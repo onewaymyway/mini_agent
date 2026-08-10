@@ -144,6 +144,133 @@ class TestTopicLifecycle(unittest.TestCase):
             paths = _make_paths(tmp)
             self.assertEqual(ga.growth_topic_lifecycle(paths, "unknown"), [])
 
+    def test_lifecycle_shows_goal_reopened_from_status_history(self):
+        """[next_doc/growth_advisor_cron_search_and_status_history_plan.md
+        方向三] Goal 完成后又被重新打开，时间线应该能看出这个往复
+        （goal_completed -> goal_reopened），而不是只剩最后的 active。"""
+        from mini_agent.perception.goal_backlog import GoalBacklog as GB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            candidate = ga.GrowthCandidate(
+                candidate_id="c2", title="学习 Rust", rationale="因为...",
+                evidence_count=5, confidence=0.6,
+            )
+            backlog.save_all([candidate])
+
+            goal_backlog = GB(paths)
+            goal = goal_backlog.add_goal(title="学习 Rust", source="user")
+            backlog.set_linked_goal("c2", goal.id)
+
+            goal_backlog.set_status(goal.id, "completed")
+            goal_backlog.set_status(goal.id, "active")
+
+            events = ga.growth_topic_lifecycle(paths, candidate.dedupe_key(), goal_backlog=goal_backlog)
+            stages = [e["stage"] for e in events]
+            self.assertIn("goal_completed", stages)
+            self.assertIn("goal_reopened", stages)
+            self.assertLess(stages.index("goal_completed"), stages.index("goal_reopened"))
+
+    def test_lifecycle_falls_back_to_current_status_without_history(self):
+        """没有 status_history（旧数据/从未经历过一次 set_status）时退回
+        原来的"只看当前状态"路径，向后兼容。"""
+        from mini_agent.perception.goal_backlog import GoalBacklog as GB, GoalNode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            candidate = ga.GrowthCandidate(
+                candidate_id="c3", title="学习 Go", rationale="因为...",
+                evidence_count=5, confidence=0.6,
+            )
+            backlog.save_all([candidate])
+
+            goal_backlog = GB(paths)
+            node = GoalNode(id="g_old", level="goal", title="学习 Go", source="user", status="completed")
+            goal_backlog._nodes[node.id] = node  # 直接注入，模拟没有经过 set_status 的旧数据
+            backlog.set_linked_goal("c3", node.id)
+
+            events = ga.growth_topic_lifecycle(paths, candidate.dedupe_key(), goal_backlog=goal_backlog)
+            stages = [e["stage"] for e in events]
+            self.assertIn("goal_completed", stages)
+            self.assertNotIn("goal_reopened", stages)
+
+
+class TestCronTriggeredActiveSearch(unittest.TestCase):
+    """[next_doc/growth_advisor_cron_search_and_status_history_plan.md
+    方向一] cron 路径的主动检索预算调度。"""
+
+    def _fake_web_search(self, query: str, max_results: int = 5) -> str:
+        return f"[web_search] result for {query}\nhttps://example.com/x"
+
+    def test_disabled_by_default_does_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cfg = GrowthAdvisorConfig()
+            candidate = ga.GrowthCandidate(
+                candidate_id="c1", title="数据分析", rationale="因为...",
+                evidence_count=5, confidence=0.9,
+            )
+            result = ga._maybe_run_cron_triggered_active_search(
+                paths, cfg, [candidate],
+                llm_helper=_fake_llm_extract, web_search_fn=self._fake_web_search,
+            )
+            self.assertIsNone(result)
+
+    def test_enabled_triggers_search_for_top_candidate_without_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cfg = GrowthAdvisorConfig()
+            cfg.cron_triggered_active_search_enabled = True
+            cfg.cron_triggered_active_search_daily_limit = 1
+            candidates = [
+                ga.GrowthCandidate(candidate_id="low", title="冷门方向", rationale="r", evidence_count=3, confidence=0.3),
+                ga.GrowthCandidate(candidate_id="high", title="热门方向", rationale="r", evidence_count=8, confidence=0.9),
+            ]
+            result = ga._maybe_run_cron_triggered_active_search(
+                paths, cfg, candidates,
+                llm_helper=_fake_llm_extract, web_search_fn=self._fake_web_search,
+            )
+            self.assertIsNotNone(result)
+            self.assertEqual(result["triggered_candidate_ids"], ["high"])
+
+    def test_daily_budget_respected_across_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cfg = GrowthAdvisorConfig()
+            cfg.cron_triggered_active_search_enabled = True
+            cfg.cron_triggered_active_search_daily_limit = 1
+            candidates = [
+                ga.GrowthCandidate(candidate_id="a", title="方向 A", rationale="r", evidence_count=5, confidence=0.8),
+                ga.GrowthCandidate(candidate_id="b", title="方向 B", rationale="r", evidence_count=5, confidence=0.7),
+            ]
+            ga._maybe_run_cron_triggered_active_search(
+                paths, cfg, candidates,
+                llm_helper=_fake_llm_extract, web_search_fn=self._fake_web_search,
+            )
+            # 当天预算已用完，第二次调用不应该再触发。
+            result2 = ga._maybe_run_cron_triggered_active_search(
+                paths, cfg, candidates,
+                llm_helper=_fake_llm_extract, web_search_fn=self._fake_web_search,
+            )
+            self.assertIsNone(result2)
+
+    def test_missing_web_search_fn_skips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cfg = GrowthAdvisorConfig()
+            cfg.cron_triggered_active_search_enabled = True
+            candidate = ga.GrowthCandidate(
+                candidate_id="c1", title="数据分析", rationale="因为...",
+                evidence_count=5, confidence=0.9,
+            )
+            result = ga._maybe_run_cron_triggered_active_search(
+                paths, cfg, [candidate],
+                llm_helper=_fake_llm_extract, web_search_fn=None,
+            )
+            self.assertIsNone(result)
+
 
 if __name__ == "__main__":
     unittest.main()

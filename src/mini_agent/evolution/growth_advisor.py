@@ -3046,7 +3046,11 @@ def _select_candidates_for_reports(
 # ────────────────────────── 每日流程封装（供 cron / CLI 复用） ──────────────────────────
 
 
-def run_daily_cycle(paths, cfg, profile, memory_store, *, llm_helper: Optional[Callable[[str], str]] = None) -> dict[str, Any]:
+def run_daily_cycle(
+    paths, cfg, profile, memory_store, *,
+    llm_helper: Optional[Callable[[str], str]] = None,
+    web_search_fn=None,
+) -> dict[str, Any]:
     """`sys:growth_advisor_daily` 与 `/growth scan` 共用的主流程：
     信号扫描 -> 候选生成 -> （置信度达标的）Top-N 生成调研报告 ->
     （P2 新增）按 4.2 节节流规则决定要不要推送一条通知。
@@ -3055,6 +3059,14 @@ def run_daily_cycle(paths, cfg, profile, memory_store, *, llm_helper: Optional[C
     真正传给 `growth_signal_scan`（默认 False，零 LLM 成本）——即使调用方
     在有 agent 上下文的场景下总是能拿到 `llm_helper`，是否使用仍然由
     这个显式开关控制，不因为"恰好有"就默认用上。
+
+    `web_search_fn`：[next_doc/growth_advisor_cron_search_and_status_
+    history_plan.md 方向一] 可选，签名与 `generate_growth_report()` 的
+    同名参数一致。只有在 `cfg.cron_triggered_active_search_enabled=True`
+    且本参数非 `None` 时才会真正触发 cron 路径的主动检索（见
+    `_maybe_run_cron_triggered_active_search()`）；不传时行为与本机制
+    引入前完全一致，调用方（cron job / `/growth scan`）是否具备检索
+    工具、要不要打开这条路径，仍然由调用方自己决定。
     """
     if not getattr(cfg, "enabled", True):
         return {"skipped": True, "reason": "growth_advisor disabled"}
@@ -3120,11 +3132,20 @@ def run_daily_cycle(paths, cfg, profile, memory_store, *, llm_helper: Optional[C
         except Exception:
             pass
 
+    # [next_doc/growth_advisor_cron_search_and_status_history_plan.md
+    # 方向一] 默认关闭；`_maybe_run_cron_triggered_active_search()` 内部
+    # 已经做了完整的 try/except 兜底，这里不需要再包一层。
+    cron_active_search = _maybe_run_cron_triggered_active_search(
+        paths, cfg, new_candidates,
+        llm_helper=llm_helper, web_search_fn=web_search_fn, profile=profile,
+    )
+
     return {
         "skipped": False,
         "new_candidates": [c.candidate_id for c in new_candidates],
         "reports": [r.report_id for r in reports],
         "notification": notification,
+        "cron_active_search": cron_active_search,
     }
 
 
@@ -3287,6 +3308,96 @@ def _external_signal_excerpts_for_topic(
             "excerpt": excerpt,
         })
     return out
+
+
+# ────────── cron 无人值守路径的主动检索预算调度（next_doc/
+# growth_advisor_cron_search_and_status_history_plan.md 方向一）──────────
+# `run_daily_cycle()` 此前完全不触发 N4/方向一的主动检索——覆盖面只能靠
+# 人工触发 `/growth report`。这里借用 `tech_radar_search.py` 同一套
+# "控频率+控预算"节流思路（每天最多处理个位数种子），但预算维度换成
+# "cron 每天最多对几个候选触发一次"，状态记账复用既有的
+# `growth_advisor_state.json`（跟 `notify_count_today` 同一个自然日
+# 计数器风格，见 `_maybe_dispatch_notification`）。
+
+CRON_ACTIVE_SEARCH_STATE_DATE_KEY = "cron_active_search_date"
+CRON_ACTIVE_SEARCH_STATE_COUNT_KEY = "cron_active_search_count_today"
+
+
+def _maybe_run_cron_triggered_active_search(
+    paths, cfg, candidates: list[GrowthCandidate], *, llm_helper, web_search_fn, profile=None,
+) -> Optional[dict]:
+    """[方向一] `run_daily_cycle()` 收尾时调用：从本轮候选里挑出"证据数
+    最高但从未有过任何外部背景"的若干个，触发定向检索。
+
+    - `cfg.cron_triggered_active_search_enabled` 为 `False`（默认）、
+      `llm_helper`/`web_search_fn` 任一缺失时直接跳过——跟方向一手动
+      触发路径一样，检索能力必须由调用方注入，本函数不导入
+      `tools/builtin.py::web_search`。
+    - 每个自然日最多处理 `cfg.cron_triggered_active_search_daily_limit`
+      个候选（默认 1），计数落盘在 `growth_advisor_state.json`，与
+      `notify_count_today` 同一自然日翻转规则，互不共享计数。
+    - 候选选取：按 `confidence` 降序遍历 `candidates`，跳过
+      `_external_signal_count_for_topic()` 命中数 > 0 的（已经有外部
+      背景，不重复劳动，延续"只在完全没有素材时才补"的既有边界）。
+    - 复用 `_active_search_excerpts_for_topic()` 完成"检索→LLM 抽取→
+      落盘 wiki"，不重新实现一套；无论这次检索是否真的抽出内容，都会
+      占用当天的预算名额（避免同一个屡查屡空的候选反复重试、把当天\n      预算耗在它一个人身上——是否值得继续查它，交给\n      `tech_radar_search.py` 的质量反馈闭环处理，本函数不做重试判断）。
+    - 任何一步异常都不应该打断 `run_daily_cycle` 主流程，整体
+      try/except + log_exception 兜底。
+    """
+    if not getattr(cfg, "cron_triggered_active_search_enabled", False):
+        return None
+    if llm_helper is None or web_search_fn is None:
+        return None
+    if not candidates:
+        return None
+
+    try:
+        daily_limit = max(0, int(getattr(cfg, "cron_triggered_active_search_daily_limit", 1)))
+        if daily_limit <= 0:
+            return None
+
+        state = _load_growth_state(paths)
+        today = _today_str()
+        if state.get(CRON_ACTIVE_SEARCH_STATE_DATE_KEY) != today:
+            state[CRON_ACTIVE_SEARCH_STATE_DATE_KEY] = today
+            state[CRON_ACTIVE_SEARCH_STATE_COUNT_KEY] = 0
+        remaining = daily_limit - int(state.get(CRON_ACTIVE_SEARCH_STATE_COUNT_KEY, 0))
+        if remaining <= 0:
+            return None
+
+        effective_keywords = _effective_topic_keywords(profile) if profile is not None else {}
+        ranked = sorted(candidates, key=lambda c: -c.confidence)
+
+        triggered: list[str] = []
+        for candidate in ranked:
+            if remaining <= 0:
+                break
+            info = effective_keywords.get(candidate.title)
+            keywords = list(info.get("keywords") or []) if isinstance(info, dict) else []
+            try:
+                if _external_signal_count_for_topic(paths, candidate.title, keywords) > 0:
+                    continue
+            except Exception:
+                continue
+
+            excerpts = _active_search_excerpts_for_topic(
+                paths, candidate, keywords,
+                web_search_fn=web_search_fn, llm_helper=llm_helper,
+            )
+            remaining -= 1
+            state[CRON_ACTIVE_SEARCH_STATE_COUNT_KEY] = int(state.get(CRON_ACTIVE_SEARCH_STATE_COUNT_KEY, 0)) + 1
+            if excerpts:
+                triggered.append(candidate.candidate_id)
+
+        _save_growth_state(paths, state)
+        if not triggered:
+            return {"triggered_candidate_ids": []}
+        return {"triggered_candidate_ids": triggered}
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.growth_advisor._maybe_run_cron_triggered_active_search")
+        return None
 
 
 # ────────── 方向一：真正的主动检索（growth_advisor_active_search_and_
@@ -3489,14 +3600,53 @@ def growth_topic_lifecycle(paths, dedupe_key: str, *, goal_backlog=None) -> list
             except Exception:
                 goal = None
             if goal is not None:
-                status = getattr(goal, "status", None)
-                ts = getattr(goal, "last_touched_at", None) or getattr(goal, "created_at", linked.updated_at)
-                if status == "completed":
-                    events.append({"stage": "goal_completed", "ts": ts, "label": "目标已完成", "detail": ""})
-                elif status in ("abandoned", "failed", "cancelled"):
-                    events.append({"stage": "goal_stalled", "ts": ts, "label": f"目标已停滞（{status}）", "detail": status})
-                elif status == "active":
-                    events.append({"stage": "goal_active", "ts": ts, "label": "目标进行中", "detail": ""})
+                _TERMINAL_STATUSES = ("completed", "abandoned", "failed", "cancelled")
+
+                def _goal_status_event(status: str, ts: float) -> Optional[dict]:
+                    if status == "completed":
+                        return {"stage": "goal_completed", "ts": ts, "label": "目标已完成", "detail": ""}
+                    if status in ("abandoned", "failed", "cancelled"):
+                        return {"stage": "goal_stalled", "ts": ts, "label": f"目标已停滞（{status}）", "detail": status}
+                    if status == "active":
+                        return {"stage": "goal_active", "ts": ts, "label": "目标进行中", "detail": ""}
+                    return None
+
+                # [next_doc/growth_advisor_cron_search_and_status_history_
+                # plan.md 方向三] 优先用 `status_history` 还原完整往复：
+                # 一个 Goal 完成过一次又被重新打开，能看出"goal_completed
+                # -> goal_reopened -> ..."而不是只剩最后一次 set_status
+                # 之后的"当前状态"。旧数据/尚未经历过一次显式 set_status
+                # 的 Goal 没有历史（空列表），退回原来的"只看当前状态"
+                # 兜底路径，保持向后兼容。
+                history = list(getattr(goal, "status_history", None) or [])
+                if history:
+                    prev_status = None
+                    for entry in history:
+                        if not isinstance(entry, dict):
+                            continue
+                        status = entry.get("status")
+                        ts = entry.get("at") or linked.updated_at
+                        if (
+                            status == "active"
+                            and prev_status is not None
+                            and prev_status in _TERMINAL_STATUSES
+                        ):
+                            events.append({
+                                "stage": "goal_reopened", "ts": ts,
+                                "label": f"目标重新被打开（此前状态：{prev_status}）",
+                                "detail": prev_status,
+                            })
+                        else:
+                            evt = _goal_status_event(status, ts)
+                            if evt is not None:
+                                events.append(evt)
+                        prev_status = status
+                else:
+                    status = getattr(goal, "status", None)
+                    ts = getattr(goal, "last_touched_at", None) or getattr(goal, "created_at", linked.updated_at)
+                    evt = _goal_status_event(status, ts)
+                    if evt is not None:
+                        events.append(evt)
 
     events.sort(key=lambda e: e["ts"])
     return events

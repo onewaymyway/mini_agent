@@ -231,5 +231,74 @@ class TestTechRadarSearch(unittest.TestCase):
         self.assertEqual(state2["last_run_id"], "run-b")
 
 
+class TestQualityFeedbackLoop(unittest.TestCase):
+    """[next_doc/growth_advisor_cron_search_and_status_history_plan.md
+    方向二] 检索结果质量反馈闭环：连续多次空结果的种子在冷却期内被跳过，
+    冷却期满/查到有用内容后恢复参与轮转。"""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.paths = AgentPaths(Path(self._tmpdir.name))
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _run(self, *, keywords, web_search_fn, response, run_id, **kw):
+        helper = _FakeLLMHelper(response)
+        return run_tech_radar_search_once(
+            self.paths, llm_helper=helper, keywords=keywords,
+            daily_seed_limit=len(keywords), web_search_fn=web_search_fn,
+            run_id=run_id, low_quality_streak_threshold=2,
+            low_quality_cooldown_days=14, **kw,
+        )
+
+    def test_repeated_empty_seed_gets_skipped_after_streak_threshold(self):
+        empty_response = json.dumps({"items": [{"index": 1, "entities": [], "facts": []}]})
+        web_search_fn = _fake_web_search_factory({"noisy_seed": "无关内容"})
+
+        # 连续 2 次都没抽出任何内容，达到阈值。
+        self._run(keywords=["noisy_seed"], web_search_fn=web_search_fn, response=empty_response, run_id="r1")
+        self._run(keywords=["noisy_seed"], web_search_fn=web_search_fn, response=empty_response, run_id="r2")
+
+        state = json.loads(self.paths.external_input_tech_radar_state.read_text(encoding="utf-8"))
+        self.assertEqual(state["seed_quality"]["noisy_seed"]["empty_streak"], 2)
+
+        # 第三次运行：该种子应该被质量过滤挡住，本轮不再处理它。
+        summary = self._run(keywords=["noisy_seed"], web_search_fn=web_search_fn, response=empty_response, run_id="r3")
+        self.assertEqual(summary.seeds_processed, 0)
+        self.assertEqual(summary.low_quality_skipped_count, 1)
+
+    def test_useful_result_resets_streak(self):
+        empty_response = json.dumps({"items": [{"index": 1, "entities": [], "facts": []}]})
+        useful_response = json.dumps({
+            "items": [{"index": 1, "entities": [
+                {"name": "X", "entity_type": "tool", "description": "有用的东西"},
+            ], "facts": []}]
+        })
+        web_search_fn = _fake_web_search_factory({"seed_a": "内容"})
+
+        self._run(keywords=["seed_a"], web_search_fn=web_search_fn, response=empty_response, run_id="r1")
+        self._run(keywords=["seed_a"], web_search_fn=web_search_fn, response=useful_response, run_id="r2")
+
+        state = json.loads(self.paths.external_input_tech_radar_state.read_text(encoding="utf-8"))
+        self.assertEqual(state["seed_quality"]["seed_a"]["empty_streak"], 0)
+
+    def test_quality_feedback_disabled_never_skips(self):
+        empty_response = json.dumps({"items": [{"index": 1, "entities": [], "facts": []}]})
+        web_search_fn = _fake_web_search_factory({"noisy_seed": "无关内容"})
+
+        for i in range(3):
+            self._run(
+                keywords=["noisy_seed"], web_search_fn=web_search_fn,
+                response=empty_response, run_id=f"r{i}", quality_feedback_enabled=False,
+            )
+        summary = self._run(
+            keywords=["noisy_seed"], web_search_fn=web_search_fn,
+            response=empty_response, run_id="r-last", quality_feedback_enabled=False,
+        )
+        self.assertEqual(summary.seeds_processed, 1)
+        self.assertEqual(summary.low_quality_skipped_count, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

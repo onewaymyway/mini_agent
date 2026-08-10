@@ -590,6 +590,17 @@ class TechRadarConfig:
     daily_seed_limit: int = 5
     max_search_results: int = 5
 
+    # ── 检索结果质量反馈闭环（next_doc/growth_advisor_cron_search_and_
+    # status_history_plan.md 方向二）────────────────────────────────────
+    # 默认开启，零额外调用成本——只是在种子选择前多做一次基于既有
+    # 轮转状态文件的过滤，不引入新的 LLM/网络调用。某个种子连续
+    # `low_quality_streak_threshold` 次检索都没抽出任何 entity/fact，
+    # 在 `low_quality_cooldown_days` 天冷却期内暂时跳过它，冷却期满后
+    # 自动重新参与轮转（不是永久拉黑）。
+    quality_feedback_enabled: bool = True
+    low_quality_streak_threshold: int = 3
+    low_quality_cooldown_days: int = 14
+
 
 @dataclass
 class EcosystemPositioningConfig:
@@ -1812,6 +1823,17 @@ class GrowthAdvisorConfig:
     # 单次报告最多触发几次检索调用，当前实现只用 1 次，预留字段供以后
     # 扩展为"多个关键词各查一次"时使用，不代表当前已支持多轮。
     report_active_search_max_calls: int = 1
+
+    # ── cron 无人值守路径的主动检索（next_doc/growth_advisor_cron_search_
+    # and_status_history_plan.md 方向一）──────────────────────────────
+    # 默认关闭：`run_daily_cycle()`（`sys:growth_advisor_daily`）此前完全
+    # 不触发主动检索，覆盖面依赖人工触发 `/growth report`。打开后，借用
+    # `tech_radar_search.py` 同一套"控频率+控预算"节流模式，cron 路径
+    # 每天最多对 `cron_triggered_active_search_daily_limit` 个"证据数
+    # 最高但从未有过任何外部背景"的候选触发一次定向检索，复用
+    # `_active_search_excerpts_for_topic()` 落盘管道，不新增检索通道。
+    cron_triggered_active_search_enabled: bool = False
+    cron_triggered_active_search_daily_limit: int = 1
 
 
 @dataclass

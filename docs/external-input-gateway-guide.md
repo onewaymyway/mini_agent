@@ -619,6 +619,20 @@ Agent 主动去外部世界找信号"，两者互补、互不依赖。详见
 `docs/wiki-knowledge-base-guide.md` §十二·3、
 `next_doc/external_knowledge_wiki_and_self_improvement_plan.md` P3。
 
+`next_doc/growth_advisor_cron_search_and_status_history_plan.md`（方向
+二）给这条链路补了一层质量反馈：种子轮转前先看
+`tech_radar.quality_feedback_enabled`（默认开启，零额外成本）——连续
+`tech_radar.low_quality_streak_threshold`（默认 3）次检索都没抽出任何
+`entity`/`fact` 的种子，在 `tech_radar.low_quality_cooldown_days`
+（默认 14 天）内暂时跳过，冷却期满或期间查到有用内容都会自动恢复
+参与轮转，避免屡查屡空的种子无限期占用每天的检索配额。同一份计划
+的方向一还让"手动触发 `/growth report`"之外的 `run_daily_cycle()`
+cron 路径也能在开启 `growth_advisor.cron_triggered_active_search_
+enabled` 后，对少数几个"证据数最高但完全没有外部背景"的成长顾问候选
+触发一次定向检索（复用的正是本节这套主动检索能力，只是触发方从
+"手动查看某份报告"换成了"每日 cron 收尾时按预算挑选"），详见
+`docs/growth-advisor-guide.md` §2.11。
+
 外部知识反馈闭环计划 P4 新增了一条与 `tech_radar_search.py` 结构几乎完全
 一致、但视角相反的链路：`external_input/ecosystem_positioning_scan.py`，
 独立 cron job `sys:ecosystem_positioning_scan`（`interval:604800`，每周

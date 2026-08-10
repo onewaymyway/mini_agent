@@ -6013,7 +6013,15 @@ async def post_growth_scan(request: Request):
             helper = getattr(self_agent, "llm_helper", None)
             if helper is not None:
                 llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
-        result = ga.run_daily_cycle(paths, cfg, profile, store, llm_helper=llm_helper)
+        # [next_doc/growth_advisor_cron_search_and_status_history_plan.md
+        # 方向一] 同 CLI `/growth scan`：传入 web_search_fn 只是让能力
+        # 可用，是否真正触发仍由 cfg.cron_triggered_active_search_enabled
+        # 这个显式开关决定。
+        from mini_agent.tools.builtin import web_search as _web_search_fn
+        result = ga.run_daily_cycle(
+            paths, cfg, profile, store,
+            llm_helper=llm_helper, web_search_fn=_web_search_fn,
+        )
         mgr.save()
         # [kanban_perception_gaps_improvement_plan.md 方向 D.1] 复用这个
         # 既有的每日调用点，顺带记一条 Objective 完成率快照——不新增独立

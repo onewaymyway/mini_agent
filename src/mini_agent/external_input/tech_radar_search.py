@@ -48,6 +48,17 @@ if TYPE_CHECKING:
 CONSUMER_NAME = "tech_radar_search"
 JOB_ID = "sys:tech_radar_search"
 
+# ────────── 检索结果质量反馈闭环（next_doc/growth_advisor_cron_search_
+# and_status_history_plan.md 方向二）──────────
+# 种子检索结果落盘后此前没有任何"这条外部资讯有没有用"的反馈机制，同一个
+# query 反复查到空结果也会被无限期继续排进轮转。这里给每个种子维护一个
+# 轻量的"最近连续几次一无所获"计数（empty_streak），连续达到阈值后本轮
+# 选种子时临时跳过它，跳过期满一个冷却期（而不是永久拉黑）后自动重新
+# 参与轮转——延续"证据不够强就克制"的一贯原则，但对"检索"这个动作，
+# 反过来是"持续查不到东西就克制"。
+DEFAULT_LOW_QUALITY_STREAK_THRESHOLD = 3
+DEFAULT_LOW_QUALITY_COOLDOWN_DAYS = 14
+
 # 单次 run 里，种子检索结果一次性打包进同一个 LLM 批量抽取 prompt——种子数
 # 本身已经被 daily_seed_limit 收敛到个位数，不需要再分批调用 LLM。
 _URL_RE = re.compile(r"https?://\S+")
@@ -67,6 +78,9 @@ class TechRadarSummary:
     entities_queued: int = 0
     facts_queued: int = 0
     parse_failed_count: int = 0
+    # [质量反馈闭环] 本轮因为连续多次查不到有用内容、仍在冷却期而被跳过
+    # 的种子数量——只统计，不影响其它计数字段的既有语义。
+    low_quality_skipped_count: int = 0
 
 
 def _collect_seed_pool(paths: "AgentPaths", keywords: list, summary: TechRadarSummary) -> list[str]:
@@ -121,6 +135,63 @@ def _save_rotation_state(paths: "AgentPaths", state: dict) -> None:
     except Exception as exc:
         from mini_agent.errors import log_exception
         log_exception(exc, where="mini_agent.external_input.tech_radar_search._save_rotation_state")
+
+
+def _filter_low_quality_seeds(
+    seeds: list[str],
+    quality_state: dict,
+    *,
+    streak_threshold: int,
+    cooldown_seconds: float,
+    now: float,
+) -> tuple[list[str], list[str]]:
+    """按每个种子的历史质量记录，把连续 `streak_threshold` 次都没查到任何
+    有用内容、且距上次运行还在冷却期内的种子暂时挑出来，其余种子原样保留
+    顺序返回——返回 `(eligible, skipped)`。
+
+    `streak_threshold <= 0` 视为关闭本机制，直接返回全部种子、空跳过
+    列表（对应 `TechRadarConfig.quality_feedback_enabled=False` 或阈值
+    被显式关掉的情况，调用方在这种情况下也可以直接不调用本函数）。
+
+    冷却期到了之后即便 `empty_streak` 仍然大于等于阈值也会重新纳入本轮
+    候选——这是"降级但不永久拉黑"的关键：冷却期满后再查一次，查到有用
+    内容会在结果回填时把 streak 清零，查不到则冷却期重新计时，不需要
+    额外的"是否已经冷却过一次"标记。
+    """
+    if streak_threshold <= 0:
+        return list(seeds), []
+    eligible: list[str] = []
+    skipped: list[str] = []
+    for seed in seeds:
+        info = quality_state.get(seed) if isinstance(quality_state, dict) else None
+        if not isinstance(info, dict):
+            eligible.append(seed)
+            continue
+        streak = int(info.get("empty_streak") or 0)
+        last_run_at = float(info.get("last_run_at") or 0.0)
+        if streak >= streak_threshold and (now - last_run_at) < cooldown_seconds:
+            skipped.append(seed)
+        else:
+            eligible.append(seed)
+    return eligible, skipped
+
+
+def _update_seed_quality(quality_state: dict, seed: str, *, useful: bool, now: float) -> dict:
+    """处理完一个种子的检索结果后调用，返回更新后的 `quality_state`
+    （原地修改并返回同一个 dict，方便调用方链式使用）。`useful` 由调用方
+    判定——目前的标准是这个种子最终有没有产出至少一条 entity/fact
+    候选，标准本身不在这个函数里，保持这里只负责状态记账。
+    """
+    info = dict(quality_state.get(seed) or {})
+    info["total_runs"] = int(info.get("total_runs") or 0) + 1
+    if useful:
+        info["empty_streak"] = 0
+    else:
+        info["empty_streak"] = int(info.get("empty_streak") or 0) + 1
+        info["total_empty"] = int(info.get("total_empty") or 0) + 1
+    info["last_run_at"] = now
+    quality_state[seed] = info
+    return quality_state
 
 
 def _select_seeds_for_this_run(seeds: list[str], *, limit: int, offset: int) -> tuple[list[str], int]:
@@ -223,6 +294,9 @@ def run_tech_radar_search_once(
     max_search_results: int = 5,
     run_id: Optional[str] = None,
     web_search_fn=None,
+    quality_feedback_enabled: bool = True,
+    low_quality_streak_threshold: int = DEFAULT_LOW_QUALITY_STREAK_THRESHOLD,
+    low_quality_cooldown_days: int = DEFAULT_LOW_QUALITY_COOLDOWN_DAYS,
 ) -> TechRadarSummary:
     """cron 触发入口：采集种子 → 逐个调用 web_search → 批量 LLM 抽取 →
     落盘进 world_writer pending 队列（source_kind=external_search）。
@@ -235,6 +309,16 @@ def run_tech_radar_search_once(
     `web_search_fn` 默认使用 `tools/builtin.py::web_search()`（真实检索），
     暴露为参数纯粹是为了单测可以注入假实现，不代表本模块支持切换检索
     通道（计划 §3 P3 明确"不新增检索通道"）。
+
+    `quality_feedback_enabled`/`low_quality_streak_threshold`/
+    `low_quality_cooldown_days`：[next_doc/growth_advisor_cron_search_
+    and_status_history_plan.md 方向二] 质量反馈闭环——种子池在
+    `_select_seeds_for_this_run()` 轮转之前先过滤掉"连续多次查不到任何
+    有用内容、仍在冷却期内"的种子（见 `_filter_low_quality_seeds()`），
+    每个种子处理完之后按"这次有没有产出至少一条 entity/fact"更新其
+    质量记录（见 `_update_seed_quality()`），质量状态与轮转 offset 存在
+    同一个状态文件里。`quality_feedback_enabled=False` 时完全跳过这层
+    过滤，行为与本机制引入前一致。
     """
     summary = TechRadarSummary()
     if llm_helper is None:
@@ -246,8 +330,28 @@ def run_tech_radar_search_once(
 
     state = _load_rotation_state(paths)
     offset = int(state.get("offset") or 0)
+    quality_state: dict = dict(state.get("seed_quality") or {}) if quality_feedback_enabled else {}
+    now = time.time()
+
+    if quality_feedback_enabled:
+        seeds_for_rotation, skipped_seeds = _filter_low_quality_seeds(
+            seeds, quality_state,
+            streak_threshold=low_quality_streak_threshold,
+            cooldown_seconds=max(0, low_quality_cooldown_days) * 86400,
+            now=now,
+        )
+        summary.low_quality_skipped_count = len(skipped_seeds)
+    else:
+        seeds_for_rotation = seeds
+
+    if not seeds_for_rotation:
+        # 种子池非空，但全部被质量过滤挡在冷却期里——不推进轮转游标（下次
+        # 冷却期满时应该仍从同一个 offset 开始，避免"整池都在冷却"这种
+        # 边界情况下 offset 无意义地空转）。
+        return summary
+
     selected, next_offset = _select_seeds_for_this_run(
-        seeds, limit=max(1, daily_seed_limit), offset=offset,
+        seeds_for_rotation, limit=max(1, daily_seed_limit), offset=offset,
     )
     if not selected:
         return summary
@@ -347,12 +451,24 @@ def run_tech_radar_search_once(
             )
             summary.facts_queued += len(facts)
 
-    _save_rotation_state(paths, {
+        if quality_feedback_enabled:
+            _update_seed_quality(
+                quality_state, seed, useful=bool(entities or facts), now=now,
+            )
+
+    new_state = {
         "offset": next_offset,
         "last_run_id": run_id,
         "last_run_at": time.time(),
         "last_seed_pool_size": len(seeds),
-    })
+    }
+    if quality_feedback_enabled:
+        new_state["seed_quality"] = quality_state
+    elif state.get("seed_quality"):
+        # 开关关闭时不主动清空历史质量数据——万一之后重新打开，之前
+        # 积累的记录还能继续用，不需要从零重新观察。
+        new_state["seed_quality"] = state.get("seed_quality")
+    _save_rotation_state(paths, new_state)
 
     return summary
 
@@ -366,6 +482,9 @@ def ensure_tech_radar_search_job(
     daily_seed_limit: int = 5,
     max_search_results: int = 5,
     schedule: str = "interval:86400",
+    quality_feedback_enabled: bool = True,
+    low_quality_streak_threshold: int = DEFAULT_LOW_QUALITY_STREAK_THRESHOLD,
+    low_quality_cooldown_days: int = DEFAULT_LOW_QUALITY_COOLDOWN_DAYS,
 ) -> bool:
     """daemon 启动时调用：缺失才补注册 `sys:tech_radar_search` job，并注册
     本地回调 handler，跟 `ensure_external_knowledge_extractor_job` 同构。
@@ -401,6 +520,9 @@ def ensure_tech_radar_search_job(
             _paths, llm_helper=helper,
             keywords=keywords, daily_seed_limit=daily_seed_limit,
             max_search_results=max_search_results,
+            quality_feedback_enabled=quality_feedback_enabled,
+            low_quality_streak_threshold=low_quality_streak_threshold,
+            low_quality_cooldown_days=low_quality_cooldown_days,
         )
         return True
 

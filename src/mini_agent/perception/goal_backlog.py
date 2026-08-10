@@ -155,6 +155,18 @@ class GoalNode:
     # 见 GoalBacklog.add_goal() 的解析逻辑与 perception/turn_context.py。
     source_initiator: str = "user"
 
+    # [next_doc/growth_advisor_cron_search_and_status_history_plan.md
+    # 方向三] `status` 此前只是一个不透明字符串，只能查到"当前状态"，
+    # 查不到"怎么走到这个状态的"——一个 Goal 完成后又被重新打开
+    # （比如周期性 Goal 的下一轮，或用户手动改回 active）在既有数据
+    # 结构里完全看不出来。这里补一条极简的状态变更历史，只有
+    # `set_status()` 会追加，其它字段变更（`update_progress()`/
+    # `update_fields()` 等）不触碰本字段。每项：
+    # `{"status": str, "at": float}`，只追加不修改/删除，旧数据反序列化
+    # 时缺该字段按 `[]` 处理（等价于"这个节点还没经历过一次显式状态
+    # 变更"，不需要额外迁移）。
+    status_history: list = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -181,6 +193,7 @@ class GoalNode:
             "skip_next_cycle": self.skip_next_cycle,
             "user_feedback": self.user_feedback,
             "source_initiator": self.source_initiator,
+            "status_history": self.status_history,
         }
 
     @staticmethod
@@ -213,6 +226,7 @@ class GoalNode:
             # "user"——对旧数据保守估计为用户创建，不会把历史 Goal 误标成
             # 某种自动触发来源。
             source_initiator=d.get("source_initiator", "user"),
+            status_history=d.get("status_history", []),
         )
 
     @property
@@ -728,11 +742,21 @@ class GoalBacklog:
 
         内部会先重新加载磁盘最新状态，在最新数据基础上改这一个字段再落盘，
         避免与其他进程并发写入互相覆盖。
+
+        [next_doc/growth_advisor_cron_search_and_status_history_plan.md
+        方向三] 状态真正发生变化时（新状态与当前状态不同）追加一条
+        `status_history` 记录——同一状态被重复 set（比如外部调用方不
+        判断当前状态就无脑调一次 `set_status(node_id, "active")`）不
+        产生冗余历史条目，避免历史里全是无意义的重复记录。
         """
         with self._locked():
             node = self._nodes.get(node_id)
             if not node:
                 return False
+            if node.status != status:
+                node.status_history = list(node.status_history) + [
+                    {"status": status, "at": time.time()}
+                ]
             node.status = status
             node.last_touched_at = time.time()
         return True

@@ -1321,6 +1321,9 @@ class HttpServer:
                     keywords=getattr(_tech_radar_cfg, "keywords", None),
                     daily_seed_limit=getattr(_tech_radar_cfg, "daily_seed_limit", 5),
                     max_search_results=getattr(_tech_radar_cfg, "max_search_results", 5),
+                    quality_feedback_enabled=getattr(_tech_radar_cfg, "quality_feedback_enabled", True),
+                    low_quality_streak_threshold=getattr(_tech_radar_cfg, "low_quality_streak_threshold", 3),
+                    low_quality_cooldown_days=getattr(_tech_radar_cfg, "low_quality_cooldown_days", 14),
                 )
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception

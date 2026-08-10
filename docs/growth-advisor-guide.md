@@ -312,6 +312,40 @@ CLI/看板无需任何操作——这几项都发生在 `generate_growth_report(
 内部，`/growth report <id>`、`/growth scan` 自动带上新行为，行为差异
 只体现在报告正文本身（有真实摘录 + 来源标注、更具体的结构）。
 
+### 2.11 cron 主动检索预算调度 / 检索质量反馈闭环 / Goal 状态历史（本次新增）
+
+> 对应方案：`next_doc/growth_advisor_cron_search_and_status_history_plan.md`。
+
+补齐三处此前留白的空隙：
+
+- **cron 路径也能触发主动检索**（`cron_triggered_active_search_
+  enabled`，默认关闭）：此前主动检索只有"手动触发调研报告"这一条
+  路径能用，`sys:growth_advisor_daily`（cron 无人值守路径）从不触发。
+  打开开关后，`run_daily_cycle()`（`/growth scan` 与 cron job 共用）
+  每个自然日最多对 `cron_triggered_active_search_daily_limit`（默认
+  1）个"证据数最高但从未有过任何外部背景"的候选触发一次定向检索，
+  复用既有的检索 → LLM 抽取 → 落盘 wiki 管道，产出跟手动触发路径共用
+  同一个 `source_kind="external_search"` 标记。预算按自然日计数，
+  跟推送节流是两套独立的计数器。
+- **主动检索的质量反馈闭环**（`tech_radar.quality_feedback_enabled`，
+  默认开启，零额外成本）：`sys:tech_radar_search` 种子轮转此前不看
+  历史检索质量——一个连续查不到任何有用内容的种子会被无限期继续
+  排队。现在种子连续 `tech_radar.low_quality_streak_threshold`
+  （默认 3）次检索都没有抽出 entity/fact，会在
+  `tech_radar.low_quality_cooldown_days`（默认 14 天）冷却期内暂时
+  跳过；冷却期内只要有一次查到有用内容，或冷却期满，都会自动重新
+  参与轮转——是降级不是拉黑。
+- **Goal 状态变更历史**：`GoalBacklog.set_status()` 现在会给 Goal
+  节点追加一条 `{"status", "at"}` 历史记录（状态真正变化时才追加，
+  重复 `set` 同一状态不产生冗余条目）。`growth_topic_lifecycle()` 消费
+  这份历史后，能在时间线里正确呈现"完成过一次又被重新打开"这种
+  往复（新增 `goal_reopened` 事件），而不只是展示最后一次状态；旧数据
+  没有这份历史时自动退回原有的"只看当前状态"展示，不受影响。
+
+三者都不需要用户在看板/CLI 做任何额外操作——前两项通过配置开关生效，
+Goal 状态历史是数据结构层面的补全，`growth_topic_lifecycle()` 的既有
+调用方（看板/CLI 展开某个主题详情）自动获得更完整的时间线。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外
@@ -434,6 +468,9 @@ GET  /v1/growth/health_trend                             # 健康度趋势快照
 | `goal_alignment_llm_enabled` | `false` | （2.9 节）对齐分析是否额外做一次 LLM 语义匹配，找出关键词匹配漏掉的"字面不同、实质同一件事"配对；结果只出现在建议列表，不自动写入关联关系 |
 | `report_two_stage_enabled` | `false` | （2.10 节）报告生成先让 LLM 提炼 3-4 个具体问题再逐一回答，替代固定的四段式结构；多一次 LLM 调用，默认关闭 |
 | `report_dismiss_reason_adaptive_enabled` | `true` | （2.10 节）报告曾被标"内容太笼统"时，下次生成追加针对性提醒；不产生额外 LLM 调用，默认开启 |
+| `report_active_search_enabled` | `false` | （2.11 节）手动触发调研报告（有 `web_search_fn` 的调用路径）时，被动扫描命中 0 条素材才现查一次；会实际发起检索调用，默认关闭 |
+| `cron_triggered_active_search_enabled` | `false` | （2.11 节）`sys:growth_advisor_daily` cron 路径是否也触发主动检索，每天最多处理 `cron_triggered_active_search_daily_limit` 个"证据数最高但没有外部背景"的候选；会实际发起检索调用，默认关闭 |
+| `cron_triggered_active_search_daily_limit` | `1` | （2.11 节）cron 主动检索每个自然日的预算上限，开关关闭时不生效 |
 
 另外 `memory_backfill.cron_run_backfill_enabled`（默认 `true`，v4 N2）
 控制 cron 任务收尾是否自动回填记忆，属于 `memory_backfill` 配置块而非

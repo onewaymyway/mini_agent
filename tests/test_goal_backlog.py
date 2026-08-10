@@ -73,5 +73,51 @@ class TestGoalNodeDescription(unittest.TestCase):
         self.assertEqual(goals[0].description, "需要落盘再读回")
 
 
+class TestGoalStatusHistory(unittest.TestCase):
+    """[next_doc/growth_advisor_cron_search_and_status_history_plan.md
+    方向三] set_status() 追加 status_history，同状态重复 set 不产生冗余
+    记录，旧数据反序列化兜底为空列表。"""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.paths = AgentPaths(Path(self._tmpdir.name))
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_set_status_appends_history_entry(self):
+        backlog = GoalBacklog(self.paths)
+        goal = backlog.add_goal(title="学习 Rust", source="user")
+        backlog.set_status(goal.id, "completed")
+        node = backlog.get(goal.id)
+        self.assertEqual(len(node.status_history), 1)
+        self.assertEqual(node.status_history[0]["status"], "completed")
+
+    def test_reopen_after_completed_recorded_in_history(self):
+        backlog = GoalBacklog(self.paths)
+        goal = backlog.add_goal(title="学习 Rust", source="user")
+        backlog.set_status(goal.id, "completed")
+        backlog.set_status(goal.id, "active")
+        node = backlog.get(goal.id)
+        statuses = [e["status"] for e in node.status_history]
+        self.assertEqual(statuses, ["completed", "active"])
+
+    def test_repeated_same_status_does_not_duplicate_history(self):
+        backlog = GoalBacklog(self.paths)
+        goal = backlog.add_goal(title="学习 Rust", source="user")
+        backlog.set_status(goal.id, "active")
+        backlog.set_status(goal.id, "active")
+        node = backlog.get(goal.id)
+        self.assertEqual(node.status_history, [])
+
+    def test_old_data_without_status_history_field_defaults_to_empty(self):
+        old_dict = {
+            "id": "goal_old", "level": "goal", "title": "老目标",
+            "source": "user", "status": "active",
+        }
+        node = GoalNode.from_dict(old_dict)
+        self.assertEqual(node.status_history, [])
+
+
 if __name__ == "__main__":
     unittest.main()

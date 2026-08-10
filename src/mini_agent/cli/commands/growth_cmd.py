@@ -147,7 +147,16 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
             return
         mgr, profile = _get_profile(paths)
         store = _get_memory_store(paths)
-        result = ga.run_daily_cycle(paths, cfg, profile, store, llm_helper=_get_llm_helper(agent))
+        # [next_doc/growth_advisor_cron_search_and_status_history_plan.md
+        # 方向一] `web_search_fn` 直接复用 tools/builtin.py 的模块级函数
+        # （跟 tech_radar_search.py 默认使用的是同一个实现），是否真正
+        # 触发仍然由 cfg.cron_triggered_active_search_enabled 这个显式
+        # opt-in 开关决定——传入本身不代表一定会调用检索。
+        from mini_agent.tools.builtin import web_search as _web_search_fn
+        result = ga.run_daily_cycle(
+            paths, cfg, profile, store,
+            llm_helper=_get_llm_helper(agent), web_search_fn=_web_search_fn,
+        )
         mgr.save()
         if result.get("skipped"):
             R.print_info(f"跳过：{result.get('reason')}")
