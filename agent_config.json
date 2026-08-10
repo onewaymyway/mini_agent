@@ -19,6 +19,7 @@
   "bash_stream_output_enabled": false,
   "skill_keyword_activation_enabled": false,
   "artifact_auto_detect_enabled": false,
+  "save_tool_executor_error_logs": false,
   "max_llm_calls": 4,
   "llm_retry_delay": 30,
   "max_turns": 50,

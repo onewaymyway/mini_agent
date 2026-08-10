@@ -1958,6 +1958,18 @@ class AppConfig:
     # 不引入额外依赖）| "embedding"（预留，当前未实现，退回 keyword 档）
     recall_history_mode: str = "keyword"
 
+    # [next_doc/errors_tool_executor_log_toggle_plan.md] 全局错误日志
+    # （~/.agent/logs/error.jsonl）里 `where` 前缀为
+    # "mini_agent.tool_executor" 的记录是否落盘。默认 True（保持改动前的
+    # 行为不变）。tool_executor 里这类记录绝大多数是工具调用过程中的
+    # 预期内降级路径（如历史消息里工具结果 JSON 解析失败），当用户觉得
+    # 这类记录占比过高、淹没了其它更需要关注的错误时，可以在
+    # agent_config.json 里设 `"save_tool_executor_error_logs": false`
+    # 关闭——注意这是"从源头不写入"，跟 `errors.error_log_stats()` 的
+    # `exclude_tool_executor`（只在统计展示时过滤、不影响落盘）是两个
+    # 独立的开关，互不冲突，可以只开其中一个。
+    save_tool_executor_error_logs: bool = True
+
     # ── 功能子配置块（每个功能域独立聚合）────────────────────────────────────
     memory:     MemoryConfig     = field(default_factory=MemoryConfig)
     compress:   CompressConfig   = field(default_factory=CompressConfig)

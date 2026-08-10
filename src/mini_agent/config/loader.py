@@ -700,7 +700,7 @@ def load_config(
     # [next_doc/memory_backfill_and_profile_update_plan.md] 记忆回填配置。
     memory_backfill_cfg = _nested_blocks["memory_backfill"]
 
-    return AppConfig(
+    cfg = AppConfig(
         api_key=api_key,
         model=_model,
         max_tokens=int(file_cfg.get("max_tokens") or os.environ.get("CLAUDE_MAX_TOKENS", DEFAULT_MAX_TOKENS)),
@@ -733,6 +733,9 @@ def load_config(
         # 默认 False，保持旧版一次性返回行为不变；agent_config.json 里
         # 配置 "bash_stream_output_enabled": true 即可开启。
         bash_stream_output_enabled=_fb("bash_stream_output_enabled", None, False),
+        # [next_doc/errors_tool_executor_log_toggle_plan.md] 全局错误日志
+        # 是否落盘 tool_executor 来源的记录，默认 True（不改变原行为）。
+        save_tool_executor_error_logs=_fb("save_tool_executor_error_logs", None, True),
         # 子配置块
         memory=memory_cfg,
         compress=compress_cfg,
@@ -771,6 +774,17 @@ def load_config(
         llm_fallback_chain=_llm_fallback_chain,
         llm_fallback_on=_llm_fallback_on,
     )
+
+    # [next_doc/errors_tool_executor_log_toggle_plan.md] 把
+    # `save_tool_executor_error_logs` 同步到 errors.py 的进程级开关——
+    # errors.py 不依赖 AppConfig（避免循环导入/被大量非 Agent 场景调用
+    # 时的初始化负担），这里是唯一的桥接点。多次调用 load_config()（如
+    # daemon 多用户场景每个 session 各自 load 一次）时后来者覆盖前者，
+    # 这是当前"进程级单一开关"设计的已知局限——见该 next_doc 的取舍说明。
+    from mini_agent.errors import configure_tool_executor_log_saving
+    configure_tool_executor_log_saving(cfg.save_tool_executor_error_logs)
+
+    return cfg
 
 
 # ── 辅助函数（不变）──────────────────────────────────────────────────────────

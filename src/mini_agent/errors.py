@@ -56,6 +56,32 @@ _INSTALLED = False
 _MAX_BYTES = 10 * 1024 * 1024  # 10MB
 _BACKUP_COUNT = 5
 
+# [next_doc/errors_tool_executor_log_toggle_plan.md] 是否把 `where` 前缀为
+# `_TOOL_EXECUTOR_WHERE_PREFIX` 的记录写入全局错误日志文件。默认 True（保持
+# 改动前行为不变）；由 `configure_tool_executor_log_saving()` 在
+# `config/loader.py::load_config()` 里根据 `AppConfig.save_tool_executor_
+# error_logs`（对应 agent_config.json 的 `save_tool_executor_error_logs`
+# 字段）同步。之所以做成模块级开关而不是每次调用 `log_exception()` 时传参：
+# `tool_executor.py` 里几十处调用点分散在整个文件，统一在这里收口判断，
+# 不需要逐一改造调用方（用户明确要求"改 errors.py 的逻辑，而不是调用的
+# 地方"）。
+_SAVE_TOOL_EXECUTOR_ERROR_LOGS = True
+_TOOL_EXECUTOR_WHERE_PREFIX = "mini_agent.tool_executor"
+
+
+def configure_tool_executor_log_saving(enabled: bool) -> None:
+    """设置是否把 tool_executor 来源的记录写入全局错误日志文件。
+
+    典型调用方：`config/loader.py::load_config()`，每次成功加载配置后
+    同步一次。也可以在测试里直接调用，临时切换行为。
+    """
+    global _SAVE_TOOL_EXECUTOR_ERROR_LOGS
+    _SAVE_TOOL_EXECUTOR_ERROR_LOGS = bool(enabled)
+
+
+def _is_tool_executor_where(where: str) -> bool:
+    return bool(where) and where.startswith(_TOOL_EXECUTOR_WHERE_PREFIX)
+
 
 def _error_log_path() -> Path:
     """解析全局错误日志文件路径。
@@ -154,12 +180,23 @@ def log_exception(
         level: 日志级别，默认 ERROR；无关紧要的降级路径可传 logging.WARNING。
         reraise: 若为 True，记录完成后重新抛出 exc（用于"记录后仍要中断"的场景）。
     """
+    resolved_where = where or _infer_caller()
+
+    # [next_doc/errors_tool_executor_log_toggle_plan.md] 开关关闭且这条
+    # 记录来自 tool_executor 时，直接跳过——不构造 record/不格式化
+    # traceback，省掉这条记录唯一有意义的开销；`reraise` 语义不受影响
+    # （日志是否落盘跟"要不要把异常继续抛出去"是两件独立的事）。
+    if not _SAVE_TOOL_EXECUTOR_ERROR_LOGS and _is_tool_executor_where(resolved_where):
+        if reraise:
+            raise exc
+        return
+
     record: dict[str, Any] = {
         "ts": iso_local(),
         "ts_str": now_str(),
         "pid": os.getpid(),
         "thread": threading.current_thread().name,
-        "where": where or _infer_caller(),
+        "where": resolved_where,
         "exc_type": type(exc).__name__,
         "message": str(exc),
         "traceback": "".join(
@@ -194,6 +231,12 @@ class _RootErrorRouteHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            # [next_doc/errors_tool_executor_log_toggle_plan.md] 同样的
+            # 开关也覆盖这条路径——如果项目里未来某处改成用
+            # `logging.getLogger("mini_agent.tool_executor")` 而不是直接
+            # 调用 `log_exception()`，行为应该保持一致。
+            if not _SAVE_TOOL_EXECUTOR_ERROR_LOGS and _is_tool_executor_where(record.name or ""):
+                return
             payload: dict[str, Any] = {
                 "ts": iso_local(),
                 "ts_str": now_str(),
