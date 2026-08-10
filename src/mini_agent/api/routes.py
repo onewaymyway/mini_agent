@@ -5908,7 +5908,12 @@ async def get_growth_summary(request: Request):
             from mini_agent.config.models import GrowthAdvisorConfig
             cfg = GrowthAdvisorConfig()
         profile = UserProfileManager(paths).load()
-        store = MemoryStore(paths)
+        # [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md
+        # 方向一] 之前这里是 `MemoryStore(paths)`——把整个 AgentPaths 实例
+        # 当路径传了进去，静默降级为空记忆列表，导致诊断面板"记忆总条数"
+        # 永远是 0，跟健康度趋势里 cron 任务记的真实条数对不上。
+        from mini_agent.perception.memory_factory import build_default_memory_store
+        store = build_default_memory_store(paths)
         profile_cfg = getattr(self_agent.cfg, "profile", None) if self_agent else None
         diagnostics = ga.diagnostics_snapshot(paths, cfg, profile, store, profile_cfg=profile_cfg)
 
@@ -5998,7 +6003,11 @@ async def post_growth_scan(request: Request):
             from mini_agent.config.models import GrowthAdvisorConfig
             cfg = GrowthAdvisorConfig()
 
-        store = MemoryStore(paths)
+        # [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md
+        # 方向一] 同上：改用统一的工具函数，避免手动扫描在空记忆列表上跑，
+        # 导致 0 命中、LLM 信号增强永远因"未匹配记忆数不足"被跳过。
+        from mini_agent.perception.memory_factory import build_default_memory_store
+        store = build_default_memory_store(paths)
         llm_helper = None
         if self_agent is not None and getattr(cfg, "llm_signal_augment_enabled", False):
             helper = getattr(self_agent, "llm_helper", None)

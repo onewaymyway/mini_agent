@@ -3777,6 +3777,11 @@ def _render_growth_profile_and_keywords(client: "AgentClient", diagnostics: dict
             st.caption("习惯：" + "、".join(user_profile["habits"]))
         if user_profile.get("updated_at"):
             st.caption(f"更新时间：{time.strftime('%Y-%m-%d %H:%M', time.localtime(user_profile['updated_at']))}")
+        # [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md
+        # 方向二] 展示当前检测到的用户常用语言，方便确认画像语言是否符合
+        # 预期（检测结果由 profile.py::detect_primary_language 生成）。
+        if user_profile.get("preferred_language"):
+            st.caption(f"检测到的常用语言：`{user_profile['preferred_language']}`")
 
     # [next_doc/memory_backfill_and_profile_update_plan.md 看板展示]
     # "待复核"特征：距今超过 stale_after_days 天没有被新记忆再次印证，

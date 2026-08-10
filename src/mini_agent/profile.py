@@ -320,6 +320,19 @@ class UserProfileManager:
             for e in delta_entries
         )
 
+        # [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md
+        # 方向二] 显式检测用户常用语言并落盘，不再靠"跟记忆条目同语言"
+        # 这条弱约束隐式传递——如果 delta_entries 里的摘要本身已经被上游
+        # 转成了英文，靠"同语言"这条指令是没有基准可跟的。这里直接对本
+        # 轮参与 prompt 的记忆摘要文本做检测；没有新增记忆时（增量分支
+        # delta 为空退化的情况理论上不会发生，因为上面已经兜底成
+        # entries[-N:]）保留上一版检测结果，避免因为这一轮没有有效文本
+        # 就被冲回默认英文。
+        from mini_agent.utils.lang_detect import detect_primary_language, DEFAULT_LANGUAGE
+        detected_language = detect_primary_language([e.summary for e in delta_entries])
+        prev_language = str(prev_derived.get("preferred_language", "") or "")
+        preferred_language = detected_language if detected_language != DEFAULT_LANGUAGE or not prev_language else prev_language
+
         previous_profile_text = ""
         stale_tech = stale_items(prev_tech_items, now=now, stale_after_days=stale_after_days)
         stale_habits = stale_items(prev_habit_items, now=now, stale_after_days=stale_after_days)
@@ -357,7 +370,10 @@ class UserProfileManager:
 
         resp = llm_client.chat_with_retry(
             messages=[{"role": "user", "content": prompt}],
-            system=pm.render("system/profile_summarizer"),
+            system=pm.render(
+                "system/profile_summarizer",
+                preferred_language=preferred_language,
+            ),
             tools=[],
             max_retries=10,
         )
@@ -392,6 +408,10 @@ class UserProfileManager:
             # 不是"本次喂给 LLM 的条目数"——增量分支下两者不相等。
             "source_entry_count": len(entries),
             "updated_at": now,
+            # [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md
+            # 方向二] 供其它生成类 prompt（成长顾问报告/月度复盘等）复用，
+            # 避免各自重复实现语言检测。
+            "preferred_language": preferred_language,
         }
         # [next_doc/growth_advisor_improvement_plan_v2.md P4-0] 合并式更新：
         # 只覆盖本方法自己负责的固定字段集合（PROFILE_GENERATED_KEYS），

@@ -1545,3 +1545,72 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
     可用（需要额外从 bridge/agent 上下文取），且"重新生成单份报告"
     这个场景本身调用频率低、用户可以接受暂时不带外部背景，不属于
     N4 的必要范围，后续如果需要可以单独补一个小改动。
+
+## 诊断数据源修复 + 用户语言检测（growth_advisor_diagnostics_and_language_fix_plan.md）
+
+- **触发背景**：用户反馈诊断面板"记忆总条数：0"跟健康度趋势里的
+  "记忆总条数：99"对不上，且"LLM 增强调用状态"一直显示从未触发过；
+  同时反馈"Agent 对你的了解"画像用英文生成，没跟随用户实际使用的语言。
+
+### 方向一：`MemoryStore` 构造 bug
+
+- **根因**：`src/mini_agent/api/routes.py`（`/growth/summary` 与"立即
+  为我看看"手动扫描端点）、`src/mini_agent/cli/commands/growth_cmd.py`
+  三处都写成了 `MemoryStore(paths)`——把整个 `AgentPaths` 实例当成
+  `MemoryStore.__init__` 的 `path` 参数传了进去，`self._path` 因此不是
+  一个真实文件路径，`all_entries()` 加载失败又被 `diagnostics_snapshot()`
+  里的 `try/except Exception: entries = []` 静默吞掉，导致诊断面板永远
+  显示 0 条记忆、手动扫描永远 0 命中、LLM 信号增强因"未匹配记忆数不足"
+  永远被跳过。健康度趋势里的真实条数是 cron 任务通过 `memory_factory`
+  正确构造的 store 记录的，跟诊断面板的数据源实际上是两套不同的（一套
+  正确一套错误的）构造逻辑，并非统计口径本身不一致。
+- **改动**：
+  - `src/mini_agent/perception/memory_factory.py` 新增
+    `build_default_memory_store(paths)`，统一从 `AgentPaths` 正确构造出
+    project scope（`paths.workdir_memory`）的只读 `MemoryStore`。
+  - `src/mini_agent/api/routes.py` 两处调用点、
+    `src/mini_agent/cli/commands/growth_cmd.py::_get_memory_store` 均
+    改为调用该工具函数。
+- **测试**：`tests/test_growth_diagnostics_and_lang_fix.py::
+  TestBuildDefaultMemoryStore`（2 个用例：写入后能跨实例读回、内部路径
+  确实是 `paths.workdir_memory` 而不是 `AgentPaths` 实例本身）。
+
+### 方向二：用户常用语言检测
+
+- **设计**：不依赖"跟记忆条目同语言"这条隐式弱约束（一旦上游摘要文本
+  本身语言跑偏，下游就没有基准可跟），改为显式检测 + 落盘：
+  - 新增 `src/mini_agent/utils/lang_detect.py::detect_primary_language()`
+    ——基于 Unicode 区间字符占比的轻量启发式（CJK 表意文字 / 假名 /
+    谚文），无外部依赖、无 LLM 调用，支持 zh/ja/ko，其余退回 `en`。
+  - `src/mini_agent/profile.py::UserProfileManager.generate()` 每次刷新
+    画像时，用本轮参与 prompt 的 `delta_entries` 摘要文本重新检测，写入
+    `profile.derived["preferred_language"]`；检测结果为默认值（`en`）
+    且已有上一版检测结果时保留旧值，避免单次英文偏多的批次把语言冲回
+    默认值（"sticky"策略，减少语言在批次间来回跳变）。
+  - `prompts/system/profile_summarizer.md` 新增 `{{preferred_language}}`
+    变量，明确要求模型直接使用检测结果输出，而不是自行根据记忆条目的
+    语言判断。
+  - `evolution/growth_advisor.py::diagnostics_snapshot()` 的
+    `user_profile` 快照新增 `preferred_language` 字段；
+    `apps/mini_agent_kanban/app.py::_render_growth_profile_and_keywords`
+    在"Agent 对你的了解"区块下顺带展示这个检测结果，方便用户核对。
+- **范围取舍**：本次只把检测结果接入了画像生成这一处 prompt；成长顾问
+  报告生成、月度复盘等其它面向用户的生成类 prompt 尚未逐一排查接入，
+  留给后续需要时再做（`profile.derived["preferred_language"]` 已经是
+  可直接复用的落盘字段，接入成本很低）。
+- **测试**：`tests/test_growth_diagnostics_and_lang_fix.py`：
+  - `TestDetectPrimaryLanguage`（5 个用例：空输入、中文、英文、日文
+    优先于中文判定、英文长文本里夹杂少量中文字符不误判）。
+  - `TestProfileGeneratePreferredLanguage`（1 个用例：`generate()` 用
+    中文记忆摘要跑一遍后 `derived["preferred_language"] == "zh"`）。
+
+### 测试结果
+
+- 新增测试文件 `tests/test_growth_diagnostics_and_lang_fix.py`
+  （8 项）全部通过。
+- 既有 `tests/test_growth_advisor.py`（182 项）跑下来 181 项通过，
+  1 项失败（`TestTopicTrend::
+  test_compact_topic_trend_storage_downsamples_old_points`）——该用例
+  跟本次改动的两个方向（`MemoryStore` 构造 / 语言检测）均无关联，是
+  跟自然日边界相关的既有时间敏感测试，本次未做改动也未修复，如需要
+  应作为独立 issue 跟进。

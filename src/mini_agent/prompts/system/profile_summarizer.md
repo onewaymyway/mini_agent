@@ -6,6 +6,11 @@
 # 传入了 previous_profile（增量更新场景）时，要求模型在旧画像基础上更新，
 # 而不是只根据新增的会话摘要重新总结一遍——避免旧画像里依然成立的长期
 # 特征，因为不在本次喂入的记忆窗口内而被无声丢弃。
+#
+# [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md 方向二]
+# {{preferred_language}} 由 profile.py 用 detect_primary_language() 显式
+# 检测后传入，不再依赖模型自己"根据记忆条目语言判断"——那条隐式规则一旦
+# 上游摘要文本本身语言跑偏，就没有基准可跟。
 
 You are an assistant that builds and maintains a concise user profile from
 a list of past session summaries. Respond with ONLY a JSON object (no
@@ -32,5 +37,9 @@ starting point:
 If no previous profile is provided, build a fresh profile from the session
 summaries alone.
 
-Write the "summary", "tech_stack" and "habits" values in the same language
-as the memory entries provided. Keep each list to at most 8 items.
+Write the "summary", "tech_stack" and "habits" values in {{preferred_language}}
+(an ISO 639-1 language code, e.g. "zh" for Chinese, "ja" for Japanese, "en"
+for English). This has already been detected from the user's own messages —
+use it directly, do NOT infer the output language from the wording of the
+memory entries below (they may have been summarized in a different language
+by an earlier step). Keep each list to at most 8 items.

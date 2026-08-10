@@ -2830,6 +2830,10 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store, profile_cfg=None) ->
         "tech_stack": _as_text_list(derived_profile.get("tech_stack")),
         "habits": _as_text_list(derived_profile.get("habits")),
         "updated_at": derived_profile.get("updated_at"),
+        # [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md
+        # 方向二] 透出当前检测到的用户常用语言，方便用户在诊断面板确认
+        # "为什么画像是这个语言"；没生成过画像时为空串。
+        "preferred_language": derived_profile.get("preferred_language") or "",
     }
 
     # [next_doc/memory_backfill_and_profile_update_plan.md 看板展示]

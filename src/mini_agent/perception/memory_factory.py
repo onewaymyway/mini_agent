@@ -25,6 +25,29 @@ from mini_agent.perception.memory_base import MemoryBackend
 
 if TYPE_CHECKING:
     from mini_agent.config import AppConfig
+    from mini_agent.perception.memory_store import MemoryStore
+    from mini_agent.storage.paths import AgentPaths
+
+
+# [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md 方向一]
+# 诊断面板 / 手动扫描按钮 / CLI 之前各自手写 `MemoryStore(paths)`，把整个
+# `AgentPaths` 实例当路径传了进去（`MemoryStore.__init__` 的 `path` 参数
+# 期望的是 JSONL 文件路径），静默降级为空记忆列表且不报错。这里统一收口
+# 成一个工具函数，避免以后再有第 N 处写错。
+def build_default_memory_store(paths: "AgentPaths") -> "MemoryStore":
+    """按项目 scope 的默认路径构造一个只读用途的 MemoryStore。
+
+    用于诊断面板 / 手动触发扫描 / CLI 等"临时需要读一次记忆"的场景，跟
+    `create_memory_backend()` 走完整配置驱动的正式后端不同——这里刻意
+    保持轻量（不接 library_index/LLM 分类回调），因为调用方只是要读
+    `all_entries()`，不需要写入路径的分类能力。
+
+    注意：不读取 `cfg.memory.store_path` 这个自定义路径配置（如果用户
+    改过默认记忆文件位置，这里暂时读不到）——这是已知的简化，跟改动前
+    `growth_cmd.py` 的既有行为保持一致，留给后续改动统一处理。
+    """
+    from mini_agent.perception.memory_store import MemoryStore
+    return MemoryStore(paths.workdir_memory)
 
 
 # ── 后端注册表 ────────────────────────────────────────────────────────────────

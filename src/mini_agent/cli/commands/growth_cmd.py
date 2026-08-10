@@ -60,9 +60,13 @@ def _get_profile(paths):
 
 
 def _get_memory_store(paths):
+    # [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md
+    # 方向一] 之前是 `MemoryStore(paths)`——把整个 AgentPaths 实例当路径
+    # 传了进去，静默降级为空记忆列表，导致 `/growth scan` 之类命令在 0
+    # 条记忆上跑。改用统一的工具函数。
     try:
-        from mini_agent.perception.memory_store import MemoryStore
-        return MemoryStore(paths)
+        from mini_agent.perception.memory_factory import build_default_memory_store
+        return build_default_memory_store(paths)
     except Exception:
         return None
 
