@@ -1939,11 +1939,41 @@ class ObjectiveExecutor:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._write_output_manifest')
 
+    def _maybe_close_parent_goal(self, ex: ObjectiveExecution) -> None:
+        """[goal_execution_spec_generation_plan.md §5 第二段] 子 Objective
+        完成收尾之后，顺手判断一下它的父 Goal 是否可以整体关闭——真正的
+        判断条件（是否一次性 Goal、是否全部子节点都已终态、是否有已确认的
+        `overall_completion_criteria`）全部封装在
+        `GoalBacklog.maybe_close_goal_by_overall_criteria()` 内部，本方法
+        只负责找到 parent_id 并调用，不重复判断条件。多数 Objective 完成时
+        父 Goal 还有其它 active 子节点，或本来就不适用本机制，会在该方法内部
+        提前 return None，不会真的触发 LLM 调用。
+
+        只在 `_on_objective_completed`（正常完成）路径调用，不在
+        `_on_objective_failed`/`_on_objective_cancelled` 路径调用——与方案
+        §5 第二段"在最后一个子 Objective 完成时"的表述一致：整体关闭判断
+        针对的是"顺利跑完"的场景，失败/取消的子任务收尾不触发这次额外判断
+        （即使因此导致全部子节点已终态，也留给用户/下次其它子节点完成时
+        自然触发，不强行在失败路径上多做一次判断）。
+        """
+        if self._goal_backlog is None:
+            return
+        try:
+            objective = self._goal_backlog.get(ex.objective_id)
+            parent_id = objective.parent_id if objective else None
+            if not parent_id:
+                return
+            self._goal_backlog.maybe_close_goal_by_overall_criteria(parent_id, self._cfg)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._maybe_close_parent_goal')
+
     def _on_objective_completed(self, ex: ObjectiveExecution) -> None:
         """Objective 全部步骤完成后的收尾动作。"""
         self._sync_goal_status(ex.objective_id, "completed")
         self._record_theme_outcome(ex, "completed")
         self._write_output_manifest(ex, "completed")
+        self._maybe_close_parent_goal(ex)
         try:
             from mini_agent.evolution.resource_arbiter import append_activity_digest
             append_activity_digest(self._paths, {

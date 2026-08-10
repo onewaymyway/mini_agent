@@ -1,9 +1,10 @@
 # Goal 执行规范自动生成 + 用户确认机制
 
-- **状态**：Stage 1 已实施（核心数据模型/存储/生成器/模板库/配置 + 两处
-  消费方注入 + §5.1 轻量核对 + CLI 命令）。看板 UI（§6.1/§6.2/§6.3）、
-  `builder_mode="agent"` 只读探索路径、`overall_completion_criteria`
-  驱动的一次性 Goal 整体关闭判断仍未实施，见
+- **状态**：Stage 1（核心数据模型/存储/生成器/模板库/配置 + 两处消费方
+  注入 + §5.1 轻量核对 + CLI 命令）+ Stage 2（`overall_completion_
+  criteria` 驱动的一次性 Goal 整体关闭判断）已实施。看板 UI
+  （§6.1/§6.2/§6.3）、`builder_mode="agent"` 只读探索路径、模板自动匹配
+  仍未实施，见
   `next_doc/goal_execution_spec_generation_implementation_record.md`
   的"未实施"清单。
 - **触发背景**：用户反馈"goal 系统已经有自动生成验收标准的能力

@@ -594,6 +594,101 @@ class GoalExecutionSpecBuilder:
         spec.confirmed_at = time.time()
         return spec
 
+    def evaluate_overall_completion(
+        self,
+        goal_title: str,
+        goal_description: str,
+        spec: GoalExecutionSpec,
+        children: list[tuple[str, str]],
+        manifests: list[dict],
+    ) -> dict:
+        """[goal_execution_spec_generation_plan.md §5 第二段 /
+        implementation_record.md 未实施清单第 5 项] 判断"整个一次性 Goal
+        是否可以整体关闭"——只在调用方已经确认"全部子 Objective 均已进入
+        终态"且 `spec.overall_completion_criteria` 非空时才有意义调用，
+        本方法自己不做这两条前置判断（由 `GoalBacklog.maybe_close_goal_
+        by_overall_criteria()` 负责，纯函数与调用时机分开职责）。
+
+        children：`[(title, status), ...]`，全部子 Objective 的标题与终态。
+        manifests：该 Goal 历史全部轮次的 manifest dict 列表（通常来自
+        `output_workspace.read_all_manifests()`），用于给判官提供"实际产出
+        了什么"的证据，而不是只凭标题空判断。
+
+        返回 `{"decision": "close"|"continue", "reasoning": str}`；LLM 调用
+        失败/解析失败时保守返回 `{"decision": "continue", "reasoning": "..."}`
+        ——不确定时绝不主动关闭 Goal，这是"确认优先于生效"哲学在这里的体现。
+        """
+        from mini_agent.prompts import pm
+        from mini_agent.evolution.output_workspace import format_manifest_for_prompt
+
+        criteria_lines = "\n".join(
+            f"{i+1}. [{c.verification_method}] {c.text}"
+            for i, c in enumerate(spec.overall_completion_criteria)
+        ) or "（无）"
+
+        children_lines = "\n".join(
+            f"{i+1}. {title}（{status}）" for i, (title, status) in enumerate(children)
+        ) or "（无）"
+
+        manifest_parts = []
+        for m in manifests:
+            text = format_manifest_for_prompt(m)
+            if text:
+                manifest_parts.append(text)
+        manifest_block = "\n---\n".join(manifest_parts) if manifest_parts else "（无历史产出记录）"
+
+        prompt = pm.render(
+            "user/goal_overall_completion_request",
+            goal_title=goal_title,
+            goal_description=goal_description or "（无）",
+            criteria_lines=criteria_lines,
+            children_lines=children_lines,
+            manifest_block=manifest_block,
+        )
+
+        raw = self._run_judge_llm(prompt)
+        data = _extract_json(raw)
+        if not isinstance(data, dict) or data.get("decision") not in ("close", "continue"):
+            reason = self.last_error or "LLM 返回内容解析失败（未找到合法 JSON）"
+            return {"decision": "continue", "reasoning": f"判定失败，保守判定为需继续：{reason}"}
+        return {
+            "decision": data.get("decision"),
+            "reasoning": str(data.get("reasoning") or ""),
+        }
+
+    def _run_judge_llm(self, prompt: str) -> str:
+        """与 `_run_llm()` 逻辑相同，只是 system prompt 换成整体完成判定专用
+        的一份（见 prompts/system/goal_overall_completion_judge.md）——判定
+        任务与"生成执行规范草案"是两种不同性质的输出，分开一份 system prompt
+        而不是复用 `_run_llm()`，避免以后各自演进指令时互相牵连。
+        """
+        from mini_agent.llm.service import LLMHelper
+        from mini_agent.prompts import pm
+
+        (model, provider) = self._resolve_model()
+        helper = self._llm_helper or LLMHelper.from_config(self._cfg)
+        system_prompt = pm.render("system/goal_overall_completion_judge")
+
+        try:
+            text = helper.ask(
+                prompt,
+                system=system_prompt,
+                max_retries=2,
+                override_model=model,
+                override_provider=provider,
+            )
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.perception.goal_execution_spec.GoalExecutionSpecBuilder._run_judge_llm")
+            self.last_error = str(e)
+            return ""
+
+        if text and text.strip():
+            self.last_error = None
+            return text
+        self.last_error = "GoalExecutionSpecBuilder（整体完成判定）未产出任何文本输出"
+        return ""
+
 
 # ── §5.1 轻量核对：纯文件名/key 字符串匹配，不做语义判断 ─────────────────────
 

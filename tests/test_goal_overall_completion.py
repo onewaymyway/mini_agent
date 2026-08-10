@@ -1,0 +1,318 @@
+"""tests/test_goal_overall_completion.py
+
+覆盖 next_doc/goal_execution_spec_generation_plan.md §5 第二段 /
+implementation_record.md 未实施清单第 5 项：`overall_completion_criteria`
+驱动的一次性 Goal 整体关闭判断。
+
+  1. GoalExecutionSpecBuilder.evaluate_overall_completion()：正常解析
+     close/continue 两种判定、解析失败时保守 continue。
+  2. GoalBacklog.maybe_close_goal_by_overall_criteria()：
+     - 前置条件不满足时（recurring Goal / 还有子节点未终态 / 未确认规范 /
+       overall_completion_criteria 为空）不触发任何 LLM 调用，返回 None。
+     - 条件满足、LLM 判定 close 时：goal.status 变为 completed，追加
+       progress_notes。
+     - 条件满足、LLM 判定 continue 时：goal.status 保持 active，追加
+       说明性 progress_notes。
+  3. ObjectiveExecutor._on_objective_completed() 收尾时会调用
+     _maybe_close_parent_goal()，最终把满足条件的父 Goal 关闭。
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+from mini_agent.evolution import output_workspace
+from mini_agent.evolution.objective_executor import ObjectiveExecutor
+from mini_agent.perception import goal_execution_spec as ges
+from mini_agent.perception.goal_backlog import GoalBacklog
+from mini_agent.storage.paths import AgentPaths
+
+
+def _paths(tmp) -> AgentPaths:
+    return AgentPaths(project_root=Path(tmp))
+
+
+class _FakeHelper:
+    def __init__(self, response: str):
+        self.response = response
+        self.calls: list[str] = []
+
+    def ask(self, prompt, *, system="", max_retries=3, retry_policy=None,
+             override_model=None, override_provider=None, override_temperature=None):
+        self.calls.append(prompt)
+        return self.response
+
+
+def _base_cfg(tmp_path):
+    from mini_agent.config.loader import load_config
+    cfg = load_config(
+        project_root=tmp_path, verbose=False, sandbox=True,
+        auto_approve=True, model="claude-sonnet-4-6",
+    )
+    cfg.api_key = "sk-fake"
+    return cfg
+
+
+def _confirmed_spec_with_overall_criteria(goal_id: str) -> ges.GoalExecutionSpec:
+    spec = ges.GoalExecutionSpec(goal_id=goal_id)
+    spec.overall_completion_criteria.append(
+        ges.Criterion(text="全部子任务均已产出报告", verification_method="manual_review")
+    )
+    ges.GoalExecutionSpecBuilder.confirm(spec)
+    return spec
+
+
+# ── GoalExecutionSpecBuilder.evaluate_overall_completion() ────────────────────
+
+class TestEvaluateOverallCompletion(unittest.TestCase):
+    def test_parses_close_decision(self):
+        helper = _FakeHelper(json.dumps({"decision": "close", "reasoning": "标准均已满足"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _base_cfg(Path(tmp))
+            builder = ges.GoalExecutionSpecBuilder(cfg, llm_helper=helper)
+            spec = _confirmed_spec_with_overall_criteria("goal_1")
+
+            result = builder.evaluate_overall_completion(
+                "调研 Goal", "调研某个技术方案", spec,
+                children=[("第一步", "completed"), ("第二步", "completed")],
+                manifests=[],
+            )
+        self.assertEqual(result["decision"], "close")
+        self.assertIn("满足", result["reasoning"])
+        self.assertEqual(len(helper.calls), 1)
+
+    def test_parses_continue_decision(self):
+        helper = _FakeHelper(json.dumps({"decision": "continue", "reasoning": "标准2未见证据"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _base_cfg(Path(tmp))
+            builder = ges.GoalExecutionSpecBuilder(cfg, llm_helper=helper)
+            spec = _confirmed_spec_with_overall_criteria("goal_2")
+
+            result = builder.evaluate_overall_completion(
+                "调研 Goal", "", spec,
+                children=[("第一步", "completed"), ("第二步", "failed")],
+                manifests=[],
+            )
+        self.assertEqual(result["decision"], "continue")
+
+    def test_unparseable_response_falls_back_to_continue(self):
+        helper = _FakeHelper("not json at all")
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _base_cfg(Path(tmp))
+            builder = ges.GoalExecutionSpecBuilder(cfg, llm_helper=helper)
+            spec = _confirmed_spec_with_overall_criteria("goal_3")
+
+            result = builder.evaluate_overall_completion(
+                "Goal", "", spec, children=[("步骤", "completed")], manifests=[],
+            )
+        self.assertEqual(result["decision"], "continue")
+        self.assertIn("判定失败", result["reasoning"])
+
+
+# ── GoalBacklog.maybe_close_goal_by_overall_criteria() ─────────────────────────
+
+class TestMaybeCloseGoalByOverallCriteria(unittest.TestCase):
+    def test_returns_none_when_not_recurring_flag_but_recurring_goal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            backlog = GoalBacklog(paths)
+            goal = backlog.add_goal(title="周期性目标", description="")
+            backlog.set_recurrence(goal.id, True, "job_1")
+            backlog.add_objectives_for_goal(goal.id, ["第一步"])
+
+            outcome = backlog.maybe_close_goal_by_overall_criteria(goal.id)
+        self.assertIsNone(outcome)
+
+    def test_returns_none_when_children_not_all_terminal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            backlog = GoalBacklog(paths)
+            goal = backlog.add_goal(title="一次性目标", description="做点事")
+            ges.save_spec(paths, goal.id, _confirmed_spec_with_overall_criteria(goal.id))
+            backlog.update_fields(goal.id, execution_spec_confirmed=True)
+            backlog.add_objectives_for_goal(goal.id, ["第一步", "第二步"])
+
+            outcome = backlog.maybe_close_goal_by_overall_criteria(goal.id)
+        self.assertIsNone(outcome)
+
+    def test_returns_none_when_spec_not_confirmed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            backlog = GoalBacklog(paths)
+            goal = backlog.add_goal(title="一次性目标", description="做点事")
+            [obj] = backlog.add_objectives_for_goal(goal.id, ["第一步"])
+            backlog.set_status(obj.id, "completed")
+
+            outcome = backlog.maybe_close_goal_by_overall_criteria(goal.id)
+        self.assertIsNone(outcome)
+
+    def test_returns_none_when_overall_criteria_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            backlog = GoalBacklog(paths)
+            goal = backlog.add_goal(title="一次性目标", description="做点事")
+            spec = ges.GoalExecutionSpec(goal_id=goal.id)
+            spec.deliverables.append(ges.Deliverable(name="notes.md"))
+            ges.GoalExecutionSpecBuilder.confirm(spec)
+            ges.save_spec(paths, goal.id, spec)
+            backlog.update_fields(goal.id, execution_spec_confirmed=True)
+            [obj] = backlog.add_objectives_for_goal(goal.id, ["第一步"])
+            backlog.set_status(obj.id, "completed")
+
+            outcome = backlog.maybe_close_goal_by_overall_criteria(goal.id)
+        self.assertIsNone(outcome)
+
+    def test_closes_goal_when_llm_decides_close(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            backlog = GoalBacklog(paths)
+            goal = backlog.add_goal(title="一次性目标", description="做点事")
+            ges.save_spec(paths, goal.id, _confirmed_spec_with_overall_criteria(goal.id))
+            backlog.update_fields(goal.id, execution_spec_confirmed=True)
+            [obj] = backlog.add_objectives_for_goal(goal.id, ["第一步"])
+            backlog.set_status(obj.id, "completed")
+
+            helper = _FakeHelper(json.dumps({"decision": "close", "reasoning": "全部标准已满足"}))
+            cfg = _base_cfg(Path(tmp))
+
+            import mini_agent.perception.goal_execution_spec as ges_mod
+            orig_builder_cls = ges_mod.GoalExecutionSpecBuilder
+
+            class _PatchedBuilder(orig_builder_cls):
+                def __init__(self, cfg, llm_helper=None, mode=None):
+                    super().__init__(cfg, llm_helper=helper, mode=mode)
+
+            ges_mod.GoalExecutionSpecBuilder = _PatchedBuilder
+            try:
+                outcome = backlog.maybe_close_goal_by_overall_criteria(goal.id, cfg)
+            finally:
+                ges_mod.GoalExecutionSpecBuilder = orig_builder_cls
+
+            self.assertEqual(outcome, "closed")
+            reloaded = backlog.get(goal.id)
+            self.assertEqual(reloaded.status, "completed")
+            self.assertIn("整体完成判定", reloaded.progress_notes)
+
+    def test_keeps_goal_open_when_llm_decides_continue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            backlog = GoalBacklog(paths)
+            goal = backlog.add_goal(title="一次性目标", description="做点事")
+            ges.save_spec(paths, goal.id, _confirmed_spec_with_overall_criteria(goal.id))
+            backlog.update_fields(goal.id, execution_spec_confirmed=True)
+            [obj] = backlog.add_objectives_for_goal(goal.id, ["第一步"])
+            backlog.set_status(obj.id, "completed")
+
+            helper = _FakeHelper(json.dumps({"decision": "continue", "reasoning": "证据不足"}))
+            cfg = _base_cfg(Path(tmp))
+
+            import mini_agent.perception.goal_execution_spec as ges_mod
+            orig_builder_cls = ges_mod.GoalExecutionSpecBuilder
+
+            class _PatchedBuilder(orig_builder_cls):
+                def __init__(self, cfg, llm_helper=None, mode=None):
+                    super().__init__(cfg, llm_helper=helper, mode=mode)
+
+            ges_mod.GoalExecutionSpecBuilder = _PatchedBuilder
+            try:
+                outcome = backlog.maybe_close_goal_by_overall_criteria(goal.id, cfg)
+            finally:
+                ges_mod.GoalExecutionSpecBuilder = orig_builder_cls
+
+            self.assertEqual(outcome, "kept_open")
+            reloaded = backlog.get(goal.id)
+            self.assertEqual(reloaded.status, "active")
+            self.assertIn("暂不关闭", reloaded.progress_notes)
+
+
+# ── output_workspace.read_all_manifests() ──────────────────────────────────────
+
+class TestReadAllManifests(unittest.TestCase):
+    def test_reads_manifests_from_all_run_dirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            base_dir = output_workspace.goal_output_base_dir(paths, "goal_x")
+            d1 = output_workspace.allocate_objective_dir(paths, "goal_x", 1)
+            d2 = output_workspace.allocate_objective_dir(paths, "goal_x", 2)
+            output_workspace.write_manifest(
+                base_dir, d1, task_summary="第一步", started_at=time.time(),
+                finished_at=time.time(), status="completed", artifacts=[], progress_note="",
+            )
+            output_workspace.write_manifest(
+                base_dir, d2, task_summary="第二步", started_at=time.time(),
+                finished_at=time.time(), status="completed", artifacts=[], progress_note="",
+            )
+
+            manifests = output_workspace.read_all_manifests(base_dir)
+        self.assertEqual(len(manifests), 2)
+        summaries = [m.get("task_summary") for m in manifests]
+        self.assertEqual(summaries, ["第一步", "第二步"])
+
+    def test_missing_dir_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            base_dir = output_workspace.goal_output_base_dir(paths, "no_such_goal")
+            self.assertEqual(output_workspace.read_all_manifests(base_dir), [])
+
+
+# ── ObjectiveExecutor 端到端集成 ────────────────────────────────────────────────
+
+class _FakeSubmitter:
+    def __init__(self):
+        self._n = 0
+
+    def __call__(self, message: str, initiator: str, meta: dict):
+        self._n += 1
+        return f"turn_{self._n}"
+
+
+class TestObjectiveExecutorClosesParentGoal(unittest.TestCase):
+    """ObjectiveExecutor._on_objective_completed() 收尾时调用
+    _maybe_close_parent_goal()，最终把满足条件的一次性父 Goal 关闭。"""
+
+    def test_last_objective_completed_closes_goal_when_llm_says_close(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            backlog = GoalBacklog(paths)
+            goal = backlog.add_goal(title="一次性目标", description="做一件事")
+            ges.save_spec(paths, goal.id, _confirmed_spec_with_overall_criteria(goal.id))
+            backlog.update_fields(goal.id, execution_spec_confirmed=True)
+            [obj] = backlog.add_objectives_for_goal(goal.id, ["唯一的一步"])
+
+            cfg = _base_cfg(Path(tmp))
+            helper = _FakeHelper(json.dumps({"decision": "close", "reasoning": "标准已满足"}))
+
+            import mini_agent.perception.goal_execution_spec as ges_mod
+            orig_builder_cls = ges_mod.GoalExecutionSpecBuilder
+
+            class _PatchedBuilder(orig_builder_cls):
+                def __init__(self, cfg, llm_helper=None, mode=None):
+                    super().__init__(cfg, llm_helper=helper, mode=mode)
+
+            ges_mod.GoalExecutionSpecBuilder = _PatchedBuilder
+            try:
+                oe = ObjectiveExecutor(
+                    paths=paths,
+                    submit_fn=_FakeSubmitter(),
+                    llm_decompose_fn=lambda o: [f"{o.title} - 单步"],
+                    goal_backlog=backlog,
+                    cfg=cfg,
+                )
+                exec_id = oe.start(obj)
+                ex = oe.get_execution(exec_id)
+                turn_id = ex.current_step.turn_id
+                oe.on_turn_done(turn_id, "完成了唯一的一步。")
+            finally:
+                ges_mod.GoalExecutionSpecBuilder = orig_builder_cls
+
+            self.assertEqual(oe.get_execution(exec_id).status, "completed")
+            reloaded_goal = backlog.get(goal.id)
+            self.assertEqual(reloaded_goal.status, "completed")
+
+
+if __name__ == "__main__":
+    unittest.main()

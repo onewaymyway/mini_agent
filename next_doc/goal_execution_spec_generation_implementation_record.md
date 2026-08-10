@@ -1,9 +1,10 @@
-# Goal 执行规范自动生成 + 用户确认机制 —— 实施记录（Stage 1）
+# Goal 执行规范自动生成 + 用户确认机制 —— 实施记录（Stage 1 + Stage 2）
 
 对应设计文档：`next_doc/goal_execution_spec_generation_plan.md`
 
-本记录只覆盖 Stage 1（后端核心能力）的实施情况，不重复方案本身的设计
-论证，只记录"最终落地成什么样、和方案哪里不同、还差什么"。
+本记录覆盖 Stage 1（后端核心能力）+ Stage 2（`overall_completion_criteria`
+驱动的一次性 Goal 整体关闭判断）的实施情况，不重复方案本身的设计论证，只
+记录"最终落地成什么样、和方案哪里不同、还差什么"。
 
 ## 1. 已实施
 
@@ -124,20 +125,100 @@
   等一批用例因缺少 `json_repair`/`fastapi` 等无关依赖而报
   `ModuleNotFoundError`，与本次改动无关，不在本次验证范围内当作基线）。
 
-## 2. 与方案的偏差 / 未实施清单
+## 2. Stage 2 已实施：`overall_completion_criteria` 驱动的一次性 Goal
+   整体关闭判断（对应方案 §5 第二段 / Stage 1 未实施清单第 5 项）
 
-以下条目方案里有描述，本次 Stage 1 **未实施**，留作后续 Track：
+### 2.1 判定器
+
+`perception/goal_execution_spec.py::GoalExecutionSpecBuilder` 新增
+`evaluate_overall_completion(goal_title, goal_description, spec, children,
+manifests)`：
+
+- 独立的一次性 LLM 调用（专用 system prompt
+  `prompts/system/goal_overall_completion_judge.md` + user prompt
+  `prompts/user/goal_overall_completion_request.md`，不复用生成草案用的
+  `_run_llm()`/`goal_execution_spec_builder.md`，两种任务性质不同，分开
+  演进），对照 `spec.overall_completion_criteria`、全部子 Objective 的
+  标题+终态、该 Goal 历史全部轮次的 manifest（产出文件+备注），逐条核查
+  后输出 `{"decision": "close"|"continue", "reasoning": str}`。
+- 解析失败/LLM 调用失败时保守返回 `continue`（附错误说明）——"不确定时
+  绝不主动关闭 Goal"，与方案"确认优先于生效"的哲学一致，关闭动作本身
+  也需要"证据充分"才触发，不是超时/异常时的默认行为。
+- `evolution/output_workspace.py` 新增 `read_all_manifests(base_dir)`：
+  读取某个 Goal 目录下**全部**轮次（`run_%04d/`）的 `manifest.json`（与
+  只读最新一轮的 `read_latest_manifest()` 互补），供本判定器拿到"这个
+  Goal 到目前为止一共产出过什么"的完整证据，而不是只看最后一轮。
+
+### 2.2 触发入口与前置条件
+
+`perception/goal_backlog.py::GoalBacklog.maybe_close_goal_by_overall_
+criteria(goal_id, cfg=None)`：
+
+- 前置判断（不满足时直接返回 `None`，不消耗任何 LLM 调用）：Goal 存在
+  且是 `level="goal"`；非 `recurring`（周期性 Goal 不适用"整体关闭"这个
+  概念，与方案 §2 一致）；`status == "active"`；存在子节点且**全部**子
+  节点都已进入终态（`completed`/`failed`/`cancelled`，只要有一个还是
+  `active`/`paused` 就直接返回）；`execution_spec_confirmed=True` 且独立
+  文件里 `spec.confirmed=True`；`spec.overall_completion_criteria` 非空。
+- 前置条件全部满足后才调用 `evaluate_overall_completion()`：`decision==
+  "close"` 时 `set_status(goal_id, "completed")` + 追加一条
+  `✅ 整体完成判定：<reasoning>` 的 `progress_notes`；`"continue"` 时
+  goal 状态不变，追加一条 `ℹ️ 整体完成判定（暂不关闭）：<reasoning>` 的
+  `progress_notes`（便于用户在看板/CLI 回看"为什么还没关闭"，不是静默
+  丢弃这次判定结果）。
+- 只读前置判断与 LLM 调用都在锁外完成，与 `goals_missing_objective()`
+  的"读写分离"原则一致，只有最终 `set_status()`/`append_progress_note()`
+  落盘时各自短暂加锁；`cfg` 不传时退化为 `load_config(project_root)`
+  现读一份。
+- 任何环节异常都被捕获、`log_exception` 记录后返回 `None`，不影响调用方
+  主流程——这是可选增强，不是必经关卡。
+
+`evolution/objective_executor.py::ObjectiveExecutor` 新增
+`_maybe_close_parent_goal(ex)`，只在 `_on_objective_completed()`（正常
+完成路径）末尾调用一次：查找该 Objective 的 `parent_id`，调用
+`goal_backlog.maybe_close_goal_by_overall_criteria(parent_id, self._cfg)`。
+不在 `_on_objective_failed()`/`_on_objective_cancelled()` 路径调用——与
+方案 §5 第二段"在最后一个子 Objective **完成**时"的表述一致，失败/取消
+路径即使导致全部子节点凑齐终态，也不在那两条路径上额外触发一次判断
+（下次任何其它子节点走完成路径收尾时，或用户手动干预后，仍会自然触发）。
+
+### 2.3 测试
+
+`tests/test_goal_overall_completion.py`（新增，12 个用例）：
+
+- `evaluate_overall_completion()`：`close`/`continue` 两种正常解析、
+  解析失败兜底为 `continue`。
+- `maybe_close_goal_by_overall_criteria()`：5 种前置条件不满足的场景各
+  返回 `None`（recurring Goal / 子节点未全部终态 / 规范未确认 /
+  `overall_completion_criteria` 为空）+ `close`/`continue` 两种正常判定
+  路径的状态与 `progress_notes` 断言。
+- `output_workspace.read_all_manifests()`：多轮 manifest 按目录名顺序
+  读出、目录不存在时返回空列表。
+- `ObjectiveExecutor` 端到端集成：唯一子 Objective 走 `on_turn_done()`
+  正常完成后，`_maybe_close_parent_goal()` 被自动触发，父 Goal 最终被
+  置为 `completed`（mock `GoalExecutionSpecBuilder` 返回 `close`）。
+- 全部新增用例 + 既有 `test_goal_execution_spec.py`/`test_goal_cron_
+  bridge.py`/`test_goal_backlog.py`/`test_goal_output_directory_onetime.py`/
+  `test_objective_outcome_tracker.py`/`test_goal_execution_fairness*.py`
+  回归通过（共 98 个用例）。
+
+## 3. 与方案的偏差 / 未实施清单
+
+以下条目方案里有描述，**未实施**，留作后续 Track：
 
 1. **看板 UI（§6.1/§6.2/§6.3）**：`apps/mini_agent_kanban/app.py` 的
    "⏰ 周期性设置"/"➕ 新建目标"表单尚未接入草稿确认区块、字段级锁定
    勾选框、差异高亮。当前只能通过 CLI（`/agent goals spec ...`）生成/
    确认/查看规范。这是本次范围内最大的缺口——方案里"看板"是用户
-   反馈的主要触发场景，目前只有 CLI 路径可用。
+   反馈的主要触发场景，目前只有 CLI 路径可用。§2 新增的"整体关闭
+   判定"结果（`✅`/`ℹ️` 两种 progress_notes）目前也只能在看板"进展记录"
+   区块里以纯文本形式看到，没有专门的状态徽标/提示样式。
 2. **`builder_mode="agent"` 只读探索路径**：方案 §3 输入源 1 提到应
    支持"起一个只读受限 Agent 先看一眼项目再生成"，镜像
    `GoalSpecBuilder._run_builder_agent()`。当前 `GoalExecutionSpecBuilder`
    只实现了裸 LLM 单轮路径，`mode="agent"`/`"auto"` 配置项存在但实际
-   行为等同 `"llm"`。
+   行为等同 `"llm"`（§2 新增的整体关闭判定同样只有裸 LLM 单轮路径，未
+   挂只读工具去实际核查产出文件内容，只依赖 manifest 摘要文本）。
 3. **模板自动匹配**：方案 §7 提到"关键词规则粗略匹配 Goal 描述，命中
    某个模板则默认预选"，当前只支持显式传 `template_id`，不做自动推荐。
 4. **`--from-history` 只取最新一轮**：方案 §3 输入源 3 描述为"过去若干
@@ -145,27 +226,29 @@
    `build_draft()` 本身的 `history_manifests` 参数已支持传入一个列表
    （`_run_llm` 拼 prompt 时会取最后 3 条），CLI 调用方后续要支持"多轮"
    只需要改 `_cmd_spec_generate()` 里收集 manifest 的逻辑，不需要改
-   核心模块签名。
-5. **`overall_completion_criteria` 驱动的一次性 Goal 整体关闭判断**：
-   方案 §5 第二段提到 `GoalBacklog.add_objectives_for_goal()` 应"在最后
-   一个子 Objective 完成时读取 `overall_completion_criteria` 判断 Goal
-   是否可以整体关闭"，当前只做了 description 注入，未接入关闭判断逻辑
-   （该字段目前只是被生成、存储、展示，尚未被任何地方读取消费）。
-6. **看板"从执行历史反推"默认预填**、**差异高亮 UI**：均依赖 1，随看板
+   核心模块签名。（§2 的 `evaluate_overall_completion()` 不受此限——它
+   走 `read_all_manifests()`，本来就读全部历史轮次。）
+5. **看板"从执行历史反推"默认预填**、**差异高亮 UI**：均依赖 1，随看板
    UI 一起实施。
+6. **CLI 侧暴露"整体关闭判定"的手动触发/查看入口**：目前
+   `maybe_close_goal_by_overall_criteria()` 只在 Objective 正常完成的
+   自动路径里触发，没有对应的 `/agent goals ...` 子命令让用户在不新增
+   子 Objective 的情况下手动重新触发一次判定（比如判定结果是
+   `continue` 之后，用户后续手动补充了一些材料，想重新判一次）。
 
-以上 6 项均不影响已实施部分的正确性——`execution_spec_confirmed` 默认
-`False`，未生成/未确认的 Goal 行为与改动前完全一致；已确认的 Goal 目前
-只能通过 CLI 走完整流程，功能上可用，只是交互形式（CLI vs 看板表单）
-与方案描述的主入口不同。
+以上未实施项均不影响已实施部分的正确性——`execution_spec_confirmed`
+默认 `False`，未生成/未确认的 Goal 行为与方案引入前完全一致；
+`overall_completion_criteria` 为空（绝大多数周期性 Goal 的默认情况）
+时 §2 的判定逻辑不会被触发，等价于该功能关闭。
 
-## 3. 后续建议顺序
+## 4. 后续建议顺序
 
 1. 看板 UI（§6.1 最小可用版本：展示 5 个 section + 反馈文本框 + 确认/
    跳过两个按钮即可，字段级锁定/差异高亮可以作为该 Track 内的第二个
-   迭代，不必一次做全）。
-2. `overall_completion_criteria` 消费逻辑（依赖方相对独立，可以和看板
-   UI 并行）。
+   迭代，不必一次做全；同时把 §2 的整体关闭判定结果做成看板上更显眼的
+   状态展示，而不只是 progress_notes 里的一行文本）。
+2. CLI 侧补一个手动重新触发整体关闭判定的命令（见 §3 第 6 条），成本低，
+   可以和看板 UI 并行。
 3. `builder_mode="agent"` 路径 + 模板自动匹配（优先级较低，当前 `llm`
    路径已经可用，且 `revise()` 的字段锁定机制已经能覆盖"生成方向不对
    需要人工干预"的场景）。

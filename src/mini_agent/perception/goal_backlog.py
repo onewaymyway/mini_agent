@@ -771,6 +771,95 @@ class GoalBacklog:
                 created.append(node)
         return created
 
+    def maybe_close_goal_by_overall_criteria(self, goal_id: str, cfg: Optional[object] = None) -> Optional[str]:
+        """[goal_execution_spec_generation_plan.md §5 第二段 /
+        implementation_record.md 未实施清单第 5 项] 一次性（非 recurring）
+        Goal 名下全部子 Objective 都已进入终态后，若该 Goal 存在已确认的执行
+        规范且 `overall_completion_criteria` 非空，调用一次 LLM 判定是否可以
+        把整个 Goal 标记为 `completed`。
+
+        由 `ObjectiveExecutor._on_objective_completed()` 在每次子 Objective
+        收尾后调用一次（见该方法调用点注释）；本方法自己重新判断"是否真的到
+        了该判断的时候"（是否还有子节点未终态等），调用方不需要预先过滤，
+        多传/传早了也只会提前 return None，不会误判。
+
+        前置只读判断在锁外完成（`load()` 之后直接读快照），真正的 LLM 判定
+        调用同样在锁外进行——与 `goals_missing_objective()` 的"读写分离"原则
+        一致，避免长时间持有跨进程文件锁阻塞其它进程；只有最终落盘
+        （`set_status()`/`append_progress_note()`）才各自短暂加锁。
+
+        返回值：
+          - "closed"    — 已判定关闭，goal.status 已置为 "completed"。
+          - "kept_open" — 已判定不关闭（标准证据不足），未做任何状态修改
+                          （可能已追加一条说明性 progress_notes）。
+          - None        — 未触发判定：不是一次性 Goal / Goal 已非 active /
+                          还有子节点未进入终态 / 没有已确认的执行规范 /
+                          `overall_completion_criteria` 为空。这种情况下不会
+                          消耗任何 LLM 调用，代表"这个 Goal 根本不适用本机制"
+                          （多数周期性 Goal、没生成过规范的 Goal 都会落在这里，
+                          等价于本方案引入前的行为）。
+
+        任何环节异常都静默降级为 None，不影响调用方的 Objective 收尾主流程
+        ——关闭判断是可选增强，不是必经关卡。
+        """
+        self.load()
+        goal = self._nodes.get(goal_id)
+        if goal is None or not goal.is_goal:
+            return None
+        if goal.recurring or goal.status != "active":
+            return None
+        if not goal.children_ids:
+            return None
+        children: list[tuple[str, str]] = []
+        for cid in goal.children_ids:
+            child = self._nodes.get(cid)
+            if child is None:
+                continue
+            if child.status in ("active", "paused"):
+                # 还有子节点未进入终态，还不到判断"整体是否完成"的时机。
+                return None
+            children.append((child.title, child.status))
+        if not children:
+            return None
+        if not getattr(goal, "execution_spec_confirmed", False):
+            return None
+
+        try:
+            from mini_agent.perception import goal_execution_spec as ges
+            spec = ges.load_spec(self._paths, goal_id)
+            if spec is None or not spec.confirmed or not spec.overall_completion_criteria:
+                return None
+
+            from mini_agent.evolution import output_workspace
+            base_dir = output_workspace.goal_output_base_dir(self._paths, goal_id)
+            manifests = output_workspace.read_all_manifests(base_dir)
+
+            if cfg is None:
+                from mini_agent.config import load_config
+                cfg = load_config(self._paths.project_root)
+
+            builder = ges.GoalExecutionSpecBuilder(cfg)
+            result = builder.evaluate_overall_completion(
+                goal.title, goal.description, spec, children, manifests,
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(
+                _mini_agent_exc,
+                where="mini_agent.perception.goal_backlog.GoalBacklog.maybe_close_goal_by_overall_criteria",
+            )
+            return None
+
+        reasoning = (result.get("reasoning") or "").strip()
+        if result.get("decision") == "close":
+            self.set_status(goal_id, "completed")
+            if reasoning:
+                self.append_progress_note(goal_id, f"✅ 整体完成判定：{reasoning[:200]}")
+            return "closed"
+        if reasoning:
+            self.append_progress_note(goal_id, f"ℹ️ 整体完成判定（暂不关闭）：{reasoning[:200]}")
+        return "kept_open"
+
     def update_progress(self, node_id: str, notes: str) -> bool:
         """更新节点进展记录。
 

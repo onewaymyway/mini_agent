@@ -187,6 +187,33 @@ def read_latest_manifest(base_dir: Path) -> Optional[dict]:
     return d
 
 
+def read_all_manifests(base_dir: Path) -> list[dict]:
+    """[goal_execution_spec_generation_plan.md §5 `overall_completion_criteria`
+    消费] 读取 `base_dir` 下全部子目录（`cycle_%04d/` / `run_%04d/`）的
+    `manifest.json`，按目录名排序（等价于按时间顺序，命名规则本身是零填充
+    序号）返回。用于"整个 Goal 能否关闭"这类需要看**全部**历史产出、而不是
+    只看最新一轮的场景，与只取 `latest.json` 指针的 `read_latest_manifest()`
+    互补——那个是"跨轮传递上一轮摘要"用的，这个是"回顾整个 Goal 做过什么"
+    用的，两者读取的数据源相同但用途不同，不合并成一个函数。
+
+    目录不存在或没有任何 manifest.json 时返回空列表，不抛异常。
+    """
+    if not base_dir.is_dir():
+        return []
+    out: list[dict] = []
+    for child in sorted(base_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        manifest_path = child / "manifest.json"
+        try:
+            d = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        d["_dir"] = str(child.as_posix())
+        out.append(d)
+    return out
+
+
 # ── prompt 注入格式化 ─────────────────────────────────────────────────────────
 
 def format_manifest_for_prompt(manifest: dict) -> str:
@@ -221,5 +248,6 @@ __all__ = [
     "allocate_objective_dir",
     "write_manifest",
     "read_latest_manifest",
+    "read_all_manifests",
     "format_manifest_for_prompt",
 ]
