@@ -117,6 +117,110 @@ class TestGoalGrowthAlignment(unittest.TestCase):
             self.assertEqual(result["linked_goals"], [])
 
 
+    def test_llm_enabled_but_no_helper_behaves_like_rule_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            profile.derived["growth_focus_areas"] = {"数据分析能力": ["e1", "e2", "e3"]}
+            cfg = GrowthAdvisorConfig(goal_alignment_llm_enabled=True)
+            # 没传 llm_helper：即使开关打开也不应该报错，行为退化成纯规则匹配。
+            result = ga.goal_growth_alignment(paths, profile, cfg=cfg)
+            self.assertEqual(result["llm_suggested_matches"], [])
+            topics = [r["topic"] for r in result["unmatched_interests"]]
+            self.assertIn("数据分析能力", topics)
+
+
+class TestGoalAlignmentLlmMatch(unittest.TestCase):
+    def test_llm_disabled_by_default_no_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            profile.derived["growth_focus_areas"] = {"数据分析能力": ["e1", "e2", "e3"]}
+            goal_backlog = GoalBacklog(paths)
+            goal_backlog.add_goal(title="提升可视化技能", description="d")
+
+            calls = []
+
+            def fake_llm(prompt):
+                calls.append(prompt)
+                return "[]"
+
+            cfg = GrowthAdvisorConfig()  # goal_alignment_llm_enabled 默认 False
+            result = ga.goal_growth_alignment(
+                paths, profile, cfg=cfg, goal_backlog=goal_backlog, llm_helper=fake_llm
+            )
+            self.assertEqual(calls, [])
+            self.assertEqual(result["llm_suggested_matches"], [])
+
+    def test_llm_finds_semantic_match_missed_by_keywords(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            profile.derived["growth_focus_areas"] = {"数据分析能力": ["e1", "e2", "e3"]}
+            goal_backlog = GoalBacklog(paths)
+            goal = goal_backlog.add_goal(title="提升可视化技能", description="d")
+
+            def fake_llm(prompt):
+                import json
+                return json.dumps([{"topic": "数据分析能力", "goal_id": goal.id}])
+
+            cfg = GrowthAdvisorConfig(goal_alignment_llm_enabled=True)
+            result = ga.goal_growth_alignment(
+                paths, profile, cfg=cfg, goal_backlog=goal_backlog, llm_helper=fake_llm
+            )
+            self.assertEqual(result["unmatched_interests"], [])
+            self.assertEqual(len(result["llm_suggested_matches"]), 1)
+            match = result["llm_suggested_matches"][0]
+            self.assertEqual(match["topic"], "数据分析能力")
+            self.assertEqual(match["goal_id"], goal.id)
+            self.assertEqual(match["matched_via"], "llm")
+            # llm_suggested_matches 只是建议，不应该出现在 linked_goals 里
+            # （那是关键词精确匹配 / 显式 adopt-goal 才会产生的确定关系）。
+            self.assertEqual(result["linked_goals"], [])
+
+    def test_llm_hallucinated_ids_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            profile.derived["growth_focus_areas"] = {"数据分析能力": ["e1", "e2", "e3"]}
+            goal_backlog = GoalBacklog(paths)
+            goal_backlog.add_goal(title="提升可视化技能", description="d")
+
+            def fake_llm(prompt):
+                import json
+                return json.dumps([
+                    {"topic": "数据分析能力", "goal_id": "not-a-real-goal-id"},
+                    {"topic": "编造的方向", "goal_id": "also-fake"},
+                ])
+
+            cfg = GrowthAdvisorConfig(goal_alignment_llm_enabled=True)
+            result = ga.goal_growth_alignment(
+                paths, profile, cfg=cfg, goal_backlog=goal_backlog, llm_helper=fake_llm
+            )
+            self.assertEqual(result["llm_suggested_matches"], [])
+            topics = [r["topic"] for r in result["unmatched_interests"]]
+            self.assertIn("数据分析能力", topics)
+
+    def test_llm_malformed_response_falls_back_gracefully(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            profile.derived["growth_focus_areas"] = {"数据分析能力": ["e1", "e2", "e3"]}
+            goal_backlog = GoalBacklog(paths)
+            goal_backlog.add_goal(title="提升可视化技能", description="d")
+
+            def fake_llm(prompt):
+                return "这不是 JSON"
+
+            cfg = GrowthAdvisorConfig(goal_alignment_llm_enabled=True)
+            result = ga.goal_growth_alignment(
+                paths, profile, cfg=cfg, goal_backlog=goal_backlog, llm_helper=fake_llm
+            )
+            self.assertEqual(result["llm_suggested_matches"], [])
+            topics = [r["topic"] for r in result["unmatched_interests"]]
+            self.assertIn("数据分析能力", topics)
+
+
 class TestAdoptCandidateAsGoal(unittest.TestCase):
     def test_requires_report(self):
         with tempfile.TemporaryDirectory() as tmp:

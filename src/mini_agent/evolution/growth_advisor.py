@@ -324,12 +324,17 @@ P6 范围（对应 next_doc/growth_advisor_improvement_plan_v3.md「反馈粒度
 
 Goal/Cron 打通范围（对应 next_doc/growth_advisor_goal_cron_integration_
 plan.md，本次新增）：
-    - **阶段 A 对齐分析**：新增 `goal_growth_alignment()`，纯规则式
+    - **阶段 A 对齐分析**：新增 `goal_growth_alignment()`，默认纯规则式
       关键词匹配（零 LLM 成本），比对"证据数达标的兴趣方向/已采纳
       候选"和 GoalBacklog 里的 Goal 标题，找出"有兴趣但没建目标"和
       "已建目标但停滞"（`GrowthAdvisorConfig.goal_alignment_stalled_
-      days`，默认 21 天没 touch）两类方向。`diagnostics_snapshot()`
-      新增 `goal_alignment` 计数字段，CLI 新增 `/growth align`。
+      days`，默认 21 天没 touch）两类方向。`goal_alignment_llm_
+      enabled`（默认 `False`）打开后额外对规则匹配不上的双方做一次
+      LLM 语义匹配（`_llm_match_interests_to_goals()`），命中的配对
+      放进独立的 `llm_suggested_matches`（建议，不自动写入关联关系，
+      幻觉 id 会被过滤），调用结果计入 `goal_alignment_match` LLM 调用
+      状态。`diagnostics_snapshot()` 新增 `goal_alignment` 计数字段，
+      CLI 新增 `/growth align`。
     - **阶段 B 一键落地**：新增 `adopt_candidate_as_goal()`，把一个
       已有调研报告的候选创建成 GoalBacklog Goal（`description` 用
       报告摘要 + 路径引用），候选反向记 `linked_goal_id`（新增字段，
@@ -2258,17 +2263,29 @@ def _load_goal_backlog_safely(paths):
 def goal_growth_alignment(
     paths, profile, *, cfg=None, goal_backlog=None,
     min_confidence: float = 0.5, stalled_days: Optional[int] = None,
+    llm_helper: Optional[Callable[[str], str]] = None,
 ) -> dict[str, Any]:
     """[growth_advisor_goal_cron_integration_plan.md 阶段 A] 对齐分析：
     找出"有兴趣信号但没有对应 Goal"和"已经关联 Goal 但该 Goal 停滞"的
-    两类方向。纯只读聚合，不写任何状态，可随时安全调用。
+    两类方向。默认纯只读的规则式关键词匹配，不写任何状态，可随时安全
+    调用。
 
-    `cfg.goal_alignment_enabled=False` 时直接返回空结果（两个列表都是
-    `[]`，`enabled=False`），供 CLI/看板判断要不要展示这块功能。
+    `cfg.goal_alignment_enabled=False` 时直接返回空结果（`enabled=False`），
+    供 CLI/看板判断要不要展示这块功能。
+
+    `llm_helper` + `cfg.goal_alignment_llm_enabled=True`（都满足才触发，
+    同 `growth_signal_scan()` 的 `llm_helper` 约定）时，额外对"规则
+    没匹配上的兴趣方向"和"规则没匹配上的 Goal"做一次语义匹配，结果放进
+    返回值的 `llm_suggested_matches`（不是 `linked_goals`——这些是
+    "建议你看看要不要关联"，不是关键词精确匹配那种确定关系，也不会自动
+    写入任何持久化的 `linked_goal_id`）。
     """
     enabled = getattr(cfg, "goal_alignment_enabled", True) if cfg is not None else True
     if not enabled:
-        return {"enabled": False, "unmatched_interests": [], "linked_goals": []}
+        return {
+            "enabled": False, "unmatched_interests": [], "linked_goals": [],
+            "llm_suggested_matches": [],
+        }
 
     if stalled_days is None:
         stalled_days = getattr(cfg, "goal_alignment_stalled_days", 21) if cfg is not None else 21
@@ -2315,6 +2332,7 @@ def goal_growth_alignment(
 
     unmatched_interests = []
     linked_goals = []
+    matched_goal_ids: set[str] = set()
     now = time.time()
     for key, info in interest_topics.items():
         conf = info.get("confidence")
@@ -2332,6 +2350,7 @@ def goal_growth_alignment(
                 "candidate_id": info.get("candidate_id"),
             })
             continue
+        matched_goal_ids.add(goal.id)
         stalled = goal.status == "active" and (goal.last_touched_at or 0) < now - stalled_days * 86400
         linked_goals.append({
             "topic": info["topic"],
@@ -2344,13 +2363,135 @@ def goal_growth_alignment(
             "stalled": stalled,
         })
 
+    llm_suggested_matches: list[dict[str, Any]] = []
+    llm_enabled = getattr(cfg, "goal_alignment_llm_enabled", False) if cfg is not None else False
+    if llm_enabled and llm_helper is not None and unmatched_interests:
+        candidate_goals = [g for g in goals if g.id not in matched_goal_ids]
+        status_out: dict[str, Any] = {"outcome": "error"}
+        try:
+            matches = _llm_match_interests_to_goals(
+                unmatched_interests, candidate_goals, llm_helper, status_out=status_out
+            )
+            matched_topics = {m["topic"] for m in matches}
+            unmatched_interests = [
+                r for r in unmatched_interests if r["topic"] not in matched_topics
+            ]
+            llm_suggested_matches = matches
+            _record_llm_call_status(
+                paths, "goal_alignment_match", status_out.get("outcome", "success"),
+                detail=f"matches={len(matches)}",
+            )
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.growth_advisor.goal_growth_alignment_llm_match")
+            _record_llm_call_status(paths, "goal_alignment_match", "error", detail=str(exc)[:200])
+
     return {
         "enabled": True,
         "unmatched_interests": sorted(
             unmatched_interests, key=lambda r: -(r.get("evidence_count") or 0)
         ),
         "linked_goals": sorted(linked_goals, key=lambda r: (not r["stalled"], r["topic"])),
+        "llm_suggested_matches": llm_suggested_matches,
     }
+
+
+# 一次对齐分析 LLM 语义匹配，最多各送多少条"规则没匹配上的兴趣方向 /
+# Goal"，避免 prompt 无限增长；同 `_LLM_AUGMENT_MAX_ENTRIES` 的克制原则。
+_GOAL_ALIGNMENT_LLM_MAX_ITEMS = 20
+
+
+def _llm_match_interests_to_goals(
+    unmatched_interests: list[dict[str, Any]],
+    candidate_goals: list,
+    llm_helper: Callable[[str], str],
+    *,
+    status_out: Optional[dict] = None,
+) -> list[dict[str, Any]]:
+    """对"规则关键词匹配没匹配上"的兴趣方向和 Goal 各自取一批，让 LLM
+    判断有没有语义上实际相关但字面不重合的配对（比如兴趣叫"数据分析
+    能力"、Goal 叫"提升可视化技能"）。
+
+    只有 LLM 输出的 `topic`/`goal_id` 都能在各自的候选池里对上号才会被
+    采纳，防止幻觉匹配（编出不存在的 topic 或 goal_id）；任何解析失败
+    都直接返回空列表而不是让异常向上传播——LLM 输出不可信，这里是纯粹
+    的"能用就用，用不了就当没发生"。
+    """
+    if not unmatched_interests or not candidate_goals:
+        if status_out is not None:
+            status_out["outcome"] = "skipped_insufficient_unmatched"
+        return []
+
+    interests = unmatched_interests[:_GOAL_ALIGNMENT_LLM_MAX_ITEMS]
+    goals = candidate_goals[:_GOAL_ALIGNMENT_LLM_MAX_ITEMS]
+    valid_topics = {r["topic"] for r in interests}
+    valid_goal_ids = {g.id for g in goals}
+
+    topic_lines = "\n".join(f"- {r['topic']}" for r in interests)
+    goal_lines = "\n".join(f"- goal_id={g.id}: {g.title}" for g in goals)
+    prompt = (
+        "下面是两份列表：一份是用户最近反复关注、但还没有对应目标的\n"
+        "「兴趣方向」；另一份是用户已经建立的「目标」标题（可能措辞跟\n"
+        "兴趣方向不完全一样，但实质是同一件事）。请找出确实是同一件事、\n"
+        "只是字面表述不同的配对（不要牵强附会，宁可漏判也不要错配）。\n"
+        "只输出 JSON 数组，不要有其他文字，每个元素形如：\n"
+        '{"topic": "兴趣方向原文", "goal_id": "对应的 goal_id"}\n'
+        "topic 必须原样从下面兴趣方向列表里选，goal_id 必须原样从目标\n"
+        "列表里选，不要发明新的值。没有发现任何确定的配对时输出空数组 []。\n\n"
+        f"兴趣方向：\n{topic_lines}\n\n目标：\n{goal_lines}"
+    )
+
+    raw = llm_helper(prompt)
+    if not raw or not raw.strip():
+        if status_out is not None:
+            status_out["outcome"] = "empty_response"
+        return []
+
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"```\s*$", "", text).strip()
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\[.*\]", text, re.DOTALL)
+        if not match:
+            if status_out is not None:
+                status_out["outcome"] = "parse_error"
+            return []
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            if status_out is not None:
+                status_out["outcome"] = "parse_error"
+            return []
+
+    if not isinstance(parsed, list):
+        if status_out is not None:
+            status_out["outcome"] = "parse_error"
+        return []
+
+    goal_by_id = {g.id: g for g in goals}
+    out: list[dict[str, Any]] = []
+    seen_topics: set[str] = set()
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        topic = item.get("topic")
+        goal_id = item.get("goal_id")
+        if topic not in valid_topics or goal_id not in valid_goal_ids or topic in seen_topics:
+            continue
+        goal = goal_by_id[goal_id]
+        out.append({
+            "topic": topic, "goal_id": goal.id, "goal_title": goal.title,
+            "goal_status": goal.status, "matched_via": "llm",
+        })
+        seen_topics.add(topic)
+
+    if status_out is not None:
+        status_out["outcome"] = "success" if out else "no_new_topics"
+    return out
 
 
 def adopt_candidate_as_goal(
@@ -2448,7 +2589,7 @@ def _save_growth_state(paths, state: dict) -> None:
 #   "skipped_insufficient_unmatched"   —— 未命中记忆条目太少，没必要调用（仅信号增强）
 #   "parse_error"                      —— 有响应，但解析失败（仅信号增强）
 #   "error"                            —— 调用本身抛出异常
-_LLM_CALL_TYPES = ("signal_augment", "report_quality", "topic_category")
+_LLM_CALL_TYPES = ("signal_augment", "report_quality", "topic_category", "goal_alignment_match")
 
 
 def _record_llm_call_status(paths, call_type: str, outcome: str, *, detail: str = "") -> None:

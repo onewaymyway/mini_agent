@@ -1777,6 +1777,17 @@ class GrowthAdvisorConfig:
     # 才判定为"停滞"。独立于 `followup_review_days`（那是"候选采纳多久
     # 后该回访"），两者语义不同，不应该共用一个默认值。
     goal_alignment_stalled_days: int = 21
+    # 关键词匹配之外，是否额外调一次 LLM 对"规则没匹配上的兴趣方向"和
+    # "规则没匹配上的 Goal"做一次语义匹配（比如兴趣叫"数据分析能力"、
+    # Goal 叫"提升可视化技能"，字面不重合但语义相关，规则关键词匹配不
+    # 出来）。默认关闭（保持阶段 A 总开关"零 LLM 成本"的默认基线），
+    # 且只在有 agent 上下文的调用路径（CLI `/growth align`、API
+    # `/growth/align`）才会真正触发；LLM 输出的匹配只在两侧候选池里
+    # 各自的 id 都能对上号时才采纳，避免幻觉匹配。命中的匹配单独放进
+    # 返回结果的 `llm_suggested_matches`，跟关键词精确匹配的
+    # `linked_goals` 区分开——前者是"建议你看看要不要关联"，不会自动
+    # 写入任何持久化的关联关系。
+    goal_alignment_llm_enabled: bool = False
 
 
 @dataclass

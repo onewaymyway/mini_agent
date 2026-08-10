@@ -216,12 +216,16 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
         cfg = _get_cfg(agent)
         mgr, profile = _get_profile(paths)
         goal_backlog = _get_goal_backlog(paths)
-        alignment = ga.goal_growth_alignment(paths, profile, cfg=cfg, goal_backlog=goal_backlog)
+        llm_helper = _get_llm_helper(agent) if getattr(cfg, "goal_alignment_llm_enabled", False) else None
+        alignment = ga.goal_growth_alignment(
+            paths, profile, cfg=cfg, goal_backlog=goal_backlog, llm_helper=llm_helper
+        )
         if not alignment.get("enabled", True):
             R.print_info("对齐分析当前已关闭（growth_advisor.goal_alignment_enabled=False）。")
             return
         unmatched = alignment.get("unmatched_interests", [])
         linked = alignment.get("linked_goals", [])
+        suggested = alignment.get("llm_suggested_matches", [])
         R.console.print("[bold]兴趣方向 ⇄ 目标 对齐分析：[/bold]")
         if unmatched:
             R.console.print(f"  有兴趣信号但还没建目标（{len(unmatched)} 个）：")
@@ -232,6 +236,12 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
                 )
         else:
             R.console.print("  没有找到\"有兴趣但没建目标\"的方向。")
+        if suggested:
+            R.console.print(f"  LLM 建议关注的潜在配对（{len(suggested)} 个，字面不完全一致，仅供参考）：")
+            for row in suggested:
+                R.console.print(
+                    f"    - {row['topic']} ≈ 目标 [{row['goal_id']}] {row['goal_title']}"
+                )
         if linked:
             R.console.print(f"  已关联目标的方向（{len(linked)} 个）：")
             for row in linked:

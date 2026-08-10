@@ -226,20 +226,33 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
 `GoalBacklog`（跨会话目标层级）+ `goal_cron_bridge`（目标的周期性自动
 推进）——完全没有交叉。现在打通了三层：
 
-**对齐分析（阶段 A，默认开启，零 LLM 成本）**：`goal_growth_alignment()`
-用关键词匹配（跟内置主题关键词表同等复杂度，不引入 embedding），比对
-"证据数达标的兴趣方向 / 已采纳候选"和"GoalBacklog 里的 Goal 标题"，
-找出两类需要关注的情况：
+**对齐分析（阶段 A，默认开启，默认零 LLM 成本，可选 LLM 增强）**：
+`goal_growth_alignment()` 默认用关键词匹配（跟内置主题关键词表同等
+复杂度，不引入 embedding），比对"证据数达标的兴趣方向 / 已采纳候选"
+和"GoalBacklog 里的 Goal 标题"，找出三类需要关注的情况：
 
 - **有兴趣信号但没建目标**：说明这个方向反复被聊到，但还没有落成一个
   可追踪的目标；
 - **已建目标但停滞**：Goal `status="active"` 且 `last_touched_at`
-  超过 `goal_alignment_stalled_days`（默认 21 天）没动过。
+  超过 `goal_alignment_stalled_days`（默认 21 天）没动过；
+- **LLM 建议的潜在配对**（`goal_alignment_llm_enabled=True` 时才有，
+  默认关闭）：关键词匹配的局限在于，用户"随口聊起"一个方向和"正式
+  定成目标"时的措辞经常不一样（比如兴趣叫"数据分析能力"、Goal 叫
+  "提升可视化技能"），字面对不上但实质是一件事。打开这个开关后，
+  `/growth align` 会对"两条规则都没匹配上的兴趣方向 + Goal"各取一批
+  （各 20 条上限），额外调一次 LLM 做语义匹配，命中的配对单独列在
+  "LLM 建议关注的潜在配对"里——这是建议，不是确定关系，不会自动写入
+  任何持久化的关联；LLM 输出的 `topic`/`goal_id` 只有能在候选池里对上
+  号才会被采纳，防止幻觉匹配；调用结果计入诊断面板的"LLM 增强调用
+  状态"区块（`goal_alignment_match`，见 2.8 节），跟其余三个既有 LLM
+  调用点同等可观测。
 
-CLI：`/growth align`；诊断面板新增
+CLI：`/growth align`（`goal_alignment_llm_enabled=True` 时自动带上
+LLM 增强）；诊断面板新增
 `goal_alignment.unmatched_interests_count` /
 `goal_alignment.stalled_linked_goals_count` 两个计数（明细走
-`/growth align`，跟诊断面板一贯"只给计数，明细走专门入口"的惯例一致）；
+`/growth align`，跟诊断面板一贯"只给计数，明细走专门入口"的惯例一致；
+诊断快照本身不触发 LLM 调用，保持零成本）；
 `goal_alignment_enabled=False` 或 GoalBacklog 不可用时两个计数整体为
 `None`，不影响诊断面板其余部分。
 
@@ -385,6 +398,7 @@ GET  /v1/growth/health_trend                             # 健康度趋势快照
 | `report_include_external_context` | `false` | （v4 N4）打开后调研报告（LLM 生成路径）会把外部资讯命中数作为背景信息，独立于 `report_quality_llm_enabled` |
 | `goal_alignment_enabled` | `true` | （2.9 节）兴趣方向 ⇄ 目标 对齐分析总开关，纯规则式关键词匹配，零 LLM 成本 |
 | `goal_alignment_stalled_days` | `21` | （2.9 节）已关联 Goal 的方向，`active` 状态下超过这么多天没被 touch 就判定为"停滞"，独立于 `followup_review_days` |
+| `goal_alignment_llm_enabled` | `false` | （2.9 节）对齐分析是否额外做一次 LLM 语义匹配，找出关键词匹配漏掉的"字面不同、实质同一件事"配对；结果只出现在建议列表，不自动写入关联关系 |
 
 另外 `memory_backfill.cron_run_backfill_enabled`（默认 `true`，v4 N2）
 控制 cron 任务收尾是否自动回填记忆，属于 `memory_backfill` 配置块而非
@@ -547,8 +561,11 @@ N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
 - Goal/Cron 打通（2.9 节）目前只做了"对齐分析 + 一键落地 + 回访读取
   Goal 状态"三件事：候选 → Goal 是单向的（Goal 完成/停滞状态会反哺
   回访判断，但 Goal 的 `progress_notes` 更新不会自动同步成候选的新
-  证据）；对齐分析用的是关键词包含匹配，标题措辞差异较大时可能匹配
-  不上（比如候选叫"数据分析能力"、Goal 叫"提升可视化技能"）；也
+  证据）；对齐分析默认仍是关键词包含匹配，`goal_alignment_llm_
+  enabled` 打开后能补上"字面不同、实质同一件事"这类配对（比如候选叫
+  "数据分析能力"、Goal 叫"提升可视化技能"），但 LLM 建议目前只停在
+  "展示给你看"，还没有"一键确认成正式关联"的入口（要正式关联仍然要
+  走 `/growth adopt-goal` 或手动改标题让关键词匹配上）；也
   没有接入 cron 执行历史（比如某个绑定 cron 的 Goal 反复
   `_notify_cycle_failed`）作为新的候选证据来源——这是
   `next_doc/growth_advisor_goal_cron_integration_plan.md` 明确标注的
