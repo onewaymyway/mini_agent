@@ -4001,6 +4001,13 @@ def render_growth_tab(client: "AgentClient"):
                         for a, b in zip(counts, counts[1:])
                     )
                     st.caption(f"　证据数走势（最近 {len(counts)} 轮）：{counts[0]} {arrows} {counts[-1]}")
+                # [growth_advisor_active_search_and_lifecycle_plan.md
+                # 方向二] 用该主题最新一条候选的 id 查完整轨迹。
+                map_cid = row.get("candidate_id")
+                if map_cid and st.button(
+                    "🕒 查看轨迹", key=f"growth_map_timeline_{map_cid}"
+                ):
+                    _render_growth_topic_timeline(client, map_cid)
 
     _render_growth_followups(client)
     _render_growth_report_refresh_candidates(client)
@@ -4224,6 +4231,18 @@ def _render_growth_kanban_dragdrop(client: "AgentClient", candidates: list[dict]
                 moved = True
     if moved:
         st.rerun()
+
+    # [growth_advisor_active_search_and_lifecycle_plan.md 方向二] 拖拽
+    # 卡片本身是纯字符串标签，没有按钮承载位，用一个下拉选择 + 单独按钮
+    # 补上轨迹查看入口，不影响既有的拖拽交互本身。
+    if candidates:
+        options = {_growth_card_label(c): c["candidate_id"] for c in candidates}
+        chosen_label = st.selectbox(
+            "查看某个候选的成长轨迹", options=list(options.keys()),
+            key="growth_dragdrop_timeline_select",
+        )
+        if st.button("🕒 查看轨迹", key="growth_dragdrop_timeline_btn"):
+            _render_growth_topic_timeline(client, options[chosen_label])
 
 
 

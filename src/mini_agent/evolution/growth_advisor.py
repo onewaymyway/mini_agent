@@ -3402,6 +3402,7 @@ def growth_topic_map(paths) -> list[dict]:
         rows.append(
             {
                 "topic": latest.title,
+                "candidate_id": latest.candidate_id,
                 "current_status": latest.status,
                 "current_confidence": latest.confidence,
                 "peak_confidence": max(c.confidence for c in items),
