@@ -118,5 +118,42 @@ class TestOnetimeGoalManifestOnCompletion(unittest.TestCase):
             self.assertEqual(latest["status"], "completed")
 
 
+class TestOnetimeGoalExecutionSpecInjection(unittest.TestCase):
+    """[goal_execution_spec_generation_plan.md §5] 一次性 Goal 侧的对称处理：
+    add_objectives_for_goal() 在已确认执行规范时把规范文字块拼进 description。
+    """
+
+    def test_confirmed_spec_appended_for_onetime_goal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = GoalBacklog(paths)
+            goal = backlog.add_goal(title="一次性目标", description="做一件事")
+
+            from mini_agent.perception import goal_execution_spec as ges
+            spec = ges.GoalExecutionSpec(goal_id=goal.id)
+            spec.deliverables.append(ges.Deliverable(name="notes.md", description="调研笔记"))
+            ges.GoalExecutionSpecBuilder.confirm(spec)
+            ges.save_spec(paths, goal.id, spec)
+            backlog.update_fields(goal.id, execution_spec_confirmed=True)
+
+            [obj] = backlog.add_objectives_for_goal(goal.id, ["第一步"])
+            self.assertIn("执行规范", obj.description)
+            self.assertIn("notes.md", obj.description)
+
+    def test_unconfirmed_spec_not_appended_for_onetime_goal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = GoalBacklog(paths)
+            goal = backlog.add_goal(title="一次性目标", description="做一件事")
+
+            from mini_agent.perception import goal_execution_spec as ges
+            spec = ges.GoalExecutionSpec(goal_id=goal.id)
+            spec.deliverables.append(ges.Deliverable(name="notes.md"))
+            ges.save_spec(paths, goal.id, spec)  # 不确认
+
+            [obj] = backlog.add_objectives_for_goal(goal.id, ["第一步"])
+            self.assertNotIn("执行规范", obj.description)
+
+
 if __name__ == "__main__":
     unittest.main()

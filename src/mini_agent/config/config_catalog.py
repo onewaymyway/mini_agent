@@ -275,6 +275,7 @@ _NESTED_BLOCKS = [
     ("privacy", "隐私保护", "🔒", "privacy", _models.PrivacyConfig, {"secrets": True, "auto_env_patterns": False}),
     ("role_agent", "角色代理 RoleAgent", "🎭", "role_agent", _models.RoleAgentConfig, {}),
     ("goal_mode", "目标模式 GoalMode", "🎯", "goal_mode", _models.GoalModeConfig, {}),
+    ("goal_execution_spec", "Goal执行规范 GoalExecutionSpec", "📐", "goal_execution_spec", _models.GoalExecutionSpecConfig, {}),
     ("turn_judge", "单轮裁判 TurnJudge", "⚖️", "turn_judge", _models.TurnJudgeConfig, {}),
     ("env_info", "环境信息注入", "🖥️", "env_info", _models.EnvInfoConfig, {}),
     ("workdir_knowledge", "工作目录知识层", "📂", "workdir_knowledge", _models.WorkdirKnowledgeConfig, {}),

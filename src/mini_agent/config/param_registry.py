@@ -210,6 +210,7 @@ def _build_nested_blocks() -> list:
         NestedBlockSpec("tech_radar", _m.TechRadarConfig),
         NestedBlockSpec("ecosystem_positioning", _m.EcosystemPositioningConfig),
         NestedBlockSpec("goal_mode", _m.GoalModeConfig),
+        NestedBlockSpec("goal_execution_spec", _m.GoalExecutionSpecConfig),
         NestedBlockSpec("turn_judge", _m.TurnJudgeConfig),
         NestedBlockSpec("workdir_knowledge", _m.WorkdirKnowledgeConfig),
         NestedBlockSpec("global_knowledge", _m.GlobalKnowledgeConfig),

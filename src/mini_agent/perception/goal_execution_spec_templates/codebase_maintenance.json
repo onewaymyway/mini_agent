@@ -1,0 +1,31 @@
+{
+  "template_id": "codebase_maintenance",
+  "name": "代码维护/清理",
+  "applicable_to": "批量修复、依赖升级、代码库巡检修复类 Goal",
+  "skeleton": {
+    "deliverables": [
+      {
+        "name": "change_summary.md",
+        "description": "本轮改动摘要：修改了哪些文件、原因是什么",
+        "naming_pattern": "change_summary.md",
+        "required_every_cycle": true
+      }
+    ],
+    "handoff_fields": [
+      {
+        "key": "last_processed_cursor",
+        "description": "上次处理到的文件/模块列表位置，下一轮从这里继续，避免重复扫描",
+        "example": "src/module_a"
+      }
+    ],
+    "sub_directories": [],
+    "per_cycle_criteria": [
+      {"text": "运行现有测试全部通过", "verification_method": "run_command"},
+      {"text": "change_summary.md 存在且非空", "verification_method": "file_check"}
+    ],
+    "overall_completion_criteria": [],
+    "special_constraints": [
+      "不要修改用户明确排除的目录（占位，实际使用时请替换为具体目录）"
+    ]
+  }
+}

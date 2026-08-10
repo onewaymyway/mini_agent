@@ -410,5 +410,96 @@ class TestArchiveFinishedCycleChildren(unittest.TestCase):
             self.assertEqual(len(gb.get(goal.id).children_ids), 1)
 
 
+class TestExecutionSpecIntegration(unittest.TestCase):
+    """[goal_execution_spec_generation_plan.md §5] goal_cron_bridge 对已确认
+    执行规范的消费：未确认不生效、确认后拼进 description、§5.1 软核对提示。
+    """
+
+    def test_unconfirmed_spec_does_not_affect_description(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            _set_autonomy_maintenance(paths)
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="周报 Goal")
+            cs = CronScheduler(paths, submit_fn=None)
+            cs.load()
+            job = bridge.make_goal_recurring(gb, cs, goal.id, "interval:3600", task_template="写周报")
+            oe = FakeObjectiveExecutor()
+
+            from mini_agent.perception import goal_execution_spec as ges
+            spec = ges.GoalExecutionSpec(goal_id=goal.id)
+            spec.deliverables.append(ges.Deliverable(name="report.md", naming_pattern="report.md"))
+            ges.save_spec(paths, goal.id, spec)  # 保存但不确认
+
+            fired = bridge._fire_goal_cycle(cs.get(job.id), gb, oe)
+            self.assertTrue(fired)
+            child = gb.get(gb.get(goal.id).children_ids[0])
+            self.assertNotIn("执行规范", child.description)
+
+    def test_confirmed_spec_is_injected_into_description(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            _set_autonomy_maintenance(paths)
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="周报 Goal")
+            cs = CronScheduler(paths, submit_fn=None)
+            cs.load()
+            job = bridge.make_goal_recurring(gb, cs, goal.id, "interval:3600", task_template="写周报")
+            oe = FakeObjectiveExecutor()
+
+            from mini_agent.perception import goal_execution_spec as ges
+            spec = ges.GoalExecutionSpec(goal_id=goal.id)
+            spec.deliverables.append(ges.Deliverable(name="report.md", description="周报文件", naming_pattern="report.md"))
+            spec.special_constraints.append("不要包含真实姓名")
+            ges.GoalExecutionSpecBuilder.confirm(spec)
+            ges.save_spec(paths, goal.id, spec)
+            gb.update_fields(goal.id, execution_spec_confirmed=True)
+
+            fired = bridge._fire_goal_cycle(cs.get(job.id), gb, oe)
+            self.assertTrue(fired)
+            child = gb.get(gb.get(goal.id).children_ids[0])
+            self.assertIn("执行规范", child.description)
+            self.assertIn("report.md", child.description)
+            self.assertIn("不要包含真实姓名", child.description)
+
+    def test_soft_check_alerts_after_consecutive_misses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            _set_autonomy_maintenance(paths)
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="周报 Goal")
+            cs = CronScheduler(paths, submit_fn=None)
+            cs.load()
+            job = bridge.make_goal_recurring(gb, cs, goal.id, "interval:3600", task_template="写周报")
+            oe = FakeObjectiveExecutor()
+
+            from mini_agent.perception import goal_execution_spec as ges
+            from mini_agent.evolution import output_workspace
+
+            spec = ges.GoalExecutionSpec(goal_id=goal.id)
+            spec.deliverables.append(ges.Deliverable(name="report.md", naming_pattern="report.md"))
+            ges.GoalExecutionSpecBuilder.confirm(spec)
+            ges.save_spec(paths, goal.id, spec)
+            gb.update_fields(goal.id, execution_spec_confirmed=True)
+
+            base_dir = output_workspace.goal_output_base_dir(paths, goal.id)
+
+            # 跑 4 轮：每轮触发时会核对"上一轮"的 manifest，所以第 1 轮触发时
+            # 还没有可核对的历史，从第 2 轮起才开始计数未命中，需要 4 轮
+            # 触发才能让"上一轮未命中"累计满 3 次，触发默认
+            # soft_check_alert_after_cycles=3 的提示。
+            for i in range(4):
+                fired = bridge._fire_goal_cycle(cs.get(job.id), gb, oe)
+                self.assertTrue(fired)
+                child_id = gb.get(goal.id).children_ids[-1]
+                cycle_dir = output_workspace.allocate_cycle_dir(paths, goal.id, i + 1)
+                output_workspace.write_manifest(base_dir, cycle_dir, artifacts=[])
+                oe.finish(child_id)
+                gb.set_status(child_id, "completed")
+
+            updated_goal = gb.get(goal.id)
+            self.assertIn("建议复查执行规范", updated_goal.progress_notes)
+
+
 if __name__ == "__main__":
     unittest.main()

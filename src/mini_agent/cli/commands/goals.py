@@ -11,6 +11,10 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
   /agent goals progress <id> <txt> — 更新进展记录
   /agent goals recur <id> <schedule> [task]  — 声明为周期性（见 goal_cron_bridge.py）
   /agent goals unrecur <id>        — 停止周期性（不删 Goal/cron job）
+  /agent goals spec generate <id> [--template <id>] [--from-history]
+                                   — 生成执行规范草稿（见 perception/goal_execution_spec.py）
+  /agent goals spec confirm <id>   — 确认执行规范（冻结，下次触发生效）
+  /agent goals spec show <id>      — 查看执行规范当前内容
   /agent goals status              — 显示 AutonomousLoop tick 状态
 """
 
@@ -108,6 +112,16 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
             return
         _cmd_recur(gb, paths, rest[0], rest[1], " ".join(rest[2:]) if len(rest) > 2 else None)
 
+    elif subcmd == "spec":
+        # [goal_execution_spec_generation_plan.md §6.4] /agent goals spec ...
+        if not rest:
+            R.print_error(
+                "Usage: /agent goals spec generate <goal_id> [--template <id>] "
+                "| /agent goals spec confirm <goal_id> | /agent goals spec show <goal_id>"
+            )
+            return
+        _cmd_spec(gb, paths, rest[0], rest[1:])
+
     elif subcmd == "unrecur":
         # /agent goals unrecur <id> — 停止周期性（不删 Goal/cron job）
         if not rest:
@@ -130,7 +144,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
-            "progress, feedback, recur, unrecur, status, reset-step"
+            "progress, feedback, recur, unrecur, spec, status, reset-step"
         )
 
 
@@ -471,6 +485,20 @@ def _cmd_recur(gb, paths, goal_id: str, schedule: str, task_template: Optional[s
     R.print_success(f"Goal {goal_id} 已声明为周期性，绑定 Job {job.id}，下次触发：{job.next_run_str()}")
     R.print_info(f"停止周期性：/agent goals unrecur {goal_id}")
 
+    # [goal_execution_spec_generation_plan.md §6.4] recur 本身不强制依赖
+    # 执行规范存在——只是没有已确认规范时提示一句，跟看板"跳过"选项的
+    # 非目标声明保持一致：规范生成是可选增强，不是必经关卡。
+    try:
+        from mini_agent.perception import goal_execution_spec as ges
+        spec = ges.load_spec(paths, goal_id)
+        if spec is None or not spec.confirmed:
+            R.print_info(
+                f"该 Goal 还没有已确认的执行规范，可以先 "
+                f"/agent goals spec generate {goal_id} 想清楚细节，或直接继续。"
+            )
+    except Exception:
+        pass
+
 
 def _cmd_unrecur(gb, paths, goal_id: str) -> None:
     """停止周期性推进（不删 Goal/cron job）。"""
@@ -489,6 +517,123 @@ def _cmd_unrecur(gb, paths, goal_id: str) -> None:
         R.print_success(f"Goal {goal_id} 已停止周期性推进（绑定的 cron job 已 disable，未删除）")
     else:
         R.print_error(f"Goal 不存在或不是有效的 goal 节点：{goal_id}")
+
+
+def _cmd_spec(gb, paths, action: str, rest: list[str]) -> None:
+    """[goal_execution_spec_generation_plan.md §6.4]
+    /agent goals spec generate <goal_id> [--template <id>] [--from-history]
+    /agent goals spec confirm <goal_id>
+    /agent goals spec show <goal_id>
+    """
+    if action == "generate":
+        if not rest:
+            R.print_error("Usage: /agent goals spec generate <goal_id> [--template <id>] [--from-history]")
+            return
+        import argparse
+        p = argparse.ArgumentParser(add_help=False)
+        p.add_argument("goal_id")
+        p.add_argument("--template", default=None)
+        p.add_argument("--from-history", action="store_true")
+        try:
+            parsed = p.parse_args(rest)
+        except SystemExit:
+            R.print_error("Usage: /agent goals spec generate <goal_id> [--template <id>] [--from-history]")
+            return
+        _cmd_spec_generate(gb, paths, parsed.goal_id, parsed.template, parsed.from_history)
+
+    elif action == "confirm":
+        if not rest:
+            R.print_error("Usage: /agent goals spec confirm <goal_id>")
+            return
+        _cmd_spec_confirm(gb, paths, rest[0])
+
+    elif action == "show":
+        if not rest:
+            R.print_error("Usage: /agent goals spec show <goal_id>")
+            return
+        _cmd_spec_show(paths, rest[0])
+
+    else:
+        R.print_error(f"Unknown spec subcommand: {action!r}")
+        R.print_info("Available: generate, confirm, show")
+
+
+def _cmd_spec_generate(gb, paths, goal_id: str, template_id: Optional[str], from_history: bool) -> None:
+    node = gb.get(goal_id)
+    if node is None or not node.is_goal:
+        R.print_error(f"Goal 不存在：{goal_id}")
+        return
+
+    try:
+        from mini_agent.config import load_config
+        from mini_agent.perception import goal_execution_spec as ges
+        from mini_agent.evolution import output_workspace
+
+        cfg = load_config()
+        history_manifests = None
+        if from_history:
+            base_dir = output_workspace.goal_output_base_dir(paths, goal_id)
+            m = output_workspace.read_latest_manifest(base_dir)
+            history_manifests = [m] if m else None
+
+        builder = ges.GoalExecutionSpecBuilder(cfg)
+        spec = builder.build_draft(
+            goal_id,
+            node.title,
+            node.description,
+            template_id=template_id,
+            history_manifests=history_manifests,
+        )
+        ges.save_spec(paths, goal_id, spec)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goals._cmd_spec_generate')
+        R.print_error(f"生成执行规范失败：{e}")
+        return
+
+    if spec.generation_error:
+        R.print_warning(f"生成失败，已保存为空草稿（可手动编辑或重试）：{spec.generation_error}")
+    else:
+        R.print_success(f"已生成执行规范草稿（第 {spec.version} 版），未确认，不影响执行。")
+    R.print_info(spec.render_summary_for_user())
+    R.print_info(f"确认：/agent goals spec confirm {goal_id}")
+
+
+def _cmd_spec_confirm(gb, paths, goal_id: str) -> None:
+    node = gb.get(goal_id)
+    if node is None or not node.is_goal:
+        R.print_error(f"Goal 不存在：{goal_id}")
+        return
+    try:
+        from mini_agent.perception import goal_execution_spec as ges
+        spec = ges.load_spec(paths, goal_id)
+        if spec is None:
+            R.print_error(f"该 Goal 还没有生成过执行规范草稿：{goal_id}")
+            return
+        ges.GoalExecutionSpecBuilder.confirm(spec)
+        ges.save_spec(paths, goal_id, spec)
+        gb.update_fields(goal_id, execution_spec_confirmed=True)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goals._cmd_spec_confirm')
+        R.print_error(f"确认失败：{e}")
+        return
+    R.print_success(f"执行规范已确认并冻结（第 {spec.version} 版），下次触发即生效。")
+
+
+def _cmd_spec_show(paths, goal_id: str) -> None:
+    try:
+        from mini_agent.perception import goal_execution_spec as ges
+        spec = ges.load_spec(paths, goal_id)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goals._cmd_spec_show')
+        R.print_error(f"读取执行规范失败：{e}")
+        return
+    if spec is None:
+        R.print_info(f"该 Goal 还没有执行规范：{goal_id}")
+        return
+    R.print_info(spec.render_summary_for_user())
 
 
 def _format_ago(seconds: float) -> str:

@@ -937,6 +937,36 @@ class GoalModeConfig:
 
 
 @dataclass
+class GoalExecutionSpecConfig:
+    """[next_doc/goal_execution_spec_generation_plan.md] Goal 执行规范
+    （GoalExecutionSpec）自动生成 + 用户确认机制的配置块。
+
+    独立配置块，不塞进 GoalModeConfig——本机制虽然架构上镜像
+    GoalSpecBuilder，但作用对象是 GoalBacklog 的跨会话 Goal（而不是 goal_mode
+    单次会话内的一次性目标），语义上更接近 GoalBacklog/goal_cron_bridge 一侧。
+    """
+    enabled: bool = True
+
+    # builder_mode：与 GoalModeConfig.spec_builder_mode 同名同义（llm/agent/auto）。
+    # 第一版实现里 "agent"（只读探索）路径尚未落地，"auto"/"agent" 当前效果
+    # 与 "llm" 相同——配置项先按三态设计好，后续补齐 agent 路径时不需要改
+    # 调用方/配置 schema。
+    builder_mode: str = "auto"
+    builder_model: Optional[str] = None
+    builder_provider: Optional[str] = None
+
+    # 看板"设为周期性"表单是否默认展示"生成规范"步骤（而不是默认走"跳过"）。
+    prompt_on_recur: bool = True
+
+    # §5.1 轻量核对（纯文件名/key 字符串匹配）总开关；关闭后仍然把规范拼进
+    # prompt，但不做产出匹配、不会触发"建议复查规范"提示。
+    soft_check_enabled: bool = True
+    # 连续多少轮 file_check/handoff_fields 匹配不上才在 GoalNode 上追加一条
+    # "建议复查执行规范"的系统备注。
+    soft_check_alert_after_cycles: int = 3
+
+
+@dataclass
 class TurnJudgeConfig:
     """[SYS-TURN-JUDGE] 轮次守门员配置：每轮对话结束、真正进入"等待用户输入"之前，
     先让一个轻量 judge agent 核查一次——这是主 Agent 真的完成了、需要真人介入，
@@ -2066,6 +2096,7 @@ class AppConfig:
     format_correction: FormatCorrectionConfig = field(default_factory=FormatCorrectionConfig)
     role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)
     goal_mode:  GoalModeConfig   = field(default_factory=GoalModeConfig)
+    goal_execution_spec: GoalExecutionSpecConfig = field(default_factory=GoalExecutionSpecConfig)
     turn_judge: TurnJudgeConfig  = field(default_factory=TurnJudgeConfig)
     env_info:   EnvInfoConfig    = field(default_factory=EnvInfoConfig)
     workdir_knowledge: WorkdirKnowledgeConfig = field(default_factory=WorkdirKnowledgeConfig)

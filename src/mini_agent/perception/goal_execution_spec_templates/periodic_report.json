@@ -1,0 +1,29 @@
+{
+  "template_id": "periodic_report",
+  "name": "周期性报告（周报/日报/定期汇总）",
+  "applicable_to": "growth_advisor 报告、数据汇总、周期性总结类 Goal",
+  "skeleton": {
+    "deliverables": [
+      {
+        "name": "report.md",
+        "description": "本轮汇总报告，Markdown 格式，含与上次同期的对比",
+        "naming_pattern": "report.md",
+        "required_every_cycle": true
+      }
+    ],
+    "handoff_fields": [
+      {
+        "key": "last_reported_metrics",
+        "description": "上次报告里的关键数字快照，本轮生成对比时引用",
+        "example": "{\"total_users\": 1200}"
+      }
+    ],
+    "sub_directories": [],
+    "per_cycle_criteria": [
+      {"text": "report.md 存在且非空", "verification_method": "file_check"},
+      {"text": "报告内容包含与上一轮的对比（环比/同比等字样）", "verification_method": "manual_review"}
+    ],
+    "overall_completion_criteria": [],
+    "special_constraints": []
+  }
+}

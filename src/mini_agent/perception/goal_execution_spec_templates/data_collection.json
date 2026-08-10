@@ -1,0 +1,36 @@
+{
+  "template_id": "data_collection",
+  "name": "定期抓取/采集",
+  "applicable_to": "定期爬取、批量拉取外部数据并落盘的 Goal",
+  "skeleton": {
+    "deliverables": [
+      {
+        "name": "raw_data",
+        "description": "本轮抓取到的原始数据文件（格式由具体目标决定，如 json/csv）",
+        "naming_pattern": "raw_",
+        "required_every_cycle": true
+      }
+    ],
+    "handoff_fields": [
+      {
+        "key": "last_processed_cursor",
+        "description": "上次处理到的游标/页码/时间戳，下一轮从这里继续，避免重复抓取",
+        "example": "page_42"
+      },
+      {
+        "key": "seen_ids",
+        "description": "本轮已处理过的条目 ID 摘要（用于下一轮去重，条目多时只需给出最新一批或哈希摘要）",
+        "example": "[\"id_1001\", \"id_1002\"]"
+      }
+    ],
+    "sub_directories": [
+      {"name": "raw/", "purpose": "存放原始抓取数据，避免和后续加工产物混在同一层"}
+    ],
+    "per_cycle_criteria": [
+      {"text": "本轮 raw/ 目录下存在新增数据文件", "verification_method": "file_check"},
+      {"text": "本轮抓取的数据与上一轮无重复条目（依据 handoff 里的 seen_ids/cursor 去重）", "verification_method": "manual_review"}
+    ],
+    "overall_completion_criteria": [],
+    "special_constraints": []
+  }
+}

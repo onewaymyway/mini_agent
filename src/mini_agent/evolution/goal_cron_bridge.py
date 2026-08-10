@@ -148,6 +148,7 @@ def _fire_goal_cycle(
     from mini_agent.perception.goal_backlog import compose_context
     description = compose_context(goal.description, job.task_template)
     description = _append_output_workspace_context(paths, goal.id, cycle_no, description)
+    description = _append_execution_spec_context(paths, goal_backlog, goal, description)
     objective = goal_backlog.add_objective(
         title=f"{goal.title}（第 {cycle_no} 轮）",
         parent_id=goal.id,
@@ -200,6 +201,105 @@ def _append_output_workspace_context(paths, goal_id: str, cycle_no: int, descrip
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_output_workspace_context')
         return description
+
+
+def _append_execution_spec_context(
+    paths, goal_backlog: "GoalBacklog", goal: "GoalNode", description: str,
+) -> str:
+    """[goal_execution_spec_generation_plan.md §5] 如果这个 Goal 已确认执行
+    规范，把 deliverables/sub_directories/per_cycle_criteria/
+    special_constraints/handoff_fields 格式化后拼进本轮子 Objective
+    description；同时做 §5.1 的轻量核对（纯文件名/key 字符串匹配），
+    不匹配时追加软性提示，连续多轮不匹配则在 GoalNode 上留一条系统备注。
+
+    未确认（`execution_spec_confirmed=False`）时完全不读规范文件，行为与
+    引入本机制之前一致——不确认就不生效。任何环节异常都静默跳过，不影响
+    Goal 触发主流程。
+    """
+    if paths is None or not getattr(goal, "execution_spec_confirmed", False):
+        return description
+    try:
+        from mini_agent.config import load_config
+        ges_cfg = getattr(load_config(), "goal_execution_spec", None)
+        if ges_cfg is not None and not getattr(ges_cfg, "enabled", True):
+            return description
+
+        from mini_agent.perception import goal_execution_spec as ges
+        spec = ges.load_spec(paths, goal.id)
+        if spec is None or not spec.confirmed or spec.is_empty():
+            return description
+
+        block = spec.render_prompt_block()
+        parts = [description] if description and description.strip() else []
+        if block:
+            parts.append(block)
+
+        soft_check_enabled = bool(getattr(ges_cfg, "soft_check_enabled", True)) if ges_cfg else True
+        if soft_check_enabled:
+            hint = _soft_check_execution_spec(paths, goal_backlog, goal, spec, ges_cfg)
+            if hint:
+                parts.append(hint)
+
+        return "\n\n".join(parts)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_execution_spec_context')
+        return description
+
+
+def _soft_check_execution_spec(paths, goal_backlog, goal, spec, ges_cfg) -> str:
+    """核对上一轮（若存在）的 manifest 是否满足规范要求的 file_check 类
+    deliverables 和 handoff_fields。不做语义判断，只做字符串匹配。
+
+    匹配不上：①返回一句拼进下一轮 prompt 的软提示；②连续
+    `soft_check_alert_after_cycles` 轮都没匹配上时，在 GoalNode 上追加一条
+    系统备注（`goal_backlog.append_progress_note` 是覆盖式写入，这里改用
+    直接更新 progress_notes 追加，避免覆盖 agent 自己的进展记录——见下方
+    实现，用简单字符串拼接而不是调用 append_progress_note）。
+
+    返回空字符串表示"本轮没有可核对的上一轮数据，或全部匹配上"。
+    """
+    from mini_agent.evolution import output_workspace
+    from mini_agent.perception import goal_execution_spec as ges
+
+    base_dir = output_workspace.goal_output_base_dir(paths, goal.id)
+    prev_manifest = output_workspace.read_latest_manifest(base_dir)
+    if not prev_manifest:
+        return ""
+
+    result = ges.soft_check_manifest(spec, prev_manifest)
+    if result["ok"]:
+        if spec.soft_check_miss_streak or spec.soft_check_alerted:
+            spec.soft_check_miss_streak = 0
+            spec.soft_check_alerted = False
+            ges.save_spec(paths, goal.id, spec)
+        return ""
+
+    spec.soft_check_miss_streak += 1
+    alert_after = int(getattr(ges_cfg, "soft_check_alert_after_cycles", 3) or 3) if ges_cfg else 3
+
+    missing_bits = []
+    if result["missing_deliverables"]:
+        missing_bits.append("产出物：" + "、".join(result["missing_deliverables"]))
+    if result["missing_handoff_keys"]:
+        missing_bits.append("handoff 字段：" + "、".join(result["missing_handoff_keys"]))
+    missing_text = "；".join(missing_bits)
+
+    if spec.soft_check_miss_streak >= alert_after and not spec.soft_check_alerted:
+        spec.soft_check_alerted = True
+        try:
+            note = (
+                f"⚠️ 建议复查执行规范：连续 {spec.soft_check_miss_streak} 轮未见规范要求的"
+                f"产出/字段（{missing_text}），规范可能已不再贴合实际执行情况。"
+            )
+            current = goal.progress_notes or ""
+            merged = (current + "\n" + note).strip() if current else note
+            goal_backlog.update_fields(goal.id, progress_notes=merged)
+        except Exception:
+            pass
+
+    ges.save_spec(paths, goal.id, spec)
+    return f"上一轮执行规范要求的以下内容未见产出，请注意补上：{missing_text}"
 
 
 # ── 绑定/解绑（用户操作入口） ───────────────────────────────────────────────────

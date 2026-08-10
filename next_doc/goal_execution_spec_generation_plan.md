@@ -1,7 +1,11 @@
 # Goal 执行规范自动生成 + 用户确认机制
 
-- **状态**：设计草案 / 待评审（尚未实施——先把机制想清楚，评审通过后再拆
-  Track 落地，延续既有节奏）。
+- **状态**：Stage 1 已实施（核心数据模型/存储/生成器/模板库/配置 + 两处
+  消费方注入 + §5.1 轻量核对 + CLI 命令）。看板 UI（§6.1/§6.2/§6.3）、
+  `builder_mode="agent"` 只读探索路径、`overall_completion_criteria`
+  驱动的一次性 Goal 整体关闭判断仍未实施，见
+  `next_doc/goal_execution_spec_generation_implementation_record.md`
+  的"未实施"清单。
 - **触发背景**：用户反馈"goal 系统已经有自动生成验收标准的能力
   （`goal_mode/spec.py::GoalSpecBuilder`），但缺一步把 Goal 具体化——
   尤其是设为周期性执行时，目录结构、产出物、跨轮次怎么传信息这些细节

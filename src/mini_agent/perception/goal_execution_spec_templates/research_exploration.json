@@ -1,0 +1,22 @@
+{
+  "template_id": "research_exploration",
+  "name": "调研/学习",
+  "applicable_to": "调研某个技术方案、学习类 Goal，产出较随意",
+  "skeleton": {
+    "deliverables": [
+      {
+        "name": "notes.md",
+        "description": "调研笔记，记录看了什么、结论是什么",
+        "naming_pattern": "notes.md",
+        "required_every_cycle": false
+      }
+    ],
+    "handoff_fields": [],
+    "sub_directories": [],
+    "per_cycle_criteria": [
+      {"text": "notes.md 内容有实质性推进（而非重复上一轮内容）", "verification_method": "manual_review"}
+    ],
+    "overall_completion_criteria": [],
+    "special_constraints": []
+  }
+}

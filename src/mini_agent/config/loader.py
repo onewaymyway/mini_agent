@@ -38,6 +38,7 @@ from .models import (
     EnsembleConfig,
     RoleAgentConfig,
     GoalModeConfig,
+    GoalExecutionSpecConfig,
     TurnJudgeConfig,
     EnvInfoConfig,
     ReminderConfig,
@@ -646,6 +647,7 @@ def load_config(
     # [统一参数机制] goal_mode / turn_judge 同样字段名一一对应，走通用加载
     # （见上方 tech_radar 处的说明）。
     goal_mode_cfg = _nested_blocks["goal_mode"]
+    goal_execution_spec_cfg = _nested_blocks["goal_execution_spec"]
     turn_judge_cfg = _nested_blocks["turn_judge"]
 
     # ── EnvInfo 配置组装 ────────────────────────────────────────────────────
@@ -760,6 +762,7 @@ def load_config(
         format_correction=format_correction_cfg,
         role_agent=role_agent_cfg,
         goal_mode=goal_mode_cfg,
+        goal_execution_spec=goal_execution_spec_cfg,
         turn_judge=turn_judge_cfg,
         env_info=env_info_cfg,
         workdir_knowledge=workdir_knowledge_cfg,

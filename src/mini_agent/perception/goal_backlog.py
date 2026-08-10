@@ -167,6 +167,14 @@ class GoalNode:
     # 变更"，不需要额外迁移）。
     status_history: list = field(default_factory=list)
 
+    # [next_doc/goal_execution_spec_generation_plan.md §4] 轻量指针字段：
+    # 这个 Goal 是否存在一份已确认（confirmed=true）的执行规范
+    # （.agent/goal_execution_specs/<goal_id>.json）。真正的规范内容以独立
+    # 文件为准，本字段只是缓存/索引，供 goal_cron_bridge/看板快速判断
+    # 是否需要读取独立文件，不是真值来源——独立文件与本字段不一致时（比如
+    # 文件被手工删除），以独立文件的实际存在状态为准。
+    execution_spec_confirmed: bool = False
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -194,6 +202,7 @@ class GoalNode:
             "user_feedback": self.user_feedback,
             "source_initiator": self.source_initiator,
             "status_history": self.status_history,
+            "execution_spec_confirmed": self.execution_spec_confirmed,
         }
 
     @staticmethod
@@ -227,6 +236,7 @@ class GoalNode:
             # 某种自动触发来源。
             source_initiator=d.get("source_initiator", "user"),
             status_history=d.get("status_history", []),
+            execution_spec_confirmed=d.get("execution_spec_confirmed", False),
         )
 
     @property
@@ -284,6 +294,41 @@ def _append_onetime_output_workspace_context(
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.perception.goal_backlog._append_onetime_output_workspace_context')
+        return description
+
+
+def _append_execution_spec_prompt_block(
+    paths: Optional[AgentPaths], goal: "GoalNode", description: str,
+) -> str:
+    """[goal_execution_spec_generation_plan.md §5] `add_objectives_for_goal()`
+    一侧的对称处理：如果 Goal 已确认执行规范，把 deliverables/
+    per_cycle_criteria/special_constraints/handoff_fields 格式化后拼进子
+    Objective description 末尾。
+
+    与 recurring 版本（goal_cron_bridge._append_execution_spec_context）的
+    区别：这里不做 §5.1 的轻量核对（一次性 Goal 的子 Objective 之间不是
+    "轮次"关系，"连续 N 轮未达标"的语义不适用；单个子 Objective 完成后是否
+    满足 per_cycle_criteria，留给 GoalJudge/用户在该子任务收尾时判断）。
+
+    未确认时完全不读规范文件，任何环节异常都静默跳过，不影响子节点创建
+    主流程。
+    """
+    if paths is None or not getattr(goal, "execution_spec_confirmed", False):
+        return description
+    try:
+        from mini_agent.perception import goal_execution_spec as ges
+        spec = ges.load_spec(paths, goal.id)
+        if spec is None or not spec.confirmed or spec.is_empty():
+            return description
+        block = spec.render_prompt_block()
+        if not block:
+            return description
+        parts = [description] if description and description.strip() else []
+        parts.append(block)
+        return "\n\n".join(parts)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.goal_backlog._append_execution_spec_prompt_block')
         return description
 
 
@@ -703,6 +748,9 @@ class GoalBacklog:
                     description = _append_onetime_output_workspace_context(
                         self._paths, goal_id, len(goal.children_ids) + 1, description,
                     )
+                description = _append_execution_spec_prompt_block(
+                    self._paths, goal, description,
+                )
                 node = GoalNode(
                     id=f"obj_{uuid.uuid4().hex[:8]}",
                     level="objective",

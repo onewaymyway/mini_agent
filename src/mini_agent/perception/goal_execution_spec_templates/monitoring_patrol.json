@@ -1,0 +1,29 @@
+{
+  "template_id": "monitoring_patrol",
+  "name": "巡检/监控",
+  "applicable_to": "定期检查某些状态是否异常的 Goal（服务健康度、指标阈值等）",
+  "skeleton": {
+    "deliverables": [
+      {
+        "name": "patrol_log.md",
+        "description": "本轮巡检记录：检查了什么、结果如何、是否发现异常",
+        "naming_pattern": "patrol_log.md",
+        "required_every_cycle": true
+      }
+    ],
+    "handoff_fields": [
+      {
+        "key": "last_known_state",
+        "description": "上次巡检时记录的关键状态快照，本轮用于判断是否发生变化",
+        "example": "{\"status\": \"ok\", \"last_error\": null}"
+      }
+    ],
+    "sub_directories": [],
+    "per_cycle_criteria": [
+      {"text": "patrol_log.md 存在且非空", "verification_method": "file_check"},
+      {"text": "发现异常时，patrol_log.md 中有明确记录（而不是被静默忽略）", "verification_method": "manual_review"}
+    ],
+    "overall_completion_criteria": [],
+    "special_constraints": []
+  }
+}
