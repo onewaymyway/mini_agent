@@ -197,6 +197,34 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
 Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策画像的归纳与
 矛盾处理逻辑。
 
+#### Goal 执行规范草稿（generate → 反馈迭代 → 确认）
+
+每张 Goal 卡片下方有一个执行规范面板（`_render_goal_execution_spec_
+widget()`），对接 `perception/goal_execution_spec.py`，与 CLI `/agent goals spec ...`
+是同一套后端能力（详见 [命令与工具参考](commands-and-tools-reference.md)、
+[HTTP API 指南](http-api-guide.md)）：
+
+- **生成草稿**：未生成过时展示"起草方式"下拉框（可选模板库骨架，关键词
+  规则命中时默认预选）、"从最近一轮执行记录反推草稿内容"勾选框（该
+  Goal 已跑过至少一轮时才展示）、"生成路径"下拉框（跟随配置默认 / 自动
+  判断 / 纯 LLM / 只读探索 Agent，单次覆盖 `builder_mode`，不改配置
+  文件）。生成成功后展示"🧭 上次生成走的路径"，告知这份草稿有没有实际
+  读取过项目内容。CLI 侧对应 `/agent goals spec generate`。
+- **反馈迭代**：有未确认草稿时展示摘要 + 每个 section 的 🔒 锁定复选框
+  （产出物/跨轮传递/子目录/每轮标准/特殊约束）+ 补充意见文本框——提交
+  后未锁定的 section 据反馈重新生成，已锁定的原样保留。重新生成后自动
+  展开"🔍 与上一版的差异"区块（➕ 新增 / ➖ 删除 / ✏️ 改写 三类标注，
+  纯前端对比，不需要额外 LLM 调用），点"知道了"收起。
+- **确认/放弃**：「✅ 确认使用此规范」冻结当前草稿（下次触发即生效）；
+  「❌ 放弃草稿」清空重新开始；「📄 从模板重新起草」独立按钮，不用先
+  放弃当前草稿就能整段换模板重新生成（同样会触发差异高亮）。
+- **整体关闭判定**（仅一次性 Goal，`overall_completion_criteria` 非空时
+  有意义）：「🔁 手动重判整体是否可以关闭」按钮旁有"整体关闭判定路径"
+  下拉框（跟随配置默认 / 只读探索 Agent / 纯 LLM，单次覆盖
+  `overall_completion_use_agent`），按钮上方常驻展示上一次判定结果
+  （时间 + 走的路径 + 结论），不再只是一次性 toast 提示。CLI 侧对应
+  `/agent goals spec close-check`。
+
 ### 🔄 工作流 Tab
 
 对接 `src/mini_agent/workflow/`（`workflow_mechanism_improvement_plan.md` P7 +
@@ -354,6 +382,10 @@ Tab。流程与目标看板一致：点击"🗑️ 删除"进入二次确认态�
 | `gating_history(limit=50)` | `GET /v1/autonomous/gating_history` | 仲裁状态（`full`/`degraded`/`blocked`）变化时间线，供"🗓️ 全局日程"Tab 使用（只读） |
 | `goals()` / `add_goal()` / `update_goal()` | `/v1/goals*` | Goal 看板 |
 | `recur_goal()` / `unrecur_goal()` / `skip_goal_next_cycle()` | `POST /v1/goals/{id}/recur\|unrecur\|skip_next_cycle` | 周期性 Goal 绑定 / 解绑 / 跳过下一轮（Track A/B） |
+| `execution_spec_templates()` / `get_execution_spec()` | `GET /v1/goal_execution_spec_templates`、`GET /v1/goals/{id}/execution_spec` | Goal 执行规范：模板库摘要（带关键词匹配预选） / 查看当前草稿或已确认版本 |
+| `generate_execution_spec(mode=)` / `revise_execution_spec(locked_fields=, mode=)` | `POST .../execution_spec/generate\|revise` | 生成第 1 版草稿 / 基于反馈+字段级锁定重新生成，`mode` 单次覆盖 `builder_mode`，响应体带 `effective_path` |
+| `confirm_execution_spec()` | `POST .../execution_spec/confirm` | 确认并冻结当前草稿，下次触发即生效 |
+| `close_check_execution_spec(use_agent=)` | `POST .../execution_spec/close_check` | 手动（重新）触发"整体是否可以关闭"判定，`use_agent` 单次覆盖是否走受限 Agent 路径核实产出文件 |
 | `cancel_objective()` / `retry_objective()` / `inject_objective_guidance()` | `/v1/objectives/{execution_id}/*` | Objective 执行操作：终止 / 手动重试当前步 / 插话（Track D） |
 | `inbox()` | `GET /v1/inbox` | 全局待办中心：跨 session 聚合权限/交互请求 + 失败 Objective（Track A） |
 | `cron_jobs()` / `add_cron_job()` / `update_cron_job()` / `run_cron_job_now()` | `/v1/cron*` | Cron Job 管理，每个 job 附带 `execution_phase`（`not_running`/`queued`/`running`） |
@@ -443,6 +475,10 @@ Tab。流程与目标看板一致：点击"🗑️ 删除"进入二次确认态�
   `next_doc/kanban_perception_gaps_implementation_record.md`
   — "⚠️ 系统状态哨兵"面板、LLM 故障转移状态暴露、wiki 隔离区暴露、
   仲裁状态聚合占比的设计与实现记录
+- `next_doc/goal_execution_spec_generation_plan.md` /
+  `next_doc/goal_execution_spec_generation_implementation_record.md`
+  — Goal 执行规范自动生成 + 用户确认机制（模板库/字段级锁定反馈迭代/
+  差异高亮/只读探索 Agent 路径/整体关闭判定）的设计与逐阶段实施记录
 - `src/mini_agent/perception/sentinel.py` — 哨兵聚合面板后端：cron 连续
   失败 / Objective 重试热点 / wiki 隔离区积压 / LLM 故障转移状态 四类
   扫描函数 + `sentinel_summary()`
@@ -453,4 +489,4 @@ Tab。流程与目标看板一致：点击"🗑️ 删除"进入二次确认态�
 
 ---
 
-*最后更新：2026-07-24*
+*最后更新：2026-08-11*

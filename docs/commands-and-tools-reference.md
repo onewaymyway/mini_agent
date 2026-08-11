@@ -446,6 +446,28 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/digest daily [YYYY-MM-DD]` | 生成/查看**融合日报**（行为分布+目标进展+git提交，与上面的 `/digest` 是两个不同功能，须显式加 `daily` 子命令）；详见 [每日融合日报指南](daily-digest-guide.md) |
 | `/next [refresh]` | 查看/重新计算**主动推荐**（停滞目标 + 注意力错配排序建议）；详见 [主动推荐排序指南](next-action-advisor-guide.md) |
 
+#### Goal 执行规范（`spec` 子命令，`perception/goal_execution_spec.py`）
+
+把一个（可能是周期性执行的）Goal 具体化成结构化执行规范：每一轮该产出
+什么、跨轮需要传递什么信息、用什么标准判断"这一轮算做到位了"、以及一次性
+Goal 什么时候算整体完成。生成/反馈迭代/确认全程独立 LLM 调用，不占用主
+Agent 对话历史。详见 `next_doc/goal_execution_spec_generation_plan.md`、
+`next_doc/goal_execution_spec_generation_implementation_record.md`（设计
+与逐阶段实施记录），看板对应入口见 [Kanban 看板使用指南](kanban-dashboard-guide.md)
+"📌 目标看板 Tab"一节。
+
+| 命令 | 说明 |
+|------|------|
+| `/agent goals spec generate <goal_id> [--template <id>] [--from-history] [--mode llm\|agent\|auto]` | 生成第 1 版草稿（不确认，不影响执行）。`--template` 指定模板库里的骨架 ID 作为起点；`--from-history` 从该 Goal 最近一轮的实际产出反推草稿内容（未跑过至少一轮时等同于不加）；`--mode` 单次覆盖本次走"纯 LLM"还是"只读探索 Agent"（先看一眼项目内容再生成），不传时回退配置 `goal_execution_spec.builder_mode`（默认 `auto`：关键词规则粗筛，未命中时先跑一次纯 LLM，若其自报需要项目上下文再改用 Agent 路径重新生成一次），不修改配置文件 |
+| `/agent goals spec confirm <goal_id>` | 确认并冻结当前草稿，下次该 Goal 触发执行时即生效 |
+| `/agent goals spec show <goal_id>` | 查看当前执行规范（草稿或已确认版本） |
+| `/agent goals spec close-check <goal_id> [--use-agent \| --no-agent]` | 手动（重新）触发一次"整体是否可以关闭"判定——正常情况下在最后一个子 Objective 正常完成时自动触发一次，本命令用于补充材料后重新判一次，或排查"为什么这个 Goal 一直没有自动关闭"；只对一次性 Goal（子节点全部终态、规范已确认且 `overall_completion_criteria` 非空）生效，前置条件不满足时直接说明原因，不算错误。`--use-agent`/`--no-agent` 单次覆盖判定是否走受限 Agent 路径核实实际产出文件内容，不传时回退配置 `overall_completion_use_agent`（默认关闭），不修改配置文件。判定结果会持久化到 `GoalNode.overall_completion_last_check`，看板"🔁 手动重判"按钮上方常驻展示 |
+
+REPL 内没有独立的 `revise`（补充意见迭代 + 字段级锁定）子命令，这一步
+目前只在看板 UI 里有交互式入口（补充意见文本框 + section 锁定复选框 +
+差异高亮），CLI 侧对应能力是 `POST /v1/goals/{id}/execution_spec/revise`
+REST 端点（详见 [HTTP API 指南](http-api-guide.md)）。
+
 ### 定时任务（`src/mini_agent/cli/commands/cron.py`）
 
 > **Stage 9 Phase 2** daemon 模式下的周期性任务调度。详见 [Stage 9 自主运行时指南](self-evolution-stage9-guide.md#5-定时任务evolutioncron_schedulerpy)

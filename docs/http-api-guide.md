@@ -445,6 +445,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8765/v1/diagnostics
 - [观察性系统指南](observability-guide.md) — `/diagnostics` 端点与 traces.jsonl 详解
 - [产出物看板指南](artifacts-dashboard-guide.md) — 产出物 Manifest 设计、自动侦测开关
 - [用户行为感知系统指南](behavior-perception-guide.md) — 桌面/浏览器/手机端行为采集与工作生活画像日报
+- [Kanban 看板使用指南](kanban-dashboard-guide.md) — Goal 执行规范生成/反馈迭代/确认的看板 UI 入口
 
 ---
 
@@ -724,6 +725,96 @@ Body: {
       "progress_notes": "已完成接口扫描"
     }
   ]
+}
+```
+
+### /v1/goals/{goal_id}/execution_spec — Goal 执行规范 REST API
+
+把一个（可能是周期性执行的）Goal 具体化成结构化执行规范：每一轮该产出
+什么（`deliverables`）、跨轮需要显式传递什么信息（`handoff_fields`）、
+用什么标准判断"这一轮算做到位了"（`per_cycle_criteria`）、以及一次性
+Goal 什么时候算整体完成（`overall_completion_criteria`）。详见
+`next_doc/goal_execution_spec_generation_plan.md`（设计）、
+`next_doc/goal_execution_spec_generation_implementation_record.md`
+（逐阶段实施记录）。
+
+```bash
+# 模板库摘要列表，供"从模板起步"下拉框使用；传 goal_title/goal_description
+# 时额外返回 suggested_template_id（关键词粗略匹配，匹配不到为 null）
+GET /v1/goal_execution_spec_templates?goal_title=...&goal_description=...
+
+# 查看当前执行规范（草稿或已确认版本）。没有生成过时返回 {"spec": null}，
+# 不是 404——"还没生成"是合法状态
+GET /v1/goals/{goal_id}/execution_spec
+
+# 生成第 1 版草稿（不确认，不影响执行）
+POST /v1/goals/{goal_id}/execution_spec/generate
+Body: {
+  "schedule": "0 9 * * 1",      # 可选，周期性 Goal 的 cron 表达式，供 prompt 参考
+  "task_template": "...",       # 可选
+  "template_id": "weekly_report",  # 可选，模板库骨架 ID，不传则完全从零生成
+  "from_history": true,         # 可选，从该 Goal 最近一轮实际产出反推草稿内容
+  "mode": "auto"                # 可选，"llm" | "agent" | "auto"，见下方说明
+}
+
+# 基于反馈 + 字段级锁定重新生成，只调整未锁定的部分
+POST /v1/goals/{goal_id}/execution_spec/revise
+Body: {
+  "feedback": "每轮标准里再加一条：报告文件必须包含环比数据",
+  "locked_fields": ["deliverables", "handoff_fields"],  # 可选，原样保留、不重新生成
+  "mode": "auto"                # 可选，用法同 generate
+}
+
+# 确认并冻结当前草稿，下次该 Goal 触发执行时即生效
+POST /v1/goals/{goal_id}/execution_spec/confirm
+
+# 手动（重新）触发一次"整体是否可以关闭"判定
+POST /v1/goals/{goal_id}/execution_spec/close_check
+Body: {
+  "use_agent": true             # 可选，单次覆盖是否走受限 Agent 路径核实
+}                                # 实际产出文件内容，不传时回退配置默认值
+```
+
+`generate`/`revise` 的 `mode` 参数单次覆盖走"纯 LLM"（`"llm"`，不读取
+项目内容，速度快）还是"只读探索 Agent"（`"agent"`，先看一眼项目实际
+情况再生成，更贴合实际，耗时更长）；不传或传非法值时回退配置文件
+`goal_execution_spec.builder_mode`（默认 `"auto"`：关键词规则粗筛是否
+提到"参考/沿用项目已有内容"类诉求，命中直接走 Agent 路径；未命中先跑
+一次纯 LLM，若其输出 JSON 里自报 `needs_project_context: true`——模型
+自己判断"这道题答不准，需要先看看项目"——则丢弃这次结果、改用 Agent
+路径重新生成一次）。单次覆盖不修改配置文件，只影响这一次调用。两个
+端点的响应体都新增 `effective_path`（`"llm"`/`"agent"`，这次实际走的
+路径）：
+
+```json
+{
+  "spec": { "version": 1, "confirmed": false, "deliverables": [...], "..." : "..." },
+  "effective_path": "agent"
+}
+```
+
+`close_check` 只对一次性 Goal 生效（子节点全部进入终态、执行规范已确认
+且 `overall_completion_criteria` 非空），Goal 不是 `active` 状态或前置
+条件不满足时返回 `{"outcome": null, "reason": "..."}`，不是错误；
+`outcome` 为 `"closed"` 时 Goal 已被标记为 `completed`，为 `"kept_open"`
+时继续保持 `active`。响应体的 `goal.overall_completion_last_check` 带上
+本次判定的持久化快照（`outcome`/`reasoning`/`used_agent`/`at`），供前端
+展示"上一次判定是什么时候、判了什么、走的是哪条路径"，不需要翻
+`progress_notes` 里的文本行去找：
+
+```json
+{
+  "outcome": "closed",
+  "goal": {
+    "id": "goal_abc12345",
+    "status": "completed",
+    "overall_completion_last_check": {
+      "outcome": "closed",
+      "reasoning": "全部子 Objective 已完成，产出文件符合标准",
+      "used_agent": false,
+      "at": 1754800000.0
+    }
+  }
 }
 ```
 

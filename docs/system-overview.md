@@ -447,6 +447,7 @@ daemon 进程（常驻）
 |------|------|
 | `cli/daemon.py` | daemon start/stop/status，PID 文件，DaemonClient（HTTP 连接模式） |
 | `perception/goal_backlog.py` | 跨会话目标层级（Goal → Objective），持久化到 `.agent/goals.json` |
+| `perception/goal_execution_spec.py` | Goal 执行规范自动生成 + 用户确认机制：每一轮该产出什么/跨轮传什么信息/完成标准/一次性 Goal 整体关闭判定，独立 LLM 调用生成，字段级锁定反馈迭代，详见 [Goal 执行规范设计文档](../next_doc/goal_execution_spec_generation_plan.md) |
 | `evolution/autonomous_loop.py` | daemon 内 tick 调度，三档位边界用方法边界物理隔离（不靠注释） |
 | `evolution/resource_arbiter.py` | 用户优先 / 路径冲突 / 预算硬限制三条仲裁规则 |
 | `perception/exploration_sandbox.py` | 探索实验沙盒（第十二节 autonomous 档位接口预留） |
