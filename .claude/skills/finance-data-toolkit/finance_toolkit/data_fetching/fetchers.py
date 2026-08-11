@@ -359,47 +359,69 @@ def _fetch_sina_kline(symbol: str, period: str = 'daily', start: str = '20240101
     
     url = f"https://quotes.sina.cn/cn/api/jsonp_v2.php/var=/CN_MarketDataService.getKLineData?symbol={sina_symbol}&scale={scale}&ma=no&datalen={datalen}"
     
-    try:
-        import urllib.request
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': 'https://finance.sina.com.cn/',
-        }
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            text = resp.read().decode('utf-8', errors='ignore')
-        
-        idx = text.find('var=(')
-        if idx < 0:
-            return []
-        end_idx = text.rfind(');')
-        json_str = text[idx + 5:end_idx]
-        data = json.loads(json_str)
-        
-        if not data:
-            return []
-        
-        # 日期范围过滤
-        result = []
-        for row in data:
-            row_date = row['day'][:10]  # 格式："2024-01-01 00:00:00" -> "2024-01-01"
-            row_date_fmt = row_date.replace('-', '')  # 转为 "20240101"
-            
-            if row_date_fmt < start or row_date_fmt > end:
-                continue
-                
-            result.append({
-                'date': row_date,
-                'open': float(row['open']),
-                'high': float(row['high']),
-                'low': float(row['low']),
-                'close': float(row['close']),
-                'volume': int(row['volume']),
-            })
-        return result
-    except Exception as e:
-        logger.error(f"新浪K线获取失败: {e}")
-        return []
+    import urllib.request
+    import json as _json
+    import time as _time
+
+    # Kline 超时配置：增加到 30s，支持指数退避重试
+    KLINE_TIMEOUT = 30
+    KLINE_MAX_RETRIES = 3
+    KLINE_BACKOFF = [1, 2, 5]  # 指数退避因子（秒）
+
+    for attempt in range(KLINE_MAX_RETRIES):
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://finance.sina.com.cn/',
+            }
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=KLINE_TIMEOUT) as resp:
+                text = resp.read().decode('utf-8', errors='ignore')
+
+            idx = text.find('var=(')
+            if idx < 0:
+                raise ValueError("Invalid response: no 'var=(' found")
+            end_idx = text.rfind(');')
+            if end_idx < 0:
+                raise ValueError("Invalid response: no ');' found")
+            json_str = text[idx + 5:end_idx]
+            data = _json.loads(json_str)
+
+            if not data:
+                raise ValueError("Empty data returned")
+
+            # 日期范围过滤
+            result = []
+            for row in data:
+                row_date = row['day'][:10]
+                row_date_fmt = row_date.replace('-', '')
+
+                if row_date_fmt < start or row_date_fmt > end:
+                    continue
+
+                result.append({
+                    'date': row_date,
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': int(row['volume']),
+                })
+            return result
+
+        except Exception as e:
+            if attempt < KLINE_MAX_RETRIES - 1:
+                wait = KLINE_BACKOFF[attempt] if attempt < len(KLINE_BACKOFF) else 5
+                logger.warning(
+                    f"新浪K线获取失败 (attempt {attempt+1}/{KLINE_MAX_RETRIES}): {e}, "
+                    f"waiting {wait}s before retry"
+                )
+                _time.sleep(wait)
+            else:
+                logger.error(f"新浪K线获取失败 (after {KLINE_MAX_RETRIES} retries): {e}")
+                return []
+
+    return []
 
 
 # ============== 财务报表 ==============
@@ -750,8 +772,8 @@ def fetch_margin_data(data_type: str = 'summary', source: str = 'akshare') -> Li
         try:
             if data_type == 'summary':
                 # 融资融券汇总数据
-                df_sz = ak.stock_margin_size_szse()
-                df_sse = ak.stock_margin_size_sse()
+                df_sz = ak.stock_margin_szse()
+                df_sse = ak.stock_margin_sse()
 
                 for _, row in df_sz.iterrows():
                     results.append(FinanceData(
@@ -760,7 +782,7 @@ def fetch_margin_data(data_type: str = 'summary', source: str = 'akshare') -> Li
                         symbol='SZSE',
                         timestamp=datetime.utcnow().isoformat(),
                         payload={
-                            'date': row.get('日期', ''),
+                            'date': str(row.get('信用交易日期', '')),
                             'exchange': 'SZSE',
                             'margin_balance': float(row.get('融资余额', 0) or 0),
                             'margin_buy': float(row.get('融资买入额', 0) or 0),
@@ -776,7 +798,7 @@ def fetch_margin_data(data_type: str = 'summary', source: str = 'akshare') -> Li
                         symbol='SSE',
                         timestamp=datetime.utcnow().isoformat(),
                         payload={
-                            'date': row.get('日期', ''),
+                            'date': str(row.get('信用交易日期', '')),
                             'exchange': 'SSE',
                             'margin_balance': float(row.get('融资余额', 0) or 0),
                             'margin_buy': float(row.get('融资买入额', 0) or 0),
@@ -787,20 +809,37 @@ def fetch_margin_data(data_type: str = 'summary', source: str = 'akshare') -> Li
 
             elif data_type == 'stock':
                 # 个股融资融券明细
-                df = ak.stock_margin_detail_szse()
-                for _, row in df.iterrows():
+                df_sz = ak.stock_margin_detail_szse()
+                for _, row in df_sz.iterrows():
                     results.append(FinanceData(
                         source='akshare',
                         data_type='margin_stock',
-                        symbol=row.get('代码', ''),
+                        symbol=row.get('证券代码', ''),
                         timestamp=datetime.utcnow().isoformat(),
                         payload={
-                            'stock_code': row.get('代码', ''),
-                            'stock_name': row.get('名称', ''),
+                            'stock_code': row.get('证券代码', ''),
+                            'stock_name': row.get('证券简称', ''),
                             'margin_balance': float(row.get('融资余额', 0) or 0),
-                            'margin_change': float(row.get('融资余额变化', 0) or 0),
+                            'margin_buy': float(row.get('融资买入额', 0) or 0),
                             'short_balance': float(row.get('融券余额', 0) or 0),
-                            'update_date': row.get('日期', ''),
+                            'short_sell': float(row.get('融券卖出量', 0) or 0),
+                        }
+                    ))
+                df_sse = ak.stock_margin_detail_sse()
+                for _, row in df_sse.iterrows():
+                    results.append(FinanceData(
+                        source='akshare',
+                        data_type='margin_stock',
+                        symbol=row.get('标的证券代码', ''),
+                        timestamp=datetime.utcnow().isoformat(),
+                        payload={
+                            'stock_code': row.get('标的证券代码', ''),
+                            'stock_name': row.get('标的证券简称', ''),
+                            'date': str(row.get('信用交易日期', '')),
+                            'margin_balance': float(row.get('融资余额', 0) or 0),
+                            'margin_buy': float(row.get('融资买入额', 0) or 0),
+                            'short_balance': float(row.get('融券余额', 0) or 0),
+                            'short_sell': float(row.get('融券卖出量', 0) or 0),
                         }
                     ))
         except Exception as e:
@@ -861,21 +900,38 @@ def fetch_capital_flow(symbol: str = None, data_type: str = 'stock', source: str
                         ))
 
             elif data_type == 'sector':
-                # 板块资金流向
-                df = ak.stock_sector_fund_flow_rank(industry_type='行业')
-                for _, row in df.iterrows():
+                # 板块资金流向（行业）
+                df_industry = ak.stock_fund_flow_industry(symbol='即时')
+                for _, row in df_industry.iterrows():
                     results.append(FinanceData(
                         source='akshare',
                         data_type='sector_capital_flow',
-                        symbol=row.get('板块代码', ''),
+                        symbol='',
                         timestamp=datetime.utcnow().isoformat(),
                         payload={
-                            'sector_code': row.get('板块代码', ''),
-                            'sector_name': row.get('板块名称', ''),
-                            'main_inflow': float(row.get('主力净流入-净额', 0) or 0),
-                            'main_inflow_ratio': float(row.get('主力净流入-净占比', 0) or 0),
-                            'change_pct': float(row.get('涨跌幅', 0) or 0),
-                            'rank': int(row.get('排名', 0) or 0),
+                            'sector_code': '',
+                            'sector_name': row.get('行业', ''),
+                            'main_inflow': float(row.get('净额', 0) or 0),
+                            'main_inflow_ratio': 0.0,
+                            'change_pct': float(row.get('行业-涨跌幅', 0) or 0),
+                            'rank': int(row.get('序号', 0) or 0),
+                        }
+                    ))
+                # 板块资金流向（概念）
+                df_concept = ak.stock_fund_flow_concept(symbol='即时')
+                for _, row in df_concept.iterrows():
+                    results.append(FinanceData(
+                        source='akshare',
+                        data_type='sector_capital_flow',
+                        symbol='',
+                        timestamp=datetime.utcnow().isoformat(),
+                        payload={
+                            'sector_code': '',
+                            'sector_name': row.get('行业', ''),
+                            'main_inflow': float(row.get('净额', 0) or 0),
+                            'main_inflow_ratio': 0.0,
+                            'change_pct': float(row.get('行业-涨跌幅', 0) or 0),
+                            'rank': int(row.get('序号', 0) or 0),
                         }
                     ))
         except Exception as e:
@@ -898,22 +954,24 @@ def fetch_ipo_data(data_type: str = 'apply', source: str = 'akshare') -> List[Fi
     if source == 'akshare' and HAS_AKSHARE:
         try:
             if data_type == 'apply':
-                # 新股申购
-                df = ak.stock_yzrp_em()
+                # 新股申购（使用 stock_ipo_declare_em）
+                df = ak.stock_ipo_declare_em()
                 for _, row in df.iterrows():
                     results.append(FinanceData(
                         source='akshare',
                         data_type='ipo_apply',
-                        symbol=row.get('代码', ''),
+                        symbol='',
                         timestamp=datetime.utcnow().isoformat(),
                         payload={
-                            'stock_code': row.get('代码', ''),
-                            'stock_name': row.get('名称', ''),
-                            'apply_date': row.get('申购日期', ''),
-                            'issue_price': float(row.get('发行价', 0) or 0),
-                            'pe_ratio': float(row.get('市盈率', 0) or 0),
-                            'lot_size': int(row.get('申购单位', 0) or 0),
-                            'industry': row.get('行业', ''),
+                            'stock_code': '',
+                            'stock_name': row.get('企业名称', ''),
+                            'apply_date': row.get('更新日期', ''),
+                            'issue_price': 0.0,
+                            'pe_ratio': 0.0,
+                            'lot_size': 0,
+                            'industry': row.get('拟上市地点', ''),
+                            'sponsor': row.get('保荐机构', ''),
+                            'status': row.get('最新状态', ''),
                         }
                     ))
 

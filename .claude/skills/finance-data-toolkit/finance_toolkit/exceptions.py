@@ -187,6 +187,170 @@ class ConfigError(FinanceError):
         )
 
 
+class DataEmptyError(DataError):
+    """数据为空（返回结果为空）"""
+    
+    def __init__(self, data_type: str, symbol: Optional[str] = None, reason: str = ""):
+        details = {"data_type": data_type}
+        if symbol:
+            details["symbol"] = symbol
+        if reason:
+            details["reason"] = reason
+        
+        super().__init__(
+            message=f"{data_type} 数据为空" + (f" (标的：{symbol})" if symbol else "") + (f"，原因：{reason}" if reason else ""),
+            data_type=data_type,
+            code="DATA_EMPTY",
+            details=details
+        )
+
+
+class DataParseError(DataError):
+    """数据解析错误（格式不匹配、字段缺失等）"""
+    
+    def __init__(self, data_type: str, parse_error: str, raw_data: Optional[str] = None):
+        details = {
+            "data_type": data_type,
+            "parse_error": parse_error
+        }
+        if raw_data:
+            details["raw_data_preview"] = raw_data[:200] if len(raw_data) > 200 else raw_data
+        
+        super().__init__(
+            message=f"{data_type} 数据解析错误：{parse_error}",
+            data_type=data_type,
+            code="DATA_PARSE_ERROR",
+            details=details
+        )
+
+
+class NetworkError(FinanceError):
+    """网络错误（连接失败、DNS解析失败等）"""
+    
+    def __init__(self, message: str, url: Optional[str] = None, error_code: Optional[int] = None):
+        details = {}
+        if url:
+            details["url"] = url
+        if error_code:
+            details["error_code"] = error_code
+        
+        super().__init__(
+            message=message,
+            code="NETWORK_ERROR",
+            details=details
+        )
+
+
+class APIChangedError(SourceError):
+    """API变更错误（接口地址、参数、返回格式变化）"""
+    
+    def __init__(self, source: str, api_name: str, change_type: str = "format"):
+        super().__init__(
+            message=f"数据源 '{source}' 的 {api_name} API 发生变更（{change_type}）",
+            source=source,
+            code="API_CHANGED",
+            details={"api_name": api_name, "change_type": change_type}
+        )
+
+
+class DataStaleError(DataError):
+    """数据过期错误（数据时效性不足）"""
+    
+    def __init__(self, data_type: str, symbol: Optional[str] = None, max_age_seconds: int = 0):
+        details = {
+            "data_type": data_type,
+            "max_age_seconds": max_age_seconds
+        }
+        if symbol:
+            details["symbol"] = symbol
+        
+        super().__init__(
+            message=f"{data_type} 数据已过期" + (f" (标的：{symbol})" if symbol else ""),
+            data_type=data_type,
+            code="DATA_STALE",
+            details=details
+        )
+
+
+class RateLimitError(SourceError):
+    """API 限流错误（请求频率超限）"""
+    
+    def __init__(self, source: str, retry_after: int = 60, limit: Optional[int] = None):
+        details = {"retry_after_seconds": retry_after}
+        if limit:
+            details["limit"] = limit
+        
+        super().__init__(
+            message=f"数据源 '{source}' 触发限流，建议 {retry_after} 秒后重试",
+            source=source,
+            code="RATE_LIMIT_EXCEEDED",
+            details=details
+        )
+
+
+class ConnectionError(SourceError):
+    """网络连接错误"""
+    
+    def __init__(self, source: str, url: str, error: str = ""):
+        details = {"url": url}
+        if error:
+            details["error"] = error
+        
+        super().__init__(
+            message=f"数据源 '{source}' 连接失败：{url}" + (f" - {error}" if error else ""),
+            source=source,
+            code="CONNECTION_ERROR",
+            details=details
+        )
+
+
+class TimeoutError(SourceError):
+    """请求超时错误"""
+    
+    def __init__(self, source: str, url: str, timeout: float):
+        super().__init__(
+            message=f"数据源 '{source}' 请求超时（{timeout}秒）：{url}",
+            source=source,
+            code="REQUEST_TIMEOUT",
+            details={"url": url, "timeout_seconds": timeout}
+        )
+
+
+class DataIntegrityError(DataError):
+    """数据完整性错误（关键字段缺失、数据不一致等）"""
+    
+    def __init__(self, data_type: str, missing_fields: List[str], symbol: Optional[str] = None):
+        details = {
+            "data_type": data_type,
+            "missing_fields": missing_fields,
+            "missing_count": len(missing_fields)
+        }
+        if symbol:
+            details["symbol"] = symbol
+        
+        super().__init__(
+            message=f"{data_type} 数据完整性错误：缺少字段 {', '.join(missing_fields[:3])}" + ("..." if len(missing_fields) > 3 else ""),
+            data_type=data_type,
+            code="DATA_INTEGRITY_ERROR",
+            details=details
+        )
+
+
+class SourceHealthError(FinanceError):
+    """数据源健康状态异常"""
+    
+    def __init__(self, source: str, health_status: str, metrics: Optional[Dict] = None):
+        details = {"source": source, "health_status": health_status}
+        if metrics:
+            details["metrics"] = metrics
+        
+        super().__init__(
+            message=f"数据源 '{source}' 健康状态异常：{health_status}",
+            code="SOURCE_HEALTH_ERROR",
+            details=details
+        )
+
+
 # 便捷异常创建函数
 def raise_source_unavailable(source: str, reason: str, details: Optional[Dict] = None):
     """抛出数据源不可用异常"""
@@ -201,3 +365,28 @@ def raise_data_quality(data_type: str, issues: List[str], symbol: Optional[str] 
 def raise_circuit_breaker(source: str, failure_count: int, reset_after: int = 60):
     """抛出熔断器触发异常"""
     raise CircuitBreakerError(source, failure_count, reset_after)
+
+
+def raise_data_empty(data_type: str, symbol: Optional[str] = None, reason: str = ""):
+    """抛出数据为空异常"""
+    raise DataEmptyError(data_type, symbol, reason)
+
+
+def raise_data_parse(data_type: str, parse_error: str, raw_data: Optional[str] = None):
+    """抛出数据解析错误异常"""
+    raise DataParseError(data_type, parse_error, raw_data)
+
+
+def raise_network_error(message: str, url: Optional[str] = None, error_code: Optional[int] = None):
+    """抛出网络错误异常"""
+    raise NetworkError(message, url, error_code)
+
+
+def raise_api_changed(source: str, api_name: str, change_type: str = "format"):
+    """抛出API变更异常"""
+    raise APIChangedError(source, api_name, change_type)
+
+
+def raise_data_stale(data_type: str, symbol: Optional[str] = None, max_age_seconds: int = 0):
+    """抛出数据过期异常"""
+    raise DataStaleError(data_type, symbol, max_age_seconds)

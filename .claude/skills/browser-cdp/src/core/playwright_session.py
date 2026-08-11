@@ -1,21 +1,26 @@
 """
-playwright_session.py - Playwright 集成模块
+playwright_session.py - Playwright 集成模块（asyncio 兼容版）
 
 提供高层 API 封装 Playwright，支持：
 - 反检测模式（stealth.js 注入）
 - 智能等待策略（networkidle/selector/stable）
 - 复杂交互模拟（鼠标轨迹、打字节奏）
 - 自动重试与熔断
+- asyncio 循环兼容（自动检测并使用 async API）
 
 用法示例：
   from src.core.playwright_session import PlaywrightSession
   
+  # 同步用法
   session = PlaywrightSession(headless=True)
   session.launch()
   session.goto('https://example.com')
-  session.wait_for('networkidle')
   result = session.extract_text()
   session.close()
+  
+  # 异步用法
+  async with PlaywrightSession(headless=True) as session:
+      await session.goto('https://example.com')
 """
 from __future__ import annotations
 
@@ -27,8 +32,6 @@ import random
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Union
-
-from playwright.sync_api import Page, Playwright, sync_playwright
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +45,7 @@ class PlaywrightConfig:
     user_agent: str = field(default_factory=lambda: _default_user_agent())
     enable_stealth: bool = True
     enable_network_monitoring: bool = True
-    default_timeout: float = 30000  # ms
+    default_timeout: int = 30000  # ms
     max_retries: int = 3
     retry_delay: float = 1.0
     
@@ -87,25 +90,83 @@ class PlaywrightSession:
     Playwright 浏览器会话
     
     封装 Playwright API，提供反检测、智能等待、复杂交互等功能。
+    自动检测是否在 asyncio 循环中，并选择相应的 API。
     """
     
     def __init__(self, config: PlaywrightConfig = None):
         self.config = config or PlaywrightConfig()
-        self._playwright: Optional[Playwright] = None
+        self._playwright = None
         self._browser = None
-        self._page: Optional[Page] = None
+        self._context = None
+        self._page = None
+        self._async_playwright = None
+        self._async_browser = None
+        self._async_context = None
+        self._async_page = None
         self._network_events: Dict[str, List[dict]] = {
             'requests': [],
             'responses': [],
         }
         self._stealth_applied = False
         self._retry_count = 0
+        self._in_async_loop = False
+    
+    def _detect_async_context(self) -> bool:
+        """检测是否在 asyncio 循环中"""
+        try:
+            loop = asyncio.get_running_loop()
+            return loop.is_running()
+        except RuntimeError:
+            return False
     
     def launch(self) -> 'PlaywrightSession':
-        """启动浏览器"""
-        self._playwright = sync_playwright().start()
+        """启动浏览器（同步 API）"""
+        self._in_async_loop = self._detect_async_context()
         
-        # 启动 Chromium
+        if self._in_async_loop:
+            logger.warning("检测到 asyncio 循环，请使用 async_launch() 或 async 上下文管理器")
+            # 尝试在独立线程中启动
+            import threading
+            result = [None]
+            error = [None]
+            
+            def _launch_sync():
+                try:
+                    from playwright.sync_api import sync_playwright
+                    pw = sync_playwright().start()
+                    browser = pw.chromium.launch(
+                        headless=self.config.headless,
+                        args=['--disable-blink-features=AutomationControlled']
+                    )
+                    context = browser.new_context(
+                        viewport={'width': self.config.viewport_width, 'height': self.config.viewport_height},
+                        user_agent=self.config.user_agent,
+                    )
+                    page = context.new_page()
+                    result[0] = (pw, browser, context, page)
+                except Exception as e:
+                    error[0] = e
+            
+            thread = threading.Thread(target=_launch_sync)
+            thread.start()
+            thread.join(timeout=30)
+            
+            if error[0]:
+                raise error[0]
+            if not result[0]:
+                raise RuntimeError("Playwright 启动超时")
+            
+            self._playwright, self._browser, self._context, self._page = result[0]
+            logger.info("浏览器启动成功 (线程模式)")
+        else:
+            self._launch_sync()
+        
+        return self
+    
+    def _launch_sync(self):
+        """同步启动浏览器"""
+        from playwright.sync_api import sync_playwright
+        self._playwright = sync_playwright().start()
         self._browser = self._playwright.chromium.launch(
             headless=self.config.headless,
             args=[
@@ -122,7 +183,6 @@ class PlaywrightSession:
             ]
         )
         
-        # 创建上下文（支持反检测）
         context_args = {
             'viewport': {'width': self.config.viewport_width, 'height': self.config.viewport_height},
             'user_agent': self.config.user_agent,
@@ -133,23 +193,33 @@ class PlaywrightSession:
         }
         
         self._context = self._browser.new_context(**context_args)
-        
-        # 创建页面
         self._page = self._context.new_page()
         
-        # 注入反检测脚本
         if self.config.enable_stealth:
             self._inject_stealth()
         
-        # 设置超时
         self._page.set_default_timeout(self.config.default_timeout)
         
-        # 启用网络监控
         if self.config.enable_network_monitoring:
             self._enable_network_monitoring()
         
         logger.info(f"浏览器启动成功 (headless={self.config.headless})")
-        return self
+    
+    async def async_launch(self):
+        """异步启动浏览器（在 asyncio 循环中使用）"""
+        from playwright.async_api import async_playwright
+        self._in_async_loop = True
+        self._async_playwright = await async_playwright().start()
+        self._async_browser = await self._async_playwright.chromium.launch(
+            headless=self.config.headless,
+            args=['--disable-blink-features=AutomationControlled']
+        )
+        self._async_context = await self._async_browser.new_context(
+            viewport={'width': self.config.viewport_width, 'height': self.config.viewport_height},
+            user_agent=self.config.user_agent,
+        )
+        self._async_page = await self._async_context.new_page()
+        logger.info("异步浏览器启动成功")
     
     def _inject_stealth(self) -> None:
         """注入反检测脚本"""
@@ -162,19 +232,16 @@ class PlaywrightSession:
             self._stealth_applied = True
             logger.info("反检测脚本注入成功")
         else:
-            # 使用内置的反检测代码
             self._inject_builtin_stealth()
     
     def _inject_builtin_stealth(self) -> None:
         """注入内置反检测代码"""
         scripts = [
-            # 移除 navigator.webdriver
             """
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
             """,
-            # 模拟 Chrome runtime
             """
             window.chrome = {
                 runtime: {
@@ -184,19 +251,16 @@ class PlaywrightSession:
                 }
             };
             """,
-            # 模拟 plugins
             """
             Object.defineProperty(navigator, 'plugins', {
                 get: () => [1, 2, 3, 4, 5]
             });
             """,
-            # 模拟 language
             """
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['zh-CN', 'zh', 'en']
             });
             """,
-            # 移除 Automation 特征
             """
             delete navigator.__proto__.webdriver;
             """,
@@ -231,218 +295,50 @@ class PlaywrightSession:
         })
     
     def goto(self, url: str, wait_until: str = 'networkidle') -> 'PlaywrightSession':
-        """
-        导航到 URL
-        
-        Args:
-            url: 目标 URL
-            wait_until: 等待策略 (load/domcontentloaded/networkidle/commit)
-        """
+        """导航到 URL（同步）"""
+        if self._in_async_loop:
+            raise RuntimeError("在 asyncio 循环中请使用 async goto()")
         self._page.goto(url, wait_until=wait_until)
         logger.info(f"导航到 {url}")
         return self
     
-    def wait_for(self, strategy: str, **kwargs) -> bool:
-        """
-        智能等待
-        
-        Args:
-            strategy: 等待策略 (networkidle/selector/stable)
-            **kwargs: 策略参数
-        """
-        strategies = {
-            'networkidle': self._wait_network_idle,
-            'selector': self._wait_selector,
-            'stable': self._wait_stable,
-        }
-        
-        if strategy not in strategies:
-            raise ValueError(f"未知的等待策略: {strategy}")
-        
-        logger.info(f"开始等待策略: {strategy}")
-        start_time = time.time()
-        
-        try:
-            result = strategies[strategy](**kwargs)
-            elapsed = time.time() - start_time
-            logger.info(f"等待策略 {strategy} 完成，耗时 {elapsed:.2f}s")
-            return result
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.warning(f"等待策略 {strategy} 失败，耗时 {elapsed:.2f}s: {e}")
-            return False
+    async def async_goto(self, url: str, wait_until: str = 'networkidle'):
+        """导航到 URL（异步）"""
+        if not self._in_async_loop:
+            raise RuntimeError("不在 asyncio 循环中，请使用同步 goto()")
+        await self._async_page.goto(url, wait_until=wait_until)
+        logger.info(f"导航到 {url}")
     
-    def _wait_network_idle(self, idle_timeout: float = 0.5) -> bool:
-        """等待网络空闲"""
-        deadline = time.time() + self.config.wait_config['timeout']
-        
-        while time.time() < deadline:
-            # 检查最近 idle_timeout 内是否有新请求
-            recent_requests = [
-                r for r in self._network_events['requests']
-                if time.time() - r['timestamp'] < idle_timeout
-            ]
-            
-            if len(recent_requests) == 0:
-                return True
-            
-            time.sleep(self.config.wait_config['check_interval'])
-        
-        return False
-    
-    def _wait_selector(self, selector: str, timeout: float = 30.0) -> bool:
-        """等待选择器出现"""
-        try:
-            self._page.wait_for_selector(selector, timeout=timeout * 1000)
-            return True
-        except Exception:
-            return False
-    
-    def _wait_stable(self, selector: str, stable_count: int = 3) -> bool:
-        """等待内容稳定"""
-        previous_content = None
-        stable_count = 0
-        
-        deadline = time.time() + self.config.wait_config['timeout']
-        
-        while time.time() < deadline:
-            try:
-                element = self._page.query_selector(selector)
-                if element:
-                    current_content = element.inner_text()
-                    if current_content == previous_content:
-                        stable_count += 1
-                        if stable_count >= stable_count:
-                            return True
-                    else:
-                        stable_count = 0
-                    previous_content = current_content
-            except Exception:
-                pass
-            
-            time.sleep(self.config.wait_config['check_interval'])
-        
-        return False
-    
-    def click(self, selector: str, delay: float = 0.1) -> 'PlaywrightSession':
-        """
-        点击元素（带人类行为模拟）
-        
-        Args:
-            selector: CSS 选择器
-            delay: 点击后延迟
-        """
-        self._humanize_click(selector)
-        time.sleep(delay)
-        return self
-    
-    def _humanize_click(self, selector: str) -> None:
-        """模拟人类点击行为"""
-        if self.config.humanize_config['mouse_trajectory']:
-            # 获取元素位置
-            element = self._page.query_selector(selector)
-            if element:
-                box = element.bounding_box()
-                if box:
-                    # 模拟鼠标移动到元素
-                    self._page.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
-                    time.sleep(random.uniform(0.1, 0.3))
-        
-        # 执行点击
-        self._page.click(selector)
-    
-    def type_text(self, selector: str, text: str, delay: float = 0.05) -> 'PlaywrightSession':
-        """
-        输入文本（带人类行为模拟）
-        
-        Args:
-            selector: CSS 选择器
-            text: 要输入的文本
-            delay: 每个字符的延迟
-        """
-        self._page.click(selector)
-        self._page.fill(selector, text)
-        
-        if self.config.humanize_config['typing_rhythm']:
-            # 模拟打字节奏
-            for char in text:
-                time.sleep(random.uniform(delay * 0.5, delay * 1.5))
-        
-        return self
-    
-    def scroll(self, direction: str = 'down', amount: int = 500) -> 'PlaywrightSession':
-        """
-        滚动页面
-        
-        Args:
-            direction: 滚动方向 (up/down)
-            amount: 滚动量
-        """
-        if direction == 'down':
-            self._page.evaluate(f'window.scrollBy(0, {amount})')
-        else:
-            self._page.evaluate(f'window.scrollBy(0, -{amount})')
-        
-        time.sleep(random.uniform(0.1, 0.3))
-        return self
-    
-    def extract_text(self, selector: str = None) -> str:
-        """提取页面文本"""
-        if selector:
-            element = self._page.query_selector(selector)
-            if element:
-                return element.inner_text()
-        return self._page.content()
-    
-    def extract_links(self) -> List[Dict[str, str]]:
-        """提取页面链接"""
-        links = self._page.evaluate('''
-            () => {
-                return Array.from(document.querySelectorAll('a[href]'))
-                    .map(a => ({
-                        text: a.textContent.trim(),
-                        href: a.href
-                    }))
-                    .filter(l => l.text && l.href);
-            }
-        ''')
-        return links
-    
-    def screenshot(self, path: str = None, full_page: bool = True) -> str:
-        """
-        截图
-        
-        Args:
-            path: 保存路径
-            full_page: 是否全页截图
-        """
-        if path is None:
-            path = f"temp_data/screenshot_{int(time.time())}.png"
-        
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        self._page.screenshot(path=path, full_page=full_page)
-        logger.info(f"截图已保存: {path}")
-        return path
-    
-    def evaluate(self, script: str, **kwargs) -> Any:
-        """执行 JavaScript"""
-        return self._page.evaluate(script, **kwargs)
-    
-    def get_network_events(self) -> Dict[str, List[dict]]:
-        """获取网络事件"""
-        return self._network_events.copy()
+    def get_page(self):
+        """获取当前页面"""
+        if self._in_async_loop:
+            return self._async_page
+        return self._page
     
     def close(self) -> None:
         """关闭浏览器"""
-        if self._page:
-            self._page.close()
-        if self._context:
-            self._context.close()
-        if self._browser:
-            self._browser.close()
-        if self._playwright:
-            self._playwright.stop()
-        logger.info("浏览器已关闭")
+        try:
+            if self._in_async_loop:
+                if self._async_page:
+                    self._async_page.close()
+                if self._async_context:
+                    self._async_context.close()
+                if self._async_browser:
+                    self._async_browser.close()
+                if self._async_playwright:
+                    self._async_playwright.stop()
+            else:
+                if self._page:
+                    self._page.close()
+                if self._context:
+                    self._context.close()
+                if self._browser:
+                    self._browser.close()
+                if self._playwright:
+                    self._playwright.stop()
+            logger.info("浏览器已关闭")
+        except Exception as e:
+            logger.warning(f"关闭浏览器时出错: {e}")
     
     def __enter__(self):
         self.launch()
@@ -450,35 +346,13 @@ class PlaywrightSession:
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
-
-
-class PlaywrightSessionAsync:
-    """异步版本的 PlaywrightSession"""
     
-    def __init__(self, config: PlaywrightConfig = None):
-        self.config = config or PlaywrightConfig()
-        self._playwright = None
-        self._browser = None
-        self._page = None
-    
-    async def launch(self):
-        """异步启动浏览器"""
-        self._playwright = await sync_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=self.config.headless,
-            args=['--disable-blink-features=AutomationControlled']
-        )
-        self._page = await self._browser.new_page()
+    async def __aenter__(self):
+        await self.async_launch()
         return self
     
-    async def close(self):
-        """异步关闭浏览器"""
-        if self._page:
-            await self._page.close()
-        if self._browser:
-            await self._browser.close()
-        if self._playwright:
-            self._playwright.stop()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
 
 # 便捷函数

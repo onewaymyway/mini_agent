@@ -43,6 +43,10 @@ class RequestConfig:
     keepalive_timeout: float = 30.0          # 连接保持时间（秒）
     max_connections: int = 100               # 最大连接数
     max_keepalive_connections: int = 20      # 最大保持连接数
+    # Kline 专用配置
+    kline_timeout: float = 30.0              # K线数据超时（秒）
+    kline_max_retries: int = 3               # K线最大重试次数
+    kline_backoff: List[float] = field(default_factory=lambda: [1, 2, 5])  # K线重试退避因子
 
 
 @dataclass
@@ -55,6 +59,19 @@ class SourceConfig:
     max_retries: int = 3                     # 最大重试次数
     circuit_breaker_threshold: int = 5       # 熔断器阈值
     circuit_breaker_reset_timeout: int = 60  # 熔断器重置时间
+
+
+@dataclass
+class ProxyConfig:
+    """代理配置"""
+    enabled: bool = False                     # 是否启用代理
+    http_proxy: Optional[str] = None          # HTTP 代理地址
+    https_proxy: Optional[str] = None         # HTTPS 代理地址
+    socks_proxy: Optional[str] = None         # SOCKS 代理地址
+    trust_env: bool = False                   # 是否信任环境变量代理设置
+    proxy_rotation: bool = False              # 是否启用代理轮换
+    proxy_pool: List[str] = field(default_factory=list)  # 代理池
+    proxy_check_interval: int = 300           # 代理检测间隔（秒）
 
 
 @dataclass
@@ -71,12 +88,13 @@ class LoggingConfig:
 class Config:
     """
     全局配置类
-    
+
     管理所有配置项，支持从文件加载和程序设置。
     """
     request: RequestConfig = field(default_factory=RequestConfig)
     sources: Dict[str, SourceConfig] = field(default_factory=dict)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    proxy: ProxyConfig = field(default_factory=ProxyConfig)
     
     # 默认数据源优先级
     default_source_priority: List[str] = field(
@@ -135,7 +153,7 @@ class Config:
     def load_from_file(self, config_path: str):
         """
         从 JSON 配置文件加载配置
-        
+
         Args:
             config_path: 配置文件路径
         """
@@ -143,30 +161,34 @@ class Config:
         if not path.exists():
             logger.warning(f"配置文件不存在：{config_path}")
             return
-        
+
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            
+
             # 加载请求配置
             if 'request' in data:
                 self.request = RequestConfig(**data['request'])
-            
+
             # 加载数据源配置
             if 'sources' in data:
                 for name, config_data in data['sources'].items():
                     self.sources[name] = SourceConfig(**config_data)
-            
+
             # 加载日志配置
             if 'logging' in data:
                 self.logging = LoggingConfig(**data['logging'])
-            
+
+            # 加载代理配置
+            if 'proxy' in data:
+                self.proxy = ProxyConfig(**data['proxy'])
+
             # 加载验证配置
             if 'validation' in data:
                 self.validation.update(data['validation'])
-            
+
             logger.info(f"配置已从 {config_path} 加载")
-        
+
         except Exception as e:
             logger.error(f"加载配置文件失败：{e}")
     
@@ -211,6 +233,16 @@ class Config:
                     'max_bytes': self.logging.max_bytes,
                     'backup_count': self.logging.backup_count,
                     'use_json': self.logging.use_json,
+                },
+                'proxy': {
+                    'enabled': self.proxy.enabled,
+                    'http_proxy': self.proxy.http_proxy,
+                    'https_proxy': self.proxy.https_proxy,
+                    'socks_proxy': self.proxy.socks_proxy,
+                    'trust_env': self.proxy.trust_env,
+                    'proxy_rotation': self.proxy.proxy_rotation,
+                    'proxy_pool': self.proxy.proxy_pool,
+                    'proxy_check_interval': self.proxy.proxy_check_interval,
                 },
                 'validation': self.validation,
             }
@@ -285,3 +317,127 @@ def setup_config(
 
 # 便捷函数
 get_default_config = get_config
+
+
+def get_proxy_config() -> ProxyConfig:
+    """获取代理配置"""
+    return get_config().proxy
+
+
+def set_proxy(
+    enabled: bool = False,
+    http_proxy: Optional[str] = None,
+    https_proxy: Optional[str] = None,
+    socks_proxy: Optional[str] = None,
+    trust_env: bool = False,
+):
+    """
+    设置代理配置
+
+    Args:
+        enabled: 是否启用代理
+        http_proxy: HTTP 代理地址
+        https_proxy: HTTPS 代理地址
+        socks_proxy: SOCKS 代理地址
+        trust_env: 是否信任环境变量代理设置
+    """
+    config = get_config()
+    config.proxy.enabled = enabled
+    config.proxy.http_proxy = http_proxy
+    config.proxy.https_proxy = https_proxy
+    config.proxy.socks_proxy = socks_proxy
+    config.proxy.trust_env = trust_env
+    logger.info(f"代理配置已更新: enabled={enabled}, trust_env={trust_env}")
+
+
+def get_proxy_url(proxy_type: str = 'https') -> Optional[str]:
+    """
+    获取代理 URL
+
+    Args:
+        proxy_type: 代理类型 ('http', 'https', 'socks')
+
+    Returns:
+        代理 URL 或 None
+    """
+    proxy = get_proxy_config()
+    if not proxy.enabled:
+        return None
+
+    proxy_map = {
+        'http': proxy.http_proxy,
+        'https': proxy.https_proxy,
+        'socks': proxy.socks_proxy,
+    }
+    return proxy_map.get(proxy_type)
+
+
+def is_proxy_available() -> bool:
+    """
+    检查代理是否可用
+
+    Returns:
+        True 如果代理已启用且有有效地址
+    """
+    proxy = get_proxy_config()
+    if not proxy.enabled:
+        return False
+
+    # 检查是否有有效的代理地址
+    has_proxy = any([
+        proxy.http_proxy,
+        proxy.https_proxy,
+        proxy.socks_proxy,
+    ])
+    return has_proxy
+
+
+def get_trust_env() -> bool:
+    """
+    获取是否信任环境变量代理设置
+
+    Returns:
+        True 如果信任环境变量
+    """
+    return get_proxy_config().trust_env
+
+
+def add_proxy_to_pool(proxy_url: str):
+    """
+    添加代理到代理池
+
+    Args:
+        proxy_url: 代理 URL
+    """
+    proxy = get_proxy_config()
+    if proxy_url not in proxy.proxy_pool:
+        proxy.proxy_pool.append(proxy_url)
+        logger.info(f"代理已添加到池: {proxy_url}")
+
+
+def remove_proxy_from_pool(proxy_url: str):
+    """
+    从代理池移除代理
+
+    Args:
+        proxy_url: 代理 URL
+    """
+    proxy = get_proxy_config()
+    if proxy_url in proxy.proxy_pool:
+        proxy.proxy_pool.remove(proxy_url)
+        logger.info(f"代理已从池移除: {proxy_url}")
+
+
+def rotate_proxy() -> Optional[str]:
+    """
+    轮换代理（从代理池中选择一个）
+
+    Returns:
+        选中的代理 URL 或 None
+    """
+    proxy = get_proxy_config()
+    if not proxy.proxy_rotation or not proxy.proxy_pool:
+        return get_proxy_url('https') or get_proxy_url('http')
+
+    # 简单轮询：选择第一个代理
+    return proxy.proxy_pool[0] if proxy.proxy_pool else None

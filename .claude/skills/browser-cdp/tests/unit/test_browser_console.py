@@ -232,6 +232,182 @@ class TestBrowserConsole:
             finally:
                 sys.argv = original_argv
 
+    def test_eval_alias(self, capsys):
+        """测试：eval 别名函数"""
+        mock_session = Mock()
+        mock_session.eval_js.return_value = "Alias Test"
+
+        browser_console.eval(mock_session, "document.title")
+
+        captured = capsys.readouterr()
+        assert "Alias Test" in captured.out
+        mock_session.eval_js.assert_called_once_with("document.title", await_promise=True)
+
+    def test_watch_console_alias(self, capsys):
+        """测试：watch_console 别名函数"""
+        mock_session = Mock()
+        mock_session.drain_events.return_value = []
+
+        browser_console.watch_console(mock_session, duration=1.0)
+
+        mock_session.drain_events.assert_called_once_with(duration=1.0)
+
+    def test_cmd_watch_console_log_entry_added(self, capsys):
+        """测试：Console 日志监听 Log.entryAdded 事件"""
+        mock_session = Mock()
+        mock_session.drain_events.return_value = [
+            {
+                "method": "Log.entryAdded",
+                "params": {
+                    "entry": {
+                        "level": "warning",
+                        "text": "Page warning message",
+                        "source": "console-api"
+                    }
+                }
+            }
+        ]
+
+        browser_console.cmd_watch_console(mock_session, duration=5.0)
+
+        captured = capsys.readouterr()
+        assert "warning" in captured.out
+        assert "Page warning message" in captured.out
+
+    def test_cmd_watch_network_missing_request_id(self, capsys):
+        """测试：网络请求监听跳过无 requestId 的事件"""
+        mock_session = Mock()
+        mock_session.drain_events.return_value = [
+            {
+                "method": "Network.requestWillBeSent",
+                "params": {
+                    # 缺少 requestId
+                    "request": {
+                        "url": "https://example.com",
+                        "method": "GET"
+                    }
+                }
+            }
+        ]
+
+        browser_console.cmd_watch_network(mock_session, duration=5.0)
+
+        captured = capsys.readouterr()
+        # 应该输出空列表
+        assert "[]" in captured.out
+
+    def test_cmd_set_cookie_full_params(self, capsys):
+        """测试：设置 Cookie 完整参数"""
+        mock_session = Mock()
+        mock_session.set_cookie.return_value = {"success": True}
+
+        browser_console.cmd_set_cookie(
+            mock_session,
+            name="tracking_id",
+            value="xyz789",
+            domain=".example.com",
+            path="/api",
+            secure=False,
+            http_only=True,
+            same_site="Strict",
+            expires=1700000000.0
+        )
+
+        mock_session.set_cookie.assert_called_once_with(
+            "tracking_id", "xyz789", ".example.com", "/api",
+            False, True, "Strict", 1700000000.0
+        )
+
+    def test_cmd_delete_cookie_with_domain_path(self, capsys):
+        """测试：删除 Cookie 带域名和路径"""
+        mock_session = Mock()
+        mock_session.delete_cookie.return_value = {"deleted": True}
+
+        browser_console.cmd_delete_cookie(
+            mock_session,
+            "session_id",
+            domain=".example.com",
+            path="/api"
+        )
+
+        mock_session.delete_cookie.assert_called_once_with(
+            "session_id", ".example.com", "/api"
+        )
+
+    def test_main_with_set_cookie(self, monkeypatch):
+        """测试：main 函数 --set-cookie 参数"""
+        mock_session = Mock()
+        mock_session.set_cookie.return_value = {"success": True}
+
+        with patch('src.core.browser_console.get_session', return_value=mock_session), \
+             patch('sys.argv', ['browser_console.py', '--set-cookie', 'theme', 'dark',
+                               '--cookie-domain', 'example.com', '--cookie-path', '/']):
+            browser_console.main()
+            mock_session.set_cookie.assert_called_once()
+
+    def test_main_with_delete_cookie(self, monkeypatch):
+        """测试：main 函数 --delete-cookie 参数"""
+        mock_session = Mock()
+        mock_session.delete_cookie.return_value = {"deleted": True}
+
+        with patch('src.core.browser_console.get_session', return_value=mock_session), \
+             patch('sys.argv', ['browser_console.py', '--delete-cookie', 'session_id',
+                               '--cookie-domain', 'example.com']):
+            browser_console.main()
+            mock_session.delete_cookie.assert_called_once()
+
+    def test_main_with_clear_cookies(self, monkeypatch):
+        """测试：main 函数 --clear-cookies 参数"""
+        mock_session = Mock()
+        mock_session.clear_all_cookies.return_value = {"cleared": True}
+
+        with patch('src.core.browser_console.get_session', return_value=mock_session), \
+             patch('sys.argv', ['browser_console.py', '--clear-cookies']):
+            browser_console.main()
+            mock_session.clear_all_cookies.assert_called_once()
+
+    def test_cmd_watch_network_multiple_requests(self, capsys):
+        """测试：网络请求监听多个请求"""
+        mock_session = Mock()
+        mock_session.drain_events.return_value = [
+            {
+                "method": "Network.requestWillBeSent",
+                "params": {
+                    "requestId": "req-1",
+                    "request": {"url": "https://api.example.com/data", "method": "GET"}
+                }
+            },
+            {
+                "method": "Network.requestWillBeSent",
+                "params": {
+                    "requestId": "req-2",
+                    "request": {"url": "https://api.example.com/user", "method": "POST"}
+                }
+            },
+            {
+                "method": "Network.responseReceived",
+                "params": {
+                    "requestId": "req-1",
+                    "response": {"status": 200, "mimeType": "application/json"}
+                }
+            },
+            {
+                "method": "Network.loadingFailed",
+                "params": {
+                    "requestId": "req-2",
+                    "errorText": "Net::ERR_NAME_NOT_RESOLVED"
+                }
+            }
+        ]
+
+        browser_console.cmd_watch_network(mock_session, duration=5.0)
+
+        captured = capsys.readouterr()
+        assert "https://api.example.com/data" in captured.out
+        assert "https://api.example.com/user" in captured.out
+        assert "200" in captured.out
+        assert "ERR_NAME_NOT_RESOLVED" in captured.out
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

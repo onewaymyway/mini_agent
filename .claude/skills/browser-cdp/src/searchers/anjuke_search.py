@@ -25,6 +25,10 @@ class AnjukeSearcher(BaseSearcher):
     def source_name(self) -> str:
         return "anjuke"
     
+    @property
+    def supported_types(self) -> List[str]:
+        return ["xiaoqu", "house"]
+    
     async def search(self, city: str, config: SearcherConfig, 
                      search_type: str = "xiaoqu") -> List[Dict]:
         """搜索房产"""

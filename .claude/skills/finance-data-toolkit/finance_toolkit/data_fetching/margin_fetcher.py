@@ -59,16 +59,16 @@ class MarginSummary:
 class MarginStock:
     """个股融资融券数据"""
     def __init__(self, stock_code: str, stock_name: str, date: str,
-                 margin_balance: float, margin_change: float,
-                 short_balance: float, short_change: float,
+                 margin_balance: float, margin_buy: float,
+                 short_balance: float, short_sell: float,
                  source: str = 'akshare'):
         self.stock_code = stock_code
         self.stock_name = stock_name
         self.date = date
         self.margin_balance = margin_balance
-        self.margin_change = margin_change
+        self.margin_buy = margin_buy
         self.short_balance = short_balance
-        self.short_change = short_change
+        self.short_sell = short_sell
         self.source = source
         self.timestamp = datetime.utcnow().isoformat()
 
@@ -78,9 +78,9 @@ class MarginStock:
             'stock_name': self.stock_name,
             'date': self.date,
             'margin_balance': self.margin_balance,
-            'margin_change': self.margin_change,
+            'margin_buy': self.margin_buy,
             'short_balance': self.short_balance,
-            'short_change': self.short_change,
+            'short_sell': self.short_sell,
             'source': self.source,
             'timestamp': self.timestamp,
         }
@@ -89,15 +89,15 @@ class MarginStock:
 # ============== 市场汇总数据 ==============
 
 @retry_with_backoff(max_retries=3, backoff_factors=[1, 2, 5])
-def _fetch_akshare_margin_size_szse():
+def _fetch_akshare_margin_szse():
     """内部函数：获取深交所融资融券汇总（带重试）"""
-    return ak.stock_margin_size_szse()
+    return ak.stock_margin_szse()
 
 
 @retry_with_backoff(max_retries=3, backoff_factors=[1, 2, 5])
-def _fetch_akshare_margin_size_sse():
+def _fetch_akshare_margin_sse():
     """内部函数：获取上交所融资融券汇总（带重试）"""
-    return ak.stock_margin_size_sse()
+    return ak.stock_margin_sse()
 
 
 def fetch_margin_summary(
@@ -116,10 +116,10 @@ def fetch_margin_summary(
     if source == 'akshare' and HAS_AKSHARE:
         try:
             # 深交所
-            df_sz = _fetch_akshare_margin_size_szse()
+            df_sz = _fetch_akshare_margin_szse()
             for _, row in df_sz.iterrows():
                 results.append(MarginSummary(
-                    date=row.get('日期', ''),
+                    date=str(row.get('信用交易日期', '')),
                     exchange='SZSE',
                     margin_balance=float(row.get('融资余额', 0) or 0),
                     margin_buy=float(row.get('融资买入额', 0) or 0),
@@ -129,10 +129,10 @@ def fetch_margin_summary(
                 ).to_dict())
 
             # 上交所
-            df_sse = _fetch_akshare_margin_size_sse()
+            df_sse = _fetch_akshare_margin_sse()
             for _, row in df_sse.iterrows():
                 results.append(MarginSummary(
-                    date=row.get('日期', ''),
+                    date=str(row.get('信用交易日期', '')),
                     exchange='SSE',
                     margin_balance=float(row.get('融资余额', 0) or 0),
                     margin_buy=float(row.get('融资买入额', 0) or 0),
@@ -183,13 +183,13 @@ def fetch_margin_stock(
                 df_sz = _fetch_akshare_margin_detail_szse()
                 for _, row in df_sz.iterrows():
                     results.append(MarginStock(
-                        stock_code=row.get('代码', ''),
-                        stock_name=row.get('名称', ''),
-                        date=row.get('日期', ''),
+                        stock_code=str(row.get('证券代码', '')),
+                        stock_name=str(row.get('证券简称', '')),
+                        date='',
                         margin_balance=float(row.get('融资余额', 0) or 0),
-                        margin_change=float(row.get('融资余额变化', 0) or 0),
+                        margin_buy=float(row.get('融资买入额', 0) or 0),
                         short_balance=float(row.get('融券余额', 0) or 0),
-                        short_change=float(row.get('融券余额变化', 0) or 0),
+                        short_sell=float(row.get('融券卖出量', 0) or 0),
                         source='akshare'
                     ).to_dict())
 
@@ -198,13 +198,13 @@ def fetch_margin_stock(
                 df_sse = _fetch_akshare_margin_detail_sse()
                 for _, row in df_sse.iterrows():
                     results.append(MarginStock(
-                        stock_code=row.get('代码', ''),
-                        stock_name=row.get('名称', ''),
-                        date=row.get('日期', ''),
+                        stock_code=str(row.get('标的证券代码', '')),
+                        stock_name=str(row.get('标的证券简称', '')),
+                        date=str(row.get('信用交易日期', '')),
                         margin_balance=float(row.get('融资余额', 0) or 0),
-                        margin_change=float(row.get('融资余额变化', 0) or 0),
+                        margin_buy=float(row.get('融资买入额', 0) or 0),
                         short_balance=float(row.get('融券余额', 0) or 0),
-                        short_change=float(row.get('融券余额变化', 0) or 0),
+                        short_sell=float(row.get('融券卖出量', 0) or 0),
                         source='akshare'
                     ).to_dict())
 

@@ -95,6 +95,88 @@ class RequestHeaderManager:
                 "Referer": "https://weibo.com/",
             }
         ),
+        "xueqiu.com": HeaderConfig(
+            sec_fetch_dest="document",
+            sec_fetch_mode="navigate",
+            sec_fetch_site="same-origin",
+            sec_fetch_user="?1",
+            custom_headers={
+                "Referer": "https://xueqiu.com/",
+                "X-Requested-With": "XMLHttpRequest",
+            }
+        ),
+        "douban.com": HeaderConfig(
+            sec_fetch_dest="document",
+            sec_fetch_mode="navigate",
+            sec_fetch_site="same-origin",
+            sec_fetch_user="?1",
+            custom_headers={
+                "Referer": "https://www.douban.com/",
+            }
+        ),
+        "xiaohongshu.com": HeaderConfig(
+            sec_fetch_dest="document",
+            sec_fetch_mode="navigate",
+            sec_fetch_site="same-origin",
+            sec_fetch_user="?1",
+            custom_headers={
+                "Referer": "https://www.xiaohongshu.com/",
+            }
+        ),
+        "github.com": HeaderConfig(
+            sec_fetch_dest="document",
+            sec_fetch_mode="navigate",
+            sec_fetch_site="same-origin",
+            sec_fetch_user="?1",
+            custom_headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            }
+        ),
+        "36kr.com": HeaderConfig(
+            sec_fetch_dest="document",
+            sec_fetch_mode="navigate",
+            sec_fetch_site="same-origin",
+            sec_fetch_user="?1",
+            custom_headers={
+                "Referer": "https://36kr.com/",
+            }
+        ),
+        "csdn.net": HeaderConfig(
+            sec_fetch_dest="document",
+            sec_fetch_mode="navigate",
+            sec_fetch_site="same-origin",
+            sec_fetch_user="?1",
+            custom_headers={
+                "Referer": "https://www.csdn.net/",
+            }
+        ),
+        "juejin.cn": HeaderConfig(
+            sec_fetch_dest="document",
+            sec_fetch_mode="navigate",
+            sec_fetch_site="same-origin",
+            sec_fetch_user="?1",
+            custom_headers={
+                "Referer": "https://juejin.cn/",
+            }
+        ),
+        "10jqka.com.cn": HeaderConfig(
+            sec_fetch_dest="document",
+            sec_fetch_mode="navigate",
+            sec_fetch_site="same-origin",
+            sec_fetch_user="?1",
+            custom_headers={
+                "Referer": "https://www.10jqka.com.cn/",
+            }
+        ),
+        "iwencai.com": HeaderConfig(
+            sec_fetch_dest="document",
+            sec_fetch_mode="navigate",
+            sec_fetch_site="same-origin",
+            sec_fetch_user="?1",
+            custom_headers={
+                "Referer": "https://www.iwencai.com/",
+            }
+        ),
     }
     
     def __init__(self, config: HeaderConfig = None):

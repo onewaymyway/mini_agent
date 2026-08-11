@@ -180,3 +180,146 @@ def scroll_index_into_view(session: CDPSession, index: int) -> dict | None:
     })()
     """.replace("__INDEX__", str(index))
     return session.eval_js(js)
+
+
+# ---------------------------------------------------------------------------
+# 元素索引管理器：自动处理页面变化后的编号刷新
+# ---------------------------------------------------------------------------
+
+class ElementIndexManager:
+    """元素索引管理器
+
+    解决页面变化后元素编号失效的问题：
+    1. 缓存当前页面的元素列表
+    2. 检测页面变化（URL 变化、DOM 变化）
+    3. 自动刷新元素编号
+    4. 提供编号到元素的映射
+    """
+
+    def __init__(self, session: CDPSession):
+        self.session = session
+        self._elements: list[dict] = []
+        self._page_hash: str = ""
+        self._last_scan_time: float = 0.0
+
+    def _compute_page_hash(self) -> str:
+        """计算页面特征哈希，用于检测页面变化"""
+        js = """(() => {
+            const url = location.href;
+            const title = document.title;
+            const bodyText = (document.body || {}).innerText || '';
+            // 取前 500 字符的哈希
+            const snapshot = url + '|' + title + '|' + bodyText.slice(0, 500);
+            let hash = 0;
+            for (let i = 0; i < snapshot.length; i++) {
+                const char = snapshot.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash;
+            }
+            return hash.toString(16);
+        })()"""
+        return self.session.eval_js(js) or ""
+
+    def scan(self, force: bool = False) -> list[dict]:
+        """扫描页面元素，页面变化时自动刷新
+
+        Args:
+            force: 是否强制重新扫描（忽略缓存）
+
+        Returns:
+            元素列表，每个元素包含 index, tag, text, rect 等字段
+        """
+        if not force:
+            current_hash = self._compute_page_hash()
+            if current_hash == self._page_hash and self._elements:
+                return self._elements
+
+        self._elements = scan_interactive_elements(self.session)
+        self._page_hash = self._compute_page_hash()
+        self._last_scan_time = __import__('time').time()
+        return self._elements
+
+    def get_element_by_index(self, index: int, force_refresh: bool = False) -> dict | None:
+        """根据编号获取元素，编号失效时自动刷新
+
+        Args:
+            index: 元素编号
+            force_refresh: 是否强制刷新编号
+
+        Returns:
+            元素信息 dict，未找到返回 None
+        """
+        elements = self.scan(force=force_refresh)
+        target = next((e for e in elements if e["index"] == index), None)
+        if target:
+            return target
+
+        # 编号失效，尝试重新扫描
+        if not force_refresh:
+            elements = self.scan(force=True)
+            target = next((e for e in elements if e["index"] == index), None)
+            if target:
+                return target
+
+        return None
+
+    def find_element_by_text(self, text: str, force_refresh: bool = False) -> dict | None:
+        """根据文本查找元素，支持模糊匹配
+
+        Args:
+            text: 搜索文本
+            force_refresh: 是否强制刷新编号
+
+        Returns:
+            最佳匹配元素，未找到返回 None
+        """
+        elements = self.scan(force=force_refresh)
+        text_lower = text.lower()
+
+        # 精确匹配优先
+        for el in elements:
+            if el.get("text", "").lower() == text_lower:
+                return el
+
+        # 包含匹配
+        for el in elements:
+            if text_lower in el.get("text", "").lower():
+                return el
+
+        return None
+
+    def is_page_changed(self) -> bool:
+        """检测页面是否发生变化"""
+        current_hash = self._compute_page_hash()
+        return current_hash != self._page_hash
+
+    def refresh(self) -> list[dict]:
+        """强制刷新元素编号"""
+        return self.scan(force=True)
+
+    @property
+    def element_count(self) -> int:
+        """当前元素数量"""
+        return len(self._elements)
+
+    @property
+    def last_scan_time(self) -> float:
+        """最后扫描时间"""
+        return self._last_scan_time
+
+
+# 全局元素索引管理器缓存（按 session 区分）
+_manager_cache: dict = {}
+
+
+def get_element_manager(session: CDPSession) -> ElementIndexManager:
+    """获取或创建元素索引管理器"""
+    session_id = id(session)
+    if session_id not in _manager_cache:
+        _manager_cache[session_id] = ElementIndexManager(session)
+    return _manager_cache[session_id]
+
+
+def reset_element_managers():
+    """重置所有元素索引管理器（用于测试）"""
+    _manager_cache.clear()

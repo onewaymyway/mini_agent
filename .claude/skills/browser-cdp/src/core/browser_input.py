@@ -114,7 +114,26 @@ def type_text(session, text: str, delay: float = 0.02):
 
 
 def find_element_by_index(session, index: int, max_retries: int = 3) -> dict:
-    """查找元素，编号失效时自动重扫（最多重试 max_retries 次）"""
+    """查找元素，编号失效时自动重扫（使用 ElementIndexManager）
+
+    优先使用 ElementIndexManager 的缓存和自动刷新机制，
+    如果管理器不可用则回退到原有逻辑。
+    """
+    try:
+        from src.core.utils import get_element_manager
+        manager = get_element_manager(session)
+        el = manager.get_element_by_index(index, force_refresh=(max_retries > 1))
+        if el:
+            return el
+        # 管理器返回 None，尝试强制刷新
+        el = manager.get_element_by_index(index, force_refresh=True)
+        if el:
+            return el
+    except Exception:
+        # 回退到原有逻辑
+        pass
+
+    # 原有逻辑：直接扫描
     for attempt in range(max_retries):
         elements = scan_interactive_elements(session)
         target = next((e for e in elements if e["index"] == index), None)
@@ -127,28 +146,133 @@ def find_element_by_index(session, index: int, max_retries: int = 3) -> dict:
 
 
 def find_element_by_text(session, text: str, tag: str = None) -> Optional[dict]:
-    """智能查找包含指定文本的元素"""
+    """智能查找包含指定文本的元素（支持模糊匹配和优先级排序）
+
+    匹配优先级：
+    1. 精确匹配（完全相等）
+    2. 前缀匹配（以文本开头）
+    3. 包含匹配（包含文本）
+    4. 单词匹配（包含完整单词）
+
+    返回优先级最高的匹配结果。
+    """
     js = f"""(() => {{
-        const elements = Array.from(document.querySelectorAll('button, a, input, span, div, label'));
+        const elements = Array.from(document.querySelectorAll('button, a, input, span, div, label, option, summary'));
+        const target = {text!r};
         const results = [];
+
         for (const el of elements) {{
             if ({tag!r} && el.tagName.toLowerCase() !== {tag!r}.toLowerCase()) continue;
-            const t = (el.innerText || el.value || '').trim();
-            if (t.includes({text!r})) {{
+
+            // 收集所有可能的文本来源
+            const texts = [];
+            if (el.tagName.toLowerCase() === 'input') {{
+                texts.push(el.value || '');
+            }} else {{
+                texts.push(el.innerText || '');
+                texts.push(el.textContent || '');
+                texts.push(el.getAttribute('aria-label') || '');
+                texts.push(el.getAttribute('title') || '');
+                texts.push(el.placeholder || '');
+            }}
+
+            const t = texts.map(s => s.trim()).filter(s => s.length > 0).join(' ');
+            if (!t) continue;
+
+            // 计算匹配优先级
+            let score = 0;
+            const lowerT = t.toLowerCase();
+            const lowerTarget = target.toLowerCase();
+
+            // 精确匹配（最高优先级）
+            if (t === target) {{
+                score = 100;
+            }}
+            // 前缀匹配
+            else if (lowerT.startsWith(lowerTarget)) {{
+                score = 80;
+            }}
+            // 完整单词匹配
+            else if (new RegExp('\\\\b' + target.replace(/[.*+?^${{}}()|[\]\\]/g, '\\\\$&') + '\\\\b', 'i').test(t)) {{
+                score = 60;
+            }}
+            // 包含匹配
+            else if (lowerT.includes(lowerTarget)) {{
+                score = 40;
+            }}
+
+            if (score > 0) {{
                 const r = el.getBoundingClientRect();
                 results.push({{
                     tag: el.tagName.toLowerCase(),
                     text: t.slice(0, 50),
                     x: r.x + r.width/2 + window.scrollX,
                     y: r.y + r.height/2 + window.scrollY,
-                    index: null
+                    score: score,
+                    matchType: score === 100 ? 'exact' : score === 80 ? 'prefix' : score === 60 ? 'word' : 'contains'
                 }});
             }}
         }}
+
+        // 按优先级排序，返回最佳匹配
+        results.sort((a, b) => b.score - a.score);
+        return results.length > 0 ? results[0] : null;
+    }})()"""
+    result = session.eval_js(js)
+    return result if result else None
+
+
+def find_elements_by_text_all(session, text: str, tag: str = None) -> list:
+    """查找所有包含指定文本的元素（返回完整列表，用于调试）"""
+    js = f"""(() => {{
+        const elements = Array.from(document.querySelectorAll('button, a, input, span, div, label, option, summary'));
+        const target = {text!r};
+        const results = [];
+
+        for (const el of elements) {{
+            if ({tag!r} && el.tagName.toLowerCase() !== {tag!r}.toLowerCase()) continue;
+
+            const texts = [];
+            if (el.tagName.toLowerCase() === 'input') {{
+                texts.push(el.value || '');
+            }} else {{
+                texts.push(el.innerText || '');
+                texts.push(el.textContent || '');
+                texts.push(el.getAttribute('aria-label') || '');
+                texts.push(el.getAttribute('title') || '');
+                texts.push(el.placeholder || '');
+            }}
+
+            const t = texts.map(s => s.trim()).filter(s => s.length > 0).join(' ');
+            if (!t) continue;
+
+            let score = 0;
+            const lowerT = t.toLowerCase();
+            const lowerTarget = target.toLowerCase();
+
+            if (t === target) score = 100;
+            else if (lowerT.startsWith(lowerTarget)) score = 80;
+            else if (new RegExp('\\\\b' + target.replace(/[.*+?^${{}}()|[\]\\]/g, '\\\\$&') + '\\\\b', 'i').test(t)) score = 60;
+            else if (lowerT.includes(lowerTarget)) score = 40;
+
+            if (score > 0) {{
+                const r = el.getBoundingClientRect();
+                results.push({{
+                    tag: el.tagName.toLowerCase(),
+                    text: t.slice(0, 50),
+                    x: r.x + r.width/2 + window.scrollX,
+                    y: r.y + r.height/2 + window.scrollY,
+                    score: score,
+                    matchType: score === 100 ? 'exact' : score === 80 ? 'prefix' : score === 60 ? 'word' : 'contains'
+                }});
+            }}
+        }}
+
+        results.sort((a, b) => b.score - a.score);
         return results;
     }})()"""
     results = session.eval_js(js) or []
-    return results[0] if results else None
+    return results
 
 
 def focus_and_click(session, x: float, y: float):

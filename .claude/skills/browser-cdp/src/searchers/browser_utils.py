@@ -7,6 +7,7 @@ browser_utils.py - 浏览器自动化通用工具
 
 import subprocess
 import sys
+import json
 from pathlib import Path
 from typing import Dict, List
 
@@ -22,26 +23,27 @@ def run_cmd(cmd: List[str]) -> subprocess.CompletedProcess:
 
 def ensure_browser(port: int = 9333, stealth: bool = True) -> Dict:
     """确保浏览器已连接"""
+    # 先检查是否已有浏览器在运行
     cmd = [
-        PYTHON_CMD, str(SKILL_DIR / "core" / "browser_nav.py"),
+        PYTHON_CMD, str(SKILL_DIR / "core" / "browser_launch.py"),
+        "--ensure",
         "--port", str(port),
-        "--status",
     ]
     result = run_cmd(cmd)
     
     if result.returncode == 0:
         try:
-            status = json.loads(result.stdout)
-            if status.get("connected"):
-                return {"tab_id": status.get("tab_id"), "port": port}
+            data = json.loads(result.stdout)
+            if data.get("connected"):
+                return {"tab_id": data.get("tab_id"), "port": port}
         except:
             pass
     
     # 启动新浏览器
     cmd = [
-        PYTHON_CMD, str(SKILL_DIR / "core" / "browser_nav.py"),
+        PYTHON_CMD, str(SKILL_DIR / "core" / "browser_launch.py"),
+        "--dedicated",
         "--port", str(port),
-        "--launch",
     ]
     if stealth:
         cmd.extend(["--stealth"])

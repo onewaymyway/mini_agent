@@ -28,7 +28,7 @@ from .enhanced_retry_strategy import (
 from .ua_rotator import UARotator, UARotationConfig, get_ua_rotator
 from .anti_detection import AntiDetectionManager, AntiDetectionConfig, get_anti_detection
 from .smart_selector import SmartSelector, WebsiteSelectorManager, SelectorConfig
-from .smart_wait import SmartWait, SmartWaitConfig
+from .smart_wait import SmartWait, WaitConfig as SmartWaitConfig
 
 logger = logging.getLogger(__name__)
 

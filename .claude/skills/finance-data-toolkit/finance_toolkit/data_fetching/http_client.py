@@ -18,7 +18,9 @@ HTTP 客户端连接池管理
         response = await client.get('https://api.example.com/data')
 """
 
+import asyncio
 import logging
+import os
 from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
 
@@ -70,8 +72,9 @@ class HTTPClientManager:
         timeout: Optional[float] = None,
         max_retries: Optional[int] = None,
         retry_backoff: Optional[list] = None,
-        trust_env: bool = True,
-        headers: Optional[Dict[str, str]] = None
+        trust_env: bool = False,
+        headers: Optional[Dict[str, str]] = None,
+        proxies: Optional[Dict[str, str]] = None
     ) -> httpx.AsyncClient:
         """
         获取 HTTP 客户端实例
@@ -90,23 +93,34 @@ class HTTPClientManager:
             raise ImportError("httpx 未安装")
         
         # 生成客户端 key
-        key = f"{timeout}_{max_retries}_{retry_backoff}_{trust_env}"
-        
+        key = f"{timeout}_{max_retries}_{retry_backoff}_{trust_env}_{proxies}"
+
         # 如果客户端已存在且配置相同，直接返回
         if key in self._clients:
             return self._clients[key]
-        
+
         # 创建新客户端
         client_timeout = timeout or self._default_timeout
         client_headers = headers or {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept': 'application/json, text/plain, */*',
         }
-        
+
+        # 构建代理配置
+        client_proxies = proxies
+        if client_proxies is None and trust_env:
+            # 信任环境变量代理设置
+            client_proxies = {
+                'http://': os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy'),
+                'https://': os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy'),
+            }
+            client_proxies = {k: v for k, v in client_proxies.items() if v}
+
         client = httpx.AsyncClient(
             timeout=client_timeout,
             trust_env=trust_env,
             headers=client_headers,
+            proxies=client_proxies,
             limits=httpx.Limits(
                 max_connections=100,
                 max_keepalive_connections=20,
@@ -187,8 +201,9 @@ class RetryableHTTPClient:
         timeout: float = 30.0,
         max_retries: int = 3,
         retry_backoff: list = None,
-        trust_env: bool = True,
-        headers: Dict[str, str] = None
+        trust_env: bool = False,
+        headers: Dict[str, str] = None,
+        proxies: Dict[str, str] = None
     ):
         self.manager = manager or HTTPClientManager.get_instance()
         self.timeout = timeout
@@ -196,6 +211,7 @@ class RetryableHTTPClient:
         self.retry_backoff = retry_backoff or [1, 2, 5]
         self.trust_env = trust_env
         self.headers = headers
+        self.proxies = proxies
         self._client: Optional[httpx.AsyncClient] = None
     
     @property
@@ -205,7 +221,8 @@ class RetryableHTTPClient:
             self._client = self.manager.get_client(
                 timeout=self.timeout,
                 trust_env=self.trust_env,
-                headers=self.headers
+                headers=self.headers,
+                proxies=self.proxies
             )
         return self._client
     
@@ -344,19 +361,21 @@ def create_retryable_client(
     timeout: float = 30.0,
     max_retries: int = 3,
     retry_backoff: list = None,
-    trust_env: bool = True,
-    headers: Dict[str, str] = None
+    trust_env: bool = False,
+    headers: Dict[str, str] = None,
+    proxies: Dict[str, str] = None
 ) -> RetryableHTTPClient:
     """
     创建带重试功能的 HTTP 客户端
-    
+
     Args:
         timeout: 请求超时时间（秒）
         max_retries: 最大重试次数
         retry_backoff: 重试退避因子列表
         trust_env: 是否信任环境变量代理设置
         headers: 默认请求头
-    
+        proxies: 代理配置字典
+
     Returns:
         RetryableHTTPClient 实例
     """
@@ -366,7 +385,8 @@ def create_retryable_client(
         max_retries=max_retries,
         retry_backoff=retry_backoff,
         trust_env=trust_env,
-        headers=headers
+        headers=headers,
+        proxies=proxies
     )
 
 

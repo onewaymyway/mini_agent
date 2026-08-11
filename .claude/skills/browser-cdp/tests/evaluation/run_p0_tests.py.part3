@@ -1,0 +1,199 @@
+
+# ==================== 报告生成器 ====================
+
+class TestReportGenerator:
+    """测试报告生成器"""
+
+    def __init__(self, output_dir: Path):
+        self.output_dir = output_dir
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def generate_summary(self, reports: List[WebsiteTestReport]) -> Dict[str, Any]:
+        """生成汇总报告"""
+        total_tests = sum(r.total_tests for r in reports)
+        total_passed = sum(r.passed_tests for r in reports)
+        total_failed = sum(r.failed_tests for r in reports)
+        overall_pass_rate = (total_passed / total_tests * 100) if total_tests > 0 else 0
+        overall_avg_score = sum(r.avg_score for r in reports) / len(reports) if reports else 0
+
+        # 按能力统计
+        capability_stats = {}
+        for report in reports:
+            for result in report.results:
+                cap = result.capability
+                if cap not in capability_stats:
+                    capability_stats[cap] = {"total": 0, "passed": 0, "scores": []}
+                capability_stats[cap]["total"] += 1
+                if result.success:
+                    capability_stats[cap]["passed"] += 1
+                if result.score > 0:
+                    capability_stats[cap]["scores"].append(result.score)
+
+        capability_summary = []
+        for cap, stats in capability_stats.items():
+            cap_rate = (stats["passed"] / stats["total"] * 100) if stats["total"] > 0 else 0
+            avg = sum(stats["scores"]) / len(stats["scores"]) if stats["scores"] else 0
+            capability_summary.append({
+                "capability": cap,
+                "total": stats["total"],
+                "passed": stats["passed"],
+                "pass_rate": round(cap_rate, 2),
+                "avg_score": round(avg, 2),
+            })
+
+        # 按网站统计
+        website_summary = []
+        for report in reports:
+            website_summary.append({
+                "website": report.website_name,
+                "category": report.category,
+                "total": report.total_tests,
+                "passed": report.passed_tests,
+                "pass_rate": round(report.pass_rate, 2),
+                "avg_score": round(report.avg_score, 2),
+            })
+
+        return {
+            "test_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "total_tests": total_tests,
+            "total_passed": total_passed,
+            "total_failed": total_failed,
+            "overall_pass_rate": round(overall_pass_rate, 2),
+            "overall_avg_score": round(overall_avg_score, 2),
+            "capability_summary": capability_summary,
+            "website_summary": website_summary,
+        }
+
+    def save_json_report(self, reports: List[WebsiteTestReport], summary: Dict[str, Any]):
+        """保存 JSON 报告"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # 汇总报告
+        summary_path = self.output_dir / f"p0_test_summary_{timestamp}.json"
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+
+        # 各网站报告
+        for report in reports:
+            report_path = self.output_dir / f"p0_test_{report.website_name}_{timestamp}.json"
+            with open(report_path, 'w', encoding='utf-8') as f:
+                json.dump(report.to_dict(), f, ensure_ascii=False, indent=2)
+
+        logger.info(f"JSON 报告已保存: {summary_path}")
+        return summary_path
+
+    def save_markdown_report(self, reports: List[WebsiteTestReport], summary: Dict[str, Any]):
+        """保存 Markdown 报告"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        lines = [
+            "# P0 网站测试报告\n",
+            f"**测试时间**: {summary['test_time']}\n",
+            f"**测试网站数**: {len(reports)}\n",
+            f"**总测试数**: {summary['total_tests']}\n",
+            f"**通过数**: {summary['total_passed']}\n",
+            f"**失败数**: {summary['total_failed']}\n",
+            f"**总体通过率**: {summary['overall_pass_rate']:.1f}%\n",
+            f"**平均得分**: {summary['overall_avg_score']:.1f}/100\n",
+            "\n---\n\n",
+        ]
+
+        # 能力维度汇总
+        lines.append("## 能力维度汇总\n")
+        lines.append("| 能力 | 测试数 | 通过数 | 通过率 | 平均分 |\n")
+        lines.append("|------|--------|--------|--------|--------|\n")
+        for cap in summary.get("capability_summary", []):
+            lines.append(f"| {cap['capability']} | {cap['total']} | {cap['passed']} | {cap['pass_rate']:.1f}% | {cap['avg_score']:.1f} |\n")
+        lines.append("\n")
+
+        # 各网站详情
+        for report in reports:
+            lines.append(report.to_markdown())
+            lines.append("\n---\n\n")
+
+        report_path = self.output_dir / f"p0_test_summary_{timestamp}.md"
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write("".join(lines))
+
+        logger.info(f"Markdown 报告已保存: {report_path}")
+        return report_path
+
+
+# ==================== 主函数 ====================
+
+def main():
+    parser = argparse.ArgumentParser(description="P0 网站测试运行器")
+    parser.add_argument("--websites", type=str, default="baidu,zhihu,gov_cn,bilibili,csdn,juejin,douban,github,36kr,xueqiu,sina_finance,eastmoney",
+                        help="要测试的网站列表（逗号分隔）")
+    parser.add_argument("--capabilities", type=str, default=None,
+                        help="要测试的能力列表（逗号分隔），默认全部")
+    parser.add_argument("--headless", action="store_true", default=True,
+                        help="无头模式运行（默认）")
+    parser.add_argument("--no-headless", action="store_true",
+                        help="显示浏览器窗口")
+    parser.add_argument("--timeout", type=int, default=30,
+                        help="超时时间（秒）")
+    parser.add_argument("--output-dir", type=str, default=None,
+                        help="输出目录")
+    parser.add_argument("--verbose", action="store_true",
+                        help="详细输出")
+
+    args = parser.parse_args()
+
+    # 配置日志
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+    # 解析网站列表
+    website_keys = [w.strip() for w in args.websites.split(",")]
+
+    # 解析能力列表
+    capabilities = None
+    if args.capabilities:
+        capabilities = [c.strip() for c in args.capabilities.split(",")]
+
+    # 设置输出目录
+    output_dir = Path(args.output_dir) if args.output_dir else SKILL_DIR / "tests" / "evaluation" / "reports"
+
+    # 创建执行器
+    executor = P0TestExecutor(headless=not args.no_headless, timeout=args.timeout)
+
+    logger.info(f"开始执行 P0 测试，网站: {website_keys}")
+    logger.info(f"能力: {capabilities or '全部'}")
+
+    # 执行测试
+    reports = executor.run_all_tests(website_keys, capabilities)
+
+    if not reports:
+        logger.error("测试执行失败，未生成任何报告")
+        sys.exit(1)
+
+    # 生成报告
+    generator = TestReportGenerator(output_dir)
+    summary = generator.generate_summary(reports)
+    summary_path = generator.save_json_report(reports, summary)
+    md_path = generator.save_markdown_report(reports, summary)
+
+    # 输出汇总
+    print("\n" + "=" * 60)
+    print("P0 测试执行完成")
+    print("=" * 60)
+    print(f"测试网站数: {len(reports)}")
+    print(f"总测试数: {summary['total_tests']}")
+    print(f"通过数: {summary['total_passed']}")
+    print(f"失败数: {summary['total_failed']}")
+    print(f"总体通过率: {summary['overall_pass_rate']:.1f}%")
+    print(f"平均得分: {summary['overall_avg_score']:.1f}/100")
+    print(f"\n报告路径:")
+    print(f"  JSON: {summary_path}")
+    print(f"  Markdown: {md_path}")
+    print("=" * 60)
+
+    # 返回退出码
+    sys.exit(0 if summary['total_failed'] == 0 else 1)
+
+
+if __name__ == "__main__":
+    main()

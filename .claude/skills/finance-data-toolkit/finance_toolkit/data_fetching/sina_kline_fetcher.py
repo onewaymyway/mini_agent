@@ -48,7 +48,7 @@ def to_sina_symbol(code: str) -> str:
 
 def fetch_kline(code: str, scale: str = '240', datalen: int = 1023,
                 ma: str = 'no', retries: int = 3) -> List[Dict]:
-    """从新浪财经获取 K 线数据"""
+    """从新浪财经获取 K 线数据（带指数退避重试）"""
     symbol = to_sina_symbol(code)
     url = f"{SINA_KLINE_URL}?symbol={symbol}&scale={scale}&ma={ma}&datalen={datalen}"
 
@@ -58,10 +58,14 @@ def fetch_kline(code: str, scale: str = '240', datalen: int = 1023,
         'Accept': '*/*',
     }
 
+    # 指数退避重试配置
+    TIMEOUT = 30  # 增加到 30 秒
+    BACKOFF = [1, 2, 5]  # 指数退避因子
+
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
                 text = resp.read().decode('utf-8', errors='ignore')
 
             # 提取 JSONP 数据: var=(...);
@@ -79,7 +83,7 @@ def fetch_kline(code: str, scale: str = '240', datalen: int = 1023,
 
         except (urllib.error.URLError, json.JSONDecodeError, ValueError) as e:
             if attempt < retries - 1:
-                wait = 2 ** attempt
+                wait = BACKOFF[attempt] if attempt < len(BACKOFF) else BACKOFF[-1]
                 print(f"  [retry {attempt+1}/{retries}] {e}, waiting {wait}s...", file=sys.stderr)
                 time.sleep(wait)
             else:

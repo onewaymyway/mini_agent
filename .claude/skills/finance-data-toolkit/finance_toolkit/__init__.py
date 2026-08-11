@@ -224,6 +224,58 @@ try:
 except ImportError:
     pass
 
+try:
+    from .schema_validator import (
+        FinanceDataSchemaValidator,
+        ValidationResult,
+        SchemaValidationError,
+        validate_finance_data,
+        validate_finance_data_batch,
+        get_validation_summary,
+    )
+except ImportError:
+    pass
+
+# 解析器模块
+try:
+    from .parsers import (
+        parse_html_table,
+        parse_html_text,
+        parse_html_jsonp,
+        parse_json_response,
+        parse_eastmoney_json,
+        parse_sina_jsonp,
+        parse_sina_text,
+        parse_eastmoney_text,
+        safe_float,
+        safe_int,
+    )
+except ImportError:
+    pass
+
+# 存储模块
+try:
+    from .storage import (
+        FinanceDatabase,
+        create_database,
+    )
+except ImportError:
+    pass
+
+try:
+    from .compliance_checker import (
+        ComplianceChecker,
+        ComplianceResult,
+        Violation,
+        ViolationLevel,
+        ComplianceStatus,
+        check_compliance,
+        check_compliance_batch,
+        get_compliance_summary,
+    )
+except ImportError:
+    pass
+
 
 __version__ = '1.0.0'
 
@@ -374,6 +426,40 @@ __all__ = [
     'fetch_xueqiu_hot',
     'fetch_ths_wencai_hot',
     'fetch_all_social_hot',
+    
+    # 数据格式验证
+    'FinanceDataSchemaValidator',
+    'ValidationResult',
+    'SchemaValidationError',
+    'validate_finance_data',
+    'validate_finance_data_batch',
+    'get_validation_summary',
+
+    # 合规检查
+    'ComplianceChecker',
+    'ComplianceResult',
+    'Violation',
+    'ViolationLevel',
+    'ComplianceStatus',
+    'check_compliance',
+    'check_compliance_batch',
+    'get_compliance_summary',
+    
+    # 解析器
+    'parse_html_table',
+    'parse_html_text',
+    'parse_html_jsonp',
+    'parse_json_response',
+    'parse_eastmoney_json',
+    'parse_sina_jsonp',
+    'parse_sina_text',
+    'parse_eastmoney_text',
+    'safe_float',
+    'safe_int',
+    
+    # 存储
+    'FinanceDatabase',
+    'create_database',
 ]
 
 

@@ -1,0 +1,509 @@
+{
+  "test_time": "2026-08-11T08:35:00.912843",
+  "total_websites": 3,
+  "total_tests": 30,
+  "total_passed": 26,
+  "reports": [
+    {
+      "website_name": "百度",
+      "website_url": "https://www.baidu.com",
+      "category": "SEARCH",
+      "test_time": "2026-08-11 08:34:19",
+      "total_tests": 10,
+      "passed_tests": 6,
+      "failed_tests": 4,
+      "pass_rate": 60.0,
+      "avg_score": 79.29,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "www.baidu.com",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "百度一下，你就知道",
+            "url": "https://www.baidu.com/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:34:21"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "百度一下，你就知道",
+          "capability": "元素定位",
+          "success": true,
+          "duration": 0.04,
+          "score": 50,
+          "error": null,
+          "details": {
+            "found": [
+              {
+                "selector": "input[name='wd'], input#kw, input[type='text']",
+                "count": 1
+              },
+              {
+                "selector": "input#su, button[type='submit'], .s_btn",
+                "count": 1
+              }
+            ]
+          },
+          "timestamp": "2026-08-11 08:34:22"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "百度安全验证",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.21,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "selector": "input#su, button[type='submit'], .s_btn"
+          },
+          "timestamp": "2026-08-11 08:34:22"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "百度安全验证",
+          "capability": "输入操作",
+          "success": false,
+          "duration": 0.02,
+          "score": 0.0,
+          "error": "元素不存在: input[name='wd'], input#kw, input[type='text']",
+          "details": {},
+          "timestamp": "2026-08-11 08:34:22"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "百度安全验证",
+          "capability": "数据提取",
+          "success": false,
+          "duration": 0.0,
+          "score": 0.0,
+          "error": "元素不存在: #content_left, .result, [data-tools]",
+          "details": {},
+          "timestamp": "2026-08-11 08:34:22"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "百度安全验证",
+          "capability": "截图",
+          "success": true,
+          "duration": 0.09,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "tests\\evaluation\\output\\baidu_screenshot.png",
+            "size": 8512
+          },
+          "timestamp": "2026-08-11 08:34:22"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "百度安全验证",
+          "capability": "滚动",
+          "success": false,
+          "duration": 0.51,
+          "score": 40.0,
+          "error": "滚动后位置未变化",
+          "details": {},
+          "timestamp": "2026-08-11 08:34:22"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "百度安全验证",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 2.07,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:34:24"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "百度安全验证",
+          "capability": "等待策略",
+          "success": false,
+          "duration": 10.01,
+          "score": 0.0,
+          "error": "Page.wait_for_selector: Timeout 10000ms exceeded.\nCall log:\n  - waiting for loca",
+          "details": {},
+          "timestamp": "2026-08-11 08:34:34"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.79,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:34:37"
+        }
+      ]
+    },
+    {
+      "website_name": "中国政府网",
+      "website_url": "https://www.gov.cn",
+      "category": "GOV",
+      "test_time": "2026-08-11 08:34:38",
+      "total_tests": 10,
+      "passed_tests": 10,
+      "failed_tests": 0,
+      "pass_rate": 100.0,
+      "avg_score": 86.5,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "www.gov.cn",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "中国政府网_中央人民政府门户网站",
+            "url": "https://www.gov.cn/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:34:41"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "元素定位",
+          "success": true,
+          "duration": 0.05,
+          "score": 50,
+          "error": null,
+          "details": {
+            "found": [
+              {
+                "selector": "input[placeholder*='搜索'], input#soInput, input[type='text']",
+                "count": 3
+              },
+              {
+                "selector": "article, .news-list, .news_list, [class*='news']",
+                "count": 6
+              }
+            ]
+          },
+          "timestamp": "2026-08-11 08:34:42"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "中国政府网",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.1,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮选择器，跳过"
+          },
+          "timestamp": "2026-08-11 08:34:42"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "输入操作",
+          "success": true,
+          "duration": 0.02,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "selector": "input[placeholder*='搜索'], input#soInput, input[type='text']",
+            "value": "国务院"
+          },
+          "timestamp": "2026-08-11 08:34:42"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "数据提取",
+          "success": true,
+          "duration": 0.01,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "selector": "article, .news-list, .news_list, [class*='news']",
+            "text_preview": "习近平：加快建设健康中国\n习近平同斯洛伐克总统佩列格里尼会谈\n新订单指数回升 物流业景气指数保持在扩张区间\n习近平：加快建设健康中国\n习近平同斯洛伐克总统佩列格里尼会谈\n新订单指数回升 物流业景气指数"
+          },
+          "timestamp": "2026-08-11 08:34:42"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "截图",
+          "success": true,
+          "duration": 0.35,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "tests\\evaluation\\output\\gov_cn_screenshot.png",
+            "size": 758764
+          },
+          "timestamp": "2026-08-11 08:34:42"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "滚动",
+          "success": true,
+          "duration": 0.51,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "initial": 0,
+            "after": 800
+          },
+          "timestamp": "2026-08-11 08:34:42"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 2.0,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:34:44"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "等待策略",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "selector": "input[placeholder*='搜索'], input#soInput, input[type='text']",
+            "elapsed_ms": 8.968114852905273
+          },
+          "timestamp": "2026-08-11 08:34:44"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.71,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:34:47"
+        }
+      ]
+    },
+    {
+      "website_name": "东方财富",
+      "website_url": "https://www.eastmoney.com",
+      "category": "FINANCE",
+      "test_time": "2026-08-11 08:34:48",
+      "total_tests": 10,
+      "passed_tests": 10,
+      "failed_tests": 0,
+      "pass_rate": 100.0,
+      "avg_score": 86.5,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "www.eastmoney.com",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "东方财富网：财经门户，提供专业的财经、股票、行情、证券、基金、理财、银行、保险、信托、期货、黄金、股吧、博客等各类财经资讯及数据",
+            "url": "https://www.eastmoney.com/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:34:52"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "元素定位",
+          "success": true,
+          "duration": 0.27,
+          "score": 50,
+          "error": null,
+          "details": {
+            "found": [
+              {
+                "selector": "input[name='key'], input[type='text']",
+                "count": 5
+              },
+              {
+                "selector": "li",
+                "count": 525
+              }
+            ]
+          },
+          "timestamp": "2026-08-11 08:34:53"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "东方财富",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.1,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮选择器，跳过"
+          },
+          "timestamp": "2026-08-11 08:34:53"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "输入操作",
+          "success": true,
+          "duration": 0.03,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "selector": "input[name='key'], input[type='text']",
+            "value": "股票行情"
+          },
+          "timestamp": "2026-08-11 08:34:53"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "数据提取",
+          "success": true,
+          "duration": 0.01,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "selector": "li",
+            "text_preview": "东方财富手机版"
+          },
+          "timestamp": "2026-08-11 08:34:53"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "截图",
+          "success": true,
+          "duration": 1.56,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "tests\\evaluation\\output\\eastmoney_screenshot.png",
+            "size": 2743433
+          },
+          "timestamp": "2026-08-11 08:34:54"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "滚动",
+          "success": true,
+          "duration": 0.51,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "initial": 0,
+            "after": 800
+          },
+          "timestamp": "2026-08-11 08:34:55"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 2.08,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:34:57"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "等待策略",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "selector": "input[name='key'], input[type='text']",
+            "elapsed_ms": 11.6119384765625
+          },
+          "timestamp": "2026-08-11 08:34:57"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.37,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:34:59"
+        }
+      ]
+    }
+  ]
+}

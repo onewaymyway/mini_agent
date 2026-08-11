@@ -1,0 +1,1904 @@
+{
+  "test_time": "2026-08-11T08:34:51.013115",
+  "total_websites": 12,
+  "total_tests": 120,
+  "total_passed": 85,
+  "reports": [
+    {
+      "website_name": "百度搜索",
+      "website_url": "https://www.baidu.com",
+      "category": "search",
+      "test_time": "2026-08-11 08:28:57",
+      "total_tests": 10,
+      "passed_tests": 5,
+      "failed_tests": 5,
+      "pass_rate": 50.0,
+      "avg_score": 61.67,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "www.baidu.com",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "百度一下，你就知道",
+            "url": "https://www.baidu.com/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:29:00"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "百度一下，你就知道",
+          "capability": "元素定位",
+          "success": false,
+          "duration": 5.04,
+          "score": 20.0,
+          "error": "未找到任何元素",
+          "details": {},
+          "timestamp": "2026-08-11 08:29:05"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "百度一下，你就知道",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.0,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮，跳过"
+          },
+          "timestamp": "2026-08-11 08:29:05"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "百度一下，你就知道",
+          "capability": "输入操作",
+          "success": false,
+          "duration": 0.01,
+          "score": 0.0,
+          "error": "未找到搜索框",
+          "details": {},
+          "timestamp": "2026-08-11 08:29:05"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "百度一下，你就知道",
+          "capability": "数据提取",
+          "success": false,
+          "duration": 10.01,
+          "score": 40.0,
+          "error": "提取内容为空或过短",
+          "details": {},
+          "timestamp": "2026-08-11 08:29:15"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "百度一下，你就知道",
+          "capability": "截图",
+          "success": true,
+          "duration": 0.06,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "E:\\codes\\mini_claude_code\\.claude\\skills\\browser-cdp\\tests\\evaluation\\output\\baidu.com_screenshot_optimized.png",
+            "size": 50306
+          },
+          "timestamp": "2026-08-11 08:29:15"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "百度一下，你就知道",
+          "capability": "滚动",
+          "success": false,
+          "duration": 0.51,
+          "score": 40.0,
+          "error": "滚动后位置未变化",
+          "details": {},
+          "timestamp": "2026-08-11 08:29:16"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "百度一下，你就知道",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 2.02,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:29:18"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "百度一下，你就知道",
+          "capability": "等待策略",
+          "success": false,
+          "duration": 8.01,
+          "score": 30.0,
+          "error": "等待超时",
+          "details": {},
+          "timestamp": "2026-08-11 08:29:26"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.74,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:29:29"
+        }
+      ]
+    },
+    {
+      "website_name": "中国政府网",
+      "website_url": "https://www.gov.cn",
+      "category": "gov",
+      "test_time": "2026-08-11 08:29:29",
+      "total_tests": 10,
+      "passed_tests": 6,
+      "failed_tests": 4,
+      "pass_rate": 60.0,
+      "avg_score": 67.78,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "www.gov.cn",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "中国政府网_中央人民政府门户网站",
+            "url": "https://www.gov.cn/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:29:32"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "元素定位",
+          "success": false,
+          "duration": 10.06,
+          "score": 20.0,
+          "error": "未找到任何元素",
+          "details": {},
+          "timestamp": "2026-08-11 08:29:42"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.0,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮，跳过"
+          },
+          "timestamp": "2026-08-11 08:29:42"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "输入操作",
+          "success": false,
+          "duration": 0.01,
+          "score": 0.0,
+          "error": "未找到搜索框",
+          "details": {},
+          "timestamp": "2026-08-11 08:29:42"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "数据提取",
+          "success": false,
+          "duration": 5.01,
+          "score": 40.0,
+          "error": "提取内容为空或过短",
+          "details": {},
+          "timestamp": "2026-08-11 08:29:47"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "截图",
+          "success": true,
+          "duration": 0.3,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "E:\\codes\\mini_claude_code\\.claude\\skills\\browser-cdp\\tests\\evaluation\\output\\gov.cn_screenshot_optimized.png",
+            "size": 757488
+          },
+          "timestamp": "2026-08-11 08:29:48"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "滚动",
+          "success": true,
+          "duration": 0.51,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "initial": 0,
+            "after": 800
+          },
+          "timestamp": "2026-08-11 08:29:48"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 2.04,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:29:50"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "中国政府网_中央人民政府门户网站",
+          "capability": "等待策略",
+          "success": false,
+          "duration": 8.01,
+          "score": 30.0,
+          "error": "等待超时",
+          "details": {},
+          "timestamp": "2026-08-11 08:29:58"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.55,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:30:01"
+        }
+      ]
+    },
+    {
+      "website_name": "知乎",
+      "website_url": "https://www.zhihu.com",
+      "category": "social",
+      "test_time": "2026-08-11 08:30:01",
+      "total_tests": 10,
+      "passed_tests": 5,
+      "failed_tests": 5,
+      "pass_rate": 50.0,
+      "avg_score": 61.67,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "www.zhihu.com",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "知乎 - 有问题，就会有答案",
+            "url": "https://www.zhihu.com/signin?next=%2F",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:30:07"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "知乎 - 有问题，就会有答案",
+          "capability": "元素定位",
+          "success": false,
+          "duration": 10.01,
+          "score": 20.0,
+          "error": "未找到任何元素",
+          "details": {},
+          "timestamp": "2026-08-11 08:30:17"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "知乎 - 有问题，就会有答案",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.0,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮，跳过"
+          },
+          "timestamp": "2026-08-11 08:30:17"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "知乎 - 有问题，就会有答案",
+          "capability": "输入操作",
+          "success": false,
+          "duration": 5.01,
+          "score": 0.0,
+          "error": "未找到搜索框",
+          "details": {},
+          "timestamp": "2026-08-11 08:30:22"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "知乎 - 有问题，就会有答案",
+          "capability": "数据提取",
+          "success": false,
+          "duration": 5.0,
+          "score": 40.0,
+          "error": "提取内容为空或过短",
+          "details": {},
+          "timestamp": "2026-08-11 08:30:27"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "知乎 - 有问题，就会有答案",
+          "capability": "截图",
+          "success": true,
+          "duration": 0.19,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "E:\\codes\\mini_claude_code\\.claude\\skills\\browser-cdp\\tests\\evaluation\\output\\zhihu.com_screenshot_optimized.png",
+            "size": 805397
+          },
+          "timestamp": "2026-08-11 08:30:28"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "知乎 - 有问题，就会有答案",
+          "capability": "滚动",
+          "success": false,
+          "duration": 0.51,
+          "score": 40.0,
+          "error": "滚动后位置未变化",
+          "details": {},
+          "timestamp": "2026-08-11 08:30:28"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "知乎 - 有问题，就会有答案",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 2.05,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:30:30"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "知乎 - 有问题，就会有答案",
+          "capability": "等待策略",
+          "success": false,
+          "duration": 8.02,
+          "score": 30.0,
+          "error": "等待超时",
+          "details": {},
+          "timestamp": "2026-08-11 08:30:38"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.53,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:30:41"
+        }
+      ]
+    },
+    {
+      "website_name": "CSDN",
+      "website_url": "https://blog.csdn.net",
+      "category": "tech",
+      "test_time": "2026-08-11 08:30:41",
+      "total_tests": 10,
+      "passed_tests": 9,
+      "failed_tests": 1,
+      "pass_rate": 90.0,
+      "avg_score": 82.22,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "blog.csdn.net",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "CSDN博客-专业IT技术发表平台",
+            "url": "https://blog.csdn.net/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:30:50"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "CSDN博客-专业IT技术发表平台",
+          "capability": "元素定位",
+          "success": true,
+          "duration": 5.04,
+          "score": 25,
+          "error": null,
+          "details": {
+            "found": [
+              {
+                "type": "content",
+                "selector": ".article_content, .blog-content, article",
+                "count": 1,
+                "content_length": 4851
+              }
+            ]
+          },
+          "timestamp": "2026-08-11 08:30:55"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "CSDN博客-专业IT技术发表平台",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.0,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮，跳过"
+          },
+          "timestamp": "2026-08-11 08:30:55"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "CSDN博客-专业IT技术发表平台",
+          "capability": "输入操作",
+          "success": false,
+          "duration": 5.0,
+          "score": 0.0,
+          "error": "未找到搜索框",
+          "details": {},
+          "timestamp": "2026-08-11 08:31:00"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "CSDN博客-专业IT技术发表平台",
+          "capability": "数据提取",
+          "success": true,
+          "duration": 0.02,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "selector": ".article-list, .blog-list, [class*='article']",
+            "type": "article_list",
+            "content_length": 293,
+            "text_preview": "3A Cloud\nArchitecture Diagram Skill 详细介绍\n是 Cocoon AI 发布的一款面向 AI 助手的架构图生成 Skill。它把“理解自然语言中的系统结构”与“生成可"
+          },
+          "timestamp": "2026-08-11 08:31:00"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "CSDN博客-专业IT技术发表平台",
+          "capability": "截图",
+          "success": true,
+          "duration": 0.32,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "E:\\codes\\mini_claude_code\\.claude\\skills\\browser-cdp\\tests\\evaluation\\output\\csdn.net_screenshot_optimized.png",
+            "size": 811813
+          },
+          "timestamp": "2026-08-11 08:31:01"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "CSDN博客-专业IT技术发表平台",
+          "capability": "滚动",
+          "success": true,
+          "duration": 0.52,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "initial": 0,
+            "after": 800
+          },
+          "timestamp": "2026-08-11 08:31:01"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "CSDN博客-专业IT技术发表平台",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 2.03,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:31:03"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "CSDN博客-专业IT技术发表平台",
+          "capability": "等待策略",
+          "success": true,
+          "duration": 0.02,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "selector": ".article_content, .blog-content, article",
+            "type": "content",
+            "elapsed_ms": 21.351337432861328
+          },
+          "timestamp": "2026-08-11 08:31:03"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.75,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:31:06"
+        }
+      ]
+    },
+    {
+      "website_name": "掘金",
+      "website_url": "https://juejin.cn",
+      "category": "tech",
+      "test_time": "2026-08-11 08:31:06",
+      "total_tests": 10,
+      "passed_tests": 6,
+      "failed_tests": 4,
+      "pass_rate": 60.0,
+      "avg_score": 67.78,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "juejin.cn",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "稀土掘金",
+            "url": "https://juejin.cn/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:31:11"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "稀土掘金",
+          "capability": "元素定位",
+          "success": false,
+          "duration": 5.05,
+          "score": 20.0,
+          "error": "未找到任何元素",
+          "details": {},
+          "timestamp": "2026-08-11 08:31:16"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "稀土掘金",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.0,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮，跳过"
+          },
+          "timestamp": "2026-08-11 08:31:16"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "稀土掘金",
+          "capability": "输入操作",
+          "success": false,
+          "duration": 0.01,
+          "score": 0.0,
+          "error": "未找到搜索框",
+          "details": {},
+          "timestamp": "2026-08-11 08:31:16"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "稀土掘金",
+          "capability": "数据提取",
+          "success": false,
+          "duration": 5.01,
+          "score": 40.0,
+          "error": "提取内容为空或过短",
+          "details": {},
+          "timestamp": "2026-08-11 08:31:21"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "稀土掘金",
+          "capability": "截图",
+          "success": true,
+          "duration": 0.29,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "E:\\codes\\mini_claude_code\\.claude\\skills\\browser-cdp\\tests\\evaluation\\output\\juejin.cn_screenshot_optimized.png",
+            "size": 594753
+          },
+          "timestamp": "2026-08-11 08:31:21"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "稀土掘金",
+          "capability": "滚动",
+          "success": true,
+          "duration": 0.51,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "initial": 0,
+            "after": 800
+          },
+          "timestamp": "2026-08-11 08:31:22"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "稀土掘金",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 1.89,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:31:24"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "稀土掘金",
+          "capability": "等待策略",
+          "success": false,
+          "duration": 8.01,
+          "score": 30.0,
+          "error": "等待超时",
+          "details": {},
+          "timestamp": "2026-08-11 08:31:32"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.86,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:31:34"
+        }
+      ]
+    },
+    {
+      "website_name": "豆瓣",
+      "website_url": "https://www.douban.com",
+      "category": "social",
+      "test_time": "2026-08-11 08:31:34",
+      "total_tests": 10,
+      "passed_tests": 9,
+      "failed_tests": 1,
+      "pass_rate": 90.0,
+      "avg_score": 82.22,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "www.douban.com",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "豆瓣",
+            "url": "https://www.douban.com/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:31:40"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "豆瓣",
+          "capability": "元素定位",
+          "success": true,
+          "duration": 5.03,
+          "score": 25,
+          "error": null,
+          "details": {
+            "found": [
+              {
+                "type": "content",
+                "selector": ".grid-view, .article, .mod",
+                "count": 1,
+                "content_length": 289
+              }
+            ]
+          },
+          "timestamp": "2026-08-11 08:31:46"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "豆瓣",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.0,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮，跳过"
+          },
+          "timestamp": "2026-08-11 08:31:46"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "豆瓣",
+          "capability": "输入操作",
+          "success": false,
+          "duration": 5.02,
+          "score": 0.0,
+          "error": "未找到搜索框",
+          "details": {},
+          "timestamp": "2026-08-11 08:31:51"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "豆瓣",
+          "capability": "数据提取",
+          "success": true,
+          "duration": 0.02,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "selector": ".grid-view, .article, .mod",
+            "type": "content",
+            "content_length": 289,
+            "text_preview": "热门话题  · · · · · ·  ( 去话题广场 )\n乡土生活观察\n305篇内容 · 30.8万次浏览\n人会莫名其妙地无事自扰，也会莫名其妙地无故自宽\n556篇内容 · 44.9万次浏览\n每一个还"
+          },
+          "timestamp": "2026-08-11 08:31:51"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "豆瓣",
+          "capability": "截图",
+          "success": true,
+          "duration": 0.5,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "E:\\codes\\mini_claude_code\\.claude\\skills\\browser-cdp\\tests\\evaluation\\output\\douban.com_screenshot_optimized.png",
+            "size": 1523083
+          },
+          "timestamp": "2026-08-11 08:31:51"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "豆瓣",
+          "capability": "滚动",
+          "success": true,
+          "duration": 0.51,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "initial": 0,
+            "after": 800
+          },
+          "timestamp": "2026-08-11 08:31:52"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "豆瓣",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 2.08,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:31:54"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "豆瓣",
+          "capability": "等待策略",
+          "success": true,
+          "duration": 0.02,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "selector": ".grid-view, .article, .mod",
+            "type": "content",
+            "elapsed_ms": 18.012285232543945
+          },
+          "timestamp": "2026-08-11 08:31:54"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.71,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:31:56"
+        }
+      ]
+    },
+    {
+      "website_name": "GitHub",
+      "website_url": "https://github.com",
+      "category": "developer",
+      "test_time": "2026-08-11 08:31:56",
+      "total_tests": 10,
+      "passed_tests": 9,
+      "failed_tests": 1,
+      "pass_rate": 90.0,
+      "avg_score": 82.22,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "github.com",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.09,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "GitHub · Change is constant. GitHub keeps you ahead. · GitHub",
+            "url": "https://github.com/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:32:06"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "GitHub · Change is c",
+          "capability": "元素定位",
+          "success": true,
+          "duration": 5.05,
+          "score": 25,
+          "error": null,
+          "details": {
+            "found": [
+              {
+                "type": "content",
+                "selector": ".application-main, article, .markdown-body",
+                "count": 1,
+                "content_length": 4979
+              }
+            ]
+          },
+          "timestamp": "2026-08-11 08:32:11"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "GitHub · Change is c",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.0,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮，跳过"
+          },
+          "timestamp": "2026-08-11 08:32:11"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "GitHub · Change is c",
+          "capability": "输入操作",
+          "success": false,
+          "duration": 5.01,
+          "score": 0.0,
+          "error": "未找到搜索框",
+          "details": {},
+          "timestamp": "2026-08-11 08:32:16"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "GitHub · Change is c",
+          "capability": "数据提取",
+          "success": true,
+          "duration": 0.02,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "selector": ".application-main, article, .markdown-body",
+            "type": "content",
+            "content_length": 4979,
+            "text_preview": "Mona the Octocat, Copilot, and Ducky float jubilantly upward from behind the GitHub product demo acc"
+          },
+          "timestamp": "2026-08-11 08:32:16"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "GitHub · Change is c",
+          "capability": "截图",
+          "success": true,
+          "duration": 1.93,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "E:\\codes\\mini_claude_code\\.claude\\skills\\browser-cdp\\tests\\evaluation\\output\\github.com_screenshot_optimized.png",
+            "size": 2508266
+          },
+          "timestamp": "2026-08-11 08:32:18"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "GitHub · Change is c",
+          "capability": "滚动",
+          "success": true,
+          "duration": 1.03,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "initial": 0,
+            "after": 800
+          },
+          "timestamp": "2026-08-11 08:32:19"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "GitHub · Change is c",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 1.9,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:32:21"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "GitHub · Change is c",
+          "capability": "等待策略",
+          "success": true,
+          "duration": 0.02,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "selector": ".application-main, article, .markdown-body",
+            "type": "content",
+            "elapsed_ms": 20.870685577392578
+          },
+          "timestamp": "2026-08-11 08:32:21"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.71,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:32:24"
+        }
+      ]
+    },
+    {
+      "website_name": "36氪",
+      "website_url": "https://36kr.com",
+      "category": "tech",
+      "test_time": "2026-08-11 08:32:24",
+      "total_tests": 10,
+      "passed_tests": 6,
+      "failed_tests": 4,
+      "pass_rate": 60.0,
+      "avg_score": 67.78,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "36kr.com",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "36氪_让一部分人先看到未来",
+            "url": "https://36kr.com/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:32:29"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "36氪_让一部分人先看到未来",
+          "capability": "元素定位",
+          "success": false,
+          "duration": 10.02,
+          "score": 20.0,
+          "error": "未找到任何元素",
+          "details": {},
+          "timestamp": "2026-08-11 08:32:39"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "36氪_让一部分人先看到未来",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.0,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮，跳过"
+          },
+          "timestamp": "2026-08-11 08:32:39"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "36氪_让一部分人先看到未来",
+          "capability": "输入操作",
+          "success": false,
+          "duration": 5.01,
+          "score": 0.0,
+          "error": "未找到搜索框",
+          "details": {},
+          "timestamp": "2026-08-11 08:32:44"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "36氪_让一部分人先看到未来",
+          "capability": "数据提取",
+          "success": false,
+          "duration": 5.0,
+          "score": 40.0,
+          "error": "提取内容为空或过短",
+          "details": {},
+          "timestamp": "2026-08-11 08:32:49"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "36氪_让一部分人先看到未来",
+          "capability": "截图",
+          "success": true,
+          "duration": 0.73,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "E:\\codes\\mini_claude_code\\.claude\\skills\\browser-cdp\\tests\\evaluation\\output\\36kr.com_screenshot_optimized.png",
+            "size": 1909545
+          },
+          "timestamp": "2026-08-11 08:32:50"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "36氪_让一部分人先看到未来",
+          "capability": "滚动",
+          "success": true,
+          "duration": 0.51,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "initial": 0,
+            "after": 800
+          },
+          "timestamp": "2026-08-11 08:32:50"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "36氪_让一部分人先看到未来",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 2.03,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:32:52"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "36氪_让一部分人先看到未来",
+          "capability": "等待策略",
+          "success": false,
+          "duration": 8.0,
+          "score": 30.0,
+          "error": "等待超时",
+          "details": {},
+          "timestamp": "2026-08-11 08:33:00"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.72,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:33:03"
+        }
+      ]
+    },
+    {
+      "website_name": "雪球",
+      "website_url": "https://xueqiu.com",
+      "category": "finance",
+      "test_time": "2026-08-11 08:33:03",
+      "total_tests": 10,
+      "passed_tests": 9,
+      "failed_tests": 1,
+      "pass_rate": 90.0,
+      "avg_score": 82.22,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "xueqiu.com",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "雪球 - 聪明的投资者都在这里",
+            "url": "https://xueqiu.com/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:33:07"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "雪球 - 聪明的投资者都在这里",
+          "capability": "元素定位",
+          "success": true,
+          "duration": 0.05,
+          "score": 25,
+          "error": null,
+          "details": {
+            "found": [
+              {
+                "type": "content",
+                "selector": ".timeline, .feed-list, article",
+                "count": 1,
+                "content_length": 109
+              }
+            ]
+          },
+          "timestamp": "2026-08-11 08:33:07"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "雪球 - 聪明的投资者都在这里",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.0,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮，跳过"
+          },
+          "timestamp": "2026-08-11 08:33:07"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "雪球 - 聪明的投资者都在这里",
+          "capability": "输入操作",
+          "success": false,
+          "duration": 0.01,
+          "score": 0.0,
+          "error": "未找到搜索框",
+          "details": {},
+          "timestamp": "2026-08-11 08:33:07"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "雪球 - 聪明的投资者都在这里",
+          "capability": "数据提取",
+          "success": true,
+          "duration": 0.01,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "selector": ".timeline, .feed-list, article",
+            "type": "content",
+            "content_length": 109,
+            "text_preview": "7X24快讯修改于昨天10:49 · 来自雪球\n【多支高溢价LOF大幅下跌】全球芯片LOF（501225）触及跌停，当前溢价率为18.02%。国投白银LOF（161226）当前跌幅为5.9%，当前溢价"
+          },
+          "timestamp": "2026-08-11 08:33:07"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "雪球 - 聪明的投资者都在这里",
+          "capability": "截图",
+          "success": true,
+          "duration": 0.31,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "E:\\codes\\mini_claude_code\\.claude\\skills\\browser-cdp\\tests\\evaluation\\output\\xueqiu.com_screenshot_optimized.png",
+            "size": 843892
+          },
+          "timestamp": "2026-08-11 08:33:08"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "雪球 - 聪明的投资者都在这里",
+          "capability": "滚动",
+          "success": true,
+          "duration": 0.51,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "initial": 0,
+            "after": 800
+          },
+          "timestamp": "2026-08-11 08:33:08"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "雪球 - 聪明的投资者都在这里",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 2.0,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:33:10"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "雪球 - 聪明的投资者都在这里",
+          "capability": "等待策略",
+          "success": true,
+          "duration": 0.02,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "selector": ".timeline, .feed-list, article",
+            "type": "content",
+            "elapsed_ms": 18.215179443359375
+          },
+          "timestamp": "2026-08-11 08:33:10"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.7,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:33:13"
+        }
+      ]
+    },
+    {
+      "website_name": "新浪财经",
+      "website_url": "https://finance.sina.com.cn",
+      "category": "finance",
+      "test_time": "2026-08-11 08:33:13",
+      "total_tests": 10,
+      "passed_tests": 6,
+      "failed_tests": 4,
+      "pass_rate": 60.0,
+      "avg_score": 67.78,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "finance.sina.com.cn",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "新浪财经_金融信息服务商",
+            "url": "https://finance.sina.com.cn/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:33:17"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "新浪财经_金融信息服务商",
+          "capability": "元素定位",
+          "success": false,
+          "duration": 10.02,
+          "score": 20.0,
+          "error": "未找到任何元素",
+          "details": {},
+          "timestamp": "2026-08-11 08:33:27"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "新浪财经_金融信息服务商",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.0,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮，跳过"
+          },
+          "timestamp": "2026-08-11 08:33:27"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "新浪财经_金融信息服务商",
+          "capability": "输入操作",
+          "success": false,
+          "duration": 5.02,
+          "score": 0.0,
+          "error": "未找到搜索框",
+          "details": {},
+          "timestamp": "2026-08-11 08:33:32"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "新浪财经_金融信息服务商",
+          "capability": "数据提取",
+          "success": false,
+          "duration": 5.01,
+          "score": 40.0,
+          "error": "提取内容为空或过短",
+          "details": {},
+          "timestamp": "2026-08-11 08:33:37"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "新浪财经_金融信息服务商",
+          "capability": "截图",
+          "success": true,
+          "duration": 0.61,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "E:\\codes\\mini_claude_code\\.claude\\skills\\browser-cdp\\tests\\evaluation\\output\\finance.sina.com.cn_screenshot_optimized.png",
+            "size": 1529364
+          },
+          "timestamp": "2026-08-11 08:33:38"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "新浪财经_金融信息服务商",
+          "capability": "滚动",
+          "success": true,
+          "duration": 0.51,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "initial": 0,
+            "after": 800
+          },
+          "timestamp": "2026-08-11 08:33:38"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "新浪财经_金融信息服务商",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 2.07,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:33:40"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "新浪财经_金融信息服务商",
+          "capability": "等待策略",
+          "success": false,
+          "duration": 8.01,
+          "score": 30.0,
+          "error": "等待超时",
+          "details": {},
+          "timestamp": "2026-08-11 08:33:48"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.75,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:33:51"
+        }
+      ]
+    },
+    {
+      "website_name": "东方财富",
+      "website_url": "https://www.eastmoney.com",
+      "category": "finance",
+      "test_time": "2026-08-11 08:33:51",
+      "total_tests": 10,
+      "passed_tests": 9,
+      "failed_tests": 1,
+      "pass_rate": 90.0,
+      "avg_score": 82.22,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "www.eastmoney.com",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "东方财富网：财经门户，提供专业的财经、股票、行情、证券、基金、理财、银行、保险、信托、期货、黄金、股吧、博客等各类财经资讯及数据",
+            "url": "https://www.eastmoney.com/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:33:56"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "元素定位",
+          "success": true,
+          "duration": 5.05,
+          "score": 25,
+          "error": null,
+          "details": {
+            "found": [
+              {
+                "type": "content",
+                "selector": ".main, .content, .article",
+                "count": 1,
+                "content_length": 69
+              }
+            ]
+          },
+          "timestamp": "2026-08-11 08:34:01"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.0,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮，跳过"
+          },
+          "timestamp": "2026-08-11 08:34:01"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "输入操作",
+          "success": false,
+          "duration": 5.01,
+          "score": 0.0,
+          "error": "未找到搜索框",
+          "details": {},
+          "timestamp": "2026-08-11 08:34:06"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "数据提取",
+          "success": true,
+          "duration": 0.02,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "selector": ".main, .content, .article",
+            "type": "content",
+            "content_length": 69,
+            "text_preview": "移动客户端\n东方财富\n天天基金网\n东方财富证券\n东财基金\n东方财富期货\n妙想\nChoice数据\n股吧\n登录\n证券交易\n基金交易\n无障碍浏览"
+          },
+          "timestamp": "2026-08-11 08:34:06"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "截图",
+          "success": true,
+          "duration": 1.42,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "E:\\codes\\mini_claude_code\\.claude\\skills\\browser-cdp\\tests\\evaluation\\output\\eastmoney.com_screenshot_optimized.png",
+            "size": 2623058
+          },
+          "timestamp": "2026-08-11 08:34:07"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "滚动",
+          "success": true,
+          "duration": 0.51,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "initial": 0,
+            "after": 800
+          },
+          "timestamp": "2026-08-11 08:34:08"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 2.08,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:34:10"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "东方财富网：财经门户，提供专业的财经、股",
+          "capability": "等待策略",
+          "success": true,
+          "duration": 0.04,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "selector": ".main, .content, .article",
+            "type": "content",
+            "elapsed_ms": 37.75906562805176
+          },
+          "timestamp": "2026-08-11 08:34:10"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.65,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:34:12"
+        }
+      ]
+    },
+    {
+      "website_name": "哔哩哔哩",
+      "website_url": "https://www.bilibili.com",
+      "category": "video",
+      "test_time": "2026-08-11 08:34:12",
+      "total_tests": 10,
+      "passed_tests": 6,
+      "failed_tests": 4,
+      "pass_rate": 60.0,
+      "avg_score": 67.78,
+      "results": [
+        {
+          "test_id": "T01",
+          "test_name": "页面加载",
+          "website_name": "www.bilibili.com",
+          "capability": "页面加载",
+          "success": true,
+          "duration": 0.01,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "title": "哔哩哔哩 (゜-゜)つロ 干杯~-bilibili",
+            "url": "https://www.bilibili.com/",
+            "readyState": "complete"
+          },
+          "timestamp": "2026-08-11 08:34:17"
+        },
+        {
+          "test_id": "T02",
+          "test_name": "元素定位",
+          "website_name": "哔哩哔哩 (゜-゜)つロ 干杯~-bil",
+          "capability": "元素定位",
+          "success": false,
+          "duration": 10.01,
+          "score": 20.0,
+          "error": "未找到任何元素",
+          "details": {},
+          "timestamp": "2026-08-11 08:34:27"
+        },
+        {
+          "test_id": "T03",
+          "test_name": "点击操作",
+          "website_name": "哔哩哔哩 (゜-゜)つロ 干杯~-bil",
+          "capability": "点击操作",
+          "success": true,
+          "duration": 0.0,
+          "score": 50.0,
+          "error": null,
+          "details": {
+            "note": "无明确按钮，跳过"
+          },
+          "timestamp": "2026-08-11 08:34:27"
+        },
+        {
+          "test_id": "T04",
+          "test_name": "输入操作",
+          "website_name": "哔哩哔哩 (゜-゜)つロ 干杯~-bil",
+          "capability": "输入操作",
+          "success": false,
+          "duration": 5.01,
+          "score": 0.0,
+          "error": "未找到搜索框",
+          "details": {},
+          "timestamp": "2026-08-11 08:34:32"
+        },
+        {
+          "test_id": "T05",
+          "test_name": "数据提取",
+          "website_name": "哔哩哔哩 (゜-゜)つロ 干杯~-bil",
+          "capability": "数据提取",
+          "success": false,
+          "duration": 5.01,
+          "score": 40.0,
+          "error": "提取内容为空或过短",
+          "details": {},
+          "timestamp": "2026-08-11 08:34:37"
+        },
+        {
+          "test_id": "T06",
+          "test_name": "截图",
+          "website_name": "哔哩哔哩 (゜-゜)つロ 干杯~-bil",
+          "capability": "截图",
+          "success": true,
+          "duration": 0.51,
+          "score": 100.0,
+          "error": null,
+          "details": {
+            "path": "E:\\codes\\mini_claude_code\\.claude\\skills\\browser-cdp\\tests\\evaluation\\output\\bilibili.com_screenshot_optimized.png",
+            "size": 1555836
+          },
+          "timestamp": "2026-08-11 08:34:37"
+        },
+        {
+          "test_id": "T07",
+          "test_name": "滚动",
+          "website_name": "哔哩哔哩 (゜-゜)つロ 干杯~-bil",
+          "capability": "滚动",
+          "success": true,
+          "duration": 0.51,
+          "score": 95.0,
+          "error": null,
+          "details": {
+            "initial": 0,
+            "after": 800
+          },
+          "timestamp": "2026-08-11 08:34:38"
+        },
+        {
+          "test_id": "T08",
+          "test_name": "标签页管理",
+          "website_name": "哔哩哔哩 (゜-゜)つロ 干杯~-bil",
+          "capability": "标签页管理",
+          "success": true,
+          "duration": 2.04,
+          "score": 90.0,
+          "error": null,
+          "details": {
+            "tab_count": 2
+          },
+          "timestamp": "2026-08-11 08:34:40"
+        },
+        {
+          "test_id": "T09",
+          "test_name": "等待策略",
+          "website_name": "哔哩哔哩 (゜-゜)つロ 干杯~-bil",
+          "capability": "等待策略",
+          "success": false,
+          "duration": 8.0,
+          "score": 30.0,
+          "error": "等待超时",
+          "details": {},
+          "timestamp": "2026-08-11 08:34:48"
+        },
+        {
+          "test_id": "T10",
+          "test_name": "错误恢复",
+          "website_name": "unknown",
+          "capability": "错误恢复",
+          "success": true,
+          "duration": 2.64,
+          "score": 85.0,
+          "error": null,
+          "details": {
+            "recovered": true,
+            "scrollY": 0,
+            "hasBody": true
+          },
+          "timestamp": "2026-08-11 08:34:51"
+        }
+      ]
+    }
+  ]
+}

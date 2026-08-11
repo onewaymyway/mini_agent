@@ -11,6 +11,12 @@ from .fetchers import (
     fetch_lhb,
     fetch_northbound,
     fetch_stock_basic,
+    fetch_sector_quote,
+    fetch_sector_flow,
+    fetch_margin_data,
+    fetch_capital_flow,
+    fetch_ipo_data,
+    fetch_convertible_bond,
     DataFetcher,
     default_fetcher,
 )
@@ -55,6 +61,84 @@ from .extended_fetchers import (
     fetch_etf_kline,
     ExtendedDataFetcher,
     extended_fetcher,
+)
+
+# 板块数据抓取
+from .sector_fetcher import (
+    fetch_sector_quote,
+    fetch_sector_list,
+    fetch_sector_flow,
+    SectorFetcher,
+    sector_fetcher,
+)
+
+# 大宗交易数据抓取
+from .block_trade_fetcher import (
+    fetch_block_trade_detail,
+    fetch_block_trade_sector,
+    fetch_block_trade_seat,
+    BlockTradeFetcher,
+    block_trade_fetcher,
+)
+
+# 股东数据抓取
+from .shareholder_fetcher import (
+    fetch_shareholder_count,
+    fetch_institution_hold,
+    fetch_top10_shareholder,
+    ShareholderFetcher,
+    shareholder_fetcher,
+)
+
+# 新闻数据抓取
+from .news_fetcher import (
+    fetch_fenghuang_news,
+    fetch_fenghuang_hot_news,
+    fetch_sina_news,
+    fetch_eastmoney_news,
+    fetch_stock_news,
+    NewsFetcher,
+    news_fetcher,
+)
+
+# 新增数据源
+from .fenghuang_fetcher import (
+    fetch_fenghuang_quote,
+    fetch_fenghuang_news,
+    fetch_fenghuang_hot_news,
+    FenghuangFetcher,
+    fenghuang_fetcher,
+)
+from .sina_news_fetcher import (
+    fetch_sina_news,
+    fetch_sina_stock_news,
+    fetch_sina_hot_news,
+    SinaNewsFetcher,
+    sina_news_fetcher,
+)
+from .macro_fetcher import (
+    fetch_gdp_data,
+    fetch_cpi_data,
+    fetch_pmi_data,
+    fetch_interest_rate_data,
+    fetch_money_supply_data,
+    fetch_exchange_rate_data,
+    fetch_all_macro_data,
+    MacroFetcher,
+    macro_fetcher,
+)
+
+# 股票数据抓取
+from ..scrapers.stock_scraper import (
+    StockScraper,
+    fetch_stock_quote,
+    fetch_stock_kline,
+    fetch_stock_financial,
+    fetch_stock_dividend,
+    fetch_stock_lhb,
+    fetch_stock_northbound,
+    fetch_stock_basic,
+    create_scraper as create_stock_scraper,
 )
 
 __all__ = [
@@ -102,4 +186,53 @@ __all__ = [
     'fetch_etf_kline',
     'ExtendedDataFetcher',
     'extended_fetcher',
+    
+    # 新增数据获取
+    'fetch_sector_quote',
+    'fetch_sector_list',
+    'fetch_sector_flow',
+    'fetch_margin_data',
+    'fetch_capital_flow',
+    'fetch_ipo_data',
+    'fetch_convertible_bond',
+    'SectorFetcher',
+    'sector_fetcher',
+    'BlockTradeFetcher',
+    'block_trade_fetcher',
+    'ShareholderFetcher',
+    'shareholder_fetcher',
+    'NewsFetcher',
+    'news_fetcher',
+
+    # 新增数据源
+    'fetch_fenghuang_quote',
+    'fetch_fenghuang_news',
+    'fetch_fenghuang_hot_news',
+    'FenghuangFetcher',
+    'fenghuang_fetcher',
+    'fetch_sina_news',
+    'fetch_sina_stock_news',
+    'fetch_sina_hot_news',
+    'SinaNewsFetcher',
+    'sina_news_fetcher',
+    'fetch_gdp_data',
+    'fetch_cpi_data',
+    'fetch_pmi_data',
+    'fetch_interest_rate_data',
+    'fetch_money_supply_data',
+    'fetch_exchange_rate_data',
+    'fetch_all_macro_data',
+    'MacroFetcher',
+    'macro_fetcher',
+
+    # 股票数据抓取
+    'StockScraper',
+    'fetch_stock_quote',
+    'fetch_stock_kline',
+    'fetch_stock_financial',
+    'fetch_stock_dividend',
+    'fetch_stock_lhb',
+    'fetch_stock_northbound',
+    'fetch_stock_basic',
+    'create_stock_scraper',
 ]

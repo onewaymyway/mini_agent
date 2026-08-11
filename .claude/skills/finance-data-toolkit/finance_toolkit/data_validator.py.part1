@@ -1,0 +1,453 @@
+# -*- coding: utf-8 -*-
+"""
+数据验证器单元测试
+
+测试覆盖: 字段校验、格式校验、重复检测、异常值识别、逻辑一致性、跨源一致性
+"""
+
+import pytest
+import json
+from datetime import datetime
+from finance_toolkit.data_validator import (
+    DataValidator,
+    ValidationResult,
+    ValidationIssue,
+    SeverityLevel
+)
+
+
+@pytest.fixture
+def validator():
+    return DataValidator()
+
+
+# ============== 测试数据 ==============
+
+good_quote_data = {
+    'source': 'akshare',
+    'data_type': 'quote',
+    'symbol': '600000.SH',
+    'payload': {
+        'open': 10.50,
+        'high': 10.80,
+        'low': 10.40,
+        'close': 10.70,
+        'volume': 1000000,
+        'amount': 10500000.0,
+        'pre_close': 10.50
+    }
+}
+
+bad_quote_data = {
+    'source': 'unknown_source',
+    'data_type': 'quote',
+    'symbol': '600000.SH',
+    'payload': {
+        'open': 10.50,
+        'high': 10.40,  # 最高价 < 最低价
+        'low': 10.80,
+        'close': 10.70,
+        'volume': 1000000,
+        'amount': 10500000.0
+    }
+}
+
+good_kline_data = {
+    'source': 'akshare',
+    'data_type': 'kline',
+    'symbol': '600000.SH',
+    'payload': [
+        {'date': '2024-01-15', 'open': 10.50, 'high': 10.80, 'low': 10.40, 'close': 10.70, 'volume': 1000000, 'amount': 10500000.0},
+        {'date': '2024-01-16', 'open': 10.70, 'high': 11.00, 'low': 10.60, 'close': 10.90, 'volume': 1200000, 'amount': 13000000.0},
+        {'date': '2024-01-17', 'open': 10.90, 'high': 11.20, 'low': 10.80, 'close': 11.00, 'volume': 1100000, 'amount': 12000000.0},
+    ]
+}
+
+bad_kline_data = {
+    'source': 'akshare',
+    'data_type': 'kline',
+    'symbol': '600000.SH',
+    'payload': [
+        {'date': '2024-01-15', 'open': 10.50, 'high': 10.40, 'low': 10.80, 'close': 10.70, 'volume': 1000000, 'amount': 10500000.0},
+        {'date': '2024-01-15', 'open': 10.70, 'high': 11.00, 'low': 10.60, 'close': 10.90, 'volume': 1200000, 'amount': 13000000.0},
+    ]
+}
+
+good_sentiment_data = {
+    'source': 'akshare',
+    'data_type': 'sentiment',
+    'payload': {
+        'date': '2024-01-15',
+        'sentiment_score': 0.65,
+        'sentiment_label': '乐观'
+    }
+}
+
+bad_sentiment_data = {
+    'source': 'akshare',
+    'data_type': 'sentiment',
+    'payload': {
+        'date': '2024-01-15',
+        'sentiment_score': 1.5,  # 超出范围
+        'sentiment_label': '乐观'
+    }
+}
+
+duplicate_data = {
+    'source': 'akshare',
+    'data_type': 'quote',
+    'symbol': '600000.SH',
+    'payload': [
+        {'open': 10.50, 'high': 10.80, 'low': 10.40, 'close': 10.70, 'volume': 1000000, 'amount': 10500000.0},
+        {'open': 10.50, 'high': 10.80, 'low': 10.40, 'close': 10.70, 'volume': 1000000, 'amount': 10500000.0},
+        {'open': 10.50, 'high': 10.80, 'low': 10.40, 'close': 10.70, 'volume': 1000000, 'amount': 10500000.0},
+    ]
+}
+
+
+# ============== 字段校验测试 ==============
+
+class TestFieldValidation:
+    """字段校验测试 F001-F028"""
+    
+    def test_required_fields_quote(self, validator):
+        """F001: 行情数据必填字段检查"""
+        result = validator.validate(good_quote_data)
+        assert result.is_valid
+        assert result.critical_count == 0
+    
+    def test_missing_required_fields(self, validator):
+        """F001: 缺少必填字段"""
+        bad_data = good_quote_data.copy()
+        bad_data['payload'] = {'close': 10.70}  # 缺少 open, high, low, volume, amount
+        result = validator.validate(bad_data)
+        assert not result.is_valid
+        assert result.critical_count > 0
+        assert any(i.rule_id == 'F001' for i in result.issues)
+    
+    def test_required_fields_kline(self, validator):
+        """F001: K线数据必填字段检查"""
+        result = validator.validate(good_kline_data)
+        assert result.is_valid
+    
+    def test_missing_kline_fields(self, validator):
+        """F001: K线数据缺少必填字段"""
+        bad_data = good_kline_data.copy()
+        bad_data['payload'] = [{'date': '2024-01-15'}]  # 缺少价格字段
+        result = validator.validate(bad_data)
+        assert not result.is_valid
+        assert result.critical_count > 0
+    
+    def test_field_type_validation(self, validator):
+        """F016: 字段类型校验"""
+        bad_data = good_quote_data.copy()
+        bad_data['payload']['open'] = 'not_a_number'  # 类型错误
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'F016' for i in result.issues)
+    
+    def test_symbol_length_validation(self, validator):
+        """F022: 股票代码长度校验"""
+        bad_data = good_quote_data.copy()
+        bad_data['symbol'] = '600'  # 过短
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'F022' for i in result.issues)
+
+
+# ============== 格式校验测试 ==============
+
+class TestFormatValidation:
+    """格式校验测试 FM001-FM024"""
+    
+    def test_valid_date_format(self, validator):
+        """FM001: 有效日期格式"""
+        result = validator.validate(good_kline_data)
+        assert result.is_valid
+    
+    def test_invalid_date_format(self, validator):
+        """FM001: 无效日期格式"""
+        bad_data = good_kline_data.copy()
+        bad_data['payload'][0]['date'] = '2024/13/45'  # 无效日期
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'FM001' for i in result.issues)
+    
+    def test_invalid_timestamp(self, validator):
+        """FM002: 无效时间戳"""
+        bad_data = good_quote_data.copy()
+        bad_data['payload']['timestamp'] = 'invalid-timestamp'
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'FM002' for i in result.issues)
+    
+    def test_value_range_sentiment(self, validator):
+        """FM012: 情绪分数范围校验"""
+        result = validator.validate(bad_sentiment_data)
+        assert any(i.rule_id == 'FM012' for i in result.issues)
+        assert any(i.severity == SeverityLevel.CRITICAL for i in result.issues)
+    
+    def test_a_stock_code_format(self, validator):
+        """FM016: A股代码格式校验"""
+        bad_data = good_quote_data.copy()
+        bad_data['symbol'] = '600000'  # 缺少后缀
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'FM016' for i in result.issues)
+    
+    def test_url_format(self, validator):
+        """FM023: URL格式校验"""
+        bad_data = {
+            'source': 'akshare',
+            'data_type': 'news',
+            'payload': {
+                'title': '测试新闻',
+                'publish_time': '2024-01-15',
+                'source': '测试源',
+                'url': 'not-a-url'  # 无效URL
+            }
+        }
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'FM023' for i in result.issues)
+
+
+# ============== 重复检测测试 ==============
+
+class TestDuplicateDetection:
+    """重复检测测试 D001-D008"""
+    
+    def test_no_duplicates(self, validator):
+        """D001: 无重复数据"""
+        result = validator.validate(good_kline_data)
+        assert result.is_valid
+    
+    def test_high_duplicate_rate(self, validator):
+        """D001: 高重复率"""
+        result = validator.validate(duplicate_data)
+        assert any(i.rule_id == 'D001' for i in result.issues)
+    
+    def test_kline_date_duplicate(self, validator):
+        """D004: K线日期重复"""
+        result = validator.validate(bad_kline_data)
+        assert any(i.rule_id == 'D004' for i in result.issues)
+
+
+# ============== 异常值识别测试 ==============
+
+class TestAnomalyDetection:
+    """异常值识别测试 A001-A022"""
+    
+    def test_zero_price(self, validator):
+        """A001: 零价格检测"""
+        bad_data = good_quote_data.copy()
+        bad_data['payload']['close'] = 0
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'A001' for i in result.issues)
+        assert any(i.severity == SeverityLevel.CRITICAL for i in result.issues)
+    
+    def test_negative_price(self, validator):
+        """A001: 负价格检测"""
+        bad_data = good_quote_data.copy()
+        bad_data['payload']['open'] = -5.0
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'A001' for i in result.issues)
+    
+    def test_zero_volume(self, validator):
+        """A010: 零成交量检测"""
+        bad_data = good_quote_data.copy()
+        bad_data['payload']['volume'] = 0
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'A010' for i in result.issues)
+    
+    def test_zscore_outlier(self, validator):
+        """A015: Z-Score异常检测"""
+        # 创建包含异常值的数据
+        payload = []
+        for i in range(20):
+            payload.append({
+                'date': f'2024-01-{i+1:02d}',
+                'open': 10.0,
+                'high': 10.5,
+                'low': 9.8,
+                'close': 10.2 if i < 19 else 50.0,  # 最后一个值异常
+                'volume': 1000000,
+                'amount': 10200000.0
+            })
+        data = {
+            'source': 'akshare',
+            'data_type': 'kline',
+            'symbol': '600000.SH',
+            'payload': payload
+        }
+        result = validator.validate(data)
+        # Z-Score检测可能触发警告
+        assert isinstance(result, ValidationResult)
+
+
+# ============== 逻辑一致性测试 ==============
+
+class TestLogicConsistency:
+    """逻辑一致性测试 L001-L019"""
+    
+    def test_ohlc_logic(self, validator):
+        """L001: OHLC基本逻辑"""
+        result = validator.validate(bad_quote_data)
+        assert any(i.rule_id == 'L001' for i in result.issues)
+        assert any(i.severity == SeverityLevel.CRITICAL for i in result.issues)
+    
+    def test_open_price_logic(self, validator):
+        """L002-L003: 开盘价逻辑"""
+        bad_data = good_quote_data.copy()
+        bad_data['payload']['high'] = 10.30  # 最高价 < 开盘价
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'L002' for i in result.issues)
+    
+    def test_change_pct_consistency(self, validator):
+        """L004: 涨跌幅计算一致性"""
+        bad_data = good_quote_data.copy()
+        bad_data['payload']['change_pct'] = 50.0  # 与计算值不一致
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'L004' for i in result.issues)
+    
+    def test_amount_logic(self, validator):
+        """L005: 成交额逻辑"""
+        bad_data = good_quote_data.copy()
+        bad_data['payload']['amount'] = 99999999.0  # 与量价不匹配
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'L005' for i in result.issues)
+    
+    def test_change_pct_reasonable(self, validator):
+        """L011: 涨跌幅合理性"""
+        bad_data = good_quote_data.copy()
+        bad_data['payload']['pre_close'] = 1.0  # 导致涨跌幅异常
+        bad_data['payload']['close'] = 10.70
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'L011' for i in result.issues)
+
+
+# ============== 跨源一致性测试 ==============
+
+class TestCrossSourceValidation:
+    """跨源一致性测试 C001-C006"""
+    
+    def test_valid_source(self, validator):
+        """C006: 合法数据源"""
+        result = validator.validate(good_quote_data)
+        assert not any(i.rule_id == 'C006' for i in result.issues)
+    
+    def test_invalid_source(self, validator):
+        """C006: 非法数据源"""
+        bad_data = good_quote_data.copy()
+        bad_data['source'] = 'unknown_source'
+        result = validator.validate(bad_data)
+        assert any(i.rule_id == 'C006' for i in result.issues)
+
+
+# ============== 综合测试 ==============
+
+class TestComprehensive:
+    """综合测试"""
+    
+    def test_health_score(self, validator):
+        """健康评分计算"""
+        result = validator.validate(good_quote_data)
+        assert result.health_score == 100.0
+        
+        result = validator.validate(bad_quote_data)
+        assert result.health_score < 100.0
+    
+    def test_verdict(self, validator):
+        """判定结果"""
+        result = validator.validate(good_quote_data)
+        assert result.verdict == 'ACCEPTED'
+        
+        result = validator.validate(bad_quote_data)
+        assert result.verdict in ['FLAGGED', 'REJECTED']
+    
+    def test_summary_output(self, validator):
+        """摘要输出"""
+        result = validator.validate(good_quote_data)
+        summary = result.summary()
+        assert '数据验证结果' in summary
+        assert '健康评分' in summary
+    
+    def test_to_dict(self, validator):
+        """字典转换"""
+        result = validator.validate(good_quote_data)
+        d = result.to_dict()
+        assert 'is_valid' in d
+        assert 'verdict' in d
+        assert 'health_score' in d
+        assert 'issues' in d
+    
+    def test_validate_batch(self, validator):
+        """批量验证"""
+        data_list = [good_quote_data, bad_quote_data]
+        results = validator.validate_batch(data_list)
+        assert len(results) == 2
+        assert 'item_0' in results
+        assert 'item_1' in results
+    
+    def test_auto_detect_type(self, validator):
+        """自动检测数据类型"""
+        # 行情数据
+        result = validator.validate(good_quote_data, data_type='auto')
+        assert result.metrics.get('data_type') == 'quote'
+        
+        # K线数据
+        result = validator.validate(good_kline_data, data_type='auto')
+        assert result.metrics.get('data_type') == 'kline'
+    
+    def test_get_validation_summary(self, validator):
+        """验证摘要统计"""
+        from finance_toolkit.data_validator import get_validation_summary
+        results = {
+            'item_0': validator.validate(good_quote_data),
+            'item_1': validator.validate(bad_quote_data)
+        }
+        summary = get_validation_summary(results)
+        assert 'total' in summary
+        assert 'acceptance_rate' in summary
+
+
+# ============== 边界条件测试 ==============
+
+class TestEdgeCases:
+    """边界条件测试"""
+    
+    def test_empty_data(self, validator):
+        """空数据"""
+        result = validator.validate({})
+        assert not result.is_valid
+    
+    def test_none_data(self, validator):
+        """None数据"""
+        result = validator.validate(None)
+        assert result.verdict == 'REJECTED'
+    
+    def test_string_data(self, validator):
+        """字符串数据"""
+        result = validator.validate('not a dict')
+        assert result.verdict == 'REJECTED'
+    
+    def test_empty_payload(self, validator):
+        """空payload"""
+        data = {'source': 'akshare', 'data_type': 'quote', 'payload': {}}
+        result = validator.validate(data)
+        assert result.critical_count > 0
+    
+    def test_all_null_fields(self, validator):
+        """全空字段"""
+        data = {
+            'source': 'akshare',
+            'data_type': 'quote',
+            'payload': {
+                'open': None,
+                'high': None,
+                'low': None,
+                'close': None,
+                'volume': None,
+                'amount': None
+            }
+        }
+        result = validator.validate(data)
+        assert result.critical_count > 0
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])

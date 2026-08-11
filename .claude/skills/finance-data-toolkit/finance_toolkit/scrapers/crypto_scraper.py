@@ -43,8 +43,6 @@ CRYPTO_CODES = {
 
 
 @register_scraper
-@register_scraper
-@register_scraper
 class CryptoScraper(BaseScraper):
     """加密货币数据抓取器"""
 

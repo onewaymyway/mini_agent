@@ -1,0 +1,319 @@
+"""
+P0 网站测试运行器
+
+执行 P0 优先级网站的测试用例，覆盖核心操作能力：
+- OP-001: 页面加载能力
+- OP-002: 元素定位能力
+- OP-003: 点击交互能力
+- OP-004: 输入操作能力
+- OP-005: 数据提取能力
+- OP-006: 截图能力
+- OP-007: 滚动操作能力
+- OP-008: 多标签页管理
+- OP-009: 等待策略
+- OP-010: 错误恢复
+
+使用方式:
+    python run_p0_tests.py --websites baidu,zhihu,gov_cn --headless
+    python run_p0_tests.py --all-p0 --parallel
+    python run_p0_tests.py --websites baidu --capabilities nav,locate,extract
+"""
+
+import argparse
+import json
+import logging
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+# 添加 skill 根目录到路径
+SKILL_DIR = Path(__file__).parent.parent.parent
+if str(SKILL_DIR) not in sys.path:
+    sys.path.insert(0, str(SKILL_DIR))
+
+logger = logging.getLogger(__name__)
+
+
+# ==================== 测试数据定义 ====================
+
+P0_WEBSITES = {
+    "gov_cn": {
+        "name": "中国政府网",
+        "url": "https://www.gov.cn",
+        "domain": "gov.cn",
+        "category": "GOV",
+        "anti_crawl_level": 1,
+        "test_keywords": ["国务院", "政策", "新闻"],
+        "expected_elements": {
+            "search_box": "input[name='keyword'], input[type='search'], #searchInput",
+            "nav_links": "nav a, .nav a, header a",
+            "news_list": ".news-list, .list-news, article",
+        },
+    },
+    "baidu": {
+        "name": "百度",
+        "url": "https://www.baidu.com",
+        "domain": "baidu.com",
+        "category": "SEARCH",
+        "anti_crawl_level": 1,
+        "test_keywords": ["AI 大模型", "天气预报", "新闻"],
+        "expected_elements": {
+            "search_box": "#kw, input[name='wd'], #index_keyword",
+            "search_btn": "#su, input[type='submit'], .s_btn",
+            "result_list": "#content_left .result, .result-op, .c-container",
+        },
+    },
+    "zhihu": {
+        "name": "知乎",
+        "url": "https://www.zhihu.com",
+        "domain": "zhihu.com",
+        "category": "SOCIAL",
+        "anti_crawl_level": 2,
+        "test_keywords": ["人工智能", "Python", "机器学习"],
+        "expected_elements": {
+            "search_box": "input[placeholder*='搜索'], .SearchInput-input, #zh-search-input",
+            "hot_list": ".HotItem-content, .HotItem-wrapper, .FeedItem",
+            "nav_links": ".App-main nav a, .TopNav-items a",
+        },
+    },
+    "sina_finance": {
+        "name": "新浪财经",
+        "url": "https://finance.sina.com.cn",
+        "domain": "finance.sina.com.cn",
+        "category": "FINANCE",
+        "anti_crawl_level": 2,
+        "test_keywords": ["股票", "基金", "期货"],
+        "expected_elements": {
+            "search_box": "input[name='keyword'], #searchkey, input[type='text']",
+            "news_list": ".list_01 li, .feed-list li, .block-01 li",
+            "stock_quote": ".quote, .price, .up, .down",
+        },
+    },
+    "eastmoney": {
+        "name": "东方财富",
+        "url": "https://www.eastmoney.com",
+        "domain": "eastmoney.com",
+        "category": "FINANCE",
+        "anti_crawl_level": 2,
+        "test_keywords": ["股票行情", "基金净值", "财经新闻"],
+        "expected_elements": {
+            "search_box": "input[name='key'], #searchKey, input[type='search']",
+            "news_list": ".news-list li, .list li, .news-item",
+            "stock_table": "table.data-table, .quote-table, .data-table",
+        },
+    },
+    "csdn": {
+        "name": "CSDN",
+        "url": "https://www.csdn.net",
+        "domain": "csdn.net",
+        "category": "TECH",
+        "anti_crawl_level": 2,
+        "test_keywords": ["Python 教程", "JavaScript", "深度学习"],
+        "expected_elements": {
+            "search_box": "input[name='keyword'], #searchInput, input[type='search']",
+            "article_list": ".article-list li, .blog-list li, .feed_list li",
+            "hot_articles": ".hot-ranking li, .rank-list li",
+        },
+    },
+    "juejin": {
+        "name": "掘金",
+        "url": "https://juejin.cn",
+        "domain": "juejin.cn",
+        "category": "TECH",
+        "anti_crawl_level": 2,
+        "test_keywords": ["Vue.js", "React", "Go 语言"],
+        "expected_elements": {
+            "search_box": "input[placeholder*='搜索'], .search-input, input[type='search']",
+            "article_list": ".article-list, .feed-list, .note-list",
+            "hot_articles": ".hot-list li, .ranking-list li",
+        },
+    },
+    "bilibili": {
+        "name": "哔哩哔哩",
+        "url": "https://www.bilibili.com",
+        "domain": "bilibili.com",
+        "category": "VIDEO",
+        "anti_crawl_level": 3,
+        "test_keywords": ["编程教程", "Python", "AI"],
+        "expected_elements": {
+            "search_box": "input[name='keyword'], .search-input, #searchInput",
+            "video_list": ".video-item, .bili-video-card, .feed-item",
+            "nav_links": ".nav-items a, .topnav a, .navbar a",
+        },
+    },
+    "douban": {
+        "name": "豆瓣",
+        "url": "https://www.douban.com",
+        "domain": "douban.com",
+        "category": "SOCIAL",
+        "anti_crawl_level": 2,
+        "test_keywords": ["电影", "图书", "音乐"],
+        "expected_elements": {
+            "search_box": "input[name='q'], .search-input, input[type='search']",
+            "movie_list": ".movie-list li, .item, .mod",
+            "nav_links": ".nav-items a, .channel a, .tabs a",
+        },
+    },
+    "github": {
+        "name": "GitHub",
+        "url": "https://github.com",
+        "domain": "github.com",
+        "category": "DEVELOPER",
+        "anti_crawl_level": 1,
+        "test_keywords": ["python", "react", "kubernetes"],
+        "expected_elements": {
+            "search_box": "input[data-testid='search-input'], .header-search-input, input[type='search']",
+            "repo_list": ".repo-list li, .Box-row, .Box-row",
+            "nav_links": ".header-nav a, .header-nav-item a",
+        },
+    },
+    "36kr": {
+        "name": "36氪",
+        "url": "https://36kr.com",
+        "domain": "36kr.com",
+        "category": "TECH",
+        "anti_crawl_level": 2,
+        "test_keywords": ["人工智能", "创业", "科技"],
+        "expected_elements": {
+            "search_box": "input[placeholder*='搜索'], .search-input, input[type='search']",
+            "article_list": ".article-list li, .news-list li, .feed-item",
+            "hot_articles": ".hot-list li, .ranking li",
+        },
+    },
+    "xueqiu": {
+        "name": "雪球",
+        "url": "https://xueqiu.com",
+        "domain": "xueqiu.com",
+        "category": "FINANCE",
+        "anti_crawl_level": 3,
+        "test_keywords": ["股票", "基金", "投资"],
+        "expected_elements": {
+            "search_box": "input[name='q'], .search-input, input[type='search']",
+            "stock_list": ".stock-list li, .quote-item, .stock-item",
+            "news_list": ".news-list li, .timeline-item",
+        },
+    },
+}
+
+
+# ==================== 测试结果数据类 ====================
+
+@dataclass
+class TestResult:
+    """单个测试用例结果"""
+    test_id: str
+    test_name: str
+    website_name: str
+    capability: str
+    success: bool
+    duration: float
+    score: float
+    error: Optional[str] = None
+    details: Dict[str, Any] = field(default_factory=dict)
+    timestamp: str = ""
+
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "test_id": self.test_id,
+            "test_name": self.test_name,
+            "website_name": self.website_name,
+            "capability": self.capability,
+            "success": self.success,
+            "duration": round(self.duration, 2),
+            "score": round(self.score, 2),
+            "error": self.error,
+            "details": self.details,
+            "timestamp": self.timestamp,
+        }
+
+
+@dataclass
+class WebsiteTestReport:
+    """单个网站的测试报告"""
+    website_name: str
+    website_url: str
+    category: str
+    test_time: str
+    results: List[TestResult] = field(default_factory=list)
+
+    @property
+    def total_tests(self) -> int:
+        return len(self.results)
+
+    @property
+    def passed_tests(self) -> int:
+        return sum(1 for r in self.results if r.success)
+
+    @property
+    def failed_tests(self) -> int:
+        return self.total_tests - self.passed_tests
+
+    @property
+    def pass_rate(self) -> float:
+        return (self.passed_tests / self.total_tests * 100) if self.total_tests > 0 else 0
+
+    @property
+    def avg_score(self) -> float:
+        scores = [r.score for r in self.results if r.score > 0]
+        return sum(scores) / len(scores) if scores else 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "website_name": self.website_name,
+            "website_url": self.website_url,
+            "category": self.category,
+            "test_time": self.test_time,
+            "total_tests": self.total_tests,
+            "passed_tests": self.passed_tests,
+            "failed_tests": self.failed_tests,
+            "pass_rate": round(self.pass_rate, 2),
+            "avg_score": round(self.avg_score, 2),
+            "results": [r.to_dict() for r in self.results],
+        }
+
+    def to_markdown(self) -> str:
+        lines = [
+            f"# {self.website_name} 测试报告\n",
+            f"**网站**: {self.website_url}\n",
+            f"**分类**: {self.category}\n",
+            f"**测试时间**: {self.test_time}\n",
+            f"**通过率**: {self.pass_rate:.1f}% ({self.passed_tests}/{self.total_tests})\n",
+            f"**平均得分**: {self.avg_score:.1f}/100\n",
+            "\n",
+        ]
+
+        capability_stats = {}
+        for r in self.results:
+            cap = r.capability
+            if cap not in capability_stats:
+                capability_stats[cap] = {"total": 0, "passed": 0, "scores": []}
+            capability_stats[cap]["total"] += 1
+            if r.success:
+                capability_stats[cap]["passed"] += 1
+            if r.score > 0:
+                capability_stats[cap]["scores"].append(r.score)
+
+        lines.append("## 能力维度得分\n")
+        lines.append("| 能力 | 测试数 | 通过数 | 通过率 | 平均分 |\n")
+        lines.append("|------|--------|--------|--------|--------|\n")
+        for cap, stats in capability_stats.items():
+            cap_rate = (stats["passed"] / stats["total"] * 100) if stats["total"] > 0 else 0
+            avg = sum(stats["scores"]) / len(stats["scores"]) if stats["scores"] else 0
+            lines.append(f"| {cap} | {stats['total']} | {stats['passed']} | {cap_rate:.1f}% | {avg:.1f} |\n")
+
+        lines.append("\n## 详细测试结果\n")
+        lines.append("| 测试 ID | 测试名称 | 结果 | 耗时 (s) | 得分 | 错误 |\n")
+        lines.append("|---------|----------|------|----------|------|------|\n")
+        for r in self.results:
+            status = "✓" if r.success else "✗"
+            error = (r.error or "")[:30]
+            lines.append(f"| {r.test_id} | {r.test_name} | {status} | {r.duration:.2f} | {r.score:.1f} | {error} |\n")
+
+        return "".join(lines)

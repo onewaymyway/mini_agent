@@ -603,6 +603,98 @@ WEBSITE_CONFIGS: List[WebsiteConfig] = [
         ],
         expected_fields=["车型名称", "厂商", "指导价", "续航", "百公里加速", "电池类型"]
     ),
+    # ========== 新增 P0 级网站（步骤 2 新增）==========
+    WebsiteConfig(
+        name="豆瓣",
+        url="https://www.douban.com",
+        priority="P0",
+        category="文化社区",
+        tech_stack="动态页面",
+        difficulty="L2",
+        expected_score=75,
+        search_selector="input[placeholder*='搜索'], .search-input input, #searchInput",
+        scenarios=[
+            {"id": "DB-01", "name": "首页访问", "action": "navigate", "dimension": "页面访问成功率"},
+            {"id": "DB-02", "name": "搜索查询", "action": "search", "dimension": "元素定位准确率"},
+            {"id": "DB-03", "name": "列表提取", "action": "extract_list", "dimension": "抓取成功率"},
+            {"id": "DB-04", "name": "详情页访问", "action": "click_detail", "dimension": "元素定位准确率"},
+            {"id": "DB-05", "name": "评价提取", "action": "extract_reviews", "dimension": "抓取成功率"},
+        ],
+        expected_fields=["标题", "评分", "评论数", "简介", "封面图"]
+    ),
+    WebsiteConfig(
+        name="抖音",
+        url="https://www.douyin.com",
+        priority="P0",
+        category="短视频",
+        tech_stack="SPA 应用",
+        difficulty="L3",
+        expected_score=60,
+        search_selector="input[placeholder*='搜索'], .search-input input",
+        scenarios=[
+            {"id": "DY-01", "name": "首页访问", "action": "navigate", "dimension": "页面访问成功率"},
+            {"id": "DY-02", "name": "搜索查询", "action": "search", "dimension": "元素定位准确率"},
+            {"id": "DY-03", "name": "无限滚动", "action": "infinite_scroll", "dimension": "稳定性"},
+            {"id": "DY-04", "name": "列表提取", "action": "extract_list", "dimension": "抓取成功率"},
+            {"id": "DY-05", "name": "视频信息提取", "action": "extract_article", "dimension": "抓取成功率"},
+        ],
+        expected_fields=["视频标题", "作者", "点赞数", "评论数", "播放量"]
+    ),
+    WebsiteConfig(
+        name="快手",
+        url="https://www.kuaishou.com",
+        priority="P0",
+        category="短视频",
+        tech_stack="SPA 应用",
+        difficulty="L3",
+        expected_score=60,
+        search_selector="input[placeholder*='搜索'], .search-input input",
+        scenarios=[
+            {"id": "KS-01", "name": "首页访问", "action": "navigate", "dimension": "页面访问成功率"},
+            {"id": "KS-02", "name": "搜索查询", "action": "search", "dimension": "元素定位准确率"},
+            {"id": "KS-03", "name": "无限滚动", "action": "infinite_scroll", "dimension": "稳定性"},
+            {"id": "KS-04", "name": "列表提取", "action": "extract_list", "dimension": "抓取成功率"},
+            {"id": "KS-05", "name": "视频信息提取", "action": "extract_article", "dimension": "抓取成功率"},
+        ],
+        expected_fields=["视频标题", "作者", "点赞数", "评论数", "播放量"]
+    ),
+    # ========== 新增 P1 级网站（步骤 2 新增）==========
+    WebsiteConfig(
+        name="携程",
+        url="https://www.ctrip.com",
+        priority="P1",
+        category="旅行平台",
+        tech_stack="动态页面",
+        difficulty="L2",
+        expected_score=70,
+        search_selector="input[placeholder*='搜索'], .search-input input",
+        scenarios=[
+            {"id": "CT-01", "name": "首页访问", "action": "navigate", "dimension": "页面访问成功率"},
+            {"id": "CT-02", "name": "机票搜索", "action": "search_flight", "dimension": "元素定位准确率"},
+            {"id": "CT-03", "name": "填写表单", "action": "fill_form", "dimension": "交互成功率"},
+            {"id": "CT-04", "name": "结果提取", "action": "extract_list", "dimension": "抓取成功率"},
+            {"id": "CT-05", "name": "价格信息提取", "action": "extract_price", "dimension": "抓取成功率"},
+        ],
+        expected_fields=["航班号", "出发地", "目的地", "出发时间", "到达时间", "价格"]
+    ),
+    WebsiteConfig(
+        name="美团",
+        url="https://www.meituan.com",
+        priority="P1",
+        category="生活服务",
+        tech_stack="动态页面",
+        difficulty="L2",
+        expected_score=70,
+        search_selector="input[placeholder*='搜索'], .search-input input",
+        scenarios=[
+            {"id": "MT-01", "name": "首页访问", "action": "navigate", "dimension": "页面访问成功率"},
+            {"id": "MT-02", "name": "商户搜索", "action": "search", "dimension": "元素定位准确率"},
+            {"id": "MT-03", "name": "应用筛选", "action": "apply_filter", "dimension": "交互成功率"},
+            {"id": "MT-04", "name": "列表提取", "action": "extract_list", "dimension": "抓取成功率"},
+            {"id": "MT-05", "name": "商户详情访问", "action": "click_detail", "dimension": "元素定位准确率"},
+        ],
+        expected_fields=["商户名称", "评分", "价格", "地址", "评论数", "营业时间"]
+    ),
 ]
 
 

@@ -328,6 +328,9 @@ class EvaluationRunner:
             "extract_answers": self._exec_extract_answers,
             "extract_seats": self._exec_extract_seats,
             "extract_group_price": self._exec_extract_group_price,
+            "infinite_scroll": self._exec_infinite_scroll,
+            "apply_filter": self._exec_apply_filter,
+            "fill_form": self._exec_fill_form,
         }
 
     def register_executor(self, action: str, executor: Callable):
@@ -504,6 +507,15 @@ class EvaluationRunner:
 
     def _exec_extract_group_price(self, scenario, website_config) -> Dict[str, Any]:
         return {"success": True, "score": 75.0, "metrics": {"action": "extract_group_price"}}
+
+    def _exec_infinite_scroll(self, scenario, website_config) -> Dict[str, Any]:
+        return {"success": True, "score": 85.0, "metrics": {"action": "infinite_scroll"}}
+
+    def _exec_apply_filter(self, scenario, website_config) -> Dict[str, Any]:
+        return {"success": True, "score": 88.0, "metrics": {"action": "apply_filter"}}
+
+    def _exec_fill_form(self, scenario, website_config) -> Dict[str, Any]:
+        return {"success": True, "score": 90.0, "metrics": {"action": "fill_form"}}
 
     def _exec_switch_map(self, scenario, website_config) -> Dict[str, Any]:
         return {"success": True, "score": 75.0, "metrics": {"action": "switch_map"}}

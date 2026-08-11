@@ -257,10 +257,89 @@ class CaptchaHandler:
             )
     
     async def _calculate_slide_distance(self) -> float:
-        """计算滑动距离（简化版，实际需要图像对比）"""
-        # TODO: 实现图像对比算法计算缺口位置
-        # 这里返回一个默认值，实际使用时需要实现完整的图像识别
+        """计算滑动距离（通过图像对比）"""
+        try:
+            # 获取完整图片和缺口图片
+            full_img = await self._get_captcha_image("full")
+            gap_img = await self._get_captcha_image("gap")
+            
+            if not full_img or not gap_img:
+                logger.warning("无法获取验证码图片，使用默认距离")
+                return 280.0
+            
+            # 图像对比计算缺口位置
+            distance = self._compare_images(full_img, gap_img)
+            
+            if distance > 0:
+                logger.info(f"图像对比计算滑动距离: {distance}px")
+                return float(distance)
+            
+        except Exception as e:
+            logger.error(f"图像对比失败: {e}，使用默认距离")
+        
+        # 降级：返回默认值
         return 280.0
+    
+    async def _get_captcha_image(self, img_type: str) -> Optional[Image.Image]:
+        """获取验证码图片"""
+        try:
+            if img_type == "full":
+                selector = "[class*='geetest'] canvas, [class*='captcha'] canvas, .gt_box_wrap canvas"
+            else:
+                selector = "[class*='geetest'] img[src*='bg'], [class*='captcha'] img[src*='bg']"
+            
+            elem = await self.session.query_selector(selector)
+            if elem:
+                # 获取图片数据
+                src = await elem.get_attribute("src")
+                if src and src.startswith("data:"):
+                    # Base64 编码的图片
+                    import base64
+                    data = src.split(",")[1]
+                    img_data = base64.b64decode(data)
+                    return Image.open(io.BytesIO(img_data))
+        except Exception as e:
+            logger.debug(f"获取验证码图片失败: {e}")
+        return None
+    
+    def _compare_images(self, full_img: Image.Image, gap_img: Image.Image) -> int:
+        """通过图像对比计算缺口位置"""
+        try:
+            # 转换为灰度图
+            full_gray = full_img.convert('L')
+            gap_gray = gap_img.convert('L')
+            
+            # 获取图片尺寸
+            full_width, full_height = full_gray.size
+            gap_width, gap_height = gap_gray.size
+            
+            # 逐像素对比
+            full_pixels = list(full_gray.getdata())
+            gap_pixels = list(gap_gray.getdata())
+            
+            # 计算缺口位置（简化版：找第一个显著差异的列）
+            threshold = 30  # 像素差异阈值
+            
+            for x in range(gap_width):
+                diff_count = 0
+                for y in range(min(gap_height, full_height)):
+                    full_idx = y * full_width + x
+                    gap_idx = y * gap_width + x
+                    
+                    if full_idx < len(full_pixels) and gap_idx < len(gap_pixels):
+                        if abs(full_pixels[full_idx] - gap_pixels[gap_idx]) > threshold:
+                            diff_count += 1
+                
+                # 如果这一列有显著差异，认为是缺口位置
+                if diff_count > gap_height * 0.5:
+                    return x
+            
+            # 如果找不到，返回图片宽度
+            return gap_width
+            
+        except Exception as e:
+            logger.error(f"图像对比计算失败: {e}")
+            return -1
     
     async def _slide(self, slider, distance: float):
         """执行滑动操作"""
@@ -439,10 +518,90 @@ class CaptchaHandler:
     
     async def _ocr_via_api(self, image_bytes: bytes) -> str:
         """通过外部 API 进行 OCR 识别"""
-        # TODO: 集成第三方 OCR API（如百度 OCR、腾讯 OCR、阿里云 OCR）
-        # 这里返回空字符串，表示需要用户手动输入
+        # 尝试使用配置的 OCR API
+        if self.ocr_api:
+            try:
+                text = self.ocr_api(image_bytes)
+                if text:
+                    logger.info("OCR 识别成功")
+                    return text
+            except Exception as e:
+                logger.error(f"OCR API 调用失败: {e}")
+        
+        # 尝试使用环境变量配置的 OCR 服务
+        ocr_service = os.environ.get("BROWSER_CDP_OCR_SERVICE", "")
+        if ocr_service == "baidu":
+            return await self._baidu_ocr(image_bytes)
+        elif ocr_service == "tencent":
+            return await self._tencent_ocr(image_bytes)
+        elif ocr_service == "aliyun":
+            return await self._aliyun_ocr(image_bytes)
+        
         logger.warning("未配置 OCR API，需要手动输入验证码")
         return ""
+    
+    async def _baidu_ocr(self, image_bytes: bytes) -> str:
+        """百度 OCR API"""
+        try:
+            import requests
+            access_token = os.environ.get("BAIDU_OCR_ACCESS_TOKEN", "")
+            if not access_token:
+                logger.warning("未配置 BAIDU_OCR_ACCESS_TOKEN")
+                return ""
+            
+            url = "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic"
+            params = {"access_token": access_token}
+            headers = {"Content-Type": "application/x-www-form-urlencoded"}
+            
+            # 图片转 base64
+            img_base64 = base64.b64encode(image_bytes).decode('utf-8')
+            data = {"image": img_base64}
+            
+            response = requests.post(url, params=params, headers=headers, data=data, timeout=10)
+            result = response.json()
+            
+            if result.get("words_result"):
+                text = "".join([item.get("words", "") for item in result["words_result"]])
+                logger.info(f"百度 OCR 识别成功: {text}")
+                return text
+            return ""
+        except Exception as e:
+            logger.error(f"百度 OCR 失败: {e}")
+            return ""
+    
+    async def _tencent_ocr(self, image_bytes: bytes) -> str:
+        """腾讯 OCR API"""
+        try:
+            import requests
+            secret_id = os.environ.get("TENCENT_CLOUD_SECRET_ID", "")
+            secret_key = os.environ.get("TENCENT_CLOUD_SECRET_KEY", "")
+            if not secret_id or not secret_key:
+                logger.warning("未配置腾讯 OCR 凭证")
+                return ""
+            
+            # 简化实现：实际需要使用 qcloud-sdk
+            logger.warning("腾讯 OCR 需要配置 qcloud-sdk")
+            return ""
+        except Exception as e:
+            logger.error(f"腾讯 OCR 失败: {e}")
+            return ""
+    
+    async def _aliyun_ocr(self, image_bytes: bytes) -> str:
+        """阿里云 OCR API"""
+        try:
+            import requests
+            access_key_id = os.environ.get("ALIYUN_ACCESS_KEY_ID", "")
+            access_key_secret = os.environ.get("ALIYUN_ACCESS_KEY_SECRET", "")
+            if not access_key_id or not access_key_secret:
+                logger.warning("未配置阿里云 OCR 凭证")
+                return ""
+            
+            # 简化实现：实际需要使用 aliyun-sdk
+            logger.warning("阿里云 OCR 需要配置 aliyun-sdk")
+            return ""
+        except Exception as e:
+            logger.error(f"阿里云 OCR 失败: {e}")
+            return ""
     
     async def _handle_recaptcha(self) -> CaptchaResult:
         """处理 reCAPTCHA v2/v3"""

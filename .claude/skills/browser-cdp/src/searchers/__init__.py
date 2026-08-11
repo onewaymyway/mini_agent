@@ -105,7 +105,21 @@ from src.searchers.beike_search import BeikeSearcher, BeikeConfig
 
 # ========== 海外平台 ==========
 from src.searchers.reddit_search import RedditSearcher, RedditConfig
-from src.searchers.amazon_search import AmazonSearcher, AmazonConfig
+from src.searchers.amazon_search import AmazonSearcher
+
+# ========== 国际视频/社交 ==========
+from src.searchers.youtube_search import YouTubeSearcher
+from src.searchers.twitter_search import TwitterSearcher
+from src.searchers.linkedin_search import LinkedInSearcher
+
+# ========== 国际新闻/学术 ==========
+from src.searchers.bbc_news_search import BBCNewsSearcher
+from src.searchers.pubmed_search import PubMedSearcher
+
+# ========== 地图/百科/翻译 ==========
+from src.searchers.google_maps_search import GoogleMapsSearcher
+from src.searchers.wiki_search import WikipediaSearcher
+from src.searchers.translate_search import TranslationSearcher
 
 # ========== 学术 ==========
 from src.searchers.sematic_scholar_search import SematicScholarSearcher
@@ -319,6 +333,17 @@ __all__ = [
     "RedditConfig",
     "AmazonSearcher",
     "AmazonConfig",
+    # 国际视频/社交
+    "YouTubeSearcher",
+    "TwitterSearcher",
+    "LinkedInSearcher",
+    # 国际新闻/学术
+    "BBCNewsSearcher",
+    "PubMedSearcher",
+    # 地图/百科/翻译
+    "GoogleMapsSearcher",
+    "WikipediaSearcher",
+    "TranslationSearcher",
     # 学术
     "SematicScholarSearcher",
     "CnkSearcher",

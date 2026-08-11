@@ -121,6 +121,108 @@ class TestBrowserWatch:
             finally:
                 sys.argv = original_argv
 
+    def test_cmd_list_state_empty_tabs(self, capsys):
+        """测试：列出状态 - 空标签页列表"""
+        with patch('src.core.browser_watch.list_tabs', return_value=[]):
+            browser_watch.cmd_list_state('127.0.0.1', 9222)
+            captured = capsys.readouterr()
+            assert '[]' in captured.out
+
+    def test_cmd_list_state_single_tab(self, capsys):
+        """测试：列出状态 - 单个标签页"""
+        mock_tabs = [{'id': 'tab-1', 'url': 'https://example.com', 'title': 'Example'}]
+        with patch('src.core.browser_watch.list_tabs', return_value=mock_tabs):
+            browser_watch.cmd_list_state('127.0.0.1', 9222)
+            captured = capsys.readouterr()
+            assert 'tab-1' in captured.out
+            assert 'example.com' in captured.out
+            assert 'Example' in captured.out
+
+    def test_poll_until_immediate_success(self):
+        """测试：轮询立即成功"""
+        mock_session = Mock()
+        result = browser_watch.poll_until(
+            mock_session,
+            check_fn=lambda: True,
+            timeout=5.0,
+            interval=0.1,
+            desc="immediate condition"
+        )
+        assert result is True
+
+    def test_poll_until_exception_in_first_call(self):
+        """测试：轮询第一次调用就抛出异常"""
+        mock_session = Mock()
+        call_count = [0]
+
+        def check_fn():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise Exception('First call error')
+            return True
+
+        result = browser_watch.poll_until(
+            mock_session,
+            check_fn=check_fn,
+            timeout=1.0,
+            interval=0.05,
+            desc="exception then success"
+        )
+        assert result is True
+        assert call_count[0] >= 2
+
+    def test_main_with_wait_title(self, monkeypatch):
+        """测试：main 函数 --wait-title-contains 参数"""
+        mock_session = Mock()
+        mock_session.eval_js.return_value = '完成'
+
+        with patch('src.core.browser_watch.get_session', return_value=mock_session), \
+             patch('src.core.browser_watch.poll_until', return_value=True), \
+             patch('sys.argv', ['browser_watch.py', '--tab', 'tab-1', '--wait-title-contains', '完成']):
+            browser_watch.main()
+
+    def test_main_with_custom_timeout(self, monkeypatch):
+        """测试：main 函数自定义超时和间隔"""
+        mock_session = Mock()
+        mock_session.eval_js.return_value = 'https://example.com/dashboard'
+
+        with patch('src.core.browser_watch.get_session', return_value=mock_session), \
+             patch('src.core.browser_watch.poll_until', return_value=True), \
+             patch('sys.argv', ['browser_watch.py', '--tab', 'tab-1',
+                               '--wait-url-contains', 'dashboard',
+                               '--timeout', '120', '--interval', '5']):
+            browser_watch.main()
+
+    def test_poll_until_timeout_zero(self):
+        """测试：轮询超时时间为 0"""
+        mock_session = Mock()
+        result = browser_watch.poll_until(
+            mock_session,
+            check_fn=lambda: False,
+            timeout=0.0,
+            interval=0.01,
+            desc="zero timeout"
+        )
+        assert result is False
+
+    def test_poll_until_interval_zero(self):
+        """测试：轮询间隔为 0"""
+        mock_session = Mock()
+        call_count = [0]
+
+        def check_fn():
+            call_count[0] += 1
+            return call_count[0] >= 2
+
+        result = browser_watch.poll_until(
+            mock_session,
+            check_fn=check_fn,
+            timeout=1.0,
+            interval=0.0,
+            desc="zero interval"
+        )
+        assert result is True
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

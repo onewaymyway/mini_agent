@@ -56,14 +56,30 @@ class SmartWait:
         "auto": 1.0,
     }
 
+    # 关键请求类型（需要等待完成的请求）
+    CRITICAL_REQUEST_TYPES = {'xhr', 'fetch', 'websocket'}
+    # 非关键请求类型（可忽略的静态资源）
+    NON_CRITICAL_MIME_TYPES = {
+        'image/', 'text/css', 'application/javascript', 'font/',
+        'image/svg+xml', 'application/font', 'text/html',
+    }
+    # 非关键请求路径模式
+    NON_CRITICAL_PATH_PATTERNS = {
+        '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico',
+        '.css', '.js', '.woff', '.woff2', '.ttf', '.eot', '.otf',
+        '.mp4', '.mp3', '.webm', '.avi',
+    }
+
     def __init__(self, session, config: WaitConfig = None):
         self.session = session
         self.config = config or WaitConfig()
         self._pending_requests = 0
         self._active_xhr_fetch = 0
+        self._critical_pending = 0  # 关键请求计数
         self._network_enabled = False
         self._xhr_callbacks = []
         self._wait_history: List[dict] = []
+        self._request_details: dict = {}  # 请求 ID → 请求详情
 
     def get_effective_timeout(self) -> float:
         """根据页面复杂度计算有效超时时间"""
@@ -107,6 +123,8 @@ class SmartWait:
             "image": self._wait_image,
             "iframe": self._wait_iframe,
             "shadow_dom": self._wait_shadow_dom,
+            "dom_stable": self._wait_dom_stable,
+            "data_loaded": self._wait_data_loaded,
         }
 
         if strategy not in handlers:
@@ -261,23 +279,74 @@ class SmartWait:
     def clear_wait_history(self):
         """清空等待历史"""
         self._wait_history.clear()
+    def _is_critical_request(self, params: dict) -> bool:
+        """判断请求是否关键（需要等待完成）"""
+        request = params.get('request', {})
+        url = request.get('url', '')
+        initiator = request.get('initiator', {})
+        request_type = initiator.get('type', '')
+
+        # 检查请求类型
+        if request_type in self.CRITICAL_REQUEST_TYPES:
+            return True
+
+        # 检查 MIME 类型（在 response 阶段更准确）
+        response = params.get('response', {})
+        mime_type = response.get('mimeType', '').lower()
+        for non_critical in self.NON_CRITICAL_MIME_TYPES:
+            if mime_type.startswith(non_critical):
+                return False
+
+        # 检查路径模式
+        url_lower = url.lower()
+        for pattern in self.NON_CRITICAL_PATH_PATTERNS:
+            if url_lower.endswith(pattern):
+                return False
+
+        # 默认视为关键请求
+        return True
+
     def _on_request_will_be_sent(self, params: dict) -> None:
         """CDP Network.requestWillBeSent 回调"""
+        request_id = params.get('requestId', '')
         self._pending_requests += 1
+
+        # 记录请求详情用于后续判断
+        self._request_details[request_id] = params
+
         initiator = params.get('request', {}).get('initiator', {})
         if initiator.get('type') in ('xhr', 'fetch'):
             self._active_xhr_fetch += 1
+
+        # 统计关键请求
+        if self._is_critical_request(params):
+            self._critical_pending += 1
+
         for cb in self._xhr_callbacks:
             cb('request', params)
-    
+
     def _on_loading_finished(self, params: dict) -> None:
         """CDP Network.loadingFinished 回调"""
+        request_id = params.get('requestId', '')
         self._pending_requests = max(0, self._pending_requests - 1)
+
+        # 减少关键请求计数
+        if request_id in self._request_details:
+            if self._is_critical_request(self._request_details[request_id]):
+                self._critical_pending = max(0, self._critical_pending - 1)
+            del self._request_details[request_id]
+
         for cb in self._xhr_callbacks:
             cb('finish', params)
-    
+
     def _on_response_received(self, params: dict) -> None:
         """CDP Network.responseReceived 回调"""
+        request_id = params.get('requestId', '')
+        # 更新请求详情（包含 MIME 类型信息）
+        if request_id not in self._request_details:
+            self._request_details[request_id] = {}
+        self._request_details[request_id]['response'] = params.get('response', {})
+
         for cb in self._xhr_callbacks:
             cb('response', params)
     
@@ -307,19 +376,26 @@ class SmartWait:
             self._network_enabled = False
             self._pending_requests = 0
             self._active_xhr_fetch = 0
+            self._critical_pending = 0
+            self._request_details.clear()
     
-    async def _wait_network_idle(self, idle_timeout: float = None, timeout: float = None) -> bool:
+    async def _wait_network_idle(self, idle_timeout: float = None, timeout: float = None, wait_critical_only: bool = True) -> bool:
         """
-        等待网络空闲：所有请求完成且 idle_timeout 内无新请求
+        等待网络空闲：关键请求完成且 idle_timeout 内无新关键请求
 
         实现原理：
         1. 启用 CDP Network domain
-        2. 监听 Network.requestWillBeSent 增加 pending 计数
+        2. 监听 Network.requestWillBeSent 增加 pending 计数（区分关键/非关键）
         3. 监听 Network.loadingFinished 减少计数
-        4. 当 pending=0 时记录 stable_since 时间，持续 idle_timeout 内无新请求则通过
+        4. 当 critical_pending=0 时记录 stable_since 时间，持续 idle_timeout 内无新关键请求则通过
 
-        修复竞态：原实现在 pending=0 后直接 sleep(idle_timeout)，期间新请求到达后完成会误判。
-        修复方案：使用 stable_since 计时，每次新请求到达时重置，确保 idle_timeout 内持续无请求。
+        关键请求：XHR/Fetch/WebSocket 请求，或 MIME 类型非静态资源的请求
+        非关键请求：图片、CSS、JS、字体等静态资源（可忽略）
+
+        Args:
+            idle_timeout: 空闲阈值（秒）
+            timeout: 总超时时间（秒）
+            wait_critical_only: 是否只等待关键请求（默认 True，忽略静态资源）
         """
         idle_timeout = idle_timeout or self.config.idle_timeout
         timeout = timeout or self.config.timeout
@@ -330,19 +406,20 @@ class SmartWait:
         stable_since = 0.0  # 网络空闲开始时间
 
         while time.time() < deadline:
-            pending = self._pending_requests
+            # 根据 wait_critical_only 选择计数方式
+            current_pending = self._critical_pending if wait_critical_only else self._pending_requests
 
-            if pending == 0:
+            if current_pending == 0:
                 if stable_since == 0:
                     stable_since = time.time()  # 记录空闲开始时间
-                # 检查是否持续 idle_timeout 内无新请求
+                # 检查是否持续 idle_timeout 内无新关键请求
                 if time.time() - stable_since >= idle_timeout:
-                    logger.debug("网络空闲检测通过")
+                    logger.debug(f"网络空闲检测通过 (关键请求={self._critical_pending}, 总请求={self._pending_requests})")
                     return True
             else:
                 # 有新请求，重置稳定计时
                 stable_since = 0.0
-                logger.debug(f"当前 pending 请求数: {pending}")
+                logger.debug(f"当前请求数: 关键={self._critical_pending}, 总={self._pending_requests}")
 
             await asyncio.sleep(self.config.check_interval)
 
@@ -492,14 +569,18 @@ class SmartWait:
         network_idle: bool = True,
         content_stable: bool = True,
         timeout: float = None,
+        wait_critical_only: bool = True,
     ) -> bool:
         """
         自适应等待：根据页面类型自动选择策略
 
         策略选择逻辑：
         1. 如果有 selector，优先等待 selector
-        2. 否则等待网络空闲
+        2. 否则等待网络空闲（默认只等待关键请求）
         3. 最后等待内容稳定
+
+        Args:
+            wait_critical_only: 是否只等待关键请求（忽略静态资源），默认 True
         """
         timeout = timeout or self.get_effective_timeout()
         deadline = time.time() + timeout
@@ -511,11 +592,13 @@ class SmartWait:
             if result:
                 return True
 
-        # 2. 等待网络空闲
+        # 2. 等待网络空闲（优先只等待关键请求）
         if network_idle and time.time() < deadline:
-            logger.debug("自适应等待：等待网络空闲")
+            logger.debug("自适应等待：等待网络空闲（关键请求）")
             remaining = deadline - time.time()
-            result = await self._wait_network_idle(idle_timeout=0.3, timeout=remaining)
+            result = await self._wait_network_idle(
+                idle_timeout=0.3, timeout=remaining, wait_critical_only=wait_critical_only
+            )
             if result:
                 return True
 
@@ -627,6 +710,75 @@ class SmartWait:
                 wait_time = timeout * (backoff_factor ** attempt)
                 logger.debug(f"等待 {wait_time:.2f}s 后重试")
                 await asyncio.sleep(wait_time)
+
+        return False
+
+    async def _wait_dom_stable(self, timeout: float = None) -> bool:
+        """
+        等待 DOM 结构稳定（无大规模 DOM 变化）
+
+        通过比较 DOM 快照来判断页面是否稳定
+        """
+        timeout = timeout or self.config.timeout
+        previous_hash = None
+        stable_count = 0
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            # 获取 DOM 快照哈希
+            js = """(() => {
+                const html = document.documentElement.outerHTML;
+                let hash = 0;
+                for (let i = 0; i < html.length; i++) {
+                    hash = ((hash << 5) - hash) + html.charCodeAt(i);
+                    hash = hash & hash;
+                }
+                return hash.toString(16);
+            })()"""
+            current_hash = await self.session.eval_js(js)
+
+            if previous_hash is not None:
+                if current_hash == previous_hash:
+                    stable_count += 1
+                    if stable_count >= 3:
+                        logger.debug("DOM 结构稳定检测通过")
+                        return True
+                else:
+                    stable_count = 0
+                    logger.debug("DOM 结构发生变化，重置稳定计数")
+
+            previous_hash = current_hash
+            await asyncio.sleep(0.5)
+
+        return False
+
+    async def _wait_data_loaded(self, timeout: float = None) -> bool:
+        """
+        等待数据加载完成（检查 AJAX/Fetch 请求）
+
+        通过监听 XHR/Fetch 请求来判断数据是否加载完成
+        """
+        timeout = timeout or self.config.timeout
+
+        self._register_network_events()
+
+        deadline = time.time() + timeout
+        last_data_request = 0
+
+        while time.time() < deadline:
+            # 检查是否有活跃的 XHR/Fetch 请求
+            active = await self._get_active_xhr_fetch()
+
+            if active == 0:
+                # 检查最近是否有数据请求
+                if time.time() - last_data_request > 1.0:
+                    logger.debug("数据加载完成")
+                    return True
+            else:
+                last_data_request = time.time()
+                logger.debug(f"活跃数据请求数: {active}")
+
+            await asyncio.sleep(0.3)
 
         return False
 

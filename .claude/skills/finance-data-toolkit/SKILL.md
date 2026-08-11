@@ -72,6 +72,26 @@ resources:
     path: references/social-module.md
     description: 社交媒体数据抓取（微博热搜、雪球讨论、同花顺问财、舆情监控）
     triggers: 社交媒体, 微博热搜, 雪球, 舆情监控, social, weibo, sentiment
+  - id: options-data
+    path: references/options-data.md
+    description: 期权数据抓取（A股期权、商品期权、股指期权、希腊字母、隐含波动率、持仓量）
+    triggers: 期权, 希腊字母, 隐含波动率, 持仓量, options, greeks, iv, oi
+  - id: commodity-data
+    path: references/commodity-data.md
+    description: 大宗商品数据抓取（有色金属、贵金属、能源、农产品、LME、CME）
+    triggers: 大宗商品, 有色金属, 贵金属, 能源, 农产品, commodity, metals, energy
+  - id: macro-data
+    path: references/macro-data.md
+    description: 宏观经济数据抓取（CPI、PPI、GDP、PMI、利率、M2、失业率）
+    triggers: 宏观经济, CPI, PPI, GDP, PMI, 利率, 失业率, macro, economic
+  - id: ipo-data
+    path: references/ipo-data.md
+    description: IPO数据抓取（新股申购、上市、IPO日历、港股IPO、美股IPO）
+    triggers: IPO, 新股, 申购, 上市, ipo, listing, subscription
+  - id: realtime-data
+    path: references/realtime-data.md
+    description: 实时行情数据抓取（A股/港股/美股实时行情、指数、涨幅榜、市场概况）
+    triggers: 实时行情, 涨幅榜, 市场概况, realtime, quote, top-gainers
 browse_paths:
   - path: references/full-api-docs/
     description: 完整 API 手册（各数据源详细参数、返回字段字典、错误码表、限流策略），体量大，请用 grep/view 检索具体片段
@@ -378,12 +398,88 @@ for p in hot_posts:
 #     profile = await scraper.get_user_profile('user123')
 ```
 
+## 数据验证与合规检查
+
+### 合规检查器
+
+```python
+from finance_toolkit.compliance_checker import (
+    ComplianceChecker,
+    check_compliance,
+    check_compliance_batch,
+    get_compliance_summary,
+)
+
+checker = ComplianceChecker()
+result = checker.check(data_dict)
+
+# 批量检查
+results = checker.check_batch(data_list)
+summary = checker.get_summary(results)
+```
+
+### 数据质量验证
+
+```python
+from finance_toolkit.validation import (
+    validate_kline_data,
+    validate_quote_data,
+    DataQualityValidator,
+    check_data_quality,
+)
+
+# 验证 K 线数据
+report = validate_kline_data(df)
+
+# 验证实时行情
+report = validate_quote_data(quote, symbol='600000.SH')
+
+# 自动检测类型
+report = check_data_quality(data)
+```
+
+### 输出格式化
+
+```python
+from finance_toolkit.output_formatter import (
+    ComplianceOutputFormatter,
+    format_compliance_result,
+)
+
+formatter = ComplianceOutputFormatter()
+json_output = formatter.to_json(result)
+text_output = formatter.to_text(result)
+table_output = formatter.to_table(result)
+summary_output = formatter.to_summary(result)
+```
+
+### 示例脚本
+
+运行示例脚本验证合规检查功能：
+
+```bash
+# 数据质量校验示例
+cd .claude/skills/finance-data-toolkit
+python examples/data_validation_example.py
+
+# 合规检查示例
+python examples/compliance_check_example.py
+
+# 数据验证脚本（支持多种输出格式）
+python examples/data_validation_script.py --format json
+python examples/data_validation_script.py --format text
+python examples/data_validation_script.py --format table
+python examples/data_validation_script.py --format summary
+python examples/data_validation_script.py --output-dir ./output
+```
+
 ## 索引说明
 
 - **主文件**只保留架构决策、统一契约、快速入口，**不包含具体实现细节**
 - 具体抓取逻辑、参数详解、代码示例请加载对应 `resources` 子资源
 - 超大型参考资料（完整 API 手册、历史数据字典、示例 Notebook）走 `browse_paths`，请自行 `grep`/`view` 检索
 - 所有子资源文件均在 `references/` 目录下，已在 frontmatter `resources`/`browse_paths` 登记
+- 示例脚本位于 `examples/` 目录，详见 `examples/README.md`
 
 ## 环境变量配置
 
@@ -455,3 +551,11 @@ transformers>=4.36  # 可选：深度学习模型
 > - search_engines/ → baidu_search.py, bing_search.py, zhihu_search.py, zhihu_hot.py, zhihu_column_search.py, zhihu_publish_answer.py, arxiv_search.py, arxiv_multi_search.py, wechat_search.py
 > - references/ → 所有子资源文档
 > - 根目录保留 demo/test 脚本和 SKILL.md
+>
+> **统一接口增强**：2026-08-08 新增统一数据抓取接口与异常处理机制：
+> - finance_toolkit/exceptions.py → 增强异常体系（新增 RateLimitError, ConnectionError, TimeoutError, DataIntegrityError, SourceHealthError）
+> - finance_toolkit/resilience.py → 增强容错机制（CircuitBreaker, FallbackManager, RateLimiter, HealthChecker）
+> - finance_toolkit/unified_fetcher.py → 统一数据抓取接口（UnifiedFetcher）
+> - finance_toolkit/health_monitor.py → 健康监控模块（HealthMonitor, AlertHandler）
+> - finance_toolkit/rate_limiter.py → 限流器模块（TokenBucket, LeakyBucket, SlidingWindowCounter）
+> - tests/test_unified_interface.py → 33 个测试用例全部通过

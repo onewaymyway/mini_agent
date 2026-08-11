@@ -7,6 +7,7 @@ AKShare 抓取器实现
 
 from datetime import datetime
 from typing import List, Optional, AsyncIterator
+import logging
 
 try:
     import akshare as ak
@@ -16,6 +17,9 @@ except ImportError:
     ak = None
 
 from ..core import BaseScraper, FinanceData, register_scraper
+from ..exceptions import SourceUnavailableError, DataNotFoundError, DataEmptyError
+
+logger = logging.getLogger(__name__)
 
 
 @register_scraper
@@ -32,12 +36,17 @@ class AKShareScraper(BaseScraper):
     
     async def health_check(self) -> bool:
         if not HAS_AKSHARE:
-            return False
+            raise SourceUnavailableError(self.source_name, "akshare 未安装")
         try:
             # 简单测试连接
             df = ak.stock_zh_a_spot_em()
-            return not df.empty
-        except Exception:
+            if df.empty:
+                raise DataEmptyError("quote", reason="返回数据为空")
+            return True
+        except SourceUnavailableError:
+            return False
+        except Exception as e:
+            logger.warning(f"健康检查失败：{e}")
             return False
     
     async def fetch(self, 
@@ -49,7 +58,7 @@ class AKShareScraper(BaseScraper):
     ) -> AsyncIterator[FinanceData]:
         """获取数据主入口"""
         if not HAS_AKSHARE:
-            raise RuntimeError("AKShare not installed. Run: pip install akshare")
+            raise SourceUnavailableError(self.source_name, "akshare 未安装")
         
         # 标准化代码格式: 600000.SH -> 600000
         codes = [s.split('.')[0] for s in symbols]
@@ -62,33 +71,39 @@ class AKShareScraper(BaseScraper):
                 return dt
             return dt.strftime('%Y%m%d')
         
-        if data_type == 'quote':
-            async for item in self._fetch_realtime_quote(codes, symbols):
-                yield item
-        elif data_type == 'kline':
-            period = kwargs.get('period', 'daily')
-            adjust = kwargs.get('adjust', 'qfq')
-            start_str = to_date_str(start, '20240101')
-            end_str = to_date_str(end, datetime.now().strftime('%Y%m%d'))
-            async for item in self._fetch_kline(codes, symbols, period, start_str, end_str, adjust):
-                yield item
-        elif data_type == 'financial':
-            async for item in self._fetch_financial(codes, symbols):
-                yield item
-        elif data_type == 'dividend':
-            async for item in self._fetch_dividend(codes, symbols):
-                yield item
-        elif data_type == 'shareholder':
-            async for item in self._fetch_shareholder(codes, symbols):
-                yield item
-        elif data_type == 'lhb':
-            async for item in self._fetch_lhb(codes, symbols):
-                yield item
-        elif data_type == 'northbound':
-            async for item in self._fetch_northbound(codes, symbols):
-                yield item
-        else:
-            raise ValueError(f"Unsupported data_type: {data_type}")
+        try:
+            if data_type == 'quote':
+                async for item in self._fetch_realtime_quote(codes, symbols):
+                    yield item
+            elif data_type == 'kline':
+                period = kwargs.get('period', 'daily')
+                adjust = kwargs.get('adjust', 'qfq')
+                start_str = to_date_str(start, '20240101')
+                end_str = to_date_str(end, datetime.now().strftime('%Y%m%d'))
+                async for item in self._fetch_kline(codes, symbols, period, start_str, end_str, adjust):
+                    yield item
+            elif data_type == 'financial':
+                async for item in self._fetch_financial(codes, symbols):
+                    yield item
+            elif data_type == 'dividend':
+                async for item in self._fetch_dividend(codes, symbols):
+                    yield item
+            elif data_type == 'shareholder':
+                async for item in self._fetch_shareholder(codes, symbols):
+                    yield item
+            elif data_type == 'lhb':
+                async for item in self._fetch_lhb(codes, symbols):
+                    yield item
+            elif data_type == 'northbound':
+                async for item in self._fetch_northbound(codes, symbols):
+                    yield item
+            else:
+                raise ValueError(f"Unsupported data_type: {data_type}")
+        except SourceUnavailableError:
+            raise
+        except Exception as e:
+            logger.error(f"数据抓取失败：{e}")
+            raise SourceUnavailableError(self.source_name, str(e)[:100])
     
     async def _fetch_realtime_quote(self, codes: List[str], original_symbols: List[str]) -> AsyncIterator[FinanceData]:
         """获取 A 股实时行情 (东方财富接口)"""

@@ -71,6 +71,11 @@ try:
 except ImportError:
     ETFScraper = None
 
+try:
+    from .sector_scraper import SectorScraper
+except ImportError:
+    SectorScraper = None
+
 __all__ = []
 if AKShareScraper:
     __all__.append('AKShareScraper')
@@ -98,3 +103,40 @@ if CryptoScraper:
     __all__.append('CryptoScraper')
 if ETFScraper:
     __all__.append('ETFScraper')
+if SectorScraper:
+    __all__.append('SectorScraper')
+try:
+    from .stock_scraper import StockScraper
+except ImportError:
+    StockScraper = None
+
+try:
+    from .news_scraper import NewsScraper
+except ImportError:
+    NewsScraper = None
+
+try:
+    from .social_scraper import SocialScraper
+except ImportError:
+    SocialScraper = None
+
+try:
+    from .guba_scraper import GubaScraper
+except ImportError:
+    GubaScraper = None
+
+try:
+    from .commodity_scraper import CommodityScraper
+except ImportError:
+    CommodityScraper = None
+
+if StockScraper:
+    __all__.append('StockScraper')
+if NewsScraper:
+    __all__.append('NewsScraper')
+if SocialScraper:
+    __all__.append('SocialScraper')
+if GubaScraper:
+    __all__.append('GubaScraper')
+if CommodityScraper:
+    __all__.append('CommodityScraper')

@@ -9,6 +9,9 @@ browser_extract.py - 从当前 tab 抓取内容
   python browser_extract.py --tab <id> --mode links
   python browser_extract.py --tab <id> --mode meta
   python browser_extract.py --tab <id> --mode elements --save elements.json
+  python browser_extract.py --tab <id> --mode xpath --selector "//div[@class='content']"
+  python browser_extract.py --tab <id> --mode text --selector "#main" --xpath
+  python browser_extract.py --tab <id> --mode elements --selector ".//div[@class='item']" --xpath
 """
 from __future__ import annotations
 
@@ -102,21 +105,92 @@ def mode_meta(session) -> dict:
 
 
 @with_error_handling("extract_elements", OperationType.EXTRACT, max_retries=2)
-def extract_elements(session, selector: str) -> list:
-    """提取指定选择器的元素列表"""
+def extract_elements(session, selector: str, xpath: bool = False) -> list:
+    """提取指定选择器的元素列表，支持 CSS 选择器和 XPath"""
+    if xpath:
+        js = f"""
+        (() => {{
+            const nodes = document.evaluate({selector!r}, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+            const elements = [];
+            for (let i = 0; i < nodes.snapshotLength; i++) {{
+                const el = nodes.snapshotItem(i);
+                if (el && el.nodeType === 1) {{
+                    elements.push({{
+                        index: i,
+                        tag: el.tagName.toLowerCase(),
+                        text: (el.innerText || el.value || '').trim().slice(0, 100),
+                        id: el.id || null,
+                        class: el.className || null,
+                    }});
+                }
+            }}
+            return elements;
+        }})()
+        """
+    else:
+        js = f"""
+        (() => {{
+            const elements = Array.from(document.querySelectorAll({selector!r}));
+            return elements.map((el, i) => ({{
+                index: i,
+                tag: el.tagName.toLowerCase(),
+                text: (el.innerText || el.value || '').trim().slice(0, 100),
+                id: el.id || null,
+                class: el.className || null,
+            }}));
+        }})()
+        """
+    return session.eval_js(js) or []
+
+
+@with_error_handling("extract_xpath", OperationType.EXTRACT, max_retries=2)
+def extract_xpath(session, xpath_expr: str) -> list:
+    """通过 XPath 提取元素列表"""
     js = f"""
     (() => {{
-        const elements = Array.from(document.querySelectorAll({selector!r}));
-        return elements.map((el, i) => ({{
-            index: i,
-            tag: el.tagName.toLowerCase(),
-            text: (el.innerText || el.value || '').trim().slice(0, 100),
-            id: el.id || null,
-            class: el.className || null,
-        }}));
+        const nodes = document.evaluate({xpath_expr!r}, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        const elements = [];
+        for (let i = 0; i < nodes.snapshotLength; i++) {{
+            const el = nodes.snapshotItem(i);
+            if (el && el.nodeType === 1) {{
+                elements.push({{
+                    index: i,
+                    tag: el.tagName.toLowerCase(),
+                    text: (el.innerText || el.value || '').trim().slice(0, 100),
+                    id: el.id || null,
+                    class: el.className || null,
+                }});
+            }}
+        }}
+        return elements;
     }})()
     """
     return session.eval_js(js) or []
+
+
+@with_error_handling("extract_text", OperationType.EXTRACT, max_retries=2)
+def extract_text(session, selector: str, xpath: bool = False) -> str:
+    """提取指定选择器的文本内容"""
+    if xpath:
+        js = f"""
+        (() => {{
+            const nodes = document.evaluate({selector!r}, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+            const texts = [];
+            for (let i = 0; i < nodes.snapshotLength; i++) {{
+                const el = nodes.snapshotItem(i);
+                if (el) texts.push((el.innerText || el.textContent || '').trim());
+            }}
+            return texts.join('\\n');
+        }})()
+        """
+    else:
+        js = f"""
+        (() => {{
+            const el = document.querySelector({selector!r});
+            return el ? (el.innerText || el.textContent || '').trim() : '';
+        }})()
+        """
+    return session.eval_js(js) or ""
 
 
 def main():
@@ -124,9 +198,11 @@ def main():
     add_connection_args(parser)
     parser.add_argument(
         "--mode",
-        choices=["html", "text", "elements", "forms", "links", "meta"],
+        choices=["html", "text", "elements", "forms", "links", "meta", "xpath"],
         default="text",
     )
+    parser.add_argument("--selector", default=None, help="CSS 选择器或 XPath 表达式（配合 --mode elements/text/xpath 使用）")
+    parser.add_argument("--xpath", action="store_true", help="将 --selector 视为 XPath 表达式")
     parser.add_argument("--save", default=None, help="把结果写入文件而不是打印到 stdout")
     parser.add_argument("--max-chars", type=int, default=20000, help="html/text 模式下的最大输出长度，避免刷屏")
 
@@ -137,16 +213,26 @@ def main():
             data = mode_html(session)
             out = data[: args.max_chars]
         elif args.mode == "text":
-            data = session.eval_js(TEXT_JS) or ""
-            out = data[: args.max_chars]
+            if args.selector:
+                out = extract_text(session, args.selector, xpath=args.xpath)
+            else:
+                out = session.eval_js(TEXT_JS) or ""
+            out = out[: args.max_chars]
         elif args.mode == "elements":
-            out = scan_interactive_elements(session)
+            if args.selector:
+                out = extract_elements(session, args.selector, xpath=args.xpath)
+            else:
+                out = scan_interactive_elements(session)
         elif args.mode == "forms":
             out = session.eval_js(FORMS_JS) or []
         elif args.mode == "links":
             out = session.eval_js(LINKS_JS) or []
         elif args.mode == "meta":
             out = session.eval_js(META_JS) or {}
+        elif args.mode == "xpath":
+            if not args.selector:
+                raise ValueError("--mode xpath 需要指定 --selector")
+            out = extract_xpath(session, args.selector)
         else:
             out = None
 

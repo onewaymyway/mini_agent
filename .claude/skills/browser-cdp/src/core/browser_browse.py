@@ -49,6 +49,7 @@ from src.core.utils import (
 from src.core.smart_wait import SmartWait
 from src.core.browser_nav import cmd_goto, current_state
 from src.core.browser_screenshot import capture, annotate_png, save_screenshot
+from src.core.browser_extract import extract_elements, extract_xpath, extract_text
 from src.core.browser_input import (
     mouse_click,
     mouse_right_click,
@@ -56,6 +57,7 @@ from src.core.browser_input import (
     type_text,
     find_element_by_index,
     find_element_by_text,
+    find_elements_by_text_all,
     drag_elements,
     batch_click,
 )
@@ -144,11 +146,21 @@ def classify_error(error: Exception) -> BrowserErrorType:
 
 
 def retry_operation(func: Callable) -> Callable:
-    """重试操作装饰器"""
+    """重试操作装饰器 - 根据错误类型动态选择重试策略
+
+    集成 retry.py 中的 ERROR_TYPE_STRATEGIES，为不同错误类型提供差异化重试配置：
+    - CONNECTION: 5次重试，指数退避+抖动，启用熔断器
+    - TIMEOUT: 3次重试，指数退避
+    - ELEMENT: 3次重试，线性退避，不启用熔断器
+    - NAVIGATION: 3次重试，指数退避+抖动，启用熔断器
+    - CONTENT/PERMISSION/RESOURCE: 不重试
+    """
     @functools.wraps(func)
-    def wrapper(*args, retry_config=None, **kwargs):
+    def wrapper(*args, retry_config=None, operation=None, **kwargs):
         from src.reliability.retry import RetryConfig, retry_operation as reliability_retry
         config = retry_config or RetryConfig()
+        op_name = operation or func.__name__
+
         last_error = None
         for attempt in range(config.max_retries + 1):
             try:
@@ -156,14 +168,50 @@ def retry_operation(func: Callable) -> Callable:
             except Exception as e:
                 last_error = e
                 error_type = classify_error(e)
+
+                # 根据错误类型获取对应的重试策略
+                from src.reliability.error import ErrorCategory
+                category_map = {
+                    BrowserErrorType.CONNECTION_LOST: ErrorCategory.CONNECTION,
+                    BrowserErrorType.TIMEOUT: ErrorCategory.TIMEOUT,
+                    BrowserErrorType.ELEMENT_NOT_FOUND: ErrorCategory.ELEMENT,
+                    BrowserErrorType.NAVIGATION_FAILED: ErrorCategory.NAVIGATION,
+                }
+                category = category_map.get(error_type)
+                if category:
+                    strategy_config = RetryConfig.for_error_category(category)
+                    # 合并用户配置和策略配置（用户配置优先）
+                    merged = {
+                        "max_retries": strategy_config.max_retries,
+                        "base_delay": strategy_config.base_delay,
+                        "max_delay": strategy_config.max_delay,
+                        "backoff_strategy": strategy_config.backoff_strategy,
+                        "circuit_breaker": strategy_config.circuit_breaker,
+                    }
+                    # 用户显式指定的配置优先
+                    if retry_config:
+                        merged.update({
+                            "max_retries": retry_config.max_retries,
+                            "base_delay": retry_config.base_delay,
+                            "max_delay": retry_config.max_delay,
+                        })
+                    config = RetryConfig(**merged)
+
                 if attempt < config.max_retries:
                     import time
-                    delay = min(config.base_delay * (2 ** (attempt - 1)), config.max_delay)
+                    delay = min(config.base_delay * (2 ** attempt), config.max_delay)
+                    logger.warning(
+                        f"[{op_name}] 第 {attempt + 1} 次重试，错误类型={error_type.value}, "
+                        f"延迟 {delay:.1f}s: {str(e)[:80]}"
+                    )
                     time.sleep(delay)
+                else:
+                    logger.error(f"[{op_name}] 重试耗尽 ({config.max_retries} 次)，错误类型={error_type.value}")
+
         raise BrowserError(
             error_type=classify_error(last_error),
             message=str(last_error),
-            operation=func.__name__,
+            operation=op_name,
             attempt=config.max_retries,
             max_attempts=config.max_retries,
         ) from last_error
@@ -279,81 +327,132 @@ def cmd_screenshot(
     return result
 
 
+def find_element_multi_strategy(session, index=None, selector=None, text=None, timeout=10.0):
+    """多策略元素查找：按优先级依次尝试 index → selector → text
+
+    策略链：
+    1. 如果提供 index，先尝试编号查找
+    2. 如果提供 selector，尝试 CSS/XPath 选择器查找
+    3. 如果提供 text，尝试文本匹配查找
+    4. 如果 index 失败，自动降级到 selector/text
+
+    Returns:
+        dict: 元素信息 {index, tag, text, x, y, rect, found_by}
+        None: 未找到元素
+    """
+    strategies = []
+    if index is not None:
+        strategies.append(("index", index))
+    if selector is not None:
+        strategies.append(("selector", selector))
+    if text is not None:
+        strategies.append(("text", text))
+
+    if not strategies:
+        return None
+
+    deadline = time.time() + timeout
+    last_error = None
+
+    for strategy_name, strategy_value in strategies:
+        while time.time() < deadline:
+            try:
+                if strategy_name == "index":
+                    el = find_element_by_index(session, strategy_value)
+                    if el:
+                        el["found_by"] = f"index={strategy_value}"
+                        return el
+                elif strategy_name == "selector":
+                    js = f"""(() => {{
+                        const el = document.querySelector({strategy_value!r});
+                        if (!el) return null;
+                        const r = el.getBoundingClientRect();
+                        return {{
+                            tag: el.tagName.toLowerCase(),
+                            text: (el.innerText || el.value || '').trim().slice(0, 50),
+                            x: r.x + r.width/2 + window.scrollX,
+                            y: r.y + r.height/2 + window.scrollY,
+                            rect: {{x: r.x, y: r.y, width: r.width, height: r.height}},
+                            found_by: 'selector={strategy_value}'
+                        }};
+                    }})()"""
+                    el = session.eval_js(js)
+                    if el:
+                        return el
+                elif strategy_name == "text":
+                    el = find_element_by_text(session, strategy_value)
+                    if el:
+                        el["found_by"] = f"text={strategy_value}"
+                        return el
+            except Exception as e:
+                last_error = e
+            time.sleep(0.3)
+
+    if last_error:
+        logger.warning(f"多策略查找失败: {last_error}")
+    return None
+
+
 @with_error_handling("click", OperationType.CLICK, max_retries=3)
 def cmd_click(session, index: int = None, xy: tuple = None, selector: str = None, 
-              text: str = None, double: bool = False, right: bool = False) -> dict:
-    """执行点击操作"""
-    if index is not None:
-        el = find_element_by_index(session, index)
-        x, y = element_center(el)
-        mouse_click(session, x, y, click_count=2 if double else 1)
-        print(f"[ok] 已点击 #{index}: <{el['tag']}> {el['text'][:40]!r}")
-        return {"index": index, "tag": el['tag'], "text": el['text'][:40]}
-    
+              text: str = None, double: bool = False, right: bool = False,
+              timeout: float = 10.0) -> dict:
+    """执行点击操作（支持多策略查找）
+
+    Args:
+        timeout: 查找元素超时时间（秒），默认 10s
+    """
+    # 坐标点击（无需查找）
     if xy:
         x, y = xy
         mouse_click(session, x, y)
         print(f"[ok] 已点击坐标 ({x}, {y})")
         return {"x": x, "y": y}
-    
-    if selector:
-        js = f"""(() => {{
-            const el = document.querySelector({selector!r});
-            if (!el) return null;
-            const r = el.getBoundingClientRect();
-            return {{x: r.x + r.width/2 + window.scrollX, y: r.y + r.height/2 + window.scrollY}};
-        }})()"""
-        pos = session.eval_js(js)
-        if not pos:
-            raise ElementNotFoundError(selector=selector)
-        mouse_click(session, pos["x"], pos["y"])
-        print(f"[ok] 已点击 {selector}")
-        return {"selector": selector}
-    
-    if text:
-        el = find_element_by_text(session, text)
-        if el:
-            mouse_click(session, el["x"], el["y"])
-            print(f"[ok] 已智能点击: {el['text']!r}")
-            return {"text": text, "found": True}
+
+    # 多策略查找
+    el = find_element_multi_strategy(session, index=index, selector=selector, text=text, timeout=timeout)
+    if el:
+        x, y = element_center(el)
+        mouse_click(session, x, y, click_count=2 if double else 1)
+        print(f"[ok] 已点击 {el.get('found_by', 'unknown')}: <{el['tag']}> {el.get('text', '')[:40]!r}")
+        return {"found_by": el.get("found_by"), "tag": el["tag"], "text": el.get("text", "")[:40]}
+
+    # 文本查找失败时返回 warn（不抛异常，允许继续）
+    if text and not index and not selector:
         print(f"[warn] 未找到包含文本 '{text}' 的元素")
         return {"text": text, "found": False}
-    
-    raise ElementNotFoundError(selector="any")
+
+    raise ElementNotFoundError(selector=f"index={index}/selector={selector}/text={text}")
 
 
 @with_error_handling("type", OperationType.INPUT, max_retries=3)
 def cmd_type(session, index: int = None, selector: str = None, text: str = None, 
-             clear_first: bool = False) -> dict:
-    """执行输入操作"""
+             clear_first: bool = False, timeout: float = 10.0) -> dict:
+    """执行输入操作（支持多策略查找）
+
+    Args:
+        timeout: 查找元素超时时间（秒），默认 10s
+    """
     if text is None:
         raise ElementNotFoundError(selector="text")
-    
-    if index is not None:
-        el = find_element_by_index(session, index)
-        x, y = element_center(el)
-        mouse_click(session, x, y)
-    elif selector:
-        js = f"""(() => {{
-            const el = document.querySelector({selector!r});
-            if (!el) return false;
-            el.focus();
-            return true;
-        }})()"""
-        if not session.eval_js(js):
-            raise ElementNotFoundError(selector=selector)
-    else:
-        raise ElementNotFoundError(selector="any")
-    
+
+    # 多策略查找目标元素
+    el = find_element_multi_strategy(session, index=index, selector=selector, timeout=timeout)
+    if not el:
+        raise ElementNotFoundError(selector=f"index={index}/selector={selector}")
+
+    # 聚焦元素
+    x, y = element_center(el)
+    mouse_click(session, x, y)
+
     if clear_first:
         session.send("Input.dispatchKeyEvent", {"type": "keyDown", "key": "a", "modifiers": 2})
         session.send("Input.dispatchKeyEvent", {"type": "keyUp", "key": "a", "modifiers": 2})
         dispatch_key(session, "Backspace")
-    
-    type_text(session, text)
-    print(f"[ok] 已输入文本: {text!r}")
-    return {"text": text}
 
+    type_text(session, text)
+    print(f"[ok] 已输入文本到 {el.get('found_by', 'element')}: {text!r}")
+    return {"text": text, "found_by": el.get("found_by")}
 
 @with_error_handling("scroll", OperationType.SCROLL, max_retries=3)
 def cmd_scroll(session, index: int = None, by: tuple = None, to_top: bool = False, 
@@ -556,6 +655,14 @@ def main():
     dynamic_group.add_argument("--wait-spa-route", action="store_true", help="等待 SPA 路由稳定")
     dynamic_group.add_argument("--wait-spa-url", default=None, help="SPA 路由期望的 URL 模式")
     
+    # 内容抓取
+    extract_group = parser.add_argument_group('内容抓取')
+    extract_group.add_argument("--extract", metavar="MODE", choices=["html", "text", "elements", "forms", "links", "meta", "xpath"], default=None, help="抓取页面内容")
+    extract_group.add_argument("--extract-selector", default=None, help="抓取时的选择器（CSS 或 XPath）")
+    extract_group.add_argument("--extract-xpath", action="store_true", help="将 --extract-selector 视为 XPath")
+    extract_group.add_argument("--extract-save", default=None, help="抓取结果保存路径")
+    extract_group.add_argument("--extract-max-chars", type=int, default=20000, help="抓取内容最大长度")
+
     # 状态查询
     state_group = parser.add_argument_group('状态查询')
     state_group.add_argument("--state", action="store_true", help="查询当前页面状态")
@@ -731,6 +838,47 @@ def main():
             ))
             print(f"[ok] SPA 路由稳定检查完成: {result}")
         
+        # 内容抓取
+        if args.extract:
+            if args.extract == "html":
+                root = session.send("DOM.getDocument", {"depth": -1})
+                node_id = root["root"]["nodeId"]
+                result = session.send("DOM.getOuterHTML", {"nodeId": node_id})
+                out = result.get("outerHTML", "")[:args.extract_max_chars]
+            elif args.extract == "text":
+                out = extract_text(session, args.extract_selector or "", xpath=args.extract_xpath)
+                out = out[:args.extract_max_chars]
+            elif args.extract == "elements":
+                out = extract_elements(session, args.extract_selector or "", xpath=args.extract_xpath)
+            elif args.extract == "forms":
+                out = session.eval_js("(() => Array.from(document.forms).map((f, fi) => ({index: fi, action: f.action, method: f.method, fields: Array.from(f.elements).map(el => ({tag: el.tagName.toLowerCase(), type: el.type || null, name: el.name || null, id: el.id || null, value: el.type === 'password' ? null : (el.value ?? null), checked: el.type === 'checkbox' || el.type === 'radio' ? !!el.checked : null})))}))()" ) or []
+            elif args.extract == "links":
+                out = session.eval_js("(() => Array.from(document.querySelectorAll('a[href]')).map(a => ({text: (a.innerText || '').trim().slice(0, 100), href: a.href})))()" ) or []
+            elif args.extract == "meta":
+                out = session.eval_js("(() => ({url: location.href, title: document.title, description: (document.querySelector('meta[name=\"description\"]') || {}).content || null, h1: Array.from(document.querySelectorAll('h1')).map(h => h.innerText.trim()).slice(0, 10), lang: document.documentElement.lang || null}))()" ) or {}
+            elif args.extract == "xpath":
+                if not args.extract_selector:
+                    raise ValueError("--extract xpath 需要指定 --extract-selector")
+                out = extract_xpath(session, args.extract_selector)
+            else:
+                out = None
+            
+            if args.extract_save:
+                with open(args.extract_save, "w", encoding="utf-8") as f:
+                    if isinstance(out, str):
+                        f.write(out)
+                    else:
+                        import json
+                        json.dump(out, f, ensure_ascii=False, indent=2)
+                print(f"[ok] 已写入 {args.extract_save}")
+            else:
+                import json
+                from src.core.utils import print_json
+                if isinstance(out, str):
+                    print(out)
+                else:
+                    print_json(out)
+        
         # 状态查询
         if args.state:
             print_json(current_state(session))
@@ -767,6 +915,7 @@ def main():
             args.wait_strategy,
             args.state,
             args.elements,
+            args.extract,
         ]):
             parser.print_help()
             

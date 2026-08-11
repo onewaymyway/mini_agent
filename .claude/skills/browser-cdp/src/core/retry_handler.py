@@ -31,6 +31,9 @@ class FailureReason(Enum):
     SELECTOR_NOT_FOUND = "selector_not_found"
     NETWORK_ERROR = "network_error"
     HTTP_ERROR = "http_error"
+    CAPTCHA_DETECTED = "captcha_detected"
+    RATE_LIMITED = "rate_limited"
+    BLOCKED = "blocked"
     UNKNOWN = "unknown"
 
 
@@ -110,6 +113,73 @@ class CircuitBreaker:
         self.state = "closed"
 
 
+class AdaptiveRetryStrategy:
+    """自适应重试策略 - 根据历史成功率动态调整重试参数"""
+    
+    def __init__(self):
+        self._success_history = {}  # {error_type: [success/failure list]}
+    
+    def get_strategy(self, error_type: FailureReason) -> RetryConfig:
+        """根据历史成功率动态调整重试策略"""
+        history = self._success_history.get(error_type.value, [])
+        
+        if len(history) >= 10:
+            success_rate = sum(history) / len(history)
+            
+            if success_rate < 0.3:
+                # 成功率低，增加等待时间，减少重试次数
+                return RetryConfig(
+                    max_attempts=2,
+                    base_delay=5.0,
+                    max_delay=60.0
+                )
+            elif success_rate > 0.8:
+                # 成功率高，减少等待时间
+                return RetryConfig(
+                    max_attempts=3,
+                    base_delay=0.5,
+                    max_delay=5.0
+                )
+        
+        return RetryConfig()  # 返回默认配置
+    
+    def record_result(self, error_type: FailureReason, success: bool):
+        """记录重试结果"""
+        if error_type.value not in self._success_history:
+            self._success_history[error_type.value] = []
+        self._success_history[error_type.value].append(1 if success else 0)
+        # 保持最近 100 条记录
+        self._success_history[error_type.value] = self._success_history[error_type.value][-100:]
+
+
+class ProxyQualityEvaluator:
+    """代理质量评估器 - 选择成功率最高的代理"""
+    
+    def __init__(self):
+        self._proxy_stats = {}
+    
+    def get_best_proxy(self) -> Optional[str]:
+        """选择成功率最高的代理"""
+        best_proxy = None
+        best_rate = 0
+        
+        for proxy, stats in self._proxy_stats.items():
+            total = stats['success'] + stats['failure']
+            if total >= 5:  # 至少 5 次请求
+                rate = stats['success'] / total
+                if rate > best_rate:
+                    best_rate = rate
+                    best_proxy = proxy
+        
+        return best_proxy
+    
+    def record_result(self, proxy: str, success: bool):
+        """记录代理使用结果"""
+        if proxy not in self._proxy_stats:
+            self._proxy_stats[proxy] = {'success': 0, 'failure': 0}
+        self._proxy_stats[proxy]['success' if success else 'failure'] += 1
+
+
 class RetryHandler:
     """
     重试处理器
@@ -119,6 +189,7 @@ class RetryHandler:
     - 熔断器保护
     - 异常分类
     - 重试历史追踪
+    - 自适应重试策略
     """
     
     def __init__(self, config: RetryConfig = None):
@@ -128,6 +199,8 @@ class RetryHandler:
             self.config.circuit_breaker_timeout
         )
         self._retry_history: List[dict] = []
+        self.adaptive_strategy = AdaptiveRetryStrategy()
+        self.proxy_evaluator = ProxyQualityEvaluator()
     
     async def execute(
         self,
@@ -166,6 +239,8 @@ class RetryHandler:
                 # 记录成功
                 self._record_attempt(attempt, success=True, result=result)
                 self.circuit_breaker.record_success()
+                # 更新自适应策略（成功时不区分错误类型）
+                self.adaptive_strategy.record_result(FailureReason.UNKNOWN, True)
                 
                 logger.debug(f"执行成功: {func.__name__} (attempt {attempt})")
                 return result
@@ -181,6 +256,8 @@ class RetryHandler:
                     exception=e, 
                     reason=failure_reason
                 )
+                # 更新自适应策略
+                self.adaptive_strategy.record_result(failure_reason, False)
                 
                 logger.warning(
                     f"执行失败: {func.__name__} (attempt {attempt}/{self.config.max_attempts}), "
@@ -251,8 +328,22 @@ class RetryHandler:
             return FailureReason.SELECTOR_NOT_FOUND
         elif "network" in exc_str or "http" in exc_str:
             return FailureReason.NETWORK_ERROR
+        elif "captcha" in exc_str or "verify" in exc_str or "滑块" in exc_str or "验证码" in exc_str:
+            return FailureReason.CAPTCHA_DETECTED
+        elif "429" in exc_str or "rate limit" in exc_str or "too many requests" in exc_str:
+            return FailureReason.RATE_LIMITED
+        elif "403" in exc_str or "blocked" in exc_str or "forbidden" in exc_str:
+            return FailureReason.BLOCKED
         else:
             return FailureReason.UNKNOWN
+    
+    def get_captcha_retry_delay(self, attempt: int) -> float:
+        """验证码场景的专用退避策略"""
+        # 验证码场景需要更长等待，避免触发更严格的限制
+        base = 5.0
+        max_delay = 60.0
+        delay = base * (2 ** (attempt - 1))
+        return min(delay, max_delay)
     
     def _record_attempt(
         self,

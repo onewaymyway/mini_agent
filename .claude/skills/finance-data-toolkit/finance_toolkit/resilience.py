@@ -2,10 +2,10 @@
 """
 Finance Data Toolkit - 容错机制
 
-提供熔断器、降级策略、重试机制等容错功能。
+提供熔断器、降级策略、重试机制、限流器、健康检查器等容错功能。
 
 使用示例：
-    from finance_toolkit.resilience import CircuitBreaker, FallbackManager, retry_with_backoff
+    from finance_toolkit.resilience import CircuitBreaker, FallbackManager, RateLimiter, HealthChecker
     
     # 熔断器示例
     cb = CircuitBreaker("akshare", failure_threshold=5, reset_timeout=60)
@@ -15,13 +15,14 @@ Finance Data Toolkit - 容错机制
     except CircuitBreakerError:
         print("使用备用数据源")
     
-    # 降级策略示例
-    fallback = FallbackManager([
-        ("akshare", fetch_from_akshare),
-        ("eastmoney", fetch_from_eastmoney),
-        ("sina", fetch_from_sina),
-    ])
-    result = fallback.fetch(symbols=['600000.SH'])
+    # 限流器示例
+    rl = RateLimiter(max_calls=10, period=60)
+    with rl.acquire():
+        data = fetch_data()
+    
+    # 健康检查器示例
+    hc = HealthChecker(sources=["akshare", "eastmoney"])
+    status = hc.check_all()
 """
 
 import asyncio
@@ -29,12 +30,19 @@ import time
 import logging
 from typing import List, Dict, Callable, Any, Optional, Tuple
 from functools import wraps
+from collections import defaultdict
 
 from .exceptions import (
     CircuitBreakerError,
     SourceUnavailableError,
     FallbackError,
     SourceRateLimitedError,
+    RateLimitError,
+    ConnectionError,
+    TimeoutError,
+    SourceHealthError,
+    DataNotFoundError,
+    DataEmptyError,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,7 +80,10 @@ class CircuitBreaker:
         self._failure_count = 0
         self._last_failure_time: Optional[float] = None
         self._half_open_calls = 0
-        self._lock = asyncio.Lock() if asyncio.get_event_loop().is_running() else None
+        try:
+            self._lock = asyncio.Lock() if asyncio.get_event_loop().is_running() else None
+        except RuntimeError:
+            self._lock = None
     
     @property
     def state(self) -> str:
@@ -94,43 +105,85 @@ class CircuitBreaker:
         if self._lock and self._lock.locked():
             self._lock.release()
     
-    async def guard(self):
+    def guard(self):
         """
         上下文管理器，保护被熔断器监控的代码块
-        
+
         使用示例：
-            async with cb.guard():
+            with cb.guard():
+                result = fetch_data()
+
+        异步版本：
+            guard = await cb.guard_async()
+            async with guard:
                 result = await fetch_data()
         """
+        current_state = self.state
+
+        if current_state == "OPEN":
+            raise CircuitBreakerError(
+                self.source,
+                self._failure_count,
+                int(self.reset_timeout - (time.time() - self._last_failure_time)) if self._last_failure_time else self.reset_timeout
+            )
+
+        if current_state == "HALF_OPEN":
+            if self._half_open_calls >= self.half_open_max_calls:
+                raise CircuitBreakerError(self.source, self._failure_count, self.reset_timeout)
+            self._half_open_calls += 1
+
+        return _SyncCircuitBreakerGuard(self)
+
+    async def guard_async(self):
+        """异步上下文管理器"""
         await self._acquire_lock()
         try:
             current_state = self.state
-            
+
             if current_state == "OPEN":
                 raise CircuitBreakerError(
                     self.source,
                     self._failure_count,
-                    int(self.reset_timeout - (time.time() - self._last_failure_time))
+                    int(self.reset_timeout - (time.time() - self._last_failure_time)) if self._last_failure_time else self.reset_timeout
                 )
-            
+
             if current_state == "HALF_OPEN":
                 if self._half_open_calls >= self.half_open_max_calls:
                     raise CircuitBreakerError(self.source, self._failure_count, self.reset_timeout)
                 self._half_open_calls += 1
-            
+
             return _CircuitBreakerGuard(self)
         finally:
             self._release_lock()
+
+    def guard_sync(self):
+        """同步上下文管理器"""
+        current_state = self.state
+
+        if current_state == "OPEN":
+            raise CircuitBreakerError(
+                self.source,
+                self._failure_count,
+                int(self.reset_timeout - (time.time() - self._last_failure_time)) if self._last_failure_time else self.reset_timeout
+            )
+
+        if current_state == "HALF_OPEN":
+            if self._half_open_calls >= self.half_open_max_calls:
+                raise CircuitBreakerError(self.source, self._failure_count, self.reset_timeout)
+            self._half_open_calls += 1
+
+        return _SyncCircuitBreakerGuard(self)
     
     async def record_success(self):
         """记录成功调用"""
         async with self._lock if self._lock else _nullcontext():
-            if self._state == "HALF_OPEN":
+            current_state = self.state
+            if current_state == "HALF_OPEN":
                 self._half_open_calls = 0
                 self._state = "CLOSED"
                 self._failure_count = 0
                 logger.info(f"熔断器 [{self.source}] 恢复 CLOSED 状态")
-            elif self._state == "CLOSED":
+            elif current_state == "CLOSED":
                 self._failure_count = max(0, self._failure_count - 1)
     
     async def record_failure(self, error: Exception = None):
@@ -170,6 +223,26 @@ class _CircuitBreakerGuard:
             await self.breaker.record_success()
         else:
             await self.breaker.record_failure(exc_val)
+        return False
+
+
+class _SyncCircuitBreakerGuard:
+    """同步熔断器上下文管理器"""
+
+    def __init__(self, breaker: CircuitBreaker):
+        self.breaker = breaker
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            self.breaker._failure_count = max(0, self.breaker._failure_count - 1)
+        else:
+            self.breaker._failure_count += 1
+            self.breaker._last_failure_time = time.time()
+            if self.breaker._failure_count >= self.breaker.failure_threshold:
+                self.breaker._state = "OPEN"
         return False
 
 
@@ -268,7 +341,13 @@ class FallbackManager:
                 if source_name in self.circuit_breakers:
                     await self.circuit_breakers[source_name].record_failure(e)
                 continue
-                
+
+            except (DataNotFoundError, DataEmptyError) as e:
+                # 数据为空或未找到，记录错误并尝试下一个源
+                errors[source_name] = f"{type(e).__name__}: {str(e)[:100]}"
+                logger.warning(f"数据源 {source_name} 返回空数据，尝试备用源")
+                continue
+
             except Exception as e:
                 # 其他异常
                 errors[source_name] = f"{type(e).__name__}: {str(e)[:100]}"
@@ -286,6 +365,369 @@ class FallbackManager:
     def get_fallback_order(self) -> List[str]:
         """获取数据源优先级顺序"""
         return [s[0] for s in self.sources]
+
+
+class RateLimiter:
+    """
+    令牌桶限流器
+    
+    控制 API 调用频率，防止触发限流。
+    
+    参数：
+        max_calls: 周期内最大调用次数
+        period: 周期时间（秒）
+        burst: 突发容量（默认等于 max_calls）
+    """
+    
+    def __init__(self, max_calls: int = 10, period: int = 60, burst: Optional[int] = None):
+        self.max_calls = max_calls
+        self.period = period
+        self.burst = burst or max_calls
+        self._tokens = float(self.burst)
+        self._last_refill = time.time()
+        try:
+            self._lock = asyncio.Lock() if asyncio.get_event_loop().is_running() else None
+        except RuntimeError:
+            self._lock = None
+    
+    def _refill(self):
+        """补充令牌"""
+        now = time.time()
+        elapsed = now - self._last_refill
+        self._tokens = min(self.burst, self._tokens + elapsed * (self.max_calls / self.period))
+        self._last_refill = now
+    
+    async def acquire(self, tokens: int = 1):
+        """获取令牌（异步）"""
+        while True:
+            async with self._lock:
+                self._refill()
+                if self._tokens >= tokens:
+                    self._tokens -= tokens
+                    return
+            # 等待令牌补充
+            wait_time = (tokens - self._tokens) * (self.period / self.max_calls)
+            logger.debug(f"限流器等待 {wait_time:.2f} 秒")
+            await asyncio.sleep(wait_time)
+    
+    def acquire_sync(self, tokens: int = 1):
+        """获取令牌（同步）"""
+        while True:
+            with _sync_lock():
+                self._refill()
+                if self._tokens >= tokens:
+                    self._tokens -= tokens
+                    return
+            wait_time = (tokens - self._tokens) * (self.period / self.max_calls)
+            logger.debug(f"限流器等待 {wait_time:.2f} 秒")
+            time.sleep(wait_time)
+    
+    @property
+    def available_tokens(self) -> float:
+        """获取可用令牌数"""
+        self._refill()
+        return self._tokens
+
+
+class HealthChecker:
+    """
+    数据源健康检查器
+
+    定期检查数据源可用性，维护健康状态。
+    区分临时故障（网络抖动、限流）与永久故障（服务下线、配置错误）。
+
+    参数：
+        sources: 数据源列表 [{"name": str, "check_func": Callable, "timeout": float}]
+        check_interval: 检查间隔（秒）
+        success_rate_threshold: 成功率阈值（低于此值触发告警）
+        temp_failure_threshold: 临时故障判定阈值（连续失败次数）
+        permanent_failure_threshold: 永久故障判定阈值（成功率低于此值）
+    """
+
+    # 临时故障类型
+    TEMPORARY_ERRORS = (
+        ConnectionError,
+        TimeoutError,
+        SourceRateLimitedError,
+        OSError,
+    )
+
+    # 永久故障类型
+    PERMANENT_ERRORS = (
+        SourceUnavailableError,
+        DataNotFoundError,
+        DataEmptyError,
+    )
+
+    def __init__(
+        self,
+        sources: List[Dict[str, Any]],
+        check_interval: int = 300,
+        success_rate_threshold: float = 0.8,
+        temp_failure_threshold: int = 3,
+        permanent_failure_threshold: float = 0.5,
+    ):
+        self.sources = sources
+        self.check_interval = check_interval
+        self.success_rate_threshold = success_rate_threshold
+        self.temp_failure_threshold = temp_failure_threshold
+        self.permanent_failure_threshold = permanent_failure_threshold
+        self._health_status: Dict[str, Dict[str, Any]] = {}
+        self._last_check: Dict[str, float] = {}
+        self._running = False
+        self._task: Optional[asyncio.Task] = None
+        # 成功率统计
+        self._success_counts: Dict[str, int] = {s["name"]: 0 for s in sources}
+        self._failure_counts: Dict[str, int] = {s["name"]: 0 for s in sources}
+        self._alerts: List[Dict[str, Any]] = []
+        # 故障类型统计
+        self._temp_failure_counts: Dict[str, int] = {s["name"]: 0 for s in sources}
+        self._permanent_failure_counts: Dict[str, int] = {s["name"]: 0 for s in sources}
+        # 故障历史
+        self._failure_history: Dict[str, List[Dict[str, Any]]] = {s["name"]: [] for s in sources}
+
+    def record_fetch_result(self, source_name: str, success: bool):
+        """记录抓取结果，用于成功率统计"""
+        if source_name not in self._success_counts:
+            self._success_counts[source_name] = 0
+            self._failure_counts[source_name] = 0
+            self._temp_failure_counts[source_name] = 0
+            self._permanent_failure_counts[source_name] = 0
+
+        if success:
+            self._success_counts[source_name] += 1
+            # 成功时重置临时故障计数
+            self._temp_failure_counts[source_name] = 0
+        else:
+            self._failure_counts[source_name] += 1
+            # 检查成功率是否低于阈值
+            total = self._success_counts[source_name] + self._failure_counts[source_name]
+            if total >= 10:  # 至少10次调用后才评估
+                rate = self._success_counts[source_name] / total
+                if rate < self.success_rate_threshold:
+                    alert = {
+                        "source": source_name,
+                        "type": "low_success_rate",
+                        "rate": round(rate, 4),
+                        "total_calls": total,
+                        "success_calls": self._success_counts[source_name],
+                        "failure_calls": self._failure_counts[source_name],
+                        "threshold": self.success_rate_threshold,
+                        "timestamp": time.time()
+                    }
+                    self._alerts.append(alert)
+                    logger.warning(f"数据源 {source_name} 成功率过低：{rate:.2%} (阈值：{self.success_rate_threshold:.0%})")
+
+    def record_failure(self, source_name: str, error: Exception):
+        """记录失败并分类为临时或永久故障"""
+        if source_name not in self._success_counts:
+            self._success_counts[source_name] = 0
+            self._failure_counts[source_name] = 0
+            self._temp_failure_counts[source_name] = 0
+            self._permanent_failure_counts[source_name] = 0
+
+        self._failure_counts[source_name] += 1
+
+        # 分类故障类型
+        if isinstance(error, self.TEMPORARY_ERRORS):
+            self._temp_failure_counts[source_name] += 1
+            failure_type = "temporary"
+        elif isinstance(error, self.PERMANENT_ERRORS):
+            self._permanent_failure_counts[source_name] += 1
+            failure_type = "permanent"
+        else:
+            # 未知类型，默认视为临时故障
+            self._temp_failure_counts[source_name] += 1
+            failure_type = "unknown"
+
+        # 记录故障历史
+        self._failure_history[source_name].append({
+            "timestamp": time.time(),
+            "type": failure_type,
+            "error": str(error)[:200],
+            "error_type": type(error).__name__,
+        })
+        # 保留最近100条记录
+        self._failure_history[source_name] = self._failure_history[source_name][-100:]
+
+        # 检查是否达到临时故障阈值
+        if self._temp_failure_counts[source_name] >= self.temp_failure_threshold:
+            alert = {
+                "source": source_name,
+                "type": "temp_failure_threshold",
+                "consecutive_failures": self._temp_failure_counts[source_name],
+                "threshold": self.temp_failure_threshold,
+                "timestamp": time.time()
+            }
+            self._alerts.append(alert)
+            logger.warning(f"数据源 {source_name} 连续临时故障 {self._temp_failure_counts[source_name]} 次")
+
+        # 检查是否达到永久故障阈值
+        if self._permanent_failure_counts[source_name] >= self.temp_failure_threshold:
+            alert = {
+                "source": source_name,
+                "type": "permanent_failure",
+                "consecutive_failures": self._permanent_failure_counts[source_name],
+                "threshold": self.temp_failure_threshold,
+                "timestamp": time.time()
+            }
+            self._alerts.append(alert)
+            logger.error(f"数据源 {source_name} 可能已永久失效，连续永久故障 {self._permanent_failure_counts[source_name]} 次")
+
+    def get_failure_type(self, source_name: str) -> Optional[str]:
+        """获取数据源最近的故障类型"""
+        history = self._failure_history.get(source_name, [])
+        if not history:
+            return None
+        return history[-1].get("type")
+
+    def get_temp_failure_count(self, source_name: str) -> int:
+        """获取临时故障计数"""
+        return self._temp_failure_counts.get(source_name, 0)
+
+    def get_permanent_failure_count(self, source_name: str) -> int:
+        """获取永久故障计数"""
+        return self._permanent_failure_counts.get(source_name, 0)
+
+    def is_temporarily_unavailable(self, source_name: str) -> bool:
+        """检查数据源是否临时不可用"""
+        return self._temp_failure_counts.get(source_name, 0) >= self.temp_failure_threshold
+
+    def is_permanently_unavailable(self, source_name: str) -> bool:
+        """检查数据源是否永久不可用"""
+        return self._permanent_failure_counts.get(source_name, 0) >= self.temp_failure_threshold
+
+    def reset_failure_counts(self, source_name: str):
+        """重置指定数据源的故障计数"""
+        self._temp_failure_counts[source_name] = 0
+        self._permanent_failure_counts[source_name] = 0
+        self._failure_history[source_name] = []
+        logger.info(f"已重置数据源 {source_name} 的故障计数")
+
+    def get_success_rate(self, source_name: str) -> float:
+        """获取数据源成功率"""
+        success = self._success_counts.get(source_name, 0)
+        failure = self._failure_counts.get(source_name, 0)
+        total = success + failure
+        if total == 0:
+            return 1.0  # 无记录时默认健康
+        return success / total
+
+    def get_recent_alerts(self, source_name: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
+        """获取最近的告警"""
+        if source_name:
+            return [a for a in self._alerts if a["source"] == source_name][-limit:]
+        return self._alerts[-limit:]
+
+    def clear_alerts(self, source_name: Optional[str] = None):
+        """清除告警"""
+        if source_name:
+            self._alerts = [a for a in self._alerts if a["source"] != source_name]
+        else:
+            self._alerts = []
+    
+    async def check(self, source_name: str) -> Dict[str, Any]:
+        """检查单个数据源健康状态"""
+        source_info = next((s for s in self.sources if s["name"] == source_name), None)
+        if not source_info:
+            raise ValueError(f"未知数据源：{source_name}")
+
+        check_func = source_info.get("check_func")
+        timeout = source_info.get("timeout", 10)
+
+        try:
+            start_time = time.time()
+            if asyncio.iscoroutinefunction(check_func):
+                await asyncio.wait_for(check_func(), timeout=timeout)
+            else:
+                check_func()
+
+            elapsed = time.time() - start_time
+            status = {
+                "source": source_name,
+                "healthy": True,
+                "latency_ms": round(elapsed * 1000, 2),
+                "last_check": time.time(),
+                "consecutive_failures": 0,
+                "failure_type": None,
+                "success_rate": self.get_success_rate(source_name),
+            }
+            logger.debug(f"数据源 {source_name} 健康检查通过（{elapsed*1000:.1f}ms）")
+            # 成功时重置故障计数
+            self.reset_failure_counts(source_name)
+
+        except Exception as e:
+            elapsed = time.time() - start_time
+            prev_failures = self._health_status.get(source_name, {}).get("consecutive_failures", 0)
+            # 分类故障类型
+            if isinstance(e, self.TEMPORARY_ERRORS):
+                failure_type = "temporary"
+            elif isinstance(e, self.PERMANENT_ERRORS):
+                failure_type = "permanent"
+            else:
+                failure_type = "unknown"
+
+            status = {
+                "source": source_name,
+                "healthy": False,
+                "error": str(e)[:100],
+                "error_type": type(e).__name__,
+                "failure_type": failure_type,
+                "latency_ms": round(elapsed * 1000, 2),
+                "last_check": time.time(),
+                "consecutive_failures": prev_failures + 1,
+                "success_rate": self.get_success_rate(source_name),
+            }
+            logger.warning(f"数据源 {source_name} 健康检查失败：{e}")
+            # 记录故障
+            self.record_failure(source_name, e)
+
+        self._health_status[source_name] = status
+        self._last_check[source_name] = time.time()
+        return status
+    
+    async def check_all(self) -> Dict[str, Dict[str, Any]]:
+        """检查所有数据源健康状态"""
+        results = {}
+        for source_info in self.sources:
+            name = source_info["name"]
+            results[name] = await self.check(name)
+        return results
+    
+    def get_status(self, source_name: str) -> Optional[Dict[str, Any]]:
+        """获取数据源当前健康状态"""
+        return self._health_status.get(source_name)
+    
+    def is_healthy(self, source_name: str) -> bool:
+        """检查数据源是否健康"""
+        status = self._health_status.get(source_name)
+        return status and status.get("healthy", False)
+    
+    async def start_monitoring(self):
+        """启动后台健康监控"""
+        if self._running:
+            return
+        
+        self._running = True
+        self._task = asyncio.create_task(self._monitor_loop())
+        logger.info(f"健康检查器已启动，间隔 {self.check_interval} 秒")
+    
+    async def _monitor_loop(self):
+        """监控循环"""
+        while self._running:
+            try:
+                await self.check_all()
+            except Exception as e:
+                logger.error(f"健康检查循环出错：{e}")
+            await asyncio.sleep(self.check_interval)
+    
+    def stop_monitoring(self):
+        """停止后台监控"""
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            self._task = None
+        logger.info("健康检查器已停止")
 
 
 def retry_with_backoff(

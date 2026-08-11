@@ -114,6 +114,38 @@ from .enhanced_exception_handler import (
     with_enhanced_exception_handling,
     async_with_enhanced_exception_handling,
 )
+from .adaptive_timeout import (
+    AdaptiveTimeout,
+    TimeoutPredictor,
+    get_adaptive_timeout,
+    get_timeout_predictor,
+    record_response,
+    get_optimal_timeout,
+)
+from .smart_wait_v2 import (
+    SmartWaiterV2,
+    WaitStrategy as WaitStrategyV2,
+    WebsiteType,
+    smart_wait_v2,
+)
+from .adaptive_backoff import (
+    AdaptiveBackoff,
+    BackoffStrategy as AdaptiveBackoffStrategy,
+    FailurePattern,
+    get_adaptive_backoff,
+    record_failure,
+    record_success,
+    get_backoff_delay,
+    get_failure_pattern,
+)
+from .predictive_retry import (
+    PredictiveRetry,
+    RetryPrediction,
+    get_predictive_retry,
+    record_attempt,
+    predict_optimal_retries,
+    get_retry_prediction,
+)
 
 __all__ = [
     # 错误分类
@@ -230,6 +262,34 @@ __all__ = [
     "reset_enhanced_exception_handler",
     "with_enhanced_exception_handling",
     "async_with_enhanced_exception_handling",
+    # 自适应超时
+    "AdaptiveTimeout",
+    "TimeoutPredictor",
+    "get_adaptive_timeout",
+    "get_timeout_predictor",
+    "record_response",
+    "get_optimal_timeout",
+    # 增强智能等待
+    "SmartWaiterV2",
+    "WaitStrategyV2",
+    "WebsiteType",
+    "smart_wait_v2",
+    # 自适应退避
+    "AdaptiveBackoff",
+    "AdaptiveBackoffStrategy",
+    "FailurePattern",
+    "get_adaptive_backoff",
+    "record_failure",
+    "record_success",
+    "get_backoff_delay",
+    "get_failure_pattern",
+    # 预测性重试
+    "PredictiveRetry",
+    "RetryPrediction",
+    "get_predictive_retry",
+    "record_attempt",
+    "predict_optimal_retries",
+    "get_retry_prediction",
 ]
 
 __version__ = "1.2.0"

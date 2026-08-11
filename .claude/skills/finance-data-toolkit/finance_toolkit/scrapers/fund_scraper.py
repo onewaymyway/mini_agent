@@ -5,6 +5,8 @@
 支持: 基金净值、历史净值、持仓、分类、基金经理等
 """
 
+import json
+import re
 from datetime import datetime, timedelta
 from typing import List, Optional, AsyncIterator
 
@@ -78,99 +80,118 @@ class FundScraper(BaseScraper):
             raise ValueError(f"不支持的数据类型：{data_type}")
 
     async def _fetch_nav(self, symbol: str, **kwargs) -> AsyncIterator[FinanceData]:
-        """获取基金净值 (单只基金)"""
+        """获取基金最新净值 - 使用 JS 文件方式"""
         async with httpx.AsyncClient(timeout=30) as client:
-            # 东方财富基金净值接口
+            # 获取基金 JS 数据文件
             resp = await client.get(
-                'https://fund.eastmoney.com/f10/F10Data.aspx',
-                params={
-                    'type': 'lsjz',
-                    'code': symbol,
-                    'page': '1',
-                    'sdate': (kwargs.get('start') or datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'),
-                    'edate': (kwargs.get('end') or datetime.now()).strftime('%Y-%m-%d'),
-                    'per': '20'
-                },
+                f'https://fund.eastmoney.com/pingzhongdata/{symbol}.js',
                 timeout=30
             )
 
             if resp.status_code != 200:
                 return
 
-            # 解析 HTML 表格数据
-            import re
             text = resp.text
-            # 提取净值数据
-            pattern = r'<td>(\d{4}-\d{2}-\d{2})</td><td>([\d.]+)</td><td>([\d.]+)</td><td>([\d.]+)</td><td>([\d.]+)%</td>'
-            matches = re.findall(pattern, text)
-
-            if matches:
-                records = []
-                for m in matches:
-                    records.append({
-                        'date': m[0],
-                        'nav': float(m[1]),
-                        'acc_nav': float(m[2]),
-                        'daily_return': float(m[3]),
-                        'accum_return': float(m[4])
-                    })
+            
+            # 提取基本信息
+            info = {}
+            
+            # 基金名称
+            name_match = re.search(r'fS_name\s*=\s*["\']([^"\']+)["\']', text)
+            if name_match:
+                info['name'] = name_match.group(1)
+            
+            # 基金代码
+            code_match = re.search(r'fS_code\s*=\s*["\']([^"\']+)["\']', text)
+            if code_match:
+                info['code'] = code_match.group(1)
+            
+            # 最新净值 (Data_netWorthTrend 最后一个元素的 y 值)
+            nav_match = re.search(r'Data_netWorthTrend\s*=\s*\[(.+?)\];', text, re.DOTALL)
+            if nav_match:
+                nav_str = nav_match.group(1)
+                # 提取最后一个净值记录
+                nav_pattern = r'\{"x":"([^"]+)","y":"([^"]+)"'
+                nav_matches = re.findall(nav_pattern, nav_str)
+                if nav_matches:
+                    last_nav = nav_matches[-1]
+                    info['nav_date'] = last_nav[0]
+                    info['nav'] = float(last_nav[1])
+            
+            # 累计净值 (Data_ACWorthTrend)
+            acc_nav_match = re.search(r'Data_ACWorthTrend\s*=\s*\[(.+?)\];', text, re.DOTALL)
+            if acc_nav_match:
+                acc_str = acc_nav_match.group(1)
+                acc_pattern = r'\["([^"]+)",([\d.]+)'
+                acc_matches = re.findall(acc_pattern, acc_str)
+                if acc_matches:
+                    info['acc_nav'] = float(acc_matches[-1][1])
+            
+            if info:
                 yield FinanceData(
                     source='fund',
                     data_type='fund_nav',
                     symbol=symbol,
                     timestamp=datetime.utcnow(),
-                    payload={'records': records, 'count': len(records)}
+                    payload=info
                 )
 
     async def _fetch_holdings(self, symbol: str, **kwargs) -> AsyncIterator[FinanceData]:
-        """获取基金持仓"""
+        """获取基金持仓 - 使用 JS 文件方式"""
         async with httpx.AsyncClient(timeout=30) as client:
-            # 股票持仓
             resp = await client.get(
-                'https://fundf10.eastmoney.com/FundArchivesDatas.aspx',
-                params={
-                    'type': 'jjcc',
-                    'code': symbol,
-                    'topline': '10',
-                    'year': 'all',
-                    'month': 'all'
-                },
+                f'https://fund.eastmoney.com/pingzhongdata/{symbol}.js',
                 timeout=30
             )
 
             if resp.status_code != 200:
                 return
 
-            import re
             text = resp.text
-            # 解析持仓数据
-            pattern = r'<td><a[^>]*>([^<]+)</a></td><td>([^<]+)</td><td>([^<]*)</td><td>([^<]*)</td><td>([^<]*)</td>'
-            matches = re.findall(pattern, text)
-
-            if matches:
-                holdings = []
-                for m in matches[:10]:
+            holdings = []
+            
+            # 股票持仓代码
+            stock_match = re.search(r'stockCodes\s*=\s*\[(.+?)\];', text, re.DOTALL)
+            if stock_match:
+                stock_str = stock_match.group(1)
+                stock_codes = re.findall(r'["\']([0-9a-f]{6,})["\']', stock_str)
+                for code in stock_codes[:20]:  # 最多20只
                     holdings.append({
-                        'stock_name': m[0],
-                        'stock_code': m[1],
-                        'shares': m[2],
-                        'market_value': m[3],
-                        'weight': m[4]
+                        'type': 'stock',
+                        'code': code,
+                        'name': '未知'
                     })
+            
+            # 债券持仓代码
+            bond_match = re.search(r'zqCodesNew\s*=\s*\[(.+?)\];', text, re.DOTALL)
+            if bond_match:
+                bond_str = bond_match.group(1)
+                bond_codes = re.findall(r'["\']([0-9.]+)["\']', bond_str)
+                for code in bond_codes[:10]:  # 最多10只
+                    holdings.append({
+                        'type': 'bond',
+                        'code': code,
+                        'name': '未知'
+                    })
+            
+            if holdings:
                 yield FinanceData(
                     source='fund',
                     data_type='fund_holdings',
                     symbol=symbol,
                     timestamp=datetime.utcnow(),
-                    payload={'holdings': holdings}
+                    payload={'holdings': holdings, 'count': len(holdings)}
                 )
 
     async def _fetch_rank(self, **kwargs) -> AsyncIterator[FinanceData]:
         """获取基金排行榜"""
-        async with httpx.AsyncClient(timeout=30) as client:
-            rank_type = kwargs.get('rank_type', '1')  # 1=近1月, 2=近3月, 3=近6月, 4=近1年
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://fund.eastmoney.com/',
+        }
+        async with httpx.AsyncClient(timeout=30, headers=headers) as client:
             fund_type = kwargs.get('fund_type', 'gp')  # gp=股票型, hh=混合型, zq=债券型
-
+            
             resp = await client.get(
                 'https://fund.eastmoney.com/data/rankhandler.aspx',
                 params={
@@ -192,74 +213,115 @@ class FundScraper(BaseScraper):
             if resp.status_code != 200:
                 return
 
-            data = resp.json()
-            if data.get('data'):
-                funds = []
-                for item in data['data'][:50]:
+            text = resp.text
+            
+            # 解析 JSONP: var rankData = {datas:[...], allRecords:...}
+            match = re.search(r'var rankData\s*=\s*(.+?);\s*$', text, re.DOTALL)
+            if not match:
+                return
+            
+            json_str = match.group(1).strip()
+            # 修复 JSON key 引号
+            json_str = re.sub(r'([{,])\s*(\w+)\s*:', r'\1"\2":', json_str)
+            
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError:
+                return
+            
+            funds = []
+            if data.get('datas'):
+                for item in data['datas'][:50]:
                     parts = item.split(',')
                     if len(parts) >= 12:
-                        funds.append({
-                            'code': parts[0],
-                            'name': parts[1],
-                            'nav': parts[2],
-                            'acc_nav': parts[3],
-                            'daily_return': parts[4],
-                            'return_1m': parts[5],
-                            'return_3m': parts[6],
-                            'return_6m': parts[7],
-                            'return_1y': parts[8],
-                            'return_3y': parts[9],
-                            'return_5y': parts[10],
-                            'fund_type': parts[11]
-                        })
+                        try:
+                            funds.append({
+                                'code': parts[0],
+                                'name': parts[1],
+                                'pinyin': parts[2],
+                                'date': parts[3],
+                                'nav': parts[4],
+                                'acc_nav': parts[5],
+                                'daily_return': parts[6],
+                                'return_1m': parts[7],
+                                'return_3m': parts[8],
+                                'return_6m': parts[9],
+                                'return_1y': parts[10],
+                                'return_3y': parts[11],
+                                'return_5y': parts[12] if len(parts) > 12 else None,
+                                'fund_type': parts[13] if len(parts) > 13 else None
+                            })
+                        except (ValueError, IndexError):
+                            continue
+            
+            if funds:
                 yield FinanceData(
                     source='fund',
                     data_type='fund_rank',
                     symbol='*',
                     timestamp=datetime.utcnow(),
-                    payload={'funds': funds, 'count': len(funds)}
+                    payload={'funds': funds, 'count': len(funds), 'total': data.get('allRecords', 0)}
                 )
 
     async def _fetch_info(self, symbol: str) -> AsyncIterator[FinanceData]:
-        """获取基金基本信息"""
+        """获取基金基本信息 - 使用 JS 文件方式"""
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(
-                f'https://fund.eastmoney.com/{symbol}.html',
+                f'https://fund.eastmoney.com/pingzhongdata/{symbol}.js',
                 timeout=30
             )
 
             if resp.status_code != 200:
                 return
 
-            import re
             text = resp.text
-
-            # 提取基本信息
             info = {}
-            name_match = re.search(r'<h1[^>]*>([^<]+)</h1>', text)
+            
+            # 基金名称
+            name_match = re.search(r'fS_name\s*=\s*["\']([^"\']+)["\']', text)
             if name_match:
                 info['name'] = name_match.group(1)
-
+            
+            # 基金代码
+            code_match = re.search(r'fS_code\s*=\s*["\']([^"\']+)["\']', text)
+            if code_match:
+                info['code'] = code_match.group(1)
+            
             # 基金类型
-            type_match = re.search(r'基金类型[：:](\s*[^<]+)', text)
+            type_match = re.search(r'fund_Type\s*=\s*["\']([^"\']+)["\']', text)
             if type_match:
-                info['type'] = type_match.group(1).strip()
-
-            # 基金规模
-            size_match = re.search(r'基金规模[：:](\s*[^<]+)', text)
-            if size_match:
-                info['size'] = size_match.group(1).strip()
-
+                info['type'] = type_match.group(1)
+            
+            # 基金公司
+            company_match = re.search(r'fund_Company\s*=\s*["\']([^"\']+)["\']', text)
+            if company_match:
+                info['company'] = company_match.group(1)
+            
             # 成立日期
-            date_match = re.search(r'成立日期[：:](\s*[^<]+)', text)
+            date_match = re.search(r'fund_EstablishDate\s*=\s*["\']([^"\']+)["\']', text)
             if date_match:
-                info['establish_date'] = date_match.group(1).strip()
-
+                info['establish_date'] = date_match.group(1)
+            
+            # 基金规模
+            size_match = re.search(r'fund_Scale\s*=\s*["\']([^"\']+)["\']', text)
+            if size_match:
+                info['size'] = size_match.group(1)
+            
             # 基金经理
-            manager_match = re.search(r'基金经理[：:](\s*[^<]+)', text)
+            manager_match = re.search(r'fund_Manager\s*=\s*["\']([^"\']+)["\']', text)
             if manager_match:
-                info['manager'] = manager_match.group(1).strip()
-
+                info['manager'] = manager_match.group(1)
+            
+            # 费率信息
+            rate_match = re.search(r'fund_Rate\s*=\s*\{([^}]+)\}', text)
+            if rate_match:
+                info['rate'] = rate_match.group(1)
+            
+            # 最小申购金额
+            min_match = re.search(r'fund_minsg\s*=\s*["\']([^"\']+)["\']', text)
+            if min_match:
+                info['min_purchase'] = min_match.group(1)
+            
             if info:
                 yield FinanceData(
                     source='fund',
@@ -270,48 +332,79 @@ class FundScraper(BaseScraper):
                 )
 
     async def _fetch_history(self, symbol: str, start: Optional[datetime], end: Optional[datetime], **kwargs) -> AsyncIterator[FinanceData]:
-        """获取基金历史净值"""
+        """获取基金历史净值 - 使用 JS 文件方式"""
         async with httpx.AsyncClient(timeout=30) as client:
-            beg = (start or datetime.now() - __import__('datetime').timedelta(days=365)).strftime('%Y-%m-%d')
-            ed = (end or datetime.now()).strftime('%Y-%m-%d')
-
             resp = await client.get(
-                'https://fund.eastmoney.com/f10/F10Data.aspx',
-                params={
-                    'type': 'lsjz',
-                    'code': symbol,
-                    'page': '1',
-                    'sdate': beg,
-                    'edate': ed,
-                    'per': '100'
-                },
+                f'https://fund.eastmoney.com/pingzhongdata/{symbol}.js',
                 timeout=30
             )
 
             if resp.status_code != 200:
                 return
 
-            import re
             text = resp.text
-            pattern = r'<td>(\d{4}-\d{2}-\d{2})</td><td>([\d.]+)</td><td>([\d.]+)</td><td>([\d.]+)</td><td>([\d.]+)%</td>'
-            matches = re.findall(pattern, text)
-
-            if matches:
-                records = []
-                for m in matches:
-                    records.append({
-                        'date': m[0],
-                        'nav': float(m[1]),
-                        'acc_nav': float(m[2]),
-                        'daily_return': float(m[3]),
-                        'accum_return': float(m[4])
-                    })
+            records = []
+            
+            # 提取净值历史数据
+            nav_match = re.search(r'Data_netWorthTrend\s*=\s*\[(.+?)\];', text, re.DOTALL)
+            if nav_match:
+                nav_str = nav_match.group(1)
+                # 解析为 JSON 数组
+                try:
+                    nav_data = json.loads(f'[{nav_str}]')
+                    for item in nav_data:
+                        x = item.get('x', 0)
+                        # 转换时间戳为日期
+                        if isinstance(x, (int, float)) and x > 1000000000000:
+                            date_str = datetime.fromtimestamp(x / 1000).strftime('%Y-%m-%d')
+                        else:
+                            date_str = str(x)
+                        records.append({
+                            'date': date_str,
+                            'nav': float(item.get('y', 0)),
+                            'equity_return': float(item.get('equityReturn', 0)) if item.get('equityReturn') else None
+                        })
+                except json.JSONDecodeError:
+                    pass
+            
+            # 提取累计净值历史
+            acc_nav_records = []
+            acc_match = re.search(r'Data_ACWorthTrend\s*=\s*\[(.+?)\];', text, re.DOTALL)
+            if acc_match:
+                acc_str = acc_match.group(1)
+                try:
+                    acc_data = json.loads(f'[{acc_str}]')
+                    for item in acc_data:
+                        if len(item) >= 2:
+                            acc_nav_records.append({
+                                'date': str(item[0]),
+                                'acc_nav': float(item[1])
+                            })
+                except json.JSONDecodeError:
+                    pass
+            
+            # 合并数据
+            if records:
+                # 按日期排序（最新的在前）
+                records.sort(key=lambda x: x['date'], reverse=True)
+                
+                # 添加累计净值
+                acc_dict = {r['date']: r['acc_nav'] for r in acc_nav_records}
+                for record in records:
+                    if record['date'] in acc_dict:
+                        record['acc_nav'] = acc_dict[record['date']]
+                
                 yield FinanceData(
                     source='fund',
                     data_type='fund_history',
                     symbol=symbol,
                     timestamp=datetime.utcnow(),
-                    payload={'records': records, 'count': len(records), 'start': beg, 'end': ed}
+                    payload={
+                        'records': records[:100],  # 最多100条
+                        'count': len(records),
+                        'start': records[-1]['date'] if records else '',
+                        'end': records[0]['date'] if records else ''
+                    }
                 )
 
     async def close(self):

@@ -23,6 +23,24 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class FingerprintConfig:
+    """设备指纹配置"""
+    canvas_noise_level: float = 0.1
+    webgl_vendors: list = None
+    memory_range: tuple = (4, 16)
+    cores_range: tuple = (2, 16)
+
+    def __post_init__(self):
+        if self.webgl_vendors is None:
+            self.webgl_vendors = [
+                ('Intel Inc.', 'Intel Iris OpenGL Engine'),
+                ('NVIDIA Corporation', 'NVIDIA GeForce GTX 1650'),
+                ('Apple Inc.', 'Apple GPU'),
+                ('AMD', 'AMD Radeon Pro'),
+            ]
+
+
+@dataclass
 class StealthConfig:
     """Stealth 配置"""
     enable_webdriver_removal: bool = True
@@ -35,6 +53,12 @@ class StealthConfig:
     humanize_mouse: bool = True
     humanize_typing: bool = True
     random_delay_range: tuple = (0.5, 2.0)  # 随机延迟范围（增加到人类化水平）
+    fingerprint_config: FingerprintConfig = None
+    website_type: str = 'general'  # 网站类型：general/ecommerce/finance/social
+
+    def __post_init__(self):
+        if self.fingerprint_config is None:
+            self.fingerprint_config = FingerprintConfig()
 
 
 class RequestIntervalController:
@@ -60,6 +84,113 @@ class RequestIntervalController:
         self.last_request_time = time.time()
 
 
+class DynamicFingerprintGenerator:
+    """动态指纹生成器 - 为每个会话生成唯一指纹"""
+    
+    def __init__(self, config: FingerprintConfig = None):
+        self.config = config or FingerprintConfig()
+        self._session_fingerprint = None
+    
+    def generate_session_fingerprint(self) -> dict:
+        """为每个会话生成唯一指纹"""
+        vendor, renderer = random.choice(self.config.webgl_vendors)
+        self._session_fingerprint = {
+            'canvas_hash': self._generate_canvas_hash(),
+            'webgl_renderer': renderer,
+            'webgl_vendor': vendor,
+            'device_memory': random.randint(*self.config.memory_range),
+            'hardware_concurrency': random.randint(*self.config.cores_range),
+        }
+        return self._session_fingerprint
+    
+    def _generate_canvas_hash(self) -> str:
+        """生成 Canvas 噪声哈希"""
+        import hashlib
+        noise = bytes([random.randint(0, 255) for _ in range(64)])
+        return hashlib.md5(noise).hexdigest()[:16]
+    
+    def get_session_js(self) -> str:
+        """生成会话专属的 JS 指纹脚本"""
+        if self._session_fingerprint is None:
+            self.generate_session_fingerprint()
+
+        fp = self._session_fingerprint
+        vendor = fp['webgl_vendor']
+        renderer = fp['webgl_renderer']
+        memory = fp['device_memory']
+        cores = fp['hardware_concurrency']
+
+        js = f"""
+        // Canvas 指纹随机化
+        const originalCanvasToDataURL = HTMLCanvasElement.prototype.toDataURL;
+        HTMLCanvasElement.prototype.toDataURL = function(type, ...args) {{
+            if (type === 'image/png') {{
+                return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+            }}
+            return originalCanvasToDataURL.call(this, type, ...args);
+        }};
+
+        // WebGL 指纹随机化
+        const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(param) {{
+            if (param === 37445) return '{vendor}';
+            if (param === 37446) return '{renderer}';
+            return originalGetParameter.call(this, param);
+        }};
+
+        // 设备信息随机化
+        Object.defineProperty(navigator, 'deviceMemory', {{
+            get: () => {memory}
+        }});
+        Object.defineProperty(navigator, 'hardwareConcurrency', {{
+            get: () => {cores}
+        }});
+        """
+        return js
+
+
+class AdaptiveBehaviorSimulator:
+    """自适应行为模拟器 - 根据网站类型调整行为参数"""
+    
+    BEHAVIOR_PARAMS = {
+        'general': {
+            'mouse_speed_range': (200, 800),
+            'click_delay_range': (0.1, 0.5),
+            'typing_speed_range': (50, 150),
+            'scroll_speed_range': (100, 500),
+        },
+        'ecommerce': {
+            'mouse_speed_range': (150, 600),
+            'click_delay_range': (0.2, 0.8),
+            'typing_speed_range': (30, 100),
+            'scroll_speed_range': (50, 300),
+        },
+        'finance': {
+            'mouse_speed_range': (300, 1000),
+            'click_delay_range': (0.05, 0.3),
+            'typing_speed_range': (100, 200),
+            'scroll_speed_range': (200, 800),
+        },
+        'social': {
+            'mouse_speed_range': (180, 700),
+            'click_delay_range': (0.15, 0.6),
+            'typing_speed_range': (40, 120),
+            'scroll_speed_range': (80, 400),
+        },
+    }
+    
+    def __init__(self, website_type: str = 'general'):
+        self.website_type = website_type
+        self.params = self.BEHAVIOR_PARAMS.get(website_type, self.BEHAVIOR_PARAMS['general'])
+    
+    def get_click_delay(self) -> float:
+        return random.uniform(*self.params['click_delay_range'])
+    
+    def get_typing_delay(self) -> float:
+        return random.uniform(1.0 / self.params['typing_speed_range'][1],
+                             1.0 / self.params['typing_speed_range'][0])
+
+
 class StealthMode:
     """
     Stealth 模式：隐藏自动化特征
@@ -72,6 +203,8 @@ class StealthMode:
         self.config = config or StealthConfig()
         self._applied = False
         self.interval_controller = RequestIntervalController()
+        self.fingerprint_gen = DynamicFingerprintGenerator(self.config.fingerprint_config)
+        self.behavior_sim = AdaptiveBehaviorSimulator(self.config.website_type)
     
     async def apply(self) -> bool:
         """
@@ -231,57 +364,12 @@ class StealthMode:
         logger.debug("已模拟插件信息")
     
     async def _mock_device_fingerprint(self):
-        """模拟设备指纹（Canvas/WebGL/内存/硬件并发）"""
-        js = """
-        // Canvas 指纹随机化
-        const originalCanvasToDataURL = HTMLCanvasElement.prototype.toDataURL;
-        HTMLCanvasElement.prototype.toDataURL = function(type, ...args) {
-            if (type === 'image/png') {
-                // 返回随机噪声图像
-                return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-            }
-            return originalCanvasToDataURL.call(this, type, ...args);
-        };
+        """模拟设备指纹（Canvas/WebGL/内存/硬件并发）- 使用动态指纹"""
+        # 生成会话专属指纹
+        fp_js = self.fingerprint_gen.get_session_js()
 
-        // WebGL 指纹随机化
-        const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
-        WebGLRenderingContext.prototype.getParameter = function(param) {
-            if (param === 37445) return 'Intel Inc.';
-            if (param === 37446) return 'Intel Iris OpenGL Engine';
-            return originalGetParameter.call(this, param);
-        };
-
-        // 设备内存模拟
-        Object.defineProperty(navigator, 'deviceMemory', {
-            get: () => 8
-        });
-
-        // 硬件并发模拟
-        Object.defineProperty(navigator, 'hardwareConcurrency', {
-            get: () => 8
-        });
-
-        // 平台信息
-        try {
-            Object.defineProperty(navigator, 'platform', {
-                get: () => 'Win32',
-                configurable: true
-            });
-        } catch(e) {}
-
-        // 连接类型
-        try {
-            Object.defineProperty(navigator, 'connection', {
-                get: () => ({
-                    effectiveType: '4g',
-                    rtt: 50,
-                    downlink: 10,
-                    saveData: false
-                }),
-                configurable: true
-            });
-        } catch(e) {}
-
+        # WebRTC 泄漏防护
+        webrtc_js = """
         // WebRTC 泄漏防护
         try {
             const mockRTCPeerConnection = window.RTCPeerConnection;
@@ -298,7 +386,7 @@ class StealthMode:
                 };
                 pc.createAnswer = function(...args) {
                     return originalCreateAnswer.apply(pc, args).then(answer => {
-                        answer.sdp = answer.sdp.replace(/(c=IN IP4 )\d+\.\d+\.\d+\.\d+/g, '$1127.0.0.1');
+                        answer.sdp = answer.sdp.replace(/(c=IN IP4 )\d+\.\d+\.\d+\.\d+/g, '$127.0.0.1');
                         answer.sdp = answer.sdp.replace(/candidate:(.*?)\s+typ\s+host/g, 'candidate:1 1 UDP 2122252543 127.0.0.1 9 typ host');
                         return answer;
                     });
@@ -309,8 +397,10 @@ class StealthMode:
             window.RTCPeerConnection.prototype = mockRTCPeerConnection.prototype;
         } catch(e) {}
         """
+
+        js = fp_js + webrtc_js
         await self.session.eval_js(js)
-        logger.debug("已模拟设备指纹（含 WebRTC 防护 + Canvas 伪装）")
+        logger.debug(f"已应用动态设备指纹 (WebGL: {self.fingerprint_gen._session_fingerprint['webgl_vendor']})")
     
     # =========================================================================
     # 人类行为模拟
