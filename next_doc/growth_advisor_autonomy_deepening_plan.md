@@ -1,5 +1,11 @@
 # 成长顾问：自主性深化改进方案
 
+> **实施状态更新**：方向 A1、B1、B2、D1、D2 已在
+> `docs/growth-advisor-guide.md` 2.13 节落地并合并（详见该节"新增/
+> 变更文件"清单），下面对应小节的内容保留作为设计背景/取舍记录，不再
+> 是"待实施"。方向 A2、A3、B3、C1、C2 仍按第 6 节的排期建议暂缓，
+> 保留为待实施方向。
+
 > 前置阅读：`docs/growth-advisor-guide.md` **1.5 节「设计理念」**（本方案
 > 的判断前提，务必先读）、2.9 节（Goal/Cron 打通）、2.12 节（采纳即
 > 启动）；`next_doc/growth_advisor_goal_cron_integration_plan.md`；

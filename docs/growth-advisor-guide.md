@@ -516,6 +516,87 @@ Goal 状态历史是数据结构层面的补全，`growth_topic_lifecycle()` 的
   展示 `pursuit` 结果的 toast 提示；报告查看折叠区的"已落地为 Goal"
   提示文案更新为"正在自主持续调研"。
 
+### 2.13 落地 `growth_advisor_autonomy_deepening_plan.md`：A1 / B1 / B2 / D1 / D2（本次新增）
+
+在 2.12 节"采纳即启动"之后，按 `next_doc/growth_advisor_autonomy_
+deepening_plan.md` 的优先级建议（该文档第 6 节），实现了其中五个
+方向。B3/C1/C2/A2/A3 仍按方案文档标注的理由暂缓（B3/A3 工作量和收益
+不确定，C1/C2 优先级低于先保证增量质量和可见性，A2 依赖后续对"失败"
+类停滞原因的进一步细分），保留在方案文档里供后续按需认领。
+
+**D1 + D2：看板可见性 + 就近控制**（方案文档"投入产出比最高"的一项）
+
+- 新增只读聚合端点 `GET /v1/growth/pursuits`：跨 `GrowthBacklog` +
+  `GoalBacklog` + `CronScheduler` + `growth_state.json` 四个既有
+  数据源拼装，不新增持久化。返回每个"已采纳且关联了 Goal"的候选的
+  周期性执行状态（第几轮、下次执行时间、cron job 是否启用）和饱和度
+  信号（见下面 B2）。
+- 看板成长顾问 tab 新增"🔄 正在自主推进"分区（`_render_growth_
+  pursuits()`），列出全部处于自主持续调研状态的方向，每条直接带
+  "⏸ 暂停"/"▶ 恢复"按钮（复用已有的 `unrecur_goal()`/`recur_goal()`，
+  没有新增后端能力）和一个"📄 素材"入口——用户不需要跳到「🎯 目标」
+  tab、也不需要理解"这背后是一个 Goal + 一个 cron job"，操作路径就近
+  收在成长顾问自己的界面里。
+
+**B1：增量质量的自动规则式初筛**
+
+- 新增 `growth_advisor.evaluate_cycle_increment(paths, goal_id)`：
+  读该 Goal 最近两轮的 manifest，从 `progress_note` 里的
+  ```handoff``` 块取出 `covered_subtopics`，算本轮相对上一轮的新增
+  子话题占比。占比过低（默认阈值 60% 重叠）判定"疑似低增量"。纯规则
+  式（集合差集），零 LLM 成本，只读、不阻断任何流程——方案文档里
+  "LLM 复核"这个可选的第二步（对被规则式标记的轮次再做一次语义级
+  判断）本轮未实现，留在方案文档里作为后续可选增强。
+- 轮次不足（少于 2 轮）或本轮 handoff 没有提供 `covered_subtopics`
+  时，明确返回 `evaluated=False`，不会被误判成"低增量"。
+
+**B2：饱和度信号**
+
+- 新增 `growth_advisor.record_pursuit_cycle_signal()` /
+  `get_pursuit_saturation()`：把"连续低增量轮次"计数存进
+  `growth_state.json` 的 `pursuit_saturation` 子字典（按 `goal_id`
+  分桶，不为这个信号单独开一份持久化文件）。连续达到阈值（默认 3
+  轮）判定"疑似饱和"；不再低增量时计数归零，同一次饱和状态只提示
+  一次（不重复打扰），归零后重新累计满阈值会触发新一轮提示。
+- 新增 `growth_advisor.process_pursuit_cycle_completion(paths, goal)`
+  把"算增量 → 记饱和度计数 → 刚跨过阈值时给出建议文案"串起来，只处理
+  打了 `growth_advisor` 标签的 Goal，其余 Goal 直接跳过。
+- 接入点：`goal_cron_bridge.reap_finished_cycles()` 里一轮子
+  Objective 以 `completed` 收尾时，顺带调用新增的
+  `_check_pursuit_saturation()`——刚判定饱和会通过既有通知网关
+  （`notification/dispatcher.py`）推一条"最近几轮新增内容不多了，
+  要不要降频/先告一段落"的提示。**只是提示，不自动降频或停止**，
+  对齐 1.5 节"自主不等于替用户做主"——异常整体吞掉，不影响
+  `reap_finished_cycles()` 的计数主流程。
+- 看板"🔄 正在自主推进"分区里，饱和的方向会带一条 `st.warning` 提示，
+  跟 D1 展示的执行状态在同一处呈现。
+
+**A1：report/refresh 与 Goal 周期性并轨**
+
+- `growth_advisor.reports_needing_refresh()` 新增可选参数
+  `goal_backlog`：传入时，已经落地成 Goal 且 `recurring=True` 的
+  候选会被跳过——它的素材已经由 `growth_pursuit` 周期性执行接管，
+  不再需要"报告刷新"这条独立路径继续提示。不传（默认 `None`）时
+  行为与改动前完全一致，向后兼容所有既有调用方。
+- `GET /v1/growth/reports/refresh_candidates` 路由已经改为传入
+  `goal_backlog`（拿不到 `GoalBacklog` 时优雅退化成不过滤）。
+
+**新增/变更文件**：
+
+- `src/mini_agent/evolution/growth_advisor.py`：新增
+  `evaluate_cycle_increment()` / `record_pursuit_cycle_signal()` /
+  `get_pursuit_saturation()` / `process_pursuit_cycle_completion()`；
+  `reports_needing_refresh()` 新增 `goal_backlog` 参数；
+- `src/mini_agent/evolution/goal_cron_bridge.py`：
+  `reap_finished_cycles()` 一轮成功完成时接入
+  `_check_pursuit_saturation()`；
+- `src/mini_agent/api/routes.py`：新增
+  `GET /v1/growth/pursuits`；`refresh_candidates` 路由改为传入
+  `goal_backlog`；
+- `apps/mini_agent_kanban/client.py`：新增 `growth_pursuits()`；
+- `apps/mini_agent_kanban/app.py`：新增 `_render_growth_pursuits()`
+  并接入 `render_growth_tab()`。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外
@@ -552,7 +633,13 @@ Goal 状态历史是数据结构层面的补全，`growth_topic_lifecycle()` 的
 - "有没有推进？"回访卡片：满足回访窗口且被动信号初筛没有跳过的候选
   会展示在这里，两个按钮对应 progressed/stalled
 - "可以刷新一下这份报告"提示：`reports_needing_refresh()` 命中的报告，
-  按"最近是否突增"优先排序，一键重新生成
+  按"最近是否突增"优先排序，一键重新生成（**[2.13 节 A1]** 已经落地
+  成 Goal 且绑定了周期性执行的候选不会出现在这里——它的素材已经由
+  自主持续调研接管）
+- **[2.13 节 D1/D2 新增]**"🔄 正在自主推进"折叠区：列出所有已采纳
+  且关联了 Goal 的方向，逐条展示第几轮、下次执行时间、连续低增量时
+  的"疑似饱和"提示，并带"⏸ 暂停"/"▶ 恢复"/"📄 素材"按钮，不需要跳到
+  「🎯 目标」tab
 - "📄 查看调研报告"折叠区（**[修复]** 与候选当前状态无关）：所有挂着
   `report_id` 的候选（不管 pending/accepted/dismissed/expired）都能在
   这里下拉选中查看正文——此前"📄 查看报告"按钮只出现在待处理候选卡片/
@@ -616,11 +703,12 @@ POST /v1/growth/keywords                                # 添加自定义关键�
 POST /v1/growth/keywords/{topic}/confirm                # 确认保留一个待确认主题
 POST /v1/growth/keywords/{topic}/remove                 # 删除自定义主题 / 隐藏内置主题
 POST /v1/growth/keywords/{topic}/restore                 # 恢复一个被隐藏的内置主题
-GET  /v1/growth/reports/refresh_candidates               # "值得刷新"的报告列表
+GET  /v1/growth/reports/refresh_candidates               # "值得刷新"的报告列表（已进入自主持续调研的候选不再出现，见 2.13 节 A1）
 POST /v1/growth/candidates/{id}/report/refresh            # 重新生成该候选的调研报告
-POST /v1/growth/candidates/{id}/adopt_goal                # 落地成 GoalBacklog Goal，交给 Goal/Cron 体系继续调研（本次新增）
+POST /v1/growth/candidates/{id}/adopt_goal                # 落地成 GoalBacklog Goal，交给 Goal/Cron 体系继续调研
 GET  /v1/growth/reports/{id}                             # 某份调研报告的完整元数据 + 正文
 GET  /v1/growth/health_trend                             # 健康度趋势快照序列（v4 N1，见 5.5 节）
+GET  /v1/growth/pursuits                                  # 正在被自主推进的方向列表（本次新增，见 2.13 节 D1）
 ```
 
 ## 5. 常用配置项（`agent_config.json` / `growth_advisor` 块）
@@ -842,3 +930,14 @@ N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
   比例是不是在上升）——这几项都是
   `next_doc/growth_advisor_research_quality_plan.md` 明确标注的
   非目标，留给后续单独排期。
+- 2.13 节落地的 B1/B2 增量质量/饱和度信号目前只是"提示"，不影响
+  执行流程本身；且 B1 只做了规则式初筛（`covered_subtopics` 差集
+  占比），`growth_advisor_autonomy_deepening_plan.md` 里提到的
+  "LLM 语义级复核"这个可选增强步骤还没有做；相近主题之间仍然不共享
+  素材、也不会互相去重/合并提示（方案文档方向 B3，明确标注工作量/
+  收益不确定，暂缓）；Goal 停滞时的"自诊断"（区分执行失败 vs 素材
+  饱和两类原因，方案文档方向 A2）、对齐分析结果的批量落地（方向
+  A3）、wiki 页面的定期重新整理（方向 C1）、"本轮新增摘要"推送
+  （方向 C2）也都还没有实施——这些是 `next_doc/growth_advisor_
+  autonomy_deepening_plan.md` 里已识别但尚未排期的部分，供后续
+  按需认领。

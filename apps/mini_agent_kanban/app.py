@@ -4417,6 +4417,7 @@ def render_growth_tab(client: "AgentClient"):
                     _render_growth_topic_timeline(client, map_cid)
 
     _render_growth_followups(client)
+    _render_growth_pursuits(client)
     _render_growth_report_refresh_candidates(client)
     _render_growth_report_viewer(client, candidates)
 
@@ -4513,6 +4514,72 @@ def _render_growth_followups(client: "AgentClient"):
             if cols[2].button("🕒 还没空", key=f"growth_followup_stalled_{c['candidate_id']}"):
                 client.growth_followup_record(c["candidate_id"], "stalled")
                 st.rerun()
+
+
+def _render_growth_pursuits(client: "AgentClient"):
+    """[growth_advisor_autonomy_deepening_plan.md 方向 D1/D2] "🔄 正在
+    自主推进"总览：已采纳且关联了 Goal 的候选，直接在成长顾问 tab 里
+    展示进展（第几轮、下次执行时间）和饱和度信号，并提供就近的暂停/
+    恢复入口——不要求用户理解"这背后是一个 Goal + 一个 cron job"，
+    对用户暴露的心智模型始终是"成长顾问在帮我调研 X"。"""
+    data = client.growth_pursuits() or {}
+    rows = data.get("pursuits") or []
+    if not rows:
+        return
+    active = [r for r in rows if r.get("recurring")]
+    paused = [r for r in rows if not r.get("recurring")]
+    with st.expander(f"🔄 正在自主推进（{len(active)} 个方向）", expanded=bool(active)):
+        st.caption("这些是你采纳过、成长顾问正在按周期自动持续调研的方向——素材持续追加到同一份"
+                   "页面，不需要你手动触发。")
+        for row in active:
+            saturation = row.get("saturation") or {}
+            cols = st.columns([4, 1.2, 1])
+            with cols[0]:
+                label = f"**{row.get('title')}** — 第 {row.get('cycle_count', 0)} 轮"
+                if row.get("next_run_at"):
+                    label += f" · 下次 {row['next_run_at']}"
+                st.write(label)
+                st.caption(f"调度：{row.get('schedule') or '（未知）'}")
+                if saturation.get("saturated"):
+                    st.warning(
+                        f"⚠️ 最近连续 {saturation.get('streak')} 轮新增内容不多了，"
+                        "可能已经了解得差不多，考虑降低频率或先告一段落。"
+                    )
+            with cols[1]:
+                if st.button("⏸ 暂停", key=f"growth_pursuit_pause_{row['goal_id']}"):
+                    client.unrecur_goal(row["goal_id"])
+                    st.toast(f"已暂停「{row.get('title')}」的自主调研", icon="⏸")
+                    st.rerun()
+            with cols[2]:
+                if st.button("📄 素材", key=f"growth_pursuit_view_{row['goal_id']}"):
+                    st.session_state["_growth_pursuit_view_goal"] = row["goal_id"]
+                    st.rerun()
+        if paused:
+            st.markdown("**已暂停**")
+            for row in paused:
+                cols = st.columns([4, 1])
+                cols[0].write(f"{row.get('title')} — 已完成 {row.get('cycle_count', 0)} 轮")
+                if cols[1].button("▶ 恢复", key=f"growth_pursuit_resume_{row['goal_id']}"):
+                    schedule = row.get("schedule") or "interval:86400"
+                    client.recur_goal(row["goal_id"], schedule)
+                    st.toast(f"已恢复「{row.get('title')}」的自主调研", icon="▶")
+                    st.rerun()
+
+    viewing_goal = st.session_state.get("_growth_pursuit_view_goal")
+    if viewing_goal:
+        row = next((r for r in rows if r.get("goal_id") == viewing_goal), None)
+        if row is not None:
+            with st.expander(f"📄 「{row.get('title')}」当前素材", expanded=True):
+                spec_resp = client.get_execution_spec(viewing_goal)
+                if spec_resp and "_error" not in spec_resp:
+                    st.caption("执行规范里声明的产出物（wiki 页面）请到「🎯 目标」tab 对应 Goal 的"
+                               "输出目录里查看最新内容——这里先展示轮次/来源等元信息。")
+                    st.json(spec_resp, expanded=False)
+                else:
+                    st.caption("该 Goal 还没有执行规范，或暂时无法读取。")
+                if st.button("收起", key="growth_pursuit_view_close"):
+                    st.session_state.pop("_growth_pursuit_view_goal", None)
+                    st.rerun()
 
 
 def _render_growth_report_refresh_candidates(client: "AgentClient"):

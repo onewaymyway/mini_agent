@@ -2342,7 +2342,7 @@ def _recent_evidence_delta(paths, dedupe_key: str, *, window_days: int) -> Optio
     return max(0, series[-1]["evidence_count"] - baseline["evidence_count"])
 
 
-def reports_needing_refresh(paths, cfg=None) -> list[dict]:
+def reports_needing_refresh(paths, cfg=None, *, goal_backlog=None) -> list[dict]:
     """返回"生成之后证据又显著增长、值得提示用户刷新一下"的报告列表。
     只看每个候选**当前挂着的那份报告**（`candidate.report_id`），已经被
     刷新过的旧报告不会重复出现。纯只读聚合，不做任何写入。
@@ -2354,6 +2354,14 @@ def reports_needing_refresh(paths, cfg=None) -> list[dict]:
     用户正在主动推进、当下更值得优先刷新。没有足够趋势快照数据判断的
     候选（`recent_evidence_delta is None`）退化按 `new_evidence` 排序，
     不会被误判成"没有最近突增"而排到最后。
+
+    `goal_backlog`：[growth_advisor_autonomy_deepening_plan.md 方向 A1]
+    可选。传入时，已经落地成 Goal 且该 Goal 处于 `recurring=True` 的
+    候选会被跳过——它的素材已经由 `growth_pursuit` 周期性执行接管
+    （每天/每周自动往 wiki 页面追加），不再需要"报告刷新"这条独立
+    路径，两套机制回答的是同一个问题，继续并存只会让用户搞不清该看
+    哪一个。不传（`None`，默认值）时行为与改动前完全一致，向后兼容
+    所有既有调用方。
     """
     min_new = getattr(cfg, "report_refresh_min_new_evidence", _DEFAULT_REPORT_REFRESH_MIN_NEW_EVIDENCE) if cfg is not None else _DEFAULT_REPORT_REFRESH_MIN_NEW_EVIDENCE
     reports_by_id = {r.report_id: r for r in list_reports(paths)}
@@ -2361,6 +2369,13 @@ def reports_needing_refresh(paths, cfg=None) -> list[dict]:
     for c in GrowthBacklog(paths).load_all():
         if not c.report_id:
             continue
+        if goal_backlog is not None and c.linked_goal_id:
+            try:
+                goal = goal_backlog.get(c.linked_goal_id)
+            except Exception:
+                goal = None
+            if goal is not None and getattr(goal, "recurring", False):
+                continue
         report = reports_by_id.get(c.report_id)
         if report is None:
             continue
@@ -2877,6 +2892,166 @@ def _save_growth_state(paths, state: dict) -> None:
     p = paths.growth_state_path
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+
+# ──────────── [growth_advisor_autonomy_deepening_plan.md 方向 B1/B2] ────────────
+# 增量质量自动校验 + 饱和度信号：`growth_pursuit` 模板的 per_cycle_criteria
+# 目前全部是 manual_review——没有自动化手段发现"一个方向已经连续好几轮
+# 都在重复讲差不多的内容"。这里补一层零成本的规则式初筛：比对相邻两轮
+# handoff 里的 `covered_subtopics` 差集，重叠比例过高就标记"疑似低增量"；
+# 连续多轮都被标记，则判定这个方向"疑似饱和"，供上层（reap_finished_
+# cycles / 看板）据此提示用户"要不要降频/告一段落"，而不是让周期性
+# 执行无限期按固定节奏空转下去——纯诊断信号，不自动拦截产出、不自动
+# 停止周期性执行，最终"要不要慢下来"仍然由用户决定（对齐 1.5 节"自主
+# 不等于替用户做主"）。
+
+_PURSUIT_SATURATION_DEFAULT_THRESHOLD = 3
+_PURSUIT_INCREMENT_OVERLAP_THRESHOLD = 0.6
+
+
+def evaluate_cycle_increment(paths, goal_id: str, *, overlap_threshold: float = _PURSUIT_INCREMENT_OVERLAP_THRESHOLD) -> dict:
+    """比较某个 Goal 最近两轮 manifest 的 handoff 数据，判断本轮相比上一轮
+    是否"疑似低增量"。纯规则式（`covered_subtopics` 集合差集占比），零
+    LLM 成本，不判"失败"、不阻断任何流程——只读，供调用方自行决定要不要
+    据此提示用户或计入 `record_pursuit_cycle_signal()` 的饱和度计数。
+
+    返回：
+        {"evaluated": bool,       # 是否成功做出了判断（轮次不足/没有
+                                   # handoff 数据时为 False，此时
+                                   # low_increment 恒为 False，不误判）
+         "low_increment": bool,
+         "overlap_ratio": float | None,       # 仅 evaluated=True 时有值
+         "new_subtopics_count": int | None,
+         "covered_subtopics_count": int | None,
+         "reason": str}           # evaluated=False 时说明原因
+    """
+    from mini_agent.evolution import output_workspace
+    from mini_agent.perception.goal_execution_spec import get_handoff_data
+
+    base_dir = output_workspace.goal_output_base_dir(paths, goal_id)
+    manifests = output_workspace.read_all_manifests(base_dir)
+    if len(manifests) < 2:
+        return {
+            "evaluated": False, "low_increment": False,
+            "overlap_ratio": None, "new_subtopics_count": None,
+            "covered_subtopics_count": None,
+            "reason": "轮次不足（少于 2 轮），暂无法比较增量",
+        }
+
+    prev_handoff = get_handoff_data(manifests[-2].get("progress_note") or "") or {}
+    curr_handoff = get_handoff_data(manifests[-1].get("progress_note") or "") or {}
+
+    def _as_set(handoff: dict, key: str) -> set:
+        v = handoff.get(key)
+        if isinstance(v, list):
+            return {str(x).strip() for x in v if str(x).strip()}
+        return set()
+
+    prev_subtopics = _as_set(prev_handoff, "covered_subtopics")
+    curr_subtopics = _as_set(curr_handoff, "covered_subtopics")
+    if not curr_subtopics:
+        return {
+            "evaluated": False, "low_increment": False,
+            "overlap_ratio": None, "new_subtopics_count": None,
+            "covered_subtopics_count": None,
+            "reason": "本轮 handoff 未提供 covered_subtopics，跳过判断（可能是该 Goal 没有用 growth_pursuit 模板，或执行时没有按约定写 handoff 块）",
+        }
+
+    new_subtopics = curr_subtopics - prev_subtopics
+    overlap_ratio = 1.0 - (len(new_subtopics) / len(curr_subtopics))
+    low_increment = overlap_ratio >= overlap_threshold
+    return {
+        "evaluated": True,
+        "low_increment": low_increment,
+        "overlap_ratio": round(overlap_ratio, 3),
+        "new_subtopics_count": len(new_subtopics),
+        "covered_subtopics_count": len(curr_subtopics),
+        "reason": "",
+    }
+
+
+def record_pursuit_cycle_signal(
+    paths, goal_id: str, low_increment: bool, *,
+    saturation_threshold: int = _PURSUIT_SATURATION_DEFAULT_THRESHOLD,
+) -> dict:
+    """维护某个 Goal 的"连续低增量轮次"计数（存进 growth_state.json 的
+    `pursuit_saturation` 子字典，按 goal_id 分桶，不为这个单一信号新开
+    一份持久化文件——对齐"复用已有存储位置"的既有取舍）。
+
+    - `low_increment=True` → streak +1；`False` → streak 归零、
+      `notified` 归位（一旦这轮不再是低增量，视为"已经缓过来"，之前的
+      饱和提示状态失效，下次再连续低增量会重新触发一次新的提示）。
+    - streak 达到 `saturation_threshold`（默认 3）判定为"疑似饱和"。
+    - `notified` 用于避免同一次饱和状态被重复提示——`newly_saturated`
+      只在"刚刚跨过阈值、之前还没提示过"时为 `True`，调用方（比如
+      `goal_cron_bridge.reap_finished_cycles()`）据此决定是否要推一次
+      "要不要降频"的通知，而不是每轮都重复打扰用户。
+
+    返回：{"streak": int, "saturated": bool, "newly_saturated": bool}
+    """
+    state = _load_growth_state(paths)
+    sat = state.setdefault("pursuit_saturation", {})
+    entry = dict(sat.get(goal_id) or {"streak": 0, "notified": False})
+    if low_increment:
+        entry["streak"] = int(entry.get("streak", 0)) + 1
+    else:
+        entry["streak"] = 0
+        entry["notified"] = False
+    saturated = entry["streak"] >= saturation_threshold
+    newly_saturated = saturated and not entry.get("notified", False)
+    if newly_saturated:
+        entry["notified"] = True
+    sat[goal_id] = entry
+    _save_growth_state(paths, state)
+    return {"streak": entry["streak"], "saturated": saturated, "newly_saturated": newly_saturated}
+
+
+def get_pursuit_saturation(paths, goal_id: str) -> dict:
+    """只读查询某个 Goal 当前的饱和度状态，供看板/API 展示，不产生任何
+    写入。没有记录过时返回 streak=0（尚未判定过饱和）。"""
+    state = _load_growth_state(paths)
+    entry = (state.get("pursuit_saturation") or {}).get(goal_id) or {}
+    threshold = _PURSUIT_SATURATION_DEFAULT_THRESHOLD
+    streak = int(entry.get("streak", 0))
+    return {
+        "streak": streak,
+        "saturated": streak >= threshold,
+        "threshold": threshold,
+    }
+
+
+def process_pursuit_cycle_completion(paths, goal) -> Optional[dict]:
+    """[方向 B1/B2 的组装入口] 一个"成长顾问自主推进"的 Goal 某一轮循环
+    完成后调用：算这一轮的增量质量 → 更新饱和度计数 → 刚跨过阈值时
+    返回一条可供上层（`goal_cron_bridge.reap_finished_cycles()`）推送
+    的提示信息。只处理打了 `growth_advisor` 标签的 Goal，其余 Goal 直接
+    跳过返回 `None`（这个信号只对成长顾问的持续调研场景有意义，通用
+    周期性 Goal 不受影响）。
+
+    任何异常都不向上抛——这是诊断增强，不能反过来影响
+    `reap_finished_cycles()` 的计数主流程；调用方应当把本函数包在
+    try/except 里（`reap_finished_cycles()` 已经这样做）。
+
+    返回 `None`（未触发提示）或
+        {"goal_id", "goal_title", "streak", "message"}（刚跨过饱和
+        阈值，建议向用户推一条提示）。
+    """
+    if "growth_advisor" not in (getattr(goal, "tags", None) or []):
+        return None
+    increment = evaluate_cycle_increment(paths, goal.id)
+    signal = record_pursuit_cycle_signal(paths, goal.id, increment.get("low_increment", False))
+    if not signal.get("newly_saturated"):
+        return None
+    return {
+        "goal_id": goal.id,
+        "goal_title": goal.title,
+        "streak": signal["streak"],
+        "message": (
+            f"「{goal.title}」最近 {signal['streak']} 轮新增内容不多了，"
+            "是这个方向已经了解得差不多，还是希望换个角度继续深挖？"
+            "可以考虑把频率降低一些，或先告一段落。"
+        ),
+    }
 
 
 # ────────────────────────── [LLM 增强路径可观测性] ──────────────────────────

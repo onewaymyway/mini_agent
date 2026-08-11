@@ -6511,7 +6511,74 @@ async def get_growth_reports_refresh_candidates(request: Request):
         if cfg is None:
             from mini_agent.config.models import GrowthAdvisorConfig
             cfg = GrowthAdvisorConfig()
-        return {"refresh_candidates": ga.reports_needing_refresh(paths, cfg)}
+        # [growth_advisor_autonomy_deepening_plan.md 方向 A1] 已经落地成
+        # Goal 且绑定了周期性执行的候选，素材由 growth_pursuit 自动接管，
+        # 不再需要"报告刷新"这条独立路径；拿不到 GoalBacklog 时优雅退化
+        # 成不过滤（等价于改动前的行为），不因为这一步失败而影响主功能。
+        goal_backlog = None
+        try:
+            from mini_agent.perception.goal_backlog import GoalBacklog
+            goal_backlog = GoalBacklog(paths)
+        except Exception:
+            goal_backlog = None
+        return {"refresh_candidates": ga.reports_needing_refresh(paths, cfg, goal_backlog=goal_backlog)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/growth/pursuits")
+async def get_growth_pursuits(request: Request):
+    """GET /v1/growth/pursuits — [growth_advisor_autonomy_deepening_plan.md
+    方向 D1] 聚合"哪些方向正在被自主持续调研"：已采纳且关联了 Goal 的
+    候选，逐条附上该 Goal 的周期性执行状态（下次执行时间/已跑轮数）和
+    饱和度信号，供看板渲染"🔄 正在自主推进"总览，不需要用户跳到
+    「🎯 目标」tab 理解 Goal/Cron 的内部机制。
+
+    纯只读聚合，跨 GrowthBacklog + GoalBacklog + CronScheduler +
+    growth_state.json 四个既有数据源拼装，不新增持久化。CronScheduler
+    在非 daemon 模式下可能拿不到，此时对应条目的 `next_run_at`/
+    `run_count` 为 `None`，不影响其余字段返回。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.perception.goal_backlog import GoalBacklog
+
+        backlog = ga.GrowthBacklog(paths)
+        goal_backlog = GoalBacklog(paths)
+        goal_backlog.load()
+
+        http_server = getattr(request.app.state, "http_server", None)
+        cs = _get_cron_scheduler(http_server) if http_server else None
+        jobs_by_id = {j.id: j for j in cs.list_jobs()} if cs is not None else {}
+
+        pursuits = []
+        for c in backlog.load_all():
+            if not c.linked_goal_id:
+                continue
+            goal = goal_backlog.get(c.linked_goal_id)
+            if goal is None:
+                continue
+            job = jobs_by_id.get(goal.recurrence_cron_job_id) if goal.recurrence_cron_job_id else None
+            saturation = ga.get_pursuit_saturation(paths, goal.id)
+            pursuits.append({
+                "candidate_id": c.candidate_id,
+                "title": c.title,
+                "goal_id": goal.id,
+                "goal_title": goal.title,
+                "recurring": goal.recurring,
+                "cycle_count": goal.cycle_count,
+                "schedule": job.schedule if job else None,
+                "next_run_at": job.next_run_at if job else None,
+                "last_run_at": job.last_run_at if job else None,
+                "run_count": job.run_count if job else None,
+                "cron_enabled": job.enabled if job else None,
+                "saturation": saturation,
+            })
+        return {"pursuits": pursuits}
     except HTTPException:
         raise
     except Exception as e:

@@ -406,6 +406,13 @@ def reap_finished_cycles(goal_backlog: "GoalBacklog") -> int:
                     # （比如渠道配置有问题）不影响本次计数结果，只是记录到
                     # dispatcher 自己的日志里。
                     _notify_cycle_failed(goal_backlog, goal, note)
+                elif child.status == "completed":
+                    # [growth_advisor_autonomy_deepening_plan.md 方向 B1/B2]
+                    # 只对成长顾问自主推进的 Goal（打了 growth_advisor 标签）
+                    # 做增量质量判断；一轮成功完成时顺带算一次饱和度信号，
+                    # 刚跨过阈值才推一次通知（同一次饱和状态不重复打扰）。
+                    # 诊断增强，任何异常都吞掉，不影响 reap 主流程的计数。
+                    _check_pursuit_saturation(goal_backlog, goal)
         # [Track D] 归档已跑过多轮、已经计过数的旧子节点，避免 goals.json
         # 随轮数无限增长。只读遍历+命中才写，跟本函数其余部分同一种开销
         # 可控的设计哲学。
@@ -438,6 +445,33 @@ def _notify_cycle_failed(goal_backlog: "GoalBacklog", goal: "GoalNode", note: st
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._notify_cycle_failed')
+
+
+def _check_pursuit_saturation(goal_backlog: "GoalBacklog", goal: "GoalNode") -> None:
+    """[growth_advisor_autonomy_deepening_plan.md 方向 B1/B2] 一轮成功
+    完成时，对成长顾问自主推进的 Goal 算一次增量质量/饱和度信号，刚
+    跨过阈值就推一条"要不要降频"的通知。纯诊断增强：不判断失败、不
+    自动停止/降低周期性执行（是否降频仍由用户在通知/看板里决定），
+    任何异常整体吞掉，不影响 reap_finished_cycles() 的计数主流程。
+    """
+    try:
+        paths = getattr(goal_backlog, "_paths", None)
+        if paths is None:
+            return
+        from mini_agent.evolution.growth_advisor import process_pursuit_cycle_completion
+        hint = process_pursuit_cycle_completion(paths, goal)
+        if hint is None:
+            return
+        from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+        NotificationDispatcher(paths).dispatch(NotificationMessage(
+            title=f"「{goal.title}」最近几轮新增内容不多了",
+            body=hint["message"],
+            source="growth_advisor_pursuit_saturation",
+            meta={"goal_id": goal.id, "streak": hint["streak"]},
+        ))
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._check_pursuit_saturation')
 
 
 __all__ = [

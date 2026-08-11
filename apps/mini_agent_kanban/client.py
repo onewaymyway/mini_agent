@@ -759,6 +759,12 @@ class AgentClient:
     def growth_candidate_timeline(self, candidate_id: str):
         return self._get(f"/growth/candidates/{candidate_id}/timeline")
 
+    # [growth_advisor_autonomy_deepening_plan.md 方向 D1] 聚合"正在被
+    # 自主推进的方向"，供成长顾问 tab 直接渲染，不需要用户跳到「🎯 目标」
+    # tab 理解 Goal/Cron 机制。
+    def growth_pursuits(self):
+        return self._get("/growth/pursuits")
+
     # ── 文件系统（产出物浏览）────────────────────────────────────────
     def fs_list(self, path="."):
         return self._get("/fs/list", params={"path": path})
