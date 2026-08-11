@@ -413,7 +413,109 @@ bridge.py`/`test_goal_backlog.py`/`test_goal_overall_completion.py`/
   测试用例（原因同 Stage 5：现有测试体系不覆盖 Streamlit 渲染，后端
   路径已有 `test_generate_builds_and_saves_draft` 覆盖）。
 
-## 7. 与方案的偏差 / 未实施清单
+## 7. Stage 7 已实施：`builder_mode="agent"` 只读探索路径（对应方案 §3
+   输入源 1，未实施清单第 2 项）
+
+镜像 `goal_mode/spec.py::GoalSpecBuilder._run_builder_agent` 的"只读、有限
+工具的受限 Agent"架构，补齐此前 `mode="agent"`/`"auto"` 配置项存在但实际
+行为等同 `"llm"` 的缺口。
+
+### 7.1 配置（`config/models.py::GoalExecutionSpecConfig`）
+
+新增三个字段，与 `GoalModeConfig` 的同名字段同义：
+`builder_agent_allowed_tools`（默认 `skill_list`/`list_workflows`/
+`show_workflow`/`read_file`/`list_dir`/`tree_summary`/`grep`/`glob`，不含
+`bash`、不含任何写文件的工具）、`builder_agent_allowed_tool_groups`（默认
+空）、`builder_agent_max_turns`（默认 6）。`builder_mode` 字段的说明文字
+同步更新，不再写"agent 路径尚未落地"。
+
+### 7.2 `GoalExecutionSpecBuilder`（`perception/goal_execution_spec.py`）
+
+- `__init__` 新增可选参数 `parent_session_id`/`parent_session_dir`（透传给
+  受限 Agent，用于把它的会话记录挂到父会话下面，与 `GoalSpecBuilder` 的
+  同名参数用途一致），新增 `last_effective_path` 属性（记录这次调用实际
+  走了 `"llm"` 还是 `"agent"`，供调用方/测试判断）。
+- 新增模块级函数 `_rule_based_needs_project_context(text)`：关键词规则
+  （"项目里/项目中"“现有的 XXX”“已有的 XXX”“沿用”“参考…现有/已有/项目”
+  “skill”“workflow”“工作流”“代码风格”“目录结构”“命名约定/规范”“复用"）
+  粗略匹配一段文本是否提到"参考/沿用项目已有内容"类诉求。**与
+  `goal_mode/spec.py` 同名函数的区别**：不做"已知 skill/workflow 名称"的
+  二次匹配（那一层依赖遍历项目实际 skill/workflow 列表，对"要不要起一个
+  受限 Agent"这个初筛决策收益有限，先用最朴素的关键词规则覆盖最常见
+  场景）。
+- 新增 `_run_builder(prompt, *, detection_text=None)` 作为 `build_draft`/
+  `revise` 的唯一入口，按 `self.mode` 分诊：
+  - `"llm"` → 固定走 `_run_llm`（裸单轮 chat completion，不挂工具）。
+  - `"agent"` → 固定走 `_run_builder_agent`。
+  - `"auto"` → 对 `detection_text`（`build_draft` 传 `title+description`，
+    `revise` 传用户反馈文本）跑关键词规则，命中走 agent，否则走 llm。
+  - **与 `GoalSpecBuilder._run_builder` 的一处简化**：没有做"LLM 在裸输出
+    JSON 里自报 `needs_project_context` 后二次重生成"那层兜底——
+    `goal_execution_spec_builder.md` 的输出 schema 目前不包含这个字段，
+    规则漏判时不会自动补救，只能显式传 `mode="agent"` 绕过。这个简化在
+    `_run_builder` 的 docstring 里也写明了，不是隐藏的行为差异。
+- 新增 `_run_builder_agent(prompt)`：通过 `role_agents/judge_factory.py::
+  spawn_judge_agent`/`run_judge_turn` 构造并运行一个只读受限 Agent，system
+  prompt 用 `goal_execution_spec_builder` 基础说明 + 新增的
+  `goal_execution_spec_builder_agent_addendum`（新文件，告知模型"你现在有
+  只读工具可用"，内容结构对齐 `goal_spec_builder_agent_addendum.md`）拼接
+  而成。构造失败/运行失败/空输出三种失败路径都写 `self.last_error` 并
+  返回空字符串，走到 `build_draft`/`revise` 里既有的"解析失败 → 兜底空
+  草稿/保留上一版"逻辑，不需要新增错误处理分支。
+- `build_draft()`/`revise()` 的调用点从 `self._run_llm(prompt)` 改为
+  `self._run_builder(prompt, detection_text=...)`，行为完全对齐既有测试
+  （默认 `mode="auto"` 时，不含触发关键词的普通描述仍然走 llm 路径，原有
+  25 个测试用例全部原样通过，无需改动断言）。
+
+### 7.3 新增文件
+
+`src/mini_agent/prompts/system/goal_execution_spec_builder_agent_addendum.md`
+——"补充说明：你现在挂载了一组只读工具" + "使用原则"（先查证再产出、不要
+过度探索、工具只读、查证结果要体现在规范里、最终仍只输出一个 JSON
+对象），结构与 `goal_spec_builder_agent_addendum.md` 对齐，产出对象从
+"验收标准"换成"执行规范"。
+
+### 7.4 测试
+
+`tests/test_goal_execution_spec.py` 追加 8 个用例：
+`_rule_based_needs_project_context()` 对典型触发词/无关描述的判断；
+`mode="llm"` 即便描述里出现关键词也绝不构造受限 Agent（用一个断言型假
+`spawn_judge_agent` 顶替，一旦被调用测试直接失败）；`mode="agent"` 即便
+描述完全不涉及项目上下文也一定构造受限 Agent，并正确解析其
+`raw_output`；`mode="auto"` 命中关键词时用 agent 路径且不再调用裸 LLM
+helper、不命中时走 llm 路径且不构造 Agent；`revise()` 场景下
+`detection_text` 用的是用户反馈文本而不是 Goal 描述本身；受限 Agent 构造
+失败（`spawn_judge_agent` 抛异常）时正确落到空草稿兜底、`last_error` 里
+包含"构造受限 Agent 失败"字样。全部通过 `monkeypatch` 打桩
+`mini_agent.role_agents.judge_factory.spawn_judge_agent`/`run_judge_turn`，
+不依赖真实 LLM/沙箱环境。
+
+全部新增用例 + 此前全部回归用例（`test_goal_execution_spec.py`/
+`test_goal_execution_spec_kanban_routes.py`/`test_goal_cron_bridge.py`/
+`test_goal_backlog.py`/`test_goal_overall_completion.py`/
+`test_goals_spec_close_check_cli.py`/`test_kanban_config_routes.py`/
+`test_goal_output_directory_onetime.py`/`test_goal_execution_fairness.py`/
+`test_config_catalog_list_seed_merge.py`/`test_external_input_config.py`）
+合计 125 个用例回归通过。
+
+### 7.5 与方案的偏差 / 未做的部分
+
+- **`evaluate_overall_completion()`（Stage 2 整体关闭判定）不受这次改动
+  影响，仍然只有裸 LLM 单轮路径**，不挂只读工具去实际核查产出文件内容，
+  只依赖 manifest 摘要文本——这是 Stage 2 就已知的未实施项，Stage 7 的
+  范围明确限定在 `GoalExecutionSpecBuilder`（草稿生成/修订），没有顺带
+  扩展到整体关闭判定，避免两个本来独立的改动混在一次改动里。
+- **CLI `/agent goals spec generate` 未新增 `--mode` 参数**：`mode` 目前
+  只能通过配置文件的 `goal_execution_spec.builder_mode` 设置，或者代码
+  里显式传 `GoalExecutionSpecBuilder(cfg, mode=...)`；CLI/看板都没有暴露
+  单次调用覆盖 `mode` 的入口。这与 GoalSpecBuilder 侧
+  `/goal --mode=agent <文本>` 能单次覆盖的能力不对称，留作后续如果有
+  实际需求再补。
+- **看板没有展示"这次走的是 llm 还是 agent 路径"**：`last_effective_path`
+  目前只是 Python 属性，没有通过 REST 响应体传给前端、也没有在草稿摘要
+  里展示"生成这份草稿时是否读取了项目内容"。
+
+## 9. 与方案的偏差 / 未实施清单
 
 以下条目方案里有描述，**未实施**，留作后续 Track：
 
@@ -426,13 +528,16 @@ bridge.py`/`test_goal_backlog.py`/`test_goal_overall_completion.py`/
    - `revise()` 前后的差异高亮；
    - §2 新增的"整体关闭判定"结果目前在看板上只有 close_check 按钮点击
      后的一次性 `st.success`/`st.info` 提示，没有做成持久化的状态徽标
-     （历史判定结果仍然只能在"进展记录"里看纯文本）。
-2. **`builder_mode="agent"` 只读探索路径**：方案 §3 输入源 1 提到应
-   支持"起一个只读受限 Agent 先看一眼项目再生成"，镜像
-   `GoalSpecBuilder._run_builder_agent()`。当前 `GoalExecutionSpecBuilder`
-   只实现了裸 LLM 单轮路径，`mode="agent"`/`"auto"` 配置项存在但实际
-   行为等同 `"llm"`（§2 新增的整体关闭判定同样只有裸 LLM 单轮路径，未
-   挂只读工具去实际核查产出文件内容，只依赖 manifest 摘要文本）。
+     （历史判定结果仍然只能在"进展记录"里看纯文本）；
+   - 看板没有展示"这份草稿生成时走的是 llm 还是 agent 路径"（Stage 7
+     新增的 `last_effective_path` 目前只是 Python 属性，未通过 REST 响应
+     体/UI 暴露，见 §7.5）。
+2. **`builder_mode="agent"` 只读探索路径**：**已实施**（Stage 7，见 §7）
+   ——镜像 `GoalSpecBuilder._run_builder_agent()`，`mode="agent"` 固定走
+   受限只读 Agent，`mode="auto"`（默认）用关键词规则判断是否需要项目
+   上下文。简化点、以及未覆盖的部分见 §7.5（其中"CLI/看板未暴露单次
+   覆盖 `mode` 的入口"、"`evaluate_overall_completion()` 仍是裸 LLM 单轮
+   路径，未挂只读工具去实际核查产出文件内容"两点仍然成立，留作后续）。
 3. **模板自动匹配**：**已实施**（Stage 4，见 §4）——关键词规则匹配
    Goal 的 title+description，命中模板则在看板下拉框里默认预选，用户
    仍可改选或选"不用模板"；CLI 未接入（`--template` 仍要求显式传入）。
@@ -456,14 +561,22 @@ bridge.py`/`test_goal_backlog.py`/`test_goal_overall_completion.py`/
 以上未实施项均不影响已实施部分的正确性——`execution_spec_confirmed`
 默认 `False`，未生成/未确认的 Goal 行为与方案引入前完全一致；
 `overall_completion_criteria` 为空（绝大多数周期性 Goal 的默认情况）
-时 §2 的判定逻辑不会被触发，等价于该功能关闭。
+时 §2 的判定逻辑不会被触发，等价于该功能关闭；`builder_mode` 默认
+`"auto"`，关键词规则未命中时行为与"agent 路径不存在"完全一致（走 llm
+单轮路径），不影响任何既有 Goal 的既有行为。
 
-## 8. 后续建议顺序
+## 10. 后续建议顺序
 
 1. 看板 UI 的剩余精细化：字段直接编辑文本框 + 差异高亮（当前"反馈驱动
    迭代"已经能覆盖大多数场景，这一项主要是进一步降低反馈成本）；整体
    关闭判定结果做成更显眼的持久化状态展示，而不只是一次性 toast +
-   progress_notes 里的文本行。
-2. `builder_mode="agent"` 路径（优先级较低，当前 `llm` 路径已经可用，
-   且 `revise()` 的字段锁定机制已经能覆盖"生成方向不对需要人工干预"的
-   场景）。
+   progress_notes 里的文本行；把 `last_effective_path` 展示出来，让用户
+   知道这份草稿是否读取过项目内容。
+2. `evaluate_overall_completion()` 挂只读工具去实际核查产出文件内容
+   （当前只依赖 manifest 摘要文本），可以复用 Stage 7 刚补齐的
+   `_run_builder_agent()` 同一套受限 Agent 基础设施，风险和工作量都比
+   Stage 7 本身小。
+3. `mode="auto"` 补上"LLM 自报 `needs_project_context` 后二次重生成"那层
+   兜底（对齐 `GoalSpecBuilder` 的完整三态设计），以及 CLI/看板暴露单次
+   覆盖 `mode` 的入口——两者优先级都较低，当前关键词规则 + 配置文件级
+   `builder_mode` 已经能覆盖多数场景。

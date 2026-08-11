@@ -12,9 +12,12 @@ perception/goal_execution_spec.py — Goal 执行规范（GoalExecutionSpec）
 `execution_spec_confirmed: bool`。
 
 第一版实现范围（对照方案的取舍）：
-  - builder_mode 支持 "llm"（裸单轮 chat completion）和 "auto"（当前等价于
-    "llm"——"agent" 只读探索路径与模板库一起留作后续 Track，本模块的接口
-    已经按三态设计，不需要以后改签名）。
+  - builder_mode 支持 "llm"（裸单轮 chat completion）、"agent"（只读受限
+    Agent，镜像 goal_mode/spec.py::GoalSpecBuilder._run_builder_agent）和
+    "auto"（关键词规则粗略判断是否需要项目上下文，命中走 agent，否则走
+    llm；比 GoalSpecBuilder 的 "auto" 少了"LLM 自报 needs_project_context
+    后二次重生成"那层兜底，见 GoalExecutionSpecBuilder._run_builder 的
+    说明）。
   - §5.1 轻量核对（纯文件名/key 字符串匹配）在本模块提供纯函数实现，
     由 evolution/goal_cron_bridge.py 在每轮触发时调用。
   - 模板库（§7）随本模块一起提供，见
@@ -431,6 +434,31 @@ def _spec_from_llm_data(data: dict, goal_id: str, version: int, locked_fields: O
     )
 
 
+_PROJECT_CONTEXT_KEYWORD_RE = re.compile(
+    r"(项目里|项目中|现有的?(代码|文件|目录|报告|数据|格式|命名)|"
+    r"已有的?(代码|文件|目录|报告|数据)|"
+    r"沿用|参考.{0,6}(现有|已有|项目)|skill|workflow|工作流|"
+    r"代码风格|目录结构|命名(约定|规范)|复用)",
+    re.IGNORECASE,
+)
+
+
+def _rule_based_needs_project_context(text: str) -> bool:
+    """[goal_execution_spec_generation_plan.md §3 输入源 1，实施记录 Stage
+    "builder_mode=agent" 章节] 判断一段文本是否"看起来"需要先看一眼项目
+    实际情况才能写出具体、可核查的执行规范。
+
+    镜像 goal_mode/spec.py::_rule_based_needs_project_context 的思路，但
+    简化为纯关键词匹配——不做"已知 skill/workflow 名称"的二次匹配（那一层
+    依赖 cfg 遍历项目实际 skill/workflow 列表，对"要不要起一个受限 Agent"
+    这个初筛决策而言收益有限，先用最朴素的规则覆盖最常见的场景："参考/
+    沿用/复用项目已有的 XXX"“提到 skill/workflow"这类表述）。
+    """
+    if not text:
+        return False
+    return bool(_PROJECT_CONTEXT_KEYWORD_RE.search(text))
+
+
 def _empty_draft(goal_id: str, version: int, reason: str) -> GoalExecutionSpec:
     """生成失败时的最小兜底草稿：全部字段为空，等价于"沿用通用行为"。"""
     return GoalExecutionSpec(
@@ -451,10 +479,17 @@ class GoalExecutionSpecBuilder:
 
     _VALID_MODES = ("llm", "agent", "auto")
 
-    def __init__(self, cfg: "AppConfig", llm_helper=None, mode: Optional[str] = None) -> None:
+    def __init__(self, cfg: "AppConfig", llm_helper=None, mode: Optional[str] = None,
+                 parent_session_id: Optional[str] = None, parent_session_dir: Optional[str] = None) -> None:
         self._cfg = cfg
         self._llm_helper = llm_helper
         self.last_error: Optional[str] = None
+        self.last_effective_path: Optional[str] = None
+        # 仅 "agent"/"auto" 命中 agent 路径时使用：把受限 Agent 的会话记录
+        # 挂到父会话下面，与 GoalSpecBuilder 的同名参数用途一致——纯粹是
+        # 存储层面的归档路径，调用方不传时（多数场景）就落在顶层目录。
+        self._parent_session_id = parent_session_id
+        self._parent_session_dir = parent_session_dir
 
         ges_cfg = getattr(cfg, "goal_execution_spec", None)
         raw_mode = (mode or getattr(ges_cfg, "builder_mode", None) or "auto")
@@ -474,10 +509,42 @@ class GoalExecutionSpecBuilder:
         )
         return resolve_role_model(None, role_cfg_block, self._cfg)
 
+    def _run_builder(self, prompt: str, *, detection_text: Optional[str] = None) -> str:
+        """按 self.mode 分诊到具体生成路径，是 build_draft/revise 的唯一
+        入口，镜像 goal_mode/spec.py::GoalSpecBuilder._run_builder。
+
+        - "llm"   → 直接走 `_run_llm`。
+        - "agent" → 直接走 `_run_builder_agent`。
+        - "auto"  → 用关键词规则粗略判断 `detection_text`（build_draft 传
+          title+description，revise 传用户反馈文本）是否提到"参考/沿用
+          项目已有内容"类诉求，命中则走 agent 路径，否则走 llm 路径。
+
+        与 `GoalSpecBuilder._run_builder` 的"auto"路径的一处简化：这里没有
+        做"LLM 自报 needs_project_context 后二次重生成"那层兜底——
+        `goal_execution_spec_builder.md` 的输出 schema 目前不包含这个字段，
+        规则漏判时不会自动补救，只能显式传 `mode="agent"` 绕过。见实施
+        记录里这一 Stage 的取舍说明。
+        """
+        if self.mode == "agent":
+            self.last_effective_path = "agent"
+            return self._run_builder_agent(prompt)
+
+        if self.mode == "llm":
+            self.last_effective_path = "llm"
+            return self._run_llm(prompt)
+
+        # mode == "auto"
+        if _rule_based_needs_project_context(detection_text or prompt):
+            self.last_effective_path = "agent"
+            return self._run_builder_agent(prompt)
+        self.last_effective_path = "llm"
+        return self._run_llm(prompt)
+
     def _run_llm(self, prompt: str) -> str:
-        """裸单轮 chat completion。mode="agent" 第一版尚未实现只读探索路径
-        （见方案 §3 输入源 1 的 "auto" 三态设计），当前统一走这条路径——
-        接口签名（self.mode 三态）保留，后续补 agent 路径时不需要改调用方。
+        """裸单轮 chat completion——不挂工具，模型唯一能做的事就是把 JSON
+        写出来。适合 Goal 本身足够自解释、不涉及项目内部结构的场景；涉及
+        项目内部信息时应该用 `_run_builder_agent`（见 `_run_builder` 的
+        分诊逻辑），否则模型只能凭训练知识猜测项目里的实际情况。
         """
         from mini_agent.llm.service import LLMHelper
         from mini_agent.prompts import pm
@@ -504,6 +571,73 @@ class GoalExecutionSpecBuilder:
             self.last_error = None
             return text
         self.last_error = "GoalExecutionSpecBuilder 未产出任何文本输出"
+        return ""
+
+    def _run_builder_agent(self, prompt: str) -> str:
+        """构造一个只读、有限工具的受限 Agent 来生成/修订执行规范草案。
+
+        镜像 goal_mode/spec.py::GoalSpecBuilder._run_builder_agent——同样是
+        "只读、有限工具、纯文本 JSON 产出"的受限 Agent，工具白名单默认与
+        GoalSpecBuilder 相同（skill_list/list_workflows/show_workflow/
+        read_file/list_dir/tree_summary/grep/glob），不包含 bash、不包含
+        任何写文件/写 workflow 的工具。system prompt 用
+        `goal_execution_spec_builder` 基础说明 + `_agent_addendum` 附录
+        （告知模型"你现在有只读工具可用"）拼接而成。
+        """
+        from mini_agent.prompts import pm
+        from mini_agent.role_agents.judge_factory import spawn_judge_agent, run_judge_turn
+
+        ges_cfg = getattr(self._cfg, "goal_execution_spec", None)
+        from types import SimpleNamespace
+        role_cfg_block = SimpleNamespace(
+            judge_model=getattr(ges_cfg, "builder_model", None),
+            judge_provider=getattr(ges_cfg, "builder_provider", None),
+        )
+
+        allowed_tools = list(getattr(ges_cfg, "builder_agent_allowed_tools", None) or [])
+        allowed_tool_groups = list(getattr(ges_cfg, "builder_agent_allowed_tool_groups", None) or [])
+        max_turns = int(getattr(ges_cfg, "builder_agent_max_turns", None) or 6)
+
+        agent_system_prompt = (
+            pm.render("system/goal_execution_spec_builder")
+            + "\n\n"
+            + pm.render("system/goal_execution_spec_builder_agent_addendum")
+        )
+
+        try:
+            agent = spawn_judge_agent(
+                profile=None,
+                base_cfg=self._cfg,
+                role_cfg_block=role_cfg_block,
+                display_name="🎯 GoalExecutionSpecBuilder(agent)",
+                system_prompt=agent_system_prompt,
+                max_turns=max_turns,
+                tools_enabled=True,
+                allowed_tools=allowed_tools,
+                allowed_tool_groups=allowed_tool_groups,
+                force_sandbox_when_tools=True,
+                parent_session_id=self._parent_session_id,
+                parent_session_dir=self._parent_session_dir,
+            )
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.perception.goal_execution_spec.GoalExecutionSpecBuilder._run_builder_agent")
+            self.last_error = f"构造受限 Agent 失败：{e}"
+            return ""
+
+        result = run_judge_turn(agent, prompt, failure_role_label="GoalExecutionSpecBuilder(agent)")
+        if not result.ok:
+            self.last_error = result.error or "GoalExecutionSpecBuilder(agent) 运行失败"
+            return ""
+
+        if result.raw_output and result.raw_output.strip():
+            self.last_error = None
+            return result.raw_output
+
+        self.last_error = (
+            "GoalExecutionSpecBuilder(agent) 未产出任何文本输出"
+            "（可能一直在调用只读工具探索，未在 max_turns 内收敛）"
+        )
         return ""
 
     def build_draft(
@@ -553,7 +687,7 @@ class GoalExecutionSpecBuilder:
             history_block=history_block,
         )
 
-        raw = self._run_llm(prompt)
+        raw = self._run_builder(prompt, detection_text=f"{goal_title} {goal_description}")
         data = _extract_json(raw)
         if data is None:
             reason = self.last_error or "LLM 返回内容解析失败（未找到合法 JSON）"
@@ -585,7 +719,7 @@ class GoalExecutionSpecBuilder:
             locked_block=locked_block,
         )
 
-        raw = self._run_llm(prompt)
+        raw = self._run_builder(prompt, detection_text=feedback)
         data = _extract_json(raw)
         if data is None:
             # 失败时保留上一版内容（不是清空），只是版本号不变、附上错误说明——

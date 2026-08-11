@@ -948,12 +948,32 @@ class GoalExecutionSpecConfig:
     enabled: bool = True
 
     # builder_mode：与 GoalModeConfig.spec_builder_mode 同名同义（llm/agent/auto）。
-    # 第一版实现里 "agent"（只读探索）路径尚未落地，"auto"/"agent" 当前效果
-    # 与 "llm" 相同——配置项先按三态设计好，后续补齐 agent 路径时不需要改
-    # 调用方/配置 schema。
+    #   "llm"   — 始终是单轮裸 chat completion（不挂工具）。
+    #   "agent" — 始终构造一个只读、有限工具的受限 Agent 来生成/修订，可以
+    #             先查看项目实际结构/已有 skill、workflow 定义/历史产出目录
+    #             再写规范，避免凭空编造不存在的路径或文件名约定。
+    #   "auto"  — 默认值。用关键词规则粗略判断 title/description（或
+    #             revise 场景的用户反馈）是否提到"参考项目现有内容"类诉求，
+    #             命中则走 "agent"，否则走 "llm"。与 GoalModeConfig.
+    #             spec_builder_mode="auto" 的区别：这里没有做"LLM 自报
+    #             needs_project_context 后二次重生成"那一层兜底，规则漏判
+    #             时不会自动补救——第一版先用最朴素的规则覆盖最常见的场景，
+    #             漏判可以显式传 mode="agent" 绕过。
     builder_mode: str = "auto"
     builder_model: Optional[str] = None
     builder_provider: Optional[str] = None
+    # 仅 "agent"/"auto" 命中 agent 路径时生效：只读工具白名单，与
+    # GoalModeConfig.spec_builder_agent_allowed_tools 同一批工具——builder
+    # 只需要"看"项目里实际有什么（skill/workflow 定义、源码、历史输出
+    # 目录），不需要"改"，不包含 bash/任何写文件的工具。
+    builder_agent_allowed_tools: list = field(
+        default_factory=lambda: [
+            "skill_list", "list_workflows", "show_workflow",
+            "read_file", "list_dir", "tree_summary", "grep", "glob",
+        ]
+    )
+    builder_agent_allowed_tool_groups: list = field(default_factory=list)
+    builder_agent_max_turns: int = 6
 
     # 看板"设为周期性"表单是否默认展示"生成规范"步骤（而不是默认走"跳过"）。
     prompt_on_recur: bool = True

@@ -230,6 +230,167 @@ def test_build_draft_with_template_includes_skeleton_in_prompt(tmp_path):
     assert "periodic_report" in helper.calls[0] or "report.md" in helper.calls[0]
 
 
+# ── builder_mode 分诊："llm"/"agent"/"auto" ───────────────────────────────────
+
+def test_rule_based_needs_project_context_matches_keywords():
+    assert ges._rule_based_needs_project_context("参考现有报告的格式来写") is True
+    assert ges._rule_based_needs_project_context("沿用项目里的 workflow 定义") is True
+    assert ges._rule_based_needs_project_context("每周汇总一次销售数据") is False
+    assert ges._rule_based_needs_project_context("") is False
+
+
+class _FakeJudgeResult:
+    def __init__(self, ok=True, raw_output="", error=None):
+        self.ok = ok
+        self.raw_output = raw_output
+        self.error = error
+
+
+def test_build_draft_mode_llm_never_uses_agent_path(tmp_path, monkeypatch):
+    """mode="llm" 时即便描述里出现关键词，也不应该走 agent 路径。"""
+    calls = {"agent": 0}
+
+    def _fake_spawn(**kwargs):
+        calls["agent"] += 1
+        raise AssertionError("mode=llm 不应该构造受限 Agent")
+
+    monkeypatch.setattr(
+        "mini_agent.role_agents.judge_factory.spawn_judge_agent", _fake_spawn,
+    )
+    helper = _FakeHelper(json.dumps({
+        "deliverables": [], "handoff_fields": [], "sub_directories": [],
+        "per_cycle_criteria": [], "overall_completion_criteria": [], "special_constraints": [],
+    }))
+    cfg = _base_cfg(tmp_path)
+    builder = ges.GoalExecutionSpecBuilder(cfg, llm_helper=helper, mode="llm")
+
+    spec = builder.build_draft("goal_llm", "沿用项目里的 workflow 定义来写周报", "参考现有报告格式")
+
+    assert builder.last_effective_path == "llm"
+    assert calls["agent"] == 0
+    assert spec.goal_id == "goal_llm"
+
+
+def test_build_draft_mode_agent_always_uses_agent_path(tmp_path, monkeypatch):
+    """mode="agent" 时即便描述完全不涉及项目上下文，也应该走 agent 路径。"""
+    response = json.dumps({
+        "deliverables": [{"name": "out.md", "naming_pattern": "out.md", "required_every_cycle": True}],
+        "handoff_fields": [], "sub_directories": [], "per_cycle_criteria": [],
+        "overall_completion_criteria": [], "special_constraints": [],
+    })
+
+    def _fake_spawn(**kwargs):
+        assert kwargs["tools_enabled"] is True
+        assert "read_file" in kwargs["allowed_tools"]
+        return object()
+
+    def _fake_run_turn(agent, prompt, *, failure_role_label):
+        return _FakeJudgeResult(ok=True, raw_output=response)
+
+    monkeypatch.setattr("mini_agent.role_agents.judge_factory.spawn_judge_agent", _fake_spawn)
+    monkeypatch.setattr("mini_agent.role_agents.judge_factory.run_judge_turn", _fake_run_turn)
+
+    cfg = _base_cfg(tmp_path)
+    builder = ges.GoalExecutionSpecBuilder(cfg, mode="agent")
+
+    spec = builder.build_draft("goal_agent", "完全不涉及项目内部信息的普通 Goal")
+
+    assert builder.last_effective_path == "agent"
+    assert spec.deliverables[0].name == "out.md"
+    assert builder.last_error is None
+
+
+def test_build_draft_mode_auto_detects_keyword_and_uses_agent_path(tmp_path, monkeypatch):
+    response = json.dumps({
+        "deliverables": [], "handoff_fields": [], "sub_directories": [],
+        "per_cycle_criteria": [], "overall_completion_criteria": [], "special_constraints": [],
+    })
+    llm_calls = {"count": 0}
+
+    def _fake_spawn(**kwargs):
+        return object()
+
+    def _fake_run_turn(agent, prompt, *, failure_role_label):
+        return _FakeJudgeResult(ok=True, raw_output=response)
+
+    monkeypatch.setattr("mini_agent.role_agents.judge_factory.spawn_judge_agent", _fake_spawn)
+    monkeypatch.setattr("mini_agent.role_agents.judge_factory.run_judge_turn", _fake_run_turn)
+
+    class _CountingHelper(_FakeHelper):
+        def ask(self, *a, **k):
+            llm_calls["count"] += 1
+            return super().ask(*a, **k)
+
+    helper = _CountingHelper(response)
+    cfg = _base_cfg(tmp_path)
+    builder = ges.GoalExecutionSpecBuilder(cfg, llm_helper=helper)  # 默认 mode="auto"
+
+    spec = builder.build_draft("goal_auto", "沿用项目里已有 workflow 的产出目录结构")
+
+    assert builder.last_effective_path == "agent"
+    assert llm_calls["count"] == 0  # 走了 agent 路径就不应该再调用裸 LLM helper
+    assert spec.goal_id == "goal_auto"
+
+
+def test_build_draft_mode_auto_without_keyword_uses_llm_path(tmp_path, monkeypatch):
+    def _fake_spawn(**kwargs):
+        raise AssertionError("没有命中关键词，不应该构造受限 Agent")
+
+    monkeypatch.setattr("mini_agent.role_agents.judge_factory.spawn_judge_agent", _fake_spawn)
+
+    helper = _FakeHelper(json.dumps({
+        "deliverables": [], "handoff_fields": [], "sub_directories": [],
+        "per_cycle_criteria": [], "overall_completion_criteria": [], "special_constraints": [],
+    }))
+    cfg = _base_cfg(tmp_path)
+    builder = ges.GoalExecutionSpecBuilder(cfg, llm_helper=helper)
+
+    builder.build_draft("goal_auto2", "普通的每周汇总 Goal")
+
+    assert builder.last_effective_path == "llm"
+    assert len(helper.calls) == 1
+
+
+def test_build_draft_agent_path_spawn_failure_falls_back_to_empty(tmp_path, monkeypatch):
+    def _fake_spawn(**kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("mini_agent.role_agents.judge_factory.spawn_judge_agent", _fake_spawn)
+    cfg = _base_cfg(tmp_path)
+    builder = ges.GoalExecutionSpecBuilder(cfg, mode="agent")
+
+    spec = builder.build_draft("goal_agent_fail", "任意描述")
+
+    assert spec.is_empty()
+    assert spec.generation_error
+    assert "构造受限 Agent 失败" in builder.last_error
+
+
+def test_revise_mode_auto_detects_keyword_in_feedback(tmp_path, monkeypatch):
+    """revise() 的 detection_text 用的是用户反馈，不是 Goal 描述本身。"""
+    prior = ges.GoalExecutionSpec(goal_id="goal_revise_auto", version=1)
+    response = json.dumps({
+        "deliverables": [], "handoff_fields": [], "sub_directories": [],
+        "per_cycle_criteria": [], "overall_completion_criteria": [], "special_constraints": [],
+    })
+
+    def _fake_spawn(**kwargs):
+        return object()
+
+    def _fake_run_turn(agent, prompt, *, failure_role_label):
+        return _FakeJudgeResult(ok=True, raw_output=response)
+
+    monkeypatch.setattr("mini_agent.role_agents.judge_factory.spawn_judge_agent", _fake_spawn)
+    monkeypatch.setattr("mini_agent.role_agents.judge_factory.run_judge_turn", _fake_run_turn)
+
+    cfg = _base_cfg(tmp_path)
+    builder = ges.GoalExecutionSpecBuilder(cfg)  # mode="auto"
+
+    builder.revise(prior, "请参考项目里已有的报告格式来改")
+
+    assert builder.last_effective_path == "agent"
+
+
 def test_revise_locks_specified_fields(tmp_path):
     prior = ges.GoalExecutionSpec(goal_id="goal_4", version=1)
     prior.deliverables.append(ges.Deliverable(name="keep.md", naming_pattern="keep.md"))
