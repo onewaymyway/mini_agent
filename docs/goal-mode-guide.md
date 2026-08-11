@@ -7,6 +7,13 @@ Evaluator 循环发生在**一次 `run_turn` 内部**，受 `cfg.max_turns` 硬�
 Goal 模式是**跨多次 `run_turn` 的外层驱动循环**，能在撞到轮次/上下文上限时
 自动压缩历史后继续，并且支持进程被杀死后从上一个完整轮次恢复。
 
+> 注意与 [Goal 执行规范指南](goal-execution-spec-guide.md) 的
+> `GoalExecutionSpecBuilder` 区分：本文档的 `GoalSpecBuilder` 服务单次会话
+> 内的一次性目标（生成**验收标准**，驱动下面的 `GoalRunner` 循环）；
+> `GoalExecutionSpecBuilder` 是同一套"草稿→反馈迭代→确认"交互模式在
+> `GoalBacklog`（跨会话 Goal/Objective）体系上的姐妹实现，解决"这个 Goal
+> 具体怎么执行"（每轮产出什么、跨轮传什么、整体何时能关闭），两者互不依赖。
+
 ---
 
 ## 设计思路

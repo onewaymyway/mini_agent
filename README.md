@@ -943,6 +943,8 @@ python -m pytest tests/ -q
 - [Role Agent 指南](docs/role-agents-guide.md) — EvaluatorAgent/CoachAgent 等框架自动触发的角色 Agent（不同于 `/agents` 命令管理的、由 `spawn_named_agent` 主动调用的自定义子 Agent）
 - [LLMHelper 使用指南](docs/llm-helper-guide.md) — **新增**：主对话循环之外（judge/ensemble/目标拆解/摘要重写/路由判定）的统一 LLM 调用入口，跟随 `/model` 切换 + 统一重试 + `override_*` 逃生舱，含新增旁路调用的检查清单
 - [Goal 模式指南](docs/goal-mode-guide.md) — **新增**：设定一个目标，Agent 自动多轮尝试直至达成或触发安全阀，`/goal` 命令，验收标准协商、GoalJudge 判定、异常中断恢复
+- [Goal 与 Cron 绑定指南](docs/goal-cron-binding-guide.md) — Goal 声明周期性推进、产出目录规范、用户意见追加
+- [Goal 执行规范指南](docs/goal-execution-spec-guide.md) — **新增**：为具体 Goal 自动生成"每轮该产出什么、跨轮传什么、何时能关闭"的结构化执行规范，草稿反馈迭代+确认后生效
 - [轮次守门员指南（Turn Judge）](docs/turn-judge-guide.md) — **新增**：轮次结束等待用户输入前，自动核查是"真的需要人"还是"技术性卡壳"，后者由系统代替用户反馈继续推进
 - [Workflow 指南](docs/workflow-guide.md) — 工作流编排机制
 - [脚本/LLM/Agent 混合执行系统指南](docs/hybrid-exec-guide.md) — **新增**：独立于 workflow 的 `hybrid_exec` 系统，脚本优先/坏了先自愈/修不好再降级 LLM/Agent，脚本仓库版本管理+成功率统计+自动退役，可独立调用也可作为 `hybrid_step` 接入 workflow（插件文件开关），`GET /v1/hybrid_exec/summary` + 看板 "🧪 混合执行" Tab，`ReexplorePolicy` 跨 run 主动重探索（默认关闭）
@@ -961,6 +963,23 @@ MIT License
 欢迎提交 Issue 和 Pull Request！
 
 ---
+
+*2026-08 Goal 执行规范自动生成 + 用户确认机制（GoalExecutionSpec）*：为
+`GoalBacklog` 里的具体 Goal（周期性 Goal + 拆多个子任务的一次性 Goal）
+自动生成一份结构化"执行规范"草稿——每轮该产出什么文件（`deliverables`）、
+跨轮次要显式传递哪些结构化信息（`handoff_fields`，固定用 ` ```handoff```
+` JSON 代码块传递）、用什么标准判断这一轮做到位了（`per_cycle_criteria`，
+优先收敛到 `file_check`/`run_command` 可核查方式）、要不要整体关闭
+（`overall_completion_criteria`，仅一次性多子任务场景使用）。架构镜像
+`goal_mode/spec.py::GoalSpecBuilder` 的"草稿→反馈迭代→确认冻结"模式，
+未确认的草稿不生效；支持从零生成/从 5 类内置模板起步/从执行历史反推
+三种输入源，`builder_mode`（`llm`/`agent`/`auto`）与 `overall_completion_
+use_agent` 均可单次覆盖不改配置文件；`GoalNode.overall_completion_
+last_check` 持久化展示最近一次整体关闭判定；轻量核对（纯文件名/key
+字符串匹配，不做语义判断）连续多轮未命中会在进展记录里追加"建议复查
+执行规范"提示，但始终只提示不拦截。入口覆盖看板「⏰ 周期性设置」/「➕ 新建
+目标」以及 `/agent goals spec generate/confirm/show/close-check` 命令。
+详见 [Goal 执行规范指南](docs/goal-execution-spec-guide.md)。
 
 *2026-08-04 脚本/LLM/Agent 混合执行系统（hybrid_exec，P1-P4）*：新增独立顶层包 `src/mini_agent/hybrid_exec/`，把"探索优先 agent/llm、执行优先脚本、脚本坏了先自愈修复、修不好才降级"封装成可复用组件——`TaskSpec`/`ExecutionResult`/`ExecutionTier` 三元组数据结构；`ScriptRepository` 做脚本版本存储+成功率统计+连续失败自动退役；`ScriptRunner` 复用 `py_step_runner.py` 的子进程隔离协议不重造沙箱；`LLMExplorer`/`AgentExplorer` 负责从 0 生成脚本（LLM 优先，dry-run 不过才升级 Agent）；`LLMRepairer`/`AgentRepairer` 负责脚本报错后修复；`FallbackExecutor` 在脚本彻底不可用时兜底给答案（不产出脚本）；`HybridExecutor` 是顶层编排器，`default_executor(project_root)` 一行拿到默认配置实例，可完全脱离 workflow 独立 `import` 调用。P2 补齐 Agent 探索/修复（复用 `agent_spawn.build_minimal_agent`，`agent_fs_write_enabled` 默认关闭走只读沙箱）并接入 workflow 新 step 类型 `hybrid_step`——**未修改 workflow 包任何源码**，通过 `register_step_executor()` 公开扩展点 + 薄插件文件 `myplugins/hybrid_step.py` 注册（删除该文件即禁用，不同于 `python_step_enabled` 配置开关模式）。P3 加上 `RunRecorder` 落盘每次 run 的完整决策轨迹到 `.agent/hybrid_exec/runs/<task_id>/`，独立调用与 workflow 场景共享同一份统计口径。P4 新增只读端点 `GET /v1/hybrid_exec/summary` + 看板 "🧪 混合执行" Tab 展示各 task 的脚本命中率/tier 分布；新增 `ReexplorePolicy` 基于累计成功率的跨 run 主动重探索（默认不启用，opt-in）。54 个单元/集成测试全部通过，且验证过对现有 workflow/kanban 相关测试无回归。新增可运行端到端演示 `examples/hybrid_exec_demo.py`（`python examples/hybrid_exec_demo.py` 直接跑）：用规则版替身代替 LLM/Agent 调用（本沙箱无 API Key），但 `HybridExecutor` 编排、`ScriptRepository` 版本管理、`ScriptRunner` 真实子进程执行、`RunRecorder` 落盘、`kanban_summary` 聚合全部走真实代码路径，覆盖"首次探索/复用脚本/报错自愈修复/连续失败自动退役降级 Fallback/可观测性"5 个场景并全部通过断言验证；仍缺真实 LLM/Agent 网络调用本身的端到端验证，详见 [脚本/LLM/Agent 混合执行系统指南](docs/hybrid-exec-guide.md) 第十一节
 

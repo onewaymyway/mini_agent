@@ -4,6 +4,9 @@
 > `next_doc/goal_cron_binding_implementation_record.md`
 > 前置阅读：[Stage 9 自主运行时指南 · 3. Goal Backlog](self-evolution-stage9-guide.md#3-goal-backlogperceptiongoal_backlogpy)、
 > [Stage 9 自主运行时指南 · 5. 定时任务](self-evolution-stage9-guide.md#5-定时任务evolutioncron_schedulerpy)
+> 延伸阅读：[Goal 执行规范指南](goal-execution-spec-guide.md)——在本文
+> 第 10 节的通用产出目录管道之上，为具体 Goal 生成"该怎么执行"的结构化
+> 规范（自动生成草稿 → 反馈迭代 → 确认后生效）。
 
 ## 1. 要解决的问题
 
@@ -337,10 +340,21 @@ prompt 格式化，`cron_job_workspace.py`/`goal_cron_bridge.py`/
 `cron_job_executor.py`/`objective_executor.py`/`perception/goal_backlog.py`
 都只调用这个模块）。
 
-## 11. 已知限制（新增）
+## 12. Goal 执行规范（GoalExecutionSpec）
+
+第 10 节的产出目录/`manifest.json`/跨轮传递机制是**对所有 Goal 一视同仁**
+的通用管道。如果还想让某个具体 Goal 声明"我每轮该产出什么文件、要跨轮
+记住哪些结构化信息、用什么标准判断这一轮做到位了"，可以在此基础上为该
+Goal 生成一份 `GoalExecutionSpec`（自动生成草稿 → 反馈迭代 → 用户确认后
+才生效），入口就在「⏰ 周期性设置」/「➕ 新建目标」/`/agent goals spec
+generate` 命令里。详见 [Goal 执行规范指南](goal-execution-spec-guide.md)。
+
+## 13. 已知限制（新增）
 
 - 用户意见追加不做去重/冲突检测：同一个节点反复提相互矛盾的意见时，历史全部保留，
   agent 在执行时自己综合判断，不会自动合并或提示冲突。
 - 产出路径规范只是 prompt 层面的软约束，不做运行时强制校验/拒绝执行。
 - 产出目录规范不做旧数据迁移（改造上线之前的历史产出散落在哪就留在哪），也不做
   `manifest.json` 里 `artifacts` 声明路径的存在性校验，更不做自动清理/归档策略。
+- Goal 执行规范（第 12 节）的已知限制见
+  [Goal 执行规范指南 · 9. 已知限制](goal-execution-spec-guide.md#9-已知限制--未实施清单)。
