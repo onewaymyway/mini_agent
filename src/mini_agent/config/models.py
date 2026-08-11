@@ -985,6 +985,26 @@ class GoalExecutionSpecConfig:
     # "建议复查执行规范"的系统备注。
     soft_check_alert_after_cycles: int = 3
 
+    # evaluate_overall_completion()（"整个一次性 Goal 是否可以整体关闭"
+    # 判定）默认只依赖 manifest 摘要文本做裸 LLM 单轮判断；打开这个开关后，
+    # 改为构造一个只读、有限工具的受限 Agent（复用 GoalExecutionSpecBuilder
+    # 已有的 _run_builder_agent 基础设施同一套 judge_factory 调用方式），
+    # 允许判官实际打开该 Goal 产出目录下的文件核查内容（比如确认"报告里
+    # 是否真的包含对比表格"，而不是只看文件名/摘要），判定更可靠但成本更高
+    # （多一轮甚至多轮工具调用）。默认关闭——"整体关闭判定"本身就是可选
+    # 增强（只有一次性、拆了多个子 Objective 且填了 overall_completion_
+    # criteria 的 Goal 才会触发），这里进一步细分为"要不要为了准确性多付出
+    # 一次 Agent 调用的成本"，交给用户按需开启。
+    overall_completion_use_agent: bool = False
+    # 仅 overall_completion_use_agent=True 时生效：只读工具白名单，不含
+    # skill_list/list_workflows——判官核查的是"这个 Goal 自己的产出目录"，
+    # 不需要了解项目里其它 skill/workflow 的定义。
+    overall_completion_agent_allowed_tools: list = field(
+        default_factory=lambda: ["read_file", "list_dir", "tree_summary", "grep", "glob"]
+    )
+    overall_completion_agent_allowed_tool_groups: list = field(default_factory=list)
+    overall_completion_agent_max_turns: int = 8
+
 
 @dataclass
 class TurnJudgeConfig:

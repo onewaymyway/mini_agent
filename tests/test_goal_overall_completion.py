@@ -112,6 +112,135 @@ class TestEvaluateOverallCompletion(unittest.TestCase):
         self.assertEqual(result["decision"], "continue")
         self.assertIn("判定失败", result["reasoning"])
 
+    def test_use_agent_disabled_by_default_never_spawns_agent(self):
+        """[goal_execution_spec_generation_implementation_record.md §10
+        后续建议顺序第 2 条 / 未实施清单第 8 项] 默认
+        `overall_completion_use_agent=False`，即便传了 `output_base_dir`
+        也应该走裸 LLM 单轮路径，不构造受限 Agent——这是引入本能力前的
+        既有行为，Stage 9 默认关闭，不应该悄悄改变任何既有 Goal 的实际
+        判定路径。"""
+        helper = _FakeHelper(json.dumps({"decision": "close", "reasoning": "标准均已满足"}))
+
+        def _fake_spawn(**kwargs):
+            raise AssertionError("默认关闭时不应该构造受限 Agent")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _base_cfg(Path(tmp))
+            builder = ges.GoalExecutionSpecBuilder(cfg, llm_helper=helper)
+            spec = _confirmed_spec_with_overall_criteria("goal_default_no_agent")
+            import unittest.mock as mock
+            with mock.patch("mini_agent.role_agents.judge_factory.spawn_judge_agent", _fake_spawn):
+                result = builder.evaluate_overall_completion(
+                    "Goal", "", spec, children=[("步骤", "completed")], manifests=[],
+                    output_base_dir="/tmp/goal_out",
+                )
+        self.assertEqual(result["decision"], "close")
+        self.assertEqual(len(helper.calls), 1)
+
+    def test_use_agent_enabled_spawns_readonly_judge_and_includes_output_dir(self):
+        """开启 `overall_completion_use_agent` 后走受限 Agent 路径：工具
+        白名单不含 skill_list/list_workflows（只需要看该 Goal 自己的产出
+        目录），prompt 里带上 `output_base_dir`。"""
+        import unittest.mock as mock
+
+        class _FakeJudgeResult:
+            def __init__(self, ok=True, raw_output="", error=None):
+                self.ok = ok
+                self.raw_output = raw_output
+                self.error = error
+
+        captured = {}
+
+        def _fake_spawn(**kwargs):
+            captured["kwargs"] = kwargs
+            return object()
+
+        def _fake_run_turn(agent, prompt, *, failure_role_label):
+            captured["prompt"] = prompt
+            return _FakeJudgeResult(ok=True, raw_output=json.dumps(
+                {"decision": "close", "reasoning": "已打开报告文件确认表格存在"}
+            ))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _base_cfg(Path(tmp))
+            cfg.goal_execution_spec.overall_completion_use_agent = True
+            builder = ges.GoalExecutionSpecBuilder(cfg)
+            spec = _confirmed_spec_with_overall_criteria("goal_agent_judge")
+
+            with mock.patch("mini_agent.role_agents.judge_factory.spawn_judge_agent", _fake_spawn), \
+                 mock.patch("mini_agent.role_agents.judge_factory.run_judge_turn", _fake_run_turn):
+                result = builder.evaluate_overall_completion(
+                    "周报 Goal", "", spec, children=[("步骤", "completed")], manifests=[],
+                    output_base_dir="/tmp/goal_out_dir",
+                )
+
+        self.assertEqual(result["decision"], "close")
+        self.assertIn("表格", result["reasoning"])
+        kwargs = captured["kwargs"]
+        self.assertTrue(kwargs["tools_enabled"])
+        self.assertIn("read_file", kwargs["allowed_tools"])
+        self.assertNotIn("skill_list", kwargs["allowed_tools"])
+        self.assertIn("/tmp/goal_out_dir", captured["prompt"])
+
+    def test_use_agent_enabled_without_output_dir_omits_dir_hint(self):
+        """开启 agent 路径但调用方没传 `output_base_dir`（旧调用方兼容）
+        时，prompt 里不应该出现空路径提示文字。"""
+        import unittest.mock as mock
+
+        class _FakeJudgeResult:
+            def __init__(self, ok=True, raw_output="", error=None):
+                self.ok = ok
+                self.raw_output = raw_output
+                self.error = error
+
+        captured = {}
+
+        def _fake_spawn(**kwargs):
+            return object()
+
+        def _fake_run_turn(agent, prompt, *, failure_role_label):
+            captured["prompt"] = prompt
+            return _FakeJudgeResult(ok=True, raw_output=json.dumps(
+                {"decision": "continue", "reasoning": "还差一条标准"}
+            ))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _base_cfg(Path(tmp))
+            cfg.goal_execution_spec.overall_completion_use_agent = True
+            builder = ges.GoalExecutionSpecBuilder(cfg)
+            spec = _confirmed_spec_with_overall_criteria("goal_agent_judge_no_dir")
+
+            with mock.patch("mini_agent.role_agents.judge_factory.spawn_judge_agent", _fake_spawn), \
+                 mock.patch("mini_agent.role_agents.judge_factory.run_judge_turn", _fake_run_turn):
+                builder.evaluate_overall_completion(
+                    "Goal", "", spec, children=[("步骤", "completed")], manifests=[],
+                )
+
+        self.assertNotIn("该 Goal 的产出目录", captured["prompt"])
+
+    def test_use_agent_spawn_failure_falls_back_to_continue(self):
+        """受限 Agent 构造失败时，与 build_draft 侧一致：`last_error` 记录
+        原因，`evaluate_overall_completion` 保守返回 continue。"""
+        import unittest.mock as mock
+
+        def _fake_spawn(**kwargs):
+            raise RuntimeError("boom")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _base_cfg(Path(tmp))
+            cfg.goal_execution_spec.overall_completion_use_agent = True
+            builder = ges.GoalExecutionSpecBuilder(cfg)
+            spec = _confirmed_spec_with_overall_criteria("goal_agent_judge_fail")
+
+            with mock.patch("mini_agent.role_agents.judge_factory.spawn_judge_agent", _fake_spawn):
+                result = builder.evaluate_overall_completion(
+                    "Goal", "", spec, children=[("步骤", "completed")], manifests=[],
+                    output_base_dir="/tmp/x",
+                )
+
+        self.assertEqual(result["decision"], "continue")
+        self.assertIn("构造受限 Agent 失败", builder.last_error)
+
 
 # ── GoalBacklog.maybe_close_goal_by_overall_criteria() ─────────────────────────
 

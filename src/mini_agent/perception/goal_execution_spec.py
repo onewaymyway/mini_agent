@@ -762,11 +762,12 @@ class GoalExecutionSpecBuilder:
         spec: GoalExecutionSpec,
         children: list[tuple[str, str]],
         manifests: list[dict],
+        output_base_dir: Optional[str] = None,
     ) -> dict:
         """[goal_execution_spec_generation_plan.md §5 第二段 /
-        implementation_record.md 未实施清单第 5 项] 判断"整个一次性 Goal
-        是否可以整体关闭"——只在调用方已经确认"全部子 Objective 均已进入
-        终态"且 `spec.overall_completion_criteria` 非空时才有意义调用，
+        implementation_record.md 未实施清单第 5 项/第 8 项] 判断"整个一次性
+        Goal 是否可以整体关闭"——只在调用方已经确认"全部子 Objective 均已
+        进入终态"且 `spec.overall_completion_criteria` 非空时才有意义调用，
         本方法自己不做这两条前置判断（由 `GoalBacklog.maybe_close_goal_
         by_overall_criteria()` 负责，纯函数与调用时机分开职责）。
 
@@ -774,8 +775,13 @@ class GoalExecutionSpecBuilder:
         manifests：该 Goal 历史全部轮次的 manifest dict 列表（通常来自
         `output_workspace.read_all_manifests()`），用于给判官提供"实际产出
         了什么"的证据，而不是只凭标题空判断。
+        output_base_dir：该 Goal 产出目录的实际路径（通常来自
+        `output_workspace.goal_output_base_dir()`）。仅在配置
+        `goal_execution_spec.overall_completion_use_agent=true` 时才会用到
+        ——告诉受限 Agent 去哪里打开文件核查内容；裸 LLM 单轮路径下这个
+        参数不产生任何效果（不传也完全兼容旧调用方）。
 
-        返回 `{"decision": "close"|"continue", "reasoning": str}`；LLM 调用
+        返回 `{"decision": "close"|"continue", "reasoning": str}`；调用
         失败/解析失败时保守返回 `{"decision": "continue", "reasoning": "..."}`
         ——不确定时绝不主动关闭 Goal，这是"确认优先于生效"哲学在这里的体现。
         """
@@ -798,6 +804,12 @@ class GoalExecutionSpecBuilder:
                 manifest_parts.append(text)
         manifest_block = "\n---\n".join(manifest_parts) if manifest_parts else "（无历史产出记录）"
 
+        ges_cfg = getattr(self._cfg, "goal_execution_spec", None)
+        use_agent = bool(getattr(ges_cfg, "overall_completion_use_agent", False))
+        output_dir_block = ""
+        if use_agent and output_base_dir:
+            output_dir_block = f"\n该 Goal 的产出目录：{output_base_dir}\n（可用工具打开该目录下的文件核查具体内容）\n"
+
         prompt = pm.render(
             "user/goal_overall_completion_request",
             goal_title=goal_title,
@@ -805,9 +817,13 @@ class GoalExecutionSpecBuilder:
             criteria_lines=criteria_lines,
             children_lines=children_lines,
             manifest_block=manifest_block,
+            output_dir_block=output_dir_block,
         )
 
-        raw = self._run_judge_llm(prompt)
+        if use_agent:
+            raw = self._run_overall_completion_judge_agent(prompt)
+        else:
+            raw = self._run_judge_llm(prompt)
         data = _extract_json(raw)
         if not isinstance(data, dict) or data.get("decision") not in ("close", "continue"):
             reason = self.last_error or "LLM 返回内容解析失败（未找到合法 JSON）"
@@ -848,6 +864,75 @@ class GoalExecutionSpecBuilder:
             self.last_error = None
             return text
         self.last_error = "GoalExecutionSpecBuilder（整体完成判定）未产出任何文本输出"
+        return ""
+
+    def _run_overall_completion_judge_agent(self, prompt: str) -> str:
+        """构造一个只读、有限工具的受限 Agent 来做"整体是否可以关闭"判定，
+        与 `_run_builder_agent()` 是同一套 `judge_factory.py::
+        spawn_judge_agent`/`run_judge_turn` 基础设施，区别只在 system
+        prompt（`goal_overall_completion_judge` + `_agent_addendum`）、
+        工具白名单（`overall_completion_agent_allowed_tools`，默认不含
+        skill_list/list_workflows，只需要看该 Goal 自己的产出目录）、
+        以及配置来源（`overall_completion_agent_max_turns`）。
+
+        [goal_execution_spec_generation_plan.md §10 后续建议顺序第 2 条 /
+        implementation_record.md 未实施清单第 8 项] 补齐"评委不会亲自打开
+        文件核实内容，只依赖 manifest 摘要文本"这一缺口。
+        """
+        from mini_agent.prompts import pm
+        from mini_agent.role_agents.judge_factory import spawn_judge_agent, run_judge_turn
+
+        ges_cfg = getattr(self._cfg, "goal_execution_spec", None)
+        from types import SimpleNamespace
+        role_cfg_block = SimpleNamespace(
+            judge_model=getattr(ges_cfg, "builder_model", None),
+            judge_provider=getattr(ges_cfg, "builder_provider", None),
+        )
+
+        allowed_tools = list(getattr(ges_cfg, "overall_completion_agent_allowed_tools", None) or [])
+        allowed_tool_groups = list(getattr(ges_cfg, "overall_completion_agent_allowed_tool_groups", None) or [])
+        max_turns = int(getattr(ges_cfg, "overall_completion_agent_max_turns", None) or 8)
+
+        agent_system_prompt = (
+            pm.render("system/goal_overall_completion_judge")
+            + "\n\n"
+            + pm.render("system/goal_overall_completion_judge_agent_addendum")
+        )
+
+        try:
+            agent = spawn_judge_agent(
+                profile=None,
+                base_cfg=self._cfg,
+                role_cfg_block=role_cfg_block,
+                display_name="🏁 GoalOverallCompletionJudge(agent)",
+                system_prompt=agent_system_prompt,
+                max_turns=max_turns,
+                tools_enabled=True,
+                allowed_tools=allowed_tools,
+                allowed_tool_groups=allowed_tool_groups,
+                force_sandbox_when_tools=True,
+                parent_session_id=self._parent_session_id,
+                parent_session_dir=self._parent_session_dir,
+            )
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.perception.goal_execution_spec.GoalExecutionSpecBuilder._run_overall_completion_judge_agent")
+            self.last_error = f"构造受限 Agent 失败：{e}"
+            return ""
+
+        result = run_judge_turn(agent, prompt, failure_role_label="GoalOverallCompletionJudge(agent)")
+        if not result.ok:
+            self.last_error = result.error or "GoalOverallCompletionJudge(agent) 运行失败"
+            return ""
+
+        if result.raw_output and result.raw_output.strip():
+            self.last_error = None
+            return result.raw_output
+
+        self.last_error = (
+            "GoalOverallCompletionJudge(agent) 未产出任何文本输出"
+            "（可能一直在调用只读工具核查，未在 max_turns 内收敛）"
+        )
         return ""
 
 

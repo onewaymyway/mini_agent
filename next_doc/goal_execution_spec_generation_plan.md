@@ -13,8 +13,11 @@
   是否需要项目上下文）+ Stage 8（CLI `spec generate --mode` 与看板"生成
   路径"下拉框，单次覆盖配置默认的 `builder_mode`，不改配置文件；REST
   `generate`/`revise` 响应体新增 `effective_path`，看板展示"上次生成走的
-  路径"）已实施。看板侧的"直接编辑字段文本框"“差异高亮”、
-  `evaluate_overall_completion()` 挂只读工具核查产出内容仍未实施，见
+  路径"）+ Stage 9（`evaluate_overall_completion()` 新增可选的只读受限
+  Agent 判定路径，配置 `overall_completion_use_agent` 开启后可实际打开
+  该 Goal 产出目录下的文件核查内容，而不只依赖 manifest 摘要文本；默认
+  关闭，不影响既有行为）已实施。看板侧的"直接编辑字段文本框"“差异高亮”
+  仍未实施，见
   `next_doc/goal_execution_spec_generation_implementation_record.md`
   的"未实施"清单。
 - **触发背景**：用户反馈"goal 系统已经有自动生成验收标准的能力

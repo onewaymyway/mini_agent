@@ -9,11 +9,15 @@
 # 与 role_agents/goal_judge.py::run_goal_judge 的区别：
 #   - GoalJudge 是主 Agent 会话内、每一步/每一轮结束时的"关卡"，判定的是
 #     "当前这一步/这一轮做到位了没有"，可挂工具亲自验证。
-#   - 本 judge 是独立的一次性 LLM 调用（不占用主 Agent 会话），判定的是
-#     "这个 Goal 名下全部子 Objective 都已经进入终态之后，整个 Goal 是否可以
+#   - 本 judge 是独立的一次性调用（不占用主 Agent 会话），判定的是"这个
+#     Goal 名下全部子 Objective 都已经进入终态之后，整个 Goal 是否可以
 #     宣告彻底完成、关闭"——只对照 `overall_completion_criteria`，不逐条审
-#     子任务过程，不挂工具，纯粹基于已产出的证据（子 Objective 标题/状态 +
-#     全部历史 manifest）做一次终局判断。
+#     子任务过程，纯粹基于已产出的证据（子 Objective 标题/状态 + 全部历史
+#     manifest）做一次终局判断。默认是裸 LLM 单轮调用、不挂工具；配置
+#     `goal_execution_spec.overall_completion_use_agent=true` 时会额外
+#     拼接 goal_overall_completion_judge_agent_addendum.md，挂载一组只读
+#     工具去实际核查产出文件内容，本文件的判定原则/输出格式两种路径共用，
+#     不因是否挂工具而改变。
 
 你是一名严格的「Goal 整体完成核查员」。一个一次性（非周期性）Goal 名下的
 全部子 Objective 都已经结束（完成/失败/取消），现在需要你判断：这个 Goal

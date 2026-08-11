@@ -841,6 +841,7 @@ class GoalBacklog:
             builder = ges.GoalExecutionSpecBuilder(cfg)
             result = builder.evaluate_overall_completion(
                 goal.title, goal.description, spec, children, manifests,
+                output_base_dir=str(base_dir),
             )
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception

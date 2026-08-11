@@ -1,10 +1,10 @@
-# Goal 执行规范自动生成 + 用户确认机制 —— 实施记录（Stage 1 ~ Stage 8）
+# Goal 执行规范自动生成 + 用户确认机制 —— 实施记录（Stage 1 ~ Stage 9）
 
 对应设计文档：`next_doc/goal_execution_spec_generation_plan.md`
 
-本记录覆盖 Stage 1（后端核心能力）～ Stage 8（CLI/看板暴露单次覆盖
-`builder_mode` 的入口）的实施情况，不重复方案本身的设计论证，只记录
-"最终落地成什么样、和方案哪里不同、还差什么"。
+本记录覆盖 Stage 1（后端核心能力）～ Stage 9（`evaluate_overall_
+completion()` 可选的只读受限 Agent 判定路径）的实施情况，不重复方案本身
+的设计论证，只记录"最终落地成什么样、和方案哪里不同、还差什么"。
 
 ## 1. 已实施
 
@@ -620,7 +620,124 @@ Stage 8 补上这个入口，行为对齐 `GoalSpecBuilder` 侧 `/goal --mode=ag
 `test_goal_output_directory_onetime.py`/`test_goal_execution_fairness.py`）
 合计 117 个用例回归通过。
 
-## 9. 与方案的偏差 / 未实施清单
+## 9. Stage 9 已实施：`evaluate_overall_completion()` 可选的只读受限
+   Agent 判定路径（对应实施记录 §10 后续建议顺序第 2 条 / 未实施清单第
+   8 项"`evaluate_overall_completion()` 挂只读工具核查产出内容"）
+
+此前 §2 的整体关闭判定固定走裸 LLM 单轮调用，只依据 `read_all_
+manifests()` 拼出的摘要文本判断（文件清单 + `progress_note` 备注），
+没有能力实际打开产出文件核实内容是否真的符合标准（比如"报告里是否真的
+包含对比表格"这种要点，manifest 摘要文本本身给不出可靠依据）。Stage 9
+复用 Stage 7 已经搭好的"只读、有限工具的受限 Agent"基础设施，给这个
+判定补上一条可选的、更可靠但成本更高的路径。
+
+### 9.1 配置（`config/models.py::GoalExecutionSpecConfig`）
+
+新增三个字段：
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `overall_completion_use_agent` | `false` | 总开关。关闭时行为与 Stage 9 引入前完全一致（裸 LLM 单轮）；打开后 `evaluate_overall_completion()` 改走受限 Agent 路径 |
+| `overall_completion_agent_allowed_tools` | `["read_file", "list_dir", "tree_summary", "grep", "glob"]` | 只读工具白名单。**不含** `skill_list`/`list_workflows`（与 `builder_agent_allowed_tools` 的区别）——判官核查的是"这个 Goal 自己的产出目录"，不需要了解项目里其它 skill/workflow 的定义 |
+| `overall_completion_agent_max_turns` | `8` | 受限 Agent 的最大轮次，比 `builder_agent_max_turns`（默认 6）略高——核查产出内容往往需要多打开几个文件 |
+
+默认关闭的理由：整体关闭判定本身就是"只有一次性、拆了多个子 Objective
+且填了 `overall_completion_criteria` 的 Goal 才会触发"的可选增强（见方案
+§2 非目标声明），这里进一步细分为"要不要为了判定准确性多付出一次
+（甚至多轮）Agent 工具调用的成本"，交给用户按需开启，不默认让所有已经
+在用这个功能的 Goal 判定成本悄悄上升。
+
+### 9.2 `GoalExecutionSpecBuilder`（`perception/goal_execution_spec.py`）
+
+- `evaluate_overall_completion()` 新增可选形参 `output_base_dir:
+  Optional[str] = None`（该 Goal 产出目录的实际路径，通常来自
+  `output_workspace.goal_output_base_dir()`）。裸 LLM 路径下这个参数
+  不产生任何效果，只有 `overall_completion_use_agent=True` 时才会被
+  用到——拼进 user prompt 的 `{{output_dir_block}}` 占位符，告诉受限
+  Agent 去哪个目录打开文件；未传时该占位符渲染为空字符串，不影响裸 LLM
+  路径的既有 prompt 内容。
+- 新增 `_run_overall_completion_judge_agent(prompt)`：与 `_run_builder_
+  agent()` 是同一套 `role_agents/judge_factory.py::spawn_judge_agent`/
+  `run_judge_turn` 基础设施，区别只在 system prompt（`goal_overall_
+  completion_judge` + 新增的 `_agent_addendum`）、工具白名单/`max_turns`
+  来源（`overall_completion_agent_*` 而不是 `builder_agent_*`）。构造
+  失败/运行失败/空输出三种失败路径与 `_run_builder_agent()` 完全对称，
+  都写 `self.last_error` 并返回空字符串，落到 `evaluate_overall_
+  completion()` 既有的"解析失败 → 保守判定为 continue"兜底，不需要
+  新增错误处理分支。
+- `evaluate_overall_completion()` 内部按 `cfg.goal_execution_spec.
+  overall_completion_use_agent` 二选一调用 `_run_judge_llm()`（原有裸
+  LLM 路径，未改动）或 `_run_overall_completion_judge_agent()`——不像
+  `_run_builder()` 那样有"auto"三态分诊，这里只有"开/关"两态：整体关闭
+  判定的触发条件本身已经很收窄（只读前置判断 + `overall_completion_
+  criteria` 非空），不需要再叠加一层关键词规则去猜"这次要不要挂
+  Agent"，直接由配置显式控制更直接。
+
+### 9.3 新增文件
+
+`src/mini_agent/prompts/system/goal_overall_completion_judge_agent_
+addendum.md`——"补充说明：你现在可以调用工具打开该 Goal 产出目录下的
+实际文件" + "使用原则"（manifest 摘要只是起点、不要过度探索、工具只读、
+查证结果要体现在 reasoning 里、最终仍只输出一个 JSON 对象），结构与
+`goal_execution_spec_builder_agent_addendum.md` 对齐，但强调点不同：
+生成规范时"查证项目结构"，这里是"核查产出文件内容是否真的达标"。
+
+`prompts/system/goal_overall_completion_judge.md` 顶部注释同步更新，
+说明默认裸 LLM、`overall_completion_use_agent=true` 时额外拼接哪份
+附录，判定原则/输出格式两条路径完全共用，不因是否挂工具而改变。
+
+`prompts/user/goal_overall_completion_request.md` 新增可选变量
+`{{output_dir_block}}`，仅 agent 路径且调用方传了 `output_base_dir`
+时非空。
+
+### 9.4 调用方（`perception/goal_backlog.py`）
+
+`GoalBacklog.maybe_close_goal_by_overall_criteria()` 已经在计算
+`base_dir`（用于 `read_all_manifests()`），这里顺带把它透传给
+`evaluate_overall_completion(output_base_dir=str(base_dir))`——不需要
+额外一次目录解析。CLI `spec close-check` 路径同样调用这个方法，因此
+手动重触发的判定也会自动享受到这个能力（配置打开时）。
+
+### 9.5 与方案的偏差 / 未做的部分
+
+- **不支持单次覆盖**：与 Stage 8 给 `build_draft`/`revise` 加的单次
+  `mode` 覆盖不同，`evaluate_overall_completion()` 目前只能通过配置文件
+  开关，CLI `spec close-check`/看板"🔁 手动重判整体是否可以关闭"都没有
+  暴露单次覆盖的入口。整体关闭判定的触发频率远低于草稿生成/修订（一次
+  一次性 Goal 通常只会真正关闭一次），单次覆盖的收益相对更小，暂不做。
+- **看板没有展示"这次整体关闭判定是否挂了 Agent"**：`GoalBacklog.
+  maybe_close_goal_by_overall_criteria()` 返回值仍然只有
+  `"closed"/"kept_open"/None` 三种，`reasoning` 文本里 agent 路径已经
+  会体现"已打开 xxx 文件确认..."这类具体依据（见 §9.3 附录第 4 条使用
+  原则），但没有单独的字段/UI 徽标标出"这次走的是哪条路径"，与 Stage 8
+  给草稿生成加的 `effective_path` 展示不对称。
+- **`overall_completion_agent_max_turns` 默认值（8）纯粹是经验估计**，
+  没有做专门的压测/调优；如果实际使用中发现产出目录文件较多、经常在
+  `max_turns` 内收敛不到结论，需要用户自行调大这个配置。
+
+### 9.6 测试
+
+`tests/test_goal_overall_completion.py` 追加 4 个用例：
+`overall_completion_use_agent` 默认关闭时即便传了 `output_base_dir` 也
+绝不构造受限 Agent（用断言型假 `spawn_judge_agent` 顶替，一旦被调用
+测试直接失败）；开启后正确构造只读受限 Agent（工具白名单含
+`read_file`、不含 `skill_list`）且 prompt 里正确带上 `output_base_dir`；
+开启但未传 `output_base_dir` 时 prompt 里不出现目录提示文字（旧调用方
+兼容）；受限 Agent 构造失败时正确落到"保守返回 continue"兜底、
+`last_error` 里包含"构造受限 Agent 失败"字样。全部通过 `unittest.mock.
+patch` 打桩 `mini_agent.role_agents.judge_factory.spawn_judge_agent`/
+`run_judge_turn`，不依赖真实 LLM/沙箱环境。
+
+全部新增用例 + 此前全部回归用例（`test_goal_execution_spec.py`/
+`test_goal_execution_spec_kanban_routes.py`/`test_goal_cron_bridge.py`/
+`test_goal_backlog.py`/`test_goal_overall_completion.py`/
+`test_goals_spec_close_check_cli.py`/`test_kanban_config_routes.py`/
+`test_goal_output_directory_onetime.py`/`test_goal_execution_fairness.py`/
+`test_goals_spec_generate_cli_mode.py`/
+`test_config_catalog_list_seed_merge.py`/`test_external_input_config.py`）
+合计 135 个用例回归通过。
+
+## 10. 与方案的偏差 / 未实施清单
 
 以下条目方案里有描述，**未实施**，留作后续 Track：
 
@@ -668,10 +785,12 @@ Stage 8 补上这个入口，行为对齐 `GoalSpecBuilder` 侧 `/goal --mode=ag
    `"mode"` 字段单次覆盖，CLI `spec generate` 支持 `--mode`，看板新增
    "生成路径"下拉框，均不修改配置文件，只影响单次调用；响应体新增
    `effective_path`，看板展示"上次生成走的路径"。
-8. **`evaluate_overall_completion()` 挂只读工具核查产出内容**：仍**未
-   实施**——该方法固定走裸 LLM 单轮调用，只依赖 `read_all_manifests()`
-   摘要文本判断，不会实际打开产出文件核查内容是否真的符合标准。见 §10
-   后续建议顺序第 2 条。
+8. **`evaluate_overall_completion()` 挂只读工具核查产出内容**：**已实施**
+   （Stage 9，见 §9）——新增可选配置 `overall_completion_use_agent`
+   （默认 `false`），开启后复用 Stage 7 的受限 Agent 基础设施，判官可以
+   实际打开该 Goal 产出目录下的文件核实内容，而不再只依赖 manifest
+   摘要文本。默认关闭，不影响任何既有 Goal 的既有判定行为；未做单次
+   覆盖入口，见 §9.5。
 
 以上未实施项均不影响已实施部分的正确性——`execution_spec_confirmed`
 默认 `False`，未生成/未确认的 Goal 行为与方案引入前完全一致；
@@ -680,19 +799,20 @@ Stage 8 补上这个入口，行为对齐 `GoalSpecBuilder` 侧 `/goal --mode=ag
 `"auto"`，关键词规则未命中时行为与"agent 路径不存在"完全一致（走 llm
 单轮路径），不影响任何既有 Goal 的既有行为；单次 `mode` 覆盖不传时
 （CLI 不带 `--mode`、看板选"跟随配置默认"、REST body 不带 `mode` 键）
-行为与 Stage 8 引入前完全一致。
+行为与 Stage 8 引入前完全一致；`overall_completion_use_agent` 默认
+`false`，行为与 Stage 9 引入前完全一致。
 
-## 10. 后续建议顺序
+## 11. 后续建议顺序
 
 1. 看板 UI 的剩余精细化：字段直接编辑文本框 + 差异高亮（当前"反馈驱动
    迭代"已经能覆盖大多数场景，这一项主要是进一步降低反馈成本）；整体
    关闭判定结果做成更显眼的持久化状态展示，而不只是一次性 toast +
-   progress_notes 里的文本行。（`last_effective_path` 展示已在 Stage 8
-   补上，见 §8.4，不再列入本条。）
-2. `evaluate_overall_completion()` 挂只读工具去实际核查产出文件内容
-   （当前只依赖 manifest 摘要文本），可以复用 Stage 7 补齐的
-   `_run_builder_agent()` 同一套受限 Agent 基础设施，风险和工作量都比
-   Stage 7 本身小。
+   progress_notes 里的文本行；看板展示"这次整体关闭判定是否挂了 Agent"
+   （对齐 Stage 8 给草稿生成加的 `effective_path` 展示，见 §9.5）。
+2. CLI `spec close-check`/看板"🔁 手动重判整体是否可以关闭"暴露单次
+   覆盖 `overall_completion_use_agent` 的入口（对齐 Stage 8 给
+   `build_draft`/`revise` 加的单次 `mode` 覆盖）——优先级较低，整体关闭
+   判定触发频率低，配置文件级开关已能覆盖多数场景。
 3. `mode="auto"` 补上"LLM 自报 `needs_project_context` 后二次重生成"那层
    兜底（对齐 `GoalSpecBuilder` 的完整三态设计）——优先级较低，当前
    关键词规则 + Stage 8 的单次 `mode` 覆盖入口已经能覆盖多数场景（规则
