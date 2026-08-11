@@ -733,6 +733,11 @@ class AgentClient:
     def growth_candidate_refresh_report(self, candidate_id: str):
         return self._post(f"/growth/candidates/{candidate_id}/report/refresh")
 
+    def growth_candidate_adopt_goal(self, candidate_id: str):
+        """把候选落地成 GoalBacklog Goal——采纳一个方向之后，让成长顾问
+        真正"接着往下调研"的入口（要求候选已有调研报告）。"""
+        return self._post(f"/growth/candidates/{candidate_id}/adopt_goal")
+
     # [next_doc/growth_advisor_improvement_plan_v4.md 方向三 N1] 诊断面板
     # 健康度趋势——独立于 growth_summary，看板展开趋势区块时才拉取。
     def growth_health_trend(self, limit: int = 30):

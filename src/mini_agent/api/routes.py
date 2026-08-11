@@ -6597,6 +6597,47 @@ async def post_growth_candidate_refresh_report(request: Request, candidate_id: s
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/growth/candidates/{candidate_id}/adopt_goal")
+async def post_growth_candidate_adopt_goal(request: Request, candidate_id: str):
+    """POST /v1/growth/candidates/{id}/adopt_goal — 把一个候选"落地"成
+    GoalBacklog 里的一个 Goal 节点，交给 Goal/Cron 体系持续推进——这是
+    用户采纳一个方向之后，真正让成长顾问"接着往下调研、收集素材"的
+    衔接点（CLI `/growth adopt-goal <id>` 此前唯一入口，这里补上看板/
+    API 路径，行为完全复用同一个 `adopt_candidate_as_goal()`）。
+
+    要求候选已有调研报告（`report_id` 非空），否则 400；候选如果还是
+    `pending` 会顺带流转成 `accepted`。只创建 Goal 本身，**不自动绑定
+    周期性**——是否设为周期性执行、要不要顺手生成一份
+    [Goal 执行规范](../../../docs/goal-execution-spec-guide.md）仍然是
+    用户在 Goal 管理里显式决定的下一步，成长顾问不代管 Goal 生命周期。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.perception.goal_backlog import GoalBacklog
+
+        backlog = ga.GrowthBacklog(paths)
+        candidate = next((c for c in backlog.load_all() if c.candidate_id == candidate_id), None)
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="candidate not found")
+        if not candidate.report_id:
+            raise HTTPException(
+                status_code=400,
+                detail="该候选还没有调研报告，请先生成报告后再落地成目标",
+            )
+
+        goal_backlog = GoalBacklog(paths)
+        goal = ga.adopt_candidate_as_goal(paths, candidate, goal_backlog=goal_backlog)
+        return {"ok": True, "goal": goal.to_dict()}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/growth/reports/{report_id}")
 async def get_growth_report_body(request: Request, report_id: str):
     """GET /v1/growth/reports/{id} — 返回某份调研报告的 Markdown 正文。"""

@@ -263,7 +263,15 @@ GoalBacklog Goal——标题用候选标题，`description` 用报告摘要 + �
 路径引用，打上 `growth_advisor` 标签；候选反向记一份
 `linked_goal_id`，如果候选此前还是 `pending` 会顺带流转成
 `accepted`。落地之后要不要把这个 Goal 设成周期性任务（绑定 cron），
-走既有的 Goal 管理命令即可，成长顾问不代管 Goal 的生命周期。
+走既有的 Goal 管理命令即可，成长顾问不代管 Goal 的生命周期。**看板/
+API 入口（本次新增）**：`POST /v1/growth/candidates/{id}/adopt_goal`
+（`client.growth_candidate_adopt_goal()`），"📄 查看调研报告"折叠区
+里"🚀 落地为 Goal（继续调研）"按钮，此前这一步只有 CLI 能做，看板上
+"采纳"了一个方向之后除了改个状态字段，没有任何入口能让成长顾问真的
+"接着在这个方向上继续调研、收集素材"——用户体感上就是"采纳了但系统
+什么都没做"，本质是"采纳"（`accept`，只是反馈信号）和"落地推进"
+（`adopt_candidate_as_goal`，真正开始收集素材）是两个不同的动作，
+此前只有前者暴露在看板里。
 
 **回访优先用 Goal 真实状态（阶段 C，向后兼容）**：候选一旦有
 `linked_goal_id`，30 天回访（2.3 节）判断"要不要展示回访卡片"时，
@@ -384,7 +392,11 @@ Goal 状态历史是数据结构层面的补全，`growth_topic_lifecycle()` 的
   这里下拉选中查看正文——此前"📄 查看报告"按钮只出现在待处理候选卡片/
   拖拽看板的"待处理"列上，候选一旦被采纳/忽略或过期，报告就从界面上
   找不到入口了（顶部指标数字仍显示总数，但点不到），现在始终可查，与
-  列表/拖拽视图各自的报告按钮并存
+  列表/拖拽视图各自的报告按钮并存；同一处新增"🚀 落地为 Goal（继续
+  调研）"按钮（**新增**，需候选已有报告），点击后创建对应 GoalBacklog
+  Goal——这是"采纳一个方向"之后，让成长顾问真正继续深入调研收集素材的
+  衔接点，此前只有 CLI `/growth adopt-goal <id>` 能做，看板上完全没有
+  入口，容易让人误以为"采纳了但系统什么都没做"
 - 指标卡下方：推荐采纳率 + 可展开的"按主题看采纳/忽略排行"
 - 再下方：可展开的"🗺️ 成长主题地图"——按主题聚合的完整推进轨迹，每个
   方向显示当前状态、历史峰值置信度、历史累计出现/采纳/忽略次数、证据
@@ -440,6 +452,7 @@ POST /v1/growth/keywords/{topic}/remove                 # 删除自定义主题 
 POST /v1/growth/keywords/{topic}/restore                 # 恢复一个被隐藏的内置主题
 GET  /v1/growth/reports/refresh_candidates               # "值得刷新"的报告列表
 POST /v1/growth/candidates/{id}/report/refresh            # 重新生成该候选的调研报告
+POST /v1/growth/candidates/{id}/adopt_goal                # 落地成 GoalBacklog Goal，交给 Goal/Cron 体系继续调研（本次新增）
 GET  /v1/growth/reports/{id}                             # 某份调研报告的完整元数据 + 正文
 GET  /v1/growth/health_trend                             # 健康度趋势快照序列（v4 N1，见 5.5 节）
 ```

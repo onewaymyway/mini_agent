@@ -4458,8 +4458,9 @@ def _render_growth_report_viewer(client: "AgentClient", candidates: list[dict]):
             "选择一个候选查看它的调研报告", options=list(options.keys()),
             key="growth_report_viewer_select",
         )
-        if st.button("查看", key="growth_report_viewer_btn"):
-            chosen = options[chosen_label]
+        chosen = options[chosen_label]
+        vcol1, vcol2 = st.columns([1, 1])
+        if vcol1.button("查看", key="growth_report_viewer_btn"):
             rep = client.growth_report(chosen["report_id"])
             if rep and "_error" not in rep:
                 st.caption(
@@ -4469,6 +4470,25 @@ def _render_growth_report_viewer(client: "AgentClient", candidates: list[dict]):
                 st.markdown(rep.get("body", "（报告正文为空）"))
             else:
                 st.error((rep or {}).get("_error", "读取报告失败"))
+        # [用户反馈] 采纳一个方向之后，成长顾问不会自动在这个方向上继续
+        # 调研——需要显式"落地成 Goal"交给 Goal/Cron 体系持续推进，此前
+        # 只有 CLI `/growth adopt-goal <id>` 一条路，看板完全没有入口，
+        # 容易让人以为"采纳了但系统什么都没做"。这里补上按钮，复用同一个
+        # `adopt_candidate_as_goal()`。
+        if chosen.get("linked_goal_id"):
+            vcol2.caption(f"已落地为 Goal（{chosen['linked_goal_id'][:8]}）")
+        else:
+            if vcol2.button("🚀 落地为 Goal（继续调研）", key="growth_report_viewer_adopt_btn"):
+                result = client.growth_candidate_adopt_goal(chosen["candidate_id"])
+                if result and "_error" not in result:
+                    st.success(
+                        "已创建 Goal，可以在「🎯 目标」tab 里把它设为周期性，"
+                        "由成长顾问之前的调研报告继续深入。"
+                    )
+                    st.rerun()
+                else:
+                    st.error((result or {}).get("_error", "落地失败"))
+
 
 
 
