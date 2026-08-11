@@ -2710,8 +2710,30 @@ def _render_goal_card(
                 # 完成时会自动判定一次；这里补一个手动重判入口，对应 CLI
                 # `spec close-check`，用于"上次判定是继续、后续补充了材料想重判"
                 # 或排查"为什么一直没自动关闭"。
+                # [implementation_record.md §11 后续建议顺序第 1/2 条]
+                # 持久化展示上一次判定结果 + 单次覆盖是否走 Agent 路径，
+                # 与草稿生成的"生成路径"下拉框 + `effective_path` 展示是
+                # 同一风格。
+                last_check = n.get("overall_completion_last_check")
+                if last_check:
+                    _cc_outcome = last_check.get("outcome")
+                    _cc_icon = "✅" if _cc_outcome == "closed" else "ℹ️"
+                    _cc_path = "只读探索 Agent" if last_check.get("used_agent") else "纯 LLM"
+                    _cc_at = last_check.get("at")
+                    _cc_at_str = time.strftime("%m-%d %H:%M", time.localtime(_cc_at)) if _cc_at else "未知时间"
+                    st.caption(
+                        f"{_cc_icon} 上次整体关闭判定（{_cc_at_str}，走 {_cc_path} 路径）："
+                        f"{'已关闭' if _cc_outcome == 'closed' else '暂不关闭'}"
+                    )
+                _cc_path_labels = {"": "跟随配置默认", "agent": "只读探索 Agent", "llm": "纯 LLM"}
+                _cc_path_choice = st.selectbox(
+                    "整体关闭判定路径", list(_cc_path_labels.keys()),
+                    format_func=lambda k: _cc_path_labels[k],
+                    key=f"{key_prefix}ges_closecheck_path_{n.get('id')}",
+                )
                 if st.button("🔁 手动重判整体是否可以关闭", key=f"{key_prefix}ges_closecheck_{n.get('id')}"):
-                    res = client.close_check_execution_spec(n.get("id"))
+                    _cc_use_agent = {"": None, "agent": True, "llm": False}[_cc_path_choice]
+                    res = client.close_check_execution_spec(n.get("id"), use_agent=_cc_use_agent)
                     if res and res.get("_error"):
                         st.error(res["_error"])
                     else:

@@ -16,8 +16,12 @@
   路径"）+ Stage 9（`evaluate_overall_completion()` 新增可选的只读受限
   Agent 判定路径，配置 `overall_completion_use_agent` 开启后可实际打开
   该 Goal 产出目录下的文件核查内容，而不只依赖 manifest 摘要文本；默认
-  关闭，不影响既有行为）已实施。看板侧的"直接编辑字段文本框"“差异高亮”
-  仍未实施，见
+  关闭，不影响既有行为）+ Stage 10（整体关闭判定结果持久化到
+  `GoalNode.overall_completion_last_check`，看板/CLI 常驻展示上一次判定
+  是什么时候、判了什么、走的是哪条路径；`use_agent` 单次覆盖入口，CLI
+  `spec close-check --use-agent/--no-agent`、REST body `use_agent`
+  字段、看板"整体关闭判定路径"下拉框）已实施。看板侧的"直接编辑字段
+  文本框"“差异高亮”仍未实施，见
   `next_doc/goal_execution_spec_generation_implementation_record.md`
   的"未实施"清单。
 - **触发背景**：用户反馈"goal 系统已经有自动生成验收标准的能力

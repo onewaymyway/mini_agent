@@ -23,6 +23,7 @@ import json
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from mini_agent.evolution import output_workspace
@@ -356,6 +357,77 @@ class TestMaybeCloseGoalByOverallCriteria(unittest.TestCase):
             reloaded = backlog.get(goal.id)
             self.assertEqual(reloaded.status, "active")
             self.assertIn("暂不关闭", reloaded.progress_notes)
+
+    def test_persists_last_check_snapshot_on_close(self):
+        """[implementation_record.md §11 后续建议顺序第 1 条] 判定后
+        `GoalNode.overall_completion_last_check` 应写入本次结果快照。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            backlog = GoalBacklog(paths)
+            goal = backlog.add_goal(title="一次性目标", description="做点事")
+            ges.save_spec(paths, goal.id, _confirmed_spec_with_overall_criteria(goal.id))
+            backlog.update_fields(goal.id, execution_spec_confirmed=True)
+            [obj] = backlog.add_objectives_for_goal(goal.id, ["第一步"])
+            backlog.set_status(obj.id, "completed")
+
+            helper = _FakeHelper(json.dumps({"decision": "close", "reasoning": "全部标准已满足"}))
+            cfg = _base_cfg(Path(tmp))
+
+            import mini_agent.perception.goal_execution_spec as ges_mod
+            orig_builder_cls = ges_mod.GoalExecutionSpecBuilder
+
+            class _PatchedBuilder(orig_builder_cls):
+                def __init__(self, cfg, llm_helper=None, mode=None):
+                    super().__init__(cfg, llm_helper=helper, mode=mode)
+
+            ges_mod.GoalExecutionSpecBuilder = _PatchedBuilder
+            try:
+                backlog.maybe_close_goal_by_overall_criteria(goal.id, cfg)
+            finally:
+                ges_mod.GoalExecutionSpecBuilder = orig_builder_cls
+
+            reloaded = backlog.get(goal.id)
+            last_check = reloaded.overall_completion_last_check
+            self.assertIsNotNone(last_check)
+            self.assertEqual(last_check["outcome"], "closed")
+            self.assertEqual(last_check["used_agent"], False)
+            self.assertIn("全部标准已满足", last_check["reasoning"])
+            self.assertGreater(last_check["at"], 0)
+
+    def test_use_agent_override_forwarded_and_persisted(self):
+        """[implementation_record.md §11 后续建议顺序第 2 条] `use_agent=True`
+        单次覆盖时应透传给 `evaluate_overall_completion(use_agent_override=
+        True)`，即便配置文件里 `overall_completion_use_agent=False`；构造
+        受限 Agent 失败时按既有兜底保守判定为 continue，但
+        `overall_completion_last_check.used_agent` 仍应记为 `True`（代表
+        "这次尝试走的是 agent 路径"，与是否成功无关）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            backlog = GoalBacklog(paths)
+            goal = backlog.add_goal(title="一次性目标", description="做点事")
+            ges.save_spec(paths, goal.id, _confirmed_spec_with_overall_criteria(goal.id))
+            backlog.update_fields(goal.id, execution_spec_confirmed=True)
+            [obj] = backlog.add_objectives_for_goal(goal.id, ["第一步"])
+            backlog.set_status(obj.id, "completed")
+
+            cfg = _base_cfg(Path(tmp))
+            self.assertFalse(getattr(cfg.goal_execution_spec, "overall_completion_use_agent", False))
+
+            import mini_agent.perception.goal_execution_spec as ges_mod
+
+            def _fail_spawn(*a, **k):
+                raise RuntimeError("spawn failed (test)")
+
+            with unittest.mock.patch(
+                "mini_agent.role_agents.judge_factory.spawn_judge_agent", side_effect=_fail_spawn,
+            ):
+                outcome = backlog.maybe_close_goal_by_overall_criteria(goal.id, cfg, use_agent=True)
+
+            self.assertEqual(outcome, "kept_open")
+            reloaded = backlog.get(goal.id)
+            last_check = reloaded.overall_completion_last_check
+            self.assertIsNotNone(last_check)
+            self.assertTrue(last_check["used_agent"])
 
 
 # ── output_workspace.read_all_manifests() ──────────────────────────────────────

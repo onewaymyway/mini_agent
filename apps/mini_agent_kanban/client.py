@@ -391,8 +391,14 @@ class AgentClient:
     def confirm_execution_spec(self, goal_id: str):
         return self._post(f"/goals/{goal_id}/execution_spec/confirm")
 
-    def close_check_execution_spec(self, goal_id: str):
-        return self._post(f"/goals/{goal_id}/execution_spec/close_check")
+    def close_check_execution_spec(self, goal_id: str, use_agent: bool | None = None):
+        # use_agent: None（跟随配置默认 overall_completion_use_agent）/
+        # True（只读探索 Agent）/ False（纯 LLM），单次覆盖，不修改配置
+        # 文件（implementation_record.md §11 后续建议顺序第 2 条）。
+        body = {}
+        if use_agent is not None:
+            body["use_agent"] = use_agent
+        return self._post(f"/goals/{goal_id}/execution_spec/close_check", body)
 
     # ── 看板：Objective 执行操作（Track D）+ 全局待办中心（Track A）───
     def cancel_objective(self, execution_id: str):

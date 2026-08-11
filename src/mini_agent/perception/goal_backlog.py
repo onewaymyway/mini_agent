@@ -175,6 +175,17 @@ class GoalNode:
     # 文件被手工删除），以独立文件的实际存在状态为准。
     execution_spec_confirmed: bool = False
 
+    # [goal_execution_spec_generation_plan.md §5 第二段 / implementation_
+    # record.md §11 后续建议顺序第 1 条"整体关闭判定结果持久化展示"]
+    # 最近一次 `GoalBacklog.maybe_close_goal_by_overall_criteria()` 实际
+    # 执行判定（前置条件全部满足、真正调用了 LLM/受限 Agent）后的结果快照：
+    # `{"outcome": "closed"|"kept_open", "reasoning": str, "used_agent":
+    # bool, "at": float}`。只在真正触发判定时写入（前置条件不满足、返回
+    # `None` 的情况不写），供看板/CLI 展示"上一次整体关闭判定是什么时候、
+    # 判了什么、是否挂了 Agent"，不需要用户翻 progress_notes 里的文本行去
+    # 找。旧数据反序列化缺省为 `None`，代表"从未触发过判定"。
+    overall_completion_last_check: Optional[dict] = None
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -203,6 +214,7 @@ class GoalNode:
             "source_initiator": self.source_initiator,
             "status_history": self.status_history,
             "execution_spec_confirmed": self.execution_spec_confirmed,
+            "overall_completion_last_check": self.overall_completion_last_check,
         }
 
     @staticmethod
@@ -237,6 +249,7 @@ class GoalNode:
             source_initiator=d.get("source_initiator", "user"),
             status_history=d.get("status_history", []),
             execution_spec_confirmed=d.get("execution_spec_confirmed", False),
+            overall_completion_last_check=d.get("overall_completion_last_check"),
         )
 
     @property
@@ -771,12 +784,20 @@ class GoalBacklog:
                 created.append(node)
         return created
 
-    def maybe_close_goal_by_overall_criteria(self, goal_id: str, cfg: Optional[object] = None) -> Optional[str]:
+    def maybe_close_goal_by_overall_criteria(
+        self, goal_id: str, cfg: Optional[object] = None, use_agent: Optional[bool] = None,
+    ) -> Optional[str]:
         """[goal_execution_spec_generation_plan.md §5 第二段 /
         implementation_record.md 未实施清单第 5 项] 一次性（非 recurring）
         Goal 名下全部子 Objective 都已进入终态后，若该 Goal 存在已确认的执行
         规范且 `overall_completion_criteria` 非空，调用一次 LLM 判定是否可以
         把整个 Goal 标记为 `completed`。
+
+        use_agent：[implementation_record.md §11 后续建议顺序第 2 条] 单次
+        覆盖是否走受限 Agent 路径判定，`None`（默认）时回退配置文件
+        `goal_execution_spec.overall_completion_use_agent`，与 Stage 8 给
+        `build_draft`/`revise` 加的单次 `mode` 覆盖是同一风格，不修改配置
+        文件；透传给 `evaluate_overall_completion(use_agent_override=...)`。
 
         由 `ObjectiveExecutor._on_objective_completed()` 在每次子 Objective
         收尾后调用一次（见该方法调用点注释）；本方法自己重新判断"是否真的到
@@ -842,6 +863,7 @@ class GoalBacklog:
             result = builder.evaluate_overall_completion(
                 goal.title, goal.description, spec, children, manifests,
                 output_base_dir=str(base_dir),
+                use_agent_override=use_agent,
             )
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
@@ -852,7 +874,23 @@ class GoalBacklog:
             return None
 
         reasoning = (result.get("reasoning") or "").strip()
-        if result.get("decision") == "close":
+        decision = result.get("decision")
+        outcome = "closed" if decision == "close" else "kept_open"
+        # [implementation_record.md §11 后续建议顺序第 1 条"整体关闭判定
+        # 结果持久化展示"] 前置条件全部满足、真正调用了判定之后，无论
+        # close/kept_open 都把本次结果写进 GoalNode，供看板/CLI 展示"上一
+        # 次判定是什么时候、判了什么、是否挂了 Agent"，不必翻 progress_
+        # notes 里的文本行去找。
+        self.update_fields(
+            goal_id,
+            overall_completion_last_check={
+                "outcome": outcome,
+                "reasoning": reasoning,
+                "used_agent": bool(getattr(builder, "last_used_agent", False)),
+                "at": time.time(),
+            },
+        )
+        if outcome == "closed":
             self.set_status(goal_id, "completed")
             if reasoning:
                 self.append_progress_note(goal_id, f"✅ 整体完成判定：{reasoning[:200]}")

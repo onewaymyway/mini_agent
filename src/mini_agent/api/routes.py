@@ -3809,16 +3809,26 @@ async def confirm_goal_execution_spec(goal_id: str, request: Request):
 async def close_check_goal_execution_spec(goal_id: str, request: Request):
     """POST /v1/goals/{goal_id}/execution_spec/close_check — 手动（重新）
     触发一次"整体是否可以关闭"判定，对应 CLI `/agent goals spec
-    close-check`。前置条件不满足时返回 `outcome: null`，不算错误。"""
+    close-check`。前置条件不满足时返回 `outcome: null`，不算错误。
+    Body: { "use_agent": bool? } —— [implementation_record.md §11 后续
+    建议顺序第 2 条] 单次覆盖是否走受限 Agent 路径判定，不传（或传
+    `null`）时回退配置文件 `overall_completion_use_agent`，不修改配置
+    文件，与 generate/revise 端点的 `mode` 单次覆盖同一风格。返回的
+    `goal.overall_completion_last_check` 里带 `used_agent`，供前端展示
+    这次实际走的是哪条路径。"""
     backlog = _goal_backlog_only(request)
     node = backlog.get(goal_id)
     if node is None or not node.is_goal:
         raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
     if node.status != "active":
         return {"outcome": None, "reason": f"Goal 当前状态为 {node.status!r}，不是 active，跳过判定。"}
+    body = await request.json() if await request.body() else {}
+    use_agent = body.get("use_agent")
+    if use_agent is not None:
+        use_agent = bool(use_agent)
     try:
         from mini_agent.config import load_config
-        outcome = backlog.maybe_close_goal_by_overall_criteria(goal_id, load_config())
+        outcome = backlog.maybe_close_goal_by_overall_criteria(goal_id, load_config(), use_agent=use_agent)
     except Exception as e:
         from mini_agent.errors import log_exception
         log_exception(e, where='mini_agent.api.routes.close_check_goal_execution_spec')

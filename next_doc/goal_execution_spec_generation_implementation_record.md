@@ -1,10 +1,10 @@
-# Goal 执行规范自动生成 + 用户确认机制 —— 实施记录（Stage 1 ~ Stage 9）
+# Goal 执行规范自动生成 + 用户确认机制 —— 实施记录（Stage 1 ~ Stage 10）
 
 对应设计文档：`next_doc/goal_execution_spec_generation_plan.md`
 
-本记录覆盖 Stage 1（后端核心能力）～ Stage 9（`evaluate_overall_
-completion()` 可选的只读受限 Agent 判定路径）的实施情况，不重复方案本身
-的设计论证，只记录"最终落地成什么样、和方案哪里不同、还差什么"。
+本记录覆盖 Stage 1（后端核心能力）～ Stage 10（整体关闭判定结果持久化
+展示 + 单次覆盖 `overall_completion_use_agent`）的实施情况，不重复方案
+本身的设计论证，只记录"最终落地成什么样、和方案哪里不同、还差什么"。
 
 ## 1. 已实施
 
@@ -737,7 +737,97 @@ patch` 打桩 `mini_agent.role_agents.judge_factory.spawn_judge_agent`/
 `test_config_catalog_list_seed_merge.py`/`test_external_input_config.py`）
 合计 135 个用例回归通过。
 
-## 10. 与方案的偏差 / 未实施清单
+## 10. Stage 10 已实施：整体关闭判定结果持久化展示 + 单次覆盖
+    `overall_completion_use_agent`（对应 §9.5 未做的部分第 1 条 /
+    implementation_record.md §11 后续建议顺序第 1/2 条）
+
+Stage 9 之后仍留了两个口子：①`GoalBacklog.maybe_close_goal_by_overall_
+criteria()` 的判定结果只写进 `progress_notes` 里的一行文本，没有结构化
+的持久化状态供看板/CLI 直接读取展示；②`overall_completion_use_agent`
+只能通过配置文件开关，没有像 `build_draft`/`revise` 的 `mode` 那样的
+单次覆盖入口。Stage 10 把这两点补上，不引入新的架构层，全部复用 Stage
+8/9 已经搭好的"单次覆盖 + 响应体带上实际生效路径"模式。
+
+### 10.1 结果持久化（`perception/goal_backlog.py`）
+
+`GoalNode` 新增 `overall_completion_last_check: Optional[dict] = None`
+字段（`to_dict`/`from_dict` 已同步，旧数据反序列化缺省为 `None`，代表
+"从未触发过判定"）：
+
+```json
+{"outcome": "closed" | "kept_open", "reasoning": str, "used_agent": bool, "at": float}
+```
+
+`maybe_close_goal_by_overall_criteria()` 在前置条件全部满足、真正调用了
+`evaluate_overall_completion()` 之后（无论最终结果是 `closed` 还是
+`kept_open`）都会用 `update_fields()` 写入这个字段；前置条件不满足直接
+`return None` 的路径不写（与"这个 Goal 根本不适用本机制"的既有语义
+一致，不会在从未真正判定过的 Goal 上凭空出现一条快照）。看板/CLI 据此
+可以直接展示"上一次判定是什么时候、判了什么、走的是哪条路径"，不需要
+翻 `progress_notes` 里的文本行去找。
+
+### 10.2 单次覆盖 `use_agent`
+
+- `GoalExecutionSpecBuilder.evaluate_overall_completion()` 新增可选形参
+  `use_agent_override: Optional[bool] = None`——`True`/`False` 时直接
+  决定这次判定是否走受限 Agent 路径，`None`（默认，不传）时回退配置
+  `goal_execution_spec.overall_completion_use_agent`（Stage 9 引入前/
+  引入后的既有行为，完全兼容旧调用方）。新增 `self.last_used_agent:
+  Optional[bool]`（构造时为 `None`，判定后写入实际使用的路径），与
+  `self.last_effective_path` 是同一风格的"实际生效结果"记录。
+- `GoalBacklog.maybe_close_goal_by_overall_criteria()` 新增
+  `use_agent: Optional[bool] = None` 形参，透传给
+  `evaluate_overall_completion(use_agent_override=use_agent)`，并把
+  `builder.last_used_agent` 写进 §10.1 的持久化快照。
+- CLI：`/agent goals spec close-check <goal_id> [--use-agent | --no-
+  agent]`（`argparse` 的 `store_true`/`store_false` 互斥对，都不传时为
+  `None`）；判定完成后从持久化快照读 `used_agent` 决定提示文字里展示
+  "只读探索 Agent"还是"纯 LLM"。
+- REST：`POST .../execution_spec/close_check` 新增可选 body 字段
+  `"use_agent": bool`，不传或传 `null` 时透传 `None`（回退配置默认值）。
+- 看板：`_render_goal_execution_spec_widget()` 附近"🔁 手动重判整体是否
+  可以关闭"按钮旁新增"整体关闭判定路径"下拉框（跟随配置默认 / 只读
+  探索 Agent / 纯 LLM），与"生成路径"下拉框是同一交互模式；按钮上方
+  新增一行持久化状态展示（图标 + 判定时间 + 路径 + 结论），点击一次
+  之后即使刷新页面也还能看到"上一次判定的结果"，不再只是一次性
+  `st.success`/`st.info` 提示——对应 §9.5"看板没有展示这次整体关闭判定
+  是否挂了 Agent"，Stage 10 已补上。
+
+### 10.3 与方案/§9.5 的偏差
+
+- 与 Stage 8 给 `build_draft`/`revise` 加的单次 `mode` 覆盖完全对称
+  （单次覆盖 + 响应体/CLI 提示带上实际路径），没有引入新的交互范式。
+- 持久化快照只保留"最近一次"，不做历史列表——与 §2 非目标"不做规范的
+  多版本历史 UI"、Stage 9 之前"只保留当前生效版本"的一贯取舍一致。
+- 仍然没有暴露"整体关闭判定"的 `builder_model`/`builder_provider`/
+  `max_turns` 等更细粒度参数的单次覆盖入口——判定触发频率低，`use_
+  agent` 单次覆盖已覆盖"想临时看一眼 Agent 路径判断更准还是更不准"这个
+  最主要的排查场景，更细粒度的覆盖收益更低，暂不做。
+
+### 10.4 测试
+
+- `tests/test_goal_overall_completion.py` 追加 2 个用例：判定后
+  `GoalNode.overall_completion_last_check` 正确写入 `outcome`/
+  `reasoning`/`used_agent`/`at`；`use_agent=True` 单次覆盖时即便配置
+  文件 `overall_completion_use_agent=False`，`spawn_judge_agent` 仍会被
+  尝试调用（用 `unittest.mock.patch` 让其失败以验证确实"尝试走了 agent
+  路径"），持久化快照的 `used_agent` 仍记为 `True`（代表"这次尝试的
+  路径"，与是否成功无关，构造失败落到既有"保守返回 continue"兜底）。
+- `tests/test_goals_spec_close_check_cli.py` 追加 2 个用例：
+  `--use-agent`/`--no-agent`/都不传三种情况下 `use_agent` 参数正确
+  透传给 `maybe_close_goal_by_overall_criteria()`；判定结果的持久化
+  快照 `used_agent=True` 时提示文字里正确展示"只读探索 Agent"。既有
+  3 个用例的 mock lambda 签名同步补上 `use_agent=None` 形参（不改变
+  原有断言）。
+- `tests/test_goal_execution_spec_kanban_routes.py` 追加 2 个用例：
+  body 里 `"use_agent": true` 正确透传给
+  `maybe_close_goal_by_overall_criteria(use_agent=True)`；不传时透传
+  `None`。
+
+全部新增用例 + 此前全部回归用例（同 §9.6 列出的 12 个测试文件）合计
+141 个用例回归通过。
+
+## 11. 与方案的偏差 / 未实施清单
 
 以下条目方案里有描述，**未实施**，留作后续 Track：
 
@@ -748,9 +838,11 @@ patch` 打桩 `mini_agent.role_agents.judge_factory.spawn_judge_agent`/
    - 每个 section 直接编辑文本框（按行拆分），当前只能"看摘要 + 写反馈
      + 重新生成"，不能手工微调某个字段的具体文字；
    - `revise()` 前后的差异高亮；
-   - §2 新增的"整体关闭判定"结果目前在看板上只有 close_check 按钮点击
-     后的一次性 `st.success`/`st.info` 提示，没有做成持久化的状态徽标
-     （历史判定结果仍然只能在"进展记录"里看纯文本）；
+   - §2 新增的"整体关闭判定"结果**已实施持久化展示**（Stage 10，见
+     §10.1）——`GoalNode.overall_completion_last_check` 保存最近一次
+     判定的 `outcome`/`reasoning`/`used_agent`/`at`，看板"🔁 手动重判"
+     按钮上方常驻展示，不再只是一次性 `st.success`/`st.info` 提示；
+     仍然只保留"最近一次"，不做历史列表（与 §2 非目标一致）。
    - 看板展示"这份草稿生成时走的是 llm 还是 agent 路径"：**已实施**
      （Stage 8，见 §8.4）——`last_effective_path` 已通过 REST 响应体的
      `effective_path` 字段暴露，看板草稿区块顶部展示"上次生成走的路径"。
@@ -789,8 +881,16 @@ patch` 打桩 `mini_agent.role_agents.judge_factory.spawn_judge_agent`/
    （Stage 9，见 §9）——新增可选配置 `overall_completion_use_agent`
    （默认 `false`），开启后复用 Stage 7 的受限 Agent 基础设施，判官可以
    实际打开该 Goal 产出目录下的文件核实内容，而不再只依赖 manifest
-   摘要文本。默认关闭，不影响任何既有 Goal 的既有判定行为；未做单次
-   覆盖入口，见 §9.5。
+   摘要文本。默认关闭，不影响任何既有 Goal 的既有判定行为；单次覆盖
+   入口**已实施**，见下第 9 条。
+9. **CLI/看板暴露单次覆盖 `overall_completion_use_agent` 的入口 +
+   整体关闭判定结果持久化展示**：**已实施**（Stage 10，见 §10）——
+   `GoalNode` 新增 `overall_completion_last_check` 持久化字段；
+   `evaluate_overall_completion()`/`maybe_close_goal_by_overall_
+   criteria()` 新增 `use_agent_override`/`use_agent` 单次覆盖形参；CLI
+   `spec close-check` 支持 `--use-agent`/`--no-agent`；REST body 支持
+   `"use_agent"` 字段；看板"🔁 手动重判"按钮旁新增"整体关闭判定路径"
+   下拉框，按钮上方常驻展示上一次判定结果。
 
 以上未实施项均不影响已实施部分的正确性——`execution_spec_confirmed`
 默认 `False`，未生成/未确认的 Goal 行为与方案引入前完全一致；
@@ -800,20 +900,17 @@ patch` 打桩 `mini_agent.role_agents.judge_factory.spawn_judge_agent`/
 单轮路径），不影响任何既有 Goal 的既有行为；单次 `mode` 覆盖不传时
 （CLI 不带 `--mode`、看板选"跟随配置默认"、REST body 不带 `mode` 键）
 行为与 Stage 8 引入前完全一致；`overall_completion_use_agent` 默认
-`false`，行为与 Stage 9 引入前完全一致。
+`false`，行为与 Stage 9 引入前完全一致；单次 `use_agent` 覆盖不传时
+（CLI 不带 `--use-agent`/`--no-agent`、REST body 不带 `use_agent` 键）
+行为与 Stage 10 引入前完全一致。
 
-## 11. 后续建议顺序
+## 12. 后续建议顺序
 
 1. 看板 UI 的剩余精细化：字段直接编辑文本框 + 差异高亮（当前"反馈驱动
-   迭代"已经能覆盖大多数场景，这一项主要是进一步降低反馈成本）；整体
-   关闭判定结果做成更显眼的持久化状态展示，而不只是一次性 toast +
-   progress_notes 里的文本行；看板展示"这次整体关闭判定是否挂了 Agent"
-   （对齐 Stage 8 给草稿生成加的 `effective_path` 展示，见 §9.5）。
-2. CLI `spec close-check`/看板"🔁 手动重判整体是否可以关闭"暴露单次
-   覆盖 `overall_completion_use_agent` 的入口（对齐 Stage 8 给
-   `build_draft`/`revise` 加的单次 `mode` 覆盖）——优先级较低，整体关闭
-   判定触发频率低，配置文件级开关已能覆盖多数场景。
-3. `mode="auto"` 补上"LLM 自报 `needs_project_context` 后二次重生成"那层
+   迭代"已经能覆盖大多数场景，这一项主要是进一步降低反馈成本）——整体
+   关闭判定结果的持久化展示 + 是否挂 Agent 展示**已实施**（Stage 10，
+   见 §10.1/§10.2）。
+2. `mode="auto"` 补上"LLM 自报 `needs_project_context` 后二次重生成"那层
    兜底（对齐 `GoalSpecBuilder` 的完整三态设计）——优先级较低，当前
    关键词规则 + Stage 8 的单次 `mode` 覆盖入口已经能覆盖多数场景（规则
    漏判时用户可以显式传 `--mode agent`/看板选"只读探索 Agent"绕过，不

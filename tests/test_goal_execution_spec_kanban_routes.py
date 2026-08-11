@@ -233,6 +233,41 @@ class TestGoalExecutionSpecKanbanRoutes(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["outcome"], "closed")
 
+    def test_close_check_forwards_use_agent_override(self):
+        """[implementation_record.md §11 后续建议顺序第 2 条] body 里的
+        `use_agent` 单次覆盖应透传给
+        `GoalBacklog.maybe_close_goal_by_overall_criteria(use_agent=...)`。"""
+        captured = {}
+
+        def _fake(self, goal_id, cfg=None, use_agent=None):
+            captured["use_agent"] = use_agent
+            return "kept_open"
+
+        with patch(
+            "mini_agent.perception.goal_backlog.GoalBacklog.maybe_close_goal_by_overall_criteria",
+            _fake,
+        ):
+            resp = self.client.post(
+                f"/v1/goals/{self.goal.id}/execution_spec/close_check", json={"use_agent": True},
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(captured["use_agent"])
+
+    def test_close_check_without_use_agent_body_passes_none(self):
+        captured = {}
+
+        def _fake(self, goal_id, cfg=None, use_agent=None):
+            captured["use_agent"] = use_agent
+            return "kept_open"
+
+        with patch(
+            "mini_agent.perception.goal_backlog.GoalBacklog.maybe_close_goal_by_overall_criteria",
+            _fake,
+        ):
+            resp = self.client.post(f"/v1/goals/{self.goal.id}/execution_spec/close_check")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(captured["use_agent"])
+
 
 if __name__ == "__main__":
     unittest.main()

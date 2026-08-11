@@ -485,6 +485,12 @@ class GoalExecutionSpecBuilder:
         self._llm_helper = llm_helper
         self.last_error: Optional[str] = None
         self.last_effective_path: Optional[str] = None
+        # [implementation_record.md §11 后续建议顺序第 2 条] 仅
+        # `evaluate_overall_completion()` 使用：这次判定实际是否走了受限
+        # Agent 路径（`True`/`False`），调用前为 `None`——与
+        # `last_effective_path` 是同一风格的"实际生效结果"记录，只是
+        # 服务于"整体关闭判定"而不是"草稿生成"。
+        self.last_used_agent: Optional[bool] = None
         # 仅 "agent"/"auto" 命中 agent 路径时使用：把受限 Agent 的会话记录
         # 挂到父会话下面，与 GoalSpecBuilder 的同名参数用途一致——纯粹是
         # 存储层面的归档路径，调用方不传时（多数场景）就落在顶层目录。
@@ -763,6 +769,7 @@ class GoalExecutionSpecBuilder:
         children: list[tuple[str, str]],
         manifests: list[dict],
         output_base_dir: Optional[str] = None,
+        use_agent_override: Optional[bool] = None,
     ) -> dict:
         """[goal_execution_spec_generation_plan.md §5 第二段 /
         implementation_record.md 未实施清单第 5 项/第 8 项] 判断"整个一次性
@@ -776,10 +783,16 @@ class GoalExecutionSpecBuilder:
         `output_workspace.read_all_manifests()`），用于给判官提供"实际产出
         了什么"的证据，而不是只凭标题空判断。
         output_base_dir：该 Goal 产出目录的实际路径（通常来自
-        `output_workspace.goal_output_base_dir()`）。仅在配置
-        `goal_execution_spec.overall_completion_use_agent=true` 时才会用到
-        ——告诉受限 Agent 去哪里打开文件核查内容；裸 LLM 单轮路径下这个
-        参数不产生任何效果（不传也完全兼容旧调用方）。
+        `output_workspace.goal_output_base_dir()`）。仅在实际走 Agent 路径
+        时才会用到——告诉受限 Agent 去哪里打开文件核查内容；裸 LLM 单轮
+        路径下这个参数不产生任何效果（不传也完全兼容旧调用方）。
+        use_agent_override：[implementation_record.md §11 后续建议顺序第 2
+        条"CLI/看板暴露单次覆盖 overall_completion_use_agent 的入口"] 单次
+        调用覆盖是否走受限 Agent 路径，不修改配置文件——`True`/`False` 时
+        直接决定这次判定走哪条路径，`None`（默认，不传）时回退配置文件
+        `goal_execution_spec.overall_completion_use_agent`（Stage 9 引入前
+        的行为，完全兼容旧调用方）。实际使用的路径记在
+        `self.last_used_agent`（`bool`），供调用方回写持久化状态/展示。
 
         返回 `{"decision": "close"|"continue", "reasoning": str}`；调用
         失败/解析失败时保守返回 `{"decision": "continue", "reasoning": "..."}`
@@ -805,7 +818,11 @@ class GoalExecutionSpecBuilder:
         manifest_block = "\n---\n".join(manifest_parts) if manifest_parts else "（无历史产出记录）"
 
         ges_cfg = getattr(self._cfg, "goal_execution_spec", None)
-        use_agent = bool(getattr(ges_cfg, "overall_completion_use_agent", False))
+        if use_agent_override is not None:
+            use_agent = bool(use_agent_override)
+        else:
+            use_agent = bool(getattr(ges_cfg, "overall_completion_use_agent", False))
+        self.last_used_agent = use_agent
         output_dir_block = ""
         if use_agent and output_base_dir:
             output_dir_block = f"\n该 Goal 的产出目录：{output_base_dir}\n（可用工具打开该目录下的文件核查具体内容）\n"

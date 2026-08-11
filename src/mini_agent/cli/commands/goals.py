@@ -16,7 +16,7 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
                                      --mode 单次覆盖配置默认的 builder_mode
   /agent goals spec confirm <id>   — 确认执行规范（冻结，下次触发生效）
   /agent goals spec show <id>      — 查看执行规范当前内容
-  /agent goals spec close-check <id>
+  /agent goals spec close-check <id> [--use-agent | --no-agent]
                                    — 手动（重新）触发一次"整体是否可以关闭"
                                      判定（见 §5 第二段，通常由子 Objective
                                      完成时自动触发，这里补一个手动入口）
@@ -123,7 +123,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
             R.print_error(
                 "Usage: /agent goals spec generate <goal_id> [--template <id>] [--from-history] [--mode llm|agent|auto] "
                 "| /agent goals spec confirm <goal_id> | /agent goals spec show <goal_id> "
-                "| /agent goals spec close-check <goal_id>"
+                "| /agent goals spec close-check <goal_id> [--use-agent | --no-agent]"
             )
             return
         _cmd_spec(gb, paths, rest[0], rest[1:])
@@ -563,9 +563,19 @@ def _cmd_spec(gb, paths, action: str, rest: list[str]) -> None:
 
     elif action == "close-check":
         if not rest:
-            R.print_error("Usage: /agent goals spec close-check <goal_id>")
+            R.print_error("Usage: /agent goals spec close-check <goal_id> [--use-agent | --no-agent]")
             return
-        _cmd_spec_close_check(gb, paths, rest[0])
+        import argparse
+        p = argparse.ArgumentParser(add_help=False)
+        p.add_argument("goal_id")
+        p.add_argument("--use-agent", dest="use_agent", action="store_true", default=None)
+        p.add_argument("--no-agent", dest="use_agent", action="store_false")
+        try:
+            parsed = p.parse_args(rest)
+        except SystemExit:
+            R.print_error("Usage: /agent goals spec close-check <goal_id> [--use-agent | --no-agent]")
+            return
+        _cmd_spec_close_check(gb, paths, parsed.goal_id, parsed.use_agent)
 
     else:
         R.print_error(f"Unknown spec subcommand: {action!r}")
@@ -656,7 +666,7 @@ def _cmd_spec_show(paths, goal_id: str) -> None:
     R.print_info(spec.render_summary_for_user())
 
 
-def _cmd_spec_close_check(gb, paths, goal_id: str) -> None:
+def _cmd_spec_close_check(gb, paths, goal_id: str, use_agent: Optional[bool] = None) -> None:
     """[goal_execution_spec_generation_plan.md §5 第二段] 手动（重新）触发一次
     "整体是否可以关闭"判定。正常情况下这个判定在最后一个子 Objective 正常
     完成时由 `ObjectiveExecutor._maybe_close_parent_goal()` 自动触发一次；
@@ -669,6 +679,11 @@ def _cmd_spec_close_check(gb, paths, goal_id: str) -> None:
     前置条件（是否一次性 Goal、子节点是否全部终态、规范是否已确认且
     `overall_completion_criteria` 非空），条件不满足时直接告知原因，不会
     误触发。
+
+    use_agent：[implementation_record.md §11 后续建议顺序第 2 条] 单次覆盖
+    是否走受限 Agent 路径，`--use-agent`/`--no-agent` 对应 `True`/`False`，
+    都不传则为 `None`，回退配置文件 `overall_completion_use_agent`（与
+    Stage 8 `--mode` 单次覆盖同一风格，不修改配置文件）。
     """
     node = gb.get(goal_id)
     if node is None or not node.is_goal:
@@ -680,7 +695,7 @@ def _cmd_spec_close_check(gb, paths, goal_id: str) -> None:
     try:
         from mini_agent.config import load_config
         cfg = load_config()
-        outcome = gb.maybe_close_goal_by_overall_criteria(goal_id, cfg)
+        outcome = gb.maybe_close_goal_by_overall_criteria(goal_id, cfg, use_agent=use_agent)
     except Exception as e:
         from mini_agent.errors import log_exception
         log_exception(e, where='mini_agent.cli.commands.goals._cmd_spec_close_check')
@@ -692,10 +707,15 @@ def _cmd_spec_close_check(gb, paths, goal_id: str) -> None:
             "未触发判定：可能不是一次性 Goal、还有子 Objective 未进入终态、"
             "执行规范未确认，或 overall_completion_criteria 为空。"
         )
-    elif outcome == "closed":
-        R.print_success(f"判定为整体已完成，Goal 已标记为 completed：{goal_id}")
+        return
+
+    updated = gb.get(goal_id)
+    last_check = getattr(updated, "overall_completion_last_check", None) if updated else None
+    path_label = "只读探索 Agent" if (last_check or {}).get("used_agent") else "纯 LLM"
+    if outcome == "closed":
+        R.print_success(f"判定为整体已完成（走 {path_label} 路径），Goal 已标记为 completed：{goal_id}")
     else:
-        R.print_info(f"判定为暂不关闭（继续保持 active）：{goal_id}，详见 progress notes。")
+        R.print_info(f"判定为暂不关闭（走 {path_label} 路径，继续保持 active）：{goal_id}，详见 progress notes。")
 
 
 def _format_ago(seconds: float) -> str:

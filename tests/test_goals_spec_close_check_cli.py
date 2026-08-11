@@ -59,7 +59,7 @@ def test_non_active_goal_is_skipped_without_calling_backlog(monkeypatch):
         called = []
         monkeypatch.setattr(
             gb, "maybe_close_goal_by_overall_criteria",
-            lambda gid, cfg=None: called.append(gid) or "closed",
+            lambda gid, cfg=None, use_agent=None: called.append(gid) or "closed",
         )
         _cmd_spec_close_check(gb, paths, goal.id)
 
@@ -75,7 +75,7 @@ def test_none_outcome_gives_explanatory_hint(monkeypatch):
         gb = GoalBacklog(paths)
         goal = gb.add_goal(title="一次性目标")
 
-        monkeypatch.setattr(gb, "maybe_close_goal_by_overall_criteria", lambda gid, cfg=None: None)
+        monkeypatch.setattr(gb, "maybe_close_goal_by_overall_criteria", lambda gid, cfg=None, use_agent=None: None)
         monkeypatch.setattr("mini_agent.config.load_config", lambda: object())
         _cmd_spec_close_check(gb, paths, goal.id)
 
@@ -90,7 +90,7 @@ def test_closed_outcome_reports_success(monkeypatch):
         gb = GoalBacklog(paths)
         goal = gb.add_goal(title="一次性目标")
 
-        monkeypatch.setattr(gb, "maybe_close_goal_by_overall_criteria", lambda gid, cfg=None: "closed")
+        monkeypatch.setattr(gb, "maybe_close_goal_by_overall_criteria", lambda gid, cfg=None, use_agent=None: "closed")
         monkeypatch.setattr("mini_agent.config.load_config", lambda: object())
         _cmd_spec_close_check(gb, paths, goal.id)
 
@@ -105,8 +105,65 @@ def test_kept_open_outcome_reports_info(monkeypatch):
         gb = GoalBacklog(paths)
         goal = gb.add_goal(title="一次性目标")
 
-        monkeypatch.setattr(gb, "maybe_close_goal_by_overall_criteria", lambda gid, cfg=None: "kept_open")
+        monkeypatch.setattr(gb, "maybe_close_goal_by_overall_criteria", lambda gid, cfg=None, use_agent=None: "kept_open")
         monkeypatch.setattr("mini_agent.config.load_config", lambda: object())
         _cmd_spec_close_check(gb, paths, goal.id)
 
     assert cap.info and "暂不关闭" in cap.info[0]
+
+
+def test_use_agent_flag_forwarded_to_backlog(monkeypatch):
+    """[implementation_record.md §11 后续建议顺序第 2 条] `--use-agent`/
+    `--no-agent` 解析出的 `use_agent` 参数正确透传给
+    `maybe_close_goal_by_overall_criteria(use_agent=...)`。"""
+    cap = _Capture()
+    _patch_renderer(monkeypatch, cap)
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = AgentPaths(project_root=Path(tmp))
+        gb = GoalBacklog(paths)
+        goal = gb.add_goal(title="一次性目标")
+
+        received = {}
+
+        def _fake(gid, cfg=None, use_agent=None):
+            received["use_agent"] = use_agent
+            return "kept_open"
+
+        monkeypatch.setattr(gb, "maybe_close_goal_by_overall_criteria", _fake)
+        monkeypatch.setattr("mini_agent.config.load_config", lambda: object())
+
+        _cmd_spec_close_check(gb, paths, goal.id, use_agent=True)
+        assert received["use_agent"] is True
+
+        _cmd_spec_close_check(gb, paths, goal.id, use_agent=False)
+        assert received["use_agent"] is False
+
+        _cmd_spec_close_check(gb, paths, goal.id)
+        assert received["use_agent"] is None
+
+
+def test_close_check_reports_path_from_persisted_last_check(monkeypatch):
+    """[implementation_record.md §11 后续建议顺序第 1 条] 判定后
+    `GoalNode.overall_completion_last_check.used_agent` 决定输出提示里
+    展示"只读探索 Agent"还是"纯 LLM"。"""
+    cap = _Capture()
+    _patch_renderer(monkeypatch, cap)
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = AgentPaths(project_root=Path(tmp))
+        gb = GoalBacklog(paths)
+        goal = gb.add_goal(title="一次性目标")
+
+        def _fake(gid, cfg=None, use_agent=None):
+            gb.update_fields(
+                gid,
+                overall_completion_last_check={
+                    "outcome": "closed", "reasoning": "ok", "used_agent": True, "at": 1.0,
+                },
+            )
+            return "closed"
+
+        monkeypatch.setattr(gb, "maybe_close_goal_by_overall_criteria", _fake)
+        monkeypatch.setattr("mini_agent.config.load_config", lambda: object())
+        _cmd_spec_close_check(gb, paths, goal.id)
+
+    assert cap.success and "只读探索 Agent" in cap.success[0]
