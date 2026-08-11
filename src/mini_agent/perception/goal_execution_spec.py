@@ -336,7 +336,9 @@ _TEMPLATES_DIR = Path(__file__).parent / "goal_execution_spec_templates"
 
 
 def list_templates() -> list[dict]:
-    """列出模板库里全部模板的 {id, name, applicable_to} 摘要，供 UI/CLI 展示。"""
+    """列出模板库里全部模板的 {id, name, applicable_to, keywords} 摘要，供
+    UI/CLI 展示；`keywords` 供 `suggest_template()` 做关键词匹配，也直接
+    暴露出来供调用方自行展示"为什么推荐了这个模板"。"""
     out = []
     if not _TEMPLATES_DIR.is_dir():
         return out
@@ -349,8 +351,33 @@ def list_templates() -> list[dict]:
             "id": data.get("template_id", p.stem),
             "name": data.get("name", p.stem),
             "applicable_to": data.get("applicable_to", ""),
+            "keywords": list(data.get("keywords") or []),
         })
     return out
+
+
+def suggest_template(goal_title: str, goal_description: str = "") -> Optional[str]:
+    """[goal_execution_spec_generation_plan.md §7 末段 / implementation_
+    record.md 未实施清单第 3 项] 关键词规则粗略匹配 Goal 的 title+description，
+    命中某个模板的 `keywords` 数量最多的即为推荐模板；全部模板都 0 命中时
+    返回 None（代表"不用模板"，调用方应展示"完全从零生成"选项且不预选
+    任何模板，而不是随便选一个凑数）。
+
+    只做最朴素的子串计数匹配，不做分词/语义匹配——第一版的目标是"给用户
+    一个默认预选，减少手动挑选的心智负担"，不是"精确判断 Goal 类型"，
+    用户始终可以在 UI 里改选或选"不用模板"，匹配错了代价很低。
+    """
+    text = f"{goal_title or ''} {goal_description or ''}"
+    if not text.strip():
+        return None
+    best_id: Optional[str] = None
+    best_score = 0
+    for tpl in list_templates():
+        score = sum(1 for kw in tpl.get("keywords", []) if kw and kw in text)
+        if score > best_score:
+            best_score = score
+            best_id = tpl["id"]
+    return best_id if best_score > 0 else None
 
 
 def load_template(template_id: str) -> Optional[dict]:
@@ -767,6 +794,7 @@ __all__ = [
     "delete_spec",
     "list_templates",
     "load_template",
+    "suggest_template",
     "soft_check_manifest",
     "get_handoff_data",
 ]

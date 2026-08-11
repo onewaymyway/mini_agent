@@ -2,6 +2,13 @@
   "template_id": "research_exploration",
   "name": "调研/学习",
   "applicable_to": "调研某个技术方案、学习类 Goal，产出较随意",
+  "keywords": [
+    "调研",
+    "研究",
+    "学习",
+    "技术方案",
+    "探索"
+  ],
   "skeleton": {
     "deliverables": [
       {
@@ -14,7 +21,10 @@
     "handoff_fields": [],
     "sub_directories": [],
     "per_cycle_criteria": [
-      {"text": "notes.md 内容有实质性推进（而非重复上一轮内容）", "verification_method": "manual_review"}
+      {
+        "text": "notes.md 内容有实质性推进（而非重复上一轮内容）",
+        "verification_method": "manual_review"
+      }
     ],
     "overall_completion_criteria": [],
     "special_constraints": []

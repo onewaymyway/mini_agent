@@ -2,6 +2,14 @@
   "template_id": "codebase_maintenance",
   "name": "代码维护/清理",
   "applicable_to": "批量修复、依赖升级、代码库巡检修复类 Goal",
+  "keywords": [
+    "修复",
+    "依赖升级",
+    "代码维护",
+    "重构",
+    "清理代码",
+    "测试覆盖"
+  ],
   "skeleton": {
     "deliverables": [
       {
@@ -20,8 +28,14 @@
     ],
     "sub_directories": [],
     "per_cycle_criteria": [
-      {"text": "运行现有测试全部通过", "verification_method": "run_command"},
-      {"text": "change_summary.md 存在且非空", "verification_method": "file_check"}
+      {
+        "text": "运行现有测试全部通过",
+        "verification_method": "run_command"
+      },
+      {
+        "text": "change_summary.md 存在且非空",
+        "verification_method": "file_check"
+      }
     ],
     "overall_completion_criteria": [],
     "special_constraints": [

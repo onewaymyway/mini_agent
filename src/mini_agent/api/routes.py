@@ -3670,12 +3670,18 @@ def _spec_paths(request: Request) -> "AgentPaths":
 
 
 @router.get("/goal_execution_spec_templates")
-async def list_goal_execution_spec_templates(request: Request):
+async def list_goal_execution_spec_templates(
+    request: Request, goal_title: str = Query(default=""), goal_description: str = Query(default=""),
+):
     """GET /v1/goal_execution_spec_templates — 模板库摘要列表（方案 §7），
-    供看板"从模板起步"下拉框使用。"""
+    供看板"从模板起步"下拉框使用。传 `goal_title`/`goal_description` 时
+    额外返回 `suggested_template_id`（关键词粗略匹配，见
+    `goal_execution_spec.suggest_template()`），前端据此默认预选、允许
+    用户改选或选"不用模板"——匹配不到时为 `null`。"""
     _require_owner(request)
-    from mini_agent.perception.goal_execution_spec import list_templates
-    return {"templates": list_templates()}
+    from mini_agent.perception.goal_execution_spec import list_templates, suggest_template
+    suggested = suggest_template(goal_title, goal_description) if (goal_title or goal_description) else None
+    return {"templates": list_templates(), "suggested_template_id": suggested}
 
 
 @router.get("/goals/{goal_id}/execution_spec")

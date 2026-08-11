@@ -2315,6 +2315,7 @@ def _render_execution_spec_summary(spec: dict) -> None:
 def _render_goal_execution_spec_widget(
     client: "AgentClient", goal_id: str, key_prefix: str = "",
     on_confirm_extra: Optional[Callable[[], None]] = None,
+    goal_title: str = "", goal_description: str = "",
 ) -> bool:
     """返回 True 表示当前已经是"已确认"状态（调用方可据此决定要不要再提示
     用户"建议先确认规范"之类的文案，不影响主流程是否能继续）。"""
@@ -2337,14 +2338,39 @@ def _render_goal_execution_spec_widget(
         return True
 
     if spec is None:
-        tpl_res = client.execution_spec_templates() or {}
+        tpl_res = client.execution_spec_templates(goal_title=goal_title, goal_description=goal_description) or {}
         templates = tpl_res.get("templates", []) if not tpl_res.get("_error") else []
+        suggested_id = tpl_res.get("suggested_template_id") if not tpl_res.get("_error") else None
         tpl_labels = ["（不使用模板，完全从零生成）"] + [f"{t['id']} · {t['name']}" for t in templates]
+        # [goal_execution_spec_generation_plan.md §7 末段] 关键词粗略匹配命中
+        # 某个模板时默认预选它，用户仍然可以在下拉框里改选或选"不用模板"。
+        default_idx = 0
+        if suggested_id:
+            for i, t in enumerate(templates):
+                if t.get("id") == suggested_id:
+                    default_idx = i + 1  # +1 因为第 0 项是"不使用模板"
+                    break
         gcol1, gcol2 = st.columns([2, 1])
-        tpl_choice = gcol1.selectbox("起草方式", tpl_labels, key=f"{key_prefix}ges_tpl_{goal_id}")
+        tpl_choice = gcol1.selectbox(
+            "起草方式" + ("（已根据 Goal 描述自动推荐）" if suggested_id else ""),
+            tpl_labels, index=default_idx, key=f"{key_prefix}ges_tpl_{goal_id}",
+        )
+        # [goal_execution_spec_generation_plan.md §3 输入源 3] 只在选了模板
+        # （代表这不是"➕ 新建目标"里全新创建、还没跑过一轮的 Goal）时才
+        # 展示这个勾选框——刚创建、从未执行过的 Goal 打开这个开关也只会
+        # 拿到空历史，徒增一次无意义的选项；已有历史的 Goal 才谈得上
+        # "从上一轮执行记录反推"。REST 层已支持这个参数，这里只是补上
+        # 看板侧此前遗漏的开关（见实施记录未实施清单第 5 条）。
+        from_history = False
+        if key_prefix != "newgoal_":
+            from_history = st.checkbox(
+                "从最近一轮的执行记录反推草稿内容（该 Goal 已经跑过至少一轮时有效，"
+                "否则等同于不勾选）",
+                value=False, key=f"{key_prefix}ges_fromhist_{goal_id}",
+            )
         if gcol2.button("📋 生成执行规范草稿", key=f"{key_prefix}ges_gen_{goal_id}"):
             template_id = tpl_choice.split(" · ")[0] if tpl_choice != tpl_labels[0] else ""
-            res = client.generate_execution_spec(goal_id, template_id=template_id)
+            res = client.generate_execution_spec(goal_id, template_id=template_id, from_history=from_history)
             if res and res.get("_error"):
                 st.error(f"生成失败：{res['_error']}")
             else:
@@ -2606,10 +2632,16 @@ def _render_goal_card(
                 # 入口，走同一套草稿确认流程；确认后下一轮触发即生效，不需要
                 # 先解绑再重新绑定。
                 st.markdown("---")
-                _render_goal_execution_spec_widget(client, n.get("id"), key_prefix=key_prefix)
+                _render_goal_execution_spec_widget(
+                    client, n.get("id"), key_prefix=key_prefix,
+                    goal_title=n.get("title", ""), goal_description=n.get("description", ""),
+                )
             else:
                 st.caption("这个 Goal 还不是周期性的——绑定后会按 schedule 自动派生并启动新一轮。")
-                _render_goal_execution_spec_widget(client, n.get("id"), key_prefix=key_prefix)
+                _render_goal_execution_spec_widget(
+                    client, n.get("id"), key_prefix=key_prefix,
+                    goal_title=n.get("title", ""), goal_description=n.get("description", ""),
+                )
                 # [goal_execution_spec_generation_plan.md §5 第二段] 一次性、拆了
                 # 多个子 Objective 的 Goal，如果确认过规范且填了
                 # overall_completion_criteria，正常情况下最后一个子 Objective
@@ -2748,25 +2780,35 @@ def render_kanban_tab(client: AgentClient):
                 new_goal_id = (new_goal or {}).get("id") if isinstance(new_goal, dict) else None
                 if gen_spec and new_goal_id:
                     st.session_state["_ges_pending_new_goal"] = new_goal_id
+                    st.session_state["_ges_pending_new_goal_title"] = (new_goal or {}).get("title", "")
+                    st.session_state["_ges_pending_new_goal_desc"] = (new_goal or {}).get("description", "")
             st.rerun()
         elif submitted and not title.strip():
             st.error("标题不能为空")
 
     # 新建目标时勾选了"同时生成执行规范"——创建请求本身只返回新 Goal 的 id，
     # 拿到 id 之后才能调用生成接口，所以草稿确认区块放在表单外面单独渲染，
-    # 跨 rerun 用 session_state 记住"当前正在为哪个新建的 Goal 走这个流程"。
+    # 跨 rerun 用 session_state 记住"当前正在为哪个新建的 Goal 走这个流程"
+    # （连同 title/description 一起存，因为模板自动匹配需要这两个字段，
+    # 而表单本身已经 clear_on_submit 清空，不能在这里重新从表单读取）。
     _pending_new_goal_id = st.session_state.get("_ges_pending_new_goal")
     if _pending_new_goal_id:
         with st.container(border=True):
             st.markdown(f"##### 📋 为新建目标生成执行规范（`{_pending_new_goal_id}`）")
             confirmed = _render_goal_execution_spec_widget(
                 client, _pending_new_goal_id, key_prefix="newgoal_",
+                goal_title=st.session_state.get("_ges_pending_new_goal_title", ""),
+                goal_description=st.session_state.get("_ges_pending_new_goal_desc", ""),
             )
             if st.button("收起（稍后可在该 Goal 卡片下继续）", key="_ges_pending_dismiss"):
                 del st.session_state["_ges_pending_new_goal"]
+                st.session_state.pop("_ges_pending_new_goal_title", None)
+                st.session_state.pop("_ges_pending_new_goal_desc", None)
                 st.rerun()
             if confirmed:
                 del st.session_state["_ges_pending_new_goal"]
+                st.session_state.pop("_ges_pending_new_goal_title", None)
+                st.session_state.pop("_ges_pending_new_goal_desc", None)
 
     goals_data = client.goals() or {}
     if "_error" in goals_data:

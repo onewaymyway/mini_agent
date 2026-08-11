@@ -301,11 +301,8 @@ on_confirm_extra=None)`，实现方案 §6.1/§6.2 的"生成草稿 → 反馈�
   草稿」回到"未生成"状态重新选模板生成——比方案描述的"随时可以从模板
   重新起草而不丢弃当前进度"少一步便利性，但实现更简单、不需要额外维护
   "草稿 A 是否源自模板 B"这类隐藏状态。
-- **不做"从执行历史反推"在看板侧的默认预填**：看板生成按钮固定不传
-  `from_history`；`from_history=True` 目前只有 CLI `--from-history` 参数
-  在用，REST 端点虽然已经支持透传这个字段（`generate_execution_spec()`
-  客户端方法也留了 `from_history` 参数），但看板 UI 没有暴露对应的
-  勾选框——history_manifests 输入源第一版就绪，只是这次没做前端开关。
+- **看板侧"从执行历史反推"开关**：Stage 3 首版未做，**Stage 5 已补上**
+  （见 §5），这里不再列为差异项。
 
 ### 3.5 测试
 
@@ -325,7 +322,76 @@ bridge.py`/`test_goal_backlog.py`/`test_goal_overall_completion.py`/
 `test_goal_output_directory_onetime.py`/`test_goal_execution_fairness.py`
 回归通过（共 100 个用例）。
 
-## 4. 与方案的偏差 / 未实施清单
+## 4. Stage 4 已实施：模板自动匹配（对应方案 §7 末段，Stage 1-3 未实施
+   清单第 3 项）
+
+- 每个模板 JSON（`perception/goal_execution_spec_templates/*.json`）新增
+  `keywords` 字段（字符串数组，人工维护，第一版每个模板 5~8 个关键词，
+  覆盖模板 `applicable_to` 描述里提到的典型场景词）。`list_templates()`
+  的返回摘要里一并带出 `keywords`，供调用方自行展示"为什么推荐了这个
+  模板"（当前 UI 没有展示 keywords 明细，只用来做匹配，接口层面先留出
+  这个字段）。
+- 新增纯函数 `suggest_template(goal_title, goal_description) -> Optional
+  [str]`：对 `title + description` 文本做最朴素的子串命中计数，命中最多
+  的模板 id 即为推荐；全部模板 0 命中，或 `title`/`description` 都是空
+  字符串时返回 `None`（代表"不推荐、不预选，用户自行选择"，不会为了给
+  出一个结果而随便选一个模板凑数）。刻意不做分词/语义匹配——方案里这个
+  功能的定位是"给一个默认预选、减少手动挑选的心智负担"，不是"精确判断
+  Goal 类型"，用户始终可以在下拉框里改选或选"不用模板"，匹配错了代价
+  很低，没有必要为此引入额外的分词依赖。
+- `GET /goal_execution_spec_templates` 端点新增两个可选 query 参数
+  `goal_title`/`goal_description`，传了其中任一个就调用
+  `suggest_template()` 并在响应里附加 `suggested_template_id`（未传则为
+  `None`，行为与 Stage 3 完全一致，不影响没有传这两个参数的既有调用方）。
+- `AgentClient.execution_spec_templates()` 新增同名可选参数透传。
+- 看板 `_render_goal_execution_spec_widget()` 新增 `goal_title`/
+  `goal_description` 两个可选形参：三处接入点（"⏰ 周期性设置"已绑定/
+  未绑定分支、"➕ 新建目标"确认区块）都改为传入对应 Goal 的 title/
+  description；下拉框里如果有 `suggested_template_id` 就默认预选那一项，
+  并在"起草方式"标签后追加"（已根据 Goal 描述自动推荐）"提示，用户仍可
+  改选或选"不使用模板"。"➕ 新建目标"场景下 title/description 随
+  `_ges_pending_new_goal` 一起存进 `st.session_state`（创建表单本身
+  `clear_on_submit=True` 会清空输入框，不能在确认区块渲染时重新从表单
+  读取）。
+- CLI `/agent goals spec generate` 未接入自动匹配——`--template` 仍然
+  要求显式传入，这与方案"用户在触发入口里选择"的表述一致（CLI 场景下
+  "触发入口"就是命令行参数本身，没有下拉框可预选，接入意义不大）。
+
+### 4.1 测试
+
+- `tests/test_goal_execution_spec.py` 追加 4 个用例：`list_templates()`
+  返回值包含 `keywords`；`suggest_template()` 对三类典型描述（周报/巡检/
+  数据抓取）分别命中对应模板；空输入/无关描述时返回 `None`。
+- `tests/test_goal_execution_spec_kanban_routes.py` 追加 1 个用例：
+  `GET /goal_execution_spec_templates` 带 `goal_title`/`goal_description`
+  时返回正确的 `suggested_template_id`；不带时该字段为 `None`（已有用例
+  覆盖，无需新增）。
+- 全部新增用例 + 此前全部回归用例合计 104 个通过。
+
+## 5. Stage 5 已实施：看板"从执行历史反推"开关（对应方案 §3 输入源 3，
+   未实施清单第 5 条前半）
+
+- `_render_goal_execution_spec_widget()` 的"生成第 1 版草稿"步骤新增
+  「从最近一轮的执行记录反推草稿内容」勾选框，勾选后随生成请求一起把
+  `from_history=True` 传给 `generate_execution_spec()`，与 CLI
+  `--from-history` 走同一条后端路径（`output_workspace.read_latest_
+  manifest()` 读最新一轮 manifest 拼进生成 prompt）。
+- **只在"⏰ 周期性设置"两个分支里展示这个勾选框，"➕ 新建目标"确认区块
+  不展示**：新建的 Goal 在这一步必然还没跑过任何一轮，`from_history=
+  True` 传过去也只会读到空历史，等价于没勾选，展示这个选项对这个场景
+  没有意义，反而增加一次无谓的选择负担。用 `key_prefix != "newgoal_"`
+  做区分（"➕ 新建目标"确认区块固定用 `key_prefix="newgoal_"`，是当前
+  代码里唯一带这个前缀的调用点）。
+- 默认不勾选（`value=False`），与 CLI 默认不带 `--from-history` 一致。
+
+未新增独立测试用例——`from_history` 参数的透传链路（REST 端点 →
+`AgentClient.generate_execution_spec()`）已经在 Stage 3 的
+`test_generate_builds_and_saves_draft`（打桩 `build_draft`，未显式传
+`from_history` 走默认值 `False` 的路径）里间接覆盖；看板这一步只是新增
+了一个可选 UI 输入，不引入新的后端分支逻辑，不需要为纯 UI 勾选框单独
+补 Streamlit 层面的测试（现有测试体系不覆盖 Streamlit 渲染本身）。
+
+## 6. 与方案的偏差 / 未实施清单
 
 以下条目方案里有描述，**未实施**，留作后续 Track：
 
@@ -336,8 +402,6 @@ bridge.py`/`test_goal_backlog.py`/`test_goal_overall_completion.py`/
      + 重新生成"，不能手工微调某个字段的具体文字；
    - `revise()` 前后的差异高亮；
    - "📄 从模板重新起草"独立按钮（当前只能放弃草稿后重新选模板生成）；
-   - 看板侧"从执行历史反推"的开关（`from_history` 参数 REST 层已支持
-     透传，只是看板没有暴露对应勾选框）；
    - §2 新增的"整体关闭判定"结果目前在看板上只有 close_check 按钮点击
      后的一次性 `st.success`/`st.info` 提示，没有做成持久化的状态徽标
      （历史判定结果仍然只能在"进展记录"里看纯文本）。
@@ -347,8 +411,9 @@ bridge.py`/`test_goal_backlog.py`/`test_goal_overall_completion.py`/
    只实现了裸 LLM 单轮路径，`mode="agent"`/`"auto"` 配置项存在但实际
    行为等同 `"llm"`（§2 新增的整体关闭判定同样只有裸 LLM 单轮路径，未
    挂只读工具去实际核查产出文件内容，只依赖 manifest 摘要文本）。
-3. **模板自动匹配**：方案 §7 提到"关键词规则粗略匹配 Goal 描述，命中
-   某个模板则默认预选"，当前只支持显式传 `template_id`，不做自动推荐。
+3. **模板自动匹配**：**已实施**（Stage 4，见 §4）——关键词规则匹配
+   Goal 的 title+description，命中模板则在看板下拉框里默认预选，用户
+   仍可改选或选"不用模板"；CLI 未接入（`--template` 仍要求显式传入）。
 4. **`--from-history` 只取最新一轮**：方案 §3 输入源 3 描述为"过去若干
    轮"，当前 CLI 实现只读 `read_latest_manifest()` 取最新一轮；
    `build_draft()` 本身的 `history_manifests` 参数已支持传入一个列表
@@ -356,8 +421,8 @@ bridge.py`/`test_goal_backlog.py`/`test_goal_overall_completion.py`/
    只需要改 `_cmd_spec_generate()` 里收集 manifest 的逻辑，不需要改
    核心模块签名。（§2 的 `evaluate_overall_completion()` 不受此限——它
    走 `read_all_manifests()`，本来就读全部历史轮次。）
-5. **看板"从执行历史反推"默认预填**、**差异高亮 UI**：Stage 3 未做，见
-   §3.4/未实施清单第 1 项。
+5. **看板"从执行历史反推"默认预填**：**已实施**（Stage 5，见 §5）。
+   **差异高亮 UI**：仍未做，见未实施清单第 1 项。
 6. **CLI 侧暴露"整体关闭判定"的手动触发/查看入口**：**已实施**——见
    `/agent goals spec close-check <goal_id>`（`cli/commands/goals.py::
    _cmd_spec_close_check()`），直接调用
@@ -371,12 +436,12 @@ bridge.py`/`test_goal_backlog.py`/`test_goal_overall_completion.py`/
 `overall_completion_criteria` 为空（绝大多数周期性 Goal 的默认情况）
 时 §2 的判定逻辑不会被触发，等价于该功能关闭。
 
-## 5. 后续建议顺序
+## 7. 后续建议顺序
 
 1. 看板 UI 的剩余精细化：字段直接编辑文本框 + 差异高亮（当前"反馈驱动
    迭代"已经能覆盖大多数场景，这一项主要是进一步降低反馈成本）；整体
    关闭判定结果做成更显眼的持久化状态展示，而不只是一次性 toast +
    progress_notes 里的文本行。
-2. `builder_mode="agent"` 路径 + 模板自动匹配（优先级较低，当前 `llm`
-   路径已经可用，且 `revise()` 的字段锁定机制已经能覆盖"生成方向不对
-   需要人工干预"的场景）。
+2. `builder_mode="agent"` 路径（优先级较低，当前 `llm` 路径已经可用，
+   且 `revise()` 的字段锁定机制已经能覆盖"生成方向不对需要人工干预"的
+   场景）。

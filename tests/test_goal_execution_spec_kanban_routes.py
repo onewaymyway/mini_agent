@@ -60,8 +60,18 @@ class TestGoalExecutionSpecKanbanRoutes(unittest.TestCase):
     def test_templates_endpoint_returns_list(self):
         resp = self.client.get("/v1/goal_execution_spec_templates")
         self.assertEqual(resp.status_code, 200)
-        templates = resp.json()["templates"]
+        body = resp.json()
+        templates = body["templates"]
         self.assertTrue(any(t["id"] == "periodic_report" for t in templates))
+        self.assertIsNone(body["suggested_template_id"])
+
+    def test_templates_endpoint_suggests_by_goal_title(self):
+        resp = self.client.get(
+            "/v1/goal_execution_spec_templates",
+            params={"goal_title": "每周数据周报", "goal_description": "汇总核心指标"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["suggested_template_id"], "periodic_report")
 
     def test_get_execution_spec_none_when_not_generated(self):
         resp = self.client.get(f"/v1/goals/{self.goal.id}/execution_spec")

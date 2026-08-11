@@ -2,6 +2,15 @@
   "template_id": "monitoring_patrol",
   "name": "巡检/监控",
   "applicable_to": "定期检查某些状态是否异常的 Goal（服务健康度、指标阈值等）",
+  "keywords": [
+    "巡检",
+    "监控",
+    "检查",
+    "告警",
+    "健康度",
+    "阈值",
+    "异常"
+  ],
   "skeleton": {
     "deliverables": [
       {
@@ -20,8 +29,14 @@
     ],
     "sub_directories": [],
     "per_cycle_criteria": [
-      {"text": "patrol_log.md 存在且非空", "verification_method": "file_check"},
-      {"text": "发现异常时，patrol_log.md 中有明确记录（而不是被静默忽略）", "verification_method": "manual_review"}
+      {
+        "text": "patrol_log.md 存在且非空",
+        "verification_method": "file_check"
+      },
+      {
+        "text": "发现异常时，patrol_log.md 中有明确记录（而不是被静默忽略）",
+        "verification_method": "manual_review"
+      }
     ],
     "overall_completion_criteria": [],
     "special_constraints": []

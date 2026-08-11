@@ -2,6 +2,16 @@
   "template_id": "periodic_report",
   "name": "周期性报告（周报/日报/定期汇总）",
   "applicable_to": "growth_advisor 报告、数据汇总、周期性总结类 Goal",
+  "keywords": [
+    "周报",
+    "日报",
+    "月报",
+    "报告",
+    "汇总",
+    "总结",
+    "对比",
+    "growth_advisor"
+  ],
   "skeleton": {
     "deliverables": [
       {
@@ -20,8 +30,14 @@
     ],
     "sub_directories": [],
     "per_cycle_criteria": [
-      {"text": "report.md 存在且非空", "verification_method": "file_check"},
-      {"text": "报告内容包含与上一轮的对比（环比/同比等字样）", "verification_method": "manual_review"}
+      {
+        "text": "report.md 存在且非空",
+        "verification_method": "file_check"
+      },
+      {
+        "text": "报告内容包含与上一轮的对比（环比/同比等字样）",
+        "verification_method": "manual_review"
+      }
     ],
     "overall_completion_criteria": [],
     "special_constraints": []

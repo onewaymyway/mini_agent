@@ -2,6 +2,14 @@
   "template_id": "data_collection",
   "name": "定期抓取/采集",
   "applicable_to": "定期爬取、批量拉取外部数据并落盘的 Goal",
+  "keywords": [
+    "抓取",
+    "爬取",
+    "采集",
+    "拉取",
+    "同步数据",
+    "收集数据"
+  ],
   "skeleton": {
     "deliverables": [
       {
@@ -24,11 +32,20 @@
       }
     ],
     "sub_directories": [
-      {"name": "raw/", "purpose": "存放原始抓取数据，避免和后续加工产物混在同一层"}
+      {
+        "name": "raw/",
+        "purpose": "存放原始抓取数据，避免和后续加工产物混在同一层"
+      }
     ],
     "per_cycle_criteria": [
-      {"text": "本轮 raw/ 目录下存在新增数据文件", "verification_method": "file_check"},
-      {"text": "本轮抓取的数据与上一轮无重复条目（依据 handoff 里的 seen_ids/cursor 去重）", "verification_method": "manual_review"}
+      {
+        "text": "本轮 raw/ 目录下存在新增数据文件",
+        "verification_method": "file_check"
+      },
+      {
+        "text": "本轮抓取的数据与上一轮无重复条目（依据 handoff 里的 seen_ids/cursor 去重）",
+        "verification_method": "manual_review"
+      }
     ],
     "overall_completion_criteria": [],
     "special_constraints": []

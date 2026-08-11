@@ -354,8 +354,13 @@ class AgentClient:
 
     # ── 看板：Goal 执行规范草稿生成/反馈迭代/确认/查看（goal_execution_spec_
     # generation_plan.md §6.1/§6.3/§6.4）────────────────────────────────────
-    def execution_spec_templates(self):
-        return self._get("/goal_execution_spec_templates")
+    def execution_spec_templates(self, goal_title: str = "", goal_description: str = ""):
+        params = {}
+        if goal_title:
+            params["goal_title"] = goal_title
+        if goal_description:
+            params["goal_description"] = goal_description
+        return self._get("/goal_execution_spec_templates", params=params or None)
 
     def get_execution_spec(self, goal_id: str):
         return self._get(f"/goals/{goal_id}/execution_spec")

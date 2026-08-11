@@ -141,6 +141,24 @@ def test_load_template_missing_returns_none():
     assert ges.load_template("") is None
 
 
+def test_list_templates_includes_keywords():
+    templates = ges.list_templates()
+    by_id = {t["id"]: t for t in templates}
+    assert by_id["periodic_report"]["keywords"]
+    assert "周报" in by_id["periodic_report"]["keywords"]
+
+
+def test_suggest_template_matches_by_keyword():
+    assert ges.suggest_template("每周数据周报", "汇总本周核心指标") == "periodic_report"
+    assert ges.suggest_template("巡检服务健康度", "检查是否有异常告警") == "monitoring_patrol"
+    assert ges.suggest_template("抓取竞品价格数据", "定期采集并落盘") == "data_collection"
+
+
+def test_suggest_template_no_match_returns_none():
+    assert ges.suggest_template("随便起个名字", "完全不相关的描述") is None
+    assert ges.suggest_template("", "") is None
+
+
 # ── GoalExecutionSpecBuilder ──────────────────────────────────────────────────
 
 class _FakeHelper:
