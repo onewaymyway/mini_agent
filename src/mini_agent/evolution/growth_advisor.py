@@ -1,5 +1,13 @@
 """成长顾问 Growth Advisor（对应 next_doc/growth_advisor_design.md）。
 
+设计理念（对后续改动的前提，详见 docs/growth-advisor-guide.md 1.5 节）：
+成长顾问的定位是**自主**——自主根据用户需求规划成长方向，并在用户
+选择的方向上自主、持续地收集整理素材供用户学习。"采纳"应该是一个
+起点而不是终点；"持续"意味着每一轮都要有实质性增量，不能原地打转；
+自主不等于替用户做主——用户始终能看到进展、能随时暂停/调整。任何
+改动如果会让机制退回"每一步都要人工衔接"，应视为偏离定位，而不是
+一个可选的实现方式。
+
 与 evolution/ 目录下服务"Agent 自我进化"的模块（soft_goal_deriver /
 decision_profile_builder / objective_outcome_tracker ...）是姊妹关系：
 那些模块把用户的反馈/记忆折射回 Agent 自身的行为改进，这个模块则是把
