@@ -6564,6 +6564,11 @@ async def get_growth_pursuits(request: Request):
                 continue
             job = jobs_by_id.get(goal.recurrence_cron_job_id) if goal.recurrence_cron_job_id else None
             saturation = ga.get_pursuit_saturation(paths, goal.id)
+            # [方向 C2] 还没被推送出去的"本轮新增摘要"，只读展示，不清空队列
+            # （真正清空由下一次实际推送时触发，见 growth_advisor.py）。
+            pending_digest = [
+                d for d in ga.peek_pending_pursuit_digests(paths) if d.get("goal_id") == goal.id
+            ]
             pursuits.append({
                 "candidate_id": c.candidate_id,
                 "title": c.title,
@@ -6577,6 +6582,7 @@ async def get_growth_pursuits(request: Request):
                 "run_count": job.run_count if job else None,
                 "cron_enabled": job.enabled if job else None,
                 "saturation": saturation,
+                "pending_digest": pending_digest,
             })
         return {"pursuits": pursuits}
     except HTTPException:

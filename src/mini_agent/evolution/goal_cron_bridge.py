@@ -149,6 +149,7 @@ def _fire_goal_cycle(
     description = compose_context(goal.description, job.task_template)
     description = _append_output_workspace_context(paths, goal.id, cycle_no, description)
     description = _append_execution_spec_context(paths, goal_backlog, goal, description)
+    description = _append_growth_reorganize_hint(paths, goal, cycle_no, description)
     objective = goal_backlog.add_objective(
         title=f"{goal.title}（第 {cycle_no} 轮）",
         parent_id=goal.id,
@@ -244,6 +245,31 @@ def _append_execution_spec_context(
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_execution_spec_context')
+        return description
+
+
+def _append_growth_reorganize_hint(paths, goal: "GoalNode", cycle_no: int, description: str) -> str:
+    """[growth_advisor_autonomy_deepening_plan.md 方向 C1] 累计满
+    `reorganize_every_n_cycles` 轮时，往本轮子 Objective description 里
+    追加一段"顺带整理一下"的提示。只对打了 `growth_advisor` 标签的 Goal
+    生效（`reorganize_hint_for_cycle` 内部判断），拿不到配置或任何环节
+    异常都静默跳过，不影响 Goal 触发主流程。
+    """
+    if paths is None:
+        return description
+    try:
+        from mini_agent.config import load_config
+        cfg = getattr(load_config(), "growth_advisor", None)
+        from mini_agent.evolution.growth_advisor import reorganize_hint_for_cycle
+        hint = reorganize_hint_for_cycle(goal, cycle_no, cfg=cfg)
+        if not hint:
+            return description
+        parts = [description] if description and description.strip() else []
+        parts.append(hint)
+        return "\n\n".join(parts)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_growth_reorganize_hint')
         return description
 
 
@@ -413,6 +439,9 @@ def reap_finished_cycles(goal_backlog: "GoalBacklog") -> int:
                     # 刚跨过阈值才推一次通知（同一次饱和状态不重复打扰）。
                     # 诊断增强，任何异常都吞掉，不影响 reap 主流程的计数。
                     _check_pursuit_saturation(goal_backlog, goal)
+                    # [方向 C2] 本轮新增摘要暂存，等下一次真正推送时打包
+                    # 带出，不单独消耗推送额度。同样只是诊断/展示增强。
+                    _record_pursuit_digest(goal_backlog, goal)
         # [Track D] 归档已跑过多轮、已经计过数的旧子节点，避免 goals.json
         # 随轮数无限增长。只读遍历+命中才写，跟本函数其余部分同一种开销
         # 可控的设计哲学。
@@ -472,6 +501,24 @@ def _check_pursuit_saturation(goal_backlog: "GoalBacklog", goal: "GoalNode") -> 
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._check_pursuit_saturation')
+
+
+def _record_pursuit_digest(goal_backlog: "GoalBacklog", goal: "GoalNode") -> None:
+    """[growth_advisor_autonomy_deepening_plan.md 方向 C2] 一轮成功完成
+    时，把这一轮新增的 covered_subtopics 存进待推送摘要队列。纯诊断/
+    展示增强，任何异常都整体吞掉，不影响 reap_finished_cycles() 的计数
+    主流程。"""
+    try:
+        paths = getattr(goal_backlog, "_paths", None)
+        if paths is None:
+            return
+        from mini_agent.config import load_config
+        cfg = getattr(load_config(), "growth_advisor", None)
+        from mini_agent.evolution.growth_advisor import record_pursuit_cycle_digest
+        record_pursuit_cycle_digest(paths, goal, cfg=cfg)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._record_pursuit_digest')
 
 
 __all__ = [

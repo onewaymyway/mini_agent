@@ -1923,6 +1923,23 @@ class GrowthAdvisorConfig:
     cron_triggered_active_search_enabled: bool = False
     cron_triggered_active_search_daily_limit: int = 1
 
+    # ── C1：定期整理（growth_advisor_autonomy_deepening_plan.md 方向 C1）──
+    # `growth_pursuit` 模板此前只会"线性追加"，轮次一多页面会越来越长、
+    # 缺乏组织。默认开启（零 LLM 成本——只是往 prompt 里多拼一段整理
+    # 指令，复用同一次执行循环，不新增 cron job/数据结构）：每累计这么
+    # 多轮，下一次执行时额外提示"顺带做一次重新组织"。设为 0 或负数视为
+    # 关闭这条提示。
+    reorganize_every_n_cycles: int = 10
+
+    # ── C2：本轮新增摘要推送（growth_advisor_autonomy_deepening_plan.md
+    # 方向 C2）──────────────────────────────────────────────────────────
+    # 默认开启：每轮持续调研完成后，把 handoff.covered_subtopics 的新增
+    # 差集整理成一句"本轮新增摘要"，暂存起来，等下一次 `_maybe_dispatch_
+    # notification()`/`_maybe_dispatch_weekly_digest()` 真正推送时顺带
+    # 打包进同一条消息——复用已有的推送节流（notification_frequency/
+    # notification_max_per_day），不为这条摘要单独消耗一次推送额度。
+    pursuit_digest_enabled: bool = True
+
 
 @dataclass
 class ReminderConfig:

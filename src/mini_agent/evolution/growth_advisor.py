@@ -3080,6 +3080,132 @@ def process_pursuit_cycle_completion(paths, goal) -> Optional[dict]:
     }
 
 
+# ────────── [growth_advisor_autonomy_deepening_plan.md 方向 C1] 定期整理 ──────────
+# `growth_pursuit` 模板此前只会"线性追加"，轮次一多页面会越来越长、缺乏
+# 组织。这里不新增独立的 cron job 或数据结构，只是在满足轮次条件时往
+# 拼给模型的 prompt 里多插一段"这一轮顺带整理一下"的指令——仍然是同一个
+# 执行循环里的一种特殊模式。
+
+
+def reorganize_hint_for_cycle(goal, cycle_no: int, cfg=None) -> Optional[str]:
+    """[方向 C1] 只对打了 `growth_advisor` 标签、且这一轮轮次号能整除
+    `cfg.reorganize_every_n_cycles`（默认 10，<=0 视为关闭）的 Goal 返回
+    一段拼进子 Objective description 的整理指令；其余情况返回 None。
+
+    纯规则式判断（轮次号取模），零 LLM 成本，不读取任何执行历史——是否
+    真的需要整理由模型在这一轮执行时自行判断，这里只是"提醒"，不代表
+    这一轮的产出会因此被强制要求包含整理内容（对齐 per_cycle_criteria
+    仍然是 manual_review 的既有克制）。
+    """
+    if "growth_advisor" not in (getattr(goal, "tags", None) or []):
+        return None
+    every_n = getattr(cfg, "reorganize_every_n_cycles", 10) if cfg is not None else 10
+    if every_n is None or every_n <= 0:
+        return None
+    if cycle_no <= 0 or cycle_no % every_n != 0:
+        return None
+    return (
+        f"【本轮附加提示（第 {cycle_no} 轮，累计满 {every_n} 轮）】\n"
+        "这一轮除了正常新增内容，请先花一点时间对现有 wiki 页面做一次\n"
+        "重新组织：合并重复表述、按子话题分节、把 handoff.open_questions\n"
+        "里已经解决的问题移出——组织之后再继续本轮新增部分，不要为了整理\n"
+        "而删减已有的有效信息。"
+    )
+
+
+# ────────── [growth_advisor_autonomy_deepening_plan.md 方向 C2] 本轮新增摘要推送 ──────────
+# 复用 2.4 节已有的推送节流机制（notification_frequency/notification_
+# max_per_day），不新增一套独立的通知逻辑——每轮执行结束后先把"本轮新增
+# 了什么"存进 growth_state.json 的一个待推送队列，等下一次真正触发推送
+# （日常报告推送 / 周摘要）时顺带打包进同一条消息，不额外占用推送额度。
+
+_PURSUIT_DIGEST_MAX_PENDING = 30
+
+
+def record_pursuit_cycle_digest(paths, goal, cfg=None) -> Optional[dict]:
+    """[方向 C2] 一轮持续调研完成后调用：从最近两轮 manifest 的 handoff
+    里算出本轮新增的 `covered_subtopics`，整理成一条"本轮新增摘要"，
+    存进 `growth_state.json` 的 `pending_pursuit_digests` 队列（不立即
+    推送）。只处理打了 `growth_advisor` 标签的 Goal，其余直接跳过。
+
+    `cfg.pursuit_digest_enabled=False` 时整体跳过（不产生任何暂存），
+    默认开启。队列超过 `_PURSUIT_DIGEST_MAX_PENDING` 条时丢弃最旧的——
+    这是一份"待展示的摘要"，不是审计日志，丢一点旧数据不影响正确性。
+
+    返回新增的摘要条目（供调用方测试/日志），本轮没有新增子话题或没有
+    可比较的 handoff 数据时返回 None（不落一条空摘要）。
+    """
+    if cfg is not None and not getattr(cfg, "pursuit_digest_enabled", True):
+        return None
+    if "growth_advisor" not in (getattr(goal, "tags", None) or []):
+        return None
+    increment = evaluate_cycle_increment(paths, goal.id)
+    if not increment.get("evaluated"):
+        return None
+    new_count = increment.get("new_subtopics_count") or 0
+    if new_count <= 0:
+        return None
+
+    from mini_agent.evolution import output_workspace
+    from mini_agent.perception.goal_execution_spec import get_handoff_data
+
+    base_dir = output_workspace.goal_output_base_dir(paths, goal.id)
+    manifests = output_workspace.read_all_manifests(base_dir)
+    if len(manifests) < 2:
+        return None
+    prev_handoff = get_handoff_data(manifests[-2].get("progress_note") or "") or {}
+    curr_handoff = get_handoff_data(manifests[-1].get("progress_note") or "") or {}
+
+    def _as_set(handoff: dict, key: str) -> set:
+        v = handoff.get(key)
+        if isinstance(v, list):
+            return {str(x).strip() for x in v if str(x).strip()}
+        return set()
+
+    new_subtopics = sorted(_as_set(curr_handoff, "covered_subtopics") - _as_set(prev_handoff, "covered_subtopics"))
+    if not new_subtopics:
+        return None
+
+    entry = {
+        "goal_id": goal.id,
+        "goal_title": goal.title,
+        "new_subtopics": new_subtopics[:8],
+        "at": time.time(),
+    }
+    state = _load_growth_state(paths)
+    pending = list(state.get("pending_pursuit_digests") or [])
+    pending.append(entry)
+    if len(pending) > _PURSUIT_DIGEST_MAX_PENDING:
+        pending = pending[-_PURSUIT_DIGEST_MAX_PENDING:]
+    state["pending_pursuit_digests"] = pending
+    _save_growth_state(paths, state)
+    return entry
+
+
+def _pop_pending_pursuit_digest_lines(paths) -> list[str]:
+    """取出并清空当前全部待推送的"本轮新增摘要"，格式化成可以直接拼进
+    通知正文的若干行文本。只在调用方确实要发出一条推送消息时调用——
+    调用即清空，避免同一条摘要被打包进两条不同的推送消息里重复出现。"""
+    state = _load_growth_state(paths)
+    pending = list(state.get("pending_pursuit_digests") or [])
+    if not pending:
+        return []
+    state["pending_pursuit_digests"] = []
+    _save_growth_state(paths, state)
+    lines = []
+    for entry in pending:
+        subtopics = "、".join(entry.get("new_subtopics") or [])
+        lines.append(f"- 「{entry.get('goal_title', '')}」本轮新增：{subtopics}")
+    return lines
+
+
+def peek_pending_pursuit_digests(paths) -> list[dict]:
+    """只读查询当前待推送的摘要队列，供看板"🔄 正在自主推进"分区展示
+    "还没推送的最新进展"，不产生任何写入、不清空队列。"""
+    state = _load_growth_state(paths)
+    return list(state.get("pending_pursuit_digests") or [])
+
+
 # ────────────────────────── [LLM 增强路径可观测性] ──────────────────────────
 # 此前 `_llm_augment_topics` / 报告正文 LLM 起草 / `classify_topic_category_llm`
 # 三处 LLM 增强调用失败（异常、空响应、JSON 解析失败）都只落一条
@@ -3190,6 +3316,11 @@ def _maybe_dispatch_weekly_digest(paths, cfg, profile=None) -> Optional[dict]:
             f"过去 {WEEKLY_DIGEST_INTERVAL_DAYS} 天为你生成了 {len(window_reports)} "
             f"份成长调研报告：\n" + "\n".join(lines)
         )
+        # [方向 C2] 顺带打包本次窗口期内积累的"正在自主推进"方向的本轮新增
+        # 摘要，不额外消耗推送额度——这条消息本来就要发，只是多拼几行。
+        digest_lines = _pop_pending_pursuit_digest_lines(paths)
+        if digest_lines:
+            body += "\n\n正在自主持续调研的方向本轮新增：\n" + "\n".join(digest_lines)
 
         from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
         from mini_agent.notification import reports_store
@@ -3289,9 +3420,15 @@ def _maybe_dispatch_notification(
         from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
         from mini_agent.notification import reports_store
 
+        body = best_report.summary
+        # [方向 C2] 这条日常推送本来就要发出，顺带打包正在自主持续调研
+        # 方向的本轮新增摘要，不额外消耗 notification_max_per_day 额度。
+        digest_lines = _pop_pending_pursuit_digest_lines(paths)
+        if digest_lines:
+            body += "\n\n正在自主持续调研的方向本轮新增：\n" + "\n".join(digest_lines)
         message = NotificationMessage(
             title=f"成长顾问：{best_report.title}",
-            body=best_report.summary,
+            body=body,
             source="growth_report",
             meta={
                 "candidate_id": best_report.candidate_id,

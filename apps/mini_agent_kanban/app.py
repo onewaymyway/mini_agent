@@ -4545,6 +4545,12 @@ def _render_growth_pursuits(client: "AgentClient"):
                         f"⚠️ 最近连续 {saturation.get('streak')} 轮新增内容不多了，"
                         "可能已经了解得差不多，考虑降低频率或先告一段落。"
                     )
+                # [方向 C2] 还没打包进推送消息的"本轮新增摘要"，看板里先
+                # 展示出来，不用等下一次推送才看到最新进展。
+                pending_digest = row.get("pending_digest") or []
+                if pending_digest:
+                    latest_topics = "、".join(pending_digest[-1].get("new_subtopics") or [])
+                    st.caption(f"🆕 本轮新增：{latest_topics}")
             with cols[1]:
                 if st.button("⏸ 暂停", key=f"growth_pursuit_pause_{row['goal_id']}"):
                     client.unrecur_goal(row["goal_id"])

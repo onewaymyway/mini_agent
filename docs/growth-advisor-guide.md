@@ -618,6 +618,80 @@ deepening_plan.md` 的优先级建议（该文档第 6 节），实现了其中�
 - `apps/mini_agent_kanban/app.py`：新增 `_render_growth_pursuits()`
   并接入 `render_growth_tab()`。
 
+### 2.14 落地 `growth_advisor_autonomy_deepening_plan.md`：C1 / C2（本次新增）
+
+在 2.13 节落地 A1/A2/B1/B2/D1/D2 之后，按方案文档第 6 节排在其后的
+C1（定期整理）/ C2（新增摘要推送）也一并实施。A3/B3 仍按方案文档标注
+的理由暂缓（工作量和收益都有较大不确定性，不承诺进入下一轮实施范围），
+保留在方案文档里供后续按需认领。
+
+**C1：定期整理，从"线性追加"到"顺带重新组织"**
+
+- 新增 `growth_advisor.reorganize_hint_for_cycle(goal, cycle_no, cfg)`：
+  纯规则式判断（轮次号对 `cfg.reorganize_every_n_cycles` 取模，默认
+  10 轮，配成 0 或负数视为关闭），零 LLM 成本、不读取任何执行历史。
+  只对打了 `growth_advisor` 标签的 Goal 生效。
+- 接入点：`goal_cron_bridge.register_goal_cycle_handler()` 触发每一轮
+  子 Objective 时，新增 `_append_execution_spec_context()` 之后的一步
+  `_append_growth_reorganize_hint()`——累计满 N 轮的那一轮，会在拼给
+  模型的 description 末尾追加一段"这一轮先花点时间合并重复表述、按
+  子话题分节、把 handoff.open_questions 里已解决的问题移出，再继续
+  本轮新增部分"的提示。仍然是同一个执行循环里的一种特殊模式，没有
+  新增独立的 cron job 或数据结构，只是这一轮的 prompt 多了一段说明；
+  是否真的需要整理由模型在执行时自行判断，不代表这一轮的产出会因此
+  被强制要求包含整理内容（`per_cycle_criteria` 仍然是既有的
+  `manual_review`，不新增自动校验）。
+- 任何环节异常（拿不到配置/生成提示失败）都静默跳过，不影响 Goal
+  触发主流程。
+
+**C2：本轮新增摘要，复用已有推送节流，不额外消耗额度**
+
+- 新增 `growth_advisor.record_pursuit_cycle_digest(paths, goal, cfg)`：
+  一轮成功完成时，从最近两轮 manifest 的 handoff 里算出本轮新增的
+  `covered_subtopics` 差集，整理成一条"本轮新增摘要"，存进
+  `growth_state.json` 的 `pending_pursuit_digests` 队列（不为这个
+  信号单独开一份持久化文件，复用 B2 的既有取舍）；没有新增子话题或
+  没有可比较的 handoff 数据时不落任何记录。`cfg.pursuit_digest_
+  enabled=False`（默认 `True`）时整体跳过。队列超过 30 条自动丢弃
+  最旧的——这是一份待展示摘要，不是审计日志。
+- 接入点：`goal_cron_bridge.reap_finished_cycles()` 一轮子 Objective
+  以 `completed` 收尾、且是打了 `growth_advisor` 标签的 Goal 时，
+  紧跟在 B2 的 `_check_pursuit_saturation()` 之后调用新增的
+  `_record_pursuit_digest()`。
+- **真正推送时才打包带出，不新增一套独立的通知逻辑**：
+  `_maybe_dispatch_notification()`（`notification_frequency=daily`）
+  和 `_maybe_dispatch_weekly_digest()`（`notification_frequency=
+  weekly_digest`）在确实要发出一条消息时，各自调用新增的
+  `_pop_pending_pursuit_digest_lines()`（取出并清空队列）把摘要行拼进
+  同一条消息正文——不单独触发一次推送，也不占用
+  `notification_max_per_day` 的额外额度；`notification_frequency=
+  kanban_only` 时两条推送路径都不会触发，摘要会持续在队列里累积，
+  直到用户切换回 daily/weekly_digest 或直接在看板查看。
+- 看板可见性：新增只读函数 `growth_advisor.peek_pending_pursuit_
+  digests()`（不清空队列），`GET /v1/growth/pursuits` 每条记录新增
+  `pending_digest` 字段；看板"🔄 正在自主推进"分区（D1）每条方向下面
+  新增一行 `🆕 本轮新增：...` 展示还没被推送出去的最新进展，不需要
+  等到下一次日报/周报才看到。
+
+**新增/变更文件**：
+
+- `src/mini_agent/config/models.py`：`GrowthAdvisorConfig` 新增
+  `reorganize_every_n_cycles`（默认 10）/ `pursuit_digest_enabled`
+  （默认 `True`）两个字段；
+- `src/mini_agent/evolution/growth_advisor.py`：新增
+  `reorganize_hint_for_cycle()` / `record_pursuit_cycle_digest()` /
+  `_pop_pending_pursuit_digest_lines()` / `peek_pending_pursuit_
+  digests()`；`_maybe_dispatch_notification()` /
+  `_maybe_dispatch_weekly_digest()` 在实际推送时打包摘要；
+- `src/mini_agent/evolution/goal_cron_bridge.py`：新增
+  `_append_growth_reorganize_hint()`（接入
+  `register_goal_cycle_handler()`）与 `_record_pursuit_digest()`
+  （接入 `reap_finished_cycles()`）；
+- `src/mini_agent/api/routes.py`：`GET /v1/growth/pursuits` 每条记录
+  新增 `pending_digest` 字段；
+- `apps/mini_agent_kanban/app.py`：`_render_growth_pursuits()`
+  每条方向新增"🆕 本轮新增"展示。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外
