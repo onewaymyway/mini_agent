@@ -1,0 +1,32 @@
+{
+  "name": "Wikipedia",
+  "domain": "wikipedia.org",
+  "url": "https://www.wikipedia.org",
+  "category": "education",
+  "subcategory": "encyclopedia",
+  "frontend_framework": "MediaWiki",
+  "anti_crawl_level": 1,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P1",
+  "timeout": 20,
+  "retry_count": 2,
+  "stealth_mode": false,
+  "target_success_rate": 0.95,
+  "target_accuracy": 0.90,
+  "custom_config": {
+    "search_box": "input#searchInput, input[name='search']",
+    "search_button": "button[title='Search'], input[type='submit']",
+    "results": ".searchresult, .mw-search-result",
+    "result_item": ".searchresult",
+    "title": ".searchresult .searchresult-title, .mw-search-result-heading a",
+    "content": ".searchresult .searchresult-snippet, .mw-search-result-text",
+    "pagination": {
+      "next_page": "a.next, .mw-next-link",
+      "page_numbers": ".mw-pages li"
+    }
+  },
+  "tags": ["education", "encyclopedia", "knowledge", "global"],
+  "created_at": "2026-08-11T13:35:00.000Z",
+  "updated_at": "2026-08-11T13:35:00.000Z"
+}

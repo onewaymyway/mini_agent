@@ -1,0 +1,32 @@
+{
+  "name": "中国政府网",
+  "domain": "gov.cn",
+  "url": "https://www.gov.cn",
+  "category": "government",
+  "subcategory": "government_portal",
+  "frontend_framework": "None",
+  "anti_crawl_level": 1,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P0",
+  "timeout": 20,
+  "retry_count": 2,
+  "stealth_mode": false,
+  "target_success_rate": 0.95,
+  "target_accuracy": 0.90,
+  "custom_config": {
+    "search_box": "input#soInput, input[placeholder*='搜索']",
+    "search_button": "input#soBtn, button[type='submit']",
+    "results": ".news-list, .result-item",
+    "result_item": ".news-list li, .result-item",
+    "title": ".news-list li a, .result-title a",
+    "content": ".news-list li .date, .result-content",
+    "pagination": {
+      "next_page": "a.next, .pagination-next",
+      "page_numbers": ".page-num"
+    }
+  },
+  "tags": ["government", "portal", "chinese", "official"],
+  "created_at": "2026-08-11T13:35:00.000Z",
+  "updated_at": "2026-08-11T13:35:00.000Z"
+}

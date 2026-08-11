@@ -1,14 +1,14 @@
 {
-  "name": "掘金",
-  "domain": "juejin.cn",
-  "url": "https://juejin.cn",
-  "category": "tech",
-  "subcategory": "developer_community",
-  "frontend_framework": "Vue",
+  "name": "今日头条",
+  "domain": "toutiao.com",
+  "url": "https://www.toutiao.com",
+  "category": "news",
+  "subcategory": "news_aggregation",
+  "frontend_framework": "React",
   "anti_crawl_level": 2,
   "login_required": false,
   "captcha_type": "none",
-  "priority": "P0",
+  "priority": "P1",
   "timeout": 25,
   "retry_count": 3,
   "stealth_mode": true,
@@ -17,16 +17,16 @@
   "custom_config": {
     "search_box": "input[placeholder*='搜索'], input[name='keyword']",
     "search_button": "button.search-btn, input[type='submit']",
-    "results": ".article-item, .feed-card",
-    "result_item": ".article-item",
-    "title": ".article-title, .title-text",
-    "content": ".article-content, .content-text",
+    "results": ".item-wrap, .feed-item",
+    "result_item": ".item-wrap",
+    "title": ".item-title, .title-text",
+    "content": ".item-content, .content-text",
     "pagination": {
-      "next_page": "a.next, .pagination-next",
+      "next_page": "a.next-page, .load-more",
       "page_numbers": ".page-num"
     }
   },
-  "tags": ["tech", "developer", "chinese", "blog"],
+  "tags": ["news", "aggregation", "chinese", "high-traffic"],
   "created_at": "2026-08-11T13:35:00.000Z",
   "updated_at": "2026-08-11T13:35:00.000Z"
 }

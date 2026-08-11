@@ -1,0 +1,27 @@
+{
+  "name": "网站名称",
+  "domain": "domain.com",
+  "url": "https://www.domain.com",
+  "category": "CATEGORY",
+  "subcategory": "SUBCATEGORY",
+  "frontend_framework": "React/Vue/SSR/None",
+  "anti_crawl_level": 2,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P1",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.85,
+  "target_accuracy": 0.80,
+  "custom_config": {
+    "search_url": "https://www.domain.com/search?q={query}",
+    "result_selector": ".result-item",
+    "title_selector": ".title",
+    "url_selector": "a[href]",
+    "content_selector": ".content"
+  },
+  "tags": ["标签1", "标签2"],
+  "created_at": "2026-08-08T00:00:00.000Z",
+  "updated_at": "2026-08-08T00:00:00.000Z"
+}

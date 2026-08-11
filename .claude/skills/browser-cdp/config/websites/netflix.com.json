@@ -1,0 +1,32 @@
+{
+  "name": "Netflix",
+  "domain": "netflix.com",
+  "url": "https://www.netflix.com",
+  "category": "video",
+  "subcategory": "streaming",
+  "frontend_framework": "React",
+  "anti_crawl_level": 3,
+  "login_required": true,
+  "captcha_type": "none",
+  "priority": "P1",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.80,
+  "target_accuracy": 0.75,
+  "custom_config": {
+    "search_box": "input[placeholder*='Titles'], input[name='query']",
+    "search_button": "button[type='submit'], input[type='submit']",
+    "results": ".title-cards .card, .movie-card",
+    "result_item": ".title-cards .card",
+    "title": ".title-cards .card-title, .movie-title",
+    "content": ".title-cards .card-desc, .movie-desc",
+    "pagination": {
+      "next_page": "a.next-page, .load-more",
+      "page_numbers": ".page-num"
+    }
+  },
+  "tags": ["video", "streaming", "entertainment", "global"],
+  "created_at": "2026-08-11T13:35:00.000Z",
+  "updated_at": "2026-08-11T13:35:00.000Z"
+}

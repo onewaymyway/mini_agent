@@ -1,0 +1,36 @@
+{
+  "name": "京东",
+  "domain": "jd.com",
+  "url": "https://www.jd.com",
+  "category": "ecommerce",
+  "subcategory": "shopping",
+  "frontend_framework": "Vue",
+  "anti_crawl_level": 3,
+  "login_required": false,
+  "captcha_type": "slider",
+  "priority": "P1",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.85,
+  "target_accuracy": 0.80,
+  "custom_config": {
+    "search_box": "input#key, input[name='key'], input[placeholder*='商品']",
+    "search_button": "button.btn-search, input[type='submit']",
+    "results": ".gl-item, .item--Jd",
+    "result_item": ".gl-item",
+    "title": ".p-name em, .p-name a em",
+    "price": ".p-price strong i",
+    "pagination": {
+      "next_page": "a.pn-next, .pn-next",
+      "page_numbers": ".p-num li"
+    },
+    "captcha_detection": {
+      "selectors": ["#J_authframe", ".authcode", "[class*='verify']"],
+      "text_patterns": ["验证码", "滑动验证"]
+    }
+  },
+  "tags": ["ecommerce", "shopping", "chinese", "high-traffic"],
+  "created_at": "2026-08-11T13:35:00.000Z",
+  "updated_at": "2026-08-11T13:35:00.000Z"
+}

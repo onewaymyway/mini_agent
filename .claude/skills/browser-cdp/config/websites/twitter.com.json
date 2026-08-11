@@ -1,0 +1,32 @@
+{
+  "name": "Twitter/X",
+  "domain": "twitter.com",
+  "url": "https://twitter.com",
+  "category": "social",
+  "subcategory": "microblog",
+  "frontend_framework": "React",
+  "anti_crawl_level": 4,
+  "login_required": true,
+  "captcha_type": "none",
+  "priority": "P1",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.75,
+  "target_accuracy": 0.70,
+  "custom_config": {
+    "search_box": "input[placeholder*='Search'], input[placeholder*='搜索']",
+    "search_button": "button[type='submit'], input[type='submit']",
+    "results": ".css-175oi2r, .stream-item",
+    "result_item": ".css-175oi2r",
+    "title": ".css-4rbku8, .tweet-title",
+    "content": ".css-901oao, .tweet-content",
+    "pagination": {
+      "next_page": "a[data-testid='pagination-next'], .load-more",
+      "page_numbers": ".pagination-item"
+    }
+  },
+  "tags": ["social", "microblog", "news", "global"],
+  "created_at": "2026-08-11T13:35:00.000Z",
+  "updated_at": "2026-08-11T13:35:00.000Z"
+}

@@ -1,0 +1,32 @@
+{
+  "name": "豆瓣",
+  "domain": "douban.com",
+  "url": "https://www.douban.com",
+  "category": "social",
+  "subcategory": "review_platform",
+  "frontend_framework": "Vue",
+  "anti_crawl_level": 2,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P0",
+  "timeout": 25,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.90,
+  "target_accuracy": 0.85,
+  "custom_config": {
+    "search_box": "input#search-query, input[placeholder*='搜索']",
+    "search_button": "button#search-button, input[type='submit']",
+    "results": ".search-result, .item-root",
+    "result_item": ".search-result",
+    "title": ".search-result .title, .item-root .title a",
+    "content": ".search-result .rate, .item-root .rating",
+    "pagination": {
+      "next_page": "a.next, .pagination-next",
+      "page_numbers": ".pagination-item"
+    }
+  },
+  "tags": ["social", "review", "chinese", "entertainment"],
+  "created_at": "2026-08-11T13:35:00.000Z",
+  "updated_at": "2026-08-11T13:35:00.000Z"
+}

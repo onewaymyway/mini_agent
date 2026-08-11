@@ -1,0 +1,36 @@
+{
+  "name": "小红书",
+  "domain": "xiaohongshu.com",
+  "url": "https://www.xiaohongshu.com",
+  "category": "social",
+  "subcategory": "lifestyle",
+  "frontend_framework": "React",
+  "anti_crawl_level": 3,
+  "login_required": false,
+  "captcha_type": "slider",
+  "priority": "P1",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.80,
+  "target_accuracy": 0.75,
+  "custom_config": {
+    "search_box": "input[placeholder*='搜索'], input[name='keyword']",
+    "search_button": "button.search-btn, input[type='submit']",
+    "results": ".note-item, .note-card",
+    "result_item": ".note-item",
+    "title": ".note-title, .title-text",
+    "content": ".note-content, .content-text",
+    "pagination": {
+      "next_page": "a.next-page, .load-more",
+      "page_numbers": ".page-num"
+    },
+    "captcha_detection": {
+      "selectors": ["#captcha-dialog", ".verify-wrap", "[class*='geetest']"],
+      "text_patterns": ["滑动验证", "拖动滑块"]
+    }
+  },
+  "tags": ["social", "lifestyle", "chinese", "high-traffic"],
+  "created_at": "2026-08-11T13:35:00.000Z",
+  "updated_at": "2026-08-11T13:35:00.000Z"
+}

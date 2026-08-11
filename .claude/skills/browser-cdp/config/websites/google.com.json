@@ -1,0 +1,36 @@
+{
+  "name": "Google",
+  "domain": "google.com",
+  "url": "https://www.google.com",
+  "category": "search",
+  "subcategory": "search_engine",
+  "frontend_framework": "None",
+  "anti_crawl_level": 2,
+  "login_required": false,
+  "captcha_type": "recaptcha",
+  "priority": "P0",
+  "timeout": 25,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.90,
+  "target_accuracy": 0.85,
+  "custom_config": {
+    "search_box": "input[name='q'], input#searchboxinput",
+    "search_button": "input[type='submit'], button[type='submit']",
+    "results": "#search .g, .result",
+    "result_item": "#search .g",
+    "title": "#search .g h3, .r a",
+    "content": "#search .g .st, .st",
+    "pagination": {
+      "next_page": "#pnnext, a[aria-label='Next']",
+      "page_numbers": "span[role='link']"
+    },
+    "captcha_detection": {
+      "selectors": ["#recaptcha", "iframe[src*='recaptcha']", ".rc-anchor-container"],
+      "text_patterns": ["reCAPTCHA", "I'm not a robot"]
+    }
+  },
+  "tags": ["search", "engine", "global", "high-traffic"],
+  "created_at": "2026-08-11T13:35:00.000Z",
+  "updated_at": "2026-08-11T13:35:00.000Z"
+}

@@ -1,0 +1,32 @@
+{
+  "name": "东方财富",
+  "domain": "eastmoney.com",
+  "url": "https://www.eastmoney.com",
+  "category": "finance",
+  "subcategory": "financial_portal",
+  "frontend_framework": "Vue",
+  "anti_crawl_level": 2,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P0",
+  "timeout": 25,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.90,
+  "target_accuracy": 0.85,
+  "custom_config": {
+    "search_box": "input#searchkey, input[placeholder*='搜索']",
+    "search_button": "button.search-btn, input[type='submit']",
+    "results": ".dataItem, .list-item",
+    "result_item": ".dataItem",
+    "title": ".dataItem .title, .list-title a",
+    "content": ".dataItem .content, .list-content",
+    "pagination": {
+      "next_page": "a.next, .pagination-next",
+      "page_numbers": ".page-num"
+    }
+  },
+  "tags": ["finance", "portal", "chinese", "stock"],
+  "created_at": "2026-08-11T13:35:00.000Z",
+  "updated_at": "2026-08-11T13:35:00.000Z"
+}

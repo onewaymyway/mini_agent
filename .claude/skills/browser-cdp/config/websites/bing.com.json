@@ -1,0 +1,32 @@
+{
+  "name": "Bing",
+  "domain": "bing.com",
+  "url": "https://www.bing.com",
+  "category": "search",
+  "subcategory": "search_engine",
+  "frontend_framework": "None",
+  "anti_crawl_level": 1,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P1",
+  "timeout": 25,
+  "retry_count": 3,
+  "stealth_mode": false,
+  "target_success_rate": 0.90,
+  "target_accuracy": 0.85,
+  "custom_config": {
+    "search_box": "input#sb_form_q, input[name='q']",
+    "search_button": "input#search_icon, button[type='submit']",
+    "results": ".b_algo, .b_results li",
+    "result_item": ".b_algo",
+    "title": ".b_title h2, a.leankbd",
+    "content": ".b_caption, .b_lines",
+    "pagination": {
+      "next_page": "a.sb_pagN, .next-page",
+      "page_numbers": "span.b_pag li"
+    }
+  },
+  "tags": ["search", "engine", "global"],
+  "created_at": "2026-08-11T13:35:00.000Z",
+  "updated_at": "2026-08-11T13:35:00.000Z"
+}
