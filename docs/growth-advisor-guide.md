@@ -90,6 +90,10 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
 - 这个改动是不是又把某个原本自动衔接的步骤，重新变成了需要用户单独
   触发的动作？如果是，需要想清楚为什么这次要开这个例外。
 
+> 对照这条理念梳理出的具体改进方向（增量质量校验、饱和度信号、看板
+> 可见性等）见 `next_doc/growth_advisor_autonomy_deepening_plan.md`——
+> 已识别但尚未实施，供后续按需认领。
+
 ## 2. 核心机制一览
 
 ### 2.1 信号扫描 → 候选生成（每天自动跑一次）
