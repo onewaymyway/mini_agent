@@ -3700,7 +3700,13 @@ async def generate_goal_execution_spec(goal_id: str, request: Request):
     """POST /v1/goals/{goal_id}/execution_spec/generate — 生成第 1 版草稿
     （不确认，不影响执行），对应 CLI `/agent goals spec generate`。
     Body: { "schedule": str?, "task_template": str?, "template_id": str?,
-            "from_history": bool? }
+            "from_history": bool?, "mode": "llm"|"agent"|"auto"? }
+    `mode` 不传时回退配置文件 `goal_execution_spec.builder_mode`（默认
+    "auto"），传了非法值时同样回退（`GoalExecutionSpecBuilder.__init__`
+    已有校验，这里不重复）——单次调用覆盖，不修改配置文件。响应体新增
+    `effective_path`（"llm"/"agent"，这次实际走的路径），供前端展示
+    "这份草稿是否读取过项目内容"。[goal_execution_spec_generation_plan.md
+    §3 输入源 1 / implementation_record.md §7.5 未实施清单第 2 条]
     """
     backlog = _goal_backlog_only(request)
     node = backlog.get(goal_id)
@@ -3720,7 +3726,7 @@ async def generate_goal_execution_spec(goal_id: str, request: Request):
             m = output_workspace.read_latest_manifest(base_dir)
             history_manifests = [m] if m else None
 
-        builder = ges.GoalExecutionSpecBuilder(cfg)
+        builder = ges.GoalExecutionSpecBuilder(cfg, mode=body.get("mode") or None)
         spec = builder.build_draft(
             goal_id, node.title, node.description,
             schedule=body.get("schedule") or None,
@@ -3735,14 +3741,17 @@ async def generate_goal_execution_spec(goal_id: str, request: Request):
         from mini_agent.errors import log_exception
         log_exception(e, where='mini_agent.api.routes.generate_goal_execution_spec')
         raise HTTPException(status_code=500, detail=f"生成执行规范失败：{e}")
-    return {"spec": spec.to_dict()}
+    return {"spec": spec.to_dict(), "effective_path": builder.last_effective_path}
 
 
 @router.post("/goals/{goal_id}/execution_spec/revise")
 async def revise_goal_execution_spec(goal_id: str, request: Request):
     """POST /v1/goals/{goal_id}/execution_spec/revise — 基于反馈 + 字段级
     锁定重新生成（方案 §6.2），对应看板「🔄 补充意见重新生成」按钮。
-    Body: { "feedback": str, "locked_fields": [str, ...]? }
+    Body: { "feedback": str, "locked_fields": [str, ...]?, "mode": "llm"|
+            "agent"|"auto"? }
+    `mode` 用法与 generate 端点一致（单次覆盖，不传时回退配置默认值）。
+    响应体同样新增 `effective_path`。
     """
     body = await request.json()
     feedback = (body.get("feedback") or "").strip()
@@ -3755,7 +3764,7 @@ async def revise_goal_execution_spec(goal_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"该 Goal 还没有生成过执行规范草稿：{goal_id}")
     try:
         from mini_agent.config import load_config
-        builder = ges.GoalExecutionSpecBuilder(load_config())
+        builder = ges.GoalExecutionSpecBuilder(load_config(), mode=body.get("mode") or None)
         spec = builder.revise(prior, feedback, locked_fields=body.get("locked_fields"))
         ges.save_spec(paths, goal_id, spec)
     except HTTPException:
@@ -3764,7 +3773,7 @@ async def revise_goal_execution_spec(goal_id: str, request: Request):
         from mini_agent.errors import log_exception
         log_exception(e, where='mini_agent.api.routes.revise_goal_execution_spec')
         raise HTTPException(status_code=500, detail=f"修订执行规范失败：{e}")
-    return {"spec": spec.to_dict()}
+    return {"spec": spec.to_dict(), "effective_path": builder.last_effective_path}
 
 
 @router.post("/goals/{goal_id}/execution_spec/confirm")

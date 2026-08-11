@@ -1,11 +1,10 @@
-# Goal 执行规范自动生成 + 用户确认机制 —— 实施记录（Stage 1 + Stage 2 + Stage 3）
+# Goal 执行规范自动生成 + 用户确认机制 —— 实施记录（Stage 1 ~ Stage 8）
 
 对应设计文档：`next_doc/goal_execution_spec_generation_plan.md`
 
-本记录覆盖 Stage 1（后端核心能力）+ Stage 2（`overall_completion_criteria`
-驱动的一次性 Goal 整体关闭判断）+ Stage 3（看板 UI 最小可用版本）的实施
-情况，不重复方案本身的设计论证，只记录"最终落地成什么样、和方案哪里
-不同、还差什么"。
+本记录覆盖 Stage 1（后端核心能力）～ Stage 8（CLI/看板暴露单次覆盖
+`builder_mode` 的入口）的实施情况，不重复方案本身的设计论证，只记录
+"最终落地成什么样、和方案哪里不同、还差什么"。
 
 ## 1. 已实施
 
@@ -515,6 +514,112 @@ helper、不命中时走 llm 路径且不构造 Agent；`revise()` 场景下
   目前只是 Python 属性，没有通过 REST 响应体传给前端、也没有在草稿摘要
   里展示"生成这份草稿时是否读取了项目内容"。
 
+## 8. Stage 8 已实施：CLI/看板暴露单次覆盖 `builder_mode` 的入口（对应
+   实施记录 §7.5/§9 未实施清单第 2 条"CLI/看板未暴露单次覆盖 mode 的
+   入口"）
+
+Stage 7 补齐了 `builder_mode="agent"` 的实际执行路径，但当时 `mode` 只能
+通过配置文件 `goal_execution_spec.builder_mode` 设置，单次调用无法覆盖。
+Stage 8 补上这个入口，行为对齐 `GoalSpecBuilder` 侧 `/goal --mode=agent
+<文本>` 能单次覆盖的能力。
+
+### 8.1 REST 端点（`api/routes.py`）
+
+- `POST /goals/{id}/execution_spec/generate`、`POST /goals/{id}/
+  execution_spec/revise` 两个端点的请求体新增可选字段 `"mode"`
+  （`"llm"`/`"agent"`/`"auto"`），透传进
+  `GoalExecutionSpecBuilder(cfg, mode=body.get("mode") or None)`——不传
+  或传空字符串时等价于 `mode=None`，构造函数内部按既有逻辑回退配置文件
+  `builder_mode`（默认 `"auto"`），不修改配置文件本身，只影响这一次
+  调用。
+- 两个端点的响应体新增 `"effective_path"` 字段（`builder.
+  last_effective_path`，取值 `"llm"`/`"agent"`），供前端展示"这次实际
+  走的是哪条路径"，不需要额外调用或猜测。`confirm`/`close_check`/`GET`
+  端点不涉及生成，不需要这个字段。
+
+### 8.2 CLI（`cli/commands/goals.py`）
+
+- `/agent goals spec generate <goal_id> [--template <id>] [--from-history]
+  [--mode llm|agent|auto]`：新增 `--mode` 参数，`argparse` 用 `choices=
+  ["llm", "agent", "auto"]` 做校验，非法值直接报用法错误、不调用生成器
+  （不消耗任何 LLM/Agent 调用）。`_cmd_spec_generate()` 新增形参 `mode:
+  Optional[str] = None`，透传进 `GoalExecutionSpecBuilder(cfg, mode=mode)`。
+- 生成成功的提示文案追加"走 {纯 LLM｜只读探索 Agent} 路径"，读取
+  `builder.last_effective_path` 后映射成中文标签展示，不需要用户额外查
+  日志才知道这次有没有读取项目内容。
+- 顶层 `handle_goals_cmd()` 的 usage 提示与命令文档字符串（模块开头
+  docstring）同步更新，加入 `--mode` 说明。
+
+### 8.3 `AgentClient` 封装（`apps/mini_agent_kanban/client.py`）
+
+`generate_execution_spec()`/`revise_execution_spec()` 各新增可选形参
+`mode: str = ""`，空字符串时不在请求体里带 `"mode"` 键（沿用既有
+`from_history`/`template_id` 等参数"传空等于不传"的约定风格），非空时
+透传进请求体，与 REST 端点的 `body.get("mode") or None` 语义对齐（客户端
+传空字符串、不传字段、服务端拿到 `None`，三者最终效果一致）。
+
+### 8.4 看板 UI（`apps/mini_agent_kanban/app.py`）
+
+- `_render_goal_execution_spec_widget()` 新增 `path_key` session_state
+  键（`f"{key_prefix}ges_path_{goal_id}"`），保存最近一次 `generate`/
+  `revise` 响应里的 `effective_path`；草稿区块顶部（在"已确认"/"未生成"
+  两个分支之前）新增一行 `st.caption`，把 `effective_path` 翻译成"纯
+  LLM（未读取项目内容）"/"只读探索 Agent（读取过项目内容）"展示给用户
+  ——这是实施记录 §7.5/§9 未实施清单里"看板没有展示'这次走的是 llm 还是
+  agent 路径'"的直接补齐。
+- "生成第 1 版草稿"步骤（未生成分支）新增"生成路径"下拉框，选项为
+  "跟随配置默认"/"自动判断"/"纯 LLM"/"只读探索 Agent"，默认选中"跟随
+  配置默认"（对应传空字符串，等价于此前行为，不改变任何既有用户的默认
+  体验）；点击生成按钮时把选中值透传给 `generate_execution_spec(mode=...)`，
+  返回结果里的 `effective_path` 写入 `path_key`。
+- "🔄 补充意见重新生成"步骤同样新增一个精简版下拉框（"跟随配置默认"/
+  "自动判断"/"纯 LLM"/"只读探索 Agent"），随 `revise_execution_spec()`
+  一起提交；"❌ 放弃草稿"/"♻️ 生成新草稿"两处清空 `draft_key` 的地方同步
+  清空 `path_key`，避免展示"上一份已放弃草稿"的路径信息。
+- "📄 从模板重新起草"独立按钮（Stage 6）**未新增**这个下拉框——这个
+  按钮的定位是"整段覆盖、推倒重来"的快捷操作（见 Stage 6 章节），保持
+  原有的"跟随配置默认"行为不额外增加选择负担；如果用户想在换模板的同时
+  指定生成路径，需要先放弃草稿，走"生成第 1 版草稿"入口。它的返回结果
+  仍然会更新 `path_key`（服务端总是返回 `effective_path`），只是没有
+  UI 输入让用户提前指定。
+
+### 8.5 与方案的偏差 / 简化取舍
+
+- 方案 §6.4 原文只提到"CLI/看板都没有暴露单次覆盖 mode 的入口"是遗留
+  问题，没有规定具体交互形式；Stage 8 选择"下拉框 + 默认跟随配置"而不是
+  单独的"高级选项"折叠区，是因为可选项只有 4 个（含"跟随配置默认"），
+  平铺展示的心智负担和一个折叠 expander 相当，没必要再加一层折叠。
+- `evaluate_overall_completion()`（Stage 2 整体关闭判定）**仍然不支持**
+  单次覆盖任何执行路径参数——它本来就没有 `mode` 概念（该方法固定走裸
+  LLM 单轮调用，不涉及 `_run_builder` 分诊逻辑），Stage 8 的范围明确
+  限定在 `GoalExecutionSpecBuilder.build_draft()`/`revise()` 这两个已经
+  有 `mode` 概念的入口，没有顺带给 `evaluate_overall_completion()` 加
+  这个能力，这一点与"未实施清单"里"`evaluate_overall_completion()`
+  挂只读工具核查产出内容"是同一个待办，还没有做。
+
+### 8.6 测试
+
+- `tests/test_goal_execution_spec_kanban_routes.py` 追加 3 个用例：
+  `generate`/`revise` 端点透传 `mode` 到 `GoalExecutionSpecBuilder` 构造
+  函数（打桩验证构造参数）、响应体正确携带 `effective_path`；不传 `mode`
+  时构造函数收到 `None`（而不是空字符串），避免"不传"与"显式传空"两种
+  语义在服务端悄悄产生歧义。
+- 新增 `tests/test_goals_spec_generate_cli_mode.py`（3 个用例）：
+  `--mode agent` 正确透传并在成功提示里体现"只读探索 Agent"字样；不带
+  `--mode` 时透传 `None` 且提示体现"纯 LLM"；非法 `--mode` 值被
+  `argparse choices` 拦截，`_cmd_spec_generate()`（打桩）完全不会被
+  调用，不消耗任何生成器调用。
+- 看板 UI 改动是纯前端下拉框 + 参数透传，不引入新的后端分支逻辑，沿用
+  Stage 3/5/6 一贯的取舍——不为纯 Streamlit 渲染新增测试（现有测试体系
+  不覆盖 Streamlit 渲染本身），后端参数透传路径已由上面两批用例覆盖。
+
+全部新增 6 个用例 + 此前全部回归用例（`test_goal_execution_spec.py`/
+`test_goal_execution_spec_kanban_routes.py`/`test_goal_cron_bridge.py`/
+`test_goal_backlog.py`/`test_goal_overall_completion.py`/
+`test_goals_spec_close_check_cli.py`/`test_kanban_config_routes.py`/
+`test_goal_output_directory_onetime.py`/`test_goal_execution_fairness.py`）
+合计 117 个用例回归通过。
+
 ## 9. 与方案的偏差 / 未实施清单
 
 以下条目方案里有描述，**未实施**，留作后续 Track：
@@ -529,15 +634,16 @@ helper、不命中时走 llm 路径且不构造 Agent；`revise()` 场景下
    - §2 新增的"整体关闭判定"结果目前在看板上只有 close_check 按钮点击
      后的一次性 `st.success`/`st.info` 提示，没有做成持久化的状态徽标
      （历史判定结果仍然只能在"进展记录"里看纯文本）；
-   - 看板没有展示"这份草稿生成时走的是 llm 还是 agent 路径"（Stage 7
-     新增的 `last_effective_path` 目前只是 Python 属性，未通过 REST 响应
-     体/UI 暴露，见 §7.5）。
+   - 看板展示"这份草稿生成时走的是 llm 还是 agent 路径"：**已实施**
+     （Stage 8，见 §8.4）——`last_effective_path` 已通过 REST 响应体的
+     `effective_path` 字段暴露，看板草稿区块顶部展示"上次生成走的路径"。
 2. **`builder_mode="agent"` 只读探索路径**：**已实施**（Stage 7，见 §7）
    ——镜像 `GoalSpecBuilder._run_builder_agent()`，`mode="agent"` 固定走
    受限只读 Agent，`mode="auto"`（默认）用关键词规则判断是否需要项目
-   上下文。简化点、以及未覆盖的部分见 §7.5（其中"CLI/看板未暴露单次
-   覆盖 `mode` 的入口"、"`evaluate_overall_completion()` 仍是裸 LLM 单轮
-   路径，未挂只读工具去实际核查产出文件内容"两点仍然成立，留作后续）。
+   上下文。简化点、以及未覆盖的部分见 §7.5（其中"`evaluate_overall_
+   completion()` 仍是裸 LLM 单轮路径，未挂只读工具去实际核查产出文件
+   内容"一点仍然成立，见本清单第 7 条；"CLI/看板未暴露单次覆盖 `mode`
+   的入口"**已实施**，见 Stage 8/§8）。
 3. **模板自动匹配**：**已实施**（Stage 4，见 §4）——关键词规则匹配
    Goal 的 title+description，命中模板则在看板下拉框里默认预选，用户
    仍可改选或选"不用模板"；CLI 未接入（`--template` 仍要求显式传入）。
@@ -557,26 +663,38 @@ helper、不命中时走 llm 路径且不构造 Agent；`revise()` 场景下
    `active` 时提前跳过（不消耗 LLM 调用），其余前置条件判断复用同一个
    方法，行为与自动触发路径完全一致。测试见
    `tests/test_goals_spec_close_check_cli.py`（5 个用例）。
+7. **CLI/看板暴露单次覆盖 `mode` 的入口**：**已实施**（Stage 8，见
+   §8）——`POST .../execution_spec/generate`/`revise` 支持请求体
+   `"mode"` 字段单次覆盖，CLI `spec generate` 支持 `--mode`，看板新增
+   "生成路径"下拉框，均不修改配置文件，只影响单次调用；响应体新增
+   `effective_path`，看板展示"上次生成走的路径"。
+8. **`evaluate_overall_completion()` 挂只读工具核查产出内容**：仍**未
+   实施**——该方法固定走裸 LLM 单轮调用，只依赖 `read_all_manifests()`
+   摘要文本判断，不会实际打开产出文件核查内容是否真的符合标准。见 §10
+   后续建议顺序第 2 条。
 
 以上未实施项均不影响已实施部分的正确性——`execution_spec_confirmed`
 默认 `False`，未生成/未确认的 Goal 行为与方案引入前完全一致；
 `overall_completion_criteria` 为空（绝大多数周期性 Goal 的默认情况）
 时 §2 的判定逻辑不会被触发，等价于该功能关闭；`builder_mode` 默认
 `"auto"`，关键词规则未命中时行为与"agent 路径不存在"完全一致（走 llm
-单轮路径），不影响任何既有 Goal 的既有行为。
+单轮路径），不影响任何既有 Goal 的既有行为；单次 `mode` 覆盖不传时
+（CLI 不带 `--mode`、看板选"跟随配置默认"、REST body 不带 `mode` 键）
+行为与 Stage 8 引入前完全一致。
 
 ## 10. 后续建议顺序
 
 1. 看板 UI 的剩余精细化：字段直接编辑文本框 + 差异高亮（当前"反馈驱动
    迭代"已经能覆盖大多数场景，这一项主要是进一步降低反馈成本）；整体
    关闭判定结果做成更显眼的持久化状态展示，而不只是一次性 toast +
-   progress_notes 里的文本行；把 `last_effective_path` 展示出来，让用户
-   知道这份草稿是否读取过项目内容。
+   progress_notes 里的文本行。（`last_effective_path` 展示已在 Stage 8
+   补上，见 §8.4，不再列入本条。）
 2. `evaluate_overall_completion()` 挂只读工具去实际核查产出文件内容
-   （当前只依赖 manifest 摘要文本），可以复用 Stage 7 刚补齐的
+   （当前只依赖 manifest 摘要文本），可以复用 Stage 7 补齐的
    `_run_builder_agent()` 同一套受限 Agent 基础设施，风险和工作量都比
    Stage 7 本身小。
 3. `mode="auto"` 补上"LLM 自报 `needs_project_context` 后二次重生成"那层
-   兜底（对齐 `GoalSpecBuilder` 的完整三态设计），以及 CLI/看板暴露单次
-   覆盖 `mode` 的入口——两者优先级都较低，当前关键词规则 + 配置文件级
-   `builder_mode` 已经能覆盖多数场景。
+   兜底（对齐 `GoalSpecBuilder` 的完整三态设计）——优先级较低，当前
+   关键词规则 + Stage 8 的单次 `mode` 覆盖入口已经能覆盖多数场景（规则
+   漏判时用户可以显式传 `--mode agent`/看板选"只读探索 Agent"绕过，不
+   强依赖这层自动兜底）。

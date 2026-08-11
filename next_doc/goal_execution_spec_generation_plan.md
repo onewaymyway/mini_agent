@@ -10,9 +10,11 @@
   未确认草稿一步换模板重生成，不用先放弃草稿）+ Stage 7
   （`builder_mode="agent"` 只读探索路径：镜像
   `GoalSpecBuilder._run_builder_agent()`，`mode="auto"` 用关键词规则判断
-  是否需要项目上下文）已实施。看板侧的"直接编辑字段文本框"“差异高亮”、
-  `evaluate_overall_completion()` 挂只读工具核查产出内容、CLI/看板暴露
-  单次覆盖 `mode` 的入口仍未实施，见
+  是否需要项目上下文）+ Stage 8（CLI `spec generate --mode` 与看板"生成
+  路径"下拉框，单次覆盖配置默认的 `builder_mode`，不改配置文件；REST
+  `generate`/`revise` 响应体新增 `effective_path`，看板展示"上次生成走的
+  路径"）已实施。看板侧的"直接编辑字段文本框"“差异高亮”、
+  `evaluate_overall_completion()` 挂只读工具核查产出内容仍未实施，见
   `next_doc/goal_execution_spec_generation_implementation_record.md`
   的"未实施"清单。
 - **触发背景**：用户反馈"goal 系统已经有自动生成验收标准的能力

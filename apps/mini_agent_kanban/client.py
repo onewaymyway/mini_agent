@@ -366,7 +366,10 @@ class AgentClient:
         return self._get(f"/goals/{goal_id}/execution_spec")
 
     def generate_execution_spec(self, goal_id: str, schedule: str = "", task_template: str = "",
-                                 template_id: str = "", from_history: bool = False):
+                                 template_id: str = "", from_history: bool = False, mode: str = ""):
+        # mode: ""（回退配置默认 builder_mode）/ "llm" / "agent" / "auto"，单次
+        # 覆盖，不修改配置文件（implementation_record.md §7.5/§9 未实施清单第
+        # 2 条"CLI/看板未暴露单次覆盖 mode 的入口"，现已补上）。
         body = {"from_history": from_history}
         if schedule:
             body["schedule"] = schedule
@@ -374,12 +377,16 @@ class AgentClient:
             body["task_template"] = task_template
         if template_id:
             body["template_id"] = template_id
+        if mode:
+            body["mode"] = mode
         return self._post(f"/goals/{goal_id}/execution_spec/generate", body)
 
-    def revise_execution_spec(self, goal_id: str, feedback: str, locked_fields: list | None = None):
-        return self._post(f"/goals/{goal_id}/execution_spec/revise", {
-            "feedback": feedback, "locked_fields": locked_fields or [],
-        })
+    def revise_execution_spec(self, goal_id: str, feedback: str, locked_fields: list | None = None,
+                               mode: str = ""):
+        body = {"feedback": feedback, "locked_fields": locked_fields or []}
+        if mode:
+            body["mode"] = mode
+        return self._post(f"/goals/{goal_id}/execution_spec/revise", body)
 
     def confirm_execution_spec(self, goal_id: str):
         return self._post(f"/goals/{goal_id}/execution_spec/confirm")

@@ -102,6 +102,53 @@ class TestGoalExecutionSpecKanbanRoutes(unittest.TestCase):
         self.assertIsNotNone(on_disk)
         self.assertEqual(on_disk.version, 1)
 
+    def test_generate_forwards_mode_override_and_returns_effective_path(self):
+        """[goal_execution_spec_generation_plan.md §3 输入源 1 /
+        implementation_record.md §7.5/§9 未实施清单第 2 条] REST 层新增的
+        单次 mode 覆盖：body 里的 "mode" 要透传进 GoalExecutionSpecBuilder
+        构造函数，响应体要带上 builder.last_effective_path。"""
+        fake_spec = GoalExecutionSpec(version=1, goal_id=self.goal.id)
+        captured = {}
+
+        class _FakeBuilder:
+            def __init__(self, cfg, mode=None):
+                captured["mode"] = mode
+                self.last_effective_path = "agent"
+
+            def build_draft(self, *a, **kw):
+                return fake_spec
+
+        with patch("mini_agent.perception.goal_execution_spec.GoalExecutionSpecBuilder", _FakeBuilder):
+            resp = self.client.post(
+                f"/v1/goals/{self.goal.id}/execution_spec/generate",
+                json={"mode": "agent"},
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(captured["mode"], "agent")
+        self.assertEqual(resp.json()["effective_path"], "agent")
+
+    def test_generate_without_mode_passes_none(self):
+        """不传 mode 时透传 None（服务端回退配置文件默认值），而不是空
+        字符串——`GoalExecutionSpecBuilder.__init__` 用 `mode or ...` 的
+        写法，传空字符串同样会回退，但显式测 None 更贴近 body.get() 的
+        真实返回值，避免以后改成别的写法时悄悄改变语义。"""
+        fake_spec = GoalExecutionSpec(version=1, goal_id=self.goal.id)
+        captured = {}
+
+        class _FakeBuilder:
+            def __init__(self, cfg, mode=None):
+                captured["mode"] = mode
+                self.last_effective_path = "llm"
+
+            def build_draft(self, *a, **kw):
+                return fake_spec
+
+        with patch("mini_agent.perception.goal_execution_spec.GoalExecutionSpecBuilder", _FakeBuilder):
+            resp = self.client.post(f"/v1/goals/{self.goal.id}/execution_spec/generate", json={})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(captured["mode"])
+        self.assertEqual(resp.json()["effective_path"], "llm")
+
     def test_revise_requires_prior_draft(self):
         resp = self.client.post(
             f"/v1/goals/{self.goal.id}/execution_spec/revise",
@@ -132,6 +179,29 @@ class TestGoalExecutionSpecKanbanRoutes(unittest.TestCase):
         self.assertEqual(resp.json()["spec"]["version"], 2)
         args, kwargs = mock_revise.call_args
         self.assertEqual(kwargs.get("locked_fields"), ["deliverables"])
+
+    def test_revise_forwards_mode_override(self):
+        prior = GoalExecutionSpec(version=1, goal_id=self.goal.id)
+        save_spec(self.paths, self.goal.id, prior)
+        revised = GoalExecutionSpec(version=2, goal_id=self.goal.id)
+        captured = {}
+
+        class _FakeBuilder:
+            def __init__(self, cfg, mode=None):
+                captured["mode"] = mode
+                self.last_effective_path = "llm"
+
+            def revise(self, *a, **kw):
+                return revised
+
+        with patch("mini_agent.perception.goal_execution_spec.GoalExecutionSpecBuilder", _FakeBuilder):
+            resp = self.client.post(
+                f"/v1/goals/{self.goal.id}/execution_spec/revise",
+                json={"feedback": "更细一点", "mode": "llm"},
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(captured["mode"], "llm")
+        self.assertEqual(resp.json()["effective_path"], "llm")
 
     def test_confirm_requires_prior_draft(self):
         resp = self.client.post(f"/v1/goals/{self.goal.id}/execution_spec/confirm")

@@ -2320,6 +2320,7 @@ def _render_goal_execution_spec_widget(
     """返回 True 表示当前已经是"已确认"状态（调用方可据此决定要不要再提示
     用户"建议先确认规范"之类的文案，不影响主流程是否能继续）。"""
     draft_key = f"{key_prefix}ges_draft_{goal_id}"
+    path_key = f"{key_prefix}ges_path_{goal_id}"
 
     if draft_key not in st.session_state:
         existing = client.get_execution_spec(goal_id)
@@ -2328,12 +2329,21 @@ def _render_goal_execution_spec_widget(
 
     spec = st.session_state.get(draft_key)
 
+    # [goal_execution_spec_generation_plan.md §3 输入源 1 /
+    # implementation_record.md §7.5 未实施清单第 2 条] 展示这份草稿最近一次
+    # 生成/修订时实际走的路径（llm/agent），让用户知道有没有读取过项目内容。
+    _path_label = {"llm": "纯 LLM（未读取项目内容）", "agent": "只读探索 Agent（读取过项目内容）"}
+    effective_path = st.session_state.get(path_key)
+    if effective_path:
+        st.caption(f"🧭 上次生成走的路径：{_path_label.get(effective_path, effective_path)}")
+
     if spec and spec.get("confirmed"):
         st.success(f"✅ 执行规范已确认（第 {spec.get('version', 1)} 版），下次触发即生效。")
         with st.expander("查看当前执行规范", expanded=False):
             _render_execution_spec_summary(spec)
             if st.button("♻️ 生成新草稿（重新想一遍细节）", key=f"{key_prefix}ges_regen_{goal_id}"):
                 del st.session_state[draft_key]
+                st.session_state.pop(path_key, None)
                 st.rerun()
         return True
 
@@ -2368,13 +2378,31 @@ def _render_goal_execution_spec_widget(
                 "否则等同于不勾选）",
                 value=False, key=f"{key_prefix}ges_fromhist_{goal_id}",
             )
+        # [goal_execution_spec_generation_plan.md §3 输入源 1 /
+        # implementation_record.md §7.5/§9 未实施清单第 2 条] 单次覆盖
+        # `builder_mode`，不改配置文件。默认"跟随配置默认"（不传 mode，
+        # 服务端回退配置文件里的 goal_execution_spec.builder_mode，默认
+        # "auto"）。
+        mode_labels = {
+            "": "跟随配置默认（当前配置的 builder_mode，通常是 auto）",
+            "auto": "自动判断（关键词规则命中项目相关诉求才起 Agent）",
+            "llm": "纯 LLM（不读取项目内容，速度快）",
+            "agent": "只读探索 Agent（先看一眼项目再生成，更贴合实际）",
+        }
+        mode_choice = st.selectbox(
+            "生成路径", list(mode_labels.keys()), format_func=lambda k: mode_labels[k],
+            index=0, key=f"{key_prefix}ges_mode_{goal_id}",
+        )
         if gcol2.button("📋 生成执行规范草稿", key=f"{key_prefix}ges_gen_{goal_id}"):
             template_id = tpl_choice.split(" · ")[0] if tpl_choice != tpl_labels[0] else ""
-            res = client.generate_execution_spec(goal_id, template_id=template_id, from_history=from_history)
+            res = client.generate_execution_spec(
+                goal_id, template_id=template_id, from_history=from_history, mode=mode_choice,
+            )
             if res and res.get("_error"):
                 st.error(f"生成失败：{res['_error']}")
             else:
                 st.session_state[draft_key] = res.get("spec")
+                st.session_state[path_key] = res.get("effective_path")
                 st.rerun()
         return False
 
@@ -2397,6 +2425,16 @@ def _render_goal_execution_spec_widget(
                          value=field_name in prior_locked):
             locked_now.append(field_name)
 
+    mode_labels = {
+        "": "跟随配置默认",
+        "auto": "自动判断",
+        "llm": "纯 LLM",
+        "agent": "只读探索 Agent",
+    }
+    revise_mode = st.selectbox(
+        "本次重新生成走的路径", list(mode_labels.keys()), format_func=lambda k: mode_labels[k],
+        index=0, key=f"{key_prefix}ges_revise_mode_{goal_id}",
+    )
     with st.form(f"{key_prefix}ges_revise_form_{goal_id}"):
         feedback = st.text_area("补充意见（提交后，未勾选🔒锁定的部分会据此重新生成，已锁定的原样保留）", height=60)
         rcol1, rcol2, rcol3 = st.columns(3)
@@ -2408,11 +2446,12 @@ def _render_goal_execution_spec_widget(
         if not feedback.strip():
             st.error("补充意见不能为空")
         else:
-            res = client.revise_execution_spec(goal_id, feedback.strip(), locked_fields=locked_now)
+            res = client.revise_execution_spec(goal_id, feedback.strip(), locked_fields=locked_now, mode=revise_mode)
             if res and res.get("_error"):
                 st.error(f"重新生成失败：{res['_error']}")
             else:
                 st.session_state[draft_key] = res.get("spec")
+                st.session_state[path_key] = res.get("effective_path")
                 st.rerun()
     elif confirm_click:
         res = client.confirm_execution_spec(goal_id)
@@ -2425,6 +2464,7 @@ def _render_goal_execution_spec_widget(
             st.rerun()
     elif skip_click:
         del st.session_state[draft_key]
+        st.session_state.pop(path_key, None)
         st.rerun()
 
     # [goal_execution_spec_generation_plan.md §6.1 / 实施记录未实施清单
@@ -2446,6 +2486,7 @@ def _render_goal_execution_spec_widget(
                 st.error(f"重新起草失败：{res['_error']}")
             else:
                 st.session_state[draft_key] = res.get("spec")
+                st.session_state[path_key] = res.get("effective_path")
                 st.rerun()
 
     return False

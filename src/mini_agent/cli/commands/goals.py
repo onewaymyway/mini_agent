@@ -11,8 +11,9 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
   /agent goals progress <id> <txt> — 更新进展记录
   /agent goals recur <id> <schedule> [task]  — 声明为周期性（见 goal_cron_bridge.py）
   /agent goals unrecur <id>        — 停止周期性（不删 Goal/cron job）
-  /agent goals spec generate <id> [--template <id>] [--from-history]
+  /agent goals spec generate <id> [--template <id>] [--from-history] [--mode llm|agent|auto]
                                    — 生成执行规范草稿（见 perception/goal_execution_spec.py）
+                                     --mode 单次覆盖配置默认的 builder_mode
   /agent goals spec confirm <id>   — 确认执行规范（冻结，下次触发生效）
   /agent goals spec show <id>      — 查看执行规范当前内容
   /agent goals spec close-check <id>
@@ -120,7 +121,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         # [goal_execution_spec_generation_plan.md §6.4] /agent goals spec ...
         if not rest:
             R.print_error(
-                "Usage: /agent goals spec generate <goal_id> [--template <id>] "
+                "Usage: /agent goals spec generate <goal_id> [--template <id>] [--from-history] [--mode llm|agent|auto] "
                 "| /agent goals spec confirm <goal_id> | /agent goals spec show <goal_id> "
                 "| /agent goals spec close-check <goal_id>"
             )
@@ -533,19 +534,20 @@ def _cmd_spec(gb, paths, action: str, rest: list[str]) -> None:
     """
     if action == "generate":
         if not rest:
-            R.print_error("Usage: /agent goals spec generate <goal_id> [--template <id>] [--from-history]")
+            R.print_error("Usage: /agent goals spec generate <goal_id> [--template <id>] [--from-history] [--mode llm|agent|auto]")
             return
         import argparse
         p = argparse.ArgumentParser(add_help=False)
         p.add_argument("goal_id")
         p.add_argument("--template", default=None)
         p.add_argument("--from-history", action="store_true")
+        p.add_argument("--mode", default=None, choices=["llm", "agent", "auto"])
         try:
             parsed = p.parse_args(rest)
         except SystemExit:
-            R.print_error("Usage: /agent goals spec generate <goal_id> [--template <id>] [--from-history]")
+            R.print_error("Usage: /agent goals spec generate <goal_id> [--template <id>] [--from-history] [--mode llm|agent|auto]")
             return
-        _cmd_spec_generate(gb, paths, parsed.goal_id, parsed.template, parsed.from_history)
+        _cmd_spec_generate(gb, paths, parsed.goal_id, parsed.template, parsed.from_history, parsed.mode)
 
     elif action == "confirm":
         if not rest:
@@ -570,7 +572,12 @@ def _cmd_spec(gb, paths, action: str, rest: list[str]) -> None:
         R.print_info("Available: generate, confirm, show, close-check")
 
 
-def _cmd_spec_generate(gb, paths, goal_id: str, template_id: Optional[str], from_history: bool) -> None:
+def _cmd_spec_generate(gb, paths, goal_id: str, template_id: Optional[str], from_history: bool,
+                        mode: Optional[str] = None) -> None:
+    """`mode` 支持单次覆盖配置文件里的 `goal_execution_spec.builder_mode`
+    （不传时回退配置默认值 "auto"），对应方案 §6.4 与
+    implementation_record.md §7.5/§9 未实施清单第 2 条"CLI/看板未暴露单次
+    覆盖 mode 的入口"——现已补上。"""
     node = gb.get(goal_id)
     if node is None or not node.is_goal:
         R.print_error(f"Goal 不存在：{goal_id}")
@@ -588,7 +595,7 @@ def _cmd_spec_generate(gb, paths, goal_id: str, template_id: Optional[str], from
             m = output_workspace.read_latest_manifest(base_dir)
             history_manifests = [m] if m else None
 
-        builder = ges.GoalExecutionSpecBuilder(cfg)
+        builder = ges.GoalExecutionSpecBuilder(cfg, mode=mode)
         spec = builder.build_draft(
             goal_id,
             node.title,
@@ -606,7 +613,8 @@ def _cmd_spec_generate(gb, paths, goal_id: str, template_id: Optional[str], from
     if spec.generation_error:
         R.print_warning(f"生成失败，已保存为空草稿（可手动编辑或重试）：{spec.generation_error}")
     else:
-        R.print_success(f"已生成执行规范草稿（第 {spec.version} 版），未确认，不影响执行。")
+        path_label = {"llm": "纯 LLM", "agent": "只读探索 Agent"}.get(builder.last_effective_path, builder.last_effective_path)
+        R.print_success(f"已生成执行规范草稿（第 {spec.version} 版，走 {path_label} 路径），未确认，不影响执行。")
     R.print_info(spec.render_summary_for_user())
     R.print_info(f"确认：/agent goals spec confirm {goal_id}")
 
