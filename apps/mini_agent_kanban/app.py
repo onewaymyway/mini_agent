@@ -2427,6 +2427,27 @@ def _render_goal_execution_spec_widget(
         del st.session_state[draft_key]
         st.rerun()
 
+    # [goal_execution_spec_generation_plan.md §6.1 / 实施记录未实施清单
+    # 第 1 项] "从模板重新起草"：不必先放弃当前草稿再重新走一遍"生成"
+    # 入口——这里直接调用同一个 generate 接口，用选中的模板整段覆盖当前
+    # 草稿（`build_draft()` 固定生成"第 1 版"，等价于推倒重来，不是在
+    # 当前版本号上累加、也不是"合并"；真想保留已经改好的部分，应该用
+    # 上面的「🔄 补充意见重新生成」+ 字段锁定，而不是这个按钮）。
+    with st.expander("📄 从模板重新起草（会整段覆盖当前草稿，不会保留已改内容）"):
+        tpl_res2 = client.execution_spec_templates(goal_title=goal_title, goal_description=goal_description) or {}
+        templates2 = tpl_res2.get("templates", []) if not tpl_res2.get("_error") else []
+        tpl_labels2 = ["（不使用模板，完全从零生成）"] + [f"{t['id']} · {t['name']}" for t in templates2]
+        rtcol1, rtcol2 = st.columns([2, 1])
+        tpl_choice2 = rtcol1.selectbox("选择模板", tpl_labels2, key=f"{key_prefix}ges_retpl_{goal_id}")
+        if rtcol2.button("♻️ 用此模板重新起草", key=f"{key_prefix}ges_regen_tpl_{goal_id}"):
+            template_id2 = tpl_choice2.split(" · ")[0] if tpl_choice2 != tpl_labels2[0] else ""
+            res = client.generate_execution_spec(goal_id, template_id=template_id2)
+            if res and res.get("_error"):
+                st.error(f"重新起草失败：{res['_error']}")
+            else:
+                st.session_state[draft_key] = res.get("spec")
+                st.rerun()
+
     return False
 
 
