@@ -2239,6 +2239,32 @@ def followup_question_hint(paths, candidate: GrowthCandidate, *, cfg=None, goal_
         stalled_days = getattr(cfg, "goal_alignment_stalled_days", 21) if cfg is not None else 21
         signal = _goal_progress_signal(goal_backlog, candidate.linked_goal_id, stalled_days=stalled_days)
         if signal == "stalled":
+            # [growth_advisor_autonomy_deepening_plan.md 方向 A2] 停滞的
+            # 原因粗分两类：素材已经饱和（B2 信号）vs 执行本身没有真正
+            # 跑起来（cron 被跳过/失败，或者压根没绑定成功）。前者是
+            # "方向讲得差不多了"，后者是系统自己的问题——两种情况的
+            # 用户措辞不应该一样，否则会让用户误以为"这个方向不值得
+            # 继续"，实际上只是执行环节卡住了。只对已经绑定了周期性
+            # 执行的 Goal 做这个区分（`recurring=True`）；一次性 Goal
+            # 停滞的语义跟"自主持续调研"场景不同，走原有措辞。
+            goal = None
+            try:
+                goal = goal_backlog.get(candidate.linked_goal_id)
+            except Exception:
+                goal = None
+            if goal is not None and getattr(goal, "recurring", False):
+                saturation = get_pursuit_saturation(paths, goal.id)
+                if saturation.get("saturated"):
+                    return (
+                        f"「{candidate.title}」最近 {saturation.get('streak')} 轮新增内容不多了，"
+                        "是这个方向已经了解得差不多，还是希望换个角度继续深挖？"
+                        "可以考虑把频率降低一些，或先告一段落。"
+                    )
+                return (
+                    f"「{candidate.title}」绑定的自主调研看起来有一阵没真正推进——"
+                    "更像是执行环节遇到了问题（比如任务被跳过/失败），"
+                    "建议去「🎯 目标」tab 看一眼执行状态，而不是这个方向本身不值得继续。"
+                )
             return f"「{candidate.title}」对应的目标看起来有一阵没动了，要不要先放一放，或者重新规划一下？"
         if signal == "progressed":
             return f"「{candidate.title}」对应的目标最近还在推进，要不要跟我说说进展？"

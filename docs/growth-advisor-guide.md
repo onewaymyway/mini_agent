@@ -516,13 +516,13 @@ Goal 状态历史是数据结构层面的补全，`growth_topic_lifecycle()` 的
   展示 `pursuit` 结果的 toast 提示；报告查看折叠区的"已落地为 Goal"
   提示文案更新为"正在自主持续调研"。
 
-### 2.13 落地 `growth_advisor_autonomy_deepening_plan.md`：A1 / B1 / B2 / D1 / D2（本次新增）
+### 2.13 落地 `growth_advisor_autonomy_deepening_plan.md`：A1 / A2 / B1 / B2 / D1 / D2（本次新增）
 
 在 2.12 节"采纳即启动"之后，按 `next_doc/growth_advisor_autonomy_
-deepening_plan.md` 的优先级建议（该文档第 6 节），实现了其中五个
-方向。B3/C1/C2/A2/A3 仍按方案文档标注的理由暂缓（B3/A3 工作量和收益
-不确定，C1/C2 优先级低于先保证增量质量和可见性，A2 依赖后续对"失败"
-类停滞原因的进一步细分），保留在方案文档里供后续按需认领。
+deepening_plan.md` 的优先级建议（该文档第 6 节），实现了其中六个
+方向。B3/C1/C2/A3 仍按方案文档标注的理由暂缓（B3/A3 工作量和收益
+不确定，C1/C2 优先级低于先保证增量质量和可见性），保留在方案文档里
+供后续按需认领。
 
 **D1 + D2：看板可见性 + 就近控制**（方案文档"投入产出比最高"的一项）
 
@@ -581,12 +581,33 @@ deepening_plan.md` 的优先级建议（该文档第 6 节），实现了其中�
 - `GET /v1/growth/reports/refresh_candidates` 路由已经改为传入
   `goal_backlog`（拿不到 `GoalBacklog` 时优雅退化成不过滤）。
 
+**A2：Goal 停滞时先区分原因，再决定怎么问**
+
+- `followup_question_hint()` 对已绑定周期性执行的 Goal（`recurring=
+  True`）区分两类停滞原因，措辞不再一律是"要不要先放一放"：
+  - 命中 B2 饱和度信号（`get_pursuit_saturation().saturated`）→
+    判定是"素材讲得差不多了"，问法沿用 B2 通知里的措辞（"最近 N 轮
+    新增内容不多了，是已经了解得差不多，还是希望换个角度继续？"）；
+  - 没有命中饱和度信号但 Goal 仍然判定停滞 → 更可能是执行本身没有
+    真正跑起来（cron 被跳过/失败，或者当初绑定就没成功），措辞改为
+    "看起来有一阵没真正推进——更像是执行环节遇到了问题，建议去
+    「🎯 目标」tab 看一眼执行状态，而不是这个方向本身不值得继续"，
+    避免用户把"系统的问题"误解成"我不想继续了"。
+  - 一次性（非 recurring）Goal 停滞的语义跟"自主持续调研"场景不同，
+    继续走原有措辞，不受这次改动影响。
+- 这一步**只是措辞层面的自诊断/区分，不包含自动重试或自动修复**——
+  方案文档 A2 提到的"能自愈的自愈"这部分（比如自动检测 cron job
+  被 disable 并尝试重新绑定）本轮未实现，仍然需要用户去「🎯 目标」
+  tab 手动确认/处理，留作后续可能的增强。
+
 **新增/变更文件**：
 
 - `src/mini_agent/evolution/growth_advisor.py`：新增
   `evaluate_cycle_increment()` / `record_pursuit_cycle_signal()` /
   `get_pursuit_saturation()` / `process_pursuit_cycle_completion()`；
   `reports_needing_refresh()` 新增 `goal_backlog` 参数；
+  `followup_question_hint()` 对已绑定周期性执行的 Goal 区分"饱和"vs
+  "执行卡住"两类停滞措辞（见下面 A2）；
 - `src/mini_agent/evolution/goal_cron_bridge.py`：
   `reap_finished_cycles()` 一轮成功完成时接入
   `_check_pursuit_saturation()`；
@@ -935,9 +956,10 @@ N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
   占比），`growth_advisor_autonomy_deepening_plan.md` 里提到的
   "LLM 语义级复核"这个可选增强步骤还没有做；相近主题之间仍然不共享
   素材、也不会互相去重/合并提示（方案文档方向 B3，明确标注工作量/
-  收益不确定，暂缓）；Goal 停滞时的"自诊断"（区分执行失败 vs 素材
-  饱和两类原因，方案文档方向 A2）、对齐分析结果的批量落地（方向
+  收益不确定，暂缓）；对齐分析结果的批量落地（方向
   A3）、wiki 页面的定期重新整理（方向 C1）、"本轮新增摘要"推送
   （方向 C2）也都还没有实施——这些是 `next_doc/growth_advisor_
   autonomy_deepening_plan.md` 里已识别但尚未排期的部分，供后续
-  按需认领。
+  按需认领。方向 A2（Goal 停滞时区分"素材饱和"vs"执行卡住"两类
+  原因）已实施，但只做到"措辞区分、引导用户去看执行状态"这一层，
+  不包含自动检测/重试执行失败的能力——这部分自愈能力仍然是留白。

@@ -221,5 +221,88 @@ class TestReportsNeedingRefreshSkipsPursuingCandidates(unittest.TestCase):
             self.assertFalse(any(r["candidate_id"] == cand.candidate_id for r in with_filter))
 
 
+class TestFollowupHintDistinguishesFailureVsSaturation(unittest.TestCase):
+    """[growth_advisor_autonomy_deepening_plan.md 方向 A2] Goal 停滞时，
+    对已绑定周期性执行的 Goal 区分"素材饱和"和"执行本身没跑起来"两类
+    原因，措辞应该不一样——不应该让"执行卡住了"被误读成"这个方向不值得
+    继续"。"""
+
+    def _setup_recurring_stalled_candidate(self, paths, title="持续调研 Z"):
+        from mini_agent.evolution.cron_scheduler import CronScheduler
+        from mini_agent.evolution.goal_cron_bridge import make_goal_recurring
+
+        backlog = ga.GrowthBacklog(paths)
+        cand = backlog.add_or_merge(
+            title=title, rationale="r", evidence_refs=[f"e{i}" for i in range(5)],
+            min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+        )
+        candidate = backlog.get(cand.candidate_id)
+        report = ga.generate_growth_report(paths, candidate)
+        backlog.attach_report(cand.candidate_id, report.report_id)
+        candidate = backlog.get(cand.candidate_id)
+
+        goal_backlog = GoalBacklog(paths)
+        goal = ga.adopt_candidate_as_goal(paths, candidate, goal_backlog=goal_backlog)
+        cron_scheduler = CronScheduler(paths, submit_fn=None)
+        make_goal_recurring(goal_backlog, cron_scheduler, goal.id, "interval:86400")
+        # 让 Goal 显式停滞（很久没有 touch）
+        goal_backlog.load()
+        node = goal_backlog.get(goal.id)
+        node.last_touched_at = 0.0
+        goal_backlog.save()
+        goal_backlog.load()
+
+        cand_final = ga.GrowthBacklog(paths).get(cand.candidate_id)
+        cand_final.accepted_at = 0.0  # 确保落在回访窗口内
+        ga.GrowthBacklog(paths).save_all([
+            (cand_final if x.candidate_id == cand.candidate_id else x)
+            for x in ga.GrowthBacklog(paths).load_all()
+        ])
+        return cand_final, goal_backlog, goal
+
+    def test_execution_issue_wording_when_not_saturated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand, goal_backlog, goal = self._setup_recurring_stalled_candidate(paths)
+            hint = ga.followup_question_hint(paths, cand, goal_backlog=goal_backlog)
+            self.assertIn("执行环节", hint)
+            self.assertNotIn("了解得差不多", hint)
+
+    def test_saturation_wording_when_saturated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand, goal_backlog, goal = self._setup_recurring_stalled_candidate(paths)
+            for _ in range(3):
+                ga.record_pursuit_cycle_signal(paths, goal.id, True)
+            hint = ga.followup_question_hint(paths, cand, goal_backlog=goal_backlog)
+            self.assertIn("了解得差不多", hint)
+            self.assertNotIn("执行环节", hint)
+
+    def test_non_recurring_goal_keeps_original_wording(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            cand = backlog.add_or_merge(
+                title="一次性目标", rationale="r", evidence_refs=[f"e{i}" for i in range(5)],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            candidate = backlog.get(cand.candidate_id)
+            report = ga.generate_growth_report(paths, candidate)
+            backlog.attach_report(cand.candidate_id, report.report_id)
+            candidate = backlog.get(cand.candidate_id)
+
+            goal_backlog = GoalBacklog(paths)
+            goal = ga.adopt_candidate_as_goal(paths, candidate, goal_backlog=goal_backlog)
+            goal_backlog.load()
+            node = goal_backlog.get(goal.id)
+            node.last_touched_at = 0.0
+            goal_backlog.save()
+            goal_backlog.load()
+
+            cand_final = ga.GrowthBacklog(paths).get(cand.candidate_id)
+            hint = ga.followup_question_hint(paths, cand_final, goal_backlog=goal_backlog)
+            self.assertIn("要不要先放一放", hint)
+
+
 if __name__ == "__main__":
     unittest.main()
