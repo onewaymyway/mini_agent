@@ -695,9 +695,19 @@ class AgentClient:
 
     def growth_candidate_action(self, candidate_id: str, action: str, *, reason: str | None = None):
         """反馈粒度细化：dismiss 时可选传 reason（见
-        `growth_advisor._VALID_DISMISS_REASONS`），accept 忽略该参数。"""
+        `growth_advisor._VALID_DISMISS_REASONS`），accept 忽略该参数。
+
+        [采纳即启动] `action == "accept"` 时，服务端默认会顺带触发"生成
+        报告 → 落地为 Goal → 生成并确认执行规范 → 绑定周期性"整条自动
+        链路（`GrowthAdvisorConfig.auto_pursue_on_accept`，默认开启），
+        比单纯写一次状态慢不少（可能含一到两次 LLM 调用），因此把超时
+        放宽到 90s，与 `growth_scan()` 对齐，避免"点了采纳没反应"的
+        误解。响应体里会多一个 `pursuit` 字段，看板据此展示"已开始
+        自主推进"或呈现 `pursuit.errors` 里的尽力而为提示。
+        """
         body = {"reason": reason} if (action == "dismiss" and reason) else None
-        return self._post(f"/growth/candidates/{candidate_id}/{action}", body)
+        timeout = 90 if action == "accept" else 15
+        return self._post(f"/growth/candidates/{candidate_id}/{action}", body, timeout=timeout)
 
     def growth_report(self, report_id: str):
         return self._get(f"/growth/reports/{report_id}")

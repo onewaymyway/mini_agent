@@ -354,6 +354,105 @@ CLI/看板无需任何操作——这几项都发生在 `generate_growth_report(
 Goal 状态历史是数据结构层面的补全，`growth_topic_lifecycle()` 的既有
 调用方（看板/CLI 展开某个主题详情）自动获得更完整的时间线。
 
+### 2.12 采纳即启动：从"每一步都要人工衔接"到"自主持续调研"（本次新增）
+
+> 与用户讨论后的方向性改动：成长顾问的定位应该是"自主根据用户需求
+> 规划成长方向，并在用户选择的方向上自主、不断地收集整理素材"，而
+> 不是"信号扫描之后每一步都要人工点一下的流水线"。
+
+**此前的问题**：2.9 节的"一键落地"虽然把"落地成 Goal"这一步接进了
+看板，但完整链路仍然是四段全部手动衔接：
+
+```
+信号扫描 → 候选 → [人工采纳] → [人工"落地为Goal"] → [人工设周期性] → [人工生成执行规范并确认]
+```
+
+任何一步没做，链条就断在那——用户点了"✅ 采纳"之后，系统除了改一个
+状态字段，什么都不会继续做，体感上就是"采纳了但什么都没发生"。
+
+**现在的行为**：`GrowthAdvisorConfig.auto_pursue_on_accept`（**默认
+开启**，是本次改动里少数默认开启而非 opt-in 的开关之一——"采纳"这个
+动作本身现在就等价于"开始持续调研"，对齐上面的定位）。用户点
+"✅ 采纳"（或看板拖拽到"已采纳"列）时，`auto_pursue_candidate()` 自动
+依次完成：
+
+1. **候选没有调研报告** → 先用零成本规则模板生成一份，保证这条自动
+   路径不强依赖 LLM 也能跑通；
+2. **落地为 Goal**（复用 2.9 节的 `adopt_candidate_as_goal()`；已经
+   落地过的候选直接复用已有 `linked_goal_id`，不会重复建 Goal）；
+3. **生成并直接确认一版执行规范**，使用新增的专用模板
+   `growth_pursuit`（而不是通用的 `research_exploration`——后者是给
+   "随手调研一下"用的最简骨架，不懂"持续深化同一个方向"这个场景的
+   特殊性）：
+   - 每一轮的产出物是同一份 `wiki/growth/<topic>.md`，**追加**新的、
+     带来源标注的内容块，而不是每轮各生成一份互不衔接的新报告——
+     久而久之这份页面本身就是一份可以直接拿去学习的素材库；
+   - `handoff_fields` 包含 `covered_subtopics`（已经讲过的子话题，
+     下一轮据此避免重复）、`open_questions`（上一轮留下但没展开的
+     方向，下一轮优先从这里推进）、`last_source_urls`（引用来源
+     去重）；
+   - `per_cycle_criteria` 要求"本轮必须比上一轮有实质性增量"，而不是
+     用不同措辞重写已有内容；
+   - 执行规范生成失败（比如 LLM 暂不可用）不会中断整条链路，只是这个
+     Goal 暂时沿用通用行为，后续可以在「🎯 目标」tab 手动补一份；
+4. **绑定周期性**，调度节奏由 `GrowthAdvisorConfig.auto_pursue_
+   schedule` 控制，**默认 `interval:86400`（每天一轮）**——与用户
+   确认过的默认节奏一致。已经绑定过的话复用已有 cron job，不会重复
+   创建。
+
+四步中任一后续步骤失败都不影响前面已经成功的部分（比如"生成报告"
+成功但"绑定周期性"失败时，Goal 仍然是已创建状态），失败信息通过
+`accept` 接口响应体的 `pursuit.errors` 字段返回，看板据此用
+`st.toast` 尽力而为地提示用户，不会让整个"采纳"动作因为某一个后续
+子步骤出错就跟着报错。
+
+**用户仍然拥有控制权**：
+
+- 自动绑定的周期性执行可以随时在「🎯 目标」tab 里 `unrecur`（暂停），
+  不会被自动重新绑定；
+- 想关掉"采纳即启动"、回到此前"每一步手动确认"的行为，把
+  `auto_pursue_on_accept` 设为 `False` 即可——此时"✅ 采纳"退回成
+  单纯的反馈信号，2.9 节的"🚀 落地为 Goal（继续调研）"按钮继续按
+  原有方式手动使用；
+- 调度节奏（`auto_pursue_schedule`）和执行规范模板
+  （`auto_pursue_template_id`）都可以在配置里覆盖，不强绑固定值。
+
+**API**：`POST /v1/growth/candidates/{id}/accept` 的响应体新增
+`pursuit` 字段：
+
+```jsonc
+{
+  "ok": true,
+  "candidate": { "...": "...", "linked_goal_id": "..." },
+  "pursuit": {
+    "goal": { "id": "...", "title": "..." },
+    "cron_job": { "id": "...", "schedule": "interval:86400" },
+    "report_generated": true,
+    "errors": []
+  }
+}
+```
+
+`auto_pursue_on_accept=False` 时不会出现 `pursuit` 字段，行为与
+此前完全一致。
+
+**新增/变更文件**：
+
+- `src/mini_agent/perception/goal_execution_spec_templates/growth_pursuit.json`
+  （新增模板）；
+- `src/mini_agent/config/models.py`：`GrowthAdvisorConfig` 新增
+  `auto_pursue_on_accept` / `auto_pursue_schedule` /
+  `auto_pursue_template_id` 三个字段；
+- `src/mini_agent/evolution/growth_advisor.py`：新增
+  `auto_pursue_candidate()`；
+- `src/mini_agent/api/routes.py`：`post_growth_candidate_action()`
+  的 `accept` 分支接入自动链路；
+- `apps/mini_agent_kanban/client.py`：`growth_candidate_action()`
+  的 `accept` 超时放宽到 90s（自动链路可能含 LLM 调用）；
+- `apps/mini_agent_kanban/app.py`：列表视图/拖拽视图的"✅ 采纳"按钮
+  展示 `pursuit` 结果的 toast 提示；报告查看折叠区的"已落地为 Goal"
+  提示文案更新为"正在自主持续调研"。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外
@@ -362,12 +461,16 @@ Goal 状态历史是数据结构层面的补全，`growth_topic_lifecycle()` 的
 1. 每天 22:30（`sys:growth_advisor_daily` cron job）自动跑一遍 2.1~2.4
    节的完整流程；
 2. 每 30 天（`sys:growth_monthly_retrospective`）生成一次月度复盘统计
-   （数量/采纳率/主题排行 + 跨候选的"成长主题地图"聚合）。
+   （数量/采纳率/主题排行 + 跨候选的"成长主题地图"聚合）；
+3. 用户在看板/CLI/API 上采纳一个候选后（`auto_pursue_on_accept`
+   默认开启），自动落地成 Goal 并绑定每天一轮的周期性执行，持续在
+   同一份 wiki 页面上追加素材——见 2.12 节。
 
-除 `enabled` 本身外，本文档提到的所有细化能力（LLM 增强扫描、LLM 报告
-正文、LLM 主题分类、按类别静音、探索位……）默认全部关闭，只有总开关是
-"零成本默认开启"，其余是"opt-in 增强"——这是这套机制一以贯之的设计
-取舍，加新能力不改变这条底线。
+除 `enabled` 本身与 `auto_pursue_on_accept` 外，本文档提到的所有
+细化能力（LLM 增强扫描、LLM 报告正文、LLM 主题分类、按类别静音、
+探索位……）默认全部关闭，只有总开关和"采纳即启动"是"零成本/默认
+开启"，其余是"opt-in 增强"——这是这套机制一以贯之的设计取舍，加新
+能力不改变这条底线。
 
 ## 4. 怎么用
 
@@ -443,7 +546,7 @@ Goal 状态历史是数据结构层面的补全，`growth_topic_lifecycle()` 的
 GET  /v1/growth/summary                              # 候选队列 + 报告列表 + 复盘统计 + 首次触达状态 + 诊断快照
 POST /v1/growth/first_touch_ack                       # 标记首次触达提示已展示（幂等）
 POST /v1/growth/scan                                   # 手动触发一轮扫描
-POST /v1/growth/candidates/{id}/accept|dismiss          # 采纳 / 忽略；dismiss 可选 body {"reason": "..."}（见 2.7 节）
+POST /v1/growth/candidates/{id}/accept|dismiss          # 采纳 / 忽略；dismiss 可选 body {"reason": "..."}（见 2.7 节）；accept 响应体新增 `pursuit` 字段（见 2.12 节，`auto_pursue_on_accept=false` 时不出现）
 GET  /v1/growth/followups                              # 待回访候选列表（含 question_hint 提问措辞）
 POST /v1/growth/followups/{id}/progressed|stalled       # 回答一次回访
 POST /v1/growth/keywords                                # 添加自定义关键词主题
@@ -462,6 +565,9 @@ GET  /v1/growth/health_trend                             # 健康度趋势快照
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `enabled` | `true` | 总开关，关闭后信号扫描/候选生成/cron job 全部跳过 |
+| `auto_pursue_on_accept` | `true` | 采纳候选时是否自动完成"生成报告 → 落地为 Goal → 生成并确认执行规范 → 绑定周期性"整条链路（见 2.12 节），是本文档里少数默认开启的增强开关之一 |
+| `auto_pursue_schedule` | `"interval:86400"` | 自动绑定周期性时使用的调度表达式，默认每天一轮 |
+| `auto_pursue_template_id` | `"growth_pursuit"` | 自动生成执行规范草稿时使用的模板 id |
 | `generation_frequency` | `"daily"` | `daily` / `every_12h` / `weekly` / `manual` |
 | `notification_frequency` | `"daily"` | `daily`（当天新报告里优先级最高的一条，最多 `notification_max_per_day` 条）/ `weekly_digest`（每 7 天把窗口期内新生成的全部报告打包成一条摘要推送）/ `kanban_only`（只更新看板，不推送） |
 | `notification_max_per_day` | `1` | `notification_frequency=daily` 时，单日最多推送条数 |

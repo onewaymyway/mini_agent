@@ -2713,6 +2713,144 @@ def adopt_candidate_as_goal(
     return goal
 
 
+# ────────────────── 采纳即启动：自主持续调研 ──────────────────
+# [与用户讨论后的方向性改动] 此前"采纳"只是一个反馈信号，"落地成 Goal"、
+# "生成执行规范"、"绑定周期性"三步都要用户各自手动点一次；成长顾问的
+# 定位应该是"自主规划方向、自主持续收集素材"，而不是"每一步都要人工
+# 衔接的流水线"。这里把四步收敛成一个函数，`cfg.auto_pursue_on_accept`
+# 默认开启时由"采纳"这个动作本身直接触发，用户不需要再逐步点。
+
+def auto_pursue_candidate(
+    paths,
+    candidate: GrowthCandidate,
+    *,
+    goal_backlog=None,
+    cron_scheduler=None,
+    cfg: Optional["GrowthAdvisorConfig"] = None,
+    llm_helper: Optional[Callable[[str], str]] = None,
+    profile=None,
+) -> dict[str, Any]:
+    """把一个候选从"已采纳"一路自动推进到"持续、周期性地被推进"：
+
+    1. 候选没有调研报告 → 先用零成本规则模板生成一份（不强依赖 LLM，
+       保证这条自动化路径在没有 `llm_helper` 时也能跑通）。
+    2. `adopt_candidate_as_goal()` 落地成 Goal（若候选此前已经落地过，
+       直接复用已有的 `linked_goal_id`，不会重复建 Goal）。
+    3. 用 `cfg.auto_pursue_template_id`（默认 `growth_pursuit`，专门
+       为"持续深化、不原地打转"设计）生成一版执行规范草稿并**直接
+       确认**——这是"自动衔接"的核心：用户不需要再手动跑一遍模板选择
+       /反馈迭代循环。草稿生成失败（比如 LLM 不可用）不会中断整个
+       流程，只是这个 Goal 暂时没有执行规范（等价于沿用通用行为），
+       后续用户/Agent 仍可以手动补一份。
+    4. 绑定周期性（`cfg.auto_pursue_schedule`，默认每天一次）。已经
+       绑定过的话 `make_goal_recurring()` 会复用旧 job，不会重复创建。
+
+    任一后续步骤失败都不影响前面已经完成的部分（Goal 建立成功就是
+    成功），失败信息记录在返回 dict 的 `errors` 里，供调用方（API 层）
+    以尽力而为的方式呈现给用户，而不是让整个"采纳"动作因为执行规范
+    生成失败就跟着 500。
+
+    返回：
+        {
+            "goal": GoalNode | None,
+            "spec": GoalExecutionSpec | None,
+            "cron_job": CronJob | None,
+            "report_generated": bool,
+            "errors": list[str],
+        }
+    """
+    if cfg is None:
+        from mini_agent.config.models import GrowthAdvisorConfig
+        cfg = GrowthAdvisorConfig()
+
+    result: dict[str, Any] = {
+        "goal": None, "spec": None, "cron_job": None,
+        "report_generated": False, "errors": [],
+    }
+
+    if goal_backlog is None:
+        goal_backlog = _load_goal_backlog_safely(paths)
+    if goal_backlog is None:
+        result["errors"].append("无法访问 GoalBacklog（项目路径不可用），已跳过自动持续调研。")
+        return result
+
+    # 1. 报告
+    if not candidate.report_id:
+        try:
+            report = generate_growth_report(
+                paths, candidate, llm_helper=llm_helper, profile=profile, cfg=None,
+            )
+            GrowthBacklog(paths).attach_report(candidate.candidate_id, report.report_id)
+            candidate.report_id = report.report_id
+            result["report_generated"] = True
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.evolution.growth_advisor.auto_pursue_candidate.report")
+            result["errors"].append(f"生成调研报告失败：{e}")
+            return result
+
+    # 2. 落地成 Goal（若已落地过，复用）
+    goal = None
+    if candidate.linked_goal_id:
+        try:
+            goal_backlog.load()
+            goal = goal_backlog.get(candidate.linked_goal_id)
+        except Exception:
+            goal = None
+    if goal is None:
+        try:
+            goal = adopt_candidate_as_goal(paths, candidate, goal_backlog=goal_backlog)
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.evolution.growth_advisor.auto_pursue_candidate.adopt")
+            result["errors"].append(f"落地为 Goal 失败：{e}")
+            return result
+    result["goal"] = goal
+
+    # 3. 执行规范草稿 + 直接确认
+    try:
+        from mini_agent.perception import goal_execution_spec as ges
+        from mini_agent.config import load_config
+
+        builder_cfg = load_config()
+        builder = ges.GoalExecutionSpecBuilder(builder_cfg)
+        spec = builder.build_draft(
+            goal.id, goal.title, goal.description,
+            schedule=cfg.auto_pursue_schedule,
+            template_id=cfg.auto_pursue_template_id,
+        )
+        ges.GoalExecutionSpecBuilder.confirm(spec)
+        ges.save_spec(paths, goal.id, spec)
+        try:
+            goal_backlog.update_fields(goal.id, execution_spec_confirmed=True)
+        except Exception:
+            pass
+        result["spec"] = spec
+        if getattr(spec, "generation_error", None):
+            result["errors"].append(f"执行规范草稿生成时出现问题（已按空白草稿确认，可后续手动补充）：{spec.generation_error}")
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where="mini_agent.evolution.growth_advisor.auto_pursue_candidate.spec")
+        result["errors"].append(f"生成/确认执行规范失败，该 Goal 暂时沿用通用行为：{e}")
+
+    # 4. 绑定周期性
+    if cron_scheduler is not None:
+        try:
+            from mini_agent.evolution.goal_cron_bridge import make_goal_recurring
+            job = make_goal_recurring(
+                goal_backlog, cron_scheduler, goal.id, cfg.auto_pursue_schedule,
+            )
+            result["cron_job"] = job
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.evolution.growth_advisor.auto_pursue_candidate.recur")
+            result["errors"].append(f"绑定周期性执行失败：{e}")
+    else:
+        result["errors"].append("当前上下文拿不到 CronScheduler（非 daemon 模式），已跳过绑定周期性；Goal 已创建，可稍后在「🎯 目标」tab 手动设为周期性。")
+
+    return result
+
+
 def _today_str() -> str:
     return time.strftime("%Y-%m-%d", time.localtime())
 

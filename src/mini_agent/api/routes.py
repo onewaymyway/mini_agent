@@ -6295,7 +6295,44 @@ async def post_growth_candidate_action(request: Request, candidate_id: str, acti
         if cand is None:
             raise HTTPException(status_code=404, detail="candidate not found")
         ga.GrowthFeedbackLedger(paths).record(candidate_id, status, reason=reason)
-        return {"ok": True, "candidate": cand.to_dict()}
+        response: dict = {"ok": True, "candidate": cand.to_dict()}
+
+        # [采纳即启动] action == accept 且配置开启（默认开启）时，自动
+        # 衔接"生成报告 → 落地为 Goal → 生成并确认执行规范 → 绑定周期性"
+        # 全部后续步骤，不需要用户再逐步点。任一后续步骤失败都不影响
+        # accept 本身已经成功——失败信息放进 `pursuit.errors`，看板据此
+        # 尽力而为地提示，而不是让这个请求整体 500。
+        if action == "accept":
+            http_server = getattr(request.app.state, "http_server", None)
+            self_agent = getattr(http_server.bridge, "agent", None) if http_server else None
+            growth_cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
+            if growth_cfg is None:
+                from mini_agent.config.models import GrowthAdvisorConfig
+                growth_cfg = GrowthAdvisorConfig()
+            if getattr(growth_cfg, "auto_pursue_on_accept", True):
+                try:
+                    from mini_agent.perception.goal_backlog import GoalBacklog
+                    goal_backlog = GoalBacklog(paths)
+                    cron_scheduler = _get_cron_scheduler(http_server) if http_server else None
+                    pursuit = ga.auto_pursue_candidate(
+                        paths, cand, goal_backlog=goal_backlog,
+                        cron_scheduler=cron_scheduler, cfg=growth_cfg,
+                    )
+                    response["pursuit"] = {
+                        "goal": pursuit["goal"].to_dict() if pursuit.get("goal") else None,
+                        "cron_job": pursuit["cron_job"].to_dict() if pursuit.get("cron_job") else None,
+                        "report_generated": pursuit.get("report_generated", False),
+                        "errors": pursuit.get("errors", []),
+                    }
+                    refreshed = backlog.get(candidate_id)
+                    if refreshed is not None:
+                        response["candidate"] = refreshed.to_dict()
+                except Exception as e:
+                    from mini_agent.errors import log_exception
+                    log_exception(e, where="mini_agent.api.routes.post_growth_candidate_action.auto_pursue")
+                    response["pursuit"] = {"errors": [f"自动持续调研触发失败：{e}"]}
+
+        return response
     except HTTPException:
         raise
     except Exception as e:

@@ -1777,6 +1777,24 @@ class GrowthAdvisorConfig:
     # 近期记忆里归纳新的主题——不影响、不覆盖规则式扫描结果，只做补充。
     llm_signal_augment_enabled: bool = False
 
+    # ── 采纳即启动：自主持续调研（growth_advisor 自主定位改进）──────────
+    # 用户在看板/API 上"采纳"一个候选后，是否自动衔接后续全部步骤（没有
+    # 报告先生成一份 → 落地成 Goal → 用 growth_pursuit 模板生成执行规范
+    # 草稿并直接确认 → 绑定周期性）。这是与用户明确讨论过的方向性决定：
+    # 默认开启（"采纳"本身就意味着"开始持续调研"，对齐"成长顾问应自主
+    # 持续为用户收集素材"的定位），而不是像其余克制默认那样 opt-in——
+    # 用户随时可以在「🎯 目标」tab 里对生成的 Goal 调用 unrecur 暂停。
+    auto_pursue_on_accept: bool = True
+    # 自动绑定周期性时使用的调度表达式，`CronScheduler`/`make_goal_
+    # recurring` 认得的格式（"interval:<秒数>"）。默认每天一次，对应与
+    # 用户确认过的"每天"节奏。
+    auto_pursue_schedule: str = "interval:86400"
+    # 自动生成执行规范草稿时使用的模板 id，对应新增的
+    # `goal_execution_spec_templates/growth_pursuit.json`——专门为"持续
+    # 深化同一个成长方向、不在原地打转"设计，区别于通用的
+    # `research_exploration`（那个模板是给"随手调研一下"用的最简骨架）。
+    auto_pursue_template_id: str = "growth_pursuit"
+
     # ── P4-3：采纳后回访（growth_advisor_improvement_plan_v2.md P4-3）───
     # 候选被采纳这么多天后，如果用户还没回答过"有没有推进"，看板会展示一张
     # 回访卡片；答案（progressed/stalled）反馈进置信度调权，不强制回答。

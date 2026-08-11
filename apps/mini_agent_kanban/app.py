@@ -4476,7 +4476,10 @@ def _render_growth_report_viewer(client: "AgentClient", candidates: list[dict]):
         # 容易让人以为"采纳了但系统什么都没做"。这里补上按钮，复用同一个
         # `adopt_candidate_as_goal()`。
         if chosen.get("linked_goal_id"):
-            vcol2.caption(f"已落地为 Goal（{chosen['linked_goal_id'][:8]}）")
+            # [采纳即启动] 默认情况下这一步已经由 accept 动作自动做完
+            # （生成 Goal → 生成并确认执行规范 → 绑定周期性），这里只是
+            # 展示状态；用户仍可以随时去「🎯 目标」tab 手动暂停/调整。
+            vcol2.caption(f"🔄 已落地为 Goal（{chosen['linked_goal_id'][:8]}），成长顾问正在按此方向自主持续调研")
         else:
             if vcol2.button("🚀 落地为 Goal（继续调研）", key="growth_report_viewer_adopt_btn"):
                 result = client.growth_candidate_adopt_goal(chosen["candidate_id"])
@@ -4668,7 +4671,20 @@ def _render_growth_pending_list(client: "AgentClient", pending: list[dict]):
             )
             b1, b2, b3, b4 = st.columns(4)
             if b1.button("✅ 采纳", key=f"growth_accept_{c['candidate_id']}"):
-                client.growth_candidate_action(c["candidate_id"], "accept")
+                # [采纳即启动] accept 现在默认会自动触发"生成报告 → 落地
+                # 为 Goal → 生成并确认执行规范 → 绑定周期性"整条链路，
+                # 响应体里的 `pursuit` 字段带回这一路的结果/失败信息，
+                # 尽力而为地提示用户，不阻塞 rerun。
+                resp = client.growth_candidate_action(c["candidate_id"], "accept")
+                pursuit = (resp or {}).get("pursuit") or {}
+                goal = pursuit.get("goal")
+                if goal:
+                    if pursuit.get("cron_job"):
+                        st.toast(f"🔄 已开始自主持续调研：{goal.get('title', '')}（每天一轮）", icon="🌱")
+                    else:
+                        st.toast(f"已创建 Goal：{goal.get('title', '')}（周期性绑定未完成，可到「🎯 目标」tab 手动设置）", icon="⚠️")
+                for err in pursuit.get("errors") or []:
+                    st.toast(err, icon="⚠️")
                 st.rerun()
             if b2.button("🙈 忽略", key=f"growth_dismiss_{c['candidate_id']}"):
                 dismiss_reason = None if reason_value == "unspecified" else reason_value
@@ -4743,6 +4759,7 @@ def _render_growth_kanban_dragdrop(client: "AgentClient", candidates: list[dict]
     # rerun 都会对本来就已经是 accepted 的卡片重复调用 accept）。
     id_to_status = {c["candidate_id"]: c.get("status") for c in candidates}
     moved = False
+    pursuit_notes: list[tuple[str, str]] = []  # [采纳即启动] (message, icon) 汇总，拖拽循环结束后统一 toast
     for col in result:
         header = col.get("header", "")
         target_status = next((s for s, h in _GROWTH_KANBAN_COLUMNS if h == header), None)
@@ -4753,11 +4770,23 @@ def _render_growth_kanban_dragdrop(client: "AgentClient", candidates: list[dict]
             if cand_id is None:
                 continue
             if id_to_status.get(cand_id) != target_status:
-                client.growth_candidate_action(
+                resp = client.growth_candidate_action(
                     cand_id, "accept" if target_status == "accepted" else "dismiss"
                 )
                 moved = True
+                if target_status == "accepted":
+                    pursuit = (resp or {}).get("pursuit") or {}
+                    goal = pursuit.get("goal")
+                    if goal:
+                        if pursuit.get("cron_job"):
+                            pursuit_notes.append((f"🔄 已开始自主持续调研：{goal.get('title', '')}（每天一轮）", "🌱"))
+                        else:
+                            pursuit_notes.append((f"已创建 Goal：{goal.get('title', '')}（周期性绑定未完成，可到「🎯 目标」tab 手动设置）", "⚠️"))
+                    for err in pursuit.get("errors") or []:
+                        pursuit_notes.append((err, "⚠️"))
     if moved:
+        for msg, icon in pursuit_notes:
+            st.toast(msg, icon=icon)
         st.rerun()
 
     # [growth_advisor_active_search_and_lifecycle_plan.md 方向二] 拖拽

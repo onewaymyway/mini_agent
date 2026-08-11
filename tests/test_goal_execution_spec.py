@@ -125,6 +125,10 @@ def test_list_templates_returns_five_builtin_templates():
     assert ids == {
         "periodic_report", "data_collection", "monitoring_patrol",
         "codebase_maintenance", "research_exploration",
+        # growth_pursuit：为"成长顾问采纳即启动"新增的专用模板（见
+        # docs/growth-advisor-guide.md 2.12 节），不是这五个通用场景模板
+        # 之一，单独列出而不是改这条断言本身覆盖的五个通用模板。
+        "growth_pursuit",
     }
 
 
