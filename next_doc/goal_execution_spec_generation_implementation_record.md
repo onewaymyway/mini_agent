@@ -827,15 +827,15 @@ criteria()` 的判定结果只写进 `progress_notes` 里的一行文本，没�
 全部新增用例 + 此前全部回归用例（同 §9.6 列出的 12 个测试文件）合计
 141 个用例回归通过。
 
-## 13. Stage 11 已实施：看板"差异高亮"（对应方案 §6.1 最后一段 /
-    implementation_record.md §12 后续建议顺序第 1 条）
+## 11. Stage 11 已实施：看板"差异高亮"（对应方案 §6.1 最后一段 /
+    implementation_record.md §12（原编号）后续建议顺序第 1 条）
 
 `revise()`/"从模板重新起草"整段覆盖草稿之后，之前只能"看摘要 + 重新
 通读整份规范去猜这次改了什么"——通读成本过高会让用户倾向于"差不多得了，
 直接确认"，违背"迭代到确认可行为止"的初衷（方案 §6.2）。Stage 11
 补上纯前端的差异标注，不需要额外 LLM 调用。
 
-### 13.1 差异计算（`apps/mini_agent_kanban/app.py`）
+### 11.1 差异计算（`apps/mini_agent_kanban/app.py`）
 
 - `_compute_spec_diff(old_spec, new_spec) -> dict`：对
   `deliverables`/`handoff_fields`/`sub_directories`/`per_cycle_
@@ -851,7 +851,7 @@ criteria()` 的判定结果只写进 `progress_notes` 里的一行文本，没�
   ➖ 删除（红色删除线）/ ✏️ 改写（黄色，只展示改写后的新内容）"三类
   标注；`diff` 为空时提示"这次重新生成后各字段内容与上一版完全一致"。
 
-### 13.2 接入点（`_render_goal_execution_spec_widget()`）
+### 11.2 接入点（`_render_goal_execution_spec_widget()`）
 
 - 新增 `diff_key` session_state 键：「🔄 补充意见重新生成」/「📄 从模板
   重新起草」提交成功、用新草稿覆盖 `draft_key` 之前，先把**覆盖前**的
@@ -866,7 +866,7 @@ criteria()` 的判定结果只写进 `progress_notes` 里的一行文本，没�
 - 只在"整段覆盖"场景（`revise()`/模板重新起草）触发，第一次生成草稿
   （`spec is None` 分支）没有"上一版"可比，不设置 `diff_key`。
 
-### 13.3 与方案的偏差
+### 11.3 与方案的偏差
 
 - 方案 §6.2 原话是"新增条目、删除条目、被改写的条目分别标出来"，
   Stage 11 按这个粒度实现了，但"改写"只展示改写后的新内容（不做逐字
@@ -880,7 +880,7 @@ criteria()` 的判定结果只写进 `progress_notes` 里的一行文本，没�
   优先的一环（先让用户看清"改了什么"，再考虑"要不要手动微调"），
   见 §14 未实施清单第 1 项。
 
-### 13.4 测试
+### 11.4 测试
 
 `tests/test_goal_execution_spec_diff.py`（新增，8 个用例）：完全相同的
 两份草稿返回空 diff；新增/删除/改写三种情况分别按各 section 的识别 key
@@ -895,7 +895,63 @@ kanban/app.py::_compute_spec_diff`（不依赖真实 Streamlit 运行时上下�
 全部新增用例 + 此前全部回归用例（同 §10.4 列出的测试文件 + 本文件）
 合计 149 个用例回归通过。
 
-## 14. 与方案的偏差 / 未实施清单
+## 12. Stage 12 已实施：`mode="auto"` 补上"LLM 自报
+    `needs_project_context` 后二次重生成"兜底（对应后续建议顺序第 2 条）
+
+Stage 7/8 引入的 `mode="auto"` 分诊此前只有一层"关键词规则粗筛"：命中
+才走 Agent 路径，没命中就直接走裸 LLM 路径、不再纠正。与老代码
+`goal_mode/spec.py::GoalSpecBuilder._run_builder` 的完整三态设计相比，
+缺了第二道保险——"规则没命中，但 LLM 自己在输出里坦白这道题答不准，
+需要先看看项目"，系统据此自动改用 Agent 路径重新生成一次。Stage 12
+把这层兜底原样搬过来。
+
+### 12.1 Prompt schema 新增字段（`prompts/system/goal_execution_spec_
+    builder.md`）
+
+新增 `needs_project_context: bool`（默认 `false`）字段，说明文字与
+`goal_spec_builder.md` 里对应说明完全对称：模型如果明确依赖项目内部
+具体信息（某个 skill 的具体能力/参数、某个 workflow 的具体步骤/产出物）
+才能写出可核查的标准，而自己并不确定这些细节，就不要凭空编造，改为把
+这个字段设为 `true`（其余字段仍按现有理解尽量给出，作为兜底），下游
+据此改用能读文件的 Agent 重新生成一份更可靠的草案。
+
+### 12.2 `_run_builder()` 二次重生成逻辑
+
+`mode == "auto"` 分支下：
+1. 规则粗筛（`_rule_based_needs_project_context`）命中 → 直接走 Agent
+   路径，逻辑不变。
+2. 规则没命中 → 先跑一次裸 LLM，解析其输出 JSON；
+   - `needs_project_context` 不是 `true`（缺失/`false`/其他值）→ 直接
+     返回这次 LLM 结果，`last_effective_path` 记为 `"llm"`（与 Stage 12
+     之前行为一致）。
+   - `needs_project_context` 为 `true` → 丢弃这次 LLM 结果，打一条
+     `R.print_info` 提示，改用 Agent 路径重新生成一次，
+     `last_effective_path` 改记为 `"agent"`。
+
+`build_draft()`/`revise()` 都是 `_run_builder()` 唯一入口，两条链路
+自动获得同样的兜底，不需要各自加逻辑。`needs_project_context` 只是
+一个"过程信号"，不进最终 `GoalExecutionSpec`（`_spec_from_llm_data()`
+按已知字段名取值，多出来的 key 直接忽略，不需要额外过滤代码）。
+
+### 12.3 与方案/老代码的偏差
+
+- 完全对齐 `GoalSpecBuilder._run_builder` 的三态设计，没有做简化。
+- 二次重生成只发生一次（不会"Agent 路径又自报一次 needs_project_
+  context 再重生成"死循环）——`_run_builder_agent()` 走的是完全不同
+  的代码路径，其输出不会再触发这层判断，天然不存在递归。
+- 裸 LLM 那次"自报需要项目上下文"的输出被整个丢弃（不做部分合并），
+  与老代码行为一致——既然模型自己说这次答得不靠谱，就不该保留任何
+  部分内容。
+
+### 12.4 测试
+
+`tests/test_goal_execution_spec.py` 追加 4 个用例：`build_draft()` 下
+规则未命中但 LLM 自报 `needs_project_context=true` 时正确改用 Agent
+路径、裸 LLM 只被调用一次（不会重复调用两次纯 LLM）；`needs_project_
+context=false` 时保持在 llm 路径不触发二次生成；`revise()` 路径下同样
+生效。全部新增用例 + 此前全部回归用例合计 152 个用例回归通过。
+
+## 13. 与方案的偏差 / 未实施清单
 
 以下条目方案里有描述，**未实施**，留作后续 Track：
 
@@ -905,10 +961,10 @@ kanban/app.py::_compute_spec_diff`（不依赖真实 Streamlit 运行时上下�
    细节仍未做（见 §3.4 的具体取舍说明）：
    - 每个 section 直接编辑文本框（按行拆分），当前只能"看摘要 + 写反馈
      + 重新生成"，不能手工微调某个字段的具体文字；
-   - `revise()` 前后的差异高亮：**已实施**（Stage 11，见 §13）——
+   - `revise()` 前后的差异高亮：**已实施**（Stage 11，见 §11）——
      `_compute_spec_diff()`/`_render_spec_diff()` 对比"整段覆盖"前后
      两份草稿，标出新增/删除/改写的条目；只做条目级对比，不做字符级
-     行内 diff（见 §13.3）。
+     行内 diff（见 §11.3）。
    - §2 新增的"整体关闭判定"结果**已实施持久化展示**（Stage 10，见
      §10.1）——`GoalNode.overall_completion_last_check` 保存最近一次
      判定的 `outcome`/`reasoning`/`used_agent`/`at`，看板"🔁 手动重判"
@@ -920,10 +976,13 @@ kanban/app.py::_compute_spec_diff`（不依赖真实 Streamlit 运行时上下�
 2. **`builder_mode="agent"` 只读探索路径**：**已实施**（Stage 7，见 §7）
    ——镜像 `GoalSpecBuilder._run_builder_agent()`，`mode="agent"` 固定走
    受限只读 Agent，`mode="auto"`（默认）用关键词规则判断是否需要项目
-   上下文。简化点、以及未覆盖的部分见 §7.5（其中"`evaluate_overall_
-   completion()` 仍是裸 LLM 单轮路径，未挂只读工具去实际核查产出文件
-   内容"一点仍然成立，见本清单第 7 条；"CLI/看板未暴露单次覆盖 `mode`
-   的入口"**已实施**，见 Stage 8/§8）。
+   上下文，规则未命中时先走裸 LLM，再看其自报的 `needs_project_context`
+   决定要不要二次重生成（**已实施**，Stage 12，见 §12）。简化点、以及
+   未覆盖的部分见 §7.5（其中"`evaluate_overall_completion()` 仍是裸 LLM
+   单轮路径，未挂只读工具去实际核查产出文件内容"一点仍然成立，见本
+   清单第 7 条；"CLI/看板未暴露单次覆盖 `mode` 的入口"**已实施**，见
+   Stage 8/§8；"auto 模式未做 LLM 自报二次重生成兜底"**已实施**，见
+   Stage 12/§12）。
 3. **模板自动匹配**：**已实施**（Stage 4，见 §4）——关键词规则匹配
    Goal 的 title+description，命中模板则在看板下拉框里默认预选，用户
    仍可改选或选"不用模板"；CLI 未接入（`--template` 仍要求显式传入）。
@@ -962,6 +1021,13 @@ kanban/app.py::_compute_spec_diff`（不依赖真实 Streamlit 运行时上下�
    `spec close-check` 支持 `--use-agent`/`--no-agent`；REST body 支持
    `"use_agent"` 字段；看板"🔁 手动重判"按钮旁新增"整体关闭判定路径"
    下拉框，按钮上方常驻展示上一次判定结果。
+10. **`mode="auto"` 补上"LLM 自报 `needs_project_context` 后二次重生成"
+    兜底**：**已实施**（Stage 12，见 §12）——`goal_execution_spec_
+    builder.md` 输出 schema 新增 `needs_project_context: bool`（默认
+    `false`）字段；`_run_builder()` 的 `auto` 分支里，规则粗筛没命中时
+    先跑一次裸 LLM，若其自报 `needs_project_context=true` 则丢弃这次
+    结果、改用受限 Agent 路径重新生成一次；与 `goal_mode/spec.py::
+    GoalSpecBuilder._run_builder` 的三态设计完全对称。
 
 以上未实施项均不影响已实施部分的正确性——`execution_spec_confirmed`
 默认 `False`，未生成/未确认的 Goal 行为与方案引入前完全一致；
@@ -974,16 +1040,15 @@ kanban/app.py::_compute_spec_diff`（不依赖真实 Streamlit 运行时上下�
 `false`，行为与 Stage 9 引入前完全一致；单次 `use_agent` 覆盖不传时
 （CLI 不带 `--use-agent`/`--no-agent`、REST body 不带 `use_agent` 键）
 行为与 Stage 10 引入前完全一致；差异高亮（Stage 11）只在有"上一版"
-可比时（`diff_key` 存在）才展示，第一次生成草稿的路径完全不受影响。
+可比时（`diff_key` 存在）才展示，第一次生成草稿的路径完全不受影响；
+`needs_project_context`（Stage 12）默认由 prompt 引导为 `false`，只有
+模型明确自报"这次答不准"才触发二次生成，绝大多数场景不受影响，且
+`_spec_from_llm_data()` 按已知字段名取值，多出来的这个信号字段不会
+被误写进最终 `GoalExecutionSpec`。
 
-## 15. 后续建议顺序
+## 14. 后续建议顺序
 
 1. 看板 UI 的最后一块剩余精细化：每个 section 直接编辑文本框（按行
-   拆分手工微调具体文字）——差异高亮已实施（Stage 11，见 §13），"反馈
+   拆分手工微调具体文字）——差异高亮已实施（Stage 11，见 §11），"反馈
    驱动迭代 + 差异高亮"已经能覆盖"改哪里、改成什么样"的大多数场景，
    这一项主要是给"只想改一个字"的场景省一次 LLM 调用，优先级较低。
-2. `mode="auto"` 补上"LLM 自报 `needs_project_context` 后二次重生成"那层
-   兜底（对齐 `GoalSpecBuilder` 的完整三态设计）——优先级较低，当前
-   关键词规则 + Stage 8 的单次 `mode` 覆盖入口已经能覆盖多数场景（规则
-   漏判时用户可以显式传 `--mode agent`/看板选"只读探索 Agent"绕过，不
-   强依赖这层自动兜底）。

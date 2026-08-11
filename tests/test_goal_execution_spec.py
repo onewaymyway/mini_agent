@@ -351,6 +351,99 @@ def test_build_draft_mode_auto_without_keyword_uses_llm_path(tmp_path, monkeypat
     assert len(helper.calls) == 1
 
 
+def test_build_draft_mode_auto_llm_self_reports_needs_context_retries_with_agent(tmp_path, monkeypatch):
+    """[implementation_record.md §15 后续建议顺序第 2 条] 规则没命中，但
+    裸 LLM 第一次输出的 JSON 里 `needs_project_context: true`（模型自报
+    "这次答不准，需要看项目"）——应丢弃这次 LLM 结果，改用 agent 路径
+    重新生成一次，最终 `last_effective_path` 是 "agent"，且返回的草稿
+    内容来自 agent 路径的输出，不是那份自报"不靠谱"的 LLM 草稿。"""
+    llm_response = json.dumps({
+        "deliverables": [], "handoff_fields": [], "sub_directories": [],
+        "per_cycle_criteria": [], "overall_completion_criteria": [], "special_constraints": [],
+        "needs_project_context": True,
+    })
+    agent_response = json.dumps({
+        "deliverables": [{"name": "from_agent.md", "naming_pattern": "from_agent.md", "required_every_cycle": True}],
+        "handoff_fields": [], "sub_directories": [], "per_cycle_criteria": [],
+        "overall_completion_criteria": [], "special_constraints": [],
+    })
+
+    def _fake_spawn(**kwargs):
+        return object()
+
+    def _fake_run_turn(agent, prompt, *, failure_role_label):
+        return _FakeJudgeResult(ok=True, raw_output=agent_response)
+
+    monkeypatch.setattr("mini_agent.role_agents.judge_factory.spawn_judge_agent", _fake_spawn)
+    monkeypatch.setattr("mini_agent.role_agents.judge_factory.run_judge_turn", _fake_run_turn)
+
+    helper = _FakeHelper(llm_response)
+    cfg = _base_cfg(tmp_path)
+    builder = ges.GoalExecutionSpecBuilder(cfg, llm_helper=helper)  # 默认 mode="auto"
+
+    spec = builder.build_draft("goal_auto_selfreport", "普通描述，不含关键词，但模型自己觉得需要看项目")
+
+    assert len(helper.calls) == 1  # 裸 LLM 只被调用一次（第一次尝试），不会重复调用
+    assert builder.last_effective_path == "agent"
+    assert spec.deliverables[0].name == "from_agent.md"
+
+
+def test_build_draft_mode_auto_llm_needs_context_false_stays_on_llm_path(tmp_path, monkeypatch):
+    """裸 LLM 显式回传 `needs_project_context: false` 时（正常情况），
+    不应该触发二次重生成，`last_effective_path` 仍是 "llm"。"""
+    def _fake_spawn(**kwargs):
+        raise AssertionError("needs_project_context=false 不应该触发 agent 二次生成")
+
+    monkeypatch.setattr("mini_agent.role_agents.judge_factory.spawn_judge_agent", _fake_spawn)
+
+    helper = _FakeHelper(json.dumps({
+        "deliverables": [], "handoff_fields": [], "sub_directories": [],
+        "per_cycle_criteria": [], "overall_completion_criteria": [], "special_constraints": [],
+        "needs_project_context": False,
+    }))
+    cfg = _base_cfg(tmp_path)
+    builder = ges.GoalExecutionSpecBuilder(cfg, llm_helper=helper)
+
+    builder.build_draft("goal_auto3", "普通的每周汇总 Goal")
+
+    assert builder.last_effective_path == "llm"
+    assert len(helper.calls) == 1
+
+
+def test_revise_mode_auto_llm_self_reports_needs_context_retries_with_agent(tmp_path, monkeypatch):
+    """二次重生成兜底在 revise() 路径下同样生效（detection_text 用反馈
+    文本，规则没命中反馈文本时才会走到"先跑 llm 再看自报字段"这一步）。"""
+    prior = ges.GoalExecutionSpec(goal_id="goal_revise_selfreport", version=1)
+    llm_response = json.dumps({
+        "deliverables": [], "handoff_fields": [], "sub_directories": [],
+        "per_cycle_criteria": [], "overall_completion_criteria": [], "special_constraints": [],
+        "needs_project_context": True,
+    })
+    agent_response = json.dumps({
+        "deliverables": [{"name": "revised_by_agent.md", "naming_pattern": "revised_by_agent.md", "required_every_cycle": True}],
+        "handoff_fields": [], "sub_directories": [], "per_cycle_criteria": [],
+        "overall_completion_criteria": [], "special_constraints": [],
+    })
+
+    def _fake_spawn(**kwargs):
+        return object()
+
+    def _fake_run_turn(agent, prompt, *, failure_role_label):
+        return _FakeJudgeResult(ok=True, raw_output=agent_response)
+
+    monkeypatch.setattr("mini_agent.role_agents.judge_factory.spawn_judge_agent", _fake_spawn)
+    monkeypatch.setattr("mini_agent.role_agents.judge_factory.run_judge_turn", _fake_run_turn)
+
+    helper = _FakeHelper(llm_response)
+    cfg = _base_cfg(tmp_path)
+    builder = ges.GoalExecutionSpecBuilder(cfg, llm_helper=helper)  # mode="auto"
+
+    new_spec = builder.revise(prior, "补充意见里不含关键词，但模型自己觉得需要看项目")
+
+    assert builder.last_effective_path == "agent"
+    assert new_spec.deliverables[0].name == "revised_by_agent.md"
+
+
 def test_build_draft_agent_path_spawn_failure_falls_back_to_empty(tmp_path, monkeypatch):
     def _fake_spawn(**kwargs):
         raise RuntimeError("boom")

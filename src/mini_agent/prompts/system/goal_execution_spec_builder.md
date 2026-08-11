@@ -40,6 +40,14 @@
 如果想清楚之后发现某个 Goal 不需要特殊规范（比如目标本身已经足够简单、
 自解释），对应字段留空数组也是一种合法结果，不要为了凑内容而编造。
 
+如果这个 Goal 明确依赖项目内部的具体信息才能写出可核查的标准——例如引用了
+某个 skill 的具体能力/参数、某个 workflow 的具体步骤/产出物，而你并不确定
+这些细节的真实情况——不要凭空编造一个"听起来合理"的文件名、命令或步骤。
+这种情况下，在输出 JSON 里把 `needs_project_context` 设为 `true`，其余字段
+仍按你现有的理解尽量给出（作为兜底），下游会根据这个信号改用能读取项目文件
+的 Agent 重新生成一份更可靠的草案。绝大多数 Goal 不需要这个字段为 true，
+只在确实拿不准项目具体细节时才标记。
+
 ## 输出格式（严格遵守，只输出这一个 JSON 对象，不要有 JSON 之外的文字，不要用
 markdown 代码块包裹）：
 {
@@ -56,5 +64,6 @@ markdown 代码块包裹）：
     {"text": "标准描述（尽量可核查）", "verification_method": "run_command | file_check | manual_review"}
   ],
   "overall_completion_criteria": [],
-  "special_constraints": ["特殊约束1", "..."]
+  "special_constraints": ["特殊约束1", "..."],
+  "needs_project_context": false
 }

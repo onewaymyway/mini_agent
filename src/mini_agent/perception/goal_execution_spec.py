@@ -521,15 +521,19 @@ class GoalExecutionSpecBuilder:
 
         - "llm"   → 直接走 `_run_llm`。
         - "agent" → 直接走 `_run_builder_agent`。
-        - "auto"  → 用关键词规则粗略判断 `detection_text`（build_draft 传
+        - "auto"  → 先用关键词规则粗略判断 `detection_text`（build_draft 传
           title+description，revise 传用户反馈文本）是否提到"参考/沿用
-          项目已有内容"类诉求，命中则走 agent 路径，否则走 llm 路径。
+          项目已有内容"类诉求，命中则直接走 agent 路径；规则没命中则先走
+          llm 路径，解析其输出 JSON 里的 `needs_project_context` 字段——
+          为 `true`（模型自报"这道题我答不好，需要先看看项目"）则丢弃这次
+          结果，改用 agent 路径重新生成一次。
 
-        与 `GoalSpecBuilder._run_builder` 的"auto"路径的一处简化：这里没有
-        做"LLM 自报 needs_project_context 后二次重生成"那层兜底——
-        `goal_execution_spec_builder.md` 的输出 schema 目前不包含这个字段，
-        规则漏判时不会自动补救，只能显式传 `mode="agent"` 绕过。见实施
-        记录里这一 Stage 的取舍说明。
+        [implementation_record.md §15 后续建议顺序第 2 条] 这层"LLM 自报
+        needs_project_context 后二次重生成"的兜底与 `goal_mode/spec.py::
+        GoalSpecBuilder._run_builder` 完全对称——`goal_execution_spec_
+        builder.md` 的输出 schema 已加上 `needs_project_context` 字段
+        （默认 `false`），规则漏判时不再是"只能显式传 mode=agent 绕过"，
+        LLM 自己也有一次纠正机会。
         """
         if self.mode == "agent":
             self.last_effective_path = "agent"
@@ -543,8 +547,19 @@ class GoalExecutionSpecBuilder:
         if _rule_based_needs_project_context(detection_text or prompt):
             self.last_effective_path = "agent"
             return self._run_builder_agent(prompt)
+
+        raw = self._run_llm(prompt)
         self.last_effective_path = "llm"
-        return self._run_llm(prompt)
+        data = _extract_json(raw) or {}
+        if data.get("needs_project_context") is True:
+            import mini_agent.ui.renderer as R
+            R.print_info(
+                "[GoalExecutionSpecBuilder] 规则未命中，但模型自报需要读取项目内容"
+                "（skill/workflow 等）才能写好验收标准，改用受限 Agent 路径重新生成…"
+            )
+            self.last_effective_path = "agent"
+            return self._run_builder_agent(prompt)
+        return raw
 
     def _run_llm(self, prompt: str) -> str:
         """裸单轮 chat completion——不挂工具，模型唯一能做的事就是把 JSON
