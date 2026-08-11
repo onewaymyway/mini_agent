@@ -4418,6 +4418,7 @@ def render_growth_tab(client: "AgentClient"):
 
     _render_growth_followups(client)
     _render_growth_report_refresh_candidates(client)
+    _render_growth_report_viewer(client, candidates)
 
     pending = [c for c in candidates if c.get("status") == "pending"]
     if not pending:
@@ -4430,6 +4431,45 @@ def render_growth_tab(client: "AgentClient"):
         _render_growth_kanban_dragdrop(client, candidates)
     else:
         _render_growth_pending_list(client, pending)
+
+
+def _render_growth_report_viewer(client: "AgentClient", candidates: list[dict]):
+    """[修复] 顶部「调研报告」计数是历史累计总数，但此前只有「待处理候选」
+    卡片上才有「📄 查看报告」按钮——候选一旦被采纳/忽略/过期，报告就从
+    界面上"消失"了（数字显示有、点不到）。这里补一个不依赖候选当前状态
+    的独立查看入口：只要候选身上挂着 report_id（不管 pending/accepted/
+    dismissed/expired），都能在这里选中查看，与拖拽看板/列表视图各自的
+    按钮并存，不影响原有交互。"""
+    has_report = [c for c in candidates if c.get("report_id")]
+    if not has_report:
+        return
+    with st.expander(f"📄 查看调研报告（{len(has_report)} 个候选已生成）", expanded=False):
+        _STATUS_LABEL = {
+            "pending": "🕗 待处理", "accepted": "✅ 已采纳",
+            "dismissed": "🙈 已忽略", "expired": "⌛ 已过期",
+        }
+        options = {}
+        for c in sorted(has_report, key=lambda x: -x.get("confidence", 0)):
+            status_label = _STATUS_LABEL.get(c.get("status"), c.get("status", ""))
+            short_id = str(c.get("candidate_id", ""))[:8]
+            label = f"[{status_label}] {c.get('title', '')} · {short_id}"
+            options[label] = c
+        chosen_label = st.selectbox(
+            "选择一个候选查看它的调研报告", options=list(options.keys()),
+            key="growth_report_viewer_select",
+        )
+        if st.button("查看", key="growth_report_viewer_btn"):
+            chosen = options[chosen_label]
+            rep = client.growth_report(chosen["report_id"])
+            if rep and "_error" not in rep:
+                st.caption(
+                    f"生成于 {rep.get('generated_at', '')} · "
+                    f"证据 {rep.get('evidence_count_at_generation', chosen.get('evidence_count', 0))} 条"
+                )
+                st.markdown(rep.get("body", "（报告正文为空）"))
+            else:
+                st.error((rep or {}).get("_error", "读取报告失败"))
+
 
 
 def _render_growth_followups(client: "AgentClient"):
