@@ -1,0 +1,37 @@
+{
+  "name": "百度搜索",
+  "domain": "baidu.com",
+  "url": "https://www.baidu.com",
+  "category": "search",
+  "subcategory": "search_engine",
+  "frontend_framework": "None",
+  "anti_crawl_level": 2,
+  "login_required": false,
+  "captcha_type": "slider",
+  "priority": "P0",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.95,
+  "target_accuracy": 0.90,
+  "custom_config": {
+    "search_box": "input#kw, input[name='wd'], input[type='text'][name='wd']",
+    "search_button": "input#su, button[type='submit']",
+    "results": "#content_left .result, .c-container, .result-op, [data-tools]",
+    "result_item": ".result.c-container, .c-container, .result-op",
+    "title": ".t a, .c-title a, .result-title h3, a[data-log-title]",
+    "url": ".c-title a, .result-link, a[data-log-url]",
+    "content": ".content-2KpgN, .content_1ZcWe, .c-abstract, .abstract",
+    "pagination": {
+      "next_page": "a[n='next'], a[data-page='next'], .page-next a",
+      "page_numbers": "a[data-page], .page-num"
+    },
+    "captcha_detection": {
+      "selectors": ["#slideBlock", ".slide-block", "[class*='geetest']"],
+      "text_patterns": ["滑动验证", "拖拽滑块", "geetest"]
+    }
+  },
+  "tags": ["search", "chinese", "high-traffic", "engine"],
+  "created_at": "2026-08-11T00:00:00.000Z",
+  "updated_at": "2026-08-11T13:30:00.000Z"
+}

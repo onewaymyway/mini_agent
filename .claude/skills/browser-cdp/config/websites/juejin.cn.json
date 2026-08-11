@@ -1,0 +1,29 @@
+{
+  "name": "掘金",
+  "domain": "juejin.cn",
+  "url": "https://juejin.cn",
+  "category": "tech",
+  "subcategory": "tech_community",
+  "frontend_framework": "Vue",
+  "anti_crawl_level": 2,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P0",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.90,
+  "target_accuracy": 0.85,
+  "custom_config": {
+    "search_box": "input[data-testid='search-input'], input[type='search'], .search-input",
+    "search_button": "button[type='submit'], .search-btn",
+    "article_list": ".article-list, .feed-list, [class*='feed']",
+    "article_item": ".feed-item, .article-item, .note-card",
+    "article_title": ".feed-item-title, .note-card__title, h3",
+    "article_url": ".feed-item-title a, .note-card__title a",
+    "content": ".feed-item-content, .note-card__content, article"
+  },
+  "tags": ["tech", "community", "chinese", "developer"],
+  "created_at": "2026-08-11T00:00:00.000Z",
+  "updated_at": "2026-08-11T00:00:00.000Z"
+}

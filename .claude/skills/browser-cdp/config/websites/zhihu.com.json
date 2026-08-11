@@ -1,0 +1,36 @@
+{
+  "name": "知乎",
+  "domain": "zhihu.com",
+  "url": "https://www.zhihu.com",
+  "category": "social",
+  "subcategory": "qna_platform",
+  "frontend_framework": "React",
+  "anti_crawl_level": 3,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P0",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.90,
+  "target_accuracy": 0.85,
+  "custom_config": {
+    "search_box": "input[data-testid='search-input'], input[type='search'], .SearchBar-input, [placeholder*='搜索']",
+    "search_button": "button[type='submit'], .SearchBar-button, [class*='search-btn']",
+    "hot_items": ".HotItem, .HotList-item, .QuestionItem, [class*='HotItem'], [class*='QuestionItem']",
+    "question_title": ".QuestionItem-title, .HotItem-title, h2, [class*='title']",
+    "answer_count": ".QuestionItem-answerCount, .HotItem-answers, [class*='answer']",
+    "content": ".RichContent, .Post-content, article, [class*='ContentItem']",
+    "pagination": {
+      "next_page": "button[aria-label='下一页'], a[rel='next'], [class*='Pagination'] button:last-child",
+      "load_more": "button[class*='loadMore'], button[class*='ShowMore']"
+    },
+    "captcha_detection": {
+      "selectors": [],
+      "text_patterns": []
+    }
+  },
+  "tags": ["social", "qna", "chinese", "community"],
+  "created_at": "2026-08-11T00:00:00.000Z",
+  "updated_at": "2026-08-11T13:30:00.000Z"
+}
