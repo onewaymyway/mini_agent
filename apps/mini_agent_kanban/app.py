@@ -2305,13 +2305,80 @@ def _render_execution_spec_summary(spec: dict) -> None:
         st.caption("（当前草稿全部字段为空，等价于沿用默认通用行为，不额外拼接任何 prompt 文字）")
 
 
-# [goal_execution_spec_generation_plan.md §6.1/§6.2/§6.3] 看板"生成草稿 →
-# 反馈迭代（字段级锁定）→ 确认"最小可用版本。之前只有 CLI（/agent goals
-# spec ...）能走这套流程，这里补上看板入口——不做方案 §6.2 描述的"直接编辑
-# 字段文本框 + 差异高亮"（留作后续迭代，见 next_doc 实施记录），只做"生成→
-# 看摘要→补充意见重新生成（可锁定已满意的 section）→确认/放弃"这条主线，
-# 与 CLI 的 `spec generate/confirm` 语义完全对齐，草稿缓存在
-# st.session_state 里跨 rerun 保留，不在每次 rerun 时重新触发 LLM 调用。
+# [goal_execution_spec_generation_plan.md §6.2 / implementation_record.md
+# §12 后续建议顺序第 1 条"差异高亮"] `revise()`/"从模板重新起草"整段
+# 覆盖草稿之后，前端对比新旧两份 JSON 生成的差异标注——不需要额外 LLM
+# 调用，纯本地字符串/字典比较。每个 section 用一个"识别 key"匹配同一条
+# 目在新旧草稿里是否还存在：deliverables 按 name、handoff_fields 按
+# key、sub_directories 按 name、两种 criteria 按 text、special_
+# constraints（纯字符串列表）按值本身。
+_SPEC_DIFF_SECTIONS = [
+    ("deliverables", "产出物", "name"),
+    ("handoff_fields", "跨轮传递", "key"),
+    ("sub_directories", "子目录", "name"),
+    ("per_cycle_criteria", "每轮完成标准", "text"),
+    ("overall_completion_criteria", "整体完成标准", "text"),
+]
+
+
+def _compute_spec_diff(old_spec: dict, new_spec: dict) -> dict:
+    """返回 `{field_name: {"added": [...], "removed": [...], "changed":
+    [(old_item, new_item), ...]}}`，只包含真正有差异的 section（section
+    内容完全相同则不出现在结果里，调用方据此判断"这次改了什么"）。"""
+    diff: dict = {}
+    for field_name, _label, key_field in _SPEC_DIFF_SECTIONS:
+        old_items = old_spec.get(field_name) or []
+        new_items = new_spec.get(field_name) or []
+        old_by_key = {item.get(key_field, ""): item for item in old_items}
+        new_by_key = {item.get(key_field, ""): item for item in new_items}
+        added = [new_by_key[k] for k in new_by_key if k not in old_by_key]
+        removed = [old_by_key[k] for k in old_by_key if k not in new_by_key]
+        changed = [
+            (old_by_key[k], new_by_key[k])
+            for k in new_by_key
+            if k in old_by_key and old_by_key[k] != new_by_key[k]
+        ]
+        if added or removed or changed:
+            diff[field_name] = {"added": added, "removed": removed, "changed": changed}
+
+    old_constraints = list(old_spec.get("special_constraints") or [])
+    new_constraints = list(new_spec.get("special_constraints") or [])
+    if old_constraints != new_constraints:
+        c_added = [c for c in new_constraints if c not in old_constraints]
+        c_removed = [c for c in old_constraints if c not in new_constraints]
+        if c_added or c_removed:
+            diff["special_constraints"] = {"added": c_added, "removed": c_removed, "changed": []}
+    return diff
+
+
+def _render_spec_diff(diff: dict) -> None:
+    """把 `_compute_spec_diff()` 的结果渲染成"➕ 新增 / ➖ 删除 / ✏️ 改写"
+    三类标注，用户不用重新通读整份规范去猜"这次改了什么"（方案 §6.1 最后
+    一段"通读成本过高会让用户倾向于直接确认"要解决的问题）。"""
+    if not diff:
+        st.caption("这次重新生成后，各字段内容与上一版完全一致（可能只是措辞层面的重新生成，或本来就锁定了全部字段）。")
+        return
+    section_labels = {f: label for f, label, _ in _SPEC_DIFF_SECTIONS}
+    section_labels["special_constraints"] = "特殊约束"
+    text_field = {f: kf for f, _, kf in _SPEC_DIFF_SECTIONS}
+    for field_name, d in diff.items():
+        label = section_labels.get(field_name, field_name)
+        st.markdown(f"**{label}：**")
+        key_field = text_field.get(field_name)
+        for item in d["added"]:
+            text = item if isinstance(item, str) else item.get(key_field, "")
+            st.markdown(f"<span style='color:#1a7f37;'>➕ 新增：{_esc_html(str(text))}</span>", unsafe_allow_html=True)
+        for item in d["removed"]:
+            text = item if isinstance(item, str) else item.get(key_field, "")
+            st.markdown(
+                f"<span style='color:#cf222e;text-decoration:line-through;'>➖ 删除：{_esc_html(str(text))}</span>",
+                unsafe_allow_html=True,
+            )
+        for old_item, new_item in d.get("changed", []):
+            text = new_item.get(key_field, "") if isinstance(new_item, dict) else str(new_item)
+            st.markdown(f"<span style='color:#9a6700;'>✏️ 改写：{_esc_html(str(text))}</span>", unsafe_allow_html=True)
+
+
 def _render_goal_execution_spec_widget(
     client: "AgentClient", goal_id: str, key_prefix: str = "",
     on_confirm_extra: Optional[Callable[[], None]] = None,
@@ -2321,6 +2388,12 @@ def _render_goal_execution_spec_widget(
     用户"建议先确认规范"之类的文案，不影响主流程是否能继续）。"""
     draft_key = f"{key_prefix}ges_draft_{goal_id}"
     path_key = f"{key_prefix}ges_path_{goal_id}"
+    # [implementation_record.md §12 后续建议顺序第 1 条"差异高亮"] 每次
+    # `revise()`/"从模板重新起草"整段覆盖草稿前，把覆盖前的版本存进这里；
+    # 渲染时如果存在就对比算出差异标注，展示一次后即清空（不跨会话持久化
+    # ——差异只对"刚刚这一次改动"有意义，下次改动会覆盖掉上一次的对比
+    # 基线）。
+    diff_key = f"{key_prefix}ges_diffprev_{goal_id}"
 
     if draft_key not in st.session_state:
         existing = client.get_execution_spec(goal_id)
@@ -2344,6 +2417,7 @@ def _render_goal_execution_spec_widget(
             if st.button("♻️ 生成新草稿（重新想一遍细节）", key=f"{key_prefix}ges_regen_{goal_id}"):
                 del st.session_state[draft_key]
                 st.session_state.pop(path_key, None)
+                st.session_state.pop(diff_key, None)
                 st.rerun()
         return True
 
@@ -2412,6 +2486,18 @@ def _render_goal_execution_spec_widget(
     st.caption(f"📝 执行规范草稿（第 {spec.get('version', 1)} 版，未确认，不影响执行）")
     _render_execution_spec_summary(spec)
 
+    # [goal_execution_spec_generation_plan.md §6.1 最后一段 / implementation_
+    # record.md §12 后续建议顺序第 1 条"差异高亮"] 上一次操作（补充意见
+    # 重新生成 / 从模板重新起草）覆盖草稿之后，展示这次相比上一版改了
+    # 什么，避免用户为了确认"没有意外改动"重新通读整份规范。
+    diff_prev = st.session_state.get(diff_key)
+    if diff_prev is not None:
+        with st.expander("🔍 与上一版的差异", expanded=True):
+            _render_spec_diff(_compute_spec_diff(diff_prev, spec))
+            if st.button("知道了，收起差异", key=f"{key_prefix}ges_diffack_{goal_id}"):
+                st.session_state.pop(diff_key, None)
+                st.rerun()
+
     lock_sections = [
         ("deliverables", "产出物"), ("handoff_fields", "跨轮传递"),
         ("sub_directories", "子目录"), ("per_cycle_criteria", "每轮标准"),
@@ -2450,6 +2536,7 @@ def _render_goal_execution_spec_widget(
             if res and res.get("_error"):
                 st.error(f"重新生成失败：{res['_error']}")
             else:
+                st.session_state[diff_key] = spec
                 st.session_state[draft_key] = res.get("spec")
                 st.session_state[path_key] = res.get("effective_path")
                 st.rerun()
@@ -2459,12 +2546,14 @@ def _render_goal_execution_spec_widget(
             st.error(f"确认失败：{res['_error']}")
         else:
             st.session_state[draft_key] = res.get("spec")
+            st.session_state.pop(diff_key, None)
             if on_confirm_extra:
                 on_confirm_extra()
             st.rerun()
     elif skip_click:
         del st.session_state[draft_key]
         st.session_state.pop(path_key, None)
+        st.session_state.pop(diff_key, None)
         st.rerun()
 
     # [goal_execution_spec_generation_plan.md §6.1 / 实施记录未实施清单
@@ -2485,6 +2574,7 @@ def _render_goal_execution_spec_widget(
             if res and res.get("_error"):
                 st.error(f"重新起草失败：{res['_error']}")
             else:
+                st.session_state[diff_key] = spec
                 st.session_state[draft_key] = res.get("spec")
                 st.session_state[path_key] = res.get("effective_path")
                 st.rerun()

@@ -20,8 +20,11 @@
   `GoalNode.overall_completion_last_check`，看板/CLI 常驻展示上一次判定
   是什么时候、判了什么、走的是哪条路径；`use_agent` 单次覆盖入口，CLI
   `spec close-check --use-agent/--no-agent`、REST body `use_agent`
-  字段、看板"整体关闭判定路径"下拉框）已实施。看板侧的"直接编辑字段
-  文本框"“差异高亮”仍未实施，见
+  字段、看板"整体关闭判定路径"下拉框）+ Stage 11（看板"差异高亮"：
+  `revise()`/"从模板重新起草"整段覆盖草稿后，纯前端对比新旧两份 JSON
+  标出新增/删除/改写的条目，展开区块默认展开，收起后可再次触发差异
+  展示，不需要额外 LLM 调用）已实施。看板侧的"直接编辑字段文本框"
+  仍未实施，见
   `next_doc/goal_execution_spec_generation_implementation_record.md`
   的"未实施"清单。
 - **触发背景**：用户反馈"goal 系统已经有自动生成验收标准的能力
