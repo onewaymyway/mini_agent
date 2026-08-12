@@ -770,6 +770,11 @@ class AgentClient:
     def growth_pursuits_portfolio_summary(self):
         return self._get("/growth/pursuits/portfolio_summary")
 
+    # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 规划维度候选]
+    # 调研路径关联信号，按需拉取（展开分区时才请求）。
+    def growth_pursuits_related_directions(self):
+        return self._get("/growth/pursuits/related_directions")
+
     # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 1]
     # "📄 素材"按钮点击时记一次埋点，供后续 `growth_pursuits()` 的
     # `engagement` 字段计算"距上次查看过了几轮"。

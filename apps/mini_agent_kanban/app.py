@@ -4636,6 +4636,21 @@ def _render_growth_pursuits(client: "AgentClient"):
                 st.info(f"💡 {len(attention)} 个方向可能需要你看一眼：{names}{more}")
             elif portfolio.get("total"):
                 st.caption(f"{portfolio.get('total')} 个方向都在正常推进，暂时没有需要特别关注的。")
+            # [规划维度候选] 调研路径关联信号：哪些方向内容上互相有共现，
+            # 值得关联查看——纯提示，不改变任何排序/执行，怎么处理仍然
+            # 由用户自己决定。
+            try:
+                related_data = client.growth_pursuits_related_directions() or {}
+            except Exception:
+                related_data = {}
+            relations = related_data.get("relations") or []
+            if relations:
+                lines = "；".join(
+                    f"「{r.get('title')}」↔「{r.get('related_title')}」"
+                    for r in relations[:3]
+                )
+                more = f" 等 {len(relations)} 组" if len(relations) > 3 else ""
+                st.caption(f"🔗 内容上可能有关联，值得互相参考：{lines}{more}")
         # [growth_advisor_autonomy_deepening_plan_v2.md 方向 5] 批量操作
         # 入口：单个方向的暂停/恢复已经很短，但同时有多个方向在跑时，
         # 逐个点还是麻烦（比如要出差一段时间）。这里只是循环调用已有的

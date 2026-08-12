@@ -3788,6 +3788,75 @@ def pursuits_portfolio_summary(
     }
 
 
+# ────────── [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 规划维度候选] 调研路径关联信号 ──────────
+# 现状：多个方向并行推进时，`pursuits_portfolio_summary()` 只回答"该先
+# 看哪几个"，不回答"这几个方向之间是不是有关联"。这里补一个纯规则式
+# 的共现信号：如果方向 A 最近几轮实际产出的内容里，反复出现方向 B 的
+# 关键词，就提示"这两个方向内容上有关联，值得互相参考"——刻意不判断
+# "谁是谁的前置知识"这种更强的因果结论（共现不等于依赖顺序，规则式
+# 关键词匹配也做不到这种语义判断），只做"值得关注"级别的弱提示，跟
+# 方案文档"规划维度"里"资源分配/决策权交还用户"的一贯克制一致。
+
+_PURSUIT_RELATED_MIN_SHARED_KEYWORDS = 2
+_PURSUIT_RELATED_LOOKBACK_CYCLES = 5
+
+
+def related_pursuit_directions(paths, goal_backlog, profile=None) -> list[dict]:
+    """[规划维度候选] 对"🔄 正在自主推进"分区里全部方向两两之间做一次
+    关键词共现扫描：方向 A 最近几轮实际产出的内容（`covered_subtopics`
+    累积文本，复用方向 6 动态修正已有的 `_recent_covered_subtopics_
+    text()`）里，如果命中方向 B 的关键词（`_effective_topic_
+    keywords()` 登记的那一份）达到 `_PURSUIT_RELATED_MIN_SHARED_
+    KEYWORDS`（默认 2）个，就记一条"A 的内容提到了 B"的关联信号。
+
+    只处理打了 `growth_advisor` 标签且 `recurring=True` 的 Goal，口径
+    跟 `pursuits_portfolio_summary()` 一致。`profile` 缺失、某个方向
+    没有登记关键词、或没有可用的产出内容时，该方向自然不参与匹配，
+    不报错、不影响其它方向的计算。方向是有意义的（A 的内容提到 B，
+    不代表 B 的内容也提到 A），因此两个方向互相提到时会各出现一条
+    独立记录，不做去重合并。
+
+    返回：[{"goal_id", "title", "related_goal_id", "related_title",
+    "shared_keywords": [...]}]，纯只读聚合，不产生新的持久化。
+    """
+    backlog = GrowthBacklog(paths)
+    pursued: list[tuple[str, Any]] = []
+    for c in backlog.load_all():
+        if not c.linked_goal_id:
+            continue
+        goal = goal_backlog.get(c.linked_goal_id)
+        if goal is None or not goal.recurring:
+            continue
+        pursued.append((c.title, goal))
+    if len(pursued) < 2:
+        return []
+
+    effective_keywords = _effective_topic_keywords(profile) if profile is not None else {}
+    relations: list[dict] = []
+    for title_a, goal_a in pursued:
+        content_a = _recent_covered_subtopics_text(paths, goal_a.id, _PURSUIT_RELATED_LOOKBACK_CYCLES)
+        if not content_a:
+            continue
+        content_a_lower = content_a.lower()
+        for title_b, goal_b in pursued:
+            if goal_a.id == goal_b.id:
+                continue
+            info_b = effective_keywords.get(title_b)
+            keywords_b = list(info_b.get("keywords") or []) if isinstance(info_b, dict) else []
+            if not keywords_b:
+                continue
+            shared = [kw for kw in keywords_b if kw.lower() in content_a_lower]
+            if len(shared) >= _PURSUIT_RELATED_MIN_SHARED_KEYWORDS:
+                relations.append({
+                    "goal_id": goal_a.id,
+                    "title": title_a,
+                    "related_goal_id": goal_b.id,
+                    "related_title": title_b,
+                    "shared_keywords": shared,
+                })
+    return relations
+
+
 # ──────────── [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 3] ────────────
 # Goal 执行内容反哺信号扫描：候选 → Goal 此前是单向的，Goal 绑定周期性
 # 执行之后每一轮实际产出的 `open_questions` 完全不会反哺回成长顾问的

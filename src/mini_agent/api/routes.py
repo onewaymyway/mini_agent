@@ -6645,6 +6645,32 @@ async def get_growth_pursuits_portfolio_summary(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/growth/pursuits/related_directions")
+async def get_growth_pursuits_related_directions(request: Request):
+    """GET /v1/growth/pursuits/related_directions —
+    [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 规划维度候选]
+    多方向并行推进时的关联信号：哪些正在自主推进的方向，内容上跟另一
+    个方向有共现关键词，值得互相参考。纯只读聚合，不产生新的持久化，
+    跟 `/growth/pursuits/portfolio_summary` 一样按需拉取。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.perception.goal_backlog import GoalBacklog
+        from mini_agent.profile import UserProfileManager
+
+        goal_backlog = GoalBacklog(paths)
+        goal_backlog.load()
+        profile = UserProfileManager(paths).load()
+
+        return {"relations": ga.related_pursuit_directions(paths, goal_backlog, profile=profile)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/growth/pursuits/{goal_id}/view_material")
 async def post_growth_pursuit_view_material(request: Request, goal_id: str):
     """POST /v1/growth/pursuits/{goal_id}/view_material —

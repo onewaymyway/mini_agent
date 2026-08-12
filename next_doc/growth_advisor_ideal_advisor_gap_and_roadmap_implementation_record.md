@@ -624,3 +624,58 @@ C1（`reorganize_hint_for_cycle()`）已验证的"按累计轮次追加 prompt
 - 成本核对：默认关闭，零行为变化；开启后不产生任何新的 LLM/网络
   调用，只是多扫一次已经在内存里的 `memory_store.all_entries()`——
   这个调用在 `growth_signal_scan()` 里本来就会做一次，量级可忽略。
+
+### 调研路径关联信号（规划维度候选）
+
+对应聊天中新增候选（源自规划维度局限分析：多方向并行推进时，
+`pursuits_portfolio_summary()` 只回答"该先看哪几个"，不回答"这几个
+方向之间是不是有关联"）。目标：用一个纯规则式的共现信号提示"这两个
+方向内容上有关联，值得互相参考"——刻意不判断"谁是谁的前置知识"这种
+更强的因果结论（共现不等于依赖顺序），保持跟规划维度一贯的"决策权
+交还用户"的克制。
+
+- `evolution/growth_advisor.py` 新增
+  `related_pursuit_directions(paths, goal_backlog, profile=None)`：
+  对"🔄 正在自主推进"分区（口径同 `pursuits_portfolio_summary()`：
+  `growth_advisor` 标签 + `recurring=True`）里全部方向两两之间做一次
+  关键词共现扫描——方向 A 最近几轮实际产出的内容（复用方向 6 动态
+  修正已有的 `_recent_covered_subtopics_text()`）里，如果命中方向 B
+  的关键词（`_effective_topic_keywords()`）达到 `_PURSUIT_RELATED_
+  MIN_SHARED_KEYWORDS`（默认 2）个，记一条"A 提到 B"的关联信号。
+  方向有意义（A 的内容提到 B 不代表 B 的内容也提到 A），因此不做
+  对称去重，两个方向互相提到时各出现一条独立记录。纯只读聚合，不
+  产生新的持久化，没有配置开关（零成本，跟 `pursuits_portfolio_
+  summary()` 一样按需拉取）。
+- `api/routes.py` 新增 `GET /growth/pursuits/related_directions`，
+  跟 `/growth/pursuits/portfolio_summary` 同款只读聚合端点。
+- `apps/mini_agent_kanban/client.py` 新增
+  `growth_pursuits_related_directions()`；`apps/mini_agent_kanban/
+  app.py::_render_growth_pursuits()` 在"🔄 正在自主推进"展开分区里
+  新增一行 `🔗 内容上可能有关联，值得互相参考：...` 提示（没有关联
+  信号时不展示，不影响既有布局）。
+- 新增测试 `tests/test_growth_advisor_related_pursuit_directions.py`
+  （7 个用例）：少于 2 个方向在推进时返回空列表；没有关键词重叠时
+  不生成关联；命中阈值时正确生成关联记录（含具体共享关键词）；未达
+  阈值（只命中 1 个关键词）不生成；暂停的方向不参与匹配；没有
+  `profile` 时不生成任何关联（没有关键词表可比对）；方向不对称
+  （只有 A 的内容提到 B，B 没有产出内容时只生成一条 A→B，不会凭空
+  生成 B→A）。
+- 回归：加上这批新测试后，`test_growth_advisor.py` +
+  `test_growth_advisor_pursuits_portfolio_summary.py` +
+  `test_growth_advisor_material_engagement.py` +
+  `test_growth_advisor_pursuit_self_check.py` +
+  `test_growth_advisor_saturation_and_pursuit_visibility.py` +
+  `test_growth_advisor_pursuit_increment_llm_review.py` +
+  `test_growth_advisor_pursuit_spinoff.py` +
+  `test_growth_advisor_feedback_pattern_summary.py` +
+  `test_growth_advisor_pursuit_style.py` +
+  `test_growth_advisor_pursuit_style_reclassify_and_report_upgrade.py` +
+  `test_growth_advisor_notification_context_aware_throttle.py` +
+  `test_growth_advisor_related_pursuit_directions.py` +
+  `test_goal_backlog.py` + `test_goal_cron_bridge.py` +
+  `test_growth_advisor_goal_cron_integration.py` 共 357 个用例全部
+  通过（同一个跟本次改动无关的既有时间敏感用例单独排除，理由同上）。
+- 成本核对：零配置开关，纯规则式关键词字符串匹配（复用已有的
+  `_recent_covered_subtopics_text()`/`_effective_topic_keywords()`），
+  不产生任何 LLM 调用；跟 `pursuits_portfolio_summary()` 一样只在
+  看板展开分区时按需请求一次，不放进默认响应、不接入 cron 触发路径。

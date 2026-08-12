@@ -1166,6 +1166,43 @@ boost`）。
 **测试**：`tests/test_growth_advisor_notification_context_aware_
 throttle.py`（12 个用例）。
 
+### 2.24 调研路径关联信号（规划维度候选）（本次新增）
+
+**现状问题**：多方向并行推进时，2.9 节的 `pursuits_portfolio_
+summary()` 只回答"我现在该先看哪几个方向"，不回答"这几个方向之间
+是不是有关联"——理想情况下，如果方向 A 的调研内容里反复出现方向 B
+的关键词，值得提示用户"这两个可以关联着看"。
+
+**改动**：
+
+- `related_pursuit_directions(paths, goal_backlog, profile=None)`：
+  对"🔄 正在自主推进"分区（口径同 2.9 节）里全部方向两两之间做一次
+  关键词共现扫描，复用 2.21 节动态修正已有的 `_recent_covered_
+  subtopics_text()` 拿方向 A 最近几轮的实际产出内容，复用
+  `_effective_topic_keywords()` 拿方向 B 登记的关键词，命中数达到
+  阈值（默认 2）就记一条"A 提到 B"的关联信号。刻意只做共现提示，不
+  判断"谁是谁的前置知识"这种更强的因果结论——共现不等于依赖顺序，
+  规则式关键词匹配也做不到这种语义判断，跟规划维度一贯"决策权交还
+  用户"的克制一致。方向是有意义的（A 提到 B 不代表 B 也提到 A），
+  不做对称去重。
+- `GET /growth/pursuits/related_directions`：跟 2.9 节
+  `/growth/pursuits/portfolio_summary` 同款只读聚合端点，看板展开
+  分区时按需请求。
+- 看板在"🔄 正在自主推进"展开分区里新增一行 `🔗 内容上可能有关联，
+  值得互相参考：...` 提示（没有关联信号时不展示）。
+
+**新增/变更文件**：`src/mini_agent/evolution/growth_advisor.py`
+（`related_pursuit_directions()`）、`src/mini_agent/api/routes.py`
+（`GET /growth/pursuits/related_directions`）、
+`apps/mini_agent_kanban/client.py`
+（`growth_pursuits_related_directions()`）、
+`apps/mini_agent_kanban/app.py`（`_render_growth_pursuits()` 新增
+关联提示行）。这个能力没有配置开关——纯规则式字符串匹配，零成本，
+跟 2.9 节一样按需拉取，不需要 opt-in。
+
+**测试**：`tests/test_growth_advisor_related_pursuit_directions.py`
+（7 个用例）。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外
@@ -1565,3 +1602,11 @@ N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
   调整，对使用频率本来就很低的用户（比如每周互动一两次）可能不适用
   （基线数据不足时函数会返回 `None`，直接跳过软性调整，但也意味着
   这类用户永远享受不到这个能力）。
+- 2.24 节落地的调研路径关联信号只做"共现提示"，不做"依赖顺序判断"
+  ——即便两个方向存在明显的先后关系（比如"Python 基础"应该先于
+  "数据分析"），系统也只会说"这两个有关联"，不会建议学习顺序，这是
+  刻意的克制而不是遗漏，但也确实是规划维度分析里提到的"纵向路径
+  设计"能力缺口尚未填补的部分；关键词共现本身对措辞高度敏感（同一
+  个概念换一种说法就匹配不到），且只扫描 `covered_subtopics` 这一个
+  字段，如果某个方向没有用 `growth_pursuit` 模板、或者执行时没有按
+  约定写 handoff 块，这个方向就完全不会出现在关联信号里。
