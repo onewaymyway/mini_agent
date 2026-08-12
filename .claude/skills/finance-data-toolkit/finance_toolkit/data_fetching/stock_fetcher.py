@@ -11,6 +11,12 @@ from dataclasses import dataclass, field
 
 from ..resilience import retry_with_backoff
 from ..exceptions import DataError, SourceUnavailableError
+from ..validation import (
+    validate_kline_data,
+    validate_quote_data,
+    DataQualityValidator,
+    QualityReport,
+)
 
 try:
     import akshare as ak
@@ -128,14 +134,17 @@ def _fetch_realtime_quote_internal(symbols=None):
     return df.to_dict("records")
 
 
-def fetch_realtime_quote(symbols=None, source="akshare"):
+def fetch_realtime_quote(symbols=None, source="akshare", validate=True):
+    """获取实时行情，返回 (quotes, quality_issues)"""
     if source != "akshare" or not HAS_AKSHARE:
         raise SourceUnavailableError(source, f"数据源 {source} 不可用")
+    validator = DataQualityValidator()
     try:
         records = _fetch_realtime_quote_internal(symbols)
         results = []
+        quality_issues = []
         for rec in records:
-            results.append(StockQuote(
+            quote_obj = StockQuote(
                 symbol=rec.get("代码", ""),
                 name=rec.get("名称", ""),
                 price=float(rec.get("最新价", 0) or 0),
@@ -151,8 +160,26 @@ def fetch_realtime_quote(symbols=None, source="akshare"):
                 pb_ratio=float(rec.get("市净率", 0) or 0),
                 total_market_cap=float(rec.get("总市值", 0) or 0),
                 float_market_cap=float(rec.get("流通市值", 0) or 0),
-            ))
-        return results
+            )
+            results.append(quote_obj)
+            if validate and quote_obj.symbol:
+                q_dict = {
+                    'close': quote_obj.price,
+                    'open': quote_obj.open,
+                    'high': quote_obj.high,
+                    'low': quote_obj.low,
+                    'pre_close': quote_obj.prev_close,
+                    'volume': quote_obj.volume,
+                    'amount': quote_obj.amount,
+                    'change_pct': quote_obj.change_pct,
+                    'symbol': quote_obj.symbol,
+                }
+                q_report = validator.validate_quote(q_dict, symbol=quote_obj.symbol)
+                if not q_report.is_valid:
+                    quality_issues.extend(q_report.issues)
+        if quality_issues:
+            logger.warning(f"实时行情验证发现 {len(quality_issues)} 个问题")
+        return results, quality_issues
     except Exception as e:
         logger.error(f"实时行情获取失败: {e}")
         raise DataError(f"实时行情获取失败: {e}", data_type="quote")
@@ -165,7 +192,8 @@ def _fetch_kline_internal(symbol, start, end, period="daily"):
     return ak.stock_zh_a_hist(symbol=symbol, period=period, start_date=start, end_date=end, adjust="qfq")
 
 
-def fetch_kline(symbol, start_date=None, end_date=None, period="daily", source="akshare"):
+def fetch_kline(symbol, start_date=None, end_date=None, period="daily", source="akshare", validate=True):
+    """获取K线数据"""
     if source != "akshare" or not HAS_AKSHARE:
         raise SourceUnavailableError(source, f"数据源 {source} 不可用")
     try:
@@ -174,6 +202,12 @@ def fetch_kline(symbol, start_date=None, end_date=None, period="daily", source="
         if start_date is None:
             start_date = (datetime.now() - timedelta(days=365)).strftime("%Y%m%d")
         df = _fetch_kline_internal(symbol, start_date, end_date, period)
+        if df is None or df.empty:
+            return []
+        if validate:
+            report = validate_kline_data(df)
+            if not report.is_valid:
+                logger.warning(f"K线数据验证失败: {report}")
         results = []
         for _, row in df.iterrows():
             results.append(StockKline(
@@ -336,13 +370,20 @@ def fetch_stock_basic(source="akshare"):
 # ============== 便捷函数 ==============
 
 def fetch_all_stock_data(symbol=None, data_types=None, source="akshare"):
+    """获取股票所有类型数据，返回 (results, quality_issues)"""
     if data_types is None:
         data_types = ["quote", "kline", "financial", "dividend", "lhb", "northbound", "basic"]
-    results = {}
+    results: Dict[str, Any] = {}
+    quality_issues: List[Any] = []
     if "quote" in data_types:
-        results["quote"] = fetch_realtime_quote(symbols=[symbol] if symbol else None, source=source)
+        quote_results, quote_issues = fetch_realtime_quote(
+            symbols=[symbol] if symbol else None, source=source
+        )
+        results["quote"] = quote_results
+        quality_issues.extend(quote_issues)
     if "kline" in data_types and symbol:
-        results["kline"] = fetch_kline(symbol=symbol, source=source)
+        kline_results = fetch_kline(symbol=symbol, source=source)
+        results["kline"] = kline_results
     if "financial" in data_types and symbol:
         results["financial"] = fetch_financial(symbol=symbol, source=source)
     if "dividend" in data_types and symbol:
@@ -353,7 +394,7 @@ def fetch_all_stock_data(symbol=None, data_types=None, source="akshare"):
         results["northbound"] = fetch_northbound(source=source)
     if "basic" in data_types:
         results["basic"] = fetch_stock_basic(source=source)
-    return results
+    return results, quality_issues
 
 
 __all__ = [
@@ -362,4 +403,5 @@ __all__ = [
     "fetch_realtime_quote", "fetch_kline", "fetch_financial",
     "fetch_dividend", "fetch_lhb", "fetch_northbound",
     "fetch_stock_basic", "fetch_all_stock_data",
+    "QualityReport", "DataQualityValidator",
 ]
