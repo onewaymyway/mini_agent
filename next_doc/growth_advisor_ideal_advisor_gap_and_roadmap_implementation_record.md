@@ -2,7 +2,7 @@
 
 对应计划：`growth_advisor_ideal_advisor_gap_and_roadmap_plan.md`
 （第 7 节给出的优先级顺序：方向 1 → 方向 4 → 方向 5 → 方向 3 →
-方向 2 → 方向 6（不排期））。本记录按落地顺序追加，每个方向落地后
+方向 2 → 方向 6）。本记录按落地顺序追加，每个方向落地后
 在此补一节，不新开文件。
 
 ## 已完成
@@ -337,5 +337,106 @@ C1（`reorganize_hint_for_cycle()`）已验证的"按累计轮次追加 prompt
 
 ## 待推进（按方案文档第 7 节优先级）
 
-1. 方向 6：主题类型分化的调研/呈现风格——方案文档明确本轮不建议
-   排期，留待后续视情况重新评估。
+（全部六个方向已落地，无待推进项。）
+
+## 已完成
+
+### 方向 6：调研风格智能分类（规则默认 + LLM opt-in）
+
+对应方案文档第 6 节。目标：`growth_pursuit` 模板此前对技术类、理论类、
+习惯养成类方向一视同仁，产出方式完全相同。方案文档原建议"先做用户
+手动选择、暂不做自动判断"，后续与用户讨论后改为直接做**自动智能
+分类**——跳过手动选择这一中间态，规则式关键词匹配作为零成本默认
+路径（总是可用），LLM 复核作为 opt-in 增强（默认关闭）。
+
+- `evolution/growth_advisor.py` 新增：
+  - `_PURSUIT_STYLE_LABELS = ("技能实操类", "知识理论类", "习惯养成类")`——
+    跟 P5-3 的 `_TOPIC_CATEGORY_LABELS`（"是什么话题"）是两个正交维度，
+    这里回答的是"这类话题该怎么调研/呈现"。
+  - `_PURSUIT_STYLE_KEYWORDS`：只登记"技能实操类"（编程/开发/工程/
+    框架/代码/api 等）和"习惯养成类"（习惯/打卡/坚持/作息/锻炼等）
+    两类的高置信度关键词，刻意不穷举——跟 `_TOPIC_CATEGORIES` 只登记
+    7 个高置信度主题同一种"宁可漏判归入默认值，不强行猜测引入噪音"
+    的取舍。
+  - `_infer_pursuit_style_rule(topic, extra_text="")`：关键词命中数
+    最多的类别胜出，全不命中或平局兜底"知识理论类"（读书笔记式持续
+    调研是 `growth_pursuit` 模板最初、也是最通用的产出形态，作为
+    默认值最保守）。零 LLM 成本，总是可用。
+  - `classify_pursuit_style_llm(topic, keywords, llm_helper, paths=None)`：
+    跟 `classify_topic_category_llm()` 同款"opt-in、宽松吸收"模式，
+    3 选 1，解析失败/异常/空响应一律返回 `None`，调用方兜底沿用规则式
+    结果，不会倒退现有行为。LLM 调用结果通过既有的
+    `_record_llm_call_status(paths, "pursuit_style", ...)` 记录。
+  - `determine_pursuit_style(topic, extra_text="", keywords=None, cfg=None,
+    llm_helper=None, paths=None)`：统一入口，规则式结果总是先算出来；
+    `cfg.pursuit_style_llm_enabled=True` 且传了 `llm_helper` 时才额外
+    调一次 LLM 复核，命中合法标签就覆盖，否则静默沿用规则式结果——这
+    一步失败绝不影响返回值的可用性。
+  - `_PURSUIT_STYLE_PROMPT_ADDENDUM`：每种风格对应一段 prompt 追加
+    指令（技能实操类多给可复现操作步骤/代码示例；知识理论类维护
+    结构化知识脉络；习惯养成类以短小打卡式记录为主、不追求持续增厚
+    知识库）。
+  - `pursuit_style_hint(goal, cfg=None)`：只对打了 `growth_advisor`
+    标签、且 `goal.growth_pursuit_style` 非空（已被分类过）的 Goal
+    返回对应的风格提示；未分类（旧 Goal、或非自动推进路径创建的
+    Goal）时返回 `None`，不影响任何现有行为。跟 C1/方向 5 的"按累计
+    轮次触发"不同，这里**每一轮都带上**——风格是这个方向的持续属性，
+    不是某个特定轮次才需要的提醒。
+- `config/models.py::GrowthAdvisorConfig` 新增 `pursuit_style_llm_
+  enabled: bool = False`：跟 `topic_category_llm_enabled`/
+  `feedback_pattern_llm_enabled` 等同款默认关闭、opt-in 的取舍。
+- `perception/goal_backlog.py::GoalNode` 新增 `growth_pursuit_style:
+  Optional[str] = None` 字段（同步补齐 `to_dict`/`from_dict`）：只影响
+  `growth_pursuit` 模板每一轮 prompt 里追加的风格提示，不影响任何
+  排序/执行判定；旧数据反序列化缺该字段时落到 `None`，等价于"未分类"，
+  不需要额外迁移。
+- `evolution/growth_advisor.py::auto_pursue_candidate()`：落地成 Goal
+  之后（步骤 2 与步骤 3 之间新增步骤 2.5），若 Goal 尚未分类过
+  （`growth_pursuit_style` 为空），调用一次 `determine_pursuit_style()`
+  并写回 `goal_backlog.update_fields(goal.id, growth_pursuit_style=...)`——
+  只在**首次**自动持续推进落地时判定一次（风格是持续属性，不需要每次
+  自动推进都重算），失败静默跳过、不影响主流程（`report`/`goal`/
+  `spec`/`cron_job` 各步骤照常推进）。
+- `evolution/goal_cron_bridge.py` 新增 `_append_growth_pursuit_style_
+  hint()`，跟 `_append_growth_reorganize_hint()` / `_append_growth_
+  self_check_hint()` 在同一处（`_trigger_cycle`/组装子 Objective
+  description 的位置）串联调用，任何环节异常静默跳过、不影响 Goal
+  触发主流程；不产生额外的执行循环或 LLM 调用点。
+- `api/routes.py`：`GET /growth/pursuits` 每条方向新增 `pursuit_style`
+  字段（`getattr(goal, "growth_pursuit_style", None)`），纯只读透出，
+  不产生新的持久化或计算。
+- `apps/mini_agent_kanban/app.py::_render_growth_pursuits()`：调度信息
+  这一行 caption 里追加 `🧭 <风格>` 标记（未分类时不展示，不影响既有
+  布局）——纯展示，帮用户理解"这个方向的素材会偏实操案例、还是偏
+  结构化脉络、还是偏打卡提醒"。
+- 新增测试 `tests/test_growth_advisor_pursuit_style.py`（18 个用例）：
+  规则式分类（技能类关键词命中/习惯类关键词命中/无命中兜底知识理论类/
+  extra_text 参与匹配/平局取默认）；LLM 分类（合法标签/非法标签返回
+  None/空响应返回 None/异常返回 None）；统一入口 `determine_pursuit_
+  style()`（默认只用规则/关闭时忽略 helper/开启但无 helper 时降级为
+  规则/开启且有效时覆盖规则/LLM 返回非法值时降级为规则）；
+  `pursuit_style_hint()`（非 growth_advisor 标签不生效/未分类不生效/
+  三种风格都能正确生成提示/非法风格值返回 None）。
+- 回归：`tests/test_growth_advisor.py` +
+  `test_growth_advisor_pursuits_portfolio_summary.py` +
+  `test_growth_advisor_material_engagement.py` +
+  `test_growth_advisor_pursuit_self_check.py` +
+  `test_growth_advisor_saturation_and_pursuit_visibility.py` +
+  `test_growth_advisor_pursuit_increment_llm_review.py` +
+  `test_growth_advisor_pursuit_spinoff.py` +
+  `test_growth_advisor_feedback_pattern_summary.py` +
+  `test_growth_advisor_pursuit_style.py` 共 275 个用例全部通过；另外
+  单独跑了 `test_goal_backlog.py` + `test_goal_cron_bridge.py` +
+  `test_growth_advisor_goal_cron_integration.py`（`GoalNode` 新字段 /
+  `goal_cron_bridge` 新 hint 函数所在模块的既有测试）共 48 个用例，
+  全部通过，无回归。`test_kanban_growth_dragdrop.py` 因为环境缺
+  `streamlit` 包无法收集，`test_system_connectivity_routes.py` 等
+  少数路由测试因环境缺 `fastapi` 包无法收集，均是预置的环境缺口，
+  与本次改动无关。
+- 成本核对：默认（`pursuit_style_llm_enabled=False`）零增量 LLM 调用，
+  规则式分类只是一次字符串关键词匹配，量级可忽略；`GoalNode` 新增
+  一个字段不引入新的持久化文件；开启 LLM 复核后，只在
+  `auto_pursue_candidate()` 首次落地一个 Goal 时触发一次 LLM 调用
+  （不是每轮 cron 都调），量级与 `topic_category_llm_enabled` 开启后
+  单个主题首次归类时的调用频率相当，符合方案文档"opt-in、成本可控"
+  的预期。

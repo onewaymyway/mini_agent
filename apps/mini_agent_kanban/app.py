@@ -4668,7 +4668,15 @@ def _render_growth_pursuits(client: "AgentClient"):
                 if row.get("next_run_at"):
                     label += f" · 下次 {row['next_run_at']}"
                 st.write(label)
-                st.caption(f"调度：{row.get('schedule') or '（未知）'}")
+                schedule_line = f"调度：{row.get('schedule') or '（未知）'}"
+                # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md
+                # 方向 6] 调研风格标记：纯展示，帮用户理解"这个方向的素材
+                # 会偏实操案例、还是偏结构化脉络、还是偏打卡提醒"。未分类
+                # （旧 Goal）时不展示，不影响既有布局。
+                pursuit_style = row.get("pursuit_style")
+                if pursuit_style:
+                    schedule_line += f" · 🧭 {pursuit_style}"
+                st.caption(schedule_line)
                 if saturation.get("saturated"):
                     st.warning(
                         f"⚠️ 最近连续 {saturation.get('streak')} 轮新增内容不多了，"

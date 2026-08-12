@@ -3267,6 +3267,20 @@ def auto_pursue_candidate(
             return result
     result["goal"] = goal
 
+    # 2.5 [方向 6] 调研风格分类——只在 Goal 尚未分类过时判定一次（风格是
+    # 持续属性，不需要每次自动推进都重算），失败静默跳过、不影响主流程。
+    if not getattr(goal, "growth_pursuit_style", None):
+        try:
+            style = determine_pursuit_style(
+                candidate.title, extra_text=candidate.rationale,
+                cfg=cfg, llm_helper=llm_helper, paths=paths,
+            )
+            goal_backlog.update_fields(goal.id, growth_pursuit_style=style)
+            goal.growth_pursuit_style = style
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.evolution.growth_advisor.auto_pursue_candidate.style")
+
     # 3. 执行规范草稿 + 直接确认
     try:
         from mini_agent.perception import goal_execution_spec as ges
@@ -3997,6 +4011,151 @@ def self_check_hint_for_cycle(goal, cycle_no: int, cfg=None) -> Optional[str]:
         "阅读时判断这几个问题答不答得上来；请不要对用户的掌握程度做任何\n"
         "评价或判分，只提供问题和参考答案要点。"
     ).format(cycle_no=cycle_no, every_n=every_n)
+
+
+# ────────── [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 6] 调研风格智能分类 ──────────
+# 现状：无论学技术、读理论书、还是养习惯，`growth_pursuit` 模板的产出方式
+# 完全一样。这里补一层"调研风格"分类——跟 P5-3 的 `_category_of()`（"是
+# 什么话题"）是两个正交维度，这里回答的是"这类话题该怎么调研/呈现"。
+# 规则式关键词匹配是默认路径（零成本、总是跑），LLM 只在 opt-in 开启且
+# 传了 llm_helper 时对规则结果做一次复核/纠偏——跟 `classify_topic_
+# category_llm()` 同一套"规则默认、LLM 增强"的取舍，避免引入新的强依赖。
+_PURSUIT_STYLE_LABELS = ("技能实操类", "知识理论类", "习惯养成类")
+
+# 关键词命中数最多的风格胜出；全都不命中时兜底"知识理论类"（读书笔记式
+# 持续调研是 growth_pursuit 模板最初、也是最通用的产出形态，作为默认最
+# 保守）。关键词表刻意保持简短、只覆盖高置信度词，宁可漏判归入默认值，
+# 不强行猜测引入噪音——跟 `_TOPIC_CATEGORIES` 只登记 7 个高置信度主题
+# 而不是穷举所有可能主题的取舍一致。
+_PURSUIT_STYLE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "技能实操类": (
+        "编程", "开发", "工程", "框架", "库", "工具", "代码", "调试",
+        "部署", "实战", "项目实践", "动手", "python", "javascript",
+        "sql", "api", "架构", "设计模式", "算法实现",
+    ),
+    "习惯养成类": (
+        "习惯", "打卡", "坚持", "自律", "作息", "锻炼", "运动", "冥想",
+        "早起", "戒", "养成", "日常", "健身", "饮食",
+    ),
+}
+
+
+def _infer_pursuit_style_rule(topic: str, extra_text: str = "") -> str:
+    """[方向 6] 规则式关键词匹配，零 LLM 成本、总是可用。只在 `_PURSUIT_
+    STYLE_KEYWORDS` 登记的两类（技能实操类/习惯养成类）里找关键词命中，
+    命中数最多的胜出；平局或全不命中一律兜底"知识理论类"（既是最通用的
+    默认产出形态，也避免在证据不足时武断猜测）。
+    """
+    text = f"{topic} {extra_text}".lower()
+    best_label = "知识理论类"
+    best_count = 0
+    for label, keywords in _PURSUIT_STYLE_KEYWORDS.items():
+        count = sum(1 for kw in keywords if kw.lower() in text)
+        if count > best_count:
+            best_count = count
+            best_label = label
+    return best_label
+
+
+def classify_pursuit_style_llm(
+    topic: str, keywords: list[str], llm_helper: Callable[[str], str], *, paths=None
+) -> Optional[str]:
+    """[方向 6] 用 LLM 把一个成长方向归到 3 种调研风格之一。跟
+    `classify_topic_category_llm()` 同款"opt-in、宽松吸收"模式：解析
+    失败、返回值不在 3 个标签里，一律返回 None，调用方兜底沿用规则式
+    结果（不倒退现有行为，不会因为 LLM 抽风就丢掉一个可用的分类）。
+    """
+    prompt = (
+        "请把下面这个用户成长方向归到 3 种调研/呈现风格之一：技能实操类/"
+        "知识理论类/习惯养成类。技能实操类指需要动手案例、可复现操作步骤"
+        "的技术或技能学习；知识理论类指需要结构化知识脉络的理论、书籍、"
+        "概念性学习；习惯养成类指需要短周期打卡提醒、而不是持续增厚知识"
+        "库的行为习惯培养。\n"
+        f"方向：{topic}\n关键词：{', '.join(keywords)}\n"
+        "只输出风格名称本身（3 选 1），不要有其他文字。"
+    )
+    try:
+        raw = llm_helper(prompt)
+    except Exception as exc:
+        if paths is not None:
+            _record_llm_call_status(paths, "pursuit_style", "error", detail=str(exc)[:200])
+        return None
+    if not raw:
+        if paths is not None:
+            _record_llm_call_status(paths, "pursuit_style", "empty_response")
+        return None
+    text = raw.strip()
+    for label in _PURSUIT_STYLE_LABELS:
+        if label in text:
+            if paths is not None:
+                _record_llm_call_status(paths, "pursuit_style", "success", detail=label)
+            return label
+    if paths is not None:
+        _record_llm_call_status(paths, "pursuit_style", "parse_error", detail=text[:100])
+    return None
+
+
+def determine_pursuit_style(
+    topic: str,
+    *,
+    extra_text: str = "",
+    keywords: Optional[list[str]] = None,
+    cfg=None,
+    llm_helper: Optional[Callable[[str], str]] = None,
+    paths=None,
+) -> str:
+    """[方向 6] 调研风格分类的统一入口：规则式结果总是先算出来（零成本、
+    保证总能返回一个合法标签）；`cfg.pursuit_style_llm_enabled=True` 且
+    传了 `llm_helper` 时，额外调一次 LLM 复核，命中就用 LLM 结果覆盖，
+    LLM 不可用/解析失败/未开启时静默沿用规则式结果——这一步失败绝不
+    影响返回值的可用性。
+    """
+    rule_label = _infer_pursuit_style_rule(topic, extra_text)
+    if not getattr(cfg, "pursuit_style_llm_enabled", False):
+        return rule_label
+    if llm_helper is None:
+        return rule_label
+    llm_label = classify_pursuit_style_llm(topic, keywords or [], llm_helper, paths=paths)
+    return llm_label if llm_label in _PURSUIT_STYLE_LABELS else rule_label
+
+
+# 每种风格对应的 prompt 追加指令，接入 `growth_pursuit` 模板每一轮的子
+# Objective description（见 goal_cron_bridge._append_growth_pursuit_
+# style_hint()）。跟 C1/方向 5 的"按轮次追加提示"是同一种零成本接入
+# 方式的变体：这里不按轮次触发，而是每一轮都带上（风格是这个方向的
+# 持续属性，不是某个特定轮次才需要的提醒）。
+_PURSUIT_STYLE_PROMPT_ADDENDUM: dict[str, str] = {
+    "技能实操类": (
+        "这是一个偏技能实操类的方向：请多给可复现的操作步骤、代码/命令"
+        "示例、动手练习，少堆砌纯概念性描述。"
+    ),
+    "知识理论类": (
+        "这是一个偏知识理论类的方向：请注意维护清晰的结构化知识脉络"
+        "（概念之间的关系、层级），帮助形成系统性理解，而不是零散知识点"
+        "的简单堆砌。"
+    ),
+    "习惯养成类": (
+        "这是一个偏习惯养成类的方向：请以短小的打卡式进展记录/提醒为主，"
+        "不需要持续增厚成篇的知识库内容；重点关注是否坚持、有没有中断，"
+        "而不是新增了多少新知识。"
+    ),
+}
+
+
+def pursuit_style_hint(goal, cfg=None) -> Optional[str]:
+    """[方向 6] 只对打了 `growth_advisor` 标签、且已经有 `growth_pursuit_
+    style` 标记（在 `auto_pursue_candidate()` 落地时写入）的 Goal 返回
+    一段拼进子 Objective description 的风格提示；其余情况返回 None
+    （对齐"未分类时不影响任何现有行为"的既有克制）。`cfg` 目前只是为了
+    跟其它 hint 函数保持统一签名，风格提示本身不依赖任何配置项。
+    """
+    if "growth_advisor" not in (getattr(goal, "tags", None) or []):
+        return None
+    style = getattr(goal, "growth_pursuit_style", None)
+    addendum = _PURSUIT_STYLE_PROMPT_ADDENDUM.get(style) if style else None
+    if not addendum:
+        return None
+    return f"【调研风格提示】{addendum}"
 
 
 # ────────── [growth_advisor_autonomy_deepening_plan.md 方向 C2] 本轮新增摘要推送 ──────────

@@ -151,6 +151,7 @@ def _fire_goal_cycle(
     description = _append_execution_spec_context(paths, goal_backlog, goal, description)
     description = _append_growth_reorganize_hint(paths, goal, cycle_no, description)
     description = _append_growth_self_check_hint(paths, goal, cycle_no, description)
+    description = _append_growth_pursuit_style_hint(paths, goal, description)
     objective = goal_backlog.add_objective(
         title=f"{goal.title}（第 {cycle_no} 轮）",
         parent_id=goal.id,
@@ -298,6 +299,33 @@ def _append_growth_self_check_hint(paths, goal: "GoalNode", cycle_no: int, descr
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_growth_self_check_hint')
+        return description
+
+
+def _append_growth_pursuit_style_hint(paths, goal: "GoalNode", description: str) -> str:
+    """[growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 6]
+    每一轮都追加一次调研风格提示（不像 C1/方向 5 那样按轮次取模触发——
+    风格是这个方向的持续属性，不是某一轮才需要的提醒）。只对打了
+    `growth_advisor` 标签、且已经在 `auto_pursue_candidate()` 落地时被
+    分类过（`goal.growth_pursuit_style` 非空）的 Goal 生效
+    （`pursuit_style_hint` 内部判断），拿不到配置或任何环节异常都静默
+    跳过，不影响 Goal 触发主流程。
+    """
+    if paths is None:
+        return description
+    try:
+        from mini_agent.config import load_config
+        cfg = getattr(load_config(), "growth_advisor", None)
+        from mini_agent.evolution.growth_advisor import pursuit_style_hint
+        hint = pursuit_style_hint(goal, cfg=cfg)
+        if not hint:
+            return description
+        parts = [description] if description and description.strip() else []
+        parts.append(hint)
+        return "\n\n".join(parts)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_growth_pursuit_style_hint')
         return description
 
 

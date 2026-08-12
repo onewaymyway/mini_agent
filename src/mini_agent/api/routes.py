@@ -6600,6 +6600,10 @@ async def get_growth_pursuits(request: Request):
                 "saturation": saturation,
                 "pending_digest": pending_digest,
                 "engagement": engagement,
+                # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md
+                # 方向 6] 调研风格标记，落地时判定、`None` 表示未分类
+                # （旧 Goal 或非自动推进路径），纯展示用途。
+                "pursuit_style": getattr(goal, "growth_pursuit_style", None),
             })
         return {"pursuits": pursuits}
     except HTTPException:

@@ -186,6 +186,15 @@ class GoalNode:
     # 找。旧数据反序列化缺省为 `None`，代表"从未触发过判定"。
     overall_completion_last_check: Optional[dict] = None
 
+    # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 6] 成长
+    # 顾问自动持续推进的 Goal 落地时（`auto_pursue_candidate()`）判定出的
+    # 调研/呈现风格：`"技能实操类"` / `"知识理论类"` / `"习惯养成类"`。只
+    # 影响 `growth_pursuit` 模板每一轮 prompt 里追加的一段风格提示（见
+    # `growth_advisor.pursuit_style_hint()`），不影响任何排序/执行判定。
+    # `None` 表示未分类（非 growth_advisor 相关 Goal 的常态，或方向 6
+    # 落地前创建的旧 Goal），下游按"不追加风格提示"处理，不需要迁移。
+    growth_pursuit_style: Optional[str] = None
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -215,6 +224,7 @@ class GoalNode:
             "status_history": self.status_history,
             "execution_spec_confirmed": self.execution_spec_confirmed,
             "overall_completion_last_check": self.overall_completion_last_check,
+            "growth_pursuit_style": self.growth_pursuit_style,
         }
 
     @staticmethod
@@ -250,6 +260,7 @@ class GoalNode:
             status_history=d.get("status_history", []),
             execution_spec_confirmed=d.get("execution_spec_confirmed", False),
             overall_completion_last_check=d.get("overall_completion_last_check"),
+            growth_pursuit_style=d.get("growth_pursuit_style"),
         )
 
     @property

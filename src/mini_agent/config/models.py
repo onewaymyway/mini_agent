@@ -1901,6 +1901,16 @@ class GrowthAdvisorConfig:
     # 不会喂回任何候选排序/置信度计算——跟第一步同样的"止步于展示"取舍。
     feedback_pattern_llm_enabled: bool = False
 
+    # ── 方向 6：调研风格智能分类（growth_advisor_ideal_advisor_gap_and_
+    # roadmap_plan.md 方向 6）──────────────────────────────────────────
+    # `determine_pursuit_style()` 的规则式关键词匹配默认一直开启、零 LLM
+    # 成本，总能返回一个合法的调研风格标签（技能实操类/知识理论类/习惯
+    # 养成类）。这个开关控制的是在规则结果之上、有 agent 上下文时额外调
+    # 一次 LLM 复核/纠偏——默认关闭，对齐同批其它 LLM 增强开关"默认零
+    # 成本"的基线；开启后 LLM 解析失败/异常时静默沿用规则式结果，不会
+    # 让这个 Goal 的自动持续推进流程因为分类失败而中断。
+    pursuit_style_llm_enabled: bool = False
+
     # ── A3：对齐分析结果批量落地（growth_advisor_autonomy_deepening_
     # plan.md 方向 A3）─────────────────────────────────────────────────
     # `/growth align --adopt-all` / 看板"全部采纳"一次性对"未匹配兴趣"
