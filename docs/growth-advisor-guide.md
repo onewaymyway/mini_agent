@@ -741,6 +741,64 @@ C1（定期整理）/ C2（新增摘要推送）也一并实施。A3/B3 仍按�
 - `apps/mini_agent_kanban/app.py`：新增 `_render_growth_alignment()`
   并接入 `render_growth_tab()`。
 
+### 2.16 落地 `growth_advisor_autonomy_deepening_plan_v2.md`：方向 4（remaining_topics）/ 方向 5（批量暂停/调频）（本次新增）
+
+v1 九个方向落地后，二次审视实现细节又识别出五处"有了但不够"的打磨点
+（详见 v2 方案文档），按其第 6 节的优先级排序，先落地成本最低的两项：
+
+**方向 4：A3 批量落地补充 `remaining_topics`**
+
+- **现状问题**：`batch_adopt_unmatched_interests()` 每次调用都会重新跑
+  一遍 `goal_growth_alignment()`，如果两次调用之间发生了新的信号扫描，
+  `unmatched_interests` 的 `evidence_count` 排序可能变化——原本只返回
+  一个 `remaining_count` 数字，用户不知道具体是哪几个方向还没处理。
+- **改动**：`batch_adopt_unmatched_interests()` 返回值新增
+  `remaining_topics: list[str]`——本次调用结束时仍待处理的 topic 名称
+  列表（按本次返回时的 `evidence_count` 降序）。这只是让"还剩哪些"对
+  用户可见，不引入新的状态持久化，也不改变实际处理顺序（顺序仍由下一
+  次调用时的最新排序决定），对应方案文档"方案一（更简单）"的选择，
+  未采用需要额外持久化"批量操作进度快照"的方案二。
+- **CLI**：`/growth align --adopt-all` 在提示"还有 N 条未处理"之后，
+  追加一行"待处理：<topic1>、<topic2>..."。
+- **看板**："🚀 全部采纳"按钮点击后，剩余提示同样附上具体方向名称。
+
+**方向 5：看板新增"批量暂停 / 批量调频"入口**
+
+- **现状问题**：2.13 节 D2 做到了单个方向的"⏸ 暂停"/"▶ 恢复"，但同时
+  有多个方向在自主推进时（比如要出差一段时间），只能逐个点，跟
+  "就近控制、不用理解 Goal/Cron 内部机制"的理念有落差。
+- **改动**：成长顾问 tab"🔄 正在自主推进"分区新增"⚙ 批量操作"入口
+  （`st.popover`），提供两个动作：
+  - **全部暂停**：对列表里全部方向依次调用 `unrecur_goal()`（跟单条
+    "⏸ 暂停"完全同一个后端能力，只是循环调用）；
+  - **全部调整频率**：提供"每天/每周"选择，对列表里全部方向依次调用
+    `recur_goal()` 传入新的 schedule。
+  两个动作都要求用户显式点击触发，不新增任何"系统自动决定暂停/降频"
+  的逻辑，对齐 1.5 节"自主不等于替用户做主"。**不提供"全部恢复"**——
+  按方案文档的判断，批量恢复的使用场景比批量暂停少见得多（恢复往往
+  是回来后逐条重新评估"这个方向还要不要继续"），如果后续用户反馈确实
+  需要再补。
+- 没有新增后端接口——完全复用 D2 已有的 `stop_goal_recurrence()` /
+  `make_goal_recurring()`，纯粹是看板侧循环调用 + 一个确认性质的批量
+  提示（"将对全部 N 个正在自主推进的方向生效"）。
+
+v2 方案文档其余三项（方向 1：B1 LLM 复核；方向 2：对齐分析 LLM 建议
+一键确认；方向 3：饱和度信号历史趋势）仍按方案文档第 6 节的优先级
+排序留待后续实施，本轮未涉及。
+
+**新增/变更文件**：
+
+- `src/mini_agent/evolution/growth_advisor.py`：
+  `batch_adopt_unmatched_interests()` 返回值新增 `remaining_topics`；
+- `src/mini_agent/cli/commands/growth_cmd.py`：`/growth align
+  --adopt-all` 打印 `remaining_topics`；
+- `apps/mini_agent_kanban/app.py`：`_render_growth_alignment()` 展示
+  `remaining_topics`；`_render_growth_pursuits()` 新增"⚙ 批量操作"
+  入口（批量暂停 / 批量调整频率）；
+- `tests/test_growth_advisor_goal_cron_integration.py`：新增
+  `TestBatchAdoptRemainingTopics`，覆盖 `remaining_topics` 在"部分
+  处理"和"全部处理完"两种场景下的行为。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外

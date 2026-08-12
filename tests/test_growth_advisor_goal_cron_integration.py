@@ -351,5 +351,41 @@ class TestFollowupUsesGoalSignal(unittest.TestCase):
             self.assertIsInstance(result, list)
 
 
+class TestBatchAdoptRemainingTopics(unittest.TestCase):
+    """[growth_advisor_autonomy_deepening_plan_v2.md 方向 4 方案一]
+    `batch_adopt_unmatched_interests()` 除了 `remaining_count`，还应该
+    返回 `remaining_topics`，让"还剩哪几条没处理"对用户可见（而不是一个
+    可能因为下次调用时重新排序而对不上的数字）。"""
+
+    def test_remaining_topics_lists_unprocessed_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            _accepted_candidate_with_report(paths, title="数据分析", evidence_count=9)
+            _accepted_candidate_with_report(paths, title="数据可视化", evidence_count=5)
+            profile.derived["growth_focus_areas"] = {
+                "数据分析": ["e"] * 9,
+                "数据可视化": ["e"] * 5,
+            }
+            cfg = GrowthAdvisorConfig(goal_alignment_adopt_all_max_batch=1)
+            result = ga.batch_adopt_unmatched_interests(paths, cfg, profile)
+            self.assertEqual(len(result["processed"]), 1)
+            self.assertEqual(result["remaining_count"], 1)
+            self.assertEqual(result["remaining_topics"], ["数据可视化"])
+            # 按 evidence_count 降序，最先处理的应该是证据数更高的那条。
+            self.assertEqual(result["processed"][0]["topic"], "数据分析")
+
+    def test_remaining_topics_empty_when_batch_covers_all(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            _accepted_candidate_with_report(paths, title="数据分析", evidence_count=5)
+            profile.derived["growth_focus_areas"] = {"数据分析": ["e"] * 5}
+            cfg = GrowthAdvisorConfig(goal_alignment_adopt_all_max_batch=3)
+            result = ga.batch_adopt_unmatched_interests(paths, cfg, profile)
+            self.assertEqual(result["remaining_count"], 0)
+            self.assertEqual(result["remaining_topics"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

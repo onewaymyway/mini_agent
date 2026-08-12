@@ -4546,7 +4546,9 @@ def _render_growth_alignment(client: "AgentClient"):
                     st.toast(f"「{entry.get('topic')}」落地失败：{'；'.join(entry.get('errors') or ['未知原因'])}", icon="⚠️")
             remaining = result.get("remaining_count", 0)
             if remaining:
-                st.info(f"还有 {remaining} 条未处理（本次批量上限已用完），可再次点击继续。")
+                remaining_topics = result.get("remaining_topics") or []
+                topics_str = "、".join(remaining_topics) if remaining_topics else ""
+                st.info(f"还有 {remaining} 条未处理（本次批量上限已用完），可再次点击继续。" + (f"待处理：{topics_str}" if topics_str else ""))
             st.rerun()
 
 
@@ -4565,6 +4567,30 @@ def _render_growth_pursuits(client: "AgentClient"):
     with st.expander(f"🔄 正在自主推进（{len(active)} 个方向）", expanded=bool(active)):
         st.caption("这些是你采纳过、成长顾问正在按周期自动持续调研的方向——素材持续追加到同一份"
                    "页面，不需要你手动触发。")
+        # [growth_advisor_autonomy_deepening_plan_v2.md 方向 5] 批量操作
+        # 入口：单个方向的暂停/恢复已经很短，但同时有多个方向在跑时，
+        # 逐个点还是麻烦（比如要出差一段时间）。这里只是循环调用已有的
+        # `unrecur_goal()` / `recur_goal()`（跟单条"⏸ 暂停"完全同一个
+        # 后端能力），不新增后端接口，也不自动触发——仍然要用户显式
+        # 点击 + 确认。"全部恢复"故意不做（详见方案文档 5 节理由）。
+        if active:
+            with st.popover("⚙ 批量操作"):
+                st.caption(f"将对全部 {len(active)} 个正在自主推进的方向生效。")
+                if st.button(f"⏸ 全部暂停（{len(active)} 个）", key="growth_pursuit_pause_all"):
+                    for row in active:
+                        client.unrecur_goal(row["goal_id"])
+                    st.toast(f"已暂停全部 {len(active)} 个方向的自主调研", icon="⏸")
+                    st.rerun()
+                new_schedule = st.selectbox(
+                    "批量调整频率为：", ["interval:86400", "interval:604800"],
+                    format_func=lambda s: {"interval:86400": "每天", "interval:604800": "每周"}.get(s, s),
+                    key="growth_pursuit_batch_schedule",
+                )
+                if st.button(f"⚙ 全部调整为该频率（{len(active)} 个）", key="growth_pursuit_batch_reschedule"):
+                    for row in active:
+                        client.recur_goal(row["goal_id"], new_schedule)
+                    st.toast(f"已将 {len(active)} 个方向的调度频率批量调整", icon="⚙")
+                    st.rerun()
         for row in active:
             saturation = row.get("saturation") or {}
             cols = st.columns([4, 1.2, 1])

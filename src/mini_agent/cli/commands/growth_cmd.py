@@ -320,7 +320,10 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
                     R.console.print(f"    - {row['topic']}")
             remaining = result.get("remaining_count", 0)
             if remaining:
+                remaining_topics = result.get("remaining_topics", [])
                 R.print_info(f"还有 {remaining} 条未处理（本次批量上限已用完），可再次执行 /growth align --adopt-all 继续。")
+                if remaining_topics:
+                    R.console.print("  待处理：" + "、".join(remaining_topics))
             return
 
         alignment = ga.goal_growth_alignment(

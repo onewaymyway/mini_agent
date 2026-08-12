@@ -2733,10 +2733,21 @@ def batch_adopt_unmatched_interests(
     本身已经是"任一步骤失败不影响已完成部分"的容错设计），失败信息
     记在对应条目的 `errors` 里。
 
+    [growth_advisor_autonomy_deepening_plan_v2.md 方向 4 方案一] 每次
+    调用都会重新跑一遍 `goal_growth_alignment()`，如果两次调用之间有
+    新的信号扫描发生，`unmatched_interests` 的 `evidence_count` 排序
+    可能变化，导致"还剩几条"这个数字对应的具体条目不稳定。为了让用户
+    能看清楚具体是哪些方向还没处理（而不是一个可能对不上的数字），
+    额外返回 `remaining_topics`：本次调用结束时仍待处理的 topic 列表
+    （按本次返回时的 `evidence_count` 降序），只是让"未处理的有哪些"
+    对用户可见，不改变实际处理顺序——顺序仍由下一次调用时的最新排序
+    决定。
+
     返回：
         {"processed": [{"topic", "candidate_id", "goal_id", "errors"}, ...],
          "skipped": [{"topic", "reason"}, ...],
-         "remaining_count": int}  # 本次未处理到的、仍待落地的条数
+         "remaining_count": int,  # 本次未处理到的、仍待落地的条数
+         "remaining_topics": list[str]}  # 上述条目对应的 topic 名称列表
     """
     if goal_backlog is None:
         goal_backlog = _load_goal_backlog_safely(paths)
@@ -2788,6 +2799,7 @@ def batch_adopt_unmatched_interests(
         "processed": processed,
         "skipped": skipped,
         "remaining_count": len(remaining),
+        "remaining_topics": [r["topic"] for r in remaining],
     }
 
 
