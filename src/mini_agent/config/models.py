@@ -1968,6 +1968,15 @@ class GrowthAdvisorConfig:
     # 意义打折，太小容易对正常节奏的方向也报警。
     pursuit_long_unviewed_threshold: int = 5
 
+    # ── 方向 5：学习效果自测环节（growth_advisor_ideal_advisor_gap_and_
+    # roadmap_plan.md 方向 5）──────────────────────────────────────────
+    # 累计满这个轮次数时，在当轮子 Objective description 里追加一段
+    # "顺带生成自测小节"的提示，复用同一次执行循环已有的 LLM 调用，零
+    # 增量成本，默认开启。<=0 视为关闭。默认 5——比 reorganize_every_n_
+    # cycles 的默认 10 更小，因为自测的价值在于"及时发现没跟上"，间隔
+    # 太长意义打折。
+    pursuit_self_check_every_n_cycles: int = 5
+
 
 @dataclass
 class ReminderConfig:

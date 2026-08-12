@@ -3624,6 +3624,45 @@ def reorganize_hint_for_cycle(goal, cycle_no: int, cfg=None) -> Optional[str]:
     )
 
 
+# ────────── [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 5] 学习效果自测 ──────────
+# `growth_pursuit` 模板产出的是持续增厚的读书笔记，从来不检验"用户是不是
+# 真的理解/能应用这些内容"。这里复用 C1 已经验证过的"按累计轮次触发额外
+# prompt 指令"模式：不新增独立的判分/交互系统，只是在满足轮次条件时往
+# 拼给模型的 prompt 里多插一段"顺带生成几道自测题"的指令，仍然是同一个
+# 执行循环里的一次追加产出。刻意不做自动判分、不要求用户提交答案——一旦
+# 引入"系统给用户的理解程度打分"，就跨过了 growth_advisor_design.md 明确
+# 写的非目标（"不做心理评估/主观判断"）的边界。
+
+
+def self_check_hint_for_cycle(goal, cycle_no: int, cfg=None) -> Optional[str]:
+    """[方向 5] 只对打了 `growth_advisor` 标签、且这一轮轮次号能整除
+    `cfg.pursuit_self_check_every_n_cycles`（默认 5，<=0 视为关闭）的
+    Goal 返回一段拼进子 Objective description 的自测指令；其余情况
+    返回 None。
+
+    纯规则式判断（轮次号取模），不额外触发 LLM 调用（复用同一次执行
+    循环里已有的调用），也不读取任何执行历史——生成的自测题质量、
+    要不要真的生成，都留给模型在这一轮执行时自行判断，这里只是"提醒"，
+    对齐 per_cycle_criteria 仍然是 manual_review 的既有克制。
+    """
+    if "growth_advisor" not in (getattr(goal, "tags", None) or []):
+        return None
+    every_n = getattr(cfg, "pursuit_self_check_every_n_cycles", 5) if cfg is not None else 5
+    if every_n is None or every_n <= 0:
+        return None
+    if cycle_no <= 0 or cycle_no % every_n != 0:
+        return None
+    return (
+        "【本轮附加提示（第 {cycle_no} 轮，累计满 {every_n} 轮）】\n"
+        "这一轮除了正常新增内容，请基于目前已覆盖的 covered_subtopics，\n"
+        "额外生成 3~5 道可以自问自答的检验问题（附简短参考答案要点），\n"
+        "追加到 wiki 页面末尾一个独立小节「## 自测：第 {cycle_no} 轮小结」。\n"
+        "这不是一个测验系统，不需要用户当场提交答案，只是帮用户自己在\n"
+        "阅读时判断这几个问题答不答得上来；请不要对用户的掌握程度做任何\n"
+        "评价或判分，只提供问题和参考答案要点。"
+    ).format(cycle_no=cycle_no, every_n=every_n)
+
+
 # ────────── [growth_advisor_autonomy_deepening_plan.md 方向 C2] 本轮新增摘要推送 ──────────
 # 复用 2.4 节已有的推送节流机制（notification_frequency/notification_
 # max_per_day），不新增一套独立的通知逻辑——每轮执行结束后先把"本轮新增

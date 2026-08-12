@@ -98,11 +98,46 @@
   pursuits` 默认响应），跟 `/growth/health_trend` 等既有"展开时才
   请求"的接入模式一致。
 
+## 已完成
+
+### 方向 5：学习效果自测环节
+
+对应方案文档第 5 节。目标：`growth_pursuit` 模板此前只会持续增厚
+读书笔记，从不检验"用户是不是真的理解/能应用这些内容"。这里复用
+C1（`reorganize_hint_for_cycle()`）已验证的"按累计轮次追加 prompt
+指令"模式，往同一次执行循环里追加自测题产出。
+
+- `config/models.py::GrowthAdvisorConfig` 新增
+  `pursuit_self_check_every_n_cycles`（默认 `5`，`<=0` 视为关闭）——
+  比 `reorganize_every_n_cycles` 的默认 `10` 更小，对齐方案文档"自测
+  环节的价值在于及时发现没跟上，间隔太长意义打折"的取舍。
+- `evolution/growth_advisor.py` 新增 `self_check_hint_for_cycle(goal,
+  cycle_no, cfg=None)`，跟 `reorganize_hint_for_cycle()` 同一套判断
+  结构（只对 `growth_advisor` 标签生效、纯轮次号取模、零 LLM 成本、
+  不读取执行历史）：满足轮次条件时返回一段提示，要求当轮除正常新增
+  内容外，基于 `covered_subtopics` 额外生成 3~5 道自问自答检验题
+  （附简短参考答案要点），追加到 wiki 页面末尾独立小节
+  「## 自测：第 N 轮小结」。明确要求"不需要用户当场提交答案""不要
+  对用户的掌握程度做任何评价或判分"，对齐 `growth_advisor_design.md`
+  "不做心理评估/主观判断"的非目标边界。
+- `evolution/goal_cron_bridge.py` 新增 `_append_growth_self_check_
+  hint()`，跟 `_append_growth_reorganize_hint()` 在同一处（`_trigger_
+  cycle`/组装子 Objective description 的位置）串联调用，任何环节
+  异常静默跳过、不影响 Goal 触发主流程；不产生额外的执行循环或 LLM
+  调用点——复用当轮已经在跑的那一次执行。
+- 新增测试 `tests/test_growth_advisor_pursuit_self_check.py`
+  （7 个用例）：非 `growth_advisor` 标签不生效/轮次不整除不生效/
+  默认阈值生效且包含关键措辞/自定义阈值生效/阈值 `<=0` 关闭/轮次 0
+  不生效/生成的提示不要求打分（非目标校验）。
+- 成本核对：零新增 LLM 调用点（复用同一次执行循环已有的调用），零
+  新增持久化，符合方案文档"可以考虑默认开启（而不是像 B1 LLM 复核
+  那样需要 opt-in）"的建议，默认值直接设为开启（`5`）。刻意不做
+  自动判分、不做交互提交，避免引入测验式的心理负担。
+
 ## 待推进（按方案文档第 7 节优先级）
 
-1. 方向 5：学习效果自测环节。
-2. 方向 3：Goal 执行内容反哺信号扫描。
-3. 方向 2：反馈模式统计展示（第一步纯统计，第二步 LLM 归纳暂不
+1. 方向 3：Goal 执行内容反哺信号扫描。
+2. 方向 2：反馈模式统计展示（第一步纯统计，第二步 LLM 归纳暂不
    排期）。
-4. 方向 6：主题类型分化的调研/呈现风格——方案文档明确本轮不建议
+3. 方向 6：主题类型分化的调研/呈现风格——方案文档明确本轮不建议
    排期，留待后续视情况重新评估。

@@ -150,6 +150,7 @@ def _fire_goal_cycle(
     description = _append_output_workspace_context(paths, goal.id, cycle_no, description)
     description = _append_execution_spec_context(paths, goal_backlog, goal, description)
     description = _append_growth_reorganize_hint(paths, goal, cycle_no, description)
+    description = _append_growth_self_check_hint(paths, goal, cycle_no, description)
     objective = goal_backlog.add_objective(
         title=f"{goal.title}（第 {cycle_no} 轮）",
         parent_id=goal.id,
@@ -270,6 +271,33 @@ def _append_growth_reorganize_hint(paths, goal: "GoalNode", cycle_no: int, descr
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_growth_reorganize_hint')
+        return description
+
+
+def _append_growth_self_check_hint(paths, goal: "GoalNode", cycle_no: int, description: str) -> str:
+    """[growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 5]
+    累计满 `pursuit_self_check_every_n_cycles` 轮时，往本轮子 Objective
+    description 里追加一段"顺带生成自测小节"的提示，跟 C1 的整理提示是
+    同一种"按累计轮次追加 prompt 指令"模式、同一个位置串联调用，不产生
+    额外的执行循环或 LLM 调用点。只对打了 `growth_advisor` 标签的 Goal
+    生效（`self_check_hint_for_cycle` 内部判断），拿不到配置或任何环节
+    异常都静默跳过，不影响 Goal 触发主流程。
+    """
+    if paths is None:
+        return description
+    try:
+        from mini_agent.config import load_config
+        cfg = getattr(load_config(), "growth_advisor", None)
+        from mini_agent.evolution.growth_advisor import self_check_hint_for_cycle
+        hint = self_check_hint_for_cycle(goal, cycle_no, cfg=cfg)
+        if not hint:
+            return description
+        parts = [description] if description and description.strip() else []
+        parts.append(hint)
+        return "\n\n".join(parts)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_growth_self_check_hint')
         return description
 
 
