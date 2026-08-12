@@ -125,6 +125,49 @@ class TestSaturationSignal(unittest.TestCase):
             self.assertTrue(after["saturated"])
 
 
+class TestPursuitSaturationTrend(unittest.TestCase):
+    """[growth_advisor_autonomy_deepening_plan_v2.md 方向 3] 饱和度信号
+    历史趋势：`record_pursuit_cycle_signal()` 顺带追加趋势记录，
+    `get_pursuit_saturation_trend()` 只读返回，按 goal_id 区分。"""
+
+    def test_trend_accumulates_per_goal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            ga.record_pursuit_cycle_signal(paths, "g1", True, saturation_threshold=3)
+            ga.record_pursuit_cycle_signal(paths, "g1", True, saturation_threshold=3)
+            ga.record_pursuit_cycle_signal(paths, "g1", False, saturation_threshold=3)
+
+            trend = ga.get_pursuit_saturation_trend(paths, "g1")
+            self.assertEqual(len(trend), 3)
+            self.assertEqual([p["low_increment"] for p in trend], [True, True, False])
+            # streak 应该跟对应轮次记录时的状态一致：1、2、0（第三轮归零）。
+            self.assertEqual([p["streak"] for p in trend], [1, 2, 0])
+
+    def test_trend_scoped_to_goal_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            ga.record_pursuit_cycle_signal(paths, "g1", True)
+            ga.record_pursuit_cycle_signal(paths, "g2", False)
+            trend_g1 = ga.get_pursuit_saturation_trend(paths, "g1")
+            trend_g2 = ga.get_pursuit_saturation_trend(paths, "g2")
+            self.assertEqual(len(trend_g1), 1)
+            self.assertEqual(len(trend_g2), 1)
+            self.assertTrue(trend_g1[0]["low_increment"])
+            self.assertFalse(trend_g2[0]["low_increment"])
+
+    def test_trend_empty_when_never_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self.assertEqual(ga.get_pursuit_saturation_trend(paths, "g-none"), [])
+
+    def test_compact_storage_is_noop_when_no_old_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            ga.record_pursuit_cycle_signal(paths, "g1", True)
+            removed = ga.compact_pursuit_saturation_trend_storage(paths)
+            self.assertEqual(removed, 0)
+
+
 class TestProcessPursuitCycleCompletion(unittest.TestCase):
     def test_non_growth_advisor_goal_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:

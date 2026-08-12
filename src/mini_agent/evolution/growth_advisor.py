@@ -3177,6 +3177,15 @@ def record_pursuit_cycle_signal(
       `goal_cron_bridge.reap_finished_cycles()`）据此决定是否要推一次
       "要不要降频"的通知，而不是每轮都重复打扰用户。
 
+    [growth_advisor_autonomy_deepening_plan_v2.md 方向 3] 除了更新
+    `pursuit_saturation` 当前状态这个快照，顺带向
+    `growth_pursuit_saturation_trend.jsonl` 追加一条历史记录，供
+    `get_pursuit_saturation_trend()` 读取——只读的当前状态回答不了
+    "降频之后有没有缓过来""是不是一直饱和"这类需要看走势的问题，这里的
+    追加写入是诊断性质，失败不影响 streak 计数本身（`_load_growth_
+    state()`/`_save_growth_state()` 已经在最外层完成，这里追加失败只是
+    少一条趋势记录，不影响函数返回值）。
+
     返回：{"streak": int, "saturated": bool, "newly_saturated": bool}
     """
     state = _load_growth_state(paths)
@@ -3193,6 +3202,17 @@ def record_pursuit_cycle_signal(
         entry["notified"] = True
     sat[goal_id] = entry
     _save_growth_state(paths, state)
+    try:
+        _append_jsonl(paths.growth_pursuit_saturation_trend_path, {
+            "goal_id": goal_id,
+            "recorded_at": time.time(),
+            "low_increment": bool(low_increment),
+            "streak": entry["streak"],
+            "saturated": saturated,
+        })
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.growth_advisor.record_pursuit_cycle_signal_trend")
     return {"streak": entry["streak"], "saturated": saturated, "newly_saturated": newly_saturated}
 
 
@@ -3208,6 +3228,69 @@ def get_pursuit_saturation(paths, goal_id: str) -> dict:
         "saturated": streak >= threshold,
         "threshold": threshold,
     }
+
+
+_PURSUIT_SATURATION_TREND_RAW_WINDOW_DAYS = 60
+_DEFAULT_PURSUIT_SATURATION_TREND_MAX_POINTS = 30
+
+
+def _compact_pursuit_saturation_trend_rows(rows: list[dict], *, now: Optional[float] = None) -> list[dict]:
+    """纯函数：对饱和度趋势的行做降采样，返回压缩后的新列表（不做任何
+    IO）。跟 `_compact_health_trend_rows()` 是同一套模式——按 goal_id +
+    天分桶，桶内只保留时间最新的一条，避免"每轮一条、永久累积"。"""
+    now = now if now is not None else time.time()
+    cutoff = now - _PURSUIT_SATURATION_TREND_RAW_WINDOW_DAYS * 86400
+    recent = [r for r in rows if r.get("recorded_at", 0) >= cutoff]
+    old = [r for r in rows if r.get("recorded_at", 0) < cutoff]
+    if not old:
+        return rows
+    buckets: dict[tuple, dict] = {}
+    for r in old:
+        ts = r.get("recorded_at", 0)
+        key = (r.get("goal_id"), int(ts // 86400))
+        existing = buckets.get(key)
+        if existing is None or ts > existing.get("recorded_at", 0):
+            buckets[key] = r
+    out = list(buckets.values()) + recent
+    out.sort(key=lambda r: r.get("recorded_at", 0))
+    return out
+
+
+def compact_pursuit_saturation_trend_storage(paths, *, now: Optional[float] = None) -> int:
+    """对落盘的 growth_pursuit_saturation_trend.jsonl 做一次降采样压缩，
+    返回被压缩掉的行数（0 表示本次没有可压缩的旧数据，不会触发写盘）。
+    幂等操作，跟 `compact_health_trend_storage()` 的调用契约一致——建议
+    跟它一样接在 `run_daily_cycle()` 尾部调用，不需要单独的调度入口。"""
+    rows = _read_jsonl(paths.growth_pursuit_saturation_trend_path)
+    if not rows:
+        return 0
+    compacted = _compact_pursuit_saturation_trend_rows(rows, now=now)
+    removed = len(rows) - len(compacted)
+    if removed > 0:
+        _write_jsonl(paths.growth_pursuit_saturation_trend_path, compacted)
+    return removed
+
+
+def get_pursuit_saturation_trend(
+    paths, goal_id: str, limit: int = _DEFAULT_PURSUIT_SATURATION_TREND_MAX_POINTS,
+) -> list[dict]:
+    """返回某个 Goal 最近 `limit` 条"这一轮是否低增量"的时间序列，按
+    时间正序，供看板"🔄 正在自主推进"分区展开后画一条简单走势（跟已有的
+    "证据数走势"箭头展示风格一致，不需要引入图表库）。只读，不产生任何
+    写入。跟 `_topic_trend_series()` / `health_trend_series()` 的调用
+    契约一致（早期的点丢弃，只关心"最近的走势"）。"""
+    rows = [
+        {
+            "recorded_at": r.get("recorded_at"),
+            "low_increment": r.get("low_increment"),
+            "streak": r.get("streak"),
+            "saturated": r.get("saturated"),
+        }
+        for r in _read_jsonl(paths.growth_pursuit_saturation_trend_path)
+        if r.get("goal_id") == goal_id
+    ]
+    rows.sort(key=lambda r: r.get("recorded_at") or 0)
+    return rows[-limit:] if limit else rows
 
 
 def process_pursuit_cycle_completion(paths, goal) -> Optional[dict]:
@@ -3767,6 +3850,9 @@ def run_daily_cycle(
     try:
         _record_health_snapshot(paths, cfg, profile, memory_store)
         compact_health_trend_storage(paths)
+        # [growth_advisor_autonomy_deepening_plan_v2.md 方向 3] 饱和度
+        # 趋势的降采样压缩跟健康度趋势同一个节奏，不需要单独的调度点。
+        compact_pursuit_saturation_trend_storage(paths)
     except Exception:
         pass
 

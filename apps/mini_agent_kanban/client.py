@@ -778,6 +778,11 @@ class AgentClient:
     def growth_align_confirm_match(self, topic: str, goal_id: str):
         return self._post("/growth/align/confirm_match", json_body={"topic": topic, "goal_id": goal_id})
 
+    # [growth_advisor_autonomy_deepening_plan_v2.md 方向 3] 某个自主
+    # 推进方向最近若干轮"是否低增量"的时间序列，按需拉取。
+    def growth_pursuit_saturation_trend(self, goal_id: str, limit: int = 30):
+        return self._get(f"/growth/pursuits/{goal_id}/saturation_trend", params={"limit": limit})
+
     # ── 文件系统（产出物浏览）────────────────────────────────────────
     def fs_list(self, path="."):
         return self._get("/fs/list", params={"path": path})

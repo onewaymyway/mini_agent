@@ -845,6 +845,69 @@ Goal，跟建议的意思不一样）或手动改标题让关键词匹配上。
   `TestConfirmLlmSuggestedMatch`，覆盖成功关联、候选缺失、Goal 缺失
   三种场景。
 
+### 2.18 落地 `growth_advisor_autonomy_deepening_plan_v2.md`：方向 3（饱和度信号历史趋势）（本次新增）
+
+**现状问题**：`get_pursuit_saturation()`（2.13 节 B2）只返回某个 Goal
+**当前**的 streak/saturated 状态，`pursuit_saturation` 在
+`growth_state.json` 里也只存最新一条，不是时间序列——看不出"这个方向
+饱和之后，用户听了建议真的降频了吗？降频之后新增内容是不是又回升了？
+还是说不管频率怎么调都一直低增量"。
+
+**改动**：
+
+- 新增只追加文件 `growth_pursuit_saturation_trend.jsonl`
+  （`AgentPaths.growth_pursuit_saturation_trend_path`），复用 v4 N1
+  健康度趋势（`_record_health_snapshot()` / `compact_health_trend_
+  storage()`）已经验证过的"按天降采样、旧数据自动压缩"模式——新增
+  `_compact_pursuit_saturation_trend_rows()` / `compact_pursuit_
+  saturation_trend_storage()`，按 `(goal_id, 天)` 分桶压缩，跟
+  `growth_health_trend.jsonl` 是平行但独立的文件（不复用同一份文件，
+  因为这里的记录天然按 goal_id 分桶，混在一份全局文件里查询反而更
+  麻烦）。压缩调用接在 `run_daily_cycle()` 尾部，跟健康度趋势同一个
+  节奏，不需要单独的调度点。
+- `record_pursuit_cycle_signal()` 在更新 `pursuit_saturation` 当前
+  状态的同时，顺带向这份文件追加一条记录（`goal_id`/`recorded_at`/
+  `low_increment`/`streak`/`saturated`）——追加失败只是少一条趋势
+  记录，不影响 streak 计数本身的返回值，对齐"诊断增强不影响主流程"
+  的既有取舍。
+- 新增只读函数 `get_pursuit_saturation_trend(paths, goal_id,
+  limit=30)`，返回某个 Goal 最近若干轮"是否低增量"的时间序列，按
+  时间正序。
+- **API**：新增 `GET /v1/growth/pursuits/{goal_id}/saturation_trend`
+  （按需拉取，不放进 `/growth/pursuits` 默认响应，避免每次打开 tab
+  都拉取历史数据，跟 `/growth/health_trend` 的调用契约一致）。
+- **看板**："🔄 正在自主推进"分区每条方向新增"📈 饱和度走势"折叠区，
+  用 🟢/🔴 两种颜色的紧凑记号展示最近若干轮是否低增量，不引入图表库
+  （风格延续 D1 已有的"证据数走势"箭头展示）。
+- 成本可控：只是多写一条降采样记录，不产生新的 LLM 调用或额外的
+  Goal 触发；本轮**不涉及**方案文档提到的"用趋势数据判断要不要重新
+  触发回访卡片"这个后续判断点——那是在有了真实趋势数据之后才能评估
+  的下一步，留给后续视实际情况决定。
+
+v2 方案文档最后一项（方向 1：B1 LLM 复核）仍按方案文档第 6 节的优先级
+排序留待后续实施，涉及新的 opt-in LLM 调用点和"规则判断 vs LLM 判断
+如何共存展示"的设计取舍，建议放在最后。
+
+**新增/变更文件**：
+
+- `src/mini_agent/storage/paths.py`：新增
+  `growth_pursuit_saturation_trend_path`；
+- `src/mini_agent/evolution/growth_advisor.py`：
+  `record_pursuit_cycle_signal()` 顺带追加趋势记录；新增
+  `_compact_pursuit_saturation_trend_rows()` /
+  `compact_pursuit_saturation_trend_storage()` /
+  `get_pursuit_saturation_trend()`；`run_daily_cycle()` 尾部接入
+  压缩调用；
+- `src/mini_agent/api/routes.py`：新增
+  `GET /v1/growth/pursuits/{goal_id}/saturation_trend`；
+- `apps/mini_agent_kanban/client.py`：新增
+  `growth_pursuit_saturation_trend()`；
+- `apps/mini_agent_kanban/app.py`：`_render_growth_pursuits()` 每条
+  方向新增"📈 饱和度走势"折叠区；
+- `tests/test_growth_advisor_saturation_and_pursuit_visibility.py`：
+  新增 `TestPursuitSaturationTrend`，覆盖趋势累积、按 goal_id 隔离、
+  未记录时为空、压缩函数在无旧数据时为空操作四种场景。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外

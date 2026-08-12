@@ -405,6 +405,19 @@ class AgentPaths:
         return self.workdir_dir / "growth_health_trend.jsonl"
 
     @property
+    def growth_pursuit_saturation_trend_path(self) -> Path:
+        """<project_root>/.agent/growth_pursuit_saturation_trend.jsonl —
+        [growth_advisor_autonomy_deepening_plan_v2.md 方向 3] 每次
+        `record_pursuit_cycle_signal()` 更新某个自主推进方向（Goal）的
+        饱和度计数时，顺带追加一条降采样的历史记录（goal_id/recorded_at/
+        low_increment/streak/saturated），供看板画"这个方向饱和之后，
+        用户调整频率有没有用"这类简单走势。跟 `growth_health_trend_path`
+        （全局健康度）/`growth_topic_trend_path`（单主题证据数）是平行
+        但独立的只追加文件，同样是"按天降采样、旧数据自动压缩"模式（见
+        `_compact_pursuit_saturation_trend_rows()`）。"""
+        return self.workdir_dir / "growth_pursuit_saturation_trend.jsonl"
+
+    @property
     def llm_call_stats_path(self) -> Path:
         """<project_root>/.agent/llm_call_stats.jsonl — [kanban_perception_gaps_
         improvement_plan.md 方向 B.2] 轻量 LLM 调用计数，跟 `llm/debug_logger.py`

@@ -6702,8 +6702,7 @@ async def post_growth_align_confirm_match(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
+async def get_growth_health_trend(request: Request):
     """GET /v1/growth/health_trend — [next_doc/growth_advisor_improvement_plan_v4.md
     方向三 N1] 返回全局健康度快照序列（最近若干天，按时间正序），供看板
     画折线图。独立于 `/growth/summary`：趋势数据不需要每次打开 tab 都拉
@@ -6721,6 +6720,33 @@ async def post_growth_align_confirm_match(request: Request):
         except (TypeError, ValueError):
             limit = 30
         return {"health_trend": ga.health_trend_series(paths, limit=limit)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/growth/pursuits/{goal_id}/saturation_trend")
+async def get_growth_pursuit_saturation_trend(request: Request, goal_id: str):
+    """GET /v1/growth/pursuits/{goal_id}/saturation_trend — [growth_advisor_
+    autonomy_deepening_plan_v2.md 方向 3] 返回某个正在自主推进的方向
+    （Goal）最近若干轮的"是否低增量"时间序列，供看板展开某个方向时画一条
+    简单走势（跟 `/growth/health_trend` 一样是按需拉取，不放进
+    `/growth/pursuits` 的默认响应，避免每次打开 tab 都拉取历史数据）。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+
+        limit = 30
+        try:
+            raw_limit = request.query_params.get("limit")
+            if raw_limit is not None:
+                limit = max(1, int(raw_limit))
+        except (TypeError, ValueError):
+            limit = 30
+        return {"saturation_trend": ga.get_pursuit_saturation_trend(paths, goal_id, limit=limit)}
     except HTTPException:
         raise
     except Exception as e:

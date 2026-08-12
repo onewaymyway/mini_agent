@@ -4627,6 +4627,17 @@ def _render_growth_pursuits(client: "AgentClient"):
                         f"⚠️ 最近连续 {saturation.get('streak')} 轮新增内容不多了，"
                         "可能已经了解得差不多，考虑降低频率或先告一段落。"
                     )
+                # [growth_advisor_autonomy_deepening_plan_v2.md 方向 3]
+                # 饱和度历史趋势：只读、按需拉取，帮用户判断"降频建议
+                # 有没有用"——比如降频之后新增内容是不是又回升了。
+                with st.expander("📈 饱和度走势", expanded=False):
+                    trend = client.growth_pursuit_saturation_trend(row["goal_id"]) or {}
+                    points = trend.get("saturation_trend") or []
+                    if not points:
+                        st.caption("暂无足够历史数据（需要至少两轮才能开始计算增量）。")
+                    else:
+                        marks = "".join("🔴" if p.get("low_increment") else "🟢" for p in points)
+                        st.caption(f"最近 {len(points)} 轮（🟢 有实质增量 · 🔴 疑似低增量）：{marks}")
                 # [方向 C2] 还没打包进推送消息的"本轮新增摘要"，看板里先
                 # 展示出来，不用等下一次推送才看到最新进展。
                 pending_digest = row.get("pending_digest") or []
