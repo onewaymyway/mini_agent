@@ -1066,6 +1066,70 @@ v2 方案文档最后一项（方向 1：B1 LLM 复核）见下面 2.19 节，�
   降级）、`pursuit_style_hint()`（非标签 Goal 不生效/未分类不生效/
   三种风格都能正确生成提示/非法风格值返回 `None`）。
 
+### 2.21 方向 6 动态修正：调研风格按实际产出内容周期性重判（本次新增）
+
+**现状问题**：方向 6 的分类只在 Goal 首次落地时基于候选标题/
+rationale 判定一次——用一句话猜风格，容易猜错（比如"数据分析"这类
+标题，光看标题很难判断用户更想要动手案例还是结构化理论）。
+
+**改动**：
+
+- `maybe_reclassify_pursuit_style(paths, goal_backlog, goal, cycle_no,
+  cfg=None, llm_helper=None)`：累计满 `pursuit_style_reclassify_
+  every_n_cycles`（默认 8）轮时触发一次重新分类，用最近几轮实际
+  产出的 `covered_subtopics` 文本（而不是当初的候选标题）重新跑
+  `determine_pursuit_style()`——复用 2.20 节已有的规则默认 + LLM
+  opt-in 逻辑，不是另起一套分类器。
+- 新结果与当前值不同才写回，相同则不产生任何写入，避免无意义的
+  刷新；没有可用的产出内容时直接跳过。
+- **接入点**：`goal_cron_bridge._trigger_cycle()` 里，调用点放在
+  2.20 节 `_append_growth_pursuit_style_hint()` 之前，保证同一轮里
+  如果风格被修正了，紧接着追加的风格提示用的是修正后的新值。这一步
+  目前没有透传 `llm_helper`，即便全局开启 `pursuit_style_llm_
+  enabled` 也只走规则式重判，避免在 cron 触发路径上引入新的隐式
+  LLM 成本。
+
+**新增/变更文件**：`src/mini_agent/evolution/growth_advisor.py`
+（`_recent_covered_subtopics_text()`/`maybe_reclassify_pursuit_
+style()`）、`src/mini_agent/config/models.py`
+（`pursuit_style_reclassify_every_n_cycles`）、
+`src/mini_agent/evolution/goal_cron_bridge.py`
+（`_maybe_reclassify_growth_pursuit_style()`）。
+
+### 2.22 方向 7：报告质量自动闭环（本次新增）
+
+**现状问题**：`report_not_useful` 反馈（用户标"方向没错，报告没写好"）
+此前只是记录下来供月度复盘/诊断面板展示，从没被用来反过来指导报告
+生成策略——一个方向的报告哪怕被反复标"写得不好"，下一次仍然会用
+同样的固定模板再产出一份类似质量的内容。
+
+**改动**：
+
+- `_should_auto_upgrade_report_quality(paths, candidate, cfg=None)`：
+  `cfg.report_quality_auto_upgrade_enabled=False`（默认）时直接返回
+  `False`；开启后，复用既有的 `_report_quality_dismiss_counts()`
+  统计，命中 `cfg.report_quality_auto_upgrade_threshold`（默认 2）
+  才返回 `True`。
+- `generate_growth_report()` 新增 `quality_auto_upgraded` 参数：为
+  `True` 时正文开头追加一句提示，让用户知道这份报告为什么跟以往不
+  太一样（同 2.9 节"探索位"标注一样的"管理预期"展示方式），并透传
+  进 `GrowthReport.quality_auto_upgraded` 字段（跟 `source="llm"`
+  的区别是：后者可能只是全局开关打开导致，不代表这里有过负反馈）。
+- `run_daily_cycle()`：全局模板路径下，如果当前上下文确实拿得到
+  `llm_helper`（比如 cron 触发）且命中了升级判断，临时把这一份报告
+  升级为 LLM 生成——不修改全局 `report_quality_llm_enabled` 开关，
+  只影响这一次调用，同一轮里其余方向仍走各自原来的路径。
+
+**新增/变更文件**：`src/mini_agent/evolution/growth_advisor.py`
+（`_should_auto_upgrade_report_quality()`、`generate_growth_report()`
+新参数、`GrowthReport.quality_auto_upgraded` 字段、`run_daily_cycle()`
+报告生成循环改为显式判断）、`src/mini_agent/config/models.py`
+（`report_quality_auto_upgrade_enabled`/`report_quality_auto_upgrade_
+threshold`）。
+
+**两节共用测试**：`tests/test_growth_advisor_pursuit_style_reclassify_
+and_report_upgrade.py`（15 个用例）。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外
@@ -1222,6 +1286,9 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 | `goal_alignment_adopt_all_max_batch` | `3` | （2.15 节）`/growth align --adopt-all` / 看板"全部采纳"单次最多批量落地的方向数，避免一次点击触发过多 LLM 调用 |
 | `pursuit_increment_llm_review_enabled` | `false` | （2.19 节）`evaluate_cycle_increment()` 规则式判定"疑似低增量"后，是否再追加一次 LLM 语义复核；结果只作诊断展示，不覆盖规则式判断、不影响 B2 饱和度 streak 计数；会实际发起一次 LLM 调用，默认关闭 |
 | `pursuit_style_llm_enabled` | `false` | （2.20 节，`growth_advisor_ideal_advisor_gap_and_roadmap_plan.md` 方向 6）调研风格（技能实操类/知识理论类/习惯养成类）分类默认走零成本的规则式关键词匹配，打开后额外调一次 LLM 复核/纠偏；只在 `auto_pursue_candidate()` 首次落地一个 Goal 时触发一次，不是每轮都调 |
+| `pursuit_style_reclassify_every_n_cycles` | `8` | （2.21 节，方向 6 动态修正）累计满多少轮后，用该方向最近几轮实际产出的内容重新判定一次调研风格（可能改写此前判定的结果）；`<=0` 关闭。目前只走规则式重判，不透传 `llm_helper` |
+| `report_quality_auto_upgrade_enabled` | `false` | （2.22 节，方向 7）某个方向的报告被反馈"内容太笼统"累计达到阈值时，是否自动把下一份报告临时升级为 LLM 生成（不修改全局 `report_quality_llm_enabled`）；只在调用方确实拿得到 `llm_helper` 时才生效 |
+| `report_quality_auto_upgrade_threshold` | `2` | （2.22 节）触发上面自动升级所需的"报告没写好"累计次数；`<=0` 视为关闭 |
 
 另外 `memory_backfill.cron_run_backfill_enabled`（默认 `true`，v4 N2）
 控制 cron 任务收尾是否自动回填记忆，属于 `memory_backfill` 配置块而非
@@ -1436,11 +1503,18 @@ N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
 - 2.20 节落地的方向 6（调研风格智能分类）目前只影响 `growth_pursuit`
   模板每一轮 prompt 里追加的一段文字提示，不做任何"根据风格切换成
   完全不同的模板结构/wiki 页面组织方式"——生成结果最终仍然取决于
-  执行模型是否真的照做这段提示，不是强约束；分类只在 Goal 首次落地
-  时判定一次，不会随着后续轮次的实际产出内容动态修正（比如一个方向
-  最初被归为"知识理论类"，但用户后来其实更想要动手案例，目前没有
-  机制发现并重新分类，需要手动改 `.agent/goals.json` 里的
-  `growth_pursuit_style` 字段）；规则式关键词表覆盖面有限，边界
-  情况（比如"数据分析"这类既偏实操又偏理论的主题）容易被兜底成
-  默认的"知识理论类"，开启 `pursuit_style_llm_enabled` 能缓解但
-  不能完全消除误判。
+  执行模型是否真的照做这段提示，不是强约束。分类曾经只在 Goal 首次
+  落地时判定一次，2.21 节的动态修正已经补上"按累计轮次用实际产出
+  内容重新判定"这一层，但修正的粒度仍然是"整个方向一个标签"，不会
+  区分"这个方向早期偏理论、后期转向实操"这种阶段性变化；规则式
+  关键词表覆盖面有限，边界情况（比如"数据分析"这类既偏实操又偏
+  理论的主题）容易被兜底成默认的"知识理论类"，开启 `pursuit_style_
+  llm_enabled` 能缓解但不能完全消除误判；动态修正的重判目前不透传
+  `llm_helper`，即便全局开启该配置，重判这一步也只走规则式路径。
+- 2.22 节落地的方向 7（报告质量自动闭环）只处理了"要不要换成 LLM
+  生成"这一种最粗粒度的改进方式，不会根据具体的负反馈内容做更细
+  的调整（比如用户觉得报告"太空泛"和"跟实际情况不符"，理想情况下
+  应该对应不同的改进策略，目前统一按"升级成 LLM 生成"一刀切处理）；
+  升级只发生在下一次生成时，不会主动重新生成已经存在的旧报告；且
+  只有调用方（cron 触发路径）确实具备 `llm_helper` 时才会真正生效，
+  纯模板环境下这个开关不产生任何效果。

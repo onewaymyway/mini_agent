@@ -5,6 +5,11 @@
 > 扫描）、方向 2（反馈模式统计展示，含第二步 LLM 归纳）、方向 6
 > （调研风格智能分类，规则默认 + LLM opt-in）均已落地，详见
 > `next_doc/growth_advisor_ideal_advisor_gap_and_roadmap_implementation_record.md`。
+> 后续讨论中又追加了两个候选方向并已落地：方向 6 的动态修正（调研
+> 风格改为按累计轮次用实际产出内容周期性重判，而不是只在 Goal 落地
+> 时看一次候选标题）、方向 7（报告质量自动闭环：`report_not_useful`
+> 反馈累计达到阈值时自动把下一份报告升级为 LLM 生成）——这两个方向
+> 不在本文档最初的六个方向编号里，详见实施记录对应小节。
 
 > **状态**：这是继
 > `next_doc/growth_advisor_autonomy_deepening_plan.md`（v1）、

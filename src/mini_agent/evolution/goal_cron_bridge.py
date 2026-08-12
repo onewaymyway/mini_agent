@@ -151,6 +151,7 @@ def _fire_goal_cycle(
     description = _append_execution_spec_context(paths, goal_backlog, goal, description)
     description = _append_growth_reorganize_hint(paths, goal, cycle_no, description)
     description = _append_growth_self_check_hint(paths, goal, cycle_no, description)
+    _maybe_reclassify_growth_pursuit_style(paths, goal_backlog, goal, cycle_no)
     description = _append_growth_pursuit_style_hint(paths, goal, description)
     objective = goal_backlog.add_objective(
         title=f"{goal.title}（第 {cycle_no} 轮）",
@@ -327,6 +328,30 @@ def _append_growth_pursuit_style_hint(paths, goal: "GoalNode", description: str)
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_growth_pursuit_style_hint')
         return description
+
+
+def _maybe_reclassify_growth_pursuit_style(paths, goal_backlog, goal: "GoalNode", cycle_no: int) -> None:
+    """[growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 6
+    动态修正] 累计满 `pursuit_style_reclassify_every_n_cycles` 轮时，
+    用该方向最近几轮实际产出的内容重新判定一次调研风格，可能改写
+    `goal.growth_pursuit_style`（不同于其它 `_append_growth_*` 系列
+    函数只追加提示文字，这里是一次状态更新）。调用点在
+    `_append_growth_pursuit_style_hint()` 之前，保证同一轮里如果
+    风格被修正了，紧接着追加的风格提示用的是修正后的新值。拿不到
+    配置、`llm_helper` 或任何环节异常都静默跳过，不影响 Goal 触发
+    主流程；这一步本身不产生 LLM 调用（规则式路径），只有开启
+    `pursuit_style_llm_enabled` 且 `llm_helper_provider` 可用时才会。
+    """
+    if paths is None:
+        return
+    try:
+        from mini_agent.config import load_config
+        cfg = getattr(load_config(), "growth_advisor", None)
+        from mini_agent.evolution.growth_advisor import maybe_reclassify_pursuit_style
+        maybe_reclassify_pursuit_style(paths, goal_backlog, goal, cycle_no, cfg=cfg, llm_helper=None)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._maybe_reclassify_growth_pursuit_style')
 
 
 def _soft_check_execution_spec(paths, goal_backlog, goal, spec, ges_cfg) -> str:

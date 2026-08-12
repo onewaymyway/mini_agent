@@ -507,6 +507,14 @@ class GrowthReport:
     # `run_daily_cycle` 在 `cfg.exploration_slot_enabled=True` 且确实选中
     # 了探索位候选时才会显式传 `True`。
     is_exploration: bool = False
+    # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 7]
+    # 这份报告是否因为该方向此前被反复标"报告没写好"
+    # （`DISMISS_REASON_REPORT_NOT_USEFUL`）而自动升级为 LLM 生成——
+    # 区别于 `source="llm"`（可能只是全局 `report_quality_llm_enabled`
+    # 打开导致，不代表这里有过负反馈）。默认 `False`，旧数据反序列化
+    # 时缺该字段自然落到 `False`，等价于"不是因为质量信号被升级的"，
+    # 不需要额外迁移。纯展示/诊断用途，不参与任何排序计算。
+    quality_auto_upgraded: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -824,6 +832,33 @@ def _report_quality_dismiss_counts(paths) -> dict[str, int]:
         if title:
             counts[title] = counts.get(title, 0) + 1
     return counts
+
+
+# ────────── [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 7] 报告质量自动闭环 ──────────
+# 现状：`_report_quality_dismiss_counts()` 已经在记录"哪些方向的报告
+# 被反馈写得不好"，但此前只是"记录下来给人看"（月度复盘/诊断面板），
+# 从没被用来反过来指导报告生成策略本身。这里补一层最小的自动闭环：
+# 某个方向的报告被标"内容太笼统"累计达到阈值时，下一次生成自动临时
+# 切到 LLM 生成路径（即便全局 `report_quality_llm_enabled` 是关闭
+# 的），而不是继续用固定模板反复产出同样质量的内容。
+
+def _should_auto_upgrade_report_quality(paths, candidate: GrowthCandidate, cfg=None) -> bool:
+    """[方向 7] 只读判断：这个候选的下一份报告要不要因为质量信号自动
+    升级为 LLM 生成。`cfg.report_quality_auto_upgrade_enabled=False`
+    （默认）时直接返回 `False`，零成本、零行为变化——这是一个新增的
+    LLM 调用触发点，对齐"增加调用成本的能力默认关闭"的一贯原则。开启
+    后，只有该方向的 `report_not_useful` 累计次数达到
+    `cfg.report_quality_auto_upgrade_threshold`（默认 2）才返回
+    `True`；调用方是否真的有 `llm_helper` 可用仍由调用方自己判断，本
+    函数只回答"要不要"，不管"能不能"。
+    """
+    if not getattr(cfg, "report_quality_auto_upgrade_enabled", False):
+        return False
+    threshold = getattr(cfg, "report_quality_auto_upgrade_threshold", 2)
+    if threshold is None or threshold <= 0:
+        return False
+    counts = _report_quality_dismiss_counts(paths)
+    return counts.get(candidate.title, 0) >= threshold
 
 
 def _feedback_multiplier(dismiss_count: int) -> float:
@@ -1996,6 +2031,7 @@ def generate_growth_report(
     profile=None,
     cfg=None,
     web_search_fn=None,
+    quality_auto_upgraded: bool = False,
 ) -> GrowthReport:
     """为一个候选生成调研报告并落盘。
 
@@ -2037,6 +2073,14 @@ def generate_growth_report(
 
     以上参数任一缺失、或规则模板路径（`llm_helper is None`）时，相应
     逻辑整体跳过，向后兼容此前所有不传这些参数的调用方。
+
+    `quality_auto_upgraded`：[growth_advisor_ideal_advisor_gap_and_
+    roadmap_plan.md 方向 7] 调用方（`run_daily_cycle`）判定这份报告是
+    因为该方向此前被反复标"报告没写好"而临时把这一份报告升级成 LLM
+    生成时传 `True`——只影响正文开头追加的一句提示和 `GrowthReport.
+    quality_auto_upgraded` 字段，不影响是否真的走 LLM 路径（那由调用
+    方传入的 `llm_helper` 是否非 `None` 决定）。默认 `False`，不影响
+    现有调用方。
     """
     report_id = uuid.uuid4().hex[:12]
     slug = f"{_slugify(candidate.title)}-{report_id[:6]}"
@@ -2152,6 +2196,12 @@ def generate_growth_report(
         note = "> 这是我们不太确定你会不会感兴趣的新方向，证据还不算多，供参考。\n\n"
         body = note + body
         summary = "[探索方向] " + summary
+    if quality_auto_upgraded:
+        # [方向 7] 因质量信号自动升级：跟探索位标注同一种"管理预期"的
+        # 展示方式，让用户知道这份报告为什么跟以往不太一样，而不是悄悄
+        # 换了生成方式却不告诉用户。
+        note = "> 这个方向之前的报告被反馈过内容太笼统，这一份自动换成了更详细的生成方式。\n\n"
+        body = note + body
 
     report_path = paths.growth_report_path(slug)
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2167,6 +2217,7 @@ def generate_growth_report(
         source=source,
         evidence_count_at_generation=candidate.evidence_count,
         is_exploration=is_exploration,
+        quality_auto_upgraded=quality_auto_upgraded,
     )
     _append_jsonl(paths.growth_reports_index_path, report.to_dict())
     GrowthBacklog(paths).attach_report(candidate.candidate_id, report_id)
@@ -4158,6 +4209,87 @@ def pursuit_style_hint(goal, cfg=None) -> Optional[str]:
     return f"【调研风格提示】{addendum}"
 
 
+# ────────── [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 6 动态修正] ──────────
+# `auto_pursue_candidate()` 只在 Goal 首次落地时基于候选标题/rationale
+# 判定一次调研风格——这是"用还没开始调研之前的一句话猜风格"，猜错的
+# 概率不低（比如"数据分析"这类主题，光看标题很难判断用户更想要动手
+# 案例还是结构化理论）。这里补一层周期性的动态修正：累计满 N 轮后，
+# 改用"这个方向实际已经产出的内容"（`covered_subtopics` 累积文本）
+# 重新分类一次——内容比标题更能反映这个方向实际走向的是哪种风格。跟
+# C1/方向 5 同一种"按累计轮次触发"的接入模式，但这里触发的是一次状态
+# 更新（可能改写 `growth_pursuit_style`），不是往 prompt 里追加文字。
+
+_PURSUIT_STYLE_RECLASSIFY_LOOKBACK_CYCLES = 5
+
+
+def _recent_covered_subtopics_text(paths, goal_id: str, lookback: int) -> str:
+    """[方向 6 动态修正] 汇总最近 `lookback` 轮 manifest 里 handoff 的
+    `covered_subtopics`，拼成一段文本供重新分类时当 `extra_text` 用。
+    读取失败/没有数据时返回空字符串，调用方据此自然退化为"只用标题
+    分类"（等价于改动前的行为）。
+    """
+    try:
+        from mini_agent.evolution import output_workspace
+        from mini_agent.perception.goal_execution_spec import get_handoff_data
+        base_dir = output_workspace.goal_output_base_dir(paths, goal_id)
+        manifests = output_workspace.read_all_manifests(base_dir)
+    except Exception:
+        return ""
+    if not manifests:
+        return ""
+    topics: list[str] = []
+    for m in manifests[-lookback:]:
+        handoff = get_handoff_data(m.get("progress_note") or "") or {}
+        v = handoff.get("covered_subtopics")
+        if isinstance(v, list):
+            topics.extend(str(x).strip() for x in v if str(x).strip())
+    return " ".join(topics)
+
+
+def maybe_reclassify_pursuit_style(
+    paths, goal_backlog, goal, cycle_no: int, *, cfg=None, llm_helper: Optional[Callable[[str], str]] = None,
+) -> Optional[str]:
+    """[方向 6 动态修正] 只对打了 `growth_advisor` 标签、且这一轮轮次号
+    能整除 `cfg.pursuit_style_reclassify_every_n_cycles`（默认 8，`<=0`
+    视为关闭）的 Goal 触发一次重新分类；其余情况直接返回 `None`（不
+    触碰任何字段）。
+
+    用最近几轮实际产出的 `covered_subtopics` 文本（而不是当初落地时的
+    候选标题/rationale）重新跑一次 `determine_pursuit_style()`——规则式
+    路径零成本，`pursuit_style_llm_enabled` 开启时同样可以走 LLM 复核。
+    新结果与当前值不同才写回（`goal_backlog.update_fields()` +
+    直接更新 `goal.growth_pursuit_style`，两者都做是为了不依赖调用方
+    传入的 `goal` 对象是否与 backlog 内部节点是同一个引用）；相同则
+    不产生任何写入，避免无意义的 `last_touched_at` 刷新。没有可用的
+    `covered_subtopics` 文本（轮次还太少、或非 growth_pursuit 模板）时
+    直接跳过，不会用"没有新内容"误判成某个具体风格。
+
+    返回新分类结果（触发且结果变化时）或 `None`（未触发/未变化/没有
+    可用文本）。任何异常都不应该影响 Goal 触发主流程，调用方
+    （`goal_cron_bridge`）负责包一层 try/except。
+    """
+    if "growth_advisor" not in (getattr(goal, "tags", None) or []):
+        return None
+    every_n = getattr(cfg, "pursuit_style_reclassify_every_n_cycles", 8) if cfg is not None else 8
+    if every_n is None or every_n <= 0:
+        return None
+    if cycle_no <= 0 or cycle_no % every_n != 0:
+        return None
+    extra_text = _recent_covered_subtopics_text(
+        paths, goal.id, _PURSUIT_STYLE_RECLASSIFY_LOOKBACK_CYCLES,
+    )
+    if not extra_text:
+        return None
+    new_style = determine_pursuit_style(
+        goal.title, extra_text=extra_text, cfg=cfg, llm_helper=llm_helper, paths=paths,
+    )
+    if new_style == getattr(goal, "growth_pursuit_style", None):
+        return None
+    goal_backlog.update_fields(goal.id, growth_pursuit_style=new_style)
+    goal.growth_pursuit_style = new_style
+    return new_style
+
+
 # ────────── [growth_advisor_autonomy_deepening_plan.md 方向 C2] 本轮新增摘要推送 ──────────
 # 复用 2.4 节已有的推送节流机制（notification_frequency/notification_
 # max_per_day），不新增一套独立的通知逻辑——每轮执行结束后先把"本轮新增
@@ -4630,13 +4762,23 @@ def run_daily_cycle(
     # 用 llm_helper 换取更高信息密度（同样是 opt-in，不因为"恰好有" llm_helper
     # 就默认用上）。
     report_llm_helper = llm_helper if getattr(cfg, "report_quality_llm_enabled", False) else None
-    reports = [
-        generate_growth_report(
-            paths, c, llm_helper=report_llm_helper, is_exploration=is_exploration,
-            profile=profile, cfg=cfg,
-        )
-        for c, is_exploration in selected
-    ]
+    reports = []
+    for c, is_exploration in selected:
+        # [方向 7] 报告质量自动闭环：全局模板路径下，如果这个方向的
+        # 报告已经被反复标"内容太笼统"、且当前上下文确实拿得到
+        # `llm_helper`（比如 cron 触发），临时把这一份报告升级为 LLM
+        # 生成——不修改全局 `report_quality_llm_enabled` 开关本身，
+        # 只影响这一次调用，其余方向仍走原来的路径。
+        per_report_llm_helper = report_llm_helper
+        quality_auto_upgraded = False
+        if per_report_llm_helper is None and llm_helper is not None:
+            if _should_auto_upgrade_report_quality(paths, c, cfg):
+                per_report_llm_helper = llm_helper
+                quality_auto_upgraded = True
+        reports.append(generate_growth_report(
+            paths, c, llm_helper=per_report_llm_helper, is_exploration=is_exploration,
+            profile=profile, cfg=cfg, quality_auto_upgraded=quality_auto_upgraded,
+        ))
 
     candidates_by_id = {c.candidate_id: c for c in top}
     freq = getattr(cfg, "notification_frequency", "daily")

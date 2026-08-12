@@ -337,7 +337,8 @@ C1（`reorganize_hint_for_cycle()`）已验证的"按累计轮次追加 prompt
 
 ## 待推进（按方案文档第 7 节优先级）
 
-（全部六个方向已落地，无待推进项。）
+（原方案文档六个方向已全部落地。以下两项是后续讨论中新增的候选方向，
+已完成实现，见下方"已完成"对应小节。）
 
 ## 已完成
 
@@ -445,3 +446,122 @@ C1（`reorganize_hint_for_cycle()`）已验证的"按累计轮次追加 prompt
   enabled` 行；7 节"当前局限"补一条方向 6 的已知边界（分类只在 Goal
   首次落地时判定一次、不会随后续实际产出动态修正；规则式关键词表
   覆盖面有限，边界情况容易被兜底成默认的"知识理论类"）。
+
+### 方向 6 动态修正：调研风格按实际产出内容周期性重判
+
+对应聊天中新增候选（源自方向 6 局限分析：分类只在 Goal 首次落地时
+基于候选标题判定一次，不会随后续实际产出动态修正）。目标：把"猜
+风格"这件事从"只看一句话标题"升级为"定期看实际已经产出了什么"。
+
+- `evolution/growth_advisor.py` 新增：
+  - `_recent_covered_subtopics_text(paths, goal_id, lookback)`：汇总
+    最近 `lookback`（默认 5）轮 manifest 里 handoff 的
+    `covered_subtopics`，拼成一段文本；读取失败/没有数据返回空
+    字符串，调用方据此自然退化为"跳过重判"。
+  - `maybe_reclassify_pursuit_style(paths, goal_backlog, goal, cycle_no,
+    cfg=None, llm_helper=None)`：只对打了 `growth_advisor` 标签、且
+    轮次号能整除 `cfg.pursuit_style_reclassify_every_n_cycles`（默认
+    8，`<=0` 关闭）的 Goal 触发；用最近几轮实际产出内容重新跑一次
+    `determine_pursuit_style()`（复用方向 6 已有的规则默认 + LLM
+    opt-in 逻辑，不是另起一套分类器），结果与当前值不同才写回
+    （`goal_backlog.update_fields()` + 直接更新 `goal.growth_pursuit_
+    style` 双重保险，不依赖调用方传入对象与 backlog 内部节点是否
+    同一引用），相同则不产生任何写入。没有可用的 `covered_subtopics`
+    文本时直接跳过，不会用"没有新内容"误判成某个具体风格。
+- `config/models.py::GrowthAdvisorConfig` 新增
+  `pursuit_style_reclassify_every_n_cycles: int = 8`——取值介于
+  `pursuit_self_check_every_n_cycles`（5）和 `reorganize_every_n_
+  cycles`（10）之间，"有足够内容可供判断、但不会拖太久才修正"的
+  折中值。
+- `evolution/goal_cron_bridge.py` 新增
+  `_maybe_reclassify_growth_pursuit_style()`，调用点放在
+  `_append_growth_pursuit_style_hint()` 之前（同一处组装子
+  Objective description 的位置），保证同一轮里如果风格被修正了，
+  紧接着追加的风格提示用的是修正后的新值；任何环节异常静默跳过，
+  不影响 Goal 触发主流程。这一步本身不产生新的 LLM 调用点（复用
+  `determine_pursuit_style()` 已有的规则默认路径，桥接函数目前没有
+  透传 `llm_helper`，即便全局开启 `pursuit_style_llm_enabled` 也只走
+  规则式重判——避免在 cron 触发路径上引入新的隐式 LLM 成本，后续如果
+  需要在这个接入点也支持 LLM 复核，需要单独评估调用频率）。
+- 新增测试（见下方方向 7 同一测试文件）：`_recent_covered_subtopics_
+  text()` 空数据/正常聚合；`maybe_reclassify_pursuit_style()` 非
+  growth_advisor 标签跳过/轮次不整除跳过/配置关闭跳过/结果未变化时
+  不写入且返回 `None`/结果确实变化时正确写回 `GoalNode` 与
+  `goal_backlog` 持久化/没有可用文本时跳过。
+
+### 方向 7：报告质量自动闭环
+
+对应聊天中新增候选（源自反馈维度局限分析：`report_not_useful` 反馈
+此前只是记录下来给人看，没有反过来指导报告生成策略）。目标：某个
+方向的报告被反复标"内容太笼统"之后，下一次生成能自动换一种更详细
+的生成方式，而不是继续用固定模板反复产出同样质量的内容。
+
+- `evolution/growth_advisor.py` 新增：
+  - `_should_auto_upgrade_report_quality(paths, candidate, cfg=None)`：
+    只读判断，`cfg.report_quality_auto_upgrade_enabled=False`（默认）
+    时直接返回 `False`，零成本、零行为变化；开启后，复用既有的
+    `_report_quality_dismiss_counts()` 统计，命中
+    `cfg.report_quality_auto_upgrade_threshold`（默认 2，`<=0` 视为
+    关闭）才返回 `True`。只回答"要不要"，"能不能"（是否真的有
+    `llm_helper` 可用）由调用方判断。
+  - `generate_growth_report()` 新增 `quality_auto_upgraded: bool =
+    False` 参数：为 `True` 时在正文开头追加一句"这个方向之前的报告
+    被反馈过内容太笼统，这一份自动换成了更详细的生成方式"（跟
+    `is_exploration` 的"探索位"标注同一种"管理预期、不悄悄换生成
+    方式却不告诉用户"的展示风格），并透传进 `GrowthReport.quality_
+    auto_upgraded` 字段。只影响这句提示和字段值，不影响是否真的走
+    LLM 路径（那由 `llm_helper` 是否非 `None` 决定）。
+  - `GrowthReport` 新增 `quality_auto_upgraded: bool = False` 字段，
+    区别于 `source="llm"`（可能只是全局 `report_quality_llm_enabled`
+    打开导致，不代表这里有过负反馈）；旧数据反序列化缺该字段落到
+    `False`，等价于"不是因为质量信号被升级的"，不需要额外迁移。
+  - `run_daily_cycle()`：报告生成循环从列表推导式改成显式
+    `for` 循环，逐个候选判断——全局模板路径（`report_quality_llm_
+    enabled=False`）下，如果当前上下文确实拿得到 `llm_helper`（比如
+    cron 触发）且 `_should_auto_upgrade_report_quality()` 命中，临时
+    把这一份报告的 `llm_helper` 换成真实的 `llm_helper`、并传
+    `quality_auto_upgraded=True`；不修改全局开关本身，只影响这一次
+    调用，同一轮里其余方向仍走各自原来的路径。
+- `config/models.py::GrowthAdvisorConfig` 新增
+  `report_quality_auto_upgrade_enabled: bool = False`（默认关闭，
+  对齐"增加调用成本的能力默认关闭"的一贯原则）和
+  `report_quality_auto_upgrade_threshold: int = 2`。
+- 新增测试 `tests/test_growth_advisor_pursuit_style_reclassify_and_
+  report_upgrade.py`（15 个用例，覆盖上面方向 6 动态修正与方向 7
+  两部分）：
+  - `_recent_covered_subtopics_text()`：无 manifest 返回空/正常聚合
+    多轮内容；
+  - `maybe_reclassify_pursuit_style()`：非 `growth_advisor` 标签跳过/
+    轮次不整除跳过/`cfg` 显式关闭跳过/规则式重判结果未变化时返回
+    `None` 且不写入/结果确实变化（标题猜的"知识理论类" vs 实际内容
+    明显偏"习惯养成类"）时正确写回 `GoalNode` 与持久化存储/没有可用
+    文本时跳过；
+  - `_should_auto_upgrade_report_quality()`：默认关闭返回 `False`/
+    开启但未达阈值返回 `False`/开启且达到阈值返回 `True`/阈值为 0
+    时按关闭处理；
+  - `generate_growth_report()`：`quality_auto_upgraded=False`（默认）
+    时正文不含升级提示；`quality_auto_upgraded=True` 时正文含提示且
+    字段正确回填；`GrowthReport.from_dict()` 缺该字段时兜底 `False`。
+- 回归：`tests/test_growth_advisor.py` +
+  `test_growth_advisor_pursuits_portfolio_summary.py` +
+  `test_growth_advisor_material_engagement.py` +
+  `test_growth_advisor_pursuit_self_check.py` +
+  `test_growth_advisor_saturation_and_pursuit_visibility.py` +
+  `test_growth_advisor_pursuit_increment_llm_review.py` +
+  `test_growth_advisor_pursuit_spinoff.py` +
+  `test_growth_advisor_feedback_pattern_summary.py` +
+  `test_growth_advisor_pursuit_style.py` +
+  `test_growth_advisor_pursuit_style_reclassify_and_report_upgrade.py` +
+  `test_goal_backlog.py` + `test_goal_cron_bridge.py` +
+  `test_growth_advisor_goal_cron_integration.py` 共 352 个用例，351
+  通过；唯一失败的
+  `TestHealthTrend::test_compact_health_trend_storage_downsamples_
+  old_points` 是跟本次改动完全无关的既有用例（跟当天的日期边界分桶
+  有关，单独隔离运行同样失败，确认是预置的时间敏感型环境问题，不是
+  本次改动引入的回归）。
+- 成本核对：两个方向默认都关闭（`pursuit_style_reclassify_every_n_
+  cycles=8` 本身零 LLM 成本，因为桥接函数目前不透传 `llm_helper`；
+  `report_quality_auto_upgrade_enabled=False`），默认零增量成本；
+  开启后，动态修正每 8 轮做一次规则式重判（可忽略），报告质量自动
+  升级只在命中阈值的方向上多花一次 LLM 调用，不是无差别升级全部
+  报告，符合"opt-in、成本可控"的一贯原则。

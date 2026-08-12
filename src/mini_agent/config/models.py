@@ -1911,6 +1911,33 @@ class GrowthAdvisorConfig:
     # 让这个 Goal 的自动持续推进流程因为分类失败而中断。
     pursuit_style_llm_enabled: bool = False
 
+    # ── 方向 6 动态修正（growth_advisor_ideal_advisor_gap_and_roadmap_
+    # plan.md 方向 6，2026-08 追加候选并落地）───────────────────────────
+    # `auto_pursue_candidate()` 只在 Goal 首次落地时基于候选标题猜一次
+    # 调研风格，容易猜错。这个字段控制累计满多少轮后，改用该方向实际
+    # 已经产出的 `covered_subtopics` 文本重新分类一次（`maybe_
+    # reclassify_pursuit_style()`）；`<=0` 视为关闭。默认 `8`——比
+    # `reorganize_every_n_cycles`（10）略短，比 `pursuit_self_check_
+    # every_n_cycles`（5）略长，取一个"有足够内容可供判断、但不会拖太
+    # 久才修正"的折中值。
+    pursuit_style_reclassify_every_n_cycles: int = 8
+
+    # ── 方向 7：报告质量自动闭环（growth_advisor_ideal_advisor_gap_and_
+    # roadmap_plan.md 方向 7，2026-08 追加候选并落地）──────────────────
+    # `report_not_useful` dismiss 反馈此前只是"记录下来给人看"（月度
+    # 复盘/诊断面板），从没被用来反过来指导报告生成策略。这个开关控制
+    # 的是：某个方向的报告被标"内容太笼统"累计达到
+    # `report_quality_auto_upgrade_threshold` 次时，下一次生成自动
+    # 临时切到 LLM 生成路径（即便全局 `report_quality_llm_enabled` 关
+    # 闭），只影响这一份报告，不修改全局开关本身。默认关闭，对齐"增加
+    # 调用成本的能力默认关闭"的一贯原则；开启后也只在调用方确实能拿到
+    # `llm_helper`（比如 cron 触发）、且命中阈值的方向才会真正多花一次
+    # LLM 调用，不是无差别升级全部报告。
+    report_quality_auto_upgrade_enabled: bool = False
+    # 触发自动升级所需的"报告没写好"累计次数，`<=0` 视为关闭（等价于
+    # `report_quality_auto_upgrade_enabled=False`）。
+    report_quality_auto_upgrade_threshold: int = 2
+
     # ── A3：对齐分析结果批量落地（growth_advisor_autonomy_deepening_
     # plan.md 方向 A3）─────────────────────────────────────────────────
     # `/growth align --adopt-all` / 看板"全部采纳"一次性对"未匹配兴趣"
