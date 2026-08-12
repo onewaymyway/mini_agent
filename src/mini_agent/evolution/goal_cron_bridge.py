@@ -402,10 +402,18 @@ def stop_goal_recurrence(
 
 # ── 完成计数回收（Track C） ────────────────────────────────────────────────────
 
-def reap_finished_cycles(goal_backlog: "GoalBacklog") -> int:
+def reap_finished_cycles(goal_backlog: "GoalBacklog", *, llm_helper_provider=None) -> int:
     """扫描所有 recurring=True 的 Goal，把本轮新出现的终态子 Objective 计入
     cycle_count/progress_notes。由 AutonomousLoop 被动 tick 周期性调用
     （只读遍历 + 命中才写，开销可控，不需要单独起线程/订阅机制）。
+
+    `llm_helper_provider`：[growth_advisor_autonomy_deepening_plan_v2.md
+    方向 1] 可选的惰性 `Callable[[], Any]`，每次命中 B1/B2 检查点时才
+    取一次当前 `llm_helper`（跟 `tech_radar_search.py` 等 cron job 的
+    `llm_helper_provider` 约定一致），供 `_check_pursuit_saturation()`
+    在 `cfg.pursuit_increment_llm_review_enabled=True` 时触发一次可选的
+    LLM 复核。不传（默认 `None`）时行为与改动前完全一致——`evaluate_
+    cycle_increment()` 拿不到 `llm_helper` 会自动跳过复核这一步。
 
     返回本次新计数的子节点数量（用于日志/测试断言，正常 tick 大多数时候是 0）。
     """
@@ -438,7 +446,7 @@ def reap_finished_cycles(goal_backlog: "GoalBacklog") -> int:
                     # 做增量质量判断；一轮成功完成时顺带算一次饱和度信号，
                     # 刚跨过阈值才推一次通知（同一次饱和状态不重复打扰）。
                     # 诊断增强，任何异常都吞掉，不影响 reap 主流程的计数。
-                    _check_pursuit_saturation(goal_backlog, goal)
+                    _check_pursuit_saturation(goal_backlog, goal, llm_helper_provider=llm_helper_provider)
                     # [方向 C2] 本轮新增摘要暂存，等下一次真正推送时打包
                     # 带出，不单独消耗推送额度。同样只是诊断/展示增强。
                     _record_pursuit_digest(goal_backlog, goal)
@@ -476,8 +484,9 @@ def _notify_cycle_failed(goal_backlog: "GoalBacklog", goal: "GoalNode", note: st
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._notify_cycle_failed')
 
 
-def _check_pursuit_saturation(goal_backlog: "GoalBacklog", goal: "GoalNode") -> None:
-    """[growth_advisor_autonomy_deepening_plan.md 方向 B1/B2] 一轮成功
+def _check_pursuit_saturation(goal_backlog: "GoalBacklog", goal: "GoalNode", *, llm_helper_provider=None) -> None:
+    """[growth_advisor_autonomy_deepening_plan.md 方向 B1/B2；
+    growth_advisor_autonomy_deepening_plan_v2.md 方向 1] 一轮成功
     完成时，对成长顾问自主推进的 Goal 算一次增量质量/饱和度信号，刚
     跨过阈值就推一条"要不要降频"的通知。纯诊断增强：不判断失败、不
     自动停止/降低周期性执行（是否降频仍由用户在通知/看板里决定），
@@ -487,8 +496,11 @@ def _check_pursuit_saturation(goal_backlog: "GoalBacklog", goal: "GoalNode") -> 
         paths = getattr(goal_backlog, "_paths", None)
         if paths is None:
             return
+        from mini_agent.config.loader import load_config
         from mini_agent.evolution.growth_advisor import process_pursuit_cycle_completion
-        hint = process_pursuit_cycle_completion(paths, goal)
+        cfg = getattr(load_config(), "growth_advisor", None)
+        llm_helper = llm_helper_provider() if llm_helper_provider else None
+        hint = process_pursuit_cycle_completion(paths, goal, llm_helper=llm_helper, cfg=cfg)
         if hint is None:
             return
         from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage

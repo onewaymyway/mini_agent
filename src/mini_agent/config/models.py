@@ -1949,6 +1949,17 @@ class GrowthAdvisorConfig:
     # notification_max_per_day），不为这条摘要单独消耗一次推送额度。
     pursuit_digest_enabled: bool = True
 
+    # ── 方向 1：B1 增量质量校验的 LLM 复核（growth_advisor_autonomy_
+    # deepening_plan_v2.md 方向 1）────────────────────────────────────────
+    # 默认关闭：会额外触发一次 LLM 调用，属于"增加调用成本的能力默认
+    # opt-in"。打开后，`evaluate_cycle_increment()` 只在规则式初筛已经
+    # 判定 `low_increment=True` 的轮次上，才追加一次 LLM 语义复核——
+    # 判断这次"重叠比例高"究竟是真的在原地打转，还是子话题标签凑巧
+    # 重复但内容其实往前推进了。复核结果（`llm_reviewed`/`llm_verdict`/
+    # `llm_reason`）只是诊断展示，跟规则式判断分开记录，不覆盖规则式
+    # 判断本身，也不影响 B2 饱和度 streak 的计数方式。
+    pursuit_increment_llm_review_enabled: bool = False
+
 
 @dataclass
 class ReminderConfig:

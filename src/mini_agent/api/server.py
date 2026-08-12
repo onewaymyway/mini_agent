@@ -1785,6 +1785,13 @@ class HttpServer:
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.gateway_poller')
                 self._bridge._external_input_poller = None
 
+            # [growth_advisor_autonomy_deepening_plan_v2.md 方向 1] 惰性
+            # 获取 agent.llm_helper，供 reap_finished_cycles() 里 B1 的
+            # 可选 LLM 复核使用（cfg.pursuit_increment_llm_review_enabled
+            # 默认关闭，未开启时这个 provider 取到的值也不会被用到）。
+            def _pursuit_increment_llm_helper():
+                return getattr(agent, "llm_helper", None)
+
             return AutonomousLoop(
                 goal_backlog=goal_backlog,
                 input_queue=self._bridge.input_queue,
@@ -1795,6 +1802,7 @@ class HttpServer:
                 objective_executor=objective_executor,
                 goal_decompose_fn=_goal_decompose,
                 objective_isolated_runner=self._objective_isolated_runner,
+                llm_helper_provider=_pursuit_increment_llm_helper,
             )
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception

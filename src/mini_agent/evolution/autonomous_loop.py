@@ -52,12 +52,17 @@ class AutonomousLoop:
         objective_executor=None,
         goal_decompose_fn=None,
         objective_isolated_runner=None,
+        llm_helper_provider=None,
     ) -> None:
         self._goal_backlog = goal_backlog
         self._input_queue = input_queue
         self._paths = paths
         self._cfg = cfg
         self._tick_interval = tick_interval_seconds
+        # [growth_advisor_autonomy_deepening_plan_v2.md 方向 1] 惰性
+        # llm_helper 获取，透传给 reap_finished_cycles() 供 B1 的可选
+        # LLM 复核使用；不传时该复核步骤自动跳过，行为与改动前一致。
+        self._llm_helper_provider = llm_helper_provider
         self._last_tick_at: float = 0.0
         self._tick_count: int = 0
         self._digest_records: list[dict] = []  # 待写入 activity_digest.jsonl 的记录
@@ -299,7 +304,7 @@ class AutonomousLoop:
         # goals.json，失败静默降级，不影响本次 tick 其余步骤。
         try:
             from mini_agent.evolution.goal_cron_bridge import reap_finished_cycles
-            reap_finished_cycles(self._goal_backlog)
+            reap_finished_cycles(self._goal_backlog, llm_helper_provider=self._llm_helper_provider)
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.reap_finished_cycles')

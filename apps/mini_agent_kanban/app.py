@@ -4627,6 +4627,20 @@ def _render_growth_pursuits(client: "AgentClient"):
                         f"⚠️ 最近连续 {saturation.get('streak')} 轮新增内容不多了，"
                         "可能已经了解得差不多，考虑降低频率或先告一段落。"
                     )
+                    # [growth_advisor_autonomy_deepening_plan_v2.md 方向 1]
+                    # 只在实际触发过 LLM 复核时展示，跟规则式判断分开
+                    # 呈现，不互相覆盖——LLM 认为其实有实质推进时单独
+                    # 提示，避免用户只看到规则式结论就误以为已经定论。
+                    if saturation.get("llm_reviewed"):
+                        if saturation.get("llm_verdict") is False:
+                            st.caption(
+                                f"🤖 LLM 复核认为其实有实质推进（{saturation.get('llm_reason') or '未提供理由'}），"
+                                "仅供参考，上面的规则式判断不受影响。"
+                            )
+                        elif saturation.get("llm_verdict") is True:
+                            st.caption(
+                                f"🤖 LLM 复核也认为确实低增量（{saturation.get('llm_reason') or '未提供理由'}）。"
+                            )
                 # [growth_advisor_autonomy_deepening_plan_v2.md 方向 3]
                 # 饱和度历史趋势：只读、按需拉取，帮用户判断"降频建议
                 # 有没有用"——比如降频之后新增内容是不是又回升了。
@@ -4638,6 +4652,12 @@ def _render_growth_pursuits(client: "AgentClient"):
                     else:
                         marks = "".join("🔴" if p.get("low_increment") else "🟢" for p in points)
                         st.caption(f"最近 {len(points)} 轮（🟢 有实质增量 · 🔴 疑似低增量）：{marks}")
+                        # [方向 1] 有 LLM 复核过的轮次额外标一个 🤖，
+                        # 悬停/展开不方便时至少能看出"这几轮有没有被
+                        # 复核过"，具体理由仍以上面最新一条的 caption 为准。
+                        reviewed = [p for p in points if p.get("llm_reviewed")]
+                        if reviewed:
+                            st.caption(f"其中 {len(reviewed)} 轮触发过 LLM 复核（🤖）。")
                 # [方向 C2] 还没打包进推送消息的"本轮新增摘要"，看板里先
                 # 展示出来，不用等下一次推送才看到最新进展。
                 pending_digest = row.get("pending_digest") or []

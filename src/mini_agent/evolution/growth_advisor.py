@@ -3099,11 +3099,32 @@ _PURSUIT_SATURATION_DEFAULT_THRESHOLD = 3
 _PURSUIT_INCREMENT_OVERLAP_THRESHOLD = 0.6
 
 
-def evaluate_cycle_increment(paths, goal_id: str, *, overlap_threshold: float = _PURSUIT_INCREMENT_OVERLAP_THRESHOLD) -> dict:
+_LLM_REVIEWED_DEFAULTS = {"llm_reviewed": False, "llm_verdict": None, "llm_reason": ""}
+
+
+def evaluate_cycle_increment(
+    paths, goal_id: str, *,
+    overlap_threshold: float = _PURSUIT_INCREMENT_OVERLAP_THRESHOLD,
+    llm_helper: Optional[Callable[[str], str]] = None,
+    llm_review_enabled: bool = False,
+) -> dict:
     """比较某个 Goal 最近两轮 manifest 的 handoff 数据，判断本轮相比上一轮
     是否"疑似低增量"。纯规则式（`covered_subtopics` 集合差集占比），零
     LLM 成本，不判"失败"、不阻断任何流程——只读，供调用方自行决定要不要
     据此提示用户或计入 `record_pursuit_cycle_signal()` 的饱和度计数。
+
+    [growth_advisor_autonomy_deepening_plan_v2.md 方向 1] `llm_helper` +
+    `llm_review_enabled=True`（都满足才触发，同项目里其余 LLM 增强调用点
+    一致的 opt-in 约定）时，只在规则式初筛已经判定 `low_increment=True`
+    的轮次上，追加一次 LLM 语义复核——规则式初筛只能发现"字面上没什么
+    新词"，发现不了"子话题标签凑巧重复、但其实内容已经往前推进了"这种
+    更隐蔽的误判。复核结果单独放进 `llm_reviewed`/`llm_verdict`/
+    `llm_reason` 三个字段，**不覆盖** `low_increment` 本身——两种信号都
+    应该在诊断面板/看板里可见，调用方是否要据此调整展示（比如提示"规则
+    判定低增量，但 LLM 认为其实有实质推进"）自行决定；`record_pursuit_
+    cycle_signal()` 的 streak 计数仍然只看规则式 `low_increment`，不因为
+    这一步而改变既有的计数口径。LLM 调用失败/未开启/规则未判定为低增量
+    时，三个字段保持默认值（`llm_reviewed=False`）。
 
     返回：
         {"evaluated": bool,       # 是否成功做出了判断（轮次不足/没有
@@ -3113,7 +3134,11 @@ def evaluate_cycle_increment(paths, goal_id: str, *, overlap_threshold: float = 
          "overlap_ratio": float | None,       # 仅 evaluated=True 时有值
          "new_subtopics_count": int | None,
          "covered_subtopics_count": int | None,
-         "reason": str}           # evaluated=False 时说明原因
+         "reason": str,           # evaluated=False 时说明原因
+         "llm_reviewed": bool,    # 是否实际触发了 LLM 复核
+         "llm_verdict": bool | None,  # True=LLM 同意确实低增量；
+                                       # False=LLM 认为其实有实质推进
+         "llm_reason": str}       # LLM 复核给出的简短理由
     """
     from mini_agent.evolution import output_workspace
     from mini_agent.perception.goal_execution_spec import get_handoff_data
@@ -3126,6 +3151,7 @@ def evaluate_cycle_increment(paths, goal_id: str, *, overlap_threshold: float = 
             "overlap_ratio": None, "new_subtopics_count": None,
             "covered_subtopics_count": None,
             "reason": "轮次不足（少于 2 轮），暂无法比较增量",
+            **_LLM_REVIEWED_DEFAULTS,
         }
 
     prev_handoff = get_handoff_data(manifests[-2].get("progress_note") or "") or {}
@@ -3145,24 +3171,109 @@ def evaluate_cycle_increment(paths, goal_id: str, *, overlap_threshold: float = 
             "overlap_ratio": None, "new_subtopics_count": None,
             "covered_subtopics_count": None,
             "reason": "本轮 handoff 未提供 covered_subtopics，跳过判断（可能是该 Goal 没有用 growth_pursuit 模板，或执行时没有按约定写 handoff 块）",
+            **_LLM_REVIEWED_DEFAULTS,
         }
 
     new_subtopics = curr_subtopics - prev_subtopics
     overlap_ratio = 1.0 - (len(new_subtopics) / len(curr_subtopics))
     low_increment = overlap_ratio >= overlap_threshold
-    return {
+    result = {
         "evaluated": True,
         "low_increment": low_increment,
         "overlap_ratio": round(overlap_ratio, 3),
         "new_subtopics_count": len(new_subtopics),
         "covered_subtopics_count": len(curr_subtopics),
         "reason": "",
+        **_LLM_REVIEWED_DEFAULTS,
     }
+
+    if low_increment and llm_review_enabled and llm_helper is not None:
+        status_out: dict[str, Any] = {"outcome": "error"}
+        try:
+            verdict, reason = _llm_review_cycle_increment(
+                prev_subtopics, curr_subtopics, new_subtopics, llm_helper, status_out=status_out,
+            )
+            result["llm_reviewed"] = True
+            result["llm_verdict"] = verdict
+            result["llm_reason"] = reason
+            _record_llm_call_status(
+                paths, "pursuit_increment_review", status_out.get("outcome", "success"),
+                detail=reason[:200],
+            )
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.growth_advisor.evaluate_cycle_increment_llm_review")
+            _record_llm_call_status(paths, "pursuit_increment_review", "error", detail=str(exc)[:200])
+
+    return result
+
+
+def _llm_review_cycle_increment(
+    prev_subtopics: set, curr_subtopics: set, new_subtopics: set,
+    llm_helper: Callable[[str], str], *, status_out: Optional[dict] = None,
+) -> tuple[bool, str]:
+    """[方向 1] 对一个已经被规则式初筛标记为"疑似低增量"的轮次，追一次
+    语义复核——只传子话题的标题集合（不传完整正文，控制 prompt 体积），
+    让 LLM 判断"这些标题上的重叠，是不是意味着内容真的在原地打转"。
+
+    返回 `(verdict, reason)`：`verdict=True` 表示 LLM 同意规则式判断
+    （确实是低增量），`False` 表示 LLM 认为其实有实质推进（规则判断
+    可能是误判，比如新增子话题的标题恰好重复用词，但讨论的具体内容
+    不同）。解析失败/空响应时抛出异常，由调用方统一走失败路径（不在这
+    里返回"默认同意规则判断"这种隐性兜底，避免掩盖复核本身失效的情况）。
+    """
+    prompt = (
+        "你在协助复核一个持续调研方向的\"本轮是否有实质推进\"判断。\n"
+        "规则式初筛已经判定本轮\"疑似低增量\"（新增子话题标题占比过低）。\n"
+        "请你只根据子话题标题本身的语义，判断这次真的是在重复讲同样的\n"
+        "内容，还是新增的标题虽然用词与已有标题接近，但实际讨论的是\n"
+        "不同的具体内容（比如\"性能优化\" vs \"启动性能优化\"这种从大类\n"
+        "细化到具体子问题的情况，不应算作低增量）。\n\n"
+        f"上一轮已覆盖的子话题：{sorted(prev_subtopics) or '（无）'}\n"
+        f"本轮全部子话题：{sorted(curr_subtopics) or '（无）'}\n"
+        f"本轮新增子话题：{sorted(new_subtopics) or '（无）'}\n\n"
+        "只输出一个 JSON 对象，不要输出其它任何文字，格式：\n"
+        '{"has_real_progress": true/false, "reason": "一句话理由（30 字以内）"}\n'
+        "has_real_progress=true 表示你认为本轮其实有实质推进（不同意\n"
+        "规则式\"低增量\"的判断）；false 表示你同意确实是低增量。"
+    )
+    raw = llm_helper.ask(prompt)
+    if not raw or not raw.strip():
+        if status_out is not None:
+            status_out["outcome"] = "empty_response"
+        raise ValueError("LLM 复核返回空响应")
+
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    try:
+        parsed = json.loads(text)
+    except Exception as exc:
+        if status_out is not None:
+            status_out["outcome"] = "parse_error"
+        raise ValueError(f"LLM 复核响应解析失败：{exc}") from exc
+
+    if not isinstance(parsed, dict) or "has_real_progress" not in parsed:
+        if status_out is not None:
+            status_out["outcome"] = "parse_error"
+        raise ValueError("LLM 复核响应缺少 has_real_progress 字段")
+
+    has_real_progress = bool(parsed.get("has_real_progress"))
+    reason = str(parsed.get("reason") or "").strip()
+    if status_out is not None:
+        status_out["outcome"] = "success"
+    # verdict 与 has_real_progress 相反：verdict=True 表示"同意规则判断
+    # （确实低增量）"，has_real_progress=True 表示"LLM 认为有实质推进"。
+    return (not has_real_progress), reason
 
 
 def record_pursuit_cycle_signal(
     paths, goal_id: str, low_increment: bool, *,
     saturation_threshold: int = _PURSUIT_SATURATION_DEFAULT_THRESHOLD,
+    llm_reviewed: bool = False, llm_verdict: Optional[bool] = None, llm_reason: str = "",
 ) -> dict:
     """维护某个 Goal 的"连续低增量轮次"计数（存进 growth_state.json 的
     `pursuit_saturation` 子字典，按 goal_id 分桶，不为这个单一信号新开
@@ -3176,6 +3287,14 @@ def record_pursuit_cycle_signal(
       只在"刚刚跨过阈值、之前还没提示过"时为 `True`，调用方（比如
       `goal_cron_bridge.reap_finished_cycles()`）据此决定是否要推一次
       "要不要降频"的通知，而不是每轮都重复打扰用户。
+
+    [growth_advisor_autonomy_deepening_plan_v2.md 方向 1] `llm_reviewed`/
+    `llm_verdict`/`llm_reason` 是 `evaluate_cycle_increment()` 的 LLM
+    复核结果（未开启该开关或未触发复核时保持默认值），这里只是原样
+    存一份"最近一次"快照（`get_pursuit_saturation()` 据此展示）并追加
+    进趋势记录，不参与 streak 的加减逻辑——streak 仍然只看
+    `low_increment` 这一个规则式信号，避免"规则说低增量、LLM 说不是"
+    被静默合并成一个结论。
 
     [growth_advisor_autonomy_deepening_plan_v2.md 方向 3] 除了更新
     `pursuit_saturation` 当前状态这个快照，顺带向
@@ -3200,6 +3319,9 @@ def record_pursuit_cycle_signal(
     newly_saturated = saturated and not entry.get("notified", False)
     if newly_saturated:
         entry["notified"] = True
+    entry["llm_reviewed"] = bool(llm_reviewed)
+    entry["llm_verdict"] = llm_verdict
+    entry["llm_reason"] = llm_reason or ""
     sat[goal_id] = entry
     _save_growth_state(paths, state)
     try:
@@ -3209,6 +3331,9 @@ def record_pursuit_cycle_signal(
             "low_increment": bool(low_increment),
             "streak": entry["streak"],
             "saturated": saturated,
+            "llm_reviewed": bool(llm_reviewed),
+            "llm_verdict": llm_verdict,
+            "llm_reason": llm_reason or "",
         })
     except Exception as exc:
         from mini_agent.errors import log_exception
@@ -3227,6 +3352,11 @@ def get_pursuit_saturation(paths, goal_id: str) -> dict:
         "streak": streak,
         "saturated": streak >= threshold,
         "threshold": threshold,
+        # [方向 1] 最近一轮 LLM 复核结果快照（未开启/未触发复核时保持
+        # 默认值），只读展示，不参与 saturated 的判断。
+        "llm_reviewed": bool(entry.get("llm_reviewed", False)),
+        "llm_verdict": entry.get("llm_verdict"),
+        "llm_reason": entry.get("llm_reason") or "",
     }
 
 
@@ -3285,6 +3415,9 @@ def get_pursuit_saturation_trend(
             "low_increment": r.get("low_increment"),
             "streak": r.get("streak"),
             "saturated": r.get("saturated"),
+            "llm_reviewed": r.get("llm_reviewed", False),
+            "llm_verdict": r.get("llm_verdict"),
+            "llm_reason": r.get("llm_reason") or "",
         }
         for r in _read_jsonl(paths.growth_pursuit_saturation_trend_path)
         if r.get("goal_id") == goal_id
@@ -3293,13 +3426,20 @@ def get_pursuit_saturation_trend(
     return rows[-limit:] if limit else rows
 
 
-def process_pursuit_cycle_completion(paths, goal) -> Optional[dict]:
+def process_pursuit_cycle_completion(paths, goal, *, llm_helper=None, cfg=None) -> Optional[dict]:
     """[方向 B1/B2 的组装入口] 一个"成长顾问自主推进"的 Goal 某一轮循环
     完成后调用：算这一轮的增量质量 → 更新饱和度计数 → 刚跨过阈值时
     返回一条可供上层（`goal_cron_bridge.reap_finished_cycles()`）推送
     的提示信息。只处理打了 `growth_advisor` 标签的 Goal，其余 Goal 直接
     跳过返回 `None`（这个信号只对成长顾问的持续调研场景有意义，通用
     周期性 Goal 不受影响）。
+
+    `llm_helper` + `cfg.pursuit_increment_llm_review_enabled=True`
+    （都满足才触发）[方向 1]：透传给 `evaluate_cycle_increment()`，只在
+    规则式初筛已经判定"疑似低增量"的轮次上追加一次 LLM 复核，复核结果
+    随 streak 一起存进 `pursuit_saturation`，不改变 streak 本身的计数
+    口径（见 `record_pursuit_cycle_signal()` 的说明）。`llm_helper` 为
+    `None` 或开关关闭时行为与改动前完全一致。
 
     任何异常都不向上抛——这是诊断增强，不能反过来影响
     `reap_finished_cycles()` 的计数主流程；调用方应当把本函数包在
@@ -3311,8 +3451,16 @@ def process_pursuit_cycle_completion(paths, goal) -> Optional[dict]:
     """
     if "growth_advisor" not in (getattr(goal, "tags", None) or []):
         return None
-    increment = evaluate_cycle_increment(paths, goal.id)
-    signal = record_pursuit_cycle_signal(paths, goal.id, increment.get("low_increment", False))
+    llm_review_enabled = bool(getattr(cfg, "pursuit_increment_llm_review_enabled", False)) if cfg is not None else False
+    increment = evaluate_cycle_increment(
+        paths, goal.id, llm_helper=llm_helper, llm_review_enabled=llm_review_enabled,
+    )
+    signal = record_pursuit_cycle_signal(
+        paths, goal.id, increment.get("low_increment", False),
+        llm_reviewed=increment.get("llm_reviewed", False),
+        llm_verdict=increment.get("llm_verdict"),
+        llm_reason=increment.get("llm_reason", ""),
+    )
     if not signal.get("newly_saturated"):
         return None
     return {
@@ -3471,6 +3619,7 @@ def peek_pending_pursuit_digests(paths) -> list[dict]:
 #   "error"                            —— 调用本身抛出异常
 _LLM_CALL_TYPES = (
     "signal_augment", "report_quality", "topic_category", "goal_alignment_match", "report_outline",
+    "pursuit_increment_review",
 )
 
 

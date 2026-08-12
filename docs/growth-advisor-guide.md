@@ -884,9 +884,8 @@ Goal，跟建议的意思不一样）或手动改标题让关键词匹配上。
   触发回访卡片"这个后续判断点——那是在有了真实趋势数据之后才能评估
   的下一步，留给后续视实际情况决定。
 
-v2 方案文档最后一项（方向 1：B1 LLM 复核）仍按方案文档第 6 节的优先级
-排序留待后续实施，涉及新的 opt-in LLM 调用点和"规则判断 vs LLM 判断
-如何共存展示"的设计取舍，建议放在最后。
+v2 方案文档最后一项（方向 1：B1 LLM 复核）见下面 2.19 节，至此
+`growth_advisor_autonomy_deepening_plan_v2.md` 五个方向全部落地。
 
 **新增/变更文件**：
 
@@ -907,6 +906,98 @@ v2 方案文档最后一项（方向 1：B1 LLM 复核）仍按方案文档第 6
 - `tests/test_growth_advisor_saturation_and_pursuit_visibility.py`：
   新增 `TestPursuitSaturationTrend`，覆盖趋势累积、按 goal_id 隔离、
   未记录时为空、压缩函数在无旧数据时为空操作四种场景。
+
+### 2.19 落地 `growth_advisor_autonomy_deepening_plan_v2.md`：方向 1（B1 增量质量校验的 LLM 复核）（本次新增）
+
+**现状问题**：2.13 节 B1 的 `evaluate_cycle_increment()` 只做规则式
+初筛——比对相邻两轮 `covered_subtopics` 的集合差集占比，重叠比例过高
+就标记"疑似低增量"。规则式初筛只能发现"字面上没什么新词"，发现不了
+"子话题标题凑巧重复、但内容其实已经往前推进了"这种更隐蔽的误判——
+比如上一轮和本轮的子话题标题都叫"性能优化"，规则式判断会认为这是
+100% 重叠，但本轮实际讨论的可能是完全不同的具体子问题。
+
+**改动**：
+
+- `evaluate_cycle_increment()` 新增可选参数 `llm_helper` / `llm_
+  review_enabled`（默认 `None`/`False`，不改变既有调用方不传参数时
+  的行为）：只在规则式初筛已经判定 `low_increment=True` 的轮次上，
+  才追加一次 LLM 复核——不对每一轮都调用，维持"规则式路径优先、LLM
+  增强作为 opt-in 补充"的既有取舍。
+- 新增 `_llm_review_cycle_increment()`：只把上一轮/本轮/新增的子话题
+  标题集合（不传完整正文）拼进 prompt，让 LLM 判断"这次重叠是不是
+  真的在原地打转"，返回结构化 JSON（`has_real_progress` +
+  一句话理由）。解析失败/空响应/异常统一走失败路径（记一次
+  `pursuit_increment_review` 的 `error`/`parse_error`/
+  `empty_response` 状态，复用既有的 `_record_llm_call_status()`
+  三态诊断机制，不吞掉真实失败让复核看起来"默认通过"）。
+- 复核结果放进返回值新增的三个字段——`llm_reviewed`（是否实际触发
+  过复核）、`llm_verdict`（`True`=LLM 同意规则式判断确实低增量，
+  `False`=LLM 认为其实有实质推进，`None`=未触发）、`llm_reason`
+  （一句话理由）——**不覆盖** `low_increment` 本身。两种信号刻意
+  分开记录：`record_pursuit_cycle_signal()` 的 streak 计数仍然只看
+  规则式 `low_increment`，不会因为 LLM 复核结果而改变计数口径，
+  避免"规则说低增量、LLM 说不是"被静默合并成一个结论——这一点是
+  方案文档明确要求的取舍，不是遗漏。
+- `record_pursuit_cycle_signal()` 新增可选的 `llm_reviewed`/
+  `llm_verdict`/`llm_reason` 参数，原样存进 `pursuit_saturation`
+  当前状态快照（供 `get_pursuit_saturation()` 展示"最近一次"）并
+  追加进 2.18 节已有的 `growth_pursuit_saturation_trend.jsonl`
+  （复用同一份趋势文件，不新开一份存储）。不传这三个参数时行为与
+  改动前完全一致（三个字段落盘为默认值），向后兼容所有既有调用方。
+- 新增配置项 `growth_advisor.pursuit_increment_llm_review_enabled`
+  （默认 `False`，opt-in——这是新增的 LLM 调用点，对齐"增加调用
+  成本的能力默认关闭"的一贯原则）。`process_pursuit_cycle_completion()`
+  新增 `llm_helper`/`cfg` 参数，读取这个开关决定要不要把 `llm_helper`
+  透传给 `evaluate_cycle_increment()`。
+- **接入点**：`goal_cron_bridge.reap_finished_cycles()` 新增可选的
+  `llm_helper_provider` 参数（惰性 `Callable[[], Any]`，跟
+  `tech_radar_search.py` 等 cron job 同一套约定），`_check_pursuit_
+  saturation()` 内部加载 `cfg.growth_advisor` 并取一次 `llm_helper`
+  透传下去；`AutonomousLoop` 新增同名构造参数，`api/server.py::
+  _build_autonomous_loop()` 传入 `lambda: getattr(agent, "llm_
+  helper", None)`（跟 `sys:tech_radar_search` 等既有 cron job 的
+  `llm_helper_provider` 完全同一种惰性获取写法）。不传时（比如
+  非 daemon 模式的测试路径）`evaluate_cycle_increment()` 拿不到
+  `llm_helper`，复核这一步自动跳过，不影响主流程。
+- **看板**：\"🔄 正在自主推进\"分区里，饱和警告下面只在
+  `llm_reviewed=True` 时追加一行 `st.caption`——LLM 认为其实有实质
+  推进时单独提示\"仅供参考，规则式判断不受影响\"，避免用户误以为
+  规则式饱和结论已经被推翻；\"📈 饱和度走势\"折叠区里额外统计\"其中
+  N 轮触发过 LLM 复核\"，具体理由仍以最新一条为准，不为每个历史点
+  都展开详情（保持跟已有走势展示同样的\"不引入图表库、只做紧凑
+  记号\"风格）。
+- 任何异常整体吞掉，不影响 `reap_finished_cycles()` 的计数主流程——
+  跟 B1/B2 落地时确立的取舍完全一致。
+
+**新增/变更文件**：
+
+- `src/mini_agent/config/models.py`：新增
+  `GrowthAdvisorConfig.pursuit_increment_llm_review_enabled`；
+- `src/mini_agent/evolution/growth_advisor.py`：
+  `evaluate_cycle_increment()` 新增 `llm_helper`/`llm_review_enabled`
+  参数及 `llm_reviewed`/`llm_verdict`/`llm_reason` 返回字段；新增
+  `_llm_review_cycle_increment()`；`_LLM_CALL_TYPES` 新增
+  `"pursuit_increment_review"`；`record_pursuit_cycle_signal()` 新增
+  `llm_reviewed`/`llm_verdict`/`llm_reason` 参数并写入快照+趋势；
+  `get_pursuit_saturation()`/`get_pursuit_saturation_trend()` 新增
+  对应展示字段；`process_pursuit_cycle_completion()` 新增
+  `llm_helper`/`cfg` 参数；
+- `src/mini_agent/evolution/goal_cron_bridge.py`：
+  `reap_finished_cycles()` / `_check_pursuit_saturation()` 新增
+  `llm_helper_provider` 参数并透传 `cfg`；
+- `src/mini_agent/evolution/autonomous_loop.py`：`AutonomousLoop`
+  新增 `llm_helper_provider` 构造参数，`_tick_maintenance()` 透传给
+  `reap_finished_cycles()`；
+- `src/mini_agent/api/server.py`：`_build_autonomous_loop()` 传入
+  `lambda: getattr(agent, "llm_helper", None)`；
+- `apps/mini_agent_kanban/app.py`：`_render_growth_pursuits()` 饱和
+  警告下追加 LLM 复核提示，走势折叠区追加复核轮次统计；
+- `tests/test_growth_advisor_pursuit_increment_llm_review.py`：新增，
+  覆盖默认关闭不触发调用、只在规则判定低增量时触发、LLM 同意/不同意
+  两种结果都不覆盖规则式判断、streak 计数不受 LLM 结果影响、调用
+  失败与响应解析失败的降级路径、`process_pursuit_cycle_completion()`
+  按 `cfg` 开关决定是否透传 `llm_helper`、`reap_finished_cycles()`
+  新签名可用等场景。
 
 ## 3. 默认行为速览
 
@@ -1061,6 +1152,7 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 | `reorganize_every_n_cycles` | `10` | （2.14 节）`growth_pursuit` 模板累计满这么多轮，下一轮 prompt 里附加一段"顺带整理一下"的提示；配成 0 或负数视为关闭 |
 | `pursuit_digest_enabled` | `true` | （2.14 节）每轮持续调研完成后是否暂存"本轮新增摘要"，等下一次实际推送时打包带出，不额外消耗推送额度 |
 | `goal_alignment_adopt_all_max_batch` | `3` | （2.15 节）`/growth align --adopt-all` / 看板"全部采纳"单次最多批量落地的方向数，避免一次点击触发过多 LLM 调用 |
+| `pursuit_increment_llm_review_enabled` | `false` | （2.19 节）`evaluate_cycle_increment()` 规则式判定"疑似低增量"后，是否再追加一次 LLM 语义复核；结果只作诊断展示，不覆盖规则式判断、不影响 B2 饱和度 streak 计数；会实际发起一次 LLM 调用，默认关闭 |
 
 另外 `memory_backfill.cron_run_backfill_enabled`（默认 `true`，v4 N2）
 控制 cron 任务收尾是否自动回填记忆，属于 `memory_backfill` 配置块而非
