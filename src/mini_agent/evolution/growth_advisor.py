@@ -3360,6 +3360,61 @@ def get_pursuit_saturation(paths, goal_id: str) -> dict:
     }
 
 
+# ──────────── [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 1] ────────────
+# 素材参与度信号：`pursuit_saturation` 衡量的是"素材本身有没有新内容"，
+# 完全不衡量"用户吸收了多少"。这里补一个最小化的埋点——看板"📄 素材"
+# 按钮被点击时，记一次"当前轮次"快照，跟 `get_pursuit_saturation()` 一样
+# 存进 `growth_state.json`（新增 `pursuit_material_views` 子字典，跟
+# `pursuit_saturation` 平行，不新开文件），只存"最近一次查看时的轮次"，
+# 不记录停留时长——看板技术上拿不到，也没必要为这一个信号引入额外的
+# 前端埋点体系（对齐方案文档第 1 节的取舍）。
+
+
+def record_pursuit_material_view(paths, goal_id: str, cycle_count: int) -> dict:
+    """记录一次"用户点开了这个方向的素材"事件——只存"最近一次查看时的
+    轮次"，覆盖式写入（不追加历史，历史走势对这个信号价值不大，读一次
+    "最近一次是第几轮"就足够支撑第 4 节的"长期无人查看"判断）。
+
+    失败尽力而为：调用方（看板按钮点击处理）不应该因为这次埋点写入
+    失败就影响"打开素材"这个主操作本身，因此这里内部不抛出磁盘 IO
+    之外的异常（`_load_growth_state`/`_save_growth_state` 本身已经是
+    尽力而为的读写）。
+
+    返回：{"goal_id", "last_viewed_cycle", "viewed_at"}
+    """
+    state = _load_growth_state(paths)
+    views = state.setdefault("pursuit_material_views", {})
+    now = time.time()
+    views[goal_id] = {"last_viewed_cycle": int(cycle_count), "viewed_at": now}
+    _save_growth_state(paths, state)
+    return {"goal_id": goal_id, "last_viewed_cycle": int(cycle_count), "viewed_at": now}
+
+
+def get_pursuit_material_engagement(paths, goal_id: str, current_cycle: int) -> dict:
+    """只读查询某个 Goal 的素材参与度：素材已经比用户上次查看时新了
+    几轮。从未查看过时 `last_viewed_cycle` 为 `None`，
+    `cycles_since_last_view` 直接等于 `current_cycle`（相当于"从头到
+    现在都没看过"）。不产生任何写入。
+
+    返回：{"last_viewed_cycle": int | None, "current_cycle": int,
+    "cycles_since_last_view": int}
+    """
+    state = _load_growth_state(paths)
+    entry = (state.get("pursuit_material_views") or {}).get(goal_id) or {}
+    last_viewed_cycle = entry.get("last_viewed_cycle")
+    current_cycle = int(current_cycle or 0)
+    if last_viewed_cycle is None:
+        cycles_since_last_view = current_cycle
+    else:
+        last_viewed_cycle = int(last_viewed_cycle)
+        cycles_since_last_view = max(0, current_cycle - last_viewed_cycle)
+    return {
+        "last_viewed_cycle": last_viewed_cycle,
+        "current_cycle": current_cycle,
+        "cycles_since_last_view": cycles_since_last_view,
+    }
+
+
 _PURSUIT_SATURATION_TREND_RAW_WINDOW_DAYS = 60
 _DEFAULT_PURSUIT_SATURATION_TREND_MAX_POINTS = 30
 

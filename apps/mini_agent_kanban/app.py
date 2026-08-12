@@ -4664,6 +4664,17 @@ def _render_growth_pursuits(client: "AgentClient"):
                 if pending_digest:
                     latest_topics = "、".join(pending_digest[-1].get("new_subtopics") or [])
                     st.caption(f"🆕 本轮新增：{latest_topics}")
+                # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md
+                # 方向 1] 素材参与度：纯展示，不做警告/阻断，用户自己
+                # 判断要不要点进去看。从未查看过时单独提示一句，跟"已经
+                # 看过、但又新了几轮"区分开，语义更准确。
+                engagement = row.get("engagement") or {}
+                cycles_since = engagement.get("cycles_since_last_view")
+                if engagement.get("last_viewed_cycle") is None:
+                    if cycles_since:
+                        st.caption(f"👀 你还没查看过这份素材（已有 {cycles_since} 轮内容）")
+                elif cycles_since:
+                    st.caption(f"👀 距你上次查看已经过了 {cycles_since} 轮新内容")
             with cols[1]:
                 if st.button("⏸ 暂停", key=f"growth_pursuit_pause_{row['goal_id']}"):
                     client.unrecur_goal(row["goal_id"])
@@ -4671,6 +4682,11 @@ def _render_growth_pursuits(client: "AgentClient"):
                     st.rerun()
             with cols[2]:
                 if st.button("📄 素材", key=f"growth_pursuit_view_{row['goal_id']}"):
+                    # [方向 1] 记一次查看埋点；失败不阻塞打开素材本身。
+                    try:
+                        client.growth_pursuit_view_material(row["goal_id"])
+                    except Exception:
+                        pass
                     st.session_state["_growth_pursuit_view_goal"] = row["goal_id"]
                     st.rerun()
         if paused:

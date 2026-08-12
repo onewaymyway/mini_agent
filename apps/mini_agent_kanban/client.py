@@ -765,6 +765,12 @@ class AgentClient:
     def growth_pursuits(self):
         return self._get("/growth/pursuits")
 
+    # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 1]
+    # "📄 素材"按钮点击时记一次埋点，供后续 `growth_pursuits()` 的
+    # `engagement` 字段计算"距上次查看过了几轮"。
+    def growth_pursuit_view_material(self, goal_id: str):
+        return self._post(f"/growth/pursuits/{goal_id}/view_material")
+
     # [growth_advisor_autonomy_deepening_plan.md 方向 A3] 兴趣方向 ⇄
     # Goal 对齐分析 + 批量落地。
     def growth_align(self):

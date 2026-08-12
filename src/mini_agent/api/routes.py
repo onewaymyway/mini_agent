@@ -6569,6 +6569,10 @@ async def get_growth_pursuits(request: Request):
             pending_digest = [
                 d for d in ga.peek_pending_pursuit_digests(paths) if d.get("goal_id") == goal.id
             ]
+            # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 1]
+            # 素材参与度：素材已经比用户上次点开查看时新了几轮，供看板
+            # 展示"距你上次查看已经过了 N 轮新内容"，纯只读聚合。
+            engagement = ga.get_pursuit_material_engagement(paths, goal.id, goal.cycle_count)
             pursuits.append({
                 "candidate_id": c.candidate_id,
                 "title": c.title,
@@ -6583,8 +6587,36 @@ async def get_growth_pursuits(request: Request):
                 "cron_enabled": job.enabled if job else None,
                 "saturation": saturation,
                 "pending_digest": pending_digest,
+                "engagement": engagement,
             })
         return {"pursuits": pursuits}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/growth/pursuits/{goal_id}/view_material")
+async def post_growth_pursuit_view_material(request: Request, goal_id: str):
+    """POST /v1/growth/pursuits/{goal_id}/view_material —
+    [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 1] 看板
+    "📄 素材"按钮点击时调用，记一次"用户查看时素材处于第几轮"的轻量
+    埋点，供 `/growth/pursuits` 的 `engagement` 字段计算"距上次查看过了
+    几轮"。只需要 `goal_id`，当前轮次由后端从 GoalBacklog 读取（避免
+    信任前端传来的轮次，也避免前端要额外拼一次请求体）。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.perception.goal_backlog import GoalBacklog
+
+        goal_backlog = GoalBacklog(paths)
+        goal_backlog.load()
+        goal = goal_backlog.get(goal_id)
+        if goal is None:
+            raise HTTPException(status_code=404, detail=f"Goal 不存在：{goal_id}")
+        return ga.record_pursuit_material_view(paths, goal_id, goal.cycle_count)
     except HTTPException:
         raise
     except Exception as e:

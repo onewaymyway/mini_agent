@@ -1,5 +1,9 @@
 # 成长顾问：理想形态对照与改进方向规划
 
+> **实施进度**：方向 1（素材参与度信号）已落地，详见
+> `next_doc/growth_advisor_ideal_advisor_gap_and_roadmap_implementation_record.md`。
+> 其余方向按第 7 节优先级顺序推进中。
+
 > **状态**：这是继
 > `next_doc/growth_advisor_autonomy_deepening_plan.md`（v1）、
 > `next_doc/growth_advisor_autonomy_deepening_plan_v2.md`（v2，五个
