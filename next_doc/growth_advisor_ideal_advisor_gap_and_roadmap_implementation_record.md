@@ -207,9 +207,76 @@ C1（`reorganize_hint_for_cycle()`）已验证的"按累计轮次追加 prompt
   规则式初筛准确度依赖窗口/阈值取值是否合适，先上线观察，暂不引入
   LLM 归一化（方案文档"两步走"里明确的第二步，本轮未做）。
 
+## 已完成
+
+### 方向 2 第一步：反馈模式统计展示
+
+对应方案文档第 2 节第一步。目标：`_dismiss_counts_by_dedupe_key()` /
+`_category_dismiss_counts()` 只是把反馈拿去调权重的具体数值，回答不了
+"用户到底更容易忽略什么样的方向"这个更高层的问题。这里只做**统计
+展示，不做决策接入**——方案文档明确的最低成本、最不会破坏现有排序
+逻辑的切入方式。
+
+- `evolution/growth_advisor.py` 新增 `growth_feedback_pattern_summary
+  (paths, profile=None)`：
+  - 只看最近 `_FEEDBACK_PATTERN_RECENT_WINDOW`（20）条 dismiss 反馈
+    （按时间排序取尾部），反映"最近的倾向"而不是"从有记录以来的
+    全部历史"——用户兴趣会变化，陈年记录不该继续影响"最近是不是有
+    共性"的判断。
+  - 按 `dismiss_reason` 分组统计一次（`reason_distribution`），再按
+    候选标题对应的类别（复用既有 `_category_of()`）分组统计一次
+    （`category_distribution`）。
+  - 样本数低于 `_FEEDBACK_PATTERN_MIN_SAMPLE`（5）时不给"摘要文字"
+    （`has_enough_data=False`），但计数本身仍然照常返回，供看板按需
+    展示原始分布——凑不出有意义的共性判断时，硬给摘要反而可能误导。
+  - 样本数达标后，某个原因/类别占比达到
+    `_FEEDBACK_PATTERN_DOMINANT_RATIO`（0.5）才写进摘要文字，否则给
+    "没有看出明显的共性模式"这句平淡的话——避免样本刚好凑够 5 条、
+    其中 3 条随手点了同一个原因就被解读成"模式"。
+  - 只产出一段人类可读的摘要文字，**不产出任何用于排序/加权的数值**，
+    对齐方案文档"第一步只做统计展示，不做决策接入"的明确取舍。
+- `diagnostics_snapshot()` 新增 `feedback_pattern` 字段，内部通过
+  `_feedback_pattern_diagnostics_summary()` 包一层 try/except——反馈
+  模式统计失败不该拖垮整个诊断面板，失败时退化为"看不出模式"的默认
+  结构。
+- `apps/mini_agent_kanban/app.py::_render_growth_diagnostics()`：诊断
+  面板新增"反馈模式"区块，展示摘要文字；详细的原因/类别分布放进一个
+  嵌套的可折叠区块（`查看详细分布`），避免默认就把一堆数字堆在诊断
+  面板正文里。新增 `_DISMISS_REASON_DIAGNOSTICS_LABELS`（短标签，跟
+  已有的 `_GROWTH_DISMISS_REASON_OPTIONS` 长句子分开，诊断区块更适合
+  短词拼进一句 caption）。
+- 明确不做的部分（对齐方案文档"第一步只做统计展示"）：这段摘要**不
+  自动调整任何候选排序/置信度公式**，`_feedback_multiplier()` /
+  `_category_feedback_multiplier()` 等既有衰减公式完全不受影响；
+  方案文档提到的"第二步（LLM 归纳）"本轮**未实施**，留待验证第一步
+  确实有用之后再排期。
+- 新增测试 `tests/test_growth_advisor_feedback_pattern_summary.py`
+  （8 个用例）：无 dismiss 记录/accepted 记录不计入/样本不足不给
+  摘要断言但计数仍返回/主导原因被正确识别并写进摘要/多个原因和类别
+  分散时给出"无共性"的平淡摘要/窗口只看最近 N 条（挤出旧记录）/
+  类别分布正确统计/`diagnostics_snapshot()` 正确带上这个新字段。
+- 回归：`tests/test_growth_advisor.py` +
+  `test_growth_advisor_pursuits_portfolio_summary.py` +
+  `test_growth_advisor_material_engagement.py` +
+  `test_growth_advisor_pursuit_self_check.py` +
+  `test_growth_advisor_saturation_and_pursuit_visibility.py` +
+  `test_growth_advisor_pursuit_increment_llm_review.py` +
+  `test_growth_advisor_pursuit_spinoff.py` +
+  `test_growth_advisor_feedback_pattern_summary.py` 共 250 个用例
+  全部通过，无回归。
+- 同步更新 `docs/growth-advisor-guide.md` 第 7 节"当前局限"里"各类
+  衰减/加权系数都是经验取值"这条描述，补充说明方向 2 第一步已经能
+  展示"最近更容易忽略什么"的统计模式，但明确止步于展示、不接入任何
+  自动校准。
+- 成本核对：零新增 LLM 调用，零新增持久化文件（直接复用既有
+  `growth_feedback_ledger.jsonl` / `growth_backlog.jsonl`），
+  `diagnostics_snapshot()` 每次调用多一次"读取最近 dismiss 记录 +
+  查询候选标题"的只读聚合，量级与既有的 `_dismiss_counts_by_dedupe_
+  key()` 相当。
+
 ## 待推进（按方案文档第 7 节优先级）
 
-1. 方向 2：反馈模式统计展示（第一步纯统计，第二步 LLM 归纳暂不
-   排期）。
-2. 方向 6：主题类型分化的调研/呈现风格——方案文档明确本轮不建议
+1. 方向 6：主题类型分化的调研/呈现风格——方案文档明确本轮不建议
    排期，留待后续视情况重新评估。
+2. 方向 2 第二步（LLM 归纳反馈模式、接入排序）——方案文档明确建议
+   先验证第一步（纯统计展示）确实有用之后再做，本轮未排期。

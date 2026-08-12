@@ -900,6 +900,126 @@ def _category_feedback_multiplier(dismiss_count: int) -> float:
     return max(_MIN_CATEGORY_MULTIPLIER, round(_CATEGORY_DECAY_FACTOR ** dismiss_count, 3))
 
 
+# ──────────── [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2] ────────────
+# 反馈模式统计展示：`_dismiss_counts_by_dedupe_key` / `_category_dismiss_
+# counts` 只是把反馈拿去调权重的具体数值，不回答"用户到底更容易忽略
+# 什么样的方向"这个更高层的问题。这里只做第一步——纯统计展示，不接入
+# 任何排序/置信度计算（第二步 LLM 归纳按方案文档明确暂不排期）。
+
+# 只看最近这么多条 dismiss 记录——反馈模式应该反映"最近的倾向"，不是
+# "从有记录以来的全部历史"（用户的兴趣会变化，陈年的忽略记录不该继续
+# 影响"最近是不是有共性"这个判断）。
+_FEEDBACK_PATTERN_RECENT_WINDOW = 20
+# 样本数低于这个值时不给"摘要文字"（凑不出有意义的共性判断，硬给反而
+# 可能误导），但计数本身仍然照常返回，供看板按需展示原始分布。
+_FEEDBACK_PATTERN_MIN_SAMPLE = 5
+# 某个原因/类别在样本里占比达到这个比例才认为"有共性"，值得写进摘要
+# 文字——避免样本刚好凑够 5 条、其中 3 条随手点了同一个原因就被解读成
+# "模式"。
+_FEEDBACK_PATTERN_DOMINANT_RATIO = 0.5
+
+_DISMISS_REASON_LABELS = {
+    DISMISS_REASON_NOT_INTERESTED: "不感兴趣",
+    DISMISS_REASON_BAD_TIMING: "时机不对",
+    DISMISS_REASON_REPORT_NOT_USEFUL: "报告没写好",
+    DISMISS_REASON_UNSPECIFIED: "未说明原因",
+}
+
+
+def growth_feedback_pattern_summary(paths, profile=None) -> dict[str, Any]:
+    """对最近 `_FEEDBACK_PATTERN_RECENT_WINDOW` 条 dismiss 反馈做一次简单
+    的分组统计（按 `dismiss_reason` 分组、按候选标题对应的类别分组），
+    产出一段人类可读的摘要文字——纯粹是"让用户和系统都能看见这个模式"，
+    不产出任何用于排序/加权的数值，也不自动据此调整任何候选排序（对齐
+    方案文档"诊断增强不影响主流程"的一贯取舍，以及本文档第 8 节额外
+    补充的"系统从数据里归纳出的结论一律止步于展示"这条更保守的原则）。
+
+    只读，不写任何持久化；任何异常都不应该影响调用方（诊断面板）其它
+    部分，调用方应自行 try/except 包裹（跟其它诊断聚合函数的既有约定
+    一致，这里不内部吞异常，保持函数本身纯粹可测试）。
+
+    返回：
+        {"has_enough_data": bool,          # 样本数是否达到最低门槛
+         "sample_size": int,               # 参与统计的 dismiss 条数
+         "reason_distribution": {reason: count},
+         "category_distribution": {category: count},
+         "summary_text": str}              # 人类可读摘要，样本不足或
+                                            # 没有明显共性时给出对应说明
+    """
+    dismiss_entries = [
+        e for e in GrowthFeedbackLedger(paths).all_entries()
+        if e.get("action") == STATUS_DISMISSED
+    ]
+    dismiss_entries.sort(key=lambda e: e.get("ts", 0))
+    recent = dismiss_entries[-_FEEDBACK_PATTERN_RECENT_WINDOW:]
+    sample_size = len(recent)
+
+    if sample_size == 0:
+        return {
+            "has_enough_data": False,
+            "sample_size": 0,
+            "reason_distribution": {},
+            "category_distribution": {},
+            "summary_text": "目前还没有任何忽略记录，暂时看不出反馈模式。",
+        }
+
+    reason_counts: dict[str, int] = {}
+    for e in recent:
+        reason = e.get("reason") or DISMISS_REASON_UNSPECIFIED
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+    id_to_title = {c.candidate_id: c.title for c in GrowthBacklog(paths).load_all()}
+    category_counts: dict[str, int] = {}
+    for e in recent:
+        title = id_to_title.get(e.get("candidate_id"))
+        if not title:
+            continue
+        category = _category_of(title, profile)
+        category_counts[category] = category_counts.get(category, 0) + 1
+
+    if sample_size < _FEEDBACK_PATTERN_MIN_SAMPLE:
+        summary_text = (
+            f"最近只有 {sample_size} 条忽略记录，样本还太少，暂时看不出"
+            "明显的共性模式。"
+        )
+        return {
+            "has_enough_data": False,
+            "sample_size": sample_size,
+            "reason_distribution": reason_counts,
+            "category_distribution": category_counts,
+            "summary_text": summary_text,
+        }
+
+    lines = []
+    dominant_reason = max(reason_counts.items(), key=lambda kv: kv[1])
+    if dominant_reason[1] / sample_size >= _FEEDBACK_PATTERN_DOMINANT_RATIO:
+        label = _DISMISS_REASON_LABELS.get(dominant_reason[0], dominant_reason[0])
+        pct = round(dominant_reason[1] / sample_size * 100)
+        lines.append(
+            f"最近 {sample_size} 次忽略里，有 {dominant_reason[1]} 次（约 {pct}%）"
+            f"的原因是「{label}」。"
+        )
+
+    if category_counts:
+        dominant_category = max(category_counts.items(), key=lambda kv: kv[1])
+        if dominant_category[1] / sample_size >= _FEEDBACK_PATTERN_DOMINANT_RATIO:
+            lines.append(
+                f"被忽略的方向里，「{dominant_category[0]}」占比较高"
+                f"（{dominant_category[1]}/{sample_size}）。"
+            )
+
+    if not lines:
+        lines.append("最近的忽略记录里没有看出明显的共性模式。")
+
+    return {
+        "has_enough_data": True,
+        "sample_size": sample_size,
+        "reason_distribution": reason_counts,
+        "category_distribution": category_counts,
+        "summary_text": "".join(lines) if len(lines) == 1 else " ".join(lines),
+    }
+
+
 # ────────── [P4-3] 采纳后回访（followup） ──────────
 # 方案第二条：候选被采纳后，隔一段时间（默认 30 天，见
 # GrowthAdvisorConfig.followup_review_days）问一次"这个方向后续有没有真的
@@ -5065,7 +5185,25 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store, profile_cfg=None) ->
         # `goal_alignment_enabled=False` 关闭时，两个字段整体为 `None`，
         # 不影响诊断面板其余部分。
         "goal_alignment": _goal_alignment_diagnostics_summary(paths, cfg, profile),
+        # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2]
+        # 反馈模式统计——纯展示，不参与任何排序/置信度计算，见函数
+        # docstring 里的取舍说明。任何异常都不该拖垮整个诊断面板，失败
+        # 时退化为"看不出模式"的默认结构。
+        "feedback_pattern": _feedback_pattern_diagnostics_summary(paths, profile),
     }
+
+
+def _feedback_pattern_diagnostics_summary(paths, profile) -> dict[str, Any]:
+    try:
+        return growth_feedback_pattern_summary(paths, profile=profile)
+    except Exception:
+        return {
+            "has_enough_data": False,
+            "sample_size": 0,
+            "reason_distribution": {},
+            "category_distribution": {},
+            "summary_text": "反馈模式统计暂时不可用。",
+        }
 
 
 def _goal_alignment_diagnostics_summary(paths, cfg, profile) -> dict[str, Any]:

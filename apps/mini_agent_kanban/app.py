@@ -4107,6 +4107,32 @@ def _render_growth_diagnostics(diagnostics: dict):
                 "报告质量待改进列表里查看。"
             )
 
+        # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2]
+        # 反馈模式——纯统计展示，帮用户/系统看见"最近更容易忽略什么"，
+        # 不据此调整任何候选排序（明细分布折叠展示，避免默认就把一堆
+        # 数字堆在诊断面板正文里）。
+        feedback_pattern = diagnostics.get("feedback_pattern") or {}
+        if feedback_pattern.get("summary_text"):
+            st.markdown("**反馈模式**")
+            st.write(feedback_pattern["summary_text"])
+            reason_dist = feedback_pattern.get("reason_distribution") or {}
+            category_dist = feedback_pattern.get("category_distribution") or {}
+            if reason_dist or category_dist:
+                with st.expander("查看详细分布", expanded=False):
+                    if reason_dist:
+                        st.caption(
+                            "按忽略原因：" + "，".join(
+                                f"{_DISMISS_REASON_DIAGNOSTICS_LABELS.get(r, r)} {n} 次"
+                                for r, n in reason_dist.items()
+                            )
+                        )
+                    if category_dist:
+                        st.caption(
+                            "按方向类别：" + "，".join(
+                                f"{cat} {n} 次" for cat, n in category_dist.items()
+                            )
+                        )
+
         st.markdown("**后台定时任务**")
         if cron_jobs.get("_note"):
             st.caption(cron_jobs["_note"])
@@ -4768,6 +4794,16 @@ _GROWTH_DISMISS_REASON_OPTIONS = [
     ("bad_timing", "方向可以，但现在不是时候"),
     ("report_not_useful", "方向没错，是报告没写好"),
 ]
+
+# [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2] 诊断面板
+# "反馈模式"区块展示用的短标签，跟上面 selectbox 里的长句子分开——诊断
+# 区块是概览性质，用更短的词更适合跟数字拼在一句 caption 里。
+_DISMISS_REASON_DIAGNOSTICS_LABELS = {
+    "unspecified": "未说明原因",
+    "not_interested": "不感兴趣",
+    "bad_timing": "时机不对",
+    "report_not_useful": "报告没写好",
+}
 
 
 # [next_doc/growth_advisor_active_search_and_lifecycle_plan.md 方向二]

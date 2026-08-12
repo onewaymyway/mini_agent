@@ -1290,8 +1290,14 @@ N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
   `report_quality_llm_enabled` 且调用方处于有 agent 上下文的场景；
 - 各类衰减/加权系数（dismiss 衰减、类别衰减、回访调权、证据分布度、
   类别历史采纳率加权）都是经验取值，不是从真实反馈数据拟合出来的——
-  P6 的 dismiss 原因细化让"哪些反馈该参与衰减"更准确了，但衰减系数
-  本身仍未接入任何自动校准；
+  P6 的 dismiss 原因细化让"哪些反馈该参与衰减"更准确了，
+  `next_doc/growth_advisor_ideal_advisor_gap_and_roadmap_plan.md`
+  方向 2 补上了一层纯统计展示（`growth_feedback_pattern_summary()`，
+  诊断面板"反馈模式"区块），能看出"最近更容易忽略什么原因/类别的
+  方向"，但这段摘要明确止步于"展示给你看"，不会被用来自动调整任何
+  衰减系数或候选排序——方案文档第 8 节把这一条列为比既有"用户始终
+  有最终决定权"底线更保守的额外取舍，衰减系数本身仍未接入任何自动
+  校准；
 - `growth_feedback_ledger.jsonl` 尚未纳入数据生命周期管理（P5-0 延后
   项），长期运行会持续增长，当前数据量还不影响性能；
 - 探索位（`exploration_slot_enabled`）默认关闭：这项改动主动打破了
