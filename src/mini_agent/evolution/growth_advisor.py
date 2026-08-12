@@ -2703,6 +2703,94 @@ def _llm_match_interests_to_goals(
     return out
 
 
+# ────────── [growth_advisor_autonomy_deepening_plan.md 方向 A3] 对齐分析结果批量落地 ──────────
+# `/growth align` 之前只是展示"有兴趣信号但没建目标"的列表，落地还是要
+# 对每一条分别调用 accept + auto_pursue_candidate()。这里补一个批量入口，
+# 复用已有的 `auto_pursue_candidate()`，单次处理条数受
+# `cfg.goal_alignment_adopt_all_max_batch` 节流，避免一次性触发过多
+# LLM 调用（生成报告 + 生成执行规范）。
+
+
+def batch_adopt_unmatched_interests(
+    paths, cfg, profile, *,
+    goal_backlog=None, cron_scheduler=None, llm_helper: Optional[Callable[[str], str]] = None,
+) -> dict[str, Any]:
+    """[方向 A3] 对 `goal_growth_alignment()` 找出的"有兴趣信号但没建
+    目标"列表做批量落地：对其中已经有对应候选记录（`candidate_id` 非
+    空）的条目，依次调用 `auto_pursue_candidate()`（复用"采纳即启动"
+    整条链路：生成报告 → 落地成 Goal → 生成并确认执行规范 → 绑定周期
+    性）。没有 `candidate_id` 的条目（比如只是 focus_areas 里的一个
+    兴趣信号，还没走到候选生成这一步）无法直接采纳，原样跳过、计入
+    `skipped`，不会因此报错。
+
+    单次最多处理 `cfg.goal_alignment_adopt_all_max_batch`（默认 3）条，
+    按 `evidence_count` 从高到低排序取前 N 个——避免用户手滑触发一次
+    意外的成本爆炸；未被处理到的条目下次调用仍然会出现在
+    `goal_growth_alignment()` 的结果里，不会丢失，用户可以多次调用
+    直到列表清空。
+
+    任一条目内部失败都不影响其余条目继续处理（`auto_pursue_candidate()`
+    本身已经是"任一步骤失败不影响已完成部分"的容错设计），失败信息
+    记在对应条目的 `errors` 里。
+
+    返回：
+        {"processed": [{"topic", "candidate_id", "goal_id", "errors"}, ...],
+         "skipped": [{"topic", "reason"}, ...],
+         "remaining_count": int}  # 本次未处理到的、仍待落地的条数
+    """
+    if goal_backlog is None:
+        goal_backlog = _load_goal_backlog_safely(paths)
+
+    alignment = goal_growth_alignment(
+        paths, profile, cfg=cfg, goal_backlog=goal_backlog, llm_helper=llm_helper,
+    )
+    unmatched = alignment.get("unmatched_interests", []) if alignment.get("enabled", True) else []
+
+    max_batch = getattr(cfg, "goal_alignment_adopt_all_max_batch", 3) if cfg is not None else 3
+    if max_batch is None or max_batch < 0:
+        max_batch = 3
+
+    eligible = [r for r in unmatched if r.get("candidate_id")]
+    ineligible = [r for r in unmatched if not r.get("candidate_id")]
+    # [方向 A3] 已排好序（goal_growth_alignment 按 evidence_count 降序），
+    # 直接按顺序取前 N 个即可，不需要重新排序。
+    to_process = eligible[:max_batch]
+    remaining = eligible[max_batch:]
+
+    backlog = GrowthBacklog(paths)
+    processed = []
+    for row in to_process:
+        cid = row["candidate_id"]
+        entry: dict[str, Any] = {"topic": row["topic"], "candidate_id": cid, "goal_id": None, "errors": []}
+        try:
+            cand = backlog.get(cid)
+            if cand is None:
+                entry["errors"].append("候选记录已不存在（可能已被删除），已跳过。")
+                processed.append(entry)
+                continue
+            if cand.status != STATUS_ACCEPTED:
+                cand = backlog.set_status(cid, STATUS_ACCEPTED)
+                GrowthFeedbackLedger(paths).record(cid, STATUS_ACCEPTED, reason=None)
+            pursuit = auto_pursue_candidate(
+                paths, cand, goal_backlog=goal_backlog, cron_scheduler=cron_scheduler,
+                cfg=cfg, llm_helper=llm_helper, profile=profile,
+            )
+            entry["goal_id"] = pursuit["goal"].id if pursuit.get("goal") else None
+            entry["errors"] = pursuit.get("errors", [])
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.evolution.growth_advisor.batch_adopt_unmatched_interests")
+            entry["errors"].append(f"批量落地失败：{e}")
+        processed.append(entry)
+
+    skipped = [{"topic": r["topic"], "reason": "没有对应的候选记录，无法直接落地（先走一轮 /growth scan 生成候选）"} for r in ineligible]
+    return {
+        "processed": processed,
+        "skipped": skipped,
+        "remaining_count": len(remaining),
+    }
+
+
 def adopt_candidate_as_goal(
     paths, candidate: GrowthCandidate, *, goal_backlog=None, extra_tags: Optional[list[str]] = None,
 ) -> Any:

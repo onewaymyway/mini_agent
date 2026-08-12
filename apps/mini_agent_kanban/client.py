@@ -765,6 +765,14 @@ class AgentClient:
     def growth_pursuits(self):
         return self._get("/growth/pursuits")
 
+    # [growth_advisor_autonomy_deepening_plan.md 方向 A3] 兴趣方向 ⇄
+    # Goal 对齐分析 + 批量落地。
+    def growth_align(self):
+        return self._get("/growth/align")
+
+    def growth_align_adopt_all(self):
+        return self._post("/growth/align/adopt_all")
+
     # ── 文件系统（产出物浏览）────────────────────────────────────────
     def fs_list(self, path="."):
         return self._get("/fs/list", params={"path": path})

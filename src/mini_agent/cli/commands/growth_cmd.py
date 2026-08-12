@@ -18,6 +18,13 @@ next_doc/growth_advisor_design.md）。
                               next_doc/growth_advisor_goal_cron_integration_plan.md
                               阶段 A）：哪些方向有兴趣信号但没建目标、
                               哪些已建目标但停滞
+  /growth align --adopt-all — [方向 A3] 批量落地"有兴趣但没建目标"的
+                              方向，复用 auto_pursue_candidate() 整条
+                              链路（生成报告 → 落地成 Goal → 确认执行
+                              规范 → 绑定周期性）；单次最多处理
+                              growth_advisor.goal_alignment_adopt_all_
+                              max_batch（默认 3）条，避免一次性触发过多
+                              LLM 调用，剩余条目下次调用继续处理
   /growth adopt-goal <id>   — 把一个候选落地成一个 GoalBacklog 目标
                               （阶段 B，要求候选已有调研报告）
   /growth timeline <id>     — 查看某方向的完整成长轨迹时间线（发现 →
@@ -277,6 +284,45 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
         mgr, profile = _get_profile(paths)
         goal_backlog = _get_goal_backlog(paths)
         llm_helper = _get_llm_helper(agent) if getattr(cfg, "goal_alignment_llm_enabled", False) else None
+
+        if len(args) >= 2 and args[1] == "--adopt-all":
+            # [growth_advisor_autonomy_deepening_plan.md 方向 A3] 批量
+            # 落地"有兴趣但没建目标"的方向，复用 auto_pursue_candidate()
+            # 整条链路，单次最多处理 cfg.goal_alignment_adopt_all_max_batch
+            # 条，避免一次性触发过多 LLM 调用。
+            # CLI 场景没有 daemon 的 CronScheduler 实例可用，绑定周期性
+            # 这一步会在 `auto_pursue_candidate()` 内部优雅退化（记一条
+            # errors 提示"当前上下文拿不到 CronScheduler"，Goal 本身仍会
+            # 创建成功），跟单条 `/growth accept` 在非 daemon 场景下的
+            # 行为一致。
+            cron_scheduler = None
+            result = ga.batch_adopt_unmatched_interests(
+                paths, cfg, profile, goal_backlog=goal_backlog,
+                cron_scheduler=cron_scheduler, llm_helper=llm_helper,
+            )
+            processed = result.get("processed", [])
+            skipped = result.get("skipped", [])
+            if not processed and not skipped:
+                R.print_info("没有找到\"有兴趣但没建目标\"的方向，无需批量落地。")
+                return
+            R.console.print(f"[bold]批量落地结果（{len(processed)} 条已处理）：[/bold]")
+            for entry in processed:
+                if entry.get("goal_id"):
+                    R.print_info(f"  ✅ {entry['topic']} → 目标 [{entry['goal_id']}]")
+                else:
+                    R.print_error(f"  ❌ {entry['topic']}：{'；'.join(entry.get('errors') or ['未知原因'])}")
+                for err in (entry.get("errors") or []):
+                    if entry.get("goal_id"):
+                        R.print_warning(f"      ⚠️ {err}")
+            if skipped:
+                R.console.print(f"  跳过（无对应候选记录，{len(skipped)} 条）：")
+                for row in skipped:
+                    R.console.print(f"    - {row['topic']}")
+            remaining = result.get("remaining_count", 0)
+            if remaining:
+                R.print_info(f"还有 {remaining} 条未处理（本次批量上限已用完），可再次执行 /growth align --adopt-all 继续。")
+            return
+
         alignment = ga.goal_growth_alignment(
             paths, profile, cfg=cfg, goal_backlog=goal_backlog, llm_helper=llm_helper
         )
@@ -338,5 +384,5 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
 
     R.print_error(
         "未知子命令。可用：/growth [list] | scan | accept <id> | dismiss <id> | report <id> | "
-        "retrospective | align | adopt-goal <id> | timeline <id>"
+        "retrospective | align [--adopt-all] | adopt-goal <id> | timeline <id>"
     )

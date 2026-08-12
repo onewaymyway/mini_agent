@@ -6591,7 +6591,90 @@ async def get_growth_pursuits(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/growth/health_trend")
+@router.get("/growth/align")
+async def get_growth_align(request: Request):
+    """GET /v1/growth/align — [growth_advisor_goal_cron_integration_
+    plan.md 阶段 A] 兴趣方向 ⇄ Goal 对齐分析，CLI `/growth align` 的
+    API 对应端点。纯只读聚合（除非开启 `goal_alignment_llm_enabled`
+    且拿得到 agent 上下文，此时会额外触发一次 LLM 语义匹配，见
+    `goal_growth_alignment()` docstring）。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.profile import UserProfileManager
+        from mini_agent.perception.goal_backlog import GoalBacklog
+
+        profile = UserProfileManager(paths).load()
+        http_server = getattr(request.app.state, "http_server", None)
+        self_agent = getattr(http_server.bridge, "agent", None) if http_server else None
+        cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
+        if cfg is None:
+            from mini_agent.config.models import GrowthAdvisorConfig
+            cfg = GrowthAdvisorConfig()
+
+        llm_helper = None
+        if self_agent is not None and getattr(cfg, "goal_alignment_llm_enabled", False):
+            helper = getattr(self_agent, "llm_helper", None)
+            if helper is not None:
+                llm_helper = lambda prompt: helper.ask(prompt)
+
+        goal_backlog = GoalBacklog(paths)
+        goal_backlog.load()
+        return ga.goal_growth_alignment(paths, profile, cfg=cfg, goal_backlog=goal_backlog, llm_helper=llm_helper)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/growth/align/adopt_all")
+async def post_growth_align_adopt_all(request: Request):
+    """POST /v1/growth/align/adopt_all — [growth_advisor_autonomy_
+    deepening_plan.md 方向 A3] 批量落地对齐分析里"有兴趣但没建目标"的
+    方向，复用 `auto_pursue_candidate()` 整条链路（生成报告 → 落地成
+    Goal → 生成并确认执行规范 → 绑定周期性）。单次最多处理
+    `growth_advisor.goal_alignment_adopt_all_max_batch`（默认 3）条，
+    避免看板"全部采纳"按钮一次点击就意外触发过多 LLM 调用；剩余条目
+    （`remaining_count`）留到下一次调用继续处理，不会丢失。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.profile import UserProfileManager
+        from mini_agent.perception.goal_backlog import GoalBacklog
+
+        profile = UserProfileManager(paths).load()
+        http_server = getattr(request.app.state, "http_server", None)
+        self_agent = getattr(http_server.bridge, "agent", None) if http_server else None
+        cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
+        if cfg is None:
+            from mini_agent.config.models import GrowthAdvisorConfig
+            cfg = GrowthAdvisorConfig()
+
+        llm_helper = None
+        if self_agent is not None and getattr(cfg, "goal_alignment_llm_enabled", False):
+            helper = getattr(self_agent, "llm_helper", None)
+            if helper is not None:
+                llm_helper = lambda prompt: helper.ask(prompt)
+
+        goal_backlog = GoalBacklog(paths)
+        goal_backlog.load()
+        cron_scheduler = _get_cron_scheduler(http_server) if http_server else None
+        result = ga.batch_adopt_unmatched_interests(
+            paths, cfg, profile, goal_backlog=goal_backlog,
+            cron_scheduler=cron_scheduler, llm_helper=llm_helper,
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 async def get_growth_health_trend(request: Request):
     """GET /v1/growth/health_trend — [next_doc/growth_advisor_improvement_plan_v4.md
     方向三 N1] 返回全局健康度快照序列（最近若干天，按时间正序），供看板

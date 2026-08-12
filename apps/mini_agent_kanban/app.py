@@ -4417,6 +4417,7 @@ def render_growth_tab(client: "AgentClient"):
                     _render_growth_topic_timeline(client, map_cid)
 
     _render_growth_followups(client)
+    _render_growth_alignment(client)
     _render_growth_pursuits(client)
     _render_growth_report_refresh_candidates(client)
     _render_growth_report_viewer(client, candidates)
@@ -4514,6 +4515,39 @@ def _render_growth_followups(client: "AgentClient"):
             if cols[2].button("🕒 还没空", key=f"growth_followup_stalled_{c['candidate_id']}"):
                 client.growth_followup_record(c["candidate_id"], "stalled")
                 st.rerun()
+
+
+def _render_growth_alignment(client: "AgentClient"):
+    """[growth_advisor_autonomy_deepening_plan.md 方向 A3] 兴趣方向 ⇄
+    Goal 对齐分析：展示"有兴趣信号但还没建目标"的方向，提供"全部采纳"
+    批量入口——复用 `auto_pursue_candidate()` 整条链路，单次最多处理
+    `goal_alignment_adopt_all_max_batch`（默认 3）条，避免一次点击就
+    意外触发过多 LLM 调用；剩余条目留到下次点击继续处理。"""
+    data = client.growth_align() or {}
+    if not data.get("enabled", True):
+        return
+    unmatched = data.get("unmatched_interests") or []
+    if not unmatched:
+        return
+    with st.expander(f"🧭 有兴趣但还没建目标（{len(unmatched)} 个方向）", expanded=False):
+        st.caption("这些方向最近反复出现在你的活动里，但还没有对应的目标——"
+                   "可以逐条查看，或点击下面按钮批量落地成自主持续调研的目标。")
+        for row in unmatched:
+            mark = "（已有候选记录，可批量落地）" if row.get("candidate_id") else "（还没有候选记录，需先 /growth scan）"
+            st.write(f"- {row.get('topic')} · 证据数={row.get('evidence_count')} {mark}")
+        adoptable = [r for r in unmatched if r.get("candidate_id")]
+        if adoptable and st.button(f"🚀 全部采纳（最多一次处理 {min(len(adoptable), 3)} 条）", key="growth_align_adopt_all"):
+            result = client.growth_align_adopt_all() or {}
+            processed = result.get("processed") or []
+            for entry in processed:
+                if entry.get("goal_id"):
+                    st.toast(f"「{entry.get('topic')}」已落地为目标", icon="✅")
+                else:
+                    st.toast(f"「{entry.get('topic')}」落地失败：{'；'.join(entry.get('errors') or ['未知原因'])}", icon="⚠️")
+            remaining = result.get("remaining_count", 0)
+            if remaining:
+                st.info(f"还有 {remaining} 条未处理（本次批量上限已用完），可再次点击继续。")
+            st.rerun()
 
 
 def _render_growth_pursuits(client: "AgentClient"):

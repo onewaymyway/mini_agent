@@ -692,6 +692,55 @@ C1（定期整理）/ C2（新增摘要推送）也一并实施。A3/B3 仍按�
 - `apps/mini_agent_kanban/app.py`：`_render_growth_pursuits()`
   每条方向新增"🆕 本轮新增"展示。
 
+### 2.15 落地 `growth_advisor_autonomy_deepening_plan.md`：A3（本次新增）
+
+在 2.14 节落地 C1/C2 之后，按方案文档第 6 节排在最后一批的 A3（对齐
+分析结果批量落地）也一并实施。B3（跨主题去重/关联）仍按方案文档标注
+的理由暂缓——明确留待后续单独评估候选规模是否值得投入，不属于这一轮
+的实施范围。
+
+**A3：对齐分析结果支持批量落地**
+
+- 新增 `growth_advisor.batch_adopt_unmatched_interests()`：对
+  `goal_growth_alignment()` 找出的"有兴趣信号但没建目标"列表，逐条
+  复用已有的 `auto_pursue_candidate()`（生成报告 → 落地成 Goal → 生成
+  并确认执行规范 → 绑定周期性）。只处理列表中已经有对应候选记录
+  （`candidate_id` 非空）的条目——纯 focus_areas 信号但还没走到候选
+  生成这一步的条目无法直接采纳，原样跳过、计入 `skipped`，不报错，
+  提示"先走一轮 /growth scan 生成候选"。
+- **节流**：新增配置 `goal_alignment_adopt_all_max_batch`（默认 3），
+  单次最多处理这么多条（按 `evidence_count` 降序，跟
+  `goal_growth_alignment()` 返回顺序一致，不重新排序），避免"批量"
+  变成一次意外的成本爆炸（一次性触发多个"生成报告 + 生成执行规范"的
+  LLM 调用）。未处理到的条目通过 `remaining_count` 告知调用方，下次
+  再调用会继续出现在列表里，不会丢失。
+- **CLI**：`/growth align --adopt-all`——在原有 `/growth align` 只读
+  展示的基础上新增这个子命令，逐条打印落地结果（成功 → 目标 id；
+  失败 → 具体原因），并在还有剩余条目时提示"可再次执行继续"。
+- **API**：新增 `GET /v1/growth/align`（`goal_growth_alignment()` 的
+  只读端点，此前只有 CLI 能查看，现在看板也能拉取）和
+  `POST /v1/growth/align/adopt_all`（批量落地，内部复用同一个节流
+  逻辑）。
+- **看板**：成长顾问 tab 新增"🧭 有兴趣但还没建目标"折叠区，列出全部
+  未匹配方向（标注是否有候选记录、能不能批量落地），带一个"🚀 全部
+  采纳"按钮，点击后逐条 toast 反馈结果，剩余条目会提示"可再次点击
+  继续"。
+
+**新增/变更文件**：
+
+- `src/mini_agent/config/models.py`：`GrowthAdvisorConfig` 新增
+  `goal_alignment_adopt_all_max_batch`（默认 3）；
+- `src/mini_agent/evolution/growth_advisor.py`：新增
+  `batch_adopt_unmatched_interests()`；
+- `src/mini_agent/cli/commands/growth_cmd.py`：`/growth align` 新增
+  `--adopt-all` 子选项；
+- `src/mini_agent/api/routes.py`：新增 `GET /v1/growth/align` 与
+  `POST /v1/growth/align/adopt_all`；
+- `apps/mini_agent_kanban/client.py`：新增 `growth_align()` /
+  `growth_align_adopt_all()`；
+- `apps/mini_agent_kanban/app.py`：新增 `_render_growth_alignment()`
+  并接入 `render_growth_tab()`。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外
@@ -842,6 +891,9 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 | `report_active_search_enabled` | `false` | （2.11 节）手动触发调研报告（有 `web_search_fn` 的调用路径）时，被动扫描命中 0 条素材才现查一次；会实际发起检索调用，默认关闭 |
 | `cron_triggered_active_search_enabled` | `false` | （2.11 节）`sys:growth_advisor_daily` cron 路径是否也触发主动检索，每天最多处理 `cron_triggered_active_search_daily_limit` 个"证据数最高但没有外部背景"的候选；会实际发起检索调用，默认关闭 |
 | `cron_triggered_active_search_daily_limit` | `1` | （2.11 节）cron 主动检索每个自然日的预算上限，开关关闭时不生效 |
+| `reorganize_every_n_cycles` | `10` | （2.14 节）`growth_pursuit` 模板累计满这么多轮，下一轮 prompt 里附加一段"顺带整理一下"的提示；配成 0 或负数视为关闭 |
+| `pursuit_digest_enabled` | `true` | （2.14 节）每轮持续调研完成后是否暂存"本轮新增摘要"，等下一次实际推送时打包带出，不额外消耗推送额度 |
+| `goal_alignment_adopt_all_max_batch` | `3` | （2.15 节）`/growth align --adopt-all` / 看板"全部采纳"单次最多批量落地的方向数，避免一次点击触发过多 LLM 调用 |
 
 另外 `memory_backfill.cron_run_backfill_enabled`（默认 `true`，v4 N2）
 控制 cron 任务收尾是否自动回填记忆，属于 `memory_backfill` 配置块而非

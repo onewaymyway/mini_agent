@@ -1888,6 +1888,15 @@ class GrowthAdvisorConfig:
     # 写入任何持久化的关联关系。
     goal_alignment_llm_enabled: bool = False
 
+    # ── A3：对齐分析结果批量落地（growth_advisor_autonomy_deepening_
+    # plan.md 方向 A3）─────────────────────────────────────────────────
+    # `/growth align --adopt-all` / 看板"全部采纳"一次性对"未匹配兴趣"
+    # 列表逐条调用 `auto_pursue_candidate()` 时，单次最多处理这么多条，
+    # 避免批量操作一次性触发过多 LLM 调用（生成报告 + 生成执行规范）
+    # 造成成本意外爆炸——语义上类似 `max_reports_per_run`，但这是用户
+    # 主动触发的批量动作，不共用同一个每日 cron 的上限，独立配置。
+    goal_alignment_adopt_all_max_batch: int = 3
+
     # ── 调研信息获取与整理（growth_advisor_research_quality_plan.md）──
     # 阶段 2：报告生成先让 LLM 提炼 3-4 个具体问题，再逐个回答，替代
     # "一次性要求四段通用内容"。默认关闭——这一步是额外一次 LLM 调用，
