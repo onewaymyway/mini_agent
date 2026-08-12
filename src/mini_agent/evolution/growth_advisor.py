@@ -3415,6 +3415,67 @@ def get_pursuit_material_engagement(paths, goal_id: str, current_cycle: int) -> 
     }
 
 
+_PURSUIT_LONG_UNVIEWED_DEFAULT_THRESHOLD = 5
+
+
+def pursuits_portfolio_summary(
+    paths, goal_backlog, *, long_unviewed_threshold: int = _PURSUIT_LONG_UNVIEWED_DEFAULT_THRESHOLD,
+) -> dict:
+    """[growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 4]
+    对"🔄 正在自主推进"分区里全部方向做一次轻量聚合，回答"我现在该
+    先看哪几个方向"这个全局问题——纯粹是把已经分散展示的饱和度信号
+    （方向 B2）和参与度信号（方向 1）组织成一句摘要，不引入任何新的
+    判断维度、不产生新的持久化，也不做排序/推荐算法，只是简单的分类
+    计数 + 列出具体是哪几个方向落在"建议关注"这一类。
+
+    分类规则（同一个方向可能同时落入两类，去重后只算一次"建议关注"）：
+    - 饱和未处理：`get_pursuit_saturation()` 判定 `saturated=True`；
+    - 长期无人查看：`cycles_since_last_view >= long_unviewed_
+      threshold`（且素材确实已经有内容，即 `cycles_since_last_view
+      > 0`，避免刚创建、还没来得及有第一轮增量的方向被误判）；
+    - 其余归为"正常推进"。
+
+    只处理打了 `growth_advisor` 标签且 `recurring=True` 的 Goal——跟
+    `/growth/pursuits` 的"🔄 正在自主推进"口径完全一致，暂停的方向不
+    参与统计（用户已经主动暂停，不需要系统再提示"建议关注"）。
+
+    返回：{"total": int, "saturated_count": int, "long_unviewed_count":
+    int, "attention_needed": [{"goal_id", "title", "reasons": [...]}],
+    "normal_count": int}
+    """
+    backlog = GrowthBacklog(paths)
+    attention: list[dict] = []
+    saturated_count = 0
+    long_unviewed_count = 0
+    total = 0
+    for c in backlog.load_all():
+        if not c.linked_goal_id:
+            continue
+        goal = goal_backlog.get(c.linked_goal_id)
+        if goal is None or not goal.recurring:
+            continue
+        total += 1
+        reasons = []
+        saturation = get_pursuit_saturation(paths, goal.id)
+        if saturation.get("saturated"):
+            reasons.append("saturated")
+            saturated_count += 1
+        engagement = get_pursuit_material_engagement(paths, goal.id, goal.cycle_count)
+        cycles_since = engagement.get("cycles_since_last_view") or 0
+        if cycles_since >= long_unviewed_threshold and cycles_since > 0:
+            reasons.append("long_unviewed")
+            long_unviewed_count += 1
+        if reasons:
+            attention.append({"goal_id": goal.id, "title": c.title, "reasons": reasons})
+    return {
+        "total": total,
+        "saturated_count": saturated_count,
+        "long_unviewed_count": long_unviewed_count,
+        "attention_needed": attention,
+        "normal_count": total - len(attention),
+    }
+
+
 _PURSUIT_SATURATION_TREND_RAW_WINDOW_DAYS = 60
 _DEFAULT_PURSUIT_SATURATION_TREND_MAX_POINTS = 30
 

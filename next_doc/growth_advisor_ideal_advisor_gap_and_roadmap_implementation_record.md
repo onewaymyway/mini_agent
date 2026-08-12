@@ -52,13 +52,57 @@
   下一步用途留给方向 4（跨方向全局视角）判断，对齐方案文档"先有
   数据、再谈决策"的克制顺序。
 
+## 已完成
+
+### 方向 4：跨方向全局视角摘要
+
+对应方案文档第 4 节。目标：多方向并行推进时，聚合已有的饱和度信号
+（B2）和方向 1 的参与度信号，回答"我现在该先看哪几个方向"，而不是
+让用户逐条扫一遍列表自己判断。
+
+- `config/models.py::GrowthAdvisorConfig` 新增
+  `pursuit_long_unviewed_threshold`（默认 `5`）：判定"长期无人查看"
+  的轮次差阈值。
+- `evolution/growth_advisor.py` 新增 `pursuits_portfolio_summary(paths,
+  goal_backlog, *, long_unviewed_threshold=5)`：
+  - 只遍历打了 `growth_advisor` 标签且已落地成 Goal 的候选中
+    `goal.recurring=True` 的部分——跟 `/growth/pursuits` 的"🔄 正在
+    自主推进"口径完全一致，已暂停的方向不参与统计。
+  - 对每个方向复用 `get_pursuit_saturation()` / `get_pursuit_material_
+    engagement()` 两个既有只读函数，不重复计算、不引入新判断逻辑。
+  - 分类规则：`saturated=True` 记一次"饱和未处理"；
+    `cycles_since_last_view >= threshold`（且 `> 0`，避免刚创建、还
+    没有过第一轮增量的方向被误判）记一次"长期无人查看"；两个原因
+    可以同时命中同一个方向，"建议关注"列表按方向去重、不去重原因。
+  - 返回 `{"total", "saturated_count", "long_unviewed_count",
+    "attention_needed": [{"goal_id","title","reasons"}], "normal_
+    count"}`，不做任何排序/推荐算法，只是分类计数 + 列出具体名单。
+- `api/routes.py` 新增 `GET /growth/pursuits/portfolio_summary`：
+  纯只读聚合，`long_unviewed_threshold` 从 agent 的
+  `GrowthAdvisorConfig` 读取，拿不到时退化到默认值 `5`。
+- `apps/mini_agent_kanban/client.py` 新增 `growth_pursuits_portfolio_
+  summary()`。
+- `apps/mini_agent_kanban/app.py::_render_growth_pursuits()`：分区
+  展开时（跟批量操作入口同一个位置）额外拉取一次摘要，命中"建议
+  关注"时用 `st.info` 展示"💡 N 个方向可能需要你看一眼：「A」、
+  「B」…"，点开分区后仍能在具体那一条上看到饱和度/参与度详情；没有
+  命中时展示一句平淡的"都在正常推进"，不做任何自动排序/暂停——
+  用户拥有最终决定权，对齐方案文档"不做系统自动决定优先级"的
+  明确取舍。
+- 新增测试 `tests/test_growth_advisor_pursuits_portfolio_summary.py`
+  （7 个用例）：空列表/正常方向不命中/饱和命中/长期无人查看命中/
+  刚查看过不误判/暂停方向被排除在统计外/同一方向同时命中两个原因时
+  只计入一次"建议关注"。
+- 成本核对：零新增 LLM 调用，零新增持久化，`GET /growth/pursuits/
+  portfolio_summary` 是独立端点、按需拉取（不放进 `/growth/
+  pursuits` 默认响应），跟 `/growth/health_trend` 等既有"展开时才
+  请求"的接入模式一致。
+
 ## 待推进（按方案文档第 7 节优先级）
 
-1. 方向 4：跨方向全局视角摘要（依赖本方向的参与度信号 + 已有的
-   饱和度信号）。
-2. 方向 5：学习效果自测环节。
-3. 方向 3：Goal 执行内容反哺信号扫描。
-4. 方向 2：反馈模式统计展示（第一步纯统计，第二步 LLM 归纳暂不
+1. 方向 5：学习效果自测环节。
+2. 方向 3：Goal 执行内容反哺信号扫描。
+3. 方向 2：反馈模式统计展示（第一步纯统计，第二步 LLM 归纳暂不
    排期）。
-5. 方向 6：主题类型分化的调研/呈现风格——方案文档明确本轮不建议
+4. 方向 6：主题类型分化的调研/呈现风格——方案文档明确本轮不建议
    排期，留待后续视情况重新评估。

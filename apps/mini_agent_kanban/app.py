@@ -4589,6 +4589,22 @@ def _render_growth_pursuits(client: "AgentClient"):
     with st.expander(f"🔄 正在自主推进（{len(active)} 个方向）", expanded=bool(active)):
         st.caption("这些是你采纳过、成长顾问正在按周期自动持续调研的方向——素材持续追加到同一份"
                    "页面，不需要你手动触发。")
+        # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 4]
+        # 跨方向全局视角摘要：把已经分散展示的饱和度/参与度信号聚合成
+        # 一句话，帮用户判断"该先看哪几个方向"——纯展示，不自动排序/
+        # 暂停任何方向，怎么处理仍然由用户自己决定。
+        if active:
+            try:
+                portfolio = client.growth_pursuits_portfolio_summary() or {}
+            except Exception:
+                portfolio = {}
+            attention = portfolio.get("attention_needed") or []
+            if attention:
+                names = "、".join(f"「{a.get('title')}」" for a in attention[:3])
+                more = f" 等 {len(attention)} 个" if len(attention) > 3 else ""
+                st.info(f"💡 {len(attention)} 个方向可能需要你看一眼：{names}{more}")
+            elif portfolio.get("total"):
+                st.caption(f"{portfolio.get('total')} 个方向都在正常推进，暂时没有需要特别关注的。")
         # [growth_advisor_autonomy_deepening_plan_v2.md 方向 5] 批量操作
         # 入口：单个方向的暂停/恢复已经很短，但同时有多个方向在跑时，
         # 逐个点还是麻烦（比如要出差一段时间）。这里只是循环调用已有的

@@ -1960,6 +1960,14 @@ class GrowthAdvisorConfig:
     # 判断本身，也不影响 B2 饱和度 streak 的计数方式。
     pursuit_increment_llm_review_enabled: bool = False
 
+    # ── 方向 4：跨方向全局视角摘要（growth_advisor_ideal_advisor_gap_
+    # and_roadmap_plan.md 方向 4）──────────────────────────────────────
+    # "长期无人查看"的判定阈值：某个方向的素材已经比用户上次查看时新了
+    # 多少轮，就计入 `pursuits_portfolio_summary()` 的"建议关注"分类。
+    # 默认 5——跟方向 1 文档里"自测环节间隔不宜太长"是类似的取舍，太大
+    # 意义打折，太小容易对正常节奏的方向也报警。
+    pursuit_long_unviewed_threshold: int = 5
+
 
 @dataclass
 class ReminderConfig:

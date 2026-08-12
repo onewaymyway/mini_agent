@@ -6596,6 +6596,39 @@ async def get_growth_pursuits(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/growth/pursuits/portfolio_summary")
+async def get_growth_pursuits_portfolio_summary(request: Request):
+    """GET /v1/growth/pursuits/portfolio_summary —
+    [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 4] 多方向
+    并行推进时的全局视角摘要：聚合饱和度信号（方向 B2）+ 参与度信号
+    （方向 1），回答"我现在该先看哪几个方向"。纯只读聚合，不产生新的
+    持久化，跟 `/growth/pursuits` 一样按需拉取（看板在展开分区时才
+    请求一次，不放进默认响应）。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.perception.goal_backlog import GoalBacklog
+
+        goal_backlog = GoalBacklog(paths)
+        goal_backlog.load()
+
+        http_server = getattr(request.app.state, "http_server", None)
+        self_agent = getattr(http_server.bridge, "agent", None) if http_server else None
+        cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
+        threshold = getattr(cfg, "pursuit_long_unviewed_threshold", None)
+        if not threshold:
+            from mini_agent.config.models import GrowthAdvisorConfig
+            threshold = GrowthAdvisorConfig().pursuit_long_unviewed_threshold
+
+        return ga.pursuits_portfolio_summary(paths, goal_backlog, long_unviewed_threshold=threshold)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/growth/pursuits/{goal_id}/view_material")
 async def post_growth_pursuit_view_material(request: Request, goal_id: str):
     """POST /v1/growth/pursuits/{goal_id}/view_material —
