@@ -188,6 +188,7 @@
     "max_total_concurrent_tasks": 2
   },
   "growth_advisor": {
-    "llm_signal_augment_enabled": true
+    "llm_signal_augment_enabled": true,
+    "feedback_pattern_llm_enabled": true
   }
 }
