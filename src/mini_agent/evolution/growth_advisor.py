@@ -452,6 +452,16 @@ class GrowthCandidate:
     # 序列化时缺该字段，`from_dict` 走既有的已知字段兜底默认值机制，
     # 自然落到 `None`，等价于"未落地"，不需要额外迁移。
     linked_goal_id: Optional[str] = None
+    # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 3]
+    # 这条候选的信号来源标记，只在**创建时**写入、合并证据时不覆盖
+    # （见 `GrowthBacklog.add_or_merge`）——`"signal_scan"`（默认值，
+    # 绝大多数候选：来自对话记忆的关键词命中）或 `"pursuit_spinoff"`
+    # （来自另一个正在推进方向的 `open_questions` 反复出现，见
+    # `extract_spinoff_topics_from_pursuits()`）。纯展示用途，不参与
+    # 任何排序/置信度计算；旧数据反序列化时缺该字段，`from_dict` 落到
+    # 默认值 `"signal_scan"`，等价于"按原有口径来自信号扫描"，不需要
+    # 额外迁移。
+    origin: str = "signal_scan"
 
     def dedupe_key(self) -> str:
         return normalize_title_key(self.title)
@@ -588,6 +598,7 @@ class GrowthBacklog:
         max_pending: int,
         dismissed_cooldown_days: int,
         confidence_multiplier: float = 1.0,
+        origin: str = "signal_scan",
     ) -> Optional[GrowthCandidate]:
         """尝试新增一条候选。规则（对应方案第 3 节"克制"要求）：
             - evidence_refs 数量不达标 → 不生成，返回 None
@@ -595,6 +606,12 @@ class GrowthBacklog:
               不重复创建
             - 曾被 dismissed 且仍在冷却期内 → 跳过，返回 None
             - pending 数量已达上限 → 跳过，返回 None（避免无限堆积）
+
+        `origin`：[方向 3] 只在真正**新建**候选时写入 `GrowthCandidate.
+        origin`；命中已有候选走合并分支时保留原候选的 origin 不变
+        （一个话题最初来自信号扫描、后来恰好也被 spinoff 命中，不应该
+        把来源标记改写成 spinoff——先到先得，origin 只反映"这个话题
+        第一次被发现"的来源）。
         """
         if len(evidence_refs) < min_evidence_count:
             return None
@@ -632,6 +649,7 @@ class GrowthBacklog:
             # confidence_multiplier < 1.0 时说明这个方向此前被 dismiss 过
             # （见 _feedback_multiplier），新建候选默认置信度打折但不清零。
             confidence=round(base_confidence * confidence_multiplier, 3),
+            origin=origin,
         )
         all_c.append(cand)
         self.save_all(all_c)
@@ -1595,14 +1613,38 @@ def _llm_augment_topics(
 # ────────────────────────── 候选生成 growth_candidate_derive ──────────────────────────
 
 
-def growth_candidate_derive(paths, cfg, profile) -> list[GrowthCandidate]:
+def growth_candidate_derive(paths, cfg, profile, *, goal_backlog=None) -> list[GrowthCandidate]:
     """消费 `profile.derived["growth_focus_areas"]`（由 growth_signal_scan
     产出），对证据数达标、未命中 excluded_topics 的主题生成/合并候选到
     backlog，返回本次新增或有更新的候选列表。
+
+    [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 3]
+    `goal_backlog`：可选，传入时额外调用 `extract_spinoff_topics_
+    from_pursuits()` 挖掘"正在推进方向里反复出现但从未被吸收"的衍生
+    话题，并入本轮候选生成输入——走同一套证据数阈值/置信度计算，只是
+    额外打一个 `origin="pursuit_spinoff"` 标记（仅在该主题此前未被
+    信号扫描命中过时才标记来源为 spinoff；如果同一个标题恰好也被
+    memory 信号命中了，仍按信号扫描的证据优先合并，不覆盖对方证据，
+    只是把两边证据取并集）。不传（沿用旧调用点）时行为与改动前完全
+    一致。任何异常都不影响原有 memory 信号路径。
     """
     focus_areas: dict[str, list[str]] = dict(
         (getattr(profile, "derived", {}) or {}).get("growth_focus_areas", {})
     )
+    spinoff_origins: set[str] = set()
+    if goal_backlog is not None:
+        try:
+            spinoff_hits = extract_spinoff_topics_from_pursuits(paths, goal_backlog)
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.growth_advisor.growth_candidate_derive_spinoff")
+            spinoff_hits = {}
+        for topic, refs in spinoff_hits.items():
+            if topic not in focus_areas:
+                spinoff_origins.add(topic)
+            existing = focus_areas.setdefault(topic, [])
+            focus_areas[topic] = sorted(set(existing) | set(refs))
+
     excluded = {t.strip().lower() for t in getattr(cfg, "excluded_topics", []) or []}
     backlog = GrowthBacklog(paths)
     backlog.expire_stale()
@@ -1628,7 +1670,10 @@ def growth_candidate_derive(paths, cfg, profile) -> list[GrowthCandidate]:
     for topic, refs in sorted(focus_areas.items(), key=lambda kv: -len(kv[1])):
         if topic.strip().lower() in excluded:
             continue
-        rationale = f"最近记忆里与「{topic}」相关的内容出现了 {len(set(refs))} 次，可能是值得投入的方向。"
+        if topic in spinoff_origins:
+            rationale = f"你正在推进的另一个方向里，「{topic}」这个问题反复被提到但一直没有展开，可能是值得单独投入的方向。"
+        else:
+            rationale = f"最近记忆里与「{topic}」相关的内容出现了 {len(set(refs))} 次，可能是值得投入的方向。"
         key = normalize_title_key(topic)
         topic_multiplier = _feedback_multiplier(dismiss_counts.get(key, 0))
         category_multiplier = _category_feedback_multiplier(
@@ -1648,6 +1693,7 @@ def growth_candidate_derive(paths, cfg, profile) -> list[GrowthCandidate]:
             max_pending=max_pending,
             dismissed_cooldown_days=cooldown_days,
             confidence_multiplier=multiplier,
+            origin="pursuit_spinoff" if topic in spinoff_origins else "signal_scan",
         )
         # [P4-6] 每轮都记一条趋势快照，不管这次是否达标生成/更新了候选
         # ——证据数本身在低于阈值时也是有意义的"正在积累"信号，只有在
@@ -3476,6 +3522,95 @@ def pursuits_portfolio_summary(
     }
 
 
+# ──────────── [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 3] ────────────
+# Goal 执行内容反哺信号扫描：候选 → Goal 此前是单向的，Goal 绑定周期性
+# 执行之后每一轮实际产出的 `open_questions` 完全不会反哺回成长顾问的
+# 候选池，持续调研过程中牵出的相邻新兴趣点只能永远沉默地躺在那里。这里
+# 补一个规则式初筛：同一段 open_questions 文本在最近几轮里反复出现、又
+# 从未被任何一轮的 `covered_subtopics` 吸收，就当作一条"衍生话题"信号，
+# 并入 `growth_signal_scan()` 的候选生成输入（不直接生成候选，避免绕开
+# 用户"采纳"这一步）。
+
+# 只看每个方向最近这么多轮的 open_questions（早于这个窗口的历史不再
+# 重新翻出来，避免陈年话题反复刷屏）。
+_SPINOFF_LOOKBACK_CYCLES = 3
+# 同一段文本在窗口内至少出现这么多次才算"反复出现"（单轮提到的问题很
+# 可能下一轮就自然被吸收，不构成独立信号）。
+_SPINOFF_MIN_OCCURRENCES = 2
+
+
+def extract_spinoff_topics_from_pursuits(paths, goal_backlog) -> dict[str, list[str]]:
+    """扫描全部已落地成 Goal 且 `recurring=True` 的成长方向（口径与
+    `pursuits_portfolio_summary()` 一致：遍历 `GrowthBacklog` 里
+    `linked_goal_id` 指向的、仍在周期性推进的 Goal），从其最近几轮
+    manifest 的 `handoff.open_questions` 里挖掘"反复出现、但从未被
+    任何一轮 `covered_subtopics` 吸收"的衍生话题。
+
+    返回 `{topic_text: [evidence_refs...]}`——跟 `growth_signal_scan()`
+    产出的 `growth_focus_areas` 同构，供调用方直接并入同一份 dict 交给
+    `growth_candidate_derive()` 处理，走同一套证据数阈值/置信度计算。
+    `evidence_refs` 是合成 id（`pursuit_spinoff:{goal_id}:{窗口内相对
+    轮次编号}`），不是真实 memory entry_id，只用于让 `evidence_count`
+    可计数、可去重。
+
+    规则式初筛，零 LLM 成本，只读不写：任何单个 Goal 的 manifest 读取
+    失败都不影响其它 Goal，最终吸收不到时返回空字典。
+    """
+    from mini_agent.evolution import output_workspace
+    from mini_agent.perception.goal_execution_spec import get_handoff_data
+
+    result: dict[str, list[str]] = {}
+    try:
+        backlog = GrowthBacklog(paths)
+        candidates = backlog.load_all()
+    except Exception:
+        return result
+
+    seen_goal_ids: set[str] = set()
+    for c in candidates:
+        if not c.linked_goal_id or c.linked_goal_id in seen_goal_ids:
+            continue
+        goal = goal_backlog.get(c.linked_goal_id)
+        if goal is None or not goal.recurring:
+            continue
+        seen_goal_ids.add(c.linked_goal_id)
+
+        try:
+            base_dir = output_workspace.goal_output_base_dir(paths, goal.id)
+            manifests = output_workspace.read_all_manifests(base_dir)
+        except Exception:
+            continue
+        if not manifests:
+            continue
+
+        ever_covered: set[str] = set()
+        for m in manifests:
+            handoff = get_handoff_data(m.get("progress_note") or "") or {}
+            for s in handoff.get("covered_subtopics") or []:
+                s = str(s).strip()
+                if s:
+                    ever_covered.add(s)
+
+        window = manifests[-_SPINOFF_LOOKBACK_CYCLES:]
+        occurrence_cycles: dict[str, list[int]] = {}
+        for idx, m in enumerate(window, start=1):
+            handoff = get_handoff_data(m.get("progress_note") or "") or {}
+            for q in handoff.get("open_questions") or []:
+                q = str(q).strip()
+                if not q:
+                    continue
+                occurrence_cycles.setdefault(q, []).append(idx)
+
+        for q, cycles in occurrence_cycles.items():
+            if len(cycles) < _SPINOFF_MIN_OCCURRENCES or q in ever_covered:
+                continue
+            refs = [f"pursuit_spinoff:{goal.id}:{n}" for n in cycles]
+            existing = result.setdefault(q, [])
+            result[q] = sorted(set(existing) | set(refs))
+
+    return result
+
+
 _PURSUIT_SATURATION_TREND_RAW_WINDOW_DAYS = 60
 _DEFAULT_PURSUIT_SATURATION_TREND_MAX_POINTS = 30
 
@@ -4108,7 +4243,10 @@ def run_daily_cycle(
 
     scan_llm_helper = llm_helper if getattr(cfg, "llm_signal_augment_enabled", False) else None
     growth_signal_scan(paths, profile, memory_store, llm_helper=scan_llm_helper)
-    new_candidates = growth_candidate_derive(paths, cfg, profile)
+    # [方向 3] goal_backlog 拿不到（非 daemon 上下文等）时安全退化为 None，
+    # growth_candidate_derive 内部行为等价于改动前（只用 memory 信号）。
+    goal_backlog = _load_goal_backlog_safely(paths)
+    new_candidates = growth_candidate_derive(paths, cfg, profile, goal_backlog=goal_backlog)
 
     # [P5-3] 除了看板上"手动添加/确认"两个触发点，cron 每日流程本身也会
     # 让主题"转正"（`_update_keyword_learning_streaks` 的自动确认路径），

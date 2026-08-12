@@ -134,10 +134,82 @@ C1（`reorganize_hint_for_cycle()`）已验证的"按累计轮次追加 prompt
   那样需要 opt-in）"的建议，默认值直接设为开启（`5`）。刻意不做
   自动判分、不做交互提交，避免引入测验式的心理负担。
 
+## 已完成
+
+### 方向 3：Goal 执行内容反哺信号扫描
+
+对应方案文档第 3 节。目标：候选 → Goal 此前是单向的，持续调研过程中
+在 `open_questions` 里反复冒出、但从未被吸收的衍生话题，此前只能永远
+沉默地躺在 manifest 里；这里补一条规则式的反哺路径，把这类衍生话题
+并入下一轮候选生成的输入。
+
+- `evolution/growth_advisor.py`：
+  - `GrowthCandidate` 新增 `origin` 字段（默认 `"signal_scan"`，旧数据
+    反序列化时自然落到这个默认值，无需迁移）——只在**创建**候选时
+    写入，之后任何合并证据的操作都不覆盖它（先到先得：一个话题最初
+    是从对话记忆发现的，后来恰好也被 spinoff 命中，仍然保留
+    `"signal_scan"`，不因为后到的信号改写来源标记）。
+  - `GrowthBacklog.add_or_merge()` 新增 `origin` 关键字参数（默认
+    `"signal_scan"`），透传给新建的 `GrowthCandidate`。
+  - 新增 `extract_spinoff_topics_from_pursuits(paths, goal_backlog)`：
+    口径跟 `pursuits_portfolio_summary()` 完全一致——遍历
+    `GrowthBacklog` 里 `linked_goal_id` 指向、且 `goal.recurring=True`
+    的方向（不是直接扫 `goal_backlog` 全表按 tags 过滤，避免口径
+    跟"🔄 正在自主推进"分区不一致）；对每个方向读全部历史 manifest，
+    先算出"曾经出现在任意一轮 `covered_subtopics` 里的文本"全集
+    （只要曾被覆盖过就不算沉默线索，不局限于"后续轮次"），再在最近
+    `_SPINOFF_LOOKBACK_CYCLES`（3）轮的 `open_questions` 里统计每段
+    文本出现次数，`>= _SPINOFF_MIN_OCCURRENCES`（2）次且从未被吸收
+    的，才算一条"衍生话题"信号。返回
+    `{topic_text: [合成 evidence_refs...]}`，跟 `growth_focus_areas`
+    同构，`evidence_refs` 形如 `pursuit_spinoff:{goal_id}:{窗口内
+    相对轮次编号}`（不是真实 memory entry_id，只用于计数/去重）。
+  - `growth_candidate_derive()` 新增可选 `goal_backlog` 参数：传入时
+    调用 `extract_spinoff_topics_from_pursuits()`，把结果并入本轮
+    `focus_areas`（同名主题取证据并集，不覆盖已有证据），走同一套
+    `min_evidence_count`/置信度乘子计算；新建候选时把
+    `origin="pursuit_spinoff"` 传给 `add_or_merge()`（仅对"此前未被
+    memory 信号命中过"的主题打这个标记）。不传 `goal_backlog`（沿用
+    旧调用点）时行为与改动前完全一致；内部调用
+    `extract_spinoff_topics_from_pursuits()` 出错时静默降级为空，不
+    影响原有 memory 信号路径。
+  - `run_daily_cycle()` 通过既有的 `_load_goal_backlog_safely(paths)`
+    拿到 `goal_backlog`（拿不到时为 `None`，自然退化）并传给
+    `growth_candidate_derive()`。
+- `apps/mini_agent_kanban/app.py`：`_render_growth_pending_list()`（列表
+  视图）和 `_growth_card_label()`（拖拽视图）在 `origin="pursuit_
+  spinoff"` 的候选标题旁加一个"🔗 来自你正在推进的方向"标记——纯展示，
+  帮用户理解"为什么会突然冒出这个建议"，不影响任何排序/操作逻辑。
+- 新增测试 `tests/test_growth_advisor_pursuit_spinoff.py`（9 个用例）：
+  无推进方向时返回空/反复出现且未吸收的话题被发现（含 evidence_refs
+  格式校验）/单次提及不命中/被任意一轮吸收后不再命中/暂停方向的口径
+  确认（`recurring` 不变则仍参与统计，跟 `pursuits_portfolio_summary`
+  同口径）/窗口外的旧轮次不参与计数；`growth_candidate_derive` 侧：
+  spinoff 话题正确打标签/不传 `goal_backlog` 时行为不变/同名话题被
+  memory 信号先命中时 origin 不被覆盖且证据取并集。
+- 回归：`tests/test_growth_advisor.py` +
+  `test_growth_advisor_pursuits_portfolio_summary.py` +
+  `test_growth_advisor_material_engagement.py` +
+  `test_growth_advisor_pursuit_self_check.py` +
+  `test_growth_advisor_saturation_and_pursuit_visibility.py` +
+  `test_growth_advisor_pursuit_increment_llm_review.py` 共 233 个用例
+  全部通过，无回归（`test_kanban_growth_dragdrop.py` 因为环境缺
+  `streamlit` 包无法收集，是预置的环境缺口，与本次改动无关）。
+- 同步更新 `docs/growth-advisor-guide.md` 第 7 节"当前局限"里
+  "候选 → Goal 是单向的"这条描述，补充说明方向 3 已经覆盖了"衍生话题"
+  这一种更窄的反哺场景，但不是"Goal 进展本身反哺候选证据"这种更通用
+  的双向同步（仍然是已知局限）。
+- 成本核对：零新增 LLM 调用，零新增持久化文件（`origin` 只是
+  `growth_backlog.jsonl` 里已有 `GrowthCandidate` 记录新增的一个字段），
+  `growth_candidate_derive()` 每轮 cron 多一次"遍历 backlog 里已落地
+  方向 + 读取它们的历史 manifest"的 IO，量级与 `pursuits_portfolio_
+  summary()` 相当，符合方案文档"复用现有信号扫描输入管道"的克制预期；
+  规则式初筛准确度依赖窗口/阈值取值是否合适，先上线观察，暂不引入
+  LLM 归一化（方案文档"两步走"里明确的第二步，本轮未做）。
+
 ## 待推进（按方案文档第 7 节优先级）
 
-1. 方向 3：Goal 执行内容反哺信号扫描。
-2. 方向 2：反馈模式统计展示（第一步纯统计，第二步 LLM 归纳暂不
+1. 方向 2：反馈模式统计展示（第一步纯统计，第二步 LLM 归纳暂不
    排期）。
-3. 方向 6：主题类型分化的调研/呈现风格——方案文档明确本轮不建议
+2. 方向 6：主题类型分化的调研/呈现风格——方案文档明确本轮不建议
    排期，留待后续视情况重新评估。

@@ -1313,9 +1313,15 @@ N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
   没有被用来反过来指导报告生成策略本身（比如自动为高频被标记的方向
   切换到 LLM 生成、或调整模板内容），这是留给未来版本的闭环；
 - Goal/Cron 打通（2.9 节）目前只做了"对齐分析 + 一键落地 + 回访读取
-  Goal 状态"三件事：候选 → Goal 是单向的（Goal 完成/停滞状态会反哺
-  回访判断，但 Goal 的 `progress_notes` 更新不会自动同步成候选的新
-  证据）；对齐分析默认仍是关键词包含匹配，`goal_alignment_llm_
+  Goal 状态"三件事：候选 → Goal 本身仍是单向的（Goal 完成/停滞状态会
+  反哺回访判断，但 Goal 的 `progress_notes` 更新不会自动同步成候选的
+  新证据）；`next_doc/growth_advisor_ideal_advisor_gap_and_roadmap_
+  plan.md` 方向 3 补上了一条相邻但更窄的反哺路径——`extract_spinoff_
+  topics_from_pursuits()` 会把持续调研过程中反复出现、却从未被
+  `covered_subtopics` 吸收的 `open_questions` 并入下一轮信号扫描的
+  候选生成输入（打 `origin="pursuit_spinoff"` 标记，仍然要用户手动
+  采纳才会变成新方向），但这只覆盖"衍生话题"这一种反哺场景，不是
+  "Goal 进展本身反哺候选证据"这种更通用的双向同步；对齐分析默认仍是关键词包含匹配，`goal_alignment_llm_
   enabled` 打开后能补上"字面不同、实质同一件事"这类配对（比如候选叫
   "数据分析能力"、Goal 叫"提升可视化技能"），但 LLM 建议目前只停在
   "展示给你看"，还没有"一键确认成正式关联"的入口（要正式关联仍然要

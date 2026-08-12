@@ -4868,7 +4868,13 @@ def _render_growth_pending_list(client: "AgentClient", pending: list[dict]):
     时的兜底路径保留——不强制要求这个可选依赖。"""
     for c in sorted(pending, key=lambda x: -x.get("confidence", 0)):
         with st.container(border=True):
-            st.markdown(f"**{c['title']}**  \n{c.get('rationale', '')}")
+            title_line = f"**{c['title']}**"
+            if c.get("origin") == "pursuit_spinoff":
+                # [方向 3] 纯展示标记，帮用户理解"为什么会突然冒出这个
+                # 建议"——不是来自对话记忆，而是从另一个正在推进的方向里
+                # 牵出来的衍生话题。
+                title_line += "  🔗 来自你正在推进的方向"
+            st.markdown(f"{title_line}  \n{c.get('rationale', '')}")
             st.caption(
                 f"置信度 {c.get('confidence', 0)} · 证据 {c.get('evidence_count', 0)} 条"
             )
@@ -4936,7 +4942,8 @@ def _growth_card_label(c: dict) -> str:
     # 前 8 位保证同一批渲染里不会有两张标签完全相同的卡片。
     conf = c.get("confidence", 0)
     short_id = str(c.get("candidate_id", ""))[:8]
-    return f"{c.get('title', '')}（置信度 {conf}） · {short_id}"
+    origin_tag = " 🔗" if c.get("origin") == "pursuit_spinoff" else ""
+    return f"{c.get('title', '')}{origin_tag}（置信度 {conf}） · {short_id}"
 
 
 def _render_growth_kanban_dragdrop(client: "AgentClient", candidates: list[dict]):
