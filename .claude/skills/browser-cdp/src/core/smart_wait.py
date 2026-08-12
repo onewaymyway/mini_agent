@@ -140,7 +140,7 @@ class SmartWait:
             )
             elapsed = time.time() - start_time
             wait_result = WaitResult(
-                success=True,
+                success=bool(result),
                 strategy=strategy,
                 elapsed=elapsed,
                 details=kwargs,
