@@ -999,6 +999,73 @@ v2 方案文档最后一项（方向 1：B1 LLM 复核）见下面 2.19 节，�
   按 `cfg` 开关决定是否透传 `llm_helper`、`reap_finished_cycles()`
   新签名可用等场景。
 
+### 2.20 落地 `growth_advisor_ideal_advisor_gap_and_roadmap_plan.md`：方向 6（调研风格智能分类）（本次新增）
+
+**现状问题**：无论是学一门技术、读一本理论书、还是培养一个习惯，
+`growth_pursuit` 模板产出的方式完全相同——都是持续增厚的 wiki 页面，
+没有区分"这类话题该怎么调研/呈现"。方案文档最初的建议是"先做用户
+手动选择、暂不做自动判断"；后续与用户讨论后，直接跳过手动选择这一
+中间态，做自动智能分类：规则式关键词匹配作为零成本默认路径（总是
+可用），LLM 复核作为 opt-in 增强（默认关闭）。
+
+**改动**：
+
+- 新增 3 个调研风格标签：`技能实操类`/`知识理论类`/`习惯养成类`——
+  跟 2.5 节的话题类别系统（技术类/管理类/表达类/其他类）是两个正交
+  维度：类别回答"是什么话题"，风格回答"这类话题该怎么调研/呈现"。
+- `_infer_pursuit_style_rule(topic, extra_text="")`：只登记"技能
+  实操类"（编程/开发/工程/代码/api 等）和"习惯养成类"（习惯/打卡/
+  坚持/作息/锻炼等）两类的高置信度关键词，命中数最多的胜出；全不
+  命中或平局兜底"知识理论类"（读书笔记式持续调研是模板最初、也是
+  最通用的产出形态，作为默认值最保守）。
+- `classify_pursuit_style_llm()` / `determine_pursuit_style()`：跟
+  2.5 节 `classify_topic_category_llm()` 同款"opt-in、宽松吸收"
+  模式——规则式结果总是先算出来，`pursuit_style_llm_enabled=True`
+  且有 `llm_helper` 时才额外调一次 LLM 复核，命中合法标签就覆盖，
+  解析失败/异常/未开启都静默沿用规则式结果，不影响返回值可用性。
+- `pursuit_style_hint()`：每种风格对应一段 prompt 追加指令（技能
+  实操类多给可复现操作步骤/代码示例；知识理论类维护结构化知识
+  脉络；习惯养成类以短小打卡式记录为主、不追求持续增厚知识库）。
+  跟 2.14 节 C1/2.19 节不同，这里**每一轮都带上**（不按累计轮次
+  取模触发）——风格是这个方向的持续属性，不是某个特定轮次才需要
+  的提醒。
+- **接入点**：`auto_pursue_candidate()` 落地成 Goal 之后，若尚未
+  分类过（避免每次自动推进都重算），判定一次并写入 `GoalNode.
+  growth_pursuit_style` 新字段；`goal_cron_bridge._trigger_cycle()`
+  跟 C1/方向 5 的两个 hint 函数在同一处串联调用
+  `_append_growth_pursuit_style_hint()`，往子 Objective description
+  里追加风格提示；任何环节异常静默跳过，不影响 Goal 触发主流程。
+- **看板**："🔄 正在自主推进"分区每条方向的调度信息行追加
+  `🧭 <风格>` 标记（未分类的旧 Goal 不展示，不影响既有布局）。
+- **API**：`GET /growth/pursuits` 每条方向新增 `pursuit_style` 字段，
+  纯只读透出。
+
+**新增/变更文件**：
+
+- `src/mini_agent/config/models.py`：新增
+  `GrowthAdvisorConfig.pursuit_style_llm_enabled`（默认 `False`）；
+- `src/mini_agent/perception/goal_backlog.py`：`GoalNode` 新增
+  `growth_pursuit_style: Optional[str] = None` 字段（同步 `to_dict`/
+  `from_dict`）；
+- `src/mini_agent/evolution/growth_advisor.py`：新增
+  `_PURSUIT_STYLE_LABELS`/`_PURSUIT_STYLE_KEYWORDS`/
+  `_infer_pursuit_style_rule()`/`classify_pursuit_style_llm()`/
+  `determine_pursuit_style()`/`_PURSUIT_STYLE_PROMPT_ADDENDUM`/
+  `pursuit_style_hint()`；`auto_pursue_candidate()` 新增落地后的
+  风格判定步骤；
+- `src/mini_agent/evolution/goal_cron_bridge.py`：新增
+  `_append_growth_pursuit_style_hint()` 并接入 `_trigger_cycle()`；
+- `src/mini_agent/api/routes.py`：`GET /growth/pursuits` 响应新增
+  `pursuit_style` 字段；
+- `apps/mini_agent_kanban/app.py`：`_render_growth_pursuits()` 调度
+  信息行追加风格标记；
+- `tests/test_growth_advisor_pursuit_style.py`：新增，覆盖规则式
+  分类（各风格关键词命中/无命中兜底/extra_text 参与匹配）、LLM 分类
+  （合法/非法标签、空响应、异常）、统一入口（默认只用规则/开关关闭
+  忽略 helper/开启无 helper 时降级/开启且有效时覆盖/LLM 非法值时
+  降级）、`pursuit_style_hint()`（非标签 Goal 不生效/未分类不生效/
+  三种风格都能正确生成提示/非法风格值返回 `None`）。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外
@@ -1154,6 +1221,7 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 | `pursuit_digest_enabled` | `true` | （2.14 节）每轮持续调研完成后是否暂存"本轮新增摘要"，等下一次实际推送时打包带出，不额外消耗推送额度 |
 | `goal_alignment_adopt_all_max_batch` | `3` | （2.15 节）`/growth align --adopt-all` / 看板"全部采纳"单次最多批量落地的方向数，避免一次点击触发过多 LLM 调用 |
 | `pursuit_increment_llm_review_enabled` | `false` | （2.19 节）`evaluate_cycle_increment()` 规则式判定"疑似低增量"后，是否再追加一次 LLM 语义复核；结果只作诊断展示，不覆盖规则式判断、不影响 B2 饱和度 streak 计数；会实际发起一次 LLM 调用，默认关闭 |
+| `pursuit_style_llm_enabled` | `false` | （2.20 节，`growth_advisor_ideal_advisor_gap_and_roadmap_plan.md` 方向 6）调研风格（技能实操类/知识理论类/习惯养成类）分类默认走零成本的规则式关键词匹配，打开后额外调一次 LLM 复核/纠偏；只在 `auto_pursue_candidate()` 首次落地一个 Goal 时触发一次，不是每轮都调 |
 
 另外 `memory_backfill.cron_run_backfill_enabled`（默认 `true`，v4 N2）
 控制 cron 任务收尾是否自动回填记忆，属于 `memory_backfill` 配置块而非
@@ -1365,3 +1433,14 @@ N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
   按需认领。方向 A2（Goal 停滞时区分"素材饱和"vs"执行卡住"两类
   原因）已实施，但只做到"措辞区分、引导用户去看执行状态"这一层，
   不包含自动检测/重试执行失败的能力——这部分自愈能力仍然是留白。
+- 2.20 节落地的方向 6（调研风格智能分类）目前只影响 `growth_pursuit`
+  模板每一轮 prompt 里追加的一段文字提示，不做任何"根据风格切换成
+  完全不同的模板结构/wiki 页面组织方式"——生成结果最终仍然取决于
+  执行模型是否真的照做这段提示，不是强约束；分类只在 Goal 首次落地
+  时判定一次，不会随着后续轮次的实际产出内容动态修正（比如一个方向
+  最初被归为"知识理论类"，但用户后来其实更想要动手案例，目前没有
+  机制发现并重新分类，需要手动改 `.agent/goals.json` 里的
+  `growth_pursuit_style` 字段）；规则式关键词表覆盖面有限，边界
+  情况（比如"数据分析"这类既偏实操又偏理论的主题）容易被兜底成
+  默认的"知识理论类"，开启 `pursuit_style_llm_enabled` 能缓解但
+  不能完全消除误判。

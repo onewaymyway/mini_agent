@@ -440,3 +440,8 @@ C1（`reorganize_hint_for_cycle()`）已验证的"按累计轮次追加 prompt
   （不是每轮 cron 都调），量级与 `topic_category_llm_enabled` 开启后
   单个主题首次归类时的调用频率相当，符合方案文档"opt-in、成本可控"
   的预期。
+- 同步更新 `docs/growth-advisor-guide.md`：新增 2.20 节完整记录方向 6
+  的现状问题/改动/新增变更文件；5 节配置表新增 `pursuit_style_llm_
+  enabled` 行；7 节"当前局限"补一条方向 6 的已知边界（分类只在 Goal
+  首次落地时判定一次、不会随后续实际产出动态修正；规则式关键词表
+  覆盖面有限，边界情况容易被兜底成默认的"知识理论类"）。
