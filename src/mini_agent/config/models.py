@@ -1938,6 +1938,24 @@ class GrowthAdvisorConfig:
     # `report_quality_auto_upgrade_enabled=False`）。
     report_quality_auto_upgrade_threshold: int = 2
 
+    # ── 情境感知候选：推送的软性节流（growth_advisor_ideal_advisor_gap_
+    # and_roadmap_plan.md 感知维度分析，2026-08 追加候选并落地）────────
+    # 推送节流此前完全是静态规则（置信度阈值、每天最多几条），感知不到
+    # "用户最近是不是明显没那么活跃"。这个开关控制的是：最近一周的记忆
+    # 条目数相对更早几周的周均值显著偏低时，临时把有效置信度门槛抬高
+    # 一点（软性因子，依然可能推送，只是需要更高置信度），不是硬性
+    # 阻断整轮推送。默认关闭，对齐"新增行为默认不改变既有推送节奏"的
+    # 原则；开启后不产生任何额外 LLM/网络调用，只是多扫一次已经在内存
+    # 里的 `memory_store` 条目。
+    notification_context_aware_throttle_enabled: bool = False
+    # 判定"最近明显更安静"的密度比值门槛：最近一周条目数 / 基线周均值
+    # 低于这个值才触发软性抬高；`<=0` 视为关闭（永远不会触发，等价于
+    # 该开关没打开）。
+    notification_low_activity_ratio_threshold: float = 0.3
+    # 命中"更安静"时，在 `notification_min_confidence` 基础上额外加多少
+    # （封顶 1.0）。
+    notification_low_activity_confidence_boost: float = 0.15
+
     # ── A3：对齐分析结果批量落地（growth_advisor_autonomy_deepening_
     # plan.md 方向 A3）─────────────────────────────────────────────────
     # `/growth align --adopt-all` / 看板"全部采纳"一次性对"未匹配兴趣"

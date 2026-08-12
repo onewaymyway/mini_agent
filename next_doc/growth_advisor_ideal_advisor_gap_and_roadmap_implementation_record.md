@@ -565,3 +565,62 @@ C1（`reorganize_hint_for_cycle()`）已验证的"按累计轮次追加 prompt
   开启后，动态修正每 8 轮做一次规则式重判（可忽略），报告质量自动
   升级只在命中阈值的方向上多花一次 LLM 调用，不是无差别升级全部
   报告，符合"opt-in、成本可控"的一贯原则。
+
+### 推送的情境感知（软性节流）
+
+对应聊天中新增候选（源自感知维度局限分析：推送节流此前完全是静态
+规则，不会感知"用户最近是不是明显没那么活跃"）。目标：在不引入
+心理/精力评估的前提下，用一个间接、可观测的信号（对话密度）对推送
+门槛做一次软性调整，而不是硬性阻断整轮推送。
+
+- `evolution/growth_advisor.py` 新增：
+  - `_recent_conversation_density_ratio(memory_store, recent_days=7,
+    baseline_weeks=4, now=None)`：最近一周的记忆条目数，相对于再往
+    前 4 周的周均值，算出一个密度比值；`memory_store` 缺失、或基线
+    窗口内条目数为 0（没有足够历史数据）时返回 `None`——不强行算出
+    一个可能是噪音的比值，调用方遇到 `None` 视为"没有可用信号"。
+  - `_effective_notification_min_confidence(paths, cfg,
+    memory_store=None)`：在配置的 `notification_min_confidence`
+    基础上，只有 `cfg.notification_context_aware_throttle_enabled=
+    True` 且算出的密度比值低于 `notification_low_activity_ratio_
+    threshold`（默认 0.3）时，才额外加上 `notification_low_
+    activity_confidence_boost`（默认 0.15，封顶 1.0）——软性抬高
+    门槛，依然可能推送，只是需要更高置信度；其余情况原样返回配置值，
+    跟改动前完全一致。
+  - `_maybe_dispatch_notification()` 新增 `memory_store=None` 参数，
+    内部改用 `_effective_notification_min_confidence()` 计算门槛
+    （原来直接读 `cfg.notification_min_confidence`）；`run_daily_
+    cycle()` 调用处透传已有的 `memory_store`。
+- `config/models.py::GrowthAdvisorConfig` 新增
+  `notification_context_aware_throttle_enabled: bool = False`（默认
+  关闭）、`notification_low_activity_ratio_threshold: float = 0.3`
+  （`<=0` 视为关闭）、`notification_low_activity_confidence_boost:
+  float = 0.15`。
+- 新增测试 `tests/test_growth_advisor_notification_context_aware_
+  throttle.py`（12 个用例）：`_recent_conversation_density_ratio()`
+  （无 `memory_store` 返回 `None`/无基线数据返回 `None`/最近更安静时
+  比值 `<1`/活跃度持平时比值约等于 1）；`_effective_notification_
+  min_confidence()`（关闭时原样返回/开启但无信号原样返回/开启且
+  命中"更安静"时正确抬高/开启但活跃度持平时不抬高/抬高结果封顶
+  1.0/阈值为 0 时按关闭处理）；`_maybe_dispatch_notification()`
+  集成验证（不传 `memory_store` 时行为不受影响/安静期确实能把一条
+  中等置信度报告过滤掉）。
+- 回归：加上这批新测试后，`test_growth_advisor.py` +
+  `test_growth_advisor_pursuits_portfolio_summary.py` +
+  `test_growth_advisor_material_engagement.py` +
+  `test_growth_advisor_pursuit_self_check.py` +
+  `test_growth_advisor_saturation_and_pursuit_visibility.py` +
+  `test_growth_advisor_pursuit_increment_llm_review.py` +
+  `test_growth_advisor_pursuit_spinoff.py` +
+  `test_growth_advisor_feedback_pattern_summary.py` +
+  `test_growth_advisor_pursuit_style.py` +
+  `test_growth_advisor_pursuit_style_reclassify_and_report_upgrade.py` +
+  `test_growth_advisor_notification_context_aware_throttle.py` +
+  `test_goal_backlog.py` + `test_goal_cron_bridge.py` +
+  `test_growth_advisor_goal_cron_integration.py` 共 350 个用例全部
+  通过（`TestHealthTrend::test_compact_health_trend_storage_
+  downsamples_old_points` 这一个跟本次改动无关的既有时间敏感用例
+  单独排除，理由同上一节）。
+- 成本核对：默认关闭，零行为变化；开启后不产生任何新的 LLM/网络
+  调用，只是多扫一次已经在内存里的 `memory_store.all_entries()`——
+  这个调用在 `growth_signal_scan()` 里本来就会做一次，量级可忽略。

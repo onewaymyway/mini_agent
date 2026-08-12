@@ -1130,6 +1130,42 @@ threshold`）。
 **两节共用测试**：`tests/test_growth_advisor_pursuit_style_reclassify_
 and_report_upgrade.py`（15 个用例）。
 
+### 2.23 推送的情境感知（软性节流）（本次新增）
+
+**现状问题**：推送节流此前完全是静态规则（置信度阈值、每天最多
+几条），不会感知"用户最近是不是明显没那么活跃"——理想情况下，如果
+最近几天对话密度骤降，可能不是推新方向的好时机，但系统只会机械按
+既定频率照常推送。
+
+**改动**：
+
+- `_recent_conversation_density_ratio(memory_store, recent_days=7,
+  baseline_weeks=4, now=None)`：最近一周记忆条目数相对更早 4 周
+  周均值的密度比值；数据不足（没有基线窗口数据）时返回 `None`，
+  不强行推断。
+- `_effective_notification_min_confidence(paths, cfg,
+  memory_store=None)`：只有开启 `notification_context_aware_
+  throttle_enabled` 且比值低于 `notification_low_activity_ratio_
+  threshold`（默认 0.3）时，才在 `notification_min_confidence`
+  基础上加 `notification_low_activity_confidence_boost`（默认
+  0.15，封顶 1.0）——**软性**抬高门槛，不是硬性跳过整轮推送；判断
+  "现在不适合推"完全靠间接信号推断，选择软性调整是为了把误判的
+  伤害限制在"少数中等置信度报告延后一天"，而不是"确实想看却被
+  拦下"。
+- `_maybe_dispatch_notification()` 接入这个有效门槛，`run_daily_
+  cycle()` 透传已有的 `memory_store`，不产生额外的 LLM/网络调用。
+
+**新增/变更文件**：`src/mini_agent/evolution/growth_advisor.py`
+（`_recent_conversation_density_ratio()`/`_effective_notification_
+min_confidence()`/`_maybe_dispatch_notification()` 新参数）、
+`src/mini_agent/config/models.py`
+（`notification_context_aware_throttle_enabled`/`notification_low_
+activity_ratio_threshold`/`notification_low_activity_confidence_
+boost`）。
+
+**测试**：`tests/test_growth_advisor_notification_context_aware_
+throttle.py`（12 个用例）。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外
@@ -1289,6 +1325,9 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 | `pursuit_style_reclassify_every_n_cycles` | `8` | （2.21 节，方向 6 动态修正）累计满多少轮后，用该方向最近几轮实际产出的内容重新判定一次调研风格（可能改写此前判定的结果）；`<=0` 关闭。目前只走规则式重判，不透传 `llm_helper` |
 | `report_quality_auto_upgrade_enabled` | `false` | （2.22 节，方向 7）某个方向的报告被反馈"内容太笼统"累计达到阈值时，是否自动把下一份报告临时升级为 LLM 生成（不修改全局 `report_quality_llm_enabled`）；只在调用方确实拿得到 `llm_helper` 时才生效 |
 | `report_quality_auto_upgrade_threshold` | `2` | （2.22 节）触发上面自动升级所需的"报告没写好"累计次数；`<=0` 视为关闭 |
+| `notification_context_aware_throttle_enabled` | `false` | （2.23 节）最近一周对话密度明显低于历史周均值时，是否软性抬高推送置信度门槛（依然可能推送，只是需要更高置信度）；不产生额外调用 |
+| `notification_low_activity_ratio_threshold` | `0.3` | （2.23 节）判定"明显更安静"的密度比值门槛，最近一周条目数 / 基线周均值低于这个值才触发；`<=0` 视为关闭 |
+| `notification_low_activity_confidence_boost` | `0.15` | （2.23 节）命中"更安静"时在 `notification_min_confidence` 基础上额外加多少（封顶 1.0） |
 
 另外 `memory_backfill.cron_run_backfill_enabled`（默认 `true`，v4 N2）
 控制 cron 任务收尾是否自动回填记忆，属于 `memory_backfill` 配置块而非
@@ -1518,3 +1557,11 @@ N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
   升级只发生在下一次生成时，不会主动重新生成已经存在的旧报告；且
   只有调用方（cron 触发路径）确实具备 `llm_helper` 时才会真正生效，
   纯模板环境下这个开关不产生任何效果。
+- 2.23 节落地的推送情境感知只是"软性抬高置信度门槛"，不是真正理解
+  用户当前的精力/心情/时间可用性——对话密度骤降也可能只是因为用户
+  在忙别的事、或者单纯这几天没怎么打开客户端，跟"不想被打扰"不是
+  一回事，信号本身就是间接推断，存在误判空间；密度比值的窗口（最近
+  7 天 vs 前 4 周周均值）是固定的，不会根据用户的历史使用节奏自适应
+  调整，对使用频率本来就很低的用户（比如每周互动一两次）可能不适用
+  （基线数据不足时函数会返回 `None`，直接跳过软性调整，但也意味着
+  这类用户永远享受不到这个能力）。

@@ -4460,6 +4460,81 @@ def mark_first_touch_notice_shown(paths) -> None:
 WEEKLY_DIGEST_INTERVAL_DAYS = 7
 
 
+# ────────── [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 感知维度候选] 推送的情境感知（软性节流） ──────────
+# 现状：推送节流此前完全是静态规则（置信度阈值、每天最多几条），不会
+# 感知"用户最近是不是明显没那么活跃"。这里补一个最小的情境感知信号：
+# 用最近一周的记忆条目数 vs 更早几周的周均值算一个密度比值，只在
+# 显著低于历史水平时，把有效置信度门槛稍微抬高一点（软性因子——依然
+# 可能推送，只是需要更高的置信度），而不是硬性阻断或跳过整轮推送。
+# 判断"这几天不适合推新方向"完全靠间接信号推断，本身就不精确，选择
+# "软性抬高门槛"而不是"直接不推"，是为了在信号可能误判时把伤害限制在
+# "少数中等置信度报告延后一天"，而不是"确实想看却因为误判被拦下"。
+
+_CONVERSATION_DENSITY_RECENT_DAYS = 7
+_CONVERSATION_DENSITY_BASELINE_WEEKS = 4
+
+
+def _recent_conversation_density_ratio(
+    memory_store, *, recent_days: int = _CONVERSATION_DENSITY_RECENT_DAYS,
+    baseline_weeks: int = _CONVERSATION_DENSITY_BASELINE_WEEKS, now: Optional[float] = None,
+) -> Optional[float]:
+    """[情境感知候选] 最近 `recent_days` 天的记忆条目数，相对于再往前
+    `baseline_weeks` 周的周均值，算出一个密度比值——`< 1` 表示比历史
+    水平更安静，`>= 1` 表示持平或更活跃。
+
+    返回 `None`（而不是 `0`）的情况：`memory_store` 缺失、或基线窗口
+    内条目数为 0（没有足够历史数据支撑"最近变安静了"这个判断，强行
+    算出一个比值反而可能是噪音）——调用方遇到 `None` 应该视为"没有
+    可用信号"，不套用任何软性调整，等价于改动前的行为。
+    """
+    if memory_store is None:
+        return None
+    now = now if now is not None else time.time()
+    recent_cutoff = now - recent_days * 86400
+    baseline_start = recent_cutoff - baseline_weeks * recent_days * 86400
+    try:
+        entries = memory_store.all_entries()
+    except Exception:
+        return None
+    recent_count = 0
+    baseline_count = 0
+    for e in entries:
+        created_at = getattr(e, "created_at", 0) or 0
+        if created_at >= recent_cutoff:
+            recent_count += 1
+        elif created_at >= baseline_start:
+            baseline_count += 1
+    if baseline_count <= 0:
+        return None
+    baseline_weekly_avg = baseline_count / baseline_weeks
+    if baseline_weekly_avg <= 0:
+        return None
+    return recent_count / baseline_weekly_avg
+
+
+def _effective_notification_min_confidence(paths, cfg, memory_store=None) -> float:
+    """[情境感知候选] 在配置的 `notification_min_confidence` 基础上，
+    如果开启了 `notification_context_aware_throttle_enabled` 且能算出
+    密度比值、且比值低于 `notification_low_activity_ratio_threshold`
+    （默认 0.3，即"最近一周活跃度不到历史周均值的 30%"），额外加上
+    `notification_low_activity_confidence_boost`（默认 0.15，封顶
+    1.0）——软性抬高门槛，不是直接跳过推送。任何一步拿不到数据/未
+    开启，都原样返回配置里的 `notification_min_confidence`，跟改动前
+    行为一致。
+    """
+    base = getattr(cfg, "notification_min_confidence", 0.6)
+    if not getattr(cfg, "notification_context_aware_throttle_enabled", False):
+        return base
+    ratio = _recent_conversation_density_ratio(memory_store)
+    if ratio is None:
+        return base
+    threshold = getattr(cfg, "notification_low_activity_ratio_threshold", 0.3)
+    if ratio >= threshold:
+        return base
+    boost = getattr(cfg, "notification_low_activity_confidence_boost", 0.15)
+    return min(1.0, base + boost)
+
+
 def _maybe_dispatch_weekly_digest(paths, cfg, profile=None) -> Optional[dict]:
     """`notification_frequency == "weekly_digest"` 时的推送逻辑：每 7 天
     最多推一次，内容是窗口期内（上次推送至今，首次则取最近 7 天）新生成
@@ -4535,7 +4610,8 @@ def _maybe_dispatch_weekly_digest(paths, cfg, profile=None) -> Optional[dict]:
 
 
 def _maybe_dispatch_notification(
-    paths, cfg, candidates_by_id: dict[str, GrowthCandidate], reports: list[GrowthReport], profile=None
+    paths, cfg, candidates_by_id: dict[str, GrowthCandidate], reports: list[GrowthReport], profile=None,
+    memory_store=None,
 ) -> Optional[dict]:
     """方案第 4.2 节推送节流：看板展示不受限，主动推送（通知中心/邮件）
     才需要节流——本函数只负责"要不要推、推哪一条"，看板轮询走的是
@@ -4553,6 +4629,12 @@ def _maybe_dispatch_notification(
           -> 不再推送，状态落盘在 `paths.growth_state_path`。
         - 任何一步异常都不应该打断 `run_daily_cycle` 主流程，统一
           try/except + log_exception 兜底，返回 None。
+
+    `memory_store`：[情境感知候选] 可选，透传给
+    `_effective_notification_min_confidence()` 用于计算最近对话密度；
+    不传或 `cfg.notification_context_aware_throttle_enabled=False`
+    时，有效置信度门槛就是配置里的 `notification_min_confidence`，
+    行为与改动前完全一致。
     """
     reports = list(reports or [])
     if not reports:
@@ -4564,7 +4646,7 @@ def _maybe_dispatch_notification(
         # 时把 weekly_digest 误当成 daily 逐条推送。
         return None
 
-    min_conf = getattr(cfg, "notification_min_confidence", 0.6)
+    min_conf = _effective_notification_min_confidence(paths, cfg, memory_store)
     max_per_day = getattr(cfg, "notification_max_per_day", 1)
     # [P4-5] 按类别历史采纳率算优先级分数，而不是单纯比置信度；同时把
     # 类别被静音（category_notification_frequency=="kanban_only"）的
@@ -4785,7 +4867,7 @@ def run_daily_cycle(
     if freq == "weekly_digest":
         notification = _maybe_dispatch_weekly_digest(paths, cfg, profile)
     else:
-        notification = _maybe_dispatch_notification(paths, cfg, candidates_by_id, reports, profile)
+        notification = _maybe_dispatch_notification(paths, cfg, candidates_by_id, reports, profile, memory_store=memory_store)
 
     # [v4 N1] 每日流程收尾时顺带记一条全局健康度快照 + 做一次降采样
     # 压缩，跟 growth_topic_trend 的既有节奏一致（每天一次，不影响主
