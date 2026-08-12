@@ -387,5 +387,49 @@ class TestBatchAdoptRemainingTopics(unittest.TestCase):
             self.assertEqual(result["remaining_topics"], [])
 
 
+class TestConfirmLlmSuggestedMatch(unittest.TestCase):
+    """[growth_advisor_autonomy_deepening_plan_v2.md 方向 2]
+    `confirm_llm_suggested_match()` 把一条 LLM 建议的语义配对写成正式
+    关联：找到 topic 对应的候选，把 `linked_goal_id` 指向已存在的
+    Goal，不新建 Goal。"""
+
+    def test_confirms_match_and_sets_linked_goal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand = _accepted_candidate_with_report(paths, title="数据分析能力")
+            goal_backlog = GoalBacklog(paths)
+            goal = goal_backlog.add_goal(title="提升可视化技能", description="d")
+
+            result = ga.confirm_llm_suggested_match(
+                paths, "数据分析能力", goal.id, goal_backlog=goal_backlog,
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["goal_id"], goal.id)
+            updated = ga.GrowthBacklog(paths).get(cand.candidate_id)
+            self.assertEqual(updated.linked_goal_id, goal.id)
+
+    def test_missing_candidate_returns_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            goal_backlog = GoalBacklog(paths)
+            goal = goal_backlog.add_goal(title="提升可视化技能", description="d")
+            result = ga.confirm_llm_suggested_match(
+                paths, "不存在的方向", goal.id, goal_backlog=goal_backlog,
+            )
+            self.assertFalse(result["ok"])
+            self.assertIn("没有对应的候选记录", result["reason"])
+
+    def test_missing_goal_returns_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            _accepted_candidate_with_report(paths, title="数据分析能力")
+            goal_backlog = GoalBacklog(paths)
+            result = ga.confirm_llm_suggested_match(
+                paths, "数据分析能力", "nonexistent-goal-id", goal_backlog=goal_backlog,
+            )
+            self.assertFalse(result["ok"])
+            self.assertIn("不存在", result["reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

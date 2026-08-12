@@ -2703,6 +2703,70 @@ def _llm_match_interests_to_goals(
     return out
 
 
+# ────────── [growth_advisor_autonomy_deepening_plan_v2.md 方向 2] 对齐分析 LLM 建议一键确认 ──────────
+# `goal_growth_alignment()` 的 `llm_suggested_matches` 此前只停留在
+# "展示给你看"——要正式关联，用户只能走 `/growth adopt-goal`（新建一个
+# Goal，跟建议的意思不一样）或手动改标题让关键词匹配上。这里补一个
+# "确认这条建议、把兴趣方向关联到已存在的 Goal"的入口，是 A3（批量落地）
+# 的自然延伸：A3 解决"没有 Goal，需要新建"，这里解决"已有语义相关的
+# Goal，需要关联而不是新建"。
+
+
+def confirm_llm_suggested_match(
+    paths, topic: str, goal_id: str, *, goal_backlog=None,
+) -> dict[str, Any]:
+    """把一条 `llm_suggested_matches` 里的建议写成正式关联：找到 `topic`
+    对应的候选记录，把它的 `linked_goal_id` 指向 `goal_id`（复用
+    `GrowthBacklog.set_linked_goal()`，不新建 Goal，`goal_id` 必须是
+    已经存在的 Goal）。
+
+    `topic` 没有对应候选记录时（比如只是 focus_areas 里的一个兴趣信号，
+    还没走到候选生成这一步）无法直接关联，返回
+    `{"ok": False, "reason": ...}`，提示先走一轮 `/growth scan`。
+
+    `goal_id` 在 `goal_backlog` 里找不到对应节点时同样拒绝——不校验
+    `topic`/`goal_id` 是否真的出现在某一次 `llm_suggested_matches`
+    里（调用方通常是刚从那份列表里选出来的一条，这里只保证两端都是
+    真实存在的记录，避免关联到一个不存在的 Goal）。
+
+    返回：
+        {"ok": True, "candidate_id": ..., "goal_id": ..., "goal_title": ...}
+        或 {"ok": False, "reason": "..."}
+    """
+    if not topic:
+        return {"ok": False, "reason": "topic 不能为空。"}
+    if not goal_id:
+        return {"ok": False, "reason": "goal_id 不能为空。"}
+
+    if goal_backlog is None:
+        goal_backlog = _load_goal_backlog_safely(paths)
+    goal = goal_backlog.get(goal_id) if goal_backlog is not None else None
+    if goal is None:
+        return {"ok": False, "reason": f"目标 {goal_id} 不存在（可能已被删除）。"}
+
+    backlog = GrowthBacklog(paths)
+    all_c = backlog.load_all()
+    target_key = normalize_title_key(topic)
+    cand = None
+    for c in all_c:
+        if c.dedupe_key() == target_key or c.title == topic:
+            cand = c
+            break
+    if cand is None:
+        return {
+            "ok": False,
+            "reason": f"「{topic}」没有对应的候选记录，无法直接关联（先走一轮 /growth scan 生成候选）。",
+        }
+
+    updated = backlog.set_linked_goal(cand.candidate_id, goal.id)
+    if updated is None:
+        return {"ok": False, "reason": "写入关联失败（候选记录可能已被并发修改）。"}
+    return {
+        "ok": True, "candidate_id": cand.candidate_id,
+        "goal_id": goal.id, "goal_title": goal.title,
+    }
+
+
 # ────────── [growth_advisor_autonomy_deepening_plan.md 方向 A3] 对齐分析结果批量落地 ──────────
 # `/growth align` 之前只是展示"有兴趣信号但没建目标"的列表，落地还是要
 # 对每一条分别调用 accept + auto_pursue_candidate()。这里补一个批量入口，

@@ -326,6 +326,22 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
                     R.console.print("  待处理：" + "、".join(remaining_topics))
             return
 
+        if len(args) >= 2 and args[1] == "--confirm-match":
+            # [growth_advisor_autonomy_deepening_plan_v2.md 方向 2] 把一条
+            # `llm_suggested_matches` 里的建议确认成正式关联：
+            # /growth align --confirm-match "<topic>" <goal_id>
+            if len(args) < 4:
+                R.print_error("用法：/growth align --confirm-match \"<兴趣方向>\" <goal_id>")
+                return
+            topic = args[2]
+            goal_id = args[3]
+            result = ga.confirm_llm_suggested_match(paths, topic, goal_id, goal_backlog=goal_backlog)
+            if result.get("ok"):
+                R.print_info(f"✅ 已将「{topic}」关联到目标 [{result['goal_id']}] {result.get('goal_title')}")
+            else:
+                R.print_error(f"关联失败：{result.get('reason')}")
+            return
+
         alignment = ga.goal_growth_alignment(
             paths, profile, cfg=cfg, goal_backlog=goal_backlog, llm_helper=llm_helper
         )
@@ -350,6 +366,7 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
             for row in suggested:
                 R.console.print(
                     f"    - {row['topic']} ≈ 目标 [{row['goal_id']}] {row['goal_title']}"
+                    f"  （确认：/growth align --confirm-match \"{row['topic']}\" {row['goal_id']}）"
                 )
         if linked:
             R.console.print(f"  已关联目标的方向（{len(linked)} 个）：")

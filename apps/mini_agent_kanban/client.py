@@ -773,6 +773,11 @@ class AgentClient:
     def growth_align_adopt_all(self):
         return self._post("/growth/align/adopt_all")
 
+    # [growth_advisor_autonomy_deepening_plan_v2.md 方向 2] 确认一条
+    # LLM 语义匹配建议，把兴趣方向关联到已存在的 Goal（不新建）。
+    def growth_align_confirm_match(self, topic: str, goal_id: str):
+        return self._post("/growth/align/confirm_match", json_body={"topic": topic, "goal_id": goal_id})
+
     # ── 文件系统（产出物浏览）────────────────────────────────────────
     def fs_list(self, path="."):
         return self._get("/fs/list", params={"path": path})

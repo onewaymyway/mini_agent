@@ -782,9 +782,9 @@ v1 九个方向落地后，二次审视实现细节又识别出五处"有了但�
   `make_goal_recurring()`，纯粹是看板侧循环调用 + 一个确认性质的批量
   提示（"将对全部 N 个正在自主推进的方向生效"）。
 
-v2 方案文档其余三项（方向 1：B1 LLM 复核；方向 2：对齐分析 LLM 建议
-一键确认；方向 3：饱和度信号历史趋势）仍按方案文档第 6 节的优先级
-排序留待后续实施，本轮未涉及。
+v2 方案文档其余两项（方向 1：B1 LLM 复核；方向 3：饱和度信号历史趋势）
+仍按方案文档第 6 节的优先级排序留待后续实施，方向 2（对齐分析 LLM
+建议一键确认）已在 2.17 节落地。
 
 **新增/变更文件**：
 
@@ -798,6 +798,52 @@ v2 方案文档其余三项（方向 1：B1 LLM 复核；方向 2：对齐分析
 - `tests/test_growth_advisor_goal_cron_integration.py`：新增
   `TestBatchAdoptRemainingTopics`，覆盖 `remaining_topics` 在"部分
   处理"和"全部处理完"两种场景下的行为。
+
+### 2.17 落地 `growth_advisor_autonomy_deepening_plan_v2.md`：方向 2（对齐分析 LLM 建议一键确认）（本次新增）
+
+**现状问题**：`goal_alignment_llm_enabled=True` 时，`goal_growth_
+alignment()` 会额外对"规则没匹配上的兴趣方向"和"规则没匹配上的
+Goal"做一次语义匹配，结果放进 `llm_suggested_matches`（比如兴趣叫
+"数据分析能力"、Goal 叫"提升可视化技能"）。这份建议此前只停留在
+"展示给你看"——CLI/看板都能看到建议列表，但没有任何"确认这条建议、
+正式关联"的入口，要正式关联只能走 `/growth adopt-goal`（新建一个
+Goal，跟建议的意思不一样）或手动改标题让关键词匹配上。
+
+**改动**：
+
+- 新增 `growth_advisor.confirm_llm_suggested_match(paths, topic,
+  goal_id, goal_backlog=None)`：找到 `topic` 对应的候选记录（按
+  `dedupe_key()` 或标题原文匹配），把它的 `linked_goal_id` 指向
+  `goal_id`（复用 `GrowthBacklog.set_linked_goal()`，不新建 Goal）。
+  `topic` 没有对应候选记录、或 `goal_id` 在 `goal_backlog` 里找不到
+  对应节点时，都返回 `{"ok": False, "reason": ...}`，不抛异常。
+- **CLI**：`/growth align --confirm-match "<兴趣方向>" <goal_id>`——
+  `/growth align` 展示 `llm_suggested_matches` 时，每条附带对应的
+  确认命令，方便直接复制执行。
+- **API**：新增 `POST /v1/growth/align/confirm_match`（请求体
+  `{"topic": str, "goal_id": str}`）。
+- **看板**："🧭 有兴趣但还没建目标"折叠区新增"🔗 语义相关的建议"子
+  分区，列出 `llm_suggested_matches`，每条带一个"🔗 关联"按钮，点击
+  即调用确认接口并 toast 反馈结果。
+- 这条改进依赖 `goal_alignment_llm_enabled` 已经打开（默认关闭），
+  跟既有的"新增能力默认 opt-in"取舍一致——建议本身不常出现，确认入口
+  的收益也主要在打开这个开关的用户身上。
+
+**新增/变更文件**：
+
+- `src/mini_agent/evolution/growth_advisor.py`：新增
+  `confirm_llm_suggested_match()`；
+- `src/mini_agent/cli/commands/growth_cmd.py`：`/growth align` 新增
+  `--confirm-match` 子选项；
+- `src/mini_agent/api/routes.py`：新增
+  `POST /v1/growth/align/confirm_match`；
+- `apps/mini_agent_kanban/client.py`：新增
+  `growth_align_confirm_match()`；
+- `apps/mini_agent_kanban/app.py`：`_render_growth_alignment()` 新增
+  "🔗 语义相关的建议"子分区；
+- `tests/test_growth_advisor_goal_cron_integration.py`：新增
+  `TestConfirmLlmSuggestedMatch`，覆盖成功关联、候选缺失、Goal 缺失
+  三种场景。
 
 ## 3. 默认行为速览
 

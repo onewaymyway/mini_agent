@@ -6674,8 +6674,36 @@ async def post_growth_align_adopt_all(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/growth/align/confirm_match")
+async def post_growth_align_confirm_match(request: Request):
+    """POST /v1/growth/align/confirm_match — [growth_advisor_autonomy_
+    deepening_plan_v2.md 方向 2] 把一条 `llm_suggested_matches` 里的
+    建议确认成正式关联：把 `topic` 对应候选的 `linked_goal_id` 指向
+    请求体里的 `goal_id`（不新建 Goal）。请求体：{"topic": str, "goal_id": str}。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.perception.goal_backlog import GoalBacklog
 
-async def get_growth_health_trend(request: Request):
+        body = await request.json()
+        topic = (body or {}).get("topic")
+        goal_id = (body or {}).get("goal_id")
+        if not topic or not goal_id:
+            raise HTTPException(status_code=400, detail="topic 和 goal_id 均为必填。")
+
+        goal_backlog = GoalBacklog(paths)
+        goal_backlog.load()
+        return ga.confirm_llm_suggested_match(paths, topic, goal_id, goal_backlog=goal_backlog)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
     """GET /v1/growth/health_trend — [next_doc/growth_advisor_improvement_plan_v4.md
     方向三 N1] 返回全局健康度快照序列（最近若干天，按时间正序），供看板
     画折线图。独立于 `/growth/summary`：趋势数据不需要每次打开 tab 都拉

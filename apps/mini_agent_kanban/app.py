@@ -4522,12 +4522,18 @@ def _render_growth_alignment(client: "AgentClient"):
     Goal 对齐分析：展示"有兴趣信号但还没建目标"的方向，提供"全部采纳"
     批量入口——复用 `auto_pursue_candidate()` 整条链路，单次最多处理
     `goal_alignment_adopt_all_max_batch`（默认 3）条，避免一次点击就
-    意外触发过多 LLM 调用；剩余条目留到下次点击继续处理。"""
+    意外触发过多 LLM 调用；剩余条目留到下次点击继续处理。
+
+    [growth_advisor_autonomy_deepening_plan_v2.md 方向 2] 同时展示
+    `llm_suggested_matches`（LLM 认为语义相关但字面不完全一致的候选
+    配对），每条带一个"🔗 关联"按钮，确认后调用 `confirm_llm_suggested_
+    match()` 把对应候选关联到已存在的 Goal（不新建）。"""
     data = client.growth_align() or {}
     if not data.get("enabled", True):
         return
     unmatched = data.get("unmatched_interests") or []
-    if not unmatched:
+    suggested = data.get("llm_suggested_matches") or []
+    if not unmatched and not suggested:
         return
     with st.expander(f"🧭 有兴趣但还没建目标（{len(unmatched)} 个方向）", expanded=False):
         st.caption("这些方向最近反复出现在你的活动里，但还没有对应的目标——"
@@ -4550,6 +4556,22 @@ def _render_growth_alignment(client: "AgentClient"):
                 topics_str = "、".join(remaining_topics) if remaining_topics else ""
                 st.info(f"还有 {remaining} 条未处理（本次批量上限已用完），可再次点击继续。" + (f"待处理：{topics_str}" if topics_str else ""))
             st.rerun()
+
+        # [growth_advisor_autonomy_deepening_plan_v2.md 方向 2] LLM 建议
+        # 的语义相关配对：字面不完全一致，只展示，用户逐条确认后才正式
+        # 关联到已存在的 Goal（不新建）。
+        if suggested:
+            st.markdown("**🔗 语义相关的建议**（字面不完全一致，确认后关联到已有目标）")
+            for row in suggested:
+                cols = st.columns([4, 1])
+                cols[0].write(f"{row.get('topic')} ≈ 目标「{row.get('goal_title')}」")
+                if cols[1].button("🔗 关联", key=f"growth_align_confirm_{row.get('topic')}_{row.get('goal_id')}"):
+                    confirm_result = client.growth_align_confirm_match(row.get("topic"), row.get("goal_id")) or {}
+                    if confirm_result.get("ok"):
+                        st.toast(f"已将「{row.get('topic')}」关联到「{row.get('goal_title')}」", icon="🔗")
+                    else:
+                        st.toast(f"关联失败：{confirm_result.get('reason')}", icon="⚠️")
+                    st.rerun()
 
 
 def _render_growth_pursuits(client: "AgentClient"):
