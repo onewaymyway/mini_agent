@@ -1144,6 +1144,7 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 | `goal_alignment_enabled` | `true` | （2.9 节）兴趣方向 ⇄ 目标 对齐分析总开关，纯规则式关键词匹配，零 LLM 成本 |
 | `goal_alignment_stalled_days` | `21` | （2.9 节）已关联 Goal 的方向，`active` 状态下超过这么多天没被 touch 就判定为"停滞"，独立于 `followup_review_days` |
 | `goal_alignment_llm_enabled` | `false` | （2.9 节）对齐分析是否额外做一次 LLM 语义匹配，找出关键词匹配漏掉的"字面不同、实质同一件事"配对；结果只出现在建议列表，不自动写入关联关系 |
+| `feedback_pattern_llm_enabled` | `false` | （`growth_advisor_ideal_advisor_gap_and_roadmap_plan.md` 方向 2 第二步）诊断面板"反馈模式"区块是否额外调一次 LLM，把规则式统计出来的忽略原因/类别分布归纳成一两句自然语言（`llm_insight`）；只在规则式统计样本已达标时才触发，结果只是展示，不影响任何排序/加权 |
 | `report_two_stage_enabled` | `false` | （2.10 节）报告生成先让 LLM 提炼 3-4 个具体问题再逐一回答，替代固定的四段式结构；多一次 LLM 调用，默认关闭 |
 | `report_dismiss_reason_adaptive_enabled` | `true` | （2.10 节）报告曾被标"内容太笼统"时，下次生成追加针对性提醒；不产生额外 LLM 调用，默认开启 |
 | `report_active_search_enabled` | `false` | （2.11 节）手动触发调研报告（有 `web_search_fn` 的调用路径）时，被动扫描命中 0 条素材才现查一次；会实际发起检索调用，默认关闭 |
@@ -1294,9 +1295,13 @@ N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
   `next_doc/growth_advisor_ideal_advisor_gap_and_roadmap_plan.md`
   方向 2 补上了一层纯统计展示（`growth_feedback_pattern_summary()`，
   诊断面板"反馈模式"区块），能看出"最近更容易忽略什么原因/类别的
-  方向"，但这段摘要明确止步于"展示给你看"，不会被用来自动调整任何
-  衰减系数或候选排序——方案文档第 8 节把这一条列为比既有"用户始终
-  有最终决定权"底线更保守的额外取舍，衰减系数本身仍未接入任何自动
+  方向"；第二步在此之上加了一个默认关闭的 opt-in 开关
+  `feedback_pattern_llm_enabled`，打开后额外调一次 LLM 把这段统计
+  转成更自然的一两句归纳文字（`llm_insight` 字段，诊断面板里以
+  `💡` 前缀跟规则式摘要并列展示）。但无论第一步的统计还是第二步的
+  LLM 归纳，都明确止步于"展示给你看"，不会被用来自动调整任何衰减
+  系数或候选排序——方案文档第 8 节把这一条列为比既有"用户始终有
+  最终决定权"底线更保守的额外取舍，衰减系数本身仍未接入任何自动
   校准；
 - `growth_feedback_ledger.jsonl` 尚未纳入数据生命周期管理（P5-0 延后
   项），长期运行会持续增长，当前数据量还不影响性能；

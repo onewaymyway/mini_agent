@@ -154,5 +154,121 @@ class TestGrowthFeedbackPatternSummary(unittest.TestCase):
             self.assertFalse(snap["feedback_pattern"]["has_enough_data"])
 
 
+class TestGrowthFeedbackPatternLlmInsight(unittest.TestCase):
+    """[growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2 第二步]"""
+
+    class _Cfg:
+        feedback_pattern_llm_enabled = True
+
+    def _seed_dominant_pattern(self, paths):
+        ledger = ga.GrowthFeedbackLedger(paths)
+        for i in range(6):
+            cand = _make_candidate(paths, f"话题{i}")
+            ledger.record(cand.candidate_id, "dismissed", reason="not_interested")
+
+    def test_disabled_by_default_even_with_helper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self._seed_dominant_pattern(paths)
+            calls = []
+
+            def helper(prompt):
+                calls.append(prompt)
+                return "看起来都不感兴趣"
+
+            # cfg=None（默认）→ feedback_pattern_llm_enabled 视为 False
+            result = ga.growth_feedback_pattern_summary(paths, llm_helper=helper)
+            self.assertEqual(result["llm_insight"], "")
+            self.assertEqual(calls, [])
+
+    def test_enabled_without_helper_stays_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self._seed_dominant_pattern(paths)
+            result = ga.growth_feedback_pattern_summary(paths, cfg=self._Cfg())
+            self.assertEqual(result["llm_insight"], "")
+
+    def test_enabled_with_helper_populates_insight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self._seed_dominant_pattern(paths)
+
+            def helper(prompt):
+                self.assertIn("不感兴趣", prompt)
+                self.assertIn("6", prompt)
+                return "你最近忽略的方向大多是因为不感兴趣。"
+
+            result = ga.growth_feedback_pattern_summary(paths, cfg=self._Cfg(), llm_helper=helper)
+            self.assertEqual(result["llm_insight"], "你最近忽略的方向大多是因为不感兴趣。")
+            # 规则式摘要不应该被覆盖，两者并存
+            self.assertIn("不感兴趣", result["summary_text"])
+
+    def test_insufficient_sample_skips_llm_call(self):
+        """样本不够（has_enough_data=False）时，即便开启也不该多花一次
+        LLM 调用——数字本身就不够归纳。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            ledger = ga.GrowthFeedbackLedger(paths)
+            cand = _make_candidate(paths, "话题0")
+            ledger.record(cand.candidate_id, "dismissed", reason="not_interested")
+            calls = []
+
+            def helper(prompt):
+                calls.append(prompt)
+                return "不该被调用"
+
+            result = ga.growth_feedback_pattern_summary(paths, cfg=self._Cfg(), llm_helper=helper)
+            self.assertFalse(result["has_enough_data"])
+            self.assertEqual(result["llm_insight"], "")
+            self.assertEqual(calls, [])
+
+    def test_llm_empty_response_falls_back_gracefully(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self._seed_dominant_pattern(paths)
+            result = ga.growth_feedback_pattern_summary(
+                paths, cfg=self._Cfg(), llm_helper=lambda prompt: "   "
+            )
+            self.assertEqual(result["llm_insight"], "")
+            # 规则式部分不受影响
+            self.assertTrue(result["has_enough_data"])
+
+    def test_llm_exception_does_not_propagate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self._seed_dominant_pattern(paths)
+
+            def helper(prompt):
+                raise RuntimeError("boom")
+
+            result = ga.growth_feedback_pattern_summary(paths, cfg=self._Cfg(), llm_helper=helper)
+            self.assertEqual(result["llm_insight"], "")
+            self.assertTrue(result["has_enough_data"])
+
+    def test_diagnostics_snapshot_passes_through_llm_helper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self._seed_dominant_pattern(paths)
+
+            class _FullCfg(self._Cfg):
+                enabled = True
+                min_evidence_count = 3
+                max_pending_candidates = 10
+                dismissed_cooldown_days = 30
+                notification_frequency = "daily"
+                notification_min_confidence = 0.5
+                excluded_topics = []
+                llm_signal_augment_enabled = False
+
+            class _Profile:
+                derived = {}
+
+            snap = ga.diagnostics_snapshot(
+                paths, _FullCfg(), _Profile(), None,
+                llm_helper=lambda prompt: "归纳结果",
+            )
+            self.assertEqual(snap["feedback_pattern"]["llm_insight"], "归纳结果")
+
+
 if __name__ == "__main__":
     unittest.main()

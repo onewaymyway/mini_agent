@@ -4115,6 +4115,11 @@ def _render_growth_diagnostics(diagnostics: dict):
         if feedback_pattern.get("summary_text"):
             st.markdown("**反馈模式**")
             st.write(feedback_pattern["summary_text"])
+            if feedback_pattern.get("llm_insight"):
+                # [方向 2 第二步] LLM 归纳的自然语言总结，跟规则式统计
+                # 并列展示（不是替换），用 caption 弱化一下视觉权重，
+                # 提示这是"补充解读"而不是更权威的结论。
+                st.caption(f"💡 {feedback_pattern['llm_insight']}")
             reason_dist = feedback_pattern.get("reason_distribution") or {}
             category_dist = feedback_pattern.get("category_distribution") or {}
             if reason_dist or category_dist:

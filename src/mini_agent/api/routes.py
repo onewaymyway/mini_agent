@@ -6125,7 +6125,19 @@ async def get_growth_summary(request: Request):
         from mini_agent.perception.memory_factory import build_default_memory_store
         store = build_default_memory_store(paths)
         profile_cfg = getattr(self_agent.cfg, "profile", None) if self_agent else None
-        diagnostics = ga.diagnostics_snapshot(paths, cfg, profile, store, profile_cfg=profile_cfg)
+        # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2
+        # 第二步] 跟 `/growth/align` 的 `goal_alignment_llm_enabled` 同款
+        # opt-in 约定：只有配置开启且拿得到 agent 上下文时才传 llm_helper，
+        # `diagnostics_snapshot()` 内部再按 `feedback_pattern_llm_enabled`
+        # 决定要不要真的触发那次归纳调用。
+        llm_helper = None
+        if self_agent is not None and getattr(cfg, "feedback_pattern_llm_enabled", False):
+            helper = getattr(self_agent, "llm_helper", None)
+            if helper is not None:
+                llm_helper = lambda prompt: helper.ask(prompt)
+        diagnostics = ga.diagnostics_snapshot(
+            paths, cfg, profile, store, profile_cfg=profile_cfg, llm_helper=llm_helper,
+        )
 
         cs = _get_cron_scheduler(http_server) if http_server else None
         if cs is not None:

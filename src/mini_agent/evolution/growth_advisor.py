@@ -926,7 +926,57 @@ _DISMISS_REASON_LABELS = {
 }
 
 
-def growth_feedback_pattern_summary(paths, profile=None) -> dict[str, Any]:
+def _llm_summarize_feedback_pattern(
+    reason_distribution: dict[str, int],
+    category_distribution: dict[str, int],
+    sample_size: int,
+    llm_helper: Callable[[str], str],
+    *,
+    status_out: Optional[dict] = None,
+) -> str:
+    """[growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2 第二步]
+    把规则式统计出来的分布数字，让 LLM 组织成一句更自然的归纳文字。
+
+    跟 `_llm_match_interests_to_goals` 同款"能用就用，用不了就当没发生"
+    的克制：LLM 返回空、超长、或者看起来在编造分布里没有的数字，直接
+    丢弃整段输出，调用方退回规则式的 `summary_text`，不会因为 LLM 输出
+    异常而污染诊断面板。不做任何 JSON 解析——这里只要一段自然语言，
+    比 `_llm_match_interests_to_goals` 要处理结构化匹配简单得多。
+    """
+    if status_out is not None:
+        status_out["outcome"] = "error"
+    reason_lines = "\n".join(
+        f"- {_DISMISS_REASON_LABELS.get(r, r)}：{n} 次" for r, n in reason_distribution.items()
+    )
+    category_lines = "\n".join(f"- {c}：{n} 次" for c, n in category_distribution.items())
+    prompt = (
+        "下面是用户最近忽略成长顾问推荐方向时留下的统计数字，样本共 "
+        f"{sample_size} 条。请用一到两句自然、口语化的中文帮用户归纳一下"
+        "这些数字反映出的倾向，只基于给出的数字说话，不要编造数字或做"
+        "任何数字之外的推测。如果数字本身看不出明显规律，就直接说"
+        "看不出明显规律，不要牵强附会。只输出这一到两句话，不要标题、"
+        "不要列表、不要多余的开场白。\n\n"
+        f"按忽略原因统计：\n{reason_lines or '（无数据）'}\n\n"
+        f"按方向类别统计：\n{category_lines or '（无数据）'}"
+    )
+    raw = llm_helper(prompt)
+    if not raw or not raw.strip():
+        if status_out is not None:
+            status_out["outcome"] = "empty_response"
+        return ""
+    text = raw.strip()
+    # 防御性截断：万一 LLM 没听指令输出了一大段，砍到一个摘要该有的长度，
+    # 避免污染诊断面板的展示。
+    if len(text) > 300:
+        text = text[:300].rstrip() + "……"
+    if status_out is not None:
+        status_out["outcome"] = "success"
+    return text
+
+
+def growth_feedback_pattern_summary(
+    paths, profile=None, *, cfg=None, llm_helper: Optional[Callable[[str], str]] = None,
+) -> dict[str, Any]:
     """对最近 `_FEEDBACK_PATTERN_RECENT_WINDOW` 条 dismiss 反馈做一次简单
     的分组统计（按 `dismiss_reason` 分组、按候选标题对应的类别分组），
     产出一段人类可读的摘要文字——纯粹是"让用户和系统都能看见这个模式"，
@@ -938,13 +988,24 @@ def growth_feedback_pattern_summary(paths, profile=None) -> dict[str, Any]:
     部分，调用方应自行 try/except 包裹（跟其它诊断聚合函数的既有约定
     一致，这里不内部吞异常，保持函数本身纯粹可测试）。
 
+    [方向 2 第二步] `cfg.feedback_pattern_llm_enabled=True` 且传入
+    `llm_helper`（都满足才触发，同 `goal_alignment_llm_enabled` 的
+    opt-in 约定）、且样本数已经达标（`has_enough_data=True`）时，额外
+    调一次 LLM 把上面的分布数字组织成一句更自然的归纳文字，放进返回值
+    的 `llm_insight`（不存在时为空字符串）——跟规则式的 `summary_text`
+    并列展示，不替换它，也不会被用于任何排序/加权计算。LLM 调用失败/
+    输出为空/不像样时静默留空，不影响函数其它部分的返回。
+
     返回：
         {"has_enough_data": bool,          # 样本数是否达到最低门槛
          "sample_size": int,               # 参与统计的 dismiss 条数
          "reason_distribution": {reason: count},
          "category_distribution": {category: count},
-         "summary_text": str}              # 人类可读摘要，样本不足或
+         "summary_text": str,              # 人类可读摘要，样本不足或
                                             # 没有明显共性时给出对应说明
+         "llm_insight": str}               # [方向 2 第二步] LLM 归纳的
+                                            # 一两句自然语言总结，未开启/
+                                            # 未触发/失败时为空字符串
     """
     dismiss_entries = [
         e for e in GrowthFeedbackLedger(paths).all_entries()
@@ -961,6 +1022,7 @@ def growth_feedback_pattern_summary(paths, profile=None) -> dict[str, Any]:
             "reason_distribution": {},
             "category_distribution": {},
             "summary_text": "目前还没有任何忽略记录，暂时看不出反馈模式。",
+            "llm_insight": "",
         }
 
     reason_counts: dict[str, int] = {}
@@ -988,6 +1050,7 @@ def growth_feedback_pattern_summary(paths, profile=None) -> dict[str, Any]:
             "reason_distribution": reason_counts,
             "category_distribution": category_counts,
             "summary_text": summary_text,
+            "llm_insight": "",
         }
 
     lines = []
@@ -1011,12 +1074,30 @@ def growth_feedback_pattern_summary(paths, profile=None) -> dict[str, Any]:
     if not lines:
         lines.append("最近的忽略记录里没有看出明显的共性模式。")
 
+    llm_insight = ""
+    llm_enabled = getattr(cfg, "feedback_pattern_llm_enabled", False) if cfg is not None else False
+    if llm_enabled and llm_helper is not None:
+        status_out: dict[str, Any] = {"outcome": "error"}
+        try:
+            llm_insight = _llm_summarize_feedback_pattern(
+                reason_counts, category_counts, sample_size, llm_helper, status_out=status_out,
+            )
+            _record_llm_call_status(
+                paths, "feedback_pattern_insight", status_out.get("outcome", "success"),
+            )
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.growth_advisor.growth_feedback_pattern_summary_llm")
+            _record_llm_call_status(paths, "feedback_pattern_insight", "error", detail=str(exc)[:200])
+            llm_insight = ""
+
     return {
         "has_enough_data": True,
         "sample_size": sample_size,
         "reason_distribution": reason_counts,
         "category_distribution": category_counts,
         "summary_text": "".join(lines) if len(lines) == 1 else " ".join(lines),
+        "llm_insight": llm_insight,
     }
 
 
@@ -5003,7 +5084,10 @@ def monthly_retrospective_summary(paths) -> dict[str, Any]:
 # 中间状态：候选数=0 本身不区分"扫描过但没匹配到"和"压根没扫描过"。这个
 # 函数把决定"为什么是 0"的关键中间量整理成一份可读快照，配合看板展示，
 # 让用户自己就能判断卡在哪一步，不用非得来问。
-def diagnostics_snapshot(paths, cfg, profile, memory_store, profile_cfg=None) -> dict[str, Any]:
+def diagnostics_snapshot(
+    paths, cfg, profile, memory_store, profile_cfg=None,
+    *, llm_helper: Optional[Callable[[str], str]] = None,
+) -> dict[str, Any]:
     """成长顾问的自检信息：当前配置快照、上一次信号扫描命中了哪些主题
     各多少条（只给计数，不回显记忆原文——诊断信息也要遵守"知情但克制"
     的边界）、扫描窗口内一共有多少条记忆可供扫描。纯只读聚合，不做任何
@@ -5013,6 +5097,11 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store, profile_cfg=None) ->
     `profile_cfg`（`ProfileConfig`）为可选参数，仅用于取
     `stale_after_days` 来计算画像"待复核"条目——不传时（比如老调用方/
     测试还没升级）该字段直接退化为空列表，不影响函数原有行为。
+
+    [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2 第二步]
+    `llm_helper` 为可选参数，透传给 `growth_feedback_pattern_summary()`
+    用于生成 `feedback_pattern.llm_insight`；不传时该字段自然为空
+    字符串，不影响函数其它部分。
     """
     derived = dict(getattr(profile, "derived", {}) or {})
     focus_areas: dict[str, list[str]] = derived.get("growth_focus_areas") or {}
@@ -5188,14 +5277,16 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store, profile_cfg=None) ->
         # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2]
         # 反馈模式统计——纯展示，不参与任何排序/置信度计算，见函数
         # docstring 里的取舍说明。任何异常都不该拖垮整个诊断面板，失败
-        # 时退化为"看不出模式"的默认结构。
-        "feedback_pattern": _feedback_pattern_diagnostics_summary(paths, profile),
+        # 时退化为"看不出模式"的默认结构。第二步 LLM 归纳是否触发由
+        # `cfg.feedback_pattern_llm_enabled` + 有没有传 `llm_helper`
+        # 共同决定，跟 `goal_alignment_llm_enabled` 同款 opt-in 约定。
+        "feedback_pattern": _feedback_pattern_diagnostics_summary(paths, cfg, profile, llm_helper),
     }
 
 
-def _feedback_pattern_diagnostics_summary(paths, profile) -> dict[str, Any]:
+def _feedback_pattern_diagnostics_summary(paths, cfg, profile, llm_helper) -> dict[str, Any]:
     try:
-        return growth_feedback_pattern_summary(paths, profile=profile)
+        return growth_feedback_pattern_summary(paths, profile=profile, cfg=cfg, llm_helper=llm_helper)
     except Exception:
         return {
             "has_enough_data": False,
@@ -5203,6 +5294,7 @@ def _feedback_pattern_diagnostics_summary(paths, profile) -> dict[str, Any]:
             "reason_distribution": {},
             "category_distribution": {},
             "summary_text": "反馈模式统计暂时不可用。",
+            "llm_insight": "",
         }
 
 

@@ -1888,6 +1888,19 @@ class GrowthAdvisorConfig:
     # 写入任何持久化的关联关系。
     goal_alignment_llm_enabled: bool = False
 
+    # ── 反馈模式统计展示第二步（growth_advisor_ideal_advisor_gap_and_
+    # roadmap_plan.md 方向 2 第二步）────────────────────────────────────
+    # 第一步（`growth_feedback_pattern_summary()` 的规则式分组统计）默认
+    # 一直开启、零 LLM 成本；这个开关控制的是在此之上、有 agent 上下文时
+    # 额外调一次 LLM，把统计摘要转成一句更自然的归纳文字（放进返回值的
+    # `llm_insight` 字段，不覆盖规则式的 `summary_text`）。默认关闭，
+    # 对齐 `goal_alignment_llm_enabled`/`llm_signal_augment_enabled` 等
+    # 同类开关"默认零 LLM 成本"的基线；且即便打开，也只在规则式统计已经
+    # `has_enough_data=True` 时才会触发（样本不够时统计本身就没有可归纳
+    # 的东西，不值得为此多花一次 LLM 调用）。这段归纳文字仍然只是展示，
+    # 不会喂回任何候选排序/置信度计算——跟第一步同样的"止步于展示"取舍。
+    feedback_pattern_llm_enabled: bool = False
+
     # ── A3：对齐分析结果批量落地（growth_advisor_autonomy_deepening_
     # plan.md 方向 A3）─────────────────────────────────────────────────
     # `/growth align --adopt-all` / 看板"全部采纳"一次性对"未匹配兴趣"

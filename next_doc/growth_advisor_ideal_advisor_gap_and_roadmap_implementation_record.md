@@ -274,9 +274,68 @@ C1（`reorganize_hint_for_cycle()`）已验证的"按累计轮次追加 prompt
   查询候选标题"的只读聚合，量级与既有的 `_dismiss_counts_by_dedupe_
   key()` 相当。
 
+## 已完成
+
+### 方向 2 第二步：反馈模式 LLM 归纳
+
+对应方案文档第 2 节第二步，在第一步（纯统计展示）已经落地并验证可用
+之后补上。目标：把规则式统计出来的原因/类别分布数字，在有 agent 上下
+文时额外调一次 LLM，组织成一句更自然、更好读的归纳文字——跟第一步
+同样明确止步于展示，不接入任何排序/加权计算。
+
+- `config/models.py::GrowthAdvisorConfig` 新增 `feedback_pattern_llm_
+  enabled: bool = False`：跟 `goal_alignment_llm_enabled`/
+  `llm_signal_augment_enabled` 同款默认关闭、opt-in 的取舍，保持
+  "默认零 LLM 成本"的基线。
+- `evolution/growth_advisor.py`：
+  - `growth_feedback_pattern_summary()` 新增可选关键字参数 `cfg`/
+    `llm_helper`，返回值新增 `llm_insight` 字段（默认空字符串）。只有
+    `cfg.feedback_pattern_llm_enabled=True` 且传了 `llm_helper` 且
+    规则式统计已经 `has_enough_data=True` 时才会真正触发那次 LLM
+    调用——样本不够时数字本身就没有可归纳的东西，不值得多花一次调用。
+    不传 `cfg`/`llm_helper`（沿用旧调用点）时行为与改动前完全一致。
+  - 新增 `_llm_summarize_feedback_pattern()`：把 `reason_distribution`/
+    `category_distribution`/`sample_size` 组织进 prompt，要求 LLM 只
+    基于给出的数字说一两句自然语言、看不出规律就直说看不出，不做任何
+    JSON 解析（只要一段自然语言，比 `_llm_match_interests_to_goals`
+    的结构化匹配简单）；输出防御性截断到 300 字；空响应/异常都静默
+    退化为空字符串，不影响规则式 `summary_text` 的返回，也不向上抛出。
+  - LLM 调用结果通过既有的 `_record_llm_call_status(paths,
+    "feedback_pattern_insight", ...)` 记录，跟其它 LLM 增强调用共用
+    同一份"最近一次调用状态"诊断信息。
+  - `diagnostics_snapshot()` 新增可选关键字参数 `llm_helper`，透传给
+    `growth_feedback_pattern_summary()`；`_feedback_pattern_diagnostics_
+    summary()` 同步接收 `cfg`/`llm_helper` 并在异常兜底结构里补上
+    `llm_insight: ""`。
+- `api/routes.py`：`/growth/summary` 路由跟 `/growth/align` 同款写法——
+  只有 `self_agent` 存在且 `cfg.feedback_pattern_llm_enabled=True` 时
+  才取 `self_agent.llm_helper` 包一层传给 `diagnostics_snapshot()`。
+- `apps/mini_agent_kanban/app.py::_render_growth_diagnostics()`："反馈
+  模式"区块里，规则式 `summary_text` 照常展示，`llm_insight` 存在时
+  额外用一行 `💡` 前缀的 caption 并列展示在下方（弱化视觉权重，提示
+  这是"补充解读"而不是更权威的结论，不替换规则式摘要）。
+- 新增测试（追加进 `tests/test_growth_advisor_feedback_pattern_
+  summary.py`，新增 `TestGrowthFeedbackPatternLlmInsight` 测试类，7 个
+  用例）：默认关闭时即便传了 helper 也不调用/开启但没传 helper 仍为
+  空/开启且传了 helper 时正确产出 insight（并验证 prompt 里带上了
+  正确的分布数字）/样本不足时不触发 LLM 调用/LLM 空响应优雅降级/LLM
+  抛异常不向上传播/`diagnostics_snapshot()` 正确透传 `llm_helper`。
+  文件总用例数从 8 增至 15，全部通过。
+- 回归：`tests/test_growth_advisor.py` +
+  `test_growth_advisor_pursuits_portfolio_summary.py` +
+  `test_growth_advisor_material_engagement.py` +
+  `test_growth_advisor_pursuit_self_check.py` +
+  `test_growth_advisor_saturation_and_pursuit_visibility.py` +
+  `test_growth_advisor_pursuit_increment_llm_review.py` +
+  `test_growth_advisor_pursuit_spinoff.py` +
+  `test_growth_advisor_feedback_pattern_summary.py` 共 257 个用例
+  全部通过，无回归。
+- 成本核对：默认关闭，零增量成本；开启后每次 `/growth/summary`
+  刷新诊断面板、且规则式统计样本达标时，多一次 LLM 调用，量级与
+  `goal_alignment_llm_enabled` 开启后 `/growth/align` 每次调用多一次
+  LLM 语义匹配相当，符合方案文档"opt-in、成本可控"的预期。
+
 ## 待推进（按方案文档第 7 节优先级）
 
 1. 方向 6：主题类型分化的调研/呈现风格——方案文档明确本轮不建议
    排期，留待后续视情况重新评估。
-2. 方向 2 第二步（LLM 归纳反馈模式、接入排序）——方案文档明确建议
-   先验证第一步（纯统计展示）确实有用之后再做，本轮未排期。

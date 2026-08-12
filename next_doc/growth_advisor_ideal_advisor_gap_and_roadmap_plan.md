@@ -2,9 +2,9 @@
 
 > **实施进度**：方向 1（素材参与度信号）、方向 4（跨方向全局视角
 > 摘要）、方向 5（学习效果自测环节）、方向 3（Goal 执行内容反哺信号
-> 扫描）、方向 2 第一步（反馈模式统计展示）已落地，详见
+> 扫描）、方向 2（反馈模式统计展示，含第二步 LLM 归纳）已落地，详见
 > `next_doc/growth_advisor_ideal_advisor_gap_and_roadmap_implementation_record.md`。
-> 方向 2 第二步（LLM 归纳）与方向 6 明确暂不排期。
+> 方向 6 明确暂不排期。
 
 > **状态**：这是继
 > `next_doc/growth_advisor_autonomy_deepening_plan.md`（v1）、
