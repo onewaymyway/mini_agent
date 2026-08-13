@@ -2105,16 +2105,21 @@ def generate_growth_report(
                         and getattr(cfg, "report_active_search_enabled", False)
                     ):
                         # [方向一：真正的主动检索] 被动扫描没有可用素材，
-                        # 且调用方具备检索工具，现查一次而不是直接放弃。
+                        # 且调用方具备检索工具，现查一次（或多次，见阶段
+                        # 二 max_calls）而不是直接放弃。
                         excerpts = _active_search_excerpts_for_topic(
                             paths, candidate, keywords,
                             web_search_fn=web_search_fn, llm_helper=llm_helper,
+                            max_calls=int(getattr(cfg, "report_active_search_max_calls", 1) or 1),
                         )
                     if excerpts:
                         excerpt_lines = "\n".join(
                             f"- 参考：{e['id']}（{e['date']}）：{e['excerpt']}" for e in excerpts
                         )
-                        count_desc = f"最近 30 天外部世界大约有 {ext_count} 条" if ext_count > 0 else "现查到一条"
+                        count_desc = (
+                            f"最近 30 天外部世界大约有 {ext_count} 条" if ext_count > 0
+                            else f"现查到 {len(excerpts)} 条"
+                        )
                         external_context_section = (
                             f"\n[外部背景参考，仅供了解，不改变你的判断] "
                             f"{count_desc}跟这个方向相关的资讯，"
@@ -5213,6 +5218,7 @@ def _maybe_run_cron_triggered_active_search(
             excerpts = _active_search_excerpts_for_topic(
                 paths, candidate, keywords,
                 web_search_fn=web_search_fn, llm_helper=llm_helper,
+                max_calls=int(getattr(cfg, "report_active_search_max_calls", 1) or 1),
             )
             remaining -= 1
             state[CRON_ACTIVE_SEARCH_STATE_COUNT_KEY] = int(state.get(CRON_ACTIVE_SEARCH_STATE_COUNT_KEY, 0)) + 1
@@ -5230,30 +5236,58 @@ def _maybe_run_cron_triggered_active_search(
 
 
 # ────────── 方向一：真正的主动检索（growth_advisor_active_search_and_
-# lifecycle_plan.md）──────────
+# lifecycle_plan.md），阶段一/二见 next_doc/growth_advisor_autonomous_
+# search_and_material_improvement_plan.md ──────────
 
-def _active_search_excerpts_for_topic(
-    paths,
-    candidate: "GrowthCandidate",
-    keywords: list[str],
-    *,
-    web_search_fn,
-    llm_helper,
-    max_results: int = 5,
+_DEFAULT_ACTIVE_SEARCH_MAX_EXCERPTS = 3
+_DEFAULT_ACTIVE_SEARCH_EXCERPT_CHARS = 200
+_DEFAULT_ACTIVE_SEARCH_FALLBACK_EXCERPT_CHARS = 150
+
+
+def _excerpts_from_extracted_candidates(
+    query: str, entities: list, facts: list, *, max_excerpts: int,
 ) -> list[dict[str, str]]:
-    """[growth_advisor_active_search_and_lifecycle_plan.md 方向一] 被动
-    扫描（`_external_signal_matching_pages()`）没有可用素材时，现查一次
-    并落一份 wiki 页面供后续复用。任何一步失败都静默返回空列表，退回
-    "没有外部背景"的原有路径，不让检索失败拖垮报告生成本身。
+    """[阶段一] 把已经抽取出的结构化 `EntityCandidate`/`FactCandidate` 转成
+    报告可直接引用的摘录，而不是让报告消费未经处理的原始检索文本。这些
+    候选本身就是 LLM 已经从检索结果里提炼出的独立信息点，信息密度比截断
+    原始文本更高，`id` 也能精确到具体是哪个实体/事实，便于报告 prompt 里
+    要求的"标注来源"落到实处。
 
-    复用 `external_input/tech_radar_search.py` 同一套 `EntityCandidate`/
-    `FactCandidate` 抽取管道与 `EXTERNAL_SEARCH_SOURCE_KIND` 落盘标记，
-    `source_entries` 前缀换成 `growth_advisor_active_search:<candidate_
-    id>` 以便跟巡检产生的页面区分来源。
+    实体优先于事实排列（实体通常是更适合展开讲的主题性信息），超过
+    `max_excerpts` 的部分丢弃——上限本身已经由调用方控制候选数量。
+    """
+    out: list[dict[str, str]] = []
+    today = _today_str()
+    for e in entities:
+        if len(out) >= max_excerpts:
+            break
+        text = f"{e.name}：{e.description}".strip()
+        out.append({
+            "id": f"active_search:{query}#entity:{e.name}",
+            "date": today,
+            "excerpt": text[:_DEFAULT_ACTIVE_SEARCH_EXCERPT_CHARS],
+        })
+    for idx, f in enumerate(facts, 1):
+        if len(out) >= max_excerpts:
+            break
+        out.append({
+            "id": f"active_search:{query}#fact:{idx}",
+            "date": today,
+            "excerpt": f.statement[:_DEFAULT_ACTIVE_SEARCH_EXCERPT_CHARS],
+        })
+    return out
+
+
+def _run_single_active_search_query(
+    paths, candidate: "GrowthCandidate", query: str, *,
+    web_search_fn, llm_helper, max_results: int, max_excerpts: int,
+) -> list[dict[str, str]]:
+    """对一个具体的查询角度执行一次"检索 → 抽取 → 落盘 pending 队列 →
+    构造摘录"的完整流程。任何一步失败都静默返回空列表，不抛出——供调用方
+    在多角度循环里对每个角度独立容错，一个角度失败不影响其它角度。
     """
     if web_search_fn is None or llm_helper is None:
         return []
-    query = candidate.title if not keywords else f"{candidate.title} {keywords[0]}"
     try:
         raw_text = web_search_fn(query, max_results=max_results)
     except Exception:
@@ -5303,10 +5337,90 @@ def _active_search_excerpts_for_topic(
     if facts:
         queue_facts(paths, facts, source_entries=source_entries, source_kind=EXTERNAL_SEARCH_SOURCE_KIND)
 
-    # 落盘走 pending 队列（跟巡检一致，需要后续 consolidate 才会生成正式
-    # wiki 页面），当次报告仍然直接用现查到的原始摘录，不等 consolidate。
-    excerpt = " ".join(str(raw_text).split())[:150]
+    # [阶段一] 优先用已抽取的结构化候选构造摘录；抽取结果为空（比如检索
+    # 结果是纯噪音，模型没抽出任何有意义的实体/事实）时才退回原来的
+    # "原始文本截断"摘录，保证任何情况下都不会比改动前拿到更少的信息。
+    if entities or facts:
+        return _excerpts_from_extracted_candidates(query, entities, facts, max_excerpts=max_excerpts)
+    excerpt = " ".join(str(raw_text).split())[:_DEFAULT_ACTIVE_SEARCH_FALLBACK_EXCERPT_CHARS]
     return [{"id": f"active_search:{query}", "date": _today_str(), "excerpt": excerpt}]
+
+
+def _build_active_search_queries(candidate: "GrowthCandidate", keywords: list[str], *, max_calls: int) -> list[str]:
+    """[阶段二] 构造最多 `max_calls` 个查询角度：第一个沿用改动前的
+    "标题 + 第一个关键词"（`max_calls<=1` 时行为与改动前完全一致），之后
+    依次用关键词表里后续的关键词各拼一个查询。关键词数量不够时不重复
+    拼凑同一个角度，宁可少查也不做无意义的重复调用。
+    """
+    if max_calls < 1:
+        max_calls = 1
+    if not keywords:
+        return [candidate.title]
+    queries = [f"{candidate.title} {kw}" for kw in keywords[:max_calls]]
+    # 去重但保持顺序（关键词表理论上不应有重复，这里只是防御性处理）
+    seen: set = set()
+    out = []
+    for q in queries:
+        if q not in seen:
+            seen.add(q)
+            out.append(q)
+    return out or [candidate.title]
+
+
+def _active_search_excerpts_for_topic(
+    paths,
+    candidate: "GrowthCandidate",
+    keywords: list[str],
+    *,
+    web_search_fn,
+    llm_helper,
+    max_results: int = 5,
+    max_calls: int = 1,
+    max_excerpts_per_call: int = _DEFAULT_ACTIVE_SEARCH_MAX_EXCERPTS,
+) -> list[dict[str, str]]:
+    """[growth_advisor_active_search_and_lifecycle_plan.md 方向一] 被动
+    扫描（`_external_signal_matching_pages()`）没有可用素材时，现查一次
+    （或多次，见下方 `max_calls`）并落一份 wiki 页面供后续复用。任何一步
+    失败都静默返回空列表，退回"没有外部背景"的原有路径，不让检索失败拖垮
+    报告生成本身。
+
+    复用 `external_input/tech_radar_search.py` 同一套 `EntityCandidate`/
+    `FactCandidate` 抽取管道与 `EXTERNAL_SEARCH_SOURCE_KIND` 落盘标记，
+    `source_entries` 前缀换成 `growth_advisor_active_search:<candidate_
+    id>` 以便跟巡检产生的页面区分来源。
+
+    `max_calls`：[阶段二，growth_advisor_autonomous_search_and_material_
+    improvement_plan.md] 默认 1（与改动前行为完全一致，只查一个角度）。
+    大于 1 时，会用关键词表里后续的关键词各追加一个查询角度（见
+    `_build_active_search_queries()`），对应 `config/models.py::
+    GrowthAdvisorConfig.report_active_search_max_calls` 这个此前预留但
+    未消费的字段。多次查询各自独立容错，某一个角度失败不影响其它角度；
+    最终摘录按 `id` 去重合并，受 `max_excerpts_per_call`（此时语义是
+    "摘录总数上限"）约束，避免随 `max_calls` 增大让报告 prompt 线性膨胀。
+    """
+    if web_search_fn is None or llm_helper is None:
+        return []
+    queries = _build_active_search_queries(candidate, keywords, max_calls=max_calls)
+
+    merged: list[dict[str, str]] = []
+    seen_ids: set = set()
+    for query in queries:
+        if len(merged) >= max_excerpts_per_call:
+            break
+        remaining = max_excerpts_per_call - len(merged)
+        excerpts = _run_single_active_search_query(
+            paths, candidate, query,
+            web_search_fn=web_search_fn, llm_helper=llm_helper,
+            max_results=max_results, max_excerpts=remaining,
+        )
+        for ex in excerpts:
+            if ex["id"] in seen_ids:
+                continue
+            seen_ids.add(ex["id"])
+            merged.append(ex)
+            if len(merged) >= max_excerpts_per_call:
+                break
+    return merged
 
 
 def growth_topic_map(paths) -> list[dict]:

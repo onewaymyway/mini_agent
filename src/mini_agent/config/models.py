@@ -1985,8 +1985,12 @@ class GrowthAdvisorConfig:
     # `web_search_fn` 时，才会现查一次并把结果落一份 wiki 页面；只在
     # 被动扫描（N4）确实没有可用素材时补一次，不是"素材不够多再补"。
     report_active_search_enabled: bool = False
-    # 单次报告最多触发几次检索调用，当前实现只用 1 次，预留字段供以后
-    # 扩展为"多个关键词各查一次"时使用，不代表当前已支持多轮。
+    # [growth_advisor_autonomous_search_and_material_improvement_plan.md
+    # 阶段二] 单次报告最多触发几次检索调用，默认 1（与此前行为一致，只用
+    # 关键词表第一个关键词查一次）。调大后会用关键词表里后续的关键词各
+    # 追加一个查询角度（见 growth_advisor.py::_build_active_search_
+    # queries()），关键词数量不够时不重复拼凑同一个角度。默认值不变，
+    # 只有显式调大才会增加 web_search_fn 调用次数。
     report_active_search_max_calls: int = 1
 
     # ── cron 无人值守路径的主动检索（next_doc/growth_advisor_cron_search_

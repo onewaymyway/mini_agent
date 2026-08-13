@@ -1614,3 +1614,27 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   跟本次改动的两个方向（`MemoryStore` 构造 / 语言检测）均无关联，是
   跟自然日边界相关的既有时间敏感测试，本次未做改动也未修复，如需要
   应作为独立 issue 跟进。
+
+## 自主检索与学习素材生成改进（growth_advisor_autonomous_search_and_material_improvement_plan.md，阶段一/阶段二完成）
+
+- **触发背景**：针对"如何更好地自主检索、生成报告和学习素材"的专项
+  复盘，定位到主动检索链路"查得浅、抽取结果没被用上"两处具体问题，
+  完整方向拆解、验收标准见该计划文档本身，本条只记录实施摘要（详情
+  不在此重复维护）。
+- **阶段一**：`_active_search_excerpts_for_topic()` 改为优先用已抽取的
+  结构化 `EntityCandidate`/`FactCandidate` 构造摘录（新增
+  `_excerpts_from_extracted_candidates()`），抽取为空时退回原始文本
+  截断兜底；不改变 `queue_entities`/`queue_facts` 落盘行为。
+- **阶段二**：激活此前预留但未消费的 `report_active_search_max_calls`
+  字段（新增 `_build_active_search_queries()`），默认值 `1` 保持改动前
+  行为，调大后按关键词表追加查询角度，各角度独立容错、摘录按 `id`
+  去重合并；`generate_growth_report()`/`_maybe_run_cron_triggered_
+  active_search()` 两个调用点透传该配置。
+- **测试**：新增 `tests/test_growth_advisor_active_search_material.py`
+  （11 项，覆盖结构化摘录优先/兜底、摘录数量上限、多角度查询数量、
+  关键词不足不重复拼凑、单角度失败不阻塞其它角度、多角度摘录去重、
+  两个调用点的 cfg 透传），全部通过；`tests/test_growth_advisor*.py`
+  （去除 dragdrop 看板专用文件）373 项全部通过，无回归。
+- **文档**：更新 `docs/growth-advisor-guide.md` 新增"5.6 自主检索与
+  素材沉淀改进"小节及配置项表格行；`config/models.py` 里
+  `report_active_search_max_calls` 的注释同步更新为"已激活"。
