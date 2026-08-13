@@ -373,6 +373,18 @@ class AgentPaths:
         return self.workdir_dir / "growth_reports.archive.jsonl"
 
     @property
+    def growth_materials_index_path(self) -> Path:
+        """<project_root>/.agent/growth_materials.jsonl —
+        [growth_advisor_autonomous_search_and_material_improvement_
+        plan.md 方向"报告与学习素材分层"] GrowthLearningMaterial 元数据
+        索引，跟 `growth_reports_index_path`（决策向简报）平行但独立的
+        一份索引——"报告"回答"值不值得投入"，"学习素材"回答"投入之后
+        怎么学"，两者不是同一份文档的不同版本，是两种不同定位的产物，
+        分开存储避免互相污染。正文同样落在 `wiki_growth_dir` 下的
+        Markdown 文件（文件名带 `-material` 后缀区分）。"""
+        return self.workdir_dir / "growth_materials.jsonl"
+
+    @property
     def growth_feedback_ledger_path(self) -> Path:
         """<project_root>/.agent/growth_feedback_ledger.jsonl — 用户对候选/报告
         的采纳/忽略反馈流水，供研判层下次调整候选置信度。"""
@@ -448,6 +460,11 @@ class AgentPaths:
     def growth_report_path(self, slug: str) -> Path:
         """…/wiki/growth/<slug>.md"""
         return self.wiki_growth_dir / f"{slug}.md"
+
+    def growth_material_path(self, slug: str) -> Path:
+        """…/wiki/growth/<slug>-material.md — 学习素材正文（跟同名候选的
+        调研报告是两份独立文件，见 `growth_materials_index_path`）。"""
+        return self.wiki_growth_dir / f"{slug}-material.md"
 
     @property
     def gating_history_path(self) -> Path:

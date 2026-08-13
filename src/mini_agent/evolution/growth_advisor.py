@@ -462,6 +462,13 @@ class GrowthCandidate:
     # 默认值 `"signal_scan"`，等价于"按原有口径来自信号扫描"，不需要
     # 额外迁移。
     origin: str = "signal_scan"
+    # [growth_advisor_autonomous_search_and_material_improvement_plan.md
+    # 方向"报告与学习素材分层"] 生成过学习素材后回填，跟 `report_id`
+    # 是两个独立字段——一个候选可能只有报告没有素材（用户还在"值不值得
+    # 投入"的决策阶段），也可能报告和素材都有（已经决定投入、要开始
+    # 执行了）。`None` 表示尚未生成过学习素材，旧数据反序列化时缺该
+    # 字段自然落到 `None`，不需要额外迁移。
+    material_id: Optional[str] = None
 
     def dedupe_key(self) -> str:
         return normalize_title_key(self.title)
@@ -534,6 +541,46 @@ class GrowthReport:
 
     @classmethod
     def from_dict(cls, d: dict) -> "GrowthReport":
+        known = {f for f in cls.__dataclass_fields__}
+        return cls(**{k: v for k, v in d.items() if k in known})
+
+
+@dataclass
+class GrowthLearningMaterial:
+    """[growth_advisor_autonomous_search_and_material_improvement_plan.md
+    方向"报告与学习素材分层"] "报告"（`GrowthReport`）回答"值不值得
+    投入"，是决策向的简报；这个类回答"投入之后怎么学"，是执行向的
+    结构化产物——固定三段：学习路径（有序步骤）、资源清单、第一个可
+    执行任务。两者是平行但独立的产物，不是同一份文档的不同版本，故意
+    不共用一个 dataclass（字段语义不同：报告是自由格式 Markdown 正文
+    + 摘要，素材是结构化字段 + 拼出来的正文）。
+    """
+    material_id: str
+    candidate_id: str
+    title: str
+    slug: str
+    # 有序学习步骤，每步一句话（例如"先读官方 quickstart，跑通一个最小
+    # 示例"），供 CLI/看板直接渲染成一个有序列表，不需要额外解析正文。
+    learning_path: list[str] = field(default_factory=list)
+    # 资源清单：每条是一句话描述（可能包含链接），跟 learning_path 平行
+    # 但独立——不是每个学习步骤都对应一条资源，也不强制一一对应。
+    resources: list[str] = field(default_factory=list)
+    # 建议现在就能动手做的第一个具体任务（不是"了解一下"这种笼统建议），
+    # 呼应改进计划里"结构化路径 + 资源清单 + 首个可执行任务"的定位。
+    first_task: str = ""
+    body_path: str = ""          # 正文落在 wiki_growth_dir 下的 Markdown 文件
+    created_at: float = field(default_factory=time.time)
+    source: str = "template"     # "template" | "llm"
+    # 生成这份素材时依据的报告 id（如果是从一份已有报告"升级"而来），
+    # 素材也可以在没有报告的情况下独立生成（比如用户跳过报告直接要
+    # 学习素材），此时为 `None`——不强制素材依赖报告存在。
+    based_on_report_id: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "GrowthLearningMaterial":
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in d.items() if k in known})
 
@@ -697,6 +744,19 @@ class GrowthBacklog:
         for c in all_c:
             if c.candidate_id == candidate_id:
                 c.report_id = report_id
+                c.updated_at = time.time()
+        self.save_all(all_c)
+
+    def attach_material(self, candidate_id: str, material_id: str) -> None:
+        """[growth_advisor_autonomous_search_and_material_improvement_
+        plan.md 方向"报告与学习素材分层"] 跟 `attach_report()` 是同一种
+        写入模式——生成一份学习素材后把 `material_id` 回填到候选上，
+        供 CLI/API"这个候选有没有学习素材"的判断直接读候选字段，不用
+        每次都去扫素材索引。"""
+        all_c = self.load_all()
+        for c in all_c:
+            if c.candidate_id == candidate_id:
+                c.material_id = material_id
                 c.updated_at = time.time()
         self.save_all(all_c)
 
@@ -2335,6 +2395,154 @@ def get_report_by_id(paths, report_id: str) -> Optional[GrowthReport]:
     for d in _read_jsonl(paths.growth_reports_archive_path):
         if d.get("report_id") == report_id:
             return GrowthReport.from_dict(d)
+    return None
+
+
+# ────────────────────── 学习素材（执行向，跟报告分层）──────────────────────
+#
+# [growth_advisor_autonomous_search_and_material_improvement_plan.md
+# 方向"报告与学习素材分层"] `generate_growth_report()` 生成的是决策向
+# 简报（回答"值不值得投入"），下面这组函数生成的是执行向的结构化
+# 产物（回答"投入之后怎么学"）——固定三段：学习路径、资源清单、第一
+# 个可执行任务，见 `GrowthLearningMaterial` docstring。设计上刻意跟
+# 报告完全独立（各自的索引文件、正文目录、生成函数），互不依赖：素材
+# 可以基于已有报告生成（复用报告正文归纳三段结构，`based_on_report_id`
+# 记录来源），也可以在候选还没有报告时独立生成。
+
+
+def _learning_material_template_body(
+    title: str, rationale: str, learning_path: list[str],
+    resources: list[str], first_task: str,
+) -> str:
+    path_lines = "\n".join(f"{i}. {step}" for i, step in enumerate(learning_path, 1)) or "（暂无）"
+    resource_lines = "\n".join(f"- {r}" for r in resources) or "（暂无）"
+    return (
+        f"# {title} · 学习素材\n\n"
+        f"{rationale}\n\n"
+        "## 学习路径\n"
+        f"{path_lines}\n\n"
+        "## 资源清单\n"
+        f"{resource_lines}\n\n"
+        "## 现在就可以做的第一件事\n"
+        f"{first_task}\n"
+    )
+
+
+def _default_learning_path(title: str) -> list[str]:
+    """规则模板兜底的学习路径——三步走的通用骨架，不针对具体主题，
+    只保证"没有 LLM 时也能给出一个能直接照做的最小闭环"，跟
+    `generate_growth_report()` 的规则模板同等定位（零成本兜底，不追求
+    针对性）。"""
+    return [
+        f"用 30 分钟检索『{title}』的官方文档或权威入门教程，建立整体轮廓",
+        "挑一个跟近期实际任务相关的小切口，动手做一次最小可行的尝试",
+        "记录下卡住的地方，下次调研或请教时优先解决这些具体问题",
+    ]
+
+
+def generate_learning_material(
+    paths,
+    candidate: GrowthCandidate,
+    *,
+    llm_helper: Optional[Callable[[str], str]] = None,
+    report: Optional[GrowthReport] = None,
+) -> GrowthLearningMaterial:
+    """为一个候选生成"学习素材"（执行向：学习路径 + 资源清单 + 第一个
+    可执行任务），跟 `generate_growth_report()`（决策向简报）是两个
+    独立的生成入口，可以先后调用、也可以只调用其中一个。
+
+    `report`：可选，传入该候选已有的调研报告时，规则模板兜底路径会
+    引用报告的 `summary` 作为素材开头的一句话背景（素材不是报告的
+    简单复制，只是复用"为什么值得关注"这一句，避免重复归纳）；不传
+    时用 `candidate.rationale` 兜底，效果等价。
+
+    `llm_helper`：非 `None` 时优先让 LLM 生成三段结构化内容（要求
+    返回 JSON：`{"learning_path": [...], "resources": [...],
+    "first_task": "..."}`），解析失败/异常/空响应时静默退回规则模板，
+    保证任何情况下都有可用产物、不会因为 LLM 抖动就生成失败。
+    """
+    material_id = uuid.uuid4().hex[:12]
+    slug = f"{_slugify(candidate.title)}-{material_id[:6]}"
+    background = (report.summary if report is not None and report.summary else candidate.rationale)
+
+    learning_path: list[str] = []
+    resources: list[str] = []
+    first_task = ""
+    source = "template"
+
+    if llm_helper is not None:
+        prompt = (
+            "请为以下用户成长方向候选，生成一份『学习素材』的结构化内容，"
+            "只返回 JSON（不要任何多余文字/Markdown 代码块标记），格式：\n"
+            '{"learning_path": ["步骤1", "步骤2", "步骤3"], '
+            '"resources": ["资源1", "资源2"], "first_task": "一句话描述的具体任务"}\n'
+            f"主题：{candidate.title}\n背景：{background}\n"
+            "learning_path 要求 3~6 步、有先后顺序、每步一句话可执行；"
+            "resources 要求 2~5 条、具体到可检索的名称（不要求真实链接）；"
+            "first_task 要求是现在就能动手做的具体任务，不要写成\"了解一下\"这种笼统建议。"
+        )
+        try:
+            raw = llm_helper(prompt)
+            if raw and raw.strip():
+                text = raw.strip()
+                if text.startswith("```"):
+                    text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+                    text = re.sub(r"```\s*$", "", text).strip()
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError:
+                    match = re.search(r"\{.*\}", text, re.DOTALL)
+                    parsed = json.loads(match.group(0)) if match else None
+                if isinstance(parsed, dict):
+                    lp = [str(s).strip() for s in (parsed.get("learning_path") or []) if str(s).strip()]
+                    rs = [str(s).strip() for s in (parsed.get("resources") or []) if str(s).strip()]
+                    ft = str(parsed.get("first_task") or "").strip()
+                    if lp and ft:
+                        learning_path, resources, first_task = lp, rs, ft
+                        source = "llm"
+        except Exception:
+            learning_path, resources, first_task, source = [], [], "", "template"
+
+    if not learning_path or not first_task:
+        learning_path = _default_learning_path(candidate.title)
+        resources = resources or ["官方文档 / 权威教程（优先）", "社区实践案例，关注踩坑记录"]
+        first_task = first_task or f"花 30 分钟检索『{candidate.title}』的入门资料，写下 3 个具体问题"
+        source = "template"
+
+    body = _learning_material_template_body(
+        candidate.title, background, learning_path, resources, first_task,
+    )
+    body_path = paths.growth_material_path(slug)
+    body_path.parent.mkdir(parents=True, exist_ok=True)
+    body_path.write_text(body, encoding="utf-8")
+
+    material = GrowthLearningMaterial(
+        material_id=material_id,
+        candidate_id=candidate.candidate_id,
+        title=candidate.title,
+        slug=slug,
+        learning_path=learning_path,
+        resources=resources,
+        first_task=first_task,
+        body_path=str(body_path),
+        source=source,
+        based_on_report_id=(report.report_id if report is not None else None),
+    )
+    _append_jsonl(paths.growth_materials_index_path, material.to_dict())
+    GrowthBacklog(paths).attach_material(candidate.candidate_id, material_id)
+    return material
+
+
+def list_materials(paths) -> list[GrowthLearningMaterial]:
+    """返回全部已生成的学习素材（跟 `list_reports()` 一样，只追加不
+    轮转——学习素材数量远小于报告，暂不需要归档机制）。"""
+    return [GrowthLearningMaterial.from_dict(d) for d in _read_jsonl(paths.growth_materials_index_path)]
+
+
+def get_material_by_id(paths, material_id: str) -> Optional[GrowthLearningMaterial]:
+    for d in _read_jsonl(paths.growth_materials_index_path):
+        if d.get("material_id") == material_id:
+            return GrowthLearningMaterial.from_dict(d)
     return None
 
 

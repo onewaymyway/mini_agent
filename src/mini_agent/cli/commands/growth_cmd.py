@@ -13,6 +13,11 @@ next_doc/growth_advisor_design.md）。
                               行为与之前版本一致
   /growth accept <id>       — 采纳一个候选（标记 accepted，记入反馈台账）
   /growth report <id>       — 查看某候选已生成的调研报告正文
+  /growth material <id>     — 查看某候选已生成的学习素材（学习路径 +
+                              资源清单 + 第一个可执行任务；跟报告是
+                              两份独立产物，见 growth_advisor_autonomous_
+                              search_and_material_improvement_plan.md
+                              "报告与学习素材分层"）
   /growth retrospective     — 生成/展示月度成长复盘摘要
   /growth align             — 查看兴趣方向 ⇄ Goal 对齐分析（见
                               next_doc/growth_advisor_goal_cron_integration_plan.md
@@ -262,6 +267,38 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
                 + (f"，检测到 {len(hallucinated)} 处疑似编造引用：{'、'.join(hallucinated)}"
                    if hallucinated else "，未检测到编造引用")
             )
+        return
+
+    if sub == "material":
+        if len(args) < 2:
+            R.print_error("用法：/growth material <candidate_id>")
+            return
+        cid = args[1]
+        backlog = ga.GrowthBacklog(paths)
+        cand = backlog.get(cid)
+        if cand is None:
+            R.print_error(f"未找到候选：{cid}")
+            return
+        if not cand.material_id:
+            # 学习素材不强制要求先有报告，但如果这个候选已经有报告，
+            # 复用报告的一句话摘要作为素材开头的背景（见
+            # `generate_learning_material()` 的 `report` 参数说明）。
+            report = ga.get_report_by_id(paths, cand.report_id) if cand.report_id else None
+            material = ga.generate_learning_material(
+                paths, cand, llm_helper=_get_llm_helper(agent), report=report,
+            )
+            R.print_info(f"已生成学习素材：{material.body_path}")
+        else:
+            material = ga.get_material_by_id(paths, cand.material_id)
+        if material is None:
+            R.print_error("学习素材索引缺失，请重新执行 /growth material 生成。")
+            return
+        from pathlib import Path
+        body_path = Path(material.body_path)
+        if body_path.exists():
+            R.console.print(body_path.read_text(encoding="utf-8"))
+        else:
+            R.print_error(f"学习素材文件缺失：{body_path}")
         return
 
     if sub == "timeline":

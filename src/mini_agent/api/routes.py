@@ -7013,3 +7013,68 @@ async def get_growth_report_body(request: Request, report_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/growth/candidates/{candidate_id}/material/generate")
+async def post_growth_candidate_generate_material(request: Request, candidate_id: str):
+    """POST /v1/growth/candidates/{id}/material/generate —
+    [growth_advisor_autonomous_search_and_material_improvement_plan.md
+    方向"报告与学习素材分层"] 为该候选生成一份『学习素材』（学习路径 +
+    资源清单 + 第一个可执行任务），跟调研报告是两份独立产物、独立的
+    生成入口——不要求候选已经有报告；如果已经有报告，会复用报告的
+    摘要作为素材背景（见 `generate_learning_material()` 的 `report`
+    参数说明）。已经生成过素材的候选重复调用会再生成一份新的（跟
+    `report/refresh` 的"替换"语义不同，素材索引只追加，多次生成的
+    历史都保留，候选上挂着的 `material_id` 会指向最新一份）。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+
+        backlog = ga.GrowthBacklog(paths)
+        candidate = next((c for c in backlog.load_all() if c.candidate_id == candidate_id), None)
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="candidate not found")
+
+        http_server = getattr(request.app.state, "http_server", None)
+        self_agent = http_server.bridge.agent if http_server else None
+        llm_helper = None
+        if self_agent is not None:
+            helper = getattr(self_agent, "llm_helper", None)
+            if helper is not None:
+                llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
+
+        report = ga.get_report_by_id(paths, candidate.report_id) if candidate.report_id else None
+        material = ga.generate_learning_material(
+            paths, candidate, llm_helper=llm_helper, report=report,
+        )
+        return {"ok": True, "material": material.to_dict()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/growth/materials/{material_id}")
+async def get_growth_material_body(request: Request, material_id: str):
+    """GET /v1/growth/materials/{id} — 返回某份学习素材的 Markdown 正文
+    及结构化字段（`learning_path`/`resources`/`first_task`）。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+
+        material = ga.get_material_by_id(paths, material_id)
+        if material is None:
+            raise HTTPException(status_code=404, detail="material not found")
+        from pathlib import Path
+        body_path = Path(material.body_path)
+        body = body_path.read_text(encoding="utf-8") if body_path.exists() else ""
+        d = material.to_dict()
+        d["body"] = body
+        return d
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

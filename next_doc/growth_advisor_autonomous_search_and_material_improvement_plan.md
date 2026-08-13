@@ -166,6 +166,52 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
   "未检测到编造引用"）；不带该字段（多数场景）时不打印任何额外内容，
   不改变既有输出格式。
 
+## 3'''. 报告与学习素材分层（已实施）
+
+**问题**：此前"报告"是唯一产物，兼顾"值不值得投入"（决策向）和"投入
+之后怎么学"（执行向）两种诉求，写得笼统就两头都不够用。
+
+**方案**：
+
+- 新增 `GrowthLearningMaterial` dataclass（`material_id`/`candidate_id`/
+  `title`/`slug`/`learning_path`/`resources`/`first_task`/`body_path`/
+  `created_at`/`source`/`based_on_report_id`），跟 `GrowthReport` 平行
+  但独立，故意不共用一个 dataclass——字段语义不同（报告是自由格式
+  正文 + 摘要，素材是结构化字段 + 拼出来的正文）。
+- 新增 `generate_learning_material(paths, candidate, *, llm_helper=None,
+  report=None)`：
+  - `report` 可选：传入时复用报告 `summary` 作为素材背景（不重复归纳
+    "为什么值得关注"）；不传时用 `candidate.rationale` 兜底——素材不
+    强制依赖报告存在，先后顺序随意。
+  - `llm_helper` 非 `None` 时要求返回结构化 JSON（`learning_path`/
+    `resources`/`first_task`），兼容代码块包裹（` ```json ... ``` `）
+    和"JSON 前后有多余文字"两种常见偏差（用正则兜底提取 `{...}`）；
+    解析失败、异常、空响应、或关键字段缺失（`learning_path` 为空或
+    `first_task` 为空）都静默退回规则模板，不抛错、不生成半成品。
+  - 规则模板兜底：`_default_learning_path()` 给出三步通用骨架（检索
+    入门资料建立轮廓 → 挑小切口动手尝试 → 记录卡点留待下次解决），
+    加两条通用资源提示和一条"检索并写下 3 个具体问题"的默认任务，
+    保证任何情况下都有非空、可直接照做的产物。
+  - 生成后写入 `.agent/wiki/growth/<slug>-material.md`、追加进
+    `.agent/growth_materials.jsonl` 索引、通过新增的
+    `GrowthBacklog.attach_material()` 回填候选的 `material_id` 字段
+    （`GrowthCandidate` 新增该字段，跟 `report_id` 平行独立，旧数据
+    反序列化自然落到 `None`）。
+- 新增 `list_materials()`/`get_material_by_id()`，跟 `list_reports()`/
+  `get_report_by_id()` 对称；素材数量远小于报告，暂不需要归档机制。
+- **入口**：
+  - CLI `/growth material <candidate_id>`：候选没有素材时生成并展示，
+    已有时直接展示、不重复生成（跟 `/growth report` 的行为对称）。
+  - API `POST /growth/candidates/{id}/material/generate`：每次调用都
+    生成一份新的（不是"刷新替换"语义，多次生成的历史都保留在索引里，
+    候选上挂着的 `material_id` 指向最新一份）+ `GET /growth/materials/
+    {id}`（返回结构化字段 + 正文，跟 `GET /growth/reports/{id}` 对称）。
+- **刻意不做的事**：素材没有接入报告专属的阶段一/二/三能力（外部背景
+  摘录、生成后自检、"该不该刷新"判断）——这些是报告这个产物形态下
+  解决"标注来源真实性"问题的机制，素材是全新的结构化产物，是否需要
+  对齐这些能力取决于实际使用情况，本轮不预先假设；看板暂未接入学习
+  素材的展示入口，目前只有 CLI/API。
+
 ## 3. 测试与回归
 
 - 新增 `tests/test_growth_advisor_active_search_material.py`：
@@ -196,15 +242,25 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
   在无报告/多报告混合命中与编造场景下的聚合结果；`diagnostics_
   snapshot()` 包含 `citation_check` 键；CLI `/growth report` 在报告带
   `citation_check` 时打印自检摘要、不带时不打印额外内容
+- 新增 `tests/test_growth_advisor_learning_material.py`（18 项）：
+  - 规则模板兜底路径产出非空三段结构、正文包含三个小节标题；索引
+    落盘、候选 `material_id` 被回填
+  - LLM 路径：结构化 JSON 被正确采用；代码块包裹的 JSON 被正确解析；
+    非 JSON 响应/缺关键字段/异常/空响应四种偏差都退回规则模板
+  - 素材基于已有报告生成时复用报告 `summary` 作为背景、
+    `based_on_report_id` 正确回填；不传 `report` 时用候选
+    `rationale` 兜底、`based_on_report_id` 为 `None`
+  - `list_materials()`/`get_material_by_id()` 基本读取行为（含未知
+    id 返回 `None`、默认空列表）
+  - `GrowthLearningMaterial`/`GrowthCandidate.material_id` 的序列化
+    往返及旧数据缺字段时的默认值
+  - CLI `/growth material`：候选无素材时生成并展示、已有素材时直接
+    展示不重复生成、未知候选报错不抛异常
 
 ## 4. 后续方向（未实施，方向级规划）
 
-以下方向改动面更大或需要先观察阶段一/二/三实际效果再决定，本轮不实施：
+以下方向改动面更大或需要先观察实际效果再决定，本轮不实施：
 
-- **报告与学习素材分层**：现在"报告"（决策向简报）和"落地成 Goal 后的
-  周期执行内容"之间没有按用户投入程度分层的"学习素材"产物（结构化路径 +
-  资源清单 + 首个可执行任务）。改动面涉及新的产物形态和落盘结构，建议
-  单独立项设计
 - **外部世界变化驱动的刷新**：`reports_needing_refresh()` 目前只看用户
   自己新增的记忆证据，不看外部世界本身是否发生变化；可以考虑复用阶段一
   新增的结构化摘录做"跟上次报告生成时的摘录内容比对，差异明显才提示刷新"，
@@ -214,15 +270,19 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
   "某个方向的报告编造引用比例持续偏高，就换更强的 prompt 或提高
   `report_two_stage_enabled` 优先级重新生成一次"，属于比"展示"更进一步
   的"利用"，建议先观察展示上线后的实际数据分布，再决定要不要做
+- **学习素材对齐报告的能力**：学习素材目前是全新产物，没有接入外部
+  背景摘录、生成后自检、"该不该刷新"这些报告专属能力；也没有接入
+  看板展示入口（目前只有 CLI/API）。是否需要对齐取决于实际使用情况，
+  建议先观察素材的实际生成/查看频率再决定
 
 ---
 
 ## 5. 实施记录
 
-- **状态**：阶段一、阶段二、阶段三（含"生成后自检结果的展示"）均已
-  实施完成。详细摘要见 `next_doc/growth_advisor_implementation_record.
-  md` "自主检索与学习素材生成改进" 一节（避免跟本文档重复维护同一份
-  内容）。
+- **状态**：阶段一、阶段二、阶段三（含"生成后自检结果的展示"）、以及
+  "报告与学习素材分层"均已实施完成。详细摘要见 `next_doc/growth_
+  advisor_implementation_record.md`"自主检索与学习素材生成改进"一节
+  （避免跟本文档重复维护同一份内容）。
 - **改动文件**：
   - `src/mini_agent/evolution/growth_advisor.py`（`_active_search_
     excerpts_for_topic()` 重构，新增 `_excerpts_from_extracted_
@@ -231,17 +291,27 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
     `citation_check` 字段，新增 `_check_report_citations()`，
     `generate_growth_report()` 记录 `used_excerpts` 并在正文生成后
     调用自检；`diagnostics_snapshot()` 新增 `citation_check` 区块，
-    新增 `_citation_check_diagnostics_summary()`）
+    新增 `_citation_check_diagnostics_summary()`；`GrowthCandidate`
+    新增 `material_id` 字段；新增 `GrowthLearningMaterial` dataclass、
+    `generate_learning_material()`/`list_materials()`/
+    `get_material_by_id()`；`GrowthBacklog` 新增 `attach_material()`）
+  - `src/mini_agent/storage/paths.py`（新增 `growth_materials_index_
+    path` 属性、`growth_material_path()` 方法）
   - `src/mini_agent/config/models.py`（`report_active_search_max_calls`
     注释更新为"已激活"）
   - `src/mini_agent/cli/commands/growth_cmd.py`（`/growth report` 打印
-    正文后追加自检摘要）
+    正文后追加自检摘要；新增 `/growth material <id>` 子命令）
+  - `src/mini_agent/cli/parser.py`（帮助文本新增 `/growth material` 行）
+  - `src/mini_agent/api/routes.py`（新增 `POST /growth/candidates/{id}/
+    material/generate`、`GET /growth/materials/{id}`）
   - `tests/test_growth_advisor_active_search_material.py`（新增，11 项，
     阶段一/二）
   - `tests/test_growth_advisor_report_citation_check.py`（新增，16 项，
     阶段三 + 展示）
+  - `tests/test_growth_advisor_learning_material.py`（新增，18 项，
+    报告与学习素材分层）
   - `docs/growth-advisor-guide.md`（5.6 节新增 + 更新，纳入阶段三与
-    展示；配置表格行）
+    展示；新增 5.7 节说明学习素材分层；配置表格行）
   - `next_doc/growth_advisor_implementation_record.md`（实施摘要更新）
-- 第 4 节剩余方向（学习素材分层、外部世界变化驱动刷新、自检结果的
-  自动利用）仍未实施，维持方向级规划。
+- 第 4 节剩余方向（外部世界变化驱动刷新、自检结果的自动利用、学习
+  素材对齐报告能力）仍未实施，维持方向级规划。

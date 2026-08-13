@@ -1615,7 +1615,7 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   跟自然日边界相关的既有时间敏感测试，本次未做改动也未修复，如需要
   应作为独立 issue 跟进。
 
-## 自主检索与学习素材生成改进（growth_advisor_autonomous_search_and_material_improvement_plan.md，阶段一/阶段二/阶段三完成）
+## 自主检索与学习素材生成改进（growth_advisor_autonomous_search_and_material_improvement_plan.md，阶段一/阶段二/阶段三/学习素材分层均完成）
 
 - **触发背景**：针对"如何更好地自主检索、生成报告和学习素材"的专项
   复盘，定位到主动检索链路"查得浅、抽取结果没被用上"两处具体问题，
@@ -1651,6 +1651,16 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   <candidate_id>` 打印正文后，若报告带 `citation_check` 追加一行摘要
   （命中比例 + 编造引用列表，或"未检测到编造引用"），不带该字段时
   不打印任何额外内容。
+- **报告与学习素材分层**（本轮新增）：新增 `GrowthLearningMaterial`
+  dataclass（学习路径 + 资源清单 + 第一个可执行任务）跟 `GrowthReport`
+  平行独立；新增 `generate_learning_material()`（可选复用已有报告
+  `summary` 作为背景，LLM 结构化 JSON 生成 + 规则模板兜底）、
+  `list_materials()`/`get_material_by_id()`；`GrowthCandidate` 新增
+  `material_id` 字段，`GrowthBacklog` 新增 `attach_material()`；
+  `AgentPaths` 新增 `growth_materials_index_path`/`growth_material_
+  path()`；CLI 新增 `/growth material <id>` 子命令；API 新增 `POST
+  /growth/candidates/{id}/material/generate` 与 `GET /growth/
+  materials/{id}`。
 - **测试**：新增 `tests/test_growth_advisor_active_search_material.py`
   （11 项，覆盖结构化摘录优先/兜底、摘录数量上限、多角度查询数量、
   关键词不足不重复拼凑、单角度失败不阻塞其它角度、多角度摘录去重、
@@ -1660,29 +1670,49 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   `generate_growth_report()` 端到端在五种路径下 `citation_check` 的
   取值及序列化兼容性、`_citation_check_diagnostics_summary()` 的空
   数据/多报告聚合、`diagnostics_snapshot()` 包含该键、CLI `/growth
-  report` 的自检摘要打印/不打印两种场景）；全部通过。
+  report` 的自检摘要打印/不打印两种场景）；新增 `tests/test_growth_
+  advisor_learning_material.py`（18 项，覆盖规则模板兜底产出非空
+  三段结构、LLM 结构化 JSON 解析（含代码块包裹）、四种偏差场景
+  （非 JSON/缺字段/异常/空响应）退回模板、基于报告生成时复用摘要
+  背景、独立生成时用候选 rationale 兜底、`list_materials()`/
+  `get_material_by_id()` 基本行为、序列化兼容性、CLI `/growth
+  material` 生成/复用/未知候选三种场景）；全部通过。
   `tests/test_growth_advisor*.py` + `tests/test_growth_cmd_timeline_
-  and_active_search_wiring.py`（去除 dragdrop 看板专用文件）395 项
-  全部通过，无回归。
+  and_active_search_wiring.py`（去除 dragdrop 看板专用文件）413 项
+  全部通过，无回归（环境本身缺 `fastapi` 依赖，`api/routes.py` 改动
+  仅做了语法与人工核对，未跑该模块相关的 API 层测试，是环境限制而非
+  本轮改动引入的问题）。
 - **文档**：更新 `docs/growth-advisor-guide.md`"5.6 自主检索与素材
   沉淀改进"小节，标题纳入阶段三、新增"阶段三：生成后自检"子节说明
   `citation_check` 字段含义及取舍，补充自检结果已接入的两处展示
-  （CLI/诊断面板），"已知边界"列表相应更新；`config/models.py` 里
-  `report_active_search_max_calls` 的注释此前已更新为"已激活"，本轮
-  无需再改。
+  （CLI/诊断面板），"已知边界"列表相应更新；新增"5.7 报告与学习
+  素材分层"小节说明定位区分、生成方式、存储、入口及本轮未做的部分；
+  `config/models.py` 里 `report_active_search_max_calls` 的注释此前已
+  更新为"已激活"，本轮无需再改。
 - **改动文件**：
   - `src/mini_agent/evolution/growth_advisor.py`（`GrowthReport` 新增
     `citation_check` 字段；新增 `_check_report_citations()`；
     `generate_growth_report()` 记录 `used_excerpts` 并在正文生成后
     调用自检、写入报告；`diagnostics_snapshot()` 新增 `citation_check`
-    区块，新增 `_citation_check_diagnostics_summary()`）
-  - `src/mini_agent/cli/commands/growth_cmd.py`（`/growth report`
-    子命令打印正文后追加自检摘要）
+    区块，新增 `_citation_check_diagnostics_summary()`；`GrowthCandidate`
+    新增 `material_id` 字段；新增 `GrowthLearningMaterial` dataclass、
+    `generate_learning_material()`/`list_materials()`/
+    `get_material_by_id()`；`GrowthBacklog` 新增 `attach_material()`）
+  - `src/mini_agent/storage/paths.py`（新增 `growth_materials_index_
+    path` 属性、`growth_material_path()` 方法）
+  - `src/mini_agent/cli/commands/growth_cmd.py`（`/growth report` 子
+    命令打印正文后追加自检摘要；新增 `/growth material <id>` 子命令）
+  - `src/mini_agent/cli/parser.py`（帮助文本新增 `/growth material` 行）
+  - `src/mini_agent/api/routes.py`（新增 `POST /growth/candidates/{id}/
+    material/generate`、`GET /growth/materials/{id}`）
   - `tests/test_growth_advisor_report_citation_check.py`（新增，16 项）
-  - `docs/growth-advisor-guide.md`（5.6 节更新）
+  - `tests/test_growth_advisor_learning_material.py`（新增，18 项）
+  - `docs/growth-advisor-guide.md`（5.6 节更新，新增 5.7 节）
   - `next_doc/growth_advisor_autonomous_search_and_material_improvement_
-    plan.md`（第 5 节实施记录更新为阶段一/二/三（含展示）均已完成，
-    第 4 节移除"生成后自检"及"展示"两条，改为"自检结果的自动利用"）
+    plan.md`（第 5 节实施记录更新为阶段一/二/三（含展示）+ 学习素材
+    分层均已完成，第 4 节移除"生成后自检""展示""报告与学习素材分层"
+    三条，改为"外部世界变化驱动刷新""自检结果的自动利用""学习素材
+    对齐报告能力"三条）
   - `next_doc/growth_advisor_implementation_record.md`（本节）
-- 第 4 节剩余两个方向（学习素材分层、外部世界变化驱动刷新）以及
-  "自检结果的自动利用"仍未实施，维持方向级规划。
+- 第 4 节剩余三个方向（外部世界变化驱动的刷新、生成后自检结果的自动
+  利用、学习素材对齐报告能力）仍未实施，维持方向级规划。

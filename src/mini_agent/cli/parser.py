@@ -125,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
               /growth scan                Run one signal scan + candidate derive + top-N report cycle now
               /growth accept|dismiss <id> Mark a candidate accepted/dismissed
               /growth report <id>         Show (or generate) the research report for a candidate
+              /growth material <id>       Show (or generate) the learning material for a candidate
               /growth retrospective       Show the monthly growth retrospective summary
               /debug system               Print current system prompt (with token estimate)
               /debug history [full] [n]   Print history as a table (last n msgs; 'full' = no truncation)
