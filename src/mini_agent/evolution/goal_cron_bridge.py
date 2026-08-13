@@ -261,11 +261,53 @@ def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, desc
             return description
         parts = [description] if description and description.strip() else []
         parts.append(block)
+
+        # [Stage B] converge 阶段：如果执行规范尚未确认，额外提示"收敛完成后
+        # 建议生成/确认执行规范"，把 converge 与 GoalExecutionSpec 的确认流程
+        # 串起来（不强制、不自动调用，只是提示，避免两套机制各自为政）。
+        if effective_mode == "converge" and not spec_confirmed:
+            parts.append(pm.fragment("execution_phase", "CONVERGE_SPEC_HINT_BLOCK"))
+
+        # [Stage B] tidy 阶段：如果已有确认的执行规范，把规范里声明的
+        # deliverables/sub_directories 罗列出来，作为整理时的核对清单，
+        # 而不是让 agent 凭空判断"哪些目录/文件算冗余"。
+        if effective_mode == "tidy" and spec_confirmed:
+            try:
+                spec_for_tidy = ges.load_spec(paths, goal.id)
+            except Exception:
+                spec_for_tidy = None
+            checklist_hint = _build_tidy_checklist_hint(spec_for_tidy)
+            if checklist_hint:
+                parts.append(checklist_hint)
+
         return "\n\n".join(parts)
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_execution_phase_context')
         return description
+
+
+def _build_tidy_checklist_hint(spec) -> str:
+    """[goal_execution_phase_improvement_plan.md Stage B] 基于已确认的
+    GoalExecutionSpec 生成一份 tidy 阶段专属核对清单文本；spec 为 None 或
+    没有 deliverables/sub_directories 时返回空字符串（调用方据此跳过）。
+    """
+    if spec is None:
+        return ""
+    lines: list[str] = []
+    if getattr(spec, "deliverables", None):
+        lines.append("应存在的产出文件（按命名规则核对，缺失/命名不一致需在报告中指出）：")
+        for d in spec.deliverables:
+            pattern = f"（命名规则：{d.naming_pattern}）" if getattr(d, "naming_pattern", "") else ""
+            lines.append(f"  - {d.name}{pattern}")
+    if getattr(spec, "sub_directories", None):
+        lines.append("预期的子目录结构（核对是否有游离在外、未归入这些目录的产出）：")
+        for s in spec.sub_directories:
+            purpose = f"：{s.purpose}" if getattr(s, "purpose", "") else ""
+            lines.append(f"  - {s.name}{purpose}")
+    if not lines:
+        return ""
+    return "## 整理核对清单（依据已确认的执行规范）\n\n" + "\n".join(lines)
 
 
 def _append_execution_spec_context(

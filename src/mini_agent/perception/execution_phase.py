@@ -161,6 +161,7 @@ def resolve_effective_mode(
     spec_confirmed: bool,
     spec_recently_revised: bool,
     miss_streak: int = 0,
+    tidy_every_n_cycles: int = DEFAULT_TIDY_EVERY_N_CYCLES,
 ) -> tuple[str, ExecutionPhaseState]:
     """计算本轮的"有效阶段"，并按需推进/落盘 mode_history（调用方负责 save）。
 
@@ -173,6 +174,16 @@ def resolve_effective_mode(
         否则                                            → converge（过渡态）
     """
     if state.locked or state.mode != "auto":
+        # [Stage B] tidy 阶段是"一次性插入"的维护动作：手动/自动进入 tidy 后，
+        # 执行完一轮（cycles_in_mode 已经 >=1，说明已经跑过一次 tidy 提示）
+        # 就自动回到 stable 并解除锁定，不需要用户手动切回，避免每轮都停在
+        # 整理模式不产出正常内容。
+        if state.mode == "tidy" and state.cycles_in_mode >= 1:
+            state.last_tidy_cycle = cycle_no
+            state.record_transition("stable", reason="tidy_auto_revert")
+            state.locked = False
+            return "stable", state
+        state.cycles_in_mode += 1
         return state.mode, state
 
     if cycle_no <= DEFAULT_EXPLORE_MIN_CYCLES:
@@ -183,6 +194,17 @@ def resolve_effective_mode(
         target = "stable"
     else:
         target = "converge"
+
+    # [Stage B §2.4] 稳定期周期性自动插入 tidy：仅当已经判定为 stable、
+    # 配置了 tidy_every_n_cycles>0、且距上次 tidy 已满足轮次间隔时触发。
+    # 触发后本轮 effective mode 直接给 tidy（下一轮由上面的
+    # "tidy 一轮后自动回 stable"逻辑收尾），不改变 state.mode 本身
+    # （仍是 "auto"）。
+    if target == "stable" and tidy_every_n_cycles and tidy_every_n_cycles > 0:
+        last_tidy = state.last_tidy_cycle or 0
+        if cycle_no - last_tidy >= tidy_every_n_cycles:
+            target = "tidy"
+            state.last_tidy_cycle = cycle_no
 
     # stability_score：粗略地用"是否达到 stable 判定条件"映射到 0~1，
     # 仅供展示参考，不参与其他逻辑。

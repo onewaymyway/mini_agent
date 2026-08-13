@@ -62,7 +62,25 @@
 建议在探索期先不急于 `spec confirm`，等收敛出相对稳定的方式后再确认，
 这样自动判定也会更快从 explore 过渡到 stable。
 
-## 生效范围
+## tidy 阶段的行为细节
+
+- 手动/自动进入 `tidy` 后，只会维持**一轮**：这一轮结束、下一次触发时会
+  自动回到 `stable` 并解除锁定，不需要手动切回。
+- 如果这个 Goal 已经确认了执行规范，tidy 阶段会自动附带一份"整理核对
+  清单"（基于执行规范里声明的 deliverables/sub_directories），帮助 agent
+  依据既定规范而不是凭空判断"哪些算冗余"。
+- `auto` 模式默认不会周期性插入 tidy（需要显式配置 `tidy_every_n_cycles`
+  才会生效，当前版本尚未暴露为用户可配置项，留待后续版本）。
+
+## converge 阶段与执行规范的联动
+
+如果一个 Goal 处于 `converge` 阶段、但还没有确认执行规范
+（`GoalExecutionSpec`），系统会额外提示 agent："如果本轮已经能给出结论，
+建议把产出规则、目录结构、验收标准写清楚"，方便你后续用
+`/agent goals spec generate` 生成对应草稿并确认。这只是提示，不会自动帮你
+生成或确认规范。
+
+
 
 当前版本（Stage A）只对通过 `goal_cron_bridge`（即 recurring Goal /
 `run_mode=goal_cycle` 的 cron job）触发的轮次生效；未绑定 Goal 的独立 cron

@@ -113,12 +113,19 @@ CLI（`cli/commands/goals.py`，追加到 `/agent goals` 下）：
 
 ## 6. 分阶段落地
 
-- **Stage A（本次实现）**：数据模型（`perception/execution_phase.py`）+
+- **Stage A（已实现）**：数据模型（`perception/execution_phase.py`）+
   CLI 手动切换（explore/converge/stable/tidy/auto + lock/unlock）+
   `goal_cron_bridge.py` 接入（prompt 片段注入 + 简单规则自动判定）+
   单元测试 + 文档。
-- **Stage B（后续）**：converge 阶段"方案对比说明"与 GoalExecutionSpec
-  confirm 流程联动细化；tidy 阶段专属整理 checklist 模板。
+- **Stage B（已实现）**：
+  - tidy 阶段执行一轮后自动回到 stable 并解锁（不需要用户手动切回）。
+  - `auto` 模式下支持按 `tidy_every_n_cycles` 周期性自动插入 tidy（默认
+    关闭，`resolve_effective_mode(..., tidy_every_n_cycles=N)`）。
+  - converge 阶段若执行规范尚未确认，追加提示引导用户后续
+    `spec generate`/`spec confirm`，把 converge 与 GoalExecutionSpec 确认
+    流程串起来（不自动调用，仅提示）。
+  - tidy 阶段若已有确认的执行规范，自动生成"整理核对清单"（基于 spec 的
+    deliverables/sub_directories），而不是让 agent 凭空判断哪些是冗余。
 - **Stage C（后续）**：看板可视化（阶段徽章、stability_score、一键切换）。
 - **Stage D（后续）**：更细的自动判定信号（例如接入 goal_judge 的
   progress 趋势），以及独立 cron（非 goal_cycle）场景的阶段支持。

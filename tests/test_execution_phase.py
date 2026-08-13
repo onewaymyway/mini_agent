@@ -184,3 +184,76 @@ def test_bridge_append_execution_phase_context_locked_stable(tmp_path):
     ep.set_mode(paths, "goal_1", "stable")
     result = bridge._append_execution_phase_context(paths, _FakeGoal(), 1, "base description")
     assert "稳定期" in result
+
+
+# ── Stage B: tidy 自动回退 / converge-spec 联动 / tidy checklist ────────────
+
+def test_resolve_tidy_auto_reverts_to_stable_after_one_cycle(tmp_path):
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="tidy", locked=True)
+    # 第一次调用：还没跑过 tidy（cycles_in_mode 从 0 开始），维持 tidy
+    effective1, state = ep.resolve_effective_mode(
+        state, cycle_no=5, spec_confirmed=True, spec_recently_revised=False, miss_streak=0
+    )
+    assert effective1 == "tidy"
+    assert state.cycles_in_mode == 1
+    # 第二次调用（下一轮触发）：已经跑过一次 tidy，自动回到 stable 并解锁
+    effective2, state = ep.resolve_effective_mode(
+        state, cycle_no=6, spec_confirmed=True, spec_recently_revised=False, miss_streak=0
+    )
+    assert effective2 == "stable"
+    assert state.mode == "stable"
+    assert state.locked is False
+    assert state.last_tidy_cycle == 6
+
+
+def test_resolve_auto_periodic_tidy_insertion(tmp_path):
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto")
+    effective, state = ep.resolve_effective_mode(
+        state, cycle_no=10, spec_confirmed=True, spec_recently_revised=False, miss_streak=0,
+        tidy_every_n_cycles=5,
+    )
+    assert effective == "tidy"
+    assert state.last_tidy_cycle == 10
+
+
+def test_resolve_auto_periodic_tidy_disabled_by_default(tmp_path):
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto")
+    effective, _ = ep.resolve_effective_mode(
+        state, cycle_no=100, spec_confirmed=True, spec_recently_revised=False, miss_streak=0,
+    )
+    assert effective == "stable"
+
+
+def test_bridge_converge_appends_spec_hint_when_unconfirmed(tmp_path):
+    from mini_agent.evolution import goal_cron_bridge as bridge
+
+    class _FakeGoal:
+        id = "goal_1"
+        execution_spec_confirmed = False
+
+    paths = _paths(tmp_path)
+    ep.set_mode(paths, "goal_1", "converge")
+    result = bridge._append_execution_phase_context(paths, _FakeGoal(), 1, "base description")
+    assert "收敛期" in result
+    assert "固化执行规范" in result
+
+
+def test_build_tidy_checklist_hint_from_spec():
+    from mini_agent.evolution import goal_cron_bridge as bridge
+    from mini_agent.perception import goal_execution_spec as ges
+
+    spec = ges.GoalExecutionSpec(goal_id="g1")
+    spec.deliverables.append(ges.Deliverable(name="report.md", naming_pattern="report_{n}.md"))
+    spec.sub_directories.append(ges.SubDirectory(name="raw/", purpose="原始数据"))
+    hint = bridge._build_tidy_checklist_hint(spec)
+    assert "report.md" in hint
+    assert "raw/" in hint
+
+
+def test_build_tidy_checklist_hint_empty_spec_returns_empty():
+    from mini_agent.evolution import goal_cron_bridge as bridge
+    from mini_agent.perception import goal_execution_spec as ges
+
+    spec = ges.GoalExecutionSpec(goal_id="g1")
+    assert bridge._build_tidy_checklist_hint(spec) == ""
+    assert bridge._build_tidy_checklist_hint(None) == ""
