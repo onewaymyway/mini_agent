@@ -65,9 +65,8 @@ REST 返回 404。
 
 ## 与能力 B（交互式调优）的关系
 
-诊断报告是能力 A，纯读取；后续的能力 B（根据诊断结果生成"改哪些参数"的
-草案，经用户确认后才真正应用）依赖同一份诊断数据，但属于不同的 Stage，
-尚未实施。当前想要根据诊断结果调整 schedule/priority/执行阶段/执行规范，
-仍需分别使用 `/agent goals recur`、`update_fields`（REST PATCH）、
-`/agent goals phase set`、`/agent goals spec generate` + `confirm` 这些既有
-命令。
+诊断报告是能力 A，纯读取；能力 B（[交互式调优指南](goal-cycle-tuning-guide.md)，
+Stage 2 已实施）依赖同一份诊断数据，根据诊断结果生成"改哪些参数"的
+草案，经用户确认后才真正应用，白名单覆盖 schedule/priority/执行阶段/
+task_template/重新生成执行规范。当前草案生成只支持结构化参数输入和规则
+触发建议，自然语言意见自动解析（Stage 3）尚未实施。

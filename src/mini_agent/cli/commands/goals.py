@@ -33,6 +33,22 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
                                      perception/cycle_diagnostics.py，
                                      next_doc/goal_cron_cycle_diagnostics_
                                      and_interactive_tuning_plan.md Stage 1）
+  /agent goals tune <id> <param>=<value> [<param2>=<value2> ...] [--reason <text>]
+                                   — 生成一份调优草案（白名单参数，见
+                                     perception/cycle_tuning.py），打印 diff，
+                                     不生效
+  /agent goals tune suggest <id>  — 基于诊断报告规则触发的调优建议（不含
+                                     LLM），命中信号时生成草案，未命中时
+                                     明确告知"当前没有建议"
+  /agent goals tune list <id>     — 列出该 Goal 的历史调优草案（含状态）
+  /agent goals tune confirm <id> <proposal_id>
+                                   — 确认草案（仍未生效，只是"这份草案本身
+                                     被确认了"）
+  /agent goals tune apply <id> <proposal_id>
+                                   — 应用已确认的草案，逐项调用白名单参数
+                                     对应的既有修改入口
+  /agent goals tune reject <id> <proposal_id> [reason...]
+                                   — 拒绝草案，作废，不产生任何实际改动
 """
 
 from __future__ import annotations
@@ -160,6 +176,20 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
             return
         _cmd_diagnose(gb, paths, rest[0])
 
+    elif subcmd == "tune":
+        # [goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 2]
+        if not rest:
+            R.print_error(
+                "Usage: /agent goals tune <goal_id> <param>=<value> [...] [--reason <text>] "
+                "| /agent goals tune suggest <goal_id> "
+                "| /agent goals tune list <goal_id> "
+                "| /agent goals tune confirm <goal_id> <proposal_id> "
+                "| /agent goals tune apply <goal_id> <proposal_id> "
+                "| /agent goals tune reject <goal_id> <proposal_id> [reason...]"
+            )
+            return
+        _cmd_tune(gb, paths, rest[0], rest[1:])
+
     elif subcmd == "unrecur":
         # /agent goals unrecur <id> — 停止周期性（不删 Goal/cron job）
         if not rest:
@@ -182,7 +212,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
-            "progress, feedback, recur, unrecur, spec, phase, diagnose, status, reset-step"
+            "progress, feedback, recur, unrecur, spec, phase, diagnose, tune, status, reset-step"
         )
 
 
@@ -849,6 +879,168 @@ def _cmd_diagnose(gb, paths, goal_id: str) -> None:
         R.print_info("  机制说明:")
         for note in report.mechanism_notes:
             R.print_info(f"    - {note}")
+
+
+def _print_tuning_proposal(proposal) -> None:
+    R.print_info(f"调优草案 {proposal.id}（status={proposal.status}, source={proposal.source}）")
+    for c in proposal.proposed_changes:
+        R.print_info(f"  {c.param}: {c.from_value!r} -> {c.to_value!r}")
+        if c.reason:
+            R.print_info(f"    原因: {c.reason}")
+    if proposal.status == "applied" and proposal.apply_results:
+        R.print_info("  应用结果:")
+        for r in proposal.apply_results:
+            mark = "✓" if r["ok"] else "✗"
+            R.print_info(f"    {mark} {r['param']} -> {r['to']}: {r['detail']}")
+    if proposal.status == "rejected" and proposal.reject_reason:
+        R.print_info(f"  拒绝原因: {proposal.reject_reason}")
+
+
+def _cmd_tune(gb, paths, goal_id: str, rest: list[str]) -> None:
+    """[goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 2]
+    /agent goals tune <goal_id> <param>=<value> [...] [--reason <text>]
+    /agent goals tune suggest <goal_id>
+    /agent goals tune list <goal_id>
+    /agent goals tune confirm <goal_id> <proposal_id>
+    /agent goals tune apply <goal_id> <proposal_id>
+    /agent goals tune reject <goal_id> <proposal_id> [reason...]
+
+    注意第一个位置参数的双重语义：既可能是子动作（suggest/list/confirm/
+    apply/reject），也可能直接是 goal_id（生成草案的默认形式）。用是否
+    匹配已知子动作名来消歧，与项目里其它"动词可省略"的命令风格一致。
+    """
+    from mini_agent.perception import cycle_tuning as ct
+
+    known_actions = ("suggest", "list", "confirm", "apply", "reject")
+    if goal_id in known_actions:
+        action = goal_id
+        if not rest:
+            R.print_error(f"Usage: /agent goals tune {action} <goal_id> [...]")
+            return
+        target_goal_id = rest[0]
+        action_rest = rest[1:]
+    else:
+        action = "create"
+        target_goal_id = goal_id
+        action_rest = rest
+
+    node = gb.get(target_goal_id)
+    if node is None or not node.is_goal:
+        R.print_error(f"Goal 不存在：{target_goal_id}")
+        return
+
+    if action == "suggest":
+        from mini_agent.perception.cycle_diagnostics import build_cycle_diagnostics
+        report = build_cycle_diagnostics(paths, gb, target_goal_id)
+        suggestion = ct.suggest_tuning_from_diagnostics(report)
+        if suggestion is None:
+            R.print_info("当前没有基于诊断报告规则触发的调优建议。")
+            return
+        ct.save_proposal(paths, suggestion)
+        R.print_success("已生成规则触发的调优草案：")
+        _print_tuning_proposal(suggestion)
+        R.print_info(f"确认：/agent goals tune confirm {target_goal_id} {suggestion.id}")
+        return
+
+    if action == "list":
+        proposals = ct.list_proposals(paths, target_goal_id)
+        if not proposals:
+            R.print_info("该 Goal 还没有任何调优草案。")
+            return
+        for p in proposals:
+            R.print_info(f"  {p.id}  status={p.status}  source={p.source}  changes={len(p.proposed_changes)}")
+        return
+
+    if action == "confirm":
+        if not action_rest:
+            R.print_error(f"Usage: /agent goals tune confirm {target_goal_id} <proposal_id>")
+            return
+        try:
+            proposal = ct.confirm_tuning_proposal(paths, target_goal_id, action_rest[0])
+        except ValueError as e:
+            R.print_error(str(e))
+            return
+        R.print_success(f"草案 {proposal.id} 已确认（仍未生效）。")
+        R.print_info(f"应用：/agent goals tune apply {target_goal_id} {proposal.id}")
+        return
+
+    if action == "apply":
+        if not action_rest:
+            R.print_error(f"Usage: /agent goals tune apply {target_goal_id} <proposal_id>")
+            return
+        try:
+            from mini_agent.evolution.cron_scheduler import load_cron_scheduler
+            cs = load_cron_scheduler(paths)
+            spec_builder_cfg = None
+            try:
+                from mini_agent.config import load_config
+                spec_builder_cfg = load_config()
+            except Exception:
+                spec_builder_cfg = None
+            proposal = ct.apply_tuning_proposal(
+                paths, gb, cs, target_goal_id, action_rest[0], spec_builder_cfg=spec_builder_cfg,
+            )
+        except ValueError as e:
+            R.print_error(str(e))
+            return
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.commands.goals._cmd_tune.apply')
+            R.print_error(f"应用失败：{e}")
+            return
+        R.print_success(f"草案 {proposal.id} 已应用。")
+        _print_tuning_proposal(proposal)
+        return
+
+    if action == "reject":
+        if not action_rest:
+            R.print_error(f"Usage: /agent goals tune reject {target_goal_id} <proposal_id> [reason...]")
+            return
+        reason = " ".join(action_rest[1:]) if len(action_rest) > 1 else ""
+        try:
+            proposal = ct.reject_tuning_proposal(paths, gb, target_goal_id, action_rest[0], reason)
+        except ValueError as e:
+            R.print_error(str(e))
+            return
+        R.print_success(f"草案 {proposal.id} 已拒绝。")
+        return
+
+    # action == "create"：解析 <param>=<value> [...] [--reason <text>]
+    reason = ""
+    kv_args = []
+    i = 0
+    while i < len(action_rest):
+        tok = action_rest[i]
+        if tok == "--reason":
+            reason = " ".join(action_rest[i + 1:])
+            break
+        kv_args.append(tok)
+        i += 1
+    if not kv_args:
+        R.print_error(
+            f"Usage: /agent goals tune {target_goal_id} <param>=<value> [...] [--reason <text>]\n"
+            f"可选参数：{', '.join(ct.WHITELIST_PARAMS)}"
+        )
+        return
+    changes = []
+    for kv in kv_args:
+        if "=" not in kv:
+            R.print_error(f"格式错误（需要 param=value）：{kv!r}")
+            return
+        param, value = kv.split("=", 1)
+        changes.append({"param": param, "to": value, "reason": reason})
+    try:
+        proposal = ct.build_tuning_proposal(target_goal_id, changes, source="user_request")
+    except ct.WhitelistViolation as e:
+        R.print_error(str(e))
+        return
+    except ValueError as e:
+        R.print_error(str(e))
+        return
+    ct.save_proposal(paths, proposal)
+    R.print_success("已生成调优草案：")
+    _print_tuning_proposal(proposal)
+    R.print_info(f"确认：/agent goals tune confirm {target_goal_id} {proposal.id}")
 
 
 def _format_ago(seconds: float) -> str:

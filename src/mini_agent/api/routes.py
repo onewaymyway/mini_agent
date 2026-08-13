@@ -82,6 +82,16 @@ api/routes.py — FastAPI 路由定义
                                        and_interactive_tuning_plan.md Stage 1]
                                        跨轮次诊断报告：阶段/健康告警/cron 状态/
                                        最近轮次产出/机制说明一次性聚合返回
+    POST   /v1/goals/{goal_id}/tuning_proposals  [同上 Stage 2] 生成调优草案
+                                       （白名单参数：schedule/priority/
+                                       execution_phase/task_template/
+                                       regenerate_spec）
+    POST   /v1/goals/{goal_id}/tuning_proposals/suggest  规则触发的调优建议
+                                       （不含 LLM，命中信号才生成）
+    GET    /v1/goals/{goal_id}/tuning_proposals  列出历史草案（含状态）
+    POST   /v1/goals/{goal_id}/tuning_proposals/{id}/confirm  确认草案（仍未生效）
+    POST   /v1/goals/{goal_id}/tuning_proposals/{id}/apply    应用已确认的草案
+    POST   /v1/goals/{goal_id}/tuning_proposals/{id}/reject   拒绝草案，作废
     GET    /v1/self/diagnosis_feedback  自诊断信号闭环 P1-P4 汇总（改进候选清单/
                                          建议采纳率回看/能力快照 diff/skill 有效性）
     GET    /v1/self/goal_fairness    [goal_execution_fairness_improvement_plan.md
@@ -4069,6 +4079,151 @@ async def get_goal_cycle_diagnostics(goal_id: str, request: Request):
         log_exception(e, where='mini_agent.api.routes.get_goal_cycle_diagnostics')
         raise HTTPException(status_code=500, detail=f"生成诊断报告失败：{e}")
     return {"diagnostics": report.to_dict()}
+
+
+# ── Stage 2: 交互式调优（草案 → 确认 → 应用）──────────────────────────────
+# [goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md §3.3]
+
+def _cron_scheduler_readonly(paths: "AgentPaths"):
+    from mini_agent.evolution.cron_scheduler import load_cron_scheduler
+    return load_cron_scheduler(paths)
+
+
+@router.post("/goals/{goal_id}/tuning_proposals")
+async def create_tuning_proposal(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/tuning_proposals — 生成一份调优草案。
+    Body: { "changes": [{"param": str, "to": any, "reason": str?}], "source": str? }
+    `source` 默认 "user_request"；规则触发的建议请改用
+    `POST /v1/goals/{goal_id}/tuning_proposals/suggest`。
+    `param` 不在白名单内时返回 400，不生成任何草案。
+    """
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(goal_id)
+    if node is None or not node.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    body = await request.json()
+    changes = body.get("changes")
+    if not changes:
+        raise HTTPException(status_code=400, detail="changes is required and must be non-empty")
+    source = body.get("source", "user_request")
+    paths = _spec_paths(request)
+    from mini_agent.perception import cycle_tuning as ct
+    try:
+        proposal = ct.build_tuning_proposal(goal_id, changes, source=source)
+    except ct.WhitelistViolation as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    ct.save_proposal(paths, proposal)
+    return {"proposal": proposal.to_dict()}
+
+
+@router.post("/goals/{goal_id}/tuning_proposals/suggest")
+async def suggest_tuning_proposal(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/tuning_proposals/suggest — 基于诊断报告的
+    规则信号生成候选草案（不含 LLM），命中信号才会生成并落盘草案；没有
+    命中时返回 `{"proposal": null}`，不是错误。"""
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(goal_id)
+    if node is None or not node.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    paths = _spec_paths(request)
+    from mini_agent.perception.cycle_diagnostics import build_cycle_diagnostics
+    from mini_agent.perception import cycle_tuning as ct
+    report = build_cycle_diagnostics(paths, backlog, goal_id)
+    suggestion = ct.suggest_tuning_from_diagnostics(report)
+    if suggestion is None:
+        return {"proposal": None}
+    ct.save_proposal(paths, suggestion)
+    return {"proposal": suggestion.to_dict()}
+
+
+@router.get("/goals/{goal_id}/tuning_proposals")
+async def list_tuning_proposals(goal_id: str, request: Request):
+    """GET /v1/goals/{goal_id}/tuning_proposals — 列出历史草案（含状态）。"""
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(goal_id)
+    if node is None or not node.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    paths = _spec_paths(request)
+    from mini_agent.perception import cycle_tuning as ct
+    proposals = ct.list_proposals(paths, goal_id)
+    return {"proposals": [p.to_dict() for p in proposals]}
+
+
+@router.post("/goals/{goal_id}/tuning_proposals/{proposal_id}/confirm")
+async def confirm_tuning_proposal_route(goal_id: str, proposal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/tuning_proposals/{proposal_id}/confirm —
+    确认草案本身，此时仍未生效。"""
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(goal_id)
+    if node is None or not node.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    paths = _spec_paths(request)
+    from mini_agent.perception import cycle_tuning as ct
+    try:
+        proposal = ct.confirm_tuning_proposal(paths, goal_id, proposal_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"proposal": proposal.to_dict()}
+
+
+@router.post("/goals/{goal_id}/tuning_proposals/{proposal_id}/apply")
+async def apply_tuning_proposal_route(goal_id: str, proposal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/tuning_proposals/{proposal_id}/apply —
+    应用已确认的草案，逐项调用白名单参数对应的既有修改入口。某一项失败
+    不影响其它项，失败详情在返回的 `apply_results` 里逐条列出。"""
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(goal_id)
+    if node is None or not node.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    paths = _spec_paths(request)
+    from mini_agent.perception import cycle_tuning as ct
+    cs = _cron_scheduler_readonly(paths)
+    spec_builder_cfg = None
+    try:
+        http_server = getattr(request.app.state, "http_server", None)
+        self_agent = http_server.bridge.agent if http_server else None
+        spec_builder_cfg = getattr(self_agent, "cfg", None) if self_agent else None
+        if spec_builder_cfg is None:
+            from mini_agent.config import load_config
+            spec_builder_cfg = load_config()
+    except Exception:
+        spec_builder_cfg = None
+    try:
+        proposal = ct.apply_tuning_proposal(
+            paths, backlog, cs, goal_id, proposal_id, spec_builder_cfg=spec_builder_cfg,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.routes.apply_tuning_proposal_route')
+        raise HTTPException(status_code=500, detail=f"应用调优草案失败：{e}")
+    return {"proposal": proposal.to_dict()}
+
+
+@router.post("/goals/{goal_id}/tuning_proposals/{proposal_id}/reject")
+async def reject_tuning_proposal_route(goal_id: str, proposal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/tuning_proposals/{proposal_id}/reject —
+    拒绝草案，作废，不产生任何实际改动。Body 可选: {"reason": str}"""
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(goal_id)
+    if node is None or not node.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    paths = _spec_paths(request)
+    reason = ""
+    try:
+        body = await request.json()
+        reason = body.get("reason", "") if body else ""
+    except Exception:
+        reason = ""
+    from mini_agent.perception import cycle_tuning as ct
+    try:
+        proposal = ct.reject_tuning_proposal(paths, backlog, goal_id, proposal_id, reason)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"proposal": proposal.to_dict()}
 
 
 # ── Objective 执行操作（看板与自主性改进方案 Track D）────────────────────────

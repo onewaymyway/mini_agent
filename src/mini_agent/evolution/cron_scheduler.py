@@ -1039,6 +1039,20 @@ class CronScheduler:
         self.save()
         return True
 
+    def update_task_template(self, job_id: str, task_template: str) -> bool:
+        """[goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 2]
+        更新 job 的 task_template（cron 触发时注入的任务描述模板），不影响
+        其它字段。白名单调优机制里"是否重新生成执行规范"之外，另一个可调
+        参数是这个——与 update_schedule/update_priority 是同一层级的既有
+        修改入口，供 CycleTuningProposal.apply 复用，不重新发明写入逻辑。
+        """
+        job = self._jobs.get(job_id)
+        if not job:
+            return False
+        job.task_template = task_template
+        self.save()
+        return True
+
     # ── 查询 ──────────────────────────────────────────────────────────────────
 
     def is_job_running(self, job_id: str) -> bool:
