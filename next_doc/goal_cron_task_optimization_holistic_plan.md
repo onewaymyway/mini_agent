@@ -176,7 +176,10 @@ Goal）的 `execution_phase.last_known_effective_mode()`，经新增的纯函数
   系列用例 + `tests/test_unified_task_scheduler.py` 新增
   `test_resource_estimate_defaults_to_1_without_phase_history`/
   `test_resource_estimate_reflects_stable_phase`/
-  `test_resource_estimate_falls_back_to_1_without_paths`）。
+  `test_resource_estimate_falls_back_to_1_without_paths`）+
+  `tests/test_unified_scheduler_preview_route.py` 新增
+  `test_goal_channel_resource_estimate_reflects_phase`（确认路由层
+  `paths` 透传到位，端到端验证阶段感知的 `resource_estimate` 生效）。
 
 ## 5. 评估后决定本轮不实现的方向（记录，供后续排期）
 

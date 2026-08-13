@@ -91,6 +91,27 @@ class TestUnifiedSchedulerPreviewRoute(unittest.TestCase):
         self.assertEqual(goal_tasks[0]["task_id"], obj.id)
         self.assertEqual(goal_tasks[0]["source"], "goal")
 
+    def test_goal_channel_resource_estimate_reflects_phase(self):
+        """[goal_cron_task_optimization_holistic_plan.md §5 调度联动子项]
+        路由层正确把 `paths` 传给 `build_default_scheduler()`，goal 通道
+        的 `resource_estimate`/`extra.phase_mode` 应反映该 Goal 的实际
+        execution phase，而不是恒为 1.0 的旧行为。"""
+        from mini_agent.perception import execution_phase as ep
+
+        backlog = GoalBacklog(self.paths)
+        goal = backlog.add_goal(title="parent", priority=3)
+        backlog.add_objective(title="child objective", parent_id=goal.id, priority=3)
+        backlog.save()
+        ep.set_mode(self.paths, goal.id, "tidy")
+
+        client = _make_client(self.root, self.cfg)
+        resp = client.get("/v1/self/unified_scheduler_preview")
+        body = resp.json()
+        goal_tasks = body["channels"]["goal"]
+        self.assertEqual(len(goal_tasks), 1)
+        self.assertAlmostEqual(goal_tasks[0]["resource_estimate"], 0.85)
+        self.assertEqual(goal_tasks[0]["extra"].get("phase_mode"), "tidy")
+
     def test_cron_and_goal_cycle_channels_separated(self):
         cs = CronScheduler(self.paths, submit_fn=lambda *a, **k: True)
         normal_job = cs.add_job(name="normal", schedule="interval:3600", task_template="x")
