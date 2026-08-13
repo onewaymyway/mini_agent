@@ -6354,6 +6354,56 @@ def render_global_schedule_tab(client: AgentClient):
                     f"（{entry.get('reason', '')}）"
                 )
 
+    st.divider()
+    _render_fairness_diagnostics(client)
+
+
+# [goal_fairness_scheduling_diagnostics_plan.md] "⚖️ 调度公平性诊断"——纯
+# 只读快照，不提供任何操作按钮。回答"公平轮询/老化加成/时间片抢占这几个
+# 默认值拍脑袋定的参数，现在实际状态是什么样"，帮助判断参数是否需要调整，
+# 而不是凭感觉猜。
+def _render_fairness_diagnostics(client: AgentClient) -> None:
+    with st.expander("⚖️ 调度公平性诊断（只读）", expanded=False):
+        data = client.fairness_diagnostics() or {}
+        if "_error" in data:
+            st.caption(f"读取失败：{data['_error']}")
+            return
+        enabled = data.get("time_slicing_enabled", False)
+        st.markdown(f"时间片抢占（P4）：{'🟢 已开启' if enabled else '⚪ 未开启（默认关闭）'}")
+
+        cfg = data.get("config") or {}
+        st.caption(
+            f"当前生效参数 — 老化加成：每停滞 1 天 +{cfg.get('aging_boost_per_day', 1.0):.2f}"
+            f"（累计上限 {cfg.get('aging_boost_max_days', 14.0):.0f} 天），"
+            f"停滞判定阈值 {cfg.get('stale_days', 7.0):.0f} 天；"
+            f"抢占触发条件：单次时间片 ≥{cfg.get('yield_after_steps', 3)} 步 或 "
+            f"≥{cfg.get('yield_after_seconds', 900.0):.0f} 秒"
+        )
+
+        paused_count = data.get("paused_for_fairness_count", 0)
+        active_count = data.get("active_objectives_count", 0)
+        boosted_count = data.get("goals_with_active_aging_boost", 0)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("当前 active objectives", active_count)
+        c2.metric("当前老化加成生效数", boosted_count)
+        c3.metric("当前因抢占暂停数", paused_count)
+
+        objectives = data.get("objectives") or []
+        if objectives:
+            with st.expander(f"逐个 objective 明细（共 {len(objectives)} 条，按 effective_priority 排序）", expanded=False):
+                for item in objectives:
+                    flags = []
+                    if item.get("is_running"):
+                        flags.append("▶️运行中")
+                    if item.get("is_paused_for_fairness"):
+                        flags.append("⏸️已让出")
+                    flag_str = f"（{' '.join(flags)}）" if flags else ""
+                    st.caption(
+                        f"{item.get('objective_id', '')}：priority={item.get('priority', 0):.1f} "
+                        f"+ aging_boost={item.get('aging_boost', 0):.2f} "
+                        f"= effective={item.get('effective_priority', 0):.2f}{flag_str}"
+                    )
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Tab: ⚙️ 配置管理（kanban_config_management_plan.md）

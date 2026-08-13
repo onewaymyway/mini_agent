@@ -70,6 +70,8 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/sentinel/summary      [同上 方向 A] 哨兵聚合面板
     GET    /v1/goal_mode/stuck_stats [goal_stuck_stats_and_llm_progress_judge_
                                        plan.md §1] Goal stuck 历史统计（只读）
+    GET    /v1/self/fairness_diagnostics [goal_fairness_scheduling_
+                                       diagnostics_plan.md] 调度公平性参数快照
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
     POST   /v1/goals                 新增 Goal
     PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级/标题/描述
@@ -527,6 +529,51 @@ async def get_self_llm_pool_status(request: Request):
     if snap is None:
         return {"entries": [], "current": 0, "switched_from_preferred": False, "enabled": False}
     return {**snap, "enabled": True}
+
+
+# ── 调度公平性诊断（goal_fairness_scheduling_diagnostics_plan.md）──────────
+@router.get("/self/fairness_diagnostics")
+async def get_self_fairness_diagnostics(request: Request):
+    """GET /v1/self/fairness_diagnostics — 调度公平性参数只读快照：公平
+    轮询/老化加成/时间片抢占当前的配置值 + 每个 active objective 当前的
+    priority/aging_boost/effective_priority + 当前因时间片抢占被暂停的
+    execution 列表，不修改任何状态，纯观测。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    try:
+        from mini_agent.perception.fairness_diagnostics import fairness_diagnostics_snapshot
+
+        self_agent = http_server.bridge.agent
+        cfg = getattr(self_agent, "cfg", None) if self_agent else None
+
+        al = http_server.autonomous_loop
+        paths = getattr(al, "_paths", None) if al is not None else None
+        if paths is None and cfg is not None and getattr(cfg, "project_root", None) is not None:
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(cfg.project_root)
+
+        goal_backlog = None
+        if paths is not None:
+            try:
+                from mini_agent.perception.goal_backlog import load_goal_backlog
+                goal_backlog = load_goal_backlog(paths)
+            except Exception:
+                goal_backlog = None
+
+        objective_executor = getattr(al, "_objective_executor", None) if al is not None else None
+        if objective_executor is None:
+            objective_executor = getattr(http_server.bridge, "_objective_executor", None)
+
+        return fairness_diagnostics_snapshot(goal_backlog, objective_executor, cfg)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_fairness_diagnostics')
+        from mini_agent.perception.fairness_diagnostics import _empty_snapshot
+        return _empty_snapshot()
 
 
 # ── LLM 调用计数（方向 B.2）─────────────────────────────────────────────────

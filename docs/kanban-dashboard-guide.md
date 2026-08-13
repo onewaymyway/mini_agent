@@ -372,6 +372,18 @@ Tab。流程与目标看板一致：点击"🗑️ 删除"进入二次确认态�
   附带"数据不完整，可能因为期间状态变化过于频繁"的提示，而不是静默
   给出一个不准确的比例。
 
+Tab 末尾还有一个**⚖️ 调度公平性诊断**折叠区块（`GET /v1/self/
+fairness_diagnostics`，`next_doc/goal_fairness_scheduling_diagnostics_
+plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间片抢占这几个
+默认值拍脑袋定的参数，现在实际状态是什么样"。展示 P4 时间片抢占当前是否
+开启（默认关闭）、当前生效的老化加成/停滞判定/抢占触发阈值这几个参数值、
+当前 active objectives 总数/老化加成生效数/因抢占被暂停数三个指标，以及
+可展开的逐个 objective 明细（priority/aging_boost/effective_priority/
+是否在跑/是否被抢占暂停）。跟"🧠 自我状态"tab 已有的"⚖️ 执行公平性"面板
+（`/v1/self/goal_fairness`，Goal 粒度）是互补关系，不是重复：这个新面板
+是 Objective 粒度，且额外覆盖了 P4 抢占状态（P5 面板完全不涉及）。不新增
+任何历史事件持久化，只是"现在这一刻"的快照。
+
 ## `AgentClient` 封装的 API 端点
 
 `apps/mini_agent_kanban/client.py` 中的 `AgentClient` 封装了看板所需的全部 HTTP 调用，

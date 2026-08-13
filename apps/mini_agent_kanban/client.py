@@ -311,6 +311,13 @@ class AgentClient:
         高频反复卡住的目标列表，供"🧠 自我状态"tab 展示。"""
         return self._get("/goal_mode/stuck_stats", params={"recent_days": recent_days})
 
+    def fairness_diagnostics(self):
+        """[goal_fairness_scheduling_diagnostics_plan.md] 调度公平性参数
+        只读快照：公平轮询/老化加成/时间片抢占当前配置值 + 每个 active
+        objective 的 priority/aging_boost/effective_priority + 当前被
+        时间片抢占暂停的 execution 列表。"""
+        return self._get("/self/fairness_diagnostics")
+
     def force_reap(self, target: str = "all"):
         """[kanban_execution_visibility_and_control_plan.md 阶段 B/C]
         看板"🚨 立即回收"按钮：不必等 watchdog 下一次 tick，立刻对指定

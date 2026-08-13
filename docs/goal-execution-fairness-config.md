@@ -121,3 +121,23 @@ autonomy:
 `GET /v1/self/goal_fairness`，纯展示，不提供手动调整调度顺序的交互——人工
 干预仍通过看板已有的"改 priority/改 status"等通用手段进行。
 
+## P4 补充：调度公平性参数自诊断（goal_fairness_scheduling_diagnostics_plan.md）
+
+P5 的"⚖️ 执行公平性"区块是**按 Goal 聚合**的视角，展示的是老化加成/
+effective_priority；但 P4 时间片抢占本身是否开启、当前有没有 execution
+正因为抢占被暂停、抢占的触发阈值现在是什么值——这些完全没有暴露过。
+新增只读端点 `GET /v1/self/fairness_diagnostics`（"🗓️ 全局日程"tab 下的
+"⚖️ 调度公平性诊断"折叠区块）作为补充：
+
+- P4 时间片抢占当前是否开启（默认关闭）、`yield_after_steps`/
+  `yield_after_seconds` 两个阈值当前的值；
+- 当前因为抢占正被暂停的 execution 列表（`paused_for_fairness_*`）；
+- 按 **Objective 粒度**（而不是 Goal 粒度）展示 priority/aging_boost/
+  effective_priority/是否在跑/是否被抢占暂停——同一个 Goal 下多个
+  Objective 之间谁排在前面，`/self/goal_fairness` 看不出来。
+
+两个端点数据来源相同（`compute_aging_boost`/`active_objectives_fair_
+ranked`），互为补充而非替代：先看 `/self/goal_fairness` 了解"哪个 Goal
+最近被冷落"，再看 `/self/fairness_diagnostics` 了解"P4 抢占有没有在
+生效、具体是哪个 Objective 被让出去了"。
+
