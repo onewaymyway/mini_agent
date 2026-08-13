@@ -223,9 +223,73 @@ def fetch_exchange_rate_data() -> List[FinanceData]:
     return results
 
 
+def fetch_unemployment_data() -> List[FinanceData]:
+    """获取失业率数据
+
+    Returns:
+        List[FinanceData]: 失业率数据列表
+    """
+    results = []
+
+    if HAS_AKSHARE:
+        try:
+            df = ak.macro_china_unemployment()
+            for _, row in df.iterrows():
+                payload = {
+                    'date': row.get('月份', ''),
+                    'urban_unemployment': float(row.get('城镇调查失业率', 0) or 0),
+                    'urban_sampled': float(row.get('城镇调查失业率-样本调查', 0) or 0),
+                }
+                results.append(FinanceData(
+                    source='akshare',
+                    data_type='macro_unemployment',
+                    symbol='CN_UNEMPLOYMENT',
+                    timestamp=datetime.utcnow().isoformat(),
+                    payload=payload,
+                ))
+        except Exception as e:
+            logger.error(f"失业率数据获取失败: {e}")
+
+    return results
+
+
+def fetch_trade_data() -> List[FinanceData]:
+    """获取贸易收支数据
+
+    Returns:
+        List[FinanceData]: 贸易收支数据列表
+    """
+    results = []
+
+    if HAS_AKSHARE:
+        try:
+            df = ak.macro_china_trade_balance()
+            for _, row in df.iterrows():
+                payload = {
+                    'date': row.get('月份', ''),
+                    'export': float(row.get('出口', 0) or 0),
+                    'import': float(row.get('进口', 0) or 0),
+                    'balance': float(row.get('贸易差额', 0) or 0),
+                    'export_yoy': float(row.get('出口同比', 0) or 0),
+                    'import_yoy': float(row.get('进口同比', 0) or 0),
+                    'balance_yoy': float(row.get('贸易差额同比', 0) or 0),
+                }
+                results.append(FinanceData(
+                    source='akshare',
+                    data_type='macro_trade',
+                    symbol='CN_TRADE',
+                    timestamp=datetime.utcnow().isoformat(),
+                    payload=payload,
+                ))
+        except Exception as e:
+            logger.error(f"贸易收支数据获取失败: {e}")
+
+    return results
+
+
 def fetch_all_macro_data() -> Dict[str, List[FinanceData]]:
     """获取所有宏观经济数据
-    
+
     Returns:
         Dict: 包含所有宏观经济数据类型的字典
     """
@@ -236,6 +300,8 @@ def fetch_all_macro_data() -> Dict[str, List[FinanceData]]:
         'interest_rate': fetch_interest_rate_data(),
         'money_supply': fetch_money_supply_data(),
         'exchange_rate': fetch_exchange_rate_data(),
+        'unemployment': fetch_unemployment_data(),
+        'trade': fetch_trade_data(),
     }
 
 
@@ -265,7 +331,15 @@ class MacroFetcher:
     def get_exchange_rate(self) -> List[FinanceData]:
         """获取汇率数据"""
         return fetch_exchange_rate_data()
-    
+
+    def get_unemployment(self) -> List[FinanceData]:
+        """获取失业率数据"""
+        return fetch_unemployment_data()
+
+    def get_trade(self) -> List[FinanceData]:
+        """获取贸易收支数据"""
+        return fetch_trade_data()
+
     def get_all(self) -> Dict[str, List[FinanceData]]:
         """获取所有宏观数据"""
         return fetch_all_macro_data()

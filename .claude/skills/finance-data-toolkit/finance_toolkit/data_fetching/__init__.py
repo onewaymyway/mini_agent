@@ -123,9 +123,29 @@ from .macro_fetcher import (
     fetch_interest_rate_data,
     fetch_money_supply_data,
     fetch_exchange_rate_data,
+    fetch_unemployment_data,
+    fetch_trade_data,
     fetch_all_macro_data,
     MacroFetcher,
     macro_fetcher,
+)
+from .crypto_fetchers import (
+    fetch_crypto_quote,
+    fetch_crypto_kline,
+    fetch_crypto_rank,
+    fetch_crypto_trending,
+    CryptoFetcher,
+    crypto_fetcher,
+)
+from .commodity_fetchers import (
+    fetch_gold_quote,
+    fetch_gold_kline,
+    fetch_crude_oil_quote,
+    fetch_nymex_wti_quote,
+    fetch_dxy_quote,
+    fetch_lme_metal_quote,
+    CommodityFetcher,
+    commodity_fetcher,
 )
 
 # 股票数据抓取
@@ -221,9 +241,29 @@ __all__ = [
     'fetch_interest_rate_data',
     'fetch_money_supply_data',
     'fetch_exchange_rate_data',
+    'fetch_unemployment_data',
+    'fetch_trade_data',
     'fetch_all_macro_data',
     'MacroFetcher',
     'macro_fetcher',
+
+    # 加密货币数据抓取
+    'fetch_crypto_quote',
+    'fetch_crypto_kline',
+    'fetch_crypto_rank',
+    'fetch_crypto_trending',
+    'CryptoFetcher',
+    'crypto_fetcher',
+
+    # 大宗商品数据抓取
+    'fetch_gold_quote',
+    'fetch_gold_kline',
+    'fetch_crude_oil_quote',
+    'fetch_nymex_wti_quote',
+    'fetch_dxy_quote',
+    'fetch_lme_metal_quote',
+    'CommodityFetcher',
+    'commodity_fetcher',
 
     # 股票数据抓取
     'StockScraper',
