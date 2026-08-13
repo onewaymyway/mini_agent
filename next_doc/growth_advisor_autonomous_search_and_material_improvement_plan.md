@@ -110,6 +110,41 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
   已经是 opt-in，这里只是让已经 opt-in 的用户能进一步控制"查几个角度"，
   不引入新的默认开销
 
+## 3'. 阶段三：生成后自检（已实施）
+
+**问题**：第 4 节此前列出的"生成后自检"——报告正文写完后，回头核对是否
+真的引用了摘录内容、标注是否属实，之前只在 prompt 里"要求"模型做，没有
+验证步骤。阶段一、二让检索和摘录构造本身更扎实了，但"模型有没有真的按
+要求标注来源"仍然是纯粹依赖模型自觉，缺一步事后核对。
+
+**方案**：
+
+- `generate_growth_report()` 新增局部变量 `used_excerpts`，记录本次
+  真正拼进 prompt 的摘录列表（阶段一/二产出的 `excerpts`）；只有走了
+  `report_include_external_context` 分支且拿到非空摘录才会被设置，
+  其余情况维持空列表，不影响任何既有行为。
+- 新增纯函数 `_check_report_citations(body, excerpts) -> dict`：用正则
+  `[（(]\s*参考[：:]\s*([^）)]+)[）)]` 提取正文里所有『（参考：xxx）』
+  标注，跟 `excerpts` 的 `id` 列表做**双向子串匹配**（`ref in eid` 或
+  `eid in ref`）——因为 prompt 只要求"标注页面 id"，没规定必须逐字
+  复制完整 id，模型给出简写（比如只保留 `active_search:...#entity:
+  pandas` 里的 `pandas`）应该算"对得上"而不是"编造"，双向子串匹配是
+  在"漏判个别巧合的编造"和"把合理简写误判成编造"之间选择优先控制
+  误报率。返回 `excerpts_total`/`cited_count`（同一条摘录被引用多次
+  只计一次）/`citation_mentions_total`（标注出现的总次数）/
+  `hallucinated_refs`（对不上任何摘录 id 的引用原文，截断到 5 条、
+  每条 60 字）。
+- `GrowthReport` 新增 `citation_check: Optional[dict] = None` 字段，
+  只有正文由 LLM 生成（`source == "llm"`）且 `used_excerpts` 非空时才
+  会调用 `_check_report_citations()` 并写入这个字段；未开启外部背景、
+  没拿到摘录、或走规则模板兜底路径时保持 `None`——`None` 表示"这次
+  没有可核对的引用"，跟"核对后确认没有编造"（`hallucinated_refs`
+  为空列表）是两种不同的语义，不能混为一谈。
+- **不做任何自动纠正或阻断**：`citation_check` 纯粹是诊断字段，不
+  参与候选排序、不影响报告是否落盘，也不会因为检测到"编造引用"就
+  重新生成或拒绝写入——按照"仅展示、不影响判断"的一贯设计原则，怎么
+  处理这个诊断信息交给下游（看板/CLI，本轮未接入展示）决定。
+
 ## 3. 测试与回归
 
 - 新增 `tests/test_growth_advisor_active_search_material.py`：
@@ -123,6 +158,14 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
   - `generate_growth_report()`/`_maybe_run_cron_triggered_active_search()`
     两个调用点正确透传 `cfg.report_active_search_max_calls`，`cfg` 缺失
     该字段时退回 1
+- 新增 `tests/test_growth_advisor_report_citation_check.py`：
+  - `_check_report_citations()` 纯函数：完全命中、简写 id 仍算命中、
+    编造引用被记入 `hallucinated_refs`、无任何引用、同一摘录多次引用
+    只计一次
+  - `generate_growth_report()` 端到端：引用命中、编造引用、外部背景
+    关闭、没拿到摘录、模板兜底五种路径下 `citation_check` 的取值；
+    该字段随 `to_dict()`/`from_dict()` 正确序列化、旧数据缺字段时
+    反序列化落到 `None`
 - 跑存量 `tests/test_growth_advisor*.py`、
   `tests/test_growth_advisor_active_search_and_lifecycle.py`、
   `tests/test_growth_advisor_cron_search_and_status_history.py` 相关文件
@@ -130,7 +173,7 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
 
 ## 4. 后续方向（未实施，方向级规划）
 
-以下方向改动面更大或需要先观察阶段一/二实际效果再决定，本轮不实施：
+以下方向改动面更大或需要先观察阶段一/二/三实际效果再决定，本轮不实施：
 
 - **报告与学习素材分层**：现在"报告"（决策向简报）和"落地成 Goal 后的
   周期执行内容"之间没有按用户投入程度分层的"学习素材"产物（结构化路径 +
@@ -140,25 +183,36 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
   自己新增的记忆证据，不看外部世界本身是否发生变化；可以考虑复用阶段一
   新增的结构化摘录做"跟上次报告生成时的摘录内容比对，差异明显才提示刷新"，
   但需要先积累阶段一落地后的实际数据再评估值不值得做
-- **生成后自检**：报告正文写完后，回头核对是否真的引用了摘录内容、标注
-  是否属实，目前只在 prompt 里"要求"模型做，没有验证步骤
+- **生成后自检结果的展示与利用**：阶段三已经把"引用是否对得上"落到了
+  `GrowthReport.citation_check` 字段，但目前只是诊断记录，没有接入看板/
+  CLI 展示，也没有基于自检结果做任何自动重试（例如"编造引用比例过高就
+  换更强的 prompt 重试一次"）或提示用户的动作；建议先观察实际数据里
+  `hallucinated_refs` 出现的频率，再决定要不要往这个方向投入
 
 ---
 
 ## 5. 实施记录
 
-- **状态**：阶段一、阶段二均已实施完成。详细摘要见
+- **状态**：阶段一、阶段二、阶段三均已实施完成。详细摘要见
   `next_doc/growth_advisor_implementation_record.md` "自主检索与学习
   素材生成改进" 一节（避免跟本文档重复维护同一份内容）。
 - **改动文件**：
   - `src/mini_agent/evolution/growth_advisor.py`（`_active_search_
     excerpts_for_topic()` 重构，新增 `_excerpts_from_extracted_
     candidates()`/`_run_single_active_search_query()`/`_build_active_
-    search_queries()`；两个调用点透传 `max_calls`）
+    search_queries()`；两个调用点透传 `max_calls`；`GrowthReport` 新增
+    `citation_check` 字段，新增 `_check_report_citations()`，
+    `generate_growth_report()` 记录 `used_excerpts` 并在正文生成后
+    调用自检）
   - `src/mini_agent/config/models.py`（`report_active_search_max_calls`
     注释更新为"已激活"）
-  - `tests/test_growth_advisor_active_search_material.py`（新增，11 项）
-  - `docs/growth-advisor-guide.md`（新增 5.6 节 + 配置表格行）
-  - `next_doc/growth_advisor_implementation_record.md`（新增实施摘要）
+  - `tests/test_growth_advisor_active_search_material.py`（新增，11 项，
+    阶段一/二）
+  - `tests/test_growth_advisor_report_citation_check.py`（新增，11 项，
+    阶段三）
+  - `docs/growth-advisor-guide.md`（5.6 节新增 + 更新，纳入阶段三；
+    配置表格行）
+  - `next_doc/growth_advisor_implementation_record.md`（实施摘要更新
+    为阶段一/二/三均已完成）
 - 第 4 节列出的后续方向（学习素材分层、外部世界变化驱动刷新、生成后
-  自检）仍未实施，维持方向级规划。
+  自检结果的展示与利用）仍未实施，维持方向级规划。

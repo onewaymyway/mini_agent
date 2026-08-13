@@ -515,6 +515,19 @@ class GrowthReport:
     # 时缺该字段自然落到 `False`，等价于"不是因为质量信号被升级的"，
     # 不需要额外迁移。纯展示/诊断用途，不参与任何排序计算。
     quality_auto_upgraded: bool = False
+    # [阶段三：生成后自检，growth_advisor_autonomous_search_and_material_
+    # improvement_plan.md 第 4 节] 正文写完后，核对是否真的引用了拼进
+    # prompt 的外部摘录、有没有编造一个摘录列表里不存在的引用来源。
+    # 只有 `report_include_external_context` 开启且这次确实拿到了非空
+    # 摘录列表、正文由 LLM 生成时才会计算，取值：
+    #   {"excerpts_total": int,      # 拼进 prompt 的摘录总数
+    #    "cited_count": int,         # 正文里出现引用、且能对上摘录 id 的条数
+    #    "citation_mentions_total": int,  # 正文里『（参考：xxx）』的总次数
+    #    "hallucinated_refs": list[str]}  # 正文引用了但对不上任何摘录 id 的原文片段（截断展示，非结构化诊断用途，不参与任何排序/巩固判断）
+    # 默认 `None`：没开启外部背景、没有摘录、或正文走的是规则模板兜底，
+    # 三种情况都表示"这次没有可核对的引用"，不是"核对通过"，前端/CLI
+    # 展示时应区分对待。旧数据反序列化缺该字段时也落到 `None`，向后兼容。
+    citation_check: Optional[dict] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -2022,6 +2035,57 @@ def _generate_report_outline(
     return questions
 
 
+_CITATION_REF_RE = re.compile(r"[（(]\s*参考[：:]\s*([^）)]+)[）)]")
+
+
+def _check_report_citations(body: str, excerpts: list[dict[str, str]]) -> dict:
+    """[阶段三：生成后自检，growth_advisor_autonomous_search_and_material_
+    improvement_plan.md 第 4 节] 核对 `body` 里出现的『（参考：xxx）』标注
+    跟拼进 prompt 的 `excerpts`（阶段一/二产出，元素含 `id` 字段）对不对
+    得上，不涉及任何 LLM 调用，纯字符串比对。
+
+    设计取舍：
+    - prompt 里只要求"标注页面 id"，没规定 LLM 必须逐字复制完整 id
+      （例如 `active_search:python 入门#entity:pandas` 可能被简写成
+      `pandas` 或只保留 `#entity:pandas` 后半段），所以用**双向子串
+      包含**判断是否"对得上"：`ref in excerpt_id` 或 `excerpt_id in ref`
+      任一成立即算命中，避免把"合理简写"误判成"编造引用"而产生大量
+      噪音；代价是可能漏判个别确实编造但恰好凑巧是某个 id 子串的引用，
+      这类假阴性对"自检"这个诊断性质的功能可以接受，优先控制误报率。
+    - 每条 excerpt 最多被计入 `cited_count` 一次，即使正文里对同一条
+      摘录标注了多次引用，不重复计数（避免"引用同一条摘录 5 次"跟
+      "引用了 5 条不同摘录"在统计上分不清）。
+    - `hallucinated_refs`：正文里出现了『（参考：xxx）』但 xxx 跟任何
+      一条摘录 id 都对不上——可能是真的编造，也可能是 LLM 引用了自己
+      记忆里的其它内容、格式凑巧符合标注要求；这里只做记录，不做任何
+      自动纠正或阻断生成，交给下游（看板/CLI）展示决定怎么处理。截断
+      到最多 5 条、每条最多 60 字，避免诊断字段本身无限增长。
+    """
+    excerpt_ids = [str(e.get("id", "")).strip() for e in excerpts if e.get("id")]
+    refs = [m.strip() for m in _CITATION_REF_RE.findall(body or "") if m.strip()]
+
+    cited_ids: set[str] = set()
+    hallucinated: list[str] = []
+    for ref in refs:
+        matched = False
+        for eid in excerpt_ids:
+            if not eid:
+                continue
+            if ref in eid or eid in ref:
+                cited_ids.add(eid)
+                matched = True
+                break
+        if not matched:
+            hallucinated.append(ref[:60])
+
+    return {
+        "excerpts_total": len(excerpt_ids),
+        "cited_count": len(cited_ids),
+        "citation_mentions_total": len(refs),
+        "hallucinated_refs": hallucinated[:5],
+    }
+
+
 def generate_growth_report(
     paths,
     candidate: GrowthCandidate,
@@ -2087,6 +2151,12 @@ def generate_growth_report(
 
     body = None
     source = "template"
+    # [阶段三：生成后自检，growth_advisor_autonomous_search_and_material_
+    # improvement_plan.md 第 4 节] 记录本次实际拼进 prompt 的摘录列表，
+    # 供正文生成后核对"是否真的引用了摘录、标注是否属实"。默认空列表，
+    # 未开启 `report_include_external_context` 或没取到摘录时保持为空，
+    # 下面的自检直接跳过，不影响任何既有行为。
+    used_excerpts: list[dict[str, str]] = []
     if llm_helper is not None:
         external_context_section = ""
         if profile is not None and cfg is not None and getattr(cfg, "report_include_external_context", False):
@@ -2113,6 +2183,7 @@ def generate_growth_report(
                             max_calls=int(getattr(cfg, "report_active_search_max_calls", 1) or 1),
                         )
                     if excerpts:
+                        used_excerpts = excerpts
                         excerpt_lines = "\n".join(
                             f"- 参考：{e['id']}（{e['date']}）：{e['excerpt']}" for e in excerpts
                         )
@@ -2132,6 +2203,7 @@ def generate_growth_report(
                         )
             except Exception:
                 external_context_section = ""
+                used_excerpts = []
 
         dismiss_reason_note = ""
         if cfg is not None and getattr(cfg, "report_dismiss_reason_adaptive_enabled", True):
@@ -2180,6 +2252,16 @@ def generate_growth_report(
             body = None
             _record_llm_call_status(paths, "report_quality", "error", detail=str(exc)[:200])
 
+    # [阶段三：生成后自检] 只有真的拼过摘录进 prompt、且正文确实由 LLM
+    # 生成时才有核对的意义——规则模板兜底路径不引用任何外部摘录，检查
+    # 没有对象，直接跳过（`citation_check` 落 `None`，不产生误报）。
+    citation_check: Optional[dict] = None
+    if used_excerpts and body and source == "llm":
+        try:
+            citation_check = _check_report_citations(body, used_excerpts)
+        except Exception:
+            citation_check = None
+
     if not body:
         body = (
             f"# {candidate.title}\n\n"
@@ -2223,6 +2305,7 @@ def generate_growth_report(
         evidence_count_at_generation=candidate.evidence_count,
         is_exploration=is_exploration,
         quality_auto_upgraded=quality_auto_upgraded,
+        citation_check=citation_check,
     )
     _append_jsonl(paths.growth_reports_index_path, report.to_dict())
     GrowthBacklog(paths).attach_report(candidate.candidate_id, report_id)

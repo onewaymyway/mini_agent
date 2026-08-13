@@ -1615,7 +1615,7 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   跟自然日边界相关的既有时间敏感测试，本次未做改动也未修复，如需要
   应作为独立 issue 跟进。
 
-## 自主检索与学习素材生成改进（growth_advisor_autonomous_search_and_material_improvement_plan.md，阶段一/阶段二完成）
+## 自主检索与学习素材生成改进（growth_advisor_autonomous_search_and_material_improvement_plan.md，阶段一/阶段二/阶段三完成）
 
 - **触发背景**：针对"如何更好地自主检索、生成报告和学习素材"的专项
   复盘，定位到主动检索链路"查得浅、抽取结果没被用上"两处具体问题，
@@ -1630,11 +1630,43 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   行为，调大后按关键词表追加查询角度，各角度独立容错、摘录按 `id`
   去重合并；`generate_growth_report()`/`_maybe_run_cron_triggered_
   active_search()` 两个调用点透传该配置。
+- **阶段三**（本轮新增）：报告正文写完后新增一次"生成后自检"——
+  `generate_growth_report()` 记录本次实际拼进 prompt 的摘录列表
+  （`used_excerpts`），正文由 LLM 生成且摘录非空时调用新增的纯函数
+  `_check_report_citations(body, excerpts)`，用双向子串匹配核对正文
+  里『（参考：xxx）』标注是否对得上摘录 id（容忍 LLM 简写 id 的合理
+  情况，避免把简写误判成编造），结果写入 `GrowthReport.citation_check`
+  新字段（`excerpts_total`/`cited_count`/`citation_mentions_total`/
+  `hallucinated_refs`）。只做诊断记录，不阻断报告生成、不影响候选
+  排序；`citation_check` 为 `None` 表示"没有可核对的引用"（外部背景
+  未开启/没拿到摘录/走模板兜底），旧数据反序列化缺该字段时同样落到
+  `None`，向后兼容。
 - **测试**：新增 `tests/test_growth_advisor_active_search_material.py`
   （11 项，覆盖结构化摘录优先/兜底、摘录数量上限、多角度查询数量、
   关键词不足不重复拼凑、单角度失败不阻塞其它角度、多角度摘录去重、
-  两个调用点的 cfg 透传），全部通过；`tests/test_growth_advisor*.py`
-  （去除 dragdrop 看板专用文件）373 项全部通过，无回归。
-- **文档**：更新 `docs/growth-advisor-guide.md` 新增"5.6 自主检索与
-  素材沉淀改进"小节及配置项表格行；`config/models.py` 里
-  `report_active_search_max_calls` 的注释同步更新为"已激活"。
+  两个调用点的 cfg 透传）；新增 `tests/test_growth_advisor_report_
+  citation_check.py`（11 项，覆盖 `_check_report_citations()` 纯函数
+  的完全引用/简写引用/编造引用/无引用/重复引用五种场景，以及
+  `generate_growth_report()` 端到端在"引用命中""编造引用""外部背景
+  关闭""没拿到摘录""模板兜底"五种路径下 `citation_check` 的取值，
+  以及该字段随 `to_dict()`/`from_dict()` 的序列化/反序列化兼容性）；
+  全部通过。`tests/test_growth_advisor*.py`（去除 dragdrop 看板专用
+  文件）384 项全部通过，无回归。
+- **文档**：更新 `docs/growth-advisor-guide.md`"5.6 自主检索与素材
+  沉淀改进"小节，标题纳入阶段三、新增"阶段三：生成后自检"子节说明
+  `citation_check` 字段含义及取舍，"已知边界"列表相应更新；`config/
+  models.py` 里 `report_active_search_max_calls` 的注释此前已更新为
+  "已激活"，本轮无需再改。
+- **改动文件**：
+  - `src/mini_agent/evolution/growth_advisor.py`（`GrowthReport` 新增
+    `citation_check` 字段；新增 `_check_report_citations()`；
+    `generate_growth_report()` 记录 `used_excerpts` 并在正文生成后
+    调用自检、写入报告）
+  - `tests/test_growth_advisor_report_citation_check.py`（新增，11 项）
+  - `docs/growth-advisor-guide.md`（5.6 节更新）
+  - `next_doc/growth_advisor_autonomous_search_and_material_improvement_
+    plan.md`（第 5 节实施记录更新为阶段一/二/三均已完成，第 4 节移除
+    "生成后自检"这一条）
+  - `next_doc/growth_advisor_implementation_record.md`（本节）
+- 第 4 节剩余两个方向（学习素材分层、外部世界变化驱动刷新）仍未实施，
+  维持方向级规划。
