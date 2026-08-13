@@ -1602,6 +1602,40 @@ context` 开启、这次确实拿到了非空摘录、且正文由 LLM 生成—
   产物，暂未对齐这些能力，是否有必要视实际使用情况再定）；看板暂未
   接入学习素材的展示入口（目前只有 CLI/API）。
 
+## 5.8 外部世界变化驱动的刷新（`next_doc/growth_advisor_autonomous_search_and_material_improvement_plan.md`"外部世界变化驱动的刷新"方向）
+
+此前 `reports_needing_refresh()` 只看用户自己新增的记忆证据，完全不看
+"外部世界本身有没有变化"——一份报告哪怕参考的外部资讯早就过时了，只要
+用户自己没新增证据，也不会被标记为"该刷新"。现在新增一条独立的触发
+信号，**默认关闭**，跟证据数信号是 OR 关系（任一满足就纳入待刷新列表）：
+
+- **生成时留指纹**：`generate_growth_report()` 只要这次真的拿到了摘录
+  （无论最终正文走 LLM 还是模板兜底——这个信号回答"外部世界有没有
+  变化"，不要求 LLM 真的用上了这些摘录，触发条件比 `citation_check`
+  宽），就把摘录压缩成轻量指纹（`[{"id": 页面id, "hash": 内容前 12
+  位 md5}]`）写入 `GrowthReport.external_excerpt_fingerprint`，只存
+  id + 哈希，不存原文，避免索引文件无限增长。
+- **比对**：新增 `external_signal_drift_for_report(paths, report,
+  profile)`，拿这份指纹跟"现在被动扫描能拿到的摘录"做比对——纯只读，
+  只读本地已抓取落盘的 wiki 页面，**不触发任何新的检索或 LLM
+  调用**，成本接近于 0。返回 `{"new_excerpt_ids": [...],
+  "changed_excerpt_ids": [...], "drift_count": int}`；没有基线指纹
+  或找不到当前主题关键词时返回 `None`（不是"确认无变化"）。
+- **接入 `reports_needing_refresh()`**：新增 `profile=` 参数（默认
+  `None`）。只有同时传入 `profile` 且
+  `cfg.report_external_drift_refresh_enabled` 开启（默认 `False`）
+  时才会做比对；`drift_count` 达到 `cfg.report_external_drift_min_
+  changes`（默认 1）才计入待刷新，命中时行里带 `external_drift`
+  字段（未命中/未启用时不带这个键，保持默认行为的返回结构完全不变）。
+  证据数信号触发时不会额外做 drift 比对（避免不必要开销），因此
+  `external_drift` 只在"单独靠外部世界变化触发"时才出现。
+- 之前"证据快照缺失就整行跳过"的哨兵值逻辑（`evidence_count_at_
+  generation < 0`）现在只影响证据数这一条信号，drift 信号不受影响、
+  仍可独立触发——旧报告即便没有证据快照，只要有摘录指纹，依然能享受
+  这条新信号。
+- API `GET /growth/reports/refresh_candidates` 只有配置开启时才会
+  额外加载一次 `profile`，关闭时（默认）不产生任何额外开销。
+
 ## 6. 数据存放位置
 
 - `.agent/growth_backlog.jsonl` — 候选队列（整表重写，不是只追加）

@@ -381,6 +381,7 @@ next_doc/growth_advisor_research_quality_plan.md，本次新增）：
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -535,6 +536,18 @@ class GrowthReport:
     # 三种情况都表示"这次没有可核对的引用"，不是"核对通过"，前端/CLI
     # 展示时应区分对待。旧数据反序列化缺该字段时也落到 `None`，向后兼容。
     citation_check: Optional[dict] = None
+    # [growth_advisor_autonomous_search_and_material_improvement_plan.md
+    # 方向"外部世界变化驱动的刷新"] 生成这份报告时实际拼进 prompt 的
+    # 外部摘录的轻量指纹——`[{"id": 页面id, "hash": 摘录内容前 12 位
+    # md5}]`，只在 `report_include_external_context` 开启且这次确实
+    # 拿到非空摘录时写入，其余情况为 `None`。跟 `citation_check`（核对
+    # LLM 有没有如实标注引用）回答的是不同问题：这个字段回答"生成之后，
+    # 外部世界（本地已抓取到的那部分）有没有发生变化"，供
+    # `reports_needing_refresh()` 在 `report_external_drift_refresh_
+    # enabled` 开启时比对使用。只存 id + 内容指纹，不存摘录原文，避免
+    # 索引文件无限增长。旧数据反序列化缺该字段时落到 `None`，等价于
+    # "这份报告没有可比对的外部摘录基线"，不会被误判为"世界变了"。
+    external_excerpt_fingerprint: Optional[list[dict]] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -2146,6 +2159,73 @@ def _check_report_citations(body: str, excerpts: list[dict[str, str]]) -> dict:
     }
 
 
+def _compute_excerpt_fingerprint(excerpts: list[dict[str, str]]) -> list[dict]:
+    """[growth_advisor_autonomous_search_and_material_improvement_plan.md
+    方向"外部世界变化驱动的刷新"] 把一份摘录列表压缩成轻量指纹
+    `[{"id": ..., "hash": ...}]`，只存 12 位 md5 前缀，不存原文——
+    足够判断"同一个页面 id 的内容有没有变"，不需要也不应该把摘录原文
+    存进只追加的报告索引文件（避免无限增长，且原文已经在报告正文里
+    留了痕迹，没必要重复存一份）。"""
+    return [
+        {"id": e.get("id", ""), "hash": hashlib.md5((e.get("excerpt") or "").encode("utf-8")).hexdigest()[:12]}
+        for e in excerpts
+        if e.get("id")
+    ]
+
+
+def external_signal_drift_for_report(paths, report: "GrowthReport", profile) -> Optional[dict]:
+    """[growth_advisor_autonomous_search_and_material_improvement_plan.md
+    方向"外部世界变化驱动的刷新"] 拿一份报告生成时的外部摘录指纹
+    （`report.external_excerpt_fingerprint`）跟"现在被动扫描能拿到的
+    摘录"做比对，判断"外部世界（本地已抓取部分）有没有发生变化"。
+
+    纯只读比对，**不触发任何新的检索或 LLM 调用**——只读本地已经抓取
+    落盘的 wiki 页面（`_external_signal_excerpts_for_topic()` 走的是
+    被动扫描路径），成本接近于 0，可以放心在 `reports_needing_refresh()`
+    这种可能被频繁轮询的入口里调用。
+
+    返回 `None` 表示"没有可比对的基线或当前主题信息"（这份报告当时
+    没有外部摘录 / 候选没有 profile 里配置的主题关键词 / 任何异常），
+    不是"没有变化"——调用方不应把 `None` 当作"确认无变化"处理。
+
+    返回值非 `None` 时：
+    `{"new_excerpt_ids": [...],       # 现在能看到但当时没见过的页面 id
+      "changed_excerpt_ids": [...],   # 当时见过、但内容指纹变了的页面 id
+      "drift_count": int}`            # 上面两个列表长度之和，用于跟
+                                       # `report_external_drift_min_changes`
+                                       # 阈值比较
+    """
+    baseline = getattr(report, "external_excerpt_fingerprint", None)
+    if not baseline:
+        return None
+    try:
+        effective = _effective_topic_keywords(profile)
+        info = effective.get(report.title)
+        if not info:
+            return None
+        keywords = info["keywords"]
+        current_excerpts = _external_signal_excerpts_for_topic(paths, report.title, keywords)
+        current = _compute_excerpt_fingerprint(current_excerpts)
+        baseline_by_id = {row["id"]: row["hash"] for row in baseline if row.get("id")}
+        new_ids: list[str] = []
+        changed_ids: list[str] = []
+        for row in current:
+            eid = row.get("id")
+            if not eid:
+                continue
+            if eid not in baseline_by_id:
+                new_ids.append(eid)
+            elif baseline_by_id[eid] != row.get("hash"):
+                changed_ids.append(eid)
+        return {
+            "new_excerpt_ids": new_ids,
+            "changed_excerpt_ids": changed_ids,
+            "drift_count": len(new_ids) + len(changed_ids),
+        }
+    except Exception:
+        return None
+
+
 def generate_growth_report(
     paths,
     candidate: GrowthCandidate,
@@ -2322,6 +2402,18 @@ def generate_growth_report(
         except Exception:
             citation_check = None
 
+    # [方向"外部世界变化驱动的刷新"] 只要这次真的拿到了摘录（无论最终
+    # 正文走的是 LLM 还是模板兜底），就记一份指纹留作基线——这里回答
+    # "外部世界（本地已抓取部分）有没有变化"，跟上面 `citation_check`
+    # （回答"LLM 有没有如实引用"）是两个独立问题，不共用同一个触发
+    # 条件。
+    external_excerpt_fingerprint: Optional[list[dict]] = None
+    if used_excerpts:
+        try:
+            external_excerpt_fingerprint = _compute_excerpt_fingerprint(used_excerpts)
+        except Exception:
+            external_excerpt_fingerprint = None
+
     if not body:
         body = (
             f"# {candidate.title}\n\n"
@@ -2366,6 +2458,7 @@ def generate_growth_report(
         is_exploration=is_exploration,
         quality_auto_upgraded=quality_auto_upgraded,
         citation_check=citation_check,
+        external_excerpt_fingerprint=external_excerpt_fingerprint,
     )
     _append_jsonl(paths.growth_reports_index_path, report.to_dict())
     GrowthBacklog(paths).attach_report(candidate.candidate_id, report_id)
@@ -2962,7 +3055,7 @@ def _recent_evidence_delta(paths, dedupe_key: str, *, window_days: int) -> Optio
     return max(0, series[-1]["evidence_count"] - baseline["evidence_count"])
 
 
-def reports_needing_refresh(paths, cfg=None, *, goal_backlog=None) -> list[dict]:
+def reports_needing_refresh(paths, cfg=None, *, goal_backlog=None, profile=None) -> list[dict]:
     """返回"生成之后证据又显著增长、值得提示用户刷新一下"的报告列表。
     只看每个候选**当前挂着的那份报告**（`candidate.report_id`），已经被
     刷新过的旧报告不会重复出现。纯只读聚合，不做任何写入。
@@ -2982,8 +3075,21 @@ def reports_needing_refresh(paths, cfg=None, *, goal_backlog=None) -> list[dict]
     路径，两套机制回答的是同一个问题，继续并存只会让用户搞不清该看
     哪一个。不传（`None`，默认值）时行为与改动前完全一致，向后兼容
     所有既有调用方。
+
+    `profile`：[growth_advisor_autonomous_search_and_material_
+    improvement_plan.md 方向"外部世界变化驱动的刷新"] 可选。只有同时
+    传入 `profile` 且 `cfg.report_external_drift_refresh_enabled` 开启
+    时，才会额外用 `external_signal_drift_for_report()` 判断"外部世界
+    是否发生变化"，作为跟"证据数增长"平行的第二个触发条件（两者是
+    OR 关系——任一条件满足就纳入待刷新列表）。不传 `profile`（默认
+    `None`）或 `cfg` 里没开这个开关时，行为跟改动前完全一致，不会
+    多算一次比对开销。命中该条件的行返回时会带 `external_drift` 字段
+    （否则不带该键——保持返回结构对"没启用这个方向"的调用方完全
+    不变，而不是恒定输出一个 `None` 占位）。
     """
     min_new = getattr(cfg, "report_refresh_min_new_evidence", _DEFAULT_REPORT_REFRESH_MIN_NEW_EVIDENCE) if cfg is not None else _DEFAULT_REPORT_REFRESH_MIN_NEW_EVIDENCE
+    drift_enabled = profile is not None and bool(getattr(cfg, "report_external_drift_refresh_enabled", False))
+    drift_min_changes = getattr(cfg, "report_external_drift_min_changes", 1) if cfg is not None else 1
     reports_by_id = {r.report_id: r for r in list_reports(paths)}
     out = []
     for c in GrowthBacklog(paths).load_all():
@@ -2999,27 +3105,45 @@ def reports_needing_refresh(paths, cfg=None, *, goal_backlog=None) -> list[dict]
         report = reports_by_id.get(c.report_id)
         if report is None:
             continue
+
+        drift = None
+        drift_trigger = False
+        if drift_enabled:
+            try:
+                drift = external_signal_drift_for_report(paths, report, profile)
+            except Exception:
+                drift = None
+            drift_trigger = drift is not None and drift.get("drift_count", 0) >= drift_min_changes
+
         if report.evidence_count_at_generation < 0:
             # [P5-1] 哨兵值：生成时的证据数快照缺失（反序列化自这个字段
-            # 引入之前的旧数据），不做"证据从 0 涨到现在"这种误判，直接
-            # 跳过，不计入待刷新。
+            # 引入之前的旧数据），证据数这条信号不做"从 0 涨到现在"这种
+            # 误判；但外部世界变化信号跟证据数快照无关，不受这个哨兵值
+            # 影响，仍然可能单独触发。
+            new_evidence = None
+            evidence_trigger = False
+        else:
+            new_evidence = c.evidence_count - report.evidence_count_at_generation
+            evidence_trigger = new_evidence >= min_new
+
+        if not (evidence_trigger or drift_trigger):
             continue
-        new_evidence = c.evidence_count - report.evidence_count_at_generation
-        if new_evidence >= min_new:
-            recent_delta = _recent_evidence_delta(
-                paths, c.dedupe_key(), window_days=_REPORT_REFRESH_RECENT_BURST_WINDOW_DAYS
-            )
-            out.append(
-                {
-                    "candidate_id": c.candidate_id,
-                    "title": c.title,
-                    "report_id": report.report_id,
-                    "evidence_count": c.evidence_count,
-                    "evidence_count_at_generation": report.evidence_count_at_generation,
-                    "new_evidence": new_evidence,
-                    "recent_evidence_delta": recent_delta,
-                }
-            )
+
+        recent_delta = _recent_evidence_delta(
+            paths, c.dedupe_key(), window_days=_REPORT_REFRESH_RECENT_BURST_WINDOW_DAYS
+        )
+        row = {
+            "candidate_id": c.candidate_id,
+            "title": c.title,
+            "report_id": report.report_id,
+            "evidence_count": c.evidence_count,
+            "evidence_count_at_generation": report.evidence_count_at_generation,
+            "new_evidence": new_evidence if new_evidence is not None else 0,
+            "recent_evidence_delta": recent_delta,
+        }
+        if drift_enabled and drift_trigger:
+            row["external_drift"] = drift
+        out.append(row)
     return sorted(
         out,
         key=lambda row: (-(row["recent_evidence_delta"] or 0), -row["new_evidence"]),

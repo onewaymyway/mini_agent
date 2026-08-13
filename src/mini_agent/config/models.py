@@ -1810,6 +1810,18 @@ class GrowthAdvisorConfig:
     # 候选证据数比上一次生成报告时又新增达到这个数量，才提示"可以刷新
     # 这份报告了"，避免证据每多 1 条就打扰用户。
     report_refresh_min_new_evidence: int = 3
+    # [growth_advisor_autonomous_search_and_material_improvement_plan.md
+    # 方向"外部世界变化驱动的刷新"] 默认关闭：`reports_needing_refresh()`
+    # 此前只看用户自己新增的记忆证据，不看外部世界本身是否发生变化。
+    # 打开后，额外拿"生成报告时拼进 prompt 的外部摘录指纹"跟"现在被动
+    # 扫描能拿到的摘录"做比对（只读比对本地已抓取的素材，不触发新的
+    # 检索/LLM 调用），出现指纹变化时也会把这份报告纳入待刷新列表。
+    # 只对开启过 `report_include_external_context` 且当时确实拿到了
+    # 摘录的报告生效，其余报告这个信号恒为 `None`，不受影响。
+    report_external_drift_refresh_enabled: bool = False
+    # 外部摘录指纹变化达到这个条数（新增摘录 + 内容变化的摘录之和）才
+    # 计入待刷新，避免摘录来源哪怕只更新了一个字都被判定为"世界变了"。
+    report_external_drift_min_changes: int = 1
 
     # ── P4-5：通知策略细化（growth_advisor_improvement_plan_v2.md P4-5）─
     # 按主题类别覆盖推送偏好——目前只支持"kanban_only"这一种覆盖值（把

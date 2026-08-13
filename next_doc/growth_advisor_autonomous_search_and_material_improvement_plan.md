@@ -212,6 +212,55 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
   对齐这些能力取决于实际使用情况，本轮不预先假设；看板暂未接入学习
   素材的展示入口，目前只有 CLI/API。
 
+## 3''''. 外部世界变化驱动的刷新（已实施，基础机制，不接入看板/CLI 展示）
+
+**问题**：`reports_needing_refresh()` 此前只看用户自己新增的记忆证据，
+完全不看外部世界本身是否发生变化——一份报告哪怕参考的外部资讯早就
+过时了，只要用户自己没新增证据，也不会被标记为"该刷新"。
+
+**方案**（默认关闭，不等真实使用数据，先做好基础机制，接入展示留到
+后续观察需要再做）：
+
+- `generate_growth_report()` 只要这次真的拿到了摘录（不要求最终正文
+  走 LLM——这个信号回答"外部世界有没有变化"，跟 `citation_check`
+  回答的"LLM 有没有如实引用"是不同问题，触发条件更宽），就用新增的
+  `_compute_excerpt_fingerprint()` 把摘录压缩成轻量指纹（只存 id +
+  内容前 12 位 md5，不存原文，避免索引文件无限增长）写入
+  `GrowthReport.external_excerpt_fingerprint`。
+- 新增 `external_signal_drift_for_report(paths, report, profile)`：
+  拿这份指纹跟"现在被动扫描能拿到的摘录"（`_external_signal_
+  excerpts_for_topic()`）比对，**纯只读，不触发任何新的检索或 LLM
+  调用**，成本接近于 0。返回 `{"new_excerpt_ids": [...],
+  "changed_excerpt_ids": [...], "drift_count": int}`；没有基线指纹
+  （报告当时没有外部摘录）或找不到当前主题关键词（profile 里的主题
+  配置变了）时返回 `None`——`None` 不等于"确认无变化"，是"这次没有
+  可比对的基线/上下文"。
+- `reports_needing_refresh()` 新增 `profile=` 参数（默认 `None`，
+  向后兼容所有既有调用方）。只有同时传入 `profile` 且新增的配置项
+  `cfg.report_external_drift_refresh_enabled`（默认 `False`）开启时
+  才会做比对；`drift_count` 达到 `cfg.report_external_drift_min_
+  changes`（默认 1）才计入待刷新，命中的行会带 `external_drift`
+  字段，未命中/未启用时不带这个键——保持"默认关闭时返回结构跟改动前
+  完全一致"，不是恒定输出一个占位 `None`。
+- 证据数信号和外部世界变化信号是 **OR 关系**：任一满足就纳入待刷新
+  列表；证据数信号触发时不会再额外做一次 drift 比对（避免不必要
+  开销），所以 `external_drift` 字段只会出现在"单独靠外部世界变化
+  触发"的行里。
+- 之前"证据快照缺失（`evidence_count_at_generation < 0`，旧数据
+  哨兵值）就整行跳过"的逻辑收窄为只影响证据数这一条信号——drift
+  信号不依赖这个快照，旧报告即便没有证据快照，只要有摘录指纹，仍然
+  可能单独触发这条新信号。
+- API `GET /growth/reports/refresh_candidates`：只有 `cfg.report_
+  external_drift_refresh_enabled` 开启时才会额外加载一次 `profile`
+  并透传，关闭时（默认）不产生任何额外开销（不加载 profile、不做
+  比对）。
+- **刻意不做的事**：这一轮只做基础机制，不接入看板/CLI 的独立展示——
+  配置默认关闭，`external_drift` 字段目前只是"混在证据数信号同一份
+  列表里的额外字段"，没有专门的界面把它单独渲染出来；也没有 CLI
+  命令可以快速开启/查看这个功能的效果。是否值得做展示，建议先手动
+  开启配置观察一段时间的实际触发频率再定（这也是为什么第 4 节仍然
+  保留"外部世界变化驱动的刷新接入看板/CLI 展示"这一条后续方向）。
+
 ## 3. 测试与回归
 
 - 新增 `tests/test_growth_advisor_active_search_material.py`：
@@ -256,15 +305,22 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
     往返及旧数据缺字段时的默认值
   - CLI `/growth material`：候选无素材时生成并展示、已有素材时直接
     展示不重复生成、未知候选报错不抛异常
+- 新增 `tests/test_growth_advisor_external_drift_refresh.py`（16 项）：
+  - `_compute_excerpt_fingerprint()`：id+哈希提取、缺 id 的条目跳过、
+    相同内容哈希相同、不同内容哈希不同
+  - `generate_growth_report()` 的 `external_excerpt_fingerprint` 字段：
+    有摘录时非空且正确、没摘录/规则模板兜底时为 `None`（不要求
+    `source == "llm"`，验证跟 `citation_check` 的触发条件不同）
+  - `external_signal_drift_for_report()`：无基线/主题信息缺失时返回
+    `None`；内容不变/内容变化/新增页面三种场景的 `drift_count` 等
+  - `reports_needing_refresh()`：不传 `profile` 时行为与改动前完全
+    一致；单独靠外部世界变化触发时结果带 `external_drift` 字段；
+    证据数触发时不带该字段（不做多余比对）；`min_changes` 阈值生效
 
 ## 4. 后续方向（未实施，方向级规划）
 
 以下方向改动面更大或需要先观察实际效果再决定，本轮不实施：
 
-- **外部世界变化驱动的刷新**：`reports_needing_refresh()` 目前只看用户
-  自己新增的记忆证据，不看外部世界本身是否发生变化；可以考虑复用阶段一
-  新增的结构化摘录做"跟上次报告生成时的摘录内容比对，差异明显才提示刷新"，
-  但需要先积累阶段一落地后的实际数据再评估值不值得做
 - **生成后自检结果的自动利用**：目前自检结果（`citation_check`）已经
   接入诊断面板和 CLI 展示，但还没有基于自检结果做任何自动动作——例如
   "某个方向的报告编造引用比例持续偏高，就换更强的 prompt 或提高
@@ -274,44 +330,59 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
   背景摘录、生成后自检、"该不该刷新"这些报告专属能力；也没有接入
   看板展示入口（目前只有 CLI/API）。是否需要对齐取决于实际使用情况，
   建议先观察素材的实际生成/查看频率再决定
+- **外部世界变化驱动的刷新接入看板/CLI 展示**：`reports_needing_
+  refresh()` 已经能识别外部世界变化并在返回行里带 `external_drift`
+  字段，但目前没有任何界面把这个字段单独渲染出来（跟证据数信号混在
+  一起展示）；配置开关默认关闭，也没有 CLI 命令可以直接开启/查看
+  这个功能的效果。建议先在少数场景手动开启配置观察实际触发频率，
+  再决定要不要接入看板的独立展示
 
 ---
 
 ## 5. 实施记录
 
-- **状态**：阶段一、阶段二、阶段三（含"生成后自检结果的展示"）、以及
-  "报告与学习素材分层"均已实施完成。详细摘要见 `next_doc/growth_
-  advisor_implementation_record.md`"自主检索与学习素材生成改进"一节
-  （避免跟本文档重复维护同一份内容）。
+- **状态**：阶段一、阶段二、阶段三（含"生成后自检结果的展示"）、
+  "报告与学习素材分层"、以及"外部世界变化驱动的刷新"（基础机制）
+  均已实施完成。详细摘要见 `next_doc/growth_advisor_implementation_
+  record.md`"自主检索与学习素材生成改进"一节（避免跟本文档重复
+  维护同一份内容）。
 - **改动文件**：
   - `src/mini_agent/evolution/growth_advisor.py`（`_active_search_
     excerpts_for_topic()` 重构，新增 `_excerpts_from_extracted_
     candidates()`/`_run_single_active_search_query()`/`_build_active_
     search_queries()`；两个调用点透传 `max_calls`；`GrowthReport` 新增
-    `citation_check` 字段，新增 `_check_report_citations()`，
-    `generate_growth_report()` 记录 `used_excerpts` 并在正文生成后
-    调用自检；`diagnostics_snapshot()` 新增 `citation_check` 区块，
-    新增 `_citation_check_diagnostics_summary()`；`GrowthCandidate`
-    新增 `material_id` 字段；新增 `GrowthLearningMaterial` dataclass、
+    `citation_check`/`external_excerpt_fingerprint` 字段，新增
+    `_check_report_citations()`/`_compute_excerpt_fingerprint()`/
+    `external_signal_drift_for_report()`；`generate_growth_report()`
+    记录 `used_excerpts` 并在正文生成后调用自检、计算摘录指纹；
+    `diagnostics_snapshot()` 新增 `citation_check` 区块，新增
+    `_citation_check_diagnostics_summary()`；`GrowthCandidate` 新增
+    `material_id` 字段；新增 `GrowthLearningMaterial` dataclass、
     `generate_learning_material()`/`list_materials()`/
-    `get_material_by_id()`；`GrowthBacklog` 新增 `attach_material()`）
+    `get_material_by_id()`；`GrowthBacklog` 新增 `attach_material()`；
+    `reports_needing_refresh()` 新增 `profile=` 参数，OR 上外部世界
+    变化信号）
+  - `src/mini_agent/config/models.py`（`report_active_search_max_calls`
+    注释更新为"已激活"；新增 `report_external_drift_refresh_enabled`/
+    `report_external_drift_min_changes`）
   - `src/mini_agent/storage/paths.py`（新增 `growth_materials_index_
     path` 属性、`growth_material_path()` 方法）
-  - `src/mini_agent/config/models.py`（`report_active_search_max_calls`
-    注释更新为"已激活"）
   - `src/mini_agent/cli/commands/growth_cmd.py`（`/growth report` 打印
     正文后追加自检摘要；新增 `/growth material <id>` 子命令）
   - `src/mini_agent/cli/parser.py`（帮助文本新增 `/growth material` 行）
   - `src/mini_agent/api/routes.py`（新增 `POST /growth/candidates/{id}/
-    material/generate`、`GET /growth/materials/{id}`）
+    material/generate`、`GET /growth/materials/{id}`；`GET /growth/
+    reports/refresh_candidates` 配置开启时加载 profile 并透传）
   - `tests/test_growth_advisor_active_search_material.py`（新增，11 项，
     阶段一/二）
   - `tests/test_growth_advisor_report_citation_check.py`（新增，16 项，
     阶段三 + 展示）
   - `tests/test_growth_advisor_learning_material.py`（新增，18 项，
     报告与学习素材分层）
-  - `docs/growth-advisor-guide.md`（5.6 节新增 + 更新，纳入阶段三与
-    展示；新增 5.7 节说明学习素材分层；配置表格行）
+  - `tests/test_growth_advisor_external_drift_refresh.py`（新增，16 项，
+    外部世界变化驱动的刷新）
+  - `docs/growth-advisor-guide.md`（5.6/5.7 节新增/更新；新增 5.8 节
+    说明外部世界变化驱动的刷新机制）
   - `next_doc/growth_advisor_implementation_record.md`（实施摘要更新）
-- 第 4 节剩余方向（外部世界变化驱动刷新、自检结果的自动利用、学习
-  素材对齐报告能力）仍未实施，维持方向级规划。
+- 第 4 节剩余三个方向（自检结果的自动利用、学习素材对齐报告能力、
+  外部世界变化驱动的刷新接入看板/CLI 展示）仍未实施，维持方向级规划。

@@ -6533,7 +6533,22 @@ async def get_growth_reports_refresh_candidates(request: Request):
             goal_backlog = GoalBacklog(paths)
         except Exception:
             goal_backlog = None
-        return {"refresh_candidates": ga.reports_needing_refresh(paths, cfg, goal_backlog=goal_backlog)}
+        # [growth_advisor_autonomous_search_and_material_improvement_
+        # plan.md 方向"外部世界变化驱动的刷新"] 只有配置开启时才多付
+        # 一次 profile 加载 + 比对的成本，关闭时（默认）行为与改动前
+        # 完全一致。
+        profile = None
+        if getattr(cfg, "report_external_drift_refresh_enabled", False):
+            try:
+                from mini_agent.profile import UserProfileManager
+                profile = UserProfileManager(paths).load()
+            except Exception:
+                profile = None
+        return {
+            "refresh_candidates": ga.reports_needing_refresh(
+                paths, cfg, goal_backlog=goal_backlog, profile=profile,
+            )
+        }
     except HTTPException:
         raise
     except Exception as e:
