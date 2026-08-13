@@ -201,6 +201,7 @@
     "report_two_stage_enabled":true,
     "report_active_search_enabled":true,
     "cron_triggered_active_search_enabled":true,
-    "pursuit_increment_llm_review_enabled":true
+    "pursuit_increment_llm_review_enabled":true,
+    "report_active_search_max_calls":5
   }
 }
