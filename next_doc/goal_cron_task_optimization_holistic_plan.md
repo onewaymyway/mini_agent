@@ -1,8 +1,8 @@
 # Goal/Cron 任务优化 —— 真实需求梳理与系统理念
 
-> 状态：方向 B（阶段健康告警）、方向 C（下一轮从简执行）已实施完成；
-> 方向 A（阶段感知的归档/调度联动）、方向 D（跨 Goal 探索期并发治理）
-> 本轮评估后记录方向、暂不实现，见 §5。
+> 状态：方向 B（阶段健康告警）、方向 C（下一轮从简执行）、方向 A（阶段
+> 感知的归档门禁）已实施完成；方向 D（跨 Goal 探索期并发治理）本轮评估
+> 后记录方向、暂不实现，见 §5。
 > 前置背景：`goal_cron_binding_plan.md`（绑定/触发/回收）、
 > `goal_execution_phase_improvement_plan.md`（explore/converge/stable/tidy
 > 阶段机制）、`goal_cron_visibility_and_intervention_improvement_plan.md`
@@ -108,6 +108,24 @@ Goal 触发主流程。
 新增 REST 端点 `POST /v1/goals/{goal_id}/lightweight_next_cycle`，看板
 "⏰ 周期性设置"折叠区新增"🪶 下一轮从简"按钮，与"跳过下一轮"并列。
 
+### 方向 A（已实施）：阶段感知的归档门禁
+
+在 `execution_phase.py` 新增只读函数 `last_known_effective_mode(state)`：
+不重新触发一次完整的规则判定（那是 `resolve_effective_mode` 的职责，
+需要 `cycle_no`/`spec_confirmed` 等触发时才有的上下文），只读取"最近一次
+已知的有效阶段"——`mode != "auto"` 时直接是该阶段；`mode == "auto"` 时从
+`mode_history` 找最近一条 `reason == "rule_based_auto"` 的记录还原阶段名；
+完全没有历史记录时保守返回 `"explore"`（不确定就当作还在探索期，不提前
+归档/放宽资源控制）。
+
+`goal_cron_bridge.reap_finished_cycles()` 在调用
+`goal_backlog.archive_finished_cycle_children()` 之前，先用这个函数读取
+当前阶段，只有 `stable`/`tidy`（已收敛）才允许归档；`explore`/`converge`
+阶段的早期尝试细节可能还有参考价值，暂缓归档，避免"刚探索完还没收敛就被
+清出 `goals.json`，用户想回看当时试过哪些方案时已经找不到"。`paths` 拿不
+到或阶段状态读取异常时保守按"允许归档"处理，与本条门禁引入之前的行为
+一致，不因为诊断信息缺失而阻塞归档这个主功能。
+
 ## 4. 分阶段落地记录
 
 - **Stage 1（已实施）**：方向 C —— `GoalNode.next_cycle_lightweight` 字段
@@ -118,17 +136,22 @@ Goal 触发主流程。
   接入 + 单元测试（`tests/test_execution_phase.py` 新增
   `check_phase_health` 系列用例 + `tests/test_goal_cron_bridge.py` 新增
   通知派发用例）。
+- **Stage 3（已实施）**：方向 A —— `execution_phase.last_known_effective_mode()`
+  + `goal_cron_bridge.reap_finished_cycles()` 归档调用前置门禁 + 单元测试
+  （`tests/test_execution_phase.py` 新增 `last_known_effective_mode` 系列
+  用例 + `tests/test_goal_cron_bridge.py` 新增
+  `test_reap_skips_archive_while_in_explore_phase`/
+  `test_reap_archives_once_phase_reaches_stable`）。
 
 ## 5. 评估后决定本轮不实现的方向（记录，供后续排期）
 
-- **方向 A：阶段感知的归档/调度联动**——现状 `archive_finished_cycle_children`
-  是纯"轮数阈值触发"，不区分当前处于哪个阶段；`stability_score` 也只用于
-  看板展示，不参与 `UnifiedTaskScheduler` 的资源分配权重。设想是 explore
-  期给更宽松的超时/重试预算、更谨慎的归档（早期尝试细节可能还有参考价值），
-  stable 期收紧成本控制、更积极归档。本轮不做的原因：这需要改动调度器和
-  归档函数的调用约定（新增可选参数或读取阶段状态的依赖），影响面比方向
-  B/C 大，且目前没有真实使用数据支撑"具体阈值该设多少"，贸然实现容易
-  引入一套没有校准过的策略。留待观察方向 B 的告警实际命中情况后再排期。
+- **方向 A 的调度联动子项（归档门禁已实施，调度权重部分仍未做）**——
+  `stability_score`/`last_known_effective_mode` 目前只用于归档门禁和看板
+  展示，还没接入 `UnifiedTaskScheduler` 的资源分配权重（explore 期给更
+  宽松的超时/重试预算，stable 期收紧成本控制）。本轮不做的原因：这需要
+  改动调度器的调用约定，影响面比归档门禁大，且目前没有真实使用数据支撑
+  "具体权重该设多少"，贸然实现容易引入一套没有校准过的策略。留待观察
+  归档门禁 + 方向 B 告警的实际命中情况后再排期。
 - **方向 D：跨 Goal 探索期并发治理**——多个 recurring Goal 同时处于
   explore 阶段时，理论上系统层面的不确定性会叠加，`ResourceArbiter` 应该
   有一条"同时处于 explore 的 Goal 数量" 软上限规则。本轮不做的原因：当前
@@ -151,3 +174,11 @@ Goal 触发主流程。
   可能被同时设置——`_fire_goal_cycle()` 里 `skip_next_cycle` 的判断在前，
   命中后直接 return，不会走到 `next_cycle_lightweight` 的处理分支，语义
   上"跳过"优先于"降级"，符合直觉（不跑就不存在"跑得简单一点"）。
+- 归档门禁只改变 `reap_finished_cycles()` 内部触发归档的**时机**，不改变
+  `GoalBacklog.archive_finished_cycle_children()` 本身的行为——该方法仍可
+  被直接调用（CLI/看板未来若要提供"立即归档"入口，不受这条门禁限制）。
+  对于从未主动使用 execution phase 机制（阶段状态文件不存在或一直是
+  `auto` 且没有历史记录）的 Goal，门禁会保守地把它们当作"仍在 explore"，
+  在真正积累出规则判定历史之前不做归档；实际使用中 `_fire_goal_cycle()`
+  每轮都会调用 `_append_execution_phase_context()`，跑不了几轮阶段历史
+  就会出现，不会长期卡在这个保守默认值上。

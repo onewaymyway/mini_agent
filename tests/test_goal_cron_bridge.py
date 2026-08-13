@@ -445,6 +445,50 @@ class TestArchiveFinishedCycleChildren(unittest.TestCase):
             self.assertEqual(archived, 0)
             self.assertEqual(len(gb.get(goal.id).children_ids), 1)
 
+    def test_reap_skips_archive_while_in_explore_phase(self):
+        """goal_cron_task_optimization_holistic_plan.md 方向 A —— explore/
+        converge 阶段暂缓归档，避免早期尝试细节被过早清掉。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            from mini_agent.perception import execution_phase as ep
+
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="G")
+            gb.set_recurrence(goal.id, recurring=True, cron_job_id="user:fake")
+            ep.set_mode(paths, goal.id, "explore")  # 用户手动锁定在 explore
+
+            for i in range(25):
+                obj = gb.add_objective(title=f"第 {i + 1} 轮", parent_id=goal.id, source="cron")
+                gb.set_status(obj.id, "completed")
+                bridge.reap_finished_cycles(gb)
+
+            # 默认 keep_recent=20，25 轮理应触发归档，但阶段锁定在 explore，
+            # reap 内部的归档调用应被跳过。
+            updated = gb.get(goal.id)
+            self.assertEqual(len(updated.children_ids), 25)
+            archive_path = paths.workdir_dir / "goal_cycle_archive.jsonl"
+            self.assertFalse(archive_path.exists())
+
+    def test_reap_archives_once_phase_reaches_stable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            from mini_agent.perception import execution_phase as ep
+
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="G")
+            gb.set_recurrence(goal.id, recurring=True, cron_job_id="user:fake")
+            ep.set_mode(paths, goal.id, "stable")
+
+            for i in range(25):
+                obj = gb.add_objective(title=f"第 {i + 1} 轮", parent_id=goal.id, source="cron")
+                gb.set_status(obj.id, "completed")
+                bridge.reap_finished_cycles(gb)
+
+            updated = gb.get(goal.id)
+            self.assertEqual(len(updated.children_ids), 20)
+            archive_path = paths.workdir_dir / "goal_cycle_archive.jsonl"
+            self.assertTrue(archive_path.exists())
+
 
 class TestExecutionSpecIntegration(unittest.TestCase):
     """[goal_execution_spec_generation_plan.md §5] goal_cron_bridge 对已确认

@@ -565,3 +565,39 @@ def test_check_phase_health_phase_flapping_triggers():
 def test_check_phase_health_no_history_no_alert():
     state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", locked=False)
     assert ep.check_phase_health(state, "stable") is None
+
+
+# ── last_known_effective_mode（goal_cron_task_optimization_holistic_plan.md 方向 A）──
+
+def test_last_known_effective_mode_manual_non_auto():
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="stable", locked=True)
+    assert ep.last_known_effective_mode(state) == "stable"
+
+
+def test_last_known_effective_mode_auto_no_history_defaults_explore():
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", locked=False)
+    assert ep.last_known_effective_mode(state) == "explore"
+
+
+def test_last_known_effective_mode_auto_reads_latest_rule_based_entry():
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", locked=False)
+    state.mode_history.append(
+        ep.ModeChange(at=1.0, from_mode="auto:explore", to_mode="auto:converge", reason="rule_based_auto")
+    )
+    state.mode_history.append(
+        ep.ModeChange(at=2.0, from_mode="auto:converge", to_mode="auto:stable", reason="rule_based_auto")
+    )
+    assert ep.last_known_effective_mode(state) == "stable"
+
+
+def test_last_known_effective_mode_ignores_non_rule_based_entries():
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", locked=False)
+    state.mode_history.append(
+        ep.ModeChange(at=1.0, from_mode="auto:explore", to_mode="auto:stable", reason="rule_based_auto")
+    )
+    state.mode_history.append(
+        ep.ModeChange(at=2.0, from_mode="stable", to_mode="converge", reason="user_set")
+    )
+    # 最新一条不是 rule_based_auto（是用户手动切换记录），应跳过它，
+    # 沿用更早的自动判定记录。
+    assert ep.last_known_effective_mode(state) == "stable"

@@ -347,6 +347,27 @@ def resolve_effective_mode(
     return target, state
 
 
+def last_known_effective_mode(state: ExecutionPhaseState) -> str:
+    """[goal_cron_task_optimization_holistic_plan.md 方向 A] 不重新计算判定，
+    只读取"最近一次已知的有效阶段"，供归档/调度这类不适合在每次调用时都
+    重新跑一遍完整规则判定的场景使用。
+
+    - `state.mode != "auto"`：用户手动指定的阶段就是当前有效阶段，直接返回。
+    - `state.mode == "auto"`：从 `mode_history` 里找最近一条
+      `reason == "rule_based_auto"` 的记录，取其 `to_mode`（形如
+      `"auto:stable"`）解析出阶段名。
+    - 没有任何历史记录（Goal 刚开始跑，或阶段机制还没被真正触发过）时，
+      保守返回 `"explore"`——"不确定就当作还在探索期"，避免在阶段信息
+      缺失时误判为已收敛而过早归档/放宽资源控制。
+    """
+    if state.mode != "auto":
+        return state.mode
+    for m in reversed(state.mode_history):
+        if m.reason == "rule_based_auto" and m.to_mode.startswith("auto:"):
+            return m.to_mode.split(":", 1)[1]
+    return "explore"
+
+
 def check_phase_health(
     state: ExecutionPhaseState,
     effective_mode: str,

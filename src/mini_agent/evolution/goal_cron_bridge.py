@@ -698,11 +698,24 @@ def reap_finished_cycles(goal_backlog: "GoalBacklog", *, llm_helper_provider=Non
                     # [方向 C2] 本轮新增摘要暂存，等下一次真正推送时打包
                     # 带出，不单独消耗推送额度。同样只是诊断/展示增强。
                     _record_pursuit_digest(goal_backlog, goal)
-        # [Track D] 归档已跑过多轮、已经计过数的旧子节点，避免 goals.json
-        # 随轮数无限增长。只读遍历+命中才写，跟本函数其余部分同一种开销
-        # 可控的设计哲学。
+        # [Track D / goal_cron_task_optimization_holistic_plan.md 方向 A]
+        # 归档已跑过多轮、已经计过数的旧子节点，避免 goals.json 随轮数无限
+        # 增长。只读遍历+命中才写，跟本函数其余部分同一种开销可控的设计
+        # 哲学。方向 A 新增一层阶段感知的门禁：只在 execution phase 判定为
+        # stable/tidy（已收敛）时才归档，explore/converge 阶段的早期尝试
+        # 细节可能还有参考价值，暂缓归档；paths 拿不到、阶段状态读取异常时
+        # 保守地按"允许归档"处理（与本条门禁引入之前的行为一致），不因为
+        # 诊断信息缺失而阻塞归档这个主功能。
         try:
-            goal_backlog.archive_finished_cycle_children(goal.id)
+            allow_archive = True
+            paths = getattr(goal_backlog, "_paths", None)
+            if paths is not None:
+                from mini_agent.perception import execution_phase as ep
+                phase_state = ep.load_phase(paths, goal.id)
+                effective_mode = ep.last_known_effective_mode(phase_state)
+                allow_archive = effective_mode in ("stable", "tidy")
+            if allow_archive:
+                goal_backlog.archive_finished_cycle_children(goal.id)
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge.reap_finished_cycles.archive')
