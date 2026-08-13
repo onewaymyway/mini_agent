@@ -5930,7 +5930,61 @@ def diagnostics_snapshot(
         # `cfg.feedback_pattern_llm_enabled` + 有没有传 `llm_helper`
         # 共同决定，跟 `goal_alignment_llm_enabled` 同款 opt-in 约定。
         "feedback_pattern": _feedback_pattern_diagnostics_summary(paths, cfg, profile, llm_helper),
+        # [growth_advisor_autonomous_search_and_material_improvement_
+        # plan.md 阶段三后续：生成后自检结果的展示] 汇总最近报告的
+        # `citation_check` 诊断字段——引用命中率、检测到编造引用的报告
+        # 数——供看板判断"标注来源"这条 prompt 要求实际执行得怎么样，
+        # 纯展示，不影响任何排序/生成逻辑。
+        "citation_check": _citation_check_diagnostics_summary(paths),
     }
+
+
+def _citation_check_diagnostics_summary(paths) -> dict[str, Any]:
+    """[growth_advisor_autonomous_search_and_material_improvement_plan.md
+    阶段三后续：生成后自检结果的展示] 汇总活跃索引里带 `citation_check`
+    的报告（`generate_growth_report()` 只在"开了外部背景 + 拿到非空
+    摘录 + LLM 生成"这个组合下才会写这个字段，多数报告该字段仍是
+    `None`，不计入汇总）：
+
+    - `reports_checked`：有 `citation_check` 的报告数（分母）
+    - `reports_with_hallucination`：其中至少出现过一条编造引用的报告数
+    - `total_excerpts_offered` / `total_excerpts_cited`：所有这些报告
+      加总的"摘录总数"/"被正确引用的摘录数"，用于估算总体引用命中率
+    - `citation_hit_rate`：`total_excerpts_cited / total_excerpts_offered`
+      （分母为 0 时该字段为 `None`，不是 `0.0`——"没有可核对的样本"跟
+      "样本都没命中"是两回事）
+
+    纯只读聚合，任何异常都退化为"看不出数据"的默认结构，不拖垮整个
+    诊断面板（跟本函数所在的 `diagnostics_snapshot()` 里其它汇总子
+    函数保持一致的容错风格）。
+    """
+    try:
+        reports = list_reports(paths)
+        checked = [r for r in reports if getattr(r, "citation_check", None)]
+        total_offered = 0
+        total_cited = 0
+        with_hallucination = 0
+        for r in checked:
+            cc = r.citation_check or {}
+            total_offered += int(cc.get("excerpts_total", 0) or 0)
+            total_cited += int(cc.get("cited_count", 0) or 0)
+            if cc.get("hallucinated_refs"):
+                with_hallucination += 1
+        return {
+            "reports_checked": len(checked),
+            "reports_with_hallucination": with_hallucination,
+            "total_excerpts_offered": total_offered,
+            "total_excerpts_cited": total_cited,
+            "citation_hit_rate": (total_cited / total_offered) if total_offered > 0 else None,
+        }
+    except Exception:
+        return {
+            "reports_checked": 0,
+            "reports_with_hallucination": 0,
+            "total_excerpts_offered": 0,
+            "total_excerpts_cited": 0,
+            "citation_hit_rate": None,
+        }
 
 
 def _feedback_pattern_diagnostics_summary(paths, cfg, profile, llm_helper) -> dict[str, Any]:

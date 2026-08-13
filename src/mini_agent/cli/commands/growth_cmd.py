@@ -249,6 +249,19 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
             R.console.print(body_path.read_text(encoding="utf-8"))
         else:
             R.print_error(f"报告文件缺失：{body_path}")
+        # [growth_advisor_autonomous_search_and_material_improvement_
+        # plan.md 阶段三后续：生成后自检结果的展示] 只有这份报告真的
+        # 做过引用自检（开了外部背景 + 拿到摘录 + LLM 生成）才展示，
+        # 其余情况保持原样不打印任何额外内容，不干扰既有输出。
+        cc = getattr(report, "citation_check", None)
+        if cc:
+            hallucinated = cc.get("hallucinated_refs") or []
+            R.print_info(
+                f"[自检] 引用了 {cc.get('cited_count', 0)}/{cc.get('excerpts_total', 0)} "
+                f"条摘录"
+                + (f"，检测到 {len(hallucinated)} 处疑似编造引用：{'、'.join(hallucinated)}"
+                   if hallucinated else "，未检测到编造引用")
+            )
         return
 
     if sub == "timeline":

@@ -145,6 +145,27 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
   重新生成或拒绝写入——按照"仅展示、不影响判断"的一贯设计原则，怎么
   处理这个诊断信息交给下游（看板/CLI，本轮未接入展示）决定。
 
+## 3''. 阶段三后续：生成后自检结果的展示（已实施）
+
+**背景**：阶段三把"引用是否对得上"落到了 `GrowthReport.citation_check`
+字段，但当时只做诊断记录，没有接入任何展示，属于"算了但没人看得到"。
+
+**方案**：
+
+- `diagnostics_snapshot()` 新增 `citation_check` 区块（新增
+  `_citation_check_diagnostics_summary()`）：汇总活跃索引里带
+  `citation_check` 的报告——`reports_checked`（分母）、`reports_with_
+  hallucination`（至少一条编造引用的报告数）、`total_excerpts_offered`/
+  `total_excerpts_cited`（加总摘录数/命中数）、`citation_hit_rate`
+  （总体命中率；分母为 0 时是 `None`，跟"命中率 0%"区分开）。纯只读
+  聚合，异常时退化为"看不出数据"的默认结构，不拖垮整个诊断面板。
+- `GET /growth/reports/{id}` 不需要改动——`report.to_dict()` 已经
+  自动带上新增的 `citation_check` 字段，接口原样透出。
+- CLI `/growth report <candidate_id>` 打印报告正文后，若这份报告带
+  `citation_check`，追加一行摘要（引用命中比例 + 编造引用列表，或
+  "未检测到编造引用"）；不带该字段（多数场景）时不打印任何额外内容，
+  不改变既有输出格式。
+
 ## 3. 测试与回归
 
 - 新增 `tests/test_growth_advisor_active_search_material.py`：
@@ -168,8 +189,13 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
     反序列化落到 `None`
 - 跑存量 `tests/test_growth_advisor*.py`、
   `tests/test_growth_advisor_active_search_and_lifecycle.py`、
-  `tests/test_growth_advisor_cron_search_and_status_history.py` 相关文件
-  确认无回归
+  `tests/test_growth_advisor_cron_search_and_status_history.py`、
+  `tests/test_growth_cmd_timeline_and_active_search_wiring.py` 相关
+  文件确认无回归
+- 新增（同一测试文件追加）：`_citation_check_diagnostics_summary()`
+  在无报告/多报告混合命中与编造场景下的聚合结果；`diagnostics_
+  snapshot()` 包含 `citation_check` 键；CLI `/growth report` 在报告带
+  `citation_check` 时打印自检摘要、不带时不打印额外内容
 
 ## 4. 后续方向（未实施，方向级规划）
 
@@ -183,19 +209,20 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
   自己新增的记忆证据，不看外部世界本身是否发生变化；可以考虑复用阶段一
   新增的结构化摘录做"跟上次报告生成时的摘录内容比对，差异明显才提示刷新"，
   但需要先积累阶段一落地后的实际数据再评估值不值得做
-- **生成后自检结果的展示与利用**：阶段三已经把"引用是否对得上"落到了
-  `GrowthReport.citation_check` 字段，但目前只是诊断记录，没有接入看板/
-  CLI 展示，也没有基于自检结果做任何自动重试（例如"编造引用比例过高就
-  换更强的 prompt 重试一次"）或提示用户的动作；建议先观察实际数据里
-  `hallucinated_refs` 出现的频率，再决定要不要往这个方向投入
+- **生成后自检结果的自动利用**：目前自检结果（`citation_check`）已经
+  接入诊断面板和 CLI 展示，但还没有基于自检结果做任何自动动作——例如
+  "某个方向的报告编造引用比例持续偏高，就换更强的 prompt 或提高
+  `report_two_stage_enabled` 优先级重新生成一次"，属于比"展示"更进一步
+  的"利用"，建议先观察展示上线后的实际数据分布，再决定要不要做
 
 ---
 
 ## 5. 实施记录
 
-- **状态**：阶段一、阶段二、阶段三均已实施完成。详细摘要见
-  `next_doc/growth_advisor_implementation_record.md` "自主检索与学习
-  素材生成改进" 一节（避免跟本文档重复维护同一份内容）。
+- **状态**：阶段一、阶段二、阶段三（含"生成后自检结果的展示"）均已
+  实施完成。详细摘要见 `next_doc/growth_advisor_implementation_record.
+  md` "自主检索与学习素材生成改进" 一节（避免跟本文档重复维护同一份
+  内容）。
 - **改动文件**：
   - `src/mini_agent/evolution/growth_advisor.py`（`_active_search_
     excerpts_for_topic()` 重构，新增 `_excerpts_from_extracted_
@@ -203,16 +230,18 @@ search()` / `generate_growth_report()` / `reports_needing_refresh()` 这条
     search_queries()`；两个调用点透传 `max_calls`；`GrowthReport` 新增
     `citation_check` 字段，新增 `_check_report_citations()`，
     `generate_growth_report()` 记录 `used_excerpts` 并在正文生成后
-    调用自检）
+    调用自检；`diagnostics_snapshot()` 新增 `citation_check` 区块，
+    新增 `_citation_check_diagnostics_summary()`）
   - `src/mini_agent/config/models.py`（`report_active_search_max_calls`
     注释更新为"已激活"）
+  - `src/mini_agent/cli/commands/growth_cmd.py`（`/growth report` 打印
+    正文后追加自检摘要）
   - `tests/test_growth_advisor_active_search_material.py`（新增，11 项，
     阶段一/二）
-  - `tests/test_growth_advisor_report_citation_check.py`（新增，11 项，
-    阶段三）
-  - `docs/growth-advisor-guide.md`（5.6 节新增 + 更新，纳入阶段三；
-    配置表格行）
-  - `next_doc/growth_advisor_implementation_record.md`（实施摘要更新
-    为阶段一/二/三均已完成）
-- 第 4 节列出的后续方向（学习素材分层、外部世界变化驱动刷新、生成后
-  自检结果的展示与利用）仍未实施，维持方向级规划。
+  - `tests/test_growth_advisor_report_citation_check.py`（新增，16 项，
+    阶段三 + 展示）
+  - `docs/growth-advisor-guide.md`（5.6 节新增 + 更新，纳入阶段三与
+    展示；配置表格行）
+  - `next_doc/growth_advisor_implementation_record.md`（实施摘要更新）
+- 第 4 节剩余方向（学习素材分层、外部世界变化驱动刷新、自检结果的
+  自动利用）仍未实施，维持方向级规划。

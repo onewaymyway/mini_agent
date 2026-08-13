@@ -1641,32 +1641,48 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   排序；`citation_check` 为 `None` 表示"没有可核对的引用"（外部背景
   未开启/没拿到摘录/走模板兜底），旧数据反序列化缺该字段时同样落到
   `None`，向后兼容。
+- **阶段三后续：生成后自检结果的展示**（本轮新增）：`diagnostics_
+  snapshot()` 新增 `citation_check` 区块（新增 `_citation_check_
+  diagnostics_summary()`），汇总活跃索引里带 `citation_check` 的报告——
+  `reports_checked`/`reports_with_hallucination`/`total_excerpts_
+  offered`/`total_excerpts_cited`/`citation_hit_rate`（分母为 0 时是
+  `None`，跟"命中率 0%"区分开）；`GET /growth/reports/{id}` 不需要
+  改动，`report.to_dict()` 自动带上新字段；CLI `/growth report
+  <candidate_id>` 打印正文后，若报告带 `citation_check` 追加一行摘要
+  （命中比例 + 编造引用列表，或"未检测到编造引用"），不带该字段时
+  不打印任何额外内容。
 - **测试**：新增 `tests/test_growth_advisor_active_search_material.py`
   （11 项，覆盖结构化摘录优先/兜底、摘录数量上限、多角度查询数量、
   关键词不足不重复拼凑、单角度失败不阻塞其它角度、多角度摘录去重、
   两个调用点的 cfg 透传）；新增 `tests/test_growth_advisor_report_
-  citation_check.py`（11 项，覆盖 `_check_report_citations()` 纯函数
-  的完全引用/简写引用/编造引用/无引用/重复引用五种场景，以及
-  `generate_growth_report()` 端到端在"引用命中""编造引用""外部背景
-  关闭""没拿到摘录""模板兜底"五种路径下 `citation_check` 的取值，
-  以及该字段随 `to_dict()`/`from_dict()` 的序列化/反序列化兼容性）；
-  全部通过。`tests/test_growth_advisor*.py`（去除 dragdrop 看板专用
-  文件）384 项全部通过，无回归。
+  citation_check.py`（16 项，覆盖 `_check_report_citations()` 纯函数
+  的完全引用/简写引用/编造引用/无引用/重复引用五种场景、
+  `generate_growth_report()` 端到端在五种路径下 `citation_check` 的
+  取值及序列化兼容性、`_citation_check_diagnostics_summary()` 的空
+  数据/多报告聚合、`diagnostics_snapshot()` 包含该键、CLI `/growth
+  report` 的自检摘要打印/不打印两种场景）；全部通过。
+  `tests/test_growth_advisor*.py` + `tests/test_growth_cmd_timeline_
+  and_active_search_wiring.py`（去除 dragdrop 看板专用文件）395 项
+  全部通过，无回归。
 - **文档**：更新 `docs/growth-advisor-guide.md`"5.6 自主检索与素材
   沉淀改进"小节，标题纳入阶段三、新增"阶段三：生成后自检"子节说明
-  `citation_check` 字段含义及取舍，"已知边界"列表相应更新；`config/
-  models.py` 里 `report_active_search_max_calls` 的注释此前已更新为
-  "已激活"，本轮无需再改。
+  `citation_check` 字段含义及取舍，补充自检结果已接入的两处展示
+  （CLI/诊断面板），"已知边界"列表相应更新；`config/models.py` 里
+  `report_active_search_max_calls` 的注释此前已更新为"已激活"，本轮
+  无需再改。
 - **改动文件**：
   - `src/mini_agent/evolution/growth_advisor.py`（`GrowthReport` 新增
     `citation_check` 字段；新增 `_check_report_citations()`；
     `generate_growth_report()` 记录 `used_excerpts` 并在正文生成后
-    调用自检、写入报告）
-  - `tests/test_growth_advisor_report_citation_check.py`（新增，11 项）
+    调用自检、写入报告；`diagnostics_snapshot()` 新增 `citation_check`
+    区块，新增 `_citation_check_diagnostics_summary()`）
+  - `src/mini_agent/cli/commands/growth_cmd.py`（`/growth report`
+    子命令打印正文后追加自检摘要）
+  - `tests/test_growth_advisor_report_citation_check.py`（新增，16 项）
   - `docs/growth-advisor-guide.md`（5.6 节更新）
   - `next_doc/growth_advisor_autonomous_search_and_material_improvement_
-    plan.md`（第 5 节实施记录更新为阶段一/二/三均已完成，第 4 节移除
-    "生成后自检"这一条）
+    plan.md`（第 5 节实施记录更新为阶段一/二/三（含展示）均已完成，
+    第 4 节移除"生成后自检"及"展示"两条，改为"自检结果的自动利用"）
   - `next_doc/growth_advisor_implementation_record.md`（本节）
-- 第 4 节剩余两个方向（学习素材分层、外部世界变化驱动刷新）仍未实施，
-  维持方向级规划。
+- 第 4 节剩余两个方向（学习素材分层、外部世界变化驱动刷新）以及
+  "自检结果的自动利用"仍未实施，维持方向级规划。
