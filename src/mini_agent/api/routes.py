@@ -2850,7 +2850,7 @@ async def get_self_unified_scheduler_preview(request: Request):
 
     try:
         from mini_agent.evolution.unified_task_scheduler import build_default_scheduler
-        scheduler = build_default_scheduler(goal_backlog=goal_backlog, cron_scheduler=cron_scheduler)
+        scheduler = build_default_scheduler(goal_backlog=goal_backlog, cron_scheduler=cron_scheduler, paths=paths)
         by_channel = scheduler.poll_all()
         for name, tasks in by_channel.items():
             result["channels"][name] = [

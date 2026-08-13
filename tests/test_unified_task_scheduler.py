@@ -99,6 +99,56 @@ class TestObjectiveChannelAdapter(_Base):
         after = backlog.get(goal.id).last_scheduled_at
         self.assertEqual(before, after)
 
+    def test_resource_estimate_defaults_to_1_without_phase_history(self):
+        """没有任何 execution phase 历史（Goal 刚创建，或阶段机制从未
+        被触发过）时，`last_known_effective_mode()` 保守返回 "explore"，
+        对应倍率 1.3——不是恒为 1.0 的旧行为，但仍是"读得到状态但没有
+        历史"这条路径下的确定性结果。"""
+        backlog = GoalBacklog(self.paths)
+        goal = backlog.add_goal(title="parent", priority=1)
+        obj = backlog.add_objective(title="child", parent_id=goal.id, priority=1)
+        backlog.save()
+
+        adapter = ObjectiveChannelAdapter(backlog, paths=self.paths)
+        tasks = adapter.poll_due()
+        self.assertEqual(len(tasks), 1)
+        self.assertAlmostEqual(tasks[0].resource_estimate, 1.3)
+        self.assertEqual(tasks[0].extra.get("phase_mode"), "explore")
+
+    def test_resource_estimate_reflects_stable_phase(self):
+        """能读到该 Goal 的 ExecutionPhaseState 且已知有效阶段为
+        stable 时，resource_estimate 应换算成 1.0（stable 的默认倍率），
+        且 extra["phase_mode"] 同步反映阶段名。"""
+        from mini_agent.perception import execution_phase as ep
+
+        backlog = GoalBacklog(self.paths)
+        goal = backlog.add_goal(title="parent", priority=1)
+        backlog.add_objective(title="child", parent_id=goal.id, priority=1)
+        backlog.save()
+
+        ep.set_mode(self.paths, goal.id, "stable")
+
+        adapter = ObjectiveChannelAdapter(backlog, paths=self.paths)
+        tasks = adapter.poll_due()
+        self.assertEqual(len(tasks), 1)
+        self.assertAlmostEqual(tasks[0].resource_estimate, 1.0)
+        self.assertEqual(tasks[0].extra.get("phase_mode"), "stable")
+
+    def test_resource_estimate_falls_back_to_1_without_paths(self):
+        """未注入 paths、且 goal_backlog 本身也拿不到 _paths 时，阶段感知
+        的资源估算整体降级为 1.0，与引入本机制之前的行为一致。"""
+        backlog = GoalBacklog(self.paths)
+        goal = backlog.add_goal(title="parent", priority=1)
+        backlog.add_objective(title="child", parent_id=goal.id, priority=1)
+        backlog.save()
+
+        adapter = ObjectiveChannelAdapter(backlog, paths=None)
+        adapter._paths = None  # 显式模拟拿不到 paths 的极端情况
+        tasks = adapter.poll_due()
+        self.assertEqual(len(tasks), 1)
+        self.assertAlmostEqual(tasks[0].resource_estimate, 1.0)
+        self.assertEqual(tasks[0].extra.get("phase_mode"), "")
+
 
 class TestCronChannelAdapters(_Base):
     def _make_scheduler(self) -> CronScheduler:

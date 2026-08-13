@@ -39,6 +39,20 @@ DEFAULT_FLAP_WINDOW = 8               # 检查 mode_history 最近这么多条 a
 DEFAULT_FLAP_THRESHOLD = 3            # 窗口内"回退到 explore/converge"的次数达到此值即告警
 DEFAULT_HEALTH_ALERT_COOLDOWN_SECONDS = 3 * 24 * 3600  # 同一种告警的最短复发间隔
 
+# [goal_cron_task_optimization_holistic_plan.md §5 调度联动子项] 各阶段的
+# 相对资源倍率——explore/converge 期任务定义/方案本身还在变动，多给一点
+# 超时/重试预算换取"别因为节流误伤还在摸索的早期尝试"；stable/tidy 期
+# 任务已经跑顺，收紧成本控制。数值是启发式初始值（1.0 为改进前的统一
+# 基线，未接入本机制时的行为），刻意不做更复杂的模型——与
+# `DEFAULT_STUCK_EXPLORE_CYCLES` 等阈值一样，先上线观察，需要调整时改
+# 这里的常量即可，不涉及调用方代码变动。
+DEFAULT_PHASE_RESOURCE_MULTIPLIERS = {
+    "explore": 1.3,
+    "converge": 1.15,
+    "stable": 1.0,
+    "tidy": 0.85,
+}
+
 
 @dataclass
 class ModeChange:
@@ -366,6 +380,33 @@ def last_known_effective_mode(state: ExecutionPhaseState) -> str:
         if m.reason == "rule_based_auto" and m.to_mode.startswith("auto:"):
             return m.to_mode.split(":", 1)[1]
     return "explore"
+
+
+def phase_resource_multiplier(
+    mode: str,
+    *,
+    multipliers: Optional[dict] = None,
+) -> float:
+    """[goal_cron_task_optimization_holistic_plan.md §5 调度联动子项]
+    把一个已知的有效阶段名换算成相对资源倍率，供调度层（目前是
+    `UnifiedTaskScheduler` 的 Goal 通道只读预览）参考——explore 期给更
+    宽松的预算，stable/tidy 期收紧。
+
+    纯函数、零 IO：只做字典查找，`mode` 不在 `multipliers` 里（包括
+    未知阶段名、或状态本身还没有任何历史因而无法判定）时保守返回
+    `1.0`——即"这个机制引入之前的统一基线"，不因为阶段信息缺失而放大
+    或收紧资源估算。`multipliers` 参数留给未来接 `AppConfig` 覆盖默认值
+    用，不传时用模块顶部的 `DEFAULT_PHASE_RESOURCE_MULTIPLIERS`。
+
+    本函数只产出一个数字，是否/如何据此调整真实的执行资源分配，仍由
+    调用方决定——与 `allocate_weighted_slots()` 一样，是"接管仲裁裁决"
+    这条长期路径上的一块纯计算积木，本身不产生任何执行副作用。
+    """
+    table = multipliers if multipliers is not None else DEFAULT_PHASE_RESOURCE_MULTIPLIERS
+    try:
+        return float(table.get(mode, 1.0))
+    except Exception:
+        return 1.0
 
 
 def check_phase_health(

@@ -601,3 +601,24 @@ def test_last_known_effective_mode_ignores_non_rule_based_entries():
     # 最新一条不是 rule_based_auto（是用户手动切换记录），应跳过它，
     # 沿用更早的自动判定记录。
     assert ep.last_known_effective_mode(state) == "stable"
+
+
+# ── phase_resource_multiplier（goal_cron_task_optimization_holistic_plan.md §5 调度联动子项）──
+
+def test_phase_resource_multiplier_known_modes():
+    assert ep.phase_resource_multiplier("explore") == 1.3
+    assert ep.phase_resource_multiplier("converge") == 1.15
+    assert ep.phase_resource_multiplier("stable") == 1.0
+    assert ep.phase_resource_multiplier("tidy") == 0.85
+
+
+def test_phase_resource_multiplier_unknown_mode_defaults_to_1():
+    assert ep.phase_resource_multiplier("not_a_real_mode") == 1.0
+    assert ep.phase_resource_multiplier("") == 1.0
+
+
+def test_phase_resource_multiplier_custom_table_overrides_default():
+    custom = {"explore": 2.0}
+    assert ep.phase_resource_multiplier("explore", multipliers=custom) == 2.0
+    # 自定义表里没有的 mode 仍回落到 1.0，不会误用默认表。
+    assert ep.phase_resource_multiplier("stable", multipliers=custom) == 1.0

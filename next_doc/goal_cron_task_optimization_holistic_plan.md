@@ -1,8 +1,9 @@
 # Goal/Cron 任务优化 —— 真实需求梳理与系统理念
 
 > 状态：方向 B（阶段健康告警）、方向 C（下一轮从简执行）、方向 A（阶段
-> 感知的归档门禁）已实施完成；方向 D（跨 Goal 探索期并发治理）本轮评估
-> 后记录方向、暂不实现，见 §5。
+> 感知的归档门禁 + 调度联动子项·阶段感知资源估算）已实施完成；方向 D
+> （跨 Goal 探索期并发治理）、方向 A 调度联动子项里"真正接入执行资源
+> 分配"的部分，本轮评估后记录方向、暂不实现，见 §5。
 > 前置背景：`goal_cron_binding_plan.md`（绑定/触发/回收）、
 > `goal_execution_phase_improvement_plan.md`（explore/converge/stable/tidy
 > 阶段机制）、`goal_cron_visibility_and_intervention_improvement_plan.md`
@@ -126,6 +127,29 @@ Goal 触发主流程。
 到或阶段状态读取异常时保守按"允许归档"处理，与本条门禁引入之前的行为
 一致，不因为诊断信息缺失而阻塞归档这个主功能。
 
+### 方向 A 调度联动子项（已实施）：阶段感知的资源估算（只读预览）
+
+`归档门禁` 只是"阶段状态影响系统行为"的第一个落点，§5 原本记录了第二个
+落点——`UnifiedTaskScheduler` 的资源分配权重（explore 期更宽松、stable
+期更收紧）。这一次先落地其中风险最低的一层：`ObjectiveChannelAdapter.
+poll_due()` 返回的 `SchedulableTask.resource_estimate` 不再恒为 `1.0`，
+改为按该 Goal（对派生的 Objective 而言是其 `parent_id` 指向的 recurring
+Goal）的 `execution_phase.last_known_effective_mode()`，经新增的纯函数
+`execution_phase.phase_resource_multiplier()` 换算出的相对倍率——explore
+1.3、converge 1.15、stable 1.0、tidy 0.85（表在
+`execution_phase.DEFAULT_PHASE_RESOURCE_MULTIPLIERS`，改默认值只需要改
+这个常量）。`extra["phase_mode"]` 同步带出阶段名，方便看板/诊断展示时
+不用额外查一次。
+
+范围边界与 §5 原本的担忧完全一致：这仍然只是 `poll_due()` 这一层的
+**只读预览**，`resource_estimate` 目前唯一的消费方是
+`/self/unified_scheduler_preview` 诊断端点；真正接管执行资源分配（超时
+预算、重试次数等）的那部分仍未实现，也仍是"没有真实使用数据支撑具体
+数值该怎么用"——先把"能读到、能看到"这一步做完、观察一段时间效果，再
+决定是否/如何让它真正影响执行行为。任何一环读取失败（`paths` 未注入、
+阶段状态文件不存在、任何异常）都保守回落到 `1.0`，与引入本子项之前的
+行为完全一致，不影响 `poll_due()` 本身的可用性。
+
 ## 4. 分阶段落地记录
 
 - **Stage 1（已实施）**：方向 C —— `GoalNode.next_cycle_lightweight` 字段
@@ -142,16 +166,28 @@ Goal 触发主流程。
   用例 + `tests/test_goal_cron_bridge.py` 新增
   `test_reap_skips_archive_while_in_explore_phase`/
   `test_reap_archives_once_phase_reaches_stable`）。
+- **Stage 4（已实施）**：方向 A 调度联动子项 —— 
+  `execution_phase.phase_resource_multiplier()` +
+  `ObjectiveChannelAdapter` 新增 `paths` 参数与阶段感知的
+  `resource_estimate`/`extra["phase_mode"]` +
+  `build_default_scheduler(paths=...)` 透传 +
+  `/self/unified_scheduler_preview` 路由传入 `paths` + 单元测试
+  （`tests/test_execution_phase.py` 新增 `phase_resource_multiplier`
+  系列用例 + `tests/test_unified_task_scheduler.py` 新增
+  `test_resource_estimate_defaults_to_1_without_phase_history`/
+  `test_resource_estimate_reflects_stable_phase`/
+  `test_resource_estimate_falls_back_to_1_without_paths`）。
 
 ## 5. 评估后决定本轮不实现的方向（记录，供后续排期）
 
-- **方向 A 的调度联动子项（归档门禁已实施，调度权重部分仍未做）**——
-  `stability_score`/`last_known_effective_mode` 目前只用于归档门禁和看板
-  展示，还没接入 `UnifiedTaskScheduler` 的资源分配权重（explore 期给更
-  宽松的超时/重试预算，stable 期收紧成本控制）。本轮不做的原因：这需要
-  改动调度器的调用约定，影响面比归档门禁大，且目前没有真实使用数据支撑
-  "具体权重该设多少"，贸然实现容易引入一套没有校准过的策略。留待观察
-  归档门禁 + 方向 B 告警的实际命中情况后再排期。
+- **方向 A 调度联动子项的剩余部分（阶段感知的资源估算已实施，真正接入
+  执行资源分配仍未做）**——`resource_estimate`/`phase_mode` 目前只出现在
+  `poll_due()` 的只读预览里，还没有任何调用方据此真正调整执行侧的超时/
+  重试预算或参与 `allocate_weighted_slots()` 的槽位分配计算。本轮不做的
+  原因不变：这需要改动调度器/执行器的调用约定，影响面比"暴露一个诊断
+  字段"大得多，且目前没有真实使用数据支撑"具体倍率该怎么消费、消费到
+  哪个环节"，贸然实现容易引入一套没有校准过的策略。留待观察这批阶段感知
+  预览数据 + 方向 B 告警的实际命中情况后再排期。
 - **方向 D：跨 Goal 探索期并发治理**——多个 recurring Goal 同时处于
   explore 阶段时，理论上系统层面的不确定性会叠加，`ResourceArbiter` 应该
   有一条"同时处于 explore 的 Goal 数量" 软上限规则。本轮不做的原因：当前
@@ -182,3 +218,8 @@ Goal 触发主流程。
   在真正积累出规则判定历史之前不做归档；实际使用中 `_fire_goal_cycle()`
   每轮都会调用 `_append_execution_phase_context()`，跑不了几轮阶段历史
   就会出现，不会长期卡在这个保守默认值上。
+- `phase_resource_multiplier()` 是纯函数，`ObjectiveChannelAdapter` 新增
+  的 `paths` 参数有默认值（`None`，回落到 `goal_backlog._paths`），不
+  传/传不到的调用方行为与本子项引入之前完全一致（`resource_estimate`
+  恒为 `1.0`）；`build_default_scheduler()` 新增的 `paths` 关键字参数
+  同理，是可选追加参数，不影响任何既有调用点的签名兼容性。

@@ -36,6 +36,17 @@
   深度耦合 `AutonomousLoop` 自身持有的运行时状态，还没有一个类似
   `CronScheduler.trigger_job_now()` 那样的安全公开入口，见该类文档
   字符串的详细说明。
+
+[goal_cron_task_optimization_holistic_plan.md §5 调度联动子项 · 已实施]
+`ObjectiveChannelAdapter.poll_due()` 新增阶段感知的 `resource_estimate`
+——按该 Goal `ExecutionPhaseState` 的 `last_known_effective_mode()` 经
+`execution_phase.phase_resource_multiplier()` 换算出的相对倍率
+（explore/converge 更宽松，stable/tidy 更收紧），替代此前恒为 `1.0` 的
+占位值。这一步仍然只是"只读预览"层面的可观测性增强，目前唯一的消费方是
+`/self/unified_scheduler_preview` 诊断端点；`allocate_weighted_slots()`
+接管的仲裁裁决仍只用 `channel_weights`（goal/cron 两通道整体权重），
+尚未把单个 Goal 的 `resource_estimate` 纳入真正的槽位分配计算——这仍是
+"具体权重该怎么用"需要先观察真实数据再排期的部分，见 §5 剩余记录。
 """
 
 from __future__ import annotations
@@ -117,10 +128,40 @@ class ObjectiveChannelAdapter:
     `UnifiedTaskScheduler.suggest_order()` 跨通道比较用。`due_at` 恒为
     `None`（Goal 没有明确到期时间，"随时可跑，谁该被优先轮到"完全由
     effective_priority 决定）。
+
+    [goal_cron_task_optimization_holistic_plan.md §5 调度联动子项]
+    `resource_estimate` 不再恒为 `1.0`——若能读到该 Goal 的
+    `ExecutionPhaseState`（`paths` 已注入且状态文件存在/可读），按
+    `execution_phase.last_known_effective_mode()` 还原出的阶段名，经
+    `execution_phase.phase_resource_multiplier()` 换算成相对倍率；读不到
+    （`paths` 未注入、Goal 没有 recurring 阶段历史、任何异常）时保守回落
+    到 `1.0`，与引入本机制之前的行为完全一致。这一步仍然只是“只读预览”
+    ——`poll_due()` 不接管任何实际执行决策，`resource_estimate` 目前只
+    出现在 `/self/unified_scheduler_preview` 这类诊断端点里，尚未被真正的
+    资源分配逻辑消费（该逻辑的落地仍是 §5 记录的待办，本次只补上
+    “阶段感知的资源估算”这一块可观测性）。
     """
 
-    def __init__(self, goal_backlog: Any) -> None:
+    def __init__(self, goal_backlog: Any, paths: Any = None) -> None:
         self._goal_backlog = goal_backlog
+        # paths 优先用显式传入的值；未传入时尝试从 goal_backlog 自身取
+        # （与 goal_cron_bridge.py 里 getattr(goal_backlog, "_paths", None)
+        # 同一取法），两者都拿不到时阶段感知的资源估算整体降级为 1.0。
+        self._paths = paths if paths is not None else getattr(goal_backlog, "_paths", None)
+
+    def _resource_estimate_for(self, goal_id: str):
+        """返回 (resource_estimate, phase_mode)，任何环节失败都回落到
+        (1.0, "")——阶段感知的资源估算是纯诊断增强，不应该因为读取阶段
+        状态失败而影响 poll_due() 本身的可用性。"""
+        if self._paths is None:
+            return 1.0, ""
+        try:
+            from mini_agent.perception import execution_phase as ep
+            state = ep.load_phase(self._paths, goal_id)
+            mode = ep.last_known_effective_mode(state)
+            return ep.phase_resource_multiplier(mode), mode
+        except Exception:
+            return 1.0, ""
 
     def poll_due(self) -> list[SchedulableTask]:
         if self._goal_backlog is None:
@@ -137,14 +178,25 @@ class ObjectiveChannelAdapter:
                 effective_priority = node.priority + compute_aging_boost(node, now)
             except Exception:
                 effective_priority = getattr(node, "priority", 0.0)
+            task_id = getattr(node, "id", "")
+            # 阶段状态挂在 recurring Goal（根节点）上，不是每个派生
+            # Objective 各自维护一份——`parent_id` 为空（该节点本身就是
+            # Goal 根节点，理论上不该出现在 active_objectives_fair_ranked()
+            # 结果里，但兜底处理）时退回用它自身 id 查询，仍然安全（读不到
+            # 就回落 1.0）。
+            phase_goal_id = getattr(node, "parent_id", None) or task_id
+            resource_estimate, phase_mode = self._resource_estimate_for(phase_goal_id)
             tasks.append(SchedulableTask(
                 source="goal",
-                task_id=getattr(node, "id", ""),
+                task_id=task_id,
                 title=getattr(node, "title", ""),
                 priority=float(effective_priority),
                 due_at=None,
-                resource_estimate=1.0,
-                extra={"last_scheduled_at": getattr(node, "last_scheduled_at", 0.0)},
+                resource_estimate=resource_estimate,
+                extra={
+                    "last_scheduled_at": getattr(node, "last_scheduled_at", 0.0),
+                    "phase_mode": phase_mode,
+                },
             ))
         return tasks
 
@@ -447,14 +499,20 @@ def build_default_scheduler(
     *,
     goal_backlog: Any = None,
     cron_scheduler: Any = None,
+    paths: Any = None,
 ) -> UnifiedTaskScheduler:
     """便捷构造函数：按现有三条通道的既有对象构造一个已注册好全部
     Channel 的 `UnifiedTaskScheduler`。任一依赖为 `None` 时对应 Channel
     仍会注册，只是 `poll_due()` 会返回空列表（不影响其它通道），与
     P4 后端端点"任一子系统数据缺失时对应字段返回空/占位"是同一风格。
+
+    `paths` 转发给 `ObjectiveChannelAdapter`，用于 §5 调度联动子项的
+    阶段感知资源估算；不传时 `ObjectiveChannelAdapter` 会退而尝试
+    `goal_backlog._paths`，仍拿不到则该功能整体降级为 `1.0`（见该类
+    文档字符串），不影响调用方既有用法。
     """
     scheduler = UnifiedTaskScheduler()
-    scheduler.register_channel("goal", ObjectiveChannelAdapter(goal_backlog))
+    scheduler.register_channel("goal", ObjectiveChannelAdapter(goal_backlog, paths=paths))
     scheduler.register_channel("cron", CronChannelAdapter(cron_scheduler))
     scheduler.register_channel("goal_cycle", GoalCycleChannelAdapter(cron_scheduler))
     return scheduler
