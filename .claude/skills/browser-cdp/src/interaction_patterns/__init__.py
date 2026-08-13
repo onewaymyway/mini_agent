@@ -23,6 +23,13 @@ from .ecommerce_pattern import (
 )
 from .taobao_search_pattern import TaobaoSearchPattern
 from .jd_search_pattern import JDSearchPattern
+from .news_pattern import (
+    NewsPattern,
+    ArticleData,
+    ArticleResults,
+)
+from .zhihu_news_pattern import ZhihuNewsPattern
+from .toutiao_news_pattern import ToutiaoNewsPattern
 
 logger = logging.getLogger(__name__)
 
