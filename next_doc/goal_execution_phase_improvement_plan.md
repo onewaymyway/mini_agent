@@ -133,8 +133,26 @@ CLI（`cli/commands/goals.py`，追加到 `/agent goals` 下）：
   app.py::_render_goal_execution_phase_widget`，展示 mode/locked/
   stability_score/mode_history，并提供切换下拉框 + 解锁按钮）+
   `AgentClient` 对应方法 + 路由层单元测试。
-- **Stage D（后续）**：更细的自动判定信号（例如接入 goal_judge 的
-  progress 趋势），以及独立 cron（非 goal_cycle）场景的阶段支持。
+- **Stage D（已实现，范围有调整）**：
+  - 更细的自动判定信号：新增跨轮"进展趋势"信号
+    `execution_phase.compute_progress_trend_signal()`——比较这个 Goal 最近
+    3 轮已完成周期（`GoalNode.reaped_cycle_child_ids` 末尾）的
+    `progress_notes` 文本相似度（复用 `evolution/guardian.py` 同款
+    difflib 思路），高度雷同时判定为"伪进展"，把 `resolve_effective_mode`
+    原本会给出的 `stable` 降级为 `converge`（只在"本来会判 stable"时才
+    降级，不影响 explore/converge 本身的判定）；历史不足 3 轮、或某轮
+    进展摘要缺失时该信号不参与判定（返回 `None`，等价于关闭）。
+    `goal_cron_bridge._append_execution_phase_context` 新增可选
+    `goal_backlog` 参数用于取数，未传入时行为与 Stage D 之前完全一致。
+  - 独立 cron（非 goal_cycle）场景的阶段支持：**评估后决定不实现**——阶段
+    概念依赖"同一 Goal 的连续多轮"这个语境，独立 cron job 没有 Goal 归属，
+    套用意义不大，已在 `docs/goal-execution-phase-guide.md` 明确写为设计
+    决定而非遗留缺口。
+  - 原方案提到的"接入 goal_judge 的 progress 趋势"：`goal_judge` 是单个
+    Goal 执行内部（`goal_mode/runner.py`）逐轮判定 DONE/CONTINUE 的模块，
+    不覆盖 `goal_cron_bridge` 的跨周期 recurring 场景，因此改为直接从
+    `GoalNode.progress_notes` 历史构造信号（效果等价，链路更短，不新增
+    对 `goal_judge` 内部状态的跨模块依赖）。
 
 ## 7. 兼容性与风险
 

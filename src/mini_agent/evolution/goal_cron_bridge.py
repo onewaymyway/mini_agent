@@ -148,7 +148,7 @@ def _fire_goal_cycle(
     from mini_agent.perception.goal_backlog import compose_context
     description = compose_context(goal.description, job.task_template)
     description = _append_output_workspace_context(paths, goal.id, cycle_no, description)
-    description = _append_execution_phase_context(paths, goal, cycle_no, description)
+    description = _append_execution_phase_context(paths, goal, cycle_no, description, goal_backlog=goal_backlog)
     description = _append_execution_spec_context(paths, goal_backlog, goal, description)
     description = _append_growth_reorganize_hint(paths, goal, cycle_no, description)
     description = _append_growth_self_check_hint(paths, goal, cycle_no, description)
@@ -208,14 +208,19 @@ def _append_output_workspace_context(paths, goal_id: str, cycle_no: int, descrip
         return description
 
 
-def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, description: str) -> str:
-    """[goal_execution_phase_improvement_plan.md §4] 读取/推进这个 Goal 的
-    ExecutionPhaseState，把当前有效阶段（explore/converge/stable/tidy）
-    对应的 prompt 片段拼进本轮子 Objective description。
+def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, description: str,
+                                     *, goal_backlog=None) -> str:
+    """[goal_execution_phase_improvement_plan.md §4 / Stage D] 读取/推进这个
+    Goal 的 ExecutionPhaseState，把当前有效阶段（explore/converge/stable/
+    tidy）对应的 prompt 片段拼进本轮子 Objective description。
 
     paths 为 None 或任何环节异常时静默跳过，不影响 Goal 触发主流程；
     没有 phase 文件时按默认状态（mode="auto"）处理，行为与引入本机制之前
     完全一致（默认判定倾向 explore/converge，不会突然收紧成 stable）。
+
+    goal_backlog：[Stage D] 可选，传入时用于计算跨轮"进展趋势"信号（见
+    `execution_phase.compute_progress_trend_signal`），传 None 时行为与
+    Stage D 之前完全一致（该信号不参与判定）。
     """
     if paths is None:
         return description
@@ -237,12 +242,15 @@ def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, desc
                 if confirmed_at is not None and (time.time() - confirmed_at) < 86400:
                     spec_recently_revised = True
 
+        progress_trend_stuck = ep.compute_progress_trend_signal(goal_backlog, goal.id)
+
         effective_mode, state = ep.resolve_effective_mode(
             state,
             cycle_no=cycle_no,
             spec_confirmed=spec_confirmed,
             spec_recently_revised=spec_recently_revised,
             miss_streak=miss_streak,
+            progress_trend_stuck=progress_trend_stuck,
         )
         ep.save_phase(paths, state)
 

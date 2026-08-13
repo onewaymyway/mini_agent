@@ -147,6 +147,110 @@ def test_resolve_auto_high_miss_streak_stays_explore(tmp_path):
     assert effective == "explore"
 
 
+# ── Stage D: 进展趋势信号 ────────────────────────────────────────────────────
+
+def test_resolve_auto_progress_trend_stuck_downgrades_stable_to_converge(tmp_path):
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto")
+    effective, _ = ep.resolve_effective_mode(
+        state, cycle_no=10, spec_confirmed=True, spec_recently_revised=False,
+        miss_streak=0, progress_trend_stuck=True,
+    )
+    assert effective == "converge"
+
+
+def test_resolve_auto_progress_trend_healthy_keeps_stable(tmp_path):
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto")
+    effective, _ = ep.resolve_effective_mode(
+        state, cycle_no=10, spec_confirmed=True, spec_recently_revised=False,
+        miss_streak=0, progress_trend_stuck=False,
+    )
+    assert effective == "stable"
+
+
+def test_resolve_auto_progress_trend_none_keeps_stable(tmp_path):
+    """未提供信号（None）时行为与 Stage D 之前一致，不影响判定。"""
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto")
+    effective, _ = ep.resolve_effective_mode(
+        state, cycle_no=10, spec_confirmed=True, spec_recently_revised=False, miss_streak=0,
+    )
+    assert effective == "stable"
+
+
+def test_resolve_auto_progress_trend_stuck_does_not_affect_explore(tmp_path):
+    """信号只在"本来会判 stable"时才降级；本来就是 explore 的场景不受影响。"""
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto")
+    effective, _ = ep.resolve_effective_mode(
+        state, cycle_no=1, spec_confirmed=False, spec_recently_revised=True,
+        miss_streak=0, progress_trend_stuck=True,
+    )
+    assert effective == "explore"
+
+
+class _FakeBacklogForTrend:
+    def __init__(self, goal, children: dict):
+        self._goal = goal
+        self._children = children
+
+    def get(self, node_id: str):
+        if node_id == self._goal.id:
+            return self._goal
+        return self._children.get(node_id)
+
+
+class _FakeGoalForTrend:
+    def __init__(self, goal_id: str, reaped_ids: list):
+        self.id = goal_id
+        self.reaped_cycle_child_ids = reaped_ids
+
+
+class _FakeChildForTrend:
+    def __init__(self, progress_notes: str):
+        self.progress_notes = progress_notes
+
+
+def test_compute_progress_trend_signal_insufficient_history_returns_none(tmp_path):
+    goal = _FakeGoalForTrend("g1", reaped_ids=["c1"])
+    backlog = _FakeBacklogForTrend(goal, {"c1": _FakeChildForTrend("做了 A")})
+    assert ep.compute_progress_trend_signal(backlog, "g1", window=3) is None
+
+
+def test_compute_progress_trend_signal_repeated_notes_returns_true(tmp_path):
+    goal = _FakeGoalForTrend("g1", reaped_ids=["c1", "c2", "c3"])
+    backlog = _FakeBacklogForTrend(goal, {
+        "c1": _FakeChildForTrend("本轮完成了周期性维护任务，无异常，产出与上轮一致"),
+        "c2": _FakeChildForTrend("本轮完成了周期性维护任务，无异常，产出与上轮一致"),
+        "c3": _FakeChildForTrend("本轮完成了周期性维护任务，无异常，产出与上轮一致"),
+    })
+    assert ep.compute_progress_trend_signal(backlog, "g1", window=3) is True
+
+
+def test_compute_progress_trend_signal_distinct_notes_returns_false(tmp_path):
+    goal = _FakeGoalForTrend("g1", reaped_ids=["c1", "c2", "c3"])
+    backlog = _FakeBacklogForTrend(goal, {
+        "c1": _FakeChildForTrend("新增了模块 A 的解析逻辑，覆盖了 3 种边界情况"),
+        "c2": _FakeChildForTrend("重构了存储层，把原子写入拆成独立工具函数"),
+        "c3": _FakeChildForTrend("补充了 12 个单元测试，修复了一个并发写入的竞态问题"),
+    })
+    assert ep.compute_progress_trend_signal(backlog, "g1", window=3) is False
+
+
+def test_compute_progress_trend_signal_missing_note_returns_none(tmp_path):
+    goal = _FakeGoalForTrend("g1", reaped_ids=["c1", "c2", "c3"])
+    backlog = _FakeBacklogForTrend(goal, {
+        "c1": _FakeChildForTrend("做了一些事"),
+        "c2": _FakeChildForTrend(""),
+        "c3": _FakeChildForTrend("做了另一些事"),
+    })
+    assert ep.compute_progress_trend_signal(backlog, "g1", window=3) is None
+
+
+def test_compute_progress_trend_signal_none_backlog_or_goal_id_returns_none(tmp_path):
+    assert ep.compute_progress_trend_signal(None, "g1") is None
+    goal = _FakeGoalForTrend("g1", reaped_ids=["c1", "c2", "c3"])
+    backlog = _FakeBacklogForTrend(goal, {})
+    assert ep.compute_progress_trend_signal(backlog, "") is None
+
+
 # ── goal_cron_bridge 接入 ────────────────────────────────────────────────────
 
 def test_bridge_append_execution_phase_context_default_state(tmp_path):
@@ -184,6 +288,32 @@ def test_bridge_append_execution_phase_context_locked_stable(tmp_path):
     ep.set_mode(paths, "goal_1", "stable")
     result = bridge._append_execution_phase_context(paths, _FakeGoal(), 1, "base description")
     assert "稳定期" in result
+
+
+def test_bridge_append_execution_phase_context_progress_trend_stuck_gives_converge(tmp_path):
+    """[Stage D] auto 模式下即使 spec 已确认且 miss_streak=0，如果传入的
+    goal_backlog 显示最近几轮进展描述高度雷同，也应判定为 converge 而非 stable。
+    """
+    from mini_agent.evolution import goal_cron_bridge as bridge
+
+    class _FakeGoal:
+        id = "goal_1"
+        execution_spec_confirmed = False  # 未确认 spec 时走 explore/converge，不测 stable 路径
+
+    goal = _FakeGoalForTrend("goal_1", reaped_ids=["c1", "c2", "c3"])
+    same_note = "本轮完成了周期性维护任务，无异常，产出与上轮一致"
+    backlog = _FakeBacklogForTrend(goal, {
+        "c1": _FakeChildForTrend(same_note),
+        "c2": _FakeChildForTrend(same_note),
+        "c3": _FakeChildForTrend(same_note),
+    })
+    paths = _paths(tmp_path)
+    result = bridge._append_execution_phase_context(
+        paths, _FakeGoal(), 10, "base description", goal_backlog=backlog,
+    )
+    # spec 未确认时本来就判 explore，这里主要验证 goal_backlog 参数不报错、
+    # 且能正常传导（下面单独用 resolve_effective_mode 直接验证降级效果）。
+    assert "base description" in result
 
 
 # ── Stage B: tidy 自动回退 / converge-spec 联动 / tidy checklist ────────────

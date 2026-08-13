@@ -154,6 +154,50 @@ def unlock_mode(paths: "AgentPaths", goal_id: str) -> ExecutionPhaseState:
     return state
 
 
+def compute_progress_trend_signal(
+    goal_backlog, goal_id: str, *, window: int = 3, similarity_threshold: float = 0.85,
+) -> Optional[bool]:
+    """[goal_execution_phase_improvement_plan.md Stage D] 跨轮"进展趋势"信号。
+
+    读取这个 Goal 最近已完成的 `window` 个周期子节点（`reaped_cycle_child_ids`
+    末尾）的 `progress_notes` 文本，两两比较相似度（复用 evolution/guardian.py
+    `_is_near_duplicate` 同款 difflib 思路），若相邻轮次的进展描述高度雷同，
+    视为"看起来在原地打转"的伪进展信号，返回 True；文本有明显差异返回 False；
+    历史不足 `window` 轮或任何环节异常返回 None（不参与判定，等价于关闭）。
+
+    这只是一个粗粒度的辅助信号（文本相似度不代表真实产出质量），不单独触发
+    阶段切换，只作为 `resolve_effective_mode` 里"是否已经足够稳定"判定的
+    一票否决项——即便 spec 已确认且 miss_streak 为 0，如果最近几轮的进展
+    描述几乎重复，也不应该判定为 stable。
+    """
+    if goal_backlog is None or not goal_id:
+        return None
+    try:
+        goal = goal_backlog.get(goal_id)
+        if goal is None:
+            return None
+        reaped = list(getattr(goal, "reaped_cycle_child_ids", []) or [])
+        if len(reaped) < window:
+            return None
+        recent_ids = reaped[-window:]
+        notes: list[str] = []
+        for child_id in recent_ids:
+            child = goal_backlog.get(child_id)
+            note = (getattr(child, "progress_notes", "") or "").strip() if child is not None else ""
+            if not note:
+                return None  # 缺少足够信息时不判定，避免误判
+            notes.append(note)
+        import difflib
+
+        for i in range(1, len(notes)):
+            ratio = difflib.SequenceMatcher(None, notes[i - 1], notes[i]).ratio()
+            if ratio < similarity_threshold:
+                return False
+        return True
+    except Exception:
+        return None
+
+
 def resolve_effective_mode(
     state: ExecutionPhaseState,
     *,
@@ -162,6 +206,7 @@ def resolve_effective_mode(
     spec_recently_revised: bool,
     miss_streak: int = 0,
     tidy_every_n_cycles: int = DEFAULT_TIDY_EVERY_N_CYCLES,
+    progress_trend_stuck: Optional[bool] = None,
 ) -> tuple[str, ExecutionPhaseState]:
     """计算本轮的"有效阶段"，并按需推进/落盘 mode_history（调用方负责 save）。
 
@@ -172,6 +217,11 @@ def resolve_effective_mode(
         spec 已确认且近期未 revise 且 miss_streak 低    → stable（跳过 converge，
           第一版不做"候选方案对比"识别，converge 仅作为可手动进入的阶段）
         否则                                            → converge（过渡态）
+      [Stage D] progress_trend_stuck=True（跨轮进展文本高度雷同）时，即使
+      前面条件满足 stable，也降级为 converge——"文件层面看起来收敛了，但
+      内容层面可能只是在重复"，用 converge 阶段要求的"方案对比说明"倒逼
+      agent 交代清楚，而不是静默判 stable。不满足 stable 条件时该信号不生效
+      （不会把 explore 进一步"加重"，避免同一个粗糙信号被用在两个方向上）。
     """
     if state.locked or state.mode != "auto":
         # [Stage B] tidy 阶段是"一次性插入"的维护动作：手动/自动进入 tidy 后，
@@ -192,6 +242,8 @@ def resolve_effective_mode(
         target = "explore"
     elif spec_confirmed and not spec_recently_revised and miss_streak == 0:
         target = "stable"
+        if progress_trend_stuck is True:
+            target = "converge"
     else:
         target = "converge"
 

@@ -47,9 +47,17 @@
    判定为 `explore`（说明执行方式还不稳定）。
 3. 如果 spec 已确认、近期未变更、轻量核对连续命中，判定为 `stable`。
 4. 其余情况判定为过渡态 `converge`。
+5. **[Stage D] 进展趋势信号**：即使满足上面第 3 条的 `stable` 条件，系统
+   还会额外检查这个 Goal 最近 3 轮已完成周期的 `progress_notes`（每轮完成
+   后留下的进展摘要）——如果这几轮的文字描述**高度雷同**（文本相似度
+   ≥0.85），说明"文件层面看起来符合规范，但内容上可能只是在原地重复"，
+   会把判定从 `stable` 降级为 `converge`，倒逼 agent 在收敛阶段交代清楚
+   "这一轮到底推进了什么"，而不是被静默判定为已经稳定。历史轮次不足 3
+   轮、或某一轮进展摘要为空时，这条信号不参与判定（不影响原有规则）。
 
 自动判定只影响"本轮拼给 agent 的 prompt 片段"，不会自动帮你确认或修改
-`GoalExecutionSpec` 本身。
+`GoalExecutionSpec` 本身；进展趋势信号也只是粗粒度的文本相似度启发式，
+不代表真实产出质量判断。
 
 ## 与 GoalExecutionSpec 的关系
 
@@ -84,9 +92,11 @@
 
 ## 生效范围
 
-当前版本（Stage A/B/C）只对通过 `goal_cron_bridge`（即 recurring Goal /
+当前版本（Stage A/B/C/D）只对通过 `goal_cron_bridge`（即 recurring Goal /
 `run_mode=goal_cycle` 的 cron job）触发的轮次生效；未绑定 Goal 的独立 cron
-job（`cron_job_executor.py` 直接执行）暂不接入，留待后续版本扩展。
+job（`cron_job_executor.py` 直接执行）**明确不接入**——阶段概念（探索/
+收敛/稳定）依赖"是否属于同一个 Goal 的连续多轮"这个语境，独立 cron job
+没有 Goal 归属，套用这套机制意义不大，这是已评估后的决定，非遗留缺口。
 
 ## 看板操作
 
