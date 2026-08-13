@@ -395,7 +395,12 @@ GET /v1/self/scheduling_overview        cron_channel.running/queued/max_concurre
                                          以及 goal_cycle_channel 与三条通道共享的
                                          ResourceArbiter 仲裁结果（见 §9）
 GET /v1/self/unified_scheduler_preview  §7.2 加权分配的只读预览（是否开启、
-                                         权重、当前会算出的槽位分配）
+                                         权重、当前会算出的槽位分配）；
+                                         goal 通道每个任务的 resource_estimate
+                                         另外反映该 Goal 的执行阶段（见
+                                         [Goal 执行阶段指南](goal-execution-phase-guide.md#调度联动阶段感知的资源估算只读预览)），
+                                         仍是纯诊断展示，未接入 §7.2 的实际
+                                         槽位分配计算
 ```
 
 `GET /v1/cron/jobs/{id}/workspace` 响应示例：

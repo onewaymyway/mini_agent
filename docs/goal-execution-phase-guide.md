@@ -117,6 +117,34 @@ job（`cron_job_executor.py` 直接执行）**明确不接入**——阶段概�
 收敛/稳定）依赖"是否属于同一个 Goal 的连续多轮"这个语境，独立 cron job
 没有 Goal 归属，套用这套机制意义不大，这是已评估后的决定，非遗留缺口。
 
+## 调度联动：阶段感知的资源估算（只读预览）
+
+除了调节 agent 行为、驱动归档门禁，阶段状态还会反映到调度层的只读
+预览里。`GET /v1/self/unified_scheduler_preview`（见
+[Cron 独立执行链路指南](cron-dedicated-execution-guide.md#8-rest-api)）
+的 `goal` 通道中，每个任务的 `resource_estimate` 不再恒为 `1.0`，而是
+按该 Goal 当前的"最近一次已知有效阶段"换算出的相对倍率：
+
+| 阶段 | 倍率 | 直觉 |
+|---|---|---|
+| explore | 1.3 | 还在摸索，给更宽松的资源预算 |
+| converge | 1.15 | 接近收敛，适度宽松 |
+| stable | 1.0 | 已跑顺，维持基线 |
+| tidy | 0.85 | 收尾整理，收紧成本 |
+
+响应里同时带一个 `extra.phase_mode` 字段标出具体阶段名，方便直接展示
+不用再反查一次。这套倍率是启发式初始值，改默认值只需要调整
+`execution_phase.DEFAULT_PHASE_RESOURCE_MULTIPLIERS` 常量，不涉及调用方
+代码改动。
+
+**这仍然只是诊断展示，不改变任何实际执行行为**——`resource_estimate`
+目前唯一的消费方就是这个只读预览端点本身，尚未接入
+`allocate_weighted_slots()` 的真实槽位分配计算（那部分因为还没有真实
+使用数据支撑"具体倍率该怎么消费"，仍记录在
+`next_doc/goal_cron_task_optimization_holistic_plan.md` §5，留待后续
+排期）。读不到阶段状态（Goal 从未触发过、`paths` 未注入、任何异常）时
+保守回落到 `1.0`，与引入本机制之前的行为一致。
+
 ## 看板操作
 
 打开 Streamlit 看板，Goal 卡片（非 Objective）上会展示一个可折叠的
