@@ -344,6 +344,14 @@ class AgentClient:
             "priority": priority, "source": source,
         })
 
+    def similar_confirmed_goal_specs(self, title: str, description: str = ""):
+        """[cross_goal_experience_reuse_plan.md] 在已确认执行规范的历史
+        Goal 里找相似候选，供"➕ 新建 Goal"表单里的"🔍 查找相似的历史执行
+        规范"按钮使用。"""
+        return self._get("/goals/similar_confirmed_specs", params={
+            "title": title, "description": description,
+        })
+
     def update_goal(self, goal_id: str, **fields):
         return self._patch(f"/goals/{goal_id}", fields)
 

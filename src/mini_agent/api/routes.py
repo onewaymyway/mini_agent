@@ -72,6 +72,8 @@ api/routes.py — FastAPI 路由定义
                                        plan.md §1] Goal stuck 历史统计（只读）
     GET    /v1/self/fairness_diagnostics [goal_fairness_scheduling_
                                        diagnostics_plan.md] 调度公平性参数快照
+    GET    /v1/goals/similar_confirmed_specs [cross_goal_experience_reuse_
+                                       plan.md] 相似历史 Goal 执行规范推荐
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
     POST   /v1/goals                 新增 Goal
     PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级/标题/描述
@@ -3473,6 +3475,45 @@ async def list_goals(request: Request):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/goals/similar_confirmed_specs")
+async def get_similar_confirmed_goal_specs(
+    request: Request,
+    title: str = Query(""),
+    description: str = Query(""),
+    exclude_goal_id: str = Query(""),
+):
+    """GET /v1/goals/similar_confirmed_specs?title=&description= —
+    [cross_goal_experience_reuse_plan.md] 只读：在已确认执行规范的历史
+    Goal 里找相似候选，附对方的 GoalExecutionSpec 摘要，供创建新 Goal 时
+    自愿参考；不做任何自动应用。title/description 都为空时返回空列表。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+        from mini_agent.perception.cross_goal_reference import find_similar_confirmed_goals
+
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if not project_root:
+            return {"candidates": []}
+        paths = AgentPaths(project_root)
+        backlog = load_goal_backlog(paths)
+        candidates = find_similar_confirmed_goals(
+            backlog, title, description, paths=paths,
+            exclude_goal_id=exclude_goal_id or None,
+        )
+        return {"candidates": candidates}
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_similar_confirmed_goal_specs')
+        return {"candidates": []}
 
 
 @router.post("/goals")

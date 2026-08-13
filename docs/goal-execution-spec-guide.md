@@ -218,6 +218,14 @@ Goal 卡片内，「整体关闭判定路径」下拉框（单次覆盖 `use_age
 草稿确认流程，适用于会拆多个子 Objective、`overall_completion_criteria`
 才有意义的场景。
 
+表单下方还有一个独立的「🔍 查找相似的历史执行规范」按钮
+（`next_doc/cross_goal_experience_reuse_plan.md`）：点击后用当前填写的
+标题/描述，在**已确认过执行规范**的历史 Goal 里做一次轻量文本相似度
+匹配（`difflib`，不引入向量检索），把相似度足够高的候选连同对方的
+`render_summary_for_user()` 摘要展示出来。纯查询，不修改任何状态，也
+不会自动把匹配到的规范套用到新 Goal 上——用户自己判断要不要参考着写，
+这是"避免同类型 Goal 各自从头踩坑"的最小可行版本，不是自动化。
+
 ### 7.4 CLI
 
 ```bash

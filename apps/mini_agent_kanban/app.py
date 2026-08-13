@@ -2998,8 +2998,8 @@ def render_kanban_tab(client: AgentClient):
 
     with st.expander("➕ 新建目标"):
         with st.form("new_goal", clear_on_submit=True):
-            title = st.text_input("标题")
-            desc = st.text_area("描述", height=60)
+            title = st.text_input("标题", key="_new_goal_title_input")
+            desc = st.text_area("描述", height=60, key="_new_goal_desc_input")
             priority = st.slider("优先级", 0, 100, 50)
             # [goal_execution_spec_generation_plan.md §6.3] 默认不勾选——多数
             # 随手创建的一次性 Goal 不值得投入一次 LLM 调用去想细节，是否需要
@@ -3027,6 +3027,31 @@ def render_kanban_tab(client: AgentClient):
             st.rerun()
         elif submitted and not title.strip():
             st.error("标题不能为空")
+
+        # [cross_goal_experience_reuse_plan.md] "🔍 查找相似的历史执行规范"
+        # ——独立于表单提交按钮（st.form 内只能有一个 submit 按钮），复用
+        # 上面标题/描述输入框当前的值（通过显式 key 从 session_state 读取，
+        # 不需要用户重新输入一遍）。纯查询、不修改任何状态，找到的候选只是
+        # 展示摘要供用户自己判断要不要复制进描述里参考，不做任何自动应用。
+        if st.button("🔍 查找相似的历史执行规范", key="_find_similar_goal_specs_btn"):
+            cur_title = st.session_state.get("_new_goal_title_input", "").strip()
+            cur_desc = st.session_state.get("_new_goal_desc_input", "").strip()
+            if not cur_title and not cur_desc:
+                st.caption("请先在上面填写标题或描述，再点击查找。")
+            else:
+                resp = client.similar_confirmed_goal_specs(cur_title, cur_desc) or {}
+                candidates = resp.get("candidates") or []
+                if "_error" in resp:
+                    st.caption(f"查找失败：{resp['_error']}")
+                elif not candidates:
+                    st.caption("没有找到相似度足够高的历史 Goal（或历史 Goal 都还没确认过执行规范）。")
+                else:
+                    for cand in candidates:
+                        with st.expander(
+                            f"「{cand.get('title', '')}」（相似度 {cand.get('similarity', 0):.0%}）",
+                            expanded=False,
+                        ):
+                            st.markdown(cand.get("spec_summary", ""))
 
     # 新建目标时勾选了"同时生成执行规范"——创建请求本身只返回新 Goal 的 id，
     # 拿到 id 之后才能调用生成接口，所以草稿确认区块放在表单外面单独渲染，
