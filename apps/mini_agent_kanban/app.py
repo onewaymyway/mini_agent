@@ -2582,6 +2582,67 @@ def _render_goal_execution_spec_widget(
     return False
 
 
+_PHASE_LABELS = {
+    "explore": "🔍 探索",
+    "converge": "⚖️ 收敛",
+    "stable": "✅ 稳定",
+    "tidy": "🧹 整理",
+    "auto": "🤖 自动",
+}
+
+
+def _render_goal_execution_phase_widget(client: AgentClient, goal_id: str, key_prefix: str = "") -> None:
+    """[goal_execution_phase_improvement_plan.md Stage C] Goal 卡片上的执行
+    阶段徽章 + 手动切换折叠区。默认折叠展示当前阶段（含 auto 模式下系统
+    自动判定出的 stability_score），展开后允许用户切换 explore/converge/
+    stable/tidy/auto 五态，非 auto 默认隐式锁定（与 CLI `/agent goals
+    phase set` 行为一致），并提供解锁按钮。
+
+    读取失败（goal_id 为空、接口异常）时静默不展示，不影响卡片其他内容。
+    """
+    if not goal_id:
+        return
+    resp = client.get_execution_phase(goal_id)
+    if not resp or resp.get("_error"):
+        return
+    phase = resp.get("phase") or {}
+    mode = phase.get("mode", "auto")
+    locked = phase.get("locked", False)
+    score = phase.get("stability_score", 0.0)
+    label = _PHASE_LABELS.get(mode, mode)
+    lock_tag = "🔒" if locked else ""
+
+    with st.expander(f"{label} {lock_tag}　执行阶段", expanded=False):
+        st.caption(f"stability_score: {score:.2f}　·　已在当前阶段 {phase.get('cycles_in_mode', 0)} 轮")
+        history = phase.get("mode_history") or []
+        if history:
+            recent = history[-3:]
+            for m in recent:
+                st.caption(f"　{m.get('from','')} → {m.get('to','')}（{m.get('reason','')}）")
+
+        mode_options = ["auto", "explore", "converge", "stable", "tidy"]
+        current_idx = mode_options.index(mode) if mode in mode_options else 0
+        col1, col2 = st.columns([3, 1])
+        new_mode = col1.selectbox(
+            "切换阶段", mode_options, index=current_idx,
+            format_func=lambda m: _PHASE_LABELS.get(m, m),
+            key=f"{key_prefix}phase_select_{goal_id}",
+        )
+        if col2.button("应用", key=f"{key_prefix}phase_apply_{goal_id}"):
+            res = client.set_execution_phase(goal_id, new_mode)
+            if res and res.get("_error"):
+                st.error(f"切换阶段失败：{res['_error']}")
+            else:
+                st.rerun()
+        if locked:
+            if st.button("🔓 解除锁定（交回自动判定）", key=f"{key_prefix}phase_unlock_{goal_id}"):
+                res = client.unlock_execution_phase(goal_id)
+                if res and res.get("_error"):
+                    st.error(f"解除锁定失败：{res['_error']}")
+                else:
+                    st.rerun()
+
+
 def _render_goal_card(
     client: AgentClient, n: dict, status_key: str, indent: bool = False, note: str = "",
     execution: Optional[dict] = None, cron_next_run_by_id: Optional[dict] = None,
@@ -2696,6 +2757,13 @@ def _render_goal_card(
     # Objective 收尾时 latest.json 不存在，函数内部会静默不展示。
     if n.get("level") != "objective":
         _render_goal_output_manifests(client, n.get("id", ""), key_prefix=key_prefix)
+
+    # [goal_execution_phase_improvement_plan.md Stage C] Goal 卡片（非
+    # Objective）展示执行阶段徽章 + 手动切换下拉框——explore/converge/
+    # stable/tidy/auto 五态，与 execution_spec 折叠区一样只在 Goal 层级
+    # 渲染，Objective 卡片不重复展示（阶段是挂在 Goal 上的概念）。
+    if n.get("level") != "objective":
+        _render_goal_execution_phase_widget(client, n.get("id", ""), key_prefix=key_prefix)
 
     if execution is not None:
         _render_objective_execution_detail(client, execution, key_prefix=key_prefix)

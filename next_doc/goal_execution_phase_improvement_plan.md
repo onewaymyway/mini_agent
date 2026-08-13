@@ -126,7 +126,13 @@ CLI（`cli/commands/goals.py`，追加到 `/agent goals` 下）：
     流程串起来（不自动调用，仅提示）。
   - tidy 阶段若已有确认的执行规范，自动生成"整理核对清单"（基于 spec 的
     deliverables/sub_directories），而不是让 agent 凭空判断哪些是冗余。
-- **Stage C（后续）**：看板可视化（阶段徽章、stability_score、一键切换）。
+- **Stage C（已实现）**：看板可视化——REST 端点
+  `GET/POST /v1/goals/{goal_id}/execution_phase`、
+  `POST /v1/goals/{goal_id}/execution_phase/unlock`（`api/routes.py`）+
+  Streamlit 看板 Goal 卡片上的阶段徽章折叠区（`apps/mini_agent_kanban/
+  app.py::_render_goal_execution_phase_widget`，展示 mode/locked/
+  stability_score/mode_history，并提供切换下拉框 + 解锁按钮）+
+  `AgentClient` 对应方法 + 路由层单元测试。
 - **Stage D（后续）**：更细的自动判定信号（例如接入 goal_judge 的
   progress 趋势），以及独立 cron（非 goal_cycle）场景的阶段支持。
 

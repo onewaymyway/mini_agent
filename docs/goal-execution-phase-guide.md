@@ -82,11 +82,22 @@
 
 
 
-当前版本（Stage A）只对通过 `goal_cron_bridge`（即 recurring Goal /
+## 生效范围
+
+当前版本（Stage A/B/C）只对通过 `goal_cron_bridge`（即 recurring Goal /
 `run_mode=goal_cycle` 的 cron job）触发的轮次生效；未绑定 Goal 的独立 cron
-job（`cron_job_executor.py` 直接执行）暂不接入，留待后续版本扩展。看板
-（kanban）可视化（阶段徽章、`stability_score` 展示、一键切换）也留待后续
-版本，当前请使用 `/agent goals phase` 命令行操作。
+job（`cron_job_executor.py` 直接执行）暂不接入，留待后续版本扩展。
+
+## 看板操作
+
+打开 Streamlit 看板，Goal 卡片（非 Objective）上会展示一个可折叠的
+"执行阶段"区域：
+
+- 折叠标题显示当前阶段徽章（🔍探索/⚖️收敛/✅稳定/🧹整理/🤖自动）和是否锁定
+  （🔒）。
+- 展开后可看到 `stability_score`、已在当前阶段的轮数、最近几次切换记录。
+- 下拉框选择目标阶段 + "应用"按钮完成切换（等价于 CLI `phase set`）。
+- 已锁定时额外出现"解除锁定"按钮（等价于 CLI `phase unlock`）。
 
 ## 数据存储
 

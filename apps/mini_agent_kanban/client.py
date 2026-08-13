@@ -400,6 +400,20 @@ class AgentClient:
             body["use_agent"] = use_agent
         return self._post(f"/goals/{goal_id}/execution_spec/close_check", body)
 
+    # ── 看板：Goal 执行阶段徽章 + 手动切换（goal_execution_phase_
+    # improvement_plan.md Stage C）─────────────────────────────────────────
+    def get_execution_phase(self, goal_id: str):
+        return self._get(f"/goals/{goal_id}/execution_phase")
+
+    def set_execution_phase(self, goal_id: str, mode: str, lock: bool | None = None):
+        body = {"mode": mode}
+        if lock is not None:
+            body["lock"] = lock
+        return self._post(f"/goals/{goal_id}/execution_phase", body)
+
+    def unlock_execution_phase(self, goal_id: str):
+        return self._post(f"/goals/{goal_id}/execution_phase/unlock")
+
     # ── 看板：Objective 执行操作（Track D）+ 全局待办中心（Track A）───
     def cancel_objective(self, execution_id: str):
         return self._post(f"/objectives/{execution_id}/cancel")

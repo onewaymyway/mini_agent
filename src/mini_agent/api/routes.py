@@ -3837,6 +3837,74 @@ async def close_check_goal_execution_spec(goal_id: str, request: Request):
     return {"outcome": outcome, "goal": updated.to_dict() if updated else None}
 
 
+# ── Goal 执行阶段（goal_execution_phase_improvement_plan.md Stage C）────────
+# 看板"阶段徽章"展示 + 手动切换，直接复用 perception/execution_phase.py，
+# 与 execution_spec 一节风格对称：REST 层只是把 CLI（/agent goals phase）
+# 能力暴露给看板，不重复实现判定逻辑。
+
+@router.get("/goals/{goal_id}/execution_phase")
+async def get_goal_execution_phase(goal_id: str, request: Request):
+    """GET /v1/goals/{goal_id}/execution_phase — 查看当前执行阶段状态
+    （mode/locked/stability_score/mode_history），对应 CLI
+    `/agent goals phase show`。没有 phase 文件时返回默认状态
+    （mode="auto", locked=False），不是 404——"还没手动设置过"是合法状态。
+    """
+    paths = _spec_paths(request)
+    from mini_agent.perception import execution_phase as ep
+    state = ep.load_phase(paths, goal_id)
+    return {"phase": state.to_dict()}
+
+
+@router.post("/goals/{goal_id}/execution_phase")
+async def set_goal_execution_phase(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/execution_phase — 手动切换执行阶段，对应
+    CLI `/agent goals phase set`。Body: { "mode": "explore"|"converge"|
+    "stable"|"tidy"|"auto", "lock": bool? }。`lock` 不传时沿用 CLI 同样的
+    默认规则：非 auto 隐式锁定，auto 隐式解锁。
+    """
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(goal_id)
+    if node is None or not node.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    body = await request.json()
+    mode = body.get("mode")
+    if not mode:
+        raise HTTPException(status_code=400, detail="mode is required")
+    lock = body.get("lock")
+    if lock is not None:
+        lock = bool(lock)
+    paths = _spec_paths(request)
+    from mini_agent.perception import execution_phase as ep
+    try:
+        state = ep.set_mode(paths, goal_id, mode, lock=lock, reason="kanban_set")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.routes.set_goal_execution_phase')
+        raise HTTPException(status_code=500, detail=f"切换执行阶段失败：{e}")
+    return {"phase": state.to_dict()}
+
+
+@router.post("/goals/{goal_id}/execution_phase/unlock")
+async def unlock_goal_execution_phase(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/execution_phase/unlock — 解除锁定，交回
+    自动判定，对应 CLI `/agent goals phase unlock`。"""
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(goal_id)
+    if node is None or not node.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    paths = _spec_paths(request)
+    from mini_agent.perception import execution_phase as ep
+    try:
+        state = ep.unlock_mode(paths, goal_id)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.routes.unlock_goal_execution_phase')
+        raise HTTPException(status_code=500, detail=f"解除锁定失败：{e}")
+    return {"phase": state.to_dict()}
+
+
 # ── Objective 执行操作（看板与自主性改进方案 Track D）────────────────────────
 # 给 ObjectiveExecutor 已有的状态机加几个转换入口：终止 / 手动重试当前步 /
 # 插一句话补充上下文。都是"事实来源仍是 ObjectiveExecutor"的操作——不直接
