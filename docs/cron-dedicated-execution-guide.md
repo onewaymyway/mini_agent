@@ -269,6 +269,10 @@ build_cron_agent()`），不跨触发复用同一个 Agent/history：
 
 ## 7. 全局默认配置
 
+> 本节讲的是 cron 通道自身的分级响应/记账/仲裁配置；三条执行通道
+> （Goal/普通 cron/goal_cycle）如何共享同一份资源仲裁结果的完整设计与
+> 分阶段状态，见 [Goal/Cron 统一调度层指南](unified-scheduler-guide.md)。
+
 `agent_config.json` 里可选的 `"cron": {...}` 块：
 
 ```json

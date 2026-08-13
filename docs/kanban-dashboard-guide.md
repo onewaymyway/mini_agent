@@ -285,6 +285,14 @@ widget()`），对接 `perception/goal_execution_spec.py`，与 CLI `/agent goal
 持久 Worker 活跃 execution 数、心跳线程是否存活。开关切换仍需改
 `agent_config.json` 并重启 daemon，本区块本身不提供热切换按钮。
 
+紧接着的 **🕹️ 统一调度总览** 区块（`GET /v1/self/scheduling_overview` +
+`GET /v1/self/unified_scheduler_preview`，详见
+[Goal/Cron 统一调度层指南](unified-scheduler-guide.md)）：展示 Goal/
+普通 cron/goal_cycle 三条执行通道当前的运行/排队/跳过状态、共享的
+`ResourceArbiter` 仲裁结果、哪些调度灰度开关（`unified_arbitration_
+enabled`/`unified_dispatch_enabled` 等）当前生效，以及"如果现在要决定
+谁先执行"的建议排序预览。纯只读展示，不提供任何触发/暂停操作按钮。
+
 `⚙️ 执行模型` 区块顶部另有一个 **📋 执行总览** 面板
 （`next_doc/kanban_execution_visibility_and_control_plan.md`）：
 四栏分别展示 🟢 正在执行 / 🟡 排队等待 / 🔴 异常已回收 / ⚪ 最近完成，
