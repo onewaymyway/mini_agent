@@ -1,0 +1,151 @@
+{
+  "version": "1.0.0",
+  "generated_at": "2026-08-13",
+  "description": "Phase 1 P0站点测试配置 — 10个核心站点",
+  "run_config": {
+    "mode": "real",
+    "concurrency": 3,
+    "timeout_per_test_seconds": 60,
+    "max_retries": 2,
+    "screenshot_on_fail": true,
+    "save_page_source_on_fail": false,
+    "rate_limit_min_seconds": 1.0,
+    "rate_limit_max_seconds": 3.0
+  },
+  "p0_sites": [
+    {
+      "site_id": "gov_cn",
+      "name": "中国政府网",
+      "url": "https://www.gov.cn",
+      "priority": "P0",
+      "category": "gov",
+      "anti_crawl_level": "low",
+      "test_scenarios": [
+        {"scenario_id": "NAV-001", "name": "首页导航", "action": "navigate", "timeout": 30},
+        {"scenario_id": "SRCH-001", "name": "关键词搜索", "action": "search", "keyword": "国务院", "timeout": 30},
+        {"scenario_id": "DOM-001", "name": "新闻列表解析", "action": "extract", "selector": ".news_list li", "timeout": 30}
+      ]
+    },
+    {
+      "site_id": "stats_gov_cn",
+      "name": "国家数据",
+      "url": "https://www.stats.gov.cn",
+      "priority": "P0",
+      "category": "gov",
+      "anti_crawl_level": "low",
+      "test_scenarios": [
+        {"scenario_id": "NAV-002", "name": "首页导航", "action": "navigate", "timeout": 30},
+        {"scenario_id": "SRCH-002", "name": "统计关键词搜索", "action": "search", "keyword": "GDP", "timeout": 30},
+        {"scenario_id": "DATA-001", "name": "数据表格提取", "action": "extract", "selector": "table.datatable tr", "timeout": 30}
+      ]
+    },
+    {
+      "site_id": "gsxt_gov_cn",
+      "name": "国家企业信用信息公示",
+      "url": "https://www.gsxt.gov.cn",
+      "priority": "P0",
+      "category": "gov",
+      "anti_crawl_level": "high",
+      "test_scenarios": [
+        {"scenario_id": "NAV-003", "name": "首页导航", "action": "navigate", "timeout": 30},
+        {"scenario_id": "SRCH-003", "name": "企业信用搜索", "action": "search", "keyword": "阿里巴巴", "timeout": 45},
+        {"scenario_id": "FORM-001", "name": "验证码处理", "action": "captcha_hint", "timeout": 60}
+      ]
+    },
+    {
+      "site_id": "boss_zhipin",
+      "name": "BOSS直聘",
+      "url": "https://www.zhipin.com",
+      "priority": "P0",
+      "category": "jobs",
+      "anti_crawl_level": "medium",
+      "test_scenarios": [
+        {"scenario_id": "NAV-004", "name": "首页导航", "action": "navigate", "timeout": 30},
+        {"scenario_id": "SRCH-004", "name": "职位搜索", "action": "search", "keyword": "Python工程师", "timeout": 30},
+        {"scenario_id": "EXTRACT-001", "name": "职位列表解析", "action": "extract", "selector": ".job-card", "timeout": 30}
+      ]
+    },
+    {
+      "site_id": "51job",
+      "name": "前程无忧",
+      "url": "https://www.51job.com",
+      "priority": "P0",
+      "category": "jobs",
+      "anti_crawl_level": "medium",
+      "test_scenarios": [
+        {"scenario_id": "NAV-005", "name": "首页导航", "action": "navigate", "timeout": 30},
+        {"scenario_id": "SRCH-005", "name": "职位搜索", "action": "search", "keyword": "数据分析师", "timeout": 30},
+        {"scenario_id": "EXTRACT-002", "name": "职位列表解析", "action": "extract", "selector": ".el_table_row", "timeout": 30}
+      ]
+    },
+    {
+      "site_id": "lagou",
+      "name": "拉勾网",
+      "url": "https://www.lagou.com",
+      "priority": "P0",
+      "category": "jobs",
+      "anti_crawl_level": "medium",
+      "test_scenarios": [
+        {"scenario_id": "NAV-006", "name": "首页导航", "action": "navigate", "timeout": 30},
+        {"scenario_id": "SRCH-006", "name": "职位搜索", "action": "search", "keyword": "前端开发", "timeout": 30},
+        {"scenario_id": "EXTRACT-003", "name": "职位列表解析", "action": "extract", "selector": "..job-list-box", "timeout": 30}
+      ]
+    },
+    {
+      "site_id": "jd_com",
+      "name": "京东",
+      "url": "https://www.jd.com",
+      "priority": "P0",
+      "category": "ecommerce",
+      "anti_crawl_level": "high",
+      "test_scenarios": [
+        {"scenario_id": "NAV-007", "name": "首页导航", "action": "navigate", "timeout": 30},
+        {"scenario_id": "SRCH-007", "name": "商品搜索", "action": "search", "keyword": "手机", "timeout": 30},
+        {"scenario_id": "EXTRACT-004", "name": "商品列表解析", "action": "extract", "selector": ".gl-item", "timeout": 30}
+      ]
+    },
+    {
+      "site_id": "cls_cn",
+      "name": "财联社",
+      "url": "https://www.cls.cn",
+      "priority": "P0",
+      "category": "finance",
+      "anti_crawl_level": "low",
+      "test_scenarios": [
+        {"scenario_id": "NAV-008", "name": "首页导航", "action": "navigate", "timeout": 30},
+        {"scenario_id": "SRCH-008", "name": "财经搜索", "action": "search", "keyword": "股市", "timeout": 30},
+        {"scenario_id": "EXTRACT-005", "name": "资讯列表解析", "action": "extract", "selector": ".article-item", "timeout": 30}
+      ]
+    },
+    {
+      "site_id": "zhihu",
+      "name": "知乎",
+      "url": "https://www.zhihu.com",
+      "priority": "P0",
+      "category": "social",
+      "anti_crawl_level": "medium",
+      "test_scenarios": [
+        {"scenario_id": "NAV-009", "name": "首页导航", "action": "navigate", "timeout": 30},
+        {"scenario_id": "SRCH-009", "name": "问题搜索", "action": "search", "keyword": "AI大模型", "timeout": 30},
+        {"scenario_id": "EXTRACT-006", "name": "回答列表解析", "action": "extract", "selector": ".RichContent", "timeout": 30}
+      ]
+    },
+    {
+      "site_id": "baidu_health",
+      "name": "百度健康",
+      "url": "https://health.baidu.com",
+      "priority": "P0",
+      "category": "health",
+      "anti_crawl_level": "low",
+      "test_scenarios": [
+        {"scenario_id": "NAV-010", "name": "首页导航", "action": "navigate", "timeout": 30},
+        {"scenario_id": "SRCH-010", "name": "疾病搜索", "action": "search", "keyword": "感冒", "timeout": 30},
+        {"scenario_id": "EXTRACT-007", "name": "健康信息解析", "action": "extract", "selector": ".result-item", "timeout": 30}
+      ]
+    }
+  ],
+  "execution_order": [
+    "gov_cn", "stats_gov_cn", "gsxt_gov_cn", "boss_zhipin", "51job",
+    "lagou", "jd_com", "cls_cn", "zhihu", "baidu_health"
+  ]
+}
