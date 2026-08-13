@@ -1,7 +1,13 @@
 # 周期性 Goal/Cron 任务的跨轮次诊断与交互式调优设计方案
 
-> 状态：**设计草案 / 待评审**（尚未实施——先把机制想清楚，评审通过后按
-> Stage 拆解实施，遵循既有的"每个 Stage 完成后更新文档 + 跑回归"节奏）
+> 状态：**Stage 1（只读诊断）已实施** / Stage 2/3（交互式调优）仍是设计草案
+> ——先把机制想清楚，评审通过后按 Stage 拆解实施，遵循既有的"每个 Stage
+> 完成后更新文档 + 跑回归"节奏。Stage 1 实现见
+> `src/mini_agent/perception/cycle_diagnostics.py`、CLI
+> `/agent goals diagnose <goal_id>`、REST
+> `GET /v1/goals/{goal_id}/cycle_diagnostics`、
+> [使用指南](../docs/goal-cycle-diagnostics-guide.md)、
+> `tests/test_cycle_diagnostics.py`。
 > 触发背景：用户提出，对于周期性执行的 Goal/cron 任务，有时候需要的不是
 > "某一次执行跑得怎么样"，而是**"这个任务整体跑得怎么样"**——所有轮次
 > 的情况、当前是否健康、用的目录结构和机制是什么；看完这份整体状况后，
@@ -234,7 +240,7 @@ execution_specs/` 的风格一致，不塞进 `goals.json` 主文件（避免主
 
 ## 4. 分阶段实施计划
 
-- **Stage 1（只读诊断，零风险，优先实施）**：`cycle_diagnostics.py` +
+- **Stage 1（只读诊断，零风险，优先实施）✅ 已实施**：`cycle_diagnostics.py` +
   CLI `diagnose` 命令 + REST 端点。不涉及任何改动能力，可以独立评估
   "这份报告是否真的解决了用户翻文件拼图的问题"，为 Stage 2/3 打基础。
 - **Stage 2（规则触发的调优建议，不含 LLM 解析用户自然语言）**：

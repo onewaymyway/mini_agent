@@ -926,6 +926,7 @@ python -m pytest tests/ -q
 - [定时任务完整参考](docs/cron-jobs-reference.md) — **新增**：汇总全部 `sys:` 内置 cron job（固定内置 9 个 + 各计划按需补注册的十余个），含每个 job 的目的、触发频率、是否含 LLM 调用、默认启用状态及关联设计文档
 - [守护进程多客户端架构指南](docs/daemon-multi-client-guide.md) — **新增**：`DaemonClient`/`SessionAgentPool`/`AgentBridge`（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）三层架构、多端接入同一会话的消息生命周期、`run_connected_repl` 已连接模式渲染与斜杠命令转发，含当前已知问题排查记录
 - [Cron 任务专属执行机制指南](docs/cron-dedicated-execution-guide.md) — **新增**：cron job 到期后的独立后台线程执行通道（不阻塞用户消息）、超时/步数/StuckDetector 卡死检测三重兜底、跨次触发的 progress_summary 续接、每 job 专属文件夹（prompt.md/config.json/state.json/runs/*.jsonl）、`CronConfig` 全局默认+缺省字段实时回退、5 个 REST 端点、看板 "⏰ Cron 任务" tab
+- [Goal/Cron 统一调度层指南](docs/unified-scheduler-guide.md) — **新增**：Goal/普通 cron/goal_cycle 三条执行通道的资源仲裁统一化（`goal_cron_unified_scheduler_improvement_plan.md` P0-P5）——cron 对 degraded 分级响应+统一记账、连续跳过告警、`tick()` 看门狗、`scheduling_overview`/`unified_scheduler_preview` 两个只读观测端点、`allocate_weighted_slots()` 接管 degraded 槽位分配（默认关闭）、`dispatch_due_cron_jobs()` 统一派发入口（默认关闭），Goal 通道实际派发路径尚未接入
 - [每日融合日报指南](docs/daily-digest-guide.md) — **新增**：行为分布+目标进展+git提交融合为一份日报（`/digest daily`），`sys:daily_digest` cron job，启动打印摘要
 - [主动推荐排序指南](docs/next-action-advisor-guide.md) — **新增**：停滞目标/注意力错配规则层排序（`/next`），可选 LLM 排序层、决策画像加权、持续超时 daemon 主动推送，均可配置开关
 - [决策画像指南](docs/decision-profile-guide.md) — **新增**：从历史技术决策归纳可追溯的用户价值取向模式（`/decision_profile`），矛盾证据不覆盖只记录，默认关闭 cron job

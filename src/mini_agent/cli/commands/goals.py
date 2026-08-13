@@ -27,6 +27,12 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
   /agent goals phase set <id> explore|converge|stable|tidy|auto [--lock]
                                    — 手动切换执行阶段（非 auto 默认隐式锁定）
   /agent goals phase unlock <id>   — 解除锁定，交回自动判定
+  /agent goals diagnose <id>       — 跨轮次诊断报告：这个 Goal 整体跑得
+                                     怎么样（阶段/健康告警/cron 状态/最近
+                                     轮次产出/机制说明一次性拼出来，见
+                                     perception/cycle_diagnostics.py，
+                                     next_doc/goal_cron_cycle_diagnostics_
+                                     and_interactive_tuning_plan.md Stage 1）
 """
 
 from __future__ import annotations
@@ -146,6 +152,14 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
             return
         _cmd_phase(paths, rest[0], rest[1:])
 
+    elif subcmd == "diagnose":
+        # [goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 1]
+        # /agent goals diagnose <goal_id>
+        if not rest:
+            R.print_error("Usage: /agent goals diagnose <goal_id>")
+            return
+        _cmd_diagnose(gb, paths, rest[0])
+
     elif subcmd == "unrecur":
         # /agent goals unrecur <id> — 停止周期性（不删 Goal/cron job）
         if not rest:
@@ -168,7 +182,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
-            "progress, feedback, recur, unrecur, spec, phase, status, reset-step"
+            "progress, feedback, recur, unrecur, spec, phase, diagnose, status, reset-step"
         )
 
 
@@ -779,6 +793,62 @@ def _cmd_phase(paths, action: str, rest: list[str]) -> None:
         return
 
     R.print_error(f"Unknown phase action: {action!r}. Use show/set/unlock.")
+
+
+def _cmd_diagnose(gb, paths, goal_id: str) -> None:
+    """[goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 1]
+    /agent goals diagnose <goal_id> — 打印跨轮次诊断报告。纯只读展示。
+    """
+    from mini_agent.perception.cycle_diagnostics import build_cycle_diagnostics
+
+    report = build_cycle_diagnostics(paths, gb, goal_id)
+    if not report.found:
+        R.print_error(report.error or f"Goal '{goal_id}' not found")
+        return
+
+    R.print_info(f"📋 诊断报告：{report.goal_title} ({report.goal_id})")
+    recur_txt = f"周期性 (schedule={report.schedule})" if report.recurring else "一次性"
+    R.print_info(f"  状态: {report.status}  |  {recur_txt}  |  已完成轮次: {report.cycle_count}")
+
+    lock_txt = "locked" if report.execution_phase_locked else "unlocked"
+    R.print_info(f"  执行阶段: {report.execution_phase_mode} ({lock_txt})")
+    if report.phase_history_summary:
+        R.print_info("  最近阶段变迁:")
+        for m in report.phase_history_summary[-5:]:
+            R.print_info(f"    {m['from']} -> {m['to']} ({m['reason']})")
+
+    if report.cron_health:
+        ch = report.cron_health
+        R.print_info(
+            f"  Cron 健康: run_count={ch.get('run_count')}, "
+            f"consecutive_skip_count={ch.get('consecutive_skip_count')}, "
+            f"enabled={ch.get('enabled')}"
+        )
+
+    if report.recent_health_alerts:
+        R.print_info("  ⚠️  健康告警:")
+        for a in report.recent_health_alerts:
+            R.print_info(f"    {a['message']}")
+
+    if report.recent_cycle_summaries:
+        R.print_info(f"  最近轮次（最多显示 {len(report.recent_cycle_summaries)} 条）:")
+        for s in report.recent_cycle_summaries[-10:]:
+            tag = " [archived]" if s.get("archived") else ""
+            R.print_info(
+                f"    cycle={s.get('cycle')} status={s.get('status')} "
+                f"artifacts={s.get('artifact_count')}{tag}  {s.get('task_summary', '')[:60]}"
+            )
+
+    R.print_info(f"  产出目录: {report.output_dir}")
+    if report.progress_notes_tail:
+        R.print_info("  最近进展记录:")
+        for line in report.progress_notes_tail.splitlines()[-5:]:
+            R.print_info(f"    {line}")
+
+    if report.mechanism_notes:
+        R.print_info("  机制说明:")
+        for note in report.mechanism_notes:
+            R.print_info(f"    - {note}")
 
 
 def _format_ago(seconds: float) -> str:

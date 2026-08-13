@@ -78,6 +78,10 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/goals                 新增 Goal
     PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级/标题/描述
     POST   /v1/goals/{goal_id}/feedback  持久化提意见（合入 description，双向同步 cron）
+    GET    /v1/goals/{goal_id}/cycle_diagnostics  [goal_cron_cycle_diagnostics_
+                                       and_interactive_tuning_plan.md Stage 1]
+                                       跨轮次诊断报告：阶段/健康告警/cron 状态/
+                                       最近轮次产出/机制说明一次性聚合返回
     GET    /v1/self/diagnosis_feedback  自诊断信号闭环 P1-P4 汇总（改进候选清单/
                                          建议采纳率回看/能力快照 diff/skill 有效性）
     GET    /v1/self/goal_fairness    [goal_execution_fairness_improvement_plan.md
@@ -4042,6 +4046,29 @@ async def unlock_goal_execution_phase(goal_id: str, request: Request):
         log_exception(e, where='mini_agent.api.routes.unlock_goal_execution_phase')
         raise HTTPException(status_code=500, detail=f"解除锁定失败：{e}")
     return {"phase": state.to_dict()}
+
+
+@router.get("/goals/{goal_id}/cycle_diagnostics")
+async def get_goal_cycle_diagnostics(goal_id: str, request: Request):
+    """GET /v1/goals/{goal_id}/cycle_diagnostics —
+    [goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 1]
+    跨轮次诊断报告：聚合阶段/健康告警/cron 状态/最近轮次产出/机制说明，
+    回答"这个 Goal 整体跑得怎么样"，对应 CLI `/agent goals diagnose`。
+    纯只读聚合，不修改任何状态。Goal 不存在时返回 404。
+    """
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(goal_id)
+    if node is None or not node.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    paths = _spec_paths(request)
+    from mini_agent.perception.cycle_diagnostics import build_cycle_diagnostics
+    try:
+        report = build_cycle_diagnostics(paths, backlog, goal_id)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.routes.get_goal_cycle_diagnostics')
+        raise HTTPException(status_code=500, detail=f"生成诊断报告失败：{e}")
+    return {"diagnostics": report.to_dict()}
 
 
 # ── Objective 执行操作（看板与自主性改进方案 Track D）────────────────────────
