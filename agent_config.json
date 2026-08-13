@@ -204,5 +204,9 @@
     "pursuit_increment_llm_review_enabled":true,
     "report_external_drift_refresh_enabled":true,
     "report_active_search_max_calls":5
+  },
+  "cycle_tuning":{
+    "diagnostics_llm_summary_enabled":true,
+    "tuning_llm_parse_enabled":true
   }
 }
