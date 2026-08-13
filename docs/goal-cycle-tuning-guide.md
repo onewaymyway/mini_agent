@@ -1,9 +1,10 @@
 # Goal 交互式调优（Cycle Tuning）指南
 
-> Stage 2 实现，见
+> Stage 2（规则+结构化调优 draft/confirm/apply/reject）/ Stage 3（可选的
+> LLM 自然语言意见解析，默认关闭）均已实现，见
 > `next_doc/goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md`。
 > 依赖 [诊断报告](goal-cycle-diagnostics-guide.md) 的数据，但属于独立能力
-> （能力 B）。Stage 3（自然语言意见 → 自动映射到白名单参数）尚未实施。
+> （能力 B）。
 
 ## 解决什么问题
 
@@ -34,7 +35,11 @@
 
 ```
 /agent goals tune <goal_id> <param>=<value> [<param2>=<value2> ...] [--reason <text>]
-                                  — 直接生成结构化草案（不含自然语言解析）
+                                  — 直接生成结构化草案
+/agent goals tune <goal_id> "<自然语言改进意见>"
+                                  — Stage 3（可选，需开启配置）：不含 '=' 时
+                                    按自然语言意见处理，尝试用 LLM 解析成
+                                    白名单参数改动
 /agent goals tune suggest <goal_id>
                                   — 基于诊断报告规则触发的候选草案
 /agent goals tune list <goal_id>
@@ -59,6 +64,8 @@
 
 ```
 POST   /v1/goals/{goal_id}/tuning_proposals          Body: {"changes": [...], "source"?: str}
+                                                       或 Body: {"nl_text": str}（Stage 3，可选，
+                                                       需开启配置，可能返回 proposal=null）
 POST   /v1/goals/{goal_id}/tuning_proposals/suggest   规则触发建议（可能返回 proposal=null）
 GET    /v1/goals/{goal_id}/tuning_proposals           列出历史草案
 POST   /v1/goals/{goal_id}/tuning_proposals/{id}/confirm
@@ -100,10 +107,45 @@ POST   /v1/goals/{goal_id}/tuning_proposals/{id}/reject   Body（可选）: {"re
 会尝试自动加载配置；如果这一项失败并提示"未提供 AppConfig"，可以改用
 `/agent goals spec generate <goal_id>` 手动生成。
 
-## 与 Stage 3 的关系
+## Stage 3（可选）：自然语言意见解析
 
-当前只支持两种草案生成方式：命令行/接口直接传结构化的 `param=value`，或
-`tune suggest` 的规则触发建议。把一句自然语言意见（比如"这个任务最近老是
-被跳过，帮我放宽一下"）自动映射到白名单参数，属于 Stage 3，尚未实施——
-在此之前，请直接用 `tune <goal_id> schedule=interval:7200` 这样的结构化
-命令。
+Stage 1/2 已经能覆盖"命令行/接口直接传结构化 `param=value`"和"规则触发
+建议"两种场景。如果想直接说一句人话（比如"这个任务最近老是被跳过，帮我
+放宽一下触发间隔"）让系统自动映射到白名单参数，可以打开这一层可选增强：
+
+1. 在 `agent_config.json` 里设置：
+
+   ```json
+   { "cycle_tuning": { "tuning_llm_parse_enabled": true } }
+   ```
+
+2. CLI：命令里不含任何 `param=value`（即没有 `=`）时，整段文本按自然语言
+   处理：
+
+   ```
+   /agent goals tune goal_abc123 这个任务最近老是被跳过，帮我放宽一下触发间隔
+   ```
+
+   REST：
+
+   ```json
+   POST /v1/goals/{goal_id}/tuning_proposals
+   { "nl_text": "这个任务最近老是被跳过，帮我放宽一下触发间隔" }
+   ```
+
+3. 解析出的改动会先生成 `status="draft"` 的草案（`source="user_request"`，
+   虽然经过了 LLM 转译，改动意图仍然来自用户），**不会自动生效**——仍然
+   要走正常的 `confirm` → `apply` 两步，请在确认前仔细核对 diff，确认
+   LLM 理解的映射符合你的本意。
+
+**边界与失败回退**（见
+`perception/cycle_tuning.py::parse_nl_request_to_changes()`）：
+
+- 只能映射到 `WHITELIST_PARAMS` 里的五个参数；LLM 即使编出一个不存在的
+  参数名，也会在解析阶段被丢弃，不会进入草案（双重校验：`build_tuning_
+  proposal()` 本身仍然会对最终结果再做一次白名单校验）。
+- 开关未开启、没有可用的 LLM、LLM 输出无法解析成合法 JSON、或判断"这条
+  意见无法映射到任何白名单参数"（比如"暂停一阵子"——这应该走
+  `/agent goals unrecur`，不是调优参数改动）：都会静默返回"未能生成
+  草案"，CLI/REST 会提示改用具体的 `param=value` 命令，不会报错中断，也
+  不会强行猜一个可能有害的改动。

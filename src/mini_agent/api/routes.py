@@ -81,11 +81,15 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/goals/{goal_id}/cycle_diagnostics  [goal_cron_cycle_diagnostics_
                                        and_interactive_tuning_plan.md Stage 1]
                                        跨轮次诊断报告：阶段/健康告警/cron 状态/
-                                       最近轮次产出/机制说明一次性聚合返回
+                                       最近轮次产出/机制说明一次性聚合返回。
+                                       `?summarize=true`（Stage 3，可选，需
+                                       配置开关）附一段 LLM 自然语言总结。
     POST   /v1/goals/{goal_id}/tuning_proposals  [同上 Stage 2] 生成调优草案
                                        （白名单参数：schedule/priority/
                                        execution_phase/task_template/
-                                       regenerate_spec）
+                                       regenerate_spec）。也可传
+                                       `{"nl_text": str}`（Stage 3，可选，需
+                                       配置开关）用 LLM 解析自然语言意见。
     POST   /v1/goals/{goal_id}/tuning_proposals/suggest  规则触发的调优建议
                                        （不含 LLM，命中信号才生成）
     GET    /v1/goals/{goal_id}/tuning_proposals  列出历史草案（含状态）
@@ -4058,13 +4062,46 @@ async def unlock_goal_execution_phase(goal_id: str, request: Request):
     return {"phase": state.to_dict()}
 
 
+def _agent_llm_ask(request: Request):
+    """[Stage 3] 从当前 http_server 绑定的 self agent 上取
+    `llm_helper.ask()`，包成 `Callable[[str], str]`。拿不到时返回 None，
+    与 CLI `_get_llm_ask()` 同一约定（见 cli/commands/goals.py）。"""
+    try:
+        http_server = getattr(request.app.state, "http_server", None)
+        self_agent = http_server.bridge.agent if http_server else None
+        helper = getattr(self_agent, "llm_helper", None)
+        if helper is None:
+            return None
+        return lambda prompt: helper.ask(prompt)
+    except Exception:
+        return None
+
+
+def _agent_cfg(request: Request):
+    try:
+        http_server = getattr(request.app.state, "http_server", None)
+        self_agent = http_server.bridge.agent if http_server else None
+        cfg = getattr(self_agent, "cfg", None)
+        if cfg is not None:
+            return cfg
+        from mini_agent.config import load_config
+        return load_config()
+    except Exception:
+        return None
+
+
 @router.get("/goals/{goal_id}/cycle_diagnostics")
 async def get_goal_cycle_diagnostics(goal_id: str, request: Request):
-    """GET /v1/goals/{goal_id}/cycle_diagnostics —
-    [goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 1]
+    """GET /v1/goals/{goal_id}/cycle_diagnostics?summarize=true —
+    [goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 1/3]
     跨轮次诊断报告：聚合阶段/健康告警/cron 状态/最近轮次产出/机制说明，
     回答"这个 Goal 整体跑得怎么样"，对应 CLI `/agent goals diagnose`。
     纯只读聚合，不修改任何状态。Goal 不存在时返回 404。
+
+    `?summarize=true`（Stage 3，可选）：额外请求一段 LLM 生成的自然语言
+    总结，填充到返回体的 `diagnostics.llm_summary`。需要配置开关
+    `cycle_tuning.diagnostics_llm_summary_enabled=True`，未开启或 LLM 不
+    可用时 `llm_summary` 仍为 `null`，不报错、不影响报告本身。
     """
     backlog = _goal_backlog_only(request)
     node = backlog.get(goal_id)
@@ -4078,6 +4115,17 @@ async def get_goal_cycle_diagnostics(goal_id: str, request: Request):
         from mini_agent.errors import log_exception
         log_exception(e, where='mini_agent.api.routes.get_goal_cycle_diagnostics')
         raise HTTPException(status_code=500, detail=f"生成诊断报告失败：{e}")
+
+    if request.query_params.get("summarize", "").lower() in ("1", "true", "yes"):
+        cfg = _agent_cfg(request)
+        tuning_cfg = getattr(cfg, "cycle_tuning", None)
+        if getattr(tuning_cfg, "diagnostics_llm_summary_enabled", False):
+            from mini_agent.perception.cycle_diagnostics import summarize_report_with_llm
+            try:
+                report.llm_summary = summarize_report_with_llm(report, _agent_llm_ask(request))
+            except Exception:
+                report.llm_summary = None
+
     return {"diagnostics": report.to_dict()}
 
 
@@ -4092,10 +4140,15 @@ def _cron_scheduler_readonly(paths: "AgentPaths"):
 @router.post("/goals/{goal_id}/tuning_proposals")
 async def create_tuning_proposal(goal_id: str, request: Request):
     """POST /v1/goals/{goal_id}/tuning_proposals — 生成一份调优草案。
-    Body: { "changes": [{"param": str, "to": any, "reason": str?}], "source": str? }
-    `source` 默认 "user_request"；规则触发的建议请改用
-    `POST /v1/goals/{goal_id}/tuning_proposals/suggest`。
-    `param` 不在白名单内时返回 400，不生成任何草案。
+    Body（二选一）：
+      - { "changes": [{"param": str, "to": any, "reason": str?}], "source": str? }
+        `source` 默认 "user_request"。`param` 不在白名单内时返回 400。
+      - { "nl_text": str }（Stage 3，可选）：自然语言改进意见，需要配置
+        开关 `cycle_tuning.tuning_llm_parse_enabled=True`，否则返回 400
+        明确提示"该功能未开启"；解析失败（LLM 判断无法映射到白名单参数）
+        时返回 200，`{"proposal": null}`，不是错误——调用方据此提示用户
+        改用 `changes` 字段直接传结构化改动。
+    规则触发的建议请改用 `POST /v1/goals/{goal_id}/tuning_proposals/suggest`。
     """
     backlog = _goal_backlog_only(request)
     node = backlog.get(goal_id)
@@ -4103,11 +4156,29 @@ async def create_tuning_proposal(goal_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
     body = await request.json()
     changes = body.get("changes")
-    if not changes:
-        raise HTTPException(status_code=400, detail="changes is required and must be non-empty")
-    source = body.get("source", "user_request")
     paths = _spec_paths(request)
     from mini_agent.perception import cycle_tuning as ct
+
+    if not changes:
+        nl_text = (body.get("nl_text") or "").strip()
+        if not nl_text:
+            raise HTTPException(status_code=400, detail="either changes or nl_text is required")
+        cfg = _agent_cfg(request)
+        tuning_cfg = getattr(cfg, "cycle_tuning", None)
+        if not getattr(tuning_cfg, "tuning_llm_parse_enabled", False):
+            raise HTTPException(
+                status_code=400,
+                detail="nl_text 解析需要先开启配置 cycle_tuning.tuning_llm_parse_enabled",
+            )
+        from mini_agent.perception.cycle_diagnostics import build_cycle_diagnostics
+        report = build_cycle_diagnostics(paths, backlog, goal_id)
+        proposal = ct.build_tuning_proposal_from_nl(goal_id, nl_text, report, _agent_llm_ask(request))
+        if proposal is None:
+            return {"proposal": None}
+        ct.save_proposal(paths, proposal)
+        return {"proposal": proposal.to_dict()}
+
+    source = body.get("source", "user_request")
     try:
         proposal = ct.build_tuning_proposal(goal_id, changes, source=source)
     except ct.WhitelistViolation as e:

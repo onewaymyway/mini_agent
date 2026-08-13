@@ -363,6 +363,107 @@ def apply_tuning_proposal(
     return proposal
 
 
+# ── Stage 3（可选，默认关闭）：LLM 自然语言解析层 ──────────────────────────
+# next_doc/goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md §3.2 第 1 步
+
+def parse_nl_request_to_changes(
+    text: str,
+    report: "CycleDiagnosticsReport",
+    llm_ask,
+) -> Optional[list[dict]]:
+    """把用户的自然语言改进意见解析成白名单参数改动列表。只在规则层无法
+    直接解析（比如没有 `param=value` 这种明确结构）时才会被调用，本函数
+    本身不做任何"猜测式"规则解析，纯粹是这一层可选的 LLM 增强。
+
+    `llm_ask`：同 `cycle_diagnostics.summarize_report_with_llm`，
+    `Callable[[str], str]` 约定，为 None 时直接返回 None。
+
+    返回值：`list[dict]`（可直接喂给 `build_tuning_proposal()` 的
+    `changes` 参数）或 `None`（解析失败/无法生成任何改动）。**不会**
+    抛出异常——LLM 输出不可控，任何解析问题都归为"没能生成草案"，调用方
+    据此提示用户改用具体的 `param=value` 命令，不强行猜一个可能有害的
+    改动（方案 §3.2 第 1 步"失败可回退"）。
+
+    白名单校验在这里就做一次（丢弃不在白名单内的条目，而不是让整份草案
+    因为 LLM 编出一个不存在的参数名而失败）——真正的硬边界仍然在
+    `build_tuning_proposal()` 里（双重校验，不依赖这一层"过滤干净"）。
+    """
+    if llm_ask is None or not (text or "").strip():
+        return None
+    context = {
+        "goal_title": report.goal_title,
+        "recurring": report.recurring,
+        "schedule": report.schedule,
+        "execution_phase_mode": report.execution_phase_mode,
+        "cron_health": report.cron_health,
+    }
+    prompt = (
+        "用户对下面这个周期性任务（Goal）提出了一条自然语言改进意见，请把它\n"
+        "映射为若干条结构化的参数改动。只能使用以下参数名之一，不允许发明\n"
+        f"新参数：{', '.join(WHITELIST_PARAMS)}。\n"
+        "  - schedule：cron 触发间隔，格式如 'interval:3600'（秒）或标准 cron\n"
+        "    表达式；用户说'暂停'/'不要再跑了'不属于改 schedule，这种情况\n"
+        "    不要生成任何改动（应通过 unrecur 命令处理，不在本机制范围内）。\n"
+        "  - priority：整数优先级。\n"
+        "  - execution_phase：explore/converge/stable/tidy/auto 之一。\n"
+        "  - task_template：cron 触发时注入的任务描述文本。\n"
+        "  - regenerate_spec：值固定为 true，表示'重新生成一份执行规范草稿'。\n"
+        "当前该 Goal 的上下文（供你理解意见里的相对表述，比如'加倍'/'放宽'）：\n"
+        + json.dumps(context, ensure_ascii=False)
+        + "\n用户的改进意见：" + text.strip()
+        + "\n请只输出一个 JSON 数组，每个元素形如 "
+          '{"param": "...", "to": ..., "reason": "..."}'
+          "，reason 用一句话说明为什么这样映射。如果这条意见无法映射为上述\n"
+          "任何白名单参数的改动，输出空数组 []。不要输出除 JSON 数组之外的\n"
+          "任何文字。"
+    )
+    try:
+        raw = llm_ask(prompt)
+        parsed = json.loads(_extract_json_array(raw))
+        if not isinstance(parsed, list):
+            return None
+        changes = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            param = item.get("param")
+            if param not in WHITELIST_PARAMS:
+                continue
+            changes.append({"param": param, "to": item.get("to"), "reason": item.get("reason", "")})
+        return changes or None
+    except Exception:
+        return None
+
+
+def _extract_json_array(text: str) -> str:
+    text = text or ""
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        return "[]"
+    return text[start : end + 1]
+
+
+def build_tuning_proposal_from_nl(
+    goal_id: str,
+    text: str,
+    report: "CycleDiagnosticsReport",
+    llm_ask,
+) -> Optional[CycleTuningProposal]:
+    """`parse_nl_request_to_changes()` + `build_tuning_proposal()` 的便捷
+    组合：解析失败/无改动时返回 None，由调用方（CLI/REST）提示用户改用
+    具体命令，不在这里报错。`source` 固定为 `"user_request"`——虽然经过了
+    LLM 这一层转译，改动意图仍然来自用户，不是系统规则主动发现的问题。
+    """
+    changes = parse_nl_request_to_changes(text, report, llm_ask)
+    if not changes:
+        return None
+    try:
+        return build_tuning_proposal(goal_id, changes, source="user_request")
+    except (WhitelistViolation, ValueError):
+        return None
+
+
 def _apply_single_change(paths, goal_backlog, cron_scheduler, node, change: TuningChange, *,
                           spec_builder_cfg=None) -> tuple[bool, str]:
     param = change.param

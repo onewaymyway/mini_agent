@@ -1,9 +1,8 @@
 # 周期性 Goal/Cron 任务的跨轮次诊断与交互式调优设计方案
 
 > 状态：**Stage 1（只读诊断）/ Stage 2（规则+结构化调优 draft/confirm/
-> apply/reject）已实施**；Stage 3（LLM 自然语言解析、诊断自然语言摘要）
-> 仍是设计草案，视 Stage 1-2 使用反馈决定是否需要。遵循既有的"每个 Stage
-> 完成后更新文档 + 跑回归"节奏。
+> apply/reject）/ Stage 3（可选的 LLM 自然语言解析层，默认关闭）均已
+> 实施**。遵循既有的"每个 Stage 完成后更新文档 + 跑回归"节奏。
 > Stage 1 实现见 `src/mini_agent/perception/cycle_diagnostics.py`、CLI
 > `/agent goals diagnose <goal_id>`、REST
 > `GET /v1/goals/{goal_id}/cycle_diagnostics`、
@@ -13,6 +12,18 @@
 > `/agent goals tune ...`、REST `/v1/goals/{goal_id}/tuning_proposals*`、
 > [调优使用指南](../docs/goal-cycle-tuning-guide.md)、
 > `tests/test_cycle_tuning.py`。
+> Stage 3 实现见 `cycle_diagnostics.py::summarize_report_with_llm()`（诊断
+> 报告的可选 LLM 自然语言摘要，CLI `diagnose --summarize` / REST
+> `?summarize=true`）+ `cycle_tuning.py::parse_nl_request_to_changes()` /
+> `build_tuning_proposal_from_nl()`（调优草案的可选 LLM 自然语言解析，
+> CLI `tune <goal_id> "<改进意见>"`（无 `=` 时）/ REST
+> `POST tuning_proposals {"nl_text": ...}`），配置开关
+> `cycle_tuning.diagnostics_llm_summary_enabled` /
+> `cycle_tuning.tuning_llm_parse_enabled`（见 `config/models.py::
+> CycleTuningConfig`，均默认 `False`）。两层测试见
+> `tests/test_cycle_diagnostics.py::TestSummarizeReportWithLLM`、
+> `tests/test_cycle_tuning.py::TestParseNLRequestToChanges` /
+> `TestBuildTuningProposalFromNL`。
 > 触发背景：用户提出，对于周期性执行的 Goal/cron 任务，有时候需要的不是
 > "某一次执行跑得怎么样"，而是**"这个任务整体跑得怎么样"**——所有轮次
 > 的情况、当前是否健康、用的目录结构和机制是什么；看完这份整体状况后，
@@ -253,9 +264,13 @@ execution_specs/` 的风格一致，不塞进 `goals.json` 主文件（避免主
   规则层从诊断报告直接生成建议（比如"连续跳过超阈值 → 建议放宽
   schedule"）。用户主动提改进意见但系统能直接结构化解析的情况（比如
   命令行直接传参数名+新值）也在这一阶段支持，不依赖 LLM。
-- **Stage 3（可选）**：LLM 辅助把自然语言改进意见映射到白名单参数、
-  以及诊断报告的自然语言摘要层，视 Stage 1-2 实际使用反馈决定是否
-  需要，不是必须项。
+- **Stage 3（可选）✅ 已实施**：LLM 辅助把自然语言改进意见映射到白名单
+  参数（`parse_nl_request_to_changes()`）、以及诊断报告的自然语言摘要层
+  （`summarize_report_with_llm()`）。两者都通过独立的配置开关默认关闭
+  （`cycle_tuning.tuning_llm_parse_enabled` / `diagnostics_llm_summary_
+  enabled`），关闭时 CLI/REST 行为与 Stage 1-2 完全一致；打开后失败/
+  无法解析都静默回退到"提示改用结构化命令"或"不展示摘要"，不影响主
+  流程可用性。
 
 每个 Stage 完成后按项目一贯节奏更新 `docs/` 对应指南 + 跑回归测试，
 不在实施过程中积压文档债务。
@@ -290,7 +305,13 @@ execution_specs/` 的风格一致，不塞进 `goals.json` 主文件（避免主
    误解析成"永久取消 recurring"），后果比诊断报告出错更严重——即使有
    confirm 这道闸门，也需要在草案 diff 里把"改前 → 改后"的语义写清楚
    （不能只展示字段名和原始值，要有人类可读的效果描述），降低用户在
-   confirm 环节看走眼的概率。
+   confirm 环节看走眼的概率。**已落地的缓解**：`parse_nl_request_to_
+   changes()` 的 prompt 里显式列出白名单参数的含义和取值格式，并明确
+   要求"暂停/不要再跑了"这类意图不映射为 schedule 改动而是返回空数组
+   （见方案实现里的 prompt 注释）；`_print_tuning_proposal()` 打印 diff
+   时仍然带上每项改动的 `reason` 字段。是否需要更进一步（比如对
+   `source="user_request"` 且来自 NL 解析的草案额外加一句"请仔细核对"
+   提示）已在 CLI/文档里补充，效果留待实际使用观察。
 4. 是否需要给 `CycleTuningProposal` 设置有效期（比如诊断报告依据的
    数据已经过时太久后，草案要求重新生成而不能直接 confirm 生效）——
    避免用户放了很久才想起来确认一份基于旧数据生成的草案。

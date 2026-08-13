@@ -247,5 +247,82 @@ class TestSuggestTuningFromDiagnostics(unittest.TestCase):
         self.assertIsNone(suggestion)
 
 
+class TestParseNLRequestToChanges(unittest.TestCase):
+    """Stage 3（可选）：自然语言解析层——白名单过滤、失败回退、便捷组合函数。"""
+
+    def _report(self):
+        return cd.CycleDiagnosticsReport(
+            goal_id="g1", goal_title="Test Goal", found=True,
+            recurring=True, schedule="interval:3600", execution_phase_mode="stable",
+        )
+
+    def test_llm_ask_none_returns_none(self):
+        self.assertIsNone(ct.parse_nl_request_to_changes("跑快一点", self._report(), None))
+
+    def test_empty_text_returns_none(self):
+        self.assertIsNone(ct.parse_nl_request_to_changes("   ", self._report(), lambda p: "[]"))
+
+    def test_llm_exception_falls_back_to_none(self):
+        def broken_ask(prompt):
+            raise RuntimeError("llm down")
+        self.assertIsNone(ct.parse_nl_request_to_changes("跑快一点", self._report(), broken_ask))
+
+    def test_llm_returns_empty_array_means_no_mapping(self):
+        self.assertIsNone(ct.parse_nl_request_to_changes("暂停一阵子", self._report(), lambda p: "[]"))
+
+    def test_llm_valid_json_maps_to_whitelisted_change(self):
+        def fake_ask(prompt):
+            self.assertIn("schedule", prompt)
+            return '[{"param": "schedule", "to": "interval:1800", "reason": "跑快一倍"}]'
+        changes = ct.parse_nl_request_to_changes("跑快一点", self._report(), fake_ask)
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["param"], "schedule")
+        self.assertEqual(changes[0]["to"], "interval:1800")
+
+    def test_non_whitelisted_param_is_dropped_not_raised(self):
+        def fake_ask(prompt):
+            return (
+                '[{"param": "schedule", "to": "interval:1800", "reason": "ok"}, '
+                '{"param": "delete_goal", "to": true, "reason": "越权"}]'
+            )
+        changes = ct.parse_nl_request_to_changes("随便改点什么", self._report(), fake_ask)
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["param"], "schedule")
+
+    def test_malformed_json_returns_none(self):
+        self.assertIsNone(ct.parse_nl_request_to_changes("跑快一点", self._report(), lambda p: "不是 JSON"))
+
+    def test_prose_wrapped_json_array_is_extracted(self):
+        def fake_ask(prompt):
+            return '这是我的建议：\n[{"param": "priority", "to": 5, "reason": "提高优先级"}]\n谢谢'
+        changes = ct.parse_nl_request_to_changes("提高优先级", self._report(), fake_ask)
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["param"], "priority")
+
+
+class TestBuildTuningProposalFromNL(unittest.TestCase):
+    def _report(self):
+        return cd.CycleDiagnosticsReport(goal_id="g1", goal_title="Test Goal", found=True)
+
+    def test_returns_none_when_parse_fails(self):
+        proposal = ct.build_tuning_proposal_from_nl("g1", "暂停一阵子", self._report(), lambda p: "[]")
+        self.assertIsNone(proposal)
+
+    def test_returns_none_when_llm_ask_missing(self):
+        proposal = ct.build_tuning_proposal_from_nl("g1", "跑快一点", self._report(), None)
+        self.assertIsNone(proposal)
+
+    def test_success_builds_draft_proposal_with_user_request_source(self):
+        def fake_ask(prompt):
+            return '[{"param": "priority", "to": 9, "reason": "更紧急"}]'
+        proposal = ct.build_tuning_proposal_from_nl("g1", "优先级调高", self._report(), fake_ask)
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal.status, "draft")
+        self.assertEqual(proposal.source, "user_request")
+        self.assertEqual(proposal.goal_id, "g1")
+        self.assertEqual(len(proposal.proposed_changes), 1)
+        self.assertEqual(proposal.proposed_changes[0].param, "priority")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1007,6 +1007,36 @@ class GoalExecutionSpecConfig:
 
 
 @dataclass
+class CycleTuningConfig:
+    """[next_doc/goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md
+    Stage 3] 跨轮次诊断报告的自然语言摘要层 + 调优草案的自然语言解析层，
+    两者都是**可选增强**、默认关闭：规则层聚合出的诊断报告/草案本身已经
+    是完整可用的结构化数据，这两个开关只是"锦上添花"，不打开也不影响
+    Stage 1/2 的任何功能（与 `digest_advisor.next_action_rank_with_llm`
+    同一立场，见方案 §2.3/§3.1 末尾/§5 第 3 条）。
+
+    两层都要求"失败静默回退"：LLM 调用失败/返回无法解析时，摘要层回退
+    到"不生成摘要，只展示结构化字段"；解析层回退到"无法自动生成草案，
+    提示用户改用具体的 `param=value` 命令"，不会因为 LLM 不可用/输出
+    异常而报错中断。
+    """
+
+    # 诊断报告是否附带一段 LLM 生成的自然语言总结（§2.3）。输入只有已经
+    # 聚合好的结构化报告字段，不额外读取原始产出内容，控制 token 成本。
+    diagnostics_llm_summary_enabled: bool = False
+
+    # 调优草案是否允许把用户的自然语言改进意见解析成白名单参数改动
+    # （§3.2 第 1 步）。规则层能直接解析的情况（比如 CLI 直接传
+    # `param=value`）不受此开关影响，只有"规则解析不出结构化改动"时才
+    # 会尝试这一层。
+    tuning_llm_parse_enabled: bool = False
+
+    # 两层复用同一个 LLMHelper（跟随 `/model` 实时切换），不单独配置
+    # provider/model——这是"辅助展示/辅助起草"场景，没有必要引入第二套
+    # 模型选择维度，与当前活跃对话用的模型保持一致即可。
+
+
+@dataclass
 class ExecutionPhaseConfig:
     """[next_doc/goal_stuck_stats_and_llm_progress_judge_plan.md §2] Goal
     执行阶段（explore/converge/stable/tidy）跨轮"进展趋势"信号的配置块。
@@ -2308,6 +2338,7 @@ class AppConfig:
     goal_mode:  GoalModeConfig   = field(default_factory=GoalModeConfig)
     goal_execution_spec: GoalExecutionSpecConfig = field(default_factory=GoalExecutionSpecConfig)
     execution_phase: ExecutionPhaseConfig = field(default_factory=ExecutionPhaseConfig)
+    cycle_tuning: CycleTuningConfig = field(default_factory=CycleTuningConfig)
     turn_judge: TurnJudgeConfig  = field(default_factory=TurnJudgeConfig)
     env_info:   EnvInfoConfig    = field(default_factory=EnvInfoConfig)
     workdir_knowledge: WorkdirKnowledgeConfig = field(default_factory=WorkdirKnowledgeConfig)

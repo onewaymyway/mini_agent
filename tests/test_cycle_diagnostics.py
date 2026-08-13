@@ -169,5 +169,44 @@ class TestRecentCycleSummariesHotAndCold(unittest.TestCase):
         self.assertEqual(len(archived_entries), 3)
 
 
+class TestSummarizeReportWithLLM(unittest.TestCase):
+    """Stage 3（可选）：summarize_report_with_llm 的失败回退与正常路径。"""
+
+    def _report(self, found=True):
+        return cd.CycleDiagnosticsReport(
+            goal_id="g1", goal_title="Test Goal", found=found,
+            recurring=True, schedule="interval:3600", cycle_count=3,
+            execution_phase_mode="stable",
+        )
+
+    def test_llm_ask_none_returns_none(self):
+        self.assertIsNone(cd.summarize_report_with_llm(self._report(), None))
+
+    def test_goal_not_found_returns_none_even_with_llm(self):
+        called = []
+        def fake_ask(prompt):
+            called.append(prompt)
+            return "should not be reached"
+        result = cd.summarize_report_with_llm(self._report(found=False), fake_ask)
+        self.assertIsNone(result)
+        self.assertEqual(called, [])
+
+    def test_llm_exception_falls_back_to_none(self):
+        def broken_ask(prompt):
+            raise RuntimeError("llm unavailable")
+        self.assertIsNone(cd.summarize_report_with_llm(self._report(), broken_ask))
+
+    def test_llm_empty_text_falls_back_to_none(self):
+        self.assertIsNone(cd.summarize_report_with_llm(self._report(), lambda p: "   "))
+
+    def test_llm_success_returns_stripped_text(self):
+        def fake_ask(prompt):
+            self.assertIn("Test Goal", prompt)
+            self.assertIn("stable", prompt)
+            return "  这个 Goal 目前进展平稳。  "
+        result = cd.summarize_report_with_llm(self._report(), fake_ask)
+        self.assertEqual(result, "这个 Goal 目前进展平稳。")
+
+
 if __name__ == "__main__":
     unittest.main()

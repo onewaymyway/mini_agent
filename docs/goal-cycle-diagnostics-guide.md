@@ -1,8 +1,9 @@
 # Goal 跨轮次诊断报告（Cycle Diagnostics）指南
 
-> Stage 1（只读诊断）实现，见
+> Stage 1（只读诊断）/ Stage 2（能力 B：交互式调优 draft/confirm/apply，
+> 见 [调优使用指南](goal-cycle-tuning-guide.md)）/ Stage 3（可选的 LLM
+> 自然语言摘要层，默认关闭）均已实现，见
 > `next_doc/goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md`。
-> 能力 B（交互式调优 draft/confirm/apply）尚未实施，见该文档 Stage 2/3。
 
 ## 解决什么问题
 
@@ -31,6 +32,10 @@ GET /v1/goals/{goal_id}/cycle_diagnostics
 
 返回 `{"diagnostics": {...}}`，字段结构见下。Goal 不存在时 CLI 打印错误，
 REST 返回 404。
+
+**规则聚合本身默认不调用 LLM**（机制说明是静态模板文本），这一点不受
+下面 Stage 3 开关影响——`llm_summary` 只是报告末尾追加的一段可选文字，
+去掉它报告仍然完整可用。
 
 ## 报告包含什么
 
@@ -68,5 +73,37 @@ REST 返回 404。
 诊断报告是能力 A，纯读取；能力 B（[交互式调优指南](goal-cycle-tuning-guide.md)，
 Stage 2 已实施）依赖同一份诊断数据，根据诊断结果生成"改哪些参数"的
 草案，经用户确认后才真正应用，白名单覆盖 schedule/priority/执行阶段/
-task_template/重新生成执行规范。当前草案生成只支持结构化参数输入和规则
-触发建议，自然语言意见自动解析（Stage 3）尚未实施。
+task_template/重新生成执行规范。
+
+## Stage 3（可选）：LLM 自然语言摘要
+
+规则聚合出的结构化报告已经能完整回答"整体状态如何"。如果想要一段可以
+直接读的自然语言总结（"这个 Goal 最近几轮进展平稳，阶段处于 stable，
+但 cron 触发已连续跳过 2 次，建议关注"），可以打开这一层可选增强：
+
+1. 在 `agent_config.json` 里设置：
+
+   ```json
+   { "cycle_tuning": { "diagnostics_llm_summary_enabled": true } }
+   ```
+
+2. CLI 加 `--summarize`：
+
+   ```
+   /agent goals diagnose <goal_id> --summarize
+   ```
+
+   REST 加查询参数：
+
+   ```
+   GET /v1/goals/{goal_id}/cycle_diagnostics?summarize=true
+   ```
+
+   返回体里的 `diagnostics.llm_summary` 会被填充为一段文字；开关未开启、
+   或没有可用的 LLM、或调用失败，`llm_summary` 都保持 `null`，**不会**
+   报错、也不会影响报告其余字段——这一层是纯粹的锦上添花，不是必需项。
+
+摘要的输入只有已经聚合好的结构化字段（Goal 标题、阶段、健康告警、cron
+状态、最近几轮摘要），不会额外读取原始产出内容，控制 token 成本，也
+避免摘要"编造"报告里没有的事实——见
+`perception/cycle_diagnostics.py::summarize_report_with_llm()`。

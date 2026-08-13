@@ -49,6 +49,19 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
                                      对应的既有修改入口
   /agent goals tune reject <id> <proposal_id> [reason...]
                                    — 拒绝草案，作废，不产生任何实际改动
+
+  以下两项为 Stage 3（可选增强，默认关闭，见 next_doc/goal_cron_cycle_
+  diagnostics_and_interactive_tuning_plan.md §2.3/§3.2，配置开关
+  `cycle_tuning.diagnostics_llm_summary_enabled` /
+  `cycle_tuning.tuning_llm_parse_enabled`）：
+  /agent goals diagnose <id> --summarize
+                                   — 在结构化诊断报告末尾附一段 LLM 生成
+                                     的自然语言总结；开关关闭或 LLM 不
+                                     可用时静默跳过，不影响报告本身
+  /agent goals tune <id> "<自然语言改进意见>"
+                                   — 不含 `param=value` 时按自然语言意见
+                                     处理，尝试用 LLM 解析成白名单参数
+                                     改动；解析失败时提示改用具体命令
 """
 
 from __future__ import annotations
@@ -169,12 +182,14 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         _cmd_phase(paths, rest[0], rest[1:])
 
     elif subcmd == "diagnose":
-        # [goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 1]
-        # /agent goals diagnose <goal_id>
+        # [goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 1/3]
+        # /agent goals diagnose <goal_id> [--summarize]
         if not rest:
-            R.print_error("Usage: /agent goals diagnose <goal_id>")
+            R.print_error("Usage: /agent goals diagnose <goal_id> [--summarize]")
             return
-        _cmd_diagnose(gb, paths, rest[0])
+        summarize = "--summarize" in rest[1:]
+        goal_id_arg = rest[0]
+        _cmd_diagnose(gb, paths, goal_id_arg, agent=agent, summarize=summarize)
 
     elif subcmd == "tune":
         # [goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 2]
@@ -188,7 +203,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
                 "| /agent goals tune reject <goal_id> <proposal_id> [reason...]"
             )
             return
-        _cmd_tune(gb, paths, rest[0], rest[1:])
+        _cmd_tune(gb, paths, rest[0], rest[1:], agent=agent)
 
     elif subcmd == "unrecur":
         # /agent goals unrecur <id> — 停止周期性（不删 Goal/cron job）
@@ -825,9 +840,34 @@ def _cmd_phase(paths, action: str, rest: list[str]) -> None:
     R.print_error(f"Unknown phase action: {action!r}. Use show/set/unlock.")
 
 
-def _cmd_diagnose(gb, paths, goal_id: str) -> None:
-    """[goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 1]
-    /agent goals diagnose <goal_id> — 打印跨轮次诊断报告。纯只读展示。
+def _get_llm_ask(agent):
+    """[Stage 3] 把 `agent.llm_helper.ask()` 包成 `Callable[[str], str]`，
+    与 `growth_cmd.py::_get_llm_helper` 同一约定。拿不到 agent/helper 时
+    返回 None，调用方据此走"无 LLM"的默认降级路径。
+    """
+    if agent is None:
+        return None
+    helper = getattr(agent, "llm_helper", None)
+    if helper is None:
+        return None
+    return lambda prompt: helper.ask(prompt)
+
+
+def _cycle_tuning_cfg(agent):
+    """[Stage 3] 拿 `cfg.cycle_tuning`（两个 LLM 增强层开关）。拿不到 cfg
+    时返回 `CycleTuningConfig()` 默认值（两个开关都是 False，等价于
+    "未显式开启"）。"""
+    from mini_agent.config.models import CycleTuningConfig
+    cfg = getattr(agent, "cfg", None)
+    return getattr(cfg, "cycle_tuning", None) or CycleTuningConfig()
+
+
+def _cmd_diagnose(gb, paths, goal_id: str, *, agent=None, summarize: bool = False) -> None:
+    """[goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 1/3]
+    /agent goals diagnose <goal_id> [--summarize] — 打印跨轮次诊断报告。
+    纯只读展示；`--summarize` 是 Stage 3 的可选 LLM 摘要层，需要配置开关
+    `cycle_tuning.diagnostics_llm_summary_enabled=True` 才会真正调用 LLM，
+    否则明确提示"该功能未开启"而不是静默忽略这个 flag。
     """
     from mini_agent.perception.cycle_diagnostics import build_cycle_diagnostics
 
@@ -880,6 +920,23 @@ def _cmd_diagnose(gb, paths, goal_id: str) -> None:
         for note in report.mechanism_notes:
             R.print_info(f"    - {note}")
 
+    if summarize:
+        cfg = _cycle_tuning_cfg(agent)
+        if not getattr(cfg, "diagnostics_llm_summary_enabled", False):
+            R.print_info(
+                "  （--summarize 需要先在配置里开启 "
+                "cycle_tuning.diagnostics_llm_summary_enabled，当前未开启，跳过。）"
+            )
+        else:
+            from mini_agent.perception.cycle_diagnostics import summarize_report_with_llm
+            llm_ask = _get_llm_ask(agent)
+            summary = summarize_report_with_llm(report, llm_ask)
+            if summary:
+                R.print_info("  🤖 自然语言总结:")
+                R.print_info(f"    {summary}")
+            else:
+                R.print_info("  （未能生成自然语言总结，仅展示以上结构化字段。）")
+
 
 def _print_tuning_proposal(proposal) -> None:
     R.print_info(f"调优草案 {proposal.id}（status={proposal.status}, source={proposal.source}）")
@@ -896,9 +953,10 @@ def _print_tuning_proposal(proposal) -> None:
         R.print_info(f"  拒绝原因: {proposal.reject_reason}")
 
 
-def _cmd_tune(gb, paths, goal_id: str, rest: list[str]) -> None:
-    """[goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 2]
+def _cmd_tune(gb, paths, goal_id: str, rest: list[str], *, agent=None) -> None:
+    """[goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 2/3]
     /agent goals tune <goal_id> <param>=<value> [...] [--reason <text>]
+    /agent goals tune <goal_id> "<自然语言改进意见>"  （Stage 3，无 '=' 时）
     /agent goals tune suggest <goal_id>
     /agent goals tune list <goal_id>
     /agent goals tune confirm <goal_id> <proposal_id>
@@ -1022,6 +1080,37 @@ def _cmd_tune(gb, paths, goal_id: str, rest: list[str]) -> None:
             f"可选参数：{', '.join(ct.WHITELIST_PARAMS)}"
         )
         return
+
+    # [Stage 3] 没有任何一项包含 '='，按自然语言改进意见处理（不是格式
+    # 错误）——只要开关开启且能拿到 LLM，就尝试解析成白名单参数改动；
+    # 解析失败/开关未开启则明确提示改用 param=value，不静默失败。
+    if all("=" not in kv for kv in kv_args):
+        nl_text = " ".join(kv_args)
+        cfg = _cycle_tuning_cfg(agent)
+        llm_ask = _get_llm_ask(agent) if getattr(cfg, "tuning_llm_parse_enabled", False) else None
+        if llm_ask is None:
+            R.print_error(
+                "未识别到 param=value 格式，也无法按自然语言解析（需要先开启 "
+                "cycle_tuning.tuning_llm_parse_enabled 配置且有可用的 LLM）。\n"
+                f"请改用：/agent goals tune {target_goal_id} <param>=<value> [...]\n"
+                f"可选参数：{', '.join(ct.WHITELIST_PARAMS)}"
+            )
+            return
+        from mini_agent.perception.cycle_diagnostics import build_cycle_diagnostics
+        report = build_cycle_diagnostics(paths, gb, target_goal_id)
+        proposal = ct.build_tuning_proposal_from_nl(target_goal_id, nl_text, report, llm_ask)
+        if proposal is None:
+            R.print_error(
+                "无法把这条意见解析成白名单参数改动，请改用具体命令："
+                f"/agent goals tune {target_goal_id} <param>=<value>"
+            )
+            return
+        ct.save_proposal(paths, proposal)
+        R.print_success("已根据自然语言意见生成调优草案（请仔细核对 diff 后再确认）：")
+        _print_tuning_proposal(proposal)
+        R.print_info(f"确认：/agent goals tune confirm {target_goal_id} {proposal.id}")
+        return
+
     changes = []
     for kv in kv_args:
         if "=" not in kv:

@@ -70,6 +70,13 @@ class CycleDiagnosticsReport:
 
     generated_at: float = field(default_factory=time.time)
 
+    # ── Stage 3（可选，默认不生成）：LLM 自然语言摘要 ──
+    # 见 next_doc/goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md
+    # §2.3。只在调用方显式请求（CLI --summarize / REST ?summarize=true）且
+    # `cycle_tuning.diagnostics_llm_summary_enabled=True` 时才会被填充，
+    # 默认是 None，不代表报告本身不完整。
+    llm_summary: Optional[str] = None
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -307,3 +314,46 @@ def build_cycle_diagnostics(
     report.mechanism_notes = _build_mechanism_notes(node, spec, phase_state)
     report.generated_at = time.time()
     return report
+
+
+# ── Stage 3（可选，默认关闭）：LLM 自然语言摘要层 ──────────────────────────
+# next_doc/goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md §2.3
+
+def summarize_report_with_llm(report: CycleDiagnosticsReport, llm_ask) -> Optional[str]:
+    """把已经聚合好的结构化报告喂给 LLM，生成一段自然语言总结。
+
+    `llm_ask`：`Callable[[str], str]`，与 `evolution/growth_advisor.py` /
+    `evolution/next_action_advisor.py._llm_rank` 同一个约定——调用方（CLI/
+    REST）负责把 `agent.llm_helper.ask` 包成这个签名，本函数不直接依赖
+    `LLMHelper` 类，方便测试时传入桩函数。`llm_ask` 为 None 或调用抛异常/
+    返回空文本时，静默返回 None（不生成摘要，不影响报告本身的可用性，
+    §2.3"失败自动回退"）。
+
+    输入只有已经聚合好的结构化字段（不额外读取原始产出内容/manifest 全文），
+    控制 token 成本，也避免 LLM 摘要"引入报告里没有的新事实"。
+    """
+    if llm_ask is None or not report.found:
+        return None
+    payload = {
+        "goal_title": report.goal_title,
+        "recurring": report.recurring,
+        "schedule": report.schedule,
+        "cycle_count": report.cycle_count,
+        "execution_phase_mode": report.execution_phase_mode,
+        "recent_health_alerts": [a.get("message", "") for a in report.recent_health_alerts],
+        "cron_health": report.cron_health,
+        "recent_cycle_summaries": report.recent_cycle_summaries[-5:],
+    }
+    prompt = (
+        "以下是某个周期性任务（Goal）的跨轮次诊断报告（结构化数据，已经过\n"
+        "规则聚合，不需要你重新判断健康与否，只需要把它总结成 2-4 句自然语言，\n"
+        "面向用户直接可读：说清楚整体进展是否平稳、有没有需要关注的信号\n"
+        "（不要编造报告里没有出现的字段或数值）。用中文回答，不要用 markdown\n"
+        "标题/列表，只输出一段连续文字：\n" + json.dumps(payload, ensure_ascii=False)
+    )
+    try:
+        text = llm_ask(prompt)
+        text = (text or "").strip()
+        return text or None
+    except Exception:
+        return None
