@@ -1752,7 +1752,19 @@ class HttpServer:
             # daemon 其余部分启动（跟本文件其它可选子系统的接线风格一致）。
             try:
                 from mini_agent.evolution.goal_cron_bridge import register_goal_cycle_handler
-                register_goal_cycle_handler(cron_scheduler, goal_backlog, objective_executor)
+
+                # [goal_stuck_stats_and_llm_progress_judge_plan.md §2] 惰性
+                # 获取，daemon 启动时 agent 可能还没就绪也不影响注册本身；
+                # 是否真正调用取决于 AppConfig.execution_phase.
+                # progress_trend_llm_enabled（默认 False），这里只负责把
+                # 拿 helper 的手段接进去。
+                def _execution_phase_llm_helper():
+                    return getattr(agent, "llm_helper", None)
+
+                register_goal_cycle_handler(
+                    cron_scheduler, goal_backlog, objective_executor,
+                    llm_helper_provider=_execution_phase_llm_helper,
+                )
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.register_goal_cycle_handler')

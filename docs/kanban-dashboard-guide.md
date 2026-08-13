@@ -322,6 +322,17 @@ plan.md` 方向 D.2）：`growth_health_trend.jsonl` 已经覆盖了"记忆总�
 走势"这类需求，这里只是换一个展示位置方便"🧠 自我状态"tab 一站式查看，
 没有另起一份采集逻辑。
 
+再往下是**🧊 Goal Stuck 历史统计**区块（`GET /v1/goal_mode/stuck_stats`，
+`next_doc/goal_stuck_stats_and_llm_progress_judge_plan.md` §1）：纯只读
+聚合，不提供任何操作按钮。展示历史 goal_mode 会话总数、被判定 `stuck`
+（GoalJudge/StuckDetector 多次恢复无效后的终态）的次数与占比、近 30 天
+内的 stuck 数量，以及一个可展开的"反复卡住的目标"列表（按 `goal_text`
+归并，同一个目标反复被判 stuck 往往说明目标描述或验收标准本身有问题，
+比孤立的一次更值得关注）。这块数据不新增存储，直接复用
+`goal_mode/state.py` 已有的会话目录扫描，主要用途是为"要不要上更高成本
+的机制（比如并行多路径择优）"之类的立项决策提供真实触发频率参考，而不是
+凭感觉决定。
+
 ### ⏰ Cron 任务 Tab
 
 Cron Job 列表、启用/禁用、手动触发、新建，`priority` 字段的展示与编辑

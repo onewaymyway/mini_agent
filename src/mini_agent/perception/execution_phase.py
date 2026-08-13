@@ -154,21 +154,65 @@ def unlock_mode(paths: "AgentPaths", goal_id: str) -> ExecutionPhaseState:
     return state
 
 
+def _llm_judge_progress_trend(notes: list[str], llm_helper) -> Optional[bool]:
+    """[goal_stuck_stats_and_llm_progress_judge_plan.md §2] 把最近几轮
+    `progress_notes` 原文交给 LLM，判断这几轮是"真的在原地打转"还是
+    "内容上有实质推进（哪怕文字表述相似）"或"看起来相似但属于正常重复"
+    （比如周期性巡检类 Goal）。
+
+    只要求回答三选一关键词：STUCK / PROGRESSING / UNSURE。解析不到合法
+    关键词、响应为空、或调用抛异常，一律返回 None（调用方据此退回 difflib
+    结果），不影响 Goal 触发主流程，也不在这里做重试。
+    """
+    if llm_helper is None or not notes:
+        return None
+    try:
+        notes_block = "\n".join(f"第{i + 1}轮：{n}" for i, n in enumerate(notes))
+        prompt = (
+            "下面是同一个周期性任务最近几轮的进展记录（每轮任务结束后留下的\n"
+            "摘要文字）。请判断这几轮是否属于\"内容上原地打转、没有实质推进\"，\n"
+            "还是\"确实有实质推进（哪怕措辞相似）\"，或者\"内容雷同但属于这个\n"
+            "任务本身该有的正常重复\"（例如周期性巡检、格式固定的定期汇报）。\n"
+            "只回答以下三个词之一，不要输出任何其它内容：\n"
+            "STUCK（原地打转，没有实质推进）\n"
+            "PROGRESSING（有实质推进，或雷同属于正常重复）\n"
+            "UNSURE（无法判断）\n\n"
+            f"{notes_block}"
+        )
+        raw = llm_helper(prompt)
+        if not raw or not raw.strip():
+            return None
+        text = raw.strip().upper()
+        if "STUCK" in text and "PROGRESSING" not in text:
+            return True
+        if "PROGRESSING" in text and "STUCK" not in text:
+            return False
+        return None
+    except Exception:
+        return None
+
+
 def compute_progress_trend_signal(
     goal_backlog, goal_id: str, *, window: int = 3, similarity_threshold: float = 0.85,
+    llm_helper=None,
 ) -> Optional[bool]:
-    """[goal_execution_phase_improvement_plan.md Stage D] 跨轮"进展趋势"信号。
+    """[goal_execution_phase_improvement_plan.md Stage D /
+    goal_stuck_stats_and_llm_progress_judge_plan.md §2] 跨轮"进展趋势"信号。
 
     读取这个 Goal 最近已完成的 `window` 个周期子节点（`reaped_cycle_child_ids`
-    末尾）的 `progress_notes` 文本，两两比较相似度（复用 evolution/guardian.py
-    `_is_near_duplicate` 同款 difflib 思路），若相邻轮次的进展描述高度雷同，
-    视为"看起来在原地打转"的伪进展信号，返回 True；文本有明显差异返回 False；
-    历史不足 `window` 轮或任何环节异常返回 None（不参与判定，等价于关闭）。
+    末尾）的 `progress_notes` 文本。
 
-    这只是一个粗粒度的辅助信号（文本相似度不代表真实产出质量），不单独触发
-    阶段切换，只作为 `resolve_effective_mode` 里"是否已经足够稳定"判定的
-    一票否决项——即便 spec 已确认且 miss_streak 为 0，如果最近几轮的进展
-    描述几乎重复，也不应该判定为 stable。
+    `llm_helper` 传入（且配置开启，见 `ExecutionPhaseConfig.
+    progress_trend_llm_enabled`）时优先用 LLM 判断（`_llm_judge_progress_trend`）
+    ——只看文本相似度分不清"雷同但正常"（比如周期性巡检类 Goal）和"雷同
+    且确实卡住"，LLM 能结合语义判断。LLM 不可用/未传入/判断不出结果（返回
+    `None`）时，退回原有的 difflib 文本相似度判断（两两比较相邻轮次的
+    `progress_notes`，全部达到 `similarity_threshold` 才判定为 True）。
+
+    历史不足 `window` 轮、缺少 `progress_notes`、或任何环节异常，返回
+    `None`（不参与判定，等价于该信号关闭）——这一层判定在 LLM 和 difflib
+    两条路径下语义一致，不会因为选了哪条路径而改变"信息不足就不判定"的
+    保守策略。
     """
     if goal_backlog is None or not goal_id:
         return None
@@ -187,6 +231,14 @@ def compute_progress_trend_signal(
             if not note:
                 return None  # 缺少足够信息时不判定，避免误判
             notes.append(note)
+
+        if llm_helper is not None:
+            llm_result = _llm_judge_progress_trend(notes, llm_helper)
+            if llm_result is not None:
+                return llm_result
+            # LLM 不可用/判断不出结果时，静默退回下面的 difflib 兜底，
+            # 不提前 return None（否则等于关闭了这个信号，而不是"降级"）。
+
         import difflib
 
         for i in range(1, len(notes)):

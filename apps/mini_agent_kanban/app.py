@@ -4011,6 +4011,46 @@ def render_self_tab(client: AgentClient):
     # 换一个展示位置：跟"🌱 成长顾问"tab 复用同一个 `_render_growth_
     # health_trend()` 组件和同一份数据源。
 
+    st.divider()
+    _render_goal_stuck_stats(client)
+
+
+# [goal_stuck_stats_and_llm_progress_judge_plan.md §1] "🧊 Goal Stuck 历史
+# 统计"——纯只读聚合，不提供任何操作按钮，只用于回答"这个项目历史上到底
+# 有多少次 Goal 被判定卡住"，为后续要不要上更高成本的机制（比如并行多
+# 路径择优）提供真实频率参考，而不是凭感觉决定。
+def _render_goal_stuck_stats(client: AgentClient) -> None:
+    st.markdown("**🧊 Goal Stuck 历史统计**（只读，参考用）")
+    data = client.goal_mode_stuck_stats() or {}
+    if "_error" in data:
+        st.caption(f"读取失败：{data['_error']}")
+        return
+    total = data.get("total_sessions", 0)
+    if total == 0:
+        st.caption("暂无 goal_mode 会话历史。")
+        return
+    stuck_count = data.get("stuck_count", 0)
+    stuck_ratio = data.get("stuck_ratio", 0.0)
+    recent_count = data.get("recent_stuck_count", 0)
+    window_days = data.get("recent_window_days", 30)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("历史会话总数", total)
+    c2.metric("被判 stuck 次数", stuck_count, delta=f"占比 {stuck_ratio:.1%}")
+    c3.metric(f"近 {window_days} 天 stuck", recent_count)
+
+    top_texts = data.get("top_stuck_goal_texts") or []
+    if top_texts:
+        with st.expander(f"反复卡住的目标（共 {len(top_texts)} 个不同描述）", expanded=False):
+            for item in top_texts:
+                goal_text = item.get("goal_text", "")
+                count = item.get("count", 0)
+                excerpt = item.get("last_final_report_excerpt", "")
+                st.markdown(f"- **{count} 次** — {goal_text}")
+                if excerpt:
+                    st.caption(f"　最近一次终态摘要：{excerpt}")
+    elif stuck_count > 0:
+        st.caption("有 stuck 记录，但未能归并出目标描述（可能是较早版本的历史数据）。")
+
 
 # [kanban_perception_gaps_improvement_plan.md 方向 B.1] "🔀 LLM 故障转移状态"
 # ——把已经在内存里现成可用的 LLMClientPool.snapshot() 接上一个只读展示，

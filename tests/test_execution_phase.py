@@ -251,6 +251,70 @@ def test_compute_progress_trend_signal_none_backlog_or_goal_id_returns_none(tmp_
     assert ep.compute_progress_trend_signal(backlog, "") is None
 
 
+# ── goal_stuck_stats_and_llm_progress_judge_plan.md §2: LLM 进展判断 ────────
+
+def test_llm_judge_progress_trend_parses_stuck():
+    result = ep._llm_judge_progress_trend(["A", "B", "C"], lambda prompt: "STUCK")
+    assert result is True
+
+
+def test_llm_judge_progress_trend_parses_progressing():
+    result = ep._llm_judge_progress_trend(["A", "B", "C"], lambda prompt: "  progressing  ")
+    assert result is False
+
+
+def test_llm_judge_progress_trend_unsure_returns_none():
+    result = ep._llm_judge_progress_trend(["A", "B", "C"], lambda prompt: "UNSURE")
+    assert result is None
+
+
+def test_llm_judge_progress_trend_garbage_response_returns_none():
+    result = ep._llm_judge_progress_trend(["A", "B", "C"], lambda prompt: "我觉得不太好说")
+    assert result is None
+
+
+def test_llm_judge_progress_trend_empty_response_returns_none():
+    result = ep._llm_judge_progress_trend(["A", "B", "C"], lambda prompt: "")
+    assert result is None
+
+
+def test_llm_judge_progress_trend_none_helper_returns_none():
+    assert ep._llm_judge_progress_trend(["A", "B", "C"], None) is None
+
+
+def test_llm_judge_progress_trend_exception_returns_none():
+    def _boom(prompt):
+        raise RuntimeError("llm down")
+    assert ep._llm_judge_progress_trend(["A", "B", "C"], _boom) is None
+
+
+def test_compute_progress_trend_signal_uses_llm_when_provided():
+    """LLM 给出明确结论时优先采用，不再走 difflib（即使文本其实差异很大，
+    也应该用 LLM 的判断，验证"优先级"而不只是"能调用"）。"""
+    goal = _FakeGoalForTrend("g1", reaped_ids=["c1", "c2", "c3"])
+    backlog = _FakeBacklogForTrend(goal, {
+        "c1": _FakeChildForTrend("新增了模块 A"),
+        "c2": _FakeChildForTrend("重构了存储层"),
+        "c3": _FakeChildForTrend("补充了单元测试"),
+    })
+    result = ep.compute_progress_trend_signal(backlog, "g1", window=3, llm_helper=lambda p: "STUCK")
+    assert result is True  # LLM 判定优先，覆盖了 difflib 本会给出的 False
+
+
+def test_compute_progress_trend_signal_falls_back_to_difflib_when_llm_unsure():
+    """LLM 返回 UNSURE（即 None）时应静默退回 difflib 结果，而不是直接
+    整体返回 None（否则等于关闭了这个信号，而不是"降级"）。"""
+    goal = _FakeGoalForTrend("g1", reaped_ids=["c1", "c2", "c3"])
+    same_note = "本轮完成了周期性维护任务，无异常，产出与上轮一致"
+    backlog = _FakeBacklogForTrend(goal, {
+        "c1": _FakeChildForTrend(same_note),
+        "c2": _FakeChildForTrend(same_note),
+        "c3": _FakeChildForTrend(same_note),
+    })
+    result = ep.compute_progress_trend_signal(backlog, "g1", window=3, llm_helper=lambda p: "UNSURE")
+    assert result is True  # 退回 difflib：三轮文本雷同 → True
+
+
 # ── goal_cron_bridge 接入 ────────────────────────────────────────────────────
 
 def test_bridge_append_execution_phase_context_default_state(tmp_path):
@@ -314,6 +378,69 @@ def test_bridge_append_execution_phase_context_progress_trend_stuck_gives_conver
     # spec 未确认时本来就判 explore，这里主要验证 goal_backlog 参数不报错、
     # 且能正常传导（下面单独用 resolve_effective_mode 直接验证降级效果）。
     assert "base description" in result
+
+
+def test_bridge_llm_helper_not_used_when_config_disabled(tmp_path, monkeypatch):
+    """[§2] 配置关闭（默认）时，即使传入了 llm_helper_provider，也不应该
+    实际调用它——只应该走 difflib 路径。"""
+    from mini_agent.evolution import goal_cron_bridge as bridge
+    from mini_agent.config.models import AppConfig
+
+    class _FakeGoal:
+        id = "goal_1"
+        execution_spec_confirmed = False
+
+    monkeypatch.setattr("mini_agent.config.load_config", lambda: AppConfig())
+
+    called = {"n": 0}
+
+    class _FakeHelper:
+        def ask(self, prompt):
+            called["n"] += 1
+            return "STUCK"
+
+    paths = _paths(tmp_path)
+    bridge._append_execution_phase_context(
+        paths, _FakeGoal(), 10, "base description",
+        llm_helper_provider=lambda: _FakeHelper(),
+    )
+    assert called["n"] == 0
+
+
+def test_bridge_llm_helper_used_when_config_enabled(tmp_path, monkeypatch):
+    """[§2] 配置开启且 provider 返回非 None helper 时，进展趋势信号应该
+    走 LLM 路径（这里只验证 helper 被实际调用了；判定效果已在
+    execution_phase 模块级测试里覆盖）。"""
+    from mini_agent.evolution import goal_cron_bridge as bridge
+    from mini_agent.config.models import AppConfig
+
+    class _FakeGoal:
+        id = "goal_1"
+        execution_spec_confirmed = False
+
+    cfg = AppConfig()
+    cfg.execution_phase.progress_trend_llm_enabled = True
+    monkeypatch.setattr("mini_agent.config.load_config", lambda: cfg)
+
+    called = {"n": 0}
+
+    class _FakeHelper:
+        def ask(self, prompt):
+            called["n"] += 1
+            return "PROGRESSING"
+
+    goal = _FakeGoalForTrend("goal_1", reaped_ids=["c1", "c2", "c3"])
+    backlog = _FakeBacklogForTrend(goal, {
+        "c1": _FakeChildForTrend("做了 A"),
+        "c2": _FakeChildForTrend("做了 A"),
+        "c3": _FakeChildForTrend("做了 A"),
+    })
+    paths = _paths(tmp_path)
+    bridge._append_execution_phase_context(
+        paths, _FakeGoal(), 10, "base description",
+        goal_backlog=backlog, llm_helper_provider=lambda: _FakeHelper(),
+    )
+    assert called["n"] == 1
 
 
 # ── Stage B: tidy 自动回退 / converge-spec 联动 / tidy checklist ────────────

@@ -305,6 +305,12 @@ class AgentClient:
         哨兵"区块展示。"""
         return self._get("/sentinel/summary", params={"cron_failure_threshold": cron_failure_threshold})
 
+    def goal_mode_stuck_stats(self, recent_days: int = 30):
+        """[goal_stuck_stats_and_llm_progress_judge_plan.md §1] Goal stuck
+        历史统计（只读）：总会话数/stuck 次数占比/最近窗口内 stuck 数量/
+        高频反复卡住的目标列表，供"🧠 自我状态"tab 展示。"""
+        return self._get("/goal_mode/stuck_stats", params={"recent_days": recent_days})
+
     def force_reap(self, target: str = "all"):
         """[kanban_execution_visibility_and_control_plan.md 阶段 B/C]
         看板"🚨 立即回收"按钮：不必等 watchdog 下一次 tick，立刻对指定

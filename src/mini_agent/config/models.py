@@ -1007,6 +1007,20 @@ class GoalExecutionSpecConfig:
 
 
 @dataclass
+class ExecutionPhaseConfig:
+    """[next_doc/goal_stuck_stats_and_llm_progress_judge_plan.md §2] Goal
+    执行阶段（explore/converge/stable/tidy）跨轮"进展趋势"信号的配置块。
+
+    `perception/execution_phase.py::compute_progress_trend_signal()` 默认用
+    纯文本相似度（difflib）判断最近几轮 `progress_notes` 是否雷同；打开
+    `progress_trend_llm_enabled` 后，改用 LLM 判断是否真的在原地打转，
+    difflib 结果降级为 LLM 不可用/解析失败时的兜底，不会因为 LLM 异常
+    影响 Goal 触发主流程。默认关闭，不影响现有部署行为。
+    """
+    progress_trend_llm_enabled: bool = False
+
+
+@dataclass
 class TurnJudgeConfig:
     """[SYS-TURN-JUDGE] 轮次守门员配置：每轮对话结束、真正进入"等待用户输入"之前，
     先让一个轻量 judge agent 核查一次——这是主 Agent 真的完成了、需要真人介入，
@@ -2293,6 +2307,7 @@ class AppConfig:
     role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)
     goal_mode:  GoalModeConfig   = field(default_factory=GoalModeConfig)
     goal_execution_spec: GoalExecutionSpecConfig = field(default_factory=GoalExecutionSpecConfig)
+    execution_phase: ExecutionPhaseConfig = field(default_factory=ExecutionPhaseConfig)
     turn_judge: TurnJudgeConfig  = field(default_factory=TurnJudgeConfig)
     env_info:   EnvInfoConfig    = field(default_factory=EnvInfoConfig)
     workdir_knowledge: WorkdirKnowledgeConfig = field(default_factory=WorkdirKnowledgeConfig)

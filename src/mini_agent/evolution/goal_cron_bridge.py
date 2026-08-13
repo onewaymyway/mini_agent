@@ -41,14 +41,21 @@ def register_goal_cycle_handler(
     cron_scheduler: "CronScheduler",
     goal_backlog: "GoalBacklog",
     objective_executor: "ObjectiveExecutor",
+    *, llm_helper_provider=None,
 ) -> None:
     """把 goal_cycle 触发逻辑挂到 cron_scheduler。daemon 启动时（构建完
     GoalBacklog/CronScheduler/ObjectiveExecutor 三者之后）调用一次，见
     api/server.py::HttpServer._build_autonomous_loop()。
+
+    `llm_helper_provider`：[goal_stuck_stats_and_llm_progress_judge_plan.md
+    §2] 可选、惰性获取的 `Callable[[], Optional[LLMHelper]]`，daemon 启动
+    时 agent 可能还没就绪也不影响注册本身（与 `ensure_goal_relevance_judge_job`
+    等既有 P5 机制同款写法）。传 None（默认）时 execution phase 的进展趋势
+    信号维持纯 difflib 判断，行为与引入本参数之前完全一致。
     """
 
     def _handler(job: "CronJob") -> bool:
-        return _fire_goal_cycle(job, goal_backlog, objective_executor)
+        return _fire_goal_cycle(job, goal_backlog, objective_executor, llm_helper_provider=llm_helper_provider)
 
     cron_scheduler.set_goal_cycle_handler(_handler)
 
@@ -91,6 +98,7 @@ def _fire_goal_cycle(
     job: "CronJob",
     goal_backlog: "GoalBacklog",
     objective_executor: "ObjectiveExecutor",
+    *, llm_helper_provider=None,
 ) -> bool:
     """CronScheduler 到期触发一个 run_mode="goal_cycle" 的 job 时调用。
 
@@ -148,7 +156,9 @@ def _fire_goal_cycle(
     from mini_agent.perception.goal_backlog import compose_context
     description = compose_context(goal.description, job.task_template)
     description = _append_output_workspace_context(paths, goal.id, cycle_no, description)
-    description = _append_execution_phase_context(paths, goal, cycle_no, description, goal_backlog=goal_backlog)
+    description = _append_execution_phase_context(
+        paths, goal, cycle_no, description, goal_backlog=goal_backlog, llm_helper_provider=llm_helper_provider,
+    )
     description = _append_execution_spec_context(paths, goal_backlog, goal, description)
     description = _append_growth_reorganize_hint(paths, goal, cycle_no, description)
     description = _append_growth_self_check_hint(paths, goal, cycle_no, description)
@@ -209,8 +219,9 @@ def _append_output_workspace_context(paths, goal_id: str, cycle_no: int, descrip
 
 
 def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, description: str,
-                                     *, goal_backlog=None) -> str:
-    """[goal_execution_phase_improvement_plan.md §4 / Stage D] 读取/推进这个
+                                     *, goal_backlog=None, llm_helper_provider=None) -> str:
+    """[goal_execution_phase_improvement_plan.md §4 / Stage D /
+    goal_stuck_stats_and_llm_progress_judge_plan.md §2] 读取/推进这个
     Goal 的 ExecutionPhaseState，把当前有效阶段（explore/converge/stable/
     tidy）对应的 prompt 片段拼进本轮子 Objective description。
 
@@ -221,6 +232,13 @@ def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, desc
     goal_backlog：[Stage D] 可选，传入时用于计算跨轮"进展趋势"信号（见
     `execution_phase.compute_progress_trend_signal`），传 None 时行为与
     Stage D 之前完全一致（该信号不参与判定）。
+
+    llm_helper_provider：[§2] 可选、惰性获取的 `Callable[[], Optional[
+    LLMHelper]]`。只有 `AppConfig.execution_phase.progress_trend_llm_enabled`
+    开启且能拿到非 None 的 helper 时，才会把 `llm_helper` 传给
+    `compute_progress_trend_signal`，让进展趋势信号改用 LLM 判断；配置
+    关闭、未传 provider、或 provider 返回 None 时，维持纯 difflib 判断，
+    行为与本参数引入之前完全一致。
     """
     if paths is None:
         return description
@@ -242,7 +260,18 @@ def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, desc
                 if confirmed_at is not None and (time.time() - confirmed_at) < 86400:
                     spec_recently_revised = True
 
-        progress_trend_stuck = ep.compute_progress_trend_signal(goal_backlog, goal.id)
+        llm_helper = None
+        if llm_helper_provider is not None:
+            try:
+                from mini_agent.config import load_config
+                if getattr(load_config().execution_phase, "progress_trend_llm_enabled", False):
+                    helper = llm_helper_provider()
+                    if helper is not None:
+                        llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
+            except Exception:
+                llm_helper = None
+
+        progress_trend_stuck = ep.compute_progress_trend_signal(goal_backlog, goal.id, llm_helper=llm_helper)
 
         effective_mode, state = ep.resolve_effective_mode(
             state,

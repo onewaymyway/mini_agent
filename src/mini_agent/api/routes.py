@@ -68,6 +68,8 @@ api/routes.py — FastAPI 路由定义
                                        每日趋势（快照挂在 /growth/scan 上记录）
     GET    /v1/wiki/quarantine_status  [同上 方向 E] wiki 隔离区积压
     GET    /v1/sentinel/summary      [同上 方向 A] 哨兵聚合面板
+    GET    /v1/goal_mode/stuck_stats [goal_stuck_stats_and_llm_progress_judge_
+                                       plan.md §1] Goal stuck 历史统计（只读）
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
     POST   /v1/goals                 新增 Goal
     PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级/标题/描述
@@ -633,6 +635,38 @@ async def get_sentinel_summary(
             "cron_jobs_with_failures": [], "stuck_objective_steps": [],
             "quarantine_backlog": {"pending_count": 0, "earliest_first_seen_at": None, "items": []},
             "llm_failover_state": None, "arbitration_recent_ratio": None,
+        }
+
+
+# ── Goal stuck 历史统计（goal_stuck_stats_and_llm_progress_judge_plan.md §1）──
+@router.get("/goal_mode/stuck_stats")
+async def get_goal_mode_stuck_stats(
+    request: Request,
+    recent_days: int = Query(30, ge=1, description="最近多少天内的 stuck 记录计入 recent_stuck_count"),
+):
+    """GET /v1/goal_mode/stuck_stats — 只读聚合 goal_mode 会话历史里被判定
+    `stuck`（GoalJudge/StuckDetector 多次恢复无效后的终态）的次数/占比/
+    高频目标，为"要不要上并行多路径择优"之类更高成本机制的立项提供真实
+    触发频率参考，不修改任何现有状态。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    try:
+        from mini_agent.perception.goal_stuck_stats import stuck_stats_summary
+
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        return stuck_stats_summary(project_root, recent_days=recent_days)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_goal_mode_stuck_stats')
+        return {
+            "total_sessions": 0, "stuck_count": 0, "stuck_ratio": 0.0,
+            "recent_stuck_count": 0, "recent_window_days": recent_days,
+            "top_stuck_goal_texts": [], "generated_at": time.time(),
         }
 
 
