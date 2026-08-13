@@ -148,6 +148,7 @@ def _fire_goal_cycle(
     from mini_agent.perception.goal_backlog import compose_context
     description = compose_context(goal.description, job.task_template)
     description = _append_output_workspace_context(paths, goal.id, cycle_no, description)
+    description = _append_execution_phase_context(paths, goal, cycle_no, description)
     description = _append_execution_spec_context(paths, goal_backlog, goal, description)
     description = _append_growth_reorganize_hint(paths, goal, cycle_no, description)
     description = _append_growth_self_check_hint(paths, goal, cycle_no, description)
@@ -204,6 +205,66 @@ def _append_output_workspace_context(paths, goal_id: str, cycle_no: int, descrip
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_output_workspace_context')
+        return description
+
+
+def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, description: str) -> str:
+    """[goal_execution_phase_improvement_plan.md §4] 读取/推进这个 Goal 的
+    ExecutionPhaseState，把当前有效阶段（explore/converge/stable/tidy）
+    对应的 prompt 片段拼进本轮子 Objective description。
+
+    paths 为 None 或任何环节异常时静默跳过，不影响 Goal 触发主流程；
+    没有 phase 文件时按默认状态（mode="auto"）处理，行为与引入本机制之前
+    完全一致（默认判定倾向 explore/converge，不会突然收紧成 stable）。
+    """
+    if paths is None:
+        return description
+    try:
+        from mini_agent.perception import execution_phase as ep
+        from mini_agent.perception import goal_execution_spec as ges
+
+        state = ep.load_phase(paths, goal.id)
+
+        spec_confirmed = bool(getattr(goal, "execution_spec_confirmed", False))
+        spec_recently_revised = not spec_confirmed
+        miss_streak = 0
+        if spec_confirmed:
+            spec = ges.load_spec(paths, goal.id)
+            if spec is not None:
+                miss_streak = int(getattr(spec, "soft_check_miss_streak", 0))
+                # 确认后 24 小时内仍算"刚调整过"，避免确认当轮立刻判成 stable
+                confirmed_at = getattr(spec, "confirmed_at", None)
+                if confirmed_at is not None and (time.time() - confirmed_at) < 86400:
+                    spec_recently_revised = True
+
+        effective_mode, state = ep.resolve_effective_mode(
+            state,
+            cycle_no=cycle_no,
+            spec_confirmed=spec_confirmed,
+            spec_recently_revised=spec_recently_revised,
+            miss_streak=miss_streak,
+        )
+        ep.save_phase(paths, state)
+
+        from mini_agent.prompts import pm
+        key_map = {
+            "explore": "EXPLORE_BLOCK",
+            "converge": "CONVERGE_BLOCK",
+            "stable": "STABLE_BLOCK",
+            "tidy": "TIDY_BLOCK",
+        }
+        key = key_map.get(effective_mode)
+        if key is None:
+            return description
+        block = pm.fragment("execution_phase", key)
+        if not block:
+            return description
+        parts = [description] if description and description.strip() else []
+        parts.append(block)
+        return "\n\n".join(parts)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_execution_phase_context')
         return description
 
 

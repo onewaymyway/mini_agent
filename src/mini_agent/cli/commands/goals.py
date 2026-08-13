@@ -21,6 +21,12 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
                                      判定（见 §5 第二段，通常由子 Objective
                                      完成时自动触发，这里补一个手动入口）
   /agent goals status              — 显示 AutonomousLoop tick 状态
+  /agent goals phase show <id>     — 查看当前执行阶段（见
+                                     perception/execution_phase.py，
+                                     next_doc/goal_execution_phase_improvement_plan.md）
+  /agent goals phase set <id> explore|converge|stable|tidy|auto [--lock]
+                                   — 手动切换执行阶段（非 auto 默认隐式锁定）
+  /agent goals phase unlock <id>   — 解除锁定，交回自动判定
 """
 
 from __future__ import annotations
@@ -128,6 +134,18 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
             return
         _cmd_spec(gb, paths, rest[0], rest[1:])
 
+    elif subcmd == "phase":
+        # [goal_execution_phase_improvement_plan.md §5]
+        # /agent goals phase show <id> | set <id> <mode> [--lock] | unlock <id>
+        if not rest:
+            R.print_error(
+                "Usage: /agent goals phase show <goal_id> "
+                "| /agent goals phase set <goal_id> explore|converge|stable|tidy|auto [--lock] "
+                "| /agent goals phase unlock <goal_id>"
+            )
+            return
+        _cmd_phase(paths, rest[0], rest[1:])
+
     elif subcmd == "unrecur":
         # /agent goals unrecur <id> — 停止周期性（不删 Goal/cron job）
         if not rest:
@@ -150,7 +168,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
-            "progress, feedback, recur, unrecur, spec, status, reset-step"
+            "progress, feedback, recur, unrecur, spec, phase, status, reset-step"
         )
 
 
@@ -716,6 +734,51 @@ def _cmd_spec_close_check(gb, paths, goal_id: str, use_agent: Optional[bool] = N
         R.print_success(f"判定为整体已完成（走 {path_label} 路径），Goal 已标记为 completed：{goal_id}")
     else:
         R.print_info(f"判定为暂不关闭（走 {path_label} 路径，继续保持 active）：{goal_id}，详见 progress notes。")
+
+
+def _cmd_phase(paths, action: str, rest: list[str]) -> None:
+    """[goal_execution_phase_improvement_plan.md §5] /agent goals phase 子命令。"""
+    from mini_agent.perception import execution_phase as ep
+
+    if action == "show":
+        if not rest:
+            R.print_error("Usage: /agent goals phase show <goal_id>")
+            return
+        state = ep.load_phase(paths, rest[0])
+        lock_txt = "locked" if state.locked else "unlocked"
+        R.print_info(
+            f"Goal {state.goal_id} execution phase: {state.mode} ({lock_txt}), "
+            f"stability_score={state.stability_score:.2f}, cycles_in_mode={state.cycles_in_mode}"
+        )
+        if state.mode_history:
+            R.print_info("Recent transitions:")
+            for m in state.mode_history[-5:]:
+                R.print_info(f"  {m.from_mode} -> {m.to_mode} ({m.reason})")
+        return
+
+    if action == "set":
+        if len(rest) < 2:
+            R.print_error("Usage: /agent goals phase set <goal_id> explore|converge|stable|tidy|auto [--lock]")
+            return
+        goal_id, mode = rest[0], rest[1]
+        lock_flag = "--lock" in rest[2:]
+        try:
+            state = ep.set_mode(paths, goal_id, mode, lock=True if lock_flag else None, reason="cli_set")
+        except ValueError as e:
+            R.print_error(str(e))
+            return
+        R.print_success(f"Goal {goal_id} execution phase set to {state.mode} (locked={state.locked})")
+        return
+
+    if action == "unlock":
+        if not rest:
+            R.print_error("Usage: /agent goals phase unlock <goal_id>")
+            return
+        state = ep.unlock_mode(paths, rest[0])
+        R.print_success(f"Goal {rest[0]} execution phase unlocked (mode={state.mode})")
+        return
+
+    R.print_error(f"Unknown phase action: {action!r}. Use show/set/unlock.")
 
 
 def _format_ago(seconds: float) -> str:
