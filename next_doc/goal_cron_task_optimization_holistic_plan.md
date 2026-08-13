@@ -1,0 +1,153 @@
+# Goal/Cron 任务优化 —— 真实需求梳理与系统理念
+
+> 状态：方向 B（阶段健康告警）、方向 C（下一轮从简执行）已实施完成；
+> 方向 A（阶段感知的归档/调度联动）、方向 D（跨 Goal 探索期并发治理）
+> 本轮评估后记录方向、暂不实现，见 §5。
+> 前置背景：`goal_cron_binding_plan.md`（绑定/触发/回收）、
+> `goal_execution_phase_improvement_plan.md`（explore/converge/stable/tidy
+> 阶段机制）、`goal_cron_visibility_and_intervention_improvement_plan.md`
+> （看板可见性 + 跳过一轮 + 归档 + 失败通知）均已完整实施。本方案不重复
+> 造轮子，只补这些机制之上仍然缺失的一层。
+
+## 0. 背景：现状已经解决了什么
+
+在动手之前先盘一遍现状，避免重复建设：
+
+- **触发/绑定机制通了**：Goal 可以 `recurring=True`，由
+  `goal_cron_bridge.py` 按 schedule 周期性派生子 Objective，Goal 暂停会
+  联动 cron 停摆。
+- **agent 行为基调有阶段区分**：`execution_phase.py` 的
+  `explore/converge/stable/tidy` 状态机，能让 agent 在"刚起步试错"和
+  "跑熟了重复执行"之间切换 prompt 基调，还有 Stage D 的"伪进展"降级信号。
+- **看板可见性和基础干预已具备**：Goal 卡片能看到第几轮、下次触发时间、
+  一键绑定/解绑；用户能"跳过下一轮"；`goals.json` 有归档机制防止无限
+  膨胀；某一轮失败会主动推通知。
+
+这些机制各自都做得比较完整，但放在一起看，还留了三类真实场景没被覆盖。
+
+## 1. 真实场景倒推需求
+
+**场景 1：阶段状态只影响 agent，不影响用户感知**
+
+一个"每天扫 arxiv"的 Goal 卡在 explore 阶段迟迟不收敛（比如任务定义本身
+有歧义，或者外部环境一直在变化，agent 每轮都在"重新摸索"）。现有机制里，
+`stability_score` 只是看板上一个数字，用户不主动点开看板、不主动对比
+历史轮次，根本不会意识到这个 Goal"一直没跑顺"。同样，Stage D 的"伪进展"
+降级信号（`stable` 被打回 `converge`）目前只是内部悄悄调整 prompt，用户
+毫无感知——但这个信号恰恰是"这个 Goal 值得你看一眼"的强信号，被浪费了。
+
+**场景 2：干预粒度是二元的，缺一个中间态**
+
+现有"跳过下一轮"解决的是"这周太忙，这一轮别跑了"。但真实场景里更常见的
+是"这一轮还是要跑，但我不希望它又搞出一堆新东西"——比如用户临时出差、
+不方便盯着新方案的产出，只想让 agent 做最基础的同步/巡检。当前只有
+"完全不跑"和"正常跑（包括可能触发的 explore/converge 行为）"两个选项，
+缺一个"跑，但降级"的中间态。
+
+**场景 3：健康信号分散在各处，没有统一的"值得关注"判断**
+
+`execution_phase.py` 的 `stability_score`、`mode_history`、Stage D 的
+"伪进展"信号，加上 growth_advisor 自己的"饱和度"信号，本质上都是同一类
+东西——"这个 Goal 的执行状态是否正常"。但它们目前各自为政：有的只展示
+不通知（阶段状态），有的通知但范围窄（只对 growth_advisor 标签的 Goal
+判断饱和度）。用户没有一个统一的"哪些周期性 Goal 需要我关注"的入口。
+
+## 2. 系统理念
+
+把上面三个场景抽象一下，本方案要补的是一条理念：
+
+> **执行阶段（execution phase）不应该只是 agent 侧的行为调节器，它还应该
+> 是系统对外的健康信号源。** 阶段状态的每一次异常变化——长期卡住、反复
+> 回退——都应该有机会转化成一条用户能看到的信号，而不是只停留在
+> prompt 拼接这一层。
+
+配合这条理念，干预能力也要跟着从"二元开关"细化为"力度可调"：跳过是
+一端，正常执行是另一端，中间需要"跑但降级"这种更贴近真实使用习惯的挡位。
+
+## 3. 改进方案
+
+### 方向 B（已实施）：执行阶段健康告警
+
+在 `ExecutionPhaseState` 上新增 `last_health_alert_at`/
+`last_health_alert_kind` 两个字段（纯通知层去重状态，不参与阶段判定本身），
+并新增 `check_phase_health(state, effective_mode)` 只读判定函数，覆盖两类
+问题：
+
+1. **stuck_explore**：`auto` 模式且未锁定，`effective_mode == "explore"`
+   且连续轮数达到阈值（默认 6 轮）——用户手动锁定在 explore 是明确意图，
+   不算异常，不告警。
+2. **phase_flapping**：最近若干次自动判定里，"从 stable/converge 被打回
+   converge/explore"的次数达到阈值（默认 8 次窗口内 3 次）——覆盖 Stage D
+   "伪进展"信号反复触发的情况。
+
+同一种问题命中冷却期（默认 3 天）内不重复告警；两类问题互不抑制。命中且
+不在冷却期时，`goal_cron_bridge._append_execution_phase_context()` 复用
+现成的 `NotificationDispatcher`（与已有的 `_notify_cycle_failed()` 同一
+套通知网关，kanban 渠道恒真兜底）推送一条通知，不新增渠道实现。
+
+判定函数本身不修改 state，调用方在决定要发送通知后才落盘冷却状态——
+保持与项目里其它只读判定函数一致的风格。任何环节异常整体吞掉，不影响
+Goal 触发主流程。
+
+### 方向 C（已实施）：下一轮"降级执行"（lightweight）
+
+`GoalNode` 新增 `next_cycle_lightweight: bool` 字段，语义与
+`skip_next_cycle` 并列但不同：
+
+| 字段 | 语义 | 这一轮是否触发 |
+|---|---|---|
+| `skip_next_cycle` | 完全不跑这一轮 | 否 |
+| `next_cycle_lightweight` | 跑，但要求从简 | 是 |
+
+`_fire_goal_cycle()` 在拼装子 Objective description 时，若命中该标记，
+在 execution phase 提示片段之后追加一段"本轮降级执行"约束（不引入新方案、
+不做结构性变更、有异常再汇报），消费后立即清零，只影响这一次触发，不
+改变 `ExecutionPhaseState.mode` 本身——降级是"这一轮"的临时决定，不代表
+这个 Goal 整体阶段判断变了。
+
+新增 REST 端点 `POST /v1/goals/{goal_id}/lightweight_next_cycle`，看板
+"⏰ 周期性设置"折叠区新增"🪶 下一轮从简"按钮，与"跳过下一轮"并列。
+
+## 4. 分阶段落地记录
+
+- **Stage 1（已实施）**：方向 C —— `GoalNode.next_cycle_lightweight` 字段
+  + `_fire_goal_cycle()` 消费逻辑 + REST 端点 + 看板按钮 + 单元测试
+  （`tests/test_goal_cron_bridge.py::TestLightweightNextCycle`）。
+- **Stage 2（已实施）**：方向 B —— `ExecutionPhaseState` 新增冷却字段 +
+  `check_phase_health()` + `goal_cron_bridge._notify_phase_health_issue()`
+  接入 + 单元测试（`tests/test_execution_phase.py` 新增
+  `check_phase_health` 系列用例 + `tests/test_goal_cron_bridge.py` 新增
+  通知派发用例）。
+
+## 5. 评估后决定本轮不实现的方向（记录，供后续排期）
+
+- **方向 A：阶段感知的归档/调度联动**——现状 `archive_finished_cycle_children`
+  是纯"轮数阈值触发"，不区分当前处于哪个阶段；`stability_score` 也只用于
+  看板展示，不参与 `UnifiedTaskScheduler` 的资源分配权重。设想是 explore
+  期给更宽松的超时/重试预算、更谨慎的归档（早期尝试细节可能还有参考价值），
+  stable 期收紧成本控制、更积极归档。本轮不做的原因：这需要改动调度器和
+  归档函数的调用约定（新增可选参数或读取阶段状态的依赖），影响面比方向
+  B/C 大，且目前没有真实使用数据支撑"具体阈值该设多少"，贸然实现容易
+  引入一套没有校准过的策略。留待观察方向 B 的告警实际命中情况后再排期。
+- **方向 D：跨 Goal 探索期并发治理**——多个 recurring Goal 同时处于
+  explore 阶段时，理论上系统层面的不确定性会叠加，`ResourceArbiter` 应该
+  有一条"同时处于 explore 的 Goal 数量" 软上限规则。本轮不做的原因：当前
+  项目里同时运行的 recurring Goal 数量规模尚未出现这类问题的实际信号，
+  且这类"跨 Goal 裁决规则"改动涉及 `ResourceArbiter` 的核心调度逻辑，
+  影响所有 Goal 而不只是新增功能覆盖的 Goal，风险收益比不划算，先记录
+  方向，等实际出现多 Goal 并发探索导致资源紧张的场景再动手。
+
+## 6. 兼容性与风险
+
+- 全部新增字段（`GoalNode.next_cycle_lightweight`、
+  `ExecutionPhaseState.last_health_alert_*`）默认值保证向后兼容，
+  `to_dict`/`from_dict` 同步补齐，未主动使用的 Goal 行为不变。
+- 健康告警是纯诊断增强，判定函数只读、调用方异常整体吞掉，不影响
+  Goal 触发主流程本身；告警阈值是启发式的，可能需要后续根据实际使用
+  情况调整默认值（`DEFAULT_STUCK_EXPLORE_CYCLES`/`DEFAULT_FLAP_WINDOW`/
+  `DEFAULT_FLAP_THRESHOLD`/`DEFAULT_HEALTH_ALERT_COOLDOWN_SECONDS`，均在
+  `execution_phase.py` 顶部，改动只需要调整常量）。
+- `next_cycle_lightweight` 与 `skip_next_cycle` 是两个独立字段，理论上
+  可能被同时设置——`_fire_goal_cycle()` 里 `skip_next_cycle` 的判断在前，
+  命中后直接 return，不会走到 `next_cycle_lightweight` 的处理分支，语义
+  上"跳过"优先于"降级"，符合直觉（不跑就不存在"跑得简单一点"）。

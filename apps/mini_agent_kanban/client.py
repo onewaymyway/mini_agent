@@ -369,6 +369,11 @@ class AgentClient:
     def skip_goal_next_cycle(self, goal_id: str):
         return self._post(f"/goals/{goal_id}/skip_next_cycle")
 
+    def lightweight_goal_next_cycle(self, goal_id: str):
+        """[goal_cron_task_optimization_holistic_plan.md 方向 C] 下一轮从简
+        执行，但仍然照常触发（区别于 skip_goal_next_cycle 完全不跑）。"""
+        return self._post(f"/goals/{goal_id}/lightweight_next_cycle")
+
     def add_goal_feedback(self, goal_id: str, text: str):
         """[goal_cron_feedback_and_output_policy_plan.md 3.5/3.6] 持久化提意见。"""
         return self._post(f"/goals/{goal_id}/feedback", {"text": text})

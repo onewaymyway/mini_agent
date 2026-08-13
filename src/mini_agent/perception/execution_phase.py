@@ -33,6 +33,12 @@ DEFAULT_EXPLORE_MIN_CYCLES = 3
 DEFAULT_SPEC_STABLE_CYCLES = 2
 DEFAULT_TIDY_EVERY_N_CYCLES = 0  # 0 = 关闭自动 tidy 插入
 
+# [goal_cron_task_optimization_holistic_plan.md 方向 B] 健康告警的默认阈值。
+DEFAULT_STUCK_EXPLORE_CYCLES = 6      # auto 模式下连续判定为 explore 达到此轮数即告警
+DEFAULT_FLAP_WINDOW = 8               # 检查 mode_history 最近这么多条 auto 判定记录
+DEFAULT_FLAP_THRESHOLD = 3            # 窗口内"回退到 explore/converge"的次数达到此值即告警
+DEFAULT_HEALTH_ALERT_COOLDOWN_SECONDS = 3 * 24 * 3600  # 同一种告警的最短复发间隔
+
 
 @dataclass
 class ModeChange:
@@ -66,6 +72,12 @@ class ExecutionPhaseState:
     mode_history: list[ModeChange] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
 
+    # [goal_cron_task_optimization_holistic_plan.md 方向 B] 上一次健康告警
+    # 的时间戳/种类，用于告警冷却——避免同一种健康问题每轮都重复推送。
+    # 不参与阶段判定本身，纯粹是通知层的去重状态。
+    last_health_alert_at: float = 0.0
+    last_health_alert_kind: str = ""
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["mode_history"] = [m.to_dict() for m in self.mode_history]
@@ -86,6 +98,8 @@ class ExecutionPhaseState:
             last_tidy_cycle=d.get("last_tidy_cycle"),
             mode_history=[ModeChange.from_dict(m) for m in d.get("mode_history", [])],
             updated_at=float(d.get("updated_at", time.time())),
+            last_health_alert_at=float(d.get("last_health_alert_at", 0.0)),
+            last_health_alert_kind=d.get("last_health_alert_kind", ""),
         )
 
     def record_transition(self, to_mode: str, reason: str = "") -> None:
@@ -331,3 +345,78 @@ def resolve_effective_mode(
             state.mode_history = state.mode_history[-50:]
     state.cycles_in_mode += 1
     return target, state
+
+
+def check_phase_health(
+    state: ExecutionPhaseState,
+    effective_mode: str,
+    *,
+    stuck_explore_cycles: int = DEFAULT_STUCK_EXPLORE_CYCLES,
+    flap_window: int = DEFAULT_FLAP_WINDOW,
+    flap_threshold: int = DEFAULT_FLAP_THRESHOLD,
+    cooldown_seconds: float = DEFAULT_HEALTH_ALERT_COOLDOWN_SECONDS,
+) -> Optional[str]:
+    """[goal_cron_task_optimization_holistic_plan.md 方向 B] 判断这个 Goal 的
+    执行阶段是否出现了值得主动告诉用户的"健康问题"，返回一段中文告警原因；
+    没有问题、或命中冷却期内已经告警过同一种问题，返回 None。
+
+    这不是对 agent 行为的调节（那是 resolve_effective_mode 的职责），而是
+    把阶段状态转成一个面向用户的信号：用户不需要每天巡检看板，系统主动
+    在异常时喊一声。只做规则判定，第一版不引入额外 LLM 调用。
+
+    两类问题：
+    1. stuck_explore —— 长期（auto 模式下）判定为 explore 迟迟不收敛，往往
+       意味着任务定义本身有问题（目标不清晰/环境不稳定），而不是 agent
+       "还需要多试几次"。只在 mode == "auto" 且未被用户手动锁定时判定——
+       用户手动锁定在 explore 是明确意图，不应被当成异常。
+    2. phase_flapping —— 阶段反复从 stable/converge 被打回 explore/converge
+       （常见于 Stage D 的"伪进展"降级反复触发），意味着看起来收敛但内容
+       层面并不稳定，值得用户介入看看，而不是让系统一直自动降级下去。
+
+    两类问题共享同一个冷却字段（`last_health_alert_kind`/`last_health_alert_at`）
+    ——同一种 kind 在 cooldown_seconds 内不重复返回，不同 kind 之间不互相
+    抑制（stuck 和 flapping 是不同性质的问题，都值得各自提醒一次）。
+    调用方负责在决定"确实要发送通知"后落盘更新这两个字段（本函数只读
+    判断，不修改 state，保持与其它只读判定函数一致的风格）。
+    """
+    try:
+        now = time.time()
+
+        def _cooldown_ok(kind: str) -> bool:
+            if state.last_health_alert_kind != kind:
+                return True
+            return (now - state.last_health_alert_at) >= cooldown_seconds
+
+        if (
+            state.mode == "auto"
+            and not state.locked
+            and effective_mode == "explore"
+            and state.cycles_in_mode >= stuck_explore_cycles
+        ):
+            if _cooldown_ok("stuck_explore"):
+                return (
+                    f"已连续 {state.cycles_in_mode} 轮仍处于探索阶段（explore）未能收敛，"
+                    "可能是任务目标不够清晰或执行环境不稳定，建议人工看一下这个 Goal 的"
+                    "执行方向是否需要调整。"
+                )
+            return None
+
+        if flap_threshold > 0 and len(state.mode_history) > 0:
+            recent = [m for m in state.mode_history[-flap_window:] if m.reason == "rule_based_auto"]
+            regressions = sum(
+                1
+                for m in recent
+                if m.to_mode.startswith("auto:") and m.to_mode.split(":", 1)[1] in ("explore", "converge")
+                and m.from_mode.startswith("auto:") and m.from_mode.split(":", 1)[1] in ("stable", "converge")
+                and m.to_mode.split(":", 1)[1] != m.from_mode.split(":", 1)[1]
+            )
+            if regressions >= flap_threshold and _cooldown_ok("phase_flapping"):
+                return (
+                    f"最近 {len(recent)} 次自动阶段判定里，有 {regressions} 次从更靠后的阶段"
+                    "被打回更早的阶段（比如 stable/converge 被打回 converge/explore），"
+                    "说明这个 Goal 表面上看起来收敛了，但内容层面可能反复不稳定，建议人工"
+                    "复核最近几轮的实际产出。"
+                )
+        return None
+    except Exception:
+        return None

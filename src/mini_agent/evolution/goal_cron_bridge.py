@@ -159,6 +159,19 @@ def _fire_goal_cycle(
     description = _append_execution_phase_context(
         paths, goal, cycle_no, description, goal_backlog=goal_backlog, llm_helper_provider=llm_helper_provider,
     )
+    # [goal_cron_task_optimization_holistic_plan.md 方向 C] "下一轮降级执行"
+    # 与 execution phase 提示是叠加关系，不互斥——不管当前判定处于哪个阶段，
+    # 都在描述末尾追加一段"从简执行"约束，并在消费后立即清零标记，只影响
+    # 这一次触发。放在 execution phase 片段之后，避免被阶段提示的措辞盖过。
+    if goal.next_cycle_lightweight:
+        goal_backlog.update_fields(goal.id, next_cycle_lightweight=False)
+        goal_backlog.append_progress_note(goal.id, f"第 {cycle_no} 轮由用户标记为降级执行（从简）")
+        description = compose_context(
+            description,
+            "【本轮降级执行】用户临时要求这一轮从简处理：只做最小限度的同步/"
+            "巡检，不要引入新方案、不要做结构性变更、不要扩大任务范围，"
+            "有明显异常再如实汇报，其余按现状简要确认即可。",
+        )
     description = _append_execution_spec_context(paths, goal_backlog, goal, description)
     description = _append_growth_reorganize_hint(paths, goal, cycle_no, description)
     description = _append_growth_self_check_hint(paths, goal, cycle_no, description)
@@ -281,6 +294,20 @@ def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, desc
             miss_streak=miss_streak,
             progress_trend_stuck=progress_trend_stuck,
         )
+        # [goal_cron_task_optimization_holistic_plan.md 方向 B] 阶段健康告警：
+        # 只读判定，命中且不在冷却期内才落盘更新告警状态并发通知；异常/未
+        # 命中都不影响后面 save_phase 和 prompt 拼接的主流程。
+        try:
+            health_reason = ep.check_phase_health(state, effective_mode)
+            if health_reason:
+                kind = "stuck_explore" if effective_mode == "explore" else "phase_flapping"
+                state.last_health_alert_kind = kind
+                state.last_health_alert_at = time.time()
+                _notify_phase_health_issue(paths, goal, health_reason)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_execution_phase_context.health_check')
+
         ep.save_phase(paths, state)
 
         from mini_agent.prompts import pm
@@ -703,6 +730,28 @@ def _notify_cycle_failed(goal_backlog: "GoalBacklog", goal: "GoalNode", note: st
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._notify_cycle_failed')
+
+
+def _notify_phase_health_issue(paths, goal: "GoalNode", reason: str) -> None:
+    """[goal_cron_task_optimization_holistic_plan.md 方向 B] execution phase
+    健康告警（长期卡在 explore / 阶段反复回退）推一条通知。跟
+    `_notify_cycle_failed` 同一套通知网关，复用同样的"kanban 渠道恒真兜底 +
+    异常整体吞掉"约定——告警是感知增强，不能反过来影响 execution phase
+    判定或 Goal 触发主流程。
+    """
+    try:
+        if paths is None:
+            return
+        from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+        NotificationDispatcher(paths).dispatch(NotificationMessage(
+            title=f"周期性目标「{goal.title}」执行阶段可能需要关注",
+            body=reason[:200],
+            source="goal_cycle_phase_health",
+            meta={"goal_id": goal.id},
+        ))
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._notify_phase_health_issue')
 
 
 def _check_pursuit_saturation(goal_backlog: "GoalBacklog", goal: "GoalNode", *, llm_helper_provider=None) -> None:

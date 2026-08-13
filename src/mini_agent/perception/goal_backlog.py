@@ -130,6 +130,13 @@ class GoalNode:
     # 处理（下次 tick 正常判断）。
     skip_next_cycle: bool = False
 
+    # [goal_cron_task_optimization_holistic_plan.md 方向 C] 用户请求"下一轮
+    # 降级执行"——与 skip_next_cycle（完全不跑）不同，这一轮仍然触发，但
+    # goal_cron_bridge 会在 execution phase 提示片段之外额外拼接一段"从简
+    # 执行"引导（不新增探索/变更，只做最小同步），执行完当轮后自动清零，
+    # 不影响 recurring 本身、也不改变 ExecutionPhaseState.mode。
+    next_cycle_lightweight: bool = False
+
     # [goal_cron_feedback_and_output_policy_plan.md Track A] 用户对本节点持续
     # 生效的意见反馈历史。每条：{"text": str, "at": float}。这里只做追加记录，
     # 供 UI/CLI 回看；真正影响后续执行的是同步追加进 description 的那部分
@@ -219,6 +226,7 @@ class GoalNode:
             "cycle_count": self.cycle_count,
             "reaped_cycle_child_ids": self.reaped_cycle_child_ids,
             "skip_next_cycle": self.skip_next_cycle,
+            "next_cycle_lightweight": self.next_cycle_lightweight,
             "user_feedback": self.user_feedback,
             "source_initiator": self.source_initiator,
             "status_history": self.status_history,
@@ -252,6 +260,7 @@ class GoalNode:
             cycle_count=d.get("cycle_count", 0),
             reaped_cycle_child_ids=d.get("reaped_cycle_child_ids", []),
             skip_next_cycle=d.get("skip_next_cycle", False),
+            next_cycle_lightweight=d.get("next_cycle_lightweight", False),
             user_feedback=d.get("user_feedback", []),
             # 历史数据（本字段新增前写入的 goals.json）没有这个键，兜底
             # "user"——对旧数据保守估计为用户创建，不会把历史 Goal 误标成

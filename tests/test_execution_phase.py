@@ -514,3 +514,54 @@ def test_build_tidy_checklist_hint_empty_spec_returns_empty():
     spec = ges.GoalExecutionSpec(goal_id="g1")
     assert bridge._build_tidy_checklist_hint(spec) == ""
     assert bridge._build_tidy_checklist_hint(None) == ""
+
+
+# ── check_phase_health（goal_cron_task_optimization_holistic_plan.md 方向 B）──
+
+def test_check_phase_health_stuck_explore_triggers():
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", locked=False)
+    state.cycles_in_mode = ep.DEFAULT_STUCK_EXPLORE_CYCLES
+    reason = ep.check_phase_health(state, "explore")
+    assert reason is not None
+    assert "explore" in reason or "探索" in reason
+
+
+def test_check_phase_health_stuck_explore_below_threshold_no_alert():
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", locked=False)
+    state.cycles_in_mode = ep.DEFAULT_STUCK_EXPLORE_CYCLES - 1
+    assert ep.check_phase_health(state, "explore") is None
+
+
+def test_check_phase_health_locked_explore_not_alerted():
+    # 用户手动锁定在 explore 是明确意图，不应触发"卡住"告警。
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="explore", locked=True)
+    state.cycles_in_mode = ep.DEFAULT_STUCK_EXPLORE_CYCLES + 5
+    assert ep.check_phase_health(state, "explore") is None
+
+
+def test_check_phase_health_cooldown_suppresses_repeat_alert():
+    import time as _time
+
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", locked=False)
+    state.cycles_in_mode = ep.DEFAULT_STUCK_EXPLORE_CYCLES
+    assert ep.check_phase_health(state, "explore") is not None
+    state.last_health_alert_kind = "stuck_explore"
+    state.last_health_alert_at = _time.time()
+    # 冷却期内，同一种问题不应再次告警。
+    assert ep.check_phase_health(state, "explore") is None
+
+
+def test_check_phase_health_phase_flapping_triggers():
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", locked=False)
+    for _ in range(ep.DEFAULT_FLAP_THRESHOLD):
+        state.mode_history.append(
+            ep.ModeChange(at=0.0, from_mode="auto:stable", to_mode="auto:converge", reason="rule_based_auto")
+        )
+    reason = ep.check_phase_health(state, "converge")
+    assert reason is not None
+    assert "打回" in reason or "复核" in reason
+
+
+def test_check_phase_health_no_history_no_alert():
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", locked=False)
+    assert ep.check_phase_health(state, "stable") is None

@@ -2835,18 +2835,30 @@ def _render_goal_card(
                     f"已绑定 cron job `{n.get('recurrence_cron_job_id', '?')}` · "
                     f"已完成 {n.get('cycle_count', 0)} 轮{next_run_caption}"
                 )
-                bc1, bc2 = st.columns(2)
+                bc1, bc2, bc3 = st.columns(3)
                 if bc1.button("⏭️ 跳过下一轮", key=f"{key_prefix}skipcycle_{n.get('id')}",
                                disabled=bool(n.get("skip_next_cycle"))):
                     res = client.skip_goal_next_cycle(n.get("id"))
                     if res and "_error" in res:
                         st.error(res["_error"])
                     st.rerun()
-                if bc2.button("🛑 取消周期性", key=f"{key_prefix}unrecur_{n.get('id')}"):
+                # [goal_cron_task_optimization_holistic_plan.md 方向 C]
+                # "跳过"是二元的（跑/不跑），这里补一个中间态：下一轮仍然
+                # 触发，但要求 agent 从简处理，不引入新方案/结构性变更。
+                if bc2.button("🪶 下一轮从简", key=f"{key_prefix}lightweight_{n.get('id')}",
+                               disabled=bool(n.get("next_cycle_lightweight")),
+                               help="下一次触发仍会照常执行，但只做最小限度的同步/巡检"):
+                    res = client.lightweight_goal_next_cycle(n.get("id"))
+                    if res and "_error" in res:
+                        st.error(res["_error"])
+                    st.rerun()
+                if bc3.button("🛑 取消周期性", key=f"{key_prefix}unrecur_{n.get('id')}"):
                     res = client.unrecur_goal(n.get("id"))
                     if res and "_error" in res:
                         st.error(res["_error"])
                     st.rerun()
+                if n.get("next_cycle_lightweight"):
+                    st.caption("🪶 下一轮已标记为从简执行")
                 # [goal_execution_spec_generation_plan.md §6.1 最后一条] 已绑定
                 # 周期性、但从未生成过规范的既有 Goal，补一个「生成执行规范」
                 # 入口，走同一套草稿确认流程；确认后下一轮触发即生效，不需要

@@ -302,6 +302,42 @@ class TestSkipNextCycle(unittest.TestCase):
             self.assertEqual(len(oe.start_calls), 1)
 
 
+class TestLightweightNextCycle(unittest.TestCase):
+    """goal_cron_task_optimization_holistic_plan.md 方向 C"""
+
+    def test_fire_appends_lightweight_hint_and_clears_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            _set_autonomy_maintenance(paths)
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="G")
+            gb.set_recurrence(goal.id, recurring=True, cron_job_id="user:fake")
+            gb.update_fields(goal.id, next_cycle_lightweight=True)
+            oe = FakeObjectiveExecutor()
+            cs = CronScheduler(paths, submit_fn=None)
+            cs.load()
+            job = cs.add_job(name="j", schedule="interval:60", task_template="t",
+                              goal_id=goal.id, run_mode="goal_cycle")
+
+            fired = bridge._fire_goal_cycle(job, gb, oe)
+
+            self.assertTrue(fired)
+            self.assertEqual(len(oe.start_calls), 1)
+            updated_goal = gb.get(goal.id)
+            self.assertFalse(updated_goal.next_cycle_lightweight)
+            self.assertIn("从简", updated_goal.progress_notes)
+            child = gb.get(oe.start_calls[0])
+            self.assertIn("降级执行", child.description)
+
+            # 只影响这一次触发，下一轮不应再自动带上降级提示。
+            oe.finish(oe.start_calls[0])
+            gb.set_status(oe.start_calls[0], "completed")
+            fired_again = bridge._fire_goal_cycle(job, gb, oe)
+            self.assertTrue(fired_again)
+            child2 = gb.get(oe.start_calls[1])
+            self.assertNotIn("降级执行", child2.description)
+
+
 class TestReapFailureNotification(unittest.TestCase):
     """goal_cron_visibility_and_intervention_improvement_plan.md Track C"""
 
@@ -499,6 +535,63 @@ class TestExecutionSpecIntegration(unittest.TestCase):
 
             updated_goal = gb.get(goal.id)
             self.assertIn("建议复查执行规范", updated_goal.progress_notes)
+
+
+class TestPhaseHealthNotification(unittest.TestCase):
+    """goal_cron_task_optimization_holistic_plan.md 方向 B"""
+
+    def test_dispatches_notification_when_stuck_in_explore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            from mini_agent.perception import execution_phase as ep
+
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="G")
+
+            # 预置一个已经"卡在 explore 很久"的阶段状态。
+            state = ep.ExecutionPhaseState(goal_id=goal.id, mode="auto", locked=False)
+            state.cycles_in_mode = ep.DEFAULT_STUCK_EXPLORE_CYCLES
+            ep.save_phase(paths, state)
+
+            calls = []
+
+            class _FakeDispatcher:
+                def __init__(self, _paths):
+                    pass
+
+                def dispatch(self, message, channels=None):
+                    calls.append(message)
+                    return {"kanban": True}
+
+            import mini_agent.notification.dispatcher as dispatcher_mod
+            original = dispatcher_mod.NotificationDispatcher
+            dispatcher_mod.NotificationDispatcher = _FakeDispatcher
+            try:
+                bridge._append_execution_phase_context(paths, goal, 1, "base description")
+            finally:
+                dispatcher_mod.NotificationDispatcher = original
+
+            self.assertEqual(len(calls), 1)
+            self.assertIn("关注", calls[0].title)
+
+            # 冷却期内再触发一次不应重复通知。
+            calls2 = []
+
+            class _FakeDispatcher2:
+                def __init__(self, _paths):
+                    pass
+
+                def dispatch(self, message, channels=None):
+                    calls2.append(message)
+                    return {"kanban": True}
+
+            dispatcher_mod.NotificationDispatcher = _FakeDispatcher2
+            try:
+                bridge._append_execution_phase_context(paths, goal, 2, "base description")
+            finally:
+                dispatcher_mod.NotificationDispatcher = original
+
+            self.assertEqual(len(calls2), 0)
 
 
 if __name__ == "__main__":

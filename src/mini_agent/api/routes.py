@@ -3748,6 +3748,23 @@ async def skip_goal_next_cycle(goal_id: str, request: Request):
     return {"goal": updated.to_dict() if updated else None}
 
 
+@router.post("/goals/{goal_id}/lightweight_next_cycle")
+async def lightweight_goal_next_cycle(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/lightweight_next_cycle — 下一次周期性触发
+    仍然照常执行，但要求"从简"（不引入新方案/不做结构性变更），跟
+    skip_next_cycle（完全不跑）是不同粒度的干预。见
+    next_doc/goal_cron_task_optimization_holistic_plan.md 方向 C。
+    """
+    backlog, _scheduler = _goal_backlog_and_scheduler(request)
+    goal = backlog.get(goal_id)
+    if goal is None or not goal.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    if not goal.recurring:
+        raise HTTPException(status_code=400, detail="Goal is not recurring")
+    updated = backlog.update_fields(goal_id, next_cycle_lightweight=True)
+    return {"goal": updated.to_dict() if updated else None}
+
+
 @router.post("/goals/{goal_id}/feedback")
 async def add_goal_feedback(goal_id: str, request: Request):
     """POST /v1/goals/{goal_id}/feedback — [goal_cron_feedback_and_output_
