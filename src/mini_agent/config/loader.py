@@ -54,6 +54,7 @@ from .models import (
     AutonomyConfig,
     ObservabilityConfig,
     SchedulerConfig,
+    CycleTuningConfig,
     DEFAULT_MODEL,
     DEFAULT_AGENT_NAME,
     DEFAULT_MAX_TOKENS,
@@ -701,6 +702,9 @@ def load_config(
     scheduler_cfg = _nested_blocks["scheduler"]
     # [next_doc/memory_backfill_and_profile_update_plan.md] 记忆回填配置。
     memory_backfill_cfg = _nested_blocks["memory_backfill"]
+    # [next_doc/goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md
+    # Stage 3] 诊断报告 LLM 摘要 / 调优草案 LLM 自然语言解析两个开关。
+    cycle_tuning_cfg = _nested_blocks["cycle_tuning"]
 
     cfg = AppConfig(
         api_key=api_key,
@@ -774,6 +778,7 @@ def load_config(
         autonomy=autonomy_cfg,
         scheduler=scheduler_cfg,
         observability=observability_cfg,
+        cycle_tuning=cycle_tuning_cfg,
         llm_fallback_chain=_llm_fallback_chain,
         llm_fallback_on=_llm_fallback_on,
     )

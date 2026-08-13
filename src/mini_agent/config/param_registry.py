@@ -243,6 +243,10 @@ def _build_nested_blocks() -> list:
         # 和 dataclass 默认值不一致"的问题（见 loader.py profile_cfg 处的
         # 说明——那里是历史遗留的手写路径，本 block 直接走新机制不受影响）。
         NestedBlockSpec("memory_backfill", _m.MemoryBackfillConfig),
+        # [next_doc/goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md
+        # Stage 3] 诊断报告 LLM 摘要 / 调优草案 LLM 自然语言解析两个开关，
+        # 均默认 False，走通用加载机制。
+        NestedBlockSpec("cycle_tuning", _m.CycleTuningConfig),
     ]
 
 

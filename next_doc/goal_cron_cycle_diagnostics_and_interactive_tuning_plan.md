@@ -20,7 +20,10 @@
 > `POST tuning_proposals {"nl_text": ...}`），配置开关
 > `cycle_tuning.diagnostics_llm_summary_enabled` /
 > `cycle_tuning.tuning_llm_parse_enabled`（见 `config/models.py::
-> CycleTuningConfig`，均默认 `False`）。两层测试见
+> CycleTuningConfig`，均默认 `False`，已注册进
+> `param_registry.NESTED_CONFIG_BLOCKS` 并接入 `loader.py`/`config_catalog.py`，
+> `agent_config.json` 里的 `cycle_tuning.*` 会被正常读取和在看板配置页
+> 展示，不是"写了当没写"）。两层测试见
 > `tests/test_cycle_diagnostics.py::TestSummarizeReportWithLLM`、
 > `tests/test_cycle_tuning.py::TestParseNLRequestToChanges` /
 > `TestBuildTuningProposalFromNL`。

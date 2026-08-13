@@ -288,6 +288,7 @@ _NESTED_BLOCKS = [
     ("cron", "Cron 任务执行", "⏰", "cron", _models.CronConfig, {}),
     ("autonomy", "自主性调度 Autonomy", "🤖", "autonomy", _models.AutonomyConfig, {}),
     ("observability", "可观测性", "📊", "observability", _models.ObservabilityConfig, {}),
+    ("cycle_tuning", "周期任务诊断与调优 LLM 增强", "🩺", "cycle_tuning", _models.CycleTuningConfig, {}),
 ]
 
 # ── 与 param_registry.NESTED_CONFIG_BLOCKS 的一致性校验 ────────────────────
