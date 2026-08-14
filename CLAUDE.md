@@ -713,6 +713,55 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
   SessionEnd 时间门控 + 内置 cron job `sys:self_maintain`
 - 详见 [具身智能改进指南](docs/embodied-agent-guide.md)
 
+### 外部输入网关（`src/mini_agent/external_input/`）
+
+> 对应 `next_doc/external_input_gateway_design.md`（P1-P8 已全部完成）+
+> `next_doc/external_input_reliability_observability_archive_plan.md`（可靠性/
+> 可观测性/归档增强）。独立于用户对话轮次的事件采集通道。
+
+- `poller.py`/`poll_history.py`：独立轮询调度，内置 `watch`/`weather`（`builtin/`）两个来源，可扩展 `source.py::Source` 接口
+- `gateway.py`：事件路由与告警落点（`alerts.jsonl`），去重缓存支持重启恢复
+- `goal_relevance.py`：事件是否与已有 Goal 相关的判定，命中后可 `enqueue_turn` 接入 `autonomous_loop.tick()`（不受 `autonomy_level` 门控，详见 `docs/goal-provenance-guide.md` 记录的排查过程）
+- `novelty_judge.py`：新颖性判定；`ecosystem_positioning_scan.py`/`tech_radar_search.py`：生态定位与技术雷达扫描；`knowledge_extractor.py`：事件知识抽取；`report_tiers.py`：分级汇报；`watchlist.py`：关注对象匹配；`policy.py`/`config.py`：网关策略与配置
+- 看板"🔌 外部输入"面板（来源/路由规则/待处理告警/事件流水，已分页）
+- 详见 [外部输入网关指南](docs/external-input-gateway-guide.md)
+
+### 关注对象 · 分级汇报 · 通知系统（`src/mini_agent/notification/`）
+
+> 对应 `next_doc/watchlist_notification_goal_design.md`（P1-P7 已全部完成）。
+> 是外部输入网关的扩展，不重复实现事件采集/路由。
+
+- `dispatcher.py::NotificationDispatcher`：多通道分发，`kanban` 为恒开兜底通道不可通过配置关闭
+- `channels/email.py`、`channels/kanban.py`：内置通知通道，可扩展
+- `reports_store.py`：分级汇报独立存储（`reports.jsonl`），不复用网关的 `alerts.jsonl`
+- `config.py::NotificationConfig`：`.agent/notification/config.yaml` 加载，密钥字段支持 `${ENV:VAR_NAME}` 占位符
+- 看板"🔔 关注与通知"tab（关注对象/分级汇报 tier/待处理汇报/通知发送记录，已分页）+ Goal 卡片"🔗 相关外部信息"面板
+- 详见 [关注对象·通知系统指南](docs/watchlist-notification-guide.md)
+
+### 成长顾问（Growth Advisor，`src/mini_agent/evolution/growth_advisor.py`）
+
+> 对应 `next_doc/growth_advisor_design.md`（P1-P3）+ `improvement_plan_v2`
+> （P4-0~P4-7）+ `improvement_plan_v3`（P5-0~P5-6）+ `ideal_advisor_gap_and_
+> roadmap_plan`（方向 1-3、5）+ `autonomous_search_and_material_
+> improvement_plan`（Phase 1-2），均已完成
+
+- 信号扫描（可选 LLM 增强）→ 成长候选 → backlog → 反馈留存台账；周报、专题地图、月度回顾；诊断快照（`diagnostics_snapshot()`）自助定位"候选为 0"原因
+- 反馈模式统计（规则版 + 可选 LLM 归纳）；Goal 执行内容反哺信号扫描（`extract_spinoff_topics_from_pursuits()`，标记 `origin=pursuit_spinoff`）
+- 主动搜索：结构化实体/事实抽取结果直接用于报告摘录（而非原文截断），可配置多角度查询（`report_active_search_max_calls`）
+- CLI `/growth`、API `/v1/growth/*`、看板"🌱 成长顾问"tab（可选拖拽排序 + "🩺 我的数据/诊断信息"面板）
+- 详见 [成长顾问指南](docs/growth-advisor-guide.md)
+
+### Goal 来源追溯（Goal Provenance）与执行公平性诊断
+
+- `perception/turn_context.py` + `GoalNode.source_initiator` 字段：记录每个 Goal 由 user/cron/external/autonomous_loop 中哪一路触发创建；看板 Goal 卡片来源徽章；详见 [Goal 来源追溯指南](docs/goal-provenance-guide.md)
+- `perception/fairness_diagnostics.py::fairness_diagnostics_snapshot()`：只读展示 P2/P3/P4 公平调度参数当前状态（aging boost/effective priority/因公平性暂停的 Objective 列表），看板"🗓️ 全局日程"tab"⚖️ 调度公平性诊断"面板；与既有 Goal 粒度的"⚖️ 执行公平性"面板互补（Objective 粒度）；详见 [Goal 执行公平性配置](docs/goal-execution-fairness-config.md)
+- `perception/cross_goal_reference.py::find_similar_confirmed_goals()`：新建 Goal 时可选查找相似的历史已确认执行规范，纯参考不自动应用
+
+### 系统状态哨兵与热文件归档
+
+- `perception/sentinel.py::sentinel_summary()`：聚合 5 类系统状态信号（cron 连续失败/Objective 重试热点/wiki 隔离积压/LLM 故障转移快照/资源仲裁 gating 比例），看板顶部"⚠️ 系统状态哨兵"折叠面板
+- `archive/gc.py`：外部输入/通知系统热文件（`alerts.jsonl`/`pending_hits.jsonl`/`goal_relevance_candidates.jsonl`/`notification/reports.jsonl`）已处理记录超过 `retention_hours` 后按自然月迁出到 `.agent/archive/`，归档文件只追加、视为只读；内置 cron job `sys:archive_gc`（每天凌晨 3 点）
+
 ### 参数优先级
 
 **命令行参数 > 配置文件参数**。之前配置文件优先级更高，已修正。
@@ -760,6 +809,11 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [Goal 模式指南](docs/goal-mode-guide.md) — 设定目标后自动多轮尝试直至达成，`/goal` 命令，验收标准协商 / GoalJudge 判定 / 异常中断恢复
 - [轮次守门员指南](docs/turn-judge-guide.md) — 轮次结束等待用户输入前自动核查是否真的需要真人 / 是否应由系统代替用户反馈继续（`turn_judge` 配置块，默认关闭）
 - [用户行为感知系统指南](docs/behavior-perception-guide.md) — 桌面（前台窗口/空闲/浏览器插件+CDP专用浏览器/Git/终端/媒体/应用启停）+ 手机（Tasker/快捷指令/Android伴侣App）行为采集，配置文件 `<project_root>/behavior_config.json`（跟 `agent_config.json` 同级），总开关与全部子开关默认关闭；分析层每日聚合工作与生活画像日报
+- [外部输入网关指南](docs/external-input-gateway-guide.md) — 独立轮询调度采集外部事件，路由/告警/Goal 相关性判定，`enqueue_turn` 接入自主循环，看板"🔌 外部输入"面板
+- [关注对象·通知系统指南](docs/watchlist-notification-guide.md) — 关注对象匹配 + 分级汇报 + 多通道通知分发（`NotificationDispatcher`），看板"🔔 关注与通知"tab
+- [成长顾问指南](docs/growth-advisor-guide.md) — 信号扫描→候选→backlog→反馈台账，周报/专题地图/月度回顾，看板"🌱 成长顾问"tab
+- [Goal 来源追溯指南](docs/goal-provenance-guide.md) — 外部输入到 Goal 的全部创建链路、`source_initiator` 追溯、cron 触发 `enqueue_turn` 不受 `autonomy_level` 门控的排查记录
+- [Goal 执行公平性配置](docs/goal-execution-fairness-config.md) — P1-P5 公平调度配置项与只读诊断快照
 - [脚本/LLM/Agent 混合执行系统指南](docs/hybrid-exec-guide.md) — **新增**：独立于 workflow 的 `hybrid_exec` 系统（P1-P4 已完成），探索优先 agent/llm、执行优先脚本、脚本坏了先自愈修复、修不好再降级，脚本仓库版本管理+成功率统计+自动退役，`default_executor()` 独立调用 / `hybrid_step` workflow 接入（插件文件开关）/ `GET /v1/hybrid_exec/summary` + 看板 Tab / `ReexplorePolicy` 跨 run 主动重探索（默认关闭）
 
 ## 当前进展

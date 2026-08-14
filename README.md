@@ -65,6 +65,12 @@ mini_agent 不追求让 AI 拥有自己的目标，而是持续提高对用户�
 | 🔄 LLM 故障转移 | 多配置 fallback chain + 多 API Key 轮转，自动切换保证可用性 |
 | ⏳ 智能退避策略 | 重试支持 fixed / linear / exponential 三种退避模式，可配上限 |
 | 🚦 RPM 限速 | 滑动窗口频率限制，防止超出平台 RPM 配额 |
+| 🔌 外部输入网关 | 独立轮询调度采集外部事件（内置 `watch`/`weather` 来源，可扩展）、路由与告警落点、Goal 相关性判定后可自动 `enqueue_turn` 接入自主循环，看板"🔌 外部输入"面板，详见 [外部输入网关指南](docs/external-input-gateway-guide.md) |
+| 🔔 关注对象 · 分级汇报 · 通知系统 | 在外部输入网关之上：关注对象匹配、分级汇报（tier）、Goal 相关性候选 + LLM 判定、多通道通知分发（kanban 恒开 + email 等可配），看板"🔔 关注与通知"tab，详见 [关注对象·通知系统指南](docs/watchlist-notification-guide.md) |
+| 🌱 成长顾问 | 基于长期信号扫描自动生成成长候选/待办 backlog、反馈留存、周报/专题地图/月度回顾，可选 LLM 增强，看板"🌱 成长顾问"tab（含拖拽排序与诊断面板），详见 [成长顾问指南](docs/growth-advisor-guide.md) |
+| 🧾 目标溯源 | 记录每个 Goal 由谁（user/cron/external/autonomous_loop）触发创建，看板 Goal 卡片来源徽章，详见 [Goal 来源追溯指南](docs/goal-provenance-guide.md) |
+| ⚖️ 执行公平性诊断 | 只读快照展示 aging boost / effective priority / 因公平性暂停的 Objective 等调度参数当前状态，看板"🗓️ 全局日程"tab，详见 [Goal 执行公平性配置](docs/goal-execution-fairness-config.md) |
+| 🗄️ 热文件归档 | 外部输入/通知系统的 `alerts.jsonl`/`pending_hits.jsonl`/`goal_relevance_candidates.jsonl`/`notification/reports.jsonl` 按月自动归档到 `.agent/archive/`（`sys:archive_gc` 定时任务），支持"过去一个月发生了什么"回顾式查询 |
 
 ## 快速开始
 
