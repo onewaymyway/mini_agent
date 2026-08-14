@@ -247,6 +247,14 @@ def _build_nested_blocks() -> list:
         # Stage 3] 诊断报告 LLM 摘要 / 调优草案 LLM 自然语言解析两个开关，
         # 均默认 False，走通用加载机制。
         NestedBlockSpec("cycle_tuning", _m.CycleTuningConfig),
+        # [next_doc/goal_stuck_stats_and_llm_progress_judge_plan.md §2 遗留
+        # 缺陷修复] `ExecutionPhaseConfig`（`progress_trend_llm_enabled`）
+        # 自引入以来一直只是 `AppConfig` 上的一个 dataclass 字段，`loader.py`
+        # 从未提取、也从未传给 `AppConfig(...)`——与本文件模块头部注释里
+        # 提到的 `scheduler` 曾长期"写了当没写"是同一类问题，`agent_config.
+        # json` 里写 `"execution_phase": {"progress_trend_llm_enabled": true}`
+        # 此前完全不起作用。此处补齐注册。
+        NestedBlockSpec("execution_phase", _m.ExecutionPhaseConfig),
     ]
 
 

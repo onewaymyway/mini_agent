@@ -39,6 +39,7 @@ from .models import (
     RoleAgentConfig,
     GoalModeConfig,
     GoalExecutionSpecConfig,
+    ExecutionPhaseConfig,
     TurnJudgeConfig,
     EnvInfoConfig,
     ReminderConfig,
@@ -705,6 +706,10 @@ def load_config(
     # [next_doc/goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md
     # Stage 3] 诊断报告 LLM 摘要 / 调优草案 LLM 自然语言解析两个开关。
     cycle_tuning_cfg = _nested_blocks["cycle_tuning"]
+    # [next_doc/goal_stuck_stats_and_llm_progress_judge_plan.md §2 遗留
+    # 缺陷修复] 进展趋势判定是否接 LLM 的开关，此前从未被加载（见
+    # param_registry.py 注册处的说明）。
+    execution_phase_cfg = _nested_blocks["execution_phase"]
 
     cfg = AppConfig(
         api_key=api_key,
@@ -779,6 +784,7 @@ def load_config(
         scheduler=scheduler_cfg,
         observability=observability_cfg,
         cycle_tuning=cycle_tuning_cfg,
+        execution_phase=execution_phase_cfg,
         llm_fallback_chain=_llm_fallback_chain,
         llm_fallback_on=_llm_fallback_on,
     )

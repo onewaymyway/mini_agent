@@ -23,7 +23,13 @@
 > CycleTuningConfig`，均默认 `False`，已注册进
 > `param_registry.NESTED_CONFIG_BLOCKS` 并接入 `loader.py`/`config_catalog.py`，
 > `agent_config.json` 里的 `cycle_tuning.*` 会被正常读取和在看板配置页
-> 展示，不是"写了当没写"）。两层测试见
+> 展示，不是"写了当没写"）。**同批修复**：排查发现 `ExecutionPhaseConfig`
+> （`progress_trend_llm_enabled`，见
+> `goal_stuck_stats_and_llm_progress_judge_plan.md §2`）有同样的问题——
+> 一直只是 `AppConfig` 上的字段，从未接入 `loader.py`，一并修复并补充了
+> `tests/test_config_nested_blocks_wiring.py` 做静态+端到端双重回归守护
+> （检查 `AppConfig` 每个子配置块是否被正确加载，防止后续新增配置块时
+> 重演同一疏漏）。两层测试见
 > `tests/test_cycle_diagnostics.py::TestSummarizeReportWithLLM`、
 > `tests/test_cycle_tuning.py::TestParseNLRequestToChanges` /
 > `TestBuildTuningProposalFromNL`。

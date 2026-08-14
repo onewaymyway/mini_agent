@@ -68,6 +68,14 @@ execution_phase.progress_trend_llm_enabled=False`）用纯文本相似度
 盲区：**分不清"内容确实雷同但属于正常重复"（比如周期性巡检类 Goal，每轮
 产出格式相同）和"真的在原地打转"**。
 
+> 修复记录：`progress_trend_llm_enabled` 这个开关从引入起有一段时间只是
+> `models.py` 里的 dataclass 字段，`config/loader.py` 从未提取/加载它——
+> `agent_config.json` 里配置 `execution_phase.progress_trend_llm_enabled`
+> 完全不起作用，实际永远是默认值 `False`。现已修复：注册进
+> `param_registry.NESTED_CONFIG_BLOCKS` 并接入 `loader.py`，配置文件里的
+> 值会被正常读取（同时补了 `tests/test_config_nested_blocks_wiring.py`
+> 防止同类问题在其他子配置块上再次出现）。
+
 打开 `progress_trend_llm_enabled` 后，改为把最近几轮的进展摘要交给 LLM，
 让它结合语义判断这几轮到底是"原地打转"还是"有实质推进（哪怕措辞相似）"
 或"雷同但属于任务本身该有的正常重复"。LLM 判断不出结果、响应异常、或
