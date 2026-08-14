@@ -18,7 +18,7 @@ LLM 调用"。本文档只做汇总和索引，不重复各 job 背后的详细�
 
 | 注册方式 | 位置 | 特点 |
 |---------|------|------|
-| **固定内置**（`_BUILTIN_JOBS`） | `evolution/cron_scheduler.py` | 9 个，首次 daemon 启动时一次性写入 `cron_jobs.json`，模块内静态列表 |
+| **固定内置**（`_BUILTIN_JOBS`） | `evolution/cron_scheduler.py` | 16 个，首次 daemon 启动时一次性写入 `cron_jobs.json`，模块内静态列表 |
 | **按需补注册**（`ensure_*_job()`） | 十余个独立模块 | daemon 每次启动时，`api/server.py::_build_autonomous_loop()` 依次调用各模块的 `ensure_*_job(paths, cron_scheduler)`；job_id 已存在则直接复用（不覆盖用户手动改过的 `schedule`/`enabled`），不存在才创建，默认 `enabled=True`（除非模块显式调用一次 `disable()`，见下方"默认禁用"标注） |
 
 两种方式产出的 `CronJob` 对象治理规则完全一致：`sys:` 前缀的 job **可以
@@ -47,6 +47,7 @@ Goal，到期时驱动 GoalBacklog 派生并启动一轮子 Objective，而不�
 | `sys:consolidation` | 巩固循环扫描 | `interval:21600`（6h） | 零 LLM | 是 | 技能库冗余检查/去重、能力地图更新、晋升候选评估 |
 | `sys:wiki_gap_scan` | wiki 知识缺口扫描 | `interval:43200`（12h） | 零 LLM 触发，可能派发的补全子任务另计 | 是 | 扫描浅层实体/孤儿页面/陈旧专题页，标注陈旧页并可派发补全子任务 |
 | `sys:wiki_fallback_cleanup` | wiki 兜底页面清理 | `interval:604800`（7d） | 零 LLM | 是 | 归并/标记 session-facts 兜底页里长期未被合并的 fact |
+| `sys:wiki_quarantine_repair` | wiki 问题页面自动修复 | `interval:21600`（6h） | 零 LLM（本地回调，直接文件修复，不经过 agent 回合） | 是 | 全量扫描 `wiki/` 记录解析失败的页面并对已知格式问题（如 `frontmatter.links` 写成裸字符串）尝试自动修复，详见 [`wiki/quarantine_repair.py`](../src/mini_agent/wiki/quarantine_repair.py) |
 | `sys:workdir_sync` | 工作区知识整合 | `interval:3600`（1h） | 零 LLM | 是 | 同步工作区文件变化到 WorkdirKnowledge，刷新 WorkThread 进展 |
 | `sys:self_eval` | 能力自评 | `interval:86400`（24h） | 零 LLM（规则统计） | 是 | 回顾近 24h 工具使用/任务结果，更新 `capability_map` 置信度 |
 | `sys:goal_review` | 目标清理 | `interval:43200`（12h） | 零 LLM | 是 | 标记已完成 Objective 为 completed，暂停超过 7 天无进展的 Objective |
@@ -56,6 +57,9 @@ Goal，到期时驱动 GoalBacklog 派生并启动一轮子 Objective，而不�
 | `sys:daily_digest` | 每日融合日报 | `cron:0 22 * * *`（每天 22:00） | 零 LLM | 是 | 合并当天行为分布/目标进展/代码提交，生成融合日报 |
 | `sys:next_action_digest` | 主动推荐排序 | `interval:10800`（3h） | 零 LLM | 是 | 对停滞目标/注意力错配候选排序生成推荐，候选为空则跳过 |
 | `sys:decision_profile_update` | 决策画像归纳 | `interval:604800`（7d） | 零 LLM（规则归纳） | **否**（默认关闭） | 从历史决策记录归纳可追溯的用户价值模式，证据不足 3 条不落地 |
+| `sys:growth_advisor_daily` | 成长顾问：候选扫描 | `cron:30 22 * * *`（每天 22:30） | **含 LLM**（可选：为置信度最高的候选生成调研报告时调用 `llm_helper` 起草正文；未提供 `llm_helper` 时按规则模板兜底） | 是（随 `GrowthAdvisorConfig.enabled` opt-out） | 扫描近期记忆信号，生成/更新成长方向候选，为符合条件的候选生成调研报告，弱信号不生成候选 |
+| `sys:growth_monthly_retrospective` | 成长顾问：月度复盘 | `interval:2592000`（30d） | 零 LLM（纯规则统计聚合） | 是 | 统计成长候选的生成/采纳/忽略情况，生成一份月度复盘摘要 |
+| `sys:memory_backfill_scan` | 记忆回填：补跑遗漏摘要 | `interval:21600`（6h） | **含 LLM**（对待补摘要的 session 逐个调用一次摘要生成） | 是（随 `MemoryBackfillConfig.enabled` opt-out） | 扫描 summary 为空但内容达标的存量 session（如异常中断/摘要生成失败未重试），补生成摘要并写入长期记忆，是 growth_advisor 信号扫描和用户画像的共同上游数据源 |
 
 > `sys:consolidation`/`sys:wiki_gap_scan`/`sys:wiki_fallback_cleanup` 的
 > handler 本身只做扫描/规则处理，但触发的下游动作（如 wiki 缺口补全）
@@ -136,9 +140,10 @@ SelfMaintenanceModule.health_check()`）内部做四项检查，结果合并写�
 
 **零 LLM 成本**（规则计算/文件读写，daemon 默认全部开启，可放心长期挂着跑）：
 `sys:consolidation`、`sys:wiki_gap_scan`、`sys:wiki_fallback_cleanup`、
-`sys:workdir_sync`、`sys:self_eval`、`sys:goal_review`、`sys:digest_trim`、
-`sys:self_maintain`、`sys:daily_digest`、`sys:next_action_digest`、
-`sys:decision_profile_update`、`sys:candidate_queue_triage`、
+`sys:wiki_quarantine_repair`、`sys:workdir_sync`、`sys:self_eval`、
+`sys:goal_review`、`sys:digest_trim`、`sys:self_maintain`、
+`sys:daily_digest`、`sys:next_action_digest`、`sys:decision_profile_update`、
+`sys:growth_monthly_retrospective`、`sys:candidate_queue_triage`、
 `sys:wiki_utility_audit`、`sys:relevance_threshold_calibration`、
 `sys:monthly_trend_retrospective`、`sys:improvement_backlog_merge`、
 `sys:suggestion_outcome_review`、`sys:self_model_snapshot`、
@@ -149,6 +154,9 @@ SelfMaintenanceModule.health_check()`）内部做四项检查，结果合并写�
 `sys:ecosystem_positioning_scan` ⏸、`sys:external_knowledge_extractor` ⏸、
 `sys:tech_radar_search` ⏸、`sys:external_trend_capability_link` ⏸、
 `sys:goal_relevance_judge`、`sys:novelty_importance_judge`、
+`sys:growth_advisor_daily`（仅在为高置信度候选生成调研报告时调用，弱信号
+轮次不产生 LLM 调用）、`sys:memory_backfill_scan`（仅对待补摘要的候选
+session 逐个调用一次摘要生成）、
 `sys:session_cleanup`（仅对待抽取的候选 session 逐个触发一次轻量抽取，
 非候选/已抽取/无需抽取的 session 不产生 LLM 调用）。
 
@@ -196,6 +204,13 @@ SelfMaintenanceModule.health_check()`）内部做四项检查，结果合并写�
 （在 §2 或 §3 对应小节加一行，并在 §4 速查表补上分类），避免出现"代码里
 已经有十几个 job，但只有各自零散设计文档、没有统一清单"的情况——这正是
 本文档要解决的问题，不应该重新出现。
+
+`docs/commands-and-tools-reference.md` 和 `docs/self-evolution-stage9-
+guide.md` 里各嵌了一份简化版\"固定内置 job\"表格（面向各自文档的上下文，
+不是重复造轮子，而是历史上从本文档复制出去的摘要），**新增/修改固定内置
+job 时也请同步这两处**——`next_doc/goal_cron_docs_status_audit_record.md`
+第二轮核对记录了一次因为只更新本文档、忘了同步这两处副本导致的漂移，
+是目前唯一已知会重复腐化的地方。
 
 ## 7. 优先级、资源仲裁与全局日程可观测性
 

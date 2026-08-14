@@ -52,6 +52,51 @@
 抽查的第一个案例带偏了预期。基于这个结果，**不建议**投入自动化核对工具
 （§2.3 的判断依据成立），后续按需人工抽查即可。
 
+## 第二轮核对（扩大范围到 `docs/` 用户指南 + 代码抽查）
+
+首轮核对范围限定在 `next_doc/`（方案文档自身状态栏 vs 正文），本轮把范围
+扩大到 `docs/` 下的用户指南，并对其中列举\"具体数量/清单\"这类容易随代码
+演进而静默腐化的表述做了逐条代码抽查（状态栏式的\"已完成/待评审\"表述在
+首轮已核对过，本轮不重复）。
+
+### 核对方法
+
+`docs/` 下 goal/cron 相关指南共 11 篇（`cron-dedicated-execution-guide.md`、
+`cron-jobs-reference.md`、`goal-cron-binding-guide.md`、
+`goal-cycle-diagnostics-guide.md`、`goal-cycle-patrol-guide.md`、
+`goal-cycle-tuning-guide.md`、`goal-execution-fairness-config.md`、
+`goal-execution-phase-guide.md`、`goal-execution-spec-guide.md`、
+`goal-mode-guide.md`、`goal-provenance-guide.md`）。逐篇检查开头的状态/
+版本声明是否与其引用的 `next_doc/` 方案文档、以及正文里列举的具体配置项/
+函数名是否在代码里仍然存在。其中 `cron-jobs-reference.md` 因为正文本身是
+一份\"全部 `sys:` job 清单\"，具备可用代码直接核验的具体数字（而不是笼统的
+\"已完成\"），额外用 `grep` 把文档里出现的全部 `sys:*` job_id 与
+`evolution/cron_scheduler.py::_BUILTIN_JOBS` + 全代码库 `grep '"sys:'` 结果
+做了逐条 diff。
+
+### 核对结论
+
+| 文档 | 核对结论 | 处理 |
+|---|---|---|
+| `cron-jobs-reference.md` | **不一致**——§1 声称\"固定内置 9 个\"，实际\n  `_BUILTIN_JOBS` 已增长到 16 个；§2\"固定内置 job\"表格、§4\"零 LLM\n  成本\"速查列表均漏列 4 个后续新增的内置 job：`sys:wiki_quarantine_\n  repair`（wiki 问题页面自动修复）、`sys:growth_advisor_daily` /\n  `sys:growth_monthly_retrospective`（成长顾问日常扫描/月度复盘）、\n  `sys:memory_backfill_scan`（记忆回填）——这 4 个 job 各自的设计方案\n  文档（`growth_advisor_*`、`memory_backfill_and_profile_update_plan.md`\n  等）落地时都提到了要\"同步更新本文档\"（见文档 §6 的维护约定），但\n  实际都没有做，是本轮唯一一处真正的\"实现已超前于文档\"案例 | **已修正**：\n  §1 数字改为 16；§2 补齐 4 行（含 schedule/LLM 成本/默认启用/目的，\n  依据 `_BUILTIN_JOBS` 源码注释逐一核实，其中 `growth_advisor_daily`/\n  `memory_backfill_scan` 判定为\"含 LLM\"——前者为高置信度候选生成调研\n  报告时可选调用 `llm_helper`，后者对待补摘要的 session 逐个调用摘要\n  生成，均非无条件调用）；§4 速查表同步补齐分类 |\n| `docs/commands-and-tools-reference.md` / `docs/self-evolution-stage9-\n  guide.md` | 两篇文档里各自嵌了一份\"固定内置 job\"简表，同样停留在\n  \"9 个\"、缺失上述 4 个 job（两处是 `cron-jobs-reference.md` 撰写时\n  复制出去的简化版本，后续 4 次新增 job 都只更新了源头一处） | **已\n  修正**：两处的数字和简表同步补齐，与 `cron-jobs-reference.md` 保持\n  一致 |\n| `cron-dedicated-execution-guide.md` / `goal-cron-binding-guide.md` /\n  `goal-cycle-diagnostics-guide.md` / `goal-cycle-patrol-guide.md` /\n  `goal-cycle-tuning-guide.md` / `goal-execution-fairness-config.md` /\n  `goal-execution-phase-guide.md` / `goal-execution-spec-guide.md` /\n  `goal-mode-guide.md` / `goal-provenance-guide.md` | 一致——开头状态\n  声明与所引用的 `next_doc/` 方案文档状态栏吻合，正文提到的配置项/\n  函数名（如 `dedupe_cron_skip_alert`、`priority_score`、\n  `CyclePatrolConfig` 各字段）经代码抽查确认存在 | 无需修改 |
+
+### 根因与后续建议
+
+`cron-jobs-reference.md` 这类\"汇总/索引型\"文档天然比\"单一方案的状态栏\"
+更容易腐化：新增一个 `sys:` job 时，开发者会记得更新自己那份设计方案
+文档的状态栏（因为改动就在那份文档描述的范围内），但容易忘记同步一份
+\"汇总所有 job\"的旁支文档——尤其是当同一份汇总内容被复制到了第二、第三
+个地方（`commands-and-tools-reference.md`/`self-evolution-stage9-guide.md`
+里的简表）时，遗漏概率随复制份数增加。
+
+建议：`commands-and-tools-reference.md`/`self-evolution-stage9-guide.md`
+里的两份简表本身就是重复维护的根源，后续如果再次出现遗漏，可以考虑把
+这两处简表精简为\"仅列不含 LLM 调用成本判断必要性的核心几条 + 一句话
+指向 `cron-jobs-reference.md` 查看完整清单\"，把\"完整清单\"这个单一职责
+彻底收敛到一个文件，而不是指望三处手动保持同步。`cron-jobs-reference.md`
+§6 已有的\"新增 job 时同步更新本文档\"提醒，建议扩展为\"同步更新本文档 +
+检查是否有其它文档复制了简化版清单\"。
+
 ## 后续维护建议
 
 不新增强制流程，但建议以下情况发生时顺带检查一下状态栏：

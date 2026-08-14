@@ -508,8 +508,12 @@ cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6
 | `sys:daily_digest` | 每天 22:00 | 融合日报：合并行为分布+目标进展+git提交，默认开启（`digest_advisor.daily_digest_enabled`） |
 | `sys:next_action_digest` | 每 3 小时 | 主动推荐：停滞目标/注意力错配排序，候选为空则跳过，默认开启（`digest_advisor.next_action_enabled`） |
 | `sys:decision_profile_update` | 每 7 天 | 决策画像归纳，**默认关闭**（`digest_advisor.decision_profile_enabled`），建议积累数周数据后手动开启 |
+| `sys:wiki_quarantine_repair` | 每 6 小时 | wiki 问题页面自动修复（本地回调，零 LLM） |
+| `sys:growth_advisor_daily` | 每天 22:30 | 成长顾问：候选扫描 + 高置信度候选调研报告 |
+| `sys:growth_monthly_retrospective` | 每 30 天 | 成长顾问：月度复盘摘要 |
+| `sys:memory_backfill_scan` | 每 6 小时 | 记忆回填：补跑遗漏摘要的存量 session |
 
-除上表 9 个固定内置 job 外，daemon 启动时还会按需补注册十余个 `sys:` job
+除上表 16 个固定内置 job 外，daemon 启动时还会按需补注册十余个 `sys:` job
 （外部输入闭环、自诊断闭环深化、外部知识反馈闭环等计划各自的巡检/聚合/
 回看任务），同样遵循"缺失才补、不可 remove"的规则。**每个 job 的目的、
 触发频率、是否含 LLM 调用、默认启用状态、关联设计文档的完整清单见

@@ -252,8 +252,12 @@ cron:<分 时 日 月 周>   5 字段 cron，如 cron:0 */6 * * *（每 6 小时
 | `sys:daily_digest` | 每天 22:00 | 每日融合日报 |
 | `sys:next_action_digest` | 3h | 主动推荐排序 |
 | `sys:decision_profile_update` | 7d（默认关闭） | 决策画像归纳 |
+| `sys:wiki_quarantine_repair` | 6h | wiki 问题页面自动修复（本地回调，零 LLM） |
+| `sys:growth_advisor_daily` | 每天 22:30 | 成长顾问：候选扫描 + 调研报告 |
+| `sys:growth_monthly_retrospective` | 30d | 成长顾问：月度复盘摘要 |
+| `sys:memory_backfill_scan` | 6h | 记忆回填：补跑遗漏摘要 |
 
-除以上 `cron_scheduler.py::_BUILTIN_JOBS` 里固定注册的 9 个之外，daemon 启动
+除以上 `cron_scheduler.py::_BUILTIN_JOBS` 里固定注册的 16 个之外，daemon 启动
 流程（`api/server.py::_build_autonomous_loop()`）里还有十余个模块各自用
 `ensure_*_job()`（缺失才补注册，不影响用户已手动调整的 schedule/enabled）
 按需补挂的 job——外部输入闭环、自诊断闭环深化、外部知识反馈闭环等计划都
