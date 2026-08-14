@@ -4152,9 +4152,19 @@ async def get_cycle_diagnostics_overview(request: Request):
         skip_alert_threshold = getattr(getattr(cfg, "cron", None), "skip_alert_threshold", 5) or 5
     except Exception:
         skip_alert_threshold = 5
+    dedupe_cron_skip_alert = True
+    try:
+        dedupe_cron_skip_alert = getattr(getattr(cfg, "cycle_patrol", None), "dedupe_cron_skip_alert", True)
+        if dedupe_cron_skip_alert is None:
+            dedupe_cron_skip_alert = True
+    except Exception:
+        dedupe_cron_skip_alert = True
     from mini_agent.evolution.cycle_patrol import load_overview
     try:
-        overview = load_overview(paths, backlog, skip_alert_threshold=skip_alert_threshold)
+        overview = load_overview(
+            paths, backlog, skip_alert_threshold=skip_alert_threshold,
+            dedupe_cron_skip_alert=dedupe_cron_skip_alert,
+        )
     except Exception as e:
         from mini_agent.errors import log_exception
         log_exception(e, where='mini_agent.api.routes.get_cycle_diagnostics_overview')

@@ -1066,6 +1066,9 @@ class CyclePatrolConfig:
     max_push_per_run: int = 3          # 超过则合并降噪为一条
     push_cooldown_hours: float = 24.0  # 同一 Goal 同一信号的推送冷却时间
     generate_tuning_drafts: bool = True  # 命中规则建议时是否顺带生成调优草案（§2.4）
+    dedupe_cron_skip_alert: bool = True  # [Stage 3/§6.2] cron_skip 信号只覆盖跨越
+    # cron.skip_alert_threshold 之前的窗口，避免与 cron 层自己的阈值告警重复；
+    # 设 False 退回 Stage 1/2 原始行为（阈值-1 及以上都算命中，不设上界）。
 
 
 @dataclass

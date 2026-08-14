@@ -1,7 +1,8 @@
 # 周期性 Goal/Cron 任务的主动巡检推送与全局健康总览设计方案
 
 > 状态：**Stage 1（能力 C：主动巡检 + 推送）/ Stage 2（能力 D：看板全局
-> 健康总览）均已实施完成**。实现见 `config/models.py::CyclePatrolConfig`
+> 健康总览）均已实施完成；Stage 3（收敛 §6 风险与开放问题中可落地的两项）
+> 也已实施完成**。实现见 `config/models.py::CyclePatrolConfig`
 > + `evolution/cycle_patrol.py` + `AutonomousLoop._tick_maintenance()`
 > （接入点与方案 §2.1 描述有一处偏差，见下方"实施偏差说明"）+ REST
 > `GET /v1/goals/cycle_diagnostics_overview` + 看板"🩺 健康总览"区块。
@@ -14,6 +15,17 @@
 > recurring Goal，因此实际接入点改为 `_tick_maintenance()`（passive 的
 > 超集档位），与同文件里 `goal_relevance_candidate`/`reap_finished_
 > cycles` 是同一档位边界理由，不是遗漏。
+>
+> **Stage 3 落地说明**（对应 §6 第 2、4 条开放问题，详见 §7）：
+> 1. 新增 `CyclePatrolConfig.dedupe_cron_skip_alert`（默认 `True`）——
+>    `cron_skip` 信号的判定窗口收窄为"跨越 `cron.skip_alert_threshold`
+>    之前"，跨越之后的通知所有权交给 cron 层自己的告警，避免同一次
+>    连续跳过产生两条重叠通知。
+> 2. 总览条目新增 `priority_score` 字段（`alert_count*10 +
+>    cron_consecutive_skip*5 + explore_bonus`），同一 severity 档位内
+>    按该分数降序排列，不改变三档判定标准本身。
+> §6 第 1、3 条（合并降噪 prompt 效果需要实测、多用户推送目标）仍然
+> 保持"留待后续、不阻塞当前实现"的开放状态，详见 §7。
 
 > 与 [`goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md`](goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md)
 > 是同一条主线的延续——那份方案交付的诊断报告（能力 A）/ 交互式调优
@@ -332,6 +344,10 @@ D 依赖 C 提供的快照数据结构（`cycle_patrol_state.json` 的 schema）
    LLM 排出的"优先级"是否真的有意义，还是不如老老实实按 severity 排序
    展示、只把摘要文案交给 LLM——实施时先做小范围试用再决定是否保留
    "LLM 排优先级"这部分，退化到"只生成摘要不排序"不影响核心功能。
+   **仍然开放**：`_llm_merge_summary()` 的 prompt 目前仍然请求 LLM 自行
+   判断优先级，尚未收集到足够真实巡检数据来决定是否收窄成"只生成摘要，
+   优先级交给 §6.4 的 `priority_score` 规则计算"，留待有真实使用数据后
+   再评审，不阻塞当前实现。
 2. **`push_cooldown_hours` 与 `cron.skip_alert_threshold` 的关系**——
    如果一个 Goal 同时触发 cron 层已有的 `_maybe_alert_consecutive_
    skip()` 和本方案的巡检推送，用户可能在短时间内收到两条内容高度
@@ -340,14 +356,71 @@ D 依赖 C 提供的快照数据结构（`cycle_patrol_state.json` 的 schema）
    本来就服务不同目的（cron 层是"技术性告警"，巡检是"整体健康周期性
    汇报"）保留两者——倾向后者但需要在文案上明确区分定位，避免用户
    觉得是重复骚扰。
+   **已在 Stage 3 落地**（见 §7.1）：保留两条通知各自的定位，但通过
+   收窄 `cron_skip` 信号的判定窗口（默认 `dedupe_cron_skip_alert=True`）
+   把"阈值恰好跨越那一刻"的通知所有权唯一交给 cron 层，巡检只负责
+   "跨越之前"的早期预警，消除了两者在同一次跳过上重叠推送的场景。
 3. **多用户模式下巡检推送给谁**——当前 `NotificationDispatcher`/
    `InputQueue` 的推送目标沿用现有机制（未特别区分多用户场景），
    `multi_user_enabled=True` 时巡检产生的推送应该推给谁（owner？所有
    订阅了对应 Goal 的用户？）不在本方案首次实现范围内讨论，先按现有
    单播/广播的默认行为处理，后续如果多用户场景有明确诉求再单独评审。
+   **仍然开放**，Stage 3 未涉及多用户场景改动。
 4. **总览面板的 `severity` 判定要不要比单 Goal 卡片更细**——现在单 Goal
    卡片只有 🔴🟡🟢 三档，总览面板汇总几十个 Goal 时，如果大部分都是黄色
    （比如很多 Goal 都在 explore 阶段，这是正常状态而非问题），三档可能
    不够用户快速定位"真正紧急"的那几个。是否需要在总览面板引入更细的
    排序权重（比如告警条数、cron 连续跳过次数分别加权）留待 Stage 2
    实施时结合实际数据分布再定，不阻塞 Stage 1 落地。
+   **已在 Stage 3 落地**（见 §7.2）：三档判定标准本身不变（延续 §5 第 2
+   条"不新造健康判定标准"边界），但每个总览条目新增 `priority_score`
+   排序权重字段，同一档位内按分数降序排列。
+
+## 7. Stage 3：收敛可落地的开放问题
+
+在 Stage 1/2 交付并积累一段时间使用反馈后，对 §6 中已经有明确、低风险
+落地方案的两条开放问题做了收敛（另外两条——LLM 排优先级的 prompt 效果、
+多用户推送目标——仍然缺乏足够真实数据/明确诉求，保持开放，见上方各条
+备注）。
+
+### 7.1 cron_skip 信号与 cron 层告警去重（对应 §6 第 2 条）
+
+`evolution/cycle_patrol.py::_screen_candidate()` 新增
+`dedupe_cron_skip_alert` 参数（由 `CyclePatrolConfig.dedupe_cron_skip_
+alert` 驱动，默认 `True`）：
+
+- 开启时，`cron_skip` 信号只在 `skip_count ∈ [threshold-1, threshold)`
+  这个窗口内命中——即"即将跨越阈值但还没跨越"，一旦 `skip_count >=
+  threshold`，说明 cron 层的 `_maybe_alert_consecutive_skip()` 本轮
+  已经/即将发出它自己的告警，巡检不再把"纯 cron_skip"当作新信号（如果
+  同一 Goal 还命中了其它信号类型如 `stuck_explore`/`health_alert`，
+  仍然会因为那些信号被巡检覆盖，不会被完全忽略）。
+- 关闭时（`dedupe_cron_skip_alert=False`）退回 Stage 1/2 的原始行为：
+  `skip_count >= threshold - 1` 起就一直算命中，不设上界。
+- `build_overview_live()` / `run_cycle_patrol()` 两条调用路径都透传
+  这个开关，保证"总览面板显示的信号命中情况"与"实际会不会推送"用的是
+  同一份判定逻辑，不会出现总览显示 yellow 但从未收到过对应推送（或
+  反过来）的不一致。
+
+### 7.2 总览面板细粒度排序权重（对应 §6 第 4 条）
+
+新增 `_priority_score(report, signal_types)`：
+
+```
+priority_score = alert_count * 10 + cron_consecutive_skip * 5
+                  + (3 if "stuck_explore" in signal_types else 0)
+```
+
+- 权重系数是"看得到的输入"，不是黑盒判定——三个输入项完全是总览条目
+  已经在展示的字段（`alert_count`/`cron_consecutive_skip`/
+  `execution_phase_mode`），只是把它们加权汇总成一个可排序的数字，
+  **不改变、不新增** 🔴🟡🟢 三档 severity 判定标准本身（延续 §5 第 2 条
+  边界）。
+- `_overview_entry_for()` 在每个总览条目上附加 `priority_score` 字段，
+  `_overview_sort_key()` 统一供 `build_overview_live()` 和
+  `run_cycle_patrol()` 两条路径复用：先按 severity（红→黄→绿）排序，
+  同一档位内再按 `priority_score` 降序。
+- `load_overview()` 读取旧版本（Stage 1/2 时期写入、没有这个字段）的
+  快照时做兼容补齐，避免升级后旧快照数据在前端渲染时缺字段报错。
+- 看板 UI（`_render_cycle_health_overview()`）不需要改动——它已经是
+  按后端返回的数组顺序直接渲染，排序权重的变化在后端生效即可。

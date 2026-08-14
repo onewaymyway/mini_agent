@@ -72,7 +72,12 @@ class PatrolCandidate:
     signal_types: list = field(default_factory=list)
 
 
-def _screen_candidate(report, skip_alert_threshold: int = 5) -> Optional[list]:
+def _screen_candidate(
+    report,
+    skip_alert_threshold: int = 5,
+    *,
+    dedupe_cron_skip_alert: bool = True,
+) -> Optional[list]:
     """基于已经聚合好的诊断报告，按既有阈值判定这个 Goal 是否"值得关注"。
     只做筛选（返回命中的信号类型列表），不产生新的判定标准——三类信号
     完全对应看板卡片/CLI diagnose 已经在展示的字段（§5 第 2 条）。"""
@@ -87,12 +92,24 @@ def _screen_candidate(report, skip_alert_threshold: int = 5) -> Optional[list]:
     cron_health = report.cron_health or {}
     skip_count = cron_health.get("consecutive_skip_count") or 0
     # 阈值与 `_maybe_alert_consecutive_skip()` 用的 `cron.skip_alert_
-    # threshold`（默认 5）同源，这里只做"接近或达到阈值"的粗判（阈值 - 1），
-    # 让巡检能在 cron 层真正告警前先一步提醒（§2.2 第 2 点）。调用方
-    # 传入实际配置值时（见 `run_cycle_patrol`/`build_overview_live`）用
-    # 真实阈值，不传时退回默认值 5，不引入额外的强依赖。
-    if skip_count and skip_count >= max(1, skip_alert_threshold - 1):
-        signal_types.append("cron_skip")
+    # threshold`（默认 5）同源。§6.2 开放问题在 Stage 3 中的落地决定：
+    # 两条通知**保留各自定位**（cron 层 = 精确跨越阈值那一刻的技术性
+    # 告警；巡检 = 跨越前的早期预警 + 周期性健康汇报），但为避免同一次
+    # "连续跳过"在阈值附近产生两条高度重叠的通知，巡检对 `cron_skip`
+    # 信号的判定默认只覆盖"跨越阈值之前"的窗口
+    # `[threshold-1, threshold)`（不含 threshold 本身）——一旦
+    # `skip_count >= threshold`，说明 cron 层本轮已经/即将发出它自己的
+    # 告警，巡检不再把"纯 cron_skip"当作新信号重复提醒（但如果同时还有
+    # 其它信号类型，Goal 依然会因为那些信号被巡检覆盖，不会被完全忽略）。
+    # `dedupe_cron_skip_alert=False` 时退回 Stage 1/2 的原始行为（阈值-1
+    # 及以上都算命中，不设上界），供需要"巡检也要覆盖阈值之后"场景使用。
+    if skip_count:
+        lower = max(1, skip_alert_threshold - 1)
+        if dedupe_cron_skip_alert:
+            if lower <= skip_count < skip_alert_threshold:
+                signal_types.append("cron_skip")
+        elif skip_count >= lower:
+            signal_types.append("cron_skip")
     if not signal_types:
         return None
     return signal_types
@@ -110,6 +127,21 @@ def _severity_for(report, signal_types: list) -> str:
 
 # ── 快照拼装（供本模块内部使用，也是能力 D 的数据来源）────────────────────
 
+def _priority_score(report, signal_types: Optional[list]) -> int:
+    """[§6.4 开放问题的 Stage 3 落地] 三档 severity 在 Goal 数量多、大量
+    Goal 同处 yellow（比如都在 explore 阶段，属正常状态）时不够用户快速
+    定位"真正紧急"的那几个，因此在总览条目里附加一个细粒度的排序权重，
+    UI 侧可以在同一 severity 档位内再按这个分数降序排列。**不改变/新增
+    健康判定标准本身**（§5 第 2 条边界不变）——权重只是把已有三个字段
+    （告警条数、cron 连续跳过次数、是否长期卡在 explore）加权汇总成一个
+    可排序的数字，权重系数是"看得到的输入"，不是黑盒判定。"""
+    cron_health = report.cron_health or {}
+    skip_count = cron_health.get("consecutive_skip_count") or 0
+    alert_count = len(report.recent_health_alerts or [])
+    explore_bonus = 3 if "stuck_explore" in (signal_types or []) else 0
+    return alert_count * 10 + skip_count * 5 + explore_bonus
+
+
 def _overview_entry_for(paths: "AgentPaths", report, signal_types: Optional[list], has_pending_tuning: bool) -> dict:
     cron_health = report.cron_health or {}
     return {
@@ -121,10 +153,23 @@ def _overview_entry_for(paths: "AgentPaths", report, signal_types: Optional[list
         "execution_phase_mode": report.execution_phase_mode,
         "next_run_at": cron_health.get("next_run_at"),
         "has_pending_tuning_proposal": has_pending_tuning,
+        "priority_score": _priority_score(report, signal_types),
     }
 
 
-def build_overview_live(paths: "AgentPaths", goal_backlog: "GoalBacklog", *, skip_alert_threshold: int = 5) -> dict:
+def _overview_sort_key(g: dict) -> tuple:
+    # 先按 severity（红→黄→绿），同一档位内再按 priority_score 降序
+    # （§6.4，Stage 3 新增），让"真正紧急"的排在同色区块靠前的位置。
+    return ({"red": 0, "yellow": 1, "green": 2}.get(g["severity"], 3), -g.get("priority_score", 0))
+
+
+def build_overview_live(
+    paths: "AgentPaths",
+    goal_backlog: "GoalBacklog",
+    *,
+    skip_alert_threshold: int = 5,
+    dedupe_cron_skip_alert: bool = True,
+) -> dict:
     """[能力 D §3.1] 无巡检快照时的现算路径：只跑规则层（不调 LLM），
     对所有 recurring Goal 现跑一次 `build_cycle_diagnostics()`。成本跟
     看板每张卡片渲染时已经在做的诊断读取相当，与快照路径共用同一份
@@ -140,27 +185,46 @@ def build_overview_live(paths: "AgentPaths", goal_backlog: "GoalBacklog", *, ski
             continue
         if not report.found:
             continue
-        signal_types = _screen_candidate(report, skip_alert_threshold=skip_alert_threshold)
+        signal_types = _screen_candidate(
+            report, skip_alert_threshold=skip_alert_threshold,
+            dedupe_cron_skip_alert=dedupe_cron_skip_alert,
+        )
         has_pending = _has_pending_tuning_proposal(paths, node.id)
         goals.append(_overview_entry_for(paths, report, signal_types, has_pending))
-    goals.sort(key=lambda g: {"red": 0, "yellow": 1, "green": 2}.get(g["severity"], 3))
+    goals.sort(key=_overview_sort_key)
     return {"data_source": "live", "generated_at": time.time(), "goals": goals}
 
 
-def load_overview(paths: "AgentPaths", goal_backlog: "GoalBacklog", *, skip_alert_threshold: int = 5) -> dict:
+def load_overview(
+    paths: "AgentPaths",
+    goal_backlog: "GoalBacklog",
+    *,
+    skip_alert_threshold: int = 5,
+    dedupe_cron_skip_alert: bool = True,
+) -> dict:
     """[能力 D §3.1/§3.2] 优先读巡检快照（`cycle_patrol.enabled=True` 且
     至少跑过一轮之后才会有），没有快照时退化为 `build_overview_live()`。
+    快照里的条目可能是旧版本（无 `priority_score` 字段）写入的，读出时
+    做一次兼容补齐，保证前端始终能拿到这个字段用于同 severity 内排序。
     """
     state = _load_state(paths)
     overview = state.get("overview") or {}
     goals = overview.get("goals")
     if goals is not None:
+        for g in goals:
+            g.setdefault(
+                "priority_score",
+                g.get("alert_count", 0) * 10 + g.get("cron_consecutive_skip", 0) * 5,
+            )
         return {
             "data_source": "patrol_snapshot",
             "generated_at": overview.get("generated_at", state.get("last_run_at", 0.0)),
             "goals": goals,
         }
-    return build_overview_live(paths, goal_backlog, skip_alert_threshold=skip_alert_threshold)
+    return build_overview_live(
+        paths, goal_backlog, skip_alert_threshold=skip_alert_threshold,
+        dedupe_cron_skip_alert=dedupe_cron_skip_alert,
+    )
 
 
 def _has_pending_tuning_proposal(paths: "AgentPaths", goal_id: str) -> bool:
@@ -278,7 +342,10 @@ def run_cycle_patrol(
             continue
         if not report.found:
             continue
-        signal_types = _screen_candidate(report, skip_alert_threshold=skip_alert_threshold)
+        signal_types = _screen_candidate(
+            report, skip_alert_threshold=skip_alert_threshold,
+            dedupe_cron_skip_alert=getattr(cfg, "dedupe_cron_skip_alert", True),
+        )
         has_pending = _has_pending_tuning_proposal(paths, node.id)
         overview_goals.append(_overview_entry_for(paths, report, signal_types, has_pending))
         if signal_types:
@@ -309,7 +376,7 @@ def run_cycle_patrol(
             continue
         to_push.append(c)
 
-    overview_goals.sort(key=lambda g: {"red": 0, "yellow": 1, "green": 2}.get(g["severity"], 3))
+    overview_goals.sort(key=_overview_sort_key)
     state["overview"] = {"generated_at": now, "goals": overview_goals}
     state["last_run_at"] = now
 

@@ -1,7 +1,8 @@
 # Goal 主动巡检推送与健康总览（Cycle Patrol）指南
 
 > 能力 C（主动巡检 + 推送）/ 能力 D（看板全局健康总览）均已实现（Stage 1
-> + Stage 2），见
+> + Stage 2），Stage 3（§6 开放问题中「cron_skip 与 cron 层告警去重」/
+> 「总览面板细粒度排序」两项已落地）见
 > `next_doc/goal_cron_cycle_proactive_patrol_and_health_overview_plan.md`。
 > 与 [跨轮次诊断报告指南](goal-cycle-diagnostics-guide.md) /
 > [交互式调优指南](goal-cycle-tuning-guide.md) 是同一条主线的延续——那份
@@ -34,7 +35,8 @@
     "llm_enabled": true,
     "max_push_per_run": 3,
     "push_cooldown_hours": 24.0,
-    "generate_tuning_drafts": true
+    "generate_tuning_drafts": true,
+    "dedupe_cron_skip_alert": true
   }
 }
 ```
@@ -47,6 +49,23 @@
 | `max_push_per_run` | `3` | 单次巡检命中的 Goal 数超过这个值时，合并降噪成一条消息，不逐条刷屏。 |
 | `push_cooldown_hours` | `24.0` | 同一个 Goal 同一轮问题信号的推送冷却时间。首次命中不推送（避免单次抖动打扰你），持续命中且过了冷却时间才真正推送。 |
 | `generate_tuning_drafts` | `true` | 命中规则建议时（比如 cron 连续跳过对应"放宽间隔"）是否顺带生成一份调优草案（`draft` 状态，不自动确认/应用）。 |
+| `dedupe_cron_skip_alert` | `true` | [Stage 3] 是否与 cron 层自己的连续跳过告警（`cron.skip_alert_threshold`）去重。开启时，巡检的 `cron_skip` 信号只覆盖"跨越阈值之前"的窗口（早期预警），一旦跳过次数达到/超过阈值，说明 cron 层本轮已经/即将发出它自己的告警，巡检不再对**纯 cron_skip** 信号重复推送（如果同一 Goal 还命中了其它信号类型，仍然会被巡检覆盖）。设为 `false` 退回 Stage 1/2 的原始行为（阈值-1 及以上都算命中，不设上界）。 |
+
+### cron_skip 信号与 cron 层告警的关系（§6.2 开放问题的落地决定）
+
+同一个 Goal 的"连续跳过"可能同时触发两层通知：
+
+1. **cron 层**（`evolution/cron_scheduler.py::_maybe_alert_consecutive_
+   skip()`）——跳过次数**恰好跨越** `cron.skip_alert_threshold` 那一刻
+   发一次技术性告警，服务的是"这一次跨越"。
+2. **巡检层**（本方案）——服务的是"周期性健康汇报 + 跨越阈值之前的早期
+   预警"，两者定位不同、值得都保留，但如果不做任何处理，会在阈值附近
+   产生两条高度重叠的通知。
+
+`dedupe_cron_skip_alert=true`（默认）时，巡检把 `cron_skip` 信号的判定
+窗口限制在 `[threshold-1, threshold)`（不含 threshold 本身）——也就是
+说巡检只在 cron 层告警**即将**发生之前提前提醒一次，一旦真的跨越阈值，
+就把这次通知的所有权交给 cron 层，不重复发。
 
 ### 巡检范围与判定标准
 
@@ -98,11 +117,20 @@ GET /v1/goals/cycle_diagnostics_overview
       "goal_id": "...", "title": "...", "severity": "yellow",
       "alert_count": 2, "cron_consecutive_skip": 0,
       "execution_phase_mode": "explore", "next_run_at": 1234567890.0,
-      "has_pending_tuning_proposal": true
+      "has_pending_tuning_proposal": true, "priority_score": 13
     }
   ]
 }
 ```
+
+`goals` 数组已经按 severity（红→黄→绿）、同一 severity 内再按
+`priority_score` 降序排好序（[Stage 3 / §6.4 开放问题落地]，
+`priority_score = alert_count * 10 + cron_consecutive_skip * 5 +
+(3 if 长期卡在 explore else 0)`），前端可以直接按数组顺序渲染，不需要
+自己再排一遍。这个权重**不改变** 🔴🟡🟢 三档判定标准本身（仍然是看板
+卡片/CLI `diagnose` 那一套），只是在同一档位内提供更细的优先级参考，
+帮助你在大量 Goal 同处 yellow（比如都在 explore 阶段，属正常状态）时
+更快定位"真正紧急"的那几个。
 
 ### 数据来源：优先复用巡检快照，无快照时按需现算
 
