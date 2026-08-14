@@ -603,7 +603,7 @@ def render_login_gate(cli_args) -> bool:
     with st.form("login_form"):
         username = st.text_input("用户名")
         password = st.text_input("密码", type="password")
-        submitted = st.form_submit_button("登录", use_container_width=True)
+        submitted = st.form_submit_button("登录", width='stretch')
 
     if submitted:
         client_id = _client_id()
@@ -1579,8 +1579,8 @@ def render_chat_tab(client: AgentClient, session_id: str = ""):
             msg = st.text_area("输入消息", height=80, label_visibility="collapsed",
                                 placeholder="和 Agent 说点什么…")
             c1, c2 = st.columns([1, 1])
-            send = c1.form_submit_button("发送 ➤", use_container_width=True)
-            interrupt = c2.form_submit_button("⏹ 中断当前任务", use_container_width=True)
+            send = c1.form_submit_button("发送 ➤", width='stretch')
+            interrupt = c2.form_submit_button("⏹ 中断当前任务", width='stretch')
 
         new_turn_id = None
         if send and msg.strip():
@@ -1688,7 +1688,7 @@ def _render_chat_messages_body(client: AgentClient, session_id: str = "") -> str
             f"⬆️ 加载更早消息（已加载 {len(entries)} / {total} 条）",
             key=f"load_more_history_{session_id or 'default'}",
             on_click=_load_more,
-            use_container_width=True,
+            width='stretch',
         )
 
     last_rendered_user_msg = ""
@@ -1886,7 +1886,7 @@ def _render_sessions_change_banner_body(client: AgentClient) -> None:
     if current_ids != baseline:
         bc1, bc2 = st.columns([5, 1])
         bc1.warning("🔔 检测到会话列表有变化（可能是其它标签页新建/删除了会话，或后台自动创建了新会话）")
-        if bc2.button("🔄 刷新列表", key="sessions_refresh_banner", use_container_width=True):
+        if bc2.button("🔄 刷新列表", key="sessions_refresh_banner", width='stretch'):
             st.session_state["_sessions_baseline_ids"] = current_ids
             st.rerun()
 
@@ -1897,7 +1897,7 @@ def render_sessions_tab(client: AgentClient):
 
     c1, c2 = st.columns([1, 3])
     with c1:
-        if st.button("➕ 新建会话", use_container_width=True):
+        if st.button("➕ 新建会话", width='stretch'):
             res = client.new_session()
             if res and "_error" not in res:
                 st.success("已创建新会话")
@@ -1970,7 +1970,7 @@ def render_sessions_tab(client: AgentClient):
                 st.rerun()
 
     pc1, pc2, pc3 = st.columns([1, 2, 1])
-    if pc1.button("⬅️ 上一页", disabled=(page <= 0), use_container_width=True):
+    if pc1.button("⬅️ 上一页", disabled=(page <= 0), width='stretch'):
         st.session_state["sessions_page"] = page - 1
         st.rerun()
     pc2.markdown(
@@ -1978,7 +1978,7 @@ def render_sessions_tab(client: AgentClient):
         f"（共 {total} 个会话）</div>",
         unsafe_allow_html=True,
     )
-    if pc3.button("下一页 ➡️", disabled=(page >= total_pages - 1), use_container_width=True):
+    if pc3.button("下一页 ➡️", disabled=(page >= total_pages - 1), width='stretch'):
         st.session_state["sessions_page"] = page + 1
         st.rerun()
 
@@ -4006,7 +4006,7 @@ def _render_workflow_stats_panel(client: AgentClient, selected: str):
                     "平均评分": s.get("avg_score") if s.get("avg_score") is not None else "-",
                     "平均重试次数": s.get("avg_retries_used", 0.0),
                 })
-            st.dataframe(rows, use_container_width=True, hide_index=True)
+            st.dataframe(rows, width='stretch', hide_index=True)
 
         condition_stats = stats.get("condition_stats", {})
         if condition_stats:
@@ -4015,7 +4015,7 @@ def _render_workflow_stats_panel(client: AgentClient, selected: str):
                 {"步骤": step_id, "实际执行比例": f"{c.get('true_rate', 0.0) * 100:.1f}%", "样本数": c.get("total", 0)}
                 for step_id, c in condition_stats.items()
             ]
-            st.dataframe(rows, use_container_width=True, hide_index=True)
+            st.dataframe(rows, width='stretch', hide_index=True)
 
 
 def _render_workflow_step_card(client: AgentClient, run_id: str, step_id: str, sr: dict):
@@ -7027,7 +7027,7 @@ def render_error_log_tab(client: AgentClient):
             pass
         st.dataframe(
             [{"异常类型": r["name"], "次数": r["count"]} for r in by_type],
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
     else:
         st.caption("暂无数据。")
@@ -7036,7 +7036,7 @@ def render_error_log_tab(client: AgentClient):
     if by_where:
         st.dataframe(
             [{"位置": r["name"], "次数": r["count"]} for r in by_where],
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
     else:
         st.caption("暂无数据。")
