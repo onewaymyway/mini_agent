@@ -97,7 +97,46 @@
 §6 已有的\"新增 job 时同步更新本文档\"提醒，建议扩展为\"同步更新本文档 +
 检查是否有其它文档复制了简化版清单\"。
 
-## 后续维护建议
+## 第三轮核对：成长顾问（Growth Advisor）专题
+
+范围：`docs/growth-advisor-guide.md`（唯一的用户指南，1700+ 行，是这条
+主线里体量最大、迭代次数最多的单篇文档）+ `next_doc/` 下 16 篇
+`growth_advisor_*` 方案/记录文档。核对方式沿用第二轮的方法——对"清单型"
+内容（本文档的核心是 §5 配置项表、§2 各子节"新增/变更文件"清单）做
+代码逐条抽查，而不是只读状态栏文字。
+
+### 核对结论
+
+| 检查项 | 结论 | 处理 |
+|---|---|---|
+| §2.1-2.24 各子节列举的函数名/配置项/测试文件（重点抽查 2.20/2.22/2.23/2.24 这几个"本次新增"标注的最新小节） | 全部与代码一致（`_infer_pursuit_style_rule`、`_should_auto_upgrade_report_quality`、`_recent_conversation_density_ratio`、`related_pursuit_directions` 等逐一在 `evolution/growth_advisor.py` 核实存在，对应测试文件也都存在） | 无需修改 |
+| `GrowthAdvisorConfig`（`config/models.py`，49 个字段）与 §5"常用配置项"表格逐字段 diff | **不一致**——4 个字段在代码里真实存在且被消费，但完全没有出现在 §5 表格里，其中 3 个（`pursuit_long_unviewed_threshold`/`pursuit_self_check_every_n_cycles`/`report_external_drift_min_changes`）在全文任何位置都没有提及，对应的两个能力（方向 4"跨方向全局视角摘要"、方向 5"学习效果自测环节"，均来自 `growth_advisor_ideal_advisor_gap_and_roadmap_plan.md`，该方案文档状态栏明确写着"已落地"）在用户指南里完全没有对应小节——即"文档说这两个方向已经做完了，但去用户能看到的地方找，根本找不到" | **已修正**：新增 §2.24a 小节说明这两个能力（含 API/看板入口），§5 表格补齐 4 个字段 |
+| `growth_advisor_*_plan.md`/`_implementation_record.md` 状态栏与彼此的引用关系（如 v2/v3/v4 之间、`ideal_advisor_gap_and_roadmap_plan.md` 与其 `_implementation_record.md`） | 一致，状态栏描述准确，方向级完成度标注与 `docs/growth-advisor-guide.md` 对应小节吻合（除上面提到的方向 4/5 那 2 个例外） | 无需修改 |
+
+### 根因
+
+跟第二轮"汇总型文档遗漏新增条目"是同一类问题的变种：`growth_advisor_
+ideal_advisor_gap_and_roadmap_plan.md` 一次性规划了 6 个方向，落地时
+分批次把内容写回 `docs/growth-advisor-guide.md`——方向 1/2/3/6 都各自
+有对应小节（2.19/2.20/2.9 第二步等），但方向 4/5 在合并到用户指南这一步
+被漏掉了，只在方案文档自己的状态栏和 `_implementation_record.md` 里
+留了记录。这是"批量规划、分批落地回写文档"这种工作模式下容易出现的
+遗漏模式——**不是**忘记更新索引/汇总（第二轮那种情况），而是一次改动
+产出的多个子能力里，有一部分连"写回用户指南"这一步都没有执行，比第二轮
+发现的问题更隐蔽（第二轮至少方案文档自己的状态栏和实现代码是同步的，
+只是没同步到旁支汇总文档；这次是用户指南本身就没有这部分内容，不是
+"内容存在但没被索引到"）。
+
+### 后续维护建议
+
+`docs/growth-advisor-guide.md` 已经积累到 24+ 个子小节、1700+ 行，单篇
+文档追踪"哪些方向已经写进指南、哪些还没"本身开始变得容易出错。建议在
+`growth_advisor_ideal_advisor_gap_and_roadmap_plan.md` 这类"一次规划
+多个方向"的文档里，状态栏除了标注"方向 N 已落地"，可以额外加一句"已
+写入用户指南 §2.X 节"/"尚未写入用户指南"，把"代码已实现"和"用户指南
+已覆盖"两件事分开跟踪——本轮暴露的问题恰恰是两者被默认等同了。
+
+## 后续维护建议（汇总）
 
 不新增强制流程，但建议以下情况发生时顺带检查一下状态栏：
 

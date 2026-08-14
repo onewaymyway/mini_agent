@@ -1203,6 +1203,44 @@ summary()` 只回答"我现在该先看哪几个方向"，不回答"这几个方
 **测试**：`tests/test_growth_advisor_related_pursuit_directions.py`
 （7 个用例）。
 
+### 2.24a 跨方向全局视角摘要 + 学习效果自测环节（`growth_advisor_ideal_advisor_gap_and_roadmap_plan.md` 方向 4/5，此前遗漏未写入本指南）
+
+**方向 4：跨方向全局视角摘要**——`pursuits_portfolio_summary()` 对
+"🔄 正在自主推进"分区（口径同 2.9 节，只统计打了 `growth_advisor` 标签
+且 `recurring=True` 的 Goal）里全部方向做一次轻量聚合，回答"我现在该
+先看哪几个方向"这个全局问题：不引入新的判断维度、不产生新的持久化，
+只是把已经分散展示的饱和度信号（B2）和参与度信号（方向 1）组织成一句
+摘要。分类规则（同一方向可能同时命中两类，去重后只算一次"建议关注"）：
+
+- **饱和未处理**：`get_pursuit_saturation()` 判定 `saturated=True`；
+- **长期无人查看**：`cycles_since_last_view >= pursuit_long_unviewed_
+  threshold`（默认 5）且素材确实已有内容（避免刚创建的方向被误判）；
+- 其余归为"正常推进"。
+
+API：`GET /growth/pursuits/portfolio_summary`（可选 query 参数覆盖
+`long_unviewed_threshold`），看板"🔄 正在自主推进"分区展开时按需拉取
+展示汇总数字（总数/饱和数/长期未看数），跟 2.24 节的关联信号提示是
+同一批新增内容里先落地的部分。
+
+**方向 5：学习效果自测环节**——`self_check_hint_for_cycle(goal,
+cycle_no, cfg)`：累计满 `pursuit_self_check_every_n_cycles`（默认 5，
+`<=0` 关闭）轮时，往当轮子 Objective description 里追加一段"顺带生成
+几道自测题"的提示，复用同一次执行循环已有的 LLM 调用，零增量成本。
+刻意**不做自动判分、不要求用户提交答案**——自测题生成与否、质量如何，
+完全留给模型在这一轮执行时自行判断；一旦引入"系统给用户理解程度打分"，
+就跨过了 `growth_advisor_design.md` 明确写的非目标（"不做心理评估/
+主观判断"）边界。跟 2.14 节 C1、2.19 节的"累计满 N 轮追加一段 hint"
+是同一种实现模式在这里的第三次复用，不是新发明的接入方式。
+
+**新增/变更文件**：`src/mini_agent/evolution/growth_advisor.py`
+（`pursuits_portfolio_summary()`、`self_check_hint_for_cycle()`）、
+`src/mini_agent/config/models.py`（`pursuit_long_unviewed_threshold`
+默认 `5`、`pursuit_self_check_every_n_cycles` 默认 `5`）、
+`src/mini_agent/api/routes.py`（`GET /growth/pursuits/portfolio_
+summary`）、`apps/mini_agent_kanban/client.py`
+（`growth_pursuits_portfolio_summary()`）、`apps/mini_agent_kanban/
+app.py`（"🔄 正在自主推进"分区汇总展示）。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外
@@ -1366,6 +1404,10 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 | `notification_context_aware_throttle_enabled` | `false` | （2.23 节）最近一周对话密度明显低于历史周均值时，是否软性抬高推送置信度门槛（依然可能推送，只是需要更高置信度）；不产生额外调用 |
 | `notification_low_activity_ratio_threshold` | `0.3` | （2.23 节）判定"明显更安静"的密度比值门槛，最近一周条目数 / 基线周均值低于这个值才触发；`<=0` 视为关闭 |
 | `notification_low_activity_confidence_boost` | `0.15` | （2.23 节）命中"更安静"时在 `notification_min_confidence` 基础上额外加多少（封顶 1.0） |
+| `pursuit_long_unviewed_threshold` | `5` | （2.24a 节，方向 4）某方向的素材已经比用户上次查看时新了多少轮，就计入 `pursuits_portfolio_summary()` 的"建议关注"分类 |
+| `pursuit_self_check_every_n_cycles` | `5` | （2.24a 节，方向 5）累计满多少轮后追加一段"生成自测题"的提示；`<=0` 关闭 |
+| `report_external_drift_min_changes` | `1` | （5.8 节）外部世界变化驱动刷新时，判定"值得刷新"所需的最少变化条数 |
+| `report_external_drift_refresh_enabled` | `false` | （5.8 节）打开后，候选关联的外部资讯发生变化达到 `report_external_drift_min_changes` 条时，提示报告可以刷新 |
 
 另外 `memory_backfill.cron_run_backfill_enabled`（默认 `true`，v4 N2）
 控制 cron 任务收尾是否自动回填记忆，属于 `memory_backfill` 配置块而非
