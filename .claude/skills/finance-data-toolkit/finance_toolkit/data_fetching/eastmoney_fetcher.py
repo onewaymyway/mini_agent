@@ -6,6 +6,7 @@
 """
 
 import json
+import os
 import re
 import sys
 import argparse
@@ -177,6 +178,48 @@ def parse_eastmoney_stock(text: str, symbol: str) -> Dict[str, Any]:
     return data
 
 
+def _get_browser_cdp_base_path() -> Path:
+    """
+    获取 browser-cdp 脚本基础路径
+
+    优先级：
+    1. 环境变量 BROWSER_CDP_PATH
+    2. 配置文件 config/paths.json 中的 browser_cdp 字段
+    3. 默认路径（向后兼容）
+    """
+    # 优先从环境变量读取
+    env_path = os.environ.get('BROWSER_CDP_PATH')
+    if env_path:
+        return Path(env_path)
+
+    # 其次从配置文件读取
+    config_path = Path(__file__).parent.parent.parent.parent / 'config' / 'paths.json'
+    if config_path.exists():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            browser_cdp_path = config.get('browser_cdp', '')
+            if browser_cdp_path:
+                return Path(browser_cdp_path)
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    # 最后尝试默认路径（向后兼容）
+    default_path = Path(__file__).parent.parent.parent.parent / 'browser-cdp'
+    if default_path.exists():
+        return default_path
+
+    # 再尝试相对路径（兼容不同项目结构）
+    for rel in ['../browser-cdp', '../../browser-cdp']:
+        candidate = Path(__file__).parent.parent.parent / rel
+        if candidate.exists():
+            return candidate.resolve()
+
+    raise FileNotFoundError(
+        f"无法找到 browser-cdp 目录，请设置环境变量 BROWSER_CDP_PATH 或配置文件 config/paths.json"
+    )
+
+
 def run_browser_script(script_name: str, args: list) -> str:
     """运行 browser-cdp 脚本并返回输出"""
     # 根据脚本名称映射到新目录结构
@@ -189,7 +232,16 @@ def run_browser_script(script_name: str, args: list) -> str:
         'browser_screenshot.py': 'browser_ops/browser_screenshot.py',
     }
     new_path = script_map.get(script_name, script_name)
-    script_path = Path(__file__).parent.parent.parent.parent / 'browser-cdp' / new_path
+
+    try:
+        base_path = _get_browser_cdp_base_path()
+        script_path = base_path / new_path
+    except FileNotFoundError as e:
+        raise RuntimeError(str(e)) from e
+
+    if not script_path.exists():
+        raise RuntimeError(f"browser-cdp 脚本不存在: {script_path}")
+
     cmd = [sys.executable, str(script_path)] + args
     result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
     if result.returncode != 0:

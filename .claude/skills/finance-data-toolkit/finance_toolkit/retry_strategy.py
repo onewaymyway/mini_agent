@@ -201,20 +201,34 @@ class AsyncExponentialBackoffRetry(AsyncRetryStrategy):
 # ============== 固定间隔重试 ==============
 
 class FixedIntervalRetry(RetryStrategy):
-    """固定间隔重试策略"""
-    
-    def __init__(self, max_retries: int = 3, interval: float = 5.0):
+    """固定间隔重试策略
+
+    支持 max_delay 参数（保持接口一致性），但实际延迟为固定值 interval。
+    若 interval > max_delay，则自动限制为 max_delay。
+    """
+
+    def __init__(
+        self,
+        max_retries: int = 3,
+        interval: float = 5.0,
+        max_delay: float = 60.0,
+    ):
         super().__init__(max_retries)
-        self.interval = interval
-    
+        self.interval = min(interval, max_delay)
+        self.max_delay = max_delay
+
     def should_retry(self, attempt: int, exception: Exception) -> bool:
         retryable = (SourceUnavailableError, SourceRateLimitedError, TimeoutError)
         if isinstance(exception, (DataQualityError, DataValidationError)):
             return False
         return isinstance(exception, retryable) or attempt < self.max_retries
-    
+
     def get_delay(self, attempt: int, exception: Exception) -> float:
         return self.interval
+
+    def get_max_delay(self) -> float:
+        """返回最大延迟（保持与 ExponentialBackoffRetry 接口一致）"""
+        return self.max_delay
 
 
 # ============== 自定义条件重试 ==============
