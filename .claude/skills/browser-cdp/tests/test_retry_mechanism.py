@@ -437,11 +437,20 @@ class TestRetryMechanism:
         # 应该有4个延迟值（对应4次重试等待）
         assert len(delays) == 4
         
-        # 延迟应大致呈指数增长
+        # 延迟应大致呈指数增长（EXPONENTIAL_JITTER 有随机抖动，允许 ±50% 偏差）
         for i in range(1, len(delays)):
-            assert delays[i] >= delays[i-1] * 0.5  # 允许抖动
+            expected_min = delays[i-1] * 0.5
+            assert delays[i] >= expected_min * 0.5, (
+                f"delay[{i}]={delays[i]:.2f} 不应小于 "
+                f"delay[{i-1}]={delays[i-1]:.2f} 的 25%"
+            )
         
-        print(f"  PASS: exponential_backoff_sequence ({delays})")
+        # 统计上，指数退避序列应呈现增长趋势（后三个值之和 > 第一个值）
+        assert sum(delays[1:]) > delays[0], (
+            f"指数退避应呈现增长趋势，但得到: {delays}"
+        )
+        
+        print(f"  PASS: exponential_backoff_sequence ({[round(d, 2) for d in delays]})")
 
 
 # ==================== 主程序 ====================

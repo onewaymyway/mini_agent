@@ -236,10 +236,14 @@ class CircuitBreaker:
     
     def record_failure(self):
         """记录失败"""
+        # 熔断器已打开时不重复计数，避免 half_open→open→half_open 循环
+        if self.state == "open":
+            return
         self.failure_count += 1
         self.last_failure_time = time.time()
         if self.state == "half_open":
             self.state = "open"
+            self.trip_count += 1
             logger.warning("Circuit breaker: open after failed probe")
         elif self.failure_count >= self.failure_threshold:
             self.state = "open"

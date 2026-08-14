@@ -146,6 +146,22 @@ from .predictive_retry import (
     predict_optimal_retries,
     get_retry_prediction,
 )
+from .operation_validator import (
+    BaseValidator,
+    ExistenceValidator,
+    VisibilityValidator,
+    TextContentValidator,
+    URLMatchValidator,
+    CustomValidator,
+    OperationValidator,
+    ValidationRule,
+    ValidationContext,
+    ValidationReport,
+    ValidationResult,
+    ValidatorType,
+    VALIDATION_TEMPLATES,
+    create_validator_from_template,
+)
 
 __all__ = [
     # 错误分类
@@ -290,6 +306,21 @@ __all__ = [
     "record_attempt",
     "predict_optimal_retries",
     "get_retry_prediction",
+    # 操作验证
+    "BaseValidator",
+    "ExistenceValidator",
+    "VisibilityValidator",
+    "TextContentValidator",
+    "URLMatchValidator",
+    "CustomValidator",
+    "OperationValidator",
+    "ValidationRule",
+    "ValidationContext",
+    "ValidationReport",
+    "ValidationResult",
+    "ValidatorType",
+    "VALIDATION_TEMPLATES",
+    "create_validator_from_template",
 ]
 
 __version__ = "1.2.0"
