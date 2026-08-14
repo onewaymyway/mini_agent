@@ -262,6 +262,112 @@ class AutonomousLoop:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_passive.novelty_judge_candidate')
             pass
 
+    def _trigger_objective_candidate(
+        self, obj, *, fairness_paused_ids: set, user_paused_ids: set,
+    ) -> bool:
+        """[goal_cron_convergence_and_governance_improvement_plan.md
+        Track 1] 从 `_tick_maintenance()` 原地循环体中抽取的"选中一个
+        Objective 候选后具体怎么触发它"逻辑，行为与抽取前完全等价（同样
+        的 resume_fairness / start 分支选择、同样的 mark_scheduled 记账、
+        同样的 digest 记录），只是抽成一个可以被外部单独调用的方法，供
+        `trigger_objective_now()` 复用，不是重新实现一份。
+
+        调用方需要在调用前自行完成排序、`is_running`/`user_paused_ids`/
+        `can_start_new()`/per-Goal 并发上限检查——这个方法只负责"确定要
+        触发这个候选之后，具体怎么触发"，不重复做筛选判断（筛选判断在
+        两个调用方那里语境不同：`_tick_maintenance()` 是遍历排序结果，
+        `trigger_objective_now()` 是针对单个指定 id，让两者各自决定要不要
+        检查、怎么检查更合适）。
+
+        返回 True 表示确实触发了一次调度动作（resume 或 start 成功），
+        False 表示命中 `fairness_paused_ids` 但 resume 未成功，或
+        `start()` 未返回 execution_id（不是异常，是"这次没排上"）。
+        """
+        if obj.id in fairness_paused_ids:
+            resumed = self._objective_executor.resume_fairness(obj.id)
+            if resumed:
+                try:
+                    self._goal_backlog.mark_scheduled(obj.id)
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._trigger_objective_candidate.mark_scheduled')
+                self._record_digest({
+                    "type": "objective_resumed_from_fairness_pause",
+                    "objective_id": obj.id,
+                    "title": obj.title,
+                    "summary": f"从公平性暂停恢复执行 Objective：{obj.title}",
+                })
+            return bool(resumed)
+
+        exec_id = self._objective_executor.start(obj)
+        if exec_id:
+            try:
+                self._goal_backlog.mark_scheduled(obj.id)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._trigger_objective_candidate.mark_scheduled')
+            self._record_digest({
+                "type": "objective_started",
+                "objective_id": obj.id,
+                "title": obj.title,
+                "execution_id": exec_id,
+                "summary": f"开始执行 Objective：{obj.title}",
+            })
+        return bool(exec_id)
+
+    def trigger_objective_now(self, objective_id: str) -> bool:
+        """[goal_cron_convergence_and_governance_improvement_plan.md
+        Track 1] 供 `evolution/unified_task_scheduler.py::
+        ObjectiveChannelAdapter.execute()` 调用的公开安全入口——语义与
+        `CronScheduler.trigger_job_now(job_id) -> bool` 对齐：成功触发
+        返回 True；因并发上限已满/该 Objective 正在运行/找不到节点等
+        原因未触发返回 False，不抛异常（异常场景内部已兜底记录日志）。
+
+        这不是一份"简化版"调度逻辑——检查项（是否已在运行、是否处于
+        用户主动暂停、全局并发上限、per-Goal 并发上限）与
+        `_tick_maintenance()` 排序循环体内的检查完全一致，且复用同一个
+        `_trigger_objective_candidate()` 做实际触发，保证两个调用路径
+        行为不会出现分叉。
+        """
+        if self._objective_executor is None or self._goal_backlog is None:
+            return False
+        try:
+            if self._objective_executor.is_running(objective_id):
+                return False
+            try:
+                user_paused_ids = set(self._objective_executor.user_paused_objective_ids())
+            except Exception:
+                user_paused_ids = set()
+            if objective_id in user_paused_ids:
+                return False
+            if not self._objective_executor.can_start_new():
+                return False
+
+            autonomy_cfg = getattr(self._cfg, "autonomy", None) if self._cfg is not None else None
+            per_goal_cap = getattr(autonomy_cfg, "max_concurrent_objectives_per_goal", 1) \
+                if autonomy_cfg is not None else 1
+            if per_goal_cap and per_goal_cap > 0:
+                goal_id = self._objective_executor._goal_id_of_objective(objective_id)
+                if self._objective_executor.running_count_for_goal(goal_id) >= per_goal_cap:
+                    return False
+
+            obj = self._goal_backlog.get(objective_id)
+            if obj is None:
+                return False
+
+            try:
+                fairness_paused_ids = set(self._objective_executor.fairness_paused_objective_ids())
+            except Exception:
+                fairness_paused_ids = set()
+
+            return self._trigger_objective_candidate(
+                obj, fairness_paused_ids=fairness_paused_ids, user_paused_ids=user_paused_ids,
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop.trigger_objective_now')
+            return False
+
     def _tick_maintenance(self) -> None:
         """
         [maintenance 档位] passive 的全部任务 + Objective 持续执行推进。
@@ -507,36 +613,9 @@ class AutonomousLoop:
                     if self._objective_executor.running_count_for_goal(goal_id) >= per_goal_cap:
                         continue
 
-                if obj.id in fairness_paused_ids:
-                    resumed = self._objective_executor.resume_fairness(obj.id)
-                    if resumed:
-                        try:
-                            self._goal_backlog.mark_scheduled(obj.id)
-                        except Exception as _mini_agent_exc:
-                            from mini_agent.errors import log_exception
-                            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._tick_maintenance.mark_scheduled')
-                        self._record_digest({
-                            "type": "objective_resumed_from_fairness_pause",
-                            "objective_id": obj.id,
-                            "title": obj.title,
-                            "summary": f"从公平性暂停恢复执行 Objective：{obj.title}",
-                        })
-                    continue
-
-                exec_id = self._objective_executor.start(obj)
-                if exec_id:
-                    try:
-                        self._goal_backlog.mark_scheduled(obj.id)
-                    except Exception as _mini_agent_exc:
-                        from mini_agent.errors import log_exception
-                        log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._tick_maintenance.mark_scheduled')
-                    self._record_digest({
-                        "type": "objective_started",
-                        "objective_id": obj.id,
-                        "title": obj.title,
-                        "execution_id": exec_id,
-                        "summary": f"开始执行 Objective：{obj.title}",
-                    })
+                self._trigger_objective_candidate(
+                    obj, fairness_paused_ids=fairness_paused_ids, user_paused_ids=user_paused_ids,
+                )
             return
 
         # ObjectiveExecutor 未注入时的降级路径：沿用旧的单次 Task 提交

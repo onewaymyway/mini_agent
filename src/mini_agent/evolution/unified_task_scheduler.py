@@ -15,27 +15,29 @@
   3. 接管仲裁裁决：新增 `allocate_weighted_slots()` 纯函数，degraded 状态
      下 goal/cron 两通道的并发上限可选（`scheduler.unified_arbitration_
      enabled`，默认关闭）改由本函数按权重 + cron 保底统一计算。
-  4. 接管实际派发（部分）：`CronChannelAdapter`/`GoalCycleChannelAdapter`
-     的 `execute()` 已实现真正委托派发（详见下方范围边界）；
-     `ObjectiveChannelAdapter.execute()` 仍未实现，见该类文档字符串。
+  4. 接管实际派发：`CronChannelAdapter`/`GoalCycleChannelAdapter`/
+     `ObjectiveChannelAdapter` 的 `execute()` 均已实现真正委托派发
+     （详见下方范围边界）——[goal_cron_convergence_and_governance_
+     improvement_plan.md Track 1] `ObjectiveChannelAdapter.execute()`
+     的缺口已补上。
 
 **明确的范围边界**：
 - 本模块 **不修改** `ObjectiveExecutor`/`GoalBacklog` 任何一行既有代码，
   只是在它们之上包一层只读适配器；`CronScheduler` 在 P5 第 4 步做了一次
   行为保留的内部重构（把 `tick()` 循环体里"触发单个 job + 记账"的逻辑
   抽成 `_trigger_and_record()`/`trigger_job_now()`，供本模块的
-  `execute()` 复用），`tick()` 自身的到期判断/排序/触发顺序完全不变。
-- `CronChannelAdapter`/`GoalCycleChannelAdapter.execute()` 在 P5 第 4 步
-  已经是真正的委托派发（内部调用 `CronScheduler.trigger_job_now()`），
-  但**目前仍未被 `UnifiedTaskScheduler` 自身或 `AutonomousLoop` 的任何
-  既有 tick 路径调用**——`CronScheduler.tick()` 依然是当前唯一的实际
-  触发入口，这两个 `execute()` 只是"已经可以安全调用，但还没有人在
-  调用"。是否/何时切换到统一入口是 P5 第 5 步的范围。
-- `ObjectiveChannelAdapter.execute()` 仍 `raise NotImplementedError`——
-  Goal 通道的实际派发逻辑（公平排序/per-Goal 并发上限/pause 状态检查等）
-  深度耦合 `AutonomousLoop` 自身持有的运行时状态，还没有一个类似
-  `CronScheduler.trigger_job_now()` 那样的安全公开入口，见该类文档
-  字符串的详细说明。
+  `execute()` 复用），`tick()` 自身的到期判断/排序/触发顺序完全不变；
+  `AutonomousLoop` 在 Track 1 做了对等的重构（把 `_tick_maintenance()`
+  排序循环体里"触发单个 Objective 候选 + 记账"的逻辑抽成
+  `_trigger_objective_candidate()`/`trigger_objective_now()`），
+  `_tick_maintenance()` 自身的排序/筛选/触发顺序同样完全不变。
+- 三个适配器的 `execute()` 现在都是真正的委托派发，但**目前仍未被
+  `UnifiedTaskScheduler` 自身或 `AutonomousLoop`/`CronScheduler` 的任何
+  既有 tick 路径调用**——`CronScheduler.tick()`/`AutonomousLoop.
+  _tick_maintenance()` 依然是当前唯一的实际触发入口，三个 `execute()`
+  只是"已经可以安全调用，但还没有人在调用"。是否/何时切换到统一入口
+  是 P5 第 5 步的范围，`scheduler.unified_dispatch_enabled` 默认值不
+  在 Track 1 范围内调整。
 
 [goal_cron_task_optimization_holistic_plan.md §5 调度联动子项 · 已实施]
 `ObjectiveChannelAdapter.poll_due()` 新增阶段感知的 `resource_estimate`
@@ -142,12 +144,17 @@ class ObjectiveChannelAdapter:
     “阶段感知的资源估算”这一块可观测性）。
     """
 
-    def __init__(self, goal_backlog: Any, paths: Any = None) -> None:
+    def __init__(self, goal_backlog: Any, paths: Any = None, autonomous_loop: Any = None) -> None:
         self._goal_backlog = goal_backlog
         # paths 优先用显式传入的值；未传入时尝试从 goal_backlog 自身取
         # （与 goal_cron_bridge.py 里 getattr(goal_backlog, "_paths", None)
         # 同一取法），两者都拿不到时阶段感知的资源估算整体降级为 1.0。
         self._paths = paths if paths is not None else getattr(goal_backlog, "_paths", None)
+        # [goal_cron_convergence_and_governance_improvement_plan.md
+        # Track 1] execute() 需要的安全入口——不传时 execute() 退化为
+        # 返回 False（与 cron_scheduler/goal_cycle 两个适配器"依赖未注入
+        # 时返回 False 不抛异常"的既有约定一致）。
+        self._autonomous_loop = autonomous_loop
 
     def _resource_estimate_for(self, goal_id: str):
         """返回 (resource_estimate, phase_mode)，任何环节失败都回落到
@@ -200,21 +207,32 @@ class ObjectiveChannelAdapter:
             ))
         return tasks
 
-    def execute(self, task: SchedulableTask) -> None:
-        raise NotImplementedError(
-            "ObjectiveChannelAdapter.execute() 仍未实现——Goal 通道的实际"
-            "派发（AutonomousLoop._tick_maintenance() 里公平排序/per-Goal"
-            "并发上限/paused 状态检查/resume_fairness 等一整套逻辑，见"
-            "autonomous_loop.py 相关代码段）比 cron/goal_cycle 通道复杂"
-            "得多，且深度耦合 AutonomousLoop 自身持有的运行时状态"
-            "（fairness_paused_objective_ids 等），在没有一个安全的公开"
-            "入口（类似 CronScheduler.trigger_job_now() 那样，把'触发 +"
-            "记账'封装成一次调用）之前，贸然实现 execute() 要么重新拼一份"
-            "简化版调度逻辑（引入与 AutonomousLoop 不一致的风险），要么"
-            "需要先重构 AutonomousLoop 抽出对应的公开方法——两者都超出"
-            "本轮范围，留给后续评估。见 unified_task_scheduler.py 模块"
-            "头部说明。"
-        )
+    def execute(self, task: SchedulableTask) -> bool:
+        """[goal_cron_convergence_and_governance_improvement_plan.md
+        Track 1] 委托给 `AutonomousLoop.trigger_objective_now(objective_id)`
+        ——与 `_tick_maintenance()` 排序循环体触发候选时走的是同一份
+        `_trigger_objective_candidate()` 记账逻辑（`mark_scheduled` +
+        digest 记录），不会出现"这里触发了但排序状态没同步更新"的记账
+        错位，延续了 P5 第 4 步中 `CronChannelAdapter.execute()` 的设计
+        原则：不在适配器这一层重新拼一份简化版调度逻辑。
+
+        `autonomous_loop` 未注入、或 `task.task_id` 找不到对应节点/
+        当前不满足触发条件（正在运行、用户暂停、并发上限已满）时返回
+        `False`，不抛异常。
+
+        **调用方注意**：与 `CronChannelAdapter.execute()` 当前状态一致
+        ——本方法目前仍未被 `UnifiedTaskScheduler` 自身任何方法调用，
+        也未接入 `AutonomousLoop` 既有的 tick 路径，`_tick_maintenance()`
+        依然是当前唯一的实际触发入口。是否/何时切换到统一入口作为默认
+        路径，留给后续单独评审（`scheduler.unified_dispatch_enabled`
+        默认值不在本 Track 范围内调整）。
+        """
+        if self._autonomous_loop is None:
+            return False
+        try:
+            return bool(self._autonomous_loop.trigger_objective_now(task.task_id))
+        except Exception:
+            return False
 
 
 class CronChannelAdapter:
@@ -500,6 +518,7 @@ def build_default_scheduler(
     goal_backlog: Any = None,
     cron_scheduler: Any = None,
     paths: Any = None,
+    autonomous_loop: Any = None,
 ) -> UnifiedTaskScheduler:
     """便捷构造函数：按现有三条通道的既有对象构造一个已注册好全部
     Channel 的 `UnifiedTaskScheduler`。任一依赖为 `None` 时对应 Channel
@@ -510,9 +529,15 @@ def build_default_scheduler(
     阶段感知资源估算；不传时 `ObjectiveChannelAdapter` 会退而尝试
     `goal_backlog._paths`，仍拿不到则该功能整体降级为 `1.0`（见该类
     文档字符串），不影响调用方既有用法。
+
+    `autonomous_loop` 转发给 `ObjectiveChannelAdapter`，用于 Track 1
+    的 `execute()` 真正委托派发；不传时 `execute()` 恒返回 `False`
+    （与其它依赖缺失时的降级风格一致），不影响调用方既有用法。
     """
     scheduler = UnifiedTaskScheduler()
-    scheduler.register_channel("goal", ObjectiveChannelAdapter(goal_backlog, paths=paths))
+    scheduler.register_channel(
+        "goal", ObjectiveChannelAdapter(goal_backlog, paths=paths, autonomous_loop=autonomous_loop),
+    )
     scheduler.register_channel("cron", CronChannelAdapter(cron_scheduler))
     scheduler.register_channel("goal_cycle", GoalCycleChannelAdapter(cron_scheduler))
     return scheduler

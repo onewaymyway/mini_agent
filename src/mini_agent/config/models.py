@@ -1069,6 +1069,18 @@ class CyclePatrolConfig:
     dedupe_cron_skip_alert: bool = True  # [Stage 3/§6.2] cron_skip 信号只覆盖跨越
     # cron.skip_alert_threshold 之前的窗口，避免与 cron 层自己的阈值告警重复；
     # 设 False 退回 Stage 1/2 原始行为（阈值-1 及以上都算命中，不设上界）。
+    review_trigger_enabled: bool = True  # [Track 3] 是否计算"两项搁置方向的
+    # 复查触发信号"（阶段感知资源估算 / 跨 Goal explore 并发治理），见
+    # goal_cron_convergence_and_governance_improvement_plan.md §3。只读统计，
+    # 不影响巡检推送本身；设 False 完全跳过这部分计算。
+    review_trigger_min_recurring_goals: int = 5  # 样本量门槛：recurring Goal
+    # 总数低于这个值时不参与复查判断（避免小样本比例数字失真，见 §6 第 2 条）。
+    review_trigger_explore_alert_ratio: float = 0.3  # 复查信号 1（阶段感知
+    # 资源估算）阈值：explore 阶段且有健康告警的 Goal 占比。
+    review_trigger_explore_concurrency_ratio: float = 0.5  # 复查信号 2（跨
+    # Goal explore 并发治理）阈值：同时处于 explore 阶段的 Goal 占比。
+    review_trigger_consecutive_rounds: int = 4  # 需要连续命中阈值的巡检轮数
+    # 才认为"具备统计显著性"（默认 4 轮 × interval_hours 默认 6 小时 ≈ 1 天）。
 
 
 @dataclass

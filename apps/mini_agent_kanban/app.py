@@ -3312,6 +3312,13 @@ def _render_cycle_health_overview(client: "AgentClient"):
             )
 
         goals = data.get("goals") or []
+        review_triggers = data.get("review_triggers") or {}
+        try:
+            from mini_agent.evolution.cycle_patrol import _review_trigger_messages
+            for msg in _review_trigger_messages(review_triggers):
+                st.info(f"🔎 {msg}")
+        except Exception:
+            pass
         if not goals:
             st.caption("暂无周期性（recurring）Goal，或均处于健康状态。")
             return

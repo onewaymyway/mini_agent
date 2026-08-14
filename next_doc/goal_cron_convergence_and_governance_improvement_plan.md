@@ -1,8 +1,9 @@
 # Goal/Cron 长期任务执行机制收敛与治理改进方案
 
-> 状态：**设计草案 / 待评审**（尚未实施——本文档先把四个方向的方案定下来，
-> 评审通过后再按 Track 拆解实施，遵循既有的"每个 Track 完成后更新文档 +
-> 跑回归"节奏）。
+> 状态：**四个 Track 已全部实施完成**（Track 1：统一调度层 Goal 通道
+> 接入；Track 2：文档状态栏核对；Track 3：复查触发信号；Track 4：一次性
+> Goal 覆盖原则显式化）。各 Track 详细实施记录见对应小节（§1.4/§2.2/
+> §3.4/§4.3）。
 >
 > 触发背景：对项目 goal/cron 相关的十余份 next_doc 方案文档（绑定/触发、
 > 公平调度、执行阶段、诊断+调优、主动巡检+健康总览、产出目录规范）做了
@@ -110,6 +111,43 @@ Goal 通道的实际派发（公平排序 / per-Goal 并发上限 / `paused` 状
    本身的行为不因本次重构产生任何回归（用现有的
    `test_autonomous_loop*.py` 系列验证）。
 
+### 1.4 实施记录
+
+**Track 1 已实施完成。**
+
+- `evolution/autonomous_loop.py`：从 `_tick_maintenance()` 排序循环体
+  抽取 `_trigger_objective_candidate(obj, *, fairness_paused_ids,
+  user_paused_ids) -> bool`（resume_fairness/start 分支选择 +
+  mark_scheduled 记账 + digest 记录，与抽取前逐行等价），
+  `_tick_maintenance()` 循环体改为调用它，行为不变。新增公开方法
+  `trigger_objective_now(objective_id) -> bool`：独立完成 is_running /
+  user_paused / can_start_new / per-Goal 并发上限四项检查后，复用同一个
+  `_trigger_objective_candidate()` 触发，任何内部异常兜底捕获并返回
+  `False`（不向上抛出）。
+- `evolution/unified_task_scheduler.py`：`ObjectiveChannelAdapter.
+  __init__()` 新增 `autonomous_loop` 参数；`execute()` 不再
+  `raise NotImplementedError`，改为委托
+  `self._autonomous_loop.trigger_objective_now(task.task_id)`，未注入
+  或调用异常时返回 `False`（与 `CronChannelAdapter.execute()` 既有异常
+  处理风格一致）。`build_default_scheduler()` 同步新增 `autonomous_loop`
+  参数并透传。模块头部文档字符串同步更新为"P5 第 4 步三个通道均已完成"。
+- `api/routes.py`：`get_self_unified_scheduler_preview()` 里
+  `build_default_scheduler()` 调用透传已有的 `al`（`http_server.
+  autonomous_loop`）变量。
+- 测试：新增 `tests/test_autonomous_loop_trigger_objective_now.py`（11
+  个用例，覆盖 §1.3 验收标准三类场景 + 异常兜底 + fairness 恢复失败
+  等边界情况）；`tests/test_unified_task_scheduler.py` 里断言"execute()
+  抛 NotImplementedError"的旧用例替换为三个新用例（未注入返回 False /
+  委托调用并透传返回值 / 异常兜底）。`test_goal_execution_fairness*.py`
+  /`test_autonomous_loop_decommission_hook.py`/`test_consolidation.py`
+  等既有回归套件（约 130 个相关用例）全部保持通过，未发现
+  `_tick_maintenance()` 行为回归。
+- **仍未做的**（不在本 Track 范围内，符合 §1.2 边界）：
+  `scheduler.unified_dispatch_enabled` 默认值未改动，`_tick_
+  maintenance()` 依然是当前唯一的实际触发入口；`ObjectiveChannelAdapter.
+  execute()` 目前"可以安全调用，但还没有人在调用"，与 `CronChannelAdapter`
+  /`GoalCycleChannelAdapter.execute()` 现状一致。
+
 ## 2. Track 2：goal/cron 相关方案文档状态栏核对
 
 ### 2.1 现状与目标
@@ -139,12 +177,16 @@ Goal 通道的实际派发（公平排序 / per-Goal 并发上限 / `paused` 状
 
 ### 2.2 交付物
 
-- 一份核对清单（可以是本文档的一个附录小节，也可以是独立的
-  `next_doc/goal_cron_docs_status_audit_record.md`，视核对出的问题
-  数量决定放在哪——问题少就直接并进本文档 Track 2 的实施记录小节，
-  问题多单独开一篇方便追溯），列出：文档名 / 核对前状态栏 / 核对结论
-  （一致 / 需修正）/ 修正后状态栏。
-- 对识别出"状态栏需要修正"的文档，直接提交修正。
+- 核对记录：`next_doc/goal_cron_docs_status_audit_record.md`（29 篇文档
+  逐一核对结论）。
+- 对识别出"状态栏需要修正"的文档提交修正——本轮核对发现 1 处：
+  `goal_cron_output_directory_convention_plan.md` 状态栏已修正为
+  "已实施完成"，并同步修正 §4 小标题中"本文档暂不实施"的自相矛盾表述。
+
+**Track 2 已实施完成。** 核对结论：29 篇文档中仅发现上述 1 处不一致，
+其余状态描述与实施记录/代码实际情况一致，详见审计记录文档"结论"小节。
+基于这个结果，不投入自动化核对工具（§2.3 的判断依据成立），后续按需
+人工抽查即可。
 
 ### 2.3 明确不做的事
 
@@ -219,6 +261,30 @@ Stage 1/2/3（能力 C + 能力 D + 本轮的去重/优先级排序改进）已�
   实施时在配置里暴露成可调项，观察第一批真实数据后再决定是否需要
   调整，这本身也是"数据消费先于精确调参"的体现。
 
+### 3.4 实施记录
+
+**Track 3 已实施完成。**
+
+- `config/models.py::CyclePatrolConfig` 新增 5 个配置项
+  （`review_trigger_enabled`/`review_trigger_min_recurring_goals`/
+  `review_trigger_explore_alert_ratio`/`review_trigger_explore_
+  concurrency_ratio`/`review_trigger_consecutive_rounds`），阈值与
+  §3.2 设计一致（30% / 50% / 连续 4 轮 / 最小样本 5）。
+- `evolution/cycle_patrol.py` 新增 `_compute_review_trigger_ratios()`
+  （纯规则统计）+ `_update_review_triggers()`（持久化连续命中轮数到
+  `cycle_patrol_state.json` 的 `review_triggers` 字段）+
+  `_review_trigger_messages()`（转成看板提示文案）。
+- `run_cycle_patrol()` 每轮巡检顺带更新 `review_triggers`（持久化，
+  支持连续轮数累积）；`build_overview_live()`（无快照兜底路径）只报告
+  即时比例，`active` 恒为 `False`（无状态文件无法跨 tick 累积轮数，
+  用 `consecutive_rounds_tracked: False` 标注这一限制）。
+- 看板 `_render_cycle_health_overview()` 在健康总览区块顶部展示
+  `active=True` 的提示文案（`st.info`，🔎 开头），不影响任何调度行为。
+- 详见 `docs/goal-cycle-patrol-guide.md` "复查触发信号"小节（用户可见
+  文档）。测试见 `tests/test_cycle_patrol.py::TestReviewTriggers`（9 个
+  用例：比例计算、样本量门槛、连续命中累积/清零、消息生成、持久化路径
+  与现算路径的 `active` 语义差异、总开关关闭时跳过计算）。
+
 ## 4. Track 4：显式化"一次性 Goal 是否套用某机制"的判断原则
 
 ### 4.1 现状与目标
@@ -257,15 +323,21 @@ Stage 1/2/3（能力 C + 能力 D + 本轮的去重/优先级排序改进）已�
 
 ### 4.3 交付物
 
-- 在 `docs/goal-cron-binding-guide.md`（或看板/评审阶段确定的其它
-  合适位置）新增一个简短小节，把上面这条判断原则写清楚，并列出
-  `cycle_patrol`（不覆盖）和产出目录规范（覆盖）作为两个对照案例。
-- 复查一遍现有 goal/cron 相关机制清单（诊断/调优、执行阶段状态机、
-  公平调度、主动巡检），逐项标注"是否覆盖一次性 Goal"以及依据上面
-  这条原则是否合理——如果发现某个机制的现状与原则推导结果不一致，
-  记录为独立的后续待办，本 Track 本身不代为修改（避免把"写原则"和
-  "按原则改代码"混在一起，前者是文档性工作，后者可能涉及行为变更，
-  应该分开评审）。
+- 在 `docs/goal-cron-binding-guide.md` 新增 §14，把判断原则写清楚，
+  列出 `cycle_patrol`（不覆盖）和产出目录规范（覆盖）作为两个对照案例。
+- 复查现有 goal/cron 相关机制清单，逐项核对与原则是否一致：
+
+| 机制 | 覆盖范围 | 是否符合原则 |
+|---|---|---|
+| `cycle_patrol`（主动巡检） | 仅 `recurring=True` | 符合（价值依赖跨轮趋势） |
+| 产出目录规范 | recurring + 一次性 Goal 均覆盖 | 符合（价值来自子任务间衔接，与是否周期性无关） |
+| `execution_phase`（执行阶段状态机） | 不做 `recurring` 硬性限制，任意 Goal 调用 `load_phase()`/`save_phase()` 均可用 | 符合——阶段状态机概念上依赖"多轮"，但实现上不强行拒绝一次性 Goal 调用，一次性 Goal 由于本身只跑一轮，天然停留在初始阶段，不会产生错误的阶段判断，不需要额外加限制 |
+| `cycle_diagnostics`（单 Goal 诊断） | 对 recurring/一次性 Goal 都可生成报告，仅 `cron_health` 字段在非 recurring 时为空 | 符合——诊断报告本身的价值（展示当前状态）不依赖跨轮，只有其中 `cron_health` 这一个子字段依赖 cron 触发历史，按需为空即可，不需要整体限制 |
+
+复查结论：现有机制的覆盖范围与本 Track 归纳的原则**均一致**，未发现
+需要单独立项调整的不一致项。
+
+**Track 4 已实施完成。**
 
 ### 4.4 明确不做的事
 

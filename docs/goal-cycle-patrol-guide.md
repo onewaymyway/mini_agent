@@ -161,7 +161,19 @@ GET /v1/goals/cycle_diagnostics_overview
   },
   "overview": {
     "generated_at": 1234567890.0,
-    "goals": [ ... ]
+    "goals": [ ... ],
+    "review_triggers": {
+      "phase_aware_resource_estimation": {"consecutive_hits": 2, "last_ratio": 0.35, "active": false},
+      "cross_goal_explore_concurrency": {"consecutive_hits": 4, "last_ratio": 0.55, "active": true},
+      "sample_ok": true,
+      "recurring_goal_count": 8
+    }
+  },
+  "review_triggers": {
+    "phase_aware_resource_estimation": {"consecutive_hits": 2, "last_ratio": 0.35, "active": false},
+    "cross_goal_explore_concurrency": {"consecutive_hits": 4, "last_ratio": 0.55, "active": true},
+    "sample_ok": true,
+    "recurring_goal_count": 8
   }
 }
 ```
@@ -169,7 +181,44 @@ GET /v1/goals/cycle_diagnostics_overview
 `signals` 跟踪每个 Goal 当前"命中中"的问题信号，用于去重节流；信号消失
 （下一轮巡检该 Goal 不再命中任何规则）时对应记录会被清理，下次重新计时。
 `overview` 是能力 D 复用的健康快照，每次巡检（不管有没有命中推送）都会
-更新。
+更新。`review_triggers`（顶层和 `overview` 内各存一份，内容相同，顶层是
+为了方便直接读取而不用剥一层 `overview`）跟踪 [Track 3，见
+`next_doc/goal_cron_convergence_and_governance_improvement_plan.md` §3]
+两项搁置方向"是否具备重新评估的统计条件"，见下方专门小节。
+
+## 复查触发信号（Track 3）
+
+`goal_cron_task_optimization_holistic_plan.md` §5 记录了两项当时"评估
+后决定暂不实现"的方向（阶段感知资源估算接入执行侧、跨 Goal 探索期并发
+治理），理由都是"缺乏真实数据支撑，贸然实现容易引入未校准的策略"。这两
+项本身**在本轮依然不实现**，但巡检每轮顺带做一次纯规则统计（零 LLM
+成本，复用 `overview.goals` 已有的 `execution_phase_mode`/`alert_count`
+字段，不新增采集面），持续观察这两个"当时不做"的判断现在是否还成立：
+
+| 复查信号 | 统计口径 | 默认阈值 | 对应方向 |
+|---|---|---|---|
+| `phase_aware_resource_estimation` | explore 阶段且伴随健康告警的 Goal 占比 | `review_trigger_explore_alert_ratio`（默认 0.3） | 方向 A：阶段感知资源估算 |
+| `cross_goal_explore_concurrency` | 同时处于 explore 阶段的 Goal 占比 | `review_trigger_explore_concurrency_ratio`（默认 0.5） | 方向 D：跨 Goal explore 并发治理 |
+
+两个信号都要求：① recurring Goal 总数 `>= review_trigger_min_recurring_
+goals`（默认 5，避免小样本比例数字失真）；② 比例连续
+`review_trigger_consecutive_rounds`（默认 4，约 1 天）轮巡检都超过阈值
+才会把 `active` 置为 `true`；中途任意一轮未命中，连续计数清零重新累积。
+
+`active=true` 时，看板"🩺 健康总览"区块顶部会出现一条提示文案（`🔎`
+开头），说明当前具备重新评估对应方向的统计条件——**这只是一个提示，不
+会自动触发任何调度行为变更，是否真正立项实施仍然是人工决策**。
+
+`build_overview_live()`（无巡检快照时的现算兜底路径）也会计算即时比例，
+但因为没有状态文件可以跨 tick 累积"连续命中轮数"，`active` 恒为
+`false`（`consecutive_rounds_tracked: false` 标注这一点）——真正的复查
+判断只在巡检持续运行、有快照可读时才会生效。
+
+阈值是初始猜测值，不是精确校准的结果，实施时已经暴露成可调配置项
+（`review_trigger_enabled`/`review_trigger_min_recurring_goals`/
+`review_trigger_explore_alert_ratio`/`review_trigger_explore_
+concurrency_ratio`/`review_trigger_consecutive_rounds`），观察第一批
+真实数据后可以再调整。
 
 ## 实施记录
 
@@ -186,7 +235,15 @@ GET /v1/goals/cycle_diagnostics_overview
 - **Stage 2**（能力 D）：`evolution/cycle_patrol.py::build_overview_live()`
   / `load_overview()` + REST `GET /v1/goals/cycle_diagnostics_overview`
   + 看板 `_render_cycle_health_overview()`。
+- **Stage 3**：`dedupe_cron_skip_alert`（cron_skip 信号与 cron 层告警
+  去重）+ `priority_score`（总览细粒度排序），详见
+  `next_doc/goal_cron_cycle_proactive_patrol_and_health_overview_plan.md`
+  §7。
+- **Track 3**（`goal_cron_convergence_and_governance_improvement_plan.md`
+  §3）：`_compute_review_trigger_ratios()` / `_update_review_triggers()`
+  / `_review_trigger_messages()` + 看板顶部提示文案，详见上方"复查触发
+  信号"小节。
 
 测试：`tests/test_cycle_patrol.py`（模块级，含节流/去重/合并降噪/LLM
-失败回退/一次性 Goal 排除）、
+失败回退/一次性 Goal 排除/复查触发信号）、
 `tests/test_cycle_patrol_overview_routes.py`（REST 端到端）。

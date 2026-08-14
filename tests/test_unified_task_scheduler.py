@@ -79,10 +79,40 @@ class TestObjectiveChannelAdapter(_Base):
         self.assertEqual(tasks[0].title, "child objective")
         self.assertIsNone(tasks[0].due_at)
 
-    def test_execute_raises_not_implemented(self):
+    def test_execute_without_autonomous_loop_returns_false(self):
+        """[Track 1] autonomous_loop 未注入时 execute() 应安全返回 False，
+        不再抛 NotImplementedError（Track 1 之前的旧行为）。"""
         adapter = ObjectiveChannelAdapter(None)
-        with self.assertRaises(NotImplementedError):
-            adapter.execute(SchedulableTask(source="goal", task_id="x"))
+        result = adapter.execute(SchedulableTask(source="goal", task_id="x"))
+        self.assertFalse(result)
+
+    def test_execute_delegates_to_autonomous_loop_trigger(self):
+        """[Track 1] execute() 应委托给 autonomous_loop.trigger_objective_
+        now(task_id)，并把其返回值原样透传。"""
+        calls = []
+
+        class _FakeLoop:
+            def trigger_objective_now(self, objective_id):
+                calls.append(objective_id)
+                return True
+
+        adapter = ObjectiveChannelAdapter(None, autonomous_loop=_FakeLoop())
+        result = adapter.execute(SchedulableTask(source="goal", task_id="obj-42"))
+        self.assertTrue(result)
+        self.assertEqual(calls, ["obj-42"])
+
+    def test_execute_swallows_autonomous_loop_exceptions(self):
+        """[Track 1] autonomous_loop.trigger_objective_now() 抛异常时，
+        execute() 应捕获并返回 False，不向上传播（与 CronChannelAdapter.
+        execute() 的既有异常处理风格一致）。"""
+
+        class _BrokenLoop:
+            def trigger_objective_now(self, objective_id):
+                raise RuntimeError("boom")
+
+        adapter = ObjectiveChannelAdapter(None, autonomous_loop=_BrokenLoop())
+        result = adapter.execute(SchedulableTask(source="goal", task_id="x"))
+        self.assertFalse(result)
 
     def test_poll_due_is_read_only(self):
         """调用 poll_due() 不应该修改任何 GoalNode 字段（比如

@@ -157,6 +157,86 @@ def _overview_entry_for(paths: "AgentPaths", report, signal_types: Optional[list
     }
 
 
+def _compute_review_trigger_ratios(overview_goals: list) -> dict:
+    """[Track 3，goal_cron_convergence_and_governance_improvement_plan.md
+    §3] 纯规则统计，零 LLM 成本，复用 `overview_goals` 里已经在维护的
+    `execution_phase_mode`/`alert_count` 字段，不新增任何采集面。"""
+    total = len(overview_goals)
+    if total == 0:
+        return {
+            "recurring_goal_count": 0,
+            "explore_alert_ratio": 0.0,
+            "explore_concurrency_ratio": 0.0,
+        }
+    explore_goals = [g for g in overview_goals if g.get("execution_phase_mode") == "explore"]
+    explore_alert_goals = [g for g in explore_goals if (g.get("alert_count") or 0) > 0]
+    return {
+        "recurring_goal_count": total,
+        "explore_alert_ratio": len(explore_alert_goals) / total,
+        "explore_concurrency_ratio": len(explore_goals) / total,
+    }
+
+
+def _update_review_triggers(state: dict, ratios: dict, cfg: Optional["CyclePatrolConfig"]) -> dict:
+    """更新 `state["review_triggers"]` 里两个方向各自的连续命中轮数，
+    返回本轮最新的完整状态（供写入 overview 展示）。样本量不足
+    （`recurring_goal_count < review_trigger_min_recurring_goals`）时两个
+    方向的连续命中计数都重置为 0，不参与判断（§6 第 2 条）。"""
+    min_sample = getattr(cfg, "review_trigger_min_recurring_goals", 5) if cfg is not None else 5
+    alert_threshold = getattr(cfg, "review_trigger_explore_alert_ratio", 0.3) if cfg is not None else 0.3
+    concurrency_threshold = getattr(cfg, "review_trigger_explore_concurrency_ratio", 0.5) if cfg is not None else 0.5
+    consecutive_needed = getattr(cfg, "review_trigger_consecutive_rounds", 4) if cfg is not None else 4
+
+    triggers = state.setdefault("review_triggers", {})
+    entry_a = triggers.setdefault(
+        "phase_aware_resource_estimation",
+        {"consecutive_hits": 0, "last_ratio": 0.0, "active": False},
+    )
+    entry_d = triggers.setdefault(
+        "cross_goal_explore_concurrency",
+        {"consecutive_hits": 0, "last_ratio": 0.0, "active": False},
+    )
+
+    sample_ok = ratios.get("recurring_goal_count", 0) >= min_sample
+
+    def _update_one(entry: dict, ratio: float, threshold: float) -> None:
+        entry["last_ratio"] = ratio
+        if sample_ok and ratio >= threshold:
+            entry["consecutive_hits"] = entry.get("consecutive_hits", 0) + 1
+        else:
+            entry["consecutive_hits"] = 0
+        entry["active"] = entry["consecutive_hits"] >= consecutive_needed
+
+    _update_one(entry_a, ratios.get("explore_alert_ratio", 0.0), alert_threshold)
+    _update_one(entry_d, ratios.get("explore_concurrency_ratio", 0.0), concurrency_threshold)
+
+    triggers["sample_ok"] = sample_ok
+    triggers["recurring_goal_count"] = ratios.get("recurring_goal_count", 0)
+    return triggers
+
+
+def _review_trigger_messages(triggers: dict) -> list:
+    """把 state["review_triggers"] 转成看板可以直接展示的提示文案列表，
+    只在 `active=True` 时出现，不 active 时列表为空（不产生任何噪音）。"""
+    messages = []
+    a = triggers.get("phase_aware_resource_estimation") or {}
+    if a.get("active"):
+        messages.append(
+            f"检测到 {a.get('last_ratio', 0.0):.0%} 的周期性 Goal 长期处于 "
+            "explore 阶段且伴随健康告警，可以评估是否需要启动「阶段感知资源"
+            "估算接入执行侧」（见 goal_cron_task_optimization_holistic_"
+            "plan.md §5 方向 A）。"
+        )
+    d = triggers.get("cross_goal_explore_concurrency") or {}
+    if d.get("active"):
+        messages.append(
+            f"检测到 {d.get('last_ratio', 0.0):.0%} 的周期性 Goal 同时处于 "
+            "explore 阶段，可以评估是否需要启动「跨 Goal 探索期并发治理」"
+            "（见 goal_cron_task_optimization_holistic_plan.md §5 方向 D）。"
+        )
+    return messages
+
+
 def _overview_sort_key(g: dict) -> tuple:
     # 先按 severity（红→黄→绿），同一档位内再按 priority_score 降序
     # （§6.4，Stage 3 新增），让"真正紧急"的排在同色区块靠前的位置。
@@ -192,7 +272,27 @@ def build_overview_live(
         has_pending = _has_pending_tuning_proposal(paths, node.id)
         goals.append(_overview_entry_for(paths, report, signal_types, has_pending))
     goals.sort(key=_overview_sort_key)
-    return {"data_source": "live", "generated_at": time.time(), "goals": goals}
+    payload = {"data_source": "live", "generated_at": time.time(), "goals": goals}
+    # [Track 3] 现算路径没有状态文件可以跨 tick 累积"连续命中轮数"，只能
+    # 报告本次即时比例，不参与 active/consecutive_hits 判断（这两个字段
+    # 恒为 0/False）——真正的复查判断只在 run_cycle_patrol() 的快照路径里
+    # 生效，看板应优先展示快照数据，现算路径只是"巡检从未跑过"时的兜底。
+    try:
+        ratios = _compute_review_trigger_ratios(goals)
+        payload["review_triggers"] = {
+            "phase_aware_resource_estimation": {
+                "consecutive_hits": 0, "last_ratio": ratios.get("explore_alert_ratio", 0.0), "active": False,
+            },
+            "cross_goal_explore_concurrency": {
+                "consecutive_hits": 0, "last_ratio": ratios.get("explore_concurrency_ratio", 0.0), "active": False,
+            },
+            "sample_ok": ratios.get("recurring_goal_count", 0) >= 5,
+            "recurring_goal_count": ratios.get("recurring_goal_count", 0),
+            "consecutive_rounds_tracked": False,
+        }
+    except Exception:
+        pass
+    return payload
 
 
 def load_overview(
@@ -216,10 +316,14 @@ def load_overview(
                 "priority_score",
                 g.get("alert_count", 0) * 10 + g.get("cron_consecutive_skip", 0) * 5,
             )
+        review_triggers = overview.get("review_triggers")
+        if review_triggers is not None:
+            review_triggers.setdefault("consecutive_rounds_tracked", True)
         return {
             "data_source": "patrol_snapshot",
             "generated_at": overview.get("generated_at", state.get("last_run_at", 0.0)),
             "goals": goals,
+            "review_triggers": review_triggers,
         }
     return build_overview_live(
         paths, goal_backlog, skip_alert_threshold=skip_alert_threshold,
@@ -377,7 +481,16 @@ def run_cycle_patrol(
         to_push.append(c)
 
     overview_goals.sort(key=_overview_sort_key)
-    state["overview"] = {"generated_at": now, "goals": overview_goals}
+    overview_payload = {"generated_at": now, "goals": overview_goals}
+    if getattr(cfg, "review_trigger_enabled", True):
+        try:
+            ratios = _compute_review_trigger_ratios(overview_goals)
+            triggers = _update_review_triggers(state, ratios, cfg)
+            overview_payload["review_triggers"] = dict(triggers)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.cycle_patrol.run_cycle_patrol.review_triggers")
+    state["overview"] = overview_payload
     state["last_run_at"] = now
 
     if not to_push:
