@@ -149,3 +149,42 @@ Stage 1/2 已经能覆盖"命令行/接口直接传结构化 `param=value`"和"�
   `/agent goals unrecur`，不是调优参数改动）：都会静默返回"未能生成
   草案"，CLI/REST 会提示改用具体的 `param=value` 命令，不会报错中断，也
   不会强行猜一个可能有害的改动。
+
+## 看板（Streamlit）里的交互方式
+
+CLI/REST 之外，`apps/mini_agent_kanban` 也提供了同一套能力的图形化入口，
+在每张 Goal 卡片（非 Objective）上追加一个 `🩺 诊断与调优` 折叠区，跟
+`🧭 执行阶段` 徽章是同级的常驻入口，不需要先绑定周期性才能看到。
+
+**设计取舍**（对应"看板里怎么操作比较合理"这个问题）：
+
+1. **复用已有的"徽章 + 默认折叠"范式**，不新开一个独立 Tab/页面。诊断
+   和调优都是围绕单个 Goal 的操作，跟着卡片走，用户不用在"看板"和某个
+   独立的"诊断中心"之间来回切换、重新定位到同一个 Goal。折叠区标题上的
+   🟢/🟡/🔴 徽章直接反映健康状态，不需要展开就能"扫一眼知道要不要管"——
+   这是诊断报告最核心的价值，如果还要点开才能看到红绿灯，价值会打折扣。
+2. **诊断报告本身随卡片渲染就取一次**（跟执行阶段徽章、产出目录折叠区
+   同一策略）——纯本地文件聚合，成本可控，不需要额外的"加载"按钮。
+   **LLM 自然语言摘要不会跟着自动生成**：那是要真正花一次 LLM 调用的，
+   看板上可能同时渲染几十张卡片，不应该因为卡片数量触发一堆后台 LLM
+   请求，所以做成独立的"🤖 生成自然语言摘要"按钮，用户主动点了才算一次。
+3. **调优草案完整复用已有的 draft → confirmed → applied 状态机和 REST
+   接口**，看板侧不重新发明一套逻辑；每张草案卡片按当前状态只展示对应
+   能做的操作（draft → 确认/拒绝，confirmed → 应用/拒绝），已应用/已拒绝
+   的进历史折叠区，不占主要空间。
+4. **手动生成草案时按参数类型给对应控件**（`execution_phase` 是下拉框、
+   `priority` 是滑块、`task_template` 是文本域），而不是让用户填自由文本
+   `param=value`——CLI 场景下打错参数名/值格式只是重新敲一遍命令，看板
+   表单提交出错却不容易定位到底错在哪，所以从交互层面把"参数名拼错"
+   这类问题排除掉，而不是提交后才靠后端报错。自然语言意见输入框依然
+   保留（Stage 3），是否真的生效取决于服务端配置开关，看板不重复维护
+   一份"是否已开启"的判断逻辑，未开启时原样展示后端返回的错误信息。
+5. **只在 Goal 层级渲染**，不出现在 Objective 卡片上——调优的白名单参数
+   全部是挂在 Goal 上的概念，Objective 没有对应语义。
+
+对应的看板代码：`apps/mini_agent_kanban/app.py::_render_goal_cycle_
+diagnostics_widget()` / `_render_goal_tuning_widget()`，`client.py` 里
+`get_cycle_diagnostics` / `list_tuning_proposals` / `suggest_tuning_
+proposal` / `create_tuning_proposal` / `confirm_tuning_proposal` /
+`apply_tuning_proposal` / `reject_tuning_proposal` 这一组方法，均直接
+调用上面列出的 REST 接口，没有引入新的后端逻辑。

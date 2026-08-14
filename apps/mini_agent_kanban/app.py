@@ -2643,6 +2643,273 @@ def _render_goal_execution_phase_widget(client: AgentClient, goal_id: str, key_p
                     st.rerun()
 
 
+# [goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 1/2/3 看板
+# 集成] 参数值输入控件——跟白名单参数一一对应，而不是让用户填自由文本
+# `param=value`：CLI 场景下打错参数名/值格式只是重新敲一遍命令，看板场景
+# 里"表单提交出错却不知道错哪"体验更差，所以每个参数配一个贴合取值范围的
+# 控件（下拉框/滑块/文本域），从交互层面排除掉"参数名拼错""execution_phase
+# 填了白名单外的字符串"这类问题，而不是提交后才靠后端校验报错。
+_TUNING_PARAM_LABELS = {
+    "schedule": "🕐 调度间隔 (schedule)",
+    "priority": "🔢 优先级 (priority)",
+    "execution_phase": "🧭 执行阶段 (execution_phase)",
+    "task_template": "📝 任务模板 (task_template)",
+    "regenerate_spec": "♻️ 重新生成执行规范草稿 (regenerate_spec)",
+}
+
+
+def _render_tuning_change_value_input(param: str, key_prefix: str, goal_id: str):
+    """按参数名渲染对应取值控件，返回 (value, disabled)——disabled=True 时
+    调用方应该禁用提交按钮（比如 regenerate_spec 不需要用户填值，但仍要
+    走同一套草案确认流程，不代表'什么都不用做'）。"""
+    if param == "schedule":
+        return st.text_input(
+            "新的调度表达式", placeholder="interval:3600 或 cron:0 9 * * *",
+            key=f"{key_prefix}tune_val_schedule_{goal_id}",
+        ), False
+    if param == "priority":
+        return st.slider(
+            "新优先级", 0, 100, 50, key=f"{key_prefix}tune_val_priority_{goal_id}",
+        ), False
+    if param == "execution_phase":
+        return st.selectbox(
+            "新阶段", ["auto", "explore", "converge", "stable", "tidy"],
+            format_func=lambda m: _PHASE_LABELS.get(m, m),
+            key=f"{key_prefix}tune_val_phase_{goal_id}",
+        ), False
+    if param == "task_template":
+        return st.text_area(
+            "新的任务模板文本（cron 触发时注入的任务描述）", height=80,
+            key=f"{key_prefix}tune_val_template_{goal_id}",
+        ), False
+    # regenerate_spec：固定为 true，不需要用户填值——只是"要不要触发重新
+    # 生成一份草稿"这个二元决定，值本身没有意义。
+    st.caption("提交后会调用『重新生成执行规范草稿』，只生成新草稿，不自动确认——"
+               "确认仍需要在『⏰ 周期性设置』折叠区里手动操作。")
+    return True, False
+
+
+def _render_tuning_proposal_card(client: AgentClient, goal_id: str, p: dict, key_prefix: str) -> None:
+    """渲染单条草案：改动 diff + 状态相应的操作按钮（draft→确认/拒绝，
+    confirmed→应用/拒绝），与 CLI `_print_tuning_proposal()` 展示同样的
+    字段，保证两端看到的信息一致。"""
+    status = p.get("status", "draft")
+    status_label = {"draft": "📝 草稿", "confirmed": "✅ 已确认（待应用）"}.get(status, status)
+    source_label = "👤 用户提出" if p.get("source") == "user_request" else "⚙️ 规则触发"
+    with st.container(border=True):
+        st.caption(f"{status_label}　·　{source_label}　·　`{p.get('id', '')}`")
+        for c in p.get("proposed_changes", []):
+            reason = f"　—　{c.get('reason')}" if c.get("reason") else ""
+            st.markdown(
+                f"**{_TUNING_PARAM_LABELS.get(c.get('param'), c.get('param'))}**："
+                f"`{c.get('from')}` → `{c.get('to')}`{reason}"
+            )
+        bcol1, bcol2 = st.columns(2)
+        if status == "draft":
+            if bcol1.button("✅ 确认草案", key=f"{key_prefix}tune_confirm_{p.get('id')}"):
+                res = client.confirm_tuning_proposal(goal_id, p.get("id"))
+                if res and res.get("_error"):
+                    st.error(f"确认失败：{res['_error']}")
+                else:
+                    st.rerun()
+        elif status == "confirmed":
+            if bcol1.button("🚀 应用（立即生效）", key=f"{key_prefix}tune_apply_{p.get('id')}"):
+                res = client.apply_tuning_proposal(goal_id, p.get("id"))
+                if res and res.get("_error"):
+                    st.error(f"应用失败：{res['_error']}")
+                else:
+                    applied = res.get("proposal", {})
+                    fail_results = [
+                        r for r in applied.get("apply_results", []) if not r.get("ok", True)
+                    ]
+                    if fail_results:
+                        for r in fail_results:
+                            st.warning(f"⚠️ `{r.get('param')}` 应用失败：{r.get('error', '未知原因')}")
+                    st.toast("✅ 调优草案已应用", icon="✅")
+                    st.rerun()
+        if status in ("draft", "confirmed"):
+            if bcol2.button("❌ 拒绝", key=f"{key_prefix}tune_reject_{p.get('id')}"):
+                res = client.reject_tuning_proposal(goal_id, p.get("id"))
+                if res and res.get("_error"):
+                    st.error(f"拒绝失败：{res['_error']}")
+                else:
+                    st.rerun()
+
+
+def _render_goal_tuning_widget(client: AgentClient, goal_id: str, key_prefix: str = "") -> None:
+    """[Stage 2/3 看板集成] 调优草案区块：待处理草案列表 + 两种生成入口
+    （规则建议 / 手动指定参数，Stage 3 自然语言意见需要后端配置开关，未
+    开启时后端会返回明确的 400 错误，这里原样展示，不做二次判断）。
+    """
+    resp = client.list_tuning_proposals(goal_id)
+    if resp and resp.get("_error"):
+        st.caption(f"调优草案加载失败：{resp['_error']}")
+        return
+    proposals = (resp or {}).get("proposals") or []
+    pending = [p for p in proposals if p.get("status") in ("draft", "confirmed")]
+    history = [p for p in proposals if p.get("status") in ("applied", "rejected")]
+
+    if pending:
+        for p in pending:
+            _render_tuning_proposal_card(client, goal_id, p, key_prefix)
+    else:
+        st.caption("暂无待处理的调优草案。")
+
+    acol1, acol2 = st.columns(2)
+    if acol1.button("🔍 基于诊断规则生成建议", key=f"{key_prefix}tune_suggest_{goal_id}",
+                     help="不调用 LLM，只根据诊断报告里已有的规则信号（比如 cron 连续跳过）判断"):
+        res = client.suggest_tuning_proposal(goal_id)
+        if res and res.get("_error"):
+            st.error(f"生成失败：{res['_error']}")
+        elif not (res or {}).get("proposal"):
+            st.toast("当前没有规则命中的建议", icon="ℹ️")
+        else:
+            st.rerun()
+
+    with st.expander("✍️ 手动生成草案", expanded=False):
+        # [Stage 3] 自然语言意见——是否真的生效取决于服务端配置开关
+        # cycle_tuning.tuning_llm_parse_enabled，未开启时后端返回 400，
+        # 这里直接展示后端的错误信息，不在看板侧重复维护一份"是否开启"的
+        # 判断逻辑（避免两处状态不一致）。
+        nl_text = st.text_area(
+            "自然语言改进意见（可选，需要管理员已开启该功能）", height=60,
+            placeholder="例如：这个任务最近老是被跳过，帮我放宽一下触发间隔",
+            key=f"{key_prefix}tune_nl_{goal_id}",
+        )
+        if st.button("提交自然语言意见", key=f"{key_prefix}tune_nl_submit_{goal_id}"):
+            if not nl_text.strip():
+                st.error("意见内容不能为空")
+            else:
+                res = client.create_tuning_proposal(goal_id, nl_text=nl_text.strip())
+                if res and res.get("_error"):
+                    st.error(f"提交失败：{res['_error']}")
+                elif not (res or {}).get("proposal"):
+                    st.warning("未能把这条意见解析成结构化改动，请改用下面的『指定参数改动』。")
+                else:
+                    st.rerun()
+
+        st.markdown("---")
+        st.caption("或直接指定要改的参数（白名单内，与 CLI `tune param=value` 等价）：")
+        from mini_agent.perception.cycle_tuning import WHITELIST_PARAMS
+        param_choice = st.selectbox(
+            "参数", list(WHITELIST_PARAMS),
+            format_func=lambda k: _TUNING_PARAM_LABELS.get(k, k),
+            key=f"{key_prefix}tune_param_{goal_id}",
+        )
+        value, _ = _render_tuning_change_value_input(param_choice, key_prefix, goal_id)
+        reason = st.text_input("理由（可选，会记录进草案里）", key=f"{key_prefix}tune_reason_{goal_id}")
+        if st.button("生成草案", key=f"{key_prefix}tune_manual_submit_{goal_id}"):
+            changes = [{"param": param_choice, "to": value, "reason": reason}]
+            res = client.create_tuning_proposal(goal_id, changes=changes)
+            if res and res.get("_error"):
+                st.error(f"生成失败：{res['_error']}")
+            else:
+                st.rerun()
+
+    if history:
+        with st.expander(f"🗂️ 历史草案（{len(history)}）", expanded=False):
+            for p in history[-5:]:
+                status_label = {"applied": "✅ 已应用", "rejected": "❌ 已拒绝"}.get(
+                    p.get("status"), p.get("status")
+                )
+                summary = "；".join(
+                    f"{c.get('param')}→{c.get('to')}" for c in p.get("proposed_changes", [])
+                )
+                st.caption(f"{status_label}　`{p.get('id', '')}`　{summary}")
+
+
+def _render_goal_cycle_diagnostics_widget(client: AgentClient, goal_id: str, key_prefix: str = "") -> None:
+    """[goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 1/2/3
+    看板集成] Goal 卡片上的跨轮次诊断报告 + 调优草案入口。
+
+    交互设计取舍（对应用户的问题"看板里怎么做这件事合理"）：
+      1. 复用已有的\"badge + 默认折叠 expander\"范式（与执行阶段徽章
+         `_render_goal_execution_phase_widget` 同款），而不是新开一个独立
+         Tab——诊断/调优是围绕单个 Goal 的操作，跟着 Goal 卡片走，用户不用
+         在\"看板\"和\"诊断中心\"之间切换、重新定位到同一个 Goal。
+      2. 诊断报告本身走跟 execution_phase/output_manifests 一致的\"随卡片
+         渲染就取一次\"（纯本地文件聚合，成本跟读一次 goals.json 相当），
+         徽章直接反映健康状态（🟢/🟡/🔴），不需要用户先展开才知道\"这个
+         Goal 是不是有问题\"——诊断的核心价值就是\"扫一眼就知道要不要管\"，
+         如果还要点开才能看到红绿灯，这个价值就打了折扣。
+      3. LLM 自然语言摘要（Stage 3）**不**跟着卡片自动生成——那是要花一次
+         LLM 调用的，扫视整个看板时不应该因为卡片多而触发一堆后台 LLM
+         请求；改成按钮触发，用户主动点了才算一次。
+      4. 调优草案的生成/确认/应用完整复用已有的 draft→confirm→apply 状态机
+         和 REST 接口，不在看板侧另起一套逻辑；表单按参数类型给对应控件
+         （下拉框/滑块/文本域）而不是自由文本 `param=value`，让看板用户
+         不需要记参数名和取值格式，出错概率比 CLI 自由文本更低。
+      5. 只在 Goal 层级（非 Objective）渲染——调优的白名单参数
+         （schedule/priority/execution_phase/task_template/regenerate_spec）
+         全部是挂在 Goal 上的概念，Objective 没有对应语义。
+    读取失败时静默不展示，不影响卡片其它内容（与 execution_phase 同一
+    降级策略）。
+    """
+    if not goal_id:
+        return
+    resp = client.get_cycle_diagnostics(goal_id)
+    if not resp or resp.get("_error"):
+        return
+    diag = (resp or {}).get("diagnostics") or {}
+    if not diag.get("found", True):
+        return
+
+    alerts = diag.get("recent_health_alerts") or []
+    cron_health = diag.get("cron_health") or {}
+    # 徽章：有 alert 就是黄，cron 健康信号里标了 unhealthy/critical 一类
+    # 才升级到红——具体判定逻辑完全信任后端 `check_phase_health()` /
+    # `cron_health` 已经算好的结果，看板不重新发明健康判定标准。
+    severity = str(cron_health.get("status", "")).lower()
+    if severity in ("unhealthy", "critical", "failing"):
+        health_icon = "🔴"
+    elif alerts:
+        health_icon = "🟡"
+    else:
+        health_icon = "🟢"
+
+    with st.expander(f"{health_icon} 诊断与调优", expanded=False):
+        st.caption(
+            f"已完成 {diag.get('cycle_count', 0)} 轮　·　"
+            f"阶段：{_PHASE_LABELS.get(diag.get('execution_phase_mode', 'auto'), diag.get('execution_phase_mode', 'auto'))}"
+            f"{'🔒' if diag.get('execution_phase_locked') else ''}"
+            f"　·　状态：{diag.get('status', '-')}"
+        )
+        if alerts:
+            for a in alerts:
+                st.warning(f"⚠️ {a.get('message', a) if isinstance(a, dict) else a}")
+        if cron_health:
+            ch_msg = cron_health.get("message") or cron_health.get("status") or ""
+            if ch_msg:
+                st.caption(f"⏰ cron 健康：{ch_msg}")
+
+        summary_key = f"{key_prefix}diag_llm_summary_{goal_id}"
+        if st.button("🤖 生成自然语言摘要", key=f"{key_prefix}diag_summarize_btn_{goal_id}",
+                     help="需要管理员已开启配置 cycle_tuning.diagnostics_llm_summary_enabled"):
+            resp2 = client.get_cycle_diagnostics(goal_id, summarize=True)
+            summary = ((resp2 or {}).get("diagnostics") or {}).get("llm_summary")
+            st.session_state[summary_key] = summary or "（未生成——功能未开启，或本次 LLM 调用未返回有效结果）"
+        if summary_key in st.session_state:
+            st.info(st.session_state[summary_key])
+
+        recent = diag.get("recent_cycle_summaries") or []
+        if recent:
+            with st.expander(f"最近几轮产出（{len(recent)}）", expanded=False):
+                for item in reversed(recent[-5:]):
+                    label = item.get("label") or item.get("cycle") or ""
+                    text = item.get("summary") or item.get("progress_notes") or ""
+                    st.caption(f"`{label}` {text}")
+
+        mechanism_notes = diag.get("mechanism_notes") or []
+        if mechanism_notes:
+            with st.expander("机制说明", expanded=False):
+                for note in mechanism_notes:
+                    st.caption(f"- {note}")
+
+        st.markdown("---")
+        st.markdown("##### 🔧 调优草案")
+        _render_goal_tuning_widget(client, goal_id, key_prefix=key_prefix)
+
+
 def _render_goal_card(
     client: AgentClient, n: dict, status_key: str, indent: bool = False, note: str = "",
     execution: Optional[dict] = None, cron_next_run_by_id: Optional[dict] = None,
@@ -2764,6 +3031,13 @@ def _render_goal_card(
     # 渲染，Objective 卡片不重复展示（阶段是挂在 Goal 上的概念）。
     if n.get("level") != "objective":
         _render_goal_execution_phase_widget(client, n.get("id", ""), key_prefix=key_prefix)
+
+    # [goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 1/2/3
+    # 看板集成] 跟执行阶段徽章同级——诊断/调优是"围绕这个 Goal 的操作"，不是
+    # "周期性设置"的子项，一次性 Goal（未绑定 cron）也一样有阶段/健康信号
+    # 可看，不应该只在绑定了周期性之后才暴露入口。
+    if n.get("level") != "objective":
+        _render_goal_cycle_diagnostics_widget(client, n.get("id", ""), key_prefix=key_prefix)
 
     if execution is not None:
         _render_objective_execution_detail(client, execution, key_prefix=key_prefix)

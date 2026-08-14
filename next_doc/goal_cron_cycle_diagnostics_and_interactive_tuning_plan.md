@@ -33,6 +33,14 @@
 > `tests/test_cycle_diagnostics.py::TestSummarizeReportWithLLM`、
 > `tests/test_cycle_tuning.py::TestParseNLRequestToChanges` /
 > `TestBuildTuningProposalFromNL`。
+> **看板集成**：CLI/REST 之外，`apps/mini_agent_kanban` 也接上了同一套
+> 能力——每张 Goal 卡片新增 `🩺 诊断与调优` 折叠区（`app.py::_render_goal_
+> cycle_diagnostics_widget()` / `_render_goal_tuning_widget()` /
+> `_render_tuning_proposal_card()`，`client.py` 新增 7 个方法），交互设计
+> 取舍见[调优使用指南「看板里的交互方式」](../docs/goal-cycle-tuning-guide.md#看板streamlit里的交互方式)。
+> 全部复用已有 REST 接口，未新增后端逻辑；REST 层此前只有模块级单元测试、
+> 缺少经过真实路由的端到端覆盖，一并补上
+> `tests/test_cycle_diagnostics_tuning_routes.py`。
 > 触发背景：用户提出，对于周期性执行的 Goal/cron 任务，有时候需要的不是
 > "某一次执行跑得怎么样"，而是**"这个任务整体跑得怎么样"**——所有轮次
 > 的情况、当前是否健康、用的目录结构和机制是什么；看完这份整体状况后，

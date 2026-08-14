@@ -440,6 +440,37 @@ class AgentClient:
     def unlock_execution_phase(self, goal_id: str):
         return self._post(f"/goals/{goal_id}/execution_phase/unlock")
 
+    # ── 看板：Goal 跨轮次诊断报告 + 交互式调优（goal_cron_cycle_diagnostics_
+    # and_interactive_tuning_plan.md Stage 1/2/3）────────────────────────────
+    def get_cycle_diagnostics(self, goal_id: str, summarize: bool = False):
+        params = {"summarize": "true"} if summarize else None
+        return self._get(f"/goals/{goal_id}/cycle_diagnostics", params=params)
+
+    def list_tuning_proposals(self, goal_id: str):
+        return self._get(f"/goals/{goal_id}/tuning_proposals")
+
+    def suggest_tuning_proposal(self, goal_id: str):
+        return self._post(f"/goals/{goal_id}/tuning_proposals/suggest")
+
+    def create_tuning_proposal(self, goal_id: str, changes: list | None = None,
+                                nl_text: str = "", source: str = "user_request"):
+        # changes 和 nl_text 二选一（与 REST 层约定一致，见 routes.py
+        # create_tuning_proposal 的文档字符串）。
+        if nl_text:
+            body = {"nl_text": nl_text}
+        else:
+            body = {"changes": changes or [], "source": source}
+        return self._post(f"/goals/{goal_id}/tuning_proposals", body)
+
+    def confirm_tuning_proposal(self, goal_id: str, proposal_id: str):
+        return self._post(f"/goals/{goal_id}/tuning_proposals/{proposal_id}/confirm")
+
+    def apply_tuning_proposal(self, goal_id: str, proposal_id: str):
+        return self._post(f"/goals/{goal_id}/tuning_proposals/{proposal_id}/apply")
+
+    def reject_tuning_proposal(self, goal_id: str, proposal_id: str, reason: str = ""):
+        return self._post(f"/goals/{goal_id}/tuning_proposals/{proposal_id}/reject", {"reason": reason})
+
     # ── 看板：Objective 执行操作（Track D）+ 全局待办中心（Track A）───
     def cancel_objective(self, execution_id: str):
         return self._post(f"/objectives/{execution_id}/cancel")

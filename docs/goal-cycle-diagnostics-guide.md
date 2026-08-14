@@ -107,3 +107,10 @@ task_template/重新生成执行规范。
 状态、最近几轮摘要），不会额外读取原始产出内容，控制 token 成本，也
 避免摘要"编造"报告里没有的事实——见
 `perception/cycle_diagnostics.py::summarize_report_with_llm()`。
+
+## 看板入口
+
+`apps/mini_agent_kanban` 里每张 Goal 卡片都有一个 `🩺 诊断与调优` 折叠区
+（跟 `🧭 执行阶段` 徽章同级），展开即是本页描述的诊断报告的图形化版本，
+含健康徽章、自然语言摘要按钮，以及下方的调优草案操作区。交互设计的完整
+说明见[调优使用指南](goal-cycle-tuning-guide.md#看板streamlit里的交互方式)。
