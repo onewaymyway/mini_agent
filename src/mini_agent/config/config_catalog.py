@@ -289,6 +289,7 @@ _NESTED_BLOCKS = [
     ("autonomy", "自主性调度 Autonomy", "🤖", "autonomy", _models.AutonomyConfig, {}),
     ("observability", "可观测性", "📊", "observability", _models.ObservabilityConfig, {}),
     ("cycle_tuning", "周期任务诊断与调优 LLM 增强", "🩺", "cycle_tuning", _models.CycleTuningConfig, {}),
+    ("cycle_patrol", "周期任务主动巡检推送", "🚨", "cycle_patrol", _models.CyclePatrolConfig, {}),
     ("execution_phase", "执行阶段进展趋势判定", "🧭", "execution_phase", _models.ExecutionPhaseConfig, {}),
 ]
 

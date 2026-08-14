@@ -1,6 +1,19 @@
 # 周期性 Goal/Cron 任务的主动巡检推送与全局健康总览设计方案
 
-> 状态：**设计阶段，尚未实施**。
+> 状态：**Stage 1（能力 C：主动巡检 + 推送）/ Stage 2（能力 D：看板全局
+> 健康总览）均已实施完成**。实现见 `config/models.py::CyclePatrolConfig`
+> + `evolution/cycle_patrol.py` + `AutonomousLoop._tick_maintenance()`
+> （接入点与方案 §2.1 描述有一处偏差，见下方"实施偏差说明"）+ REST
+> `GET /v1/goals/cycle_diagnostics_overview` + 看板"🩺 健康总览"区块。
+> 用户指南见 [`docs/goal-cycle-patrol-guide.md`](../docs/goal-cycle-patrol-guide.md)，
+> 测试见 `tests/test_cycle_patrol.py` / `tests/test_cycle_patrol_overview_routes.py`。
+>
+> **实施偏差说明**：§2.1 建议巡检挂在 `AutonomousLoop._tick_passive()`，
+> 但该方法体在代码层面有强制边界——不引用 `GoalBacklog` 任何方法（见
+> `evolution/autonomous_loop.py` 模块头部注释）。巡检需要遍历所有
+> recurring Goal，因此实际接入点改为 `_tick_maintenance()`（passive 的
+> 超集档位），与同文件里 `goal_relevance_candidate`/`reap_finished_
+> cycles` 是同一档位边界理由，不是遗漏。
 
 > 与 [`goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md`](goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md)
 > 是同一条主线的延续——那份方案交付的诊断报告（能力 A）/ 交互式调优

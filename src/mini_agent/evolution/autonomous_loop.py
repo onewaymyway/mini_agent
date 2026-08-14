@@ -310,6 +310,43 @@ class AutonomousLoop:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.reap_finished_cycles')
             pass
 
+        # ── 周期性 Goal/Cron 任务主动巡检推送（能力 C，见 next_doc/
+        # goal_cron_cycle_proactive_patrol_and_health_overview_plan.md §2）──
+        # 放在 _tick_maintenance() 而不是方案文档字面提到的 _tick_passive()：
+        # 巡检需要遍历 GoalBacklog 里所有 recurring Goal，而 _tick_passive()
+        # 按本文件顶部注释的既有边界"不引用 GoalBacklog 任何方法"，与
+        # goal_relevance_candidate/reap_finished_cycles 是同一档位边界
+        # 理由，见上面两段注释。`run_cycle_patrol()` 内部已经做了间隔
+        # 节流 + 去重冷却，本方法体只负责在命中时把文案交给 InputQueue
+        # （NotificationDispatcher 通道已经在函数内部调用过）。总开关
+        # 默认关闭，读取配置本身就是零成本判断。
+        try:
+            cycle_patrol_cfg = getattr(self._cfg, "cycle_patrol", None)
+            if cycle_patrol_cfg is not None and getattr(cycle_patrol_cfg, "enabled", False):
+                from mini_agent.evolution.cycle_patrol import run_cycle_patrol
+                llm_ask = None
+                if getattr(cycle_patrol_cfg, "llm_enabled", True) and self._llm_helper_provider is not None:
+                    try:
+                        helper = self._llm_helper_provider()
+                    except Exception:
+                        helper = None
+                    if helper is not None:
+                        llm_ask = lambda prompt: helper.ask(prompt)
+                push = run_cycle_patrol(
+                    self._paths, self._goal_backlog, cycle_patrol_cfg, llm_ask=llm_ask,
+                    app_cfg=self._cfg,
+                )
+                if push is not None and self._input_queue is not None:
+                    self._input_queue.enqueue(
+                        message=push["body"],
+                        initiator="scheduled",
+                        meta=push["meta"],
+                    )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.cycle_patrol')
+            pass
+
         # [daemon_task_hang_recovery_and_watchdog_hardening_plan.md 阶段一]
         # CronJobRunner：回收卡死超过有效超时阈值的 cron job，代替永远
         # 不会执行到的 finally 释放并发许可，使其可以被下一次到期重新

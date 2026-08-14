@@ -1051,6 +1051,24 @@ class ExecutionPhaseConfig:
 
 
 @dataclass
+class CyclePatrolConfig:
+    """[next_doc/goal_cron_cycle_proactive_patrol_and_health_overview_plan.md
+    §2.7] 能力 C：周期性 Goal/Cron 任务的主动巡检 + 推送。总开关默认关闭，
+    对现有部署零影响；打开后按 `interval_hours` 节流，只巡检
+    `recurring=True` 的 Goal，规则先筛出候选、命中才可能调用 LLM 生成
+    摘要/合并降噪（`llm_enabled` 控制的是"命中后要不要用 LLM 呈现"，
+    不是"巡检本身是否依赖 LLM"，规则筛不出候选时永远不产生 LLM 调用）。
+    """
+
+    enabled: bool = False              # 总开关，默认关闭
+    interval_hours: float = 6.0        # 巡检间隔（不是 tick 间隔）
+    llm_enabled: bool = True           # 命中候选时是否用 LLM 生成摘要/合并降噪
+    max_push_per_run: int = 3          # 超过则合并降噪为一条
+    push_cooldown_hours: float = 24.0  # 同一 Goal 同一信号的推送冷却时间
+    generate_tuning_drafts: bool = True  # 命中规则建议时是否顺带生成调优草案（§2.4）
+
+
+@dataclass
 class TurnJudgeConfig:
     """[SYS-TURN-JUDGE] 轮次守门员配置：每轮对话结束、真正进入"等待用户输入"之前，
     先让一个轻量 judge agent 核查一次——这是主 Agent 真的完成了、需要真人介入，
@@ -2339,6 +2357,8 @@ class AppConfig:
     goal_execution_spec: GoalExecutionSpecConfig = field(default_factory=GoalExecutionSpecConfig)
     execution_phase: ExecutionPhaseConfig = field(default_factory=ExecutionPhaseConfig)
     cycle_tuning: CycleTuningConfig = field(default_factory=CycleTuningConfig)
+    # [goal_cron_cycle_proactive_patrol_and_health_overview_plan.md §2.7]
+    cycle_patrol: CyclePatrolConfig = field(default_factory=CyclePatrolConfig)
     turn_judge: TurnJudgeConfig  = field(default_factory=TurnJudgeConfig)
     env_info:   EnvInfoConfig    = field(default_factory=EnvInfoConfig)
     workdir_knowledge: WorkdirKnowledgeConfig = field(default_factory=WorkdirKnowledgeConfig)

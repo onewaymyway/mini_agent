@@ -501,6 +501,17 @@ class AgentPaths:
         return self.workdir_dir / "attention_mismatch_state.json"
 
     @property
+    def cycle_patrol_state_path(self) -> Path:
+        """<project_root>/.agent/cycle_patrol_state.json — 能力 C（主动巡检）
+        的运行状态：上次巡检时间 `last_run_at` + 每个 recurring Goal 当前
+        "命中中"的问题信号跟踪（`first_detected_at`/`last_pushed_at`/
+        `push_count`），结构与 `attention_mismatch_state_path` 同构，见
+        next_doc/goal_cron_cycle_proactive_patrol_and_health_overview_plan.md
+        §2.1/§2.5。同时也是能力 D（全局健康总览）优先复用的数据源（§3.1）。
+        """
+        return self.workdir_dir / "cycle_patrol_state.json"
+
+    @property
     def decision_candidates_pending_path(self) -> Path:
         """<project_root>/.agent/decision_candidates_pending.jsonl — 决策候选待批量落盘队列。
 

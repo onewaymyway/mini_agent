@@ -247,6 +247,11 @@ def _build_nested_blocks() -> list:
         # Stage 3] 诊断报告 LLM 摘要 / 调优草案 LLM 自然语言解析两个开关，
         # 均默认 False，走通用加载机制。
         NestedBlockSpec("cycle_tuning", _m.CycleTuningConfig),
+        # [next_doc/goal_cron_cycle_proactive_patrol_and_health_overview_
+        # plan.md §2.7] 能力 C 的主动巡检配置块，走通用加载机制，第一步
+        # 就注册，避免重演本文件头部提到的"新增子配置块忘了接入 loader.py"
+        # 问题。
+        NestedBlockSpec("cycle_patrol", _m.CyclePatrolConfig),
         # [next_doc/goal_stuck_stats_and_llm_progress_judge_plan.md §2 遗留
         # 缺陷修复] `ExecutionPhaseConfig`（`progress_trend_llm_enabled`）
         # 自引入以来一直只是 `AppConfig` 上的一个 dataclass 字段，`loader.py`

@@ -3277,8 +3277,73 @@ def _render_objective_completion_trend(client: "AgentClient"):
         c3.metric("平均重试次数", latest.get("avg_retry_count", 0))
 
 
+def _render_cycle_health_overview(client: "AgentClient"):
+    """[能力 D，见 next_doc/goal_cron_cycle_proactive_patrol_and_health_
+    overview_plan.md §3.3] 看板顶部跨 recurring Goal 的健康总览区块。数据
+    优先来自能力 C 的巡检快照（`data_source="patrol_snapshot"`），巡检未
+    开启时后端自动退化为现算（`data_source="live"`），本函数不区分两条
+    路径的渲染逻辑，只是标注一下数据来源和更新时间，避免用户误以为总览
+    是绝对实时的（§3.3 最后一条）。
+
+    每行提供一个"🔍 定位"按钮，复用已有的
+    `st.session_state["kanban_focus_node_id"]` 跳转机制（focus_node 那段
+    代码已经存在，这里只需要设置这个 session_state）。
+    """
+    with st.expander("🩺 健康总览", expanded=False):
+        try:
+            data = client.get_cycle_diagnostics_overview() or {}
+        except Exception as e:
+            st.caption(f"健康总览加载失败：{e}")
+            return
+        if data and "_error" in data:
+            st.caption(f"健康总览加载失败：{data['_error']}")
+            return
+
+        data_source = data.get("data_source", "live")
+        generated_at = data.get("generated_at") or 0
+        if data_source == "patrol_snapshot" and generated_at:
+            age_min = max(0, int((time.time() - generated_at) / 60))
+            st.caption(f"最近一次巡检：{age_min} 分钟前")
+        else:
+            st.caption(
+                "实时计算（未开启主动巡检）。开启主动巡检后，这里会显示"
+                "最近一次后台巡检的结果，无需每次打开看板都重新计算——"
+                "详见 `cycle_patrol.enabled` 配置项。"
+            )
+
+        goals = data.get("goals") or []
+        if not goals:
+            st.caption("暂无周期性（recurring）Goal，或均处于健康状态。")
+            return
+
+        severity_icon = {"red": "🔴", "yellow": "🟡", "green": "🟢"}
+        counts = {"red": 0, "yellow": 0, "green": 0}
+        for g in goals:
+            counts[g.get("severity", "green")] = counts.get(g.get("severity", "green"), 0) + 1
+        st.caption(
+            f"🔴 {counts.get('red', 0)}　🟡 {counts.get('yellow', 0)}　"
+            f"🟢 {counts.get('green', 0)}　（共 {len(goals)} 个）"
+        )
+
+        # 绿色数量较多时默认只显示统计数字（上面那一行），逐条列出的是
+        # 红/黄以及少量绿色兜底，避免大规模部署下总览区块本身刷屏。
+        show_rows = [g for g in goals if g.get("severity") != "green"] or goals[:5]
+        for g in show_rows:
+            icon = severity_icon.get(g.get("severity", "green"), "🟢")
+            cols = st.columns([5, 2, 2, 2, 1])
+            cols[0].write(f"{icon} {g.get('title', '')}")
+            cols[1].caption(f"告警 {g.get('alert_count', 0)}")
+            cols[2].caption(_PHASE_LABELS.get(g.get("execution_phase_mode", "auto"), g.get("execution_phase_mode", "auto")))
+            cols[3].caption("📝 待确认草案" if g.get("has_pending_tuning_proposal") else "")
+            if cols[4].button("🔍", key=f"overview_focus_{g.get('goal_id', '')}", help="定位到该 Goal 卡片"):
+                st.session_state["kanban_focus_node_id"] = g.get("goal_id")
+                st.rerun()
+
+
 def render_kanban_tab(client: AgentClient):
     st.markdown("#### 📌 目标看板 (Goal Backlog)")
+
+    _render_cycle_health_overview(client)
 
     _render_objective_completion_trend(client)
 

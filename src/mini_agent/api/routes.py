@@ -96,6 +96,12 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/goals/{goal_id}/tuning_proposals/{id}/confirm  确认草案（仍未生效）
     POST   /v1/goals/{goal_id}/tuning_proposals/{id}/apply    应用已确认的草案
     POST   /v1/goals/{goal_id}/tuning_proposals/{id}/reject   拒绝草案，作废
+    GET    /v1/goals/cycle_diagnostics_overview  [goal_cron_cycle_proactive_
+                                       patrol_and_health_overview_plan.md
+                                       能力 D] 跨 recurring Goal 的健康总览，
+                                       优先读能力 C 的巡检快照（data_source=
+                                       "patrol_snapshot"），无快照时现算规则层
+                                       （data_source="live"，不调 LLM）。
     GET    /v1/self/diagnosis_feedback  自诊断信号闭环 P1-P4 汇总（改进候选清单/
                                          建议采纳率回看/能力快照 diff/skill 有效性）
     GET    /v1/self/goal_fairness    [goal_execution_fairness_improvement_plan.md
@@ -4127,6 +4133,33 @@ async def get_goal_cycle_diagnostics(goal_id: str, request: Request):
                 report.llm_summary = None
 
     return {"diagnostics": report.to_dict()}
+
+
+@router.get("/goals/cycle_diagnostics_overview")
+async def get_cycle_diagnostics_overview(request: Request):
+    """GET /v1/goals/cycle_diagnostics_overview — [能力 D，见 next_doc/
+    goal_cron_cycle_proactive_patrol_and_health_overview_plan.md §3.2]
+    跨 recurring Goal 的健康总览：优先读能力 C 的巡检快照
+    （`data_source="patrol_snapshot"`），没有快照（巡检未开启/尚未跑过
+    一轮）时退化为只跑规则层的现算（`data_source="live"`，不调用 LLM）。
+    纯只读聚合，不修改任何状态。
+    """
+    backlog = _goal_backlog_only(request)
+    paths = _spec_paths(request)
+    cfg = _agent_cfg(request)
+    skip_alert_threshold = 5
+    try:
+        skip_alert_threshold = getattr(getattr(cfg, "cron", None), "skip_alert_threshold", 5) or 5
+    except Exception:
+        skip_alert_threshold = 5
+    from mini_agent.evolution.cycle_patrol import load_overview
+    try:
+        overview = load_overview(paths, backlog, skip_alert_threshold=skip_alert_threshold)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.routes.get_cycle_diagnostics_overview')
+        raise HTTPException(status_code=500, detail=f"生成健康总览失败：{e}")
+    return overview
 
 
 # ── Stage 2: 交互式调优（草案 → 确认 → 应用）──────────────────────────────

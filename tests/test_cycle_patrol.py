@@ -1,0 +1,184 @@
+"""tests/test_cycle_patrol.py — 覆盖
+next_doc/goal_cron_cycle_proactive_patrol_and_health_overview_plan.md
+Stage 1（能力 C：主动巡检 + 推送）与 Stage 2（能力 D：健康总览数据源）。
+
+  1. cfg=None / enabled=False：直接返回 None，不写状态文件（零成本）。
+  2. 未到巡检间隔：返回 None，不重复计算。
+  3. 首次命中不推送，只记录 first_detected_at；第二轮（跨过冷却时间）才
+     真正推送。
+  4. 信号消失后跟踪记录被清理，下次重新计时。
+  5. 命中数超过 max_push_per_run 时合并降噪成一条消息。
+  6. LLM 失败时静默回退到模板文案，不影响推送本身。
+  7. 一次性 Goal（recurring=False）不参与巡检。
+  8. build_overview_live / load_overview：无快照时现算，有快照时优先读
+     快照，字段结构一致。
+"""
+
+from __future__ import annotations
+
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+from mini_agent.config.models import CyclePatrolConfig
+from mini_agent.evolution import cycle_patrol as cp
+from mini_agent.perception import execution_phase as ep
+from mini_agent.perception.goal_backlog import load_goal_backlog
+from mini_agent.storage.paths import AgentPaths
+
+
+class TestRunCyclePatrol(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.paths = AgentPaths(Path(self._tmpdir.name))
+        self.gb = load_goal_backlog(self.paths)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _make_stuck_recurring_goal(self, title="Stuck recurring goal"):
+        node = self.gb.add_goal(title, source="user")
+        self.gb.update_fields(node.id, recurring=True)
+        state = ep.load_phase(self.paths, node.id)
+        state.mode = "auto"
+        state.cycles_in_mode = 10  # >= DEFAULT_STUCK_EXPLORE_CYCLES，触发 stuck_explore 告警
+        ep.save_phase(self.paths, state)
+        return node
+
+    def test_disabled_returns_none_and_no_state_file(self):
+        cfg = CyclePatrolConfig(enabled=False)
+        result = cp.run_cycle_patrol(self.paths, self.gb, cfg)
+        self.assertIsNone(result)
+        self.assertFalse(self.paths.cycle_patrol_state_path.exists())
+
+    def test_none_cfg_returns_none(self):
+        self.assertIsNone(cp.run_cycle_patrol(self.paths, self.gb, None))
+
+    def test_interval_throttle(self):
+        cfg = CyclePatrolConfig(enabled=True, interval_hours=6.0)
+        cp.run_cycle_patrol(self.paths, self.gb, cfg)  # 第一次跑，写入 last_run_at
+        state = cp._load_state(self.paths)
+        self.assertGreater(state["last_run_at"], 0.0)
+        # 手动伪造刚跑过（未到间隔），第二次调用应直接返回 None（不重新聚合）
+        result = cp.run_cycle_patrol(self.paths, self.gb, cfg)
+        self.assertIsNone(result)
+
+    def test_first_hit_not_pushed_second_hit_after_cooldown_is_pushed(self):
+        self._make_stuck_recurring_goal()
+        cfg = CyclePatrolConfig(enabled=True, interval_hours=0.0, push_cooldown_hours=0.0,
+                                 llm_enabled=False, generate_tuning_drafts=False)
+
+        # 第一轮：命中但是首次发现，不推送
+        result1 = cp.run_cycle_patrol(self.paths, self.gb, cfg)
+        self.assertIsNone(result1)
+        state = cp._load_state(self.paths)
+        self.assertEqual(len(state["signals"]), 1)
+
+        # 第二轮：冷却时间为 0，立即满足推送条件
+        result2 = cp.run_cycle_patrol(self.paths, self.gb, cfg)
+        self.assertIsNotNone(result2)
+        self.assertIn("body", result2)
+        self.assertTrue(result2["body"])
+
+    def test_signal_disappears_clears_tracking(self):
+        node = self._make_stuck_recurring_goal()
+        cfg = CyclePatrolConfig(enabled=True, interval_hours=0.0, push_cooldown_hours=0.0,
+                                 llm_enabled=False, generate_tuning_drafts=False)
+        cp.run_cycle_patrol(self.paths, self.gb, cfg)
+        state = cp._load_state(self.paths)
+        self.assertIn(node.id, state["signals"])
+
+        # 信号消失：把 execution phase 恢复正常
+        state_ep = ep.load_phase(self.paths, node.id)
+        state_ep.cycles_in_mode = 0
+        ep.save_phase(self.paths, state_ep)
+
+        cp.run_cycle_patrol(self.paths, self.gb, cfg)
+        state2 = cp._load_state(self.paths)
+        self.assertNotIn(node.id, state2["signals"])
+
+    def test_merge_when_exceeding_max_push_per_run(self):
+        for i in range(4):
+            self._make_stuck_recurring_goal(title=f"Stuck goal {i}")
+        cfg = CyclePatrolConfig(enabled=True, interval_hours=0.0, push_cooldown_hours=0.0,
+                                 llm_enabled=False, max_push_per_run=2, generate_tuning_drafts=False)
+        cp.run_cycle_patrol(self.paths, self.gb, cfg)  # 首次发现，不推送
+        result = cp.run_cycle_patrol(self.paths, self.gb, cfg)
+        self.assertIsNotNone(result)
+        self.assertIn("4 个 Goal", result["body"])
+
+    def test_llm_failure_falls_back_to_template(self):
+        self._make_stuck_recurring_goal()
+        cfg = CyclePatrolConfig(enabled=True, interval_hours=0.0, push_cooldown_hours=0.0,
+                                 llm_enabled=True, generate_tuning_drafts=False)
+
+        def _boom(prompt):
+            raise RuntimeError("llm down")
+
+        cp.run_cycle_patrol(self.paths, self.gb, cfg, llm_ask=_boom)
+        result = cp.run_cycle_patrol(self.paths, self.gb, cfg, llm_ask=_boom)
+        self.assertIsNotNone(result)
+        self.assertTrue(result["body"])  # 静默回退到模板文本，不抛异常
+
+    def test_one_off_goal_not_patrolled(self):
+        node = self.gb.add_goal("One-off stuck-looking goal", source="user")
+        # 不设置 recurring=True
+        state = ep.load_phase(self.paths, node.id)
+        state.cycles_in_mode = 10
+        ep.save_phase(self.paths, state)
+        cfg = CyclePatrolConfig(enabled=True, interval_hours=0.0, push_cooldown_hours=0.0,
+                                 llm_enabled=False, generate_tuning_drafts=False)
+        cp.run_cycle_patrol(self.paths, self.gb, cfg)
+        state_file = cp._load_state(self.paths)
+        self.assertEqual(len(state_file["signals"]), 0)
+
+
+class TestOverview(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.paths = AgentPaths(Path(self._tmpdir.name))
+        self.gb = load_goal_backlog(self.paths)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_live_overview_no_snapshot(self):
+        node = self.gb.add_goal("Recurring for overview", source="user")
+        self.gb.update_fields(node.id, recurring=True)
+        overview = cp.load_overview(self.paths, self.gb)
+        self.assertEqual(overview["data_source"], "live")
+        self.assertEqual(len(overview["goals"]), 1)
+        self.assertEqual(overview["goals"][0]["goal_id"], node.id)
+        self.assertIn(overview["goals"][0]["severity"], ("red", "yellow", "green"))
+
+    def test_snapshot_overview_after_patrol_run(self):
+        node = self.gb.add_goal("Recurring for snapshot", source="user")
+        self.gb.update_fields(node.id, recurring=True)
+        cfg = CyclePatrolConfig(enabled=True, interval_hours=0.0)
+        cp.run_cycle_patrol(self.paths, self.gb, cfg)
+        overview = cp.load_overview(self.paths, self.gb)
+        self.assertEqual(overview["data_source"], "patrol_snapshot")
+        self.assertEqual(len(overview["goals"]), 1)
+        self.assertEqual(overview["goals"][0]["goal_id"], node.id)
+
+    def test_overview_sorted_by_severity(self):
+        healthy = self.gb.add_goal("Healthy", source="user")
+        self.gb.update_fields(healthy.id, recurring=True)
+        stuck = self.gb.add_goal("Stuck", source="user")
+        self.gb.update_fields(stuck.id, recurring=True)
+        state = ep.load_phase(self.paths, stuck.id)
+        state.cycles_in_mode = 10
+        ep.save_phase(self.paths, state)
+
+        overview = cp.load_overview(self.paths, self.gb)
+        severities = [g["severity"] for g in overview["goals"]]
+        # red/yellow 排在 green 前面
+        self.assertLessEqual(
+            severities.index("yellow") if "yellow" in severities else 0,
+            severities.index("green") if "green" in severities else 0,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

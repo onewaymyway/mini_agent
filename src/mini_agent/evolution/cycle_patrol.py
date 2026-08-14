@@ -1,0 +1,394 @@
+"""evolution/cycle_patrol.py — 周期性 Goal/Cron 任务的主动巡检 + LLM 辅助推送
+（能力 C，见 next_doc/goal_cron_cycle_proactive_patrol_and_health_overview_
+plan.md §2）。
+
+模式与 `evolution/cron_scheduler.py::_maybe_alert_consecutive_skip()` /
+`evolution/next_action_advisor.py::check_persistent_attention_mismatch()`
+完全一致（同一套"周期性主动检查 + 状态跟踪 + 节流推送"在项目里的第三次
+应用），不新发明状态机、不新发明推送通道：
+
+  - 规则先行：`build_cycle_diagnostics()`（零 LLM 成本）先聚合出每个
+    recurring Goal 的健康信号，再用既有阈值筛出候选（§2.2）。
+  - LLM 只做"候选已经存在，帮我把候选变成更好的呈现"这件事——单 Goal
+    摘要复用 `cycle_diagnostics.summarize_report_with_llm()`，多 Goal
+    命中时的合并降噪是本模块新增的唯一 LLM 调用点（§2.3）。LLM 失败
+    一律静默回退到规则拼接的模板文本，不阻塞推送本身。
+  - 去重节流：同一 Goal 同一輪"首次命中不推送，持续命中 + 过了冷却时间
+    才推送"，状态存 `AgentPaths.cycle_patrol_state_path`，结构与
+    `next_action_advisor._load_mismatch_state()` 同构（§2.5）。
+  - 推送双通道：`NotificationDispatcher`（面向"用户可能不在看对话"）+
+    `InputQueue.enqueue()`（面向"用户正在对话"），两条通道各自失败隔离
+    （§2.6）。本模块只负责生成文案 + 调用 NotificationDispatcher；
+    `InputQueue.enqueue()` 由调用方（`AutonomousLoop._tick_passive()`）
+    完成，与 `check_persistent_attention_mismatch()` 的分工一致。
+
+同时，每次巡检（不管有没有命中）都会把"当前每个 recurring Goal 的健康
+判定快照"写进同一份状态文件的 `overview` 字段，供能力 D（看板全局健康
+总览，见 §3.1）优先复用，避免总览面板每次打开都对所有 Goal 现算一遍。
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Callable, Optional
+
+if TYPE_CHECKING:
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.perception.goal_backlog import GoalBacklog
+    from mini_agent.config.models import CyclePatrolConfig
+
+
+# ── 状态文件读写（与 next_action_advisor._load_mismatch_state 同构）───────
+
+def _load_state(paths: "AgentPaths") -> dict:
+    p = paths.cycle_patrol_state_path
+    if not p.exists():
+        return {"last_run_at": 0.0, "signals": {}, "overview": {}}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {"last_run_at": 0.0, "signals": {}, "overview": {}}
+    data.setdefault("last_run_at", 0.0)
+    data.setdefault("signals", {})
+    data.setdefault("overview", {})
+    return data
+
+
+def _save_state(paths: "AgentPaths", state: dict) -> None:
+    p = paths.cycle_patrol_state_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ── 规则候选筛选（§2.2）─────────────────────────────────────────────────
+
+@dataclass
+class PatrolCandidate:
+    goal_id: str
+    goal_title: str
+    report: "object"  # CycleDiagnosticsReport，避免顶层 import 造成循环
+    signal_types: list = field(default_factory=list)
+
+
+def _screen_candidate(report, skip_alert_threshold: int = 5) -> Optional[list]:
+    """基于已经聚合好的诊断报告，按既有阈值判定这个 Goal 是否"值得关注"。
+    只做筛选（返回命中的信号类型列表），不产生新的判定标准——三类信号
+    完全对应看板卡片/CLI diagnose 已经在展示的字段（§5 第 2 条）。"""
+    signal_types: list = []
+    if report.recent_health_alerts:
+        for a in report.recent_health_alerts:
+            msg = a.get("message", "") if isinstance(a, dict) else str(a)
+            if "explore" in msg and "stuck_explore" not in signal_types:
+                signal_types.append("stuck_explore")
+            elif "stuck_explore" not in signal_types and "health_alert" not in signal_types:
+                signal_types.append("health_alert")
+    cron_health = report.cron_health or {}
+    skip_count = cron_health.get("consecutive_skip_count") or 0
+    # 阈值与 `_maybe_alert_consecutive_skip()` 用的 `cron.skip_alert_
+    # threshold`（默认 5）同源，这里只做"接近或达到阈值"的粗判（阈值 - 1），
+    # 让巡检能在 cron 层真正告警前先一步提醒（§2.2 第 2 点）。调用方
+    # 传入实际配置值时（见 `run_cycle_patrol`/`build_overview_live`）用
+    # 真实阈值，不传时退回默认值 5，不引入额外的强依赖。
+    if skip_count and skip_count >= max(1, skip_alert_threshold - 1):
+        signal_types.append("cron_skip")
+    if not signal_types:
+        return None
+    return signal_types
+
+
+def _severity_for(report, signal_types: list) -> str:
+    cron_health = report.cron_health or {}
+    skip_count = cron_health.get("consecutive_skip_count") or 0
+    if skip_count >= 5 or (report.recent_health_alerts and len(report.recent_health_alerts) >= 2):
+        return "red"
+    if signal_types:
+        return "yellow"
+    return "green"
+
+
+# ── 快照拼装（供本模块内部使用，也是能力 D 的数据来源）────────────────────
+
+def _overview_entry_for(paths: "AgentPaths", report, signal_types: Optional[list], has_pending_tuning: bool) -> dict:
+    cron_health = report.cron_health or {}
+    return {
+        "goal_id": report.goal_id,
+        "title": report.goal_title,
+        "severity": _severity_for(report, signal_types or []),
+        "alert_count": len(report.recent_health_alerts or []),
+        "cron_consecutive_skip": cron_health.get("consecutive_skip_count") or 0,
+        "execution_phase_mode": report.execution_phase_mode,
+        "next_run_at": cron_health.get("next_run_at"),
+        "has_pending_tuning_proposal": has_pending_tuning,
+    }
+
+
+def build_overview_live(paths: "AgentPaths", goal_backlog: "GoalBacklog", *, skip_alert_threshold: int = 5) -> dict:
+    """[能力 D §3.1] 无巡检快照时的现算路径：只跑规则层（不调 LLM），
+    对所有 recurring Goal 现跑一次 `build_cycle_diagnostics()`。成本跟
+    看板每张卡片渲染时已经在做的诊断读取相当，与快照路径共用同一份
+    `_overview_entry_for()` 拼装逻辑，保证两条路径字段结构完全一致。"""
+    from mini_agent.perception.cycle_diagnostics import build_cycle_diagnostics
+    goals = []
+    for node in goal_backlog.all_nodes():
+        if not getattr(node, "is_goal", False) or not getattr(node, "recurring", False):
+            continue
+        try:
+            report = build_cycle_diagnostics(paths, goal_backlog, node.id)
+        except Exception:
+            continue
+        if not report.found:
+            continue
+        signal_types = _screen_candidate(report, skip_alert_threshold=skip_alert_threshold)
+        has_pending = _has_pending_tuning_proposal(paths, node.id)
+        goals.append(_overview_entry_for(paths, report, signal_types, has_pending))
+    goals.sort(key=lambda g: {"red": 0, "yellow": 1, "green": 2}.get(g["severity"], 3))
+    return {"data_source": "live", "generated_at": time.time(), "goals": goals}
+
+
+def load_overview(paths: "AgentPaths", goal_backlog: "GoalBacklog", *, skip_alert_threshold: int = 5) -> dict:
+    """[能力 D §3.1/§3.2] 优先读巡检快照（`cycle_patrol.enabled=True` 且
+    至少跑过一轮之后才会有），没有快照时退化为 `build_overview_live()`。
+    """
+    state = _load_state(paths)
+    overview = state.get("overview") or {}
+    goals = overview.get("goals")
+    if goals is not None:
+        return {
+            "data_source": "patrol_snapshot",
+            "generated_at": overview.get("generated_at", state.get("last_run_at", 0.0)),
+            "goals": goals,
+        }
+    return build_overview_live(paths, goal_backlog, skip_alert_threshold=skip_alert_threshold)
+
+
+def _has_pending_tuning_proposal(paths: "AgentPaths", goal_id: str) -> bool:
+    try:
+        from mini_agent.perception.cycle_tuning import list_proposals
+        return any(p.status == "draft" for p in list_proposals(paths, goal_id))
+    except Exception:
+        return False
+
+
+# ── 摘要/合并降噪文案（§2.3，失败静默回退到模板文本）───────────────────────
+
+def _fallback_summary(report) -> str:
+    cron_health = report.cron_health or {}
+    skip_count = cron_health.get("consecutive_skip_count") or 0
+    bits = []
+    if skip_count:
+        bits.append(f"cron 已连续跳过 {skip_count} 次")
+    if report.recent_health_alerts:
+        bits.append(f"{len(report.recent_health_alerts)} 条健康告警")
+    detail = "，".join(bits) if bits else "存在需要关注的信号"
+    return f"Goal「{report.goal_title}」{detail}。"
+
+
+def _merge_fallback(entries: list) -> str:
+    titles = "、".join(f"「{e['report'].goal_title}」" for e in entries)
+    return f"本次巡检发现 {len(entries)} 个 Goal 需要关注：{titles}。详情可在看板查看。"
+
+
+def _llm_merge_summary(entries: list, llm_ask: Callable) -> Optional[str]:
+    """[§2.3 第 2 点] 多 Goal 同时命中时，把结构化摘要一次性交给 LLM，
+    生成一条排了优先级的合并推送文案，而不是逐条摘要简单拼接。失败/无
+    `llm_ask` 时返回 None，调用方回退到 `_merge_fallback()`。"""
+    if llm_ask is None:
+        return None
+    payload = [
+        {
+            "goal_title": e["report"].goal_title,
+            "signal_types": e["signal_types"],
+            "recent_health_alerts": [
+                a.get("message", "") if isinstance(a, dict) else str(a)
+                for a in (e["report"].recent_health_alerts or [])
+            ],
+            "cron_consecutive_skip": (e["report"].cron_health or {}).get("consecutive_skip_count") or 0,
+        }
+        for e in entries
+    ]
+    prompt = (
+        "以下是本轮巡检命中问题信号的多个周期性任务（Goal），已经过规则\n"
+        "聚合，不需要你重新判断健康与否。请生成一段 2-4 句的中文自然语言\n"
+        "推送文案，说明本次巡检发现几个 Goal 需要关注、其中最值得优先\n"
+        "处理的是哪个及原因（不要编造数据里没有的字段或数值），不要用\n"
+        "markdown 标题/列表，只输出一段连续文字：\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
+    try:
+        text = llm_ask(prompt)
+        text = (text or "").strip()
+        return text or None
+    except Exception:
+        return None
+
+
+# ── 主入口：供 AutonomousLoop._tick_passive() 周期性调用 ───────────────────
+
+def run_cycle_patrol(
+    paths: "AgentPaths",
+    goal_backlog: "GoalBacklog",
+    cfg: Optional["CyclePatrolConfig"],
+    llm_ask: Optional[Callable[[str], str]] = None,
+    *,
+    app_cfg: Optional[object] = None,
+) -> Optional[dict]:
+    """执行一轮巡检（含节流），返回本轮需要推送的 payload：
+    `{"body": str, "meta": {...}}`，调用方负责把 `body` 交给
+    `InputQueue.enqueue()`；本函数内部已经尝试过 `NotificationDispatcher`
+    （失败静默，不影响返回值）。没有命中/未到巡检间隔/总开关关闭时返回
+    `None`。
+
+    `cfg=None` 或 `cfg.enabled=False` 时直接返回 `None`，不读取任何状态
+    文件（§2.7"对现有部署零影响"）。
+
+    `app_cfg`：可选的完整 `AppConfig`，用于读取 `app_cfg.cron.
+    skip_alert_threshold`（与 `_maybe_alert_consecutive_skip()` 同源阈值，
+    见 `_screen_candidate()`）。不传时退回默认值 5，不引入额外的强依赖。
+    """
+    if cfg is None or not getattr(cfg, "enabled", False):
+        return None
+
+    skip_alert_threshold = 5
+    try:
+        skip_alert_threshold = getattr(getattr(app_cfg, "cron", None), "skip_alert_threshold", 5) or 5
+    except Exception:
+        skip_alert_threshold = 5
+
+    now = time.time()
+    state = _load_state(paths)
+    last_run_at = state.get("last_run_at", 0.0)
+    interval_hours = getattr(cfg, "interval_hours", 6.0)
+    if last_run_at and (now - last_run_at) < interval_hours * 3600:
+        return None
+
+    from mini_agent.perception.cycle_diagnostics import build_cycle_diagnostics, summarize_report_with_llm
+
+    signals: dict = state.setdefault("signals", {})
+    overview_goals: list = []
+    round_candidates: list = []  # [{"goal_id", "report", "signal_types"}]
+
+    for node in goal_backlog.all_nodes():
+        if not getattr(node, "is_goal", False) or not getattr(node, "recurring", False):
+            continue
+        try:
+            report = build_cycle_diagnostics(paths, goal_backlog, node.id)
+        except Exception:
+            continue
+        if not report.found:
+            continue
+        signal_types = _screen_candidate(report, skip_alert_threshold=skip_alert_threshold)
+        has_pending = _has_pending_tuning_proposal(paths, node.id)
+        overview_goals.append(_overview_entry_for(paths, report, signal_types, has_pending))
+        if signal_types:
+            round_candidates.append({
+                "goal_id": node.id, "report": report, "signal_types": signal_types,
+            })
+
+    # 清理已消失的信号，避免跟踪记录无限增长（与 _load_mismatch_state 同策略）
+    current_ids = {c["goal_id"] for c in round_candidates}
+    for goal_id in list(signals.keys()):
+        if goal_id not in current_ids:
+            del signals[goal_id]
+
+    cooldown_hours = getattr(cfg, "push_cooldown_hours", 24.0)
+    to_push: list = []
+    for c in round_candidates:
+        goal_id = c["goal_id"]
+        rec = signals.get(goal_id)
+        if rec is None:
+            signals[goal_id] = {
+                "first_detected_at": now, "last_pushed_at": 0.0, "push_count": 0,
+            }
+            continue  # 首次命中不推送，避免单次抖动打扰用户（§2.5）
+        last_pushed_at = rec.get("last_pushed_at", 0.0)
+        first_detected_at = rec.get("first_detected_at", now)
+        reference = max(last_pushed_at, first_detected_at) if last_pushed_at else first_detected_at
+        if (now - reference) < cooldown_hours * 3600:
+            continue
+        to_push.append(c)
+
+    overview_goals.sort(key=lambda g: {"red": 0, "yellow": 1, "green": 2}.get(g["severity"], 3))
+    state["overview"] = {"generated_at": now, "goals": overview_goals}
+    state["last_run_at"] = now
+
+    if not to_push:
+        _save_state(paths, state)
+        return None
+
+    max_push = getattr(cfg, "max_push_per_run", 3)
+    llm_enabled = getattr(cfg, "llm_enabled", True) and llm_ask is not None
+    generate_tuning_drafts = getattr(cfg, "generate_tuning_drafts", True)
+
+    # 命中候选，顺带生成调优草案（§2.4，不自动 confirm/apply）
+    tuning_hits: dict = {}
+    if generate_tuning_drafts:
+        try:
+            from mini_agent.perception.cycle_tuning import suggest_tuning_from_diagnostics, save_proposal
+            for c in to_push:
+                proposal = suggest_tuning_from_diagnostics(c["report"])
+                if proposal is not None:
+                    save_proposal(paths, proposal)
+                    tuning_hits[c["goal_id"]] = proposal.id
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.cycle_patrol.run_cycle_patrol.tuning_drafts")
+
+    if len(to_push) > max_push:
+        # 合并降噪成一条（§2.3 第 2 点）
+        body = None
+        if llm_enabled:
+            body = _llm_merge_summary(to_push, llm_ask)
+        if not body:
+            body = _merge_fallback(to_push)
+        if tuning_hits:
+            body += " 其中部分 Goal 已生成调优草案待确认，可在看板里查看。"
+        title = f"周期任务巡检：{len(to_push)} 个 Goal 需要关注"
+    else:
+        parts = []
+        for c in to_push:
+            text = None
+            if llm_enabled:
+                try:
+                    text = summarize_report_with_llm(c["report"], llm_ask)
+                except Exception:
+                    text = None
+            if not text:
+                text = _fallback_summary(c["report"])
+            if c["goal_id"] in tuning_hits:
+                text += " 已生成一份调优草案待确认，可以在看板里查看。"
+            parts.append(text)
+        body = "\n".join(parts)
+        title = f"周期任务巡检：{len(to_push)} 个 Goal 需要关注" if len(to_push) > 1 else "周期任务巡检提醒"
+
+    for c in to_push:
+        rec = signals[c["goal_id"]]
+        rec["last_pushed_at"] = now
+        rec["push_count"] = rec.get("push_count", 0) + 1
+
+    _save_state(paths, state)
+
+    # 通道 1：NotificationDispatcher（失败静默，不影响 InputQueue 推送）
+    try:
+        from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+        NotificationDispatcher(paths).dispatch(NotificationMessage(
+            title=title,
+            body=body[:2000],
+            source="cycle_patrol",
+            meta={
+                "goal_ids": [c["goal_id"] for c in to_push],
+                "signal_types": sorted({s for c in to_push for s in c["signal_types"]}),
+            },
+        ))
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where="mini_agent.evolution.cycle_patrol.run_cycle_patrol.dispatch")
+
+    return {
+        "body": body,
+        "meta": {
+            "source": "cycle_patrol",
+            "goal_ids": [c["goal_id"] for c in to_push],
+        },
+    }

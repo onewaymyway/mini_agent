@@ -446,6 +446,11 @@ class AgentClient:
         params = {"summarize": "true"} if summarize else None
         return self._get(f"/goals/{goal_id}/cycle_diagnostics", params=params)
 
+    def get_cycle_diagnostics_overview(self):
+        """[能力 D，见 next_doc/goal_cron_cycle_proactive_patrol_and_
+        health_overview_plan.md §3.2] 跨 recurring Goal 的健康总览。"""
+        return self._get("/goals/cycle_diagnostics_overview")
+
     def list_tuning_proposals(self, goal_id: str):
         return self._get(f"/goals/{goal_id}/tuning_proposals")
 
