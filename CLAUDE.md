@@ -661,6 +661,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - **资源仲裁**（`evolution/resource_arbiter.py`）：用户优先 / 路径冲突检测 / 预算硬限制三条规则；`activity_digest.jsonl` 自主行为粗粒度日志；`build_digest_summary()` 六分组渲染（Objective进展/Cron执行/探索结果/Agent建议/进化提案/其他）
 - **initiator 字段贯穿**：`_TurnCommand`/`enqueue()`/`TurnInfo`/`StateRepo.apply()` 均加入 `initiator` 参数（`"user"`/`"autonomous"`/`"cron"`）；自主发起的 T0 改动自动上浮为 T1
 - **新 API 端点**：`/v1/autonomous/status`、`/v1/goals` CRUD、`/v1/cron/jobs` CRUD，共 8 个新端点；另有主动推荐与数字分身机制设计方案新增的 3 个只读端点 `/v1/digest/daily`、`/v1/next_actions`、`/v1/decision_profile`（均直接读已落盘文件，不重复触发生成）
+- **全局暂停调度（看板"停止调度"功能）**：`OperatingState.scheduling_paused`（持久化于 `self_profile.json`，与 `autonomy_level` 独立）；`AutonomousLoop.tick()` 最外层检查，为 True 时直接短路，不触碰 cron_scheduler/objective_executor/goal_backlog；不影响手动调试端点（`POST /v1/cron/jobs/{id}/run`、`/v1/goals` 增删改）和当前正在跑的任务；新增 `POST /v1/autonomous/scheduling/pause|resume`，`GET /v1/autonomous/status` 新增 `scheduling_paused` 字段；看板顶栏"⏸️ 暂停全部调度"/"▶️ 恢复调度"按钮
 - **CLI 命令**：`/goals`（含 accept/reject）、`/cron`（含所有子命令）、`/digest`（六分组摘要）、`/digest daily`（融合日报）、`/next`（主动推荐）、`/decision_profile`（决策画像，注意与既有 `/profile` 强制刷新用户画像命令无关）、`mini-agent daemon start|stop|status`
 - 详见 [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md)
 

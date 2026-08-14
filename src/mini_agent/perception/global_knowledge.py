@@ -204,6 +204,15 @@ class OperatingState:
     last_active_at: float = 0.0
     total_sessions_lifetime: int = 0
     total_projects_worked: int = 0
+    # [看板"停止调度"功能] 用户手动全局暂停开关，独立于 autonomy_level：
+    # autonomy_level 决定"暂停后应该恢复到哪个档位"，scheduling_paused 决定
+    # "现在要不要跑"。为 True 时 AutonomousLoop.tick() 在最外层直接返回，
+    # cron/Objective/软目标 derive 全部不触发；不影响手动触发的调试接口
+    # （POST /cron/jobs/{id}/run、goal 手动操作等仍然直接生效，走的不是
+    # tick() 这条路）。默认 False，不影响任何已有行为。
+    scheduling_paused: bool = False
+    scheduling_paused_at: float = 0.0
+    scheduling_paused_reason: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -212,6 +221,9 @@ class OperatingState:
             "last_active_at": self.last_active_at,
             "total_sessions_lifetime": self.total_sessions_lifetime,
             "total_projects_worked": self.total_projects_worked,
+            "scheduling_paused": self.scheduling_paused,
+            "scheduling_paused_at": self.scheduling_paused_at,
+            "scheduling_paused_reason": self.scheduling_paused_reason,
         }
 
     @staticmethod
@@ -225,6 +237,9 @@ class OperatingState:
             last_active_at=float(d.get("last_active_at", 0.0) or 0.0),
             total_sessions_lifetime=int(d.get("total_sessions_lifetime", 0) or 0),
             total_projects_worked=int(d.get("total_projects_worked", 0) or 0),
+            scheduling_paused=bool(d.get("scheduling_paused", False)),
+            scheduling_paused_at=float(d.get("scheduling_paused_at", 0.0) or 0.0),
+            scheduling_paused_reason=str(d.get("scheduling_paused_reason", "") or ""),
         )
 
 
@@ -345,6 +360,33 @@ def load_self_profile(paths: AgentPaths) -> Optional[SelfProfile]:
 
 def save_self_profile(paths: AgentPaths, profile: SelfProfile) -> None:
     _atomic_write_json(paths.global_self_profile, profile.to_dict())
+
+
+def set_scheduling_paused(paths: AgentPaths, paused: bool, reason: str = "") -> SelfProfile:
+    """[看板"停止调度"功能] 读-改-写 operating_state.scheduling_paused。
+
+    不存在 self_profile.json 时先 ensure_self_profile() 创建默认版本，
+    再在其基础上改这一个字段——与其它零散的 operating_state 更新点
+    （update_self_profile_on_session_end 等）保持同一个"读现有/改一处/
+    整体写回"模式，不做局部 patch，避免并发写入时字段互相覆盖。
+    """
+    profile = ensure_self_profile(paths)
+    profile.operating_state.scheduling_paused = bool(paused)
+    profile.operating_state.scheduling_paused_at = time.time() if paused else 0.0
+    profile.operating_state.scheduling_paused_reason = (reason or "") if paused else ""
+    save_self_profile(paths, profile)
+    return profile
+
+
+def is_scheduling_paused(paths: AgentPaths) -> bool:
+    """读取当前是否处于全局调度暂停状态；读取失败时保守返回 False（不影响现有行为）。"""
+    try:
+        profile = load_self_profile(paths)
+        if profile is not None:
+            return bool(profile.operating_state.scheduling_paused)
+    except Exception:
+        pass
+    return False
 
 
 def ensure_self_profile(paths: AgentPaths) -> SelfProfile:

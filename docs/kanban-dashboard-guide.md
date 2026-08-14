@@ -58,6 +58,15 @@ streamlit run app.py
   非空时以可展开列表展示，每条待办若关联某个 session，可点击"跳转"按钮直接把当前
   页面切换绑定到那个 session。
 - session 存储目录（`<project_root>/.agent/sessions/<session_id>/`），单独一行展示
+- **⏸️ 暂停全部调度 / ▶️ 恢复调度**（看板"停止调度"功能，见
+  [Stage 9 自主运行时指南](self-evolution-stage9-guide.md#421-全局暂停调度看板停止调度功能)）：
+  顶栏常驻按钮，与"⚙️ daemon 正在执行 N 项任务"区块相邻。点击暂停后
+  `AutonomousLoop.tick()` 直接短路，cron job 到期触发 / Objective 推进 /
+  软目标 derive 全部不再自动发生，同时展示暂停时间与原因（若填写）；
+  暂停期间仍可在"⏰ Cron 任务"tab 手动"立即触发"某个 job、在"📌 目标看板"
+  tab 手动增删改 Goal/Objective 来调试配置，也不会打断当前正在跑的任务。
+  点击"▶️ 恢复调度"撤销暂停。状态持久化在 `self_profile.json`，
+  daemon 重启后仍保持暂停，不会自动恢复。
 - **⚙️ daemon 正在执行 N 项任务**（[daemon_stability_and_ux_improvement_plan.md
   补充] 顶栏跳转增强）：聚合展示 daemon 后台此刻正在跑的 Objective 执行
   （`/v1/autonomous/status` 的 `objective_executions`，`status=="running"`）、
@@ -410,6 +419,7 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `sessions(limit=50, offset=0)` / `session_detail()` / `resume_session()` / `new_session()` / `delete_session()` | `/v1/sessions*` | 会话管理（`offset` 配合 `limit` 做分页） |
 | `users()` | `/v1/users` | 多用户列表（多用户模式） |
 | `self_status()` / `autonomous_status()` | `/self/status`、`/self/autonomous` | 自省与自主循环状态 |
+| `pause_scheduling(reason=)` / `resume_scheduling()` | `POST /v1/autonomous/scheduling/pause\|resume` | 看板"停止调度"功能：全局暂停/恢复自动调度，见顶部状态条一节 |
 | `gating_history(limit=50)` | `GET /v1/autonomous/gating_history` | 仲裁状态（`full`/`degraded`/`blocked`）变化时间线，供"🗓️ 全局日程"Tab 使用（只读） |
 | `goals()` / `add_goal()` / `update_goal()` | `/v1/goals*` | Goal 看板 |
 | `recur_goal()` / `unrecur_goal()` / `skip_goal_next_cycle()` | `POST /v1/goals/{id}/recur\|unrecur\|skip_next_cycle` | 周期性 Goal 绑定 / 解绑 / 跳过下一轮（Track A/B） |

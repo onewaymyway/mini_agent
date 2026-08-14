@@ -99,6 +99,17 @@ class AutonomousLoop:
         根据当前 autonomy_level 选择对应档位的 tick 逻辑。
         """
         self._last_tick_at = time.time()
+
+        # [看板"停止调度"功能] 用户手动全局暂停开关，最外层短路：不推进
+        # tick_count（看板"距下次Tick"/统计不应该在暂停期间继续跳动，
+        # 造成"好像还在跑"的错觉），不触碰 cron_scheduler/objective_executor/
+        # goal_backlog 任何方法。恢复后从下一次 tick 正常继续，不补跑错过
+        # 的周期（与 cron job 本身"错过就错过，不追赶"的既有语义一致）。
+        # 手动调试接口（POST /cron/jobs/{id}/run、goal 手动操作等）不经过
+        # tick()，不受此开关影响。
+        if self._is_scheduling_paused():
+            return
+
         self._tick_count += 1
 
         autonomy_level = self._get_autonomy_level()
@@ -965,6 +976,16 @@ class AutonomousLoop:
             pass
         return "passive"  # 读取失败时保守降级
 
+    def _is_scheduling_paused(self) -> bool:
+        """读取 self_profile.json 里的全局调度暂停开关。"""
+        try:
+            from mini_agent.perception.global_knowledge import is_scheduling_paused
+            return is_scheduling_paused(self._paths)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
+            return False  # 读取失败时保守降级为不暂停（与改动前行为一致）
+
     def _run_workdir_consolidation(self) -> None:
         """
         定期运行 workdir knowledge 整合（若有对应函数）。
@@ -1068,6 +1089,7 @@ class AutonomousLoop:
             "tick_count": self._tick_count,
             "tick_interval_seconds": self._tick_interval,
             "autonomy_level": self._get_autonomy_level(),
+            "scheduling_paused": self._is_scheduling_paused(),
         }
 
 

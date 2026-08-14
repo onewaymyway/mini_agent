@@ -50,6 +50,7 @@ mini_agent 不追求让 AI 拥有自己的目标，而是持续提高对用户�
 | 📝 Reminder 系统 | 动态提示注入机制，工具出错/用户意图等情境下自动追加解决经验，同轮去重防重复 |
 | 🤖 Role Agent | 预设角色子 Agent 模板，结构化参数注入，支持工具/模型限制 |
 | 🏃 常驻守护进程 | **Stage 9**：`mini-agent daemon start --detach` 让 agent 常驻后台，CLI/Web 均以"连接模式"接入，不依赖会话存活；PID 文件 + daemon_info.json 管理 |
+| ⏸️ 停止调度 | 看板一键暂停全部自动调度（cron/Objective/软目标 derive），暂停期间仍可手动触发 cron job、增删改 Goal 进行调试，不打断当前正在跑的任务，随时可恢复 |
 | 🎯 Goal Backlog | **Stage 9**：跨会话目标层级（Goal → Objective），`.agent/goals.json` 持久化；`/goals accept/reject` 管理 agent 建议目标，关联 WorkThread 复用进展 |
 | ⚙️ 三档位自主调度 | **Stage 9**：`passive`（只跑 cron job）/ `maintenance`（Objective 持续执行）/ `autonomous`（软目标 derive + 探索实验），修改 `self_profile.json` 切换 |
 | ⏰ 定时任务（Cron） | **Stage 9**：`/cron` 命令管理周期性 daemon 任务；支持 `interval:<秒>` 和 `cron:<5字段>` 两种格式；8 个内置系统 job（consolidation / wiki_gap_scan / wiki_fallback_cleanup / workdir_sync / self_eval / goal_review / digest_trim / self_maintain） |

@@ -3301,6 +3301,13 @@ async def get_autonomous_status(request: Request):
         "has_actionable_work": False,
         "objective_slots": None,
         "gating": None,
+        # [看板"停止调度"功能] 用户手动全局暂停开关的当前状态，独立于
+        # loop_active/autonomy_level——即使 daemon 正常跑着、档位是
+        # maintenance/autonomous，这里为 True 时 tick() 也在最外层直接
+        # 短路，不推进任何 cron/Objective/软目标 derive。
+        "scheduling_paused": False,
+        "scheduling_paused_at": None,
+        "scheduling_paused_reason": "",
     }
 
     al = http_server.autonomous_loop
@@ -3309,6 +3316,19 @@ async def get_autonomous_status(request: Request):
         try:
             result["autonomy_level"] = al._get_autonomy_level()
             result["next_tick_in"] = round(max(0.0, al._last_tick_at + al._tick_interval - time.time()), 1)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes')
+            pass
+
+        try:
+            from mini_agent.perception.global_knowledge import load_self_profile
+            profile = load_self_profile(al._paths)
+            if profile is not None:
+                op = profile.operating_state
+                result["scheduling_paused"] = bool(op.scheduling_paused)
+                result["scheduling_paused_at"] = op.scheduling_paused_at or None
+                result["scheduling_paused_reason"] = op.scheduling_paused_reason or ""
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.api.routes')
@@ -3398,6 +3418,74 @@ async def get_autonomous_status(request: Request):
                 pass
 
     return result
+
+
+@router.post("/autonomous/scheduling/pause")
+async def pause_scheduling(request: Request):
+    """
+    POST /v1/autonomous/scheduling/pause
+    body（可选）：{"reason": "..."}
+
+    [看板"停止调度"功能] 全局暂停自动调度：AutonomousLoop.tick() 下一次
+    调用起直接短路，不再触发 cron job、Objective 推进、软目标 derive、
+    探索实验。不影响：
+      - 当前正在跑的 turn/Objective step（不会被打断，跑完为止）
+      - 手动调试接口，例如 POST /cron/jobs/{id}/run、/goals 系列增删改、
+        goal_cycle 手动操作等——这些都不经过 tick()，暂停期间仍然可以
+        正常用来调试 Goal/Cron 配置
+      - 用户消息本身（InputQueue 正常处理，与自动调度是两条独立的路）
+
+    状态持久化在 self_profile.json（operating_state.scheduling_paused），
+    daemon 重启后仍保持暂停，需显式调用 resume 才会恢复。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    al = http_server.autonomous_loop
+    if al is None:
+        raise HTTPException(status_code=503, detail="AutonomousLoop not available")
+
+    reason = ""
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            reason = str(body.get("reason") or "")
+    except Exception:
+        pass
+
+    from mini_agent.perception.global_knowledge import set_scheduling_paused
+    profile = set_scheduling_paused(al._paths, True, reason=reason)
+    op = profile.operating_state
+    return {
+        "scheduling_paused": True,
+        "scheduling_paused_at": op.scheduling_paused_at,
+        "scheduling_paused_reason": op.scheduling_paused_reason,
+    }
+
+
+@router.post("/autonomous/scheduling/resume")
+async def resume_scheduling(request: Request):
+    """
+    POST /v1/autonomous/scheduling/resume
+
+    [看板"停止调度"功能] 撤销暂停，AutonomousLoop.tick() 从下一次调用起
+    恢复正常按 autonomy_level 档位执行。不补跑暂停期间错过的 cron 周期
+    （与 cron job 本身"错过就错过，不追赶"的既有语义一致）。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    al = http_server.autonomous_loop
+    if al is None:
+        raise HTTPException(status_code=503, detail="AutonomousLoop not available")
+
+    from mini_agent.perception.global_knowledge import set_scheduling_paused
+    set_scheduling_paused(al._paths, False)
+    return {"scheduling_paused": False}
 
 
 @router.get("/autonomous/gating_history")

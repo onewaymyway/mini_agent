@@ -191,6 +191,7 @@ _ensure_goal_objectives()
 
 ```
 tick()
+ ├─ _is_scheduling_paused()              ← 见 4.2.1，为 True 时最外层直接返回
  ├─ _tick_passive()
  │   └─ CronScheduler.tick()         ← 检查所有 job 是否到期并触发
  └─ _tick_maintenance()
@@ -200,6 +201,41 @@ tick()
      └─ 若有空闲槽位：
          └─ ObjectiveExecutor.start(objective) ← 启动新 Objective
 ```
+
+### 4.2.1 全局暂停调度（看板"停止调度"功能）
+
+> 对应看板需求：临时把所有自动调度都停下来，同时仍然可以在看板上手动
+> 调试 Goal 和 Cron 配置，调完之后再恢复。
+
+与 `autonomy_level`（决定"该跑哪个档位"）是两个独立的开关：
+`OperatingState.scheduling_paused`（`self_profile.json` 持久化）决定
+"现在要不要跑"，为 `True` 时 `tick()` 在最外层直接 `return`，不推进
+`tick_count`，不触碰 `cron_scheduler`/`objective_executor`/`goal_backlog`
+任何方法——三个档位（passive/maintenance/autonomous）在暂停期间都不会
+自动触发任何事情。
+
+**不受影响的部分**（暂停只挡自动触发链路，不挡手动操作）：
+- 手动触发 cron job：`POST /v1/cron/jobs/{id}/run`（看板"⏰ Cron 任务"
+  tab 的"立即触发"按钮）
+- Goal/Objective 的增删改：`POST/PATCH /v1/goals` 系列端点（看板
+  "📌 目标看板"tab）
+- 当前已经在跑的 turn / Objective step（不会被打断，跑完为止）
+- 用户消息本身（`InputQueue` 正常处理，走的是另一条路）
+
+**API**：
+```
+POST /v1/autonomous/scheduling/pause   body（可选）: {"reason": "..."}
+POST /v1/autonomous/scheduling/resume
+```
+`GET /v1/autonomous/status` 响应新增 `scheduling_paused` /
+`scheduling_paused_at` / `scheduling_paused_reason` 三个字段。
+
+**看板**：顶栏常驻"⏸️ 暂停全部调度"/"▶️ 恢复调度"按钮（`app.py::
+_render_scheduling_pause_control()`），暂停时额外显示暂停时间和原因。
+
+状态持久化在 `self_profile.json`，**daemon 重启后仍保持暂停**，需要显式
+调用 resume 才会恢复；恢复后不会补跑暂停期间错过的 cron 周期（与 cron
+job 本身"错过就错过，不追赶"的既有语义一致）。
 
 ### 4.3 autonomy_level 修改
 
@@ -544,6 +580,8 @@ frustration_threshold`（默认 0.5）时，本次 tick 跳过自主任务提交
 | `POST /v1/cron/jobs` | 添加用户 cron job |
 | `PUT /v1/cron/jobs/{job_id}` | 启用/禁用/修改 schedule |
 | `POST /v1/cron/jobs/{job_id}/run` | 立即触发一次 |
+| `POST /v1/autonomous/scheduling/pause` | 全局暂停自动调度（见 4.2.1 节），不影响上表其它手动端点 |
+| `POST /v1/autonomous/scheduling/resume` | 撤销暂停，恢复正常按档位调度 |
 
 ### SSE 新增事件
 

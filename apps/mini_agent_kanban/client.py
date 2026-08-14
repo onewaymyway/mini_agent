@@ -237,6 +237,15 @@ class AgentClient:
     def autonomous_status(self):
         return self._get("/autonomous/status")
 
+    def pause_scheduling(self, reason: str = ""):
+        """[看板"停止调度"功能] 全局暂停自动调度（cron/Objective/软目标 derive），
+        不影响手动调试接口和当前正在跑的任务。"""
+        return self._post("/autonomous/scheduling/pause", json_body={"reason": reason})
+
+    def resume_scheduling(self):
+        """[看板"停止调度"功能] 撤销暂停，恢复正常自动调度。"""
+        return self._post("/autonomous/scheduling/resume")
+
     def gating_history(self, limit: int = 50):
         """[scheduling_unification_and_kanban_visibility_improvement_plan.md P5]
         ResourceArbiter 三态门控（full/degraded/blocked）状态变化时间线，

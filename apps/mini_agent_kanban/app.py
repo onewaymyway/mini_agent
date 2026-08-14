@@ -763,6 +763,48 @@ def _render_queue_panel(client: AgentClient, session_id: str = "") -> None:
         st.text(input_preview + ("…" if len(t.get("input") or "") > 120 else ""))
 
 
+def _render_scheduling_pause_control(client: AgentClient, autostat: dict) -> None:
+    """[看板"停止调度"功能] 顶栏常驻的全局调度暂停/恢复控件。
+
+    暂停后 AutonomousLoop.tick() 直接短路，cron job / Objective 推进 /
+    软目标 derive 全部不再自动触发，但不影响手动调试：cron"⏰ Cron 任务"
+    tab 的"立即触发"、"📌 目标看板"tab 里对 Goal/Objective 的手动增删改，
+    在暂停期间仍然照常可用——这正是"停下来但还能手动调 Goal/Cron"的入口。
+    """
+    paused = bool(autostat.get("scheduling_paused"))
+
+    if paused:
+        reason = autostat.get("scheduling_paused_reason") or ""
+        paused_at = autostat.get("scheduling_paused_at")
+        paused_at_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(paused_at)) if paused_at else "—"
+        with st.container():
+            st.warning(
+                f"⏸️ 自动调度已全局暂停（{paused_at_str} 起）"
+                + (f"，原因：{reason}" if reason else "")
+                + "。cron / Objective / 软目标 derive 均不会自动触发，"
+                "但仍可在下方 tab 手动触发 cron job、增删改 Goal/Objective 进行调试。"
+            )
+            if st.button("▶️ 恢复调度", key="resume_scheduling_btn",
+                         help="撤销暂停，AutonomousLoop 从下一次 tick 起恢复正常按当前自主等级执行；"
+                              "不会补跑暂停期间错过的 cron 周期。"):
+                res = client.resume_scheduling()
+                if res and "_error" in res:
+                    st.error(res["_error"])
+                else:
+                    st.success("已恢复调度。")
+                st.rerun()
+    else:
+        if st.button("⏸️ 暂停全部调度", key="pause_scheduling_btn",
+                      help="全局停止 cron job / Objective 推进 / 软目标 derive 等一切自动调度，"
+                           "不影响当前正在跑的任务和手动调试操作；状态会持久化，daemon 重启后仍保持暂停。"):
+                res = client.pause_scheduling()
+                if res and "_error" in res:
+                    st.error(res["_error"])
+                else:
+                    st.success("已暂停全部自动调度。")
+                st.rerun()
+
+
 def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
     """[看板新增] 顶栏只展示当前 session 的 activity（calling_tool/calling_model
     等），完全反映不出 daemon 后台（AutonomousLoop）此刻实际在跑哪个 Objective、
@@ -994,6 +1036,8 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
 """, unsafe_allow_html=True)
     if status.get("session_dir"):
         st.caption(f"📁 session 目录: `{status['session_dir']}`")
+
+    _render_scheduling_pause_control(client, autostat)
 
     _render_daemon_current_tasks(client, autostat)
 
