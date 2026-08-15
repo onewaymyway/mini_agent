@@ -210,3 +210,66 @@ def test_record_wiki_miss_appends_ledger(paths):
     entries = CapabilityLedgerStore(paths).list_for_track("trk1")
     assert len(entries) == 1
     assert entries[0].action == "miss_observed"
+
+
+def test_make_wiki_writer_writes_real_wiki_page(paths):
+    """验证 make_wiki_writer(paths) 返回的回调真的能落盘出一个合法的
+    wiki topic 页面，frontmatter 带上 capability_track_id / source_urls /
+    retrieved_at（§5 wiki 沉淀规范），且能通过 wiki/parser.py 解析回来。"""
+    from mini_agent.evolution.capability_learning import make_wiki_writer
+    from mini_agent.wiki.parser import parse_page
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(
+        title="股票分析能力", persona_desc="x",
+        outline_names=["技术分析基础"],
+    )
+    topic = track.outline[0]
+    results = [
+        {"url": "https://example.com/macd", "summary": "MACD 是趋势跟踪型指标"},
+        {"url": "https://example.com/rsi", "summary": "RSI 衡量超买超卖"},
+    ]
+
+    writer = make_wiki_writer(paths)
+    page_ids = writer(topic, track, results)
+    assert page_ids == [f"cap_{track.track_id}_{topic.topic_id}"]
+
+    page_path = paths.wiki_type_dir("topic") / f"{page_ids[0]}.md"
+    assert page_path.exists()
+
+    page = parse_page(page_path)
+    assert page.tags == [track.wiki_tag]
+    assert page.raw_frontmatter["capability_track_id"] == track.track_id
+    assert page.raw_frontmatter["source_urls"] == [
+        "https://example.com/macd", "https://example.com/rsi",
+    ]
+    assert "retrieved_at" in page.raw_frontmatter
+    assert "MACD" in page.body
+    assert "RSI" in page.body
+
+
+def test_cycle_end_to_end_with_real_wiki_writer(paths):
+    """把 make_wiki_writer 接到 run_capability_learning_cycle 里跑一轮，
+    验证真实写入路径和循环编排能正确衔接（retriever 仍用假实现，
+    因为真实 web_search 需要网络，P1 阶段不在单测里依赖网络）。"""
+    from mini_agent.evolution.capability_learning import make_wiki_writer
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(
+        title="股票分析能力", persona_desc="x",
+        outline_names=["技术分析基础"],
+    )
+
+    def fake_retriever(topic, track):
+        return [{"url": "https://example.com/x", "summary": "示例摘要内容"}]
+
+    summary = run_capability_learning_cycle(
+        paths, retriever=fake_retriever, wiki_writer=make_wiki_writer(paths),
+    )
+    assert summary["topics_researched"] == 1
+
+    refreshed = store.get(track.track_id)
+    topic = refreshed.outline[0]
+    assert topic.coverage_state == "covered"
+    page_path = paths.wiki_type_dir("topic") / f"{topic.wiki_page_ids[0]}.md"
+    assert page_path.exists()

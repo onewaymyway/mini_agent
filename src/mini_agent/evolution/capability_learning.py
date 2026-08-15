@@ -19,11 +19,21 @@
     - CapabilityQuestion 异步问答队列的生成 / 提交 / 消费（§3.3、§10.2）
     - CapabilityLedgerEntry 台账记录（§3.2）
     - run_capability_learning_cycle()：单轮循环的编排函数，检索/wiki 写入
-      两步以可注入的回调形式暴露（P1 先不接真实 web_search + wiki writer，
-      避免未经评审就产生真实的外部请求和 wiki 写入副作用；P2 阶段替换成
-      真实实现时只需要传入真正的 retriever/writer 回调，编排逻辑不用改）
+      两步以可注入的回调形式暴露
+    - make_wiki_writer(paths)：真实的 wiki 写入回调（对接 wiki/writer.py），
+      不依赖网络，已有单测覆盖并验证能写出可被 wiki/parser.py 解析的合法
+      页面。**尚未接入 wiki/dedup.py 判重**——需要先确认"按 wiki_tag
+      批量加载已有页面"该走哪条现成接口，留到接线阶段和 wiki 模块维护者
+      一起确认，避免猜测一个不确定正确性的集成方式
 
 尚未落地（按设计文档标注的阶段留到后续）：
+    - 真实 retriever 回调（对接 web_search，需要网络，P1 单测里全部用假
+      实现替代，避免单测依赖外部网络请求）
+    - cron 任务表注册 sys:capability_learning_cycle（cron_scheduler.py 里
+      内置任务是"生成 task_template 文本交给 Agent 自己执行"的模式，不是
+      直接调用 Python 函数——意味着真正接线还需要一个新的 slash command
+      处理器，把 run_capability_learning_cycle() 包装成 Agent 能触发的
+      命令，这一步比预想的多一层，留到下一步单独做）
     - target_type="persona" 全链路（人设草稿生成 / 发布，见文档 §10）
     - PersonaProfile.wiki_scopes 接线（见文档 §11）
     - 与 external_trend_capability_link / objective_executor / decision_profile_builder /
@@ -601,3 +611,61 @@ def record_wiki_miss(paths: AgentPaths, track_id: str, topic_hint: str, query: s
         action="miss_observed",
         summary=f"检索未命中：{query}",
     ))
+
+
+# ── 真实 wiki_writer 实现（§5 wiki 沉淀规范）───────────────────────────────
+#
+# 之所以到这一步才提供"真实"实现，是因为它不依赖网络/外部服务——纯粹是
+# "把已经检索到的 results 渲染成 wiki 页面落盘"，可以完全离线单元测试，
+# 和 retriever（依赖真实 web_search，P1 阶段刻意不提供，见下方说明）
+# 风险等级不同，值得分开推进。
+
+
+def make_wiki_writer(paths: AgentPaths) -> WikiWriterFn:
+    """返回一个绑定了 paths 的 wiki_writer 回调，直接传给
+    `run_capability_learning_cycle(wiki_writer=make_wiki_writer(paths))`。
+
+    做成"返回闭包"而不是让 `default_wiki_writer` 自己接收 paths 参数，
+    是为了匹配 `WikiWriterFn` 已经定义好的签名
+    `(topic, track, results) -> list[str]`，不用因为多一个 paths 参数
+    而改动 run_capability_learning_cycle 里的调用方式。
+
+    P1 版本每个子主题固定写一页，不做多页拆分；也**没有接入
+    `wiki/dedup.py` 的判重**（P2 再做，见设计文档 §5、§14——判重需要先
+    确定"怎么批量加载某个 wiki_tag 下的已有页面"这个更基础的接口，
+    P1 阶段不确定该用哪一套现成的加载路径，与其写一个不确定正确性的
+    集成，不如先留空、明确标注，等接线阶段和 wiki 模块的维护者一起确认）。
+    """
+
+    def _writer(topic: OutlineTopic, track: CapabilityTrack, results: list[dict]) -> list[str]:
+        from datetime import datetime, timezone
+
+        from mini_agent.wiki.writer import write_page
+
+        page_id = f"cap_{track.track_id}_{topic.topic_id}"
+        body_lines = [f"# {topic.name}", ""]
+        urls: list[str] = []
+        for r in results:
+            summary = r.get("summary") or r.get("text") or ""
+            url = r.get("url") or ""
+            if url:
+                urls.append(url)
+            body_lines.append(f"- {summary}" + (f"（来源：{url}）" if url else ""))
+        body = "\n".join(body_lines) if results else f"# {topic.name}\n\n（暂无检索结果）"
+
+        extra_fm = {
+            "capability_track_id": track.track_id,
+            "source_urls": urls,
+            "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        }
+        write_page(
+            paths=paths,
+            page_id=page_id,
+            page_type="topic",
+            body=body,
+            tags=[track.wiki_tag] if track.wiki_tag else [],
+            extra_frontmatter=extra_fm,
+        )
+        return [page_id]
+
+    return _writer

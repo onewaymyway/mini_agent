@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.2（P1 最小可用闭环已实现，见下方「实施状态」）
+- **版本**：v0.3（P1 核心闭环 + 真实 wiki 写入回调已实现，见下方「实施状态」）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -22,11 +22,13 @@
 | `needs_user_context()` 判定（P1 版本：persona 型默认需要用户输入，knowledge 型默认不需要，更细致判定留 P2） | ✅ 已实现（占位规则） | 同上 |
 | `CapabilityQuestion` 异步问答队列（生成 `raise_question` / 提交 `answer` / 忽略 `dismiss` / 过期清理 `sweep_expired`） | ✅ 已实现 | 同上 |
 | `CapabilityLedgerEntry` 台账（`CapabilityLedgerStore`） | ✅ 已实现 | 同上 |
-| 单轮循环编排 `run_capability_learning_cycle()` | ✅ 已实现，**检索/wiki 写入以可注入回调形式暴露，P1 阶段不接真实 `web_search`/`wiki/writer.py`**，避免未经评审就产生真实外部请求和 wiki 写入副作用；未接线时会安全跳过并记录 `action="skipped"` 台账 | 同上 |
+| 单轮循环编排 `run_capability_learning_cycle()` | ✅ 已实现，**检索/wiki 写入以可注入回调形式暴露**，未接线时会安全跳过并记录 `action="skipped"` 台账 | 同上 |
+| `make_wiki_writer(paths)`：真实 wiki 写入回调（对接 `wiki/writer.py`） | ✅ 已实现并有单测覆盖（含端到端跑通一轮循环、验证落盘页面可被 `wiki/parser.py` 正确解析）。**未接入 `wiki/dedup.py` 判重**——需要先确认"按 wiki_tag 批量加载已有页面"该走哪条现成接口，留到接线阶段和 wiki 模块维护者一起确认，不猜测拼接 | 同上 |
+| 真实 `retriever` 回调（对接 `web_search`） | ⏳ 未实现——需要真实网络请求，P1 单测里全部用假实现替代，避免单测依赖外部网络 | — |
 | `record_wiki_miss()`（§14.1-a 使用驱动学习的记录接口） | ✅ 已实现，`context_builder.py` 的调用接线留到后续阶段单独评审 | 同上 |
 | HTTP API（`/v1/capability/tracks`、`/v1/capability/questions` 等 9 个端点，对应 §7.1） | ✅ 已实现为独立 router，**尚未挂载到 `api/server.py`**（见该文件顶部注释的两行接线说明），避免直接改动 7700+ 行的 `routes.py`/`server.py` 带来的风险 | `src/mini_agent/api/capability_routes.py` |
-| 单元测试（12 组用例，覆盖 CRUD / 缺口排序 / 异步问答生命周期 / 循环编排的多种分支） | ✅ 全部通过 | `tests/test_capability_learning_p1.py` |
-| cron 注册 `sys:capability_learning_cycle` | ⏳ 未接线（`run_capability_learning_cycle()` 函数本体已就绪，注册到 `cron_scheduler.py` 的 `CRON_JOBS` 表留到下一步，同样是为了避免未经评审就让后台任务真实跑起来） | — |
+| 单元测试（14 组用例，覆盖 CRUD / 缺口排序 / 异步问答生命周期 / 循环编排的多种分支 / 真实 wiki 写入落盘与解析回读 / 端到端一轮循环） | ✅ 全部通过 | `tests/test_capability_learning_p1.py` |
+| cron 注册 `sys:capability_learning_cycle` | ⏳ 未接线。**发现一个比预想更深一层的问题**：`cron_scheduler.py` 里内置任务的机制是"生成一段 `task_template` 文本交给 Agent 自己带着工具执行"（参照 `sys:growth_advisor_daily` 的 `/growth scan` 模式），不是直接调用 Python 函数——意味着真正接线还需要先做一个新的 slash command（比如 `/capability cycle`），把 `run_capability_learning_cycle()` 包装成 Agent 能触发的命令，cron 任务条目本身只是引用这个命令。这一步比最初设计文档 §4 假设的"cron 直接跑一个函数"多一层，留到下一步单独做，不在这一轮里仓促补全 | — |
 | 看板三个 UI 区域（人设管理 / 进度展示 / 待回答问题） | ⏳ 未实现 | — |
 | `context_builder.py` 接入检索复用 | ⏳ 未实现 | — |
 | 真实 `retriever` / `wiki_writer` 回调实现（对接 `web_search` 与 `wiki/writer.py` + `wiki/dedup.py`） | ⏳ 未实现（P1 故意留空，见上） | — |
@@ -189,6 +191,18 @@ class CapabilityQuestion:
 ---
 
 ## 4. cron 集成
+
+> **实现阶段发现的修正**（写代码时才发现，原设计假设有误，记录在这里避免
+> 下次又踩一遍）：`cron_scheduler.py` 里已有的 `sys:` 内置任务并不是直接
+> 调用一个 Python 函数，而是生成一段 `task_template` 文本，交给 Agent
+> 自己带着工具去执行（参照 `sys:growth_advisor_daily` 是让 Agent 跑一次
+> `/growth scan` slash command）。这意味着下面这张"直接注册 job 调用
+> `run_capability_learning_cycle()`"的示意图，实际接线时还需要先补一个
+> `/capability cycle` 这样的 slash command 处理器作为中间层，`task_template`
+> 引用这个命令，而不是任务表里能直接挂 Python 可调用对象。这一层目前
+> 代码里还没有实现（见文档开头「实施状态」），下面的示意仍保留作为
+> "最终效果应该是什么"的说明，但接线时请按"先做 slash command，cron
+> 任务模板引用它"这个顺序推进，不要直接找 `CRON_JOBS` 表插入函数引用。
 
 新增内置 job（挂进 `cron_scheduler.py` 现有的 `sys:` 前缀内置任务列表）：
 
