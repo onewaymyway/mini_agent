@@ -710,6 +710,10 @@ def load_config(
     # 缺陷修复] 进展趋势判定是否接 LLM 的开关，此前从未被加载（见
     # param_registry.py 注册处的说明）。
     execution_phase_cfg = _nested_blocks["execution_phase"]
+    # [cycle_patrol 加载修复] cycle_patrol 在 _nested_blocks 中已加载，但
+    # 此前未传入 AppConfig，导致 agent_config.json 中 cycle_patrol.enabled
+    # 等字段无论怎么配都不会生效——本次一并补齐。
+    cycle_patrol_cfg = _nested_blocks["cycle_patrol"]
 
     cfg = AppConfig(
         api_key=api_key,
@@ -785,6 +789,7 @@ def load_config(
         observability=observability_cfg,
         cycle_tuning=cycle_tuning_cfg,
         execution_phase=execution_phase_cfg,
+        cycle_patrol=cycle_patrol_cfg,
         llm_fallback_chain=_llm_fallback_chain,
         llm_fallback_on=_llm_fallback_on,
     )
