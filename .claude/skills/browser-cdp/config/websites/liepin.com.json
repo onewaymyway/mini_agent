@@ -1,0 +1,50 @@
+{
+  "name": "猎聘",
+  "domain": "liepin.com",
+  "url": "https://www.liepin.com",
+  "category": "recruitment",
+  "subcategory": "jobs",
+  "frontend_framework": "Vue",
+  "anti_crawl_level": 3,
+  "login_required": false,
+  "captcha_type": "slider",
+  "priority": "P2",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.7,
+  "target_accuracy": 0.75,
+  "custom_config": {
+    "search_url": "https://www.liepin.com/zhaopin/",
+    "search_box": "input[name='keyword'], input[placeholder*='搜索']",
+    "location_box": "select.region-select, input[placeholder*='城市']",
+    "search_button": "button.search-btn, .search-btn",
+    "results": ".job-item-wrap, .job-item-list",
+    "result_item": ".job-item-wrap",
+    "title": ".job-title, .job-name",
+    "salary": ".job-salary, .red",
+    "company": ".company-name, .company-text",
+    "experience": ".job-experience, .txt-area",
+    "education": ".job-education, .edu-label",
+    "city": ".job-city, .area-text",
+    "stage": ".job-stage, .stage-label",
+    "pagination": {
+      "next_page": "a.next-page, .pagination-next",
+      "page_numbers": ".pagination a"
+    },
+    "captcha_detection": {
+      "selectors": [
+        "#captcha-dialog",
+        ".nc_wrapper",
+        ".geetest_panel"
+      ],
+      "text_patterns": [
+        "拖动滑块",
+        "验证"
+      ]
+    }
+  },
+  "tags": ["recruitment", "jobs", "salary", "china", "captcha_required"],
+  "created_at": "2026-08-15T13:15:00.000Z",
+  "updated_at": "2026-08-15T13:15:00.000Z"
+}

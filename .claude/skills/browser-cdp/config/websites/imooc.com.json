@@ -1,0 +1,47 @@
+{
+  "name": "慕课网",
+  "domain": "imooc.com",
+  "url": "https://www.imooc.com",
+  "category": "education",
+  "subcategory": "online-courses",
+  "frontend_framework": "React",
+  "anti_crawl_level": 2,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P2",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.8,
+  "target_accuracy": 0.8,
+  "custom_config": {
+    "search_url": "https://coding.imooc.com/search.html",
+    "search_box": "input[name=query], input[placeholder*=搜索]",
+    "search_button": "button.submit, .search-btn",
+    "results": ".course-item, .list-course-list li",
+    "result_item": ".course-item",
+    "title": ".course-title, .course-name",
+    "author": ".teacher-name, .author",
+    "students": ".student-count, .number",
+    "level": ".level, .difficulty",
+    "duration": ".time-length, .duration",
+    "price": ".price, .sale-price",
+    "rating": ".score, .rate",
+    "pagination": {
+      "next_page": "a.next, .page-next",
+      "page_numbers": ".page-box a"
+    },
+    "captcha_detection": {
+      "selectors": [],
+      "text_patterns": []
+    }
+  },
+  "tags": [
+    "education",
+    "courses",
+    "programming",
+    "china"
+  ],
+  "created_at": "2026-08-15T13:15:00.000Z",
+  "updated_at": "2026-08-15T13:15:00.000Z"
+}

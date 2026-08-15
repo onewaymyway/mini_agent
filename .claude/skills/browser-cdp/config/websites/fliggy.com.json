@@ -1,0 +1,52 @@
+{
+  "name": "飞猪",
+  "domain": "fliggy.com",
+  "url": "https://www.fliggy.com",
+  "category": "travel",
+  "subcategory": "hotels",
+  "frontend_framework": "React",
+  "anti_crawl_level": 3,
+  "login_required": false,
+  "captcha_type": "slider",
+  "priority": "P2",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.7,
+  "target_accuracy": 0.75,
+  "custom_config": {
+    "search_url": "https://www.fliggy.com/hotel/search",
+    "search_box": "input[placeholder*=城市]",
+    "date_box": "input[name=checkIn], input[name=checkOut]",
+    "search_button": "button.search-btn, .btn-search",
+    "results": ".hotel-item, .result-list li",
+    "result_item": ".hotel-item",
+    "title": ".hotel-name, .name",
+    "price": ".price, .sale-price",
+    "location": ".location, .address",
+    "rating": ".rating, .score",
+    "reviews": ".review-count, .comment-num",
+    "pagination": {
+      "next_page": "a.next, .page-next",
+      "page_numbers": ".page-box a"
+    },
+    "captcha_detection": {
+      "selectors": [
+        "#captcha-dialog",
+        ".nc_wrapper"
+      ],
+      "text_patterns": [
+        "拖动滑块",
+        "验证"
+      ]
+    }
+  },
+  "tags": [
+    "travel",
+    "hotels",
+    "booking",
+    "china"
+  ],
+  "created_at": "2026-08-15T13:15:00.000Z",
+  "updated_at": "2026-08-15T13:15:00.000Z"
+}

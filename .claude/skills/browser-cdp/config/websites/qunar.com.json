@@ -1,0 +1,48 @@
+{
+  "name": "去哪儿",
+  "domain": "qunar.com",
+  "url": "https://www.qunar.com",
+  "category": "travel",
+  "subcategory": "flights",
+  "frontend_framework": "React",
+  "anti_crawl_level": 3,
+  "login_required": false,
+  "captcha_type": "slider",
+  "priority": "P2",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.7,
+  "target_accuracy": 0.75,
+  "custom_config": {
+    "search_url": "https://travels.so.com/qunaer/flights/search",
+    "search_box": "input[name='from'], input[name='to'], input[placeholder*='出发地']",
+    "date_box": "input[name='departDate'], .date-picker-input",
+    "search_button": "button.search-btn, .btn-search",
+    "results": ".flight-result-item, .result-list li",
+    "result_item": ".flight-result-item",
+    "title": ".flight-name, .airline-name",
+    "price": ".price, .sale-price",
+    "departure": ".dep-time, .time-info",
+    "arrival": ".arr-time, .arrival-time",
+    "duration": ".duration, .flight-duration",
+    "stops": ".stops, .stop-info",
+    "pagination": {
+      "next_page": "a.next, .page-next",
+      "page_numbers": ".page-box a"
+    },
+    "captcha_detection": {
+      "selectors": [
+        "#captcha-dialog",
+        ".nc_wrapper"
+      ],
+      "text_patterns": [
+        "拖动滑块",
+        "验证"
+      ]
+    }
+  },
+  "tags": ["travel", "flights", "booking", "china"],
+  "created_at": "2026-08-15T13:15:00.000Z",
+  "updated_at": "2026-08-15T13:15:00.000Z"
+}
