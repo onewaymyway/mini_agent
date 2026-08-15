@@ -1,9 +1,13 @@
 # flat / nested 配置写法统一迁移计划
 
-- **版本**: v1.0
-- **状态**: 待开始
+- **版本**: v1.1
+- **状态**: 已完成（Stage 1-3）
 - **变更记录**:
   - v1.0：初版设计，聚焦"消灭 flat 手写构造代码"这一件事，不做其他改动。
+  - v1.1：Stage 1（`load_nested_block_with_flat_compat()` 通用兼容层）、
+    Stage 2（11 个 block 全部迁移）、Stage 3（`config_catalog.py` 看板
+    字段目录同步迁移 + `docs/param-system-guide.md` 更新）已完成。
+    Stage 4（移除兼容层）保持"可选、需团队决策后再排期"，未开始。
 
 ---
 
@@ -191,7 +195,48 @@ def load_nested_block_with_flat_compat(
   配置不生效对用户造成的实际影响，可作为"为什么值得投入时间做这次迁移"
   的具体案例引用。
 
-## 6. 风险与缓解
+## 7. 实施记录（Stage 1-3 完成情况）
+
+- **Stage 1**：`param_registry.py` 新增 `load_nested_block_with_flat_compat()`
+  及共享的 `_convert_field_value()`（从 `load_nested_block()` 里提取出来，
+  避免两处各写一份类型转换规则）。单元测试见
+  `tests/test_flat_nested_config_compat.py::TestLoadNestedBlockWithFlatCompat`。
+- **Stage 2**：`loader.py` 里 11 个 block 的手写字段级构造代码全部清零，
+  改成 `load_nested_block_with_flat_compat()` + 少量
+  `apply_overrides()`（仅覆盖真正有 CLI/函数参数需求的字段）。端到端测试
+  见 `tests/test_flat_nested_config_compat.py::TestElevenBlocksEndToEnd`。
+  过程中顺带修正了几处"旧 flat key 无条件覆盖 nested 写法"的反向优先级
+  问题（如 `memory.enabled`、`skill.semantic_enabled`、
+  `perception.project_scan_enabled` 等）——迁移前这些字段即使写了 nested
+  形式也会被 `apply_overrides()` 里硬编码的 flat 默认值覆盖回去，现在
+  统一成"nested 优先"。`compress.strategy` 和
+  `compress.max_message_chars_for_compact` 的历史遗留默认值不一致问题见
+  §7.1，前者原样保留，后者按 dataclass 默认值修正（见下）。
+- **Stage 3**：`config_catalog.py` 里 `memory`/`compress`/`tool_trim`/
+  `skill`/`perception`/`session`/`profile`/`debug`/`http`/`retry`/
+  `ensemble` 对应的手写 `_XXX_FIELDS`（约 185 行）全部删除，改成加入自动
+  展开的 `_NESTED_BLOCKS` 列表，json_key 从 `"memory_top_k"` 变成
+  `"memory.top_k"`（看板 PATCH 写回统一使用 nested 形式）。
+  `docs/param-system-guide.md` 新增第 7 节说明新旧写法与优先级。
+
+### 7.1 迁移中发现的行为差异（已确认按"贴近 dataclass 真源"原则处理）
+
+- `compress.max_message_chars_for_compact`：迁移前硬编码的 flat 默认值是
+  `10000`，但 `CompressConfig.max_message_chars_for_compact` 的 dataclass
+  默认值实际是 `40_000`——`agent_config.json` 里没有配置这个字段的用户，
+  迁移前实际生效的是 `10000`，迁移后变成 `40_000`。这属于本计划 §0 提到
+  的"两处默认值不同步"同类问题，按迁移目标（`models.py` 是唯一真源）修正
+  为 `40_000`。**如果这个改动影响到存量用户的实际压缩行为，需要单独评估
+  并在 CHANGELOG 里说明**。
+- `compress.strategy`：迁移前硬编码默认值 `"turn_aligned"` 与 dataclass
+  默认值 `"compact_with_skills"` 不一致，且这个硬编码值此前会无条件覆盖
+  nested 写法。这处**原样保留**（未按 dataclass 默认值修正），因为
+  `strategy` 是压缩策略这种影响面较大的字段，改动需要更谨慎的评估，留给
+  后续独立的技术债处理。
+- 其余 9 个 block 的所有字段，迁移前后默认值/优先级完全一致，无行为差异
+  （已用 `tests/test_flat_nested_config_compat.py` 里的对照测试验证）。
+
+## 8. 风险与缓解
 
 | 风险 | 缓解措施 |
 |---|---|

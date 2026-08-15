@@ -111,210 +111,39 @@ _CORE_FIELDS = [
     FieldSpec("bash_stream_output_enabled", "bash_stream_output_enabled", "bash 实时流式输出"),
 ]
 
-# ── memory（历史遗留：整体走 flat key，不是 nested block）───────────────────
-_MEMORY_FIELDS = [
-    FieldSpec("memory_enabled", "memory.enabled", "记忆检索总开关"),
-    FieldSpec("memory_backend", "memory.backend", "记忆存储后端"),
-    FieldSpec("memory_global_enabled", "memory.global_enabled", "跨项目全局记忆"),
-    FieldSpec("memory_global_top_k", "memory.global_top_k", "全局记忆召回条数"),
-    FieldSpec("memory_top_k", "memory.top_k", "记忆召回条数"),
-    FieldSpec("memory_decay_half_life_days", "memory.decay_half_life_days", "记忆衰减半衰期（天）"),
-    FieldSpec("memory_max_entries", "memory.max_entries", "记忆最大条目数"),
-    FieldSpec("lesson_rules_enabled", "memory.lesson_rules_enabled", "教训规则提炼"),
-    FieldSpec("lesson_fail_threshold", "memory.lesson_fail_threshold", "教训触发失败阈值"),
-    FieldSpec("correction_detection_enabled", "memory.correction_detection_enabled", "纠错检测"),
-    FieldSpec("memory_per_turn_retrieval_enabled", "memory.per_turn_retrieval_enabled", "每轮主动检索记忆"),
-    # [看板字段补齐] 以下字段此前只能通过代码直接构造 MemoryConfig 设置，
-    # 未在看板（config_catalog）中收录，导致既看不到当前值也无法编辑。
-    FieldSpec("memory.library_index_enabled", "memory.library_index_enabled", "图书馆式索引总开关"),
-    FieldSpec("memory.library_shelf_search_enabled", "memory.library_shelf_search_enabled", "两步检索（先定位书架）"),
-    FieldSpec("memory.library_index_user_scoped", "memory.library_index_user_scoped", "多用户书架隔离"),
-    FieldSpec("memory.library_wiki_search_primary", "memory.library_wiki_search_primary", "wiki 检索优先"),
-    FieldSpec("memory.wiki_enabled", "memory.wiki_enabled", "wiki 式知识库"),
-    FieldSpec("memory.embedding_enabled", "memory.embedding_enabled", "语义检索（embedding）"),
-    FieldSpec("memory.embedding_model", "memory.embedding_model", "embedding 模型"),
-    FieldSpec("memory.embedding_tfidf_weight", "memory.embedding_tfidf_weight", "TF-IDF 权重"),
-    FieldSpec("memory.embedding_weight", "memory.embedding_weight", "embedding 权重"),
-    FieldSpec("memory.embedding_top_n", "memory.embedding_top_n", "embedding 召回条数"),
-    FieldSpec("memory.consolidation_enabled", "memory.consolidation_enabled", "记忆巩固（归纳）"),
-    FieldSpec("memory.consolidation_min_group_size", "memory.consolidation_min_group_size", "巩固最小分组大小"),
-    FieldSpec("memory.wiki_index_reuse_enabled", "memory.wiki_index_reuse_enabled", "wiki 索引复用"),
-    FieldSpec("memory.wiki_confidence_weight", "memory.wiki_confidence_weight", "wiki 信度加权系数"),
-    FieldSpec("memory.wiki_quarantine_llm_repair_enabled", "memory.wiki_quarantine_llm_repair_enabled", "隔离区页面 LLM 修复"),
-    FieldSpec("memory.lifecycle_stale_threshold_days", "memory.lifecycle_stale_threshold_days", "知识过期判定阈值（天）"),
-    FieldSpec("memory.lifecycle_discount_enabled", "memory.lifecycle_discount_enabled", "过期知识排序折扣"),
-]
-
-# ── compress（历史遗留：flat key，前缀 auto_compress_ / compact_）───────────
-_COMPRESS_FIELDS = [
-    FieldSpec("auto_compress_enabled", "compress.enabled", "自动压缩总开关"),
-    FieldSpec("auto_compress_threshold", "compress.threshold", "触发压缩的 token 占用率"),
-    FieldSpec("auto_compress_strategy", "compress.strategy", "压缩策略"),
-    FieldSpec("forget_policy_enabled", "compress.forget_orphan_tool_results", "剔除孤立 tool_result"),
-    FieldSpec("compact_turn_count_trigger_enabled", "compress.turn_count_trigger_enabled", "按轮数触发压缩"),
-    FieldSpec("compact_max_turns", "compress.max_turns_before_compact", "触发压缩的轮数阈值"),
-    FieldSpec("compact_tool_call_count_trigger_enabled", "compress.tool_call_count_trigger_enabled", "按工具调用数触发压缩"),
-    FieldSpec("compact_max_tool_calls", "compress.max_tool_calls_before_compact", "触发压缩的工具调用数阈值"),
-    FieldSpec("compact_topic_shift_detection", "compress.topic_shift_detection", "话题切换检测模式"),
-    FieldSpec("compact_topic_shift_keyword_overlap_threshold", "compress.topic_shift_keyword_overlap_threshold", "话题切换关键词重合度阈值"),
-    FieldSpec("compact_topic_shift_min_budget_pct", "compress.topic_shift_min_budget_pct", "话题切换最小预算占比"),
-    FieldSpec("compact_redundancy_detection_enabled", "compress.redundancy_detection_enabled", "冗余检测"),
-    FieldSpec("compact_redundancy_tool_result_ratio", "compress.redundancy_tool_result_ratio", "冗余 tool_result 占比阈值"),
-    FieldSpec("compact_cooldown_turns", "compress.compact_cooldown_turns", "两次压缩之间的冷却轮数"),
-    FieldSpec("compact_require_confirmation", "compress.require_confirmation", "压缩前需要用户确认"),
-    FieldSpec("compact_max_message_chars", "compress.max_message_chars_for_compact", "触发压缩的单消息字符数阈值"),
-    FieldSpec("compact_precheck_enabled", "compress.compact_precheck_enabled", "压缩预检"),
-    FieldSpec("compact_precheck_threshold", "compress.compact_precheck_threshold", "预检超限比例阈值"),
-    FieldSpec("model_context_window", "compress.model_context_window", "模型上下文窗口大小（0=自动）"),
-    FieldSpec("compact_goal_aware_weighting_enabled", "compress.goal_aware_weighting_enabled", "目标感知加权保留"),
-    FieldSpec("compact_decision_extraction_enabled", "compress.decision_extraction_on_compact_with_skills_enabled", "压缩时顺带提炼决策"),
-    FieldSpec("compact_decision_recall_tool_enabled", "compress.decision_recall_tool_enabled", "决策召回只读工具"),
-    FieldSpec("compact_safe_point_gating_enabled", "compress.safe_point_gating_enabled", "压缩安全点门控"),
-    FieldSpec("compact_composite_intensity_enabled", "compress.composite_intensity_enabled", "复合强度触发"),
-    FieldSpec("compact_composite_intensity_threshold", "compress.composite_intensity_threshold", "复合强度阈值"),
-    FieldSpec("compact_audit_enabled", "compress.audit_enabled", "压缩审计"),
-    FieldSpec("compact_audit_async", "compress.audit_async", "压缩审计异步执行"),
-    # [看板字段补齐] 以下字段此前只能通过代码直接构造 CompressConfig 设置，
-    # 未在看板中收录。
-    FieldSpec("compress.extraction_trigger_enabled", "compress.extraction_trigger_enabled", "轻量抽取触发器总开关"),
-    FieldSpec("compress.extraction_trigger_dispatch_enabled", "compress.extraction_trigger_dispatch_enabled", "触发后真正发起抽取调用"),
-    FieldSpec("compress.extraction_trigger_min_window_turns", "compress.extraction_trigger_min_window_turns", "抽取轮次计数阈值"),
-    FieldSpec("compress.extract_decisions", "compress.extract_decisions", "顺带提炼决策"),
-    FieldSpec("compress.entity_digest_enabled", "compress.entity_digest_enabled", "抽取时注入实体索引摘要"),
-    FieldSpec("compress.entity_digest_max_entities", "compress.entity_digest_max_entities", "实体索引摘要条目上限"),
-    FieldSpec("compress.extract_world_model", "compress.extract_world_model", "顺带提炼世界模型"),
-    FieldSpec("compress.decision_batch_min_interval_days", "compress.decision_batch_min_interval_days", "决策新建冷却天数"),
-    FieldSpec("compress.decision_recall_turn_gate_enabled", "compress.decision_recall_turn_gate_enabled", "关键词门控自动决策召回"),
-    FieldSpec("compress.decision_recall_gate_k", "compress.decision_recall_gate_k", "门控召回候选数上限"),
-    FieldSpec("compress.selective_min_user_turns", "compress.selective_min_user_turns", "Selective 策略最少保留用户轮数"),
-]
-
-_TOOL_TRIM_FIELDS = [
-    FieldSpec("tool_result_trim_enabled", "tool_trim.enabled", "工具结果裁剪总开关"),
-    FieldSpec("tool_result_trim_threshold", "tool_trim.threshold", "触发裁剪的字符阈值"),
-    FieldSpec("tool_trim_bash_tail_ratio", "tool_trim.bash_tail_ratio", "bash 输出保留尾部比例"),
-    FieldSpec("tool_trim_read_window_lines", "tool_trim.read_window_lines", "read_file 窗口行数"),
-    FieldSpec("tool_trim_grep_max_lines", "tool_trim.grep_max_lines", "grep 结果最大行数"),
-    FieldSpec("raw_store_enabled", "tool_trim.raw_store_enabled", "裁剪前原文暂存"),
-    FieldSpec("raw_store_max_entries", "tool_trim.raw_store_max_entries", "原文暂存最大条目数"),
-    FieldSpec("raw_store_max_total_chars", "tool_trim.raw_store_max_total_chars", "原文暂存总字符上限"),
-    FieldSpec("smart_summary_enabled", "tool_trim.smart_summary_enabled", "智能摘要裁剪"),
-    FieldSpec("smart_summary_threshold", "tool_trim.smart_summary_threshold", "智能摘要触发阈值"),
-    FieldSpec("smart_summary_max_input_chars", "tool_trim.smart_summary_max_input_chars", "智能摘要最大输入字符数"),
-    FieldSpec("smart_summary_model", "tool_trim.smart_summary_model", "智能摘要使用的模型"),
-    # [看板字段补齐]
-    FieldSpec("tool_trim.large_file_threshold_bytes", "tool_trim.large_file_threshold_bytes", "大文件判定字节阈值"),
-    FieldSpec("tool_trim.list_dir_show_size", "tool_trim.list_dir_show_size", "list_dir 显示文件大小"),
-    FieldSpec("tool_trim.large_file_warn_marker", "tool_trim.large_file_warn_marker", "大文件标记符"),
-]
-
-_SKILL_FIELDS = [
-    FieldSpec("skill_semantic_enabled", "skill.semantic_enabled", "语义匹配技能"),
-    FieldSpec("skill_semantic_threshold", "skill.semantic_threshold", "语义匹配阈值"),
-    FieldSpec("skill_tracking_enabled", "skill.tracking_enabled", "技能使用追踪"),
-    FieldSpec("skill_chunking_enabled", "skill.chunking_enabled", "技能分块加载"),
-    FieldSpec("skill_compact_budget", "skill.compact_budget", "技能压缩总预算（字符）"),
-    FieldSpec("skill_compact_per_skill", "skill.compact_per_skill", "单个技能压缩预算（字符）"),
-    FieldSpec("skill_matcher", "skill.matcher", "技能匹配器"),
-    FieldSpec("skill_keyword_activation_enabled", "skill.keyword_activation_enabled", "关键词自动激活技能"),
-    FieldSpec("skill_auto_unload_enabled", "skill.auto_unload_enabled", "闲置技能自动卸载"),
-    FieldSpec("skill_auto_unload_idle_seconds", "skill.auto_unload_idle_seconds", "自动卸载闲置秒数"),
-    # [看板字段补齐]
-    FieldSpec("skill.candidate_reminder_enabled", "skill.candidate_reminder_enabled", "候选技能提醒"),
-]
-
-_PERCEPTION_FIELDS = [
-    FieldSpec("project_scan_enabled", "perception.project_scan_enabled", "项目结构扫描"),
-    FieldSpec("file_watch_enabled", "perception.file_watch_enabled", "文件变更监听"),
-    FieldSpec("tool_cache_enabled", "perception.tool_cache_enabled", "工具结果缓存"),
-    FieldSpec("tool_cache_max_entries", "perception.tool_cache_max_entries", "工具缓存最大条目数"),
-    FieldSpec("token_estimate_enabled", "perception.token_estimate_enabled", "token 占用估算"),
-    FieldSpec("token_warn_threshold", "perception.token_warn_threshold", "token 占用预警阈值"),
-    FieldSpec("tool_stats_enabled", "perception.tool_stats_enabled", "工具调用统计"),
-    FieldSpec("artifact_auto_detect_enabled", "perception.artifact_auto_detect_enabled", "产出物自动识别"),
-]
-
-_SESSION_FIELDS = [
-    FieldSpec("session_fmt", "session.fmt", "会话存储格式"),
-    FieldSpec("auto_save_session", "session.auto_save", "自动保存会话"),
-    FieldSpec("session_summary_enabled", "session.summary_enabled", "会话摘要"),
-    FieldSpec("session_summary_min_turns", "session.summary_min_turns", "生成摘要的最小轮数"),
-    FieldSpec("session_search_enabled", "session.search_enabled", "会话搜索"),
-    FieldSpec("session_backend", "session.backend", "会话存储后端"),
-]
-
-_PROFILE_FIELDS = [
-    FieldSpec("profile_enabled", "profile.enabled", "用户画像"),
-    FieldSpec("profile_refresh_interval_entries", "profile.refresh_interval_entries", "画像刷新间隔（条目数）"),
-    FieldSpec("profile_min_entries", "profile.min_entries", "生成画像所需最小条目数"),
-    FieldSpec("profile_max_entries_for_profile", "profile.max_entries_for_profile", "画像参考的最大条目数"),
-    # [看板字段补齐]
-    FieldSpec("profile.stale_after_days", "profile.stale_after_days", "画像过期天数"),
-]
-
-_DEBUG_FIELDS = [
-    FieldSpec("debug_llm", "debug.llm_enabled", "LLM 调试日志"),
-    FieldSpec("debug_llm_console", "debug.llm_console", "调试日志输出到控制台"),
-]
-
-_HTTP_FIELDS = [
-    FieldSpec("http_enabled", "http.enabled", "HTTP API 服务"),
-    FieldSpec("http_host", "http.host", "监听地址"),
-    FieldSpec("http_port", "http.port", "监听端口"),
-    FieldSpec("http_api_token", "http.api_token", "API 访问令牌", sensitive=True),
-    FieldSpec("http_fs_readonly", "http.fs_readonly", "文件系统接口只读"),
-    FieldSpec("http_ring_maxlen", "http.ring_maxlen", "事件环形缓冲区长度"),
-    FieldSpec("http_multi_user_enabled", "http.multi_user_enabled", "多用户模式"),
-    # [看板字段补齐]
-    FieldSpec("http.blocking_call_timeout_seconds", "http.blocking_call_timeout_seconds", "阻塞调用超时（秒）"),
-    FieldSpec("http.blocking_call_failure_threshold", "http.blocking_call_failure_threshold", "熔断失败次数阈值"),
-    FieldSpec("http.blocking_call_cooldown_seconds", "http.blocking_call_cooldown_seconds", "熔断冷却时长（秒）"),
-]
-
-_RETRY_FIELDS = [
-    FieldSpec("llm_retry_max", "retry.max_retries", "LLM 调用最大重试次数"),
-    FieldSpec("llm_retry_delay", "retry.delay", "重试基础延迟（秒）"),
-    FieldSpec("llm_retry_verbose", "retry.verbose", "重试日志"),
-    FieldSpec("llm_retry_backoff_mode", "retry.backoff_mode", "退避模式"),
-    FieldSpec("llm_retry_backoff_step", "retry.backoff_step", "退避步长（秒）"),
-    FieldSpec("llm_retry_backoff_max_delay", "retry.backoff_max_delay", "退避最大延迟（秒，0=不限）"),
-    # [看板字段补齐]
-    FieldSpec("retry.network_aware", "retry.network_aware", "断网感知重试"),
-    FieldSpec("retry.network_check_interval", "retry.network_check_interval", "断网轮询间隔（秒）"),
-    FieldSpec("retry.network_max_wait", "retry.network_max_wait", "断网最长等待（秒，0=不限）"),
-]
-
-_ENSEMBLE_FIELDS = [
-    FieldSpec("ensemble_mode", "ensemble.mode", "Ensemble 模式"),
-    FieldSpec("ensemble_granularity", "ensemble.granularity", "Ensemble 粒度"),
-    FieldSpec("ensemble_n", "ensemble.n", "并行方案数 N"),
-    FieldSpec("ensemble_execution", "ensemble.execution", "执行方式"),
-    FieldSpec("ensemble_max_concurrency", "ensemble.max_concurrency", "最大并发数"),
-    FieldSpec("ensemble_judge_strategy", "ensemble.judge_strategy", "评审策略"),
-    FieldSpec("ensemble_judge_model", "ensemble.judge_model", "评审模型"),
-    FieldSpec("ensemble_judge_provider", "ensemble.judge_provider", "评审 Provider"),
-    FieldSpec("ensemble_early_stop_on_consensus", "ensemble.early_stop_on_consensus", "共识后提前终止"),
-    FieldSpec("ensemble_max_extra_cost_ratio", "ensemble.max_extra_cost_ratio", "允许的额外成本倍率"),
-]
-
 _FLAT_CATEGORIES: list[CategorySpec] = [
     CategorySpec("core", "核心运行参数", "⚙️", _CORE_FIELDS),
-    CategorySpec("memory", "记忆", "🧠", _MEMORY_FIELDS),
-    CategorySpec("compress", "历史压缩 Compact", "🗜️", _COMPRESS_FIELDS),
-    CategorySpec("tool_trim", "工具结果裁剪", "✂️", _TOOL_TRIM_FIELDS),
-    CategorySpec("skill", "技能 Skill", "🧩", _SKILL_FIELDS),
-    CategorySpec("perception", "感知", "👀", _PERCEPTION_FIELDS),
-    CategorySpec("session", "会话", "🗂️", _SESSION_FIELDS),
-    CategorySpec("profile", "用户画像", "🪪", _PROFILE_FIELDS),
-    CategorySpec("debug", "调试", "🐞", _DEBUG_FIELDS),
-    CategorySpec("http", "HTTP API", "🌐", _HTTP_FIELDS),
-    CategorySpec("retry", "LLM 重试", "🔁", _RETRY_FIELDS),
-    CategorySpec("ensemble", "Ensemble 多方案", "🎛️", _ENSEMBLE_FIELDS),
 ]
 
 # ── nested block 分类：字段名与 dataclass 字段名一一对应，自动展开 ──────────
 # (category_id, label, icon, AppConfig 属性名, dataclass 类, {字段名: 是否敏感})
+#
+# [flat_nested_config_unification_migration_plan.md Stage 2 验收标准第 3 条]
+# memory/compress/tool_trim/skill/perception/session/profile/debug/http/
+# retry/ensemble 这 11 个 block 原先在上面 `_FLAT_CATEGORIES` 里各自手写一份
+# `_XXX_FIELDS`（flat json_key，如 `"memory_top_k"`），随着 `loader.py`
+# 迁移成 nested-first（见 `config/loader.py`、
+# `param_registry.load_nested_block_with_flat_compat()`），看板这边也一并
+# 迁移成这里的自动展开写法，json_key 从 `"memory_top_k"` 变成
+# `"memory.top_k"`——PATCH 写回时统一写 nested 形式，与 loader 的
+# "nested 优先"保持一致。注意：`_is_customized()` 判断"是否显式配置过"时
+# 也是按 json_key（即 nested 路径）去查 `raw_file_cfg`，所以存量
+# `agent_config.json` 里只写了旧 flat key（如 `"memory_top_k"`）、没有
+# nested `"memory": {...}` 的用户，看板上会显示这些字段"未customized"——
+# 这只影响这一个"是否显式配置过"的展示态，不影响 `load_config()` 实际读到
+# 的值（flat key 依然通过兼容层生效，见 `loader.py` 对应注释）。
 _NESTED_BLOCKS = [
+    ("memory", "记忆", "🧠", "memory", _models.MemoryConfig, {}),
+    ("compress", "历史压缩 Compact", "🗜️", "compress", _models.CompressConfig, {}),
+    ("tool_trim", "工具结果裁剪", "✂️", "tool_trim", _models.ToolTrimConfig, {}),
+    ("skill", "技能 Skill", "🧩", "skill", _models.SkillConfig, {}),
+    ("perception", "感知", "👀", "perception", _models.PerceptionConfig, {}),
+    ("session", "会话", "🗂️", "session", _models.SessionConfig, {}),
+    ("profile", "用户画像", "🪪", "profile", _models.ProfileConfig, {}),
+    ("debug", "调试", "🐞", "debug", _models.DebugConfig, {}),
+    ("http", "HTTP API", "🌐", "http", _models.HttpConfig, {"api_token": True}),
+    ("retry", "LLM 重试", "🔁", "retry", _models.RetryConfig, {}),
+    ("ensemble", "Ensemble 多方案", "🎛️", "ensemble", _models.EnsembleConfig, {}),
     ("tech_radar", "技术雷达", "🛰️", "tech_radar", _models.TechRadarConfig, {}),
     ("web_search", "网络搜索", "🔍", "web_search", _models.WebSearchConfig, {"api_key": True}),
     ("ecosystem_positioning", "生态定位", "🌐", "ecosystem_positioning", _models.EcosystemPositioningConfig, {}),

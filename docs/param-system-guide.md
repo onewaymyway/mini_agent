@@ -51,8 +51,16 @@
 **本次重构做的事**：把"nested block"这一类（数量最多、后续新增参数最
 频繁的场景）收敛成一份唯一的注册表，`loader.py` 和 `config_catalog.py`
 都从同一处 import，不再各自维护重复列表；同时为"flat CLI 参数"提供一
-套声明式写法，作为**新增**参数的强制规范（存量的 `_f`/`_fb`/`_fn` 调用
-点数量大、逐个改造收益低，本次不做存量迁移）。
+套声明式写法，作为**新增**参数的强制规范。
+
+> **更新（`next_doc/flat_nested_config_unification_migration_plan.md`）**：
+> 本节最初的结论是"存量的 `_f`/`_fb`/`_fn` 调用点数量大、逐个改造收益
+> 低，本次不做存量迁移"，但这个决定的副作用是 `memory`/`compress`/
+> `tool_trim`/`skill`/`perception`/`session`/`profile`/`debug`/`http`/
+> `retry`/`ensemble` 这 11 个手写 flat block（合计 151 个字段）被冻结在
+> "新参数不许走这里、旧参数也没人去改"的状态，连续暴露了同类"字段读不到
+> /改不生效"的 bug（详见该迁移计划 §0）。这 11 个 block 现已全部迁移完成
+> （见第 8 节），`loader.py` 里不再有针对它们的手写字段级构造代码。
 
 ---
 
@@ -288,11 +296,79 @@ assert cfg.autonomy.my_new_threshold == 0.9
 
 ---
 
-## 7. 相关文档
+## 7. 存量 flat block 迁移（已完成，`flat_nested_config_unification_migration_plan.md`）
+
+`memory`/`compress`/`tool_trim`/`skill`/`perception`/`session`/`profile`/
+`debug`/`http`/`retry`/`ensemble` 这 11 个历史遗留的手写 flat block，已经
+全部迁移成"nested 优先、旧 flat key 兼容兜底"的写法，`loader.py` 里不再
+有针对它们的手写字段级构造代码。
+
+### 7.1 新写法（推荐）
+
+```json
+{
+  "memory": {"enabled": true, "top_k": 5},
+  "skill": {"semantic_enabled": true, "compact_budget": 30000}
+}
+```
+
+跟第 3 节的 nested block 写法完全一样，字段名与 `models.py` 里对应
+dataclass 的字段名一一对应，新增字段只需要改 `models.py`。
+
+### 7.2 旧写法（仍然兼容，但不建议新配置继续使用）
+
+```json
+{"memory_enabled": true, "memory_top_k": 5, "skill_semantic_enabled": true}
+```
+
+这批旧 flat key 通过 `param_registry.load_nested_block_with_flat_compat()`
+继续读取，避免存量 `agent_config.json` 升级后配置失效。
+
+### 7.3 优先级
+
+**nested 写法 > 旧 flat key > CLI/命令行参数（如果该字段有 CLI 覆盖）
+> dataclass 默认值** —— 注意 CLI 参数优先级实际上比 nested/flat 都高
+（跟第 5 节 `apply_overrides()` 的两段式组合顺序一致：先算出通用加载的
+结果，再用非 `None` 的 CLI 值覆盖）；同一个字段如果 nested 和旧 flat key
+同时写了不同的值，nested 写法生效。
+
+### 7.4 给这 11 个 block 新增字段
+
+跟第 3.1 节完全一样：只改 `models.py` 即可，不需要碰 `loader.py`。只有
+这个新字段还需要一个"历史遗留的旧 flat key"时（这种情况应该越来越少，
+新字段本来就不该有旧 flat key），才需要去 `loader.py` 里对应
+`load_nested_block_with_flat_compat(...)` 调用的 `flat_key_map={...}`
+参数里补一项 `"字段名": "旧flat key"`。
+
+### 7.5 已知的历史遗留不一致（迁移时特意保留，不在本次范围内修正）
+
+- `compress.strategy`：迁移前的代码里，只要 `agent_config.json` 没写
+  `auto_compress_strategy` 这个 flat key，就无条件用硬编码的
+  `"turn_aligned"` 作为默认值（而不是 `CompressConfig.strategy` 的
+  dataclass 默认值 `"compact_with_skills"`），且这个硬编码值会覆盖掉
+  nested 写法 `{"compress": {"strategy": ...}}` 里配置的值。为了保证
+  "迁移前后行为一致"，`loader.py` 里原样保留了这个怪癖（见对应代码注释）。
+  如果后续要修正为遵循 `CompressConfig.strategy` 的 dataclass 默认值，
+  需要单独排期、单独评估对存量用户的影响，不属于本次迁移范围。
+
+### 7.6 看板 UI（`config_catalog.py`）
+
+这 11 个 block 在看板配置管理界面里的 `json_key` 已经从 `"memory_top_k"`
+这种旧 flat key 形式，改成了 `"memory.top_k"` 这种与 nested 写法一致的
+形式（PATCH 写回时统一写 nested 形式）。副作用：如果存量
+`agent_config.json` 里只写了旧 flat key、没有对应的 nested block，看板上
+会显示这些字段"未显式配置过"（`customized: false`）——这只影响这一个
+展示态，不影响 `load_config()` 实际读到的值（旧 flat key 依然通过
+兼容层生效）。
+
+---
+
+## 8. 相关文档
 
 - [配置系统指南](config-guide.md) — 配置架构总览、子配置块详解、加载优先级
 - [Goal 执行公平性调度配置](goal-execution-fairness-config.md) — `AutonomyConfig.fairness_*` 字段的完整业务语义说明（本机制的典型使用案例）
 - [看板配置管理](kanban-config-management.md) — `config_catalog.py`（看板 UI 只读展示 + PATCH 更新）如何复用 `NESTED_CONFIG_BLOCKS`
+- [flat / nested 配置写法统一迁移计划](../next_doc/flat_nested_config_unification_migration_plan.md) — 第 7 节所述 11 个 block 的迁移方案与验收记录
 
 ---
 

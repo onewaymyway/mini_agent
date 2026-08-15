@@ -87,13 +87,13 @@ class TestKanbanConfigRoutes(unittest.TestCase):
         self.assertTrue(cap_field["customized"])
 
     def test_sensitive_fields_are_masked(self):
-        self._write_config({"http_api_token": "super-secret-token"})
+        self._write_config({"http": {"api_token": "super-secret-token"}})
         cfg = self._load_cfg()
         client = _make_client(cfg)
         resp = client.get("/v1/self/config")
         data = resp.json()
         http_cat = next(c for c in data["categories"] if c["id"] == "http")
-        token_field = next(f for f in http_cat["fields"] if f["json_key"] == "http_api_token")
+        token_field = next(f for f in http_cat["fields"] if f["json_key"] == "http.api_token")
         self.assertTrue(token_field["sensitive"])
         self.assertNotIn("super-secret-token", str(token_field["value"]))
 
@@ -145,11 +145,11 @@ class TestKanbanConfigRoutes(unittest.TestCase):
         client = _make_client(cfg)
 
         resp = client.patch("/v1/self/config", json={
-            "updates": [{"json_key": "http_api_token", "value": "hacked"}]
+            "updates": [{"json_key": "http.api_token", "value": "hacked"}]
         })
         self.assertEqual(resp.status_code, 400)
         on_disk = json.loads(self.config_path.read_text(encoding="utf-8"))
-        self.assertNotIn("http_api_token", on_disk)
+        self.assertNotIn("http", on_disk)
 
 
 if __name__ == "__main__":

@@ -120,41 +120,114 @@ def load_nested_block(block: dict, cls: type, env_fallback: Optional[dict] = Non
             raw_v = os.environ[env_name]
         elif not in_block:
             continue
-        has_default = f.default is not dataclasses.MISSING
-        default_v = f.default if has_default else None
-        has_default_factory = f.default_factory is not dataclasses.MISSING
-        factory_sample = f.default_factory() if has_default_factory else None
-        try:
-            if isinstance(default_v, bool):
-                kwargs[f.name] = bool(raw_v)
-            elif isinstance(default_v, int) and not isinstance(default_v, bool):
-                kwargs[f.name] = int(raw_v)
-            elif isinstance(default_v, float):
-                kwargs[f.name] = float(raw_v)
-            elif isinstance(default_v, str):
-                kwargs[f.name] = str(raw_v)
-            elif isinstance(default_v, list) or (has_default_factory and isinstance(factory_sample, list)):
-                kwargs[f.name] = list(raw_v) if isinstance(raw_v, list) else _fallback_field(
-                    cls, f.name, raw_v, "list", default_v if has_default else factory_sample
-                )
-            elif isinstance(default_v, dict) or (has_default_factory and isinstance(factory_sample, dict)):
-                # [P5-5] dict 类型字段（如 GrowthAdvisorConfig.category_
-                # notification_frequency）此前是"原样透传"，配置文件/编辑器
-                # 存进来的错误类型（例如整段被误当字符串保存）会静默流入
-                # 下游，某个随机调用点才报错。这里显式校验类型，不匹配时
-                # 回退默认值并记一条 warning 日志，不让一个字段的脏数据
-                # 拖垮整个加载流程。
-                kwargs[f.name] = raw_v if isinstance(raw_v, dict) else _fallback_field(
-                    cls, f.name, raw_v, "dict", default_v if has_default else factory_sample
-                )
-            else:
-                # None 默认 / Optional[...] 等：原样透传（合法空值不应被
-                # 误判为类型不匹配，例如 `Optional[str] = None` 传入 None）
-                kwargs[f.name] = raw_v
-        except (TypeError, ValueError):
-            # 类型转换失败（脏配置）——忽略该字段，退回默认值
-            continue
+        ok, converted = _convert_field_value(cls, f, raw_v)
+        if ok:
+            kwargs[f.name] = converted
+        # 转换失败（脏配置）：忽略该字段，退回默认值，不中断加载流程
     return cls(**kwargs)
+
+
+# 一个哨兵值，用来在字段值本身合法为 `None`（如 `Optional[str] = None`）时，
+# 与"转换失败/字段缺失"这两种情况区分开。
+_CONVERT_FAILED = object()
+
+
+def _convert_field_value(cls: type, f: "dataclasses.Field", raw_v: Any) -> tuple:
+    """把一个原始值按 dataclass 字段 `f` 的默认值类型做转换，供
+    `load_nested_block()` 和 `load_nested_block_with_flat_compat()` 共用，
+    避免两处各自维护一份类型转换规则、行为逐渐分叉。
+
+    返回 `(True, converted_value)` 表示转换成功；`(False, _CONVERT_FAILED)`
+    表示类型不匹配/转换失败，调用方应跳过该字段（不覆盖，保留默认值或
+    通用加载已得出的值）。
+    """
+    has_default = f.default is not dataclasses.MISSING
+    default_v = f.default if has_default else None
+    has_default_factory = f.default_factory is not dataclasses.MISSING
+    factory_sample = f.default_factory() if has_default_factory else None
+    try:
+        if isinstance(default_v, bool):
+            return True, bool(raw_v)
+        elif isinstance(default_v, int) and not isinstance(default_v, bool):
+            return True, int(raw_v)
+        elif isinstance(default_v, float):
+            return True, float(raw_v)
+        elif isinstance(default_v, str):
+            return True, str(raw_v)
+        elif isinstance(default_v, list) or (has_default_factory and isinstance(factory_sample, list)):
+            if isinstance(raw_v, list):
+                return True, list(raw_v)
+            return True, _fallback_field(cls, f.name, raw_v, "list", default_v if has_default else factory_sample)
+        elif isinstance(default_v, dict) or (has_default_factory and isinstance(factory_sample, dict)):
+            # [P5-5] dict 类型字段此前是"原样透传"，配置文件/编辑器存进来的
+            # 错误类型（例如整段被误当字符串保存）会静默流入下游，某个随机
+            # 调用点才报错。这里显式校验类型，不匹配时回退默认值并记一条
+            # warning 日志，不让一个字段的脏数据拖垮整个加载流程。
+            if isinstance(raw_v, dict):
+                return True, raw_v
+            return True, _fallback_field(cls, f.name, raw_v, "dict", default_v if has_default else factory_sample)
+        else:
+            # None 默认 / Optional[...] 等：原样透传（合法空值不应被误判为
+            # 类型不匹配，例如 `Optional[str] = None` 传入 None）
+            return True, raw_v
+    except (TypeError, ValueError):
+        return False, _CONVERT_FAILED
+
+
+def load_nested_block_with_flat_compat(
+    file_cfg: dict,
+    attr_name: str,
+    cls: type,
+    flat_key_map: dict,
+    env_fallback: Optional[dict] = None,
+) -> Any:
+    """存量 flat block 迁移期的过渡兼容加载：nested block 优先；nested 里
+    缺失的字段，回退读取 `flat_key_map` 里登记的旧 flat key（若也缺失，则
+    用 dataclass 默认值）。
+
+    用途：`next_doc/flat_nested_config_unification_migration_plan.md` 里
+    11 个历史 flat block（`memory`/`compress`/`tool_trim`/`skill`/
+    `perception`/`session`/`profile`/`debug`/`http`/`retry`/`ensemble`）
+    的迁移期兼容层——迁移前 `loader.py` 里为每个字段手写
+    `XxxConfig(field=_fb("json_key", cli_val, default), ...)`，字段名与
+    JSON key 经常不一致（如 `memory_top_k` → `top_k`）；迁移后改成本函数：
+    nested 写法（`{"memory": {"top_k": 5}}`）优先生效，旧 flat 写法
+    （`{"memory_top_k": 5}`）只在 nested 缺省时兜底，避免存量
+    `agent_config.json` 用户升级后配置失效。
+
+    不建议新 block 使用——新 block 直接用 `load_nested_block()`，不需要
+    `flat_key_map`；这里只是为了兼容"旧参数名与字段名不一致"这批历史包袱。
+    计划在 flat 写法迁移完成若干个大版本后移除本函数与所有调用点，届时
+    `agent_config.json` 只接受 nested 写法（见迁移计划 Stage 4）。
+
+    参数：
+      file_cfg: 顶层配置 dict（`agent_config.json` 解析结果）。
+      attr_name: 顶层 nested block 的 key（如 "memory"）。
+      cls: 对应 dataclass 类型。
+      flat_key_map: `{dataclass 字段名: 旧 flat key}`，只需要登记"确实存在
+        旧 flat key"的字段；未登记的字段只走 nested，没有旧写法可回退。
+      env_fallback: 透传给 `load_nested_block()`，语义不变。
+    """
+    raw_block = file_cfg.get(attr_name)
+    block = raw_block if isinstance(raw_block, dict) else {}
+    instance = load_nested_block(block, cls, env_fallback)
+
+    overrides: dict[str, Any] = {}
+    for f in dataclasses.fields(cls):
+        if f.name in block:
+            # nested 写法已经显式给出（包括显式 null），不回退 flat key
+            continue
+        flat_key = flat_key_map.get(f.name)
+        if not flat_key or flat_key not in file_cfg:
+            continue
+        raw_v = file_cfg[flat_key]
+        if raw_v is None:
+            overrides[f.name] = None
+            continue
+        ok, converted = _convert_field_value(cls, f, raw_v)
+        if ok:
+            overrides[f.name] = converted
+    return dataclasses.replace(instance, **overrides) if overrides else instance
 
 
 def _fallback_field(cls: type, field_name: str, raw_v: Any, expected: str, default_v: Any) -> Any:

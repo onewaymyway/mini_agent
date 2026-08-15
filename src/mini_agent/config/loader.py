@@ -62,7 +62,13 @@ from .models import (
     DEFAULT_MAX_TURNS,
 )
 from .prompt_builder import _read_claude_md, _resolve_prompts_dir, _resolve_skills_dir
-from .param_registry import NESTED_CONFIG_BLOCKS, load_all_nested_blocks, load_nested_block, apply_overrides
+from .param_registry import (
+    NESTED_CONFIG_BLOCKS,
+    load_all_nested_blocks,
+    load_nested_block,
+    load_nested_block_with_flat_compat,
+    apply_overrides,
+)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -307,240 +313,342 @@ def load_config(
     _mem_path_str = file_cfg.get("memory_store_path", "")
     _mem_path = Path(_mem_path_str) if _mem_path_str else None
 
-    # per_turn_retrieval_enabled 支持两种写法：
-    #   1) 扁平键 "memory_per_turn_retrieval_enabled"（与本文件里其余
-    #      memory_* 键的既有约定一致，CLI/环境变量扩展时也走这条）
-    #   2) 嵌套写法 {"memory": {"per_turn_retrieval_enabled": false}}（更符合
-    #      直觉、且与 MemoryConfig 字段名直接对应，这里额外兼容，避免用户
-    #      按字段名嵌套写却被静默忽略）
-    # 注意：本文件其余 library_index_enabled/library_shelf_search_enabled/
-    # library_wiki_search_primary 等字段目前都还没有接入 file_cfg，只能通过
-    # 代码里直接构造 MemoryConfig(...) 设置，如果也需要从 agent_config.json
-    # 配置，需要照这里的模式各自补一条。
-    _mem_dict = file_cfg.get("memory") if isinstance(file_cfg.get("memory"), dict) else {}
-    _per_turn_retrieval_default = bool(_mem_dict.get("per_turn_retrieval_enabled", True))
-
-    # [统一参数机制] MemoryConfig 除了下面这批有扁平 key / CLI 兼容需求的
-    # 字段外，还有一批"字段名与 dataclass 一一对应"的开关（library_index_*/
-    # wiki_*/embedding_*/consolidation_*/lifecycle_* 等）此前只能通过代码
-    # 直接构造设置，agent_config.json 里的 `"memory": {...}` 嵌套写法完全
-    # 不会被读取——这里先走通用加载把整个 memory block（含这些字段）读进来，
-    # 再用 apply_overrides 覆盖下面这批仍需要扁平 key/CLI 优先级的字段，
-    # 两段式组合与 reminder/privacy 等 block 的既有模式一致。
+    # [flat_nested_config_unification_migration_plan.md Stage 2 第 4 类]
+    # per_turn_retrieval_enabled 现在统一走下面 `load_nested_block_with_
+    # flat_compat()` 的通用优先级（nested 写法 > 旧扁平键
+    # "memory_per_turn_retrieval_enabled" > dataclass 默认值 True）。
+    # 迁移前这里是反过来的（扁平键存在时会覆盖 nested 写法），是本次迁移
+    # 顺带修正的一处历史不一致，其余 library_index_enabled/wiki_* 等字段
+    # 本来就只支持 nested 写法，不受影响。
+    # memory：30 字段，flat key 与字段名不一致（memory_top_k → top_k 等）。
+    # enabled/global_enabled/global_top_k/top_k 有 CLI 覆盖需求；
+    # store_path 需要 str→Path 转换，单独用 apply_overrides 处理；其余
+    # （decay_half_life_days/max_entries/lesson_*/correction_detection_
+    # enabled/per_turn_retrieval_enabled 等）只走 nested + flat 兼容层
+    # （flat_key_map 里登记的都是历史上确实存在过的扁平 key，字段名与
+    # flat key 相同的这批此前直接是 dataclass 默认值生效，现在同样能被
+    # 对应的扁平 key 覆盖，属于本次迁移顺带补齐的兼容面，不改变"这些字段
+    # 默认值不变"这个事实）。library_index_*/wiki_*/embedding_*/
+    # consolidation_*/lifecycle_* 这批本来就只支持 nested 写法，不受影响。
     memory_cfg = apply_overrides(
-        load_nested_block(_mem_dict, MemoryConfig),
-        enabled=_fb("memory_enabled", memory_enabled),
-        backend=_f("memory_backend", None) or "local",
+        load_nested_block_with_flat_compat(
+            file_cfg, "memory", MemoryConfig,
+            flat_key_map={
+                "enabled": "memory_enabled",
+                "backend": "memory_backend",
+                "global_enabled": "memory_global_enabled",
+                "global_top_k": "memory_global_top_k",
+                "top_k": "memory_top_k",
+                "decay_half_life_days": "memory_decay_half_life_days",
+                "max_entries": "memory_max_entries",
+                "lesson_rules_enabled": "lesson_rules_enabled",
+                "lesson_fail_threshold": "lesson_fail_threshold",
+                "correction_detection_enabled": "correction_detection_enabled",
+                "per_turn_retrieval_enabled": "memory_per_turn_retrieval_enabled",
+            },
+        ),
+        enabled=(bool(memory_enabled) if memory_enabled is not None else None),
         store_path=_mem_path,
-        global_enabled=_fb("memory_global_enabled", memory_global_enabled, True),
-        global_top_k=_fn("memory_global_top_k", memory_global_top_k, 2),
-        top_k=_fn("memory_top_k", memory_top_k, 3),
-        decay_half_life_days=_fn("memory_decay_half_life_days", None, 30.0),
-        max_entries=_fn("memory_max_entries", None, 500),
-        lesson_rules_enabled=_fb("lesson_rules_enabled", None, True),
-        lesson_fail_threshold=_fn("lesson_fail_threshold", None, 3),
-        correction_detection_enabled=_fb("correction_detection_enabled", None, True),
-        per_turn_retrieval_enabled=_fb(
-            "memory_per_turn_retrieval_enabled", None, _per_turn_retrieval_default
-        ),
+        global_enabled=(bool(memory_global_enabled) if memory_global_enabled is not None else None),
+        global_top_k=(int(memory_global_top_k) if memory_global_top_k is not None else None),
+        top_k=(int(memory_top_k) if memory_top_k is not None else None),
     )
 
-    # [统一参数机制] CompressConfig 里 extraction_trigger_*/extract_decisions/
-    # entity_digest_*/extract_world_model/decision_batch_min_interval_days/
-    # decision_recall_turn_gate_enabled/decision_recall_gate_k/
-    # selective_weights/selective_min_user_turns 这批字段此前从未被读取，
-    # `agent_config.json` 里的 `"compress": {...}` 嵌套 block 完全被忽略。
-    # 先走通用加载把整个 compress block 读进来（覆盖上述遗漏字段），再用
-    # apply_overrides 覆盖下面这批已有扁平 key 支持的字段，两段式组合。
-    _compress_dict = file_cfg.get("compress") if isinstance(file_cfg.get("compress"), dict) else {}
+    # [flat_nested_config_unification_migration_plan.md Stage 2 第 4 类]
+    # compress：40 字段。enabled/threshold/forget_orphan_tool_results 三个
+    # 有 CLI/函数参数覆盖需求，用 apply_overrides 处理；其余（含此前
+    # extraction_trigger_*/entity_digest_*/selective_* 等从未接入 flat
+    # key、只能靠 nested 写法的字段）统一走 flat_key_map，nested 优先、
+    # 旧 flat key 兜底，dataclass 默认值垫底。
+    # `strategy` 字段是个例外：历史遗留行为是"不管 nested/flat 是否设置，
+    # 只要 CLI 未传，就用硬编码的 'turn_aligned' 而不是 dataclass 默认值
+    # 'compact_with_skills'"（`_f("auto_compress_strategy", None) or
+    # "turn_aligned"` 这行本身就是"永远非 None"，此前会无条件覆盖掉
+    # nested 里设置的 strategy）——按迁移计划"不改变行为"的要求，这里原样
+    # 保留这个历史怪癖，不放进 flat_key_map（放进去会被 nested 优先规则
+    # 打破，导致默认值从 turn_aligned 变成 compact_with_skills）。是否修正
+    # 这处不一致留给后续独立的技术债处理，不在本次迁移范围内。
     compress_cfg = apply_overrides(
-        load_nested_block(_compress_dict, CompressConfig),
-        enabled=_fb("auto_compress_enabled", auto_compress_enabled),
-        threshold=_fn("auto_compress_threshold", auto_compress_threshold, 0.7),
+        load_nested_block_with_flat_compat(
+            file_cfg, "compress", CompressConfig,
+            flat_key_map={
+                "enabled": "auto_compress_enabled",
+                "threshold": "auto_compress_threshold",
+                "forget_orphan_tool_results": "forget_policy_enabled",
+                "turn_count_trigger_enabled": "compact_turn_count_trigger_enabled",
+                "max_turns_before_compact": "compact_max_turns",
+                "tool_call_count_trigger_enabled": "compact_tool_call_count_trigger_enabled",
+                "max_tool_calls_before_compact": "compact_max_tool_calls",
+                "topic_shift_detection": "compact_topic_shift_detection",
+                "topic_shift_keyword_overlap_threshold": "compact_topic_shift_keyword_overlap_threshold",
+                "topic_shift_min_budget_pct": "compact_topic_shift_min_budget_pct",
+                "redundancy_detection_enabled": "compact_redundancy_detection_enabled",
+                "redundancy_tool_result_ratio": "compact_redundancy_tool_result_ratio",
+                "compact_cooldown_turns": "compact_cooldown_turns",
+                "require_confirmation": "compact_require_confirmation",
+                "max_message_chars_for_compact": "compact_max_message_chars",
+                "compact_precheck_enabled": "compact_precheck_enabled",
+                "compact_precheck_threshold": "compact_precheck_threshold",
+                "model_context_window": "model_context_window",
+                "goal_aware_weighting_enabled": "compact_goal_aware_weighting_enabled",
+                "decision_extraction_on_compact_with_skills_enabled": "compact_decision_extraction_enabled",
+                "decision_recall_tool_enabled": "compact_decision_recall_tool_enabled",
+                "safe_point_gating_enabled": "compact_safe_point_gating_enabled",
+                "composite_intensity_enabled": "compact_composite_intensity_enabled",
+                "composite_intensity_threshold": "compact_composite_intensity_threshold",
+                "audit_enabled": "compact_audit_enabled",
+                "audit_async": "compact_audit_async",
+                "audit_compact_reasons": "compact_audit_reasons",
+            },
+        ),
+        enabled=(bool(auto_compress_enabled) if auto_compress_enabled is not None else None),
+        threshold=(float(auto_compress_threshold) if auto_compress_threshold is not None else None),
         strategy=_f("auto_compress_strategy", None) or "turn_aligned",
-        forget_orphan_tool_results=_fb("forget_policy_enabled", forget_policy_enabled),
-        # ── 触发器开关（每个独立配置，默认关闭/宽松，向后兼容）──────────────
-        turn_count_trigger_enabled=_fb("compact_turn_count_trigger_enabled", None, False),
-        max_turns_before_compact=_fn("compact_max_turns", None, 20),
-        tool_call_count_trigger_enabled=_fb("compact_tool_call_count_trigger_enabled", None, False),
-        max_tool_calls_before_compact=_fn("compact_max_tool_calls", None, 50),
-        topic_shift_detection=_f("compact_topic_shift_detection", None) or "off",
-        topic_shift_keyword_overlap_threshold=_fn(
-            "compact_topic_shift_keyword_overlap_threshold", None, 0.15
-        ),
-        topic_shift_min_budget_pct=_fn(
-            "compact_topic_shift_min_budget_pct", None, 0.2
-        ),
-        redundancy_detection_enabled=_fb("compact_redundancy_detection_enabled", None, False),
-        redundancy_tool_result_ratio=_fn("compact_redundancy_tool_result_ratio", None, 0.6),
-        compact_cooldown_turns=_fn("compact_cooldown_turns", None, 3),
-        require_confirmation=_fb("compact_require_confirmation", None, False),
-        max_message_chars_for_compact=_fn("compact_max_message_chars", None, 10000),
-        # [BUGFIX] 以下三个字段此前漏了从配置文件读取，dataclass 默认值会
-        # 无条件生效，导致 agent_config.json 里配置的 model_context_window
-        # 等值永远不生效（compact_precheck_enabled 默认 True、
-        # compact_precheck_threshold 默认 0.85 恰好"看起来正常"，容易被忽略；
-        # model_context_window 默认 0，最容易暴露问题）。
-        compact_precheck_enabled=_fb("compact_precheck_enabled", None, True),
-        compact_precheck_threshold=_fn("compact_precheck_threshold", None, 0.85),
-        model_context_window=_fn("model_context_window", None, 0),
-        # [compact_mechanism_improvement_plan P0/P1/P2，2026-07 三次更新]
-        # 此前遗漏了从配置文件读取（dataclass 默认值无条件生效，导致
-        # agent_config.json 里配置这些字段永远不生效），补齐 flat-key 映射：
-        goal_aware_weighting_enabled=_fb("compact_goal_aware_weighting_enabled", None, False),
-        decision_extraction_on_compact_with_skills_enabled=_fb(
-            "compact_decision_extraction_enabled", None, False
-        ),
-        decision_recall_tool_enabled=_fb("compact_decision_recall_tool_enabled", None, True),
-        safe_point_gating_enabled=_fb("compact_safe_point_gating_enabled", None, False),
-        composite_intensity_enabled=_fb("compact_composite_intensity_enabled", None, False),
-        composite_intensity_threshold=_fn(
-            "compact_composite_intensity_threshold", None, 1.2
-        ),
-        audit_enabled=_fb("compact_audit_enabled", None, False),
-        audit_async=_fb("compact_audit_async", None, True),
-        audit_compact_reasons=(
-            file_cfg["compact_audit_reasons"]
-            if isinstance(file_cfg.get("compact_audit_reasons"), list)
-            else None
-        ),
+        forget_orphan_tool_results=(bool(forget_policy_enabled) if forget_policy_enabled is not None else None),
     )
 
-    # [统一参数机制] large_file_threshold_bytes/list_dir_show_size/
-    # large_file_warn_marker 此前从未被读取，`"tool_trim": {...}` 嵌套
-    # block 里配置这几项完全不生效——通用加载补齐，其余已有扁平 key 支持
-    # 的字段仍用 apply_overrides 覆盖。
-    _tool_trim_dict = file_cfg.get("tool_trim") if isinstance(file_cfg.get("tool_trim"), dict) else {}
+    # [flat_nested_config_unification_migration_plan.md Stage 2 第 4 类]
+    # tool_trim：15 字段。除 large_file_threshold_bytes/list_dir_show_size/
+    # large_file_warn_marker（本来就只有 nested 写法）外，其余均有
+    # CLI/函数参数覆盖需求，nested/flat 兼容层跑完后用 apply_overrides
+    # 处理 CLI 优先级，与迁移前行为一致。
     tool_trim_cfg = apply_overrides(
-        load_nested_block(_tool_trim_dict, ToolTrimConfig),
-        enabled=_fb("tool_result_trim_enabled", tool_result_trim_enabled),
-        threshold=_fn("tool_result_trim_threshold", tool_result_trim_threshold, 4000),
-        bash_tail_ratio=_fn("tool_trim_bash_tail_ratio", tool_trim_bash_tail_ratio, 0.6),
-        read_window_lines=_fn("tool_trim_read_window_lines", tool_trim_read_window_lines, 0),
-        grep_max_lines=_fn("tool_trim_grep_max_lines", tool_trim_grep_max_lines, 50),
-        raw_store_enabled=_fb("raw_store_enabled", raw_store_enabled, True),
-        raw_store_max_entries=_fn("raw_store_max_entries", raw_store_max_entries, 128),
-        raw_store_max_total_chars=_fn("raw_store_max_total_chars", raw_store_max_total_chars, 5_000_000),
-        smart_summary_enabled=_fb("smart_summary_enabled", smart_summary_enabled, False),
-        smart_summary_threshold=_fn("smart_summary_threshold", smart_summary_threshold, 12000),
-        smart_summary_max_input_chars=_fn(
-            "smart_summary_max_input_chars", smart_summary_max_input_chars, 60000
+        load_nested_block_with_flat_compat(
+            file_cfg, "tool_trim", ToolTrimConfig,
+            flat_key_map={
+                "enabled": "tool_result_trim_enabled",
+                "threshold": "tool_result_trim_threshold",
+                "bash_tail_ratio": "tool_trim_bash_tail_ratio",
+                "read_window_lines": "tool_trim_read_window_lines",
+                "grep_max_lines": "tool_trim_grep_max_lines",
+                "raw_store_enabled": "raw_store_enabled",
+                "raw_store_max_entries": "raw_store_max_entries",
+                "raw_store_max_total_chars": "raw_store_max_total_chars",
+                "smart_summary_enabled": "smart_summary_enabled",
+                "smart_summary_threshold": "smart_summary_threshold",
+                "smart_summary_max_input_chars": "smart_summary_max_input_chars",
+                "smart_summary_model": "smart_summary_model",
+            },
         ),
-        smart_summary_model=_f("smart_summary_model", smart_summary_model) or "",
+        enabled=(bool(tool_result_trim_enabled) if tool_result_trim_enabled is not None else None),
+        threshold=(int(tool_result_trim_threshold) if tool_result_trim_threshold is not None else None),
+        bash_tail_ratio=(float(tool_trim_bash_tail_ratio) if tool_trim_bash_tail_ratio is not None else None),
+        read_window_lines=(int(tool_trim_read_window_lines) if tool_trim_read_window_lines is not None else None),
+        grep_max_lines=(int(tool_trim_grep_max_lines) if tool_trim_grep_max_lines is not None else None),
+        raw_store_enabled=(bool(raw_store_enabled) if raw_store_enabled is not None else None),
+        raw_store_max_entries=(int(raw_store_max_entries) if raw_store_max_entries is not None else None),
+        raw_store_max_total_chars=(int(raw_store_max_total_chars) if raw_store_max_total_chars is not None else None),
+        smart_summary_enabled=(bool(smart_summary_enabled) if smart_summary_enabled is not None else None),
+        smart_summary_threshold=(int(smart_summary_threshold) if smart_summary_threshold is not None else None),
+        smart_summary_max_input_chars=(int(smart_summary_max_input_chars) if smart_summary_max_input_chars is not None else None),
+        smart_summary_model=smart_summary_model,
     )
 
-    # [统一参数机制] candidate_reminder_enabled 此前从未被读取，`"skill":
-    # {...}` 嵌套 block 里配置这项完全不生效——通用加载补齐。
-    _skill_dict = file_cfg.get("skill") if isinstance(file_cfg.get("skill"), dict) else {}
+    # [flat_nested_config_unification_migration_plan.md Stage 2 第 3 类]
+    # skill：11 字段，flat key 与字段名不一致（skill_semantic_enabled →
+    # semantic_enabled 等）。semantic_enabled/threshold、tracking_enabled、
+    # chunking_enabled、compact_budget/per_skill、keyword_activation_enabled、
+    # auto_unload_enabled/idle_seconds 有 CLI/函数参数覆盖需求；matcher、
+    # candidate_reminder_enabled 没有，只走 nested/flat 兼容层。
     skill_cfg = apply_overrides(
-        load_nested_block(_skill_dict, SkillConfig),
-        semantic_enabled=_fb("skill_semantic_enabled", skill_semantic_enabled),
-        semantic_threshold=_fn("skill_semantic_threshold", skill_semantic_threshold, 0.72),
-        tracking_enabled=_fb("skill_tracking_enabled", skill_tracking_enabled),
-        chunking_enabled=_fb("skill_chunking_enabled", skill_chunking_enabled),
-        compact_budget=_fn("skill_compact_budget", skill_compact_budget, 25_000),
-        compact_per_skill=_fn("skill_compact_per_skill", skill_compact_per_skill, 5_000),
-        matcher=_f("skill_matcher", None) or "keyword",
-        keyword_activation_enabled=_fb("skill_keyword_activation_enabled", skill_keyword_activation_enabled, default=False),
-        auto_unload_enabled=_fb("skill_auto_unload_enabled", skill_auto_unload_enabled, default=True),
-        auto_unload_idle_seconds=_fn("skill_auto_unload_idle_seconds", skill_auto_unload_idle_seconds, 1800),
+        load_nested_block_with_flat_compat(
+            file_cfg, "skill", SkillConfig,
+            flat_key_map={
+                "semantic_enabled": "skill_semantic_enabled",
+                "semantic_threshold": "skill_semantic_threshold",
+                "tracking_enabled": "skill_tracking_enabled",
+                "chunking_enabled": "skill_chunking_enabled",
+                "compact_budget": "skill_compact_budget",
+                "compact_per_skill": "skill_compact_per_skill",
+                "matcher": "skill_matcher",
+                "keyword_activation_enabled": "skill_keyword_activation_enabled",
+                "auto_unload_enabled": "skill_auto_unload_enabled",
+                "auto_unload_idle_seconds": "skill_auto_unload_idle_seconds",
+            },
+        ),
+        semantic_enabled=(bool(skill_semantic_enabled) if skill_semantic_enabled is not None else None),
+        semantic_threshold=(float(skill_semantic_threshold) if skill_semantic_threshold is not None else None),
+        tracking_enabled=(bool(skill_tracking_enabled) if skill_tracking_enabled is not None else None),
+        chunking_enabled=(bool(skill_chunking_enabled) if skill_chunking_enabled is not None else None),
+        compact_budget=(int(skill_compact_budget) if skill_compact_budget is not None else None),
+        compact_per_skill=(int(skill_compact_per_skill) if skill_compact_per_skill is not None else None),
+        keyword_activation_enabled=(bool(skill_keyword_activation_enabled) if skill_keyword_activation_enabled is not None else None),
+        auto_unload_enabled=(bool(skill_auto_unload_enabled) if skill_auto_unload_enabled is not None else None),
+        auto_unload_idle_seconds=(int(skill_auto_unload_idle_seconds) if skill_auto_unload_idle_seconds is not None else None),
     )
 
-    perception_cfg = PerceptionConfig(
-        project_scan_enabled=_fb("project_scan_enabled", project_scan_enabled),
-        file_watch_enabled=_fb("file_watch_enabled", file_watch_enabled),
-        tool_cache_enabled=_fb("tool_cache_enabled", tool_cache_enabled),
-        tool_cache_max_entries=_fn("tool_cache_max_entries", None, 256),
-        token_estimate_enabled=_fb("token_estimate_enabled", token_estimate_enabled),
-        token_warn_threshold=_fn("token_warn_threshold", token_warn_threshold, 0.75),
-        tool_stats_enabled=_fb("tool_stats_enabled", tool_stats_enabled),
-        artifact_auto_detect_enabled=_fb("artifact_auto_detect_enabled", artifact_auto_detect_enabled),
+    # [flat_nested_config_unification_migration_plan.md Stage 2 第 1 类]
+    # perception：flat key 与字段名完全一致。`load_config()` 的同名参数
+    # 目前没有对应 CLI flag（parser.py 里没有 --project-scan 等），但
+    # `load_config()` 是公开函数，调用方仍可能直接传参，因此保留
+    # `apply_overrides` 处理这批"函数参数"，只是通用加载部分换成
+    # `load_nested_block_with_flat_compat()`（nested 优先，flat key 兼容）。
+    perception_cfg = apply_overrides(
+        load_nested_block_with_flat_compat(
+            file_cfg, "perception", PerceptionConfig,
+            flat_key_map={
+                "project_scan_enabled": "project_scan_enabled",
+                "file_watch_enabled": "file_watch_enabled",
+                "tool_cache_enabled": "tool_cache_enabled",
+                "tool_cache_max_entries": "tool_cache_max_entries",
+                "token_estimate_enabled": "token_estimate_enabled",
+                "token_warn_threshold": "token_warn_threshold",
+                "tool_stats_enabled": "tool_stats_enabled",
+                "artifact_auto_detect_enabled": "artifact_auto_detect_enabled",
+            },
+        ),
+        # 只处理"函数参数"这一层覆盖；flat key / nested 已经在上面
+        # `load_nested_block_with_flat_compat()` 里按优先级处理过，这里不
+        # 重复读 file_cfg，避免 `_fb` 的默认值语义把 flat_compat 已经算出的
+        # 结果无条件覆盖回去（那样等于让 nested 写法永远不起作用）。
+        project_scan_enabled=(bool(project_scan_enabled) if project_scan_enabled is not None else None),
+        file_watch_enabled=(bool(file_watch_enabled) if file_watch_enabled is not None else None),
+        tool_cache_enabled=(bool(tool_cache_enabled) if tool_cache_enabled is not None else None),
+        token_estimate_enabled=(bool(token_estimate_enabled) if token_estimate_enabled is not None else None),
+        token_warn_threshold=(float(token_warn_threshold) if token_warn_threshold is not None else None),
+        tool_stats_enabled=(bool(tool_stats_enabled) if tool_stats_enabled is not None else None),
+        artifact_auto_detect_enabled=(bool(artifact_auto_detect_enabled) if artifact_auto_detect_enabled is not None else None),
     )
 
+    # [flat_nested_config_unification_migration_plan.md Stage 2 第 2 类]
+    # session：7 字段，flat key 与字段名有少量不一致（session_fmt → fmt、
+    # auto_save_session → auto_save）。dir/fmt/auto_save/summary_enabled/
+    # summary_min_turns/search_enabled 有 CLI/函数参数覆盖需求，通用加载
+    # 跑完后用 `apply_overrides()` 按"CLI 参数 > 配置文件 > 默认值"覆盖，
+    # `backend` 没有 flat key 历史（此前也从未被读取），只走 nested。
     _session_dir_str = (
         (str(session_dir) if session_dir else "")
         or file_cfg.get("session_dir")
         or os.environ.get("SESSION_DIR", "")
     )
-    session_cfg = SessionConfig(
+    session_cfg = apply_overrides(
+        load_nested_block_with_flat_compat(
+            file_cfg, "session", SessionConfig,
+            flat_key_map={
+                "fmt": "session_fmt",
+                "auto_save": "auto_save_session",
+                "summary_enabled": "session_summary_enabled",
+                "summary_min_turns": "session_summary_min_turns",
+                "search_enabled": "session_search_enabled",
+                "backend": "session_backend",
+            },
+            env_fallback={"fmt": "SESSION_FMT"},
+        ),
         dir=Path(_session_dir_str) if _session_dir_str else None,
-        fmt=_f("session_fmt", session_fmt) or os.environ.get("SESSION_FMT", "json"),
-        auto_save=_fb("no_save_session", None, False) is False
-                  and _fb("auto_save_session", auto_save_session, True),
-        summary_enabled=_fb("session_summary_enabled", session_summary_enabled),
-        summary_min_turns=_fn("session_summary_min_turns", session_summary_min_turns, 4),
-        search_enabled=_fb("session_search_enabled", session_search_enabled),
-        backend=_f("session_backend", None) or "local",
+        fmt=session_fmt,
+        auto_save=(
+            False if _fb("no_save_session", None, False) else
+            (bool(auto_save_session) if auto_save_session is not None else None)
+        ),
+        summary_enabled=(bool(session_summary_enabled) if session_summary_enabled is not None else None),
+        summary_min_turns=(int(session_summary_min_turns) if session_summary_min_turns is not None else None),
+        search_enabled=(bool(session_search_enabled) if session_search_enabled is not None else None),
     )
 
-    profile_cfg = ProfileConfig(
-        # [next_doc/memory_backfill_and_profile_update_plan.md 第 4 节
-        # 风险项 4] 此前这里的隐式默认值是 `_fb` 的第三个参数缺省值
-        # `False`，与 `ProfileConfig.enabled` 的 dataclass 默认值各自
-        # 独立维护、容易脱节（"dataclass 默认值改了，这里没同步改"）。
-        # 现在显式传 `True`，与 dataclass 默认值保持一致，agent_config.json
-        # 里没写 profile_enabled 的用户，画像功能默认开启。
-        enabled=_fb("profile_enabled", None, True),
-        refresh_interval_entries=_fn("profile_refresh_interval_entries", None, 3),
-        min_entries=_fn("profile_min_entries", None, 1),
-        max_entries_for_profile=_fn("profile_max_entries_for_profile", None, 20),
-        stale_after_days=_fn("profile_stale_after_days", None, 90),
+    # [flat_nested_config_unification_migration_plan.md Stage 2 第 2 类]
+    # profile：5 字段，flat key 前缀不一致（profile_enabled → enabled 等），
+    # 没有 CLI 覆盖需求，直接走 `load_nested_block_with_flat_compat()`。
+    # `enabled` 缺省时走 dataclass 默认值 `True`，与迁移前"没写
+    # profile_enabled 时显式传 True"的行为一致，不再需要在这里手写默认值。
+    profile_cfg = load_nested_block_with_flat_compat(
+        file_cfg, "profile", ProfileConfig,
+        flat_key_map={
+            "enabled": "profile_enabled",
+            "refresh_interval_entries": "profile_refresh_interval_entries",
+            "min_entries": "profile_min_entries",
+            "max_entries_for_profile": "profile_max_entries_for_profile",
+            "stale_after_days": "profile_stale_after_days",
+        },
     )
 
+    # [flat_nested_config_unification_migration_plan.md Stage 2 第 1 类]
+    # debug：3 字段。优先级：CLI/函数参数 > nested 写法（{"debug": {...}}）
+    # > 旧 flat key（debug_llm 等）> 环境变量（LLM_DEBUG 等，沿用原有
+    # "1"/"true"/"yes" 的宽松字符串判断，不复用 `load_nested_block()`
+    # 通用的 `bool(raw_v)` 转换，避免把非空字符串 "0" 误判为 True）>
+    # dataclass 默认值。
+    _debug_dict = file_cfg.get("debug") if isinstance(file_cfg.get("debug"), dict) else {}
+    _debug_llm_explicit = _debug_dict.get("llm_enabled", file_cfg.get("debug_llm"))
+    _debug_console_explicit = _debug_dict.get("llm_console", file_cfg.get("debug_llm_console"))
     _env_debug     = os.environ.get("LLM_DEBUG", "").lower() in ("1", "true", "yes")
     _env_debug_con = os.environ.get("LLM_DEBUG_CONSOLE", "").lower() in ("1", "true", "yes")
-    _debug_llm_v     = bool(_fb("debug_llm",         debug_llm,         _env_debug))
-    _debug_console_v = bool(_fb("debug_llm_console", debug_llm_console, _env_debug_con))
-    _debug_log_dir_str = file_cfg.get("debug_log_dir") or os.environ.get("LLM_DEBUG_LOG_DIR", "")
+    _debug_llm_v = bool(debug_llm) if debug_llm is not None else (
+        bool(_debug_llm_explicit) if _debug_llm_explicit is not None else _env_debug
+    )
+    _debug_console_v = bool(debug_llm_console) if debug_llm_console is not None else (
+        bool(_debug_console_explicit) if _debug_console_explicit is not None else _env_debug_con
+    )
+    _debug_log_dir_str = (
+        _debug_dict.get("log_dir")
+        or file_cfg.get("debug_log_dir")
+        or os.environ.get("LLM_DEBUG_LOG_DIR", "")
+    )
     _debug_log_dir = Path(_debug_log_dir_str) if _debug_log_dir_str else None
     debug_cfg = DebugConfig(
         llm_enabled=_debug_llm_v,
         llm_console=_debug_console_v,
         log_dir=_debug_log_dir,
     )
-    # [统一参数机制] blocking_call_timeout_seconds/blocking_call_failure_
-    # threshold/blocking_call_cooldown_seconds 此前从未被读取，`"http":
-    # {...}` 嵌套 block 里配置这几项完全不生效——通用加载补齐。
-    _http_dict = file_cfg.get("http") if isinstance(file_cfg.get("http"), dict) else {}
-    http_cfg = apply_overrides(
-        load_nested_block(_http_dict, HttpConfig),
-        enabled=_fb("http_enabled", None),
-        host=_f("http_host", None) or "127.0.0.1",
-        port=int(_f("http_port", None) or 8765),
-        api_token=_f("http_api_token", None) or "",
-        allowed_ips=file_cfg.get("http_allowed_ips", ["127.0.0.1", "::1"]),
-        cors_origins=file_cfg.get("http_cors_origins", []),
-        fs_readonly=_fb("http_fs_readonly", None),
-        fs_excludes=file_cfg.get("http_fs_excludes", []),
-        ring_maxlen=int(_f("http_ring_maxlen", None) or 2000),
-        multi_user_enabled=_fb("http_multi_user_enabled", None),
+    # [flat_nested_config_unification_migration_plan.md Stage 2 第 3 类]
+    # http：13 字段，flat key 与字段名不一致（http_ring_maxlen →
+    # ring_maxlen 等），且没有 CLI 覆盖需求（`load_config()` 签名里没有
+    # http_* 参数，CLI 层的 --http/--http-port 等 flag 目前并未接入
+    # `load_config()`），纯 nested + flat 兼容层，无需 `apply_overrides`。
+    http_cfg = load_nested_block_with_flat_compat(
+        file_cfg, "http", HttpConfig,
+        flat_key_map={
+            "enabled": "http_enabled",
+            "host": "http_host",
+            "port": "http_port",
+            "api_token": "http_api_token",
+            "allowed_ips": "http_allowed_ips",
+            "cors_origins": "http_cors_origins",
+            "fs_readonly": "http_fs_readonly",
+            "fs_excludes": "http_fs_excludes",
+            "ring_maxlen": "http_ring_maxlen",
+            "multi_user_enabled": "http_multi_user_enabled",
+        },
     )
 
-    # [统一参数机制] network_aware/network_check_interval/network_max_wait
-    # 此前从未被读取，`"retry": {...}` 嵌套 block 里配置这几项完全不生效
-    # ——通用加载补齐。
-    _retry_dict = file_cfg.get("retry") if isinstance(file_cfg.get("retry"), dict) else {}
+    # [flat_nested_config_unification_migration_plan.md Stage 2 第 4 类]
+    # retry：9 字段。backoff_mode/step/max_delay 有 CLI 覆盖需求
+    # （--retry-backoff 等），其余（max_retries/delay/verbose/
+    # network_aware 等）只走 nested + flat 兼容层。
     retry_cfg = apply_overrides(
-        load_nested_block(_retry_dict, RetryConfig),
-        max_retries=_fn("llm_retry_max", None, 15),
-        delay=_fn("llm_retry_delay", None, 5.0),
-        verbose=_fb("llm_retry_verbose", None, True),
-        backoff_mode=_f("llm_retry_backoff_mode", llm_retry_backoff_mode) or "fixed",
-        backoff_step=_fn("llm_retry_backoff_step", llm_retry_backoff_step, 60.0),
-        backoff_max_delay=_fn("llm_retry_backoff_max_delay", llm_retry_backoff_max_delay, 0.0),
+        load_nested_block_with_flat_compat(
+            file_cfg, "retry", RetryConfig,
+            flat_key_map={
+                "max_retries": "llm_retry_max",
+                "delay": "llm_retry_delay",
+                "verbose": "llm_retry_verbose",
+                "backoff_mode": "llm_retry_backoff_mode",
+                "backoff_step": "llm_retry_backoff_step",
+                "backoff_max_delay": "llm_retry_backoff_max_delay",
+            },
+        ),
+        backoff_mode=llm_retry_backoff_mode,
+        backoff_step=(float(llm_retry_backoff_step) if llm_retry_backoff_step is not None else None),
+        backoff_max_delay=(float(llm_retry_backoff_max_delay) if llm_retry_backoff_max_delay is not None else None),
     )
 
-    ensemble_cfg = EnsembleConfig(
-        mode=_f("ensemble_mode", None) or "off",
-        granularity=_f("ensemble_granularity", None) or "both",
-        n=int(_fn("ensemble_n", None, 3)),
-        execution=_f("ensemble_execution", None) or "parallel",
-        max_concurrency=int(_fn("ensemble_max_concurrency", None, 3)),
-        judge_strategy=_f("ensemble_judge_strategy", None) or "llm_judge",
-        judge_model=_f("ensemble_judge_model", None) or None,
-        judge_provider=_f("ensemble_judge_provider", None) or None,
-        early_stop_on_consensus=_fb("ensemble_early_stop_on_consensus", None, True),
-        max_extra_cost_ratio=_fn("ensemble_max_extra_cost_ratio", None, 2.0),
+    # [flat_nested_config_unification_migration_plan.md Stage 2 第 3 类]
+    # ensemble：10 字段，flat key 与字段名不一致（ensemble_n → n 等），
+    # 没有 CLI 覆盖需求（`load_config()` 签名里没有 ensemble_* 参数），
+    # 纯 nested + flat 兼容层。
+    ensemble_cfg = load_nested_block_with_flat_compat(
+        file_cfg, "ensemble", EnsembleConfig,
+        flat_key_map={
+            "mode": "ensemble_mode",
+            "granularity": "ensemble_granularity",
+            "n": "ensemble_n",
+            "execution": "ensemble_execution",
+            "max_concurrency": "ensemble_max_concurrency",
+            "judge_strategy": "ensemble_judge_strategy",
+            "judge_model": "ensemble_judge_model",
+            "judge_provider": "ensemble_judge_provider",
+            "early_stop_on_consensus": "ensemble_early_stop_on_consensus",
+            "max_extra_cost_ratio": "ensemble_max_extra_cost_ratio",
+        },
     )
 
     # ── LLM Fallback Chain ────────────────────────────────────────────────────
