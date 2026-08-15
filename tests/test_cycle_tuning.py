@@ -299,6 +299,88 @@ class TestParseNLRequestToChanges(unittest.TestCase):
         self.assertEqual(len(changes), 1)
         self.assertEqual(changes[0]["param"], "priority")
 
+    def test_prompt_includes_current_priority_and_task_template(self):
+        """[对话连续性修复] 白名单里 priority/task_template 是有'当前值'的
+        参数，Stage 3 prompt 必须把当前值喂给 LLM，否则用户第二次追加意见
+        时 LLM 只能凭空生成一份新的 to 值，把之前已经确认过的内容覆盖掉。
+        """
+        captured = {}
+
+        def fake_ask(prompt):
+            captured["prompt"] = prompt
+            return "[]"
+
+        report = cd.CycleDiagnosticsReport(
+            goal_id="g1", goal_title="Test Goal", found=True,
+            recurring=True, schedule="interval:3600", execution_phase_mode="stable",
+            priority=7, task_template="[已有要求] 先检查 A，再检查 B",
+        )
+        ct.parse_nl_request_to_changes("再加一条：也检查 C", report, fake_ask)
+        prompt = captured["prompt"]
+        self.assertIn("先检查 A，再检查 B", prompt)
+        self.assertIn('"priority": 7', prompt)
+        self.assertIn("合并后的完整新文本", prompt)
+
+    def test_context_default_priority_and_task_template_absent(self):
+        """没有绑定 cron job / priority 是默认值 0 时，context 里仍然会带上
+        这两个字段（值为 0 / None），不会因为'没有当前值'就整个漏掉——
+        LLM 能据此判断这是一个从零开始的场景，而不是误以为有历史内容。
+        """
+        captured = {}
+
+        def fake_ask(prompt):
+            captured["prompt"] = prompt
+            return "[]"
+
+        ct.parse_nl_request_to_changes("提高优先级", self._report(), fake_ask)
+        self.assertIn('"priority": 0', captured["prompt"])
+        self.assertIn('"task_template": null', captured["prompt"])
+
+
+class TestBuildCycleDiagnosticsCurrentValues(unittest.TestCase):
+    """[对话连续性修复] build_cycle_diagnostics 要把 node.priority 和
+    cron job 当前的 task_template 带出来，这是喂给 Stage 3 LLM 的当前值
+    来源——如果这里漏了，即使 prompt 模板改对了也没有实际数据可用。
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.paths = AgentPaths(Path(self._tmpdir.name))
+        self.gb = load_goal_backlog(self.paths)
+        self.cs = CronScheduler(self.paths)
+        self.cs.load()
+        self.node = self.gb.add_goal("Tuning goal", source="user")
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_priority_reflected_without_cron_job(self):
+        self.node.priority = 5
+        report = cd.build_cycle_diagnostics(self.paths, self.gb, self.node.id)
+        self.assertEqual(report.priority, 5)
+        self.assertIsNone(report.task_template)
+
+    def test_task_template_reflected_after_recurring_bind(self):
+        make_goal_recurring(self.gb, self.cs, self.node.id, "interval:3600", "原始模板内容")
+        report = cd.build_cycle_diagnostics(self.paths, self.gb, self.node.id)
+        self.assertEqual(report.task_template, "原始模板内容")
+
+    def test_task_template_reflects_previously_applied_change(self):
+        """回归场景本身：第一次调优 apply 之后，诊断报告里的 task_template
+        必须是'应用之后'的最新值，而不是绑定时的原始值——这样第二次自然
+        语言请求才能在真正的最新内容基础上继续追加。"""
+        make_goal_recurring(self.gb, self.cs, self.node.id, "interval:3600", "[已有要求] 先检查 A")
+        p = ct.build_tuning_proposal(
+            self.node.id,
+            [{"param": "task_template", "to": "[已有要求] 先检查 A，再检查 B", "reason": "追加"}],
+        )
+        ct.save_proposal(self.paths, p)
+        ct.confirm_tuning_proposal(self.paths, self.node.id, p.id)
+        ct.apply_tuning_proposal(self.paths, self.gb, self.cs, self.node.id, p.id)
+
+        report = cd.build_cycle_diagnostics(self.paths, self.gb, self.node.id)
+        self.assertEqual(report.task_template, "[已有要求] 先检查 A，再检查 B")
+
 
 class TestBuildTuningProposalFromNL(unittest.TestCase):
     def _report(self):

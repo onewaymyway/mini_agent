@@ -394,7 +394,9 @@ def parse_nl_request_to_changes(
         "goal_title": report.goal_title,
         "recurring": report.recurring,
         "schedule": report.schedule,
+        "priority": report.priority,
         "execution_phase_mode": report.execution_phase_mode,
+        "task_template": report.task_template,
         "cron_health": report.cron_health,
     }
     prompt = (
@@ -407,8 +409,17 @@ def parse_nl_request_to_changes(
         "  - priority：整数优先级。\n"
         "  - execution_phase：explore/converge/stable/tidy/auto 之一。\n"
         "  - task_template：cron 触发时注入的任务描述文本。\n"
+        "    【重要】下面 context.task_template 就是当前生效的完整文本。\n"
+        "    如果用户这次的意见是在已有要求基础上'追加/补充/再加一条'，\n"
+        "    你输出的 to 必须是【合并后的完整新文本】——先保留\n"
+        "    context.task_template 里已有的全部内容，再把用户这次提的\n"
+        "    新要求融合进去，禁止只输出用户这次新提的那一小段、把旧内容\n"
+        "    丢掉。如果用户明确要求'替换成/改成/不要之前那些了'，才可以\n"
+        "    整段重写。不确定用户是想追加还是替换时，按追加处理（更保守，\n"
+        "    不丢用户之前已经确认过的要求）。\n"
         "  - regenerate_spec：值固定为 true，表示'重新生成一份执行规范草稿'。\n"
-        "当前该 Goal 的上下文（供你理解意见里的相对表述，比如'加倍'/'放宽'）：\n"
+        "当前该 Goal 的上下文（供你理解意见里的相对表述，比如'加倍'/'放宽'，\n"
+        "以及上面 task_template 的合并要求）：\n"
         + json.dumps(context, ensure_ascii=False)
         + "\n用户的改进意见：" + text.strip()
         + "\n请只输出一个 JSON 数组，每个元素形如 "

@@ -52,6 +52,14 @@ class CycleDiagnosticsReport:
     status: str = ""
     created_at: float = 0.0
     last_scheduled_at: float = 0.0
+    # [调优交互式对话的历史连续性修复] 白名单参数里 priority/task_template
+    # 此前完全没有出现在报告里——导致 Stage 3 自然语言解析层看不到"当前值"，
+    # 每次都只能凭用户这一句话从零生成一份新的 to 值，对 task_template 这种
+    # 自由文本参数尤其致命：用户在已有基础上追加一条要求，LLM 却因为不知道
+    # 原文是什么，只能编一份新的，等于把之前所有确认过的内容都覆盖掉了。
+    # 现在补上这两个字段，供 Stage 3 prompt 把"当前值"喂给 LLM 作为基线。
+    priority: int = 0
+    task_template: Optional[str] = None
 
     # ── 健康信号（复用 check_phase_health 的判定逻辑，不重新发明）──
     execution_phase_mode: str = "auto"
@@ -155,6 +163,7 @@ def _cron_job_for_goal(paths: "AgentPaths", cron_job_id: Optional[str]) -> Optio
             "consecutive_skip_count": job.consecutive_skip_count,
             "last_run_at": job.last_run_at,
             "next_run_at": job.next_run_at,
+            "task_template": job.task_template,
         }
     except Exception:
         return None
@@ -236,6 +245,7 @@ def build_cycle_diagnostics(
         status=node.status,
         created_at=node.created_at,
         last_scheduled_at=node.last_scheduled_at,
+        priority=getattr(node, "priority", 0),
         progress_notes_tail="\n".join((node.progress_notes or "").splitlines()[-10:]),
     )
 
@@ -244,6 +254,7 @@ def build_cycle_diagnostics(
         report.cron_health = _cron_job_for_goal(paths, node.recurrence_cron_job_id)
         if report.cron_health:
             report.schedule = report.cron_health.get("schedule")
+            report.task_template = report.cron_health.get("task_template")
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.perception.cycle_diagnostics.build_cycle_diagnostics.cron')
