@@ -883,6 +883,8 @@ def create_app(
     role_store: Optional[UserStore] = None,
     project_root: Optional[Path] = None,
     session_pool: Optional[Any] = None,  # daemon 多用户架构 Phase 3: Optional[SessionAgentPool]
+    access_log_enabled: bool = True,
+    access_log_path: str = "",
 ) -> FastAPI:
 
     @asynccontextmanager
@@ -942,6 +944,17 @@ def create_app(
     else:
         app.add_middleware(AuthMiddleware, token=token, allowed_ips=allowed_ips)
 
+    # ── 访问日志（http_access_log_plan）─────────────────────────────────────
+    # 放在鉴权中间件之后添加，使其成为最外层（Starlette 的中间件是"后加的在
+    # 外层"，最外层最先看到请求），这样即便请求被鉴权/IP白名单拦掉，也依然
+    # 会留下一条记录，不会漏掉"看起来连不上"但其实是 401/403 的情况。
+    from mini_agent.api.http_log import HttpAccessLogMiddleware
+    app.add_middleware(
+        HttpAccessLogMiddleware,
+        enabled  = access_log_enabled,
+        log_path = access_log_path,
+    )
+
     # ── 路由 ──────────────────────────────────────────────────────────────
     app.include_router(router)
 
@@ -984,10 +997,17 @@ class HttpServer:
         fs_excludes:      Optional[list[str]] = None,
         ring_maxlen:      int  = 2000,
         multi_user_enabled: bool = False,
+        access_log_enabled: bool = True,
+        access_log_path:  str  = "",
     ) -> None:
         self._host = host
         self._port = port
         self._project_root = project_root
+
+        # http_access_log_plan：是否记录 HTTP 访问日志，以及记录到哪个文件
+        # （空 = 默认与全局错误日志同目录，见 mini_agent.api.http_log）。
+        self._access_log_enabled = access_log_enabled
+        self._access_log_path = access_log_path
 
         # [daemon-stop-graceful-fix] 供 routes.py::/v1/shutdown 使用的优雅
         # 关停信号。daemon-mode 场景下由 cli/app.py 在创建完 HttpServer 后
@@ -1875,6 +1895,8 @@ class HttpServer:
             role_store   = self._role_store,
             project_root = self._project_root,
             session_pool = self._session_pool,
+            access_log_enabled = self._access_log_enabled,
+            access_log_path    = self._access_log_path,
         )
         # Stage 9 §3: 注入 HttpServer 自身到 app.state，使 routes.py 可查询 AutonomousLoop
         app.state.http_server = self

@@ -564,6 +564,17 @@ class HttpConfig:
     blocking_call_failure_threshold: int = 3          # 连续失败几次后打开熔断
     blocking_call_cooldown_seconds: float = 120.0     # 熔断打开后冷却多久再放行探测
 
+    # [http_access_log_plan] HTTP 请求访问日志——每条请求的 method/path/状态码/
+    # 耗时，写入独立的 JSONL 文件，用于事后排查"http server 长时间卡住"这类
+    # 问题（比如定位到具体是哪个路由的耗时异常拖住了整个事件循环）。
+    # 默认开启，开销是每请求一次 JSON 序列化+文件 append，可忽略不计；
+    # 不想要这份日志可以显式关掉。
+    access_log_enabled: bool = True
+    # 留空 = 默认落在与 error.jsonl 相同的目录（~/.agent/logs/http_access.jsonl，
+    # 或 MINI_AGENT_HOME 指向的目录），与全局错误日志保持一致的存放位置；
+    # 也可以显式指定一个绝对路径，把它单独存到别处。
+    access_log_path: str = ""
+
 
 @dataclass
 class WebSearchConfig:

@@ -522,6 +522,8 @@ def _main_inner() -> None:
                 fs_excludes        = cfg.http_fs_excludes or [],
                 ring_maxlen        = cfg.http_ring_maxlen,
                 multi_user_enabled = multi_user_enabled,
+                access_log_enabled = cfg.http.access_log_enabled,
+                access_log_path    = cfg.http.access_log_path,
             )
             http_server.start()
 

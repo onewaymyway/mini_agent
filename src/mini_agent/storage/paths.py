@@ -151,6 +151,15 @@ class AgentPaths:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    @property
+    def global_http_access_log(self) -> Path:
+        """~/.agent/logs/http_access.jsonl —— HTTP 请求访问日志（JSON Lines）。
+        默认与 global_error_log 同目录，每一行记录一次请求的 method/path/
+        状态码/耗时，用于事后排查 http server 卡顿等问题（见
+        mini_agent.api.http_log）。可通过 HttpConfig.access_log_path 显式
+        覆盖到别的路径，此属性只是"未显式配置时"的默认值。"""
+        return self.global_logs_dir / "http_access.jsonl"
+
     def profile_path(self, user_id: Optional[str] = None) -> Path:
         """
         用户 profile 文件路径。
