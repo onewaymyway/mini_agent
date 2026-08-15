@@ -127,6 +127,11 @@ def build_parser() -> argparse.ArgumentParser:
               /growth report <id>         Show (or generate) the research report for a candidate
               /growth material <id>       Show (or generate) the learning material for a candidate
               /growth retrospective       Show the monthly growth retrospective summary
+              /capability [list]          Show CapabilityTrack overview (Persona Capability Learning)
+              /capability create <title> | <persona_desc>  Create a knowledge-type Track
+              /capability cycle           Run one learning cycle now (P1: retriever not wired, skips research)
+              /capability questions [track_id]  List pending async questions
+              /capability answer <id> <text>  Submit an answer to a pending question
               /debug system               Print current system prompt (with token estimate)
               /debug history [full] [n]   Print history as a table (last n msgs; 'full' = no truncation)
               /debug all [n]              Print system + history together

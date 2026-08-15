@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.5（P1 核心闭环 + 真实 wiki 写入回调已实现；`PersonaProfile.wiki_scopes`（第 11 节）+ `record_wiki_miss()` 接线（§14.1-a）已提前插入实现，见下方「实施状态」）
+- **版本**：v0.6（P1 核心闭环 + 真实 wiki 写入回调已实现；`PersonaProfile.wiki_scopes`（第 11 节）+ `record_wiki_miss()` 接线（§14.1-a）+ `/capability` slash command 中间层（§4）已提前插入实现，见下方「实施状态」）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -28,7 +28,7 @@
 | `record_wiki_miss()`（§14.1-a 使用驱动学习的记录接口） | ✅ 已实现，`context_builder.py` 已接线（见「第 11 节」小节下方新增说明）；`scan_outline_gaps()` 消费这批台账调整排序留到 P2 | 同上 |
 | HTTP API（`/v1/capability/tracks`、`/v1/capability/questions` 等 9 个端点，对应 §7.1） | ✅ 已实现为独立 router，**尚未挂载到 `api/server.py`**（见该文件顶部注释的两行接线说明），避免直接改动 7700+ 行的 `routes.py`/`server.py` 带来的风险 | `src/mini_agent/api/capability_routes.py` |
 | 单元测试（14 组用例，覆盖 CRUD / 缺口排序 / 异步问答生命周期 / 循环编排的多种分支 / 真实 wiki 写入落盘与解析回读 / 端到端一轮循环） | ✅ 全部通过 | `tests/test_capability_learning_p1.py` |
-| cron 注册 `sys:capability_learning_cycle` | ⏳ 未接线。**发现一个比预想更深一层的问题**：`cron_scheduler.py` 里内置任务的机制是"生成一段 `task_template` 文本交给 Agent 自己带着工具执行"（参照 `sys:growth_advisor_daily` 的 `/growth scan` 模式），不是直接调用 Python 函数——意味着真正接线还需要先做一个新的 slash command（比如 `/capability cycle`），把 `run_capability_learning_cycle()` 包装成 Agent 能触发的命令，cron 任务条目本身只是引用这个命令。这一步比最初设计文档 §4 假设的"cron 直接跑一个函数"多一层，留到下一步单独做，不在这一轮里仓促补全 | — |
+| cron 注册 `sys:capability_learning_cycle` | ⏳ cron 任务表本身仍未注册（见下方说明），但阻塞它的那一层缺口——`/capability cycle` slash command 中间层——已实现，接线时只需在 `cron_scheduler.py` 的 `SYSTEM_JOBS` 里新增一条 `task_template` 引用 `/capability cycle` 即可，不用再回头改命令处理器 | `src/mini_agent/cli/commands/capability_cmd.py` |
 | 看板三个 UI 区域（人设管理 / 进度展示 / 待回答问题） | ⏳ 未实现 | — |
 | `context_builder.py` 接入检索复用 | ⏳ 未实现 | — |
 | 真实 `retriever` / `wiki_writer` 回调实现（对接 `web_search` 与 `wiki/writer.py` + `wiki/dedup.py`） | ⏳ 未实现（P1 故意留空，见上） | — |
@@ -65,6 +65,21 @@
 **未做的部分**：
 - `scan_outline_gaps()` 消费 `miss_observed` 台账、据此调整候选排序——设计文档标注在 P2（"提高优先级的实际排序逻辑留到 P2 与 LLM 辅助判定一起做，避免规则式实现里出现频繁提问却查不到的噪音"），本次只做到"记录"这一步，不做"消费"
 - cron 尚未接线（见上方 P1 表格），意味着即使记录了台账，也还没有下一轮循环去读取它——这份记录目前是纯粹的静态积累，价值要等 cron 接线后才能兑现，但先把记录点铺好可以让 cron 接线时不用再回头改 `context_builder.py`
+
+### §4（`/capability` slash command 中间层）—— ✅ 已提前实现
+
+设计文档写作过程中发现的那层缺口——`cron_scheduler.py` 的 `sys:` 内置任务是"生成 `task_template` 文本交给 Agent 执行"而不是直接调用 Python 函数，真正接线 cron 前需要先有一个 slash command——本次补上：
+
+| 项目 | 状态 | 对应文件 |
+|---|---|---|
+| `/capability [list]`：展示所有 Track 概况 | ✅ 已实现 | `src/mini_agent/cli/commands/capability_cmd.py` |
+| `/capability create <title> \| <persona_desc>`：创建 knowledge 型 Track | ✅ 已实现（大纲仍是空的，LLM/规则式起草留到 P2，与 `CapabilityTrackStore.create()` 现有行为一致） | 同上 |
+| `/capability cycle`：手动触发一轮学习循环，等价于 `sys:capability_learning_cycle` 未来会执行的内容 | ✅ 已实现，**刻意不传入 retriever**——调用 `run_capability_learning_cycle(paths, wiki_writer=make_wiki_writer(paths))`，`retriever` 留空意味着需要检索的子主题仍会被安全跳过并记 `skipped` 台账，不产生真实网络请求，也就不会绕开 §13.3-g 尚未实现的合规过滤 | 同上 |
+| `/capability questions [track_id]` / `/capability answer <id> <text>`：异步问答队列的 CLI 入口 | ✅ 已实现 | 同上 |
+| repl.py 分发、`cli/commands/__init__.py` 导出、`/help`（`parser.py`）文案 | ✅ 已同步更新 | `src/mini_agent/cli/repl.py`、`src/mini_agent/cli/commands/__init__.py`、`src/mini_agent/cli/parser.py` |
+| 单元测试（10 组：无 agent / 空列表 / 创建 / cycle 空跑 / cycle 在真实 Track 上确认不产生"假装学会了"的覆盖率变化 / 问答队列列出与提交 / 未知子命令） | ✅ 全部通过 | `tests/test_capability_cmd.py` |
+
+**未做的部分**：cron 任务表（`cron_scheduler.py::SYSTEM_JOBS`）本身仍未新增 `sys:capability_learning_cycle` 条目——命令中间层就位后，接线这一步变成"新增一条 `task_template: '[能力学习] 执行一次 /capability cycle'` 的字典"这么简单，但按之前的克制原则，仍然等评审通过后再打开，不在这轮里顺带默认开启一个会周期性自动运行的新 cron 任务。
 
 ### P2 / P3
 

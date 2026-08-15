@@ -24,6 +24,9 @@ cli/commands — slash 命令处理模块包
                 人工浏览页面/backlinks、三段式检索 A/B 对比、手动索引重建）
   recall      — /recall <query>（compact_mechanism_improvement_plan.md P2-B：
                 手动检索被 compact 掉的原始 raw history 片段）
+  capability_cmd — /capability list|create|cycle|questions|answer（人设能力
+                自主学习：next_doc/persona_capability_learning_design.md，
+                cron 接线的中间层命令，见该文件顶部说明）
 """
 
 from mini_agent.cli.commands.skills import handle_skills_list, handle_skill_cmd
@@ -51,6 +54,7 @@ from mini_agent.cli.commands.digest_cmd import handle_digest_cmd
 from mini_agent.cli.commands.next_action_cmd import handle_next_action_cmd
 from mini_agent.cli.commands.profile_cmd import handle_profile_cmd
 from mini_agent.cli.commands.growth_cmd import handle_growth_cmd
+from mini_agent.cli.commands.capability_cmd import handle_capability_cmd
 
 __all__ = [
     "handle_behavior_cmd",
@@ -79,4 +83,5 @@ __all__ = [
     "handle_next_action_cmd",
     "handle_profile_cmd",
     "handle_growth_cmd",
+    "handle_capability_cmd",
 ]

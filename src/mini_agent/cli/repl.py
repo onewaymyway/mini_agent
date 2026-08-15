@@ -42,7 +42,8 @@ from mini_agent.cli.commands import (
     handle_digest_cmd,
     handle_next_action_cmd,
     handle_profile_cmd,
-    handle_growth_cmd,)
+    handle_growth_cmd,
+    handle_capability_cmd,)
 
 
 def _print_resume_hint(agent: Agent) -> None:
@@ -460,6 +461,11 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         # [next_doc/growth_advisor_design.md] 成长顾问：见
         # cli/commands/growth_cmd.py 顶部子命令说明。
         handle_growth_cmd(parts[1:], agent)
+
+    elif name == "capability":
+        # [next_doc/persona_capability_learning_design.md] 人设能力自主
+        # 学习：见 cli/commands/capability_cmd.py 顶部子命令说明。
+        handle_capability_cmd(parts[1:], agent)
 
     elif name == "debug":
         # /debug system|history [full] [n]|all [n]|save [path]
