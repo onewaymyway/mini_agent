@@ -989,6 +989,14 @@ class HttpServer:
         self._port = port
         self._project_root = project_root
 
+        # [daemon-stop-graceful-fix] 供 routes.py::/v1/shutdown 使用的优雅
+        # 关停信号。daemon-mode 场景下由 cli/app.py 在创建完 HttpServer 后
+        # 赋值为它自己的 stop_event（与 SIGTERM/Ctrl-C 共用同一个 finally
+        # 清理路径）；非 daemon-mode 场景（比如单次 --prompt、测试用例里
+        # 直接实例化 HttpServer）保持 None，routes.py 会据此判断该端点
+        # 不可用并让调用方 fallback 到强制终止。
+        self.shutdown_event: Optional[threading.Event] = None
+
         # Token
         self._token = load_or_generate_token(project_root, configured_token)
 

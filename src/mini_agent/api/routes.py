@@ -364,6 +364,34 @@ async def health():
     return {"ok": True, "ts": time.time()}
 
 
+@router.post("/shutdown")
+async def request_shutdown(request: Request):
+    """
+    请求 daemon 优雅关停。
+
+    [daemon-stop-graceful-fix] 之前 `mini-agent daemon stop` 在 Windows 上
+    直接 TerminateProcess 硬杀进程，完全绕过 Python 信号处理，导致
+    daemon 前台终端（--daemon-attach-console，prompt_toolkit 等库修改过
+    的控制台输入模式）来不及在 finally/atexit 里恢复，表现为"daemon 停掉
+    以后，这个终端回车没反应、方向键历史失效"。
+
+    这里补一条与平台无关的优雅关停通道：daemon 进程自己的 HTTP 服务本来
+    就在运行，直接通过它请求关停，触发 cli/app.py 里已有的
+    `stop_event.set()` 路径（与 SIGTERM/Ctrl-C 完全一致的 finally 清理：
+    停 http_server、清 PID 文件、恢复终端），不需要跨进程发信号。
+    `daemon stop` 会优先走这里，只有 HTTP 不通或超时未退出时才 fallback
+    到强制终止（TerminateProcess / SIGKILL）。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    shutdown_event = getattr(http_server, "shutdown_event", None) if http_server else None
+    if shutdown_event is None:
+        # 没有注册 shutdown_event（比如非 --daemon-mode 场景下单独跑
+        # HttpServer 的测试/嵌入式用法）——不算错误，调用方应 fallback。
+        return {"ok": False, "message": "shutdown_event not available on this process"}
+    shutdown_event.set()
+    return {"ok": True, "message": "shutdown requested"}
+
+
 @router.get("/status", response_model=StatusResponse)
 async def get_status(
     request: Request,

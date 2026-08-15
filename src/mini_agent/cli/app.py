@@ -587,9 +587,27 @@ def _main_inner() -> None:
             R.print_info("[daemon] Received shutdown signal, stopping...")
             stop_event.set()
 
+        # [daemon-stop-graceful-fix] 把这个 daemon 自己的 stop_event 暴露
+        # 给 HTTP 层的 POST /v1/shutdown（api/routes.py::request_shutdown），
+        # 让 `mini-agent daemon stop` 能通过一条与平台无关的通道（HTTP，
+        # 而不是跨进程信号/TerminateProcess）触发下面同一套优雅关停 +
+        # finally 清理逻辑。Windows 上之前 `daemon stop` 直接
+        # TerminateProcess 硬杀该进程，绕过了这里的 finally，导致
+        # --daemon-attach-console 场景下 prompt_toolkit 改过的控制台输入
+        # 模式来不及恢复（回车无响应、方向键历史失效）。
+        if http_server is not None:
+            http_server.shutdown_event = stop_event
+
         try:
             _signal.signal(_signal.SIGTERM, _shutdown_handler)
             _signal.signal(_signal.SIGINT, _shutdown_handler)
+            # [daemon-stop-graceful-fix] Windows 没有 SIGTERM；
+            # cli/daemon.py::cmd_daemon_stop 的第 2 级兜底改用
+            # GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT)，Python 会把它
+            # 转换成 signal.SIGBREAK 交给这里同一个 handler 处理，
+            # 与 HTTP 优雅关停（第 1 级）走的是同一套 finally 清理路径。
+            if sys.platform == "win32" and hasattr(_signal, "SIGBREAK"):
+                _signal.signal(_signal.SIGBREAK, _shutdown_handler)
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.cli.app')

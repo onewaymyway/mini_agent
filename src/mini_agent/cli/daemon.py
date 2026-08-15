@@ -782,7 +782,17 @@ def cmd_daemon_start(
         # POSIX 下 os.execv 是真正可靠的进程替换，继续用原来的写法。
         if sys.platform == "win32":
             try:
-                proc = subprocess.Popen(foreground_cmd)
+                # [daemon-stop-graceful-fix] CREATE_NEW_PROCESS_GROUP 让子
+                # 进程成为独立的控制台进程组，这样 cmd_daemon_stop 的第 2
+                # 级兜底才能用 GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT)
+                # 精确定点到这个子进程（而不会连带把发送信号的调用方自己
+                # 也一起打断）。不影响这里紧接着的 Ctrl-C 转发逻辑——那个
+                # 用的是 CTRL_C_EVENT，proc.send_signal 内部已经处理好了
+                # 新进程组下的转发。
+                CREATE_NEW_PROCESS_GROUP = 0x00000200
+                proc = subprocess.Popen(
+                    foreground_cmd, creationflags=CREATE_NEW_PROCESS_GROUP
+                )
                 try:
                     returncode = proc.wait()
                 except KeyboardInterrupt:
@@ -913,7 +923,25 @@ def cmd_daemon_start(
 def cmd_daemon_stop(project_root: Path) -> int:
     """
     `mini-agent daemon stop`
-    向 daemon 进程发送 SIGTERM，等待其 graceful shutdown。
+
+    [daemon-stop-graceful-fix] 关停顺序改为三级递进，全平台一致：
+      1. HTTP POST /v1/shutdown —— 平台无关的优雅关停通道，触发
+         daemon 进程内部与 SIGTERM/Ctrl-C 完全一致的 finally 清理
+         （停 http_server、清 PID 文件、如果是前台 attach-console 场景
+         还会正常走到 prompt_toolkit 等库的终端状态恢复）。
+      2. 平台信号：Unix 发 SIGTERM；Windows 发 CTRL_BREAK_EVENT（前提
+         是子进程以 CREATE_NEW_PROCESS_GROUP 创建，见 cmd_daemon_start），
+         同样能被 Python signal handler 捕获，走 graceful shutdown。
+      3. 强制终止（Unix SIGKILL / Windows TerminateProcess）——只有前两步
+         都不起作用（旧版 daemon 不支持 /v1/shutdown、进程已经卡死等）
+         时才使用，此时无法保证 finally 清理会执行，可能残留终端状态
+         异常，但这是最后手段，总比进程杀不掉好。
+
+    之前的实现在 Windows 上直接第 3 步硬来（TerminateProcess），完全绕过
+    Python 信号处理和 finally 清理，是"daemon 停掉后，那个终端回车没
+    反应、方向键历史失效"的根因：前台 attach-console 场景下 daemon 进程
+    用 prompt_toolkit 等库修改过控制台输入模式（ECHO/ICANON 等），只有
+    正常退出路径才会恢复，硬杀直接跳过了这一步。
     """
     info = _read_daemon_info(project_root)
     if not info:
@@ -921,14 +949,51 @@ def cmd_daemon_stop(project_root: Path) -> int:
         return 1
 
     pid = info["pid"]
+    port = info.get("http_port")
     print(f"[daemon] Stopping daemon PID={pid}...")
 
+    if not _is_process_alive(pid):
+        print("[daemon] Process already gone.")
+        _cleanup_pid_files(project_root)
+        return 0
+
+    # ── 第 1 级：HTTP 优雅关停（平台无关，优先尝试）───────────────────────
+    graceful_requested = False
+    if port:
+        try:
+            client = DaemonClient(port, project_root=project_root)
+            result = client._post_json("/v1/shutdown") if client.health_check() else None
+            if result and result.get("ok"):
+                graceful_requested = True
+                print("[daemon] Graceful shutdown requested via HTTP.")
+            elif result is not None:
+                # 端点存在但明确表示不可用（比如旧版 daemon 没有这个
+                # 端点、或者非 daemon-mode 进程没注册 shutdown_event）
+                print(f"[daemon] HTTP shutdown unavailable ({result.get('message')}), "
+                      f"falling back to signal.")
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.cmd_daemon_stop.http')
+
+    if graceful_requested:
+        for _ in range(20):  # 最多等 10 秒
+            time.sleep(0.5)
+            if not _is_process_alive(pid):
+                _cleanup_pid_files(project_root)
+                print("[daemon] Stopped.")
+                return 0
+        print("[daemon] Did not exit after HTTP shutdown request, trying signal...")
+
+    # ── 第 2 级：平台信号（HTTP 不可用，或超时未退出时兜底）──────────────
     try:
         if sys.platform == "win32":
             import ctypes
-            ctypes.windll.kernel32.TerminateProcess(
-                ctypes.windll.kernel32.OpenProcess(1, False, pid), 0
-            )
+            CTRL_BREAK_EVENT = 1
+            # 只有子进程当初以 CREATE_NEW_PROCESS_GROUP 创建时，
+            # GenerateConsoleCtrlEvent 才可能送达并被其 signal handler
+            # 捕获；不满足条件时该调用通常直接失败或无效果，下面仍会
+            # 用存活检测判断是否需要继续到第 3 级硬杀。
+            ctypes.windll.kernel32.GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid)
         else:
             os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -939,25 +1004,31 @@ def cmd_daemon_stop(project_root: Path) -> int:
         from mini_agent.errors import log_exception
         log_exception(e, where='mini_agent.cli.daemon.cmd_daemon_stop')
         print(f"[daemon] Error sending signal: {e}", file=sys.stderr)
-        return 1
 
-    # 等待进程退出（最多 10 秒）
-    for _ in range(20):
+    for _ in range(10):  # 最多再等 5 秒
         time.sleep(0.5)
         if not _is_process_alive(pid):
             _cleanup_pid_files(project_root)
             print("[daemon] Stopped.")
             return 0
 
-    print("[daemon] Process did not exit in 10s, sending SIGKILL...")
+    # ── 第 3 级：强制终止（最后手段）────────────────────────────────────
+    print("[daemon] Process did not exit gracefully, forcing termination...")
     try:
-        if sys.platform != "win32":
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.kernel32.TerminateProcess(
+                ctypes.windll.kernel32.OpenProcess(1, False, pid), 0
+            )
+        else:
             os.kill(pid, signal.SIGKILL)
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
         pass
+    time.sleep(0.5)
     _cleanup_pid_files(project_root)
+    print("[daemon] Stopped (forced).")
     return 0
 
 
