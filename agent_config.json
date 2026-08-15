@@ -98,7 +98,8 @@
     "same_feedback_similarity_threshold": 0.9,
     "persist_state": true,
     "auto_resume_prompt": true,
-    "judge_show_prompt": true
+    "judge_show_prompt": true,
+    "decision_consumption_enabled": true
   },
   "turn_judge": {
     "enabled": false,
