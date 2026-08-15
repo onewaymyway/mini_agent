@@ -86,34 +86,41 @@ class DataFormatValidator:
 
         return ValidationResult(len(errors) == 0, errors, warnings)
 
+    # 特殊文件类型的命名模式（无需Symbol字段）
+    SPECIAL_FILE_PATTERNS = {
+        'northbound': re.compile(r'^northbound_\d{4}[-_]\d{2}[-_]\d{2}$'),
+        'manifest': re.compile(r'^manifest_\d{4}[-_]\d{2}[-_]\d{2}$'),
+        'symbol_index': re.compile(r'^symbol_index$'),
+        'source_index': re.compile(r'^source_index$'),
+    }
+
     def _validate_filename(self, file_path: Path) -> Tuple[List[str], List[str]]:
         """校验文件名和目录结构"""
         errors, warnings = [], []
         parts = file_path.parts
+        stem = file_path.stem
+        suffix = file_path.suffix
 
         # 检查是否在正确的目录层级
         expected_dirs = ['data', 'raw', 'processed', 'index', 'cache', 'archive']
         if not any(d in parts for d in expected_dirs):
             warnings.append(f'文件不在预期的数据目录下: {file_path}')
 
-        # 校验文件名格式 (processed 目录下)
-        stem = file_path.stem
-        suffix = file_path.suffix
-
+        # 校验扩展名
         if suffix != '.json':
             errors.append(f'扩展名应为 .json，实际为 {suffix}')
+            return errors, warnings  # 扩展名不对的不再校验其他
 
-        # 解析文件名
+        # 特殊文件类型：northbound、manifest、index文件
+        for pattern_name, pattern in self.SPECIAL_FILE_PATTERNS.items():
+            if pattern.match(stem):
+                return errors, warnings  # 特殊文件格式通过
+
+        # 标准文件：需要校验日期格式
         name_parts = stem.split('_')
-        if len(name_parts) < 2:
-            warnings.append(f'文件名可能缺少必要字段: {file_path.name}')
-
-        # 校验日期格式
         date_part = name_parts[-1] if name_parts else ''
-        if not DATE_PATTERN.match(date_part):
-            # 尝试匹配 YYYYMMDD 格式
-            if not re.match(r'^\d{8}$', date_part):
-                warnings.append(f'文件名日期格式可能不正确: {date_part}')
+        if not DATE_PATTERN.match(date_part) and not re.match(r'^\d{8}$', date_part):
+            warnings.append(f'文件名日期格式可能不正确: {date_part}')
 
         return errors, warnings
 
