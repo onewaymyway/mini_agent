@@ -5081,49 +5081,56 @@ def _render_growth_report_viewer(client: "AgentClient", candidates: list[dict]):
             "pending": "🕗 待处理", "accepted": "✅ 已采纳",
             "dismissed": "🙈 已忽略", "expired": "⌛ 已过期",
         }
-        options = {}
+        # [交互改进] 原来用下拉框逐个切换查看，选中态和操作按钮的对应关系
+        # 不直观，且每次只能看一个、来回切换成本高。改成把所有候选平铺
+        # 展开，每个候选自带「查看/收起报告」「落地为 Goal」两个操作，
+        # 报告内容按候选各自缓存在 session_state 里，避免重复请求。
         for c in sorted(has_report, key=lambda x: -x.get("confidence", 0)):
             status_label = _STATUS_LABEL.get(c.get("status"), c.get("status", ""))
-            short_id = str(c.get("candidate_id", ""))[:8]
-            label = f"[{status_label}] {c.get('title', '')} · {short_id}"
-            options[label] = c
-        chosen_label = st.selectbox(
-            "选择一个候选查看它的调研报告", options=list(options.keys()),
-            key="growth_report_viewer_select",
-        )
-        chosen = options[chosen_label]
-        vcol1, vcol2 = st.columns([1, 1])
-        if vcol1.button("查看", key="growth_report_viewer_btn"):
-            rep = client.growth_report(chosen["report_id"])
-            if rep and "_error" not in rep:
-                st.caption(
-                    f"生成于 {rep.get('generated_at', '')} · "
-                    f"证据 {rep.get('evidence_count_at_generation', chosen.get('evidence_count', 0))} 条"
-                )
-                st.markdown(rep.get("body", "（报告正文为空）"))
-            else:
-                st.error((rep or {}).get("_error", "读取报告失败"))
-        # [用户反馈] 采纳一个方向之后，成长顾问不会自动在这个方向上继续
-        # 调研——需要显式"落地成 Goal"交给 Goal/Cron 体系持续推进，此前
-        # 只有 CLI `/growth adopt-goal <id>` 一条路，看板完全没有入口，
-        # 容易让人以为"采纳了但系统什么都没做"。这里补上按钮，复用同一个
-        # `adopt_candidate_as_goal()`。
-        if chosen.get("linked_goal_id"):
+            candidate_id = c.get("candidate_id", "")
+            short_id = str(candidate_id)[:8]
+            st.markdown(f"**[{status_label}] {c.get('title', '')}** · `{short_id}`")
+
+            cache_key = f"growth_report_cache_{candidate_id}"
+            vcol1, vcol2 = st.columns([1, 1])
+            is_shown = st.session_state.get(cache_key) is not None
+            toggle_label = "收起报告" if is_shown else "查看报告"
+            if vcol1.button(toggle_label, key=f"growth_report_viewer_btn_{candidate_id}"):
+                if is_shown:
+                    st.session_state.pop(cache_key, None)
+                else:
+                    rep = client.growth_report(c["report_id"])
+                    st.session_state[cache_key] = rep or {"_error": "读取报告失败"}
+                st.rerun()
+
             # [采纳即启动] 默认情况下这一步已经由 accept 动作自动做完
             # （生成 Goal → 生成并确认执行规范 → 绑定周期性），这里只是
             # 展示状态；用户仍可以随时去「🎯 目标」tab 手动暂停/调整。
-            vcol2.caption(f"🔄 已落地为 Goal（{chosen['linked_goal_id'][:8]}），成长顾问正在按此方向自主持续调研")
-        else:
-            if vcol2.button("🚀 落地为 Goal（继续调研）", key="growth_report_viewer_adopt_btn"):
-                result = client.growth_candidate_adopt_goal(chosen["candidate_id"])
-                if result and "_error" not in result:
-                    st.success(
-                        "已创建 Goal，可以在「🎯 目标」tab 里把它设为周期性，"
-                        "由成长顾问之前的调研报告继续深入。"
+            if c.get("linked_goal_id"):
+                vcol2.caption(f"🔄 已落地为 Goal（{c['linked_goal_id'][:8]}）")
+            else:
+                if vcol2.button("🚀 落地为 Goal（继续调研）", key=f"growth_report_viewer_adopt_btn_{candidate_id}"):
+                    result = client.growth_candidate_adopt_goal(candidate_id)
+                    if result and "_error" not in result:
+                        st.success(
+                            "已创建 Goal，可以在「🎯 目标」tab 里把它设为周期性，"
+                            "由成长顾问之前的调研报告继续深入。"
+                        )
+                        st.rerun()
+                    else:
+                        st.error((result or {}).get("_error", "落地失败"))
+
+            rep = st.session_state.get(cache_key)
+            if rep is not None:
+                if "_error" not in rep:
+                    st.caption(
+                        f"生成于 {rep.get('generated_at', '')} · "
+                        f"证据 {rep.get('evidence_count_at_generation', c.get('evidence_count', 0))} 条"
                     )
-                    st.rerun()
+                    st.markdown(rep.get("body", "（报告正文为空）"))
                 else:
-                    st.error((result or {}).get("_error", "落地失败"))
+                    st.error(rep.get("_error", "读取报告失败"))
+            st.divider()
 
 
 
