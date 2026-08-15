@@ -64,6 +64,46 @@ resources:
     path: references/pdd-search.md
     description: 拼多多商品搜索自动化脚本（pdd_search.py），支持关键词搜索、价格/销量提取
     triggers: 拼多多搜索, pdd search, 拼多多, 商品搜索, pdd_search.py
+  - id: pinduoyun-config
+    path: config/websites/pinduoyun.com.json
+    description: 拼多多网站配置：电商 shopping 子类，抗爬等级3，滑块验证码，目标成功率80%
+    triggers: 拼多多配置, pinduoyun config, 电商配置, ecommerce config
+  - id: kuaishou-config
+    path: config/websites/kuaishou.com.json
+    description: 快手网站配置：短视频 video short_video 子类，抗爬等级3，滑块验证码，无限滚动
+    triggers: 快手配置, kuaishou config, 短视频配置, video config
+  - id: 51job-config
+    path: config/websites/51job.com.json
+    description: 前程无忧网站配置：招聘 recruitment jobs 子类，抗爬等级2，无验证码，目标成功率85%
+    triggers: 前程无忧配置, 51job config, 招聘配置, jobs config
+  - id: meituan-config
+    path: config/websites/meituan.com.json
+    description: 美团网站配置：本地生活 lifestyle local_services 子类，抗爬等级3，滑块验证码
+    triggers: 美团配置, meituan config, 本地生活配置, lifestyle config
+  - id: anjuke-config
+    path: config/websites/anjuke.com.json
+    description: 安居客网站配置：房产 lifestyle real_estate 子类，抗爬等级2，无验证码
+    triggers: 安居客配置, anjuke config, 房产配置, real estate config
+  - id: lagou-config
+    path: config/websites/lagou.com.json
+    description: 拉勾网网站配置：招聘 recruitment jobs 子类，抗爬等级3，滑块验证码，互联网招聘
+    triggers: 拉勾配置, lagou config, 互联网招聘, tech jobs
+  - id: dianping-config
+    path: config/websites/dianping.com.json
+    description: 大众点评网站配置：本地生活 lifestyle review_platform 子类，抗爬等级3，滑块验证码
+    triggers: 大众点评配置, dianping config, 商户评价, restaurant review
+  - id: ctrip-config
+    path: config/websites/ctrip.com.json
+    description: 携程网站配置：旅游 travel booking 子类，抗爬等级3，滑块验证码，酒店预订
+    triggers: 携程配置, ctrip config, 旅游配置, hotel booking
+  - id: cnki-config
+    path: config/websites/cnki.net.json
+    description: 中国知网网站配置：教育 education academic_database 子类，需登录，无验证码
+    triggers: 知网配置, cnki config, 学术论文, academic papers
+  - id: xianyu-config
+    path: config/websites/xianyu.com.json
+    description: 闲鱼网站配置：电商 ecommerce secondhand 子类，需登录，滑块验证码
+    triggers: 闲鱼配置, xianyu config, 二手交易, secondhand commerce
   - id: douban-search
     path: references/douban-search.md
     description: 豆瓣搜索自动化脚本（douban_search.py），支持书籍/电影/音乐搜索，获取评分和评价数
@@ -292,6 +332,18 @@ resources:
     path: references/tencent-sports-search.md
     description: 腾讯体育搜索自动化脚本（tencent_sports_search.py），支持体育新闻/赛事资讯/球员动态搜索
     triggers: 腾讯体育, tencent sports search, tencent_sports_search.py, 体育新闻, NBA
+  - id: explicit-wait
+    path: references/explicit-wait.md
+    description: 显式等待模块（explicit_wait.py）完整文档：条件等待、组合条件、模块级便捷函数
+    triggers: 显式等待, explicit wait, wait_for_selector, Condition
+  - id: network-idle-detector
+    path: references/network-idle-detector.md
+    description: 网络空闲检测模块（network_idle_detector.py）完整文档：MIME类型优先级、请求分类、稳定性检测
+    triggers: 网络空闲, network idle, NetworkIdleDetector, NetworkIdleConfig
+  - id: page-render-detector
+    path: references/page-render-detector.md
+    description: 页面渲染完成检测模块（page_render_detector.py）完整文档：多策略检测、DOM变化、内容哈希、字体加载
+    triggers: 渲染检测, page render, RenderResult, RenderConfig, MutationObserver
 ---
 
 # Browser CDP Skill
@@ -327,6 +379,9 @@ resources:
 | `core/browser_browse.py` | 浏览器浏览统一入口：整合导航/截图/交互/等待策略，提供组合操作能力 |
 | `core/dom_observer.py` | DOM 变化监听：MutationObserver 实现，检测动态内容加载完成 |
 | `core/enhanced_dynamic_loader.py` | 增强版动态加载器：DOM 监听 + 虚拟列表 + 多策略等待 |
+| `core/explicit_wait.py` | 显式等待模块：条件等待、组合条件、模块级便捷函数 |
+| `core/network_idle_detector.py` | 网络空闲检测模块：精细化网络状态监控、MIME分类、稳定性检测 |
+| `core/page_render_detector.py` | 页面渲染完成检测：DOM变化+内容哈希+字体加载+动画检测 |
 | `searchers/baidu_search.py` / `searchers/bing_search.py` | 搜索引擎自动化，见下方对应子资源 |
 | `searchers/zhihu_search.py` / `searchers/zhihu_hot.py` | 知乎内容/热榜抓取，见下方对应子资源 |
 | `searchers/zhihu_column_search.py` | 知乎专栏文章批量搜索与抓取，见下方对应子资源 |
@@ -1909,6 +1964,67 @@ python scripts/run_quality_assessment.py --site baidu --generate-report --format
 | 截图标注 | `take_screenshot_with_annotation()` | 截图并标注元素 |
 | 执行JS | `execute_javascript()` | 执行JavaScript代码 |
 
+### 显式等待模块（explicit_wait.py）
+
+`src/core/explicit_wait.py` 提供结构化显式等待能力，替代隐式等待：
+
+| 功能 | 方法 | 说明 |
+|------|------|------|
+| 条件等待 | `until(condition, timeout)` | 等待自定义条件满足 |
+| 条件取反 | `until_not(condition, timeout)` | 等待条件不再满足 |
+| 元素可见 | `until_visible(selector, timeout)` | 等待元素可见（含Shadow DOM支持） |
+| 元素存在 | `until_present(selector, timeout)` | 等待元素存在于 DOM |
+| 文本匹配 | `until_text(selector, text, exact)` | 等待元素包含指定文本 |
+| 数量条件 | `until_count(selector, count, operator)` | 等待匹配元素数量满足条件 |
+| URL匹配 | `until_url_matches(pattern, timeout)` | 等待URL匹配正则模式 |
+| 内容稳定 | `until_stable(selector, check_times)` | 等待元素内容连续多次不变 |
+
+**Condition 复合条件**：
+```python
+from src.core.explicit_wait import Condition, ExplicitWait
+
+cond = Condition("has_text", lambda: el.text == "OK") & \n       Condition("is_visible", lambda: el.is_visible)
+result = await wait.until(cond, timeout=10)
+```
+
+### 网络空闲检测模块（network_idle_detector.py）
+
+`src/core/network_idle_detector.py` 提供精细化的网络空闲检测：
+
+| 功能 | 方法 | 说明 |
+|------|------|------|
+| 等待空闲 | `wait_for_idle(idle_timeout, timeout, on_idle)` | 等待网络空闲并触发回调 |
+| 获取状态 | `get_idle_status()` | 实时获取网络空闲状态 |
+| 等待特定请求 | `wait_for_specific_request(url_pattern, timeout)` | 等待特定 URL 模式请求完成 |
+| 重置状态 | `reset()` | 清空历史记录和请求计数 |
+
+**配置选项**：
+- `idle_timeout`: 空闲判定阈值（默认0.5s）
+- `max_pending_requests`: 允许的最大 pending 数（0=严格）
+- `exclude_patterns`: 排除的 URL 模式列表
+- `critical_mime_types`: 关键 MIME 类型集合
+- `non_critical_extensions`: 非关键文件扩展名集合
+
+### 页面渲染完成检测模块（page_render_detector.py）
+
+`src/core/page_render_detector.py` 提供多维度渲染状态检测：
+
+| 功能 | 方法 | 说明 |
+|------|------|------|
+| 组合检测 | `wait_for_page_ready(timeout, require_all)` | 综合检测（DOM+字体+图片） |
+| DOM稳定 | `wait_for_dom_stable(timeout, stable_samples)` | 连续N次快照无变化 |
+| 字体加载 | `wait_for_fonts_loaded(timeout)` | 等待 WebFont 加载完成 |
+| 图片加载 | `wait_for_images_loaded(timeout, include_lazy)` | 等待图片加载完成 |
+| 内容检测 | `wait_for_content(selector, min_length, timeout)` | 等待指定内容达到最小长度 |
+| 实时报告 | `get_render_report()` | 获取当前渲染状态报告 |
+
+**RenderStatus 字段**：
+- `success`: 是否成功
+- `dom_stable`: DOM 是否稳定
+- `fonts_loaded`: 字体是否加载
+- `images_loaded`: 图片是否加载
+- `content_length`: 有效内容长度
+
 ### 测试覆盖
 
 | 测试文件 | 测试数 | 状态 |
@@ -1917,6 +2033,11 @@ python scripts/run_quality_assessment.py --site baidu --generate-report --format
 | `test_browser_interaction_new.py` | 13 | ✅ 全部通过 |
 | `test_browser_browse.py` | 46 | ✅ 全部通过 |
 | `test_browser_interaction.py` | 9 | ✅ 全部通过 |
+
+**新增模块**：
+- `explicit_wait.py`: 478 行，Condition类 + ExplicitWait类 + 8个便捷方法
+- `network_idle_detector.py`: 500 行，NetworkIdleDetector类 + CDP事件监听
+- `page_render_detector.py`: 708 行，PageRenderDetector类 + 4维度检测
 
 **完整测试套件**：922 passed, 7 failed（7个为预存问题）
 

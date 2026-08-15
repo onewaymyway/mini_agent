@@ -1,0 +1,38 @@
+{
+  "name": "携程",
+  "domain": "ctrip.com",
+  "url": "https://www.ctrip.com",
+  "category": "travel",
+  "subcategory": "booking",
+  "frontend_framework": "React",
+  "anti_crawl_level": 3,
+  "login_required": false,
+  "captcha_type": "slider",
+  "priority": "P1",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.75,
+  "target_accuracy": 0.70,
+  "custom_config": {
+    "search_box": "input#hotel_key, input[placeholder*='酒店'], .search-input",
+    "search_button": "button.search-btn, .search-submit",
+    "results": ".hotel-item, .hotel-list-item, .result-item",
+    "result_item": ".hotel-item",
+    "title": ".hotel-name a, .hotel-title",
+    "price": ".hotel-price, .price-num",
+    "rating": ".hotel-score, .rating-score",
+    "location": ".hotel-address, .location",
+    "pagination": {
+      "next_page": "a.next, .next-page, button.load-more",
+      "page_numbers": ".page-num, .pagination li"
+    },
+    "captcha_detection": {
+      "selectors": ["#nc_1_wrapper", ".nc_wrapper", "[class*='geetest']"],
+      "text_patterns": ["滑动验证", "拖拽滑块"]
+    }
+  },
+  "tags": ["travel", "booking", "chinese", "hotels", "high-traffic"],
+  "created_at": "2026-08-15T11:43:00.000Z",
+  "updated_at": "2026-08-15T11:43:00.000Z"
+}

@@ -1,0 +1,38 @@
+{
+  "name": "快手",
+  "domain": "kuaishou.com",
+  "url": "https://www.kuaishou.com",
+  "category": "video",
+  "subcategory": "short_video",
+  "frontend_framework": "React",
+  "anti_crawl_level": 3,
+  "login_required": false,
+  "captcha_type": "slider",
+  "priority": "P0",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.80,
+  "target_accuracy": 0.75,
+  "custom_config": {
+    "search_box": "input[placeholder*='搜索'], input[name='kw'], .search-input",
+    "search_button": "button.search-btn, .search-submit",
+    "results": ".video-card, .ks-feed-item, .result-item",
+    "result_item": ".video-card",
+    "title": ".video-title, .ks-title, .title-text",
+    "author": ".author-name, .ks-author",
+    "views": ".view-count, .ks-views",
+    "likes": ".like-count, .ks-likes",
+    "pagination": {
+      "next_page": "a.next, button.load-more, .pagination-next",
+      "infinite_scroll": true
+    },
+    "captcha_detection": {
+      "selectors": ["#nc_1_wrapper", ".nc_wrapper", "[class*='geetest']", ".verify-wrap"],
+      "text_patterns": ["滑动验证", "拖拽滑块", "验证码"]
+    }
+  },
+  "tags": ["video", "short_video", "chinese", "high-traffic", "social"],
+  "created_at": "2026-08-15T11:43:00.000Z",
+  "updated_at": "2026-08-15T11:43:00.000Z"
+}

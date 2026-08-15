@@ -1,0 +1,35 @@
+{
+  "name": "中国知网",
+  "domain": "cnki.net",
+  "url": "https://www.cnki.net",
+  "category": "education",
+  "subcategory": "academic_database",
+  "frontend_framework": "Vue",
+  "anti_crawl_level": 2,
+  "login_required": true,
+  "captcha_type": "none",
+  "priority": "P1",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.80,
+  "target_accuracy": 0.75,
+  "custom_config": {
+    "search_box": "input#searchtxt, input[name='searchtxt'], .search-input",
+    "search_button": "input#searchbtn, button.search-btn",
+    "results": ".result-item, .paper-item, .search-result",
+    "result_item": ".result-item",
+    "title": ".fzbold a, .paper-title",
+    "author": ".author, .paper-author",
+    "journal": ".journal, .paper-journal",
+    "year": ".year, .paper-year",
+    "citation": ".citation, .cite-count",
+    "pagination": {
+      "next_page": "a.next, .next, .pager_next",
+      "page_numbers": ".pager_num, .page-num"
+    }
+  },
+  "tags": ["education", "academic", "chinese", "papers", "requires-login"],
+  "created_at": "2026-08-15T11:43:00.000Z",
+  "updated_at": "2026-08-15T11:43:00.000Z"
+}

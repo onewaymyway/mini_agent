@@ -1,0 +1,37 @@
+{
+  "name": "拼多多",
+  "domain": "pinduoyun.com",
+  "url": "https://www.pinduoyun.com",
+  "category": "ecommerce",
+  "subcategory": "shopping",
+  "frontend_framework": "React",
+  "anti_crawl_level": 3,
+  "login_required": false,
+  "captcha_type": "slider",
+  "priority": "P0",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.80,
+  "target_accuracy": 0.75,
+  "custom_config": {
+    "search_box": "input#search-input, input[placeholder*='搜索'], input[name='keyword']",
+    "search_button": "button.search-btn, button[type='submit'], .search-button",
+    "results": ".goods-card, .result-item, .goods-item",
+    "result_item": ".goods-card",
+    "title": ".goods-name, .goods-title, .item-title",
+    "price": ".goods-price, .price-num, .item-price",
+    "sales": ".sales-count, .sold-text",
+    "pagination": {
+      "next_page": "a.next, .pagination-next, button.load-more",
+      "page_numbers": ".pagination-item, .page-num"
+    },
+    "captcha_detection": {
+      "selectors": ["#nc_1_wrapper", ".nc_wrapper", "[class*='geetest']", ".verify-wrap"],
+      "text_patterns": ["滑动验证", "拖拽滑块", "geetest", "验证码"]
+    }
+  },
+  "tags": ["ecommerce", "shopping", "chinese", "low-price", "high-traffic"],
+  "created_at": "2026-08-15T11:43:00.000Z",
+  "updated_at": "2026-08-15T11:43:00.000Z"
+}

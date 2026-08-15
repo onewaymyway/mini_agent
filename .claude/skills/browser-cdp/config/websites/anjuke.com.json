@@ -1,0 +1,35 @@
+{
+  "name": "安居客",
+  "domain": "anjuke.com",
+  "url": "https://www.anjuke.com",
+  "category": "lifestyle",
+  "subcategory": "real_estate",
+  "frontend_framework": "Vue",
+  "anti_crawl_level": 2,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P0",
+  "timeout": 25,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.85,
+  "target_accuracy": 0.80,
+  "custom_config": {
+    "search_box": "input#search-keyword, input[placeholder*='小区/楼盘'], .search-input",
+    "search_button": "button.search-btn, .search-submit",
+    "results": ".sellListContent, .house-card, .list-item",
+    "result_item": ".house-card",
+    "title": ".title a, .house-title",
+    "price": ".price, .house-price",
+    "area": ".area-value, .house-area",
+    "location": ".positionInfo a, .house-location",
+    "rooms": ".rooms, .house-rooms",
+    "pagination": {
+      "next_page": "a.next, .fpingg a:last-child, .pagination-next",
+      "page_numbers": ".page-list li"
+    }
+  },
+  "tags": ["lifestyle", "real_estate", "chinese", "housing"],
+  "created_at": "2026-08-15T11:43:00.000Z",
+  "updated_at": "2026-08-15T11:43:00.000Z"
+}

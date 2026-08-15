@@ -1,0 +1,40 @@
+{
+  "name": "大众点评",
+  "domain": "dianping.com",
+  "url": "https://www.dianping.com",
+  "category": "lifestyle",
+  "subcategory": "review_platform",
+  "frontend_framework": "Vue",
+  "anti_crawl_level": 3,
+  "login_required": false,
+  "captcha_type": "slider",
+  "priority": "P1",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.75,
+  "target_accuracy": 0.70,
+  "custom_config": {
+    "search_box": "input#s_query, input[placeholder*='搜索'], .searchbox-input",
+    "search_button": "button.search-btn, .searchbox-btn",
+    "results": ".shop-review-list li, .shop-list-item, .shop-item",
+    "result_item": ".shop-list-item",
+    "title": ".shop-name a, .shop-list-item-title",
+    "rating": ".rank-point, .score-rank",
+    "price": ".avg-price span, .price",
+    "address": ".addr, .shop-addr",
+    "category": ".tag-list a, .shop-category",
+    "review_count": ".comment-num, .review-count",
+    "pagination": {
+      "next_page": "a.next, .next, button.load-more",
+      "page_numbers": ".page-num, .c_page a"
+    },
+    "captcha_detection": {
+      "selectors": ["#nc_1_wrapper", ".nc_wrapper", "[class*='geetest']", ".verify-wrap"],
+      "text_patterns": ["滑动验证", "拖动滑块", "验证码"]
+    }
+  },
+  "tags": ["lifestyle", "review", "chinese", "food", "high-traffic"],
+  "created_at": "2026-08-15T11:43:00.000Z",
+  "updated_at": "2026-08-15T11:43:00.000Z"
+}
