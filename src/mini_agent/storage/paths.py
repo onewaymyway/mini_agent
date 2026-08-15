@@ -1296,6 +1296,29 @@ class AgentPaths:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    # ── 人设能力自主学习 Capability Learning（persona_capability_learning_design.md）──
+
+    @property
+    def capability_tracks_path(self) -> Path:
+        """<project_root>/.agent/capability_tracks.json — 全部 CapabilityTrack 列表
+        （knowledge 型 / persona 型均落在同一份文件，用 target_type 区分），
+        量级不大，参照 cron_jobs.json 单文件存法，不做分文件。"""
+        return self.workdir_dir / "capability_tracks.json"
+
+    def capability_ledger_path(self, track_id: str) -> Path:
+        """<project_root>/.agent/capability_ledger/<track_id>.jsonl — 单个 Track
+        的学习台账（每行一条 CapabilityLedgerEntry），供看板进度展示与月度复盘引用。"""
+        d = self.workdir_dir / "capability_ledger"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{track_id}.jsonl"
+
+    @property
+    def capability_questions_path(self) -> Path:
+        """<project_root>/.agent/capability_questions.jsonl — CapabilityQuestion
+        异步问答队列，追加写；status: pending/answered/dismissed/expired，
+        看板按 status/track_id 过滤展示。"""
+        return self.workdir_dir / "capability_questions.jsonl"
+
     def __repr__(self) -> str:
         return f"AgentPaths(project_root={self.project_root})"
 

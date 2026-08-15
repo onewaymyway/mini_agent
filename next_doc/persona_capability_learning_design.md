@@ -1,8 +1,41 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.1（初稿）
+- **版本**：v0.2（P1 最小可用闭环已实现，见下方「实施状态」）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
+
+---
+
+## 实施状态
+
+本节记录方案落地进度，每完成一个阶段就更新，保持和代码库实际状态同步，
+避免文档和实现脱节。
+
+### P1（最小可用闭环）—— ✅ 数据层与逻辑层已实现，未接入真实检索/wiki 写入
+
+| 项目 | 状态 | 对应文件 |
+|---|---|---|
+| `CapabilityTrack` / `OutlineTopic` / `CapabilityLedgerEntry` / `CapabilityQuestion` 数据模型 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
+| 存储路径（`capability_tracks_path` / `capability_ledger_path` / `capability_questions_path`） | ✅ 已实现 | `src/mini_agent/storage/paths.py` |
+| Track CRUD（`CapabilityTrackStore`） | ✅ 已实现 | 同上 |
+| 大纲缺口扫描 `scan_outline_gaps()`（规则式：uncovered 优先，partial 按最久未触达优先） | ✅ 已实现 | 同上 |
+| `needs_user_context()` 判定（P1 版本：persona 型默认需要用户输入，knowledge 型默认不需要，更细致判定留 P2） | ✅ 已实现（占位规则） | 同上 |
+| `CapabilityQuestion` 异步问答队列（生成 `raise_question` / 提交 `answer` / 忽略 `dismiss` / 过期清理 `sweep_expired`） | ✅ 已实现 | 同上 |
+| `CapabilityLedgerEntry` 台账（`CapabilityLedgerStore`） | ✅ 已实现 | 同上 |
+| 单轮循环编排 `run_capability_learning_cycle()` | ✅ 已实现，**检索/wiki 写入以可注入回调形式暴露，P1 阶段不接真实 `web_search`/`wiki/writer.py`**，避免未经评审就产生真实外部请求和 wiki 写入副作用；未接线时会安全跳过并记录 `action="skipped"` 台账 | 同上 |
+| `record_wiki_miss()`（§14.1-a 使用驱动学习的记录接口） | ✅ 已实现，`context_builder.py` 的调用接线留到后续阶段单独评审 | 同上 |
+| HTTP API（`/v1/capability/tracks`、`/v1/capability/questions` 等 9 个端点，对应 §7.1） | ✅ 已实现为独立 router，**尚未挂载到 `api/server.py`**（见该文件顶部注释的两行接线说明），避免直接改动 7700+ 行的 `routes.py`/`server.py` 带来的风险 | `src/mini_agent/api/capability_routes.py` |
+| 单元测试（12 组用例，覆盖 CRUD / 缺口排序 / 异步问答生命周期 / 循环编排的多种分支） | ✅ 全部通过 | `tests/test_capability_learning_p1.py` |
+| cron 注册 `sys:capability_learning_cycle` | ⏳ 未接线（`run_capability_learning_cycle()` 函数本体已就绪，注册到 `cron_scheduler.py` 的 `CRON_JOBS` 表留到下一步，同样是为了避免未经评审就让后台任务真实跑起来） | — |
+| 看板三个 UI 区域（人设管理 / 进度展示 / 待回答问题） | ⏳ 未实现 | — |
+| `context_builder.py` 接入检索复用 | ⏳ 未实现 | — |
+| 真实 `retriever` / `wiki_writer` 回调实现（对接 `web_search` 与 `wiki/writer.py` + `wiki/dedup.py`） | ⏳ 未实现（P1 故意留空，见上） | — |
+
+**P1 阶段的设计取舍说明**：数据模型、存储、核心逻辑（缺口扫描、异步问答队列、循环编排）已经是可以真实跑起来、有测试覆盖的代码，但两处"会产生真实外部副作用"的关口——① 真正调用互联网检索和 wiki 写入、② 挂载到 cron 定时任务表使其自动周期性运行——都刻意留了一步显式开关，需要在功能评审通过、且第 14.3-g 合规过滤到位之后再接线，不在 P1 这一步默认打开。这是为了让"代码已经写好、可测试"和"功能对用户/系统实际生效"两件事分开推进，降低一次性铺开的风险。
+
+### P2 / P3
+
+尚未开始，规划内容见文末「实施阶段划分」一节。
 
 ---
 
