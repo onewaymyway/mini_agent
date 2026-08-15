@@ -557,6 +557,12 @@ class HttpConfig:
     # daemon 多用户架构 Phase 1：是否启用多用户认证（MultiUserAuthMiddleware）。
     # 默认 False，保持现有单 token 单用户行为完全不变（向后兼容）。
     multi_user_enabled: bool = False
+    # [http_server_blocking_call_guard_plan] 路由里同步调用 LLM 等可能长时间阻塞的
+    # 操作时，统一经过 `mini_agent.utils.blocking_guard.run_blocking()`，避免把事件
+    # 循环整个卡住。以下三项是它的默认参数，行为默认开启，不需要用户手动配置：
+    blocking_call_timeout_seconds: float = 45.0       # 单次调用硬超时
+    blocking_call_failure_threshold: int = 3          # 连续失败几次后打开熔断
+    blocking_call_cooldown_seconds: float = 120.0     # 熔断打开后冷却多久再放行探测
 
 
 @dataclass

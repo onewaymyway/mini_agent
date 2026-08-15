@@ -2,6 +2,11 @@
 
 > mini-agent 内置 FastAPI HTTP 服务，支持通过 REST 和 SSE 与 agent 交互。
 
+> **写新路由、尤其涉及 LLM 调用的路由前请先看**：
+> [`blocking-call-guard-guide.md`](./blocking-call-guard-guide.md) ——
+> 路由里同步调用 LLM 等耗时不可控的操作，必须经过 `run_blocking()`，否则会把整个
+> HTTP server 的事件循环卡死。
+
 ## 快速开始
 
 ### 启动 HTTP 服务

@@ -220,6 +220,7 @@ from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 
 from .bridge import AgentBridge
 from .fs_helper import FsHelper
+from mini_agent.utils.blocking_guard import run_blocking
 from .models import (
     ChatRequest, ChatResponse, InterruptResponse, StatusResponse,
     PermissionRequest, PermissionResponse, HistoryResponse,
@@ -4184,6 +4185,28 @@ def _agent_cfg(request: Request):
         return None
 
 
+def _blocking_call_opts(request: Request, where: str) -> dict:
+    """[http_server_blocking_call_guard_plan] 路由里凡是要同步调用 LLM /
+    其他可能长时间阻塞的操作，一律经过 `run_blocking()`，不允许直接同步调用——
+    否则会把主事件循环整个卡住，其他请求（包括跟这次调用无关的看板轮询）全部
+    要排队等它，详见该 plan 文档。这里统一从 `cfg.http.blocking_call_*` 读取
+    超时/熔断参数，拿不到 cfg 时退回 `run_blocking()` 自带的默认值。"""
+    cfg = _agent_cfg(request)
+    http_cfg = getattr(cfg, "http", None)
+    opts = {"where": where}
+    if http_cfg is not None:
+        timeout = getattr(http_cfg, "blocking_call_timeout_seconds", None)
+        threshold = getattr(http_cfg, "blocking_call_failure_threshold", None)
+        cooldown = getattr(http_cfg, "blocking_call_cooldown_seconds", None)
+        if timeout is not None:
+            opts["timeout"] = timeout
+        if threshold is not None:
+            opts["failure_threshold"] = threshold
+        if cooldown is not None:
+            opts["cooldown_seconds"] = cooldown
+    return opts
+
+
 @router.get("/goals/{goal_id}/cycle_diagnostics")
 async def get_goal_cycle_diagnostics(goal_id: str, request: Request):
     """GET /v1/goals/{goal_id}/cycle_diagnostics?summarize=true —
@@ -4216,7 +4239,11 @@ async def get_goal_cycle_diagnostics(goal_id: str, request: Request):
         if getattr(tuning_cfg, "diagnostics_llm_summary_enabled", False):
             from mini_agent.perception.cycle_diagnostics import summarize_report_with_llm
             try:
-                report.llm_summary = summarize_report_with_llm(report, _agent_llm_ask(request))
+                report.llm_summary = await run_blocking(
+                    summarize_report_with_llm, report, _agent_llm_ask(request),
+                    fallback=None,
+                    **_blocking_call_opts(request, "cycle_diagnostics_summarize"),
+                )
             except Exception:
                 report.llm_summary = None
 
@@ -4303,7 +4330,11 @@ async def create_tuning_proposal(goal_id: str, request: Request):
             )
         from mini_agent.perception.cycle_diagnostics import build_cycle_diagnostics
         report = build_cycle_diagnostics(paths, backlog, goal_id)
-        proposal = ct.build_tuning_proposal_from_nl(goal_id, nl_text, report, _agent_llm_ask(request))
+        proposal = await run_blocking(
+            ct.build_tuning_proposal_from_nl, goal_id, nl_text, report, _agent_llm_ask(request),
+            fallback=None,
+            **_blocking_call_opts(request, "tuning_proposal_from_nl"),
+        )
         if proposal is None:
             return {"proposal": None}
         ct.save_proposal(paths, proposal)
@@ -6726,9 +6757,17 @@ async def get_growth_summary(request: Request):
             helper = getattr(self_agent, "llm_helper", None)
             if helper is not None:
                 llm_helper = lambda prompt: helper.ask(prompt)
-        diagnostics = ga.diagnostics_snapshot(
+        diagnostics = await run_blocking(
+            ga.diagnostics_snapshot,
             paths, cfg, profile, store, profile_cfg=profile_cfg, llm_helper=llm_helper,
+            fallback=None,
+            **_blocking_call_opts(request, "growth_diagnostics_snapshot"),
         )
+        if diagnostics is None:
+            # 熔断/超时兜底：拿不到最新诊断快照时，返回一个最小占位，
+            # 不让整个 /growth/summary 500——看板其他字段（candidates/reports 等）
+            # 仍然正常展示。
+            diagnostics = {"_note": "diagnostics snapshot unavailable (timed out or circuit open)"}
 
         cs = _get_cron_scheduler(http_server) if http_server else None
         if cs is not None:
@@ -6831,9 +6870,11 @@ async def post_growth_scan(request: Request):
         # 可用，是否真正触发仍由 cfg.cron_triggered_active_search_enabled
         # 这个显式开关决定。
         from mini_agent.tools.builtin import web_search as _web_search_fn
-        result = ga.run_daily_cycle(
+        result = await run_blocking(
+            ga.run_daily_cycle,
             paths, cfg, profile, store,
             llm_helper=llm_helper, web_search_fn=_web_search_fn,
+            **_blocking_call_opts(request, "growth_scan_daily_cycle"),
         )
         mgr.save()
         # [kanban_perception_gaps_improvement_plan.md 方向 D.1] 复用这个
@@ -6847,8 +6888,18 @@ async def post_growth_scan(request: Request):
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where="mini_agent.api.routes.post_growth_scan.objective_trend_snapshot")
         return result
-    except HTTPException:
-        raise
+    except HTTPException as e:
+        # [http_server_blocking_call_guard_plan] run_daily_cycle 现在经过
+        # run_blocking，超时/熔断打开时会以 HTTPException(504/503) 的形式
+        # 抛到这里——跟下面 Exception 分支一样，信号扫描阶段的结果已经写进
+        # profile 对象了，同样要 best-effort 落盘，不能因为后面 LLM 调用
+        # 卡超时就把已经完成的这部分也丢掉。
+        try:
+            mgr.save()
+        except Exception as save_exc:
+            from mini_agent.errors import log_exception
+            log_exception(save_exc, where="mini_agent.api.routes.post_growth_scan.fallback_save")
+        raise e
     except Exception as e:
         # 信号扫描阶段（`ga.growth_signal_scan` 内部）已经把结果写进了
         # 上面 load() 出来的同一个 profile 对象；即使异常发生在后面的候选/
@@ -7335,7 +7386,10 @@ async def get_growth_align(request: Request):
 
         goal_backlog = GoalBacklog(paths)
         goal_backlog.load()
-        return ga.goal_growth_alignment(paths, profile, cfg=cfg, goal_backlog=goal_backlog, llm_helper=llm_helper)
+        return await run_blocking(
+            ga.goal_growth_alignment, paths, profile, cfg=cfg, goal_backlog=goal_backlog, llm_helper=llm_helper,
+            **_blocking_call_opts(request, "growth_align"),
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -7376,9 +7430,11 @@ async def post_growth_align_adopt_all(request: Request):
         goal_backlog = GoalBacklog(paths)
         goal_backlog.load()
         cron_scheduler = _get_cron_scheduler(http_server) if http_server else None
-        result = ga.batch_adopt_unmatched_interests(
+        result = await run_blocking(
+            ga.batch_adopt_unmatched_interests,
             paths, cfg, profile, goal_backlog=goal_backlog,
             cron_scheduler=cron_scheduler, llm_helper=llm_helper,
+            **_blocking_call_opts(request, "growth_align_adopt_all"),
         )
         return result
     except HTTPException:
@@ -7547,7 +7603,10 @@ async def post_growth_candidate_refresh_report(request: Request, candidate_id: s
             helper = getattr(self_agent, "llm_helper", None)
             if helper is not None:
                 llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
-        report = ga.refresh_growth_report(paths, candidate_id, llm_helper=llm_helper)
+        report = await run_blocking(
+            ga.refresh_growth_report, paths, candidate_id, llm_helper=llm_helper,
+            **_blocking_call_opts(request, "growth_candidate_refresh_report"),
+        )
         if report is None:
             raise HTTPException(status_code=404, detail="candidate not found")
         return {"ok": True, "report": report.to_dict()}
@@ -7652,8 +7711,9 @@ async def post_growth_candidate_generate_material(request: Request, candidate_id
                 llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
 
         report = ga.get_report_by_id(paths, candidate.report_id) if candidate.report_id else None
-        material = ga.generate_learning_material(
-            paths, candidate, llm_helper=llm_helper, report=report,
+        material = await run_blocking(
+            ga.generate_learning_material, paths, candidate, llm_helper=llm_helper, report=report,
+            **_blocking_call_opts(request, "growth_candidate_generate_material"),
         )
         return {"ok": True, "material": material.to_dict()}
     except HTTPException:
