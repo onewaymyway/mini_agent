@@ -5713,6 +5713,171 @@ def _render_growth_kanban_dragdrop(client: "AgentClient", candidates: list[dict]
             _render_growth_topic_timeline(client, options[chosen_label])
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Tab: 🎓 能力学习（next_doc/persona_capability_learning_design.md §7）
+# ═══════════════════════════════════════════════════════════════════════
+# P1 阶段接线：三个区域——人设管理区（Track 增删改）/ 进度展示区（大纲覆盖
+# 状态 + 学习台账）/ 待回答问题区（异步问答队列）。cron 尚未接线（见设计
+# 文档「实施状态」），所以这里没有"距离下一轮学习还有多久"这类倒计时展示；
+# `/capability cycle` 手动触发仍需通过 CLI slash command，看板本身不提供
+# "立即学习"按钮，避免在 cron 接线评审通过前就在 UI 上暗示这是个已经在
+# 自动运行的功能。
+def render_capability_tab(client: "AgentClient"):
+    st.markdown("#### 🎓 能力学习 / 人设养成 (Capability Learning)")
+    st.caption(
+        "给 Agent 一个能力方向或人设描述，它会持续、克制地检索沉淀成 wiki 知识；"
+        "遇到只有你知道的信息会异步向你提问，不会打断你当前的事。"
+        "（cron 定时自动推进尚未开启，当前需要通过 `/capability cycle` 命令手动触发一轮）"
+    )
+
+    tracks_resp = client.capability_tracks()
+    if isinstance(tracks_resp, dict) and tracks_resp.get("_error"):
+        st.warning(f"拉取能力 Track 列表失败：{tracks_resp['_error']}")
+        tracks = []
+    else:
+        tracks = tracks_resp.get("tracks", []) if isinstance(tracks_resp, dict) else []
+
+    # ── 7.1 人设管理区 ───────────────────────────────────────────────
+    with st.expander("➕ 新建能力 / 人设方向", expanded=not tracks):
+        with st.form("capability_new_track_form"):
+            new_title = st.text_input("标题", placeholder="股票分析能力")
+            new_desc = st.text_area("方向描述", placeholder="希望你具备强大的股票分析能力")
+            new_type = st.selectbox("类型", ["knowledge", "persona"], format_func=lambda x: {
+                "knowledge": "知识能力（沉淀 wiki 知识）",
+                "persona": "角色人设（养成 .agent/personas 人设文件）",
+            }[x])
+            new_wiki_tag = st.text_input(
+                "wiki 命名空间（可留空自动生成）", placeholder="capability:stock_analysis",
+            )
+            submitted = st.form_submit_button("创建")
+        if submitted:
+            if not new_title or not new_desc:
+                st.warning("标题和方向描述都不能为空。")
+            else:
+                resp = client.create_capability_track(
+                    title=new_title, persona_desc=new_desc,
+                    target_type=new_type, wiki_tag=new_wiki_tag,
+                )
+                if isinstance(resp, dict) and resp.get("_error"):
+                    st.error(f"创建失败：{resp['_error']}")
+                else:
+                    st.success(f"已创建 Track：{resp.get('title', new_title)}")
+                    st.rerun()
+
+    if not tracks:
+        st.info("还没有任何能力 Track，先在上面创建一个。")
+        return
+
+    st.markdown("##### 人设 / 能力方向列表")
+    for track in tracks:
+        outline = track.get("outline", []) or []
+        total = len(outline)
+        covered = sum(1 for t in outline if t.get("coverage_state") == "covered")
+        status = track.get("status", "active")
+        status_badge = {"active": "🟢 进行中", "paused": "⏸️ 已暂停", "archived": "📦 已归档"}.get(status, status)
+        type_badge = "🧑‍🎓 人设" if track.get("target_type") == "persona" else "📚 知识"
+        with st.expander(
+            f"{type_badge} {track.get('title', '(未命名)')} — {status_badge} — "
+            f"覆盖 {covered}/{total or '?'}",
+        ):
+            st.caption(track.get("persona_desc", ""))
+            st.caption(f"wiki_tag: `{track.get('wiki_tag', '')}`　track_id: `{track.get('track_id', '')}`")
+
+            # ── 7.2 进度展示区：大纲覆盖状态 + 学习台账 ──────────────
+            if outline:
+                st.markdown("**能力大纲覆盖状态**")
+                state_icon = {"uncovered": "⬜", "partial": "🟨", "covered": "✅"}
+                for topic in outline:
+                    icon = state_icon.get(topic.get("coverage_state", "uncovered"), "⬜")
+                    st.write(f"{icon} {topic.get('name', '')}"
+                             + (f"　（关联 {len(topic.get('wiki_page_ids', []))} 篇 wiki 页面）"
+                                if topic.get("wiki_page_ids") else ""))
+            else:
+                st.caption("这个 Track 还没有大纲子主题。")
+
+            ledger_resp = client.capability_track_ledger(track.get("track_id", ""), limit=10)
+            entries = ledger_resp.get("entries", []) if isinstance(ledger_resp, dict) else []
+            if entries:
+                st.markdown("**最近学习台账**")
+                action_label = {
+                    "researched": "🔍 已检索沉淀", "question_raised": "❓ 已生成问题",
+                    "question_answered": "💬 已消费回答", "skipped": "⏭️ 已跳过",
+                    "miss_observed": "📌 记录到一次检索未命中",
+                }
+                for entry in entries[:10]:
+                    ts = entry.get("cycle_ts")
+                    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else ""
+                    st.caption(
+                        f"{when}　{action_label.get(entry.get('action', ''), entry.get('action', ''))}"
+                        f"　{entry.get('summary', '')}"
+                    )
+            else:
+                st.caption("还没有学习台账记录（cron 尚未接线，暂时只能通过 `/capability cycle` 手动推进）。")
+
+            # 管理操作
+            cols = st.columns(4)
+            with cols[0]:
+                if status == "active" and st.button("⏸️ 暂停", key=f"cap_pause_{track['track_id']}"):
+                    client.update_capability_track(track["track_id"], status="paused")
+                    st.rerun()
+                elif status == "paused" and st.button("▶️ 恢复", key=f"cap_resume_{track['track_id']}"):
+                    client.update_capability_track(track["track_id"], status="active")
+                    st.rerun()
+            with cols[1]:
+                confirm_key = f"cap_del_confirm_{track['track_id']}"
+                if st.session_state.get(confirm_key):
+                    if st.button("⚠️ 确认删除", key=f"cap_del_go_{track['track_id']}"):
+                        client.delete_capability_track(track["track_id"])
+                        st.session_state.pop(confirm_key, None)
+                        st.rerun()
+                elif st.button("🗑️ 删除", key=f"cap_del_{track['track_id']}"):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
+            st.caption("删除只下线这个 Track，不会删除已经沉淀的 wiki 页面。")
+
+    # ── 7.3 待回答问题区 ─────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("##### ❓ 待回答问题")
+    questions_resp = client.capability_questions(status="pending")
+    pending_questions = questions_resp.get("questions", []) if isinstance(questions_resp, dict) else []
+    if not pending_questions:
+        st.caption("目前没有待回答的问题。")
+    else:
+        track_titles = {t["track_id"]: t.get("title", "") for t in tracks}
+        for q in pending_questions:
+            with st.container(border=True):
+                st.write(f"**{q.get('question', '')}**")
+                if q.get("hint"):
+                    st.caption(f"提示：{q['hint']}")
+                st.caption(f"来自：{track_titles.get(q.get('track_id', ''), q.get('track_id', ''))}")
+                ans_key = f"cap_q_answer_{q['question_id']}"
+                answer_text = st.text_input("你的回答", key=ans_key)
+                bcols = st.columns([1, 1, 6])
+                with bcols[0]:
+                    if st.button("提交", key=f"cap_q_submit_{q['question_id']}"):
+                        if answer_text.strip():
+                            client.answer_capability_question(q["question_id"], answer_text.strip())
+                            st.rerun()
+                        else:
+                            st.warning("回答不能为空。")
+                with bcols[1]:
+                    if st.button("忽略", key=f"cap_q_dismiss_{q['question_id']}"):
+                        client.dismiss_capability_question(q["question_id"])
+                        st.rerun()
+
+    with st.expander("🗂️ 历史问答（已回答 / 已忽略 / 已过期）"):
+        history_resp = client.capability_questions()
+        all_questions = history_resp.get("questions", []) if isinstance(history_resp, dict) else []
+        history = [q for q in all_questions if q.get("status") != "pending"]
+        if not history:
+            st.caption("还没有历史问答记录。")
+        else:
+            for q in history[:30]:
+                st.caption(
+                    f"[{q.get('status', '')}] {q.get('question', '')}"
+                    + (f"　→ {q.get('answer', '')}" if q.get("answer") else "")
+                )
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 自诊断信号闭环深化（next_doc/self_diagnosis_feedback_loop_deepening_plan.md
@@ -7849,7 +8014,7 @@ def main():
     render_topbar(client, get_active_session_id())
 
     tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
-                    "🧠 自我状态", "🌱 成长顾问", "🧬 进化提案", "⏰ Cron 任务", "🗓️ 全局日程", "🔌 外部输入",
+                    "🧠 自我状态", "🌱 成长顾问", "🎓 能力学习", "🧬 进化提案", "⏰ Cron 任务", "🗓️ 全局日程", "🔌 外部输入",
                     "🔔 关注与通知", "⚙️ 配置", "🔧 诊断", "🧪 混合执行", "📛 错误日志"])
 
     # [daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
@@ -7879,22 +8044,24 @@ def main():
     with tabs[7]:
         render_growth_tab(client)
     with tabs[8]:
-        render_evolution_proposals_tab(client)
+        render_capability_tab(client)
     with tabs[9]:
-        render_cron_jobs_tab(client)
+        render_evolution_proposals_tab(client)
     with tabs[10]:
-        render_global_schedule_tab(client)
+        render_cron_jobs_tab(client)
     with tabs[11]:
-        render_external_input_tab(client)
+        render_global_schedule_tab(client)
     with tabs[12]:
-        render_notification_tab(client)
+        render_external_input_tab(client)
     with tabs[13]:
-        render_config_tab(client)
+        render_notification_tab(client)
     with tabs[14]:
-        render_diagnostics_tab(client)
+        render_config_tab(client)
     with tabs[15]:
-        render_hybrid_exec_tab(client)
+        render_diagnostics_tab(client)
     with tabs[16]:
+        render_hybrid_exec_tab(client)
+    with tabs[17]:
         render_error_log_tab(client)
 
     # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——

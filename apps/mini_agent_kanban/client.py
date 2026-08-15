@@ -933,3 +933,45 @@ class AgentClient:
         if download:
             q += "&download=true"
         return self._url(f"/artifacts/{manifest_id}/file?{q}")
+
+    # ── 能力学习 / 人设养成（persona_capability_learning_design.md §7.1）───
+    def capability_tracks(self, status: str = None):
+        params = {"status": status} if status else None
+        return self._get("/capability/tracks", params=params)
+
+    def create_capability_track(self, title: str, persona_desc: str,
+                                 outline_names: list = None, target_type: str = "knowledge",
+                                 wiki_tag: str = ""):
+        body = {
+            "title": title, "persona_desc": persona_desc,
+            "target_type": target_type, "wiki_tag": wiki_tag,
+        }
+        if outline_names:
+            body["outline_names"] = outline_names
+        return self._post("/capability/tracks", body)
+
+    def get_capability_track(self, track_id: str):
+        return self._get(f"/capability/tracks/{track_id}")
+
+    def update_capability_track(self, track_id: str, **fields):
+        return self._patch(f"/capability/tracks/{track_id}", fields)
+
+    def delete_capability_track(self, track_id: str):
+        return self._delete(f"/capability/tracks/{track_id}")
+
+    def capability_track_ledger(self, track_id: str, limit: int = 50):
+        return self._get(f"/capability/tracks/{track_id}/ledger", params={"limit": limit})
+
+    def capability_questions(self, status: str = None, track_id: str = None):
+        params = {}
+        if status:
+            params["status"] = status
+        if track_id:
+            params["track_id"] = track_id
+        return self._get("/capability/questions", params=params or None)
+
+    def answer_capability_question(self, question_id: str, answer: str):
+        return self._post(f"/capability/questions/{question_id}/answer", {"answer": answer})
+
+    def dismiss_capability_question(self, question_id: str):
+        return self._post(f"/capability/questions/{question_id}/dismiss")

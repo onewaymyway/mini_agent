@@ -958,6 +958,13 @@ def create_app(
     # ── 路由 ──────────────────────────────────────────────────────────────
     app.include_router(router)
 
+    # 人设能力自主学习（capability_learning，见 next_doc/persona_capability_learning_design.md
+    # §7.1）。独立 router，见 api/capability_routes.py 顶部注释——本次接线只挂载
+    # 数据 CRUD/问答端点，不影响任何默认自动运行行为（cron 任务表本身仍未新增
+    # sys:capability_learning_cycle 条目，见该设计文档「实施状态」表格）。
+    from mini_agent.api.capability_routes import capability_router
+    app.include_router(capability_router)
+
     @app.get("/")
     async def root():
         return {
