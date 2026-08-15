@@ -359,11 +359,53 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 
 ---
 
-## 12. 实施阶段划分
+## 13. 与其它现有系统的协同边界（可行性与可维护性评估）
+
+上面几节已经确定了核心架构，这一节单独评估"还能和哪些现有系统联动"——**不是所有能想到的关联都值得做**，这里按"能直接采纳 / 需要边界限制才能采纳 / 明确排除"三档给出结论，避免方案范围无限扩张、埋下难以维护的隐性耦合。
+
+### 13.1 可直接采纳（低风险、单向依赖）
+
+**a. 用 `perception/self_model.py` 的 `capability_map` 给大纲排优先级**
+
+新建 knowledge 型 Track 时，子主题的推进顺序应该参考 `capability_map` 里 Agent 现有的能力评估（`confidence` 低/`total_calls` 少的领域优先），而不是纯按 wiki 覆盖率排。这是**单向只读消费**，不产生任何反向副作用，不引入新的自动化决策链路，成本低、收益明确，直接采纳。
+
+**b. 用 `evolution/decision_profile_builder.py` 的 `user_value_profile.md` 减少 persona 构建时的重复追问**
+
+第 10 节 persona 型 Track 的追问环节，先检查这份用户决策画像有没有可直接复用的信号（比如沟通风格偏好），有则作为草稿默认值，减少不必要的追问。**但必须原样继承它自己的证据门槛**——`decision_profile_builder` 本身有严格的 `MIN_EVIDENCE_COUNT`（证据不够不落地）的克制原则，引用其结论时不能绕开这个门槛，证据不足的领域该追问还是要追问，不能因为"复用了画像"就放松追问的严谨性。
+
+**c. 月度复盘并入 `growth_advisor` 已有的月度复盘入口**
+
+不新开复盘展示面板，能力学习 Track / persona 构建的月度统计（新增多少 wiki 页面、哪个 Track 进展最快、发布了几个新人设）并入同一份月度摘要。**但报告内部必须分节展示，不能合并叙事**——"帮用户成长"（growth_advisor）、"帮 Agent 学能力"（capability learning）、"构建人设"（persona track）是三件性质不同的事，混在一段话里会让用户分不清这个月的进展到底是自己在变化还是 Agent 在替自己攒东西。
+
+### 13.2 需要边界限制才能采纳（有真实耦合风险，不能默认打通）
+
+**d. 与 `evolution/external_trend_capability_link.py` 的关联——只做人工审核层面的浅集成**
+
+这个模块和本方案架构高度同构（外部知识 wiki 页面 × 能力薄弱点 → 改进候选），看似可以"打个兼容 tag 就复用"，但它的下游是 `soft_goal_deriver.py`，在 `autonomous` 档位下会**自动生成 Goal**。如果能力学习 Track 产出的 wiki 页面被无差别打上兼容标签，相当于"用户明确要求 Agent 学某项能力"这件事，可能间接触发"Agent 自主决定要改进自身行为"的自动化链路——这与第 9 节"人设/能力方向的所有权在用户，Agent 不能自作主张扩展"的原则相冲突，所有权边界会被模糊掉。
+
+**结论**：只允许写入该模块"人类可读草稿"这一半（`external_trend_capability_candidates_path`，供人工审核），**不允许**进入自动生成候选、进而可能被 `soft_goal_deriver` 消费为 Goal 的那条链路。这个限制要在实现时用配置显式关闭默认打通，而不是靠"没接口就不会触发"这种隐式保证。
+
+**e. 与 `evolution/objective_executor.py` 的关联——只借鉴模式，不共享执行池**
+
+`objective_executor` 的并发控制 `MAX_CONCURRENT_OBJECTIVES`（默认 2）是为"完整多步 Objective、真实 agent turn"设计的重量级资源池，而项目里已经存在 `next_doc/goal_execution_fairness_improvement_plan.md` 这样的文档，说明这套执行池的**公平性本身就是已知痛点**。如果把"检索一个子主题"这种应该轻量、高频的后台任务也塞进同一个池子抢并发槽位，大概率会让已有的公平性问题雪上加霜，用户真正手动发起的 Objective 反而可能被后台学习任务挤占资源。
+
+**结论**：不直接复用 `objective_executor` 的调度池。可以借鉴的是它的**局部实现模式**——失败重试策略、`ResourceArbiter` 接入方式——但检索任务的执行队列必须独立调度，不与用户手动发起的 Objective 共享并发槽位。
+
+### 13.3 明确排除（语义冲突，非本方案范围）
+
+**f. 小说创作技能族（`character-designer`/`world-builder`/`plot-tracker` 等）接入 wiki**
+
+这里存在一个**语义级冲突**，不只是"信息不够、待评估"：`wiki/dedup.py` 的设计前提是"同一个事实被重复检索到应该合并去重"，这个假设对真实世界知识成立，但对虚构世界设定不成立——小说创作中角色设定的修订、世界观的迭代往往是**有意为之的改动**，不应被自动判定为"重复内容"而合并掉；`plot-tracker`/`consistency-checker` 这些技能存在的意义，恰恰是精确区分"有意修订"和"无意矛盾"，这和 wiki 模块"去重即优化"的核心假设直接冲突。
+
+**结论**：明确排除在本方案范围外，不作为"待评估方向"挂在文档里——挂着反而暗示"迟早要做"，误导后续读者。如果未来确有需要，应该是一份独立的、正视这个语义冲突（而不是绕开它）的新设计，不应顺带并入本方案。
+
+---
+
+## 14. 实施阶段划分
 
 **P1（最小可用闭环）**：
 - `CapabilityTrack` / `OutlineTopic` / `CapabilityLedgerEntry` / `CapabilityQuestion` 数据模型 + 存储路径
-- `sys:capability_learning_cycle` cron job：缺口扫描（规则式）+ 检索 + wiki 写入 + 台账记录
+- `sys:capability_learning_cycle` cron job：缺口扫描（规则式，可直接引入第 13.1-a 节 `capability_map` 排序）+ 检索（独立调度队列，不复用 `objective_executor` 并发池，见 13.2-e）+ wiki 写入 + 台账记录
 - 异步问答队列的生成与消费（不接通知，只落队列）
 - 看板三个区域（人设管理/进度展示/待回答问题）+ 对应 API
 - `context_builder.py` 接入检索复用
@@ -373,9 +415,11 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - 通知系统接入（节流摘要式推送）
 - `wiki_utility_audit.py` 联动，追踪自动生成内容的实际使用率，作为后续调权/清理依据
 - 看板拖拽式大纲编辑、时间线可视化
+- `decision_profile_builder` 联动减少 persona 构建重复追问（13.1-b）、月度复盘并入 growth_advisor 入口但分节展示（13.1-c）
 
 **P3（跨 Track 能力沉淀 + Persona 结合，方向级）**：
 - 多个 Track 之间共享的通用子主题去重复用（比如"数据来源可靠性判断"可能在多个能力方向下都用得到）
 - 问答队列机制上移为通用基础设施，供其它 cron 模块复用
 - `target_type: "persona"` 全链路：人设维度大纲、人设草稿生成、`/role show` 风格预览、显式发布流程（第 10 节）
 - `PersonaProfile.wiki_scopes` 字段 + `context_builder` 透传 `wiki_shelf_search(tags=...)` + 看板知识范围绑定 UI（第 11 节）——这一项依赖优先级最高，因为 `wiki_shelf_search` 本身已经支持 `tags` 参数，改动成本低、见效快，可以考虑提前到 P2 甚至 P1 收尾阶段单独插入
+- 与 `external_trend_capability_link.py` 的浅集成（仅人工审核草稿层，不打通自动 Goal 生成，见 13.2-d），作为方向级选项，实施前需团队评审确认边界配置默认关闭
