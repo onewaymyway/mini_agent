@@ -1,13 +1,14 @@
 """
-L3 业务校验器
+L3 业务校验器 + FinanceData 统一契约验证层
 行情数据、财务数据、新闻数据的业务逻辑校验
 """
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Dict
+from typing import Any, Dict, List, Optional
 
 from .pipeline import BaseCleaner, CleanLevel, CleanResult
+from finance_toolkit.models.finance_data import FinanceData
 
 
 class QuoteValidator(BaseCleaner):
@@ -267,3 +268,340 @@ class GubaValidator(BaseCleaner):
                 warnings.append(f"发布时间在未来: {pub_time}")
         
         return CleanResult(data=raw_data, level=self.level, passed=len(issues)==0, issues=issues+warnings)
+
+
+# ═══════════════════════════════════════════════════════════════
+# FinanceData 统一契约验证层（L1-L2）
+# ═══════════════════════════════════════════════════════════════
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+from finance_toolkit.plugins.types import DataType
+from finance_toolkit.data_validator import DataValidator, SeverityLevel, ValidationIssue, ValidationResult
+
+
+@dataclass
+class FieldIssue:
+    """FinanceData 字段级验证问题"""
+    dimension: str          # "field" | "type" | "range"
+    field_path: str         # 如 "symbol" / "payload.open"
+    value: Any
+    expected: str           # 期望描述
+    actual: str             # 实际值描述
+    suggestion: str = ""
+
+    def to_validation_issue(self, rule_id: str) -> ValidationIssue:
+        return ValidationIssue(
+            rule_id=rule_id,
+            rule_name=f"{self.dimension}_{self.field_path}",
+            severity=SeverityLevel.WARNING,
+            field=self.field_path,
+            value=str(self.value),
+            message=f"[{self.dimension}] {self.field_path}: {self.expected}, got {self.actual}",
+            suggestion=self.suggestion,
+        )
+
+
+@dataclass
+class FinanceDataValidationResult:
+    """FinanceData 综合验证结果"""
+    is_valid: bool
+    field_issues: List[FieldIssue] = field(default_factory=list)
+    type_issues: List[FieldIssue] = field(default_factory=list)
+    range_issues: List[FieldIssue] = field(default_factory=list)
+    base_validation: Optional[ValidationResult] = None
+
+    @property
+    def total_issues(self) -> int:
+        return len(self.field_issues) + len(self.type_issues) + len(self.range_issues)
+
+    @property
+    def health_score(self) -> float:
+        total = self.total_issues
+        if total == 0:
+            return 100.0
+        penalty = total * 10
+        return max(0.0, 100.0 - penalty)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "is_valid": self.is_valid,
+            "health_score": round(self.health_score, 1),
+            "total_issues": self.total_issues,
+            "field_issues": [
+                {"field": i.field_path, "expected": i.expected, "actual": i.actual, "suggestion": i.suggestion}
+                for i in self.field_issues
+            ],
+            "type_issues": [
+                {"field": i.field_path, "expected": i.expected, "actual": i.actual}
+                for i in self.type_issues
+            ],
+            "range_issues": [
+                {"field": i.field_path, "expected": i.expected, "actual": i.actual}
+                for i in self.range_issues
+            ],
+        }
+
+    def summary(self) -> str:
+        mark = "\u2713" if self.is_valid else "\u2717"
+        lines = [
+            f"FinanceData 验证结果 [{mark}] 健康评分: {self.health_score:.1f}/100",
+            f"  字段校验: {len(self.field_issues)} 个问题",
+            f"  类型校验: {len(self.type_issues)} 个问题",
+            f"  范围校验: {len(self.range_issues)} 个问题",
+        ]
+        if self.base_validation:
+            lines.append(f"  基础验证: {self.base_validation.verdict} (评分 {self.base_validation.health_score:.1f})")
+        return "\n".join(lines)
+
+
+class FieldValidator:
+    """
+    L1: FinanceData 必填字段校验
+    确保 source / data_type / symbol / timestamp / payload 存在且非空
+    """
+
+    REQUIRED_FIELDS: Dict[str, str] = {
+        "source": "str (non-empty)",
+        "data_type": "DataType enum or valid string",
+        "symbol": "str (non-empty, format: 600000.SH / 000001.SZ)",
+        "timestamp": "ISO 8601 string (e.g. 2026-08-15T10:30:00+08:00)",
+        "payload": "dict (non-empty, contains business fields)",
+    }
+
+    def validate(self, fd) -> List[FieldIssue]:
+        from finance_toolkit.models.finance_data import FinanceData
+        issues: List[FieldIssue] = []
+
+        if not fd.source or not isinstance(fd.source, str):
+            issues.append(FieldIssue(
+                dimension="field", field_path="source",
+                value=fd.source,
+                expected="required (non-empty str)",
+                actual=f"{type(fd.source).__name__}: {fd.source!r}",
+                suggestion="必须提供有效的数据源标识，如 'akshare', 'eastmoney'",
+            ))
+
+        dt = fd.data_type
+        if dt is None:
+            issues.append(FieldIssue(
+                dimension="field", field_path="data_type",
+                value=None, expected="required (DataType enum)",
+                actual="None", suggestion="必须指定 DataType 枚举值",
+            ))
+        elif not isinstance(dt, DataType):
+            issues.append(FieldIssue(
+                dimension="field", field_path="data_type",
+                value=dt, expected="DataType enum",
+                actual=f"{type(dt).__name__}: {dt!r}",
+                suggestion="请使用 finance_toolkit.plugins.types.DataType 枚举",
+            ))
+
+        if not fd.symbol or not isinstance(fd.symbol, str):
+            issues.append(FieldIssue(
+                dimension="field", field_path="symbol",
+                value=fd.symbol,
+                expected="required (non-empty str, format: XXXXXX.SH/SZ)",
+                actual=f"{type(fd.symbol).__name__}: {fd.symbol!r}",
+                suggestion="股票代码格式应为 '600000.SH' 或 '000001.SZ'",
+            ))
+
+        if not fd.timestamp or not isinstance(fd.timestamp, str):
+            issues.append(FieldIssue(
+                dimension="field", field_path="timestamp",
+                value=fd.timestamp,
+                expected="required (ISO 8601 str)",
+                actual=f"{type(fd.timestamp).__name__}: {fd.timestamp!r}",
+                suggestion="请使用 ISO 8601 格式，如 '2026-08-15T10:30:00+08:00'",
+            ))
+        else:
+            try:
+                datetime.fromisoformat(fd.timestamp.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                issues.append(FieldIssue(
+                    dimension="field", field_path="timestamp",
+                    value=fd.timestamp,
+                    expected="ISO 8601 format (e.g. 2026-08-15T10:30:00+08:00)",
+                    actual=fd.timestamp,
+                    suggestion="请转换为标准 ISO 8601 格式",
+                ))
+
+        if not fd.payload or not isinstance(fd.payload, dict):
+            issues.append(FieldIssue(
+                dimension="field", field_path="payload",
+                value=fd.payload,
+                expected="required (non-empty dict)",
+                actual=f"{type(fd.payload).__name__}: {fd.payload!r}",
+                suggestion="payload 必须是包含业务字段的字典",
+            ))
+        elif len(fd.payload) == 0:
+            issues.append(FieldIssue(
+                dimension="field", field_path="payload",
+                value=fd.payload, expected="required (non-empty dict)",
+                actual="empty dict", suggestion="payload 至少应包含一个业务字段",
+            ))
+
+        return issues
+
+
+class TypeValidator:
+    """
+    L2: payload 内部字段 Python 类型校验
+    对常见金融字段定义期望类型，允许 None（缺失）
+    """
+
+    TYPE_MAP: Dict[str, tuple] = {
+        "open": (int, float), "high": (int, float), "low": (int, float),
+        "close": (int, float), "price": (int, float), "pre_close": (int, float),
+        "volume": (int, float), "amount": (int, float),
+        "change": (int, float), "change_pct": (int, float), "pct_chg": (int, float),
+        "turnover_rate": (int, float), "amplitude": (int, float),
+        "pe_ratio": (int, float), "pb_ratio": (int, float),
+        "total_mv": (int, float), "circ_mv": (int, float),
+        "date": (str, ), "datetime": (str, ),
+        "revenue": (int, float), "net_profit": (int, float),
+        "total_assets": (int, float), "total_liab": (int, float), "equity": (int, float),
+        "eps": (int, float), "bps": (int, float), "roe": (int, float),
+        "report_date": (str, ),
+        "north_buy": (int, float), "north_sell": (int, float), "net_inflow": (int, float),
+        "nav": (int, float), "fund_code": str, "fund_name": str,
+        "index_code": str, "index_name": str,
+    }
+
+    def validate(self, payload: Dict[str, Any]) -> List[FieldIssue]:
+        issues: List[FieldIssue] = []
+        for path, expected_types in self.TYPE_MAP.items():
+            if path not in payload:
+                continue
+            val = payload[path]
+            if val is None:
+                continue
+            if not isinstance(val, expected_types):
+                issues.append(FieldIssue(
+                    dimension="type", field_path=f"payload.{path}",
+                    value=val, expected=f"one of {expected_types}",
+                    actual=f"{type(val).__name__}: {val!r}",
+                    suggestion=f"字段 '{path}' 应转换为目标类型",
+                ))
+        return issues
+
+
+class RangeValidator:
+    """
+    L3: payload 数值字段业务范围校验
+    复用 data_validator.VALUE_RANGES 中的约束
+    """
+
+    def validate(self, payload: Dict[str, Any]) -> List[FieldIssue]:
+        ranges = DataValidator.VALUE_RANGES
+        issues: List[FieldIssue] = []
+        for field_name, (low, high) in ranges.items():
+            if field_name not in payload:
+                continue
+            val = payload[field_name]
+            if val is None or not isinstance(val, (int, float)):
+                continue
+            if val < low or val > high:
+                issues.append(FieldIssue(
+                    dimension="range", field_path=f"payload.{field_name}",
+                    value=val, expected=f"[{low}, {high}]", actual=str(val),
+                    suggestion=f"值 {val} 超出合理范围 [{low}, {high}]，请核查数据源",
+                ))
+        return issues
+
+
+class FinanceDataValidator:
+    """
+    FinanceData 统一验证中间件
+
+    组合三层校验：
+      1. FieldValidator    — FinanceData 契约字段完整性 (L1)
+      2. TypeValidator     — payload 内部字段 Python 类型 (L2)
+      3. RangeValidator    — payload 数值业务范围 (L3)
+
+    同时支持调用底层 DataValidator 进行 97 条规则全量验证。
+    """
+
+    def __init__(self, enable_base_validator: bool = True, strict_mode: bool = False):
+        self.enable_base_validator = enable_base_validator
+        self.strict_mode = strict_mode
+        self._field_v = FieldValidator()
+        self._type_v = TypeValidator()
+        self._range_v = RangeValidator()
+        self._base_validator = DataValidator(strict_mode=strict_mode) if enable_base_validator else None
+
+    def validate(self, fd) -> FinanceDataValidationResult:
+        """对 FinanceData 对象执行完整验证"""
+        from finance_toolkit.models.finance_data import FinanceData
+        if not isinstance(fd, FinanceData):
+            return FinanceDataValidationResult(
+                is_valid=False,
+                field_issues=[FieldIssue(
+                    dimension="field", field_path="root", value=str(type(fd)),
+                    expected="FinanceData instance", actual=f"{type(fd).__name__}",
+                    suggestion="必须传入 FinanceData 对象",
+                )],
+            )
+
+        result = FinanceDataValidationResult(is_valid=True)
+        result.field_issues = self._field_v.validate(fd)
+        if fd.payload:
+            result.type_issues = self._type_v.validate(fd.payload)
+            result.range_issues = self._range_v.validate(fd.payload)
+
+        if self._base_validator and self.enable_base_validator:
+            try:
+                base_result = self._base_validator.validate(
+                    fd.to_dict(),
+                    data_type=fd.data_type.value if isinstance(fd.data_type, DataType) else str(fd.data_type),
+                    symbol=fd.symbol,
+                )
+                result.base_validation = base_result
+            except Exception:
+                pass
+
+        result.is_valid = len(result.field_issues) == 0
+        return result
+
+    def validate_many(self, items: List) -> List[FinanceDataValidationResult]:
+        """批量验证"""
+        return [self.validate(item) for item in items]
+
+    def validate_and_normalize(self, fd) -> FinanceData:
+        """验证并尝试自动修复可修复的类型问题"""
+        result = self.validate(fd)
+        if result.is_valid:
+            return fd
+
+        from finance_toolkit.models.finance_data import FinanceData
+        normalized_payload = dict(fd.payload) if fd.payload else {}
+        for path, expected_types in TypeValidator.TYPE_MAP.items():
+            if path not in normalized_payload:
+                continue
+            val = normalized_payload[path]
+            if val is None or isinstance(val, expected_types):
+                continue
+            try:
+                if float in expected_types:
+                    normalized_payload[path] = float(val)
+                elif int in expected_types:
+                    normalized_payload[path] = int(float(val))
+            except (ValueError, TypeError):
+                pass
+
+        return FinanceData(
+            source=fd.source, data_type=fd.data_type, symbol=fd.symbol,
+            timestamp=fd.timestamp, payload=normalized_payload,
+            raw=fd.raw, meta=fd.meta, error=fd.error,
+        )
+
+
+def validate_finance_data(fd, **kwargs) -> FinanceDataValidationResult:
+    """便捷函数：验证单个 FinanceData 对象"""
+    return FinanceDataValidator(**kwargs).validate(fd)
+
+
+def validate_finance_data_batch(items: List, **kwargs) -> List[FinanceDataValidationResult]:
+    """便捷函数：批量验证 FinanceData 列表"""
+    return FinanceDataValidator(**kwargs).validate_many(items)
