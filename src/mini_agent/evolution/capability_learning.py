@@ -33,10 +33,19 @@
       `ContextBuilder._maybe_record_capability_wiki_miss()`）。刻意只在能
       明确关联到具体 Track 时才记录，不对所有未命中查询做关键词/语义猜测
       式关联
+    - HTTP API 已挂载到 api/server.py（`app.include_router(capability_router)`）
+    - 看板三区域 UI（人设管理/进度展示/待回答问题），见 apps/mini_agent_kanban
+    - §13.3-g 合规过滤：`apply_compliance_filter()` 在 `make_wiki_writer()`
+      写入前对检索结果做句级风险表述过滤（具体买卖建议等整句剔除），并对
+      金融/医疗/法律等专业建议领域的 Track 页面加 `requires_disclaimer:
+      true` frontmatter 标记 + 正文追加免责声明。规则式实现（关键词/正则
+      句级过滤），不接 LLM 改写——见该函数上方注释的取舍说明
 
 尚未落地（按设计文档标注的阶段留到后续）：
     - 真实 retriever 回调（对接 web_search，需要网络，P1 单测里全部用假
-      实现替代，避免单测依赖外部网络请求）
+      实现替代，避免单测依赖外部网络请求）——§13.3-g 合规过滤已就位，
+      这是这一步"待评审接线"清单里此前唯一缺的前置条件，接线本身仍需
+      单独评审（真实网络请求 + 检索内容质量把关不是本模块能单方面决定的）
     - cron 任务表注册 sys:capability_learning_cycle（cron_scheduler.py 里
       内置任务是"生成 task_template 文本交给 Agent 自己执行"的模式，不是
       直接调用 Python 函数——意味着真正接线还需要一个新的 slash command
@@ -628,6 +637,92 @@ def record_wiki_miss(paths: AgentPaths, track_id: str, topic_hint: str, query: s
     ))
 
 
+# ── 合规过滤（§13.3-g，必须在 P1 写入环节内置，不可延后）────────────────────
+#
+# 设计文档 §13.3-g 明确要求：wiki 页面可以沉淀"分析方法论"，但检索结果里
+# 如果混入了具体的"买入/卖出建议"这类内容，写入前必须过滤/改写，只保留
+# 方法论和事实性信息；同时对金融/医疗/法律这类专业建议领域的页面，
+# frontmatter 加 `requires_disclaimer: true` 标记。P1 用规则式实现
+# （关键词/正则句级过滤），不接 LLM 改写——规则式虽然召回率有限，但
+# 不会引入"LLM 误判把正常内容也改写掉"的新增不确定性，且延迟低、
+# 可离线单测，符合"这一步必须在检索/写入环节内置，风险补救成本远高于
+# 预防"的克制要求。
+
+# 逐句匹配的风险短语——命中即整句剔除，不做局部替换（局部替换容易把
+# 句子改得语义不通，整句剔除更保守、也更容易审计）。
+_COMPLIANCE_RISKY_PHRASE_PATTERNS = [
+    r"建议(买入|卖出|加仓|减仓|做多|做空)",
+    r"(现在|目前|近期).{0,6}(应该|可以|值得).{0,4}(买入|卖出|入场|建仓)",
+    r"(推荐|首推).{0,4}(买入|买进|加仓)",
+    r"目标价.{0,10}(元|美元|港元|\$)",
+    r"止损位",
+    r"仓位建议",
+    r"(强烈)?(推荐|建议).{0,4}(购买|投资).{0,10}(股票|基金|标的)",
+]
+
+# 领域关键词——命中任一即视为需要 `requires_disclaimer` 标记的专业建议
+# 领域（§13.3-g 提到"类似场景（医疗、法律等专业建议类方向）都可能踩同样
+# 的线"，不只是金融，这里三类一起覆盖）。
+_COMPLIANCE_DISCLAIMER_DOMAIN_KEYWORDS = [
+    "股票", "基金", "投资", "证券", "期货", "外汇", "理财",  # 金融
+    "疾病", "诊断", "用药", "药物", "治疗", "病症", "医疗",    # 医疗
+    "诉讼", "法律", "合同纠纷", "律师", "法规",              # 法律
+]
+
+
+def _filter_compliance_risky_text(text: str) -> tuple[str, bool]:
+    """按句号/换行切句，剔除命中风险短语的整句。返回（过滤后文本，是否有
+    内容被剔除）。空文本/无命中时原样返回，第二个返回值为 False。"""
+    import re
+
+    if not text:
+        return text, False
+    # 按中英文句末标点切句，保留标点本身，避免把风险短语所在句子的边界
+    # 判断依赖过于精细的分句库——够用即可，不追求语法学意义上的精确分句。
+    sentences = re.split(r"(?<=[。！？\n])", text)
+    kept: list[str] = []
+    filtered_any = False
+    for sent in sentences:
+        if not sent.strip():
+            continue
+        if any(re.search(pat, sent) for pat in _COMPLIANCE_RISKY_PHRASE_PATTERNS):
+            filtered_any = True
+            continue
+        kept.append(sent)
+    return "".join(kept).strip(), filtered_any
+
+
+def is_disclaimer_required_track(track: "CapabilityTrack") -> bool:
+    """判断这个 Track 是否落在需要 `requires_disclaimer` 标记的专业建议
+    领域（金融/医疗/法律等，见 §13.3-g）。规则式关键词匹配，宁可多标注
+    （对不需要的页面多加一句"仅供参考"没有实质坏处），也不漏标注。"""
+    haystack = f"{track.title} {track.persona_desc} {track.wiki_tag}"
+    return any(kw in haystack for kw in _COMPLIANCE_DISCLAIMER_DOMAIN_KEYWORDS)
+
+
+def apply_compliance_filter(
+    results: list[dict], track: "CapabilityTrack",
+) -> tuple[list[dict], bool, bool]:
+    """对检索结果的每条 summary/text 做句级风险过滤。
+
+    返回 (过滤后的 results 副本, 本次是否实际剔除了内容, 是否需要
+    requires_disclaimer 标记)。不修改传入的 results，返回新列表——
+    调用方（make_wiki_writer）用返回值渲染页面正文，不依赖副作用。
+    """
+    filtered_results: list[dict] = []
+    any_filtered = False
+    for r in results:
+        r2 = dict(r)
+        for key in ("summary", "text"):
+            if r2.get(key):
+                cleaned, did_filter = _filter_compliance_risky_text(r2[key])
+                r2[key] = cleaned
+                any_filtered = any_filtered or did_filter
+        filtered_results.append(r2)
+    requires_disclaimer = is_disclaimer_required_track(track) or any_filtered
+    return filtered_results, any_filtered, requires_disclaimer
+
+
 # ── 真实 wiki_writer 实现（§5 wiki 沉淀规范）───────────────────────────────
 #
 # 之所以到这一步才提供"真实"实现，是因为它不依赖网络/外部服务——纯粹是
@@ -657,21 +752,31 @@ def make_wiki_writer(paths: AgentPaths) -> WikiWriterFn:
 
         from mini_agent.wiki.writer import write_page
 
+        # §13.3-g：写入前先过滤风险表述（具体买卖建议等），并判定是否需要
+        # requires_disclaimer 标记——这一步必须在这里做，不能延后到接线阶段。
+        results, _filtered_any, requires_disclaimer = apply_compliance_filter(results, track)
+
         page_id = f"cap_{track.track_id}_{topic.topic_id}"
         body_lines = [f"# {topic.name}", ""]
         urls: list[str] = []
         for r in results:
             summary = r.get("summary") or r.get("text") or ""
+            if not summary:
+                continue
             url = r.get("url") or ""
             if url:
                 urls.append(url)
             body_lines.append(f"- {summary}" + (f"（来源：{url}）" if url else ""))
-        body = "\n".join(body_lines) if results else f"# {topic.name}\n\n（暂无检索结果）"
+        has_body_content = len(body_lines) > 2
+        body = "\n".join(body_lines) if has_body_content else f"# {topic.name}\n\n（暂无检索结果）"
+        if requires_disclaimer:
+            body += "\n\n> 仅供参考，不构成投资/医疗/法律等专业建议。"
 
         extra_fm = {
             "capability_track_id": track.track_id,
             "source_urls": urls,
             "retrieved_at": datetime.now(timezone.utc).isoformat(),
+            "requires_disclaimer": requires_disclaimer,
         }
         write_page(
             paths=paths,

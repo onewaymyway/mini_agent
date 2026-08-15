@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.7（P1 核心闭环 + 真实 wiki 写入回调已实现；`PersonaProfile.wiki_scopes`（第 11 节）+ `record_wiki_miss()` 接线（§14.1-a）+ `/capability` slash command 中间层（§4）已提前插入实现；本轮新增 HTTP API 挂载到 `api/server.py` + 看板三区域 UI + 确认 `context_builder.py` 检索复用已天然满足，见下方「实施状态」。P1 仅剩 cron 注册与真实 retriever/合规过滤未接线，均刻意留待评审后开启）
+- **版本**：v0.8（P1 核心闭环 + 真实 wiki 写入回调 + §13.3-g 合规过滤已实现；`PersonaProfile.wiki_scopes`（第 11 节）+ `record_wiki_miss()` 接线（§14.1-a）+ `/capability` slash command 中间层（§4）+ HTTP API 挂载 + 看板三区域 UI 均已完成，见下方「实施状态」。P1 仅剩 cron 注册与真实 `retriever`（web_search）接线未完成，均刻意留待评审后开启）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -32,7 +32,8 @@
 | cron 注册 `sys:capability_learning_cycle` | ⏳ cron 任务表本身仍未注册（见下方说明），但阻塞它的那一层缺口——`/capability cycle` slash command 中间层——已实现，接线时只需在 `cron_scheduler.py` 的 `SYSTEM_JOBS` 里新增一条 `task_template` 引用 `/capability cycle` 即可，不用再回头改命令处理器 | `src/mini_agent/cli/commands/capability_cmd.py` |
 | 看板三个 UI 区域（人设管理 / 进度展示 / 待回答问题） | ✅ 已实现为新 Tab「🎓 能力学习」（挂在「🌱 成长顾问」之后），三区域：新建/管理 Track（暂停恢复/二次确认删除，不级联删 wiki）、大纲覆盖状态 + 学习台账、待回答问题（提交/忽略）+ 折叠历史问答。cron 未接线，UI 上没有"距离下次学习还有多久"之类的倒计时展示，避免暗示已自动运行 | `apps/mini_agent_kanban/app.py`（`render_capability_tab`）、`apps/mini_agent_kanban/client.py`（新增 11 个 `capability_*` 方法） |
 | `context_builder.py` 接入检索复用 | ✅ 经代码走查确认已经**天然满足**，不需要额外实现：`_try_inject_wiki_search()` 本来就是"命中就注入"的全库/`tags` 范围检索（§11 的 `wiki_scopes` 只是把 `tags` 收窄到当前 persona 范围，不传 `wiki_scopes` 时就是全库检索），knowledge 型 Track 沉淀的 wiki 页面天然会被这条既有链路检索命中并注入——§6 想要的"命中 active Track 时按需注入"和现有"每轮 turn 命中就注入"是同一件事，没有必要再实现一层重复的"识别话题是否命中某个 Track"关键词匹配（重复匹配反而增加噪音，与项目一贯的"不重复实现"原则一致）。§14.1-a 的未命中记录部分本来就已提前完成 | `src/mini_agent/context_builder.py`（未改动，本次为确认结论，非新代码） |
-| 真实 `retriever` / `wiki_writer` 回调实现（对接 `web_search` 与 `wiki/writer.py` + `wiki/dedup.py`） | ⏳ 未实现（P1 故意留空，见上，仍需先完成 §13.3-g 合规过滤才能接线） | — |
+| 真实 `retriever` / `wiki_writer` 回调实现（对接 `web_search` 与 `wiki/writer.py` + `wiki/dedup.py`） | wiki_writer 侧的合规过滤前置条件（见下一行）已就位；真实 `retriever`（对接 `web_search`，需要真实网络请求）仍未实现，P1 单测全部用假实现替代 | — |
+| §13.3-g 合规过滤（写入前剔除具体买卖建议等风险表述 + 金融/医疗/法律领域页面加 `requires_disclaimer` 标记） | ✅ 已实现并接入 `make_wiki_writer()` 写入路径：`apply_compliance_filter()` 做句级关键词/正则过滤（整句剔除，不做局部改写），`is_disclaimer_required_track()` 按 Track 标题/描述/wiki_tag 关键词判定风险领域；命中时 frontmatter 加 `requires_disclaimer: true` + 正文追加"仅供参考"免责声明。规则式实现，不接 LLM 改写（见函数上方注释的取舍说明） | `src/mini_agent/evolution/capability_learning.py` |
 
 **P1 阶段的设计取舍说明**：数据模型、存储、核心逻辑（缺口扫描、异步问答队列、循环编排）已经是可以真实跑起来、有测试覆盖的代码，但两处"会产生真实外部副作用"的关口——① 真正调用互联网检索和 wiki 写入、② 挂载到 cron 定时任务表使其自动周期性运行——都刻意留了一步显式开关，需要在功能评审通过、且第 14.3-g 合规过滤到位之后再接线，不在 P1 这一步默认打开。这是为了让"代码已经写好、可测试"和"功能对用户/系统实际生效"两件事分开推进，降低一次性铺开的风险。
 
@@ -75,7 +76,7 @@
 |---|---|---|
 | `/capability [list]`：展示所有 Track 概况 | ✅ 已实现 | `src/mini_agent/cli/commands/capability_cmd.py` |
 | `/capability create <title> \| <persona_desc>`：创建 knowledge 型 Track | ✅ 已实现（大纲仍是空的，LLM/规则式起草留到 P2，与 `CapabilityTrackStore.create()` 现有行为一致） | 同上 |
-| `/capability cycle`：手动触发一轮学习循环，等价于 `sys:capability_learning_cycle` 未来会执行的内容 | ✅ 已实现，**刻意不传入 retriever**——调用 `run_capability_learning_cycle(paths, wiki_writer=make_wiki_writer(paths))`，`retriever` 留空意味着需要检索的子主题仍会被安全跳过并记 `skipped` 台账，不产生真实网络请求，也就不会绕开 §13.3-g 尚未实现的合规过滤 | 同上 |
+| `/capability cycle`：手动触发一轮学习循环，等价于 `sys:capability_learning_cycle` 未来会执行的内容 | ✅ 已实现，**刻意不传入 retriever**——调用 `run_capability_learning_cycle(paths, wiki_writer=make_wiki_writer(paths))`，`retriever` 留空意味着需要检索的子主题仍会被安全跳过并记 `skipped` 台账，不产生真实网络请求（§13.3-g 合规过滤本身已实现并接入 `make_wiki_writer()`，这里留空是因为 `retriever` 本身尚未接线，与合规过滤是否就位无关） | 同上 |
 | `/capability questions [track_id]` / `/capability answer <id> <text>`：异步问答队列的 CLI 入口 | ✅ 已实现 | 同上 |
 | repl.py 分发、`cli/commands/__init__.py` 导出、`/help`（`parser.py`）文案 | ✅ 已同步更新 | `src/mini_agent/cli/repl.py`、`src/mini_agent/cli/commands/__init__.py`、`src/mini_agent/cli/parser.py` |
 | 单元测试（10 组：无 agent / 空列表 / 创建 / cycle 空跑 / cycle 在真实 Track 上确认不产生"假装学会了"的覆盖率变化 / 问答队列列出与提交 / 未知子命令） | ✅ 全部通过 | `tests/test_capability_cmd.py` |
@@ -543,7 +544,7 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - 异步问答队列的生成与消费（不接通知，只落队列）—— ✅ 已实现
 - 看板三个区域（人设管理/进度展示/待回答问题）+ 对应 API —— ✅ 均已实现，见文档开头「实施状态」
 - `context_builder.py` 接入检索复用 —— ✅ 未命中记录部分（§14.1-a）已提前完成；§6 的"命中 active Track 时按需注入"部分经代码走查确认已被既有的 `_try_inject_wiki_search()` 全库检索链路天然覆盖，不需要额外实现，见文档开头「实施状态」说明
-- 剩余未接线项：`sys:capability_learning_cycle` / `sys:capability_question_sweep` cron 注册、真实 `retriever`（`web_search`）回调、§13.3-g 合规过滤——均刻意留待评审后开启，不在本轮默认打开
+- 剩余未接线项：`sys:capability_learning_cycle` / `sys:capability_question_sweep` cron 注册、真实 `retriever`（`web_search`）回调——§13.3-g 合规过滤已实现并接入写入路径，不再是这两项的阻塞前提；是否接线仍刻意留待评审后开启，不在本轮默认打开
 
 **P2（体验与质量增强）**：
 - 大纲生成/缺口判定引入 LLM 辅助（替换纯规则）

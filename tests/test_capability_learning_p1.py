@@ -273,3 +273,113 @@ def test_cycle_end_to_end_with_real_wiki_writer(paths):
     assert topic.coverage_state == "covered"
     page_path = paths.wiki_type_dir("topic") / f"{topic.wiki_page_ids[0]}.md"
     assert page_path.exists()
+
+
+# ── §13.3-g 合规过滤 ─────────────────────────────────────────────────────
+
+
+def test_filter_strips_buy_sell_advice_sentence():
+    from mini_agent.evolution.capability_learning import _filter_compliance_risky_text
+
+    text = "MACD 是趋势跟踪型指标。建议买入并设置止损位。RSI 衡量超买超卖。"
+    cleaned, did_filter = _filter_compliance_risky_text(text)
+    assert did_filter is True
+    assert "MACD" in cleaned
+    assert "RSI" in cleaned
+    assert "建议买入" not in cleaned
+    assert "止损位" not in cleaned
+
+
+def test_filter_no_risky_content_passthrough():
+    from mini_agent.evolution.capability_learning import _filter_compliance_risky_text
+
+    text = "MACD 是趋势跟踪型指标，由快线、慢线和柱状图组成。"
+    cleaned, did_filter = _filter_compliance_risky_text(text)
+    assert did_filter is False
+    assert cleaned == text.strip()
+
+
+def test_is_disclaimer_required_track_finance_keyword(paths):
+    from mini_agent.evolution.capability_learning import is_disclaimer_required_track
+
+    store = CapabilityTrackStore(paths)
+    finance_track = store.create(title="股票分析能力", persona_desc="x")
+    other_track = store.create(title="做饭技巧", persona_desc="学做家常菜")
+    assert is_disclaimer_required_track(finance_track) is True
+    assert is_disclaimer_required_track(other_track) is False
+
+
+def test_apply_compliance_filter_marks_disclaimer_and_strips_content(paths):
+    from mini_agent.evolution.capability_learning import apply_compliance_filter
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="股票分析能力", persona_desc="x")
+    results = [
+        {"url": "https://example.com/a", "summary": "技术分析关注价格走势形态。建议买入并持有。"},
+    ]
+    filtered, any_filtered, requires_disclaimer = apply_compliance_filter(results, track)
+    assert any_filtered is True
+    assert requires_disclaimer is True
+    assert "建议买入" not in filtered[0]["summary"]
+    assert "技术分析关注价格走势形态" in filtered[0]["summary"]
+    # 不修改传入的原始 results（返回新列表）
+    assert "建议买入" in results[0]["summary"]
+
+
+def test_apply_compliance_filter_non_risk_domain_no_disclaimer(paths):
+    from mini_agent.evolution.capability_learning import apply_compliance_filter
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="做饭技巧", persona_desc="学做家常菜")
+    results = [{"url": "https://example.com/a", "summary": "先热锅再倒油。"}]
+    filtered, any_filtered, requires_disclaimer = apply_compliance_filter(results, track)
+    assert any_filtered is False
+    assert requires_disclaimer is False
+    assert filtered[0]["summary"] == "先热锅再倒油。"
+
+
+def test_make_wiki_writer_filters_risky_content_and_adds_disclaimer(paths):
+    """端到端验证 make_wiki_writer 的写入路径已经接上合规过滤：风险表述
+    被剔除，frontmatter 带 requires_disclaimer=true，正文追加免责声明。"""
+    from mini_agent.evolution.capability_learning import make_wiki_writer
+    from mini_agent.wiki.parser import parse_page
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(
+        title="股票分析能力", persona_desc="x", outline_names=["技术分析基础"],
+    )
+    topic = track.outline[0]
+    results = [
+        {"url": "https://example.com/macd", "summary": "MACD 是趋势跟踪型指标。建议买入并设置止损位。"},
+    ]
+
+    writer = make_wiki_writer(paths)
+    page_ids = writer(topic, track, results)
+    page_path = paths.wiki_type_dir("topic") / f"{page_ids[0]}.md"
+    page = parse_page(page_path)
+
+    assert page.raw_frontmatter["requires_disclaimer"] is True
+    assert "MACD" in page.body
+    assert "建议买入" not in page.body
+    assert "止损位" not in page.body
+    assert "仅供参考" in page.body
+
+
+def test_make_wiki_writer_non_risk_domain_no_disclaimer_flag(paths):
+    from mini_agent.evolution.capability_learning import make_wiki_writer
+    from mini_agent.wiki.parser import parse_page
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(
+        title="做饭技巧", persona_desc="学做家常菜", outline_names=["刀工基础"],
+    )
+    topic = track.outline[0]
+    results = [{"url": "https://example.com/a", "summary": "先热锅再倒油，控制好火候。"}]
+
+    writer = make_wiki_writer(paths)
+    page_ids = writer(topic, track, results)
+    page_path = paths.wiki_type_dir("topic") / f"{page_ids[0]}.md"
+    page = parse_page(page_path)
+
+    assert page.raw_frontmatter["requires_disclaimer"] is False
+    assert "仅供参考" not in page.body
