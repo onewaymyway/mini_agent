@@ -152,3 +152,129 @@ def test_persona_field_defaults_to_empty_when_absent(tmp_path):
     persona = _parse_persona(md)
     assert persona is not None
     assert persona.wiki_scopes == []
+
+
+# ── §14.1-a 使用驱动学习：wiki_search 未命中时的 miss 记录接线 ──────────────
+
+
+def test_miss_recorded_when_persona_scope_matches_active_track(tmp_path, monkeypatch):
+    """persona 绑定的 wiki_scopes 命中某个 active knowledge 型 Track 的
+    wiki_tag，且 wiki_search 未命中时，应该记一条 miss_observed 台账。"""
+    from mini_agent.evolution.capability_learning import CapabilityLedgerStore, CapabilityTrackStore
+
+    track_store = CapabilityTrackStore(_agent_paths(tmp_path))
+    track = track_store.create(
+        title="股票分析能力", persona_desc="希望你具备强大的股票分析能力",
+    )
+    persona = PersonaProfile(name="stock-advisor", wiki_scopes=[track.wiki_tag])
+    monkeypatch.setattr(
+        "mini_agent.orchestrator.persona_profiles.get_persona_loader",
+        lambda: _FakeLoader({"stock-advisor": persona}),
+    )
+
+    library = _FakeLibrary()  # 空结果 = 未命中
+    memory = _FakeMemoryStore(library=library)
+    cfg = _make_cfg(tmp_path)
+
+    builder = ContextBuilder(cfg=cfg, memory=memory, persona_getter=lambda: "stock-advisor")
+    builder.refresh_turn_context("利率对股价的影响")
+
+    ledger = CapabilityLedgerStore(_agent_paths(tmp_path)).list_for_track(track.track_id)
+    miss_entries = [e for e in ledger if e.action == "miss_observed"]
+    assert len(miss_entries) == 1
+    assert "利率对股价的影响" in miss_entries[0].summary
+
+
+def test_no_miss_recorded_when_scope_does_not_match_any_track(tmp_path, monkeypatch):
+    from mini_agent.evolution.capability_learning import CapabilityLedgerStore, CapabilityTrackStore
+
+    persona = PersonaProfile(name="stock-advisor", wiki_scopes=["capability:unrelated_topic"])
+    monkeypatch.setattr(
+        "mini_agent.orchestrator.persona_profiles.get_persona_loader",
+        lambda: _FakeLoader({"stock-advisor": persona}),
+    )
+
+    track_store = CapabilityTrackStore(_agent_paths(tmp_path))
+    track = track_store.create(title="股票分析能力", persona_desc="希望你具备强大的股票分析能力")
+
+    library = _FakeLibrary()
+    memory = _FakeMemoryStore(library=library)
+    cfg = _make_cfg(tmp_path)
+
+    builder = ContextBuilder(cfg=cfg, memory=memory, persona_getter=lambda: "stock-advisor")
+    builder.refresh_turn_context("query")
+
+    ledger = CapabilityLedgerStore(_agent_paths(tmp_path)).list_for_track(track.track_id)
+    assert [e for e in ledger if e.action == "miss_observed"] == []
+
+
+def test_no_miss_recorded_without_active_persona(tmp_path):
+    from mini_agent.evolution.capability_learning import CapabilityTrackStore
+
+    track_store = CapabilityTrackStore(_agent_paths(tmp_path))
+    track = track_store.create(title="股票分析能力", persona_desc="希望你具备强大的股票分析能力")
+
+    library = _FakeLibrary()
+    memory = _FakeMemoryStore(library=library)
+    cfg = _make_cfg(tmp_path)
+
+    builder = ContextBuilder(cfg=cfg, memory=memory, persona_getter=lambda: None)
+    builder.refresh_turn_context("query")
+
+    from mini_agent.evolution.capability_learning import CapabilityLedgerStore
+    ledger = CapabilityLedgerStore(_agent_paths(tmp_path)).list_for_track(track.track_id)
+    assert ledger == []
+
+
+def test_miss_tracking_disabled_by_config_skips_recording(tmp_path, monkeypatch):
+    from mini_agent.config import MemoryConfig
+    from mini_agent.evolution.capability_learning import CapabilityLedgerStore, CapabilityTrackStore
+
+    track_store = CapabilityTrackStore(_agent_paths(tmp_path))
+    track = track_store.create(title="股票分析能力", persona_desc="希望你具备强大的股票分析能力")
+
+    persona = PersonaProfile(name="stock-advisor", wiki_scopes=[track.wiki_tag])
+    monkeypatch.setattr(
+        "mini_agent.orchestrator.persona_profiles.get_persona_loader",
+        lambda: _FakeLoader({"stock-advisor": persona}),
+    )
+
+    library = _FakeLibrary()
+    memory = _FakeMemoryStore(library=library)
+    cfg = AppConfig(
+        project_root=tmp_path,
+        memory=MemoryConfig(capability_wiki_miss_tracking_enabled=False),
+    )
+
+    builder = ContextBuilder(cfg=cfg, memory=memory, persona_getter=lambda: "stock-advisor")
+    builder.refresh_turn_context("query")
+
+    ledger = CapabilityLedgerStore(_agent_paths(tmp_path)).list_for_track(track.track_id)
+    assert ledger == []
+
+
+def test_miss_recording_failure_does_not_break_turn_refresh(tmp_path, monkeypatch):
+    """记录环节本身抛异常也不能影响检索主流程（静默降级）。"""
+    persona = PersonaProfile(name="stock-advisor", wiki_scopes=["capability:stock_analysis"])
+    monkeypatch.setattr(
+        "mini_agent.orchestrator.persona_profiles.get_persona_loader",
+        lambda: _FakeLoader({"stock-advisor": persona}),
+    )
+    monkeypatch.setattr(
+        "mini_agent.evolution.capability_learning.CapabilityTrackStore.list_tracks",
+        lambda self, status=None: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    library = _FakeLibrary()
+    memory = _FakeMemoryStore(library=library)
+    cfg = _make_cfg(tmp_path)
+
+    builder = ContextBuilder(cfg=cfg, memory=memory, persona_getter=lambda: "stock-advisor")
+    # 不应抛异常
+    builder.refresh_turn_context("query")
+
+
+def _agent_paths(project_root: Path):
+    from mini_agent.storage.paths import AgentPaths
+
+    return AgentPaths(project_root=project_root)

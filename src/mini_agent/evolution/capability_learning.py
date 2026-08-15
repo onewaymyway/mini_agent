@@ -25,6 +25,14 @@
       页面。**尚未接入 wiki/dedup.py 判重**——需要先确认"按 wiki_tag
       批量加载已有页面"该走哪条现成接口，留到接线阶段和 wiki 模块维护者
       一起确认，避免猜测一个不确定正确性的集成方式
+    - PersonaProfile.wiki_scopes 接线（§11）：`context_builder.py` 每轮
+      检索把当前激活角色的 `wiki_scopes` 透传给 `wiki_shelf_search(tags=...)`
+    - record_wiki_miss() 的接线（§14.1-a）：`context_builder.py` 在 persona
+      绑定的 `wiki_scopes` 命中某个 active knowledge 型 Track 的 `wiki_tag`
+      且检索未命中时，自动调用 `record_wiki_miss()` 记台账（见
+      `ContextBuilder._maybe_record_capability_wiki_miss()`）。刻意只在能
+      明确关联到具体 Track 时才记录，不对所有未命中查询做关键词/语义猜测
+      式关联
 
 尚未落地（按设计文档标注的阶段留到后续）：
     - 真实 retriever 回调（对接 web_search，需要网络，P1 单测里全部用假
@@ -33,9 +41,11 @@
       内置任务是"生成 task_template 文本交给 Agent 自己执行"的模式，不是
       直接调用 Python 函数——意味着真正接线还需要一个新的 slash command
       处理器，把 run_capability_learning_cycle() 包装成 Agent 能触发的
-      命令，这一步比预想的多一层，留到下一步单独做）
+      命令，这一步比预想的多一层，留到下一步单独做）。**这意味着
+      record_wiki_miss() 记下的台账目前只是静态积累**——`scan_outline_gaps()`
+      还没有读取 `miss_observed` 台账来实际调整优先级排序（那部分逻辑
+      按设计文档标注在 P2），cron 没接线之前也不会有下一轮循环去消费它
     - target_type="persona" 全链路（人设草稿生成 / 发布，见文档 §10）
-    - PersonaProfile.wiki_scopes 接线（见文档 §11）
     - 与 external_trend_capability_link / objective_executor / decision_profile_builder /
       capability_map 的协同（见文档 §12，P1 阶段刻意不打通，避免引入耦合风险）
     - LLM 辅助的大纲生成/缺口判定（P1 是规则式，见文档 §14 P2 阶段）
@@ -595,15 +605,20 @@ def run_capability_learning_cycle(
     return summary
 
 
-# ── 检索未命中记录（§14.1-a 使用驱动学习，P1 先提供记录接口，
-#    context_builder.py 的接线留到实现阶段单独评审）─────────────────────
+# ── 检索未命中记录（§14.1-a 使用驱动学习，接线方见
+#    context_builder.py::ContextBuilder._maybe_record_capability_wiki_miss，
+#    只在 persona 绑定的 wiki_scopes 命中某个 active knowledge 型 Track 的
+#    wiki_tag 时才调用，不做全量未命中查询的猜测式关联）──────────────────
 
 
 def record_wiki_miss(paths: AgentPaths, track_id: str, topic_hint: str, query: str) -> None:
     """当 context_builder 在某个 Track 的 wiki_tag 范围内检索未命中时调用，
     记一条 miss_observed 台账，供下一轮 scan_outline_gaps 提高优先级
-    （P1 先只落台账，"提高优先级"的实际排序逻辑留到 P2 与 LLM 辅助判定
-    一起做，避免规则式实现里出现"频繁提问却查不到"的噪音）。"""
+    （P1 先只落台账，"提高优先级"的实际排序逻辑——即 scan_outline_gaps()
+    读取 miss_observed 台账并据此调整候选排序——留到 P2 与 LLM 辅助判定
+    一起做，避免规则式实现里出现"频繁提问却查不到"的噪音；目前 cron 也
+    还没接线，这份台账暂时只是静态积累，等 P2/cron 接线后才会被真正
+    消费）。"""
     ledger_store = CapabilityLedgerStore(paths)
     ledger_store.append(CapabilityLedgerEntry(
         track_id=track_id,

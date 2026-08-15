@@ -168,6 +168,17 @@ class MemoryConfig:
     # 权重压过内容相关性本身；设为 0 等价于改动前的排序结果（回归保护）。
     wiki_confidence_weight: float = 0.1
 
+    # ── persona_capability_learning_design.md §14.1-a：使用驱动学习 ────────
+    # 当前激活 persona 声明了 wiki_scopes、且该 scope 命中某个 active 的
+    # knowledge 型 CapabilityTrack.wiki_tag 时，wiki_search 未命中（含未
+    # 配置/异常/零 grounded）会记一条 miss_observed 台账（见
+    # evolution/capability_learning.py::record_wiki_miss），供下一轮
+    # capability learning 循环提高该 Track 缺口优先级。默认开；只在
+    # persona 绑定了 wiki_scopes 时才可能触发，未绑定 persona 或未声明
+    # wiki_scopes 的场景零开销。关闭后完全跳过这一步记录，不影响检索
+    # 本身的既有行为。
+    capability_wiki_miss_tracking_enabled: bool = True
+
     # ── wiki/quarantine_repair.py：隔离区页面 LLM 兜底修复 ─────────────────
     # 默认关闭（opt-in），复用 `llm_helper` opt-in 模式（架构决策：涉及文本
     # 理解/归类的新功能一律走 LLM，不引入 embedding 模型）。规则式修复策略

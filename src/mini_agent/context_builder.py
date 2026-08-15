@@ -137,6 +137,7 @@ class ContextBuilder:
         if self.memory and query:
             wiki_used = self._try_inject_wiki_search(query)
             if not wiki_used:
+                self._maybe_record_capability_wiki_miss(query)
                 self._inject_shelf_search_chain(query)
 
     def _active_persona_wiki_scopes(self) -> list[str]:
@@ -310,6 +311,50 @@ class ContextBuilder:
             ]
         else:
             self.last_injected_memory_ids = []
+
+    def _maybe_record_capability_wiki_miss(self, query: str) -> None:
+        """[persona_capability_learning_design.md §14.1-a] wiki_search 未命中时，
+        如果当前激活 persona 声明的 `wiki_scopes` 命中了某个 active 的
+        knowledge 型 `CapabilityTrack.wiki_tag`，记一条 `miss_observed` 台账，
+        供下一轮 `sys:capability_learning_cycle` 提高该 Track 对应子主题的
+        推进优先级（"真实问过但答不上"比"大纲里理论上该有"更有说服力）。
+
+        刻意只在能明确关联到某个 Track 时才记录（persona wiki_scopes 命中
+        wiki_tag），不对所有未命中查询做关键词/语义匹配去猜它属于哪个
+        Track——猜测式关联噪音大，容易把"这个概念本来就该自己查"的普通
+        未命中也算作缺口信号，违背设计文档 §3.3 的克制原则。没有激活
+        persona、persona 未声明 wiki_scopes、或没有匹配的 active Track 时，
+        这个函数是纯粹的空操作，不产生任何文件 IO。
+        """
+        if not getattr(self.cfg.memory, "capability_wiki_miss_tracking_enabled", True):
+            return
+        scopes = self._active_persona_wiki_scopes()
+        if not scopes:
+            return
+        try:
+            from pathlib import Path
+
+            from mini_agent.evolution.capability_learning import (
+                CapabilityTrackStore,
+                record_wiki_miss,
+            )
+            from mini_agent.storage.paths import AgentPaths
+
+            project_root = getattr(self.cfg, "project_root", None)
+            if not project_root:
+                return
+            paths = AgentPaths(project_root=Path(project_root))
+            store = CapabilityTrackStore(paths)
+            scope_set = set(scopes)
+            persona_name = self._persona_getter() if self._persona_getter else ""
+            for track in store.list_tracks(status="active"):
+                if track.target_type == "knowledge" and track.wiki_tag in scope_set:
+                    record_wiki_miss(
+                        paths, track.track_id, topic_hint=persona_name or "", query=query,
+                    )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._maybe_record_capability_wiki_miss')
 
     def clear_turn_cache(self) -> None:
         """在 run_turn 结束时调用，清理 turn 级缓存。"""

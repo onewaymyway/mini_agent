@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.4（P1 核心闭环 + 真实 wiki 写入回调已实现；`PersonaProfile.wiki_scopes`（第 11 节）已提前插入实现，见下方「实施状态」）
+- **版本**：v0.5（P1 核心闭环 + 真实 wiki 写入回调已实现；`PersonaProfile.wiki_scopes`（第 11 节）+ `record_wiki_miss()` 接线（§14.1-a）已提前插入实现，见下方「实施状态」）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -25,7 +25,7 @@
 | 单轮循环编排 `run_capability_learning_cycle()` | ✅ 已实现，**检索/wiki 写入以可注入回调形式暴露**，未接线时会安全跳过并记录 `action="skipped"` 台账 | 同上 |
 | `make_wiki_writer(paths)`：真实 wiki 写入回调（对接 `wiki/writer.py`） | ✅ 已实现并有单测覆盖（含端到端跑通一轮循环、验证落盘页面可被 `wiki/parser.py` 正确解析）。**未接入 `wiki/dedup.py` 判重**——需要先确认"按 wiki_tag 批量加载已有页面"该走哪条现成接口，留到接线阶段和 wiki 模块维护者一起确认，不猜测拼接 | 同上 |
 | 真实 `retriever` 回调（对接 `web_search`） | ⏳ 未实现——需要真实网络请求，P1 单测里全部用假实现替代，避免单测依赖外部网络 | — |
-| `record_wiki_miss()`（§14.1-a 使用驱动学习的记录接口） | ✅ 已实现，`context_builder.py` 的调用接线留到后续阶段单独评审 | 同上 |
+| `record_wiki_miss()`（§14.1-a 使用驱动学习的记录接口） | ✅ 已实现，`context_builder.py` 已接线（见「第 11 节」小节下方新增说明）；`scan_outline_gaps()` 消费这批台账调整排序留到 P2 | 同上 |
 | HTTP API（`/v1/capability/tracks`、`/v1/capability/questions` 等 9 个端点，对应 §7.1） | ✅ 已实现为独立 router，**尚未挂载到 `api/server.py`**（见该文件顶部注释的两行接线说明），避免直接改动 7700+ 行的 `routes.py`/`server.py` 带来的风险 | `src/mini_agent/api/capability_routes.py` |
 | 单元测试（14 组用例，覆盖 CRUD / 缺口排序 / 异步问答生命周期 / 循环编排的多种分支 / 真实 wiki 写入落盘与解析回读 / 端到端一轮循环） | ✅ 全部通过 | `tests/test_capability_learning_p1.py` |
 | cron 注册 `sys:capability_learning_cycle` | ⏳ 未接线。**发现一个比预想更深一层的问题**：`cron_scheduler.py` 里内置任务的机制是"生成一段 `task_template` 文本交给 Agent 自己带着工具执行"（参照 `sys:growth_advisor_daily` 的 `/growth scan` 模式），不是直接调用 Python 函数——意味着真正接线还需要先做一个新的 slash command（比如 `/capability cycle`），把 `run_capability_learning_cycle()` 包装成 Agent 能触发的命令，cron 任务条目本身只是引用这个命令。这一步比最初设计文档 §4 假设的"cron 直接跑一个函数"多一层，留到下一步单独做，不在这一轮里仓促补全 | — |
@@ -52,9 +52,23 @@
 - "超出边界"的台账/日志标注（§11.3 提到的可选项）——`wiki_shelf_search` 本身不返回"这次是否命中了限定范围外的页面"这类信息，要做需要先给 `WikiSearchResult` 加字段，评估后决定是否值得为一条弱提示改动检索层返回结构，暂不在这次里做
 - `wiki_scopes` 与 knowledge 型 `CapabilityTrack.wiki_tag` 的双向可见列表（§11.2 末尾），依赖 P1 中 `CapabilityTrack` 的看板 UI（尚未实现），自然顺延到那之后
 
+### §14.1-a（`record_wiki_miss()` 接线）—— ✅ 已提前实现
+
+顺着第 11 节的 `wiki_scopes` 顺手接上：既然 `context_builder.py` 现在已经知道"当前激活角色绑定了哪个 wiki_tag"，就可以用同一份信息判断"这次未命中的检索是不是恰好落在某个 knowledge 型 Track 的范围内"，不需要额外猜测。这比 §14.1-a 原始设想（对所有未命中查询做关键词/语义匹配去猜它属于哪个 Track）风险小得多——只在能通过 `wiki_scopes ∩ wiki_tag` 明确关联时才记录，避免把"这个概念本来就该自己查"的普通未命中也算作缺口信号，符合设计文档 §3.3"生成问题要克制"的同一条原则延伸到"记录缺口信号也要克制"。
+
+| 项目 | 状态 | 对应文件 |
+|---|---|---|
+| `ContextBuilder._maybe_record_capability_wiki_miss()`：wiki_search 未命中 + persona `wiki_scopes` 命中某个 active knowledge 型 Track 的 `wiki_tag` 时，调用 `record_wiki_miss()` | ✅ 已实现 | `src/mini_agent/context_builder.py` |
+| `MemoryConfig.capability_wiki_miss_tracking_enabled` 配置开关（默认开，未绑定 persona/wiki_scopes 时零开销，关闭后完全跳过） | ✅ 已实现 | `src/mini_agent/config/models.py` |
+| 单元测试（5 组：命中记录 / 不命中不记录 / 无激活 persona 不记录 / 配置关闭不记录 / 记录环节异常不影响主流程） | ✅ 全部通过 | `tests/test_context_builder_persona_wiki_scopes.py` |
+
+**未做的部分**：
+- `scan_outline_gaps()` 消费 `miss_observed` 台账、据此调整候选排序——设计文档标注在 P2（"提高优先级的实际排序逻辑留到 P2 与 LLM 辅助判定一起做，避免规则式实现里出现频繁提问却查不到的噪音"），本次只做到"记录"这一步，不做"消费"
+- cron 尚未接线（见上方 P1 表格），意味着即使记录了台账，也还没有下一轮循环去读取它——这份记录目前是纯粹的静态积累，价值要等 cron 接线后才能兑现，但先把记录点铺好可以让 cron 接线时不用再回头改 `context_builder.py`
+
 ### P2 / P3
 
-尚未开始，规划内容见文末「实施阶段划分」一节（第 11 节主体已提前完成，见上）。
+尚未开始，规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线已提前完成，见上）。
 
 ---
 
@@ -512,7 +526,7 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - `sys:capability_learning_cycle` cron job：缺口扫描（规则式，可直接引入第 12.1-a 节 `capability_map` 排序 + 13.1-a 检索未命中优先级）+ 检索（独立调度队列，不复用 `objective_executor` 并发池，见 12.2-e；纳入 13.1-b 多 Track 公平调度）+ wiki 写入（内置 13.3-g 合规过滤，不可延后）+ 台账记录
 - 异步问答队列的生成与消费（不接通知，只落队列）
 - 看板三个区域（人设管理/进度展示/待回答问题）+ 对应 API
-- `context_builder.py` 接入检索复用（同时接入 13.1-a 未命中记录）
+- `context_builder.py` 接入检索复用（未命中记录部分——即持久化写台账那一步——已提前完成，见文档开头「实施状态」§14.1-a 小节；这里仍待做的是 §6 的"命中 active Track 时按需注入相关 wiki 上下文"那部分，与未命中记录是两回事）
 
 **P2（体验与质量增强）**：
 - 大纲生成/缺口判定引入 LLM 辅助（替换纯规则）
