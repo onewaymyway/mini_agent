@@ -2702,7 +2702,7 @@ _TUNING_PARAM_LABELS = {
 }
 
 
-def _render_tuning_change_value_input(param: str, key_prefix: str, goal_id: str):
+def _render_tuning_change_value_input(param: str, key_prefix: str, goal_id: str, *, current_task_template: str = ""):
     """按参数名渲染对应取值控件，返回 (value, disabled)——disabled=True 时
     调用方应该禁用提交按钮（比如 regenerate_spec 不需要用户填值，但仍要
     走同一套草案确认流程，不代表'什么都不用做'）。"""
@@ -2722,8 +2722,13 @@ def _render_tuning_change_value_input(param: str, key_prefix: str, goal_id: str)
             key=f"{key_prefix}tune_val_phase_{goal_id}",
         ), False
     if param == "task_template":
+        # [诊断与调优展示补全] 默认值带上当前生效的 task_template（诊断
+        # 报告里已经取到，见 _render_goal_cycle_diagnostics_widget），用户
+        # 通常是"在现有基础上改一点"而不是从零重写，预填能避免误操作把
+        # 之前确认过的内容整段丢掉；仍然可以清空重写。
         return st.text_area(
             "新的任务模板文本（cron 触发时注入的任务描述）", height=80,
+            value=current_task_template,
             key=f"{key_prefix}tune_val_template_{goal_id}",
         ), False
     # regenerate_spec：固定为 true，不需要用户填值——只是"要不要触发重新
@@ -2780,7 +2785,7 @@ def _render_tuning_proposal_card(client: AgentClient, goal_id: str, p: dict, key
                     st.rerun()
 
 
-def _render_goal_tuning_widget(client: AgentClient, goal_id: str, key_prefix: str = "") -> None:
+def _render_goal_tuning_widget(client: AgentClient, goal_id: str, key_prefix: str = "", *, current_task_template: str = "") -> None:
     """[Stage 2/3 看板集成] 调优草案区块：待处理草案列表 + 两种生成入口
     （规则建议 / 手动指定参数，Stage 3 自然语言意见需要后端配置开关，未
     开启时后端会返回明确的 400 错误，这里原样展示，不做二次判断）。
@@ -2840,7 +2845,10 @@ def _render_goal_tuning_widget(client: AgentClient, goal_id: str, key_prefix: st
             format_func=lambda k: _TUNING_PARAM_LABELS.get(k, k),
             key=f"{key_prefix}tune_param_{goal_id}",
         )
-        value, _ = _render_tuning_change_value_input(param_choice, key_prefix, goal_id)
+        value, _ = _render_tuning_change_value_input(
+            param_choice, key_prefix, goal_id,
+            current_task_template=current_task_template if param_choice == "task_template" else "",
+        )
         reason = st.text_input("理由（可选，会记录进草案里）", key=f"{key_prefix}tune_reason_{goal_id}")
         if st.button("生成草案", key=f"{key_prefix}tune_manual_submit_{goal_id}"):
             changes = [{"param": param_choice, "to": value, "reason": reason}]
@@ -2926,6 +2934,22 @@ def _render_goal_cycle_diagnostics_widget(client: AgentClient, goal_id: str, key
             if ch_msg:
                 st.caption(f"⏰ cron 健康：{ch_msg}")
 
+        # [诊断与调优展示补全] task_template 是唯二的自由文本调优参数
+        # （另一个 regenerate_spec 不需要"当前值"），用户点开调优表单前
+        # 应该先看到"现在生效的是哪段文本"，否则手动生成草案时只能凭记忆
+        # 编一份新的，容易把之前确认过的内容覆盖掉。report 里早就有
+        # task_template 字段（诊断报告构建时从绑定的 cron job 读出），
+        # 只是之前没有渲染过；这里用只读文本框展示，过长时自带滚动条，
+        # 不占用卡片的固定高度。
+        current_template = diag.get("task_template")
+        if current_template:
+            st.caption("📝 当前 task_template（cron 触发时注入的任务描述）：")
+            st.text_area(
+                "当前 task_template", value=current_template, height=100,
+                disabled=True, label_visibility="collapsed",
+                key=f"{key_prefix}diag_cur_template_{goal_id}",
+            )
+
         summary_key = f"{key_prefix}diag_llm_summary_{goal_id}"
         if st.button("🤖 生成自然语言摘要", key=f"{key_prefix}diag_summarize_btn_{goal_id}",
                      help="需要管理员已开启配置 cycle_tuning.diagnostics_llm_summary_enabled"):
@@ -2951,7 +2975,10 @@ def _render_goal_cycle_diagnostics_widget(client: AgentClient, goal_id: str, key
 
         st.markdown("---")
         st.markdown("##### 🔧 调优草案")
-        _render_goal_tuning_widget(client, goal_id, key_prefix=key_prefix)
+        _render_goal_tuning_widget(
+            client, goal_id, key_prefix=key_prefix,
+            current_task_template=current_template or "",
+        )
 
 
 def _render_goal_card(
@@ -2975,10 +3002,32 @@ def _render_goal_card(
     # agent 实际推进过程中动态更新的记录，比需要手动回写的 progress_notes
     # 更贴近"现在做到哪一步了"。两者都没有时不展示这一行，避免卡片里
     # 出现"进展：（空）"这种没意义的占位。
+    #
+    # [进展信息过长/无滚动条修复] cumulative_progress 是 agent 持续追加
+    # 写入的自由文本，长期运行的 Goal 很容易攒到几十行，之前整段原样塞进
+    # 卡片的一个 <div>，卡片被撑得极长，而这段 HTML 本身又没有固定高度/
+    # overflow 设置，也就没有滚动条——用户反馈的正是这个观察。
+    # 处理方式：按行拆成条目，卡片正文只放最新一条（一眼看到"现在做到
+    # 哪了"，不撑高卡片），完整历史移到卡片下方的折叠区，按时间倒序、
+    # 复用已有的 `_client_side_page()`（跟外部信息 external_context 同一
+    # 套分页交互）分页展示，每页 10 条——用户可以点击"下一页"，或者
+    # （因为整段内容此时已经不是超长单块，而是分页后的短列表）用浏览器
+    # 自身滚动查看，不再依赖卡片内部的滚动条。
     progress_text = n.get("work_thread_progress") or n.get("progress_notes") or ""
-    progress_html = (
-        f'<div class="meta">📈 进展：{_esc_html(progress_text)}</div>' if progress_text else ""
-    )
+    progress_lines = [ln.strip() for ln in progress_text.splitlines() if ln.strip()]
+    if len(progress_lines) <= 1:
+        progress_html = (
+            f'<div class="meta">📈 进展：{_esc_html(progress_text)}</div>' if progress_text else ""
+        )
+    else:
+        # 约定：agent 追加进展时把最新内容写在最后一行，卡片正文只展示
+        # 这一条最新记录（截断超长单行，避免单行本身又把卡片撑高）。
+        latest_line = progress_lines[-1]
+        latest_display = latest_line if len(latest_line) <= 120 else latest_line[:120] + "…"
+        progress_html = (
+            f'<div class="meta">📈 进展（共 {len(progress_lines)} 条，最新）：'
+            f'{_esc_html(latest_display)}</div>'
+        )
     next_suggested = n.get("work_thread_next_suggested") or ""
     next_html = (
         f'<div class="meta" style="color:#888;">👉 建议下一步：{_esc_html(next_suggested)}</div>'
@@ -3042,6 +3091,22 @@ def _render_goal_card(
   {note_html}
 </div>
 """, unsafe_allow_html=True)
+
+    # [进展信息过长/无滚动条修复] 卡片正文只展示最新一条进展（见上面
+    # progress_html 的处理），完整历史（倒序、最新在前）放在这个折叠区，
+    # 每页 10 条，与 external_context 用同一套 `_client_side_page()` 分页
+    # 交互——点击翻页或滚动浏览均可，不再是一个又长又没有滚动条的整段
+    # HTML。只在条目数 > 1 时展示（否则卡片正文已经是完整内容，重复一份
+    # 折叠区没有信息量）。
+    if len(progress_lines) > 1:
+        with st.expander(f"📈 进展历史（共 {len(progress_lines)} 条，倒序）", expanded=False):
+            reversed_progress = list(reversed(progress_lines))
+            progress_page_key = f"{key_prefix}goal_progress_page_{n.get('id')}"
+            for idx, line in zip(
+                range(len(reversed_progress), 0, -1),
+                _client_side_page(reversed_progress, 10, progress_page_key),
+            ):
+                st.caption(f"`#{idx}` {line}")
 
     # [P7 新增，见 watchlist_notification_goal_design.md §6 P7] GoalRelevanceEngine
     # Stage② 判定 relevant=true 时会把外部信息摘要挂到 external_context 上

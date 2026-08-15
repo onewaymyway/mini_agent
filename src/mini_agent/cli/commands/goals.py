@@ -895,6 +895,16 @@ def _cmd_diagnose(gb, paths, goal_id: str, *, agent=None, summarize: bool = Fals
             f"enabled={ch.get('enabled')}"
         )
 
+    # [诊断展示补全] task_template 是白名单调优参数之一，但此前诊断报告
+    # 打印时完全没展示——用户想调优前得先知道"现在生效的到底是哪段文本"，
+    # 不然只能凭记忆或者去翻 cron_jobs.json。report.task_template 字段
+    # 后端早就有（build_cycle_diagnostics 里从绑定的 cron job 读出），
+    # 只是没被打印过；这里补上，不新增任何后端逻辑。
+    if report.task_template:
+        R.print_info("  当前 task_template（cron 触发时注入的任务描述）:")
+        for line in report.task_template.splitlines():
+            R.print_info(f"    {line}")
+
     if report.recent_health_alerts:
         R.print_info("  ⚠️  健康告警:")
         for a in report.recent_health_alerts:
