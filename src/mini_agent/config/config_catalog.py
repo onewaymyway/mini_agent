@@ -124,6 +124,25 @@ _MEMORY_FIELDS = [
     FieldSpec("lesson_fail_threshold", "memory.lesson_fail_threshold", "教训触发失败阈值"),
     FieldSpec("correction_detection_enabled", "memory.correction_detection_enabled", "纠错检测"),
     FieldSpec("memory_per_turn_retrieval_enabled", "memory.per_turn_retrieval_enabled", "每轮主动检索记忆"),
+    # [看板字段补齐] 以下字段此前只能通过代码直接构造 MemoryConfig 设置，
+    # 未在看板（config_catalog）中收录，导致既看不到当前值也无法编辑。
+    FieldSpec("memory.library_index_enabled", "memory.library_index_enabled", "图书馆式索引总开关"),
+    FieldSpec("memory.library_shelf_search_enabled", "memory.library_shelf_search_enabled", "两步检索（先定位书架）"),
+    FieldSpec("memory.library_index_user_scoped", "memory.library_index_user_scoped", "多用户书架隔离"),
+    FieldSpec("memory.library_wiki_search_primary", "memory.library_wiki_search_primary", "wiki 检索优先"),
+    FieldSpec("memory.wiki_enabled", "memory.wiki_enabled", "wiki 式知识库"),
+    FieldSpec("memory.embedding_enabled", "memory.embedding_enabled", "语义检索（embedding）"),
+    FieldSpec("memory.embedding_model", "memory.embedding_model", "embedding 模型"),
+    FieldSpec("memory.embedding_tfidf_weight", "memory.embedding_tfidf_weight", "TF-IDF 权重"),
+    FieldSpec("memory.embedding_weight", "memory.embedding_weight", "embedding 权重"),
+    FieldSpec("memory.embedding_top_n", "memory.embedding_top_n", "embedding 召回条数"),
+    FieldSpec("memory.consolidation_enabled", "memory.consolidation_enabled", "记忆巩固（归纳）"),
+    FieldSpec("memory.consolidation_min_group_size", "memory.consolidation_min_group_size", "巩固最小分组大小"),
+    FieldSpec("memory.wiki_index_reuse_enabled", "memory.wiki_index_reuse_enabled", "wiki 索引复用"),
+    FieldSpec("memory.wiki_confidence_weight", "memory.wiki_confidence_weight", "wiki 信度加权系数"),
+    FieldSpec("memory.wiki_quarantine_llm_repair_enabled", "memory.wiki_quarantine_llm_repair_enabled", "隔离区页面 LLM 修复"),
+    FieldSpec("memory.lifecycle_stale_threshold_days", "memory.lifecycle_stale_threshold_days", "知识过期判定阈值（天）"),
+    FieldSpec("memory.lifecycle_discount_enabled", "memory.lifecycle_discount_enabled", "过期知识排序折扣"),
 ]
 
 # ── compress（历史遗留：flat key，前缀 auto_compress_ / compact_）───────────
@@ -155,6 +174,19 @@ _COMPRESS_FIELDS = [
     FieldSpec("compact_composite_intensity_threshold", "compress.composite_intensity_threshold", "复合强度阈值"),
     FieldSpec("compact_audit_enabled", "compress.audit_enabled", "压缩审计"),
     FieldSpec("compact_audit_async", "compress.audit_async", "压缩审计异步执行"),
+    # [看板字段补齐] 以下字段此前只能通过代码直接构造 CompressConfig 设置，
+    # 未在看板中收录。
+    FieldSpec("compress.extraction_trigger_enabled", "compress.extraction_trigger_enabled", "轻量抽取触发器总开关"),
+    FieldSpec("compress.extraction_trigger_dispatch_enabled", "compress.extraction_trigger_dispatch_enabled", "触发后真正发起抽取调用"),
+    FieldSpec("compress.extraction_trigger_min_window_turns", "compress.extraction_trigger_min_window_turns", "抽取轮次计数阈值"),
+    FieldSpec("compress.extract_decisions", "compress.extract_decisions", "顺带提炼决策"),
+    FieldSpec("compress.entity_digest_enabled", "compress.entity_digest_enabled", "抽取时注入实体索引摘要"),
+    FieldSpec("compress.entity_digest_max_entities", "compress.entity_digest_max_entities", "实体索引摘要条目上限"),
+    FieldSpec("compress.extract_world_model", "compress.extract_world_model", "顺带提炼世界模型"),
+    FieldSpec("compress.decision_batch_min_interval_days", "compress.decision_batch_min_interval_days", "决策新建冷却天数"),
+    FieldSpec("compress.decision_recall_turn_gate_enabled", "compress.decision_recall_turn_gate_enabled", "关键词门控自动决策召回"),
+    FieldSpec("compress.decision_recall_gate_k", "compress.decision_recall_gate_k", "门控召回候选数上限"),
+    FieldSpec("compress.selective_min_user_turns", "compress.selective_min_user_turns", "Selective 策略最少保留用户轮数"),
 ]
 
 _TOOL_TRIM_FIELDS = [
@@ -170,6 +202,10 @@ _TOOL_TRIM_FIELDS = [
     FieldSpec("smart_summary_threshold", "tool_trim.smart_summary_threshold", "智能摘要触发阈值"),
     FieldSpec("smart_summary_max_input_chars", "tool_trim.smart_summary_max_input_chars", "智能摘要最大输入字符数"),
     FieldSpec("smart_summary_model", "tool_trim.smart_summary_model", "智能摘要使用的模型"),
+    # [看板字段补齐]
+    FieldSpec("tool_trim.large_file_threshold_bytes", "tool_trim.large_file_threshold_bytes", "大文件判定字节阈值"),
+    FieldSpec("tool_trim.list_dir_show_size", "tool_trim.list_dir_show_size", "list_dir 显示文件大小"),
+    FieldSpec("tool_trim.large_file_warn_marker", "tool_trim.large_file_warn_marker", "大文件标记符"),
 ]
 
 _SKILL_FIELDS = [
@@ -183,6 +219,8 @@ _SKILL_FIELDS = [
     FieldSpec("skill_keyword_activation_enabled", "skill.keyword_activation_enabled", "关键词自动激活技能"),
     FieldSpec("skill_auto_unload_enabled", "skill.auto_unload_enabled", "闲置技能自动卸载"),
     FieldSpec("skill_auto_unload_idle_seconds", "skill.auto_unload_idle_seconds", "自动卸载闲置秒数"),
+    # [看板字段补齐]
+    FieldSpec("skill.candidate_reminder_enabled", "skill.candidate_reminder_enabled", "候选技能提醒"),
 ]
 
 _PERCEPTION_FIELDS = [
@@ -210,6 +248,8 @@ _PROFILE_FIELDS = [
     FieldSpec("profile_refresh_interval_entries", "profile.refresh_interval_entries", "画像刷新间隔（条目数）"),
     FieldSpec("profile_min_entries", "profile.min_entries", "生成画像所需最小条目数"),
     FieldSpec("profile_max_entries_for_profile", "profile.max_entries_for_profile", "画像参考的最大条目数"),
+    # [看板字段补齐]
+    FieldSpec("profile.stale_after_days", "profile.stale_after_days", "画像过期天数"),
 ]
 
 _DEBUG_FIELDS = [
@@ -225,6 +265,10 @@ _HTTP_FIELDS = [
     FieldSpec("http_fs_readonly", "http.fs_readonly", "文件系统接口只读"),
     FieldSpec("http_ring_maxlen", "http.ring_maxlen", "事件环形缓冲区长度"),
     FieldSpec("http_multi_user_enabled", "http.multi_user_enabled", "多用户模式"),
+    # [看板字段补齐]
+    FieldSpec("http.blocking_call_timeout_seconds", "http.blocking_call_timeout_seconds", "阻塞调用超时（秒）"),
+    FieldSpec("http.blocking_call_failure_threshold", "http.blocking_call_failure_threshold", "熔断失败次数阈值"),
+    FieldSpec("http.blocking_call_cooldown_seconds", "http.blocking_call_cooldown_seconds", "熔断冷却时长（秒）"),
 ]
 
 _RETRY_FIELDS = [
@@ -234,6 +278,10 @@ _RETRY_FIELDS = [
     FieldSpec("llm_retry_backoff_mode", "retry.backoff_mode", "退避模式"),
     FieldSpec("llm_retry_backoff_step", "retry.backoff_step", "退避步长（秒）"),
     FieldSpec("llm_retry_backoff_max_delay", "retry.backoff_max_delay", "退避最大延迟（秒，0=不限）"),
+    # [看板字段补齐]
+    FieldSpec("retry.network_aware", "retry.network_aware", "断网感知重试"),
+    FieldSpec("retry.network_check_interval", "retry.network_check_interval", "断网轮询间隔（秒）"),
+    FieldSpec("retry.network_max_wait", "retry.network_max_wait", "断网最长等待（秒，0=不限）"),
 ]
 
 _ENSEMBLE_FIELDS = [
@@ -291,6 +339,12 @@ _NESTED_BLOCKS = [
     ("cycle_tuning", "周期任务诊断与调优 LLM 增强", "🩺", "cycle_tuning", _models.CycleTuningConfig, {}),
     ("cycle_patrol", "周期任务主动巡检推送", "🚨", "cycle_patrol", _models.CyclePatrolConfig, {}),
     ("execution_phase", "执行阶段进展趋势判定", "🧭", "execution_phase", _models.ExecutionPhaseConfig, {}),
+    # [看板字段补齐] scheduler/memory_backfill 两个 block 已在
+    # param_registry.NESTED_CONFIG_BLOCKS 里注册、也已被 loader.py 正确
+    # 加载，但此前从未加进本文件的 _NESTED_BLOCKS，导致看板既看不到也
+    # 无法编辑这两个 block 下的字段。
+    ("scheduler", "统一调度器 Scheduler", "🗓️", "scheduler", _models.SchedulerConfig, {}),
+    ("memory_backfill", "记忆回填", "🧬", "memory_backfill", _models.MemoryBackfillConfig, {}),
 ]
 
 # ── 与 param_registry.NESTED_CONFIG_BLOCKS 的一致性校验 ────────────────────

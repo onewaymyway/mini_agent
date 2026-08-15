@@ -320,7 +320,15 @@ def load_config(
     _mem_dict = file_cfg.get("memory") if isinstance(file_cfg.get("memory"), dict) else {}
     _per_turn_retrieval_default = bool(_mem_dict.get("per_turn_retrieval_enabled", True))
 
-    memory_cfg = MemoryConfig(
+    # [统一参数机制] MemoryConfig 除了下面这批有扁平 key / CLI 兼容需求的
+    # 字段外，还有一批"字段名与 dataclass 一一对应"的开关（library_index_*/
+    # wiki_*/embedding_*/consolidation_*/lifecycle_* 等）此前只能通过代码
+    # 直接构造设置，agent_config.json 里的 `"memory": {...}` 嵌套写法完全
+    # 不会被读取——这里先走通用加载把整个 memory block（含这些字段）读进来，
+    # 再用 apply_overrides 覆盖下面这批仍需要扁平 key/CLI 优先级的字段，
+    # 两段式组合与 reminder/privacy 等 block 的既有模式一致。
+    memory_cfg = apply_overrides(
+        load_nested_block(_mem_dict, MemoryConfig),
         enabled=_fb("memory_enabled", memory_enabled),
         backend=_f("memory_backend", None) or "local",
         store_path=_mem_path,
@@ -337,7 +345,16 @@ def load_config(
         ),
     )
 
-    compress_cfg = CompressConfig(
+    # [统一参数机制] CompressConfig 里 extraction_trigger_*/extract_decisions/
+    # entity_digest_*/extract_world_model/decision_batch_min_interval_days/
+    # decision_recall_turn_gate_enabled/decision_recall_gate_k/
+    # selective_weights/selective_min_user_turns 这批字段此前从未被读取，
+    # `agent_config.json` 里的 `"compress": {...}` 嵌套 block 完全被忽略。
+    # 先走通用加载把整个 compress block 读进来（覆盖上述遗漏字段），再用
+    # apply_overrides 覆盖下面这批已有扁平 key 支持的字段，两段式组合。
+    _compress_dict = file_cfg.get("compress") if isinstance(file_cfg.get("compress"), dict) else {}
+    compress_cfg = apply_overrides(
+        load_nested_block(_compress_dict, CompressConfig),
         enabled=_fb("auto_compress_enabled", auto_compress_enabled),
         threshold=_fn("auto_compress_threshold", auto_compress_threshold, 0.7),
         strategy=_f("auto_compress_strategy", None) or "turn_aligned",
@@ -382,14 +399,20 @@ def load_config(
         ),
         audit_enabled=_fb("compact_audit_enabled", None, False),
         audit_async=_fb("compact_audit_async", None, True),
-        **(
-            {"audit_compact_reasons": file_cfg["compact_audit_reasons"]}
+        audit_compact_reasons=(
+            file_cfg["compact_audit_reasons"]
             if isinstance(file_cfg.get("compact_audit_reasons"), list)
-            else {}
+            else None
         ),
     )
 
-    tool_trim_cfg = ToolTrimConfig(
+    # [统一参数机制] large_file_threshold_bytes/list_dir_show_size/
+    # large_file_warn_marker 此前从未被读取，`"tool_trim": {...}` 嵌套
+    # block 里配置这几项完全不生效——通用加载补齐，其余已有扁平 key 支持
+    # 的字段仍用 apply_overrides 覆盖。
+    _tool_trim_dict = file_cfg.get("tool_trim") if isinstance(file_cfg.get("tool_trim"), dict) else {}
+    tool_trim_cfg = apply_overrides(
+        load_nested_block(_tool_trim_dict, ToolTrimConfig),
         enabled=_fb("tool_result_trim_enabled", tool_result_trim_enabled),
         threshold=_fn("tool_result_trim_threshold", tool_result_trim_threshold, 4000),
         bash_tail_ratio=_fn("tool_trim_bash_tail_ratio", tool_trim_bash_tail_ratio, 0.6),
@@ -406,7 +429,11 @@ def load_config(
         smart_summary_model=_f("smart_summary_model", smart_summary_model) or "",
     )
 
-    skill_cfg = SkillConfig(
+    # [统一参数机制] candidate_reminder_enabled 此前从未被读取，`"skill":
+    # {...}` 嵌套 block 里配置这项完全不生效——通用加载补齐。
+    _skill_dict = file_cfg.get("skill") if isinstance(file_cfg.get("skill"), dict) else {}
+    skill_cfg = apply_overrides(
+        load_nested_block(_skill_dict, SkillConfig),
         semantic_enabled=_fb("skill_semantic_enabled", skill_semantic_enabled),
         semantic_threshold=_fn("skill_semantic_threshold", skill_semantic_threshold, 0.72),
         tracking_enabled=_fb("skill_tracking_enabled", skill_tracking_enabled),
@@ -471,7 +498,12 @@ def load_config(
         llm_console=_debug_console_v,
         log_dir=_debug_log_dir,
     )
-    http_cfg = HttpConfig(
+    # [统一参数机制] blocking_call_timeout_seconds/blocking_call_failure_
+    # threshold/blocking_call_cooldown_seconds 此前从未被读取，`"http":
+    # {...}` 嵌套 block 里配置这几项完全不生效——通用加载补齐。
+    _http_dict = file_cfg.get("http") if isinstance(file_cfg.get("http"), dict) else {}
+    http_cfg = apply_overrides(
+        load_nested_block(_http_dict, HttpConfig),
         enabled=_fb("http_enabled", None),
         host=_f("http_host", None) or "127.0.0.1",
         port=int(_f("http_port", None) or 8765),
@@ -484,7 +516,12 @@ def load_config(
         multi_user_enabled=_fb("http_multi_user_enabled", None),
     )
 
-    retry_cfg = RetryConfig(
+    # [统一参数机制] network_aware/network_check_interval/network_max_wait
+    # 此前从未被读取，`"retry": {...}` 嵌套 block 里配置这几项完全不生效
+    # ——通用加载补齐。
+    _retry_dict = file_cfg.get("retry") if isinstance(file_cfg.get("retry"), dict) else {}
+    retry_cfg = apply_overrides(
+        load_nested_block(_retry_dict, RetryConfig),
         max_retries=_fn("llm_retry_max", None, 15),
         delay=_fn("llm_retry_delay", None, 5.0),
         verbose=_fb("llm_retry_verbose", None, True),
