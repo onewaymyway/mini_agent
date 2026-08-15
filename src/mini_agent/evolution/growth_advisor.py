@@ -5371,6 +5371,33 @@ def run_daily_cycle(
     except Exception:
         pass
 
+    # [BUGFIX：目标看板"完成率趋势"长期无数据] 之前 D.1 的
+    # `record_objective_completion_snapshot()` 只挂在 HTTP 路由
+    # `POST /v1/growth/scan`（api/routes.py::post_growth_scan）里调用，
+    # 而 `sys:growth_advisor_daily` 这个 cron job 的 run_mode 是
+    # "message"——到点后是把 task_template 文本（"/growth scan"）作为一
+    # 条消息投递给 Agent 主循环，由 Agent 在对话轮次里把它当 slash 命令
+    # 执行，实际调用的是 `cli/commands/growth_cmd.py::handle_growth_cmd`
+    # 这条完全独立的代码路径，同样调用本函数 `run_daily_cycle()`，但从
+    # 未经过那个 HTTP 路由。结果是：cron 每天真正触发的那次扫描永远不会
+    # 记录 Objective 完成率快照，只有用户在看板上点"立即为我看看"（直接
+    # 打这个 HTTP 接口）才会记一条——这正是"daemon 已经跑了很多天，完成
+    # 率趋势却一直没有数据"的根因。
+    # 修复：把快照记录移到这里，跟上面的健康度快照放在同一个"每日流程
+    # 收尾"位置，这样无论调用方是 cron message、CLI `/growth scan`、还是
+    # 看板 HTTP 路由，只要真正跑过一次 `run_daily_cycle()` 就会记一条，
+    # 不再依赖某一条特定的调用路径。routes.py 里原来的调用点已同步移除，
+    # 避免看板手动触发时因为两处都调用而重复记两条同一天的快照。
+    try:
+        from mini_agent.evolution.objective_trend import (
+            record_objective_completion_snapshot,
+            compact_objective_completion_trend_storage,
+        )
+        record_objective_completion_snapshot(paths)
+        compact_objective_completion_trend_storage(paths)
+    except Exception:
+        pass
+
     # [growth_advisor_improvement_plan_v4.md 方向二 2.2 节 / N3] 默认
     # 关闭——这会实际修改 agent_config.json，属于有外部效果的写操作，
     # 只在用户显式打开时才会触发。跟健康度快照收尾一样静默降级，不

@@ -6905,16 +6905,15 @@ async def post_growth_scan(request: Request):
             **_blocking_call_opts(request, "growth_scan_daily_cycle"),
         )
         mgr.save()
-        # [kanban_perception_gaps_improvement_plan.md 方向 D.1] 复用这个
-        # 既有的每日调用点，顺带记一条 Objective 完成率快照——不新增独立
-        # 线程/cron。best-effort：跟成长顾问本身的信号扫描是两件不相关的
-        # 事，快照记录失败绝不能让本次成长顾问扫描的结果也跟着 500。
-        try:
-            from mini_agent.evolution.objective_trend import record_objective_completion_snapshot
-            record_objective_completion_snapshot(paths)
-        except Exception as _mini_agent_exc:
-            from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where="mini_agent.api.routes.post_growth_scan.objective_trend_snapshot")
+        # [kanban_perception_gaps_improvement_plan.md 方向 D.1 / BUGFIX]
+        # Objective 完成率快照的记录已经移到 `run_daily_cycle()` 内部
+        # （evolution/growth_advisor.py），跟 cron message 路径
+        # （cli/commands/growth_cmd.py::handle_growth_cmd）共用同一处
+        # 收尾逻辑，不再需要在这里单独调用——原来只在这个 HTTP 路由里调
+        # 用是"daemon 跑了很多天、完成率趋势却一直没数据"的根因（cron
+        # 每天真正触发的路径根本不经过这个路由，见 growth_advisor.py 里
+        # 对应位置的详细说明），保留在这里反而会导致看板手动触发时重复
+        # 记两条同一天的快照。
         return result
     except HTTPException as e:
         # [http_server_blocking_call_guard_plan] run_daily_cycle 现在经过

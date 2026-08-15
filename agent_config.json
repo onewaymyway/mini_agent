@@ -208,5 +208,13 @@
   "cycle_tuning":{
     "diagnostics_llm_summary_enabled":true,
     "tuning_llm_parse_enabled":true
+  },
+  "cycle_patrol": {
+    "enabled": true,
+    "interval_hours": 6.0,
+    "llm_enabled": true,
+    "max_push_per_run": 3,
+    "push_cooldown_hours": 24.0,
+    "generate_tuning_drafts": true
   }
 }
