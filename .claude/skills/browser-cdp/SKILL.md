@@ -344,6 +344,46 @@ resources:
     path: references/page-render-detector.md
     description: 页面渲染完成检测模块（page_render_detector.py）完整文档：多策略检测、DOM变化、内容哈希、字体加载
     triggers: 渲染检测, page render, RenderResult, RenderConfig, MutationObserver
+  - id: facebook-search
+    path: references/facebook-search.md
+    description: Facebook 社交内容搜索自动化脚本（facebook_search.py），支持用户动态/群组/事件搜索
+    triggers: Facebook搜索, facebook search, facebook_search.py, 社交媒体, 动态抓取
+  - id: instagram-search
+    path: references/instagram-search.md
+    description: Instagram 社交内容搜索自动化脚本（instagram_search.py），支持帖子/用户/标签搜索
+    triggers: Instagram搜索, instagram search, instagram_search.py, 社交媒体, 图片抓取
+  - id: linkedin-search
+    path: references/linkedin-search.md
+    description: LinkedIn 职场社交搜索自动化脚本（linkedin_search.py），支持职位/人脉/公司动态搜索
+    triggers: LinkedIn搜索, linkedin search, linkedin_search.py, 职场社交, 招聘搜索
+  - id: twitter-search
+    path: references/twitter-search.md
+    description: Twitter/X 社交内容搜索自动化脚本（twitter_search.py），支持推文/话题/用户搜索
+    triggers: Twitter搜索, twitter search, x search, twitter_search.py, 社交媒体
+  - id: pinduoyun-search
+    path: references/pinduoyun-search.md
+    description: 拼多多云店商品搜索自动化脚本（pinduoyun_search.py），支持商品搜索、价格/销量提取
+    triggers: 拼多多云搜索, pinduoyun search, 拼团商品, 价格抓取
+  - id: kuaishou-search
+    path: references/kuaishou-search.md
+    description: 快手短视频搜索自动化脚本（kuaishou_search.py），支持视频搜索、用户/话题搜索
+    triggers: 快手搜索, kuaishou search, kuaishou_search.py, 短视频搜索
+  - id: anjuke-search
+    path: references/anjuke-search.md
+    description: 安居客房产搜索自动化脚本（anjuke_search.py），支持二手房/租房/小区数据抓取
+    triggers: 安居客搜索, anjuke search, anjuke_search.py, 房产搜索, 房源抓取
+  - id: ctrip-search
+    path: references/ctrip-search.md
+    description: 携程旅行搜索自动化脚本（ctrip_search.py），支持酒店/机票/旅游产品搜索
+    triggers: 携程搜索, ctrip search, ctrip_search.py, 酒店预订, 机票搜索
+  - id: cnki-search
+    path: references/cnki-search.md
+    description: 中国知网学术论文搜索自动化脚本（cnki_search.py），支持期刊/论文/学位搜索
+    triggers: 知网搜索, cnki search, cnki_search.py, 学术论文, 期刊搜索
+  - id: xianyu-search
+    path: references/xianyu-search.md
+    description: 闲鱼二手商品搜索自动化脚本（xianyu_search.py），支持二手商品搜索、价格提取
+    triggers: 闲鱼搜索, xianyu search, xianyu_search.py, 二手商品, 闲鱼抓取
 ---
 
 # Browser CDP Skill
@@ -408,6 +448,16 @@ resources:
 | `searchers/maimai_search.py` | 脉脉搜索，见下方对应子资源 |
 | `searchers/amap_poi_search.py` | 高德地图 POI 搜索，见下方对应子资源 |
 | `searchers/dianping_search.py` | 大众点评搜索，见下方对应子资源 |
+| `searchers/facebook_search.py` | Facebook 社交内容搜索，见下方对应子资源 |
+| `searchers/instagram_search.py` | Instagram 社交内容搜索，见下方对应子资源 |
+| `searchers/linkedin_search.py` | LinkedIn 职场社交搜索，见下方对应子资源 |
+| `searchers/twitter_search.py` | Twitter/X 社交内容搜索，见下方对应子资源 |
+| `searchers/pinduoyun_search.py` | 拼多多云店商品搜索，见下方对应子资源 |
+| `searchers/kuaishou_search.py` | 快手短视频搜索，见下方对应子资源 |
+| `searchers/anjuke_search.py` | 安居客房产搜索，见下方对应子资源 |
+| `searchers/ctrip_search.py` | 携程旅行搜索，见下方对应子资源 |
+| `searchers/cnki_search.py` | 中国知网学术论文搜索，见下方对应子资源 |
+| `searchers/xianyu_search.py` | 闲鱼二手商品搜索，见下方对应子资源 |
 
 ## 子资源（渐进式加载）
 
@@ -1113,6 +1163,15 @@ searcher.close()
 | `CryptoSearcher` | 加密货币搜索（CoinMarketCap） | `realtime-search` |
 | `NewsSearcher` | 实时新闻搜索 | `realtime-search` |
 | `CnkSearcher` | 中国知网论文搜索 | `cnki-search` |
+| `FacebookSearcher` | Facebook 社交内容搜索 | `facebook-search` |
+| `InstagramSearcher` | Instagram 社交内容搜索 | `instagram-search` |
+| `LinkedInSearcher` | LinkedIn 职场社交搜索 | `linkedin-search` |
+| `TwitterSearcher` | Twitter/X 社交内容搜索 | `twitter-search` |
+| `PinduoyunSearcher` | 拼多多云店商品搜索 | `pinduoyun-search` |
+| `KuaishouSearcher` | 快手短视频搜索 | `kuaishou-search` |
+| `AnjukeSearcher` | 安居客房产搜索 | `anjuke-search` |
+| `CtripSearcher` | 携程旅行搜索 | `ctrip-search` |
+| `XianyuSearcher` | 闲鱼二手商品搜索 | `xianyu-search` |
 
 详细使用指南见 `searchers-guide` 子资源。
 
