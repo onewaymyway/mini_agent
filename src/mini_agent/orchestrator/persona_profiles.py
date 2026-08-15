@@ -54,6 +54,14 @@ class PersonaProfile:
     platforms: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
 
+    # [persona_capability_learning_design.md §11] 该角色检索时优先使用的
+    # wiki 命名空间（如 "capability:stock_analysis"）。空 = 不限制，沿用
+    # allowed_tools"空即不限制"的向后兼容惯例，不破坏现有 persona 文件。
+    # 传给 wiki_shelf_search(tags=...) 时只影响候选打分（软优先，见
+    # _rule_score），不是硬过滤——限定范围内零命中时仍能命中范围外页面，
+    # 不会把"人设专精感"变成"知识黑名单"（设计文档 §11.3）。
+    wiki_scopes: list[str] = field(default_factory=list)
+
 
 def _as_list(raw) -> list[str]:
     if isinstance(raw, str):
@@ -115,6 +123,7 @@ def _parse_persona(path: Path) -> Optional[PersonaProfile]:
         source_path=path,
         platforms=_as_list(meta.get("platforms")),
         tags=_as_list(meta.get("tags")),
+        wiki_scopes=_as_list(meta.get("wiki_scopes")),
     )
 
 

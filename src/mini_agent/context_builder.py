@@ -139,6 +139,31 @@ class ContextBuilder:
             if not wiki_used:
                 self._inject_shelf_search_chain(query)
 
+    def _active_persona_wiki_scopes(self) -> list[str]:
+        """[persona_capability_learning_design.md §11] 当前激活 persona 声明的
+        `wiki_scopes`（没有激活 persona / persona 未声明该字段时返回空列表）。
+
+        只读取，不做任何过滤决策——是否限定范围、限定范围零命中后要不要
+        回退全库检索，都交给 wiki_shelf_search 自身的软优先打分机制
+        （tags 只影响 `_rule_score` 排序，不是硬过滤），这里不重复实现。
+        任何异常都不应影响检索主流程，静默返回空列表退化为"不限制"。
+        """
+        if not self._persona_getter:
+            return []
+        try:
+            persona_name = self._persona_getter()
+            if not persona_name:
+                return []
+            from mini_agent.orchestrator.persona_profiles import get_persona_loader
+
+            loader = get_persona_loader()
+            persona = loader.get(persona_name) if loader else None
+            return list(persona.wiki_scopes) if persona and persona.wiki_scopes else []
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._active_persona_wiki_scopes')
+            return []
+
     def _try_inject_wiki_search(self, query: str) -> bool:
         """P4 实际切换：wiki_search 转正为主检索路径，命中则填充缓存并返回 True。
 
@@ -174,6 +199,7 @@ class ContextBuilder:
             result = library.wiki_search(
                 query,
                 llm_call=llm_call,
+                tags=self._active_persona_wiki_scopes() or None,
                 confidence_weight=getattr(self.cfg.memory, "wiki_confidence_weight", None),
                 use_index=getattr(self.cfg.memory, "wiki_index_reuse_enabled", True),
             )

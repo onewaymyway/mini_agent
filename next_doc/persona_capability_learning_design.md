@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.3（P1 核心闭环 + 真实 wiki 写入回调已实现，见下方「实施状态」）
+- **版本**：v0.4（P1 核心闭环 + 真实 wiki 写入回调已实现；`PersonaProfile.wiki_scopes`（第 11 节）已提前插入实现，见下方「实施状态」）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -35,9 +35,26 @@
 
 **P1 阶段的设计取舍说明**：数据模型、存储、核心逻辑（缺口扫描、异步问答队列、循环编排）已经是可以真实跑起来、有测试覆盖的代码，但两处"会产生真实外部副作用"的关口——① 真正调用互联网检索和 wiki 写入、② 挂载到 cron 定时任务表使其自动周期性运行——都刻意留了一步显式开关，需要在功能评审通过、且第 14.3-g 合规过滤到位之后再接线，不在 P1 这一步默认打开。这是为了让"代码已经写好、可测试"和"功能对用户/系统实际生效"两件事分开推进，降低一次性铺开的风险。
 
+### 第 11 节（`PersonaProfile.wiki_scopes`）—— ✅ 已提前实现
+
+按第 14 节末尾的说明（"这一项依赖优先级最高……可以考虑提前到 P2 甚至 P1 收尾阶段单独插入"）提前插入实现，因为它不依赖 P1 其余部分（`CapabilityTrack` 是否接线检索/cron 都无所谓），只是把已有的 `wiki_shelf_search(tags=...)` 能力接到 persona 系统上，改动面很小：
+
+| 项目 | 状态 | 对应文件 |
+|---|---|---|
+| `PersonaProfile.wiki_scopes` 字段 + frontmatter 解析（`wiki_scopes:` YAML 列表或逗号分隔字符串，空/不填=不限制，向后兼容） | ✅ 已实现 | `src/mini_agent/orchestrator/persona_profiles.py` |
+| `context_builder.py` 每轮检索透传 `wiki_scopes` 到 `library.wiki_search(tags=...)` | ✅ 已实现（`ContextBuilder._active_persona_wiki_scopes()`） | `src/mini_agent/context_builder.py` |
+| 软优先语义（§11.3） | ✅ 天然满足，未额外实现"硬限制/回退"逻辑——`wiki_shelf_search` 的 `tags` 参数本身只参与 `_rule_score` 打分，不是候选过滤条件，限定范围内零命中时本来就会检索到范围外页面，不需要在 `context_builder.py` 里再实现一次"零命中回退全库"的逻辑 | `src/mini_agent/wiki/search.py`（既有实现，未改动） |
+| 文档 | ✅ 已更新 | `docs/persona-guide.md` |
+| 单元测试（7 组：未激活 persona / persona 未声明字段 / 声明了字段透传 tags / loader 异常静默降级 / frontmatter 解析 2 组） | ✅ 全部通过 | `tests/test_context_builder_persona_wiki_scopes.py` |
+
+**未做的部分**（本次不在范围内，留给第 10 节 persona 型 Track 或看板迭代）：
+- 看板"知识范围绑定"卡片（§11.4）——目前只能手改 persona `.md` 文件的 `wiki_scopes` 字段，没有看板可视化勾选
+- "超出边界"的台账/日志标注（§11.3 提到的可选项）——`wiki_shelf_search` 本身不返回"这次是否命中了限定范围外的页面"这类信息，要做需要先给 `WikiSearchResult` 加字段，评估后决定是否值得为一条弱提示改动检索层返回结构，暂不在这次里做
+- `wiki_scopes` 与 knowledge 型 `CapabilityTrack.wiki_tag` 的双向可见列表（§11.2 末尾），依赖 P1 中 `CapabilityTrack` 的看板 UI（尚未实现），自然顺延到那之后
+
 ### P2 / P3
 
-尚未开始，规划内容见文末「实施阶段划分」一节。
+尚未开始，规划内容见文末「实施阶段划分」一节（第 11 节主体已提前完成，见上）。
 
 ---
 
@@ -510,6 +527,6 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - 多个 Track 之间共享的通用子主题去重复用（比如"数据来源可靠性判断"可能在多个能力方向下都用得到）
 - 问答队列机制上移为通用基础设施，供其它 cron 模块复用
 - `target_type: "persona"` 全链路：人设维度大纲、人设草稿生成、`/role show` 风格预览、显式发布流程（第 10 节）
-- `PersonaProfile.wiki_scopes` 字段 + `context_builder` 透传 `wiki_shelf_search(tags=...)` + 看板知识范围绑定 UI（第 11 节）——这一项依赖优先级最高，因为 `wiki_shelf_search` 本身已经支持 `tags` 参数，改动成本低、见效快，可以考虑提前到 P2 甚至 P1 收尾阶段单独插入
+- `PersonaProfile.wiki_scopes` 字段 + `context_builder` 透传 `wiki_shelf_search(tags=...)`——✅ **已提前实现**，见文档开头「实施状态」。**尚未实现**：看板知识范围绑定 UI（§11.4），仍按 P3 节奏推进，依赖 `CapabilityTrack` 看板先落地
 - 与 `external_trend_capability_link.py` 的浅集成（仅人工审核草稿层，不打通自动 Goal 生成，见 12.2-d），作为方向级选项，实施前需团队评审确认边界配置默认关闭
 - 13.2-e 可验证的学习效果（探针问题对比"有/无 wiki 上下文"回答质量）——实现复杂度高（涉及双份回答生成与质量判定），不在早期阶段承诺，需先验证 P1/P2 的基础闭环稳定后再评估投入

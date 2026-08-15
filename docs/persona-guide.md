@@ -35,6 +35,8 @@ description: 管家式科幻AI助理人设，语气从容、略带英式幽默
 tone: 沉稳、简练、偶尔调侃            # 可选，供 /role show 展示
 allowed_tools: null                 # 可选白名单；留空/不填 = 不限制
 break_character_policy: soft        # soft | strict
+wiki_scopes:                        # 可选，该角色检索时优先使用的 wiki 命名空间；留空/不填 = 不限制
+  - capability:stock_analysis
 ---
 
 你现在是贾维斯（Jarvis），一位管家式的科幻AI助理……
@@ -51,6 +53,7 @@ break_character_policy: soft        # soft | strict
 | `tone` | 可选，语气风格简述 |
 | `break_character_policy` | `soft`（默认）：角色可在被问及真实身份/严肃技术问题时短暂跳出角色回答，再询问是否继续；`strict`：角色应尽量保持人设。**无论取值为何，安全边界都不受影响**（见下） |
 | `allowed_tools` | 可选工具白名单（YAML 列表或逗号分隔字符串）。声明后，不在名单内的工具调用会被系统**直接拒绝**，不进入常规审批流程；空/不填 = 不限制 |
+| `wiki_scopes` | 可选（YAML 列表或逗号分隔字符串）。声明后，`context_builder.py` 每轮检索会把这些 tag 透传给 `wiki_shelf_search(tags=...)`，让该角色激活时的 wiki 检索**优先**命中这些命名空间下的页面；这是**软优先而不是硬限制**——限定范围内零命中时仍会检索到范围外的页面，不会让角色"变笨"。空/不填 = 不限制。最自然的取值来源是 `next_doc/persona_capability_learning_design.md` 里 knowledge 型 `CapabilityTrack` 持续沉淀出的 `wiki_tag`，一个 wiki 命名空间也可以被多个角色的 `wiki_scopes` 共享 |
 
 ## CLI 命令
 
