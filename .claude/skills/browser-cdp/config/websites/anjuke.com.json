@@ -2,7 +2,7 @@
   "name": "安居客",
   "domain": "anjuke.com",
   "url": "https://www.anjuke.com",
-  "category": "lifestyle",
+  "category": "property",
   "subcategory": "real_estate",
   "frontend_framework": "Vue",
   "anti_crawl_level": 2,
@@ -29,7 +29,7 @@
       "page_numbers": ".page-list li"
     }
   },
-  "tags": ["lifestyle", "real_estate", "chinese", "housing"],
+  "tags": ["property", "real_estate", "chinese", "housing"],
   "created_at": "2026-08-15T11:43:00.000Z",
   "updated_at": "2026-08-15T11:43:00.000Z"
 }

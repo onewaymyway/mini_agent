@@ -1,96 +1,89 @@
-# 大众点评搜索器 (dianping_search.py)
+---
+name: dianping-search	skill: browser-cdp
+script: dianping_search.py
+description: 大众点评商户搜索自动化脚本，支持城市、品类筛选，获取店铺评分和评论信息。
+triggers: 大众点评搜索, dianping search, 餐厅搜索, 商户搜索, dianping_search.py
+platforms: windows, macos, linux, pc
+---
 
-## 概述
+# 大众点评商户搜索自动化脚本 (`dianping_search.py`)
 
-大众点评搜索器通过浏览器自动化搜索大众点评的商户和评价，支持商户搜索和评价抓取。
+## 用途
 
-## 功能特性
+使用 browser-cdp skill 搜索大众点评商户，获取店铺评分、评论数、人均消费等核心信息。
 
-- 关键词搜索：搜索商户、餐厅、服务
-- 城市定位：支持指定城市搜索
-- 商户详情：抓取商户名称、评分、地址、电话、分类
-- 反检测模式：支持 stealth 模式
-- 注意：大众点评有较强反爬，建议使用已登录会话
-
-## 使用方法
-
-### 命令行
+## 使用示例
 
 ```bash
-# 搜索餐厅
-python dianping_search.py "火锅" --city "北京"
+cd .claude/skills/browser-cdp
 
-# 搜索咖啡店
-python dianping_search.py "咖啡店" --city "上海" --max-results 20
+# 基础搜索
+python src/searchers/dianping_search.py "火锅" --city 北京 --max-results 10
 
-# 搜索商户
-python dianping_search.py "餐厅" --output-dir ./dianping_results
-```
+# 指定品类
+python src/searchers/dianping_search.py "日料" --city 上海 --category 美食 --output-dir ./dianping_results
 
-### Python API
-
-```python
-from src.searchers.dianping_search import DianpingSearcher
-import asyncio
-
-async def main():
-    searcher = DianpingSearcher(port=9333, stealth=True)
-    
-    # 搜索
-    results = await searcher.search("火锅", "北京")
-    
-    # 获取详情
-    detail = await searcher.get_detail("https://www.dianping.com/shop/xxx")
-
-asyncio.run(main())
+# 启用反检测模式
+python src/searchers/dianping_search.py "咖啡厅" --city 深圳 --stealth --max-results 15
 ```
 
 ## 参数说明
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| query | str | - | 搜索关键词 |
-| city | str | "" | 城市名称 |
-| max_results | int | 10 | 最大结果数 |
-| output_dir | str | None | 输出目录 |
-| port | int | 9333 | 浏览器调试端口 |
-| stealth | bool | True | 是否启用反检测模式 |
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `query` | 搜索关键词（必填） | - |
+| `--city` | 城市名称 | 全部 |
+| `--category` | 品类分类 | 全部 |
+| `--max-results` | 最大结果数量 | 10 |
+| `--output-dir` | 输出目录 | `./search_results/dianping` |
+| `--port` | CDP 调试端口 | 9333 |
+| `--stealth` | 启用反检测模式 | True |
+| `--wait-timeout` | 页面等待超时(秒) | 30 |
 
-## 返回格式
+## 输出格式
 
 ```json
 {
-  "source": "dianping",
-  "title": "商户名称",
+  "title": "海底捞火锅(朝阳门店)",
   "url": "https://www.dianping.com/shop/xxx",
-  "snippet": "地址信息",
-  "metadata": {
-    "query": "关键词",
-    "city": "城市",
-    "rating": "评分",
-    "address": "详细地址",
-    "category": "分类"
-  },
-  "scraped_at": "2024-01-01T00:00:00Z"
+  "score": 4.8,
+  "review_count": 2580,
+  "avg_price": 120,
+  "city": "北京",
+  "category": "火锅",
+  "address": "朝阳区三里屯",
+  "tags": ["环境好", "服务赞"],
+  "source": "dianping",
+  "scraped_at": "2026-08-15 11:58:00"
 }
 ```
 
+## 核心实现要点
+
+- 使用 JS 提取 `.shop-list-item` 或 `.shop-item` 中的商户信息
+- 评分从 `.score` 提取，支持小数格式
+- 评论数从 `.review-count` 提取
+- 人均消费从 `.avg-price` 提取
+- 地址信息从 `.shop-address` 提取
+- 支持按评分、销量排序筛选
+- 反检测模式隐藏自动化特征
+- 验证码检测：检测 slider 滑块验证
+
 ## 注意事项
 
-1. 大众点评有严格的反爬机制，建议使用已登录会话
-2. 部分商户信息可能需要登录才能查看
-3. 搜索频率不宜过高，建议添加随机延迟
-4. 页面可能需要滑块验证
+- 大众点评反爬较严格，建议启用 `--stealth` 模式
+- 搜索结果可能需滑动加载更多
+- 部分店铺信息需登录后查看完整内容
+- 建议控制搜索频率，避免触发验证码
 
-## 技术实现
+## 技术特征
 
-- 使用 `browser_cdp` 模块控制浏览器
-- 直接访问大众点评站内搜索
-- 使用 JavaScript 提取搜索结果
-- 支持异步操作
+- **前端框架**: Vue.js SPA
+- **反爬等级**: 3（高度）
+- **验证码类型**: slider（滑块验证）
+- **登录要求**: 否
+- **目标成功率**: 75%
 
-## 相关文件
+## 相关配置
 
-- 搜索器源码：`src/searchers/dianping_search.py`
-- 基础类：`src/searchers/base.py`
-- 工具函数：`src/searchers/utils.py`
+参见 `config/websites/dianping.com.json` 获取完整的站点配置。

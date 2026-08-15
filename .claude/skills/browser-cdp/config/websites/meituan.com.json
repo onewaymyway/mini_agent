@@ -2,7 +2,7 @@
   "name": "美团",
   "domain": "meituan.com",
   "url": "https://www.meituan.com",
-  "category": "lifestyle",
+  "category": "shopping",
   "subcategory": "local_services",
   "frontend_framework": "React",
   "anti_crawl_level": 3,
@@ -33,7 +33,7 @@
       "text_patterns": ["滑动验证", "拖拽滑块", "验证码"]
     }
   },
-  "tags": ["lifestyle", "local_services", "chinese", "high-traffic", "food"],
+  "tags": ["shopping", "local_services", "chinese", "high-traffic", "food"],
   "created_at": "2026-08-15T11:43:00.000Z",
   "updated_at": "2026-08-15T11:43:00.000Z"
 }

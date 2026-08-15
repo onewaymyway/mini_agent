@@ -2,7 +2,7 @@
   "name": "大众点评",
   "domain": "dianping.com",
   "url": "https://www.dianping.com",
-  "category": "lifestyle",
+  "category": "shopping",
   "subcategory": "review_platform",
   "frontend_framework": "Vue",
   "anti_crawl_level": 3,
@@ -34,7 +34,7 @@
       "text_patterns": ["滑动验证", "拖动滑块", "验证码"]
     }
   },
-  "tags": ["lifestyle", "review", "chinese", "food", "high-traffic"],
+  "tags": ["shopping", "review", "chinese", "food", "high-traffic"],
   "created_at": "2026-08-15T11:43:00.000Z",
   "updated_at": "2026-08-15T11:43:00.000Z"
 }
