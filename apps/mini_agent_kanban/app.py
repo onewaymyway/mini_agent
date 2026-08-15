@@ -5542,23 +5542,36 @@ def _render_growth_pending_list(client: "AgentClient", pending: list[dict]):
             st.caption(
                 f"置信度 {c.get('confidence', 0)} · 证据 {c.get('evidence_count', 0)} 条"
             )
-            # [反馈粒度细化] dismiss 原因选择——"方向没错，是报告没写好"
-            # 不会压低这个方向今后的置信度，只会计入报告质量诊断，跟
-            # "不感兴趣"/"时机不对"是两种完全不同的信号，分开记录才能让
-            # 系统学到正确的东西。默认"不说明原因"，行为与此前版本一致。
+            # [看板卡顿修复] 之前"忽略原因" selectbox 直接摆在 st.container
+            # 里，Streamlit 的默认行为是"任何 widget 值一变化就立刻触发整页
+            # rerun"——虽然选完原因本身并不会调用 client（只是本地算出
+            # reason_value，真正提交在下面按钮点击时才发生），但这次多余
+            # 的整页 rerun 会重新跑一遍页面函数，包括本 tab 之外那些较重的
+            # API 调用（诊断信息、回访、Goal 对齐分析等），表现为"选完原因
+            # 卡住好一阵才刷新"。用 st.form 包住"选原因 + 采纳/忽略"这一组
+            # 交互：st.form 内部的 widget 变化不会触发 rerun，只有点击
+            # `st.form_submit_button` 才会——这样选原因不再触发任何 rerun，
+            # 真正提交（调用 growth_candidate_action）仍然只发生在点击
+            # 「采纳」/「忽略」的那一刻，跟需求描述的"选完原因、点了采纳/
+            # 忽略才提交"完全一致。「查看报告」/「轨迹」跟"原因"无关，且
+            # `st.button` 不允许出现在 `st.form` 内部，保留在 form 外。
             reason_key = f"growth_dismiss_reason_{c['candidate_id']}"
-            reason_label = st.selectbox(
-                "忽略原因（可选，仅在点「忽略」时生效）",
-                options=[label for _, label in _GROWTH_DISMISS_REASON_OPTIONS],
-                key=reason_key,
-                label_visibility="collapsed",
-            )
+            with st.form(key=f"growth_form_{c['candidate_id']}"):
+                reason_label = st.selectbox(
+                    "忽略原因（可选，仅在点「忽略」时生效）",
+                    options=[label for _, label in _GROWTH_DISMISS_REASON_OPTIONS],
+                    key=reason_key,
+                    label_visibility="collapsed",
+                )
+                fb1, fb2 = st.columns(2)
+                accept_clicked = fb1.form_submit_button("✅ 采纳", key=f"growth_accept_{c['candidate_id']}")
+                dismiss_clicked = fb2.form_submit_button("🙈 忽略", key=f"growth_dismiss_{c['candidate_id']}")
+
             reason_value = next(
                 (v for v, label in _GROWTH_DISMISS_REASON_OPTIONS if label == reason_label),
                 "unspecified",
             )
-            b1, b2, b3, b4 = st.columns(4)
-            if b1.button("✅ 采纳", key=f"growth_accept_{c['candidate_id']}"):
+            if accept_clicked:
                 # [采纳即启动] accept 现在默认会自动触发"生成报告 → 落地
                 # 为 Goal → 生成并确认执行规范 → 绑定周期性"整条链路，
                 # 响应体里的 `pursuit` 字段带回这一路的结果/失败信息，
@@ -5574,10 +5587,12 @@ def _render_growth_pending_list(client: "AgentClient", pending: list[dict]):
                 for err in pursuit.get("errors") or []:
                     st.toast(err, icon="⚠️")
                 st.rerun()
-            if b2.button("🙈 忽略", key=f"growth_dismiss_{c['candidate_id']}"):
+            if dismiss_clicked:
                 dismiss_reason = None if reason_value == "unspecified" else reason_value
                 client.growth_candidate_action(c["candidate_id"], "dismiss", reason=dismiss_reason)
                 st.rerun()
+
+            b3, b4 = st.columns(2)
             report_id = c.get("report_id")
             if report_id and b3.button("📄 查看报告", key=f"growth_report_{c['candidate_id']}"):
                 rep = client.growth_report(report_id)
