@@ -62,6 +62,13 @@
       领域置信度粗略映射到子主题，`scan_outline_gaps()` 在 miss_counts
       之后、last_touched_at 之前用它做第二级排序（置信度越低越优先）；
       不匹配的子主题给中性值 0.5，不产生任何反向副作用/不写回
+    - §13.1-b 多 Track 公平调度：`CapabilityTrack.last_advanced_at`
+      记录该 Track 上次真正被推进（处理过至少 1 个子主题）的时间戳，
+      `run_capability_learning_cycle()` 按这个字段升序处理 active
+      Track；新增可选的 `max_topics_per_run_cycle` 全局预算参数（默认
+      None=不设上限，向后兼容），设置后多个 Track 会共享同一份预算，
+      预算耗尽的 Track 本轮不推进，下一轮因为 last_advanced_at 更旧会
+      排到最前面，长期下来公平，不会出现早建 Track 永远占满配额
 
 留给 P3 的方向（P1/P2 刻意不做，避免过早引入不确定性/耦合）：
     - target_type="persona" 全链路（人设草稿生成 / 发布，见文档 §10）
@@ -130,6 +137,11 @@ class CapabilityTrack:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     cadence: str = "interval:21600"
+    # [§13.1-b 多 Track 公平调度] 上一次本 Track 在 run_capability_learning_cycle()
+    # 里真正被推进过（至少处理了 1 个子主题，不论是 researched/question_raised/
+    # skipped）的时间戳。None = 从未被推进过。仅用于排序，不影响其它任何行为；
+    # 向后兼容旧数据（旧 Track 文件没有这个字段时 from_dict 里默认 None）。
+    last_advanced_at: Optional[float] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -150,6 +162,7 @@ class CapabilityTrack:
             created_at=d.get("created_at", time.time()),
             updated_at=d.get("updated_at", time.time()),
             cadence=d.get("cadence", "interval:21600"),
+            last_advanced_at=d.get("last_advanced_at"),
         )
 
 
@@ -650,6 +663,7 @@ def run_capability_learning_cycle(
     wiki_writer: Optional[WikiWriterFn] = None,
     max_pending_questions: int = DEFAULT_MAX_PENDING_QUESTIONS,
     topics_per_cycle: int = DEFAULT_TOPICS_PER_CYCLE,
+    max_topics_per_run_cycle: Optional[int] = None,
 ) -> dict:
     """sys:capability_learning_cycle 对应的单轮编排逻辑（§4 伪流程的落地）。
 
@@ -657,6 +671,17 @@ def run_capability_learning_cycle(
     记一条 action="skipped" 的台账并跳过，不产生任何外部请求或 wiki 写入
     副作用——这样这个函数在未接线真实检索/写入实现之前就是安全的、
     可以直接单元测试/在 cron 里试跑而不用担心误触发真实抓取。
+
+    [§13.1-b 多 Track 公平调度] 同时开多个 active Track 时，按
+    `last_advanced_at` 升序处理（从未推进过/最久没被推进过的优先），
+    避免早建的 Track 长期占满配额、后建的 Track 得不到推进。这一点
+    在没有 `max_topics_per_run_cycle` 全局预算时不改变最终结果（因为
+    P1 起每个 Track 本来就各自独立拿到 `topics_per_cycle` 份额，互不
+    挤占），只在设置了全局预算、单轮处理不完所有 Track 时才真正影响
+    "谁先谁后"——预算耗尽时排在后面的 Track 本轮不推进，下一轮因为
+    `last_advanced_at` 更旧会被排到最前面，长期下来仍然公平。
+    `max_topics_per_run_cycle` 默认 None（不设全局预算，向后兼容此前
+    行为：每个 Track 各自跑满 `topics_per_cycle`）。
 
     返回一份本轮执行摘要（供 cron 日志 / 看板展示）。
     """
@@ -667,10 +692,19 @@ def run_capability_learning_cycle(
     summary = {"tracks_processed": 0, "topics_researched": 0, "questions_raised": 0,
                "questions_consumed": 0, "topics_skipped": 0}
 
-    for track in track_store.list_tracks(status="active"):
-        summary["tracks_processed"] += 1
+    active_tracks = sorted(
+        track_store.list_tracks(status="active"),
+        key=lambda t: t.last_advanced_at if t.last_advanced_at is not None else 0.0,
+    )
+    global_budget_remaining = max_topics_per_run_cycle
 
-        # 消费已回答但尚未处理的问题（§4 伪流程最后一步）
+    for track in active_tracks:
+        summary["tracks_processed"] += 1
+        track_advanced = False
+
+        # 消费已回答但尚未处理的问题（§4 伪流程最后一步）——不占用检索/
+        # 写入类的全局预算（成本可忽略：只是读一条已有答案记一笔台账），
+        # 不受 max_topics_per_run_cycle 限制，任何情况下都会处理。
         answered = [
             q for q in question_store.list_questions(status="answered", track_id=track.track_id)
             if not q.consumed
@@ -685,27 +719,39 @@ def run_capability_learning_cycle(
             question_store.mark_consumed(q.question_id)
             summary["questions_consumed"] += 1
 
+        if global_budget_remaining is not None and global_budget_remaining <= 0:
+            # 全局预算已耗尽，本轮不再推进任何子主题（但上面已回答问题的
+            # 消费仍然发生了）。剩余 active Track 下一轮因为
+            # last_advanced_at 更旧会被排到最前面，见函数文档字符串。
+            continue
+
         # 挑选本轮推进的子主题（§14.1-a：miss_observed 台账优先级信号；
         # §12.1-a：capability_map 领域置信度优先级信号，见 _topic_capability_confidence）
         miss_counts = _topic_miss_counts(ledger_store, track.track_id)
         capability_confidence = _topic_capability_confidence(track, paths)
         pending = question_store.pending_count(track.track_id)
+        per_track_limit = topics_per_cycle
+        if global_budget_remaining is not None:
+            per_track_limit = min(per_track_limit, global_budget_remaining)
         if pending >= max_pending_questions:
             # 待回答问题已达上限，本轮只推进不需要用户输入的子主题
             topics = [
                 t for t in scan_outline_gaps(
-                    track, limit=topics_per_cycle * 2,
+                    track, limit=max(per_track_limit, topics_per_cycle) * 2,
                     miss_counts=miss_counts, capability_confidence=capability_confidence,
                 )
                 if not needs_user_context(t, track)
-            ][:topics_per_cycle]
+            ][:per_track_limit]
         else:
             topics = scan_outline_gaps(
-                track, limit=topics_per_cycle,
+                track, limit=per_track_limit,
                 miss_counts=miss_counts, capability_confidence=capability_confidence,
             )
 
         for topic in topics:
+            if global_budget_remaining is not None and global_budget_remaining <= 0:
+                break
+
             if needs_user_context(topic, track):
                 if pending >= max_pending_questions:
                     continue
@@ -723,6 +769,9 @@ def run_capability_learning_cycle(
                 ))
                 summary["questions_raised"] += 1
                 pending += 1
+                track_advanced = True
+                if global_budget_remaining is not None:
+                    global_budget_remaining -= 1
                 continue
 
             if retriever is None or wiki_writer is None:
@@ -733,6 +782,9 @@ def run_capability_learning_cycle(
                     summary="未接线真实检索/wiki 写入回调，本轮跳过（P1 安全默认）",
                 ))
                 summary["topics_skipped"] += 1
+                track_advanced = True
+                if global_budget_remaining is not None:
+                    global_budget_remaining -= 1
                 continue
 
             results = retriever(topic, track)
@@ -744,6 +796,9 @@ def run_capability_learning_cycle(
                     summary="命中黑名单关键词，跳过",
                 ))
                 summary["topics_skipped"] += 1
+                track_advanced = True
+                if global_budget_remaining is not None:
+                    global_budget_remaining -= 1
                 continue
 
             page_ids = wiki_writer(topic, track, results)
@@ -755,12 +810,19 @@ def run_capability_learning_cycle(
                 wiki_page_ids=page_ids,
             ))
             summary["topics_researched"] += 1
+            track_advanced = True
+            if global_budget_remaining is not None:
+                global_budget_remaining -= 1
 
             # 更新大纲覆盖状态
             topic.coverage_state = "covered" if page_ids else "partial"
             topic.last_touched_at = time.time()
             topic.wiki_page_ids = list(set(topic.wiki_page_ids + page_ids))
-        track_store.update(track.track_id, outline=track.outline)
+
+        update_fields = {"outline": track.outline}
+        if track_advanced:
+            update_fields["last_advanced_at"] = time.time()
+        track_store.update(track.track_id, **update_fields)
 
     return summary
 

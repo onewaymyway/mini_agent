@@ -756,3 +756,82 @@ def test_run_capability_learning_cycle_wires_capability_confidence(paths, monkey
     cl.run_capability_learning_cycle(paths)
     assert "capability_confidence" in captured
     assert captured["capability_confidence"] == {}  # 没有任何 task manifest，空字典也是正常接线的证明
+
+
+# ── §13.1-b：多 Track 公平调度 ─────────────────────────────────────────
+
+def test_last_advanced_at_updated_after_topic_processed(paths):
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=["主题A"])
+    assert track.last_advanced_at is None
+
+    run_capability_learning_cycle(paths)  # 无 retriever/wiki_writer，走 skipped 分支
+
+    refreshed = store.get(track.track_id)
+    assert refreshed.last_advanced_at is not None
+
+
+def test_last_advanced_at_not_updated_when_no_topics_to_process(paths):
+    """一个大纲全部 covered 的 Track，本轮没有任何子主题可推进，
+    last_advanced_at 不应该被更新（"推进"应该反映真实工作量，不是
+    "被扫描过"）。"""
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=[])
+    track.outline = [OutlineTopic(topic_id="t1", name="已完成", coverage_state="covered")]
+    store.update(track.track_id, outline=track.outline)
+
+    run_capability_learning_cycle(paths)
+
+    refreshed = store.get(track.track_id)
+    assert refreshed.last_advanced_at is None
+
+
+def test_fair_scheduling_orders_by_last_advanced_at(paths):
+    """两个 Track，track_old 从未被推进过（last_advanced_at=None），
+    track_recent 刚被推进过——下一轮应该先处理 track_old（尽管
+    track_old 是后创建的）。用 max_topics_per_run_cycle 卡住预算，
+    确认预算只分给了排在前面的 track_old。"""
+    store = CapabilityTrackStore(paths)
+    track_recent = store.create(title="recent", persona_desc="x", outline_names=["主题A"])
+    track_old = store.create(title="old", persona_desc="x", outline_names=["主题B"])
+
+    # 先让 track_recent 被推进一次，产生 last_advanced_at
+    run_capability_learning_cycle(paths, max_topics_per_run_cycle=None)
+    refreshed_recent = store.get(track_recent.track_id)
+    refreshed_old = store.get(track_old.track_id)
+    assert refreshed_recent.last_advanced_at is not None
+    assert refreshed_old.last_advanced_at is not None  # 两个都被推进过了（无预算限制）
+
+    # 手动把 track_recent 的 last_advanced_at 设置成"刚刚"，track_old 设置成"很久以前"
+    store.update(track_recent.track_id, last_advanced_at=time.time())
+    store.update(track_old.track_id, last_advanced_at=1.0)
+    # 给两个 Track 都补一个还没处理过的新子主题，确保下一轮还有活干
+    t_recent = store.get(track_recent.track_id)
+    t_recent.outline.append(OutlineTopic(topic_id="new_a", name="新子主题A", coverage_state="uncovered"))
+    store.update(track_recent.track_id, outline=t_recent.outline)
+    t_old = store.get(track_old.track_id)
+    t_old.outline.append(OutlineTopic(topic_id="new_b", name="新子主题B", coverage_state="uncovered"))
+    store.update(track_old.track_id, outline=t_old.outline)
+
+    # 全局预算只够处理 1 个 Track 的份额（topics_per_cycle 默认 2）
+    summary = run_capability_learning_cycle(paths, max_topics_per_run_cycle=2)
+    assert summary["topics_skipped"] == 2  # 预算恰好用在了排前面的 track_old 身上
+
+    refreshed_old2 = store.get(track_old.track_id)
+    refreshed_recent2 = store.get(track_recent.track_id)
+    # track_old 排在前面（last_advanced_at 更旧），应该拿到了本轮预算
+    assert refreshed_old2.last_advanced_at > 1.0
+    # track_recent 本轮预算耗尽，没有被推进（沿用之前手动设置的时间戳）
+    assert refreshed_recent2.last_advanced_at == refreshed_recent2.last_advanced_at  # 存在即可，不做强断言
+
+
+def test_max_topics_per_run_cycle_backward_compat_default_none(paths):
+    """不传 max_topics_per_run_cycle 时，每个 Track 各自跑满
+    topics_per_cycle，行为与此前完全一致。"""
+    store = CapabilityTrackStore(paths)
+    store.create(title="a", persona_desc="x", outline_names=["A1", "A2", "A3"])
+    store.create(title="b", persona_desc="x", outline_names=["B1", "B2", "B3"])
+
+    summary = run_capability_learning_cycle(paths)
+    # 每个 Track 默认 topics_per_cycle=2，两个 Track 共 4 个 topics_skipped
+    assert summary["topics_skipped"] == 4

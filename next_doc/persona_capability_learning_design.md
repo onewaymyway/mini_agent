@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.13（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的四项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
+- **版本**：v0.14（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的五项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -94,6 +94,20 @@ Persona 详情页反向展示"绑定的知识范围"列表未单独实现——�
 
 单向只读消费，不写回 `capability_map`、不影响 `self_model.py` 自身读取逻辑，符合设计文档 §12.1-a 的边界要求。
 
+### §13.1-b（多 Track 之间的公平调度）—— ✅ 本轮已实现
+
+设计文档 §13.1 把这一项列为"建议优先纳入 P1/P2，成本低"：
+
+| 项目 | 状态 | 对应文件 |
+|---|---|---|
+| `CapabilityTrack.last_advanced_at`：记录该 Track 上次在 `run_capability_learning_cycle()` 里真正被推进（处理过至少 1 个子主题，不论 researched/question_raised/skipped）的时间戳，None=从未推进过；旧 Track 文件无该字段时 `from_dict` 默认 None，向后兼容 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
+| `run_capability_learning_cycle()` 按 `last_advanced_at` 升序处理 active Track（从未推进过/最久没推进过的优先） | ✅ 已实现 | 同上 |
+| `max_topics_per_run_cycle` 可选全局预算参数：多个 Track 共享同一份预算，预算耗尽的 Track 本轮不再推进；默认 `None`（不设上限，向后兼容——没有全局预算时，排序变化不影响最终结果，因为每个 Track 依然各自跑满 `topics_per_cycle`，只是处理顺序不同） | ✅ 已实现 | 同上 |
+| 消费"已回答问题"这一步（成本可忽略）不占用全局预算、不受限，任何情况下都会为每个 active Track 执行 | ✅ 已实现 | 同上 |
+| 单元测试（5 组：`last_advanced_at` 在处理后更新 / 无子主题可推进时不更新 / 公平排序在预算受限时生效 / 不传预算参数向后兼容 / 与既有测试无冲突） | ✅ 全部通过 | `tests/test_capability_learning_p1.py` |
+
+`sys:capability_learning_cycle` cron job 目前调用 `run_capability_learning_cycle()` 时未显式传 `max_topics_per_run_cycle`（沿用默认 `None`），即当前实际运行行为不变——这一项先把机制和字段落地、验证正确，是否要在 cron 任务里默认打开全局预算（以及预算取多少合适）留给后续结合真实使用量评估，不在本轮直接改变默认运行行为。
+
 ### §4（`/capability` slash command 中间层）—— ✅ 已提前实现
 
 设计文档写作过程中发现的那层缺口——`cron_scheduler.py` 的 `sys:` 内置任务是"生成 `task_template` 文本交给 Agent 执行"而不是直接调用 Python 函数，真正接线 cron 前需要先有一个 slash command——本次补上：
@@ -122,7 +136,7 @@ cron 任务表（`cron_scheduler.py::SYSTEM_JOBS`）已注册 `sys:capability_le
 
 ### P3
 
-规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线 + §14 P2 大纲起草 + §11.4 看板知识范围绑定 + §12.1-a capability_map 排序信号均已提前完成，见上）。剩余方向：`target_type="persona"` 全链路（人设草稿生成/发布，见文档 §10）、与 `external_trend_capability_link`/`objective_executor`/`decision_profile_builder` 的协同（见文档 §12.1-b/c、§12.2）、13.2-e 可验证的学习效果。
+规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线 + §14 P2 大纲起草 + §11.4 看板知识范围绑定 + §12.1-a capability_map 排序信号 + §13.1-b 多 Track 公平调度均已提前完成，见上）。剩余方向：`target_type="persona"` 全链路（人设草稿生成/发布，见文档 §10）、与 `external_trend_capability_link`/`objective_executor`/`decision_profile_builder` 的协同（见文档 §12.1-b/c、§12.2）、13.1-c 跨 Track 子主题去重、13.2-d/e 时效性衰减与可验证学习效果。
 
 ---
 
@@ -599,4 +613,6 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - `PersonaProfile.wiki_scopes` 字段 + `context_builder` 透传 `wiki_shelf_search(tags=...)`——✅ **已提前实现**，见文档开头「实施状态」。看板知识范围绑定 UI（§11.4）——✅ **已提前实现**，见文档开头「§11.4」小节
 - §12.1-a `capability_map` 排序信号——✅ **已提前实现**，见文档开头「§12.1-a」小节
 - 与 `external_trend_capability_link.py` 的浅集成（仅人工审核草稿层，不打通自动 Goal 生成，见 12.2-d），作为方向级选项，实施前需团队评审确认边界配置默认关闭
+- 13.1-c 跨 Track 子主题去重与知识共享——尚未实现
+- 13.2-d 知识时效性衰减（`OutlineTopic.volatility` 字段已在 P1 提前带上，但 `scan_outline_gaps()` 尚未消费它）——尚未实现
 - 13.2-e 可验证的学习效果（探针问题对比"有/无 wiki 上下文"回答质量）——实现复杂度高（涉及双份回答生成与质量判定），不在早期阶段承诺，需先验证 P1/P2 的基础闭环稳定后再评估投入
