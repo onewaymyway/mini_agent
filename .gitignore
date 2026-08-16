@@ -54,3 +54,49 @@ temp_cdp
 .claude/skills/browser-cdp/output/
 .agent/daemon_run_outputs/
 .agent/daemon/
+
+# A股数据与分析结果（禁止提交）
+agent_api.key
+agent_permissions.json
+providers*.json
+agent_config_*.json
+
+# Chrome/CDP 调试配置
+.cache/
+.chrome_debug_profile/
+
+# 数据、日志、缓存目录
+data/
+daemon/
+logs/
+archive/
+copy/
+created/
+done/
+echo/
+mkdir/
+READY/
+release_logs/
+temp_test/
+test_reports/
+
+# 测试与缓存
+.pytest_cache/
+.ruff_cache/
+
+# VSCode 配置
+.vscode/
+
+# .agent 子目录（部分已有规则，补充遗漏的）
+.agent/archive/
+.agent/capability_ledger/
+.agent/cron/
+.agent/cron_runs/
+.agent/cycle_tuning_proposals/
+.agent/goal_execution_phase/
+.agent/goal_execution_specs/
+.agent/notification/
+.agent/output/
+.agent/temp/
+.agent/workspace.db
+
