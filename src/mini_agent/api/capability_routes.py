@@ -24,8 +24,10 @@ from pydantic import BaseModel
 
 from mini_agent.evolution.capability_learning import (
     CapabilityLedgerStore,
+    CapabilityOutlineSuggestionStore,
     CapabilityQuestionStore,
     CapabilityTrackStore,
+    accept_outline_suggestion,
 )
 from mini_agent.orchestrator.persona_profiles import (
     get_persona_loader,
@@ -181,6 +183,41 @@ def dismiss_question(request: Request, question_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="question not found")
     return {"dismissed": True, "question_id": question_id}
+
+
+# ── v0.21 §13.2-f 大纲动态生长建议端点 ─────────────────────────────────
+#
+# 与上面的异步问答端点是两件独立的事：问答队列的答案是"素材"，这里的
+# 建议队列是从素材里提炼出来的"要不要扩展大纲"的产出，两者状态机
+# （pending/answered/dismissed/expired 与 pending/accepted/dismissed）
+# 也不同，不合并成一个端点组。
+
+
+@capability_router.get("/suggestions")
+def list_outline_suggestions(request: Request, status: Optional[str] = None, track_id: Optional[str] = None):
+    store = CapabilityOutlineSuggestionStore(_get_paths(request))
+    return {"suggestions": [s.to_dict() for s in store.list_suggestions(status=status, track_id=track_id)]}
+
+
+@capability_router.post("/suggestions/{suggestion_id}/accept")
+def accept_outline_suggestion_endpoint(request: Request, suggestion_id: str):
+    """采纳一条建议：追加为大纲新子主题（`accept_outline_suggestion()`
+    同时把建议自身标记为 accepted）。建议不存在/已处理过/对应 Track 已被
+    删除时统一返回 404——三种情况看板前端都应该提示"刷新后重试"，不需要
+    在错误码层面细分。"""
+    topic = accept_outline_suggestion(_get_paths(request), suggestion_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail="suggestion not found or already processed")
+    return {"accepted": True, "suggestion_id": suggestion_id, "topic": topic.to_dict()}
+
+
+@capability_router.post("/suggestions/{suggestion_id}/dismiss")
+def dismiss_outline_suggestion(request: Request, suggestion_id: str):
+    store = CapabilityOutlineSuggestionStore(_get_paths(request))
+    ok = store.dismiss(suggestion_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    return {"dismissed": True, "suggestion_id": suggestion_id}
 
 
 # ── §11.4 知识范围绑定端点 ───────────────────────────────────────────────

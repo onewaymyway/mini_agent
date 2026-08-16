@@ -176,5 +176,71 @@ class TestPersonaDraftRoutes(unittest.TestCase):
         self.assertEqual(published_path.parent, paths.project_personas_dir)
 
 
+class TestCapabilityOutlineSuggestionRoutes(unittest.TestCase):
+    """v0.21 §13.2-f 大纲动态生长建议端点挂载测试。"""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.project_root = Path(self._tmpdir.name)
+        self.client = _make_client(self.project_root)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_list_suggestions_empty(self):
+        resp = self.client.get("/v1/capability/suggestions")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"suggestions": []})
+
+    def test_accept_suggestion_adds_topic(self):
+        from mini_agent.evolution.capability_learning import (
+            CapabilityOutlineSuggestionStore,
+            CapabilityTrackStore,
+            OutlineSuggestion,
+        )
+        from mini_agent.storage.paths import AgentPaths
+
+        paths = AgentPaths(project_root=self.project_root)
+        track = CapabilityTrackStore(paths).create(title="股票分析", persona_desc="股票分析")
+        CapabilityOutlineSuggestionStore(paths).add(OutlineSuggestion(
+            suggestion_id="capsug_x1", track_id=track.track_id,
+            source_question_id="q1", suggested_name="港股市场特点",
+        ))
+
+        resp = self.client.post("/v1/capability/suggestions/capsug_x1/accept")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["topic"]["name"], "港股市场特点")
+
+        list_resp = self.client.get("/v1/capability/suggestions", params={"status": "pending"})
+        self.assertEqual(list_resp.json(), {"suggestions": []})
+
+    def test_dismiss_suggestion(self):
+        from mini_agent.evolution.capability_learning import (
+            CapabilityOutlineSuggestionStore,
+            CapabilityTrackStore,
+            OutlineSuggestion,
+        )
+        from mini_agent.storage.paths import AgentPaths
+
+        paths = AgentPaths(project_root=self.project_root)
+        track = CapabilityTrackStore(paths).create(title="股票分析", persona_desc="股票分析")
+        CapabilityOutlineSuggestionStore(paths).add(OutlineSuggestion(
+            suggestion_id="capsug_x2", track_id=track.track_id,
+            source_question_id="q1", suggested_name="港股市场特点",
+        ))
+
+        resp = self.client.post("/v1/capability/suggestions/capsug_x2/dismiss")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"dismissed": True, "suggestion_id": "capsug_x2"})
+
+    def test_accept_unknown_suggestion_404(self):
+        resp = self.client.post("/v1/capability/suggestions/does_not_exist/accept")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_dismiss_unknown_suggestion_404(self):
+        resp = self.client.post("/v1/capability/suggestions/does_not_exist/dismiss")
+        self.assertEqual(resp.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.21（「后续计划」第 1、2 项已实现。第 1 项：`CapabilityLearningConfig` 新增 `notification_enabled`/`notification_frequency`/`notification_max_per_day` 三个独立字段，`maybe_dispatch_capability_notification()` 在 `/capability cycle`（含 `sys:capability_learning_cycle`）跑完一轮后按天节流推送"待回答问题数 + 本轮新沉淀 wiki 页面数"摘要，空轮不占用额度不发送，走既有 `NotificationDispatcher`。第 2 项：`OutlineSuggestion` 数据模型 + `CapabilityOutlineSuggestionStore` + `generate_outline_suggestion_from_answer()`——消费已回答问题时，拿到 `llm_helper` 就尝试提炼"是否存在明显大纲外新关注点"，命中且与现有大纲/待处理建议都不重复（复用 §13.1-c 的 `_topic_name_similarity`）时生成一条 pending 建议，`accept_outline_suggestion()` 供采纳（追加为新 `OutlineTopic`）、`CapabilityOutlineSuggestionStore.dismiss()` 供忽略；`run_capability_learning_cycle()` 新增可选 `llm_helper` 入参接线，CLI 新增 `/capability suggestions [track_id] | accept <id> | dismiss <id>`。均见「实施状态」新增小节。第 3 项（Persona 镜像视图）待后续轮次实施）
+- **版本**：v0.21（「后续计划」三项全部完成。第 1 项：通知系统接入（`notification_enabled`/`notification_frequency`/`notification_max_per_day` + `maybe_dispatch_capability_notification()`，见「§8 通知系统接入」小节）。第 2 项：大纲动态生长建议核心逻辑 + CLI（`OutlineSuggestion` + `CapabilityOutlineSuggestionStore` + `generate_outline_suggestion_from_answer()` + `accept_outline_suggestion()` + `/capability suggestions`，见「§13.2-f 大纲动态生长建议」小节）。**本轮新增**：第 2 项补齐 HTTP API（`GET /v1/capability/suggestions`、`POST .../accept`、`POST .../dismiss`）与看板 UI（能力学习 Tab 新增「💡 大纲扩展建议」区块，采纳/忽略按钮）；第 3 项 Persona 详情页镜像视图——能力学习 Tab 新增「🎭 已发布角色一览」区块，按角色列出各自绑定的 `wiki_scopes`，实现 §11.2 末尾"双向可见"）
 - **上一版本**：v0.20（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的九项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）、§13.1-c 跨 Track 子主题去重与知识共享、§10 `target_type="persona"` 人设草稿合成与发布全链路（核心库 + CLI + HTTP API + 看板 UI）。**本轮（v0.20）**：真实检索与 cron 任务评审条件已满足，`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段均改为**默认开启**（opt-out，此前是 opt-in 默认关闭），见「实施状态」新增小节；同时把看板人设草稿区从最简版本（一句纯文字完成度摘要 + 单一源码预览）升级为进度条+逐维度勾选清单、渲染效果/源码双 Tab 预览、§10.4-2 真人模仿安全提示单独高亮）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
@@ -64,8 +64,17 @@
 | 单元测试（8 组：无 llm_helper 跳过 / LLM 判定 NONE 跳过 / 命中生成建议 / 与既有大纲重复被去重 / 采纳建议追加子主题 / 采纳未知建议返回 None / cycle 传 llm_helper 生成建议 / cycle 不传时不生成） | ✅ 全部通过 | `tests/test_capability_outline_suggestions_v021.py` |
 
 **未做的部分**（本次不在范围内，留给后续轮次）：
-- HTTP API 端点（`GET /v1/capability/suggestions`、`POST /v1/capability/suggestions/{id}/accept`、`.../dismiss`）——本轮只做了核心逻辑 + CLI，看板/API 侧的可视化操作入口留到下一轮和「Persona 镜像视图」一起做（两者都涉及能力学习 Tab 的 UI 改动，合并一轮改动面更集中，便于评审）
-- 看板 UI 展示 pending 建议列表 + 一键采纳/忽略按钮——同上，随 API 端点一起补
+- HTTP API 端点（`GET /v1/capability/suggestions`、`POST /v1/capability/suggestions/{id}/accept`、`.../dismiss`）—— ✅ **本轮已补齐**，见下方「§13.2-f 大纲扩展建议 API + 看板 UI（本轮补齐）」小节
+- 看板 UI 展示 pending 建议列表 + 一键采纳/忽略按钮—— ✅ **本轮已补齐**，见下方同一小节
+
+### §13.2-f 大纲扩展建议 API + 看板 UI（本轮补齐）—— ✅ 已实现
+
+| 项目 | 状态 | 对应文件 |
+|---|---|---|
+| `GET /v1/capability/suggestions`（支持 `status`/`track_id` 过滤）/ `POST /v1/capability/suggestions/{id}/accept`（复用 `accept_outline_suggestion()`，不重复业务逻辑）/ `POST /v1/capability/suggestions/{id}/dismiss` | ✅ 已实现 | `src/mini_agent/api/capability_routes.py` |
+| 看板 client 方法 `capability_outline_suggestions()` / `accept_capability_outline_suggestion()` / `dismiss_capability_outline_suggestion()` | ✅ 已实现 | `apps/mini_agent_kanban/client.py` |
+| 能力学习 Tab 新增「💡 大纲扩展建议」区块：列出 pending 建议（建议名称 + 来源理由 + 所属 Track），逐条「采纳」/「忽略」按钮，风格对齐既有「❓ 待回答问题」区块 | ✅ 已实现 | `apps/mini_agent_kanban/app.py`（`render_capability_tab`） |
+| 单元测试（5 组：列表为空 / 采纳追加子主题 / 忽略 / 采纳未知建议 404 / 忽略未知建议 404） | ✅ 全部通过 | `tests/test_capability_routes_mount.py`（新增 `TestCapabilityOutlineSuggestionRoutes`） |
 
 ### 第 11 节（`PersonaProfile.wiki_scopes`）—— ✅ 已提前实现
 
@@ -96,6 +105,16 @@
 | 单元测试（9 组：工具函数列出/插入/替换/清空/无 frontmatter 失败 5 组，API 端点列出/设置/未知角色 404 3 组，共 8 个测试方法覆盖 9 个断言场景） | ✅ 全部通过 | `tests/test_capability_persona_wiki_scopes_binding.py` |
 
 Persona 详情页反向展示"绑定的知识范围"列表未单独实现——现有 `/role` CLI 侧没有一个"persona 详情页"承载这类信息，看板目前也没有独立的 Persona 管理 Tab；本轮选择把双向可见性做在 Track 详情页一侧（已绑定角色列表 + 全局未绑定弱提示），已能覆盖 §11.2 末尾"双向可见"的核心诉求，若后续新增独立的 Persona 管理 Tab，可以在那里补上镜像视图。
+
+### Persona 详情页镜像视图（v0.21 第 3 项）—— ✅ 已实现
+
+§11.4 已经做了 Track 详情页「知识范围绑定」卡片的正向视图（"这个 Track 被哪些角色引用"）；本轮补上反向的镜像视图，实现设计文档 §11.2 末尾"双向可见"：
+
+| 项目 | 状态 | 对应文件 |
+|---|---|---|
+| 能力学习 Tab 新增「🎭 已发布角色一览」区块：复用 `list_capability_personas()`（与知识范围绑定卡片同一份数据源，不额外请求），按角色列出 `display_name` + 已绑定的 `wiki_scopes`（未绑定则显示"不限定范围（检索全库）"） | ✅ 已实现 | `apps/mini_agent_kanban/app.py`（`render_capability_tab`） |
+
+未新开独立的 Persona 管理 Tab——沿用文档此前的判断，双向可见性做在同一个 Tab 的两个区块里已经足够，若后续这个 Tab 内容变得过于拥挤，再评估是否拆分独立 Tab。
 
 ### §14.1-a（`record_wiki_miss()` 接线）—— ✅ 已提前实现
 
@@ -674,13 +693,13 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 
 目前大纲创建后主要靠用户手动编辑。更自然的方式是：用户在追问回答或对话中提到大纲之外的新关注点时（比如原大纲是"股票分析"，用户提到"我其实更关心港股"），系统生成一条"要不要把这个也加进大纲"的建议，而不是让大纲外的信息被浪费掉。这一点和 13.1-a 是一体两面——a 解决的是"发现已有子主题的缺口"，f 解决的是"发现大纲本身该扩展"，两者机制不同，值得区分成两个独立能力点分别实现。
 
-### 后续计划（v0.21）—— §8 通知接入（✅ 已实现） / §13.2-f 大纲动态生长 / Persona 镜像视图
+### 后续计划（v0.21）—— §8 通知接入 / §13.2-f 大纲动态生长 / Persona 镜像视图（三项均已实现）
 
-三项从「进一步改进方向」里挑出、纳入本轮实施，第 1 项已完成（见上方「§8 通知系统接入（v0.21 第 1 项）」小节），第 2、3 项待后续轮次：
+三项从「进一步改进方向」里挑出、纳入本轮实施，三项均已完成：
 
 1. ~~**§8 通知系统接入**~~ —— ✅ **已实现**，见文档开头「§8 通知系统接入」小节。
-2. ~~**§13.2-f 大纲动态生长建议**~~ —— ✅ **已实现**（核心逻辑 + CLI），见文档开头「§13.2-f 大纲动态生长建议」小节；HTTP API 端点与看板 UI 留到下一轮和第 3 项一起做。
-3. **Persona 详情页镜像视图**：Track 详情页已经有"被以下角色引用"的正向视图（§11.4），本轮在能力学习 Tab 里补一个"🎭 已发布角色一览"区块，按角色列出各自绑定的 `wiki_scopes`（若未绑定则显示"不限定范围"），实现文档 §11.2 末尾"双向可见"的镜像视图，不需要为此新开一个独立 Persona 管理 Tab。
+2. ~~**§13.2-f 大纲动态生长建议**~~ —— ✅ **已实现**（核心逻辑 + CLI + HTTP API + 看板 UI），见文档开头「§13.2-f 大纲动态生长建议」及「§13.2-f 大纲扩展建议 API + 看板 UI（本轮补齐）」两个小节。
+3. ~~**Persona 详情页镜像视图**~~ —— ✅ **已实现**，见文档开头「Persona 详情页镜像视图（v0.21 第 3 项）」小节。
 
 
 

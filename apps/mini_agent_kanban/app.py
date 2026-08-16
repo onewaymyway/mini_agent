@@ -6031,6 +6031,54 @@ def render_capability_tab(client: "AgentClient"):
                     + (f"　→ {q.get('answer', '')}" if q.get("answer") else "")
                 )
 
+    # ── v0.21 §13.2-f 大纲动态生长建议区 ──────────────────────────────
+    # 消费已回答问题时由 llm_helper 提炼出的"大纲之外新关注点"建议，
+    # 采纳后追加为新子主题、忽略则不动大纲——始终是人工决定，不自动追加。
+    st.markdown("---")
+    st.markdown("##### 💡 大纲扩展建议")
+    suggestions_resp = client.capability_outline_suggestions(status="pending")
+    pending_suggestions = (
+        suggestions_resp.get("suggestions", []) if isinstance(suggestions_resp, dict) else []
+    )
+    if not pending_suggestions:
+        st.caption("目前没有待处理的大纲扩展建议（回答异步问题后，若答案里提到明显的新方向，会在这里出现）。")
+    else:
+        track_titles = {t["track_id"]: t.get("title", "") for t in tracks}
+        for s in pending_suggestions:
+            with st.container(border=True):
+                st.write(f"建议新增子主题：**{s.get('suggested_name', '')}**")
+                if s.get("rationale"):
+                    st.caption(s["rationale"])
+                st.caption(f"来自：{track_titles.get(s.get('track_id', ''), s.get('track_id', ''))}")
+                bcols = st.columns([1, 1, 6])
+                with bcols[0]:
+                    if st.button("采纳", key=f"cap_sug_accept_{s['suggestion_id']}"):
+                        client.accept_capability_outline_suggestion(s["suggestion_id"])
+                        st.rerun()
+                with bcols[1]:
+                    if st.button("忽略", key=f"cap_sug_dismiss_{s['suggestion_id']}"):
+                        client.dismiss_capability_outline_suggestion(s["suggestion_id"])
+                        st.rerun()
+
+    # ── v0.21 第 3 项：Persona 详情页镜像视图 ──────────────────────────
+    # §11.4 已经在 Track 详情页做了"被以下角色引用"的正向视图；这里补一个
+    # 反向的"🎭 已发布角色一览"，按角色列出各自绑定的 wiki_scopes，实现
+    # 设计文档 §11.2 末尾"双向可见"——不新开独立 Persona 管理 Tab，直接挂
+    # 在能力学习 Tab 里，和上面知识范围绑定卡片共用同一份 personas 数据源。
+    st.markdown("---")
+    st.markdown("##### 🎭 已发布角色一览")
+    all_personas_resp = client.list_capability_personas()
+    all_personas = (
+        all_personas_resp.get("personas", []) if isinstance(all_personas_resp, dict) else []
+    )
+    if not all_personas:
+        st.caption("目前没有已发布的角色（`.agent/personas/` 下暂无文件）。")
+    else:
+        for p in all_personas:
+            scopes = p.get("wiki_scopes") or []
+            scope_note = "、".join(scopes) if scopes else "不限定范围（检索全库）"
+            st.caption(f"**{p.get('display_name') or p.get('name')}** — {scope_note}")
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 自诊断信号闭环深化（next_doc/self_diagnosis_feedback_loop_deepening_plan.md

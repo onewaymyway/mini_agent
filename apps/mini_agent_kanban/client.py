@@ -977,6 +977,21 @@ class AgentClient:
     def dismiss_capability_question(self, question_id: str):
         return self._post(f"/capability/questions/{question_id}/dismiss")
 
+    # ── v0.21 §13.2-f 大纲动态生长建议 ──────────────────────────────────
+    def capability_outline_suggestions(self, status: str = None, track_id: str = None):
+        params = {}
+        if status:
+            params["status"] = status
+        if track_id:
+            params["track_id"] = track_id
+        return self._get("/capability/suggestions", params=params or None)
+
+    def accept_capability_outline_suggestion(self, suggestion_id: str):
+        return self._post(f"/capability/suggestions/{suggestion_id}/accept")
+
+    def dismiss_capability_outline_suggestion(self, suggestion_id: str):
+        return self._post(f"/capability/suggestions/{suggestion_id}/dismiss")
+
     # ── §11.4 知识范围绑定 ────────────────────────────────────────────
     def list_capability_personas(self):
         return self._get("/capability/personas")
