@@ -103,10 +103,24 @@ wiki_scopes:                        # 可选，该角色检索时优先使用的
 
 ## 创建自定义角色
 
-使用 `persona-generator` skill（`.claude/skills/persona-generator/SKILL.md`）辅助创建，
-会引导你确认身份设定、说话风格、是否需要工具限制、`break_character_policy` 取值，
-并写入 `.agent/personas/<name>.md`。创建后可用 `/role show <name>` 预览、
-`/role use <name>` 试用。
+两种方式：
+
+1. **手写 / skill 辅助**：使用 `persona-generator` skill
+   （`.claude/skills/persona-generator/SKILL.md`）辅助创建，会引导你确认
+   身份设定、说话风格、是否需要工具限制、`break_character_policy` 取值，
+   并写入 `.agent/personas/<name>.md`。创建后可用 `/role show <name>`
+   预览、`/role use <name>` 试用。
+2. **Capability Learning 人设草稿**（`next_doc/persona_capability_learning_design.md` §10）：
+   创建一个 `target_type="persona"` 的 CapabilityTrack（`/capability create
+   <title> | <persona_desc> --persona`），通过异步问答逐步补充身份背景、
+   说话习惯等各维度信息，再用 `/capability persona draft <track_id>`
+   把已收集到的信息合成一版草稿、`/capability persona show <track_id>`
+   预览、确认无误后 `/capability persona publish <track_id>` 发布——发布
+   前系统会对"要求模仿某个真实公众人物本人"这类表述做一次启发式提示
+   （不自动阻断），适合"想不清楚人设细节，希望被逐步问出来"的场景；
+   看板的 🎓 能力学习 Tab 也提供同样的生成/预览/发布入口，见
+   [`kanban-dashboard-guide.md`](kanban-dashboard-guide.md) 的
+   "能力学习 Tab" 一节。
 
 ## 多用户 / daemon 场景
 
@@ -116,3 +130,5 @@ wiki_scopes:                        # 可选，该角色检索时优先使用的
 ## 设计文档
 
 完整的设计决策与实施记录见 [`next_doc/roleplay_persona_design.md`](../next_doc/roleplay_persona_design.md)。
+Capability Learning 人设草稿生成/发布链路见
+[`next_doc/persona_capability_learning_design.md`](../next_doc/persona_capability_learning_design.md) §10。

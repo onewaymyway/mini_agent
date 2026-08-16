@@ -354,26 +354,40 @@ plan.md` 方向 D.2）：`growth_health_trend.jsonl` 已经覆盖了"记忆总�
 ### 🎓 能力学习 Tab
 
 对应 `next_doc/persona_capability_learning_design.md` §7 三个区域，数据来自
-`/v1/capability/*`（本轮新挂载，见该设计文档「实施状态」表格）：
+`/v1/capability/*`：
 
 - **人设管理区**：顶部"➕ 新建能力 / 人设方向"表单（标题 + 方向描述 +
-  类型 knowledge/persona + 可选 wiki 命名空间），下方按 Track 列出，每个
-  Track 可折叠展开，含暂停/恢复、二次确认删除（删除只下线 Track 本身，
-  不级联删已产出的 wiki 页面，见设计文档 §7.1 的克制原则）。
+  类型 knowledge/persona + 可选 wiki 命名空间 + 可选"用 LLM 起草初始
+  大纲"），下方按 Track 列出，每个 Track 可折叠展开，含暂停/恢复、
+  二次确认删除（删除只下线 Track 本身，不级联删已产出的 wiki 页面，
+  见设计文档 §7.1 的克制原则）。
 - **进度展示区**：展开某个 Track 后，按 `uncovered`/`partial`/`covered`
   三态图标展示大纲子主题覆盖状态，以及最近 10 条学习台账（检索沉淀/
-  生成问题/消费回答/跳过/记录未命中，见 §3.2）。
+  生成问题/消费回答/跳过/记录未命中/复用其它 Track 页面，见 §3.2、
+  §13.1-c）。
+- **人设草稿区（仅 persona 型 Track，见 §10.3）**：「生成/刷新草稿」
+  按钮会把目前已回答的问题合成一份 `.agent/personas/*.md` 格式的草稿
+  并落盘（不会自动发布），旁边展示完成度（几个维度已经有信息、还缺
+  哪些）；草稿正文可以在折叠区里预览；「发布」按钮需要二次确认，
+  确认后才会真正写入 `.agent/personas/`（项目级目录），供 `/role use`
+  立即激活。生成草稿和发布是两个独立的、都需要用户显式点击的动作，
+  不会因为点了"生成"就顺带发布。
+- **知识范围绑定区（仅 knowledge 型、已生成 wiki_tag 的 Track，见
+  §11.4）**：展示当前哪些角色的 `wiki_scopes` 绑定了这个 Track 的
+  wiki 命名空间，可在弹出面板里勾选/取消绑定各个已定义角色。
 - **待回答问题区**：所有 `status=pending` 的异步问题，逐条展示问题文本+
   提示+所属 Track，配文本框"提交"/"忽略"按钮；提交后立即返回、不等待
   也不触发学习循环（异步语义，见设计文档 §3.3/§9 第 6 条）——下一轮
-  `sys:capability_learning_cycle` 才会去消费已回答的问题。已回答/已忽略/
+  `/capability cycle` 才会去消费已回答的问题。已回答/已忽略/
   已过期的问题收进一个折叠的"历史问答"区。
 
-`sys:capability_learning_cycle` cron 任务尚未注册（见设计文档「实施
-状态」），因此这个 Tab 目前没有"距离下次学习还有多久"之类的倒计时展示，
-也没有"立即学习"按钮——避免在 cron 接线评审通过前，让 UI 暗示这是个已经
-在自动运行的功能。当前唯一能推进学习循环的方式是 CLI 的 `/capability
-cycle` 命令。
+`sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个
+cron job 已注册但默认 `enabled=False`（opt-in，见设计文档「实施
+状态」），因此这个 Tab 目前没有"距离下次学习还有多久"之类的倒计时
+展示，也没有"立即学习"按钮——避免在用户显式打开 cron 之前，让 UI
+暗示这是个已经在自动运行的功能。当前唯一能推进学习循环的方式是 CLI
+的 `/capability cycle` 命令，或在 ⏰ Cron 任务 Tab 里手动打开对应
+cron job 后等待其按 cadence 自动触发。
 
 ### ⏰ Cron 任务 Tab
 
