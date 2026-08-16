@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.14（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的五项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
+- **版本**：v0.15（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的六项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -134,9 +134,23 @@ cron 任务表（`cron_scheduler.py::SYSTEM_JOBS`）已注册 `sys:capability_le
 | 看板「➕ 新建能力 / 人设方向」表单新增"用 LLM 起草初始大纲"复选框 | ✅ 已实现 | `apps/mini_agent_kanban/app.py`、`apps/mini_agent_kanban/client.py` |
 | 单元测试（10 组：解析多行/条数校验/空响应/异常兜底/`create()` 走 LLM 路径/`outline_names` 优先级/失败兜底空大纲/HTTP 端点两条路径） | ✅ 全部通过 | `tests/test_capability_learning_p1.py`、`tests/test_capability_routes_mount.py` |
 
+### §13.2-d（知识时效性衰减，`volatility` 消费）—— ✅ 本轮已实现
+
+`OutlineTopic.volatility` 字段在 P1 就已带上（避免后续迁移），但此前 `scan_outline_gaps()` 从不消费它——`covered` 子主题一旦覆盖就永久排除在候选之外，会出现"名义覆盖率 100%，内容早已过期"的假象（比如"当前宏观利率环境"这类 `volatile` 内容，检索一次之后再也不会被重新推进）。本轮补上：
+
+| 项目 | 状态 | 对应文件 |
+|---|---|---|
+| `STALENESS_SECONDS_BY_VOLATILITY`：`volatile` → 7 天、`periodic` → 30 天的过期阈值常量；`stable`（默认值）或未识别取值不设阈值，永不因时间被重新纳入候选 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
+| `_needs_staleness_refresh(topic, now)`：仅对 `coverage_state == "covered"` 的子主题生效；`last_touched_at is None` 视为需要刷新（比如手动改了 `volatility` 标注但还没有触达记录），不会因为"没有时间戳"被永久跳过 | ✅ 已实现 | 同上 |
+| `scan_outline_gaps(track, ..., now=None)`：候选集从"非 `covered`"扩展为"非 `covered` 或已过期需刷新"；过期的 `covered` 子主题排序上归入 `partial` 同一优先档（已有内容但需要刷新，不抢在真正 `uncovered` 之前，也不会被排到"确定还新鲜"的 covered 子主题之后）。新增 `now` 参数供单测传固定时间戳，默认 `time.time()`，不传各参数时行为与此前完全一致 | ✅ 已实现，向后兼容 | 同上 |
+| 刷新后的状态回写 | ✅ 天然满足，未额外实现——`run_capability_learning_cycle()` 里已有的写入后更新逻辑（`topic.coverage_state = "covered" if page_ids else "partial"` + `topic.last_touched_at = time.time()`）对"过期被重新选中的 covered 子主题"和"本来就是 partial/uncovered 的子主题"走的是完全相同的代码路径，刷新后 `last_touched_at` 自然重置，过期计时器自动重新开始，不需要新增分支 | 同上（未改动，本次为确认结论） | — |
+| 单元测试（4 组：`stable` 永不过期 / `volatile` 超过 7 天阈值后被重新纳入且排序正确 / `last_touched_at is None` 视为需要刷新 / `periodic` 使用 30 天更长阈值） | ✅ 全部通过 | `tests/test_capability_learning_p1.py` |
+
+`run_capability_learning_cycle()` 未改动——它调用 `scan_outline_gaps()` 时不传 `now`，沿用默认 `time.time()`，行为自动获得这项能力，不需要额外接线。
+
 ### P3
 
-规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线 + §14 P2 大纲起草 + §11.4 看板知识范围绑定 + §12.1-a capability_map 排序信号 + §13.1-b 多 Track 公平调度均已提前完成，见上）。剩余方向：`target_type="persona"` 全链路（人设草稿生成/发布，见文档 §10）、与 `external_trend_capability_link`/`objective_executor`/`decision_profile_builder` 的协同（见文档 §12.1-b/c、§12.2）、13.1-c 跨 Track 子主题去重、13.2-d/e 时效性衰减与可验证学习效果。
+规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线 + §14 P2 大纲起草 + §11.4 看板知识范围绑定 + §12.1-a capability_map 排序信号 + §13.1-b 多 Track 公平调度 + §13.2-d 知识时效性衰减均已提前完成，见上）。剩余方向：`target_type="persona"` 全链路（人设草稿生成/发布，见文档 §10）、与 `external_trend_capability_link`/`objective_executor`/`decision_profile_builder` 的协同（见文档 §12.1-b/c、§12.2）、13.1-c 跨 Track 子主题去重、13.2-e 可验证学习效果。
 
 ---
 
@@ -595,7 +609,7 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - 异步问答队列的生成与消费（不接通知，只落队列）—— ✅ 已实现
 - 看板三个区域（人设管理/进度展示/待回答问题）+ 对应 API —— ✅ 均已实现，见文档开头「实施状态」
 - `context_builder.py` 接入检索复用 —— ✅ 未命中记录部分（§14.1-a）已提前完成；§6 的"命中 active Track 时按需注入"部分经代码走查确认已被既有的 `_try_inject_wiki_search()` 全库检索链路天然覆盖，不需要额外实现，见文档开头「实施状态」说明
-- 剩余未接线项：无——P1 计划项已全部实现，`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草也已提前完成（均原标注在 P2）。真实 `retriever`（`web_search`）与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` cron 任务默认关闭（opt-in），需要用户在配置/看板里显式打开，不在本轮默认打开（详见文档开头「实施状态」的取舍说明）。剩余 P3 方向：`target_type="persona"` 全链路、与 `capability_map` 等其它子系统的协同，另行评审
+- 剩余未接线项：无——P1 计划项已全部实现，`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草、§13.2-d 知识时效性衰减也已提前完成（均原标注在 P2/P3）。真实 `retriever`（`web_search`）与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` cron 任务默认关闭（opt-in），需要用户在配置/看板里显式打开，不在本轮默认打开（详见文档开头「实施状态」的取舍说明）。剩余 P3 方向：`target_type="persona"` 全链路、与 `capability_map` 等其它子系统的协同，另行评审
 
 **P2（体验与质量增强）**：
 - 大纲生成/缺口判定引入 LLM 辅助（替换纯规则）
@@ -614,5 +628,5 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - §12.1-a `capability_map` 排序信号——✅ **已提前实现**，见文档开头「§12.1-a」小节
 - 与 `external_trend_capability_link.py` 的浅集成（仅人工审核草稿层，不打通自动 Goal 生成，见 12.2-d），作为方向级选项，实施前需团队评审确认边界配置默认关闭
 - 13.1-c 跨 Track 子主题去重与知识共享——尚未实现
-- 13.2-d 知识时效性衰减（`OutlineTopic.volatility` 字段已在 P1 提前带上，但 `scan_outline_gaps()` 尚未消费它）——尚未实现
+- 13.2-d 知识时效性衰减（`OutlineTopic.volatility` 字段已在 P1 提前带上）——✅ **已提前实现**，见文档开头「§13.2-d」小节
 - 13.2-e 可验证的学习效果（探针问题对比"有/无 wiki 上下文"回答质量）——实现复杂度高（涉及双份回答生成与质量判定），不在早期阶段承诺，需先验证 P1/P2 的基础闭环稳定后再评估投入

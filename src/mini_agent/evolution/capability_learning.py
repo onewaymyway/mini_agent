@@ -544,11 +544,39 @@ def draft_outline_with_llm(
 # ── 大纲缺口扫描（§4 伪流程第一步，规则式，P1 版本）──────────────────────
 
 
+# [§13.2-d 知识时效性衰减] volatility → 距上次触达多久后视为"该重新检索"。
+# 只对 volatile / periodic 生效；stable（默认值）永不因为时间过期被重新
+# 纳入候选——"技术分析基础"这类内容几乎不过时，不应该被无谓地重复检索。
+# 具体秒数先写死常量（P1 一贯做法，后续可迁移进 config_catalog）：
+#   volatile（"当前宏观利率环境"这类）— 7 天
+#   periodic（介于两者之间，比如"季度财报解读方法"）— 30 天
+STALENESS_SECONDS_BY_VOLATILITY = {
+    "volatile": 7 * 86400,
+    "periodic": 30 * 86400,
+}
+
+
+def _needs_staleness_refresh(topic: OutlineTopic, now: float) -> bool:
+    """判断一个已经 `coverage_state == "covered"` 的子主题，是否因为
+    `volatility` 标注和距上次触达的时间，需要被重新纳入本轮候选。
+    `stable`（或未识别的取值）永远返回 False——只有 §13.2-d 明确定义的
+    两档时效性标注才会触发重新检索，避免"忘记打标"的子主题被误判过期。"""
+    if topic.coverage_state != "covered":
+        return False
+    threshold = STALENESS_SECONDS_BY_VOLATILITY.get(topic.volatility)
+    if not threshold:
+        return False
+    if topic.last_touched_at is None:
+        return True
+    return (now - topic.last_touched_at) >= threshold
+
+
 def scan_outline_gaps(
     track: CapabilityTrack,
     limit: int = DEFAULT_TOPICS_PER_CYCLE,
     miss_counts: Optional[dict[str, int]] = None,
     capability_confidence: Optional[dict[str, float]] = None,
+    now: Optional[float] = None,
 ) -> list[OutlineTopic]:
     """规则式缺口扫描：优先选 uncovered，其次 partial；同一 coverage_state
     内，先按 `miss_counts`（§14.1-a 的 `miss_observed` 台账统计，见
@@ -559,21 +587,40 @@ def scan_outline_gaps(
     越优先，没有匹配到 capability_map 条目的子主题给中性值 0.5（既不
     因为"没数据"被排到最后，也不会抢在明确低置信度的子主题前面）；
     以上信号都缺失或相同时，退化为原有的 last_touched_at 从旧到新排序
-    （越久没碰过的越优先）。两个新参数默认 None，不传时行为与此前
-    完全一致，接线方（run_capability_learning_cycle）不用改调用方式。"""
+    （越久没碰过的越优先）。
+
+    [§13.2-d 知识时效性衰减] 候选集不再只是"非 covered"的子主题——已经
+    `covered` 但被标注为 `volatility="volatile"/"periodic"` 且距上次
+    触达超过对应阈值（见 `_needs_staleness_refresh()`）的子主题，也会
+    被重新纳入候选，排序上和 `partial` 同一优先级（已经有内容、只是
+    可能过期，不该抢在真正 `uncovered` 的子主题前面，但也不该排到
+    "确定还新鲜"的 covered 子主题之后）。这样才不会出现"名义覆盖率
+    100%，内容早已过期"的假象却永远不会被重新检索的问题。
+
+    `now` 默认取 `time.time()`；单测里可以传固定时间戳避免依赖真实
+    系统时钟。三个新参数（`miss_counts`/`capability_confidence`/`now`）
+    默认值下行为与此前完全一致，接线方不用改调用方式。"""
     miss_counts = miss_counts or {}
     capability_confidence = capability_confidence or {}
+    now = now if now is not None else time.time()
 
-    def sort_key(t: OutlineTopic):
+    def sort_key(t: OutlineTopic, stale: bool):
         state_rank = {"uncovered": 0, "partial": 1, "covered": 2}.get(t.coverage_state, 1)
+        if stale:
+            state_rank = 1  # 与 partial 同档：已有内容，但需要刷新
         miss_count = miss_counts.get(t.topic_id, 0)
         confidence = capability_confidence.get(t.topic_id, 0.5)
         touched = t.last_touched_at or 0
         return (state_rank, -miss_count, confidence, touched)
 
-    candidates = [t for t in track.outline if t.coverage_state != "covered"]
-    candidates.sort(key=sort_key)
-    return candidates[:limit]
+    candidates = []
+    for t in track.outline:
+        stale = _needs_staleness_refresh(t, now)
+        if t.coverage_state == "covered" and not stale:
+            continue
+        candidates.append((sort_key(t, stale), t))
+    candidates.sort(key=lambda pair: pair[0])
+    return [t for _, t in candidates[:limit]]
 
 
 def _topic_capability_confidence(track: CapabilityTrack, paths: AgentPaths) -> dict[str, float]:

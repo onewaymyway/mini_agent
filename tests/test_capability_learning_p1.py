@@ -498,6 +498,72 @@ def test_capability_question_store_sweep_expired(paths):
 # ── §14.1-a 收尾：miss_observed 台账接入 scan_outline_gaps 优先级排序 ──────
 
 
+def test_scan_outline_gaps_stable_covered_never_becomes_stale(paths):
+    """§13.2-d：stable（默认值）covered 子主题不管过去多久都不会被
+    重新纳入候选——即使 last_touched_at 是很久以前，也不应该被重复检索。"""
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=[])
+    now = 10_000_000.0
+    track.outline = [
+        OutlineTopic(topic_id="t1", name="技术分析基础", coverage_state="covered",
+                     volatility="stable", last_touched_at=0.0),
+        OutlineTopic(topic_id="t2", name="B", coverage_state="uncovered"),
+    ]
+    picked = scan_outline_gaps(track, limit=10, now=now)
+    picked_ids = [t.topic_id for t in picked]
+    assert picked_ids == ["t2"]
+
+
+def test_scan_outline_gaps_volatile_covered_becomes_stale_after_threshold(paths):
+    """§13.2-d：volatile 且距上次触达超过 7 天阈值的 covered 子主题，
+    应被重新纳入候选，且和 partial 同一优先档（排在 uncovered 之后，
+    但不会被漏掉）。"""
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=[])
+    now = 1_000_000.0
+    stale_touch = now - 8 * 86400  # 超过 7 天阈值
+    fresh_touch = now - 1 * 86400  # 未超过阈值
+    track.outline = [
+        OutlineTopic(topic_id="t_stale", name="当前宏观利率环境", coverage_state="covered",
+                     volatility="volatile", last_touched_at=stale_touch),
+        OutlineTopic(topic_id="t_fresh", name="另一个波动主题", coverage_state="covered",
+                     volatility="volatile", last_touched_at=fresh_touch),
+        OutlineTopic(topic_id="t_uncovered", name="C", coverage_state="uncovered"),
+    ]
+    picked = scan_outline_gaps(track, limit=10, now=now)
+    picked_ids = [t.topic_id for t in picked]
+    # uncovered 排最前，过期的 volatile covered 子主题被重新纳入且排在其后，
+    # 未过期的 fresh covered 子主题不应出现
+    assert picked_ids == ["t_uncovered", "t_stale"]
+
+
+def test_scan_outline_gaps_volatile_covered_none_last_touched_is_stale(paths):
+    """`last_touched_at is None` 视为需要刷新（比如手动改了 volatility
+    标注但还没有触达记录），不应因为"没有时间戳"被永久跳过。"""
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=[])
+    track.outline = [
+        OutlineTopic(topic_id="t1", name="A", coverage_state="covered",
+                     volatility="periodic", last_touched_at=None),
+    ]
+    picked = scan_outline_gaps(track, limit=10)
+    assert [t.topic_id for t in picked] == ["t1"]
+
+
+def test_scan_outline_gaps_periodic_uses_longer_threshold(paths):
+    """periodic 的阈值（30 天）比 volatile（7 天）更长——8 天前触达的
+    periodic 子主题不应该被判定为过期。"""
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=[])
+    now = 1_000_000.0
+    track.outline = [
+        OutlineTopic(topic_id="t1", name="季度财报解读方法", coverage_state="covered",
+                     volatility="periodic", last_touched_at=now - 8 * 86400),
+    ]
+    picked = scan_outline_gaps(track, limit=10, now=now)
+    assert picked == []
+
+
 def test_scan_outline_gaps_backward_compat_no_miss_counts(paths):
     from mini_agent.evolution.capability_learning import CapabilityTrackStore, scan_outline_gaps
 
