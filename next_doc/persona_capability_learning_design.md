@@ -1,7 +1,8 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.21.1（bug 修复：`run_capability_learning_cycle()` 检索没有任何结果时错误地把子主题标成 `covered`。**触发背景**：用户反馈打开某个 wiki 页面看到正文只有"（暂无检索结果）"，但对应的学习台账却写着"🔍 已检索沉淀　检索并写入 1 个 wiki 页面"，感觉不正常。**根因**：`make_wiki_writer()` 无论 `retriever` 返回的 `results` 是否为空，都会无条件写出一页——真的检索到内容就写正文，检索不到就写占位文案"（暂无检索结果）"，`page_ids` 因此永远非空；而 `run_capability_learning_cycle()` 原本直接用 `page_ids` 是否非空判断 `topic.coverage_state`，导致"其实什么也没查到"的子主题被永久标记为 `covered`——`scan_outline_gaps()` 从此再也不会把它选回候选池重试，看起来"已覆盖"实际上永远是一页空内容，学习台账的文案也没有区分"写入了有内容的页面"和"写入了占位页面"这两种情况。**修复**：新增 `topic.coverage_state` 只在真正查到内容（`results` 里至少有一条非空 `summary`/`text`）时才标记为 `covered`，否则保持/回退为 `partial`（下一轮还会被重新选中重试）；学习台账新增 `research_empty` 台账动作，文案明确写"本轮检索未获得有效结果……不计入已覆盖"；`run_capability_learning_cycle()` 返回值新增 `topics_research_empty` 计数；`maybe_dispatch_capability_notification()`"新沉淀页面数"改用 `topics_researched - topics_research_empty`，不把空占位页当作新沉淀内容推送；占位页正文文案也从"（暂无检索结果）"改为更明确的"（本轮检索未获得有效结果，后续轮次会自动重试，该子主题暂不计入已覆盖）"。见下方「检索空结果 bug 修复」小节。）
-- **上一版本**：v0.21（「后续计划」三项全部完成。第 1 项：通知系统接入（`notification_enabled`/`notification_frequency`/`notification_max_per_day` + `maybe_dispatch_capability_notification()`，见「§8 通知系统接入」小节）。第 2 项：大纲动态生长建议核心逻辑 + CLI（`OutlineSuggestion` + `CapabilityOutlineSuggestionStore` + `generate_outline_suggestion_from_answer()` + `accept_outline_suggestion()` + `/capability suggestions`，见「§13.2-f 大纲动态生长建议」小节）。第 2 项补齐 HTTP API（`GET /v1/capability/suggestions`、`POST .../accept`、`POST .../dismiss`）与看板 UI（能力学习 Tab 新增「💡 大纲扩展建议」区块，采纳/忽略按钮）；第 3 项 Persona 详情页镜像视图——能力学习 Tab 新增「🎭 已发布角色一览」区块，按角色列出各自绑定的 `wiki_scopes`，实现 §11.2 末尾"双向可见"；「人设 / 能力方向列表」的「能力大纲覆盖状态」区块新增「查看」按钮直接展开对应 wiki 页面正文（`GET /v1/capability/wiki_pages/{page_id}`））
+- **版本**：v0.22（用户反馈"能力学习检索机制不合理——不能只用 `web_search`，应该考虑利用 Agent 自身能力（含 skill 生态）去检索更复杂的内容"。**改动**：`CapabilityLearningConfig` 新增 `retriever_mode` 档位（`"web_search"` 默认 / `"agent"`），`"agent"` 档位下 `make_agent_retriever(cfg)` 用受限只读工具集（`web_search`/`search_knowledge`/`read_file`/`glob`/`grep`/`skill_list`/`skill_activate`/`skill_resource_list`/`skill_resource_load`）的 `SubAgent`（`orchestrator/sub_agent.py`）自主完成一轮调研——可以先 `skill_list`/`skill_activate` 激活更适合当前领域的技能再检索，而不是只会做"关键词拼接 → 单次搜索引擎调用"。`/capability cycle`（`cli/commands/capability_cmd.py`）按 `retriever_mode` 选择对应的 retriever 工厂函数，两种模式产出的结果写入前都仍统一经过 §13.3-g 合规过滤，不受影响。默认值保留 `"web_search"`（成本更低、单轮耗时更短，符合本项目一贯的"新机制先保守默认"取向），用户可在 `agent_config.json` 里把 `capability_learning.retriever_mode` 改成 `"agent"` 切换。详见「§14.4 检索方式扩展：`retriever_mode`」小节。）
+- **上一版本**：v0.21.1（bug 修复：`run_capability_learning_cycle()` 检索没有任何结果时错误地把子主题标成 `covered`。**触发背景**：用户反馈打开某个 wiki 页面看到正文只有"（暂无检索结果）"，但对应的学习台账却写着"🔍 已检索沉淀　检索并写入 1 个 wiki 页面"，感觉不正常。**根因**：`make_wiki_writer()` 无论 `retriever` 返回的 `results` 是否为空，都会无条件写出一页——真的检索到内容就写正文，检索不到就写占位文案"（暂无检索结果）"，`page_ids` 因此永远非空；而 `run_capability_learning_cycle()` 原本直接用 `page_ids` 是否非空判断 `topic.coverage_state`，导致"其实什么也没查到"的子主题被永久标记为 `covered`——`scan_outline_gaps()` 从此再也不会把它选回候选池重试，看起来"已覆盖"实际上永远是一页空内容，学习台账的文案也没有区分"写入了有内容的页面"和"写入了占位页面"这两种情况。**修复**：新增 `topic.coverage_state` 只在真正查到内容（`results` 里至少有一条非空 `summary`/`text`）时才标记为 `covered`，否则保持/回退为 `partial`（下一轮还会被重新选中重试）；学习台账新增 `research_empty` 台账动作，文案明确写"本轮检索未获得有效结果……不计入已覆盖"；`run_capability_learning_cycle()` 返回值新增 `topics_research_empty` 计数；`maybe_dispatch_capability_notification()`"新沉淀页面数"改用 `topics_researched - topics_research_empty`，不把空占位页当作新沉淀内容推送；占位页正文文案也从"（暂无检索结果）"改为更明确的"（本轮检索未获得有效结果，后续轮次会自动重试，该子主题暂不计入已覆盖）"。见「检索空结果 bug 修复」小节。）
+- **再上一版本**：v0.21（「后续计划」三项全部完成。第 1 项：通知系统接入（`notification_enabled`/`notification_frequency`/`notification_max_per_day` + `maybe_dispatch_capability_notification()`，见「§8 通知系统接入」小节）。第 2 项：大纲动态生长建议核心逻辑 + CLI（`OutlineSuggestion` + `CapabilityOutlineSuggestionStore` + `generate_outline_suggestion_from_answer()` + `accept_outline_suggestion()` + `/capability suggestions`，见「§13.2-f 大纲动态生长建议」小节）。第 2 项补齐 HTTP API（`GET /v1/capability/suggestions`、`POST .../accept`、`POST .../dismiss`）与看板 UI（能力学习 Tab 新增「💡 大纲扩展建议」区块，采纳/忽略按钮）；第 3 项 Persona 详情页镜像视图——能力学习 Tab 新增「🎭 已发布角色一览」区块，按角色列出各自绑定的 `wiki_scopes`，实现 §11.2 末尾"双向可见"；「人设 / 能力方向列表」的「能力大纲覆盖状态」区块新增「查看」按钮直接展开对应 wiki 页面正文（`GET /v1/capability/wiki_pages/{page_id}`））
 - **再上一版本**：v0.20（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的九项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）、§13.1-c 跨 Track 子主题去重与知识共享、§10 `target_type="persona"` 人设草稿合成与发布全链路（核心库 + CLI + HTTP API + 看板 UI）。**本轮（v0.20）**：真实检索与 cron 任务评审条件已满足，`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段均改为**默认开启**（opt-out，此前是 opt-in 默认关闭），见「实施状态」新增小节；同时把看板人设草稿区从最简版本（一句纯文字完成度摘要 + 单一源码预览）升级为进度条+逐维度勾选清单、渲染效果/源码双 Tab 预览、§10.4-2 真人模仿安全提示单独高亮）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
@@ -12,6 +13,51 @@
 
 本节记录方案落地进度，每完成一个阶段就更新，保持和代码库实际状态同步，
 避免文档和实现脱节。
+
+### §14.4 检索方式扩展：`retriever_mode`（v0.22）—— ✅ 已实现
+
+**触发背景**：用户反馈"能力学习循环里，检索只用 `web_search`，这个不合理——不应该只用 `web_search`，应该考虑利用 Agent 自身的能力去检索，因为 `web_search` 只支持一些简单的检索，Agent 自身可以利用 skill 去检索更复杂的内容"。
+
+**问题**：`make_web_search_retriever()` 是当时唯一接线的真实 `retriever` 实现——每个子主题的检索 query 就是 `f"{track.title} {topic.name}"` 朴素拼接，直接调用 `web_search/factory.py` 的 provider 拿到一批标题/摘要/链接。这是"关键词 → 搜索引擎"最朴素的一种检索方式：查不到需要多跳信息才能拼出来的答案，也完全用不上项目里已有的 skill 生态（比如某个领域专用的检索/分析类 skill，本可以先激活它辅助调研）。
+
+**方案**：不是"替换掉" `make_web_search_retriever()`，而是新增一个平行的 retriever 实现，两者共享同一套 `RetrieverFn` 签名（`Callable[[OutlineTopic, CapabilityTrack], list[dict]]`），由新增的配置项 `CapabilityLearningConfig.retriever_mode` 挑选：
+
+| `retriever_mode` | 实现 | 检索方式 | 成本/耗时 |
+| --- | --- | --- | --- |
+| `"web_search"`（默认） | `make_web_search_retriever(cfg)` | 单次关键词拼接 → `WebSearchProvider.search()` | 低，单次 HTTP 请求 |
+| `"agent"` | `make_agent_retriever(cfg)`（本轮新增） | 受限工具集的 `SubAgent` 自主完成一轮调研 | 较高，多轮 LLM 调用 + 工具调用 |
+
+`make_agent_retriever(cfg)` 为每个子主题构造一个独立的 `orchestrator.task.Task`（不带 `session_id`，不落盘 session/task 记录，避免把大量后台调研任务塞进用户的 session 列表），通过 `orchestrator.sub_agent.SubAgent` 在独立线程里执行，`auto_approve=True`（cron 场景无人值守）。SubAgent 只被授予一份只读工具白名单（`allowed_tools`）：
+
+```
+web_search, search_knowledge, read_file, glob, grep,
+skill_list, skill_activate, skill_resource_list, skill_resource_load
+```
+
+刻意不给任何文件写入/命令执行类工具——这个 SubAgent 的职责始终是"调研并给出一段摘要"，即使调研 prompt 本身没有诱导它去改动项目文件，也不应该在权限层面留出这个口子（继承本项目一贯的最小权限取向，与 `judge_factory.py`/`goal_judge.py` 等其它 SubAgent 使用方限制 `allowed_tools`/`allowed_tool_groups` 的做法一致）。prompt 明确引导它：先看看 `skill_list` 有没有更适合当前领域的技能，有就 `skill_activate` 激活后再检索/分析，而不是一上来就只会做最简单的关键词搜索；调研完成后直接输出一段 Markdown 摘要（含来源），不需要寒暄。
+
+单个子主题调研受两个新配置项约束，避免"agent 检索"模式让单轮 cron 循环无限拖长：
+- `agent_retriever_max_turns`（默认 6）：传给 `Task.max_turns`，限制这一次调研自己能做多少轮工具调用。
+- `agent_retriever_timeout_seconds`（默认 240）：`SubAgent.join(timeout=...)` 的等待上限；超时后按"本轮无结果"处理（发一次 `SubAgent.cancel()` 信号让后台线程尽快收尾，不强杀线程），返回空列表，走既有的安全跳过路径，下一轮 `scan_outline_gaps()` 还会重新选中这个子主题重试——与 `make_web_search_retriever()` 捕获 `WebSearchError` 后返回空列表是同一种失败语义，`run_capability_learning_cycle()` 完全不需要感知走的是哪种 retriever。
+
+`make_agent_retriever()` 返回的结果统一是单条 `{"summary": <调研摘要>, "source": "agent_research"}`（摘要文本同样受 `summary_max_chars` 截断，与 `make_web_search_retriever()` 一致），写入前依旧要经过 `make_wiki_writer()` 里已经接好的 §13.3-g 合规过滤，不会绕过。
+
+**接线**：`/capability cycle`（`cli/commands/capability_cmd.py`）按 `retriever_enabled` 决定是否检索、再按 `retriever_mode` 选择 `make_agent_retriever(cfg)` 还是 `make_web_search_retriever(cfg)`；未识别的 `retriever_mode` 值按 `"web_search"` 处理。命令完成后的提示文案会带上当前使用的 `retriever_mode`，方便用户确认实际生效的是哪种检索方式。
+
+**默认值取舍**：`retriever_mode` 默认仍是 `"web_search"`，不是新功能一上来就换成默认值——"agent" 模式每个子主题至少多花一次完整的 LLM 多轮对话（`agent_retriever_max_turns` 轮以内），跑在默认 6 小时一次、覆盖所有 active Track 的 `sys:capability_learning_cycle` 上，成本和耗时相对 `web_search` 单次请求高出不少，符合本项目一贯"新机制先保守默认、用户按需 opt-in"的取向（与 `retriever_enabled` 当初从 opt-in 到 opt-out 走两步评审是同一种克制）。用户可以在 `agent_config.json` 里把 `capability_learning.retriever_mode` 改成 `"agent"`，或后续在看板"🎓 能力学习"Tab 的配置区切换（配置项已随 `config_catalog.py` 的通用 `NestedBlockSpec` 机制自动出现在看板配置面板，不需要额外接线）。
+
+**测试覆盖**：`tests/test_capability_learning_p1.py` 新增覆盖默认配置值、`allowed_tools` 白名单（断言不含写入/执行类工具）、摘要截断、`SubAgent` 失败/超时时返回空列表、`/capability cycle` 按 `retriever_mode` 选择正确 retriever 工厂函数五组测试，均通过 monkeypatch 替换 `SubAgent` 为假实现，不依赖真实 LLM/网络。
+
+| 落地内容 | 状态 | 涉及文件 |
+| --- | --- | --- |
+| `CapabilityLearningConfig` 新增 `retriever_mode`/`agent_retriever_max_turns`/`agent_retriever_timeout_seconds` | ✅ 已实现 | `src/mini_agent/config/models.py` |
+| `make_agent_retriever(cfg)`：受限工具集 SubAgent 调研 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
+| `/capability cycle` 按 `retriever_mode` 选择 retriever 工厂 | ✅ 已实现 | `src/mini_agent/cli/commands/capability_cmd.py` |
+| 单元测试（默认值/工具白名单/截断/失败兜底/命令分支选择） | ✅ 已实现 | `tests/test_capability_learning_p1.py` |
+
+**留给后续的方向（本轮刻意不做）**：
+- 看板"🎓 能力学习"Tab 目前只是通用配置面板自动展示 `retriever_mode` 字段（下拉/文本编辑），没有额外做"agent 模式下最近几次调研摘要预览"这类专属 UI——等 `"agent"` 模式有真实使用反馈后再评估是否值得做。
+- 没有做"按子主题动态选择检索模式"（比如简单主题走 `web_search`、复杂主题走 `agent`）——这需要先有一种"复杂度判定"的信号来源，属于过早引入不确定性，留到有真实使用反馈后再考虑。
 
 ### 检索空结果 bug 修复（v0.21.1）—— ✅ 已实现
 
@@ -105,7 +151,7 @@ topic.coverage_state = "covered" if page_ids else "partial"  # 改动前
 | cron 注册 `sys:capability_learning_cycle` | ✅ 已在 `cron_scheduler.py` 的 `SYSTEM_JOBS` 里注册（连同 `sys:capability_question_sweep` 过期问题清理），task_template 引用 §4 的 `/capability cycle` / `/capability questions --sweep-expired`。**v0.20 起默认 `enabled: True`**（opt-out，见文档开头「后续计划」小节），用户仍可在看板「⏰ Cron 任务」Tab 或 CLI 手动关闭 | `src/mini_agent/evolution/cron_scheduler.py` |
 | 看板三个 UI 区域（人设管理 / 进度展示 / 待回答问题） | ✅ 已实现为新 Tab「🎓 能力学习」（挂在「🌱 成长顾问」之后），三区域：新建/管理 Track（暂停恢复/二次确认删除，不级联删 wiki）、大纲覆盖状态 + 学习台账、待回答问题（提交/忽略）+ 折叠历史问答。cron 已注册，v0.20 起默认开启（见文档开头「后续计划」小节），UI 上暂未加"距离下次学习还有多久"之类的倒计时展示，后续可评估是否补上 | `apps/mini_agent_kanban/app.py`（`render_capability_tab`）、`apps/mini_agent_kanban/client.py`（新增 11 个 `capability_*` 方法） |
 | `context_builder.py` 接入检索复用 | ✅ 经代码走查确认已经**天然满足**，不需要额外实现：`_try_inject_wiki_search()` 本来就是"命中就注入"的全库/`tags` 范围检索（§11 的 `wiki_scopes` 只是把 `tags` 收窄到当前 persona 范围，不传 `wiki_scopes` 时就是全库检索），knowledge 型 Track 沉淀的 wiki 页面天然会被这条既有链路检索命中并注入——§6 想要的"命中 active Track 时按需注入"和现有"每轮 turn 命中就注入"是同一件事，没有必要再实现一层重复的"识别话题是否命中某个 Track"关键词匹配（重复匹配反而增加噪音，与项目一贯的"不重复实现"原则一致）。§14.1-a 的未命中记录部分本来就已提前完成 | `src/mini_agent/context_builder.py`（未改动，本次为确认结论，非新代码） |
-| 真实 `retriever` / `wiki_writer` 回调实现（对接 `web_search` 与 `wiki/writer.py` + `wiki/dedup.py`） | ✅ `make_web_search_retriever(cfg)` 已实现并接入 `/capability cycle`：query 用 `f"{track.title} {topic.name}"` 朴素拼接，复用既有 `web_search/factory.py` 的 provider 抽象（不新增检索后端），结果截断到 `summary_max_chars`（默认 400 字），`WebSearchError` 兜底为空结果走既有 skipped 路径。写入前经过 `apply_compliance_filter()`，不会绕过。**v0.20 起默认开启**：`CapabilityLearningConfig.retriever_enabled = True`（此前默认 False，见文档开头「后续计划」小节），评审条件（§13.3-g 合规过滤已实现并有测试覆盖）已满足，改为与 `GrowthAdvisorConfig` 一致的默认开启取向；用户仍可在配置里显式关回 `False` | `src/mini_agent/evolution/capability_learning.py`（`make_web_search_retriever`）、`src/mini_agent/config/models.py`（`CapabilityLearningConfig`）、`src/mini_agent/cli/commands/capability_cmd.py` |
+| 真实 `retriever` / `wiki_writer` 回调实现（对接 `web_search` 与 `wiki/writer.py` + `wiki/dedup.py`） | ✅ `make_web_search_retriever(cfg)` 已实现并接入 `/capability cycle`：query 用 `f"{track.title} {topic.name}"` 朴素拼接，复用既有 `web_search/factory.py` 的 provider 抽象（不新增检索后端），结果截断到 `summary_max_chars`（默认 400 字），`WebSearchError` 兜底为空结果走既有 skipped 路径。写入前经过 `apply_compliance_filter()`，不会绕过。**v0.20 起默认开启**：`CapabilityLearningConfig.retriever_enabled = True`（此前默认 False，见文档开头「后续计划」小节），评审条件（§13.3-g 合规过滤已实现并有测试覆盖）已满足，改为与 `GrowthAdvisorConfig` 一致的默认开启取向；用户仍可在配置里显式关回 `False`。**v0.22 新增**：不再是唯一的真实检索实现——`CapabilityLearningConfig.retriever_mode`（默认仍为 `"web_search"`）可切到 `"agent"`，改用 `make_agent_retriever(cfg)`，由受限只读工具集的 `SubAgent` 自主调研（可用 `web_search`/`search_knowledge`/`skill_list`/`skill_activate` 等，不止单次关键词搜索），见「§14.4 检索方式扩展：`retriever_mode`」小节 | `src/mini_agent/evolution/capability_learning.py`（`make_web_search_retriever`、`make_agent_retriever`）、`src/mini_agent/config/models.py`（`CapabilityLearningConfig`）、`src/mini_agent/cli/commands/capability_cmd.py` |
 | §13.3-g 合规过滤（写入前剔除具体买卖建议等风险表述 + 金融/医疗/法律领域页面加 `requires_disclaimer` 标记） | ✅ 已实现并接入 `make_wiki_writer()` 写入路径：`apply_compliance_filter()` 做句级关键词/正则过滤（整句剔除，不做局部改写），`is_disclaimer_required_track()` 按 Track 标题/描述/wiki_tag 关键词判定风险领域；命中时 frontmatter 加 `requires_disclaimer: true` + 正文追加"仅供参考"免责声明。规则式实现，不接 LLM 改写（见函数上方注释的取舍说明） | `src/mini_agent/evolution/capability_learning.py` |
 
 **P1 阶段的设计取舍说明**：数据模型、存储、核心逻辑（缺口扫描、异步问答队列、循环编排）已经是可以真实跑起来、有测试覆盖的代码，但两处"会产生真实外部副作用"的关口——① 真正调用互联网检索和 wiki 写入、② 挂载到 cron 定时任务表使其自动周期性运行——都刻意留了一步显式开关，需要在功能评审通过、且第 14.3-g 合规过滤到位之后再接线，不在 P1 这一步默认打开。这是为了让"代码已经写好、可测试"和"功能对用户/系统实际生效"两件事分开推进，降低一次性铺开的风险。
@@ -237,7 +283,7 @@ Persona 详情页反向展示"绑定的知识范围"列表未单独实现——�
 |---|---|---|
 | `/capability [list]`：展示所有 Track 概况 | ✅ 已实现 | `src/mini_agent/cli/commands/capability_cmd.py` |
 | `/capability create <title> \| <persona_desc> [--llm-draft]`：创建 knowledge 型 Track | ✅ 已实现；`--llm-draft` 用 `agent.llm_helper` 起草初始大纲（§14 P2，已提前实现，见下方「§14 P2：LLM 辅助大纲起草」小节），不加这个 flag 时仍是原有的空大纲行为 | 同上 |
-| `/capability cycle`：手动触发一轮学习循环，等价于 `sys:capability_learning_cycle` 执行的内容 | ✅ 已实现；是否使用真实检索由 `CapabilityLearningConfig.retriever_enabled` 配置项控制（v0.20 起默认 True），关闭时 `retriever=None`，需要检索的子主题仍会被安全跳过并记 `skipped` 台账；默认打开时用 `make_web_search_retriever(cfg)`，写入前仍经过 §13.3-g 合规过滤 | 同上 |
+| `/capability cycle`：手动触发一轮学习循环，等价于 `sys:capability_learning_cycle` 执行的内容 | ✅ 已实现；是否使用真实检索由 `CapabilityLearningConfig.retriever_enabled` 配置项控制（v0.20 起默认 True），关闭时 `retriever=None`，需要检索的子主题仍会被安全跳过并记 `skipped` 台账；默认打开时按 `retriever_mode` 选用 `make_web_search_retriever(cfg)`（默认）或 `make_agent_retriever(cfg)`（[v0.22] `retriever_mode="agent"`），写入前仍经过 §13.3-g 合规过滤 | 同上 |
 | `/capability questions [track_id]` / `/capability questions --sweep-expired` / `/capability answer <id> <text>`：异步问答队列的 CLI 入口 | ✅ 已实现 | 同上 |
 | repl.py 分发、`cli/commands/__init__.py` 导出、`/help`（`parser.py`）文案 | ✅ 已同步更新 | `src/mini_agent/cli/repl.py`、`src/mini_agent/cli/commands/__init__.py`、`src/mini_agent/cli/parser.py` |
 | 单元测试（10 组：无 agent / 空列表 / 创建 / cycle 空跑 / cycle 在真实 Track 上确认不产生"假装学会了"的覆盖率变化 / 问答队列列出与提交 / 未知子命令） | ✅ 全部通过 | `tests/test_capability_cmd.py` |

@@ -221,5 +221,9 @@
   "http": {
     "access_log_enabled": true,
     "access_log_path": ""
+  },
+  "capability_learning":{
+    "retriever_mode": "agent",
+    "agent_retriever_max_turns": 20
   }
 }

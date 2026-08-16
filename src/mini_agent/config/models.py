@@ -2194,23 +2194,62 @@ class CapabilityLearningConfig:
     `agent_config.json` 里把 `retriever_enabled` 改回 `False`，或在看板
     「⏰ Cron 任务」Tab / CLI 里单独 disable 这两个 job（关闭 retriever
     时循环仍会跑，只是需要检索的子主题记 `skipped` 台账，不产生网络请求）。
+
+    [v0.22 §14.4 检索方式扩展] 此前 `retriever_enabled=True` 时唯一的真实
+    检索实现是 `make_web_search_retriever()`——直接调用
+    `web_search/factory.py` 的 provider，只能做"关键词 → 搜索引擎"这一种
+    最朴素的检索，查不到多跳信息、用不了项目里已有的 skill 生态（比如某个
+    领域专用的检索/分析 skill）。`retriever_mode` 新增一个可选档位
+    `"agent"`：改用 `make_agent_retriever()`，让一个受限工具集的 SubAgent
+    （见 `orchestrator/sub_agent.py`）带着 `web_search`/`search_knowledge`/
+    `skill_list`/`skill_activate` 等只读工具自主完成调研，必要时可以先
+    激活更合适的 skill 再检索，产出一段综合摘要，而不是单次 API 调用的原始
+    结果列表。默认仍保留 `"web_search"`（成本更低、单轮调用耗时更短，符合
+    项目一贯"新机制先保守默认"的取向），用户可按需切到 `"agent"`。
     """
 
-    # 总开关：是否允许 `run_capability_learning_cycle` 使用真实 web_search
-    # 检索（而非跳过并记 skipped 台账）。默认 True（opt-out）。
+    # 总开关：是否允许 `run_capability_learning_cycle` 使用真实检索（而非
+    # 跳过并记 skipped 台账）；具体走哪种检索实现由 `retriever_mode` 决定。
+    # 默认 True（opt-out）。
     retriever_enabled: bool = True
+
+    # 检索实现档位：
+    #   "web_search" —— `make_web_search_retriever()`，单次关键词搜索
+    #                    （默认，成本低、耗时短）
+    #   "agent"      —— `make_agent_retriever()`，用受限工具集的 SubAgent
+    #                    自主调研（可用 web_search/search_knowledge/skill_*
+    #                    等工具，必要时先激活更合适的 skill 再检索），
+    #                    能覆盖 web_search 单次调用查不到的复合/多跳内容，
+    #                    但会多消耗 LLM 调用与时间（受
+    #                    `agent_retriever_max_turns`/
+    #                    `agent_retriever_timeout_seconds` 限制）。
+    # 未识别的值按 "web_search" 处理（见 capability_cmd.py 选择逻辑）。
+    retriever_mode: str = "web_search"
 
     # 每个子主题检索时最多拉取的搜索结果条数，直接传给
     # WebSearchProvider.search(max_results=...)。太大会增加合规过滤的
     # 误判概率（更多句子意味着更多可能命中风险短语正则的机会）和单轮
-    # 循环耗时，默认给一个克制的小值。
+    # 循环耗时，默认给一个克制的小值。仅 retriever_mode="web_search" 时
+    # 生效。
     max_results_per_topic: int = 3
 
     # 每条搜索结果摘要（summary）截断长度（字符数），避免整页原文被摘要
     # 字段吞掉——wiki 沉淀的应该是"检索到了什么要点"，不是原文转载
     # （原文转载还涉及版权问题，不在本模块讨论范围内，但截断本身是
-    # 独立于版权考虑的克制默认）。
+    # 独立于版权考虑的克制默认）。两种 retriever_mode 都会用这个值截断
+    # 最终写入的摘要文本。
     summary_max_chars: int = 400
+
+    # [v0.22] retriever_mode="agent" 时，单个子主题调研 SubAgent 允许的
+    # 最大工具调用轮数（Task.max_turns）。太大会让一次调研无限展开、拖慢
+    # 整轮 cron 循环，默认给一个够用但克制的小值。
+    agent_retriever_max_turns: int = 6
+
+    # [v0.22] retriever_mode="agent" 时，等待单个子主题调研 SubAgent 完成
+    # 的超时时间（秒）。超时后按"本轮无结果"处理（记 skipped/research_empty
+    # 台账，下一轮重试），已启动的 SubAgent 线程不会被强行杀死，只是发送
+    # 取消信号，避免阻塞整轮 cron 循环。
+    agent_retriever_timeout_seconds: int = 240
 
     # ── v0.21 §8 通知系统接入 ──────────────────────────────────────────
     # 是否在 run_capability_learning_cycle 每轮跑完后尝试推送一条摘要

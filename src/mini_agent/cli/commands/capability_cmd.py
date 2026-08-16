@@ -26,10 +26,16 @@ cron_scheduler.py SYSTEM_JOBS 里对应条目的说明）。
                                      capability_learning.retriever_enabled
                                      配置项控制（默认 True）：关闭时安全
                                      跳过需要检索的子主题并记台账；默认打开时
-                                     用 make_web_search_retriever 接
-                                     web_search，检索结果写入前仍会经过
-                                     §13.3-g 合规过滤（make_wiki_writer 里
-                                     已经接好，不受这个开关影响）
+                                     具体走哪种检索实现由
+                                     capability_learning.retriever_mode 决定
+                                     （[v0.22 §14.4] "web_search"=默认，
+                                     make_web_search_retriever 接
+                                     web_search；"agent"=make_agent_retriever，
+                                     受限工具集 SubAgent 自主调研，可用
+                                     skill_list/skill_activate 等），检索结果
+                                     写入前仍会经过 §13.3-g 合规过滤
+                                     （make_wiki_writer 里已经接好，不受这个
+                                     开关影响）
   /capability questions [track_id] — 列出 pending 状态的待回答问题
   /capability questions --sweep-expired
                                    — 清理超过 TTL 未回答的问题，标记为
@@ -166,15 +172,23 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         # 是否使用真实检索由 CapabilityLearningConfig.retriever_enabled
         # 控制（默认 True，opt-out）。关闭时保持 P1 原有安全兜底行为：
         # retriever=None，需要检索的子主题记 skipped 台账，不产生网络
-        # 请求；默认打开时用 make_web_search_retriever(cfg) 接真实
-        # web_search，检索结果在写入前仍会经过 make_wiki_writer 里已经
+        # 请求。开启时具体走哪种检索实现由 retriever_mode 决定（[v0.22
+        # §14.4]）：默认 "web_search" 用 make_web_search_retriever(cfg)
+        # 接真实 web_search；"agent" 用 make_agent_retriever(cfg)，改由
+        # 受限工具集的 SubAgent 自主调研（可用 skill 生态，不止关键词
+        # 搜索）。两种检索结果在写入前都仍会经过 make_wiki_writer 里已经
         # 接好的 §13.3-g 合规过滤，不会绕过。
         cfg = getattr(agent, "cfg", None)
         retriever = None
         retriever_enabled = bool(getattr(getattr(cfg, "capability_learning", None), "retriever_enabled", False))
+        retriever_mode = str(getattr(getattr(cfg, "capability_learning", None), "retriever_mode", "web_search") or "web_search")
         if retriever_enabled and cfg is not None:
-            from mini_agent.evolution.capability_learning import make_web_search_retriever
-            retriever = make_web_search_retriever(cfg)
+            if retriever_mode == "agent":
+                from mini_agent.evolution.capability_learning import make_agent_retriever
+                retriever = make_agent_retriever(cfg)
+            else:
+                from mini_agent.evolution.capability_learning import make_web_search_retriever
+                retriever = make_web_search_retriever(cfg)
         # v0.21 §13.2-f：拿得到 llm_helper 就顺带在消费已回答问题时生成
         # 大纲动态生长建议；拿不到（agent 未初始化/无 LLM 上下文）时这一步
         # 在 run_capability_learning_cycle 内部整体跳过，不影响循环本身。
@@ -197,10 +211,11 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         except Exception:
             pass
         skip_note = (
-            "（真实检索已开启，检索失败/无结果的子主题仍会被跳过并记台账）"
+            f"（真实检索已开启，检索方式={retriever_mode}，检索失败/无结果的子主题仍会被跳过并记台账）"
             if retriever_enabled
             else "（未开启真实检索，需要检索的子主题会被跳过并记台账；"
-                 "在 agent_config.json 里设置 capability_learning.retriever_enabled=true 可开启）"
+                 "在 agent_config.json 里设置 capability_learning.retriever_enabled=true 可开启，"
+                 "并可用 capability_learning.retriever_mode 选择 web_search/agent）"
         )
         R.print_info(
             "本轮学习循环完成："

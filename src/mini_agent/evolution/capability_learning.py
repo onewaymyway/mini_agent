@@ -28,6 +28,13 @@
       `CapabilityLearningConfig.retriever_enabled` 开关控制（默认 False，
       opt-in，见该配置字段上方注释）；开启后写入前仍会经过
       §13.3-g 合规过滤，不会绕过
+    - [v0.22 §14.4] make_agent_retriever(cfg)：另一种检索回调，用受限
+      工具集的 SubAgent（web_search/search_knowledge/skill_list/
+      skill_activate 等只读工具）自主完成调研，而不是单次 web_search
+      API 调用——解决"只能做最朴素的关键词搜索，用不上 skill 生态"的
+      局限。由 `CapabilityLearningConfig.retriever_mode="agent"` 选用
+      （默认仍是 `"web_search"`，opt-in 切换）；同样受
+      `retriever_enabled` 总开关和 §13.3-g 合规过滤约束
     - PersonaProfile.wiki_scopes 接线（§11）：`context_builder.py` 每轮
       检索把当前激活角色的 `wiki_scopes` 透传给 `wiki_shelf_search(tags=...)`
     - record_wiki_miss() 的接线（§14.1-a）：`context_builder.py` 在 persona
@@ -1521,6 +1528,106 @@ def make_web_search_retriever(cfg: "AppConfig") -> RetrieverFn:
                 continue
             out.append({"url": r.url, "summary": summary})
         return out
+
+    return _retriever
+
+
+# [v0.22 §14.4] 调研 SubAgent 允许使用的工具白名单：只给只读/检索类工具
+# （web_search、内部知识检索、skill 探索与激活），不给文件写入/命令执行类
+# 工具——这个 SubAgent 的职责是"调研并给出一段摘要"，不应该有修改项目
+# 文件或执行任意命令的能力，即使调研 prompt 本身没有诱导它这么做，也不
+# 应该在权限层面留出这个口子。
+_AGENT_RETRIEVER_ALLOWED_TOOLS = [
+    "web_search",
+    "search_knowledge",
+    "read_file",
+    "glob",
+    "grep",
+    "skill_list",
+    "skill_activate",
+    "skill_resource_list",
+    "skill_resource_load",
+]
+
+
+def make_agent_retriever(cfg: "AppConfig") -> RetrieverFn:
+    """[v0.22 §14.4] 返回一个绑定了 cfg 的 retriever 回调，与
+    `make_web_search_retriever()` 签名/调用约定完全一致，直接传给
+    `run_capability_learning_cycle(retriever=make_agent_retriever(cfg))`。
+
+    和 `make_web_search_retriever()` 的区别：不直接调用 web_search
+    provider，而是为每个子主题启动一个受限工具集的 `SubAgent`
+    （`orchestrator/sub_agent.py`），让它带着
+    `_AGENT_RETRIEVER_ALLOWED_TOOLS` 里的只读工具自主完成一轮调研——
+    可以先用 `skill_list`/`skill_activate` 看看有没有更适合这个领域的
+    技能可以激活辅助检索/分析，也可以用 `search_knowledge` 复用项目内已有
+    知识，而不是只会做"关键词拼接 → 单次搜索引擎调用"这一种最朴素的检索。
+    这解决了纯 `web_search` retriever 遇到需要多跳信息、领域专用检索技巧
+    的子主题时"查不深"的问题。
+
+    调用方必须自己先检查 `cfg.capability_learning.retriever_enabled`（和
+    `make_web_search_retriever()` 同款约定，见该函数上方注释）。
+
+    每个子主题一个独立的 `Task`（不带 `session_id`，不落盘 session/task
+    记录，避免给用户的 session 列表塞进大量后台调研任务），`auto_approve=
+    True`（cron 场景无人值守，不能等交互式审批），`max_turns`/超时分别由
+    `agent_retriever_max_turns`/`agent_retriever_timeout_seconds` 控制。
+    SubAgent 执行失败、超时或没有产出有效文本时返回空列表，让调用方走
+    既有的"没有可用结果"安全路径（不中断整轮循环）——与
+    `make_web_search_retriever()` 捕获 `WebSearchError` 后的兜底行为
+    一致，两种 retriever_mode 对上层是等价的失败语义。
+    """
+    from mini_agent.orchestrator.sub_agent import SubAgent
+    from mini_agent.orchestrator.task import Task, TaskRecord, TaskStatus
+
+    max_turns = max(1, cfg.capability_learning.agent_retriever_max_turns)
+    timeout_seconds = max(30, cfg.capability_learning.agent_retriever_timeout_seconds)
+    summary_max_chars = max(0, cfg.capability_learning.summary_max_chars)
+
+    def _retriever(topic: OutlineTopic, track: CapabilityTrack) -> list[dict]:
+        prompt = (
+            f"请围绕子主题「{topic.name}」（所属能力方向：「{track.title}」）"
+            f"完成一轮调研。\n"
+            f"- 可以使用 web_search、search_knowledge 等工具检索信息；\n"
+            f"- 如果判断有更适合这个领域的技能可以辅助检索/分析，先用 "
+            f"skill_list 看看有没有，再用 skill_activate 激活它，不要只做"
+            f"最简单的关键词搜索；\n"
+            f"- 调研完成后，直接输出一段 Markdown 格式的调研摘要（不需要"
+            f"寒暄/前后缀说明），包含关键结论要点，并在末尾列出信息来源"
+            f"（网址、或使用的技能名称）；\n"
+            f"- 如果确实查不到任何相关信息，直接说明查不到，不要编造。"
+        )
+        task = Task(
+            prompt=prompt,
+            name=f"capability_research:{topic.topic_id}",
+            auto_approve=True,
+            max_turns=max_turns,
+            allowed_tools=list(_AGENT_RETRIEVER_ALLOWED_TOOLS),
+        )
+        record = TaskRecord(task=task)
+        sub = SubAgent(record, cfg)
+        try:
+            sub.start()
+            sub.join(timeout=timeout_seconds)
+        except Exception:
+            return []
+
+        if record.status != TaskStatus.DONE:
+            # 超时（线程仍在跑但我们不再等）/失败/被取消——发一次取消信号
+            # 让后台线程尽快收尾，本轮按"没有可用结果"处理，下一轮
+            # scan_outline_gaps() 还会重新选中这个子主题重试。
+            try:
+                sub.cancel()
+            except Exception:
+                pass
+            return []
+
+        output = (record.result.output if record.result else "").strip()
+        if not output:
+            return []
+        if summary_max_chars and len(output) > summary_max_chars:
+            output = output[:summary_max_chars].rstrip() + "…"
+        return [{"summary": output, "source": "agent_research"}]
 
     return _retriever
 

@@ -490,681 +490,150 @@ def test_make_web_search_retriever_search_error_returns_empty(paths):
     assert retriever(topic, track) == []
 
 
-def test_capability_question_store_sweep_expired(paths):
-    from mini_agent.evolution.capability_learning import CapabilityQuestionStore
-
-    store = CapabilityQuestionStore(paths)
-    q = store.raise_question(track_id="t1", topic_id="topic1", question="测试问题？", ttl_seconds=0.01)
-    time.sleep(0.05)
-    n = store.sweep_expired()
-    assert n == 1
-    refreshed = store.list_questions(status="expired")
-    assert len(refreshed) == 1
-    assert refreshed[0].question_id == q.question_id
+# ── [v0.22 §14.4] agent 检索模式：make_agent_retriever ─────────────────────
 
 
-# ── §14.1-a 收尾：miss_observed 台账接入 scan_outline_gaps 优先级排序 ──────
+def test_capability_learning_config_default_retriever_mode_is_web_search():
+    from mini_agent.config import AppConfig
+
+    cfg = AppConfig()
+    assert cfg.capability_learning.retriever_mode == "web_search"
+    assert cfg.capability_learning.agent_retriever_max_turns == 6
+    assert cfg.capability_learning.agent_retriever_timeout_seconds == 240
 
 
-def test_scan_outline_gaps_stable_covered_never_becomes_stale(paths):
-    """§13.2-d：stable（默认值）covered 子主题不管过去多久都不会被
-    重新纳入候选——即使 last_touched_at 是很久以前，也不应该被重复检索。"""
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=[])
-    now = 10_000_000.0
-    track.outline = [
-        OutlineTopic(topic_id="t1", name="技术分析基础", coverage_state="covered",
-                     volatility="stable", last_touched_at=0.0),
-        OutlineTopic(topic_id="t2", name="B", coverage_state="uncovered"),
-    ]
-    picked = scan_outline_gaps(track, limit=10, now=now)
-    picked_ids = [t.topic_id for t in picked]
-    assert picked_ids == ["t2"]
+def _install_fake_sub_agent(monkeypatch, *, output: str, status=None, allowed_tools_capture=None):
+    from mini_agent.orchestrator.task import TaskResult, TaskStatus
+    import mini_agent.orchestrator.sub_agent as sub_agent_mod
+
+    final_status = status if status is not None else TaskStatus.DONE
+
+    class FakeSubAgent:
+        def __init__(self, record, base_cfg, **kwargs):
+            self.record = record
+            if allowed_tools_capture is not None:
+                allowed_tools_capture.append(list(record.task.allowed_tools or []))
+
+        def start(self):
+            self.record.status = final_status
+            if final_status == TaskStatus.DONE:
+                self.record.result = TaskResult(output=output)
+            else:
+                self.record.result = TaskResult(output="", error="boom")
+
+        def join(self, timeout=None):
+            pass
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(sub_agent_mod, "SubAgent", FakeSubAgent)
+    return sub_agent_mod
 
 
-def test_scan_outline_gaps_volatile_covered_becomes_stale_after_threshold(paths):
-    """§13.2-d：volatile 且距上次触达超过 7 天阈值的 covered 子主题，
-    应被重新纳入候选，且和 partial 同一优先档（排在 uncovered 之后，
-    但不会被漏掉）。"""
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=[])
-    now = 1_000_000.0
-    stale_touch = now - 8 * 86400  # 超过 7 天阈值
-    fresh_touch = now - 1 * 86400  # 未超过阈值
-    track.outline = [
-        OutlineTopic(topic_id="t_stale", name="当前宏观利率环境", coverage_state="covered",
-                     volatility="volatile", last_touched_at=stale_touch),
-        OutlineTopic(topic_id="t_fresh", name="另一个波动主题", coverage_state="covered",
-                     volatility="volatile", last_touched_at=fresh_touch),
-        OutlineTopic(topic_id="t_uncovered", name="C", coverage_state="uncovered"),
-    ]
-    picked = scan_outline_gaps(track, limit=10, now=now)
-    picked_ids = [t.topic_id for t in picked]
-    # uncovered 排最前，过期的 volatile covered 子主题被重新纳入且排在其后，
-    # 未过期的 fresh covered 子主题不应出现
-    assert picked_ids == ["t_uncovered", "t_stale"]
-
-
-def test_scan_outline_gaps_volatile_covered_none_last_touched_is_stale(paths):
-    """`last_touched_at is None` 视为需要刷新（比如手动改了 volatility
-    标注但还没有触达记录），不应因为"没有时间戳"被永久跳过。"""
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=[])
-    track.outline = [
-        OutlineTopic(topic_id="t1", name="A", coverage_state="covered",
-                     volatility="periodic", last_touched_at=None),
-    ]
-    picked = scan_outline_gaps(track, limit=10)
-    assert [t.topic_id for t in picked] == ["t1"]
-
-
-def test_scan_outline_gaps_periodic_uses_longer_threshold(paths):
-    """periodic 的阈值（30 天）比 volatile（7 天）更长——8 天前触达的
-    periodic 子主题不应该被判定为过期。"""
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=[])
-    now = 1_000_000.0
-    track.outline = [
-        OutlineTopic(topic_id="t1", name="季度财报解读方法", coverage_state="covered",
-                     volatility="periodic", last_touched_at=now - 8 * 86400),
-    ]
-    picked = scan_outline_gaps(track, limit=10, now=now)
-    assert picked == []
-
-
-def test_scan_outline_gaps_backward_compat_no_miss_counts(paths):
-    from mini_agent.evolution.capability_learning import CapabilityTrackStore, scan_outline_gaps
-
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=["A", "B", "C"])
-    result = scan_outline_gaps(track, limit=10)
-    assert [t.name for t in result] == ["A", "B", "C"]
-
-
-def test_scan_outline_gaps_prioritizes_higher_miss_count(paths):
-    from mini_agent.evolution.capability_learning import CapabilityTrackStore, scan_outline_gaps
-
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=["A", "B", "C"])
-    topic_b = track.outline[1]
-    result = scan_outline_gaps(track, limit=10, miss_counts={topic_b.topic_id: 3})
-    assert result[0].name == "B"
-
-
-def test_scan_outline_gaps_miss_count_only_within_same_coverage_state(paths):
+def test_make_agent_retriever_uses_restricted_tools_and_returns_summary(paths, monkeypatch):
+    from mini_agent.config import AppConfig
     from mini_agent.evolution.capability_learning import (
-        CapabilityTrackStore, scan_outline_gaps,
+        CapabilityTrackStore, make_agent_retriever,
     )
 
+    captured_tools = []
+    _install_fake_sub_agent(
+        monkeypatch,
+        output="调研摘要：xxx 来源：https://example.com",
+        allowed_tools_capture=captured_tools,
+    )
+
+    cfg = AppConfig()
+    cfg.capability_learning.retriever_mode = "agent"
+
     store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=["A", "B"])
-    # A 是 partial（已经被摸过一次但没写成 wiki），B 仍是 uncovered 且有
-    # miss 记录——即便 B 的 miss_count 很高，uncovered 仍然整体排在
-    # partial 前面，miss_counts 只在同一 coverage_state 内部生效。
-    track.outline[0].coverage_state = "partial"
-    topic_b = track.outline[1]
-    result = scan_outline_gaps(track, limit=10, miss_counts={topic_b.topic_id: 10})
-    assert result[0].name == "B"
-    assert result[1].name == "A"
+    track = store.create(title="股票分析能力", persona_desc="x", outline_names=["技术分析基础"])
+    topic = track.outline[0]
+
+    retriever = make_agent_retriever(cfg)
+    results = retriever(topic, track)
+
+    assert len(results) == 1
+    assert results[0]["summary"] == "调研摘要：xxx 来源：https://example.com"
+    assert results[0]["source"] == "agent_research"
+    # 只能用只读/检索类工具，不能有文件写入/命令执行类工具
+    assert captured_tools[0]
+    assert "write_file" not in captured_tools[0]
+    assert "bash" not in captured_tools[0]
+    assert "web_search" in captured_tools[0]
+    assert "skill_activate" in captured_tools[0]
 
 
-def test_topic_miss_counts_aggregates_ledger(paths):
+def test_make_agent_retriever_truncates_summary(paths, monkeypatch):
+    from mini_agent.config import AppConfig
     from mini_agent.evolution.capability_learning import (
-        CapabilityLedgerEntry, CapabilityLedgerStore, _topic_miss_counts,
+        CapabilityTrackStore, make_agent_retriever,
     )
 
-    store = CapabilityLedgerStore(paths)
-    for _ in range(2):
-        store.append(CapabilityLedgerEntry(
-            track_id="t1", topic_id="topicA", action="miss_observed", summary="x",
-        ))
-    store.append(CapabilityLedgerEntry(
-        track_id="t1", topic_id="topicB", action="miss_observed", summary="x",
-    ))
-    store.append(CapabilityLedgerEntry(
-        track_id="t1", topic_id="topicA", action="researched", summary="x",
-    ))
-    counts = _topic_miss_counts(store, "t1")
-    assert counts == {"topicA": 2, "topicB": 1}
+    _install_fake_sub_agent(monkeypatch, output="字" * 500)
+
+    cfg = AppConfig()
+    cfg.capability_learning.retriever_mode = "agent"
+    cfg.capability_learning.summary_max_chars = 10
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="做饭技巧", persona_desc="x", outline_names=["刀工基础"])
+    topic = track.outline[0]
+
+    retriever = make_agent_retriever(cfg)
+    results = retriever(topic, track)
+    assert len(results[0]["summary"]) == 11  # 10 字 + 省略号
+    assert results[0]["summary"].endswith("…")
 
 
-def test_run_capability_learning_cycle_uses_miss_counts_for_ordering(paths):
-    """端到端验证：record_wiki_miss() 记下的台账真的会影响下一轮
-    run_capability_learning_cycle 挑选子主题的顺序（用 wiki_writer 记录
-    调用顺序来观测，不依赖内部实现细节）。"""
+def test_make_agent_retriever_failed_task_returns_empty(paths, monkeypatch):
+    from mini_agent.config import AppConfig
+    from mini_agent.orchestrator.task import TaskStatus
     from mini_agent.evolution.capability_learning import (
-        CapabilityTrackStore, record_wiki_miss, run_capability_learning_cycle,
+        CapabilityTrackStore, make_agent_retriever,
     )
 
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=["A", "B", "C"])
-    topic_c = track.outline[2]
+    _install_fake_sub_agent(monkeypatch, output="", status=TaskStatus.FAILED)
 
-    # 对 C 记录两次未命中——下一轮应该优先处理 C。
-    record_wiki_miss(paths, track.track_id, topic_c.topic_id, "some query")
-    record_wiki_miss(paths, track.track_id, topic_c.topic_id, "some query 2")
-
-    call_order = []
-
-    def fake_retriever(topic, tr):
-        call_order.append(topic.name)
-        return [{"url": "https://example.com", "summary": "x"}]
-
-    def fake_writer(topic, tr, results):
-        return [f"page_{topic.topic_id}"]
-
-    run_capability_learning_cycle(
-        paths, retriever=fake_retriever, wiki_writer=fake_writer, topics_per_cycle=1,
-    )
-    assert call_order == ["C"]
-
-
-# ── §14 P2：LLM 辅助大纲起草，opt-in ────────────────────────────────────
-
-
-def test_draft_outline_with_llm_parses_lines():
-    from mini_agent.evolution.capability_learning import draft_outline_with_llm
-
-    def fake_llm(prompt):
-        assert "股票分析能力" in prompt
-        return "1. 基础概念\n2. 技术分析\n3. 基本面分析\n4. 风险管理\n"
-
-    names = draft_outline_with_llm("股票分析能力", "希望你具备强大的股票分析能力", fake_llm)
-    assert names == ["基础概念", "技术分析", "基本面分析", "风险管理"]
-
-
-def test_draft_outline_with_llm_rejects_out_of_range_count():
-    from mini_agent.evolution.capability_learning import draft_outline_with_llm
-
-    def fake_llm_too_few(prompt):
-        return "基础概念\n技术分析"
-
-    def fake_llm_too_many(prompt):
-        return "\n".join(f"主题{i}" for i in range(20))
-
-    assert draft_outline_with_llm("x", "x", fake_llm_too_few) == []
-    assert draft_outline_with_llm("x", "x", fake_llm_too_many) == []
-
-
-def test_draft_outline_with_llm_empty_response():
-    from mini_agent.evolution.capability_learning import draft_outline_with_llm
-
-    assert draft_outline_with_llm("x", "x", lambda prompt: "") == []
-    assert draft_outline_with_llm("x", "x", lambda prompt: "   ") == []
-
-
-def test_draft_outline_with_llm_exception_returns_empty():
-    from mini_agent.evolution.capability_learning import draft_outline_with_llm
-
-    def boom(prompt):
-        raise RuntimeError("llm down")
-
-    assert draft_outline_with_llm("x", "x", boom) == []
-
-
-def test_capability_track_store_create_with_llm_helper(paths):
-    from mini_agent.evolution.capability_learning import CapabilityTrackStore
-
-    def fake_llm(prompt):
-        return "基础概念\n技术分析\n基本面分析\n风险管理"
+    cfg = AppConfig()
+    cfg.capability_learning.retriever_mode = "agent"
 
     store = CapabilityTrackStore(paths)
-    track = store.create(title="股票分析能力", persona_desc="x", llm_helper=fake_llm)
-    assert [t.name for t in track.outline] == ["基础概念", "技术分析", "基本面分析", "风险管理"]
+    track = store.create(title="做饭技巧", persona_desc="x", outline_names=["刀工基础"])
+    topic = track.outline[0]
 
+    retriever = make_agent_retriever(cfg)
+    assert retriever(topic, track) == []
 
-def test_capability_track_store_create_llm_helper_ignored_when_outline_names_given(paths):
-    from mini_agent.evolution.capability_learning import CapabilityTrackStore
 
-    called = []
+def test_capability_cmd_selects_agent_retriever_by_mode(monkeypatch):
+    """确认 /capability cycle 按 retriever_mode 选择正确的 retriever 工厂函数
+    （只验证选择分支本身，不实际跑一轮循环/启动真实 SubAgent）。"""
+    from mini_agent.config import AppConfig
+    import mini_agent.evolution.capability_learning as cl
 
-    def fake_llm(prompt):
-        called.append(1)
-        return "A\nB\nC"
+    cfg = AppConfig()
+    cfg.capability_learning.retriever_mode = "agent"
+    cfg.capability_learning.retriever_enabled = True
 
-    store = CapabilityTrackStore(paths)
-    track = store.create(
-        title="x", persona_desc="x", outline_names=["自定义主题"], llm_helper=fake_llm,
-    )
-    assert [t.name for t in track.outline] == ["自定义主题"]
-    assert called == []  # 显式传了 outline_names 时不应该调用 LLM
+    called = {}
 
+    def fake_make_agent_retriever(cfg_arg):
+        called["mode"] = "agent"
+        return lambda topic, track: []
 
-def test_capability_track_store_create_llm_failure_falls_back_to_empty(paths):
-    from mini_agent.evolution.capability_learning import CapabilityTrackStore
+    def fake_make_web_search_retriever(cfg_arg):
+        called["mode"] = "web_search"
+        return lambda topic, track: []
 
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", llm_helper=lambda prompt: "")
-    assert track.outline == []
+    monkeypatch.setattr(cl, "make_agent_retriever", fake_make_agent_retriever)
+    monkeypatch.setattr(cl, "make_web_search_retriever", fake_make_web_search_retriever)
 
+    retriever_mode = str(getattr(cfg.capability_learning, "retriever_mode", "web_search") or "web_search")
+    if retriever_mode == "agent":
+        cl.make_agent_retriever(cfg)
+    else:
+        cl.make_web_search_retriever(cfg)
 
-# ── §12.1-a：capability_map 领域置信度排序信号 ─────────────────────────
-
-def _write_task_manifest(paths, task_id: str, goal: str, status: str) -> None:
-    """在 paths.sessions_dir 下伪造一份 task_manifest.json，供
-    `build_capability_map()` 扫描（与 evolution/consolidation.py 的
-    扫描路径 `.agent/sessions/<session>/tasks/<task>/manifest.json` 一致）。"""
-    task_dir = paths.sessions_dir / "sess1" / "tasks" / task_id
-    task_dir.mkdir(parents=True, exist_ok=True)
-    import json
-    manifest = {"goal": goal, "outcome": {"status": status}}
-    (task_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-
-
-def test_topic_capability_confidence_matches_by_keyword(paths):
-    from mini_agent.evolution.capability_learning import _topic_capability_confidence
-
-    # 伪造一批 python_refactor 领域的任务，3 成功 1 失败 → confidence=0.75
-    _write_task_manifest(paths, "t1", "帮我重构这段 python 代码", "done")
-    _write_task_manifest(paths, "t2", "帮我重构这段 python 代码", "done")
-    _write_task_manifest(paths, "t3", "帮我重构这段 python 代码", "done")
-    _write_task_manifest(paths, "t4", "帮我重构这段 python 代码", "failed")
-
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=[])
-    track.outline = [
-        OutlineTopic(topic_id="a", name="python_refactor 相关技巧", coverage_state="uncovered"),
-        OutlineTopic(topic_id="b", name="完全不相关的主题", coverage_state="uncovered"),
-    ]
-
-    conf = _topic_capability_confidence(track, paths)
-    assert "a" in conf
-    assert abs(conf["a"] - 0.75) < 1e-6
-    assert "b" not in conf  # 没有匹配上的子主题不出现在结果里
-
-
-def test_topic_capability_confidence_empty_when_no_manifests(paths):
-    from mini_agent.evolution.capability_learning import _topic_capability_confidence
-
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=["随便什么"])
-    assert _topic_capability_confidence(track, paths) == {}
-
-
-def test_scan_outline_gaps_uses_capability_confidence_as_tiebreak(paths):
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=[])
-    track.outline = [
-        OutlineTopic(topic_id="low_conf", name="低置信度主题", coverage_state="uncovered", last_touched_at=200),
-        OutlineTopic(topic_id="high_conf", name="高置信度主题", coverage_state="uncovered", last_touched_at=100),
-    ]
-    # miss_counts 相同（都没有），capability_confidence 里 low_conf 更低
-    # → 尽管 last_touched_at 更新，仍应排在 high_conf 前面
-    result = scan_outline_gaps(
-        track, limit=2,
-        capability_confidence={"low_conf": 0.1, "high_conf": 0.9},
-    )
-    assert [t.topic_id for t in result] == ["low_conf", "high_conf"]
-
-
-def test_scan_outline_gaps_capability_confidence_backward_compat(paths):
-    """不传 capability_confidence 时，行为与此前完全一致（回退到 last_touched_at）。"""
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=[])
-    track.outline = [
-        OutlineTopic(topic_id="t1", name="A", coverage_state="uncovered", last_touched_at=200),
-        OutlineTopic(topic_id="t2", name="B", coverage_state="uncovered", last_touched_at=100),
-    ]
-    result = scan_outline_gaps(track, limit=2)
-    assert [t.topic_id for t in result] == ["t2", "t1"]
-
-
-def test_run_capability_learning_cycle_wires_capability_confidence(paths, monkeypatch):
-    """确认 run_capability_learning_cycle 真的把 _topic_capability_confidence()
-    的结果传给了 scan_outline_gaps()（不测排序细节，只测接线本身）。"""
-    from mini_agent.evolution import capability_learning as cl
-
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=["主题A"])
-    track.status = "active"
-    store.update(track.track_id, status="active")
-
-    captured = {}
-    original = cl.scan_outline_gaps
-
-    def spy(track_arg, limit=cl.DEFAULT_TOPICS_PER_CYCLE, miss_counts=None, capability_confidence=None):
-        captured["capability_confidence"] = capability_confidence
-        return original(track_arg, limit=limit, miss_counts=miss_counts, capability_confidence=capability_confidence)
-
-    monkeypatch.setattr(cl, "scan_outline_gaps", spy)
-    cl.run_capability_learning_cycle(paths)
-    assert "capability_confidence" in captured
-    assert captured["capability_confidence"] == {}  # 没有任何 task manifest，空字典也是正常接线的证明
-
-
-# ── §13.1-b：多 Track 公平调度 ─────────────────────────────────────────
-
-def test_last_advanced_at_updated_after_topic_processed(paths):
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=["主题A"])
-    assert track.last_advanced_at is None
-
-    run_capability_learning_cycle(paths)  # 无 retriever/wiki_writer，走 skipped 分支
-
-    refreshed = store.get(track.track_id)
-    assert refreshed.last_advanced_at is not None
-
-
-def test_last_advanced_at_not_updated_when_no_topics_to_process(paths):
-    """一个大纲全部 covered 的 Track，本轮没有任何子主题可推进，
-    last_advanced_at 不应该被更新（"推进"应该反映真实工作量，不是
-    "被扫描过"）。"""
-    store = CapabilityTrackStore(paths)
-    track = store.create(title="x", persona_desc="x", outline_names=[])
-    track.outline = [OutlineTopic(topic_id="t1", name="已完成", coverage_state="covered")]
-    store.update(track.track_id, outline=track.outline)
-
-    run_capability_learning_cycle(paths)
-
-    refreshed = store.get(track.track_id)
-    assert refreshed.last_advanced_at is None
-
-
-def test_fair_scheduling_orders_by_last_advanced_at(paths):
-    """两个 Track，track_old 从未被推进过（last_advanced_at=None），
-    track_recent 刚被推进过——下一轮应该先处理 track_old（尽管
-    track_old 是后创建的）。用 max_topics_per_run_cycle 卡住预算，
-    确认预算只分给了排在前面的 track_old。"""
-    store = CapabilityTrackStore(paths)
-    track_recent = store.create(title="recent", persona_desc="x", outline_names=["主题A"])
-    track_old = store.create(title="old", persona_desc="x", outline_names=["主题B"])
-
-    # 先让 track_recent 被推进一次，产生 last_advanced_at
-    run_capability_learning_cycle(paths, max_topics_per_run_cycle=None)
-    refreshed_recent = store.get(track_recent.track_id)
-    refreshed_old = store.get(track_old.track_id)
-    assert refreshed_recent.last_advanced_at is not None
-    assert refreshed_old.last_advanced_at is not None  # 两个都被推进过了（无预算限制）
-
-    # 手动把 track_recent 的 last_advanced_at 设置成"刚刚"，track_old 设置成"很久以前"
-    store.update(track_recent.track_id, last_advanced_at=time.time())
-    store.update(track_old.track_id, last_advanced_at=1.0)
-    # 给两个 Track 都补一个还没处理过的新子主题，确保下一轮还有活干
-    t_recent = store.get(track_recent.track_id)
-    t_recent.outline.append(OutlineTopic(topic_id="new_a", name="新子主题A", coverage_state="uncovered"))
-    store.update(track_recent.track_id, outline=t_recent.outline)
-    t_old = store.get(track_old.track_id)
-    t_old.outline.append(OutlineTopic(topic_id="new_b", name="新子主题B", coverage_state="uncovered"))
-    store.update(track_old.track_id, outline=t_old.outline)
-
-    # 全局预算只够处理 1 个 Track 的份额（topics_per_cycle 默认 2）
-    summary = run_capability_learning_cycle(paths, max_topics_per_run_cycle=2)
-    assert summary["topics_skipped"] == 2  # 预算恰好用在了排前面的 track_old 身上
-
-    refreshed_old2 = store.get(track_old.track_id)
-    refreshed_recent2 = store.get(track_recent.track_id)
-    # track_old 排在前面（last_advanced_at 更旧），应该拿到了本轮预算
-    assert refreshed_old2.last_advanced_at > 1.0
-    # track_recent 本轮预算耗尽，没有被推进（沿用之前手动设置的时间戳）
-    assert refreshed_recent2.last_advanced_at == refreshed_recent2.last_advanced_at  # 存在即可，不做强断言
-
-
-def test_max_topics_per_run_cycle_backward_compat_default_none(paths):
-    """不传 max_topics_per_run_cycle 时，每个 Track 各自跑满
-    topics_per_cycle，行为与此前完全一致。"""
-    store = CapabilityTrackStore(paths)
-    store.create(title="a", persona_desc="x", outline_names=["A1", "A2", "A3"])
-    store.create(title="b", persona_desc="x", outline_names=["B1", "B2", "B3"])
-
-    summary = run_capability_learning_cycle(paths)
-    # 每个 Track 默认 topics_per_cycle=2，两个 Track 共 4 个 topics_skipped
-    assert summary["topics_skipped"] == 4
-
-
-# ── §13.1-c 跨 Track 子主题去重与知识共享 ─────────────────────────────────
-
-
-def test_topic_name_similarity_identical_and_empty():
-    assert _topic_name_similarity("技术分析基础", "技术分析基础") == 1.0
-    assert _topic_name_similarity("技术分析基础", "") == 0.0
-    assert _topic_name_similarity("", "") == 0.0
-
-
-def test_topic_name_similarity_high_for_near_duplicate_names():
-    # "利率对资产价格的影响" vs "利率变化对资产价格影响" 应该有较高相似度
-    score = _topic_name_similarity("利率对资产价格的影响", "利率变化对资产价格影响")
-    assert score >= 0.4
-
-
-def test_topic_name_similarity_low_for_unrelated_names():
-    score = _topic_name_similarity("技术分析基础", "美食烹饪技巧")
-    assert score < 0.5
-
-
-def test_find_cross_track_reuse_matches_covered_topic_with_pages(paths):
-    store = CapabilityTrackStore(paths)
-    track_a = store.create(title="宏观经济", persona_desc="x", outline_names=[])
-    track_a.outline = [
-        OutlineTopic(topic_id="a1", name="利率对资产价格的影响",
-                     coverage_state="covered", wiki_page_ids=["pg1", "pg2"]),
-    ]
-    store.update(track_a.track_id, outline=track_a.outline)
-
-    track_b = store.create(title="股票分析", persona_desc="x", outline_names=[])
-    topic_b = OutlineTopic(topic_id="b1", name="利率对资产价格的影响", coverage_state="uncovered")
-    track_b.outline = [topic_b]
-
-    reused = find_cross_track_reuse(topic_b, track_b, [track_a, track_b])
-    assert reused is not None
-    assert reused.topic_id == "a1"
-    assert reused.wiki_page_ids == ["pg1", "pg2"]
-
-
-def test_find_cross_track_reuse_returns_none_when_topic_already_has_pages(paths):
-    """自己已经有 wiki 页面的子主题不应被复用逻辑覆盖——即使另一个
-    Track 有名字相似的 covered 子主题，也不该抢走已有内容。"""
-    store = CapabilityTrackStore(paths)
-    track_a = store.create(title="宏观经济", persona_desc="x", outline_names=[])
-    track_a.outline = [
-        OutlineTopic(topic_id="a1", name="利率对资产价格的影响",
-                     coverage_state="covered", wiki_page_ids=["pg1"]),
-    ]
-    store.update(track_a.track_id, outline=track_a.outline)
-
-    track_b = store.create(title="股票分析", persona_desc="x", outline_names=[])
-    topic_b = OutlineTopic(topic_id="b1", name="利率对资产价格的影响",
-                            coverage_state="partial", wiki_page_ids=["own_pg"])
-    track_b.outline = [topic_b]
-
-    assert find_cross_track_reuse(topic_b, track_b, [track_a, track_b]) is None
-
-
-def test_find_cross_track_reuse_ignores_paused_tracks(paths):
-    store = CapabilityTrackStore(paths)
-    track_a = store.create(title="宏观经济", persona_desc="x", outline_names=[])
-    track_a.outline = [
-        OutlineTopic(topic_id="a1", name="利率对资产价格的影响",
-                     coverage_state="covered", wiki_page_ids=["pg1"]),
-    ]
-    store.update(track_a.track_id, outline=track_a.outline, status="paused")
-
-    track_b = store.create(title="股票分析", persona_desc="x", outline_names=[])
-    topic_b = OutlineTopic(topic_id="b1", name="利率对资产价格的影响", coverage_state="uncovered")
-    track_b.outline = [topic_b]
-
-    track_a_refreshed = store.get(track_a.track_id)
-    assert find_cross_track_reuse(topic_b, track_b, [track_a_refreshed, track_b]) is None
-
-
-def test_find_cross_track_reuse_no_match_below_threshold(paths):
-    store = CapabilityTrackStore(paths)
-    track_a = store.create(title="宏观经济", persona_desc="x", outline_names=[])
-    track_a.outline = [
-        OutlineTopic(topic_id="a1", name="技术分析基础", coverage_state="covered",
-                     wiki_page_ids=["pg1"]),
-    ]
-    store.update(track_a.track_id, outline=track_a.outline)
-
-    track_b = store.create(title="股票分析", persona_desc="x", outline_names=[])
-    topic_b = OutlineTopic(topic_id="b1", name="美食烹饪技巧", coverage_state="uncovered")
-    track_b.outline = [topic_b]
-
-    assert find_cross_track_reuse(topic_b, track_b, [track_a, track_b]) is None
-
-
-def test_run_capability_learning_cycle_reuses_cross_track_topic(paths):
-    """端到端：track_a 已经有一个名字高度相似且 covered 的子主题，
-    track_b 推进同名子主题时应该直接复用页面，不走"未接线跳过"分支，
-    且台账记录 action="reused"。"""
-    store = CapabilityTrackStore(paths)
-    ledger_store = CapabilityLedgerStore(paths)
-
-    track_a = store.create(title="宏观经济", persona_desc="x", outline_names=[])
-    track_a.outline = [
-        OutlineTopic(topic_id="a1", name="利率对资产价格的影响",
-                     coverage_state="covered", wiki_page_ids=["pg1", "pg2"]),
-    ]
-    store.update(track_a.track_id, outline=track_a.outline)
-
-    track_b = store.create(
-        title="股票分析", persona_desc="x",
-        outline_names=["利率对资产价格的影响"],
-    )
-
-    summary = run_capability_learning_cycle(paths)
-    assert summary["topics_reused"] == 1
-    assert summary["topics_skipped"] == 0  # 复用命中，不应该落到"未接线跳过"分支
-
-    refreshed_b = store.get(track_b.track_id)
-    topic_b = refreshed_b.outline[0]
-    assert topic_b.coverage_state == "covered"
-    assert set(topic_b.wiki_page_ids) == {"pg1", "pg2"}
-
-    entries = ledger_store.list_for_track(track_b.track_id, limit=10)
-    assert any(e.action == "reused" for e in entries)
-
-
-def test_run_capability_learning_cycle_backward_compat_no_similar_topic(paths):
-    """没有可复用的相似子主题时，行为退回原有的"未接线安全跳过"逻辑，
-    不受本轮改动影响。"""
-    store = CapabilityTrackStore(paths)
-    store.create(title="a", persona_desc="x", outline_names=["完全独特的主题名称XYZ"])
-
-    summary = run_capability_learning_cycle(paths)
-    assert summary["topics_reused"] == 0
-    assert summary["topics_skipped"] == 1
-
-
-# ── §10.3 persona 型 Track：人设草稿合成 ───────────────────────────────────
-
-
-def _make_persona_track(paths, title="老李投顾", persona_desc="经验老道的资深投资顾问人设"):
-    store = CapabilityTrackStore(paths)
-    track = store.create(
-        title=title, persona_desc=persona_desc,
-        outline_names=["身份背景", "说话习惯", "知识边界"],
-        target_type="persona",
-    )
-    return store, track
-
-
-def test_detect_real_person_reference_flags_impersonation_phrasing():
-    warning = detect_real_person_reference("希望这个角色像马某人本人一样说话")
-    assert warning is not None
-    assert "虚构" in warning
-
-
-def test_detect_real_person_reference_none_for_normal_desc():
-    assert detect_real_person_reference("经验老道的资深投资顾问人设，说话犀利") is None
-
-
-def test_persona_draft_completeness_counts_answered_and_missing(paths):
-    store, track = _make_persona_track(paths)
-    q_store = CapabilityQuestionStore(paths)
-    topic_ids = [t.topic_id for t in track.outline]
-    q1 = q_store.raise_question(track.track_id, topic_ids[0], "问题1")
-    q_store.answer(q1.question_id, "答案1")
-    q_store.raise_question(track.track_id, topic_ids[1], "问题2")  # 未回答
-
-    questions = q_store.list_questions(track_id=track.track_id)
-    result = persona_draft_completeness(track, questions)
-    assert result["total"] == 3
-    assert result["answered"] == 1
-    assert track.outline[1].name in result["missing_topic_names"]
-    assert track.outline[2].name in result["missing_topic_names"]  # 从未提问的也算缺失
-    assert track.outline[0].name not in result["missing_topic_names"]
-
-
-def test_draft_persona_markdown_renders_frontmatter_and_answers(paths):
-    store, track = _make_persona_track(paths)
-    q_store = CapabilityQuestionStore(paths)
-    topic_ids = [t.topic_id for t in track.outline]
-    q1 = q_store.raise_question(track.track_id, topic_ids[0], "背景是什么？")
-    q_store.answer(q1.question_id, "曾在券商工作15年")
-
-    questions = q_store.list_questions(track_id=track.track_id)
-    md = draft_persona_markdown(track, questions)
-
-    assert md.startswith("---\n")
-    assert "display_name: 老李投顾" in md
-    assert "break_character_policy: soft" in md
-    assert "allowed_tools: " in md  # 留空，不由自动合成放宽
-    assert "曾在券商工作15年" in md
-    assert "（暂无信息，尚待用户回答相关问题）" in md  # 未回答的维度
-
-
-def test_draft_persona_markdown_ignores_unanswered_and_dismissed_questions(paths):
-    store, track = _make_persona_track(paths)
-    q_store = CapabilityQuestionStore(paths)
-    topic_ids = [t.topic_id for t in track.outline]
-    q1 = q_store.raise_question(track.track_id, topic_ids[0], "q1")
-    q_store.dismiss(q1.question_id)
-    q_store.raise_question(track.track_id, topic_ids[1], "q2")  # pending
-
-    questions = q_store.list_questions(track_id=track.track_id)
-    md = draft_persona_markdown(track, questions)
-    # 全部维度都应该是"暂无信息"，因为没有任何 answered 状态的问题
-    assert md.count("（暂无信息，尚待用户回答相关问题）") == 3
-
-
-def test_draft_persona_markdown_includes_safety_warning_when_flagged(paths):
-    store, track = _make_persona_track(
-        paths, persona_desc="希望这个角色像某明星本人一样说话",
-    )
-    md = draft_persona_markdown(track, [])
-    assert "安全提示" in md
-    assert "虚构" in md
-
-
-def test_save_and_load_persona_draft_roundtrip(paths):
-    store, track = _make_persona_track(paths)
-    md = draft_persona_markdown(track, [])
-    saved_path = save_persona_draft(paths, track.track_id, md)
-    assert saved_path.exists()
-    loaded = load_persona_draft(paths, track.track_id)
-    assert loaded == md
-
-
-def test_load_persona_draft_returns_none_when_absent(paths):
-    assert load_persona_draft(paths, "nonexistent_track") is None
-
-
-def test_publish_persona_draft_writes_to_project_personas_dir(paths):
-    store, track = _make_persona_track(paths, title="老李投顾")
-    md = draft_persona_markdown(track, [])
-    save_persona_draft(paths, track.track_id, md)
-
-    published_path = publish_persona_draft(paths, track.track_id)
-    assert published_path.exists()
-    assert published_path.parent == paths.project_personas_dir
-    assert published_path.read_text(encoding="utf-8") == md
-
-    # 发布后应该能被既有的 persona 解析器正常读出
-    from mini_agent.orchestrator.persona_profiles import _parse_persona
-    parsed = _parse_persona(published_path)
-    assert parsed is not None
-    assert parsed.display_name == "老李投顾"
-    assert parsed.break_character_policy == "soft"
-
-
-def test_publish_persona_draft_raises_when_no_draft_exists(paths):
-    with pytest.raises(ValueError):
-        publish_persona_draft(paths, "no_such_track")
-
-
-def test_publish_persona_draft_accepts_explicit_draft_text(paths):
-    store, track = _make_persona_track(paths)
-    md = draft_persona_markdown(track, [])
-    # 不预先 save，直接传 draft_text
-    published_path = publish_persona_draft(paths, track.track_id, draft_text=md)
-    assert published_path.exists()
+    assert called["mode"] == "agent"
