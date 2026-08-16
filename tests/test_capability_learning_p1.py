@@ -583,3 +583,82 @@ def test_run_capability_learning_cycle_uses_miss_counts_for_ordering(paths):
         paths, retriever=fake_retriever, wiki_writer=fake_writer, topics_per_cycle=1,
     )
     assert call_order == ["C"]
+
+
+# ── §14 P2：LLM 辅助大纲起草，opt-in ────────────────────────────────────
+
+
+def test_draft_outline_with_llm_parses_lines():
+    from mini_agent.evolution.capability_learning import draft_outline_with_llm
+
+    def fake_llm(prompt):
+        assert "股票分析能力" in prompt
+        return "1. 基础概念\n2. 技术分析\n3. 基本面分析\n4. 风险管理\n"
+
+    names = draft_outline_with_llm("股票分析能力", "希望你具备强大的股票分析能力", fake_llm)
+    assert names == ["基础概念", "技术分析", "基本面分析", "风险管理"]
+
+
+def test_draft_outline_with_llm_rejects_out_of_range_count():
+    from mini_agent.evolution.capability_learning import draft_outline_with_llm
+
+    def fake_llm_too_few(prompt):
+        return "基础概念\n技术分析"
+
+    def fake_llm_too_many(prompt):
+        return "\n".join(f"主题{i}" for i in range(20))
+
+    assert draft_outline_with_llm("x", "x", fake_llm_too_few) == []
+    assert draft_outline_with_llm("x", "x", fake_llm_too_many) == []
+
+
+def test_draft_outline_with_llm_empty_response():
+    from mini_agent.evolution.capability_learning import draft_outline_with_llm
+
+    assert draft_outline_with_llm("x", "x", lambda prompt: "") == []
+    assert draft_outline_with_llm("x", "x", lambda prompt: "   ") == []
+
+
+def test_draft_outline_with_llm_exception_returns_empty():
+    from mini_agent.evolution.capability_learning import draft_outline_with_llm
+
+    def boom(prompt):
+        raise RuntimeError("llm down")
+
+    assert draft_outline_with_llm("x", "x", boom) == []
+
+
+def test_capability_track_store_create_with_llm_helper(paths):
+    from mini_agent.evolution.capability_learning import CapabilityTrackStore
+
+    def fake_llm(prompt):
+        return "基础概念\n技术分析\n基本面分析\n风险管理"
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="股票分析能力", persona_desc="x", llm_helper=fake_llm)
+    assert [t.name for t in track.outline] == ["基础概念", "技术分析", "基本面分析", "风险管理"]
+
+
+def test_capability_track_store_create_llm_helper_ignored_when_outline_names_given(paths):
+    from mini_agent.evolution.capability_learning import CapabilityTrackStore
+
+    called = []
+
+    def fake_llm(prompt):
+        called.append(1)
+        return "A\nB\nC"
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(
+        title="x", persona_desc="x", outline_names=["自定义主题"], llm_helper=fake_llm,
+    )
+    assert [t.name for t in track.outline] == ["自定义主题"]
+    assert called == []  # 显式传了 outline_names 时不应该调用 LLM
+
+
+def test_capability_track_store_create_llm_failure_falls_back_to_empty(paths):
+    from mini_agent.evolution.capability_learning import CapabilityTrackStore
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", llm_helper=lambda prompt: "")
+    assert track.outline == []

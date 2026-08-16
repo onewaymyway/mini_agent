@@ -6,12 +6,8 @@
 超大文件），原因见该文件规模——直接在里面插入几百行新代码风险高、review
 成本大，独立文件挂载是更安全的接线方式。
 
-接线方式（P1 阶段尚未接线，需要下一步显式启用，避免未经评审就对外暴露
-新接口）：在 api/server.py 的 `app.include_router(router)`（约第 959 行）
-下面加两行：
-
-    from mini_agent.api.capability_routes import capability_router
-    app.include_router(capability_router)
+已挂载到 api/server.py（`app.include_router(capability_router)`，紧跟在
+主 router 挂载之后），`/v1/capability/*` 端点对外可用。
 
 本文件里的 `_get_paths(request)` 复用了 routes.py 里同样的取 AgentPaths
 方式（`http_server.bridge.agent.cfg.project_root`），Track 数据是
@@ -47,6 +43,21 @@ def _get_paths(request: Request) -> AgentPaths:
     return AgentPaths(project_root)
 
 
+def _get_llm_helper(request: Request):
+    """跟 cli/commands/capability_cmd.py::_get_llm_helper 同款约定（也是
+    routes.py 里其它几处 opt-in LLM 增强端点的既有模式，见该文件
+    `_get_llm_helper` 附近的用法）：把 `agent.llm_helper` 包成
+    `Callable[[str], str]`，拿不到就返回 None，调用方退回无 LLM 默认
+    路径，不报错。"""
+    http_server = request.app.state
+    bridge = getattr(http_server, "bridge", None)
+    agent = getattr(bridge, "agent", None) if bridge is not None else None
+    helper = getattr(agent, "llm_helper", None) if agent is not None else None
+    if helper is None:
+        return None
+    return lambda prompt: helper.ask(prompt)
+
+
 # ── 请求体模型 ───────────────────────────────────────────────────────────
 
 
@@ -56,6 +67,10 @@ class CreateTrackBody(BaseModel):
     outline_names: Optional[list[str]] = None
     target_type: str = "knowledge"  # knowledge / persona
     wiki_tag: Optional[str] = None
+    # §14 P2：outline_names 为空且这个开关为 True 时，用
+    # draft_outline_with_llm() 起草初始大纲；拿不到 agent.llm_helper 时
+    # 静默退回空大纲，不报错（见 CapabilityTrackStore.create 文档字符串）。
+    llm_draft: bool = False
 
 
 class UpdateTrackBody(BaseModel):
@@ -83,12 +98,14 @@ def list_tracks(request: Request, status: Optional[str] = None):
 @capability_router.post("/tracks")
 def create_track(request: Request, body: CreateTrackBody):
     store = CapabilityTrackStore(_get_paths(request))
+    llm_helper = _get_llm_helper(request) if (body.llm_draft and not body.outline_names) else None
     track = store.create(
         title=body.title,
         persona_desc=body.persona_desc,
         outline_names=body.outline_names,
         target_type=body.target_type,
         wiki_tag=body.wiki_tag or "",
+        llm_helper=llm_helper,
     )
     return track.to_dict()
 

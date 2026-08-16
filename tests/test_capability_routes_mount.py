@@ -81,6 +81,26 @@ class TestCapabilityRoutesMount(unittest.TestCase):
         resp = self.client.delete("/v1/capability/tracks/does-not-exist")
         self.assertEqual(resp.status_code, 404)
 
+    def test_create_track_with_llm_draft_no_helper_falls_back_empty(self):
+        # bridge.agent 没有 llm_helper 属性，_get_llm_helper 应该返回
+        # None，create_track 端点静默退回空大纲，不报错。
+        resp = self.client.post("/v1/capability/tracks", json={
+            "title": "股票分析能力", "persona_desc": "x", "llm_draft": True,
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["outline"], [])
+
+    def test_create_track_with_llm_draft_uses_helper(self):
+        self.client.app.state.bridge.agent.llm_helper = SimpleNamespace(
+            ask=lambda prompt: "基础概念\n技术分析\n基本面分析\n风险管理",
+        )
+        resp = self.client.post("/v1/capability/tracks", json={
+            "title": "股票分析能力", "persona_desc": "x", "llm_draft": True,
+        })
+        self.assertEqual(resp.status_code, 200)
+        names = [t["name"] for t in resp.json()["outline"]]
+        self.assertEqual(names, ["基础概念", "技术分析", "基本面分析", "风险管理"])
+
 
 if __name__ == "__main__":
     unittest.main()

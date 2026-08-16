@@ -51,12 +51,16 @@
       命中次数，同一 coverage_state 内 miss 次数越多排序越靠前，用户
       实际检索碰壁过的子主题不再和"系统扫描出来但没人问过"的子主题
       用同一套 last_touched_at 排序
+    - LLM 辅助大纲起草（§14 P2 提前实现）：`draft_outline_with_llm()` +
+      `CapabilityTrackStore.create(..., llm_helper=...)`，CLI
+      `/capability create --llm-draft` 与 HTTP API `llm_draft` 字段均已
+      接线，看板新建表单加了对应复选框；起草失败/无 LLM 上下文时静默
+      退回空大纲，不报错
 
-留给 P2 的方向（P1 刻意不做，避免过早引入不确定性/耦合）：
+留给 P3 的方向（P1/P2 刻意不做，避免过早引入不确定性/耦合）：
     - target_type="persona" 全链路（人设草稿生成 / 发布，见文档 §10）
     - 与 external_trend_capability_link / objective_executor / decision_profile_builder /
-      capability_map 的协同（见文档 §12，P1 阶段刻意不打通，避免引入耦合风险）
-    - LLM 辅助的大纲生成/缺口判定（P1 是规则式，见文档 §14 P2 阶段）
+      capability_map 的协同（见文档 §12，刻意不打通，避免引入耦合风险）
 """
 
 from __future__ import annotations
@@ -280,14 +284,20 @@ class CapabilityTrackStore:
         outline_names: Optional[list[str]] = None,
         target_type: str = "knowledge",
         wiki_tag: str = "",
+        llm_helper: Optional[Callable[[str], str]] = None,
     ) -> CapabilityTrack:
-        """创建一个新 Track。outline_names 为空时先建空大纲，
-        由调用方（看板 / LLM 起草流程，P2 才接 LLM）再补充子主题，
-        P1 阶段允许调用方直接传入一份规则式/用户编辑的初始大纲。"""
+        """创建一个新 Track。outline_names 为空且传入了 `llm_helper` 时，
+        用 `draft_outline_with_llm()` 起草一份初始大纲（P2，opt-in，见该
+        函数文档字符串）；outline_names 为空且没有 `llm_helper` 时退化为
+        空大纲，由调用方（看板 / 后续手动补充）再补充子主题——三种入参
+        组合都兼容，不强制要求任何一种。"""
         track_id = f"cap_{uuid.uuid4().hex[:12]}"
+        names = list(outline_names or [])
+        if not names and llm_helper is not None:
+            names = draft_outline_with_llm(title, persona_desc, llm_helper)
         outline = [
             OutlineTopic(topic_id=f"topic_{uuid.uuid4().hex[:8]}", name=n)
-            for n in (outline_names or [])
+            for n in names
         ]
         if not wiki_tag:
             slug = "".join(c if c.isalnum() else "_" for c in title.lower())[:40]
@@ -462,6 +472,54 @@ class CapabilityQuestionStore:
                 questions[i] = q
                 self._save_all(questions)
                 return
+
+
+# ── LLM 辅助大纲起草（§14 P2，opt-in，见 CapabilityTrackStore.create）──────
+
+DRAFT_OUTLINE_MIN_TOPICS = 3
+DRAFT_OUTLINE_MAX_TOPICS = 8
+
+
+def draft_outline_with_llm(
+    title: str, persona_desc: str, llm_helper: Callable[[str], str],
+) -> list[str]:
+    """用 `llm_helper(prompt) -> str` 起草一份初始大纲子主题名称列表。
+
+    跟 growth_advisor.py 里 `_llm_summarize_feedback_pattern()` 同款"能用
+    就用，用不了就当没发生"的克制：LLM 返回空、条数不在
+    [DRAFT_OUTLINE_MIN_TOPICS, DRAFT_OUTLINE_MAX_TOPICS] 范围内、或者解析
+    不出有效行，直接返回空列表——调用方（`CapabilityTrackStore.create`）
+    退回到空大纲，不会因为 LLM 输出格式异常而创建出一份包含垃圾数据的
+    大纲。不做重试/多轮修正：这是"起草辅助"而不是"必须成功的关键路径"，
+    起草失败用户在看板手动加子主题的成本很低，没有必要为了让它更"智能"
+    引入额外的不确定性（多轮重试可能让同一次创建操作的延迟变得不可预期）。
+    """
+    prompt = (
+        f"我想持续学习/养成一个能力方向，标题是「{title}」，"
+        f"具体描述：{persona_desc}\n\n"
+        f"请帮我列出 {DRAFT_OUTLINE_MIN_TOPICS}-{DRAFT_OUTLINE_MAX_TOPICS} 个"
+        "循序渐进的子主题，覆盖从基础到进阶的关键知识点或能力维度。"
+        "每行一个子主题名称（4-12 个汉字左右，不用编号、不用标点、不用"
+        "多余解释），不要输出标题之外的任何内容。"
+    )
+    try:
+        raw = llm_helper(prompt)
+    except Exception:
+        return []
+    if not raw or not raw.strip():
+        return []
+
+    names: list[str] = []
+    for line in raw.strip().splitlines():
+        # 防御性清理：去掉常见的编号/项目符号前缀（"1. "/"- "/"• " 等），
+        # LLM 即使被要求不加编号也时常习惯性加上。
+        cleaned = line.strip().lstrip("0123456789.、-•* ").strip()
+        if cleaned and len(cleaned) <= 30:
+            names.append(cleaned)
+
+    if not (DRAFT_OUTLINE_MIN_TOPICS <= len(names) <= DRAFT_OUTLINE_MAX_TOPICS):
+        return []
+    return names
 
 
 # ── 大纲缺口扫描（§4 伪流程第一步，规则式，P1 版本）──────────────────────

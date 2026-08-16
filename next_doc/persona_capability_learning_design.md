@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.10（P1 全部计划项已实现，并提前完成了原标注在 P2 的 `miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
+- **版本**：v0.11（P1 全部计划项已实现；并提前完成了原标注在 P2 的两项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -75,17 +75,28 @@
 | 项目 | 状态 | 对应文件 |
 |---|---|---|
 | `/capability [list]`：展示所有 Track 概况 | ✅ 已实现 | `src/mini_agent/cli/commands/capability_cmd.py` |
-| `/capability create <title> \| <persona_desc>`：创建 knowledge 型 Track | ✅ 已实现（大纲仍是空的，LLM/规则式起草留到 P2，与 `CapabilityTrackStore.create()` 现有行为一致） | 同上 |
-| `/capability cycle`：手动触发一轮学习循环，等价于 `sys:capability_learning_cycle` 未来会执行的内容 | ✅ 已实现，**刻意不传入 retriever**——调用 `run_capability_learning_cycle(paths, wiki_writer=make_wiki_writer(paths))`，`retriever` 留空意味着需要检索的子主题仍会被安全跳过并记 `skipped` 台账，不产生真实网络请求（§13.3-g 合规过滤本身已实现并接入 `make_wiki_writer()`，这里留空是因为 `retriever` 本身尚未接线，与合规过滤是否就位无关） | 同上 |
-| `/capability questions [track_id]` / `/capability answer <id> <text>`：异步问答队列的 CLI 入口 | ✅ 已实现 | 同上 |
+| `/capability create <title> \| <persona_desc> [--llm-draft]`：创建 knowledge 型 Track | ✅ 已实现；`--llm-draft` 用 `agent.llm_helper` 起草初始大纲（§14 P2，已提前实现，见下方「§14 P2：LLM 辅助大纲起草」小节），不加这个 flag 时仍是原有的空大纲行为 | 同上 |
+| `/capability cycle`：手动触发一轮学习循环，等价于 `sys:capability_learning_cycle` 执行的内容 | ✅ 已实现；是否使用真实检索由 `CapabilityLearningConfig.retriever_enabled` 配置项控制（默认 False），关闭时 `retriever=None`，需要检索的子主题仍会被安全跳过并记 `skipped` 台账；打开时用 `make_web_search_retriever(cfg)`，写入前仍经过 §13.3-g 合规过滤 | 同上 |
+| `/capability questions [track_id]` / `/capability questions --sweep-expired` / `/capability answer <id> <text>`：异步问答队列的 CLI 入口 | ✅ 已实现 | 同上 |
 | repl.py 分发、`cli/commands/__init__.py` 导出、`/help`（`parser.py`）文案 | ✅ 已同步更新 | `src/mini_agent/cli/repl.py`、`src/mini_agent/cli/commands/__init__.py`、`src/mini_agent/cli/parser.py` |
 | 单元测试（10 组：无 agent / 空列表 / 创建 / cycle 空跑 / cycle 在真实 Track 上确认不产生"假装学会了"的覆盖率变化 / 问答队列列出与提交 / 未知子命令） | ✅ 全部通过 | `tests/test_capability_cmd.py` |
 
-**未做的部分**：cron 任务表（`cron_scheduler.py::SYSTEM_JOBS`）本身仍未新增 `sys:capability_learning_cycle` 条目——命令中间层就位后，接线这一步变成"新增一条 `task_template: '[能力学习] 执行一次 /capability cycle'` 的字典"这么简单，但按之前的克制原则，仍然等评审通过后再打开，不在这轮里顺带默认开启一个会周期性自动运行的新 cron 任务。
+cron 任务表（`cron_scheduler.py::SYSTEM_JOBS`）已注册 `sys:capability_learning_cycle` / `sys:capability_question_sweep`，默认 `enabled: False`（opt-in，理由见该条目上方注释）。
 
-### P2 / P3
+### §14 P2：LLM 辅助大纲起草 —— ✅ 已提前实现
 
-尚未开始，规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线已提前完成，见上）。
+| 项目 | 状态 | 对应文件 |
+|---|---|---|
+| `draft_outline_with_llm(title, persona_desc, llm_helper)`：用 LLM 起草 3-8 个初始大纲子主题名称 | ✅ 已实现。"能用就用，用不了就当没发生"：`llm_helper` 抛异常/返回空/解析出的条数不在 `[DRAFT_OUTLINE_MIN_TOPICS, DRAFT_OUTLINE_MAX_TOPICS]`（3-8）范围内，一律返回空列表，调用方退回空大纲，不重试、不报错 | `src/mini_agent/evolution/capability_learning.py` |
+| `CapabilityTrackStore.create(..., llm_helper=...)`：`outline_names` 为空且传入了 `llm_helper` 时调用上面这个函数起草大纲 | ✅ 已实现，显式传了 `outline_names` 时不会调用 LLM（避免意外覆盖用户/调用方指定的大纲） | 同上 |
+| CLI `/capability create ... --llm-draft`：复用 `growth_cmd.py::_get_llm_helper` 同款把 `agent.llm_helper` 包成 `Callable[[str], str]` 的约定 | ✅ 已实现 | `src/mini_agent/cli/commands/capability_cmd.py` |
+| HTTP API `POST /v1/capability/tracks` 的 `llm_draft: bool` 字段，`_get_llm_helper(request)` 从 `request.app.state.bridge.agent.llm_helper` 取 | ✅ 已实现，与 CLI 侧同款容错（拿不到 helper 时静默退回空大纲） | `src/mini_agent/api/capability_routes.py` |
+| 看板「➕ 新建能力 / 人设方向」表单新增"用 LLM 起草初始大纲"复选框 | ✅ 已实现 | `apps/mini_agent_kanban/app.py`、`apps/mini_agent_kanban/client.py` |
+| 单元测试（10 组：解析多行/条数校验/空响应/异常兜底/`create()` 走 LLM 路径/`outline_names` 优先级/失败兜底空大纲/HTTP 端点两条路径） | ✅ 全部通过 | `tests/test_capability_learning_p1.py`、`tests/test_capability_routes_mount.py` |
+
+### P3
+
+尚未开始，规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线 + §14 P2 大纲起草均已提前完成，见上）。剩余方向：`target_type="persona"` 全链路（人设草稿生成/发布，见文档 §10）、与 `external_trend_capability_link`/`objective_executor`/`decision_profile_builder`/`capability_map` 的协同（见文档 §12）。
 
 ---
 
@@ -544,7 +555,7 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - 异步问答队列的生成与消费（不接通知，只落队列）—— ✅ 已实现
 - 看板三个区域（人设管理/进度展示/待回答问题）+ 对应 API —— ✅ 均已实现，见文档开头「实施状态」
 - `context_builder.py` 接入检索复用 —— ✅ 未命中记录部分（§14.1-a）已提前完成；§6 的"命中 active Track 时按需注入"部分经代码走查确认已被既有的 `_try_inject_wiki_search()` 全库检索链路天然覆盖，不需要额外实现，见文档开头「实施状态」说明
-- 剩余未接线项：无——P1 计划项已全部实现，`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序也已提前完成（原标注在 P2）。真实 `retriever`（`web_search`）与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` cron 任务默认关闭（opt-in），需要用户在配置/看板里显式打开，不在本轮默认打开（详见文档开头「实施状态」的取舍说明）。剩余 P2 方向（LLM 辅助大纲起草、`target_type="persona"` 全链路等）另行评审
+- 剩余未接线项：无——P1 计划项已全部实现，`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草也已提前完成（均原标注在 P2）。真实 `retriever`（`web_search`）与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` cron 任务默认关闭（opt-in），需要用户在配置/看板里显式打开，不在本轮默认打开（详见文档开头「实施状态」的取舍说明）。剩余 P3 方向：`target_type="persona"` 全链路、与 `capability_map` 等其它子系统的协同，另行评审
 
 **P2（体验与质量增强）**：
 - 大纲生成/缺口判定引入 LLM 辅助（替换纯规则）

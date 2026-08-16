@@ -5749,6 +5749,11 @@ def render_capability_tab(client: "AgentClient"):
             new_wiki_tag = st.text_input(
                 "wiki 命名空间（可留空自动生成）", placeholder="capability:stock_analysis",
             )
+            new_llm_draft = st.checkbox(
+                "用 LLM 起草初始大纲（§14 P2，需要 agent 有可用的 LLM 上下文；"
+                "起草失败会静默创建空大纲，不报错）",
+                value=False,
+            )
             submitted = st.form_submit_button("创建")
         if submitted:
             if not new_title or not new_desc:
@@ -5757,11 +5762,14 @@ def render_capability_tab(client: "AgentClient"):
                 resp = client.create_capability_track(
                     title=new_title, persona_desc=new_desc,
                     target_type=new_type, wiki_tag=new_wiki_tag,
+                    llm_draft=new_llm_draft,
                 )
                 if isinstance(resp, dict) and resp.get("_error"):
                     st.error(f"创建失败：{resp['_error']}")
                 else:
-                    st.success(f"已创建 Track：{resp.get('title', new_title)}")
+                    outline_n = len(resp.get("outline", []) or [])
+                    draft_note = f"，已起草 {outline_n} 个子主题" if new_llm_draft and outline_n else ""
+                    st.success(f"已创建 Track：{resp.get('title', new_title)}{draft_note}")
                     st.rerun()
 
     if not tracks:

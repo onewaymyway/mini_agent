@@ -941,10 +941,11 @@ class AgentClient:
 
     def create_capability_track(self, title: str, persona_desc: str,
                                  outline_names: list = None, target_type: str = "knowledge",
-                                 wiki_tag: str = ""):
+                                 wiki_tag: str = "", llm_draft: bool = False):
         body = {
             "title": title, "persona_desc": persona_desc,
             "target_type": target_type, "wiki_tag": wiki_tag,
+            "llm_draft": llm_draft,
         }
         if outline_names:
             body["outline_names"] = outline_names

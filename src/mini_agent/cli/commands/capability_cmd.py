@@ -12,9 +12,13 @@ cron_scheduler.py SYSTEM_JOBS 里对应条目的说明）。
 子命令：
   /capability                    — 展示所有 Track 概况（标题/状态/覆盖率）
   /capability list                — 同上（显式别名，风格对齐 /growth list）
-  /capability create <title> | <persona_desc>
-                                   — 创建一个 knowledge 型 Track（大纲用内置
-                                     规则式模板起草，LLM 辅助起草留到 P2）
+  /capability create <title> | <persona_desc> [--llm-draft]
+                                   — 创建一个 knowledge 型 Track。默认空
+                                     大纲，之后可在看板手动补充子主题；
+                                     加 --llm-draft 时用 agent 的
+                                     llm_helper 起草一份初始大纲（§14 P2，
+                                     拿不到 LLM 或起草失败时静默退回
+                                     空大纲，不报错）
   /capability cycle                — 手动触发一轮学习循环（等价于
                                      sys:capability_learning_cycle 的内容，
                                      不依赖那条 cron job 是否已注册/enabled）。
@@ -64,6 +68,21 @@ def _fmt_coverage(track) -> str:
     return f"{covered}/{total}"
 
 
+def _get_llm_helper(agent):
+    """把 `agent.llm_helper` 包成 `Callable[[str], str]`，与
+    `growth_cmd.py::_get_llm_helper` 完全同款约定，直接复用同一种
+    "拿不到就返回 None，调用方退回无 LLM 默认路径"的克制。不共用同一份
+    代码（而是各自 cli/commands 模块内一份小函数）是这个代码库里已有的
+    既成模式（growth_cmd.py/goal_mode_cmd.py 等都是各自内联），这里跟随
+    既有约定，不引入新的共享工具模块。"""
+    if agent is None:
+        return None
+    helper = getattr(agent, "llm_helper", None)
+    if helper is None:
+        return None
+    return lambda prompt: helper.ask(prompt)
+
+
 def _print_tracks(tracks) -> None:
     if not tracks:
         R.print_info("暂无 CapabilityTrack，使用 /capability create <title> | <persona_desc> 创建一个。")
@@ -96,9 +115,10 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         return
 
     if sub == "create":
-        rest = " ".join(args[1:]).strip()
+        rest = " ".join(a for a in args[1:] if a != "--llm-draft").strip()
+        use_llm_draft = "--llm-draft" in args
         if not rest:
-            R.print_error("用法：/capability create <title> | <persona_desc>")
+            R.print_error("用法：/capability create <title> | <persona_desc> [--llm-draft]")
             return
         if "|" in rest:
             title, _, persona_desc = rest.partition("|")
@@ -107,13 +127,24 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         title = title.strip()
         persona_desc = persona_desc.strip() or title
         if not title:
-            R.print_error("用法：/capability create <title> | <persona_desc>")
+            R.print_error("用法：/capability create <title> | <persona_desc> [--llm-draft]")
             return
         store = CapabilityTrackStore(paths)
-        track = store.create(title=title, persona_desc=persona_desc)
+        # --llm-draft：用 draft_outline_with_llm() 起草初始大纲（§14 P2，
+        # opt-in）。拿不到 llm_helper（agent 未初始化/无 LLM 上下文）时
+        # 静默退回空大纲，不报错——这跟 growth_cmd.py 里同款 LLM 增强
+        # 开关的容错方式一致。
+        llm_helper = _get_llm_helper(agent) if use_llm_draft else None
+        track = store.create(title=title, persona_desc=persona_desc, llm_helper=llm_helper)
+        draft_note = ""
+        if use_llm_draft:
+            draft_note = (
+                "（LLM 起草成功）" if track.outline
+                else "（LLM 起草失败或不可用，已创建空大纲，可在看板手动补充）"
+            )
         R.print_success(
             f"已创建 Track [{track.track_id}] {track.title}，"
-            f"大纲 {len(track.outline)} 个子主题，wiki_tag={track.wiki_tag}"
+            f"大纲 {len(track.outline)} 个子主题{draft_note}，wiki_tag={track.wiki_tag}"
         )
         return
 
