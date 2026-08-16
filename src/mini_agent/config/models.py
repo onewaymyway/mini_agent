@@ -2200,6 +2200,25 @@ class CapabilityLearningConfig:
     # 独立于版权考虑的克制默认）。
     summary_max_chars: int = 400
 
+    # ── v0.21 §8 通知系统接入 ──────────────────────────────────────────
+    # 是否在 run_capability_learning_cycle 每轮跑完后尝试推送一条摘要
+    # 通知（"你有 N 个待回答问题，本轮新沉淀 M 篇 wiki 页面"）。风格
+    # 对齐 GrowthAdvisorConfig.notification_frequency/max_per_day，但
+    # 这里是 CapabilityLearningConfig 自己独立的一套字段，不和
+    # GrowthAdvisorConfig 混用（两个子系统的节流状态、节流额度互相独立，
+    # 关掉一个不影响另一个）。默认 True，但只有"确有新内容"（新问题或新
+    # wiki 页面）时才会真正发送，没有新内容的空轮不会产生任何推送。
+    notification_enabled: bool = True
+
+    # "kanban_only" 时完全不主动推送（看板轮询 /v1/capability/* 端点不
+    # 受影响，仍然随时可查）；"daily" 时按天节流，当天最多推
+    # notification_max_per_day 条摘要（多轮合并成一条，不逐轮推送）。
+    notification_frequency: str = "daily"
+
+    # 当天（本地时区自然日）最多推送几条摘要。多轮循环产生的新内容会
+    # 合并进同一条里，不会因为触发了多次 cron 就发多条。
+    notification_max_per_day: int = 1
+
 
 @dataclass
 class ReminderConfig:

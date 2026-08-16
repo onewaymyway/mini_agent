@@ -974,6 +974,99 @@ def run_capability_learning_cycle(
     return summary
 
 
+def _today_str() -> str:
+    """本地时区自然日字符串（YYYY-MM-DD），风格对齐
+    growth_advisor.py::_today_str，独立实现一份而不是导入 growth_advisor
+    ——两个模块的节流状态本来就要互相独立，不共用一份状态文件，见
+    CapabilityLearningConfig.notification_* 字段注释。"""
+    return time.strftime("%Y-%m-%d", time.localtime())
+
+
+def _load_capability_notify_state(paths: AgentPaths) -> dict:
+    return _read_json(paths.capability_notify_state_path(), {})
+
+
+def _save_capability_notify_state(paths: AgentPaths, state: dict) -> None:
+    _write_json(paths.capability_notify_state_path(), state)
+
+
+def maybe_dispatch_capability_notification(
+    paths: AgentPaths, cfg, cycle_summary: dict, pending_questions_count: int,
+) -> Optional[dict]:
+    """v0.21 §8 通知系统接入。
+
+    `run_capability_learning_cycle()` 跑完一轮后调用：如果本轮"新产生了
+    待回答问题"或"新沉淀了 wiki 页面"，按天节流（默认每天最多推
+    `notification_max_per_day` 条，多轮循环合并成一条摘要，不逐轮推送）
+    发一条通知，走已有的 `NotificationDispatcher`。
+
+    - `cfg` 是 `CapabilityLearningConfig`（或 `None`/无该属性时按默认值
+      处理，容错方式对齐其它调用方的 `getattr(..., default)` 惯例）。
+    - `cycle_summary`：`run_capability_learning_cycle()` 的返回值，读取
+      `topics_researched`（新沉淀页面数的近似值——每个 researched 子主题
+      至少产出一个 wiki 页面）和 `questions_raised`。
+    - 空轮（两个数都是 0）不占用推送额度，也不发送任何通知——"没有新
+      内容"本身不构成推送理由，这条规则和 growth_advisor 的"宁可不推，
+      不为了凑数硬推"是同一条原则。
+    - 任何一步异常都不应该打断调用方主流程，统一 try/except +
+      log_exception 兜底，返回 None。
+
+    返回本次是否实际发送、以及发送渠道结果，供 cron 日志/测试断言；
+    `None` 表示本次没有发送（含"被节流跳过""关闭""空轮"三种情况，
+    调用方通常不需要区分，需要区分时可自行传参 dry-run 检查前置条件）。
+    """
+    try:
+        new_questions = int(cycle_summary.get("questions_raised", 0) or 0)
+        new_pages = int(cycle_summary.get("topics_researched", 0) or 0)
+        if new_questions <= 0 and new_pages <= 0:
+            return None
+
+        notification_enabled = bool(getattr(cfg, "notification_enabled", True))
+        if not notification_enabled:
+            return None
+        freq = getattr(cfg, "notification_frequency", "daily")
+        if freq == "kanban_only":
+            return None
+        max_per_day = int(getattr(cfg, "notification_max_per_day", 1) or 1)
+
+        state = _load_capability_notify_state(paths)
+        today = _today_str()
+        if state.get("last_notify_date") != today:
+            state["last_notify_date"] = today
+            state["notify_count_today"] = 0
+        if state.get("notify_count_today", 0) >= max_per_day:
+            return None
+
+        from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+
+        lines = []
+        if pending_questions_count > 0:
+            lines.append(f"你有 {pending_questions_count} 个待回答问题")
+        if new_pages > 0:
+            lines.append(f"本轮新沉淀 {new_pages} 篇 wiki 页面")
+        if new_questions > 0:
+            lines.append(f"本轮新生成 {new_questions} 个待回答问题")
+        message = NotificationMessage(
+            title="能力学习：本轮进展摘要",
+            body="，".join(lines) + "。",
+            source="capability_learning",
+            meta={
+                "questions_raised": new_questions,
+                "topics_researched": new_pages,
+                "pending_questions": pending_questions_count,
+            },
+        )
+        results = NotificationDispatcher(paths).dispatch(message)
+
+        state["notify_count_today"] = state.get("notify_count_today", 0) + 1
+        _save_capability_notify_state(paths, state)
+        return {"sent": True, "channels": results}
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.capability_learning.maybe_dispatch_capability_notification")
+        return None
+
+
 # ── 检索未命中记录（§14.1-a 使用驱动学习，接线方见
 #    context_builder.py::ContextBuilder._maybe_record_capability_wiki_miss，
 #    只在 persona 绑定的 wiki_scopes 命中某个 active knowledge 型 Track 的

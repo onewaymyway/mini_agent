@@ -1,6 +1,7 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.20（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的九项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）、§13.1-c 跨 Track 子主题去重与知识共享、§10 `target_type="persona"` 人设草稿合成与发布全链路（核心库 + CLI + HTTP API + 看板 UI）。**本轮（v0.20）**：真实检索与 cron 任务评审条件已满足，`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段均改为**默认开启**（opt-out，此前是 opt-in 默认关闭），见「实施状态」新增小节；同时把看板人设草稿区从最简版本（一句纯文字完成度摘要 + 单一源码预览）升级为进度条+逐维度勾选清单、渲染效果/源码双 Tab 预览、§10.4-2 真人模仿安全提示单独高亮）
+- **版本**：v0.21（「后续计划」第 1 项已实现：`CapabilityLearningConfig` 新增 `notification_enabled`/`notification_frequency`/`notification_max_per_day` 三个独立字段，`maybe_dispatch_capability_notification()` 在 `/capability cycle`（含 `sys:capability_learning_cycle`）跑完一轮后按天节流推送"待回答问题数 + 本轮新沉淀 wiki 页面数"摘要，空轮不占用额度不发送，走既有 `NotificationDispatcher`，见「实施状态」新增小节。第 2、3 项待后续轮次实施）
+- **上一版本**：v0.20（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的九项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）、§13.1-c 跨 Track 子主题去重与知识共享、§10 `target_type="persona"` 人设草稿合成与发布全链路（核心库 + CLI + HTTP API + 看板 UI）。**本轮（v0.20）**：真实检索与 cron 任务评审条件已满足，`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段均改为**默认开启**（opt-out，此前是 opt-in 默认关闭），见「实施状态」新增小节；同时把看板人设草稿区从最简版本（一句纯文字完成度摘要 + 单一源码预览）升级为进度条+逐维度勾选清单、渲染效果/源码双 Tab 预览、§10.4-2 真人模仿安全提示单独高亮）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -36,6 +37,18 @@
 | §13.3-g 合规过滤（写入前剔除具体买卖建议等风险表述 + 金融/医疗/法律领域页面加 `requires_disclaimer` 标记） | ✅ 已实现并接入 `make_wiki_writer()` 写入路径：`apply_compliance_filter()` 做句级关键词/正则过滤（整句剔除，不做局部改写），`is_disclaimer_required_track()` 按 Track 标题/描述/wiki_tag 关键词判定风险领域；命中时 frontmatter 加 `requires_disclaimer: true` + 正文追加"仅供参考"免责声明。规则式实现，不接 LLM 改写（见函数上方注释的取舍说明） | `src/mini_agent/evolution/capability_learning.py` |
 
 **P1 阶段的设计取舍说明**：数据模型、存储、核心逻辑（缺口扫描、异步问答队列、循环编排）已经是可以真实跑起来、有测试覆盖的代码，但两处"会产生真实外部副作用"的关口——① 真正调用互联网检索和 wiki 写入、② 挂载到 cron 定时任务表使其自动周期性运行——都刻意留了一步显式开关，需要在功能评审通过、且第 14.3-g 合规过滤到位之后再接线，不在 P1 这一步默认打开。这是为了让"代码已经写好、可测试"和"功能对用户/系统实际生效"两件事分开推进，降低一次性铺开的风险。
+
+### §8 通知系统接入（v0.21 第 1 项）—— ✅ 已实现
+
+| 项目 | 状态 | 对应文件 |
+|---|---|---|
+| `CapabilityLearningConfig.notification_enabled` / `notification_frequency`（`"daily"` \| `"kanban_only"`）/ `notification_max_per_day`：独立于 `GrowthAdvisorConfig` 的一套字段，节流状态也单独落盘，不共用 growth_advisor 的额度 | ✅ 已实现 | `src/mini_agent/config/models.py` |
+| `capability_notify_state_path()`：`.agent/capability_notify_state.json`，记录 `last_notify_date`/`notify_count_today` | ✅ 已实现 | `src/mini_agent/storage/paths.py` |
+| `maybe_dispatch_capability_notification(paths, cfg, cycle_summary, pending_questions_count)`：空轮（本轮无新问题且无新页面）不占额度不发送；`notification_frequency="kanban_only"` 或 `notification_enabled=False` 时不发送；当天额度耗尽时不发送；否则拼一条摘要（待回答问题数 / 本轮新沉淀页面数 / 本轮新生成问题数），走 `NotificationDispatcher` 发送，异常统一 `log_exception` 兜底不影响主流程 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
+| `/capability cycle`（对应 `sys:capability_learning_cycle` 引用的中间层命令）跑完 `run_capability_learning_cycle()` 后调用上述函数，`try/except` 包裹不影响命令本身的输出 | ✅ 已实现 | `src/mini_agent/cli/commands/capability_cmd.py` |
+| 单元测试（6 组：空轮不发送 / 有新页面触发 / 当天额度耗尽后节流 / kanban_only 不发送 / 关闭开关不发送 / `cfg=None` 走默认值仍能发送） | ✅ 全部通过 | `tests/test_capability_notification_v021.py` |
+
+未做：多轮循环产生的新内容目前是"当轮汇总"而非"跨轮持续累加直到真正推送成功"——如果当天额度已耗尽，未推送出去的那部分新增内容不会被下一次成功推送时一并带上（不像 growth_advisor 的 `_pop_pending_pursuit_digest_lines` 那样有专门的待推送队列）。这属于"下一条摘要只反映最新一轮，不追溯此前被节流掉的部分"，评估后认为可接受（能力学习的新增内容本身可以在看板随时查看，不依赖推送），暂不在本轮引入额外的待推送队列机制。
 
 ### 第 11 节（`PersonaProfile.wiki_scopes`）—— ✅ 已提前实现
 
@@ -644,11 +657,11 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 
 目前大纲创建后主要靠用户手动编辑。更自然的方式是：用户在追问回答或对话中提到大纲之外的新关注点时（比如原大纲是"股票分析"，用户提到"我其实更关心港股"），系统生成一条"要不要把这个也加进大纲"的建议，而不是让大纲外的信息被浪费掉。这一点和 13.1-a 是一体两面——a 解决的是"发现已有子主题的缺口"，f 解决的是"发现大纲本身该扩展"，两者机制不同，值得区分成两个独立能力点分别实现。
 
-### 后续计划（v0.21，即将实施）—— §8 通知接入 / §13.2-f 大纲动态生长 / Persona 镜像视图
+### 后续计划（v0.21）—— §8 通知接入（✅ 已实现） / §13.2-f 大纲动态生长 / Persona 镜像视图
 
-三项从「进一步改进方向」里挑出、纳入本轮实施：
+三项从「进一步改进方向」里挑出、纳入本轮实施，第 1 项已完成（见上方「§8 通知系统接入（v0.21 第 1 项）」小节），第 2、3 项待后续轮次：
 
-1. **§8 通知系统接入**：`sys:capability_learning_cycle` 每轮跑完后，检查是否有"新产生的待回答问题"或"本轮新沉淀的 wiki 页面"，按天节流（默认每天最多一条摘要，复用 `notification_frequency`/`notification_max_per_day` 同款节流风格，但作为 `CapabilityLearningConfig` 自己的字段，不和 `GrowthAdvisorConfig` 混用），合并成一条摘要通知（"你有 N 个待回答问题，本轮新沉淀 M 篇 wiki 页面"），走已有的 `NotificationDispatcher`。不逐条推送。
+1. ~~**§8 通知系统接入**~~ —— ✅ **已实现**，见文档开头「§8 通知系统接入」小节。
 2. **§13.2-f 大纲动态生长建议**：消费已回答问题时，用可选的 `llm_helper` 从问答内容里提炼"是否存在明显在原大纲之外、但用户主动提到的新关注点"，命中且和现有大纲子主题不重复（复用 §13.1-c 的 `_topic_name_similarity`）时生成一条 `OutlineSuggestion`（pending 状态），供用户在看板/CLI 采纳（追加进大纲）或忽略。没有 `llm_helper` 时这一步整体跳过（不做规则式猜测，误报成本比"暂时不建议"更高）。
 3. **Persona 详情页镜像视图**：Track 详情页已经有"被以下角色引用"的正向视图（§11.4），本轮在能力学习 Tab 里补一个"🎭 已发布角色一览"区块，按角色列出各自绑定的 `wiki_scopes`（若未绑定则显示"不限定范围"），实现文档 §11.2 末尾"双向可见"的镜像视图，不需要为此新开一个独立 Persona 管理 Tab。
 

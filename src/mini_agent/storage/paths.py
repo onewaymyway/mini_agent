@@ -1319,6 +1319,15 @@ class AgentPaths:
         看板按 status/track_id 过滤展示。"""
         return self.workdir_dir / "capability_questions.jsonl"
 
+    def capability_notify_state_path(self) -> Path:
+        """<project_root>/.agent/capability_notify_state.json — v0.21 §8
+        通知接入的按天节流状态（last_notify_date/notify_count_today），
+        风格对齐 growth_advisor 的 growth_state_path，但独立存储，不与
+        GrowthAdvisorConfig 的节流状态混用（两套 notification_frequency
+        配置本来就互相独立，见 CapabilityLearningConfig 字段注释）。
+        """
+        return self.workdir_dir / "capability_notify_state.json"
+
     def capability_persona_draft_path(self, track_id: str) -> Path:
         """<project_root>/.agent/capability_persona_drafts/<track_id>.md —
         persona 型 Track（target_type="persona"）的人设草稿（§10.3）。

@@ -169,6 +169,19 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         result = run_capability_learning_cycle(
             paths, retriever=retriever, wiki_writer=make_wiki_writer(paths),
         )
+        # v0.21 §8：本轮跑完后尝试推送一条按天节流的摘要通知（空轮/被
+        # 节流/关闭时静默不发，不影响本命令的正常输出）。
+        try:
+            from mini_agent.evolution.capability_learning import (
+                CapabilityQuestionStore as _QStore,
+                maybe_dispatch_capability_notification,
+            )
+            pending_count = len(_QStore(paths).list_questions(status="pending"))
+            maybe_dispatch_capability_notification(
+                paths, getattr(cfg, "capability_learning", None), result, pending_count,
+            )
+        except Exception:
+            pass
         skip_note = (
             "（真实检索已开启，检索失败/无结果的子主题仍会被跳过并记台账）"
             if retriever_enabled
