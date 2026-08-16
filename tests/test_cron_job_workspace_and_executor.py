@@ -228,6 +228,129 @@ class TestCronJobWorkspace:
         # 最近的（mtime 最大）应该排在最前面
         assert recent[0] == run_ids[-1]
 
+    # ── [看板"最近执行记录只有时间，看不出成功/失败"] recent_runs_summary ──
+
+    def test_recent_runs_summary_success(self, tmp_path):
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.ensure()
+
+        rid = "2026-07-20T00-00-00"
+        ws.append_run_event(rid, {"type": "run_started"})
+        ws.append_run_event(rid, {"type": "step", "step_index": 1, "error": None})
+        ws.append_run_event(rid, {
+            "type": "run_finished", "status": STATUS_IDLE,
+            "steps_executed": 1, "duration_seconds": 12.5,
+        })
+
+        summary = ws.recent_runs_summary(limit=5)
+        assert len(summary) == 1
+        row = summary[0]
+        assert row["run_id"] == rid
+        assert row["status"] == "success"
+        assert row["success"] is True
+        assert row["error"] == ""
+        assert row["steps_executed"] == 1
+        assert row["duration_seconds"] == 12.5
+        assert row["started_at"] is not None
+        assert row["finished_at"] is not None
+
+    def test_recent_runs_summary_failed_carries_error_text(self, tmp_path):
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.ensure()
+
+        rid = "2026-07-20T00-00-00"
+        ws.append_run_event(rid, {"type": "run_started"})
+        ws.append_run_event(rid, {
+            "type": "step_error", "step_index": 0, "error": "LLM API 超时",
+        })
+        ws.append_run_event(rid, {
+            "type": "run_finished", "status": STATUS_NEEDS_REVIEW,
+            "steps_executed": 0, "duration_seconds": 3.0,
+        })
+
+        row = ws.recent_runs_summary(limit=5)[0]
+        assert row["status"] == "failed"
+        assert row["success"] is False
+        assert row["error"] == "LLM API 超时"
+
+    def test_recent_runs_summary_stuck_give_up_carries_error_text(self, tmp_path):
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.ensure()
+
+        rid = "2026-07-20T00-00-00"
+        ws.append_run_event(rid, {"type": "run_started"})
+        ws.append_run_event(rid, {
+            "type": "stuck_give_up", "step_index": 3,
+        })
+        ws.append_run_event(rid, {
+            "type": "run_finished", "status": STATUS_NEEDS_REVIEW,
+            "steps_executed": 3, "duration_seconds": 30.0,
+        })
+
+        row = ws.recent_runs_summary(limit=5)[0]
+        assert row["status"] == "failed"
+        assert row["success"] is False
+        # stuck_give_up 事件本身没带 error 字段（由调用方 executor 决定文案），
+        # 摘要函数在拿不到具体 error 文本时仍要给出一个非空的兜底说明。
+        assert row["error"]
+
+    def test_recent_runs_summary_timed_out(self, tmp_path):
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.ensure()
+
+        rid = "2026-07-20T00-00-00"
+        ws.append_run_event(rid, {"type": "run_started"})
+        ws.append_run_event(rid, {"type": "timed_out", "step_index": 5})
+        ws.append_run_event(rid, {
+            "type": "run_finished", "status": STATUS_TIMED_OUT,
+            "steps_executed": 5, "duration_seconds": 1200.0,
+        })
+
+        row = ws.recent_runs_summary(limit=5)[0]
+        assert row["status"] == "timed_out"
+        assert row["success"] is False
+        assert "超时" in row["error"]
+
+    def test_recent_runs_summary_crashed_when_no_finish_event(self, tmp_path):
+        """进程异常退出：run_started 写了，但 run_finished 从没写进去。"""
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.ensure()
+
+        rid = "2026-07-20T00-00-00"
+        ws.append_run_event(rid, {"type": "run_started"})
+        ws.append_run_event(rid, {"type": "step", "step_index": 1})
+
+        row = ws.recent_runs_summary(limit=5)[0]
+        assert row["status"] == "crashed_or_running"
+        assert row["success"] is False
+        assert row["error"]
+        assert row["finished_at"] is None
+
+    def test_recent_runs_summary_respects_limit_and_order(self, tmp_path):
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.ensure()
+
+        run_ids = []
+        for i in range(3):
+            rid = f"2026-07-2{i}T00-00-00"
+            ws.append_run_event(rid, {"type": "run_started"})
+            ws.append_run_event(rid, {
+                "type": "run_finished", "status": STATUS_IDLE,
+                "steps_executed": 1, "duration_seconds": 1.0,
+            })
+            run_ids.append(rid)
+            time.sleep(0.01)
+
+        summary = ws.recent_runs_summary(limit=2)
+        assert len(summary) == 2
+        assert summary[0]["run_id"] == run_ids[-1]
+
     def test_list_all_workspaces(self, tmp_path):
         paths = _FakePaths(tmp_path)
         CronJobWorkspace(paths, "user:job1").ensure()

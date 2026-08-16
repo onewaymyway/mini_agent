@@ -6979,8 +6979,41 @@ def render_cron_jobs_tab(client: AgentClient):
                             st.success("已重置，下次触发将从头开始执行。")
                             st.rerun()
 
+                # [最近执行记录只有 run_id，看不出是否成功] 优先用带成功/
+                # 失败判定的 recent_runs_summary；旧版后端（未升级）没有这个
+                # 字段时回退到只有 run_id 的旧列表，保持向后兼容不报错。
+                recent_runs_summary = (ws_resp or {}).get("recent_runs_summary")
                 recent_runs = (ws_resp or {}).get("recent_runs") or []
-                if recent_runs:
+                _RUN_STATUS_BADGE = {
+                    "success": "✅ 成功",
+                    "timed_out": "⏱️ 超时",
+                    "failed": "❌ 失败",
+                    "crashed_or_running": "❓ 未知（进程异常退出/仍在运行）",
+                }
+                if recent_runs_summary is not None:
+                    if recent_runs_summary:
+                        with st.expander(f"🗒️ 最近执行记录（{len(recent_runs_summary)} 条）"):
+                            for run in recent_runs_summary:
+                                run_id = run.get("run_id", "")
+                                started_at = run.get("started_at")
+                                time_str = (
+                                    time.strftime("%m-%d %H:%M:%S", time.localtime(started_at))
+                                    if started_at else run_id
+                                )
+                                badge = _RUN_STATUS_BADGE.get(run.get("status"), run.get("status") or "未知")
+                                dur = run.get("duration_seconds")
+                                dur_note = f"，耗时 {dur:.1f}s" if isinstance(dur, (int, float)) else ""
+                                st.markdown(f"**{time_str}** {badge}{dur_note}")
+                                if not run.get("success") and run.get("error"):
+                                    st.error(run["error"])
+                                if st.button(f"查看事件详情 {run_id}", key=f"cron_run_{job_id}_{run_id}"):
+                                    events_resp = client.cron_job_run_events(job_id, run_id)
+                                    if events_resp and "_error" in events_resp:
+                                        st.error(f"获取执行事件失败：{events_resp['_error']}")
+                                    else:
+                                        st.json((events_resp or {}).get("events") or [], expanded=False)
+                                st.divider()
+                elif recent_runs:
                     with st.expander(f"🗒️ 最近执行记录（{len(recent_runs)} 条）"):
                         for run_id in recent_runs:
                             if st.button(f"查看 {run_id}", key=f"cron_run_{job_id}_{run_id}"):

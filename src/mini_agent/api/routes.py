@@ -5930,6 +5930,11 @@ async def get_cron_job_workspace(job_id: str, request: Request):
         "config": config.to_dict(),
         "is_running": is_running,
         "recent_runs": ws.recent_runs(limit=10),
+        # [看板"最近执行记录"只显示 run_id/时间、看不出是否成功] 新增带
+        # 成功/失败判定 + 失败原因的摘要列表，看板据此渲染状态角标和失败
+        # 说明，不用逐条点开事件详情才能知道哪次跑失败了。见
+        # CronJobWorkspace.recent_runs_summary() 顶部注释的字段说明。
+        "recent_runs_summary": ws.recent_runs_summary(limit=10),
     }
 
 

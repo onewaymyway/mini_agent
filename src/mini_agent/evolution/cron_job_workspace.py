@@ -302,6 +302,106 @@ class CronJobWorkspace:
         files = sorted(self.runs_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
         return [p.stem for p in files[:limit]]
 
+    def recent_runs_summary(self, limit: int = 10) -> list[dict]:
+        """[看板"最近执行记录"只显示时间、看不出成功/失败的反馈] 按时间倒序
+        返回最近 N 次执行的摘要（run_id/起止时间/是否成功/失败原因），供看板
+        不用逐条点开事件详情就能一眼看出哪次失败了、为什么失败。
+
+        每条摘要从对应 run 的 `runs/<run_id>.jsonl` 事件流里提取：
+            - started_at   : `run_started` 事件的写入时间（无该事件时回退为
+                              文件 mtime，理论上不应发生，仅防御性兜底）
+            - finished_at  : `run_finished` 事件的写入时间；没有该事件说明
+                              这次执行异常中断（进程崩溃/被杀）或仍在运行，
+                              status 归为 "crashed_or_running"
+            - status       : `run_finished.status`（idle/timed_out/
+                              needs_human_review 之一，见模块顶部状态机
+                              常量），映射为更易读的 success/timed_out/
+                              failed/crashed_or_running 四种之一（见
+                              `_RUN_STATUS_DISPLAY_MAP`）
+            - success      : bool，status == STATUS_IDLE 时为 True，
+                              其余（含 timed_out）一律 False——超时不算
+                              "正常完成"，看板应该能看出来
+            - error        : 失败原因文本。优先取 `run_finished` 所在这条
+                              run 里最后一条带 `error` 字段的事件
+                              （`step_error`/`stuck_give_up`，`step` 事件的
+                              `error` 字段为 None 时忽略），取不到但
+                              status 是 timed_out 时给一句固定说明
+                              （区分是硬超时还是达到 max_steps 上限）
+            - steps_executed / duration_seconds：直接取自 `run_finished`
+              事件，供看板展示执行规模，取不到时为 None
+        """
+        run_ids = self.recent_runs(limit=limit)
+        summaries: list[dict] = []
+        for run_id in run_ids:
+            events = self.read_run_events(run_id)
+            summaries.append(self._summarize_run_events(run_id, events))
+        return summaries
+
+    @staticmethod
+    def _summarize_run_events(run_id: str, events: list[dict]) -> dict:
+        started_at = None
+        finished_at = None
+        raw_status = None
+        error_text = ""
+        steps_executed = None
+        duration_seconds = None
+        timeout_kind = ""  # "timed_out" / "max_steps_reached"，仅在没有更具体 error 时兜底用
+
+        for ev in events:
+            ev_type = ev.get("type")
+            if ev_type == "run_started" and started_at is None:
+                started_at = ev.get("at")
+            elif ev_type == "run_finished":
+                finished_at = ev.get("at")
+                raw_status = ev.get("status")
+                steps_executed = ev.get("steps_executed")
+                duration_seconds = ev.get("duration_seconds")
+            elif ev_type in ("step_error", "stuck_give_up"):
+                err = ev.get("error")
+                if err:
+                    error_text = str(err)
+            elif ev_type == "step":
+                err = ev.get("error")
+                if err:
+                    error_text = str(err)
+            elif ev_type == "timed_out":
+                timeout_kind = "硬超时（触达 timeout_seconds 上限）"
+            elif ev_type == "max_steps_reached":
+                timeout_kind = "触达单次执行最大步数上限（max_steps）"
+
+        if raw_status is None:
+            display_status = "crashed_or_running"
+            success = False
+            if not error_text:
+                error_text = "本次执行没有找到结束事件（进程可能异常退出，或仍在运行中）"
+        elif raw_status == STATUS_IDLE:
+            display_status = "success"
+            success = True
+        elif raw_status == STATUS_TIMED_OUT:
+            display_status = "timed_out"
+            success = False
+            if not error_text:
+                error_text = timeout_kind or "执行超时，未在限定时间/步数内完成"
+        else:
+            # STATUS_NEEDS_REVIEW 及其它未识别值一律按失败处理，宁可多报
+            # 一次"失败"让用户去看详情，也不要把异常状态误判成成功。
+            display_status = "failed"
+            success = False
+            if not error_text:
+                error_text = "执行异常结束，未记录到具体错误信息（可展开事件详情查看）"
+
+        return {
+            "run_id": run_id,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "status": display_status,
+            "raw_status": raw_status,
+            "success": success,
+            "error": error_text,
+            "steps_executed": steps_executed,
+            "duration_seconds": duration_seconds,
+        }
+
     def read_run_events(self, run_id: str) -> list[dict]:
         path = self.run_log_path(run_id)
         if not path.exists():

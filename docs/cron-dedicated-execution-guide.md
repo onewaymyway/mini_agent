@@ -430,9 +430,43 @@ GET /v1/self/unified_scheduler_preview  §7.2 加权分配的只读预览（是�
     "stuck_max_recoveries": 2
   },
   "is_running": false,
-  "recent_runs": ["2026-07-20T09-00-00", "2026-07-19T09-00-00"]
+  "recent_runs": ["2026-07-20T09-00-00", "2026-07-19T09-00-00"],
+  "recent_runs_summary": [
+    {
+      "run_id": "2026-07-20T09-00-00",
+      "started_at": 1720000000.0,
+      "finished_at": 1720000180.0,
+      "status": "success",
+      "raw_status": "idle",
+      "success": true,
+      "error": "",
+      "steps_executed": 3,
+      "duration_seconds": 180.0
+    },
+    {
+      "run_id": "2026-07-19T09-00-00",
+      "started_at": 1719913600.0,
+      "finished_at": 1719913605.0,
+      "status": "failed",
+      "raw_status": "needs_human_review",
+      "success": false,
+      "error": "LLM API 超时",
+      "steps_executed": 1,
+      "duration_seconds": 5.0
+    }
+  ]
 }
 ```
+
+`recent_runs` 只是 run_id 列表（旧字段，保留向后兼容）；`recent_runs_summary`
+（新增）逐条给出是否成功（`status`/`success`）与失败原因（`error`），由
+`CronJobWorkspace.recent_runs_summary()` 从对应 `runs/<run_id>.jsonl`
+事件流里提取——`status` 取值：`success`（正常完成）/ `timed_out`（触达
+超时或 max_steps 上限，不算成功）/ `failed`（`needs_human_review` 或
+其它异常状态）/ `crashed_or_running`（没找到 `run_finished` 事件，进程
+可能异常退出或仍在跑）。看板"⏰ Cron 任务" Tab 的"最近执行记录"直接展示
+这份摘要（时间 + 状态角标，失败时额外展示 `error` 文本），不用逐条点开
+事件详情才知道哪次跑失败了。
 
 后台线程执行完一次后通过 `AgentBridge.emit_cron_job_finished()` 推
 `CRON_JOB_FINISHED` SSE 事件，实时打开着看板的用户不需要手动刷新。
@@ -453,7 +487,9 @@ GET /v1/self/unified_scheduler_preview  §7.2 加权分配的只读预览（是�
 - 优先级展示 + "🔢 调整优先级" 展开面板（对应 §3.2 的 `priority` 字段，
   影响同一 tick 内多个到期 job 的提交顺序）
 - 进度摘要展开查看
-- 最近执行记录回放（对应 `runs/<run_id>.jsonl` 的逐步事件）
+- 最近执行记录：每条直接展示时间 + 成功/超时/失败/未知状态角标，失败
+  时额外展示失败原因文本，不用点开才知道；仍可展开对应
+  `runs/<run_id>.jsonl` 的逐步事件详情
 - `prompt.md` 在线编辑保存
 - `needs_human_review` 状态下的一键重置按钮
 - "➕ 新建 cron job" 表单：提交前会对 `schedule` 字段做格式前置校验
