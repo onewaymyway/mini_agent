@@ -236,6 +236,36 @@ class CapabilityQuestion:
         )
 
 
+@dataclass
+class OutlineSuggestion:
+    """v0.21 §13.2-f 大纲动态生长建议：消费已回答问题时，用可选的
+    `llm_helper` 提炼出的"大纲之外、用户主动提到的新关注点"。不是自动
+    追加进大纲——只是生成一条待用户在看板/CLI 采纳或忽略的建议
+    （`status`），采纳后才会真正变成 `OutlineTopic`。"""
+    suggestion_id: str
+    track_id: str
+    source_question_id: str
+    suggested_name: str
+    rationale: str = ""
+    status: str = "pending"                       # pending / accepted / dismissed
+    created_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "OutlineSuggestion":
+        return cls(
+            suggestion_id=d["suggestion_id"],
+            track_id=d["track_id"],
+            source_question_id=d["source_question_id"],
+            suggested_name=d["suggested_name"],
+            rationale=d.get("rationale", ""),
+            status=d.get("status", "pending"),
+            created_at=d.get("created_at", time.time()),
+        )
+
+
 # ── 通用 jsonl / json 读写（与 growth_advisor.py 同风格，避免另造一套）──────
 
 
@@ -501,6 +531,151 @@ class CapabilityQuestionStore:
                 questions[i] = q
                 self._save_all(questions)
                 return
+
+
+# ── CapabilityOutlineSuggestionStore：大纲动态生长建议队列（v0.21 §13.2-f）──
+
+
+class CapabilityOutlineSuggestionStore:
+    """同样是"整体读出、内存改、整体写回"，量级和 CapabilityQuestionStore
+    一致（单个用户的待采纳建议数不会大）。"""
+
+    def __init__(self, paths: AgentPaths):
+        self._paths = paths
+
+    def _load_all(self) -> list[OutlineSuggestion]:
+        rows = _read_jsonl(self._paths.capability_outline_suggestions_path)
+        return [OutlineSuggestion.from_dict(r) for r in rows]
+
+    def _save_all(self, suggestions: list[OutlineSuggestion]) -> None:
+        _write_jsonl(
+            self._paths.capability_outline_suggestions_path,
+            [s.to_dict() for s in suggestions],
+        )
+
+    def list_suggestions(
+        self, status: Optional[str] = None, track_id: Optional[str] = None,
+    ) -> list[OutlineSuggestion]:
+        items = self._load_all()
+        if status:
+            items = [s for s in items if s.status == status]
+        if track_id:
+            items = [s for s in items if s.track_id == track_id]
+        items.sort(key=lambda s: s.created_at, reverse=True)
+        return items
+
+    def add(self, suggestion: OutlineSuggestion) -> None:
+        items = self._load_all()
+        items.append(suggestion)
+        self._save_all(items)
+
+    def dismiss(self, suggestion_id: str) -> bool:
+        items = self._load_all()
+        for i, s in enumerate(items):
+            if s.suggestion_id == suggestion_id:
+                s.status = "dismissed"
+                items[i] = s
+                self._save_all(items)
+                return True
+        return False
+
+    def mark_accepted(self, suggestion_id: str) -> Optional[OutlineSuggestion]:
+        """只更新建议自身的状态——真正把子主题加进大纲是调用方
+        （`accept_outline_suggestion()`）的职责，两步拆开是为了让"加大纲"
+        这一步能独立处理 Track 不存在等错误，不把两件事捆在一次写入里。"""
+        items = self._load_all()
+        for i, s in enumerate(items):
+            if s.suggestion_id == suggestion_id:
+                s.status = "accepted"
+                items[i] = s
+                self._save_all(items)
+                return s
+        return None
+
+
+def generate_outline_suggestion_from_answer(
+    track: CapabilityTrack,
+    question: CapabilityQuestion,
+    llm_helper: Optional[Callable[[str], str]],
+    existing_pending_names: Optional[list[str]] = None,
+) -> Optional[OutlineSuggestion]:
+    """v0.21 §13.2-f：消费一条已回答问题时，尝试提炼"是否存在明显在原
+    大纲之外、但用户主动提到的新关注点"。
+
+    没有 `llm_helper` 时整体跳过，返回 None——不做规则式猜测（比如从
+    答案里抠关键词），设计文档原话是"误报成本比'暂时不建议'更高"，
+    跟 §13.1-a/c 一贯的"生成问题/建议要克制"是同一条原则。
+
+    命中且与现有大纲子主题、以及已有的 pending 建议都不重复（复用
+    §13.1-c 的 `_topic_name_similarity`，同一阈值 `CROSS_TRACK_REUSE_
+    SIMILARITY_THRESHOLD`）时才返回一条 `OutlineSuggestion`；LLM 判定
+    "没有新方向"（约定输出 `NONE`）或输出解析不出有效名称时也返回
+    None。不重试、不做多轮修正——和 `draft_outline_with_llm()` 同款
+    "起草辅助而非关键路径"的克制。
+    """
+    if llm_helper is None:
+        return None
+    if not question.answer:
+        return None
+
+    prompt = (
+        f"用户正在持续学习一个能力方向，标题是「{track.title}」，\n"
+        f"已有大纲子主题：{', '.join(t.name for t in track.outline) or '（暂无）'}\n\n"
+        f"系统之前问了用户：「{question.question}」\n"
+        f"用户的回答是：「{question.answer}」\n\n"
+        "如果这条回答里提到了一个明显在已有大纲之外、值得单独作为一个新"
+        "子主题加入大纲的新关注点，请只输出这个子主题的名称（4-12 个汉字"
+        "左右，不要标点、不要解释）。如果回答里没有这样的新方向（比如"
+        "只是回答了原问题本身、或者提到的内容已经被现有子主题覆盖），"
+        "请只输出 NONE。不要输出除以上两种情况之外的任何内容。"
+    )
+    try:
+        raw = llm_helper(prompt)
+    except Exception:
+        return None
+    if not raw or not raw.strip():
+        return None
+    name = raw.strip().splitlines()[0].strip().lstrip("0123456789.、-•* ").strip()
+    if not name or name.upper() == "NONE" or len(name) > 30:
+        return None
+
+    existing_names = [t.name for t in track.outline] + list(existing_pending_names or [])
+    for existing in existing_names:
+        if _topic_name_similarity(name, existing) >= CROSS_TRACK_REUSE_SIMILARITY_THRESHOLD:
+            return None
+
+    return OutlineSuggestion(
+        suggestion_id=f"capsug_{uuid.uuid4().hex[:12]}",
+        track_id=track.track_id,
+        source_question_id=question.question_id,
+        suggested_name=name,
+        rationale=f"用户在回答「{question.question}」时提到，可能是大纲之外的新关注点",
+    )
+
+
+def accept_outline_suggestion(
+    paths: AgentPaths, suggestion_id: str,
+) -> Optional[OutlineTopic]:
+    """用户在看板/CLI 采纳一条建议：把 `suggested_name` 追加成一个新的
+    `OutlineTopic`（`coverage_state="uncovered"`），写回对应 Track 的大纲，
+    并把建议自身标记为 accepted。Track 已被删除、或建议不存在/已处理过
+    时返回 None，不抛异常——调用方（CLI/API）据此给出用户可读的错误提示。
+    """
+    suggestion_store = CapabilityOutlineSuggestionStore(paths)
+    suggestions = suggestion_store.list_suggestions()
+    target = next((s for s in suggestions if s.suggestion_id == suggestion_id), None)
+    if target is None or target.status != "pending":
+        return None
+
+    track_store = CapabilityTrackStore(paths)
+    track = track_store.get(target.track_id)
+    if track is None:
+        return None
+
+    new_topic = OutlineTopic(topic_id=f"topic_{uuid.uuid4().hex[:8]}", name=target.suggested_name)
+    track_store.update(track.track_id, outline=track.outline + [new_topic])
+    suggestion_store.mark_accepted(suggestion_id)
+    return new_topic
 
 
 # ── LLM 辅助大纲起草（§14 P2，opt-in，见 CapabilityTrackStore.create）──────
@@ -787,6 +962,7 @@ def run_capability_learning_cycle(
     max_pending_questions: int = DEFAULT_MAX_PENDING_QUESTIONS,
     topics_per_cycle: int = DEFAULT_TOPICS_PER_CYCLE,
     max_topics_per_run_cycle: Optional[int] = None,
+    llm_helper: Optional[Callable[[str], str]] = None,
 ) -> dict:
     """sys:capability_learning_cycle 对应的单轮编排逻辑（§4 伪流程的落地）。
 
@@ -806,14 +982,21 @@ def run_capability_learning_cycle(
     `max_topics_per_run_cycle` 默认 None（不设全局预算，向后兼容此前
     行为：每个 Track 各自跑满 `topics_per_cycle`）。
 
+    `llm_helper`：[v0.21 §13.2-f] 可选，`Callable[[str], str]`，传入时会
+    在消费已回答问题的同时尝试生成大纲动态生长建议（见
+    `generate_outline_suggestion_from_answer()`）；不传时这一步整体跳过，
+    行为与此前完全一致（向后兼容）。
+
     返回一份本轮执行摘要（供 cron 日志 / 看板展示）。
     """
     track_store = CapabilityTrackStore(paths)
     ledger_store = CapabilityLedgerStore(paths)
     question_store = CapabilityQuestionStore(paths)
+    suggestion_store = CapabilityOutlineSuggestionStore(paths) if llm_helper is not None else None
 
     summary = {"tracks_processed": 0, "topics_researched": 0, "questions_raised": 0,
-               "questions_consumed": 0, "topics_skipped": 0, "topics_reused": 0}
+               "questions_consumed": 0, "topics_skipped": 0, "topics_reused": 0,
+               "outline_suggestions_generated": 0}
 
     active_tracks = sorted(
         track_store.list_tracks(status="active"),
@@ -839,6 +1022,25 @@ def run_capability_learning_cycle(
                 action="question_answered",
                 summary=f"用户回答了「{q.question}」，答案已记录，供后续检索/草稿使用",
             ))
+            if suggestion_store is not None:
+                pending_names = [
+                    s.suggested_name for s in suggestion_store.list_suggestions(
+                        status="pending", track_id=track.track_id,
+                    )
+                ]
+                new_suggestion = generate_outline_suggestion_from_answer(
+                    track, q, llm_helper, existing_pending_names=pending_names,
+                )
+                if new_suggestion is not None:
+                    suggestion_store.add(new_suggestion)
+                    ledger_store.append(CapabilityLedgerEntry(
+                        track_id=track.track_id,
+                        topic_id=q.topic_id,
+                        action="outline_suggested",
+                        summary=f"从回答中提炼出大纲外新关注点建议：「{new_suggestion.suggested_name}」，"
+                                f"等待用户在看板/CLI 采纳或忽略",
+                    ))
+                    summary["outline_suggestions_generated"] += 1
             question_store.mark_consumed(q.question_id)
             summary["questions_consumed"] += 1
 

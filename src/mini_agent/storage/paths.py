@@ -1319,6 +1319,16 @@ class AgentPaths:
         看板按 status/track_id 过滤展示。"""
         return self.workdir_dir / "capability_questions.jsonl"
 
+    @property
+    def capability_outline_suggestions_path(self) -> Path:
+        """<project_root>/.agent/capability_outline_suggestions.jsonl —
+        v0.21 §13.2-f 大纲动态生长建议队列（OutlineSuggestion）。用户在
+        回答异步问题时提到大纲之外的新关注点，LLM 提炼出的"要不要加进
+        大纲"建议存在这里，供看板/CLI 采纳或忽略。风格对齐
+        capability_questions_path：整体读出/内存改/整体写回，量级不大。
+        """
+        return self.workdir_dir / "capability_outline_suggestions.jsonl"
+
     def capability_notify_state_path(self) -> Path:
         """<project_root>/.agent/capability_notify_state.json — v0.21 §8
         通知接入的按天节流状态（last_notify_date/notify_count_today），

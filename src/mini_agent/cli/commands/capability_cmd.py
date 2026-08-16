@@ -37,6 +37,15 @@ cron_scheduler.py SYSTEM_JOBS 里对应条目的说明）。
                                      sys:capability_question_sweep 引用
   /capability answer <question_id> <answer text>
                                    — 提交一条问题的回答（下一轮 cycle 会消费）
+  /capability suggestions [track_id]
+                                   — 列出 pending 状态的大纲动态生长建议
+                                     （v0.21 §13.2-f，消费已回答问题时由
+                                     llm_helper 提炼产生，见
+                                     generate_outline_suggestion_from_answer）
+  /capability suggestions accept <suggestion_id>
+                                   — 采纳一条建议，追加为大纲新子主题
+  /capability suggestions dismiss <suggestion_id>
+                                   — 忽略一条建议
 """
 
 from __future__ import annotations
@@ -166,8 +175,13 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         if retriever_enabled and cfg is not None:
             from mini_agent.evolution.capability_learning import make_web_search_retriever
             retriever = make_web_search_retriever(cfg)
+        # v0.21 §13.2-f：拿得到 llm_helper 就顺带在消费已回答问题时生成
+        # 大纲动态生长建议；拿不到（agent 未初始化/无 LLM 上下文）时这一步
+        # 在 run_capability_learning_cycle 内部整体跳过，不影响循环本身。
+        llm_helper = _get_llm_helper(agent)
         result = run_capability_learning_cycle(
             paths, retriever=retriever, wiki_writer=make_wiki_writer(paths),
+            llm_helper=llm_helper,
         )
         # v0.21 §8：本轮跑完后尝试推送一条按天节流的摘要通知（空轮/被
         # 节流/关闭时静默不发，不影响本命令的正常输出）。
@@ -194,7 +208,8 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
             f"检索并写入 {result['topics_researched']} 个子主题，"
             f"生成问题 {result['questions_raised']} 条，"
             f"消费已回答问题 {result['questions_consumed']} 条，"
-            f"跳过 {result['topics_skipped']} 个子主题"
+            f"跳过 {result['topics_skipped']} 个子主题，"
+            f"生成大纲建议 {result.get('outline_suggestions_generated', 0)} 条"
             f"{skip_note}"
         )
         return
@@ -310,6 +325,50 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
             )
             return
 
+    if sub == "suggestions":
+        from mini_agent.evolution.capability_learning import (
+            CapabilityOutlineSuggestionStore,
+            accept_outline_suggestion,
+        )
+
+        action = args[1] if len(args) > 1 else ""
+        if action in ("accept", "dismiss"):
+            if len(args) < 3:
+                R.print_error(f"用法：/capability suggestions {action} <suggestion_id>")
+                return
+            suggestion_id = args[2]
+            if action == "accept":
+                topic = accept_outline_suggestion(paths, suggestion_id)
+                if topic is None:
+                    R.print_error(
+                        f"未找到待处理建议：{suggestion_id}（可能已处理过/id 有误，"
+                        f"或对应 Track 已被删除）"
+                    )
+                    return
+                R.print_success(f"已采纳，新增子主题「{topic.name}」（topic_id={topic.topic_id}）。")
+                return
+            else:
+                store = CapabilityOutlineSuggestionStore(paths)
+                ok = store.dismiss(suggestion_id)
+                if not ok:
+                    R.print_error(f"未找到建议：{suggestion_id}")
+                    return
+                R.print_success("已忽略该建议。")
+                return
+
+        track_id = args[1] if len(args) > 1 else None
+        store = CapabilityOutlineSuggestionStore(paths)
+        pending = store.list_suggestions(status="pending", track_id=track_id)
+        if not pending:
+            R.print_info("暂无待处理的大纲建议。")
+            return
+        for s in pending:
+            R.print_info(
+                f"[{s.suggestion_id}] track={s.track_id}  建议新增子主题：「{s.suggested_name}」\n"
+                f"  {s.rationale}"
+            )
+        return
+
     R.print_error(
-        f"未知子命令：{sub}。可用：list | create | cycle | questions | answer | persona"
+        f"未知子命令：{sub}。可用：list | create | cycle | questions | answer | suggestions | persona"
     )
