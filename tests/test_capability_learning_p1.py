@@ -20,6 +20,8 @@ from mini_agent.evolution.capability_learning import (
     scan_outline_gaps,
     needs_user_context,
     record_wiki_miss,
+    find_cross_track_reuse,
+    _topic_name_similarity,
 )
 
 
@@ -901,3 +903,137 @@ def test_max_topics_per_run_cycle_backward_compat_default_none(paths):
     summary = run_capability_learning_cycle(paths)
     # 每个 Track 默认 topics_per_cycle=2，两个 Track 共 4 个 topics_skipped
     assert summary["topics_skipped"] == 4
+
+
+# ── §13.1-c 跨 Track 子主题去重与知识共享 ─────────────────────────────────
+
+
+def test_topic_name_similarity_identical_and_empty():
+    assert _topic_name_similarity("技术分析基础", "技术分析基础") == 1.0
+    assert _topic_name_similarity("技术分析基础", "") == 0.0
+    assert _topic_name_similarity("", "") == 0.0
+
+
+def test_topic_name_similarity_high_for_near_duplicate_names():
+    # "利率对资产价格的影响" vs "利率变化对资产价格影响" 应该有较高相似度
+    score = _topic_name_similarity("利率对资产价格的影响", "利率变化对资产价格影响")
+    assert score >= 0.4
+
+
+def test_topic_name_similarity_low_for_unrelated_names():
+    score = _topic_name_similarity("技术分析基础", "美食烹饪技巧")
+    assert score < 0.5
+
+
+def test_find_cross_track_reuse_matches_covered_topic_with_pages(paths):
+    store = CapabilityTrackStore(paths)
+    track_a = store.create(title="宏观经济", persona_desc="x", outline_names=[])
+    track_a.outline = [
+        OutlineTopic(topic_id="a1", name="利率对资产价格的影响",
+                     coverage_state="covered", wiki_page_ids=["pg1", "pg2"]),
+    ]
+    store.update(track_a.track_id, outline=track_a.outline)
+
+    track_b = store.create(title="股票分析", persona_desc="x", outline_names=[])
+    topic_b = OutlineTopic(topic_id="b1", name="利率对资产价格的影响", coverage_state="uncovered")
+    track_b.outline = [topic_b]
+
+    reused = find_cross_track_reuse(topic_b, track_b, [track_a, track_b])
+    assert reused is not None
+    assert reused.topic_id == "a1"
+    assert reused.wiki_page_ids == ["pg1", "pg2"]
+
+
+def test_find_cross_track_reuse_returns_none_when_topic_already_has_pages(paths):
+    """自己已经有 wiki 页面的子主题不应被复用逻辑覆盖——即使另一个
+    Track 有名字相似的 covered 子主题，也不该抢走已有内容。"""
+    store = CapabilityTrackStore(paths)
+    track_a = store.create(title="宏观经济", persona_desc="x", outline_names=[])
+    track_a.outline = [
+        OutlineTopic(topic_id="a1", name="利率对资产价格的影响",
+                     coverage_state="covered", wiki_page_ids=["pg1"]),
+    ]
+    store.update(track_a.track_id, outline=track_a.outline)
+
+    track_b = store.create(title="股票分析", persona_desc="x", outline_names=[])
+    topic_b = OutlineTopic(topic_id="b1", name="利率对资产价格的影响",
+                            coverage_state="partial", wiki_page_ids=["own_pg"])
+    track_b.outline = [topic_b]
+
+    assert find_cross_track_reuse(topic_b, track_b, [track_a, track_b]) is None
+
+
+def test_find_cross_track_reuse_ignores_paused_tracks(paths):
+    store = CapabilityTrackStore(paths)
+    track_a = store.create(title="宏观经济", persona_desc="x", outline_names=[])
+    track_a.outline = [
+        OutlineTopic(topic_id="a1", name="利率对资产价格的影响",
+                     coverage_state="covered", wiki_page_ids=["pg1"]),
+    ]
+    store.update(track_a.track_id, outline=track_a.outline, status="paused")
+
+    track_b = store.create(title="股票分析", persona_desc="x", outline_names=[])
+    topic_b = OutlineTopic(topic_id="b1", name="利率对资产价格的影响", coverage_state="uncovered")
+    track_b.outline = [topic_b]
+
+    track_a_refreshed = store.get(track_a.track_id)
+    assert find_cross_track_reuse(topic_b, track_b, [track_a_refreshed, track_b]) is None
+
+
+def test_find_cross_track_reuse_no_match_below_threshold(paths):
+    store = CapabilityTrackStore(paths)
+    track_a = store.create(title="宏观经济", persona_desc="x", outline_names=[])
+    track_a.outline = [
+        OutlineTopic(topic_id="a1", name="技术分析基础", coverage_state="covered",
+                     wiki_page_ids=["pg1"]),
+    ]
+    store.update(track_a.track_id, outline=track_a.outline)
+
+    track_b = store.create(title="股票分析", persona_desc="x", outline_names=[])
+    topic_b = OutlineTopic(topic_id="b1", name="美食烹饪技巧", coverage_state="uncovered")
+    track_b.outline = [topic_b]
+
+    assert find_cross_track_reuse(topic_b, track_b, [track_a, track_b]) is None
+
+
+def test_run_capability_learning_cycle_reuses_cross_track_topic(paths):
+    """端到端：track_a 已经有一个名字高度相似且 covered 的子主题，
+    track_b 推进同名子主题时应该直接复用页面，不走"未接线跳过"分支，
+    且台账记录 action="reused"。"""
+    store = CapabilityTrackStore(paths)
+    ledger_store = CapabilityLedgerStore(paths)
+
+    track_a = store.create(title="宏观经济", persona_desc="x", outline_names=[])
+    track_a.outline = [
+        OutlineTopic(topic_id="a1", name="利率对资产价格的影响",
+                     coverage_state="covered", wiki_page_ids=["pg1", "pg2"]),
+    ]
+    store.update(track_a.track_id, outline=track_a.outline)
+
+    track_b = store.create(
+        title="股票分析", persona_desc="x",
+        outline_names=["利率对资产价格的影响"],
+    )
+
+    summary = run_capability_learning_cycle(paths)
+    assert summary["topics_reused"] == 1
+    assert summary["topics_skipped"] == 0  # 复用命中，不应该落到"未接线跳过"分支
+
+    refreshed_b = store.get(track_b.track_id)
+    topic_b = refreshed_b.outline[0]
+    assert topic_b.coverage_state == "covered"
+    assert set(topic_b.wiki_page_ids) == {"pg1", "pg2"}
+
+    entries = ledger_store.list_for_track(track_b.track_id, limit=10)
+    assert any(e.action == "reused" for e in entries)
+
+
+def test_run_capability_learning_cycle_backward_compat_no_similar_topic(paths):
+    """没有可复用的相似子主题时，行为退回原有的"未接线安全跳过"逻辑，
+    不受本轮改动影响。"""
+    store = CapabilityTrackStore(paths)
+    store.create(title="a", persona_desc="x", outline_names=["完全独特的主题名称XYZ"])
+
+    summary = run_capability_learning_cycle(paths)
+    assert summary["topics_reused"] == 0
+    assert summary["topics_skipped"] == 1

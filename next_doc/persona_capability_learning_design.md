@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.15（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的六项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
+- **版本**：v0.16（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的七项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）、§13.1-c 跨 Track 子主题去重与知识共享。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -148,9 +148,22 @@ cron 任务表（`cron_scheduler.py::SYSTEM_JOBS`）已注册 `sys:capability_le
 
 `run_capability_learning_cycle()` 未改动——它调用 `scan_outline_gaps()` 时不传 `now`，沿用默认 `time.time()`，行为自动获得这项能力，不需要额外接线。
 
+### §13.1-c（跨 Track 子主题去重与知识共享）—— ✅ 本轮已实现
+
+设计文档 §13.1 把这一项列为"建议优先纳入 P1/P2，成本低"：用户同时开多个 Track（比如"股票分析"和"宏观经济"）时，子主题会有交叉（"利率对资产价格的影响"两边都可能各自检索一遍），缺口扫描前加一步轻量的相似度检测，命中就复用已有页面，不重复检索：
+
+| 项目 | 状态 | 对应文件 |
+|---|---|---|
+| `_topic_name_similarity(a, b)`：字符级 2-gram（bigram）Jaccard 相似度，取值 [0,1]——"关键词/tag 相似度即可，不需要语义匹配"（原文 §13.1-c），对中文子主题名称（通常没有空格）比朴素分词更友好，也不引入 embedding | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
+| `find_cross_track_reuse(topic, track, other_tracks)`：在其它 **active** Track 的大纲里找相似度 ≥ 0.5（`CROSS_TRACK_REUSE_SIMILARITY_THRESHOLD`）且已 `covered`、已有 wiki 页面的子主题；只在本子主题**自己还没有任何 wiki 页面**时才会命中——已经有内容的子主题不应被复用逻辑覆盖掉可能更贴合自身 Track 语境的既有页面；`paused` Track 不参与匹配；纯函数、无副作用，方便单测 | ✅ 已实现 | 同上 |
+| `run_capability_learning_cycle()` 接线：检索/写入回调之前先做复用检测（即使 `retriever`/`wiki_writer` 未接线也照样生效，不会被 P1 的"未接线安全跳过"分支挡住）；命中时台账记 `action="reused"`，`summary` 新增 `topics_reused` 计数字段 | ✅ 已实现 | 同上 |
+| 单元测试（9 组：相似度函数 3 组 / `find_cross_track_reuse` 4 组（命中/已有页面不覆盖/忽略 paused Track/低于阈值不命中）/ `run_capability_learning_cycle` 端到端复用 1 组 / 无相似主题时向后兼容退回原有跳过逻辑 1 组） | ✅ 全部通过 | `tests/test_capability_learning_p1.py` |
+
+跨 Track 关联本身没有建立额外的持久化结构（比如"这两个子主题被判定为等价"的记录）——每轮临时计算，命中就直接把 `wiki_page_ids` 并入当前子主题，足够满足"不重复检索"这个核心诉求，避免为一个轻量优化引入新的存储实体。
+
 ### P3
 
-规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线 + §14 P2 大纲起草 + §11.4 看板知识范围绑定 + §12.1-a capability_map 排序信号 + §13.1-b 多 Track 公平调度 + §13.2-d 知识时效性衰减均已提前完成，见上）。剩余方向：`target_type="persona"` 全链路（人设草稿生成/发布，见文档 §10）、与 `external_trend_capability_link`/`objective_executor`/`decision_profile_builder` 的协同（见文档 §12.1-b/c、§12.2）、13.1-c 跨 Track 子主题去重、13.2-e 可验证学习效果。
+规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线 + §14 P2 大纲起草 + §11.4 看板知识范围绑定 + §12.1-a capability_map 排序信号 + §13.1-b 多 Track 公平调度 + §13.2-d 知识时效性衰减 + §13.1-c 跨 Track 子主题去重均已提前完成，见上）。剩余方向：`target_type="persona"` 全链路（人设草稿生成/发布，见文档 §10）、与 `external_trend_capability_link`/`objective_executor`/`decision_profile_builder` 的协同（见文档 §12.1-b/c、§12.2）、13.2-e 可验证学习效果。
 
 ---
 
@@ -609,7 +622,7 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - 异步问答队列的生成与消费（不接通知，只落队列）—— ✅ 已实现
 - 看板三个区域（人设管理/进度展示/待回答问题）+ 对应 API —— ✅ 均已实现，见文档开头「实施状态」
 - `context_builder.py` 接入检索复用 —— ✅ 未命中记录部分（§14.1-a）已提前完成；§6 的"命中 active Track 时按需注入"部分经代码走查确认已被既有的 `_try_inject_wiki_search()` 全库检索链路天然覆盖，不需要额外实现，见文档开头「实施状态」说明
-- 剩余未接线项：无——P1 计划项已全部实现，`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草、§13.2-d 知识时效性衰减也已提前完成（均原标注在 P2/P3）。真实 `retriever`（`web_search`）与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` cron 任务默认关闭（opt-in），需要用户在配置/看板里显式打开，不在本轮默认打开（详见文档开头「实施状态」的取舍说明）。剩余 P3 方向：`target_type="persona"` 全链路、与 `capability_map` 等其它子系统的协同，另行评审
+- 剩余未接线项：无——P1 计划项已全部实现，`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草、§13.2-d 知识时效性衰减、§13.1-c 跨 Track 子主题去重也已提前完成（均原标注在 P2/P3）。真实 `retriever`（`web_search`）与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` cron 任务默认关闭（opt-in），需要用户在配置/看板里显式打开，不在本轮默认打开（详见文档开头「实施状态」的取舍说明）。剩余 P3 方向：`target_type="persona"` 全链路、与 `capability_map` 等其它子系统的协同，另行评审
 
 **P2（体验与质量增强）**：
 - 大纲生成/缺口判定引入 LLM 辅助（替换纯规则）
@@ -627,6 +640,6 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - `PersonaProfile.wiki_scopes` 字段 + `context_builder` 透传 `wiki_shelf_search(tags=...)`——✅ **已提前实现**，见文档开头「实施状态」。看板知识范围绑定 UI（§11.4）——✅ **已提前实现**，见文档开头「§11.4」小节
 - §12.1-a `capability_map` 排序信号——✅ **已提前实现**，见文档开头「§12.1-a」小节
 - 与 `external_trend_capability_link.py` 的浅集成（仅人工审核草稿层，不打通自动 Goal 生成，见 12.2-d），作为方向级选项，实施前需团队评审确认边界配置默认关闭
-- 13.1-c 跨 Track 子主题去重与知识共享——尚未实现
+- 13.1-c 跨 Track 子主题去重与知识共享——✅ **已提前实现**，见文档开头「§13.1-c」小节
 - 13.2-d 知识时效性衰减（`OutlineTopic.volatility` 字段已在 P1 提前带上）——✅ **已提前实现**，见文档开头「§13.2-d」小节
 - 13.2-e 可验证的学习效果（探针问题对比"有/无 wiki 上下文"回答质量）——实现复杂度高（涉及双份回答生成与质量判定），不在早期阶段承诺，需先验证 P1/P2 的基础闭环稳定后再评估投入

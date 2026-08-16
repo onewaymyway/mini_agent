@@ -69,6 +69,16 @@
       None=不设上限，向后兼容），设置后多个 Track 会共享同一份预算，
       预算耗尽的 Track 本轮不推进，下一轮因为 last_advanced_at 更旧会
       排到最前面，长期下来公平，不会出现早建 Track 永远占满配额
+    - §13.2-d 知识时效性衰减：`OutlineTopic.volatility`
+      （volatile/periodic/stable）在 P1 就带上了字段，本轮补上消费——
+      `scan_outline_gaps()` 新增 `now` 参数，已 covered 但距上次触达
+      超过对应阈值（volatile 7 天/periodic 30 天）的子主题会被重新
+      纳入候选，避免"名义覆盖率 100%，内容早已过期"的假象
+    - §13.1-c 跨 Track 子主题去重与知识共享：`find_cross_track_reuse()`
+      用字符级 2-gram Jaccard 相似度（关键词/tag 层面，不引入语义
+      匹配）在其它 active Track 里找名字高度相似且已 covered 的子
+      主题，命中就直接复用其 wiki 页面（台账记为 action="reused"），
+      不重复检索——只在本子主题自己还没有任何 wiki 页面时才会触发
 
 留给 P3 的方向（P1/P2 刻意不做，避免过早引入不确定性/耦合）：
     - target_type="persona" 全链路（人设草稿生成 / 发布，见文档 §10）
@@ -691,6 +701,72 @@ def needs_user_context(topic: OutlineTopic, track: CapabilityTrack) -> bool:
     return track.target_type == "persona"
 
 
+# ── 跨 Track 子主题去重与知识共享（§13.1-b，本轮实现）──────────────────────
+#
+# 用户同时开多个 Track 时子主题会有交叉（比如"股票分析"和"宏观经济"两个
+# Track 都可能各自检索一遍"利率对资产价格的影响"）。设计文档 §13.1-c 要求
+# 这一步用"关键词/tag 相似度即可，不需要语义匹配"——这里用字符级 2-gram
+# （bigram）Jaccard 相似度：对中文场景比空格分词更友好（中文子主题名称
+# 通常没有空格），对英文场景也退化成朴素的重叠度量，足够作为"值不值得
+# 复用已有页面"这种粗粒度判断的依据，不需要引入 embedding/语义模型。
+
+CROSS_TRACK_REUSE_SIMILARITY_THRESHOLD = 0.5
+
+
+def _name_bigrams(name: str) -> set[str]:
+    s = name.strip().lower()
+    if len(s) < 2:
+        return {s} if s else set()
+    return {s[i : i + 2] for i in range(len(s) - 1)}
+
+
+def _topic_name_similarity(a: str, b: str) -> float:
+    """字符级 2-gram Jaccard 相似度，取值 [0, 1]。两边任一为空返回 0。"""
+    sa, sb = _name_bigrams(a), _name_bigrams(b)
+    if not sa or not sb:
+        return 0.0
+    union = len(sa | sb)
+    if not union:
+        return 0.0
+    return len(sa & sb) / union
+
+
+def find_cross_track_reuse(
+    topic: OutlineTopic,
+    track: CapabilityTrack,
+    other_tracks: list[CapabilityTrack],
+) -> Optional[OutlineTopic]:
+    """在其它 active Track 的大纲里找一个"名字足够相似、已经 covered、
+    已有 wiki 页面"的子主题，供本轮复用而不是重新检索。
+
+    只在同一子主题**没有自己的 wiki 页面**时才有复用的意义（已经有
+    页面的子主题走既有的 §13.2-d 时效性刷新逻辑，不应该被"复用"覆盖掉
+    自己已有的、可能更贴合本 Track 语境的内容）。多个候选命中时取
+    相似度最高的一个；相似度相同时取先出现的（`other_tracks` 顺序
+    由调用方决定，本函数不额外排序，保持纯函数、无副作用）。
+
+    找不到满足条件的候选时返回 None，调用方应退回原有的检索/跳过逻辑，
+    这个函数本身不产生任何副作用（不写台账、不改任何字段），方便
+    单测和复用。"""
+    if topic.wiki_page_ids:
+        return None
+    best: Optional[OutlineTopic] = None
+    best_score = 0.0
+    for other in other_tracks:
+        if other.track_id == track.track_id:
+            continue
+        if other.status != "active":
+            continue
+        for candidate in other.outline:
+            if candidate.coverage_state != "covered" or not candidate.wiki_page_ids:
+                continue
+            score = _topic_name_similarity(topic.name, candidate.name)
+            if score >= CROSS_TRACK_REUSE_SIMILARITY_THRESHOLD and score > best_score:
+                best = candidate
+                best_score = score
+    return best
+
+
 # ── 单轮循环编排（§4）────────────────────────────────────────────────────
 
 
@@ -737,7 +813,7 @@ def run_capability_learning_cycle(
     question_store = CapabilityQuestionStore(paths)
 
     summary = {"tracks_processed": 0, "topics_researched": 0, "questions_raised": 0,
-               "questions_consumed": 0, "topics_skipped": 0}
+               "questions_consumed": 0, "topics_skipped": 0, "topics_reused": 0}
 
     active_tracks = sorted(
         track_store.list_tracks(status="active"),
@@ -816,6 +892,30 @@ def run_capability_learning_cycle(
                 ))
                 summary["questions_raised"] += 1
                 pending += 1
+                track_advanced = True
+                if global_budget_remaining is not None:
+                    global_budget_remaining -= 1
+                continue
+
+            # [§13.1-c 跨 Track 复用] 检索之前先看看有没有其它 active Track
+            # 已经把非常相似的子主题检索完了——复用检测本身不依赖
+            # retriever/wiki_writer 是否接线（只是读别的 Track 已有的
+            # wiki_page_ids），所以放在最前面，即使本轮没接线真实检索/写入
+            # 回调也照样生效，不会被 P1 安全默认的"未接线跳过"分支挡住。
+            reuse_source = find_cross_track_reuse(topic, track, active_tracks)
+            if reuse_source is not None:
+                topic.coverage_state = "covered"
+                topic.last_touched_at = time.time()
+                topic.wiki_page_ids = list(set(topic.wiki_page_ids + reuse_source.wiki_page_ids))
+                ledger_store.append(CapabilityLedgerEntry(
+                    track_id=track.track_id,
+                    topic_id=topic.topic_id,
+                    action="reused",
+                    summary=f"与其它 Track 的子主题「{reuse_source.name}」高度相似，"
+                            f"复用其 {len(reuse_source.wiki_page_ids)} 个 wiki 页面，未重复检索",
+                    wiki_page_ids=reuse_source.wiki_page_ids,
+                ))
+                summary["topics_reused"] += 1
                 track_advanced = True
                 if global_budget_remaining is not None:
                     global_budget_remaining -= 1
