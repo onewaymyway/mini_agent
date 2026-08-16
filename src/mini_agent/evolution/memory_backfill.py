@@ -117,7 +117,7 @@ def scan_sessions_for_backfill(
     candidates = [
         m for m in all_metas
         if m.id not in exclude_ids
-        and not (m.summary or "").strip()
+        and not (str(m.summary or "").strip())
         and m.turns >= min_turns_for_backfill
     ]
     candidates.sort(key=lambda m: _parse_updated_at(m.updated_at))
