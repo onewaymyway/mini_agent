@@ -493,3 +493,93 @@ def test_capability_question_store_sweep_expired(paths):
     refreshed = store.list_questions(status="expired")
     assert len(refreshed) == 1
     assert refreshed[0].question_id == q.question_id
+
+
+# ── §14.1-a 收尾：miss_observed 台账接入 scan_outline_gaps 优先级排序 ──────
+
+
+def test_scan_outline_gaps_backward_compat_no_miss_counts(paths):
+    from mini_agent.evolution.capability_learning import CapabilityTrackStore, scan_outline_gaps
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=["A", "B", "C"])
+    result = scan_outline_gaps(track, limit=10)
+    assert [t.name for t in result] == ["A", "B", "C"]
+
+
+def test_scan_outline_gaps_prioritizes_higher_miss_count(paths):
+    from mini_agent.evolution.capability_learning import CapabilityTrackStore, scan_outline_gaps
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=["A", "B", "C"])
+    topic_b = track.outline[1]
+    result = scan_outline_gaps(track, limit=10, miss_counts={topic_b.topic_id: 3})
+    assert result[0].name == "B"
+
+
+def test_scan_outline_gaps_miss_count_only_within_same_coverage_state(paths):
+    from mini_agent.evolution.capability_learning import (
+        CapabilityTrackStore, scan_outline_gaps,
+    )
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=["A", "B"])
+    # A 是 partial（已经被摸过一次但没写成 wiki），B 仍是 uncovered 且有
+    # miss 记录——即便 B 的 miss_count 很高，uncovered 仍然整体排在
+    # partial 前面，miss_counts 只在同一 coverage_state 内部生效。
+    track.outline[0].coverage_state = "partial"
+    topic_b = track.outline[1]
+    result = scan_outline_gaps(track, limit=10, miss_counts={topic_b.topic_id: 10})
+    assert result[0].name == "B"
+    assert result[1].name == "A"
+
+
+def test_topic_miss_counts_aggregates_ledger(paths):
+    from mini_agent.evolution.capability_learning import (
+        CapabilityLedgerEntry, CapabilityLedgerStore, _topic_miss_counts,
+    )
+
+    store = CapabilityLedgerStore(paths)
+    for _ in range(2):
+        store.append(CapabilityLedgerEntry(
+            track_id="t1", topic_id="topicA", action="miss_observed", summary="x",
+        ))
+    store.append(CapabilityLedgerEntry(
+        track_id="t1", topic_id="topicB", action="miss_observed", summary="x",
+    ))
+    store.append(CapabilityLedgerEntry(
+        track_id="t1", topic_id="topicA", action="researched", summary="x",
+    ))
+    counts = _topic_miss_counts(store, "t1")
+    assert counts == {"topicA": 2, "topicB": 1}
+
+
+def test_run_capability_learning_cycle_uses_miss_counts_for_ordering(paths):
+    """端到端验证：record_wiki_miss() 记下的台账真的会影响下一轮
+    run_capability_learning_cycle 挑选子主题的顺序（用 wiki_writer 记录
+    调用顺序来观测，不依赖内部实现细节）。"""
+    from mini_agent.evolution.capability_learning import (
+        CapabilityTrackStore, record_wiki_miss, run_capability_learning_cycle,
+    )
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=["A", "B", "C"])
+    topic_c = track.outline[2]
+
+    # 对 C 记录两次未命中——下一轮应该优先处理 C。
+    record_wiki_miss(paths, track.track_id, topic_c.topic_id, "some query")
+    record_wiki_miss(paths, track.track_id, topic_c.topic_id, "some query 2")
+
+    call_order = []
+
+    def fake_retriever(topic, tr):
+        call_order.append(topic.name)
+        return [{"url": "https://example.com", "summary": "x"}]
+
+    def fake_writer(topic, tr, results):
+        return [f"page_{topic.topic_id}"]
+
+    run_capability_learning_cycle(
+        paths, retriever=fake_retriever, wiki_writer=fake_writer, topics_per_cycle=1,
+    )
+    assert call_order == ["C"]

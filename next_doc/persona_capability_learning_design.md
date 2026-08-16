@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.9（P1 全部计划项已实现：核心闭环 + 真实 wiki 写入回调 + §13.3-g 合规过滤 + HTTP API 挂载 + 看板三区域 UI + cron 注册 + 真实 `retriever`（web_search）接线均已完成，见下方「实施状态」。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
+- **版本**：v0.10（P1 全部计划项已实现，并提前完成了原标注在 P2 的 `miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -64,9 +64,9 @@
 | `MemoryConfig.capability_wiki_miss_tracking_enabled` 配置开关（默认开，未绑定 persona/wiki_scopes 时零开销，关闭后完全跳过） | ✅ 已实现 | `src/mini_agent/config/models.py` |
 | 单元测试（5 组：命中记录 / 不命中不记录 / 无激活 persona 不记录 / 配置关闭不记录 / 记录环节异常不影响主流程） | ✅ 全部通过 | `tests/test_context_builder_persona_wiki_scopes.py` |
 
-**未做的部分**：
-- `scan_outline_gaps()` 消费 `miss_observed` 台账、据此调整候选排序——设计文档标注在 P2（"提高优先级的实际排序逻辑留到 P2 与 LLM 辅助判定一起做，避免规则式实现里出现频繁提问却查不到的噪音"），本次只做到"记录"这一步，不做"消费"
-- cron 尚未接线（见上方 P1 表格），意味着即使记录了台账，也还没有下一轮循环去读取它——这份记录目前是纯粹的静态积累，价值要等 cron 接线后才能兑现，但先把记录点铺好可以让 cron 接线时不用再回头改 `context_builder.py`
+**已收尾**：
+- `scan_outline_gaps()` 消费 `miss_observed` 台账、据此调整候选排序——原设计文档标注在 P2，已提前实现：`_topic_miss_counts()` 统计最近 200 条台账中各子主题的未命中次数，`scan_outline_gaps(track, miss_counts=...)` 在同一 coverage_state 内按 miss 次数降序排列，`run_capability_learning_cycle()` 已接线调用。不传 `miss_counts` 时行为与此前完全一致（向后兼容）
+- cron 已注册（默认关闭，见上方 P1 表格），`/capability cycle` 手动触发时同样会读取这份台账并影响排序，不依赖 cron 是否已开启
 
 ### §4（`/capability` slash command 中间层）—— ✅ 已提前实现
 
@@ -544,7 +544,7 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - 异步问答队列的生成与消费（不接通知，只落队列）—— ✅ 已实现
 - 看板三个区域（人设管理/进度展示/待回答问题）+ 对应 API —— ✅ 均已实现，见文档开头「实施状态」
 - `context_builder.py` 接入检索复用 —— ✅ 未命中记录部分（§14.1-a）已提前完成；§6 的"命中 active Track 时按需注入"部分经代码走查确认已被既有的 `_try_inject_wiki_search()` 全库检索链路天然覆盖，不需要额外实现，见文档开头「实施状态」说明
-- 剩余未接线项：无——P1 计划项已全部实现。真实 `retriever`（`web_search`）与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` cron 任务默认关闭（opt-in），需要用户在配置/看板里显式打开，不在本轮默认打开（详见文档开头「实施状态」的取舍说明）。P2 方向（LLM 辅助大纲起草、把 `miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序等）另行评审
+- 剩余未接线项：无——P1 计划项已全部实现，`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序也已提前完成（原标注在 P2）。真实 `retriever`（`web_search`）与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` cron 任务默认关闭（opt-in），需要用户在配置/看板里显式打开，不在本轮默认打开（详见文档开头「实施状态」的取舍说明）。剩余 P2 方向（LLM 辅助大纲起草、`target_type="persona"` 全链路等）另行评审
 
 **P2（体验与质量增强）**：
 - 大纲生成/缺口判定引入 LLM 辅助（替换纯规则）

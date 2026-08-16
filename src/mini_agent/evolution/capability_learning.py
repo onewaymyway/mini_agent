@@ -46,14 +46,17 @@
     - cron 任务表注册 `sys:capability_learning_cycle` / `sys:capability_
       question_sweep`（cron_scheduler.py SYSTEM_JOBS），默认 `enabled: False`
       （opt-in，理由见该条目上方注释）
+    - `miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序（§14.1-a
+      收尾）：`_topic_miss_counts()` 统计最近 200 条台账里各子主题的未
+      命中次数，同一 coverage_state 内 miss 次数越多排序越靠前，用户
+      实际检索碰壁过的子主题不再和"系统扫描出来但没人问过"的子主题
+      用同一套 last_touched_at 排序
 
 留给 P2 的方向（P1 刻意不做，避免过早引入不确定性/耦合）：
     - target_type="persona" 全链路（人设草稿生成 / 发布，见文档 §10）
     - 与 external_trend_capability_link / objective_executor / decision_profile_builder /
       capability_map 的协同（见文档 §12，P1 阶段刻意不打通，避免引入耦合风险）
     - LLM 辅助的大纲生成/缺口判定（P1 是规则式，见文档 §14 P2 阶段）
-    - 把 `miss_observed` 台账接入 `scan_outline_gaps()` 的优先级排序——
-      目前台账只是静态积累，`scan_outline_gaps()` 还没有读取它来调整排序
 """
 
 from __future__ import annotations
@@ -464,19 +467,45 @@ class CapabilityQuestionStore:
 # ── 大纲缺口扫描（§4 伪流程第一步，规则式，P1 版本）──────────────────────
 
 
-def scan_outline_gaps(track: CapabilityTrack, limit: int = DEFAULT_TOPICS_PER_CYCLE) -> list[OutlineTopic]:
-    """规则式缺口扫描：优先选 uncovered，其次 partial，按 last_touched_at
-    从旧到新排序（越久没碰过的越优先）。P2 阶段会替换/叠加 LLM 辅助判定
-    与 capability_map 排序信号（见设计文档 §12.1-a、§14），
-    但函数签名保持不变，接线方不用改。"""
+def scan_outline_gaps(
+    track: CapabilityTrack,
+    limit: int = DEFAULT_TOPICS_PER_CYCLE,
+    miss_counts: Optional[dict[str, int]] = None,
+) -> list[OutlineTopic]:
+    """规则式缺口扫描：优先选 uncovered，其次 partial；同一 coverage_state
+    内，先按 `miss_counts`（§14.1-a 的 `miss_observed` 台账统计，见
+    `_topic_miss_counts()`）降序——用户实际在对话里检索碰壁过的子主题，
+    比"系统扫描出来但还没人真正需要过"的子主题更值得优先推进；miss 次数
+    相同或没有传入 miss_counts 时，退化为原有的 last_touched_at 从旧到新
+    排序（越久没碰过的越优先）。miss_counts 默认 None，不传时行为与此前
+    完全一致，接线方（run_capability_learning_cycle）不用改调用方式。
+    P2 阶段会替换/叠加 LLM 辅助判定与 capability_map 排序信号（见设计
+    文档 §12.1-a、§14），但函数签名保持兼容，不会再破坏调用方。"""
+    miss_counts = miss_counts or {}
+
     def sort_key(t: OutlineTopic):
         state_rank = {"uncovered": 0, "partial": 1, "covered": 2}.get(t.coverage_state, 1)
+        miss_count = miss_counts.get(t.topic_id, 0)
         touched = t.last_touched_at or 0
-        return (state_rank, touched)
+        return (state_rank, -miss_count, touched)
 
     candidates = [t for t in track.outline if t.coverage_state != "covered"]
     candidates.sort(key=sort_key)
     return candidates[:limit]
+
+
+def _topic_miss_counts(ledger_store: "CapabilityLedgerStore", track_id: str) -> dict[str, int]:
+    """统计某个 Track 台账里各 topic_id 的 miss_observed 次数，供
+    `scan_outline_gaps()` 的优先级排序使用。取最近 200 条台账里的
+    miss_observed 计数——不是全量：台账文件会随时间无限增长，只看最近
+    一段时间的信号足够反映"最近是不是真的常被问到"，也避免几年前的一次
+    未命中永远把某个子主题钉在队首。"""
+    entries = ledger_store.list_for_track(track_id, limit=200)
+    counts: dict[str, int] = {}
+    for e in entries:
+        if e.action == "miss_observed":
+            counts[e.topic_id] = counts.get(e.topic_id, 0) + 1
+    return counts
 
 
 def needs_user_context(topic: OutlineTopic, track: CapabilityTrack) -> bool:
@@ -542,16 +571,17 @@ def run_capability_learning_cycle(
             question_store.mark_consumed(q.question_id)
             summary["questions_consumed"] += 1
 
-        # 挑选本轮推进的子主题
+        # 挑选本轮推进的子主题（§14.1-a：miss_observed 台账优先级信号）
+        miss_counts = _topic_miss_counts(ledger_store, track.track_id)
         pending = question_store.pending_count(track.track_id)
         if pending >= max_pending_questions:
             # 待回答问题已达上限，本轮只推进不需要用户输入的子主题
             topics = [
-                t for t in scan_outline_gaps(track, limit=topics_per_cycle * 2)
+                t for t in scan_outline_gaps(track, limit=topics_per_cycle * 2, miss_counts=miss_counts)
                 if not needs_user_context(t, track)
             ][:topics_per_cycle]
         else:
-            topics = scan_outline_gaps(track, limit=topics_per_cycle)
+            topics = scan_outline_gaps(track, limit=topics_per_cycle, miss_counts=miss_counts)
 
         for topic in topics:
             if needs_user_context(topic, track):
@@ -621,12 +651,11 @@ def run_capability_learning_cycle(
 
 def record_wiki_miss(paths: AgentPaths, track_id: str, topic_hint: str, query: str) -> None:
     """当 context_builder 在某个 Track 的 wiki_tag 范围内检索未命中时调用，
-    记一条 miss_observed 台账，供下一轮 scan_outline_gaps 提高优先级
-    （P1 先只落台账，"提高优先级"的实际排序逻辑——即 scan_outline_gaps()
-    读取 miss_observed 台账并据此调整候选排序——留到 P2 与 LLM 辅助判定
-    一起做，避免规则式实现里出现"频繁提问却查不到"的噪音；目前 cron 也
-    还没接线，这份台账暂时只是静态积累，等 P2/cron 接线后才会被真正
-    消费）。"""
+    记一条 miss_observed 台账。下一轮 `run_capability_learning_cycle` 会
+    经 `_topic_miss_counts()` 统计这份台账并传给 `scan_outline_gaps()`，
+    在同一 coverage_state 内把 miss 次数更高的子主题排到前面（§14.1-a
+    收尾，见 `scan_outline_gaps()` 文档字符串）——不依赖 cron 是否已经
+    接线：`/capability cycle` 手动触发时同样会读取这份台账。"""
     ledger_store = CapabilityLedgerStore(paths)
     ledger_store.append(CapabilityLedgerEntry(
         track_id=track_id,
