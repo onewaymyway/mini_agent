@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.16（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的七项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）、§13.1-c 跨 Track 子主题去重与知识共享。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
+- **版本**：v0.17（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的八项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）、§13.1-c 跨 Track 子主题去重与知识共享、§10 `target_type="persona"` 人设草稿合成与发布链路。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -161,9 +161,25 @@ cron 任务表（`cron_scheduler.py::SYSTEM_JOBS`）已注册 `sys:capability_le
 
 跨 Track 关联本身没有建立额外的持久化结构（比如"这两个子主题被判定为等价"的记录）——每轮临时计算，命中就直接把 `wiki_page_ids` 并入当前子主题，足够满足"不重复检索"这个核心诉求，避免为一个轻量优化引入新的存储实体。
 
+### §10（`target_type="persona"` 全链路：人设草稿生成/发布）—— ✅ 本轮已实现
+
+原本标注为 P3 里工作量最大的一项。设计文档 §10.3 要求的四步全部落地：
+
+| 项目 | 状态 | 对应文件 |
+|---|---|---|
+| 第 1 点·草稿生成：`draft_persona_markdown(track, questions)` 把 persona 型 Track 的大纲 + 已回答的 `CapabilityQuestion`（`status="answered"` 且答案非空，不受 `consumed` 影响）合成一份与手写 `.agent/personas/*.md` 同样格式的 frontmatter + 正文；`allowed_tools`/`wiki_scopes` 故意留空，不由自动合成放宽或猜测（§10.4-3） | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
+| 第 2 点·完成度反馈：`persona_draft_completeness(track, questions)` 返回已回答/总维度数 + 缺失维度名称列表 | ✅ 已实现 | 同上 |
+| §10.4-2 真人扮演风险提示：`detect_real_person_reference(persona_desc)` 用关键词/正则启发式识别"要求模仿/扮演某个真实公众人物本人"的表述，命中时在草稿里嵌入警示注释，**不自动阻断**（宁可漏报，不误伤正常人设描述），供用户在发布前的预览阶段自行判断 | ✅ 已实现 | 同上 |
+| 草稿持久化：`save_persona_draft()`/`load_persona_draft()` 落盘到新增的 `<project_root>/.agent/capability_persona_drafts/<track_id>.md`（草稿态，非正式 personas 目录） | ✅ 已实现 | 同上、`src/mini_agent/storage/paths.py` |
+| 第 4 点·显式发布：`publish_persona_draft(paths, track_id)` 把草稿写入项目级 `project_personas_dir`（不写全局目录，避免静默污染），完成后尝试 `PersonaLoader.rediscover()` 让运行中的 agent 立即感知；**只能由 CLI/API 显式调用，不会被 `run_capability_learning_cycle()` 自动带出** | ✅ 已实现 | 同上 |
+| CLI 接线：`/capability create ... --persona` 创建 persona 型 Track；`/capability persona draft/show/publish <track_id>` 三个子命令对应生成/预览/发布，对 knowledge 型 Track 调用会报错拒绝 | ✅ 已实现 | `src/mini_agent/cli/commands/capability_cmd.py`、`src/mini_agent/cli/parser.py` |
+| 单元测试（persona 草稿合成 10 组 + CLI 子命令 6 组） | ✅ 全部通过 | `tests/test_capability_learning_p1.py`、`tests/test_capability_cmd.py` |
+
+刻意未做的部分（留给后续按需再评估，不在本轮范围内）：HTTP API 端点（`/capability/personas/{track_id}/draft` 等）与看板 UI 卡片——CLI 链路已经打通全流程闭环，HTTP/看板只是同一套底层函数的另一层接线，风险和工作量都可控，等实际有看板端需求时再加，不提前堆砌未经验证的接口面。
+
 ### P3
 
-规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线 + §14 P2 大纲起草 + §11.4 看板知识范围绑定 + §12.1-a capability_map 排序信号 + §13.1-b 多 Track 公平调度 + §13.2-d 知识时效性衰减 + §13.1-c 跨 Track 子主题去重均已提前完成，见上）。剩余方向：`target_type="persona"` 全链路（人设草稿生成/发布，见文档 §10）、与 `external_trend_capability_link`/`objective_executor`/`decision_profile_builder` 的协同（见文档 §12.1-b/c、§12.2）、13.2-e 可验证学习效果。
+规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线 + §14 P2 大纲起草 + §11.4 看板知识范围绑定 + §12.1-a capability_map 排序信号 + §13.1-b 多 Track 公平调度 + §13.2-d 知识时效性衰减 + §13.1-c 跨 Track 子主题去重 + §10 persona 全链路（CLI 部分）均已提前完成，见上）。剩余方向：§10 的 HTTP API/看板接线、与 `external_trend_capability_link`/`objective_executor`/`decision_profile_builder` 的协同（见文档 §12.1-b/c、§12.2）、13.2-e 可验证学习效果。
 
 ---
 
@@ -622,7 +638,7 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - 异步问答队列的生成与消费（不接通知，只落队列）—— ✅ 已实现
 - 看板三个区域（人设管理/进度展示/待回答问题）+ 对应 API —— ✅ 均已实现，见文档开头「实施状态」
 - `context_builder.py` 接入检索复用 —— ✅ 未命中记录部分（§14.1-a）已提前完成；§6 的"命中 active Track 时按需注入"部分经代码走查确认已被既有的 `_try_inject_wiki_search()` 全库检索链路天然覆盖，不需要额外实现，见文档开头「实施状态」说明
-- 剩余未接线项：无——P1 计划项已全部实现，`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草、§13.2-d 知识时效性衰减、§13.1-c 跨 Track 子主题去重也已提前完成（均原标注在 P2/P3）。真实 `retriever`（`web_search`）与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` cron 任务默认关闭（opt-in），需要用户在配置/看板里显式打开，不在本轮默认打开（详见文档开头「实施状态」的取舍说明）。剩余 P3 方向：`target_type="persona"` 全链路、与 `capability_map` 等其它子系统的协同，另行评审
+- 剩余未接线项：无——P1 计划项已全部实现，`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草、§13.2-d 知识时效性衰减、§13.1-c 跨 Track 子主题去重、§10 persona 全链路（CLI 部分）也已提前完成（均原标注在 P2/P3）。真实 `retriever`（`web_search`）与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` cron 任务默认关闭（opt-in），需要用户在配置/看板里显式打开，不在本轮默认打开（详见文档开头「实施状态」的取舍说明）。剩余 P3 方向：§10 的 HTTP API/看板接线、与 `capability_map` 等其它子系统的协同，另行评审
 
 **P2（体验与质量增强）**：
 - 大纲生成/缺口判定引入 LLM 辅助（替换纯规则）

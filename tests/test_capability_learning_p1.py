@@ -22,6 +22,12 @@ from mini_agent.evolution.capability_learning import (
     record_wiki_miss,
     find_cross_track_reuse,
     _topic_name_similarity,
+    draft_persona_markdown,
+    persona_draft_completeness,
+    detect_real_person_reference,
+    save_persona_draft,
+    load_persona_draft,
+    publish_persona_draft,
 )
 
 
@@ -1037,3 +1043,128 @@ def test_run_capability_learning_cycle_backward_compat_no_similar_topic(paths):
     summary = run_capability_learning_cycle(paths)
     assert summary["topics_reused"] == 0
     assert summary["topics_skipped"] == 1
+
+
+# ── §10.3 persona 型 Track：人设草稿合成 ───────────────────────────────────
+
+
+def _make_persona_track(paths, title="老李投顾", persona_desc="经验老道的资深投资顾问人设"):
+    store = CapabilityTrackStore(paths)
+    track = store.create(
+        title=title, persona_desc=persona_desc,
+        outline_names=["身份背景", "说话习惯", "知识边界"],
+        target_type="persona",
+    )
+    return store, track
+
+
+def test_detect_real_person_reference_flags_impersonation_phrasing():
+    warning = detect_real_person_reference("希望这个角色像马某人本人一样说话")
+    assert warning is not None
+    assert "虚构" in warning
+
+
+def test_detect_real_person_reference_none_for_normal_desc():
+    assert detect_real_person_reference("经验老道的资深投资顾问人设，说话犀利") is None
+
+
+def test_persona_draft_completeness_counts_answered_and_missing(paths):
+    store, track = _make_persona_track(paths)
+    q_store = CapabilityQuestionStore(paths)
+    topic_ids = [t.topic_id for t in track.outline]
+    q1 = q_store.raise_question(track.track_id, topic_ids[0], "问题1")
+    q_store.answer(q1.question_id, "答案1")
+    q_store.raise_question(track.track_id, topic_ids[1], "问题2")  # 未回答
+
+    questions = q_store.list_questions(track_id=track.track_id)
+    result = persona_draft_completeness(track, questions)
+    assert result["total"] == 3
+    assert result["answered"] == 1
+    assert track.outline[1].name in result["missing_topic_names"]
+    assert track.outline[2].name in result["missing_topic_names"]  # 从未提问的也算缺失
+    assert track.outline[0].name not in result["missing_topic_names"]
+
+
+def test_draft_persona_markdown_renders_frontmatter_and_answers(paths):
+    store, track = _make_persona_track(paths)
+    q_store = CapabilityQuestionStore(paths)
+    topic_ids = [t.topic_id for t in track.outline]
+    q1 = q_store.raise_question(track.track_id, topic_ids[0], "背景是什么？")
+    q_store.answer(q1.question_id, "曾在券商工作15年")
+
+    questions = q_store.list_questions(track_id=track.track_id)
+    md = draft_persona_markdown(track, questions)
+
+    assert md.startswith("---\n")
+    assert "display_name: 老李投顾" in md
+    assert "break_character_policy: soft" in md
+    assert "allowed_tools: " in md  # 留空，不由自动合成放宽
+    assert "曾在券商工作15年" in md
+    assert "（暂无信息，尚待用户回答相关问题）" in md  # 未回答的维度
+
+
+def test_draft_persona_markdown_ignores_unanswered_and_dismissed_questions(paths):
+    store, track = _make_persona_track(paths)
+    q_store = CapabilityQuestionStore(paths)
+    topic_ids = [t.topic_id for t in track.outline]
+    q1 = q_store.raise_question(track.track_id, topic_ids[0], "q1")
+    q_store.dismiss(q1.question_id)
+    q_store.raise_question(track.track_id, topic_ids[1], "q2")  # pending
+
+    questions = q_store.list_questions(track_id=track.track_id)
+    md = draft_persona_markdown(track, questions)
+    # 全部维度都应该是"暂无信息"，因为没有任何 answered 状态的问题
+    assert md.count("（暂无信息，尚待用户回答相关问题）") == 3
+
+
+def test_draft_persona_markdown_includes_safety_warning_when_flagged(paths):
+    store, track = _make_persona_track(
+        paths, persona_desc="希望这个角色像某明星本人一样说话",
+    )
+    md = draft_persona_markdown(track, [])
+    assert "安全提示" in md
+    assert "虚构" in md
+
+
+def test_save_and_load_persona_draft_roundtrip(paths):
+    store, track = _make_persona_track(paths)
+    md = draft_persona_markdown(track, [])
+    saved_path = save_persona_draft(paths, track.track_id, md)
+    assert saved_path.exists()
+    loaded = load_persona_draft(paths, track.track_id)
+    assert loaded == md
+
+
+def test_load_persona_draft_returns_none_when_absent(paths):
+    assert load_persona_draft(paths, "nonexistent_track") is None
+
+
+def test_publish_persona_draft_writes_to_project_personas_dir(paths):
+    store, track = _make_persona_track(paths, title="老李投顾")
+    md = draft_persona_markdown(track, [])
+    save_persona_draft(paths, track.track_id, md)
+
+    published_path = publish_persona_draft(paths, track.track_id)
+    assert published_path.exists()
+    assert published_path.parent == paths.project_personas_dir
+    assert published_path.read_text(encoding="utf-8") == md
+
+    # 发布后应该能被既有的 persona 解析器正常读出
+    from mini_agent.orchestrator.persona_profiles import _parse_persona
+    parsed = _parse_persona(published_path)
+    assert parsed is not None
+    assert parsed.display_name == "老李投顾"
+    assert parsed.break_character_policy == "soft"
+
+
+def test_publish_persona_draft_raises_when_no_draft_exists(paths):
+    with pytest.raises(ValueError):
+        publish_persona_draft(paths, "no_such_track")
+
+
+def test_publish_persona_draft_accepts_explicit_draft_text(paths):
+    store, track = _make_persona_track(paths)
+    md = draft_persona_markdown(track, [])
+    # 不预先 save，直接传 draft_text
+    published_path = publish_persona_draft(paths, track.track_id, draft_text=md)
+    assert published_path.exists()

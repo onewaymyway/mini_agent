@@ -129,5 +129,84 @@ class TestUnknownSubcommand(unittest.TestCase):
             capability_cmd.handle_capability_cmd(["bogus"], agent=agent)
 
 
+class TestPersonaSubcommands(unittest.TestCase):
+    def test_persona_create_with_flag_sets_target_type(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            agent = _FakeAgent(paths)
+            capability_cmd.handle_capability_cmd(
+                ["create", "老李投顾", "|", "经验老道的资深投资顾问人设", "--persona"],
+                agent=agent,
+            )
+            tracks = CapabilityTrackStore(paths).list_tracks()
+            self.assertEqual(len(tracks), 1)
+            self.assertEqual(tracks[0].target_type, "persona")
+
+    def test_persona_subcommand_requires_track_id(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = _FakeAgent(_make_paths(tmp))
+            capability_cmd.handle_capability_cmd(["persona", "draft"], agent=agent)  # 不抛异常
+
+    def test_persona_subcommand_unknown_track_reports_error(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = _FakeAgent(_make_paths(tmp))
+            capability_cmd.handle_capability_cmd(
+                ["persona", "draft", "no_such_track"], agent=agent,
+            )  # 不抛异常
+
+    def test_persona_subcommand_rejects_knowledge_type_track(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            agent = _FakeAgent(paths)
+            track = CapabilityTrackStore(paths).create(
+                title="股票分析", persona_desc="x", outline_names=["技术分析基础"],
+            )
+            capability_cmd.handle_capability_cmd(
+                ["persona", "draft", track.track_id], agent=agent,
+            )  # knowledge 型，应该报错但不抛异常
+
+    def test_persona_draft_then_show_then_publish_roundtrip(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            agent = _FakeAgent(paths)
+            track = CapabilityTrackStore(paths).create(
+                title="老李投顾", persona_desc="经验老道的资深投资顾问人设",
+                outline_names=["身份背景", "说话习惯"], target_type="persona",
+            )
+            capability_cmd.handle_capability_cmd(
+                ["persona", "draft", track.track_id], agent=agent,
+            )
+            from mini_agent.evolution.capability_learning import load_persona_draft
+            draft_text = load_persona_draft(paths, track.track_id)
+            self.assertIsNotNone(draft_text)
+
+            capability_cmd.handle_capability_cmd(
+                ["persona", "show", track.track_id], agent=agent,
+            )
+
+            capability_cmd.handle_capability_cmd(
+                ["persona", "publish", track.track_id], agent=agent,
+            )
+            published = paths.project_personas_dir / "老李投顾.md"
+            self.assertTrue(published.exists())
+
+    def test_persona_publish_without_draft_reports_error_not_exception(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            agent = _FakeAgent(paths)
+            track = CapabilityTrackStore(paths).create(
+                title="老李投顾", persona_desc="x", target_type="persona",
+            )
+            capability_cmd.handle_capability_cmd(
+                ["persona", "publish", track.track_id], agent=agent,
+            )  # 没有草稿，应该报错但不抛异常
+
+
 if __name__ == "__main__":
     unittest.main()

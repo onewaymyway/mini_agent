@@ -115,10 +115,11 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         return
 
     if sub == "create":
-        rest = " ".join(a for a in args[1:] if a != "--llm-draft").strip()
+        rest = " ".join(a for a in args[1:] if a not in ("--llm-draft", "--persona")).strip()
         use_llm_draft = "--llm-draft" in args
+        target_type = "persona" if "--persona" in args else "knowledge"
         if not rest:
-            R.print_error("用法：/capability create <title> | <persona_desc> [--llm-draft]")
+            R.print_error("用法：/capability create <title> | <persona_desc> [--llm-draft] [--persona]")
             return
         if "|" in rest:
             title, _, persona_desc = rest.partition("|")
@@ -127,7 +128,7 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         title = title.strip()
         persona_desc = persona_desc.strip() or title
         if not title:
-            R.print_error("用法：/capability create <title> | <persona_desc> [--llm-draft]")
+            R.print_error("用法：/capability create <title> | <persona_desc> [--llm-draft] [--persona]")
             return
         store = CapabilityTrackStore(paths)
         # --llm-draft：用 draft_outline_with_llm() 起草初始大纲（§14 P2，
@@ -135,15 +136,19 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         # 静默退回空大纲，不报错——这跟 growth_cmd.py 里同款 LLM 增强
         # 开关的容错方式一致。
         llm_helper = _get_llm_helper(agent) if use_llm_draft else None
-        track = store.create(title=title, persona_desc=persona_desc, llm_helper=llm_helper)
+        track = store.create(
+            title=title, persona_desc=persona_desc,
+            target_type=target_type, llm_helper=llm_helper,
+        )
         draft_note = ""
         if use_llm_draft:
             draft_note = (
                 "（LLM 起草成功）" if track.outline
                 else "（LLM 起草失败或不可用，已创建空大纲，可在看板手动补充）"
             )
+        type_note = "persona 型" if target_type == "persona" else "knowledge 型"
         R.print_success(
-            f"已创建 Track [{track.track_id}] {track.title}，"
+            f"已创建 {type_note} Track [{track.track_id}] {track.title}，"
             f"大纲 {len(track.outline)} 个子主题{draft_note}，wiki_tag={track.wiki_tag}"
         )
         return
@@ -216,6 +221,82 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         R.print_success(f"已记录回答，下一轮 /capability cycle 会消费这条问题。")
         return
 
+    if sub == "persona":
+        # persona 型 Track 专属子命令组（§10.3）：draft 生成/刷新草稿预览，
+        # show 展示上一次落盘的草稿，publish 显式发布到正式 personas 目录。
+        # 三个动作互相独立、都要求用户显式触发，任何一步都不会被
+        # /capability cycle 自动带出（见设计文档 §10.3 第 4 点）。
+        from mini_agent.evolution.capability_learning import (
+            CapabilityTrackStore as _TrackStore,
+            draft_persona_markdown,
+            load_persona_draft,
+            persona_draft_completeness,
+            publish_persona_draft,
+            save_persona_draft,
+        )
+
+        persona_sub = args[1] if len(args) > 1 else ""
+        track_id = args[2] if len(args) > 2 else ""
+        if persona_sub not in ("draft", "show", "publish") or not track_id:
+            R.print_error(
+                "用法：/capability persona draft <track_id> | "
+                "/capability persona show <track_id> | "
+                "/capability persona publish <track_id>"
+            )
+            return
+
+        track_store = _TrackStore(paths)
+        track = track_store.get(track_id)
+        if track is None:
+            R.print_error(f"未找到 Track：{track_id}")
+            return
+        if track.target_type != "persona":
+            R.print_error(
+                f"Track [{track_id}] 是 knowledge 型，不是 persona 型，"
+                f"不支持人设草稿相关操作。"
+            )
+            return
+
+        if persona_sub == "draft":
+            questions = CapabilityQuestionStore(paths).list_questions(track_id=track_id)
+            md = draft_persona_markdown(track, questions)
+            save_persona_draft(paths, track_id, md)
+            completeness = persona_draft_completeness(track, questions)
+            missing_note = (
+                f"，尚缺维度：{', '.join(completeness['missing_topic_names'])}"
+                if completeness["missing_topic_names"] else "，各维度均已有信息"
+            )
+            R.print_success(
+                f"已生成/刷新 Track [{track_id}] 的人设草稿"
+                f"（{completeness['answered']}/{completeness['total']} 个维度已有信息{missing_note}）。"
+                f"用 /capability persona show {track_id} 预览，确认无误后用 "
+                f"/capability persona publish {track_id} 发布。"
+            )
+            return
+
+        if persona_sub == "show":
+            text = load_persona_draft(paths, track_id)
+            if text is None:
+                R.print_error(
+                    f"Track [{track_id}] 还没有草稿，请先执行 "
+                    f"/capability persona draft {track_id}。"
+                )
+                return
+            R.print_info(text)
+            return
+
+        if persona_sub == "publish":
+            try:
+                target_path = publish_persona_draft(paths, track_id)
+            except ValueError as e:
+                R.print_error(str(e))
+                return
+            R.print_success(
+                f"已发布到 {target_path}，可用 /role use <name> 激活"
+                f"（角色名以草稿 frontmatter 里的 name 字段为准）。"
+            )
+            return
+
     R.print_error(
-        f"未知子命令：{sub}。可用：list | create | cycle | questions | answer"
+        f"未知子命令：{sub}。可用：list | create | cycle | questions | answer | persona"
     )

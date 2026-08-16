@@ -1192,3 +1192,227 @@ def make_web_search_retriever(cfg: "AppConfig") -> RetrieverFn:
         return out
 
     return _retriever
+
+
+# ── persona 型 Track：人设草稿合成（§10.3，本轮实现）───────────────────────
+#
+# knowledge 型 Track 产出的是 wiki 页面；persona 型 Track
+# （target_type="persona"）产出的是一份 `.agent/personas/*.md` 格式的
+# 人设草稿。素材主要来自 CapabilityQuestion 的用户回答（§10.2："信息主要
+# 来源：用户异步回答为主"），所以草稿合成是一个独立于
+# run_capability_learning_cycle() 主循环的显式入口，不挂进每轮 cron
+# 循环——草稿不应该在用户没有察觉的情况下悄悄变化，这与 §10.3 第 4 点
+# "发布必须是显式用户动作"是同一种克制哲学的延伸：生成草稿本身虽然不是
+# "发布"，但也应该是用户主动触发（比如 `/capability persona draft`），
+# 而不是后台无声进行。
+
+_REAL_PERSON_REFERENCE_PATTERNS = [
+    r"(像|学|模仿|扮演).{0,6}(本人|真人)",
+    r"(就是|扮演成?).{1,10}(这个人|他本人|她本人)",
+]
+
+
+def detect_real_person_reference(persona_desc: str) -> Optional[str]:
+    """[§10.4-2] 粗粒度启发式检测：用户方向描述里是否出现"要求模仿/扮演
+    某个真实公众人物本人"这类表述模式。命中时返回一段供草稿预览展示的
+    警示文案，未命中返回 None。
+
+    这是关键词/正则层面的启发式，不是可靠的真人识别——正则本身无法判断
+    persona_desc 里提到的是不是真的某个可辨识公众人物（做不到，也不该
+    尝试做语义级判断），只识别"明确要求模仿/扮演某个真人本人"这一类
+    表述模式，命中就提示用户改为"参考某种风格但作为原创虚构人物"
+    （§10.4-2 原文），**不自动阻断草稿生成**——检测宁可漏报，也不应该
+    因为一个不可靠的正则误伤正常的人设描述，草稿生成本身不是发布，
+    留给用户在预览阶段自行判断。"""
+    import re
+
+    for pat in _REAL_PERSON_REFERENCE_PATTERNS:
+        if re.search(pat, persona_desc):
+            return (
+                "检测到方向描述里可能包含\"模仿/扮演某个真实公众人物本人\"的表述，"
+                "建议改为\"参考某种风格但作为原创虚构人物\"，避免把虚构语录归因给"
+                "真实的人。这是关键词层面的粗粒度提示，请自行判断是否属实，"
+                "不构成自动阻断。"
+            )
+    return None
+
+
+def _slugify_persona_name(title: str) -> str:
+    """把 Track 标题转成适合做文件名/frontmatter `name` 字段的 slug。
+    保留中英文字符和数字，其余字符（空格、标点等）折叠成连字符。"""
+    import re
+
+    slug = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "-", title.strip().lower()).strip("-")
+    return slug or "persona"
+
+
+def persona_draft_completeness(
+    track: "CapabilityTrack", questions: list["CapabilityQuestion"],
+) -> dict:
+    """统计"草稿完成度"：大纲一共多少个维度、其中多少个已经有用户回答，
+    以及缺失维度的名称列表——供看板/CLI 展示"这版草稿还缺哪些维度"
+    （§10.3 第 2 点），不需要重新渲染整份 markdown 就能拿到这份摘要。"""
+    answered_topic_ids = {
+        q.topic_id for q in questions
+        if q.status == "answered" and (q.answer or "").strip()
+    }
+    missing = [t.name for t in track.outline if t.topic_id not in answered_topic_ids]
+    total = len(track.outline)
+    return {
+        "total": total,
+        "answered": total - len(missing),
+        "missing_topic_names": missing,
+    }
+
+
+def draft_persona_markdown(
+    track: "CapabilityTrack", questions: list["CapabilityQuestion"],
+) -> str:
+    """把 persona 型 Track 目前收集到的信息（大纲子主题 + 已回答问题的
+    答案）合成一版人设草稿，渲染成与手写 `.agent/personas/*.md` 完全
+    同样的 frontmatter + 正文格式（§10.3 第 1 点）。
+
+    只使用 `status == "answered"` 且答案非空的问题（不管是否已被
+    `run_capability_learning_cycle` 标记 `consumed`——草稿预览应该反映
+    "目前所有已知信息"，不受消费状态影响，`consumed` 只是"这一轮循环
+    有没有处理过"的内部记账，不代表答案本身失效）。
+
+    frontmatter 里 `allowed_tools` / `wiki_scopes` 故意留空（§10.4-3：
+    工具权限类字段不能由自动合成随意放宽，必须用户显式确认；
+    `wiki_scopes` 走既有的 §11.4 看板绑定流程，不在草稿合成这一步猜测）。
+
+    这个函数是纯字符串拼接，不做任何文件写入——落盘由调用方决定（草稿
+    目录 vs 正式 personas 目录，见 `save_persona_draft()` /
+    `publish_persona_draft()`），方便离线单测、不依赖文件系统状态。"""
+    from datetime import datetime, timezone
+
+    answers_by_topic: dict[str, list[str]] = {}
+    for q in questions:
+        if q.status != "answered" or not (q.answer or "").strip():
+            continue
+        answers_by_topic.setdefault(q.topic_id, []).append(q.answer.strip())
+
+    slug = _slugify_persona_name(track.title)
+    desc = track.persona_desc.replace("\n", " ").strip()
+
+    lines: list[str] = [
+        "---",
+        f"name: {slug}",
+        f"display_name: {track.title}",
+        f"description: {desc}",
+        "tone: ",
+        "break_character_policy: soft",
+        "allowed_tools: ",
+        "wiki_scopes: ",
+        "---",
+        "",
+        f"<!-- 本文件由 Capability Learning 人设草稿合成于 "
+        f"{datetime.now(timezone.utc).isoformat()}，尚未发布，"
+        f"请人工检查/编辑后再通过 publish_persona_draft() 发布。 -->",
+        "",
+        f"# {track.title}",
+        "",
+        track.persona_desc.strip(),
+        "",
+    ]
+
+    missing_dims: list[str] = []
+    for topic in track.outline:
+        answers = answers_by_topic.get(topic.topic_id, [])
+        lines.append(f"## {topic.name}")
+        lines.append("")
+        if answers:
+            for a in answers:
+                lines.append(f"- {a}")
+        else:
+            lines.append("（暂无信息，尚待用户回答相关问题）")
+            missing_dims.append(topic.name)
+        lines.append("")
+
+    warning = detect_real_person_reference(track.persona_desc)
+    if warning:
+        lines.append("<!-- 安全提示：")
+        lines.append(warning)
+        lines.append("-->")
+        lines.append("")
+
+    if missing_dims:
+        lines.append(
+            "<!-- 草稿完成度提示：以下维度尚缺信息，建议继续通过 "
+            "CapabilityQuestion 问答收集后再发布：" + "、".join(missing_dims) + " -->"
+        )
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def save_persona_draft(paths: AgentPaths, track_id: str, markdown_text: str) -> Path:
+    """把 `draft_persona_markdown()` 的结果落盘到草稿目录（不是正式
+    personas 目录），供看板/CLI 预览。返回写入的文件路径。"""
+    path = paths.capability_persona_draft_path(track_id)
+    path.write_text(markdown_text, encoding="utf-8")
+    return path
+
+
+def load_persona_draft(paths: AgentPaths, track_id: str) -> Optional[str]:
+    """读取上一次落盘的人设草稿，不存在返回 None。"""
+    path = paths.capability_persona_draft_path(track_id)
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8")
+
+
+def publish_persona_draft(
+    paths: AgentPaths, track_id: str, draft_text: Optional[str] = None,
+) -> Path:
+    """把人设草稿写入正式 `.agent/personas/<name>.md`，使其对 `/role use`
+    立即可见（§10.3 第 4 点：发布必须是显式用户动作，不能自动发生——这
+    个函数本身不会被 `run_capability_learning_cycle()` 调用，只能由
+    CLI/API 的显式命令触发）。
+
+    `draft_text` 不传时，从 `capability_persona_draft_path(track_id)`
+    读取上一次 `save_persona_draft()` 落盘的内容——调用方（CLI/API）
+    应该先把草稿展示给用户确认/编辑，再调用这个函数，不应该在草稿
+    生成的同一步里顺带发布。
+
+    发布目标目录固定用项目级 `project_personas_dir`（而不是
+    `global_personas_dir`）——Capability Learning 的 Track 本身是
+    project_root 下的实体（`.agent/capability_tracks.json`），产出的
+    人设也应该落在同一个项目级作用域，不静默污染全局 personas 目录；
+    用户如果确实想要全局可用，可以自己把发布后的文件手动挪到全局目录，
+    这是一次显式的、用户自己做出的额外决定。
+
+    frontmatter 里的 `name:` 字段决定发布后的文件名（草稿里可能已被
+    用户手改过 name），解析不到时退回按 `track_id` 生成一个 slug，
+    确保这个函数在任何输入下都有确定的落盘位置，不会因为解析失败而
+    抛出令人困惑的异常。"""
+    import re
+
+    text = draft_text if draft_text is not None else load_persona_draft(paths, track_id)
+    if not text:
+        raise ValueError(
+            f"未找到 track_id={track_id} 的人设草稿，请先调用 "
+            f"draft_persona_markdown()/save_persona_draft() 生成草稿"
+        )
+
+    m = re.search(r"^name:\s*(.+)$", text, re.MULTILINE)
+    raw_slug = m.group(1).strip() if m and m.group(1).strip() else track_id
+    slug = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff_-]", "-", raw_slug).strip("-") or "persona"
+
+    target_dir = paths.project_personas_dir
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / f"{slug}.md"
+    target_path.write_text(text, encoding="utf-8")
+
+    try:
+        from mini_agent.orchestrator.persona_profiles import get_persona_loader
+        loader = get_persona_loader()
+        if loader is not None:
+            loader.rediscover()
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(
+            _mini_agent_exc,
+            where='mini_agent.evolution.capability_learning.publish_persona_draft',
+        )
+
+    return target_path

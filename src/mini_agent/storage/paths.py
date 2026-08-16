@@ -1319,6 +1319,16 @@ class AgentPaths:
         看板按 status/track_id 过滤展示。"""
         return self.workdir_dir / "capability_questions.jsonl"
 
+    def capability_persona_draft_path(self, track_id: str) -> Path:
+        """<project_root>/.agent/capability_persona_drafts/<track_id>.md —
+        persona 型 Track（target_type="persona"）的人设草稿（§10.3）。
+        草稿不是 .agent/personas/*.md 的正式角色文件，只是"合成结果的
+        预览态"——用户点"发布"后才会被复制/写入正式 personas 目录，
+        这一步必须是显式用户动作（见设计文档 §10.3 第 4 点）。"""
+        d = self.workdir_dir / "capability_persona_drafts"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{track_id}.md"
+
     def __repr__(self) -> str:
         return f"AgentPaths(project_root={self.project_root})"
 

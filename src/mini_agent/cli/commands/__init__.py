@@ -24,7 +24,7 @@ cli/commands — slash 命令处理模块包
                 人工浏览页面/backlinks、三段式检索 A/B 对比、手动索引重建）
   recall      — /recall <query>（compact_mechanism_improvement_plan.md P2-B：
                 手动检索被 compact 掉的原始 raw history 片段）
-  capability_cmd — /capability list|create|cycle|questions|answer（人设能力
+  capability_cmd — /capability list|create|cycle|questions|answer|persona（人设能力
                 自主学习：next_doc/persona_capability_learning_design.md，
                 cron 接线的中间层命令，见该文件顶部说明）
 """
