@@ -5822,6 +5822,58 @@ def render_capability_tab(client: "AgentClient"):
             else:
                 st.caption("还没有学习台账记录（cron 尚未接线，暂时只能通过 `/capability cycle` 手动推进）。")
 
+            # ── §10.3 人设草稿区（仅 persona 型 Track）──────────────────
+            if track.get("target_type") == "persona":
+                st.markdown("**人设草稿（§10.3）**")
+                st.caption(
+                    "草稿由目前已回答的问题合成，随时可以刷新预览；发布是显式动作，"
+                    "点击「发布」之前不会写入 `.agent/personas/`。"
+                )
+                draft_cols = st.columns(2)
+                with draft_cols[0]:
+                    if st.button("📝 生成/刷新草稿", key=f"cap_persona_draft_{track['track_id']}"):
+                        resp = client.draft_capability_persona(track["track_id"])
+                        if isinstance(resp, dict) and resp.get("_error"):
+                            st.error(f"生成草稿失败：{resp['_error']}")
+                        else:
+                            st.session_state[f"cap_persona_draft_text_{track['track_id']}"] = resp.get("draft", "")
+                            st.session_state[f"cap_persona_draft_completeness_{track['track_id']}"] = resp.get("completeness", {})
+                            st.rerun()
+                with draft_cols[1]:
+                    publish_confirm_key = f"cap_persona_publish_confirm_{track['track_id']}"
+                    if st.session_state.get(publish_confirm_key):
+                        if st.button("⚠️ 确认发布", key=f"cap_persona_publish_go_{track['track_id']}"):
+                            resp = client.publish_capability_persona(track["track_id"])
+                            st.session_state.pop(publish_confirm_key, None)
+                            if isinstance(resp, dict) and resp.get("_error"):
+                                st.error(f"发布失败：{resp['_error']}")
+                            else:
+                                st.success(f"已发布到 {resp.get('published_path', '')}，可用 `/role use` 激活。")
+                    elif st.button("🚀 发布", key=f"cap_persona_publish_{track['track_id']}"):
+                        st.session_state[publish_confirm_key] = True
+                        st.rerun()
+
+                draft_text = st.session_state.get(f"cap_persona_draft_text_{track['track_id']}")
+                if draft_text is None:
+                    existing = client.get_capability_persona_draft(track["track_id"])
+                    if not (isinstance(existing, dict) and existing.get("_error")):
+                        draft_text = existing.get("draft", "")
+
+                completeness = st.session_state.get(f"cap_persona_draft_completeness_{track['track_id']}")
+                if completeness:
+                    missing = completeness.get("missing_topic_names") or []
+                    missing_note = f"，尚缺：{', '.join(missing)}" if missing else "，各维度均已有信息"
+                    st.caption(
+                        f"完成度：{completeness.get('answered', 0)}/{completeness.get('total', 0)}"
+                        f"{missing_note}"
+                    )
+
+                if draft_text:
+                    with st.expander("预览草稿"):
+                        st.code(draft_text, language="markdown")
+                else:
+                    st.caption("还没有草稿，点「生成/刷新草稿」创建第一版。")
+
             # ── §11.4 知识范围绑定卡片（仅 knowledge 型、有 wiki_tag 的 Track）──
             wiki_tag = track.get("wiki_tag", "")
             if track.get("target_type") != "persona" and wiki_tag:

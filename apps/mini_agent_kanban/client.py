@@ -984,3 +984,17 @@ class AgentClient:
     def set_persona_wiki_scopes(self, persona_name: str, wiki_scopes: list):
         return self._post(f"/capability/personas/{persona_name}/wiki_scopes",
                            {"wiki_scopes": wiki_scopes})
+
+    # ── §10.3 persona 型 Track：人设草稿生成/预览/发布 ──────────────────
+    def draft_capability_persona(self, track_id: str):
+        """生成/刷新人设草稿并落盘，返回 {"draft": str, "completeness": dict}。"""
+        return self._post(f"/capability/tracks/{track_id}/persona/draft")
+
+    def get_capability_persona_draft(self, track_id: str):
+        """读取上一次落盘的草稿，尚未生成过时后端返回 404
+        （_get 统一转成 {"_error": ...}，调用方按 _error 判空）。"""
+        return self._get(f"/capability/tracks/{track_id}/persona/draft")
+
+    def publish_capability_persona(self, track_id: str):
+        """把已落盘的草稿显式发布到 `.agent/personas/`。"""
+        return self._post(f"/capability/tracks/{track_id}/persona/publish")

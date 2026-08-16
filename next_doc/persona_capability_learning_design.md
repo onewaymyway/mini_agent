@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.18（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的九项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）、§13.1-c 跨 Track 子主题去重与知识共享、§10 `target_type="persona"` 人设草稿合成与发布链路（CLI + HTTP API）。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
+- **版本**：v0.19（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的九项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）、§13.1-c 跨 Track 子主题去重与知识共享、§10 `target_type="persona"` 人设草稿合成与发布全链路（核心库 + CLI + HTTP API + 看板 UI）。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -177,11 +177,13 @@ cron 任务表（`cron_scheduler.py::SYSTEM_JOBS`）已注册 `sys:capability_le
 
 | HTTP API：`POST /v1/capability/tracks/{track_id}/persona/draft`（生成/刷新草稿，返回草稿全文 + 完成度摘要）、`GET .../persona/draft`（读取上次落盘草稿）、`POST .../persona/publish`（显式发布）；knowledge 型 Track 调用 draft/publish 返回 400，publish 前未生成过草稿返回 400，都不是裸 500 | ✅ 已实现 | `src/mini_agent/api/capability_routes.py` |
 
-刻意未做的部分（留给后续按需再评估，不在本轮范围内）：看板 UI 卡片——HTTP API 已经就绪，看板只是调用这几个端点渲染出来，等实际有看板端需求时再加，不提前堆砌未经验证的前端界面。
+| 看板 UI：`apps/mini_agent_kanban/` 能力学习 Tab（`render_capability_tab`）里，persona 型 Track 卡片新增"人设草稿"区块——「生成/刷新草稿」「发布」两个按钮 + 完成度提示 + 草稿预览（`st.expander` + `st.code`）；「发布」需要二次确认（复用既有的"删除 Track"同款确认交互模式），不会一键误发布 | ✅ 已实现 | `apps/mini_agent_kanban/app.py`、`apps/mini_agent_kanban/client.py` |
+
+至此 §10 全链路（核心库 + CLI + HTTP API + 看板 UI）四层全部完成，`target_type="persona"` 不再是"文档写了但打不通"的半成品。
 
 ### P3
 
-规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线 + §14 P2 大纲起草 + §11.4 看板知识范围绑定 + §12.1-a capability_map 排序信号 + §13.1-b 多 Track 公平调度 + §13.2-d 知识时效性衰减 + §13.1-c 跨 Track 子主题去重 + §10 persona 全链路（CLI + HTTP API）均已提前完成，见上）。剩余方向：§10 的看板 UI 接线、与 `external_trend_capability_link`/`objective_executor`/`decision_profile_builder` 的协同（见文档 §12.1-b/c、§12.2）、13.2-e 可验证学习效果。
+规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线 + §14 P2 大纲起草 + §11.4 看板知识范围绑定 + §12.1-a capability_map 排序信号 + §13.1-b 多 Track 公平调度 + §13.2-d 知识时效性衰减 + §13.1-c 跨 Track 子主题去重 + §10 persona 全链路（CLI + HTTP API + 看板 UI）均已提前完成，见上）。剩余方向：与 `external_trend_capability_link`/`objective_executor`/`decision_profile_builder` 的协同（见文档 §12.1-b/c、§12.2）、13.2-e 可验证学习效果。
 
 ---
 
@@ -640,7 +642,7 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - 异步问答队列的生成与消费（不接通知，只落队列）—— ✅ 已实现
 - 看板三个区域（人设管理/进度展示/待回答问题）+ 对应 API —— ✅ 均已实现，见文档开头「实施状态」
 - `context_builder.py` 接入检索复用 —— ✅ 未命中记录部分（§14.1-a）已提前完成；§6 的"命中 active Track 时按需注入"部分经代码走查确认已被既有的 `_try_inject_wiki_search()` 全库检索链路天然覆盖，不需要额外实现，见文档开头「实施状态」说明
-- 剩余未接线项：无——P1 计划项已全部实现，`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草、§13.2-d 知识时效性衰减、§13.1-c 跨 Track 子主题去重、§10 persona 全链路（CLI + HTTP API）也已提前完成（均原标注在 P2/P3）。真实 `retriever`（`web_search`）与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` cron 任务默认关闭（opt-in），需要用户在配置/看板里显式打开，不在本轮默认打开（详见文档开头「实施状态」的取舍说明）。剩余 P3 方向：§10 的看板 UI 接线、与 `capability_map` 等其它子系统的协同，另行评审
+- 剩余未接线项：无——P1 计划项已全部实现，`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草、§13.2-d 知识时效性衰减、§13.1-c 跨 Track 子主题去重、§10 persona 全链路（CLI + HTTP API + 看板 UI）也已提前完成（均原标注在 P2/P3）。真实 `retriever`（`web_search`）与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` cron 任务默认关闭（opt-in），需要用户在配置/看板里显式打开，不在本轮默认打开（详见文档开头「实施状态」的取舍说明）。剩余 P3 方向：与 `capability_map` 等其它子系统的协同，另行评审
 
 **P2（体验与质量增强）**：
 - 大纲生成/缺口判定引入 LLM 辅助（替换纯规则）
