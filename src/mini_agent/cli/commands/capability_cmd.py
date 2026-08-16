@@ -205,7 +205,9 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         R.print_info(
             "本轮学习循环完成："
             f"处理 Track {result['tracks_processed']} 个，"
-            f"检索并写入 {result['topics_researched']} 个子主题，"
+            f"检索并写入 {result['topics_researched']} 个子主题"
+            f"（其中 {result.get('topics_research_empty', 0)} 个检索未获得有效结果，"
+            f"标记为待重试，不计入已覆盖），"
             f"生成问题 {result['questions_raised']} 条，"
             f"消费已回答问题 {result['questions_consumed']} 条，"
             f"跳过 {result['topics_skipped']} 个子主题，"

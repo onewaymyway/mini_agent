@@ -996,7 +996,7 @@ def run_capability_learning_cycle(
 
     summary = {"tracks_processed": 0, "topics_researched": 0, "questions_raised": 0,
                "questions_consumed": 0, "topics_skipped": 0, "topics_reused": 0,
-               "outline_suggestions_generated": 0}
+               "outline_suggestions_generated": 0, "topics_research_empty": 0}
 
     active_tracks = sorted(
         track_store.list_tracks(status="active"),
@@ -1150,21 +1150,48 @@ def run_capability_learning_cycle(
                     global_budget_remaining -= 1
                 continue
 
+            # [修复] `results` 为空（检索没找到任何东西，比如 web_search
+            # provider 报错/被限流后 `make_web_search_retriever()` 兜底
+            # 吞掉异常返回 `[]`，或查询本身确实没有可用信息）时，
+            # `wiki_writer()`（见 `make_wiki_writer()`）仍然会无条件写出
+            # 一页占位内容（正文只有"（暂无检索结果）"），导致 `page_ids`
+            # 永远非空——此前这里直接拿 `page_ids` 是否非空来判断
+            # `coverage_state`，会把这种"其实什么也没查到"的子主题错误
+            # 标成 `covered`，`scan_outline_gaps()` 从此再也不会把它选回
+            # 候选池重试，看起来"已覆盖"实际上永远是一页空内容。
+            # `has_real_content` 直接复用 `wiki_writer`（`make_wiki_writer`
+            # 里的 `_writer`）判断"是否有实质内容"的同一条件（存在非空
+            # `summary`/`text` 字段），保持两边口径一致；自定义
+            # `wiki_writer` 只要遵循同一约定（真正没有内容时传入的
+            # `results` 本身就是空/无有效摘要）也会得到正确的判断。
+            has_real_content = any((r.get("summary") or r.get("text") or "").strip() for r in results)
+
             page_ids = wiki_writer(topic, track, results)
             ledger_store.append(CapabilityLedgerEntry(
                 track_id=track.track_id,
                 topic_id=topic.topic_id,
-                action="researched",
-                summary=f"检索并写入 {len(page_ids)} 个 wiki 页面",
+                action="researched" if has_real_content else "research_empty",
+                summary=(
+                    f"检索并写入 {len(page_ids)} 个 wiki 页面"
+                    if has_real_content
+                    else "本轮检索未获得有效结果（写入了占位页面，下轮会重新尝试，"
+                         "不计入已覆盖）"
+                ),
                 wiki_page_ids=page_ids,
             ))
             summary["topics_researched"] += 1
+            if not has_real_content:
+                summary["topics_research_empty"] += 1
             track_advanced = True
             if global_budget_remaining is not None:
                 global_budget_remaining -= 1
 
-            # 更新大纲覆盖状态
-            topic.coverage_state = "covered" if page_ids else "partial"
+            # 更新大纲覆盖状态：只有真的查到内容才算 covered；查到内容但
+            # `page_ids` 为空（自定义 wiki_writer 选择不落盘）保留原有的
+            # partial 语义；`results` 为空（没查到任何东西）同样归为
+            # partial，保证下一轮还会被 `scan_outline_gaps()` 选中重试，
+            # 不会因为写了一页空内容就被判定"已经完成，不用再管了"。
+            topic.coverage_state = "covered" if (has_real_content and page_ids) else "partial"
             topic.last_touched_at = time.time()
             topic.wiki_page_ids = list(set(topic.wiki_page_ids + page_ids))
 
@@ -1205,8 +1232,11 @@ def maybe_dispatch_capability_notification(
     - `cfg` 是 `CapabilityLearningConfig`（或 `None`/无该属性时按默认值
       处理，容错方式对齐其它调用方的 `getattr(..., default)` 惯例）。
     - `cycle_summary`：`run_capability_learning_cycle()` 的返回值，读取
-      `topics_researched`（新沉淀页面数的近似值——每个 researched 子主题
-      至少产出一个 wiki 页面）和 `questions_raised`。
+      `topics_researched` 减去 `topics_research_empty`（真正查到内容
+      并沉淀的子主题数——`topics_researched` 本身包含了"检索没有结果、
+      只写了一页占位内容"的情况，用这两个字段的差值而不是
+      `topics_researched` 本身，避免推送"新沉淀了 N 篇 wiki 页面"却
+      全是空占位页的误导性摘要）和 `questions_raised`。
     - 空轮（两个数都是 0）不占用推送额度，也不发送任何通知——"没有新
       内容"本身不构成推送理由，这条规则和 growth_advisor 的"宁可不推，
       不为了凑数硬推"是同一条原则。
@@ -1219,7 +1249,9 @@ def maybe_dispatch_capability_notification(
     """
     try:
         new_questions = int(cycle_summary.get("questions_raised", 0) or 0)
-        new_pages = int(cycle_summary.get("topics_researched", 0) or 0)
+        new_pages = int(cycle_summary.get("topics_researched", 0) or 0) - int(
+            cycle_summary.get("topics_research_empty", 0) or 0
+        )
         if new_questions <= 0 and new_pages <= 0:
             return None
 
@@ -1422,7 +1454,11 @@ def make_wiki_writer(paths: AgentPaths) -> WikiWriterFn:
                 urls.append(url)
             body_lines.append(f"- {summary}" + (f"（来源：{url}）" if url else ""))
         has_body_content = len(body_lines) > 2
-        body = "\n".join(body_lines) if has_body_content else f"# {topic.name}\n\n（暂无检索结果）"
+        body = (
+            "\n".join(body_lines) if has_body_content
+            else f"# {topic.name}\n\n（本轮检索未获得有效结果，后续轮次会自动重试，"
+                 f"该子主题暂不计入已覆盖）"
+        )
         if requires_disclaimer:
             body += "\n\n> 仅供参考，不构成投资/医疗/法律等专业建议。"
 

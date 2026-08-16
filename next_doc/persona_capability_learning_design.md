@@ -1,7 +1,8 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.21（「后续计划」三项全部完成。第 1 项：通知系统接入（`notification_enabled`/`notification_frequency`/`notification_max_per_day` + `maybe_dispatch_capability_notification()`，见「§8 通知系统接入」小节）。第 2 项：大纲动态生长建议核心逻辑 + CLI（`OutlineSuggestion` + `CapabilityOutlineSuggestionStore` + `generate_outline_suggestion_from_answer()` + `accept_outline_suggestion()` + `/capability suggestions`，见「§13.2-f 大纲动态生长建议」小节）。第 2 项补齐 HTTP API（`GET /v1/capability/suggestions`、`POST .../accept`、`POST .../dismiss`）与看板 UI（能力学习 Tab 新增「💡 大纲扩展建议」区块，采纳/忽略按钮）；第 3 项 Persona 详情页镜像视图——能力学习 Tab 新增「🎭 已发布角色一览」区块，按角色列出各自绑定的 `wiki_scopes`，实现 §11.2 末尾"双向可见"）。**本轮新增**：「人设 / 能力方向列表」的「能力大纲覆盖状态」区块此前只显示"关联 N 篇 wiki 页面"这个数字，现在每个有关联页面的子主题旁新增「查看」按钮，点击直接展开对应 wiki 页面的正文（新增 `GET /v1/capability/wiki_pages/{page_id}` 端点，复用 `wiki/index_reader.py::find_page_path()` 定位文件）
-- **上一版本**：v0.20（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的九项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）、§13.1-c 跨 Track 子主题去重与知识共享、§10 `target_type="persona"` 人设草稿合成与发布全链路（核心库 + CLI + HTTP API + 看板 UI）。**本轮（v0.20）**：真实检索与 cron 任务评审条件已满足，`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段均改为**默认开启**（opt-out，此前是 opt-in 默认关闭），见「实施状态」新增小节；同时把看板人设草稿区从最简版本（一句纯文字完成度摘要 + 单一源码预览）升级为进度条+逐维度勾选清单、渲染效果/源码双 Tab 预览、§10.4-2 真人模仿安全提示单独高亮）
+- **版本**：v0.21.1（bug 修复：`run_capability_learning_cycle()` 检索没有任何结果时错误地把子主题标成 `covered`。**触发背景**：用户反馈打开某个 wiki 页面看到正文只有"（暂无检索结果）"，但对应的学习台账却写着"🔍 已检索沉淀　检索并写入 1 个 wiki 页面"，感觉不正常。**根因**：`make_wiki_writer()` 无论 `retriever` 返回的 `results` 是否为空，都会无条件写出一页——真的检索到内容就写正文，检索不到就写占位文案"（暂无检索结果）"，`page_ids` 因此永远非空；而 `run_capability_learning_cycle()` 原本直接用 `page_ids` 是否非空判断 `topic.coverage_state`，导致"其实什么也没查到"的子主题被永久标记为 `covered`——`scan_outline_gaps()` 从此再也不会把它选回候选池重试，看起来"已覆盖"实际上永远是一页空内容，学习台账的文案也没有区分"写入了有内容的页面"和"写入了占位页面"这两种情况。**修复**：新增 `topic.coverage_state` 只在真正查到内容（`results` 里至少有一条非空 `summary`/`text`）时才标记为 `covered`，否则保持/回退为 `partial`（下一轮还会被重新选中重试）；学习台账新增 `research_empty` 台账动作，文案明确写"本轮检索未获得有效结果……不计入已覆盖"；`run_capability_learning_cycle()` 返回值新增 `topics_research_empty` 计数；`maybe_dispatch_capability_notification()`"新沉淀页面数"改用 `topics_researched - topics_research_empty`，不把空占位页当作新沉淀内容推送；占位页正文文案也从"（暂无检索结果）"改为更明确的"（本轮检索未获得有效结果，后续轮次会自动重试，该子主题暂不计入已覆盖）"。见下方「检索空结果 bug 修复」小节。）
+- **上一版本**：v0.21（「后续计划」三项全部完成。第 1 项：通知系统接入（`notification_enabled`/`notification_frequency`/`notification_max_per_day` + `maybe_dispatch_capability_notification()`，见「§8 通知系统接入」小节）。第 2 项：大纲动态生长建议核心逻辑 + CLI（`OutlineSuggestion` + `CapabilityOutlineSuggestionStore` + `generate_outline_suggestion_from_answer()` + `accept_outline_suggestion()` + `/capability suggestions`，见「§13.2-f 大纲动态生长建议」小节）。第 2 项补齐 HTTP API（`GET /v1/capability/suggestions`、`POST .../accept`、`POST .../dismiss`）与看板 UI（能力学习 Tab 新增「💡 大纲扩展建议」区块，采纳/忽略按钮）；第 3 项 Persona 详情页镜像视图——能力学习 Tab 新增「🎭 已发布角色一览」区块，按角色列出各自绑定的 `wiki_scopes`，实现 §11.2 末尾"双向可见"；「人设 / 能力方向列表」的「能力大纲覆盖状态」区块新增「查看」按钮直接展开对应 wiki 页面正文（`GET /v1/capability/wiki_pages/{page_id}`））
+- **再上一版本**：v0.20（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的九项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）、§13.1-c 跨 Track 子主题去重与知识共享、§10 `target_type="persona"` 人设草稿合成与发布全链路（核心库 + CLI + HTTP API + 看板 UI）。**本轮（v0.20）**：真实检索与 cron 任务评审条件已满足，`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段均改为**默认开启**（opt-out，此前是 opt-in 默认关闭），见「实施状态」新增小节；同时把看板人设草稿区从最简版本（一句纯文字完成度摘要 + 单一源码预览）升级为进度条+逐维度勾选清单、渲染效果/源码双 Tab 预览、§10.4-2 真人模仿安全提示单独高亮）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -11,6 +12,77 @@
 
 本节记录方案落地进度，每完成一个阶段就更新，保持和代码库实际状态同步，
 避免文档和实现脱节。
+
+### 检索空结果 bug 修复（v0.21.1）—— ✅ 已实现
+
+**现象**：用户打开某个 wiki 页面看到正文只有"（暂无检索结果）"，但
+对应的学习台账却写着"🔍 已检索沉淀　检索并写入 1 个 wiki 页面"——看起来
+矛盾：明明"没检索到结果"，为什么台账说"检索并写入"了？
+
+**根因**：`make_wiki_writer()`（`_writer` 闭包）无论 `retriever` 返回的
+`results` 是否为空都会**无条件写出一页**——真的检索到内容就写正文，
+检索不到任何东西就写占位文案"（暂无检索结果）"，两种情况下
+`page_ids` 都是非空的（`[page_id]`）。而 `run_capability_learning_cycle()`
+原本直接拿 `page_ids` 是否非空来判断 `topic.coverage_state`：
+
+```python
+topic.coverage_state = "covered" if page_ids else "partial"  # 改动前
+```
+
+这意味着"检索器压根没查到任何东西"（比如 `make_web_search_retriever()`
+里 `provider.search()` 抛出 `WebSearchError` 被兜底吞掉、返回 `[]`）的
+子主题，也会被永久标记为 `covered`。`scan_outline_gaps()` 只会把
+非 `covered`（或 `covered` 但触发了知识时效性衰减）的子主题选回候选池，
+一个被误标为 `covered` 的空内容子主题从此**再也不会被重试**——用户
+看到的"已覆盖"状态和"关联 1 篇 wiki 页面"都是真的，但那篇页面从头到尾
+只有一句占位文案，永远不会被后续轮次修正。
+
+**修复**：
+
+| 项目 | 修复前 | 修复后 |
+|---|---|---|
+| `topic.coverage_state` 判定依据 | `page_ids` 是否非空（`wiki_writer` 是否写出了页面） | `results`（`retriever` 的原始返回值）里是否至少有一条非空 `summary`/`text`——即真的查到内容，而不是"写出了文件"这个更弱的条件 |
+| 检索没有结果时的台账 `action` | `researched`（和真正查到内容时完全一样，无法区分） | `research_empty`，`summary` 明确写"本轮检索未获得有效结果（写入了占位页面，下轮会重新尝试，不计入已覆盖）" |
+| `run_capability_learning_cycle()` 返回值 | 无对应字段 | 新增 `topics_research_empty` 计数，`/capability cycle` CLI 输出同步展示 |
+| `maybe_dispatch_capability_notification()` 的"新沉淀页面数" | 直接用 `topics_researched`（包含空占位页） | 改用 `topics_researched - topics_research_empty`，不把空占位页当作"新沉淀内容"推送 |
+| 占位页正文文案 | `（暂无检索结果）`，容易被误读成"系统确认了这个方向没有可查内容" | `（本轮检索未获得有效结果，后续轮次会自动重试，该子主题暂不计入已覆盖）`，明确传达"这不是终态，会重试" |
+
+`topic.coverage_state` 判定改用 `results` 而不是 `page_ids`，是因为
+`page_ids` 反映的是"`wiki_writer` 这一步做了什么"，而 `coverage_state`
+本该反映的是"这个子主题的知识缺口是否真的被填上了"——两者在
+`make_wiki_writer()` 的默认实现里被意外耦合到了一起（写占位页也算
+"写了页面"），修复后用更贴近语义本身的信号（有没有真实检索到内容）
+来判断，同时保留"无论如何都写一页占位文档"这个原有设计（方便用户
+在页面里直接看到"系统尝试过但没查到"的记录，而不是完全没有痕迹）。
+
+**已知局限（暂不处理）**：修复后，一个持续查不到内容的子主题
+（比如查询词本身过于生僻、或长期处在错误配置的检索环境下）会在每一轮
+`sys:capability_learning_cycle` 里被反复选中、反复检索、反复写出占位页，
+没有引入"连续失败 N 次后自动降级/跳过"的熔断机制——这不是本次要解决
+的问题（本次是修正"错误标记为已覆盖"这个更基础的正确性 bug），如果
+后续观察到真实的重复空转消耗过多检索配额，需要单独评估。
+
+**测试**：新增 `tests/test_capability_learning_empty_retrieval_fix.py`
+（7 项，覆盖检索无结果时 `coverage_state` 保持 `partial`、台账
+`action=research_empty` 且文案正确、空结果子主题下一轮确实被重新
+选中检索、真实结果时行为不变（回归）、`summary`/`text` 全是空白字符串
+时同样视为无效结果、通知函数在"全是空占位"时不发送/在"有真实新内容"
+时正常发送两种场景）；全部通过。`tests/test_capability_learning_p1.py`
++ `tests/test_capability_cmd.py` + `tests/test_capability_routes_mount.py`
++ `tests/test_capability_notification_v021.py` +
+`tests/test_capability_outline_suggestions_v021.py` 共 126 项全部通过，
+无回归。
+
+**改动文件**：
+- `src/mini_agent/evolution/capability_learning.py`
+  （`run_capability_learning_cycle()` 新增 `has_real_content` 判断、
+  `research_empty` 台账动作、`topics_research_empty` 汇总字段；
+  `make_wiki_writer()` 占位页正文文案更新；
+  `maybe_dispatch_capability_notification()` 改用差值计算新沉淀页面数）
+- `src/mini_agent/cli/commands/capability_cmd.py`（`/capability cycle`
+  输出追加"其中 N 个检索未获得有效结果"提示）
+- `tests/test_capability_learning_empty_retrieval_fix.py`（新增，7 项）
+- `next_doc/persona_capability_learning_design.md`（本节）
 
 ### P1（最小可用闭环）—— ✅ 数据层与逻辑层已实现，未接入真实检索/wiki 写入
 
