@@ -56,11 +56,17 @@
       `/capability create --llm-draft` 与 HTTP API `llm_draft` 字段均已
       接线，看板新建表单加了对应复选框；起草失败/无 LLM 上下文时静默
       退回空大纲，不报错
+    - §12.1-a capability_map 排序信号（单向只读消费，本轮接入）：
+      `_topic_capability_confidence()` 只读消费
+      `consolidation.build_capability_map()`，用关键词双向子串匹配把
+      领域置信度粗略映射到子主题，`scan_outline_gaps()` 在 miss_counts
+      之后、last_touched_at 之前用它做第二级排序（置信度越低越优先）；
+      不匹配的子主题给中性值 0.5，不产生任何反向副作用/不写回
 
 留给 P3 的方向（P1/P2 刻意不做，避免过早引入不确定性/耦合）：
     - target_type="persona" 全链路（人设草稿生成 / 发布，见文档 §10）
-    - 与 external_trend_capability_link / objective_executor / decision_profile_builder /
-      capability_map 的协同（见文档 §12，刻意不打通，避免引入耦合风险）
+    - 与 external_trend_capability_link / objective_executor / decision_profile_builder
+      的协同（见文档 §12.1-b/c、§12.2，12.1-a capability_map 已接入，见上）
 """
 
 from __future__ import annotations
@@ -529,27 +535,77 @@ def scan_outline_gaps(
     track: CapabilityTrack,
     limit: int = DEFAULT_TOPICS_PER_CYCLE,
     miss_counts: Optional[dict[str, int]] = None,
+    capability_confidence: Optional[dict[str, float]] = None,
 ) -> list[OutlineTopic]:
     """规则式缺口扫描：优先选 uncovered，其次 partial；同一 coverage_state
     内，先按 `miss_counts`（§14.1-a 的 `miss_observed` 台账统计，见
     `_topic_miss_counts()`）降序——用户实际在对话里检索碰壁过的子主题，
     比"系统扫描出来但还没人真正需要过"的子主题更值得优先推进；miss 次数
-    相同或没有传入 miss_counts 时，退化为原有的 last_touched_at 从旧到新
-    排序（越久没碰过的越优先）。miss_counts 默认 None，不传时行为与此前
-    完全一致，接线方（run_capability_learning_cycle）不用改调用方式。
-    P2 阶段会替换/叠加 LLM 辅助判定与 capability_map 排序信号（见设计
-    文档 §12.1-a、§14），但函数签名保持兼容，不会再破坏调用方。"""
+    相同时，再按 `capability_confidence`（§12.1-a，见
+    `_topic_capability_confidence()`）升序——Agent 自评置信度越低的领域
+    越优先，没有匹配到 capability_map 条目的子主题给中性值 0.5（既不
+    因为"没数据"被排到最后，也不会抢在明确低置信度的子主题前面）；
+    以上信号都缺失或相同时，退化为原有的 last_touched_at 从旧到新排序
+    （越久没碰过的越优先）。两个新参数默认 None，不传时行为与此前
+    完全一致，接线方（run_capability_learning_cycle）不用改调用方式。"""
     miss_counts = miss_counts or {}
+    capability_confidence = capability_confidence or {}
 
     def sort_key(t: OutlineTopic):
         state_rank = {"uncovered": 0, "partial": 1, "covered": 2}.get(t.coverage_state, 1)
         miss_count = miss_counts.get(t.topic_id, 0)
+        confidence = capability_confidence.get(t.topic_id, 0.5)
         touched = t.last_touched_at or 0
-        return (state_rank, -miss_count, touched)
+        return (state_rank, -miss_count, confidence, touched)
 
     candidates = [t for t in track.outline if t.coverage_state != "covered"]
     candidates.sort(key=sort_key)
     return candidates[:limit]
+
+
+def _topic_capability_confidence(track: CapabilityTrack, paths: AgentPaths) -> dict[str, float]:
+    """[§12.1-a] 单向只读消费 `perception/self_model.py` 依赖的
+    `evolution/consolidation.py::build_capability_map()`，把 Agent 现有
+    的领域置信度粗略映射到本 Track 的子主题上，供 `scan_outline_gaps()`
+    排优先级——置信度越低的领域，Track 里对应的子主题越应该优先推进。
+
+    匹配方式故意用最朴素的关键词双向子串匹配（`domain in topic.name` 或
+    `topic.name in domain`，不区分大小写），不引入语义匹配/embedding——
+    `build_capability_map()` 自己的 domain 也是按关键词从 goal 文本里
+    粗略推断出来的（见 `_infer_domain()`），子主题匹配精度对齐上游数据
+    本身的精度即可，没必要在这一层做得比数据源更精细。一个子主题可能
+    匹配到多个 domain 时取置信度最低的那个（更保守，宁可多推进一点）。
+
+    这是纯只读消费、单向依赖（见设计文档 §12.1-a），不产生任何反向
+    副作用、不写回 capability_map，也不影响 self_model 自身的读取逻辑。
+    失败（consolidation 模块不可用/无数据）时静默返回空字典，
+    调用方退化为不带 capability_map 信号的原有排序，不报错、不阻断。
+    """
+    try:
+        from mini_agent.evolution.consolidation import build_capability_map
+        entries = build_capability_map(paths, None)  # None=只读，不写回
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.capability_learning._topic_capability_confidence')
+        return {}
+
+    if not entries:
+        return {}
+
+    result: dict[str, float] = {}
+    for topic in track.outline:
+        name_lower = topic.name.lower()
+        best: Optional[float] = None
+        for entry in entries:
+            domain_lower = entry.domain.lower()
+            if not domain_lower or not name_lower:
+                continue
+            if domain_lower in name_lower or name_lower in domain_lower:
+                if best is None or entry.confidence < best:
+                    best = entry.confidence
+        if best is not None:
+            result[topic.topic_id] = best
+    return result
 
 
 def _topic_miss_counts(ledger_store: "CapabilityLedgerStore", track_id: str) -> dict[str, int]:
@@ -629,17 +685,25 @@ def run_capability_learning_cycle(
             question_store.mark_consumed(q.question_id)
             summary["questions_consumed"] += 1
 
-        # 挑选本轮推进的子主题（§14.1-a：miss_observed 台账优先级信号）
+        # 挑选本轮推进的子主题（§14.1-a：miss_observed 台账优先级信号；
+        # §12.1-a：capability_map 领域置信度优先级信号，见 _topic_capability_confidence）
         miss_counts = _topic_miss_counts(ledger_store, track.track_id)
+        capability_confidence = _topic_capability_confidence(track, paths)
         pending = question_store.pending_count(track.track_id)
         if pending >= max_pending_questions:
             # 待回答问题已达上限，本轮只推进不需要用户输入的子主题
             topics = [
-                t for t in scan_outline_gaps(track, limit=topics_per_cycle * 2, miss_counts=miss_counts)
+                t for t in scan_outline_gaps(
+                    track, limit=topics_per_cycle * 2,
+                    miss_counts=miss_counts, capability_confidence=capability_confidence,
+                )
                 if not needs_user_context(t, track)
             ][:topics_per_cycle]
         else:
-            topics = scan_outline_gaps(track, limit=topics_per_cycle, miss_counts=miss_counts)
+            topics = scan_outline_gaps(
+                track, limit=topics_per_cycle,
+                miss_counts=miss_counts, capability_confidence=capability_confidence,
+            )
 
         for topic in topics:
             if needs_user_context(topic, track):

@@ -662,3 +662,97 @@ def test_capability_track_store_create_llm_failure_falls_back_to_empty(paths):
     store = CapabilityTrackStore(paths)
     track = store.create(title="x", persona_desc="x", llm_helper=lambda prompt: "")
     assert track.outline == []
+
+
+# ── §12.1-a：capability_map 领域置信度排序信号 ─────────────────────────
+
+def _write_task_manifest(paths, task_id: str, goal: str, status: str) -> None:
+    """在 paths.sessions_dir 下伪造一份 task_manifest.json，供
+    `build_capability_map()` 扫描（与 evolution/consolidation.py 的
+    扫描路径 `.agent/sessions/<session>/tasks/<task>/manifest.json` 一致）。"""
+    task_dir = paths.sessions_dir / "sess1" / "tasks" / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    import json
+    manifest = {"goal": goal, "outcome": {"status": status}}
+    (task_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def test_topic_capability_confidence_matches_by_keyword(paths):
+    from mini_agent.evolution.capability_learning import _topic_capability_confidence
+
+    # 伪造一批 python_refactor 领域的任务，3 成功 1 失败 → confidence=0.75
+    _write_task_manifest(paths, "t1", "帮我重构这段 python 代码", "done")
+    _write_task_manifest(paths, "t2", "帮我重构这段 python 代码", "done")
+    _write_task_manifest(paths, "t3", "帮我重构这段 python 代码", "done")
+    _write_task_manifest(paths, "t4", "帮我重构这段 python 代码", "failed")
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=[])
+    track.outline = [
+        OutlineTopic(topic_id="a", name="python_refactor 相关技巧", coverage_state="uncovered"),
+        OutlineTopic(topic_id="b", name="完全不相关的主题", coverage_state="uncovered"),
+    ]
+
+    conf = _topic_capability_confidence(track, paths)
+    assert "a" in conf
+    assert abs(conf["a"] - 0.75) < 1e-6
+    assert "b" not in conf  # 没有匹配上的子主题不出现在结果里
+
+
+def test_topic_capability_confidence_empty_when_no_manifests(paths):
+    from mini_agent.evolution.capability_learning import _topic_capability_confidence
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=["随便什么"])
+    assert _topic_capability_confidence(track, paths) == {}
+
+
+def test_scan_outline_gaps_uses_capability_confidence_as_tiebreak(paths):
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=[])
+    track.outline = [
+        OutlineTopic(topic_id="low_conf", name="低置信度主题", coverage_state="uncovered", last_touched_at=200),
+        OutlineTopic(topic_id="high_conf", name="高置信度主题", coverage_state="uncovered", last_touched_at=100),
+    ]
+    # miss_counts 相同（都没有），capability_confidence 里 low_conf 更低
+    # → 尽管 last_touched_at 更新，仍应排在 high_conf 前面
+    result = scan_outline_gaps(
+        track, limit=2,
+        capability_confidence={"low_conf": 0.1, "high_conf": 0.9},
+    )
+    assert [t.topic_id for t in result] == ["low_conf", "high_conf"]
+
+
+def test_scan_outline_gaps_capability_confidence_backward_compat(paths):
+    """不传 capability_confidence 时，行为与此前完全一致（回退到 last_touched_at）。"""
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=[])
+    track.outline = [
+        OutlineTopic(topic_id="t1", name="A", coverage_state="uncovered", last_touched_at=200),
+        OutlineTopic(topic_id="t2", name="B", coverage_state="uncovered", last_touched_at=100),
+    ]
+    result = scan_outline_gaps(track, limit=2)
+    assert [t.topic_id for t in result] == ["t2", "t1"]
+
+
+def test_run_capability_learning_cycle_wires_capability_confidence(paths, monkeypatch):
+    """确认 run_capability_learning_cycle 真的把 _topic_capability_confidence()
+    的结果传给了 scan_outline_gaps()（不测排序细节，只测接线本身）。"""
+    from mini_agent.evolution import capability_learning as cl
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="x", persona_desc="x", outline_names=["主题A"])
+    track.status = "active"
+    store.update(track.track_id, status="active")
+
+    captured = {}
+    original = cl.scan_outline_gaps
+
+    def spy(track_arg, limit=cl.DEFAULT_TOPICS_PER_CYCLE, miss_counts=None, capability_confidence=None):
+        captured["capability_confidence"] = capability_confidence
+        return original(track_arg, limit=limit, miss_counts=miss_counts, capability_confidence=capability_confidence)
+
+    monkeypatch.setattr(cl, "scan_outline_gaps", spy)
+    cl.run_capability_learning_cycle(paths)
+    assert "capability_confidence" in captured
+    assert captured["capability_confidence"] == {}  # 没有任何 task manifest，空字典也是正常接线的证明
