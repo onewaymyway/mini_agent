@@ -2171,19 +2171,22 @@ class GrowthAdvisorConfig:
 class CapabilityLearningConfig:
     """[next_doc/persona_capability_learning_design.md] 人设能力自主学习配置。
 
-    真实 retriever（对接 web_search）默认关闭（opt-in，与 GrowthAdvisorConfig
-    的"默认开启"取向刻意相反）：这个子系统会主动发起网络检索并把结果写入
-    长期 wiki，属于"有实质副作用、且内容质量把关不能完全靠代码兜底"的一类
-    功能（对照 §13.3-g 合规过滤——过滤能挡掉能识别的风险表述，但不能替代
-    "确实有人看过检索来源可信"这件事）。cron 任务表（cron_scheduler.py 的
-    sys:capability_learning_cycle）也默认 enabled=False，二者独立但通常
-    一起打开：只打开这里的 enabled 而不打开对应 cron job，效果是
-    `/capability cycle` 手动触发时会用真实检索，但不会自动定时运行。
+    真实 retriever（对接 web_search）与对应 cron 任务（`sys:
+    capability_learning_cycle`/`sys:capability_question_sweep`）此前是
+    opt-in（默认关闭），需要用户在 P1 收尾评审通过、且 §13.3-g 合规过滤
+    落地之后才手动打开。经确认合规过滤（`apply_compliance_filter()` +
+    `requires_disclaimer` 标注）已随 P1 一起实现并有测试覆盖，本轮改为
+    **默认开启**——`retriever_enabled=True` 且两个 cron job 默认
+    `enabled=True`，Track 一经创建就会按既定节奏自动检索、沉淀、清理过期
+    问题，不再需要用户额外去配置里手动打开。用户仍可以随时在
+    `agent_config.json` 里把 `retriever_enabled` 改回 `False`，或在看板
+    「⏰ Cron 任务」Tab / CLI 里单独 disable 这两个 job（关闭 retriever
+    时循环仍会跑，只是需要检索的子主题记 `skipped` 台账，不产生网络请求）。
     """
 
     # 总开关：是否允许 `run_capability_learning_cycle` 使用真实 web_search
-    # 检索（而非跳过并记 skipped 台账）。默认 False。
-    retriever_enabled: bool = False
+    # 检索（而非跳过并记 skipped 台账）。默认 True（opt-out）。
+    retriever_enabled: bool = True
 
     # 每个子主题检索时最多拉取的搜索结果条数，直接传给
     # WebSearchProvider.search(max_results=...)。太大会增加合规过滤的

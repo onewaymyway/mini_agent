@@ -278,8 +278,18 @@ def draft_persona(request: Request, track_id: str):
 
 @capability_router.get("/tracks/{track_id}/persona/draft")
 def get_persona_draft(request: Request, track_id: str):
-    """读取上一次落盘的人设草稿，不存在返回 404（尚未调用过 draft 端点）。"""
-    from mini_agent.evolution.capability_learning import load_persona_draft
+    """读取上一次落盘的人设草稿，不存在返回 404（尚未调用过 draft 端点）。
+
+    连带返回一份完成度摘要（与 POST 端点同款 `persona_draft_completeness`），
+    这样看板刷新页面重新拉取已落盘草稿时，也能展示进度条/缺失维度，不需要
+    强制用户先点一次「生成/刷新」才能看到完成度——GET 是只读操作，这里的
+    completeness 只是基于当前 track/questions 状态重新计算，不涉及任何
+    写入，和落盘的草稿文本本身是否已经过期（用户后续又回答了新问题）无关，
+    只是"以现在的已知信息看，这份草稿覆盖了多少"。"""
+    from mini_agent.evolution.capability_learning import (
+        load_persona_draft,
+        persona_draft_completeness,
+    )
 
     paths = _get_paths(request)
     track = CapabilityTrackStore(paths).get(track_id)
@@ -289,7 +299,10 @@ def get_persona_draft(request: Request, track_id: str):
     text = load_persona_draft(paths, track_id)
     if text is None:
         raise HTTPException(status_code=404, detail="no draft found for this track yet")
-    return {"track_id": track_id, "draft": text}
+
+    questions = CapabilityQuestionStore(paths).list_questions(track_id=track_id)
+    completeness = persona_draft_completeness(track, questions)
+    return {"track_id": track_id, "draft": text, "completeness": completeness}
 
 
 @capability_router.post("/tracks/{track_id}/persona/publish")

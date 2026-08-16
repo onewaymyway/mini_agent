@@ -6,7 +6,7 @@ next_doc/persona_capability_learning_design.md）。
 是"生成一段 task_template 文本交给 Agent 带着工具执行"的模式（参照
 `sys:growth_advisor_daily` 引用 `/growth scan`），不是直接调用 Python 函数。
 本模块提供的 `/capability cycle` 就是 `sys:capability_learning_cycle`
-引用的中间层命令（该 cron job 已注册，默认 enabled=False，见
+引用的中间层命令（该 cron job 已注册，默认 enabled=True，见
 cron_scheduler.py SYSTEM_JOBS 里对应条目的说明）。
 
 子命令：
@@ -24,8 +24,8 @@ cron_scheduler.py SYSTEM_JOBS 里对应条目的说明）。
                                      不依赖那条 cron job 是否已注册/enabled）。
                                      是否使用真实检索由
                                      capability_learning.retriever_enabled
-                                     配置项控制（默认 False）：关闭时安全
-                                     跳过需要检索的子主题并记台账；打开时
+                                     配置项控制（默认 True）：关闭时安全
+                                     跳过需要检索的子主题并记台账；默认打开时
                                      用 make_web_search_retriever 接
                                      web_search，检索结果写入前仍会经过
                                      §13.3-g 合规过滤（make_wiki_writer 里
@@ -155,9 +155,9 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
 
     if sub == "cycle":
         # 是否使用真实检索由 CapabilityLearningConfig.retriever_enabled
-        # 控制（默认 False，opt-in）。关闭时保持 P1 原有安全默认行为：
+        # 控制（默认 True，opt-out）。关闭时保持 P1 原有安全兜底行为：
         # retriever=None，需要检索的子主题记 skipped 台账，不产生网络
-        # 请求；打开时用 make_web_search_retriever(cfg) 接真实
+        # 请求；默认打开时用 make_web_search_retriever(cfg) 接真实
         # web_search，检索结果在写入前仍会经过 make_wiki_writer 里已经
         # 接好的 §13.3-g 合规过滤，不会绕过。
         cfg = getattr(agent, "cfg", None)

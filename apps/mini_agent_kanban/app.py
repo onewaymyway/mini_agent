@@ -5716,18 +5716,23 @@ def _render_growth_kanban_dragdrop(client: "AgentClient", candidates: list[dict]
 # ═══════════════════════════════════════════════════════════════════════
 # Tab: 🎓 能力学习（next_doc/persona_capability_learning_design.md §7）
 # ═══════════════════════════════════════════════════════════════════════
-# P1 阶段接线：三个区域——人设管理区（Track 增删改）/ 进度展示区（大纲覆盖
-# 状态 + 学习台账）/ 待回答问题区（异步问答队列）。cron 尚未接线（见设计
-# 文档「实施状态」），所以这里没有"距离下一轮学习还有多久"这类倒计时展示；
-# `/capability cycle` 手动触发仍需通过 CLI slash command，看板本身不提供
-# "立即学习"按钮，避免在 cron 接线评审通过前就在 UI 上暗示这是个已经在
-# 自动运行的功能。
+# 四个区域——人设管理区（Track 增删改）/ 进度展示区（大纲覆盖状态 + 学习
+# 台账）/ 人设草稿区（§10.3）/ 待回答问题区（异步问答队列）。真实检索
+# （`CapabilityLearningConfig.retriever_enabled`）与 cron 定时自动推进
+# （`sys:capability_learning_cycle` / `sys:capability_question_sweep`）
+# 现已默认开启——Track 一旦创建为 active 状态，就会按各自 cadence 自动
+# 检索沉淀，不再需要用户手动敲 `/capability cycle`。仍可以在看板「⏰ Cron
+# 任务」Tab 里单独 disable 这两个 job，或去配置里关掉 retriever_enabled
+# 只保留手动触发。
 def render_capability_tab(client: "AgentClient"):
     st.markdown("#### 🎓 能力学习 / 人设养成 (Capability Learning)")
     st.caption(
         "给 Agent 一个能力方向或人设描述，它会持续、克制地检索沉淀成 wiki 知识；"
         "遇到只有你知道的信息会异步向你提问，不会打断你当前的事。"
-        "（cron 定时自动推进尚未开启，当前需要通过 `/capability cycle` 命令手动触发一轮）"
+        "🟢 真实检索与 cron 定时自动推进默认已开启（每 6 小时一轮），"
+        "也可以随时用 `/capability cycle` 手动触发一轮；"
+        "如果想暂停自动运行，去「⏰ Cron 任务」Tab 关闭 "
+        "`sys:capability_learning_cycle` 即可，不影响手动触发。"
     )
 
     tracks_resp = client.capability_tracks()
@@ -5820,15 +5825,49 @@ def render_capability_tab(client: "AgentClient"):
                         f"　{entry.get('summary', '')}"
                     )
             else:
-                st.caption("还没有学习台账记录（cron 尚未接线，暂时只能通过 `/capability cycle` 手动推进）。")
+                st.caption(
+                    "还没有学习台账记录——cron 会按 6 小时一轮自动推进，"
+                    "也可以用 `/capability cycle` 立即手动跑一轮看效果。"
+                )
 
             # ── §10.3 人设草稿区（仅 persona 型 Track）──────────────────
+            # 相对最简版本的改进：① 完成度用进度条 + 逐维度勾选清单展示，
+            # 不再只是一句纯文字摘要；② 草稿预览分"渲染效果"/"源码"两个
+            # Tab，渲染效果更接近 `/role use` 之后实际生效的样子；③ 从
+            # 已落盘草稿加载时也一并取回 completeness（GET 端点已同步
+            # 补齐），不用强制先点一次生成才能看到进度；④ 检测到草稿里
+            # 嵌入了 §10.4-2 真人模仿安全提示时单独用 st.warning 高亮，
+            # 不会被淹没在一大段 markdown 源码里；⑤ 未达完成度时给「发布」
+            # 按钮加一句弱提醒（不阻断，用户仍可强行发布），呼应 §10.3
+            # "所有权在用户"的原则。
             if track.get("target_type") == "persona":
                 st.markdown("**人设草稿（§10.3）**")
                 st.caption(
                     "草稿由目前已回答的问题合成，随时可以刷新预览；发布是显式动作，"
                     "点击「发布」之前不会写入 `.agent/personas/`。"
                 )
+
+                draft_text = st.session_state.get(f"cap_persona_draft_text_{track['track_id']}")
+                completeness = st.session_state.get(f"cap_persona_draft_completeness_{track['track_id']}")
+                if draft_text is None:
+                    existing = client.get_capability_persona_draft(track["track_id"])
+                    if not (isinstance(existing, dict) and existing.get("_error")):
+                        draft_text = existing.get("draft", "")
+                        completeness = existing.get("completeness")
+
+                if completeness:
+                    total = completeness.get("total", 0) or 0
+                    answered = completeness.get("answered", 0) or 0
+                    missing = completeness.get("missing_topic_names") or []
+                    ratio = (answered / total) if total else 0.0
+                    st.progress(min(max(ratio, 0.0), 1.0), text=f"完成度 {answered}/{total} 个维度")
+                    if missing:
+                        with st.popover(f"🔎 查看尚缺的 {len(missing)} 个维度"):
+                            for name in missing:
+                                st.write(f"⬜ {name}")
+                    else:
+                        st.caption("✅ 各维度均已有用户回答的信息。")
+
                 draft_cols = st.columns(2)
                 with draft_cols[0]:
                     if st.button("📝 生成/刷新草稿", key=f"cap_persona_draft_{track['track_id']}"):
@@ -5841,7 +5880,10 @@ def render_capability_tab(client: "AgentClient"):
                             st.rerun()
                 with draft_cols[1]:
                     publish_confirm_key = f"cap_persona_publish_confirm_{track['track_id']}"
+                    incomplete = bool(completeness and (completeness.get("missing_topic_names") or []))
                     if st.session_state.get(publish_confirm_key):
+                        if incomplete:
+                            st.caption("⚠️ 还有维度缺信息，仍可发布，但建议先补全再正式启用。")
                         if st.button("⚠️ 确认发布", key=f"cap_persona_publish_go_{track['track_id']}"):
                             resp = client.publish_capability_persona(track["track_id"])
                             st.session_state.pop(publish_confirm_key, None)
@@ -5853,23 +5895,25 @@ def render_capability_tab(client: "AgentClient"):
                         st.session_state[publish_confirm_key] = True
                         st.rerun()
 
-                draft_text = st.session_state.get(f"cap_persona_draft_text_{track['track_id']}")
-                if draft_text is None:
-                    existing = client.get_capability_persona_draft(track["track_id"])
-                    if not (isinstance(existing, dict) and existing.get("_error")):
-                        draft_text = existing.get("draft", "")
-
-                completeness = st.session_state.get(f"cap_persona_draft_completeness_{track['track_id']}")
-                if completeness:
-                    missing = completeness.get("missing_topic_names") or []
-                    missing_note = f"，尚缺：{', '.join(missing)}" if missing else "，各维度均已有信息"
-                    st.caption(
-                        f"完成度：{completeness.get('answered', 0)}/{completeness.get('total', 0)}"
-                        f"{missing_note}"
-                    )
-
                 if draft_text:
-                    with st.expander("预览草稿"):
+                    if "安全提示" in draft_text or "真人" in draft_text:
+                        st.warning(
+                            "这份草稿的方向描述里检测到可能指向某个真实公众人物本人的"
+                            "表述（§10.4-2 启发式识别，可能误报/漏报）。建议改为"
+                            "\"参考某种风格但作为原创虚构人物\"，发布前请自行确认。"
+                        )
+                    preview_tab, source_tab = st.tabs(["预览效果", "源码"])
+                    with preview_tab:
+                        # frontmatter 之后的正文部分渲染成 markdown，更接近
+                        # `/role use` 之后实际呈现的效果；frontmatter 本身
+                        # 保留在源码 Tab 里查看即可，避免渲染成一堆无意义文字。
+                        body = draft_text
+                        if body.startswith("---"):
+                            parts = body.split("---", 2)
+                            if len(parts) == 3:
+                                body = parts[2]
+                        st.markdown(body)
+                    with source_tab:
                         st.code(draft_text, language="markdown")
                 else:
                     st.caption("还没有草稿，点「生成/刷新草稿」创建第一版。")

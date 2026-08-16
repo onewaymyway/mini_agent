@@ -393,14 +393,14 @@ def test_make_wiki_writer_non_risk_domain_no_disclaimer_flag(paths):
     assert "仅供参考" not in page.body
 
 
-# ── 真实 retriever（web_search）接线，默认关闭 ─────────────────────────────
+# ── 真实 retriever（web_search）接线，默认开启 ─────────────────────────────
 
 
-def test_capability_learning_config_default_retriever_disabled():
+def test_capability_learning_config_default_retriever_enabled():
     from mini_agent.config import AppConfig
 
     cfg = AppConfig()
-    assert cfg.capability_learning.retriever_enabled is False
+    assert cfg.capability_learning.retriever_enabled is True
     assert cfg.capability_learning.max_results_per_topic == 3
 
 

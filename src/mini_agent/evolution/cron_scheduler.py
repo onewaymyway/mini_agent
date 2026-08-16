@@ -22,8 +22,8 @@ evolution/cron_scheduler.py — Daemon 模式定时任务调度器
   sys:decision_profile_update — 决策画像归纳（默认关闭，见改进计划）interval:604800
   sys:growth_advisor_daily        — 成长顾问候选扫描+调研报告（默认开启）cron:30 22 * * *
   sys:growth_monthly_retrospective — 成长顾问月度复盘（默认开启）      interval:2592000
-  sys:capability_learning_cycle    — 能力学习/人设养成循环（默认关闭，见下方说明）interval:21600
-  sys:capability_question_sweep    — 能力学习异步问题过期清理（默认关闭）interval:86400
+  sys:capability_learning_cycle    — 能力学习/人设养成循环（默认开启，见下方说明）interval:21600
+  sys:capability_question_sweep    — 能力学习异步问题过期清理（默认开启）interval:86400
 
 存储：<project_root>/.agent/cron_jobs.json
 """
@@ -350,40 +350,39 @@ _BUILTIN_JOBS: list[dict] = [
         # 养成循环。task_template 引用 §4 提前实现的 `/capability cycle`
         # slash command 中间层（cli/commands/capability_cmd.py），不直接
         # 调用 Python 函数——这一层缺口设计文档写作过程中才发现，见该
-        # 命令处理器顶部注释。**默认 enabled=False**：不是因为实现本身
-        # 有已知问题（数据模型/循环编排/§13.3-g 合规过滤均已有测试覆盖），
-        # 而是因为 `/capability cycle` 目前刻意不传入 retriever（见
-        # capability_cmd.py 顶部注释），意味着即使打开这个 job，
-        # 每一轮也只会对需要检索的子主题记 `skipped` 台账，不会产生任何
-        # 真实网络请求/wiki 写入——打开它本身是安全的（不会绕开任何未完成
-        # 的合规环节），但在真实 `retriever` 接线评审通过前默认开启一个
-        # "看起来在运行、实际什么都没学到"的新 cron 任务容易造成"为什么
-        # 台账全是 skipped"的困惑（对照 growth_advisor 曾经出现过的"运行了
-        # 一天，成长顾问数据都是 0"反馈），不如默认关闭、由用户在看板/CLI
-        # 显式打开，且打开时机自然会伴随明确知道"现在还没有真实检索"的
-        # 心理预期。
+        # 命令处理器顶部注释。**默认 enabled=True**：数据模型/循环编排/
+        # §13.3-g 合规过滤（`apply_compliance_filter()` + 风险领域
+        # `requires_disclaimer` 标注）均已实现并有测试覆盖，`/capability
+        # cycle` 也已经会按 `CapabilityLearningConfig.retriever_enabled`
+        # （默认 True）使用真实 web_search 检索——评审条件已满足，改为
+        # opt-out：Track 一旦创建，会按各自 cadence 自动推进。仍然只在
+        # active Track 上运行，且每轮子主题数/待回答问题数均有上限（见
+        # §3.3、§9），不会变成无限制抓取。用户可在看板「⏰ Cron 任务」
+        # Tab 或 CLI 单独 disable 这条 job 关闭自动运行（不影响手动
+        # `/capability cycle`），或把 `retriever_enabled` 改回 False 让
+        # 循环继续跑但不产生真实网络请求。
         "id": "sys:capability_learning_cycle",
         "name": "能力学习：单轮循环",
         "schedule": "interval:21600",
-        "description": "遍历所有 active 能力/人设 Track，各推进一轮缺口扫描+检索+问答队列（每 6 小时；真实检索回调尚未接线前，仅记录 skipped 台账，不产生外部请求）",
+        "description": "遍历所有 active 能力/人设 Track，各推进一轮缺口扫描+检索+问答队列（每 6 小时，默认使用真实检索并写入 wiki，受 §13.3-g 合规过滤保护）",
         "task_template": "[能力学习] 执行一次 /capability cycle",
         "tags": ["capability_learning", "wiki"],
-        "enabled": False,
+        "enabled": True,
     },
     {
         # 清理长期未回答的 CapabilityQuestion（§3.3：超过 TTL 自动降级为
         # expired，避免队列无限堆积）。本身是纯本地状态清理，不产生任何
-        # 网络请求或 wiki 写入，风险远低于上面那条——但既然上面那条默认
-        # 关闭，这条单独打开意义不大（没有 sys:capability_learning_cycle
-        # 生成新问题，也就没有需要清理的过期问题），所以跟随同一个默认值，
-        # 由用户一起打开。
+        # 网络请求或 wiki 写入，风险低于上面那条。跟随
+        # sys:capability_learning_cycle 一起默认打开：该 job 打开后会
+        # 持续生成 CapabilityQuestion，需要这条配套清理长期未回答的问题，
+        # 避免队列无限堆积。
         "id": "sys:capability_question_sweep",
         "name": "能力学习：过期问题清理",
         "schedule": "interval:86400",
         "description": "清理长期未回答的能力学习异步问题，自动标记为 expired（每 24 小时）",
         "task_template": "[能力学习] 执行一次 /capability questions --sweep-expired",
         "tags": ["capability_learning"],
-        "enabled": False,
+        "enabled": True,
     },
 ]
 
