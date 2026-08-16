@@ -5822,6 +5822,41 @@ def render_capability_tab(client: "AgentClient"):
             else:
                 st.caption("还没有学习台账记录（cron 尚未接线，暂时只能通过 `/capability cycle` 手动推进）。")
 
+            # ── §11.4 知识范围绑定卡片（仅 knowledge 型、有 wiki_tag 的 Track）──
+            wiki_tag = track.get("wiki_tag", "")
+            if track.get("target_type") != "persona" and wiki_tag:
+                st.markdown("**知识范围绑定 —— 被以下角色引用**")
+                personas_resp = client.list_capability_personas()
+                personas = personas_resp.get("personas", []) if isinstance(personas_resp, dict) else []
+                if not personas:
+                    st.caption("当前没有任何已定义的角色人设（`.agent/personas/`）。")
+                else:
+                    bound = [p for p in personas if wiki_tag in (p.get("wiki_scopes") or [])]
+                    if bound:
+                        st.caption("、".join(p.get("display_name") or p.get("name") for p in bound))
+                    else:
+                        st.caption("暂无角色绑定这个知识范围。")
+                    with st.popover("🔗 管理绑定角色"):
+                        for p in personas:
+                            pname = p.get("name", "")
+                            scopes = list(p.get("wiki_scopes") or [])
+                            checked = wiki_tag in scopes
+                            new_checked = st.checkbox(
+                                p.get("display_name") or pname,
+                                value=checked,
+                                key=f"cap_scope_{track['track_id']}_{pname}",
+                            )
+                            if new_checked != checked:
+                                if new_checked:
+                                    scopes.append(wiki_tag)
+                                else:
+                                    scopes = [s for s in scopes if s != wiki_tag]
+                                resp = client.set_persona_wiki_scopes(pname, scopes)
+                                if isinstance(resp, dict) and resp.get("_error"):
+                                    st.error(f"更新 {pname} 的 wiki_scopes 失败：{resp['_error']}")
+                                else:
+                                    st.rerun()
+
             # 管理操作
             cols = st.columns(4)
             with cols[0]:
@@ -5842,6 +5877,20 @@ def render_capability_tab(client: "AgentClient"):
                     st.session_state[confirm_key] = True
                     st.rerun()
             st.caption("删除只下线这个 Track，不会删除已经沉淀的 wiki 页面。")
+
+    # ── §11.4 弱提示：未绑定任何知识范围的角色（不强推送，仅展示） ─────
+    knowledge_tags = [t.get("wiki_tag", "") for t in tracks
+                       if t.get("target_type") != "persona" and t.get("wiki_tag")]
+    if knowledge_tags:
+        personas_resp = client.list_capability_personas()
+        personas = personas_resp.get("personas", []) if isinstance(personas_resp, dict) else []
+        unbound = [p for p in personas if not (p.get("wiki_scopes") or [])]
+        if unbound:
+            names = "、".join(p.get("display_name") or p.get("name") for p in unbound)
+            st.caption(
+                f"💡 {names} 目前不限定知识范围。如果想让某个角色显得更专业，"
+                "可以在对应知识 Track 的「知识范围绑定」里勾选关联。"
+            )
 
     # ── 7.3 待回答问题区 ─────────────────────────────────────────────
     st.markdown("---")

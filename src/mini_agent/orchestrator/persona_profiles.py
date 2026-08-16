@@ -190,6 +190,78 @@ class PersonaLoader:
         self._all = new_all
 
 
+# ── [persona_capability_learning_design.md §11.4] 看板"知识范围绑定" ──────
+#
+# 供 api/capability_routes.py 使用：列出所有 persona（不依赖运行中的
+# PersonaLoader 单例，直接按 project_root 扫描两级目录，方便 HTTP 端点
+# 独立调用）+ 修改单个 persona 的 wiki_scopes 字段并写回磁盘。
+#
+# 写回策略：只做"精确定位 wiki_scopes 那一行并替换/插入"这一件事，不把
+# 整份 frontmatter 反序列化再重新 dump——用户手写的 frontmatter 里可能有
+# 注释、非标准缩进、字段顺序等 yaml.safe_load 读得出但 yaml.dump 写不
+# 回原样的内容，反序列化再整体重写有破坏用户原有格式的风险。改成"只动
+# 需要动的那一行"，其余内容（包括正文）原样保留。
+
+
+def list_personas_for_paths(paths) -> list[PersonaProfile]:
+    """扫描 project + global 两级 personas 目录，返回全部 persona（去重，
+    项目级覆盖全局级同名），复用 PersonaLoader 同款发现顺序。"""
+    dirs = [paths.global_personas_dir, paths.project_personas_dir]
+    all_personas: dict[str, PersonaProfile] = {}
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        for md in sorted(d.glob("*.md")):
+            persona = _parse_persona(md)
+            if persona:
+                all_personas[persona.name] = persona
+    return [all_personas[k] for k in sorted(all_personas)]
+
+
+def set_persona_wiki_scopes(source_path: Path, scopes: list[str]) -> bool:
+    """把 persona 文件 frontmatter 里的 wiki_scopes 字段替换为给定列表并写回磁盘。
+
+    scopes 为空列表时写成 `wiki_scopes: []`（等价于"不限制"，与
+    `_as_list([])` → `[]` 的解析结果一致）。失败（文件不存在/无
+    frontmatter 等）返回 False，不抛异常——调用方（HTTP 端点）据此
+    返回 404/400，不需要额外 try/except。
+    """
+    try:
+        text = source_path.read_text(encoding="utf-8")
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.orchestrator.persona_profiles.set_persona_wiki_scopes')
+        return False
+
+    fm_match = _FRONTMATTER_RE.match(text)
+    if not fm_match:
+        return False
+
+    fm_text = fm_match.group(1)
+    new_line = "wiki_scopes: " + ", ".join(scopes)
+    fm_lines = fm_text.split("\n")
+    replaced = False
+    out_lines = []
+    for line in fm_lines:
+        if line.strip().startswith("wiki_scopes:"):
+            out_lines.append(new_line)
+            replaced = True
+        else:
+            out_lines.append(line)
+    if not replaced:
+        out_lines.append(new_line)
+    new_fm_text = "\n".join(out_lines)
+
+    new_text = text[: fm_match.start()] + "---\n" + new_fm_text + "\n---\n" + text[fm_match.end():]
+    try:
+        source_path.write_text(new_text, encoding="utf-8")
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.orchestrator.persona_profiles.set_persona_wiki_scopes')
+        return False
+    return True
+
+
 def render_persona_prompt(persona: PersonaProfile) -> str:
     """渲染角色扮演 system prompt 片段：角色正文 + 强制安全边界声明。
 

@@ -27,6 +27,11 @@ from mini_agent.evolution.capability_learning import (
     CapabilityQuestionStore,
     CapabilityTrackStore,
 )
+from mini_agent.orchestrator.persona_profiles import (
+    get_persona_loader,
+    list_personas_for_paths,
+    set_persona_wiki_scopes,
+)
 from mini_agent.storage.paths import AgentPaths
 
 capability_router = APIRouter(prefix="/v1/capability")
@@ -84,6 +89,10 @@ class UpdateTrackBody(BaseModel):
 
 class AnswerQuestionBody(BaseModel):
     answer: str
+
+
+class SetPersonaWikiScopesBody(BaseModel):
+    wiki_scopes: list[str]
 
 
 # ── Track 端点 ───────────────────────────────────────────────────────────
@@ -172,3 +181,59 @@ def dismiss_question(request: Request, question_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="question not found")
     return {"dismissed": True, "question_id": question_id}
+
+
+# ── §11.4 知识范围绑定端点 ───────────────────────────────────────────────
+#
+# 供看板"知识范围绑定"卡片使用：列出所有 persona 及其当前 wiki_scopes，
+# 并允许勾选/取消某个 knowledge 型 Track 的 wiki_tag。这里只暴露"设置
+# 某个 persona 的完整 wiki_scopes 列表"这一个端点（而不是"添加单个
+# tag"/"移除单个 tag"两个端点），把"要不要加/删"的判断留在看板前端——
+# 看板已经知道当前 persona 的完整 wiki_scopes，勾选/取消只是本地增删
+# 数组后整体提交，避免服务端还要处理并发追加/移除的顺序问题。
+
+
+@capability_router.get("/personas")
+def list_personas_with_scopes(request: Request):
+    """列出所有 persona 及其 wiki_scopes，供看板"知识范围绑定"卡片展示。"""
+    paths = _get_paths(request)
+    personas = list_personas_for_paths(paths)
+    return {
+        "personas": [
+            {
+                "name": p.name,
+                "display_name": p.display_name,
+                "wiki_scopes": p.wiki_scopes,
+                "source_path": str(p.source_path) if p.source_path else None,
+            }
+            for p in personas
+        ]
+    }
+
+
+@capability_router.post("/personas/{persona_name}/wiki_scopes")
+def update_persona_wiki_scopes(request: Request, persona_name: str, body: SetPersonaWikiScopesBody):
+    """整体替换某个 persona 的 wiki_scopes 字段并写回其 .md 文件。
+
+    写回成功后尝试触发已加载的 PersonaLoader.rediscover()，让正在运行的
+    agent 立即感知到变更（不强制——拿不到 loader 时静默跳过，下次进程
+    重启/下次热加载自然会读到新内容，不影响本次写入结果）。
+    """
+    paths = _get_paths(request)
+    personas = list_personas_for_paths(paths)
+    target = next((p for p in personas if p.name == persona_name), None)
+    if target is None or target.source_path is None:
+        raise HTTPException(status_code=404, detail="persona not found")
+
+    ok = set_persona_wiki_scopes(target.source_path, body.wiki_scopes)
+    if not ok:
+        raise HTTPException(status_code=400, detail="failed to update persona file (missing frontmatter?)")
+
+    loader = get_persona_loader()
+    if loader is not None:
+        try:
+            loader.rediscover()
+        except Exception:
+            pass
+
+    return {"name": persona_name, "wiki_scopes": body.wiki_scopes}

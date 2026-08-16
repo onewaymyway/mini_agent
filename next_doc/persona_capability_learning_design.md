@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.11（P1 全部计划项已实现；并提前完成了原标注在 P2 的两项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
+- **版本**：v0.12（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的三项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -50,9 +50,22 @@
 | 单元测试（7 组：未激活 persona / persona 未声明字段 / 声明了字段透传 tags / loader 异常静默降级 / frontmatter 解析 2 组） | ✅ 全部通过 | `tests/test_context_builder_persona_wiki_scopes.py` |
 
 **未做的部分**（本次不在范围内，留给第 10 节 persona 型 Track 或看板迭代）：
-- 看板"知识范围绑定"卡片（§11.4）——目前只能手改 persona `.md` 文件的 `wiki_scopes` 字段，没有看板可视化勾选
 - "超出边界"的台账/日志标注（§11.3 提到的可选项）——`wiki_shelf_search` 本身不返回"这次是否命中了限定范围外的页面"这类信息，要做需要先给 `WikiSearchResult` 加字段，评估后决定是否值得为一条弱提示改动检索层返回结构，暂不在这次里做
-- `wiki_scopes` 与 knowledge 型 `CapabilityTrack.wiki_tag` 的双向可见列表（§11.2 末尾），依赖 P1 中 `CapabilityTrack` 的看板 UI（尚未实现），自然顺延到那之后
+
+### §11.4（看板"知识范围绑定"）—— ✅ 本轮已实现
+
+依赖的 `CapabilityTrack` 看板 UI（第 7 节）已经落地，本轮补齐这一项：
+
+| 项目 | 状态 | 对应文件 |
+|---|---|---|
+| `list_personas_for_paths(paths)` / `set_persona_wiki_scopes(source_path, scopes)`：扫描 project+global 两级 personas 目录列出全部角色；精确定位 frontmatter 里的 `wiki_scopes:` 行做替换/插入并写回磁盘（不整体反序列化重 dump，避免破坏用户手写格式） | ✅ 已实现 | `src/mini_agent/orchestrator/persona_profiles.py` |
+| `GET /v1/capability/personas`：列出所有 persona 及其 `wiki_scopes` | ✅ 已实现 | `src/mini_agent/api/capability_routes.py` |
+| `POST /v1/capability/personas/{name}/wiki_scopes`：整体替换某个 persona 的 `wiki_scopes`（看板前端本地增删数组后整体提交，不做单个 tag 的增/删两个端点），写回成功后尝试 `PersonaLoader.rediscover()` 让运行中 agent 立即感知 | ✅ 已实现 | 同上 |
+| 看板 Track 详情页「知识范围绑定」卡片（仅 knowledge 型、已填 `wiki_tag` 的 Track 展示）：展示当前绑定的角色列表 + `st.popover` 里逐个角色勾选框绑定/解绑 | ✅ 已实现 | `apps/mini_agent_kanban/app.py`（`render_capability_tab`）、`apps/mini_agent_kanban/client.py`（`list_capability_personas` / `set_persona_wiki_scopes`） |
+| 弱提示：存在 knowledge 型 Track 时，列出当前"未绑定任何知识范围"的角色名单，提示可以关联（不强推送，纯展示） | ✅ 已实现 | `apps/mini_agent_kanban/app.py` |
+| 单元测试（9 组：工具函数列出/插入/替换/清空/无 frontmatter 失败 5 组，API 端点列出/设置/未知角色 404 3 组，共 8 个测试方法覆盖 9 个断言场景） | ✅ 全部通过 | `tests/test_capability_persona_wiki_scopes_binding.py` |
+
+Persona 详情页反向展示"绑定的知识范围"列表未单独实现——现有 `/role` CLI 侧没有一个"persona 详情页"承载这类信息，看板目前也没有独立的 Persona 管理 Tab；本轮选择把双向可见性做在 Track 详情页一侧（已绑定角色列表 + 全局未绑定弱提示），已能覆盖 §11.2 末尾"双向可见"的核心诉求，若后续新增独立的 Persona 管理 Tab，可以在那里补上镜像视图。
 
 ### §14.1-a（`record_wiki_miss()` 接线）—— ✅ 已提前实现
 
@@ -96,7 +109,7 @@ cron 任务表（`cron_scheduler.py::SYSTEM_JOBS`）已注册 `sys:capability_le
 
 ### P3
 
-尚未开始，规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线 + §14 P2 大纲起草均已提前完成，见上）。剩余方向：`target_type="persona"` 全链路（人设草稿生成/发布，见文档 §10）、与 `external_trend_capability_link`/`objective_executor`/`decision_profile_builder`/`capability_map` 的协同（见文档 §12）。
+规划内容见文末「实施阶段划分」一节（第 11 节主体 + §14.1-a 记录接线 + §14 P2 大纲起草 + §11.4 看板知识范围绑定均已提前完成，见上）。剩余方向：`target_type="persona"` 全链路（人设草稿生成/发布，见文档 §10）、与 `external_trend_capability_link`/`objective_executor`/`decision_profile_builder`/`capability_map` 的协同（见文档 §12）、13.2-e 可验证的学习效果。
 
 ---
 
@@ -570,6 +583,6 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - 多个 Track 之间共享的通用子主题去重复用（比如"数据来源可靠性判断"可能在多个能力方向下都用得到）
 - 问答队列机制上移为通用基础设施，供其它 cron 模块复用
 - `target_type: "persona"` 全链路：人设维度大纲、人设草稿生成、`/role show` 风格预览、显式发布流程（第 10 节）
-- `PersonaProfile.wiki_scopes` 字段 + `context_builder` 透传 `wiki_shelf_search(tags=...)`——✅ **已提前实现**，见文档开头「实施状态」。**尚未实现**：看板知识范围绑定 UI（§11.4），仍按 P3 节奏推进，依赖 `CapabilityTrack` 看板先落地
+- `PersonaProfile.wiki_scopes` 字段 + `context_builder` 透传 `wiki_shelf_search(tags=...)`——✅ **已提前实现**，见文档开头「实施状态」。看板知识范围绑定 UI（§11.4）——✅ **本轮已提前实现**，见文档开头「§11.4」小节
 - 与 `external_trend_capability_link.py` 的浅集成（仅人工审核草稿层，不打通自动 Goal 生成，见 12.2-d），作为方向级选项，实施前需团队评审确认边界配置默认关闭
 - 13.2-e 可验证的学习效果（探针问题对比"有/无 wiki 上下文"回答质量）——实现复杂度高（涉及双份回答生成与质量判定），不在早期阶段承诺，需先验证 P1/P2 的基础闭环稳定后再评估投入

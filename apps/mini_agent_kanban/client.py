@@ -976,3 +976,11 @@ class AgentClient:
 
     def dismiss_capability_question(self, question_id: str):
         return self._post(f"/capability/questions/{question_id}/dismiss")
+
+    # ── §11.4 知识范围绑定 ────────────────────────────────────────────
+    def list_capability_personas(self):
+        return self._get("/capability/personas")
+
+    def set_persona_wiki_scopes(self, persona_name: str, wiki_scopes: list):
+        return self._post(f"/capability/personas/{persona_name}/wiki_scopes",
+                           {"wiki_scopes": wiki_scopes})
