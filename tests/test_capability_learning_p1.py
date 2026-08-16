@@ -383,3 +383,113 @@ def test_make_wiki_writer_non_risk_domain_no_disclaimer_flag(paths):
 
     assert page.raw_frontmatter["requires_disclaimer"] is False
     assert "仅供参考" not in page.body
+
+
+# ── 真实 retriever（web_search）接线，默认关闭 ─────────────────────────────
+
+
+def test_capability_learning_config_default_retriever_disabled():
+    from mini_agent.config import AppConfig
+
+    cfg = AppConfig()
+    assert cfg.capability_learning.retriever_enabled is False
+    assert cfg.capability_learning.max_results_per_topic == 3
+
+
+def test_make_web_search_retriever_uses_provider_and_respects_max_results(paths):
+    from mini_agent.config import AppConfig
+    from mini_agent.evolution.capability_learning import (
+        CapabilityTrackStore, make_web_search_retriever,
+    )
+    from mini_agent.web_search.base import SearchResult, WebSearchProvider
+    from mini_agent.web_search.factory import register_web_search_provider
+
+    class FakeProvider(WebSearchProvider):
+        def search(self, query, max_results=5):
+            assert "股票分析能力" in query
+            return [
+                SearchResult(title=f"标题{i}", url=f"https://example.com/{i}", snippet=f"摘要{i}")
+                for i in range(5)
+            ][:max_results]
+
+    register_web_search_provider("fake_capability_test", FakeProvider)
+
+    cfg = AppConfig()
+    cfg.web_search.provider = "fake_capability_test"
+    cfg.capability_learning.max_results_per_topic = 2
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="股票分析能力", persona_desc="x", outline_names=["技术分析基础"])
+    topic = track.outline[0]
+
+    retriever = make_web_search_retriever(cfg)
+    results = retriever(topic, track)
+    assert len(results) == 2
+    assert results[0]["url"] == "https://example.com/0"
+    assert results[0]["summary"] == "摘要0"
+
+
+def test_make_web_search_retriever_truncates_summary(paths):
+    from mini_agent.config import AppConfig
+    from mini_agent.evolution.capability_learning import (
+        CapabilityTrackStore, make_web_search_retriever,
+    )
+    from mini_agent.web_search.base import SearchResult, WebSearchProvider
+    from mini_agent.web_search.factory import register_web_search_provider
+
+    class LongProvider(WebSearchProvider):
+        def search(self, query, max_results=5):
+            return [SearchResult(title="t", url="https://example.com/x", snippet="字" * 500)]
+
+    register_web_search_provider("fake_capability_long", LongProvider)
+
+    cfg = AppConfig()
+    cfg.web_search.provider = "fake_capability_long"
+    cfg.capability_learning.summary_max_chars = 10
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="做饭技巧", persona_desc="x", outline_names=["刀工基础"])
+    topic = track.outline[0]
+
+    retriever = make_web_search_retriever(cfg)
+    results = retriever(topic, track)
+    assert len(results[0]["summary"]) == 11  # 10 字 + 省略号
+    assert results[0]["summary"].endswith("…")
+
+
+def test_make_web_search_retriever_search_error_returns_empty(paths):
+    from mini_agent.config import AppConfig
+    from mini_agent.evolution.capability_learning import (
+        CapabilityTrackStore, make_web_search_retriever,
+    )
+    from mini_agent.web_search.base import WebSearchError, WebSearchProvider
+    from mini_agent.web_search.factory import register_web_search_provider
+
+    class FailingProvider(WebSearchProvider):
+        def search(self, query, max_results=5):
+            raise WebSearchError("boom")
+
+    register_web_search_provider("fake_capability_fail", FailingProvider)
+
+    cfg = AppConfig()
+    cfg.web_search.provider = "fake_capability_fail"
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="做饭技巧", persona_desc="x", outline_names=["刀工基础"])
+    topic = track.outline[0]
+
+    retriever = make_web_search_retriever(cfg)
+    assert retriever(topic, track) == []
+
+
+def test_capability_question_store_sweep_expired(paths):
+    from mini_agent.evolution.capability_learning import CapabilityQuestionStore
+
+    store = CapabilityQuestionStore(paths)
+    q = store.raise_question(track_id="t1", topic_id="topic1", question="测试问题？", ttl_seconds=0.01)
+    time.sleep(0.05)
+    n = store.sweep_expired()
+    assert n == 1
+    refreshed = store.list_questions(status="expired")
+    assert len(refreshed) == 1
+    assert refreshed[0].question_id == q.question_id

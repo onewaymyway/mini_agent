@@ -2168,6 +2168,37 @@ class GrowthAdvisorConfig:
 
 
 @dataclass
+class CapabilityLearningConfig:
+    """[next_doc/persona_capability_learning_design.md] 人设能力自主学习配置。
+
+    真实 retriever（对接 web_search）默认关闭（opt-in，与 GrowthAdvisorConfig
+    的"默认开启"取向刻意相反）：这个子系统会主动发起网络检索并把结果写入
+    长期 wiki，属于"有实质副作用、且内容质量把关不能完全靠代码兜底"的一类
+    功能（对照 §13.3-g 合规过滤——过滤能挡掉能识别的风险表述，但不能替代
+    "确实有人看过检索来源可信"这件事）。cron 任务表（cron_scheduler.py 的
+    sys:capability_learning_cycle）也默认 enabled=False，二者独立但通常
+    一起打开：只打开这里的 enabled 而不打开对应 cron job，效果是
+    `/capability cycle` 手动触发时会用真实检索，但不会自动定时运行。
+    """
+
+    # 总开关：是否允许 `run_capability_learning_cycle` 使用真实 web_search
+    # 检索（而非跳过并记 skipped 台账）。默认 False。
+    retriever_enabled: bool = False
+
+    # 每个子主题检索时最多拉取的搜索结果条数，直接传给
+    # WebSearchProvider.search(max_results=...)。太大会增加合规过滤的
+    # 误判概率（更多句子意味着更多可能命中风险短语正则的机会）和单轮
+    # 循环耗时，默认给一个克制的小值。
+    max_results_per_topic: int = 3
+
+    # 每条搜索结果摘要（summary）截断长度（字符数），避免整页原文被摘要
+    # 字段吞掉——wiki 沉淀的应该是"检索到了什么要点"，不是原文转载
+    # （原文转载还涉及版权问题，不在本模块讨论范围内，但截断本身是
+    # 独立于版权考虑的克制默认）。
+    summary_max_chars: int = 400
+
+
+@dataclass
 class ReminderConfig:
     """[SYS-REMINDER] 动态 Reminder 提示注入配置。
 
@@ -2391,6 +2422,7 @@ class AppConfig:
     autonomy: AutonomyConfig = field(default_factory=AutonomyConfig)
     digest_advisor: DigestAdvisorConfig = field(default_factory=DigestAdvisorConfig)
     growth_advisor: GrowthAdvisorConfig = field(default_factory=GrowthAdvisorConfig)
+    capability_learning: CapabilityLearningConfig = field(default_factory=CapabilityLearningConfig)
     cron: CronConfig = field(default_factory=CronConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     workflow:   WorkflowConfig   = field(default_factory=WorkflowConfig)

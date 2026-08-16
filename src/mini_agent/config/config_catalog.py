@@ -162,6 +162,7 @@ _NESTED_BLOCKS = [
     ("workflow", "工作流执行", "🔄", "workflow", _models.WorkflowConfig, {}),
     ("digest_advisor", "日报与主动推荐", "📰", "digest_advisor", _models.DigestAdvisorConfig, {}),
     ("growth_advisor", "🌱 成长顾问", "🌱", "growth_advisor", _models.GrowthAdvisorConfig, {}),
+    ("capability_learning", "🎓 能力学习", "🎓", "capability_learning", _models.CapabilityLearningConfig, {}),
     ("cron", "Cron 任务执行", "⏰", "cron", _models.CronConfig, {}),
     ("autonomy", "自主性调度 Autonomy", "🤖", "autonomy", _models.AutonomyConfig, {}),
     ("observability", "可观测性", "📊", "observability", _models.ObservabilityConfig, {}),

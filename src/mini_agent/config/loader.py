@@ -838,6 +838,7 @@ def load_config(
     # 的问题——所有 block 的加载路径完全一致，是同一段通用代码。
     digest_advisor_cfg = _nested_blocks["digest_advisor"]
     growth_advisor_cfg = _nested_blocks["growth_advisor"]
+    capability_learning_cfg = _nested_blocks["capability_learning"]
     cron_cfg = _nested_blocks["cron"]
     autonomy_cfg = _nested_blocks["autonomy"]
     observability_cfg = _nested_blocks["observability"]
@@ -928,6 +929,7 @@ def load_config(
         privacy=privacy_cfg,
         digest_advisor=digest_advisor_cfg,
         growth_advisor=growth_advisor_cfg,
+        capability_learning=capability_learning_cfg,
         cron=cron_cfg,
         autonomy=autonomy_cfg,
         scheduler=scheduler_cfg,

@@ -4,19 +4,17 @@
 
 本模块只负责数据模型 + 存储 + 纯逻辑（缺口扫描 / 台账 / 异步问答队列），
 不直接依赖 FastAPI / cron_scheduler / kanban，方便单元测试和后续拆分接线：
-    - HTTP 接线见 api/capability_routes.py（新增，独立 router，未挂进
-      routes.py 主文件，避免在超大文件里手改带来的风险，挂载方式见该文件
-      顶部注释）
-    - cron 接线见本文件 `run_capability_learning_cycle()`，供
-      cron_scheduler.py 注册 `sys:capability_learning_cycle` 时直接调用
-      （P1 阶段先提供函数本体，实际注册到 CRON_JOBS 表留到接线阶段做，
-      避免在评审通过前误触发真实的互联网检索）。
+    - HTTP 接线见 api/capability_routes.py（独立 router，已挂载到
+      api/server.py，见该文件顶部注释）
+    - cron 接线见本文件 `run_capability_learning_cycle()`，`cron_scheduler.py`
+      已注册 `sys:capability_learning_cycle`（默认 `enabled: False`，opt-in）
 
-已落地（P1）：
+已落地（P1，全部完成）：
     - CapabilityTrack / OutlineTopic / CapabilityLedgerEntry / CapabilityQuestion
       数据模型 + 存储路径（storage/paths.py 已新增对应 property）
     - 大纲缺口扫描（规则式，§4 设计文档）
-    - CapabilityQuestion 异步问答队列的生成 / 提交 / 消费（§3.3、§10.2）
+    - CapabilityQuestion 异步问答队列的生成 / 提交 / 消费 / 过期清理
+      （§3.3、§10.2，`sweep_expired()` 供 `sys:capability_question_sweep` 引用）
     - CapabilityLedgerEntry 台账记录（§3.2）
     - run_capability_learning_cycle()：单轮循环的编排函数，检索/wiki 写入
       两步以可注入的回调形式暴露
@@ -25,6 +23,11 @@
       页面。**尚未接入 wiki/dedup.py 判重**——需要先确认"按 wiki_tag
       批量加载已有页面"该走哪条现成接口，留到接线阶段和 wiki 模块维护者
       一起确认，避免猜测一个不确定正确性的集成方式
+    - make_web_search_retriever(cfg)：真实的检索回调（对接
+      web_search/factory.py 既有 provider 抽象），受
+      `CapabilityLearningConfig.retriever_enabled` 开关控制（默认 False，
+      opt-in，见该配置字段上方注释）；开启后写入前仍会经过
+      §13.3-g 合规过滤，不会绕过
     - PersonaProfile.wiki_scopes 接线（§11）：`context_builder.py` 每轮
       检索把当前激活角色的 `wiki_scopes` 透传给 `wiki_shelf_search(tags=...)`
     - record_wiki_miss() 的接线（§14.1-a）：`context_builder.py` 在 persona
@@ -40,24 +43,17 @@
       金融/医疗/法律等专业建议领域的 Track 页面加 `requires_disclaimer:
       true` frontmatter 标记 + 正文追加免责声明。规则式实现（关键词/正则
       句级过滤），不接 LLM 改写——见该函数上方注释的取舍说明
+    - cron 任务表注册 `sys:capability_learning_cycle` / `sys:capability_
+      question_sweep`（cron_scheduler.py SYSTEM_JOBS），默认 `enabled: False`
+      （opt-in，理由见该条目上方注释）
 
-尚未落地（按设计文档标注的阶段留到后续）：
-    - 真实 retriever 回调（对接 web_search，需要网络，P1 单测里全部用假
-      实现替代，避免单测依赖外部网络请求）——§13.3-g 合规过滤已就位，
-      这是这一步"待评审接线"清单里此前唯一缺的前置条件，接线本身仍需
-      单独评审（真实网络请求 + 检索内容质量把关不是本模块能单方面决定的）
-    - cron 任务表注册 sys:capability_learning_cycle（cron_scheduler.py 里
-      内置任务是"生成 task_template 文本交给 Agent 自己执行"的模式，不是
-      直接调用 Python 函数——意味着真正接线还需要一个新的 slash command
-      处理器，把 run_capability_learning_cycle() 包装成 Agent 能触发的
-      命令，这一步比预想的多一层，留到下一步单独做）。**这意味着
-      record_wiki_miss() 记下的台账目前只是静态积累**——`scan_outline_gaps()`
-      还没有读取 `miss_observed` 台账来实际调整优先级排序（那部分逻辑
-      按设计文档标注在 P2），cron 没接线之前也不会有下一轮循环去消费它
+留给 P2 的方向（P1 刻意不做，避免过早引入不确定性/耦合）：
     - target_type="persona" 全链路（人设草稿生成 / 发布，见文档 §10）
     - 与 external_trend_capability_link / objective_executor / decision_profile_builder /
       capability_map 的协同（见文档 §12，P1 阶段刻意不打通，避免引入耦合风险）
     - LLM 辅助的大纲生成/缺口判定（P1 是规则式，见文档 §14 P2 阶段）
+    - 把 `miss_observed` 台账接入 `scan_outline_gaps()` 的优先级排序——
+      目前台账只是静态积累，`scan_outline_gaps()` 还没有读取它来调整排序
 """
 
 from __future__ import annotations
@@ -67,9 +63,12 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
 
 from mini_agent.storage.paths import AgentPaths
+
+if TYPE_CHECKING:
+    from mini_agent.config import AppConfig
 
 # ── 常量（默认值均可后续做成 config_catalog 配置项，P1 先写死）──────────────
 
@@ -789,3 +788,47 @@ def make_wiki_writer(paths: AgentPaths) -> WikiWriterFn:
         return [page_id]
 
     return _writer
+
+
+# ── 真实 retriever 实现（对接 web_search，默认关闭，见 CapabilityLearningConfig）───
+
+def make_web_search_retriever(cfg: "AppConfig") -> RetrieverFn:
+    """返回一个绑定了 cfg 的 retriever 回调，直接传给
+    `run_capability_learning_cycle(retriever=make_web_search_retriever(cfg))`。
+
+    调用方必须自己先检查 `cfg.capability_learning.retriever_enabled`——这个
+    函数本身不检查这个开关（构造出来的 retriever 只要被传入就会被调用，
+    开关判断放在调用方更直观，也方便调用方在开关关闭时完全不导入这个
+    函数，避免不必要的 web_search 依赖加载）。
+
+    每个子主题的检索 query 直接用 `f"{track.title} {topic.name}"`（P1
+    用最朴素的拼接，不做查询改写/多轮检索——查询质量优化留到有真实使用
+    反馈后再做，避免过早引入不确定性）。search() 抛出的 `WebSearchError`
+    会被这里捕获并转成空结果列表，让调用方（`run_capability_learning_cycle`）
+    走"没有可用结果，记 skipped 台账"的既有安全路径，而不是让一次检索
+    失败中断整轮循环。
+    """
+    from mini_agent.web_search.base import WebSearchError
+    from mini_agent.web_search.factory import create_web_search_provider
+
+    max_results = max(1, cfg.capability_learning.max_results_per_topic)
+    summary_max_chars = max(0, cfg.capability_learning.summary_max_chars)
+
+    def _retriever(topic: OutlineTopic, track: CapabilityTrack) -> list[dict]:
+        provider = create_web_search_provider(cfg)
+        query = f"{track.title} {topic.name}".strip()
+        try:
+            results = provider.search(query, max_results=max_results)
+        except WebSearchError:
+            return []
+        out: list[dict] = []
+        for r in results:
+            summary = (r.snippet or r.title or "").strip()
+            if summary_max_chars and len(summary) > summary_max_chars:
+                summary = summary[:summary_max_chars].rstrip() + "…"
+            if not summary:
+                continue
+            out.append({"url": r.url, "summary": summary})
+        return out
+
+    return _retriever

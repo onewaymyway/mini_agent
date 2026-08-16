@@ -1,6 +1,6 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.8（P1 核心闭环 + 真实 wiki 写入回调 + §13.3-g 合规过滤已实现；`PersonaProfile.wiki_scopes`（第 11 节）+ `record_wiki_miss()` 接线（§14.1-a）+ `/capability` slash command 中间层（§4）+ HTTP API 挂载 + 看板三区域 UI 均已完成，见下方「实施状态」。P1 仅剩 cron 注册与真实 `retriever`（web_search）接线未完成，均刻意留待评审后开启）
+- **版本**：v0.9（P1 全部计划项已实现：核心闭环 + 真实 wiki 写入回调 + §13.3-g 合规过滤 + HTTP API 挂载 + 看板三区域 UI + cron 注册 + 真实 `retriever`（web_search）接线均已完成，见下方「实施状态」。真实检索与 cron 任务默认 opt-in（关闭），需要用户显式打开——`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -29,10 +29,10 @@
 | HTTP API（`/v1/capability/tracks`、`/v1/capability/questions` 等 9 个端点，对应 §7.1） | ✅ 已实现为独立 router，**本轮已挂载到 `api/server.py`**（`create_app()` 里 `app.include_router(router)` 之后新增 `app.include_router(capability_router)`），端点对外可用 | `src/mini_agent/api/capability_routes.py`、`src/mini_agent/api/server.py` |
 | 单元测试（14 组用例，覆盖 CRUD / 缺口排序 / 异步问答生命周期 / 循环编排的多种分支 / 真实 wiki 写入落盘与解析回读 / 端到端一轮循环） | ✅ 全部通过 | `tests/test_capability_learning_p1.py` |
 | API 挂载单测（4 组：列表为空 / 创建+详情 / 问答提交 / 删除 404） | ✅ 已实现并全部通过 | `tests/test_capability_routes_mount.py` |
-| cron 注册 `sys:capability_learning_cycle` | ⏳ cron 任务表本身仍未注册（见下方说明），但阻塞它的那一层缺口——`/capability cycle` slash command 中间层——已实现，接线时只需在 `cron_scheduler.py` 的 `SYSTEM_JOBS` 里新增一条 `task_template` 引用 `/capability cycle` 即可，不用再回头改命令处理器 | `src/mini_agent/cli/commands/capability_cmd.py` |
-| 看板三个 UI 区域（人设管理 / 进度展示 / 待回答问题） | ✅ 已实现为新 Tab「🎓 能力学习」（挂在「🌱 成长顾问」之后），三区域：新建/管理 Track（暂停恢复/二次确认删除，不级联删 wiki）、大纲覆盖状态 + 学习台账、待回答问题（提交/忽略）+ 折叠历史问答。cron 未接线，UI 上没有"距离下次学习还有多久"之类的倒计时展示，避免暗示已自动运行 | `apps/mini_agent_kanban/app.py`（`render_capability_tab`）、`apps/mini_agent_kanban/client.py`（新增 11 个 `capability_*` 方法） |
+| cron 注册 `sys:capability_learning_cycle` | ✅ 已在 `cron_scheduler.py` 的 `SYSTEM_JOBS` 里注册（连同 `sys:capability_question_sweep` 过期问题清理），task_template 引用 §4 的 `/capability cycle` / `/capability questions --sweep-expired`。**默认 `enabled: False`**（opt-in，用户在看板「⏰ Cron 任务」Tab 或 CLI 手动开启），理由见该条目上方注释：即使打开也不会绕开任何未完成的合规环节（`retriever_enabled` 默认关闭时只会记 `skipped` 台账），但避免"打开了却看起来什么都没学到"的困惑 | `src/mini_agent/evolution/cron_scheduler.py` |
+| 看板三个 UI 区域（人设管理 / 进度展示 / 待回答问题） | ✅ 已实现为新 Tab「🎓 能力学习」（挂在「🌱 成长顾问」之后），三区域：新建/管理 Track（暂停恢复/二次确认删除，不级联删 wiki）、大纲覆盖状态 + 学习台账、待回答问题（提交/忽略）+ 折叠历史问答。cron 已注册但默认关闭，UI 上没有"距离下次学习还有多久"之类的倒计时展示，避免暗示已自动运行 | `apps/mini_agent_kanban/app.py`（`render_capability_tab`）、`apps/mini_agent_kanban/client.py`（新增 11 个 `capability_*` 方法） |
 | `context_builder.py` 接入检索复用 | ✅ 经代码走查确认已经**天然满足**，不需要额外实现：`_try_inject_wiki_search()` 本来就是"命中就注入"的全库/`tags` 范围检索（§11 的 `wiki_scopes` 只是把 `tags` 收窄到当前 persona 范围，不传 `wiki_scopes` 时就是全库检索），knowledge 型 Track 沉淀的 wiki 页面天然会被这条既有链路检索命中并注入——§6 想要的"命中 active Track 时按需注入"和现有"每轮 turn 命中就注入"是同一件事，没有必要再实现一层重复的"识别话题是否命中某个 Track"关键词匹配（重复匹配反而增加噪音，与项目一贯的"不重复实现"原则一致）。§14.1-a 的未命中记录部分本来就已提前完成 | `src/mini_agent/context_builder.py`（未改动，本次为确认结论，非新代码） |
-| 真实 `retriever` / `wiki_writer` 回调实现（对接 `web_search` 与 `wiki/writer.py` + `wiki/dedup.py`） | wiki_writer 侧的合规过滤前置条件（见下一行）已就位；真实 `retriever`（对接 `web_search`，需要真实网络请求）仍未实现，P1 单测全部用假实现替代 | — |
+| 真实 `retriever` / `wiki_writer` 回调实现（对接 `web_search` 与 `wiki/writer.py` + `wiki/dedup.py`） | ✅ `make_web_search_retriever(cfg)` 已实现并接入 `/capability cycle`：query 用 `f"{track.title} {topic.name}"` 朴素拼接，复用既有 `web_search/factory.py` 的 provider 抽象（不新增检索后端），结果截断到 `summary_max_chars`（默认 400 字），`WebSearchError` 兜底为空结果走既有 skipped 路径。写入前经过 `apply_compliance_filter()`，不会绕过。**默认关闭**：`CapabilityLearningConfig.retriever_enabled = False`，`/capability cycle` 只有在配置里显式打开这个开关时才会真正发起网络请求，理由见该开关上方注释——检索内容质量把关不能完全靠代码兜底，属于"有实质副作用"的一类功能，采用与 `GrowthAdvisorConfig`（默认开启）刻意相反的 opt-in 取向 | `src/mini_agent/evolution/capability_learning.py`（`make_web_search_retriever`）、`src/mini_agent/config/models.py`（`CapabilityLearningConfig`）、`src/mini_agent/cli/commands/capability_cmd.py` |
 | §13.3-g 合规过滤（写入前剔除具体买卖建议等风险表述 + 金融/医疗/法律领域页面加 `requires_disclaimer` 标记） | ✅ 已实现并接入 `make_wiki_writer()` 写入路径：`apply_compliance_filter()` 做句级关键词/正则过滤（整句剔除，不做局部改写），`is_disclaimer_required_track()` 按 Track 标题/描述/wiki_tag 关键词判定风险领域；命中时 frontmatter 加 `requires_disclaimer: true` + 正文追加"仅供参考"免责声明。规则式实现，不接 LLM 改写（见函数上方注释的取舍说明） | `src/mini_agent/evolution/capability_learning.py` |
 
 **P1 阶段的设计取舍说明**：数据模型、存储、核心逻辑（缺口扫描、异步问答队列、循环编排）已经是可以真实跑起来、有测试覆盖的代码，但两处"会产生真实外部副作用"的关口——① 真正调用互联网检索和 wiki 写入、② 挂载到 cron 定时任务表使其自动周期性运行——都刻意留了一步显式开关，需要在功能评审通过、且第 14.3-g 合规过滤到位之后再接线，不在 P1 这一步默认打开。这是为了让"代码已经写好、可测试"和"功能对用户/系统实际生效"两件事分开推进，降低一次性铺开的风险。
@@ -544,7 +544,7 @@ wiki_scopes:                      # 新增字段：这个角色检索时优先/�
 - 异步问答队列的生成与消费（不接通知，只落队列）—— ✅ 已实现
 - 看板三个区域（人设管理/进度展示/待回答问题）+ 对应 API —— ✅ 均已实现，见文档开头「实施状态」
 - `context_builder.py` 接入检索复用 —— ✅ 未命中记录部分（§14.1-a）已提前完成；§6 的"命中 active Track 时按需注入"部分经代码走查确认已被既有的 `_try_inject_wiki_search()` 全库检索链路天然覆盖，不需要额外实现，见文档开头「实施状态」说明
-- 剩余未接线项：`sys:capability_learning_cycle` / `sys:capability_question_sweep` cron 注册、真实 `retriever`（`web_search`）回调——§13.3-g 合规过滤已实现并接入写入路径，不再是这两项的阻塞前提；是否接线仍刻意留待评审后开启，不在本轮默认打开
+- 剩余未接线项：无——P1 计划项已全部实现。真实 `retriever`（`web_search`）与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` cron 任务默认关闭（opt-in），需要用户在配置/看板里显式打开，不在本轮默认打开（详见文档开头「实施状态」的取舍说明）。P2 方向（LLM 辅助大纲起草、把 `miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序等）另行评审
 
 **P2（体验与质量增强）**：
 - 大纲生成/缺口判定引入 LLM 辅助（替换纯规则）

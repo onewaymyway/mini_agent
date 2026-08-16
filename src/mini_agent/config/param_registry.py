@@ -291,6 +291,7 @@ def _build_nested_blocks() -> list:
         NestedBlockSpec("affordance", _m.AffordanceConfig),
         NestedBlockSpec("digest_advisor", _m.DigestAdvisorConfig),
         NestedBlockSpec("growth_advisor", _m.GrowthAdvisorConfig),
+        NestedBlockSpec("capability_learning", _m.CapabilityLearningConfig),
         NestedBlockSpec("cron", _m.CronConfig),
         NestedBlockSpec("autonomy", _m.AutonomyConfig),
         NestedBlockSpec("observability", _m.ObservabilityConfig),
