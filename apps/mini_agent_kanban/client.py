@@ -992,6 +992,12 @@ class AgentClient:
     def dismiss_capability_outline_suggestion(self, suggestion_id: str):
         return self._post(f"/capability/suggestions/{suggestion_id}/dismiss")
 
+    def capability_wiki_page(self, page_id: str):
+        """能力大纲覆盖状态区块"查看 wiki 页面"用：返回该页面的 Markdown
+        正文（`{"page_id": ..., "body": ...}`），页面不存在时后端返回
+        404，调用方按现有 `_get` 的异常处理方式兜底展示。"""
+        return self._get(f"/capability/wiki_pages/{page_id}")
+
     # ── §11.4 知识范围绑定 ────────────────────────────────────────────
     def list_capability_personas(self):
         return self._get("/capability/personas")

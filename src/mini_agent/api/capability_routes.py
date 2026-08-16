@@ -362,3 +362,27 @@ def publish_persona(request: Request, track_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
     return {"track_id": track_id, "published_path": str(target_path)}
+
+
+@capability_router.get("/wiki_pages/{page_id}")
+def get_capability_wiki_page(request: Request, page_id: str):
+    """GET /v1/capability/wiki_pages/{page_id} — 返回某篇 wiki 页面的
+    Markdown 正文，供看板"能力大纲覆盖状态"区块里直接查看某个子主题
+    关联的 wiki 页面内容（而不是只显示"关联 N 篇 wiki 页面"这个数字）。
+
+    复用 `wiki/index_reader.py::find_page_path()` 按 `page_id` 定位文件
+    （文件名固定为 `<page_id>.md`，`wiki/writer.py::write_page()` 写入
+    时保证这一约定），风格对齐 `GET /growth/reports/{id}` 读取
+    `body_path` 正文的做法。页面不存在（page_id 有误，或对应文件被
+    外部删除）时返回 404，不在这个只读端点里做任何隔离区/合规状态
+    判断——那是 wiki 检索侧的关注点，这里只负责"page_id 存在就把内容
+    原样读出来"。
+    """
+    from mini_agent.wiki.index_reader import find_page_path
+
+    paths = _get_paths(request)
+    md_path = find_page_path(paths, page_id)
+    if md_path is None or not md_path.exists():
+        raise HTTPException(status_code=404, detail="wiki page not found")
+    body = md_path.read_text(encoding="utf-8")
+    return {"page_id": page_id, "body": body}

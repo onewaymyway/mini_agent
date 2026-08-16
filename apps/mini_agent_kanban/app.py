@@ -5803,10 +5803,26 @@ def render_capability_tab(client: "AgentClient"):
                 st.markdown("**能力大纲覆盖状态**")
                 state_icon = {"uncovered": "⬜", "partial": "🟨", "covered": "✅"}
                 for topic in outline:
+                    page_ids = topic.get("wiki_page_ids", []) or []
                     icon = state_icon.get(topic.get("coverage_state", "uncovered"), "⬜")
-                    st.write(f"{icon} {topic.get('name', '')}"
-                             + (f"　（关联 {len(topic.get('wiki_page_ids', []))} 篇 wiki 页面）"
-                                if topic.get("wiki_page_ids") else ""))
+                    row_cols = st.columns([5, 1]) if page_ids else [st.container()]
+                    with row_cols[0]:
+                        st.write(f"{icon} {topic.get('name', '')}"
+                                 + (f"　（关联 {len(page_ids)} 篇 wiki 页面）" if page_ids else ""))
+                    # 直接查看对应 wiki 内容，不只是显示"关联 N 篇"这个数字
+                    if page_ids:
+                        with row_cols[1]:
+                            view_key = f"cap_wiki_view_{track.get('track_id', '')}_{topic.get('topic_id', '')}"
+                            if st.button("查看", key=f"cap_wiki_btn_{view_key}"):
+                                st.session_state[view_key] = not st.session_state.get(view_key, False)
+                        if st.session_state.get(view_key):
+                            for pid in page_ids:
+                                page_resp = client.capability_wiki_page(pid)
+                                with st.expander(f"📄 {pid}", expanded=True):
+                                    if isinstance(page_resp, dict) and page_resp.get("_error"):
+                                        st.caption(f"页面加载失败：{page_resp['_error']}")
+                                    else:
+                                        st.markdown(page_resp.get("body", "") if isinstance(page_resp, dict) else "")
             else:
                 st.caption("这个 Track 还没有大纲子主题。")
 

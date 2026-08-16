@@ -242,5 +242,34 @@ class TestCapabilityOutlineSuggestionRoutes(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
 
 
+class TestCapabilityWikiPageRoute(unittest.TestCase):
+    """看板"能力大纲覆盖状态"区块直接查看关联 wiki 页面用的端点。"""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.project_root = Path(self._tmpdir.name)
+        self.client = _make_client(self.project_root)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_get_existing_page_returns_body(self):
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.wiki.writer import write_page
+
+        paths = AgentPaths(project_root=self.project_root)
+        write_page(paths, page_id="testpage1", page_type="topic", body="这是测试内容")
+
+        resp = self.client.get("/v1/capability/wiki_pages/testpage1")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["page_id"], "testpage1")
+        self.assertIn("这是测试内容", data["body"])
+
+    def test_get_unknown_page_404(self):
+        resp = self.client.get("/v1/capability/wiki_pages/does_not_exist")
+        self.assertEqual(resp.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()
