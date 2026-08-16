@@ -102,5 +102,79 @@ class TestCapabilityRoutesMount(unittest.TestCase):
         self.assertEqual(names, ["基础概念", "技术分析", "基本面分析", "风险管理"])
 
 
+class TestPersonaDraftRoutes(unittest.TestCase):
+    """§10.3 persona 型 Track 人设草稿三个端点：draft/get/publish。"""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.project_root = Path(self._tmpdir.name)
+        self.client = _make_client(self.project_root)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _create_persona_track(self, outline_names=None):
+        resp = self.client.post("/v1/capability/tracks", json={
+            "title": "老李投顾", "persona_desc": "经验老道的资深投资顾问人设",
+            "outline_names": outline_names or ["身份背景", "说话习惯"],
+            "target_type": "persona",
+        })
+        self.assertEqual(resp.status_code, 200)
+        return resp.json()["track_id"]
+
+    def test_draft_endpoint_rejects_knowledge_type_track(self):
+        resp = self.client.post("/v1/capability/tracks", json={
+            "title": "股票分析", "persona_desc": "x",
+        })
+        track_id = resp.json()["track_id"]
+        resp2 = self.client.post(f"/v1/capability/tracks/{track_id}/persona/draft")
+        self.assertEqual(resp2.status_code, 400)
+
+    def test_draft_endpoint_not_found_track(self):
+        resp = self.client.post("/v1/capability/tracks/does-not-exist/persona/draft")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_get_draft_before_generated_returns_404(self):
+        track_id = self._create_persona_track()
+        resp = self.client.get(f"/v1/capability/tracks/{track_id}/persona/draft")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_publish_before_draft_returns_400(self):
+        track_id = self._create_persona_track()
+        resp = self.client.post(f"/v1/capability/tracks/{track_id}/persona/publish")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_draft_show_publish_full_flow(self):
+        track_id = self._create_persona_track()
+
+        # 先用 answer 端点回答一个问题，验证草稿会包含这条回答
+        from mini_agent.evolution.capability_learning import CapabilityQuestionStore, CapabilityTrackStore
+        from mini_agent.storage.paths import AgentPaths
+
+        paths = AgentPaths(project_root=self.project_root)
+        track = CapabilityTrackStore(paths).get(track_id)
+        topic_id = track.outline[0].topic_id
+        q_store = CapabilityQuestionStore(paths)
+        q = q_store.raise_question(track_id, topic_id, "你的从业背景是什么？")
+        self.client.post(f"/v1/capability/questions/{q.question_id}/answer", json={"answer": "券商工作15年"})
+
+        draft_resp = self.client.post(f"/v1/capability/tracks/{track_id}/persona/draft")
+        self.assertEqual(draft_resp.status_code, 200)
+        body = draft_resp.json()
+        self.assertIn("券商工作15年", body["draft"])
+        self.assertEqual(body["completeness"]["total"], 2)
+        self.assertEqual(body["completeness"]["answered"], 1)
+
+        get_resp = self.client.get(f"/v1/capability/tracks/{track_id}/persona/draft")
+        self.assertEqual(get_resp.status_code, 200)
+        self.assertEqual(get_resp.json()["draft"], body["draft"])
+
+        publish_resp = self.client.post(f"/v1/capability/tracks/{track_id}/persona/publish")
+        self.assertEqual(publish_resp.status_code, 200)
+        published_path = Path(publish_resp.json()["published_path"])
+        self.assertTrue(published_path.exists())
+        self.assertEqual(published_path.parent, paths.project_personas_dir)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -237,3 +237,78 @@ def update_persona_wiki_scopes(request: Request, persona_name: str, body: SetPer
             pass
 
     return {"name": persona_name, "wiki_scopes": body.wiki_scopes}
+
+
+# ── [persona_capability_learning_design.md §10.3] persona 型 Track 人设草稿 ──
+#
+# 与上面的 wiki_scopes 端点不同：这三个端点操作的是 persona 型 Track 本身
+# （CapabilityTrack.target_type == "persona"），不是已发布的 persona 文件。
+# 三个动作严格对应 evolution/capability_learning.py 里的三个纯函数
+# （draft_persona_markdown / load_persona_draft / publish_persona_draft），
+# HTTP 层只做参数校验和错误码映射，不重复任何业务逻辑——和
+# cli/commands/capability_cmd.py 的 `/capability persona ...` 子命令是
+# 同一套底层实现的两层接线，行为应保持一致。
+
+
+@capability_router.post("/tracks/{track_id}/persona/draft")
+def draft_persona(request: Request, track_id: str):
+    """生成/刷新 persona 型 Track 的人设草稿并落盘，返回草稿全文 +
+    完成度摘要。knowledge 型 Track 调用返回 400（这是 target_type
+    的语义错误，不是"没找到"，用 400 而不是 404 更准确）。"""
+    from mini_agent.evolution.capability_learning import (
+        draft_persona_markdown,
+        persona_draft_completeness,
+        save_persona_draft,
+    )
+
+    paths = _get_paths(request)
+    track_store = CapabilityTrackStore(paths)
+    track = track_store.get(track_id)
+    if track is None:
+        raise HTTPException(status_code=404, detail="track not found")
+    if track.target_type != "persona":
+        raise HTTPException(status_code=400, detail="track is not target_type=persona")
+
+    questions = CapabilityQuestionStore(paths).list_questions(track_id=track_id)
+    markdown_text = draft_persona_markdown(track, questions)
+    save_persona_draft(paths, track_id, markdown_text)
+    completeness = persona_draft_completeness(track, questions)
+    return {"track_id": track_id, "draft": markdown_text, "completeness": completeness}
+
+
+@capability_router.get("/tracks/{track_id}/persona/draft")
+def get_persona_draft(request: Request, track_id: str):
+    """读取上一次落盘的人设草稿，不存在返回 404（尚未调用过 draft 端点）。"""
+    from mini_agent.evolution.capability_learning import load_persona_draft
+
+    paths = _get_paths(request)
+    track = CapabilityTrackStore(paths).get(track_id)
+    if track is None:
+        raise HTTPException(status_code=404, detail="track not found")
+
+    text = load_persona_draft(paths, track_id)
+    if text is None:
+        raise HTTPException(status_code=404, detail="no draft found for this track yet")
+    return {"track_id": track_id, "draft": text}
+
+
+@capability_router.post("/tracks/{track_id}/persona/publish")
+def publish_persona(request: Request, track_id: str):
+    """把已落盘的草稿显式发布到项目级 personas 目录（§10.3 第 4 点：
+    发布必须是显式用户动作）。没有草稿时返回 400（"状态不满足前置条件"，
+    不是 404——track 本身是存在的，缺的是"还没生成过草稿"这个步骤）。"""
+    from mini_agent.evolution.capability_learning import publish_persona_draft
+
+    paths = _get_paths(request)
+    track = CapabilityTrackStore(paths).get(track_id)
+    if track is None:
+        raise HTTPException(status_code=404, detail="track not found")
+    if track.target_type != "persona":
+        raise HTTPException(status_code=400, detail="track is not target_type=persona")
+
+    try:
+        target_path = publish_persona_draft(paths, track_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"track_id": track_id, "published_path": str(target_path)}
