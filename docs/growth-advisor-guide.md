@@ -229,6 +229,36 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
   `growth_advisor_improvement_plan_v3.md` P5-0 小节），当前数据量还
   不大，不紧急。
 
+### 2.6.1 候选去重：字面去重 + 可选的 LLM 语义判重（本次新增）
+
+`growth_candidate_derive()` 生成新候选前，原本只做**精确标题去重**
+（`normalize_title_key()`：去标点、转小写、分词排序后比较，能拦住
+"Python 工程实践" vs "python 工程 实践" 这类纯格式差异，但拦不住
+"学习 Rust 异步编程" vs "掌握 Rust async/await" 这类措辞不同、本质
+同一方向的重复）。
+
+打开 `duplicate_direction_llm_check_enabled`（默认关闭，与
+`llm_signal_augment_enabled`/`topic_category_llm_enabled` 同一惯例）
+后，精确去重没匹配到时会再用 LLM 判断一次：把新主题和"已存在的方向"
+——当前 pending/accepted 候选标题、以及已经采纳为 Goal 正在推进的方向
+标题——一次性交给 LLM，判断是不是本质同一件事。命中时：
+
+- 匹配到的是某个候选 → 合并证据到那个候选（跟精确去重命中时行为
+  一致），不产生新候选；
+- 匹配到的是某个 Goal（没有对应的候选，比如候选早就被采纳、Goal
+  已经在推进）→ 直接跳过，不创建新候选——这个方向已经在做了，不需要
+  再单独提醒一次。
+
+LLM 判断失败（异常、输出解析不出、输出的内容不在候选列表里）时统一
+退回"不是重复"，照常新建候选——最坏情况是多一条用户可以手动忽略的
+候选，比误判丢掉一个真正的新方向成本更低。开关关闭时这一步完全不
+生效，只保留原有的精确标题去重，行为与引入前完全一致。
+
+即使打开了这个开关，判断仍然可能有漏网之鱼（比如 Goal 标题和候选
+标题都在活跃列表里但表述差异很大，LLM 没判出来）——忽略候选时可以
+选择 `already_exists`（"已存在该主题"）原因，作为人工纠正的出口，
+见下一节。
+
 ### 2.7 忽略原因：区分"方向错"和"报告差"（P6）
 
 此前"忽略一个候选"只有一个动作，系统没法知道你是"这个方向我压根不
@@ -244,6 +274,7 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
 | `not_interested` | 这个方向我不关心 | 是，正常参与方向/类别衰减 |
 | `bad_timing` | 方向可以，但现在不是时候 | 是，正常参与方向/类别衰减 |
 | `report_not_useful` | 方向没错，是报告没写好 | **否**，不压低这个方向今后的置信度 |
+| `already_exists` | 和已有方向重复，不是新方向（见 2.6.1 节） | **否**，不压低这个方向今后的置信度 |
 | `unspecified`（默认，不传原因时的取值） | 未指定 | 是，行为与 P6 之前完全一致 |
 
 `report_not_useful` 的次数单独统计（`_report_quality_dismiss_counts()`），

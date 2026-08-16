@@ -399,6 +399,65 @@ def normalize_title_key(title: str) -> str:
     return " ".join(sorted(s.split()))
 
 
+def _llm_find_duplicate_direction(
+    new_title: str,
+    existing_titles: list[str],
+    llm_helper: Callable[[str], str],
+) -> Optional[str]:
+    """[候选去重 LLM 语义判重] 判断 `new_title` 是否和 `existing_titles`
+    里的某一个本质上是同一个方向，只是措辞不同（精确标题去重
+    `normalize_title_key` 已经在调用方处理过字面重复，这里只处理"没有
+    字面重复，但明显是同一件事"的情况，比如"学习 Rust 异步编程"和
+    "掌握 Rust async/await"）。
+
+    `existing_titles` 混合了两类候选方向的标题——当前 pending/accepted
+    的 GrowthCandidate 和已采纳为 Goal 的方向，调用方（`add_or_merge`）
+    负责区分匹配结果属于哪一类、该合并证据还是直接跳过，这个函数本身
+    只做纯粹的语义匹配判断，不关心匹配对象的类型。
+
+    命中返回 `existing_titles` 里那个原始字符串（不是改写/归一化后的
+    版本，方便调用方直接拿去查表）；LLM 判定没有重复（约定输出
+    `NONE`）、输出解析不出、列表为空、或调用异常时返回 `None`——和
+    `draft_outline_with_llm()`/`generate_outline_suggestion_from_answer()`
+    同款"起草辅助而非关键路径"的克制：判断失败时退回"当作不重复"，
+    最坏情况是多生成一条候选（用户可以手动 dismiss），比误判成"重复"
+    进而悄悄丢掉一个用户真正关心的新方向成本更低。
+
+    不做多轮重试、不做批量/embedding 相似度——`existing_titles` 量级
+    (max_pending_candidates + 活跃 Goal 数量，通常几十以内) 一次性列进
+    prompt 交给 LLM 判断即可，没有必要引入额外的检索基础设施。
+    """
+    if not existing_titles:
+        return None
+    try:
+        listed = "\n".join(f"- {t}" for t in existing_titles)
+        prompt = (
+            f"下面是一个人已经在关注/推进的一些成长方向：\n{listed}\n\n"
+            f"现在有一个新提议的方向：「{new_title}」\n\n"
+            "这个新方向和上面列表中的某一个是否本质上是同一件事（只是"
+            "措辞、范围表述不同），而不是一个真正新的、值得单独列出的"
+            "方向？如果是，请只输出上面列表中那一项**完全一致**的原文"
+            "（逐字复制，不要改写、不要加编号或标点）。如果不是（这是"
+            "一个真正新的方向，或者只是相关但不算同一件事），请只输出"
+            "NONE。不要输出除以上两种情况之外的任何内容。"
+        )
+        raw = llm_helper(prompt)
+    except Exception:
+        return None
+    if not raw or not raw.strip():
+        return None
+    answer = raw.strip().splitlines()[0].strip()
+    if answer.upper() == "NONE":
+        return None
+    # 严格要求逐字匹配列表中的原文，不接受近似匹配——LLM 输出格式漂移
+    # （比如多加了引号/编号）时，宁可判定为"没找到匹配"退回不重复，也
+    # 不去猜它想指哪一个，理由同函数文档字符串。
+    for t in existing_titles:
+        if t.strip() == answer:
+            return t
+    return None
+
+
 JOB_ID_DAILY = "sys:growth_advisor_daily"
 JOB_ID_MONTHLY = "sys:growth_monthly_retrospective"
 
@@ -680,11 +739,21 @@ class GrowthBacklog:
         dismissed_cooldown_days: int,
         confidence_multiplier: float = 1.0,
         origin: str = "signal_scan",
+        llm_helper: Optional[Callable[[str], str]] = None,
+        existing_goal_titles: Optional[list[str]] = None,
     ) -> Optional[GrowthCandidate]:
         """尝试新增一条候选。规则（对应方案第 3 节"克制"要求）：
             - evidence_refs 数量不达标 → 不生成，返回 None
             - 已存在同 dedupe_key 的 pending/accepted 候选 → 合并证据、
               不重复创建
+            - [本次新增] 没有字面重复，但 `llm_helper` 判定和某个已存在
+              的 pending/accepted 候选或已采纳的 Goal 是同一个方向 →
+              命中候选时合并证据（同字面去重分支）；只命中 Goal（没有
+              对应候选）时直接跳过，不创建——这个方向已经在推进了，不
+              需要再单独生成一条候选来"提醒"用户。`llm_helper` 为
+              `None`（未开启 `duplicate_direction_llm_check_enabled` 或
+              拿不到 LLM 上下文）时这一步整体跳过，行为与改动前完全
+              一致，只保留原有的精确标题去重。
             - 曾被 dismissed 且仍在冷却期内 → 跳过，返回 None
             - pending 数量已达上限 → 跳过，返回 None（避免无限堆积）
 
@@ -715,6 +784,36 @@ class GrowthBacklog:
                 cooldown_cutoff = time.time() - dismissed_cooldown_days * 86400
                 if c.updated_at > cooldown_cutoff:
                     return None  # 冷却期内，不重新生成
+
+        if llm_helper is not None:
+            active_candidates = {
+                c.title: c for c in all_c if c.status in (STATUS_PENDING, STATUS_ACCEPTED)
+            }
+            candidate_titles = list(active_candidates.keys())
+            goal_titles = list(dict.fromkeys(existing_goal_titles or []))
+            # 候选标题排在前面：命中候选比命中 Goal 更常见（Goal 数量
+            # 通常远小于历史候选量），排列顺序本身不影响 LLM 判断，只是
+            # 沿用"先到先得"的一贯习惯，不承载额外语义。
+            all_titles = candidate_titles + [t for t in goal_titles if t not in active_candidates]
+            try:
+                match = _llm_find_duplicate_direction(title, all_titles, llm_helper)
+            except Exception as exc:
+                from mini_agent.errors import log_exception
+                log_exception(exc, where="mini_agent.growth_advisor.add_or_merge_duplicate_check")
+                match = None
+            if match is not None:
+                matched_candidate = active_candidates.get(match)
+                if matched_candidate is not None:
+                    merged = sorted(set(matched_candidate.evidence_refs) | set(evidence_refs))
+                    matched_candidate.evidence_refs = merged
+                    matched_candidate.evidence_count = len(merged)
+                    matched_candidate.confidence = _confidence_from_evidence(len(merged))
+                    matched_candidate.updated_at = time.time()
+                    self.save_all(all_c)
+                    return matched_candidate
+                # 只命中已采纳的 Goal，没有对应的候选可合并证据——这个
+                # 方向已经在推进中，不生成新候选，直接跳过。
+                return None
 
         pending_count = sum(1 for c in all_c if c.status == STATUS_PENDING)
         if pending_count >= max_pending:
@@ -861,17 +960,23 @@ _MIN_FEEDBACK_MULTIPLIER = 0.4
 DISMISS_REASON_NOT_INTERESTED = "not_interested"      # 这个方向我不关心
 DISMISS_REASON_BAD_TIMING = "bad_timing"               # 方向可以，但现在不是时候
 DISMISS_REASON_REPORT_NOT_USEFUL = "report_not_useful"  # 方向没错，报告没写好
+DISMISS_REASON_ALREADY_EXISTS = "already_exists"       # 和已有方向重复，不是新方向
 DISMISS_REASON_UNSPECIFIED = "unspecified"             # 未指定原因（兼容旧数据/旧调用方）
 _VALID_DISMISS_REASONS = frozenset(
     {
         DISMISS_REASON_NOT_INTERESTED,
         DISMISS_REASON_BAD_TIMING,
         DISMISS_REASON_REPORT_NOT_USEFUL,
+        DISMISS_REASON_ALREADY_EXISTS,
         DISMISS_REASON_UNSPECIFIED,
     }
 )
 # 参与"方向/类别置信度衰减"的 dismiss 原因——REPORT_NOT_USEFUL 不在这
 # 个集合里，是本次改动的核心：它不代表用户对这个方向不感兴趣。
+# ALREADY_EXISTS 同理不在集合里：用户忽略是因为"这条候选和我已经在做的
+# 事重复了"，不是对这个方向本身不感兴趣，不应该压低同方向/同类别未来
+# 的置信度——否则等于因为流程重复生成的问题惩罚了一个用户明明感兴趣的
+# 方向。
 _DIRECTION_NEGATIVE_DISMISS_REASONS = frozenset(
     {DISMISS_REASON_NOT_INTERESTED, DISMISS_REASON_BAD_TIMING, DISMISS_REASON_UNSPECIFIED}
 )
@@ -1043,6 +1148,7 @@ _DISMISS_REASON_LABELS = {
     DISMISS_REASON_NOT_INTERESTED: "不感兴趣",
     DISMISS_REASON_BAD_TIMING: "时机不对",
     DISMISS_REASON_REPORT_NOT_USEFUL: "报告没写好",
+    DISMISS_REASON_ALREADY_EXISTS: "已存在该主题",
     DISMISS_REASON_UNSPECIFIED: "未说明原因",
 }
 
@@ -1935,7 +2041,9 @@ def _llm_augment_topics(
 # ────────────────────────── 候选生成 growth_candidate_derive ──────────────────────────
 
 
-def growth_candidate_derive(paths, cfg, profile, *, goal_backlog=None) -> list[GrowthCandidate]:
+def growth_candidate_derive(
+    paths, cfg, profile, *, goal_backlog=None, llm_helper: Optional[Callable[[str], str]] = None,
+) -> list[GrowthCandidate]:
     """消费 `profile.derived["growth_focus_areas"]`（由 growth_signal_scan
     产出），对证据数达标、未命中 excluded_topics 的主题生成/合并候选到
     backlog，返回本次新增或有更新的候选列表。
@@ -1949,6 +2057,13 @@ def growth_candidate_derive(paths, cfg, profile, *, goal_backlog=None) -> list[G
     memory 信号命中了，仍按信号扫描的证据优先合并，不覆盖对方证据，
     只是把两边证据取并集）。不传（沿用旧调用点）时行为与改动前完全
     一致。任何异常都不影响原有 memory 信号路径。
+
+    `llm_helper`：[候选去重 LLM 语义判重] 只有在
+    `cfg.duplicate_direction_llm_check_enabled=True` 时才会真正透传给
+    `backlog.add_or_merge()` 用于语义判重（见该函数文档字符串）；开关
+    关闭或未传入时这一步整体跳过，只保留原有的精确标题去重，行为与
+    改动前完全一致。同时会用 `goal_backlog.active_goals()` 的标题作为
+    "已存在方向"的补充来源（拿不到 `goal_backlog` 时为空列表）。
     """
     focus_areas: dict[str, list[str]] = dict(
         (getattr(profile, "derived", {}) or {}).get("growth_focus_areas", {})
@@ -1966,6 +2081,16 @@ def growth_candidate_derive(paths, cfg, profile, *, goal_backlog=None) -> list[G
                 spinoff_origins.add(topic)
             existing = focus_areas.setdefault(topic, [])
             focus_areas[topic] = sorted(set(existing) | set(refs))
+
+    dedup_llm_helper = llm_helper if getattr(cfg, "duplicate_direction_llm_check_enabled", False) else None
+    active_goal_titles: list[str] = []
+    if dedup_llm_helper is not None and goal_backlog is not None:
+        try:
+            active_goal_titles = [g.title for g in goal_backlog.active_goals() if g.title]
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.growth_advisor.growth_candidate_derive_goal_titles")
+            active_goal_titles = []
 
     excluded = {t.strip().lower() for t in getattr(cfg, "excluded_topics", []) or []}
     backlog = GrowthBacklog(paths)
@@ -2016,6 +2141,8 @@ def growth_candidate_derive(paths, cfg, profile, *, goal_backlog=None) -> list[G
             dismissed_cooldown_days=cooldown_days,
             confidence_multiplier=multiplier,
             origin="pursuit_spinoff" if topic in spinoff_origins else "signal_scan",
+            llm_helper=dedup_llm_helper,
+            existing_goal_titles=active_goal_titles,
         )
         # [P4-6] 每轮都记一条趋势快照，不管这次是否达标生成/更新了候选
         # ——证据数本身在低于阈值时也是有意义的"正在积累"信号，只有在
@@ -5309,7 +5436,7 @@ def run_daily_cycle(
     # [方向 3] goal_backlog 拿不到（非 daemon 上下文等）时安全退化为 None，
     # growth_candidate_derive 内部行为等价于改动前（只用 memory 信号）。
     goal_backlog = _load_goal_backlog_safely(paths)
-    new_candidates = growth_candidate_derive(paths, cfg, profile, goal_backlog=goal_backlog)
+    new_candidates = growth_candidate_derive(paths, cfg, profile, goal_backlog=goal_backlog, llm_helper=llm_helper)
 
     # [P5-3] 除了看板上"手动添加/确认"两个触发点，cron 每日流程本身也会
     # 让主题"转正"（`_update_keyword_learning_streaks` 的自动确认路径），

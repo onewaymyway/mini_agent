@@ -1950,6 +1950,18 @@ class GrowthAdvisorConfig:
     # 方案文档非目标一节。
     topic_category_llm_enabled: bool = False
 
+    # ── 候选去重：LLM 语义判重（本次新增）────────────────────────────────
+    # `growth_candidate_derive()` 生成新候选前，除了已有的精确标题去重
+    # （`normalize_title_key` 字面匹配），可选再用 LLM 判断这个新主题是否
+    # 和"已存在的方向"（pending/accepted 候选 + 已采纳为 Goal 的方向）
+    # 语义上是同一件事，只是措辞不同——避免"最近关注的方向"反复被换个说法
+    # 重新提议。命中时合并证据到已有候选（有对应候选时）或直接跳过（只
+    # 命中 Goal、没有对应候选时），不产生新的重复候选。
+    # 默认关闭：和 `llm_signal_augment_enabled`/`topic_category_llm_enabled`
+    # 同一惯例——多一次 LLM 调用不该在没有显式开启的情况下发生；关闭时
+    # 精确标题去重仍然照常工作，行为与改动前完全一致。
+    duplicate_direction_llm_check_enabled: bool = False
+
     # ── P5-6：候选/推送排序里留一个小比例的"探索位"（growth_advisor_
     # improvement_plan_v3.md P5-6）─────────────────────────────────────
     # 默认关闭：Top-N 报告生成此前完全是"置信度越高越优先"的纯利用策略，

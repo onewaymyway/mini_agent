@@ -5428,6 +5428,7 @@ _GROWTH_DISMISS_REASON_OPTIONS = [
     ("not_interested", "不感兴趣"),
     ("bad_timing", "方向可以，但现在不是时候"),
     ("report_not_useful", "方向没错，是报告没写好"),
+    ("already_exists", "已存在该主题（和已有方向重复）"),
 ]
 
 # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2] 诊断面板
@@ -5438,6 +5439,7 @@ _DISMISS_REASON_DIAGNOSTICS_LABELS = {
     "not_interested": "不感兴趣",
     "bad_timing": "时机不对",
     "report_not_useful": "报告没写好",
+    "already_exists": "已存在该主题",
 }
 
 

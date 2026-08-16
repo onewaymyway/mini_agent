@@ -43,6 +43,11 @@ dismiss 的 reason 可选值：
   bad_timing        — 方向可以，但现在不是时候（参与衰减）
   report_not_useful — 方向没错，是报告没写好（不参与衰减，只计入报告
                        质量诊断，见月度复盘 top_report_quality_flags）
+  already_exists    — 和已有方向重复，不是新方向（不参与衰减；开启
+                       GrowthAdvisorConfig.duplicate_direction_llm_check_
+                       enabled 后，同类重复通常在生成阶段就会被 LLM
+                       判重拦下，这个 reason 主要用于漏判/未开启该开关
+                       时的人工纠正）
   unspecified       — 未指定（默认值，参与衰减，兼容旧行为）
 """
 
@@ -201,7 +206,8 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
                 R.print_info(
                     "可选 reason（不传则记为 unspecified，行为等价于此前版本）："
                     "not_interested(不感兴趣) | bad_timing(时机不对) | "
-                    "report_not_useful(方向没错，报告没写好，不会压低该方向今后的置信度)"
+                    "report_not_useful(方向没错，报告没写好，不会压低该方向今后的置信度) | "
+                    "already_exists(和已有方向重复，不会压低该方向今后的置信度)"
                 )
             return
         cid = args[1]
@@ -217,7 +223,7 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
             if reason is not None and reason not in ga._VALID_DISMISS_REASONS:
                 R.print_error(
                     f"未知 reason：{reason}，可选值：not_interested | bad_timing | "
-                    "report_not_useful | unspecified"
+                    "report_not_useful | already_exists | unspecified"
                 )
                 return
         ga.GrowthFeedbackLedger(paths).record(cid, status, reason=reason)

@@ -1742,3 +1742,72 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   - `next_doc/growth_advisor_implementation_record.md`（本节）
 - 第 4 节剩余三个方向（自检结果的自动利用、学习素材对齐报告能力、
   外部世界变化驱动的刷新接入看板/CLI 展示）仍未实施，维持方向级规划。
+
+## 候选去重：LLM 语义判重 + 新增 dismiss reason「已存在该主题」
+
+- **触发背景**：实际使用中发现 `growth_candidate_derive()` 会反复给出
+  和"已有方向"（pending/accepted 候选，或已经采纳为 Goal 正在推进的
+  方向）本质相同、只是措辞不同的候选主题——原有的去重（`normalize_
+  title_key` 精确标题匹配）只能拦住字面完全一致的重复，拦不住"学习
+  Rust 异步编程" vs "掌握 Rust async/await" 这类语义重复。
+- **方案**：新增 `_llm_find_duplicate_direction(new_title, existing_
+  titles, llm_helper)`，把新主题和"已存在方向"列表（当前 pending/
+  accepted 候选标题 + `goal_backlog.active_goals()` 标题）一次性交给
+  LLM 判断是否本质同一件事；命中要求 LLM 逐字输出列表中的原文，输出
+  解析不出/判定 NONE/调用异常时统一退回"不重复"（宁可多生成一条候选
+  让用户手动 dismiss，也不误判丢掉真正的新方向）。`GrowthBacklog.
+  add_or_merge()` 新增 `llm_helper`/`existing_goal_titles` 两个可选
+  参数：在精确标题去重之后、真正新建候选之前插入这一步判断——命中
+  候选就合并证据（和精确去重分支行为一致），只命中 Goal（没有对应
+  候选）就直接跳过、不创建。`growth_candidate_derive()` 新增同名
+  `llm_helper` 参数，新增 `GrowthAdvisorConfig.duplicate_direction_
+  llm_check_enabled`（默认 `False`，与 `llm_signal_augment_enabled`/
+  `topic_category_llm_enabled` 同一惯例：多一次 LLM 调用需要显式开
+  启）控制是否真正启用；`run_daily_cycle()` 透传已有的 `llm_helper`
+  给 `growth_candidate_derive()`，开关关闭时这条链路整体不生效，行为
+  与改动前完全一致。
+- 同时新增 dismiss reason `DISMISS_REASON_ALREADY_EXISTS`（"已存在该
+  主题"）——给漏判（未开启判重开关，或 LLM 判断失败退回"不重复"）
+  留一个人工纠正的出口。这个原因**不计入**方向/类别置信度衰减
+  （`_DIRECTION_NEGATIVE_DISMISS_REASONS` 不包含它，理由和已有的
+  `report_not_useful` 一致：用户忽略是因为"这是流程重复生成的问题"，
+  不是"对这个方向不感兴趣"，不该压低同方向/同类别未来的置信度）。
+  CLI（`/growth dismiss <id> already_exists`）和看板下拉框
+  （`_GROWTH_DISMISS_REASON_OPTIONS`）同步新增这个选项。
+- **测试**：新增 `tests/test_growth_advisor_duplicate_direction_check.py`
+  （17 项，覆盖 `_llm_find_duplicate_direction()` 的空列表/NONE/精确
+  匹配/格式漂移不匹配/异常五种场景，`add_or_merge()` 的无 llm_helper
+  行为不变/命中候选合并证据/命中 Goal 跳过创建/无匹配新建/LLM 异常
+  兜底五种场景，`growth_candidate_derive()` 的开关默认关闭忽略
+  llm_helper/开关开启合并语义重复候选/开关开启命中 Goal 跳过三种场景，
+  以及 `already_exists` reason 本身合法/不参与衰减/不影响 `_dismiss_
+  counts_by_dedupe_key` 统计/未知 reason 仍被拒绝四项）；全部通过。
+  `tests/` 下 `-k growth`（排除环境本身缺 `streamlit`/`fcntl` 相关
+  依赖导致收集失败的 4 个无关文件）456 项全部通过，仅
+  `test_compact_health_trend_storage_downsamples_old_points` 1 项失败
+  ——该用例基于挂钟时间的天粒度分桶，单独重跑同样失败，是既有的与
+  运行时刻相关的不稳定用例，跟本次改动无关（未触碰对应的 `compact_
+  health_trend_storage`/`_compact_health_trend_rows` 代码路径）。
+- **改动文件**：
+  - `src/mini_agent/evolution/growth_advisor.py`（新增
+    `_llm_find_duplicate_direction()`；`GrowthBacklog.add_or_merge()`
+    新增 `llm_helper`/`existing_goal_titles` 参数及判重分支；
+    `growth_candidate_derive()` 新增 `llm_helper` 参数并透传给
+    `add_or_merge()`、补充活跃 Goal 标题来源；`run_daily_cycle()`
+    调用点透传 `llm_helper`；新增 `DISMISS_REASON_ALREADY_EXISTS`
+    常量，加入 `_VALID_DISMISS_REASONS`/`_DISMISS_REASON_LABELS`，
+    不加入 `_DIRECTION_NEGATIVE_DISMISS_REASONS`）
+  - `src/mini_agent/config/models.py`（`GrowthAdvisorConfig` 新增
+    `duplicate_direction_llm_check_enabled`）
+  - `src/mini_agent/cli/commands/growth_cmd.py`（dismiss reason 帮助
+    文本与未知 reason 报错文案新增 `already_exists`）
+  - `apps/mini_agent_kanban/app.py`（`_GROWTH_DISMISS_REASON_OPTIONS`/
+    `_DISMISS_REASON_DIAGNOSTICS_LABELS` 新增 `already_exists` 选项）
+  - `tests/test_growth_advisor_duplicate_direction_check.py`（新增，
+    17 项）
+  - `next_doc/growth_advisor_implementation_record.md`（本节）
+- 未做：判重列表目前是"pending/accepted 候选标题 + 活跃 Goal 标题"
+  一次性列进 prompt，量级通常在几十以内；如果未来候选/Goal 数量显著
+  增长导致单次 prompt 过长，需要重新评估是否要分批或做预筛选，本次
+  暂不处理（不属于当前真实观察到的问题）。
+
