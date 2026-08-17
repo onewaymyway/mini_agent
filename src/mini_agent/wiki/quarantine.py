@@ -102,6 +102,23 @@ class QuarantineRecord:
 
 
 @dataclass
+class PurgeReport:
+    """`purge_quarantined()` 的执行结果，供 CLI 展示。"""
+    matched: int = 0             # 命中筛选条件（status）的记录数
+    deleted: int = 0             # 成功删除文件 + 摘除记录的数量
+    missing_file: int = 0        # 记录还在，但对应文件已经不存在（只摘记录）
+    errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "matched": self.matched,
+            "deleted": self.deleted,
+            "missing_file": self.missing_file,
+            "errors": self.errors,
+        }
+
+
+@dataclass
 class ScanReport:
     scanned: int = 0
     newly_quarantined: int = 0
@@ -210,6 +227,71 @@ def resolve_if_present(paths: AgentPaths, page_path: Path) -> bool:
     records[key] = rec
     _save_quarantine(paths, records)
     return True
+
+
+def purge_quarantined(
+    paths: AgentPaths,
+    *,
+    statuses: Optional[set[str]] = None,
+    page_paths: Optional[set[str]] = None,
+    dry_run: bool = True,
+) -> PurgeReport:
+    """删除隔离区里"确定不要了"的问题页面：既删磁盘上的 .md 文件，也把
+    对应记录从隔离区表里摘除。
+
+    定位：跟 `quarantine_repair.py` 的"自动修复"是两条不同的收尾路径——
+    修复是"确定改法唯一，改完还能解析"，本函数处理的是相反的情况："这份
+    数据本身就不值得保留"（比如结构性缺失 frontmatter、内容是截断碎片，
+    规则/LLM 修复都救不回来），直接清掉比长期堆在 needs_human 队列里更
+    现实。只删除隔离区里已记录的问题页面，不会碰任何能正常解析的 wiki
+    页面——不读取/校验页面内容本身，只信任隔离区记录里的路径。
+
+    默认 `dry_run=True`（保守 opt-in 惯例，同 `/agent goals spec confirm`
+    两步确认的思路）：只计算会命中哪些记录、返回 `matched` 计数，不做任何
+    写操作；调用方（CLI）据此先展示预览，用户确认后再传 `dry_run=False`
+    真正执行删除。
+
+    筛选条件：
+        statuses    — 只处理这些状态的记录（默认 None 时不限制状态，但
+                      调用方通常应该只传 needs_human/pending，避免误删
+                      status=repaired 的历史记录——不过本函数本身不做
+                      这层业务约束，交给调用方决定）。
+        page_paths  — 只处理这些具体路径（配合 `/wiki quarantine list`
+                      展示的路径做单条删除时用）；None 表示不按路径筛选。
+    两个筛选条件是 AND 关系，都为 None 时命中隔离区全部记录（调用方要
+    小心，这种情况通常只在"清空隔离区"这种明确意图下才该传）。
+    """
+    report = PurgeReport()
+    records = load_quarantine(paths)
+
+    matched_keys = [
+        key for key, rec in records.items()
+        if (statuses is None or rec.status in statuses)
+        and (page_paths is None or key in page_paths)
+    ]
+    report.matched = len(matched_keys)
+
+    if dry_run or not matched_keys:
+        return report
+
+    changed = False
+    for key in matched_keys:
+        page_path = Path(key)
+        try:
+            if page_path.exists():
+                page_path.unlink()
+                report.deleted += 1
+            else:
+                report.missing_file += 1
+        except Exception as exc:  # noqa: BLE001 - 单个文件删除失败不阻断整批
+            report.errors.append(f"{key}: {exc}")
+            continue
+        records.pop(key, None)
+        changed = True
+
+    if changed:
+        _save_quarantine(paths, records)
+    return report
 
 
 def scan_and_record(paths: AgentPaths) -> ScanReport:

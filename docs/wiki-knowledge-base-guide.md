@@ -174,7 +174,7 @@ query
 | `/wiki promotion` | wiki 转正为主索引的三项标准（P4）当前达成情况：内容占比连续达标天数、校验无错误连续天数、检索 A/B 命中率对比，末尾给出仅供参考的一句话结论——**该命令只读、不触发任何切换动作** |
 | `/wiki lifecycle-scan [--days N]` | O4：手动触发一次知识生命周期巡检（`stale_candidate_scan()`），把长期未被验证过的 `fresh` 页面标记为 `stale`。默认阈值取 `MemoryConfig.lifecycle_stale_threshold_days`（90 天），只做标记，默认不影响检索排序 |
 | `/wiki fallback-cleanup [--days N]` | 归并/标记 `session-facts` 兜底页里长期未被合并的 fact（见 §十一·5 新增子命令小节） |
-| `/wiki quarantine [list\|repair]` | 解析失败页面隔离区（见 §十四）：`list`（默认）只读展示当前 pending/needs_human 记录；`repair` 手动触发一轮"全量扫描 + 尝试修复"，跟 `sys:wiki_quarantine_repair` cron job 是同一份逻辑 |
+| `/wiki quarantine [list\|repair\|purge]` | 解析失败页面隔离区（见 §十四）：`list`（默认）只读展示当前 pending/needs_human 记录；`repair` 手动触发一轮"全量扫描 + 尝试修复"，跟 `sys:wiki_quarantine_repair` cron job 是同一份逻辑；`purge` 删除"确定救不回来"的问题页面（磁盘文件 + 隔离区记录一起清），两步确认，默认只预览、加 `--yes` 才真正执行 |
 
 `/wiki <page-id>` 找不到 backlinks 时会提示先跑 `/wiki rebuild`，而不是静默显示"无 backlinks"——backlinks 只存在于 `_index/` 里，页面本身刚写入还没重建索引时是看不到的。
 
@@ -203,7 +203,7 @@ query
 | `_index/promotion_log.jsonl` | P4 每日快照（占比、校验错误数） | 是——删除只是重新开始累积观测天数，不丢知识本身 |
 | `_index/search_ab_log.jsonl` | P4 检索 A/B 对比样本 | 是——删除只是重新开始累积样本，不丢知识本身 |
 | `_index/topics_reconsolidation_log.jsonl` | O3 topic 再巩固事件日志（追加次数、是否触发 `needs_review`） | 是——删除只是重新开始累积观测，不丢已追加进 topic 正文的内容 |
-| `_quarantine.json` | §十四：解析失败页面的问题记录（路径、错误信息、修复状态/尝试次数） | 是——纯诊断/修复调度状态，删除只是丢失历史检测记录，下次 `sys:wiki_quarantine_repair` 扫描会重新发现仍然存在的问题页面 |
+| `_quarantine.json` | §十四：解析失败页面的问题记录（路径、错误信息、修复状态/尝试次数） | 是——纯诊断/修复调度状态，删除只是丢失历史检测记录，下次 `sys:wiki_quarantine_repair` 扫描会重新发现仍然存在的问题页面；注意这与 `/wiki quarantine purge` 不同——`purge` 删的是记录指向的页面 md 文件本身（不可恢复），不是这份记录文件 |
 | `decision_candidates_pending.jsonl`（workdir 根目录，非 wiki/ 下） | compact 提炼出的决策候选，尚未经巩固循环批量落盘 | 否——删除会丢失尚未处理的候选（不影响已落盘的 decisions/*.md），见九·2 |
 | `extraction_cursor.json`（workdir 根目录） | E1 独立抽取触发器的 `last_extracted_index` 游标 | 否——删除会导致下次扫描重新覆盖已抽取过的历史区间，产生重复抽取（不会丢已落盘知识，只是浪费一次 LLM 调用） |
 | `extraction_trigger_log.jsonl`（workdir 根目录） | E1 规则扫描命中记录，供校准触发阈值 | 是——删除只是重新开始累积观测样本 |
@@ -725,12 +725,25 @@ monthly_trend_retrospective.py` 新增 cron job
   开关），用于不想等定时任务、想立刻看到修复结果的场景。`needs_human`
   状态的记录人工改好对应文件后，下次扫描（cron 或手动 `repair`）会
   自动确认并摘除，不需要额外的"标记已处理"操作。
+- **清理（`purge`，本轮新增）**：规则/LLM 修复都要求"改完必须重新
+  通过 `parse_page()` 才落盘"，遇到结构性缺失（比如整篇没有 `---`
+  frontmatter 块）这类连基本结构都不具备的坏数据，两条修复路径都无能
+  为力，只能长期停在 `needs_human`。`quarantine.purge_quarantined()`
+  提供直接删除的出口：只删除隔离区里**已有记录**的页面（磁盘文件 +
+  隔离区记录一起清），不会碰任何能正常解析的 wiki 页面，也不读取/校验
+  页面内容本身，只信任隔离区记录里的路径。CLI 是
+  `/wiki quarantine purge [--status pending|needs_human|repaired|all]
+  [--path <page_path>]... [--yes]`：默认只筛 `needs_human`（自动修复
+  已放弃、最典型的"确定没救"的一批）；不加 `--yes` 时只预览命中数量、
+  不做任何写操作，跟 `/agent goals spec confirm` 的两步确认惯例一致，
+  确认无误后加 `--yes` 才真正执行删除，不可恢复。
 
 当前局限：修复策略目前只覆盖 `links` 字段的两类已知笔误，其它类型的
 `PageParseError`（比如缺失必填字段、YAML 语法本身损坏）会被记录但暂时
-没有对应的自动修复策略，停在 `pending` 状态直到人工介入或后续版本
-补充新的修复策略；YAML 语法损坏这类"没有确定改法"的问题被有意排除在
-自动修复范围之外，不做猜测性修复。
+没有对应的自动修复策略，停在 `pending` 状态直到人工介入、后续版本补充
+新的修复策略，或者判断这批数据本身不值得保留后用 `purge` 直接清掉；
+YAML 语法损坏这类"没有确定改法"的问题被有意排除在自动修复范围之外，
+不做猜测性修复。
 
 ## 相关文档
 

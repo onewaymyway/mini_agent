@@ -27,6 +27,7 @@ backlinks/tags 这些派生信息只存在于 _index/ 下的 json 里，人工�
 from __future__ import annotations
 
 import json
+from typing import Optional
 
 import mini_agent.ui.renderer as R
 
@@ -38,7 +39,7 @@ def handle_wiki_cmd(args: list[str], agent=None) -> None:
             "/wiki search <query> [--deep] | /wiki rebuild [--full] | "
             "/wiki stats | /wiki promotion | /wiki lifecycle-scan [--days N] | "
             "/wiki gap-scan [--max-results N] [--dispatch] | /wiki fallback-cleanup [--days N] | "
-            "/wiki quarantine [list|repair]"
+            "/wiki quarantine [list|repair|purge]"
         )
         return
 
@@ -602,19 +603,24 @@ def _handle_fallback_cleanup(rest: list[str], agent) -> None:
 
 
 def _handle_quarantine(rest: list[str], agent) -> None:
-    """/wiki quarantine [list|repair] —— 解析失败页面隔离区（问题数据
-    检测与自动修复机制，见 wiki/quarantine.py + wiki/quarantine_repair.py）。
+    """/wiki quarantine [list|repair|purge] —— 解析失败页面隔离区（问题
+    数据检测与自动修复机制，见 wiki/quarantine.py + wiki/quarantine_repair.py）。
 
     不传子命令等价于 list：展示当前隔离区里的 pending/needs_human 记录，
     不做任何写操作。repair 手动触发一轮"全量扫描 + 尝试修复"，跟
     sys:wiki_quarantine_repair cron job 跑的是同一份逻辑，用于不想等
-    定时任务、想立刻看到修复结果的场景。
+    定时任务、想立刻看到修复结果的场景。purge 删除"救不回来"的问题页面
+    （见 `_handle_quarantine_purge`）。
     """
     paths = _get_paths(agent)
     if paths is None:
         return
 
     action = rest[0] if rest else "list"
+
+    if action == "purge":
+        _handle_quarantine_purge(rest[1:], paths)
+        return
 
     if action == "repair":
         from mini_agent.wiki.quarantine_repair import run_quarantine_repair_cycle
@@ -643,7 +649,7 @@ def _handle_quarantine(rest: list[str], agent) -> None:
         return
 
     if action != "list":
-        R.print_error("用法：/wiki quarantine [list|repair]")
+        R.print_error("用法：/wiki quarantine [list|repair|purge]")
         return
 
     from mini_agent.wiki.quarantine import STATUS_NEEDS_HUMAN, STATUS_PENDING, load_quarantine
@@ -683,3 +689,88 @@ def _handle_quarantine(rest: list[str], agent) -> None:
             "[dim]人工改好对应文件后，下次扫描（cron 或 /wiki quarantine repair）"
             "会自动确认并把记录标记为已修复。[/dim]"
         )
+
+
+def _handle_quarantine_purge(args: list[str], paths) -> None:
+    """/wiki quarantine purge [--status pending|needs_human|repaired|all]
+                              [--path <page_path>]... [--yes]
+
+    删除隔离区里"确定救不回来"的问题页面（同时删磁盘文件 + 摘除记录）。
+    只处理隔离区里已有记录的页面，不会碰任何能正常解析的 wiki 页面。
+
+    两步确认（同 `/agent goals spec confirm` 惯例）：不带 `--yes` 时只是
+    预览——展示会命中多少条记录、分别是哪些路径，不做任何写操作；确认
+    无误后加 `--yes` 才真正执行删除。
+
+    `--status` 默认只处理 `needs_human`（自动修复已经放弃、最典型的"确定
+    没救"的一批），避免不加参数误删还在等修复的 pending 记录；传 `all`
+    时不限制状态（包含 repaired 历史记录，需要用户明确要求）。
+    `--path` 可重复传入，配合 `/wiki quarantine list` 展示的路径做单条/
+    小批量删除；不传时按 `--status` 命中的全部记录处理。
+    """
+    from mini_agent.wiki.quarantine import (
+        STATUS_NEEDS_HUMAN, STATUS_PENDING, STATUS_REPAIRED, purge_quarantined,
+    )
+
+    status_map = {
+        "pending": STATUS_PENDING,
+        "needs_human": STATUS_NEEDS_HUMAN,
+        "repaired": STATUS_REPAIRED,
+    }
+
+    statuses: Optional[set] = {STATUS_NEEDS_HUMAN}
+    paths_filter: Optional[set] = None
+    execute = False
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--status":
+            if i + 1 >= len(args):
+                R.print_error("--status 需要一个值：pending|needs_human|repaired|all")
+                return
+            raw = args[i + 1]
+            if raw == "all":
+                statuses = None
+            else:
+                statuses = set()
+                for token in raw.split(","):
+                    token = token.strip()
+                    if token not in status_map:
+                        R.print_error(f"未知 status：{token}（可选：pending/needs_human/repaired/all）")
+                        return
+                    statuses.add(status_map[token])
+            i += 2
+        elif arg == "--path":
+            if i + 1 >= len(args):
+                R.print_error("--path 需要一个值（页面文件的绝对路径）")
+                return
+            paths_filter = paths_filter or set()
+            paths_filter.add(args[i + 1])
+            i += 2
+        elif arg == "--yes":
+            execute = True
+            i += 1
+        else:
+            R.print_error(f"未知参数：{arg}\n用法：/wiki quarantine purge [--status pending|needs_human|repaired|all] [--path <path>]... [--yes]")
+            return
+
+    preview = purge_quarantined(paths, statuses=statuses, page_paths=paths_filter, dry_run=True)
+    if preview.matched == 0:
+        R.print_info("没有命中筛选条件的隔离区记录，无需处理。")
+        return
+
+    if not execute:
+        R.console.print(f"[bold]预览[/bold]：将删除 {preview.matched} 篇隔离区页面（含磁盘文件），不可恢复。")
+        R.console.print("[dim]确认无误后加 --yes 执行，例如：/wiki quarantine purge --status needs_human --yes[/dim]")
+        return
+
+    report = purge_quarantined(paths, statuses=statuses, page_paths=paths_filter, dry_run=False)
+    R.print_success(
+        f"隔离区清理完成：命中 {report.matched} 篇，删除 {report.deleted} 篇"
+        + (f"，{report.missing_file} 篇文件本就已不存在（记录已摘除）" if report.missing_file else "")
+    )
+    if report.errors:
+        R.console.print("[dim]部分删除失败：[/dim]")
+        for e in report.errors[:5]:
+            R.console.print(f"[dim]  - {e}[/dim]")
