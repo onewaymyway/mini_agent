@@ -1,9 +1,10 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.22（用户反馈"能力学习检索机制不合理——不能只用 `web_search`，应该考虑利用 Agent 自身能力（含 skill 生态）去检索更复杂的内容"。**改动**：`CapabilityLearningConfig` 新增 `retriever_mode` 档位（`"web_search"` 默认 / `"agent"`），`"agent"` 档位下 `make_agent_retriever(cfg)` 用受限只读工具集（`web_search`/`search_knowledge`/`read_file`/`glob`/`grep`/`skill_list`/`skill_activate`/`skill_resource_list`/`skill_resource_load`）的 `SubAgent`（`orchestrator/sub_agent.py`）自主完成一轮调研——可以先 `skill_list`/`skill_activate` 激活更适合当前领域的技能再检索，而不是只会做"关键词拼接 → 单次搜索引擎调用"。`/capability cycle`（`cli/commands/capability_cmd.py`）按 `retriever_mode` 选择对应的 retriever 工厂函数，两种模式产出的结果写入前都仍统一经过 §13.3-g 合规过滤，不受影响。默认值保留 `"web_search"`（成本更低、单轮耗时更短，符合本项目一贯的"新机制先保守默认"取向），用户可在 `agent_config.json` 里把 `capability_learning.retriever_mode` 改成 `"agent"` 切换。详见「§14.4 检索方式扩展：`retriever_mode`」小节。）
-- **上一版本**：v0.21.1（bug 修复：`run_capability_learning_cycle()` 检索没有任何结果时错误地把子主题标成 `covered`。**触发背景**：用户反馈打开某个 wiki 页面看到正文只有"（暂无检索结果）"，但对应的学习台账却写着"🔍 已检索沉淀　检索并写入 1 个 wiki 页面"，感觉不正常。**根因**：`make_wiki_writer()` 无论 `retriever` 返回的 `results` 是否为空，都会无条件写出一页——真的检索到内容就写正文，检索不到就写占位文案"（暂无检索结果）"，`page_ids` 因此永远非空；而 `run_capability_learning_cycle()` 原本直接用 `page_ids` 是否非空判断 `topic.coverage_state`，导致"其实什么也没查到"的子主题被永久标记为 `covered`——`scan_outline_gaps()` 从此再也不会把它选回候选池重试，看起来"已覆盖"实际上永远是一页空内容，学习台账的文案也没有区分"写入了有内容的页面"和"写入了占位页面"这两种情况。**修复**：新增 `topic.coverage_state` 只在真正查到内容（`results` 里至少有一条非空 `summary`/`text`）时才标记为 `covered`，否则保持/回退为 `partial`（下一轮还会被重新选中重试）；学习台账新增 `research_empty` 台账动作，文案明确写"本轮检索未获得有效结果……不计入已覆盖"；`run_capability_learning_cycle()` 返回值新增 `topics_research_empty` 计数；`maybe_dispatch_capability_notification()`"新沉淀页面数"改用 `topics_researched - topics_research_empty`，不把空占位页当作新沉淀内容推送；占位页正文文案也从"（暂无检索结果）"改为更明确的"（本轮检索未获得有效结果，后续轮次会自动重试，该子主题暂不计入已覆盖）"。见「检索空结果 bug 修复」小节。）
-- **再上一版本**：v0.21（「后续计划」三项全部完成。第 1 项：通知系统接入（`notification_enabled`/`notification_frequency`/`notification_max_per_day` + `maybe_dispatch_capability_notification()`，见「§8 通知系统接入」小节）。第 2 项：大纲动态生长建议核心逻辑 + CLI（`OutlineSuggestion` + `CapabilityOutlineSuggestionStore` + `generate_outline_suggestion_from_answer()` + `accept_outline_suggestion()` + `/capability suggestions`，见「§13.2-f 大纲动态生长建议」小节）。第 2 项补齐 HTTP API（`GET /v1/capability/suggestions`、`POST .../accept`、`POST .../dismiss`）与看板 UI（能力学习 Tab 新增「💡 大纲扩展建议」区块，采纳/忽略按钮）；第 3 项 Persona 详情页镜像视图——能力学习 Tab 新增「🎭 已发布角色一览」区块，按角色列出各自绑定的 `wiki_scopes`，实现 §11.2 末尾"双向可见"；「人设 / 能力方向列表」的「能力大纲覆盖状态」区块新增「查看」按钮直接展开对应 wiki 页面正文（`GET /v1/capability/wiki_pages/{page_id}`））
-- **再上一版本**：v0.20（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的九项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）、§13.1-c 跨 Track 子主题去重与知识共享、§10 `target_type="persona"` 人设草稿合成与发布全链路（核心库 + CLI + HTTP API + 看板 UI）。**本轮（v0.20）**：真实检索与 cron 任务评审条件已满足，`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段均改为**默认开启**（opt-out，此前是 opt-in 默认关闭），见「实施状态」新增小节；同时把看板人设草稿区从最简版本（一句纯文字完成度摘要 + 单一源码预览）升级为进度条+逐维度勾选清单、渲染效果/源码双 Tab 预览、§10.4-2 真人模仿安全提示单独高亮）
+- **版本**：v0.23（用户反馈两点——① v0.22 给调研 SubAgent 的只读工具白名单太窄，"skill 里的方法可能非常复杂，需要调用各种工具和脚本才能实现"，应该开放 Agent 的所有能力，包括读写文件、执行命令；② 不应该只让 agent 做检索，应该让 agent 直接去修改/写入 wiki 文件，而不是"产出一段摘要 → 固定模板渲染"这种间接方式，这样才能更好地利用 agent 的能力。**改动**：新增两个独立配置开关（详见「§14.5 全权限工具模式与 agent 直写 wiki」小节）——`CapabilityLearningConfig.agent_retriever_tool_mode`（`"readonly"` 默认 / `"full"`）：`retriever_mode="agent"` 时，`"full"` 档位额外授予调研 SubAgent `bash`/`write_file`/`create_file`/`patch_file`/`patch_file_simple`/`list_dir`/`tree_summary`/`diff_files`（唯一不随配置放开的是 `delete_file`，任何模式下都不授予）；`CapabilityLearningConfig.wiki_write_mode`（`"callback"` 默认 / `"agent"`）：`"agent"` 档位新增 `make_agent_wiki_writer(cfg, paths)`，改由一个 SubAgent 直接调用新增的专属工具 `capability_wiki_write` 把内容写进 wiki 页面，而不是"检索/调研产出摘要 → 固定模板拼页面"这种间接方式；SubAgent 未能在轮数/超时内成功调用该工具时，自动退回固定模板兜底，保证"这个子主题最终有一页落盘记录"这个 P1 就定下的不变量不被打破。两个开关都默认关闭（`"readonly"`/`"callback"`），符合本项目一贯"新机制先保守默认"的取向。）
+- **上一版本**：v0.22（用户反馈"能力学习检索机制不合理——不能只用 `web_search`，应该考虑利用 Agent 自身能力（含 skill 生态）去检索更复杂的内容"。**改动**：`CapabilityLearningConfig` 新增 `retriever_mode` 档位（`"web_search"` 默认 / `"agent"`），`"agent"` 档位下 `make_agent_retriever(cfg)` 用受限只读工具集（`web_search`/`search_knowledge`/`read_file`/`glob`/`grep`/`skill_list`/`skill_activate`/`skill_resource_list`/`skill_resource_load`）的 `SubAgent`（`orchestrator/sub_agent.py`）自主完成一轮调研——可以先 `skill_list`/`skill_activate` 激活更适合当前领域的技能再检索，而不是只会做"关键词拼接 → 单次搜索引擎调用"。`/capability cycle`（`cli/commands/capability_cmd.py`）按 `retriever_mode` 选择对应的 retriever 工厂函数，两种模式产出的结果写入前都仍统一经过 §13.3-g 合规过滤，不受影响。默认值保留 `"web_search"`（成本更低、单轮耗时更短，符合本项目一贯的"新机制先保守默认"取向），用户可在 `agent_config.json` 里把 `capability_learning.retriever_mode` 改成 `"agent"` 切换。详见「§14.4 检索方式扩展：`retriever_mode`」小节。）
+- **再上一版本**：v0.21.1（bug 修复：`run_capability_learning_cycle()` 检索没有任何结果时错误地把子主题标成 `covered`。**触发背景**：用户反馈打开某个 wiki 页面看到正文只有"（暂无检索结果）"，但对应的学习台账却写着"🔍 已检索沉淀　检索并写入 1 个 wiki 页面"，感觉不正常。**根因**：`make_wiki_writer()` 无论 `retriever` 返回的 `results` 是否为空，都会无条件写出一页——真的检索到内容就写正文，检索不到就写占位文案"（暂无检索结果）"，`page_ids` 因此永远非空；而 `run_capability_learning_cycle()` 原本直接用 `page_ids` 是否非空判断 `topic.coverage_state`，导致"其实什么也没查到"的子主题被永久标记为 `covered`——`scan_outline_gaps()` 从此再也不会把它选回候选池重试，看起来"已覆盖"实际上永远是一页空内容，学习台账的文案也没有区分"写入了有内容的页面"和"写入了占位页面"这两种情况。**修复**：新增 `topic.coverage_state` 只在真正查到内容（`results` 里至少有一条非空 `summary`/`text`）时才标记为 `covered`，否则保持/回退为 `partial`（下一轮还会被重新选中重试）；学习台账新增 `research_empty` 台账动作，文案明确写"本轮检索未获得有效结果……不计入已覆盖"；`run_capability_learning_cycle()` 返回值新增 `topics_research_empty` 计数；`maybe_dispatch_capability_notification()`"新沉淀页面数"改用 `topics_researched - topics_research_empty`，不把空占位页当作新沉淀内容推送；占位页正文文案也从"（暂无检索结果）"改为更明确的"（本轮检索未获得有效结果，后续轮次会自动重试，该子主题暂不计入已覆盖）"。见「检索空结果 bug 修复」小节。）
+- **再再上一版本**：v0.21（「后续计划」三项全部完成。第 1 项：通知系统接入（`notification_enabled`/`notification_frequency`/`notification_max_per_day` + `maybe_dispatch_capability_notification()`，见「§8 通知系统接入」小节）。第 2 项：大纲动态生长建议核心逻辑 + CLI（`OutlineSuggestion` + `CapabilityOutlineSuggestionStore` + `generate_outline_suggestion_from_answer()` + `accept_outline_suggestion()` + `/capability suggestions`，见「§13.2-f 大纲动态生长建议」小节）。第 2 项补齐 HTTP API（`GET /v1/capability/suggestions`、`POST .../accept`、`POST .../dismiss`）与看板 UI（能力学习 Tab 新增「💡 大纲扩展建议」区块，采纳/忽略按钮）；第 3 项 Persona 详情页镜像视图——能力学习 Tab 新增「🎭 已发布角色一览」区块，按角色列出各自绑定的 `wiki_scopes`，实现 §11.2 末尾"双向可见"；「人设 / 能力方向列表」的「能力大纲覆盖状态」区块新增「查看」按钮直接展开对应 wiki 页面正文（`GET /v1/capability/wiki_pages/{page_id}`））
+- **再再上一版本**：v0.20（P1 全部计划项已实现；并提前完成了原标注在 P2/P3 的九项——`miss_observed` 台账接入 `scan_outline_gaps()` 优先级排序、LLM 辅助大纲起草（CLI `--llm-draft` + HTTP API `llm_draft` 字段 + 看板复选框）、§11.4 看板"知识范围绑定"卡片、§12.1-a `capability_map` 排序信号、§13.1-b 多 Track 公平调度、§13.2-d 知识时效性衰减（`volatility` 消费）、§13.1-c 跨 Track 子主题去重与知识共享、§10 `target_type="persona"` 人设草稿合成与发布全链路（核心库 + CLI + HTTP API + 看板 UI）。**本轮（v0.20）**：真实检索与 cron 任务评审条件已满足，`CapabilityLearningConfig.retriever_enabled` 与 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个 cron job 的 `enabled` 字段均改为**默认开启**（opt-out，此前是 opt-in 默认关闭），见「实施状态」新增小节；同时把看板人设草稿区从最简版本（一句纯文字完成度摘要 + 单一源码预览）升级为进度条+逐维度勾选清单、渲染效果/源码双 Tab 预览、§10.4-2 真人模仿安全提示单独高亮）
 - **定位**：mini_agent 新增能力设计方案——让 Agent 围绕用户设定的一个**能力人设/方向**（例如"希望你具备强大的股票分析能力"），持续自主地从互联网检索、整理、沉淀为 wiki 知识，并在必要时**异步**向用户提问以获取只有用户才知道的信息（偏好、真实需求边界、私有语境），全程不阻塞任何一方。
 - **一句话概括**：复用 `growth_advisor.py`（信号→候选→调研→反馈闭环）与 `wiki/`（写入/去重/关联/检索）已经跑通的架构范式，新增一条服务对象是"Agent 自身某项专精能力"而不是"用户成长方向"或"Agent 通用自我进化"的平行闭环，并补齐一个此前项目里没有的能力：**Agent 主动提问、用户异步作答、Agent 消费答案继续推进**的问答队列机制。同一套循环骨架进一步延伸到 `.agent/personas/` 角色扮演系统：既可以用来**持续养成一个新的人设**（第 10 节），也可以让**每个角色拥有自己专属的 wiki 检索范围**，让"人设的专业感"从语气层面真正落到回答内容层面（第 11 节）。
 
@@ -58,6 +59,113 @@ skill_list, skill_activate, skill_resource_list, skill_resource_load
 **留给后续的方向（本轮刻意不做）**：
 - 看板"🎓 能力学习"Tab 目前只是通用配置面板自动展示 `retriever_mode` 字段（下拉/文本编辑），没有额外做"agent 模式下最近几次调研摘要预览"这类专属 UI——等 `"agent"` 模式有真实使用反馈后再评估是否值得做。
 - 没有做"按子主题动态选择检索模式"（比如简单主题走 `web_search`、复杂主题走 `agent`）——这需要先有一种"复杂度判定"的信号来源，属于过早引入不确定性，留到有真实使用反馈后再考虑。
+
+### §14.5 全权限工具模式与 agent 直写 wiki（v0.23）—— ✅ 已实现
+
+**触发背景**：用户对 v0.22 的 `make_agent_retriever()` 提出两点反馈：
+
+1. 调研 SubAgent 只拿到一份只读工具白名单（`web_search`/`search_knowledge`/
+   `read_file`/`glob`/`grep`/`skill_list`/`skill_activate`/
+   `skill_resource_list`/`skill_resource_load`），"skill 里的方法可能非常
+   复杂，需要调用各种工具和脚本才能实现"——遇到需要下载并解析一份数据
+   文件、跑一段处理脚本才能完成的调研，只读工具集完全做不到，应该"开放
+   agent 的所有能力，包括读写文件，执行命令"。
+2. 检索到的内容此前只能"agent 产出一段摘要文本 → `make_wiki_writer()`
+   固定模板拼成页面"，agent 自己不能根据调研过程直接判断内容该怎么
+   组织、要不要再补充——"是不是应该让 agent 直接去修改 wiki 文件，而不是
+   单纯用 agent 进行检索，这样才能更好地利用 agent 的能力"。
+
+**方案**：新增两个相互独立、都默认关闭的配置开关（沿用 v0.22 的克制取向：
+新机制先保守默认，用户按需 opt-in）：
+
+| 配置项 | 默认值 | 生效条件 | 作用 |
+| --- | --- | --- | --- |
+| `CapabilityLearningConfig.agent_retriever_tool_mode` | `"readonly"` | `retriever_mode="agent"` 时 | `"full"`：调研 SubAgent 的工具白名单从只读扩展到读写/命令执行类工具 |
+| `CapabilityLearningConfig.wiki_write_mode` | `"callback"` | 始终生效（不依赖 `retriever_mode`） | `"agent"`：wiki 写入这一步改由 SubAgent 直接调用专属工具落盘，而不是固定模板渲染 |
+
+**① `agent_retriever_tool_mode="full"`**：`_agent_retriever_tool_list(cfg)`
+在原有只读白名单基础上，追加 `_AGENT_RETRIEVER_FULL_EXTRA_TOOLS`——
+`bash`/`write_file`/`create_file`/`patch_file`/`patch_file_simple`/
+`list_dir`/`tree_summary`/`diff_files`。**唯一一条不随配置放开的硬
+限制是 `delete_file`**——即使开到 `"full"` 档位，也不应该让一个无人
+值守、cron 触发的后台调研任务拥有删除项目文件的能力。`make_agent_retriever()`
+和后面的 `make_agent_wiki_writer()` 共享这同一份工具白名单拼装逻辑，
+不重复实现。
+
+**② `wiki_write_mode="agent"`**：新增 `make_agent_wiki_writer(cfg, paths)`，
+与 `make_wiki_writer(paths)` 签名完全一致（`WikiWriterFn`），可以直接
+互相替换，`run_capability_learning_cycle()` 不需要感知走的是哪一种。
+流程：
+
+1. 把 `retriever` 已经拿到的 `results`（经 §13.3-g 合规过滤）整理成一份
+   "调研素材"文本，喂给一个新的写入用 SubAgent；
+2. SubAgent 可以直接据此整理内容，也可以按需再用工具补充调研（工具集
+   同样受 `agent_retriever_tool_mode` 控制，与调研 SubAgent 共享同一份
+   白名单）；
+3. SubAgent 必须调用新增的专属工具 `capability_wiki_write(body)` 才算
+   完成写入——**没有把 wiki 目录直接暴露给通用的 `write_file`**：
+   `"full"` 模式下 `write_file`/`create_file` 授予的是辅助调研过程中的
+   通用读写能力（临时文件、脚本），wiki 落盘本身只能走
+   `capability_wiki_write` 这一条路径。这样做的原因：
+   - §13.3-g 合规过滤（句级风险表述过滤 + `requires_disclaimer` 标注）
+     在这个工具内部执行，agent 无法绕开；
+   - `page_id`（固定为 `cap_{track.track_id}_{topic.topic_id}`，与
+     `make_wiki_writer()` 保持一致）、`tags`（`track.wiki_tag`）等结构化
+     字段由 `make_agent_wiki_writer()` 在启动 SubAgent 前预先绑定进模块级
+     状态（`_CAPABILITY_WIKI_WRITE_STATE`），模型只需要给出正文内容，
+     不能自己决定这些必须和 `run_capability_learning_cycle()` 严格对应
+     的字段。
+
+**失败兜底**：SubAgent 超时/失败/没有成功调用 `capability_wiki_write`
+时，`make_agent_wiki_writer()` 自动退回 `make_wiki_writer(paths)` 的固定
+模板渲染（复用同一份 `results`，不重新调用 retriever）——保证"这个子
+主题最终有一页落盘记录"这个 P1 就定下的不变量（见 v0.21.1 检索空结果
+bug 修复）在新写入模式下同样成立，不会退化出"researched 但没有任何
+页面"的情况。
+
+**接线**：`/capability cycle`（`cli/commands/capability_cmd.py`）按
+`wiki_write_mode` 选择 `make_agent_wiki_writer(cfg, paths)` 还是
+`make_wiki_writer(paths)`，与 `retriever_mode` 的选择逻辑并列、互不
+依赖（两个开关可以任意组合：比如 `retriever_mode="web_search"` +
+`wiki_write_mode="agent"` 也是合法组合——检索走最省成本的关键词搜索，
+但落盘时让 agent 自己判断怎么整理页面）。命令完成后的提示文案同时展示
+`retriever_mode` 和 `wiki_write_mode` 当前生效的值。
+
+**测试覆盖**：`tests/test_capability_learning_p1.py` 新增覆盖默认配置值、
+`agent_retriever_tool_mode="full"` 时工具白名单包含读写/执行类工具且
+不含 `delete_file`、默认 `"readonly"` 时行为与 v0.22 完全一致、
+`make_agent_wiki_writer()` 通过 `capability_wiki_write` 工具成功写入、
+SubAgent 失败时退回固定模板兜底、`capability_wiki_write` 工具在非
+能力学习写入上下文里调用时安全拒绝、`/capability cycle` 按
+`wiki_write_mode` 选择正确的写入工厂函数，共 7 组测试，均通过
+monkeypatch 替换 `SubAgent` 为假实现，不依赖真实 LLM/网络。全量能力学习
+相关测试套件（`test_capability_learning_p1.py` +
+`test_capability_cmd.py` + `test_capability_routes_mount.py` +
+`test_capability_notification_v021.py` +
+`test_capability_outline_suggestions_v021.py` +
+`test_capability_persona_wiki_scopes_binding.py`，共 93 项）全部通过，
+无回归。
+
+| 落地内容 | 状态 | 涉及文件 |
+| --- | --- | --- |
+| `CapabilityLearningConfig` 新增 `agent_retriever_tool_mode`/`wiki_write_mode`/`agent_wiki_writer_max_turns`/`agent_wiki_writer_timeout_seconds` | ✅ 已实现 | `src/mini_agent/config/models.py` |
+| `_agent_retriever_tool_list(cfg)`：按 `agent_retriever_tool_mode` 拼装工具白名单，`make_agent_retriever()` 复用 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
+| `capability_wiki_write` 工具 + `make_agent_wiki_writer(cfg, paths)` | ✅ 已实现 | 同上 |
+| `/capability cycle` 按 `wiki_write_mode` 选择写入工厂函数 | ✅ 已实现 | `src/mini_agent/cli/commands/capability_cmd.py` |
+| 单元测试（7 组） | ✅ 已实现 | `tests/test_capability_learning_p1.py` |
+
+**留给后续的方向（本轮刻意不做）**：
+- 看板"🎓 能力学习"Tab 目前同样只是通用配置面板自动展示这两个新字段
+  （下拉/文本编辑），没有做"full 模式/agent 直写模式下最近几次调研或
+  写入过程的详细轨迹展示"这类专属 UI——和 v0.22 的取舍一致，等有真实
+  使用反馈后再评估是否值得做。
+- 没有做"按子主题/Track 动态选择工具模式或写入模式"——同样需要先有
+  "复杂度判定"信号来源，属于过早引入不确定性，留到有真实使用反馈后再
+  考虑。
+- `"full"` 工具模式目前是"调研 SubAgent 用一套白名单"和"写入 SubAgent
+  用同一套白名单"共享同一份配置项，没有拆成两个独立字段分别控制——
+  评估后认为调研和写入这两步的"是否需要脚本/命令行能力"的场景高度
+  重合，拆成两个字段增加的配置复杂度大于收益，暂不拆分。
 
 ### 检索空结果 bug 修复（v0.21.1）—— ✅ 已实现
 
@@ -283,7 +391,7 @@ Persona 详情页反向展示"绑定的知识范围"列表未单独实现——�
 |---|---|---|
 | `/capability [list]`：展示所有 Track 概况 | ✅ 已实现 | `src/mini_agent/cli/commands/capability_cmd.py` |
 | `/capability create <title> \| <persona_desc> [--llm-draft]`：创建 knowledge 型 Track | ✅ 已实现；`--llm-draft` 用 `agent.llm_helper` 起草初始大纲（§14 P2，已提前实现，见下方「§14 P2：LLM 辅助大纲起草」小节），不加这个 flag 时仍是原有的空大纲行为 | 同上 |
-| `/capability cycle`：手动触发一轮学习循环，等价于 `sys:capability_learning_cycle` 执行的内容 | ✅ 已实现；是否使用真实检索由 `CapabilityLearningConfig.retriever_enabled` 配置项控制（v0.20 起默认 True），关闭时 `retriever=None`，需要检索的子主题仍会被安全跳过并记 `skipped` 台账；默认打开时按 `retriever_mode` 选用 `make_web_search_retriever(cfg)`（默认）或 `make_agent_retriever(cfg)`（[v0.22] `retriever_mode="agent"`），写入前仍经过 §13.3-g 合规过滤 | 同上 |
+| `/capability cycle`：手动触发一轮学习循环，等价于 `sys:capability_learning_cycle` 执行的内容 | ✅ 已实现；是否使用真实检索由 `CapabilityLearningConfig.retriever_enabled` 配置项控制（v0.20 起默认 True），关闭时 `retriever=None`，需要检索的子主题仍会被安全跳过并记 `skipped` 台账；默认打开时按 `retriever_mode` 选用 `make_web_search_retriever(cfg)`（默认）或 `make_agent_retriever(cfg)`（[v0.22] `retriever_mode="agent"`，[v0.23] `agent_retriever_tool_mode="full"` 可选放开读写/执行类工具），wiki 写入按 `wiki_write_mode` 选用 `make_wiki_writer(paths)`（默认）或 `make_agent_wiki_writer(cfg, paths)`（[v0.23] agent 直写 wiki），写入前仍经过 §13.3-g 合规过滤 | 同上 |
 | `/capability questions [track_id]` / `/capability questions --sweep-expired` / `/capability answer <id> <text>`：异步问答队列的 CLI 入口 | ✅ 已实现 | 同上 |
 | repl.py 分发、`cli/commands/__init__.py` 导出、`/help`（`parser.py`）文案 | ✅ 已同步更新 | `src/mini_agent/cli/repl.py`、`src/mini_agent/cli/commands/__init__.py`、`src/mini_agent/cli/parser.py` |
 | 单元测试（10 组：无 agent / 空列表 / 创建 / cycle 空跑 / cycle 在真实 Track 上确认不产生"假装学会了"的覆盖率变化 / 问答队列列出与提交 / 未知子命令） | ✅ 全部通过 | `tests/test_capability_cmd.py` |

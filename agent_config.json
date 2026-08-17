@@ -224,7 +224,11 @@
   },
   "capability_learning":{
     "retriever_mode": "agent",
-    "agent_retriever_max_turns": 20
+    "agent_retriever_max_turns": 20,
+    "agent_retriever_tool_mode":"full",
+    "wiki_write_mode":"agent",
+    "agent_wiki_writer_max_turns": 20,
+    "agent_wiki_writer_timeout_seconds": 2400
   },
   "cron": {
     "default_timeout_seconds": 2400,

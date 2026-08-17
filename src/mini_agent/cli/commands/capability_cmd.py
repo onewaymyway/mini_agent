@@ -189,12 +189,23 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
             else:
                 from mini_agent.evolution.capability_learning import make_web_search_retriever
                 retriever = make_web_search_retriever(cfg)
+        # [v0.23] wiki 写入实现档位：默认仍是固定模板渲染
+        # （make_wiki_writer），"agent" 时改由 SubAgent 直接调用
+        # capability_wiki_write 工具写入（工具集受
+        # agent_retriever_tool_mode 控制），失败时自动退回固定模板兜底，
+        # 见 make_agent_wiki_writer() 的说明。
+        wiki_write_mode = str(getattr(getattr(cfg, "capability_learning", None), "wiki_write_mode", "callback") or "callback")
+        if wiki_write_mode == "agent" and cfg is not None:
+            from mini_agent.evolution.capability_learning import make_agent_wiki_writer
+            wiki_writer = make_agent_wiki_writer(cfg, paths)
+        else:
+            wiki_writer = make_wiki_writer(paths)
         # v0.21 §13.2-f：拿得到 llm_helper 就顺带在消费已回答问题时生成
         # 大纲动态生长建议；拿不到（agent 未初始化/无 LLM 上下文）时这一步
         # 在 run_capability_learning_cycle 内部整体跳过，不影响循环本身。
         llm_helper = _get_llm_helper(agent)
         result = run_capability_learning_cycle(
-            paths, retriever=retriever, wiki_writer=make_wiki_writer(paths),
+            paths, retriever=retriever, wiki_writer=wiki_writer,
             llm_helper=llm_helper,
         )
         # v0.21 §8：本轮跑完后尝试推送一条按天节流的摘要通知（空轮/被
@@ -211,11 +222,13 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         except Exception:
             pass
         skip_note = (
-            f"（真实检索已开启，检索方式={retriever_mode}，检索失败/无结果的子主题仍会被跳过并记台账）"
+            f"（真实检索已开启，检索方式={retriever_mode}，写入方式={wiki_write_mode}，"
+            f"检索失败/无结果的子主题仍会被跳过并记台账）"
             if retriever_enabled
             else "（未开启真实检索，需要检索的子主题会被跳过并记台账；"
                  "在 agent_config.json 里设置 capability_learning.retriever_enabled=true 可开启，"
-                 "并可用 capability_learning.retriever_mode 选择 web_search/agent）"
+                 "并可用 capability_learning.retriever_mode 选择 web_search/agent、"
+                 "capability_learning.wiki_write_mode 选择 callback/agent）"
         )
         R.print_info(
             "本轮学习循环完成："

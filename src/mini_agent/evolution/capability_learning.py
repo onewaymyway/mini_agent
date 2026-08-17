@@ -35,6 +35,15 @@
       局限。由 `CapabilityLearningConfig.retriever_mode="agent"` 选用
       （默认仍是 `"web_search"`，opt-in 切换）；同样受
       `retriever_enabled` 总开关和 §13.3-g 合规过滤约束
+    - [v0.23] agent_retriever_tool_mode="full"：`retriever_mode="agent"`
+      时可选把调研 SubAgent 的工具白名单从只读扩展到 bash/write_file/
+      create_file/patch_file 等读写/执行类工具（不含 delete_file），
+      支持需要脚本/命令行工具才能完成的复杂调研
+    - [v0.23] wiki_write_mode="agent"：新增 make_agent_wiki_writer(cfg,
+      paths)，改由 SubAgent 直接调用专属的 capability_wiki_write 工具
+      把内容写进 wiki 页面（而不是"agent 产出摘要 → 固定模板渲染"），
+      §13.3-g 合规过滤在工具内部执行、不可绕过；SubAgent 未成功写入时
+      自动退回固定模板兜底
     - PersonaProfile.wiki_scopes 接线（§11）：`context_builder.py` 每轮
       检索把当前激活角色的 `wiki_scopes` 透传给 `wiki_shelf_search(tags=...)`
     - record_wiki_miss() 的接线（§14.1-a）：`context_builder.py` 在 persona
@@ -1556,6 +1565,38 @@ _AGENT_RETRIEVER_ALLOWED_TOOLS = [
 ]
 
 
+# [v0.23] "full" 工具模式下额外授予的工具——读写文件与命令执行，用于支持
+# 需要脚本/命令行工具才能完成的复杂调研（下载并解析数据文件、跑一段处理
+# 脚本等）。刻意不含 delete_file：即使开放到"full"档位，也不应该让一个
+# 无人值守、cron 触发的后台调研/写入任务拥有删除项目文件的能力——这是
+# 唯一一条不随配置放开的硬限制，理由见 CapabilityLearningConfig.
+# agent_retriever_tool_mode 字段注释。
+_AGENT_RETRIEVER_FULL_EXTRA_TOOLS = [
+    "bash",
+    "write_file",
+    "create_file",
+    "patch_file",
+    "patch_file_simple",
+    "list_dir",
+    "tree_summary",
+    "diff_files",
+]
+
+
+def _agent_retriever_tool_list(cfg: "AppConfig") -> list[str]:
+    """按 `CapabilityLearningConfig.agent_retriever_tool_mode` 拼出调研/
+    写入 SubAgent 的工具白名单。`"full"` 在只读白名单基础上追加读写/执行
+    类工具（不含 delete_file，见上方注释）；未识别的值按 `"readonly"`
+    处理。"""
+    tool_mode = str(
+        getattr(cfg.capability_learning, "agent_retriever_tool_mode", "readonly") or "readonly"
+    )
+    tools = list(_AGENT_RETRIEVER_ALLOWED_TOOLS)
+    if tool_mode == "full":
+        tools += [t for t in _AGENT_RETRIEVER_FULL_EXTRA_TOOLS if t not in tools]
+    return tools
+
+
 def make_agent_retriever(cfg: "AppConfig") -> RetrieverFn:
     """[v0.22 §14.4] 返回一个绑定了 cfg 的 retriever 回调，与
     `make_web_search_retriever()` 签名/调用约定完全一致，直接传给
@@ -1608,7 +1649,7 @@ def make_agent_retriever(cfg: "AppConfig") -> RetrieverFn:
             name=f"capability_research:{topic.topic_id}",
             auto_approve=True,
             max_turns=max_turns,
-            allowed_tools=list(_AGENT_RETRIEVER_ALLOWED_TOOLS),
+            allowed_tools=_agent_retriever_tool_list(cfg),
         )
         record = TaskRecord(task=task)
         sub = SubAgent(record, cfg)
@@ -1636,6 +1677,173 @@ def make_agent_retriever(cfg: "AppConfig") -> RetrieverFn:
         return [{"summary": output, "source": "agent_research"}]
 
     return _retriever
+
+
+# ── [v0.23] agent 直接写 wiki 模式（wiki_write_mode="agent"）─────────────
+#
+# 触发背景：此前唯一的写入实现（`make_wiki_writer`）是"agent/检索器只
+# 产出一段摘要文本，固定模板负责拼成页面"——agent 没有机会根据调研过程
+# 自己判断内容该怎么组织、要不要再补充。这里提供一种可选替代：让一个
+# SubAgent 直接调用专属的 `capability_wiki_write` 工具把最终内容写进
+# wiki 页面。
+#
+# 没有把 wiki 目录直接暴露给通用的 write_file/create_file——那两个工具在
+# "full" 工具模式下是给 agent 用来处理调研过程中的辅助性读写（比如临时
+# 脚本、下载的数据文件），wiki 落盘本身只能走 capability_wiki_write 这
+# 一条路径，这样 §13.3-g 合规过滤（写入前的句级风险过滤 + disclaimer
+# 标注）才能保证不被绕开，page_id/tags 等结构化字段也不会被模型自由
+# 决定，而是由 make_agent_wiki_writer() 按 topic/track 预先绑定好。
+_CAPABILITY_WIKI_WRITE_STATE: dict = {
+    "active": False,
+    "paths": None,
+    "page_id": None,
+    "tags": None,
+    "extra_fm": None,
+    "requires_disclaimer": False,
+    "written_page_id": None,
+}
+
+
+def _capability_wiki_write_impl(body: str) -> str:
+    state = _CAPABILITY_WIKI_WRITE_STATE
+    if not state.get("active"):
+        return "错误：当前不在能力学习写入上下文里，这个工具暂不可用。"
+    body = (body or "").strip()
+    if not body:
+        return "错误：body 不能为空。"
+    from mini_agent.wiki.writer import write_page
+
+    if state.get("requires_disclaimer"):
+        body = body + "\n\n> 仅供参考，不构成投资/医疗/法律等专业建议。"
+    write_page(
+        paths=state["paths"],
+        page_id=state["page_id"],
+        page_type="topic",
+        body=body,
+        tags=state["tags"] or [],
+        extra_frontmatter=state["extra_fm"] or {},
+    )
+    state["written_page_id"] = state["page_id"]
+    return f"已写入 wiki 页面 {state['page_id']}"
+
+
+try:
+    from mini_agent.tools import tool as _capability_tool_decorator
+
+    @_capability_tool_decorator(
+        name="capability_wiki_write",
+        description=(
+            "[能力学习专用] 把这一轮调研的最终结论写入当前子主题对应的 wiki 页面。"
+            "仅在能力学习/人设养成的调研任务里可用，一次任务里只调用一次；"
+            "正文用 Markdown，需要包含关键结论要点，并在末尾列出信息来源。"
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "body": {"type": "string", "description": "wiki 页面正文（Markdown）"},
+            },
+            "required": ["body"],
+        },
+        requires_approval=False,
+        group="capability_learning",
+        override=True,
+    )
+    def capability_wiki_write(body: str) -> str:  # noqa: D401 - 见 _capability_wiki_write_impl
+        return _capability_wiki_write_impl(body)
+except Exception:  # pragma: no cover - 工具注册基础设施异常时不影响模块导入
+    pass
+
+
+def make_agent_wiki_writer(cfg: "AppConfig", paths: AgentPaths) -> WikiWriterFn:
+    """[v0.23] `wiki_write_mode="agent"` 时使用，与 `make_wiki_writer(paths)`
+    签名/调用约定完全一致（`WikiWriterFn`），可直接替换传给
+    `run_capability_learning_cycle(wiki_writer=...)`。
+
+    流程：把 `retriever` 已经拿到的 `results`（经 §13.3-g 合规过滤）整理成
+    一份"调研素材"喂给写入 SubAgent，SubAgent 可以直接据此整理成页面，
+    也可以按需再用工具补充调研（工具集受 `agent_retriever_tool_mode`
+    控制，与 `make_agent_retriever()` 共享同一份白名单逻辑），最终必须
+    调用 `capability_wiki_write` 落盘。
+
+    失败兜底：SubAgent 超时/失败/没有成功调用写入工具时，退回
+    `make_wiki_writer(paths)` 的固定模板渲染（复用同一份 `results`，不
+    重新调用 retriever）——保证"这个子主题最终有一页落盘记录"这个 P1
+    就定下的不变量（见 v0.21.1 检索空结果 bug 修复）在这个新写入模式下
+    同样成立，不会退化出"researched 但没有任何页面"的情况。
+    """
+    from mini_agent.orchestrator.sub_agent import SubAgent
+    from mini_agent.orchestrator.task import Task, TaskRecord, TaskStatus
+
+    fallback_writer = make_wiki_writer(paths)
+    max_turns = max(1, cfg.capability_learning.agent_wiki_writer_max_turns)
+    timeout_seconds = max(30, cfg.capability_learning.agent_wiki_writer_timeout_seconds)
+
+    def _writer(topic: OutlineTopic, track: CapabilityTrack, results: list[dict]) -> list[str]:
+        from datetime import datetime, timezone
+
+        filtered_results, _any_filtered, requires_disclaimer = apply_compliance_filter(results, track)
+        urls = [r.get("url") for r in filtered_results if r.get("url")]
+        material_lines = []
+        for r in filtered_results:
+            s = (r.get("summary") or r.get("text") or "").strip()
+            if s:
+                material_lines.append(f"- {s}" + (f"（来源：{r.get('url')}）" if r.get("url") else ""))
+        material = "\n".join(material_lines) if material_lines else "（本轮调研未提供额外素材，可自行检索补充）"
+
+        page_id = f"cap_{track.track_id}_{topic.topic_id}"
+        _CAPABILITY_WIKI_WRITE_STATE.update({
+            "active": True,
+            "paths": paths,
+            "page_id": page_id,
+            "tags": [track.wiki_tag] if track.wiki_tag else [],
+            "extra_fm": {
+                "capability_track_id": track.track_id,
+                "source_urls": urls,
+                "retrieved_at": datetime.now(timezone.utc).isoformat(),
+                "requires_disclaimer": requires_disclaimer,
+            },
+            "requires_disclaimer": requires_disclaimer,
+            "written_page_id": None,
+        })
+        try:
+            prompt = (
+                f"你正在为能力方向「{track.title}」的子主题「{topic.name}」整理并写入 wiki 页面。\n"
+                f"已有调研素材：\n{material}\n\n"
+                f"- 素材足够就直接整理成结构清晰的 Markdown 正文；判断需要补充时，"
+                f"可以用 web_search/search_knowledge 等工具再查，复杂内容也可以用"
+                f"允许范围内的读写/命令行工具辅助处理，但这些只是辅助手段；\n"
+                f"- 最终必须调用 capability_wiki_write 工具一次，把整理好的正文写进去；\n"
+                f"- 不需要在对话里重复输出正文全文，写入工具即可，完成后简单确认一句。"
+            )
+            task = Task(
+                prompt=prompt,
+                name=f"capability_wiki_write:{topic.topic_id}",
+                auto_approve=True,
+                max_turns=max_turns,
+                allowed_tools=_agent_retriever_tool_list(cfg) + ["capability_wiki_write"],
+            )
+            record = TaskRecord(task=task)
+            sub = SubAgent(record, cfg)
+            try:
+                sub.start()
+                sub.join(timeout=timeout_seconds)
+            except Exception:
+                pass
+            if record.status != TaskStatus.DONE:
+                try:
+                    sub.cancel()
+                except Exception:
+                    pass
+            written = _CAPABILITY_WIKI_WRITE_STATE.get("written_page_id")
+            if written:
+                return [written]
+        finally:
+            _CAPABILITY_WIKI_WRITE_STATE.update({"active": False, "paths": None})
+
+        # SubAgent 没有成功写入——退回固定模板兜底，复用同一份 results。
+        return fallback_writer(topic, track, results)
+
+    return _writer
 
 
 # ── persona 型 Track：人设草稿合成（§10.3，本轮实现）───────────────────────

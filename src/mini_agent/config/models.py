@@ -2270,6 +2270,45 @@ class CapabilityLearningConfig:
     # 合并进同一条里，不会因为触发了多次 cron 就发多条。
     notification_max_per_day: int = 1
 
+    # ── [v0.23] 检索/写入的工具能力开放程度 ────────────────────────────
+    # 触发背景：用户反馈 §14.4 给调研 SubAgent 的只读工具白名单太窄——
+    # 一些复杂子主题需要用脚本/命令行工具才能完成调研（下载并解析一份
+    # 数据文件、跑一段处理脚本），只读工具集做不到；同时检索到的内容
+    # 一直是"agent 产出摘要 → 固定模板渲染成页面"，agent 自己不能根据
+    # 调研过程直接判断怎么组织、怎么写入 wiki。见
+    # next_doc/persona_capability_learning_design.md「§14.5 全权限工具
+    # 模式与 agent 直写 wiki」。
+    #
+    # 仅在 retriever_mode="agent" 时生效：
+    #   "readonly"（默认）—— 沿用 §14.4 原有只读工具白名单
+    #   "full"             —— 额外授予 bash/write_file/create_file/
+    #                          patch_file/patch_file_simple/list_dir/
+    #                          tree_summary/diff_files。delete_file 在
+    #                          任何模式下都不授予（唯一不随配置放开的
+    #                          硬限制，见 capability_learning.py 顶部
+    #                          v0.23 小节注释）。
+    agent_retriever_tool_mode: str = "readonly"
+
+    # wiki 写入实现档位：
+    #   "callback"（默认）—— make_wiki_writer(paths)，固定模板渲染
+    #                         （results 里的 summary/url 拼成一页，不
+    #                         经过 LLM）
+    #   "agent"            —— make_agent_wiki_writer(cfg, paths)：改由一个
+    #                         SubAgent（工具集同样受 agent_retriever_tool_mode
+    #                         控制）直接调用专属的 capability_wiki_write
+    #                         工具把最终内容写进 wiki 页面；agent 没有在
+    #                         轮数/超时内成功写入时，自动退回 "callback"
+    #                         同款固定模板兜底，保证"这个子主题最终有一页
+    #                         落盘记录"这个不变量始终成立。
+    # 未识别的值按 "callback" 处理。
+    wiki_write_mode: str = "callback"
+
+    # wiki_write_mode="agent" 时，写入 SubAgent 允许的最大工具调用轮数。
+    agent_wiki_writer_max_turns: int = 8
+
+    # wiki_write_mode="agent" 时，等待写入 SubAgent 完成的超时时间（秒）。
+    agent_wiki_writer_timeout_seconds: int = 240
+
 
 @dataclass
 class ReminderConfig:

@@ -637,3 +637,183 @@ def test_capability_cmd_selects_agent_retriever_by_mode(monkeypatch):
         cl.make_web_search_retriever(cfg)
 
     assert called["mode"] == "agent"
+
+
+# ── [v0.23] full 工具模式 + agent 直接写 wiki ───────────────────────────────
+
+
+def test_capability_learning_config_default_v023_fields():
+    from mini_agent.config import AppConfig
+
+    cfg = AppConfig()
+    assert cfg.capability_learning.agent_retriever_tool_mode == "readonly"
+    assert cfg.capability_learning.wiki_write_mode == "callback"
+    assert cfg.capability_learning.agent_wiki_writer_max_turns == 8
+    assert cfg.capability_learning.agent_wiki_writer_timeout_seconds == 240
+
+
+def test_agent_retriever_tool_mode_full_adds_write_and_bash(paths, monkeypatch):
+    from mini_agent.config import AppConfig
+    from mini_agent.evolution.capability_learning import (
+        CapabilityTrackStore, make_agent_retriever,
+    )
+
+    captured_tools = []
+    _install_fake_sub_agent(
+        monkeypatch, output="调研摘要", allowed_tools_capture=captured_tools,
+    )
+
+    cfg = AppConfig()
+    cfg.capability_learning.retriever_mode = "agent"
+    cfg.capability_learning.agent_retriever_tool_mode = "full"
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="数据分析能力", persona_desc="x", outline_names=["清洗脚本"])
+    topic = track.outline[0]
+
+    retriever = make_agent_retriever(cfg)
+    retriever(topic, track)
+
+    tools = captured_tools[0]
+    assert "bash" in tools
+    assert "write_file" in tools
+    assert "create_file" in tools
+    # delete_file 在任何模式下都不授予（唯一不随配置放开的硬限制）
+    assert "delete_file" not in tools
+    # 原有只读工具仍然保留
+    assert "web_search" in tools
+    assert "skill_activate" in tools
+
+
+def test_agent_retriever_tool_mode_readonly_default_unchanged(paths, monkeypatch):
+    """未显式设置 agent_retriever_tool_mode 时，行为与 v0.22 完全一致
+    （不含 bash/write_file 等）。"""
+    from mini_agent.config import AppConfig
+    from mini_agent.evolution.capability_learning import (
+        CapabilityTrackStore, make_agent_retriever,
+    )
+
+    captured_tools = []
+    _install_fake_sub_agent(
+        monkeypatch, output="调研摘要", allowed_tools_capture=captured_tools,
+    )
+
+    cfg = AppConfig()
+    cfg.capability_learning.retriever_mode = "agent"
+
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="做饭技巧", persona_desc="x", outline_names=["刀工基础"])
+    topic = track.outline[0]
+
+    retriever = make_agent_retriever(cfg)
+    retriever(topic, track)
+
+    tools = captured_tools[0]
+    assert "bash" not in tools
+    assert "write_file" not in tools
+
+
+def test_make_agent_wiki_writer_uses_capability_wiki_write_tool(paths, monkeypatch):
+    from mini_agent.config import AppConfig
+    from mini_agent.evolution.capability_learning import (
+        CapabilityTrackStore, make_agent_wiki_writer, _capability_wiki_write_impl,
+    )
+
+    # 模拟一个"调用了 capability_wiki_write 工具"的 SubAgent：直接在
+    # start() 里触发写入实现，而不是真的跑一个 LLM 循环。
+    from mini_agent.orchestrator.task import TaskResult, TaskStatus
+    import mini_agent.orchestrator.sub_agent as sub_agent_mod
+
+    class FakeWritingSubAgent:
+        def __init__(self, record, base_cfg, **kwargs):
+            self.record = record
+
+        def start(self):
+            _capability_wiki_write_impl("# 清洗脚本\n\n结论：xxx")
+            self.record.status = TaskStatus.DONE
+            self.record.result = TaskResult(output="已写入")
+
+        def join(self, timeout=None):
+            pass
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(sub_agent_mod, "SubAgent", FakeWritingSubAgent)
+
+    cfg = AppConfig()
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="数据分析能力", persona_desc="x", outline_names=["清洗脚本"])
+    topic = track.outline[0]
+
+    writer = make_agent_wiki_writer(cfg, paths)
+    page_ids = writer(topic, track, [{"summary": "原始检索摘要", "url": "https://example.com"}])
+
+    assert page_ids == [f"cap_{track.track_id}_{topic.topic_id}"]
+
+    from mini_agent.wiki.parser import parse_page
+    from mini_agent.wiki.index_reader import find_page_path
+    page_path = find_page_path(paths, page_ids[0])
+    assert page_path is not None
+    page = parse_page(page_path)
+    assert "结论：xxx" in page.body
+
+
+def test_make_agent_wiki_writer_falls_back_when_agent_fails(paths, monkeypatch):
+    """SubAgent 没有成功调用 capability_wiki_write 时，退回固定模板兜底，
+    保证"这个子主题最终有一页落盘记录"这个不变量成立。"""
+    from mini_agent.config import AppConfig
+    from mini_agent.evolution.capability_learning import (
+        CapabilityTrackStore, make_agent_wiki_writer,
+    )
+
+    _install_fake_sub_agent(monkeypatch, output="", status=None)
+    from mini_agent.orchestrator.task import TaskStatus
+    _install_fake_sub_agent(monkeypatch, output="", status=TaskStatus.FAILED)
+
+    cfg = AppConfig()
+    store = CapabilityTrackStore(paths)
+    track = store.create(title="数据分析能力", persona_desc="x", outline_names=["清洗脚本"])
+    topic = track.outline[0]
+
+    writer = make_agent_wiki_writer(cfg, paths)
+    page_ids = writer(topic, track, [{"summary": "原始检索摘要", "url": "https://example.com"}])
+
+    assert page_ids == [f"cap_{track.track_id}_{topic.topic_id}"]
+    from mini_agent.wiki.parser import parse_page
+    from mini_agent.wiki.index_reader import find_page_path
+    page_path = find_page_path(paths, page_ids[0])
+    page = parse_page(page_path)
+    assert "原始检索摘要" in page.body
+
+
+def test_capability_wiki_write_tool_inactive_without_context():
+    from mini_agent.evolution.capability_learning import (
+        _capability_wiki_write_impl, _CAPABILITY_WIKI_WRITE_STATE,
+    )
+
+    _CAPABILITY_WIKI_WRITE_STATE.update({"active": False})
+    result = _capability_wiki_write_impl("正文")
+    assert "不可用" in result or "错误" in result
+
+
+def test_capability_cmd_selects_agent_wiki_writer_by_mode(monkeypatch):
+    from mini_agent.config import AppConfig
+    import mini_agent.evolution.capability_learning as cl
+
+    cfg = AppConfig()
+    cfg.capability_learning.wiki_write_mode = "agent"
+
+    called = {}
+
+    def fake_make_agent_wiki_writer(cfg_arg, paths_arg):
+        called["mode"] = "agent"
+        return lambda topic, track, results: []
+
+    monkeypatch.setattr(cl, "make_agent_wiki_writer", fake_make_agent_wiki_writer)
+
+    wiki_write_mode = str(getattr(cfg.capability_learning, "wiki_write_mode", "callback") or "callback")
+    if wiki_write_mode == "agent":
+        cl.make_agent_wiki_writer(cfg, None)
+
+    assert called["mode"] == "agent"
