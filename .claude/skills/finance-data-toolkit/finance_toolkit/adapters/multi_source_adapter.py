@@ -147,18 +147,22 @@ class MultiSourceAdapter:
 
 # 预定义适配器工厂函数
 def create_standard_adapter() -> MultiSourceAdapter:
-    """创建标准多源适配器"""
+    """创建标准多源适配器（已集成真实fetcher）"""
+    from .async_fetcher_wrappers import create_async_wrappers
+    
     adapter = MultiSourceAdapter()
-
-    # TODO: 在实际使用时导入具体 fetcher
-    # from .tencent_fetcher import TencentFetcher
-    # from .sina_fetcher import SinaFetcher
-    # from .eastmoney_fetcher import EastMoneyFetcher
-
-    # adapter.register_source('tencent', TencentFetcher().fetch)
-    # adapter.register_source('sina', SinaFetcher().fetch)
-    # adapter.register_source('eastmoney', EastMoneyFetcher().fetch)
-
+    wrappers = create_async_wrappers()
+    
+    # 注册腾讯财经（主数据源）
+    adapter.register_source('tencent', wrappers['tencent']['quote'])
+    
+    # 注册新浪财经（备用）
+    adapter.register_source('sina', wrappers['sina']['quote'])
+    
+    # 注册东方财富（第三备选）
+    adapter.register_source('eastmoney', wrappers['eastmoney']['quote'])
+    
+    logger.info("标准多源适配器已初始化，优先级: tencent > sina > eastmoney")
     return adapter
 
 
