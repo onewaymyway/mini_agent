@@ -188,3 +188,31 @@ export interface TuningProposal {
   summary?: string;
   [key: string]: unknown;
 }
+
+// ── 工作流 ──────────────────────────────────────────────────────
+export interface WorkflowSummary {
+  name: string;
+  [key: string]: unknown;
+}
+
+export interface WorkflowStepResult {
+  step_id?: string;
+  status?: string;
+  output?: string;
+  duration?: number;
+  [key: string]: unknown;
+}
+
+export interface WorkflowRunSummary {
+  workflow_session_id: string;
+  name?: string;
+  status?: string;
+  started_at?: string;
+  [key: string]: unknown;
+}
+
+export interface WorkflowRunDetail extends WorkflowRunSummary {
+  step_results?: WorkflowStepResult[];
+  awaiting_step_id?: string;
+  [key: string]: unknown;
+}

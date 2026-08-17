@@ -5,6 +5,7 @@ import Dashboard from "./pages/Dashboard";
 import Chat from "./pages/Chat";
 import Sessions from "./pages/Sessions";
 import Goals from "./pages/Goals";
+import Workflows from "./pages/Workflows";
 import Files from "./pages/Files";
 import Artifacts from "./pages/Artifacts";
 import SelfStatus from "./pages/SelfStatus";
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="chat" element={<Chat />} />
         <Route path="sessions" element={<Sessions />} />
         <Route path="goals" element={<Goals />} />
+        <Route path="workflows" element={<Workflows />} />
         <Route path="files" element={<Files />} />
         <Route path="artifacts" element={<Artifacts />} />
         <Route path="self" element={<SelfStatus />} />

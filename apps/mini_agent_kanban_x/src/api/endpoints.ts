@@ -170,3 +170,36 @@ export const addObjectiveGuidance = (execId: string, guidance: string) =>
   apiPost<{ ok?: boolean }>(`/objectives/${encodeURIComponent(execId)}/guidance`, { guidance });
 export const getObjectiveStepTrace = (execId: string, stepIndex: number) =>
   apiGet<Record<string, unknown>>(`/objectives/${encodeURIComponent(execId)}/steps/${stepIndex}/trace`);
+
+// ── 工作流 ──────────────────────────────────────────────────────
+import type { WorkflowRunDetail, WorkflowSummary } from "./types";
+
+export const listWorkflows = () => apiGet<{ workflows: WorkflowSummary[] }>("/workflows");
+export const getWorkflowYaml = (name: string) => apiGet<{ name: string; yaml: string }>(`/workflows/${encodeURIComponent(name)}`);
+export const patchWorkflowStep = (name: string, stepId: string, patch: unknown) =>
+  apiPost<Record<string, unknown>>(`/workflows/${encodeURIComponent(name)}/steps/${encodeURIComponent(stepId)}/patch`, { patch });
+export const previewWorkflow = (name: string, inputs: unknown) =>
+  apiPost<Record<string, unknown>>(`/workflows/${encodeURIComponent(name)}/preview`, { inputs });
+export const getWorkflowStats = (name: string) => apiGet<Record<string, unknown>>(`/workflows/${encodeURIComponent(name)}/stats`);
+export const runWorkflow = (
+  name: string,
+  body: { inputs?: unknown; background?: boolean; force_serial?: boolean; require_all_inputs_upfront?: boolean }
+) => apiPost<Record<string, unknown>>(`/workflows/${encodeURIComponent(name)}/run`, body);
+
+export const listWorkflowRuns = (name?: string) => apiGet<{ runs: import("./types").WorkflowRunSummary[] }>("/workflow_runs", { name });
+export const getWorkflowRunDetail = (runId: string) => apiGet<WorkflowRunDetail>(`/workflow_runs/${encodeURIComponent(runId)}`);
+export const getWorkflowRunEvents = (runId: string, sinceLine = 0) =>
+  apiGet<{ events?: unknown[]; next_since_line?: number }>(`/workflow_runs/${encodeURIComponent(runId)}/events`, { since_line: sinceLine });
+export const pauseWorkflowRun = (runId: string) => apiPost<{ paused?: boolean }>(`/workflow_runs/${encodeURIComponent(runId)}/pause`);
+export const cancelWorkflowRun = (runId: string) => apiPost<{ cancelled?: boolean }>(`/workflow_runs/${encodeURIComponent(runId)}/cancel`);
+export const markWorkflowRunInterrupted = (runId: string) =>
+  apiPost<Record<string, unknown>>(`/workflow_runs/${encodeURIComponent(runId)}/mark_interrupted`);
+export const resumeWorkflowRun = (runId: string, body?: { background?: boolean; force_rerun_from?: string }) =>
+  apiPost<Record<string, unknown>>(`/workflow_runs/${encodeURIComponent(runId)}/resume`, body);
+export const approveWorkflowStep = (runId: string) => apiPost<Record<string, unknown>>(`/workflow_runs/${encodeURIComponent(runId)}/approve`);
+export const rejectWorkflowStep = (runId: string, reason: string) =>
+  apiPost<Record<string, unknown>>(`/workflow_runs/${encodeURIComponent(runId)}/reject`, { reason });
+export const provideWorkflowInput = (runId: string, text: string) =>
+  apiPost<Record<string, unknown>>(`/workflow_runs/${encodeURIComponent(runId)}/input`, { text });
+export const overrideWorkflowStepOutput = (runId: string, stepId: string, output: string) =>
+  apiPost<Record<string, unknown>>(`/workflow_runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepId)}/override`, { output });
