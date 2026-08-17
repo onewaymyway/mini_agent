@@ -225,5 +225,9 @@
   "capability_learning":{
     "retriever_mode": "agent",
     "agent_retriever_max_turns": 20
+  },
+  "cron": {
+    "default_timeout_seconds": 2400,
+    "stale_job_watchdog_grace_seconds": 300
   }
 }
