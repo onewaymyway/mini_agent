@@ -80,8 +80,9 @@ export const getSelfStatus = () => apiGet<Record<string, unknown>>("/self/status
 export const getLlmPoolStatus = () => apiGet<Record<string, unknown>>("/self/llm_pool_status");
 export const getFairnessDiagnostics = () => apiGet<Record<string, unknown>>("/self/fairness_diagnostics");
 export const getLlmCallStats = (days = 7) => apiGet<Record<string, unknown>>("/self/llm_call_stats", { days });
-export const getSelfConfig = () => apiGet<Record<string, unknown>>("/self/config");
-export const patchSelfConfig = (body: unknown) => apiPatch<Record<string, unknown>>("/self/config", body);
+export const getSelfConfig = () => apiGet<import("./types").SelfConfigResponse>("/self/config");
+export const patchSelfConfig = (updates: { json_key: string; value: unknown }[]) =>
+  apiPatch<import("./types").SelfConfigResponse>("/self/config", { updates });
 export const getErrorLogStats = () => apiGet<Record<string, unknown>>("/self/error_log_stats");
 export const getGoalStuckStats = () => apiGet<Record<string, unknown>>("/goal_mode/stuck_stats");
 
@@ -421,3 +422,15 @@ export const getNotificationDispatchLog = (limit = 50) =>
 // ── 混合执行（Tab17） ────────────────────────────────────────────
 export const getHybridExecSummary = () =>
   apiGet<{ tasks: HybridExecTaskSummary[]; _error?: string }>("/hybrid_exec/summary");
+
+// ── 用户管理（Users） ─────────────────────────────────────────────
+import type { UserActionResponse, UserCreateResponse, UserInfo } from "./types";
+
+export const listUsers = () => apiGet<{ users: UserInfo[] }>("/users");
+export const createUser = (body: { name: string; role: string; trust_level?: number; meta?: Record<string, unknown> }) =>
+  apiPost<UserCreateResponse>("/users", body);
+export const removeUser = (userId: string) => apiDelete<UserActionResponse>(`/users/${encodeURIComponent(userId)}`);
+export const updateUser = (userId: string, body: { role?: string; meta?: Record<string, unknown> }) =>
+  apiPatch<UserActionResponse>(`/users/${encodeURIComponent(userId)}`, body);
+export const rotateUserToken = (userId: string) =>
+  apiPost<UserCreateResponse>(`/users/${encodeURIComponent(userId)}/token`);

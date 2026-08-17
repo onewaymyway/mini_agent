@@ -456,3 +456,53 @@ export interface HybridExecTaskSummary {
   run_summary?: unknown;
   [key: string]: unknown;
 }
+
+// ── 配置管理（Tab15） ────────────────────────────────────────────
+export interface ConfigFieldRow {
+  json_key: string;
+  label: string;
+  type: string; // "bool" | "int" | "float" | "str" | ...
+  value: unknown;
+  default: unknown;
+  customized: boolean;
+  sensitive: boolean;
+  [key: string]: unknown;
+}
+
+export interface ConfigCategory {
+  id: string;
+  label: string;
+  icon?: string;
+  fields: ConfigFieldRow[];
+}
+
+export interface SelfConfigResponse {
+  config_path: string;
+  categories: ConfigCategory[];
+  restart_required?: boolean;
+  [key: string]: unknown;
+}
+
+// ── 用户管理（Users） ─────────────────────────────────────────────
+export interface UserInfo {
+  user_id: string;
+  name: string;
+  role: string;
+  trust_level: number;
+  created_at: number;
+  last_seen?: number;
+  meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface UserCreateResponse {
+  ok: boolean;
+  user_id?: string;
+  token?: string;
+  message?: string;
+}
+
+export interface UserActionResponse {
+  ok: boolean;
+  message?: string;
+}

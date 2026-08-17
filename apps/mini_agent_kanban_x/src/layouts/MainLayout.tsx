@@ -21,6 +21,8 @@ import {
   ApiOutlined,
   NotificationOutlined,
   ToolOutlined,
+  ControlOutlined,
+  TeamOutlined,
 } from "@ant-design/icons";
 import { useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -45,6 +47,8 @@ const items = [
   { key: "/external-input", icon: <ApiOutlined />, label: <Link to="/external-input">外部输入网关</Link> },
   { key: "/watchlist", icon: <NotificationOutlined />, label: <Link to="/watchlist">关注与通知</Link> },
   { key: "/hybrid-exec", icon: <ToolOutlined />, label: <Link to="/hybrid-exec">混合执行</Link> },
+  { key: "/config", icon: <ControlOutlined />, label: <Link to="/config">配置管理</Link> },
+  { key: "/users", icon: <TeamOutlined />, label: <Link to="/users">用户管理</Link> },
   { key: "/files", icon: <FolderOutlined />, label: <Link to="/files">文件</Link> },
   { key: "/artifacts", icon: <PictureOutlined />, label: <Link to="/artifacts">产出物</Link> },
   { key: "/self", icon: <BulbOutlined />, label: <Link to="/self">自我状态</Link> },
