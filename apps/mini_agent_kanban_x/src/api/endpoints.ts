@@ -1,4 +1,4 @@
-import { apiDelete, apiGet, apiPost } from "./client";
+import { apiDelete, apiGet, apiPatch, apiPost } from "./client";
 import type {
   ChatRequest,
   ChatResponse,
@@ -34,5 +34,53 @@ export const deleteSession = (id: string) =>
   apiDelete<{ ok?: boolean }>(`/sessions/${encodeURIComponent(id)}`);
 
 // ── 权限 / 交互待处理 ─────────────────────────────────────────────
-export const listPendingPermissions = () => apiGet<Record<string, unknown>>("/permissions/pending");
-export const listPendingInteractions = () => apiGet<Record<string, unknown>>("/interactions/pending");
+export const listPendingPermissions = () =>
+  apiGet<{ pending?: import("./types").PermissionRequestItem[] }>("/permissions/pending");
+export const respondPermission = (reqId: string, body: { decision: string; remember?: boolean }) =>
+  apiPost<{ ok?: boolean }>(`/permissions/${encodeURIComponent(reqId)}`, body);
+export const listPendingInteractions = () =>
+  apiGet<{ pending?: import("./types").InteractionRequestItem[] }>("/interactions/pending");
+export const respondInteraction = (reqId: string, body: { answer: string }) =>
+  apiPost<{ ok?: boolean }>(`/interactions/${encodeURIComponent(reqId)}`, body);
+
+// ── 事件 / turns ────────────────────────────────────────────────
+export const getEvents = (sessionId?: string, sinceId?: string, limit?: number) =>
+  apiGet<{ events?: import("./types").AgentEventPayload[] }>("/events", {
+    session_id: sessionId,
+    since_id: sinceId,
+    limit,
+  });
+
+// ── 顶部状态条：自治调度 / 哨兵 / 全局待办 ───────────────────────
+export const getAutonomousStatus = () => apiGet<import("./types").AutonomousStatus>("/autonomous/status");
+export const pauseScheduling = () => apiPost<{ ok?: boolean }>("/autonomous/scheduling/pause");
+export const resumeScheduling = () => apiPost<{ ok?: boolean }>("/autonomous/scheduling/resume");
+export const getSentinelSummary = () => apiGet<import("./types").SentinelSummary>("/sentinel/summary");
+export const getInbox = () => apiGet<import("./types").InboxResponse>("/inbox");
+
+// ── 文件系统 ────────────────────────────────────────────────────
+export const fsList = (path = "") => apiGet<import("./types").FsListResponse>("/fs/list", { path });
+export const fsRead = (path: string) => apiGet<import("./types").FsReadResponse>("/fs/read", { path });
+export const fsWrite = (path: string, content: string) => apiPost<{ ok?: boolean }>("/fs/write", { path, content });
+export const fsMkdir = (path: string) => apiPost<{ ok?: boolean }>("/fs/mkdir", { path });
+export const fsDelete = (path: string) => apiDelete<{ ok?: boolean }>("/fs/delete", { path });
+export const fsRename = (path: string, new_path: string) => apiPost<{ ok?: boolean }>("/fs/rename", { path, new_path });
+export const fsDownloadUrl = (path: string) => `/fs/download?path=${encodeURIComponent(path)}`;
+export const fsSearch = (query: string, path?: string) => apiGet<{ results?: string[] }>("/fs/search", { query, path });
+
+// ── 产出物 ──────────────────────────────────────────────────────
+export const listArtifacts = () => apiGet<import("./types").ArtifactsListResponse>("/artifacts");
+export const getArtifact = (manifestId: string) =>
+  apiGet<import("./types").ArtifactManifest>(`/artifacts/${encodeURIComponent(manifestId)}`);
+export const artifactFileUrl = (manifestId: string, path: string) =>
+  `/artifacts/${encodeURIComponent(manifestId)}/file?path=${encodeURIComponent(path)}`;
+
+// ── 自我状态 ────────────────────────────────────────────────────
+export const getSelfStatus = () => apiGet<Record<string, unknown>>("/self/status");
+export const getLlmPoolStatus = () => apiGet<Record<string, unknown>>("/self/llm_pool_status");
+export const getFairnessDiagnostics = () => apiGet<Record<string, unknown>>("/self/fairness_diagnostics");
+export const getLlmCallStats = (days = 7) => apiGet<Record<string, unknown>>("/self/llm_call_stats", { days });
+export const getSelfConfig = () => apiGet<Record<string, unknown>>("/self/config");
+export const patchSelfConfig = (body: unknown) => apiPatch<Record<string, unknown>>("/self/config", body);
+export const getErrorLogStats = () => apiGet<Record<string, unknown>>("/self/error_log_stats");
+export const getGoalStuckStats = () => apiGet<Record<string, unknown>>("/goal_mode/stuck_stats");

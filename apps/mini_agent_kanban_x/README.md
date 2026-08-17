@@ -19,9 +19,9 @@
 | P0 | 方案设计文档 + 功能清单 | ✅ |
 | P1 | 工程脚手架、鉴权（Token 登录）、布局、Dashboard 状态总览（含轮询） | ✅ |
 | P2 | 💬 对话（基础流式收发）、🗂️ 会话管理（基础增删查） | ✅ 基础版 |
-| P2b | 对话/会话管理补完（内联权限审批、事件流面板、置顶对比等） | ⏳ 规划中 |
-| P3 | Files 通用文件浏览、📁 产出物浏览、🖼️ 产出预览、DiffView 组件 | ⏳ 规划中 |
-| P4 | Topbar 完整版（权限/交互/Sentinel/inbox）、🧠 自我状态、🔧 诊断信息、📛 错误日志统计 | ⏳ 规划中 |
+| P2b | 对话内联权限/交互审批、事件流面板 | ✅ 已完成；会话置顶/并排对比/变化提醒仍待做 |
+| P3 | Files 通用文件浏览、📁 产出物浏览、🖼️ 产出预览、DiffView 组件 | ✅ 已完成 |
+| P4 | Topbar 完整版（调度暂停恢复/权限交互提醒/Sentinel/全局待办）、🧠 自我状态、🔧 诊断信息、📛 错误日志统计 | ✅ 已完成 |
 | P5 | 📌 目标看板（拆 P5a/P5b，规模最大的 Tab） | ⏳ 规划中 |
 | P6 | 🔄 工作流 | ⏳ 规划中 |
 | P7 | 🌱 成长顾问、🎓 能力学习 | ⏳ 规划中 |
@@ -90,19 +90,24 @@ app.mount(
 src/
 ├── api/          # 后端 HTTP/SSE 封装（client.ts / endpoints.ts / sse.ts / types.ts）
 ├── stores/       # zustand 全局状态：鉴权、UI（当前 session 等）
-├── hooks/        # 业务 hooks：useStatus / useSessions / useChatStream
-├── layouts/      # 页面整体布局（侧边栏 + 顶部状态条）
-├── pages/        # 各功能页面（Login/Dashboard/Chat/Sessions/Settings/…）
-└── components/   # 可复用 UI 组件（后续 P3+ 补充 DiffView 等）
+├── hooks/        # 业务 hooks：useStatus / useSessions / useChatStream / usePermissions /
+│                 # useEventsPanel / useFiles / useArtifacts / useSelfStatus
+├── layouts/      # 页面整体布局（侧边栏 + 完整 Topbar：调度控制/权限提醒/Sentinel/全局待办）
+├── pages/        # 各功能页面（Login/Dashboard/Chat/Sessions/Files/Artifacts/SelfStatus/Settings/…）
+└── components/   # 可复用 UI 组件：PermissionsPanel（内联审批）、EventTimeline（事件流）、DiffView
 ```
 
 ## 已知限制 / TODO
 
-- 目前只打通 Dashboard / Chat / Sessions / Settings 四个页面，其余能力
-  （文件浏览、权限审批、自我状态、用户管理）尚未从 Streamlit 版迁移，
-  期间可以继续使用旧版 `apps/mini_agent_kanban` 处理这些场景。
-- 生产构建产物体积提示（>500KB 单 chunk）：后续可以引入路由级 `React.lazy`
+- 目前已覆盖旧看板 18 个 Tab 中的：对话、会话管理、文件浏览（通用能力）、产出物浏览+预览、
+  自我状态、诊断信息、错误日志统计，共 7 个 Tab（部分为合并页面）。
+  尚未迁移：目标看板、工作流、成长顾问、能力学习、进化提案、Cron 任务、全局日程、
+  外部输入网关、关注与通知、配置管理（表单编辑）、混合执行，共 11 个 Tab，
+  期间可以继续使用旧版 `apps/mini_agent_kanban` 处理这些场景，详见方案文档第 5 节 P5~P11。
+- 生产构建产物体积提示（>500KB 单 chunk，目前约 1.2MB）：后续引入路由级 `React.lazy`
   做代码分割，当前阶段优先保证功能正确、暂不做该优化。
 - 登录页当前只做"能否连通 + 存储 Token"的校验，如果后端启用了旧版
   `--require-login` 的账户体系，需要先用其它方式（如旧看板）换出账户 Token，
-  再粘贴到这里；后续可以在 P5 补一个真正的用户名+密码换 Token 的登录端点。
+  再粘贴到这里；后续在 P10 补一个真正的用户名+密码换 Token 的登录端点。
+- Files 页面的 `fs/write` 目前假定文件是文本；对二进制文件会读取失败并提示，
+  这与旧看板行为一致（旧看板同样只处理文本类文件的在线编辑）。

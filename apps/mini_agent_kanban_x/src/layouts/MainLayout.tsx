@@ -1,15 +1,23 @@
-import { Layout, Menu, Tag, Typography, Space, Button } from "antd";
+import { Layout, Menu, Tag, Typography, Space, Button, Badge, Drawer, List, Alert } from "antd";
 import {
   DashboardOutlined,
   MessageOutlined,
   ClusterOutlined,
   SettingOutlined,
   LogoutOutlined,
+  FolderOutlined,
+  PictureOutlined,
+  BulbOutlined,
+  BellOutlined,
+  PauseCircleOutlined,
+  PlayCircleOutlined,
 } from "@ant-design/icons";
+import { useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuthStore } from "../stores/authStore";
 import { useUiStore } from "../stores/uiStore";
 import { useStatus } from "../hooks/useStatus";
+import { usePendingApprovals, useTopbarModules } from "../hooks/usePermissions";
 
 const { Header, Sider, Content } = Layout;
 
@@ -17,6 +25,9 @@ const items = [
   { key: "/", icon: <DashboardOutlined />, label: <Link to="/">总览</Link> },
   { key: "/chat", icon: <MessageOutlined />, label: <Link to="/chat">对话</Link> },
   { key: "/sessions", icon: <ClusterOutlined />, label: <Link to="/sessions">会话</Link> },
+  { key: "/files", icon: <FolderOutlined />, label: <Link to="/files">文件</Link> },
+  { key: "/artifacts", icon: <PictureOutlined />, label: <Link to="/artifacts">产出物</Link> },
+  { key: "/self", icon: <BulbOutlined />, label: <Link to="/self">自我状态</Link> },
   { key: "/settings", icon: <SettingOutlined />, label: <Link to="/settings">设置</Link> },
 ];
 
@@ -27,9 +38,15 @@ export default function MainLayout() {
   const setCollapsed = useUiStore((s) => s.setCollapsed);
   const clearToken = useAuthStore((s) => s.clear);
   const { data: status } = useStatus();
+  const { permissions, interactions } = usePendingApprovals();
+  const { autonomous, sentinel, inbox, pause, resume } = useTopbarModules();
+  const [inboxOpen, setInboxOpen] = useState(false);
 
   const selectedKey =
     items.find((i) => i.key !== "/" && location.pathname.startsWith(i.key))?.key || "/";
+  const pendingTotal = permissions.length + interactions.length;
+  const sentinelTotal = sentinel.data?.total ?? sentinel.data?.items?.length ?? 0;
+  const inboxTotal = inbox.data?.items?.length ?? 0;
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
@@ -40,12 +57,44 @@ export default function MainLayout() {
         <Menu theme="dark" mode="inline" selectedKeys={[selectedKey]} items={items} />
       </Sider>
       <Layout>
-        <Header style={{ background: "#fff", padding: "0 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <Typography.Text strong>
+        <Header
+          style={{
+            background: "#fff",
+            padding: "0 16px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            height: "auto",
+            minHeight: 64,
+          }}
+        >
+          <Space wrap>
             {status?.state ? <Tag color="processing">状态: {String(status.state)}</Tag> : <Tag>连接中…</Tag>}
             {status?.model ? <Tag>模型: {String(status.model)}</Tag> : null}
-          </Typography.Text>
+            {autonomous.data?.queue_depth ? <Tag color="orange">排队: {autonomous.data.queue_depth}</Tag> : null}
+            {pendingTotal > 0 && (
+              <Tag color="red" onClick={() => navigate("/chat")} style={{ cursor: "pointer" }}>
+                待处理请求: {pendingTotal}
+              </Tag>
+            )}
+            {sentinelTotal > 0 && <Tag color="volcano">哨兵异常: {sentinelTotal}</Tag>}
+          </Space>
           <Space>
+            <Badge count={inboxTotal} size="small">
+              <Button icon={<BellOutlined />} onClick={() => setInboxOpen(true)}>
+                待办
+              </Button>
+            </Badge>
+            {autonomous.data?.scheduling_paused ? (
+              <Button icon={<PlayCircleOutlined />} loading={resume.isPending} onClick={() => resume.mutate()}>
+                恢复调度
+              </Button>
+            ) : (
+              <Button icon={<PauseCircleOutlined />} loading={pause.isPending} onClick={() => pause.mutate()}>
+                暂停调度
+              </Button>
+            )}
             <Button
               icon={<LogoutOutlined />}
               onClick={() => {
@@ -61,6 +110,41 @@ export default function MainLayout() {
           <Outlet />
         </Content>
       </Layout>
+
+      <Drawer title="全局待办中心" open={inboxOpen} onClose={() => setInboxOpen(false)} width={420}>
+        {sentinelTotal > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={`系统状态哨兵：发现 ${sentinelTotal} 项可能需要留意`}
+            description={
+              <List
+                size="small"
+                dataSource={sentinel.data?.items || []}
+                renderItem={(it) => (
+                  <List.Item>
+                    <Typography.Text>{it.title || it.detail}</Typography.Text>
+                  </List.Item>
+                )}
+              />
+            }
+          />
+        )}
+        <List
+          header="跨会话待办"
+          dataSource={inbox.data?.items || []}
+          locale={{ emptyText: "暂无待办" }}
+          renderItem={(it) => (
+            <List.Item>
+              <Typography.Text strong>{it.title}</Typography.Text>
+              <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
+                {it.summary}
+              </Typography.Paragraph>
+            </List.Item>
+          )}
+        />
+      </Drawer>
     </Layout>
   );
 }
