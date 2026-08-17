@@ -342,7 +342,7 @@ output/scripts/
 > - ✅ Stage 1：`output_workspace.py` 目录模型改造 —— 已完成
 > - ✅ Stage 2：`GoalExecutionSpec` 版本历史归档 —— 已完成
 > - ✅ Stage 3：`goal_cron_bridge.py` 阶段 prompt 重新拼接 —— 已完成
-> - ⬜ Stage 4：converge 自动生成 spec 草稿
+> - ✅ Stage 4：converge 自动生成 spec 草稿 —— 已完成
 > - ⬜ Stage 5：`output/scripts/` 专项规范落地（骨架分配已随 Stage 1 完成，
 >   核查/审计逻辑待 Stage 3 的 tidy 改造一并接入）
 > - ⬜ Stage 6：文档全面同步
@@ -528,3 +528,54 @@ spec*.py`/`tests/test_growth_advisor*.py` 共 646 个用例，644 个通过，
 专项核查（`requirements.txt` 一致性核查、`_experiments/` 转正检测）是
 Stage 5 的工作；`docs/goal-execution-phase-guide.md` 等用户文档同步是
 Stage 6 的工作。
+
+### Stage 4（已完成）：converge 自动生成 spec 草稿
+
+`evolution/goal_cron_bridge.py` 新增
+`_maybe_auto_generate_converge_spec_draft(paths, goal_backlog, goal, cycle_no,
+phase_info)`，在 `_fire_goal_cycle()` 里紧跟 `_resolve_execution_phase()` 之后
+调用（纯旁路副作用，不参与 description 拼接，异常整体吞掉不影响触发主
+流程）。触发条件：
+
+- 本轮 `effective_mode == "converge"`（直接读 `phase_info`，不重新判定）；
+- `goal.execution_spec_confirmed` 为 `False`；
+- `ges.load_spec(paths, goal.id)` 返回 `None`——即这个 Goal 目前**完全没有**
+  任何 spec（草稿或已确认）。这是"只触发一次"的关键：一旦生成过草稿
+  （不管用户是否已确认），后续 converge 轮次都会因为这一条直接跳过，不会
+  覆盖用户可能正在手动编辑的草稿，也不会每轮重复生成打扰用户；
+- 复用 `execution_phase.compute_progress_trend_signal(goal_backlog, goal.id,
+  window=2, llm_helper=...)` 判断"最近两轮的进展文本是否高度一致"，返回
+  `True` 才视为"方案对比说明结论一致"。`llm_helper` 直接复用
+  `_resolve_execution_phase()` 里已经构造好、通过 `phase_info["llm_helper"]`
+  带出来的那份闭包，避免同一轮内重复读配置构造两次（`_resolve_execution_
+  phase()` 的返回 dict 相应新增了这个 key）；`window=2` 是本方案 §4 的
+  字面要求（"连续 2 轮"），与 `_resolve_execution_phase()` 里判断
+  `progress_trend_stuck` 用的默认 `window=3` 是两次独立调用，不共享缓存
+  （历史轮次不够 2 轮时 `compute_progress_trend_signal` 本身会返回 `None`，
+  自然跳过，不需要额外判断）。
+
+条件全部满足时：`GoalExecutionSpecBuilder(load_config()).build_draft(goal.id,
+goal.title, goal.description)` 生成草稿，`ges.save_spec()` 落盘（**不**调用
+`GoalExecutionSpecBuilder.confirm()`，与方案 §4 "不自动确认，仍需用户手动
+spec confirm" 的要求一致），随后：
+
+1. `goal_backlog.append_progress_note()` 留一条中文说明（第几轮触发、去
+   哪里核对、怎么确认），失败静默跳过；
+2. 通过 `NotificationDispatcher` 发一条 `source="goal_cycle_converge_spec_
+   draft"` 的通知，标题/正文说明"已自动生成执行规范草稿，未确认"，失败
+   同样静默跳过，不影响主流程。
+
+`build_draft()` 本身已支持的 `schedule`/`template_id`/`history_manifests`
+参数本阶段未传（保持最小化草稿生成，不引入额外的模板/历史匹配逻辑，用户
+确认前可以自行用 `/agent goals spec generate --template ... --from-history`
+手动重新生成一份更丰富的草稿覆盖它）。
+
+测试：新增 `tests/test_goal_cron_bridge_converge_spec_draft.py`，覆盖：
+effective_mode 非 converge 时跳过、已确认 spec 时跳过、已存在草稿
+（未确认）时跳过、`compute_progress_trend_signal` 返回 `False`/`None` 时
+跳过、条件全部满足时正确调用 `build_draft`/`save_spec` 且不调用
+`confirm`、正确留痕 progress_note、`build_draft` 抛异常时整体吞掉不影响
+`_fire_goal_cycle` 主流程。
+
+尚未做的事（留给后续阶段）：`output/scripts/` 专项核查是 Stage 5 的工作；
+`docs/goal-execution-phase-guide.md` 等用户文档同步是 Stage 6 的工作。

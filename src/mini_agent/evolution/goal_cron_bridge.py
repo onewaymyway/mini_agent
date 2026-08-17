@@ -158,6 +158,11 @@ def _fire_goal_cycle(
     phase_info = _resolve_execution_phase(
         paths, goal, cycle_no, goal_backlog=goal_backlog, llm_helper_provider=llm_helper_provider,
     )
+    # [goal_output_directory_and_execution_phase_redesign_plan.md §4 Stage 4]
+    # 纯粹的旁路副作用（可能生成一份未确认的 spec 草稿 + 发通知），不影响
+    # description 拼接，放在 phase_info 算出来之后、其它 prompt 拼接之前
+    # 都可以，这里紧跟在 phase 判定之后，逻辑上离得最近。
+    _maybe_auto_generate_converge_spec_draft(paths, goal_backlog, goal, cycle_no, phase_info)
     description = _append_output_workspace_context(paths, goal, cycle_no, description, phase_info=phase_info)
     description = _append_execution_phase_context(paths, goal, description, phase_info)
     # [goal_cron_task_optimization_holistic_plan.md 方向 C] "下一轮降级执行"
@@ -275,11 +280,88 @@ def _resolve_execution_phase(paths, goal: "GoalNode", cycle_no: int,
         result["spec_confirmed"] = spec_confirmed
         result["spec"] = spec
         result["state"] = state
+        # [Stage 4] 把已经构造好的 llm_helper 闭包一并带出去，供
+        # `_maybe_auto_generate_converge_spec_draft()` 复用，避免同一轮内
+        # 重复读配置/重新构造一次 helper。
+        result["llm_helper"] = llm_helper
         return result
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._resolve_execution_phase')
         return result
+
+
+def _maybe_auto_generate_converge_spec_draft(
+    paths, goal_backlog: "GoalBacklog", goal: "GoalNode", cycle_no: int, phase_info: dict,
+) -> None:
+    """[goal_output_directory_and_execution_phase_redesign_plan.md §4 Stage 4]
+    converge 阶段收尾时，如果最近两轮的"方案对比说明"结论一致，自动生成一份
+    GoalExecutionSpec 草稿——不自动确认，仍需用户手动 `/agent goals spec
+    confirm`（或看板对应操作）确认，只是降低"卡在 converge 没人管、忘记
+    手动跑一次 `spec generate`"的概率（方案 §4 提到的具体反馈）。
+
+    "结论一致"复用 `execution_phase.compute_progress_trend_signal()` 已有的
+    difflib/LLM 双模式判断基础设施（`progress_trend_stuck` 信号本身语义是
+    "最近几轮进展文本高度相似"，这里只是换一个更小的 window=2 并把"相似"
+    解读为"收敛结论一致"而不是"卡住"——两种解读在这个函数的上下文里其实
+    是同一件事：文本层面高度雷同）。`llm_helper` 直接复用
+    `_resolve_execution_phase()` 已经构造好的那份（挂在 phase_info 里），
+    避免同一轮内重复读配置。
+
+    只在这个 Goal 目前完全没有任何 spec（草稿或已确认）时触发一次：一旦
+    生成过草稿，`ges.load_spec()` 就会返回非 None，之后自动不再重复生成/
+    覆盖，避免打断用户可能正在手动编辑的草稿。任何异常整体吞掉，不影响
+    Goal 触发主流程。
+    """
+    try:
+        if paths is None or phase_info.get("effective_mode") != "converge":
+            return
+        if bool(getattr(goal, "execution_spec_confirmed", False)):
+            return
+
+        from mini_agent.perception import goal_execution_spec as ges
+        if ges.load_spec(paths, goal.id) is not None:
+            return  # 已经有草稿/规范了（不管是否确认），不重复自动生成
+
+        from mini_agent.perception import execution_phase as ep
+        consensus = ep.compute_progress_trend_signal(
+            goal_backlog, goal.id, window=2, llm_helper=phase_info.get("llm_helper"),
+        )
+        if consensus is not True:
+            return
+
+        from mini_agent.config import load_config
+        builder = ges.GoalExecutionSpecBuilder(load_config())
+        spec = builder.build_draft(goal.id, goal.title, goal.description)
+        ges.save_spec(paths, goal.id, spec)
+
+        try:
+            goal_backlog.append_progress_note(
+                goal.id,
+                f"第 {cycle_no} 轮（converge）检测到最近两轮方案对比说明结论一致，"
+                "已自动生成执行规范草稿（尚未确认），请查看 spec/SPEC.md 或用 "
+                "`/agent goals spec show` 核对后，用 `/agent goals spec confirm` 确认。",
+            )
+        except Exception:
+            pass
+
+        try:
+            from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+            NotificationDispatcher(paths).dispatch(NotificationMessage(
+                title=f"周期性目标「{goal.title}」已自动生成执行规范草稿",
+                body="最近两轮收敛期的方案对比说明结论一致，系统已自动生成一份"
+                     "执行规范草稿（未确认），请查看后决定是否确认或修订。",
+                source="goal_cycle_converge_spec_draft",
+                meta={"goal_id": goal.id, "cycle_no": cycle_no},
+            ))
+        except Exception:
+            pass
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(
+            _mini_agent_exc,
+            where='mini_agent.evolution.goal_cron_bridge._maybe_auto_generate_converge_spec_draft',
+        )
 
 
 def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, description: str,
