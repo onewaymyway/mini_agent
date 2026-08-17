@@ -426,7 +426,13 @@ class CapabilityLedgerStore:
 
     def list_for_track(self, track_id: str, limit: int = 50) -> list[CapabilityLedgerEntry]:
         rows = _read_jsonl(self._paths.capability_ledger_path(track_id))
-        entries = [CapabilityLedgerEntry.from_dict(r) for r in rows]
+        entries: list[CapabilityLedgerEntry] = []
+        for r in rows:
+            try:
+                entries.append(CapabilityLedgerEntry.from_dict(r))
+            except (KeyError, TypeError, ValueError):
+                # 跳过格式不匹配的条目（例如其他系统写入的脏数据）
+                pass
         entries.sort(key=lambda e: e.cycle_ts, reverse=True)
         return entries[:limit]
 
