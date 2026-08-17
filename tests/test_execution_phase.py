@@ -325,7 +325,8 @@ def test_bridge_append_execution_phase_context_default_state(tmp_path):
         execution_spec_confirmed = False
 
     paths = _paths(tmp_path)
-    result = bridge._append_execution_phase_context(paths, _FakeGoal(), 1, "base description")
+    phase_info = bridge._resolve_execution_phase(paths, _FakeGoal(), 1)
+    result = bridge._append_execution_phase_context(paths, _FakeGoal(), "base description", phase_info)
     assert "base description" in result
     assert "探索期" in result  # 早期轮次默认判定为 explore
 
@@ -337,7 +338,8 @@ def test_bridge_append_execution_phase_context_paths_none_noop():
         id = "goal_1"
         execution_spec_confirmed = False
 
-    result = bridge._append_execution_phase_context(None, _FakeGoal(), 1, "base description")
+    phase_info = bridge._resolve_execution_phase(None, _FakeGoal(), 1)
+    result = bridge._append_execution_phase_context(None, _FakeGoal(), "base description", phase_info)
     assert result == "base description"
 
 
@@ -350,7 +352,8 @@ def test_bridge_append_execution_phase_context_locked_stable(tmp_path):
 
     paths = _paths(tmp_path)
     ep.set_mode(paths, "goal_1", "stable")
-    result = bridge._append_execution_phase_context(paths, _FakeGoal(), 1, "base description")
+    phase_info = bridge._resolve_execution_phase(paths, _FakeGoal(), 1)
+    result = bridge._append_execution_phase_context(paths, _FakeGoal(), "base description", phase_info)
     assert "稳定期" in result
 
 
@@ -372,8 +375,9 @@ def test_bridge_append_execution_phase_context_progress_trend_stuck_gives_conver
         "c3": _FakeChildForTrend(same_note),
     })
     paths = _paths(tmp_path)
+    phase_info = bridge._resolve_execution_phase(paths, _FakeGoal(), 10, goal_backlog=backlog)
     result = bridge._append_execution_phase_context(
-        paths, _FakeGoal(), 10, "base description", goal_backlog=backlog,
+        paths, _FakeGoal(), "base description", phase_info,
     )
     # spec 未确认时本来就判 explore，这里主要验证 goal_backlog 参数不报错、
     # 且能正常传导（下面单独用 resolve_effective_mode 直接验证降级效果）。
@@ -400,8 +404,8 @@ def test_bridge_llm_helper_not_used_when_config_disabled(tmp_path, monkeypatch):
             return "STUCK"
 
     paths = _paths(tmp_path)
-    bridge._append_execution_phase_context(
-        paths, _FakeGoal(), 10, "base description",
+    bridge._resolve_execution_phase(
+        paths, _FakeGoal(), 10,
         llm_helper_provider=lambda: _FakeHelper(),
     )
     assert called["n"] == 0
@@ -436,8 +440,8 @@ def test_bridge_llm_helper_used_when_config_enabled(tmp_path, monkeypatch):
         "c3": _FakeChildForTrend("做了 A"),
     })
     paths = _paths(tmp_path)
-    bridge._append_execution_phase_context(
-        paths, _FakeGoal(), 10, "base description",
+    bridge._resolve_execution_phase(
+        paths, _FakeGoal(), 10,
         goal_backlog=backlog, llm_helper_provider=lambda: _FakeHelper(),
     )
     assert called["n"] == 1
@@ -490,7 +494,8 @@ def test_bridge_converge_appends_spec_hint_when_unconfirmed(tmp_path):
 
     paths = _paths(tmp_path)
     ep.set_mode(paths, "goal_1", "converge")
-    result = bridge._append_execution_phase_context(paths, _FakeGoal(), 1, "base description")
+    phase_info = bridge._resolve_execution_phase(paths, _FakeGoal(), 1)
+    result = bridge._append_execution_phase_context(paths, _FakeGoal(), "base description", phase_info)
     assert "收敛期" in result
     assert "固化执行规范" in result
 

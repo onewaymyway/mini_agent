@@ -179,12 +179,13 @@ class TestFireGoalCycle(unittest.TestCase):
             children = gb.get(goal.id).children_ids
             self.assertEqual(len(children), 1)
             child = gb.get(children[0])
-            # [goal_cron_output_directory_convention_plan.md §3] _fire_goal_cycle()
-            # 现在会在描述末尾追加"本轮产出请写入：<cycle_dir>"，原始
-            # task_template 仍完整保留在前面。
+            # [goal_output_directory_and_execution_phase_redesign_plan.md Stage 3]
+            # _fire_goal_cycle() 现在改用新的四目录模型：默认（无 phase 历史）
+            # 首轮判定为 explore，会在描述末尾追加"本轮请把所有产出写入试验
+            # 目录：.../scratch"，原始 task_template 仍完整保留在前面。
             self.assertTrue(child.description.startswith("搜索最新 AI 技术进展"))
-            self.assertIn("本轮产出请写入：", child.description)
-            self.assertIn("cycle_0001", child.description)
+            self.assertIn("试验目录", child.description)
+            self.assertIn("scratch", child.description)
             self.assertIn("第 1 轮", child.title)
 
             # 第一轮仍在跑（is_running=True）：第二次触发应该被幂等检查拦住
@@ -611,7 +612,7 @@ class TestPhaseHealthNotification(unittest.TestCase):
             original = dispatcher_mod.NotificationDispatcher
             dispatcher_mod.NotificationDispatcher = _FakeDispatcher
             try:
-                bridge._append_execution_phase_context(paths, goal, 1, "base description")
+                bridge._resolve_execution_phase(paths, goal, 1)
             finally:
                 dispatcher_mod.NotificationDispatcher = original
 
@@ -631,7 +632,7 @@ class TestPhaseHealthNotification(unittest.TestCase):
 
             dispatcher_mod.NotificationDispatcher = _FakeDispatcher2
             try:
-                bridge._append_execution_phase_context(paths, goal, 2, "base description")
+                bridge._resolve_execution_phase(paths, goal, 2)
             finally:
                 dispatcher_mod.NotificationDispatcher = original
 

@@ -341,7 +341,7 @@ output/scripts/
 > **实施进度**（随实现推进更新，最新状态见文末"实施记录"）：
 > - ✅ Stage 1：`output_workspace.py` 目录模型改造 —— 已完成
 > - ✅ Stage 2：`GoalExecutionSpec` 版本历史归档 —— 已完成
-> - ⬜ Stage 3：`goal_cron_bridge.py` 阶段 prompt 重新拼接
+> - ✅ Stage 3：`goal_cron_bridge.py` 阶段 prompt 重新拼接 —— 已完成
 > - ⬜ Stage 4：converge 自动生成 spec 草稿
 > - ⬜ Stage 5：`output/scripts/` 专项规范落地（骨架分配已随 Stage 1 完成，
 >   核查/审计逻辑待 Stage 3 的 tidy 改造一并接入）
@@ -447,3 +447,84 @@ README 生成、notes 读写归档、scratch 清空判断。
 固定带上 `spec/SPEC.md` 全文（这是 Stage 3 的工作，方案 §4 提到的"确认后
 每轮开头都能看到"目前还未生效）；converge 阶段"连续 2 轮方案对比说明一致
 时自动生成 spec 草稿"是 Stage 4 的工作，本阶段未涉及。
+
+### Stage 3（已完成）：`goal_cron_bridge.py` 阶段 prompt 重新拼接
+
+recurring Goal（`run_mode="goal_cycle"`）的触发逻辑（`_fire_goal_cycle`）
+改为使用新的四目录模型（`output/`/`notes/`/`spec/`/`scratch/`），彻底不再
+调用旧的 `allocate_cycle_dir()`；一次性 Goal（`goal_backlog.py` 里的
+`add_objectives_for_goal()`）和独立 cron job（`cron_job_executor.py`）
+不受影响，继续走旧模型（方案 §1 的既有结论）。
+
+**触发流程改造**：原来"先分配目录/读上一轮 manifest → 再判定 execution
+phase → 再判定 spec"的三段式调用顺序，改成"先判定 execution phase → 再
+根据判定结果决定目录约束文案 → 再判定 spec"，因为目录约束文案（"这一轮
+只能写 scratch/ 还是 output/"）依赖 effective_mode，必须先算出阶段：
+
+- 新增 `_resolve_execution_phase(paths, goal, cycle_no, *, goal_backlog=None,
+  llm_helper_provider=None) -> dict`：从原来的 `_append_execution_phase_
+  context()` 里拆出纯"判定 + 副作用"部分（读/存 `ExecutionPhaseState`、
+  spec 确认状态、进展趋势信号、健康告警检查与通知、`save_phase()`），
+  返回 `{"effective_mode", "spec_confirmed", "spec", "state"}`，供后续两个
+  函数复用，避免重复计算或重复触发副作用（健康告警只应该发一次）。
+- `_append_execution_phase_context(paths, goal, description, phase_info)`：
+  签名改为接收 `_resolve_execution_phase()` 的返回值，只负责阶段文案片段
+  （EXPLORE/CONVERGE/STABLE/TIDY_BLOCK）+ converge 未确认 spec 提示 +
+  tidy 已确认 spec 时的核对清单，不再自己做判定。
+- `_append_output_workspace_context(paths, goal, cycle_no, description, *,
+  phase_info=None)`：签名从 `(paths, goal_id, cycle_no, description)`
+  改为接收 `goal` 对象（需要 `execution_spec_confirmed` 等字段）和
+  `phase_info`。**这是本 Stage 的核心改动**：
+  - 幂等调用 `ensure_output_skeleton()` 确保四目录骨架就绪；
+  - 用 `read_recent_notes(limit=3)` 取最近几轮总结笔记原文拼进 prompt，
+    取代原来只取最后一轮、格式简陋的 `read_latest_manifest()`；
+  - explore/converge：明确写"正式产出目录本轮不允许直接写入"+"请写入
+    scratch/"+"脚本草稿走 output/scripts/_experiments/"（方案 §8 待决策
+    项在本阶段拍板：统一用 `_experiments/` 承担脚本类草稿角色，不用
+    `scratch/scripts_attempt_N/` 这个备选方案）；converge 额外追加"从
+    scratch/ 搬进 output/、淘汰方案挪进 _archive/、notes 里写清楚搬运
+    理由"的明确要求（方案 §5/§7）；
+  - stable：明确写"本轮只允许写 output/，不允许新增 scratch/ 或
+    _experiments/ 内容"，并在 spec 已确认时把 `spec/SPEC.md` 全文拼进
+    prompt（通过新增的 `_read_spec_md_full_text()`，优先读磁盘快照，
+    快照缺失时退回用内存 spec 现算 `render_summary_for_user()` 兜底）——
+    这是方案 §4"确认后每轮开头都能看到"的落地，也是 Stage 3 要解决的
+    "STABLE_BLOCK 完全没有把 spec 内容带出来"这个具体缺口；
+  - tidy：不再让 agent 自己判断"哪里乱了"，而是调用新增的
+    `_build_tidy_problem_checklist()`（基于 `scan_output_structure()` +
+    `scratch_is_empty()`）算出一份确定性问题清单（根目录散落文件、
+    `_misc/` 未清空、`scripts/` 根目录混入疑似临时脚本、`_run_logs/`
+    超量、`_archive/` 规模提示、`scratch/` 未清空）喂给 agent，对应方案
+    §7.1 核查清单第 1/2/6/8/5 条；第 3/4/7/9 条（`retention` 规则核对、
+    命名匹配、`requirements.txt` 一致性、`_experiments/` 转正检测）留待
+    后续更细的静态分析补齐，本阶段先覆盖能直接从现有扫描函数拿到的部分。
+  - `phase_info` 为 `None` 或 `effective_mode` 拿不到值时，按最保守的
+    "stable"（只允许写 output/）兜底，而不是"放开随便写"。
+
+**未变化的部分**：`_append_execution_spec_context()`（spec 已确认时把
+`render_prompt_block()` 拼进 prompt + 轻量核对软提示）逻辑不变，与新增的
+"stable 阶段附上 SPEC.md 全文"是互补关系——前者是结构化的、面向"本轮该
+产出什么"的指令，后者是完整的规范文档全文，两者服务的目的不同，没有做
+去重合并。`_build_tidy_checklist_hint()`（基于 spec 的 deliverables/
+sub_directories 核对清单）也保留，与 `_build_tidy_problem_checklist()`
+（基于目录扫描的确定性问题清单）是互补关系，一个需要读 spec 内容才能
+判断，一个纯粹是文件系统扫描，分工不同。
+
+测试：更新 `tests/test_goal_cron_bridge.py`（触发流程断言从"本轮产出请
+写入：cycle_0001"改为"试验目录…scratch"）、`tests/test_execution_phase.py`
+（多处调用点从旧的一段式 `_append_execution_phase_context(paths, goal,
+cycle_no, description, ...)` 改为两段式 `_resolve_execution_phase()` +
+`_append_execution_phase_context(paths, goal, description, phase_info)`，
+并修复一处误删的 `_build_tidy_checklist_hint()` 函数体）。改造后运行
+`tests/test_goal_cron_bridge.py`/`tests/test_execution_phase.py`/
+`tests/test_output_workspace_new_layout.py`/`tests/test_goal_execution_
+spec*.py`/`tests/test_growth_advisor*.py` 共 646 个用例，644 个通过，
+2 个失败均为与本次改动无关的既有日期相关问题（`growth_advisor.py` 的
+`compact_health_trend_storage`/`compact_topic_trend_storage` 按"90 天前"
+降采样逻辑，与 `goal_cron_bridge.py`/`output_workspace.py` 均无调用关系）。
+
+尚未做的事（留给后续阶段）：converge 阶段"连续 2 轮方案对比说明一致时
+自动生成 spec 草稿"是 Stage 4 的工作，本阶段未涉及；`output/scripts/`
+专项核查（`requirements.txt` 一致性核查、`_experiments/` 转正检测）是
+Stage 5 的工作；`docs/goal-execution-phase-guide.md` 等用户文档同步是
+Stage 6 的工作。

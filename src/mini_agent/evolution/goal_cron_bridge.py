@@ -155,10 +155,11 @@ def _fire_goal_cycle(
     # 子任务里。改成拼接：父 Goal 说明在前，本轮具体任务模板在后，都保留。
     from mini_agent.perception.goal_backlog import compose_context
     description = compose_context(goal.description, job.task_template)
-    description = _append_output_workspace_context(paths, goal.id, cycle_no, description)
-    description = _append_execution_phase_context(
-        paths, goal, cycle_no, description, goal_backlog=goal_backlog, llm_helper_provider=llm_helper_provider,
+    phase_info = _resolve_execution_phase(
+        paths, goal, cycle_no, goal_backlog=goal_backlog, llm_helper_provider=llm_helper_provider,
     )
+    description = _append_output_workspace_context(paths, goal, cycle_no, description, phase_info=phase_info)
+    description = _append_execution_phase_context(paths, goal, description, phase_info)
     # [goal_cron_task_optimization_holistic_plan.md 方向 C] "下一轮降级执行"
     # 与 execution phase 提示是叠加关系，不互斥——不管当前判定处于哪个阶段，
     # 都在描述末尾追加一段"从简执行"约束，并在消费后立即清零标记，只影响
@@ -198,63 +199,26 @@ def _fire_goal_cycle(
     return True
 
 
-def _append_output_workspace_context(paths, goal_id: str, cycle_no: int, description: str) -> str:
-    """[goal_cron_output_directory_convention_plan.md §3] recurring Goal
-    一侧不经过 CronJobWorkspace.render_prompt()（那是 dedicated-execution
-    cron 专属路径），这里补一段等价逻辑：分配本轮产出目录、读上一轮
-    manifest，拼进子 Objective 描述末尾。
-
-    paths 为 None（拿不到 AgentPaths，理论上不应发生，防御性处理）或任何
-    环节异常时，静默跳过——不影响 Goal 触发主流程，退化为改造前的行为
-    （agent 自己判断产出放哪）。
-    """
-    if paths is None:
-        return description
-    try:
-        from mini_agent.evolution import output_workspace
-        base_dir = output_workspace.goal_output_base_dir(paths, goal_id)
-        cycle_dir = output_workspace.allocate_cycle_dir(paths, goal_id, cycle_no)
-
-        parts = [description] if description and description.strip() else []
-
-        prev_manifest = output_workspace.read_latest_manifest(base_dir)
-        if prev_manifest:
-            prev_text = output_workspace.format_manifest_for_prompt(prev_manifest)
-            if prev_text:
-                parts.append(f"--- 上一轮产出（{prev_manifest.get('_dir', '')}） ---\n{prev_text}")
-
-        parts.append(f"本轮产出请写入：{cycle_dir}")
-        return "\n\n".join(parts)
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_output_workspace_context')
-        return description
-
-
-def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, description: str,
-                                     *, goal_backlog=None, llm_helper_provider=None) -> str:
+def _resolve_execution_phase(paths, goal: "GoalNode", cycle_no: int,
+                              *, goal_backlog=None, llm_helper_provider=None) -> dict:
     """[goal_execution_phase_improvement_plan.md §4 / Stage D /
-    goal_stuck_stats_and_llm_progress_judge_plan.md §2] 读取/推进这个
-    Goal 的 ExecutionPhaseState，把当前有效阶段（explore/converge/stable/
-    tidy）对应的 prompt 片段拼进本轮子 Objective description。
+    goal_stuck_stats_and_llm_progress_judge_plan.md §2 /
+    goal_output_directory_and_execution_phase_redesign_plan.md Stage 3]
+    读取/推进这个 Goal 的 ExecutionPhaseState，计算本轮 effective_mode，
+    并落盘/发健康告警——这部分是纯粹的"判定 + 副作用"，从原来的
+    `_append_execution_phase_context()` 拆出来，是因为 Stage 3 需要在
+    构造 prompt 的产出目录约束段落时（`_append_output_workspace_context`）
+    就知道 effective_mode（explore/converge 只能写 scratch/，stable 只能
+    写 output/），而不是等到阶段文案段落才知道。
 
-    paths 为 None 或任何环节异常时静默跳过，不影响 Goal 触发主流程；
-    没有 phase 文件时按默认状态（mode="auto"）处理，行为与引入本机制之前
-    完全一致（默认判定倾向 explore/converge，不会突然收紧成 stable）。
-
-    goal_backlog：[Stage D] 可选，传入时用于计算跨轮"进展趋势"信号（见
-    `execution_phase.compute_progress_trend_signal`），传 None 时行为与
-    Stage D 之前完全一致（该信号不参与判定）。
-
-    llm_helper_provider：[§2] 可选、惰性获取的 `Callable[[], Optional[
-    LLMHelper]]`。只有 `AppConfig.execution_phase.progress_trend_llm_enabled`
-    开启且能拿到非 None 的 helper 时，才会把 `llm_helper` 传给
-    `compute_progress_trend_signal`，让进展趋势信号改用 LLM 判断；配置
-    关闭、未传 provider、或 provider 返回 None 时，维持纯 difflib 判断，
-    行为与本参数引入之前完全一致。
+    返回 dict：{"effective_mode": str|None, "spec_confirmed": bool,
+    "spec": GoalExecutionSpec|None, "state": ExecutionPhaseState|None}。
+    任何环节异常都吞掉，返回 effective_mode=None（调用方据此按最保守的
+    "stable"（只写 output/）兜底，不影响 Goal 触发主流程）。
     """
+    result = {"effective_mode": None, "spec_confirmed": False, "spec": None, "state": None}
     if paths is None:
-        return description
+        return result
     try:
         from mini_agent.perception import execution_phase as ep
         from mini_agent.perception import goal_execution_spec as ges
@@ -264,11 +228,11 @@ def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, desc
         spec_confirmed = bool(getattr(goal, "execution_spec_confirmed", False))
         spec_recently_revised = not spec_confirmed
         miss_streak = 0
+        spec = None
         if spec_confirmed:
             spec = ges.load_spec(paths, goal.id)
             if spec is not None:
                 miss_streak = int(getattr(spec, "soft_check_miss_streak", 0))
-                # 确认后 24 小时内仍算"刚调整过"，避免确认当轮立刻判成 stable
                 confirmed_at = getattr(spec, "confirmed_at", None)
                 if confirmed_at is not None and (time.time() - confirmed_at) < 86400:
                     spec_recently_revised = True
@@ -294,9 +258,6 @@ def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, desc
             miss_streak=miss_streak,
             progress_trend_stuck=progress_trend_stuck,
         )
-        # [goal_cron_task_optimization_holistic_plan.md 方向 B] 阶段健康告警：
-        # 只读判定，命中且不在冷却期内才落盘更新告警状态并发通知；异常/未
-        # 命中都不影响后面 save_phase 和 prompt 拼接的主流程。
         try:
             health_reason = ep.check_phase_health(state, effective_mode)
             if health_reason:
@@ -306,11 +267,228 @@ def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, desc
                 _notify_phase_health_issue(paths, goal, health_reason)
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_execution_phase_context.health_check')
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._resolve_execution_phase.health_check')
 
         ep.save_phase(paths, state)
 
+        result["effective_mode"] = effective_mode
+        result["spec_confirmed"] = spec_confirmed
+        result["spec"] = spec
+        result["state"] = state
+        return result
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._resolve_execution_phase')
+        return result
+
+
+def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, description: str,
+                                      *, phase_info: Optional[dict] = None) -> str:
+    """[goal_output_directory_and_execution_phase_redesign_plan.md Stage 3]
+    recurring Goal 一侧改用新的四目录模型（output/notes/spec/scratch，方案
+    §1~§6），取代原来"每轮一个新目录 cycle_NNNN/"的旧模型：
+      - 幂等确保 output/ 固定骨架存在（README.md/_misc/_archive/scripts/…）
+      - 把最近几轮 notes/cycle_NNNN.md 原文拼进 prompt（取代原来只取最后
+        一轮、内容格式相对简陋的 manifest 机制）
+      - 依据 effective_mode 拼一段"本轮可以写哪里、不可以写哪里"的约束：
+          explore/converge → 只能写 scratch/（脚本草稿走
+            output/scripts/_experiments/），converge 额外要求"搬运+清理"
+          stable            → 只能写 output/，并附上已确认执行规范
+            spec/SPEC.md 全文（若存在）
+          tidy              → 附上代码扫描算出的"问题清单"（方案 §7.1），
+            不要求 agent 自己从零判断"哪里乱了"
+      - 提醒本轮结束前写一份 notes/cycle_NNNN.md 总结笔记
+
+    phase_info：由 `_fire_goal_cycle` 调用 `_resolve_execution_phase()` 后
+    传入，包含 effective_mode/spec_confirmed/spec。为 None 或
+    effective_mode 取不到值时，按最保守的 "stable"（只允许写 output/）
+    处理——这是有意为之的保守兜底：不确定阶段时，"限制只能写正式产出目录"
+    比"放开随便写"更安全。
+
+    paths 为 None（拿不到 AgentPaths，理论上不应发生，防御性处理）或任何
+    环节异常时，静默跳过——不影响 Goal 触发主流程。
+    """
+    if paths is None:
+        return description
+    try:
+        from mini_agent.evolution import output_workspace as ow
+        goal_id = goal.id
+        ow.ensure_output_skeleton(paths, goal_id)
+        out_dir = ow.goal_output_dir(paths, goal_id)
+        notes_dir = ow.goal_notes_dir(paths, goal_id)
+        scratch_dir = ow.goal_scratch_dir(paths, goal_id)
+
+        parts = [description] if description and description.strip() else []
+
+        recent_notes = ow.read_recent_notes(paths, goal_id, limit=3)
+        if recent_notes:
+            notes_text = "\n\n".join(
+                f"--- 第 {n['cycle_no']} 轮总结笔记 ---\n{n['content']}" for n in recent_notes
+            )
+            parts.append(notes_text)
+
+        mode = (phase_info or {}).get("effective_mode") or "stable"
+        note_reminder = f"完成后请在 {notes_dir} 下写一份 cycle_{cycle_no:04d}.md 总结笔记"
+
+        if mode in ("explore", "converge"):
+            experiments_dir = out_dir / "scripts" / "_experiments"
+            lines = [
+                "## 产出目录约束（探索/收敛期）",
+                "",
+                f"- 正式产出目录：{out_dir}（本轮**不允许**直接写入）",
+                f"- 本轮请把所有产出写入试验目录：{scratch_dir}",
+                f"  （脚本类草稿请统一放在 {experiments_dir} 下，而不是 scratch/ 本身）",
+                f"- {note_reminder}",
+            ]
+            if mode == "converge":
+                lines += [
+                    "",
+                    "## 收敛期额外要求",
+                    "",
+                    "- 从 scratch/（含 output/scripts/_experiments/ 中选定的脚本）里"
+                    "挑选一个方案，**搬进** output/（脚本搬进 output/scripts/ 根目录，"
+                    "遵循正式命名约定：动词开头的 snake_case，不用版本后缀）",
+                    "- 未被选中的方案连同其数据一起挪进 output/_archive/，并注明淘汰原因",
+                    "- 在本轮总结笔记里写清楚搬运理由 + 淘汰了哪些方案"
+                    "（这份'方案对比说明'是本轮的重点产出之一，请单独成段，方便后续核对）",
+                ]
+            parts.append("\n".join(lines))
+        elif mode == "tidy":
+            checklist = _build_tidy_problem_checklist(paths, goal_id)
+            lines = [
+                "## 产出目录整理任务（代码预检结果）",
+                "",
+                f"正式产出目录：{out_dir}",
+                "",
+                checklist,
+                "",
+                f"{note_reminder}（整理报告本身），并按上述问题项逐一处理"
+                "（能确定性判断的问题已经列在上面，不需要从零判断'哪里乱了'，"
+                "专注于'怎么处理这些具体问题'即可）。",
+            ]
+            parts.append("\n".join(lines))
+        else:  # stable（含未知/None 兜底）
+            lines = [
+                "## 产出目录约束（稳定期）",
+                "",
+                f"- 本轮只允许写入正式产出目录：{out_dir}（含 output/scripts/ 根目录的"
+                "增量修改），不允许新增 scratch/ 或 output/scripts/_experiments/ 内容——"
+                "如果确实需要先探索验证，这本身就是一个信号，说明可能没有真正收敛，"
+                "请在总结笔记里如实指出，必要时建议退回收敛期。",
+                f"- {note_reminder}，记录本轮的增量变化。",
+            ]
+            spec = (phase_info or {}).get("spec")
+            spec_confirmed = bool((phase_info or {}).get("spec_confirmed"))
+            if spec_confirmed:
+                spec_md_text = _read_spec_md_full_text(paths, goal_id, fallback_spec=spec)
+                if spec_md_text:
+                    lines += ["", "## 已确认的执行规范（spec/SPEC.md 全文）", "", spec_md_text]
+            parts.append("\n".join(lines))
+
+        return "\n\n".join(parts)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_output_workspace_context')
+        return description
+
+
+def _read_spec_md_full_text(paths, goal_id: str, *, fallback_spec=None) -> str:
+    """读取 `spec/SPEC.md` 落盘全文（方案 §4，由
+    `goal_execution_spec.save_spec()` 写入）。文件不存在时（例如快照写入
+    曾经失败过，或历史数据尚未触发过一次 save_spec）退回用内存里已加载的
+    `fallback_spec.render_summary_for_user()` 现算一份，尽量不让"稳定期
+    附上规范全文"这件事因为快照文件缺失而完全失效。两者都拿不到时返回
+    空字符串。
+    """
+    try:
+        from mini_agent.evolution.output_workspace import goal_spec_dir
+        spec_md = goal_spec_dir(paths, goal_id) / "SPEC.md"
+        if spec_md.exists():
+            text = spec_md.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+    except Exception:
+        pass
+    if fallback_spec is not None:
+        try:
+            return fallback_spec.render_summary_for_user().strip()
+        except Exception:
+            pass
+    return ""
+
+
+def _build_tidy_problem_checklist(paths, goal_id: str) -> str:
+    """[方案 §7.1] tidy 阶段核查清单里能确定性代码判断的那部分（第
+    1/3(部分)/4(部分)/6/7 条留待更细的静态分析——第一版先覆盖能直接从
+    `scan_output_structure()`/`scratch_is_empty()` 扫描结果算出来的项：
+    根目录散落文件、_misc/ 未清空、疑似临时脚本混在 scripts/ 根目录、
+    _run_logs/ 数量、_archive/ 归档规模、scratch/ 是否已清空。
+
+    返回给 agent 看的 Markdown 文本，全部是"代码已经算出来的问题"，
+    agent 不需要自己判断"这里乱不乱"，只需要决定"怎么处理"。没有发现
+    任何问题时返回一句确认性文字，而不是空字符串（避免 agent 误以为
+    没有跑扫描）。
+    """
+    try:
+        from mini_agent.evolution import output_workspace as ow
+        stats = ow.scan_output_structure(paths, goal_id)
+        scratch_empty = ow.scratch_is_empty(paths, goal_id)
+    except Exception:
+        return "（本轮目录扫描失败，请自行检查 output/ 目录结构）"
+
+    lines: list[str] = []
+    if stats["root_unexpected"]:
+        lines.append("- ⚠️ output/ 根目录下存在未分类文件（应归入某个业务子目录或 "
+                      "_misc/）：" + "、".join(stats["root_unexpected"]))
+    if stats["misc_count"]:
+        lines.append(f"- ⚠️ _misc/ 有 {stats['misc_count']} 个文件未清空："
+                      + "、".join(stats["misc_files"][:20])
+                      + "（请归类或挪进 _archive/ 并注明原因）")
+    scripts = stats["scripts"]
+    if scripts["unexpected_root_files"]:
+        lines.append("- ⚠️ scripts/ 根目录下存在疑似临时脚本，应挪进 "
+                      "scripts/_experiments/：" + "、".join(scripts["unexpected_root_files"]))
+    if scripts["run_logs_count"] > 10:
+        lines.append(f"- ⚠️ scripts/_run_logs/ 已有 {scripts['run_logs_count']} 个日志"
+                      "（建议只保留最近 10 次，其余清理）")
+    if not scratch_empty:
+        lines.append("- ⚠️ scratch/ 尚未清空——进入 stable 前必须清空或仅保留明确标注"
+                      "'仅存档不再维护'的内容")
+    if stats["archive_entries"] > 200:
+        lines.append(f"- ℹ️ _archive/ 已有 {stats['archive_entries']} 项归档，"
+                      "可评估是否有过老内容可以彻底删除（默认不自动删，仅提示）")
+
+    if not lines:
+        return "本轮代码扫描未发现确定性问题（根目录整洁、_misc/ 为空、scratch/ 已清空）。"
+    return "以下是本轮代码扫描出的问题清单：\n\n" + "\n".join(lines)
+
+
+def _append_execution_phase_context(paths, goal: "GoalNode", description: str, phase_info: dict) -> str:
+    """[goal_execution_phase_improvement_plan.md §4 / Stage B / 方案 Stage 3]
+    把 `_resolve_execution_phase()` 算出的 effective_mode 对应的阶段文案
+    片段（explore/converge/stable/tidy）拼进本轮子 Objective description。
+
+    与产出目录约束（`_append_output_workspace_context`，负责"能写哪里、
+    不能写哪里"这类结构化约束）分工不同，这里只负责阶段本身的文字说明和
+    两个既有的提示钩子（converge 未确认规范时提示生成、tidy 已确认规范时
+    的核对清单）——tidy 的"代码算出的问题清单"已经移到
+    `_append_output_workspace_context` 里（方案 §7.1 要求的是"目录/文件
+    层面的确定性核查"，跟这里的 spec deliverables 核对清单是互补关系，
+    都保留）。
+
+    phase_info 的 effective_mode 为 None（`_resolve_execution_phase` 内部
+    异常兜底）时，直接跳过阶段文案（不影响 Goal 触发主流程，产出目录约束
+    那边已经按 stable 做了保守兜底）。
+    """
+    if paths is None:
+        return description
+    effective_mode = phase_info.get("effective_mode")
+    if effective_mode is None:
+        return description
+    try:
         from mini_agent.prompts import pm
+        from mini_agent.perception import goal_execution_spec as ges
+
         key_map = {
             "explore": "EXPLORE_BLOCK",
             "converge": "CONVERGE_BLOCK",
@@ -326,20 +504,24 @@ def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, desc
         parts = [description] if description and description.strip() else []
         parts.append(block)
 
+        spec_confirmed = bool(phase_info.get("spec_confirmed"))
+
         # [Stage B] converge 阶段：如果执行规范尚未确认，额外提示"收敛完成后
-        # 建议生成/确认执行规范"，把 converge 与 GoalExecutionSpec 的确认流程
-        # 串起来（不强制、不自动调用，只是提示，避免两套机制各自为政）。
+        # 建议生成/确认执行规范"。
         if effective_mode == "converge" and not spec_confirmed:
             parts.append(pm.fragment("execution_phase", "CONVERGE_SPEC_HINT_BLOCK"))
 
         # [Stage B] tidy 阶段：如果已有确认的执行规范，把规范里声明的
-        # deliverables/sub_directories 罗列出来，作为整理时的核对清单，
-        # 而不是让 agent 凭空判断"哪些目录/文件算冗余"。
+        # deliverables/sub_directories 罗列出来，作为整理时的核对清单
+        # （与目录扫描出的确定性问题清单互补，spec 层面的核对仍需要读
+        # spec 内容才能判断，不属于纯目录扫描的范畴）。
         if effective_mode == "tidy" and spec_confirmed:
-            try:
-                spec_for_tidy = ges.load_spec(paths, goal.id)
-            except Exception:
-                spec_for_tidy = None
+            spec_for_tidy = phase_info.get("spec")
+            if spec_for_tidy is None:
+                try:
+                    spec_for_tidy = ges.load_spec(paths, goal.id)
+                except Exception:
+                    spec_for_tidy = None
             checklist_hint = _build_tidy_checklist_hint(spec_for_tidy)
             if checklist_hint:
                 parts.append(checklist_hint)
@@ -349,6 +531,26 @@ def _append_execution_phase_context(paths, goal: "GoalNode", cycle_no: int, desc
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_execution_phase_context')
         return description
+    """[goal_execution_phase_improvement_plan.md Stage B] 基于已确认的
+    GoalExecutionSpec 生成一份 tidy 阶段专属核对清单文本；spec 为 None 或
+    没有 deliverables/sub_directories 时返回空字符串（调用方据此跳过）。
+    """
+    if spec is None:
+        return ""
+    lines: list[str] = []
+    if getattr(spec, "deliverables", None):
+        lines.append("应存在的产出文件（按命名规则核对，缺失/命名不一致需在报告中指出）：")
+        for d in spec.deliverables:
+            pattern = f"（命名规则：{d.naming_pattern}）" if getattr(d, "naming_pattern", "") else ""
+            lines.append(f"  - {d.name}{pattern}")
+    if getattr(spec, "sub_directories", None):
+        lines.append("预期的子目录结构（核对是否有游离在外、未归入这些目录的产出）：")
+        for s in spec.sub_directories:
+            purpose = f"：{s.purpose}" if getattr(s, "purpose", "") else ""
+            lines.append(f"  - {s.name}{purpose}")
+    if not lines:
+        return ""
+    return "## 整理核对清单（依据已确认的执行规范）\n\n" + "\n".join(lines)
 
 
 def _build_tidy_checklist_hint(spec) -> str:
