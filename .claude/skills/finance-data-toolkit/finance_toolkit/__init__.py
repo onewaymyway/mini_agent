@@ -61,7 +61,26 @@ try:
         CircuitBreaker,
         FallbackManager,
         retry_with_backoff,
+        RetryStrategySelector,
+        get_retry_engine,
+        RetryConfig,
     )
+    from .retry_engine import (
+        RetryEngine,
+        ExponentialBackoffRetry,
+        FixedIntervalRetry,
+        AdaptiveBackoffRetry,
+        retry_on_error,
+    )
+    from .retry_config import (
+        RetryConfig as RetryConfigV2,
+        RetryConfigManager,
+        get_retry_config_manager,
+        reset_retry_config_manager,
+        DEFAULT_RETRY_CONFIG,
+    )
+    from .retry_strategy import retry_with_config
+    from .error_capture import ErrorCapture, ErrorType
 except ImportError:
     pass
 
@@ -262,6 +281,35 @@ try:
 except ImportError:
     pass
 
+# 数据质量验证集成
+try:
+    from .validation_adapter import (
+        validate_quote_data,
+        validate_kline_data,
+        validate_financial_data,
+        validate_capital_flow,
+        validate_sector_data,
+        validate_fund_data,
+        validate_bond_data,
+        ValidationPipeline,
+        QualityReport,
+    )
+except ImportError:
+    pass
+
+# 基础输入校验模块（最小验证集）
+try:
+    from .input_validator import (
+        InputValidator,
+        ValidationResult,
+        BatchResult,
+        validate,
+        validate_batch,
+        list_schemas,
+    )
+except ImportError:
+    pass
+
 try:
     from .compliance_checker import (
         ComplianceChecker,
@@ -276,6 +324,64 @@ try:
 except ImportError:
     pass
 
+# 数据质量验证体系 - 新增模块
+try:
+    from .validators import (
+        DataIntegrityValidator,
+        validate_quote,
+        validate_kline,
+        validate_financial,
+        CrossSourceValidator,
+        validate_multi_source_quote,
+        validate_multi_source_kline,
+    )
+    from .monitoring import (
+        TaskMonitor,
+        TaskMetric,
+        AlertLevel,
+        MonitorConfig,
+        DashboardRenderer,
+        render_dashboard,
+    )
+    from .benchmark import (
+        DataSourceBenchmark,
+        SourceBenchmark,
+        BaselineConfig,
+        run_all_benchmarks,
+    )
+    from .reports import (
+        QualityReportGenerator,
+        generate_quality_report,
+    )
+except ImportError as e:
+    import logging
+    logging.getLogger(__name__).warning(f"数据质量验证模块导入失败: {e}")
+
+
+# ========== 插件系统（步骤 4 新增） ==========
+try:
+    from .plugins import (
+        BasePlugin,
+        PluginConfig,
+        DataType,
+        HealthStatus,
+        PluginManager,
+        get_plugin_manager,
+        PluginDiscovery,
+        PluginError,
+        PluginFetchError,
+        PluginConfigError,
+        SourceUnavailableError,
+        SourceRateLimitedError,
+        DataNotFoundError,
+        DataQualityError,
+    )
+    from .plugins.manager import PluginManager, get_plugin_manager
+    from .plugins.router import DataSourceRouter, PluginRoute
+    from .config_loader import ConfigLoader
+except ImportError as e:
+    import logging
+    logging.getLogger(__name__).warning(f"插件系统导入失败（可能尚未初始化）: {e}")
 
 __version__ = '1.0.0'
 
@@ -302,7 +408,15 @@ __all__ = [
     'CircuitBreaker',
     'FallbackManager',
     'retry_with_backoff',
-    
+    'retry_with_config',
+
+    # 重试配置管理
+    'RetryConfigV2',
+    'RetryConfigManager',
+    'get_retry_config_manager',
+    'reset_retry_config_manager',
+    'DEFAULT_RETRY_CONFIG',
+
     # 数据获取
     'fetch_realtime_quote',
     'fetch_kline',
@@ -460,6 +574,38 @@ __all__ = [
     # 存储
     'FinanceDatabase',
     'create_database',
+
+    # 数据质量验证集成
+    'validate_quote_data',
+    'validate_kline_data',
+    'validate_financial_data',
+    'validate_capital_flow',
+    'validate_sector_data',
+    'validate_fund_data',
+    'validate_bond_data',
+    'ValidationPipeline',
+    'QualityReport',
+
+    # 数据质量验证体系
+    'DataIntegrityValidator',
+    'validate_quote',
+    'validate_kline',
+    'validate_financial',
+    'CrossSourceValidator',
+    'validate_multi_source_quote',
+    'validate_multi_source_kline',
+    'TaskMonitor',
+    'TaskMetric',
+    'AlertLevel',
+    'MonitorConfig',
+    'DashboardRenderer',
+    'render_dashboard',
+    'DataSourceBenchmark',
+    'SourceBenchmark',
+    'BaselineConfig',
+    'run_all_benchmarks',
+    'QualityReportGenerator',
+    'generate_quality_report',
 ]
 
 
