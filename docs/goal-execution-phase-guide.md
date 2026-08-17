@@ -169,3 +169,18 @@ job（`cron_job_executor.py` 直接执行）**明确不接入**——阶段概�
 每个 Goal 的阶段状态独立存储在 `.agent/goal_execution_phase/<goal_id>.json`，
 不会修改 `goals.json` 中的 `GoalNode` 结构。没有该文件时视为默认状态
 （`mode="auto"`, `locked=False`），行为与未使用本功能之前完全一致。
+
+## 产出目录模型重构（进行中）
+
+recurring Goal 的产出目录正在从"每轮一个 `cycle_NNNN/` 目录"迁移到"四个
+固定目录（`output/`/`notes/`/`spec/`/`scratch/`）跨轮共用"的新模型，设计
+动机是现有模型下 explore 阶段允许换目录结构、tidy 阶段又缺乏实质核查手段，
+导致产出目录实际很难真正收敛。完整设计见
+`next_doc/goal_output_directory_and_execution_phase_redesign_plan.md`。
+
+当前进度：`evolution/output_workspace.py` 已提供新目录模型的路径分配、
+骨架创建、结构扫描、README 自动生成、轮次笔记读写等基础函数（Stage 1），
+但**尚未接入 `goal_cron_bridge.py` 的实际触发流程**——recurring Goal 触发
+时目前仍使用原有的 `cycle_NNNN/` 分配逻辑，行为未变化。后续阶段完成、
+正式接入生产触发流程后，本文档会同步更新阶段行为细节（尤其是 stable 阶段
+将固定带上 `spec/SPEC.md` 全文、tidy 阶段的核对清单将改为代码驱动）。

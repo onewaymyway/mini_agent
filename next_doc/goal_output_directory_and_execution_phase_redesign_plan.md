@@ -338,6 +338,15 @@ output/scripts/
 
 ## 10. 建议的实施顺序
 
+> **实施进度**（随实现推进更新，最新状态见文末"实施记录"）：
+> - ✅ Stage 1：`output_workspace.py` 目录模型改造 —— 已完成
+> - ⬜ Stage 2：`GoalExecutionSpec` 版本历史归档
+> - ⬜ Stage 3：`goal_cron_bridge.py` 阶段 prompt 重新拼接
+> - ⬜ Stage 4：converge 自动生成 spec 草稿
+> - ⬜ Stage 5：`output/scripts/` 专项规范落地（骨架分配已随 Stage 1 完成，
+>   核查/审计逻辑待 Stage 3 的 tidy 改造一并接入）
+> - ⬜ Stage 6：文档全面同步
+
 1. `output_workspace.py` 目录模型改造（`output/`/`notes/`/`spec/`/
    `scratch/` 四件套 + `output/` 内部固定骨架分配函数）+ 对应单测——这是
    地基，后续步骤都依赖它。
@@ -356,3 +365,42 @@ output/scripts/
    `docs/goal-execution-spec-guide.md`、`docs/unified-scheduler-guide.md`
    中涉及 `output_workspace` 的部分，以及新增一份面向用户的"产出目录规范"
    说明文档。
+
+## 11. 实施记录
+
+### Stage 1（已完成）：`output_workspace.py` 目录模型改造
+
+新增函数（均为 recurring Goal 专用，不影响一次性 Goal / 独立 cron job 的
+既有 `allocate_cycle_dir()`/`allocate_run_dir()`/`allocate_objective_dir()`
+行为，两套机制并存）：
+
+- `goal_output_dir()`/`goal_notes_dir()`/`goal_spec_dir()`/
+  `goal_scratch_dir()`：四个并列目录的路径函数。
+- `ensure_output_skeleton()`：幂等创建 `output/` 固定骨架（`README.md`/
+  `_misc/`/`_archive/`/`scripts/` 及其 `lib/`/`_run_logs/`/`_experiments/`
+  子目录 + `requirements.txt`/`CHANGELOG.md`/`README.md` 占位文件）。
+- `scan_output_structure()`：扫描 `output/` 实际内容，返回结构化统计
+  （散落根文件、`_misc/` 内容、各业务子目录文件数与最新 mtime、脚本相关
+  统计、归档条目数）。**目录一律不算"未分类"**（业务子目录是否与 spec
+  一致，留给后续 Stage 3 的 tidy 逻辑结合 `GoalExecutionSpec` 核对），只有
+  散落在根目录的**文件**才会被标记，避免这个函数越权做本该由 spec 层做的
+  判断。
+- `render_output_readme()`：基于 `scan_output_structure()` 机械生成
+  `output/README.md`，不经过 LLM。
+- `write_cycle_note()`/`read_recent_notes()`/`archive_old_notes()`：
+  `notes/cycle_NNNN.md` 的写入、按轮次倒序读取最近 N 篇、超过阈值时归档
+  进 `notes/archive/`。
+- `scratch_is_empty()`：判断 `scratch/` 是否已清空（tidy 阶段核查用）。
+
+`OUTPUT_RESERVED_NAMES`/`SCRIPTS_RESERVED_NAMES` 两个常量集中定义了 §2.1/
+§6 的系统保留名单，后续 tidy 核查、`render_output_readme()` 复用同一份，
+避免出现两处名单不一致。
+
+测试：`tests/test_output_workspace_new_layout.py`（13 个用例），覆盖路径
+函数、骨架幂等创建、结构扫描（含散落文件/临时脚本命名/实验脚本识别）、
+README 生成、notes 读写归档、scratch 清空判断。
+
+尚未接入 `goal_cron_bridge.py` 的实际触发流程（这部分是 Stage 3 的工作）
+——目前 recurring Goal 触发时仍走原有的 `allocate_cycle_dir()` 路径，新函数
+已就绪但还未被生产逻辑调用，这是有意为之的分阶段推进，避免一次性大改动
+影响现有正在运行的 Goal。
