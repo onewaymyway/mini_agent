@@ -36,6 +36,8 @@ except ImportError:
 
 from .eastmoney_fetcher import fetch_stock_data as fetch_eastmoney_quote
 from .sina_kline_fetcher import analyze_stock as fetch_sina_kline
+from .index_fetcher import IndexDataFetcher, fetcher as index_fetcher
+from .etf_fetcher import ETFDataFetcher, fetcher as etf_fetcher
 from .guba_scraper import (
     GubaPost,
     GubaComment,
@@ -275,4 +277,27 @@ __all__ = [
     'fetch_stock_northbound',
     'fetch_stock_basic',
     'create_stock_scraper',
+
+    # 代理管理与反爬策略 (新增)
+    'ProxyPool',
+    'ProxyNode',
+    'get_proxy_pool',
+    'reset_proxy_pool',
+    'AntiScrapeConfig',
+    'AntiScrapeStrategy',
+
+    # 指数数据抓取 (新增)
+    'IndexDataFetcher',
+    'index_fetcher',
+    'fetch_index_kline',
+    'fetch_index_constituents',
+    'fetch_index_realtime',
+
+    # ETF数据抓取 (新增)
+    'ETFDataFetcher',
+    'etf_fetcher',
+    'fetch_etf_quote',
+    'fetch_etf_kline',
+    'fetch_etf_info',
+    'fetch_etf_scale',
 ]
