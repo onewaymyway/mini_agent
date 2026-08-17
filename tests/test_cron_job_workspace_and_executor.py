@@ -31,6 +31,7 @@ from mini_agent.evolution.cron_job_workspace import (
     STATUS_NEEDS_REVIEW,
     STATUS_TIMED_OUT,
     DEFAULT_TIMEOUT_SECONDS,
+    DEFAULT_MAX_STEPS,
     list_all_workspaces,
 )
 from mini_agent.evolution.cron_job_executor import (
@@ -93,20 +94,53 @@ class TestCronJobWorkspace:
         ws.ensure(default_task_template="第一次的模板")
         assert ws.read_prompt() == "用户手动编辑过的内容"
 
-    def test_ensure_with_default_config_only_applies_on_first_creation(self, tmp_path):
+    def test_ensure_no_longer_bakes_default_config_snapshot(self, tmp_path):
+        """[fix] ensure() 首次创建 config.json 时不再把 default_config 整份
+        写死进去——那样会把"调用方按当时全局配置拼出来的快照值"永久固化成
+        这个 job 自己的显式覆盖，导致之后调整全局 CronConfig.
+        default_timeout_seconds 对已存在的 job 不生效。现在首次创建写入的
+        应该是空覆盖，job 没设置过的字段始终跟随 read_config(default=...)
+        里传入的、当时最新的全局默认值。"""
         paths = _FakePaths(tmp_path)
         ws = CronJobWorkspace(paths, "user:abc123")
-        custom_default = CronJobConfig(timeout_seconds=999, max_steps=5)
-        ws.ensure(default_config=custom_default)
+        ws.ensure(default_config=CronJobConfig(timeout_seconds=999, max_steps=5))
 
+        # 没有 default 时回退硬编码默认值，而不是 999/5——证明没有被固化。
         config = ws.read_config()
-        assert config.timeout_seconds == 999
-        assert config.max_steps == 5
+        assert config.timeout_seconds == DEFAULT_TIMEOUT_SECONDS
+        assert config.max_steps == DEFAULT_MAX_STEPS
 
-        # 已存在 config.json 后，再传不同的 default_config 不应生效
-        ws.ensure(default_config=CronJobConfig(timeout_seconds=111, max_steps=1))
-        config2 = ws.read_config()
-        assert config2.timeout_seconds == 999
+        # 传入"当前"全局默认时应该实时跟随，且这个值本身随时可以变化。
+        live_default = CronJobConfig(timeout_seconds=111, max_steps=1)
+        config2 = ws.read_config(default=live_default)
+        assert config2.timeout_seconds == 111
+        assert config2.max_steps == 1
+
+    def test_write_config_overrides_persists_only_user_set_fields(self, tmp_path):
+        """用户显式改动的字段才会写进 config.json，且不影响没改动的字段
+        继续跟随全局默认——覆盖 CronJobWorkspace.write_config_overrides()。"""
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.ensure()
+        assert ws.read_raw_overrides() == {}
+
+        ws.write_config_overrides({"timeout_seconds": 999})
+        assert ws.read_raw_overrides() == {"timeout_seconds": 999}
+
+        live_default = CronJobConfig(timeout_seconds=42, max_steps=7)
+        merged = ws.read_config(default=live_default)
+        assert merged.timeout_seconds == 999      # 用户显式设置，不受 default 影响
+        assert merged.max_steps == 7               # 没设置过，跟随全局默认
+
+        # value=None 清除覆盖，恢复跟随全局默认。
+        ws.write_config_overrides({"timeout_seconds": None})
+        assert ws.read_raw_overrides() == {}
+        merged2 = ws.read_config(default=live_default)
+        assert merged2.timeout_seconds == 42
+
+        # 不在白名单内的字段被忽略，不会污染 config.json。
+        ws.write_config_overrides({"not_a_real_field": 123})
+        assert "not_a_real_field" not in ws.read_raw_overrides()
 
     def test_read_config_falls_back_to_default_for_missing_fields(self, tmp_path):
         """config.json 里没写的字段，read_config(default=...) 应跟随全局配置
@@ -458,7 +492,8 @@ class TestCronJobExecutor:
     def test_max_steps_reached_marks_timed_out_and_keeps_progress(self, tmp_path):
         paths = _FakePaths(tmp_path)
         ws = CronJobWorkspace(paths, "user:test_job")
-        ws.ensure(default_config=CronJobConfig(timeout_seconds=9999, max_steps=3))
+        ws.ensure()
+        ws.write_config_overrides({"timeout_seconds": 9999, "max_steps": 3})
 
         call_count = {"n": 0}
 
@@ -481,7 +516,8 @@ class TestCronJobExecutor:
         paths = _FakePaths(tmp_path)
         ws = CronJobWorkspace(paths, "user:test_job")
         # 超短超时（0 秒），保证第一次进入循环时 deadline 检查就直接命中
-        ws.ensure(default_config=CronJobConfig(timeout_seconds=0, max_steps=999))
+        ws.ensure()
+        ws.write_config_overrides({"timeout_seconds": 0, "max_steps": 999})
 
         called = {"n": 0}
 
@@ -499,7 +535,8 @@ class TestCronJobExecutor:
         应该能读到上一次遗留的 progress_summary。"""
         paths = _FakePaths(tmp_path)
         ws = CronJobWorkspace(paths, "user:test_job")
-        ws.ensure(default_config=CronJobConfig(timeout_seconds=9999, max_steps=2))
+        ws.ensure()
+        ws.write_config_overrides({"timeout_seconds": 9999, "max_steps": 2})
         ws.prompt_path.write_text(
             "{{task_description}}\n"
             "{{#progress}}\n[上次进度] {{progress}}\n{{/progress}}\n",
@@ -630,7 +667,8 @@ class TestCronJobExecutorMemoryBackfill:
         backend = _FakeMemoryBackend()
         executor = _make_backfill_executor(paths, backend=backend)
         ws = CronJobWorkspace(paths, "user:test_job")
-        ws.ensure(default_config=CronJobConfig(timeout_seconds=0, max_steps=999))
+        ws.ensure()
+        ws.write_config_overrides({"timeout_seconds": 0, "max_steps": 999})
 
         def step_fn(prompt):
             return StepResult(text="还在跑第一步")

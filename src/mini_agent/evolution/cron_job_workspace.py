@@ -52,6 +52,14 @@ class CronJobConfig:
     stuck_consecutive_limit: int = 3
     stuck_max_recoveries: int = 2
 
+    # 可被 job 级 config.json 覆盖的字段名单——read_config()/from_dict()
+    # 的合并逻辑、以及 CronJobWorkspace.write_config_overrides() 的白名单
+    # 校验都复用这份定义，避免两处字段列表长出来不一致。
+    OVERRIDE_FIELDS = (
+        "timeout_seconds", "max_steps", "stuck_similarity_threshold",
+        "stuck_consecutive_limit", "stuck_max_recoveries",
+    )
+
     @staticmethod
     def from_dict(d: dict, default: Optional["CronJobConfig"] = None) -> "CronJobConfig":
         """从 config.json 的原始 dict 构造。
@@ -63,8 +71,7 @@ class CronJobConfig:
         每次 read_config() 都会重新按这个规则合并。
         """
         base = CronJobConfig() if default is None else CronJobConfig(**asdict(default))
-        for k in ("timeout_seconds", "max_steps", "stuck_similarity_threshold",
-                  "stuck_consecutive_limit", "stuck_max_recoveries"):
+        for k in CronJobConfig.OVERRIDE_FIELDS:
             if k in d:
                 setattr(base, k, d[k])
         return base
@@ -136,11 +143,20 @@ class CronJobWorkspace:
     def ensure(self, default_task_template: str = "", default_config: Optional[CronJobConfig] = None) -> None:
         """确保文件夹和默认文件存在；已存在的文件不覆盖（用户可能已编辑过）。
 
-        default_config — 新建 config.json 时使用的默认值来源，通常由调用方
-        传入根据 AppConfig.cron（全局配置，见 config/models.py::CronConfig）
-        构造的 CronJobConfig；不传时退回 CronJobConfig() 的硬编码默认值。
-        只影响**首次创建**该 job 文件夹时写入的 config.json 内容，job 自己
-        已经存在的 config.json 不会被这里覆盖。
+        default_config — [兼容旧调用签名保留，不再影响写入内容] 早期版本会把
+        这个参数在**首次创建**时整份 to_dict() 写进 config.json，导致"用户
+        从未设置过、只是调用方按当时的全局 AppConfig.cron 拼出来的快照值"
+        被永久固化成了这个 job 自己的显式覆盖——之后哪怕运维再调整全局的
+        CronConfig.default_timeout_seconds，这个 job 也不会跟着变，因为
+        config.json 里已经"显式写着"当初创建那一刻的值，read_config() 的
+        缺省回退逻辑对它不生效。
+
+        现在的语义改为：**只有用户通过 write_config_overrides() 主动设置过
+        的字段才会被持久化**；config.json 首次创建时写入的是空覆盖 `{}`，
+        job 自己没设置过的字段在每次 read_config(default=...) 时都会实时
+        跟随调用方传入的全局默认值（通常来自当前的 AppConfig.cron），不需要
+        对已存在的 job 目录做迁移。default_config 参数因此不再被这里使用，
+        仅保留形参以免破坏既有调用方的位置/关键字参数写法。
         """
         self.dir.mkdir(parents=True, exist_ok=True)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -148,7 +164,7 @@ class CronJobWorkspace:
             content = default_task_template or "{{task_description}}\n\n{{progress}}\n"
             self.prompt_path.write_text(content, encoding="utf-8")
         if not self.config_path.exists():
-            atomic_write_json(self.config_path, (default_config or CronJobConfig()).to_dict())
+            atomic_write_json(self.config_path, {})
         if not self.state_path.exists():
             atomic_write_json(self.state_path, CronJobState().to_dict())
 
@@ -171,6 +187,20 @@ class CronJobWorkspace:
         except (OSError, json.JSONDecodeError):
             return default or CronJobConfig()
 
+    def read_raw_overrides(self) -> dict:
+        """读取 config.json 里用户显式设置过的字段（原始 dict，未与任何
+        default 合并）。看板据此展示"这个字段是用户自定义的，还是跟随全局
+        默认"，区分于 read_config() 返回的、已经合并完默认值的最终生效值。
+        文件缺失/损坏/内容非法（例如被手动改坏成非 dict）时返回空 dict。
+        """
+        try:
+            d = json.loads(self.config_path.read_text(encoding="utf-8"))
+            if not isinstance(d, dict):
+                return {}
+            return {k: v for k, v in d.items() if k in CronJobConfig.OVERRIDE_FIELDS}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
     def read_state(self) -> CronJobState:
         try:
             d = json.loads(self.state_path.read_text(encoding="utf-8"))
@@ -182,6 +212,35 @@ class CronJobWorkspace:
 
     def write_state(self, state: CronJobState) -> None:
         atomic_write_json(self.state_path, state.to_dict())
+
+    def write_config_overrides(self, overrides: dict) -> dict:
+        """用户在看板/API 里主动修改某个 job 的专属限制（超时秒数/最大
+        步数/卡死检测参数）时的唯一写入口——只有经过这里写入的字段才会
+        持久化到 config.json，取代早期 ensure(default_config=...) 那种
+        "首次创建时把全局默认值当成用户设置永久固化下来"的做法（见
+        ensure() 顶部说明）。
+
+        overrides — 只包含用户这次想要改动的字段（不在 CronJobConfig.
+        OVERRIDE_FIELDS 白名单内的键会被忽略，防止 config.json 里混入
+        任意垃圾字段）；某个字段的 value 传 None 表示"清除这个字段的
+        自定义覆盖，恢复跟随全局默认"，而不是把 timeout_seconds 真的设成
+        None（那样后续 `time.time() + cfg.timeout_seconds` 会直接崩）。
+        没提到的字段维持原样不动。
+
+        返回写入后的原始 overrides dict（未与任何 default 合并），供调用方
+        （如 API 层）直接回显。
+        """
+        self.dir.mkdir(parents=True, exist_ok=True)
+        current = self.read_raw_overrides()
+        for k, v in overrides.items():
+            if k not in CronJobConfig.OVERRIDE_FIELDS:
+                continue
+            if v is None:
+                current.pop(k, None)
+            else:
+                current[k] = v
+        atomic_write_json(self.config_path, current)
+        return current
 
     def render_prompt(self, task_description: str, run_id: Optional[str] = None) -> str:
         """把 prompt.md 模板渲染成最终发给 agent 的文本。

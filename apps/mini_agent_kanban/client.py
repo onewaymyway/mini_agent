@@ -671,6 +671,14 @@ class AgentClient:
         """修改 prompt.md，下次该 job 触发时立即生效。"""
         return self._put(f"/cron/jobs/{job_id}/prompt", {"prompt": prompt})
 
+    def update_cron_job_config(self, job_id: str, **fields):
+        """修改这个 job 专属的限制覆盖（timeout_seconds/max_steps/
+        stuck_similarity_threshold/stuck_consecutive_limit/
+        stuck_max_recoveries 的任意子集）。某个字段传 None 表示清除该
+        字段的自定义覆盖，恢复跟随全局 CronConfig 默认值；不传的字段维持
+        原样不动。下次该 job 触发时立即生效，无需重启 daemon。"""
+        return self._put(f"/cron/jobs/{job_id}/config", fields)
+
     def cron_job_run_events(self, job_id: str, run_id: str):
         """某次执行的完整逐步事件流（诊断/回放用）。"""
         return self._get(f"/cron/jobs/{job_id}/runs/{run_id}")

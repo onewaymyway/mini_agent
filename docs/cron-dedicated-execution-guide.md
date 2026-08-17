@@ -242,21 +242,44 @@ build_cron_agent()`），不跨触发复用同一个 Agent/history：
 
 ### 6.2 `config.json`：单 job 覆盖
 
+首次触发时自动创建，内容是**空 JSON 对象 `{}`**——不预写任何全局默认值
+快照。只有你（通过看板的"⚙️ 调整执行配置"面板，或直接调用
+`PUT /v1/cron/jobs/{id}/config`）显式设置过的字段才会出现在这个文件里：
+
 ```json
 {
-  "timeout_seconds": 1200,
-  "max_steps": 60,
-  "stuck_similarity_threshold": 0.92,
-  "stuck_consecutive_limit": 3,
-  "stuck_max_recoveries": 2
+  "timeout_seconds": 1800,
+  "max_steps": 40
 }
 ```
+
+（上面这个例子里只有 `timeout_seconds`/`max_steps` 被用户显式覆盖过，
+`stuck_similarity_threshold`/`stuck_consecutive_limit`/`stuck_max_recoveries`
+仍然跟随全局默认。）
 
 字段缺省时回退全局默认值（见 §7）——**这个回退是每次读取都会重新
 计算的**，也就是说改一次全局配置，所有没有在自己 `config.json` 里
 显式写这个字段的 job，下次触发立即跟着变化，不需要逐个 job 手动改
 文件，也不需要跑迁移脚本。已经在 `config.json` 里显式写过的字段不受
 全局配置变化影响（这是你主动覆盖的值，理应保留）。
+
+> **早期版本的已知问题（已修复）**：在这次修复之前，`ensure()` 会在
+> job **首次创建** `config.json` 时把调用方按当时全局配置拼出来的值
+> （比如刚好等于 `cron.default_timeout_seconds`）整份写死进文件，
+> 这份"快照"从此被当成了"用户显式覆盖"，导致之后再调整全局
+> `default_timeout_seconds` 对已经存在的 job 完全不生效，必须手动改
+> 每个 job 自己的 `config.json` 才能生效——这跟本节开头描述的"回退是
+> 每次读取都会重新计算的"设计意图是矛盾的。现在 `ensure()` 不再写入
+> 任何快照，`config.json` 首次创建时是空对象，只有用户主动通过
+> `write_config_overrides()`（对应 §9.1 的 API/UI）设置过的字段才会
+> 持久化，从根本上避免这个问题复现。
+
+#### 6.2.1 手动改文件 vs 通过 API/看板改
+
+直接编辑 `config.json` 文件仍然可以（比如批量脚本场景），效果和调用
+`PUT /v1/cron/jobs/{id}/config` 完全等价——两者读写的是同一份文件，
+没有哪个是"更权威"的入口。看板/API 只是提供了带校验、带"恢复为全局
+默认"一键清除覆盖能力的更友好操作方式，具体见 §9.1。
 
 ### 6.3 `state.json`：执行状态机
 
@@ -294,7 +317,7 @@ build_cron_agent()`），不跨触发复用同一个 Agent/history：
 | 字段 | 默认值 | 作用 |
 |---|---|---|
 | `max_concurrent_jobs` | 2 | `CronJobRunner` 的并发上限（见 §3） |
-| `default_timeout_seconds` | 1200（20 分钟） | 新建 job **首次生成** `config.json` 时写入的默认值，也是已存在 job 缺省该字段时的回退来源（见 §6.2）；同时也是 §3.3 watchdog 计算"有效超时阈值"的基准之一 |
+| `default_timeout_seconds` | 1200（20 分钟） | 单个 job 自己的 `config.json` 里没有显式覆盖 `timeout_seconds` 时的回退来源（见 §6.2，实时生效，不是"新建时写死一次"）；同时也是 §3.3 watchdog 计算"有效超时阈值"的基准之一 |
 | `default_max_steps` | 60 | 同上 |
 | `inner_max_turns` | 15 | cron 专用 Agent 单次 `run_turn()` 内部的 `max_turns` 预算（见 §5） |
 | `stale_job_watchdog_grace_seconds` | 300（5 分钟） | §3.3 watchdog 判定"job 已卡死"时，在 job 自己的 `timeout_seconds` 之上再加的宽限期 |
@@ -374,6 +397,9 @@ allocate_weighted_slots()` 按 `channel_weights` 对 `degraded_total_slots`
 GET   /v1/cron/jobs/{id}/workspace   state + config + 最近执行列表
 GET   /v1/cron/jobs/{id}/prompt      读 prompt.md
 PUT   /v1/cron/jobs/{id}/prompt      改 prompt.md（Body: {"prompt": "..."}）
+PUT   /v1/cron/jobs/{id}/config      改这个 job 专属的超时/步数/卡死检测覆盖
+                                      （见 §6.2/§8.1，Body 里字段传 null 表示
+                                      清除覆盖、恢复跟随全局默认）
 GET   /v1/cron/jobs/{id}/runs/{run_id}  某次执行的完整事件流
 POST  /v1/cron/jobs/{id}/reset       needs_human_review → idle（正在执行中的
                                       job 拒绝重置，返回 409）
@@ -429,6 +455,14 @@ GET /v1/self/unified_scheduler_preview  §7.2 加权分配的只读预览（是�
     "stuck_consecutive_limit": 3,
     "stuck_max_recoveries": 2
   },
+  "config_overrides": {},
+  "config_global_default": {
+    "timeout_seconds": 1200,
+    "max_steps": 60,
+    "stuck_similarity_threshold": 0.92,
+    "stuck_consecutive_limit": 3,
+    "stuck_max_recoveries": 2
+  },
   "is_running": false,
   "recent_runs": ["2026-07-20T09-00-00", "2026-07-19T09-00-00"],
   "recent_runs_summary": [
@@ -458,6 +492,15 @@ GET /v1/self/unified_scheduler_preview  §7.2 加权分配的只读预览（是�
 }
 ```
 
+`config` 是与全局默认合并后的**实际生效值**；`config_overrides` 是这个
+job 自己 `config.json` 里显式设置过的原始字段（未合并，空对象表示这个
+job 至今没有任何自定义覆盖，`config` 里展示的每个值都直接来自
+`config_global_default`）；`config_global_default` 是按当前
+`AppConfig.cron` 实时算出来的全局默认值，三者对照即可判断"这个数字
+是用户自己设的，还是跟着全局配置走的"，看板 §9.1 的"⚙️ 调整执行配置"
+面板就是靠这三个字段渲染每个输入框旁边的"已自定义"/"跟随全局默认"
+标注。
+
 `recent_runs` 只是 run_id 列表（旧字段，保留向后兼容）；`recent_runs_summary`
 （新增）逐条给出是否成功（`status`/`success`）与失败原因（`error`），由
 `CronJobWorkspace.recent_runs_summary()` 从对应 `runs/<run_id>.jsonl`
@@ -467,6 +510,40 @@ GET /v1/self/unified_scheduler_preview  §7.2 加权分配的只读预览（是�
 可能异常退出或仍在跑）。看板"⏰ Cron 任务" Tab 的"最近执行记录"直接展示
 这份摘要（时间 + 状态角标，失败时额外展示 `error` 文本），不用逐条点开
 事件详情才知道哪次跑失败了。
+
+### 8.1 `PUT /v1/cron/jobs/{id}/config`：修改单 job 专属限制覆盖
+
+Body 支持以下字段的任意子集（对应 §6.2 `config.json` 里的可覆盖字段）：
+
+| 字段 | 校验规则 |
+|---|---|
+| `timeout_seconds` | 数值，> 0 |
+| `max_steps` | 整数，> 0 |
+| `stuck_similarity_threshold` | 数值，0 < x ≤ 1 |
+| `stuck_consecutive_limit` | 整数，≥ 1 |
+| `stuck_max_recoveries` | 整数，≥ 0 |
+
+某个字段传具体数值 = 显式设置这个覆盖值（持久化进 `config.json`，从此
+不再跟随全局默认变化，直到你再改它或清除覆盖）；传 `null` = 清除这个
+字段的覆盖，恢复跟随全局 `cron.default_timeout_seconds` 等默认值；不
+出现在 body 里的字段维持原样不动。下次该 job 触发时立即生效，不需要
+重启 daemon。
+
+```bash
+# 只把超时时间改成 30 分钟，其它字段不动
+curl -X PUT $BASE/v1/cron/jobs/user:ab12cd34/config \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"timeout_seconds": 1800}'
+
+# 恢复超时时间跟随全局默认
+curl -X PUT $BASE/v1/cron/jobs/user:ab12cd34/config \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"timeout_seconds": null}'
+```
+
+响应：`{"job_id": ..., "config_overrides": {...}, "config": {...}}`
+（同样是"原始覆盖"+"合并后生效值"的组合，语义与上面 workspace 响应里
+的两个字段一致）。
 
 后台线程执行完一次后通过 `AgentBridge.emit_cron_job_finished()` 推
 `CRON_JOB_FINISHED` SSE 事件，实时打开着看板的用户不需要手动刷新。
@@ -486,6 +563,12 @@ GET /v1/self/unified_scheduler_preview  §7.2 加权分配的只读预览（是�
   达到 `cron.skip_alert_threshold` 时有专门标注，见 §3.2）
 - 优先级展示 + "🔢 调整优先级" 展开面板（对应 §3.2 的 `priority` 字段，
   影响同一 tick 内多个到期 job 的提交顺序）
+- "⚙️ 调整执行配置（超时 / 步数 / 卡死检测）" 展开面板（对应 §6.2/§8.1
+  的 `config.json` 覆盖）：每个输入框旁标注"已自定义"还是"跟随全局
+  默认"（依据 §8 workspace 响应里的 `config_overrides`），预填的是
+  当前实际生效值；"💾 保存为自定义配置"把当前表单值整体固化为这个 job
+  自己的显式覆盖，"↩️ 恢复为全局默认"一键清除全部覆盖字段，之后这个
+  job 会重新跟随全局 `cron.default_timeout_seconds` 等配置实时变化
 - 进度摘要展开查看
 - 最近执行记录：每条直接展示时间 + 成功/超时/失败/未知状态角标，失败
   时额外展示失败原因文本，不用点开才知道；仍可展开对应
@@ -532,7 +615,8 @@ GET /v1/self/unified_scheduler_preview  §7.2 加权分配的只读预览（是�
 | 状态卡在 `needs_human_review` | 打开该 job 的最近一次 `runs/<run_id>.jsonl`，看最后几条 `step`/`stuck_recover`/`stuck_give_up`/`step_error` 事件；确认原因后在看板点"重置"或调用 `POST /v1/cron/jobs/{id}/reset`；如果 `last_error` 里提到"判定为卡死…已被 watchdog 强制回收"，说明是 §3.3 的存活性回收触发的，可以按需调大该 job 的 `timeout_seconds` 或全局 `stale_job_watchdog_grace_seconds` |
 | 状态卡在 `running` 但看板显示未在执行 | daemon 异常退出导致的僵尸状态，不影响下次触发（下次执行会记一次 `consecutive_failures` 但仍会正常继续执行），也可以手动 `reset` 清掉；如果 daemon 一直在跑但某个 job 长时间卡在 `running`，正常情况下 §3.3 的 watchdog 会在超时+宽限期后自动回收，不需要手动介入 |
 | 任务每次都从头开始，没有接续上次进度 | 检查 `prompt.md` 是否还保留 `{{#progress}}...{{/progress}}` 块（被用户误删就不会拼进度了）；检查上次是不是 `idle` 正常完成（正常完成会清空 `progress_summary`，这是预期行为，不是 bug） |
-| 想让所有 job 的超时时间统一改长一点 | 改 `agent_config.json` 的 `cron.default_timeout_seconds` 即可，对未在自己 `config.json` 里显式覆盖过该字段的 job 立即生效（见 §6.2/§7），不需要逐个改文件；注意同时会影响 §3.3 watchdog 的有效超时阈值 |
+| 想让所有 job 的超时时间统一改长一点 | 改 `agent_config.json` 的 `cron.default_timeout_seconds` 即可，对没有在自己 `config.json` 里显式覆盖过该字段的 job 立即生效（见 §6.2/§7），不需要逐个改文件；如果某个 job 之前手动/通过看板设置过自己的 `timeout_seconds` 覆盖，需要在看板"⚙️ 调整执行配置"面板里点"恢复为全局默认"（或把 `config.json` 里的对应字段删掉）才会重新跟随全局值，注意同时会影响 §3.3 watchdog 的有效超时阈值 |
+| 只想给某一个 job 单独调超时/步数，不想影响其它 job | 看板该 job 卡片里展开"⚙️ 调整执行配置"，改好数值点"保存为自定义配置"，或直接调 `PUT /v1/cron/jobs/{id}/config`（见 §8.1）——不会影响全局默认，也不会影响其它 job |
 | 新建 job 提示 schedule 格式不合法 | 按提示修正为 `interval:<秒数>`（如 `interval:3600`）或 `cron:<分> <时> <日> <月> <周>`（如 `cron:0 22 * * *`），字段支持 `*`/`*/n`/`n`/`n,m`/`n-m` |
 | 多个 job 同时到期，想让某个 job 优先跑 | 在看板给该 job 调高 `priority`（§3.2），数值越大越优先；只影响同一 tick 内的提交顺序，不会抢占正在执行的其它 job |
 | 某个第三方 API 挂了，多个不相关的 job 陆续失败 | 查是否收到"检测到跨 cron job 的系统性失败"告警（§3.4 广度熔断），需要先在 `agent_config.json` 显式配置 `cron.circuit_breaker_distinct_threshold`（默认不启用）才会触发 |

@@ -172,6 +172,9 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/cron/jobs/{id}/run    立即运行一次
     POST   /v1/cron/jobs/{id}/feedback  持久化提意见（合入 description/task_template/prompt.md）
     GET    /v1/cron/jobs/{id}/workspace       专属执行状态（state/config/最近执行列表）
+    PUT    /v1/cron/jobs/{id}/config          修改专属限制覆盖（超时秒数/最大步数/
+                                               卡死检测参数），字段传 null 清除覆盖、
+                                               恢复跟随全局 CronConfig 默认值
     GET    /v1/cron/jobs/{id}/prompt          读取用户可编辑的 prompt.md
     PUT    /v1/cron/jobs/{id}/prompt          修改 prompt.md
     GET    /v1/cron/jobs/{id}/runs/{run_id}   某次执行的完整事件流
@@ -5890,6 +5893,26 @@ def _get_cron_scheduler(http_server):
     return cs
 
 
+def _get_cron_global_default_config(request: Request) -> "CronJobConfig":
+    """按当前（可能刚被改过的）AppConfig.cron 实时拼出一份 CronJobConfig，
+    用作 ws.read_config(default=...) 的回退来源——job 自己 config.json 里
+    没显式覆盖的字段（见 CronJobWorkspace.write_config_overrides()）应该
+    永远跟随这里的最新值，而不是 job 创建那一刻的快照（那正是本次修复
+    要解决的问题，见 cron_job_workspace.py::CronJobWorkspace.ensure() 顶部
+    说明）。stuck_* 三个字段目前没有对应的全局配置项，回退到 CronJobConfig
+    的硬编码默认值。"""
+    from mini_agent.evolution.cron_job_workspace import CronJobConfig
+    http_server = getattr(request.app.state, "http_server", None)
+    self_agent = getattr(http_server.bridge, "agent", None) if http_server else None
+    cron_cfg = getattr(getattr(self_agent, "cfg", None), "cron", None)
+    if cron_cfg is None:
+        return CronJobConfig()
+    return CronJobConfig(
+        timeout_seconds=getattr(cron_cfg, "default_timeout_seconds", CronJobConfig.timeout_seconds),
+        max_steps=getattr(cron_cfg, "default_max_steps", CronJobConfig.max_steps),
+    )
+
+
 def _get_cron_paths(request: Request):
     """取 AgentPaths，用于定位 .agent/cron_jobs/。复用现有 self_agent.cfg.project_root
     获取方式（见本文件其它 self_profile/goal_backlog 相关端点）。"""
@@ -5921,13 +5944,23 @@ async def get_cron_job_workspace(job_id: str, request: Request):
     ws = CronJobWorkspace(paths, job_id)
     ws.ensure(default_task_template=job.task_template)
     state = ws.read_state()
-    config = ws.read_config()
+    # [fix] 之前这里 read_config() 不传 default，永远回退硬编码的 20 分钟/
+    # 60 步——看板显示的"超时上限"跟运维实际调整过的全局 CronConfig.
+    # default_timeout_seconds 对不上。改为传入当前的全局默认值，未被这个
+    # job 自己显式覆盖的字段（config.get("config", {})）会跟随最新全局配置。
+    global_default = _get_cron_global_default_config(request)
+    config = ws.read_config(default=global_default)
     is_running = cs.is_job_running(job_id) if cs is not None else False
 
     return {
         "job_id": job_id,
         "state": state.to_dict(),
         "config": config.to_dict(),
+        # [新增] 用户自己显式覆盖过的字段（未与任何 default 合并）——看板
+        # 据此区分"这个值是用户设置的"还是"当前跟随全局默认"，并决定
+        # 编辑表单里每个字段初始要不要打开"自定义"开关。
+        "config_overrides": ws.read_raw_overrides(),
+        "config_global_default": global_default.to_dict(),
         "is_running": is_running,
         "recent_runs": ws.recent_runs(limit=10),
         # [看板"最近执行记录"只显示 run_id/时间、看不出是否成功] 新增带
@@ -5935,6 +5968,71 @@ async def get_cron_job_workspace(job_id: str, request: Request):
         # 说明，不用逐条点开事件详情才能知道哪次跑失败了。见
         # CronJobWorkspace.recent_runs_summary() 顶部注释的字段说明。
         "recent_runs_summary": ws.recent_runs_summary(limit=10),
+    }
+
+
+@router.put("/cron/jobs/{job_id}/config")
+async def update_cron_job_config(job_id: str, request: Request):
+    """
+    PUT /v1/cron/jobs/{job_id}/config
+    Body: 任意子集，key 属于 CronJobConfig.OVERRIDE_FIELDS：
+        timeout_seconds, max_steps, stuck_similarity_threshold,
+        stuck_consecutive_limit, stuck_max_recoveries
+    每个字段的 value 传具体数值表示"用户显式设置这个覆盖值"；传 null
+    表示"清除这个字段的自定义覆盖，恢复跟随全局 CronConfig 默认值"；
+    不出现在 body 里的字段维持原样不动。
+
+    这是 config.json 里 timeout_seconds/max_steps 等字段的唯一用户写入
+    口——只有经这里显式设置的字段才会持久化覆盖，避免历史上 ensure()
+    把"调用方按当时全局配置拼出来的快照"误当成用户设置永久写死的问题
+    （见 evolution/cron_job_workspace.py::CronJobWorkspace.ensure() 顶部
+    说明）。下次该 job 触发时立即生效，无需重启 daemon。
+    """
+    _require_owner(request)
+    http_server, paths = _get_cron_paths(request)
+
+    cs = _get_cron_scheduler(http_server)
+    job = cs.get(job_id) if cs is not None else None
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+    from mini_agent.evolution.cron_job_workspace import CronJobWorkspace, CronJobConfig
+
+    unknown = [k for k in body if k not in CronJobConfig.OVERRIDE_FIELDS]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported field(s): {unknown}; allowed: {list(CronJobConfig.OVERRIDE_FIELDS)}",
+        )
+
+    _validators = {
+        "timeout_seconds": lambda v: isinstance(v, (int, float)) and v > 0,
+        "max_steps": lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
+        "stuck_similarity_threshold": lambda v: isinstance(v, (int, float)) and 0 < v <= 1,
+        "stuck_consecutive_limit": lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 1,
+        "stuck_max_recoveries": lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0,
+    }
+    for k, v in body.items():
+        if v is None:
+            continue  # None = 清除覆盖，不做数值校验
+        validator = _validators.get(k)
+        if validator is not None and not validator(v):
+            raise HTTPException(status_code=400, detail=f"invalid value for '{k}': {v!r}")
+
+    ws = CronJobWorkspace(paths, job_id)
+    ws.ensure(default_task_template=job.task_template)
+    overrides = ws.write_config_overrides(body)
+
+    global_default = _get_cron_global_default_config(request)
+    effective = ws.read_config(default=global_default)
+    return {
+        "job_id": job_id,
+        "config_overrides": overrides,
+        "config": effective.to_dict(),
     }
 
 

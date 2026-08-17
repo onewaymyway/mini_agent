@@ -7103,6 +7103,94 @@ def render_cron_jobs_tab(client: AgentClient):
                         st.success("已保存。")
                         st.rerun()
 
+            # [新增] 编辑该 job 专属的执行限制覆盖（超时/最大步数/卡死检测
+            # 参数）。字段没被这个 job 显式覆盖过时，输入框预填的是"当前
+            # 生效值"，其实际来源是全局 CronConfig 的默认值——运维之后调整
+            # 全局默认，这个 job 会自动跟着变（见 PUT /cron/jobs/{id}/config
+            # 和 CronJobWorkspace.write_config_overrides() 的说明），不需要
+            # 用户手动同步。只有点了下面的"保存"才会把值固化成这个 job 自己
+            # 的显式覆盖；"恢复为全局默认"会清除覆盖，重新跟随全局配置。
+            with st.expander("⚙️ 调整执行配置（超时 / 步数 / 卡死检测）"):
+                cfg_ws_resp = client.cron_job_workspace(job_id)
+                if cfg_ws_resp and "_error" in cfg_ws_resp:
+                    st.caption(f"获取当前配置失败：{cfg_ws_resp['_error']}")
+                else:
+                    effective_cfg = (cfg_ws_resp or {}).get("config") or {}
+                    overrides = (cfg_ws_resp or {}).get("config_overrides") or {}
+
+                    def _field_caption(field_key, label):
+                        return f"{label}（{'已自定义' if field_key in overrides else '跟随全局默认'}）"
+
+                    cfg_c1, cfg_c2 = st.columns(2)
+                    new_timeout_min = cfg_c1.number_input(
+                        _field_caption("timeout_seconds", "超时（分钟）"),
+                        min_value=1,
+                        value=max(1, int(effective_cfg.get("timeout_seconds", 1200)) // 60),
+                        step=1,
+                        key=f"cron_cfg_timeout_{job_id}",
+                    )
+                    new_max_steps = cfg_c2.number_input(
+                        _field_caption("max_steps", "最大步数"),
+                        min_value=1,
+                        value=int(effective_cfg.get("max_steps", 60)),
+                        step=1,
+                        key=f"cron_cfg_max_steps_{job_id}",
+                    )
+                    cfg_c3, cfg_c4, cfg_c5 = st.columns(3)
+                    new_similarity = cfg_c3.number_input(
+                        _field_caption("stuck_similarity_threshold", "卡死相似度阈值"),
+                        min_value=0.01, max_value=1.0,
+                        value=float(effective_cfg.get("stuck_similarity_threshold", 0.92)),
+                        step=0.01, format="%.2f",
+                        key=f"cron_cfg_similarity_{job_id}",
+                    )
+                    new_consecutive = cfg_c4.number_input(
+                        _field_caption("stuck_consecutive_limit", "连续雷同步数"),
+                        min_value=1,
+                        value=int(effective_cfg.get("stuck_consecutive_limit", 3)),
+                        step=1,
+                        key=f"cron_cfg_consecutive_{job_id}",
+                    )
+                    new_recoveries = cfg_c5.number_input(
+                        _field_caption("stuck_max_recoveries", "最多恢复次数"),
+                        min_value=0,
+                        value=int(effective_cfg.get("stuck_max_recoveries", 2)),
+                        step=1,
+                        key=f"cron_cfg_recoveries_{job_id}",
+                    )
+
+                    save_col, reset_col = st.columns(2)
+                    with save_col:
+                        if st.button("💾 保存为自定义配置", key=f"cron_cfg_save_{job_id}"):
+                            res = client.update_cron_job_config(
+                                job_id,
+                                timeout_seconds=int(new_timeout_min) * 60,
+                                max_steps=int(new_max_steps),
+                                stuck_similarity_threshold=float(new_similarity),
+                                stuck_consecutive_limit=int(new_consecutive),
+                                stuck_max_recoveries=int(new_recoveries),
+                            )
+                            if res and "_error" in res:
+                                st.error(f"保存失败：{res['_error']}")
+                            else:
+                                st.success("已保存，下次该 job 触发时生效。")
+                                st.rerun()
+                    with reset_col:
+                        if st.button("↩️ 恢复为全局默认", key=f"cron_cfg_reset_{job_id}"):
+                            res = client.update_cron_job_config(
+                                job_id,
+                                timeout_seconds=None,
+                                max_steps=None,
+                                stuck_similarity_threshold=None,
+                                stuck_consecutive_limit=None,
+                                stuck_max_recoveries=None,
+                            )
+                            if res and "_error" in res:
+                                st.error(f"重置失败：{res['_error']}")
+                            else:
+                                st.success("已恢复跟随全局默认。")
+                                st.rerun()
+
             # [看板 cron 任务标签页补齐删除功能] 此前只有"目标看板"tab里
             # 才能删除 cron job，本 tab（Cron 任务）只有运行/启停/改优先级，
             # 没有删除入口——用户想删一个非 sys: 前缀的自定义 job 必须切
