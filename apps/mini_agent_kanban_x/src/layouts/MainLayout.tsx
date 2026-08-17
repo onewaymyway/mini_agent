@@ -11,6 +11,7 @@ import {
   BellOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
+  FlagOutlined,
 } from "@ant-design/icons";
 import { useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -25,6 +26,7 @@ const items = [
   { key: "/", icon: <DashboardOutlined />, label: <Link to="/">总览</Link> },
   { key: "/chat", icon: <MessageOutlined />, label: <Link to="/chat">对话</Link> },
   { key: "/sessions", icon: <ClusterOutlined />, label: <Link to="/sessions">会话</Link> },
+  { key: "/goals", icon: <FlagOutlined />, label: <Link to="/goals">目标看板</Link> },
   { key: "/files", icon: <FolderOutlined />, label: <Link to="/files">文件</Link> },
   { key: "/artifacts", icon: <PictureOutlined />, label: <Link to="/artifacts">产出物</Link> },
   { key: "/self", icon: <BulbOutlined />, label: <Link to="/self">自我状态</Link> },

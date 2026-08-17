@@ -137,3 +137,54 @@ export interface AutonomousStatus {
   gating?: unknown;
   [key: string]: unknown;
 }
+
+// ── 目标看板 ────────────────────────────────────────────────────
+export interface GoalNode {
+  id: string;
+  title: string;
+  description?: string;
+  status?: string;
+  priority?: number;
+  is_recurring?: boolean;
+  execution_spec_confirmed?: boolean;
+  progress_notes?: string;
+  work_thread_progress?: string;
+  work_thread_next_suggested?: string;
+  [key: string]: unknown;
+}
+
+export interface ObjectiveNode {
+  id: string;
+  goal_id?: string;
+  status?: string;
+  steps?: ObjectiveStep[];
+  [key: string]: unknown;
+}
+
+export interface ObjectiveStep {
+  index?: number;
+  title?: string;
+  status?: string;
+  output?: string;
+  [key: string]: unknown;
+}
+
+export interface GoalsResponse {
+  goals: GoalNode[];
+  objectives: ObjectiveNode[];
+}
+
+export interface ExecutionSpec {
+  goal_id?: string;
+  confirmed?: boolean;
+  version?: number;
+  content?: unknown;
+  [key: string]: unknown;
+}
+
+export interface TuningProposal {
+  id: string;
+  status?: string;
+  summary?: string;
+  [key: string]: unknown;
+}
