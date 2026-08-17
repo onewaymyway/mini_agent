@@ -394,6 +394,105 @@ def scratch_is_empty(paths: "AgentPaths", goal_id: str) -> bool:
     return not any(f.is_file() for f in scratch_dir.rglob("*"))
 
 
+# 常见标准库模块名集合，用于 check_scripts_requirements_consistency() 排除
+# 明显不需要出现在 requirements.txt 里的导入。Python 3.10+ 提供
+# sys.stdlib_module_names，取不到时退回一份手工列出的高频子集兜底（宁可
+# 漏检也不要把标准库模块误报成"缺依赖"）。
+def _stdlib_module_names() -> frozenset:
+    import sys
+    names = getattr(sys, "stdlib_module_names", None)
+    if names:
+        return frozenset(names)
+    return frozenset({
+        "os", "sys", "re", "json", "time", "math", "itertools", "functools",
+        "collections", "typing", "pathlib", "subprocess", "logging", "datetime",
+        "random", "shutil", "argparse", "csv", "io", "tempfile", "unittest",
+        "dataclasses", "enum", "abc", "hashlib", "traceback", "copy", "glob",
+        "threading", "multiprocessing", "socket", "struct", "string", "textwrap",
+        "urllib", "http", "sqlite3", "pickle", "base64", "uuid", "warnings",
+    })
+
+
+def check_scripts_requirements_consistency(paths: "AgentPaths", goal_id: str) -> list[str]:
+    """[方案 §6.2/§7.1 第 7 条] 扫描 `scripts/*.py`（不含 `_experiments/`）的
+    顶层 `import`/`from ... import` 语句，返回 `requirements.txt` 里似乎遗漏
+    的第三方包名列表（去重、按字母排序）。
+
+    用正则粗略提取，**不追求 100% 准确**——无法处理条件导入、`try/except
+    ImportError` 兜底导入、以及"顶层模块名与 PyPI 包名不一致"（如
+    `PIL`→`Pillow`、`yaml`→`PyYAML`）这类特殊情况，只是一段"明显遗漏"的
+    确定性核查提示，tidy 阶段据此提醒 agent 人工核对，而不是拿它做强制
+    拦截。`requirements.txt`/`scripts/` 不存在时返回空列表。
+    """
+    import re
+
+    scripts_dir = goal_output_dir(paths, goal_id) / "scripts"
+    if not scripts_dir.is_dir():
+        return []
+    req_path = scripts_dir / "requirements.txt"
+    req_text = ""
+    if req_path.exists():
+        try:
+            req_text = req_path.read_text(encoding="utf-8").lower()
+        except OSError:
+            req_text = ""
+
+    import_re = re.compile(r"^\s*(?:from|import)\s+([a-zA-Z0-9_\.]+)", re.MULTILINE)
+    modules: set[str] = set()
+    for f in scripts_dir.glob("*.py"):
+        if not f.is_file():
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for m in import_re.finditer(text):
+            modules.add(m.group(1).split(".")[0])
+
+    stdlib = _stdlib_module_names()
+    missing: list[str] = []
+    for mod in sorted(modules):
+        if not mod or mod in stdlib or mod in ("mini_agent",):
+            continue
+        candidates = {mod.lower(), mod.lower().replace("_", "-")}
+        if not any(c in req_text for c in candidates):
+            missing.append(mod)
+    return missing
+
+
+def detect_experiments_promotion_candidates(
+    paths: "AgentPaths", goal_id: str, *, notes_limit: int = 10, min_mentions: int = 2,
+) -> list[str]:
+    """[方案 §6.4/§7.1 第 9 条] 检查 `scripts/_experiments/` 下的脚本文件名是
+    否在最近若干轮 `notes/cycle_NNNN.md` 里被反复引用（出现次数 >=
+    `min_mentions`），但尚未出现在 `scripts/` 根目录——这类脚本"验证有效
+    却一直没有按 §6.4 要求转正"，tidy 阶段据此提示 agent 核对是否需要搬迁
+    重命名进 `scripts/` 根目录。
+
+    启发式判断，按文件名字符串在 notes 原文里出现的次数计数，不追求完全
+    精确（无法判断是否真的是"同一个实验的后续引用"还是偶然的文件名重复
+    提及）。`_experiments/` 为空或不存在时返回空列表。
+    """
+    scripts_dir = goal_output_dir(paths, goal_id) / "scripts"
+    experiments_dir = scripts_dir / "_experiments"
+    if not experiments_dir.is_dir():
+        return []
+    exp_names = [f.name for f in experiments_dir.rglob("*.py") if f.is_file()]
+    if not exp_names:
+        return []
+    root_names = {f.name for f in scripts_dir.glob("*.py") if f.is_file()}
+
+    notes = read_recent_notes(paths, goal_id, limit=notes_limit)
+    combined_text = "\n".join(n.get("content", "") for n in notes)
+    if not combined_text:
+        return []
+
+    candidates = sorted(
+        {name for name in exp_names if name not in root_names and combined_text.count(name) >= min_mentions}
+    )
+    return candidates
+
+
 # ── manifest 读写 ─────────────────────────────────────────────────────────────
 
 def _latest_path(base_dir: Path) -> Path:
@@ -554,4 +653,6 @@ __all__ = [
     "read_recent_notes",
     "archive_old_notes",
     "scratch_is_empty",
+    "check_scripts_requirements_consistency",
+    "detect_experiments_promotion_candidates",
 ]

@@ -343,8 +343,7 @@ output/scripts/
 > - ✅ Stage 2：`GoalExecutionSpec` 版本历史归档 —— 已完成
 > - ✅ Stage 3：`goal_cron_bridge.py` 阶段 prompt 重新拼接 —— 已完成
 > - ✅ Stage 4：converge 自动生成 spec 草稿 —— 已完成
-> - ⬜ Stage 5：`output/scripts/` 专项规范落地（骨架分配已随 Stage 1 完成，
->   核查/审计逻辑待 Stage 3 的 tidy 改造一并接入）
+> - ✅ Stage 5：`output/scripts/` 专项规范落地 —— 已完成
 > - ⬜ Stage 6：文档全面同步
 
 1. `output_workspace.py` 目录模型改造（`output/`/`notes/`/`spec/`/
@@ -579,3 +578,55 @@ effective_mode 非 converge 时跳过、已确认 spec 时跳过、已存在草�
 
 尚未做的事（留给后续阶段）：`output/scripts/` 专项核查是 Stage 5 的工作；
 `docs/goal-execution-phase-guide.md` 等用户文档同步是 Stage 6 的工作。
+
+### Stage 5（已完成）：`output/scripts/` 专项规范落地
+
+骨架分配（`README.md`/`requirements.txt`/`CHANGELOG.md`/`lib/`/
+`_run_logs/`/`_experiments/`）已随 Stage 1 的 `ensure_output_skeleton()`
+完成，本阶段补齐方案 §7.1 里尚未覆盖的两条确定性核查（第 7/9 条），并接入
+Stage 3 已经搭好的 tidy "问题清单"管道：
+
+`evolution/output_workspace.py` 新增两个函数：
+
+- `check_scripts_requirements_consistency(paths, goal_id) -> list[str]`
+  （§6.2/§7.1 第 7 条）：正则粗略提取 `scripts/*.py`（不含 `_experiments/`）
+  的顶层 `import`/`from ... import` 语句，对照 `requirements.txt` 文本，
+  返回"看起来遗漏"的第三方包名列表。用 `sys.stdlib_module_names`（3.10+
+  内置；取不到时退回一份手工列出的高频标准库子集兜底）排除标准库导入，
+  显式排除项目自身的 `mini_agent`。**不追求 100% 准确**——无法处理条件
+  导入、`try/except ImportError` 兜底导入、以及"顶层模块名与 PyPI 包名
+  不一致"（如 `PIL`→`Pillow`）这类特殊情况，定位是"明显遗漏"的提示，
+  交给 agent 人工核实，不做强制拦截。
+- `detect_experiments_promotion_candidates(paths, goal_id, *, notes_limit=10,
+  min_mentions=2) -> list[str]`（§6.4/§7.1 第 9 条）：取
+  `scripts/_experiments/` 下的脚本文件名，与最近 `notes_limit` 轮
+  `notes/cycle_NNNN.md` 原文按文件名字符串做出现次数统计，出现次数
+  `>= min_mentions` 且尚未以同名文件出现在 `scripts/` 根目录的，判定为
+  "验证有效却一直没有按 §6.1 命名约定转正"，列入候选。同样是启发式判断
+  （按文件名字符串出现次数，不追求语义上确认"确实是同一次实验的后续
+  引用"），供 agent 核对而非自动搬迁。
+
+`evolution/goal_cron_bridge.py` 的 `_build_tidy_problem_checklist()`
+（Stage 3 已有的"tidy 阶段代码预检问题清单"函数）接入这两个新函数：
+`missing_requirements`/`promotion_candidates` 各自独立 `try/except`
+（比其余几项更依赖文本解析，出错概率相对更高，值得单独兜底，不因为其中
+一项解析失败就丢失其余检查项），非空时各追加一行提示，文案分别标注"启发式
+核查，可能有误判，请人工核实"和"评估是否需要按 §6.1 命名约定搬迁转正"，
+延续 Stage 3 "代码算出问题清单，agent 只需决定怎么处理"的定位，不混淆成
+"代码直接下结论"。函数 docstring 同步更新，标注第 7/9 条已在 Stage 5
+补齐，第 3/4 条（`retention`/`naming_pattern` 规则核对，需要结合
+`GoalExecutionSpec` 的业务子目录声明）仍留给后续阶段。
+
+测试：新增 `tests/test_output_workspace_scripts_audit.py`（10 个用例），
+覆盖 `check_scripts_requirements_consistency()` 的"无 scripts/ 目录返回
+空"/"正确标记遗漏的第三方包，不误报标准库"/"已在 requirements.txt 声明的
+包不再标记"/"`_experiments/` 下的导入不计入核查"，`detect_experiments_
+promotion_candidates()` 的"无 `_experiments/` 返回空"/"被多轮 notes 提及
+但未转正的脚本被标记"/"已转正（同名出现在 scripts/ 根目录）的脚本不再
+标记"/"提及次数不足阈值不标记"，以及两者接入 `_build_tidy_problem_
+checklist()` 后的呈现效果（含"完全没有问题时仍返回确认性文字"的既有
+行为不受影响）。
+
+尚未做的事（留给后续阶段）：`docs/goal-execution-phase-guide.md`、
+`docs/goal-execution-spec-guide.md`、`docs/unified-scheduler-guide.md`
+以及新增一份面向用户的"产出目录规范"说明文档，是 Stage 6 的工作。

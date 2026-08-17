@@ -500,11 +500,12 @@ def _read_spec_md_full_text(paths, goal_id: str, *, fallback_spec=None) -> str:
 
 
 def _build_tidy_problem_checklist(paths, goal_id: str) -> str:
-    """[方案 §7.1] tidy 阶段核查清单里能确定性代码判断的那部分（第
-    1/3(部分)/4(部分)/6/7 条留待更细的静态分析——第一版先覆盖能直接从
-    `scan_output_structure()`/`scratch_is_empty()` 扫描结果算出来的项：
-    根目录散落文件、_misc/ 未清空、疑似临时脚本混在 scripts/ 根目录、
-    _run_logs/ 数量、_archive/ 归档规模、scratch/ 是否已清空。
+    """[方案 §7.1] tidy 阶段核查清单里能确定性代码判断的那部分——第一版
+    （Stage 3）覆盖第 1/2/5/6/8 条；[Stage 5] 补齐第 7 条（requirements.txt
+    与 scripts/*.py 实际 import 是否一致）和第 9 条（_experiments/ 里是否
+    存在应转正但一直没转正的脚本）。第 3/4 条（`retention`/`naming_pattern`
+    规则核对）仍需结合 `GoalExecutionSpec` 的业务子目录声明才能判断，留待
+    后续阶段。
 
     返回给 agent 看的 Markdown 文本，全部是"代码已经算出来的问题"，
     agent 不需要自己判断"这里乱不乱"，只需要决定"怎么处理"。没有发现
@@ -517,6 +518,18 @@ def _build_tidy_problem_checklist(paths, goal_id: str) -> str:
         scratch_empty = ow.scratch_is_empty(paths, goal_id)
     except Exception:
         return "（本轮目录扫描失败，请自行检查 output/ 目录结构）"
+
+    # [Stage 5] requirements.txt 一致性核查 / _experiments/ 转正检测——两者
+    # 各自独立 try/except，任一失败不影响其余检查项正常展示（比上面几项
+    # 更依赖文本解析，出错概率相对更高，值得单独兜底）。
+    try:
+        missing_requirements = ow.check_scripts_requirements_consistency(paths, goal_id)
+    except Exception:
+        missing_requirements = []
+    try:
+        promotion_candidates = ow.detect_experiments_promotion_candidates(paths, goal_id)
+    except Exception:
+        promotion_candidates = []
 
     lines: list[str] = []
     if stats["root_unexpected"]:
@@ -539,6 +552,13 @@ def _build_tidy_problem_checklist(paths, goal_id: str) -> str:
     if stats["archive_entries"] > 200:
         lines.append(f"- ℹ️ _archive/ 已有 {stats['archive_entries']} 项归档，"
                       "可评估是否有过老内容可以彻底删除（默认不自动删，仅提示）")
+    if missing_requirements:
+        lines.append("- ⚠️ scripts/*.py 里出现但 requirements.txt 未见记录的第三方包"
+                      "（启发式核查，可能有误判，请人工核实）：" + "、".join(missing_requirements))
+    if promotion_candidates:
+        lines.append("- ℹ️ scripts/_experiments/ 下这些脚本被最近几轮总结笔记多次提及，"
+                      "但尚未转正到 scripts/ 根目录，评估是否需要按 §6.1 命名约定搬迁转正："
+                      + "、".join(promotion_candidates))
 
     if not lines:
         return "本轮代码扫描未发现确定性问题（根目录整洁、_misc/ 为空、scratch/ 已清空）。"
