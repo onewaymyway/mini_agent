@@ -365,3 +365,94 @@ export interface GatingHistoryResponse {
   ratio_summary?: unknown;
   [key: string]: unknown;
 }
+
+// ── 外部输入网关（Tab13） ────────────────────────────────────────
+export interface ExternalInputSource {
+  id: string;
+  type?: string;
+  enabled?: boolean;
+  interval_seconds?: number;
+  is_running?: boolean | null;
+  last_poll_ts?: string | null;
+  consecutive_failures?: number;
+  circuit_open?: boolean;
+  last_error?: string | null;
+  [key: string]: unknown;
+}
+
+export interface ExternalInputPolicyRule {
+  match?: unknown;
+  action?: string;
+  enqueue?: unknown;
+  [key: string]: unknown;
+}
+
+export interface ExternalInputAlertItem {
+  id?: string;
+  title?: string;
+  detail?: string;
+  created_at?: string;
+  source_id?: string;
+  [key: string]: unknown;
+}
+
+export interface ExternalInputEventItem {
+  event_type?: string;
+  ts?: string;
+  [key: string]: unknown;
+}
+
+export interface NoveltyCandidateItem {
+  id: string;
+  title?: string;
+  summary?: string;
+  status?: string;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+// ── 关注与通知（Tab14） ──────────────────────────────────────────
+export interface WatchlistItem {
+  id?: string;
+  name?: string;
+  enabled?: boolean;
+  [key: string]: unknown;
+}
+
+export interface ReportTierItem {
+  id?: string;
+  name?: string;
+  job_id?: string;
+  job_enabled?: boolean | null;
+  next_run_str?: string | null;
+  idle_streak?: number;
+  [key: string]: unknown;
+}
+
+export interface PendingReportItem {
+  id: string;
+  detail?: unknown;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface DispatchLogEntry {
+  ts?: string;
+  channel?: string;
+  title?: string;
+  [key: string]: unknown;
+}
+
+// ── 混合执行（Tab17） ────────────────────────────────────────────
+export interface HybridExecTaskSummary {
+  task_id: string;
+  active_version?: number | null;
+  active_status?: string;
+  active_created_by?: string;
+  active_success_count?: number;
+  active_fail_count?: number;
+  active_consecutive_fail?: number;
+  version_count?: number;
+  run_summary?: unknown;
+  [key: string]: unknown;
+}

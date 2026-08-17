@@ -354,3 +354,70 @@ export const resetCronJobWorkspace = (jobId: string) => apiPost<Record<string, u
 
 // ── 全局日程（Tab12） ────────────────────────────────────────────
 export const getGatingHistory = (limit = 50) => apiGet<GatingHistoryResponse>("/autonomous/gating_history", { limit });
+
+// ── 外部输入网关（Tab13） ────────────────────────────────────────
+import type {
+  DispatchLogEntry,
+  ExternalInputAlertItem,
+  ExternalInputEventItem,
+  ExternalInputPolicyRule,
+  ExternalInputSource,
+  HybridExecTaskSummary,
+  NoveltyCandidateItem,
+  PendingReportItem,
+  ReportTierItem,
+  WatchlistItem,
+} from "./types";
+
+export const listExternalInputSources = () =>
+  apiGet<{ sources: ExternalInputSource[]; poller_available: boolean }>("/external_input/sources");
+export const reloadExternalInputSources = () =>
+  apiPost<Record<string, unknown>>("/external_input/sources/reload");
+export const listExternalInputPolicies = () =>
+  apiGet<{ rules: ExternalInputPolicyRule[]; _error?: string }>("/external_input/policies");
+export const listExternalInputEvents = (limit = 50, offset = 0) =>
+  apiGet<{ events: ExternalInputEventItem[]; has_more: boolean }>("/external_input/events", { limit, offset });
+export const listExternalInputAlerts = (limit = 20, offset = 0) =>
+  apiGet<{ alerts: ExternalInputAlertItem[]; total: number; has_more: boolean }>("/external_input/alerts", {
+    limit,
+    offset,
+  });
+export const getExternalInputHealthHistory = (sourceId?: string, sinceDays = 7) =>
+  apiGet<Record<string, unknown>>("/external_input/health_history", { source_id: sourceId, since_days: sinceDays });
+export const listNoveltyCandidates = (limit = 20, offset = 0) =>
+  apiGet<{ candidates: NoveltyCandidateItem[]; total: number; has_more: boolean }>(
+    "/external_input/novelty_candidates",
+    { limit, offset }
+  );
+export const confirmNoveltyCandidate = (id: string) =>
+  apiPost<{ ok?: boolean; goal_id?: string; goal_title?: string }>(
+    `/external_input/novelty_candidates/${encodeURIComponent(id)}/confirm`
+  );
+export const dismissNoveltyCandidate = (id: string) =>
+  apiPost<{ ok?: boolean }>(`/external_input/novelty_candidates/${encodeURIComponent(id)}/dismiss`);
+export const queryArchive = (params: {
+  category: string;
+  since: string;
+  until: string;
+  keyword?: string;
+  limit?: number;
+  offset?: number;
+}) => apiGet<{ items?: unknown[]; total?: number; has_more?: boolean; [key: string]: unknown }>("/archive/query", params);
+export const getFeedbackLoopSummary = () => apiGet<Record<string, unknown>>("/evolution/feedback_loop_summary");
+
+// ── 关注与通知（Tab14） ──────────────────────────────────────────
+export const getNotificationWatchlist = () => apiGet<{ items: WatchlistItem[] }>("/notification/watchlist");
+export const getNotificationReportTiers = () => apiGet<{ tiers: ReportTierItem[] }>("/notification/report_tiers");
+export const getPendingReports = (limit = 20, offset = 0) =>
+  apiGet<{ reports: PendingReportItem[]; total: number; has_more: boolean }>("/notifications/pending", {
+    limit,
+    offset,
+  });
+export const ackPendingReport = (id: string) =>
+  apiPost<{ ok?: boolean }>(`/notifications/pending/${encodeURIComponent(id)}/ack`);
+export const getNotificationDispatchLog = (limit = 50) =>
+  apiGet<{ entries: DispatchLogEntry[]; has_more: boolean }>("/notification/dispatch_log", { limit });
+
+// ── 混合执行（Tab17） ────────────────────────────────────────────
+export const getHybridExecSummary = () =>
+  apiGet<{ tasks: HybridExecTaskSummary[]; _error?: string }>("/hybrid_exec/summary");

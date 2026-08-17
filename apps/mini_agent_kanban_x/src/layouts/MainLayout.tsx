@@ -18,6 +18,9 @@ import {
   ExperimentOutlined,
   ClockCircleOutlined,
   CalendarOutlined,
+  ApiOutlined,
+  NotificationOutlined,
+  ToolOutlined,
 } from "@ant-design/icons";
 import { useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -39,6 +42,9 @@ const items = [
   { key: "/evolution", icon: <ExperimentOutlined />, label: <Link to="/evolution">进化提案</Link> },
   { key: "/cron", icon: <ClockCircleOutlined />, label: <Link to="/cron">Cron 任务</Link> },
   { key: "/schedule", icon: <CalendarOutlined />, label: <Link to="/schedule">全局日程</Link> },
+  { key: "/external-input", icon: <ApiOutlined />, label: <Link to="/external-input">外部输入网关</Link> },
+  { key: "/watchlist", icon: <NotificationOutlined />, label: <Link to="/watchlist">关注与通知</Link> },
+  { key: "/hybrid-exec", icon: <ToolOutlined />, label: <Link to="/hybrid-exec">混合执行</Link> },
   { key: "/files", icon: <FolderOutlined />, label: <Link to="/files">文件</Link> },
   { key: "/artifacts", icon: <PictureOutlined />, label: <Link to="/artifacts">产出物</Link> },
   { key: "/self", icon: <BulbOutlined />, label: <Link to="/self">自我状态</Link> },

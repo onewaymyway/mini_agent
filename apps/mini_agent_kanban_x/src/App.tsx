@@ -13,6 +13,9 @@ import CronJobs from "./pages/CronJobs";
 import GlobalSchedule from "./pages/GlobalSchedule";
 import Files from "./pages/Files";
 import Artifacts from "./pages/Artifacts";
+import ExternalInput from "./pages/ExternalInput";
+import Watchlist from "./pages/Watchlist";
+import HybridExec from "./pages/HybridExec";
 import SelfStatus from "./pages/SelfStatus";
 import Settings from "./pages/Settings";
 import { useAuthStore } from "./stores/authStore";
@@ -45,6 +48,9 @@ export default function App() {
         <Route path="evolution" element={<EvolutionProposals />} />
         <Route path="cron" element={<CronJobs />} />
         <Route path="schedule" element={<GlobalSchedule />} />
+        <Route path="external-input" element={<ExternalInput />} />
+        <Route path="watchlist" element={<Watchlist />} />
+        <Route path="hybrid-exec" element={<HybridExec />} />
         <Route path="files" element={<Files />} />
         <Route path="artifacts" element={<Artifacts />} />
         <Route path="self" element={<SelfStatus />} />
