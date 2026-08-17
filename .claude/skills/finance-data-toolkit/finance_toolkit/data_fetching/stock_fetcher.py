@@ -382,8 +382,12 @@ def fetch_all_stock_data(symbol=None, data_types=None, source="akshare"):
         results["quote"] = quote_results
         quality_issues.extend(quote_issues)
     if "kline" in data_types and symbol:
-        kline_results = fetch_kline(symbol=symbol, source=source)
-        results["kline"] = kline_results
+        try:
+            kline_results = fetch_kline(symbol=symbol, source=source)
+            results["kline"] = kline_results
+        except DataError as e:
+            logger.error(f"K线批量获取失败: {e}")
+            results["kline"] = []
     if "financial" in data_types and symbol:
         results["financial"] = fetch_financial(symbol=symbol, source=source)
     if "dividend" in data_types and symbol:
