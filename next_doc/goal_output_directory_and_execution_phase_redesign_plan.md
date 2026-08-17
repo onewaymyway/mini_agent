@@ -340,7 +340,7 @@ output/scripts/
 
 > **实施进度**（随实现推进更新，最新状态见文末"实施记录"）：
 > - ✅ Stage 1：`output_workspace.py` 目录模型改造 —— 已完成
-> - ⬜ Stage 2：`GoalExecutionSpec` 版本历史归档
+> - ✅ Stage 2：`GoalExecutionSpec` 版本历史归档 —— 已完成
 > - ⬜ Stage 3：`goal_cron_bridge.py` 阶段 prompt 重新拼接
 > - ⬜ Stage 4：converge 自动生成 spec 草稿
 > - ⬜ Stage 5：`output/scripts/` 专项规范落地（骨架分配已随 Stage 1 完成，
@@ -404,3 +404,46 @@ README 生成、notes 读写归档、scratch 清空判断。
 ——目前 recurring Goal 触发时仍走原有的 `allocate_cycle_dir()` 路径，新函数
 已就绪但还未被生产逻辑调用，这是有意为之的分阶段推进，避免一次性大改动
 影响现有正在运行的 Goal。
+
+### Stage 2（已完成）：`GoalExecutionSpec` 版本历史归档
+
+`perception/goal_execution_spec.py`：
+
+- `SubDirectory` 新增 `retention`（`"latest_only"` / `"append"` /
+  `"unbounded"`，缺省 `"unbounded"`）/ `naming_pattern`（缺省空字符串）两个
+  可选字段。`from_dict()` 用 `d.get(..., 默认值)` 兜底，非法 `retention`
+  值也会回退为 `"unbounded"`，向后兼容旧的已保存 spec 文件（缺这两个字段
+  或值非法都不报错）。`render_summary_for_user()`/`render_prompt_block()`
+  同步把 `retention`/`naming_pattern` 渲染进子目录说明，方便用户和 agent
+  都能看到"这个子目录该怎么管理"。
+- `save_spec()` 保持权威存储路径
+  （`.agent/goal_execution_specs/<goal_id>.json`）不变，在此基础上追加两个
+  动作，且都包在 try/except 里、失败只记录日志不影响主流程（落盘快照/
+  归档是锦上添花的可见性能力，不应因为产出目录一时不可写导致 spec 保存
+  本身失败）：
+  1. `_archive_prior_spec_version()`：写入新版本前，若 `spec/SPEC.json`
+     已存在（即"即将被覆盖的旧版本"），复制进
+     `spec/history/v{旧version}_{confirmed_at 或 generated_at 对应日期}.md`
+     / `.json`（同一天重复保存同一版本号时自动加数字后缀避免互相覆盖）。
+  2. `_write_spec_snapshot()`：把当前版本渲染落盘到 `spec/SPEC.md`
+     （`render_summary_for_user()` 的落盘结果）+ `spec/SPEC.json`
+     （`to_dict()` 结构化数据），供用户直接在文件系统里打开查看。
+  两者都通过 `evolution/output_workspace.py::goal_spec_dir()` 定位
+  `spec/` 目录路径，为避免循环 import（`output_workspace.py` 不依赖本
+  模块），采用函数体内延迟 import。
+- 新增 `list_spec_history()`：列出某 Goal 的历史 spec 版本摘要（文件名/
+  version/confirmed_at/generated_at/confirmed），按时间倒序，供 CLI/看板
+  未来展示"这个 Goal 什么时候、为什么改变了产出规则"使用（本阶段只提供
+  数据函数，尚未接入 CLI/看板 UI，留给后续阶段或独立小改动）。
+
+测试：`tests/test_goal_execution_spec_versioning.py`（13 个用例），覆盖
+`SubDirectory` 新字段的默认值/序列化往返/非法值兜底/旧数据兼容、
+`render_summary_for_user()`/`render_prompt_block()` 是否带出新字段、
+`save_spec()` 落盘 SPEC.md/SPEC.json、首次保存不产生历史记录、二次/三次
+保存正确归档、`list_spec_history()` 排序与空结果、以及"产出目录被文件占位
+导致快照写入失败时 save_spec() 本身不崩溃"的容错路径。
+
+尚未做的事（留给后续阶段）：`goal_cron_bridge.py` 仍未在每轮 prompt 里
+固定带上 `spec/SPEC.md` 全文（这是 Stage 3 的工作，方案 §4 提到的"确认后
+每轮开头都能看到"目前还未生效）；converge 阶段"连续 2 轮方案对比说明一致
+时自动生成 spec 草稿"是 Stage 4 的工作，本阶段未涉及。

@@ -95,17 +95,36 @@ class HandoffField:
         )
 
 
+_VALID_RETENTIONS = ("latest_only", "append", "unbounded")
+
+
 @dataclass
 class SubDirectory:
     name: str
     purpose: str = ""
+    # [goal_output_directory_and_execution_phase_redesign_plan.md §2.4]
+    # retention 让 tidy 阶段的核查变成确定性代码逻辑：
+    #   latest_only ← 每轮覆写，只保留最新一份
+    #   append      ← 按轮次累积保留
+    #   unbounded   ← 不做特殊管理，人工决定（缺省值，兼容旧 spec 文件）
+    retention: str = "unbounded"
+    # 与 Deliverable.naming_pattern 语义一致，避免命名风格逐轮漂移
+    naming_pattern: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @staticmethod
     def from_dict(d: dict) -> "SubDirectory":
-        return SubDirectory(name=d.get("name", ""), purpose=d.get("purpose", ""))
+        retention = d.get("retention", "unbounded")
+        if retention not in _VALID_RETENTIONS:
+            retention = "unbounded"
+        return SubDirectory(
+            name=d.get("name", ""),
+            purpose=d.get("purpose", ""),
+            retention=retention,
+            naming_pattern=d.get("naming_pattern", ""),
+        )
 
 
 @dataclass
@@ -224,7 +243,9 @@ class GoalExecutionSpec:
         lines.append("子目录 sub_directories：")
         if self.sub_directories:
             for s in self.sub_directories:
-                lines.append(f"  - {s.name}：{s.purpose}")
+                extra = f"（retention: {s.retention}"
+                extra += f"，命名：{s.naming_pattern}）" if s.naming_pattern else "）"
+                lines.append(f"  - {s.name}：{s.purpose} {extra}")
         else:
             lines.append("  （无）")
         lines.append("")
@@ -265,7 +286,9 @@ class GoalExecutionSpec:
         if self.sub_directories:
             lines.append("子目录组织：")
             for s in self.sub_directories:
-                lines.append(f"  - {s.name}：{s.purpose}")
+                extra = f"（retention: {s.retention}"
+                extra += f"，命名：{s.naming_pattern}）" if s.naming_pattern else "）"
+                lines.append(f"  - {s.name}：{s.purpose} {extra}")
         if self.per_cycle_criteria:
             lines.append("本轮完成需满足：")
             for c in self.per_cycle_criteria:
@@ -314,13 +337,136 @@ def load_spec(paths: "AgentPaths", goal_id: str) -> Optional[GoalExecutionSpec]:
 
 
 def save_spec(paths: "AgentPaths", goal_id: str, spec: GoalExecutionSpec) -> Path:
-    """把执行规范写入独立文件。返回写入路径。"""
+    """把执行规范写入独立文件（`.agent/goal_execution_specs/<goal_id>.json`，
+    这是权威存储，行为不变）。返回写入路径。
+
+    [goal_output_directory_and_execution_phase_redesign_plan.md §4 / Stage 2]
+    额外做两件事，失败均不影响权威存储的写入（try/except 兜底，只记录，不
+    抛出——落盘 SPEC.md/SPEC.json 和历史归档是"锦上添花"的可见性能力，不应
+    因为 recurring Goal 的产出目录一时不可写而导致 spec 保存本身失败）：
+      1. 若旧版本文件存在，先把它复制进
+         `spec/history/v{旧version}_{confirmed_at 或 generated_at 时间}.md/.json`，
+         形成审计轨迹。
+      2. 把当前版本渲染落盘到 `spec/SPEC.md`（`render_summary_for_user()` 的
+         落盘结果，人类可读）+ `spec/SPEC.json`（结构化数据），供用户直接在
+         文件系统里打开查看，不用跑命令。
+    """
     spec.goal_id = goal_id
     d = _spec_dir(paths)
     d.mkdir(parents=True, exist_ok=True)
     p = _spec_path(paths, goal_id)
+
+    try:
+        _archive_prior_spec_version(paths, goal_id)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where="mini_agent.perception.goal_execution_spec.save_spec(_archive_prior_spec_version)")
+
     atomic_write_json(p, spec.to_dict())
+
+    try:
+        _write_spec_snapshot(paths, goal_id, spec)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where="mini_agent.perception.goal_execution_spec.save_spec(_write_spec_snapshot)")
+
     return p
+
+
+def _spec_workspace_dir(paths: "AgentPaths", goal_id: str) -> Optional[Path]:
+    """定位 `goal_output_directory_and_execution_phase_redesign_plan.md` §4
+    里的 `spec/` 目录（当前版本 SPEC.md/SPEC.json + history/）。依赖
+    evolution/output_workspace.py::goal_spec_dir()——反向 import 会形成循环
+    依赖（output_workspace 不依赖本模块，本模块按需惰性 import 它），因此
+    延迟到函数体内 import；导入失败（理论上不会发生，只是防御）时返回 None，
+    调用方据此跳过快照/归档逻辑，不影响权威存储写入。
+    """
+    try:
+        from mini_agent.evolution.output_workspace import goal_spec_dir
+    except Exception:
+        return None
+    return goal_spec_dir(paths, goal_id)
+
+
+def _write_spec_snapshot(paths: "AgentPaths", goal_id: str, spec: GoalExecutionSpec) -> None:
+    spec_dir = _spec_workspace_dir(paths, goal_id)
+    if spec_dir is None:
+        return
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    (spec_dir / "SPEC.md").write_text(spec.render_summary_for_user(), encoding="utf-8")
+    atomic_write_json(spec_dir / "SPEC.json", spec.to_dict())
+
+
+def _archive_prior_spec_version(paths: "AgentPaths", goal_id: str) -> Optional[Path]:
+    """写入新版本前，把 `spec/SPEC.md`/`SPEC.json` 当前内容（即"即将被覆盖
+    的旧版本"）复制进 `spec/history/v{旧version}_{时间戳}.md/.json`。
+
+    时间戳优先取旧 spec 的 confirmed_at，其次 generated_at，都没有则用当前
+    时间——尽量反映"这份旧版本实际生效的时间"，而不是归档动作本身发生的
+    时间。旧版本文件不存在（例如第一次保存）时静默跳过，返回 None。
+    """
+    spec_dir = _spec_workspace_dir(paths, goal_id)
+    if spec_dir is None:
+        return None
+    old_json = spec_dir / "SPEC.json"
+    old_md = spec_dir / "SPEC.md"
+    if not old_json.exists():
+        return None
+
+    try:
+        old_data = json.loads(old_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    old_version = old_data.get("version", "0")
+    ts = old_data.get("confirmed_at") or old_data.get("generated_at") or time.time()
+    date_str = time.strftime("%Y-%m-%d", time.localtime(ts))
+
+    history_dir = spec_dir / "history"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"v{old_version}_{date_str}"
+
+    dest_json = history_dir / f"{stem}.json"
+    dest_md = history_dir / f"{stem}.md"
+    # 同一天内对同一版本号重复保存（罕见但可能）时避免互相覆盖
+    suffix = 2
+    while dest_json.exists() or dest_md.exists():
+        stem = f"v{old_version}_{date_str}_{suffix}"
+        dest_json = history_dir / f"{stem}.json"
+        dest_md = history_dir / f"{stem}.md"
+        suffix += 1
+
+    dest_json.write_text(json.dumps(old_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    if old_md.exists():
+        dest_md.write_text(old_md.read_text(encoding="utf-8"), encoding="utf-8")
+    return dest_json
+
+
+def list_spec_history(paths: "AgentPaths", goal_id: str) -> list[dict]:
+    """列出某个 Goal 的历史 spec 版本摘要（供 CLI/看板展示"这个 Goal 什么
+    时候、为什么改变了产出规则"），按归档时间倒序。`spec/history/` 不存在
+    或为空时返回空列表。"""
+    spec_dir = _spec_workspace_dir(paths, goal_id)
+    if spec_dir is None:
+        return []
+    history_dir = spec_dir / "history"
+    if not history_dir.is_dir():
+        return []
+    out = []
+    for p in history_dir.glob("*.json"):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        out.append({
+            "file": p.name,
+            "version": data.get("version"),
+            "confirmed_at": data.get("confirmed_at"),
+            "generated_at": data.get("generated_at"),
+            "confirmed": data.get("confirmed", False),
+        })
+    out.sort(key=lambda x: (x.get("confirmed_at") or x.get("generated_at") or 0), reverse=True)
+    return out
 
 
 def delete_spec(paths: "AgentPaths", goal_id: str) -> bool:
@@ -1043,6 +1189,7 @@ __all__ = [
     "load_spec",
     "save_spec",
     "delete_spec",
+    "list_spec_history",
     "list_templates",
     "load_template",
     "suggest_template",
