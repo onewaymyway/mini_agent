@@ -973,6 +973,23 @@ def create_app(
             "docs":    "/docs",
         }
 
+    # ── 看板 SPA 静态资源挂载（kanban_react_spa_replacement_plan.md §5 P11）───
+    # 生产构建产物 apps/mini_agent_kanban_x/dist/ 如果存在，就挂载到 /kanban
+    # 路径下，实现"一个进程既跑 API 又跑看板前端"的部署方式（同源，天然免
+    # CORS，不需要额外起 Nginx）。dist/ 不存在（尚未 `npm run build`，或纯 API
+    # 部署场景）时静默跳过，不影响 daemon 正常启动——这是可选增强，不是
+    # 硬依赖。SPA 路由由 `html=True` 支持：任何未匹配到具体静态文件的路径
+    # 都 fallback 到 index.html，交给前端 React Router 处理（避免刷新
+    # /kanban/goals 之类子路径时返回 404）。
+    try:
+        from fastapi.staticfiles import StaticFiles
+        kanban_x_dist = Path(__file__).resolve().parents[3] / "apps" / "mini_agent_kanban_x" / "dist"
+        if kanban_x_dist.is_dir():
+            app.mount("/kanban", StaticFiles(directory=str(kanban_x_dist), html=True), name="kanban-x")
+    except Exception as _mini_agent_exc:  # noqa: BLE001 — 静态资源挂载失败不应阻塞 API 服务启动
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.server.create_app.mount_kanban_x')
+
     # ── 注入到 app.state ──────────────────────────────────────────────────
     app.state.bridge       = bridge
     app.state.fs_helper    = fs_helper

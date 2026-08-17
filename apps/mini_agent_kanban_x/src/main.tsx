@@ -19,7 +19,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: "#1677ff" } }}>
-        <BrowserRouter>
+        <BrowserRouter basename={import.meta.env.PROD ? "/kanban" : "/"}>
           <App />
         </BrowserRouter>
       </ConfigProvider>

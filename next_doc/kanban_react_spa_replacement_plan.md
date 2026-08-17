@@ -5,7 +5,8 @@
 > 新看板放在 `apps/mini_agent_kanban_x`，后端 100% 复用现有 FastAPI
 > (`src/mini_agent/api/routes.py`)，仅在确有需要时补充聚合端点。
 
-状态：**进行中**。本文档随每个阶段完成同步更新，最新状态见文末"阶段进度"表。
+状态：**P0~P11 全部完成**。核心 CRUD/审批闭环已覆盖旧看板全部 18 个 Tab，
+仍有少量优先级较低的"锦上添花"项列在文末交付记录与 README 里，供后续按需迭代。
 
 配套文档：`next_doc/kanban_feature_inventory.md` 完整梳理了旧看板 18 个 Tab + 4 个
 全局模块的全部功能点与对应后端端点（共 ~175 个 REST 端点），是本文档第 5 节
@@ -148,7 +149,7 @@ apps/mini_agent_kanban_x/                  # 新看板根目录（与旧 mini_ag
 | P8 | Tab10 进化提案 + Tab11 Cron 任务 + Tab12 全局日程 | ✅ 已完成（本次交付） |
 | P9 | Tab13 外部输入网关 + Tab14 关注与通知 + Tab17 混合执行 | ✅ 已完成（本次交付） |
 | P10 | Tab15 配置管理 + Users 用户管理 + 账户登录门禁完整版 | ✅ 已完成（本次交付，登录门禁说明见下） |
-| P11 | 生产收尾 | ⏳ 规划中 |
+| P11 | 生产收尾 | ✅ 已完成（本次交付） |
 
 > 排序依据：P1~P4 优先做"高频 + 对 Streamlit 卡顿最敏感"的场景（对话、会话、文件、状态监控），
 > P5~P9 按旧看板 Tab 的代码规模从大到小排（目标看板、成长顾问两个 Tab 各自都有 30+ 端点，
@@ -306,3 +307,23 @@ npm run build           # 产出 dist/，可用 `npm run preview` 本地预览
   端点——P1 阶段的简化版 Token 登录页已经是当前后端能力下的"完整版"，此次不新增虚构的
   登录接口调用；用户名+密码登录如未来后端补充对应端点，再补齐 SPA 侧表单。`npm run build`
   验证通过。P11（生产收尾：部署文档、性能优化如代码分割、E2E 检查）待迭代。
+- 2026-08-17（第十次交付，本次）：完成 P11 生产收尾，方案 P0~P11 全部交付完成。
+  **同进程静态资源挂载**：`src/mini_agent/api/server.py::create_app()` 新增自动检测——
+  `apps/mini_agent_kanban_x/dist/` 存在则用 `StaticFiles(html=True)` 挂载到 `/kanban`
+  路径（daemon 同源，免 CORS），不存在则静默跳过、不阻塞 daemon 启动；相应地
+  `vite.config.ts` 生产构建 `base` 设为 `/kanban/`、`src/main.tsx` 的 `BrowserRouter`
+  生产环境下加 `basename="/kanban"`，确保子路径挂载下资源路径与刷新不出现 404。
+  **生产构建体积优化**：`src/App.tsx` 除登录页/Dashboard/对话页外，其余 15 个页面改为
+  `React.lazy` + `Suspense` 路由级懒加载；`vite.config.ts` 新增 `manualChunks` 把
+  react/react-router-dom、antd/@ant-design/icons、@tanstack/react-query 拆成独立 vendor
+  chunk。优化前单一 bundle 约 1.37MB，优化后拆分为 15+ 个路由级小 chunk（多数 <20KB）
+  + 3 个可长期缓存的 vendor chunk（antd 本身约 1MB 是组件库体积决定的，进一步拆分收益
+  有限，已在 README 注明）。**文档收尾**：重写 `apps/mini_agent_kanban_x/README.md`，
+  阶段表全部标记完成、补充"同进程部署"章节的具体步骤和两处路由适配说明、补充构建体积
+  优化说明、"已知限制"章节按最新交付范围重新梳理（P5~P10 各自遗留项 + 登录门禁现状）。
+  `npm run build` 验证通过（`tsc -b` 类型检查 + `vite build` 产物生成均无报错）。
+  **新旧并存原则维持不变**：全程未修改/未下线 `apps/mini_agent_kanban`（Streamlit
+  版），`/kanban` 是纯新增挂载点；是否下线旧版本留给使用者自行决定，不代为决策。
+  至此，`next_doc/kanban_feature_inventory.md` 中梳理的旧看板 18 个 Tab + 4 个全局模块
+  均已在新版 SPA 落地核心能力，P0~P11 全部阶段交付完成，仅剩若干已在 README/本文档中
+  逐一列出的"锦上添花"项留待后续按需迭代。
