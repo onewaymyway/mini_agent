@@ -7,6 +7,10 @@
 
 状态：**进行中**。本文档随每个阶段完成同步更新，最新状态见文末"阶段进度"表。
 
+配套文档：`next_doc/kanban_feature_inventory.md` 完整梳理了旧看板 18 个 Tab + 4 个
+全局模块的全部功能点与对应后端端点（共 ~175 个 REST 端点），是本文档第 5 节
+分阶段计划的直接依据，新增/调整阶段划分时请先核对该清单，避免遗漏功能。
+
 ---
 
 ## 1. 为什么要换掉 Streamlit
@@ -115,19 +119,69 @@ apps/mini_agent_kanban_x/                  # 新看板根目录（与旧 mini_ag
 
 ## 5. 分阶段实施计划
 
-| 阶段 | 内容 | 产出 | 状态 |
-|---|---|---|---|
-| P0 | 方案设计与文档 | 本文档 + README 骨架 | ✅ 已完成 |
-| P1 | 工程脚手架：Vite+React+TS+antd+TanStack Query+Router，鉴权（Token/登录门禁）、布局、Dashboard（状态总览，SSE 实时） | `apps/mini_agent_kanban_x` 可运行的最小闭环 | ✅ 已完成（本次交付） |
-| P2 | Chat 流式对话页 + Sessions 会话管理（列表/详情/resume/delete/新建） | Chat/Sessions 页面 | ✅ 已完成（本次交付） |
-| P3 | Files 文件浏览（list/read/download/upload/mkdir/delete/rename）+ DiffView | Files 页面 | ⏳ 规划中 |
-| P4 | Permissions/Interactions 待处理审批、SelfStatus（调度总览/LLM 池/公平性诊断/错误日志统计等只读面板） | Permissions/SelfStatus 页面 | ⏳ 规划中 |
-| P5 | Users 用户管理（owner）、Settings、生产构建接入 FastAPI `StaticFiles` 挂载、旧 Streamlit 看板下线评估 | 生产可部署形态 | ⏳ 规划中 |
+> 本节按 `next_doc/kanban_feature_inventory.md` 里梳理出的旧看板 **18 个 Tab + 4 个全局模块**
+> 逐一分配阶段，确保"计划覆盖的功能 = 旧看板全部功能"，不遗漏任何一个 Tab。
+> 每个阶段的验收标准是：对照功能清单里的条目逐条勾选，能一一对应到新版页面的某个交互点。
 
-> 说明：受限于一次性交付的时间/篇幅，P1+P2 是本次直接落地的部分（工程可跑、
-> Dashboard 与 Chat/Sessions 三个高频、对 Streamlit 卡顿最敏感的页面已用真实接口打通）；
-> P3~P5 给出了明确的目录占位、接口清单和实现方式，便于后续按同样模式继续搬迁，
-> 不需要推倒重来。
+### 全局模块（贯穿各阶段，非独立 Tab）
+
+| 模块 | 归属阶段 | 说明 |
+|---|---|---|
+| 登录门禁 | P1 | 已实现简化版（Token 直连）；账户名+密码登录见 P8 |
+| 侧边栏连接配置 | P1 | Settings 页 + MainLayout 顶部状态条已覆盖健康检查/手动刷新 |
+| 本页面 session 绑定 | P1（已做基础版）/ P2（多标签页并行完善） | `uiStore.currentSessionId` + URL query 同步 |
+| 顶部状态条（队列/任务/gating/权限提醒/Sentinel/全局 inbox） | P1（状态条骨架）→ P4（权限/交互/Sentinel/inbox 完整接入） | |
+
+### Tab 级阶段划分
+
+| 阶段 | 覆盖 Tab / 模块 | 关键产出 | 状态 |
+|---|---|---|---|
+| P0 | 方案设计 | 本文档 + 功能清单 `kanban_feature_inventory.md` | ✅ 已完成 |
+| P1 | 工程脚手架 + 登录 + Dashboard（对应"顶部状态条"精简版） | `apps/mini_agent_kanban_x` 可运行闭环 | ✅ 已完成 |
+| P2 | Tab1 对话（核心收发+流式，权限/交互审批与事件流面板延后）、Tab2 会话管理（列表/新建/恢复/删除/详情，置顶对比延后） | Chat / Sessions 页面 | ✅ 已完成（基础版，标注的延后项见 P4/P2b） |
+| P2b | Tab1 补完（内联权限/交互审批、事件流面板、最近工具活动）、Tab2 补完（置顶+并排对比、变化提醒横幅、认知锚点保存） | Chat/Sessions 达到与旧版 1:1 对齐 | ⏳ 规划中 |
+| P3 | Files 通用能力（旧版无独立 Tab，但被工作流/配置等多处复用，见清单"附"）+ Tab5 产出物浏览 + Tab6 产出预览 + DiffView 组件 | Files 页面、Artifacts 页面、`components/DiffView.tsx` | ⏳ 规划中 |
+| P4 | 全局模块补完（权限/交互审批、Sentinel、全局 inbox 完整接入 Topbar）+ Tab16 诊断信息 + Tab18 错误日志统计 + Tab7 自我状态（LLM 池/公平性诊断/调用统计/配置查看） | Topbar 完整版、SelfStatus 页面 | ⏳ 规划中 |
+| P5 | Tab3 目标看板（规模最大，拆两步）：<br>· P5a 目标 CRUD + 周期性设置 + 反馈 + 执行规范（生成/修订/确认/收尾）<br>· P5b 执行阶段 + Objective 执行控制（取消/暂停/恢复/重试/编辑步骤/guidance/trace）+ 调优草案 + 周期诊断 + 完成率趋势 | Goals 页面（含子路由/Tab） | ⏳ 规划中 |
+| P6 | Tab4 工作流（定义查看/运行面板/历史统计/执行详情/运行控制/步骤覆盖） | Workflows 页面 | ⏳ 规划中 |
+| P7 | Tab8 成长顾问（规模第二大，含候选看板拖拽、画像、对齐、追求中方向、报告）+ Tab9 能力学习/人设养成 | Growth 页面、Capability 页面 | ⏳ 规划中 |
+| P8 | Tab10 进化提案 + Tab11 Cron 任务 + Tab12 全局日程 | Evolution/Cron/Schedule 页面 | ⏳ 规划中 |
+| P9 | Tab13 外部输入网关 + Tab14 关注与通知 + Tab17 混合执行 | ExternalInput/Notification/HybridExec 页面 | ⏳ 规划中 |
+| P10 | Tab15 配置管理（分类+过滤+按类型渲染表单控件）+ Users 用户管理（增强项，旧版无网页 UI）+ 账户登录门禁完整版 | Config/Users 页面 | ⏳ 规划中 |
+| P11 | 生产收尾：生产构建接入 FastAPI `StaticFiles` 挂载、代码分割优化（路由级 `React.lazy`）、端到端回归对照清单核对、旧 Streamlit 看板下线评估 | 生产可部署形态 | ⏳ 规划中 |
+
+> 排序依据：P1~P4 优先做"高频 + 对 Streamlit 卡顿最敏感"的场景（对话、会话、文件、状态监控），
+> P5~P9 按旧看板 Tab 的代码规模从大到小排（目标看板、成长顾问两个 Tab 各自都有 30+ 端点，
+> 拆成独立阶段并进一步拆子步骤，避免一个阶段范围过大导致中途验收困难），
+> P10~P11 是收尾/增强/部署类工作。
+
+### 阶段与旧看板 Tab 的完整映射表（校验用）
+
+| 旧看板 Tab | 新版归属阶段 |
+|---|---|
+| 💬 对话 | P2 / P2b |
+| 🗂️ 会话管理 | P2 / P2b |
+| 📌 目标看板 | P5a / P5b |
+| 🔄 工作流 | P6 |
+| 📁 产出物浏览 | P3 |
+| 🖼️ 产出预览 | P3 |
+| 🧠 自我状态 | P4 |
+| 🌱 成长顾问 | P7 |
+| 🎓 能力学习 | P7 |
+| 🧬 进化提案 | P8 |
+| ⏰ Cron 任务 | P8 |
+| 🗓️ 全局日程 | P8 |
+| 🔌 外部输入网关 | P9 |
+| 🔔 关注与通知 | P9 |
+| ⚙️ 配置管理 | P10 |
+| 🔧 诊断信息 | P4 |
+| 🧪 混合执行 | P9 |
+| 📛 错误日志统计 | P4 |
+
+> 说明：受限于一次性交付的时间/篇幅，P0~P2 是本次直接落地的部分（工程可跑、
+> Dashboard 与 Chat/Sessions 基础版已用真实接口打通）；P2b~P11 给出了明确的
+> Tab 归属、接口清单（见 `kanban_feature_inventory.md`）和实现方式，便于后续
+> 按同样模式继续搬迁，不需要推倒重来，也不会漏掉旧看板里的任何一块能力。
 
 ## 6. 与后端接口的映射关系（节选，完整清单见 `routes.py`）
 
@@ -175,6 +229,9 @@ npm run build           # 产出 dist/，可用 `npm run preview` 本地预览
 
 ## 9. 阶段进度（随实施更新）
 
-- 2026-08-17：完成 P0（本文档）与 P1（工程脚手架 + 鉴权 + Dashboard 实时状态）、
-  P2（Chat 流式对话、Sessions 会话管理）。详见 `apps/mini_agent_kanban_x/README.md`
-  中的"当前完成度"章节。P3~P5 待后续迭代。
+- 2026-08-17（第一次交付）：完成 P0（方案文档）与 P1（工程脚手架 + 鉴权 + Dashboard 实时状态）、
+  P2（Chat 流式对话基础版、Sessions 会话管理基础版）。
+- 2026-08-17（本次更新）：产出 `kanban_feature_inventory.md` 完整功能清单（18 Tab + 4 全局模块，
+  ~175 个后端端点逐一对照），并据此把第 5 节的分阶段计划从粗粒度的 P3~P5 拆解为
+  覆盖全部 18 个 Tab 的 P2b~P11 共 12 个阶段，新增"阶段与旧看板 Tab 映射表"用于校验完整性。
+  代码侧本次未新增改动，详见 `apps/mini_agent_kanban_x/README.md` 中的"当前完成度"章节。
