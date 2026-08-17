@@ -1480,6 +1480,19 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 这是纯只读展示能力，不需要额外配置即可生效（只要总开关 `enabled` 为
 真、且 `sys:growth_advisor_daily` 正常运行）。
 
+**已知问题修复（本轮）**：`run_daily_cycle()` 收尾处记快照/做降采样压缩
+这段此前是裸 `except Exception: pass`——`_record_health_snapshot()`
+内部会调 `diagnostics_snapshot()` 做一整套子统计，任何一处子计算抛
+异常都会被这里完全静默吞掉，不留任何日志。表现为：cron job 侧显示
+"正常运行、连续失败次数 0"，但 `growth_health_trend.jsonl` 一直是空的，
+看板"📈 健康度趋势"区块也就一直没有数据，且没有任何线索能定位具体是哪
+一步失败——这跟本文档其它地方"静默降级但要 `log_exception`"的既定
+写法不一致。已改为出错时调用 `log_exception`（`where` 标记为
+`mini_agent.evolution.growth_advisor.run_daily_cycle.health_snapshot`），
+不改变"快照失败不影响主流程"的行为，只是让失败原因变得可排查——如果
+`sys:growth_advisor_daily` 已经运行多次但趋势仍是空的，下次运行后可以
+直接查错误日志定位根因，不用再靠猜。
+
 ### N2：cron 记忆回填（对应 `docs/memory-backfill-guide.md` 方向一 M3）
 
 daemon/cron 任务此前完全不产出记忆——`cron_agent_bridge.py` 每次触发都

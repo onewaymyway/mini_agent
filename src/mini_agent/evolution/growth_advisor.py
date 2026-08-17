@@ -5488,15 +5488,24 @@ def run_daily_cycle(
     # [v4 N1] 每日流程收尾时顺带记一条全局健康度快照 + 做一次降采样
     # 压缩，跟 growth_topic_trend 的既有节奏一致（每天一次，不影响主
     # 流程返回结构）。快照/压缩失败不应该影响本轮扫描/候选生成/推送
-    # 已经产出的结果，静默降级。
+    # 已经产出的结果，静默降级——但"静默降级"只应该指"不中断主流程"，
+    # 不该指"连错误原因都不留"：这里此前是裸 `except: pass`，一旦
+    # `_record_health_snapshot()`（内部会调 `diagnostics_snapshot()`
+    # 做一整套子统计，任何一处抛异常都会传到这里）出错，健康度趋势会
+    # 一直是空的，且没有任何日志能定位原因，cron job 侧看到的仍是
+    # "成功执行"（异常没有再往上抛）。改成跟本文件其它静默降级路径
+    # 一致的 `log_exception`，不改变"失败不影响主流程"的行为，只是让
+    # 失败原因变得可排查。
     try:
         _record_health_snapshot(paths, cfg, profile, memory_store)
         compact_health_trend_storage(paths)
         # [growth_advisor_autonomy_deepening_plan_v2.md 方向 3] 饱和度
         # 趋势的降采样压缩跟健康度趋势同一个节奏，不需要单独的调度点。
         compact_pursuit_saturation_trend_storage(paths)
-    except Exception:
-        pass
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+
+        log_exception(exc, where="mini_agent.evolution.growth_advisor.run_daily_cycle.health_snapshot")
 
     # [BUGFIX：目标看板"完成率趋势"长期无数据] 之前 D.1 的
     # `record_objective_completion_snapshot()` 只挂在 HTTP 路由
