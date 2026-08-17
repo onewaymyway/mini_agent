@@ -67,6 +67,15 @@ export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
   return handle<T>(res);
 }
 
+export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(base() + path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  return handle<T>(res);
+}
+
 export async function apiDelete<T>(path: string, params?: Record<string, unknown>): Promise<T> {
   const url = new URL(base() + path, window.location.origin);
   if (params) {

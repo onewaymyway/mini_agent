@@ -1,4 +1,4 @@
-import { apiDelete, apiGet, apiPatch, apiPost } from "./client";
+import { apiDelete, apiGet, apiPatch, apiPost, apiPut } from "./client";
 import type {
   ChatRequest,
   ChatResponse,
@@ -320,3 +320,37 @@ export const publishCapabilityPersona = (trackId: string) =>
   apiPost<{ track_id: string; published_path: string }>(`${CAP}/tracks/${encodeURIComponent(trackId)}/persona/publish`);
 export const getCapabilityWikiPage = (pageId: string) =>
   apiGet<Record<string, unknown> & { body?: string }>(`${CAP}/wiki_pages/${encodeURIComponent(pageId)}`);
+
+// ── 进化提案（Tab10） ───────────────────────────────────────────
+import type { CronJob, CronJobWorkspace, EvolutionProposalItem, GatingHistoryResponse } from "./types";
+
+export const listEvolutionProposals = () => apiGet<{ items: EvolutionProposalItem[]; count: number }>("/evolution/proposals");
+export const getEvolutionProposalDiff = (branch: string) =>
+  apiGet<{ branch: string; base: string; diff: string }>(`/evolution/proposals/${encodeURIComponent(branch)}/diff`);
+export const mergeEvolutionProposal = (branch: string, force = false) =>
+  apiPost<{ ok?: boolean; branch: string; merged_into?: string; commit?: string; risk?: string }>(
+    `/evolution/proposals/${encodeURIComponent(branch)}/merge`,
+    { force }
+  );
+export const getEvolutionFeedbackLoopSummary = () => apiGet<Record<string, unknown>>("/evolution/feedback_loop_summary");
+
+// ── Cron 任务（Tab11） ──────────────────────────────────────────
+export const listCronJobs = () => apiGet<{ jobs: CronJob[]; note?: string }>("/cron/jobs");
+export const createCronJob = (body: { name: string; schedule: string; task_template: string; description?: string; priority?: number }) =>
+  apiPost<{ job: CronJob }>("/cron/jobs", body);
+export const updateCronJob = (jobId: string, body: { enabled?: boolean; schedule?: string; priority?: number }) =>
+  apiPut<{ job: CronJob }>(`/cron/jobs/${encodeURIComponent(jobId)}`, body);
+export const deleteCronJob = (jobId: string) => apiDelete<{ deleted?: boolean; job_id?: string }>(`/cron/jobs/${encodeURIComponent(jobId)}`);
+export const runCronJobNow = (jobId: string) => apiPost<{ triggered?: boolean }>(`/cron/jobs/${encodeURIComponent(jobId)}/run`);
+export const addCronJobFeedback = (jobId: string, text: string) =>
+  apiPost<{ job: CronJob | null }>(`/cron/jobs/${encodeURIComponent(jobId)}/feedback`, { text });
+export const getCronJobWorkspace = (jobId: string) => apiGet<CronJobWorkspace>(`/cron/jobs/${encodeURIComponent(jobId)}/workspace`);
+export const getCronJobPrompt = (jobId: string) => apiGet<{ job_id: string; prompt: string }>(`/cron/jobs/${encodeURIComponent(jobId)}/prompt`);
+export const updateCronJobPrompt = (jobId: string, prompt: string) =>
+  apiPut<{ job_id: string; prompt: string }>(`/cron/jobs/${encodeURIComponent(jobId)}/prompt`, { prompt });
+export const getCronJobRunEvents = (jobId: string, runId: string) =>
+  apiGet<{ job_id: string; run_id: string; events: unknown[] }>(`/cron/jobs/${encodeURIComponent(jobId)}/runs/${encodeURIComponent(runId)}`);
+export const resetCronJobWorkspace = (jobId: string) => apiPost<Record<string, unknown>>(`/cron/jobs/${encodeURIComponent(jobId)}/reset`);
+
+// ── 全局日程（Tab12） ────────────────────────────────────────────
+export const getGatingHistory = (limit = 50) => apiGet<GatingHistoryResponse>("/autonomous/gating_history", { limit });

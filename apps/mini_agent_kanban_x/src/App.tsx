@@ -8,6 +8,9 @@ import Goals from "./pages/Goals";
 import Workflows from "./pages/Workflows";
 import GrowthAdvisor from "./pages/GrowthAdvisor";
 import CapabilityLearning from "./pages/CapabilityLearning";
+import EvolutionProposals from "./pages/EvolutionProposals";
+import CronJobs from "./pages/CronJobs";
+import GlobalSchedule from "./pages/GlobalSchedule";
 import Files from "./pages/Files";
 import Artifacts from "./pages/Artifacts";
 import SelfStatus from "./pages/SelfStatus";
@@ -39,6 +42,9 @@ export default function App() {
         <Route path="workflows" element={<Workflows />} />
         <Route path="growth" element={<GrowthAdvisor />} />
         <Route path="capability" element={<CapabilityLearning />} />
+        <Route path="evolution" element={<EvolutionProposals />} />
+        <Route path="cron" element={<CronJobs />} />
+        <Route path="schedule" element={<GlobalSchedule />} />
         <Route path="files" element={<Files />} />
         <Route path="artifacts" element={<Artifacts />} />
         <Route path="self" element={<SelfStatus />} />

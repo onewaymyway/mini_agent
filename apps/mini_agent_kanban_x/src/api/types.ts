@@ -321,3 +321,47 @@ export interface CapabilityLedgerEntry {
   summary?: string;
   [key: string]: unknown;
 }
+
+// ── 进化提案（Evolution Proposals，Tab10） ─────────────────────────
+export interface EvolutionProposalItem {
+  branch: string;
+  risk?: string;
+  reasons?: string[];
+  [key: string]: unknown;
+}
+
+// ── Cron 任务（Tab11） ──────────────────────────────────────────
+export interface CronJob {
+  id: string;
+  name?: string;
+  schedule?: string;
+  task_template?: string;
+  description?: string;
+  enabled?: boolean;
+  priority?: number;
+  is_system?: boolean;
+  last_run_at?: string;
+  next_run_at?: string;
+  next_run_str?: string;
+  run_count?: number;
+  consecutive_skip_count?: number;
+  execution_phase?: string;
+  [key: string]: unknown;
+}
+
+export interface CronJobWorkspace {
+  job_id: string;
+  state: Record<string, unknown>;
+  config: Record<string, unknown>;
+  is_running: boolean;
+  recent_runs: unknown[];
+  recent_runs_summary: unknown[];
+  [key: string]: unknown;
+}
+
+// ── 全局日程（Tab12） ────────────────────────────────────────────
+export interface GatingHistoryResponse {
+  history: { at?: string; state?: string; [key: string]: unknown }[];
+  ratio_summary?: unknown;
+  [key: string]: unknown;
+}

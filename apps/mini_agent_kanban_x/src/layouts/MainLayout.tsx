@@ -15,6 +15,9 @@ import {
   ApartmentOutlined,
   RiseOutlined,
   ReadOutlined,
+  ExperimentOutlined,
+  ClockCircleOutlined,
+  CalendarOutlined,
 } from "@ant-design/icons";
 import { useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -33,6 +36,9 @@ const items = [
   { key: "/workflows", icon: <ApartmentOutlined />, label: <Link to="/workflows">工作流</Link> },
   { key: "/growth", icon: <RiseOutlined />, label: <Link to="/growth">成长顾问</Link> },
   { key: "/capability", icon: <ReadOutlined />, label: <Link to="/capability">能力学习</Link> },
+  { key: "/evolution", icon: <ExperimentOutlined />, label: <Link to="/evolution">进化提案</Link> },
+  { key: "/cron", icon: <ClockCircleOutlined />, label: <Link to="/cron">Cron 任务</Link> },
+  { key: "/schedule", icon: <CalendarOutlined />, label: <Link to="/schedule">全局日程</Link> },
   { key: "/files", icon: <FolderOutlined />, label: <Link to="/files">文件</Link> },
   { key: "/artifacts", icon: <PictureOutlined />, label: <Link to="/artifacts">产出物</Link> },
   { key: "/self", icon: <BulbOutlined />, label: <Link to="/self">自我状态</Link> },
