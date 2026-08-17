@@ -203,3 +203,120 @@ export const provideWorkflowInput = (runId: string, text: string) =>
   apiPost<Record<string, unknown>>(`/workflow_runs/${encodeURIComponent(runId)}/input`, { text });
 export const overrideWorkflowStepOutput = (runId: string, stepId: string, output: string) =>
   apiPost<Record<string, unknown>>(`/workflow_runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepId)}/override`, { output });
+
+// ── 成长顾问（Tab8） ────────────────────────────────────────────
+import type {
+  CapabilityLedgerEntry,
+  CapabilityOutlineSuggestion,
+  CapabilityPersona,
+  CapabilityQuestion,
+  CapabilityTrack,
+  GrowthAlignResponse,
+  GrowthCandidate,
+  GrowthFollowup,
+  GrowthPursuit,
+  GrowthSummaryResponse,
+} from "./types";
+
+export const getGrowthSummary = () => apiGet<GrowthSummaryResponse>("/growth/summary");
+export const ackGrowthFirstTouch = () => apiPost<{ ok?: boolean }>("/growth/first_touch_ack");
+export const runGrowthScan = () => apiPost<Record<string, unknown>>("/growth/scan");
+export const growthCandidateAction = (candidateId: string, action: "accept" | "dismiss", reason?: string) =>
+  apiPost<{ ok?: boolean; candidate: GrowthCandidate; pursuit?: unknown }>(
+    `/growth/candidates/${encodeURIComponent(candidateId)}/${action}`,
+    action === "dismiss" ? { reason } : undefined
+  );
+export const getGrowthFollowups = () => apiGet<{ followups: GrowthFollowup[] }>("/growth/followups");
+export const recordGrowthFollowup = (candidateId: string, outcome: "progressed" | "stalled") =>
+  apiPost<{ ok?: boolean; candidate: GrowthCandidate }>(
+    `/growth/followups/${encodeURIComponent(candidateId)}/${outcome}`
+  );
+export const addGrowthKeyword = (topic: string, keywords: string) =>
+  apiPost<{ ok?: boolean }>("/growth/keywords", { topic, keywords });
+export const confirmGrowthKeyword = (topic: string) =>
+  apiPost<{ ok?: boolean; changed?: boolean }>(`/growth/keywords/${encodeURIComponent(topic)}/confirm`);
+export const removeGrowthKeyword = (topic: string) =>
+  apiPost<{ ok?: boolean; changed?: boolean }>(`/growth/keywords/${encodeURIComponent(topic)}/remove`);
+export const restoreGrowthKeyword = (topic: string) =>
+  apiPost<{ ok?: boolean; changed?: boolean }>(`/growth/keywords/${encodeURIComponent(topic)}/restore`);
+export const getGrowthReportsRefreshCandidates = () =>
+  apiGet<{ refresh_candidates: unknown[] }>("/growth/reports/refresh_candidates");
+export const getGrowthPursuits = () => apiGet<{ pursuits: GrowthPursuit[] }>("/growth/pursuits");
+export const getGrowthPursuitsPortfolioSummary = () => apiGet<Record<string, unknown>>("/growth/pursuits/portfolio_summary");
+export const getGrowthPursuitsRelatedDirections = () => apiGet<{ relations: unknown[] }>("/growth/pursuits/related_directions");
+export const viewGrowthPursuitMaterial = (goalId: string) =>
+  apiPost<Record<string, unknown>>(`/growth/pursuits/${encodeURIComponent(goalId)}/view_material`);
+export const getGrowthAlign = () => apiGet<GrowthAlignResponse>("/growth/align");
+export const growthAlignAdoptAll = () => apiPost<Record<string, unknown>>("/growth/align/adopt_all");
+export const growthAlignConfirmMatch = (topic: string, goalId: string) =>
+  apiPost<Record<string, unknown>>("/growth/align/confirm_match", { topic, goal_id: goalId });
+export const getGrowthCandidateTimeline = (candidateId: string) =>
+  apiGet<{ topic: string; events: unknown[] }>(`/growth/candidates/${encodeURIComponent(candidateId)}/timeline`);
+export const refreshGrowthCandidateReport = (candidateId: string) =>
+  apiPost<{ ok?: boolean; report: unknown }>(`/growth/candidates/${encodeURIComponent(candidateId)}/report/refresh`);
+export const adoptGrowthCandidateGoal = (candidateId: string) =>
+  apiPost<{ ok?: boolean; goal: unknown }>(`/growth/candidates/${encodeURIComponent(candidateId)}/adopt_goal`);
+export const getGrowthReportBody = (reportId: string) =>
+  apiGet<Record<string, unknown> & { body: string }>(`/growth/reports/${encodeURIComponent(reportId)}`);
+export const generateGrowthMaterial = (candidateId: string) =>
+  apiPost<{ ok?: boolean; material: unknown }>(`/growth/candidates/${encodeURIComponent(candidateId)}/material/generate`);
+export const getGrowthMaterialBody = (materialId: string) =>
+  apiGet<Record<string, unknown> & { body: string }>(`/growth/materials/${encodeURIComponent(materialId)}`);
+
+// ── 能力学习 / 人设养成（Tab9） ───────────────────────────────────
+const CAP = "/capability";
+export const listCapabilityTracks = (status?: string) =>
+  apiGet<{ tracks: CapabilityTrack[] }>(`${CAP}/tracks`, { status });
+export const createCapabilityTrack = (body: {
+  title: string;
+  persona_desc: string;
+  outline_names?: string[];
+  target_type?: string;
+  wiki_tag?: string;
+  llm_draft?: boolean;
+}) => apiPost<CapabilityTrack>(`${CAP}/tracks`, body);
+export const getCapabilityTrack = (trackId: string) => apiGet<CapabilityTrack>(`${CAP}/tracks/${encodeURIComponent(trackId)}`);
+export const updateCapabilityTrack = (
+  trackId: string,
+  body: Partial<{
+    title: string;
+    persona_desc: string;
+    outline: unknown[];
+    status: string;
+    excluded_keywords: string[];
+    cadence: string;
+  }>
+) => apiPatch<CapabilityTrack>(`${CAP}/tracks/${encodeURIComponent(trackId)}`, body);
+export const deleteCapabilityTrack = (trackId: string) =>
+  apiDelete<{ deleted?: boolean }>(`${CAP}/tracks/${encodeURIComponent(trackId)}`);
+export const getCapabilityTrackLedger = (trackId: string, limit = 50) =>
+  apiGet<{ entries: CapabilityLedgerEntry[] }>(`${CAP}/tracks/${encodeURIComponent(trackId)}/ledger`, { limit });
+
+export const listCapabilityQuestions = (status?: string, trackId?: string) =>
+  apiGet<{ questions: CapabilityQuestion[] }>(`${CAP}/questions`, { status, track_id: trackId });
+export const answerCapabilityQuestion = (questionId: string, answer: string) =>
+  apiPost<CapabilityQuestion>(`${CAP}/questions/${encodeURIComponent(questionId)}/answer`, { answer });
+export const dismissCapabilityQuestion = (questionId: string) =>
+  apiPost<{ dismissed?: boolean }>(`${CAP}/questions/${encodeURIComponent(questionId)}/dismiss`);
+
+export const listCapabilitySuggestions = (status?: string, trackId?: string) =>
+  apiGet<{ suggestions: CapabilityOutlineSuggestion[] }>(`${CAP}/suggestions`, { status, track_id: trackId });
+export const acceptCapabilitySuggestion = (suggestionId: string) =>
+  apiPost<{ accepted?: boolean; topic?: unknown }>(`${CAP}/suggestions/${encodeURIComponent(suggestionId)}/accept`);
+export const dismissCapabilitySuggestion = (suggestionId: string) =>
+  apiPost<{ dismissed?: boolean }>(`${CAP}/suggestions/${encodeURIComponent(suggestionId)}/dismiss`);
+
+export const listCapabilityPersonas = () => apiGet<{ personas: CapabilityPersona[] }>(`${CAP}/personas`);
+export const setCapabilityPersonaWikiScopes = (personaName: string, wikiScopes: string[]) =>
+  apiPost<CapabilityPersona>(`${CAP}/personas/${encodeURIComponent(personaName)}/wiki_scopes`, {
+    wiki_scopes: wikiScopes,
+  });
+
+export const draftCapabilityPersona = (trackId: string) =>
+  apiPost<{ track_id: string; draft: string; completeness: unknown }>(`${CAP}/tracks/${encodeURIComponent(trackId)}/persona/draft`);
+export const getCapabilityPersonaDraft = (trackId: string) =>
+  apiGet<{ track_id: string; draft: string; completeness: unknown }>(`${CAP}/tracks/${encodeURIComponent(trackId)}/persona/draft`);
+export const publishCapabilityPersona = (trackId: string) =>
+  apiPost<{ track_id: string; published_path: string }>(`${CAP}/tracks/${encodeURIComponent(trackId)}/persona/publish`);
+export const getCapabilityWikiPage = (pageId: string) =>
+  apiGet<Record<string, unknown> & { body?: string }>(`${CAP}/wiki_pages/${encodeURIComponent(pageId)}`);

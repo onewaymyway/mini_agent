@@ -216,3 +216,108 @@ export interface WorkflowRunDetail extends WorkflowRunSummary {
   awaiting_step_id?: string;
   [key: string]: unknown;
 }
+
+// ── 成长顾问（Growth Advisor） ─────────────────────────────────────
+export interface GrowthCandidate {
+  candidate_id: string;
+  title: string;
+  status?: string;
+  score?: number;
+  report_id?: string;
+  material_id?: string;
+  linked_goal_id?: string;
+  [key: string]: unknown;
+}
+
+export interface GrowthReportSummary {
+  report_id: string;
+  candidate_id?: string;
+  title?: string;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface GrowthSummaryResponse {
+  candidates: GrowthCandidate[];
+  reports: GrowthReportSummary[];
+  retrospective?: unknown;
+  first_touch_notice_shown?: boolean;
+  diagnostics?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface GrowthFollowup extends GrowthCandidate {
+  question_hint?: string;
+}
+
+export interface GrowthPursuit {
+  candidate_id: string;
+  title: string;
+  goal_id: string;
+  goal_title?: string;
+  recurring?: boolean;
+  cycle_count?: number;
+  schedule?: string;
+  next_run_at?: string;
+  last_run_at?: string;
+  run_count?: number;
+  cron_enabled?: boolean;
+  saturation?: unknown;
+  pending_digest?: unknown[];
+  engagement?: unknown;
+  pursuit_style?: string;
+  [key: string]: unknown;
+}
+
+export interface GrowthAlignResponse {
+  unmatched_interests?: unknown[];
+  llm_suggested_matches?: { topic: string; goal_id?: string; [key: string]: unknown }[];
+  [key: string]: unknown;
+}
+
+// ── 能力学习 / 人设养成（Capability Learning） ──────────────────────
+export interface CapabilityTrack {
+  track_id: string;
+  title: string;
+  persona_desc?: string;
+  status?: string;
+  target_type?: string;
+  wiki_tag?: string;
+  outline?: { name: string; [key: string]: unknown }[];
+  excluded_keywords?: string[];
+  cadence?: string;
+  [key: string]: unknown;
+}
+
+export interface CapabilityQuestion {
+  question_id: string;
+  track_id?: string;
+  status?: string;
+  question?: string;
+  answer?: string;
+  [key: string]: unknown;
+}
+
+export interface CapabilityOutlineSuggestion {
+  suggestion_id: string;
+  track_id?: string;
+  status?: string;
+  topic?: string;
+  reason?: string;
+  [key: string]: unknown;
+}
+
+export interface CapabilityPersona {
+  name: string;
+  display_name?: string;
+  wiki_scopes: string[];
+  source_path?: string | null;
+}
+
+export interface CapabilityLedgerEntry {
+  entry_id?: string;
+  track_id?: string;
+  created_at?: string;
+  summary?: string;
+  [key: string]: unknown;
+}
