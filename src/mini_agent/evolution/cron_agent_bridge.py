@@ -20,7 +20,9 @@ evolution/cron_agent_bridge.py — 为 cron 任务构建专用 Agent 实例
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from typing import Callable, Optional, TYPE_CHECKING
 
 from mini_agent.config import AppConfig, load_config
@@ -110,6 +112,66 @@ def build_cron_agent(
     )
 
 
+_TOOL_RESULT_BLOCK_RE = re.compile(r"<tool_result>\s*(.*?)\s*</tool_result>", re.DOTALL)
+
+
+def _extract_tool_calls_from_history(new_entries: list[dict]) -> list[dict]:
+    """[cron_run_debug_detail_improvement_plan.md ①] 从 agent._hist 里本步
+    新增的一段 history 条目中提取工具调用轨迹，组装成
+    `{"name": ..., "input": ..., "output": ...}` 三元组列表。
+
+    这些信息本来就存在于 history 里（agent.run_turn() 内部已经把
+    assistant 回复的 tool_use content block 和工具结果回注都写了进去），
+    这里只是纯读取 + 按出现顺序配对，不修改 history、不影响主流程。
+
+    配对依据：assistant_reply 条目里按顺序出现的 tool_use block 先进
+    "待配对"队列；随后出现的 tool_result 条目里，<tool_result>...
+    </tool_result> 包裹的 JSON 块也按顺序解析——顺序保证见
+    history_manager.append_tool_results() 内部 zip(tool_calls, results)
+    的写入方式，两边天然一一对应。
+
+    任何单条解析失败都静默跳过（防御性处理，调试功能本身不能拖垮 cron
+    执行）；整体异常兜底返回已提取的部分结果。
+    """
+    tool_calls: list[dict] = []
+    pending: list[dict] = []
+    try:
+        for entry in new_entries:
+            entry_type = str(entry.get("_type") or "")
+            if entry_type == "assistant_reply":
+                content = entry.get("content")
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_use":
+                        pending.append({
+                            "name": block.get("name"),
+                            "input": block.get("input"),
+                        })
+            elif entry_type == "tool_result":
+                content = entry.get("content")
+                if not isinstance(content, str):
+                    continue
+                for match in _TOOL_RESULT_BLOCK_RE.finditer(content):
+                    try:
+                        parsed = json.loads(match.group(1))
+                    except Exception:  # noqa: BLE001 — 单条解析失败跳过，不影响其它
+                        continue
+                    call = pending.pop(0) if pending else {
+                        "name": parsed.get("name"), "input": None,
+                    }
+                    tool_calls.append({
+                        "name": call.get("name"),
+                        "input": call.get("input"),
+                        "output": parsed.get("output"),
+                    })
+    except Exception:  # noqa: BLE001 — 调试信息提取失败不能影响 cron 主流程
+        pass
+    return tool_calls
+
+
 def make_submit_step_fn(agent: Agent) -> Callable[[str], StepResult]:
     """
     把一个已构建好的 Agent 包装成 CronJobExecutor.run_job() 需要的
@@ -125,21 +187,38 @@ def make_submit_step_fn(agent: Agent) -> Callable[[str], StepResult]:
          若是被内层预算打断的，判定为未完成，继续下一步。
     """
     def _submit(prompt_text: str) -> StepResult:
+        # [cron_run_debug_detail_improvement_plan.md ①] 调用前记下 history
+        # 长度，调用后只对本步新增的一段做工具调用提取——不需要改
+        # Agent 核心执行逻辑，纯读 agent._hist。history 属性不存在（极端
+        # 情况下的替身/mock agent）时静默跳过，不影响主流程。
+        hist = getattr(agent, "_hist", None)
+        before_len = len(hist.history) if hist is not None else 0
+
         try:
             text = agent.run_turn(prompt_text)
         except Exception as e:  # noqa: BLE001 — 交给 CronJobExecutor 统一记录/降级
             return StepResult(text="", done=False, error=str(e))
 
+        tool_calls: list[dict] = []
+        if hist is not None:
+            try:
+                tool_calls = _extract_tool_calls_from_history(hist.history[before_len:])
+            except Exception:  # noqa: BLE001 — 提取失败不能影响本步正常返回
+                tool_calls = []
+
         stripped = (text or "").strip()
         if "[CRON_DONE]" in stripped:
-            return StepResult(text=stripped, done=True)
+            return StepResult(text=stripped, done=True, tool_calls=tool_calls)
         if "[CRON_CONTINUE]" in stripped:
-            return StepResult(text=stripped, done=False)
+            return StepResult(text=stripped, done=False, tool_calls=tool_calls)
 
         hit_budget = bool(getattr(agent, "_last_turn_hit_max_turns", False))
-        return StepResult(text=stripped, done=(not hit_budget))
+        return StepResult(text=stripped, done=(not hit_budget), tool_calls=tool_calls)
 
     return _submit
 
 
-__all__ = ["build_cron_agent", "make_submit_step_fn", "CRON_INNER_MAX_TURNS_DEFAULT"]
+__all__ = [
+    "build_cron_agent", "make_submit_step_fn", "CRON_INNER_MAX_TURNS_DEFAULT",
+    "_extract_tool_calls_from_history",
+]

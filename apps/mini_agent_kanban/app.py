@@ -6908,6 +6908,87 @@ _CRON_PHASE_LABEL = {
 }
 
 
+_CRON_RUN_EVENT_TITLE = {
+    "run_started": "▶️ 开始执行",
+    "timed_out": "⏱️ 超时终止",
+    "max_steps_reached": "🚫 达到步数上限",
+    "stuck_recover": "🔁 卡死检测：尝试恢复",
+    "stuck_give_up": "🛑 卡死检测：放弃（需人工介入）",
+    "step_error": "❌ 单步执行异常",
+    "run_finished": "🏁 执行结束",
+}
+
+
+def _render_cron_run_timeline(events: list[dict]) -> None:
+    """[cron_run_debug_detail_improvement_plan.md ③] 把 runs/<run_id>.jsonl
+    原始事件列表渲染成可读时间线，替换掉原来的 `st.json(events)` 原始
+    转储——调试时不用再从几百个 tool_use/tool_result 混杂的 JSON 里
+    自己肉眼找。
+
+    纯展示层改动：只读事件字段，新字段（`full_text`/`tool_calls`）缺失
+    时（旧数据，只有 `text_preview`）对应区块显示为空，不报错，保持向
+    后兼容。
+    """
+    if not events:
+        st.caption("（本次执行没有记录到任何事件）")
+        return
+
+    for ev in events:
+        ev_type = ev.get("type", "")
+        step_index = ev.get("step_index")
+        title = _CRON_RUN_EVENT_TITLE.get(ev_type, ev_type or "（未知事件）")
+        step_note = f" · 第 {step_index} 步" if isinstance(step_index, int) else ""
+
+        if ev_type == "run_started":
+            st.markdown(f"**{title}**")
+            st.caption(
+                f"任务：{ev.get('job_name', '?')}　·　"
+                f"超时上限 {ev.get('timeout_seconds', '?')}s　·　"
+                f"最大步数 {ev.get('max_steps', '?')}"
+            )
+        elif ev_type == "step":
+            st.markdown(f"**{title}{step_note}**")
+            full_text = ev.get("full_text") or ev.get("text_preview") or ""
+            if full_text:
+                truncated = len(full_text) >= STEP_FULL_TEXT_MAX_CHARS_UI
+                with st.expander("完整输出" + ("（已截断）" if truncated else ""), expanded=False):
+                    st.markdown(full_text)
+            tool_calls = ev.get("tool_calls") or []
+            if tool_calls:
+                st.caption(f"🔧 本步工具调用 {len(tool_calls)} 次")
+                for i, tc in enumerate(tool_calls):
+                    with st.expander(f"🔧 {tc.get('name', '?')} · 第 {i + 1} 次调用", expanded=False):
+                        st.markdown("**input**")
+                        st.code(str(tc.get("input", "")), language="json")
+                        st.markdown("**output**")
+                        st.code(str(tc.get("output", "")), language="text")
+            if ev.get("error"):
+                st.error(ev["error"])
+        elif ev_type in ("stuck_recover", "stuck_give_up", "timed_out", "max_steps_reached"):
+            st.markdown(f"**{title}{step_note}**")
+        elif ev_type == "step_error":
+            st.markdown(f"**{title}{step_note}**")
+            if ev.get("error"):
+                st.error(ev["error"])
+        elif ev_type == "run_finished":
+            dur = ev.get("duration_seconds")
+            dur_note = f"，耗时 {dur:.1f}s" if isinstance(dur, (int, float)) else ""
+            st.markdown(
+                f"**{title}** · 状态 `{ev.get('status', '?')}` · "
+                f"共 {ev.get('steps_executed', '?')} 步{dur_note}"
+            )
+        else:
+            # 未识别的事件类型：不丢数据，原样兜底展示。
+            st.markdown(f"**{title}{step_note}**")
+            st.json(ev, expanded=False)
+        st.divider()
+
+
+# 与 cron_job_executor.STEP_FULL_TEXT_MAX_CHARS 保持一致，仅用于展示层判断
+# "是否可能被截断"的提示文案，不参与截断本身（截断发生在写事件时）。
+STEP_FULL_TEXT_MAX_CHARS_UI = 8000
+
+
 def render_cron_jobs_tab(client: AgentClient):
     """展示每个 cron job 的调度信息（来自 /cron/jobs）+ 专属执行状态
     （来自 /cron/jobs/{id}/workspace，对应 evolution/cron_job_workspace.py
@@ -7075,7 +7156,7 @@ def render_cron_jobs_tab(client: AgentClient):
                                     if events_resp and "_error" in events_resp:
                                         st.error(f"获取执行事件失败：{events_resp['_error']}")
                                     else:
-                                        st.json((events_resp or {}).get("events") or [], expanded=False)
+                                        _render_cron_run_timeline((events_resp or {}).get("events") or [])
                                 st.divider()
                 elif recent_runs:
                     with st.expander(f"🗒️ 最近执行记录（{len(recent_runs)} 条）"):
@@ -7085,7 +7166,7 @@ def render_cron_jobs_tab(client: AgentClient):
                                 if events_resp and "_error" in events_resp:
                                     st.error(f"获取执行事件失败：{events_resp['_error']}")
                                 else:
-                                    st.json((events_resp or {}).get("events") or [], expanded=False)
+                                    _render_cron_run_timeline((events_resp or {}).get("events") or [])
 
                 with st.expander("✏️ 编辑任务 Prompt"):
                     prompt_resp = client.cron_job_prompt(job_id)

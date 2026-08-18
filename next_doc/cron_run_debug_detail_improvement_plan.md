@@ -102,9 +102,33 @@ history 做一次提取：
 
 | 内容 | 状态 | 涉及文件 |
 | --- | --- | --- |
-| `StepResult` 新增 `tool_calls`/`full_text` 字段 | 待实施 | `src/mini_agent/evolution/cron_job_executor.py` |
-| `make_submit_step_fn()` 从 `agent._hist` 提取工具调用轨迹 | 待实施 | `src/mini_agent/evolution/cron_agent_bridge.py` |
-| `run_job()` 把新字段写进 `step` 事件 | 待实施 | `src/mini_agent/evolution/cron_job_executor.py` |
-| 看板可读时间线视图，替换 `st.json()` 原始转储 | 待实施 | `apps/mini_agent_kanban/app.py` |
-| 单元测试 | 待实施 | 新增测试文件 |
-| 文档同步 | 待实施 | 本文件「实施状态」表格 |
+| `StepResult` 新增 `tool_calls` 字段 | ✅ 已实施 | `src/mini_agent/evolution/cron_job_executor.py` |
+| `make_submit_step_fn()` 从 `agent._hist` 提取工具调用轨迹 | ✅ 已实施 | `src/mini_agent/evolution/cron_agent_bridge.py` |
+| `run_job()` 把 `full_text`/`tool_calls`（各自加截断上限）写进 `step` 事件 | ✅ 已实施 | `src/mini_agent/evolution/cron_job_executor.py` |
+| 看板可读时间线视图，替换 `st.json()` 原始转储 | ✅ 已实施 | `apps/mini_agent_kanban/app.py` |
+| 单元测试（提取逻辑 + 截断逻辑 + `run_job()` step 事件字段） | ✅ 已实施 | `tests/test_cron_agent_bridge.py`、`tests/test_cron_job_executor_step_detail.py` |
+| 文档同步 | ✅ 已实施 | 本文件「实施状态」表格 |
+
+### 实施说明（补充设计文档未细化的落地细节）
+
+- **`_extract_tool_calls_from_history()`**：新增在 `cron_agent_bridge.py`
+  里的独立函数（未改动 Agent 核心逻辑），`make_submit_step_fn()` 内
+  `_submit()` 在 `run_turn()` 前后各记一次 `len(agent._hist.history)`，
+  只对新增片段做提取。`agent` 没有 `_hist` 属性（极端情况下的
+  替身/mock）时静默跳过，`tool_calls` 保持空列表，不影响主流程。
+- **截断在写事件时统一处理**：`cron_job_executor.py` 新增
+  `_truncate_tool_calls()`，在 `run_job()` 组装 `step` 事件的最后一刻
+  对 `tool_calls` 里每条的 `input`/`output` 做截断（非字符串 `input`
+  先 `json.dumps` 序列化再截断），单条解析失败静默跳过不影响其它记录；
+  `full_text` 同样在这里用 `STEP_FULL_TEXT_MAX_CHARS` 截断
+  `result.text`，`text_preview`（500 字）逻辑保持不变。
+- **看板时间线**：新增 `_render_cron_run_timeline()`，按事件类型
+  （`run_started`/`step`/`stuck_recover`/`stuck_give_up`/`timed_out`/
+  `max_steps_reached`/`step_error`/`run_finished`）分别渲染；`step`
+  事件里 `full_text` 用可折叠区块展示，`tool_calls` 每条一个独立
+  expander（`input`/`output` 分开展示，不是堆在一起的 JSON）；未识别
+  的事件类型兜底用 `st.json()` 展示，不丢数据。两处调用点
+  （`recent_runs_summary` 分支与旧版 `recent_runs` 回退分支）均已替换。
+- **向后兼容**：旧数据（只有 `text_preview`，没有 `full_text`/
+  `tool_calls`）打开时间线视图时，`full_text` 回退读取 `text_preview`，
+  `tool_calls` 区块因空列表不渲染，不报错。

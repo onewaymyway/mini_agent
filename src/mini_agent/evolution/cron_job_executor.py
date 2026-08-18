@@ -31,7 +31,7 @@ evolution/cron_job_executor.py — cron 任务专用执行通道
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional, TYPE_CHECKING
 
 from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal
@@ -47,12 +47,60 @@ if TYPE_CHECKING:
     from mini_agent.evolution.circuit_breaker_core import CircuitBreakerCore
 
 
+# [cron_run_debug_detail_improvement_plan.md ①②] 单步事件里"完整输出"/
+# "工具调用 input/output"各自的字符数上限。写死常量，不做配置项——跟
+# 代码库里其它同类阈值一样，先用固定值观察默认量级是否够用，避免过早
+# 引入一个可能从来不需要调的配置项。
+STEP_FULL_TEXT_MAX_CHARS = 8000
+TOOL_INPUT_MAX_CHARS = 2000
+TOOL_OUTPUT_MAX_CHARS = 3000
+
+
 @dataclass
 class StepResult:
     """submit_step_fn 每次调用的返回值。"""
     text: str                     # 本步 assistant 输出（用于卡死检测 + progress 提炼）
     done: bool = False            # 任务本身已经自然完成（不需要再续下一次触发）
     error: Optional[str] = None   # 本步执行异常信息（非 None 视为一次失败）
+    # [cron_run_debug_detail_improvement_plan.md ①] 本步的工具调用轨迹，
+    # 由 cron_agent_bridge.make_submit_step_fn() 从 agent._hist 里提取，
+    # 每条形如 {"name": str, "input": Any, "output": str}。不产出工具调用
+    # 的 submit_step_fn 实现（或提取失败时）保持默认空列表，向后兼容
+    # ——run_job() 只是原样透传，不假设一定非空。
+    tool_calls: list = field(default_factory=list)
+
+
+def _truncate_tool_calls(tool_calls: Optional[list]) -> list:
+    """[cron_run_debug_detail_improvement_plan.md ②] 写事件前对每条
+    tool_calls 的 input/output 各自截断，避免个别工具调用（整段文件
+    内容、超长搜索结果）把单条 run 事件记录撑得过大。非字符串 input
+    先序列化成字符串再截断，保证 JSONL 写入不会因为截断切断了某个
+    复杂对象的中间而破坏结构（截断只发生在最终字符串上）。防御性
+    处理：单条记录解析/序列化失败不影响其它记录，也不影响主流程。
+    """
+    if not tool_calls:
+        return []
+    out = []
+    for call in tool_calls:
+        try:
+            name = call.get("name")
+            raw_input = call.get("input")
+            if isinstance(raw_input, str):
+                input_str = raw_input
+            else:
+                import json
+                input_str = json.dumps(raw_input, ensure_ascii=False)
+            output_str = call.get("output")
+            if not isinstance(output_str, str):
+                output_str = str(output_str)
+            out.append({
+                "name": name,
+                "input": input_str[:TOOL_INPUT_MAX_CHARS],
+                "output": output_str[:TOOL_OUTPUT_MAX_CHARS],
+            })
+        except Exception:  # noqa: BLE001 — 单条工具调用记录解析失败不影响其它
+            continue
+    return out
 
 
 @dataclass
@@ -171,9 +219,14 @@ class CronJobExecutor:
 
                 step_index += 1
                 last_text = result.text or ""
+                # [cron_run_debug_detail_improvement_plan.md ②] text_preview
+                # 保留（500 字，向后兼容旧看板 UI），新增 full_text（8000 字
+                # 上限）供调试时查看完整输出，避免无差别截断到 500 字。
                 ws.append_run_event(run_id, {
                     "type": "step", "step_index": step_index,
                     "text_preview": last_text[:500],
+                    "full_text": last_text[:STEP_FULL_TEXT_MAX_CHARS],
+                    "tool_calls": _truncate_tool_calls(result.tool_calls),
                     "error": result.error,
                 })
 

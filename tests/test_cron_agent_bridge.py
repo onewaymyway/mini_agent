@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import pytest
 
-from mini_agent.evolution.cron_agent_bridge import make_submit_step_fn
+from mini_agent.evolution.cron_agent_bridge import (
+    make_submit_step_fn,
+    _extract_tool_calls_from_history,
+)
 from mini_agent.evolution.cron_job_executor import StepResult
 
 
@@ -110,3 +113,134 @@ class TestMakeSubmitStepFnPromptPassthrough:
         step_fn("first full prompt with progress")
         step_fn("继续")
         assert agent.received_prompts == ["first full prompt with progress", "继续"]
+
+
+# ── cron_run_debug_detail_improvement_plan.md ① ─────────────────────────────
+# _extract_tool_calls_from_history()：从 agent._hist 新增片段里提取工具调用
+# 轨迹的纯逻辑函数，不依赖真实 Agent/LLM，用构造好的 history 条目直接覆盖。
+
+
+def _assistant_reply_with_tool_use(name: str, tool_input: dict, text: str = "") -> dict:
+    content = []
+    if text:
+        content.append({"type": "text", "text": text})
+    content.append({"type": "tool_use", "id": "tc1", "name": name, "input": tool_input})
+    return {"role": "assistant", "content": content, "_type": "assistant_reply"}
+
+
+def _tool_result_entry(entries: list[dict]) -> dict:
+    import json as _json
+    blocks = [
+        f"<tool_result>\n{_json.dumps({'name': e['name'], 'output': e['output']}, ensure_ascii=False)}\n</tool_result>"
+        for e in entries
+    ]
+    return {"role": "user", "content": "\n\n".join(blocks), "_type": "tool_result"}
+
+
+class TestExtractToolCallsFromHistory:
+    def test_single_tool_call_pairs_correctly(self):
+        history = [
+            _assistant_reply_with_tool_use("read_file", {"path": "a.txt"}),
+            _tool_result_entry([{"name": "read_file", "output": "file contents"}]),
+        ]
+        result = _extract_tool_calls_from_history(history)
+        assert result == [
+            {"name": "read_file", "input": {"path": "a.txt"}, "output": "file contents"}
+        ]
+
+    def test_multiple_tool_calls_preserve_order(self):
+        history = [
+            _assistant_reply_with_tool_use("tool_a", {"x": 1}),
+            _tool_result_entry([{"name": "tool_a", "output": "out_a"}]),
+            _assistant_reply_with_tool_use("tool_b", {"y": 2}),
+            _tool_result_entry([{"name": "tool_b", "output": "out_b"}]),
+        ]
+        result = _extract_tool_calls_from_history(history)
+        assert [tc["name"] for tc in result] == ["tool_a", "tool_b"]
+        assert result[0]["output"] == "out_a"
+        assert result[1]["output"] == "out_b"
+
+    def test_multiple_tool_calls_in_single_turn_batch(self):
+        # 一次 assistant 回复里并行发起多个 tool_use，结果批量回注在同一条
+        # tool_result 消息里——顺序仍然靠 zip() 天然对应。
+        content = [
+            {"type": "tool_use", "id": "1", "name": "tool_a", "input": {"i": 1}},
+            {"type": "tool_use", "id": "2", "name": "tool_b", "input": {"i": 2}},
+        ]
+        history = [
+            {"role": "assistant", "content": content, "_type": "assistant_reply"},
+            _tool_result_entry([
+                {"name": "tool_a", "output": "r1"},
+                {"name": "tool_b", "output": "r2"},
+            ]),
+        ]
+        result = _extract_tool_calls_from_history(history)
+        assert result == [
+            {"name": "tool_a", "input": {"i": 1}, "output": "r1"},
+            {"name": "tool_b", "input": {"i": 2}, "output": "r2"},
+        ]
+
+    def test_no_tool_use_returns_empty_list(self):
+        history = [
+            {"role": "assistant", "content": [{"type": "text", "text": "hi"}], "_type": "assistant_reply"},
+        ]
+        assert _extract_tool_calls_from_history(history) == []
+
+    def test_empty_history_returns_empty_list(self):
+        assert _extract_tool_calls_from_history([]) == []
+
+    def test_malformed_tool_result_json_skipped_silently(self):
+        history = [
+            _assistant_reply_with_tool_use("tool_a", {"x": 1}),
+            {"role": "user", "content": "<tool_result>\nnot json\n</tool_result>", "_type": "tool_result"},
+        ]
+        # 不抛异常，损坏的记录直接跳过
+        result = _extract_tool_calls_from_history(history)
+        assert result == []
+
+    def test_non_list_content_and_unknown_types_ignored(self):
+        history = [
+            {"role": "user", "content": "plain string", "_type": "user_input"},
+            {"role": "assistant", "content": "not a list", "_type": "assistant_reply"},
+        ]
+        assert _extract_tool_calls_from_history(history) == []
+
+
+class TestMakeSubmitStepFnToolCallExtraction:
+    class _FakeHistoryManager:
+        def __init__(self, entries: list[dict]):
+            self._entries = entries
+
+        @property
+        def history(self) -> list[dict]:
+            return list(self._entries)
+
+    class _FakeAgentWithHistory:
+        def __init__(self, response_text: str, new_entries: list[dict]):
+            self._response_text = response_text
+            self._last_turn_hit_max_turns = False
+            self._hist = TestMakeSubmitStepFnToolCallExtraction._FakeHistoryManager([])
+            self._new_entries = new_entries
+
+        def run_turn(self, prompt_text: str) -> str:
+            # 模拟 run_turn() 内部往 history 里追加了本步产生的条目
+            self._hist._entries.extend(self._new_entries)
+            return self._response_text
+
+    def test_step_result_carries_extracted_tool_calls(self):
+        new_entries = [
+            _assistant_reply_with_tool_use("search", {"q": "foo"}),
+            _tool_result_entry([{"name": "search", "output": "found it"}]),
+        ]
+        agent = self._FakeAgentWithHistory("done.\n[CRON_DONE]", new_entries)
+        step_fn = make_submit_step_fn(agent)
+        result = step_fn("go")
+        assert result.tool_calls == [
+            {"name": "search", "input": {"q": "foo"}, "output": "found it"}
+        ]
+
+    def test_agent_without_hist_attribute_defaults_to_empty_tool_calls(self):
+        agent = _FakeAgent(response_text="[CRON_DONE]")
+        step_fn = make_submit_step_fn(agent)
+        result = step_fn("go")
+        assert result.tool_calls == []
