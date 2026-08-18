@@ -30,6 +30,7 @@ objective_executor.py（子 Objective 收尾时落 manifest，recurring/一次�
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
@@ -132,6 +133,64 @@ OUTPUT_RESERVED_NAMES = ("README.md", "_misc", "_archive", "scripts")
 SCRIPTS_RESERVED_NAMES = (
     "README.md", "requirements.txt", "CHANGELOG.md", "lib", "_run_logs", "_experiments",
 )
+
+
+def has_legacy_cycle_dirs(paths: "AgentPaths", goal_id: str) -> bool:
+    """[迁移设计] 判断这个 Goal 名下是否存在旧模型（每轮一个新目录
+    `cycle_NNNN/`）遗留下来的历史目录——用于判断"切到新的固定四目录模型
+    （output/notes/spec/scratch）时，是否需要生成一份迁移摘要"，避免旧
+    模型下积累的执行历史被无声丢弃。只看目录是否存在，不检查内容。"""
+    base = goal_output_base_dir(paths, goal_id)
+    if not base.is_dir():
+        return False
+    return any(p.is_dir() and p.name.startswith("cycle_") for p in base.iterdir())
+
+
+def build_legacy_migration_summary(paths: "AgentPaths", goal_id: str, *, max_cycles: int = 5) -> Optional[str]:
+    """[迁移设计] 读旧模型下最近 `max_cycles` 轮 `cycle_NNNN/manifest.json`，
+    拼一段中文摘要，供调用方写进新模型第一篇 `notes/cycle_0000.md`（约定
+    用 0 号占位，不与真实轮次编号冲突），让新模型下的执行上下文不会凭空
+    丢失旧模型积累的历史。目录存在但没有任何可读 `manifest.json`（比如
+    从未真正跑完过一轮）时返回 `None`，调用方据此跳过写入。
+    """
+    base = goal_output_base_dir(paths, goal_id)
+    if not base.is_dir():
+        return None
+    all_cycle_dirs = sorted(
+        (p for p in base.iterdir() if p.is_dir() and p.name.startswith("cycle_")),
+        key=lambda p: p.name,
+    )
+    if not all_cycle_dirs:
+        return None
+    recent = all_cycle_dirs[-max_cycles:]
+
+    lines = [
+        "（自动生成的迁移说明）检测到这个 Goal 此前使用旧的"
+        f"“每轮一个新目录” 模型运行过（共 {len(all_cycle_dirs)} 轮遗留目录），"
+        "现已切换到新的固定四目录模型（output/notes/spec/scratch 跨轮共用）。"
+        "以下是旧模型下最近几轮的产出摘要，仅供参考，不代表本轮起点：",
+        "",
+    ]
+    any_manifest = False
+    for d in recent:
+        manifest_path = d / "manifest.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        any_manifest = True
+        note = (data.get("progress_note") or "").strip() or "（无记录）"
+        lines.append(f"- {d.name}：{note}")
+    if not any_manifest:
+        return None
+    lines.append("")
+    lines.append(
+        "旧模型下的历史目录本身**不会被自动删除或搬迁**，需要的话可以自行去"
+        f"`{base}` 下查看，本条说明只是把关键摘要带进新模型，避免上下文丢失。"
+    )
+    return "\n".join(lines)
 
 
 def goal_output_dir(paths: "AgentPaths", goal_id: str) -> Path:
@@ -383,6 +442,49 @@ def archive_old_notes(paths: "AgentPaths", goal_id: str, keep_recent: int = 10) 
         except OSError:
             continue
     return moved
+
+
+_OUTPUT_HINT_KEYWORDS = (
+    "写入", "输出到", "保存到", "存放在", "存到", "放到", "保存至", "写到",
+    "output to", "save to", "write to",
+)
+# 粗略匹配"看起来像相对/子路径"的片段（含斜杠，允许中英文、数字、常见文件名
+# 符号），只用于从关键词附近截取一段可读文字展示给 agent，不追求精确解析。
+_PATH_LIKE_RE = re.compile(r"[./]?[\w\u4e00-\u9fff.\-]+/[\w\u4e00-\u9fff./\-]*")
+
+
+def detect_user_specified_output_hint(description: str) -> list[str]:
+    """[迁移设计] 粗略检测 Goal `description` 里是否包含用户自己写的"产出该
+    放哪里"之类的路径提示（比如"把周报写入 reports/weekly.md"），返回匹配到
+    的路径片段列表（去重、保序，可能为空）。
+
+    用于新的固定四目录模型下判断是否需要额外提醒 agent："output/ 是唯一
+    正式产出目录，你描述里提到的这个路径如果不是 output/ 内部的相对子路径，
+    请改用 output/ 下对应位置"——避免用户在创建 Goal 时按旧习惯手写的路径
+    和新模型的强约束互相打架，同时不强行改写用户原始 description（保留
+    完整原文，只是额外拼一段说明）。
+
+    纯字符串/正则匹配，不做语义理解，存在漏检/误检都是预期内的（只是软性
+    提醒，不拦截、不修改用户的原始描述）。
+    """
+    if not description:
+        return []
+    hits: list[str] = []
+    for kw in _OUTPUT_HINT_KEYWORDS:
+        idx = description.find(kw)
+        if idx == -1:
+            continue
+        tail = description[idx: idx + 80]
+        m = _PATH_LIKE_RE.search(tail)
+        if m:
+            hits.append(m.group(0).strip().rstrip("。，,.:："))
+    seen: set = set()
+    out: list[str] = []
+    for h in hits:
+        if h and h not in seen:
+            seen.add(h)
+            out.append(h)
+    return out
 
 
 def scratch_is_empty(paths: "AgentPaths", goal_id: str) -> bool:
@@ -655,4 +757,7 @@ __all__ = [
     "scratch_is_empty",
     "check_scripts_requirements_consistency",
     "detect_experiments_promotion_candidates",
+    "has_legacy_cycle_dirs",
+    "build_legacy_migration_summary",
+    "detect_user_specified_output_hint",
 ]

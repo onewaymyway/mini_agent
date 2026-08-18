@@ -345,6 +345,7 @@ output/scripts/
 > - ✅ Stage 4：converge 自动生成 spec 草稿 —— 已完成
 > - ✅ Stage 5：`output/scripts/` 专项规范落地 —— 已完成
 > - ✅ Stage 6：文档全面同步 —— 已完成
+> - ✅ Stage 7：用户自定义输出路径提示 + 旧模型迁移摘要 —— 已完成
 
 1. `output_workspace.py` 目录模型改造（`output/`/`notes/`/`spec/`/
    `scratch/` 四件套 + `output/` 内部固定骨架分配函数）+ 对应单测——这是
@@ -675,3 +676,55 @@ cycle_NNNN.md` 承载同等信息），两者是否已经出现脱节、诊断�
 下具体如何取数，需要专门追查 `goal_cycle_diagnostics.py` 的实现后才能
 确认要不要改文档或改代码，超出本方案（新目录模型 + 执行阶段重设计）范围，
 记录在此留给后续排查，不在本次 Stage 6 顺带处理。
+
+### Stage 7（已完成）：用户自定义输出路径 + 旧模型迁移
+
+用户提出两个此前方案未覆盖的场景：Goal 描述里用户自己指定了输出目录该
+怎么处理；已经在旧模型（每轮一个 `cycle_NNNN/` 目录）下跑过若干轮的既有
+Goal，切到新模型时历史会不会无声丢失。两者都在 Stage 3 已经上线的
+`_append_output_workspace_context()` 里补齐，不引入新的触发入口。
+
+**用户自定义输出路径提示**：新增
+`output_workspace.detect_user_specified_output_hint(description) ->
+list[str]`，用一组中英文关键词（"写入"/"输出到"/"保存到"/"save to"/
+"write to" 等）+ 一个粗略的"路径样式"正则，从 `description` 里抠出用户
+手写的路径片段（去重保序）。**不修改用户原始 description**，只是命中时
+在 `_append_output_workspace_context()` 拼出的 prompt 里额外加一段说明：
+新模型下 `output/` 是唯一正式产出目录，用户写的路径如果本意是 `output/`
+内部的业务子目录就继续沿用，如果是 `output/` 之外的路径就请 agent 改用
+`output/` 内对应位置——纯软性提醒，不拦截、不覆盖执行，命中率取决于用户
+描述的措辞，允许漏检/误检。
+
+**旧模型迁移摘要**：新增两个函数——`has_legacy_cycle_dirs(paths,
+goal_id)` 判断这个 Goal 名下是否存在旧模型遗留的 `cycle_NNNN/` 目录；
+`build_legacy_migration_summary(paths, goal_id, max_cycles=5)` 读最近
+几个 `cycle_NNNN/manifest.json`，拼一段"旧模型下最近几轮做了什么"的中文
+摘要（没有任何可读 manifest 时返回 `None`）。`_append_output_workspace_
+context()` 在调用 `ensure_output_skeleton()` **之前**先判断 `output/`
+目录是否已存在（`is_first_time_new_layout`）——只有"这个 Goal 第一次
+切到新模型"这一轮才会触发迁移摘要生成，写进 `notes/cycle_0000.md`（用
+0 号占位，不与真实轮次编号 `cycle_0001` 起冲突），随后 `read_recent_
+notes()` 会像读取任何一篇正常总结笔记一样把它带进最近几轮的 prompt
+里，agent 不需要额外逻辑就能看到这份迁移上下文。旧模型下的
+`cycle_NNNN/` 目录本身**不会被自动删除或搬迁**，摘要文本里也明确注明
+"需要的话可以去 base 目录下自己看"。两个判断/生成步骤都单独包一层
+`try/except`，任何异常静默跳过，不影响触发主流程；`is_first_time_new_
+layout` 这个判断本身是幂等的天然产物——`output/` 一旦被创建就会一直
+存在，所以"迁移摘要只在第一轮生成一次"不需要额外持久化标记位。
+
+测试：新增 `tests/test_output_workspace_migration_and_hints.py`
+（13 个用例），覆盖 `detect_user_specified_output_hint()` 的关键词命中/
+不命中/去重、`has_legacy_cycle_dirs()`/`build_legacy_migration_summary()`
+的"无历史目录"/"有目录无 manifest"/"有 manifest 正确拼摘要"，以及接入
+`_append_output_workspace_context()` 后的端到端效果：第一次调用生成
+`cycle_0000.md`、没有旧目录时不生成、第二次调用不重复覆盖（用 mtime
+比对确认）、description 含路径提示时 prompt 里出现对应说明、不含提示时
+不出现多余章节。
+
+文档同步：`docs/goal-output-directory-guide.md` 新增"用户自定义输出路径"
+和"从旧模型迁移"两节（见下方文档改动）。
+
+尚未做的事：如果用户想要的是"完全脱离 `output/` 的绝对自定义目录"（而不
+是 `output/` 内部子目录组织方式的调整），目前的实现只能提醒、不能真正
+支持——四目录模型是这次重设计的核心约束，本方案没有引入"允许整个 Goal
+脱离固定目录"的开关，这是有意为之的设计边界，不是遗留缺口。

@@ -395,12 +395,49 @@ def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, des
     try:
         from mini_agent.evolution import output_workspace as ow
         goal_id = goal.id
-        ow.ensure_output_skeleton(paths, goal_id)
         out_dir = ow.goal_output_dir(paths, goal_id)
         notes_dir = ow.goal_notes_dir(paths, goal_id)
         scratch_dir = ow.goal_scratch_dir(paths, goal_id)
 
+        # [迁移设计] 判断这是不是这个 Goal 第一次切到新的固定四目录模型
+        # （必须在 ensure_output_skeleton() 之前判断——那个函数本身是幂等
+        # 创建骨架，调用完 out_dir 就一定存在了）。如果存在旧模型遗留的
+        # cycle_NNNN/ 目录，写一份迁移摘要进 notes/cycle_0000.md，让新
+        # 模型下的执行上下文不会凭空丢失旧模型积累的历史；任何一步失败都
+        # 静默跳过，不影响本轮触发主流程。
+        is_first_time_new_layout = not out_dir.exists()
+        ow.ensure_output_skeleton(paths, goal_id)
+        if is_first_time_new_layout:
+            try:
+                if ow.has_legacy_cycle_dirs(paths, goal_id):
+                    migration_summary = ow.build_legacy_migration_summary(paths, goal_id)
+                    if migration_summary:
+                        ow.write_cycle_note(paths, goal_id, 0, migration_summary)
+            except Exception:
+                pass
+
         parts = [description] if description and description.strip() else []
+
+        # [迁移设计] 如果用户在创建 Goal 时的 description 里手写了"产出该
+        # 放哪里"之类的路径提示（旧习惯，新模型引入前很常见），提醒 agent
+        # 新模型下 output/ 是唯一正式产出目录——软性提醒，不修改用户原始
+        # description，不拦截执行。
+        try:
+            output_hints = ow.detect_user_specified_output_hint(description or "")
+        except Exception:
+            output_hints = []
+        if output_hints:
+            parts.append(
+                "## 关于描述里提到的自定义产出路径\n\n"
+                f"检测到 Goal 描述里提到了这些路径片段：{', '.join(output_hints)}。"
+                f"新的产出目录模型下，正式产出统一写入 {out_dir}"
+                "（跨轮共用的固定目录，不再按轮次新建）——如果这些路径本意是"
+                "output/ 内部的业务子目录（比如 'reports/weekly.md' 对应"
+                f" {out_dir}/reports/weekly.md），继续这么组织没问题；如果本意"
+                "是 output/ 之外的绝对路径，请改用 output/ 内对应位置，不要写"
+                "到 output/ 之外，否则会被 tidy 阶段判定为"
+                "「未分类文件」。"
+            )
 
         recent_notes = ow.read_recent_notes(paths, goal_id, limit=3)
         if recent_notes:
