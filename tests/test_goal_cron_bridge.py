@@ -639,5 +639,66 @@ class TestPhaseHealthNotification(unittest.TestCase):
             self.assertEqual(len(calls2), 0)
 
 
+class TestExecutionRoutineStabilitySignal(unittest.TestCase):
+    """[goal_output_directory_and_execution_phase_redesign_plan.md §Stage8c]
+    `_resolve_execution_phase()` 组装 `routine_texts`（历史版本 +
+    当前版本的 execution_routine）并传给 `resolve_effective_mode()`。
+    """
+
+    def test_stable_routine_upgrades_miss_streak_converge_to_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="周报 Goal")
+
+            from mini_agent.perception import goal_execution_spec as ges
+            import time as _time
+
+            old_ts = _time.time() - 200000  # 早于 spec_recently_revised 的 86400s 窗口
+            routine = [ges.RoutineStep(step="扫描已有内容"), ges.RoutineStep(step="更新索引")]
+            spec_v1 = ges.GoalExecutionSpec(
+                goal_id=goal.id, version=1, confirmed=True, confirmed_at=old_ts,
+                execution_routine=routine,
+            )
+            ges.save_spec(paths, goal.id, spec_v1)
+
+            spec_v2 = ges.GoalExecutionSpec(
+                goal_id=goal.id, version=2, confirmed=True, confirmed_at=old_ts,
+                execution_routine=routine, soft_check_miss_streak=1,
+            )
+            ges.save_spec(paths, goal.id, spec_v2)
+            gb.update_fields(goal.id, execution_spec_confirmed=True)
+
+            result = bridge._resolve_execution_phase(paths, gb.get(goal.id), 10)
+            self.assertEqual(result["effective_mode"], "running")
+
+    def test_shifting_routine_keeps_miss_streak_converge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="周报 Goal")
+
+            from mini_agent.perception import goal_execution_spec as ges
+            import time as _time
+
+            old_ts = _time.time() - 200000
+            spec_v1 = ges.GoalExecutionSpec(
+                goal_id=goal.id, version=1, confirmed=True, confirmed_at=old_ts,
+                execution_routine=[ges.RoutineStep(step="完全不同的步骤一二三")],
+            )
+            ges.save_spec(paths, goal.id, spec_v1)
+
+            spec_v2 = ges.GoalExecutionSpec(
+                goal_id=goal.id, version=2, confirmed=True, confirmed_at=old_ts,
+                execution_routine=[ges.RoutineStep(step="重新设计的另一套流程 ABC")],
+                soft_check_miss_streak=1,
+            )
+            ges.save_spec(paths, goal.id, spec_v2)
+            gb.update_fields(goal.id, execution_spec_confirmed=True)
+
+            result = bridge._resolve_execution_phase(paths, gb.get(goal.id), 10)
+            self.assertEqual(result["effective_mode"], "converge")
+
+
 if __name__ == "__main__":
     unittest.main()

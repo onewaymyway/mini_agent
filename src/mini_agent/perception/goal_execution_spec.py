@@ -553,9 +553,39 @@ def list_spec_history(paths: "AgentPaths", goal_id: str) -> list[dict]:
             "confirmed_at": data.get("confirmed_at"),
             "generated_at": data.get("generated_at"),
             "confirmed": data.get("confirmed", False),
+            # [goal_output_directory_and_execution_phase_redesign_plan.md
+            # §Stage8c] 附带该历史版本的 execution_routine 原始步骤列表，
+            # 供 goal_cron_bridge.py 组装 routine_texts 传给
+            # compute_routine_stability_signal()，不需要额外再读一次文件。
+            # 是"摘要 dict"里新增的一个 key，不影响既有调用方（目前只有
+            # CLI/看板展示场景，均未读取本字段，纯增量，无回归风险）。
+            "execution_routine": [
+                (r.get("step", "") if isinstance(r, dict) else "")
+                for r in (data.get("execution_routine") or [])
+            ],
         })
     out.sort(key=lambda x: (x.get("confirmed_at") or x.get("generated_at") or 0), reverse=True)
     return out
+
+
+def serialize_routine_steps(steps) -> str:
+    """[goal_output_directory_and_execution_phase_redesign_plan.md §Stage8c]
+    把一份 `execution_routine`（`RoutineStep` 列表，或已经是字符串列表）
+    序列化成 `compute_routine_stability_signal()` 期望的单段文本，规则与
+    该函数 docstring 里约定的 `"\\n".join(r.step for r in routine)` 一致。
+
+    空列表返回空字符串（调用方据此判断这个版本"没有 routine 内容"，
+    组装 `routine_texts` 时应跳过而不是传入空字符串占位）。
+    """
+    texts = []
+    for r in steps or []:
+        if isinstance(r, RoutineStep):
+            texts.append(r.step)
+        elif isinstance(r, dict):
+            texts.append(r.get("step", ""))
+        else:
+            texts.append(str(r))
+    return "\n".join(t for t in texts if t)
 
 
 def delete_spec(paths: "AgentPaths", goal_id: str) -> bool:
@@ -1279,6 +1309,7 @@ __all__ = [
     "save_spec",
     "delete_spec",
     "list_spec_history",
+    "serialize_routine_steps",
     "list_templates",
     "load_template",
     "suggest_template",

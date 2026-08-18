@@ -354,6 +354,7 @@ def resolve_effective_mode(
     miss_streak: int = 0,
     tidy_every_n_cycles: int = DEFAULT_TIDY_EVERY_N_CYCLES,
     progress_trend_stuck: Optional[bool] = None,
+    routine_stability: Optional[bool] = None,
 ) -> tuple[str, ExecutionPhaseState]:
     """计算本轮的"有效阶段"，并按需推进/落盘 mode_history（调用方负责 save）。
 
@@ -375,6 +376,20 @@ def resolve_effective_mode(
       在读取到 spec.new_topic_discovery == "intrinsic" 时应直接不传/传
       `progress_trend_stuck=None`，本函数不重复做这层判断，只负责在拿到
       `True` 时执行降级。
+      [Stage 8c] `routine_stability=True`（`execution_routine`
+      最近几个版本的历次文本高度相似，见
+      `compute_routine_stability_signal()`）时，作用方向与
+      `progress_trend_stuck` 相反、层级也不同——`progress_trend_stuck` 是
+      "内容层面看起来在重复"，作用于已经判定为 running 的场景，做降级；
+      `routine_stability` 是"规范层面的标准动作已经稳定"，只在 target
+      已经落在 converge（即 spec 已确认、未被近期 revise，但
+      `soft_check_miss_streak==1` 导致粗规则判 converge 兜底）时生效，
+      把 converge **提升**为 running——"该走的例程已经稳定复现，个别一次
+      软核查未命中不足以打回收敛判定"。target 已经是 explore 或已经是
+      running（含被 `progress_trend_stuck` 降级后的 converge）时，该信号
+      不生效——不用它去覆盖 explore（信息不足的早期阶段不该被单一信号
+      跳过）、也不用它去对抗刚发生的降级（避免两个信号互相拉扯出抖动）。
+      `None`/`False` 均不产生任何效果，与其余信号一致的保守风格。
     """
     if state.locked or state.mode != "auto":
         # [Stage B] tidy 阶段是"一次性插入"的维护动作：手动/自动进入 tidy 后，
@@ -389,6 +404,7 @@ def resolve_effective_mode(
         state.cycles_in_mode += 1
         return state.mode, state
 
+    converge_from_miss_streak = False
     if cycle_no <= DEFAULT_EXPLORE_MIN_CYCLES:
         target = "explore"
     elif not spec_confirmed or spec_recently_revised or miss_streak >= 2:
@@ -399,6 +415,13 @@ def resolve_effective_mode(
             target = "converge"
     else:
         target = "converge"
+        converge_from_miss_streak = True
+
+    # [Stage 8c] 仅当 converge 是因为 soft_check_miss_streak==1 这种粗规则
+    # 兜底（而非刚被 progress_trend_stuck 降级）时，routine_stability=True
+    # 才把它提升回 running——理由见函数 docstring。
+    if target == "converge" and converge_from_miss_streak and routine_stability is True:
+        target = "running"
 
     # [Stage B §2.4] 稳定期周期性自动插入 tidy：仅当已经判定为 running、
     # 配置了 tidy_every_n_cycles>0、且距上次 tidy 已满足轮次间隔时触发。

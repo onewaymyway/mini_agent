@@ -991,3 +991,76 @@ True/routine 剧烈变化返回 False/正确调用 `llm_helper`/`llm_helper`
 `docs/goal-execution-phase-guide.md` 等用户文档同步"running"改名（本
 阶段仅同步了代码内注释/docstring，面向用户的 docs/ 目录尚未触碰，
 Stage 8 全部收尾时再一次性同步，避免文档跟着每个子阶段来回改）。
+
+#### Stage 8c（已完成）：`execution_routine` 收敛信号接入判定路径 + `new_topic_discovery=intrinsic` 生效
+
+本阶段只做 Stage 8b 结尾列出的"判定信号接入"这一小块，`hardening_target`/
+`sub_exploration` 接入 converge 搬迁行为、`GoalExecutionSpecBuilder` 教会
+生成新字段草稿、`output_workspace.py` 三种 `output_mode` tidy 默认模板，
+仍按原计划顺延到后续子阶段。
+
+**`perception/goal_execution_spec.py` 新增两处支持**：
+
+- `list_spec_history()` 返回的每条摘要 dict 新增 `execution_routine` 键
+  （历史版本 `execution_routine` 的 `step` 原始字符串列表），供调用方
+  组装 `routine_texts` 时不需要再单独重新读一次历史文件；纯增量字段，
+  不影响任何既有调用方（目前只有 CLI/看板展示场景，均未读取该字段）。
+- 新增 `serialize_routine_steps(steps) -> str` 纯函数，把 `RoutineStep`
+  列表（或已经是 dict/字符串列表，兼容 `list_spec_history()` 返回的
+  纯字符串形式）序列化成 `compute_routine_stability_signal()` 文档里
+  约定的 `"\n".join(...)` 单段文本；空列表/全部步骤为空串时返回空
+  字符串，调用方据此判断"这个版本没有 routine 内容"应跳过而不是传入
+  占位空串（空串会被当作"有效但空"的一条样本，可能拉低相似度误判）。
+
+**`perception/execution_phase.py::resolve_effective_mode()` 新增
+`routine_stability: Optional[bool] = None` 参数**：仅当 target 因
+`soft_check_miss_streak == 1` 被粗规则兜底判为 `converge`（对应现有
+`else: target = "converge"` 分支，新增 `converge_from_miss_streak` 标记
+区分这条路径）时，`routine_stability is True` 才把它**提升**为
+`running`——"规范层的标准动作已经稳定复现，个别一次软核查未命中不足以
+打回收敛判定"。**明确不生效的三种情形**（均已写测试覆盖，见下）：
+target 是 `explore`（信息不足的早期阶段不该被单一信号跳过）；target 是
+被 `progress_trend_stuck` 降级出的 `converge`（`converge_from_miss_streak`
+为 `False`，避免"内容层降级"信号和"规范层提升"信号在同一轮里互相
+拉扯出抖动）；`state.locked` 或 `state.mode != "auto"`（用户手动指定
+阶段时任何自动信号都不生效，这是既有规则，未改动）。
+
+**`evolution/goal_cron_bridge.py::_resolve_execution_phase()` 落地两处
+调用方逻辑**：
+
+1. `new_topic_discovery == "intrinsic"` 时，直接把 `progress_trend_stuck`
+   设为 `None`（不调用 `compute_progress_trend_signal()`），而不是算出来
+   再被下游忽略——省一次可能的 LLM 调用，语义上也更直接对应文档里
+   "调用方在读取到 intrinsic 时应不传/传 None"的约定。
+2. 组装 `routine_texts`：取 `list_spec_history()` 最近 3 条历史版本
+   （按时间倒序返回，取切片后 `reversed()` 恢复正序）+ 当前 spec 的
+   `execution_routine`，各自用 `serialize_routine_steps()` 序列化，
+   过滤掉空字符串后传给 `compute_routine_stability_signal()`，结果作为
+   `routine_stability` 一并传入 `resolve_effective_mode()`。`spec is
+   None`（未确认）或任何环节异常，`routine_stability` 保持 `None`
+   （信号关闭），try/except 兜底不影响阶段判定主流程。
+
+**有意保留范围**：`hardening_target`/`sub_exploration` 接入 converge
+搬迁行为、`GoalExecutionSpecBuilder` 教新字段草稿生成、
+`output_workspace.py` 三种 `output_mode` tidy 默认模板、
+`docs/goal-execution-phase-guide.md` 用户文档同步，均未涉及，留给后续
+子阶段（暂沿用"Stage 8d 及以后"称呼，不再给出精确编号，视实际推进
+情况决定是否合并到同一子阶段）。
+
+测试：新增 `tests/test_execution_phase_stage8c.py`（7 个用例，覆盖
+`routine_stability=True` 提升 `miss_streak` 型 converge 为 running、
+`False`/`None` 保持 converge、不拉动 explore 前进、不覆盖
+`progress_trend_stuck` 降级、对已经是 running 的目标无副作用、
+`locked` 手动阶段忽略该信号）、`tests/test_goal_execution_spec_stage8c.py`
+（6 个用例，覆盖 `serialize_routine_steps()` 空输入/`RoutineStep`
+对象/dict 形式/过滤空步骤，以及 `list_spec_history()` 正确带出
+`execution_routine` 及默认空列表），`tests/test_goal_cron_bridge.py`
+新增 `TestExecutionRoutineStabilitySignal`（2 个用例，端到端验证
+`_resolve_execution_phase()` 在 routine 稳定/剧烈变化两种历史下分别
+判定为 running/converge）。运行 `tests/test_execution_phase*.py`/
+`tests/test_goal_cron_bridge*.py`/`tests/test_goal_execution_spec*.py`/
+`tests/test_cycle_tuning.py`/`tests/test_cycle_patrol.py`/
+`tests/test_unified_task_scheduler.py`/`tests/test_cycle_diagnostics.py`/
+`tests/test_output_workspace_*.py`/`tests/test_goal_output_directory_
+onetime.py` 共 322 个用例全部通过（`test_execution_phase_kanban_routes.py`
+因本地环境缺 `httpx2` 依赖无法收集，与本次改动无关，未计入），无回归。

@@ -253,7 +253,38 @@ def _resolve_execution_phase(paths, goal: "GoalNode", cycle_no: int,
             except Exception:
                 llm_helper = None
 
-        progress_trend_stuck = ep.compute_progress_trend_signal(goal_backlog, goal.id, llm_helper=llm_helper)
+        # [Stage 8c] new_topic_discovery=="intrinsic" 的 Goal（wiki/股票报告
+        # 等累积/双轨型）内容层天然每轮都不同，"跨轮进展文本雷同"信号对它们
+        # 没有意义（见 resolve_effective_mode 文档约定），此时直接不计算/
+        # 不传该信号，而不是计算出来又被下游忽略——省一次可能的 LLM 调用。
+        spec_new_topic_discovery = getattr(spec, "new_topic_discovery", "none") if spec is not None else "none"
+        if spec_new_topic_discovery == "intrinsic":
+            progress_trend_stuck = None
+        else:
+            progress_trend_stuck = ep.compute_progress_trend_signal(goal_backlog, goal.id, llm_helper=llm_helper)
+
+        # [Stage 8c] 组装 routine_texts：取 spec/history/ 里最近几个历史版本
+        # （已按时间倒序，取最新的几条后反转为正序）的 execution_routine +
+        # 当前版本，各自序列化成一段文本，交给
+        # compute_routine_stability_signal() 判断"规范层标准动作是否已
+        # 收敛"。spec 为空、或 execution_routine 从未使用过（全部序列化后
+        # 为空串）时，routine_texts 不足两条，信号自然返回 None（关闭），
+        # 不影响任何未采用 Stage 8 新字段的存量 Goal。
+        routine_stability = None
+        if spec is not None:
+            try:
+                history = ges.list_spec_history(paths, goal.id)[:3]
+                routine_texts = [
+                    ges.serialize_routine_steps(h.get("execution_routine") or [])
+                    for h in reversed(history)
+                ]
+                current_routine_text = ges.serialize_routine_steps(spec.execution_routine)
+                if current_routine_text:
+                    routine_texts.append(current_routine_text)
+                routine_texts = [t for t in routine_texts if t]
+                routine_stability = ep.compute_routine_stability_signal(routine_texts, llm_helper=llm_helper)
+            except Exception:
+                routine_stability = None
 
         effective_mode, state = ep.resolve_effective_mode(
             state,
@@ -262,6 +293,7 @@ def _resolve_execution_phase(paths, goal: "GoalNode", cycle_no: int,
             spec_recently_revised=spec_recently_revised,
             miss_streak=miss_streak,
             progress_trend_stuck=progress_trend_stuck,
+            routine_stability=routine_stability,
         )
         try:
             health_reason = ep.check_phase_health(state, effective_mode)
