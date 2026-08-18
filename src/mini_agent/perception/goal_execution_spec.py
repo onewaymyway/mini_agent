@@ -127,6 +127,26 @@ class SubDirectory:
         )
 
 
+_VALID_OUTPUT_MODES = ("converging", "accretive", "capability_hardening", "hybrid")
+_VALID_NEW_TOPIC_DISCOVERY = ("none", "intrinsic")
+
+
+@dataclass
+class RoutineStep:
+    """[goal_output_directory_and_execution_phase_redesign_plan.md §Stage8]
+    execution_routine 的单个步骤——规范层收敛后，"这一轮该做的标准动作
+    序列"，用来把阶段判定信号从"本轮内容像不像"换成"routine 有没有变化"。
+    """
+    step: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict) -> "RoutineStep":
+        return RoutineStep(step=d.get("step", ""))
+
+
 @dataclass
 class Criterion:
     text: str
@@ -161,6 +181,29 @@ class GoalExecutionSpec:
     overall_completion_criteria: list[Criterion] = field(default_factory=list)
     special_constraints: list[str] = field(default_factory=list)
 
+    # [goal_output_directory_and_execution_phase_redesign_plan.md §Stage8]
+    # 规范层/内容层两层模型新增字段，均可选、缺省不影响任何既有行为：
+    #   output_mode: 决定 tidy/阶段判定用哪套默认模板，缺省 "converging"
+    #     与 Stage 0-7 上线时的既有行为完全一致（向后兼容）。
+    #   execution_routine: 收敛后的"每一轮标准动作序列"，阶段判定改看这个
+    #     序列有没有实质性变化，而不是看本轮产出内容本身。
+    #   cadence: 执行节奏说明（纯文本展示用，不参与调度判定）。
+    #   new_topic_discovery: "intrinsic" 显式声明"内容层常新是正常现象"，
+    #     避免 accretive/hybrid 型 goal 被误判成规范未收敛。
+    #   hardening_target: capability_hardening 型 goal 的外部固化目标路径
+    #     （如 .claude/skills/browser-cdp），converge 阶段"搬迁"的落地目标
+    #     从本地 output/ 换成这里；为空代表沿用 output/ 内部落地（默认）。
+    #   sub_exploration: hybrid 型 goal 用，声明主轨之外独立生命周期的
+    #     内容子探索说明（纯文本，不参与主轨 spec_phase 判定）。
+    # 依赖声明按当前决策走"软约束过渡"：不新增结构化字段，用户在 goal
+    # description 里手写依赖路径即可，spec 层暂不建模（见 Stage8 未决问题）。
+    output_mode: str = "converging"
+    execution_routine: list[RoutineStep] = field(default_factory=list)
+    cadence: str = ""
+    new_topic_discovery: str = "none"
+    hardening_target: str = ""
+    sub_exploration: str = ""
+
     # 生成失败时的兜底诊断信息（正常路径为 None）
     generation_error: Optional[str] = None
 
@@ -184,6 +227,12 @@ class GoalExecutionSpec:
             "per_cycle_criteria": [c.to_dict() for c in self.per_cycle_criteria],
             "overall_completion_criteria": [c.to_dict() for c in self.overall_completion_criteria],
             "special_constraints": list(self.special_constraints),
+            "output_mode": self.output_mode,
+            "execution_routine": [r.to_dict() for r in self.execution_routine],
+            "cadence": self.cadence,
+            "new_topic_discovery": self.new_topic_discovery,
+            "hardening_target": self.hardening_target,
+            "sub_exploration": self.sub_exploration,
             "generation_error": self.generation_error,
             "soft_check_miss_streak": self.soft_check_miss_streak,
             "soft_check_alerted": self.soft_check_alerted,
@@ -191,6 +240,12 @@ class GoalExecutionSpec:
 
     @staticmethod
     def from_dict(d: dict) -> "GoalExecutionSpec":
+        output_mode = d.get("output_mode", "converging")
+        if output_mode not in _VALID_OUTPUT_MODES:
+            output_mode = "converging"
+        new_topic_discovery = d.get("new_topic_discovery", "none")
+        if new_topic_discovery not in _VALID_NEW_TOPIC_DISCOVERY:
+            new_topic_discovery = "none"
         return GoalExecutionSpec(
             version=int(d.get("version", 1)),
             goal_id=d.get("goal_id", ""),
@@ -206,6 +261,12 @@ class GoalExecutionSpec:
                 Criterion.from_dict(x) for x in d.get("overall_completion_criteria", [])
             ],
             special_constraints=list(d.get("special_constraints", [])),
+            output_mode=output_mode,
+            execution_routine=[RoutineStep.from_dict(x) for x in d.get("execution_routine", [])],
+            cadence=d.get("cadence", ""),
+            new_topic_discovery=new_topic_discovery,
+            hardening_target=d.get("hardening_target", ""),
+            sub_exploration=d.get("sub_exploration", ""),
             generation_error=d.get("generation_error"),
             soft_check_miss_streak=int(d.get("soft_check_miss_streak", 0)),
             soft_check_alerted=bool(d.get("soft_check_alerted", False)),
@@ -216,7 +277,7 @@ class GoalExecutionSpec:
         return not (
             self.deliverables or self.handoff_fields or self.sub_directories
             or self.per_cycle_criteria or self.overall_completion_criteria
-            or self.special_constraints
+            or self.special_constraints or self.execution_routine
         )
 
     def render_summary_for_user(self) -> str:
@@ -224,6 +285,23 @@ class GoalExecutionSpec:
         lines = [f"执行规范（第 {self.version} 版，{'已确认' if self.confirmed else '草稿'}）："]
         if self.generation_error:
             lines.append(f"⚠️ 上次生成存在问题：{self.generation_error}")
+        lines.append("")
+        lines.append(f"产出模式 output_mode：{self.output_mode}")
+        if self.cadence:
+            lines.append(f"执行节奏 cadence：{self.cadence}")
+        if self.new_topic_discovery == "intrinsic":
+            lines.append("内容常新声明：new_topic_discovery=intrinsic（本轮出现新内容属正常现象，不代表规范未收敛）")
+        if self.hardening_target:
+            lines.append(f"外部固化目标 hardening_target：{self.hardening_target}")
+        if self.sub_exploration:
+            lines.append(f"子探索说明 sub_exploration：{self.sub_exploration}")
+        lines.append("")
+        lines.append("执行例程 execution_routine：")
+        if self.execution_routine:
+            for i, r in enumerate(self.execution_routine, 1):
+                lines.append(f"  {i}. {r.step}")
+        else:
+            lines.append("  （无，沿用阶段默认 prompt 引导）")
         lines.append("")
         lines.append("产出物 deliverables：")
         if self.deliverables:
@@ -277,6 +355,17 @@ class GoalExecutionSpec:
         if self.is_empty():
             return ""
         lines = ["【本 Goal 的执行规范（用户已确认）】"]
+        if self.new_topic_discovery == "intrinsic":
+            lines.append("说明：本 Goal 内容层天然常新（new_topic_discovery=intrinsic），"
+                          "出现未见过的主题/信息源属正常现象，不代表规范需要重新探索。")
+        if self.hardening_target:
+            lines.append(f"外部固化目标：{self.hardening_target}（验证有效的产出应最终落地到这里，而非仅留在本 Goal 私有目录）")
+        if self.sub_exploration:
+            lines.append(f"子探索说明：{self.sub_exploration}")
+        if self.execution_routine:
+            lines.append("本轮请遵循以下已收敛的标准执行例程：")
+            for i, r in enumerate(self.execution_routine, 1):
+                lines.append(f"  {i}. {r.step}")
         if self.deliverables:
             lines.append("本轮应产出：")
             for d in self.deliverables:

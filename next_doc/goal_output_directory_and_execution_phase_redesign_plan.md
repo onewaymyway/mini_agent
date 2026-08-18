@@ -834,8 +834,82 @@ explore→converge→**running**（原 stable 改名，语义从"稳定期"变�
   goal 案例判断是否有必要保留两态区分，目前倾向"改名统一"，因为暂未
   找到需要两态并存的真实场景。
 
-本 Stage 仅为设计讨论，尚未修改任何代码/测试，需要用户确认方向后，
-再拆解为具体实施 Stage（`GoalExecutionSpec` schema 迁移、
-`_resolve_execution_phase()` 判定逻辑重写、`execution_phase.md` 各阶段
-prompt 片段改写、`output_workspace.py` 内容 tidy 与 `output_mode` 的
-接入等），预计工作量不小于 Stage 0-7 总和，建议仍按小步拆分实施。
+**用户确认的三点决策**（据此展开后续实施子阶段，均已生效，不再是待定项）：
+
+1. 跨 goal 依赖（例子2依赖例子1）**按"用户手动在 description 里说明依赖
+   路径"这种软约束过渡**，本方案不新增结构化依赖字段，留待后续实际出现
+   跨 goal 依赖问题时再评估是否需要专项方案。
+2. `stable` **改名为 `running`**（不引入两态并存），语义从"稳定期"调整为
+   "规范已收敛、内容永续产出"。
+3. `execution_routine` 的"实质性变化"判定**直接照搬
+   `compute_progress_trend_signal` 的思路上线看效果**，不预先另起 diff
+   策略，后续视实际运行数据再调整。
+
+#### Stage 8a（已完成）：`GoalExecutionSpec` schema 迁移
+
+`perception/goal_execution_spec.py` 新增：
+
+- `RoutineStep` dataclass（单字段 `step: str`），承载 `execution_routine`
+  列表项；
+- `GoalExecutionSpec` 新增 6 个字段，均带向后兼容默认值：
+  `output_mode: str = "converging"`（校验值域
+  `converging`/`accretive`/`capability_hardening`/`hybrid`，非法值静默
+  回退默认，不抛异常）、`execution_routine: list[RoutineStep] = []`、
+  `cadence: str = ""`、`new_topic_discovery: str = "none"`（校验值域
+  `none`/`intrinsic`）、`hardening_target: str = ""`、
+  `sub_exploration: str = ""`；
+- `to_dict()`/`from_dict()` 同步支持新字段，`from_dict()` 对旧版（不含
+  这些 key 的）已保存 spec 文件全部走默认值分支，不影响任何历史数据；
+- `is_empty()` 补充 `execution_routine` 非空即判定非空规范（其余新字段
+  是"修饰性"字段，单独出现不改变 `is_empty()` 判断，避免"只填了
+  `output_mode` 但没有任何实质规范内容"被误判为"已有规范"）；
+- `render_summary_for_user()`/`render_prompt_block()` 分别补充新字段的
+  展示：管理端摘要里展示 `output_mode`/`cadence`/`execution_routine`/
+  `hardening_target`/`sub_exploration`；拼进 Objective description 的
+  prompt 块里，`new_topic_discovery=intrinsic` 时补一句"内容常新，不代表
+  规范未收敛"的说明，`hardening_target` 非空时提示"验证有效的产出应落地
+  到这里"，`execution_routine` 非空时列出标准例程步骤。
+
+依赖声明（决策1）本阶段**未新增任何字段**，符合"软约束过渡"的决定；
+`stable→running` 改名（决策2）、`compute_progress_trend_signal` 复用
+（决策3）本阶段均**未涉及**（属于阶段判定逻辑层，非 schema 层），留给
+后续 Stage 8b。
+
+测试：新增 `tests/test_goal_execution_spec_stage8_fields.py`（7 个用例），
+覆盖新字段默认值向后兼容、含新字段的 to_dict/from_dict 往返、非法枚举值
+回退默认、`hardening_target` 往返、`render_prompt_block()` 正确包含
+Stage 8 相关提示文案且空规范仍返回空字符串、`render_summary_for_user()`
+正确展示 `output_mode`/`hardening_target`。运行
+`tests/test_goal_execution_spec_stage8_fields.py`/
+`tests/test_goal_execution_spec.py`/`tests/test_goal_execution_spec_
+versioning.py` 共 55 个用例全部通过，无既有用例回归（`test_goal_
+execution_spec.py` 里依赖 LLM/Agent 构建路径的用例，本次未改动
+`GoalExecutionSpecBuilder` 的生成逻辑，schema 变更对其透明）。
+
+尚未做的事（留给 Stage 8b 及以后）：
+
+- `stable` → `running` 改名——涉及 `evolution/goal_cron_bridge.py` 的
+  `_resolve_execution_phase()` 判定逻辑、`prompts/fragments/
+  execution_phase.md` 各阶段 prompt 片段、以及所有引用 `"stable"` 字符串
+  的调用点（含 kanban 前端展示），改名需要一次性梳理完，避免新旧命名
+  混用；
+- 阶段判定信号从"本轮内容"改为"`execution_routine` diff"——复用
+  `compute_progress_trend_signal`，需要确认其输入形态（目前是"进展描述
+  文本"）能否直接接受"步骤列表"作为比较对象，或需要先序列化成文本
+  （如 `"\n".join(step for step in routine)`）再传入；
+- `new_topic_discovery=intrinsic` 接入判定逻辑本身（目前只在 prompt 里
+  展示提示，尚未真正影响 `_resolve_execution_phase()` 的判定结果）；
+- `hardening_target`/`sub_exploration` 接入 converge 阶段的实际"搬迁"
+  行为（目前只在 prompt 里展示，`output_workspace.py` 的搬迁逻辑尚未
+  读取这两个字段）；
+- `GoalExecutionSpecBuilder`（草稿生成器，含各 `builder_mode` 的 prompt
+  模板）尚未教会它主动生成 `output_mode`/`execution_routine` 等新字段的
+  草稿内容，目前需要用户手动编辑 spec 文件或走 `spec revise` 补充；
+- `output_workspace.py` 内容 tidy 的三种默认模板（accretive/
+  capability_hardening/converging）尚未按 §Stage8 的表格实现，目前
+  `output_mode` 字段存在但对实际 tidy 行为没有任何影响。
+
+计划把上述内容拆成 Stage 8b（阶段判定逻辑：running 改名 + routine diff
+判定 + intrinsic 接入）、Stage 8c（converge 搬迁逻辑接入
+hardening_target/sub_exploration）、Stage 8d（builder 草稿生成教会新
+字段）、Stage 8e（tidy 三种模板落地）依次推进。
