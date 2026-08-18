@@ -1111,3 +1111,55 @@ spec*.py`/`tests/test_cycle_tuning.py`/`tests/test_cycle_patrol.py`/
 `tests/test_unified_task_scheduler.py`/`tests/test_cycle_diagnostics.py`/
 `tests/test_output_workspace_*.py`/`tests/test_goal_output_directory_
 onetime.py` 共 329 个用例全部通过，无回归。
+
+#### Stage 8e（已完成）：`GoalExecutionSpecBuilder` 教会生成 Stage 8a 新字段草稿
+
+Stage 8a 上线后，`output_mode`/`execution_routine`/`cadence`/
+`new_topic_discovery`/`hardening_target`/`sub_exploration` 六个字段
+一直只能靠用户手动编辑 spec 文件或走 `spec revise` 补充——`build_draft()`
+生成的第 1 版草稿从未包含这些字段。本阶段教会草稿生成器主动产出它们。
+
+**`prompts/system/goal_execution_spec_builder.md`**：在"需要依次想清楚
+的问题"清单后追加 5 道新问题（output_mode 判断、execution_routine 步骤、
+new_topic_discovery 判断、hardening_target 路径、sub_exploration 说明），
+并新增一节"关于 `output_mode`"，用三句话分别刻画 `accretive`/
+`capability_hardening`/`hybrid` 三种非默认值各自的识别特征和典型
+`execution_routine`/`new_topic_discovery` 组合，明确"拿不准一律用默认值
+`converging`，不要为了凑齐新字段而勉强分类"——这是避免 LLM 为了"看起来
+更完整"而把普通 Goal 过度分类的关键提示。输出 JSON schema 里补上 6 个
+新字段，均给出与 `GoalExecutionSpec` 默认值一致的样例值。
+
+**`perception/goal_execution_spec.py::_spec_from_llm_data()`**：解析 LLM
+输出 JSON 里的 6 个新字段构造进返回的 `GoalExecutionSpec`；`output_mode`/
+`new_topic_discovery` 做与 `GoalExecutionSpec.from_dict()` 相同的值域
+校验（非法值/幻觉值静默回退默认），因为这里是直接构造 dataclass 而不是
+走 `from_dict()`，两条路径必须各自校验，否则 LLM 输出一个训练数据里
+"看起来合理"但不在值域内的字符串会被无校验地写进落盘文件。LLM 未产出
+某个新字段（旧响应/解析异常兜底）时，各字段独立走自身默认值，不影响
+其余字段正常解析——与既有 6 个字段的"部分缺失不报错"风格一致。
+
+**`GoalExecutionSpecBuilder.revise()` 的 `field_map`**：新增 6 个新字段
+的锁定支持——用户对某个具体字段（如 `hardening_target`）表示满意后，
+`revise()` 只调整其余字段，锁定字段用上一版的值强制覆盖回去（即便 LLM
+没有严格遵守 prompt 指示），与既有 6 个字段的"锁定是硬约束"行为完全对称。
+
+**有意保留范围**：`output_workspace.py` 三种 `output_mode` tidy 默认
+模板（`output_mode` 字段目前虽然能被 LLM 主动生成了，但对实际 tidy 行为
+仍然没有任何影响，草稿生成能力和消费能力是两件独立的事）、
+`docs/goal-execution-phase-guide.md` 等用户文档同步，均未涉及，留给
+后续子阶段。
+
+测试：新增 `tests/test_goal_execution_spec_stage8e.py`（6 个用例），
+覆盖 `_spec_from_llm_data()` 正确解析全部 6 个新字段、字段缺失时回退
+默认值、`output_mode`/`new_topic_discovery` 非法值回退默认、
+`build_draft()` 端到端解析一份 `accretive` 型响应、`revise()` 正确锁定
+`hardening_target` 字段。运行 `tests/test_execution_phase*.py`/
+`tests/test_goal_cron_bridge*.py`/`tests/test_goal_execution_spec.py`/
+`tests/test_goal_execution_spec_versioning.py`/`tests/test_goal_execution_
+spec_stage8*.py`/`tests/test_cycle_tuning.py`/`tests/test_cycle_patrol.py`/
+`tests/test_unified_task_scheduler.py`/`tests/test_cycle_diagnostics.py`/
+`tests/test_output_workspace_*.py`/`tests/test_goal_output_directory_
+onetime.py` 共 335 个用例全部通过（`test_goal_execution_spec_diff.py`/
+`test_goal_execution_spec_kanban_routes.py`/
+`test_execution_phase_kanban_routes.py` 因本地环境缺 `streamlit`/
+`httpx2` 依赖无法收集，与本次改动无关，未计入），无回归。

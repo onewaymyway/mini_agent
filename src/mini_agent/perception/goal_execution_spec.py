@@ -683,6 +683,15 @@ def _extract_json(text: str) -> Optional[dict]:
 
 
 def _spec_from_llm_data(data: dict, goal_id: str, version: int, locked_fields: Optional[list[str]] = None) -> GoalExecutionSpec:
+    # [Stage 8e] LLM 输出的 output_mode/new_topic_discovery 是自由文本，
+    # 校验值域与 `GoalExecutionSpec.from_dict()` 保持一致——非法值/幻觉值
+    # 静默回退默认，不因为 LLM 输出了值域之外的字符串而报错或污染数据。
+    output_mode = data.get("output_mode") or "converging"
+    if output_mode not in _VALID_OUTPUT_MODES:
+        output_mode = "converging"
+    new_topic_discovery = data.get("new_topic_discovery") or "none"
+    if new_topic_discovery not in _VALID_NEW_TOPIC_DISCOVERY:
+        new_topic_discovery = "none"
     return GoalExecutionSpec(
         version=version,
         goal_id=goal_id,
@@ -696,6 +705,17 @@ def _spec_from_llm_data(data: dict, goal_id: str, version: int, locked_fields: O
             Criterion.from_dict(x) for x in (data.get("overall_completion_criteria") or [])
         ],
         special_constraints=list(data.get("special_constraints") or []),
+        # [goal_output_directory_and_execution_phase_redesign_plan.md
+        # §Stage8e] Stage 8a 新增的 6 个字段——LLM 未产出这些 key（旧版
+        # prompt 或响应本身不含）时 `data.get(...)` 返回 `None`，走各字段
+        # 自身构造函数的默认值分支，与"存量 spec 文件里没有这些 key"的
+        # 向后兼容路径完全一致，不需要额外判空。
+        output_mode=output_mode,
+        execution_routine=[RoutineStep.from_dict(x) for x in (data.get("execution_routine") or [])],
+        cadence=data.get("cadence") or "",
+        new_topic_discovery=new_topic_discovery,
+        hardening_target=data.get("hardening_target") or "",
+        sub_exploration=data.get("sub_exploration") or "",
     )
 
 
@@ -1027,6 +1047,15 @@ class GoalExecutionSpecBuilder:
             "per_cycle_criteria": "per_cycle_criteria",
             "overall_completion_criteria": "overall_completion_criteria",
             "special_constraints": "special_constraints",
+            # [Stage 8e] Stage 8a 新字段同样支持按名字锁定——用户对
+            # execution_routine/hardening_target 等某个具体字段满意后，
+            # revise() 只调整其余字段，与既有 6 个字段的锁定行为一致。
+            "output_mode": "output_mode",
+            "execution_routine": "execution_routine",
+            "cadence": "cadence",
+            "new_topic_discovery": "new_topic_discovery",
+            "hardening_target": "hardening_target",
+            "sub_exploration": "sub_exploration",
         }
         for name in locked:
             attr = field_map.get(name)

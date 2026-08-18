@@ -36,9 +36,55 @@
    （→ overall_completion_criteria，默认留空数组）
 6. 有没有过程中要注意的特殊约束（隐私、不要覆盖某些文件等）？
    （→ special_constraints）
+7. 这个 Goal 的"产出模式"更接近哪一种？（→ output_mode，见下方说明，
+   拿不准就用默认值 "converging"，不要勉强套用其余三种）
+8. 如果判断为 `accretive`/`capability_hardening`/`converging` 之一，
+   这个 Goal 每一轮该走的"标准动作序列"具体是什么？（→
+   execution_routine，每个元素是一个步骤的简短描述，如"扫描已有内容"
+   "去重合并"，按执行顺序排列；如果这个 Goal 本身就很简单、没有固定
+   动作序列，留空数组）
+9. 这个 Goal 内容层面是否天然"常新"（比如持续追踪新出现的话题/信息源，
+   每轮出现从未见过的内容是正常现象而非规范未收敛的信号）？
+   （→ new_topic_discovery，是则填 `"intrinsic"`，否则填 `"none"`，
+   拿不准填 `"none"`）
+10. 如果这是"能力固化"型 Goal（试验新场景、验证有效后固化成一份更通用
+    的能力，比如打磨某个 skill/workflow 本身），验证有效的产出最终应该
+    落地到项目里的哪个具体路径？（→ hardening_target，填相对项目根目录
+    的路径，如 `"skills/report_writer/"`；不是这类 Goal 就留空字符串）
+11. 这个 Goal 里是否存在一条"独立生命周期的内容子探索"——主体已经收敛、
+    按固定例程执行，但其中某个环节本身还在持续摸索、不该被当作"主轨未
+    收敛"的信号？（→ sub_exploration，用一句话说明是哪个环节、性质是
+    什么；不存在就留空字符串）
 
 如果想清楚之后发现某个 Goal 不需要特殊规范（比如目标本身已经足够简单、
 自解释），对应字段留空数组也是一种合法结果，不要为了凑内容而编造。
+
+## 关于 `output_mode`（产出模式，决定 7~11 题怎么答）
+
+多数周期性 Goal 属于默认的 `"converging"`：先探索出一套稳定做法，之后
+严格按这套做法执行增量修改（比如"每周汇总一次某类数据、格式固定"）。
+只有明确符合以下两种特征之一时，才使用另外两个非默认值：
+
+- `"accretive"`（内容持续累积增长型）：每一轮的核心工作是"发现新内容→
+  去重合并→追加/更新到一个持续增长的知识库/索引"，内容本身天然常新，
+  例如维护一份持续更新的百科/知识库、每周新增一份股票研究报告。这类
+  Goal 通常 `execution_routine` 会包含"扫描已有→发现新增→去重合并→
+  写入/更新→刷新索引"这类步骤，`new_topic_discovery` 大概率是
+  `"intrinsic"`。
+- `"capability_hardening"`（能力固化型）：核心工作是"在新场景里试验→
+  验证是否真的有效→把验证有效的部分固化进一个更通用的能力载体（如某个
+  skill 的实现本身）"，产出不是"内容"而是"变得更好用的工具/能力"。
+  这类 Goal 的 `execution_routine` 通常是"试验新场景→验证有效性→diff
+  已有实现→增量固化→更新目标自身说明文档"，且几乎一定需要填写
+  `hardening_target`。
+- `"hybrid"`（混合型）：主体走 `accretive`/`converging` 其中之一，但同时
+  存在一条独立生命周期的内容子探索（→ `sub_exploration`）。只有主体和
+  子探索的性质明显不同、混在一起会互相干扰判断时才用这个值，不要为了
+  "更精确"而把普通 Goal 强行拆成 hybrid。
+
+拿不准时一律用默认值 `"converging"`，不要为了凑齐所有新字段而勉强分类——
+这几个字段本身也允许是"修饰性"的，只声明 `output_mode` 而
+`execution_routine` 等留空同样是合法结果。
 
 如果这个 Goal 明确依赖项目内部的具体信息才能写出可核查的标准——例如引用了
 某个 skill 的具体能力/参数、某个 workflow 的具体步骤/产出物，而你并不确定
@@ -65,5 +111,13 @@ markdown 代码块包裹）：
   ],
   "overall_completion_criteria": [],
   "special_constraints": ["特殊约束1", "..."],
+  "output_mode": "converging",
+  "execution_routine": [
+    {"step": "标准动作步骤的简短描述"}
+  ],
+  "cadence": "执行节奏说明（可选，如'每周一次'，多数 Goal 留空字符串即可，节奏信息已由 schedule 承载）",
+  "new_topic_discovery": "none",
+  "hardening_target": "",
+  "sub_exploration": "",
   "needs_project_context": false
 }
