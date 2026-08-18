@@ -122,6 +122,13 @@ DEFAULT_MAX_PENDING_QUESTIONS = 3          # §3.3：单 Track 同时 pending �
 DEFAULT_TOPICS_PER_CYCLE = 2               # §4：每轮每个 Track 最多推进的子主题数
 DEFAULT_QUESTION_TTL_SECONDS = 14 * 86400  # §3.3：问题超过 14 天未回答自动过期
 
+# [next_doc/capability_wiki_freshness_improvement_plan.md 阶段 1] 判定一个子
+# 主题"内容是否足够"的最小字数阈值——合并所有检索结果的非空摘要/正文
+# 后的总字数达到这个阈值才算 sufficient（可以标 covered），否则算 thin
+# （保持 partial，下一轮继续重试）。先写死常量，不做成配置项，观察默认值
+# 是否合适后再评估要不要暴露给用户调整。
+CONTENT_SUFFICIENT_MIN_CHARS = 120
+
 
 # ── 数据模型（对应设计文档 §3）────────────────────────────────────────────
 
@@ -131,7 +138,11 @@ class OutlineTopic:
     topic_id: str
     name: str
     coverage_state: str = "uncovered"          # uncovered / partial / covered
-    volatility: str = "stable"                  # stable / periodic / volatile（§14.2-d）
+    # [next_doc/capability_wiki_freshness_improvement_plan.md 阶段 2] 默认值
+    # 从 "stable"（永不过期）改为 "periodic"（30 天刷新周期）——大部分能力
+    # 学习子主题的内容都应该被定期重新检索验证，"stable" 只留给用户手动
+    # 标注的、确实基本不随时间变化的极少数子主题。
+    volatility: str = "periodic"                # stable / periodic / volatile（§14.2-d）
     last_touched_at: Optional[float] = None
     wiki_page_ids: list[str] = field(default_factory=list)
 
@@ -144,7 +155,7 @@ class OutlineTopic:
             topic_id=d["topic_id"],
             name=d["name"],
             coverage_state=d.get("coverage_state", "uncovered"),
-            volatility=d.get("volatility", "stable"),
+            volatility=d.get("volatility", "periodic"),
             last_touched_at=d.get("last_touched_at"),
             wiki_page_ids=list(d.get("wiki_page_ids", [])),
         )
@@ -421,6 +432,34 @@ class CapabilityTrackStore:
             return False
         self._save_all(remaining)
         return True
+
+    def migrate_stable_volatility_to_periodic(self) -> dict:
+        """[next_doc/capability_wiki_freshness_improvement_plan.md 阶段 2]
+        批量把存量子主题里 `volatility == "stable"` 的改成 `"periodic"`
+        （30 天刷新周期）——`OutlineTopic` 的默认值已经改了，但这只影响
+        新建的子主题，不会改动此前已经落盘、字段值就是字面 "stable" 的
+        存量数据。不做成 daemon 启动时自动静默迁移，由用户通过
+        `/capability migrate-volatility` 显式触发一次，符合本项目一贯
+        "改动用户数据前需要显式确认"的取向。
+
+        返回 `{"tracks_affected": int, "topics_migrated": int}`，均为 0
+        时表示没有任何 "stable" 子主题需要迁移（幂等，可以放心重复执行）。
+        """
+        tracks = self._load_all()
+        tracks_affected = 0
+        topics_migrated = 0
+        for track in tracks:
+            track_changed = False
+            for topic in track.outline:
+                if topic.volatility == "stable":
+                    topic.volatility = "periodic"
+                    topics_migrated += 1
+                    track_changed = True
+            if track_changed:
+                tracks_affected += 1
+        if topics_migrated:
+            self._save_all(tracks)
+        return {"tracks_affected": tracks_affected, "topics_migrated": topics_migrated}
 
 
 # ── CapabilityLedgerStore：单 Track 的进度台账 ─────────────────────────────
@@ -1018,7 +1057,8 @@ def run_capability_learning_cycle(
 
     summary = {"tracks_processed": 0, "topics_researched": 0, "questions_raised": 0,
                "questions_consumed": 0, "topics_skipped": 0, "topics_reused": 0,
-               "outline_suggestions_generated": 0, "topics_research_empty": 0}
+               "outline_suggestions_generated": 0, "topics_research_empty": 0,
+               "topics_research_thin": 0}
 
     active_tracks = sorted(
         track_store.list_tracks(status="active"),
@@ -1186,34 +1226,66 @@ def run_capability_learning_cycle(
             # `summary`/`text` 字段），保持两边口径一致；自定义
             # `wiki_writer` 只要遵循同一约定（真正没有内容时传入的
             # `results` 本身就是空/无有效摘要）也会得到正确的判断。
-            has_real_content = any((r.get("summary") or r.get("text") or "").strip() for r in results)
+            # [next_doc/capability_wiki_freshness_improvement_plan.md 阶段 1]
+            # 二元的 has_real_content 扩展成三态：empty（完全没查到内容，
+            # v0.21.1 已有行为）/ thin（查到内容但明显太单薄，新增）/
+            # sufficient（内容量达标）。只有 sufficient 才允许标 covered，
+            # thin 和 empty 都保持/回退 partial，下一轮会被 scan_outline_gaps()
+            # 重新选中重试，不需要等 volatility 的周期性刷新窗口。
+            content_chars = sum(
+                len((r.get("summary") or r.get("text") or "").strip()) for r in results
+            )
+            if content_chars <= 0:
+                completeness = "empty"
+            elif content_chars < CONTENT_SUFFICIENT_MIN_CHARS:
+                completeness = "thin"
+            else:
+                completeness = "sufficient"
+            has_real_content = completeness != "empty"
 
-            page_ids = wiki_writer(topic, track, results)
+            # 优先尝试把完整性信号传给 wiki_writer，让它落盘到 frontmatter；
+            # 自定义 wiki_writer 若还是旧的三参数签名（不接受 completeness
+            # 关键字参数），TypeError 后退回旧式调用——不强制所有调用方都
+            # 跟着改签名，符合本项目"失败路径回退宽松默认"的一贯约定。
+            try:
+                page_ids = wiki_writer(topic, track, results, completeness=completeness)
+            except TypeError:
+                page_ids = wiki_writer(topic, track, results)
+
+            action_by_completeness = {
+                "empty": "research_empty",
+                "thin": "research_thin",
+                "sufficient": "researched",
+            }
+            summary_by_completeness = {
+                "empty": "本轮检索未获得有效结果（写入了占位页面，下轮会重新尝试，"
+                         "不计入已覆盖）",
+                "thin": f"本轮检索到内容但明显不够充分（合计 {content_chars} 字，"
+                        f"未达 {CONTENT_SUFFICIENT_MIN_CHARS} 字阈值），下轮会重新尝试补充，"
+                        "不计入已覆盖",
+                "sufficient": f"检索并写入 {len(page_ids)} 个 wiki 页面",
+            }
             ledger_store.append(CapabilityLedgerEntry(
                 track_id=track.track_id,
                 topic_id=topic.topic_id,
-                action="researched" if has_real_content else "research_empty",
-                summary=(
-                    f"检索并写入 {len(page_ids)} 个 wiki 页面"
-                    if has_real_content
-                    else "本轮检索未获得有效结果（写入了占位页面，下轮会重新尝试，"
-                         "不计入已覆盖）"
-                ),
+                action=action_by_completeness[completeness],
+                summary=summary_by_completeness[completeness],
                 wiki_page_ids=page_ids,
             ))
             summary["topics_researched"] += 1
             if not has_real_content:
                 summary["topics_research_empty"] += 1
+            if completeness == "thin":
+                summary["topics_research_thin"] += 1
             track_advanced = True
             if global_budget_remaining is not None:
                 global_budget_remaining -= 1
 
-            # 更新大纲覆盖状态：只有真的查到内容才算 covered；查到内容但
-            # `page_ids` 为空（自定义 wiki_writer 选择不落盘）保留原有的
-            # partial 语义；`results` 为空（没查到任何东西）同样归为
-            # partial，保证下一轮还会被 `scan_outline_gaps()` 选中重试，
-            # 不会因为写了一页空内容就被判定"已经完成，不用再管了"。
-            topic.coverage_state = "covered" if (has_real_content and page_ids) else "partial"
+            # 更新大纲覆盖状态：只有内容量达标（sufficient）才算 covered；
+            # thin（内容太单薄）和 empty（没查到任何东西）都归 partial，
+            # 保证下一轮还会被 `scan_outline_gaps()` 选中重试，不会因为
+            # 写了一页内容单薄/空的页面就被判定"已经完成，不用再管了"。
+            topic.coverage_state = "covered" if (completeness == "sufficient" and page_ids) else "partial"
             topic.last_touched_at = time.time()
             topic.wiki_page_ids = list(set(topic.wiki_page_ids + page_ids))
 
@@ -1455,7 +1527,10 @@ def make_wiki_writer(paths: AgentPaths) -> WikiWriterFn:
     集成，不如先留空、明确标注，等接线阶段和 wiki 模块的维护者一起确认）。
     """
 
-    def _writer(topic: OutlineTopic, track: CapabilityTrack, results: list[dict]) -> list[str]:
+    def _writer(
+        topic: OutlineTopic, track: CapabilityTrack, results: list[dict],
+        *, completeness: Optional[str] = None,
+    ) -> list[str]:
         from datetime import datetime, timezone
 
         from mini_agent.wiki.writer import write_page
@@ -1463,6 +1538,21 @@ def make_wiki_writer(paths: AgentPaths) -> WikiWriterFn:
         # §13.3-g：写入前先过滤风险表述（具体买卖建议等），并判定是否需要
         # requires_disclaimer 标记——这一步必须在这里做，不能延后到接线阶段。
         results, _filtered_any, requires_disclaimer = apply_compliance_filter(results, track)
+
+        # [next_doc/capability_wiki_freshness_improvement_plan.md 阶段 1]
+        # completeness 由调用方（run_capability_learning_cycle）算好传入；
+        # 独立调用本函数（比如测试/其它调用方不传这个参数）时在这里按同一套
+        # 口径自行兜底计算一次，保证任何调用路径写出来的页面都带这个字段。
+        if completeness is None:
+            content_chars = sum(
+                len((r.get("summary") or r.get("text") or "").strip()) for r in results
+            )
+            if content_chars <= 0:
+                completeness = "empty"
+            elif content_chars < CONTENT_SUFFICIENT_MIN_CHARS:
+                completeness = "thin"
+            else:
+                completeness = "sufficient"
 
         page_id = f"cap_{track.track_id}_{topic.topic_id}"
         body_lines = [f"# {topic.name}", ""]
@@ -1476,11 +1566,19 @@ def make_wiki_writer(paths: AgentPaths) -> WikiWriterFn:
                 urls.append(url)
             body_lines.append(f"- {summary}" + (f"（来源：{url}）" if url else ""))
         has_body_content = len(body_lines) > 2
-        body = (
-            "\n".join(body_lines) if has_body_content
-            else f"# {topic.name}\n\n（本轮检索未获得有效结果，后续轮次会自动重试，"
-                 f"该子主题暂不计入已覆盖）"
-        )
+        if not has_body_content:
+            body = (
+                f"# {topic.name}\n\n（本轮检索未获得有效结果，后续轮次会自动重试，"
+                f"该子主题暂不计入已覆盖）"
+            )
+        elif completeness == "thin":
+            body = (
+                "\n".join(body_lines)
+                + f"\n\n（本轮检索到的内容偏少，尚未达到判定为完整的字数阈值，"
+                  f"后续轮次会继续补充，该子主题暂不计入已覆盖）"
+            )
+        else:
+            body = "\n".join(body_lines)
         if requires_disclaimer:
             body += "\n\n> 仅供参考，不构成投资/医疗/法律等专业建议。"
 
@@ -1489,6 +1587,7 @@ def make_wiki_writer(paths: AgentPaths) -> WikiWriterFn:
             "source_urls": urls,
             "retrieved_at": datetime.now(timezone.utc).isoformat(),
             "requires_disclaimer": requires_disclaimer,
+            "content_completeness": completeness,
         }
         write_page(
             paths=paths,
@@ -1778,7 +1877,10 @@ def make_agent_wiki_writer(cfg: "AppConfig", paths: AgentPaths) -> WikiWriterFn:
     max_turns = max(1, cfg.capability_learning.agent_wiki_writer_max_turns)
     timeout_seconds = max(30, cfg.capability_learning.agent_wiki_writer_timeout_seconds)
 
-    def _writer(topic: OutlineTopic, track: CapabilityTrack, results: list[dict]) -> list[str]:
+    def _writer(
+        topic: OutlineTopic, track: CapabilityTrack, results: list[dict],
+        *, completeness: Optional[str] = None,
+    ) -> list[str]:
         from datetime import datetime, timezone
 
         filtered_results, _any_filtered, requires_disclaimer = apply_compliance_filter(results, track)
@@ -1789,6 +1891,20 @@ def make_agent_wiki_writer(cfg: "AppConfig", paths: AgentPaths) -> WikiWriterFn:
             if s:
                 material_lines.append(f"- {s}" + (f"（来源：{r.get('url')}）" if r.get("url") else ""))
         material = "\n".join(material_lines) if material_lines else "（本轮调研未提供额外素材，可自行检索补充）"
+
+        # [next_doc/capability_wiki_freshness_improvement_plan.md 阶段 1]
+        # 兜底口径与 make_wiki_writer 一致：调用方没传 completeness 时按
+        # results 自行算一次，保证走 agent 写入模式的页面也带这个字段。
+        if completeness is None:
+            content_chars = sum(
+                len((r.get("summary") or r.get("text") or "").strip()) for r in filtered_results
+            )
+            if content_chars <= 0:
+                completeness = "empty"
+            elif content_chars < CONTENT_SUFFICIENT_MIN_CHARS:
+                completeness = "thin"
+            else:
+                completeness = "sufficient"
 
         page_id = f"cap_{track.track_id}_{topic.topic_id}"
         _CAPABILITY_WIKI_WRITE_STATE.update({
@@ -1801,6 +1917,7 @@ def make_agent_wiki_writer(cfg: "AppConfig", paths: AgentPaths) -> WikiWriterFn:
                 "source_urls": urls,
                 "retrieved_at": datetime.now(timezone.utc).isoformat(),
                 "requires_disclaimer": requires_disclaimer,
+                "content_completeness": completeness,
             },
             "requires_disclaimer": requires_disclaimer,
             "written_page_id": None,
@@ -1841,7 +1958,7 @@ def make_agent_wiki_writer(cfg: "AppConfig", paths: AgentPaths) -> WikiWriterFn:
             _CAPABILITY_WIKI_WRITE_STATE.update({"active": False, "paths": None})
 
         # SubAgent 没有成功写入——退回固定模板兜底，复用同一份 results。
-        return fallback_writer(topic, track, results)
+        return fallback_writer(topic, track, results, completeness=completeness)
 
     return _writer
 

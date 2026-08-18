@@ -61,7 +61,11 @@ def test_scan_outline_gaps_prefers_uncovered_and_oldest(paths):
     store = CapabilityTrackStore(paths)
     track = store.create(title="股票分析能力", persona_desc="x", outline_names=[])
     track.outline = [
-        OutlineTopic(topic_id="t1", name="A", coverage_state="covered"),
+        # volatility 默认值已改为 "periodic"（见
+        # next_doc/capability_wiki_freshness_improvement_plan.md 阶段 2），
+        # 这里显式标 "stable" 保持这条用例本身要测的"uncovered/partial
+        # 排序优先级"语义不受知识时效性衰减机制影响。
+        OutlineTopic(topic_id="t1", name="A", coverage_state="covered", volatility="stable"),
         OutlineTopic(topic_id="t2", name="B", coverage_state="uncovered"),
         OutlineTopic(topic_id="t3", name="C", coverage_state="partial", last_touched_at=100),
         OutlineTopic(topic_id="t4", name="D", coverage_state="partial", last_touched_at=200),
@@ -133,7 +137,10 @@ def test_cycle_with_retriever_and_writer_updates_outline(paths):
     )
 
     def fake_retriever(topic, track):
-        return [{"url": "https://example.com/a", "summary": "示例内容"}]
+        # 需要达到 CONTENT_SUFFICIENT_MIN_CHARS 阈值才判定为 "sufficient"
+        # 从而标记 covered（见 capability_wiki_freshness_improvement_plan.md
+        # 阶段 1），否则会被归为 "thin"。
+        return [{"url": "https://example.com/a", "summary": "示例内容。" * 25}]
 
     def fake_writer(topic, track, results):
         return [f"wiki_page_{topic.topic_id}"]
@@ -269,7 +276,8 @@ def test_cycle_end_to_end_with_real_wiki_writer(paths):
     )
 
     def fake_retriever(topic, track):
-        return [{"url": "https://example.com/x", "summary": "示例摘要内容"}]
+        # 同上：需要达到内容量阈值才会判定 covered。
+        return [{"url": "https://example.com/x", "summary": "示例摘要内容。" * 20}]
 
     summary = run_capability_learning_cycle(
         paths, retriever=fake_retriever, wiki_writer=make_wiki_writer(paths),

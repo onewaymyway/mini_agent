@@ -47,7 +47,11 @@ def _placeholder_writer(topic, track, results):
 
 
 def _real_retriever(topic, track):
-    return [{"url": "https://example.com/a", "summary": "真实检索到的内容"}]
+    # 内容长度需要达到 CONTENT_SUFFICIENT_MIN_CHARS 阈值才会被判定为
+    # "sufficient"（见 next_doc/capability_wiki_freshness_improvement_plan.md
+    # 阶段 1），否则会被归为 "thin" 而不是 covered——这里用一段够长的文本
+    # 代表"真正查到了充分内容"，而不是一句简短占位文案。
+    return [{"url": "https://example.com/a", "summary": "真实检索到的内容。" * 15}]
 
 
 def _real_writer(topic, track, results):
@@ -98,7 +102,8 @@ class TestEmptyRetrievalCoverageState:
 
         def _counting_retriever(topic, track):
             calls.append(topic.topic_id)
-            return [{"url": "https://example.com/b", "summary": "这次真的查到了"}]
+            # 同上：内容需要够长才算 "sufficient"，否则会被归为 "thin"。
+            return [{"url": "https://example.com/b", "summary": "这次真的查到了充分的内容。" * 12}]
 
         run_capability_learning_cycle(paths, retriever=_counting_retriever, wiki_writer=_real_writer)
 

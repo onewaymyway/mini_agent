@@ -52,6 +52,12 @@ cron_scheduler.py SYSTEM_JOBS 里对应条目的说明）。
                                    — 采纳一条建议，追加为大纲新子主题
   /capability suggestions dismiss <suggestion_id>
                                    — 忽略一条建议
+  /capability migrate-volatility  — [next_doc/capability_wiki_freshness_
+                                     improvement_plan.md 阶段 2] 一次性把
+                                     存量子主题里 volatility=="stable"（永
+                                     不过期）的批量改成 "periodic"（30 天
+                                     刷新周期）。幂等，可重复执行；不影响
+                                     新建子主题（默认值已改为 periodic）。
 """
 
 from __future__ import annotations
@@ -166,6 +172,19 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
             f"已创建 {type_note} Track [{track.track_id}] {track.title}，"
             f"大纲 {len(track.outline)} 个子主题{draft_note}，wiki_tag={track.wiki_tag}"
         )
+        return
+
+    if sub == "migrate-volatility":
+        store = CapabilityTrackStore(paths)
+        result = store.migrate_stable_volatility_to_periodic()
+        if result["topics_migrated"] == 0:
+            R.print_info("没有找到 volatility=\"stable\" 的子主题，无需迁移。")
+        else:
+            R.print_success(
+                f"已迁移 {result['topics_migrated']} 个子主题（涉及 "
+                f"{result['tracks_affected']} 个 Track），volatility 从 "
+                f"\"stable\" 改为 \"periodic\"（30 天刷新周期）。"
+            )
         return
 
     if sub == "cycle":

@@ -1,6 +1,18 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.23（用户反馈两点——① v0.22 给调研 SubAgent 的只读工具白名单太窄，"skill 里的方法可能非常复杂，需要调用各种工具和脚本才能实现"，应该开放 Agent 的所有能力，包括读写文件、执行命令；② 不应该只让 agent 做检索，应该让 agent 直接去修改/写入 wiki 文件，而不是"产出一段摘要 → 固定模板渲染"这种间接方式，这样才能更好地利用 agent 的能力。**改动**：新增两个独立配置开关（详见「§14.5 全权限工具模式与 agent 直写 wiki」小节）——`CapabilityLearningConfig.agent_retriever_tool_mode`（`"readonly"` 默认 / `"full"`）：`retriever_mode="agent"` 时，`"full"` 档位额外授予调研 SubAgent `bash`/`write_file`/`create_file`/`patch_file`/`patch_file_simple`/`list_dir`/`tree_summary`/`diff_files`（唯一不随配置放开的是 `delete_file`，任何模式下都不授予）；`CapabilityLearningConfig.wiki_write_mode`（`"callback"` 默认 / `"agent"`）：`"agent"` 档位新增 `make_agent_wiki_writer(cfg, paths)`，改由一个 SubAgent 直接调用新增的专属工具 `capability_wiki_write` 把内容写进 wiki 页面，而不是"检索/调研产出摘要 → 固定模板拼页面"这种间接方式；SubAgent 未能在轮数/超时内成功调用该工具时，自动退回固定模板兜底，保证"这个子主题最终有一页落盘记录"这个 P1 就定下的不变量不被打破。两个开关都默认关闭（`"readonly"`/`"callback"`），符合本项目一贯"新机制先保守默认"的取向。）
+- **版本**：v0.24（用户反馈"看板中能力学习标签页的 wiki 一直没有更新"，
+  排查定位到 `scan_outline_gaps()` 对 `coverage_state=="covered"` 且
+  `volatility=="stable"`（默认值）的子主题永久跳过，即使内容单薄/有
+  问题也不会被重新检索。**改动**：见「§14.6 wiki 内容完整性判定与刷新
+  周期」小节——① 新增内容完整性三态判定（`empty`/`thin`/`sufficient`），
+  只有内容量达标（默认阈值 120 字）才允许标 `covered`，内容太少的
+  `thin` 状态会保持 `partial`，下一轮自动重试，不用等 30 天的周期性
+  刷新窗口；判定结果落盘到 wiki 页面 frontmatter 的 `content_completeness`
+  字段；② `OutlineTopic.volatility` 默认值从 `"stable"`（永不过期）
+  改为 `"periodic"`（30 天刷新周期），并新增
+  `/capability migrate-volatility` 命令批量迁移存量 `"stable"` 数据。
+  详见 `next_doc/capability_wiki_freshness_improvement_plan.md`。）
+- **上一版本**：v0.23（用户反馈两点——① v0.22 给调研 SubAgent 的只读工具白名单太窄，"skill 里的方法可能非常复杂，需要调用各种工具和脚本才能实现"，应该开放 Agent 的所有能力，包括读写文件、执行命令；② 不应该只让 agent 做检索，应该让 agent 直接去修改/写入 wiki 文件，而不是"产出一段摘要 → 固定模板渲染"这种间接方式，这样才能更好地利用 agent 的能力。**改动**：新增两个独立配置开关（详见「§14.5 全权限工具模式与 agent 直写 wiki」小节）——`CapabilityLearningConfig.agent_retriever_tool_mode`（`"readonly"` 默认 / `"full"`）：`retriever_mode="agent"` 时，`"full"` 档位额外授予调研 SubAgent `bash`/`write_file`/`create_file`/`patch_file`/`patch_file_simple`/`list_dir`/`tree_summary`/`diff_files`（唯一不随配置放开的是 `delete_file`，任何模式下都不授予）；`CapabilityLearningConfig.wiki_write_mode`（`"callback"` 默认 / `"agent"`）：`"agent"` 档位新增 `make_agent_wiki_writer(cfg, paths)`，改由一个 SubAgent 直接调用新增的专属工具 `capability_wiki_write` 把内容写进 wiki 页面，而不是"检索/调研产出摘要 → 固定模板拼页面"这种间接方式；SubAgent 未能在轮数/超时内成功调用该工具时，自动退回固定模板兜底，保证"这个子主题最终有一页落盘记录"这个 P1 就定下的不变量不被打破。两个开关都默认关闭（`"readonly"`/`"callback"`），符合本项目一贯"新机制先保守默认"的取向。）
 - **上一版本**：v0.22（用户反馈"能力学习检索机制不合理——不能只用 `web_search`，应该考虑利用 Agent 自身能力（含 skill 生态）去检索更复杂的内容"。**改动**：`CapabilityLearningConfig` 新增 `retriever_mode` 档位（`"web_search"` 默认 / `"agent"`），`"agent"` 档位下 `make_agent_retriever(cfg)` 用受限只读工具集（`web_search`/`search_knowledge`/`read_file`/`glob`/`grep`/`skill_list`/`skill_activate`/`skill_resource_list`/`skill_resource_load`）的 `SubAgent`（`orchestrator/sub_agent.py`）自主完成一轮调研——可以先 `skill_list`/`skill_activate` 激活更适合当前领域的技能再检索，而不是只会做"关键词拼接 → 单次搜索引擎调用"。`/capability cycle`（`cli/commands/capability_cmd.py`）按 `retriever_mode` 选择对应的 retriever 工厂函数，两种模式产出的结果写入前都仍统一经过 §13.3-g 合规过滤，不受影响。默认值保留 `"web_search"`（成本更低、单轮耗时更短，符合本项目一贯的"新机制先保守默认"取向），用户可在 `agent_config.json` 里把 `capability_learning.retriever_mode` 改成 `"agent"` 切换。详见「§14.4 检索方式扩展：`retriever_mode`」小节。）
 - **再上一版本**：v0.21.1（bug 修复：`run_capability_learning_cycle()` 检索没有任何结果时错误地把子主题标成 `covered`。**触发背景**：用户反馈打开某个 wiki 页面看到正文只有"（暂无检索结果）"，但对应的学习台账却写着"🔍 已检索沉淀　检索并写入 1 个 wiki 页面"，感觉不正常。**根因**：`make_wiki_writer()` 无论 `retriever` 返回的 `results` 是否为空，都会无条件写出一页——真的检索到内容就写正文，检索不到就写占位文案"（暂无检索结果）"，`page_ids` 因此永远非空；而 `run_capability_learning_cycle()` 原本直接用 `page_ids` 是否非空判断 `topic.coverage_state`，导致"其实什么也没查到"的子主题被永久标记为 `covered`——`scan_outline_gaps()` 从此再也不会把它选回候选池重试，看起来"已覆盖"实际上永远是一页空内容，学习台账的文案也没有区分"写入了有内容的页面"和"写入了占位页面"这两种情况。**修复**：新增 `topic.coverage_state` 只在真正查到内容（`results` 里至少有一条非空 `summary`/`text`）时才标记为 `covered`，否则保持/回退为 `partial`（下一轮还会被重新选中重试）；学习台账新增 `research_empty` 台账动作，文案明确写"本轮检索未获得有效结果……不计入已覆盖"；`run_capability_learning_cycle()` 返回值新增 `topics_research_empty` 计数；`maybe_dispatch_capability_notification()`"新沉淀页面数"改用 `topics_researched - topics_research_empty`，不把空占位页当作新沉淀内容推送；占位页正文文案也从"（暂无检索结果）"改为更明确的"（本轮检索未获得有效结果，后续轮次会自动重试，该子主题暂不计入已覆盖）"。见「检索空结果 bug 修复」小节。）
 - **再再上一版本**：v0.21（「后续计划」三项全部完成。第 1 项：通知系统接入（`notification_enabled`/`notification_frequency`/`notification_max_per_day` + `maybe_dispatch_capability_notification()`，见「§8 通知系统接入」小节）。第 2 项：大纲动态生长建议核心逻辑 + CLI（`OutlineSuggestion` + `CapabilityOutlineSuggestionStore` + `generate_outline_suggestion_from_answer()` + `accept_outline_suggestion()` + `/capability suggestions`，见「§13.2-f 大纲动态生长建议」小节）。第 2 项补齐 HTTP API（`GET /v1/capability/suggestions`、`POST .../accept`、`POST .../dismiss`）与看板 UI（能力学习 Tab 新增「💡 大纲扩展建议」区块，采纳/忽略按钮）；第 3 项 Persona 详情页镜像视图——能力学习 Tab 新增「🎭 已发布角色一览」区块，按角色列出各自绑定的 `wiki_scopes`，实现 §11.2 末尾"双向可见"；「人设 / 能力方向列表」的「能力大纲覆盖状态」区块新增「查看」按钮直接展开对应 wiki 页面正文（`GET /v1/capability/wiki_pages/{page_id}`））
@@ -341,6 +353,90 @@ Persona 详情页反向展示"绑定的知识范围"列表未单独实现——�
 | 能力学习 Tab 新增「🎭 已发布角色一览」区块：复用 `list_capability_personas()`（与知识范围绑定卡片同一份数据源，不额外请求），按角色列出 `display_name` + 已绑定的 `wiki_scopes`（未绑定则显示"不限定范围（检索全库）"） | ✅ 已实现 | `apps/mini_agent_kanban/app.py`（`render_capability_tab`） |
 
 未新开独立的 Persona 管理 Tab——沿用文档此前的判断，双向可见性做在同一个 Tab 的两个区块里已经足够，若后续这个 Tab 内容变得过于拥挤，再评估是否拆分独立 Tab。
+
+### §14.6 wiki 内容完整性判定与刷新周期（v0.24）—— ✅ 已实现
+
+**触发背景**：用户反馈"看板中能力学习标签页的 wiki 一直没有更新"。排查
+后定位到根因不在 cron/检索本身，而在 `scan_outline_gaps()` 的既有规则：
+`coverage_state=="covered"` 且不 `stale` 的子主题会被永久跳过；而
+`OutlineTopic.volatility` 默认值 `"stable"` 在 `_needs_staleness_refresh()`
+里被硬编码为永不过期。只要一个子主题曾经被判定 `covered`（哪怕内容
+只有一句话、明显不够），就再也不会被系统自己重新触达。用户提出两点
+明确诉求：① 内容太少的子主题也应该判定需要更新，不能只判断"是否为
+空"；② 不应该有 `stable` 这个"永不过期"的默认档位，大部分 wiki 都应该
+有刷新周期。详细方案见 `next_doc/capability_wiki_freshness_improvement_plan.md`。
+
+**方案 ①：内容完整性三态判定（`empty`/`thin`/`sufficient`）**
+
+`run_capability_learning_cycle()` 原本的 `has_real_content` 是二元
+判断（结果里有没有非空摘要），本轮扩展成三态——把 `results` 里所有
+非空摘要/正文合并后的总字数，按新增常量 `CONTENT_SUFFICIENT_MIN_CHARS`
+（默认 `120`，写死不做配置项）分档：
+
+| 态 | 判定条件 | `coverage_state` | 台账 action |
+| --- | --- | --- | --- |
+| `empty` | 总字数为 0 | `partial`（v0.21.1 已实现） | `research_empty`（不变） |
+| `thin`（新增） | 0 < 总字数 < 120 | `partial`（此前会被错误标 `covered`） | `research_thin`（新增） |
+| `sufficient` | 总字数 ≥ 120 | `covered` | `researched`（不变） |
+
+`thin` 和 `empty` 一样保持 `partial`，`scan_outline_gaps()` 里 `partial`
+本来就在 `covered` 之前被优先选中——也就是说内容不够的子主题下一轮
+立刻会被重新选中重试，不需要等 `volatility` 的周期性刷新窗口。
+`run_capability_learning_cycle()` 返回值新增 `topics_research_thin`
+计数（`topics_research_empty` 含义不变，两者互斥）。
+
+**内容完整性落盘到 wiki 页面本身**：`make_wiki_writer()` /
+`make_agent_wiki_writer()` 都新增可选关键字参数 `completeness`，写入
+页面 frontmatter 新字段 `content_completeness`（`empty`/`thin`/
+`sufficient`），`thin` 状态下正文末尾追加一句"内容偏少，后续会继续
+补充"的提示。这样即使不翻学习台账，直接打开 wiki 页面也能看出这页
+内容够不够，符合用户"创建 wiki 时同时记录数据是否足够完整"的诉求。
+`run_capability_learning_cycle()` 调用 `wiki_writer` 时优先带
+`completeness=` 关键字调用，遇到不接受该参数的旧式三参数签名
+`wiki_writer`（`TypeError`）会自动退回旧式调用——不强制所有自定义
+`wiki_writer` 实现都跟着改签名，符合本项目一贯"失败路径回退宽松
+默认"的取向。
+
+**方案 ②：去掉 `stable` 默认档位**
+
+`OutlineTopic.volatility` 默认值从 `"stable"`（永不过期）改为
+`"periodic"`（30 天刷新周期），`from_dict()` 的缺省值同步改动——大纲
+创建、`accept_outline_suggestion()` 采纳建议新增子主题等所有实例化
+路径统一走 dataclass 默认值，一处改动全覆盖。`stable` 保留为可选值，
+供用户手动标注真正基本不随时间变化的极少数子主题，只是不再是默认。
+
+**存量数据迁移**：新增 `CapabilityTrackStore.migrate_stable_volatility_to_periodic()`
+批量把已持久化 Track 里 `volatility=="stable"` 的子主题改成
+`"periodic"`（幂等，返回 `{"tracks_affected": 0, "topics_migrated": 0}`
+表示无需迁移），配套 CLI 子命令 `/capability migrate-volatility`。不做
+成 daemon 启动时自动静默迁移，需要用户显式触发一次，符合本项目一贯
+"改动用户数据前需要显式确认"的取向。
+
+**测试覆盖**：新增 `tests/test_capability_wiki_freshness.py`（12 个
+用例，覆盖三态判定、frontmatter 落盘、旧签名 `wiki_writer` 兼容、
+`thin` 子主题下一轮立即重试、`volatility` 默认值、迁移函数的迁移/
+幂等/无需迁移三种情况）；`tests/test_capability_learning_p1.py` 和
+`tests/test_capability_learning_empty_retrieval_fix.py` 里因阈值语义
+变化受影响的既有用例（测试摘要文本长度过短、依赖 `stable` 默认值的
+排序测试）已同步调整，不影响这些用例本身要验证的行为。
+
+| 落地内容 | 状态 | 涉及文件 |
+| --- | --- | --- |
+| `CONTENT_SUFFICIENT_MIN_CHARS` 常量 + 三态判定 + `topics_research_thin` 计数 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
+| `make_wiki_writer`/`make_agent_wiki_writer` 新增 `completeness` 参数 + frontmatter 落盘 + 旧签名兼容 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
+| `OutlineTopic.volatility` 默认值改为 `"periodic"` | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
+| `migrate_stable_volatility_to_periodic()` + `/capability migrate-volatility` | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py`、`src/mini_agent/cli/commands/capability_cmd.py` |
+| 单元测试（12 个新用例 + 既有用例同步调整） | ✅ 全部通过 | `tests/test_capability_wiki_freshness.py`、`tests/test_capability_learning_p1.py`、`tests/test_capability_learning_empty_retrieval_fix.py` |
+
+**留给后续的方向（本轮刻意不做）**：
+- 不引入更复杂的内容质量判定（比如 LLM 判断"内容是否准确/是否回答了
+  子主题"）——本轮只解决"量"的问题，"质"的判断留给未来有真实误判
+  案例后再评估。
+- `CONTENT_SUFFICIENT_MIN_CHARS` 阈值暂不做成配置项，先观察默认值
+  120 是否合适。
+- 看板暂未单独展示 `content_completeness` 字段（目前只落盘在
+  frontmatter 里，wiki 页面详情本身已可见）——等有真实使用反馈后再
+  评估是否值得在能力学习 Tab 加一个专属的完整性标记 UI。
 
 ### §14.1-a（`record_wiki_miss()` 接线）—— ✅ 已提前实现
 
