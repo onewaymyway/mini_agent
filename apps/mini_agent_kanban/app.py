@@ -5798,6 +5798,26 @@ def render_capability_tab(client: "AgentClient"):
         return
 
     st.markdown("##### 人设 / 能力方向列表")
+    refresh_all_col, refresh_all_hint_col = st.columns([1, 3])
+    with refresh_all_col:
+        if st.button("🔄 刷新所有存量", key="cap_refresh_all_btn"):
+            resp = client.refresh_all_capability_topics()
+            if isinstance(resp, dict) and resp.get("_error"):
+                st.error(f"刷新失败：{resp['_error']}")
+            elif isinstance(resp, dict) and resp.get("topics_reset", 0) == 0:
+                st.info("没有已覆盖的子主题需要刷新。")
+            else:
+                st.success(
+                    f"已把 {resp.get('topics_reset', 0)} 个已覆盖子主题重置为待刷新"
+                    f"（涉及 {resp.get('tracks_affected', 0)} 个 Track），"
+                    f"下一轮能力学习循环会重新检索。"
+                )
+                st.rerun()
+    with refresh_all_hint_col:
+        st.caption(
+            "把所有 Track 里已判定「已覆盖」的子主题重置为待刷新，不用等 30 天的"
+            "周期性刷新窗口。不会清空已有 wiki 内容，重新检索到新内容前旧页面仍可读。"
+        )
     for track in tracks:
         outline = track.get("outline", []) or []
         total = len(outline)
@@ -5811,6 +5831,15 @@ def render_capability_tab(client: "AgentClient"):
         ):
             st.caption(track.get("persona_desc", ""))
             st.caption(f"wiki_tag: `{track.get('wiki_tag', '')}`　track_id: `{track.get('track_id', '')}`")
+            if st.button("🔄 刷新此 Track", key=f"cap_refresh_track_btn_{track.get('track_id', '')}"):
+                resp = client.refresh_all_capability_topics(track_id=track.get("track_id", ""))
+                if isinstance(resp, dict) and resp.get("_error"):
+                    st.error(f"刷新失败：{resp['_error']}")
+                elif isinstance(resp, dict) and resp.get("topics_reset", 0) == 0:
+                    st.info("这个 Track 没有已覆盖的子主题需要刷新。")
+                else:
+                    st.success(f"已把 {resp.get('topics_reset', 0)} 个已覆盖子主题重置为待刷新。")
+                    st.rerun()
 
             # ── 7.2 进度展示区：大纲覆盖状态 + 学习台账 ──────────────
             if outline:

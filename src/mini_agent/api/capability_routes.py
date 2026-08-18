@@ -150,6 +150,16 @@ def delete_track(request: Request, track_id: str):
     return {"deleted": True, "track_id": track_id}
 
 
+@capability_router.post("/tracks/refresh_all")
+def refresh_all_topics(request: Request, track_id: Optional[str] = None):
+    """[next_doc/capability_wiki_freshness_improvement_plan.md 看板"🔄 刷新
+    所有存量"按钮] 把已判定 covered 的子主题批量重置为 partial，供看板
+    按钮/`/capability refresh-all` 复用同一份核心逻辑。`track_id` 为空时
+    对所有 Track 生效；传入具体 track_id 时只影响该 Track。幂等。"""
+    store = CapabilityTrackStore(_get_paths(request))
+    return store.force_refresh_all_topics(track_id=track_id)
+
+
 @capability_router.get("/tracks/{track_id}/ledger")
 def get_track_ledger(request: Request, track_id: str, limit: int = 50):
     store = CapabilityLedgerStore(_get_paths(request))

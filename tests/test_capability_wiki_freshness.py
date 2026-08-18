@@ -172,7 +172,88 @@ class TestVolatilityDefault:
         assert topic.volatility == "periodic"
 
 
-class TestMigrateStableVolatility:
+class TestForceRefreshAllTopics:
+    def test_resets_covered_topics_to_partial(self, paths):
+        store = CapabilityTrackStore(paths)
+        track = store.create(title="T", persona_desc="d")
+        track.outline = [
+            OutlineTopic(topic_id="topic_1", name="A", coverage_state="covered",
+                         wiki_page_ids=["cap_topic_1"]),
+            OutlineTopic(topic_id="topic_2", name="B", coverage_state="uncovered"),
+            OutlineTopic(topic_id="topic_3", name="C", coverage_state="partial"),
+        ]
+        store.update(track.track_id, outline=track.outline)
+
+        result = store.force_refresh_all_topics()
+        assert result == {"tracks_affected": 1, "topics_reset": 1}
+
+        updated = store.get(track.track_id)
+        by_id = {t.topic_id: t.coverage_state for t in updated.outline}
+        assert by_id["topic_1"] == "partial"
+        assert by_id["topic_2"] == "uncovered"  # 不受影响
+        assert by_id["topic_3"] == "partial"    # 本来就是 partial，不受影响
+
+    def test_keeps_existing_wiki_page_ids(self, paths):
+        store = CapabilityTrackStore(paths)
+        track = store.create(title="T", persona_desc="d")
+        track.outline = [
+            OutlineTopic(topic_id="topic_1", name="A", coverage_state="covered",
+                         wiki_page_ids=["cap_topic_1"]),
+        ]
+        store.update(track.track_id, outline=track.outline)
+
+        store.force_refresh_all_topics()
+        updated = store.get(track.track_id)
+        assert updated.outline[0].wiki_page_ids == ["cap_topic_1"]
+
+    def test_scoped_to_single_track(self, paths):
+        store = CapabilityTrackStore(paths)
+        t1 = store.create(title="T1", persona_desc="d")
+        t1.outline = [OutlineTopic(topic_id="a", name="A", coverage_state="covered")]
+        store.update(t1.track_id, outline=t1.outline)
+        t2 = store.create(title="T2", persona_desc="d")
+        t2.outline = [OutlineTopic(topic_id="b", name="B", coverage_state="covered")]
+        store.update(t2.track_id, outline=t2.outline)
+
+        result = store.force_refresh_all_topics(track_id=t1.track_id)
+        assert result == {"tracks_affected": 1, "topics_reset": 1}
+        assert store.get(t1.track_id).outline[0].coverage_state == "partial"
+        assert store.get(t2.track_id).outline[0].coverage_state == "covered"  # 不受影响
+
+    def test_no_covered_topics_is_noop(self, paths):
+        store = CapabilityTrackStore(paths)
+        store.create(title="T", persona_desc="d", outline_names=["A"])
+        result = store.force_refresh_all_topics()
+        assert result == {"tracks_affected": 0, "topics_reset": 0}
+
+    def test_unknown_track_id_is_noop(self, paths):
+        store = CapabilityTrackStore(paths)
+        track = store.create(title="T", persona_desc="d")
+        track.outline = [OutlineTopic(topic_id="a", name="A", coverage_state="covered")]
+        store.update(track.track_id, outline=track.outline)
+
+        result = store.force_refresh_all_topics(track_id="does_not_exist")
+        assert result == {"tracks_affected": 0, "topics_reset": 0}
+        assert store.get(track.track_id).outline[0].coverage_state == "covered"
+
+    def test_refreshed_topic_reenters_candidate_pool_next_cycle(self, paths):
+        """刷新后不用等 volatility 周期，下一轮 cycle 就会被重新选中检索。"""
+        store = CapabilityTrackStore(paths)
+        track = store.create(title="T", persona_desc="d")
+        track.outline = [
+            OutlineTopic(topic_id="topic_1", name="A", coverage_state="covered",
+                         volatility="periodic"),
+        ]
+        store.update(track.track_id, outline=track.outline)
+
+        store.force_refresh_all_topics()
+
+        writer = _RecordingWriter()
+        result = run_capability_learning_cycle(
+            paths, retriever=_sufficient_retriever, wiki_writer=writer,
+        )
+        assert result["topics_researched"] == 1
+        assert writer.calls == ["sufficient"]
     def test_migrates_stable_topics_to_periodic(self, paths):
         store = CapabilityTrackStore(paths)
         track = store.create(title="T", persona_desc="d")

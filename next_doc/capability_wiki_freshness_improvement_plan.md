@@ -91,6 +91,25 @@ Track 里 `volatility == "stable"` 的子主题改成 `"periodic"`，返回
 - 不自动把存量 `stable` 数据迁移，需要用户显式触发 `/capability
   migrate-volatility`。
 
+### 阶段 4（补充，用户追加需求）：一键"刷新所有存量"
+
+用户反馈"应该有个按钮，可以刷新所有存量，让所有存量进入需要刷新的
+状态"——阶段 2 的 `migrate-volatility` 只解决"以后按周期自动刷新"，
+不解决"现在立刻让存量内容重新进候选池"这个更直接的诉求，两者不冲突，
+是互补的两条路径。
+
+新增 `CapabilityTrackStore.force_refresh_all_topics(track_id=None)`：
+把 `coverage_state=="covered"` 的子主题批量重置为 `"partial"`（不清空
+`wiki_page_ids`，旧内容在重新检索出新内容前仍可读），立刻重新进入
+`scan_outline_gaps()` 候选池，不用等 `volatility` 的周期性窗口。
+`track_id` 为空对所有 Track 生效，传入具体 id 只影响该 Track。幂等。
+
+三个接入点：
+- CLI：`/capability refresh-all [track_id]`
+- HTTP：`POST /v1/capability/tracks/refresh_all?track_id=...`
+- 看板：「🎓 能力学习」Tab 顶部「🔄 刷新所有存量」全局按钮 + 每个 Track
+  详情展开区里的「🔄 刷新此 Track」按钮
+
 ## 实施状态
 
 | 阶段 | 状态 | 涉及文件 |
@@ -98,8 +117,9 @@ Track 里 `volatility == "stable"` 的子主题改成 `"periodic"`，返回
 | 阶段 1：完整性三态判定 + frontmatter 落盘 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
 | 阶段 2：默认 volatility 改为 periodic + 迁移函数/命令 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py`、`src/mini_agent/cli/commands/capability_cmd.py` |
 | 阶段 3：thin 内容立即重试（复用既有 partial 优先级逻辑，无需额外改动） | ✅ 已实现（随阶段 1 一并生效） | `src/mini_agent/evolution/capability_learning.py` |
-| 文档同步 | ✅ 已实现 | `next_doc/persona_capability_learning_design.md`（新增「§14.6 wiki 内容完整性判定与刷新周期」小节） |
-| 测试 | ✅ 已实现 | `tests/test_capability_wiki_freshness.py`（新增 12 个用例）；`tests/test_capability_learning_p1.py`/`tests/test_capability_learning_empty_retrieval_fix.py` 中因阈值语义变化需要调整的既有用例（调大测试用摘要文本长度、显式标注 `volatility="stable"`）已同步修正 |
+| 阶段 4：一键刷新所有存量（CLI + HTTP + 看板按钮） | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py`、`src/mini_agent/cli/commands/capability_cmd.py`、`src/mini_agent/api/capability_routes.py`、`apps/mini_agent_kanban/client.py`、`apps/mini_agent_kanban/app.py` |
+| 文档同步 | ✅ 已实现 | `next_doc/persona_capability_learning_design.md`（§14.6 小节） |
+| 测试 | ✅ 已实现 | `tests/test_capability_wiki_freshness.py`（18 个用例，含阶段 4 的 6 个）；`tests/test_capability_learning_p1.py`/`tests/test_capability_learning_empty_retrieval_fix.py` 中因阈值语义变化需要调整的既有用例（调大测试用摘要文本长度、显式标注 `volatility="stable"`）已同步修正 |
 
 ### 阶段 1 落地细节
 

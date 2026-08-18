@@ -58,6 +58,13 @@ cron_scheduler.py SYSTEM_JOBS 里对应条目的说明）。
                                      不过期）的批量改成 "periodic"（30 天
                                      刷新周期）。幂等，可重复执行；不影响
                                      新建子主题（默认值已改为 periodic）。
+  /capability refresh-all [track_id]
+                                   — 把已判定 covered 的子主题批量重置为
+                                     partial，立刻重新进入下一轮检索候选池
+                                     （不用等 volatility 的周期性刷新窗口）。
+                                     不传 track_id 时对所有 Track 生效；
+                                     不清空已有 wiki 页面，重新检索到新内容
+                                     前旧内容仍可读。幂等，可重复执行。
 """
 
 from __future__ import annotations
@@ -184,6 +191,21 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
                 f"已迁移 {result['topics_migrated']} 个子主题（涉及 "
                 f"{result['tracks_affected']} 个 Track），volatility 从 "
                 f"\"stable\" 改为 \"periodic\"（30 天刷新周期）。"
+            )
+        return
+
+    if sub == "refresh-all":
+        store = CapabilityTrackStore(paths)
+        target_track_id = args[1] if len(args) > 1 else None
+        result = store.force_refresh_all_topics(track_id=target_track_id)
+        if result["topics_reset"] == 0:
+            R.print_info("没有找到 coverage_state==\"covered\" 的子主题，无需刷新。")
+        else:
+            scope_note = f"Track [{target_track_id}]" if target_track_id else "所有 Track"
+            R.print_success(
+                f"已把 {scope_note} 里 {result['topics_reset']} 个已覆盖子主题重置为 "
+                f"partial（涉及 {result['tracks_affected']} 个 Track），"
+                f"下一轮 /capability cycle 或 sys:capability_learning_cycle 会重新检索。"
             )
         return
 

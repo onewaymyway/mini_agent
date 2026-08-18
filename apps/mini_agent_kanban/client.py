@@ -975,6 +975,10 @@ class AgentClient:
     def delete_capability_track(self, track_id: str):
         return self._delete(f"/capability/tracks/{track_id}")
 
+    def refresh_all_capability_topics(self, track_id: str = None):
+        params = {"track_id": track_id} if track_id else None
+        return self._post("/capability/tracks/refresh_all", json_body={}, params=params)
+
     def capability_track_ledger(self, track_id: str, limit: int = 50):
         return self._get(f"/capability/tracks/{track_id}/ledger", params={"limit": limit})
 

@@ -10,7 +10,12 @@
   刷新窗口；判定结果落盘到 wiki 页面 frontmatter 的 `content_completeness`
   字段；② `OutlineTopic.volatility` 默认值从 `"stable"`（永不过期）
   改为 `"periodic"`（30 天刷新周期），并新增
-  `/capability migrate-volatility` 命令批量迁移存量 `"stable"` 数据。
+  `/capability migrate-volatility` 命令批量迁移存量 `"stable"` 数据；
+  ③ 用户追加需求"应该有个按钮可以刷新所有存量"——新增
+  `force_refresh_all_topics()`，把已 covered 的子主题批量重置为
+  partial 立刻重新进候选池（不清空已有 wiki 内容），接入 CLI
+  `/capability refresh-all`、HTTP `POST /v1/capability/tracks/refresh_all`
+  与看板「🔄 刷新所有存量」全局按钮 + 每个 Track 的单独刷新按钮。
   详见 `next_doc/capability_wiki_freshness_improvement_plan.md`。）
 - **上一版本**：v0.23（用户反馈两点——① v0.22 给调研 SubAgent 的只读工具白名单太窄，"skill 里的方法可能非常复杂，需要调用各种工具和脚本才能实现"，应该开放 Agent 的所有能力，包括读写文件、执行命令；② 不应该只让 agent 做检索，应该让 agent 直接去修改/写入 wiki 文件，而不是"产出一段摘要 → 固定模板渲染"这种间接方式，这样才能更好地利用 agent 的能力。**改动**：新增两个独立配置开关（详见「§14.5 全权限工具模式与 agent 直写 wiki」小节）——`CapabilityLearningConfig.agent_retriever_tool_mode`（`"readonly"` 默认 / `"full"`）：`retriever_mode="agent"` 时，`"full"` 档位额外授予调研 SubAgent `bash`/`write_file`/`create_file`/`patch_file`/`patch_file_simple`/`list_dir`/`tree_summary`/`diff_files`（唯一不随配置放开的是 `delete_file`，任何模式下都不授予）；`CapabilityLearningConfig.wiki_write_mode`（`"callback"` 默认 / `"agent"`）：`"agent"` 档位新增 `make_agent_wiki_writer(cfg, paths)`，改由一个 SubAgent 直接调用新增的专属工具 `capability_wiki_write` 把内容写进 wiki 页面，而不是"检索/调研产出摘要 → 固定模板拼页面"这种间接方式；SubAgent 未能在轮数/超时内成功调用该工具时，自动退回固定模板兜底，保证"这个子主题最终有一页落盘记录"这个 P1 就定下的不变量不被打破。两个开关都默认关闭（`"readonly"`/`"callback"`），符合本项目一贯"新机制先保守默认"的取向。）
 - **上一版本**：v0.22（用户反馈"能力学习检索机制不合理——不能只用 `web_search`，应该考虑利用 Agent 自身能力（含 skill 生态）去检索更复杂的内容"。**改动**：`CapabilityLearningConfig` 新增 `retriever_mode` 档位（`"web_search"` 默认 / `"agent"`），`"agent"` 档位下 `make_agent_retriever(cfg)` 用受限只读工具集（`web_search`/`search_knowledge`/`read_file`/`glob`/`grep`/`skill_list`/`skill_activate`/`skill_resource_list`/`skill_resource_load`）的 `SubAgent`（`orchestrator/sub_agent.py`）自主完成一轮调研——可以先 `skill_list`/`skill_activate` 激活更适合当前领域的技能再检索，而不是只会做"关键词拼接 → 单次搜索引擎调用"。`/capability cycle`（`cli/commands/capability_cmd.py`）按 `retriever_mode` 选择对应的 retriever 工厂函数，两种模式产出的结果写入前都仍统一经过 §13.3-g 合规过滤，不受影响。默认值保留 `"web_search"`（成本更低、单轮耗时更短，符合本项目一贯的"新机制先保守默认"取向），用户可在 `agent_config.json` 里把 `capability_learning.retriever_mode` 改成 `"agent"` 切换。详见「§14.4 检索方式扩展：`retriever_mode`」小节。）
@@ -420,13 +425,33 @@ Persona 详情页反向展示"绑定的知识范围"列表未单独实现——�
 变化受影响的既有用例（测试摘要文本长度过短、依赖 `stable` 默认值的
 排序测试）已同步调整，不影响这些用例本身要验证的行为。
 
+**方案 ③（用户追加需求）：一键"刷新所有存量"**
+
+用户进一步反馈"应该有个按钮，可以刷新所有存量，让所有存量进入需要
+刷新的状态"——方案 ② 的迁移只解决"以后按 30 天周期自动刷新"，不解决
+"现在立刻让存量内容重新进候选池"这个更直接的诉求。新增
+`CapabilityTrackStore.force_refresh_all_topics(track_id=None)`：把
+`coverage_state=="covered"` 的子主题批量重置为 `"partial"`，不清空
+`wiki_page_ids`（重新检索出新内容前旧页面仍可读），立刻重新进入
+`scan_outline_gaps()` 候选池，不用等 `volatility` 的周期性窗口；
+`track_id` 为空时对所有 Track 生效，传入具体 id 只影响该 Track；幂等。
+
+三个接入点，复用同一份核心逻辑：
+- CLI：`/capability refresh-all [track_id]`
+- HTTP：`POST /v1/capability/tracks/refresh_all?track_id=...`（`api/capability_routes.py`）
+- 看板：「🎓 能力学习」Tab「人设 / 能力方向列表」顶部「🔄 刷新所有存量」
+  全局按钮（覆盖所有 Track）+ 每个 Track 详情展开区里的「🔄 刷新此
+  Track」按钮（只影响该 Track），两处都复用 `client.py` 新增的
+  `refresh_all_capability_topics(track_id=None)`
+
 | 落地内容 | 状态 | 涉及文件 |
 | --- | --- | --- |
 | `CONTENT_SUFFICIENT_MIN_CHARS` 常量 + 三态判定 + `topics_research_thin` 计数 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
 | `make_wiki_writer`/`make_agent_wiki_writer` 新增 `completeness` 参数 + frontmatter 落盘 + 旧签名兼容 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
 | `OutlineTopic.volatility` 默认值改为 `"periodic"` | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
 | `migrate_stable_volatility_to_periodic()` + `/capability migrate-volatility` | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py`、`src/mini_agent/cli/commands/capability_cmd.py` |
-| 单元测试（12 个新用例 + 既有用例同步调整） | ✅ 全部通过 | `tests/test_capability_wiki_freshness.py`、`tests/test_capability_learning_p1.py`、`tests/test_capability_learning_empty_retrieval_fix.py` |
+| `force_refresh_all_topics()` + CLI `/capability refresh-all` + HTTP `POST /v1/capability/tracks/refresh_all` + 看板全局/单 Track 按钮 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py`、`src/mini_agent/cli/commands/capability_cmd.py`、`src/mini_agent/api/capability_routes.py`、`apps/mini_agent_kanban/client.py`、`apps/mini_agent_kanban/app.py` |
+| 单元测试（18 个新用例 + 既有用例同步调整） | ✅ 全部通过 | `tests/test_capability_wiki_freshness.py`、`tests/test_capability_learning_p1.py`、`tests/test_capability_learning_empty_retrieval_fix.py` |
 
 **留给后续的方向（本轮刻意不做）**：
 - 不引入更复杂的内容质量判定（比如 LLM 判断"内容是否准确/是否回答了

@@ -461,6 +461,46 @@ class CapabilityTrackStore:
             self._save_all(tracks)
         return {"tracks_affected": tracks_affected, "topics_migrated": topics_migrated}
 
+    def force_refresh_all_topics(self, track_id: Optional[str] = None) -> dict:
+        """[看板"🔄 刷新所有存量"按钮 / `/capability refresh-all`] 把已经
+        判定 `coverage_state == "covered"` 的子主题批量重置为 `"partial"`，
+        让它们立刻重新进入 `scan_outline_gaps()` 的候选池，不需要等
+        `volatility` 对应的周期性刷新窗口（30 天/7 天）——用于用户明确
+        感觉"存量 wiki 内容有问题，希望马上全部重新检索一轮"的场景，是
+        §14.6 完整性判定（阈值判断新写入的内容）之外的另一条路径：面向
+        "旧数据本来就该重新过一遍"，而不是"新数据写得够不够"。
+
+        只重置 `coverage_state`，不清空已有的 `wiki_page_ids`/正文——
+        重新检索沉淀出新内容前，旧页面依然可读，不会出现"点了刷新反而
+        什么都看不到"的体验倒退；下一轮 `run_capability_learning_cycle()`
+        检索到新内容后会覆盖同一个 `page_id` 对应的页面。
+
+        `track_id` 为 `None` 时对所有 Track 生效（不限 active/paused，
+        跟 `migrate_stable_volatility_to_periodic()` 保持同样的"全量存量"
+        语义）；传入具体 `track_id` 时只影响该 Track，找不到时返回
+        `topics_reset=0`（不报错，调用方按返回值判断即可）。
+
+        返回 `{"tracks_affected": int, "topics_reset": int}`，均为 0
+        表示没有任何 `covered` 子主题需要重置（幂等，可以放心重复调用）。
+        """
+        tracks = self._load_all()
+        tracks_affected = 0
+        topics_reset = 0
+        for track in tracks:
+            if track_id is not None and track.track_id != track_id:
+                continue
+            track_changed = False
+            for topic in track.outline:
+                if topic.coverage_state == "covered":
+                    topic.coverage_state = "partial"
+                    topics_reset += 1
+                    track_changed = True
+            if track_changed:
+                tracks_affected += 1
+        if topics_reset:
+            self._save_all(tracks)
+        return {"tracks_affected": tracks_affected, "topics_reset": topics_reset}
+
 
 # ── CapabilityLedgerStore：单 Track 的进度台账 ─────────────────────────────
 
