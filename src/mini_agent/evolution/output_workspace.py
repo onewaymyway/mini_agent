@@ -574,6 +574,12 @@ def detect_experiments_promotion_candidates(
     启发式判断，按文件名字符串在 notes 原文里出现的次数计数，不追求完全
     精确（无法判断是否真的是"同一个实验的后续引用"还是偶然的文件名重复
     提及）。`_experiments/` 为空或不存在时返回空列表。
+
+    `min_mentions`：[Stage 8f] 调用方可传入更低的阈值——例如
+    `capability_hardening` 型 Goal 的核心工作节奏就是"频繁试验→快速固化"，
+    默认阈值 2 可能让真正该转正的脚本多等一轮才被提示，调用方可通过
+    `default_promotion_mention_threshold()` 取得按 `output_mode` 区分的
+    建议值后传进来；不传则保持 Stage 5 上线时的默认值 2，向后兼容。
     """
     scripts_dir = goal_output_dir(paths, goal_id) / "scripts"
     experiments_dir = scripts_dir / "_experiments"
@@ -593,6 +599,64 @@ def detect_experiments_promotion_candidates(
         {name for name in exp_names if name not in root_names and combined_text.count(name) >= min_mentions}
     )
     return candidates
+
+
+def default_promotion_mention_threshold(output_mode: str) -> int:
+    """[goal_output_directory_and_execution_phase_redesign_plan.md
+    §Stage8f] 按 `GoalExecutionSpec.output_mode` 给出
+    `detect_experiments_promotion_candidates(min_mentions=...)` 的建议
+    阈值，三种 `output_mode` tidy 默认模板差异化的第一块：
+
+    - `capability_hardening`：核心工作节奏是"试验→验证→固化"，验证有效
+      就应该尽快转正/固化，阈值降到 1（提及一次即提示），避免因为默认
+      阈值 2 而让已经验证过的脚本多闲置一轮。
+    - `accretive`/`converging`/其余任何值：保持 Stage 5 上线时的默认值
+      2，不改变既有行为——`accretive` 型 Goal 的转正判断更多在
+      `detect_accretive_duplicate_candidates()`（去重合并）而不是"促使
+      脚本尽快转正"，`converging` 是默认模板本身。
+    """
+    if output_mode == "capability_hardening":
+        return 1
+    return 2
+
+
+_ACCRETIVE_DUPLICATE_SUFFIX_RE = re.compile(
+    r"^(?P<base>.+?)[_\-\s]?(v\d+|copy|副本|new|final|old|\d{8}|\(\d+\))$",
+    re.IGNORECASE,
+)
+
+
+def detect_accretive_duplicate_candidates(paths: "AgentPaths", goal_id: str) -> dict[str, list[str]]:
+    """[goal_output_directory_and_execution_phase_redesign_plan.md
+    §Stage8f] `accretive` 型 Goal（持续累积增长型）的核心风险不是"该转正
+    但没转正的实验脚本"（那是 `capability_hardening` 的风险模式），而是
+    "同一份内容被反复追加成多份相似文件，没有真正做到 execution_routine
+    里约定的'去重合并'"。
+
+    启发式判断：扫描 output/ 顶层（不含 scripts/、notes/、spec/、
+    _archive/、_misc/ 等结构化子目录）的文件，用常见的"版本/副本"后缀
+    模式（`_v2`、`-copy`、`副本`、`(1)`、8 位日期戳等）剥离出"基础名"，
+    同一个基础名下有 >=2 个文件时视为疑似未去重的重复累积，返回
+    `{基础名: [文件名, ...]}`。不追求完全精确（业务上确实需要保留多份
+    历史快照的场景会被误判，tidy 阶段的提示本来就只是"请人工核实"）。
+
+    output/ 目录不存在或没有匹配到任何顶层文件时返回空 dict。
+    """
+    out_dir = goal_output_dir(paths, goal_id)
+    if not out_dir.is_dir():
+        return {}
+    structural_dirs = {"scripts", "notes", "spec", "_archive", "_misc", "raw"}
+    groups: dict[str, list[str]] = {}
+    for entry in sorted(out_dir.iterdir()):
+        if not entry.is_file():
+            continue
+        if entry.name.lower() == "readme.md":
+            continue
+        stem = entry.stem
+        m = _ACCRETIVE_DUPLICATE_SUFFIX_RE.match(stem)
+        base = m.group("base").rstrip("_- ") if m else stem
+        groups.setdefault(base, []).append(entry.name)
+    return {base: names for base, names in groups.items() if len(names) >= 2}
 
 
 # ── manifest 读写 ─────────────────────────────────────────────────────────────

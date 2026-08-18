@@ -1163,3 +1163,53 @@ onetime.py` 共 335 个用例全部通过（`test_goal_execution_spec_diff.py`/
 `test_goal_execution_spec_kanban_routes.py`/
 `test_execution_phase_kanban_routes.py` 因本地环境缺 `streamlit`/
 `httpx2` 依赖无法收集，与本次改动无关，未计入），无回归。
+
+#### Stage 8f（已完成）：`output_workspace.py` 三种 `output_mode` tidy 默认模板差异化
+
+`output_mode` 字段在 Stage 8e 之前只是"能被声明但不影响任何实际行为"的
+修饰字段；本阶段让它第一次真正影响 tidy 阶段的代码扫描结果，覆盖两种
+非默认 `output_mode` 各自最典型的风险模式（`converging`/默认行为不变）。
+
+**`evolution/output_workspace.py` 新增两个函数**：
+
+- `default_promotion_mention_threshold(output_mode) -> int`：
+  `capability_hardening` 型 Goal 的核心节奏是"试验→验证→固化"，验证有效
+  就该尽快转正，阈值从默认 2 降到 1（提及一次即提示，不必像其余
+  `output_mode` 那样等到第二次提及）；其余任何值（含未识别的值）保持
+  Stage 5 上线时的默认值 2，不改变既有行为。
+- `detect_accretive_duplicate_candidates(paths, goal_id) -> dict[str,
+  list[str]]`：`accretive` 型 Goal 的核心风险不是"该转正的实验脚本"，
+  而是"同一份内容被反复追加成多份相似文件，没有做到 execution_routine
+  里约定的'去重合并'"。用常见的版本/副本后缀模式（`_v2`、`-copy`、
+  `副本`、`(1)`、8 位日期戳等）剥离出 output/ 顶层文件的"基础名"，同一
+  基础名下 ≥2 个文件即视为疑似未去重的重复累积。启发式判断，不追求
+  完全精确（确实需要保留多份历史快照的场景会被误判，tidy 提示本身只是
+  "请人工核实"，不是自动删除/合并）。
+
+**`evolution/goal_cron_bridge.py::_build_tidy_problem_checklist()`**：
+`_experiments/` 转正检测改用 `default_promotion_mention_threshold(spec.
+output_mode)` 算出的阈值（`spec is None` 时等价于 `converging`，阈值 2，
+行为与 Stage 5 完全一致）；`spec.output_mode == "accretive"` 时额外跑
+`detect_accretive_duplicate_candidates()`，命中则追加一条 `ℹ️` 提示；
+`converging`/`spec is None` 均不跑这项检查，不产生额外目录扫描开销。
+
+**有意保留范围**：`hybrid` 目前直接沿用 `converging` 的两项阈值/检查
+（`default_promotion_mention_threshold()` 对未列出的值统一回退默认 2，
+`detect_accretive_duplicate_candidates()` 仅在 `output_mode ==
+"accretive"` 时触发）——`hybrid` 型 Goal 的主体到底该套用哪套模板，
+理论上应该看主体子类型而非把 `hybrid` 单独当成第三套模板，这个判断留给
+后续观察真实使用场景后再决定是否需要细化；`docs/goal-execution-phase-
+guide.md` 等用户文档同步，仍未涉及。
+
+测试：新增 `tests/test_output_workspace_stage8f.py`（9 个用例），覆盖
+`default_promotion_mention_threshold()` 对 `capability_hardening`/其余
+值的阈值差异、`detect_accretive_duplicate_candidates()` 对无目录/版本化
+重名文件/README 排除在外/单文件不误判的各种输入、tidy checklist 在
+`accretive`/`converging` 两种 `output_mode` 下是否触发去重提示、
+`capability_hardening` 是否确实用更低阈值命中单次提及的实验脚本。运行
+`tests/test_execution_phase*.py`/`tests/test_goal_cron_bridge*.py`/
+`tests/test_goal_execution_spec*.py`/`tests/test_cycle_tuning.py`/
+`tests/test_cycle_patrol.py`/`tests/test_unified_task_scheduler.py`/
+`tests/test_cycle_diagnostics.py`/`tests/test_output_workspace_*.py`/
+`tests/test_goal_output_directory_onetime.py` 共 344 个用例全部通过，
+无回归。

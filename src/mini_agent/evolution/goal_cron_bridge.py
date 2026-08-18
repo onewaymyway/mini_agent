@@ -608,6 +608,12 @@ def _build_tidy_problem_checklist(paths, goal_id: str, *, spec=None) -> str:
     `_experiments/` 转正提示区分"该转正到 output/scripts/ 根目录"还是
     "该固化到 spec.hardening_target 声明的外部路径"——不传入（`None`）
     时行为与 Stage 5 完全一致，不影响任何未使用 Stage 8 新字段的存量 Goal。
+    [Stage 8f] 同时按 `spec.output_mode` 应用三种 output_mode 各自的 tidy
+    默认模板差异：`capability_hardening` 用更低的转正提及阈值（见
+    `default_promotion_mention_threshold()`）；`accretive` 额外跑一遍
+    `detect_accretive_duplicate_candidates()`，检查 output/ 顶层是否有
+    疑似未去重的重复累积文件；`converging`/默认（`spec is None`）行为与
+    Stage 5 完全一致。
 
     返回给 agent 看的 Markdown 文本，全部是"代码已经算出来的问题"，
     agent 不需要自己判断"这里乱不乱"，只需要决定"怎么处理"。没有发现
@@ -629,9 +635,22 @@ def _build_tidy_problem_checklist(paths, goal_id: str, *, spec=None) -> str:
     except Exception:
         missing_requirements = []
     try:
-        promotion_candidates = ow.detect_experiments_promotion_candidates(paths, goal_id)
+        output_mode = getattr(spec, "output_mode", "converging") if spec is not None else "converging"
+        min_mentions = ow.default_promotion_mention_threshold(output_mode)
+        promotion_candidates = ow.detect_experiments_promotion_candidates(paths, goal_id, min_mentions=min_mentions)
     except Exception:
         promotion_candidates = []
+    # [Stage 8f] accretive 型 Goal 的 tidy 默认模板重点不同——检查
+    # output/ 顶层是否存在疑似未去重的重复累积文件，而不是（只）看
+    # _experiments/ 转正。仅当 spec.output_mode == "accretive" 时才跑，
+    # 避免给不相关的 Goal 徒增一次目录扫描；spec 为 None（未确认）时
+    # 同样跳过——沿用 converging 默认模板不做该项检查。
+    duplicate_candidates: dict = {}
+    if spec is not None and getattr(spec, "output_mode", "converging") == "accretive":
+        try:
+            duplicate_candidates = ow.detect_accretive_duplicate_candidates(paths, goal_id)
+        except Exception:
+            duplicate_candidates = {}
 
     lines: list[str] = []
     if stats["root_unexpected"]:
@@ -670,6 +689,13 @@ def _build_tidy_problem_checklist(paths, goal_id: str, *, spec=None) -> str:
             lines.append("- ℹ️ scripts/_experiments/ 下这些脚本被最近几轮总结笔记多次提及，"
                           "但尚未转正到 scripts/ 根目录，评估是否需要按 §6.1 命名约定搬迁转正："
                           + "、".join(promotion_candidates))
+    if duplicate_candidates:
+        parts = [f"{base}（{ '、'.join(names) }）" for base, names in sorted(duplicate_candidates.items())]
+        lines.append(
+            "- ℹ️ output/ 顶层这些文件疑似同一份内容的重复累积、未做到 execution_routine "
+            "里约定的'去重合并'，请核实是否应该合并为一份或把旧版本挪进 _archive/："
+            + "；".join(parts)
+        )
 
     if not lines:
         return "本轮代码扫描未发现确定性问题（根目录整洁、_misc/ 为空、scratch/ 已清空）。"
