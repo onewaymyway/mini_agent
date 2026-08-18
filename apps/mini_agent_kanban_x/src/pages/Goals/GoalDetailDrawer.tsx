@@ -30,7 +30,7 @@ function JsonBlock({ data }: { data: unknown }) {
 }
 
 function OverviewTab({ goal }: { goal: GoalNode }) {
-  const { update, recur, unrecur, skipNext, lightweightNext, feedback } = useGoalActions();
+  const { update, recur, unrecur, skipNext, lightweightNext, migrateLegacy, feedback } = useGoalActions();
   const [fb, setFb] = useState("");
 
   return (
@@ -64,6 +64,21 @@ function OverviewTab({ goal }: { goal: GoalNode }) {
         <Button onClick={() => lightweightNext.mutate(goal.id)} loading={lightweightNext.isPending}>
           轻量下一周期
         </Button>
+        {goal.is_recurring ? (
+          <Popconfirm
+            title="迁移历史数据"
+            description="下一次触发时会附加一次搬迁任务，把旧的 cycle_NNNN/ 目录内容搬进新的 output/ 结构。确认？"
+            onConfirm={() =>
+              migrateLegacy.mutate(goal.id, {
+                onSuccess: () => message.success("已标记，下次触发这个 Goal 时会附加一次历史数据迁移任务"),
+                onError: (err: unknown) =>
+                  message.error(err instanceof Error ? err.message : "未检测到需要迁移的历史数据"),
+              })
+            }
+          >
+            <Button loading={migrateLegacy.isPending}>迁移历史数据</Button>
+          </Popconfirm>
+        ) : null}
         <Popconfirm title="确认放弃该目标？" onConfirm={() => update.mutate({ id: goal.id, body: { status: "abandoned" } })}>
           <Button danger>放弃目标</Button>
         </Popconfirm>

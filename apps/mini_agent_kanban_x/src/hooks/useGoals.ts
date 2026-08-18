@@ -14,6 +14,7 @@ import {
   lightweightNextCycle,
   listGoals,
   listTuningProposals,
+  migrateLegacyCycles,
   pauseObjective,
   recurGoal,
   rejectTuningProposal,
@@ -52,6 +53,7 @@ export function useGoalActions() {
     unrecur: useMutation({ mutationFn: (id: string) => unrecurGoal(id), onSuccess: invalidate }),
     skipNext: useMutation({ mutationFn: (id: string) => skipNextCycle(id), onSuccess: invalidate }),
     lightweightNext: useMutation({ mutationFn: (id: string) => lightweightNextCycle(id), onSuccess: invalidate }),
+    migrateLegacy: useMutation({ mutationFn: (id: string) => migrateLegacyCycles(id), onSuccess: invalidate }),
     feedback: useMutation({
       mutationFn: ({ id, text }: { id: string; text: string }) => feedbackGoal(id, text),
       onSuccess: invalidate,

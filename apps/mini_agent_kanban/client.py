@@ -383,6 +383,13 @@ class AgentClient:
         执行，但仍然照常触发（区别于 skip_goal_next_cycle 完全不跑）。"""
         return self._post(f"/goals/{goal_id}/lightweight_next_cycle")
 
+    def migrate_goal_legacy_cycles(self, goal_id: str):
+        """[goal_output_directory_and_execution_phase_redesign_plan.md
+        Stage 9] 请求下一次触发时附加一次历史数据迁移任务（把旧模型的
+        cycle_NNNN/ 目录内容搬进新的固定四目录模型），只打一次性标记，
+        实际迁移由下一次真正触发时的 agent 完成。"""
+        return self._post(f"/goals/{goal_id}/migrate_legacy")
+
     def add_goal_feedback(self, goal_id: str, text: str):
         """[goal_cron_feedback_and_output_policy_plan.md 3.5/3.6] 持久化提意见。"""
         return self._post(f"/goals/{goal_id}/feedback", {"text": text})

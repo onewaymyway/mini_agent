@@ -3218,7 +3218,7 @@ def _render_goal_card(
                     f"已绑定 cron job `{n.get('recurrence_cron_job_id', '?')}` · "
                     f"已完成 {n.get('cycle_count', 0)} 轮{next_run_caption}"
                 )
-                bc1, bc2, bc3 = st.columns(3)
+                bc1, bc2, bc3, bc4 = st.columns(4)
                 if bc1.button("⏭️ 跳过下一轮", key=f"{key_prefix}skipcycle_{n.get('id')}",
                                disabled=bool(n.get("skip_next_cycle"))):
                     res = client.skip_goal_next_cycle(n.get("id"))
@@ -3240,6 +3240,20 @@ def _render_goal_card(
                     if res and "_error" in res:
                         st.error(res["_error"])
                     st.rerun()
+                # [goal_output_directory_and_execution_phase_redesign_plan.md
+                # Stage 9] 请求下一次触发附加一次"历史数据迁移"任务，把旧
+                # 模型（每轮一个 cycle_NNNN/ 目录）遗留的历史产出搬进新的
+                # 固定四目录模型。只打一次性标记，disabled 状态复用同一个
+                # 字段判断，避免重复点击。
+                if bc4.button("📦 迁移历史数据", key=f"{key_prefix}migratelegacy_{n.get('id')}",
+                               disabled=bool(n.get("legacy_migration_requested")),
+                               help="下一次触发时附加一次搬迁任务：把旧的 cycle_NNNN/ 目录内容搬进新的 output/ 结构"):
+                    res = client.migrate_goal_legacy_cycles(n.get("id"))
+                    if res and "_error" in res:
+                        st.error(res["_error"])
+                    st.rerun()
+                if n.get("legacy_migration_requested"):
+                    st.caption("📦 已标记：下一轮触发时会附加一次历史数据迁移任务")
                 if n.get("next_cycle_lightweight"):
                     st.caption("🪶 下一轮已标记为从简执行")
                 # [goal_execution_spec_generation_plan.md §6.1 最后一条] 已绑定

@@ -1333,3 +1333,25 @@ None/正确带出 manifest 摘要/无 spec 时指向 `_misc/`/有 spec 时列出
 `tests/test_goal_execution_spec*.py`/`tests/test_execution_phase*.py`/
 `tests/test_goal_output_directory_onetime.py`/`tests/test_goal_backlog.py`
 共 258 个用例全部通过，无回归。
+
+**看板接入（Stage 9 补充）**：`apps/mini_agent_kanban_x`（React/TS 看板）
+新增 `migrateLegacyCycles()` API 封装（`src/api/endpoints.ts`）、
+`useGoalActions().migrateLegacy` mutation（`src/hooks/useGoals.ts`），
+以及 Goal 详情抽屉里的"迁移历史数据"按钮（`src/pages/Goals/
+GoalDetailDrawer.tsx::OverviewTab`）——仅在 `goal.is_recurring` 为真时
+展示，点击先弹二次确认（Popconfirm），确认后调用 `POST /v1/goals/
+{goal_id}/migrate_legacy`；成功提示"已标记，下次触发时会附加迁移任务"，
+失败（如没有可迁移的历史目录）直接展示后端返回的错误详情，与既有
+`skipNext`/`lightweightNext` 两个按钮的交互风格保持一致。`npx tsc -b`
+校验确认本次改动未引入新的类型错误（仓库里预先存在一个与本次改动无关的
+`pages/Sessions` 缺失模块报错）。
+
+旧版 Streamlit 看板（`apps/mini_agent_kanban`）同步补齐：`client.py`
+新增 `migrate_goal_legacy_cycles()`（对应 `POST /goals/{id}/migrate_
+legacy`）；`app.py` 的"⏰ 周期性设置"展开面板里，"⏭️ 跳过下一轮"/
+"🪶 下一轮从简"/"🛑 取消周期性"三个按钮所在的列布局从 3 列扩成 4 列，
+新增"📦 迁移历史数据"按钮（`disabled` 状态复用
+`goal.legacy_migration_requested` 字段，避免重复点击；已标记时下方补一行
+caption 提示），与既有三个按钮同一交互风格（点击→调用 client→展示
+`_error` 或 `st.rerun()` 刷新）。两个看板（React 新版 + Streamlit 旧版）
+都已接入，用户使用哪一个都能找到这个入口。

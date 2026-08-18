@@ -108,6 +108,8 @@ export const skipNextCycle = (goalId: string) =>
   apiPost<{ goal: import("./types").GoalNode }>(`/goals/${encodeURIComponent(goalId)}/skip_next_cycle`);
 export const lightweightNextCycle = (goalId: string) =>
   apiPost<{ goal: import("./types").GoalNode }>(`/goals/${encodeURIComponent(goalId)}/lightweight_next_cycle`);
+export const migrateLegacyCycles = (goalId: string) =>
+  apiPost<{ goal: import("./types").GoalNode }>(`/goals/${encodeURIComponent(goalId)}/migrate_legacy`);
 export const feedbackGoal = (goalId: string, feedback: string) =>
   apiPost<{ goal: import("./types").GoalNode }>(`/goals/${encodeURIComponent(goalId)}/feedback`, { feedback });
 
