@@ -737,13 +737,26 @@ def glob(pattern: str, root: str = ".") -> str:
         "Search for a regex pattern in files. "
         "Returns file:line:content for each match, with optional surrounding context lines. "
         "Use context_lines to see code around each match without a separate read_file call. "
-        "Reports total match count and truncation status."
+        "Reports total match count and truncation status. "
+        "PERFORMANCE: always pass a specific `path` (a subdirectory or single file) instead of "
+        "leaving it at the default '.' — searching the whole project root recursively is slow "
+        "when the tree has many files or very large files. Narrow the search to the "
+        "directory/module you actually care about whenever you can infer or already know it "
+        "(e.g. from a prior tree_summary/glob call); only fall back to the project root when "
+        "you genuinely don't know where the target might be."
     ),
     schema={
         "type": "object",
         "properties": {
             "pattern": {"type": "string", "description": "Regex pattern"},
-            "path": {"type": "string", "description": "File or directory to search"},
+            "path": {
+                "type": "string",
+                "description": (
+                    "File or directory to search. Prefer a narrow, specific path "
+                    "(e.g. 'src/mini_agent/tools') over the default '.' — this is the single "
+                    "biggest factor in how fast the search runs on large trees."
+                ),
+            },
             "file_pattern": {"type": "string", "description": "Glob filter, e.g. '*.py'"},
             "case_sensitive": {"type": "boolean", "description": "Default true"},
             "context_lines": {
