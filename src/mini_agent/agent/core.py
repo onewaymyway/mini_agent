@@ -293,15 +293,33 @@ class Agent(
         # "消息以 / 开头才走本地直接执行"快速路径识别到，之前 agent 只能自己
         # 瞎猜（翻代码、开子进程跑一个全新的、无关的 session，等于假装执行成功）。
         # 现在给 agent 一个正经工具：直接复用 REPL 同一套 _handle_slash 分发器
-        # 在当前 session 里执行，不需要再靠猜或开子进程。幂等：/goal 等模式会
-        # 在同一进程内创建多个 Agent 实例共享全局 registry，重复注册需要跳过。
-        if "run_slash_command" not in self.registry.names:
-            from mini_agent.tools.slash_command import register_slash_command_tool
-            register_slash_command_tool(self.registry, self)
+        # 在当前 session 里执行，不需要再靠猜或开子进程。
+        #
+        # [cron_run_debug_detail_improvement_plan.md 附带发现的绑定 bug 修复]
+        # 这里改成无条件每次都重新注册（`register_slash_command_tool()` 内部
+        # 已经把 `override=True` 传给 `registry.register_fn()`），而不是像
+        # 此前那样"registry 里已经有这个名字就跳过"——旧写法会把工具的闭包
+        # 永久绑死在第一个注册它的 Agent 实例上：/goal 等模式、以及每次 cron
+        # 触发都会构造的全新 Agent 实例，共享的是同一个全局默认 registry
+        # （get_default_registry()），"已存在就跳过"意味着后续所有 Agent 调用
+        # 这个工具时，实际执行的都不是自己，而是那个可能早已执行完毕/失效的
+        # 旧 Agent 对象。跟这份文件下面 `set_current_llm_helper_provider()`
+        # 的既有写法（无条件每次都重新指向 self，见下方注释）以及
+        # `tools/skill_manager.py` 里 `skill_list`/`skill_activate`/
+        # `compact_history` 等工具的既有处理方式（同样是 `override=True`
+        # 无条件重新注册）保持一致，不是这个代码库里第一次采用这个模式。
+        from mini_agent.tools.slash_command import register_slash_command_tool
+        register_slash_command_tool(self.registry, self)
 
+        if self.skill_loader:
             # [Phase E / 3.3] 注册"当前激活 skill 列表"provider，供 spawn_agent /
             # spawn_named_agent 工具读取，写入新建 Task 的 active_skills 字段，
             # 使 SubAgent 启动时能继承主 agent 当前激活的 skill（设计文档第 5 节）。
+            # 从原先挂在 run_slash_command 注册判断下面挪到这里：这个 provider
+            # 本来就依赖 self.skill_loader 存在，跟 run_slash_command 是否已经
+            # 注册过没有关系；模块级 setter 本身是幂等的（覆盖式赋值，不会像
+            # registry.register 那样抛重复注册异常），每次 Agent 构造都无条件
+            # 重新指向当前实例，与下面 llm_helper provider 的既有写法一致。
             from mini_agent.tools.orchestration import set_active_skills_provider
             set_active_skills_provider(lambda: self.skill_loader.active)
 

@@ -160,4 +160,18 @@ def register_slash_command_tool(registry: "ToolRegistry", agent: "Agent") -> Non
         requires_approval=False,
         group="builtin",
         tags=["autonomous_safe"],
+        # [cron_run_debug_detail_improvement_plan.md 附带发现的绑定 bug 修复]
+        # 这个工具的闭包捕获了具体的 `agent` 实例（见上面 `_run()` 里的
+        # `_handle_slash(cmd, agent, ...)`），而 registry 常常是跨 Agent
+        # 实例共享的全局单例（get_default_registry()）——cron 任务每次
+        # 触发都会构造一个全新 Agent 实例。如果用默认的
+        # `override=False`，第二次构造 Agent 时这里会直接
+        # `ValueError: already registered`；但如果反过来"已存在就跳过
+        # 注册"，工具就会永久绑死在第一个注册它的（很可能早已执行完毕/
+        # 失效的）Agent 实例上，后续任何 Agent 调用这个工具实际执行的都
+        # 不是自己。跟这个文件里 `tools/skill_manager.py` 对
+        # `skill_list`/`skill_activate`/`compact_history` 等工具的既有
+        # 处理方式保持一致：`override=True`，每次 Agent 构造都无条件
+        # 重新注册、把闭包重新绑定到"当前这个" Agent 实例。
+        override=True,
     )

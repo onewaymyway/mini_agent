@@ -17,21 +17,15 @@
   一条 `action="skipped"` 的台账并跳过；而正确的
   `wiki_writer=make_wiki_writer(paths)` 只在 `capability_cmd.py::
   /capability cycle` 这个 handler 内部才会被组装、传入，手写调用完全
-  没有覆盖到这一层。**改动（本轮先做的部分）**：在
-  `cron_agent_bridge.py::build_cron_agent()` 的 `system_extra` 里新增
-  一段明确提示——任务描述里出现具体的 `/xxx` 命令时，直接调用
-  `run_slash_command` 工具执行，不要自己翻源码猜测或另起进程调用——降低
-  模型选错路径的概率。**已知但本轮未修的关联问题**：`run_slash_command`
-  工具的注册用 `if "run_slash_command" not in self.registry.names` 做
-  幂等判断，但该工具挂在进程级全局单例 `_default_registry` 上（cron
-  Agent 每次触发都会重新构造全新 Agent 实例，与主 Agent、其它 SubAgent
-  共享同一份 registry），工具内部通过闭包把 `_handle_slash(cmd, agent,
-  ...)` 绑死在"最早注册这个工具的那个 Agent 实例"上——后续任何 Agent
-  （包括每一次新的 cron 触发）调用这个工具时，实际执行的都是当初绑定
-  的那个（可能早已用完/失效的）Agent 对象，而不是自己。这个问题的修复
-  方案与风险评估见 `next_doc/cron_run_debug_detail_improvement_plan.md`
-  讨论记录，留待用户确认后再动手，避免和这次的 system_extra 改动混在
-  一次提交里，方便分别验证效果。）
+  没有覆盖到这一层。**改动**：① 在 `cron_agent_bridge.py::
+  build_cron_agent()` 的 `system_extra` 里新增一段明确提示——任务描述
+  里出现具体的 `/xxx` 命令时，直接调用 `run_slash_command` 工具执行，
+  不要自己翻源码猜测或另起进程调用；② 排查过程中发现并修复了
+  `run_slash_command` 工具本身的一个绑定 bug——该工具挂在进程级全局
+  单例 registry 上、闭包却捕获了具体的 Agent 实例，此前"已注册就跳过"
+  的幂等处理会让工具永久绑死在第一个注册它的（可能早已失效的）Agent
+  实例上；改成跟 `tools/skill_manager.py` 同款的 `override=True`
+  每次重新绑定到当前 Agent。详见「实施状态」两个对应小节。）
 - **上一版本**：v0.24（用户反馈"看板中能力学习标签页的 wiki 一直没有更新"，
   排查定位到 `scan_outline_gaps()` 对 `coverage_state=="covered"` 且
   `volatility=="stable"`（默认值）的子主题永久跳过，即使内容单薄/有
@@ -64,7 +58,7 @@
 本节记录方案落地进度，每完成一个阶段就更新，保持和代码库实际状态同步，
 避免文档和实现脱节。
 
-### cron 任务里的 `/xxx` 命令未被执行导致 wiki 不更新（v0.25）—— ✅ 已实现（提示语部分）
+### cron 任务里的 `/xxx` 命令未被执行导致 wiki 不更新（v0.25）—— ✅ 已实现
 
 **触发背景**：用户提供了一次 `sys:capability_learning_cycle` 真实执行的
 命令行 compact 记录，用来排查"这个 cron 任务经常失败、没有真正更新 wiki"。
@@ -108,7 +102,41 @@
 新风险）留待用户确认后再单独实施，不和这次的提示语改动混在一起，方便
 分别验证效果。
 
-### §14.4 检索方式扩展：`retriever_mode`（v0.22）—— ✅ 已实现
+### `run_slash_command` 工具绑定 bug 修复（v0.25 续）—— ✅ 已实现
+
+**改动**：
+- `tools/slash_command.py::register_slash_command_tool()` 的
+  `registry.register_fn(...)` 调用新增 `override=True`——与
+  `tools/skill_manager.py` 里 `skill_list`/`skill_activate`/
+  `compact_history` 等工具的既有处理方式保持一致。
+- `agent/core.py` 里移除 `if "run_slash_command" not in
+  self.registry.names:` 的幂等跳过判断，改成每次 Agent 构造都无条件
+  调用 `register_slash_command_tool(self.registry, self)`——现在
+  `override=True` 保证重复注册不会再抛 `ValueError`，同时工具闭包会
+  重新绑定到"当前这个" Agent 实例，而不是永远停在第一个注册它的旧
+  实例上。
+- 顺带把原本嵌套在这段判断里的"当前激活 skill 列表" provider 注册
+  （`set_active_skills_provider(lambda: self.skill_loader.active)`）
+  挪到了 `if self.skill_loader:` 块内——这段逻辑本来就依赖
+  `skill_loader` 是否存在，跟 `run_slash_command` 是否已经注册过没有
+  关系，此前挂在一起纯属历史遗留，容易在 `skill_loader` 为空时误触发
+  （虽然是惰性 lambda，实际调用才会报错，但逻辑上不应该耦合在一起）。
+
+**并发风险评估**（对话记录里已讨论，结论落地）：`cron_job_runner.py`
+允许多个 cron job 在各自线程上并行执行，多个 Agent 实例可能同时构造/
+运行，共享同一个全局 `_default_registry`。`override=True` 理论上存在
+一个极窄的竞态窗口——Agent A 即将调用 `run_slash_command` 的瞬间，
+另一个线程的 Agent B 刚好完成构造、把工具重新绑定到了自己。这属于
+代码库里已经接受的既有权衡（`skill_manager.py` 的同类工具、以及本文件
+下方 `set_current_llm_helper_provider()` 的既有写法都是同一模式），
+不是这次改动独有的新风险，未做额外加锁处理。
+
+**测试**：新增 `tests/test_slash_command_tool_rebinding.py`，覆盖
+"重复注册不再抛异常" "后一次注册覆盖前一次、闭包指向最新 agent"
+"多次重复注册不会在 registry 里堆积出多个同名工具" 三点；不依赖真实
+Agent/LLM/REPL。
+
+
 
 **触发背景**：用户反馈"能力学习循环里，检索只用 `web_search`，这个不合理——不应该只用 `web_search`，应该考虑利用 Agent 自身的能力去检索，因为 `web_search` 只支持一些简单的检索，Agent 自身可以利用 skill 去检索更复杂的内容"。
 
