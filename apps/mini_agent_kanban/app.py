@@ -2639,7 +2639,7 @@ def _render_goal_execution_phase_widget(client: AgentClient, goal_id: str, key_p
     """[goal_execution_phase_improvement_plan.md Stage C] Goal 卡片上的执行
     阶段徽章 + 手动切换折叠区。默认折叠展示当前阶段（含 auto 模式下系统
     自动判定出的 stability_score），展开后允许用户切换 explore/converge/
-    stable/tidy/auto 五态，非 auto 默认隐式锁定（与 CLI `/agent goals
+    running/tidy/auto 五态，非 auto 默认隐式锁定（与 CLI `/agent goals
     phase set` 行为一致），并提供解锁按钮。
 
     读取失败（goal_id 为空、接口异常）时静默不展示，不影响卡片其他内容。
@@ -3136,7 +3136,7 @@ def _render_goal_card(
 
     # [goal_execution_phase_improvement_plan.md Stage C] Goal 卡片（非
     # Objective）展示执行阶段徽章 + 手动切换下拉框——explore/converge/
-    # stable/tidy/auto 五态，与 execution_spec 折叠区一样只在 Goal 层级
+    # running/tidy/auto 五态，与 execution_spec 折叠区一样只在 Goal 层级
     # 渲染，Objective 卡片不重复展示（阶段是挂在 Goal 上的概念）。
     if n.get("level") != "objective":
         _render_goal_execution_phase_widget(client, n.get("id", ""), key_prefix=key_prefix)

@@ -1213,3 +1213,56 @@ guide.md` 等用户文档同步，仍未涉及。
 `tests/test_cycle_diagnostics.py`/`tests/test_output_workspace_*.py`/
 `tests/test_goal_output_directory_onetime.py` 共 344 个用例全部通过，
 无回归。
+
+#### Stage 8g（已完成）：用户文档同步（`docs/` 目录）+ `running` 改名扫尾
+
+前几个子阶段（Stage 8b~8f）按约定只同步了代码内注释/docstring，面向
+用户的 `docs/` 目录一直没有跟进——本阶段是 Stage 8 收尾时"一次性同步"的
+那一步，覆盖两类内容：`stable` → `running` 改名的遗留引用、Stage 8a~8f
+新增的规范层模型（`output_mode` 等 6 个字段、`routine_stability` 信号、
+converge 搬迁行为、tidy 三种默认模板差异）在用户文档里补齐说明。
+
+**`docs/goal-execution-phase-guide.md`**：五种阶段说明、命令示例、自动
+判定规则、资源估算倍率表、看板徽章列表里的 `stable` 全部改为 `running`
+（并在首次出现处加一句"旧数据/脚本仍可用 `stable` 别名，自动归一化"）；
+自动判定规则新增第 6 条（`routine_stability` 收敛信号如何把 converge
+提升回 running，见 Stage 8c）、第 5 条末尾补充 `new_topic_discovery=
+"intrinsic"` 如何关闭进展趋势信号；新增一节"产出模式与规范层收敛"，
+表格列出 `output_mode`/`execution_routine`/`new_topic_discovery`/
+`hardening_target`/`sub_exploration`/`cadence` 六个字段各自的作用；tidy
+一节补充 Stage 8f 的三种 `output_mode` 差异化提示；converge 一节补充
+Stage 8d 的 `hardening_target`/`sub_exploration` 搬迁提示。
+
+**`docs/goal-execution-spec-guide.md`**：§2 数据结构表格后新增"规范层
+字段"表格（6 个 Stage 8 新字段+作用说明）；`build_draft()` 说明补充
+Stage 8e"草稿生成同时会尝试判断规范层字段，拿不准一律用默认值"；
+"stable 阶段"改为"running 阶段（Stage 8b 原名 stable）"；§5.2 `list_spec_
+history()` 说明补充 Stage 8c 新增的 `execution_routine` 字段用途。
+
+**`docs/goal-output-directory-guide.md`**：全部 `stable` 引用改为
+`running`；§6 补充 Stage 8d 的 `hardening_target` 搬迁提示；§9 tidy
+问题清单补充 Stage 8f 的三种 `output_mode` 差异化说明。
+
+**`docs/unified-scheduler-guide.md`**：阶段列表 `stable` → `running`。
+
+**代码内用户可见字符串**（非纯注释，会被用户/LLM 实际看到，一并修正）：
+`perception/cycle_tuning.py` 里"参数改动建议"prompt 的 `execution_phase`
+取值枚举说明、`perception/cycle_diagnostics.py` 里诊断建议文案的阶段
+枚举说明，均从 `stable` 改为 `running`；另外 3 处纯代码注释
+（`config/models.py`/`evolution/unified_task_scheduler.py`/
+`apps/mini_agent_kanban/app.py` 各 1~2 处）同步改名，不影响任何实际行为。
+
+未改动：`capability_learning.py` 的 `volatility` 字段（`"stable"/
+"periodic"/"volatile"`）是完全独立的概念，与执行阶段无关，不在改名
+范围内；`next_doc/goal_execution_phase_improvement_plan.md`（Stage 8b
+改名之前的原始设计文档）保留原文不做追溯修改，作为历史决策记录。
+
+测试：本阶段只涉及文档/注释/用户可见字符串的文字调整，不改变任何函数
+签名或判定逻辑，因此不新增测试用例，运行既有 Stage 8b~8f 全部测试文件
+（`tests/test_execution_phase*.py`/`tests/test_goal_cron_bridge*.py`/
+`tests/test_goal_execution_spec*.py`/`tests/test_cycle_tuning.py`/
+`tests/test_cycle_patrol.py`/`tests/test_unified_task_scheduler.py`/
+`tests/test_cycle_diagnostics.py`/`tests/test_output_workspace_*.py`/
+`tests/test_goal_output_directory_onetime.py`）确认 344 个用例全部通过，
+无回归。至此 `goal_output_directory_and_execution_phase_redesign_plan.md`
+中列出的全部计划事项（Stage 0 ~ Stage 8g）均已完成。

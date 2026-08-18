@@ -52,6 +52,20 @@
 | `special_constraints` | 自由文本列表，过程中需要注意的特殊约束（隐私、不要覆盖某些文件等） |
 | `generation_error` | 生成/修订失败时的兜底说明（见 §4 失败兜底） |
 
+**[Stage 8] 规范层字段**（均可选，缺省即 Stage 8 上线前的行为，回答"标准
+动作序列本身长什么样、收敛之后该怎么判断"，与上面这套"内容层"字段互补；
+与 [执行阶段指南](goal-execution-phase-guide.md#产出模式与规范层收敛output_mode-等-stage-8-新字段)
+配合消费）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `output_mode` | `"converging"`（默认，先探索出稳定做法再严格执行增量修改）/`"accretive"`（内容持续累积增长，如知识库/研究报告）/`"capability_hardening"`（能力固化，验证有效后固化进一个更通用的能力载体）/`"hybrid"`（主体走前两种之一，同时存在独立生命周期的子探索） |
+| `execution_routine` | `[{step}]`——收敛后"每一轮该走的标准动作序列"，按执行顺序排列的简短步骤描述 |
+| `cadence` | 自由文本，执行节奏说明（节奏调度信息已由 Goal 自身的 `schedule` 承载，这里纯展示） |
+| `new_topic_discovery` | `"none"`（默认）/`"intrinsic"`——`"intrinsic"` 显式声明"内容层常新是正常现象"，关闭[执行阶段指南](goal-execution-phase-guide.md)的"进展趋势信号"对该 Goal 的影响 |
+| `hardening_target` | `capability_hardening` 型 Goal 的外部固化目标路径（相对项目根目录，如 `"skills/report_writer/"`），converge 阶段"搬迁"的落地目标从 output/ 换成这里 |
+| `sub_exploration` | 自由文本，声明主轨之外独立生命周期的内容子探索说明，不参与主轨的阶段判定 |
+
 `GoalNode` 只新增一个轻量指针字段 `execution_spec_confirmed: bool`
 （默认 `False`），供消费方快速判断"这个 Goal 有没有确认过的规范"而不用
 每次读一遍独立文件；真正内容仍以独立文件为准。
@@ -73,6 +87,11 @@
   3. **从执行历史反推**：传入 `history_manifests`（该 Goal 过去若干轮的
      实际 `manifest.json`），让生成结果贴近真实产出，而不是纯凭空想象——
      对"已绑定周期性但从未生成过规范"的既有 Goal 尤其有用。
+  **[Stage 8e]** 除了上面的内容层字段，草稿生成同时会尝试判断并填写
+  §2 描述的规范层字段（`output_mode` 等）——prompt 里明确要求"拿不准
+  一律用默认值 `converging`，不要为了凑齐新字段而勉强分类"，多数普通
+  Goal 生成结果仍然是纯默认值，只有明确符合 `accretive`/
+  `capability_hardening` 特征的 Goal 才会被主动分类。
 - **`revise(prior_spec, feedback, locked_fields=)`**：基于"上一版 + 自然
   语言反馈"重新生成，`version += 1`。`locked_fields` 里的字段**代码层面
   强制**用 `prior_spec` 对应值覆盖 LLM 输出（不完全依赖 LLM 是否听话），
@@ -132,7 +151,7 @@ read_all_manifests()`），逐条核查后输出 `{"decision": "close"|"continue
   引入前一致；确认后把 `deliverables`/`sub_directories`/
   `per_cycle_criteria`/`special_constraints` 格式化文字 + `handoff_fields`
   的填空模板提示一并拼进子 Objective description。
-- **recurring Goal 的 stable 阶段**（见
+- **recurring Goal 的 running 阶段**（[Stage 8b] 原名 `stable`，见
   [执行阶段指南](goal-execution-phase-guide.md)）会额外把 `spec/SPEC.md`
   全文（见下方 §5.2）拼进 prompt——这是比上面这条结构化提示更完整的
   规范文档全文，两者是互补关系，服务目的不同，没有做去重合并。
@@ -176,7 +195,11 @@ recurring Goal 使用[产出目录规范](goal-output-directory-guide.md)描述�
   `spec/history/v{旧version}_{时间}.md/.json` 形成审计轨迹——配合
   `notes/` 里的每轮总结笔记，能回答"这个 Goal 什么时候、为什么改变了
   产出规则"。`list_spec_history()` 提供这份历史的结构化摘要（版本号/
-  确认状态/时间），目前只提供数据函数，尚未接入 CLI/看板展示。
+  确认状态/时间，[Stage 8c] 现在还带上当时版本的 `execution_routine`
+  步骤列表），目前只提供数据函数，尚未接入 CLI/看板展示，但已被
+  `goal_cron_bridge.py` 用于组装"规范层收敛信号"（见
+  [执行阶段指南](goal-execution-phase-guide.md#自动判定规则auto-模式)
+  第 6 条）。
 
 此外，如果这个 Goal**此前完全没有生成过任何 spec**（草稿或已确认），
 系统会在 converge 阶段结尾检查最近两轮的"方案对比说明"结论是否高度一致

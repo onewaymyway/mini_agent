@@ -142,7 +142,7 @@ daemon 内部实际有三条相互独立、但共享同一份底层 LLM 资源�
 ```
 
 `goal` 通道每个任务的 `resource_estimate` 会反映该 Goal 当前的执行阶段
-（explore/converge/stable/tidy，见
+（explore/converge/running/tidy，见
 [Goal 执行阶段指南](goal-execution-phase-guide.md#调度联动阶段感知的资源估算只读预览)）——
 这仍然是纯诊断展示，未接入下面 §7 的实际槽位分配计算。
 

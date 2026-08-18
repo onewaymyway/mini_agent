@@ -407,7 +407,7 @@ def parse_nl_request_to_changes(
         "    表达式；用户说'暂停'/'不要再跑了'不属于改 schedule，这种情况\n"
         "    不要生成任何改动（应通过 unrecur 命令处理，不在本机制范围内）。\n"
         "  - priority：整数优先级。\n"
-        "  - execution_phase：explore/converge/stable/tidy/auto 之一。\n"
+        "  - execution_phase：explore/converge/running/tidy/auto 之一。\n"
         "  - task_template：cron 触发时注入的任务描述文本。\n"
         "    【重要】下面 context.task_template 就是当前生效的完整文本。\n"
         "    如果用户这次的意见是在已有要求基础上'追加/补充/再加一条'，\n"

@@ -43,7 +43,7 @@
 `ObjectiveChannelAdapter.poll_due()` 新增阶段感知的 `resource_estimate`
 ——按该 Goal `ExecutionPhaseState` 的 `last_known_effective_mode()` 经
 `execution_phase.phase_resource_multiplier()` 换算出的相对倍率
-（explore/converge 更宽松，stable/tidy 更收紧），替代此前恒为 `1.0` 的
+（explore/converge 更宽松，running/tidy 更收紧），替代此前恒为 `1.0` 的
 占位值。这一步仍然只是"只读预览"层面的可观测性增强，目前唯一的消费方是
 `/self/unified_scheduler_preview` 诊断端点；`allocate_weighted_slots()`
 接管的仲裁裁决仍只用 `channel_weights`（goal/cron 两通道整体权重），

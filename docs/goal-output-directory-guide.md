@@ -17,7 +17,7 @@
 recurring Goal 跑多轮之后，产出目录容易变乱：旧模型是"每轮一个新目录
 `cycle_0001/`、`cycle_0002/`……"，产出物和过程记录混在一起，且 explore
 阶段天然鼓励"换目录结构"，几轮跑下来必然发散。新模型用四个**跨轮共用**
-的固定目录取代它，让"探索 → 收敛 → 稳定 → 整理"这四个执行阶段（见
+的固定目录取代它，让"探索 → 收敛 → 长期执行 → 整理"这四个执行阶段（见
 [执行阶段指南](goal-execution-phase-guide.md)）真正对应到目录规则上，而
 不是只停留在 prompt 文案里。
 
@@ -70,7 +70,8 @@ output/
   `naming_pattern` 两个元信息（见
   [执行规范指南](goal-execution-spec-guide.md)），tidy 阶段据此做确定性
   核查。
-- **`README.md`**：每次 tidy 阶段结束、以及每个 stable 轮次结束时，由
+- **`README.md`**：每次 tidy 阶段结束、以及每个 running（[Stage 8b]
+  原名 `stable`）轮次结束时，由
   代码扫描 `output/` 实际内容机械生成——不是 agent 手写，用户和后续轮次
   可以直接信任这份索引反映的是客观事实。
 
@@ -89,7 +90,7 @@ output/
 版本时，旧版本会先被复制进 `spec/history/v{旧version}_{时间}.md/.json`
 形成审计轨迹。
 
-**只要 spec 已确认，stable 阶段每一轮 prompt 都会自动带上 `spec/SPEC.md`
+**只要 spec 已确认，running 阶段每一轮 prompt 都会自动带上 `spec/SPEC.md`
 全文**——这是相对旧模型的关键变化，之前只在特定条件下才会出现规范内容。
 
 converge 阶段收尾时，如果最近两轮的"方案对比说明"结论一致，系统会**主动
@@ -103,8 +104,12 @@ explore/converge 阶段只允许写 `scratch/`，**不允许直接写 `output/`*
 （converge 期的脚本草稿统一放在 `output/scripts/_experiments/`，而不是
 `scratch/` 本身）。converge 阶段的任务是"从 scratch/ 里现存的几个方案中
 选一个，搬进 output/，并在总结笔记里写清楚搬运理由 + 淘汰了哪些方案"；
-未选中的连同其数据一起挪进 `_archive/`。进入 stable 前，`scratch/`
-必须清空——这是 tidy 阶段的强制核查项之一。
+未选中的连同其数据一起挪进 `_archive/`。进入 running 前，`scratch/`
+必须清空——这是 tidy 阶段的强制核查项之一。[Stage 8d] 如果这个 Goal
+声明了 `hardening_target`（能力固化型 Goal 的外部固化目标路径，见
+[执行规范指南](goal-execution-spec-guide.md)），converge 阶段收尾时会
+额外提示"搬迁的最终落点是这里，而不是（或不仅是）本 Goal 私有的
+output/scripts/"。
 
 ## 7. 脚本类产出规范（`output/scripts/`）
 
@@ -127,7 +132,7 @@ output/scripts/
 - 所有临时/实验性脚本一律写在 `scripts/_experiments/`，不允许出现在
   `scripts/` 根目录。如果某个实验脚本被最近几轮总结笔记反复提及、但一直
   没有搬迁转正，tidy 阶段会提示"评估是否需要转正"。
-- explore/converge 阶段允许并鼓励使用 `_experiments/`；**stable 阶段不应
+- explore/converge 阶段允许并鼓励使用 `_experiments/`；**running 阶段不应
   该再产生新的 `_experiments/` 内容**——如果又需要先写个临时脚本探索，
   本身就是一个信号，说明这个 Goal 可能没有真正收敛。
 
@@ -137,7 +142,7 @@ output/scripts/
 |---|---|---|
 | explore | `scratch/`（脚本草稿走 `output/scripts/_experiments/`） | 总结笔记写清楚试了什么、结论 |
 | converge | `scratch/` → 搬进 `output/`；选定脚本 → 搬进 `scripts/` 根目录 | "方案对比说明"单独成段；连续两轮结论一致会自动生成 spec 草稿 |
-| stable | 仅 `output/`（含 `scripts/` 根目录的增量修改） | 每轮开头带上 `spec/SPEC.md` 全文；总结笔记记录增量变化 |
+| running | 仅 `output/`（含 `scripts/` 根目录的增量修改） | 每轮开头带上 `spec/SPEC.md` 全文；总结笔记记录增量变化 |
 | tidy | 全目录只读审查 + 归档整理，不产出新内容 | 按代码算出的问题清单逐一处理，见下 |
 
 ## 9. tidy 阶段的问题清单
@@ -150,6 +155,14 @@ tidy 阶段不要求 agent 自己从零判断"哪里乱了"，而是先由代码
 于"怎么处理这些具体问题"。业务子目录的 `retention`/`naming_pattern` 规则
 核对（需要结合 `GoalExecutionSpec` 判断）暂未覆盖到代码检查，留给后续
 版本。
+
+**[Stage 8f] 三种 `output_mode` 的差异化默认模板**：如果这个 Goal 的
+`GoalExecutionSpec.output_mode` 声明为 `capability_hardening`，
+`_experiments/` 转正提示的触发阈值更低（脚本在最近笔记里被提及一次即
+提示，其余模式需要提及两次才提示）；声明为 `accretive` 时，额外扫描
+`output/` 顶层是否存在疑似未去重的重复累积文件（常见版本/副本后缀模式，
+如 `report.md` 与 `report_v2.md` 并存）；默认的 `converging` 行为与
+`output_mode` 字段引入之前完全一致。
 
 ## 10. 迁移与兼容性
 

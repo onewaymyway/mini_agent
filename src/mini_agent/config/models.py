@@ -1067,7 +1067,7 @@ class CycleTuningConfig:
 @dataclass
 class ExecutionPhaseConfig:
     """[next_doc/goal_stuck_stats_and_llm_progress_judge_plan.md §2] Goal
-    执行阶段（explore/converge/stable/tidy）跨轮"进展趋势"信号的配置块。
+    执行阶段（explore/converge/running/tidy）跨轮"进展趋势"信号的配置块。
 
     `perception/execution_phase.py::compute_progress_trend_signal()` 默认用
     纯文本相似度（difflib）判断最近几轮 `progress_notes` 是否雷同；打开

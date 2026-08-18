@@ -198,7 +198,7 @@ def _build_mechanism_notes(node, spec, phase_state) -> list[str]:
         if phase_state.mode == "auto":
             notes.append(
                 "阶段判定：当前为 auto 模式（未手动锁定），阶段在 "
-                "explore/converge/stable/tidy 间按规则自动判定，规则见 "
+                "explore/converge/running/tidy 间按规则自动判定，规则见 "
                 "docs/goal-execution-phase-guide.md。"
             )
         else:
