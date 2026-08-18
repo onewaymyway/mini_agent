@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import uuid
 import time
 from dataclasses import dataclass, field
@@ -157,6 +158,36 @@ class Session:
         return d
 
 
+# ── session 列表缓存（跨实例，按 session_dir 路径 keyed）────────────────────
+#
+# 背景：list_sessions_page() 每次都要 iterdir() + 逐个 meta.json 读取解析，
+# session 越多越慢；daemon 常驻运行、看板又高频轮询 /v1/sessions，
+# 长期下来这个函数本身的耗时会随 session 数量线性增长，哪怕丢进线程池
+# 也只是不阻塞事件循环，函数本身还是慢、还是占线程池资源。
+#
+# 这里加一层进程内缓存：
+#   - key 是 session_dir 的绝对路径字符串（多用户模式下每个用户的
+#     SessionManager 实例都是新建的，不能用实例属性缓存，必须是模块级/
+#     跨实例的）
+#   - value 是 (cached_at, all_metas 按 mtime 倒序, total)
+#   - TTL 内直接复用缓存，不重新扫盘；TTL 外重新构建
+#   - 任何写操作（save/delete/set_pinned/mark_*）主动使该 session_dir
+#     对应的缓存失效，保证"自己刚做的修改自己能立刻看到"，不必等 TTL 过期
+#
+# TTL 设置得比看板轮询间隔（通常几秒一次）稍长，既能大幅减少重复扫盘，
+# 又不会让别的进程/CLI 对同一目录的修改被缓存太久看不到。
+_METAS_CACHE_TTL = 5.0  # 秒
+_metas_cache: dict[str, tuple[float, "list[SessionMeta]", int]] = {}
+_metas_cache_lock = threading.Lock()
+
+
+def _invalidate_metas_cache(session_dir: Path) -> None:
+    """使某个 session 目录对应的列表缓存失效（写操作后调用）。"""
+    key = str(Path(session_dir).resolve())
+    with _metas_cache_lock:
+        _metas_cache.pop(key, None)
+
+
 # ── SessionManager ────────────────────────────────────────────────────────────
 
 class SessionManager:
@@ -276,6 +307,7 @@ class SessionManager:
             raw_history.save_to_file(raw_path)
 
         session.file_path = str(meta_path)
+        _invalidate_metas_cache(self.session_dir)
         return meta_path
 
     # ── 加载 ──────────────────────────────────────────────────────────────────
@@ -348,22 +380,50 @@ class SessionManager:
                 pass
         return metas
 
+    def _all_metas_cached(self) -> list[SessionMeta]:
+        """返回全部 session 的元数据（按最后修改时间倒序），带进程内缓存。
+
+        TTL 内命中缓存直接返回（浅拷贝，调用方可安全 slice/排序而不污染
+        缓存本体）；未命中或过期则重新全量扫描 + 解析，并写回缓存。
+        """
+        key = str(self.session_dir.resolve())
+        now = time.monotonic()
+
+        with _metas_cache_lock:
+            cached = _metas_cache.get(key)
+        if cached is not None:
+            cached_at, metas, _total = cached
+            if now - cached_at < _METAS_CACHE_TTL:
+                return list(metas)
+
+        # 缓存未命中/过期：重新扫描磁盘（这一步仍然是全量扫描 + 逐个读
+        # meta.json，开销没有消失，只是被 TTL 摊薄；调用方（HTTP 路由层）
+        # 应该把这条路径整体丢进线程池，避免阻塞事件循环）。
+        all_entries = self._list_session_entries()
+        metas = self._read_metas(all_entries)
+
+        with _metas_cache_lock:
+            _metas_cache[key] = (now, metas, len(metas))
+        return list(metas)
+
     def list_sessions(self, limit: int = 50) -> list[SessionMeta]:
         """
         列出所有 Session 的元数据（按最后修改时间倒序）。
         新格式（目录）和旧格式（文件）同时支持。
         """
-        entries = self._list_session_entries()[:limit]
-        return self._read_metas(entries)
+        return self._all_metas_cached()[:limit]
 
     def list_sessions_page(self, limit: int = 50, offset: int = 0) -> tuple[list[SessionMeta], int]:
         """[看板分页改进] 支持 offset 的分页版本，额外返回分页前的总数，
         供前端计算总页数。不改动 list_sessions() 本身，避免影响 CLI/daemon
-        等其它调用方。"""
-        all_entries = self._list_session_entries()
-        total = len(all_entries)
-        page_entries = all_entries[offset:offset + limit]
-        return self._read_metas(page_entries), total
+        等其它调用方。
+
+        [性能改进] 底层走 _all_metas_cached()：TTL 内命中缓存则不重新
+        扫盘/解析，避免看板高频轮询时随 session 数量增长而越来越慢。
+        """
+        all_metas = self._all_metas_cached()
+        total = len(all_metas)
+        return all_metas[offset:offset + limit], total
 
     def search(self, query: str, limit: int = 20) -> list[SessionMeta]:
         """在所有 session 的 title + summary 中做关键词搜索。"""
@@ -394,6 +454,7 @@ class SessionManager:
         if not meta_path.parent.is_dir():
             return False
         _atomic_write_json(meta_path, session.to_meta_dict())
+        _invalidate_metas_cache(self.session_dir)
         return True
 
     def mark_knowledge_extracted(self, session_id: str, extracted: bool = True) -> bool:
@@ -410,6 +471,7 @@ class SessionManager:
         if not meta_path.parent.is_dir():
             return False
         _atomic_write_json(meta_path, session.to_meta_dict())
+        _invalidate_metas_cache(self.session_dir)
         return True
 
     def mark_summary_backfilled(self, session_id: str, summary: str, summary_at_turns: int) -> bool:
@@ -432,6 +494,7 @@ class SessionManager:
         if not meta_path.parent.is_dir():
             return False
         _atomic_write_json(meta_path, session.to_meta_dict())
+        _invalidate_metas_cache(self.session_dir)
         return True
 
     def delete(self, session_id: str) -> bool:
@@ -442,6 +505,7 @@ class SessionManager:
         session_dir = self.session_dir / session_id
         if session_dir.is_dir():
             shutil.rmtree(session_dir, ignore_errors=True)
+            _invalidate_metas_cache(self.session_dir)
             return True
 
         # 前缀匹配（新格式）
@@ -452,6 +516,7 @@ class SessionManager:
         if candidates_dir:
             for d in candidates_dir:
                 shutil.rmtree(d, ignore_errors=True)
+            _invalidate_metas_cache(self.session_dir)
             return True
 
         # 旧格式：文件
@@ -459,6 +524,7 @@ class SessionManager:
         if candidates_file:
             for p in candidates_file:
                 p.unlink(missing_ok=True)
+            _invalidate_metas_cache(self.session_dir)
             return True
 
         return False

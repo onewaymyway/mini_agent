@@ -1389,7 +1389,14 @@ async def list_sessions(
             if entries:
                 current_id = max(entries, key=lambda e: e.last_active).session_id
 
-        metas, total = user_mgr.list_sessions_page(limit=limit, offset=offset)
+        # [http_server_blocking_call_guard_plan.md] list_sessions_page 内部
+        # 是同步磁盘扫描（iterdir + 逐个 meta.json 读取），哪怕命中了
+        # SessionManager 的内存缓存，未命中时仍可能耗时较久——必须丢进线程池，
+        # 否则会阻塞事件循环，拖死看板轮询的 /v1/health 心跳。
+        metas, total = await run_blocking(
+            user_mgr.list_sessions_page, limit=limit, offset=offset,
+            where="list_sessions_page",
+        )
         infos = [
             SessionInfo(
                 id=m.id, title=m.title or "(untitled)",
@@ -1429,7 +1436,10 @@ async def list_sessions(
     agent, mgr = _session_manager_or_404(_bridge(request, session_id=session_id))
     current_id = agent.session_id
 
-    metas, total = mgr.list_sessions_page(limit=limit, offset=offset)
+    metas, total = await run_blocking(
+        mgr.list_sessions_page, limit=limit, offset=offset,
+        where="list_sessions_page",
+    )
     infos = [
         SessionInfo(
             id=m.id, title=m.title or "(untitled)",
@@ -1495,7 +1505,9 @@ async def get_session_detail(request: Request, session_id: str):
                     summary=meta.summary, history=entry.agent.history, is_current=True,
                 )
 
-        session = user_mgr.load(session_id)
+        # mgr.load() 会读取完整 history.json，session 历史长的话文件不小，
+        # 同样走线程池，避免阻塞事件循环。
+        session = await run_blocking(user_mgr.load, session_id, where="session_load")
         if session is None:
             raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
         return SessionDetailResponse(
@@ -1521,7 +1533,7 @@ async def get_session_detail(request: Request, session_id: str):
             summary=meta.summary, history=agent.history, is_current=True,
         )
 
-    session = mgr.load(session_id)
+    session = await run_blocking(mgr.load, session_id, where="session_load")
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
 

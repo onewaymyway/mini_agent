@@ -525,6 +525,45 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
   后端 `GET /v1/sessions` 新增 `offset` 参数，`SessionManager` 新增
   `list_sessions_page()` 方法返回分页前的总数。
 
+  **[阻塞防护 + 缓存改进]** `list_sessions_page()` 底层是同步磁盘扫描
+  （`iterdir()` + 逐个读取解析 `meta.json`），session 数量越多、daemon
+  运行越久，这个函数本身耗时会越长。曾经出现过 daemon 运行一段时间后
+  `GET /v1/sessions` 单次请求耗时超过 4 分钟，把 FastAPI 的 asyncio
+  事件循环整个卡死，导致看板连 `/v1/health` 心跳都拿不到响应、误判
+  "无法连接到 Agent 服务"（详见 `next_doc/session_list_blocking_and_cache_fix.md`）。
+  现已从两个层面修复：
+  - **线程池隔离**：路由层用项目已有的 `run_blocking()` 助手
+    （`mini_agent/utils/blocking_guard.py`）把 `list_sessions_page()` /
+    `mgr.load()` 这类同步 I/O 丢进线程池执行，带硬超时（默认 45s）和
+    连续失败熔断，即使个别请求很慢也不会拖住事件循环、影响其它并发请求
+    （包括心跳检查）。
+  - **进程内缓存**：`SessionManager` 新增按 `session_dir` 路径 keyed 的
+    全量 metas 缓存（TTL 5 秒），看板高频轮询命中缓存时完全不碰磁盘；
+    `save()` / `delete()` / `set_pinned()` / `mark_knowledge_extracted()` /
+    `mark_summary_backfilled()` 等写操作成功后会主动使对应 session_dir
+    的缓存失效，保证不会因为缓存而看到过期数据。
+
+## 故障排查：daemon 进程还在跑，但看板提示"无法连接到 Agent 服务"
+
+如果命令行能确认 daemon 进程仍在运行，但看板报"无法连接到 Agent 服务，
+请检查地址/Token"，且此时 `http_access.jsonl` 里能看到某个请求（典型是
+`GET /v1/sessions`）的 `duration_ms` 异常大（几十秒到几分钟，`slow: true`），
+基本可以判定是**事件循环被某个同步阻塞调用卡住**，而不是真的网络不通或
+token 错误。日志里同时出现的 `ConnectionResetError [WinError 10054]`
+只是连接超时后的连锁反应，不是根因。
+
+排查步骤：
+1. 搜索 `http_access.jsonl` 里同一时间段内 `duration_ms` 明显偏大的
+   请求，定位是哪个端点卡住了。
+2. 确认该端点内部是否有未加 `run_blocking()`/线程池保护的同步磁盘或
+   CPU 密集操作——`session.py::list_sessions_page()` 已在本次修复中处理，
+   如果是其它新增端点出现同样问题，参考同样的模式加固。
+3. session 数量特别多（几千条以上）时，即便有缓存 + 线程池，缓存过期
+   瞬间的那次全量扫描本身开销也会变大，可考虑清理/归档旧 session
+   （见 `next_doc/session_cleanup_design.md`），或后续把
+   `_list_session_entries()` 换成增量索引（sqlite/独立索引文件），
+   避免随 session 数量线性增长。
+
 ## 后续可扩展方向（未实现）
 
 - SSE 真流式渲染（当前对话为轮询式刷新，简单可靠但非逐 token 流式）
