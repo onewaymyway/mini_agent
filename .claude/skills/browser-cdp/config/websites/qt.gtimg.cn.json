@@ -1,0 +1,50 @@
+{
+  "name": "腾讯财经A股",
+  "domain": "qt.gtimg.cn",
+  "url": "https://qt.gtimg.cn",
+  "category": "FINANCE",
+  "subcategory": "Stock Realtime",
+  "frontend_framework": "None",
+  "anti_crawl_level": 1,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P0",
+  "timeout": 15,
+  "retry_count": 3,
+  "stealth_mode": false,
+  "target_success_rate": 0.95,
+  "target_accuracy": 0.90,
+  "custom_config": {
+    "api_endpoint": "https://qt.gtimg.cn/q={stock_codes}",
+    "data_format": "csv_text",
+    "field_separator": "~",
+    "encoding": "gbk",
+    "stock_code_format": "{market}{code}",
+    "market_prefix": {
+      "sh": "sh60", "sz": "sz00", "bj": "bj8"
+    },
+    "fields": [
+      {"index": 1, "name": "name", "description": "股票名称"},
+      {"index": 2, "name": "code", "description": "股票代码"},
+      {"index": 3, "name": "price", "description": "当前价格"},
+      {"index": 4, "name": "open", "description": "开盘价"},
+      {"index": 5, "name": "high", "description": "最高价"},
+      {"index": 6, "name": "low", "description": "最低价"},
+      {"index": 7, "name": "yesterday_close", "description": "昨收价"},
+      {"index": 8, "name": "volume", "description": "成交量"},
+      {"index": 9, "name": "amount", "description": "成交额"},
+      {"index": 30, "name": "change_pct", "description": "涨跌幅"}
+    ]
+  },
+  "proxy_policy": {
+    "require_proxy": false,
+    "notes": "腾讯财经API无需代理，直接访问"
+  },
+  "rate_limit": {
+    "requests_per_minute": 60,
+    "delay_between_requests": 1.0
+  },
+  "tags": ["finance", "stock", "china", "realtime", "P0"],
+  "created_at": "2026-08-18T12:00:00.000Z",
+  "updated_at": "2026-08-18T12:00:00.000Z"
+}

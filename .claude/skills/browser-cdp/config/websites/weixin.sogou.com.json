@@ -1,0 +1,40 @@
+{
+  "name": "搜狗微信",
+  "domain": "weixin.sogou.com",
+  "url": "https://weixin.sogou.com",
+  "category": "SOCIAL",
+  "subcategory": "WeChat Official Accounts",
+  "frontend_framework": "Traditional",
+  "anti_crawl_level": 3,
+  "login_required": false,
+  "captcha_type": "sliding_puzzle",
+  "priority": "P0",
+  "timeout": 25,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.75,
+  "target_accuracy": 0.80,
+  "custom_config": {
+    "search_url": "https://weixin.sogou.com/weixin?type=1&query={query}",
+    "article_selector": ".news-box .txt-box h3 a",
+    "title_selector": ".news-box .txt-box h3 a",
+    "url_selector": ".news-box .txt-box h3 a",
+    "author_selector": ".s-p",
+    "account_selector": ".s-p a",
+    "description_selector": ".search-txt",
+    "pagination_next": ".page a.next",
+    "pagination_current": ".page .current"
+  },
+  "proxy_policy": {
+    "require_proxy": true,
+    "recommended": true,
+    "notes": "搜狗微信有严格频率限制，强烈建议使用代理轮换"
+  },
+  "rate_limit": {
+    "requests_per_minute": 10,
+    "delay_between_requests": 6.0
+  },
+  "tags": ["wechat", "social", "china", "articles", "P0"],
+  "created_at": "2026-08-18T12:00:00.000Z",
+  "updated_at": "2026-08-18T12:00:00.000Z"
+}

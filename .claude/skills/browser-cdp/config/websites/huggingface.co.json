@@ -1,0 +1,44 @@
+{
+  "name": "Hugging Face",
+  "domain": "huggingface.co",
+  "url": "https://huggingface.co",
+  "category": "AI_TECH",
+  "subcategory": "Open Source Models",
+  "frontend_framework": "Next.js",
+  "anti_crawl_level": 2,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P0",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": false,
+  "target_success_rate": 0.90,
+  "target_accuracy": 0.90,
+  "custom_config": {
+    "api_base": "https://huggingface.co/api",
+    "graphql_endpoint": "https://huggingface.co/api/graphql",
+    "endpoints": {
+      "models_list": "/models?limit={limit}&sort={sort}&direction={direction}",
+      "models_search": "/models?search={query}&limit={limit}",
+      "model_detail": "/models/{author}/{modelId}",
+      "blog_list": "/api/blog-posts?limit={limit}",
+      "dataset_list": "/datasets?limit={limit}&sort={sort}"
+    },
+    "headers": {
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    }
+  },
+  "proxy_policy": {
+    "require_proxy": true,
+    "recommended": true,
+    "notes": "需代理解决网络不稳定问题"
+  },
+  "rate_limit": {
+    "requests_per_minute": 30,
+    "delay_between_requests": 2.0
+  },
+  "tags": ["ai", "tech", "open_source", "models", "P0"],
+  "created_at": "2026-08-18T12:00:00.000Z",
+  "updated_at": "2026-08-18T12:00:00.000Z"
+}
