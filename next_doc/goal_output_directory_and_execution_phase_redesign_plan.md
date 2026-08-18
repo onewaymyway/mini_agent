@@ -728,3 +728,114 @@ layout` 这个判断本身是幂等的天然产物——`output/` 一旦被创�
 是 `output/` 内部子目录组织方式的调整），目前的实现只能提醒、不能真正
 支持——四目录模型是这次重设计的核心约束，本方案没有引入"允许整个 Goal
 脱离固定目录"的开关，这是有意为之的设计边界，不是遗留缺口。
+
+### Stage 8（设计讨论，未实现）：规范层/内容层两层模型
+
+**背景**：Stage 0-7 上线后，用以下五个真实 goal 反推是否成立，发现现有
+"explore→converge→stable→tidy 单层判定"的模型对至少三类场景系统性失配：
+
+1. 持续构建 `research/agent_and_ai` 技术 wiki，永不结束，每天整理一次；
+2. 基于 (1) 的产出生成改进建议，放 `research/agent_and_ai_advice`，永不
+   结束，且**依赖另一个 goal 的产出作为输入**（跨 goal 依赖，本方案未
+   讨论，记录待后续专项方案）；
+3. 持续优化 `browser-cdp` skill，产出必须落在 `.claude/skills/browser-cdp`
+   ——**在四目录模型的 goal 私有目录之外**；
+4. 同上，`finance-data-toolkit` skill，同样的外部固化目标问题；
+5. 持续抓取 A 股热点，产出报告到 `research/stock_analyse`，且要求
+   "持续探索新的信息源"——报告本身该稳定、信息源调研永远不该收敛，
+   两者绑在一个 goal 里。
+
+根因：现有模型只有一套阶段判定，且判定依据是"本轮产出内容是否有新东西"。
+但 (1)(2)(5) 这类**累积型** goal 的内容层天然、永久地在产出新东西，
+这不代表"还没收敛"；(3)(4) 这类**能力固化型** goal 的产出目标根本不在
+`output/` 范围内。把"内容常新"误判为"规范未收敛"，是 tidy/converge
+迟迟不生效、explore 判定虚高的真正原因，比 Stage 0 最初诊断的"载体设计"
+问题更底层一层。
+
+**核心修正：拆分"规范层"与"内容层"，两者各自独立收敛/不收敛**
+
+- **规范层（`spec_phase`）**：这个 Goal 该"怎么做"——目录结构、
+  `execution_routine`（每一轮的标准动作序列，新增字段，见下）——理应
+  收敛。判定依据从"本轮产出内容像不像上一轮"改为"`execution_routine`
+  本身有没有实质性变化"（复用 `compute_progress_trend_signal`，比较
+  对象从进展描述文本换成 routine 步骤 diff）。
+- **内容层（content execution）**：规范收敛后按 `execution_routine`
+  持续产出具体内容，永不进入"再次判定阶段"，除非规范层被显式重新打开
+  （见"规范复议"）。累积型/能力固化型 goal 的内容层本来就该永远处在
+  这个状态，不是异常。
+
+**`GoalExecutionSpec` 新增字段**：
+
+```yaml
+output_mode: accretive | capability_hardening | converging | hybrid
+execution_routine:            # 收敛后的"每一轮标准动作序列"
+  - step: ...
+cadence: daily | per_cycle | ...
+new_topic_discovery: intrinsic | none   # accretive/hybrid 用，显式声明
+                                          # "内容层常新是正常现象"，阶段
+                                          # 判定不得因此误判为规范未收敛
+hardening_target: <外部路径>              # capability_hardening 用，如
+                                          # .claude/skills/browser-cdp；
+                                          # converge 阶段的"搬迁"目标从
+                                          # 本地 output/ 换成这个外部路径，
+                                          # 且搬迁方式是"读取目标现状→diff→
+                                          # 增量更新"，不是覆盖
+sub_exploration: <说明>                   # hybrid 用（如 stock_analyse 的
+                                          # 信息源调研），声明"主体走
+                                          # accretive/converging，但存在一条
+                                          # 独立生命周期的内容子探索"，落在
+                                          # output/scripts/_experiments/
+                                          # 或专门的 output/_sources/ 下，
+                                          # 不占用主轨的 spec_phase 判定
+```
+
+**阶段状态机调整**：`spec_phase` 由 explore→converge→stable 三态改为
+explore→converge→**running**（原 stable 改名，语义从"稳定期"变为"长期
+执行态"，更贴合"规范已定、内容永续产出"这个事实）。`running` 态下：
+
+- 内容层按 `execution_routine` + `output_mode` 对应的默认模板持续产出，
+  不再触发 explore/converge 判定；
+- **内容 tidy**（Stage 3/5 已实现的那套目录 housekeeping）继续按
+  `output_mode` 各自的 retention 规则周期触发，与 `spec_phase` 是否为
+  `running` 无关——`accretive` 型以"文件数/时间阈值"触发，
+  `capability_hardening` 型以"`_experiments/` 转正检测"为主；
+- **规范复议**（新增触发机制，替代目前"只能靠用户手动 `spec revise`"）：
+  持续监测"routine 是否失灵"的信号——连续 N 轮 `notes/cycle_NNNN.md`
+  出现"流程执行不下去/卡住"类表述（复用 Stage 5 已有的启发式文本扫描
+  思路）、或 goal `description` 被用户修改过、或 `hardening_target`
+  连续多轮验证/固化失败——命中时把 `spec_phase` 从 `running` 拉回
+  `explore`，重新走一轮收敛；不命中则永远停留在 `running`，这是
+  `accretive`/`capability_hardening` 型 goal 的常态而非异常。
+
+**三种 `output_mode` 复用同一套两层模型，仅内容层默认模板不同**：
+
+| output_mode | 例子 | `execution_routine` 默认模板 | 内容层落地目录 |
+|---|---|---|---|
+| `accretive` | wiki (1)、stock 报告 (5) | 扫描已有→发现新增→去重合并→写入/更新→刷新索引 | `output/`（`retention: append` 为主） |
+| `capability_hardening` | skill (3)(4) | 试验新场景→验证有效性→diff `hardening_target`→增量固化→更新目标自身 README/CHANGELOG | `output/scripts/_experiments/` 承担"未转正"角色，正式产出直接写 `hardening_target` |
+| `converging` | 原方案针对的默认场景 | 沿用 Stage 0-7 既有 explore→converge→stable 判定，仅把"stable"改名为"running"、判定信号改为看 routine 而非内容 | `output/` |
+| `hybrid` | stock_analyse 整体 (5) | 主体走对应 `accretive`/`converging` 模板；`sub_exploration` 声明的子探索独立生命周期，永不参与主轨 `spec_phase` 判定 | 主体 `output/`，子探索落 `output/_sources/` 或 `output/scripts/_experiments/` |
+
+**未决问题（留待 Stage 9 细化）**：
+
+- 跨 goal 依赖（例子 (2) 依赖例子 (1) 的产出）：如何声明依赖、如何避免
+  上游还没更新时下游重复读旧数据、依赖目标不存在时如何降级，需要专项
+  方案，本次不展开。
+- `execution_routine` 的"实质性变化"判定复用 `compute_progress_trend_
+  signal` 是否真的适用于"步骤序列 diff"而非"自然语言进展描述"，需要
+  在实现阶段验证——两者输入形态不同，可能需要单独的 diff 策略而不是
+  直接复用。
+- "规范复议"的触发阈值（连续几轮抱怨、修改 description 后延迟几轮生效）
+  暂无实际运行数据支撑，第一版仍需给保守硬编码值，后续观察调整，做法
+  与 Stage 0 `_archive/` 阈值处理一致。
+- `running` 态本质是把原 `stable` 阶段"改名"还是"新增第四态与 stable
+  并存"（即某些 `converging` 型 goal 可能既有 `stable`——严格遵循规范
+  做增量修改，又有 `running`——完全放开做累积产出），需要结合更多实际
+  goal 案例判断是否有必要保留两态区分，目前倾向"改名统一"，因为暂未
+  找到需要两态并存的真实场景。
+
+本 Stage 仅为设计讨论，尚未修改任何代码/测试，需要用户确认方向后，
+再拆解为具体实施 Stage（`GoalExecutionSpec` schema 迁移、
+`_resolve_execution_phase()` 判定逻辑重写、`execution_phase.md` 各阶段
+prompt 片段改写、`output_workspace.py` 内容 tidy 与 `output_mode` 的
+接入等），预计工作量不小于 Stage 0-7 总和，建议仍按小步拆分实施。
