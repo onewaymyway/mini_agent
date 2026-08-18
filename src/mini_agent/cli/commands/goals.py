@@ -11,6 +11,16 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
   /agent goals progress <id> <txt> — 更新进展记录
   /agent goals recur <id> <schedule> [task]  — 声明为周期性（见 goal_cron_bridge.py）
   /agent goals unrecur <id>        — 停止周期性（不删 Goal/cron job）
+  /agent goals migrate-legacy <id> — 请求下一次触发时附加一次"历史数据迁移"
+                                     任务：把旧模型（每轮一个 cycle_NNNN/
+                                     目录）下的历史产出搬进新的固定四目录
+                                     模型，见 evolution/output_workspace.py
+                                     ::build_legacy_migration_directive()，
+                                     next_doc/goal_output_directory_and_
+                                     execution_phase_redesign_plan.md
+                                     Stage 9。只打标记，daemon 模式下用
+                                     `/cron run <job_id>` 立即触发一轮，
+                                     或等待下一次自然触发。
   /agent goals spec generate <id> [--template <id>] [--from-history] [--mode llm|agent|auto]
                                    — 生成执行规范草稿（见 perception/goal_execution_spec.py）
                                      --mode 单次覆盖配置默认的 builder_mode
@@ -212,6 +222,14 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
             return
         _cmd_unrecur(gb, paths, rest[0])
 
+    elif subcmd == "migrate-legacy":
+        # [goal_output_directory_and_execution_phase_redesign_plan.md Stage 9]
+        # /agent goals migrate-legacy <id>
+        if not rest:
+            R.print_error("Usage: /agent goals migrate-legacy <goal_id>")
+            return
+        _cmd_migrate_legacy(gb, paths, rest[0])
+
     elif subcmd == "status":
         _cmd_loop_status(agent, paths)
 
@@ -227,7 +245,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
-            "progress, feedback, recur, unrecur, spec, phase, diagnose, tune, status, reset-step"
+            "progress, feedback, recur, unrecur, migrate-legacy, spec, phase, diagnose, tune, status, reset-step"
         )
 
 
@@ -600,6 +618,31 @@ def _cmd_unrecur(gb, paths, goal_id: str) -> None:
         R.print_success(f"Goal {goal_id} 已停止周期性推进（绑定的 cron job 已 disable，未删除）")
     else:
         R.print_error(f"Goal 不存在或不是有效的 goal 节点：{goal_id}")
+
+
+def _cmd_migrate_legacy(gb, paths, goal_id: str) -> None:
+    """[goal_output_directory_and_execution_phase_redesign_plan.md Stage 9]
+    请求下一次触发时附加一次"历史数据迁移"任务，只打一次性标记，不立即
+    执行——实际迁移工作由下一次真正触发（自然到期，或 daemon 模式下用
+    `/cron run <job_id>` 手动立即触发）时的 agent 完成。
+    """
+    node = gb.get(goal_id)
+    if node is None or not node.is_goal:
+        R.print_error(f"Goal 不存在：{goal_id}")
+        return
+    if not node.recurring:
+        R.print_error(f"Goal {goal_id} 不是周期性 Goal，历史数据迁移任务只对周期性 Goal 生效。")
+        return
+
+    from mini_agent.evolution import output_workspace as ow
+    if not ow.has_legacy_cycle_dirs(paths, goal_id):
+        R.print_info(f"未检测到 Goal {goal_id} 名下有旧模型（cycle_NNNN/）遗留目录，无需迁移。")
+        return
+
+    gb.update_fields(goal_id, legacy_migration_requested=True)
+    R.print_success(f"已标记：Goal {goal_id} 下一次触发时会附加一次历史数据迁移任务。")
+    if node.recurrence_cron_job_id:
+        R.print_info(f"daemon 模式下可用 /cron run {node.recurrence_cron_job_id} 立即触发这一轮，或等待下次自然触发。")
 
 
 def _cmd_spec(gb, paths, action: str, rest: list[str]) -> None:

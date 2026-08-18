@@ -3909,6 +3909,28 @@ async def lightweight_goal_next_cycle(goal_id: str, request: Request):
     return {"goal": updated.to_dict() if updated else None}
 
 
+@router.post("/goals/{goal_id}/migrate_legacy")
+async def migrate_goal_legacy_cycles(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/migrate_legacy — 请求下一次周期性触发时附加
+    一次"历史数据迁移"任务：把旧模型（每轮一个 cycle_NNNN/ 目录）下遗留的
+    历史产出搬迁进新的固定四目录模型（output/notes/spec/scratch）。见
+    next_doc/goal_output_directory_and_execution_phase_redesign_plan.md
+    Stage 9。与 skip_next_cycle/lightweight_next_cycle 同一模式：只是打一个
+    一次性标记，实际迁移工作在下一次真正触发时由 agent 完成。
+    """
+    backlog, _scheduler = _goal_backlog_and_scheduler(request)
+    goal = backlog.get(goal_id)
+    if goal is None or not goal.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    if not goal.recurring:
+        raise HTTPException(status_code=400, detail="Goal is not recurring")
+    from mini_agent.evolution import output_workspace as ow
+    if not ow.has_legacy_cycle_dirs(_spec_paths(request), goal_id):
+        raise HTTPException(status_code=400, detail="No legacy cycle_NNNN/ directories found for this goal")
+    updated = backlog.update_fields(goal_id, legacy_migration_requested=True)
+    return {"goal": updated.to_dict() if updated else None}
+
+
 @router.post("/goals/{goal_id}/feedback")
 async def add_goal_feedback(goal_id: str, request: Request):
     """POST /v1/goals/{goal_id}/feedback — [goal_cron_feedback_and_output_

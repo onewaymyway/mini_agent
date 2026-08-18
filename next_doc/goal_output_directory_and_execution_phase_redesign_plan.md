@@ -1264,5 +1264,72 @@ history()` 说明补充 Stage 8c 新增的 `execution_routine` 字段用途。
 `tests/test_cycle_patrol.py`/`tests/test_unified_task_scheduler.py`/
 `tests/test_cycle_diagnostics.py`/`tests/test_output_workspace_*.py`/
 `tests/test_goal_output_directory_onetime.py`）确认 344 个用例全部通过，
-无回归。至此 `goal_output_directory_and_execution_phase_redesign_plan.md`
-中列出的全部计划事项（Stage 0 ~ Stage 8g）均已完成。
+无回归。至此 Stage 0 ~ Stage 8g 均已完成。
+
+### Stage 9（已完成）：老数据迁移 —— "tidy-like 迁移轮"
+
+**背景**：Stage 7 已经有 `has_legacy_cycle_dirs()`/`build_legacy_migration_
+summary()`，但那是**被动摘要**——只在第一次切到新模型的那一轮把"以前
+做过什么"写进 `notes/cycle_0000.md`，旧的 `cycle_NNNN/` 目录内容本身永远
+不会被真正搬进新的 `output/`。用户提出：能不能有一种机制，像 tidy 阶段
+那样，专门跑一轮，把旧数据真正转换成新模式。
+
+**设计**：不新增新的 `execution_phase` 状态（不引入第五个 `mode`），而是
+复用 Stage 3 已有的"一次性标记，消费后自动清零"模式（与
+`skip_next_cycle`/`next_cycle_lightweight` 同构）——因为迁移工作本质上是
+一次用户显式请求的**叠加任务**，不代表这个 Goal 的执行阶段发生了变化
+（迁移期间该处于 explore 还是 running，跟迁移这件事本身无关），复用现有
+阶段状态机反而会引入"迁移完了该退回哪个阶段"这类不必要的复杂度。
+
+**新增内容**：
+
+- `GoalNode` 新增 `legacy_migration_requested: bool = False` 字段（与
+  `skip_next_cycle` 同一模式），`to_dict()`/`from_dict()` 同步。
+- `evolution/output_workspace.py` 新增三个函数：
+  - `list_legacy_cycle_dirs(paths, goal_id, *, include_migrated=False)`：
+    列出未处理（或全部）的 legacy `cycle_NNNN/` 目录，排序返回。
+  - `mark_legacy_cycle_dir_migrated(dir_path)`：把处理完的目录改名加
+    `__migrated` 后缀（不删除、不搬空内容），幂等——重复调用/目标已存在
+    都直接返回目标路径，不报错、不覆盖。
+  - `build_legacy_migration_directive(paths, goal_id, *, spec=None)`：
+    生成一份**主动指令**文本（区别于 Stage 7 的被动摘要）：列出待处理
+    目录+manifest 摘要提示，要求 agent 依次判断价值、搬进 `output/`
+    对应业务子目录（`spec` 传入时）或 `_misc/`（未传入时）、无价值的
+    挪进 `_archive/`、处理完成后重命名加 `__migrated` 后缀标记、在
+    `notes/` 里专门写一段迁移说明；允许一轮处理不完，下次继续。没有
+    待处理目录时返回 `None`。
+- `evolution/goal_cron_bridge.py` 新增 `_append_legacy_migration_
+  directive()`，在 `_fire_goal_cycle()` 里于 `_append_execution_spec_
+  context()` 之前调用：消费 `goal.legacy_migration_requested` 标记，
+  命中则清零标记 + 追加指令到 description（与阶段提示是叠加关系，不管
+  当前处于哪个阶段都会附加）；目录已经不存在时同样清零标记（避免"请求
+  过一次但目录已经没了"的假象持续存在），只留一条 progress_note 说明。
+  `_build_tidy_problem_checklist()` 同步补一条 ℹ️ 提示（检测到未迁移的
+  legacy 目录时展示，不影响 tidy 判定本身，纯提醒）。
+- 触发入口：API `POST /v1/goals/{goal_id}/migrate_legacy`（校验
+  `recurring=True` 且确实存在 legacy 目录，否则 400）；CLI
+  `/agent goals migrate-legacy <goal_id>`（同样的前置校验，daemon 模式下
+  提示可用 `/cron run <job_id>` 立即触发这一轮）。两者都只是"打标记"，
+  真正的迁移工作在下一次真正触发（自然到期或手动 `/cron run`）时由 agent
+  执行——与 `skip_next_cycle`/`lightweight_next_cycle` 的触发方式完全对称，
+  不新增独立的"立即同步执行"路径。
+
+**有意保留范围**：迁移本身仍然是 agent 主观判断"哪些内容有价值"的活，
+代码只提供目录清单、manifest 摘要提示、和"处理完记得改名标记"的强约束
+（`__migrated` 后缀是否被正确打上，理论上后续可以再加一条 tidy-like 的
+代码核查项去验证，本阶段未做，因为"验证 agent 是否真的把内容搬对了地方"
+本身仍需要语义判断，不是纯文件系统扫描能确定性回答的问题）；旧目录本身
+永远不会被自动删除，只会被改名标记，符合方案一贯的"不做破坏性自动操作"
+风格。
+
+测试：新增 `tests/test_output_workspace_legacy_migration_cycle.py`
+（14 个用例），覆盖 `list_legacy_cycle_dirs()`/`mark_legacy_cycle_dir_
+migrated()` 的列出/排除已迁移/幂等改名/目标已存在不报错，
+`build_legacy_migration_directive()` 的无目录返回 None/全部已迁移返回
+None/正确带出 manifest 摘要/无 spec 时指向 `_misc/`/有 spec 时列出业务
+子目录，以及 `_append_legacy_migration_directive()` 的标记未设置时
+无副作用/命中时清零标记并追加指令/目录不存在时清零标记但不追加指令。
+运行 `tests/test_output_workspace_*.py`/`tests/test_goal_cron_bridge*.py`/
+`tests/test_goal_execution_spec*.py`/`tests/test_execution_phase*.py`/
+`tests/test_goal_output_directory_onetime.py`/`tests/test_goal_backlog.py`
+共 258 个用例全部通过，无回归。

@@ -137,6 +137,18 @@ class GoalNode:
     # 不影响 recurring 本身、也不改变 ExecutionPhaseState.mode。
     next_cycle_lightweight: bool = False
 
+    # [goal_output_directory_and_execution_phase_redesign_plan.md Stage 9]
+    # 用户请求"下一次触发时附加一次历史数据迁移任务"——把旧模型
+    # （每轮一个 cycle_NNNN/ 目录）下遗留的历史产出，搬迁进新的固定四目录
+    # 模型（output/notes/spec/scratch）。与 skip_next_cycle/
+    # next_cycle_lightweight 同样的"一次性标记，消费后自动清零"模式，由
+    # goal_cron_bridge._fire_goal_cycle() 消费：命中后清零本字段、在本轮
+    # description 里追加一段迁移指令（见
+    # evolution/output_workspace.py::build_legacy_migration_directive()），
+    # 不改变 ExecutionPhaseState.mode、不影响本轮阶段判定本身，纯粹是叠加
+    # 的一次性任务。
+    legacy_migration_requested: bool = False
+
     # [goal_cron_feedback_and_output_policy_plan.md Track A] 用户对本节点持续
     # 生效的意见反馈历史。每条：{"text": str, "at": float}。这里只做追加记录，
     # 供 UI/CLI 回看；真正影响后续执行的是同步追加进 description 的那部分
@@ -227,6 +239,7 @@ class GoalNode:
             "reaped_cycle_child_ids": self.reaped_cycle_child_ids,
             "skip_next_cycle": self.skip_next_cycle,
             "next_cycle_lightweight": self.next_cycle_lightweight,
+            "legacy_migration_requested": self.legacy_migration_requested,
             "user_feedback": self.user_feedback,
             "source_initiator": self.source_initiator,
             "status_history": self.status_history,
@@ -261,6 +274,7 @@ class GoalNode:
             reaped_cycle_child_ids=d.get("reaped_cycle_child_ids", []),
             skip_next_cycle=d.get("skip_next_cycle", False),
             next_cycle_lightweight=d.get("next_cycle_lightweight", False),
+            legacy_migration_requested=d.get("legacy_migration_requested", False),
             user_feedback=d.get("user_feedback", []),
             # 历史数据（本字段新增前写入的 goals.json）没有这个键，兜底
             # "user"——对旧数据保守估计为用户创建，不会把历史 Goal 误标成

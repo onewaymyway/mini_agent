@@ -178,6 +178,7 @@ def _fire_goal_cycle(
             "巡检，不要引入新方案、不要做结构性变更、不要扩大任务范围，"
             "有明显异常再如实汇报，其余按现状简要确认即可。",
         )
+    description = _append_legacy_migration_directive(paths, goal_backlog, goal, cycle_no, description)
     description = _append_execution_spec_context(paths, goal_backlog, goal, description)
     description = _append_growth_reorganize_hint(paths, goal, cycle_no, description)
     description = _append_growth_self_check_hint(paths, goal, cycle_no, description)
@@ -571,6 +572,37 @@ def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, des
         return description
 
 
+def _append_legacy_migration_directive(paths, goal_backlog: "GoalBacklog", goal: "GoalNode",
+                                        cycle_no: int, description: str) -> str:
+    """[goal_output_directory_and_execution_phase_redesign_plan.md Stage 9]
+    消费 `goal.legacy_migration_requested` 一次性标记（与 skip_next_cycle/
+    next_cycle_lightweight 同一模式）：命中时清零标记，追加一段迁移指令
+    （见 `output_workspace.build_legacy_migration_directive()`），不影响本轮
+    阶段判定，与执行阶段的 explore/converge/running/tidy 提示是叠加关系。
+
+    没有任何未处理的 legacy 目录时（指令函数返回 None），仍清零标记（避免
+    用户请求过一次后，因为目录已经不在了而在下次触发时又意外重新出现这段
+    指令的假象），但只留一条 progress_note 说明"未检测到需要迁移的内容"，
+    不追加空指令到 description。
+    """
+    if not getattr(goal, "legacy_migration_requested", False):
+        return description
+    goal_backlog.update_fields(goal.id, legacy_migration_requested=False)
+    from mini_agent.evolution import output_workspace as ow
+    try:
+        directive = ow.build_legacy_migration_directive(paths, goal.id)
+    except Exception:
+        directive = None
+    if not directive:
+        goal_backlog.append_progress_note(
+            goal.id, f"第 {cycle_no} 轮：用户请求的历史数据迁移未执行——未检测到需要迁移的旧 cycle 目录。"
+        )
+        return description
+    goal_backlog.append_progress_note(goal.id, f"第 {cycle_no} 轮附加历史数据迁移任务（legacy cycle 目录搬迁）。")
+    from mini_agent.perception.goal_backlog import compose_context
+    return compose_context(description, directive)
+
+
 def _read_spec_md_full_text(paths, goal_id: str, *, fallback_spec=None) -> str:
     """读取 `spec/SPEC.md` 落盘全文（方案 §4，由
     `goal_execution_spec.save_spec()` 写入）。文件不存在时（例如快照写入
@@ -670,6 +702,18 @@ def _build_tidy_problem_checklist(paths, goal_id: str, *, spec=None) -> str:
     if not scratch_empty:
         lines.append("- ⚠️ scratch/ 尚未清空——进入 running 前必须清空或仅保留明确标注"
                       "'仅存档不再维护'的内容")
+    # [Stage 9] 提醒是否仍有未处理的旧模型 legacy cycle_NNNN/ 目录——纯提醒，
+    # 不强制在 tidy 阶段处理（迁移是独立的、用户显式请求的一次性任务，见
+    # `/agent goals migrate-legacy`），只是让 agent/用户知道"还有历史包袱"。
+    try:
+        pending_legacy = ow.list_legacy_cycle_dirs(paths, goal_id, include_migrated=False)
+    except Exception:
+        pending_legacy = []
+    if pending_legacy:
+        lines.append(
+            f"- ℹ️ 检测到 {len(pending_legacy)} 个旧模型遗留的 cycle_NNNN/ 目录尚未迁移"
+            "（不影响本轮 tidy 判定，如需处理可用 /agent goals migrate-legacy 触发专门的迁移轮）"
+        )
     if stats["archive_entries"] > 200:
         lines.append(f"- ℹ️ _archive/ 已有 {stats['archive_entries']} 项归档，"
                       "可评估是否有过老内容可以彻底删除（默认不自动删，仅提示）")

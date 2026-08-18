@@ -193,6 +193,115 @@ def build_legacy_migration_summary(paths: "AgentPaths", goal_id: str, *, max_cyc
     return "\n".join(lines)
 
 
+_LEGACY_MIGRATED_SUFFIX = "__migrated"
+
+
+def list_legacy_cycle_dirs(paths: "AgentPaths", goal_id: str, *, include_migrated: bool = False) -> list[Path]:
+    """[Stage 9 迁移轮] 列出这个 Goal 名下旧模型的 `cycle_NNNN/` 目录（按名称
+    升序）。`include_migrated=False`（默认）时排除已经被标记迁移完成的
+    `cycle_NNNN__migrated/` 目录——即"还没处理过的"那部分，供
+    `build_legacy_migration_directive()`/tidy 核查复用同一份判断口径。
+    """
+    base = goal_output_base_dir(paths, goal_id)
+    if not base.is_dir():
+        return []
+    dirs = [p for p in base.iterdir() if p.is_dir() and p.name.startswith("cycle_")]
+    if not include_migrated:
+        dirs = [p for p in dirs if not p.name.endswith(_LEGACY_MIGRATED_SUFFIX)]
+    return sorted(dirs, key=lambda p: p.name)
+
+
+def mark_legacy_cycle_dir_migrated(dir_path: Path) -> Path:
+    """[Stage 9 迁移轮] 把一个已处理完的 `cycle_NNNN/` 目录重命名为
+    `cycle_NNNN__migrated/`，作为"这个旧目录已经被迁移轮处理过"的持久化
+    标记——不删除、不搬空内容，只是改名，天然幂等（对已经带后缀的目录
+    再次调用直接原样返回，不重复改名）。目标名已存在时不覆盖，直接返回
+    已存在的目标路径（视为已经迁移过）。
+    """
+    if dir_path.name.endswith(_LEGACY_MIGRATED_SUFFIX):
+        return dir_path
+    target = dir_path.with_name(dir_path.name + _LEGACY_MIGRATED_SUFFIX)
+    if target.exists():
+        return target
+    dir_path.rename(target)
+    return target
+
+
+def build_legacy_migration_directive(paths: "AgentPaths", goal_id: str, *, spec=None) -> Optional[str]:
+    """[goal_output_directory_and_execution_phase_redesign_plan.md Stage 9]
+    生成一份"迁移轮"专用的明确指令文本，拼进本轮 description——不同于
+    `build_legacy_migration_summary()`（被动摘要，只为了让 agent 知道"以前
+    做过什么"），这份指令是主动要求 agent **动手把旧目录内容搬进新模型**。
+
+    没有任何未处理的 legacy cycle 目录时返回 `None`（调用方据此跳过，不
+    追加空指令）。
+
+    `spec` 传入且非 `None` 时，指令里会带上已声明的业务子目录列表，提示
+    优先归类到对应子目录；否则统一提示"先放 `output/_misc/`，之后 tidy
+    阶段再归类"，与方案 §2.2 `_misc/` 的既有定位一致，不引入新规则。
+    """
+    pending = list_legacy_cycle_dirs(paths, goal_id, include_migrated=False)
+    if not pending:
+        return None
+
+    out_dir = goal_output_dir(paths, goal_id)
+    lines = [
+        "【历史数据迁移任务（本轮附加，一次性）】",
+        f"检测到 {len(pending)} 个旧模型（每轮一个新目录）遗留的历史目录尚未"
+        "迁移到新的固定产出目录模型，本轮请在完成常规任务之外，额外花时间"
+        "处理以下迁移工作：",
+        "",
+        "待处理的旧目录（按轮次顺序）：",
+    ]
+    for d in pending:
+        manifest_path = d / "manifest.json"
+        hint = ""
+        if manifest_path.exists():
+            try:
+                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                note = (data.get("progress_note") or "").strip()
+                if note:
+                    hint = f"（上次记录：{note[:60]}）"
+            except (OSError, ValueError):
+                pass
+        lines.append(f"- {d}{hint}")
+    lines.append("")
+    lines.append("请依次处理每个目录，动作要求：")
+    lines.append(f"1. 打开目录，判断里面的产出物是否仍有价值（不确定就倾向保留，不要直接丢弃）。")
+    if spec is not None and getattr(spec, "sub_directories", None):
+        sub_names = ", ".join(sd.name for sd in spec.sub_directories)
+        lines.append(
+            f"2. 有价值的产出，按当前已确认的执行规范搬进 `{out_dir}` 下对应的"
+            f"业务子目录（已声明的子目录：{sub_names}），确实归不了类的先放"
+            "进 `_misc/`。"
+        )
+    else:
+        lines.append(
+            f"2. 有价值的产出，先统一搬进 `{out_dir}/_misc/`（此 Goal 目前还没有"
+            "已确认的执行规范来判断该归到哪个业务子目录，_misc/ 里的内容会在"
+            "后续 tidy 阶段被要求正式归类）。"
+        )
+    lines.append(
+        "3. 明显没有价值的（失败的尝试、临时试验、过期数据），搬进 "
+        f"`{out_dir}/_archive/`，目录名或旁边加一句归档原因，不要直接删除。"
+    )
+    lines.append(
+        "4. 每个旧目录处理完后，把它重命名为原名加 `__migrated` 后缀（例如 "
+        "`cycle_0001` → `cycle_0001__migrated`），作为“已处理”的标记，不要"
+        "删除这个旧目录本身（保留作为审计痕迹）。"
+    )
+    lines.append(
+        "5. 在本轮的 notes/cycle_NNNN.md 里专门写一段“历史数据迁移”小节，"
+        "说明迁移了哪些目录、各自搬去了哪里、有没有跳过不处理的目录及原因。"
+    )
+    lines.append(
+        "如果目录数量较多、一轮处理不完，允许只处理一部分，未处理完的目录"
+        "保持原名（不加 __migrated 后缀），下一次迁移任务会自动识别并继续"
+        "处理剩余部分，不需要一次性做完。"
+    )
+    return "\n".join(lines)
+
+
 def goal_output_dir(paths: "AgentPaths", goal_id: str) -> Path:
     """recurring Goal 的正式产出目录（方案 §2），跨轮共用，不再按轮次新建。"""
     return goal_output_base_dir(paths, goal_id) / "output"
