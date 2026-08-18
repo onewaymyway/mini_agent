@@ -1,6 +1,38 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.24（用户反馈"看板中能力学习标签页的 wiki 一直没有更新"，
+- **版本**：v0.25（用户提供 `sys:capability_learning_cycle` 一次真实执行的
+  命令行 compact 记录用于排查"cron 触发了但 wiki 没有真正更新"。**根因
+  定位**：`sys:capability_learning_cycle` 的 `task_template` 只是一段
+  自然语言文本（`"[能力学习] 执行一次 /capability cycle"`），cron 执行
+  通道（`cron_agent_bridge.py::make_submit_step_fn()` → `agent.run_turn()`）
+  完全不经过 REPL 的 slash 命令分发入口（`cli/repl.py::_handle_slash()`
+  只在交互式主循环里响应 `user_input.startswith("/")`），所以这段文本
+  对 Agent 来说只是普通指令，`/capability cycle` 不会被自动执行。项目里
+  已经有专门解决这个问题的 `run_slash_command` 工具
+  （`tools/slash_command.py`），但这次记录显示 Agent 完全没有调用它，
+  而是自己翻源码、试图手写 `python -c "...run_capability_learning_cycle
+  (paths)..."` 去"猜"实现——这条路径即使执行成功也不会真正写 wiki：
+  `run_capability_learning_cycle()` 只有显式传入 `wiki_writer`（和
+  `retriever`）时才会真正检索/写入，不传时遇到需要处理的子主题只会记
+  一条 `action="skipped"` 的台账并跳过；而正确的
+  `wiki_writer=make_wiki_writer(paths)` 只在 `capability_cmd.py::
+  /capability cycle` 这个 handler 内部才会被组装、传入，手写调用完全
+  没有覆盖到这一层。**改动（本轮先做的部分）**：在
+  `cron_agent_bridge.py::build_cron_agent()` 的 `system_extra` 里新增
+  一段明确提示——任务描述里出现具体的 `/xxx` 命令时，直接调用
+  `run_slash_command` 工具执行，不要自己翻源码猜测或另起进程调用——降低
+  模型选错路径的概率。**已知但本轮未修的关联问题**：`run_slash_command`
+  工具的注册用 `if "run_slash_command" not in self.registry.names` 做
+  幂等判断，但该工具挂在进程级全局单例 `_default_registry` 上（cron
+  Agent 每次触发都会重新构造全新 Agent 实例，与主 Agent、其它 SubAgent
+  共享同一份 registry），工具内部通过闭包把 `_handle_slash(cmd, agent,
+  ...)` 绑死在"最早注册这个工具的那个 Agent 实例"上——后续任何 Agent
+  （包括每一次新的 cron 触发）调用这个工具时，实际执行的都是当初绑定
+  的那个（可能早已用完/失效的）Agent 对象，而不是自己。这个问题的修复
+  方案与风险评估见 `next_doc/cron_run_debug_detail_improvement_plan.md`
+  讨论记录，留待用户确认后再动手，避免和这次的 system_extra 改动混在
+  一次提交里，方便分别验证效果。）
+- **上一版本**：v0.24（用户反馈"看板中能力学习标签页的 wiki 一直没有更新"，
   排查定位到 `scan_outline_gaps()` 对 `coverage_state=="covered"` 且
   `volatility=="stable"`（默认值）的子主题永久跳过，即使内容单薄/有
   问题也不会被重新检索。**改动**：见「§14.6 wiki 内容完整性判定与刷新
@@ -31,6 +63,50 @@
 
 本节记录方案落地进度，每完成一个阶段就更新，保持和代码库实际状态同步，
 避免文档和实现脱节。
+
+### cron 任务里的 `/xxx` 命令未被执行导致 wiki 不更新（v0.25）—— ✅ 已实现（提示语部分）
+
+**触发背景**：用户提供了一次 `sys:capability_learning_cycle` 真实执行的
+命令行 compact 记录，用来排查"这个 cron 任务经常失败、没有真正更新 wiki"。
+
+**根因**（完整分析过程见对话记录，此处摘要结论）：
+1. `cron_scheduler.py` 里这条 job 的 `task_template` 是纯文本
+   `"[能力学习] 执行一次 /capability cycle"`，cron 执行走
+   `cron_agent_bridge.py::make_submit_step_fn()` → `agent.run_turn()`，
+   不经过 REPL 的 `_handle_slash()` 分发入口，`/capability cycle`
+   不会被自动识别/执行。
+2. 项目已有 `run_slash_command` 工具（`tools/slash_command.py`）专门
+   解决这类问题，但这次记录里 Agent 完全没有调用它，而是自己翻源码、
+   手写 `python -c "...run_capability_learning_cycle(paths)..."`
+   去"猜"实现。
+3. 即使这条手写调用顺利跑通，也不会真正写 wiki——
+   `run_capability_learning_cycle()` 只有显式传入 `wiki_writer`（和
+   `retriever`）才会真正检索/写入，不传时遇到需要处理的子主题只会记
+   一条 `action="skipped"` 的台账并跳过；正确的
+   `wiki_writer=make_wiki_writer(paths)` 只在
+   `capability_cmd.py::/capability cycle` 这个 handler 内部才会被
+   组装、传入。
+
+**本轮改动**：`cron_agent_bridge.py::build_cron_agent()` 的
+`system_extra` 新增一段提示——任务描述里出现具体的 `/xxx` 命令时，
+直接调用 `run_slash_command` 工具执行，不要自己翻源码猜测或另起进程
+调用。这是最低风险的第一步（只加了一段提示文本，不改变任何执行逻辑/
+数据结构），用来验证"提示模型用对工具"能不能解决这次观察到的现象。
+
+**已知但本轮未处理的关联问题**：`run_slash_command` 工具的注册用
+`if "run_slash_command" not in self.registry.names` 做幂等判断，而
+该工具挂在进程级全局单例 `_default_registry` 上——cron Agent 每次
+触发都会重新构造全新实例，但只有最早注册这个工具的那个 Agent 实例的
+闭包会一直生效，后续所有 Agent（含每次新的 cron 触发）调用这个工具时
+实际执行的都是那个旧 Agent 对象，不是自己。这个问题的修复方案（改用
+`skill_manager.py` 里已经验证过的 `override=True` 模式，每次 Agent
+构造都重新绑定到自己）和潜在的并发风险（`cron_job_runner.py` 允许
+多个 cron job 并行跑在各自线程上，共享同一个全局 registry，`override`
+时机和另一个线程的工具调用可能存在竞态——但这与 `skill_manager.py`
+里 `skill_list`/`skill_activate`/`compact_history` 等工具已经在用的
+`override=True` 是同一类已被代码库接受的既有风险，不是这次改动独有的
+新风险）留待用户确认后再单独实施，不和这次的提示语改动混在一起，方便
+分别验证效果。
 
 ### §14.4 检索方式扩展：`retriever_mode`（v0.22）—— ✅ 已实现
 

@@ -90,6 +90,13 @@ def build_cron_agent(
         f"完成任务后请在最后一行输出 [CRON_DONE] 标记；如果任务本质上需要"
         f"跨多次触发才能完成（比如正在处理的内容量很大），在最后一行输出"
         f"[CRON_CONTINUE] 并简述下次应该从哪里继续。"
+        f"\n\n[cron_run_debug_detail_improvement_plan.md 附带发现] 如果任务描述"
+        f"里出现具体的「/xxx」命令（比如「执行一次 /capability cycle」），"
+        f"这指的是内置 slash 命令，请直接调用 run_slash_command 工具（例如"
+        f"run_slash_command(command=\"/capability cycle\")）去执行它，不要自己"
+        f"翻源码猜测背后的 Python 函数、更不要尝试用 bash/python -c 另起进程去"
+        f"调用——那样跑的是一个全新的、无关的进程/session，既不会用上正确的"
+        f"参数（比如检索/写入回调），也不能算作这次任务真正执行了。"
     )
 
     llm_cfg = LLMConfig.from_app_config(cfg)
