@@ -2629,7 +2629,7 @@ def _render_goal_execution_spec_widget(
 _PHASE_LABELS = {
     "explore": "🔍 探索",
     "converge": "⚖️ 收敛",
-    "stable": "✅ 稳定",
+    "running": "✅ 长期执行",
     "tidy": "🧹 整理",
     "auto": "🤖 自动",
 }
@@ -2664,7 +2664,7 @@ def _render_goal_execution_phase_widget(client: AgentClient, goal_id: str, key_p
             for m in recent:
                 st.caption(f"　{m.get('from','')} → {m.get('to','')}（{m.get('reason','')}）")
 
-        mode_options = ["auto", "explore", "converge", "stable", "tidy"]
+        mode_options = ["auto", "explore", "converge", "running", "tidy"]
         current_idx = mode_options.index(mode) if mode in mode_options else 0
         col1, col2 = st.columns([3, 1])
         new_mode = col1.selectbox(
@@ -2717,7 +2717,7 @@ def _render_tuning_change_value_input(param: str, key_prefix: str, goal_id: str,
         ), False
     if param == "execution_phase":
         return st.selectbox(
-            "新阶段", ["auto", "explore", "converge", "stable", "tidy"],
+            "新阶段", ["auto", "explore", "converge", "running", "tidy"],
             format_func=lambda m: _PHASE_LABELS.get(m, m),
             key=f"{key_prefix}tune_val_phase_{goal_id}",
         ), False

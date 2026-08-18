@@ -26,7 +26,21 @@ if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
 
 
-VALID_MODES = ("explore", "converge", "stable", "tidy", "auto")
+VALID_MODES = ("explore", "converge", "running", "tidy", "auto")
+
+# [Stage 8b] 旧数据/旧调用方仍可能写入 "stable"（改名前的规范名），统一在
+# 读取/写入入口做别名归一化，避免历史落盘文件在改名后被误判为非法状态。
+_LEGACY_MODE_ALIASES = {"stable": "running"}
+
+
+def _normalize_mode(mode: str) -> str:
+    """把可能的旧名（如 "stable"）映射到当前规范名（"running"）。
+
+    未知字符串原样返回，由调用方各自决定是回退默认还是报错——本函数只做
+    别名替换，不做值域校验。
+    """
+    return _LEGACY_MODE_ALIASES.get(mode, mode)
+
 
 # auto 模式下的默认规则参数（§2）。后续如需可配置，从 AppConfig 读取覆盖。
 DEFAULT_EXPLORE_MIN_CYCLES = 3
@@ -41,7 +55,7 @@ DEFAULT_HEALTH_ALERT_COOLDOWN_SECONDS = 3 * 24 * 3600  # 同一种告警的最�
 
 # [goal_cron_task_optimization_holistic_plan.md §5 调度联动子项] 各阶段的
 # 相对资源倍率——explore/converge 期任务定义/方案本身还在变动，多给一点
-# 超时/重试预算换取"别因为节流误伤还在摸索的早期尝试"；stable/tidy 期
+# 超时/重试预算换取"别因为节流误伤还在摸索的早期尝试"；running/tidy 期
 # 任务已经跑顺，收紧成本控制。数值是启发式初始值（1.0 为改进前的统一
 # 基线，未接入本机制时的行为），刻意不做更复杂的模型——与
 # `DEFAULT_STUCK_EXPLORE_CYCLES` 等阈值一样，先上线观察，需要调整时改
@@ -49,7 +63,7 @@ DEFAULT_HEALTH_ALERT_COOLDOWN_SECONDS = 3 * 24 * 3600  # 同一种告警的最�
 DEFAULT_PHASE_RESOURCE_MULTIPLIERS = {
     "explore": 1.3,
     "converge": 1.15,
-    "stable": 1.0,
+    "running": 1.0,
     "tidy": 0.85,
 }
 
@@ -78,7 +92,7 @@ class ModeChange:
 class ExecutionPhaseState:
     version: int = 1
     goal_id: str = ""
-    mode: str = "auto"                # explore | converge | stable | tidy | auto
+    mode: str = "auto"                # explore | converge | running | tidy | auto
     locked: bool = False
     stability_score: float = 0.0
     cycles_in_mode: int = 0
@@ -99,7 +113,7 @@ class ExecutionPhaseState:
 
     @staticmethod
     def from_dict(d: dict) -> "ExecutionPhaseState":
-        mode = d.get("mode", "auto")
+        mode = _normalize_mode(d.get("mode", "auto"))
         if mode not in VALID_MODES:
             mode = "auto"
         return ExecutionPhaseState(
@@ -158,7 +172,10 @@ def save_phase(paths: "AgentPaths", state: ExecutionPhaseState) -> None:
 
 def set_mode(paths: "AgentPaths", goal_id: str, mode: str, *, lock: Optional[bool] = None,
              reason: str = "user_set") -> ExecutionPhaseState:
-    """用户手动切换阶段。mode 必须是 VALID_MODES 之一。"""
+    """用户手动切换阶段。mode 必须是 VALID_MODES 之一（"stable" 作为改名前的
+    旧别名仍被接受，自动归一化为 "running"，避免存量脚本/文档一夜之间失效）。
+    """
+    mode = _normalize_mode(mode)
     if mode not in VALID_MODES:
         raise ValueError(f"invalid execution phase mode: {mode!r}, must be one of {VALID_MODES}")
     state = load_phase(paths, goal_id)
@@ -278,6 +295,56 @@ def compute_progress_trend_signal(
         return None
 
 
+def compute_routine_stability_signal(
+    routine_texts: list[str], *, similarity_threshold: float = 0.85, llm_helper=None,
+) -> Optional[bool]:
+    """[goal_output_directory_and_execution_phase_redesign_plan.md §Stage8b]
+    规范层"execution_routine 是否已收敛"的信号——照搬
+    `compute_progress_trend_signal()`/`_llm_judge_progress_trend()` 的思路
+    （LLM 优先，判断不出来退回 difflib 相邻版本相似度比较），只是比较对象从
+    "跨轮进展描述文本"换成"execution_routine 历次版本的序列化文本"。
+
+    调用方（`goal_cron_bridge.py`）负责组装 `routine_texts`：一般取
+    `list_spec_history()` 里最近几个历史版本 + 当前版本的
+    `execution_routine`，各自序列化成 `"\\n".join(r.step for r in routine)`
+    形式的纯文本，按时间顺序传入。
+
+    返回 True 代表"最近几个版本的 routine 基本没变"（规范层已收敛，可以
+    支持进入 running）；False 代表"还在变"（规范层仍不稳定）；样本不足
+    （少于 2 条）或任何环节异常，返回 None（不参与判定，等价于该信号关闭，
+    与 `compute_progress_trend_signal` 的保守策略一致）。
+
+    这是一个独立信号，本阶段（Stage 8b）**尚未接入** `resolve_effective_mode`
+    的判定路径——是否要用它来"加速进入 running"还是仅用于展示，需要先观察
+    真实 routine 版本演进数据再决定，留给 Stage 8c 及以后。
+    """
+    if not routine_texts or len(routine_texts) < 2:
+        return None
+    try:
+        texts = [t for t in routine_texts if (t or "").strip()]
+        if len(texts) < 2:
+            return None
+
+        if llm_helper is not None:
+            llm_result = _llm_judge_progress_trend(texts, llm_helper)
+            if llm_result is not None:
+                # `_llm_judge_progress_trend` 的 True 语义是"STUCK（文本雷同/
+                # 没有变化）"——对 execution_routine 而言，"没有变化"正是我们
+                # 想要的收敛信号，语义方向恰好一致，直接透传不需要取反。
+                return llm_result
+            # LLM 不可用/判断不出结果时，静默退回下面的 difflib 兜底。
+
+        import difflib
+
+        for i in range(1, len(texts)):
+            ratio = difflib.SequenceMatcher(None, texts[i - 1], texts[i]).ratio()
+            if ratio < similarity_threshold:
+                return False
+        return True
+    except Exception:
+        return None
+
+
 def resolve_effective_mode(
     state: ExecutionPhaseState,
     *,
@@ -294,25 +361,31 @@ def resolve_effective_mode(
     - mode == "auto"：按 §2 规则粗略判定：
         cycle_no <= explore_min_cycles                → explore
         spec 未确认 / 最近仍在被 revise / miss_streak 高 → explore（还不稳定）
-        spec 已确认且近期未 revise 且 miss_streak 低    → stable（跳过 converge，
+        spec 已确认且近期未 revise 且 miss_streak 低    → running（跳过 converge，
           第一版不做"候选方案对比"识别，converge 仅作为可手动进入的阶段）
         否则                                            → converge（过渡态）
       [Stage D] progress_trend_stuck=True（跨轮进展文本高度雷同）时，即使
-      前面条件满足 stable，也降级为 converge——"文件层面看起来收敛了，但
+      前面条件满足 running，也降级为 converge——"文件层面看起来收敛了，但
       内容层面可能只是在重复"，用 converge 阶段要求的"方案对比说明"倒逼
-      agent 交代清楚，而不是静默判 stable。不满足 stable 条件时该信号不生效
-      （不会把 explore 进一步"加重"，避免同一个粗糙信号被用在两个方向上）。
+      agent 交代清楚，而不是静默判 running。不满足 running 条件时该信号不
+      生效（不会把 explore 进一步"加重"，避免同一个粗糙信号被用在两个
+      方向上）。**该降级仅在 `new_topic_discovery != "intrinsic"` 时生效**
+      ——累积型/双轨型 goal（wiki、股票报告等）内容层天然每轮都不同，
+      "跨轮进展文本雷同"这个信号对它们没有意义，调用方（goal_cron_bridge）
+      在读取到 spec.new_topic_discovery == "intrinsic" 时应直接不传/传
+      `progress_trend_stuck=None`，本函数不重复做这层判断，只负责在拿到
+      `True` 时执行降级。
     """
     if state.locked or state.mode != "auto":
         # [Stage B] tidy 阶段是"一次性插入"的维护动作：手动/自动进入 tidy 后，
         # 执行完一轮（cycles_in_mode 已经 >=1，说明已经跑过一次 tidy 提示）
-        # 就自动回到 stable 并解除锁定，不需要用户手动切回，避免每轮都停在
+        # 就自动回到 running 并解除锁定，不需要用户手动切回，避免每轮都停在
         # 整理模式不产出正常内容。
         if state.mode == "tidy" and state.cycles_in_mode >= 1:
             state.last_tidy_cycle = cycle_no
-            state.record_transition("stable", reason="tidy_auto_revert")
+            state.record_transition("running", reason="tidy_auto_revert")
             state.locked = False
-            return "stable", state
+            return "running", state
         state.cycles_in_mode += 1
         return state.mode, state
 
@@ -321,26 +394,26 @@ def resolve_effective_mode(
     elif not spec_confirmed or spec_recently_revised or miss_streak >= 2:
         target = "explore"
     elif spec_confirmed and not spec_recently_revised and miss_streak == 0:
-        target = "stable"
+        target = "running"
         if progress_trend_stuck is True:
             target = "converge"
     else:
         target = "converge"
 
-    # [Stage B §2.4] 稳定期周期性自动插入 tidy：仅当已经判定为 stable、
+    # [Stage B §2.4] 稳定期周期性自动插入 tidy：仅当已经判定为 running、
     # 配置了 tidy_every_n_cycles>0、且距上次 tidy 已满足轮次间隔时触发。
     # 触发后本轮 effective mode 直接给 tidy（下一轮由上面的
-    # "tidy 一轮后自动回 stable"逻辑收尾），不改变 state.mode 本身
+    # "tidy 一轮后自动回 running"逻辑收尾），不改变 state.mode 本身
     # （仍是 "auto"）。
-    if target == "stable" and tidy_every_n_cycles and tidy_every_n_cycles > 0:
+    if target == "running" and tidy_every_n_cycles and tidy_every_n_cycles > 0:
         last_tidy = state.last_tidy_cycle or 0
         if cycle_no - last_tidy >= tidy_every_n_cycles:
             target = "tidy"
             state.last_tidy_cycle = cycle_no
 
-    # stability_score：粗略地用"是否达到 stable 判定条件"映射到 0~1，
+    # stability_score：粗略地用"是否达到 running 判定条件"映射到 0~1，
     # 仅供展示参考，不参与其他逻辑。
-    if target == "stable":
+    if target == "running":
         state.stability_score = 1.0
     elif target == "converge":
         state.stability_score = 0.6
@@ -369,7 +442,7 @@ def last_known_effective_mode(state: ExecutionPhaseState) -> str:
     - `state.mode != "auto"`：用户手动指定的阶段就是当前有效阶段，直接返回。
     - `state.mode == "auto"`：从 `mode_history` 里找最近一条
       `reason == "rule_based_auto"` 的记录，取其 `to_mode`（形如
-      `"auto:stable"`）解析出阶段名。
+      `"auto:running"`）解析出阶段名。
     - 没有任何历史记录（Goal 刚开始跑，或阶段机制还没被真正触发过）时，
       保守返回 `"explore"`——"不确定就当作还在探索期"，避免在阶段信息
       缺失时误判为已收敛而过早归档/放宽资源控制。
@@ -431,7 +504,7 @@ def check_phase_health(
        意味着任务定义本身有问题（目标不清晰/环境不稳定），而不是 agent
        "还需要多试几次"。只在 mode == "auto" 且未被用户手动锁定时判定——
        用户手动锁定在 explore 是明确意图，不应被当成异常。
-    2. phase_flapping —— 阶段反复从 stable/converge 被打回 explore/converge
+    2. phase_flapping —— 阶段反复从 running/converge 被打回 explore/converge
        （常见于 Stage D 的"伪进展"降级反复触发），意味着看起来收敛但内容
        层面并不稳定，值得用户介入看看，而不是让系统一直自动降级下去。
 
@@ -469,13 +542,13 @@ def check_phase_health(
                 1
                 for m in recent
                 if m.to_mode.startswith("auto:") and m.to_mode.split(":", 1)[1] in ("explore", "converge")
-                and m.from_mode.startswith("auto:") and m.from_mode.split(":", 1)[1] in ("stable", "converge")
+                and m.from_mode.startswith("auto:") and m.from_mode.split(":", 1)[1] in ("running", "converge")
                 and m.to_mode.split(":", 1)[1] != m.from_mode.split(":", 1)[1]
             )
             if regressions >= flap_threshold and _cooldown_ok("phase_flapping"):
                 return (
                     f"最近 {len(recent)} 次自动阶段判定里，有 {regressions} 次从更靠后的阶段"
-                    "被打回更早的阶段（比如 stable/converge 被打回 converge/explore），"
+                    "被打回更早的阶段（比如 running/converge 被打回 converge/explore），"
                     "说明这个 Goal 表面上看起来收敛了，但内容层面可能反复不稳定，建议人工"
                     "复核最近几轮的实际产出。"
                 )

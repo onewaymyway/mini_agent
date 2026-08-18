@@ -156,13 +156,13 @@ class TestObjectiveChannelAdapter(_Base):
         backlog.add_objective(title="child", parent_id=goal.id, priority=1)
         backlog.save()
 
-        ep.set_mode(self.paths, goal.id, "stable")
+        ep.set_mode(self.paths, goal.id, "running")
 
         adapter = ObjectiveChannelAdapter(backlog, paths=self.paths)
         tasks = adapter.poll_due()
         self.assertEqual(len(tasks), 1)
         self.assertAlmostEqual(tasks[0].resource_estimate, 1.0)
-        self.assertEqual(tasks[0].extra.get("phase_mode"), "stable")
+        self.assertEqual(tasks[0].extra.get("phase_mode"), "running")
 
     def test_resource_estimate_falls_back_to_1_without_paths(self):
         """未注入 paths、且 goal_backlog 本身也拿不到 _paths 时，阶段感知

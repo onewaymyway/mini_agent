@@ -300,8 +300,8 @@ class TestReviewTriggers(unittest.TestCase):
         goals = [
             {"execution_phase_mode": "explore", "alert_count": 1},
             {"execution_phase_mode": "explore", "alert_count": 0},
-            {"execution_phase_mode": "stable", "alert_count": 2},
-            {"execution_phase_mode": "stable", "alert_count": 0},
+            {"execution_phase_mode": "running", "alert_count": 2},
+            {"execution_phase_mode": "running", "alert_count": 0},
         ]
         ratios = cp._compute_review_trigger_ratios(goals)
         self.assertEqual(ratios["recurring_goal_count"], 4)

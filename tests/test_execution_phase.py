@@ -31,11 +31,11 @@ def test_load_phase_default_when_missing(tmp_path):
 
 def test_save_and_load_roundtrip(tmp_path):
     paths = _paths(tmp_path)
-    state = ep.ExecutionPhaseState(goal_id="goal_1", mode="stable", locked=True, stability_score=0.9)
+    state = ep.ExecutionPhaseState(goal_id="goal_1", mode="running", locked=True, stability_score=0.9)
     ep.save_phase(paths, state)
 
     loaded = ep.load_phase(paths, "goal_1")
-    assert loaded.mode == "stable"
+    assert loaded.mode == "running"
     assert loaded.locked is True
     assert loaded.stability_score == 0.9
 
@@ -59,14 +59,14 @@ def test_load_phase_corrupted_file_falls_back_to_default(tmp_path):
 
 def test_set_mode_non_auto_implicitly_locks(tmp_path):
     paths = _paths(tmp_path)
-    state = ep.set_mode(paths, "goal_1", "stable")
-    assert state.mode == "stable"
+    state = ep.set_mode(paths, "goal_1", "running")
+    assert state.mode == "running"
     assert state.locked is True
 
 
 def test_set_mode_auto_defaults_unlocked(tmp_path):
     paths = _paths(tmp_path)
-    ep.set_mode(paths, "goal_1", "stable")
+    ep.set_mode(paths, "goal_1", "running")
     state = ep.set_mode(paths, "goal_1", "auto")
     assert state.mode == "auto"
     assert state.locked is False
@@ -90,18 +90,18 @@ def test_set_mode_invalid_raises(tmp_path):
 
 def test_unlock_mode(tmp_path):
     paths = _paths(tmp_path)
-    ep.set_mode(paths, "goal_1", "stable")
+    ep.set_mode(paths, "goal_1", "running")
     state = ep.unlock_mode(paths, "goal_1")
     assert state.locked is False
-    assert state.mode == "stable"
+    assert state.mode == "running"
 
 
 def test_mode_history_recorded(tmp_path):
     paths = _paths(tmp_path)
     ep.set_mode(paths, "goal_1", "explore")
-    state = ep.set_mode(paths, "goal_1", "stable")
+    state = ep.set_mode(paths, "goal_1", "running")
     assert len(state.mode_history) >= 1
-    assert state.mode_history[-1].to_mode == "stable"
+    assert state.mode_history[-1].to_mode == "running"
 
 
 # ── 自动判定 ─────────────────────────────────────────────────────────────────
@@ -135,7 +135,7 @@ def test_resolve_auto_confirmed_stable_spec_gives_stable(tmp_path):
     effective, _ = ep.resolve_effective_mode(
         state, cycle_no=10, spec_confirmed=True, spec_recently_revised=False, miss_streak=0
     )
-    assert effective == "stable"
+    assert effective == "running"
     assert state.stability_score == 1.0
 
 
@@ -164,7 +164,7 @@ def test_resolve_auto_progress_trend_healthy_keeps_stable(tmp_path):
         state, cycle_no=10, spec_confirmed=True, spec_recently_revised=False,
         miss_streak=0, progress_trend_stuck=False,
     )
-    assert effective == "stable"
+    assert effective == "running"
 
 
 def test_resolve_auto_progress_trend_none_keeps_stable(tmp_path):
@@ -173,7 +173,7 @@ def test_resolve_auto_progress_trend_none_keeps_stable(tmp_path):
     effective, _ = ep.resolve_effective_mode(
         state, cycle_no=10, spec_confirmed=True, spec_recently_revised=False, miss_streak=0,
     )
-    assert effective == "stable"
+    assert effective == "running"
 
 
 def test_resolve_auto_progress_trend_stuck_does_not_affect_explore(tmp_path):
@@ -343,7 +343,7 @@ def test_bridge_append_execution_phase_context_paths_none_noop():
     assert result == "base description"
 
 
-def test_bridge_append_execution_phase_context_locked_stable(tmp_path):
+def test_bridge_append_execution_phase_context_locked_running(tmp_path):
     from mini_agent.evolution import goal_cron_bridge as bridge
 
     class _FakeGoal:
@@ -351,10 +351,10 @@ def test_bridge_append_execution_phase_context_locked_stable(tmp_path):
         execution_spec_confirmed = False
 
     paths = _paths(tmp_path)
-    ep.set_mode(paths, "goal_1", "stable")
+    ep.set_mode(paths, "goal_1", "running")
     phase_info = bridge._resolve_execution_phase(paths, _FakeGoal(), 1)
     result = bridge._append_execution_phase_context(paths, _FakeGoal(), "base description", phase_info)
-    assert "稳定期" in result
+    assert "长期执行期" in result
 
 
 def test_bridge_append_execution_phase_context_progress_trend_stuck_gives_converge(tmp_path):
@@ -461,8 +461,8 @@ def test_resolve_tidy_auto_reverts_to_stable_after_one_cycle(tmp_path):
     effective2, state = ep.resolve_effective_mode(
         state, cycle_no=6, spec_confirmed=True, spec_recently_revised=False, miss_streak=0
     )
-    assert effective2 == "stable"
-    assert state.mode == "stable"
+    assert effective2 == "running"
+    assert state.mode == "running"
     assert state.locked is False
     assert state.last_tidy_cycle == 6
 
@@ -482,7 +482,7 @@ def test_resolve_auto_periodic_tidy_disabled_by_default(tmp_path):
     effective, _ = ep.resolve_effective_mode(
         state, cycle_no=100, spec_confirmed=True, spec_recently_revised=False, miss_streak=0,
     )
-    assert effective == "stable"
+    assert effective == "running"
 
 
 def test_bridge_converge_appends_spec_hint_when_unconfirmed(tmp_path):
@@ -560,7 +560,7 @@ def test_check_phase_health_phase_flapping_triggers():
     state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", locked=False)
     for _ in range(ep.DEFAULT_FLAP_THRESHOLD):
         state.mode_history.append(
-            ep.ModeChange(at=0.0, from_mode="auto:stable", to_mode="auto:converge", reason="rule_based_auto")
+            ep.ModeChange(at=0.0, from_mode="auto:running", to_mode="auto:converge", reason="rule_based_auto")
         )
     reason = ep.check_phase_health(state, "converge")
     assert reason is not None
@@ -569,14 +569,14 @@ def test_check_phase_health_phase_flapping_triggers():
 
 def test_check_phase_health_no_history_no_alert():
     state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", locked=False)
-    assert ep.check_phase_health(state, "stable") is None
+    assert ep.check_phase_health(state, "running") is None
 
 
 # ── last_known_effective_mode（goal_cron_task_optimization_holistic_plan.md 方向 A）──
 
 def test_last_known_effective_mode_manual_non_auto():
-    state = ep.ExecutionPhaseState(goal_id="g1", mode="stable", locked=True)
-    assert ep.last_known_effective_mode(state) == "stable"
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="running", locked=True)
+    assert ep.last_known_effective_mode(state) == "running"
 
 
 def test_last_known_effective_mode_auto_no_history_defaults_explore():
@@ -590,22 +590,22 @@ def test_last_known_effective_mode_auto_reads_latest_rule_based_entry():
         ep.ModeChange(at=1.0, from_mode="auto:explore", to_mode="auto:converge", reason="rule_based_auto")
     )
     state.mode_history.append(
-        ep.ModeChange(at=2.0, from_mode="auto:converge", to_mode="auto:stable", reason="rule_based_auto")
+        ep.ModeChange(at=2.0, from_mode="auto:converge", to_mode="auto:running", reason="rule_based_auto")
     )
-    assert ep.last_known_effective_mode(state) == "stable"
+    assert ep.last_known_effective_mode(state) == "running"
 
 
 def test_last_known_effective_mode_ignores_non_rule_based_entries():
     state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", locked=False)
     state.mode_history.append(
-        ep.ModeChange(at=1.0, from_mode="auto:explore", to_mode="auto:stable", reason="rule_based_auto")
+        ep.ModeChange(at=1.0, from_mode="auto:explore", to_mode="auto:running", reason="rule_based_auto")
     )
     state.mode_history.append(
-        ep.ModeChange(at=2.0, from_mode="stable", to_mode="converge", reason="user_set")
+        ep.ModeChange(at=2.0, from_mode="running", to_mode="converge", reason="user_set")
     )
     # 最新一条不是 rule_based_auto（是用户手动切换记录），应跳过它，
     # 沿用更早的自动判定记录。
-    assert ep.last_known_effective_mode(state) == "stable"
+    assert ep.last_known_effective_mode(state) == "running"
 
 
 # ── phase_resource_multiplier（goal_cron_task_optimization_holistic_plan.md §5 调度联动子项）──
@@ -613,7 +613,7 @@ def test_last_known_effective_mode_ignores_non_rule_based_entries():
 def test_phase_resource_multiplier_known_modes():
     assert ep.phase_resource_multiplier("explore") == 1.3
     assert ep.phase_resource_multiplier("converge") == 1.15
-    assert ep.phase_resource_multiplier("stable") == 1.0
+    assert ep.phase_resource_multiplier("running") == 1.0
     assert ep.phase_resource_multiplier("tidy") == 0.85
 
 
@@ -626,4 +626,4 @@ def test_phase_resource_multiplier_custom_table_overrides_default():
     custom = {"explore": 2.0}
     assert ep.phase_resource_multiplier("explore", multipliers=custom) == 2.0
     # 自定义表里没有的 mode 仍回落到 1.0，不会误用默认表。
-    assert ep.phase_resource_multiplier("stable", multipliers=custom) == 1.0
+    assert ep.phase_resource_multiplier("running", multipliers=custom) == 1.0

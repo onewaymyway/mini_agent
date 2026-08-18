@@ -54,10 +54,10 @@ class TestExecutionPhaseKanbanRoutes(unittest.TestCase):
         self.assertFalse(phase["locked"])
 
     def test_set_execution_phase_implicit_lock(self):
-        resp = self.client.post(f"/v1/goals/{self.goal.id}/execution_phase", json={"mode": "stable"})
+        resp = self.client.post(f"/v1/goals/{self.goal.id}/execution_phase", json={"mode": "running"})
         self.assertEqual(resp.status_code, 200)
         phase = resp.json()["phase"]
-        self.assertEqual(phase["mode"], "stable")
+        self.assertEqual(phase["mode"], "running")
         self.assertTrue(phase["locked"])
 
     def test_set_execution_phase_explicit_lock_false(self):
@@ -77,16 +77,16 @@ class TestExecutionPhaseKanbanRoutes(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
 
     def test_set_execution_phase_goal_not_found_404(self):
-        resp = self.client.post("/v1/goals/does-not-exist/execution_phase", json={"mode": "stable"})
+        resp = self.client.post("/v1/goals/does-not-exist/execution_phase", json={"mode": "running"})
         self.assertEqual(resp.status_code, 404)
 
     def test_unlock_execution_phase(self):
-        self.client.post(f"/v1/goals/{self.goal.id}/execution_phase", json={"mode": "stable"})
+        self.client.post(f"/v1/goals/{self.goal.id}/execution_phase", json={"mode": "running"})
         resp = self.client.post(f"/v1/goals/{self.goal.id}/execution_phase/unlock")
         self.assertEqual(resp.status_code, 200)
         phase = resp.json()["phase"]
         self.assertFalse(phase["locked"])
-        self.assertEqual(phase["mode"], "stable")
+        self.assertEqual(phase["mode"], "running")
 
     def test_unlock_execution_phase_goal_not_found_404(self):
         resp = self.client.post("/v1/goals/does-not-exist/execution_phase/unlock")

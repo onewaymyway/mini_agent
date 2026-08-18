@@ -4142,7 +4142,8 @@ async def get_goal_execution_phase(goal_id: str, request: Request):
 async def set_goal_execution_phase(goal_id: str, request: Request):
     """POST /v1/goals/{goal_id}/execution_phase — 手动切换执行阶段，对应
     CLI `/agent goals phase set`。Body: { "mode": "explore"|"converge"|
-    "stable"|"tidy"|"auto", "lock": bool? }。`lock` 不传时沿用 CLI 同样的
+    "running"|"tidy"|"auto", "lock": bool? }（"stable" 作为改名前的旧别名
+    仍被接受，自动归一化为 "running"）。`lock` 不传时沿用 CLI 同样的
     默认规则：非 auto 隐式锁定，auto 隐式解锁。
     """
     backlog = _goal_backlog_only(request)

@@ -120,12 +120,12 @@ class TestConfirmRejectApply(unittest.TestCase):
         self.assertEqual(self.gb.get(self.node.id).priority, 8)
 
     def test_apply_execution_phase_change(self):
-        p = self._new_proposal([{"param": "execution_phase", "to": "stable"}])
+        p = self._new_proposal([{"param": "execution_phase", "to": "running"}])
         ct.confirm_tuning_proposal(self.paths, self.node.id, p.id)
         applied = ct.apply_tuning_proposal(self.paths, self.gb, self.cs, self.node.id, p.id)
         self.assertTrue(applied.apply_results[0]["ok"])
         state = ep.load_phase(self.paths, self.node.id)
-        self.assertEqual(state.mode, "stable")
+        self.assertEqual(state.mode, "running")
 
     def test_apply_schedule_change_without_existing_recurrence(self):
         p = self._new_proposal([{"param": "schedule", "to": "interval:3600"}])
@@ -253,7 +253,7 @@ class TestParseNLRequestToChanges(unittest.TestCase):
     def _report(self):
         return cd.CycleDiagnosticsReport(
             goal_id="g1", goal_title="Test Goal", found=True,
-            recurring=True, schedule="interval:3600", execution_phase_mode="stable",
+            recurring=True, schedule="interval:3600", execution_phase_mode="running",
         )
 
     def test_llm_ask_none_returns_none(self):
@@ -312,7 +312,7 @@ class TestParseNLRequestToChanges(unittest.TestCase):
 
         report = cd.CycleDiagnosticsReport(
             goal_id="g1", goal_title="Test Goal", found=True,
-            recurring=True, schedule="interval:3600", execution_phase_mode="stable",
+            recurring=True, schedule="interval:3600", execution_phase_mode="running",
             priority=7, task_template="[已有要求] 先检查 A，再检查 B",
         )
         ct.parse_nl_request_to_changes("再加一条：也检查 C", report, fake_ask)

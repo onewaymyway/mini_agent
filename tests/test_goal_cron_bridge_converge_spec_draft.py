@@ -52,7 +52,7 @@ class TestMaybeAutoGenerateConvergeSpecDraft(unittest.TestCase):
 
     def test_skips_when_effective_mode_not_converge(self):
         with patch("mini_agent.perception.goal_execution_spec.load_spec") as m_load:
-            self._call({"effective_mode": "stable", "llm_helper": None})
+            self._call({"effective_mode": "running", "llm_helper": None})
             m_load.assert_not_called()
         self.assertEqual(self.goal_backlog.notes, [])
 

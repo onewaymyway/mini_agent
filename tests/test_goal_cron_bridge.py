@@ -478,7 +478,7 @@ class TestArchiveFinishedCycleChildren(unittest.TestCase):
             gb = GoalBacklog(paths)
             goal = gb.add_goal(title="G")
             gb.set_recurrence(goal.id, recurring=True, cron_job_id="user:fake")
-            ep.set_mode(paths, goal.id, "stable")
+            ep.set_mode(paths, goal.id, "running")
 
             for i in range(25):
                 obj = gb.add_objective(title=f"第 {i + 1} 轮", parent_id=goal.id, source="cron")

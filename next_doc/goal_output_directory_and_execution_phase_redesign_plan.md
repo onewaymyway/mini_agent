@@ -913,3 +913,81 @@ execution_spec.py` 里依赖 LLM/Agent 构建路径的用例，本次未改动
 判定 + intrinsic 接入）、Stage 8c（converge 搬迁逻辑接入
 hardening_target/sub_exploration）、Stage 8d（builder 草稿生成教会新
 字段）、Stage 8e（tidy 三种模板落地）依次推进。
+
+#### Stage 8b（已完成）：`stable → running` 改名 + `execution_routine` 收敛信号
+
+**改名范围**：`perception/execution_phase.py`（`VALID_MODES`、
+`DEFAULT_PHASE_RESOURCE_MULTIPLIERS`、`resolve_effective_mode()` 判定
+逻辑与注释、`check_phase_health()` 的 flapping 判定、
+`last_known_effective_mode()` 文档）、`evolution/goal_cron_bridge.py`
+（`_resolve_execution_phase()`/`_append_output_workspace_context()`/
+`_append_execution_phase_context()`/`reap_finished_cycles()` 里全部
+`"stable"` 字面量及注释）、`prompts/fragments/execution_phase.md`
+（`STABLE_BLOCK` → `RUNNING_BLOCK`，文案同步更新，补充"内容常新不等于
+规范未收敛"的说明，呼应 `new_topic_discovery=intrinsic`）、
+`apps/mini_agent_kanban/app.py`（阶段下拉框选项、`_PHASE_LABELS` 展示
+文案）、`api/routes.py`（`set_goal_execution_phase` 路由 docstring）。
+
+**向后兼容**：新增 `_LEGACY_MODE_ALIASES = {"stable": "running"}` +
+`_normalize_mode()` 辅助函数，接入两处入口——`ExecutionPhaseState.
+from_dict()`（读取旧版落盘文件里 `mode: "stable"` 时自动归一化，不会
+被 `VALID_MODES` 校验判为非法而回退 `"auto"`，避免存量 Goal 的阶段状态
+在改名当天集体"失忆"）、`set_mode()`（用户/CLI/API 传入旧字符串
+`"stable"` 时同样接受并归一化，而不是直接抛 `ValueError`）。
+`DEFAULT_PHASE_RESOURCE_MULTIPLIERS`/`mode_history` 里的 `"auto:xxx"`
+记录等纯内部表示不做别名兼容——这些只在同一个进程内产生和消费，不存在
+"旧数据"问题。
+
+**`execution_routine` 收敛信号（决策 3：照搬 `compute_progress_trend_
+signal` 思路）**：新增 `compute_routine_stability_signal(routine_texts,
+*, similarity_threshold=0.85, llm_helper=None) -> Optional[bool]`，
+直接复用已有的 `_llm_judge_progress_trend()`（LLM 优先，STUCK/
+PROGRESSING/UNSURE 三选一）+ difflib 相邻文本相似度兜底两级判断逻辑，
+只是比较对象从"跨轮进展描述文本"换成调用方组装的"execution_routine
+历次版本序列化文本"。`_llm_judge_progress_trend` 的 True（STUCK/雷同）
+语义对 routine 而言恰好就是"没有变化"这个正收敛信号，方向一致、不需要
+取反。样本不足两条或异常，返回 `None`（信号关闭），与既有函数的保守
+风格一致。
+
+**本阶段的有意保留范围**：`compute_routine_stability_signal()` 是独立
+纯函数，**尚未接入** `resolve_effective_mode()` 的判定路径——调用方
+（`goal_cron_bridge.py`）目前也还没有组装 `routine_texts` 并传入的代码。
+`new_topic_discovery=intrinsic` 同样只停留在 Stage 8a 的 prompt 展示
+层面，`resolve_effective_mode()` 的 `progress_trend_stuck` 降级逻辑
+本身未读取这个字段——文档 §Stage8 已注明"调用方在读取到
+`intrinsic` 时应不传/传 `None`"，这个"调用方判断"目前尚未在
+`goal_cron_bridge.py` 里实现。两者何时接入、由谁（`_resolve_execution_
+phase()` 还是更上层）负责组装 `routine_texts` 留给 Stage 8c，因为
+真正"该不该用这两个信号改变阶段判定结果"需要先有真实 spec 使用数据
+观察，属于"先把可复用的判定积木准备好，何时真正接入还需要更多信息"的
+阶段——与 Stage 0 `_archive/` 阈值的"先上线观察"处理方式一致。
+
+测试：新增 `tests/test_execution_phase_stage8b.py`（13 个用例），覆盖
+`VALID_MODES` 不再含 `"stable"`、`_normalize_mode()` 别名转换、
+`ExecutionPhaseState.from_dict()`/`set_mode()` 接受旧值并归一化、
+`set_mode()` 对真正非法值仍正确抛 `ValueError`、`resolve_effective_
+mode()` 判定目标为 `"running"`、tidy 阶段结束后正确自动回到
+`"running"`、`DEFAULT_PHASE_RESOURCE_MULTIPLIERS` 键已改名，以及
+`compute_routine_stability_signal()` 的样本不足/routine 稳定返回
+True/routine 剧烈变化返回 False/正确调用 `llm_helper`/`llm_helper`
+抛异常时不让异常冒出来共 5 个用例。改名影响到的既有测试文件
+（`tests/test_execution_phase.py` 等 8 个）里所有 `"stable"` 字面量
+同步改为 `"running"`（含 `mode_history` 里的 `"auto:stable"` 断言
+字符串、中文断言"稳定期"改为"长期执行期"）。运行
+`tests/test_execution_phase*.py`/`tests/test_goal_cron_bridge*.py`/
+`tests/test_cycle_tuning.py`/`tests/test_cycle_patrol.py`/
+`tests/test_unified_task_scheduler.py`/`tests/test_cycle_diagnostics.py`/
+`tests/test_goal_execution_spec*.py`/`tests/test_output_workspace_*.py`/
+`tests/test_goal_output_directory_onetime.py` 共 315 个用例全部通过，
+无回归。
+
+尚未做的事（留给 Stage 8c 及以后）：`compute_routine_stability_signal()`
+接入 `resolve_effective_mode()` 判定路径、`goal_cron_bridge.py` 组装
+`routine_texts`（读取 `list_spec_history()` + 当前 spec 的
+`execution_routine`）、`new_topic_discovery=intrinsic` 真正影响
+`progress_trend_stuck` 降级判定、`hardening_target`/`sub_exploration`
+接入 converge 搬迁行为、`GoalExecutionSpecBuilder` 教会生成 Stage 8a
+新字段的草稿、`output_workspace.py` 三种 `output_mode` tidy 默认模板、
+`docs/goal-execution-phase-guide.md` 等用户文档同步"running"改名（本
+阶段仅同步了代码内注释/docstring，面向用户的 docs/ 目录尚未触碰，
+Stage 8 全部收尾时再一次性同步，避免文档跟着每个子阶段来回改）。

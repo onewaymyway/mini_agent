@@ -1,7 +1,10 @@
 # prompts/fragments/execution_phase.md
 #
-# 执行阶段（explore/converge/stable/tidy）对应的 prompt 片段
-# （next_doc/goal_execution_phase_improvement_plan.md §4）
+# 执行阶段（explore/converge/running/tidy）对应的 prompt 片段
+# （next_doc/goal_execution_phase_improvement_plan.md §4，
+#  running 原名 stable，改名见
+#  next_doc/goal_output_directory_and_execution_phase_redesign_plan.md
+#  Stage 8b）
 # 由 evolution/goal_cron_bridge.py::_append_execution_phase_context 按本轮
 # effective mode 选取对应 KEY 拼进子 Objective description。
 
@@ -27,10 +30,14 @@ CONVERGE_BLOCK: |
     稳定/更符合已有约定等）。
   - 这份"方案对比说明"是本轮的重点产出之一，请单独成段，方便后续核对。
 
-STABLE_BLOCK: |
-  ## 当前执行阶段：稳定期（stable）
+RUNNING_BLOCK: |
+  ## 当前执行阶段：长期执行期（running）
 
-  这个 Goal 的执行方式已经确定，现在处于稳定重复执行阶段。
+  这个 Goal 的执行方式（规范层）已经收敛，现在处于按已确认规范长期执行
+  阶段。注意"长期执行"不等于"内容不再变化"——如果这个 Goal 本身是持续
+  产出新内容的类型（如知识库/报告类，每轮出现新主题、新素材是正常现象），
+  规范（目录结构、命名约定、每轮标准动作）不变，但内容当然应该常新，不要
+  为了"看起来稳定"而刻意重复旧内容或拒绝纳入新信息。
   本轮请：
   - 严格遵循已确认的执行规范（如有），不要改变目录结构、命名约定或核心
     实现方式。
@@ -48,7 +55,7 @@ TIDY_BLOCK: |
     单独的历史目录而不是直接删除）。
   - 输出一份简短的"整理报告"：整理了什么、为什么、是否发现了需要用户
     关注的问题。
-  - 完成整理后，这个 Goal 会自动回到稳定期，继续正常执行。
+  - 完成整理后，这个 Goal 会自动回到长期执行期（running），继续正常执行。
 
 CONVERGE_SPEC_HINT_BLOCK: |
   ## 提示：收敛完成后建议固化执行规范
@@ -57,4 +64,4 @@ CONVERGE_SPEC_HINT_BLOCK: |
   明确给出"接下来采用哪种方式"的结论，建议在产出说明中把这个结论写清楚
   （产出文件规则、目录结构、每轮验收标准），方便用户后续通过
   `/agent goals spec generate` 生成对应草稿并确认，从而让这个 Goal 进入
-  稳定期后有明确依据可循，而不是只靠本轮的自然语言描述。
+  长期执行期后有明确依据可循，而不是只靠本轮的自然语言描述。

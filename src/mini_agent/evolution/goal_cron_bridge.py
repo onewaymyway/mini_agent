@@ -213,13 +213,13 @@ def _resolve_execution_phase(paths, goal: "GoalNode", cycle_no: int,
     并落盘/发健康告警——这部分是纯粹的"判定 + 副作用"，从原来的
     `_append_execution_phase_context()` 拆出来，是因为 Stage 3 需要在
     构造 prompt 的产出目录约束段落时（`_append_output_workspace_context`）
-    就知道 effective_mode（explore/converge 只能写 scratch/，stable 只能
+    就知道 effective_mode（explore/converge 只能写 scratch/，running 只能
     写 output/），而不是等到阶段文案段落才知道。
 
     返回 dict：{"effective_mode": str|None, "spec_confirmed": bool,
     "spec": GoalExecutionSpec|None, "state": ExecutionPhaseState|None}。
     任何环节异常都吞掉，返回 effective_mode=None（调用方据此按最保守的
-    "stable"（只写 output/）兜底，不影响 Goal 触发主流程）。
+    "running"（只写 output/）兜底，不影响 Goal 触发主流程）。
     """
     result = {"effective_mode": None, "spec_confirmed": False, "spec": None, "state": None}
     if paths is None:
@@ -375,7 +375,7 @@ def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, des
       - 依据 effective_mode 拼一段"本轮可以写哪里、不可以写哪里"的约束：
           explore/converge → 只能写 scratch/（脚本草稿走
             output/scripts/_experiments/），converge 额外要求"搬运+清理"
-          stable            → 只能写 output/，并附上已确认执行规范
+          running           → 只能写 output/，并附上已确认执行规范
             spec/SPEC.md 全文（若存在）
           tidy              → 附上代码扫描算出的"问题清单"（方案 §7.1），
             不要求 agent 自己从零判断"哪里乱了"
@@ -383,7 +383,7 @@ def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, des
 
     phase_info：由 `_fire_goal_cycle` 调用 `_resolve_execution_phase()` 后
     传入，包含 effective_mode/spec_confirmed/spec。为 None 或
-    effective_mode 取不到值时，按最保守的 "stable"（只允许写 output/）
+    effective_mode 取不到值时，按最保守的 "running"（只允许写 output/）
     处理——这是有意为之的保守兜底：不确定阶段时，"限制只能写正式产出目录"
     比"放开随便写"更安全。
 
@@ -446,7 +446,7 @@ def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, des
             )
             parts.append(notes_text)
 
-        mode = (phase_info or {}).get("effective_mode") or "stable"
+        mode = (phase_info or {}).get("effective_mode") or "running"
         note_reminder = f"完成后请在 {notes_dir} 下写一份 cycle_{cycle_no:04d}.md 总结笔记"
 
         if mode in ("explore", "converge"):
@@ -486,7 +486,7 @@ def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, des
                 "专注于'怎么处理这些具体问题'即可）。",
             ]
             parts.append("\n".join(lines))
-        else:  # stable（含未知/None 兜底）
+        else:  # running（含未知/None 兜底）
             lines = [
                 "## 产出目录约束（稳定期）",
                 "",
@@ -584,7 +584,7 @@ def _build_tidy_problem_checklist(paths, goal_id: str) -> str:
         lines.append(f"- ⚠️ scripts/_run_logs/ 已有 {scripts['run_logs_count']} 个日志"
                       "（建议只保留最近 10 次，其余清理）")
     if not scratch_empty:
-        lines.append("- ⚠️ scratch/ 尚未清空——进入 stable 前必须清空或仅保留明确标注"
+        lines.append("- ⚠️ scratch/ 尚未清空——进入 running 前必须清空或仅保留明确标注"
                       "'仅存档不再维护'的内容")
     if stats["archive_entries"] > 200:
         lines.append(f"- ℹ️ _archive/ 已有 {stats['archive_entries']} 项归档，"
@@ -605,7 +605,7 @@ def _build_tidy_problem_checklist(paths, goal_id: str) -> str:
 def _append_execution_phase_context(paths, goal: "GoalNode", description: str, phase_info: dict) -> str:
     """[goal_execution_phase_improvement_plan.md §4 / Stage B / 方案 Stage 3]
     把 `_resolve_execution_phase()` 算出的 effective_mode 对应的阶段文案
-    片段（explore/converge/stable/tidy）拼进本轮子 Objective description。
+    片段（explore/converge/running/tidy）拼进本轮子 Objective description。
 
     与产出目录约束（`_append_output_workspace_context`，负责"能写哪里、
     不能写哪里"这类结构化约束）分工不同，这里只负责阶段本身的文字说明和
@@ -617,7 +617,7 @@ def _append_execution_phase_context(paths, goal: "GoalNode", description: str, p
 
     phase_info 的 effective_mode 为 None（`_resolve_execution_phase` 内部
     异常兜底）时，直接跳过阶段文案（不影响 Goal 触发主流程，产出目录约束
-    那边已经按 stable 做了保守兜底）。
+    那边已经按 running 做了保守兜底）。
     """
     if paths is None:
         return description
@@ -631,7 +631,7 @@ def _append_execution_phase_context(paths, goal: "GoalNode", description: str, p
         key_map = {
             "explore": "EXPLORE_BLOCK",
             "converge": "CONVERGE_BLOCK",
-            "stable": "STABLE_BLOCK",
+            "running": "RUNNING_BLOCK",
             "tidy": "TIDY_BLOCK",
         }
         key = key_map.get(effective_mode)
@@ -1043,7 +1043,7 @@ def reap_finished_cycles(goal_backlog: "GoalBacklog", *, llm_helper_provider=Non
         # 归档已跑过多轮、已经计过数的旧子节点，避免 goals.json 随轮数无限
         # 增长。只读遍历+命中才写，跟本函数其余部分同一种开销可控的设计
         # 哲学。方向 A 新增一层阶段感知的门禁：只在 execution phase 判定为
-        # stable/tidy（已收敛）时才归档，explore/converge 阶段的早期尝试
+        # running/tidy（已收敛）时才归档，explore/converge 阶段的早期尝试
         # 细节可能还有参考价值，暂缓归档；paths 拿不到、阶段状态读取异常时
         # 保守地按"允许归档"处理（与本条门禁引入之前的行为一致），不因为
         # 诊断信息缺失而阻塞归档这个主功能。
@@ -1054,7 +1054,7 @@ def reap_finished_cycles(goal_backlog: "GoalBacklog", *, llm_helper_provider=Non
                 from mini_agent.perception import execution_phase as ep
                 phase_state = ep.load_phase(paths, goal.id)
                 effective_mode = ep.last_known_effective_mode(phase_state)
-                allow_archive = effective_mode in ("stable", "tidy")
+                allow_archive = effective_mode in ("running", "tidy")
             if allow_archive:
                 goal_backlog.archive_finished_cycle_children(goal.id)
         except Exception as _mini_agent_exc:

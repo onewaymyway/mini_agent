@@ -68,13 +68,13 @@ class TestBuildCycleDiagnostics(unittest.TestCase):
 
     def test_execution_phase_locked_mode_surfaces_in_notes_and_fields(self):
         node = self.gb.add_goal("Phase test", source="user")
-        ep.set_mode(self.paths, node.id, "stable", reason="test")
+        ep.set_mode(self.paths, node.id, "running", reason="test")
 
         report = cd.build_cycle_diagnostics(self.paths, self.gb, node.id)
-        self.assertEqual(report.execution_phase_mode, "stable")
+        self.assertEqual(report.execution_phase_mode, "running")
         self.assertTrue(report.execution_phase_locked)
         joined = "\n".join(report.mechanism_notes)
-        self.assertIn("stable", joined)
+        self.assertIn("running", joined)
 
     def test_health_alert_surfaced_when_stuck_in_explore(self):
         node = self.gb.add_goal("Stuck goal", source="user")
@@ -176,7 +176,7 @@ class TestSummarizeReportWithLLM(unittest.TestCase):
         return cd.CycleDiagnosticsReport(
             goal_id="g1", goal_title="Test Goal", found=found,
             recurring=True, schedule="interval:3600", cycle_count=3,
-            execution_phase_mode="stable",
+            execution_phase_mode="running",
         )
 
     def test_llm_ask_none_returns_none(self):
@@ -202,7 +202,7 @@ class TestSummarizeReportWithLLM(unittest.TestCase):
     def test_llm_success_returns_stripped_text(self):
         def fake_ask(prompt):
             self.assertIn("Test Goal", prompt)
-            self.assertIn("stable", prompt)
+            self.assertIn("running", prompt)
             return "  这个 Goal 目前进展平稳。  "
         result = cd.summarize_report_with_llm(self._report(), fake_ask)
         self.assertEqual(result, "这个 Goal 目前进展平稳。")
