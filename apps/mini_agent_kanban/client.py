@@ -781,8 +781,13 @@ class AgentClient:
         return self._get("/decision_profile")
 
     # ── 成长顾问 Growth Advisor（growth_advisor_design.md）─────────────
-    def growth_summary(self):
-        return self._get("/growth/summary")
+    def growth_summary(self, refresh_diagnostics: bool = False):
+        params = {"refresh_diagnostics": True} if refresh_diagnostics else None
+        # 强制刷新时会绕过缓存重新扫描全部历史 session（正是慢的那一步），
+        # 默认 6s 超时不够用；给这条路径单独放宽到 50s（略低于服务端
+        # blocking_guard 的 45s 超时 + 一点余量），避免客户端先掉线。
+        timeout = 50 if refresh_diagnostics else 6
+        return self._get("/growth/summary", params=params, timeout=timeout)
 
     def growth_scan(self):
         # `llm_signal_augment_enabled` / `report_quality_llm_enabled` 开启时

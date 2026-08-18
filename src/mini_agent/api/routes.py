@@ -6870,11 +6870,16 @@ async def get_decision_profile(request: Request):
 # 把当前状态如实透出给看板。
 
 @router.get("/growth/summary")
-async def get_growth_summary(request: Request):
+async def get_growth_summary(request: Request, refresh_diagnostics: bool = False):
     """GET /v1/growth/summary — 返回当前候选队列（pending 优先）+ 已生成的
     调研报告列表 + 月度复盘统计 + 首次触达提示是否已展示过 + 诊断快照
     （配置/信号扫描命中情况/记忆条目数，供用户自查"为什么候选一直是 0"），
-    供看板"🌱 成长顾问"tab 一次性渲染。"""
+    供看板"🌱 成长顾问"tab 一次性渲染。
+
+    [next_doc/growth_diagnostics_backfill_count_cache_plan.md]
+    `refresh_diagnostics=True`（看板"🔄 刷新诊断数据"按钮）时，诊断快照
+    里的"记忆回填候选数"绕过 5 分钟 TTL 缓存，重新扫描拿真实最新值；
+    默认 False 走缓存，避免每次打开面板都触发一次全量 session 扫描。"""
     _require_owner(request)
     try:
         paths = _get_paths_for_request(request)
@@ -6914,6 +6919,7 @@ async def get_growth_summary(request: Request):
         diagnostics = await run_blocking(
             ga.diagnostics_snapshot,
             paths, cfg, profile, store, profile_cfg=profile_cfg, llm_helper=llm_helper,
+            force_refresh_backfill_count=refresh_diagnostics,
             fallback=None,
             **_blocking_call_opts(request, "growth_diagnostics_snapshot"),
         )

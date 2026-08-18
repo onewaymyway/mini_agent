@@ -1722,6 +1722,25 @@ context` 开启、这次确实拿到了非空摘录、且正文由 LLM 生成—
 - API `GET /growth/reports/refresh_candidates` 只有配置开启时才会
   额外加载一次 `profile`，关闭时（默认）不产生任何额外开销。
 
+## 5.9 诊断快照"记忆回填候选数"TTL 缓存 + 手动刷新（`next_doc/growth_diagnostics_backfill_count_cache_plan.md`）
+
+诊断面板「🗄️ 记忆回填状态」里的候选数依赖
+`scan_sessions_for_backfill()`，会同步扫描全部历史 session 的
+`meta.json`——session 数量积累多了之后曾触发过
+`growth_diagnostics_snapshot` 的 45s `blocking_guard` 超时。
+
+修复：这个数字加了一层进程内 TTL 缓存（默认 5 分钟，key 是
+project_root），`diagnostics_snapshot()` 默认走缓存，不再每次打开看板
+都全量扫描一遍。返回值 `memory.backfill_candidates_count_computed_at`
+标注数据计算时间。
+
+看板诊断面板新增「🔄 刷新诊断数据」按钮：点击后调用
+`GET /v1/growth/summary?refresh_diagnostics=true` 强制绕过缓存重新
+扫描，拿到真实最新值并写回缓存，随后 `st.rerun()`——不需要按钮自己
+渲染结果，rerun 后页面正常加载路径会直接读到刚刷新出的新值。强制
+刷新这条路径客户端超时放宽到 50s（默认路径仍是 6s），因为它本来就是
+要触发那次慢扫描。
+
 ## 6. 数据存放位置
 
 - `.agent/growth_backlog.jsonl` — 候选队列（整表重写，不是只追加）

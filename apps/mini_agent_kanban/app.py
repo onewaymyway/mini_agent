@@ -4624,7 +4624,7 @@ def _render_llm_pool_status(client: AgentClient) -> None:
 # 字段渲染成一个默认折叠的自检面板：配置快照 + 上次扫描命中了哪些主题
 # 各多少条 + 记忆窗口内条目数 + 后台定时任务有没有真的跑过。纯只读展示，
 # 不做任何判断/建议式文案（"卡在哪一步"交给用户自己对着这几个数字判断）。
-def _render_growth_diagnostics(diagnostics: dict):
+def _render_growth_diagnostics(diagnostics: dict, client: "AgentClient" = None):
     if not diagnostics:
         return
     with st.expander("🩺 我的数据 / 诊断信息（为什么候选是 0？点开看）"):
@@ -4854,6 +4854,7 @@ def _render_growth_profile_and_keywords(client: "AgentClient", diagnostics: dict
     # cron job 上一次/下一次运行时间——帮用户判断"记忆条目少"是不是因为
     # 回填还没跑到，而不是功能本身没生效。
     backfill_count = (diagnostics.get("memory") or {}).get("backfill_candidates_count", 0)
+    backfill_computed_at = (diagnostics.get("memory") or {}).get("backfill_candidates_count_computed_at")
     backfill_job = (diagnostics.get("cron_jobs") or {}).get("sys:memory_backfill_scan")
     if backfill_count or backfill_job:
         st.markdown("**🗄️ 记忆回填状态**")
@@ -4861,6 +4862,26 @@ def _render_growth_profile_and_keywords(client: "AgentClient", diagnostics: dict
             st.caption(f"发现 {backfill_count} 个会话有实质内容但尚未生成记忆摘要，等待下一次回填扫描。")
         else:
             st.caption("暂无待回填的存量会话。")
+        # [next_doc/growth_diagnostics_backfill_count_cache_plan.md]
+        # 这个数字走 5 分钟 TTL 缓存（避免每次打开面板都全量扫描一遍
+        # session 目录，曾在 session 数量多时触发过诊断快照超时），这里
+        # 提示数据的计算时间，并提供一键强制刷新拿真实最新值的入口。
+        if backfill_computed_at:
+            age_seconds = max(0, time.time() - backfill_computed_at)
+            age_note = (
+                "刚刚更新" if age_seconds < 60
+                else f"{int(age_seconds // 60)} 分钟前更新"
+            )
+            refresh_col, note_col = st.columns([1, 3])
+            with refresh_col:
+                if client is not None and st.button("🔄 刷新诊断数据", key="growth_diag_refresh_btn"):
+                    fresh = client.growth_summary(refresh_diagnostics=True)
+                    if isinstance(fresh, dict) and fresh.get("_error"):
+                        st.error(f"刷新失败：{fresh['_error']}")
+                    else:
+                        st.rerun()
+            with note_col:
+                st.caption(f"待回填候选数（{age_note}，点左侧按钮拿最新数据）")
         if backfill_job:
             if not backfill_job.get("enabled"):
                 st.caption("回填任务当前已关闭（`sys:memory_backfill_scan`）。")
@@ -4983,7 +5004,7 @@ def render_growth_tab(client: "AgentClient"):
     retro = data.get("retrospective", {})
     diagnostics = data.get("diagnostics", {})
 
-    _render_growth_diagnostics(diagnostics)
+    _render_growth_diagnostics(diagnostics, client)
     _render_growth_health_trend(client)
     _render_growth_profile_and_keywords(client, diagnostics)
 
