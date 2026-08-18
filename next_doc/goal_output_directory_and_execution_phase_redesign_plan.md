@@ -1064,3 +1064,50 @@ target 是 `explore`（信息不足的早期阶段不该被单一信号跳过）
 `tests/test_output_workspace_*.py`/`tests/test_goal_output_directory_
 onetime.py` 共 322 个用例全部通过（`test_execution_phase_kanban_routes.py`
 因本地环境缺 `httpx2` 依赖无法收集，与本次改动无关，未计入），无回归。
+
+#### Stage 8d（已完成）：`hardening_target`/`sub_exploration` 接入 converge 搬迁行为
+
+Stage 8a 就已经让 `render_prompt_block()` 把 `hardening_target`/
+`sub_exploration` 拼进每轮 description（§Stage8a），但那是"常驻背景
+说明"，语气偏软，容易被淹没在其余常驻文字里；本阶段在 converge 阶段
+收尾"真正决定东西搬去哪里"这个关键节点、以及 tidy 阶段"`_experiments/`
+是否该转正"的确定性检查上，各自补一条更明确的定向指令。
+
+**`evolution/goal_cron_bridge.py::_append_output_workspace_context()`
+converge 分支**：新增读取 `phase_info["spec"]`，`hardening_target` 非空时
+追加一条 `⚠️` 级别的收尾指令，明确"搬迁的最终落点是 hardening_target
+声明的路径，而不是（或不仅是）本 Goal 私有的 output/scripts/"；
+`sub_exploration` 非空时追加一条 `ℹ️` 级别说明，明确子探索独立生命周期，
+不参与主轨 `spec_phase` 判定。两个字段均为空（未使用 Stage 8 新字段的
+存量 Goal）或 `spec is None`（未确认）时，converge 分支输出与改动前
+完全一致，不新增任何文字。
+
+**`_build_tidy_problem_checklist()` 新增可选 `spec` 参数**：`_experiments/`
+转正提示（既有 Stage 5 能力）在 `spec.hardening_target` 非空时改用"评估
+是否应直接固化到 hardening_target 声明路径"的措辞，为空时保留 Stage 5
+原有的"评估是否需要搬迁转正到 scripts/ 根目录"措辞。调用方
+`_append_output_workspace_context()` 的 tidy 分支同步把 `phase_info["spec"]`
+传入；`spec` 参数默认 `None`，行为与 Stage 5 完全一致，不影响任何既有
+调用点（同名函数除 `goal_cron_bridge.py` 内部外，仅被
+`tests/test_output_workspace_scripts_audit.py` 以位置参数调用，未传
+`spec`，因此不受影响）。
+
+**有意保留范围**：`GoalExecutionSpecBuilder` 教新字段草稿生成（用户仍需
+手动编辑 spec 文件或走 `spec revise` 补充 `hardening_target`/
+`sub_exploration` 等 Stage 8 新字段）、`output_workspace.py` 三种
+`output_mode`（`accretive`/`capability_hardening`/`converging`）tidy
+默认模板的差异化落地（目前 tidy 检查逻辑对三种 `output_mode` 一视同仁，
+`output_mode` 字段本身仍不影响任何实际 tidy 行为）、
+`docs/goal-execution-phase-guide.md` 等用户文档同步，均未涉及，留给
+后续子阶段。
+
+测试：新增 `tests/test_goal_cron_bridge_stage8d.py`（7 个用例），覆盖
+converge 分支在 `hardening_target`/`sub_exploration` 各自非空时正确
+拼入对应指令、两字段均为空/`spec is None` 时输出不受影响、tidy 转正
+提示在传入/不传入 `spec` 时分别使用固化目标措辞/通用措辞、`spec is
+None` 时 tidy 检查行为与 Stage 5 完全一致。运行 `tests/test_execution_
+phase*.py`/`tests/test_goal_cron_bridge*.py`/`tests/test_goal_execution_
+spec*.py`/`tests/test_cycle_tuning.py`/`tests/test_cycle_patrol.py`/
+`tests/test_unified_task_scheduler.py`/`tests/test_cycle_diagnostics.py`/
+`tests/test_output_workspace_*.py`/`tests/test_goal_output_directory_
+onetime.py` 共 329 个用例全部通过，无回归。

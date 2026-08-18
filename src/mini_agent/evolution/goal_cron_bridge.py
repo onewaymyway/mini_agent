@@ -492,6 +492,7 @@ def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, des
                 f"- {note_reminder}",
             ]
             if mode == "converge":
+                spec_for_converge = (phase_info or {}).get("spec")
                 lines += [
                     "",
                     "## 收敛期额外要求",
@@ -503,9 +504,36 @@ def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, des
                     "- 在本轮总结笔记里写清楚搬运理由 + 淘汰了哪些方案"
                     "（这份'方案对比说明'是本轮的重点产出之一，请单独成段，方便后续核对）",
                 ]
+                # [Stage 8d] hardening_target/sub_exploration 接入 converge
+                # 搬迁行为——之前这两个字段只出现在 render_prompt_block() 的
+                # 常驻说明里（每轮都有，语气偏"背景信息"），本阶段在 converge
+                # 收尾这个"真正决定搬去哪里"的关键节点上，额外给一条更明确的
+                # 指令，避免被淹没在常驻说明里。
+                hardening_target = getattr(spec_for_converge, "hardening_target", "") if spec_for_converge else ""
+                if hardening_target:
+                    lines += [
+                        "",
+                        f"- ⚠️ 本 Goal 声明了外部固化目标 hardening_target："
+                        f"{hardening_target}——验证有效的方案，**搬迁的最终落点是"
+                        f"这里，而不是（或不仅是）本 Goal 私有的 output/scripts/**。"
+                        "若本轮验证的内容确实达到可固化标准，请直接改动"
+                        f"{hardening_target}（更新其自身的 README/CHANGELOG），"
+                        "output/scripts/ 内可以只保留驱动/验证脚本本身。",
+                    ]
+                sub_exploration = getattr(spec_for_converge, "sub_exploration", "") if spec_for_converge else ""
+                if sub_exploration:
+                    lines += [
+                        "",
+                        f"- ℹ️ 本 Goal 声明了独立生命周期的子探索：{sub_exploration}——"
+                        "这部分内容请落在 output/scripts/_experiments/ 或专门的"
+                        " output/_sources/ 下，其探索/收敛节奏与主轨独立，"
+                        "**不要**因为子探索还没收敛就认为主轨也没收敛"
+                        "（子探索不参与本 Goal 的 spec_phase 判定）。",
+                    ]
             parts.append("\n".join(lines))
         elif mode == "tidy":
-            checklist = _build_tidy_problem_checklist(paths, goal_id)
+            spec_for_tidy_checklist = (phase_info or {}).get("spec")
+            checklist = _build_tidy_problem_checklist(paths, goal_id, spec=spec_for_tidy_checklist)
             lines = [
                 "## 产出目录整理任务（代码预检结果）",
                 "",
@@ -568,13 +596,18 @@ def _read_spec_md_full_text(paths, goal_id: str, *, fallback_spec=None) -> str:
     return ""
 
 
-def _build_tidy_problem_checklist(paths, goal_id: str) -> str:
+def _build_tidy_problem_checklist(paths, goal_id: str, *, spec=None) -> str:
     """[方案 §7.1] tidy 阶段核查清单里能确定性代码判断的那部分——第一版
     （Stage 3）覆盖第 1/2/5/6/8 条；[Stage 5] 补齐第 7 条（requirements.txt
     与 scripts/*.py 实际 import 是否一致）和第 9 条（_experiments/ 里是否
     存在应转正但一直没转正的脚本）。第 3/4 条（`retention`/`naming_pattern`
     规则核对）仍需结合 `GoalExecutionSpec` 的业务子目录声明才能判断，留待
     后续阶段。
+
+    `spec`：[Stage 8d] 可选传入已确认的 `GoalExecutionSpec`，仅用于让
+    `_experiments/` 转正提示区分"该转正到 output/scripts/ 根目录"还是
+    "该固化到 spec.hardening_target 声明的外部路径"——不传入（`None`）
+    时行为与 Stage 5 完全一致，不影响任何未使用 Stage 8 新字段的存量 Goal。
 
     返回给 agent 看的 Markdown 文本，全部是"代码已经算出来的问题"，
     agent 不需要自己判断"这里乱不乱"，只需要决定"怎么处理"。没有发现
@@ -625,9 +658,18 @@ def _build_tidy_problem_checklist(paths, goal_id: str) -> str:
         lines.append("- ⚠️ scripts/*.py 里出现但 requirements.txt 未见记录的第三方包"
                       "（启发式核查，可能有误判，请人工核实）：" + "、".join(missing_requirements))
     if promotion_candidates:
-        lines.append("- ℹ️ scripts/_experiments/ 下这些脚本被最近几轮总结笔记多次提及，"
-                      "但尚未转正到 scripts/ 根目录，评估是否需要按 §6.1 命名约定搬迁转正："
-                      + "、".join(promotion_candidates))
+        hardening_target = getattr(spec, "hardening_target", "") if spec is not None else ""
+        if hardening_target:
+            lines.append(
+                "- ℹ️ scripts/_experiments/ 下这些脚本被最近几轮总结笔记多次提及，"
+                f"但尚未转正——本 Goal 声明了外部固化目标 hardening_target："
+                f"{hardening_target}，验证有效的脚本请优先评估是否应直接固化到"
+                "那里（而非仅转正到本 Goal 的 scripts/ 根目录）：" + "、".join(promotion_candidates)
+            )
+        else:
+            lines.append("- ℹ️ scripts/_experiments/ 下这些脚本被最近几轮总结笔记多次提及，"
+                          "但尚未转正到 scripts/ 根目录，评估是否需要按 §6.1 命名约定搬迁转正："
+                          + "、".join(promotion_candidates))
 
     if not lines:
         return "本轮代码扫描未发现确定性问题（根目录整洁、_misc/ 为空、scratch/ 已清空）。"
