@@ -344,7 +344,7 @@ output/scripts/
 > - ✅ Stage 3：`goal_cron_bridge.py` 阶段 prompt 重新拼接 —— 已完成
 > - ✅ Stage 4：converge 自动生成 spec 草稿 —— 已完成
 > - ✅ Stage 5：`output/scripts/` 专项规范落地 —— 已完成
-> - ⬜ Stage 6：文档全面同步
+> - ✅ Stage 6：文档全面同步 —— 已完成
 
 1. `output_workspace.py` 目录模型改造（`output/`/`notes/`/`spec/`/
    `scratch/` 四件套 + `output/` 内部固定骨架分配函数）+ 对应单测——这是
@@ -630,3 +630,48 @@ checklist()` 后的呈现效果（含"完全没有问题时仍返回确认性文
 尚未做的事（留给后续阶段）：`docs/goal-execution-phase-guide.md`、
 `docs/goal-execution-spec-guide.md`、`docs/unified-scheduler-guide.md`
 以及新增一份面向用户的"产出目录规范"说明文档，是 Stage 6 的工作。
+
+### Stage 6（已完成）：文档全面同步
+
+新增 `docs/goal-output-directory-guide.md`——面向用户的完整"产出目录
+规范"说明文档，覆盖：四目录（`output/`/`notes/`/`spec/`/`scratch/`）总览
+及各自职责边界、`output/` 内部固定骨架（`README.md`/`_misc/`/`_archive/`/
+`scripts/`/业务子目录）、`notes/` 每轮总结笔记与跨轮传递、`spec/` 当前
+版本落盘与历史版本审计轨迹（对应 Stage 2 的 `save_spec()` 落盘 + `spec/
+history/` 归档）、converge 自动生成 spec 草稿（Stage 4）、`scratch/`
+探索期试验田与"不允许直接写 output/"的约束、`output/scripts/` 专项规范
+（Stage 5 的 `requirements.txt` 一致性核查、`_experiments/` 转正检测）、
+"各阶段与目录模型配合"速查表、tidy 阶段问题清单（Stage 3+5）、以及"仅
+recurring Goal 生效、历史 `cycle_NNNN/` 目录不做自动迁移"的兼容性说明。
+
+改了三处既有文档，把与新模型冲突或过时的描述改为准确、并加交叉引用：
+
+- `docs/goal-execution-phase-guide.md`：顶部加上指向新文档的链接；
+  "tidy 阶段的行为细节"补充"代码扫描问题清单"与"基于执行规范的核对
+  清单"两者互补关系的说明；"converge 阶段与执行规范的联动"补充 Stage 4
+  的自动生成草稿行为（触发条件、"不自动确认"、"只触发一次"）；末尾
+  "产出目录模型重构（进行中）"一节改名为"产出目录模型"并更新为"已完成
+  接入生产触发流程"的表述，不再是"进行中"。
+- `docs/goal-execution-spec-guide.md`：§5"消费方"补充"stable 阶段会带上
+  `spec/SPEC.md` 全文"这条新消费路径；新增 §5.2"落盘、版本历史与
+  converge 自动草稿"，把 Stage 2 的落盘/历史机制和 Stage 4 的自动草稿
+  机制集中说明（提到的 `list_spec_history()` 已核实在
+  `goal_execution_spec.py` 中确实存在，未虚构）。
+- `docs/goal-cron-binding-guide.md`：§10 标题下加一段醒目提示，说明该节
+  描述的"每次一个 `cycle_NNNN/`/`run_NNNN/` 目录"模型现在**仅适用于**
+  独立 cron job 和一次性 Goal 子 Objective，recurring Goal 已迁移到新
+  模型，并链接过去，避免读者把旧模型误当成 recurring Goal 现在的实际
+  行为。
+
+`docs/unified-scheduler-guide.md` 核对后确认不涉及目录模型描述（只引用
+`phase_mode`/`resource_estimate`，与目录结构无关），未做改动，符合方案
+§4 "视内容决定是否需要改"的预期，不是遗漏。
+
+尚未做的事：`docs/goal-cycle-diagnostics-guide.md` 里"最近轮次产出
+（`recent_cycle_summaries`）优先读产出目录里的 `manifest.json`"这段描述，
+在核对时发现 `goal_cron_bridge.py` 新模型路径下已找不到调用
+`output_workspace` 写 `manifest.json` 的代码（新模型用 `notes/
+cycle_NNNN.md` 承载同等信息），两者是否已经出现脱节、诊断报告在新模型
+下具体如何取数，需要专门追查 `goal_cycle_diagnostics.py` 的实现后才能
+确认要不要改文档或改代码，超出本方案（新目录模型 + 执行阶段重设计）范围，
+记录在此留给后续排查，不在本次 Stage 6 顺带处理。

@@ -5,7 +5,8 @@
 产出目录。本功能让你可以手动或自动控制一个 Goal 当前处于哪个阶段，Agent
 会据此调整每一轮的行为基调。
 
-设计背景见 `next_doc/goal_execution_phase_improvement_plan.md`。
+设计背景见 `next_doc/goal_execution_phase_improvement_plan.md`；recurring
+Goal 的产出目录模型见 [产出目录规范](goal-output-directory-guide.md)。
 
 ## 五种阶段
 
@@ -101,9 +102,17 @@ execution_phase.progress_trend_llm_enabled=False`）用纯文本相似度
 
 - 手动/自动进入 `tidy` 后，只会维持**一轮**：这一轮结束、下一次触发时会
   自动回到 `stable` 并解除锁定，不需要手动切回。
-- 如果这个 Goal 已经确认了执行规范，tidy 阶段会自动附带一份"整理核对
-  清单"（基于执行规范里声明的 deliverables/sub_directories），帮助 agent
-  依据既定规范而不是凭空判断"哪些算冗余"。
+- recurring Goal 的 tidy 阶段不要求 agent 自己从零判断"哪里乱了"：系统
+  会先扫描 `output/` 实际内容，算出一份确定性问题清单（散落文件、
+  `_misc/` 未清空、疑似临时脚本、`_run_logs/` 超量、`requirements.txt`
+  疑似遗漏依赖、`_experiments/` 应转正未转正的脚本等），拼进本轮 prompt，
+  agent 只需要决定"怎么处理"。完整目录模型与核查项见
+  [产出目录规范](goal-output-directory-guide.md)。
+- 如果这个 Goal 已经确认了执行规范，tidy 阶段还会额外附带一份基于
+  `GoalExecutionSpec`（deliverables/sub_directories）的核对清单，与上面
+  "代码扫描问题清单"是互补关系：一个纯粹扫描文件系统，一个需要结合规范
+  内容判断，两者共同提示 agent 依据既定规范整理，而不是凭空判断"哪些算
+  冗余"。
 - `auto` 模式默认不会周期性插入 tidy（需要显式配置 `tidy_every_n_cycles`
   才会生效，当前版本尚未暴露为用户可配置项，留待后续版本）。
 
@@ -112,8 +121,15 @@ execution_phase.progress_trend_llm_enabled=False`）用纯文本相似度
 如果一个 Goal 处于 `converge` 阶段、但还没有确认执行规范
 （`GoalExecutionSpec`），系统会额外提示 agent："如果本轮已经能给出结论，
 建议把产出规则、目录结构、验收标准写清楚"，方便你后续用
-`/agent goals spec generate` 生成对应草稿并确认。这只是提示，不会自动帮你
-生成或确认规范。
+`/agent goals spec generate` 生成对应草稿并确认。
+
+此外，如果这个 Goal 此前**完全没有**生成过任何 spec（草稿或已确认），
+系统会检查最近两轮的"方案对比说明"结论是否高度一致（复用上面"进展趋势
+信号"同一套 difflib/LLM 判断基础设施）——一致的话会**自动生成一份未确认
+的 spec 草稿**并落盘 + 推送通知，降低"卡在 converge 没人管、忘记手动生成
+规范"的概率；**不会自动确认**，仍需要你用 `/agent goals spec confirm`
+或看板对应操作确认。一旦生成过草稿（不管是否确认），后续轮次不会再重复
+自动生成，不会覆盖你可能正在手动编辑的内容。
 
 
 
@@ -170,17 +186,16 @@ job（`cron_job_executor.py` 直接执行）**明确不接入**——阶段概�
 不会修改 `goals.json` 中的 `GoalNode` 结构。没有该文件时视为默认状态
 （`mode="auto"`, `locked=False`），行为与未使用本功能之前完全一致。
 
-## 产出目录模型重构（进行中）
+## 产出目录模型
 
-recurring Goal 的产出目录正在从"每轮一个 `cycle_NNNN/` 目录"迁移到"四个
-固定目录（`output/`/`notes/`/`spec/`/`scratch/`）跨轮共用"的新模型，设计
-动机是现有模型下 explore 阶段允许换目录结构、tidy 阶段又缺乏实质核查手段，
-导致产出目录实际很难真正收敛。完整设计见
+recurring Goal 的产出目录已从"每轮一个 `cycle_NNNN/` 目录"迁移为"四个
+固定目录（`output/`/`notes/`/`spec/`/`scratch/`）跨轮共用"的新模型（不再
+是"进行中"，`goal_cron_bridge.py` 的实际触发流程已经切换到新模型），设计
+动机是旧模型下 explore 阶段允许换目录结构、tidy 阶段又缺乏实质核查手段，
+导致产出目录实际很难真正收敛。完整规范见
+[产出目录规范](goal-output-directory-guide.md)，设计过程见
 `next_doc/goal_output_directory_and_execution_phase_redesign_plan.md`。
 
-当前进度：`evolution/output_workspace.py` 已提供新目录模型的路径分配、
-骨架创建、结构扫描、README 自动生成、轮次笔记读写等基础函数（Stage 1），
-但**尚未接入 `goal_cron_bridge.py` 的实际触发流程**——recurring Goal 触发
-时目前仍使用原有的 `cycle_NNNN/` 分配逻辑，行为未变化。后续阶段完成、
-正式接入生产触发流程后，本文档会同步更新阶段行为细节（尤其是 stable 阶段
-将固定带上 `spec/SPEC.md` 全文、tidy 阶段的核对清单将改为代码驱动）。
+一次性 Goal 和独立 cron job 不受影响，继续使用
+[绑定指南 §10](goal-cron-binding-guide.md#10-产出目录规范周期性goalcronjob--一次性-goal)
+描述的旧模型。已存在的历史 `cycle_NNNN/` 目录保留原样，不做自动迁移。

@@ -132,6 +132,10 @@ read_all_manifests()`），逐条核查后输出 `{"decision": "close"|"continue
   引入前一致；确认后把 `deliverables`/`sub_directories`/
   `per_cycle_criteria`/`special_constraints` 格式化文字 + `handoff_fields`
   的填空模板提示一并拼进子 Objective description。
+- **recurring Goal 的 stable 阶段**（见
+  [执行阶段指南](goal-execution-phase-guide.md)）会额外把 `spec/SPEC.md`
+  全文（见下方 §5.2）拼进 prompt——这是比上面这条结构化提示更完整的
+  规范文档全文，两者是互补关系，服务目的不同，没有做去重合并。
 - `perception/goal_backlog.py::add_objectives_for_goal()`：一次性 Goal
   路径对称接入（`_append_execution_spec_prompt_block()`），逻辑相同但
   **不做 §5.1 轻量核对**——一次性 Goal 的子 Objective 之间不是"轮次"
@@ -158,6 +162,28 @@ read_all_manifests()`），逐条核查后输出 `{"decision": "close"|"continue
 避免重复提示；一旦某轮重新匹配上，计数器和标记都会清零。只有
 `verification_method="file_check"` 的条目和全部 `handoff_fields` 参与
 核对，`manual_review` 的标准不参与，仍然只作为 prompt 引导。
+
+### 5.2 落盘、版本历史与 converge 自动草稿（recurring Goal 专用）
+
+recurring Goal 使用[产出目录规范](goal-output-directory-guide.md)描述的
+新目录模型时，`save_spec()` 除了写入权威存储
+（`.agent/goal_execution_specs/<goal_id>.json`，行为不变）外，还会做两件
+锦上添花的事（失败不影响权威存储本身写入成功）：
+
+- 把当前版本渲染落盘到 `spec/SPEC.md`（人类可读文本）+ `spec/SPEC.json`
+  （结构化数据），可以直接在文件系统里打开查看，不用跑命令；
+- 若已存在旧版本，先把它复制进
+  `spec/history/v{旧version}_{时间}.md/.json` 形成审计轨迹——配合
+  `notes/` 里的每轮总结笔记，能回答"这个 Goal 什么时候、为什么改变了
+  产出规则"。`list_spec_history()` 提供这份历史的结构化摘要（版本号/
+  确认状态/时间），目前只提供数据函数，尚未接入 CLI/看板展示。
+
+此外，如果这个 Goal**此前完全没有生成过任何 spec**（草稿或已确认），
+系统会在 converge 阶段结尾检查最近两轮的"方案对比说明"结论是否高度一致
+（复用[执行阶段指南](goal-execution-phase-guide.md#自动判定规则auto-模式)
+里"进展趋势信号"同一套 difflib/LLM 判断），一致的话自动调用
+`build_draft()` 生成一份**未确认**的草稿并保存、推送通知——不会自动
+`confirm()`，仍需要你手动确认；且只触发一次，不会覆盖已存在的草稿。
 
 ## 6. 模板库
 

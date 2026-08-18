@@ -238,11 +238,18 @@ kanban：Goal 详情卡片、Cron job 卡片各有一个「💬 提意见」折�
 
 ## 10. 产出目录规范（周期性 Goal/CronJob + 一次性 Goal）
 
-[`goal_cron_output_directory_convention_plan.md`] 为每个 recurring Goal 的每一轮
-执行、每个（非 goal_cycle 的）普通 CronJob 的每次触发、以及**每个一次性 Goal 的
-每个子 Objective**（§7 新增，见下），分配一个稳定、可预测、按时间/创建顺序排序的
-产出目录，并把"上一轮（或上一个子任务）产出了什么"结构化传给下一轮，不再只靠
-`progress_summary` 自由文本回忆。
+> **recurring Goal 的模型已升级**：本节描述的"每次触发一个
+> `cycle_NNNN/`/`run_NNNN/` 目录"模型，目前仍适用于**独立 cron job**（非
+> `goal_cycle` 模式）和**一次性 Goal 的子 Objective**；recurring Goal
+> （`run_mode=goal_cycle`）已迁移到"四个跨轮共用固定目录
+> `output/`/`notes/`/`spec/`/`scratch/`"的新模型，见
+> [产出目录规范（新模型）](goal-output-directory-guide.md)。已存在的历史
+> `cycle_NNNN/` 目录保留原样，不做自动迁移。
+
+[`goal_cron_output_directory_convention_plan.md`] 为每个（非 goal_cycle 的）普通
+CronJob 的每次触发、以及**每个一次性 Goal 的每个子 Objective**（§7 新增，见下），
+分配一个稳定、可预测、按时间/创建顺序排序的产出目录，并把"上一轮（或上一个子
+任务）产出了什么"结构化传给下一轮，不再只靠 `progress_summary` 自由文本回忆。
 
 ### 目录结构
 
