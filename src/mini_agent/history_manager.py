@@ -399,8 +399,19 @@ class HistoryManager:
         if llm_client is None:
             return
 
-        self._dispatch_lightweight_extraction(paths, raw_entries, candidate, llm_client)
-        save_extraction_cursor(paths, candidate.end_index)
+        # [BUGFIX / 保底推进游标] 之前这里是两条顺序语句，游标能否推进
+        # 完全依赖"_dispatch_lightweight_extraction 内部不会让异常逃逸"
+        # 这个隐含前提——一旦未来改动不小心让某个异常分支漏加 try/except，
+        # 这里就会直接抛出，导致 save_extraction_cursor 永远执行不到，
+        # 游标卡死在同一个位置，此后每次触发都重新计算出同一个（只会更大
+        # 不会更小）的超大窗口，陷入死循环。改成 try/finally 后，
+        # 不管 _dispatch_lightweight_extraction 是正常返回、内部吞掉异常
+        # 后返回、还是意外让异常逃逸，游标推进这一步都保证会执行——
+        # 抽取失败顶多是"这段内容没抽到"，绝不应该连累游标卡死。
+        try:
+            self._dispatch_lightweight_extraction(paths, raw_entries, candidate, llm_client)
+        finally:
+            save_extraction_cursor(paths, candidate.end_index)
 
     def dispatch_extraction_for_entries(
         self,
@@ -445,6 +456,16 @@ class HistoryManager:
             log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager.dispatch_extraction_for_entries')
             return False
 
+    #: [BUGFIX / next_doc/extraction_window_oversize_chunking_fix.md]
+    #: `scan_for_extraction_window()` 的 `end_index` 永远是"游标之后的全部
+    #: 新增内容"，没有任何上限——如果这段时间里连接词/实体密度/轮次计数
+    #: 三条规则一直没命中（比如长时间只在跑工具、用户输入轮次很少，但
+    #: 工具输出本身很大），未处理的原始条目会持续累积；一旦最终触发
+    #: （或 session 结束时 force=True 兜底），单次窗口就可能远超模型的
+    #: 上下文上限。递归二分重试到这个深度上限（即最多切成 2**6=64 份）
+    #: 仍然超限，视为无法处理，跳过对应片段（保留在日志里，不再继续切）。
+    _MAX_EXTRACTION_SPLIT_DEPTH = 6
+
     def _dispatch_lightweight_extraction(
         self, paths, raw_entries: list[dict], candidate, llm_client: "LLMClient"
     ) -> None:
@@ -455,6 +476,35 @@ class HistoryManager:
         queue_candidates/queue_entities/queue_facts，只是 prompt 换成
         §2 新增的"轻量抽取"专用模板（不含摘要要求），保持与 compact 路径
         产出格式一致，落盘逻辑完全复用。
+
+        [BUGFIX] 之前整段窗口一次性发给 LLM，遇到 LLMContextWindowError
+        （窗口没有上限，长期未触发时会越攒越大，见上面 `_MAX_EXTRACTION_
+        SPLIT_DEPTH` 的说明）会被内部 try/except 直接吞掉、这一大段内容
+        直接永久丢失，不会再被抽取。现在改为把 [start_index, end_index)
+        委托给 `_dispatch_extraction_window()`，遇到超限就按条目数二分，
+        两半分别递归重试，直到成功、缩到 1 条仍超限（跳过）、或达到切分
+        深度上限（同样跳过并记录）——尽量多抢救一部分内容，而不是整段
+        放弃。
+        """
+        self._dispatch_extraction_window(
+            paths, raw_entries, candidate.start_index, candidate.end_index,
+            candidate.trigger_reason, llm_client, depth=0,
+        )
+
+    def _dispatch_extraction_window(
+        self, paths, raw_entries: list[dict],
+        start_index: int, end_index: int,
+        trigger_reason: str, llm_client: "LLMClient", depth: int,
+    ) -> None:
+        """`_dispatch_lightweight_extraction` 的实际执行体，支持递归二分。
+
+        Args:
+            start_index/end_index: 本次要抽取的 raw_entries 切片范围
+                （半开区间 [start_index, end_index)）。
+            depth: 当前递归深度（首次调用为 0），仅用于限制最大切分次数
+                和丰富日志，不影响功能正确性——即使某个子窗口本身仍然
+                超限，只要条目数 > 1 就会继续二分，直到缩到 1 条或撞到
+                `_MAX_EXTRACTION_SPLIT_DEPTH`。
         """
         from mini_agent.prompts import pm
         from mini_agent.history.entry import to_llm_messages
@@ -462,8 +512,11 @@ class HistoryManager:
             cap_oversized_messages,
             DEFAULT_MAX_MESSAGE_CHARS_FOR_COMPACT,
         )
+        from mini_agent.llm.base import LLMContextWindowError
 
-        window_entries = raw_entries[candidate.start_index:candidate.end_index]
+        window_entries = raw_entries[start_index:end_index]
+        if not window_entries:
+            return
         max_chars = getattr(
             self.cfg.compress, "max_message_chars_for_compact", DEFAULT_MAX_MESSAGE_CHARS_FOR_COMPACT
         )
@@ -486,7 +539,7 @@ class HistoryManager:
                 )
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
-                log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_lightweight_extraction')
+                log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_extraction_window')
                 entity_digest_section = ""
 
         try:
@@ -498,9 +551,36 @@ class HistoryManager:
                 tools=[],
                 max_retries=10,
             )
+        except LLMContextWindowError as _mini_agent_exc:
+            window_len = end_index - start_index
+            if window_len <= 1 or depth >= self._MAX_EXTRACTION_SPLIT_DEPTH:
+                # 缩无可缩（单条目仍超限，多半是这一条本身极端巨大，比如
+                # 一次性读了个超大文件的工具结果）或者切分次数已经用尽——
+                # 放弃这个片段，记录清楚跳过了哪个范围方便事后排查，但不
+                # 影响其它片段/后续正常抽取（cursor 由调用方统一推进）。
+                from mini_agent.errors import log_exception
+                log_exception(
+                    _mini_agent_exc,
+                    where='mini_agent.history_manager.HistoryManager._dispatch_extraction_window',
+                    extra={
+                        "skipped_range": f"{start_index}-{end_index}",
+                        "depth": depth,
+                        "reason": "context_window_exceeded_after_split" if window_len <= 1
+                                  else "max_split_depth_reached",
+                    },
+                )
+                return
+            mid = start_index + window_len // 2
+            self._dispatch_extraction_window(
+                paths, raw_entries, start_index, mid, trigger_reason, llm_client, depth + 1,
+            )
+            self._dispatch_extraction_window(
+                paths, raw_entries, mid, end_index, trigger_reason, llm_client, depth + 1,
+            )
+            return
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_lightweight_extraction')
+            log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_extraction_window')
             return
 
         raw_text = (response.text or "").strip()
@@ -520,11 +600,11 @@ class HistoryManager:
             world_facts = world_extraction.facts
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_lightweight_extraction')
+            log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_extraction_window')
             pass
 
         source_entries = [
-            f"extraction_trigger@{candidate.trigger_reason}@{candidate.start_index}-{candidate.end_index}"
+            f"extraction_trigger@{trigger_reason}@{start_index}-{end_index}"
         ]
 
         if decisions and getattr(self.cfg.compress, "extract_decisions", True):
@@ -533,7 +613,7 @@ class HistoryManager:
                 queue_candidates(paths, decisions, source_entries=source_entries)
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
-                log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_lightweight_extraction')
+                log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_extraction_window')
                 pass
 
         if (world_entities or world_facts) and getattr(self.cfg.compress, "extract_world_model", True):
@@ -543,7 +623,7 @@ class HistoryManager:
                 queue_facts(paths, world_facts, source_entries=source_entries)
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
-                log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_lightweight_extraction')
+                log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_extraction_window')
                 pass
 
     def compact_with_llm(self, compact_prompt: str, run_turn_fn) -> str:
