@@ -315,7 +315,7 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         from mini_agent.session import SessionManager
 
         mgr = SessionManager(project_root=cfg.project_root)
-        metas = mgr.list_sessions(limit=limit)
+        metas = mgr.list_sessions(limit=int(limit))
         if not metas:
             return "📭 没有找到任何历史 session。"
 
