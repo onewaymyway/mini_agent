@@ -2487,6 +2487,59 @@ def _sync_execution_spec_from_server(
     # 失败"误当成"服务端数据被清空"，导致界面从有内容变成空白。
 
 
+_SCHEDULE_UNIT_SECONDS = {"秒": 1, "分钟": 60, "小时": 3600, "天": 86400}
+
+
+def _render_schedule_picker(
+    key_prefix: str,
+    default_mode: str = "interval",
+    default_value: float = 1.0,
+    default_unit: str = "小时",
+    default_cron_expr: str = "",
+) -> str:
+    """渲染"间隔（数值+单位）/ Cron 表达式"双模式调度选择器，返回最终要
+    传给后端的 schedule 字符串（`interval:<秒数>` 或 `cron:<表达式>`）。
+
+    后端 `CronJob.schedule` 协议本身没变，`interval:` 前缀后面只认秒数——
+    这里不改后端，只是把此前"用户自己心算秒数"（比如想设置每天一次要
+    自己敲 `interval:86400`）这一步换成界面上选数值+单位，提交前换算成
+    秒拼接成同样的字符串格式。
+
+    **必须放在 `st.form(...)` 外面调用**：`st.form` 内部的普通 widget（比如
+    这里的单位下拉框）变更不会立即触发 rerun，只有点提交才刷新，会导致
+    "切了单位却看不到实时换算结果"，体验比裸文本框更差。放在 form 外，
+    切换即时生效；返回的字符串是普通 Python 变量，可以直接传给 form 内
+    的提交逻辑使用，不需要在 form 内部重新渲染一遍。
+    """
+    mode = st.radio(
+        "调度类型", ["间隔", "Cron 表达式"],
+        index=0 if default_mode == "interval" else 1,
+        horizontal=True, key=f"{key_prefix}_sched_mode",
+    )
+    if mode == "间隔":
+        icol1, icol2 = st.columns([2, 1])
+        value = icol1.number_input(
+            "每隔", min_value=0.0, value=float(default_value), step=1.0,
+            key=f"{key_prefix}_sched_value",
+        )
+        unit_keys = list(_SCHEDULE_UNIT_SECONDS.keys())
+        unit = icol2.selectbox(
+            "单位", unit_keys,
+            index=unit_keys.index(default_unit) if default_unit in unit_keys else 0,
+            key=f"{key_prefix}_sched_unit",
+        )
+        seconds = int(value * _SCHEDULE_UNIT_SECONDS[unit])
+        if seconds > 0:
+            st.caption(f"≈ `interval:{seconds}`（{seconds} 秒）")
+        return f"interval:{seconds}"
+    else:
+        expr = st.text_input(
+            "Cron 表达式（分 时 日 月 周，例如 `0 9 * * *` 表示每天 9:00）",
+            value=default_cron_expr, key=f"{key_prefix}_sched_cron",
+        )
+        return f"cron:{expr.strip()}" if expr.strip() else ""
+
+
 def _render_execution_spec_summary(spec: dict) -> None:
     """把 execution_spec dict 渲染成可读摘要（看板本地实现，不依赖后端渲染
     出的文本，方便反馈迭代后立即重绘）。"""
@@ -3519,11 +3572,10 @@ def _render_goal_card(
                         st.rerun()
                 st.markdown("---")
                 st.caption("生成/确认执行规范是可选步骤——不想先想细节，可以直接下面绑定周期性（跳过规范）。")
+                r_schedule = _render_schedule_picker(
+                    f"{key_prefix}recur_{n.get('id')}", default_value=1.0, default_unit="天",
+                )
                 with st.form(f"{key_prefix}recur_form_{n.get('id')}"):
-                    r_schedule = st.text_input(
-                        "调度 (interval:<秒数> 或 cron:<表达式>)",
-                        placeholder="例如 interval:86400（每天一次）",
-                    )
                     r_task = st.text_area("每轮任务内容（留空则复用 Goal 描述）", height=60)
                     r_submit = st.form_submit_button("🔁 设为周期性")
                 if r_submit:
@@ -3995,13 +4047,9 @@ def render_kanban_tab(client: AgentClient):
     st.markdown("#### ⏰ Cron Jobs")
 
     with st.expander("➕ 新建 Cron Job"):
+        cj_schedule = _render_schedule_picker("new_cron_job", default_value=1.0, default_unit="小时")
         with st.form("new_cron_job"):
             cj_name = st.text_input("名称", key="cj_name")
-            cj_schedule = st.text_input(
-                "调度 (interval:<秒数> 或 cron:<表达式>)",
-                placeholder="例如 interval:3600 或 cron:0 9 * * *",
-                key="cj_schedule",
-            )
             cj_task = st.text_area("任务内容 (task_template)", height=80, key="cj_task")
             cj_desc = st.text_area("描述（可选）", height=60, key="cj_desc")
             cj_submitted = st.form_submit_button("创建")
@@ -7668,10 +7716,7 @@ def render_cron_jobs_tab(client: AgentClient):
     st.divider()
     with st.expander("➕ 新建 cron job"):
         new_name = st.text_input("名称", key="cron_new_name")
-        new_schedule = st.text_input(
-            "schedule（interval:<秒> 或 cron:<分 时 日 月 周>）",
-            value="interval:3600", key="cron_new_schedule",
-        )
+        new_schedule = _render_schedule_picker("cron_tab_new_job", default_value=1.0, default_unit="小时")
         new_template = st.text_area("任务描述（task_template）", key="cron_new_template")
         new_desc = st.text_input("说明（可选）", key="cron_new_desc")
         new_priority = st.number_input(
