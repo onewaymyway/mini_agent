@@ -121,3 +121,34 @@ markdown 代码块包裹）：
   "sub_exploration": "",
   "needs_project_context": false
 }
+
+## 严格的类型约束（非常重要，逐条对照检查后再输出）
+
+以下 6 个字段——`deliverables`、`handoff_fields`、`sub_directories`、
+`per_cycle_criteria`、`overall_completion_criteria`、`execution_routine`——
+**必须是"对象数组"**，数组里每一个元素都必须是 `{...}` 形式的 JSON 对象，
+**绝不能是裸字符串**。这是过去实际出现过的报错原因：把 `execution_routine`
+写成了 `["每天检查一次", "整理输出到目标目录"]` 这种字符串数组，导致下游
+程序解析崩溃。
+
+- ❌ 错误示例（`execution_routine` 写成了字符串数组）：
+  `"execution_routine": ["扫描已有内容", "去重合并", "写入报告"]`
+- ✅ 正确示例：
+  `"execution_routine": [{"step": "扫描已有内容"}, {"step": "去重合并"}, {"step": "写入报告"}]`
+
+- ❌ 错误示例（`per_cycle_criteria` 写成了字符串数组）：
+  `"per_cycle_criteria": ["报告文件存在", "包含环比数据"]`
+- ✅ 正确示例：
+  `"per_cycle_criteria": [{"text": "报告文件存在", "verification_method": "file_check"}, {"text": "包含环比数据", "verification_method": "manual_review"}]`
+
+只有 `special_constraints` 这一个数组字段例外，它就是"字符串数组"
+（`["特殊约束1", "特殊约束2"]`），不要给它的元素套对象。
+
+`output_mode`/`new_topic_discovery` 只能是各自说明里列出的固定枚举值之一
+（分别是 `converging`/`accretive`/`capability_hardening`/`hybrid` 和
+`none`/`intrinsic`），不要输出这几个词以外的自造值。`cadence`/
+`hardening_target`/`sub_exploration` 必须是纯字符串（不确定/不适用时用
+空字符串 `""`，不要用 `null` 或嵌套对象）。
+
+如果某个数组字段确实没有内容要填，输出空数组 `[]`，不要用 `null`、
+空字符串或省略该 key 来代替。

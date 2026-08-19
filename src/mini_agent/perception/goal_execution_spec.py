@@ -43,6 +43,77 @@ if TYPE_CHECKING:
 _VALID_VERIFICATION_METHODS = ("run_command", "file_check", "manual_review")
 
 
+def _safe_item_dict(x, primary_field: str) -> dict:
+    """把 LLM 输出的列表元素安全转换成 dict，供各 `*.from_dict()` 使用。
+
+    LLM 偶尔会把"对象数组"字段（如 `execution_routine`）偷懒写成纯字符串
+    数组（如 `["每周检查一次", ...]`），如果各 `from_dict()` 直接对元素调用
+    `.get(...)` 会因为元素是 `str` 而抛 `AttributeError`（曾经出现过的线上
+    报错：`'str' object has no attribute 'get'`）。这里统一兜底：
+      - 元素本身就是 dict → 原样返回。
+      - 元素是字符串 → 包装成 `{primary_field: 字符串}`，尽量保留信息而不是
+        直接丢弃（大多数场景下这就是模型想表达的内容）。
+      - 其它类型（None/数字/列表等）→ 返回空 dict，交由各字段自身的默认值
+        兜底，不让类型错误冒泡成 500。
+    """
+    if isinstance(x, dict):
+        return x
+    if isinstance(x, str):
+        return {primary_field: x}
+    return {}
+
+
+def _safe_repr(x, limit: int = 500) -> str:
+    """把任意值转成便于写进日志的字符串，截断避免单条日志过大。"""
+    try:
+        s = json.dumps(x, ensure_ascii=False, default=str)
+    except Exception:
+        s = str(x)
+    if len(s) > limit:
+        s = s[:limit] + f"...(截断，原长度 {len(s)})"
+    return s
+
+
+def _build_items(cls, items, primary_field: str, field_name: str, context: Optional[dict] = None) -> list:
+    """把 LLM 输出的某个数组字段安全转换成一组 dataclass 实例。
+
+    与逐个直接 `[cls.from_dict(x) for x in items]` 相比：
+      - `items` 本身类型不对（LLM 把数组字段写成了字符串/对象）时，不抛异常，
+        记录一条包含完整字段名/原始值/goal 上下文的日志后返回空列表。
+      - 数组内单个元素解析失败（理论上 `_safe_item_dict` 兜底后已经很难再
+        失败，这里是双保险）时，跳过这一个元素、记录日志，不影响其它元素
+        和整份 spec 的生成。
+    """
+    from mini_agent.errors import log_exception
+
+    out = []
+    if items is None:
+        return out
+    if not isinstance(items, list):
+        log_exception(
+            TypeError(f"字段 {field_name} 期望是数组，实际类型是 {type(items).__name__}"),
+            where="mini_agent.perception.goal_execution_spec._build_items",
+            extra={**(context or {}), "field": field_name, "raw_value": _safe_repr(items)},
+        )
+        return out
+    for idx, x in enumerate(items):
+        try:
+            out.append(cls.from_dict(_safe_item_dict(x, primary_field)))
+        except Exception as e:
+            log_exception(
+                e,
+                where="mini_agent.perception.goal_execution_spec._build_items",
+                extra={
+                    **(context or {}),
+                    "field": field_name,
+                    "index": idx,
+                    "raw_item": _safe_repr(x),
+                },
+            )
+            continue
+    return out
+
+
 class GoalExecutionSpecBuildError(RuntimeError):
     """GoalExecutionSpecBuilder 生成/修订草案时的不可恢复失败。
 
@@ -68,7 +139,10 @@ class Deliverable:
         return asdict(self)
 
     @staticmethod
-    def from_dict(d: dict) -> "Deliverable":
+    def from_dict(d) -> "Deliverable":
+        # 兜底：LLM 偶尔会把数组元素写成非 dict（字符串/None 等），统一转换
+        # 后再取值，避免 `.get()` 直接抛 AttributeError。
+        d = d if isinstance(d, dict) else _safe_item_dict(d, "name")
         return Deliverable(
             name=d.get("name", ""),
             description=d.get("description", ""),
@@ -87,7 +161,8 @@ class HandoffField:
         return asdict(self)
 
     @staticmethod
-    def from_dict(d: dict) -> "HandoffField":
+    def from_dict(d) -> "HandoffField":
+        d = d if isinstance(d, dict) else _safe_item_dict(d, "key")
         return HandoffField(
             key=d.get("key", ""),
             description=d.get("description", ""),
@@ -115,7 +190,8 @@ class SubDirectory:
         return asdict(self)
 
     @staticmethod
-    def from_dict(d: dict) -> "SubDirectory":
+    def from_dict(d) -> "SubDirectory":
+        d = d if isinstance(d, dict) else _safe_item_dict(d, "name")
         retention = d.get("retention", "unbounded")
         if retention not in _VALID_RETENTIONS:
             retention = "unbounded"
@@ -143,7 +219,15 @@ class RoutineStep:
         return asdict(self)
 
     @staticmethod
-    def from_dict(d: dict) -> "RoutineStep":
+    def from_dict(d) -> "RoutineStep":
+        # [线上报错兜底] LLM 曾经把 execution_routine 写成纯字符串数组
+        # （`["每周检查一次", ...]`）而不是 `[{"step": "..."}, ...]`，
+        # 元素是 str 时直接 `.get()` 会抛 AttributeError（HTTP 500 的根因）。
+        # 这里兼容处理：str 直接当作 step 内容，其它非 dict 类型给空字符串。
+        if isinstance(d, str):
+            return RoutineStep(step=d)
+        if not isinstance(d, dict):
+            return RoutineStep(step="")
         return RoutineStep(step=d.get("step", ""))
 
 
@@ -156,7 +240,8 @@ class Criterion:
         return asdict(self)
 
     @staticmethod
-    def from_dict(d: dict) -> "Criterion":
+    def from_dict(d) -> "Criterion":
+        d = d if isinstance(d, dict) else _safe_item_dict(d, "text")
         vm = d.get("verification_method", "manual_review")
         if vm not in _VALID_VERIFICATION_METHODS:
             vm = "manual_review"
@@ -253,16 +338,25 @@ class GoalExecutionSpec:
             confirmed=bool(d.get("confirmed", False)),
             confirmed_at=d.get("confirmed_at"),
             locked_fields=list(d.get("locked_fields", [])),
-            deliverables=[Deliverable.from_dict(x) for x in d.get("deliverables", [])],
-            handoff_fields=[HandoffField.from_dict(x) for x in d.get("handoff_fields", [])],
-            sub_directories=[SubDirectory.from_dict(x) for x in d.get("sub_directories", [])],
-            per_cycle_criteria=[Criterion.from_dict(x) for x in d.get("per_cycle_criteria", [])],
-            overall_completion_criteria=[
-                Criterion.from_dict(x) for x in d.get("overall_completion_criteria", [])
-            ],
-            special_constraints=list(d.get("special_constraints", [])),
+            # [兜底] 权威存储文件理论上只会写入本模块自己 to_dict() 产出的合法
+            # 结构，但仍用 _build_items 兜底防御手改/历史遗留脏数据——单个元素
+            # 格式不对时跳过并记日志，不让 load_spec() 直接抛异常。
+            deliverables=_build_items(Deliverable, d.get("deliverables"), "name", "deliverables",
+                                       {"goal_id": d.get("goal_id", ""), "source": "GoalExecutionSpec.from_dict"}),
+            handoff_fields=_build_items(HandoffField, d.get("handoff_fields"), "key", "handoff_fields",
+                                         {"goal_id": d.get("goal_id", ""), "source": "GoalExecutionSpec.from_dict"}),
+            sub_directories=_build_items(SubDirectory, d.get("sub_directories"), "name", "sub_directories",
+                                          {"goal_id": d.get("goal_id", ""), "source": "GoalExecutionSpec.from_dict"}),
+            per_cycle_criteria=_build_items(Criterion, d.get("per_cycle_criteria"), "text", "per_cycle_criteria",
+                                             {"goal_id": d.get("goal_id", ""), "source": "GoalExecutionSpec.from_dict"}),
+            overall_completion_criteria=_build_items(
+                Criterion, d.get("overall_completion_criteria"), "text", "overall_completion_criteria",
+                {"goal_id": d.get("goal_id", ""), "source": "GoalExecutionSpec.from_dict"},
+            ),
+            special_constraints=[str(s) for s in (d.get("special_constraints") or [])],
             output_mode=output_mode,
-            execution_routine=[RoutineStep.from_dict(x) for x in d.get("execution_routine", [])],
+            execution_routine=_build_items(RoutineStep, d.get("execution_routine"), "step", "execution_routine",
+                                            {"goal_id": d.get("goal_id", ""), "source": "GoalExecutionSpec.from_dict"}),
             cadence=d.get("cadence", ""),
             new_topic_discovery=new_topic_discovery,
             hardening_target=d.get("hardening_target", ""),
@@ -690,7 +784,7 @@ _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 _BRACE_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
-def _extract_json(text: str) -> Optional[dict]:
+def _extract_json(text: str, context: Optional[dict] = None) -> Optional[dict]:
     """从 LLM 原始输出里抠出 JSON 对象。
 
     正则命中的片段哪怕能被 `json.loads` 成功解析，也不保证解析结果是
@@ -700,64 +794,112 @@ def _extract_json(text: str) -> Optional[dict]:
     会直接因为类型不对而崩掉（曾经出现过 `'str' object has no attribute
     'get'` 的线上报错）。这里统一加一道类型校验，非 dict 一律按"解析
     失败"处理，交由调用方已有的兜底逻辑（保留上一版内容 / 返回
-    generation_error）接管，不让类型错误冒泡成 500。"""
+    generation_error）接管，不让类型错误冒泡成 500。
+
+    `context`：可选，调用方传入 goal_id/version/effective_path 等排障信息，
+    连同 LLM 原始输出一起写进日志，方便事后定位是"哪个 Goal 的哪次生成"
+    出现了解析问题，而不是只有一句孤立的错误信息。
+    """
+    ctx = dict(context or {})
     m = _JSON_FENCE_RE.search(text or "")
     candidate = m.group(1) if m else None
     if candidate is None:
         m2 = _BRACE_RE.search(text or "")
         candidate = m2.group(0) if m2 else None
     if candidate is None:
+        if text and text.strip():
+            from mini_agent.errors import log_exception
+            log_exception(
+                ValueError("LLM 原始输出里未找到任何 JSON 对象片段（既无 ```json 代码块也无花括号包裹内容）"),
+                where="mini_agent.perception.goal_execution_spec._extract_json",
+                extra={**ctx, "raw_llm_output": _safe_repr(text, limit=4000)},
+            )
         return None
     try:
         parsed = json.loads(candidate)
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where="mini_agent.perception.goal_execution_spec._extract_json")
+        log_exception(
+            _mini_agent_exc,
+            where="mini_agent.perception.goal_execution_spec._extract_json",
+            extra={**ctx, "raw_llm_output": _safe_repr(text, limit=4000), "candidate": _safe_repr(candidate, limit=4000)},
+        )
         return None
     if not isinstance(parsed, dict):
         from mini_agent.errors import log_exception
         log_exception(
             TypeError(f"LLM JSON 解析结果类型不是 dict，而是 {type(parsed).__name__}：{candidate[:200]!r}"),
             where="mini_agent.perception.goal_execution_spec._extract_json",
+            extra={**ctx, "raw_llm_output": _safe_repr(text, limit=4000)},
         )
         return None
     return parsed
 
 
 def _spec_from_llm_data(data: dict, goal_id: str, version: int, locked_fields: Optional[list[str]] = None) -> GoalExecutionSpec:
+    """把 LLM 返回的原始 JSON dict 转换成 `GoalExecutionSpec`。
+
+    [线上报错修复] 这里是 LLM 自由文本 JSON → 结构化数据的边界，输入完全
+    不可信——LLM 可能把某个数组字段写成字符串数组、把 dict 字段写成字符串、
+    漏掉 key、给出值域之外的枚举值等各种"看起来像但类型不对"的输出。整个
+    函数体现在分两层兜底：
+      1. 数组字段一律走 `_build_items()`：单个元素格式不对时跳过该元素、
+         记一条包含原始内容的日志，不影响其它元素和整份 spec 的生成。
+      2. 万一出现 `_build_items()` 兜底不住的意外类型错误（比如 `data`
+         本身某个 key 的值是嵌套结构导致后续渲染出错），外层调用方
+         （`build_draft`/`revise`）还会再包一层 try/except，把完整的
+         `data`、`goal_id`、`version` 记入日志后返回兜底草稿，不会让
+         异常冒泡成 HTTP 500。
+    """
+    context = {"goal_id": goal_id, "version": version, "source": "_spec_from_llm_data"}
+
     # [Stage 8e] LLM 输出的 output_mode/new_topic_discovery 是自由文本，
     # 校验值域与 `GoalExecutionSpec.from_dict()` 保持一致——非法值/幻觉值
     # 静默回退默认，不因为 LLM 输出了值域之外的字符串而报错或污染数据。
     output_mode = data.get("output_mode") or "converging"
-    if output_mode not in _VALID_OUTPUT_MODES:
+    if not isinstance(output_mode, str) or output_mode not in _VALID_OUTPUT_MODES:
         output_mode = "converging"
     new_topic_discovery = data.get("new_topic_discovery") or "none"
-    if new_topic_discovery not in _VALID_NEW_TOPIC_DISCOVERY:
+    if not isinstance(new_topic_discovery, str) or new_topic_discovery not in _VALID_NEW_TOPIC_DISCOVERY:
         new_topic_discovery = "none"
+
+    # cadence/hardening_target/sub_exploration 都是"自由文本"字段，LLM 偶尔
+    # 会给出非字符串值（比如把 hardening_target 写成 {"path": "..."} 这种
+    # 结构化对象）——统一转成字符串，而不是让下游拼 Markdown 时报错。
+    def _as_text(v) -> str:
+        if v is None:
+            return ""
+        if isinstance(v, str):
+            return v
+        return _safe_repr(v, limit=200)
+
     return GoalExecutionSpec(
         version=version,
         goal_id=goal_id,
         confirmed=False,
         locked_fields=list(locked_fields or []),
-        deliverables=[Deliverable.from_dict(x) for x in (data.get("deliverables") or [])],
-        handoff_fields=[HandoffField.from_dict(x) for x in (data.get("handoff_fields") or [])],
-        sub_directories=[SubDirectory.from_dict(x) for x in (data.get("sub_directories") or [])],
-        per_cycle_criteria=[Criterion.from_dict(x) for x in (data.get("per_cycle_criteria") or [])],
-        overall_completion_criteria=[
-            Criterion.from_dict(x) for x in (data.get("overall_completion_criteria") or [])
-        ],
-        special_constraints=list(data.get("special_constraints") or []),
+        deliverables=_build_items(Deliverable, data.get("deliverables"), "name", "deliverables", context),
+        handoff_fields=_build_items(HandoffField, data.get("handoff_fields"), "key", "handoff_fields", context),
+        sub_directories=_build_items(SubDirectory, data.get("sub_directories"), "name", "sub_directories", context),
+        per_cycle_criteria=_build_items(Criterion, data.get("per_cycle_criteria"), "text", "per_cycle_criteria", context),
+        overall_completion_criteria=_build_items(
+            Criterion, data.get("overall_completion_criteria"), "text", "overall_completion_criteria", context,
+        ),
+        # special_constraints 是"字符串数组"，同样兜底：元素不是字符串时
+        # （比如 LLM 写成了 {"text": "..."} 对象）转成字符串而不是直接崩掉。
+        special_constraints=[s if isinstance(s, str) else _safe_repr(s, limit=200)
+                              for s in (data.get("special_constraints") or []) if s],
         # [goal_output_directory_and_execution_phase_redesign_plan.md
         # §Stage8e] Stage 8a 新增的 6 个字段——LLM 未产出这些 key（旧版
         # prompt 或响应本身不含）时 `data.get(...)` 返回 `None`，走各字段
         # 自身构造函数的默认值分支，与"存量 spec 文件里没有这些 key"的
         # 向后兼容路径完全一致，不需要额外判空。
         output_mode=output_mode,
-        execution_routine=[RoutineStep.from_dict(x) for x in (data.get("execution_routine") or [])],
-        cadence=data.get("cadence") or "",
+        execution_routine=_build_items(RoutineStep, data.get("execution_routine"), "step", "execution_routine", context),
+        cadence=_as_text(data.get("cadence")),
         new_topic_discovery=new_topic_discovery,
-        hardening_target=data.get("hardening_target") or "",
-        sub_exploration=data.get("sub_exploration") or "",
+        hardening_target=_as_text(data.get("hardening_target")),
+        sub_exploration=_as_text(data.get("sub_exploration")),
     )
 
 
@@ -1036,12 +1178,37 @@ class GoalExecutionSpecBuilder:
         )
 
         raw = self._run_builder(prompt, detection_text=f"{goal_title} {goal_description}")
-        data = _extract_json(raw)
+        data = _extract_json(raw, context={
+            "goal_id": goal_id, "goal_title": goal_title, "stage": "build_draft",
+            "effective_path": self.last_effective_path,
+        })
         if data is None:
             reason = self.last_error or "LLM 返回内容解析失败（未找到合法 JSON）"
             return _empty_draft(goal_id, 1, reason)
 
-        spec = _spec_from_llm_data(data, goal_id, version=1)
+        try:
+            spec = _spec_from_llm_data(data, goal_id, version=1)
+        except Exception as e:
+            # [排障兜底] `_spec_from_llm_data` 内部各字段已经有逐项兜底
+            # （见 `_build_items`），理论上不应该再抛到这里；这一层是"万一
+            # 出现没预料到的类型错误"的最后防线——记录完整的 LLM 原始输出
+            # + 解析后的 data + goal 上下文，方便事后在 error.jsonl 里定位
+            # 具体是哪个 Goal、哪次生成、LLM 到底返回了什么导致解析失败，
+            # 而不是只有一句 500 错误信息。同时仍然返回可用的兜底草稿，
+            # 不让整个接口 500。
+            from mini_agent.errors import log_exception
+            log_exception(
+                e,
+                where="mini_agent.perception.goal_execution_spec.GoalExecutionSpecBuilder.build_draft",
+                extra={
+                    "goal_id": goal_id,
+                    "goal_title": goal_title,
+                    "effective_path": self.last_effective_path,
+                    "raw_llm_output": _safe_repr(raw, limit=4000),
+                    "parsed_data": _safe_repr(data, limit=4000),
+                },
+            )
+            return _empty_draft(goal_id, 1, f"生成结果解析后转换失败：{e}")
         return spec
 
     def revise(
@@ -1068,7 +1235,10 @@ class GoalExecutionSpecBuilder:
         )
 
         raw = self._run_builder(prompt, detection_text=feedback)
-        data = _extract_json(raw)
+        data = _extract_json(raw, context={
+            "goal_id": prior_spec.goal_id, "prior_version": prior_spec.version, "stage": "revise",
+            "effective_path": self.last_effective_path,
+        })
         if data is None:
             # 失败时保留上一版内容（不是清空），只是版本号不变、附上错误说明——
             # 修订失败不应该让用户已经确认过的字段凭空丢失。
@@ -1077,7 +1247,29 @@ class GoalExecutionSpecBuilder:
             fallback.generation_error = self.last_error or "LLM 返回内容解析失败（未找到合法 JSON）"
             return fallback
 
-        new_spec = _spec_from_llm_data(data, prior_spec.goal_id, version=prior_spec.version + 1, locked_fields=locked)
+        try:
+            new_spec = _spec_from_llm_data(data, prior_spec.goal_id, version=prior_spec.version + 1, locked_fields=locked)
+        except Exception as e:
+            # 与 build_draft 同款兜底：修订失败时保留上一版内容，不清空用户
+            # 已确认满意的字段，同时把完整上下文记入日志便于排查。
+            from mini_agent.errors import log_exception
+            log_exception(
+                e,
+                where="mini_agent.perception.goal_execution_spec.GoalExecutionSpecBuilder.revise",
+                extra={
+                    "goal_id": prior_spec.goal_id,
+                    "prior_version": prior_spec.version,
+                    "feedback": _safe_repr(feedback, limit=1000),
+                    "locked_fields": locked,
+                    "effective_path": self.last_effective_path,
+                    "raw_llm_output": _safe_repr(raw, limit=4000),
+                    "parsed_data": _safe_repr(data, limit=4000),
+                },
+            )
+            fallback = GoalExecutionSpec.from_dict(prior_spec.to_dict())
+            fallback.confirmed = False
+            fallback.generation_error = f"生成结果解析后转换失败：{e}"
+            return fallback
 
         # 对锁定字段做字符串级"原样保留"兜底：即便 LLM 没有严格遵守 prompt
         # 指示而改动了锁定字段，这里用上一版的值强制覆盖回去，保证"锁定"
@@ -1192,7 +1384,9 @@ class GoalExecutionSpecBuilder:
             raw = self._run_overall_completion_judge_agent(prompt)
         else:
             raw = self._run_judge_llm(prompt)
-        data = _extract_json(raw)
+        data = _extract_json(raw, context={
+            "goal_title": goal_title, "stage": "evaluate_overall_completion", "used_agent": use_agent,
+        })
         if not isinstance(data, dict) or data.get("decision") not in ("close", "continue"):
             reason = self.last_error or "LLM 返回内容解析失败（未找到合法 JSON）"
             return {"decision": "continue", "reasoning": f"判定失败，保守判定为需继续：{reason}"}

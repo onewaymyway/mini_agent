@@ -75,6 +75,20 @@
 只有落到这两种方式的标准会被 §5 的轻量核对机制实际使用，`manual_review`
 仍然只作为 prompt 引导，不参与核对。
 
+**类型约束与容错**：`deliverables`/`handoff_fields`/`sub_directories`/
+`per_cycle_criteria`/`overall_completion_criteria`/`execution_routine`
+这 6 个字段在 JSON 里都是"对象数组"，数组的每个元素必须是 `{...}` 对象
+（例如 `execution_routine` 的元素必须是 `{"step": "..."}`，不能是裸字符串
+`"..."`）。LLM 偶尔会把某个字段偷懒写成字符串数组，曾经因此在早期版本
+触发过一次线上 500（`'str' object has no attribute 'get'`）。现在
+`goal_execution_spec.py` 里所有 `*.from_dict()` 都已加上类型兜底
+（`_safe_item_dict`/`_build_items`）：单个元素格式不对时会把它当作该
+字段"主键"（如 `step`/`name`/`text`）的值尽量保留，仍然彻底不可用的元素
+会被跳过并记入 `~/.agent/logs/error.jsonl`（附带原始内容、`goal_id`、
+生成路径等上下文），不再让整个生成/修订请求 500。System prompt
+（`prompts/system/goal_execution_spec_builder.md`）里也补充了明确的
+"正确/错误示例"来降低 LLM 出这种格式错误的概率。
+
 ## 3. 生成器：`GoalExecutionSpecBuilder`
 
 镜像 `goal_mode/spec.py::GoalSpecBuilder` 的"草稿 → 反馈迭代 → 确认"架构：
@@ -250,14 +264,48 @@ recurring Goal 使用[产出目录规范](goal-output-directory-guide.md)描述�
 - 已绑定周期性但从未生成过规范的既有 Goal，追加一个「📋 生成执行规范」
   按钮，走同一套草稿确认流程；如果该 Goal 已跑过若干轮，默认带上"从
   执行历史反推"（读取历史 manifest）。
-- 「生成路径」下拉框：单次覆盖 `builder_mode`（`llm`/`agent`/`auto`/
-  跟随配置默认），不修改配置文件；草稿区块展示"上次生成走的路径"
-  （REST 响应体 `effective_path` 字段）。
+- 草稿生成表单包含两个下拉框：
+
+  **「起草方式」**——决定要不要给 LLM 一份骨架参考，对应 REST 请求体的
+  `template_id`：
+
+  | 选项 | 含义 |
+  | --- | --- |
+  | （不使用模板，完全从零生成） | 不带任何模板骨架，完全由 LLM 根据 Goal 标题/描述自由生成 |
+  | `<模板id> · <模板名>` | 从 `goal_execution_spec_templates/*.json` 里对应模板的 `skeleton` 起步，作为 few-shot 拼进 prompt，LLM 可在此基础上增删改；根据 Goal 描述关键词匹配到的推荐项会默认预选（下拉框标题会提示"已根据 Goal 描述自动推荐"），用户仍可改选或选择不用模板 |
+
+  **「生成路径」**——决定这次生成实际由哪种方式驱动 LLM，单次覆盖配置文件
+  `goal_execution_spec.builder_mode`，对应 REST 请求体的 `mode`：
+
+  | 选项 | 对应 `mode` 值 | 含义 |
+  | --- | --- | --- |
+  | 跟随配置默认（当前配置的 builder_mode，通常是 auto） | `""`（不传） | 服务端回退配置文件里的 `goal_execution_spec.builder_mode` |
+  | 自动判断（关键词规则命中项目相关诉求才起 Agent） | `auto` | 先用关键词规则粗略判断 Goal 标题/描述是否提到"参考/沿用项目已有内容"类诉求，命中则走受限 Agent 路径；未命中则先走纯 LLM，若 LLM 自报 `needs_project_context: true`（自认为答不好、需要先看项目）会再改用 Agent 路径重新生成一次 |
+  | 纯 LLM（不读取项目内容，速度快） | `llm` | 裸单轮 chat completion，不挂任何工具，模型只能凭 Goal 标题/描述和训练知识生成，速度最快，但涉及项目内部具体信息（如某个 skill/workflow 的实际参数）时容易凭空编造 |
+  | 只读探索 Agent（先看一眼项目再生成，更贴合实际） | `agent` | 构造一个只读、有限工具（`skill_list`/`list_workflows`/`show_workflow`/`read_file`/`list_dir`/`tree_summary`/`grep`/`glob`，不含 bash、不含任何写操作）的受限 Agent，先探索项目实际情况再生成，更贴合实际但更慢、更耗 token |
+
+  草稿区块会展示"上次生成走的路径"（🧭 图标 + `llm`/`agent`，对应 REST
+  响应体的 `effective_path` 字段），让用户知道这份草稿到底有没有读取过
+  项目内容。
 
 ### 7.2 看板「🔁 手动重判整体是否可以关闭」
 
-Goal 卡片内，「整体关闭判定路径」下拉框（单次覆盖 `use_agent`）+ 按钮，
-按钮上方常驻展示 `overall_completion_last_check` 的上一次判定结果。
+Goal 卡片内，「整体关闭判定路径」下拉框（单次覆盖 `overall_completion_
+use_agent`，对应 REST 请求体的 `use_agent`）+ 按钮，按钮上方常驻展示
+`overall_completion_last_check` 的上一次判定结果（判定结论、时间、走的
+路径）。
+
+| 选项 | 对应 `use_agent` 值 | 含义 |
+| --- | --- | --- |
+| 跟随配置默认 | `None`（不传） | 服务端回退配置文件 `goal_execution_spec.overall_completion_use_agent`（默认 `false`，即默认纯 LLM） |
+| 只读探索 Agent | `True` | 构造只读受限 Agent，用 `overall_completion_agent_allowed_tools` 允许的工具打开该 Goal 的实际产出目录核查文件内容，再判定是否满足 `overall_completion_criteria`，更可靠但更慢 |
+| 纯 LLM | `False` | 裸单轮 chat completion，只依据 manifest 摘要文本判定，不亲自打开文件核实，速度快 |
+
+判定只在该 Goal 状态为 `active`、全部子 Objective 已进入终态、且
+`spec.overall_completion_criteria` 非空时才有意义；不满足前置条件时接口
+返回 `outcome: null` 并附一句 `reason` 说明原因，不算错误。判定结果只有
+`close`（关闭，Goal 状态改为 `completed`）/`continue`（保持 `active`）两种，
+解析失败等不确定情况一律保守返回 `continue`。
 
 ### 7.3 看板「➕ 新建目标」
 
@@ -334,6 +382,24 @@ confirmed=False` 均等价于"该 Goal/该能力不受本功能影响"，与方�
 - 不做规范的多版本历史 UI，只保留"当前生效版本"；也不做旧数据迁移或
   强制校验/硬拦截——始终是 prompt 层引导，不会因为 agent 没按规范产出
   就自动判定该轮失败。
+
+### 变更记录
+
+- **[修复]** `execution_routine`/`deliverables`/`handoff_fields`/
+  `sub_directories`/`per_cycle_criteria`/`overall_completion_criteria`
+  这 6 个"对象数组"字段，如果 LLM 把某个元素输出成裸字符串而不是
+  `{...}` 对象，原实现会直接 `AttributeError` 冒泡成 HTTP 500（生成/
+  修订接口报错 `'str' object has no attribute 'get'`）。现已在
+  `goal_execution_spec.py` 的各 `*.from_dict()` / `_spec_from_llm_data()`
+  加上类型兜底（详见 §2"类型约束与容错"），单个元素格式不对时只跳过
+  该元素并记日志，不再让整个请求失败；system prompt 里也补充了明确的
+  类型约束说明和正误示例，降低 LLM 出这种格式错误的概率。
+- **[增强]** `_extract_json()`/`_spec_from_llm_data()`/`build_draft()`/
+  `revise()`/`evaluate_overall_completion()` 以及 `routes.py` 里对应的
+  4 个 REST 端点，异常处理统一改为 `log_exception(e, where=..., extra=
+  {...})`，`extra` 里带上 `goal_id`、生成路径（`effective_path`）、
+  LLM 原始输出、解析后的 data 等排障所需的完整上下文，写入
+  `~/.agent/logs/error.jsonl`，不再只有一句孤立的错误信息。
 
 详细的阶段划分（Stage 1 ~ Stage 12）、每一步的取舍论证，见
 `next_doc/goal_execution_spec_generation_implementation_record.md`；

@@ -276,12 +276,17 @@ widget()`），对接 `perception/goal_execution_spec.py`，与 CLI `/agent goal
 是同一套后端能力（详见 [命令与工具参考](commands-and-tools-reference.md)、
 [HTTP API 指南](http-api-guide.md)）：
 
-- **生成草稿**：未生成过时展示"起草方式"下拉框（可选模板库骨架，关键词
-  规则命中时默认预选）、"从最近一轮执行记录反推草稿内容"勾选框（该
-  Goal 已跑过至少一轮时才展示）、"生成路径"下拉框（跟随配置默认 / 自动
-  判断 / 纯 LLM / 只读探索 Agent，单次覆盖 `builder_mode`，不改配置
-  文件）。生成成功后展示"🧭 上次生成走的路径"，告知这份草稿有没有实际
-  读取过项目内容。CLI 侧对应 `/agent goals spec generate`。
+- **生成草稿**：未生成过时展示"起草方式"下拉框（不用模板从零生成，或选一个
+  模板库骨架作为 few-shot 参考——关键词规则命中 Goal 描述时默认预选）、
+  "从最近一轮执行记录反推草稿内容"勾选框（该 Goal 已跑过至少一轮时才
+  展示）、"生成路径"下拉框——跟随配置默认（回退配置文件 `builder_mode`）/
+  自动判断（关键词规则粗筛，命中项目相关诉求或 LLM 自报拿不准才起 Agent）/
+  纯 LLM（不读项目内容，最快，但涉及项目细节容易编造）/ 只读探索 Agent
+  （先用只读工具看一眼项目再生成，更贴合实际但更慢），单次覆盖
+  `builder_mode`，不改配置文件。生成成功后展示"🧭 上次生成走的路径"，
+  告知这份草稿有没有实际读取过项目内容。各选项的详细含义与对应的 REST
+  参数值见 [Goal 执行规范指南 §7.1](goal-execution-spec-guide.md#71-看板周期性设置)。
+  CLI 侧对应 `/agent goals spec generate`。
 - **反馈迭代**：有未确认草稿时展示摘要 + 每个 section 的 🔒 锁定复选框
   （产出物/跨轮传递/子目录/每轮标准/特殊约束）+ 补充意见文本框——提交
   后未锁定的 section 据反馈重新生成，已锁定的原样保留。重新生成后自动
@@ -292,10 +297,13 @@ widget()`），对接 `perception/goal_execution_spec.py`，与 CLI `/agent goal
   放弃当前草稿就能整段换模板重新生成（同样会触发差异高亮）。
 - **整体关闭判定**（仅一次性 Goal，`overall_completion_criteria` 非空时
   有意义）：「🔁 手动重判整体是否可以关闭」按钮旁有"整体关闭判定路径"
-  下拉框（跟随配置默认 / 只读探索 Agent / 纯 LLM，单次覆盖
-  `overall_completion_use_agent`），按钮上方常驻展示上一次判定结果
-  （时间 + 走的路径 + 结论），不再只是一次性 toast 提示。CLI 侧对应
-  `/agent goals spec close-check`。
+  下拉框——跟随配置默认（回退 `overall_completion_use_agent`）/ 只读探索
+  Agent（打开该 Goal 实际产出目录核查文件内容后判定，更可靠但更慢）/
+  纯 LLM（只依据 manifest 摘要文本判定，更快），单次覆盖
+  `overall_completion_use_agent`，按钮上方常驻展示上一次判定结果
+  （时间 + 走的路径 + 结论：已关闭/暂不关闭），不再只是一次性 toast
+  提示。详见 [Goal 执行规范指南 §7.2](goal-execution-spec-guide.md#72-看板手动重判整体是否可以关闭)。
+  CLI 侧对应 `/agent goals spec close-check`。
 
 ### 🔄 工作流 Tab
 

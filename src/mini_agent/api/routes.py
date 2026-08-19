@@ -4387,6 +4387,7 @@ async def generate_goal_execution_spec(goal_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
     body = await request.json() if await request.body() else {}
     paths = _spec_paths(request)
+    builder = None
     try:
         from mini_agent.config import load_config
         from mini_agent.perception import goal_execution_spec as ges
@@ -4412,7 +4413,16 @@ async def generate_goal_execution_spec(goal_id: str, request: Request):
         raise
     except Exception as e:
         from mini_agent.errors import log_exception
-        log_exception(e, where='mini_agent.api.routes.generate_goal_execution_spec')
+        log_exception(
+            e, where='mini_agent.api.routes.generate_goal_execution_spec',
+            extra={
+                "goal_id": goal_id,
+                "goal_title": getattr(node, "title", None),
+                "request_body": body,
+                "effective_path": getattr(builder, "last_effective_path", None),
+                "builder_last_error": getattr(builder, "last_error", None),
+            },
+        )
         raise HTTPException(status_code=500, detail=f"生成执行规范失败：{e}")
     return {"spec": spec.to_dict(), "effective_path": builder.last_effective_path}
 
@@ -4440,6 +4450,7 @@ async def revise_goal_execution_spec(goal_id: str, request: Request):
     prior = ges.load_spec(paths, goal_id)
     if prior is None:
         raise HTTPException(status_code=404, detail=f"该 Goal 还没有生成过执行规范草稿：{goal_id}")
+    builder = None
     try:
         from mini_agent.config import load_config
         builder = ges.GoalExecutionSpecBuilder(load_config(), mode=body.get("mode") or None)
@@ -4449,7 +4460,16 @@ async def revise_goal_execution_spec(goal_id: str, request: Request):
         raise
     except Exception as e:
         from mini_agent.errors import log_exception
-        log_exception(e, where='mini_agent.api.routes.revise_goal_execution_spec')
+        log_exception(
+            e, where='mini_agent.api.routes.revise_goal_execution_spec',
+            extra={
+                "goal_id": goal_id,
+                "prior_version": getattr(prior, "version", None),
+                "request_body": body,
+                "effective_path": getattr(builder, "last_effective_path", None),
+                "builder_last_error": getattr(builder, "last_error", None),
+            },
+        )
         raise HTTPException(status_code=500, detail=f"修订执行规范失败：{e}")
     return {"spec": spec.to_dict(), "effective_path": builder.last_effective_path}
 
@@ -4477,7 +4497,10 @@ async def confirm_goal_execution_spec(goal_id: str, request: Request):
         backlog.update_fields(goal_id, execution_spec_confirmed=True)
     except Exception as e:
         from mini_agent.errors import log_exception
-        log_exception(e, where='mini_agent.api.routes.confirm_goal_execution_spec')
+        log_exception(
+            e, where='mini_agent.api.routes.confirm_goal_execution_spec',
+            extra={"goal_id": goal_id, "spec_version": getattr(spec, "version", None)},
+        )
         raise HTTPException(status_code=500, detail=f"确认执行规范失败：{e}")
     updated = backlog.get(goal_id)
     return {"spec": spec.to_dict(), "goal": updated.to_dict() if updated else None}
@@ -4509,7 +4532,10 @@ async def close_check_goal_execution_spec(goal_id: str, request: Request):
         outcome = backlog.maybe_close_goal_by_overall_criteria(goal_id, load_config(), use_agent=use_agent)
     except Exception as e:
         from mini_agent.errors import log_exception
-        log_exception(e, where='mini_agent.api.routes.close_check_goal_execution_spec')
+        log_exception(
+            e, where='mini_agent.api.routes.close_check_goal_execution_spec',
+            extra={"goal_id": goal_id, "use_agent": use_agent, "request_body": body},
+        )
         raise HTTPException(status_code=500, detail=f"整体完成判定失败：{e}")
     updated = backlog.get(goal_id)
     return {"outcome": outcome, "goal": updated.to_dict() if updated else None}
