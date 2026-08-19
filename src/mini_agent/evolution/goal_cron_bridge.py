@@ -124,9 +124,15 @@ def _fire_goal_cycle(
     goal_backlog.load()
     goal = goal_backlog.get(job.goal_id)
     if goal is None or not goal.is_goal:
-        # Goal 已经不存在了（比如被彻底删除，虽然当前 GoalBacklog 没有硬删除
-        # 接口，但预留这个分支防御未来变化）——job 本身不自动删除，只是
-        # 每次触发都跳过，用户可以用 /cron remove 清理。
+        # [kanban_goal_delete_and_bulk_delete_plan.md] Goal 已经不存在了。
+        # 正常情况下这个分支不该被走到——`DELETE /v1/goals/{goal_id}`（及
+        # `DELETE /v1/goals` 一键删除）在硬删除 Goal 节点的同时，会扫描
+        # 所有 job.goal_id 命中被删节点的 cron job 一并 remove_job()，
+        # 不会留下这种"引用已删 Goal"的僵尸绑定。这里保留兜底分支，是为
+        # 了防御：① 更早版本（该功能上线前）遗留下来、从未被清理过的旧
+        # 绑定；② 未来出现其它硬删除路径（比如手动改 goals.json）时不
+        # 至于直接抛异常——job 本身不自动删除，只是每次触发都跳过，用户
+        # 可以在"⏰ Cron 任务"tab 或 `/cron remove` 手动清理。
         return False
 
     if goal.status != "active":

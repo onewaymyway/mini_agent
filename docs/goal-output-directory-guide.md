@@ -311,6 +311,32 @@ Goal 下一轮触发）自然一起完成，不需要用户关心这个细节。
 确认后 agent 会直接把该路径作为正式产出目录"——引导用户去看板走 §11.2
 的确认流程，而不是继续指望 agent 自己从文字里"理解对"。
 
+### 11.6 删除 Goal 时，`user_output_dir` 目录不会被清理
+
+[kanban_goal_delete_and_bulk_delete_plan.md] 看板"📌 目标看板"Tab（以及
+`DELETE /v1/goals/{goal_id}`、`DELETE /v1/goals` 两个 API）支持彻底删除
+一个 Goal，会级联清理该 Goal 的 `notes/`/`spec/`/`scratch/` 三个内部
+目录（连同默认 `output/`，如果没设置 `user_output_dir` 的话）、绑定的
+cron job、执行规范、执行阶段状态、调优草案——但**如果这个 Goal 设置过
+`user_output_dir`，那份指向 `<project_root>/<user_output_dir>` 的正式
+产出目录不会被删除**。
+
+原因很直接：`user_output_dir` 存在的意义就是让 `output/` 脱离
+`.agent/daemon_run_outputs/goals/<goal_id>/` 这个"agent 内部记账"的
+生命周期，指向用户自己管理的项目路径（§11.1）——既然产出目录已经不
+归 Goal 的内部记账管，删 Goal 这个操作也就不该连带删掉它，否则等于
+用一个跟"清理 agent 内部数据"看起来一样的按钮，把用户可能已经在别处
+引用、提交到版本控制、甚至手动编辑过的正式产出物一并抹掉，风险和用户
+的直觉完全不符。
+
+实现上不是靠"忘了写这段代码"侥幸做到的：两条路径（内部记账目录
+`goal_output_base_dir()` 和自定义产出目录 `goal_output_dir(...,
+user_output_dir=...)`）在删除逻辑里会显式做一次路径核实（`resolve()`
+后比较是否重合/存在包含关系），只有确认互不相交才会真正删除内部记账
+目录；一旦检测到异常重合（比如有人把 `user_output_dir` 手动填成
+`.agent/daemon_run_outputs/...` 内部路径这种反常用法），会直接跳过
+删除并在响应的 `file_cleanup_errors` 里报出来，而不是照删不误。
+
 ### 11.4 仍然保留的边界
 
 `user_output_dir` 只影响 `output/` 一个目录的物理位置，`output/` 内部

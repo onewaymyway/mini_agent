@@ -714,6 +714,64 @@ Body: {
 `PATCH` 时将 `status` 设为 `"abandoned"` 且目标为 `source="agent_derived"` 时，
 系统会自动记录到 `soft_goal_rejected.json`，30 天内不会再 derive 相同主题。
 
+```bash
+# 删除单个 Goal（含全部子 Objective）
+DELETE /v1/goals/{goal_id}
+
+# 一键删除当前全部 Goal（含各自的子 Objective）
+DELETE /v1/goals
+```
+
+两个删除接口只接受 `level == "goal"` 的节点（Objective 请用
+`POST /v1/objectives/{execution_id}/cancel` 或 `PATCH /v1/goals/{goal_id}`
+改状态，没有单独的硬删除入口），是**彻底删除**而不是状态迁移——删除后
+`GoalBacklog` 里不再有这条记录，同时级联清理：
+
+1. 该 Goal 绑定/关联的全部 cron job（不止周期性触发那一个，任何
+   `goal_id` 指向被删节点的 job 都会一并移除），避免留下引用已删 Goal
+   的"僵尸" job；
+2. `.agent/daemon_run_outputs/goals/<goal_id>/`（notes/spec/scratch 三个
+   内部目录 + 未设置 `user_output_dir` 时的默认 `output/`）；
+3. `.agent/goal_execution_specs/<goal_id>.json`（执行规范）；
+4. `.agent/goal_execution_phase/<goal_id>.json`（执行阶段状态）；
+5. `.agent/cycle_tuning_proposals/<goal_id>/`（调优草案历史）。
+
+**若该 Goal 通过 `user_output_dir` 显式指定过产出目录，那个目录被视为
+用户资产，删除时不会被清理**——只删 Goal 自己的内部记账目录，两者路径
+不重合（见 `docs/goal-output-directory-guide.md` §11）。
+
+`DELETE /v1/goals/{goal_id}` 响应示例：
+
+```json
+{
+  "deleted": true,
+  "goal_id": "goal_abc12345",
+  "deleted_node_ids": ["goal_abc12345", "obj_def67890"],
+  "removed_cron_job_ids": ["job_xyz"],
+  "failed_cron_job_ids": [],
+  "file_cleanup_errors": [],
+  "user_output_dir_preserved": false
+}
+```
+
+`DELETE /v1/goals`（一键删除全部）响应示例（`results` 里每一项结构同上，
+少了外层 `deleted`/`goal_id` 两个字段）：
+
+```json
+{
+  "deleted": true,
+  "total_count": 3,
+  "deleted_count": 3,
+  "results": [
+    {"goal_id": "goal_abc12345", "title": "完善测试覆盖", "deleted_node_ids": [...], ...}
+  ]
+}
+```
+
+`file_cleanup_errors` 非空时表示 GoalBacklog 记录和 cron job 已经删除
+成功，但某个关联文件/目录清理失败（比如权限问题）——不影响"Goal 已经
+从看板消失"这个核心结果，但可能需要手动检查对应路径。
+
 `GET /v1/goals` 响应示例：
 
 ```json

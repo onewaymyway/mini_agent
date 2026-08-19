@@ -662,6 +662,10 @@ token 错误。日志里同时出现的 `ConnectionResetError [WinError 10054]`
   `next_doc/goal_execution_spec_generation_implementation_record.md`
   — Goal 执行规范自动生成 + 用户确认机制（模板库/字段级锁定反馈迭代/
   差异高亮/只读探索 Agent 路径/整体关闭判定）的设计与逐阶段实施记录
+- `next_doc/kanban_goal_delete_and_bulk_delete_plan.md` — 目标看板"删除
+  单个 Goal" / "一键删除所有 Goal"功能的设计文档：级联清理关联 cron job、
+  `daemon_run_outputs`/执行规范/执行阶段/调优草案四类外部数据，以及
+  `user_output_dir` 用户自定义产出目录的显式保护逻辑
 - `src/mini_agent/perception/sentinel.py` — 哨兵聚合面板后端：cron 连续
   失败 / Objective 重试热点 / wiki 隔离区积压 / LLM 故障转移状态 四类
   扫描函数 + `sentinel_summary()`
@@ -672,4 +676,4 @@ token 错误。日志里同时出现的 `ConnectionResetError [WinError 10054]`
 
 ---
 
-*最后更新：2026-08-11*
+*最后更新：2026-08-20*
