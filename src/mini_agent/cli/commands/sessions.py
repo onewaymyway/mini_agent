@@ -142,7 +142,8 @@ def handle_session_cmd(args: list[str], agent: Agent) -> None:
             "/session resume <id> | /session new | /session delete <id> | "
             "/session dir | /session search <query> | "
             "/session pin <id> | /session unpin <id> | "
-            "/session cleanup [--dry-run] [--keep-days N] [--keep-count N] [--extract-first]"
+            "/session cleanup [--dry-run] [--keep-days N] [--keep-count N] "
+            "[--extract-first] [--include-orphans] [--orphan-min-age-hours N]"
         )
 
 
@@ -159,12 +160,15 @@ def _handle_session_cleanup(rest: list[str], agent: Agent, mgr) -> None:
         DEFAULT_KEEP_RECENT_DAYS,
         DEFAULT_KEEP_RECENT_COUNT,
         DEFAULT_MIN_TURNS_FOR_EXTRACTION,
+        DEFAULT_ORPHAN_MIN_AGE_HOURS,
     )
 
     dry_run = "--dry-run" in rest
     extract_first = "--extract-first" in rest
+    include_orphans = "--include-orphans" in rest
     keep_days = DEFAULT_KEEP_RECENT_DAYS
     keep_count = DEFAULT_KEEP_RECENT_COUNT
+    orphan_min_age_hours = DEFAULT_ORPHAN_MIN_AGE_HOURS
     if "--keep-days" in rest:
         try:
             keep_days = float(rest[rest.index("--keep-days") + 1])
@@ -176,6 +180,12 @@ def _handle_session_cleanup(rest: list[str], agent: Agent, mgr) -> None:
             keep_count = int(rest[rest.index("--keep-count") + 1])
         except (ValueError, IndexError):
             R.print_error("--keep-count 需要一个整数参数")
+            return
+    if "--orphan-min-age-hours" in rest:
+        try:
+            orphan_min_age_hours = float(rest[rest.index("--orphan-min-age-hours") + 1])
+        except (ValueError, IndexError):
+            R.print_error("--orphan-min-age-hours 需要一个数字参数")
             return
 
     llm_client = getattr(agent, "_llm", None) if extract_first else None
@@ -193,6 +203,8 @@ def _handle_session_cleanup(rest: list[str], agent: Agent, mgr) -> None:
         llm_client=llm_client,
         cfg=cfg,
         dry_run=dry_run,
+        include_orphans=include_orphans,
+        orphan_min_age_hours=orphan_min_age_hours,
     )
     for line in format_report_lines(report):
         R.console.print(line)

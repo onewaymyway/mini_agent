@@ -136,3 +136,86 @@ Session 清理（dry-run，不会实际删除）：共扫描 7 个，保留 4 �
 `extract_first=True` 触发的抽取失败会体现在响应的 `failed` 列表里，
 保守跳过删除，不会因为抽取失败而误删有价值的内容。
 
+## 10. 孤儿目录清理（新增）
+
+### 10.1 问题
+
+看板"会话管理"分页统计数量与 `.agent/sessions/` 下实际的目录数对不上
+（例如实际 2281 个目录，看板/清理都只看到 1128 / 1127 个）。
+
+根因：`_list_session_entries()`（`session.py`）只认"有 `meta.json`"的目录：
+
+```python
+for d in self.session_dir.iterdir():
+    if d.is_dir() and (d / "meta.json").exists():
+        entries.append((d.stat().st_mtime, d, "dir"))
+```
+
+而 session 目录本身在 `RawHistory.set_path()`（`agent/lifecycle.py` 里
+`_init_session()`/`load_session()`/`new_session()` 都会调用）时就已经
+在磁盘上创建，`meta.json` 却要等一轮对话跑完（`turn_loop.py` 里的
+`save_session()` 调用点）才会写入。只要一个 session 一轮都没跑完就
+中断——daemon 重启、进程被杀、cron 触发的子 agent 提前失败、goal 循环
+半路异常退出——它的目录就会永久停留在"有 `raw_history.jsonl`、没
+`meta.json`"的状态，对 `list_sessions()`/`scan_sessions_for_cleanup()`
+完全不可见，占磁盘但不出现在任何统计口径里。
+
+### 10.2 判定规则（孤儿目录专用，独立于 §3 的正常 session 判定）
+
+一个"有目录、没 `meta.json`"的目录满足以下任一条件即保留，不删：
+
+1. `exclude_ids`（当前正在使用的 session id）；
+2. 目录下 `goal_state.json` 存在且 `status ∈ {running, stuck}`（复用
+   `_running_goal_session_ids`，它本身按 `goal_state.json` 扫描，不依赖
+   `meta.json`，对孤儿目录同样适用）；
+3. **目录年龄 < `orphan_min_age_hours`（默认 6 小时）**——安全网：
+   `meta.json` 要等一轮跑完才写，太新的目录很可能是正在进行中的第一轮，
+   不是真孤儿。"目录年龄"取目录内所有文件的最新 `mtime`（不能只看目录
+   自身 `mtime`——在已存在文件里 append 不会更新父目录的 `mtime`，会把
+   "还在持续写"的目录误判成"早就不动了"）。
+
+不满足以上任何一条 → 判定为孤儿目录，候选删除。**孤儿目录没有
+`turns`/`knowledge_extracted` 等元信息可读，因此不走知识抽取门槛**——
+一轮都没跑完，本身也没有值得抽取的内容。
+
+### 10.3 实现落点
+
+| 文件 | 改动 |
+|------|------|
+| `src/mini_agent/evolution/session_cleanup.py` | 新增 `OrphanItem`、`scan_orphan_session_dirs()`（只扫描分类）、`cleanup_orphan_session_dirs()`（扫描 + 可选执行删除，走 `shutil.rmtree`）、`DEFAULT_ORPHAN_MIN_AGE_HOURS`；`CleanupReport` 新增 `orphan_kept`/`orphan_deleted`/`orphan_failed`/`orphan_total_scanned`（独立统计，不并入原有 `total_scanned`，向后兼容旧调用方）；`cleanup_sessions()` 新增 `include_orphans`/`orphan_min_age_hours` 参数（默认 `include_orphans=False`）；`format_report_lines()` 追加孤儿目录汇总段落 |
+| `src/mini_agent/cli/commands/sessions.py` | `/session cleanup` 新增 `--include-orphans`、`--orphan-min-age-hours N` |
+| `src/mini_agent/api/models.py` | `SessionCleanupRequest` 新增 `include_orphans`/`orphan_min_age_hours`；新增 `OrphanCleanupItem`；`SessionCleanupResponse` 新增 `orphan_total_scanned`/`orphan_kept_count`/`orphan_deleted`/`orphan_failed` |
+| `src/mini_agent/api/routes.py` | `POST /v1/sessions/cleanup` 透传新增字段给 `cleanup_sessions()`，响应回填孤儿目录结果 |
+| `apps/mini_agent_kanban/client.py` | `AgentClient.cleanup_sessions()` 新增 `include_orphans`/`orphan_min_age_hours` 参数 |
+| `apps/mini_agent_kanban/app.py` | 清理面板新增"含孤儿目录"勾选框 + "孤儿目录最小年龄（小时）"输入；预览结果新增孤儿目录汇总 + 将删除/失败两张表；"确认执行清理"按钮的启用条件从"有 deleted"改为"有 deleted 或 orphan_deleted" |
+| `docs/http-api-guide.md` | `POST /v1/sessions/cleanup` 请求/响应示例补充孤儿目录字段 |
+| `docs/kanban-dashboard-guide.md` | "批量清理"入口说明补充孤儿目录一段 |
+
+### 10.4 安全性设计（孤儿目录专用）
+
+- 默认 `include_orphans=False`——不管 CLI、API 还是看板，都要显式打开
+  才会扫描/清理孤儿目录，不影响任何已有调用方的默认行为。
+- 孤儿目录本身**没有** `pinned`/`goal 状态` 这类元数据可读（没有
+  `meta.json`），保护规则退化为"当前 session id + goal_state.json 扫描 +
+  最小年龄安全网"三条，其中最小年龄安全网是防止误删"正在跑的第一轮"
+  的关键防线，默认给了 6 小时的余量（远超正常一轮对话耗时）。
+- 删除动作用 `shutil.rmtree(path, ignore_errors=False)`（显式关闭
+  `ignore_errors`，删除失败会被捕获记录进 `report.orphan_failed`，不会
+  被静默吞掉）。
+- `dry_run` 语义与正常 session 清理完全一致，复用同一个开关。
+
+### 10.5 冒烟测试记录
+
+在临时目录下构造 3 个目录：`s1`（有 `meta.json`，正常 session）、
+`s2`（无 `meta.json`，文件与目录 `mtime` 均设为 20 小时前）、`s3`
+（无 `meta.json`，刚创建）。跑 `scan_orphan_session_dirs(..., min_age_hours=6)`：
+
+```
+s2 delete 有目录无 meta.json（一轮对话未跑完即中断），超过安全窗口，判定为孤儿目录
+s3 keep 目录年龄 < 6 小时，可能是正在进行中的第一轮，暂不判定为孤儿
+```
+
+`dry_run=False` 实际执行后：`s2` 目录被删除，`s3`（安全网内）和 `s1`
+（正常 session，本来就不在孤儿扫描范围内）原样保留，行为符合预期。
+
+

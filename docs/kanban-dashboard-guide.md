@@ -176,6 +176,19 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
   `next_doc/session_cleanup_design.md` §9。该操作需要 owner 权限（单
   token 模式下自动放行，多用户模式下非 owner 调用会被拒绝）。
 
+  - **含孤儿目录**：会话管理分页统计数（走 `meta.json` 才能识别的
+    "正常 session"）经常和 `.agent/sessions/` 目录下实际的目录数对不
+    上——差值通常是一批"有目录、没 `meta.json`"的孤儿目录，一轮对话
+    没跑完就中断（daemon 重启/进程被杀/cron 子 agent 提前失败）时会
+    留下这种残留，普通的会话列表和批量清理默认都扫描不到。勾选这个
+    选项后，预览/执行会额外把这批孤儿目录一起纳入，独立展示"孤儿目录
+    汇总 + 将删除/失败"表格，跟正常 session 的清理结果分开列，互不
+    影响。旁边的"孤儿目录最小年龄（小时）"（默认 6 小时）是安全网——
+    目录创建时间早于 `meta.json` 写入，太新的目录很可能只是正在进行
+    中的第一轮，达不到这个年龄不会被当孤儿删除。详见
+    `next_doc/session_cleanup_design.md` §10。
+
+
 ### 📌 目标看板 Tab
 
 对接 Stage 9 自主 daemon 的 `GoalBacklog` 与 `CronScheduler`：
@@ -486,7 +499,7 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `pending_permissions(session_id=)` / `respond_permission()` | `/v1/permissions/*` | 权限审批 |
 | `sessions(limit=50, offset=0)` / `session_detail()` / `resume_session()` / `new_session()` / `delete_session()` | `/v1/sessions*` | 会话管理（`offset` 配合 `limit` 做分页） |
 | `pin_session()` / `unpin_session()` | `POST /v1/sessions/{id}/pin\|unpin` | 清理保护置顶 / 取消置顶 |
-| `cleanup_sessions(dry_run=True, keep_recent_days=30, keep_recent_count=20, extract_first=False)` | `POST /v1/sessions/cleanup` | 批量清理旧会话（预览/执行同一接口，`dry_run` 区分），owner only |
+| `cleanup_sessions(dry_run=True, keep_recent_days=30, keep_recent_count=20, extract_first=False, include_orphans=False, orphan_min_age_hours=6.0)` | `POST /v1/sessions/cleanup` | 批量清理旧会话（预览/执行同一接口，`dry_run` 区分），owner only；`include_orphans` 一并清理无 `meta.json` 的孤儿目录 |
 | `users()` | `/v1/users` | 多用户列表（多用户模式） |
 | `self_status()` / `autonomous_status()` | `/self/status`、`/self/autonomous` | 自省与自主循环状态 |
 | `pause_scheduling(reason=)` / `resume_scheduling()` | `POST /v1/autonomous/scheduling/pause\|resume` | 看板"停止调度"功能：全局暂停/恢复自动调度，见顶部状态条一节 |

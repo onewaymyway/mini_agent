@@ -2053,6 +2053,9 @@ def _render_session_cleanup_panel(client: AgentClient) -> None:
     内永远不删；其余候选删除的 session 还要看是否已抽取过知识（或内容太少
     不需要抽取）。这里只是给判定结果加一层看板 UI：先"预览"（dry-run）
     看看会删哪些，确认无误再"确认执行"。
+
+    额外支持"含孤儿目录"（勾选后一并扫描/清理有目录、没 meta.json 的残留
+    目录，见 session_cleanup.py::scan_orphan_session_dirs），默认关闭。
     """
     st.markdown("---")
     with st.expander("🧹 批量清理旧会话（Session Cleanup）"):
@@ -2074,12 +2077,29 @@ def _render_session_cleanup_panel(client: AgentClient) -> None:
                  "（会调用 LLM，耗时更长；不勾选则这类会话本次跳过、不删）",
         )
 
+        oc1, oc2 = st.columns(2)
+        include_orphans = oc1.checkbox(
+            "含孤儿目录", value=False, key="cleanup_include_orphans",
+            help="额外扫描/清理磁盘上「有目录、没 meta.json」的孤儿目录——"
+                 "一轮对话没跑完就中断（daemon 重启/被杀/cron 子 agent 提前"
+                 "失败）时会留下这种残留目录，普通的会话列表和清理都看不到它们，"
+                 "需要单独勾选才会处理。",
+        )
+        orphan_min_age_hours = oc2.number_input(
+            "孤儿目录最小年龄（小时）", min_value=0.0, value=6.0, step=1.0,
+            key="cleanup_orphan_min_age_hours", disabled=not include_orphans,
+            help="安全网：目录创建后要等一轮对话跑完才会写 meta.json，太新的"
+                 "孤儿目录很可能是正在进行中的第一轮，不足这个年龄不会被判定为孤儿",
+        )
+
         bc1, bc2 = st.columns(2)
         preview_key = "session_cleanup_preview"
         if bc1.button("🔍 预览（dry-run，不会真的删除）", width='stretch'):
             res = client.cleanup_sessions(
                 dry_run=True, keep_recent_days=float(keep_days),
                 keep_recent_count=int(keep_count), extract_first=extract_first,
+                include_orphans=include_orphans,
+                orphan_min_age_hours=float(orphan_min_age_hours),
             )
             if res and "_error" not in res:
                 st.session_state[preview_key] = res
@@ -2116,13 +2136,42 @@ def _render_session_cleanup_panel(client: AgentClient) -> None:
                     width='stretch', hide_index=True,
                 )
 
-            if deleted:
+            orphan_deleted = preview.get("orphan_deleted", [])
+            orphan_failed = preview.get("orphan_failed", [])
+            if preview.get("orphan_total_scanned"):
+                st.markdown("---")
+                orphan_mb = sum(i.get("size_bytes", 0) for i in orphan_deleted) / 1024 / 1024
+                st.info(
+                    f"孤儿目录：共扫描 {preview['orphan_total_scanned']} 个，"
+                    f"保留 {preview.get('orphan_kept_count', 0)} 个，"
+                    f"将删除 {len(orphan_deleted)} 个（约 {orphan_mb:.1f} MB）。"
+                )
+                if orphan_deleted:
+                    st.markdown(f"**孤儿目录 · 将删除（{len(orphan_deleted)}）**")
+                    st.dataframe(
+                        [{"dir_name": i["dir_name"], "last_activity": i["last_activity"],
+                          "size_mb": round(i.get("size_bytes", 0) / 1024 / 1024, 2),
+                          "reason": i["reason"]} for i in orphan_deleted],
+                        width='stretch', hide_index=True,
+                    )
+                if orphan_failed:
+                    st.markdown(f"**孤儿目录 · 失败（{len(orphan_failed)}）**")
+                    st.dataframe(
+                        [{"dir_name": i["dir_name"], "reason": i["reason"]}
+                         for i in orphan_failed],
+                        width='stretch', hide_index=True,
+                    )
+
+            has_anything_to_delete = bool(deleted or orphan_deleted)
+            if has_anything_to_delete:
                 confirm = bc2.checkbox("我已确认以上列表，执行删除", key="cleanup_confirm")
                 if st.button("⚠️ 确认执行清理（不可撤销）", disabled=not confirm,
                               width='stretch', type="primary"):
                     res = client.cleanup_sessions(
                         dry_run=False, keep_recent_days=float(keep_days),
                         keep_recent_count=int(keep_count), extract_first=extract_first,
+                        include_orphans=include_orphans,
+                        orphan_min_age_hours=float(orphan_min_age_hours),
                     )
                     if res and "_error" not in res:
                         st.success(res.get("summary", "清理完成"))

@@ -239,7 +239,7 @@ from .models import (
     FsSearchRequest, EventType, AgentEvent,
     SessionInfo, SessionsListResponse, SessionDetailResponse,
     SessionActionResponse, SessionDeleteResponse,
-    SessionCleanupRequest, SessionCleanupResponse, SessionCleanupItem,
+    SessionCleanupRequest, SessionCleanupResponse, SessionCleanupItem, OrphanCleanupItem,
     UserInfo, UsersListResponse, UserCreateRequest, UserCreateResponse,
     UserUpdateRequest, UserActionResponse, WhoamiResponse,
     InteractionRequestBody, InteractionResponse,
@@ -1741,6 +1741,13 @@ def _cleanup_item_to_model(item) -> SessionCleanupItem:
     )
 
 
+def _orphan_item_to_model(item) -> OrphanCleanupItem:
+    return OrphanCleanupItem(
+        dir_name=item.dir_name, last_activity=item.last_activity,
+        size_bytes=item.size_bytes, action=item.action, reason=item.reason,
+    )
+
+
 @router.post("/sessions/cleanup", response_model=SessionCleanupResponse)
 async def cleanup_sessions_endpoint(request: Request, body: SessionCleanupRequest):
     """批量清理长期不用的旧 session（HTTP 版 `/session cleanup`，owner only）。
@@ -1802,6 +1809,8 @@ async def cleanup_sessions_endpoint(request: Request, body: SessionCleanupReques
         llm_client=llm_client,
         cfg=cfg,
         dry_run=body.dry_run,
+        include_orphans=body.include_orphans,
+        orphan_min_age_hours=body.orphan_min_age_hours,
         where="session_cleanup",
         # extract_first=True 时可能触发多次 LLM 调用，给更宽松的超时
         timeout=180.0 if body.extract_first else 30.0,
@@ -1816,6 +1825,10 @@ async def cleanup_sessions_endpoint(request: Request, body: SessionCleanupReques
         skipped_pending_extraction=[_cleanup_item_to_model(i) for i in report.skipped_pending_extraction],
         failed=[_cleanup_item_to_model(i) for i in report.failed],
         summary=summary_line,
+        orphan_total_scanned=report.orphan_total_scanned,
+        orphan_kept_count=len(report.orphan_kept),
+        orphan_deleted=[_orphan_item_to_model(i) for i in report.orphan_deleted],
+        orphan_failed=[_orphan_item_to_model(i) for i in report.orphan_failed],
     )
 
 

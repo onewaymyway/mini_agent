@@ -321,10 +321,24 @@ class SessionCleanupRequest(BaseModel):
     "只看会删什么、不真删"的安全默认值；确认无误后前端再带 dry_run=False
     发一次真正执行的请求。
     """
-    dry_run:           bool = True
-    keep_recent_days:  float = 30
-    keep_recent_count: int = 20
-    extract_first:     bool = False
+    dry_run:              bool = True
+    keep_recent_days:     float = 30
+    keep_recent_count:    int = 20
+    extract_first:        bool = False
+    # 孤儿目录（有目录、没 meta.json，一轮对话未跑完就中断留下的残留）——
+    # 默认关闭，用户需要显式勾选看板上的"含孤儿目录"才会扫描/清理，避免
+    # 老前端调用这个接口时行为突变。
+    include_orphans:      bool = False
+    orphan_min_age_hours: float = 6.0
+
+
+class OrphanCleanupItem(BaseModel):
+    """单个孤儿目录（有目录、没 meta.json）的清理判定结果。"""
+    dir_name:      str
+    last_activity: str
+    size_bytes:    int
+    action:        str   # "keep" | "delete"
+    reason:        str
 
 
 class SessionCleanupResponse(BaseModel):
@@ -335,6 +349,11 @@ class SessionCleanupResponse(BaseModel):
     skipped_pending_extraction:  list[SessionCleanupItem] = []
     failed:                      list[SessionCleanupItem] = []
     summary:                     str = ""  # 人类可读一句话汇总，直接展示在看板上
+    # 孤儿目录清理结果，include_orphans=False 时以下均为空
+    orphan_total_scanned:        int = 0
+    orphan_kept_count:           int = 0
+    orphan_deleted:               list[OrphanCleanupItem] = []
+    orphan_failed:                list[OrphanCleanupItem] = []
 
 
 # ── 用户管理（daemon 多用户架构 Phase 1）────────────────────────────────────────

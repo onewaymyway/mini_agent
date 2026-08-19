@@ -951,7 +951,9 @@ Content-Type: application/json
   "dry_run": true,
   "keep_recent_days": 30,
   "keep_recent_count": 20,
-  "extract_first": false
+  "extract_first": false,
+  "include_orphans": false,
+  "orphan_min_age_hours": 6
 }
 ```
 
@@ -963,6 +965,15 @@ Content-Type: application/json
 - `extract_first`：对候选删除但还没抽取过知识的 session，删除前先补跑一次
   离线知识抽取（会触发 LLM 调用，耗时更长，端点内部会相应放宽超时到
   180s；不开启则这类 session 本次跳过、不删，下次清理再判断）。
+- `include_orphans`（默认 `false`）：额外扫描/清理磁盘上"有目录、没
+  `meta.json`"的孤儿目录——一轮对话没跑完就中断（daemon 重启/进程被杀/
+  cron 子 agent 提前失败/goal 循环异常退出）会留下这类残留，`GET
+  /v1/sessions` 和上面的正常清理判定都看不到它们（`meta.json` 是判断
+  "是不是一个 session"的唯一依据）。看板"会话管理"分页数与
+  `.agent/sessions/` 下实际目录数对不上，通常就是这批孤儿目录导致的。
+- `orphan_min_age_hours`（默认 `6`）：孤儿目录的最小年龄安全网。
+  `meta.json` 要等一轮对话跑完才写入，目录本身创建得更早，太新的孤儿
+  目录很可能只是正在进行中的第一轮，不足这个年龄不会被判定为孤儿删除。
 
 保留优先级（命中任意一条即保留，不进入候选删除）：
 1. 当前活跃 session（自动排除，不需要调用方传）
@@ -975,7 +986,13 @@ Content-Type: application/json
 `turns` 太少（无需抽取）或已经抽取过知识 → 可直接删；否则视
 `extract_first` 决定"补抽取后删"还是"本次跳过"。
 
-响应示例（`dry_run: true`）：
+孤儿目录（`include_orphans: true` 时）走独立的保留判定（没有
+`meta.json` 也就没有 `pinned`/`turns` 等元信息，不适用上面的规则）：
+当前活跃 session id、挂着未终结 Goal、或目录年龄小于
+`orphan_min_age_hours` 即保留；否则判定为孤儿，候选删除（不经过知识
+抽取门槛——一轮都没跑完，本身也没有值得抽取的内容）。
+
+响应示例（`dry_run: true`，含孤儿目录）：
 
 ```json
 {
@@ -995,9 +1012,25 @@ Content-Type: application/json
   ],
   "skipped_pending_extraction": [],
   "failed": [],
-  "summary": "Session 清理（dry-run，不会实际删除）：共扫描 42 个，保留 38 个，将删除 1 个，待抽取跳过 0 个，失败 0 个。"
+  "summary": "Session 清理（dry-run，不会实际删除）：共扫描 42 个，保留 38 个，将删除 1 个，待抽取跳过 0 个，失败 0 个。",
+  "orphan_total_scanned": 1153,
+  "orphan_kept_count": 4,
+  "orphan_deleted": [
+    {
+      "dir_name": "sess_9f2c1a",
+      "last_activity": "2026-06-10T02:13:44+00:00",
+      "size_bytes": 8421,
+      "action": "delete",
+      "reason": "有目录无 meta.json（一轮对话未跑完即中断），超过安全窗口，判定为孤儿目录"
+    }
+  ],
+  "orphan_failed": []
 }
 ```
+
+`orphan_total_scanned`/`orphan_kept_count`/`orphan_deleted`/
+`orphan_failed` 在 `include_orphans: false` 时均为空/0，不影响原有字段
+的含义。
 
 需要 owner 权限（单 token 模式下等同于唯一使用者，直接放行；多用户模式
 下非 owner 调用返回 `403`）。多用户模式下每个用户的清理只作用于自己的

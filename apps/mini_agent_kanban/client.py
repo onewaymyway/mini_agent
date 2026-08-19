@@ -233,14 +233,19 @@ class AgentClient:
         return self._post(f"/sessions/{session_id}/unpin")
 
     def cleanup_sessions(self, *, dry_run: bool = True, keep_recent_days: float = 30,
-                          keep_recent_count: int = 20, extract_first: bool = False):
+                          keep_recent_count: int = 20, extract_first: bool = False,
+                          include_orphans: bool = False, orphan_min_age_hours: float = 6.0):
         """批量清理长期不用的旧 session。dry_run=True 只预览、不删除；
-        extract_first=True 时可能触发 LLM 调用，耗时更长，给更宽松的超时。"""
+        extract_first=True 时可能触发 LLM 调用，耗时更长，给更宽松的超时。
+        include_orphans=True 时额外清理"有目录、没 meta.json"的孤儿目录
+        （一轮对话未跑完就中断留下的残留，看板/清理原本都扫描不到）。"""
         body = {
             "dry_run": dry_run,
             "keep_recent_days": keep_recent_days,
             "keep_recent_count": keep_recent_count,
             "extract_first": extract_first,
+            "include_orphans": include_orphans,
+            "orphan_min_age_hours": orphan_min_age_hours,
         }
         timeout = 200 if extract_first else 35
         return self._post("/sessions/cleanup", json_body=body, timeout=timeout)
