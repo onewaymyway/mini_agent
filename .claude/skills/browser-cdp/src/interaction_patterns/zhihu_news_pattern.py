@@ -6,7 +6,7 @@ zhihu_news_pattern.py - 知乎新闻搜索模式
 from __future__ import annotations
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from ._base import SearchResults
 from .news_pattern import NewsPattern, ArticleData, ArticleResults

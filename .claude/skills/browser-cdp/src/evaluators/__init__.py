@@ -18,6 +18,25 @@ from .anti_detection_evaluator import AntiDetectionEvaluator
 from .stability_evaluator import StabilityEvaluator
 from .data_quality_evaluator import DataQualityEvaluator, DataQualityMonitor
 from .report_generator import ReportGenerator
+from .validators import (
+    Severity,
+    FieldType,
+    DataFreshness,
+    FieldSchema,
+    ValidationError,
+    ValidationRule,
+    ValidationResult,
+    SchemaValidator,
+    CompletenessValidator,
+    FreshnessValidator,
+    DomainValidator,
+    ConsistencyValidator,
+    DataValidator,
+    build_article_schema,
+    build_product_schema,
+    build_news_schema,
+    build_search_result_schema,
+)
 
 __all__ = [
     'BaseEvaluator',
@@ -29,4 +48,21 @@ __all__ = [
     'DataQualityEvaluator',
     'DataQualityMonitor',
     'ReportGenerator',
+    'Severity',
+    'FieldType',
+    'DataFreshness',
+    'FieldSchema',
+    'ValidationError',
+    'ValidationRule',
+    'ValidationResult',
+    'SchemaValidator',
+    'CompletenessValidator',
+    'FreshnessValidator',
+    'DomainValidator',
+    'ConsistencyValidator',
+    'DataValidator',
+    'build_article_schema',
+    'build_product_schema',
+    'build_news_schema',
+    'build_search_result_schema',
 ]

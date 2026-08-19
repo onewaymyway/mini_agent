@@ -143,9 +143,12 @@ class FaultTolerantNavigator:
         try:
             response = await page.goto(**goto_kwargs)
         except Exception as e:
-            # 导航失败，尝试重新加载
+            # 导航失败，尝试重新加载（P41: 携带原始headers避免反爬）
             try:
-                await page.reload(timeout=timeout, wait_until="networkidle")
+                reload_kwargs = {"timeout": timeout, "wait_until": "networkidle"}
+                if headers:
+                    reload_kwargs["extra_headers"] = headers
+                await page.reload(**reload_kwargs)
                 response = None
             except Exception as e2:
                 raise Exception(f"Navigation and reload both failed: {e2}")
@@ -318,22 +321,36 @@ class NavigationOrchestrator:
         self.max_concurrent = max_concurrent
         self.navigator = FaultTolerantNavigator()
         self._results: Dict[str, NavigateResult] = {}
+        self._page = None  # P42: 需外部传入page对象
+
+    def set_page(self, page):
+        """设置要使用的page对象（P42修复）"""
+        self._page = page
 
     async def navigate_multiple(
-        self, urls: List[str], timeout: int = 30000
+        self,
+        urls: List[str],
+        timeout: int = 30000,
+        page=None,
     ) -> Dict[str, NavigateResult]:
         """
         并发导航多个 URL
 
+        Args:
+            urls: 要导航的URL列表
+            timeout: 单个导航超时（毫秒）
+            page: CDP页面对象，若未设置则使用self._page
+
         Returns:
             {url: NavigateResult}
         """
+        target_page = page or self._page
         semaphore = asyncio.Semaphore(self.max_concurrent)
         tasks = {}
 
         async def _navigate(url: str) -> NavigateResult:
             async with semaphore:
-                return await self.navigator.safe_navigate(None, url, timeout=timeout)
+                return await self.navigator.safe_navigate(target_page, url, timeout=timeout)
 
         for url in urls:
             tasks[url] = asyncio.create_task(_navigate(url))

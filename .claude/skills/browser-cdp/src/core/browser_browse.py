@@ -47,6 +47,10 @@ from src.core.utils import (
     die,
 )
 from src.core.smart_wait import SmartWait
+from src.core.explicit_wait_enhanced import ExplicitWaitEnhanced, EnhancedWaitConfig
+from src.core.element_visibility_detector import ElementVisibilityDetector, check_visibility
+from src.core.network_idle_detector import NetworkIdleDetector, create_network_idle_detector, NetworkIdleConfig
+from src.core.page_render_detector import PageRenderDetector, create_render_detector, RenderConfig
 from src.core.browser_nav import cmd_goto, current_state
 from src.core.browser_screenshot import capture, annotate_png, save_screenshot
 from src.core.browser_extract import extract_elements, extract_xpath, extract_text
@@ -494,8 +498,25 @@ def cmd_scroll(session, index: int = None, by: tuple = None, to_top: bool = Fals
 @with_error_handling("wait", OperationType.WAIT, max_retries=3)
 def cmd_wait(session, selector: str = None, timeout: float = 10.0, 
              strategy: str = None) -> dict:
-    """执行等待操作"""
+    """执行等待操作（集成显式等待增强 + 可见性检测）"""
     if selector:
+        # 先检测页面是否处于加载中状态
+        vis = ElementVisibilityDetector(session)
+        load_state = vis.check_loading_state(selector)
+        if load_state.get('loading'):
+            print(f"[info] 检测到页面加载状态: {load_state['indicator']}, 等待稳定...")
+            time.sleep(1.0)
+
+        # 使用增强版显式等待，自动检测可见性与交互可达性
+        enhanced_wait = ExplicitWaitEnhanced(session, EnhancedWaitConfig(timeout=timeout))
+        try:
+            result = asyncio.run(enhanced_wait.wait_for_visible(selector))
+            print(f"[ok] 元素已可见: {selector} (可见性={result['reason']}, elapsed={result['elapsed']:.2f}s)")
+            return result
+        except Exception:
+            pass
+
+        # 降级：使用原始简单等待（保持向后兼容）
         deadline = time.time() + timeout
         js = f"!!document.querySelector({selector!r})"
         while time.time() < deadline:
@@ -512,19 +533,76 @@ def cmd_wait(session, selector: str = None, timeout: float = 10.0,
             operation="wait",
             details={"selector": selector, "timeout": timeout}
         )
-    
+
     if strategy:
         smart_wait = SmartWait(session)
         import asyncio
         result = asyncio.run(smart_wait.wait_for(strategy, timeout=timeout))
         print(f"[ok] 等待完成: strategy={result.strategy}, elapsed={result.elapsed:.2f}s")
         return {"strategy": result.strategy, "elapsed": result.elapsed, "success": result.success}
-    
+
     raise BrowserError(
         error_type=BrowserErrorType.UNKNOWN,
         message="等待操作需要指定 --wait-selector 或 --wait-for",
         operation="wait"
     )
+
+
+@with_error_handling("wait_network_idle", OperationType.WAIT, max_retries=3)
+def cmd_wait_network_idle(
+    session,
+    idle_window: float = None,
+    timeout: float = None,
+    critical_only: bool = None,
+    url_pattern: str = None,
+) -> dict:
+    """执行网络空闲等待（集成 NetworkIdleDetector）"""
+    config = NetworkIdleConfig(
+        idle_window=idle_window or 0.5,
+        timeout=timeout or 30.0,
+        wait_critical_only=critical_only if critical_only is not None else True,
+    )
+    if url_pattern:
+        config.url_patterns.append(url_pattern)
+
+    detector = NetworkIdleDetector(session, config)
+    result = asyncio.run(detector.wait_for_idle())
+    print(f"[ok] 网络空闲等待完成: success={result['success']}, elapsed={result['elapsed']:.2f}s, "
+          f"关键请求={result['stats'].get('critical_requests', 0)}, "
+          f"XHR/Fetch={result['stats'].get('xhr_fetch_requests', 0)}")
+    return result
+
+
+@with_error_handling("wait_render", OperationType.WAIT, max_retries=3)
+def cmd_wait_render(
+    session,
+    strategy: str = "adaptive",
+    selector: str = None,
+    idle_window: float = None,
+    timeout: float = None,
+) -> dict:
+    """执行增强渲染等待（集成 PageRenderDetector）"""
+    config = RenderConfig(
+        strategy=strategy,
+        idle_window=idle_window or 0.5,
+        timeout=timeout or 30.0,
+        wait_dom_stable=True,
+        wait_images=True,
+        wait_fonts=True,
+    )
+    detector = PageRenderDetector(session, config)
+    result = asyncio.run(detector.wait_for_page_ready(strategy=strategy, timeout=timeout))
+    print(f"[ok] 渲染等待完成: success={result.success}, elapsed={result.elapsed:.2f}s, "
+          f"策略={result.strategy}")
+    return {
+        'success': result.success,
+        'elapsed': result.elapsed,
+        'strategy': result.strategy,
+        'dom_changes': result.dom_changes,
+        'hash_stable_rounds': result.hash_stable_rounds,
+        'animations_done': result.animations_done,
+        'fonts_done': result.fonts_done,
+    }
 
 
 @with_error_handling("hover", OperationType.CLICK, max_retries=3)
@@ -639,10 +717,20 @@ def main():
     wait_group = parser.add_argument_group('等待操作')
     wait_group.add_argument("--wait-selector", default=None, help="等待元素出现")
     wait_group.add_argument("--wait-for", dest="wait_strategy", default=None,
-                           choices=["load", "networkidle", "route", "stable", "ajax", "selector"],
+                           choices=["load", "networkidle", "route", "stable", "ajax", "selector", "dom_stable", "condition"],
                            help="等待策略")
     wait_group.add_argument("--wait-page-ready", action="store_true", help="等待页面完全就绪（网络空闲+元素+内容稳定）")
     wait_group.add_argument("--wait-page-selector", default=None, help="等待页面就绪的关键选择器")
+    wait_group.add_argument("--wait-render", action="store_true", help="使用增强渲染监控等待页面就绪")
+    wait_group.add_argument("--wait-strategy", dest="wait_render_strategy", default="adaptive",
+                           choices=["adaptive", "networkidle", "selector", "condition", "dom_stable"],
+                           help="增强渲染等待策略")
+    wait_group.add_argument("--wait-network-idle", action="store_true", help="等待网络空闲（关键请求完成）")
+    wait_group.add_argument("--wait-network-idle-window", type=float, default=0.5, help="网络空闲确认时长（秒）")
+    wait_group.add_argument("--wait-network-idle-timeout", type=float, default=30.0, help="网络空闲超时时间（秒）")
+    wait_group.add_argument("--wait-network-idle-pattern", default=None, help="网络空闲 URL 模式过滤（正则）")
+    wait_group.add_argument("--wait-network-critical-only", dest="wait_network_critical_only", action="store_true", default=None, help="只等待关键请求")
+    wait_group.add_argument("--wait-page-idle", dest="wait_page_idle", action="store_true", help="等待页面完全空闲（网络+渲染+DOM稳定）")
     
     # 动态页面操作
     dynamic_group = parser.add_argument_group('动态页面操作')
@@ -791,6 +879,72 @@ def main():
         if args.wait_strategy:
             cmd_wait(session, strategy=args.wait_strategy, timeout=args.timeout, retry_config=retry_config, operation="wait")
         
+        # 增强渲染等待（步骤3新增）
+        if args.wait_render:
+            import asyncio
+            from src.core.page_render_monitor import wait_for_page_ready, PageRenderMonitor, WaitForOptions
+            options = WaitForOptions(
+                timeout=args.timeout,
+                wait_network_idle=True,
+                wait_dom_stable=True,
+                wait_images=True,
+                wait_fonts=True,
+                wait_ajax=True,
+            )
+            monitor = PageRenderMonitor(session, options)
+            result = asyncio.run(monitor.wait_for_page_ready(
+                selector=args.wait_page_selector,
+                timeout=args.timeout,
+            ))
+            print_json(result)
+        
+        # 网络空闲等待（步骤4新增）
+        if args.wait_network_idle:
+            import asyncio
+            cmd_wait_network_idle(
+                session,
+                idle_window=args.wait_network_idle_window,
+                timeout=args.wait_network_idle_timeout,
+                critical_only=args.wait_network_critical_only,
+                url_pattern=args.wait_network_idle_pattern,
+                retry_config=retry_config,
+                operation="wait_network_idle"
+            )
+
+        # 增强渲染等待（使用 PageRenderDetector）
+        if args.wait_render:
+            import asyncio
+            cmd_wait_render(
+                session,
+                strategy=args.wait_render_strategy,
+                selector=args.wait_page_selector,
+                idle_window=getattr(args, 'wait_network_idle_window', 0.5),
+                timeout=args.timeout,
+                retry_config=retry_config,
+                operation="wait_render"
+            )
+
+        # 页面完全空闲（网络+渲染+DOM，步骤4新增）
+        if args.wait_page_idle:
+            import asyncio
+            from src.core.page_render_detector import RenderConfig
+            render_config = RenderConfig(
+                strategy='adaptive',
+                idle_window=args.wait_network_idle_window,
+                timeout=args.timeout,
+            )
+            detector = PageRenderDetector(session, render_config)
+            result = asyncio.run(detector.wait_for_page_ready(strategy='adaptive', timeout=args.timeout))
+            print_json({
+                'success': result.success,
+                'elapsed': result.elapsed,
+                'strategy': result.strategy,
+                'dom_changes': result.dom_changes,
+                'hash_stable_rounds': result.hash_stable_rounds,
+                'animations_done': result.animations_done,
+                'fonts_done': result.fonts_done,
+            })
+
         # 动态页面操作
         if args.wait_page_ready or args.wait_page_selector:
             import asyncio

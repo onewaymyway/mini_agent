@@ -30,6 +30,21 @@ from .news_pattern import (
 )
 from .zhihu_news_pattern import ZhihuNewsPattern
 from .toutiao_news_pattern import ToutiaoNewsPattern
+from .sina_news_pattern import SinaNewsPattern
+from .cls_news_pattern import ClsNewsPattern
+from .social_content_pattern import (
+    SocialContentPattern,
+    SocialPost,
+    SocialSearchResults,
+)
+from .xiaohongshu_pattern import XiaohongshuPattern
+from .bilibili_pattern import BilibiliPattern
+from .social_interaction_pattern import (
+    SocialInteractionPattern,
+    InteractionResult,
+    CommentItem,
+    UserFollowStatus,
+)
 
 logger = logging.getLogger(__name__)
 

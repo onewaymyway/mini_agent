@@ -268,6 +268,276 @@ class ResourceExhaustedError(ReliabilityError):
         self.resource_type = resource_type
 
 
+# ══════════════════════════════════════════════════════════════════
+# 新增异常类（Step 2 补齐，与 exception_enum.py 的 35 种子类型一一对应）
+# ══════════════════════════════════════════════════════════════════
+
+
+class WebSocketDisconnectedError(ReliabilityError):
+    """WebSocket 通道意外关闭"""
+
+    def __init__(self, url: str = "", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"WebSocket disconnected: url={url!r}",
+            ErrorCategory.CONNECTION,
+            recoverable=True,
+            details=details,
+        )
+        self.url = url
+
+
+class CDPChannelClosedError(ReliabilityError):
+    """CDP 通道被服务端关闭（不可恢复）"""
+
+    def __init__(self, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            "CDP channel closed by remote end",
+            ErrorCategory.CONNECTION,
+            recoverable=False,
+            details=details,
+        )
+
+
+class PageLoadTimeoutError(ReliabilityError):
+    """页面完全加载超时"""
+
+    def __init__(self, url: str, timeout: float, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Page load timed out: url={url!r}, timeout={timeout}s",
+            ErrorCategory.TIMEOUT,
+            recoverable=True,
+            details=details,
+        )
+        self.url = url
+        self.timeout = timeout
+
+
+class ElementVisibilityTimeoutError(ReliabilityError):
+    """元素可见性等待超时"""
+
+    def __init__(self, selector: str, timeout: float, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Element visibility timeout: selector={selector!r}, timeout={timeout}s",
+            ErrorCategory.ELEMENT,
+            recoverable=True,
+            details=details,
+        )
+        self.selector = selector
+        self.timeout = timeout
+
+
+class ElementDetachedError(ReliabilityError):
+    """元素被 DOM 操作移除（detached）"""
+
+    def __init__(self, selector: str = "", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Element detached from DOM: selector={selector!r}",
+            ErrorCategory.ELEMENT,
+            recoverable=True,
+            details=details,
+        )
+        self.selector = selector
+
+
+class StaleElementReferenceError(ReliabilityError):
+    """StaleElementReference — 元素引用已过期"""
+
+    def __init__(self, selector: str = "", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Stale element reference: selector={selector!r}",
+            ErrorCategory.ELEMENT,
+            recoverable=True,
+            details=details,
+        )
+        self.selector = selector
+
+
+class NavigationAbortedError(ReliabilityError):
+    """导航请求被主动中止"""
+
+    def __init__(self, url: str = "", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Navigation aborted: url={url!r}",
+            ErrorCategory.NAVIGATION,
+            recoverable=True,
+            details=details,
+        )
+        self.url = url
+
+
+class NavigationHistoryOverflowError(ReliabilityError):
+    """浏览器历史栈溢出"""
+
+    def __init__(self, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            "Navigation history stack overflowed",
+            ErrorCategory.NAVIGATION,
+            recoverable=False,
+            details=details,
+        )
+
+
+class SameOriginNavigationFailedError(ReliabilityError):
+    """同源导航失败"""
+
+    def __init__(self, url: str = "", reason: str = "", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Same-origin navigation failed: url={url!r}, reason={reason!r}",
+            ErrorCategory.NAVIGATION,
+            recoverable=False,
+            details=details,
+        )
+        self.url = url
+        self.reason = reason
+
+
+class InvisiblePageContentError(ReliabilityError):
+    """页面内容为空或不可见"""
+
+    def __init__(self, url: str = "", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Invisible or empty page content: url={url!r}",
+            ErrorCategory.CONTENT,
+            recoverable=False,
+            details=details,
+        )
+        self.url = url
+
+
+class UnexpectedPageTitleError(ReliabilityError):
+    """页面标题与预期不符"""
+
+    def __init__(self, expected: str = "", actual: str = "", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Unexpected page title: expected={expected!r}, actual={actual!r}",
+            ErrorCategory.CONTENT,
+            recoverable=False,
+            details=details,
+        )
+        self.expected = expected
+        self.actual = actual
+
+
+class BlockedByCloudflareError(ReliabilityError):
+    """Cloudflare 挑战页拦截"""
+
+    def __init__(self, challenge_type: str = "", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Blocked by Cloudflare challenge: type={challenge_type!r}",
+            ErrorCategory.PERMISSION,
+            recoverable=False,
+            details=details,
+        )
+        self.challenge_type = challenge_type
+
+
+class BlockedByTurnstileError(ReliabilityError):
+    """Turnstile 人机验证拦截"""
+
+    def __init__(self, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            "Blocked by Turnstile CAPTCHA, manual intervention required",
+            ErrorCategory.PERMISSION,
+            recoverable=False,
+            details=details,
+        )
+
+
+class IPBlockedError(ReliabilityError):
+    """IP 被封禁"""
+
+    def __init__(self, ip: str = "", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"IP blocked: ip={ip!r}",
+            ErrorCategory.PERMISSION,
+            recoverable=False,
+            details=details,
+        )
+        self.ip = ip
+
+
+class SessionExpiredError(ReliabilityError):
+    """会话 Cookie 已过期"""
+
+    def __init__(self, domain: str = "", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Session expired: domain={domain!r}",
+            ErrorCategory.AUTH,
+            recoverable=False,
+            details=details,
+        )
+        self.domain = domain
+
+
+class OAuthTokenExpiredError(ReliabilityError):
+    """OAuth Token 过期"""
+
+    def __init__(self, provider: str = "", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"OAuth token expired: provider={provider!r}",
+            ErrorCategory.AUTH,
+            recoverable=False,
+            details=details,
+        )
+        self.provider = provider
+
+
+class MemoryLimitExceededError(ReliabilityError):
+    """内存使用超限"""
+
+    def __init__(self, current_mb: float = 0.0, limit_mb: float = 0.0, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Memory limit exceeded: current={current_mb}MB, limit={limit_mb}MB",
+            ErrorCategory.RESOURCE,
+            recoverable=False,
+            details=details,
+        )
+        self.current_mb = current_mb
+        self.limit_mb = limit_mb
+
+
+class ConnectionPoolExhaustedError(ReliabilityError):
+    """CDP 连接池无空闲连接"""
+
+    def __init__(self, pool_size: int = 0, active: int = 0, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Connection pool exhausted: size={pool_size}, active={active}",
+            ErrorCategory.RESOURCE,
+            recoverable=False,
+            details=details,
+        )
+        self.pool_size = pool_size
+        self.active = active
+
+
+class TabLimitReachedError(ReliabilityError):
+    """浏览器标签页数量上限已到达"""
+
+    def __init__(self, current_tabs: int = 0, max_tabs: int = 0, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Tab limit reached: current={current_tabs}, max={max_tabs}",
+            ErrorCategory.RESOURCE,
+            recoverable=False,
+            details=details,
+        )
+        self.current_tabs = current_tabs
+        self.max_tabs = max_tabs
+
+
+class UnknownBrowserException(ReliabilityError):
+    """无法归类到任何已知分类的未知异常"""
+
+    def __init__(self, original_exception: Optional[Exception] = None, details: Optional[Dict[str, Any]] = None):
+        msg = f"Unknown browser exception: {original_exception!r}" if original_exception else "Unknown browser exception"
+        super().__init__(
+            msg,
+            ErrorCategory.UNKNOWN,
+            recoverable=False,
+            details=details,
+        )
+        self.original_exception = original_exception
+
+
 def is_retryable(error: Exception) -> bool:
     """判断错误是否可重试"""
     if isinstance(error, ReliabilityError):

@@ -37,6 +37,8 @@ from enum import Enum
 from typing import Optional, List, Dict, Any, Callable, Tuple
 
 from src.core.smart_wait import SmartWait, WaitConfig
+from src.core.explicit_wait_enhanced import ExplicitWaitEnhanced, EnhancedWaitConfig, create_condition
+from src.core.element_visibility_detector import ElementVisibilityDetector
 from src.core.enhanced_dynamic_loader import EnhancedDynamicLoader, ScrollConfig, ScrollResult
 from src.core.dynamic_page_support import DynamicPageSupport
 from src.reliability.middleware import (
@@ -168,6 +170,9 @@ class BrowserInteraction:
         self._page_states: List[PageState] = []
         self._popup_handlers: Dict[PopupType, Callable] = {}
         self._error_recovery = ErrorRecoveryManager(self)
+        # 步骤 3 新增：显式等待增强 + 可见性检测
+        self._enhanced_wait = ExplicitWaitEnhanced(session, EnhancedWaitConfig())
+        self._vis_detector = ElementVisibilityDetector(session)
         self._register_default_popup_handlers()
     
     def _register_default_popup_handlers(self):
@@ -502,6 +507,51 @@ class BrowserInteraction:
             await asyncio.sleep(0.5)
         logger.info(f"AJAX monitoring completed, captured {len(self._ajax_requests)} requests")
         return self._ajax_requests
+
+    # =========================================================================
+    # Step 3: Enhanced Wait & Visibility Detection
+    # =========================================================================
+
+    async def wait_for_visible(self, selector: str, timeout: float = 10.0) -> dict:
+        """使用增强版显式等待等待元素可见（含加载状态检测 + 可见性验证）"""
+        logger.info(f"Starting enhanced wait for visible: {selector}, timeout={timeout}s")
+        # 先检测页面加载状态
+        load_state = self._vis_detector.check_loading_state(selector)
+        if load_state.get('loading'):
+            logger.info(f"Page loading detected: {load_state['indicator']}, waiting for stability")
+            await asyncio.sleep(1.0)
+            # 重新检测
+            load_state = self._vis_detector.check_loading_state(selector)
+            if load_state.get('loading'):
+                logger.warning(f"Page still loading after delay: {load_state['indicator']}")
+        # 使用增强等待器
+        config = EnhancedWaitConfig(timeout=timeout)
+        enhanced = ExplicitWaitEnhanced(self.session, config)
+        result = await enhanced.wait_for_visible(selector)
+        logger.info(f"Enhanced wait completed: selector={selector}, success={result['success']}, elapsed={result['elapsed']:.2f}s, reason={result['reason']}")
+        return result
+
+    async def check_element_visibility(self, selector: str) -> dict:
+        """检查元素可见性及详细信息"""
+        logger.debug(f"Checking visibility: {selector}")
+        result = self._vis_detector.check_visibility(selector)
+        logger.debug(f"Visibility check result: visible={result.visible}, reason={result.reason}, is_interactable={result.is_interactable}")
+        return result.to_dict()
+
+    async def wait_for_condition(
+        self,
+        condition: str,
+        timeout: float = 10.0,
+        **kwargs,
+    ) -> dict:
+        """等待复合条件（AND/OR/NOT 组合）"""
+        logger.info(f"Waiting for condition: {condition}, timeout={timeout}s")
+        cond = create_condition(condition, **kwargs)
+        config = EnhancedWaitConfig(timeout=timeout)
+        enhanced = ExplicitWaitEnhanced(self.session, config)
+        result = await enhanced.wait_for(cond)
+        logger.info(f"Condition wait completed: {condition}, success={result['success']}, elapsed={result['elapsed']:.2f}s")
+        return result
 
     # =========================================================================
     # Page State Management

@@ -1,0 +1,199 @@
+{
+  "test_environment": {
+    "version": "1.0.0",
+    "generated_at": "2026-08-13",
+    "description": "Browser-CDP可靠性测试环境配置"
+  },
+  "browser": {
+    "default_type": "chrome",
+    "supported_types": ["chrome", "edge"],
+    "headless": true,
+    "stealth_mode": true,
+    "timeout_seconds": 30,
+    "page_load_timeout": 30,
+    "implicit_wait": 5,
+    "custom_args": [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--disable-web-security",
+      "--disable-features=IsolateOrigins,site-per-process"
+    ]
+  },
+  "retry": {
+    "max_retries": 3,
+    "retry_delay_seconds": 2,
+    "backoff_factor": 2,
+    "retry_on_status": [500, 502, 503, 504, 429]
+  },
+  "rate_limiter": {
+    "enabled": true,
+    "min_delay_seconds": 1.0,
+    "max_delay_seconds": 3.0,
+    "jitter": true
+  },
+  "proxy": {
+    "enabled": false,
+    "pool_size": 5,
+    "rotate_per_request": true
+  },
+  "screenshot": {
+    "enabled": true,
+    "on_failure": true,
+    "on_assertion_failure": true,
+    "directory": "output/screenshots",
+    "max_size_kb": 500
+  },
+  "reporting": {
+    "format": ["json", "html"],
+    "directory": "output/reports",
+    "include_screenshots": true,
+    "include_metrics": true
+  },
+  "concurrency": {
+    "max_parallel_tests": 3,
+    "max_cdp_connections": 5,
+    "semaphore_timeout": 60
+  },
+  "phase1_sites": [
+    {
+      "site_id": "gov_cn",
+      "name": "中国政府网",
+      "url": "https://www.gov.cn",
+      "priority": "P0",
+      "category": "gov",
+      "test_cases": ["FC-001", "FC-002", "FC-009", "FC-010", "FC-036", "FC-037", "FC-046", "FC-051", "FC-060", "FC-066"],
+      "specific_config": {
+        "search_keywords": ["国务院", "政策文件", "国民经济"],
+        "expected_fields": ["title", "date", "source", "summary", "url"]
+      }
+    },
+    {
+      "site_id": "stats_gov_cn",
+      "name": "国家数据",
+      "url": "https://www.stats.gov.cn",
+      "priority": "P0",
+      "category": "gov",
+      "test_cases": ["FC-001", "FC-002", "FC-009", "FC-010", "FC-036", "FC-037", "FC-042"],
+      "specific_config": {
+        "search_keywords": ["GDP", "CPI", "人口"],
+        "expected_fields": ["indicator_name", "value", "unit", "date", "region"]
+      }
+    },
+    {
+      "site_id": "gsxt_gov_cn",
+      "name": "国家企业信用信息公示",
+      "url": "https://www.gsxt.gov.cn",
+      "priority": "P0",
+      "category": "gov",
+      "test_cases": ["FC-001", "FC-002", "FC-003", "FC-009", "FC-010", "FC-036", "FC-037", "FC-046"],
+      "specific_config": {
+        "search_keywords": ["阿里巴巴", "腾讯", "华为"],
+        "expected_fields": ["company_name", "credit_code", "legal_representative", "registration_date", "status"]
+      }
+    },
+    {
+      "site_id": "boss_zhipin",
+      "name": "BOSS直聘",
+      "url": "https://www.zhipin.com",
+      "priority": "P0",
+      "category": "jobs",
+      "test_cases": ["FC-001", "FC-002", "FC-003", "FC-004", "FC-009", "FC-010", "FC-013", "FC-036", "FC-037", "FC-046", "FC-051", "FC-060", "FC-077"],
+      "specific_config": {
+        "search_keywords": ["Python", "Java", "产品经理"],
+        "expected_fields": ["job_title", "company", "salary_range", "location", "experience", "education", "publish_date"],
+        "anti_crawl_level": "medium"
+      }
+    },
+    {
+      "site_id": "51job",
+      "name": "前程无忧",
+      "url": "https://www.51job.com",
+      "priority": "P0",
+      "category": "jobs",
+      "test_cases": ["FC-001", "FC-002", "FC-003", "FC-004", "FC-009", "FC-010", "FC-013", "FC-036", "FC-037", "FC-046", "FC-051", "FC-060"],
+      "specific_config": {
+        "search_keywords": ["数据分析", "运营", "产品"],
+        "expected_fields": ["job_title", "company", "salary", "location", "publish_date"],
+        "anti_crawl_level": "medium"
+      }
+    },
+    {
+      "site_id": "lagou",
+      "name": "拉勾网",
+      "url": "https://www.lagou.com",
+      "priority": "P0",
+      "category": "jobs",
+      "test_cases": ["FC-001", "FC-002", "FC-003", "FC-004", "FC-009", "FC-010", "FC-013", "FC-036", "FC-037", "FC-046", "FC-051", "FC-060"],
+      "specific_config": {
+        "search_keywords": ["前端", "后端", "算法"],
+        "expected_fields": ["job_title", "company", "salary_range", "location", "tech_stack"],
+        "anti_crawl_level": "medium"
+      }
+    },
+    {
+      "site_id": "jd_com",
+      "name": "京东",
+      "url": "https://www.jd.com",
+      "priority": "P0",
+      "category": "ecommerce",
+      "test_cases": ["FC-001", "FC-002", "FC-003", "FC-004", "FC-009", "FC-010", "FC-013", "FC-036", "FC-037", "FC-038", "FC-046", "FC-051", "FC-060", "FC-071", "FC-077", "FC-079", "EC-001", "EC-002", "EC-004", "EC-005"],
+      "specific_config": {
+        "search_keywords": ["手机", "笔记本电脑", "耳机"],
+        "expected_fields": ["product_name", "price", "original_price", "rating", "reviews_count", "stock_status"],
+        "anti_crawl_level": "high",
+        "requires_sign_api": true
+      }
+    },
+    {
+      "site_id": "cls_cn",
+      "name": "财联社",
+      "url": "https://www.cls.cn",
+      "priority": "P0",
+      "category": "finance",
+      "test_cases": ["FC-001", "FC-002", "FC-003", "FC-009", "FC-010", "FC-013", "FC-036", "FC-037", "FC-040", "FC-041", "FC-046", "FC-051", "FC-060", "FC-071", "FC-072"],
+      "specific_config": {
+        "search_keywords": ["股市", "基金", "宏观经济"],
+        "expected_fields": ["headline", "content", "time", "source", "tags"],
+        "anti_crawl_level": "low"
+      }
+    },
+    {
+      "site_id": "zhihu",
+      "name": "知乎",
+      "url": "https://www.zhihu.com",
+      "priority": "P0",
+      "category": "social",
+      "test_cases": ["FC-001", "FC-002", "FC-003", "FC-004", "FC-009", "FC-010", "FC-013", "FC-036", "FC-037", "FC-038", "FC-040", "FC-041", "FC-046", "FC-051", "FC-060", "FC-071", "FC-072", "FC-074", "FC-079"],
+      "specific_config": {
+        "search_keywords": ["AI", "机器学习", "Python"],
+        "expected_fields": ["question_title", "answer_content", "author", "upvotes", "comments_count", "publish_time"],
+        "anti_crawl_level": "medium"
+      }
+    },
+    {
+      "site_id": "baidu_health",
+      "name": "百度健康",
+      "url": "https://health.baidu.com",
+      "priority": "P0",
+      "category": "health",
+      "test_cases": ["FC-001", "FC-002", "FC-003", "FC-004", "FC-009", "FC-010", "FC-013", "FC-036", "FC-037", "FC-038", "FC-046", "FC-051", "FC-060"],
+      "specific_config": {
+        "search_keywords": ["感冒", "高血压", "糖尿病"],
+        "expected_fields": ["disease_name", "symptoms", "treatment", "prevention", "related_articles"],
+        "anti_crawl_level": "low"
+      }
+    }
+  ],
+  "ci_cd": {
+    "github_actions": {
+      "enabled": true,
+      "schedule": "0 2 * * *",
+      "branches": ["main", "master"],
+      "matrix": {
+        "python_versions": ["3.10", "3.11", "3.12"],
+        "browser_types": ["chrome", "edge"]
+      }
+    }
+  }
+}

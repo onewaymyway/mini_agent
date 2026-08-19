@@ -1,0 +1,27 @@
+{
+  "name": "搜狗搜索",
+  "domain": "sogou.com",
+  "url": "https://www.sogou.com",
+  "category": "SEARCH_ENGINE",
+  "subcategory": "Chinese Search",
+  "frontend_framework": "SSR",
+  "anti_crawl_level": 2,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P1",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.90,
+  "target_accuracy": 0.85,
+  "custom_config": {
+    "search_url": "https://www.sogou.com/web?query={query}",
+    "result_selector": ".vr-wrap",
+    "title_selector": ".vcard .txt-view",
+    "url_selector": ".url a",
+    "content_selector": ". txt-view"
+  },
+  "tags": ["search", "chinese", "news"],
+  "created_at": "2026-08-14T00:00:00.000Z",
+  "updated_at": "2026-08-14T00:00:00.000Z"
+}

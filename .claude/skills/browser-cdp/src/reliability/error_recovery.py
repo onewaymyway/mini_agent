@@ -177,7 +177,12 @@ class FailoverManager:
     
     def get_next_site(self) -> str:
         """获取下一个可用网站"""
-        # 尝试备用站点
+        # 主站可用时优先返回主站（故障恢复后应回到主站）
+        if self.primary not in self.failed_sites:
+            logger.info("Primary site is available, using primary")
+            return self.primary
+
+        # 主站不可用，按顺序尝试备用站点
         for i in range(len(self.backups)):
             idx = (self.current_index + i) % len(self.backups)
             site = self.backups[idx]
@@ -185,10 +190,13 @@ class FailoverManager:
                 self.current_index = idx + 1
                 logger.info(f"Failover to backup site: {site}")
                 return site
-        
-        # 所有备用站点都失败，回到主站点
-        logger.warning("All backup sites failed, returning to primary")
+
+        # 所有备用站点都失败，循环重试
+        logger.warning("All backup sites failed, cycling through backups")
         self.current_index = 0
+        for site in self.backups:
+            if site not in self.failed_sites:
+                return site
         return self.primary
     
     def mark_failed(self, site: str):

@@ -73,11 +73,20 @@ META_JS = r"""
 
 
 @with_error_handling("mode_html", OperationType.EXTRACT, max_retries=2)
-def mode_html(session) -> str:
-    root = session.send("DOM.getDocument", {"depth": -1})
-    node_id = root["root"]["nodeId"]
-    result = session.send("DOM.getOuterHTML", {"nodeId": node_id})
-    return result.get("outerHTML", "")
+def mode_html(session, max_depth: int = 3) -> str:
+    """P55修复：限制DOM深度，避免大页面获取数MB数据
+
+    Args:
+        max_depth: 最大DOM深度，默认3（仅获取body直接子元素及其一层）
+    """
+    try:
+        root = session.send("DOM.getDocument", {"depth": max_depth})
+        node_id = root["root"]["nodeId"]
+        result = session.send("DOM.getOuterHTML", {"nodeId": node_id})
+        return result.get("outerHTML", "")
+    except Exception:
+        # 降级：使用JS提取body innerHTML
+        return session.eval_js("document.body ? document.body.innerHTML : ''") or ""
 
 
 @with_error_handling("mode_text", OperationType.EXTRACT, max_retries=2)
@@ -106,91 +115,107 @@ def mode_meta(session) -> dict:
 
 @with_error_handling("extract_elements", OperationType.EXTRACT, max_retries=2)
 def extract_elements(session, selector: str, xpath: bool = False) -> list:
-    """提取指定选择器的元素列表，支持 CSS 选择器和 XPath"""
+    """提取指定选择器的元素列表，支持 CSS 选择器和 XPath
+
+    P58修复：使用 eval_js 的参数化传值，避免 f-string 直接拼接用户输入导致 JS 注入
+    """
     if xpath:
-        js = f"""
-        (() => {{
-            const nodes = document.evaluate({selector!r}, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        js = """
+        (() => {
+            const expr = __EXPR__;
+            const nodes = document.evaluate(expr, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
             const elements = [];
-            for (let i = 0; i < nodes.snapshotLength; i++) {{
+            for (let i = 0; i < nodes.snapshotLength; i++) {
                 const el = nodes.snapshotItem(i);
-                if (el && el.nodeType === 1) {{
-                    elements.push({{
+                if (el && el.nodeType === 1) {
+                    elements.push({
                         index: i,
                         tag: el.tagName.toLowerCase(),
                         text: (el.innerText || el.value || '').trim().slice(0, 100),
                         id: el.id || null,
                         class: el.className || null,
-                    }});
+                    });
                 }
-            }}
+            }
             return elements;
-        }})()
+        })()
         """
+        return session.eval_js(js, expr=selector) or []
     else:
-        js = f"""
-        (() => {{
-            const elements = Array.from(document.querySelectorAll({selector!r}));
-            return elements.map((el, i) => ({{
+        js = """
+        (() => {
+            const sel = __SEL__;
+            const elements = Array.from(document.querySelectorAll(sel));
+            return elements.map((el, i) => ({
                 index: i,
                 tag: el.tagName.toLowerCase(),
                 text: (el.innerText || el.value || '').trim().slice(0, 100),
                 id: el.id || null,
                 class: el.className || null,
-            }}));
-        }})()
+            }));
+        })()
         """
-    return session.eval_js(js) or []
+        return session.eval_js(js, sel=selector) or []
 
 
 @with_error_handling("extract_xpath", OperationType.EXTRACT, max_retries=2)
 def extract_xpath(session, xpath_expr: str) -> list:
-    """通过 XPath 提取元素列表"""
-    js = f"""
-    (() => {{
-        const nodes = document.evaluate({xpath_expr!r}, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+    """通过 XPath 提取元素列表（P58修复）
+
+    P58修复：使用参数化传值替代 f-string 拼接
+    """
+    js = """
+    (() => {
+        const expr = __EXPR__;
+        const nodes = document.evaluate(expr, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
         const elements = [];
-        for (let i = 0; i < nodes.snapshotLength; i++) {{
+        for (let i = 0; i < nodes.snapshotLength; i++) {
             const el = nodes.snapshotItem(i);
-            if (el && el.nodeType === 1) {{
-                elements.push({{
+            if (el && el.nodeType === 1) {
+                elements.push({
                     index: i,
                     tag: el.tagName.toLowerCase(),
                     text: (el.innerText || el.value || '').trim().slice(0, 100),
                     id: el.id || null,
                     class: el.className || null,
-                }});
-            }}
-        }}
+                });
+            }
+        }
         return elements;
-    }})()
+    })()
     """
-    return session.eval_js(js) or []
+    return session.eval_js(js, expr=xpath_expr) or []
 
 
 @with_error_handling("extract_text", OperationType.EXTRACT, max_retries=2)
 def extract_text(session, selector: str, xpath: bool = False) -> str:
-    """提取指定选择器的文本内容"""
+    """提取指定选择器的文本内容（P58修复）
+
+    P58修复：使用参数化传值替代 f-string 拼接
+    """
     if xpath:
-        js = f"""
-        (() => {{
-            const nodes = document.evaluate({selector!r}, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        js = """
+        (() => {
+            const expr = __EXPR__;
+            const nodes = document.evaluate(expr, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
             const texts = [];
-            for (let i = 0; i < nodes.snapshotLength; i++) {{
+            for (let i = 0; i < nodes.snapshotLength; i++) {
                 const el = nodes.snapshotItem(i);
                 if (el) texts.push((el.innerText || el.textContent || '').trim());
-            }}
+            }
             return texts.join('\\n');
-        }})()
+        })()
         """
+        return session.eval_js(js, expr=selector) or ""
     else:
-        js = f"""
-        (() => {{
-            const el = document.querySelector({selector!r});
+        js = """
+        (() => {
+            const sel = __SEL__;
+            const el = document.querySelector(sel);
             return el ? (el.innerText || el.textContent || '').trim() : '';
-        }})()
+        })()
         """
-    return session.eval_js(js) or ""
+        return session.eval_js(js, sel=selector) or ""
 
 
 def main():
@@ -205,12 +230,13 @@ def main():
     parser.add_argument("--xpath", action="store_true", help="将 --selector 视为 XPath 表达式")
     parser.add_argument("--save", default=None, help="把结果写入文件而不是打印到 stdout")
     parser.add_argument("--max-chars", type=int, default=20000, help="html/text 模式下的最大输出长度，避免刷屏")
+    parser.add_argument("--max-depth", type=int, default=3, help="html 模式的 DOM 最大深度，默认3，避免大页面性能问题")
 
     args = parser.parse_args()
     session = get_session(args)
     try:
         if args.mode == "html":
-            data = mode_html(session)
+            data = mode_html(session, max_depth=args.max_depth)
             out = data[: args.max_chars]
         elif args.mode == "text":
             if args.selector:

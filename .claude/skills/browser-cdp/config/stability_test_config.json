@@ -1,0 +1,66 @@
+{
+  "test_name": "browser-cdp 稳定性测试",
+  "version": "1.0.0",
+  "description": "72小时稳定性测试配置",
+  
+  "test_duration_hours": 72,
+  "test_interval_seconds": 300,
+  
+  "success_rate_threshold": 0.95,
+  "alert_threshold": 0.90,
+  
+  "websites": {
+    "search": [
+      {"name": "baidu", "class": "BaiduSearcher", "queries": ["AI人工智能", "Python编程"]},
+      {"name": "bing", "class": "BingSearcher", "queries": ["AI artificial intelligence"]},
+      {"name": "google", "class": "GoogleSearcher", "queries": ["AI artificial intelligence"]}
+    ],
+    "social": [
+      {"name": "zhihu", "class": "ZhihuSearcher", "queries": ["人工智能", "Python"]},
+      {"name": "weibo", "class": "WeiboSearcher", "queries": ["AI", "科技"]},
+      {"name": "xiaohongshu", "class": "XiaohongshuSearcher", "queries": ["AI", "科技"]},
+      {"name": "bilibili", "class": "BilibiliSearcher", "queries": ["AI", "Python"]},
+      {"name": "reddit", "class": "RedditSearcher", "queries": ["AI", "programming"]}
+    ],
+    "tech": [
+      {"name": "csdn", "class": "CSDNSearcher", "queries": ["Python", "人工智能"]},
+      {"name": "juejin", "class": "JuejinSearcher", "queries": ["Python", "人工智能"]},
+      {"name": "github", "class": "GitHubSearcher", "queries": ["python", "ai"]},
+      {"name": "stackoverflow", "class": "StackOverflowSearcher", "queries": ["python", "javascript"]}
+    ],
+    "ecommerce": [
+      {"name": "jd", "class": "JDSearcher", "queries": ["手机", "笔记本电脑"]},
+      {"name": "taobao", "class": "TaobaoSearcher", "queries": ["手机", "笔记本电脑"]},
+      {"name": "amazon", "class": "AmazonSearcher", "queries": ["phone", "laptop"]}
+    ],
+    "finance": [
+      {"name": "eastmoney", "class": "EastmoneyGubaSearcher", "queries": ["股票", "基金"]},
+      {"name": "xueqiu", "class": "XueqiuSearcher", "queries": ["股票", "投资"]}
+    ],
+    "news": [
+      {"name": "toutiao", "class": "ToutiaoSearcher", "queries": ["AI", "科技"]}
+    ],
+    "video": [
+      {"name": "youtube", "class": "YouTubeSearcher", "queries": ["Python tutorial"]}
+    ],
+    "professional": [
+      {"name": "linkedin", "class": "LinkedInSearcher", "queries": ["Python", "AI"]},
+      {"name": "twitter", "class": "TwitterSearcher", "queries": ["Python", "AI"]}
+    ]
+  },
+  
+  "monitoring": {
+    "enabled": true,
+    "check_interval_seconds": 60,
+    "alert_on_failure": true,
+    "alert_email": "admin@example.com",
+    "log_level": "INFO"
+  },
+  
+  "output": {
+    "results_dir": "./test_results",
+    "report_format": "json",
+    "include_logs": true,
+    "max_report_age_days": 30
+  }
+}

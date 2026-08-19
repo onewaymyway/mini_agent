@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -43,15 +42,19 @@ class ParseResult:
         }
 
 
-class BaseParser(ABC):
-    """解析器基类"""
+class BaseParser:
+    """解析器基类 - 非抽象，可直接实例化用于测试"""
 
     # 通用选择器映射（子类可覆盖）
     SELECTORS: Dict[str, List[str]] = {}
     # 结构化数据CSS选择器
     SCHEMA_SELECTORS: Dict[str, str] = {}
-    # JSON-LD提取键
-    JSONLD_KEYS: List[str] = []
+    # JSON-LD提取键 - 默认覆盖常见结构化数据类型
+    JSONLD_KEYS: List[str] = [
+        '@type', 'name', 'headline', 'description', 'author',
+        'datePublished', 'dateModified', 'publisher', 'image',
+        'offers', 'aggregateRating', 'review', 'product', 'event'
+    ]
 
     def __init__(self, **kwargs):
         self.config = kwargs
@@ -69,10 +72,23 @@ class BaseParser(ABC):
         result.metadata["content_length"] = len(content)
         return result
 
-    @abstractmethod
     def _do_parse(self, content: str, url: str, headers: Optional[Dict]) -> ParseResult:
-        """子类实现具体解析逻辑"""
-        ...
+        """默认实现：简单提取标题和链接，子类可覆盖"""
+        items = []
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(content, 'lxml')
+            title_elem = soup.find('title')
+            if title_elem:
+                title = title_elem.get_text(strip=True)
+                if title:
+                    items.append({'title': title, 'url': url})
+            links = self.extract_links(content, url)
+            if links:
+                items[0]['links'] = links[:20] if items else []
+        except Exception as e:
+            logger.debug(f"Default parse fallback: {e}")
+        return ParseResult(success=len(items) > 0, items=items, total_count=len(items))
 
     # -------------------- 工具方法 --------------------
 
@@ -94,8 +110,12 @@ class BaseParser(ABC):
         return default
 
     @classmethod
-    def clean_text(cls, text: str, max_length: int = 5000) -> str:
-        """清理文本：去除多余空白、控制长度"""
+    def clean_text(cls, text: str, max_length: int = 50000) -> str:
+        """清理文本：去除多余空白、控制长度
+
+        P5修复：max_length 默认值从 5000 提升到 50000，避免长文章被截断。
+        调用方可通过参数覆盖。
+        """
         if not text:
             return ""
         text = re.sub(r'\s+', ' ', text)
@@ -103,29 +123,113 @@ class BaseParser(ABC):
         return text[:max_length] if len(text) > max_length else text
 
     @classmethod
-    def extract_links(cls, html: str, base_url: str = "") -> List[str]:
-        """从HTML中提取所有链接"""
+    def extract_links(cls, html: str, base_url: str = "", max_count: int = 500) -> List[str]:
+        """从HTML中提取所有链接（P4修复版）
+
+        - 使用 BeautifulSoup 而非正则，避免属性顺序/嵌套问题
+        - 过滤 javascript:/data: 等危险协议
+        - 支持 href 出现在任意位置的 <a> 标签
+        """
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'lxml')
+        except Exception:
+            # 降级到正则兜底
+            return cls._extract_links_regex(html, base_url, max_count)
+
         links = []
-        pattern = r'<a\s+[^>]*href=["\']([^"\']*)["\'][^>]*>'
-        for match in re.finditer(pattern, html, re.IGNORECASE):
-            href = match.group(1).strip()
-            if href and href not in ('#', '', 'javascript:void(0)'):
+        seen = set()
+        for a in soup.find_all('a', href=True):
+            href = a['href'].strip()
+            if not href or href in ('#', '', 'javascript:', 'javascript:void(0)', 'data:', 'about:blank'):
+                continue
+            # 规范化相对路径
+            if href.startswith('//'):
+                href = 'https:' + href
+            elif href.startswith('/') and base_url:
+                from urllib.parse import urljoin
+                href = urljoin(base_url, href)
+            elif base_url and not href.startswith(('http://', 'https://')):
+                from urllib.parse import urljoin
+                href = urljoin(base_url, href)
+            if href not in seen:
+                seen.add(href)
                 links.append(href)
-        return list(set(links))
+            if len(links) >= max_count:
+                break
+        return links
 
     @classmethod
-    def extract_images(cls, html: str) -> List[Dict[str, str]]:
-        """从HTML中提取图片"""
+    def _extract_links_regex(cls, html: str, base_url: str = "", max_count: int = 500) -> List[str]:
+        """正则兜底：匹配任意位置的 href 属性"""
+        import re as _re
+        pattern = r'<a\b[^>]*\bhref=["\']([^"\']*)["\'][^>]*>'
+        links = []
+        seen = set()
+        for match in _re.finditer(pattern, html, _re.IGNORECASE):
+            href = match.group(1).strip()
+            if not href or href in ('#', '', 'javascript:', 'javascript:void(0)', 'data:', 'about:blank'):
+                continue
+            if href.startswith('//'):
+                href = 'https:' + href
+            elif href.startswith('/') and base_url:
+                from urllib.parse import urljoin
+                href = urljoin(base_url, href)
+            elif base_url and not href.startswith(('http://', 'https://')):
+                from urllib.parse import urljoin
+                href = urljoin(base_url, href)
+            if href not in seen:
+                seen.add(href)
+                links.append(href)
+            if len(links) >= max_count:
+                break
+        return links
+
+    @classmethod
+    def extract_images(cls, html: str, max_count: int = 50) -> List[Dict[str, str]]:
+        """从HTML中提取图片（含懒加载 data-src / data-lazy-src）
+
+        P13相关：同时支持 src 和 data-src/data-lazy-src 属性。
+        """
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'lxml')
+        except Exception:
+            return cls._extract_images_regex(html, max_count)
+
         images = []
-        # src属性
-        src_pattern = r'<img\s+[^>]*src=["\']([^"\']*)["\'][^>]*>'
-        # data-src属性（懒加载）
-        data_src_pattern = r'<img\s+[^>]*data-src=["\']([^"\']*)["\'][^>]*>'
-        for pattern in [src_pattern, data_src_pattern]:
-            for match in re.finditer(pattern, html, re.IGNORECASE):
-                src = match.group(1).strip()
-                if src and src not in ('about:blank', ''):
-                    images.append({"src": src})
+        seen = set()
+        for img in soup.find_all('img'):
+            src = (img.get('src') or img.get('data-src') or img.get('data-lazy-src') or '').strip()
+            if not src or src in ('about:blank', '', '#'):
+                continue
+            if src.startswith('//'):
+                src = 'https:' + src
+            if src not in seen:
+                seen.add(src)
+                images.append({'src': src})
+            if len(images) >= max_count:
+                break
+        return images
+
+    @classmethod
+    def _extract_images_regex(cls, html: str, max_count: int = 50) -> List[Dict[str, str]]:
+        """正则兜底：匹配 src / data-src / data-lazy-src"""
+        import re as _re
+        pattern = r'<img\b[^>]*\b(?:src|data-src|data-lazy-src)=["\']([^"\']*)["\'][^>]*>'
+        images = []
+        seen = set()
+        for match in _re.finditer(pattern, html, _re.IGNORECASE):
+            src = match.group(1).strip()
+            if not src or src in ('about:blank', '', '#'):
+                continue
+            if src.startswith('//'):
+                src = 'https:' + src
+            if src not in seen:
+                seen.add(src)
+                images.append({'src': src})
+            if len(images) >= max_count:
+                break
         return images
 
     # -------------------- HTML解析（使用 BeautifulSoup）--------------------
@@ -172,28 +276,117 @@ class BaseParser(ABC):
 
     # -------------------- JSON-LD 解析 --------------------
 
+    @staticmethod
+    def _repair_jsonld(text: str) -> str:
+        """修复含未转义双引号的 JSON-LD 字符串。
+
+        策略：逐字符扫描，遇到字符串内部的未转义双引号时，
+        通过向后查找后续分隔符（, } ] :）判断是合法边界还是内部引号。
+        合法的字符串结束引号保持不变，内部未转义引号转为转义形式。"""
+        text = text.strip()
+        if not text or text[0] not in ('{', '['):
+            return text
+        try:
+            json.loads(text)
+            return text
+        except json.JSONDecodeError:
+            pass
+
+        BS = chr(92)
+        chars = list(text)
+        n = len(chars)
+        in_string = False
+        i = 0
+        while i < n:
+            c = chars[i]
+            if in_string:
+                if c == BS and i + 1 < n:
+                    i += 2
+                elif c == '"':
+                    rest = ''.join(chars[i + 1:]).lstrip()
+                    if rest and rest[0] in (',', '}', ']', ':'):
+                        in_string = False
+                    else:
+                        chars[i] = BS + '"'
+                    i += 1
+                else:
+                    i += 1
+            else:
+                if c == '"':
+                    in_string = True
+                    i += 1
+                else:
+                    i += 1
+        return ''.join(chars)
+
     def _extract_jsonld(self, html: str) -> Optional[Dict[str, Any]]:
-        """从HTML中提取JSON-LD结构化数据"""
-        pattern = r'<script\s+type=["\']application/ld\+json["\'][^>]*>([\s\S]*?)</script>'
-        matches = re.findall(pattern, html, re.IGNORECASE)
-        if not matches:
+        """从HTML中提取JSON-LD结构化数据（P1修复版）
+
+        改进：使用 BeautifulSoup 而非正则解析 <script> 标签，避免嵌套 script 块导致的错误截断。
+        同时支持多个 JSON-LD 块，优先返回包含 JSONLD_KEYS 中任一 key 的数据。
+        新增：对含未转义双引号的 JSON-LD 进行自动修复后再解析。
+        """
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'lxml')
+        except Exception:
+            return self._extract_jsonld_fallback(html)
+
+        scripts = soup.find_all('script', {'type': 'application/ld+json'})
+        if not scripts:
             return None
-        for match in matches:
-            try:
-                data = json.loads(match.strip())
-                if isinstance(data, dict):
-                    # 检查是否包含我们需要的键
-                    for key in self.JSONLD_KEYS:
-                        if key in data:
-                            return data
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            for key in self.JSONLD_KEYS:
-                                if key in item:
-                                    return item
-            except json.JSONDecodeError:
+
+        for script in scripts:
+            text = script.get_text(strip=True)
+            if not text:
                 continue
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                text = self._repair_jsonld(text)
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+            if isinstance(data, dict):
+                for key in self.JSONLD_KEYS:
+                    if key in data:
+                        return data
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        for key in self.JSONLD_KEYS:
+                            if key in item:
+                                return item
+        return None
+
+    @classmethod
+    def _extract_jsonld_fallback(cls, html: str) -> Optional[Dict[str, Any]]:
+        """正则兜底：安全提取 JSON-LD（不使用非贪婪 .*?，改用手动扫描）
+
+        新增：对解析失败的 JSON-LD 块调用 _repair_jsonld 进行修复后重试。
+        """
+        pattern = r'<script\s+(?:[^>]*\btype=["\']application/ld\+json["\'][^>]*)>([\s\S]*?)</script>'
+        for match in re.finditer(pattern, html, re.IGNORECASE):
+            text = match.group(1).strip()
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                text = cls._repair_jsonld(text)
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+            if isinstance(data, dict):
+                for key in cls.JSONLD_KEYS:
+                    if key in data:
+                        return data
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        for key in cls.JSONLD_KEYS:
+                            if key in item:
+                                return item
         return None
 
     # -------------------- 正则提取 --------------------
@@ -235,16 +428,39 @@ class BaseParser(ABC):
 
     @classmethod
     def text_similarity(cls, text1: str, text2: str) -> float:
-        """计算两个文本的相似度（简单版本）"""
+        """计算两个文本的相似度（P3修复版）
+
+        改进：
+        - 对中文文本使用字符级 n-gram（bigram），而非空格分词
+        - 对英文文本保留单词级 Jaccard 相似度
+        - 混合文本自动检测并选择合适策略
+        """
         if not text1 or not text2:
             return 0.0
-        words1 = set(text1.lower().split())
-        words2 = set(text2.lower().split())
-        if not words1 or not words2:
-            return 0.0
-        intersection = words1 & words2
-        union = words1 | words2
-        return len(intersection) / len(union) if union else 0.0
+
+        # 检测是否包含中文字符
+        has_cn = bool(re.search(r'[\u4e00-\u9fff]', text1)) or bool(re.search(r'[\u4e00-\u9fff]', text2))
+
+        if has_cn:
+            # 中文：字符级 bigram Jaccard 相似度
+            def _char_bigrams(t: str) -> set:
+                t = t.lower().strip()
+                return set(t[i:i+2] for i in range(len(t) - 1)) if len(t) >= 2 else {t}
+            bg1, bg2 = _char_bigrams(text1), _char_bigrams(text2)
+            if not bg1 or not bg2:
+                return 0.0
+            intersection = bg1 & bg2
+            union = bg1 | bg2
+            return len(intersection) / len(union) if union else 0.0
+        else:
+            # 英文：单词级 Jaccard 相似度
+            words1 = set(text1.lower().split())
+            words2 = set(text2.lower().split())
+            if not words1 or not words2:
+                return 0.0
+            intersection = words1 & words2
+            union = words1 | words2
+            return len(intersection) / len(union) if union else 0.0
 
     @classmethod
     def deduplicate_items(cls, items: List[Dict[str, Any]], key: str = "title", threshold: float = 0.9) -> List[Dict[str, Any]]:

@@ -1,141 +1,121 @@
 {
-  "_comment": "工具集成配置 - 步骤3产出",
   "version": "1.0.0",
-  "created_at": "2026-08-13",
-  "description": "browser-cdp可靠性测试工具链集成配置",
+  "description": "browser-cdp 测试工具集成配置",
 
   "pytest": {
-    "enabled": true,
-    "markers": [
-      {"name": "p0", "description": "P0优先级测试，必须通过"},
-      {"name": "p1", "description": "P1优先级测试"},
-      {"name": "p2", "description": "P2优先级测试"},
-      {"name": "p3", "description": "P3优先级测试"},
-      {"name": "mock", "description": "使用mock浏览器会话"},
-      {"name": "real", "description": "需要真实浏览器"},
-      {"name": "stress", "description": "压力测试"},
-      {"name": "stability", "description": "稳定性测试"},
-      {"name": "compatibility", "description": "兼容性测试"},
-      {"name": "anti_crawl", "description": "反爬对抗测试"},
-      {"name": "performance", "description": "性能测试"}
-    ],
-    "options": {
-      "xdist_workers": 3,
-      "timeout": 120,
-      "verbose": true,
-      "tb_style": "short"
-    }
+    "pythonpath": ".",
+    "testpaths": ["tests"],
+    "python_files": ["test_*.py", "*_test.py"],
+    "python_classes": ["Test*"],
+    "python_functions": ["test_*"],
+    "asyncio_mode": "auto",
+    "markers": {
+      "unit": "单元测试（mock CDP 会话）",
+      "integration": "集成测试（需要真实浏览器）",
+      "e2e": "端到端测试（需要真实浏览器）",
+      "browser": "需要浏览器实例的测试",
+      "slow": "耗时较长的测试",
+      "p0": "P0 优先级测试",
+      "p1": "P1 优先级测试",
+      "p2": "P2 优先级测试",
+      "stress": "压力测试用例标记",
+      "mock": "mock 模式测试",
+      "real": "真实浏览器测试"
+    },
+    "addopts": ["-v", "--tb=short", "-x"],
+    "cache_dir": ".pytest_cache"
   },
 
   "asyncio": {
-    "enabled": true,
-    "event_loop_policy": "Default",
     "default_timeout": 30,
-    "max_retries": 3,
-    "retry_delay": 2,
-    "backoff_factor": 2
+    "event_loop_policy": "auto",
+    "max_concurrency": 10,
+    "retry_delay_base": 1.0,
+    "retry_delay_max": 30.0,
+    "retry_backoff": 2
   },
 
   "requests": {
-    "enabled": true,
     "timeout": 15,
-    "max_connections": 100,
-    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "allow_redirects": true,
-    "verify_ssl": false
+    "retries": 3,
+    "backoff_factor": 0.5,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "accept_language": "zh-CN,zh;q=0.9,en;q=0.8"
   },
 
   "aiohttp": {
-    "enabled": true,
     "connector_limit": 50,
-    "conn_timeout": 10,
-    "sock_read_timeout": 30,
-    "max_concurrent": 10
-  },
-
-  "playwright": {
-    "enabled": false,
-    "browser_type": "chromium",
-    "headless": true,
-    "viewport": {"width": 1920, "height": 1080}
-  },
-
-  "selenium": {
-    "enabled": false,
-    "browser_type": "chrome",
-    "headless": true,
-    "webdriver_manager": true
-  },
-
-  "jmeter": {
-    "enabled": false,
-    "path": null,
-    "test_plan": null,
-    "gui_mode": false
-  },
-
-  "locust": {
-    "enabled": false,
-    "users": 10,
-    "spawn_rate": 1,
-    "host": null
-  },
-
-  "k6": {
-    "enabled": false,
-    "script": null,
-    "vusers": 10,
-    "duration": "30s"
+    "connector_keepalive_timeout": 300,
+    "client_timeout": 15,
+    "max_redirects": 10
   },
 
   "browser_cdp": {
-    "enabled": true,
-    "mode": "mock", 
-    "modes": ["mock", "real", "hybrid"],
-    "mock": {
-      "enabled": true,
-      "simulate_latency_ms": 100,
-      "simulate_errors": false,
-      "fixed_response_time": 1.5
-    },
-    "real": {
-      "enabled": false,
-      "stealth_mode": true,
-      "headless": true,
-      "proxy_rotation": true,
-      "cookie_persistence": false
-    }
+    "mode": "mock",
+    "default_browser": "chrome",
+    "headless": true,
+    "stealth_mode": true,
+    "chromium_path": "",
+    "cdp_port": 9222,
+    "max_tabs": 5,
+    "screenshot_on_fail": true,
+    "pause_on_fail": false
   },
 
   "reporting": {
     "formats": ["json", "html", "junitxml"],
-    "output_dir": "tests/output/reports",
-    "screenshots_dir": "tests/output/screenshots",
-    "preserve_failed": true,
-    "html_template": "default"
-  },
-
-  "logging": {
-    "level": "INFO",
-    "file": "tests/output/logs/test.log",
-    "max_bytes": 10485760,
-    "backup_count": 5,
-    "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    "output_dir": "./output/test_reports",
+    "include_screenshots": true,
+    "max_report_age_days": 30,
+    "junit_xml_dir": "./output/test_reports/junit"
   },
 
   "ci_cd": {
-    "github_actions": {
+    "enabled": true,
+    "schedule": "0 2 * * *",
+    "notify_on_failure": true,
+    "notify_channels": ["log"],
+    "max_parallel_jobs": 4,
+    "artifact_retention_days": 14
+  },
+
+  "test_modes": {
+    "mock": {
+      "description": "使用 mock 数据，不启动真实浏览器",
       "enabled": true,
-      "matrix": {
-        "python_versions": ["3.10", "3.11", "3.12"],
-        "os": ["ubuntu-latest", "windows-latest"]
-      },
-      "schedule": "0 2 * * *"
+      "default": true
     },
-    "nightly": {
+    "real": {
+      "description": "启动真实浏览器进行 CDP 测试",
       "enabled": true,
-      "full_suite": true,
-      "email_notify": false
+      "requires_browser": true
+    },
+    "stress": {
+      "description": "HTTP 级压力测试，不依赖浏览器",
+      "enabled": true,
+      "requires_browser": false
+    },
+    "hybrid": {
+      "description": "先用 mock 验证逻辑，再用真实浏览器验收",
+      "enabled": true,
+      "requires_browser": true
     }
+  },
+
+  "alerting": {
+    "enabled": true,
+    "on_pass_rate_below": 0.80,
+    "on_error_rate_above": 0.15,
+    "on_p95_latency_above_ms": 5000,
+    "alert_on_failure": true,
+    "alert_email": "admin@example.com",
+    "log_level": "INFO"
+  },
+
+  "output": {
+    "results_dir": "./test_results",
+    "report_format": "json",
+    "include_logs": true,
+    "max_report_age_days": 30
   }
 }

@@ -1,0 +1,165 @@
+{
+  "test_name": "browser-cdp 网站抓取能力测试套件 v2",
+  "version": "2.0.0",
+  "description": "基于新验收标准的自动化测试配置",
+  
+  "criteria": {
+    "success_rate_threshold": 0.90,
+    "excellent_threshold": 0.95,
+    "field_completeness_threshold": 0.80,
+    "response_time_p95_ms": 3000,
+    "error_recovery_rate": 0.95
+  },
+  
+  "core_sites": [
+    {
+      "name": "baidu",
+      "class": "BaiduSearcher",
+      "queries": ["AI人工智能", "Python编程教程"],
+      "expected_min_results": 5,
+      "priority": "P0"
+    },
+    {
+      "name": "google",
+      "class": "GoogleSearcher",
+      "queries": ["artificial intelligence", "python tutorial"],
+      "expected_min_results": 5,
+      "priority": "P0"
+    },
+    {
+      "name": "bing",
+      "class": "BingSearcher",
+      "queries": ["weather forecast", "AI news"],
+      "expected_min_results": 5,
+      "priority": "P0"
+    },
+    {
+      "name": "zhihu",
+      "class": "ZhihuSearcher",
+      "queries": ["Python编程", "人工智能"],
+      "expected_min_results": 3,
+      "priority": "P0"
+    },
+    {
+      "name": "github",
+      "class": "GitHubSearcher",
+      "queries": ["python tutorial", "machine learning"],
+      "expected_min_results": 5,
+      "priority": "P0"
+    },
+    {
+      "name": "csdn",
+      "class": "CSDNSearcher",
+      "queries": ["深度学习", "Python教程"],
+      "expected_min_results": 3,
+      "priority": "P0"
+    },
+    {
+      "name": "jb51",
+      "class": "JB51Searcher",
+      "queries": ["Python基础教程"],
+      "expected_min_results": 3,
+      "priority": "P0"
+    },
+    {
+      "name": "toutiao",
+      "class": "ToutiaoSearcher",
+      "queries": ["人工智能", "科技新闻"],
+      "expected_min_results": 3,
+      "priority": "P0"
+    },
+    {
+      "name": "eastmoney",
+      "class": "EastmoneySearcher",
+      "queries": ["股票", "基金"],
+      "expected_min_results": 3,
+      "priority": "P0"
+    },
+    {
+      "name": "xueqiu",
+      "class": "XueqiuSearcher",
+      "queries": ["投资", "股票分析"],
+      "expected_min_results": 3,
+      "priority": "P0"
+    }
+  ],
+  
+  "extended_sites": [
+    {
+      "name": "accuweather",
+      "class": "AccuWeatherSearcher",
+      "queries": ["Beijing weather"],
+      "expected_min_results": 3,
+      "priority": "P0"
+    },
+    {
+      "name": "espn",
+      "class": "ESPNSearcher",
+      "queries": ["NBA scores"],
+      "expected_min_results": 3,
+      "priority": "P1"
+    },
+    {
+      "name": "linkedin",
+      "class": "LinkedInSearcher",
+      "queries": ["Python developer"],
+      "expected_min_results": 3,
+      "priority": "P1"
+    },
+    {
+      "name": "nytimes",
+      "class": "NYTimesSearcher",
+      "queries": ["AI technology"],
+      "expected_min_results": 3,
+      "priority": "P1"
+    },
+    {
+      "name": "coursera",
+      "class": "CourseraSearcher",
+      "queries": ["machine learning"],
+      "expected_min_results": 3,
+      "priority": "P2"
+    },
+    {
+      "name": "etsy",
+      "class": "EtsySearcher",
+      "queries": ["handmade jewelry"],
+      "expected_min_results": 3,
+      "priority": "P2"
+    }
+  ],
+  
+  "required_fields": [
+    "title",
+    "url",
+    "snippet",
+    "source",
+    "category"
+  ],
+  
+  "optional_fields": [
+    "published_time",
+    "author",
+    "tags"
+  ],
+  
+  "error_handling": {
+    "max_retries": 3,
+    "retry_delay_seconds": 2,
+    "exponential_backoff": true,
+    "fallback_to_html": true
+  },
+  
+  "performance": {
+    "timeout_per_query_ms": 10000,
+    "concurrent_limit": 5,
+    "memory_limit_mb": 50
+  },
+  
+  "output": {
+    "results_dir": "./test_results/v2",
+    "report_format": ["json", "markdown"],
+    "include_logs": true,
+    "max_report_age_days": 30
+  }
+}

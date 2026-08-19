@@ -135,19 +135,24 @@ class TestManualInterventionStrategy:
 class TestFailoverManager:
     """FailoverManager 测试"""
     
-    def test_get_primary(self):
+    def test_get_primary_by_default(self):
+        """默认返回主站"""
         manager = FailoverManager(primary="site_a", backups=["site_b", "site_c"])
+        assert manager.get_next_site() == "site_a"
+    
+    def test_fallback_to_backup_when_primary_failed(self):
+        """主站失效时返回备用站"""
+        manager = FailoverManager(primary="site_a", backups=["site_b", "site_c"])
+        manager.mark_failed("site_a")
         assert manager.get_next_site() == "site_b"
     
-    def test_get_backup(self):
-        manager = FailoverManager(primary="site_a", backups=["site_b", "site_c"])
-        manager.get_next_site()  # site_b
-        assert manager.get_next_site() == "site_c"
-    
-    def test_cycle_back_to_primary(self):
+    def test_recover_primary_after_success(self):
+        """主站恢复后回到主站（核心 bug 修复）"""
         manager = FailoverManager(primary="site_a", backups=["site_b"])
-        manager.get_next_site()  # site_b
-        assert manager.get_next_site() == "site_a"  # Back to primary
+        manager.mark_failed("site_a")
+        assert manager.get_next_site() == "site_b"  # 故障时回退到备份
+        manager.mark_success("site_a")
+        assert manager.get_next_site() == "site_a"  # 恢复后回到主站
     
     def test_mark_failed(self):
         manager = FailoverManager(primary="site_a", backups=["site_b"])

@@ -1,0 +1,33 @@
+{
+  "test_environment": {
+    "timeout_seconds": 30,
+    "max_retries": 3,
+    "headless": true,
+    "stealth_mode": true,
+    "screenshot_on_fail": true
+  },
+  "browser": {
+    "type": "chrome",
+    "width": 1920,
+    "height": 1080,
+    "viewport": {"width": 1920, "height": 1080}
+  },
+  "output": {
+    "screenshots_dir": "tests/output/screenshots",
+    "results_dir": "tests/output/results",
+    "reports_dir": "tests/output/reports"
+  },
+  "categories": {
+    "search_engine": ["Baidu", "Bing", "Google"],
+    "news": ["SinaFinance", "EastMoney", "CLS", "ThePaper"],
+    "social": ["Zhihu", "Weibo", "Xiaohongshu", "Bilibili"],
+    "ecommerce": ["Taobao", "JD", "PDD"],
+    "finance": ["Xueqiu", "Tonghuashun", "Jin10"],
+    "gov": ["GovCN", "CCGP", "Creditchina"],
+    "recruitment": ["BossZhipin", "Lagou", "51Job"],
+    "property": ["Lianjia", "Beike"],
+    "travel": ["Ctrip", "Qunar", "Fliggy"],
+    "health": ["BaiduHealth", "Haodf", "DXY"],
+    "legal": ["CNLaw", "66Law", "FindLaw"]
+  }
+}

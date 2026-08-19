@@ -113,6 +113,7 @@ def type_text(session, text: str, delay: float = 0.02):
             time.sleep(delay)
 
 
+@with_error_handling("find_element_by_index", OperationType.INPUT, max_retries=3)
 def find_element_by_index(session, index: int, max_retries: int = 3) -> dict:
     """查找元素，编号失效时自动重扫（使用 ElementIndexManager）
 
@@ -145,6 +146,7 @@ def find_element_by_index(session, index: int, max_retries: int = 3) -> dict:
     die(f"未找到编号为 {index} 的元素，页面可能已变化，请重新截图/扫描")
 
 
+@with_error_handling("find_element_by_text", OperationType.INPUT, max_retries=3)
 def find_element_by_text(session, text: str, tag: str = None) -> Optional[dict]:
     """智能查找包含指定文本的元素（支持模糊匹配和优先级排序）
 
@@ -222,6 +224,7 @@ def find_element_by_text(session, text: str, tag: str = None) -> Optional[dict]:
     return result if result else None
 
 
+@with_error_handling("find_elements_by_text_all", OperationType.INPUT, max_retries=3)
 def find_elements_by_text_all(session, text: str, tag: str = None) -> list:
     """查找所有包含指定文本的元素（返回完整列表，用于调试）"""
     js = f"""(() => {{
@@ -275,10 +278,12 @@ def find_elements_by_text_all(session, text: str, tag: str = None) -> list:
     return results
 
 
+@with_error_handling("focus_and_click", OperationType.CLICK, max_retries=3)
 def focus_and_click(session, x: float, y: float):
     mouse_click(session, x, y)
 
 
+@with_error_handling("drag_elements", OperationType.CLICK, max_retries=3)
 def drag_elements(session, from_x: float, from_y: float, to_x: float, to_y: float):
     """模拟拖拽操作"""
     # 按下
@@ -291,6 +296,7 @@ def drag_elements(session, from_x: float, from_y: float, to_x: float, to_y: floa
     session.send("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": to_x, "y": to_y, "button": "left"})
 
 
+@with_error_handling("batch_click", OperationType.CLICK, max_retries=3)
 def batch_click(session, selectors: List[str], delay: float = 0.5):
     """批量点击多个元素"""
     results = []
@@ -309,6 +315,7 @@ def batch_click(session, selectors: List[str], delay: float = 0.5):
     return results
 
 
+@with_error_handling("scroll", OperationType.SCROLL, max_retries=3)
 def scroll(session, direction: str = "down", amount: float = 500):
     """滚动页面（兼容旧接口）"""
     if direction == "bottom":
@@ -320,6 +327,7 @@ def scroll(session, direction: str = "down", amount: float = 500):
         session.eval_js(f"window.scrollBy(0, {amount})")
 
 
+@with_error_handling("click_selector", OperationType.CLICK, max_retries=3)
 def click_selector(session, selector: str):
     """点击指定选择器的元素"""
     js = f"""(() => {{

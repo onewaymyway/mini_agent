@@ -35,6 +35,10 @@ from src.reliability.cdp.cdp_exception_handler import (
     cdp_operation_context,
     wrap_cdp_call,
     CDPTimedOperation,
+    connect_cdp,
+    navigate_cdp,
+    eval_js_cdp,
+    query_selector_cdp,
 )
 from src.reliability.error import (
     ErrorCategory,
@@ -45,6 +49,7 @@ from src.reliability.error import (
     NavigationTimeoutError,
     CaptchaDetectedError,
     is_retryable,
+    categorize_error,
 )
 
 
@@ -179,6 +184,24 @@ class TestCDPExceptionHandler:
         with pytest.raises(CDPConnectionLostError):
             decorated()
         assert call_count == 2
+
+    def test_handle_all_retries_exhausted_then_raised(self):
+        """测试所有重试耗尽后正确 re-raise 异常"""
+        handler = CDPExceptionHandler(default_max_retries=2)
+        call_count = 0
+
+        def failing_func():
+            nonlocal call_count
+            call_count += 1
+            raise ElementNotFoundError("#missing")
+
+        decorated = handler.handle(operation="exhaust_op")(failing_func)
+        with pytest.raises(ElementNotFoundError):
+            decorated()
+        assert call_count == 2
+        # 确认错误历史已记录
+        stats = handler.get_stats("exhaust_op")
+        assert any(s["type"] == "failure" for s in stats)
     
     def test_handle_non_retryable_error(self):
         handler = CDPExceptionHandler(default_max_retries=3)
@@ -287,7 +310,7 @@ class TestAsyncDecorators:
     
     def test_async_decorator_with_retry(self):
         call_count = 0
-        
+
         @async_with_cdp_exception_handling("async_retry", max_retries=3)
         async def async_retry_func():
             nonlocal call_count
@@ -295,10 +318,38 @@ class TestAsyncDecorators:
             if call_count < 3:
                 raise CDPConnectionLostError()
             return "async_success"
-        
+
         result = asyncio.run(async_retry_func())
         assert result == "async_success"
         assert call_count == 3
+
+    def test_async_decorator_non_retryable(self):
+        """测试异步装饰器不可重试错误立即抛出"""
+        call_count = 0
+
+        @async_with_cdp_exception_handling("async_noretry", max_retries=3)
+        async def async_noretry_func():
+            nonlocal call_count
+            call_count += 1
+            raise CaptchaDetectedError()
+
+        with pytest.raises(CaptchaDetectedError):
+            asyncio.run(async_noretry_func())
+        assert call_count == 1
+
+    def test_async_decorator_max_retries_exhausted(self):
+        """测试异步装饰器重试耗尽后抛出"""
+        call_count = 0
+
+        @async_with_cdp_exception_handling("async_exhaust", max_retries=2)
+        async def async_exhaust_func():
+            nonlocal call_count
+            call_count += 1
+            raise CDPCommandTimeoutError("Runtime.evaluate", 15.0)
+
+        with pytest.raises(CDPCommandTimeoutError):
+            asyncio.run(async_exhaust_func())
+        assert call_count == 2
 
 
 class TestCDPOperationContext:
@@ -548,6 +599,129 @@ class TestIntegration:
         
         stats = handler.get_stats("history_test")
         assert len(stats) > 0
+
+
+class TestPredefinedWrappers:
+    """预定义 CDP 包装函数测试"""
+
+    def setup_method(self):
+        reset_cdp_exception_handler()
+
+    def test_connect_cdp_signature(self):
+        """测试 connect_cdp 包装器签名正确（pass 占位）"""
+        # connect_cdp 是 pass 占位，仅验证装饰器不会报错
+        import inspect
+        sig = inspect.signature(connect_cdp)
+        assert "ws_url" in sig.parameters
+        assert "timeout" in sig.parameters
+
+    def test_navigate_cdp_signature(self):
+        """测试 navigate_cdp 包装器签名"""
+        import inspect
+        sig = inspect.signature(navigate_cdp)
+        assert "session" in sig.parameters
+        assert "url" in sig.parameters
+
+    def test_eval_js_cdp_signature(self):
+        """测试 eval_js_cdp 包装器签名"""
+        import inspect
+        sig = inspect.signature(eval_js_cdp)
+        assert "expression" in sig.parameters
+
+    def test_query_selector_cdp_signature(self):
+        """测试 query_selector_cdp 包装器签名"""
+        import inspect
+        sig = inspect.signature(query_selector_cdp)
+        assert "selector" in sig.parameters
+
+
+class TestIsRetryableAndCategorize:
+    """is_retryable 和 categorize_error 辅助函数测试"""
+
+    def test_is_retryable_reliability_error_recoverable(self):
+        assert is_retryable(CDPConnectionLostError()) is True
+        assert is_retryable(ElementNotFoundError("#btn")) is True
+        assert is_retryable(NavigationTimeoutError("https://x.com", 30.0)) is True
+
+    def test_is_retryable_reliability_error_not_recoverable(self):
+        assert is_retryable(CaptchaDetectedError()) is False
+
+    def test_is_retryable_cdp_name_heuristic(self):
+        class FakeCDPError(Exception):
+            pass
+        assert is_retryable(FakeCDPError()) is True
+
+    def test_is_retryable_unknown_returns_false(self):
+        assert is_retryable(ValueError("random")) is False
+
+    def test_categorize_connection(self):
+        assert categorize_error(CDPConnectionLostError()) == ErrorCategory.CONNECTION
+        assert categorize_error(ElementNotFoundError("#btn")) == ErrorCategory.ELEMENT
+        assert categorize_error(NavigationTimeoutError("http://x", 10)) == ErrorCategory.NAVIGATION
+        assert categorize_error(CaptchaDetectedError()) == ErrorCategory.CONTENT
+        assert categorize_error(ValueError("unknown")) == ErrorCategory.UNKNOWN
+
+    def test_categorize_by_name_heuristics(self):
+        class PageLoadTimeoutError(Exception):
+            pass
+        class PageLoadError(Exception):
+            pass
+        class PageNavigationError(Exception):
+            pass
+        assert categorize_error(PageLoadTimeoutError()) == ErrorCategory.TIMEOUT
+        assert categorize_error(PageLoadError()) == ErrorCategory.NAVIGATION
+        assert categorize_error(PageNavigationError()) == ErrorCategory.NAVIGATION
+
+
+class TestStatsTracking:
+    """统计信息追踪测试"""
+
+    def setup_method(self):
+        reset_cdp_exception_handler()
+
+    def test_success_recorded_with_duration(self):
+        handler = CDPExceptionHandler()
+
+        def quick_func():
+            return 42
+
+        decorated = handler.handle(operation="quick_op")(quick_func)
+        decorated()
+        stats = handler.get_stats("quick_op")
+        assert stats[0]["type"] == "success"
+        assert "duration" in stats[0]
+        assert stats[0]["duration"] >= 0
+
+    def test_failure_recorded_with_error(self):
+        handler = CDPExceptionHandler(default_max_retries=1)
+
+        def fail_func():
+            raise CDPConnectionLostError()
+
+        decorated = handler.handle(operation="fail_op")(fail_func)
+        with pytest.raises(CDPConnectionLostError):
+            decorated()
+        stats = handler.get_stats("fail_op")
+        assert any(s["type"] == "failure" for s in stats)
+
+    def test_mixed_success_and_failure_stats(self):
+        handler = CDPExceptionHandler(default_max_retries=1)
+
+        def alternating():
+            return "ok"
+
+        decorated = handler.handle(operation="mixed_stats")(alternating)
+        decorated()
+        decorated()
+        with pytest.raises(CDPConnectionLostError):
+            def bad():
+                raise CDPConnectionLostError()
+            bad = handler.handle(operation="bad_op")(bad)
+            bad()
+
+        all_stats = handler.get_stats()
+        assert "mixed_stats" in all_stats
+        assert "bad_op" in all_stats
 
 
 if __name__ == "__main__":

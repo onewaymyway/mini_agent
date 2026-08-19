@@ -1,0 +1,32 @@
+{
+  "name": "必应",
+  "domain": "www.bing.com",
+  "url": "https://www.bing.com",
+  "category": "general",
+  "subcategory": "multi-purpose",
+  "frontend_framework": "Unknown",
+  "anti_crawl_level": 2,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P2",
+  "timeout": 30,
+  "retry_count": 3,
+  "stealth_mode": true,
+  "target_success_rate": 0.85,
+  "target_accuracy": 0.8,
+  "custom_config": {
+    "search_url": "https://www.bing.com/search?q={query}",
+    "result_selector": ".result-item, .search-result, [class*=\"result\"]",
+    "title_selector": ".title, h1, h2, [class*=\"title\"]",
+    "url_selector": "a[href]",
+    "content_selector": ".content, article, [class*=\"content\"]"
+  },
+  "tags": [
+    "web-crawl",
+    "general-purpose"
+  ],
+  "status": "deployed",
+  "created_at": "2026-08-18T06:10:06Z",
+  "updated_at": "2026-08-18T06:10:06Z",
+  "notes": "Deployed in batch 5 - step5"
+}

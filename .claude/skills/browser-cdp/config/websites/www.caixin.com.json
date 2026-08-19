@@ -1,0 +1,16 @@
+{
+  "name": "财新网",
+  "domain": "www.caixin.com",
+  "url": "https://www.caixin.com",
+  "category": "tech",
+  "status": "deployed",
+  "configuration": {
+    "max_retries": 3,
+    "timeout": 30,
+    "stealth_mode": true,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "accept_language": "zh-CN,zh;q=0.9,en;q=0.8"
+  },
+  "notes": "Created at 2026-08-18T13:51:36.521953",
+  "last_tested": "2026-08-18T13:51:36.521953"
+}

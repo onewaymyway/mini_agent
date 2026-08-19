@@ -1,1196 +1,1279 @@
+
 """
-dynamic_page_support.py - 动态页面支持模块
+dynamic_page_support.py - 动态页面统一支持模块
 
-整合以下核心能力：
-1. 元素加载等待（SmartWait）
-2. 滚动触发懒加载（EnhancedDynamicLoader）
-3. SPA 路由变化监听（SPADetector）
-4. 懒加载图片等待（EnhancedDynamicLoader）
-5. DOM 变化监听（DOMObserver）
+整合 SPA 路由监听、滚动加载检测、Cookie/Session 管理、反爬策略处理。
 
-用法：
+核心功能：
+1. SPA 路由监听与等待（React Router / Vue Router / Angular Router）
+2. 滚动加载智能检测（无限滚动 / 懒加载 / 虚拟列表）
+3. Cookie / Session 持久化管理（跨会话保留登录态）
+4. 常见反爬策略处理（检测 + 自动应对）
+
+用法示例：
     from src.core.dynamic_page_support import DynamicPageSupport
-    
-    support = DynamicPageSupport(session)
-    
-    # 等待元素出现
-    await support.wait_for_element("#result", timeout=10)
-    
-    # 滚动加载内容
-    await support.scroll_to_load(".item", max_items=100)
-    
-    # 等待 SPA 路由稳定
-    await support.wait_for_spa_route(timeout=15)
-    
-    # 等待懒加载图片
-    loaded = await support.wait_for_lazy_images(timeout=10)
+    dps = DynamicPageSupport(session)
+
+    # SPA 导航
+    await dps.wait_for_spa_route("#results", timeout=10)
+
+    # 滚动加载
+    items = await dps.scroll_to_load(max_pages=5, selector=".item")
+
+    # Cookie 管理
+    await dps.cookie_mgr.save_cookies(session, "example.com")
+    await dps.cookie_mgr.restore_cookies(session, "example.com")
+
+    # 反爬检测
+    detection = await dps.detect_anti_bot()
+    if detection["risk"] == "high":
+        await dps.apply_stealth()
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, Callable
-
-from src.core.smart_wait import SmartWait, WaitConfig
-from src.core.enhanced_dynamic_loader import EnhancedDynamicLoader, ScrollConfig, ScrollResult
-from src.core.spa_detector import SPADetector, SPAInfo
-from src.core.dom_observer import DOMObserver
+from enum import Enum
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
+class RouteChangeType(Enum):
+    """路由变化类型"""
+    FULL_NAVIGATION = "full_navigation"
+    SPA_HISTORY = "spa_history"
+    SPA_HASH = "spa_hash"
+    AJAX_CONTENT = "ajax_content"
+    UNKNOWN = "unknown"
+
+
+class AntiBotRisk(Enum):
+    """反爬风险等级"""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    BLOCKED = "blocked"
+
+
+@dataclass
+class RouteChangeEvent:
+    """路由变化事件"""
+    change_type: RouteChangeType
+    old_url: str = ""
+    new_url: str = ""
+    timestamp: float = field(default_factory=time.time)
+    details: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "change_type": self.change_type.value,
+            "old_url": self.old_url,
+            "new_url": self.new_url,
+            "timestamp": self.timestamp,
+            "details": self.details,
+        }
+
+
+@dataclass
+class AntiBotDetection:
+    """反爬检测结果"""
+    risk: AntiBotRisk
+    detected_features: List[str] = field(default_factory=list)
+    recommendations: List[str] = field(default_factory=list)
+    raw_data: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "risk": self.risk.value,
+            "detected_features": self.detected_features,
+            "recommendations": self.recommendations,
+            "raw_data": self.raw_data,
+        }
+
+
 @dataclass
 class DynamicPageResult:
-    """动态页面操作结果"""
-    success: bool
-    operation: str
-    data: Dict[str, Any] = field(default_factory=dict)
+    """动态页面操作结果（兼容 browser_interactions 导入）"""
+    success: bool = False
+    url: str = ""
+    wait_time: float = 0.0
+    route_changes: int = 0
+    items_loaded: int = 0
     error: Optional[str] = None
-    elapsed: float = 0.0
+    data: Dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict:
-        result = {
+    def to_dict(self) -> Dict[str, Any]:
+        return {
             "success": self.success,
-            "operation": self.operation,
-            "elapsed": round(self.elapsed, 2),
+            "url": self.url,
+            "wait_time": round(self.wait_time, 2),
+            "route_changes": self.route_changes,
+            "items_loaded": self.items_loaded,
+            "error": self.error,
+            "data": self.data,
         }
-        if self.error:
-            result["error"] = self.error
-        if self.data:
-            result["data"] = self.data
+
+
+class SPARouteListener:
+    """
+    SPA 路由监听器
+    监听并检测 SPA 框架的路由变化：
+    - React Router (v5/v6)
+    - Vue Router
+    - Angular Router
+    - Next.js / Nuxt.js
+    - URL hash 变化
+    - history API 调用
+    """
+
+    ROUTER_STATE_SCRIPTS = {
+        "react_router": """
+        (() => {
+            if (window.__reactRouterVersion) return { type: "react_router", version: window.__reactRouterVersion, pathname: window.location.pathname };
+            const root = document.querySelector('[data-reactroot]');
+            if (root) return { type: "react_dom", hasRoot: true, pathname: window.location.pathname };
+            return null;
+        })()
+        """,
+        "vue_router": """
+        (() => {
+            if (window.__VUE_ROUTER__) {
+                const current = window.__VUE_ROUTER__.currentRoute;
+                return { type: "vue_router", version: window.__VUE_ROUTER__._version, path: current?.value?.path || current?.path };
+            }
+            const app = document.querySelector('[data-v-app]');
+            if (app) return { type: "vue_app", hasApp: true, pathname: window.location.pathname };
+            return null;
+        })()
+        """,
+        "angular_router": """
+        (() => {
+            if (window.angular) {
+                try {
+                    const inj = angular.element(document).injector();
+                    if (inj) {
+                        const route = inj.get('$route');
+                        if (route) return { type: "angular_router", current: route.current?.path };
+                    }
+                } catch(e) {}
+            }
+            const el = document.querySelector('[ng-version]');
+            if (el) return { type: "angular", hasNgVersion: true, pathname: window.location.pathname };
+            return null;
+        })()
+        """,
+        "nextjs": """
+        (() => {
+            if (window.__NEXT_DATA__) {
+                return { type: "nextjs", pathname: window.__NEXT_DATA__.props?.pageProps?.pathname };
+            }
+            return null;
+        })()
+        """,
+        "nuxt": """
+        (() => {
+            if (window.__NUXT__) {
+                return { type: "nuxt", path: window.__NUXT__.state?.path };
+            }
+            return null;
+        })()
+        """,
+    }
+
+    def __init__(self, session: Any):
+        self.session = session
+        self._last_route_state: str = ""
+        self._route_history: List[RouteChangeEvent] = []
+        self._max_history = 50
+        self._history_hook_installed = False
+
+    async def start_listening(self) -> None:
+        """启动路由监听"""
+        self._route_history.clear()
+        self._last_route_state = await self._get_current_route_state()
+        await self._inject_history_hook()
+        logger.debug("SPARouteListener: 开始监听路由变化")
+
+    async def stop_listening(self) -> None:
+        """停止路由监听"""
+        logger.debug("SPARouteListener: 停止监听")
+
+    async def wait_for_route_change(
+        self,
+        timeout: float = 10.0,
+        url_contains: Optional[str] = None,
+        check_elements: Optional[List[str]] = None,
+    ) -> List[RouteChangeEvent]:
+        """
+        等待路由变化
+        Args:
+            timeout: 超时时间（秒）
+            url_contains: 新 URL 需包含的字符串
+            check_elements: 等待出现的元素选择器列表
+        Returns:
+            路由变化事件列表
+        """
+        initial_count = len(self._route_history)
+        start_time = time.time()
+        last_state = self._last_route_state
+
+        while time.time() - start_time < timeout:
+            current_url = await self._get_current_url()
+            if url_contains and url_contains in current_url:
+                event = self._record_route_change(RouteChangeType.FULL_NAVIGATION, current_url)
+                return [event]
+
+            current_state = await self._get_current_route_state()
+            if current_state != last_state:
+                event = self._record_route_change(RouteChangeType.SPA_HISTORY, current_url)
+                last_state = current_state
+                if check_elements:
+                    for selector in check_elements:
+                        exists = await self._element_exists(selector)
+                        if exists:
+                            event.details["element_found"] = selector
+                            return [event]
+                return [event]
+
+            if check_elements:
+                for selector in check_elements:
+                    exists = await self._element_exists(selector)
+                    if exists:
+                        event = RouteChangeEvent(
+                            change_type=RouteChangeType.AJAX_CONTENT,
+                            old_url=await self._get_current_url(),
+                            new_url=await self._get_current_url(),
+                            details={"element": selector},
+                        )
+                        self._route_history.append(event)
+                        return [event]
+
+            history_event = await self._check_history_event()
+            if history_event:
+                self._last_route_state = await self._get_current_route_state()
+                return [history_event]
+
+            await asyncio.sleep(0.1)
+
+        logger.warning(f"SPARouteListener: 路由等待超时 ({timeout}s)")
+        return self._route_history[initial_count:]
+
+    async def _inject_history_hook(self) -> None:
+        """注入 history API 监听"""
+        if self._history_hook_installed:
+            return
+        hook_js = """
+        (() => {
+            if (window.__browser_cdp_history_hook__) return;
+            window.__browser_cdp_history_hook__ = true;
+            const origPush = history.pushState.bind(history);
+            const origReplace = history.replaceState.bind(history);
+            history.pushState = function(...args) {
+                origPush(...args);
+                window.__browser_cdp_history_event__ = { type: "pushState", url: location.href, ts: Date.now() };
+            };
+            history.replaceState = function(...args) {
+                origReplace(...args);
+                window.__browser_cdp_history_event__ = { type: "replaceState", url: location.href, ts: Date.now() };
+            };
+        })()
+        """
+        try:
+            await self.session.eval_js(hook_js)
+            self._history_hook_installed = True
+        except Exception as e:
+            logger.warning(f"SPARouteListener: 注入 history 钩子失败: {e}")
+
+    async def _check_history_event(self) -> Optional[RouteChangeEvent]:
+        """检查是否有 history API 事件"""
+        try:
+            result = await self.session.eval_js("window.__browser_cdp_history_event__ || null")
+            if result:
+                event = RouteChangeEvent(
+                    change_type=RouteChangeType.SPA_HISTORY,
+                    old_url=self._last_route_state,
+                    new_url=result.get("url", ""),
+                    details={"type": result.get("type")},
+                )
+                self._route_history.append(event)
+                await self.session.eval_js("delete window.__browser_cdp_history_event__")
+                return event
+        except Exception as e:
+            logger.debug(f"SPARouteListener: 检查 history 事件失败: {e}")
+        return None
+
+    async def _get_current_url(self) -> str:
+        try:
+            return await self.session.eval_js("window.location.href")
+        except Exception:
+            return ""
+
+    async def _get_current_route_state(self) -> str:
+        """获取当前路由状态（用于检测变化）"""
+        states = []
+        for name, script in self.ROUTER_STATE_SCRIPTS.items():
+            try:
+                result = await self.session.eval_js(script)
+                if result:
+                    states.append(f"{name}:{json.dumps(result, sort_keys=True)}")
+            except Exception:
+                pass
+        url = await self._get_current_url()
+        states_str = "|".join(states)
+        return f"url:{url}|{states_str}"
+
+    async def _element_exists(self, selector: str) -> bool:
+        try:
+            result = await self.session.eval_js(f"document.querySelector('{selector}') !== null")
+            return bool(result)
+        except Exception:
+            return False
+
+    def _record_route_change(self, change_type: RouteChangeType, new_url: str) -> RouteChangeEvent:
+        old_url = self._last_route_state
+        event = RouteChangeEvent(
+            change_type=change_type,
+            old_url=old_url,
+            new_url=new_url,
+        )
+        self._route_history.append(event)
+        if len(self._route_history) > self._max_history:
+            self._route_history = self._route_history[-self._max_history:]
+        return event
+
+    def get_history(self) -> List[RouteChangeEvent]:
+        return list(self._route_history)
+
+
+
+class ScrollLoadDetector:
+    """
+    滚动加载检测器
+    检测页面滚动时的动态内容加载：
+    - 无限滚动列表
+    - 懒加载内容
+    - 虚拟列表
+    - 分页加载
+    """
+
+    def __init__(self, session: Any):
+        self.session = session
+        self._scroll_callbacks: List[Callable] = []
+        self._load_count = 0
+        self._content_hashes: List[str] = []
+
+    def on_content_loaded(self, callback: Callable[[int, int], None]) -> None:
+        """注册内容加载回调 (page_num, total_items)"""
+        self._scroll_callbacks.append(callback)
+
+    async def detect_scroll_load(
+        self,
+        max_pages: int = 10,
+        scroll_amount: int = 800,
+        stability_threshold: int = 50,
+        item_selector: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        检测并处理滚动加载
+        Returns: {pages_loaded, items_added, final_height, stabilized_at_page}
+        """
+        result = {
+            "pages_loaded": 0,
+            "items_added": 0,
+            "final_height": 0,
+            "stabilized_at_page": 0,
+        }
+        prev_height = 0
+        prev_item_count = 0
+
+        for page in range(1, max_pages + 1):
+            current_height = await self._get_page_height()
+            current_items = await self._count_items(item_selector) if item_selector else 0
+            height_diff = abs(current_height - prev_height)
+            item_diff = current_items - prev_item_count
+
+            if height_diff < stability_threshold and page > 1:
+                result["stabilized_at_page"] = page
+                logger.info(f"滚动加载已稳定，第 {page} 页后高度无显著变化")
+                break
+
+            await self._scroll_by(scroll_amount)
+            await asyncio.sleep(0.3)
+
+            result["pages_loaded"] = page
+            result["items_added"] += item_diff
+            result["final_height"] = current_height
+            prev_height = current_height
+            prev_item_count = current_items
+
+            for cb in self._scroll_callbacks:
+                try:
+                    cb(page, current_items)
+                except Exception as e:
+                    logger.warning(f"ScrollLoadDetector: 回调失败: {e}")
+
+            logger.debug(f"第 {page} 页：高度={current_height}, 元素数={current_items}")
+
         return result
+
+    async def wait_for_lazy_content(
+        self,
+        selector: str = None,
+        timeout: float = 10.0,
+    ) -> bool:
+        """
+        等待懒加载内容完成
+        Args:
+            selector: 懒加载元素选择器
+            timeout: 超时时间
+        Returns:
+            bool: 是否全部加载完成
+        """
+        selector = selector or "img[loading='lazy'], [data-src], [data-lazy]"
+        deadline = time.time() + timeout
+
+        while time.time() < deadline:
+            pending = await self._count_pending_lazy(selector)
+            if pending == 0:
+                return True
+            await asyncio.sleep(0.3)
+        return False
+
+    async def collect_virtual_list(
+        self,
+        container_selector: str,
+        item_selector: str,
+        max_items: int = 100,
+    ) -> List[str]:
+        """
+        收集虚拟列表中的所有项
+        Returns:
+            所有项的文本列表
+        """
+        items = []
+        seen = set()
+
+        for _ in range(max_items):
+            visible = await self._get_visible_items(container_selector, item_selector)
+            new_items = [t for t in visible if t not in seen]
+            items.extend(new_items)
+            seen.update(visible)
+
+            if len(new_items) == 0:
+                break
+
+            await self._scroll_virtual_item(container_selector)
+            await asyncio.sleep(0.2)
+
+        return items
+
+    async def _get_page_height(self) -> int:
+        return await self.session.eval_js("document.documentElement.scrollHeight")
+
+    async def _scroll_by(self, amount: int) -> None:
+        await self.session.eval_js(f"window.scrollBy(0, {amount})")
+
+    async def _count_items(self, selector: str) -> int:
+        try:
+            return await self.session.eval_js(f"document.querySelectorAll('{selector}').length")
+        except Exception:
+            return 0
+
+    async def _count_pending_lazy(self, selector: str) -> int:
+        js = f"""
+        (() => {{
+            const els = document.querySelectorAll('{selector}');
+            let pending = 0;
+            els.forEach(el => {{
+                const src = el.dataset.src || el.dataset.lazy || el.getAttribute('data-src');
+                if (src && !el.complete) pending++;
+            }});
+            return pending;
+        }})()
+        """
+        return await self.session.eval_js(js) or 0
+
+    async def _get_visible_items(self, container_sel: str, item_sel: str) -> List[str]:
+        js = f"""
+        (() => {{
+            const container = document.querySelector('{container_sel}');
+            if (!container) return [];
+            return Array.from(container.querySelectorAll('{item_sel}')).map(el => (el.innerText || '').trim()).filter(t => t);
+        }})()
+        """
+        return await self.session.eval_js(js) or []
+
+    async def _scroll_virtual_item(self, container_sel: str) -> None:
+        js = f"""
+        (() => {{
+            const container = document.querySelector('{container_sel}');
+            if (!container) return;
+            const items = container.querySelectorAll('[class*="item"], [role="option"]');
+            if (items.length > 0) items[0].scrollIntoView({{ block: "center" }});
+        }})()
+        """
+        await self.session.eval_js(js)
+
+
+class SessionManager:
+    """
+    Session 管理器
+    管理浏览器 Session 状态：
+    - Cookie 持久化与恢复
+    - LocalStorage / SessionStorage 备份
+    - 多 Session 切换
+    """
+
+    def __init__(self, storage_dir: str = "./data/sessions"):
+        self.storage_dir = Path(storage_dir)
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        self._sessions: Dict[str, Dict[str, Any]] = {}
+
+    async def save_session(
+        self,
+        session: Any,
+        session_id: str,
+        domain: str,
+    ) -> int:
+        """
+        保存当前浏览器 Session
+        Returns:
+            保存的 Cookie 数量
+        """
+        cookies = await self._get_all_cookies(session)
+        ls = await self._get_local_storage(session, domain)
+        ss = await self._get_session_storage(session, domain)
+
+        data = {
+            "session_id": session_id,
+            "domain": domain,
+            "saved_at": time.time(),
+            "cookies": cookies,
+            "localStorage": ls,
+            "sessionStorage": ss,
+        }
+
+        safe_name = domain.replace(":", "_").replace("/", "_")
+        file_path = self.storage_dir / f"{session_id}_{safe_name}.json"
+        file_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        logger.info(f"SessionManager: 保存 Session [{session_id}] [{domain}]，{len(cookies)} 条 Cookie")
+        return len(cookies)
+
+    async def restore_session(
+        self,
+        session: Any,
+        session_id: str,
+        domain: str,
+    ) -> bool:
+        """
+        恢复浏览器 Session
+        Returns:
+            是否恢复成功
+        """
+        safe_name = domain.replace(":", "_").replace("/", "_")
+        file_path = self.storage_dir / f"{session_id}_{safe_name}.json"
+
+        if not file_path.exists():
+            logger.warning(f"SessionManager: Session 文件不存在 [{session_id}] [{domain}]")
+            return False
+
+        try:
+            data = json.loads(file_path.read_text(encoding="utf-8"))
+            if data.get("cookies"):
+                await self._set_cookies(session, data["cookies"], domain)
+            if data.get("localStorage"):
+                await self._set_local_storage(session, data["localStorage"], domain)
+            if data.get("sessionStorage"):
+                await self._set_session_storage(session, data["sessionStorage"], domain)
+
+            logger.info(f"SessionManager: 恢复 Session [{session_id}] [{domain}] 成功")
+            return True
+        except Exception as e:
+            logger.error(f"SessionManager: 恢复 Session 失败 [{session_id}] [{domain}]: {e}")
+            return False
+
+    async def list_sessions(self) -> List[Dict[str, Any]]:
+        """列出所有已保存的 Session"""
+        sessions = []
+        for f in self.storage_dir.glob("*.json"):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                sessions.append({
+                    "file": f.name,
+                    "session_id": data.get("session_id"),
+                    "domain": data.get("domain"),
+                    "saved_at": data.get("saved_at"),
+                    "cookie_count": len(data.get("cookies", [])),
+                })
+            except Exception as e:
+                logger.warning(f"SessionManager: 读取 Session 文件失败 {f.name}: {e}")
+        return sessions
+
+    async def delete_session(self, session_id: str, domain: str) -> bool:
+        """删除指定 Session"""
+        safe_name = domain.replace(":", "_").replace("/", "_")
+        file_path = self.storage_dir / f"{session_id}_{safe_name}.json"
+        if file_path.exists():
+            file_path.unlink()
+            return True
+        return False
+
+    # ---- 内部方法 ----
+
+    async def _get_all_cookies(self, session: Any) -> List[Dict]:
+        try:
+            result = await session.eval_js("document.cookie")
+            cookies = []
+            if result:
+                for c in result.split("; "):
+                    if "=" in c:
+                        name, _, value = c.partition("=")
+                        cookies.append({"name": name.strip(), "value": value.strip(), "domain": ""})
+            return cookies
+        except Exception:
+            return []
+
+    async def _set_cookies(self, session: Any, cookies: List[Dict], domain: str) -> None:
+        try:
+            cdp_cookies = [{"name": c["name"], "value": c["value"], "domain": domain, "path": "/"} for c in cookies]
+            await session.send("Network.setCookies", {"cookies": cdp_cookies})
+        except Exception as e:
+            logger.warning(f"SessionManager: 设置 Cookie 失败: {e}")
+
+    async def _get_local_storage(self, session: Any, domain: str) -> Dict[str, str]:
+        try:
+            return await session.eval_js("(() => { const d = {}; for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);d[k]=localStorage.getItem(k);} return d; })()")
+        except Exception:
+            return {}
+
+    async def _set_local_storage(self, session: Any, data: Dict, domain: str) -> None:
+        try:
+            entries = json.dumps(data)
+            await session.eval_js(f"(() => {{ const d = {entries}; for(const k in d) localStorage.setItem(k, d[k]); }})()")
+        except Exception as e:
+            logger.warning(f"SessionManager: 恢复 localStorage 失败: {e}")
+
+    async def _get_session_storage(self, session: Any, domain: str) -> Dict[str, str]:
+        try:
+            return await session.eval_js("(() => { const d = {}; for(let i=0;i<sessionStorage.length;i++){const k=sessionStorage.key(i);d[k]=sessionStorage.getItem(k);} return d; })()")
+        except Exception:
+            return {}
+
+    async def _set_session_storage(self, session: Any, data: Dict, domain: str) -> None:
+        try:
+            entries = json.dumps(data)
+            await session.eval_js(f"(() => {{ const d = {entries}; for(const k in d) sessionStorage.setItem(k, d[k]); }})()")
+        except Exception as e:
+            logger.warning(f"SessionManager: 恢复 sessionStorage 失败: {e}")
+
+
+class AntiBotHandler:
+    """
+    反爬策略处理器
+    检测常见反爬机制并自动应对：
+    - webdriver 检测
+    - iframe 嵌套检测
+    - Canvas 指纹
+    - 请求频率异常
+    - 验证码检测
+    """
+
+    DETECTION_SCRIPTS = {
+        "webdriver": "navigator.webdriver",
+        "iframe_nested": "window !== window.top",
+        "chrome_runtime": "!!window.chrome",
+        "permissions_api": "!!navigator.permissions",
+        "plugins_count": "navigator.plugins.length",
+        "hardware_concurrency": "navigator.hardwareConcurrency",
+        "device_memory": "navigator.deviceMemory",
+    }
+
+    CAPTCHA_KEYWORDS = [
+        "captcha", "verify", "slide", "click", "checkbox",
+        "recaptcha", "hcaptcha", "geetest", "turnstile",
+        "验证", "滑块", "点选", "验证码",
+        "请完成验证", "拖动滑块", "点击", "人机验证",
+    ]
+
+    STEALTH_JS = """
+    (() => {
+        // 移除 webdriver 标记
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        // 模拟真实 Chrome
+        if (!window.chrome) {
+            window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){} };
+        }
+        // 模拟插件
+        if (navigator.plugins.length === 0) {
+            const fakePlugins = Object.freeze([{0: {type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format'}, filename: 'internal-pdf-viewer', description: 'PDF.plugin', name: 'Chrome PDF Plugin'}]);
+            Object.defineProperty(navigator, 'plugins', { get: () => fakePlugins });
+        }
+        // 模拟语言
+        Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+        // 注入完成标记
+        window.__browser_cdp_stealth_applied__ = true;
+    })()
+    """
+
+    def __init__(self, session: Any):
+        self.session = session
+        self._request_count = 0
+        self._request_timestamps: List[float] = []
+        self._stealth_applied = False
+
+    async def track_request(self) -> None:
+        """追踪请求频率"""
+        self._request_count += 1
+        self._request_timestamps.append(time.time())
+        # 清理超过 60 秒的记录
+        self._request_timestamps = [t for t in self._request_timestamps if time.time() - t < 60]
+
+    async def detect_anti_bot(self) -> AntiBotDetection:
+        """
+        检测反爬措施
+        Returns:
+            AntiBotDetection: 检测结果
+        """
+        detected = []
+        recommendations = []
+        risk_score = 0
+        raw_data = {}
+
+        # 检测 webdriver
+        try:
+            webdriver = await self.session.eval_js(self.DETECTION_SCRIPTS["webdriver"])
+            raw_data["webdriver"] = webdriver
+            if webdriver:
+                detected.append("webdriver=true 被检测到")
+                risk_score += 3
+                recommendations.append("启用 stealth 模式移除 webdriver 标记")
+        except Exception:
+            pass
+
+        # 检测 iframe 嵌套
+        try:
+            is_iframe = await self.session.eval_js(self.DETECTION_SCRIPTS["iframe_nested"])
+            raw_data["iframe_nested"] = is_iframe
+            if is_iframe:
+                detected.append("页面在 iframe 中运行")
+                risk_score += 1
+                recommendations.append("尝试在主 frame 中操作")
+        except Exception:
+            pass
+
+        # 检测请求频率
+        if len(self._request_timestamps) >= 10:
+            recent = self._request_timestamps[-10:]
+            interval = recent[-1] - recent[0] if len(recent) > 1 else 0
+            if interval < 2.0:
+                detected.append("请求频率过高")
+                risk_score += 2
+                recommendations.append("降低请求频率，增加随机延迟")
+
+        # 检测验证码页面
+        page_text = await self._get_page_text_snippet()
+        for keyword in self.CAPTCHA_KEYWORDS:
+            if keyword in page_text.lower():
+                detected.append(f"页面包含验证码关键词: {keyword}")
+                risk_score += 2
+                recommendations.append(f"检测到可能含验证码，建议人工处理或更换策略")
+                break
+
+        # 判断风险等级
+        if risk_score >= 5:
+            risk = AntiBotRisk.BLOCKED
+        elif risk_score >= 3:
+            risk = AntiBotRisk.HIGH
+        elif risk_score >= 1:
+            risk = AntiBotRisk.MEDIUM
+        else:
+            risk = AntiBotRisk.LOW
+
+        return AntiBotDetection(
+            risk=risk,
+            detected_features=detected,
+            recommendations=recommendations,
+            raw_data=raw_data,
+        )
+
+    async def apply_stealth(self) -> bool:
+        """
+        应用反检测措施
+        Returns:
+            是否成功应用
+        """
+        try:
+            await self.session.eval_js(self.STEALTH_JS)
+            self._stealth_applied = True
+            logger.info("AntiBotHandler: stealth 模式已应用")
+            return True
+        except Exception as e:
+            logger.error(f"AntiBotHandler: stealth 应用失败: {e}")
+            return False
+
+    async def is_stealth_applied(self) -> bool:
+        """检查 stealth 是否已应用"""
+        return self._stealth_applied
+
+    async def add_random_delay(self, min_sec: float = 0.5, max_sec: float = 2.0) -> float:
+        """
+        添加随机延迟，模拟人类行为
+        Returns:
+            实际延迟时间
+        """
+        delay = random.uniform(min_sec, max_sec)
+        await asyncio.sleep(delay)
+        return delay
+
+    async def _get_page_text_snippet(self, max_chars: int = 2000) -> str:
+        """获取页面文本片段用于关键词检测"""
+        try:
+            js = f"""
+            (() => {{
+                const body = document.body ? document.body.innerText : '';
+                return body.slice(0, {max_chars}).toLowerCase();
+            }})()
+            """
+            return await self.session.eval_js(js) or ""
+        except Exception:
+            return ""
+
 
 
 class DynamicPageSupport:
     """
-    动态页面支持类
-    
-    整合智能等待、滚动加载、SPA路由监听、懒加载等待等能力
+    动态页面统一支持类
+
+    整合 SPA 路由监听、滚动加载检测、Cookie/Session 管理、反爬策略处理。
+
+    用法示例：
+        from src.core.dynamic_page_support import DynamicPageSupport
+
+        dps = DynamicPageSupport(session, session_id="my_task")
+
+        # 导航并等待 SPA 路由变化
+        await dps.navigate_and_wait("https://example.com/results", check_elements=[".item"])
+
+        # 滚动加载内容
+        result = await dps.scroll_to_load(max_pages=5, item_selector=".product-item")
+        print(f"加载了 {result[\"pages_loaded\"]} 页，新增 {result[\"items_added\"]} 项")
+
+        # 保存/恢复 Session
+        await dps.save_session("example.com")
+        await dps.restore_session("example.com")
+
+        # 反爬检测与应对
+        detection = await dps.detect_anti_bot()
+        if detection["risk"] == "high":
+            await dps.apply_stealth()
+            await dps.add_random_delay()
     """
-    
-    def __init__(self, session):
+
+    def __init__(
+        self,
+        session: Any,
+        session_id: str = "default",
+        storage_dir: str = "./data/sessions",
+        auto_stealth: bool = False,
+        auto_retry_on_captcha: bool = True,
+    ):
         self.session = session
-        self._smart_wait = SmartWait(session)
-        self._dynamic_loader = EnhancedDynamicLoader(session)
-        self._spa_detector = SPADetector(session)
-        self._dom_observer = DOMObserver(session)
-    
+        self.session_id = session_id
+        self.auto_stealth = auto_stealth
+        self.auto_retry_on_captcha = auto_retry_on_captcha
+
+        # 子模块
+        self.route_listener = SPARouteListener(session)
+        self.scroll_detector = ScrollLoadDetector(session)
+        self.cookie_mgr = SessionManager(storage_dir=storage_dir)
+        self.antibot_handler = AntiBotHandler(session)
+
     # =========================================================================
-    # 元素加载等待
+    # 导航与等待
     # =========================================================================
-    
-    async def wait_for_element(
+
+    async def navigate_and_wait(
         self,
-        selector: str,
-        timeout: float = 10.0,
-        visible: bool = True,
-        strategy: str = "adaptive",
-    ) -> bool:
-        """
-        等待元素出现
-        
-        Args:
-            selector: CSS 选择器
-            timeout: 超时时间（秒）
-            visible: 是否等待可见
-            strategy: 等待策略（adaptive/selector/networkidle/stable）
-        
-        Returns:
-            bool: 是否成功等待
-        """
-        logger.info(f"等待元素出现: {selector}，策略: {strategy}")
-        start = time.time()
-        
-        if strategy == "adaptive":
-            # 自适应等待：先等网络空闲，再等元素
-            await self._smart_wait.wait_for("networkidle", timeout=timeout * 0.5)
-            result = await self._smart_wait.wait_for_selector(selector, timeout=timeout * 0.5, visible=visible)
-        else:
-            result = await self._smart_wait.wait_for(strategy, timeout=timeout, selector=selector, visible=visible)
-        
-        elapsed = time.time() - start
-        logger.info(f"元素等待完成: {selector}，耗时 {elapsed:.2f}s，成功: {result.success}")
-        return result.success
-    
-    async def wait_for_elements(
-        self,
-        selectors: List[str],
+        url: str,
+        wait_for: Optional[str] = None,
+        check_elements: Optional[List[str]] = None,
         timeout: float = 15.0,
-        all_required: bool = True,
-    ) -> Dict[str, bool]:
+        apply_stealth_first: bool = False,
+    ) -> Dict[str, Any]:
         """
-        等待多个元素出现
-        
+        导航到 URL 并等待页面稳定
+
         Args:
-            selectors: CSS 选择器列表
+            url: 目标 URL
+            wait_for: 等待的 URL 包含字符串
+            check_elements: 等待出现的元素选择器列表
             timeout: 超时时间
-            all_required: 是否所有元素都必须出现
-        
+            apply_stealth_first: 是否先应用 stealth
+
         Returns:
-            Dict[str, bool]: 每个选择器的等待结果
+            {success, url, wait_time, route_changes}
         """
-        logger.info(f"等待多个元素: {selectors}")
-        results = {}
-        
-        for selector in selectors:
-            results[selector] = await self.wait_for_element(selector, timeout=timeout)
-            if not all_required and not results[selector]:
-                logger.warning(f"元素未出现（非必需）: {selector}")
-                continue
-            if all_required and not results[selector]:
-                logger.error(f"必需元素未出现: {selector}")
-                break
-        
-        return results
-    
+        start_time = time.time()
+        result = {
+            "success": False,
+            "url": "",
+            "wait_time": 0.0,
+            "route_changes": [],
+            "elements_found": [],
+        }
+
+        try:
+            # 可选：先应用 stealth
+            if apply_stealth_first:
+                await self.antibot_handler.apply_stealth()
+                await self.antibot_handler.add_random_delay(0.5, 1.5)
+
+            # 导航
+            await self.session.goto(url)
+            result["url"] = await self.session.eval_js("window.location.href")
+
+            # 启动路由监听
+            await self.route_listener.start_listening()
+            try:
+                # 等待路由变化
+                route_changes = await self.route_listener.wait_for_route_change(
+                    timeout=timeout,
+                    url_contains=wait_for,
+                    check_elements=check_elements,
+                )
+                result["route_changes"] = [e.to_dict() for e in route_changes]
+
+                # 检查等待的元素
+                if check_elements:
+                    for selector in check_elements:
+                        exists = await self._element_exists(selector)
+                        if exists:
+                            result["elements_found"].append(selector)
+
+                result["success"] = True
+            finally:
+                await self.route_listener.stop_listening()
+
+        except Exception as e:
+            logger.error(f"DynamicPageSupport: navigate_and_wait 失败: {e}")
+            result["error"] = str(e)
+
+        result["wait_time"] = time.time() - start_time
+        return result
+
     # =========================================================================
-    # 滚动触发懒加载
+    # 滚动加载
     # =========================================================================
-    
+
     async def scroll_to_load(
         self,
-        item_selector: str = "",
         max_pages: int = 10,
-        max_items: int = 100,
-        scroll_distance: int = 800,
-        scroll_delay: float = 0.8,
-        stop_condition: Callable = None,
-    ) -> ScrollResult:
+        scroll_amount: int = 800,
+        item_selector: Optional[str] = None,
+        stability_threshold: int = 50,
+    ) -> Dict[str, Any]:
         """
         滚动加载内容
-        
-        Args:
-            item_selector: 列表项选择器
-            max_pages: 最大滚动页数
-            max_items: 最大收集项数
-            scroll_distance: 每次滚动距离
-            scroll_delay: 滚动间隔（秒）
-            stop_condition: 停止条件函数
-        
+
         Returns:
-            ScrollResult: 滚动结果
+            {pages_loaded, items_added, final_height, stabilized_at_page}
         """
-        logger.info(f"开始滚动加载，最大页数: {max_pages}，最大项数: {max_items}")
-        
-        config = ScrollConfig(
+        return await self.scroll_detector.detect_scroll_load(
+            max_pages=max_pages,
+            scroll_amount=scroll_amount,
+            stability_threshold=stability_threshold,
             item_selector=item_selector,
-            max_pages=max_pages,
-            scroll_distance=scroll_distance,
-            scroll_delay=scroll_delay,
         )
-        loader = EnhancedDynamicLoader(self.session, config)
-        
-        result = await loader.smart_scroll(
-            max_pages=max_pages,
-            stop_condition=stop_condition,
-        )
-        
-        logger.info(f"滚动加载完成: {result.pages_loaded} 页，{result.items_found} 项")
-        return result
-    
-    async def load_virtual_list(
+
+    async def wait_for_lazy_content(
         self,
+        selector: str = None,
+        timeout: float = 10.0,
+    ) -> bool:
+        """
+        等待懒加载内容完成
+        """
+        return await self.scroll_detector.wait_for_lazy_content(
+            selector=selector,
+            timeout=timeout,
+        )
+
+    async def collect_virtual_list(
+        self,
+        container_selector: str,
         item_selector: str,
         max_items: int = 100,
-        scroll_distance: int = 500,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[str]:
         """
-        加载虚拟列表数据
-        
-        Args:
-            item_selector: 列表项选择器
-            max_items: 最大收集项数
-            scroll_distance: 每次滚动距离
-        
-        Returns:
-            List[Dict]: 收集的数据列表
+        收集虚拟列表中的所有项
         """
-        logger.info(f"开始加载虚拟列表，最大项数: {max_items}")
-        
-        config = ScrollConfig(item_selector=item_selector)
-        loader = EnhancedDynamicLoader(self.session, config)
-        
-        items = await loader.load_virtual_list(
+        return await self.scroll_detector.collect_virtual_list(
+            container_selector=container_selector,
             item_selector=item_selector,
             max_items=max_items,
-            scroll_distance=scroll_distance,
         )
-        
-        logger.info(f"虚拟列表加载完成: {len(items)} 项")
-        return items
-    
+
     # =========================================================================
-    # SPA 路由变化监听
+    # Session 管理
     # =========================================================================
-    
-    async def wait_for_spa_route(
-        self,
-        timeout: float = 15.0,
-        expected_url: str = None,
-    ) -> bool:
+
+    async def save_session(self, domain: str) -> int:
         """
-        等待 SPA 路由稳定
-        
-        Args:
-            timeout: 超时时间
-            expected_url: 期望的 URL 模式
-        
-        Returns:
-            bool: 是否成功等待
+        保存当前 Session
         """
-        logger.info(f"等待 SPA 路由稳定，超时: {timeout}s")
-        
-        # 先检测 SPA 框架
-        spa_info = await self._spa_detector.detect()
-        logger.info(f"检测到 SPA 框架: {spa_info.framework.value}")
-        
-        # 等待路由稳定
-        result = await self._smart_wait.wait_for(
-            "route",
-            timeout=timeout,
-            expected_url=expected_url,
+        return await self.cookie_mgr.save_session(
+            session=self.session,
+            session_id=self.session_id,
+            domain=domain,
         )
-        
-        logger.info(f"SPA 路由等待完成: {result.success}")
-        return result.success
-    
-    async def detect_spa(self) -> SPAInfo:
+
+    async def restore_session(self, domain: str) -> bool:
         """
-        检测 SPA 框架
-        
-        Returns:
-            SPAInfo: SPA 框架信息
+        恢复 Session
         """
-        logger.info("检测 SPA 框架")
-        info = await self._spa_detector.detect()
-        logger.info(f"SPA 框架检测完成: {info.framework.value} v{info.version}")
-        return info
-    
+        return await self.cookie_mgr.restore_session(
+            session=self.session,
+            session_id=self.session_id,
+            domain=domain,
+        )
+
+    async def list_sessions(self) -> List[Dict[str, Any]]:
+        """列出所有已保存的 Session"""
+        return await self.cookie_mgr.list_sessions()
+
+    async def delete_session(self, domain: str) -> bool:
+        """删除指定 Session"""
+        return await self.cookie_mgr.delete_session(
+            session_id=self.session_id,
+            domain=domain,
+        )
+
     # =========================================================================
-    # 懒加载图片等待
+    # 反爬处理
     # =========================================================================
-    
-    async def wait_for_lazy_images(
-        self,
-        selector: str = "img[loading='lazy'], [data-src], [data-lazy]",
-        timeout: float = 10.0,
-    ) -> int:
+
+    async def detect_anti_bot(self) -> AntiBotDetection:
         """
-        等待懒加载图片完成
-        
-        Args:
-            selector: 懒加载图片选择器
-            timeout: 超时时间
-        
-        Returns:
-            int: 已加载的图片数量
+        检测反爬措施
         """
-        logger.info(f"等待懒加载图片完成，选择器: {selector}")
-        
-        config = ScrollConfig()
-        loader = EnhancedDynamicLoader(self.session, config)
-        
-        loaded = await loader.wait_for_lazy_images(selector=selector, timeout=timeout)
-        
-        logger.info(f"懒加载图片等待完成: {loaded} 张已加载")
-        return loaded
-    
-    # =========================================================================
-    # DOM 变化监听
-    # =========================================================================
-    
-    async def wait_for_dom_stable(
-        self,
-        check_interval: float = 0.5,
-        stable_count: int = 3,
-        timeout: float = 30.0,
-    ) -> bool:
+        await self.antibot_handler.track_request()
+        return await self.antibot_handler.detect_anti_bot()
+
+    async def apply_stealth(self) -> bool:
         """
-        等待 DOM 稳定
-        
-        Args:
-            check_interval: 检查间隔
-            stable_count: 连续稳定次数
-            timeout: 超时时间
-        
-        Returns:
-            bool: 是否稳定
+        应用反检测措施
         """
-        logger.info(f"等待 DOM 稳定，超时: {timeout}s")
-        
-        await self._dom_observer.observe()
-        try:
-            result = await self._dom_observer.wait_for_stable(
-                check_interval=check_interval,
-                stable_count=stable_count,
-                timeout=timeout,
-            )
-            logger.info(f"DOM 稳定检测完成: {result}")
-            return result
-        finally:
-            await self._dom_observer.stop()
-    
-    async def wait_for_content_change(
-        self,
-        selector: str = "body",
-        min_changes: int = 1,
-        timeout: float = 15.0,
-    ) -> bool:
+        return await self.antibot_handler.apply_stealth()
+
+    async def add_random_delay(self, min_sec: float = 0.5, max_sec: float = 2.0) -> float:
         """
-        等待内容变化
-        
-        Args:
-            selector: 监听的元素
-            min_changes: 最小变化次数
-            timeout: 超时时间
-        
-        Returns:
-            bool: 是否发生变化
+        添加随机延迟
         """
-        logger.info(f"等待内容变化: {selector}")
-        
-        await self._dom_observer.observe(selector=selector)
-        try:
-            result = await self._dom_observer.wait_for_content_change(
-                selector=selector,
-                min_changes=min_changes,
-                timeout=timeout,
-            )
-            logger.info(f"内容变化检测完成: {result}")
-            return result
-        finally:
-            await self._dom_observer.stop()
-    
+        return await self.antibot_handler.add_random_delay(min_sec, max_sec)
+
     # =========================================================================
     # 组合操作
     # =========================================================================
-    
-    async def wait_for_page_ready(
+
+    async def scrape_sp_a_page(
         self,
-        selector: str = None,
-        wait_network_idle: bool = True,
-        wait_content_stable: bool = True,
-        timeout: float = 30.0,
-    ) -> bool:
-        """
-        等待页面完全就绪（组合操作）
-        
-        按顺序执行：
-        1. 等待网络空闲
-        2. 等待指定选择器出现
-        3. 等待内容稳定
-        
-        Args:
-            selector: 关键元素选择器
-            wait_network_idle: 是否等待网络空闲
-            wait_content_stable: 是否等待内容稳定
-            timeout: 总超时时间
-        
-        Returns:
-            bool: 是否就绪
-        """
-        logger.info("等待页面完全就绪")
-        start = time.time()
-        
-        # 1. 等待网络空闲
-        if wait_network_idle:
-            network_result = await self._smart_wait.wait_for(
-                "networkidle",
-                timeout=timeout * 0.4,
-            )
-            logger.info(f"网络空闲等待: {network_result.success}")
-            if not network_result.success:
-                logger.warning("网络空闲等待超时，继续后续检查")
-        
-        # 2. 等待选择器
-        if selector:
-            selector_result = await self._smart_wait.wait_for_selector(
-                selector,
-                timeout=timeout * 0.3,
-            )
-            logger.info(f"选择器等待: {selector_result.success}")
-            if not selector_result.success:
-                logger.warning(f"选择器 {selector} 未出现")
-        
-        # 3. 等待内容稳定
-        if wait_content_stable:
-            stable_result = await self._smart_wait.wait_for(
-                "stable",
-                timeout=timeout * 0.3,
-            )
-            logger.info(f"内容稳定等待: {stable_result.success}")
-        
-        elapsed = time.time() - start
-        all_success = (not wait_network_idle or network_result.success) and \
-                      (not selector or selector_result.success) and \
-                      (not wait_content_stable or stable_result.success)
-        
-        logger.info(f"页面就绪检查完成，耗时 {elapsed:.2f}s，成功: {all_success}")
-        return all_success
-    
-    async def scroll_and_collect(
-        self,
+        url: str,
         item_selector: str,
-        max_items: int = 100,
-        max_pages: int = 10,
-        wait_after_scroll: float = 0.5,
-    ) -> List[Dict[str, Any]]:
+        max_pages: int = 5,
+        timeout: float = 15.0,
+    ) -> List[Dict]:
         """
-        滚动并收集内容（组合操作）
-        
+        抓取 SPA 页面（导航 + 等待 + 滚动加载）
+
         Args:
+            url: 目标 URL
             item_selector: 列表项选择器
-            max_items: 最大收集项数
             max_pages: 最大滚动页数
-            wait_after_scroll: 滚动后等待时间
-        
+            timeout: 导航等待超时
+
         Returns:
-            List[Dict]: 收集的数据列表
+            抓取到的项列表
         """
-        logger.info(f"开始滚动收集，最大项数: {max_items}")
-        
-        all_items = []
-        seen_keys = set()
-        
-        config = ScrollConfig(item_selector=item_selector)
-        loader = EnhancedDynamicLoader(self.session, config)
-        
-        # 智能滚动
-        scroll_result = await loader.smart_scroll(
-            max_pages=max_pages,
-            callback=lambda pages, items: logger.info(f"已滚动 {pages} 页，收集 {items} 项"),
+        items = []
+
+        # 1. 导航并等待
+        nav_result = await self.navigate_and_wait(
+            url=url,
+            check_elements=[item_selector],
+            timeout=timeout,
         )
-        
-        # 等待懒加载图片
-        await self.wait_for_lazy_images(timeout=5.0)
-        
-        # 收集最终内容
-        items = await loader._collect_visible_items(item_selector)
-        new_items = loader._deduplicate_items(items, seen_keys)
-        all_items.extend(new_items)
-        
-        logger.info(f"滚动收集完成: {len(all_items)} 项")
-        return all_items
+
+        if not nav_result["success"]:
+            logger.error(f"scrape_sp_a_page: 导航失败 [{url}]")
+            return items
+
+        # 2. 滚动加载
+        scroll_result = await self.scroll_to_load(
+            max_pages=max_pages,
+            item_selector=item_selector,
+        )
+
+        # 3. 提取内容
+        js = f"""
+        (() => {{
+            return Array.from(document.querySelectorAll('{item_selector}')).map(el => ({{
+                text: (el.innerText || '').trim().slice(0, 500),
+                tag: el.tagName.toLowerCase(),
+            }}));
+        }})()
+        """
+        items = await self.session.eval_js(js) or []
+
+        pages = scroll_result.get("pages_loaded", 0)
+        logger.info(f"scrape_sp_a_page: 从 [{url}] 抓取 {len(items)} 条，滚动 {pages} 页")
+        return items
+
+    async def scrape_with_session(
+        self,
+        url: str,
+        domain: str,
+        item_selector: str,
+        save_after: bool = True,
+        restore_before: bool = True,
+    ) -> List[Dict]:
+        """
+        带 Session 管理的抓取（自动恢复登录态）
+
+        Args:
+            url: 目标 URL
+            domain: 域名
+            item_selector: 列表项选择器
+            save_after: 抓取后是否保存 Session
+            restore_before: 抓取前是否恢复 Session
+
+        Returns:
+            抓取到的项列表
+        """
+        # 恢复 Session
+        if restore_before:
+            restored = await self.restore_session(domain)
+            if restored:
+                logger.info(f"scrape_with_session: 已恢复 Session [{domain}]")
+
+        # 抓取
+        items = await self.scrape_sp_a_page(url, item_selector)
+
+        # 保存 Session
+        if save_after and items:
+            await self.save_session(domain)
+
+        return items
+
+    # =========================================================================
+    # 辅助方法
+    # =========================================================================
+
+    async def _element_exists(self, selector: str) -> bool:
+        try:
+            result = await self.session.eval_js(f"document.querySelector('{selector}') !== null")
+            return bool(result)
+        except Exception:
+            return False
+
+    async def get_current_url(self) -> str:
+        try:
+            return await self.session.eval_js("window.location.href")
+        except Exception:
+            return ""
+
+    async def get_page_title(self) -> str:
+        try:
+            return await self.session.eval_js("document.title")
+        except Exception:
+            return ""
 
 
-# ============================================================================
+# =====================================================================
 # 便捷函数
-# ============================================================================
-
-async def wait_for_element(
-    session,
-    selector: str,
-    timeout: float = 10.0,
-    visible: bool = True,
-) -> bool:
-    """等待元素出现的便捷函数"""
-    support = DynamicPageSupport(session)
-    return await support.wait_for_element(selector, timeout=timeout, visible=visible)
-
-
-async def scroll_to_load(
-    session,
-    item_selector: str = "",
-    max_pages: int = 10,
-    max_items: int = 100,
-) -> ScrollResult:
-    """滚动加载内容的便捷函数"""
-    support = DynamicPageSupport(session)
-    return await support.scroll_to_load(
-        item_selector=item_selector,
-        max_pages=max_pages,
-        max_items=max_items,
-    )
-
+# =====================================================================
 
 async def wait_for_spa_route(
-    session,
-    timeout: float = 15.0,
-    expected_url: str = None,
-) -> bool:
-    """等待 SPA 路由稳定的便捷函数"""
-    support = DynamicPageSupport(session)
-    return await support.wait_for_spa_route(timeout=timeout, expected_url=expected_url)
-
-
-async def wait_for_lazy_images(
-    session,
-    selector: str = "img[loading='lazy'], [data-src], [data-lazy]",
+    session: Any,
+    url_contains: Optional[str] = None,
+    check_elements: Optional[List[str]] = None,
     timeout: float = 10.0,
+) -> List[Dict]:
+    """
+    便捷函数：等待 SPA 路由变化
+    """
+    listener = SPARouteListener(session)
+    await listener.start_listening()
+    try:
+        events = await listener.wait_for_route_change(
+            timeout=timeout,
+            url_contains=url_contains,
+            check_elements=check_elements,
+        )
+        return [e.to_dict() for e in events]
+    finally:
+        await listener.stop_listening()
+
+
+async def scroll_to_load_content(
+    session: Any,
+    max_pages: int = 10,
+    item_selector: Optional[str] = None,
+) -> Dict:
+    """
+    便捷函数：滚动加载内容
+    """
+    detector = ScrollLoadDetector(session)
+    return await detector.detect_scroll_load(max_pages=max_pages, item_selector=item_selector)
+
+
+async def save_browser_session(
+    session: Any,
+    session_id: str,
+    domain: str,
+    storage_dir: str = "./data/sessions",
 ) -> int:
-    """等待懒加载图片完成的便捷函数"""
-    support = DynamicPageSupport(session)
-    return await support.wait_for_lazy_images(selector=selector, timeout=timeout)
+    """
+    便捷函数：保存浏览器 Session
+    """
+    mgr = SessionManager(storage_dir=storage_dir)
+    return await mgr.save_session(session, session_id, domain)
 
 
-async def wait_for_page_ready(
-    session,
-    selector: str = None,
-    timeout: float = 30.0,
-) -> bool:
-    """等待页面完全就绪的便捷函数"""
-    support = DynamicPageSupport(session)
-    return await support.wait_for_page_ready(selector=selector, timeout=timeout)
-
-
-# ============================================================================
-# 新增动态场景处理方法
-# ============================================================================
-
-async def wait_for_ajax_complete(
-    session,
-    timeout: float = 10.0,
+async def restore_browser_session(
+    session: Any,
+    session_id: str,
+    domain: str,
+    storage_dir: str = "./data/sessions",
 ) -> bool:
     """
-    等待所有 AJAX 请求完成
-
-    Args:
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: 是否所有 AJAX 请求已完成
+    便捷函数：恢复浏览器 Session
     """
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for("ajaxidle", timeout=timeout)
-    logger.info(f"AJAX 等待完成: {result.success}")
-    return result.success
+    mgr = SessionManager(storage_dir=storage_dir)
+    return await mgr.restore_session(session, session_id, domain)
 
 
-async def wait_for_animation_complete(
-    session,
-    selector: str = "*",
-    timeout: float = 5.0,
+async def detect_anti_bot_measures(
+    session: Any,
+) -> Dict:
+    """
+    便捷函数：检测反爬措施
+    """
+    handler = AntiBotHandler(session)
+    detection = await handler.detect_anti_bot()
+    return detection.to_dict()
+
+
+async def apply_browser_stealth(
+    session: Any,
 ) -> bool:
     """
-    等待 CSS 动画/过渡完成
-
-    Args:
-        selector: 元素选择器
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: 动画是否已完成
+    便捷函数：应用反检测措施
     """
-    logger.info(f"等待动画完成: {selector}")
-    js_code = f'''
-    (function() {{
-        const elements = document.querySelectorAll('{selector}');
-        let hasAnimation = false;
-        elements.forEach(el => {{
-            const style = window.getComputedStyle(el);
-            if (style.animationName !== 'none' && style.animationPlayState === 'running') {{
-                hasAnimation = true;
-            }}
-            if (style.transitionProperty !== 'none' && style.transitionDuration !== '0s') {{
-                hasAnimation = true;
-            }}
-        }});
-        return !hasAnimation;
-    }})();
-    '''
-    result = await session.evaluate(js_code, timeout=timeout)
-    logger.info(f"动画等待完成: {result}")
-    return bool(result)
-
-
-async def wait_for_iframe_loaded(
-    session,
-    selector: str = "iframe",
-    timeout: float = 15.0,
-) -> bool:
-    """
-    等待 iframe 内容加载完成
-
-    Args:
-        selector: iframe 选择器
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: iframe 是否已加载完成
-    """
-    logger.info(f"等待 iframe 加载: {selector}")
-    js_code = f'''
-    (function() {{
-        const iframes = document.querySelectorAll('{selector}');
-        if (iframes.length === 0) return true;
-        let allLoaded = true;
-        iframes.forEach(iframe => {{
-            if (iframe.contentDocument && iframe.contentDocument.readyState === 'complete') {{
-                return;
-            }}
-            allLoaded = false;
-        }});
-        return allLoaded;
-    }})();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"iframe 等待完成: {result}")
-    return result
-
-
-async def wait_for_websocket_ready(
-    session,
-    timeout: float = 10.0,
-) -> bool:
-    """
-    等待 WebSocket 连接就绪
-
-    Args:
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: WebSocket 是否已就绪
-    """
-    logger.info("等待 WebSocket 连接就绪")
-    js_code = '''
-    (function() {
-        // 检查是否有活跃的 WebSocket 连接
-        const ws = window.__browser_cdp_ws;
-        if (!ws) return true;
-        return ws.readyState === WebSocket.OPEN;
-    })();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"WebSocket 等待完成: {result}")
-    return result
-
-
-async def wait_for_shadow_dom(
-    session,
-    selector: str,
-    timeout: float = 10.0,
-) -> bool:
-    """
-    等待 Shadow DOM 附加完成
-
-    Args:
-        selector: 宿主元素选择器
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: Shadow DOM 是否已附加
-    """
-    logger.info(f"等待 Shadow DOM: {selector}")
-    js_code = f'''
-    (function() {{
-        const el = document.querySelector('{selector}');
-        if (!el) return false;
-        return !!el.shadowRoot;
-    }})();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"Shadow DOM 等待完成: {result}")
-    return result
-
-
-async def wait_for_cookie_consent(
-    session,
-    timeout: float = 10.0,
-    auto_accept: bool = True,
-) -> bool:
-    """
-    等待并处理 Cookie 同意弹窗
-
-    Args:
-        timeout: 超时时间（秒）
-        auto_accept: 是否自动接受
-
-    Returns:
-        bool: Cookie 弹窗是否已处理
-    """
-    logger.info("等待 Cookie 同意弹窗")
-    js_code = '''
-    (function() {
-        // 常见 Cookie 弹窗选择器
-        const selectors = [
-            '#cookie-banner', '.cookie-banner', '.cookie-consent',
-            '.cookie-popup', '#cookie-popup', '.cc-banner',
-            '.gdpr-banner', '.consent-banner', '[role="dialog"]'
-        ];
-        for (const sel of selectors) {
-            const el = document.querySelector(sel);
-            if (el && el.offsetParent !== null) {
-                return { found: true, text: el.textContent.substring(0, 100) };
-            }
-        }
-        return { found: false };
-    })();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-
-    if result and result.get("found") and auto_accept:
-        # 尝试点击接受按钮
-        accept_selectors = [
-            '#cookie-accept', '.cookie-accept', '.accept-cookies',
-            '#accept-cookies', '.cc-accept', '[data-testid="accept-cookies"]',
-            'button:has-text("接受")', 'button:has-text("Accept")',
-            'button:has-text("同意")'
-        ]
-        for sel in accept_selectors:
-            try:
-                await session.click(sel, timeout=2.0)
-                logger.info(f"已点击 Cookie 接受按钮: {sel}")
-                return True
-            except Exception:
-                continue
-        return True  # 弹窗存在但无法自动接受
-
-    logger.info("Cookie 弹窗等待完成")
-    return True
-
-
-async def wait_for_loading_spinner(
-    session,
-    timeout: float = 10.0,
-) -> bool:
-    """
-    等待加载转圈消失
-
-    Args:
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: 加载转圈是否已消失
-    """
-    logger.info("等待加载转圈消失")
-    js_code = '''
-    (function() {
-        const selectors = [
-            '.spinner', '.loader', '.loading', '.skeleton',
-            '[class*="spinner"]', '[class*="loading"]',
-            '[class*="skeleton"]', '.ajax-loader'
-        ];
-        for (const sel of selectors) {
-            const el = document.querySelector(sel);
-            if (el && el.offsetParent !== null) {
-                return false;
-            }
-        }
-        return true;
-    })();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"加载转圈等待完成: {result}")
-    return result
-
-
-async def wait_for_skeleton_screen(
-    session,
-    timeout: float = 10.0,
-) -> bool:
-    """
-    等待骨架屏渲染完成
-
-    Args:
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: 骨架屏是否已消失
-    """
-    logger.info("等待骨架屏消失")
-    js_code = '''
-    (function() {
-        const selectors = [
-            '.skeleton', '.skeleton-screen', '[class*="skeleton"]',
-            '.placeholder', '[class*="placeholder"]'
-        ];
-        for (const sel of selectors) {
-            const el = document.querySelector(sel);
-            if (el && el.offsetParent !== null) {
-                return false;
-            }
-        }
-        return true;
-    })();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"骨架屏等待完成: {result}")
-    return result
-
-
-async def wait_for_font_loaded(
-    session,
-    timeout: float = 10.0,
-) -> bool:
-    """
-    等待 Web 字体加载完成
-
-    Args:
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: 字体是否已加载完成
-    """
-    logger.info("等待 Web 字体加载")
-    js_code = '''
-    (function() {
-        if (!document.fonts || document.fonts.ready === undefined) return true;
-        return document.fonts.ready.then(() => true).catch(() => true);
-    })();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"字体等待完成: {result}")
-    return result
-
-
-async def wait_for_popup_closed(
-    session,
-    timeout: float = 10.0,
-) -> bool:
-    """
-    等待弹窗/模态框关闭
-
-    Args:
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: 弹窗是否已关闭
-    """
-    logger.info("等待弹窗关闭")
-    js_code = '''
-    (function() {
-        const selectors = [
-            '.modal', '.popup', '.dialog', '.overlay',
-            '[role="dialog"]', '[role="alertdialog"]',
-            '.modal-backdrop', '.popup-overlay'
-        ];
-        for (const sel of selectors) {
-            const els = document.querySelectorAll(sel);
-            for (const el of els) {
-                if (el.offsetParent !== null && !el.classList.contains('d-none')) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    })();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"弹窗等待完成: {result}")
-    return result
-
-
-async def wait_for_video_loaded(
-    session,
-    selector: str = "video",
-    timeout: float = 15.0,
-) -> bool:
-    """
-    等待视频加载完成
-
-    Args:
-        selector: 视频元素选择器
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: 视频是否已加载完成
-    """
-    logger.info(f"等待视频加载: {selector}")
-    js_code = f'''
-    (function() {{
-        const videos = document.querySelectorAll('{selector}');
-        if (videos.length === 0) return true;
-        let allLoaded = true;
-        videos.forEach(video => {{
-            if (video.readyState < 3) {{  // HAVE_CURRENT_DATA = 3
-                allLoaded = false;
-            }}
-        }});
-        return allLoaded;
-    }})();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"视频等待完成: {result}")
-    return result
-
-
-async def wait_for_canvas_rendered(
-    session,
-    selector: str = "canvas",
-    timeout: float = 10.0,
-) -> bool:
-    """
-    等待 Canvas 渲染完成
-
-    Args:
-        selector: Canvas 选择器
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: Canvas 是否已渲染
-    """
-    logger.info(f"等待 Canvas 渲染: {selector}")
-    js_code = f'''
-    (function() {{
-        const canvases = document.querySelectorAll('{selector}');
-        if (canvases.length === 0) return true;
-        // 检查 canvas 是否有内容（非空白）
-        let hasContent = false;
-        canvases.forEach(canvas => {{
-            try {{
-                const ctx = canvas.getContext('2d');
-                const imageData = ctx.getImageData(0, 0, 1, 1);
-                // 检查像素是否有内容
-                for (let i = 0; i < imageData.data.length; i += 4) {{
-                    if (imageData.data[i] > 0 || imageData.data[i+1] > 0 || imageData.data[i+2] > 0) {{
-                        hasContent = true;
-                        return;
-                    }}
-                }}
-            }} catch(e) {{
-                hasContent = true; // 跨域 canvas 视为已渲染
-            }}
-        }});
-        return hasContent;
-    }})();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"Canvas 等待完成: {result}")
-    return result
-
-
-async def wait_for_webgl_ready(
-    session,
-    timeout: float = 10.0,
-) -> bool:
-    """
-    等待 WebGL 上下文就绪
-
-    Args:
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: WebGL 是否已就绪
-    """
-    logger.info("等待 WebGL 就绪")
-    js_code = '''
-    (function() {
-        const canvas = document.createElement('canvas');
-        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-        return !!gl;
-    })();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"WebGL 等待完成: {result}")
-    return result
-
-
-async def wait_for_intersection(
-    session,
-    selector: str,
-    threshold: float = 0.1,
-    timeout: float = 10.0,
-) -> bool:
-    """
-    等待元素进入视口（Intersection Observer）
-
-    Args:
-        selector: 元素选择器
-        threshold: 可见阈值
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: 元素是否已进入视口
-    """
-    logger.info(f"等待元素进入视口: {selector}")
-    js_code = f'''
-    (function() {{
-        return new Promise((resolve) => {{
-            const el = document.querySelector('{selector}');
-            if (!el) {{ resolve(false); return; }}
-            const observer = new IntersectionObserver((entries) => {{
-                entries.forEach(entry => {{
-                    if (entry.isIntersecting) {{
-                        observer.disconnect();
-                        resolve(true);
-                    }}
-                }});
-            }}, {{ threshold: {threshold} }});
-            observer.observe(el);
-            setTimeout(() => {{
-                observer.disconnect();
-                resolve(false);
-            }}, {int(timeout * 1000)});
-        }});
-    }})();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"Intersection 等待完成: {result}")
-    return result
-
-
-async def wait_for_resize_stable(
-    session,
-    timeout: float = 5.0,
-) -> bool:
-    """
-    等待窗口 resize 稳定
-
-    Args:
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: resize 是否已稳定
-    """
-    logger.info("等待 resize 稳定")
-    js_code = '''
-    (function() {
-        const width = window.innerWidth;
-        const height = window.innerHeight;
-        return { width: width, height: height };
-    })();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    # 等待一段时间让 resize 事件稳定
-    await asyncio.sleep(0.5)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"Resize 等待完成: {result}")
-    return True
-
-
-async def wait_for_service_worker(
-    session,
-    timeout: float = 10.0,
-) -> bool:
-    """
-    等待 Service Worker 激活
-
-    Args:
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: Service Worker 是否已激活
-    """
-    logger.info("等待 Service Worker 激活")
-    js_code = '''
-    (function() {
-        if (!navigator.serviceWorker) return true;
-        return navigator.serviceWorker.ready.then(() => true).catch(() => true);
-    })();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"Service Worker 等待完成: {result}")
-    return result
-
-
-async def wait_for_pwa_install(
-    session,
-    timeout: float = 15.0,
-    auto_install: bool = False,
-) -> bool:
-    """
-    等待 PWA 安装提示
-
-    Args:
-        timeout: 超时时间（秒）
-        auto_install: 是否自动安装
-
-    Returns:
-        bool: PWA 安装提示是否已处理
-    """
-    logger.info("等待 PWA 安装提示")
-    js_code = '''
-    (function() {
-        return window.__pwaPromptEvent !== undefined;
-    })();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    if result and auto_install:
-        # 触发 PWA 安装
-        await session.evaluate('window.__pwaPromptEvent.prompt()')
-        await session.evaluate('window.__pwaPromptEvent.userChoice')
-        logger.info("PWA 已自动安装")
-    logger.info(f"PWA 等待完成: {result}")
-    return result
-
-
-async def wait_for_js_error_settled(
-    session,
-    timeout: float = 5.0,
-) -> bool:
-    """
-    等待 JS 错误收敛（无新错误产生）
-
-    Args:
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: JS 错误是否已收敛
-    """
-    logger.info("等待 JS 错误收敛")
-    js_code = '''
-    (function() {
-        return window.__jsErrorCount || 0;
-    })();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    # 记录当前错误数
-    initial_count = await smart_wait.wait_for_js(js_code, timeout=2.0)
-    await asyncio.sleep(timeout)
-    # 检查错误数是否不再增长
-    final_count = await smart_wait.wait_for_js(js_code, timeout=2.0)
-    settled = (final_count - initial_count) <= 0
-    logger.info(f"JS 错误收敛检查: 初始={initial_count}, 最终={final_count}, 收敛={settled}")
-    return settled
-
-
-async def wait_for_performance_stable(
-    session,
-    timeout: float = 5.0,
-) -> bool:
-    """
-    等待页面性能指标稳定
-
-    Args:
-        timeout: 超时时间（秒）
-
-    Returns:
-        bool: 性能指标是否已稳定
-    """
-    logger.info("等待性能指标稳定")
-    js_code = '''
-    (function() {
-        const perf = performance.getEntriesByType('navigation')[0];
-        if (!perf) return true;
-        const duration = perf.duration;
-        return duration > 0 && duration < 30000; // 30秒内视为稳定
-    })();
-    '''
-    from src.core.smart_wait import SmartWait
-    smart_wait = SmartWait(session)
-    result = await smart_wait.wait_for_js(js_code, timeout=timeout)
-    logger.info(f"性能等待完成: {result}")
-    return result
+    handler = AntiBotHandler(session)
+    return await handler.apply_stealth()

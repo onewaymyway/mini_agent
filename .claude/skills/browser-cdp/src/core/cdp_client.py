@@ -15,6 +15,7 @@ import json
 import time
 import itertools
 import threading
+from functools import wraps
 from typing import Any, Optional
 
 import requests
@@ -27,6 +28,54 @@ DEFAULT_PORT = 9222
 
 class CDPError(RuntimeError):
     pass
+
+
+def _classify_cdp_error(method: str, error_msg: str = "") -> str:
+    """将 CDP 错误消息分类为 ErrorCategory 字符串键"""
+    msg_lower = error_msg.lower()
+    if any(kw in msg_lower for kw in ["timeout", "timed out", "deadline"]):
+        return "TIMEOUT"
+    if any(kw in msg_lower for kw in ["connection", "websocket", "disconnect", "closed", "refused"]):
+        return "CONNECTION"
+    if any(kw in msg_lower for kw in ["navigate", "navigation", "load"]):
+        return "NAVIGATION"
+    if any(kw in msg_lower for kw in ["element", "selector", "not found", "invalid"]):
+        return "ELEMENT"
+    return "UNKNOWN"
+
+
+def wrap_cdp_call(func):
+    """装饰器：将 CDPError 统一转换为 ReliabilityError，便于重试框架处理"""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except CDPError as e:
+            from src.reliability.error import (
+                ReliabilityError,
+                ErrorCategory,
+                CDPConnectionLostError,
+                CDPCommandTimeoutError,
+                NavigationTimeoutError,
+            )
+            method = kwargs.get("method", "") if "method" in kwargs else ""
+            if args:
+                # 如果是 CDPSession.send 调用，第一个参数是 method
+                if isinstance(args[0], str) and args[0].startswith("Page."):
+                    method = args[0]
+            category_str = _classify_cdp_error(method, str(e))
+            if category_str == "CONNECTION":
+                raise CDPConnectionLostError(details={"method": method, "original": str(e)})
+            elif category_str == "TIMEOUT":
+                if "navigate" in method.lower():
+                    raise NavigationTimeoutError(url="", timeout=kwargs.get("timeout", 15.0), details={"method": method, "original": str(e)})
+                raise CDPCommandTimeoutError(command=method, timeout=kwargs.get("timeout", 15.0), details={"original": str(e)})
+            elif category_str == "NAVIGATION":
+                raise NavigationTimeoutError(url="", timeout=kwargs.get("timeout", 15.0), details={"method": method, "original": str(e)})
+            else:
+                # 保持原始 CDPError，由上层中间件处理
+                raise
+    return wrapper
 
 
 def http_json(host: str, port: int, path: str, timeout: float = 5.0) -> Any:
@@ -129,6 +178,7 @@ class CDPSession:
     def _next_id(self) -> int:
         return next(self._id_counter)
 
+    @wrap_cdp_call
     def send(self, method: str, params: Optional[dict] = None, timeout: Optional[float] = None) -> dict:
         """发送命令并阻塞等待其对应的 result。"""
         msg_id = self._next_id()
@@ -137,6 +187,7 @@ class CDPSession:
             self._ws.send(json.dumps(payload))
         return self._wait_for_id(msg_id, timeout or self.timeout)
 
+    @wrap_cdp_call
     def _wait_for_id(self, msg_id: int, timeout: float) -> dict:
         deadline = time.time() + timeout
         while time.time() < deadline:

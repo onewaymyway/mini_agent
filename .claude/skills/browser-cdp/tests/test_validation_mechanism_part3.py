@@ -2,6 +2,15 @@
 # Test Execution Engine
 # ============================================================================
 
+import time
+import datetime
+from typing import Dict, List, Any
+
+from tests.test_validation_mechanism import TestCase, TestResult, CapabilityScore
+from tests.support.test_logger import TestLogger
+
+logger = TestLogger(__name__)
+
 class TestExecutionEngine:
     """Test execution engine"""
 

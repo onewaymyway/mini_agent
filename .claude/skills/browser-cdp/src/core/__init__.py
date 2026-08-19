@@ -1,11 +1,6 @@
-"""
-Browser-CDP Enhanced - 核心模块
-"""
-from .auth_module import AuthManager, WebsiteManager
+# Browser-CDP Core Module
+from .auth_module import AuthManager
 from .content_service import ContentDetailService
-from .web_interface import app as api_app
-
-# 爬虫基础框架
 from .url_dedup import UrlNormalizer, BloomFilter, UrlDedupManager
 from .request_client import (
     RequestConfig,
@@ -14,29 +9,46 @@ from .request_client import (
     UaRotator,
     SyncRequestClient,
     AsyncRequestClient,
-    create_sync_client,
-    create_async_client,
 )
-from .parser_base import BaseParser, ParseResult, JsonParser, SearchResultsParser
-from .crawl_scheduler import (
-    CrawlScheduler,
-    CrawlTask,
-    TaskStatus,
-    CrawlCallback,
-    PriorityQueue,
+from .smart_wait_v2 import SmartWaitV2
+from .network_idle_detector import (
+    NetworkIdleDetector,
+    NetworkIdleConfig,
+    create_network_idle_detector,
+)
+from .page_render_detector import (
+    RenderResult,
+    RenderConfig,
+    PageRenderDetector,
+    create_render_detector,
+)
+from .page_render_monitor import (
+    RenderStatus,
+    RenderMetrics,
+    DOMMutationWatcher,
+)
+from .explicit_wait_enhanced import (
+    EnhancedWaitConfig,
+    ExplicitWaitEnhanced,
+    Condition,
+    CreateCondition,
+    create_condition,
+)
+from .element_visibility_detector import (
+    VisibilityResult,
+    ElementVisibilityDetector,
 )
 
 __all__ = [
-    # 原有模块
-    'AuthManager', 'WebsiteManager', 'ContentDetailService', 'api_app',
-    # URL去重
+    'AuthManager', 'ContentDetailService',
     'UrlNormalizer', 'BloomFilter', 'UrlDedupManager',
-    # 请求客户端
     'RequestConfig', 'HttpResponse', 'RateLimiter', 'UaRotator',
     'SyncRequestClient', 'AsyncRequestClient',
-    'create_sync_client', 'create_async_client',
-    # 解析框架
-    'BaseParser', 'ParseResult', 'JsonParser', 'SearchResultsParser',
-    # 调度器
-    'CrawlScheduler', 'CrawlTask', 'TaskStatus', 'CrawlCallback', 'PriorityQueue',
+    'SmartWaitV2',
+    'NetworkIdleDetector', 'NetworkIdleConfig', 'create_network_idle_detector',
+    'RenderResult', 'RenderConfig', 'PageRenderDetector', 'create_render_detector',
+    'RenderStatus', 'RenderMetrics', 'DOMMutationWatcher',
+    'EnhancedWaitConfig', 'ExplicitWaitEnhanced',
+    'Condition', 'CreateCondition', 'create_condition',
+    'VisibilityResult', 'ElementVisibilityDetector',
 ]

@@ -2,6 +2,12 @@
 # Test Case Definitions
 # ============================================================================
 
+from typing import List, Any
+from dataclasses import dataclass
+import asyncio
+
+from tests.test_validation_mechanism import TestCase, TestResult, CapabilityScore
+
 # P0 Core Capability Test Cases
 P0_TEST_CASES: List[TestCase] = [
     # OP-001 Page Loading Capability

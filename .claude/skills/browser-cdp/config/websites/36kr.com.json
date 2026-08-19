@@ -3,30 +3,14 @@
   "domain": "36kr.com",
   "url": "https://36kr.com",
   "category": "tech",
-  "subcategory": "tech_news",
-  "frontend_framework": "React",
-  "anti_crawl_level": 2,
-  "login_required": false,
-  "captcha_type": "none",
-  "priority": "P0",
-  "timeout": 25,
-  "retry_count": 3,
-  "stealth_mode": true,
-  "target_success_rate": 0.85,
-  "target_accuracy": 0.80,
-  "custom_config": {
-    "search_box": "input[placeholder*='搜索'], input[name='keyword']",
-    "search_button": "button.search-btn, input[type='submit']",
-    "results": ".kr-flow-item, .article-item",
-    "result_item": ".kr-flow-item",
-    "title": ".kr-flow-title, .article-title",
-    "content": ".kr-flow-content, .article-content",
-    "pagination": {
-      "next_page": "a.next, .load-more",
-      "page_numbers": ".page-num"
-    }
+  "status": "deployed",
+  "configuration": {
+    "max_retries": 3,
+    "timeout": 30,
+    "stealth_mode": true,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "accept_language": "zh-CN,zh;q=0.9,en;q=0.8"
   },
-  "tags": ["tech", "news", "chinese", "startup"],
-  "created_at": "2026-08-11T13:35:00.000Z",
-  "updated_at": "2026-08-11T13:35:00.000Z"
+  "notes": "Created at 2026-08-18T13:51:36.520952",
+  "last_tested": "2026-08-18T13:51:36.520952"
 }

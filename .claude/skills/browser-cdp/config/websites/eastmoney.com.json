@@ -1,32 +1,27 @@
 {
-  "name": "东方财富",
+  "name": "东方财富网",
   "domain": "eastmoney.com",
   "url": "https://www.eastmoney.com",
-  "category": "finance",
-  "subcategory": "financial_portal",
+  "category": "FINANCE",
+  "subcategory": "Stock News",
   "frontend_framework": "Vue",
-  "anti_crawl_level": 2,
+  "anti_crawl_level": 3,
   "login_required": false,
   "captcha_type": "none",
-  "priority": "P0",
-  "timeout": 25,
+  "priority": "P1",
+  "timeout": 30,
   "retry_count": 3,
   "stealth_mode": true,
-  "target_success_rate": 0.90,
-  "target_accuracy": 0.85,
+  "target_success_rate": 0.85,
+  "target_accuracy": 0.82,
   "custom_config": {
-    "search_box": "input#searchkey, input[placeholder*='搜索']",
-    "search_button": "button.search-btn, input[type='submit']",
-    "results": ".dataItem, .list-item",
-    "result_item": ".dataItem",
-    "title": ".dataItem .title, .list-title a",
-    "content": ".dataItem .content, .list-content",
-    "pagination": {
-      "next_page": "a.next, .pagination-next",
-      "page_numbers": ".page-num"
-    }
+    "search_url": "https://searchapi.eastmoney.com/api/suggest/get?keyword={query}",
+    "news_selector": ".news-item",
+    "title_selector": ".news-title a",
+    "url_selector": ".news-title a",
+    "content_selector": ".news-desc"
   },
-  "tags": ["finance", "portal", "chinese", "stock"],
-  "created_at": "2026-08-11T13:35:00.000Z",
-  "updated_at": "2026-08-11T13:35:00.000Z"
+  "tags": ["finance", "stock", "news", "china"],
+  "created_at": "2026-08-14T00:00:00.000Z",
+  "updated_at": "2026-08-14T00:00:00.000Z"
 }

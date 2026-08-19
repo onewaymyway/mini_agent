@@ -11,7 +11,10 @@
       "description": "重试失败率超过 30%，可能表示目标网站不稳定或网络问题",
       "cooldown_seconds": 600.0,
       "enabled": true,
-      "notification": ["log", "webhook"]
+      "notification": [
+        "log",
+        "webhook"
+      ]
     },
     {
       "rule_id": "connection_loss_rate",
@@ -22,7 +25,11 @@
       "description": "连接丢失率超过 20%，可能表示浏览器不稳定或网络中断",
       "cooldown_seconds": 300.0,
       "enabled": true,
-      "notification": ["log", "webhook", "email"]
+      "notification": [
+        "log",
+        "webhook",
+        "email"
+      ]
     },
     {
       "rule_id": "error_count",
@@ -33,7 +40,9 @@
       "description": "错误数量超过 50 次，需要检查系统状态",
       "cooldown_seconds": 300.0,
       "enabled": true,
-      "notification": ["log"]
+      "notification": [
+        "log"
+      ]
     },
     {
       "rule_id": "circuit_breaker_trips",
@@ -44,7 +53,10 @@
       "description": "熔断器触发次数超过 5 次，目标网站可能不可用",
       "cooldown_seconds": 600.0,
       "enabled": true,
-      "notification": ["log", "webhook"]
+      "notification": [
+        "log",
+        "webhook"
+      ]
     },
     {
       "rule_id": "operation_duration",
@@ -55,7 +67,9 @@
       "description": "操作平均耗时超过 5 分钟，可能表示页面加载缓慢",
       "cooldown_seconds": 300.0,
       "enabled": true,
-      "notification": ["log"]
+      "notification": [
+        "log"
+      ]
     },
     {
       "rule_id": "captcha_detected",
@@ -66,7 +80,11 @@
       "description": "检测到验证码次数超过 3 次，可能需要人工干预",
       "cooldown_seconds": 1800.0,
       "enabled": true,
-      "notification": ["log", "webhook", "email"]
+      "notification": [
+        "log",
+        "webhook",
+        "email"
+      ]
     },
     {
       "rule_id": "anti_bot_detected",
@@ -77,7 +95,54 @@
       "description": "被反爬机制拦截，需要更换代理或调整策略",
       "cooldown_seconds": 3600.0,
       "enabled": true,
-      "notification": ["log", "webhook", "email"]
+      "notification": [
+        "log",
+        "webhook",
+        "email"
+      ]
+    },
+    {
+      "rule_id": "sina_rss_failure",
+      "name": "新浪财经RSS源失效",
+      "condition": "gt",
+      "threshold": 3,
+      "severity": "warning",
+      "description": "新浪财经RSS连续失败3次，需切换HTML回退或检查代理",
+      "cooldown_seconds": 1800.0,
+      "enabled": true,
+      "notification": [
+        "log",
+        "webhook"
+      ]
+    },
+    {
+      "rule_id": "hf_api_timeout",
+      "name": "HuggingFace API超时",
+      "condition": "gt",
+      "threshold": 2,
+      "severity": "warning",
+      "description": "HuggingFace API连续超时2次，可能需要启用代理",
+      "cooldown_seconds": 900.0,
+      "enabled": true,
+      "notification": [
+        "log",
+        "webhook"
+      ]
+    },
+    {
+      "rule_id": "wechat_captcha",
+      "name": "搜狗微信验证码拦截",
+      "condition": "gt",
+      "threshold": 1,
+      "severity": "critical",
+      "description": "搜狗微信检测到验证码，需暂停请求并等待人工介入",
+      "cooldown_seconds": 3600.0,
+      "enabled": true,
+      "notification": [
+        "log",
+        "webhook",
+        "email"
+      ]
     }
   ],
   "notifications": {

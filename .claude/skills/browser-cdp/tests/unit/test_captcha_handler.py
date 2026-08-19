@@ -5,8 +5,8 @@ import sys
 import os
 
 # 添加 skill 目录到路径
-skill_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, skill_dir)
+skill_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, skill_root)
 
 
 def test_imports():

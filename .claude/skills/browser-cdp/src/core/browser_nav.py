@@ -38,6 +38,11 @@ from src.reliability.error import (
     CDPConnectionLostError,
     ErrorCategory,
 )
+from src.reliability.cdp import (
+    with_cdp_exception_handling,
+    async_with_cdp_exception_handling,
+    CDPOperationType,
+)
 
 import asyncio
 import logging
@@ -107,6 +112,7 @@ def get_nav_history(tab_id: str) -> NavigationHistory:
     return _navigation_histories[tab_id]
 
 
+@with_cdp_exception_handling("navigate", CDPOperationType.NAVIGATE, max_retries=3, target_url="{url}")
 @with_error_handling_async("navigate", OperationType.NAVIGATION, max_retries=3)
 async def async_cmd_goto(session, url: str, wait_load: bool, timeout: float, 
                          wait_for: str = None, enable_stealth: bool = True,  # 默认启用反检测
@@ -213,7 +219,7 @@ async def async_cmd_goto(session, url: str, wait_load: bool, timeout: float,
         }
         print_json(result)
 
-    except NavigationTimeoutError:
+    except NavigationTimeoutError as e:
         # 可恢复错误，重新抛出供中间件处理
         nav_entry.success = False
         nav_entry.error = str(e)
@@ -223,7 +229,7 @@ async def async_cmd_goto(session, url: str, wait_load: bool, timeout: float,
             history = get_nav_history(tab_id)
             history.add(nav_entry)
         raise
-    except CDPConnectionLostError:
+    except CDPConnectionLostError as e:
         # CDP 连接断开，可恢复
         nav_entry.success = False
         nav_entry.error = str(e)
@@ -291,6 +297,7 @@ def cmd_goto(session, url: str, wait_load: bool, timeout: float,
             history.add(nav_entry)
 
 
+@with_cdp_exception_handling("wait_selector", CDPOperationType.QUERY_SELECTOR, selector="{selector}", max_retries=2)
 def cmd_wait_selector(session, selector: str, timeout: float):
     deadline = time.time() + timeout
     js = f"!!document.querySelector({selector!r})"
@@ -305,11 +312,13 @@ def cmd_wait_selector(session, selector: str, timeout: float):
     die(f"等待元素超时: {selector}")
 
 
+@with_cdp_exception_handling("get_url", CDPOperationType.EVAL_JS)
 def get_url(session) -> str:
     """获取当前页面 URL"""
     return session.eval_js("location.href")
 
 
+@with_cdp_exception_handling("wait_element", CDPOperationType.QUERY_SELECTOR, selector="{selector}", max_retries=2)
 def wait_element(session, selector: str, timeout: float = 10.0) -> bool:
     """等待元素出现（返回 bool，不抛异常）"""
     deadline = time.time() + timeout
@@ -324,6 +333,7 @@ def wait_element(session, selector: str, timeout: float = 10.0) -> bool:
     return False
 
 
+@with_cdp_exception_handling("wait_element_not_present", CDPOperationType.QUERY_SELECTOR, selector="{selector}", max_retries=2)
 def wait_element_not_present(session, selector: str, timeout: float = 10.0) -> bool:
     """等待元素消失（返回 bool，不抛异常）"""
     deadline = time.time() + timeout
@@ -338,6 +348,7 @@ def wait_element_not_present(session, selector: str, timeout: float = 10.0) -> b
     return False
 
 
+@with_cdp_exception_handling("current_state", CDPOperationType.EVAL_JS)
 def current_state(session) -> dict:
     url = session.eval_js("location.href")
     title = session.eval_js("document.title")

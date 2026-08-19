@@ -1,0 +1,48 @@
+{
+  "name": "信用中国",
+  "domain": "credit.cn",
+  "url": "https://www.creditchina.gov.cn",
+  "category": "government",
+  "subcategory": "credit",
+  "frontend_framework": "Vue",
+  "anti_crawl_level": 1,
+  "login_required": false,
+  "captcha_type": "none",
+  "priority": "P1",
+  "timeout": 25,
+  "retry_count": 3,
+  "stealth_mode": false,
+  "target_success_rate": 0.9,
+  "target_accuracy": 0.85,
+  "custom_config": {
+    "search_url": "https://www.creditchina.gov.cn/api/credit_info/reverseSearch",
+    "search_box": "input[name='keyword'], input[placeholder*='企业']",
+    "search_button": "button.search-btn, input[type='submit']",
+    "results": ".credit-item, .search-result-list li",
+    "result_item": ".credit-item",
+    "title": ".credit-name, .enterprise-name",
+    "link": ".credit-name a[href]",
+    "credit_code": ".credit-code, .unified-social-credit-code",
+    "registration_number": ".reg-number, .registration-no",
+    "legal_representative": ".legal-rep, .legal-person",
+    "pagination": {
+      "next_page": "a.next, .page-next, [data-page='next']",
+      "page_numbers": ".page-num, .el-pager li"
+    },
+    "font_encryption": {
+      "enabled": true,
+      "type": "woff_custom",
+      "mapping_file": "fonts/credit_cn_mapping.json"
+    }
+  },
+  "tags": [
+    "government",
+    "credit",
+    "enterprise",
+    "public_data",
+    "china",
+    "font_encrypted"
+  ],
+  "created_at": "2026-08-12T16:33:48.000Z",
+  "updated_at": "2026-08-12T16:33:48.000Z"
+}

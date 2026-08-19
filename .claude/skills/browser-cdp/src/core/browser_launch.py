@@ -52,6 +52,7 @@ from src.core.cdp_client import (
     version_info,
 )
 from src.core.utils import print_json, die
+from src.reliability.cdp import with_cdp_exception_handling, CDPOperationType
 
 
 WINDOWS_CHROME_CANDIDATES = [
@@ -480,6 +481,7 @@ def cmd_dedicated(args: argparse.Namespace) -> None:
         print(f"[warn] 读取页面状态时出错: {state['error']}，建议用 browser_nav.py --port {port} --tab {tab_id} 手动确认")
 
 
+@with_cdp_exception_handling("verify_tab_state", CDPOperationType.CONNECT, max_retries=2)
 def _verify_tab_state(host: str, port: int, tab_id: str | None, wait_seconds: float = 10.0) -> dict:
     """连上目标 tab，轮询直到 document.readyState 不是 loading（或超时），返回真实的 url/title。
     这一步是为了让上层（agent）拿到的"打开成功"结论是基于实际读取的页面状态，而不是"进程/端口活着"这种间接信号。"""

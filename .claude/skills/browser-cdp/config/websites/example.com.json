@@ -1,0 +1,42 @@
+{
+  "domain": "example.com",
+  "name": "示例内容网站",
+  "category": "blog",
+  "language": "zh",
+  "description": "这是一个示例博客网站配置模板",
+  
+  "anti_crawl_level": 1,
+  "requires_login": false,
+  "rate_limit_per_minute": 10,
+  
+  "custom_config": {
+    "interaction_selectors": {
+      "article_title": "h1.article-title, h1.entry-title",
+      "article_content": "div.article-content, .entry-content, article",
+      "article_author": ".author-name, .byline",
+      "article_date": ".article-date, time, .publish-date",
+      "article_tags": ".article-tags a, .tags a",
+      "article_images": "div.article-content img, .entry-content img",
+      "pagination_next": "a.next, .pagination-next, .next-page"
+    },
+    "scroll_delay": 0.5,
+    "wait_for_load": true,
+    "max_wait_time": 10
+  },
+  
+  "crawl_config": {
+    "max_pages": 10,
+    "delay_between_requests": 1.0,
+    "save_to_db": true,
+    "enable_caching": true,
+    "cache_ttl_hours": 24
+  },
+  
+  "filters": {
+    "min_quality_score": 0.3,
+    "min_word_count": 100,
+    "exclude_categories": [],
+    "include_tags": [],
+    "date_range": null
+  }
+}

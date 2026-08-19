@@ -39,6 +39,10 @@ from src.reliability.middleware import (
     OperationType,
     with_error_handling,
 )
+from src.reliability.cdp import (
+    with_cdp_exception_handling,
+    CDPOperationType,
+)
 
 
 # 标签页组定义格式：
@@ -51,6 +55,7 @@ from src.reliability.middleware import (
 # }
 
 
+@with_cdp_exception_handling("get_tab_info", CDPOperationType.EVAL_JS, max_retries=2)
 @with_error_handling("get_tab_info", OperationType.TAB, max_retries=2)
 def get_tab_info(session) -> dict:
     """获取当前标签页信息。"""
@@ -76,6 +81,7 @@ def get_tab_info(session) -> dict:
         return {"error": str(e)}
 
 
+@with_cdp_exception_handling("list_tabs", CDPOperationType.CONNECT, max_retries=2)
 def list_tabs_info(host: str = "127.0.0.1", port: int = 9222) -> list[dict]:
     """列出所有标签页及其状态。"""
     tabs = list_tabs(host, port)
@@ -109,6 +115,7 @@ def list_tabs_info(host: str = "127.0.0.1", port: int = 9222) -> list[dict]:
     return result
 
 
+@with_cdp_exception_handling("create_tab", CDPOperationType.CONNECT, max_retries=3)
 @with_error_handling("create_tab", OperationType.NAVIGATION, max_retries=3)
 def create_tab(url: str = "about:blank", host: str = "127.0.0.1", port: int = 9222) -> dict:
     """创建新标签页。"""
@@ -122,6 +129,7 @@ def create_tab(url: str = "about:blank", host: str = "127.0.0.1", port: int = 92
     }
 
 
+@with_cdp_exception_handling("switch_tab", CDPOperationType.CONNECT, max_retries=3)
 @with_error_handling("switch_tab", OperationType.NAVIGATION, max_retries=3)
 def switch_tab(target_id: str, host: str = "127.0.0.1", port: int = 9222) -> dict:
     """切换到指定标签页。"""
@@ -129,6 +137,7 @@ def switch_tab(target_id: str, host: str = "127.0.0.1", port: int = 9222) -> dic
     return {"switched_to": target_id, "timestamp": time.time()}
 
 
+@with_cdp_exception_handling("close_tab", CDPOperationType.DISCONNECT, max_retries=2)
 @with_error_handling("close_tab", OperationType.NAVIGATION, max_retries=2)
 def close_tab_by_id(target_id: str, host: str = "127.0.0.1", port: int = 9222) -> bool:
     """关闭指定标签页。"""

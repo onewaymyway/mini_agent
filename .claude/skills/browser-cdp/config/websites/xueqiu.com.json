@@ -2,31 +2,31 @@
   "name": "雪球",
   "domain": "xueqiu.com",
   "url": "https://xueqiu.com",
-  "category": "finance",
-  "subcategory": "investment_community",
-  "frontend_framework": "React",
+  "category": "general",
+  "subcategory": "multi-purpose",
+  "frontend_framework": "Unknown",
   "anti_crawl_level": 2,
   "login_required": false,
   "captcha_type": "none",
-  "priority": "P0",
-  "timeout": 25,
+  "priority": "P2",
+  "timeout": 30,
   "retry_count": 3,
   "stealth_mode": true,
   "target_success_rate": 0.85,
-  "target_accuracy": 0.80,
+  "target_accuracy": 0.8,
   "custom_config": {
-    "search_box": "input[placeholder*='搜索'], input[name='q']",
-    "search_button": "button.search-btn, input[type='submit']",
-    "results": ".timeline-item, .search-result-item",
-    "result_item": ".timeline-item",
-    "title": ".timeline-item .title, .search-result-title",
-    "content": ".timeline-item .content, .search-result-content",
-    "pagination": {
-      "next_page": "a.next, .load-more",
-      "page_numbers": ".page-num"
-    }
+    "search_url": "https://xueqiu.com/search?q={query}",
+    "result_selector": ".result-item, .search-result, [class*=\"result\"]",
+    "title_selector": ".title, h1, h2, [class*=\"title\"]",
+    "url_selector": "a[href]",
+    "content_selector": ".content, article, [class*=\"content\"]"
   },
-  "tags": ["finance", "investment", "chinese", "community"],
-  "created_at": "2026-08-11T13:35:00.000Z",
-  "updated_at": "2026-08-11T13:35:00.000Z"
+  "tags": [
+    "web-crawl",
+    "general-purpose"
+  ],
+  "status": "deployed",
+  "created_at": "2026-08-18T06:10:06Z",
+  "updated_at": "2026-08-18T06:10:06Z",
+  "notes": "Deployed in batch 4 - step5"
 }

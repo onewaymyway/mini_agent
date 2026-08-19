@@ -212,15 +212,80 @@ class PlaywrightSession:
         self._async_playwright = await async_playwright().start()
         self._async_browser = await self._async_playwright.chromium.launch(
             headless=self.config.headless,
-            args=['--disable-blink-features=AutomationControlled']
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-software-rasterizer',
+                '--disable-gpu',
+                '--mute-audio',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--disable-infobars',
+                '--window-size={},{}'.format(self.config.viewport_width, self.config.viewport_height),
+            ]
         )
-        self._async_context = await self._async_browser.new_context(
-            viewport={'width': self.config.viewport_width, 'height': self.config.viewport_height},
-            user_agent=self.config.user_agent,
-        )
+        context_args = {
+            'viewport': {'width': self.config.viewport_width, 'height': self.config.viewport_height},
+            'user_agent': self.config.user_agent,
+            'locale': 'zh-CN',
+            'timezone_id': 'Asia/Shanghai',
+        }
+        self._async_context = await self._async_browser.new_context(**context_args)
         self._async_page = await self._async_context.new_page()
-        logger.info("异步浏览器启动成功")
+        if self.config.enable_stealth:
+            await self._async_inject_stealth()
+        self._async_page.set_default_timeout(self.config.default_timeout)
+        logger.info(f"异步浏览器启动成功 (headless={self.config.headless})")
     
+    async def _async_inject_stealth(self) -> None:
+        """异步注入反检测脚本"""
+        stealth_path = os.path.join(os.path.dirname(__file__), 'stealth.min.js')
+        if os.path.exists(stealth_path):
+            with open(stealth_path, 'r') as f:
+                stealth_script = f.read()
+            await self._async_page.add_init_script(stealth_script)
+            self._stealth_applied = True
+            logger.info("异步反检测脚本注入成功")
+        else:
+            await self._async_inject_builtin_stealth()
+
+    async def _async_inject_builtin_stealth(self) -> None:
+        """异步注入内置反检测代码"""
+        scripts = [
+            """
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+            """,
+            """
+            window.chrome = {
+                runtime: {
+                    connect: function() {},
+                    onMessage: { addListener: function() {} },
+                    sendMessage: function() {},
+                }
+            };
+            """,
+            """
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            """,
+            """
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['zh-CN', 'zh', 'en']
+            });
+            """,
+            """
+            delete navigator.__proto__.webdriver;
+            """,
+        ]
+        for script in scripts:
+            await self._async_page.add_init_script(script)
+        self._stealth_applied = True
+        logger.info("异步内置反检测代码注入成功")
+
     def _inject_stealth(self) -> None:
         """注入反检测脚本"""
         stealth_path = os.path.join(os.path.dirname(__file__), 'stealth.min.js')
@@ -315,18 +380,19 @@ class PlaywrightSession:
             return self._async_page
         return self._page
     
-    def close(self) -> None:
-        """关闭浏览器"""
+    async def async_close(self) -> None:
+        """异步关闭浏览器"""
         try:
             if self._in_async_loop:
                 if self._async_page:
-                    self._async_page.close()
+                    await self._async_page.close()
                 if self._async_context:
-                    self._async_context.close()
+                    await self._async_context.close()
                 if self._async_browser:
-                    self._async_browser.close()
+                    await self._async_browser.close()
                 if self._async_playwright:
-                    self._async_playwright.stop()
+                    await self._async_playwright.stop()
+                logger.info("异步浏览器已关闭")
             else:
                 if self._page:
                     self._page.close()
@@ -336,6 +402,33 @@ class PlaywrightSession:
                     self._browser.close()
                 if self._playwright:
                     self._playwright.stop()
+                logger.info("浏览器已关闭")
+        except Exception as e:
+            logger.warning(f"关闭浏览器时出错: {e}")
+
+    def close(self) -> None:
+        """关闭浏览器（同步包装）"""
+        if self._in_async_loop:
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.async_close())
+            except RuntimeError:
+                logger.warning("无法获取事件循环，跳过异步关闭")
+        else:
+            self._close_sync()
+
+    def _close_sync(self) -> None:
+        """同步关闭浏览器"""
+        try:
+            if self._page:
+                self._page.close()
+            if self._context:
+                self._context.close()
+            if self._browser:
+                self._browser.close()
+            if self._playwright:
+                self._playwright.stop()
             logger.info("浏览器已关闭")
         except Exception as e:
             logger.warning(f"关闭浏览器时出错: {e}")
