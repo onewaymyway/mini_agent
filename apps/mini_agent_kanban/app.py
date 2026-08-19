@@ -1988,9 +1988,13 @@ def render_sessions_tab(client: AgentClient):
         current_mark = " 🟢当前" if s.get("is_current") else ""
         bound_mark = " 📌本页面" if sid == get_active_session_id() else ""
         pinned_mark = " 📎已固定" if sid in get_pinned_session_ids() else ""
-        with st.expander(f"🗂️ {sid}{current_mark}{bound_mark}{pinned_mark}　·　轮次 {s.get('turns', '?')}　·　{s.get('age', s.get('updated_at',''))}"):
+        # 注意：这里的"📎已固定"是看板本地"并排对比区"概念（见下方
+        # _render_pinned_sessions_panel），跟后端 session.pinned（cleanup
+        # 清理保护）是两码事，故用"🔒已保护"区分，避免用户混淆两个"pin"。
+        protected_mark = " 🔒已保护" if s.get("pinned") else ""
+        with st.expander(f"🗂️ {sid}{current_mark}{bound_mark}{pinned_mark}{protected_mark}　·　轮次 {s.get('turns', '?')}　·　{s.get('age', s.get('updated_at',''))}"):
             st.json(s, expanded=False)
-            cc1, cc2, cc3, cc4 = st.columns(4)
+            cc1, cc2, cc3, cc4, cc5 = st.columns(5)
             if cc1.button("▶️ 恢复此会话（全局）", key=f"resume_{sid}",
                            help="改变服务端全局默认 session，影响所有没有单独绑定 session 的客户端"):
                 res = client.resume_session(sid)
@@ -2009,7 +2013,17 @@ def render_sessions_tab(client: AgentClient):
             if cc3.button("📎 加入/移出并排对比", key=f"pin_{sid}",
                            help="加入下方的并排对比区，可以同时看多个 session 的状态和最近事件，不用来回切换标签页"):
                 toggle_pinned_session(sid)
-            if cc4.button("🗑️ 删除", key=f"del_{sid}"):
+            is_protected = bool(s.get("pinned"))
+            protect_label = "🔓 取消清理保护" if is_protected else "🔒 保护（防清理）"
+            if cc4.button(protect_label, key=f"protect_{sid}",
+                           help="开启后，批量清理（下方\"🧹 批量清理旧会话\"）永远不会删除这个 session"):
+                res = client.unpin_session(sid) if is_protected else client.pin_session(sid)
+                if res and "_error" not in res:
+                    st.success("已取消保护" if is_protected else "已加入清理保护")
+                else:
+                    st.error((res or {}).get("_error", "操作失败"))
+                st.rerun()
+            if cc5.button("🗑️ 删除", key=f"del_{sid}"):
                 client.delete_session(sid)
                 st.rerun()
 
@@ -2026,7 +2040,99 @@ def render_sessions_tab(client: AgentClient):
         st.session_state["sessions_page"] = page + 1
         st.rerun()
 
+    _render_session_cleanup_panel(client)
     _render_pinned_sessions_panel_entry(client)
+
+
+def _render_session_cleanup_panel(client: AgentClient) -> None:
+    """[Session 清理功能看板集成] 批量清理长期不用的旧 session。
+
+    规则与 CLI `/session cleanup`（见 evolution/session_cleanup.py、
+    next_doc/session_cleanup_design.md）完全一致，都是走同一套后端判定：
+    当前 session / 🔒已保护 / goal 仍在跑的 session / 最近 N 个 / 最近 N 天
+    内永远不删；其余候选删除的 session 还要看是否已抽取过知识（或内容太少
+    不需要抽取）。这里只是给判定结果加一层看板 UI：先"预览"（dry-run）
+    看看会删哪些，确认无误再"确认执行"。
+    """
+    st.markdown("---")
+    with st.expander("🧹 批量清理旧会话（Session Cleanup）"):
+        st.caption(
+            "自动清理长期不用的旧 session，释放磁盘空间。规则：当前会话 / "
+            "🔒已保护 / 目标仍在进行中的会话 / 最近 N 个 / 最近 N 天内的会话"
+            "永远不会被清理。owner 权限。"
+        )
+        cc1, cc2, cc3 = st.columns(3)
+        keep_days = cc1.number_input("保留最近 N 天", min_value=0, value=30, step=1,
+                                      key="cleanup_keep_days",
+                                      help="更新时间在这天数以内的会话永远保留")
+        keep_count = cc2.number_input("保留最近 N 个", min_value=0, value=20, step=1,
+                                       key="cleanup_keep_count",
+                                       help="按更新时间倒序，最新的这么多个会话永远保留")
+        extract_first = cc3.checkbox(
+            "先补跑知识抽取", value=False, key="cleanup_extract_first",
+            help="候选删除但还没抽取过知识的会话，删除前先离线抽取一次知识"
+                 "（会调用 LLM，耗时更长；不勾选则这类会话本次跳过、不删）",
+        )
+
+        bc1, bc2 = st.columns(2)
+        preview_key = "session_cleanup_preview"
+        if bc1.button("🔍 预览（dry-run，不会真的删除）", width='stretch'):
+            res = client.cleanup_sessions(
+                dry_run=True, keep_recent_days=float(keep_days),
+                keep_recent_count=int(keep_count), extract_first=extract_first,
+            )
+            if res and "_error" not in res:
+                st.session_state[preview_key] = res
+            else:
+                st.session_state.pop(preview_key, None)
+                st.error((res or {}).get("_error", "预览失败"))
+
+        preview = st.session_state.get(preview_key)
+        if preview:
+            st.info(preview.get("summary", ""))
+            deleted = preview.get("deleted", [])
+            skipped = preview.get("skipped_pending_extraction", [])
+            failed = preview.get("failed", [])
+            if deleted:
+                st.markdown(f"**将删除（{len(deleted)}）**")
+                st.dataframe(
+                    [{"session_id": i["session_id"], "title": i["title"],
+                      "updated_at": i["updated_at"], "turns": i["turns"],
+                      "reason": i["reason"]} for i in deleted],
+                    width='stretch', hide_index=True,
+                )
+            if skipped:
+                st.markdown(f"**待抽取，本次跳过（{len(skipped)}）**")
+                st.dataframe(
+                    [{"session_id": i["session_id"], "title": i["title"],
+                      "reason": i["reason"]} for i in skipped],
+                    width='stretch', hide_index=True,
+                )
+            if failed:
+                st.markdown(f"**失败（{len(failed)}）**")
+                st.dataframe(
+                    [{"session_id": i["session_id"], "title": i["title"],
+                      "reason": i["reason"]} for i in failed],
+                    width='stretch', hide_index=True,
+                )
+
+            if deleted:
+                confirm = bc2.checkbox("我已确认以上列表，执行删除", key="cleanup_confirm")
+                if st.button("⚠️ 确认执行清理（不可撤销）", disabled=not confirm,
+                              width='stretch', type="primary"):
+                    res = client.cleanup_sessions(
+                        dry_run=False, keep_recent_days=float(keep_days),
+                        keep_recent_count=int(keep_count), extract_first=extract_first,
+                    )
+                    if res and "_error" not in res:
+                        st.success(res.get("summary", "清理完成"))
+                        st.session_state.pop(preview_key, None)
+                        st.session_state.pop("cleanup_confirm", None)
+                        st.rerun()
+                    else:
+                        st.error((res or {}).get("_error", "清理执行失败"))
+            else:
+                st.caption("没有可删除的会话，无需执行。")
 
 
 def _render_pinned_sessions_panel_entry(client: AgentClient) -> None:

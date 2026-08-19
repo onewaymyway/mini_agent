@@ -76,8 +76,10 @@ curl -H "Authorization: Bearer your-secret-token" http://127.0.0.1:8765/v1/healt
 | `/docs` | GET | Swagger API 文档 |
 
 > **多用户/多 session 相关端点**（`/v1/sessions`、`/v1/sessions/new`、`/v1/sessions/{session_id}`、
-> `/v1/sessions/{session_id}/resume`、`/v1/users`、`/v1/users/{user_id}`、`/v1/users/{user_id}/token`）
-> 单独在 [多用户模式指南](multi-user-guide.md) 的「API 端点」章节说明，这里不重复列出。
+> `/v1/sessions/{session_id}/resume`、`/v1/sessions/{session_id}/pin`、`/v1/sessions/{session_id}/unpin`、
+> `/v1/sessions/cleanup`、`/v1/users`、`/v1/users/{user_id}`、`/v1/users/{user_id}/token`）
+> 单独在 [多用户模式指南](multi-user-guide.md) 的「API 端点」章节说明，这里不重复列出；
+> `pin`/`unpin`/`cleanup` 三个端点的详细说明见下方「Session 清理保护 / 批量清理」一节。
 
 ### 对话端点
 
@@ -907,7 +909,102 @@ session 尚未创建 Agent 时，由 `_save_cognitive_anchor()` 自身的 no-op 
 （锚点内容由 LLM 生成，可能因为 history 太短、LLM 调用失败等原因静默跳过——
 与本地模式的行为一致）。
 
-### SSE 新增事件类型：`objective_progress`
+### Session 清理保护 / 批量清理
+
+[看板 Session 清理功能集成]（`next_doc/session_cleanup_design.md`）
+新增三个端点，把原本只有 CLI `/session pin` / `/session unpin` /
+`/session cleanup` 才有的能力开放给 HTTP API / 看板使用，判定规则和
+`evolution/session_cleanup.py` 完全一致，不是另一套逻辑。
+
+#### POST /v1/sessions/{session_id}/pin — 置顶保护
+
+```bash
+POST /v1/sessions/{session_id}/pin
+```
+
+标记该 session 为"受保护"：批量清理（`/v1/sessions/cleanup`，以及 CLI
+`/session cleanup`）永远不会删除它，直到显式 unpin。只改 `meta.json` 的
+`pinned` 字段，不动 `history.json`。`GET /v1/sessions` 响应里每个 session
+新增了 `pinned` 字段，反映当前保护状态。
+
+响应示例：
+
+```json
+{"ok": true, "session_id": "abc123", "message": "Session pinned"}
+```
+
+#### POST /v1/sessions/{session_id}/unpin — 取消置顶保护
+
+```bash
+POST /v1/sessions/{session_id}/unpin
+```
+
+响应结构同上（`message` 为 `"Session unpinned"`）。
+
+#### POST /v1/sessions/cleanup — 批量清理旧 session（owner only）
+
+```bash
+POST /v1/sessions/cleanup
+Content-Type: application/json
+
+{
+  "dry_run": true,
+  "keep_recent_days": 30,
+  "keep_recent_count": 20,
+  "extract_first": false
+}
+```
+
+- `dry_run`（默认 `true`）：只扫描分类、不实际删除，用于"预览会删哪些"。
+  确认无误后带 `dry_run: false` 再请求一次才会真正执行删除。
+- `keep_recent_days` / `keep_recent_count`：两道安全网，含义与 CLI
+  `--keep-days` / `--keep-count` 一致——按更新时间倒序，最近 N 个、或最近
+  N 天内的 session 永远保留，不会进入候选删除。
+- `extract_first`：对候选删除但还没抽取过知识的 session，删除前先补跑一次
+  离线知识抽取（会触发 LLM 调用，耗时更长，端点内部会相应放宽超时到
+  180s；不开启则这类 session 本次跳过、不删，下次清理再判断）。
+
+保留优先级（命中任意一条即保留，不进入候选删除）：
+1. 当前活跃 session（自动排除，不需要调用方传）
+2. `pinned == true`（即上面的置顶保护）
+3. 挂着未终结 Goal（`status ∈ {running, stuck}`）的 session
+4. 按更新时间倒序的最近 `keep_recent_count` 个
+5. `updated_at` 在最近 `keep_recent_days` 天内
+
+不满足以上任何一条才进入候选删除，候选删除的 session 还要看：
+`turns` 太少（无需抽取）或已经抽取过知识 → 可直接删；否则视
+`extract_first` 决定"补抽取后删"还是"本次跳过"。
+
+响应示例（`dry_run: true`）：
+
+```json
+{
+  "dry_run": true,
+  "total_scanned": 42,
+  "kept_count": 38,
+  "deleted": [
+    {
+      "session_id": "old01ab",
+      "title": "旧对话标题",
+      "updated_at": "2026-05-01T10:00:00+08:00",
+      "turns": 2,
+      "action": "delete",
+      "reason": "内容过少（turns=2 < 3），无需抽取",
+      "extracted_now": false
+    }
+  ],
+  "skipped_pending_extraction": [],
+  "failed": [],
+  "summary": "Session 清理（dry-run，不会实际删除）：共扫描 42 个，保留 38 个，将删除 1 个，待抽取跳过 0 个，失败 0 个。"
+}
+```
+
+需要 owner 权限（单 token 模式下等同于唯一使用者，直接放行；多用户模式
+下非 owner 调用返回 `403`）。多用户模式下每个用户的清理只作用于自己的
+`.agent/users/<id>/sessions/` 目录，互不影响；`extract_first` 触发的
+LLM 调用统一走 owner 的 LLM 配置。
+
+
 
 `GET /v1/stream` 或 `GET /v1/stream/{turn_id}` 中，当 daemon 自主推进 Objective 步骤时，
 会推送 `objective_progress` 类型的 SSE 事件：

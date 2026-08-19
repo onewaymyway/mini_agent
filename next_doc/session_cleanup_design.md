@@ -115,3 +115,24 @@ Session 清理（dry-run，不会实际删除）：共扫描 7 个，保留 4 �
 - 目前没有为清理动作单独写审计日志（比如 `session_cleanup_log.jsonl`）；
   如果需要事后追溯"哪个 session 什么时候被删的"，可以在 `cleanup_sessions()`
   里加一个可选的落盘记录。
+
+## 9. HTTP API + 看板集成（新增）
+
+原本 `pin`/`unpin`/`cleanup` 只能通过 CLI slash 命令使用，daemon-connected
+（多用户/远程）场景下没有对应入口。新增：
+
+| 层 | 改动 |
+|------|------|
+| `src/mini_agent/api/models.py` | `SessionInfo` 新增 `pinned: bool` 字段（回显 `Session.pinned`）；新增 `SessionCleanupRequest`（`dry_run`/`keep_recent_days`/`keep_recent_count`/`extract_first`）、`SessionCleanupItem`、`SessionCleanupResponse` |
+| `src/mini_agent/api/routes.py` | 新增 `POST /v1/sessions/{id}/pin`、`POST /v1/sessions/{id}/unpin`（薄封装 `SessionManager.set_pinned()`）；新增 `POST /v1/sessions/cleanup`（owner only，内部复用 `evolution/session_cleanup.py::cleanup_sessions()`，不重新实现判定逻辑），单用户/多用户两种模式都支持，多用户模式下每个用户只清理自己 `.agent/users/<id>/sessions/` 下的 session；`extract_first=True` 时复用当前 bridge/owner 的 LLM client；调用统一走 `run_blocking()` 丢进线程池（`extract_first=True` 时超时放宽到 180s，避免多次 LLM 调用被 45s 默认超时打断），避免长时间扫描/抽取阻塞事件循环 |
+| `apps/mini_agent_kanban/client.py` | `AgentClient` 新增 `pin_session()`/`unpin_session()`/`cleanup_sessions()` |
+| `apps/mini_agent_kanban/app.py` | `render_sessions_tab()`：每个 session 卡片新增"🔒保护（防清理）/🔓取消保护"按钮和"🔒已保护"徽标（措辞上刻意避开"固定"，因为看板本身已有一个含义完全不同的"📎并排对比固定"概念，用同一个词会混淆两件事）；分页控件下方新增"🧹 批量清理旧会话"折叠面板：keep-days/keep-count 参数输入、extract_first 勾选、"预览"按钮跑 dry-run 并列出将删除/待抽取跳过/失败三张表，确认勾选后才能点亮"确认执行清理"按钮 |
+| `docs/http-api-guide.md` | 新增"Session 清理保护 / 批量清理"一节，含三个端点的请求/响应示例和保留优先级说明 |
+| `docs/kanban-dashboard-guide.md` | "大数据量下的分页显示"一节补充说明；使用场景补充"批量清理"入口 |
+
+设计上延续本文档 §5 的安全性原则：所有删除仍然只走
+`SessionManager.delete()`，HTTP 层不直接碰文件系统；`dry_run` 默认
+`True`（看板按钮比 CLI 更容易误触，比 CLI 默认值更保守一档）；
+`extract_first=True` 触发的抽取失败会体现在响应的 `failed` 列表里，
+保守跳过删除，不会因为抽取失败而误删有价值的内容。
+

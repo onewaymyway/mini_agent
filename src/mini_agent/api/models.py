@@ -268,6 +268,7 @@ class SessionInfo(BaseModel):
     summary:       str = ""
     age:           str = ""       # 人类可读的相对时间，如 "3分钟前"
     is_current:    bool = False   # 是否为当前 agent 正在使用的 session
+    pinned:        bool = False   # 是否已置顶（/session pin，cleanup 时永不删除）
 
 class SessionsListResponse(BaseModel):
     sessions:           list[SessionInfo]
@@ -298,6 +299,42 @@ class SessionActionResponse(BaseModel):
 class SessionDeleteResponse(BaseModel):
     ok:      bool
     message: str = ""
+
+
+# ── Session 批量清理（evolution/session_cleanup.py 的 HTTP 化）─────────────
+
+class SessionCleanupItem(BaseModel):
+    """单个 session 的清理判定结果（对应 session_cleanup.CleanupItem）。"""
+    session_id:    str
+    title:         str
+    updated_at:    str
+    turns:         int
+    action:        str   # "keep" | "skip_pending_extraction" | "delete"
+    reason:        str
+    extracted_now: bool = False
+
+
+class SessionCleanupRequest(BaseModel):
+    """POST /v1/sessions/cleanup 请求体。
+
+    dry_run 默认 True——看板是点击触发，比 CLI 更容易误触，默认给一个
+    "只看会删什么、不真删"的安全默认值；确认无误后前端再带 dry_run=False
+    发一次真正执行的请求。
+    """
+    dry_run:           bool = True
+    keep_recent_days:  float = 30
+    keep_recent_count: int = 20
+    extract_first:     bool = False
+
+
+class SessionCleanupResponse(BaseModel):
+    dry_run:                    bool
+    total_scanned:               int
+    kept_count:                  int
+    deleted:                     list[SessionCleanupItem] = []
+    skipped_pending_extraction:  list[SessionCleanupItem] = []
+    failed:                      list[SessionCleanupItem] = []
+    summary:                     str = ""  # 人类可读一句话汇总，直接展示在看板上
 
 
 # ── 用户管理（daemon 多用户架构 Phase 1）────────────────────────────────────────

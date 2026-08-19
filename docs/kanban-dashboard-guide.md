@@ -125,7 +125,7 @@ streamlit run app.py
 | Tab | 内容 |
 |---|---|
 | 💬 对话 | 聊天、历史消息、事件流、发送/中断 |
-| 🗂️ 会话管理 | 会话列表、新建 / 恢复 / 删除会话 |
+| 🗂️ 会话管理 | 会话列表、新建 / 恢复 / 删除会话、清理保护置顶、批量清理旧会话（见下方专节） |
 | 📌 目标看板 | Goal / Objective 看板（按状态分列）、新建目标、Cron Job 管理与手动触发、Objective 执行进度 |
 | 🔄 工作流 | Workflow 运行面板、看板视图（按 Step 状态分列）、暂停/取消/续跑/审批、出错定位与单步修改重跑、历史执行列表 |
 | 📁 产出物 | 浏览 `.agent/` 等目录下产出文件，预览与下载 |
@@ -146,6 +146,35 @@ streamlit run app.py
 事件展示逐类型解析（`tool_call` / `tool_result` / `tool_error` / `permission_req` /
 `permission_done` / `turn_start` / `turn_done` / `error` / `token`），与
 Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
+
+### 🗂️ 会话管理 Tab
+
+会话列表支持分页（见下方"大数据量下的分页显示"），每个 session 卡片新增
+两个跟"清理"相关的操作：
+
+- **🔒 保护（防清理）/ 🔓 取消保护**：对应 CLI 的 `/session pin` /
+  `/session unpin`，置顶保护后批量清理永远不会删除这个 session，卡片
+  标题上会显示"🔒已保护"徽标。
+
+  > 注意跟旁边"📎 加入/移出并排对比"按钮的区别：那个"📎固定"是看板本地
+  > 概念（把 session 加进下方并排对比区，方便同时看多个 session 状态），
+  > 只影响这个浏览器标签页的显示，不会写回后端；这里的"🔒保护"才是真正
+  > 影响后端批量清理判定的开关，两者刻意用了不同的图标和措辞，避免混淆。
+
+- **🧹 批量清理旧会话**：分页控件下方的折叠面板，对应 CLI 的
+  `/session cleanup`。填好"保留最近 N 天"/"保留最近 N 个"两道安全网参数
+  （默认 30 天 / 20 个），可选"先补跑知识抽取"（对候选删除但还没抽取过
+  知识的 session，删除前先跑一次离线抽取，会调用 LLM、耗时更长）。点
+  **🔍 预览** 先 dry-run 一次，列出"将删除 / 待抽取跳过 / 失败"三张表；
+  确认列表无误、勾选"我已确认以上列表"后，才能点亮 **⚠️ 确认执行清理**
+  真正执行。
+
+  永远不会被清理的 session：当前活跃 session、🔒已保护、挂着未终结
+  Goal（running/stuck）的 session，以及命中"最近 N 天"或"最近 N 个"
+  安全网的 session。判定规则、代码实现均与 CLI 共用同一个
+  `evolution/session_cleanup.py`，行为完全一致，详见
+  `next_doc/session_cleanup_design.md` §9。该操作需要 owner 权限（单
+  token 模式下自动放行，多用户模式下非 owner 调用会被拒绝）。
 
 ### 📌 目标看板 Tab
 
@@ -456,6 +485,8 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `turns(session_id=)` | `GET /v1/turns` | Turn 列表 |
 | `pending_permissions(session_id=)` / `respond_permission()` | `/v1/permissions/*` | 权限审批 |
 | `sessions(limit=50, offset=0)` / `session_detail()` / `resume_session()` / `new_session()` / `delete_session()` | `/v1/sessions*` | 会话管理（`offset` 配合 `limit` 做分页） |
+| `pin_session()` / `unpin_session()` | `POST /v1/sessions/{id}/pin\|unpin` | 清理保护置顶 / 取消置顶 |
+| `cleanup_sessions(dry_run=True, keep_recent_days=30, keep_recent_count=20, extract_first=False)` | `POST /v1/sessions/cleanup` | 批量清理旧会话（预览/执行同一接口，`dry_run` 区分），owner only |
 | `users()` | `/v1/users` | 多用户列表（多用户模式） |
 | `self_status()` / `autonomous_status()` | `/self/status`、`/self/autonomous` | 自省与自主循环状态 |
 | `pause_scheduling(reason=)` / `resume_scheduling()` | `POST /v1/autonomous/scheduling/pause\|resume` | 看板"停止调度"功能：全局暂停/恢复自动调度，见顶部状态条一节 |

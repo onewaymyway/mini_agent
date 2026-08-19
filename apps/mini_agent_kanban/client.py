@@ -226,6 +226,25 @@ class AgentClient:
     def delete_session(self, session_id: str):
         return self._delete(f"/sessions/{session_id}")
 
+    def pin_session(self, session_id: str):
+        return self._post(f"/sessions/{session_id}/pin")
+
+    def unpin_session(self, session_id: str):
+        return self._post(f"/sessions/{session_id}/unpin")
+
+    def cleanup_sessions(self, *, dry_run: bool = True, keep_recent_days: float = 30,
+                          keep_recent_count: int = 20, extract_first: bool = False):
+        """批量清理长期不用的旧 session。dry_run=True 只预览、不删除；
+        extract_first=True 时可能触发 LLM 调用，耗时更长，给更宽松的超时。"""
+        body = {
+            "dry_run": dry_run,
+            "keep_recent_days": keep_recent_days,
+            "keep_recent_count": keep_recent_count,
+            "extract_first": extract_first,
+        }
+        timeout = 200 if extract_first else 35
+        return self._post("/sessions/cleanup", json_body=body, timeout=timeout)
+
     # ── 用户（多用户模式）────────────────────────────────────────────
     def users(self):
         return self._get("/users")

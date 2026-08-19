@@ -20,11 +20,17 @@ api/routes.py — FastAPI 路由定义
     GET  /v1/turns                   所有 turn 列表
     GET  /v1/turns/{turn_id}         某 turn 详情
   Session
-    GET    /v1/sessions              所有 session 列表（含当前 session 标记）
+    GET    /v1/sessions              所有 session 列表（含当前 session 标记 + pinned）
     GET    /v1/sessions/{id}         某 session 详情（含完整历史）
     POST   /v1/sessions/{id}/resume  切换到指定 session（成为当前活动 session）
     POST   /v1/sessions/new          开始一个全新 session
     DELETE /v1/sessions/{id}         删除一个 session（不可删除当前 session）
+    POST   /v1/sessions/{id}/pin     置顶保护一个 session（cleanup 时永不删除）
+    POST   /v1/sessions/{id}/unpin   取消置顶
+    POST   /v1/sessions/cleanup      批量清理长期不用的旧 session（owner only，
+                                       dry_run 预览 / 实际执行同一个端点，规则与
+                                       CLI `/session cleanup` 一致，见
+                                       evolution/session_cleanup.py）
   权限审批
     GET  /v1/permissions/pending     待审批列表
     POST /v1/permissions/{req_id}    批准 / 拒绝
@@ -233,6 +239,7 @@ from .models import (
     FsSearchRequest, EventType, AgentEvent,
     SessionInfo, SessionsListResponse, SessionDetailResponse,
     SessionActionResponse, SessionDeleteResponse,
+    SessionCleanupRequest, SessionCleanupResponse, SessionCleanupItem,
     UserInfo, UsersListResponse, UserCreateRequest, UserCreateResponse,
     UserUpdateRequest, UserActionResponse, WhoamiResponse,
     InteractionRequestBody, InteractionResponse,
@@ -1405,7 +1412,7 @@ async def list_sessions(
                 turns=m.turns, input_tokens=m.input_tokens,
                 output_tokens=m.output_tokens, tool_calls=m.tool_calls,
                 summary=m.summary, age=m.age_str,
-                is_current=(m.id == current_id),
+                is_current=(m.id == current_id), pinned=m.pinned,
             )
             for m in metas
         ]
@@ -1424,6 +1431,7 @@ async def list_sessions(
                     turns=meta.turns, input_tokens=meta.input_tokens,
                     output_tokens=meta.output_tokens, tool_calls=meta.tool_calls,
                     summary=meta.summary, age="刚刚", is_current=True,
+                    pinned=getattr(meta, "pinned", False),
                 ))
                 total += 1
         return SessionsListResponse(sessions=infos, current_session_id=current_id, count=len(infos), total=total)
@@ -1448,7 +1456,7 @@ async def list_sessions(
             turns=m.turns, input_tokens=m.input_tokens,
             output_tokens=m.output_tokens, tool_calls=m.tool_calls,
             summary=m.summary, age=m.age_str,
-            is_current=(m.id == current_id),
+            is_current=(m.id == current_id), pinned=m.pinned,
         )
         for m in metas
     ]
@@ -1467,7 +1475,7 @@ async def list_sessions(
                 turns=meta.turns, input_tokens=meta.input_tokens,
                 output_tokens=meta.output_tokens, tool_calls=meta.tool_calls,
                 summary=meta.summary, age="刚刚",
-                is_current=True,
+                is_current=True, pinned=getattr(meta, "pinned", False),
             ))
             total += 1
 
@@ -1697,6 +1705,118 @@ async def delete_session(request: Request, session_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
     return SessionDeleteResponse(ok=True, message=f"Session '{session_id}' deleted")
+
+
+# ── Session 置顶 / 批量清理（看板集成，见 next_doc/session_cleanup_design.md）──
+
+@router.post("/sessions/{session_id}/pin", response_model=SessionActionResponse)
+async def pin_session(request: Request, session_id: str):
+    """置顶一个 session：`/session cleanup`（含本文件的批量清理端点）
+    永远不会删除它。只改 meta.json 的 pinned 字段，不动 history，開销很小，
+    不需要线程池保护。"""
+    user_mgr = _user_session_manager(request)
+    mgr = user_mgr if user_mgr is not None else _session_manager_or_404(_bridge(request))[1]
+    ok = mgr.set_pinned(session_id, True)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    return SessionActionResponse(ok=True, session_id=session_id, message="Session pinned")
+
+
+@router.post("/sessions/{session_id}/unpin", response_model=SessionActionResponse)
+async def unpin_session(request: Request, session_id: str):
+    """取消置顶。"""
+    user_mgr = _user_session_manager(request)
+    mgr = user_mgr if user_mgr is not None else _session_manager_or_404(_bridge(request))[1]
+    ok = mgr.set_pinned(session_id, False)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    return SessionActionResponse(ok=True, session_id=session_id, message="Session unpinned")
+
+
+def _cleanup_item_to_model(item) -> SessionCleanupItem:
+    return SessionCleanupItem(
+        session_id=item.session_id, title=item.title, updated_at=item.updated_at,
+        turns=item.turns, action=item.action, reason=item.reason,
+        extracted_now=item.extracted_now,
+    )
+
+
+@router.post("/sessions/cleanup", response_model=SessionCleanupResponse)
+async def cleanup_sessions_endpoint(request: Request, body: SessionCleanupRequest):
+    """批量清理长期不用的旧 session（HTTP 版 `/session cleanup`，owner only）。
+
+    判定规则、安全网（pin / goal 仍在跑 / 最近 N 个 / 最近 N 天 / 当前
+    session 永远排除）与 CLI 完全一致，复用同一份
+    `evolution/session_cleanup.py`，不重新实现一套判断逻辑。
+
+    `dry_run=True`（默认）只扫描分类、不实际删除，用于看板"预览"按钮；
+    确认无误后前端再带 `dry_run=False` 请求一次真正执行删除。
+
+    `extract_first=True` 时会对每个"候选删除但还没抽取过知识"的 session
+    补跑一次离线知识抽取（消耗 LLM 调用），这里复用当前 bridge 的
+    LLM client——多用户模式下每个用户的 cleanup 只影响自己的 session，
+    但目前统一走 owner 的 LLM 配置，抽取失败会体现在响应的 failed 列表里
+    并保守跳过删除，不会误删。
+    """
+    _require_owner(request)
+
+    user_mgr = _user_session_manager(request)
+    project_root = getattr(request.app.state, "project_root", None)
+
+    if user_mgr is not None:
+        mgr = user_mgr
+        exclude_ids: set[str] = set()
+        pool = _session_pool(request)
+        if pool is not None:
+            entries = pool.list_entries(user_id=request.state.user_ctx.user_id)
+            exclude_ids = {e.session_id for e in entries}
+        llm_client = None
+        cfg = None
+        if body.extract_first:
+            http_server = getattr(request.app.state, "http_server", None)
+            self_agent = http_server.bridge.agent if http_server is not None else None
+            llm_client = getattr(self_agent, "_llm", None) if self_agent is not None else None
+            cfg = getattr(self_agent, "cfg", None) if self_agent is not None else None
+    else:
+        # 单用户模式：原有行为，排除当前激活 session，extract_first 复用
+        # 当前 bridge 的 Agent（跟 CLI /session cleanup 的实现一致）。
+        bridge = _bridge(request)
+        agent, mgr = _session_manager_or_404(bridge)
+        exclude_ids = {agent.session_id} if agent.session_id else set()
+        llm_client = getattr(agent, "_llm", None) if body.extract_first else None
+        cfg = agent.cfg if body.extract_first else None
+
+    if project_root is None and mgr is not None:
+        project_root = getattr(mgr, "session_dir", None)  # 兜底：goal 保护判定允许拿不到时退化为"无保护"
+
+    from mini_agent.evolution.session_cleanup import cleanup_sessions, format_report_lines
+
+    report = await run_blocking(
+        cleanup_sessions,
+        mgr, project_root,
+        exclude_ids=exclude_ids,
+        keep_recent_days=body.keep_recent_days,
+        keep_recent_count=body.keep_recent_count,
+        min_turns_for_extraction=3,
+        extract_first=body.extract_first,
+        llm_client=llm_client,
+        cfg=cfg,
+        dry_run=body.dry_run,
+        where="session_cleanup",
+        # extract_first=True 时可能触发多次 LLM 调用，给更宽松的超时
+        timeout=180.0 if body.extract_first else 30.0,
+    )
+
+    summary_line = format_report_lines(report)[0]  # 复用 CLI 同款汇总文案，看板/CLI 展示一致
+    return SessionCleanupResponse(
+        dry_run=report.dry_run,
+        total_scanned=report.total_scanned,
+        kept_count=len(report.kept),
+        deleted=[_cleanup_item_to_model(i) for i in report.deleted],
+        skipped_pending_extraction=[_cleanup_item_to_model(i) for i in report.skipped_pending_extraction],
+        failed=[_cleanup_item_to_model(i) for i in report.failed],
+        summary=summary_line,
+    )
 
 
 # ── 权限审批 ──────────────────────────────────────────────────────────────────
