@@ -462,6 +462,30 @@ def save_spec(paths: "AgentPaths", goal_id: str, spec: GoalExecutionSpec) -> Pat
     return p
 
 
+def delete_spec(paths: "AgentPaths", goal_id: str) -> bool:
+    """[看板目标删除功能] 删除指定 Goal 的执行规范权威存储文件
+    （`.agent/goal_execution_specs/<goal_id>.json`）。
+
+    不处理 `spec/`（history/SPEC.md/SPEC.json，见 `_spec_workspace_dir()`）
+    这份可见性快照——它落在 `goal_spec_dir()`（`.agent/daemon_run_outputs/
+    goals/<goal_id>/spec/`）下，属于 `output_workspace.goal_output_base_dir()`
+    整棵子树的一部分，调用方（API 路由层）删除 Goal 时会连同该目录整体
+    一起 `rmtree`，不需要在这里重复处理，避免两处删除逻辑各管一半、
+    互相依赖顺序。
+
+    文件不存在时视为已经"删除成功"（幂等），返回 True；真正的 OSError
+    才返回 False，供调用方决定要不要在响应里提示"部分清理失败"。
+    """
+    p = _spec_path(paths, goal_id)
+    try:
+        p.unlink(missing_ok=True)
+        return True
+    except OSError as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where="mini_agent.perception.goal_execution_spec.delete_spec")
+        return False
+
+
 def _spec_workspace_dir(paths: "AgentPaths", goal_id: str) -> Optional[Path]:
     """定位 `goal_output_directory_and_execution_phase_redesign_plan.md` §4
     里的 `spec/` 目录（当前版本 SPEC.md/SPEC.json + history/）。依赖

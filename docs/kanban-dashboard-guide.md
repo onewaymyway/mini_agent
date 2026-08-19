@@ -126,7 +126,7 @@ streamlit run app.py
 |---|---|
 | 💬 对话 | 聊天、历史消息、事件流、发送/中断 |
 | 🗂️ 会话管理 | 会话列表、新建 / 恢复 / 删除会话、清理保护置顶、批量清理旧会话（见下方专节） |
-| 📌 目标看板 | Goal / Objective 看板（按状态分列）、新建目标、Cron Job 管理与手动触发、Objective 执行进度 |
+| 📌 目标看板 | Goal / Objective 看板（按状态分列）、新建目标、删除单个/一键删除全部目标（级联清理关联 cron job 与产出数据）、Cron Job 管理与手动触发、Objective 执行进度 |
 | 🔄 工作流 | Workflow 运行面板、看板视图（按 Step 状态分列）、暂停/取消/续跑/审批、出错定位与单步修改重跑、历史执行列表 |
 | 📁 产出物 | 浏览 `.agent/` 等目录下产出文件，预览与下载 |
 | 🖼️ 产出预览 | 按任务/session 登记的产出物 manifest 语义化展示（图片内联、文档下载），支持深链接直达 |
@@ -208,6 +208,26 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
   来源）。创建成功后用 `st.toast()` 弹出确认提示，表单同时以
   `clear_on_submit=True` 清空输入（`kanban_goal_creation_feedback_bugfix.md`），
   避免用户点了创建之后看着输入框里残留的旧内容、不确定是否提交成功。
+- **删除目标**（`kanban_goal_delete_and_bulk_delete_plan.md`）：
+  - 单个删除——每张 Goal 卡片（非 Objective 子卡片）下方有独立的
+    "🗑️ 删除目标"折叠区，点击"🗑️ 删除"进入二次确认态，再点"⚠️ 确认删除"
+    才真正调用 `DELETE /v1/goals/{goal_id}`；确认文案会列出连带清理的
+    内容（绑定的 cron 定时任务、`daemon_run_outputs/goals/<id>/` 过程
+    数据、执行规范、执行阶段状态、调优草案），如果该 Goal 设置过产出
+    目录（`user_output_dir`）会额外提示"该目录不会被删除"。删除成功后
+    展示实际清理了几个关联 cron job，若部分关联文件清理失败会单独提示。
+  - 一键删除全部——Tab 顶部（新建目标表单上方）有一个默认收起的
+    "🗑️ 一键删除所有目标"折叠区，用于一次性清空当前全部 Goal（及各自的
+    子 Objective）。确认门槛比单个删除更高：需要在文本框里输入固定短语
+    「删除全部」才能点亮"⚠️ 确认删除全部"按钮，避免误触清空整个看板。
+    对应 `DELETE /v1/goals`，内部对每个 Goal 走与单个删除完全相同的
+    级联清理逻辑，单个 Goal 清理失败不影响其它 Goal 继续处理。
+  - 两个删除接口都只接受 `level == "goal"` 的节点——Objective（子任务）
+    没有单独的硬删除入口，需要终止/取消的话用卡片上已有的"🛑 终止"或
+    状态下拉框。
+  - 若某个 Goal 通过 `user_output_dir` 显式指定过产出目录，删除时**只清
+    理 Goal 自己的内部记账目录，不会碰用户的自定义产出目录**，详见
+    `docs/http-api-guide.md` `/v1/goals` 一节。
 - **周期性 Goal 可见性与操作**（`goal_cron_visibility_and_intervention_improvement_plan.md`
   Track A/B）：Goal 卡片标题下方展示 `🔁 周期性 · 已完成 N 轮` 徽标（未绑定则显示"未设为
   周期性"）；由 cron 触发的子 Objective 标注"⏰ 由 cron 周期触发"。卡片下方"⏰ 周期性设置"
@@ -504,7 +524,7 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `self_status()` / `autonomous_status()` | `/self/status`、`/self/autonomous` | 自省与自主循环状态 |
 | `pause_scheduling(reason=)` / `resume_scheduling()` | `POST /v1/autonomous/scheduling/pause\|resume` | 看板"停止调度"功能：全局暂停/恢复自动调度，见顶部状态条一节 |
 | `gating_history(limit=50)` | `GET /v1/autonomous/gating_history` | 仲裁状态（`full`/`degraded`/`blocked`）变化时间线，供"🗓️ 全局日程"Tab 使用（只读） |
-| `goals()` / `add_goal()` / `update_goal()` | `/v1/goals*` | Goal 看板 |
+| `goals()` / `add_goal()` / `update_goal()` / `delete_goal()` / `delete_all_goals()` | `/v1/goals*` | Goal 看板：查看 / 新建 / 更新 / 删除单个（级联清理关联 cron job 与产出数据）/ 一键删除全部 |
 | `recur_goal()` / `unrecur_goal()` / `skip_goal_next_cycle()` | `POST /v1/goals/{id}/recur\|unrecur\|skip_next_cycle` | 周期性 Goal 绑定 / 解绑 / 跳过下一轮（Track A/B） |
 | `execution_spec_templates()` / `get_execution_spec()` | `GET /v1/goal_execution_spec_templates`、`GET /v1/goals/{id}/execution_spec` | Goal 执行规范：模板库摘要（带关键词匹配预选） / 查看当前草稿或已确认版本 |
 | `generate_execution_spec(mode=)` / `revise_execution_spec(locked_fields=, mode=)` | `POST .../execution_spec/generate\|revise` | 生成第 1 版草稿 / 基于反馈+字段级锁定重新生成，`mode` 单次覆盖 `builder_mode`，响应体带 `effective_path` |

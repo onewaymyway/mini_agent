@@ -3533,6 +3533,54 @@ def _render_goal_card(
                 else:
                     st.rerun()
 
+    # [目标看板删除功能] 只在 Goal 级卡片上展示——Objective 是"子任务"，
+    # 应该用已有的取消/状态切换操作处理，不提供单独硬删除入口（与后端
+    # DELETE /v1/goals/{goal_id} 的限制保持一致）。风格对齐"⏰ Cron 任务"
+    # tab 的删除交互：先点"🗑️ 删除"进入二次确认态（用 session_state 标记
+    # 防误触），再点"⚠️ 确认删除"才真正调用接口；确认文案里明确列出会
+    # 一并清理的关联数据，避免用户以为只是"从列表隐藏"。
+    if n.get("level") != "objective":
+        with st.expander("🗑️ 删除目标", expanded=False):
+            st.caption(
+                "彻底删除这个目标及其全部子任务，并同时清理：绑定的 cron "
+                "定时任务、`.agent/daemon_run_outputs/goals/<id>/` 下的全部"
+                "过程数据、执行规范、执行阶段状态、调优草案。**如果你为这个"
+                "目标设置过产出目录（user_output_dir），该目录不会被删除。**"
+                "此操作不可撤销。"
+            )
+            confirm_key = f"{key_prefix}confirm_delete_goal_{n.get('id')}"
+            if not st.session_state.get(confirm_key):
+                if st.button("🗑️ 删除", key=f"{key_prefix}delete_goal_{n.get('id')}"):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
+            else:
+                st.warning(f"确认彻底删除「{n.get('title', '')}」？此操作不可撤销。")
+                if n.get("user_output_dir"):
+                    st.caption(f"（你设置过产出目录「{n.get('user_output_dir')}」，删除时会保留该目录，不受影响。）")
+                dgc1, dgc2 = st.columns(2)
+                with dgc1:
+                    if st.button("⚠️ 确认删除", key=f"{key_prefix}delete_goal_confirm_{n.get('id')}"):
+                        result = client.delete_goal(n.get("id"))
+                        st.session_state.pop(confirm_key, None)
+                        if isinstance(result, dict) and result.get("_error"):
+                            st.error(f"删除失败：{result['_error']}")
+                        else:
+                            removed_jobs = (result or {}).get("removed_cron_job_ids") or []
+                            file_errs = (result or {}).get("file_cleanup_errors") or []
+                            msg = f"已删除目标「{n.get('title', '')}」"
+                            if removed_jobs:
+                                msg += f"，同时清理了 {len(removed_jobs)} 个关联 cron 任务"
+                            st.success(msg)
+                            if file_errs:
+                                st.warning(f"部分关联数据清理失败（{', '.join(file_errs)}），可能需要手动清理对应目录/文件。")
+                            if st.session_state.get("kanban_focus_node_id") == n.get("id"):
+                                st.session_state.pop("kanban_focus_node_id", None)
+                        st.rerun()
+                with dgc2:
+                    if st.button("取消", key=f"{key_prefix}delete_goal_cancel_{n.get('id')}"):
+                        st.session_state.pop(confirm_key, None)
+                        st.rerun()
+
 
 # [kanban_perception_gaps_improvement_plan.md 方向 D.1] "📈 完成率趋势"
 # ——跟上面 growth_health_trend 是完全平行的模式（同一套"每日一条快照 +
@@ -3647,6 +3695,52 @@ def _render_cycle_health_overview(client: "AgentClient"):
 
 def render_kanban_tab(client: AgentClient):
     st.markdown("#### 📌 目标看板 (Goal Backlog)")
+
+    # [看板"一键删除所有目标"功能] 破坏性最强的批量操作，单独放在标题
+    # 正下方、独立折叠区里（默认收起，不占视线），二次确认门槛比单个
+    # 删除更高——要求用户输入固定短语「删除全部」才激活确认删除按钮，
+    # 而不是像单个删除那样点两下按钮就行，避免误触清空整个看板。
+    with st.expander("🗑️ 一键删除所有目标", expanded=False):
+        st.caption(
+            "彻底删除**当前全部**目标（含各自的子任务），并同时清理每个"
+            "目标关联的 cron 定时任务、`.agent/daemon_run_outputs/goals/`"
+            "下的过程数据、执行规范、执行阶段状态、调优草案。已设置过产出"
+            "目录（user_output_dir）的目标，其产出目录不会被删除。"
+            "**此操作不可撤销，请谨慎使用。**"
+        )
+        confirm_all_key = "confirm_delete_all_goals"
+        if not st.session_state.get(confirm_all_key):
+            if st.button("🗑️ 删除所有目标", key="delete_all_goals_btn"):
+                st.session_state[confirm_all_key] = True
+                st.rerun()
+        else:
+            st.error("⚠️ 即将删除全部目标，此操作不可撤销。请输入「删除全部」以确认：")
+            typed = st.text_input("确认短语", key="delete_all_goals_confirm_text", label_visibility="collapsed")
+            dac1, dac2 = st.columns(2)
+            with dac1:
+                if st.button("⚠️ 确认删除全部", key="delete_all_goals_confirm_btn", disabled=(typed.strip() != "删除全部")):
+                    result = client.delete_all_goals()
+                    st.session_state.pop(confirm_all_key, None)
+                    st.session_state.pop("delete_all_goals_confirm_text", None)
+                    if isinstance(result, dict) and result.get("_error"):
+                        st.error(f"删除失败：{result['_error']}")
+                    else:
+                        deleted_count = (result or {}).get("deleted_count", 0)
+                        total_count = (result or {}).get("total_count", 0)
+                        st.success(f"已删除 {deleted_count}/{total_count} 个目标。")
+                        all_file_errs = [
+                            e for r in (result or {}).get("results", [])
+                            for e in (r.get("file_cleanup_errors") or [])
+                        ]
+                        if all_file_errs:
+                            st.warning(f"部分关联数据清理时出现问题（{len(all_file_errs)} 项），可能需要手动检查对应目录/文件。")
+                    st.session_state.pop("kanban_focus_node_id", None)
+                    st.rerun()
+            with dac2:
+                if st.button("取消", key="delete_all_goals_cancel_btn"):
+                    st.session_state.pop(confirm_all_key, None)
+                    st.session_state.pop("delete_all_goals_confirm_text", None)
+                    st.rerun()
 
     _render_cycle_health_overview(client)
 

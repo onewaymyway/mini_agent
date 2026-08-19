@@ -150,6 +150,20 @@ def _phase_path(paths: "AgentPaths", goal_id: str) -> Path:
     return _phase_dir(paths) / f"{safe_id}.json"
 
 
+def delete_phase(paths: "AgentPaths", goal_id: str) -> bool:
+    """[看板目标删除功能] 删除指定 Goal 的执行阶段状态文件
+    （`.agent/goal_execution_phase/<safe_id>.json`）。文件不存在时视为
+    幂等成功，只有真正的 OSError 才返回 False。"""
+    p = _phase_path(paths, goal_id)
+    try:
+        p.unlink(missing_ok=True)
+        return True
+    except OSError as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where="mini_agent.perception.execution_phase.delete_phase")
+        return False
+
+
 def load_phase(paths: "AgentPaths", goal_id: str) -> ExecutionPhaseState:
     """不存在/损坏时返回默认状态（mode="auto", locked=False），不抛异常。"""
     p = _phase_path(paths, goal_id)

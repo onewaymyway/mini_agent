@@ -388,6 +388,19 @@ class AgentClient:
     def update_goal(self, goal_id: str, **fields):
         return self._patch(f"/goals/{goal_id}", fields)
 
+    def delete_goal(self, goal_id: str):
+        """DELETE /v1/goals/{goal_id} — [看板目标看板删除功能] 彻底删除一个
+        Goal（含全部子 Objective），后端同时级联清理绑定的 cron job、
+        `.agent/daemon_run_outputs/goals/<goal_id>/`、执行规范/执行阶段/
+        调优草案。只能对 level=goal 的节点调用（Objective 请用现有的
+        取消/状态切换操作）。"""
+        return self._delete(f"/goals/{goal_id}")
+
+    def delete_all_goals(self):
+        """DELETE /v1/goals — [看板"一键删除所有目标"功能] 对当前全部
+        Goal 逐个执行与 delete_goal() 相同的级联删除，一次性清空看板。"""
+        return self._delete("/goals")
+
     # ── 看板：周期性 Goal 绑定/解绑/跳过（goal_cron_visibility_and_
     # intervention_improvement_plan.md Track A/B）───────────────────────
     def recur_goal(self, goal_id: str, schedule: str, task_template: str = ""):

@@ -1056,6 +1056,48 @@ class GoalBacklog:
             node.last_touched_at = time.time()
         return True
 
+    def delete_goal(self, goal_id: str) -> list[str]:
+        """[看板目标删除功能] 硬删除一个 Goal 及其全部子孙节点（Objective）。
+
+        与 `set_status(..., "abandoned")` 不同——那只是状态迁移，节点本身
+        （以及 goals.json 里的记录）仍然保留；这里是真正从 `goals.json`
+        里物理移除，配合调用方（API 路由层）清理 cron job 绑定、
+        `.agent/daemon_run_outputs/goals/<goal_id>/`、执行规范/执行阶段/
+        调优草案等外部文件，做到"删除即彻底清干净，不留孤儿数据"。
+
+        只接受 `level == "goal"` 的节点——不允许单独删除某个 Objective
+        （那属于"取消这个子任务"的语义，已有 `ObjectiveExecutor.cancel()`/
+        `set_status()` 覆盖，不需要额外的硬删除入口）。
+
+        级联规则：递归收集 `children_ids`（虽然当前数据模型里 Objective
+        一般不再有自己的子节点，这里仍按树形结构递归，对未来可能出现的
+        多级结构保持健壮）。
+
+        返回被删除的全部节点 id 列表（goal 本身排在最前面），调用方据此
+        去清理各自 keyed by node id 的外部文件/cron job；节点不存在或不是
+        Goal 时返回空列表，不做任何修改。
+        """
+        with self._locked():
+            goal = self._nodes.get(goal_id)
+            if goal is None or not goal.is_goal:
+                return []
+
+            to_delete: list[str] = []
+            frontier = [goal_id]
+            seen: set[str] = set()
+            while frontier:
+                nid = frontier.pop()
+                if nid in seen or nid not in self._nodes:
+                    continue
+                seen.add(nid)
+                to_delete.append(nid)
+                frontier.extend(self._nodes[nid].children_ids)
+
+            for nid in to_delete:
+                self._nodes.pop(nid, None)
+
+        return to_delete
+
     def add_user_feedback(self, node_id: str, text: str, *, _sync: bool = True) -> bool:
         """[goal_cron_feedback_and_output_policy_plan.md Track B] 用户对某个
         Goal/Objective「提意见」，持久化合入该节点的 description，此后所有

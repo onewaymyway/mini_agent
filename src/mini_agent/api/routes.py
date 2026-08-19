@@ -83,6 +83,13 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
     POST   /v1/goals                 新增 Goal
     PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级/标题/描述
+    DELETE /v1/goals/{goal_id}       [看板目标删除功能] 硬删除 Goal + 子
+                                       Objective，级联清理关联 cron job、
+                                       daemon_run_outputs/goals/<id>/、
+                                       执行规范/执行阶段/调优草案
+    DELETE /v1/goals                 [看板"一键删除所有目标"] 对全部
+                                       level=goal 节点逐个执行上面同一套
+                                       级联删除
     POST   /v1/goals/{goal_id}/feedback  持久化提意见（合入 description，双向同步 cron）
     GET    /v1/goals/{goal_id}/cycle_diagnostics  [goal_cron_cycle_diagnostics_
                                        and_interactive_tuning_plan.md Stage 1]
@@ -3944,6 +3951,214 @@ async def update_goal(goal_id: str, request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _cascade_delete_goal(http_server, paths, backlog, goal) -> dict:
+    """[看板目标删除功能 + 一键清空所有目标] 单个 Goal 的级联删除实现，被
+    `DELETE /v1/goals/{goal_id}`（删一个）和 `DELETE /v1/goals`（删全部）
+    共用，避免两处各写一份、后续改动漏改一处。
+
+    `goal` 必须是调用方已经确认存在、`is_goal=True` 的 GoalNode（对应的
+    存在性/权限校验由调用方负责，本函数只管删除本身）。
+
+    [安全防线] 若这个 Goal 设置过 `user_output_dir`（指向 project_root 下
+    用户自己的产出目录，见 `goal_output_dir()`），那份目录被视为用户资产，
+    这里**永远不删**——只删 `.agent/daemon_run_outputs/goals/<goal_id>/`
+    这个 agent 自己的内部记账目录（该目录默认包含 output/ 子目录，但一旦
+    设置了 user_output_dir，真正的产出物已经在别处，这里删的 output/
+    最多是空目录或早期未生效的残留）。为了不因为未来重构悄悄破坏这条
+    保证，这里显式比较两个路径，路径重合/包含关系异常时直接跳过删除并
+    记录到 file_cleanup_errors，而不是盲目 rmtree。
+    """
+    goal_id = goal.id
+
+    # 1. 级联删除 GoalBacklog 里的节点（goal 本身 + 全部子孙）。
+    deleted_node_ids = backlog.delete_goal(goal_id)
+    deleted_ids_set = set(deleted_node_ids)
+
+    # 2. 清理 cron job：统一走 _get_cron_scheduler()（理由见
+    #    list_cron_jobs() 的说明），扫描所有 job.goal_id 命中被删节点的
+    #    job（包括但不限于 recurrence_cron_job_id 指向的那一个）。
+    removed_job_ids: list[str] = []
+    failed_job_ids: list[str] = []
+    cs = _get_cron_scheduler(http_server)
+    if cs is not None and deleted_ids_set:
+        try:
+            for job in cs.list_jobs():
+                if getattr(job, "goal_id", None) in deleted_ids_set:
+                    try:
+                        if cs.remove_job(job.id):
+                            removed_job_ids.append(job.id)
+                        else:
+                            failed_job_ids.append(job.id)
+                    except Exception as e:
+                        from mini_agent.errors import log_exception
+                        log_exception(e, where="mini_agent.api.routes._cascade_delete_goal(remove_job)")
+                        failed_job_ids.append(job.id)
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.api.routes._cascade_delete_goal(list_jobs)")
+
+    # 3. 清理外部文件（只需针对被删除的顶层 goal_id 本身——output_workspace/
+    #    execution_spec/execution_phase/cycle_tuning 四套存储都是以"Goal"
+    #    为粒度建目录/文件，不会给单个 Objective 单独开一份）。
+    import shutil
+    from mini_agent.evolution import output_workspace as ow
+    from mini_agent.perception import goal_execution_spec as ges
+    from mini_agent.perception import execution_phase as ephase
+    from mini_agent.perception import cycle_tuning as ctuning
+
+    file_cleanup_errors: list[str] = []
+    user_output_dir_preserved = False
+    try:
+        output_dir = ow.goal_output_base_dir(paths, goal_id).resolve()
+        # 用户设置过 user_output_dir 时，真正的产出目录会解析到别处（见
+        # goal_output_dir()）；这里显式核实 output_dir 没有"逃逸"成用户
+        # 自定义目录本身或其祖先目录，防止任何未来重构不小心让两者重合。
+        unsafe = False
+        if goal.user_output_dir:
+            custom_dir = ow.goal_output_dir(paths, goal_id, user_output_dir=goal.user_output_dir).resolve()
+            user_output_dir_preserved = True
+            if output_dir == custom_dir or custom_dir in output_dir.parents or output_dir in custom_dir.parents:
+                unsafe = True
+        if unsafe:
+            file_cleanup_errors.append("daemon_run_outputs（检测到与用户产出目录重合，已跳过删除以保护数据）")
+        elif output_dir.exists():
+            shutil.rmtree(output_dir)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where="mini_agent.api.routes._cascade_delete_goal(rmtree output_dir)")
+        file_cleanup_errors.append("daemon_run_outputs")
+    if not ges.delete_spec(paths, goal_id):
+        file_cleanup_errors.append("execution_spec")
+    if not ephase.delete_phase(paths, goal_id):
+        file_cleanup_errors.append("execution_phase")
+    if not ctuning.delete_proposals(paths, goal_id):
+        file_cleanup_errors.append("tuning_proposals")
+
+    return {
+        "goal_id": goal_id,
+        "title": goal.title,
+        "deleted_node_ids": deleted_node_ids,
+        "removed_cron_job_ids": removed_job_ids,
+        "failed_cron_job_ids": failed_job_ids,
+        "file_cleanup_errors": file_cleanup_errors,
+        "user_output_dir_preserved": user_output_dir_preserved,
+    }
+
+
+@router.delete("/goals/{goal_id}")
+async def delete_goal(goal_id: str, request: Request):
+    """DELETE /v1/goals/{goal_id} — [看板目标看板删除功能] 彻底删除一个
+    Goal（及其全部子 Objective），并级联清理该 Goal 关联的一切外部数据：
+
+      1. cron 任务：不管是周期性绑定的 goal_cycle job，还是任何其它
+         `goal_id` 指向被删节点的 cron job，一并 `remove_job()`——不这样
+         做的话，一个已经不存在的 Goal 仍然挂着一个每隔一段时间触发、
+         但 `goal_cron_bridge._fire_goal_cycle()` 读不到对应 Goal 只能
+         静默跳过的"僵尸" cron job，用户在"⏰ Cron 任务"tab 里还能看到它，
+         困惑"这个 job 是干嘛的、为什么删不掉里面引用的 Goal"。
+      2. `.agent/daemon_run_outputs/goals/<goal_id>/`：Goal 的全部内部
+         过程数据（notes/spec/scratch 三个内部目录 + 未显式设置
+         `user_output_dir` 时的默认产出目录）。**若用户曾显式设置过
+         `user_output_dir` 指向项目内的其它路径，那份"正式产出物"目录
+         永远不会被删除**——只删 Goal 自己的内部记账目录，见
+         `_cascade_delete_goal()` 里的显式路径核实逻辑。
+      3. `.agent/goal_execution_specs/<goal_id>.json`：执行规范权威存储。
+      4. `.agent/goal_execution_phase/<goal_id>.json`：执行阶段状态。
+      5. `.agent/cycle_tuning_proposals/<goal_id>/`：历史调优草案。
+
+    只允许删除 `level == "goal"` 的节点——Objective 请用现有的
+    `cancel`/`set_status` 操作，不提供单独硬删除入口（见
+    `GoalBacklog.delete_goal()` 的说明）。
+
+    [关于"session 数据"] 当前实现里 recurring Goal 的每轮触发、一次性
+    Goal 的子 Objective 执行都复用 daemon 主进程内的 Agent 实例/InputQueue
+    轮次，不会为某个 Goal 单独在 `.agent/sessions/<session_id>/` 下开一份
+    专属会话——也就没有需要按 `goal_id` 索引清理的 session 目录。真正
+    "属于这个 Goal 的运行痕迹"就是上面第 2 条的 `daemon_run_outputs/
+    goals/<goal_id>/`，已经在删除范围内。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.perception.goal_backlog import load_goal_backlog
+
+    self_agent = http_server.bridge.agent
+    project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+    if not project_root:
+        raise HTTPException(status_code=503, detail="project_root not configured")
+    paths = AgentPaths(project_root)
+    backlog = load_goal_backlog(paths)
+
+    goal = backlog.get(goal_id)
+    if goal is None or not goal.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+
+    result = _cascade_delete_goal(http_server, paths, backlog, goal)
+    if not result["deleted_node_ids"]:
+        # 理论上不会走到这——上面已经判过 goal 存在——但防御性处理并发
+        # 场景下 delete_goal() 内部重新 load() 后发现节点已被别的请求删掉。
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+
+    return {"deleted": True, **result}
+
+
+@router.delete("/goals")
+async def delete_all_goals(request: Request):
+    """DELETE /v1/goals — [看板"一键删除所有目标"功能] 遍历当前
+    GoalBacklog 里全部 `level == "goal"` 的节点，逐个走
+    `_cascade_delete_goal()`（含子 Objective + cron job + 关联文件的完整
+    级联清理，与单个删除的 `DELETE /v1/goals/{goal_id}` 是同一套逻辑，见
+    该函数的说明），一次性清空整个目标看板。
+
+    每个 Goal 各自的级联删除失败不会中断其它 Goal 的处理——用批量场景下
+    "尽量多删、把删不掉的报出来"比"整批因为一个失败全部回滚"更符合用户
+    对"一键清空"的预期。返回结构里 `results` 是每个 Goal 各自的删除结果
+    （字段同单个删除接口），`deleted_count`/`total_count` 供前端快速展示
+    汇总提示。
+
+    没有任何 Goal 时返回 `deleted_count=0`，不报错（视为"已经是空的"，
+    幂等）。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.perception.goal_backlog import load_goal_backlog
+
+    self_agent = http_server.bridge.agent
+    project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+    if not project_root:
+        raise HTTPException(status_code=503, detail="project_root not configured")
+    paths = AgentPaths(project_root)
+    backlog = load_goal_backlog(paths)
+
+    # 先拿一份快照 id 列表——delete_goal() 内部每次都会重新 load()，
+    # 循环过程中不能一边遍历 self._nodes.values() 一边改它。
+    goal_ids = [n.id for n in backlog.all_nodes() if n.is_goal]
+
+    results: list[dict] = []
+    for gid in goal_ids:
+        # 每次循环重新 get()：上一轮删除会触发 backlog 内部重新 load()，
+        # 这里的 backlog 对象本身没变，但为稳妥起见仍显式重新查一次，
+        # 避免依赖"内存态在多次 _locked() 调用之间保持同步"这个细节。
+        g = backlog.get(gid)
+        if g is None or not g.is_goal:
+            continue
+        results.append(_cascade_delete_goal(http_server, paths, backlog, g))
+
+    return {
+        "deleted": True,
+        "total_count": len(goal_ids),
+        "deleted_count": len(results),
+        "results": results,
+    }
 
 
 # ── 周期性 Goal 绑定/解绑/跳过（goal_cron_visibility_and_intervention_

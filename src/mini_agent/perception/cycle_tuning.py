@@ -131,6 +131,22 @@ def _proposal_path(paths: "AgentPaths", goal_id: str, proposal_id: str) -> Path:
     return _proposal_dir(paths, goal_id) / f"{proposal_id}.json"
 
 
+def delete_proposals(paths: "AgentPaths", goal_id: str) -> bool:
+    """[看板目标删除功能] 删除指定 Goal 的全部调优草案
+    （`.agent/cycle_tuning_proposals/<safe_id>/` 整个目录）。目录不存在时
+    视为幂等成功，只有真正的异常才返回 False。"""
+    import shutil
+    d = _proposal_dir(paths, goal_id)
+    try:
+        if d.exists():
+            shutil.rmtree(d)
+        return True
+    except OSError as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where="mini_agent.perception.cycle_tuning.delete_proposals")
+        return False
+
+
 def save_proposal(paths: "AgentPaths", proposal: CycleTuningProposal) -> Path:
     d = _proposal_dir(paths, proposal.goal_id)
     d.mkdir(parents=True, exist_ok=True)
