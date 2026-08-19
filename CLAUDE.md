@@ -72,6 +72,12 @@
 - 系统性的测试案例放在 /test_cases 下
 - 所有涉及调用大模型的 prompt，必须保存到 src/mini_agent/prompts 目录下，然后通过 PromptManager 来获取
 - 增加/命令 时，需要在 src/mini_agent/ui/terminal.py 的 _COMMANDS里配置对应的提示信息
+- **看板改动一律只改 `apps/mini_agent_kanban`（Streamlit，`app.py`）——这是当前实际在用的看板。**
+  `apps/mini_agent_kanban_x`（React SPA）目前处于实验/试点阶段，不承担日常使用，**不要**
+  默认把看板相关的 bug 修复或功能改动同步过去，除非用户明确要求。若某个改动同时涉及后端
+  `src/mini_agent/api/routes.py`，后端改动正常进行（两个看板共用同一套 REST API）；仅前端
+  展示/交互层面的修改收敛到 Streamlit 一侧。详见 `next_doc/kanban_react_spa_replacement_plan.md`
+  开头的状态说明。
 
 ## 运行
 
