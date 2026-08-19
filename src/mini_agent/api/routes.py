@@ -4427,6 +4427,11 @@ async def revise_goal_execution_spec(goal_id: str, request: Request):
     响应体同样新增 `effective_path`。
     """
     body = await request.json()
+    if not isinstance(body, dict):
+        # 前端理论上永远传对象，但网络层/客户端 bug 偶尔会传出裸字符串/数组，
+        # 那样 `body.get(...)` 会直接 500 且报错信息完全不知所云——这里提前
+        # 校验成一条明确的 400，而不是留给下面这行去抛未分类异常。
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON 对象")
     feedback = (body.get("feedback") or "").strip()
     if not feedback:
         raise HTTPException(status_code=400, detail="feedback is required")

@@ -118,7 +118,14 @@ _BRACE_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def _extract_json(text: str) -> Optional[dict]:
-    """从 LLM 输出中提取第一个 JSON 对象，容忍 markdown 代码块包裹。"""
+    """从 LLM 输出中提取第一个 JSON 对象，容忍 markdown 代码块包裹。
+
+    正则抠出的片段哪怕能被 `json.loads` 成功解析，也不保证结果是
+    dict——LLM 偶尔会在正文里夹带一段本身也合法但类型不对的 JSON（字符串/
+    数组），被误抠中解析成功后，下游 `data.get(...)` 会直接因类型不对崩掉
+    （镜像 `goal_execution_spec.py::_extract_json` 修的同一类问题，这里
+    同步修）。非 dict 一律按"解析失败"处理，交由调用方已有的兜底逻辑
+    （沿用 prior_spec / 保守值）接管。"""
     m = _JSON_FENCE_RE.search(text)
     candidate = m.group(1) if m else None
     if candidate is None:
@@ -127,11 +134,19 @@ def _extract_json(text: str) -> Optional[dict]:
     if candidate is None:
         return None
     try:
-        return json.loads(candidate)
+        parsed = json.loads(candidate)
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.goal_mode.spec._extract_json')
         return None
+    if not isinstance(parsed, dict):
+        from mini_agent.errors import log_exception
+        log_exception(
+            TypeError(f"LLM JSON 解析结果类型不是 dict，而是 {type(parsed).__name__}：{candidate[:200]!r}"),
+            where='mini_agent.goal_mode.spec._extract_json',
+        )
+        return None
+    return parsed
 
 
 _NON_WORD_RE = re.compile(r"[\s,，。.！!？?；;:：\-_/\\'\"“”‘’()（）\[\]【】]+")

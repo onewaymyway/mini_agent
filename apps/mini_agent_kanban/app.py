@@ -2466,6 +2466,27 @@ def _render_goal_output_manifests(client: AgentClient, goal_id: str, key_prefix:
                 st.caption(f"　备注：{manifest['progress_note']}")
 
 
+def _sync_execution_spec_from_server(
+    client: "AgentClient", goal_id: str, draft_key: str, path_key: str,
+) -> None:
+    """写操作（generate/revise/confirm）失败后调用：强制重新拉取后端真实
+    持久化的 spec，覆盖本地 `st.session_state[draft_key]`。
+
+    背景：这几个按钮点击后本地缓存只在\"成功\"分支里用响应体的 `spec` 直接
+    覆盖，失败分支此前什么都不做——多数情况下确实等价于\"什么都没变\"，
+    但一旦后端出现\"部分持久化后才报错\"这类边界情况（或者两个标签页并发
+    操作同一个 Goal），本地缓存就会跟后端真实状态脱节，界面上看到的内容
+    和实际已经不一致，用户却毫无感知。失败后无条件回源一次，保证界面
+    显示的永远是后端当前的真实状态，而不是\"上一次成功响应\"的旧快照。"""
+    existing = client.get_execution_spec(goal_id)
+    if existing and not existing.get("_error"):
+        st.session_state[draft_key] = existing.get("spec")
+        # effective_path 只在 generate/revise 响应体里有，GET 接口不返回，
+        # 这里不清空——保留"上次生成走的路径"这条提示信息，比强制清空更有用。
+    # GET 本身也失败的话（网络问题等）：保留本地旧值不动，避免把一个"读取
+    # 失败"误当成"服务端数据被清空"，导致界面从有内容变成空白。
+
+
 def _render_execution_spec_summary(spec: dict) -> None:
     """把 execution_spec dict 渲染成可读摘要（看板本地实现，不依赖后端渲染
     出的文本，方便反馈迭代后立即重绘）。"""
@@ -2673,6 +2694,11 @@ def _render_goal_execution_spec_widget(
             )
             if res and res.get("_error"):
                 st.error(f"生成失败：{res['_error']}")
+                # 注意：这里故意不调用 st.rerun()——错误信息只在当前这次
+                # 渲染里通过 st.error 显示，立即 rerun 会让用户还没看清就被
+                # 清空。回源同步放在这个渲染周期内完成，下一次用户交互
+                # （或页面自然刷新）触发的渲染就会用上同步后的状态。
+                _sync_execution_spec_from_server(client, goal_id, draft_key, path_key)
             else:
                 st.session_state[draft_key] = res.get("spec")
                 st.session_state[path_key] = res.get("effective_path")
@@ -2734,6 +2760,7 @@ def _render_goal_execution_spec_widget(
             res = client.revise_execution_spec(goal_id, feedback.strip(), locked_fields=locked_now, mode=revise_mode)
             if res and res.get("_error"):
                 st.error(f"重新生成失败：{res['_error']}")
+                _sync_execution_spec_from_server(client, goal_id, draft_key, path_key)
             else:
                 st.session_state[diff_key] = spec
                 st.session_state[draft_key] = res.get("spec")
@@ -2743,6 +2770,7 @@ def _render_goal_execution_spec_widget(
         res = client.confirm_execution_spec(goal_id)
         if res and res.get("_error"):
             st.error(f"确认失败：{res['_error']}")
+            _sync_execution_spec_from_server(client, goal_id, draft_key, path_key)
         else:
             st.session_state[draft_key] = res.get("spec")
             st.session_state.pop(diff_key, None)
@@ -2772,6 +2800,7 @@ def _render_goal_execution_spec_widget(
             res = client.generate_execution_spec(goal_id, template_id=template_id2)
             if res and res.get("_error"):
                 st.error(f"重新起草失败：{res['_error']}")
+                _sync_execution_spec_from_server(client, goal_id, draft_key, path_key)
             else:
                 st.session_state[diff_key] = spec
                 st.session_state[draft_key] = res.get("spec")

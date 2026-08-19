@@ -691,6 +691,16 @@ _BRACE_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def _extract_json(text: str) -> Optional[dict]:
+    """从 LLM 原始输出里抠出 JSON 对象。
+
+    正则命中的片段哪怕能被 `json.loads` 成功解析，也不保证解析结果是
+    dict——LLM 偶尔会在正文里夹带一段本身也合法但类型不对的 JSON（比如
+    示例性的字符串/数组），被 `_BRACE_RE`/`_JSON_FENCE_RE` 误抠中并解析
+    成功，此时下游 `_spec_from_llm_data(data, ...)` 里 `data.get(...)`
+    会直接因为类型不对而崩掉（曾经出现过 `'str' object has no attribute
+    'get'` 的线上报错）。这里统一加一道类型校验，非 dict 一律按"解析
+    失败"处理，交由调用方已有的兜底逻辑（保留上一版内容 / 返回
+    generation_error）接管，不让类型错误冒泡成 500。"""
     m = _JSON_FENCE_RE.search(text or "")
     candidate = m.group(1) if m else None
     if candidate is None:
@@ -699,11 +709,19 @@ def _extract_json(text: str) -> Optional[dict]:
     if candidate is None:
         return None
     try:
-        return json.loads(candidate)
+        parsed = json.loads(candidate)
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where="mini_agent.perception.goal_execution_spec._extract_json")
         return None
+    if not isinstance(parsed, dict):
+        from mini_agent.errors import log_exception
+        log_exception(
+            TypeError(f"LLM JSON 解析结果类型不是 dict，而是 {type(parsed).__name__}：{candidate[:200]!r}"),
+            where="mini_agent.perception.goal_execution_spec._extract_json",
+        )
+        return None
+    return parsed
 
 
 def _spec_from_llm_data(data: dict, goal_id: str, version: int, locked_fields: Optional[list[str]] = None) -> GoalExecutionSpec:

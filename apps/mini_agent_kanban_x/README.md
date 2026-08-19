@@ -1,5 +1,9 @@
 # Mini Agent 看板 X（React SPA 版）
 
+> **⚠️ 当前状态（2026-08 更新）：本项目是实验/试点看板，尚未成为日常使用的看板。**
+> **`apps/mini_agent_kanban`（Streamlit）才是当前真正在用的看板，今后的看板相关
+> 改动（bug 修复、功能调整）一律只改 Streamlit 一侧，除非用户明确要求同步到这里。**
+
 用 `Vite + React + TypeScript + Ant Design + TanStack Query` 重构的新一代看板，
 替代基于 Streamlit 的 `apps/mini_agent_kanban`（保留、不影响旧版继续使用）。
 

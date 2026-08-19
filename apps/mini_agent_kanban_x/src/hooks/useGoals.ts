@@ -75,18 +75,23 @@ export function useExecutionSpec(goalId: string | undefined) {
 
   return {
     ...query,
+    // 四个写操作全部用 onSettled（成功/失败都触发）替代 onSuccess 单独触发
+    // invalidate：失败时也强制重新拉取 `/execution_spec`，让界面回到后端
+    // 真实持久化的状态，而不是停留在"修订前"的旧缓存上、让用户误以为
+    // 修订已经生效或者界面卡住了。全局 onError（见 main.tsx）负责弹出
+    // 报错提示，这里只负责状态同步。
     generate: useMutation({
       mutationFn: (body?: Parameters<typeof generateExecutionSpec>[1]) =>
         generateExecutionSpec(goalId as string, body),
-      onSuccess: invalidate,
+      onSettled: invalidate,
     }),
     revise: useMutation({
       mutationFn: ({ feedback, locked }: { feedback: string; locked?: string[] }) =>
         reviseExecutionSpec(goalId as string, feedback, locked),
-      onSuccess: invalidate,
+      onSettled: invalidate,
     }),
-    confirm: useMutation({ mutationFn: () => confirmExecutionSpec(goalId as string), onSuccess: invalidate }),
-    closeCheck: useMutation({ mutationFn: () => closeCheckExecutionSpec(goalId as string), onSuccess: invalidate }),
+    confirm: useMutation({ mutationFn: () => confirmExecutionSpec(goalId as string), onSettled: invalidate }),
+    closeCheck: useMutation({ mutationFn: () => closeCheckExecutionSpec(goalId as string), onSettled: invalidate }),
   };
 }
 
