@@ -802,10 +802,18 @@ class AgentClient:
     # ── 成长顾问 Growth Advisor（growth_advisor_design.md）─────────────
     def growth_summary(self, refresh_diagnostics: bool = False):
         params = {"refresh_diagnostics": True} if refresh_diagnostics else None
-        # 强制刷新时会绕过缓存重新扫描全部历史 session（正是慢的那一步），
-        # 默认 6s 超时不够用；给这条路径单独放宽到 50s（略低于服务端
-        # blocking_guard 的 45s 超时 + 一点余量），避免客户端先掉线。
-        timeout = 50 if refresh_diagnostics else 6
+        # [BUGFIX] 默认（非强制刷新）路径之前是 6s——但服务端
+        # `diagnostics_snapshot()` 走 `run_blocking()`，允许的默认预算是
+        # 45s（`blocking_guard.DEFAULT_TIMEOUT_SECONDS`），加上路由里还有
+        # 一段未进线程池的同步文件 I/O（候选/报告/月度复盘/cron 任务列表）。
+        # 候选、报告、goal 数量稍多时，一次"正常"请求耗时超过 6s 很常见，
+        # 服务端远没到超时，客户端却先 `Read timed out` 断开——表现为
+        # "成长顾问 tab 总是报错"，其实 daemon 侧一切正常。
+        # 强制刷新（绕过缓存重新扫描）本就更慢，维持 50s；默认路径也不能
+        # 再是 6s 这种远低于服务端自身容忍度的数字，一并放宽到 25s
+        # （留出跟 refresh 路径的区分度，明显比默认页面加载体感慢时能
+        # 提示用户"点一下🔄刷新诊断数据"）。
+        timeout = 50 if refresh_diagnostics else 25
         return self._get("/growth/summary", params=params, timeout=timeout)
 
     def growth_scan(self):

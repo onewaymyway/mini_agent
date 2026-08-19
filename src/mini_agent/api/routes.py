@@ -7020,9 +7020,22 @@ async def get_growth_summary(request: Request, refresh_diagnostics: bool = False
         from mini_agent.profile import UserProfileManager
 
         backlog = ga.GrowthBacklog(paths)
-        candidates = backlog.load_all()
-        reports = ga.list_reports(paths)
-        retro = ga.monthly_retrospective_summary(paths)
+        # [BUGFIX] 之前 backlog.load_all()/list_reports()/
+        # monthly_retrospective_summary() 是直接同步调用，写在 async 路由
+        # 函数体里、没有 await 也没进线程池——候选/报告数量增长后这几步本身
+        # 会变慢，而且会跟其它并发请求一起阻塞事件循环（同类问题见
+        # next_doc/session_list_blocking_and_cache_fix.md）。这里合并成
+        # 一次 run_blocking() 调用，跟下面 diagnostics_snapshot() 用同一套
+        # 熔断/超时策略，且避免线程池里再嵌套起线程（分开一次调用，不是
+        # 在 diagnostics_snapshot 内部再调 run_blocking）。
+        def _load_backlog_reports_retro():
+            return backlog.load_all(), ga.list_reports(paths), ga.monthly_retrospective_summary(paths)
+
+        candidates, reports, retro = await run_blocking(
+            _load_backlog_reports_retro,
+            fallback=([], [], {}),
+            **_blocking_call_opts(request, "growth_summary_backlog_reports"),
+        )
 
         http_server = getattr(request.app.state, "http_server", None)
         self_agent = http_server.bridge.agent if http_server else None
@@ -7082,11 +7095,20 @@ async def get_growth_summary(request: Request, refresh_diagnostics: bool = False
         else:
             diagnostics["cron_jobs"] = {"_note": "CronScheduler not available (daemon mode required)"}
 
+        # [BUGFIX] 同上，first_touch_notice_shown() 是磁盘读取，一并进
+        # 线程池——这里单开一次调用而不是塞进上面那次，因为它依赖
+        # `paths` 之外没有别的输入，开销也很小，拆开更清楚。
+        first_touch_shown = await run_blocking(
+            ga.first_touch_notice_shown, paths,
+            fallback=True,  # 拿不到时保守当作"已展示过"，不重复打扰用户
+            **_blocking_call_opts(request, "growth_summary_first_touch"),
+        )
+
         return {
             "candidates": [c.to_dict() for c in candidates],
             "reports": [r.to_dict() for r in reports],
             "retrospective": retro,
-            "first_touch_notice_shown": ga.first_touch_notice_shown(paths),
+            "first_touch_notice_shown": first_touch_shown,
             "diagnostics": diagnostics,
         }
     except HTTPException:
