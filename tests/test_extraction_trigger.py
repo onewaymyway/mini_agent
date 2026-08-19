@@ -131,6 +131,72 @@ def test_scan_connective_density_takes_priority_over_entity_density():
     assert candidate.trigger_reason == "connective_density"
 
 
+# ── max_window_chars 窗口预算上限 ───────────────────────────────────────────
+# next_doc/extraction_window_oversize_chunking_fix.md §7 后续优化：窗口预算
+# 上限应该在"长期不触发三条规则、内容持续累积"时提前截断，而不是等超限了
+# 才靠 history_manager.py 里的递归二分事后补救。
+
+
+def test_scan_size_cap_truncates_when_budget_exceeded():
+    # 构造一堆不含连接词/实体特征、轮次也不够 min_window_turns 的平淡内容，
+    # 单靠原有三条规则永远不会触发；但总字符数超过 max_window_chars。
+    entries: list[dict] = []
+    for i in range(4):
+        entries.extend(_turn("啊" * 50))
+    total_chars = sum(len(str(e.get("content", ""))) for e in entries)
+    budget = total_chars // 2  # 预算只够纳入大约一半内容
+
+    candidate = scan_for_extraction_window(
+        entries, last_extracted_index=0, min_window_turns=100,
+        connective_density_threshold=999.0,
+        max_window_chars=budget,
+    )
+    assert candidate is not None
+    assert candidate.trigger_reason == "size_cap"
+    assert candidate.truncated is True
+    assert candidate.start_index == 0
+    assert 0 < candidate.end_index < len(entries)
+
+
+def test_scan_size_cap_always_includes_at_least_one_entry():
+    # 预算小到连第一条都放不下时，仍然至少纳入一条（不能返回空窗口），
+    # 单条极端巨大的兜底交给 history_manager.py 的递归二分处理。
+    entries = [*_turn("一段很长的内容" * 20)]
+    candidate = scan_for_extraction_window(
+        entries, last_extracted_index=0, min_window_turns=100,
+        max_window_chars=1,
+    )
+    assert candidate is not None
+    assert candidate.trigger_reason == "size_cap"
+    assert candidate.end_index >= 1
+
+
+def test_scan_size_cap_does_not_trigger_when_within_budget():
+    # 预算充足时，size_cap 不应该抢在其它规则前面误触发；这里内容本身
+    # 也不满足其它规则，所以应该整体返回 None。
+    entries = [*_turn("今天天气不错。")]
+    candidate = scan_for_extraction_window(
+        entries, last_extracted_index=0, min_window_turns=6,
+        max_window_chars=1_000_000,
+    )
+    assert candidate is None
+
+
+def test_scan_size_cap_defers_to_connective_density_when_within_budget():
+    # 预算足够容纳全部新增内容时，正常走原有三条规则，size_cap 不介入、
+    # 不影响 end_index（仍然是全部新增内容的末尾）。
+    entries = [
+        make_user_input("因为旧方案有性能问题，所以我们决定改为新的批处理实现。"),
+    ]
+    candidate = scan_for_extraction_window(
+        entries, last_extracted_index=0, min_window_turns=100,
+        max_window_chars=1_000_000,
+    )
+    assert candidate is not None
+    assert candidate.trigger_reason == "connective_density"
+    assert candidate.end_index == len(entries)
+
+
 # ── cursor 持久化 ─────────────────────────────────────────────────────────
 
 def test_load_cursor_defaults_to_zero_when_missing(paths):

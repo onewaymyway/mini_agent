@@ -116,9 +116,23 @@ class ExtractionWindowCandidate:
     """一次候选抽取窗口的探测结果。"""
 
     start_index: int          # raw history 起始条目 index（含）
-    end_index: int             # 结束 index（不含），即调用时刻的 len(raw_entries)
-    trigger_reason: str        # "connective_density" | "entity_density" | "turn_count" | "session_end"
+    end_index: int             # 结束 index（不含）——不再总是 len(raw_entries)，
+                                # 见 `max_window_chars`：超过预算时会被提前截断，
+                                # 剩余部分留到下次继续扫描。
+    trigger_reason: str        # "connective_density" | "entity_density" | "turn_count"
+                                # | "size_cap" | "session_end"
     signal_score: float        # 触发强度，用于排队优先级（本模块不做排队，仅透传）
+    truncated: bool = False    # 本次候选窗口是否因为超出 max_window_chars 被截断
+                                # （即游标之后其实还有更多未纳入本窗口的新增内容）
+
+
+def _entries_char_len(entries: list[dict]) -> int:
+    """粗略估算一段 raw entries 的字符总量（与 compact._compact_chunked() 里
+    `turn_chars = sum(len(str(m.get("content", ""))) for m in turn_msgs)` 是
+    同一套估算口径，只取 content 字段的字符串化长度，不做精确 token 计数——
+    这里只需要一个足够便宜、足够单调的信号来做窗口预算切分，不需要精确。
+    """
+    return sum(len(str(e.get("content", ""))) for e in entries)
 
 
 def _extract_text(msg: dict) -> str:
@@ -150,6 +164,32 @@ def _connective_density(entries: list[dict], keywords: tuple[str, ...]) -> float
     return hits / len(text) * 100
 
 
+def _cap_window_by_chars(
+    raw_entries: list[dict], start_index: int, end_index: int, max_chars: int
+) -> tuple[int, bool]:
+    """在 `[start_index, end_index)` 范围内，按字符预算从 `start_index` 起
+    尽量多地纳入条目，返回 `(capped_end_index, truncated)`。
+
+    与 compaction.py::_compact_chunked() 的 chunk 切分策略同一个思路：
+    - 至少纳入一条（即使这一条本身已经超过预算——单条极端巨大是"内容
+      本身超限"，交给 history_manager.py 里 `_dispatch_extraction_window()`
+      的递归二分兜底，不是这里要解决的问题；这里只负责"别让窗口无限
+      累积变大"）。
+    - `truncated=True` 表示预算不够纳入 `end_index` 之前的全部新增内容，
+      调用方应把这次候选窗口标记为提前截断（游标之后还有剩余内容，留到
+      下次继续扫描，不会丢失）。
+    """
+    total_chars = 0
+    cursor = start_index
+    for i in range(start_index, end_index):
+        entry_chars = _entries_char_len([raw_entries[i]])
+        if cursor > start_index and total_chars + entry_chars > max_chars:
+            break
+        total_chars += entry_chars
+        cursor = i + 1
+    return cursor, cursor < end_index
+
+
 def scan_for_extraction_window(
     raw_entries: list[dict],
     *,
@@ -159,11 +199,23 @@ def scan_for_extraction_window(
     connective_density_threshold: float = _DEFAULT_CONNECTIVE_DENSITY_THRESHOLD,
     known_entity_names: frozenset[str] = frozenset(),
     min_new_entity_terms: int = _DEFAULT_MIN_NEW_ENTITY_TERMS,
+    max_window_chars: Optional[int] = None,
 ) -> Optional[ExtractionWindowCandidate]:
     """规则驱动、零 LLM 成本的候选窗口探测（计划 §1.2.1 触发规则 1/2，
-    改进计划第 4 节新增规则 1b）。
+    改进计划第 4 节新增规则 1b；`max_window_chars` 为
+    next_doc/extraction_window_oversize_chunking_fix.md §7 补充的窗口预算
+    上限）。
 
-    触发规则（满足任一即返回候选窗口）：
+    触发规则（满足任一即返回候选窗口，按下面的顺序判断）：
+    0. **窗口预算上限**（`max_window_chars`，若传入且 > 0）：游标之后新增
+       内容的字符数一旦超过这个预算，不再等待连接词/实体/轮次三条规则
+       是否命中，直接就地按预算截断、返回一个 `trigger_reason="size_cap"`
+       的候选窗口——这是从源头避免"长期没有触发（比如只在跑工具、用户
+       输入轮次很少但工具输出本身很大）→未处理条目持续累积→最终一次性
+       打包成远超模型上下文的超大窗口"这个问题（history_manager.py 里的
+       递归二分只是超限后的事后兜底，这里是提前预防）。触发后不会丢内容：
+       `end_index` 只是被限制在预算内，剩余部分保留在 raw_entries 里，
+       下次扫描时 `last_extracted_index` 已经推进到这里，会继续被看到。
     1. **连接词密度**：`last_extracted_index` 之后新增条目文本中，
        "因为/所以/决定/改为/放弃/取代/而不是"等词的密度超过阈值。
        这条规则本质上是"决策/纠正语境探测器"。
@@ -181,7 +233,9 @@ def scan_for_extraction_window(
     不感知"session 是否结束"这一外部事件），由调用方
     （agent/lifecycle.py::close()）在 session 结束时以
     `force=True` 的方式单独处理，见 history_manager.py::
-    maybe_trigger_extraction 的 force 参数。
+    maybe_trigger_extraction 的 force 参数（`force=True` 路径不经过本函数，
+    因此不受 `max_window_chars` 约束——session 结束时的兜底仍然是"一次性
+    收尾剩余全部内容"，超限风险由 history_manager.py 的递归二分兜底吸收）。
 
     `last_extracted_index` 越界（大于 `len(raw_entries)`，比如 cursor
     文件损坏/手动改坏）时视为"没有新内容"，返回 None，不抛异常。
@@ -191,11 +245,29 @@ def scan_for_extraction_window(
     if last_extracted_index >= len(raw_entries):
         return None
 
-    new_entries = raw_entries[last_extracted_index:]
-    if not new_entries:
+    full_end_index = len(raw_entries)
+    new_entries_probe = raw_entries[last_extracted_index:full_end_index]
+    if not new_entries_probe:
         return None
 
-    end_index = len(raw_entries)
+    end_index = full_end_index
+    if max_window_chars is not None and max_window_chars > 0:
+        end_index, truncated = _cap_window_by_chars(
+            raw_entries, last_extracted_index, full_end_index, max_window_chars
+        )
+        if truncated:
+            capped_entries = raw_entries[last_extracted_index:end_index]
+            return ExtractionWindowCandidate(
+                start_index=last_extracted_index,
+                end_index=end_index,
+                trigger_reason="size_cap",
+                signal_score=float(_entries_char_len(capped_entries)),
+                truncated=True,
+            )
+
+    new_entries = raw_entries[last_extracted_index:end_index]
+    if not new_entries:
+        return None
 
     density = _connective_density(new_entries, connective_keywords)
     if density >= connective_density_threshold:

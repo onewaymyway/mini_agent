@@ -226,6 +226,18 @@ class CompressConfig:
     # 不被抽取（计划 §1.2.1 触发规则 2）。
     extraction_trigger_min_window_turns: int = 6
 
+    # [BUGFIX / next_doc/extraction_window_oversize_chunking_fix.md §7 后续优化]
+    # 候选窗口的字符数硬上限：`scan_for_extraction_window()` 在游标之后累积
+    # 新增内容超过这个预算时，直接就地截断返回一个较小的候选窗口（trigger_
+    # reason="size_cap"），剩下的内容留到下次继续扫描——从源头避免"长期没有
+    # 命中连接词/实体/轮次三条规则→越攒越大→最终一次性远超模型上下文"的
+    # 场景，而不是只靠 history_manager.py 里超限后的递归二分事后补救。
+    # 0（默认）= 不设固定值，运行时按 `0.5 * 模型上下文窗口 * 3 chars/token`
+    # 动态换算（与 compaction.py::_compact_chunked() 的 chunk_budget_chars
+    # 用同一套估算口径），保持"抽取窗口预算"和"compact 分块预算"两者的
+    # 数量级一致；显式设为正数则覆盖这个自动换算。
+    extraction_trigger_max_window_chars: int = 0
+
     extract_decisions: bool = True     # LLMSummaryStrategy 是否顺带提炼 decisions[] 并存入 pending 队列
                                         # （决策/取舍知识提炼计划 5.2 节；不增加额外 LLM 调用，仅解析开关）
     # ── wiki 提取层与组织层改进计划 E3：抽取"看不到"已有知识库的反向注入 ──

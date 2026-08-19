@@ -111,9 +111,68 @@ finally:
   比后一半大很多（比如前半段有个巨型工具输出），第一次二分后不一定
   刚好落在能过关的大小，会继续递归，但最终仍会收敛（每次至少减半，
   `_MAX_EXTRACTION_SPLIT_DEPTH=6` 对应最多 64 份，通常足够）。
-- 没有从根源上限制"单次窗口最多包含多少条目/多少估算 token"——如果
-  希望从源头避免窗口越攒越大（而不是等超限了再事后补救），可以在
-  `scan_for_extraction_window()` 里给 `end_index` 加一个硬上限（比如
-  游标之后最多看最近 N 条，超过 N 条就先返回一个候选窗口，剩下的留到
-  下次继续扫描），这样可以更早触发、窗口更小更可控，但属于另一个改动
-  方向，本次先解决"超限了怎么优雅降级"这个更紧急的问题。
+- ~~没有从根源上限制"单次窗口最多包含多少条目/多少估算 token"~~——
+  已在 §8 补上，见下文。
+
+## 8. 补充修复：窗口预算上限（源头预防，而不是超限后二分）
+
+### 8.1 起因
+
+排查一次相关问题时发现：`_dispatch_lightweight_extraction()` /
+`_dispatch_extraction_window()` 用的是 raw history（`self._raw.entries`，
+完整未截断的原始事件日志），而 compact 用的是处理后的 `self._history`——
+两者本来就不是同一份数据，raw 天然更大。这不是 bug，是
+`extraction_trigger.py` 顶部注释里说明过的既定设计（抽取要跟 raw history
+走，坐标才不会因为 compact 清空/重置 `self._history` 而失效）。
+
+但 §6 的二分重试仍然只是"超限了再二分"的事后补救，没有对齐 compact 那边
+`agent/compaction.py::_compact_chunked()` 已经在用的"提前按 token 预算
+主动切分"（`chunk_budget_chars = model_ctx_tokens * 0.50 * CHARS_PER_TOKEN`）
+思路。
+
+### 8.2 修复
+
+- `history/extraction_trigger.py::scan_for_extraction_window()` 新增
+  `max_window_chars` 参数：游标之后新增内容的估算字符数一旦超过这个预算，
+  不再等待连接词/实体/轮次三条规则是否命中，直接按预算截断，返回一个
+  `trigger_reason="size_cap"` 的候选窗口（新增 `_cap_window_by_chars()`
+  按条目边界从游标处累加字符数，至少纳入一条，超预算即停）。
+  `ExtractionWindowCandidate` 新增 `truncated: bool` 字段标记这次窗口是否
+  被提前截断——截断不等于丢内容，游标只是推进到截断处，剩余部分下次
+  扫描时仍会被看到。
+- `history_manager.py` 新增 `_extraction_window_max_chars()`：显式配置
+  `CompressConfig.extraction_trigger_max_window_chars`（默认 0）时直接
+  采用；否则按 `llm_client.context_window` / `cfg.model_context_window`
+  动态换算（`ctx_tokens * 0.5 * 3 chars/token`），与 `_compact_chunked()`
+  的 `chunk_budget_chars` 同一套估算口径，取不到模型上下文时退化为
+  100K token 默认值。计算失败不影响触发判断本身，静默返回 `None`（等价于
+  "不设预算上限"，退回本次改动前的行为）。
+- `_maybe_trigger_extraction_impl()` 里非 `force` 路径调用
+  `scan_for_extraction_window()` 时传入这个预算；`force=True`（session
+  结束兜底）路径不受影响，仍然是"一次性收尾剩余全部内容"，超限风险继续
+  由 §6 的递归二分兜底吸收（session 结束时优先保证不丢内容，超限了二分
+  兜底比预算截断更合适——截断会把"这次没抽完"的状态留到下一次运行，但
+  session 已经结束就没有下一次了）。
+
+### 8.3 效果
+
+常规触发路径下，窗口在累积阶段就会被主动限制在预算内，`_dispatch_
+extraction_window()` 的递归二分理论上只会在"单条内容本身极端巨大"这类
+预算估算失准的场景下才会被触发，而不再是"长期不触发攒出天文数字窗口"
+的常态路径。
+
+### 8.4 涉及文件（本次新增/修改）
+
+- `src/mini_agent/history/extraction_trigger.py`
+  — 新增 `_entries_char_len()` / `_cap_window_by_chars()`
+  — `ExtractionWindowCandidate` 新增 `truncated` 字段
+  — `scan_for_extraction_window()` 新增 `max_window_chars` 参数与
+    `"size_cap"` 触发分支
+- `src/mini_agent/history_manager.py`
+  — 新增 `_extraction_window_max_chars()`
+  — `_maybe_trigger_extraction_impl()` 非 force 路径接入该预算
+- `src/mini_agent/config/models.py`
+  — `CompressConfig` 新增 `extraction_trigger_max_window_chars: int = 0`
+- `tests/test_extraction_trigger.py`
+  — 新增 4 个 `size_cap` 相关用例（超预算截断 / 预算过小仍保底纳入一条 /
+    预算充足不误触发 / 预算充足时正常让位给 connective_density）

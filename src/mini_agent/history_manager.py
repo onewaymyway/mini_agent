@@ -350,6 +350,50 @@ class HistoryManager:
             log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager.is_extraction_caught_up')
             return False
 
+    #: [BUGFIX / next_doc/extraction_window_oversize_chunking_fix.md §7]
+    #: `scan_for_extraction_window()` 的窗口字符预算换算比例，与
+    #: agent/compaction.py::_compact_chunked() 的 `chunk_budget_chars`
+    #: 用同一套估算口径（1 token ≈ 3 chars 保守估算，只用 50% 模型上下文，
+    #: 另一半留给 system prompt / entity digest / 输出），保持"抽取窗口
+    #: 预算"和"compact 分块预算"两者数量级一致，不是巧合也不是重复定义
+    #: ——两处独立维护是因为分属不同 mixin/模块，同步依赖注释提醒，不抽
+    #: 公共常量（项目里对这类"轻量估算复制两份"是既定风格，见
+    #: extraction_trigger.py 顶部 `_extract_text` 的说明）。
+    _EXTRACTION_WINDOW_CHARS_PER_TOKEN = 3
+    _EXTRACTION_WINDOW_CTX_FRACTION = 0.5
+    _EXTRACTION_WINDOW_DEFAULT_CTX_TOKENS = 100_000
+
+    def _extraction_window_max_chars(
+        self, cfg_compress, llm_client: Optional["LLMClient"]
+    ) -> Optional[int]:
+        """算出传给 `scan_for_extraction_window(max_window_chars=...)` 的预算。
+
+        显式配置 `extraction_trigger_max_window_chars > 0` 时直接采用（用户
+        手动覆盖）；否则按模型上下文窗口动态换算，取不到模型上下文时退化为
+        `_EXTRACTION_WINDOW_DEFAULT_CTX_TOKENS`（与 compaction.py 里的默认
+        100K token 兜底一致）。任何异常都不应阻断触发判断本身，失败时返回
+        None（等价于"不设预算上限"，退回本次改动前的行为，不是更糟的行为）。
+        """
+        try:
+            explicit = int(getattr(cfg_compress, "extraction_trigger_max_window_chars", 0) or 0)
+            if explicit > 0:
+                return explicit
+
+            ctx_tokens = (
+                getattr(llm_client, "context_window", None)
+                or getattr(self.cfg, "model_context_window", None)
+                or self._EXTRACTION_WINDOW_DEFAULT_CTX_TOKENS
+            )
+            ctx_tokens = int(ctx_tokens) if ctx_tokens else self._EXTRACTION_WINDOW_DEFAULT_CTX_TOKENS
+            return int(
+                ctx_tokens * self._EXTRACTION_WINDOW_CTX_FRACTION
+                * self._EXTRACTION_WINDOW_CHARS_PER_TOKEN
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._extraction_window_max_chars')
+            return None
+
     def _maybe_trigger_extraction_impl(
         self, cfg_compress, llm_client: Optional["LLMClient"], *, force: bool
     ) -> None:
@@ -383,6 +427,7 @@ class HistoryManager:
                 raw_entries,
                 last_extracted_index=last_index,
                 min_window_turns=getattr(cfg_compress, "extraction_trigger_min_window_turns", 6),
+                max_window_chars=self._extraction_window_max_chars(cfg_compress, llm_client),
             )
         if candidate is None:
             return
