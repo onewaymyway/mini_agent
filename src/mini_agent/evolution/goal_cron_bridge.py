@@ -428,7 +428,11 @@ def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, des
     try:
         from mini_agent.evolution import output_workspace as ow
         goal_id = goal.id
-        out_dir = ow.goal_output_dir(paths, goal_id)
+        # [goal_user_output_dir_plan.md] 用户明确设置过 user_output_dir 时，
+        # 正式产出目录（output/）解析到用户指定的路径；notes/spec/scratch
+        # 三个内部目录永远走默认位置（不受这个字段影响，见字段注释）。
+        user_output_dir = getattr(goal, "user_output_dir", None)
+        out_dir = ow.goal_output_dir(paths, goal_id, user_output_dir=user_output_dir)
         notes_dir = ow.goal_notes_dir(paths, goal_id)
         scratch_dir = ow.goal_scratch_dir(paths, goal_id)
 
@@ -439,7 +443,7 @@ def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, des
         # 模型下的执行上下文不会凭空丢失旧模型积累的历史；任何一步失败都
         # 静默跳过，不影响本轮触发主流程。
         is_first_time_new_layout = not out_dir.exists()
-        ow.ensure_output_skeleton(paths, goal_id)
+        ow.ensure_output_skeleton(paths, goal_id, user_output_dir=user_output_dir)
         if is_first_time_new_layout:
             try:
                 if ow.has_legacy_cycle_dirs(paths, goal_id):
@@ -455,22 +459,33 @@ def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, des
         # 放哪里"之类的路径提示（旧习惯，新模型引入前很常见），提醒 agent
         # 新模型下 output/ 是唯一正式产出目录——软性提醒，不修改用户原始
         # description，不拦截执行。
-        try:
-            output_hints = ow.detect_user_specified_output_hint(description or "")
-        except Exception:
-            output_hints = []
-        if output_hints:
+        if user_output_dir:
+            # [goal_user_output_dir_plan.md] 用户已经在看板上明确确认过产出
+            # 目录，不再需要"软性提醒/让 agent 自己判断"——直接告知本轮的
+            # 正式产出目录就是用户指定的这个路径，消除歧义。
             parts.append(
-                "## 关于描述里提到的自定义产出路径\n\n"
-                f"检测到 Goal 描述里提到了这些路径片段：{', '.join(output_hints)}。"
-                f"新的产出目录模型下，正式产出统一写入 {out_dir}"
-                "（跨轮共用的固定目录，不再按轮次新建）——如果这些路径本意是"
-                "output/ 内部的业务子目录（比如 'reports/weekly.md' 对应"
-                f" {out_dir}/reports/weekly.md），继续这么组织没问题；如果本意"
-                "是 output/ 之外的绝对路径，请改用 output/ 内对应位置，不要写"
-                "到 output/ 之外，否则会被 tidy 阶段判定为"
-                "「未分类文件」。"
+                "## 产出目录（用户指定）\n\n"
+                f"本 Goal 已由用户明确指定产出目录为 `{user_output_dir}`"
+                f"（解析后的绝对路径：{out_dir}），本轮的正式产出统一写入这里"
+                "（跨轮共用，不再按轮次新建）。"
             )
+        else:
+            try:
+                output_hints = ow.detect_user_specified_output_hint(description or "")
+            except Exception:
+                output_hints = []
+            if output_hints:
+                parts.append(
+                    "## 关于描述里提到的自定义产出路径\n\n"
+                    f"检测到 Goal 描述里提到了这些路径片段：{', '.join(output_hints)}。"
+                    f"新的产出目录模型下，正式产出统一写入 {out_dir}"
+                    "（跨轮共用的固定目录，不再按轮次新建）——如果这些路径本意是"
+                    "output/ 内部的业务子目录（比如 'reports/weekly.md' 对应"
+                    f" {out_dir}/reports/weekly.md），继续这么组织没问题；如果本意"
+                    "是 output/ 之外的绝对路径，看板上有一个「产出目录」建议"
+                    "（已根据这段描述自动检测），确认后 agent 会直接把该路径作为"
+                    "正式产出目录，不需要再靠这条软性提醒自行判断。"
+                )
 
         recent_notes = ow.read_recent_notes(paths, goal_id, limit=3)
         if recent_notes:
@@ -590,7 +605,7 @@ def _append_legacy_migration_directive(paths, goal_backlog: "GoalBacklog", goal:
     goal_backlog.update_fields(goal.id, legacy_migration_requested=False)
     from mini_agent.evolution import output_workspace as ow
     try:
-        directive = ow.build_legacy_migration_directive(paths, goal.id)
+        directive = ow.build_legacy_migration_directive(paths, goal.id, user_output_dir=getattr(goal, "user_output_dir", None))
     except Exception:
         directive = None
     if not directive:

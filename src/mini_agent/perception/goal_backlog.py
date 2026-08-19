@@ -88,6 +88,23 @@ class GoalNode:
     # 目标节点。见 docs/system-events-bus-guide.md 第7节。
     description: str = ""
 
+    # [goal_user_output_dir_plan.md] 用户在创建/编辑 Goal 时明确指定的产出
+    # 目录（相对 project_root 的路径，如 "research/stock_analyse"）。一旦设置，
+    # output_workspace.goal_output_dir() 会把这个 Goal 的正式产出目录（四目录
+    # 模型里的 output/）解析到这里，而不是默认的
+    # .agent/daemon_run_outputs/goals/<goal_id>/output/——notes/spec/scratch
+    # 三个内部目录不受影响，仍然放在默认位置下（那三个是"给 agent 自己用的
+    # 过程数据"，不是用户想找的交付物，改产出目录的诉求只针对"产出物放
+    # 哪"，跟内部记账目录无关）。None 表示未设置，沿用默认路径。
+    user_output_dir: Optional[str] = None
+
+    # [goal_user_output_dir_plan.md] 从 description 里粗略检测到的"疑似用户
+    # 指定产出路径"候选值（detect_user_specified_output_hint() 的结果，取
+    # 第一个匹配），只是**建议**，不会自动生效——纯规则匹配可能不准，需要
+    # 用户在看板上确认或改写后才会真正写入 user_output_dir。用户已手动设置过
+    # user_output_dir 后不再更新这个建议字段（避免覆盖用户已确认的选择）。
+    user_output_dir_suggested: Optional[str] = None
+
     # [watchlist_notification_goal_design.md §3.5，P5 新增]
     # GoalRelevanceEngine Stage② 判定 relevant=true 时追加的外部信息摘要，
     # 只保留最近 max_keep 条（见 attach_external_context()）。跟
@@ -704,6 +721,17 @@ class GoalBacklog:
                 description=description,
                 source_initiator=source_initiator,
             )
+            # [goal_user_output_dir_plan.md] 创建时顺手跑一遍规则检测，把
+            # description 里疑似的产出路径提示存成"建议"（不自动生效，见
+            # user_output_dir_suggested 字段注释），供看板展示给用户确认。
+            # 规则检测本身不精确，任何异常都不应该影响 Goal 创建主流程。
+            try:
+                from mini_agent.evolution import output_workspace as ow
+                hints = ow.detect_user_specified_output_hint(description or "")
+                if hints:
+                    node.user_output_dir_suggested = hints[0]
+            except Exception:
+                pass
             self._nodes[node.id] = node
         return node
 

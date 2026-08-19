@@ -3340,6 +3340,24 @@ def _render_goal_card(
             edit_title = st.text_input("标题", value=n.get("title", ""))
             edit_desc = st.text_area("描述", value=n.get("description", ""), height=80)
             edit_priority = st.slider("优先级", 0, 100, int(n.get("priority", 50)))
+            # [goal_user_output_dir_plan.md] 产出目录——默认走
+            # .agent/daemon_run_outputs/goals/<goal_id>/output/，这里允许
+            # 用户明确指定成自己想要的路径（相对 project_root，比如
+            # "research/stock_analyse"）。规则从描述里检测到的建议值
+            # （user_output_dir_suggested）仅在用户尚未手动设置时用作输入框
+            # 默认值，方便一键确认；检测不准时用户可以直接改写或清空。
+            current_output_dir = n.get("user_output_dir") or ""
+            suggested_output_dir = n.get("user_output_dir_suggested") or ""
+            if not current_output_dir and suggested_output_dir:
+                st.caption(
+                    f"💡 根据描述自动检测到疑似产出路径「{suggested_output_dir}」，"
+                    "已填入下方输入框，确认无误可直接保存；如果检测不准，请改写或清空。"
+                )
+            edit_output_dir = st.text_input(
+                "产出目录（相对项目根目录，留空则使用默认的 .agent/daemon_run_outputs/... 路径）",
+                value=current_output_dir or suggested_output_dir,
+                key=f"{key_prefix}output_dir_{n.get('id')}",
+            )
             save = st.form_submit_button("保存")
         if save:
             fields = {}
@@ -3349,6 +3367,8 @@ def _render_goal_card(
                 fields["description"] = edit_desc
             if edit_priority != int(n.get("priority", 50)):
                 fields["priority"] = edit_priority
+            if edit_output_dir.strip() != current_output_dir:
+                fields["user_output_dir"] = edit_output_dir.strip()
             if fields:
                 res = client.update_goal(n.get("id"), **fields)
                 if res and "_error" in res:

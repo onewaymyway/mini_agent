@@ -44,6 +44,13 @@ Objective（`run_0001/`、`run_0002/`……）和独立 cron job
 （`cron/<job_id>/run_<run_id>/`）继续使用旧模型不变，见
 [绑定指南 §10](goal-cron-binding-guide.md#10-产出目录规范周期性goalcronjob--一次性-goal)。
 
+> **`output/` 的位置可以被用户覆盖**：默认在
+> `.agent/daemon_run_outputs/goals/<goal_id>/output/`，但如果这个 Goal
+> 设置了 `user_output_dir`（比如 `research/stock_analyse`），`output/`
+> 会解析到 `<project_root>/research/stock_analyse` 而不是默认位置；
+> `notes/`/`spec/`/`scratch/` 三个不受影响，永远在默认位置。详见
+> [§11 用户自定义输出路径怎么处理](#11-用户自定义输出路径怎么处理)。
+
 ## 3. `output/` 内部规范
 
 固定骨架（系统级，所有 Goal 统一）：
@@ -219,24 +226,70 @@ tidy 阶段不要求 agent 自己从零判断"哪里乱了"，而是先由代码
 
 ## 11. 用户自定义输出路径怎么处理
 
-如果你在创建 Goal 时习惯在描述里写"把结果写入 xxx"、"输出到 xxx"这类
-路径提示（很多这套四目录模型引入之前创建的 Goal 都有这个习惯），系统会
-做两件事：
+[goal_user_output_dir_plan.md] 早期版本（见下方历史说明）这里只有一段
+"软性提醒"，实际产出路径仍然强制在 `.agent/daemon_run_outputs/goals/
+<goal_id>/output/` 下，无法真正指向用户想要的位置。现在支持**真正生效**
+的用户自定义产出目录，机制如下。
 
-- **保留原文**：你写的 description 不会被系统改写或删减，agent 仍然能
-  看到你的完整原始意图。
-- **补一段提醒**：如果检测到路径提示，会在 prompt 里额外提示 agent——
-  新模型下 `output/` 是唯一的正式产出目录，如果你说的那个路径本意是
-  `output/` 内部的业务子目录（比如"写入 reports/weekly.md"对应
-  `output/reports/weekly.md`），继续这么组织完全没问题；如果本意是
-  `output/` 之外的某个绝对路径，会提示 agent 改用 `output/` 内对应
-  位置，避免产出物散落到规范之外、被 tidy 阶段判定成"未分类文件"。
+### 11.1 `GoalNode.user_output_dir`：唯一生效的开关
 
-这只是一段基于关键词/路径样式的启发式软性提醒，不做语义理解，也不会
-拦截或强制修改 agent 的实际行为——如果你确实需要产出物写到 `output/`
-以外的某个固定绝对路径（比如与其他工具集成、有外部约定的路径），目前
-版本没有提供"整个 Goal 脱离四目录模型"的开关，这是这次重设计有意为之
-的边界：四个固定目录是让 tidy 阶段能做确定性核查的前提，允许任意脱离会
-让这套核查机制失去意义。如果确实有这类强需求，建议改用独立 cron job
-（`run_mode` 非 `goal_cycle`）或一次性 Goal，两者仍沿用旧的
-`cycle_NNNN/`/`run_NNNN/` 模型，目录分配更灵活。
+`GoalNode` 上新增了 `user_output_dir` 字段（相对 `project_root` 的路径，
+如 `research/stock_analyse`；也接受绝对路径，用于指向项目外的目录）。
+一旦设置：
+
+- `output/` 会解析到 `<project_root>/<user_output_dir>`，**不再**是
+  `.agent/daemon_run_outputs/goals/<goal_id>/output/`；
+- `notes/`、`spec/`、`scratch/` **三个内部目录不受影响**，始终留在默认的
+  `.agent/daemon_run_outputs/goals/<goal_id>/` 下——用户想改的是"产出物
+  放哪"，不是"agent 自己的过程记账放哪"，二者是正交的；
+- 本轮 prompt 会直接写明"本 Goal 已由用户明确指定产出目录为
+  `<user_output_dir>`（解析后的绝对路径：……）"，不再需要 agent 自己
+  从描述文字里猜测；
+- `output/` 内部规范（§3~§9：`README.md`/`_misc/`/`_archive/`/
+  `scripts/`/业务子目录/tidy 问题清单等）完全不变，只是整个 `output/`
+  的物理位置换了地方。
+
+未设置 `user_output_dir` 时，行为与之前完全一致（默认路径），对已有
+Goal 零影响。
+
+### 11.2 从描述里自动检测 → 看板确认，而不是直接生效
+
+创建 Goal（`GoalBacklog.add_goal()`）时，系统仍会跑一遍启发式检测
+（`detect_user_specified_output_hint()`，正则匹配"放到"/"写入"/"输出到"
+等关键词附近的路径片段），但检测结果**不会自动写入 `user_output_dir`**，
+只是存进一个建议字段 `user_output_dir_suggested`，原因很直接：纯规则
+匹配不可靠，直接拿去当正式产出目录风险太高（比如误把一句无关的话里的
+斜杠内容当成路径）。
+
+真正生效需要经过人工确认：
+
+- **看板**：Goal 编辑表单（`✏️ 编辑标题/描述/优先级`）里有一个"产出
+  目录"输入框。如果用户还没手动设置过，输入框会自动填入检测到的建议值
+  并提示"根据描述自动检测到疑似产出路径……确认无误可直接保存；如果
+  检测不准，请改写或清空"；用户点保存后才真正写入 `user_output_dir`，
+  之后立即在下一轮触发时生效。
+- **API**：`PATCH /v1/goals/{goal_id}`，body 里带 `user_output_dir`
+  字段（字符串）。传空字符串等价于"清除设置，改回默认路径"。
+
+如果创建 Goal 时描述里没有检测到任何路径提示，`user_output_dir_suggested`
+为空，看板输入框就是空的，用户可以随时手动填写，不依赖检测结果。
+
+### 11.3 未确认状态下仍保留旧的软性提醒
+
+`user_output_dir` 还没被设置（无论是完全没检测到，还是检测到了但用户
+还没确认）的情况下，行为退回 §11（旧版）的软性提醒机制：prompt 里会
+提示"检测到描述里提到了这些路径片段：……，如果本意是 `output/` 之外的
+绝对路径，看板上有一个「产出目录」建议（已根据这段描述自动检测），
+确认后 agent 会直接把该路径作为正式产出目录"——引导用户去看板走 §11.2
+的确认流程，而不是继续指望 agent 自己从文字里"理解对"。
+
+### 11.4 仍然保留的边界
+
+`user_output_dir` 只影响 `output/` 一个目录的物理位置，`output/` 内部
+规范（固定骨架、tidy 确定性核查等）不变，这是有意为之——四个固定目录
+（换个位置后是"三个固定位置 + 一个用户指定位置"）之间的分工关系才是
+让 tidy 阶段能做确定性核查的前提，不提供"整个 Goal 完全脱离这套规范"
+的开关。如果确实需要产出物散落在多个不相关的路径、或者不希望有
+`_misc/`/`scripts/` 这类系统保留目录，建议改用独立 cron job（`run_mode`
+非 `goal_cycle`）或一次性 Goal，两者仍沿用旧的 `cycle_NNNN/`/`run_NNNN/`
+模型，目录分配更灵活。

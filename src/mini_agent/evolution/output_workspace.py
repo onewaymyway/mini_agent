@@ -227,7 +227,7 @@ def mark_legacy_cycle_dir_migrated(dir_path: Path) -> Path:
     return target
 
 
-def build_legacy_migration_directive(paths: "AgentPaths", goal_id: str, *, spec=None) -> Optional[str]:
+def build_legacy_migration_directive(paths: "AgentPaths", goal_id: str, *, spec=None, user_output_dir: Optional[str] = None) -> Optional[str]:
     """[goal_output_directory_and_execution_phase_redesign_plan.md Stage 9]
     生成一份"迁移轮"专用的明确指令文本，拼进本轮 description——不同于
     `build_legacy_migration_summary()`（被动摘要，只为了让 agent 知道"以前
@@ -244,7 +244,7 @@ def build_legacy_migration_directive(paths: "AgentPaths", goal_id: str, *, spec=
     if not pending:
         return None
 
-    out_dir = goal_output_dir(paths, goal_id)
+    out_dir = goal_output_dir(paths, goal_id, user_output_dir=user_output_dir)
     lines = [
         "【历史数据迁移任务（本轮附加，一次性）】",
         f"检测到 {len(pending)} 个旧模型（每轮一个新目录）遗留的历史目录尚未"
@@ -302,8 +302,26 @@ def build_legacy_migration_directive(paths: "AgentPaths", goal_id: str, *, spec=
     return "\n".join(lines)
 
 
-def goal_output_dir(paths: "AgentPaths", goal_id: str) -> Path:
-    """recurring Goal 的正式产出目录（方案 §2），跨轮共用，不再按轮次新建。"""
+def goal_output_dir(paths: "AgentPaths", goal_id: str, *, user_output_dir: Optional[str] = None) -> Path:
+    """recurring Goal 的正式产出目录（方案 §2），跨轮共用，不再按轮次新建。
+
+    `user_output_dir` —— [goal_user_output_dir_plan.md] 用户在 Goal 上明确
+    设置了产出目录时（GoalNode.user_output_dir），传入该值，正式产出目录
+    会解析到 `<project_root>/<user_output_dir>`，而不是默认的
+    `.agent/daemon_run_outputs/goals/<goal_id>/output/`。notes/spec/scratch
+    三个内部目录不受影响，始终走默认路径（goal_notes_dir()/goal_spec_dir()/
+    goal_scratch_dir() 不接受这个参数）——用户想改的是"产出物放哪"，不是
+    "agent 自己的过程记账放哪"。
+
+    传入的相对路径统一按 project_root 解析；如果是绝对路径也原样接受（不
+    强行拦截，允许用户指向项目外的目录，比如另一个已有的 Git 仓库）。为空
+    字符串或 None 时退回默认路径，跟不传这个参数完全一致。
+    """
+    if user_output_dir:
+        p = Path(user_output_dir)
+        if p.is_absolute():
+            return p
+        return Path(paths.project_root) / p
     return goal_output_base_dir(paths, goal_id) / "output"
 
 
@@ -323,14 +341,14 @@ def goal_scratch_dir(paths: "AgentPaths", goal_id: str) -> Path:
     return goal_output_base_dir(paths, goal_id) / "scratch"
 
 
-def ensure_output_skeleton(paths: "AgentPaths", goal_id: str) -> Path:
+def ensure_output_skeleton(paths: "AgentPaths", goal_id: str, *, user_output_dir: Optional[str] = None) -> Path:
     """确保 output/ 固定骨架存在（方案 §2.1/§6）：README.md（首次创建给一个
     占位内容，实际索引由 render_output_readme() 刷新）、_misc/、_archive/、
     scripts/（含 scripts/lib/、scripts/_run_logs/、scripts/_experiments/
     三个固定子目录）。已存在的文件/目录不覆盖，返回 output/ 本身路径。幂等，
     可重复调用。
     """
-    out_dir = goal_output_dir(paths, goal_id)
+    out_dir = goal_output_dir(paths, goal_id, user_output_dir=user_output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "_misc").mkdir(exist_ok=True)
     (out_dir / "_archive").mkdir(exist_ok=True)
@@ -360,7 +378,7 @@ def ensure_output_skeleton(paths: "AgentPaths", goal_id: str) -> Path:
     return out_dir
 
 
-def scan_output_structure(paths: "AgentPaths", goal_id: str) -> dict:
+def scan_output_structure(paths: "AgentPaths", goal_id: str, *, user_output_dir: Optional[str] = None) -> dict:
     """扫描 output/ 实际内容，返回结构化统计——方案 §2.5/§7.1 里"代码算出的
     问题清单"的数据来源，render_output_readme() 和 tidy 阶段核对清单共用
     这份扫描结果，不重复实现目录遍历逻辑。
@@ -382,7 +400,7 @@ def scan_output_structure(paths: "AgentPaths", goal_id: str) -> dict:
       "archive_entries": int,
     }
     """
-    out_dir = goal_output_dir(paths, goal_id)
+    out_dir = goal_output_dir(paths, goal_id, user_output_dir=user_output_dir)
     result = {
         "root_unexpected": [],
         "misc_count": 0,
@@ -441,13 +459,13 @@ def scan_output_structure(paths: "AgentPaths", goal_id: str) -> dict:
     return result
 
 
-def render_output_readme(paths: "AgentPaths", goal_id: str, *, cycle_no: Optional[int] = None) -> str:
+def render_output_readme(paths: "AgentPaths", goal_id: str, *, cycle_no: Optional[int] = None, user_output_dir: Optional[str] = None) -> str:
     """扫描 output/ 实际内容，机械生成 output/README.md（方案 §2.5）——
     刻意不经过 LLM，保证这份索引反映的是客观文件系统事实，而不是 agent 的
     主观整理报告（那部分内容留在 notes/ 里）。返回写入的文本内容。
     """
-    ensure_output_skeleton(paths, goal_id)
-    stats = scan_output_structure(paths, goal_id)
+    ensure_output_skeleton(paths, goal_id, user_output_dir=user_output_dir)
+    stats = scan_output_structure(paths, goal_id, user_output_dir=user_output_dir)
 
     lines: list[str] = ["# 产出目录索引\n"]
     when = f"第 {cycle_no} 轮" if cycle_no is not None else "未知轮次"
@@ -487,7 +505,7 @@ def render_output_readme(paths: "AgentPaths", goal_id: str, *, cycle_no: Optiona
     lines.append(f"- `_archive/`：共 {stats['archive_entries']} 项")
 
     text = "\n".join(lines) + "\n"
-    readme_path = goal_output_dir(paths, goal_id) / "README.md"
+    readme_path = goal_output_dir(paths, goal_id, user_output_dir=user_output_dir) / "README.md"
     readme_path.write_text(text, encoding="utf-8")
     return text
 

@@ -700,7 +700,14 @@ PATCH /v1/goals/{goal_id}
 Body: {
   "status": "completed",         # active | paused | completed | abandoned
   "progress_notes": "覆盖率已达 82%",
-  "priority": 50
+  "priority": 50,
+  "title": "改个更准确的标题",     # 可选，标题写错时不用删了重建
+  "description": "补充说明",       # 可选
+  "user_output_dir": "research/stock_analyse"  # 可选，recurring Goal
+                                    # 的正式产出目录（output/）改到这个
+                                    # 相对 project_root 的路径；传空字符串
+                                    # 清除设置、改回默认路径。详见
+                                    # docs/goal-output-directory-guide.md §11
 }
 ```
 

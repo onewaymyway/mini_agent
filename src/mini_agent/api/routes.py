@@ -3893,6 +3893,14 @@ async def update_goal(goal_id: str, request: Request):
                 fields["title"] = new_title
         if "description" in body:
             fields["description"] = body["description"] or ""
+        # [goal_user_output_dir_plan.md] 看板"确认/修改产出目录"用——用户
+        # 显式设置后，规则检测出的 user_output_dir_suggested 就不再需要了
+        # （不清空它，留作历史参考，但 goal_output_dir() 解析优先用
+        # user_output_dir，suggested 字段之后不会再被读取用于解析路径）。
+        # 传空字符串表示"清除设置，改回默认路径"。
+        if "user_output_dir" in body:
+            v = body["user_output_dir"]
+            fields["user_output_dir"] = (v or "").strip() or None
 
         updated = backlog.update_fields(goal_id, **fields)
         if updated is None:
