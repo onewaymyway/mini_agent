@@ -103,6 +103,14 @@ class GoalNode:
     # 第一个匹配），只是**建议**，不会自动生效——纯规则匹配可能不准，需要
     # 用户在看板上确认或改写后才会真正写入 user_output_dir。用户已手动设置过
     # user_output_dir 后不再更新这个建议字段（避免覆盖用户已确认的选择）。
+    #
+    # 三种取值的语义（用于区分"没检测过"和"检测过但没结果"）：
+    #   None  —— 从未跑过检测。只会出现在这个字段引入之前就已经存在的
+    #            历史 Goal 上（旧版本 goals.json 没有这个键）——
+    #            `GoalBacklog.load()` 加载时会自动为这类 Goal 补跑一次
+    #            检测（见该方法注释），跑完之后这个字段就不会再是 None。
+    #   ""    —— 检测跑过了，但 description 里没有匹配到任何路径提示。
+    #   非空字符串 —— 检测到的候选路径片段。
     user_output_dir_suggested: Optional[str] = None
 
     # [watchlist_notification_goal_design.md §3.5，P5 新增]
@@ -263,6 +271,8 @@ class GoalNode:
             "execution_spec_confirmed": self.execution_spec_confirmed,
             "overall_completion_last_check": self.overall_completion_last_check,
             "growth_pursuit_style": self.growth_pursuit_style,
+            "user_output_dir": self.user_output_dir,
+            "user_output_dir_suggested": self.user_output_dir_suggested,
         }
 
     @staticmethod
@@ -301,6 +311,8 @@ class GoalNode:
             execution_spec_confirmed=d.get("execution_spec_confirmed", False),
             overall_completion_last_check=d.get("overall_completion_last_check"),
             growth_pursuit_style=d.get("growth_pursuit_style"),
+            user_output_dir=d.get("user_output_dir"),
+            user_output_dir_suggested=d.get("user_output_dir_suggested"),
         )
 
     @property
@@ -510,11 +522,52 @@ class GoalBacklog:
                 for g in goals_list
                 if isinstance(g, dict) and "id" in g
             }
+            self._backfill_user_output_dir_suggestions()
         except Exception as _mini_agent_exc:
             # 读取失败不阻塞 agent 主流程
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.perception.goal_backlog.GoalBacklog.load')
             self._nodes = {}
+
+    def _backfill_user_output_dir_suggestions(self) -> None:
+        """[goal_user_output_dir_plan.md] 对"存量" Goal 自动补跑一次产出
+        路径检测——`user_output_dir_suggested` 字段是在这个功能上线之后
+        才引入的，`add_goal()` 只在**创建时**跑检测；已经存在的 Goal（不
+        管是这个功能上线之前创建的，还是从旧版本 `goals.json` 加载进来
+        的）从来没有机会跑过这次检测，字段值停留在默认的 `None`。
+
+        这里在**每次加载**时检查：`level == "goal"` 且
+        `user_output_dir_suggested is None`（这个精确的 `None` 就是"从未
+        检测过"的标记，见字段注释的三态说明）的节点，对其 `description`
+        跑一遍 `detect_user_specified_output_hint()`，结果写回内存（命中
+        写路径片段，没命中写空字符串）。
+
+        [重要] 这里**只改内存，不落盘**——`load()` 有多处调用方明确要求
+        "只读查询，不加锁"（如 `goals_missing_objective()`），在这些路径
+        里如果顺手落盘，等于绕开了 `_locked()` 的加锁写入保护，可能跟其他
+        进程在锁保护下的并发写产生"最后写入覆盖前面更新"的问题。不落盘
+        没有正确性代价：真正暴露给用户看的入口（`GET /v1/goals`）每次
+        请求都会重新 `load_goal_backlog()`，检测本身是纯函数、开销可忽略
+        不计，等于"每次读都顺手算一遍"，结果对用户来说和"已经落盘"没有
+        区别；而真正需要落盘的场景（比如这个 Goal 之后触发了周期性执行）
+        会自然地经过 `_locked()`（`self.load()` → 调用方修改 → `self.
+        save()`），届时这次内存里算出来的补齐结果会随着那次正常的锁保护
+        写入一起落盘，不需要这里额外做任何事。
+
+        任何环节异常都不应该阻塞正常的加载流程，静默跳过。
+        """
+        try:
+            from mini_agent.evolution import output_workspace as ow
+        except Exception:
+            return
+        for node in self._nodes.values():
+            if node.level != "goal" or node.user_output_dir_suggested is not None:
+                continue
+            try:
+                hints = ow.detect_user_specified_output_hint(node.description or "")
+                node.user_output_dir_suggested = hints[0] if hints else ""
+            except Exception:
+                continue
 
     def save(self) -> None:
         """原子写入磁盘（使用通用工具，含指数退避重试）。"""
@@ -725,11 +778,15 @@ class GoalBacklog:
             # description 里疑似的产出路径提示存成"建议"（不自动生效，见
             # user_output_dir_suggested 字段注释），供看板展示给用户确认。
             # 规则检测本身不精确，任何异常都不应该影响 Goal 创建主流程。
+            # 无论有没有检测到，都要写一个非 None 的值（命中写路径片段，
+            # 没命中写空字符串）——`None` 专门保留给"从未跑过检测"这个
+            # 状态，用于区分\"新建时已检测过、确实没有提示\"和\"这是加载自
+            # 旧版本 goals.json 的历史 Goal，还没来得及检测过\"，后者会在
+            # `GoalBacklog.load()` 里被自动补跑一次检测（见该方法注释）。
             try:
                 from mini_agent.evolution import output_workspace as ow
                 hints = ow.detect_user_specified_output_hint(description or "")
-                if hints:
-                    node.user_output_dir_suggested = hints[0]
+                node.user_output_dir_suggested = hints[0] if hints else ""
             except Exception:
                 pass
             self._nodes[node.id] = node
