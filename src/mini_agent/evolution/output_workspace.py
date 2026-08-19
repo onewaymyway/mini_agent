@@ -642,7 +642,7 @@ def _stdlib_module_names() -> frozenset:
     })
 
 
-def check_scripts_requirements_consistency(paths: "AgentPaths", goal_id: str) -> list[str]:
+def check_scripts_requirements_consistency(paths: "AgentPaths", goal_id: str, *, user_output_dir: Optional[str] = None) -> list[str]:
     """[方案 §6.2/§7.1 第 7 条] 扫描 `scripts/*.py`（不含 `_experiments/`）的
     顶层 `import`/`from ... import` 语句，返回 `requirements.txt` 里似乎遗漏
     的第三方包名列表（去重、按字母排序）。
@@ -655,7 +655,7 @@ def check_scripts_requirements_consistency(paths: "AgentPaths", goal_id: str) ->
     """
     import re
 
-    scripts_dir = goal_output_dir(paths, goal_id) / "scripts"
+    scripts_dir = goal_output_dir(paths, goal_id, user_output_dir=user_output_dir) / "scripts"
     if not scripts_dir.is_dir():
         return []
     req_path = scripts_dir / "requirements.txt"
@@ -691,6 +691,7 @@ def check_scripts_requirements_consistency(paths: "AgentPaths", goal_id: str) ->
 
 def detect_experiments_promotion_candidates(
     paths: "AgentPaths", goal_id: str, *, notes_limit: int = 10, min_mentions: int = 2,
+    user_output_dir: Optional[str] = None,
 ) -> list[str]:
     """[方案 §6.4/§7.1 第 9 条] 检查 `scripts/_experiments/` 下的脚本文件名是
     否在最近若干轮 `notes/cycle_NNNN.md` 里被反复引用（出现次数 >=
@@ -708,7 +709,7 @@ def detect_experiments_promotion_candidates(
     `default_promotion_mention_threshold()` 取得按 `output_mode` 区分的
     建议值后传进来；不传则保持 Stage 5 上线时的默认值 2，向后兼容。
     """
-    scripts_dir = goal_output_dir(paths, goal_id) / "scripts"
+    scripts_dir = goal_output_dir(paths, goal_id, user_output_dir=user_output_dir) / "scripts"
     experiments_dir = scripts_dir / "_experiments"
     if not experiments_dir.is_dir():
         return []
@@ -753,7 +754,7 @@ _ACCRETIVE_DUPLICATE_SUFFIX_RE = re.compile(
 )
 
 
-def detect_accretive_duplicate_candidates(paths: "AgentPaths", goal_id: str) -> dict[str, list[str]]:
+def detect_accretive_duplicate_candidates(paths: "AgentPaths", goal_id: str, *, user_output_dir: Optional[str] = None) -> dict[str, list[str]]:
     """[goal_output_directory_and_execution_phase_redesign_plan.md
     §Stage8f] `accretive` 型 Goal（持续累积增长型）的核心风险不是"该转正
     但没转正的实验脚本"（那是 `capability_hardening` 的风险模式），而是
@@ -769,7 +770,7 @@ def detect_accretive_duplicate_candidates(paths: "AgentPaths", goal_id: str) -> 
 
     output/ 目录不存在或没有匹配到任何顶层文件时返回空 dict。
     """
-    out_dir = goal_output_dir(paths, goal_id)
+    out_dir = goal_output_dir(paths, goal_id, user_output_dir=user_output_dir)
     if not out_dir.is_dir():
         return {}
     structural_dirs = {"scripts", "notes", "spec", "_archive", "_misc", "raw"}

@@ -549,7 +549,9 @@ def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, des
             parts.append("\n".join(lines))
         elif mode == "tidy":
             spec_for_tidy_checklist = (phase_info or {}).get("spec")
-            checklist = _build_tidy_problem_checklist(paths, goal_id, spec=spec_for_tidy_checklist)
+            checklist = _build_tidy_problem_checklist(
+                paths, goal_id, spec=spec_for_tidy_checklist, user_output_dir=user_output_dir,
+            )
             lines = [
                 "## 产出目录整理任务（代码预检结果）",
                 "",
@@ -643,7 +645,7 @@ def _read_spec_md_full_text(paths, goal_id: str, *, fallback_spec=None) -> str:
     return ""
 
 
-def _build_tidy_problem_checklist(paths, goal_id: str, *, spec=None) -> str:
+def _build_tidy_problem_checklist(paths, goal_id: str, *, spec=None, user_output_dir: Optional[str] = None) -> str:
     """[方案 §7.1] tidy 阶段核查清单里能确定性代码判断的那部分——第一版
     （Stage 3）覆盖第 1/2/5/6/8 条；[Stage 5] 补齐第 7 条（requirements.txt
     与 scripts/*.py 实际 import 是否一致）和第 9 条（_experiments/ 里是否
@@ -669,7 +671,7 @@ def _build_tidy_problem_checklist(paths, goal_id: str, *, spec=None) -> str:
     """
     try:
         from mini_agent.evolution import output_workspace as ow
-        stats = ow.scan_output_structure(paths, goal_id)
+        stats = ow.scan_output_structure(paths, goal_id, user_output_dir=user_output_dir)
         scratch_empty = ow.scratch_is_empty(paths, goal_id)
     except Exception:
         return "（本轮目录扫描失败，请自行检查 output/ 目录结构）"
@@ -678,13 +680,15 @@ def _build_tidy_problem_checklist(paths, goal_id: str, *, spec=None) -> str:
     # 各自独立 try/except，任一失败不影响其余检查项正常展示（比上面几项
     # 更依赖文本解析，出错概率相对更高，值得单独兜底）。
     try:
-        missing_requirements = ow.check_scripts_requirements_consistency(paths, goal_id)
+        missing_requirements = ow.check_scripts_requirements_consistency(paths, goal_id, user_output_dir=user_output_dir)
     except Exception:
         missing_requirements = []
     try:
         output_mode = getattr(spec, "output_mode", "converging") if spec is not None else "converging"
         min_mentions = ow.default_promotion_mention_threshold(output_mode)
-        promotion_candidates = ow.detect_experiments_promotion_candidates(paths, goal_id, min_mentions=min_mentions)
+        promotion_candidates = ow.detect_experiments_promotion_candidates(
+            paths, goal_id, min_mentions=min_mentions, user_output_dir=user_output_dir,
+        )
     except Exception:
         promotion_candidates = []
     # [Stage 8f] accretive 型 Goal 的 tidy 默认模板重点不同——检查
@@ -695,7 +699,7 @@ def _build_tidy_problem_checklist(paths, goal_id: str, *, spec=None) -> str:
     duplicate_candidates: dict = {}
     if spec is not None and getattr(spec, "output_mode", "converging") == "accretive":
         try:
-            duplicate_candidates = ow.detect_accretive_duplicate_candidates(paths, goal_id)
+            duplicate_candidates = ow.detect_accretive_duplicate_candidates(paths, goal_id, user_output_dir=user_output_dir)
         except Exception:
             duplicate_candidates = {}
 

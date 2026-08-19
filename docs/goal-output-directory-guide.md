@@ -171,6 +171,12 @@ tidy 阶段不要求 agent 自己从零判断"哪里乱了"，而是先由代码
 如 `report.md` 与 `report_v2.md` 并存）；默认的 `converging` 行为与
 `output_mode` 字段引入之前完全一致。
 
+> 这份问题清单里涉及扫描 `output/` 实际内容的检查项（散落文件、
+> `requirements.txt` 一致性、`_experiments/` 转正、`accretive` 重复
+> 累积检测）都会正确扫描 `output/` **实际所在的位置**——如果这个 Goal
+> 设置了 `user_output_dir`（见 §11），扫描的是用户指定的那个目录，
+> 不会因为改了产出位置而漏检或扫错地方。
+
 ## 10. 迁移与兼容性
 
 已存在的 `cycle_0001/`、`cycle_0002/`……历史目录**保留原样，不做自动

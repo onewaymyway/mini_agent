@@ -48,8 +48,8 @@ agent 只能"尽量按提示理解"，可靠性完全依赖 agent 当轮对这�
 | 文件 | 改动 |
 |---|---|
 | `perception/goal_backlog.py` | `GoalNode` 新增 `user_output_dir`/`user_output_dir_suggested` 两个字段；`add_goal()` 创建时跑一遍检测，命中则写入 `user_output_dir_suggested`（异常静默跳过，不影响创建主流程） |
-| `evolution/output_workspace.py` | `goal_output_dir()` 新增 `user_output_dir` 可选参数，设置时解析到 `<project_root>/<user_output_dir>`（支持绝对路径原样使用）；`ensure_output_skeleton()`/`scan_output_structure()`/`render_output_readme()`/`build_legacy_migration_directive()` 透传同一参数 |
-| `evolution/goal_cron_bridge.py` | `_append_output_workspace_context()` 读 `goal.user_output_dir` 传给上述函数；已确认时 prompt 直接写明"本 Goal 已由用户明确指定产出目录为……"，不再依赖旧的软性提醒；未确认但检测到候选时，提醒文案改为指向看板确认入口 |
+| `evolution/output_workspace.py` | `goal_output_dir()` 新增 `user_output_dir` 可选参数，设置时解析到 `<project_root>/<user_output_dir>`（支持绝对路径原样使用）；`ensure_output_skeleton()`/`scan_output_structure()`/`render_output_readme()`/`build_legacy_migration_directive()`/`check_scripts_requirements_consistency()`/`detect_experiments_promotion_candidates()`/`detect_accretive_duplicate_candidates()` 均透传同一参数 |
+| `evolution/goal_cron_bridge.py` | `_append_output_workspace_context()` 读 `goal.user_output_dir` 传给上述函数；已确认时 prompt 直接写明"本 Goal 已由用户明确指定产出目录为……"，不再依赖旧的软性提醒；未确认但检测到候选时，提醒文案改为指向看板确认入口；`_build_tidy_problem_checklist()` 同步新增 `user_output_dir` 参数并透传给内部三个启发式检查函数 |
 | `api/routes.py` | `PATCH /v1/goals/{goal_id}` 支持 `user_output_dir` 字段（空字符串 = 清除，改回默认路径） |
 | `apps/mini_agent_kanban/app.py` | Goal 编辑表单新增"产出目录"输入框，默认值优先 `user_output_dir`，否则回填 `user_output_dir_suggested` 并给出提示文案 |
 
@@ -58,13 +58,12 @@ agent 只能"尽量按提示理解"，可靠性完全依赖 agent 当轮对这�
 后续一项待办，接口层（`PATCH /v1/goals/{goal_id}`）已经支持，纯前端
 补一个输入框即可。
 
-以下函数目前**未**透传 `user_output_dir`，仍然只读默认路径，是已知的
-遗留小尾巴（都是 tidy 阶段的启发式辅助提示，非核心执行路径，不影响
-`output/` 实际落盘位置是否正确）：`detect_accretive_duplicate_candidates()`、
+以下三个 tidy 阶段的启发式辅助函数已同步支持 `user_output_dir` 透传：
+`detect_accretive_duplicate_candidates()`、
 `check_scripts_requirements_consistency()`、
-`detect_experiments_promotion_candidates()`。改法与已完成的三个函数完全
-一致（加一个可选参数透传给内部的 `goal_output_dir()` 调用），需要时可以
-直接照搬。
+`detect_experiments_promotion_candidates()`——用法与 `goal_output_dir()`
+一致，`goal_cron_bridge._build_tidy_problem_checklist()` 已相应更新，
+tidy 阶段的问题清单在用户自定义产出目录下同样能正确核查。
 
 ## 4. 兼容性
 
