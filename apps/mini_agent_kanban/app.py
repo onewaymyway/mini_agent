@@ -7998,6 +7998,7 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
         # 避免每次打开详情弹窗就对 runs/*.jsonl 发一串没人看的请求。
         recent_runs_summary = (ws_resp or {}).get("recent_runs_summary")
         recent_runs = (ws_resp or {}).get("recent_runs") or []
+        execution_channel = (ws_resp or {}).get("execution_channel", "unknown")
         _RUN_STATUS_BADGE = {
             "success": "✅ 成功",
             "timed_out": "⏱️ 超时",
@@ -8047,7 +8048,37 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
                         else:
                             _render_cron_run_timeline((events_resp or {}).get("events") or [])
         else:
-            st.caption("暂无执行记录，触发过至少一次后这里会显示逐次的状态/耗时/事件时间线。")
+            # [为什么累计运行次数不为 0，但这里没有执行记录] 不是所有
+            # job 触发时都走会写入执行记录的"独立执行通道"——见
+            # `CronScheduler.execution_channel()` 的说明，这里按实际
+            # 通道给出针对性解释，而不是一句可能误导的"触发过至少一次
+            # 后这里会显示"（"local_handler"/"goal_cycle"/
+            # "message_queue" 这三种通道不管触发多少次都不会显示）。
+            _CHANNEL_NO_RECORD_NOTE = {
+                "local_handler": (
+                    "这是一个「本地回调」类型的内置任务（零 LLM 成本、"
+                    "确定性逻辑，比如按 tier 消费 pending_hits 并发通知），"
+                    "触发时在进程内直接同步执行、不经过独立执行通道，"
+                    "所以不会产生这里的逐次执行记录——但上面的「累计运行"
+                    "次数」是真实的，每次成功执行都会正常累加，两者不"
+                    "冲突，也不会补上历史记录。"
+                ),
+                "goal_cycle": (
+                    "这个 job 绑定了一个 Goal（run_mode=goal_cycle），"
+                    "走的是 Objective 执行通道而不是这里的独立执行通道，"
+                    "具体的执行记录请到「🎯 目标」tab 对应 Goal 里查看。"
+                ),
+                "message_queue": (
+                    "当前部署未启用 job 的独立执行通道（非 daemon 模式，"
+                    "或 job_runner 未注入），触发时消息直接进普通对话"
+                    "队列处理，不产生这里的逐次执行记录。"
+                ),
+            }
+            note = _CHANNEL_NO_RECORD_NOTE.get(execution_channel)
+            if note:
+                st.caption(f"暂无执行记录。{note}")
+            else:
+                st.caption("暂无执行记录，触发过至少一次后这里会显示逐次的状态/耗时/事件时间线。")
 
         with st.expander("✏️ 编辑任务 Prompt"):
             prompt_resp = client.cron_job_prompt(job_id)

@@ -20,6 +20,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from mini_agent.evolution.cron_scheduler import CronScheduler
 from mini_agent.storage.paths import AgentPaths
@@ -101,6 +102,55 @@ class TestRegisterLocalHandler(unittest.TestCase):
             job.next_run_at = time.time() - 1
             triggered = scheduler.tick()
             self.assertNotIn("sys:local_fail", triggered)
+
+
+class TestExecutionChannel(unittest.TestCase):
+    """[看板"为什么 run_count 不为 0 但执行记录是空的"] 覆盖
+    `CronScheduler.execution_channel()` 对四种通道的判定：local_handler
+    优先于 dedicated_workspace/message_queue，goal_cycle 优先于两者，
+    未知 job_id 返回 "unknown"。"""
+
+    def test_unknown_job_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = CronScheduler(_make_paths(tmp), submit_fn=None)
+            scheduler.load()
+            self.assertEqual(scheduler.execution_channel("sys:does_not_exist"), "unknown")
+
+    def test_local_handler_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = CronScheduler(_make_paths(tmp), submit_fn=None)
+            scheduler.load()
+            scheduler.ensure_job(job_id="sys:watchlist_report_hourly", name="关注对象分级汇报（hourly）", schedule="interval:3600")
+            scheduler.register_local_handler("sys:watchlist_report_hourly", lambda job: True)
+            self.assertEqual(scheduler.execution_channel("sys:watchlist_report_hourly"), "local_handler")
+
+    def test_goal_cycle_job_takes_priority_over_local_handler(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = CronScheduler(_make_paths(tmp), submit_fn=None)
+            scheduler.load()
+            job = scheduler.add_job(
+                name="目标绑定", schedule="interval:3600", task_template="",
+                goal_id="goal-1", run_mode="goal_cycle",
+            )
+            # 就算这个 job_id 恰好也注册了本地回调，goal_cycle 的判定
+            # 仍然优先——`_fire()` 本身就是这个优先级。
+            scheduler.register_local_handler(job.id, lambda j: True)
+            self.assertEqual(scheduler.execution_channel(job.id), "goal_cycle")
+
+    def test_dedicated_workspace_when_job_runner_injected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_job_runner = SimpleNamespace()
+            scheduler = CronScheduler(_make_paths(tmp), submit_fn=None, job_runner=fake_job_runner)
+            scheduler.load()
+            scheduler.ensure_job(job_id="sys:goal_review", name="目标清理", schedule="interval:43200")
+            self.assertEqual(scheduler.execution_channel("sys:goal_review"), "dedicated_workspace")
+
+    def test_message_queue_when_no_job_runner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = CronScheduler(_make_paths(tmp), submit_fn=lambda *a, **k: True)
+            scheduler.load()
+            scheduler.ensure_job(job_id="sys:plain_job", name="普通任务", schedule="interval:3600")
+            self.assertEqual(scheduler.execution_channel("sys:plain_job"), "message_queue")
 
 
 if __name__ == "__main__":

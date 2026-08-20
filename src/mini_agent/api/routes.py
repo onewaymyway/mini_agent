@@ -6523,6 +6523,14 @@ async def get_cron_job_workspace(job_id: str, request: Request):
         # 说明，不用逐条点开事件详情才能知道哪次跑失败了。见
         # CronJobWorkspace.recent_runs_summary() 顶部注释的字段说明。
         "recent_runs_summary": ws.recent_runs_summary(limit=10),
+        # [为什么 run_count 不为 0 但执行记录是空的] 见
+        # `CronScheduler.execution_channel()` 文档字符串——只有
+        # "dedicated_workspace" 通道才会写入上面两个字段，其余通道
+        # （尤其 "local_handler"，比如 sys:watchlist_report_<tier> 这类
+        # 零 LLM 成本的内置确定性任务）run_count 正常累加但天然不产生
+        # 执行记录，看板据此渲染区分说明，而不是让用户误以为"还没触发过
+        # /等下就有了"。
+        "execution_channel": cs.execution_channel(job_id) if cs is not None else "unknown",
     }
 
 

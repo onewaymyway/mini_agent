@@ -1138,6 +1138,44 @@ class CronScheduler:
     def get(self, job_id: str) -> Optional[CronJob]:
         return self._jobs.get(job_id)
 
+    def execution_channel(self, job_id: str) -> str:
+        """[看板"为什么这个 job 没有执行记录"] `_fire()` 实际按下面
+        优先级选择一条执行通道，不同通道对"是否产生 CronJobWorkspace
+        执行记录/run_count 是否代表同一件事"的语义不一样，这里暴露出来
+        供 API/看板判断，不用靠猜（比如"是不是系统任务"）：
+
+          - "goal_cycle"      — run_mode="goal_cycle"，走 Objective 执行
+            通道，不产生 CronJobWorkspace 执行记录。
+          - "local_handler"   — 注册过 `register_local_handler()` 的
+            job（比如 `sys:watchlist_report_<tier>`、
+            `sys:wiki_quarantine_repair` 等"零 LLM 成本、确定性"内置
+            job）：在本进程内直接同步执行，不经过 job_runner，因此
+            **不会**写入 CronJobWorkspace 的执行记录——但 `run_count`
+            仍然在 `_trigger_and_record()` 里正常累加，只要 handler
+            返回 True 就计一次，跟"有没有执行记录"是两回事。这正是
+            "run_count 不为 0，但执行记录列表是空的"最常见的原因。
+          - "dedicated_workspace" — job_runner 已注入且以上两种都不
+            命中：走独立 worker 线程执行，会写入 CronJobWorkspace，看板
+            能看到逐次执行记录 + 事件时间线（这是绝大多数 job，包括
+            `sys:goal_review`，实际执行时走的通道）。
+          - "message_queue"   — job_runner 未注入（旧部署/非 daemon）时
+            的兜底路径：消息直接进 InputQueue，当作一次普通 turn 处理，
+            同样不产生 CronJobWorkspace 执行记录。
+
+        只读判断，不改变任何调度行为；job_id 不存在时返回
+        "unknown"（调用方按"这个 job 不存在"处理即可）。
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            return "unknown"
+        if job.run_mode == "goal_cycle":
+            return "goal_cycle"
+        if job_id in self._local_handlers:
+            return "local_handler"
+        if self._job_runner is not None:
+            return "dedicated_workspace"
+        return "message_queue"
+
     def list_jobs(
         self,
         tags: Optional[list[str]] = None,
