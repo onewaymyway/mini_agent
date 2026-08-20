@@ -25,6 +25,7 @@ import {
   skipNextCycle,
   suggestTuningProposal,
   unrecurGoal,
+  updateExecutionSpec,
   updateGoal,
 } from "../api/endpoints";
 import { useAuthStore } from "../stores/authStore";
@@ -92,6 +93,12 @@ export function useExecutionSpec(goalId: string | undefined) {
     }),
     confirm: useMutation({ mutationFn: () => confirmExecutionSpec(goalId as string), onSettled: invalidate }),
     closeCheck: useMutation({ mutationFn: () => closeCheckExecutionSpec(goalId as string), onSettled: invalidate }),
+    // 手动直接编辑：content 是用户在文本框里改好的完整规范 JSON，保存后
+    // 产出新的未确认草稿，不调用 LLM，同步返回。
+    manualEdit: useMutation({
+      mutationFn: (content: Record<string, unknown>) => updateExecutionSpec(goalId as string, content),
+      onSettled: invalidate,
+    }),
   };
 }
 

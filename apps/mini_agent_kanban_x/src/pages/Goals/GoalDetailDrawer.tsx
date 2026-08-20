@@ -112,76 +112,150 @@ function ExecutionSpecTab({ goalId }: { goalId: string }) {
   const [feedback, setFeedback] = useState("");
   const [showDiff, setShowDiff] = useState(false);
   const [prevContent, setPrevContent] = useState<string>("");
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
 
   const contentText = (s: unknown) => (typeof s === "string" ? s : JSON.stringify(s, null, 2));
 
   if (spec.isLoading) return <Skeleton active />;
+
+  const currentSpec = spec.data?.spec;
+  const startEdit = () => {
+    setEditText(contentText(currentSpec?.content ?? currentSpec));
+    setEditError(null);
+    setEditing(true);
+  };
+
+  const saveEdit = () => {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(editText);
+    } catch (e) {
+      setEditError(e instanceof Error ? e.message : "JSON 格式错误");
+      return;
+    }
+    setEditError(null);
+    setPrevContent(contentText(currentSpec?.content ?? currentSpec));
+    spec.manualEdit.mutate(parsed, {
+      onSuccess: () => {
+        message.success("已保存为新草稿，尚未确认——请核对后点击「确认执行规范」使其生效");
+        setShowDiff(true);
+        setEditing(false);
+      },
+      onError: (err: unknown) => setEditError(err instanceof Error ? err.message : "保存失败"),
+    });
+  };
 
   return (
     <Space direction="vertical" style={{ width: "100%" }}>
       <Space wrap>
         <Button
           loading={spec.generate.isPending}
-          onClick={() => spec.generate.mutate(undefined, { onSuccess: () => message.success("已生成草稿") })}
+          onClick={() =>
+            spec.generate.mutate(undefined, {
+              onSuccess: () => message.success("已生成草稿"),
+              onError: (err: unknown) => message.error(err instanceof Error ? err.message : "生成失败"),
+            })
+          }
         >
-          生成执行规范草稿
+          生成新草稿（重新想一遍细节）
+        </Button>
+        <Button disabled={!currentSpec || editing} onClick={startEdit}>
+          直接编辑
         </Button>
         <Button
           type="primary"
-          disabled={!spec.data?.spec}
+          disabled={!currentSpec}
           loading={spec.confirm.isPending}
           onClick={() => spec.confirm.mutate(undefined, { onSuccess: () => message.success("已确认") })}
         >
           确认执行规范
         </Button>
         <Button
-          disabled={!spec.data?.spec}
+          disabled={!currentSpec}
           loading={spec.closeCheck.isPending}
           onClick={() =>
-            spec.closeCheck.mutate(undefined, { onSuccess: (res) => message.info(JSON.stringify(res.outcome)) })
+            spec.closeCheck.mutate(undefined, {
+              onSuccess: (res) => message.info(JSON.stringify(res.outcome)),
+              onError: (err: unknown) => message.error(err instanceof Error ? err.message : "收尾检查失败"),
+            })
           }
         >
           收尾检查
         </Button>
       </Space>
 
-      {!spec.data?.spec ? (
+      {!currentSpec && !editing ? (
         <Empty description="尚未生成执行规范草稿" />
       ) : (
         <>
-          <Descriptions size="small" column={2} bordered>
-            <Descriptions.Item label="版本">{spec.data.spec.version ?? "-"}</Descriptions.Item>
-            <Descriptions.Item label="是否已确认">{spec.data.spec.confirmed ? "是" : "否"}</Descriptions.Item>
-          </Descriptions>
-          <JsonBlock data={spec.data.spec.content ?? spec.data.spec} />
+          {currentSpec && (
+            <Descriptions size="small" column={2} bordered>
+              <Descriptions.Item label="版本">{currentSpec.version ?? "-"}</Descriptions.Item>
+              <Descriptions.Item label="是否已确认">{currentSpec.confirmed ? "是" : "否"}</Descriptions.Item>
+            </Descriptions>
+          )}
 
-          <Typography.Text strong>补充意见重新生成（修订）</Typography.Text>
-          <Input.TextArea rows={2} placeholder="输入修订意见" value={feedback} onChange={(e) => setFeedback(e.target.value)} />
-          <Space>
-            <Button
-              disabled={!feedback.trim()}
-              loading={spec.revise.isPending}
-              onClick={() => {
-                setPrevContent(contentText(spec.data?.spec?.content ?? spec.data?.spec));
-                spec.revise.mutate(
-                  { feedback },
-                  {
-                    onSuccess: () => {
-                      message.success("已生成修订版");
-                      setShowDiff(true);
-                      setFeedback("");
-                    },
-                  }
-                );
-              }}
-            >
-              提交修订
-            </Button>
-            {showDiff && <Button onClick={() => setShowDiff(false)}>隐藏对比</Button>}
-          </Space>
+          {editing ? (
+            <>
+              <Typography.Text strong>直接编辑执行规范（JSON）</Typography.Text>
+              <Input.TextArea
+                rows={16}
+                value={editText}
+                onChange={(e) => {
+                  setEditText(e.target.value);
+                  setEditError(null);
+                }}
+                style={{ fontFamily: "monospace" }}
+              />
+              {editError && <Alert type="error" showIcon message={editError} />}
+              <Space>
+                <Button type="primary" loading={spec.manualEdit.isPending} onClick={saveEdit}>
+                  保存为新草稿
+                </Button>
+                <Button onClick={() => setEditing(false)}>取消</Button>
+              </Space>
+              <Typography.Text type="secondary">
+                保存后会生成新一版草稿，不会立即生效，仍需点击上方「确认执行规范」才会在下一周期实际使用。
+              </Typography.Text>
+            </>
+          ) : (
+            currentSpec && <JsonBlock data={currentSpec.content ?? currentSpec} />
+          )}
 
-          {showDiff && spec.data?.spec && (
-            <DiffView oldText={prevContent} newText={contentText(spec.data.spec.content ?? spec.data.spec)} />
+          {!editing && (
+            <>
+              <Typography.Text strong>补充意见重新生成（AI 修订）</Typography.Text>
+              <Input.TextArea rows={2} placeholder="输入修订意见" value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+              <Space>
+                <Button
+                  disabled={!feedback.trim()}
+                  loading={spec.revise.isPending}
+                  onClick={() => {
+                    setPrevContent(contentText(currentSpec?.content ?? currentSpec));
+                    spec.revise.mutate(
+                      { feedback },
+                      {
+                        onSuccess: () => {
+                          message.success("已生成修订版，尚未确认——请核对后点击「确认执行规范」");
+                          setShowDiff(true);
+                          setFeedback("");
+                        },
+                        onError: (err: unknown) => message.error(err instanceof Error ? err.message : "修订失败"),
+                      }
+                    );
+                  }}
+                >
+                  提交修订
+                </Button>
+                {showDiff && <Button onClick={() => setShowDiff(false)}>隐藏对比</Button>}
+              </Space>
+            </>
+          )}
+
+          {showDiff && currentSpec && (
+            <DiffView oldText={prevContent} newText={contentText(currentSpec.content ?? currentSpec)} />
           )}
         </>
       )}

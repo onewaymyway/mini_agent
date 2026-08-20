@@ -4420,6 +4420,59 @@ async def get_goal_execution_spec(goal_id: str, request: Request):
     return {"spec": spec.to_dict() if spec else None}
 
 
+@router.put("/goals/{goal_id}/execution_spec")
+async def update_goal_execution_spec(goal_id: str, request: Request):
+    """PUT /v1/goals/{goal_id}/execution_spec — 手动直接编辑执行规范内容，
+    对应看板"执行规范"标签页"编辑"模式下的"保存为新草稿"按钮。
+
+    与 generate/revise 的区别：这里完全不调用 LLM，只是把前端提交的
+    完整字段集合（`GoalExecutionSpec.to_dict()` 同构的 JSON 对象）原样
+    落盘为新一版草稿——同步执行，不走 async_jobs 轮询。
+
+    Body: 与 `GET .../execution_spec` 返回的 `spec` 字段同构的 JSON 对象
+    （允许只包含部分字段，缺失字段回退 `GoalExecutionSpec` 默认值/上一版
+    对应字段，取决于是否提供了 `prior_version`）。
+    行为：
+      - `version` 强制在"当前已保存版本"基础上 +1（忽略 body 里传入的
+        `version`，避免前端算错导致版本号冲突/回退）；没有既存草稿时
+        从 1 开始。
+      - `confirmed`/`confirmed_at` 强制重置为未确认——手动编辑产出的
+        永远是新草稿，需要用户显式点击"确认执行规范"才会生效，与
+        generate/revise 两个端点的语义保持一致，不会绕过确认步骤。
+      - `goal_id` 强制回填为路径参数，忽略 body 里的值。
+    """
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(goal_id)
+    if node is None or not node.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON 对象")
+    paths = _spec_paths(request)
+    from mini_agent.perception import goal_execution_spec as ges
+    prior = ges.load_spec(paths, goal_id)
+    try:
+        new_spec = ges.GoalExecutionSpec.from_dict(body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"执行规范内容格式不合法：{e}")
+    new_spec.goal_id = goal_id
+    new_spec.version = (prior.version if prior else 0) + 1
+    new_spec.confirmed = False
+    new_spec.confirmed_at = None
+    new_spec.generation_error = None
+    try:
+        ges.save_spec(paths, goal_id, new_spec)
+        backlog.update_fields(goal_id, execution_spec_confirmed=False)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(
+            e, where='mini_agent.api.routes.update_goal_execution_spec',
+            extra={"goal_id": goal_id, "request_body": body},
+        )
+        raise HTTPException(status_code=500, detail=f"保存执行规范失败：{e}")
+    return {"spec": new_spec.to_dict()}
+
+
 @router.post("/goals/{goal_id}/execution_spec/generate")
 async def generate_goal_execution_spec(goal_id: str, request: Request):
     """POST /v1/goals/{goal_id}/execution_spec/generate — 生成第 1 版草稿

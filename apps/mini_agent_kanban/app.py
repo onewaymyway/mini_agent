@@ -2468,6 +2468,76 @@ def _render_goal_output_manifests(client: AgentClient, goal_id: str, key_prefix:
                 st.caption(f"　备注：{manifest['progress_note']}")
 
 
+def _spec_editable_json_text(spec: dict) -> str:
+    """把 spec dict 转换成给"直接编辑"文本框用的 JSON 文本——去掉
+    `version`/`confirmed`/`confirmed_at`/`goal_id`/`soft_check_*` 这几个
+    由后端维护、用户不该手改的字段，只保留实际描述"怎么执行"的内容字段，
+    减少用户编辑时的干扰和误改风险（`PUT` 端点即使收到这些字段也会强制
+    忽略/覆盖，这里预先去掉只是为了编辑体验更干净）。"""
+    editable = {
+        k: v for k, v in spec.items()
+        if k not in ("version", "confirmed", "confirmed_at", "goal_id",
+                     "soft_check_miss_streak", "soft_check_alerted", "generation_error")
+    }
+    return json.dumps(editable, ensure_ascii=False, indent=2)
+
+
+def _render_manual_edit_section(
+    client: "AgentClient", goal_id: str, spec: dict,
+    draft_key: str, path_key: str, diff_key: str, key_prefix: str,
+) -> None:
+    """[看板"执行规范"手动编辑入口] 允许用户不经过 LLM，直接改一份完整的
+    JSON 文本并保存——覆盖"只能靠 AI 补充意见重新生成"这一种修改路径。
+
+    保存后产出的是新一版**未确认**草稿（后端 `PUT .../execution_spec`
+    强制 `confirmed=False`），紧接着会走跟"补充意见重新生成"完全一样的
+    差异对比 + 确认流程，不会绕过确认这一步直接生效。
+    """
+    text_key = f"{key_prefix}ges_manualedit_text_{goal_id}"
+    open_key = f"{key_prefix}ges_manualedit_open_{goal_id}"
+    with st.expander("✏️ 直接编辑执行规范（不经过 AI，手动改 JSON）", expanded=st.session_state.get(open_key, False)):
+        st.caption(
+            "直接修改下面的 JSON 后点击保存。保存后会生成一份新的**未确认**草稿，"
+            "还需要再点一次「✅ 确认使用此规范」才会真正生效——不会因为这里保存了就立刻生效。"
+        )
+        if text_key not in st.session_state:
+            st.session_state[text_key] = _spec_editable_json_text(spec)
+        st.text_area(
+            "执行规范 JSON（deliverables / handoff_fields / sub_directories / "
+            "per_cycle_criteria / overall_completion_criteria / special_constraints / "
+            "output_mode / execution_routine / cadence 等字段）",
+            key=text_key, height=320,
+        )
+        ecol1, ecol2 = st.columns([1, 1])
+        if ecol1.button("💾 保存为新草稿", key=f"{key_prefix}ges_manualedit_save_{goal_id}"):
+            try:
+                parsed = json.loads(st.session_state[text_key])
+            except json.JSONDecodeError as e:
+                st.session_state[open_key] = True
+                st.error(f"JSON 格式错误，未保存：{e}")
+            else:
+                if not isinstance(parsed, dict):
+                    st.session_state[open_key] = True
+                    st.error("顶层必须是一个 JSON 对象（{...}），未保存")
+                else:
+                    res = client.update_execution_spec(goal_id, parsed)
+                    if res and res.get("_error"):
+                        st.session_state[open_key] = True
+                        st.error(f"保存失败：{res['_error']}")
+                    else:
+                        st.session_state[diff_key] = spec
+                        st.session_state[draft_key] = res.get("spec")
+                        st.session_state.pop(path_key, None)  # 手动编辑没有"生成路径"这个概念
+                        st.session_state.pop(text_key, None)
+                        st.session_state.pop(open_key, None)
+                        st.success("已保存为新草稿，请核对差异后点击「确认使用此规范」")
+                        st.rerun()
+        if ecol2.button("取消编辑", key=f"{key_prefix}ges_manualedit_cancel_{goal_id}"):
+            st.session_state.pop(text_key, None)
+            st.session_state.pop(open_key, None)
+            st.rerun()
+
+
 def _sync_execution_spec_from_server(
     client: "AgentClient", goal_id: str, draft_key: str, path_key: str,
 ) -> None:
@@ -2723,11 +2793,48 @@ def _render_goal_execution_spec_widget(
         st.success(f"✅ 执行规范已确认（第 {spec.get('version', 1)} 版），下次触发即生效。")
         with st.expander("查看当前执行规范", expanded=False):
             _render_execution_spec_summary(spec)
-            if st.button("♻️ 生成新草稿（重新想一遍细节）", key=f"{key_prefix}ges_regen_{goal_id}"):
-                del st.session_state[draft_key]
-                st.session_state.pop(path_key, None)
+
+        # [周期性目标反复打开看板时的修改需求] 已确认的规范也应该能改：
+        # 补充意见让 AI 改，或者手动直接编辑，两种都产出新的未确认草稿，
+        # 需要用户再次显式确认才会替换掉当前生效的版本——不会因为改了
+        # 就立刻影响下一次触发。
+        with st.form(f"{key_prefix}ges_confirmed_feedback_form_{goal_id}"):
+            confirmed_feedback = st.text_area(
+                "对当前已确认的规范提修订意见（AI 会基于这份意见重新生成一份新草稿）", height=60,
+            )
+            confirmed_revise_click = st.form_submit_button("🔄 补充意见修改（生成新草稿，需重新确认）")
+        if confirmed_revise_click:
+            if not confirmed_feedback.strip():
+                st.error("修订意见不能为空")
+            else:
+                revise_key = f"execution_spec_revise:{goal_id}"
+                if start_async_job(
+                    client, revise_key,
+                    lambda: client.revise_execution_spec(goal_id, confirmed_feedback.strip()),
+                ):
+                    st.session_state[diff_key] = spec
+                    st.rerun()
+        confirmed_revise_result = run_async_job(
+            client, f"execution_spec_revise:{goal_id}", label="正在根据补充意见修改当前规范"
+        )
+        if confirmed_revise_result is not None:
+            if confirmed_revise_result.get("_error"):
+                st.error(f"修改失败：{confirmed_revise_result['_error']}")
                 st.session_state.pop(diff_key, None)
+                _sync_execution_spec_from_server(client, goal_id, draft_key, path_key)
+            else:
+                st.session_state[draft_key] = confirmed_revise_result.get("spec")
+                st.session_state[path_key] = confirmed_revise_result.get("effective_path")
                 st.rerun()
+
+        _render_manual_edit_section(client, goal_id, spec, draft_key, path_key, diff_key, key_prefix)
+
+        if st.button("♻️ 生成新草稿（重新想一遍细节，会跳过上面两种局部修改，从模板/零重新起草）",
+                      key=f"{key_prefix}ges_regen_{goal_id}"):
+            del st.session_state[draft_key]
+            st.session_state.pop(path_key, None)
+            st.session_state.pop(diff_key, None)
+            st.rerun()
         return True
 
     if spec is None:
@@ -2898,6 +3005,10 @@ def _render_goal_execution_spec_widget(
             st.session_state[draft_key] = revise_result.get("spec")
             st.session_state[path_key] = revise_result.get("effective_path")
             st.rerun()
+
+    # [周期性设置/新建目标里再打开看板应该也能改草稿] 草稿状态下同样支持
+    # 直接手动编辑，不必只能靠"补充意见"让 AI 猜。
+    _render_manual_edit_section(client, goal_id, spec, draft_key, path_key, diff_key, key_prefix)
 
     # [goal_execution_spec_generation_plan.md §6.1 / 实施记录未实施清单
     # 第 1 项] "从模板重新起草"：不必先放弃当前草稿再重新走一遍"生成"

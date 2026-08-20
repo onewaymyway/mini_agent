@@ -1,4 +1,4 @@
-import { apiDelete, apiGet, apiPatch, apiPost, apiPut } from "./client";
+import { ApiError, apiDelete, apiGet, apiPatch, apiPost, apiPut } from "./client";
 import type {
   ChatRequest,
   ChatResponse,
@@ -113,26 +113,70 @@ export const migrateLegacyCycles = (goalId: string) =>
 export const feedbackGoal = (goalId: string, feedback: string) =>
   apiPost<{ goal: import("./types").GoalNode }>(`/goals/${encodeURIComponent(goalId)}/feedback`, { feedback });
 
+// ── 异步任务轮询（generate/revise/close_check 三个端点涉及 LLM 调用，
+// 后端立即返回 {job_id, key}，这里统一负责"轮询到 done/error 再把结果
+// 交回调用方"，调用点（useGoals.ts）感知不到轮询细节，写法与直接同步调用
+// 一致。之前前端完全没有实现这层轮询——按钮点击后只拿到 {job_id}，从来
+// 没有真正等待/读取过后台任务的结果，这正是"点击生成草稿后界面看起来
+// 没反应"的根因：请求其实成功发起了，只是没人去看它到底跑完没有。 ──
+interface AsyncJobRecord<T = unknown> {
+  job_id: string;
+  key?: string | null;
+  status: "running" | "done" | "error";
+  result?: T;
+  error?: string | null;
+}
+
+const getAsyncJob = <T = unknown>(jobId: string) => apiGet<AsyncJobRecord<T>>(`/async_jobs/${encodeURIComponent(jobId)}`);
+
+async function pollAsyncJob<T>(jobId: string, { intervalMs = 1200, timeoutMs = 10 * 60 * 1000 } = {}): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const job = await getAsyncJob<T>(jobId);
+    if (job.status === "done") return job.result as T;
+    if (job.status === "error") throw new ApiError(job.error || "后台任务执行失败");
+    if (Date.now() > deadline) throw new ApiError("等待后台任务结果超时，请稍后在页面上刷新查看");
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
 export const getExecutionSpec = (goalId: string) =>
   apiGet<{ spec: ExecutionSpec | null }>(`/goals/${encodeURIComponent(goalId)}/execution_spec`);
-export const generateExecutionSpec = (goalId: string, body?: { schedule?: string; from_history?: boolean; mode?: string }) =>
-  apiPost<{ spec: ExecutionSpec; effective_path?: string }>(
+export const generateExecutionSpec = async (
+  goalId: string,
+  body?: { schedule?: string; from_history?: boolean; mode?: string }
+) => {
+  const { job_id } = await apiPost<{ job_id: string; key: string }>(
     `/goals/${encodeURIComponent(goalId)}/execution_spec/generate`,
     body
   );
-export const reviseExecutionSpec = (goalId: string, feedback: string, lockedFields?: string[]) =>
-  apiPost<{ spec: ExecutionSpec; effective_path?: string }>(
+  return pollAsyncJob<{ spec: ExecutionSpec; effective_path?: string }>(job_id);
+};
+export const reviseExecutionSpec = async (goalId: string, feedback: string, lockedFields?: string[]) => {
+  const { job_id } = await apiPost<{ job_id: string; key: string }>(
     `/goals/${encodeURIComponent(goalId)}/execution_spec/revise`,
     { feedback, locked_fields: lockedFields }
   );
+  return pollAsyncJob<{ spec: ExecutionSpec; effective_path?: string }>(job_id);
+};
+// 手动直接编辑执行规范内容——同步端点，不涉及 LLM，不需要轮询。产出总是
+// 新的一份未确认草稿，仍需调用 confirmExecutionSpec 才会生效，与
+// generate/revise 的"确认"语义保持一致。
+export const updateExecutionSpec = (goalId: string, content: Record<string, unknown>) =>
+  apiPut<{ spec: ExecutionSpec }>(`/goals/${encodeURIComponent(goalId)}/execution_spec`, content);
 export const confirmExecutionSpec = (goalId: string) =>
   apiPost<{ spec: ExecutionSpec; goal: import("./types").GoalNode }>(
     `/goals/${encodeURIComponent(goalId)}/execution_spec/confirm`
   );
-export const closeCheckExecutionSpec = (goalId: string) =>
-  apiPost<{ outcome: unknown; goal: import("./types").GoalNode }>(
+export const closeCheckExecutionSpec = async (goalId: string) => {
+  const started = await apiPost<{ job_id?: string; key?: string; outcome?: unknown; goal?: import("./types").GoalNode }>(
     `/goals/${encodeURIComponent(goalId)}/execution_spec/close_check`
   );
+  // 「Goal 不是 active」这种快速路径后端同步返回结果，没有 job_id；
+  // 其余情况才需要轮询。
+  if (!started.job_id) return started as { outcome: unknown; goal: import("./types").GoalNode };
+  return pollAsyncJob<{ outcome: unknown; goal: import("./types").GoalNode }>(started.job_id);
+};
 
 export const getExecutionPhase = (goalId: string) =>
   apiGet<Record<string, unknown>>(`/goals/${encodeURIComponent(goalId)}/execution_phase`);

@@ -495,6 +495,13 @@ class AgentClient:
     def confirm_execution_spec(self, goal_id: str):
         return self._post(f"/goals/{goal_id}/execution_spec/confirm")
 
+    def update_execution_spec(self, goal_id: str, content: dict):
+        """[看板"直接编辑" / 手动改执行规范] 同步端点，不涉及 LLM 调用，
+        不走 async_job_ui 轮询——把 `content`（与 `get_execution_spec()`
+        返回的 `spec` 同构的完整字段集合）原样落盘为新一版**未确认**草稿，
+        仍需调用 `confirm_execution_spec()` 才会生效。"""
+        return self._put(f"/goals/{goal_id}/execution_spec", content)
+
     def close_check_execution_spec(self, goal_id: str, use_agent: bool | None = None):
         # use_agent: None（跟随配置默认 overall_completion_use_agent）/
         # True（只读探索 Agent）/ False（纯 LLM），单次覆盖，不修改配置
