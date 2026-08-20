@@ -1,4 +1,4 @@
-streamlit>=1.33
+streamlit>=1.37
 requests>=2.31
 # 可选：成长顾问 tab 的拖拽式看板视图（未安装时自动回退到列表 + 按钮，
 # 见 apps/mini_agent_kanban/app.py::_sortable_available）

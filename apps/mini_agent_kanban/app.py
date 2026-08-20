@@ -3410,14 +3410,20 @@ def _render_goal_card(
     cron_jobs_by_id: Optional[dict] = None,
     key_prefix: str = "",
 ) -> None:
-    """渲染单张 Goal/Objective 卡片 + 状态切换下拉框。
-    从 render_kanban_tab 里抽出来，供"按层级嵌套展示"复用，行为
-    （状态切换后调 client.update_goal 并 rerun）跟改造前完全一致，
-    只是现在可能带缩进（Objective 挂在其 parent Goal 卡片下面时）。
+    """渲染单张 Goal/Objective 卡片（默认只展示基础信息 + "详情/操作"入口）。
+    从 render_kanban_tab 里抽出来，供"按层级嵌套展示"复用，可能带缩进
+    （Objective 挂在其 parent Goal 卡片下面时）。
+
+    [看板卡片瘦身] 状态切换/编辑/周期性设置/执行规范/提意见/删除等操作，
+    以及进展历史/外部信息/产出物/执行阶段/周期诊断等次要信息，全部移到
+    点击"📋 详情 / 操作"后弹出的对话框里（见 `_show_goal_detail_dialog`
+    / `_render_goal_card_details`），这里只保留标题/来源/优先级/周期性
+    徽章/最新一条进展这几项一眼就要看到的信息，避免 Goal 一多列表被
+    撑得又长又乱。
 
     execution — 该 Objective 对应的 ObjectiveExecutor 执行记录（若有，
     来自 /v1/autonomous/status 里的 objective_executions，按 objective_id
-    匹配），非 None 时额外渲染真实的分步计划/进度。"""
+    匹配），非 None 时会转交给详情弹窗渲染真实的分步计划/进度。"""
     level_tag = "🎯目标" if n.get("level") == "objective" else "🌱心愿"
     wrapper_style = "margin-left:18px;border-left:2px solid #ddd;padding-left:8px;" if indent else ""
     note_html = f'<div class="meta" style="color:#c77;">{_esc_html(note)}</div>' if note else ""
@@ -3516,6 +3522,73 @@ def _render_goal_card(
 </div>
 """, unsafe_allow_html=True)
 
+
+    # [看板卡片瘦身] 默认只展示上面这张基础信息卡片；进展历史、外部信息、
+    # 产出物、执行阶段/诊断、状态切换、编辑、周期性设置（含执行规范）、
+    # 提意见、删除等全部"次要信息 + 操作"统一收进"📋 详情 / 操作"弹窗，
+    # 避免 Goal 一多，看板列表被十几个折叠区/按钮撑得又长又乱——默认视图
+    # 只保留"一眼就要看到"的几项，其余点进详情再看。这些小组件各自还会
+    # 发起 API 请求（执行阶段/诊断/产出物摘要），挪进详情弹窗顺带避免了
+    # "只是扫一眼看板"时就被无谓触发一整批请求。
+    if n.get("level") != "objective" and status_key == "draft":
+        # 待完善状态的"激活"是最高频的下一步操作，保留在卡片正文上，
+        # 不必先点进详情才能激活。
+        if st.button("🚀 激活并开始执行", key=f"{key_prefix}activate_draft_{n.get('id')}", type="primary"):
+            res = client.update_goal(n.get("id"), status="active")
+            if res and "_error" in res:
+                st.error(f"激活失败：{res['_error']}")
+            else:
+                st.toast("✅ 已激活，开始进入调度", icon="✅")
+                st.rerun()
+    if st.button("📋 详情 / 操作", key=f"{key_prefix}goal_detail_btn_{n.get('id')}", use_container_width=True):
+        _show_goal_detail_dialog(
+            client, n, status_key, execution=execution,
+            cron_next_run_by_id=cron_next_run_by_id, cron_jobs_by_id=cron_jobs_by_id,
+            key_prefix=key_prefix,
+        )
+
+
+def _show_goal_detail_dialog(
+    client: AgentClient, n: dict, status_key: str,
+    execution: Optional[dict] = None, cron_next_run_by_id: Optional[dict] = None,
+    cron_jobs_by_id: Optional[dict] = None, key_prefix: str = "",
+) -> None:
+    """点击卡片『📋 详情 / 操作』后弹出的详情对话框，内容见
+    `_render_goal_card_details()`。每次点击时动态定义并调用一个
+    `@st.dialog` 装饰的内部函数——标题需要按当前 Goal 的标题动态生成，
+    Streamlit 的 dialog 装饰器只接受静态传入的 title 字符串，这是官方
+    文档推荐的"按需动态定义"写法（而不是模块级固定一个 dialog 函数、
+    内容靠 session_state 传参）。"""
+    title = f"{'🎯目标' if n.get('level') == 'objective' else '🌱心愿'} {n.get('title', '(无标题)')}"
+
+    @st.dialog(title, width="large")
+    def _dialog():
+        _render_goal_card_details(
+            client, n, status_key, execution=execution,
+            cron_next_run_by_id=cron_next_run_by_id, cron_jobs_by_id=cron_jobs_by_id,
+            key_prefix=key_prefix,
+        )
+
+    _dialog()
+
+
+def _render_goal_card_details(
+    client: AgentClient, n: dict, status_key: str,
+    execution: Optional[dict] = None, cron_next_run_by_id: Optional[dict] = None,
+    cron_jobs_by_id: Optional[dict] = None, key_prefix: str = "",
+) -> None:
+    """[看板卡片瘦身] `_render_goal_card` 默认只画基础信息卡片，这里承接
+    "详情/操作"弹窗里的全部内容——进展历史、外部信息、产出物、执行阶段、
+    周期诊断、真实执行进度、状态切换、编辑标题描述、周期性设置（含执行
+    规范）、提意见、删除，原来直接摊平在卡片正文里，Goal 一多整页会被
+    撑得又长又乱；现在只在用户主动点开详情弹窗时才渲染。"""
+    # 与 `_render_goal_card` 里算 progress_html 用的是同一份数据/同一套
+    # 拆分规则，这里独立重算一遍（两个函数分处不同调用帧，不能直接复用
+    # 局部变量）——只有这一个字段在详情区里被复用，不值得为它专门加一个
+    # 参数在两个函数间传递。
+    _progress_text = n.get("work_thread_progress") or n.get("progress_notes") or ""
+    progress_lines = [ln.strip() for ln in _progress_text.splitlines() if ln.strip()]
+
     # [进展信息过长/无滚动条修复] 卡片正文只展示最新一条进展（见上面
     # progress_html 的处理），完整历史（倒序、最新在前）放在这个折叠区，
     # 每页 10 条，与 external_context 用同一套 `_client_side_page()` 分页
@@ -3593,7 +3666,11 @@ def _render_goal_card(
     # 单独放一个更醒目的"激活"按钮，不用去下拉框里找。
     if n.get("level") != "objective" and status_key == "draft":
         st.info("📝 待完善状态：不会被调度执行。可以先设置好周期性/执行规范，确认无误后再激活。")
-        if st.button("🚀 激活并开始执行", key=f"{key_prefix}activate_draft_{n.get('id')}", type="primary"):
+        # key 加 "_dlg" 后缀：卡片正文上已经有同一个操作的快捷按钮（同一次
+        # 渲染里两处都可能出现，key 不能重复，否则 Streamlit 会报
+        # DuplicateWidgetID），这里只是详情弹窗里的等价入口，方便已经点
+        # 进详情、不想再关掉弹窗去点卡片上那个按钮的用户。
+        if st.button("🚀 激活并开始执行", key=f"{key_prefix}activate_draft_dlg_{n.get('id')}", type="primary"):
             res = client.update_goal(n.get("id"), status="active")
             if res and "_error" in res:
                 st.error(f"激活失败：{res['_error']}")
