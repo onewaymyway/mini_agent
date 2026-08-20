@@ -732,11 +732,22 @@ class GoalBacklog:
         priority: int = 0,
         tags: Optional[list[str]] = None,
         source_initiator: Optional[str] = None,
+        status: str = "active",
     ) -> GoalNode:
         """
         添加 Goal 节点（通常由用户 /agent goals add 触发）。
         source="user" 时对应用户手动添加；
         source="agent_derived" 时由第十二节 autonomous 档位 tick 内部调用。
+
+        status —— [goal_draft_flow_plan.md] 默认 "active"，与历史行为一致
+        （现有调用方——CLI、SoftGoalDeriver 等——不传这个参数时不受影响）。
+        看板"新建目标"表单允许用户显式传 "draft"：draft 状态的 Goal
+        `is_active` 为 False，会被 `active_goals()`/`active_objectives()`
+        和 `_fire_goal_cycle()`（周期性触发点，见该函数注释"Goal 非 active
+        时挂起等待"）自动跳过，不会被调度执行——但不影响用户在这期间继续
+        通过 `recur_goal()`/`update_fields()` 等接口完善周期性、执行规范等
+        信息，这些接口本身不检查 status。用户确认无误后通过
+        `update_fields(status="active")` 手动"激活"，即可正常进入调度。
 
         source_initiator —— [goal-provenance-guide.md] 记录"创建它的这次
         调用发生在哪个 InputQueue 轮次里"，跟 `source` 是正交维度。调用方
@@ -766,7 +777,7 @@ class GoalBacklog:
                 level="goal",
                 title=title,
                 source=source,
-                status="active",
+                status=status,
                 created_at=time.time(),
                 last_touched_at=time.time(),
                 priority=priority,

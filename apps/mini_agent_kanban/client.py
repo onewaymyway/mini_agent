@@ -371,10 +371,14 @@ class AgentClient:
     def goals(self):
         return self._get("/goals")
 
-    def add_goal(self, title: str, description: str = "", priority: int = 50, source: str = "user"):
+    def add_goal(self, title: str, description: str = "", priority: int = 50, source: str = "user",
+                 status: str = "active"):
+        """status="draft" 时新建为待完善状态（不会被调度执行），见
+        goal_draft_flow_plan.md——用户可以先设置周期性/执行规范，确认无误
+        后再通过 update_goal(goal_id, status="active") 手动激活。"""
         return self._post("/goals", {
             "title": title, "description": description,
-            "priority": priority, "source": source,
+            "priority": priority, "source": source, "status": status,
         })
 
     def similar_confirmed_goal_specs(self, title: str, description: str = ""):

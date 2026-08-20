@@ -692,13 +692,19 @@ Body: {
   "title": "完善测试覆盖",
   "description": "提升单元测试覆盖率到 80%",
   "priority": 70,
-  "source": "user"
+  "source": "user",
+  "status": "active"    # 可选，"active"（默认）| "draft"。
+                        # draft 状态的 Goal 不会被调度器/周期性 cron 拾取
+                        # （两者都只看 status=="active"），用于"先设置好
+                        # 周期性/执行规范，再手动激活"的场景，见下方
+                        # PATCH 的 status 取值说明和
+                        # docs/kanban-dashboard-guide.md 的"待完善"一节。
 }
 
 # 更新 Goal 状态/进展
 PATCH /v1/goals/{goal_id}
 Body: {
-  "status": "completed",         # active | paused | completed | abandoned
+  "status": "completed",         # active | draft | paused | completed | abandoned
   "progress_notes": "覆盖率已达 82%",
   "priority": 50,
   "title": "改个更准确的标题",     # 可选，标题写错时不用删了重建

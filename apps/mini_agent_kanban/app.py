@@ -184,6 +184,7 @@ _ACTIVITY_LABELS = {
 }
 
 GOAL_STATUS_COLUMNS = [
+    ("draft", "📝 待完善"),
     ("active", "🔵 进行中"),
     ("paused", "⏸️ 暂停"),
     ("completed", "✅ 已完成"),
@@ -3399,6 +3400,21 @@ def _render_goal_card(
     # 追加到下拉框末尽（标签直接显示原始字符串，提示"当前非标准状态"），
     # 保证下拉框一定能定位到当前值，不再崩溃；用户不特意去改的话也不会
     # 误触发一次状态写回。
+    # [goal_draft_flow_plan.md] draft 状态的 Goal 不会被调度器/周期性 cron
+    # 拾取（两者都只看 status=="active"，见 add_goal() 的 status 参数注释）。
+    # 下面的通用状态下拉框本身已经能切换到 active，但"待完善"这个状态存在
+    # 的意义就是让用户在设置周期性/执行规范时明确知道"还没开始跑"，所以这里
+    # 单独放一个更醒目的"激活"按钮，不用去下拉框里找。
+    if n.get("level") != "objective" and status_key == "draft":
+        st.info("📝 待完善状态：不会被调度执行。可以先设置好周期性/执行规范，确认无误后再激活。")
+        if st.button("🚀 激活并开始执行", key=f"{key_prefix}activate_draft_{n.get('id')}", type="primary"):
+            res = client.update_goal(n.get("id"), status="active")
+            if res and "_error" in res:
+                st.error(f"激活失败：{res['_error']}")
+            else:
+                st.toast("✅ 已激活，开始进入调度", icon="✅")
+                st.rerun()
+
     _status_options = [s for s, _ in GOAL_STATUS_COLUMNS]
     if status_key not in _status_options:
         _status_options = _status_options + [status_key]
@@ -3832,6 +3848,16 @@ def render_kanban_tab(client: AgentClient):
             title = st.text_input("标题", key="_new_goal_title_input")
             desc = st.text_area("描述", height=60, key="_new_goal_desc_input")
             priority = st.slider("优先级", 0, 100, 50)
+            # [goal_draft_flow_plan.md] 创建后是否立即进入调度，由用户主动
+            # 选择——默认仍是"立即可执行"（跟历史行为一致，不改变多数场景的
+            # 使用习惯）。选"待完善"时新建为 draft 状态：不会被调度器/周期性
+            # cron 触发（两者都只看 status=="active"），但可以在下方 Goal
+            # 详情里正常设置周期性、生成执行规范草案，确认无误后手动激活。
+            init_mode = st.radio(
+                "创建后",
+                ["🚀 立即可执行", "📝 待完善（不会开始执行，可先设置周期性等信息，手动激活后才开始）"],
+                index=0, key="_new_goal_init_mode",
+            )
             # [goal_execution_spec_generation_plan.md §6.3] 默认不勾选——多数
             # 随手创建的一次性 Goal 不值得投入一次 LLM 调用去想细节，是否需要
             # 由用户主动决定，不在新建这一步强推。适用场景是"一次性但会拆多个
@@ -3839,7 +3865,8 @@ def render_kanban_tab(client: AgentClient):
             gen_spec = st.checkbox("同时生成一次性 Goal 的执行规范（用于会拆多个子任务的场景）", value=False)
             submitted = st.form_submit_button("创建")
         if submitted and title.strip():
-            res = client.add_goal(title.strip(), desc, priority)
+            init_status = "draft" if init_mode.startswith("📝") else "active"
+            res = client.add_goal(title.strip(), desc, priority, status=init_status)
             if res and "_error" in res:
                 st.error(f"创建失败：{res['_error']}")
             else:
@@ -3848,7 +3875,10 @@ def render_kanban_tab(client: AgentClient):
                 # 显示"创建成功"提示；表单本身用 clear_on_submit=True 清空
                 # 标题/描述/优先级，避免用户看到"点了创建，输入框却还留着刚
                 # 才填的内容"，误以为没提交成功。
-                st.toast(f"✅ 目标「{title.strip()}」已创建", icon="✅")
+                if init_status == "draft":
+                    st.toast(f"📝 目标「{title.strip()}」已创建为待完善状态，不会开始执行", icon="📝")
+                else:
+                    st.toast(f"✅ 目标「{title.strip()}」已创建", icon="✅")
                 new_goal = res.get("goal") if isinstance(res, dict) else None
                 new_goal_id = (new_goal or {}).get("id") if isinstance(new_goal, dict) else None
                 if gen_spec and new_goal_id:

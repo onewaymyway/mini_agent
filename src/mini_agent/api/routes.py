@@ -3828,6 +3828,15 @@ async def add_goal(request: Request):
     if not title:
         raise HTTPException(status_code=400, detail="title is required")
 
+    # [goal_draft_flow_plan.md] 看板"新建目标"新增"待完善"选项——允许创建
+    # 时就传 status="draft"，跳过默认的 "active"。白名单校验只允许这两个
+    # 值：其它值（比如误传 "completed"/"abandoned"）没有意义，且会绕过
+    # 状态机本该有的迁移路径（比如 abandoned 分支里对 agent_derived 的
+    # 拒绝历史记录逻辑），所以直接拒绝而不是静默纠正。
+    init_status = body.get("status", "active")
+    if init_status not in ("active", "draft"):
+        raise HTTPException(status_code=400, detail="status must be 'active' or 'draft'")
+
     try:
         from mini_agent.storage.paths import AgentPaths
         from mini_agent.perception.goal_backlog import load_goal_backlog
@@ -3850,6 +3859,7 @@ async def add_goal(request: Request):
             # 显式覆盖（比如未来某个脚本代表 cron 直接调这个 API），默认
             # 仍然是 "user"。
             source_initiator=body.get("source_initiator", "user"),
+            status=init_status,
         )
         return {"goal": goal.to_dict()}
     except HTTPException:
