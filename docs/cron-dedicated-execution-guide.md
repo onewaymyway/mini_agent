@@ -57,6 +57,18 @@ CronScheduler.tick() 到期
 - **未注入 `job_runner` 时自动回退旧路径**（直接 `submit_fn` 塞回
   `InputQueue`），向后兼容不升级配置的部署——这条回退路径完全是内部
   兼容性考虑，普通使用不需要关心。
+- **不是所有 job 都会走这条链路**：`CronScheduler._fire()` 在
+  `CronJobRunner.submit(job)` 之前还有两个更高优先级的分支——
+  `run_mode="goal_cycle"` 的 job（绑定了 Goal，走 Objective 执行通道）
+  和注册过 `register_local_handler()` 的 job（"本地回调"，比如
+  `sys:watchlist_report_<tier_id>` 这类零 LLM 成本、确定性逻辑的内置
+  job）——命中这两类会直接在原进程/回调里同步执行，完全不经过本文档
+  描述的独立线程 + `CronJobWorkspace` 记录链路。`CronJob.run_count`
+  这个计数字段在三条路径下都会正常累加（只要触发成功），但只有走完整
+  这条链路的 job 才会在 `CronJobWorkspace` 里留下 `recent_runs`/
+  `recent_runs_summary`——这是"看板某个 job 累计运行次数不是 0，但
+  执行记录列表却是空的"最常见的原因，详见 §8 的 `execution_channel`
+  字段和 §10 排查指南。
 
 ## 3. 并发控制
 
@@ -488,7 +500,8 @@ GET /v1/self/unified_scheduler_preview  §7.2 加权分配的只读预览（是�
       "steps_executed": 1,
       "duration_seconds": 5.0
     }
-  ]
+  ],
+  "execution_channel": "dedicated_workspace"
 }
 ```
 
@@ -510,6 +523,22 @@ job 至今没有任何自定义覆盖，`config` 里展示的每个值都直接�
 可能异常退出或仍在跑）。看板"⏰ Cron 任务" Tab 的"最近执行记录"直接展示
 这份摘要（时间 + 状态角标，失败时额外展示 `error` 文本），不用逐条点开
 事件详情才知道哪次跑失败了。
+
+`execution_channel`（新增，`CronScheduler.execution_channel()` 计算，
+只读、不影响任何调度行为）标注这个 job 到期时**实际会走哪条执行路径**，
+只有一种取值会产生上面这两个执行记录字段：
+
+| 取值 | 含义 | 会产生 `recent_runs`/`recent_runs_summary` 吗 |
+|---|---|---|
+| `dedicated_workspace` | 走本文档描述的独立线程 + `CronJobWorkspace` 记录链路（`job_runner` 已注入，且不属于下面两类） | ✅ 会 |
+| `local_handler` | 注册过 `register_local_handler()` 的"本地回调"job（零 LLM 成本、确定性逻辑，比如 `sys:watchlist_report_<tier_id>`、`sys:wiki_quarantine_repair` 等），触发时在原进程内直接同步执行 | ❌ 不会——但 `CronJob.run_count` 照常累加 |
+| `goal_cycle` | `run_mode="goal_cycle"` 的 job，走 Objective 执行通道，执行记录去对应 Goal 详情里看 | ❌ 不会——但 `CronJob.run_count` 照常累加 |
+| `message_queue` | `job_runner` 未注入时的旧回退路径（消息直接进 `InputQueue`，当普通 turn 处理） | ❌ 不会——但 `CronJob.run_count` 照常累加 |
+
+看板在 `recent_runs_summary`/`recent_runs` 都为空时，会按 `execution_channel`
+的取值给出针对性说明（见 §9.1），而不是笼统地提示"触发过至少一次后
+这里会显示"——`local_handler`/`goal_cycle`/`message_queue` 这三种通道
+无论触发多少次都不会在这里出现记录，这是设计使然，不是 bug。
 
 ### 8.1 `PUT /v1/cron/jobs/{id}/config`：修改单 job 专属限制覆盖
 
@@ -573,6 +602,11 @@ curl -X PUT $BASE/v1/cron/jobs/user:ab12cd34/config \
 - 最近执行记录：每条直接展示时间 + 成功/超时/失败/未知状态角标，失败
   时额外展示失败原因文本，不用点开才知道；仍可展开对应
   `runs/<run_id>.jsonl` 的逐步事件详情
+- 空记录时的针对性说明：没有任何执行记录时，不再是笼统的"触发过至少
+  一次后这里会显示"——按 `execution_channel`（见 §8）区分文案：
+  `local_handler` 类会说明"这是本地回调任务，不产生执行记录，但累计
+  运行次数正常累加"；`goal_cycle` 类会提示去对应 Goal 详情里看；
+  `message_queue` 类会提示当前部署未启用独立执行通道
 - `prompt.md` 在线编辑保存
 - `needs_human_review` 状态下的一键重置按钮
 - "➕ 新建 cron job" 表单：提交前会对 `schedule` 字段做格式前置校验
@@ -620,6 +654,7 @@ curl -X PUT $BASE/v1/cron/jobs/user:ab12cd34/config \
 | 新建 job 提示 schedule 格式不合法 | 按提示修正为 `interval:<秒数>`（如 `interval:3600`）或 `cron:<分> <时> <日> <月> <周>`（如 `cron:0 22 * * *`），字段支持 `*`/`*/n`/`n`/`n,m`/`n-m` |
 | 多个 job 同时到期，想让某个 job 优先跑 | 在看板给该 job 调高 `priority`（§3.2），数值越大越优先；只影响同一 tick 内的提交顺序，不会抢占正在执行的其它 job |
 | 某个第三方 API 挂了，多个不相关的 job 陆续失败 | 查是否收到"检测到跨 cron job 的系统性失败"告警（§3.4 广度熔断），需要先在 `agent_config.json` 显式配置 `cron.circuit_breaker_distinct_threshold`（默认不启用）才会触发 |
+| 某个 job 的"累计运行次数"不是 0，但"执行记录"列表却是空的 | 不是 bug——查该 job 详情里的空记录提示文案，或直接看 `GET .../workspace` 响应的 `execution_channel` 字段（见 §8）：`local_handler`（本地回调，比如 `sys:watchlist_report_<tier_id>`）和 `goal_cycle`（走 Objective 通道，去对应 Goal 详情查）这两类 job 设计上就不产生这里的执行记录，但触发成功时 `run_count` 照常累加，两者不冲突，也不会"等下就有了" |
 
 ## 11. 已知局限
 

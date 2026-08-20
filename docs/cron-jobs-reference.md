@@ -38,6 +38,16 @@ Goal，到期时驱动 GoalBacklog 派生并启动一轮子 Objective，而不�
 `llm_helper` 做一次或多次批量 LLM 请求（成本由 cron 间隔控制，不是
 每个 tick 都调）。
 
+标注"本地回调"的 job（如 `sys:wiki_quarantine_repair`、
+`sys:watchlist_report_<tier_id>`）触发时通过 `register_local_handler()`
+注册的回调在原进程内直接同步执行，**不会**在看板"⏰ Cron 任务"详情页
+产生"执行记录"（`recent_runs`/`recent_runs_summary`）——这是
+[Cron 任务专属执行机制指南 · §8](cron-dedicated-execution-guide.md#8-rest-api)
+描述的独立线程 + `CronJobWorkspace` 记录链路专属，本地回调不走这条
+链路。这些 job 的"累计运行次数"（`run_count`）仍然正常累加，只是没有
+逐次执行记录/事件时间线可查，看板据此按 `execution_channel` 字段给出
+针对性说明，详见该指南 §8/§10。
+
 ---
 
 ## 2. 固定内置 job（`cron_scheduler.py::_BUILTIN_JOBS`）
