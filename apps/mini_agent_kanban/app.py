@@ -7931,9 +7931,13 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
                     st.success("已重置，下次触发将从头开始执行。")
                     st.rerun()
 
-        # [最近执行记录只有 run_id，看不出是否成功] 优先用带成功/
-        # 失败判定的 recent_runs_summary；旧版后端（未升级）没有这个
-        # 字段时回退到只有 run_id 的旧列表，保持向后兼容不报错。
+        # [goal 详情已有"真实执行记录"（ObjectiveExecutor 分步计划），这里
+        # 做同类补齐] 最近执行记录 + 逐次事件时间线，跟 Goal 侧
+        # `_render_objective_execution_detail` 的"默认就能看到，不用来回
+        # 点"体验对齐：① 折叠区默认展开（已经在详情弹窗里了，不存在"卡片
+        # 太长"的顾虑）；② 最新一次执行的事件时间线直接展开显示，不需要
+        # 先点"查看事件详情"才看到——历史更早的几次仍然保持"点了才拉取"，
+        # 避免每次打开详情弹窗就对 runs/*.jsonl 发一串没人看的请求。
         recent_runs_summary = (ws_resp or {}).get("recent_runs_summary")
         recent_runs = (ws_resp or {}).get("recent_runs") or []
         _RUN_STATUS_BADGE = {
@@ -7944,8 +7948,8 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
         }
         if recent_runs_summary is not None:
             if recent_runs_summary:
-                with st.expander(f"🗒️ 最近执行记录（{len(recent_runs_summary)} 条）"):
-                    for run in recent_runs_summary:
+                with st.expander(f"🗒️ 执行记录（{len(recent_runs_summary)} 条）", expanded=True):
+                    for i, run in enumerate(recent_runs_summary):
                         run_id = run.get("run_id", "")
                         started_at = run.get("started_at")
                         time_str = (
@@ -7958,15 +7962,25 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
                         st.markdown(f"**{time_str}** {badge}{dur_note}")
                         if not run.get("success") and run.get("error"):
                             st.error(run["error"])
-                        if st.button(f"查看事件详情 {run_id}", key=f"cron_run_{job_id}_{run_id}"):
+                        if i == 0:
+                            # 最新一次：直接把事件时间线展开显示，不需要
+                            # 用户先点按钮才看到——这是最常被关心的一次。
                             events_resp = client.cron_job_run_events(job_id, run_id)
                             if events_resp and "_error" in events_resp:
-                                st.error(f"获取执行事件失败：{events_resp['_error']}")
+                                st.caption(f"获取执行事件失败：{events_resp['_error']}")
                             else:
-                                _render_cron_run_timeline((events_resp or {}).get("events") or [])
+                                with st.expander("查看逐步事件时间线", expanded=True):
+                                    _render_cron_run_timeline((events_resp or {}).get("events") or [])
+                        else:
+                            if st.button(f"查看事件详情 {run_id}", key=f"cron_run_{job_id}_{run_id}"):
+                                events_resp = client.cron_job_run_events(job_id, run_id)
+                                if events_resp and "_error" in events_resp:
+                                    st.error(f"获取执行事件失败：{events_resp['_error']}")
+                                else:
+                                    _render_cron_run_timeline((events_resp or {}).get("events") or [])
                         st.divider()
         elif recent_runs:
-            with st.expander(f"🗒️ 最近执行记录（{len(recent_runs)} 条）"):
+            with st.expander(f"🗒️ 执行记录（{len(recent_runs)} 条）", expanded=True):
                 for run_id in recent_runs:
                     if st.button(f"查看 {run_id}", key=f"cron_run_{job_id}_{run_id}"):
                         events_resp = client.cron_job_run_events(job_id, run_id)
@@ -7974,6 +7988,8 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
                             st.error(f"获取执行事件失败：{events_resp['_error']}")
                         else:
                             _render_cron_run_timeline((events_resp or {}).get("events") or [])
+        else:
+            st.caption("暂无执行记录，触发过至少一次后这里会显示逐次的状态/耗时/事件时间线。")
 
         with st.expander("✏️ 编辑任务 Prompt"):
             prompt_resp = client.cron_job_prompt(job_id)
