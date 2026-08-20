@@ -100,27 +100,19 @@ def scan_sessions_for_backfill(
 
     只做扫描/分类，不执行任何生成/写入动作，供 `--dry-run` 和
     `backfill_sessions()` 复用。
+
+    [session_backfill_index_incremental_plan.md] 底层走
+    `SessionManager.get_backfill_candidate_metas()`——默认阈值（4）下直接
+    读增量维护的候选索引，不再 `list_sessions(limit=100000)` 全量扫描 +
+    逐个解析每一个历史 session 的 meta.json；候选数通常远小于 session
+    总数，排序成本可以忽略。非默认阈值走原始全量扫描兜底（索引只按
+    默认阈值维护成员资格）。
     """
     exclude_ids = exclude_ids or set()
-    all_metas = session_manager.list_sessions(limit=100000)
-
-    def _parse_updated_at(updated_at: str) -> float:
-        if not updated_at:
-            return 0.0
-        try:
-            from datetime import datetime
-            dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-            return dt.timestamp()
-        except Exception:
-            return 0.0
-
     candidates = [
-        m for m in all_metas
+        m for m in session_manager.get_backfill_candidate_metas(min_turns_for_backfill=min_turns_for_backfill)
         if m.id not in exclude_ids
-        and not (str(m.summary or "").strip())
-        and m.turns >= min_turns_for_backfill
     ]
-    candidates.sort(key=lambda m: _parse_updated_at(m.updated_at))
     return candidates
 
 

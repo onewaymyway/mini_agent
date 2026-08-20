@@ -179,8 +179,9 @@ idle`，不含 `timed_out`/`needs_human_review`）且有实质产出文本时才
   交给 LLM 重新评估"——纯提示，不提供手动删除入口。
 - **🗄️ 记忆回填状态**：还有多少存量 session 符合回填条件但尚未处理
   （`GET /v1/growth/summary` 的 `diagnostics.memory.
-  backfill_candidates_count`，只读扫描，不触发实际回填），以及系统内
-  置回填任务 `sys:memory_backfill_scan` 的上次/下次运行时间（非
+  backfill_candidates_count`——底层是增量维护的候选索引，O(1) 查询，
+  不是每次都全量扫描，见 `docs/growth-advisor-guide.md` 5.9 节），以及
+  系统内置回填任务 `sys:memory_backfill_scan` 的上次/下次运行时间（非
   daemon 模式下无法获取任务运行状态，会提示改用 `/memory backfill`
   手动执行）。
 

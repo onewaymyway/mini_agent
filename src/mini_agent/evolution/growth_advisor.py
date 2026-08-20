@@ -473,17 +473,17 @@ _VALID_STATUSES = (STATUS_PENDING, STATUS_ACCEPTED, STATUS_DISMISSED, STATUS_EXP
 # （避免看板里堆积"已经不新鲜"的建议，呼应方案第 8 节"克制"原则）。
 PENDING_TTL_DAYS = 45
 
-# [next_doc/growth_diagnostics_backfill_count_cache_plan.md] 诊断快照里
-# "记忆回填候选数"依赖 `scan_sessions_for_backfill()` → `list_sessions
-# (limit=100000)`，这一步会同步扫描全部历史 session 的 meta.json，随着
-# session 数量积累（长期运行的 daemon 很容易攒到成百上千个）会越来越慢，
-# 曾经在真实使用中触发过 `growth_diagnostics_snapshot` 的 45s
-# blocking_guard 超时。这只是一个"给用户一个大概数"的诊断信息，不需要
-# 每次打开看板 Tab 都精确到秒——加一层进程内 TTL 缓存，5 分钟内复用上次
-# 扫描结果；看板提供"🔄 刷新诊断数据"按钮，点击时传 `force_refresh=True`
-# 绕过缓存拿到真实最新值。
-_BACKFILL_COUNT_CACHE_TTL_SECONDS = 300
-_backfill_count_cache: dict[str, tuple[float, int]] = {}  # project_root_key -> (computed_at, count)
+# [session_backfill_index_incremental_plan.md] 诊断快照里"记忆回填候选数"
+# 依赖的全量扫描已经在 `SessionManager` 里改成了增量维护的索引（见
+# session.py `_ensure_backfill_index()` 一节的说明）：候选资格只在
+# session 写入/删除时 O(1) 更新，不再每次查询都重新扫全部历史 session 的
+# meta.json，从根上消除了曾经在真实使用中触发过的 `growth_diagnostics_
+# snapshot` 45s blocking_guard 超时（旧的 5 分钟 TTL 结果缓存只是摊薄了
+# "重新算一次"的频率，没有降低单次冷计算本身随 session 数量线性增长的
+# 成本，改为索引后这个函数不再需要自己的缓存，直接查询即为 O(1)）。
+# 这里保留 `_backfill_candidates_count_cached` 这个函数名和
+# `force_refresh` 参数只是为了不改动调用方签名——内部已经不再做旧式的
+# TTL 判断，透传给 `SessionManager.count_backfill_candidates()`。
 
 # 一条 memory entry 的 tag 至少要在窗口内出现这么多次，才有资格被当作
 # "growth_focus_area"候选主题（与 decision_profile_builder 的
@@ -6241,33 +6241,25 @@ def monthly_retrospective_summary(paths) -> dict[str, Any]:
 # 函数把决定"为什么是 0"的关键中间量整理成一份可读快照，配合看板展示，
 # 让用户自己就能判断卡在哪一步，不用非得来问。
 def _backfill_candidates_count_cached(paths, *, force_refresh: bool = False) -> int:
-    """[进程内 TTL 缓存，见 `_backfill_count_cache` 声明处的注释] 包一层
-    缓存在真正的 `scan_sessions_for_backfill()` 调用外面——同一个
-    project_root 在 `_BACKFILL_COUNT_CACHE_TTL_SECONDS` 内重复请求诊断
-    快照时直接复用上次扫描结果，不重新走一遍全量 session 扫描；
-    `force_refresh=True`（看板"🔄 刷新诊断数据"按钮）无条件跳过缓存
-    重新计算，并把新结果写回缓存供后续请求复用。
+    """[session_backfill_index_incremental_plan.md] 底层已经改成增量维护的
+    O(1) 索引（见 `SessionManager.count_backfill_candidates()` / `session.py`
+    `_ensure_backfill_index()` 的说明），这里不再需要自己的 TTL 缓存——直接
+    透传查询即可，`force_refresh=True`（看板"🔄 刷新诊断数据"按钮）对应
+    索引层的"丢弃重建一次"，用于跨进程变更（比如刚跑完一次 `mini-agent
+    memory backfill` CLI）后主动拿到最新值，而不用等索引的跨进程失效
+    检测下次自然触发。
 
-    缓存 key 用 `str(paths.project_root)`——不同项目/workdir 的 session
-    目录彼此独立，不能共用同一份计数。任何异常（session 目录不可读等）
-    都不该拖垮整个诊断面板，静默降级为 0，跟原来的行为一致。
+    保留这层包装（而不是让调用方直接调 SessionManager）只是为了不改动
+    调用方签名，以及保留"任何异常都不该拖垮整个诊断面板，静默降级为 0"
+    这条兜底约定。
     """
-    cache_key = str(getattr(paths, "project_root", "") or "")
-    now = time.time()
-    if not force_refresh:
-        cached = _backfill_count_cache.get(cache_key)
-        if cached is not None and (now - cached[0]) < _BACKFILL_COUNT_CACHE_TTL_SECONDS:
-            return cached[1]
-
     count = 0
     try:
-        from mini_agent.evolution.memory_backfill import scan_sessions_for_backfill
         from mini_agent.session import SessionManager
         sm = SessionManager(project_root=getattr(paths, "project_root", None))
-        count = len(scan_sessions_for_backfill(sm, min_turns_for_backfill=4))
+        count = sm.count_backfill_candidates(force_refresh=force_refresh)
     except Exception:
         count = 0
-    _backfill_count_cache[cache_key] = (now, count)
     return count
 
 
@@ -6387,16 +6379,15 @@ def diagnostics_snapshot(
     # 记忆回填候选数：只读扫描（对齐 CLI `/memory backfill --dry-run` 的
     # 判定逻辑），不触发任何生成/写入，供看板解释"为什么记忆总条数这么
     # 少"以及"现在还有多少存量 session 没被回填"。
-    # [next_doc/growth_diagnostics_backfill_count_cache_plan.md] 走
-    # `_backfill_candidates_count_cached()` 的 5 分钟 TTL 缓存，不再每次
-    # 诊断快照都同步扫描全部历史 session——这一步曾在 session 数量较多
-    # 时触发过 `growth_diagnostics_snapshot` 的 45s blocking_guard 超时。
+    # [session_backfill_index_incremental_plan.md] 底层已经是增量维护的
+    # O(1) 索引，不再是"扫一次全量、缓存 5 分钟"的旧模型——这个数字在
+    # 索引建立之后始终是最新的（session 写入/删除时同步更新），不存在
+    # "过期"的概念，所以下面直接用本次查询时刻作为 computed_at，而不是
+    # 从某个缓存条目里读一个可能滞后的历史时间戳。
     backfill_candidates_count = _backfill_candidates_count_cached(
         paths, force_refresh=force_refresh_backfill_count,
     )
-    backfill_count_computed_at = _backfill_count_cache.get(
-        str(getattr(paths, "project_root", "") or ""), (None, 0),
-    )[0]
+    backfill_count_computed_at = time.time()
 
     return {
         "config": {

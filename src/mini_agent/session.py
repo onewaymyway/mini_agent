@@ -188,6 +188,70 @@ def _invalidate_metas_cache(session_dir: Path) -> None:
         _metas_cache.pop(key, None)
 
 
+# ── 记忆回填候选索引（增量维护，替代每次全量扫描）──────────────────────────
+#
+# 背景：`evolution/memory_backfill.py::scan_sessions_for_backfill()` 判定
+# "候选"的条件是 `summary == "" and turns >= min_turns_for_backfill`，之前
+# 每次查询都要 `list_sessions(limit=100000)` 全量扫描 + 逐个读 meta.json，
+# 随 session 数量线性变慢，长期运行的 daemon 上曾经触发过看板诊断接口的
+# 45s blocking_guard 超时（growth_advisor.py `_backfill_candidates_count_
+# cached` 附近注释）。
+#
+# 改成增量索引：进程内维护一份"当前满足候选条件的 session_id -> SessionMeta"
+# 字典，只在真正会影响候选资格的两个写操作上做 O(1) 更新——
+#   - save()                 （turns 增长、summary 从空变非空都在这里落盘）
+#   - mark_summary_backfilled()（离线回填成功后的专用写入路径）
+#   - delete()                （session 被删除）
+# 首次查询时才做一次全量扫描来建立索引（不可避免的一次性成本），此后完全
+# 靠上面几个写路径增量维护，不再重新扫描——把单次查询成本从 O(N) 降到 O(1)，
+# 且不会随 session 数量增长而变慢。
+#
+# 跨进程一致性：`mini-agent memory backfill` CLI 命令是独立进程，也会调用
+# `mark_summary_backfilled()`，daemon 进程内存里的索引看不到这次写入。为此
+# 每次候选资格发生变化时，除了更新内存索引，还会 best-effort 递增一个磁盘
+# 上的小生成计数器文件（`.backfill_index_gen`，纯数字，几字节，读写都是
+# O(1)）；daemon 侧每次查询前先廉价对比这个计数器，发现被其它进程改过时，
+# 丢弃内存索引触发一次重建（重建本身仍是 O(N)，但只在真的发生跨进程变更时
+# 才触发一次，不是常态）。生成计数器写入失败（权限/磁盘问题等）不影响主
+# 流程，只是退化为"这个跨进程场景下索引可能滞后到下次自然重建"，不影响
+# 正确性下限（诊断数字本来就只要求近似）。
+_BACKFILL_INDEX_MIN_TURNS = 4  # 与两个真实调用方（growth_advisor 诊断快照、
+                               # memory_backfill CLI）实际使用的默认值一致；
+                               # 索引只服务这个默认阈值，其它阈值走原始全量
+                               # 扫描兜底（仅测试代码会传别的值）。
+_backfill_index_cache: dict[str, dict[str, "SessionMeta"]] = {}
+_backfill_index_lock = threading.Lock()
+_backfill_index_seen_gen: dict[str, int] = {}  # session_dir_key -> 建索引时读到的 gen
+
+
+def _is_backfill_candidate(meta: "SessionMeta", min_turns: int = _BACKFILL_INDEX_MIN_TURNS) -> bool:
+    return not str(meta.summary or "").strip() and meta.turns >= min_turns
+
+
+def _backfill_gen_path(session_dir: Path) -> Path:
+    return session_dir / ".backfill_index_gen"
+
+
+def _read_backfill_gen(session_dir: Path) -> int:
+    try:
+        return int(_backfill_gen_path(session_dir).read_text(encoding="utf-8").strip() or "0")
+    except Exception:
+        return 0
+
+
+def _bump_backfill_gen(session_dir: Path) -> None:
+    """候选资格可能发生变化时调用，best-effort 递增磁盘计数器，供其它进程
+    的索引感知到"这个目录被改过"。任何失败都静默吞掉——这只是一个跨进程
+    失效信号，不是正确性所必需的关键路径（同进程内的增量更新已经是准确的，
+    这个计数器只用来兜底跨进程场景）。"""
+    try:
+        p = _backfill_gen_path(session_dir)
+        cur = _read_backfill_gen(session_dir)
+        p.write_text(str(cur + 1), encoding="utf-8")
+    except Exception:
+        pass
+
+
 # ── SessionManager ────────────────────────────────────────────────────────────
 
 class SessionManager:
@@ -308,6 +372,9 @@ class SessionManager:
 
         session.file_path = str(meta_path)
         _invalidate_metas_cache(self.session_dir)
+        # [记忆回填候选索引] O(1) 增量维护候选资格——turns 增长跨过阈值、
+        # summary 从空变非空都在这条写入路径上发生，见类定义处的索引说明。
+        self._backfill_index_upsert(session.meta)
         return meta_path
 
     # ── 加载 ──────────────────────────────────────────────────────────────────
@@ -413,6 +480,106 @@ class SessionManager:
         """
         return self._all_metas_cached()[:limit]
 
+    # ── 记忆回填候选索引 ──────────────────────────────────────────────────────
+
+    def _backfill_key(self) -> str:
+        return str(self.session_dir.resolve())
+
+    def _ensure_backfill_index(self) -> dict[str, "SessionMeta"]:
+        """返回当前候选索引，必要时（首次访问 / 检测到跨进程变更）重建。
+
+        重建只发生在两种情况：进程内第一次查询这个 session_dir（冷启动，
+        不可避免的一次性全量扫描），或者磁盘上的跨进程生成计数器比索引建
+        立时读到的值更新（说明其它进程改过候选资格，需要一次性对齐）。
+        除此之外的每次查询都是直接返回内存里已经维护好的字典，O(1)。
+        """
+        key = self._backfill_key()
+        cur_gen = _read_backfill_gen(self.session_dir)
+        with _backfill_index_lock:
+            idx = _backfill_index_cache.get(key)
+            seen_gen = _backfill_index_seen_gen.get(key, -1)
+            if idx is not None and seen_gen == cur_gen:
+                return idx
+
+        # 冷启动或跨进程失效：做一次全量扫描重建索引。复用
+        # `_all_metas_cached()`——如果 5 秒内已经有别的调用扫过盘，这里
+        # 直接命中那份缓存，不会真的再扫一遍磁盘。
+        all_metas = self._all_metas_cached()
+        idx = {m.id: m for m in all_metas if _is_backfill_candidate(m)}
+        with _backfill_index_lock:
+            _backfill_index_cache[key] = idx
+            _backfill_index_seen_gen[key] = cur_gen
+        return idx
+
+    def _backfill_index_upsert(self, meta: Optional["SessionMeta"]) -> None:
+        """O(1) 增量维护：session 写入/更新后调用，不触发任何重扫描。
+        索引还没建立过时直接跳过——下次真正查询会自然做一次冷启动全量扫描，
+        那次扫描会读到最新状态，这里不用抢在它前面强制建索引。"""
+        if meta is None:
+            return
+        key = self._backfill_key()
+        with _backfill_index_lock:
+            idx = _backfill_index_cache.get(key)
+            if idx is None:
+                return
+            if _is_backfill_candidate(meta):
+                idx[meta.id] = meta
+            else:
+                idx.pop(meta.id, None)
+        _bump_backfill_gen(self.session_dir)
+
+    def _backfill_index_remove(self, session_id: str) -> None:
+        key = self._backfill_key()
+        with _backfill_index_lock:
+            idx = _backfill_index_cache.get(key)
+            if idx is not None:
+                idx.pop(session_id, None)
+        _bump_backfill_gen(self.session_dir)
+
+    def count_backfill_candidates(self, *, min_turns_for_backfill: int = _BACKFILL_INDEX_MIN_TURNS,
+                                   force_refresh: bool = False) -> int:
+        """记忆回填候选数——诊断面板用，O(1)（索引已建立时）。
+
+        `min_turns_for_backfill` 传非默认值时索引不适用（索引只按默认阈值
+        维护成员资格），退化为一次性全量扫描，不缓存，仅供测试/特殊场景
+        使用；真实调用方（growth_advisor 诊断快照）永远用默认值，走索引
+        快路径。`force_refresh=True` 强制丢弃索引重建一次（对应看板"🔄
+        刷新诊断数据"按钮）。
+        """
+        if min_turns_for_backfill != _BACKFILL_INDEX_MIN_TURNS:
+            return len([m for m in self._all_metas_cached()
+                        if _is_backfill_candidate(m, min_turns_for_backfill)])
+        if force_refresh:
+            key = self._backfill_key()
+            with _backfill_index_lock:
+                _backfill_index_cache.pop(key, None)
+                _backfill_index_seen_gen.pop(key, None)
+        return len(self._ensure_backfill_index())
+
+    def get_backfill_candidate_metas(self, *, min_turns_for_backfill: int = _BACKFILL_INDEX_MIN_TURNS
+                                      ) -> list["SessionMeta"]:
+        """候选 session 列表，按 updated_at 从旧到新排序（FIFO，语义对齐
+        `evolution/memory_backfill.py::scan_sessions_for_backfill()`）。
+        默认阈值走索引（不重扫全部 session，只排序候选子集，候选数通常远
+        小于 session 总数）；非默认阈值退化为全量扫描。"""
+        if min_turns_for_backfill != _BACKFILL_INDEX_MIN_TURNS:
+            metas = [m for m in self._all_metas_cached()
+                     if _is_backfill_candidate(m, min_turns_for_backfill)]
+        else:
+            metas = list(self._ensure_backfill_index().values())
+
+        def _parse_updated_at(updated_at: str) -> float:
+            if not updated_at:
+                return 0.0
+            try:
+                dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                return dt.timestamp()
+            except Exception:
+                return 0.0
+
+        metas.sort(key=lambda m: _parse_updated_at(m.updated_at))
+        return metas
+
     def list_sessions_page(self, limit: int = 50, offset: int = 0) -> tuple[list[SessionMeta], int]:
         """[看板分页改进] 支持 offset 的分页版本，额外返回分页前的总数，
         供前端计算总页数。不改动 list_sessions() 本身，避免影响 CLI/daemon
@@ -495,6 +662,8 @@ class SessionManager:
             return False
         _atomic_write_json(meta_path, session.to_meta_dict())
         _invalidate_metas_cache(self.session_dir)
+        # [记忆回填候选索引] summary 从空变非空，这个 session 离开候选集合。
+        self._backfill_index_upsert(session.meta)
         return True
 
     def delete(self, session_id: str) -> bool:
@@ -506,6 +675,7 @@ class SessionManager:
         if session_dir.is_dir():
             shutil.rmtree(session_dir, ignore_errors=True)
             _invalidate_metas_cache(self.session_dir)
+            self._backfill_index_remove(session_id)
             return True
 
         # 前缀匹配（新格式）
@@ -517,6 +687,7 @@ class SessionManager:
             for d in candidates_dir:
                 shutil.rmtree(d, ignore_errors=True)
             _invalidate_metas_cache(self.session_dir)
+            self._backfill_index_remove(session_id)
             return True
 
         # 旧格式：文件
@@ -525,6 +696,7 @@ class SessionManager:
             for p in candidates_file:
                 p.unlink(missing_ok=True)
             _invalidate_metas_cache(self.session_dir)
+            self._backfill_index_remove(session_id)
             return True
 
         return False

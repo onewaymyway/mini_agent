@@ -1722,24 +1722,45 @@ context` 开启、这次确实拿到了非空摘录、且正文由 LLM 生成—
 - API `GET /growth/reports/refresh_candidates` 只有配置开启时才会
   额外加载一次 `profile`，关闭时（默认）不产生任何额外开销。
 
-## 5.9 诊断快照"记忆回填候选数"TTL 缓存 + 手动刷新（`next_doc/growth_diagnostics_backfill_count_cache_plan.md`）
+## 5.9 诊断快照"记忆回填候选数"：增量索引，不再全量扫描（`next_doc/session_backfill_index_incremental_plan.md`）
 
-诊断面板「🗄️ 记忆回填状态」里的候选数依赖
-`scan_sessions_for_backfill()`，会同步扫描全部历史 session 的
-`meta.json`——session 数量积累多了之后曾触发过
-`growth_diagnostics_snapshot` 的 45s `blocking_guard` 超时。
+诊断面板「🗄️ 记忆回填状态」里的候选数曾经依赖 `scan_sessions_for_backfill()`
+同步扫描全部历史 session 的 `meta.json`——session 数量积累多了之后曾触发过
+`growth_diagnostics_snapshot` 的 45s `blocking_guard` 超时。最初的修复是给
+这个数字加一层 5 分钟 TTL 缓存，但那只是摊薄了"重新全量扫描"的频率，没有
+降低单次冷计算本身随 session 数量线性增长的成本——TTL 一过期，只要 session
+数量涨到临界点，同样的超时还会复现。
 
-修复：这个数字加了一层进程内 TTL 缓存（默认 5 分钟，key 是
-project_root），`diagnostics_snapshot()` 默认走缓存，不再每次打开看板
-都全量扫描一遍。返回值 `memory.backfill_candidates_count_computed_at`
-标注数据计算时间。
+现在改成了**增量维护的候选索引**（`SessionManager` 内部）：
+- 候选资格（`summary` 为空 + `turns >= 4`）只在 session 真正被写入/删除时
+  才会变化——`SessionManager.save()`、`mark_summary_backfilled()`、
+  `delete()` 三个写路径上做 O(1) 增量更新（增/删一个 session_id），不再
+  重新扫描
+- 只有**进程内第一次查询**这个 session 目录时才会做一次全量扫描建立索引
+  （不可避免的一次性成本），此后所有查询都是直接读内存字典，跟 session
+  总数无关
+- 跨进程一致性：`mini-agent memory backfill` CLI 命令是独立进程，也会写
+  `meta.json`。为此每次候选资格变化时会 best-effort 递增一个磁盘上的小
+  生成计数器文件（`.backfill_index_gen`），daemon 侧下次查询前先廉价对比
+  这个计数器，发现被其它进程改过才会触发一次索引重建——不是每次都比对
+  全量内容，只是读一个几字节的小文件
 
-看板诊断面板新增「🔄 刷新诊断数据」按钮：点击后调用
-`GET /v1/growth/summary?refresh_diagnostics=true` 强制绕过缓存重新
-扫描，拿到真实最新值并写回缓存，随后 `st.rerun()`——不需要按钮自己
-渲染结果，rerun 后页面正常加载路径会直接读到刚刷新出的新值。强制
-刷新这条路径客户端超时放宽到 50s（默认路径仍是 6s），因为它本来就是
-要触发那次慢扫描。
+`diagnostics_snapshot()` 现在读到的数字**始终是最新的**，不再有"缓存过期
+前看到旧值"的概念；`memory.backfill_candidates_count_computed_at` 现在就是
+本次查询发生的时刻（因为查询本身已经足够便宜，不再需要区分"缓存写入
+时间"和"查询时间"）。
+
+看板诊断面板的「🔄 刷新诊断数据」按钮保留：点击后调用
+`GET /v1/growth/summary?refresh_diagnostics=true`，对应索引层"丢弃内存
+索引、强制重建一次"，主要用于"刚跑完一次 CLI 记忆回填、想立刻看到最新值，
+不想等索引的跨进程失效检测下次自然触发"这类场景。强制刷新这条路径客户端
+超时仍然放宽到 50s（默认路径 6s）——正常查询已经是 O(1) 不会慢，这个更宽
+的超时只是给"索引失效后需要重建"这个仍然是一次性全量扫描的分支留出足够
+时间。
+
+`scan_sessions_for_backfill()`（`evolution/memory_backfill.py`，供 CLI
+`mini-agent memory backfill --dry-run` 和实际回填复用）默认阈值下也改成
+读同一份索引，不再各自独立全量扫描。
 
 ## 6. 数据存放位置
 
