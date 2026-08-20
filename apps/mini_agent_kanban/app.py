@@ -28,6 +28,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from client import AgentClient
+from async_job_ui import start_async_job, run_async_job
 from diff_view import parse_unified_diff, summarize_files
 
 
@@ -2777,19 +2778,32 @@ def _render_goal_execution_spec_widget(
         )
         if gcol2.button("📋 生成执行规范草稿", key=f"{key_prefix}ges_gen_{goal_id}"):
             template_id = tpl_choice.split(" · ")[0] if tpl_choice != tpl_labels[0] else ""
-            res = client.generate_execution_spec(
-                goal_id, template_id=template_id, from_history=from_history, mode=mode_choice,
-            )
-            if res and res.get("_error"):
-                st.error(f"生成失败：{res['_error']}")
+            gen_key = f"execution_spec_generate:{goal_id}"
+            if start_async_job(
+                client, gen_key,
+                lambda: client.generate_execution_spec(
+                    goal_id, template_id=template_id, from_history=from_history, mode=mode_choice,
+                ),
+            ):
+                st.rerun()
+
+        # [kanban_async_job_mechanism_plan.md] 生成草稿现在是异步任务：
+        # 不管这次渲染是不是刚点完按钮触发的，只要 session_state（或后端
+        # "最近一次任务"）里还挂着一个正在跑的 job，这里都要接着轮询——
+        # 不放在 `if` 按钮点击分支里面，是因为轮询靠的是"每次渲染都检查
+        # 一次"，而不是"点击的那一刻等到底"。
+        gen_result = run_async_job(client, f"execution_spec_generate:{goal_id}", label="正在生成执行规范草稿")
+        if gen_result is not None:
+            if gen_result.get("_error"):
+                st.error(f"生成失败：{gen_result['_error']}")
                 # 注意：这里故意不调用 st.rerun()——错误信息只在当前这次
                 # 渲染里通过 st.error 显示，立即 rerun 会让用户还没看清就被
                 # 清空。回源同步放在这个渲染周期内完成，下一次用户交互
                 # （或页面自然刷新）触发的渲染就会用上同步后的状态。
                 _sync_execution_spec_from_server(client, goal_id, draft_key, path_key)
             else:
-                st.session_state[draft_key] = res.get("spec")
-                st.session_state[path_key] = res.get("effective_path")
+                st.session_state[draft_key] = gen_result.get("spec")
+                st.session_state[path_key] = gen_result.get("effective_path")
                 st.rerun()
         return False
 
@@ -2845,14 +2859,15 @@ def _render_goal_execution_spec_widget(
         if not feedback.strip():
             st.error("补充意见不能为空")
         else:
-            res = client.revise_execution_spec(goal_id, feedback.strip(), locked_fields=locked_now, mode=revise_mode)
-            if res and res.get("_error"):
-                st.error(f"重新生成失败：{res['_error']}")
-                _sync_execution_spec_from_server(client, goal_id, draft_key, path_key)
-            else:
+            revise_key = f"execution_spec_revise:{goal_id}"
+            if start_async_job(
+                client, revise_key,
+                lambda: client.revise_execution_spec(goal_id, feedback.strip(), locked_fields=locked_now, mode=revise_mode),
+            ):
+                # 提交成功后先把"覆盖前的版本"存进 diff_key，跟原来同步版本
+                # 的时序保持一致（草稿真正被覆盖是任务跑完之后，但对比基线
+                # 要在这里、也就是"提交那一刻"的 spec 快照）。
                 st.session_state[diff_key] = spec
-                st.session_state[draft_key] = res.get("spec")
-                st.session_state[path_key] = res.get("effective_path")
                 st.rerun()
     elif confirm_click:
         res = client.confirm_execution_spec(goal_id)
@@ -2871,6 +2886,19 @@ def _render_goal_execution_spec_widget(
         st.session_state.pop(diff_key, None)
         st.rerun()
 
+    # [kanban_async_job_mechanism_plan.md] 补充意见重新生成是异步任务，
+    # 同样要在每次渲染都检查一次，不只是点击那一刻。
+    revise_result = run_async_job(client, f"execution_spec_revise:{goal_id}", label="正在根据补充意见重新生成")
+    if revise_result is not None:
+        if revise_result.get("_error"):
+            st.error(f"重新生成失败：{revise_result['_error']}")
+            st.session_state.pop(diff_key, None)
+            _sync_execution_spec_from_server(client, goal_id, draft_key, path_key)
+        else:
+            st.session_state[draft_key] = revise_result.get("spec")
+            st.session_state[path_key] = revise_result.get("effective_path")
+            st.rerun()
+
     # [goal_execution_spec_generation_plan.md §6.1 / 实施记录未实施清单
     # 第 1 项] "从模板重新起草"：不必先放弃当前草稿再重新走一遍"生成"
     # 入口——这里直接调用同一个 generate 接口，用选中的模板整段覆盖当前
@@ -2885,14 +2913,26 @@ def _render_goal_execution_spec_widget(
         tpl_choice2 = rtcol1.selectbox("选择模板", tpl_labels2, key=f"{key_prefix}ges_retpl_{goal_id}")
         if rtcol2.button("♻️ 用此模板重新起草", key=f"{key_prefix}ges_regen_tpl_{goal_id}"):
             template_id2 = tpl_choice2.split(" · ")[0] if tpl_choice2 != tpl_labels2[0] else ""
-            res = client.generate_execution_spec(goal_id, template_id=template_id2)
-            if res and res.get("_error"):
-                st.error(f"重新起草失败：{res['_error']}")
+            # [kanban_async_job_mechanism_plan.md] 复用跟"初次生成"同一个
+            # 后端 key（同一个 goal_id 的 execution_spec/generate 调用，
+            # 两个 UI 入口从不会同时触发），提交/轮询逻辑跟上面初次生成
+            # 那一支完全一致，这里只需要额外记一下 diff 基线。
+            gen_key2 = f"execution_spec_generate:{goal_id}"
+            if start_async_job(
+                client, gen_key2,
+                lambda: client.generate_execution_spec(goal_id, template_id=template_id2),
+            ):
+                st.session_state[diff_key] = spec
+                st.rerun()
+        regen_result = run_async_job(client, f"execution_spec_generate:{goal_id}", label="正在用新模板重新起草")
+        if regen_result is not None:
+            if regen_result.get("_error"):
+                st.error(f"重新起草失败：{regen_result['_error']}")
+                st.session_state.pop(diff_key, None)
                 _sync_execution_spec_from_server(client, goal_id, draft_key, path_key)
             else:
-                st.session_state[diff_key] = spec
-                st.session_state[draft_key] = res.get("spec")
-                st.session_state[path_key] = res.get("effective_path")
+                st.session_state[draft_key] = regen_result.get("spec")
+                st.session_state[path_key] = regen_result.get("effective_path")
                 st.rerun()
 
     return False
@@ -3644,17 +3684,35 @@ def _render_goal_card(
                 )
                 if st.button("🔁 手动重判整体是否可以关闭", key=f"{key_prefix}ges_closecheck_{n.get('id')}"):
                     _cc_use_agent = {"": None, "agent": True, "llm": False}[_cc_path_choice]
-                    res = client.close_check_execution_spec(n.get("id"), use_agent=_cc_use_agent)
-                    if res and res.get("_error"):
-                        st.error(res["_error"])
+                    cc_key = f"execution_spec_close_check:{n.get('id')}"
+                    submitted = client.close_check_execution_spec(n.get("id"), use_agent=_cc_use_agent)
+                    if isinstance(submitted, dict) and submitted.get("_error"):
+                        st.error(submitted["_error"])
+                    elif isinstance(submitted, dict) and "job_id" in submitted:
+                        # [kanban_async_job_mechanism_plan.md] Goal 是
+                        # active 状态时服务端走异步任务（可能触发 Agent
+                        # 判定），记下 job_id 交给下面的轮询处理。
+                        st.session_state[f"_async_job_id::{cc_key}"] = submitted["job_id"]
+                        st.rerun()
                     else:
-                        outcome = res.get("outcome")
+                        # Goal 不是 active：服务端走的是不涉及任何调用的
+                        # 快速路径，同步直接返回 `{"outcome": None, "reason": ...}`。
+                        st.caption(submitted.get("reason") or "未触发判定：Goal 当前状态不是 active。")
+
+                # [kanban_async_job_mechanism_plan.md] 走 Agent/LLM 路径的
+                # 判定同样要在每次渲染都检查一次任务状态。
+                cc_result = run_async_job(client, f"execution_spec_close_check:{n.get('id')}", label="正在重新判定整体是否可以关闭")
+                if cc_result is not None:
+                    if cc_result.get("_error"):
+                        st.error(cc_result["_error"])
+                    else:
+                        outcome = cc_result.get("outcome")
                         if outcome == "closed":
                             st.success("判定为整体已完成，Goal 已标记为 completed。")
                         elif outcome == "kept_open":
                             st.info("判定为暂不关闭（继续保持 active），详见下方进展记录。")
                         else:
-                            st.caption(res.get("reason") or "未触发判定：可能子 Objective 未全部终态、"
+                            st.caption(cc_result.get("reason") or "未触发判定：可能子 Objective 未全部终态、"
                                                               "规范未确认，或 overall_completion_criteria 为空。")
                         st.rerun()
                 st.markdown("---")
@@ -5419,23 +5477,26 @@ def render_growth_tab(client: "AgentClient"):
     col_a, col_b = st.columns([1, 5])
     with col_a:
         if st.button("🔍 立即为我看看", key="growth_scan_btn"):
-            with st.spinner("正在扫描最近的信号..."):
-                result = client.growth_scan()
-            # [BUGFIX] 之前这里用 st.error/st.info/st.success + 紧跟的无条件
-            # st.rerun()：Streamlit 的 rerun 会立刻重新执行整个脚本，这些
-            # 消息在还没被用户看到之前就被下一次渲染冲掉了，表现为"点了按钮
-            # 好像没反应"——不管扫描成功、跳过还是报错，用户都看不到反馈。
-            # 改用 st.toast()（跨 st.rerun() 仍会展示，见上面 2098 行附近
-            # 同类用法），不需要额外的 session_state 搬运。
-            if result and "_error" in result:
-                st.toast(f"❌ 扫描失败：{result['_error']}", icon="❌")
-            elif result and result.get("skipped"):
-                st.toast(f"ℹ️ 跳过：{result.get('reason')}", icon="ℹ️")
-            else:
-                n_c = len(result.get("new_candidates", [])) if result else 0
-                n_r = len(result.get("reports", [])) if result else 0
-                st.toast(f"✅ 完成：新增/更新候选 {n_c} 条，生成调研报告 {n_r} 份。", icon="✅")
-            st.rerun()
+            if start_async_job(client, "growth_scan", lambda: client.growth_scan()):
+                st.rerun()
+
+    # [kanban_async_job_mechanism_plan.md] 扫描现在是异步任务，改用
+    # `run_async_job()` 展示"⏳ 正在扫描"的持续提示，而不是原来的
+    # `st.spinner()`（那种同步等待在扫描带 LLM 调用、耗时到分钟级时体验
+    # 很差——浏览器转圈却不知道还要等多久）。拿到终态后依然用 `st.toast()`
+    # 展示结果（跨 `st.rerun()` 仍会展示），保留原有的"完成/跳过/失败"
+    # 三种反馈文案。
+    scan_result = run_async_job(client, "growth_scan", label="正在扫描最近的信号")
+    if scan_result is not None:
+        if "_error" in scan_result:
+            st.toast(f"❌ 扫描失败：{scan_result['_error']}", icon="❌")
+        elif scan_result.get("skipped"):
+            st.toast(f"ℹ️ 跳过：{scan_result.get('reason')}", icon="ℹ️")
+        else:
+            n_c = len(scan_result.get("new_candidates", []))
+            n_r = len(scan_result.get("reports", []))
+            st.toast(f"✅ 完成：新增/更新候选 {n_c} 条，生成调研报告 {n_r} 份。", icon="✅")
+        st.rerun()
 
     data = client.growth_summary() or {}
     if "_error" in data:
@@ -5895,14 +5956,22 @@ def _render_growth_report_refresh_candidates(client: "AgentClient"):
     with st.expander(f"🔄 有 {len(rows)} 份报告可以更新一下了"):
         st.caption("这些方向自从生成报告后，又积累了不少新的相关记忆——要不要重新生成一份？")
         for row in rows:
+            cid = row["candidate_id"]
             cols = st.columns([4, 1])
             cols[0].write(
                 f"**{row.get('title')}** — 新增证据 {row.get('new_evidence')} 条"
                 f"（{row.get('evidence_count_at_generation')} → {row.get('evidence_count')}）"
             )
-            if cols[1].button("🔄 更新", key=f"growth_refresh_report_{row['candidate_id']}"):
-                with st.spinner("正在重新生成报告..."):
-                    client.growth_candidate_refresh_report(row["candidate_id"])
+            if cols[1].button("🔄 更新", key=f"growth_refresh_report_{cid}"):
+                refresh_key = f"growth_candidate_report_refresh:{cid}"
+                if start_async_job(client, refresh_key, lambda cid=cid: client.growth_candidate_refresh_report(cid)):
+                    st.rerun()
+            # [kanban_async_job_mechanism_plan.md] 报告刷新是异步任务，
+            # 每次渲染都要检查一次这个候选对应的任务状态。
+            refresh_result = run_async_job(client, f"growth_candidate_report_refresh:{cid}", label="正在重新生成报告")
+            if refresh_result is not None:
+                if refresh_result.get("_error"):
+                    st.toast(f"❌ 报告更新失败：{refresh_result['_error']}", icon="❌")
                 st.rerun()
 
 
@@ -6072,24 +6141,47 @@ def _render_growth_pending_list(client: "AgentClient", pending: list[dict]):
                 "unspecified",
             )
             if accept_clicked:
-                # [采纳即启动] accept 现在默认会自动触发"生成报告 → 落地
-                # 为 Goal → 生成并确认执行规范 → 绑定周期性"整条链路，
-                # 响应体里的 `pursuit` 字段带回这一路的结果/失败信息，
-                # 尽力而为地提示用户，不阻塞 rerun。
-                resp = client.growth_candidate_action(c["candidate_id"], "accept")
-                pursuit = (resp or {}).get("pursuit") or {}
-                goal = pursuit.get("goal")
-                if goal:
-                    if pursuit.get("cron_job"):
-                        st.toast(f"🔄 已开始自主持续调研：{goal.get('title', '')}（每天一轮）", icon="🌱")
-                    else:
-                        st.toast(f"已创建 Goal：{goal.get('title', '')}（周期性绑定未完成，可到「🎯 目标」tab 手动设置）", icon="⚠️")
-                for err in pursuit.get("errors") or []:
-                    st.toast(err, icon="⚠️")
-                st.rerun()
+                cid = c["candidate_id"]
+                key_accept = f"growth_candidate_action:{cid}:accept"
+                if start_async_job(client, key_accept, lambda cid=cid: client.growth_candidate_action(cid, "accept")):
+                    st.rerun()
             if dismiss_clicked:
+                cid = c["candidate_id"]
                 dismiss_reason = None if reason_value == "unspecified" else reason_value
-                client.growth_candidate_action(c["candidate_id"], "dismiss", reason=dismiss_reason)
+                key_dismiss = f"growth_candidate_action:{cid}:dismiss"
+                if start_async_job(
+                    client, key_dismiss,
+                    lambda cid=cid, r=dismiss_reason: client.growth_candidate_action(cid, "dismiss", reason=r),
+                ):
+                    st.rerun()
+
+            # [kanban_async_job_mechanism_plan.md] accept/dismiss 现在都是
+            # 异步任务（accept 尤其可能级联触发 LLM 调用），每次渲染都要
+            # 检查一次这个候选对应的任务状态；两个 key 不会同时有正在跑的
+            # 任务（同一时刻只可能点了其中一个按钮），依次检查即可。
+            accept_result = run_async_job(client, f"growth_candidate_action:{c['candidate_id']}:accept", label="正在采纳并自动推进")
+            if accept_result is not None:
+                if accept_result.get("_error"):
+                    st.toast(f"❌ 采纳失败：{accept_result['_error']}", icon="❌")
+                else:
+                    # [采纳即启动] accept 默认会自动触发"生成报告 → 落地
+                    # 为 Goal → 生成并确认执行规范 → 绑定周期性"整条链路，
+                    # `pursuit` 字段带回这一路的结果/失败信息，尽力而为地
+                    # 提示用户，不阻塞 rerun。
+                    pursuit = accept_result.get("pursuit") or {}
+                    goal = pursuit.get("goal")
+                    if goal:
+                        if pursuit.get("cron_job"):
+                            st.toast(f"🔄 已开始自主持续调研：{goal.get('title', '')}（每天一轮）", icon="🌱")
+                        else:
+                            st.toast(f"已创建 Goal：{goal.get('title', '')}（周期性绑定未完成，可到「🎯 目标」tab 手动设置）", icon="⚠️")
+                    for err in pursuit.get("errors") or []:
+                        st.toast(err, icon="⚠️")
+                st.rerun()
+            dismiss_result = run_async_job(client, f"growth_candidate_action:{c['candidate_id']}:dismiss", label="正在提交")
+            if dismiss_result is not None:
+                if dismiss_result.get("_error"):
+                    st.toast(f"❌ 提交失败：{dismiss_result['_error']}", icon="❌")
                 st.rerun()
 
             b3, b4 = st.columns(2)
@@ -6163,7 +6255,8 @@ def _render_growth_kanban_dragdrop(client: "AgentClient", candidates: list[dict]
     # rerun 都会对本来就已经是 accepted 的卡片重复调用 accept）。
     id_to_status = {c["candidate_id"]: c.get("status") for c in candidates}
     moved = False
-    pursuit_notes: list[tuple[str, str]] = []  # [采纳即启动] (message, icon) 汇总，拖拽循环结束后统一 toast
+    pending_key = "_growth_dragdrop_pending_jobs"
+    pending_jobs: dict = st.session_state.setdefault(pending_key, {})  # job_id -> "accepted"|"dismissed"
     for col in result:
         header = col.get("header", "")
         target_status = next((s for s, h in _GROWTH_KANBAN_COLUMNS if h == header), None)
@@ -6174,24 +6267,62 @@ def _render_growth_kanban_dragdrop(client: "AgentClient", candidates: list[dict]
             if cand_id is None:
                 continue
             if id_to_status.get(cand_id) != target_status:
-                resp = client.growth_candidate_action(
-                    cand_id, "accept" if target_status == "accepted" else "dismiss"
-                )
-                moved = True
-                if target_status == "accepted":
-                    pursuit = (resp or {}).get("pursuit") or {}
-                    goal = pursuit.get("goal")
-                    if goal:
-                        if pursuit.get("cron_job"):
-                            pursuit_notes.append((f"🔄 已开始自主持续调研：{goal.get('title', '')}（每天一轮）", "🌱"))
-                        else:
-                            pursuit_notes.append((f"已创建 Goal：{goal.get('title', '')}（周期性绑定未完成，可到「🎯 目标」tab 手动设置）", "⚠️"))
-                    for err in pursuit.get("errors") or []:
-                        pursuit_notes.append((err, "⚠️"))
+                # [kanban_async_job_mechanism_plan.md] 拖拽这个动作本身不是
+                # 一个可复用的"key"（同一张卡片理论上不会同时被拖拽两次），
+                # 每次拖拽都提交一个新任务，job_id 存进一个待处理集合里，
+                # 下面统一轮询——跟其它按钮式入口用固定 key 的做法不同，是
+                # 因为这里"一次操作可能同时移动多张卡片"，天然是个集合。
+                action = "accept" if target_status == "accepted" else "dismiss"
+                submitted = client.growth_candidate_action(cand_id, action)
+                if isinstance(submitted, dict) and submitted.get("job_id"):
+                    pending_jobs[submitted["job_id"]] = target_status
+                    moved = True
     if moved:
-        for msg, icon in pursuit_notes:
-            st.toast(msg, icon=icon)
+        st.session_state[pending_key] = pending_jobs
         st.rerun()
+
+    # 轮询所有还没跑完的拖拽任务；这里不复用 run_async_job()（它一次只
+    # 管一个 key），因为一次拖拽可能同时提交多个任务，需要等它们全部
+    # 到终态才能汇总提示。
+    if pending_jobs:
+        still_running = False
+        pursuit_notes: list[tuple[str, str]] = []
+        errors: list[str] = []
+        for job_id, target_status in list(pending_jobs.items()):
+            job = client.get_async_job(job_id)
+            if not isinstance(job, dict) or job.get("_error"):
+                continue
+            status = job.get("status")
+            if status == "running":
+                still_running = True
+                continue
+            pending_jobs.pop(job_id, None)
+            if status == "error":
+                errors.append(job.get("error") or "操作失败")
+                continue
+            res = job.get("result") or {}
+            if target_status == "accepted":
+                pursuit = res.get("pursuit") or {}
+                goal = pursuit.get("goal")
+                if goal:
+                    if pursuit.get("cron_job"):
+                        pursuit_notes.append((f"🔄 已开始自主持续调研：{goal.get('title', '')}（每天一轮）", "🌱"))
+                    else:
+                        pursuit_notes.append((f"已创建 Goal：{goal.get('title', '')}（周期性绑定未完成，可到「🎯 目标」tab 手动设置）", "⚠️"))
+                for err in pursuit.get("errors") or []:
+                    pursuit_notes.append((err, "⚠️"))
+        st.session_state[pending_key] = pending_jobs
+        if still_running:
+            st.info(f"⏳ 正在处理 {sum(1 for v in pending_jobs.values() if True)} 张卡片的拖拽结果…")
+            time.sleep(1.5)
+            st.rerun()
+        else:
+            for msg, icon in pursuit_notes:
+                st.toast(msg, icon=icon)
+            for err in errors:
+                st.toast(f"❌ {err}", icon="❌")
+            if pursuit_notes or errors:
+                st.rerun()
 
     # [growth_advisor_active_search_and_lifecycle_plan.md 方向二] 拖拽
     # 卡片本身是纯字符串标签，没有按钮承载位，用一个下拉选择 + 单独按钮

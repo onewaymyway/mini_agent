@@ -1061,6 +1061,33 @@ class AgentPaths:
         """<project_root>/.agent/cache/tool_cache.json"""
         return self.cache_dir / "tool_cache.json"
 
+    # ── 通用异步任务（kanban_async_job_mechanism_plan.md）────────────────────
+    # LLM/长耗时调用在 HTTP 路由里的标准接入方式：不再同步阻塞 handler，
+    # 而是丢进后台任务，job 记录落盘在这里，daemon 重启/浏览器刷新后仍可
+    # 从磁盘查到"上一次调用还在跑/已完成/失败了"。不放进 cache_dir（cache
+    # 语义是"可安全删除"，而 job 结果在用户看到之前不应该被随便清掉）。
+
+    @property
+    def async_jobs_dir(self) -> Path:
+        """<project_root>/.agent/async_jobs/ — 通用异步任务落盘目录"""
+        return self.workdir_dir / "async_jobs"
+
+    def async_job_record(self, job_id: str) -> Path:
+        """<project_root>/.agent/async_jobs/<job_id>.json — 单个任务的状态记录"""
+        return self.async_jobs_dir / f"{job_id}.json"
+
+    @property
+    def async_jobs_latest_dir(self) -> Path:
+        """<project_root>/.agent/async_jobs/latest_by_key/ — 每个业务 key
+        （如 "execution_spec_generate:{goal_id}"）指向"最近一次任务 id"的
+        指针文件目录，供前端在丢失 session_state 后仍能找回上一次任务。"""
+        return self.async_jobs_dir / "latest_by_key"
+
+    def async_job_latest_pointer(self, key: str) -> Path:
+        import hashlib
+        safe = hashlib.sha256(key.encode("utf-8")).hexdigest()[:40]
+        return self.async_jobs_latest_dir / f"{safe}.json"
+
     # ── Session 级 ─────────────────────────────────────────────────────────
 
     def session_dir(self, session_id: str) -> Path:

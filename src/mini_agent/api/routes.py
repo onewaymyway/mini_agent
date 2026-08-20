@@ -354,6 +354,12 @@ def _fs(request: Request) -> FsHelper:
     return request.app.state.fs_helper
 
 
+def _async_jobs(request: Request) -> "AsyncJobRegistry":
+    """看板"点击 → 后台跑 → 轮询拿结果"通用异步任务 registry，见
+    api/async_jobs.py。挂在 app.state 上，daemon 生命周期内常驻。"""
+    return request.app.state.async_jobs
+
+
 def _role_store(request: Request) -> Optional[UserStore]:
     """daemon 多用户架构 Phase 1：未开启多用户模式时返回 None。"""
     return getattr(request.app.state, "role_store", None)
@@ -375,6 +381,36 @@ def _require_owner(request: Request) -> None:
 
 
 # ── 系统 ──────────────────────────────────────────────────────────────────────
+
+@router.get("/async_jobs/{job_id}")
+async def get_async_job(job_id: str, request: Request):
+    """GET /v1/async_jobs/{job_id} — 通用异步任务状态轮询端点。
+
+    看板上所有涉及 LLM 调用的按钮（生成执行规范草稿 / 补充意见重新生成 /
+    手动重判整体关闭 / 成长顾问扫描 / 候选采纳 / 候选报告刷新……）触发后都
+    只返回 `job_id`，前端用这个端点轮询直到 `status` 变成 "done"/"error"。
+    所有任务类型共用这一个端点，不需要每个功能各开一个查询接口。
+    响应：`{"job_id", "key", "status": "running"|"done"|"error",
+    "started_at", "finished_at", "result", "error", "meta"}`。
+    找不到（job_id 拼错，或早已过了保留期被清理）时 404。
+    """
+    job = _async_jobs(request).get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Async job '{job_id}' not found")
+    return job
+
+
+@router.get("/async_jobs/latest/by_key")
+async def get_latest_async_job_by_key(request: Request, key: str = Query(...)):
+    """GET /v1/async_jobs/latest/by_key?key=... — 按业务 key（如
+    "execution_spec_generate:{goal_id}"）查找"最近一次这个操作的任务状态"。
+
+    前端刷新整个页面丢了 `st.session_state`（因此不知道上一次的 job_id）
+    时用这个端点找回进度；`result` 为 None 表示这个 key 从未触发过，是
+    合法的初始状态，不是错误。"""
+    job = _async_jobs(request).get_latest_by_key(key)
+    return {"key": key, "job": job}
+
 
 @router.get("/health")
 async def health():
@@ -4396,6 +4432,11 @@ async def generate_goal_execution_spec(goal_id: str, request: Request):
     `effective_path`（"llm"/"agent"，这次实际走的路径），供前端展示
     "这份草稿是否读取过项目内容"。[goal_execution_spec_generation_plan.md
     §3 输入源 1 / implementation_record.md §7.5 未实施清单第 2 条]
+
+    [kanban_async_job_mechanism_plan.md] 这一步涉及 LLM/Agent 调用，耗时可能
+    到分钟级，不再同步跑完再返回——立即返回 `{"job_id", "key"}`，前端轮询
+    `GET /v1/async_jobs/{job_id}` 直到 `status` 变成 "done"/"error"，`result`
+    就是原来这个端点直接返回的 `{"spec", "effective_path"}`。
     """
     backlog = _goal_backlog_only(request)
     node = backlog.get(goal_id)
@@ -4403,44 +4444,48 @@ async def generate_goal_execution_spec(goal_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
     body = await request.json() if await request.body() else {}
     paths = _spec_paths(request)
-    builder = None
-    try:
+
+    def _do_generate() -> dict:
         from mini_agent.config import load_config
         from mini_agent.perception import goal_execution_spec as ges
         from mini_agent.evolution import output_workspace
 
-        cfg = load_config()
-        history_manifests = None
-        if body.get("from_history"):
-            base_dir = output_workspace.goal_output_base_dir(paths, goal_id)
-            m = output_workspace.read_latest_manifest(base_dir)
-            history_manifests = [m] if m else None
+        builder = None
+        try:
+            cfg = load_config()
+            history_manifests = None
+            if body.get("from_history"):
+                base_dir = output_workspace.goal_output_base_dir(paths, goal_id)
+                m = output_workspace.read_latest_manifest(base_dir)
+                history_manifests = [m] if m else None
 
-        builder = ges.GoalExecutionSpecBuilder(cfg, mode=body.get("mode") or None)
-        spec = builder.build_draft(
-            goal_id, node.title, node.description,
-            schedule=body.get("schedule") or None,
-            task_template=body.get("task_template") or None,
-            template_id=body.get("template_id") or None,
-            history_manifests=history_manifests,
-        )
-        ges.save_spec(paths, goal_id, spec)
-    except HTTPException:
-        raise
-    except Exception as e:
-        from mini_agent.errors import log_exception
-        log_exception(
-            e, where='mini_agent.api.routes.generate_goal_execution_spec',
-            extra={
-                "goal_id": goal_id,
-                "goal_title": getattr(node, "title", None),
-                "request_body": body,
-                "effective_path": getattr(builder, "last_effective_path", None),
-                "builder_last_error": getattr(builder, "last_error", None),
-            },
-        )
-        raise HTTPException(status_code=500, detail=f"生成执行规范失败：{e}")
-    return {"spec": spec.to_dict(), "effective_path": builder.last_effective_path}
+            builder = ges.GoalExecutionSpecBuilder(cfg, mode=body.get("mode") or None)
+            spec = builder.build_draft(
+                goal_id, node.title, node.description,
+                schedule=body.get("schedule") or None,
+                task_template=body.get("task_template") or None,
+                template_id=body.get("template_id") or None,
+                history_manifests=history_manifests,
+            )
+            ges.save_spec(paths, goal_id, spec)
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(
+                e, where='mini_agent.api.routes.generate_goal_execution_spec',
+                extra={
+                    "goal_id": goal_id,
+                    "goal_title": getattr(node, "title", None),
+                    "request_body": body,
+                    "effective_path": getattr(builder, "last_effective_path", None),
+                    "builder_last_error": getattr(builder, "last_error", None),
+                },
+            )
+            raise
+        return {"spec": spec.to_dict(), "effective_path": builder.last_effective_path}
+
+    key = f"execution_spec_generate:{goal_id}"
+    job_id = _async_jobs(request).start(_do_generate, key=key, meta={"goal_id": goal_id})
+    return {"job_id": job_id, "key": key}
 
 
 @router.post("/goals/{goal_id}/execution_spec/revise")
@@ -4451,6 +4496,9 @@ async def revise_goal_execution_spec(goal_id: str, request: Request):
             "agent"|"auto"? }
     `mode` 用法与 generate 端点一致（单次覆盖，不传时回退配置默认值）。
     响应体同样新增 `effective_path`。
+
+    [kanban_async_job_mechanism_plan.md] 同 generate 端点：涉及 LLM 调用，
+    改为立即返回 `{"job_id", "key"}`，前端轮询 `GET /v1/async_jobs/{job_id}`。
     """
     body = await request.json()
     if not isinstance(body, dict):
@@ -4466,28 +4514,32 @@ async def revise_goal_execution_spec(goal_id: str, request: Request):
     prior = ges.load_spec(paths, goal_id)
     if prior is None:
         raise HTTPException(status_code=404, detail=f"该 Goal 还没有生成过执行规范草稿：{goal_id}")
-    builder = None
-    try:
-        from mini_agent.config import load_config
-        builder = ges.GoalExecutionSpecBuilder(load_config(), mode=body.get("mode") or None)
-        spec = builder.revise(prior, feedback, locked_fields=body.get("locked_fields"))
-        ges.save_spec(paths, goal_id, spec)
-    except HTTPException:
-        raise
-    except Exception as e:
-        from mini_agent.errors import log_exception
-        log_exception(
-            e, where='mini_agent.api.routes.revise_goal_execution_spec',
-            extra={
-                "goal_id": goal_id,
-                "prior_version": getattr(prior, "version", None),
-                "request_body": body,
-                "effective_path": getattr(builder, "last_effective_path", None),
-                "builder_last_error": getattr(builder, "last_error", None),
-            },
-        )
-        raise HTTPException(status_code=500, detail=f"修订执行规范失败：{e}")
-    return {"spec": spec.to_dict(), "effective_path": builder.last_effective_path}
+
+    def _do_revise() -> dict:
+        builder = None
+        try:
+            from mini_agent.config import load_config
+            builder = ges.GoalExecutionSpecBuilder(load_config(), mode=body.get("mode") or None)
+            spec = builder.revise(prior, feedback, locked_fields=body.get("locked_fields"))
+            ges.save_spec(paths, goal_id, spec)
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(
+                e, where='mini_agent.api.routes.revise_goal_execution_spec',
+                extra={
+                    "goal_id": goal_id,
+                    "prior_version": getattr(prior, "version", None),
+                    "request_body": body,
+                    "effective_path": getattr(builder, "last_effective_path", None),
+                    "builder_last_error": getattr(builder, "last_error", None),
+                },
+            )
+            raise
+        return {"spec": spec.to_dict(), "effective_path": builder.last_effective_path}
+
+    key = f"execution_spec_revise:{goal_id}"
+    job_id = _async_jobs(request).start(_do_revise, key=key, meta={"goal_id": goal_id})
+    return {"job_id": job_id, "key": key}
 
 
 @router.post("/goals/{goal_id}/execution_spec/confirm")
@@ -4532,7 +4584,13 @@ async def close_check_goal_execution_spec(goal_id: str, request: Request):
     `null`）时回退配置文件 `overall_completion_use_agent`，不修改配置
     文件，与 generate/revise 端点的 `mode` 单次覆盖同一风格。返回的
     `goal.overall_completion_last_check` 里带 `used_agent`，供前端展示
-    这次实际走的是哪条路径。"""
+    这次实际走的是哪条路径。
+
+    [kanban_async_job_mechanism_plan.md] `use_agent` 为真（或走配置默认
+    值判断为走 Agent 路径）时，判定过程涉及 LLM/Agent 调用，同样改为
+    立即返回 `{"job_id", "key"}`，前端轮询拿结果。「Goal 不是 active」
+    这种不涉及任何调用的快速路径维持同步直接返回，不必要地绕一圈轮询
+    反而拖慢体验。"""
     backlog = _goal_backlog_only(request)
     node = backlog.get(goal_id)
     if node is None or not node.is_goal:
@@ -4543,18 +4601,24 @@ async def close_check_goal_execution_spec(goal_id: str, request: Request):
     use_agent = body.get("use_agent")
     if use_agent is not None:
         use_agent = bool(use_agent)
-    try:
-        from mini_agent.config import load_config
-        outcome = backlog.maybe_close_goal_by_overall_criteria(goal_id, load_config(), use_agent=use_agent)
-    except Exception as e:
-        from mini_agent.errors import log_exception
-        log_exception(
-            e, where='mini_agent.api.routes.close_check_goal_execution_spec',
-            extra={"goal_id": goal_id, "use_agent": use_agent, "request_body": body},
-        )
-        raise HTTPException(status_code=500, detail=f"整体完成判定失败：{e}")
-    updated = backlog.get(goal_id)
-    return {"outcome": outcome, "goal": updated.to_dict() if updated else None}
+
+    def _do_close_check() -> dict:
+        try:
+            from mini_agent.config import load_config
+            outcome = backlog.maybe_close_goal_by_overall_criteria(goal_id, load_config(), use_agent=use_agent)
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(
+                e, where='mini_agent.api.routes.close_check_goal_execution_spec',
+                extra={"goal_id": goal_id, "use_agent": use_agent, "request_body": body},
+            )
+            raise
+        updated = backlog.get(goal_id)
+        return {"outcome": outcome, "goal": updated.to_dict() if updated else None}
+
+    key = f"execution_spec_close_check:{goal_id}"
+    job_id = _async_jobs(request).start(_do_close_check, key=key, meta={"goal_id": goal_id})
+    return {"job_id": job_id, "key": key}
 
 
 # ── Goal 执行阶段（goal_execution_phase_improvement_plan.md Stage C）────────
@@ -7435,79 +7499,79 @@ async def post_growth_scan(request: Request):
     本身是成功的。现在无论后面阶段是否失败都会尝试落盘 profile——正常
     路径 mgr.save() 照旧，异常路径在转换成 HTTPException 之前先补一次
     mgr.save()，至少诊断面板能如实反映"扫描确实跑过"。
+
+    [kanban_async_job_mechanism_plan.md] 候选/报告生成阶段可能走 LLM，
+    耗时不可控，`run_blocking()` 的固定超时早晚会不够用——改用通用异步
+    任务机制：立即返回 `{"job_id", "key"}`，前端轮询
+    `GET /v1/async_jobs/{job_id}`，`result` 就是原来直接返回的扫描结果。
+    "信号扫描阶段的结果即使后面失败也要落盘"这条既有逻辑原样保留在后台
+    任务函数内部。
     """
     _require_owner(request)
     paths = _get_paths_for_request(request)
-    from mini_agent.evolution import growth_advisor as ga
-    from mini_agent.perception.memory_store import MemoryStore
-    from mini_agent.profile import UserProfileManager
 
-    mgr = UserProfileManager(paths)
-    profile = mgr.load()
-    try:
-        http_server = getattr(request.app.state, "http_server", None)
-        self_agent = http_server.bridge.agent if http_server else None
-        cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
-        if cfg is None:
-            from mini_agent.config.models import GrowthAdvisorConfig
-            cfg = GrowthAdvisorConfig()
+    def _do_scan() -> dict:
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.profile import UserProfileManager
 
-        # [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md
-        # 方向一] 同上：改用统一的工具函数，避免手动扫描在空记忆列表上跑，
-        # 导致 0 命中、LLM 信号增强永远因"未匹配记忆数不足"被跳过。
-        from mini_agent.perception.memory_factory import build_default_memory_store
-        store = build_default_memory_store(paths)
-        llm_helper = None
-        if self_agent is not None and getattr(cfg, "llm_signal_augment_enabled", False):
-            helper = getattr(self_agent, "llm_helper", None)
-            if helper is not None:
-                llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
-        # [next_doc/growth_advisor_cron_search_and_status_history_plan.md
-        # 方向一] 同 CLI `/growth scan`：传入 web_search_fn 只是让能力
-        # 可用，是否真正触发仍由 cfg.cron_triggered_active_search_enabled
-        # 这个显式开关决定。
-        from mini_agent.tools.builtin import web_search as _web_search_fn
-        result = await run_blocking(
-            ga.run_daily_cycle,
-            paths, cfg, profile, store,
-            llm_helper=llm_helper, web_search_fn=_web_search_fn,
-            **_blocking_call_opts(request, "growth_scan_daily_cycle"),
-        )
-        mgr.save()
-        # [kanban_perception_gaps_improvement_plan.md 方向 D.1 / BUGFIX]
-        # Objective 完成率快照的记录已经移到 `run_daily_cycle()` 内部
-        # （evolution/growth_advisor.py），跟 cron message 路径
-        # （cli/commands/growth_cmd.py::handle_growth_cmd）共用同一处
-        # 收尾逻辑，不再需要在这里单独调用——原来只在这个 HTTP 路由里调
-        # 用是"daemon 跑了很多天、完成率趋势却一直没数据"的根因（cron
-        # 每天真正触发的路径根本不经过这个路由，见 growth_advisor.py 里
-        # 对应位置的详细说明），保留在这里反而会导致看板手动触发时重复
-        # 记两条同一天的快照。
-        return result
-    except HTTPException as e:
-        # [http_server_blocking_call_guard_plan] run_daily_cycle 现在经过
-        # run_blocking，超时/熔断打开时会以 HTTPException(504/503) 的形式
-        # 抛到这里——跟下面 Exception 分支一样，信号扫描阶段的结果已经写进
-        # profile 对象了，同样要 best-effort 落盘，不能因为后面 LLM 调用
-        # 卡超时就把已经完成的这部分也丢掉。
+        mgr = UserProfileManager(paths)
+        profile = mgr.load()
         try:
+            http_server = getattr(request.app.state, "http_server", None)
+            self_agent = http_server.bridge.agent if http_server else None
+            cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
+            if cfg is None:
+                from mini_agent.config.models import GrowthAdvisorConfig
+                cfg = GrowthAdvisorConfig()
+
+            # [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md
+            # 方向一] 同上：改用统一的工具函数，避免手动扫描在空记忆列表上
+            # 跑，导致 0 命中、LLM 信号增强永远因"未匹配记忆数不足"被跳过。
+            from mini_agent.perception.memory_factory import build_default_memory_store
+            store = build_default_memory_store(paths)
+            llm_helper = None
+            if self_agent is not None and getattr(cfg, "llm_signal_augment_enabled", False):
+                helper = getattr(self_agent, "llm_helper", None)
+                if helper is not None:
+                    llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
+            # [next_doc/growth_advisor_cron_search_and_status_history_plan.md
+            # 方向一] 同 CLI `/growth scan`：传入 web_search_fn 只是让能力
+            # 可用，是否真正触发仍由 cfg.cron_triggered_active_search_enabled
+            # 这个显式开关决定。
+            from mini_agent.tools.builtin import web_search as _web_search_fn
+            result = ga.run_daily_cycle(
+                paths, cfg, profile, store,
+                llm_helper=llm_helper, web_search_fn=_web_search_fn,
+            )
             mgr.save()
-        except Exception as save_exc:
+            # [kanban_perception_gaps_improvement_plan.md 方向 D.1 / BUGFIX]
+            # Objective 完成率快照的记录已经移到 `run_daily_cycle()` 内部
+            # （evolution/growth_advisor.py），跟 cron message 路径
+            # （cli/commands/growth_cmd.py::handle_growth_cmd）共用同一处
+            # 收尾逻辑，不再需要在这里单独调用——原来只在这个 HTTP 路由里
+            # 调用是"daemon 跑了很多天、完成率趋势却一直没数据"的根因
+            # （cron 每天真正触发的路径根本不经过这个路由，见
+            # growth_advisor.py 里对应位置的详细说明），保留在这里反而会
+            # 导致看板手动触发时重复记两条同一天的快照。
+            return result
+        except Exception as e:
+            # 信号扫描阶段（`ga.growth_signal_scan` 内部）已经把结果写进了
+            # 上面 load() 出来的同一个 profile 对象；即使异常发生在后面的
+            # 候选/报告生成阶段，这里也要把已经完成的那部分落盘，不能让
+            # 整个任务失败就把"扫描确实跑过"这个事实也一并丢掉。落盘本身
+            # 失败（磁盘满/权限问题等）不覆盖原始异常，只做尽力而为。
+            try:
+                mgr.save()
+            except Exception as save_exc:
+                from mini_agent.errors import log_exception
+                log_exception(save_exc, where="mini_agent.api.routes.post_growth_scan.fallback_save")
             from mini_agent.errors import log_exception
-            log_exception(save_exc, where="mini_agent.api.routes.post_growth_scan.fallback_save")
-        raise e
-    except Exception as e:
-        # 信号扫描阶段（`ga.growth_signal_scan` 内部）已经把结果写进了
-        # 上面 load() 出来的同一个 profile 对象；即使异常发生在后面的候选/
-        # 报告生成阶段，这里也要把已经完成的那部分落盘，不能让整轮请求
-        # 500 就把"扫描确实跑过"这个事实也一并丢掉。落盘本身失败（磁盘满/
-        # 权限问题等）不覆盖原始异常，只做尽力而为。
-        try:
-            mgr.save()
-        except Exception as save_exc:
-            from mini_agent.errors import log_exception
-            log_exception(save_exc, where="mini_agent.api.routes.post_growth_scan.fallback_save")
-        raise HTTPException(status_code=500, detail=str(e))
+            log_exception(e, where="mini_agent.api.routes.post_growth_scan")
+            raise
+
+    key = "growth_scan"
+    job_id = _async_jobs(request).start(_do_scan, key=key)
+    return {"job_id": job_id, "key": key}
 
 
 @router.post("/growth/candidates/{candidate_id}/{action}")
@@ -7519,74 +7583,87 @@ async def post_growth_candidate_action(request: Request, candidate_id: str, acti
     取值见 `growth_advisor._VALID_DISMISS_REASONS`；不传 body 或不传
     `reason` 字段都等价于 `reason=None`（记为 unspecified，行为与此前
     版本完全一致）。accept 动作忽略 body 内容。
+
+    [kanban_async_job_mechanism_plan.md] accept 动作在 `auto_pursue_on_accept`
+    开启时会级联触发报告生成/执行规范生成等 LLM 调用，耗时不可控，改为
+    立即返回 `{"job_id", "key"}`，前端轮询拿结果（`result` 就是原来直接
+    返回的 `response` dict）。dismiss 本身不涉及 LLM，但为了前端用同一套
+    轮询组件处理这两个动作、不用按 action 分支判断"这次是不是要轮询"，
+    统一走异步任务（对 dismiss 而言只是"提交后几乎立刻就 done"）。
     """
     _require_owner(request)
     if action not in ("accept", "dismiss"):
         raise HTTPException(status_code=400, detail="action must be accept or dismiss")
-    try:
-        reason = None
-        if action == "dismiss":
-            try:
-                body = await request.json()
-            except Exception:
-                body = None
-            if isinstance(body, dict):
-                reason = body.get("reason") or None
+    reason = None
+    if action == "dismiss":
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        if isinstance(body, dict):
+            reason = body.get("reason") or None
 
-        paths = _get_paths_for_request(request)
-        from mini_agent.evolution import growth_advisor as ga
+    paths = _get_paths_for_request(request)
+    from mini_agent.evolution import growth_advisor as ga
+    if reason is not None and reason not in ga._VALID_DISMISS_REASONS:
+        raise HTTPException(status_code=400, detail=f"invalid dismiss reason: {reason}")
 
-        if reason is not None and reason not in ga._VALID_DISMISS_REASONS:
-            raise HTTPException(status_code=400, detail=f"invalid dismiss reason: {reason}")
+    def _do_action() -> dict:
+        try:
+            status = ga.STATUS_ACCEPTED if action == "accept" else ga.STATUS_DISMISSED
+            backlog = ga.GrowthBacklog(paths)
+            cand = backlog.set_status(candidate_id, status)
+            if cand is None:
+                raise HTTPException(status_code=404, detail="candidate not found")
+            ga.GrowthFeedbackLedger(paths).record(candidate_id, status, reason=reason)
+            response: dict = {"ok": True, "candidate": cand.to_dict()}
 
-        status = ga.STATUS_ACCEPTED if action == "accept" else ga.STATUS_DISMISSED
-        backlog = ga.GrowthBacklog(paths)
-        cand = backlog.set_status(candidate_id, status)
-        if cand is None:
-            raise HTTPException(status_code=404, detail="candidate not found")
-        ga.GrowthFeedbackLedger(paths).record(candidate_id, status, reason=reason)
-        response: dict = {"ok": True, "candidate": cand.to_dict()}
+            # [采纳即启动] action == accept 且配置开启（默认开启）时，自动
+            # 衔接"生成报告 → 落地为 Goal → 生成并确认执行规范 → 绑定周期性"
+            # 全部后续步骤，不需要用户再逐步点。任一后续步骤失败都不影响
+            # accept 本身已经成功——失败信息放进 `pursuit.errors`，看板据此
+            # 尽力而为地提示，而不是让这个任务整体标记为 error。
+            if action == "accept":
+                http_server = getattr(request.app.state, "http_server", None)
+                self_agent = getattr(http_server.bridge, "agent", None) if http_server else None
+                growth_cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
+                if growth_cfg is None:
+                    from mini_agent.config.models import GrowthAdvisorConfig
+                    growth_cfg = GrowthAdvisorConfig()
+                if getattr(growth_cfg, "auto_pursue_on_accept", True):
+                    try:
+                        from mini_agent.perception.goal_backlog import GoalBacklog
+                        goal_backlog = GoalBacklog(paths)
+                        cron_scheduler = _get_cron_scheduler(http_server) if http_server else None
+                        pursuit = ga.auto_pursue_candidate(
+                            paths, cand, goal_backlog=goal_backlog,
+                            cron_scheduler=cron_scheduler, cfg=growth_cfg,
+                        )
+                        response["pursuit"] = {
+                            "goal": pursuit["goal"].to_dict() if pursuit.get("goal") else None,
+                            "cron_job": pursuit["cron_job"].to_dict() if pursuit.get("cron_job") else None,
+                            "report_generated": pursuit.get("report_generated", False),
+                            "errors": pursuit.get("errors", []),
+                        }
+                        refreshed = backlog.get(candidate_id)
+                        if refreshed is not None:
+                            response["candidate"] = refreshed.to_dict()
+                    except Exception as e:
+                        from mini_agent.errors import log_exception
+                        log_exception(e, where="mini_agent.api.routes.post_growth_candidate_action.auto_pursue")
+                        response["pursuit"] = {"errors": [f"自动持续调研触发失败：{e}"]}
 
-        # [采纳即启动] action == accept 且配置开启（默认开启）时，自动
-        # 衔接"生成报告 → 落地为 Goal → 生成并确认执行规范 → 绑定周期性"
-        # 全部后续步骤，不需要用户再逐步点。任一后续步骤失败都不影响
-        # accept 本身已经成功——失败信息放进 `pursuit.errors`，看板据此
-        # 尽力而为地提示，而不是让这个请求整体 500。
-        if action == "accept":
-            http_server = getattr(request.app.state, "http_server", None)
-            self_agent = getattr(http_server.bridge, "agent", None) if http_server else None
-            growth_cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
-            if growth_cfg is None:
-                from mini_agent.config.models import GrowthAdvisorConfig
-                growth_cfg = GrowthAdvisorConfig()
-            if getattr(growth_cfg, "auto_pursue_on_accept", True):
-                try:
-                    from mini_agent.perception.goal_backlog import GoalBacklog
-                    goal_backlog = GoalBacklog(paths)
-                    cron_scheduler = _get_cron_scheduler(http_server) if http_server else None
-                    pursuit = ga.auto_pursue_candidate(
-                        paths, cand, goal_backlog=goal_backlog,
-                        cron_scheduler=cron_scheduler, cfg=growth_cfg,
-                    )
-                    response["pursuit"] = {
-                        "goal": pursuit["goal"].to_dict() if pursuit.get("goal") else None,
-                        "cron_job": pursuit["cron_job"].to_dict() if pursuit.get("cron_job") else None,
-                        "report_generated": pursuit.get("report_generated", False),
-                        "errors": pursuit.get("errors", []),
-                    }
-                    refreshed = backlog.get(candidate_id)
-                    if refreshed is not None:
-                        response["candidate"] = refreshed.to_dict()
-                except Exception as e:
-                    from mini_agent.errors import log_exception
-                    log_exception(e, where="mini_agent.api.routes.post_growth_candidate_action.auto_pursue")
-                    response["pursuit"] = {"errors": [f"自动持续调研触发失败：{e}"]}
+            return response
+        except HTTPException:
+            raise
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.api.routes.post_growth_candidate_action")
+            raise HTTPException(status_code=500, detail=str(e))
 
-        return response
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    key = f"growth_candidate_action:{candidate_id}:{action}"
+    job_id = _async_jobs(request).start(_do_action, key=key, meta={"candidate_id": candidate_id, "action": action})
+    return {"job_id": job_id, "key": key}
 
 
 @router.get("/growth/followups")
@@ -8181,35 +8258,44 @@ async def post_growth_candidate_refresh_report(request: Request, candidate_id: s
     证据为该候选重新生成一份调研报告，替换候选当前挂着的报告；旧报告仍
     保留在历史记录里，不会被删除。是否使用 LLM 起草正文由
     `GrowthAdvisorConfig.report_quality_llm_enabled` 决定，与手动触发的
-    `/growth/scan` 保持一致的判断逻辑。"""
-    _require_owner(request)
-    try:
-        paths = _get_paths_for_request(request)
-        from mini_agent.evolution import growth_advisor as ga
+    `/growth/scan` 保持一致的判断逻辑。
 
-        http_server = getattr(request.app.state, "http_server", None)
-        self_agent = http_server.bridge.agent if http_server else None
-        cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
-        llm_helper = None
-        if (
-            self_agent is not None
-            and cfg is not None
-            and getattr(cfg, "report_quality_llm_enabled", False)
-        ):
-            helper = getattr(self_agent, "llm_helper", None)
-            if helper is not None:
-                llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
-        report = await run_blocking(
-            ga.refresh_growth_report, paths, candidate_id, llm_helper=llm_helper,
-            **_blocking_call_opts(request, "growth_candidate_refresh_report"),
-        )
-        if report is None:
-            raise HTTPException(status_code=404, detail="candidate not found")
-        return {"ok": True, "report": report.to_dict()}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    [kanban_async_job_mechanism_plan.md] 这是 6 个 LLM 调用点里此前唯一
+    还在用默认 15s 前端超时、没人修过的一个——同样改为立即返回
+    `{"job_id", "key"}`，前端轮询拿结果。
+    """
+    _require_owner(request)
+    paths = _get_paths_for_request(request)
+    from mini_agent.evolution import growth_advisor as ga
+
+    def _do_refresh() -> dict:
+        try:
+            http_server = getattr(request.app.state, "http_server", None)
+            self_agent = http_server.bridge.agent if http_server else None
+            cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
+            llm_helper = None
+            if (
+                self_agent is not None
+                and cfg is not None
+                and getattr(cfg, "report_quality_llm_enabled", False)
+            ):
+                helper = getattr(self_agent, "llm_helper", None)
+                if helper is not None:
+                    llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
+            report = ga.refresh_growth_report(paths, candidate_id, llm_helper=llm_helper)
+            if report is None:
+                raise HTTPException(status_code=404, detail="candidate not found")
+            return {"ok": True, "report": report.to_dict()}
+        except HTTPException:
+            raise
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.api.routes.post_growth_candidate_refresh_report")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    key = f"growth_candidate_report_refresh:{candidate_id}"
+    job_id = _async_jobs(request).start(_do_refresh, key=key, meta={"candidate_id": candidate_id})
+    return {"job_id": job_id, "key": key}
 
 
 @router.post("/growth/candidates/{candidate_id}/adopt_goal")

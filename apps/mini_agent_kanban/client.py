@@ -53,6 +53,19 @@ class AgentClient:
         except Exception as e:
             return {"_error": str(e)}
 
+    # ── 通用异步任务轮询（kanban_async_job_mechanism_plan.md）─────────────
+    # 涉及 LLM 调用的接口（生成/修订执行规范、整体关闭重判、成长顾问扫描/
+    # 采纳/报告刷新……）现在都是"提交后立即返回 {job_id, key}"，具体轮询
+    # UI 逻辑封装在 async_job_ui.py 里，这里只负责两个基础 HTTP 调用。
+    def get_async_job(self, job_id: str) -> dict:
+        return self._get(f"/async_jobs/{job_id}", timeout=8)
+
+    def get_latest_async_job(self, key: str) -> dict:
+        """用于页面刷新丢了 session_state 后找回"这个 key 上一次任务跑到
+        哪了"。返回 `{"key", "job"}`，`job` 为 None 表示这个 key 从未
+        触发过任务，是合法状态。"""
+        return self._get("/async_jobs/latest/by_key", params={"key": key}, timeout=8)
+
     def _delete(self, path, params=None, timeout=8):
         try:
             r = requests.delete(self._url(path), headers=self.headers, params=params, timeout=timeout)
@@ -453,6 +466,12 @@ class AgentClient:
         # mode: ""（回退配置默认 builder_mode）/ "llm" / "agent" / "auto"，单次
         # 覆盖，不修改配置文件（implementation_record.md §7.5/§9 未实施清单第
         # 2 条"CLI/看板未暴露单次覆盖 mode 的入口"，现已补上）。
+        #
+        # [kanban_async_job_mechanism_plan.md] 服务端现在立即返回
+        # `{"job_id", "key"}`（不再同步跑完 LLM 调用才返回），提交本身很
+        # 快，默认超时（15s）足够；真正的等待/轮询交给
+        # `async_job_ui.run_async_job()`，调用方（app.py）不应该再假设
+        # 这个方法的返回值里直接有 `spec`。
         body = {"from_history": from_history}
         if schedule:
             body["schedule"] = schedule
@@ -466,6 +485,8 @@ class AgentClient:
 
     def revise_execution_spec(self, goal_id: str, feedback: str, locked_fields: list | None = None,
                                mode: str = ""):
+        # [kanban_async_job_mechanism_plan.md] 同 generate_execution_spec：
+        # 立即返回 `{"job_id", "key"}`，交给 async_job_ui 轮询。
         body = {"feedback": feedback, "locked_fields": locked_fields or []}
         if mode:
             body["mode"] = mode
@@ -478,6 +499,10 @@ class AgentClient:
         # use_agent: None（跟随配置默认 overall_completion_use_agent）/
         # True（只读探索 Agent）/ False（纯 LLM），单次覆盖，不修改配置
         # 文件（implementation_record.md §11 后续建议顺序第 2 条）。
+        #
+        # [kanban_async_job_mechanism_plan.md] Goal 不是 active 时服务端
+        # 仍然同步直接返回 `{"outcome": None, "reason": ...}`；否则返回
+        # `{"job_id", "key"}`，需要调用方（app.py）用 async_job_ui 轮询。
         body = {}
         if use_agent is not None:
             body["use_agent"] = use_agent
@@ -839,13 +864,11 @@ class AgentClient:
         return self._get("/growth/summary", params=params, timeout=timeout)
 
     def growth_scan(self):
-        # `llm_signal_augment_enabled` / `report_quality_llm_enabled` 开启时
-        # 这一轮会带上真实 LLM 调用（信号归纳 + 报告正文），默认 15s 超时
-        # 经常不够——超时后前端拿到 _error，但服务端其实还在继续跑，容易
-        # 造成"点了按钮报错/没反应，过一会再看候选却确实生成了"的错觉。
-        # 放宽到 90s，给 LLM 调用留出合理的重试余量（LLMHelper.ask 默认
-        # max_retries=3）。
-        return self._post("/growth/scan", timeout=90)
+        # [kanban_async_job_mechanism_plan.md] 服务端现在立即返回
+        # `{"job_id", "key": "growth_scan"}`，不再同步等 LLM 调用跑完——
+        # 提交本身很快，不需要再把超时放宽到 90s；真正的等待交给
+        # `async_job_ui.run_async_job()`。
+        return self._post("/growth/scan")
 
     def growth_candidate_action(self, candidate_id: str, action: str, *, reason: str | None = None):
         """反馈粒度细化：dismiss 时可选传 reason（见
@@ -853,15 +876,17 @@ class AgentClient:
 
         [采纳即启动] `action == "accept"` 时，服务端默认会顺带触发"生成
         报告 → 落地为 Goal → 生成并确认执行规范 → 绑定周期性"整条自动
-        链路（`GrowthAdvisorConfig.auto_pursue_on_accept`，默认开启），
-        比单纯写一次状态慢不少（可能含一到两次 LLM 调用），因此把超时
-        放宽到 90s，与 `growth_scan()` 对齐，避免"点了采纳没反应"的
-        误解。响应体里会多一个 `pursuit` 字段，看板据此展示"已开始
-        自主推进"或呈现 `pursuit.errors` 里的尽力而为提示。
+        链路（`GrowthAdvisorConfig.auto_pursue_on_accept`，默认开启）。
+
+        [kanban_async_job_mechanism_plan.md] 无论 accept 还是 dismiss，
+        服务端都立即返回 `{"job_id", "key"}`（dismiss 本身很快跑完，只是
+        统一走同一套轮询以简化前端逻辑），不再需要按 action 区分超时。
+        最终 `result`（`async_job_ui.run_async_job()` 拿到的返回值）里
+        会多一个 `pursuit` 字段，看板据此展示"已开始自主推进"或呈现
+        `pursuit.errors` 里的尽力而为提示。
         """
         body = {"reason": reason} if (action == "dismiss" and reason) else None
-        timeout = 90 if action == "accept" else 15
-        return self._post(f"/growth/candidates/{candidate_id}/{action}", body, timeout=timeout)
+        return self._post(f"/growth/candidates/{candidate_id}/{action}", body)
 
     def growth_report(self, report_id: str):
         return self._get(f"/growth/reports/{report_id}")
@@ -895,6 +920,8 @@ class AgentClient:
         return self._get("/growth/reports/refresh_candidates")
 
     def growth_candidate_refresh_report(self, candidate_id: str):
+        # [kanban_async_job_mechanism_plan.md] 立即返回 `{"job_id", "key"}`，
+        # 交给 async_job_ui 轮询，不再用默认 15s 超时同步等结果。
         return self._post(f"/growth/candidates/{candidate_id}/report/refresh")
 
     def growth_candidate_adopt_goal(self, candidate_id: str):

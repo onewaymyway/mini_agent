@@ -78,6 +78,11 @@
   `src/mini_agent/api/routes.py`，后端改动正常进行（两个看板共用同一套 REST API）；仅前端
   展示/交互层面的修改收敛到 Streamlit 一侧。详见 `next_doc/kanban_react_spa_replacement_plan.md`
   开头的状态说明。
+- **看板上任何涉及 LLM/Agent 调用的新端点，一律走通用异步任务机制
+  （`src/mini_agent/api/async_jobs.py`），禁止在 `async def` 路由 handler
+  里直接同步调用 LLM 或用一个猜测的超时时间了事。** 标准写法、前端配套
+  组件（`apps/mini_agent_kanban/async_job_ui.py`）用法示例、6 个已改造
+  端点的清单，详见 `next_doc/kanban_async_job_mechanism_plan.md`。
 
 ## 运行
 

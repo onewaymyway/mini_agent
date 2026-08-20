@@ -997,6 +997,15 @@ def create_app(
     app.state.project_root = project_root  # daemon 多用户架构 Phase 3
     app.state.session_pool = session_pool  # None = 单用户模式 / Phase 3 未开启
 
+    # 看板"点击 → 后台跑 → 轮询拿结果"通用异步任务机制（见
+    # next_doc/kanban_async_job_mechanism_plan.md / api/async_jobs.py）。
+    # daemon 生命周期内常驻的进程内单例，供 execution_spec/generate|revise|
+    # close_check、growth/scan|candidates/{action}|report/refresh 等所有
+    # LLM 调用点复用，避免各自手写"同步调用 + 猜一个超时时间"。
+    from mini_agent.api.async_jobs import AsyncJobRegistry
+    from mini_agent.storage.paths import AgentPaths as _AsyncJobsAgentPaths
+    app.state.async_jobs = AsyncJobRegistry(_AsyncJobsAgentPaths(project_root=project_root))
+
     return app
 
 
