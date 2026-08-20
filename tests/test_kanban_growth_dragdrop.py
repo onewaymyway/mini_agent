@@ -94,3 +94,62 @@ kanban_app._render_growth_pending_list(FakeClient(), pending)
     # 点击「忽略」→ 恰好一次提交，且带上刚才选中的原因
     at.button(key="growth_dismiss_cand-1").click().run()
     assert at.session_state["calls"] == [("cand-1", "dismiss", "report_not_useful")]
+
+
+def test_keyword_list_batch_confirm_only_applies_to_checked_topics(tmp_path):
+    """[成长顾问看板"当前关键词列表"支持批量操作] 覆盖"待确认"分组：
+    勾选两个「待确认」主题里的一个，点批量保留按钮，应该只对勾选的那个
+    调用一次 `growth_keyword_confirm`，未勾选的不受影响；批量按钮在没有
+    任何勾选时不应该出现（`_kw_batch_bar` 选中数为 0 时直接 return）。"""
+    from streamlit.testing.v1 import AppTest
+
+    script = f'''
+import sys
+sys.path.insert(0, {str(Path(__file__).resolve().parent.parent / "apps" / "mini_agent_kanban")!r})
+import app as kanban_app
+import streamlit as st
+
+if "calls" not in st.session_state:
+    st.session_state["calls"] = []
+
+class FakeClient:
+    def growth_keyword_confirm(self, topic):
+        st.session_state["calls"].append(("confirm", topic))
+        return {{}}
+    def growth_keyword_remove(self, topic):
+        st.session_state["calls"].append(("remove", topic))
+        return {{}}
+    def growth_keyword_restore(self, topic):
+        st.session_state["calls"].append(("restore", topic))
+        return {{}}
+
+diagnostics = {{
+    "signal_scan": {{
+        "topics_detail": [
+            {{"topic": "主题A", "keywords": ["a1"], "source": "llm_learned", "confirmed_by_user": False}},
+            {{"topic": "主题B", "keywords": ["b1"], "source": "llm_learned", "confirmed_by_user": False}},
+        ]
+    }},
+    "hidden_builtin_topics": [],
+}}
+kanban_app._render_growth_profile_and_keywords(FakeClient(), diagnostics)
+'''
+    script_path = tmp_path / "_apptest_script.py"
+    script_path.write_text(script, encoding="utf-8")
+
+    at = AppTest.from_file(str(script_path))
+    at.run()
+    assert not at.exception
+
+    # 一开始什么都没勾选，批量按钮不应该渲染。
+    assert not any(b.key == "growth_kw_confirm_batch" for b in at.button)
+
+    # 只勾选「主题A」
+    at.checkbox(key="growth_kw_sel_learned_主题A").check().run()
+    assert not at.exception
+    assert any(b.key == "growth_kw_confirm_batch" for b in at.button)
+
+    at.button(key="growth_kw_confirm_batch").click().run()
+    assert at.session_state["calls"] == [("confirm", "主题A")]
+    # 批量操作后勾选状态被清空，批量按钮重新消失。
+    assert not any(b.key == "growth_kw_confirm_batch" for b in at.button)

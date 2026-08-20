@@ -5602,43 +5602,104 @@ def _render_growth_profile_and_keywords(client: "AgentClient", diagnostics: dict
     built_in = [t for t in topics_detail if t.get("source") == "built_in"]
     learned = [t for t in topics_detail if t.get("source") == "llm_learned" and not t.get("confirmed_by_user")]
     user_added = [t for t in topics_detail if t.get("source") == "user_added" or (t.get("source") == "llm_learned" and t.get("confirmed_by_user"))]
+    hidden_builtin = diagnostics.get("hidden_builtin_topics") or []
+
+    # [批量操作] 关键词列表条目一多，逐条点按钮很烦——每一行在原有的
+    # 单条操作按钮左边加一个复选框，分组顶部/底部放一个批量操作按钮：
+    # 选中哪些就对哪些循环调用同一个单条操作用的 client 方法（后端没有
+    # 专门的批量接口，语义上等价于"依次点了好几次同一个按钮"，跟
+    # `_render_growth_pursuits()` 里"⚙ 批量操作"popover 的实现思路
+    # 一致，不引入新接口）。选中状态存在 `st.session_state`，按分组 +
+    # topic 区分 key，互不干扰；执行完批量操作后清空对应分组的选中
+    # 状态，避免刷新后误保留上一轮勾选。
+    def _kw_clear_selection(topics: list[str], group: str) -> None:
+        for topic in topics:
+            st.session_state.pop(f"growth_kw_sel_{group}_{topic}", None)
+
+    def _kw_batch_bar(topics: list[str], group: str, label: str, key: str, on_click) -> None:
+        """选中数量 > 0 才展示批量操作按钮，避免空列表时占位置。"""
+        selected = [t for t in topics if st.session_state.get(f"growth_kw_sel_{group}_{t}")]
+        if not selected:
+            return
+        if st.button(f"{label}（{len(selected)}）", key=key):
+            for topic in selected:
+                on_click(topic)
+            _kw_clear_selection(topics, group)
+            st.rerun()
 
     if built_in:
         st.caption("内置：" + "、".join(f"`{t['topic']}`" for t in built_in))
         # [P4-7] 内置主题此前只能展示，看不到隐藏按钮——后端一直支持
         # （remove_topic_keyword 会把内置主题记进黑名单），这里补上 UI。
         with st.expander("🙈 隐藏某个内置主题"):
+            built_in_topics = [t["topic"] for t in built_in]
+            _kw_batch_bar(
+                built_in_topics, "hide", "🙈 批量隐藏", "growth_kw_hide_batch",
+                lambda topic: client.growth_keyword_remove(topic),
+            )
             for t in built_in:
-                if st.button(f"隐藏「{t['topic']}」", key=f"growth_kw_hide_{t['topic']}"):
-                    client.growth_keyword_remove(t["topic"])
-                    st.rerun()
-    hidden_builtin = diagnostics.get("hidden_builtin_topics") or []
+                cols = st.columns([1, 4])
+                with cols[0]:
+                    st.checkbox("选中", key=f"growth_kw_sel_hide_{t['topic']}", label_visibility="collapsed")
+                with cols[1]:
+                    if st.button(f"隐藏「{t['topic']}」", key=f"growth_kw_hide_{t['topic']}"):
+                        client.growth_keyword_remove(t["topic"])
+                        st.rerun()
     if hidden_builtin:
         st.caption("已隐藏的内置主题（不会再出现在扫描里）：")
+        _kw_batch_bar(
+            hidden_builtin, "restore", "↩️ 批量恢复", "growth_kw_restore_batch",
+            lambda topic: client.growth_keyword_restore(topic),
+        )
         for topic in hidden_builtin:
-            cols = st.columns([4, 1])
-            cols[0].write(f"⚪ ~~{topic}~~")
-            if cols[1].button("↩️ 恢复", key=f"growth_kw_restore_{topic}"):
+            cols = st.columns([1, 3, 1])
+            with cols[0]:
+                st.checkbox("选中", key=f"growth_kw_sel_restore_{topic}", label_visibility="collapsed")
+            cols[1].write(f"⚪ ~~{topic}~~")
+            if cols[2].button("↩️ 恢复", key=f"growth_kw_restore_{topic}"):
                 client.growth_keyword_restore(topic)
                 st.rerun()
-    for t in learned:
-        cols = st.columns([4, 1, 1])
-        streak = t.get("consecutive_scan_hits", 0)
-        streak_hint = f"（连续命中 {streak} 次，满 3 次自动保留）" if streak else ""
-        cols[0].write(f"🟡 待确认：**{t['topic']}**（{', '.join(t['keywords'])}）{streak_hint}")
-        if cols[1].button("✅ 保留", key=f"growth_kw_confirm_{t['topic']}"):
-            client.growth_keyword_confirm(t["topic"])
-            st.rerun()
-        if cols[2].button("❌ 不要", key=f"growth_kw_reject_{t['topic']}"):
-            client.growth_keyword_remove(t["topic"])
-            st.rerun()
-    for t in user_added:
-        cols = st.columns([5, 1])
-        auto_tag = " 🤖 自动保留" if t.get("auto_confirmed") else ""
-        cols[0].write(f"🔵 **{t['topic']}**（{', '.join(t['keywords'])}）{auto_tag}")
-        if cols[1].button("❌ 删除", key=f"growth_kw_remove_{t['topic']}"):
-            client.growth_keyword_remove(t["topic"])
-            st.rerun()
+    if learned:
+        learned_topics = [t["topic"] for t in learned]
+        bcol_a, bcol_b = st.columns(2)
+        with bcol_a:
+            _kw_batch_bar(
+                learned_topics, "learned", "✅ 批量保留", "growth_kw_confirm_batch",
+                lambda topic: client.growth_keyword_confirm(topic),
+            )
+        with bcol_b:
+            _kw_batch_bar(
+                learned_topics, "learned", "❌ 批量不要", "growth_kw_reject_batch",
+                lambda topic: client.growth_keyword_remove(topic),
+            )
+        for t in learned:
+            cols = st.columns([1, 3, 1, 1])
+            with cols[0]:
+                st.checkbox("选中", key=f"growth_kw_sel_learned_{t['topic']}", label_visibility="collapsed")
+            streak = t.get("consecutive_scan_hits", 0)
+            streak_hint = f"（连续命中 {streak} 次，满 3 次自动保留）" if streak else ""
+            cols[1].write(f"🟡 待确认：**{t['topic']}**（{', '.join(t['keywords'])}）{streak_hint}")
+            if cols[2].button("✅ 保留", key=f"growth_kw_confirm_{t['topic']}"):
+                client.growth_keyword_confirm(t["topic"])
+                st.rerun()
+            if cols[3].button("❌ 不要", key=f"growth_kw_reject_{t['topic']}"):
+                client.growth_keyword_remove(t["topic"])
+                st.rerun()
+    if user_added:
+        user_added_topics = [t["topic"] for t in user_added]
+        _kw_batch_bar(
+            user_added_topics, "user_added", "❌ 批量删除", "growth_kw_remove_batch",
+            lambda topic: client.growth_keyword_remove(topic),
+        )
+        for t in user_added:
+            cols = st.columns([1, 4, 1])
+            with cols[0]:
+                st.checkbox("选中", key=f"growth_kw_sel_user_added_{t['topic']}", label_visibility="collapsed")
+            auto_tag = " 🤖 自动保留" if t.get("auto_confirmed") else ""
+            cols[1].write(f"🔵 **{t['topic']}**（{', '.join(t['keywords'])}）{auto_tag}")
+            if cols[2].button("❌ 删除", key=f"growth_kw_remove_{t['topic']}"):
+                client.growth_keyword_remove(t["topic"])
+                st.rerun()
 
     with st.form("growth_add_keyword_form", clear_on_submit=True):
         st.caption("➕ 添加自定义关注主题")
