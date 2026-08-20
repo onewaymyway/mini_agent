@@ -372,8 +372,10 @@ class AgentClient:
         return self._post("/self/execution_model/force_reap", json_body={"target": target})
 
     def concurrency_status(self):
-        """[kanban_concurrency_control_plan.md] 拉取 daemon 当前的并发状态
-        快照（任务并发 / LLM 调用并发的 active/limit/waiting/waiters）。"""
+        """[kanban_concurrency_control_plan.md] 拉取 daemon 当前 SubAgent /
+        LLM 请求这两个底层信号量的并发状态快照（active/limit/waiting/
+        waiters）。注意这跟 task_concurrency_status() 不是同一层级，见后者
+        的说明。"""
         return self._get("/self/concurrency")
 
     def set_concurrency(self, max_tasks: int = None, max_llm_calls: int = None):
@@ -386,6 +388,27 @@ class AgentClient:
         if max_llm_calls is not None:
             body["max_llm_calls"] = max_llm_calls
         return self._post("/self/concurrency", body)
+
+    def task_concurrency_status(self):
+        """[kanban_concurrency_control_plan.md] 拉取顶栏"⚙️ daemon 正在
+        执行 N 项任务"里 Objective/Goal 通道、Cron 通道各自当前的并发上限
+        与运行中数量——这是"daemon 同时能跑几个任务"这一层，跟
+        concurrency_status()（SubAgent/LLM 请求这两个更底层的信号量）是
+        不同的两件事。"""
+        return self._get("/self/task_concurrency")
+
+    def set_task_concurrency(self, max_objectives: int = None, max_cron_jobs: int = None):
+        """[kanban_concurrency_control_plan.md] 运行时热改 Objective/Goal
+        通道、Cron 通道各自的最大并发执行数，立刻生效、不需要重启。
+        max_objectives 会被服务端 clamp 到 [1, hard_ceiling]（当前硬天花板
+        为 2，代码写死，改不动）。max_objectives / max_cron_jobs 至少提供
+        一个。"""
+        body = {}
+        if max_objectives is not None:
+            body["max_objectives"] = max_objectives
+        if max_cron_jobs is not None:
+            body["max_cron_jobs"] = max_cron_jobs
+        return self._post("/self/task_concurrency", body)
 
     def config_status(self):
         """[kanban_config_management_plan.md] 拉取 agent_config.json 的分类

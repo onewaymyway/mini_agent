@@ -143,11 +143,20 @@ api/routes.py — FastAPI 路由定义
     PATCH  /v1/self/config           [kanban_config_management_plan.md] 批量
                                        更新 agent_config.json 里的若干字段
     GET    /v1/self/concurrency      [kanban_concurrency_control_plan.md]
-                                       并发状态快照（任务/LLM 调用 active/
-                                       limit/waiting）
+                                       SubAgent/LLM 请求这两个底层信号量的
+                                       并发状态快照（高级用法）
     POST   /v1/self/concurrency      [kanban_concurrency_control_plan.md]
-                                       运行时热改最大并发任务数/LLM 调用数，
-                                       等价于 CLI `/concurrency tasks|llm <n>`
+                                       运行时热改最大并发 SubAgent 数/LLM
+                                       调用数，等价于 CLI `/concurrency
+                                       tasks|llm <n>`
+    GET    /v1/self/task_concurrency [kanban_concurrency_control_plan.md]
+                                       顶栏"daemon 正在执行 N 项任务"对应的
+                                       任务执行并发：Objective/Goal 通道、
+                                       Cron 通道各自的 running/current_cap/
+                                       hard_ceiling
+    POST   /v1/self/task_concurrency [kanban_concurrency_control_plan.md]
+                                       运行时热改 Objective/Goal 通道、Cron
+                                       通道各自的最大并发执行数
     POST   /v1/objectives/{execution_id}/cancel    终止一个正在运行的 Objective 执行
     POST   /v1/objectives/{execution_id}/retry     手动重试当前 step（不等超时）
     POST   /v1/objectives/{execution_id}/steps/{step_index}/reset
@@ -3371,6 +3380,151 @@ async def post_self_concurrency(request: Request):
         set_max_llm_calls(max_llm_calls)
 
     return concurrency_snapshot()
+
+
+@router.get("/self/task_concurrency")
+async def get_self_task_concurrency(request: Request):
+    """GET /v1/self/task_concurrency — [看板"🎛️ 并发上限"面板] 只读返回
+    daemon 顶栏"⚙️ daemon 正在执行 N 项任务"里那两条**任务执行通道**
+    （Objective/Goal 通道、Cron 通道）当前的并发上限与运行中数量。
+
+    注意：这跟 `/v1/self/concurrency`（SubAgent/LLM 请求这两个更底层的
+    信号量）是完全不同的两件事——一次 Objective/Cron job 执行内部可能会
+    再派生多个 SubAgent、发起多次 LLM 调用，两者不是同一层级。这里控制的
+    是"daemon 同时能有几个 Objective 执行 / 几个 cron job 在跑"，也就是
+    顶栏那个任务列表的并发数量。
+
+    返回结构：
+    {
+      "objectives": {"current_cap": int, "hard_ceiling": int, "running": int},
+      "cron":       {"current_cap": int | None, "running": int | None}
+    }
+
+    `objectives.hard_ceiling` 是代码里写死的绝对天花板
+    （`MAX_CONCURRENT_OBJECTIVES`，当前为 2）——`current_cap` 只能在
+    `[1, hard_ceiling]` 之间调整，调大到超过天花板不会有效果（详见
+    `ObjectiveExecutor.effective_max_concurrent()` 的"只降不升"设计）。
+    `cron` 字段在 CronJobRunner 未启用（走的是旧的 submit_fn 路径）时为
+    `None`，前端应据此隐藏 cron 那一栏的编辑控件。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    from mini_agent.evolution.objective_executor import MAX_CONCURRENT_OBJECTIVES
+
+    al = http_server.autonomous_loop
+    oe = getattr(al, "_objective_executor", None) if al is not None else None
+    if oe is None:
+        oe = getattr(http_server.bridge, "_objective_executor", None)
+
+    objectives_info = {"current_cap": MAX_CONCURRENT_OBJECTIVES, "hard_ceiling": MAX_CONCURRENT_OBJECTIVES, "running": 0}
+    if oe is not None:
+        try:
+            autonomy_cfg = getattr(oe._cfg, "autonomy", None) if getattr(oe, "_cfg", None) is not None else None
+            configured_cap = getattr(autonomy_cfg, "max_concurrent_objectives_cap", MAX_CONCURRENT_OBJECTIVES) if autonomy_cfg is not None else MAX_CONCURRENT_OBJECTIVES
+            objectives_info = {
+                "current_cap": min(MAX_CONCURRENT_OBJECTIVES, int(configured_cap)),
+                "hard_ceiling": MAX_CONCURRENT_OBJECTIVES,
+                "running": oe.running_count(),
+            }
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_task_concurrency.objectives')
+
+    cron_info = {"current_cap": None, "running": None}
+    cs = _get_cron_scheduler(http_server)
+    runner = getattr(cs, "_job_runner", None) if cs is not None else None
+    if runner is not None:
+        try:
+            cron_info = {
+                "current_cap": int(getattr(runner, "_max_concurrent", 2)),
+                "running": runner.running_count(),
+            }
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_task_concurrency.cron')
+
+    return {"objectives": objectives_info, "cron": cron_info}
+
+
+@router.post("/self/task_concurrency")
+async def post_self_task_concurrency(request: Request):
+    """POST /v1/self/task_concurrency — [看板"🎛️ 并发上限"面板] 运行时热改
+    Objective/Goal 通道、Cron 通道各自能同时执行几个任务，效果就是顶栏
+    "⚙️ daemon 正在执行 N 项任务"最多能同时展示几条对应来源的记录。
+
+    Body: {"max_objectives": int} 和/或 {"max_cron_jobs": int}，至少提供
+    一个。
+
+    - `max_objectives` 会被 clamp 到 `[1, MAX_CONCURRENT_OBJECTIVES]`
+      （当前硬天花板为 2，代码里写死，改配置也突破不了，这是设计上的
+      安全阀，不是 bug）；直接改的是 `ObjectiveExecutor._cfg.autonomy.
+      max_concurrent_objectives_cap`，`effective_max_concurrent()` 每次
+      调用都会重新读这个字段，所以立刻生效，不需要重启。
+    - `max_cron_jobs` 直接改 `CronJobRunner._max_concurrent`（要求
+      `>= 1`），同样立刻生效；等待槽位的调度循环会用最新值重新计算。
+      如果当前 cron 走的是旧路径（`CronJobRunner` 未启用），返回
+      400。
+
+    注意：这两个值都是**运行时状态**，不会写回 agent_config.json——
+    daemon 重启后会掉回配置文件里的默认值。调低上限只影响后续新任务
+    排队，不会打断当前正在跑的执行。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    body = await request.json()
+    max_objectives = body.get("max_objectives")
+    max_cron_jobs = body.get("max_cron_jobs")
+    if max_objectives is None and max_cron_jobs is None:
+        raise HTTPException(status_code=400, detail="需要提供 max_objectives 或 max_cron_jobs 中至少一个")
+
+    from mini_agent.evolution.objective_executor import MAX_CONCURRENT_OBJECTIVES
+
+    if max_objectives is not None:
+        try:
+            max_objectives = int(max_objectives)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="max_objectives 必须是整数")
+        if max_objectives < 1:
+            raise HTTPException(status_code=400, detail="max_objectives 必须 >= 1")
+
+        al = http_server.autonomous_loop
+        oe = getattr(al, "_objective_executor", None) if al is not None else None
+        if oe is None:
+            oe = getattr(http_server.bridge, "_objective_executor", None)
+        if oe is None:
+            raise HTTPException(status_code=503, detail="ObjectiveExecutor not available")
+        cfg = getattr(oe, "_cfg", None)
+        autonomy_cfg = getattr(cfg, "autonomy", None) if cfg is not None else None
+        if autonomy_cfg is None:
+            raise HTTPException(status_code=503, detail="autonomy config not available")
+        autonomy_cfg.max_concurrent_objectives_cap = min(max_objectives, MAX_CONCURRENT_OBJECTIVES)
+
+    if max_cron_jobs is not None:
+        try:
+            max_cron_jobs = int(max_cron_jobs)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="max_cron_jobs 必须是整数")
+        if max_cron_jobs < 1:
+            raise HTTPException(status_code=400, detail="max_cron_jobs 必须 >= 1")
+
+        cs = _get_cron_scheduler(http_server)
+        runner = getattr(cs, "_job_runner", None) if cs is not None else None
+        if runner is None:
+            raise HTTPException(status_code=400, detail="当前 cron 未启用 CronJobRunner（旧路径不支持并发上限调整）")
+        runner._max_concurrent = max(1, max_cron_jobs)
+        try:
+            with runner._slot_cond:
+                runner._slot_cond.notify_all()
+        except Exception:
+            pass
+
+    return await get_self_task_concurrency(request)
 
 
 @router.get("/self/status")

@@ -938,14 +938,91 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
 
 
 def _render_concurrency_control(client: AgentClient) -> None:
-    """[kanban_concurrency_control_plan.md] 顶栏常驻的并发上限控件，展示并
-    支持热改 daemon 当前允许的最大并发任务数（SubAgent 数量）/ 最大并发
-    LLM 调用数。
+    """[kanban_concurrency_control_plan.md] 顶栏常驻的并发上限控件。
 
-    这两个值都是**运行时状态**（信号量 limit），改动立刻生效、不需要重启
-    daemon，但也不会写回 agent_config.json——daemon 重启后会掉回配置文件
-    里的默认值。调低上限只影响后续新任务排队，不会打断当前正在跑的任务。
+    主体展示/编辑的是"⚙️ daemon 正在执行 N 项任务"这个任务执行层面的并发
+    数——Objective/Goal 通道、Cron 通道各自当前允许同时跑几个。这跟更底层
+    的 SubAgent/LLM 请求并发（一次 Objective 执行内部可能再派生多个
+    SubAgent、发起多次 LLM 调用）不是同一件事，折叠在下方"高级：SubAgent /
+    LLM 并发"子区域单独展示，避免两个不同层级的概念混在一起造成误解。
+
+    所有值都是**运行时状态**，改动立刻生效、不需要重启 daemon，但也不会
+    写回 agent_config.json——daemon 重启后会掉回配置文件里的默认值。调低
+    上限只影响后续新任务排队，不会打断当前正在跑的任务。
     """
+    task_snap = client.task_concurrency_status() or {}
+    if "_error" in task_snap:
+        return
+
+    obj = task_snap.get("objectives") or {}
+    cron = task_snap.get("cron") or {}
+
+    obj_label = f"目标 {obj.get('running', 0)}/{obj.get('current_cap', '—')}"
+    cron_label = (
+        f"　Cron {cron.get('running', 0)}/{cron.get('current_cap', '—')}"
+        if cron.get("current_cap") is not None else ""
+    )
+
+    with st.expander(f"🎛️ 任务并发上限　{obj_label}{cron_label}", expanded=False):
+        st.caption(
+            "控制的是「⚙️ daemon 正在执行 N 项任务」里能同时跑几个 Objective/"
+            "Goal 执行、几个 cron job，而不是更底层的 SubAgent/LLM 请求并发。"
+            "运行时热改，立刻生效、不需要重启；但不会写回配置文件，daemon "
+            "重启后会掉回默认值。调低上限只影响新任务排队，不会打断当前正在"
+            "跑的任务。"
+        )
+
+        hard_ceiling = int(obj.get("hard_ceiling", 2) or 2)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.metric(
+                "目标(Goal)执行并发",
+                f"{obj.get('running', 0)} / {obj.get('current_cap', '—')}",
+                help=f"硬天花板 {hard_ceiling}（代码写死，改配置也突破不了）",
+            )
+            new_max_obj = st.number_input(
+                "最大并发 Objective 数",
+                min_value=1, max_value=hard_ceiling, step=1,
+                value=min(hard_ceiling, int(obj.get("current_cap", hard_ceiling) or hard_ceiling)),
+                key="task_concurrency_max_obj_input",
+                help=f"取值范围 1～{hard_ceiling}",
+            )
+            if st.button("应用", key="task_concurrency_apply_obj_btn"):
+                res = client.set_task_concurrency(max_objectives=int(new_max_obj))
+                if res and "_error" in res:
+                    st.error(res["_error"])
+                else:
+                    st.success(f"最大并发 Objective 数 → {int(new_max_obj)}")
+                st.rerun()
+        with c2:
+            if cron.get("current_cap") is None:
+                st.caption("Cron 未启用独立并发通道（旧路径），不支持调整。")
+            else:
+                st.metric(
+                    "Cron 执行并发",
+                    f"{cron.get('running', 0)} / {cron.get('current_cap', '—')}",
+                )
+                new_max_cron = st.number_input(
+                    "最大并发 Cron job 数", min_value=1, step=1,
+                    value=int(cron.get("current_cap", 2) or 2),
+                    key="task_concurrency_max_cron_input",
+                )
+                if st.button("应用", key="task_concurrency_apply_cron_btn"):
+                    res = client.set_task_concurrency(max_cron_jobs=int(new_max_cron))
+                    if res and "_error" in res:
+                        st.error(res["_error"])
+                    else:
+                        st.success(f"最大并发 Cron job 数 → {int(new_max_cron)}")
+                    st.rerun()
+
+        st.divider()
+        _render_subagent_llm_concurrency_control(client)
+
+
+def _render_subagent_llm_concurrency_control(client: AgentClient) -> None:
+    """[kanban_concurrency_control_plan.md] 更底层的 SubAgent/LLM 请求并发
+    控件，折叠在 `_render_concurrency_control` 内部的"高级"区域，跟顶层的
+    任务执行并发（Objective/Cron 通道）分开展示。"""
     snap = client.concurrency_status() or {}
     if "_error" in snap:
         return
@@ -953,59 +1030,53 @@ def _render_concurrency_control(client: AgentClient) -> None:
     t = snap.get("tasks") or {}
     l = snap.get("llm") or {}
 
-    with st.expander(
-        f"🎛️ 并发上限　任务 {t.get('active', 0)}/{t.get('limit', '—')}"
-        f"　LLM {l.get('active', 0)}/{l.get('limit', '—')}",
-        expanded=False,
-    ):
-        st.caption(
-            "运行时热改，立刻生效、不需要重启 daemon；但不会写回配置文件，"
-            "daemon 重启后会掉回默认值。调低上限只影响新任务排队，不会打断"
-            "当前正在跑的任务。"
+    st.caption(
+        "高级：SubAgent / LLM 请求并发（一次 Objective/Cron 执行内部可能"
+        "再派生多个 SubAgent、发起多次 LLM 调用，是比上面更底层的一级）"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric(
+            "SubAgent 任务并发",
+            f"{t.get('active', 0)} / {t.get('limit', '—')}",
+            help=f"{t.get('waiting', 0)} 个排队中",
         )
-        c1, c2 = st.columns(2)
-        with c1:
-            st.metric(
-                "任务并发",
-                f"{t.get('active', 0)} / {t.get('limit', '—')}",
-                help=f"{t.get('waiting', 0)} 个排队中",
-            )
-            new_max_tasks = st.number_input(
-                "最大并发任务数", min_value=1, step=1,
-                value=int(t.get("limit", 4) or 4),
-                key="concurrency_max_tasks_input",
-            )
-            if st.button("应用", key="concurrency_apply_tasks_btn"):
-                res = client.set_concurrency(max_tasks=int(new_max_tasks))
-                if res and "_error" in res:
-                    st.error(res["_error"])
-                else:
-                    st.success(f"最大并发任务数 → {int(new_max_tasks)}")
-                st.rerun()
-        with c2:
-            st.metric(
-                "LLM 调用并发",
-                f"{l.get('active', 0)} / {l.get('limit', '—')}",
-                help=f"{l.get('waiting', 0)} 个排队中",
-            )
-            new_max_llm = st.number_input(
-                "最大并发 LLM 调用数", min_value=1, step=1,
-                value=int(l.get("limit", 8) or 8),
-                key="concurrency_max_llm_input",
-            )
-            if st.button("应用", key="concurrency_apply_llm_btn"):
-                res = client.set_concurrency(max_llm_calls=int(new_max_llm))
-                if res and "_error" in res:
-                    st.error(res["_error"])
-                else:
-                    st.success(f"最大并发 LLM 调用数 → {int(new_max_llm)}")
-                st.rerun()
+        new_max_tasks = st.number_input(
+            "最大并发 SubAgent 数", min_value=1, step=1,
+            value=int(t.get("limit", 4) or 4),
+            key="concurrency_max_tasks_input",
+        )
+        if st.button("应用", key="concurrency_apply_tasks_btn"):
+            res = client.set_concurrency(max_tasks=int(new_max_tasks))
+            if res and "_error" in res:
+                st.error(res["_error"])
+            else:
+                st.success(f"最大并发 SubAgent 数 → {int(new_max_tasks)}")
+            st.rerun()
+    with c2:
+        st.metric(
+            "LLM 调用并发",
+            f"{l.get('active', 0)} / {l.get('limit', '—')}",
+            help=f"{l.get('waiting', 0)} 个排队中",
+        )
+        new_max_llm = st.number_input(
+            "最大并发 LLM 调用数", min_value=1, step=1,
+            value=int(l.get("limit", 8) or 8),
+            key="concurrency_max_llm_input",
+        )
+        if st.button("应用", key="concurrency_apply_llm_btn"):
+            res = client.set_concurrency(max_llm_calls=int(new_max_llm))
+            if res and "_error" in res:
+                st.error(res["_error"])
+            else:
+                st.success(f"最大并发 LLM 调用数 → {int(new_max_llm)}")
+            st.rerun()
 
-        if t.get("waiters"):
-            st.caption("排队中的任务：" + "，".join(
-                f"{w.get('label', '')}（等待 {w.get('waited_s', 0)}s）"
-                for w in t["waiters"]
-            ))
+    if t.get("waiters"):
+        st.caption("排队中的任务：" + "，".join(
+            f"{w.get('label', '')}（等待 {w.get('waited_s', 0)}s）"
+            for w in t["waiters"]
+        ))
 
 
 def _render_gating_detail(client: AgentClient, gating: dict) -> None:
