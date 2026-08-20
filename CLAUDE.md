@@ -83,6 +83,15 @@
   里直接同步调用 LLM 或用一个猜测的超时时间了事。** 标准写法、前端配套
   组件（`apps/mini_agent_kanban/async_job_ui.py`）用法示例、6 个已改造
   端点的清单，详见 `next_doc/kanban_async_job_mechanism_plan.md`。
+- **看板里新增/修改的板块函数（渲染某个 Tab 内某个子区域的 `_render_xxx()`），
+  只要内部有 widget 交互（按钮/复选框/输入框/表单）或自己独立调用后端接口，
+  一律加 `@st.fragment`，禁止让它作为普通函数被外层 Tab 直接同步调用。**
+  否则该板块任意一次 widget 交互都会触发整个 Tab 重跑，连带把同一 Tab 里
+  其它互不相关的板块一起重新请求接口、重新渲染，表现为"点一下不起眼的
+  控件，整个页面卡一下"。规范细节、已踩的坑（`_render_growth_profile_and_keywords`
+  漏加 fragment 导致的卡顿）、fragment 内 `st.rerun()` 语义、入参快照滞后
+  的注意事项，详见 [Kanban 看板使用指南 · 开发规范：新增/修改板块务必用
+  `@st.fragment` 做局部刷新](docs/kanban-dashboard-guide.md#开发规范新增修改板块务必用-stfragment-做局部刷新)。
 
 ## 运行
 

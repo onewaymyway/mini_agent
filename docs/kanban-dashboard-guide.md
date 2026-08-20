@@ -666,6 +666,55 @@ token 错误。日志里同时出现的 `ConnectionResetError [WinError 10054]`
 - 历史分页目前按消息条数切页，长会话下按"轮次"分页（配合 `/v1/turns`）会
   更符合用户心智模型，留待后续验证
 
+## 开发规范：新增/修改板块务必用 `@st.fragment` 做局部刷新
+
+Streamlit 的默认行为是：任何一个 widget（`st.button`/`st.checkbox`/
+`st.text_input`/`st.form_submit_button` 等）被触发，**只要它所在的函数不是
+`@st.fragment`，就会重跑整个脚本**——对看板来说就是重跑整个
+`render_xxx_tab()`。如果某个 Tab 里同时挂着好几个各自独立请求后端的板块
+（比如成长顾问 Tab 里的诊断信息 / 健康度趋势 / 关键词管理 / 回访提醒 /
+对齐视图 / 自主推进 / 报告刷新提示 / 候选列表），漏掉 `@st.fragment` 的
+那个板块只要有一次 widget 交互，就会连带把其它跟它完全无关的板块一起
+重新请求一遍接口、重新渲染一遍——用户体感就是"点一下毫不起眼的复选框，
+整个页面卡一下"，但从这次交互本身看完全没必要触发任何刷新。
+
+**这是一个实际踩过的坑**：`_render_growth_profile_and_keywords`（成长顾问
+Tab 的"关键词管理"板块）最初没有包 `@st.fragment`，导致勾选/取消勾选一个
+关键词的"选中"复选框，会把 `growth_summary`、`health_trend`、
+`followups`、`alignment`、`pursuits`、`report_refresh_candidates` 等一整
+批互不相关的接口全部重新请求一遍。修复方式是给该函数加上
+`@st.fragment`（详见 `_render_growth_profile_and_keywords` 函数上方注释）。
+
+因此，**今后新增或修改看板里任何"自成一块、内部有 widget 交互"的板块函数
+（渲染 Tab 内某个子区域的 `_render_xxx()` 函数），只要满足以下任一条件，
+一律加 `@st.fragment`**：
+
+- 板块内部有按钮/复选框/输入框/表单等会触发交互的 widget；
+- 板块自己独立调用后端接口（不依赖外层已经拉取好的数据）；
+- 板块跟同一个 Tab 里的其它板块在数据/交互上没有强关联（不需要"点这个
+  按钮之后，另一个板块也必须跟着刷新"）。
+
+已经按这个模式做的板块可参考：`_render_growth_health_trend`、
+`_render_growth_followups`、`_render_growth_alignment`、
+`_render_growth_pursuits`、`_render_growth_report_refresh_candidates`、
+`_render_growth_profile_and_keywords`。
+
+写的时候注意两点：
+
+1. Fragment 内部的 `st.rerun()`（Streamlit ≥1.37）默认只重跑该 fragment
+   本身，不会变成全页刷新，这正是我们想要的效果——板块内点完按钮直接
+   `st.rerun()` 局部刷新即可，不用担心波及其它板块。
+2. Fragment 的入参如果来自外层一次性拉取的数据快照（比如
+   `diagnostics: dict`），fragment 内部重跑并不会重新拉取这份快照——
+   板块自己发起的写操作（比如关键词的增删改）之后数据是新的，但快照里
+   跟本板块无关的其它字段会保持外层上次渲染时的旧值，直到外层整体重跑
+   （切换 Tab、点顶部刷新按钮等）才会更新。这是可接受的小滞后，写板块
+   时心里有数即可，不需要为此额外做同步。
+
+如果某个板块内部逻辑复杂、抛异常风险较高，同时按现有的 `_safe_growth_section`
+（或对应 Tab 下的同类兜底函数）包一层，做到"单个板块出错/卡顿只影响它
+自己，不拖垮整个 Tab"。
+
 ## 相关文件
 
 - `apps/mini_agent_kanban/app.py` — 看板主程序（15 个 Tab）

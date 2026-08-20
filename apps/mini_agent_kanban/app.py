@@ -5518,6 +5518,23 @@ def _render_growth_health_trend(client: "AgentClient"):
 # + "当前关键词列表"——用户反馈"看板应该增加用户的 profile 信息""应该增加
 # 成长顾问实际使用的关键词列表"。默认展开（不是诊断信息，是用户想看的），
 # 跟上面纯排障用的 `_render_growth_diagnostics` 分开摆放。
+#
+# [卡顿修复] 关键词列表条目一多，每一行的"选中"复选框 + 单条操作按钮都是
+# 普通 st.checkbox/st.button，此前这个函数不是 @st.fragment，任何一次点击
+# （哪怕只是勾一下复选框）都会导致外层 render_growth_tab() 整个重跑：
+# 重新请求 growth_summary、health_trend、followups、alignment、pursuits、
+# report_refresh_candidates 等一整批接口，用户体感就是"点一下关键词卡一
+# 下"。改成 @st.fragment 之后，这个板块内部的交互只会重跑这个板块本身，
+# 不再牵连其它跟关键词无关的板块（参考同文件里 _render_growth_followups /
+# _render_growth_alignment / _render_growth_pursuits 等已经这么做了）。
+#
+# 注意：fragment 内部重跑时，本函数入参 diagnostics 用的是外层
+# render_growth_tab() 首次渲染时传进来的那份快照——关键词区块自己的增删改
+# 走的是 client.growth_keyword_* 接口 + fragment 内 st.rerun()，数据始终是
+# 最新的；但同一份 diagnostics 里的"画像""回填状态"等字段不会随关键词区块
+# 内部重跑而刷新，只有等外层整体重跑（比如切换 tab、点顶部"立即为我看看"）
+# 才会更新。这是可接受的小滞后，不影响关键词管理本身。
+@st.fragment
 def _render_growth_profile_and_keywords(client: "AgentClient", diagnostics: dict):
     user_profile = diagnostics.get("user_profile") or {}
     st.markdown("**🧠 Agent 对你的了解**")
