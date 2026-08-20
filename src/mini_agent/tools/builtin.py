@@ -13,6 +13,7 @@ import tempfile
 import textwrap
 import time
 import unicodedata
+from collections import deque
 from difflib import unified_diff
 from pathlib import Path
 from typing import Optional
@@ -731,6 +732,133 @@ def glob(pattern: str, root: str = ".") -> str:
 
 # ── grep ──────────────────────────────────────────────────────────────────────
 
+# [daemon 因单个巨型文件 MemoryError 崩溃后看板连不上 bugfix]
+# 原实现对匹配到的每个文件都无条件 `read_text().splitlines()`，把整份
+# 文件一次性读进内存；扫到几百 MB～几 GB 的巨型文件（日志/数据转储/
+# 误把二进制文件当文本）时 MemoryError。这不是"抛出去被 try/except
+# 接住就没事"的错误——Python 进程真正逼近系统内存上限时，OOM 影响的是
+# 进程里所有并发工作，包括处理看板 HTTP 请求的 uvicorn 事件循环，表现
+# 出来就是这条 grep 报错之后看板 API 也一起连不上。
+#
+# 现在的做法：不再区分"大文件/小文件走不同路径"，所有文件统一用
+# `f.readline(限定长度)` 逐行流式读取（见 `_grep_file_streaming`），
+# 内存占用只取决于 context_lines（前后各留最多 context_lines 行缓冲）
+# 和 `_GREP_MAX_LINE_CHARS`（单行长度上限，防止个别没有换行符、把整个
+# 文件当一"行"的病态文件把这层防线绕过去），与文件总大小完全无关——
+# 100MB、1GB 的文件和 1KB 的文件走的是同一条代码路径，内存峰值不会
+# 随文件变大而增长。
+#
+# `max_file_size_mb`/`skip_large_files`/`skip_binary_files` 三个参数只是
+# "要不要搜这个文件"的过滤器（跳过巨型文件通常是因为没意义/慢，跳过
+# 二进制文件是因为搜不出有意义的结果），不是内存安全的必要条件——即使
+# 传 `skip_large_files=False` 强制搜索超大文件，也不会内存爆炸，因为
+# 读取方式本身就是流式的。默认沿用"跳过"是为了避免误扫到日志目录/
+# node_modules 里的大文件时把一次 grep 拖得很慢。
+_GREP_MAX_LINE_CHARS = 1_000_000  # 单行（含没有真正换行符的病态大文件）读取上限
+
+
+def _looks_binary(fpath: Path) -> bool:
+    """只读前 8KB 做二进制嗅探（含 NUL 字节即判定为二进制），不读整个
+    文件。避免把日志目录里偶尔混进来的二进制/压缩/数据文件当文本整个
+    扫一遍——这类文件即使体积不大，`errors="replace"` 解码出来的内容
+    对 grep 结果也没有意义，纯粹是浪费时间。`skip_binary_files=False`
+    时不调用这个函数，交给正常的流式文本读取处理。"""
+    try:
+        with open(fpath, "rb") as fh:
+            chunk = fh.read(8192)
+        return b"\x00" in chunk
+    except OSError:
+        return False
+
+
+def _grep_file_streaming(
+    fpath: Path, regex: "re.Pattern", rel: str, context_lines: int,
+    quota_remaining: list[int],
+) -> tuple[int, list[str]]:
+    """逐行流式扫描单个文件，不把整份文件读进内存。
+
+    内存占用只取决于：① `context_lines`（"匹配前"缓冲区最多存
+    context_lines 行，"匹配后"缓冲同样最多 context_lines 行）；
+    ② `_GREP_MAX_LINE_CHARS`（单行读取上限，防止没有换行符的病态文件
+    把一整个文件当成一行读进来）。与文件总行数/总大小无关。
+
+    quota_remaining：跨文件共享的剩余 max_results 配额，用可变的单
+    元素列表在调用方和这里之间原地传递/扣减——grep() 会依次对多个文件
+    调用这个函数，配额要跨文件累计扣减，同一个列表对象被反复传入。
+
+    返回 (这个文件里的总匹配数, 这个文件贡献的输出行列表)。总匹配数
+    不管配额是否已经用完都要如实计入，用于最终"共 N 处匹配"的准确
+    统计——配额只影响"渲染多少"，不影响"数出多少"。
+    """
+    file_out: list[str] = []
+    file_total = 0
+
+    with open(fpath, "r", encoding="utf-8", errors="replace", newline="") as fh:
+        if context_lines == 0:
+            idx = 0
+            while True:
+                line = fh.readline(_GREP_MAX_LINE_CHARS)
+                if not line:
+                    break
+                text = line.rstrip("\r\n")
+                if regex.search(text):
+                    file_total += 1
+                    if quota_remaining[0] > 0:
+                        quota_remaining[0] -= 1
+                        file_out.append(f"{rel}:{idx + 1}:{text}")
+                idx += 1
+            return file_total, file_out
+
+        # 有上下文行的模式：固定大小滑动窗口维护"匹配前 N 行"缓冲，
+        # 命中后再继续收 N 行"匹配后"上下文；相邻/重叠的上下文窗口会
+        # 自动合并成一个块（用 last_emitted_idx 判断两次命中之间是否
+        # 有间隙），跟改造前"先收集全部匹配再统一按区间合并"的效果
+        # 一致，只是现在是边读边判定，不需要保留整份文件。
+        before_buf: deque[tuple[int, str]] = deque(maxlen=context_lines)
+        after_remaining = 0
+        block_open = False
+        last_emitted_idx = -1
+        idx = 0
+        while True:
+            line = fh.readline(_GREP_MAX_LINE_CHARS)
+            if not line:
+                break
+            text = line.rstrip("\r\n")
+            is_match = bool(regex.search(text))
+            if is_match:
+                file_total += 1
+                if quota_remaining[0] > 0:
+                    quota_remaining[0] -= 1
+                    if not block_open or idx - 1 > last_emitted_idx:
+                        if file_out:
+                            file_out.append("---")
+                        for bidx, btext in before_buf:
+                            if bidx > last_emitted_idx:
+                                file_out.append(f"{rel}:{bidx + 1}  {btext}")
+                        block_open = True
+                    file_out.append(f"{rel}:{idx + 1}> {text}")
+                    last_emitted_idx = idx
+                    after_remaining = context_lines
+                elif after_remaining > 0:
+                    # 配额已经用完的命中行：不单独渲染成新块，但如果它
+                    # 恰好落在前一个已接受命中的"匹配后"窗口内，仍然要
+                    # 作为普通上下文行（不带 `>` 标记）展示——跟改造前
+                    # "整个区间内的行都展示，只有真正被采纳的命中才标
+                    # `>`"的语义保持一致。
+                    file_out.append(f"{rel}:{idx + 1}  {text}")
+                    last_emitted_idx = idx
+                    after_remaining -= 1
+            elif after_remaining > 0:
+                file_out.append(f"{rel}:{idx + 1}  {text}")
+                last_emitted_idx = idx
+                after_remaining -= 1
+
+            before_buf.append((idx, text))
+            idx += 1
+
+    return file_total, file_out
+
+
 @tool(
     name="grep",
     description=(
@@ -738,6 +866,9 @@ def glob(pattern: str, root: str = ".") -> str:
         "Returns file:line:content for each match, with optional surrounding context lines. "
         "Use context_lines to see code around each match without a separate read_file call. "
         "Reports total match count and truncation status. "
+        "Reads files line-by-line (streaming), never loading a whole file into memory, so "
+        "large files are memory-safe by default; max_file_size_mb/skip_large_files only "
+        "control whether a big file is searched at all (for speed), not memory safety. "
         "PERFORMANCE: always pass a specific `path` (a subdirectory or single file) instead of "
         "leaving it at the default '.' — searching the whole project root recursively is slow "
         "when the tree has many files or very large files. Narrow the search to the "
@@ -767,6 +898,29 @@ def glob(pattern: str, root: str = ".") -> str:
                 "type": "integer",
                 "description": "Max number of matching lines to return (default 100)",
             },
+            "max_file_size_mb": {
+                "type": "number",
+                "description": (
+                    "Skip files larger than this many MB (default 20). Only affects which "
+                    "files get searched, not memory usage — matched files are always read "
+                    "line-by-line, never loaded whole into memory. Set skip_large_files=false "
+                    "to search large files too instead of raising this number."
+                ),
+            },
+            "skip_large_files": {
+                "type": "boolean",
+                "description": (
+                    "Default true: skip files bigger than max_file_size_mb. Set false to "
+                    "search big files anyway (still memory-safe — streamed line-by-line)."
+                ),
+            },
+            "skip_binary_files": {
+                "type": "boolean",
+                "description": (
+                    "Default true: skip files that look binary (sniffed from the first 8KB). "
+                    "Set false to search them too (as text, decode errors replaced)."
+                ),
+            },
         },
         "required": ["pattern"],
     },
@@ -779,6 +933,9 @@ def grep(
     case_sensitive: bool = True,
     context_lines: int = 0,
     max_results: int = 100,
+    max_file_size_mb: float = 20.0,
+    skip_large_files: bool = True,
+    skip_binary_files: bool = True,
 ) -> str:
     flags = 0 if case_sensitive else re.IGNORECASE
     try:
@@ -788,77 +945,74 @@ def grep(
 
     context_lines = max(0, min(context_lines, 10))
     max_results = max(1, min(max_results, 500))
+    max_file_size_bytes = max(0.0, max_file_size_mb) * 1024 * 1024
     root = Path(path).expanduser()
 
-    # 收集所有匹配，记录 (fpath, line_index) 以便后续提取上下文
-    Match = tuple  # (rel_path_str, all_lines_list, match_line_idx_0based)
-    matches: list[Match] = []
-    total_found = 0
-
     files = [root] if root.is_file() else sorted(root.rglob(file_pattern))
+
+    out: list[str] = []
+    total_found = 0
+    # 用单元素列表而不是普通 int，方便在 _grep_file_streaming 里原地
+    # 扣减并让这里立刻看到跨文件累计后的最新值。
+    quota_remaining = [max_results]
+    skipped_large = 0
+    skipped_binary = 0
+
     for fpath in files:
         if not fpath.is_file():
             continue
+        if skip_large_files:
+            try:
+                if fpath.stat().st_size > max_file_size_bytes:
+                    skipped_large += 1
+                    continue
+            except OSError:
+                continue
+        if skip_binary_files and _looks_binary(fpath):
+            skipped_binary += 1
+            continue
+
+        rel = str(fpath.relative_to(root)) if root.is_dir() else str(fpath)
         try:
-            all_lines = fpath.read_text(encoding="utf-8", errors="replace").splitlines()
+            file_total, file_out = _grep_file_streaming(fpath, regex, rel, context_lines, quota_remaining)
+        except MemoryError:
+            # 双重兜底：正常情况下不会走到这里（逐行读取 + 单行长度上限
+            # 已经让内存占用与文件大小无关），但万一某种极端情况仍然
+            # 触发，也绝不能让这次 MemoryError 有机会波及整个进程——
+            # 跳过这个文件，继续处理其它文件。
+            skipped_large += 1
+            continue
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.tools.builtin.grep')
             continue
-        rel = str(fpath.relative_to(root)) if root.is_dir() else str(fpath)
-        for i, line in enumerate(all_lines):
-            if regex.search(line):
-                total_found += 1
-                if len(matches) < max_results:
-                    matches.append((rel, all_lines, i))
+        total_found += file_total
+        out.extend(file_out)
 
-    if not matches:
-        return "(no matches)"
-
-    # 渲染结果
-    out: list[str] = []
     truncated = total_found > max_results
 
-    if context_lines == 0:
-        # 简洁模式：file:lineno:content
-        for rel, all_lines, idx in matches:
-            out.append(f"{rel}:{idx + 1}:{all_lines[idx].rstrip()}")
-    else:
-        # 上下文模式：按文件分组，块之间用分隔符
-        # 先按文件名分组，再合并相邻/重叠的上下文块
-        from itertools import groupby
-        keyed = [(rel, idx) for rel, _, idx in matches]
-        file_to_matches: dict[str, list] = {}
-        for rel, all_lines, idx in matches:
-            file_to_matches.setdefault(rel, (all_lines, []))[1].append(idx)
-
-        for rel, (all_lines, idxs) in file_to_matches.items():
-            # 合并重叠的上下文区间
-            intervals: list[tuple[int, int, set[int]]] = []
-            for idx in sorted(idxs):
-                lo = max(0, idx - context_lines)
-                hi = min(len(all_lines) - 1, idx + context_lines)
-                if intervals and lo <= intervals[-1][1] + 1:
-                    prev_lo, prev_hi, prev_hits = intervals[-1]
-                    intervals[-1] = (prev_lo, max(prev_hi, hi), prev_hits | {idx})
-                else:
-                    intervals.append((lo, hi, {idx}))
-
-            for seg_idx, (lo, hi, hit_set) in enumerate(intervals):
-                if seg_idx > 0:
-                    out.append("---")
-                for ln in range(lo, hi + 1):
-                    marker = ">" if ln in hit_set else " "
-                    out.append(f"{rel}:{ln + 1}{marker} {all_lines[ln].rstrip()}")
+    if total_found == 0:
+        note = "(no matches)"
+        extra = []
+        if skipped_large:
+            extra.append(f"{skipped_large} 个文件因体积超过 {max_file_size_mb:g}MB 被跳过（可传 skip_large_files=false 强制搜索）")
+        if skipped_binary:
+            extra.append(f"{skipped_binary} 个文件被判定为二进制而跳过（可传 skip_binary_files=false 强制搜索）")
+        if extra:
+            note += f"（{'，'.join(extra)}）"
+        return note
 
     summary = f"\n[{total_found} match{'es' if total_found != 1 else ''} found"
     if truncated:
         summary += f", showing first {max_results}"
     summary += "]"
+    if skipped_large:
+        summary += f"\n[{skipped_large} 个文件因体积超过 {max_file_size_mb:g}MB 被跳过未搜索，可传 skip_large_files=false 强制搜索]"
+    if skipped_binary:
+        summary += f"\n[{skipped_binary} 个文件被判定为二进制而跳过，可传 skip_binary_files=false 强制搜索]"
     out.append(summary)
 
     return "\n".join(out)
-
 
 # ── patch_file ────────────────────────────────────────────────────────────────
 
