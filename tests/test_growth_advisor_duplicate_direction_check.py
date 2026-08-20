@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -118,6 +119,56 @@ class TestAddOrMergeDuplicateCheck(unittest.TestCase):
             )
             self.assertIsNotNone(cand)
             self.assertEqual(len(backlog.load_all()), 1)
+
+    def test_llm_helper_matches_recently_dismissed_candidate_skips_creation(self):
+        """[待处理候选反复出现已忽略过的相似方向] 语义相同、措辞不同的
+        方向如果之前已经被 dismiss 且仍在冷却期内，也应该被 LLM 判重
+        拦住，而不是只依赖字面完全一致的 dedupe_key。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            first = backlog.add_or_merge(
+                title="学习 Rust 异步编程", rationale="r", evidence_refs=["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(first.candidate_id, ga.STATUS_DISMISSED)
+
+            cand = backlog.add_or_merge(
+                title="掌握 Rust async/await", rationale="r", evidence_refs=["e4", "e5", "e6"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+                llm_helper=lambda p: "学习 Rust 异步编程",
+            )
+            self.assertIsNone(cand)
+            # 没有产生新候选，也没有把证据合并回已被忽略的候选上
+            all_c = backlog.load_all()
+            self.assertEqual(len(all_c), 1)
+            self.assertEqual(set(all_c[0].evidence_refs), {"e1", "e2", "e3"})
+
+    def test_llm_helper_ignores_dismissed_candidate_past_cooldown(self):
+        """冷却期已过的 dismissed 候选不应该再拦住语义相似的新候选——
+        跟原有的字面 dedupe_key 冷却期语义保持一致。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            first = backlog.add_or_merge(
+                title="学习 Rust 异步编程", rationale="r", evidence_refs=["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(first.candidate_id, ga.STATUS_DISMISSED)
+            all_c = backlog.load_all()
+            all_c[0].updated_at = time.time() - 31 * 86400  # 冷却期已过
+            backlog.save_all(all_c)
+
+            cand = backlog.add_or_merge(
+                title="掌握 Rust async/await", rationale="r", evidence_refs=["e4", "e5", "e6"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+                # LLM 只会在候选池里看到"学习 Rust 异步编程"时才判定匹配，
+                # 冷却期已过的它不应该再出现在池子里，因此这里的 helper
+                # 判定不重复。
+                llm_helper=lambda p: "NONE",
+            )
+            self.assertIsNotNone(cand)
+            self.assertEqual(len(backlog.load_all()), 2)
 
     def test_llm_helper_exception_falls_back_to_creating(self):
         with tempfile.TemporaryDirectory() as tmp:

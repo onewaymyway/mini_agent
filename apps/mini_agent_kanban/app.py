@@ -5479,6 +5479,7 @@ def _render_growth_diagnostics(diagnostics: dict, client: "AgentClient" = None):
 # [next_doc/growth_advisor_improvement_plan_v4.md 方向三 N1] 诊断面板
 # 健康度趋势——放在可折叠区块里，用户展开才拉取 `/growth/health_trend`，
 # 不影响 tab 默认加载速度。
+@st.fragment
 def _render_growth_health_trend(client: "AgentClient"):
     with st.expander("📈 健康度趋势", expanded=False):
         try:
@@ -5655,6 +5656,26 @@ def _render_growth_profile_and_keywords(client: "AgentClient", diagnostics: dict
                 st.warning("主题名和关键词都不能为空")
 
 
+def _safe_growth_section(label: str, fn, *args, **kwargs):
+    """[板块隔离] 成长顾问 tab 由多个独立板块拼成（诊断/健康度趋势/画像/
+    回访/对齐/自主推进/报告刷新提示/候选列表……），其中大多数板块各自
+    独立调用后端接口。此前任何一个板块内部抛出未捕获异常，都会让
+    Streamlit 中断整个 `render_growth_tab()` 的执行，导致这个板块*之后*
+    的所有板块一起消失——用户体感是"一个接口超时，整页成长顾问都不
+    显示了"。这里统一兜底：单个板块出错只在原地显示一行简短提示，不
+    影响同一次渲染里其它板块继续展示。
+
+    （最常见的诱因是 `client.growth_summary()` 读超时——那个字段本身
+    在 `render_growth_tab()` 里已经改成了"报错但不 return"，这个兜底
+    补的是*其它*独立板块各自可能抛出的异常，双保险。）
+    """
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        st.caption(f"⚠️ 「{label}」板块加载失败，不影响其它板块：{e}")
+        return None
+
+
 def render_growth_tab(client: "AgentClient"):
     st.markdown("#### 🌱 成长顾问 (Growth Advisor)")
     st.caption(
@@ -5687,37 +5708,54 @@ def render_growth_tab(client: "AgentClient"):
         st.rerun()
 
     data = client.growth_summary() or {}
-    if "_error" in data:
-        st.warning(data["_error"])
-        return
+    summary_error = data.get("_error") if isinstance(data, dict) else None
+    if summary_error:
+        # [板块隔离] 此前这里是 `st.warning(...); return`——整个 tab 
+        # 依赖单次 `/growth/summary` 请求，一旦它超时（比如候选/报告/
+        # goal 数量较多、服务端诊断快照没跑完），下面所有板块（包括跟
+        # 这次请求完全无关、各自独立拉取数据的健康度趋势/回访/对齐/
+        # 自主推进/报告刷新提示）都会一起消失。改成"报错但继续往下走"：
+        # 概览相关的候选列表/统计数字/诊断信息暂时用空数据兜底展示，
+        # 其它独立板块正常渲染，互不影响。
+        retry_col, msg_col = st.columns([1, 5])
+        with retry_col:
+            if st.button("🔄 重试概览", key="growth_summary_retry_btn"):
+                st.rerun()
+        with msg_col:
+            st.warning(f"概览数据加载失败（不影响下面各个独立板块）：{summary_error}")
+        candidates, reports, retro, diagnostics = [], {}, {}, {}
+    else:
+        # [next_doc/growth_advisor_design.md] 第 8 节第 1 条：功能默认
+        # 开启，首次触达必须透明告知。是否展示过跨会话持久化在
+        # growth_advisor_state.json 里（由 `/growth/summary` 一并
+        # 返回），展示后调用 `/growth/first_touch_ack` 落盘、之后不再
+        # 重复弹出。
+        if not data.get("first_touch_notice_shown"):
+            st.info(
+                "已为你开启「成长顾问」：它会用你已有的对话记忆、目标记录等信息，"
+                "每天悄悄看一眼有没有值得推进的成长方向，生成调研报告放在这里，"
+                "不会额外采集新数据。不想要的话可以在「⚙️ 配置」里随时关闭。",
+                icon="🌱",
+            )
+            client.growth_first_touch_ack()
 
-    # [next_doc/growth_advisor_design.md] 第 8 节第 1 条：功能默认开启，
-    # 首次触达必须透明告知。是否展示过跨会话持久化在
-    # growth_advisor_state.json 里（由 `/growth/summary` 一并返回），
-    # 展示后调用 `/growth/first_touch_ack` 落盘、之后不再重复弹出。
-    if not data.get("first_touch_notice_shown"):
-        st.info(
-            "已为你开启「成长顾问」：它会用你已有的对话记忆、目标记录等信息，"
-            "每天悄悄看一眼有没有值得推进的成长方向，生成调研报告放在这里，"
-            "不会额外采集新数据。不想要的话可以在「⚙️ 配置」里随时关闭。",
-            icon="🌱",
-        )
-        client.growth_first_touch_ack()
+        candidates = data.get("candidates", [])
+        reports = {r["report_id"]: r for r in data.get("reports", [])}
+        retro = data.get("retrospective", {})
+        diagnostics = data.get("diagnostics", {})
 
-    candidates = data.get("candidates", [])
-    reports = {r["report_id"]: r for r in data.get("reports", [])}
-    retro = data.get("retrospective", {})
-    diagnostics = data.get("diagnostics", {})
+    _safe_growth_section("诊断信息", _render_growth_diagnostics, diagnostics, client)
+    _safe_growth_section("健康度趋势", _render_growth_health_trend, client)
+    _safe_growth_section("Agent 对你的了解 / 关键词", _render_growth_profile_and_keywords, client, diagnostics)
 
-    _render_growth_diagnostics(diagnostics, client)
-    _render_growth_health_trend(client)
-    _render_growth_profile_and_keywords(client, diagnostics)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("候选总数", retro.get("total_candidates", 0))
-    c2.metric("已采纳", retro.get("accepted", 0))
-    c3.metric("已忽略", retro.get("dismissed", 0))
-    c4.metric("调研报告", retro.get("reports_generated", 0))
+    if summary_error:
+        st.caption("候选统计、采纳率、主题地图等依赖概览接口的板块暂时无法显示，点上面「🔄 重试概览」再试一次。")
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("候选总数", retro.get("total_candidates", 0))
+        c2.metric("已采纳", retro.get("accepted", 0))
+        c3.metric("已忽略", retro.get("dismissed", 0))
+        c4.metric("调研报告", retro.get("reports_generated", 0))
 
     # P2：采纳率 + 主题排行（方案第 6 节"推荐命中率"指标），只在有过采纳/
     # 忽略决策时才展示，避免新用户看到一个没有意义的 0%。
@@ -5787,11 +5825,19 @@ def render_growth_tab(client: "AgentClient"):
                 ):
                     _render_growth_topic_timeline(client, map_cid)
 
-    _render_growth_followups(client)
-    _render_growth_alignment(client)
-    _render_growth_pursuits(client)
-    _render_growth_report_refresh_candidates(client)
-    _render_growth_report_viewer(client, candidates)
+    # [板块隔离] 下面这几个板块各自独立调用后端接口（不依赖上面的
+    # `growth_summary()`），用 `_safe_growth_section` 包一层：任意一个
+    # 板块内部抛出未捕获异常都只在原地提示，不会连带拖垮后面的板块。
+    _safe_growth_section("该回访一下了", _render_growth_followups, client)
+    _safe_growth_section("有兴趣但还没建目标", _render_growth_alignment, client)
+    _safe_growth_section("正在自主推进", _render_growth_pursuits, client)
+    _safe_growth_section("报告可以更新一下了", _render_growth_report_refresh_candidates, client)
+
+    if summary_error:
+        st.caption("调研报告查看器 / 待处理候选依赖概览接口，暂时无法显示，点上面「🔄 重试概览」再试一次。")
+        return
+
+    _safe_growth_section("调研报告查看器", _render_growth_report_viewer, client, candidates)
 
     pending = [c for c in candidates if c.get("status") == "pending"]
     if not pending:
@@ -5801,9 +5847,9 @@ def render_growth_tab(client: "AgentClient"):
 
     st.markdown("**待处理候选**")
     if _sortable_available():
-        _render_growth_kanban_dragdrop(client, candidates)
+        _safe_growth_section("待处理候选（看板）", _render_growth_kanban_dragdrop, client, candidates)
     else:
-        _render_growth_pending_list(client, pending)
+        _safe_growth_section("待处理候选（列表）", _render_growth_pending_list, client, pending)
 
 
 def _render_growth_report_viewer(client: "AgentClient", candidates: list[dict]):
@@ -5875,9 +5921,15 @@ def _render_growth_report_viewer(client: "AgentClient", candidates: list[dict]):
 
 
 
+@st.fragment
 def _render_growth_followups(client: "AgentClient"):
     """[P4-3] 采纳后回访：候选被采纳一段时间后，问一次"有没有真的推进"，
-    答案反馈进置信度调权。默认折叠展示，避免没有待回访项时挤占首屏。"""
+    答案反馈进置信度调权。默认折叠展示，避免没有待回访项时挤占首屏。
+
+    [板块独立刷新] `@st.fragment` 让这里的"有推进/还没空"按钮只重跑
+    这个板块本身（重新拉取 `/growth/followups`），不会带着「诊断信息」
+    「健康度趋势」「正在自主推进」等其它板块一起重新渲染/重新请求——
+    这些板块各自的开关/展开状态、已加载的数据都不受影响。"""
     data = client.growth_followups() or {}
     followups = data.get("followups") or []
     if not followups:
@@ -5895,6 +5947,7 @@ def _render_growth_followups(client: "AgentClient"):
                 st.rerun()
 
 
+@st.fragment
 def _render_growth_alignment(client: "AgentClient"):
     """[growth_advisor_autonomy_deepening_plan.md 方向 A3] 兴趣方向 ⇄
     Goal 对齐分析：展示"有兴趣信号但还没建目标"的方向，提供"全部采纳"
@@ -5952,6 +6005,7 @@ def _render_growth_alignment(client: "AgentClient"):
                     st.rerun()
 
 
+@st.fragment
 def _render_growth_pursuits(client: "AgentClient"):
     """[growth_advisor_autonomy_deepening_plan.md 方向 D1/D2] "🔄 正在
     自主推进"总览：已采纳且关联了 Goal 的候选，直接在成长顾问 tab 里
@@ -6134,9 +6188,13 @@ def _render_growth_pursuits(client: "AgentClient"):
                     st.rerun()
 
 
+@st.fragment
 def _render_growth_report_refresh_candidates(client: "AgentClient"):
     """[P4-4] 增量刷新：候选证据数比生成报告时又明显增长，提示"要不要
-    更新一下这份报告"，不强制、只提示。"""
+    更新一下这份报告"，不强制、只提示。
+
+    [板块独立刷新] `@st.fragment`：点「🔄 更新」只重跑这个板块（含
+    异步任务轮询），不牵动同一页面上其它板块。"""
     data = client.growth_reports_refresh_candidates() or {}
     rows = data.get("refresh_candidates") or []
     if not rows:

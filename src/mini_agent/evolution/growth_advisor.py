@@ -759,13 +759,17 @@ class GrowthBacklog:
             - 已存在同 dedupe_key 的 pending/accepted 候选 → 合并证据、
               不重复创建
             - [本次新增] 没有字面重复，但 `llm_helper` 判定和某个已存在
-              的 pending/accepted 候选或已采纳的 Goal 是同一个方向 →
-              命中候选时合并证据（同字面去重分支）；只命中 Goal（没有
-              对应候选）时直接跳过，不创建——这个方向已经在推进了，不
-              需要再单独生成一条候选来"提醒"用户。`llm_helper` 为
-              `None`（未开启 `duplicate_direction_llm_check_enabled` 或
-              拿不到 LLM 上下文）时这一步整体跳过，行为与改动前完全
-              一致，只保留原有的精确标题去重。
+              的 pending/accepted 候选、已采纳的 Goal、或**仍在冷却期内
+              的 dismissed 候选**是同一个方向 → 命中候选（pending/
+              accepted）时合并证据（同字面去重分支）；命中 Goal 或
+              冷却期内的 dismissed 候选时直接跳过，不创建——前者是这个
+              方向已经在推进了，后者是用户已经明确忽略过、只是这次
+              措辞不同，都不需要再单独生成一条候选来"提醒"用户。
+              `llm_helper` 为 `None`（未开启
+              `duplicate_direction_llm_check_enabled` 或拿不到 LLM
+              上下文）时这一步整体跳过，行为与改动前完全一致，只保留
+              原有的精确标题去重（此时冷却期判断仍然只按字面 dedupe_key
+              匹配）。
             - 曾被 dismissed 且仍在冷却期内 → 跳过，返回 None
             - pending 数量已达上限 → 跳过，返回 None（避免无限堆积）
 
@@ -802,11 +806,34 @@ class GrowthBacklog:
                 c.title: c for c in all_c if c.status in (STATUS_PENDING, STATUS_ACCEPTED)
             }
             candidate_titles = list(active_candidates.keys())
+            # [语义判重覆盖冷却期内的 dismissed 候选] 此前这里只把当前
+            # pending/accepted 候选和已采纳 Goal 的标题喂给 LLM 判重，
+            # 冷却期内被 dismiss 过的候选完全不在这个池子里——字面去重
+            # （上面的 `c.dedupe_key() != key` 分支）只能拦住标题完全
+            # 相同的重复，措辞不同但本质是同一个方向的候选（比如"学习
+            # Rust 异步编程" vs "掌握 Rust async/await"）如果之前已经
+            # 被忽略过，会绕开冷却期判断重新生成一条几乎一样的候选，
+            # 表现为"待处理候选里反复出现明明已经忽略过的方向"。这里把
+            # 仍在冷却期内的 dismissed 候选标题也纳入同一次 LLM 判重，
+            # 命中后按下面"只命中候选、没有匹配到 active_candidates"的
+            # 分支直接跳过（不生成、不合并证据），效果等价于命中了字面
+            # 冷却期。
+            cooldown_cutoff = time.time() - dismissed_cooldown_days * 86400
+            dismissed_recent_titles = [
+                c.title for c in all_c
+                if c.status == STATUS_DISMISSED
+                and c.updated_at > cooldown_cutoff
+                and c.title not in active_candidates
+            ]
             goal_titles = list(dict.fromkeys(existing_goal_titles or []))
-            # 候选标题排在前面：命中候选比命中 Goal 更常见（Goal 数量
-            # 通常远小于历史候选量），排列顺序本身不影响 LLM 判断，只是
-            # 沿用"先到先得"的一贯习惯，不承载额外语义。
-            all_titles = candidate_titles + [t for t in goal_titles if t not in active_candidates]
+            # 候选标题排在前面：命中候选比命中 Goal/冷却期 dismissed 候选
+            # 更常见，排列顺序本身不影响 LLM 判断，只是沿用"先到先得"的
+            # 一贯习惯，不承载额外语义。
+            all_titles = (
+                candidate_titles
+                + dismissed_recent_titles
+                + [t for t in goal_titles if t not in active_candidates and t not in dismissed_recent_titles]
+            )
             try:
                 match = _llm_find_duplicate_direction(title, all_titles, llm_helper)
             except Exception as exc:
@@ -823,8 +850,9 @@ class GrowthBacklog:
                     matched_candidate.updated_at = time.time()
                     self.save_all(all_c)
                     return matched_candidate
-                # 只命中已采纳的 Goal，没有对应的候选可合并证据——这个
-                # 方向已经在推进中，不生成新候选，直接跳过。
+                # 只命中已采纳的 Goal，或命中了一个冷却期内被忽略过的
+                # 候选（语义相同、措辞不同）——两种情况都不生成新候选，
+                # 直接跳过。
                 return None
 
         pending_count = sum(1 for c in all_c if c.status == STATUS_PENDING)
