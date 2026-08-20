@@ -7764,6 +7764,411 @@ def _render_cron_run_timeline(events: list[dict]) -> None:
 STEP_FULL_TEXT_MAX_CHARS_UI = 8000
 
 
+def _render_cron_job_card(client: AgentClient, job: dict) -> None:
+    """渲染单个 Cron 任务的精简卡片（默认视图）。
+
+    [看板卡片瘦身，与目标看板 `_render_goal_card` 同款改造] 之前这里把
+    调度信息、完整执行指标、进度摘要、最近执行记录、编辑 prompt、提意见、
+    运行/启停、优先级调整、执行配置、删除……全部摊平常驻展示，cron job
+    一多，页面被十几个折叠区/按钮撑得又长又乱。现在默认只保留名称/
+    schedule/priority/下次运行时间/执行阶段这几项"一眼要看到"的基础
+    信息，加一个精简状态徽标（含 needs_human_review 时的醒目提示 +
+    就地重置按钮，避免用户漏看需要人工介入的 job），其余全部移进点击
+    "📋 详情 / 操作"后弹出的对话框。"""
+    job_id = job.get("id", "")
+    is_system_job = bool(job.get("is_system")) or job_id.startswith("sys:")
+    exec_phase = job.get("execution_phase", "not_running")
+    with st.container(border=True):
+        top1, top2, top3 = st.columns([3, 2, 2])
+        name_label = f"**{job.get('name', job_id)}**"
+        if is_system_job:
+            name_label += "　🛠️ 系统任务"
+        top1.markdown(name_label)
+        top1.caption(job_id)
+        top2.caption(f"schedule: `{job.get('schedule', '')}`")
+        # [P2] 展示排队优先级——同一次 tick 内多个 job 同时到期时，
+        # priority 数值大的先被提交，帮助解释"为什么这个先跑那个后跑"。
+        top2.caption(f"priority: {job.get('priority', 0)}")
+        top3.caption(f"下次运行：{job.get('next_run_str', '-')}")
+        phase_label = _CRON_PHASE_LABEL.get(exec_phase)
+        if phase_label:
+            top3.caption(phase_label)
+
+        desc = job.get("description", "")
+        if desc:
+            st.caption(desc)
+
+        # [资源仲裁可见性] 连续因仲裁被跳过触发的次数——sys: job 不受
+        # 仲裁约束（见 §3.2），恒为 0，这里只对非 system job 展示，
+        # 避免误导。达到告警阈值时用 🔴 高亮，未达到时用普通 caption，
+        # 具体阈值配置见 GET/PATCH /v1/self/config 的 cron.skip_alert_threshold
+        # （或看板"⚙️ 配置"tab），本处只展示计数本身，不重复读取全局阈值。
+        if not is_system_job:
+            skip_count = job.get("consecutive_skip_count", 0)
+            if skip_count > 0:
+                st.caption(f"⚖️ 连续因资源仲裁被跳过触发：{skip_count} 次")
+
+
+        # 精简状态徽标：只取 workspace 里最关键的一个字段（status），
+        # 换算成跟详情弹窗一致的展示文案。needs_human_review 需要在默认
+        # 视图就能被看到并处理，不能等用户点进详情才发现——所以这里保留
+        # 一次 workspace 请求（跟改造前一样，每张卡片一次，没有增加请求
+        # 次数），只是只用它来判断这一个状态，其余字段留给详情弹窗再取。
+        ws_resp = client.cron_job_workspace(job_id)
+        if ws_resp and "_error" in ws_resp:
+            st.caption(f"（无法获取执行状态：{ws_resp['_error']}）")
+        else:
+            state = (ws_resp or {}).get("state") or {}
+            status = state.get("status", "idle")
+            status_label = _CRON_STATUS_LABEL.get(status, status)
+            if exec_phase == "queued":
+                display_status = "🟠 排队中"
+            elif exec_phase == "running":
+                display_status = "🔵 执行中"
+            else:
+                display_status = status_label
+            st.caption(f"状态：{display_status}")
+            if status == "needs_human_review":
+                hc1, hc2 = st.columns([4, 1])
+                hc1.warning(f"⚠️ 需要人工确认：{state.get('last_error', '') or '判定为卡住/异常'}")
+                if hc2.button("✅ 重置", key=f"cron_card_reset_{job_id}"):
+                    res = client.reset_cron_job(job_id)
+                    if res and "_error" in res:
+                        st.error(f"重置失败：{res['_error']}")
+                    else:
+                        st.success("已重置，下次触发将从头开始执行。")
+                        st.rerun()
+
+        if st.button("📋 详情 / 操作", key=f"cron_card_detail_{job_id}", use_container_width=True):
+            _show_cron_job_detail_dialog(client, job)
+
+
+def _show_cron_job_detail_dialog(client: AgentClient, job: dict) -> None:
+    """点击 Cron 任务卡片『📋 详情 / 操作』后弹出的详情对话框，内容见
+    `_render_cron_job_details()`：完整执行指标、进度摘要、最近执行记录、
+    编辑 prompt、提意见、运行/启停、优先级调整、执行配置、删除。"""
+    job_id = job.get("id", "")
+    title = f"⏰ {job.get('name', job_id)}"
+
+    @st.dialog(title, width="large")
+    def _dialog():
+        _render_cron_job_details(client, job)
+
+    _dialog()
+
+
+def _render_cron_job_details(client: AgentClient, job: dict) -> None:
+    """[看板卡片瘦身] Cron 任务详情弹窗的内容主体，从原来直接摊平在
+    `render_cron_jobs_tab` 循环体里的代码原样搬来，行为不变——独立重新
+    拉一次 `cron_job_workspace()`（跟卡片正文里为了显示精简状态徽标发起
+    的那次是两次独立请求：卡片正文常驻展示，只在需要展示徽标时才发；
+    这里只在用户主动点开详情弹窗时才发，两边各自独立、互不依赖，避免
+    因为要传递跨函数状态把代码搞复杂）。"""
+    job_id = job.get("id", "")
+    is_system_job = bool(job.get("is_system")) or job_id.startswith("sys:")
+    ws_resp = client.cron_job_workspace(job_id)
+    if ws_resp and "_error" in ws_resp:
+        st.caption(f"（无法获取执行状态：{ws_resp['_error']}）")
+    else:
+        state = (ws_resp or {}).get("state") or {}
+        config = (ws_resp or {}).get("config") or {}
+        is_running = (ws_resp or {}).get("is_running", False)
+        status = state.get("status", "idle")
+        status_label = _CRON_STATUS_LABEL.get(status, status)
+        # execution_phase 更细粒度地区分"排队中"和"真正在跑"；
+        # not_running 时退回 state.json 里的上一次结果状态展示。
+        if exec_phase == "queued":
+            display_status = "🟠 排队中"
+        elif exec_phase == "running":
+            display_status = "🔵 执行中"
+        else:
+            display_status = status_label
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("状态", display_status)
+        c2.metric("累计运行次数", job.get("run_count", 0))
+        c3.metric("连续失败次数", state.get("consecutive_failures", 0))
+        c4.metric("超时上限", f"{config.get('timeout_seconds', 1200) // 60} 分钟")
+        st.caption(
+            f"最大步数 max_steps={config.get('max_steps', 60)} · "
+            f"卡死检测：相似度阈值 {config.get('stuck_similarity_threshold', 0.92)} / "
+            f"连续 {config.get('stuck_consecutive_limit', 3)} 步触发 / "
+            f"最多恢复 {config.get('stuck_max_recoveries', 2)} 次后判定 GIVE_UP"
+        )
+
+        progress = state.get("progress_summary", "")
+        if progress:
+            with st.expander("📋 上次遗留的进度摘要"):
+                st.text(progress)
+
+        last_error = state.get("last_error", "")
+        if status == "needs_human_review" and last_error:
+            st.error(f"上次执行判定异常：{last_error}")
+
+        last_started = state.get("last_run_started_at")
+        last_finished = state.get("last_run_finished_at")
+        if last_started:
+            started_str = time.strftime("%m-%d %H:%M", time.localtime(last_started))
+            if last_finished and last_finished >= last_started:
+                dur_min = (last_finished - last_started) / 60.0
+                st.caption(f"上次执行：{started_str} 起，耗时 {dur_min:.1f} 分钟")
+            else:
+                st.caption(f"上次执行：{started_str} 起（尚未结束）")
+
+        if status == "needs_human_review" and not is_running:
+            if st.button("✅ 确认已处理，重置为空闲", key=f"cron_reset_{job_id}"):
+                res = client.reset_cron_job(job_id)
+                if res and "_error" in res:
+                    st.error(f"重置失败：{res['_error']}")
+                else:
+                    st.success("已重置，下次触发将从头开始执行。")
+                    st.rerun()
+
+        # [最近执行记录只有 run_id，看不出是否成功] 优先用带成功/
+        # 失败判定的 recent_runs_summary；旧版后端（未升级）没有这个
+        # 字段时回退到只有 run_id 的旧列表，保持向后兼容不报错。
+        recent_runs_summary = (ws_resp or {}).get("recent_runs_summary")
+        recent_runs = (ws_resp or {}).get("recent_runs") or []
+        _RUN_STATUS_BADGE = {
+            "success": "✅ 成功",
+            "timed_out": "⏱️ 超时",
+            "failed": "❌ 失败",
+            "crashed_or_running": "❓ 未知（进程异常退出/仍在运行）",
+        }
+        if recent_runs_summary is not None:
+            if recent_runs_summary:
+                with st.expander(f"🗒️ 最近执行记录（{len(recent_runs_summary)} 条）"):
+                    for run in recent_runs_summary:
+                        run_id = run.get("run_id", "")
+                        started_at = run.get("started_at")
+                        time_str = (
+                            time.strftime("%m-%d %H:%M:%S", time.localtime(started_at))
+                            if started_at else run_id
+                        )
+                        badge = _RUN_STATUS_BADGE.get(run.get("status"), run.get("status") or "未知")
+                        dur = run.get("duration_seconds")
+                        dur_note = f"，耗时 {dur:.1f}s" if isinstance(dur, (int, float)) else ""
+                        st.markdown(f"**{time_str}** {badge}{dur_note}")
+                        if not run.get("success") and run.get("error"):
+                            st.error(run["error"])
+                        if st.button(f"查看事件详情 {run_id}", key=f"cron_run_{job_id}_{run_id}"):
+                            events_resp = client.cron_job_run_events(job_id, run_id)
+                            if events_resp and "_error" in events_resp:
+                                st.error(f"获取执行事件失败：{events_resp['_error']}")
+                            else:
+                                _render_cron_run_timeline((events_resp or {}).get("events") or [])
+                        st.divider()
+        elif recent_runs:
+            with st.expander(f"🗒️ 最近执行记录（{len(recent_runs)} 条）"):
+                for run_id in recent_runs:
+                    if st.button(f"查看 {run_id}", key=f"cron_run_{job_id}_{run_id}"):
+                        events_resp = client.cron_job_run_events(job_id, run_id)
+                        if events_resp and "_error" in events_resp:
+                            st.error(f"获取执行事件失败：{events_resp['_error']}")
+                        else:
+                            _render_cron_run_timeline((events_resp or {}).get("events") or [])
+
+        with st.expander("✏️ 编辑任务 Prompt"):
+            prompt_resp = client.cron_job_prompt(job_id)
+            if prompt_resp and "_error" in prompt_resp:
+                st.caption(f"获取 prompt 失败：{prompt_resp['_error']}")
+            else:
+                current_prompt = (prompt_resp or {}).get("prompt", "")
+                new_prompt = st.text_area(
+                    "prompt.md（支持 {{task_description}} / {{progress}} 占位符）",
+                    value=current_prompt, height=160,
+                    key=f"cron_prompt_{job_id}",
+                )
+                if st.button("💾 保存 prompt", key=f"cron_prompt_save_{job_id}"):
+                    save_res = client.update_cron_job_prompt(job_id, new_prompt)
+                    if save_res and "_error" in save_res:
+                        st.error(f"保存失败：{save_res['_error']}")
+                    else:
+                        st.success("已保存，下次该 job 触发时生效。")
+
+    # [goal_cron_feedback_and_output_policy_plan.md Track E] 用户对本
+    # CronJob 提意见——持久化写入 description/task_template（及
+    # dedicated 模式下的 prompt.md）；若绑定了 Goal（run_mode=goal_cycle）
+    # 会自动双向同步。复用 P1-P4 观测面板的卡片样式，保持视觉一致。
+    with st.expander("💬 提意见", expanded=False):
+        job_feedback = job.get("user_feedback") or []
+        if job_feedback:
+            for item in reversed(job_feedback):
+                at = item.get("at")
+                ts_str = time.strftime("%m-%d %H:%M", time.localtime(at)) if at else "-"
+                st.caption(f"`{ts_str}` {item.get('text', '')}")
+        else:
+            st.caption("还没有意见记录。")
+        with st.form(f"cron_feedback_{job_id}", clear_on_submit=True):
+            fb_text = st.text_area(
+                "你的意见（会永久合入这个 job 的说明，之后每次触发都会带着）",
+                height=60, key=f"cron_feedback_text_{job_id}",
+            )
+            fb_submit = st.form_submit_button("提交意见")
+        if fb_submit:
+            if not fb_text.strip():
+                st.error("意见内容不能为空")
+            else:
+                res = client.add_cron_job_feedback(job_id, fb_text.strip())
+                if res and "_error" in res:
+                    st.error(res["_error"])
+                else:
+                    st.rerun()
+
+    btn_col1, btn_col2 = st.columns(2)
+    with btn_col1:
+        if st.button("▶️ 立即运行一次", key=f"cron_run_now_{job_id}"):
+            res = client.run_cron_job_now(job_id)
+            if res and "_error" in res:
+                st.error(f"触发失败：{res['_error']}")
+            else:
+                st.success("已触发，稍后可在上方状态区看到执行进度。")
+                st.rerun()
+    with btn_col2:
+        enabled = job.get("enabled", True)
+        toggle_label = "⏸️ 禁用" if enabled else "▶️ 启用"
+        if st.button(toggle_label, key=f"cron_toggle_{job_id}"):
+            res = client.update_cron_job(job_id, enabled=not enabled)
+            if res and "_error" in res:
+                st.error(f"操作失败：{res['_error']}")
+            else:
+                st.rerun()
+
+    with st.expander("🔢 调整优先级"):
+        new_priority = st.number_input(
+            "priority（数值越大，同一次 tick 内到期时越先被触发；不做抢占）",
+            value=int(job.get("priority", 0)), step=1,
+            key=f"cron_priority_{job_id}",
+        )
+        if st.button("💾 保存优先级", key=f"cron_priority_save_{job_id}"):
+            res = client.update_cron_job(job_id, priority=int(new_priority))
+            if res and "_error" in res:
+                st.error(f"保存失败：{res['_error']}")
+            else:
+                st.success("已保存。")
+                st.rerun()
+
+    # [新增] 编辑该 job 专属的执行限制覆盖（超时/最大步数/卡死检测
+    # 参数）。字段没被这个 job 显式覆盖过时，输入框预填的是"当前
+    # 生效值"，其实际来源是全局 CronConfig 的默认值——运维之后调整
+    # 全局默认，这个 job 会自动跟着变（见 PUT /cron/jobs/{id}/config
+    # 和 CronJobWorkspace.write_config_overrides() 的说明），不需要
+    # 用户手动同步。只有点了下面的"保存"才会把值固化成这个 job 自己
+    # 的显式覆盖；"恢复为全局默认"会清除覆盖，重新跟随全局配置。
+    with st.expander("⚙️ 调整执行配置（超时 / 步数 / 卡死检测）"):
+        cfg_ws_resp = client.cron_job_workspace(job_id)
+        if cfg_ws_resp and "_error" in cfg_ws_resp:
+            st.caption(f"获取当前配置失败：{cfg_ws_resp['_error']}")
+        else:
+            effective_cfg = (cfg_ws_resp or {}).get("config") or {}
+            overrides = (cfg_ws_resp or {}).get("config_overrides") or {}
+
+            def _field_caption(field_key, label):
+                return f"{label}（{'已自定义' if field_key in overrides else '跟随全局默认'}）"
+
+            cfg_c1, cfg_c2 = st.columns(2)
+            new_timeout_min = cfg_c1.number_input(
+                _field_caption("timeout_seconds", "超时（分钟）"),
+                min_value=1,
+                value=max(1, int(effective_cfg.get("timeout_seconds", 1200)) // 60),
+                step=1,
+                key=f"cron_cfg_timeout_{job_id}",
+            )
+            new_max_steps = cfg_c2.number_input(
+                _field_caption("max_steps", "最大步数"),
+                min_value=1,
+                value=int(effective_cfg.get("max_steps", 60)),
+                step=1,
+                key=f"cron_cfg_max_steps_{job_id}",
+            )
+            cfg_c3, cfg_c4, cfg_c5 = st.columns(3)
+            new_similarity = cfg_c3.number_input(
+                _field_caption("stuck_similarity_threshold", "卡死相似度阈值"),
+                min_value=0.01, max_value=1.0,
+                value=float(effective_cfg.get("stuck_similarity_threshold", 0.92)),
+                step=0.01, format="%.2f",
+                key=f"cron_cfg_similarity_{job_id}",
+            )
+            new_consecutive = cfg_c4.number_input(
+                _field_caption("stuck_consecutive_limit", "连续雷同步数"),
+                min_value=1,
+                value=int(effective_cfg.get("stuck_consecutive_limit", 3)),
+                step=1,
+                key=f"cron_cfg_consecutive_{job_id}",
+            )
+            new_recoveries = cfg_c5.number_input(
+                _field_caption("stuck_max_recoveries", "最多恢复次数"),
+                min_value=0,
+                value=int(effective_cfg.get("stuck_max_recoveries", 2)),
+                step=1,
+                key=f"cron_cfg_recoveries_{job_id}",
+            )
+
+            save_col, reset_col = st.columns(2)
+            with save_col:
+                if st.button("💾 保存为自定义配置", key=f"cron_cfg_save_{job_id}"):
+                    res = client.update_cron_job_config(
+                        job_id,
+                        timeout_seconds=int(new_timeout_min) * 60,
+                        max_steps=int(new_max_steps),
+                        stuck_similarity_threshold=float(new_similarity),
+                        stuck_consecutive_limit=int(new_consecutive),
+                        stuck_max_recoveries=int(new_recoveries),
+                    )
+                    if res and "_error" in res:
+                        st.error(f"保存失败：{res['_error']}")
+                    else:
+                        st.success("已保存，下次该 job 触发时生效。")
+                        st.rerun()
+            with reset_col:
+                if st.button("↩️ 恢复为全局默认", key=f"cron_cfg_reset_{job_id}"):
+                    res = client.update_cron_job_config(
+                        job_id,
+                        timeout_seconds=None,
+                        max_steps=None,
+                        stuck_similarity_threshold=None,
+                        stuck_consecutive_limit=None,
+                        stuck_max_recoveries=None,
+                    )
+                    if res and "_error" in res:
+                        st.error(f"重置失败：{res['_error']}")
+                    else:
+                        st.success("已恢复跟随全局默认。")
+                        st.rerun()
+
+    # [看板 cron 任务标签页补齐删除功能] 此前只有"目标看板"tab里
+    # 才能删除 cron job，本 tab（Cron 任务）只有运行/启停/改优先级，
+    # 没有删除入口——用户想删一个非 sys: 前缀的自定义 job 必须切
+    # 换到目标看板才行，体验割裂。这里补一份与目标看板一致的删除
+    # UI（is_system 的 job 不展示删除按钮、只能禁用；非 system job
+    # 删除前二次确认，用 confirm_key 这个 session_state 标记控制）。
+    if not is_system_job:
+        st.markdown("###### 🗑️ 删除任务")
+        confirm_key = f"cron_tab_confirm_delete_{job_id}"
+        if not st.session_state.get(confirm_key):
+            if st.button("🗑️ 删除", key=f"cron_tab_delete_{job_id}"):
+                st.session_state[confirm_key] = True
+                st.rerun()
+        else:
+            dc1, dc2 = st.columns(2)
+            with dc1:
+                if st.button("⚠️ 确认删除", key=f"cron_tab_delete_confirm_{job_id}"):
+                    result = client.delete_cron_job(job_id)
+                    st.session_state.pop(confirm_key, None)
+                    if isinstance(result, dict) and result.get("_error"):
+                        st.error(f"删除失败：{result['_error']}")
+                    else:
+                        st.success(f"已删除 cron job：{job.get('name')}")
+                    st.rerun()
+            with dc2:
+                if st.button("取消", key=f"cron_tab_delete_cancel_{job_id}"):
+                    st.session_state.pop(confirm_key, None)
+                    st.rerun()
+    else:
+        st.caption("系统内置任务，不可删除，只能禁用。")
+
+
+
 def render_cron_jobs_tab(client: AgentClient):
     """展示每个 cron job 的调度信息（来自 /cron/jobs）+ 专属执行状态
     （来自 /cron/jobs/{id}/workspace，对应 evolution/cron_job_workspace.py
@@ -7808,339 +8213,7 @@ def render_cron_jobs_tab(client: AgentClient):
         jobs = sorted(jobs, key=lambda j: 0 if j.get("id") == focus_job_id else 1)
 
     for job in jobs:
-        job_id = job.get("id", "")
-        is_system_job = bool(job.get("is_system")) or job_id.startswith("sys:")
-        exec_phase = job.get("execution_phase", "not_running")
-        with st.container(border=True):
-            top1, top2, top3 = st.columns([3, 2, 2])
-            name_label = f"**{job.get('name', job_id)}**"
-            if is_system_job:
-                name_label += "　🛠️ 系统任务"
-            top1.markdown(name_label)
-            top1.caption(job_id)
-            top2.caption(f"schedule: `{job.get('schedule', '')}`")
-            # [P2] 展示排队优先级——同一次 tick 内多个 job 同时到期时，
-            # priority 数值大的先被提交，帮助解释"为什么这个先跑那个后跑"。
-            top2.caption(f"priority: {job.get('priority', 0)}")
-            top3.caption(f"下次运行：{job.get('next_run_str', '-')}")
-            phase_label = _CRON_PHASE_LABEL.get(exec_phase)
-            if phase_label:
-                top3.caption(phase_label)
-
-            desc = job.get("description", "")
-            if desc:
-                st.caption(desc)
-
-            # [资源仲裁可见性] 连续因仲裁被跳过触发的次数——sys: job 不受
-            # 仲裁约束（见 §3.2），恒为 0，这里只对非 system job 展示，
-            # 避免误导。达到告警阈值时用 🔴 高亮，未达到时用普通 caption，
-            # 具体阈值配置见 GET/PATCH /v1/self/config 的 cron.skip_alert_threshold
-            # （或看板"⚙️ 配置"tab），本处只展示计数本身，不重复读取全局阈值。
-            if not is_system_job:
-                skip_count = job.get("consecutive_skip_count", 0)
-                if skip_count > 0:
-                    st.caption(f"⚖️ 连续因资源仲裁被跳过触发：{skip_count} 次")
-
-            ws_resp = client.cron_job_workspace(job_id)
-            if ws_resp and "_error" in ws_resp:
-                st.caption(f"（无法获取执行状态：{ws_resp['_error']}）")
-            else:
-                state = (ws_resp or {}).get("state") or {}
-                config = (ws_resp or {}).get("config") or {}
-                is_running = (ws_resp or {}).get("is_running", False)
-                status = state.get("status", "idle")
-                status_label = _CRON_STATUS_LABEL.get(status, status)
-                # execution_phase 更细粒度地区分"排队中"和"真正在跑"；
-                # not_running 时退回 state.json 里的上一次结果状态展示。
-                if exec_phase == "queued":
-                    display_status = "🟠 排队中"
-                elif exec_phase == "running":
-                    display_status = "🔵 执行中"
-                else:
-                    display_status = status_label
-
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("状态", display_status)
-                c2.metric("累计运行次数", job.get("run_count", 0))
-                c3.metric("连续失败次数", state.get("consecutive_failures", 0))
-                c4.metric("超时上限", f"{config.get('timeout_seconds', 1200) // 60} 分钟")
-                st.caption(
-                    f"最大步数 max_steps={config.get('max_steps', 60)} · "
-                    f"卡死检测：相似度阈值 {config.get('stuck_similarity_threshold', 0.92)} / "
-                    f"连续 {config.get('stuck_consecutive_limit', 3)} 步触发 / "
-                    f"最多恢复 {config.get('stuck_max_recoveries', 2)} 次后判定 GIVE_UP"
-                )
-
-                progress = state.get("progress_summary", "")
-                if progress:
-                    with st.expander("📋 上次遗留的进度摘要"):
-                        st.text(progress)
-
-                last_error = state.get("last_error", "")
-                if status == "needs_human_review" and last_error:
-                    st.error(f"上次执行判定异常：{last_error}")
-
-                last_started = state.get("last_run_started_at")
-                last_finished = state.get("last_run_finished_at")
-                if last_started:
-                    started_str = time.strftime("%m-%d %H:%M", time.localtime(last_started))
-                    if last_finished and last_finished >= last_started:
-                        dur_min = (last_finished - last_started) / 60.0
-                        st.caption(f"上次执行：{started_str} 起，耗时 {dur_min:.1f} 分钟")
-                    else:
-                        st.caption(f"上次执行：{started_str} 起（尚未结束）")
-
-                if status == "needs_human_review" and not is_running:
-                    if st.button("✅ 确认已处理，重置为空闲", key=f"cron_reset_{job_id}"):
-                        res = client.reset_cron_job(job_id)
-                        if res and "_error" in res:
-                            st.error(f"重置失败：{res['_error']}")
-                        else:
-                            st.success("已重置，下次触发将从头开始执行。")
-                            st.rerun()
-
-                # [最近执行记录只有 run_id，看不出是否成功] 优先用带成功/
-                # 失败判定的 recent_runs_summary；旧版后端（未升级）没有这个
-                # 字段时回退到只有 run_id 的旧列表，保持向后兼容不报错。
-                recent_runs_summary = (ws_resp or {}).get("recent_runs_summary")
-                recent_runs = (ws_resp or {}).get("recent_runs") or []
-                _RUN_STATUS_BADGE = {
-                    "success": "✅ 成功",
-                    "timed_out": "⏱️ 超时",
-                    "failed": "❌ 失败",
-                    "crashed_or_running": "❓ 未知（进程异常退出/仍在运行）",
-                }
-                if recent_runs_summary is not None:
-                    if recent_runs_summary:
-                        with st.expander(f"🗒️ 最近执行记录（{len(recent_runs_summary)} 条）"):
-                            for run in recent_runs_summary:
-                                run_id = run.get("run_id", "")
-                                started_at = run.get("started_at")
-                                time_str = (
-                                    time.strftime("%m-%d %H:%M:%S", time.localtime(started_at))
-                                    if started_at else run_id
-                                )
-                                badge = _RUN_STATUS_BADGE.get(run.get("status"), run.get("status") or "未知")
-                                dur = run.get("duration_seconds")
-                                dur_note = f"，耗时 {dur:.1f}s" if isinstance(dur, (int, float)) else ""
-                                st.markdown(f"**{time_str}** {badge}{dur_note}")
-                                if not run.get("success") and run.get("error"):
-                                    st.error(run["error"])
-                                if st.button(f"查看事件详情 {run_id}", key=f"cron_run_{job_id}_{run_id}"):
-                                    events_resp = client.cron_job_run_events(job_id, run_id)
-                                    if events_resp and "_error" in events_resp:
-                                        st.error(f"获取执行事件失败：{events_resp['_error']}")
-                                    else:
-                                        _render_cron_run_timeline((events_resp or {}).get("events") or [])
-                                st.divider()
-                elif recent_runs:
-                    with st.expander(f"🗒️ 最近执行记录（{len(recent_runs)} 条）"):
-                        for run_id in recent_runs:
-                            if st.button(f"查看 {run_id}", key=f"cron_run_{job_id}_{run_id}"):
-                                events_resp = client.cron_job_run_events(job_id, run_id)
-                                if events_resp and "_error" in events_resp:
-                                    st.error(f"获取执行事件失败：{events_resp['_error']}")
-                                else:
-                                    _render_cron_run_timeline((events_resp or {}).get("events") or [])
-
-                with st.expander("✏️ 编辑任务 Prompt"):
-                    prompt_resp = client.cron_job_prompt(job_id)
-                    if prompt_resp and "_error" in prompt_resp:
-                        st.caption(f"获取 prompt 失败：{prompt_resp['_error']}")
-                    else:
-                        current_prompt = (prompt_resp or {}).get("prompt", "")
-                        new_prompt = st.text_area(
-                            "prompt.md（支持 {{task_description}} / {{progress}} 占位符）",
-                            value=current_prompt, height=160,
-                            key=f"cron_prompt_{job_id}",
-                        )
-                        if st.button("💾 保存 prompt", key=f"cron_prompt_save_{job_id}"):
-                            save_res = client.update_cron_job_prompt(job_id, new_prompt)
-                            if save_res and "_error" in save_res:
-                                st.error(f"保存失败：{save_res['_error']}")
-                            else:
-                                st.success("已保存，下次该 job 触发时生效。")
-
-            # [goal_cron_feedback_and_output_policy_plan.md Track E] 用户对本
-            # CronJob 提意见——持久化写入 description/task_template（及
-            # dedicated 模式下的 prompt.md）；若绑定了 Goal（run_mode=goal_cycle）
-            # 会自动双向同步。复用 P1-P4 观测面板的卡片样式，保持视觉一致。
-            with st.expander("💬 提意见", expanded=False):
-                job_feedback = job.get("user_feedback") or []
-                if job_feedback:
-                    for item in reversed(job_feedback):
-                        at = item.get("at")
-                        ts_str = time.strftime("%m-%d %H:%M", time.localtime(at)) if at else "-"
-                        st.caption(f"`{ts_str}` {item.get('text', '')}")
-                else:
-                    st.caption("还没有意见记录。")
-                with st.form(f"cron_feedback_{job_id}", clear_on_submit=True):
-                    fb_text = st.text_area(
-                        "你的意见（会永久合入这个 job 的说明，之后每次触发都会带着）",
-                        height=60, key=f"cron_feedback_text_{job_id}",
-                    )
-                    fb_submit = st.form_submit_button("提交意见")
-                if fb_submit:
-                    if not fb_text.strip():
-                        st.error("意见内容不能为空")
-                    else:
-                        res = client.add_cron_job_feedback(job_id, fb_text.strip())
-                        if res and "_error" in res:
-                            st.error(res["_error"])
-                        else:
-                            st.rerun()
-
-            btn_col1, btn_col2 = st.columns(2)
-            with btn_col1:
-                if st.button("▶️ 立即运行一次", key=f"cron_run_now_{job_id}"):
-                    res = client.run_cron_job_now(job_id)
-                    if res and "_error" in res:
-                        st.error(f"触发失败：{res['_error']}")
-                    else:
-                        st.success("已触发，稍后可在上方状态区看到执行进度。")
-                        st.rerun()
-            with btn_col2:
-                enabled = job.get("enabled", True)
-                toggle_label = "⏸️ 禁用" if enabled else "▶️ 启用"
-                if st.button(toggle_label, key=f"cron_toggle_{job_id}"):
-                    res = client.update_cron_job(job_id, enabled=not enabled)
-                    if res and "_error" in res:
-                        st.error(f"操作失败：{res['_error']}")
-                    else:
-                        st.rerun()
-
-            with st.expander("🔢 调整优先级"):
-                new_priority = st.number_input(
-                    "priority（数值越大，同一次 tick 内到期时越先被触发；不做抢占）",
-                    value=int(job.get("priority", 0)), step=1,
-                    key=f"cron_priority_{job_id}",
-                )
-                if st.button("💾 保存优先级", key=f"cron_priority_save_{job_id}"):
-                    res = client.update_cron_job(job_id, priority=int(new_priority))
-                    if res and "_error" in res:
-                        st.error(f"保存失败：{res['_error']}")
-                    else:
-                        st.success("已保存。")
-                        st.rerun()
-
-            # [新增] 编辑该 job 专属的执行限制覆盖（超时/最大步数/卡死检测
-            # 参数）。字段没被这个 job 显式覆盖过时，输入框预填的是"当前
-            # 生效值"，其实际来源是全局 CronConfig 的默认值——运维之后调整
-            # 全局默认，这个 job 会自动跟着变（见 PUT /cron/jobs/{id}/config
-            # 和 CronJobWorkspace.write_config_overrides() 的说明），不需要
-            # 用户手动同步。只有点了下面的"保存"才会把值固化成这个 job 自己
-            # 的显式覆盖；"恢复为全局默认"会清除覆盖，重新跟随全局配置。
-            with st.expander("⚙️ 调整执行配置（超时 / 步数 / 卡死检测）"):
-                cfg_ws_resp = client.cron_job_workspace(job_id)
-                if cfg_ws_resp and "_error" in cfg_ws_resp:
-                    st.caption(f"获取当前配置失败：{cfg_ws_resp['_error']}")
-                else:
-                    effective_cfg = (cfg_ws_resp or {}).get("config") or {}
-                    overrides = (cfg_ws_resp or {}).get("config_overrides") or {}
-
-                    def _field_caption(field_key, label):
-                        return f"{label}（{'已自定义' if field_key in overrides else '跟随全局默认'}）"
-
-                    cfg_c1, cfg_c2 = st.columns(2)
-                    new_timeout_min = cfg_c1.number_input(
-                        _field_caption("timeout_seconds", "超时（分钟）"),
-                        min_value=1,
-                        value=max(1, int(effective_cfg.get("timeout_seconds", 1200)) // 60),
-                        step=1,
-                        key=f"cron_cfg_timeout_{job_id}",
-                    )
-                    new_max_steps = cfg_c2.number_input(
-                        _field_caption("max_steps", "最大步数"),
-                        min_value=1,
-                        value=int(effective_cfg.get("max_steps", 60)),
-                        step=1,
-                        key=f"cron_cfg_max_steps_{job_id}",
-                    )
-                    cfg_c3, cfg_c4, cfg_c5 = st.columns(3)
-                    new_similarity = cfg_c3.number_input(
-                        _field_caption("stuck_similarity_threshold", "卡死相似度阈值"),
-                        min_value=0.01, max_value=1.0,
-                        value=float(effective_cfg.get("stuck_similarity_threshold", 0.92)),
-                        step=0.01, format="%.2f",
-                        key=f"cron_cfg_similarity_{job_id}",
-                    )
-                    new_consecutive = cfg_c4.number_input(
-                        _field_caption("stuck_consecutive_limit", "连续雷同步数"),
-                        min_value=1,
-                        value=int(effective_cfg.get("stuck_consecutive_limit", 3)),
-                        step=1,
-                        key=f"cron_cfg_consecutive_{job_id}",
-                    )
-                    new_recoveries = cfg_c5.number_input(
-                        _field_caption("stuck_max_recoveries", "最多恢复次数"),
-                        min_value=0,
-                        value=int(effective_cfg.get("stuck_max_recoveries", 2)),
-                        step=1,
-                        key=f"cron_cfg_recoveries_{job_id}",
-                    )
-
-                    save_col, reset_col = st.columns(2)
-                    with save_col:
-                        if st.button("💾 保存为自定义配置", key=f"cron_cfg_save_{job_id}"):
-                            res = client.update_cron_job_config(
-                                job_id,
-                                timeout_seconds=int(new_timeout_min) * 60,
-                                max_steps=int(new_max_steps),
-                                stuck_similarity_threshold=float(new_similarity),
-                                stuck_consecutive_limit=int(new_consecutive),
-                                stuck_max_recoveries=int(new_recoveries),
-                            )
-                            if res and "_error" in res:
-                                st.error(f"保存失败：{res['_error']}")
-                            else:
-                                st.success("已保存，下次该 job 触发时生效。")
-                                st.rerun()
-                    with reset_col:
-                        if st.button("↩️ 恢复为全局默认", key=f"cron_cfg_reset_{job_id}"):
-                            res = client.update_cron_job_config(
-                                job_id,
-                                timeout_seconds=None,
-                                max_steps=None,
-                                stuck_similarity_threshold=None,
-                                stuck_consecutive_limit=None,
-                                stuck_max_recoveries=None,
-                            )
-                            if res and "_error" in res:
-                                st.error(f"重置失败：{res['_error']}")
-                            else:
-                                st.success("已恢复跟随全局默认。")
-                                st.rerun()
-
-            # [看板 cron 任务标签页补齐删除功能] 此前只有"目标看板"tab里
-            # 才能删除 cron job，本 tab（Cron 任务）只有运行/启停/改优先级，
-            # 没有删除入口——用户想删一个非 sys: 前缀的自定义 job 必须切
-            # 换到目标看板才行，体验割裂。这里补一份与目标看板一致的删除
-            # UI（is_system 的 job 不展示删除按钮、只能禁用；非 system job
-            # 删除前二次确认，用 confirm_key 这个 session_state 标记控制）。
-            if not is_system_job:
-                st.markdown("###### 🗑️ 删除任务")
-                confirm_key = f"cron_tab_confirm_delete_{job_id}"
-                if not st.session_state.get(confirm_key):
-                    if st.button("🗑️ 删除", key=f"cron_tab_delete_{job_id}"):
-                        st.session_state[confirm_key] = True
-                        st.rerun()
-                else:
-                    dc1, dc2 = st.columns(2)
-                    with dc1:
-                        if st.button("⚠️ 确认删除", key=f"cron_tab_delete_confirm_{job_id}"):
-                            result = client.delete_cron_job(job_id)
-                            st.session_state.pop(confirm_key, None)
-                            if isinstance(result, dict) and result.get("_error"):
-                                st.error(f"删除失败：{result['_error']}")
-                            else:
-                                st.success(f"已删除 cron job：{job.get('name')}")
-                            st.rerun()
-                    with dc2:
-                        if st.button("取消", key=f"cron_tab_delete_cancel_{job_id}"):
-                            st.session_state.pop(confirm_key, None)
-                            st.rerun()
-            else:
-                st.caption("系统内置任务，不可删除，只能禁用。")
+        _render_cron_job_card(client, job)
 
     st.divider()
     with st.expander("➕ 新建 cron job"):
