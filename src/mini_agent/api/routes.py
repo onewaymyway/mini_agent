@@ -3566,6 +3566,12 @@ async def get_autonomous_status(request: Request):
                         # [P2/P3] 供看板展示排队优先级，帮助解释"同时到期
                         # 时谁先跑"。
                         "priority": j.priority,
+                        # [goal_recurring_schedule_editable_after_bind_plan.md]
+                        # 供看板"✏️ 修改周期"表单预填当前已生效的配置——
+                        # 之前这两个字段没有透出，看板只能从"新建"默认值
+                        # （1 天）开始改，看不到已经绑的是什么。
+                        "schedule": j.schedule,
+                        "task_template": j.task_template,
                     }
                     for j in jobs
                 ]

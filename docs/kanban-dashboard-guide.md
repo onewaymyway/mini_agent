@@ -245,6 +245,13 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
   折叠区可直接绑定/解绑（对应 `/agent goals recur|unrecur`）、"⏭️ 跳过下一轮"（保持
   `recurring=True` 只跳过下一次触发，写入 `progress_notes` 留痕）——此前这三个操作只有
   CLI 入口，看板完全看不出一个 Goal 是不是在周期性运转。
+  - **修改已生效的周期**（`goal_recurring_schedule_editable_after_bind_plan.md`）：已绑定
+    周期性的 Goal，"⏰ 周期性设置"折叠区里多了一个"✏️ 修改周期"子折叠区，可以直接改
+    schedule（间隔或 Cron 表达式）和每轮任务内容，表单默认预填当前实际生效的配置。
+    之前只能先"🛑 取消周期性"、再走"设为周期性"表单重新绑定，会经历一次"暂时不是
+    周期性"的中间状态；后端 `make_goal_recurring()` 本身早就是幂等的（已绑定时直接
+    复用同一个 cron job 更新 schedule/task_template，不会重复建 job），这次只是把这个
+    能力从看板暴露出来，接口不变（还是 `POST /v1/goals/{id}/recur`）。
 - Cron Job 列表、新增、编辑，以及"立即执行一次"按钮。
 - **🩺 自主调度诊断**（`/v1/autonomous/status` 新增字段）：直接回答"为什么加了目标/
   Objective，却没看到 agent 执行"——依次展示 `loop_active`（AutonomousLoop 是否真的

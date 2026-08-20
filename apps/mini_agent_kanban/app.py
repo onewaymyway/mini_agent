@@ -2491,12 +2491,38 @@ def _sync_execution_spec_from_server(
 _SCHEDULE_UNIT_SECONDS = {"秒": 1, "分钟": 60, "小时": 3600, "天": 86400}
 
 
+def _parse_schedule_for_picker_defaults(current_schedule: str) -> tuple[str, float, str, str]:
+    """把已生效的 schedule 字符串（`interval:<秒>` / `cron:<表达式>`）解析成
+    `_render_schedule_picker` 需要的默认值四元组，用于"修改周期"场景下
+    预填当前配置，而不是每次都从"1 天"这个新建默认值开始改。
+
+    interval 秒数换算成单位时优先选"能整除、且单位尽量大"的那个（比如
+    86400 秒直接显示成 1 天，而不是 1440 分钟）——纯展示层面的可读性
+    选择，不影响提交时换算回秒数的准确性。
+    """
+    current_schedule = (current_schedule or "").strip()
+    if current_schedule.startswith("cron:"):
+        return "cron", 1.0, "小时", current_schedule[len("cron:"):]
+    if current_schedule.startswith("interval:"):
+        try:
+            seconds = int(current_schedule[len("interval:"):])
+        except ValueError:
+            return "interval", 1.0, "天", ""
+        for unit in ("天", "小时", "分钟", "秒"):
+            unit_seconds = _SCHEDULE_UNIT_SECONDS[unit]
+            if seconds % unit_seconds == 0 and seconds // unit_seconds >= 1:
+                return "interval", seconds / unit_seconds, unit, ""
+        return "interval", float(seconds), "秒", ""
+    return "interval", 1.0, "天", ""
+
+
 def _render_schedule_picker(
     key_prefix: str,
     default_mode: str = "interval",
     default_value: float = 1.0,
     default_unit: str = "小时",
     default_cron_expr: str = "",
+    current_schedule: str = "",
 ) -> str:
     """渲染"间隔（数值+单位）/ Cron 表达式"双模式调度选择器，返回最终要
     传给后端的 schedule 字符串（`interval:<秒数>` 或 `cron:<表达式>`）。
@@ -2506,12 +2532,20 @@ def _render_schedule_picker(
     自己敲 `interval:86400`）这一步换成界面上选数值+单位，提交前换算成
     秒拼接成同样的字符串格式。
 
+    `current_schedule` 非空时（修改已生效周期的场景）优先用它解析出的
+    默认值，覆盖 `default_mode`/`default_value`/`default_unit`/
+    `default_cron_expr` 这几个参数——避免"改周期"表单每次都从新建默认值
+    （1 天）开始，而是从当前实际生效的配置开始改。
+
     **必须放在 `st.form(...)` 外面调用**：`st.form` 内部的普通 widget（比如
     这里的单位下拉框）变更不会立即触发 rerun，只有点提交才刷新，会导致
     "切了单位却看不到实时换算结果"，体验比裸文本框更差。放在 form 外，
     切换即时生效；返回的字符串是普通 Python 变量，可以直接传给 form 内
     的提交逻辑使用，不需要在 form 内部重新渲染一遍。
     """
+    if current_schedule.strip():
+        default_mode, default_value, default_unit, default_cron_expr = \
+            _parse_schedule_for_picker_defaults(current_schedule)
     mode = st.radio(
         "调度类型", ["间隔", "Cron 表达式"],
         index=0 if default_mode == "interval" else 1,
@@ -3222,6 +3256,7 @@ def _render_goal_cycle_diagnostics_widget(client: AgentClient, goal_id: str, key
 def _render_goal_card(
     client: AgentClient, n: dict, status_key: str, indent: bool = False, note: str = "",
     execution: Optional[dict] = None, cron_next_run_by_id: Optional[dict] = None,
+    cron_jobs_by_id: Optional[dict] = None,
     key_prefix: str = "",
 ) -> None:
     """渲染单张 Goal/Objective 卡片 + 状态切换下拉框。
@@ -3538,6 +3573,42 @@ def _render_goal_card(
                     client, n.get("id"), key_prefix=key_prefix,
                     goal_title=n.get("title", ""), goal_description=n.get("description", ""),
                 )
+                # [goal_recurring_schedule_editable_after_bind_plan.md] 修改
+                # 周期——之前"已绑定周期性"这个分支只有 跳过/从简/取消/迁移
+                # 几个按钮，想改 schedule 或每轮任务内容只能先"🛑 取消周期性"
+                # 再重新走下面绑定表单，等于要经历一次"暂时不是周期性"的
+                # 中间状态，不合理。后端 `make_goal_recurring()` 本身早就是
+                # 幂等的——已绑定时会直接复用同一个 cron job 更新
+                # schedule/task_template，不会重复建 job（见函数 docstring
+                # "已经绑定过 → 复用旧 job"），只是这个能力一直没有从看板
+                # 暴露出来。这里复用同一个 `client.recur_goal()` 调用，UI
+                # 上单独放一个"修改周期"折叠区，跟"设为周期性"表单是同一套
+                # 逻辑，只是文案和默认值改成"当前已生效的配置"。
+                with st.expander("✏️ 修改周期", expanded=False):
+                    _cur_job = (cron_jobs_by_id or {}).get(n.get("recurrence_cron_job_id")) or {}
+                    cur_schedule = _cur_job.get("schedule") or "interval:86400"
+                    st.caption(f"当前 schedule：`{cur_schedule}`")
+                    e_schedule = _render_schedule_picker(
+                        f"{key_prefix}edit_recur_{n.get('id')}",
+                        default_value=1.0, default_unit="天",
+                        current_schedule=cur_schedule,
+                    )
+                    with st.form(f"{key_prefix}edit_recur_form_{n.get('id')}"):
+                        e_task = st.text_area(
+                            "每轮任务内容（留空则复用 Goal 描述）", height=60,
+                            value=_cur_job.get("task_template") or "",
+                        )
+                        e_submit = st.form_submit_button("💾 保存新周期")
+                    if e_submit:
+                        if not e_schedule.strip():
+                            st.error("调度不能为空")
+                        else:
+                            res = client.recur_goal(n.get("id"), e_schedule.strip(), e_task.strip())
+                            if res and "_error" in res:
+                                st.error(res["_error"])
+                            else:
+                                st.toast("✅ 周期已更新，下次触发起生效", icon="✅")
+                                st.rerun()
             else:
                 st.caption("这个 Goal 还不是周期性的——绑定后会按 schedule 自动派生并启动新一轮。")
                 _render_goal_execution_spec_widget(
@@ -3969,6 +4040,15 @@ def render_kanban_tab(client: AgentClient):
             j.get("id"): j.get("next_run_str", "-")
             for j in autostat_for_cards.get("cron_jobs", [])
         }
+        # [goal_recurring_schedule_editable_after_bind_plan.md] "修改周期"
+        # 表单需要预填当前已生效的 schedule/task_template——这两个字段活在
+        # CronJob 上，不在 Goal 节点自己的字段里（Goal 只存
+        # recurrence_cron_job_id 这个反向指针），所以另建一份按 id 索引的
+        # 完整 job 字典，同一次 autonomous_status() 调用顺带取，不用再单独
+        # 请求 /cron/jobs。
+        cron_jobs_by_id = {
+            j.get("id"): j for j in autostat_for_cards.get("cron_jobs", [])
+        }
 
         # [daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
         # 从顶栏"正在执行"列表点击"🔍 查看并控制"跳转过来时，
@@ -3992,7 +4072,7 @@ def render_kanban_tab(client: AgentClient):
                     _render_goal_card(
                         client, focus_node, focus_node.get("status", ""),
                         execution=exec_by_objective_id.get(focus_node.get("id")),
-                        cron_next_run_by_id=cron_next_run_by_id,
+                        cron_next_run_by_id=cron_next_run_by_id, cron_jobs_by_id=cron_jobs_by_id,
                         key_prefix="focus_",
                     )
             st.markdown("---")
@@ -4049,7 +4129,7 @@ def render_kanban_tab(client: AgentClient):
 
                     for g in goal_nodes:
                         _render_goal_card(
-                            client, g, status_key, cron_next_run_by_id=cron_next_run_by_id,
+                            client, g, status_key, cron_next_run_by_id=cron_next_run_by_id, cron_jobs_by_id=cron_jobs_by_id,
                         )
                         children = [o for o in obj_nodes if o.get("parent_id") == g.get("id")]
                         for o in children:
