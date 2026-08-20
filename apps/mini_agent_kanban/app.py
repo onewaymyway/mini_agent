@@ -937,6 +937,77 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
                         st.rerun()
 
 
+def _render_concurrency_control(client: AgentClient) -> None:
+    """[kanban_concurrency_control_plan.md] 顶栏常驻的并发上限控件，展示并
+    支持热改 daemon 当前允许的最大并发任务数（SubAgent 数量）/ 最大并发
+    LLM 调用数。
+
+    这两个值都是**运行时状态**（信号量 limit），改动立刻生效、不需要重启
+    daemon，但也不会写回 agent_config.json——daemon 重启后会掉回配置文件
+    里的默认值。调低上限只影响后续新任务排队，不会打断当前正在跑的任务。
+    """
+    snap = client.concurrency_status() or {}
+    if "_error" in snap:
+        return
+
+    t = snap.get("tasks") or {}
+    l = snap.get("llm") or {}
+
+    with st.expander(
+        f"🎛️ 并发上限　任务 {t.get('active', 0)}/{t.get('limit', '—')}"
+        f"　LLM {l.get('active', 0)}/{l.get('limit', '—')}",
+        expanded=False,
+    ):
+        st.caption(
+            "运行时热改，立刻生效、不需要重启 daemon；但不会写回配置文件，"
+            "daemon 重启后会掉回默认值。调低上限只影响新任务排队，不会打断"
+            "当前正在跑的任务。"
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            st.metric(
+                "任务并发",
+                f"{t.get('active', 0)} / {t.get('limit', '—')}",
+                help=f"{t.get('waiting', 0)} 个排队中",
+            )
+            new_max_tasks = st.number_input(
+                "最大并发任务数", min_value=1, step=1,
+                value=int(t.get("limit", 4) or 4),
+                key="concurrency_max_tasks_input",
+            )
+            if st.button("应用", key="concurrency_apply_tasks_btn"):
+                res = client.set_concurrency(max_tasks=int(new_max_tasks))
+                if res and "_error" in res:
+                    st.error(res["_error"])
+                else:
+                    st.success(f"最大并发任务数 → {int(new_max_tasks)}")
+                st.rerun()
+        with c2:
+            st.metric(
+                "LLM 调用并发",
+                f"{l.get('active', 0)} / {l.get('limit', '—')}",
+                help=f"{l.get('waiting', 0)} 个排队中",
+            )
+            new_max_llm = st.number_input(
+                "最大并发 LLM 调用数", min_value=1, step=1,
+                value=int(l.get("limit", 8) or 8),
+                key="concurrency_max_llm_input",
+            )
+            if st.button("应用", key="concurrency_apply_llm_btn"):
+                res = client.set_concurrency(max_llm_calls=int(new_max_llm))
+                if res and "_error" in res:
+                    st.error(res["_error"])
+                else:
+                    st.success(f"最大并发 LLM 调用数 → {int(new_max_llm)}")
+                st.rerun()
+
+        if t.get("waiters"):
+            st.caption("排队中的任务：" + "，".join(
+                f"{w.get('label', '')}（等待 {w.get('waited_s', 0)}s）"
+                for w in t["waiters"]
+            ))
+
+
 def _render_gating_detail(client: AgentClient, gating: dict) -> None:
     """[P3] 展开 ResourceArbiter.diagnose() 的规则详情，外加 cron 通道因
     仲裁被跳过触发的累计次数（P1 上线后 cron_job_runner 也会受这三条
@@ -1042,6 +1113,8 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
     _render_scheduling_pause_control(client, autostat)
 
     _render_daemon_current_tasks(client, autostat)
+
+    _render_concurrency_control(client)
 
     if gating_state != "full":
         with st.expander(

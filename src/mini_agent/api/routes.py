@@ -142,6 +142,12 @@ api/routes.py — FastAPI 路由定义
                                        字段目录状态（agent_config.json）
     PATCH  /v1/self/config           [kanban_config_management_plan.md] 批量
                                        更新 agent_config.json 里的若干字段
+    GET    /v1/self/concurrency      [kanban_concurrency_control_plan.md]
+                                       并发状态快照（任务/LLM 调用 active/
+                                       limit/waiting）
+    POST   /v1/self/concurrency      [kanban_concurrency_control_plan.md]
+                                       运行时热改最大并发任务数/LLM 调用数，
+                                       等价于 CLI `/concurrency tasks|llm <n>`
     POST   /v1/objectives/{execution_id}/cancel    终止一个正在运行的 Objective 执行
     POST   /v1/objectives/{execution_id}/retry     手动重试当前 step（不等超时）
     POST   /v1/objectives/{execution_id}/steps/{step_index}/reset
@@ -3292,6 +3298,79 @@ async def patch_self_config(request: Request):
         "categories": categories,
         "restart_required": True,
     }
+
+
+@router.get("/self/concurrency")
+async def get_self_concurrency(request: Request):
+    """GET /v1/self/concurrency — [看板并发控制] 只读返回 daemon 当前的并发
+    状态快照（任务并发 / LLM 调用并发各自的 active/limit/waiting/waiters），
+    数据直接来自 orchestrator.concurrency.concurrency_snapshot()，跟 CLI
+    `/concurrency` 命令展示的是同一份进程内状态。纯读取，不修改任何状态。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    from mini_agent.orchestrator.concurrency import concurrency_snapshot
+    return concurrency_snapshot()
+
+
+@router.post("/self/concurrency")
+async def post_self_concurrency(request: Request):
+    """POST /v1/self/concurrency — [看板并发控制] 运行时热改 daemon 的最大
+    并发任务数 / 最大并发 LLM 调用数，跟 CLI `/concurrency tasks <n>` /
+    `/concurrency llm <n>` 命令做的事完全一样（直接改信号量的 limit，
+    立刻生效，不需要重启）。
+
+    Body: {"max_tasks": int} 和/或 {"max_llm_calls": int}，至少提供一个。
+
+    注意：这是**运行时状态**，不会写回 agent_config.json——daemon 重启后
+    会掉回配置文件里的默认值。调低上限只影响后续新任务排队，不会打断当前
+    正在跑的任务。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    body = await request.json()
+    max_tasks = body.get("max_tasks")
+    max_llm_calls = body.get("max_llm_calls")
+    if max_tasks is None and max_llm_calls is None:
+        raise HTTPException(status_code=400, detail="需要提供 max_tasks 或 max_llm_calls 中至少一个")
+
+    from mini_agent.orchestrator.concurrency import (
+        concurrency_snapshot, set_max_tasks, set_max_llm_calls,
+    )
+
+    if max_tasks is not None:
+        try:
+            max_tasks = int(max_tasks)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="max_tasks 必须是整数")
+        if max_tasks < 1:
+            raise HTTPException(status_code=400, detail="max_tasks 必须 >= 1")
+        set_max_tasks(max_tasks)
+        try:
+            from mini_agent.tools.orchestration import get_task_manager
+            mgr = get_task_manager()
+            if mgr:
+                mgr.max_workers = max_tasks
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.post_self_concurrency')
+
+    if max_llm_calls is not None:
+        try:
+            max_llm_calls = int(max_llm_calls)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="max_llm_calls 必须是整数")
+        if max_llm_calls < 1:
+            raise HTTPException(status_code=400, detail="max_llm_calls 必须 >= 1")
+        set_max_llm_calls(max_llm_calls)
+
+    return concurrency_snapshot()
 
 
 @router.get("/self/status")

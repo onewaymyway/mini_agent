@@ -371,6 +371,22 @@ class AgentClient:
         卡死回收扫描，返回本次实际回收的对象。"""
         return self._post("/self/execution_model/force_reap", json_body={"target": target})
 
+    def concurrency_status(self):
+        """[kanban_concurrency_control_plan.md] 拉取 daemon 当前的并发状态
+        快照（任务并发 / LLM 调用并发的 active/limit/waiting/waiters）。"""
+        return self._get("/self/concurrency")
+
+    def set_concurrency(self, max_tasks: int = None, max_llm_calls: int = None):
+        """[kanban_concurrency_control_plan.md] 运行时热改最大并发任务数/
+        最大并发 LLM 调用数，立刻生效、不需要重启，daemon 重启后会掉回配置
+        文件里的默认值。max_tasks / max_llm_calls 至少提供一个。"""
+        body = {}
+        if max_tasks is not None:
+            body["max_tasks"] = max_tasks
+        if max_llm_calls is not None:
+            body["max_llm_calls"] = max_llm_calls
+        return self._post("/self/concurrency", body)
+
     def config_status(self):
         """[kanban_config_management_plan.md] 拉取 agent_config.json 的分类
         字段目录状态，供"⚙️ 配置"tab 展示。"""

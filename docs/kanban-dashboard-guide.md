@@ -83,6 +83,15 @@ streamlit run app.py
   框之上单独高亮渲染一遍，并提供"❌ 清除定位"退出高亮态；跳转到「⏰ Cron
   任务」时目标 job 会被排到列表最前面并给出提示；跳转到「🔄 工作流」复用
   已有的 `wf_active_run_id` 机制直接展开该次运行详情。
+- **🎛️ 并发上限**（`next_doc/kanban_concurrency_control_plan.md`）：紧跟在
+  "⚙️ daemon 正在执行 N 项任务"之后的可折叠面板，标题常驻展示"任务
+  active/limit"和"LLM active/limit"。展开后可分别查看/编辑最大并发任务数
+  （同时运行的 SubAgent 数量上限）和最大并发 LLM 调用数，点击"应用"立刻
+  生效，跟 daemon 本机终端的 `/concurrency tasks <n>` / `/concurrency
+  llm <n>` slash 命令是同一套后端机制。**注意这是运行时状态，不会写回
+  `agent_config.json`**，daemon 重启后会掉回配置文件里的默认值；调低上限
+  只影响后续新任务排队，不会打断当前正在跑的任务。有任务排队时会额外
+  列出排队中的任务标签和已等待时长。
 - **⚠️ 系统状态哨兵**（`GET /v1/sentinel/summary`，
   `next_doc/kanban_perception_gaps_improvement_plan.md` 方向 A）：跟上面
   "📥 全局待办中心"是姊妹关系但语义不同——待办中心的每一条都有明确的
@@ -578,6 +587,8 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `objective_completion_trend(limit=30)` | `GET /v1/objectives/completion_trend` | Objective 完成率每日快照序列：完成/失败数、平均重试次数、活跃数（只读，方向 D.1） |
 | `wiki_quarantine_status()` | `GET /v1/wiki/quarantine_status` | wiki 隔离区当前积压情况，不含已修复记录（只读，方向 E） |
 | `sentinel_summary(cron_failure_threshold=2)` | `GET /v1/sentinel/summary` | 哨兵聚合面板：cron 连续失败 + Objective 重试热点 + wiki 隔离区积压 + LLM 故障转移状态 + 近 7 天仲裁降级/阻塞占比一次性拉取（只读，方向 A） |
+| `concurrency_status()` | `GET /v1/self/concurrency` | 并发状态快照：任务并发 / LLM 调用并发各自的 active/limit/waiting/waiters（只读） |
+| `set_concurrency(max_tasks=, max_llm_calls=)` | `POST /v1/self/concurrency` | 运行时热改最大并发任务数 / 最大并发 LLM 调用数，立即生效、不写回配置文件，等价于 CLI `/concurrency tasks\|llm <n>` |
 
 上表标了 `session_id=` 的方法都新增了可选的 `session_id` 参数（默认 `None`，
 不传时行为与旧版本完全一致）：传了就会作为 `?session_id=` 查询参数附加到请求上，
@@ -737,6 +748,8 @@ Tab 的"关键词管理"板块）最初没有包 `@st.fragment`，导致勾选/�
   `next_doc/goal_execution_spec_generation_implementation_record.md`
   — Goal 执行规范自动生成 + 用户确认机制（模板库/字段级锁定反馈迭代/
   差异高亮/只读探索 Agent 路径/整体关闭判定）的设计与逐阶段实施记录
+- `next_doc/kanban_concurrency_control_plan.md` — "🎛️ 并发上限"面板：
+  顶栏运行时热改最大并发任务数 / 最大并发 LLM 调用数的设计文档
 - `next_doc/kanban_goal_delete_and_bulk_delete_plan.md` — 目标看板"删除
   单个 Goal" / "一键删除所有 Goal"功能的设计文档：级联清理关联 cron job、
   `daemon_run_outputs`/执行规范/执行阶段/调优草案四类外部数据，以及
