@@ -7866,6 +7866,13 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
     因为要传递跨函数状态把代码搞复杂）。"""
     job_id = job.get("id", "")
     is_system_job = bool(job.get("is_system")) or job_id.startswith("sys:")
+    # [NameError bugfix] `exec_phase` 原来是 `_render_cron_job_card`（卡片
+    # 正文）局部变量算好之后，靠"同一个 for 循环体里往下接着用"这种隐式
+    # 共享拿到的；拆成独立函数后这个变量就不存在了，这里必须重新从 job
+    # dict 里取一次——跟卡片正文那份算法完全一致，两边各自独立计算，
+    # 不依赖对方，这也是把这两个函数拆开时特意选的设计（避免要跨函数
+    # 传一堆中间变量），只是这一处漏改了。
+    exec_phase = job.get("execution_phase", "not_running")
     ws_resp = client.cron_job_workspace(job_id)
     if ws_resp and "_error" in ws_resp:
         st.caption(f"（无法获取执行状态：{ws_resp['_error']}）")
