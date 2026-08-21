@@ -978,7 +978,11 @@ def _render_concurrency_control(client: AgentClient) -> None:
             st.metric(
                 "目标(Goal)执行并发",
                 f"{obj.get('running', 0)} / {obj.get('current_cap', '—')}",
-                help=f"硬天花板 {hard_ceiling}（代码写死，改配置也突破不了）",
+                help=(
+                    f"硬天花板 {hard_ceiling}（读自 agent_config.json 的 "
+                    "autonomy.max_concurrent_objectives_hard_ceiling，改这个"
+                    "配置项、重启 daemon 后可以调高天花板本身）"
+                ),
             )
             new_max_obj = st.number_input(
                 "最大并发 Objective 数",

@@ -2893,10 +2893,14 @@ async def get_self_scheduling_overview(request: Request):
                 effective_max = oe.effective_max_concurrent()
             except Exception:
                 effective_max = MAX_CONCURRENT_OBJECTIVES
+            try:
+                static_cap = oe.hard_ceiling()
+            except Exception:
+                static_cap = MAX_CONCURRENT_OBJECTIVES
             result["goal_channel"]["objective_slots"] = {
                 "running": oe.running_count(),
                 "max": effective_max,
-                "static_cap": MAX_CONCURRENT_OBJECTIVES,
+                "static_cap": static_cap,
             }
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
@@ -3400,8 +3404,10 @@ async def get_self_task_concurrency(request: Request):
       "cron":       {"current_cap": int | None, "running": int | None}
     }
 
-    `objectives.hard_ceiling` 是代码里写死的绝对天花板
-    （`MAX_CONCURRENT_OBJECTIVES`，当前为 2）——`current_cap` 只能在
+    `objectives.hard_ceiling` 是当前生效的绝对天花板，读的是
+    `autonomy.max_concurrent_objectives_hard_ceiling`（可以在
+    agent_config.json 里配置，未配置时退化为改造前写死的
+    `MAX_CONCURRENT_OBJECTIVES=2`）——`current_cap` 只能在
     `[1, hard_ceiling]` 之间调整，调大到超过天花板不会有效果（详见
     `ObjectiveExecutor.effective_max_concurrent()` 的"只降不升"设计）。
     `cron` 字段在 CronJobRunner 未启用（走的是旧的 submit_fn 路径）时为
@@ -3422,11 +3428,16 @@ async def get_self_task_concurrency(request: Request):
     objectives_info = {"current_cap": MAX_CONCURRENT_OBJECTIVES, "hard_ceiling": MAX_CONCURRENT_OBJECTIVES, "running": 0}
     if oe is not None:
         try:
+            # [并发上限可配置化] hard_ceiling 现在来自
+            # `autonomy.max_concurrent_objectives_hard_ceiling`（可配置/可
+            # 热改），不再是写死的模块级常量；未配置时 oe.hard_ceiling()
+            # 会退化返回 MAX_CONCURRENT_OBJECTIVES，行为与改造前一致。
+            ceiling = oe.hard_ceiling()
             autonomy_cfg = getattr(oe._cfg, "autonomy", None) if getattr(oe, "_cfg", None) is not None else None
-            configured_cap = getattr(autonomy_cfg, "max_concurrent_objectives_cap", MAX_CONCURRENT_OBJECTIVES) if autonomy_cfg is not None else MAX_CONCURRENT_OBJECTIVES
+            configured_cap = getattr(autonomy_cfg, "max_concurrent_objectives_cap", ceiling) if autonomy_cfg is not None else ceiling
             objectives_info = {
-                "current_cap": min(MAX_CONCURRENT_OBJECTIVES, int(configured_cap)),
-                "hard_ceiling": MAX_CONCURRENT_OBJECTIVES,
+                "current_cap": min(ceiling, int(configured_cap)),
+                "hard_ceiling": ceiling,
                 "running": oe.running_count(),
             }
         except Exception as _mini_agent_exc:
@@ -3458,9 +3469,11 @@ async def post_self_task_concurrency(request: Request):
     Body: {"max_objectives": int} 和/或 {"max_cron_jobs": int}，至少提供
     一个。
 
-    - `max_objectives` 会被 clamp 到 `[1, MAX_CONCURRENT_OBJECTIVES]`
-      （当前硬天花板为 2，代码里写死，改配置也突破不了，这是设计上的
-      安全阀，不是 bug）；直接改的是 `ObjectiveExecutor._cfg.autonomy.
+    - `max_objectives` 会被 clamp 到 `[1, hard_ceiling]`，`hard_ceiling`
+      读的是 `autonomy.max_concurrent_objectives_hard_ceiling`（可以在
+      agent_config.json 里配置，未配置时退化为改造前写死的
+      `MAX_CONCURRENT_OBJECTIVES=2`，这是设计上的安全阀，不是 bug）；
+      直接改的是 `ObjectiveExecutor._cfg.autonomy.
       max_concurrent_objectives_cap`，`effective_max_concurrent()` 每次
       调用都会重新读这个字段，所以立刻生效，不需要重启。
     - `max_cron_jobs` 直接改 `CronJobRunner._max_concurrent`（要求
@@ -3503,7 +3516,10 @@ async def post_self_task_concurrency(request: Request):
         autonomy_cfg = getattr(cfg, "autonomy", None) if cfg is not None else None
         if autonomy_cfg is None:
             raise HTTPException(status_code=503, detail="autonomy config not available")
-        autonomy_cfg.max_concurrent_objectives_cap = min(max_objectives, MAX_CONCURRENT_OBJECTIVES)
+        # [并发上限可配置化] clamp 对象是可配置的 hard_ceiling()（默认
+        # 退化为 MAX_CONCURRENT_OBJECTIVES，与改造前行为一致），不再是写死
+        # 的模块级常量本身。
+        autonomy_cfg.max_concurrent_objectives_cap = min(max_objectives, oe.hard_ceiling())
 
     if max_cron_jobs is not None:
         try:
@@ -3866,10 +3882,16 @@ async def get_autonomous_status(request: Request):
                     from mini_agent.errors import log_exception
                     log_exception(_mini_agent_exc, where='mini_agent.api.routes')
                     effective_max = MAX_CONCURRENT_OBJECTIVES
+                try:
+                    static_cap = oe.hard_ceiling()
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.routes')
+                    static_cap = MAX_CONCURRENT_OBJECTIVES
                 result["objective_slots"] = {
                     "running": oe.running_count(),
                     "max": effective_max,
-                    "static_cap": MAX_CONCURRENT_OBJECTIVES,
+                    "static_cap": static_cap,
                 }
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception

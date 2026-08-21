@@ -51,6 +51,12 @@ if TYPE_CHECKING:
     from mini_agent.perception.goal_backlog import GoalBacklog, GoalNode
 
 
+# [并发上限可配置化] 这个模块级常量现在只是"没有可用 cfg 时的兜底默认
+# 值"，不再是不可突破的绝对天花板——真正生效的绝对天花板改由
+# `AppConfig.autonomy.max_concurrent_objectives_hard_ceiling` 提供（见
+# `ObjectiveExecutor.hard_ceiling()`），可以通过 agent_config.json 配置，
+# 也可以在看板上热改（`POST /v1/self/task_concurrency`）。未提供 cfg 或
+# cfg 里没有这个字段时，行为与改造前完全一致（等价于硬编码为 2）。
 MAX_CONCURRENT_OBJECTIVES = 2
 MAX_STEP_RETRIES = 2
 MAX_STEPS_PER_OBJECTIVE = 8
@@ -672,13 +678,34 @@ class ObjectiveExecutor:
         self.save()
         return True
 
+    def hard_ceiling(self) -> int:
+        """[并发上限可配置化] 返回当前生效的绝对天花板。
+
+        优先读取 `cfg.autonomy.max_concurrent_objectives_hard_ceiling`
+        （可通过 agent_config.json 配置，也可以在看板上热改）；未提供
+        cfg、字段不存在、或配置了非法值（< 1）时，退化为模块级常量
+        `MAX_CONCURRENT_OBJECTIVES`（等价于改造前写死为 2 的行为）。
+        """
+        autonomy_cfg = getattr(self._cfg, "autonomy", None) if self._cfg is not None else None
+        if autonomy_cfg is None:
+            return MAX_CONCURRENT_OBJECTIVES
+        try:
+            ceiling = int(getattr(
+                autonomy_cfg, "max_concurrent_objectives_hard_ceiling", MAX_CONCURRENT_OBJECTIVES
+            ))
+        except (TypeError, ValueError):
+            return MAX_CONCURRENT_OBJECTIVES
+        return ceiling if ceiling >= 1 else MAX_CONCURRENT_OBJECTIVES
+
     def effective_max_concurrent(self) -> int:
         """[Track K] 计算当前生效的并发上限。
 
         规则（只降不升，安全阀在两端）：
-          - 起点是 `min(MAX_CONCURRENT_OBJECTIVES, cfg.autonomy.
-            max_concurrent_objectives_cap)`——模块级常量永远是绝对天花板，
-            配置项只能进一步收紧，不能突破它。
+          - 起点是 `min(hard_ceiling(), cfg.autonomy.
+            max_concurrent_objectives_cap)`——`hard_ceiling()` 是可配置的
+            绝对天花板（见 `hard_ceiling()`，默认等价于改造前写死的
+            `MAX_CONCURRENT_OBJECTIVES=2`），`max_concurrent_objectives_cap`
+            只能在这个天花板以内调整，不能突破它。
           - 未提供 `cfg`，或 `cfg.autonomy.adaptive_concurrency_enabled`
             为 False 时，直接返回上面这个天花板，等价于改造前"写死用
             MAX_CONCURRENT_OBJECTIVES"的行为（前提是也没配置更低的
@@ -699,10 +726,11 @@ class ObjectiveExecutor:
         错误地砍掉。
         """
         autonomy_cfg = getattr(self._cfg, "autonomy", None) if self._cfg is not None else None
-        cap = MAX_CONCURRENT_OBJECTIVES
+        ceiling = self.hard_ceiling()
+        cap = ceiling
         if autonomy_cfg is not None:
-            configured_cap = getattr(autonomy_cfg, "max_concurrent_objectives_cap", MAX_CONCURRENT_OBJECTIVES)
-            cap = min(MAX_CONCURRENT_OBJECTIVES, configured_cap)
+            configured_cap = getattr(autonomy_cfg, "max_concurrent_objectives_cap", ceiling)
+            cap = min(ceiling, configured_cap)
 
         # [Track J] 资源门控降级：优先级高于 Track K 的自适应逻辑（两者都是
         # "只降不升"，取更严格的那一个即可）——ResourceArbiter 判定为

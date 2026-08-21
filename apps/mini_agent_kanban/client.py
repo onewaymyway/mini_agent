@@ -400,9 +400,10 @@ class AgentClient:
     def set_task_concurrency(self, max_objectives: int = None, max_cron_jobs: int = None):
         """[kanban_concurrency_control_plan.md] 运行时热改 Objective/Goal
         通道、Cron 通道各自的最大并发执行数，立刻生效、不需要重启。
-        max_objectives 会被服务端 clamp 到 [1, hard_ceiling]（当前硬天花板
-        为 2，代码写死，改不动）。max_objectives / max_cron_jobs 至少提供
-        一个。"""
+        max_objectives 会被服务端 clamp 到 [1, hard_ceiling]，hard_ceiling
+        读的是 agent_config.json 的 autonomy.max_concurrent_objectives_
+        hard_ceiling（默认 2，可配置，改完重启 daemon 生效）。
+        max_objectives / max_cron_jobs 至少提供一个。"""
         body = {}
         if max_objectives is not None:
             body["max_objectives"] = max_objectives

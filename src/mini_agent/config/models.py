@@ -1396,9 +1396,17 @@ class AutonomyConfig:
     # 更激进，只会更保守。
     adaptive_concurrency_enabled: bool = True
     # 并发数硬上限（安全阀）：无论自适应逻辑如何计算，生效并发数不会超过
-    # 这个值，也不会超过模块级常量 MAX_CONCURRENT_OBJECTIVES（两者取更小
-    # 的一个）。默认与改造前的硬编码值保持一致。
+    # 这个值，也不会超过 `max_concurrent_objectives_hard_ceiling`（两者取
+    # 更小的一个）。默认与改造前的硬编码值保持一致。
     max_concurrent_objectives_cap: int = 2
+    # [并发上限可配置化] 绝对天花板：改造前是写死在代码里的模块级常量
+    # `MAX_CONCURRENT_OBJECTIVES=2`，`max_concurrent_objectives_cap` 无论
+    # 怎么调都突破不了它。现在改成可通过 agent_config.json 的
+    # `autonomy.max_concurrent_objectives_hard_ceiling` 配置，看板的并发
+    # 滑块也是拿这个值当 max_value——调大这个值就能让看板允许把并发调得
+    # 更高，不用改代码。默认值维持 2，与改造前行为完全一致，不配置的话
+    # 什么都不会变。低于 1 会被视为非法值，退化回默认值。
+    max_concurrent_objectives_hard_ceiling: int = 2
     # 生效并发数的下限（安全阀的另一端）：无论历史多差，自适应逻辑都不会
     # 把并发数降到 0（那等价于自主执行被整体停摆，属于 Track J 的资源
     # 门控范畴，不是本 Track 该做的事）。
