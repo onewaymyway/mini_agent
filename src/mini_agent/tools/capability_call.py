@@ -21,9 +21,14 @@ agent 自己完全没有办法在对话里调用它。这个文件是这条链�
 - 每次调用重新构造一个 `CapabilityEngine` 实例（构造成本很低——只是读
   `capability.yaml` + 两个 json 文件），不做跨调用的实例缓存，避免 registry/
   index 在多轮对话之间被其他进程修改后读到过期状态。
-- 默认注入 `build_llm_resolver()`（真实调用 Anthropic Messages API 的第二级
-  检索裁决），因为这一步不依赖任何领域特定的底层工具，本工具接入后就能
-  100% 生效。
+- 默认注入 `build_llm_resolver()`（第二级检索裁决），因为这一步不依赖任何
+  领域特定的底层工具，本工具接入后就能 100% 生效。阶段九改造后，
+  `build_llm_resolver()` 走框架统一的 `LLMHelper`（见
+  `llm/service.py`），本工具复用 `tools/orchestration.py` 里已有的
+  `_get_current_llm_helper()` thread-local 机制拿到当前 `Agent.llm_helper`
+  （同一个约定 `run_ensemble_llm` 等已经在用，跟随 /model 切换），取不到时
+  （理论上不会发生——本工具只会在已完成 `Agent.__init__` 的 agent 内被调用）
+  才退化为报错，不会静默回退到某个写死的模型。
 - **默认不注入 `explore_runner`/`tool_executor`**——探索子agent真正要用的
   底层操作原语（`browser-core` 等）仍是方案文档"已知遗留"里明确记录、尚未
   从各领域 skill 中独立拆分出来的部分，本工具没有能力代为实现它们。这意味着
@@ -91,10 +96,31 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
             )
 
         from mini_agent.skills.generative_capability import CapabilityEngine, build_llm_resolver
+        from mini_agent.tools.orchestration import get_current_llm_helper
 
         skill_dir = skill.location.parent
+        # 复用 run_ensemble_llm 等已经在用的 thread-local 约定，拿到当前
+        # Agent.llm_helper（跟随 /model 切换），而不是构造一份写死配置的
+        # 独立 LLMHelper。取不到时说明本工具是在非 Agent 主流程外被调用，
+        # 如实报错而不是静默退化到某个固定模型。
+        current_llm_helper = get_current_llm_helper()
+        if current_llm_helper is None:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": (
+                        "无法获取当前 Agent 的 llm_helper，capability_call 依赖它驱动"
+                        "第二级 LLM 检索裁决。这通常意味着本工具是在 Agent 主流程之外"
+                        "被调用的（Agent.__init__ 未注册 llm_helper provider）。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
         try:
-            engine = CapabilityEngine(skill_dir, llm_resolver=build_llm_resolver())
+            engine = CapabilityEngine(
+                skill_dir, llm_resolver=build_llm_resolver(current_llm_helper)
+            )
         except Exception as e:  # noqa: BLE001
             return json.dumps(
                 {"status": "error", "error": f"引擎初始化失败（capability.yaml/registry.json 可能有问题）: {e}"},

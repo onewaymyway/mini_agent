@@ -140,6 +140,14 @@ def _get_current_llm_helper():
         return None
 
 
+def get_current_llm_helper():
+    """`_get_current_llm_helper()` 的公开别名，供本模块之外的调用方（如
+    `tools/capability_call.py`，见阶段九实施记录）复用同一套 thread-local
+    "拿到当前 Agent.llm_helper" 机制，而不必导入私有名字或各自重新实现一遍。
+    语义与返回值同 `_get_current_llm_helper()`：拿不到时返回 None。"""
+    return _get_current_llm_helper()
+
+
 @tool(
     name="spawn_agent",
     description=(

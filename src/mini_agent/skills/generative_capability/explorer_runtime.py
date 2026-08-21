@@ -20,18 +20,32 @@ Generative-Capability 引擎的探索子agent运行时（阶段三）。
   - 不自我认定成功：探索循环只有当模型显式调用 `finish` 工具并且其提交的
     数据通过 intent_schema 校验后，才视为成功；模型可随时调用
     `report_failure` 如实报告失败原因（如遇到验证码/登录墙）。
+
+阶段九改造说明（对应 next_doc/generative-capability-skill-plan.md 实施记录阶段九）:
+  - 此前本文件自行用 urllib 拼 Anthropic Messages API 请求驱动决策循环，是
+    整个引擎里唯一一处没有走框架统一 LLM 调用基础设施
+    （`llm/service.py::LLMHelper`）的地方，导致固定写死 provider=anthropic、
+    不跟随 /model 切换、不复用 LLMClientPool 的多 key/fallback 与
+    RetryPolicy。现在改为调用方传入的 `llm_helper`（通常是
+    `Agent.llm_helper`）驱动，通过 `LLMHelper.chat()` 发起带工具的多轮调用。
+  - 消息历史沿用与 `history_manager.py::HistoryManager` 完全相同的内部消息
+    约定（assistant 消息的 content 是 `[{"type":"text",...},
+    {"type":"tool_use","id","name","input"}]` 列表；工具结果消息是
+    `[{"type":"tool_result","tool_use_id","content"}]` 列表），这套约定是
+    provider 无关的——各 provider 的 client 内部各自负责转换成自己的 wire
+    格式，因此这里天然适配任何已接入的 provider，不只是 Anthropic。
 """
 
 from __future__ import annotations
 
 import json
-import os
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
+
+if TYPE_CHECKING:
+    from mini_agent.llm.service import LLMHelper
 
 FINISH_TOOL = "finish"
 REPORT_FAILURE_TOOL = "report_failure"
@@ -60,9 +74,12 @@ class ExploreTrace:
 
 def build_llm_explorer(
     tool_executor: Callable[[str, dict], dict],
-    model: str = "claude-sonnet-5",
-    api_key_env: str = "ANTHROPIC_API_KEY",
-    timeout_seconds: int = 60,
+    llm_helper: Optional["LLMHelper"] = None,
+    *,
+    cfg: Any = None,
+    override_model: Optional[str] = None,
+    override_provider: Optional[str] = None,
+    max_retries: int = 2,
 ) -> Callable[[dict, dict, dict], ExploreTrace]:
     """
     返回一个符合 CapabilityEngine.explore() 所需签名的 explorer:
@@ -70,23 +87,42 @@ def build_llm_explorer(
 
     tool_executor(tool_name, tool_input) -> dict 由调用方注入，真正执行
     白名单内的底层浏览器操作原语（本引擎不实现具体的浏览器控制逻辑）。
+
+    llm_helper / cfg / override_model / override_provider / max_retries 的
+    语义与 `llm_resolver.build_llm_resolver()` 完全一致（见其 docstring）：
+    优先用传入的 `llm_helper`（跟随 /model 切换），否则退化为
+    `LLMHelper.from_config(cfg)`；两者都未传时在调用时返回明确的失败
+    ExploreTrace，而不是抛出让调用方措手不及的异常——探索循环的失败本来就是
+    一等公民（`stop_reason="llm_error"`），环境配置问题也按这个既有约定处理。
     """
 
     def _explorer(request: dict, intent_schema: dict, explorer_config: dict) -> ExploreTrace:
-        api_key = os.environ.get(api_key_env)
-        if not api_key:
-            return ExploreTrace(
-                success=False,
-                error=f"未配置 {api_key_env}，无法启动探索子agent。这是环境配置问题。",
-                stop_reason="llm_error",
-            )
+        from mini_agent.llm.base import ToolSchema
+        from mini_agent.llm.service import LLMHelper
+
+        helper = llm_helper
+        if helper is None:
+            if cfg is None:
+                return ExploreTrace(
+                    success=False,
+                    error=(
+                        "build_llm_explorer 既未传入 llm_helper 也未传入 cfg，"
+                        "无法构造 LLMHelper，无法启动探索子agent。这是环境配置问题。"
+                    ),
+                    stop_reason="llm_error",
+                )
+            helper = LLMHelper.from_config(cfg)
 
         allowlist = _load_tool_allowlist(explorer_config)
         prompt_text = _load_prompt(explorer_config)
         max_steps = int(explorer_config.get("max_steps", 40))
         max_seconds = int(explorer_config.get("max_seconds", 180))
 
-        tools = _build_tool_schemas(allowlist, intent_schema)
+        raw_tools = _build_tool_schemas(allowlist, intent_schema)
+        tool_schemas = [
+            ToolSchema(name=t["name"], description=t["description"], input_schema=t["input_schema"])
+            for t in raw_tools
+        ]
         system_prompt = (
             prompt_text
             + "\n\n严格规则：\n"
@@ -110,29 +146,40 @@ def build_llm_explorer(
                                      steps=steps, stop_reason="time_budget")
 
             try:
-                response = _call_messages_api(
-                    api_key=api_key, model=model, system=system_prompt,
-                    messages=messages, tools=tools, timeout_seconds=timeout_seconds,
+                response = helper.chat(
+                    messages=messages,
+                    system=system_prompt,
+                    tools=tool_schemas,
+                    max_retries=max_retries,
+                    override_model=override_model,
+                    override_provider=override_provider,
                 )
             except Exception as e:  # noqa: BLE001
                 return ExploreTrace(success=False, error=f"探索子agent LLM调用失败: {e}",
                                      steps=steps, stop_reason="llm_error")
 
-            content = response.get("content", [])
-            messages.append({"role": "assistant", "content": content})
+            # 消息历史约定与 history_manager.py::HistoryManager.append_assistant()
+            # 完全一致（provider 无关，各 client 内部自行转换成自己的 wire 格式）。
+            assistant_content: list[dict] = []
+            if response.text:
+                assistant_content.append({"type": "text", "text": response.text})
+            for tc in response.tool_calls:
+                assistant_content.append(
+                    {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.input}
+                )
+            messages.append({"role": "assistant", "content": assistant_content})
 
-            tool_use_blocks = [b for b in content if b.get("type") == "tool_use"]
-            if not tool_use_blocks:
+            if not response.tool_calls:
                 # 模型没有调用任何工具也没有结束，视为无法继续推进，如实终止。
                 return ExploreTrace(success=False, error="探索子agent未调用任何工具即停止，判定探索失败",
                                      steps=steps, stop_reason="llm_error")
 
             tool_results = []
             finished_trace: Optional[ExploreTrace] = None
-            for block in tool_use_blocks:
-                name = block.get("name")
-                tool_input = block.get("input", {}) or {}
-                tool_use_id = block.get("id")
+            for tc in response.tool_calls:
+                name = tc.name
+                tool_input = tc.input or {}
+                tool_use_id = tc.id
 
                 if name == FINISH_TOOL:
                     data = tool_input.get("data")
@@ -222,29 +269,6 @@ def _load_prompt(explorer_config: dict) -> str:
     if path and Path(path).exists():
         return Path(path).read_text(encoding="utf-8")
     return "你正在为一个此前没有现成方案的需求探索可复用的操作路径。"
-
-
-def _call_messages_api(*, api_key: str, model: str, system: str, messages: list[dict],
-                        tools: list[dict], timeout_seconds: int) -> dict:
-    payload = json.dumps({
-        "model": model,
-        "max_tokens": 1024,
-        "system": system,
-        "messages": messages,
-        "tools": tools,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
-        return json.loads(resp.read().decode("utf-8"))
 
 
 # --------------------------------------------------------------------------- #

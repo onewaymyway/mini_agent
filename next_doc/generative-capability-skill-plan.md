@@ -1037,3 +1037,132 @@ next_doc/generative-capability-skill-plan.md   # 本文档（阶段八记录）
   两者不冲突；如果后续需要把它也纳入 CI，可以参照
   `tests/test_generative_capability_engine.py` 的写法新增一个对应的
   `tests/test_text_transform_capability.py`，本阶段范围内不做）。
+
+### 阶段九 —— 已完成
+
+**目标**：`llm_resolver.py`（第二级检索裁决）与 `explorer_runtime.py`（探索
+子agent决策循环）此前各自用 `urllib` 直连 Anthropic Messages API，是整个
+引擎里仅有的两处没有走框架统一 LLM 调用基础设施
+（`llm/service.py::LLMHelper`，见 `next_doc/llm_helper_unification_plan.md`）
+的地方——固定写死 `provider=anthropic`、不跟随 `/model` 切换、不复用
+`LLMClientPool` 的多 key/多配置 fallback 与统一 `RetryPolicy`、也不产生
+`call_stats` 调用计数。本阶段把这两处改接 `LLMHelper`。
+
+**新增/修改文件**：
+
+```
+src/mini_agent/skills/generative_capability/llm_resolver.py     # 修改：build_llm_resolver()
+                                                                    # 改为接收 llm_helper/cfg，
+                                                                    # 通过 helper.ask() 调用，
+                                                                    # 删除 urllib 实现
+src/mini_agent/skills/generative_capability/explorer_runtime.py  # 修改：build_llm_explorer()
+                                                                    # 改为接收 llm_helper/cfg，
+                                                                    # 通过 helper.chat() 驱动决策
+                                                                    # 循环，消息历史改用与
+                                                                    # history_manager.py 一致的
+                                                                    # 内部约定，删除
+                                                                    # _call_messages_api()
+src/mini_agent/skills/generative_capability/__init__.py           # 修改：模块 docstring 调用
+                                                                    # 示例与阶段九说明同步更新
+src/mini_agent/tools/orchestration.py                              # 修改：新增
+                                                                    # get_current_llm_helper()
+                                                                    # 公开别名，供
+                                                                    # tools/capability_call.py
+                                                                    # 等模块外调用方复用同一套
+                                                                    # thread-local 机制
+src/mini_agent/tools/capability_call.py                            # 修改：构造 CapabilityEngine
+                                                                    # 前先取 get_current_llm_helper()，
+                                                                    # 取不到时如实报错而非静默退化
+.claude/skills/browser-site-scraper/SKILL.md                       # 更新阶段说明
+.claude/skills/doc-template-generation/SKILL.md                    # 更新阶段说明
+.claude/skills/text-transform-capability/SKILL.md                  # 更新阶段说明
+next_doc/generative-capability-skill-plan.md                       # 本文档（阶段九记录）
+```
+
+**已实现能力**：
+
+- `build_llm_resolver(llm_helper=None, *, cfg=None, override_model=None,
+  override_provider=None, max_retries=2)`：签名从"`model`/`api_key_env`/
+  `timeout_seconds`"改为"`llm_helper`/`cfg`/`override_*`/`max_retries`"，
+  与 `ensemble/judge.py::judge_llm(llm_helper=...)` 的既有约定对齐——优先用
+  传入的 `llm_helper`（跟随 `/model` 切换），否则退化为
+  `LLMHelper.from_config(cfg)`；`override_model`/`override_provider` 仍可
+  覆盖裁决用的模型/provider（走 `LLMHelper` 的 override 分支，不污染主
+  agent 当前配置）。内部改为调用 `helper.ask(...)` 单轮取文本，删除了所有
+  `urllib.request`/API key 环境变量读取逻辑。两者都未传时在**调用时**（而
+  非构造时）抛出 `RuntimeError`，语义与此前"未配置 API key 时抛异常，不
+  静默返回空列表"一致，`CapabilityEngine.resolve()` 无需改动即可继续正确
+  区分 `no_match` 与 `llm_error: ...`。
+- `build_llm_explorer(tool_executor, llm_helper=None, *, cfg=None,
+  override_model=None, override_provider=None, max_retries=2)`：签名同样
+  从"`model`/`api_key_env`/`timeout_seconds`"改为"`llm_helper`/`cfg`/
+  `override_*`/`max_retries`"。决策循环内部改为调用 `helper.chat(messages=,
+  system=, tools=, ...)`，`tools` 从"手写的 Anthropic tools JSON"改为
+  `mini_agent.llm.base.ToolSchema` 实例列表（与主 agent 对话循环用的是
+  同一套类型）；工具调用结果不再依赖手工解析 Anthropic 原始 `content`
+  block，而是直接读取 `LLMResponse.tool_calls`（`ToolCall.id/name/input`），
+  再按 `history_manager.py::HistoryManager.append_assistant()` 完全相同的
+  内部消息约定（`{"type":"tool_use","id","name","input"}` /
+  `{"type":"tool_result","tool_use_id","content"}`）拼回 `messages` 列表
+  维持多轮对话——这套约定本来就是 provider 无关的，各 provider 的 client
+  内部各自负责转换成自己的 wire 格式，因此探索循环现在天然适配任何已接入
+  的 provider，不再只能是 Anthropic。`FINISH_TOOL`/`REPORT_FAILURE_TOOL`/
+  工具白名单强制/步数与时间预算硬上限等既有安全约束全部原样保留，未做任何
+  放松。两者都未传时不抛异常，而是返回
+  `ExploreTrace(success=False, stop_reason="llm_error", error=...)`——遵循
+  探索循环"失败是一等公民"的既有约定（此前"未配置 API key"分支就是这么
+  处理的），不会让调用方遭遇意料之外的异常类型。
+- `tools/orchestration.py` 新增 `get_current_llm_helper()`：`_get_current_
+  llm_helper()`（私有，`run_ensemble_llm`/`run_ensemble_subagents` 内部用）
+  的公开别名，语义与返回值完全一致（拿不到时返回 `None`），供模块之外的
+  调用方复用同一套"从当前线程拿 `Agent.llm_helper`"的 thread-local 机制，
+  不必各自重新实现一遍或导入私有名字。
+- `tools/capability_call.py`：构造 `CapabilityEngine` 前先调用
+  `get_current_llm_helper()`；拿到后传给 `build_llm_resolver(current_llm_
+  helper)`（`explore_runner` 仍按阶段七的既有设计不默认注入，见其"已知
+  遗留"）。取不到时（理论上只会发生在本工具被 Agent 主流程之外调用的
+  异常场景）返回明确的 `status: error`，不静默退化成某个写死模型——与该
+  文件一贯"不伪造成功/不掩盖限制"的风格一致。
+
+**验证结果**：
+
+1. `pytest tests/test_generative_capability_engine.py -v` → 11 passed，
+   确认阶段七迁移时补齐的回归测试在改造后依然全部通过（这些测试用
+   `build_stub_resolver`/`build_stub_explorer`，本就不触碰真实 LLM 调用
+   路径，因此不受本阶段改造影响，属预期）。
+2. 用一个自制的 `FakeLLMHelper`（记录每次 `ask()`/`chat()` 调用参数，
+   `ask()` 固定返回 `{"member_ids": ["upper"]}`，`chat()` 固定返回一次
+   `finish` 工具调用）分别驱动 `build_llm_resolver(helper, override_model=
+   "claude-sonnet-5")` 与 `build_llm_explorer(tool_executor, helper,
+   override_model="claude-sonnet-5")` → 两者均返回预期结果
+   （`member_ids == ["upper"]`；`ExploreTrace(success=True, data={"result":
+   {"text": "OK"}})`），且 `FakeLLMHelper.ask_calls`/`chat_calls` 均被正确
+   记录、`override_model` 被正确透传——证明两个函数现在真的是通过传入的
+   `LLMHelper` 接口驱动，而不是仍在内部悄悄拼 HTTP 请求。
+3. 分别对 `build_llm_resolver()`（不传参）与 `build_llm_explorer(lambda n,
+   i: {})`（不传 `llm_helper`/`cfg`）发起调用 → `resolver(...)` 正确抛出
+   `RuntimeError`（消息明确指出"既未传入 llm_helper 也未传入 cfg"）；
+   `explorer(...)` 正确返回 `ExploreTrace(success=False,
+   stop_reason="llm_error")` 而非抛异常，验证两者对"完全没有可用 LLM 调用
+   方式"这一环境配置问题的处理符合各自既有的错误处理约定（resolver 抛
+   异常、explorer 返回失败 trace）。
+4. 全文 `grep -n "urllib\|api_key_env\|os\\.environ"` 确认
+   `llm_resolver.py`/`explorer_runtime.py` 中除模块 docstring 里"此前如何
+   如何"的历史说明文字外，代码本体不再有任何遗留的 `urllib`/API key 环境
+   变量直连逻辑。
+
+**已知遗留（留给后续阶段）**：
+
+- `capability_call.py` 目前仍只注入 `llm_resolver`，`explore_runner`/
+  `tool_executor` 依旧不默认注入——这是阶段七就明确记录、依赖
+  `browser-core`/`doc-core`/`text-core` 从各领域 skill 独立拆分为静态
+  skill 才能推进的架构性遗留，本阶段范围内不涉及，不重复记录细节（见阶段
+  七"已知遗留"）。
+- `LLMHelper.chat()` 的 `max_retries` 默认策略（`EmptyOutputCondition` +
+  `retry_on_exception=True`）此前在探索子agent里完全没有——旧实现里网络
+  异常会直接向上抛出、终止整个探索循环。现在探索循环里的每一次 LLM 调用
+  都会先在 `LLMHelper` 内部重试 `max_retries` 次才失败，这是行为上的一处
+  实质改进（更不容易被单次网络抖动打断整条探索），但也意味着探索循环单步
+  的最坏延迟有所上升；`max_retries` 默认给了较保守的 `2`（小于主对话循环
+  常用的 `3`），如果后续实测发现探索场景需要不同的取值，应在
+  `capability.yaml` 层面暴露成可配置项，而不是在代码里硬编码调整。

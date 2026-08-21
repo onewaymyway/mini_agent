@@ -41,17 +41,33 @@ ExploreStep`），依赖调用方手动把该目录塞进 `sys.path` 才能工�
     from mini_agent.skills.generative_capability import (
         CapabilityEngine, build_llm_resolver, build_llm_explorer,
     )
+    from mini_agent.tools.orchestration import get_current_llm_helper
 
+    llm_helper = get_current_llm_helper()  # 或直接传 agent.llm_helper
     engine = CapabilityEngine(
         skill_dir=some_skill_dir,       # 如 .claude/skills/browser-site-scraper
-        llm_resolver=build_llm_resolver(),
-        explore_runner=build_llm_explorer(tool_executor=my_tool_executor),
+        llm_resolver=build_llm_resolver(llm_helper),
+        explore_runner=build_llm_explorer(my_tool_executor, llm_helper),
         tool_executor=my_tool_executor,  # 领域自己的底层原语执行器
     )
     result = engine.call({"text": "...", "target": {...}})
 
 不需要知道引擎内部具体拆成了哪几个文件，后续引擎内部再拆分/合并文件
 也不会影响调用方代码。
+
+阶段九改造说明
+--------------
+`llm_resolver.py`（第二级检索裁决）与 `explorer_runtime.py`（探索子agent
+决策循环）此前各自用 urllib 直连 Anthropic Messages API，是整个引擎里仅有
+的两处没有走框架统一 LLM 调用基础设施（`llm/service.py::LLMHelper`）的地方。
+阶段九把两者改为接收调用方传入的 `llm_helper`（通常是 `Agent.llm_helper`，
+可通过 `tools/orchestration.py::get_current_llm_helper()` 拿到当前线程正在
+跑的 agent 实例），从而自动获得：跟随 `/model` 切换、`LLMClientPool` 的多
+key/多配置 fallback、统一的 `RetryPolicy`、`call_stats` 调用计数——不再固定
+写死 provider=anthropic。`build_llm_resolver()`/`build_llm_explorer()` 仍
+支持不传 `llm_helper`、改传 `cfg` 的兜底用法（退化为
+`LLMHelper.from_config(cfg)`，与 `ensemble/judge.py::judge_llm` 的既有约定
+一致）。详见 next_doc/generative-capability-skill-plan.md 实施记录阶段九。
 """
 
 from __future__ import annotations
