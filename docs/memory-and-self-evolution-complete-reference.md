@@ -405,8 +405,9 @@ session"）：当前版本只记录，实际"等待 N 个 session"逻辑由晋�
 
 ### 6.4 ResourceArbiter（`evolution/resource_arbiter.py`）
 预算/并发仲裁：`used_today_goals` / `used_today_exploration` 两个独立计数器；
-`objective_executor.py` 限制最多同时跑 `MAX_CONCURRENT_OBJECTIVES`（默认 2）
-个 Objective；`append_activity_digest()` / `read_activity_digest()` /
+`objective_executor.py` 限制最多同时跑 `autonomy.max_concurrent_objectives_cap`
+个 Objective（默认 2，可通过 agent_config.json 配置或看板热改，没有硬
+天花板）；`append_activity_digest()` / `read_activity_digest()` /
 `build_digest_summary()` 支撑 `/digest` 命令展示近期自主活动摘要。
 `can_run_autonomous()` 还会读取 B1 落盘的 `proprioception_snapshot.json`，
 `frustration` 达阈值时跳过本次 tick（第 5 节 B1 有详细说明）。

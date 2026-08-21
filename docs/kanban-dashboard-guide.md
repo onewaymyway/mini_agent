@@ -91,12 +91,14 @@ streamlit run app.py
   同一面板内部"高级：SubAgent / LLM 并发"子区域单独展示，避免混淆）。
   展开后左右两栏分别是"目标(Goal)执行并发"和"Cron 执行并发"，可查看当前
   运行数/上限并编辑，点击"应用"立刻生效，跟 daemon 本机终端调整对应配置
-  是同一套底层机制。目标(Goal)通道有一个写死在代码里的硬天花板（当前为
-  2，"只降不升"的安全阀设计），数字输入框的可选范围已按此天花板限制；
-  Cron 通道若当前走的是未启用独立并发槽位的旧路径，该栏会显示"未启用
-  独立并发通道"提示而非可编辑控件。**注意这些都是运行时状态，不会写回
-  `agent_config.json`**，daemon 重启后会掉回配置文件里的默认值；调低
-  上限只影响后续新任务排队，不会打断当前正在跑的任务。
+  是同一套底层机制。目标(Goal)通道的并发上限（`autonomy.
+  max_concurrent_objectives_cap`，默认 2）**没有硬天花板**，数字输入框
+  只要求 >= 1；Cron 通道若当前走的是未启用独立并发槽位的旧路径，该栏会
+  显示"未启用独立并发通道"提示而非可编辑控件。**注意这些都是运行时状态
+  的热改，不会写回 `agent_config.json`**——`agent_config.json` 里配置的
+  值才是持久化的默认值，daemon 重启后会掉回配置文件里的值（没配置就是
+  硬编码默认值 2）；调低上限只影响后续新任务排队，不会打断当前正在跑的
+  任务。
 - **⚠️ 系统状态哨兵**（`GET /v1/sentinel/summary`，
   `next_doc/kanban_perception_gaps_improvement_plan.md` 方向 A）：跟上面
   "📥 全局待办中心"是姊妹关系但语义不同——待办中心的每一条都有明确的
@@ -594,8 +596,8 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `sentinel_summary(cron_failure_threshold=2)` | `GET /v1/sentinel/summary` | 哨兵聚合面板：cron 连续失败 + Objective 重试热点 + wiki 隔离区积压 + LLM 故障转移状态 + 近 7 天仲裁降级/阻塞占比一次性拉取（只读，方向 A） |
 | `concurrency_status()` | `GET /v1/self/concurrency` | SubAgent/LLM 请求这两个底层信号量的并发状态快照（只读，高级用法） |
 | `set_concurrency(max_tasks=, max_llm_calls=)` | `POST /v1/self/concurrency` | 运行时热改最大并发 SubAgent 数 / 最大并发 LLM 调用数，立即生效、不写回配置文件 |
-| `task_concurrency_status()` | `GET /v1/self/task_concurrency` | 顶栏"⚙️ daemon 正在执行 N 项任务"对应的任务执行并发状态：Objective/Goal 通道、Cron 通道各自的 running/current_cap/hard_ceiling（只读） |
-| `set_task_concurrency(max_objectives=, max_cron_jobs=)` | `POST /v1/self/task_concurrency` | 运行时热改 Objective/Goal 通道、Cron 通道各自的最大并发执行数，立即生效、不写回配置文件；`max_objectives` 会被 clamp 到硬天花板内 |
+| `task_concurrency_status()` | `GET /v1/self/task_concurrency` | 顶栏"⚙️ daemon 正在执行 N 项任务"对应的任务执行并发状态：Objective/Goal 通道、Cron 通道各自的 running/current_cap（只读） |
+| `set_task_concurrency(max_objectives=, max_cron_jobs=)` | `POST /v1/self/task_concurrency` | 运行时热改 Objective/Goal 通道、Cron 通道各自的最大并发执行数，立即生效、不写回配置文件；`max_objectives` 没有上限，只要求 >= 1 |
 
 上表标了 `session_id=` 的方法都新增了可选的 `session_id` 参数（默认 `None`，
 不传时行为与旧版本完全一致）：传了就会作为 `?session_id=` 查询参数附加到请求上，

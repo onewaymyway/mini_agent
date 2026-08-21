@@ -10,6 +10,17 @@
     顶栏那个任务列表"同时最多几条"，这才是用户实际想控制的"当前 daemon
     允许的同时进行的任务数量"。v1.0 加的 SubAgent/LLM 并发控件保留，
     折叠在本面板内部单独作为"高级"区域，避免两个概念混淆。
+  - v2.1（并发上限可配置化）：去掉了本文档下面描述的
+    `MAX_CONCURRENT_OBJECTIVES=2` 绝对硬天花板——原设计里
+    `max_concurrent_objectives_cap` 无论怎么配置/热改都不能突破这个写死
+    的模块级常量，用户反馈这不合理（正常应该能配到比 2 更高）。现在
+    `autonomy.max_concurrent_objectives_cap` 本身就是唯一上限，没有
+    额外 clamp，只要求 `>= 1`：可以写在 `agent_config.json` 里持久化，
+    也可以在看板上运行时热改（不写回配置文件，daemon 重启后掉回配置
+    文件里的值）。下文第 2、3 节里提到的"硬天花板"/`hard_ceiling` 字段
+    均已废弃，仅作为历史设计记录保留，当前实现见
+    `src/mini_agent/evolution/objective_executor.py` 的
+    `ObjectiveExecutor.configured_cap()`。
 
 ## 0. 背景与问题
 

@@ -26,7 +26,9 @@ autonomy:
 - 含义：同一个 Goal（按 `GoalNode.parent_id` 分组）同时最多能占用几个执行
   并发槽位。
 - 默认 `1`：一个 Goal 一次只能有一个 Objective 在跑，避免它自己吃满全局
-  并发上限（`MAX_CONCURRENT_OBJECTIVES`，默认 2）。
+  并发上限（`autonomy.max_concurrent_objectives_cap`，默认 2，可配置，
+  没有硬天花板——见 `docs/kanban-dashboard-guide.md` 的"任务并发上限"
+  一节）。
 - 设为 `0` 或负数：不限制，等价于关闭本项，回退到改造前"谁排前面谁跑"的
   行为。
 - 影响面：只影响"同时在跑"的数量，不影响 Goal 能拆出几个 Objective

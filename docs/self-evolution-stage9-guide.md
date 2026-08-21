@@ -340,7 +340,10 @@ start(objective)
 
 ### 6.2 并发控制
 
-- 同时最多运行 `MAX_CONCURRENT_OBJECTIVES = 2` 个 Objective
+- 同时最多运行 `autonomy.max_concurrent_objectives_cap` 个 Objective
+  （默认 2；可通过 `agent_config.json` 配置，或在看板"🎛️ 任务并发上限"
+  面板运行时热改——没有硬天花板，只要求 >= 1；模块级常量
+  `MAX_CONCURRENT_OBJECTIVES=2` 仅作为完全没有配置时的兜底默认值）
 - 每个 Objective 的步骤**串行**执行（保证因果性，步骤 N+1 可以看到步骤 N 的结果）
 - 每步提交前经过 `ResourceArbiter.can_run_autonomous()` 检查
 

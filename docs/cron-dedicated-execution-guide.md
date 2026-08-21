@@ -343,7 +343,8 @@ build_cron_agent()`），不跨触发复用同一个 Agent/history：
 ### 7.1 跨通道总并发上限（`scheduler.max_total_concurrent_tasks`）
 
 `max_concurrent_jobs`（本节）与 Goal Objective 通道的
-`autonomy.max_concurrent_objectives_cap`（默认 2）是两条**完全独立**的
+`autonomy.max_concurrent_objectives_cap`（默认 2，可通过 agent_config.json
+配置或看板热改，没有硬天花板）是两条**完全独立**的
 并发上限——正常（非 degraded）状态下互不感知，默认配置下系统里最多可能
 同时有 2（Objective）+ 2（cron）= 4 个任务在跑，看板顶栏"daemon 正在
 执行 N 项任务"里 N 超过单条通道上限（比如同时看到 3 个）就是这么来的，
