@@ -1,0 +1,18 @@
+{
+  "members": [
+    {
+      "member_id": "upper",
+      "description": "把 content.text 转为大写",
+      "match": {
+        "keyword": ["upper", "转大写", "uppercase", "大写"]
+      }
+    },
+    {
+      "member_id": "reverse",
+      "description": "把 content.text 反转（倒序）",
+      "match": {
+        "keyword": ["reverse", "反转", "倒序"]
+      }
+    }
+  ]
+}

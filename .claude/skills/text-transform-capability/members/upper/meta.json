@@ -1,0 +1,23 @@
+{
+  "source": "human",
+  "status": "trusted",
+  "version": 1,
+  "intent_schema": {
+    "type": "object",
+    "required": ["result"],
+    "properties": {
+      "result": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string" }
+        }
+      }
+    }
+  },
+  "success_count": 0,
+  "fail_count": 0,
+  "last_success": null,
+  "last_failure": null,
+  "migrated_from": null
+}

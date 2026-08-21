@@ -1,0 +1,53 @@
+skill_type: generative-capability
+name: text-transform-capability
+
+# 第一级免LLM匹配规则（零成本，命中优先）。
+# 具体的 keyword 值来自各 member 目录下 _index.json 中的 "match" 字段。
+domain_matchers:
+  - type: keyword
+    field: target.op
+  - type: keyword
+    field: text
+
+# 该领域所有 member 输出必须满足的 schema 结构约束模板。
+intent_schema_template:
+  type: object
+  required: [result]
+  properties:
+    result:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+
+# 探索阶段配置（复用与 browser-site-scraper / doc-template-generation 相同的
+# 引擎接线；base_tools 是本领域自己的底层原语声明，占位，尚未实现，测试时用
+# 桩探索器 + 桩 tool_executor 验证接线逻辑）。
+explorer:
+  base_tools: [text-core]
+  prompt: explorer/prompt.md
+  tool_allowlist: explorer/tool_allowlist.json
+  max_steps: 10
+  max_seconds: 30
+
+# member 的统一函数入口约定，引擎按此调用，通常无需改动。
+member_interface:
+  entrypoint: "run(input: dict) -> dict"
+
+# 生命周期阈值（可覆盖引擎默认值）。刻意设得比另外两个 skill 更小
+# （2 而不是 3），让测试文档里"连续失败触发 degraded"的场景只需要
+# 2 次调用就能复现，降低测试成本。
+lifecycle:
+  probation_success_threshold: 2
+  degrade_failure_threshold: 2
+  dead_after_reexplore_fail: true
+  # 以下两项供 health_patrol 使用：
+  health_patrol_stale_days: 30
+  health_patrol_dead_retention_days: 14
+
+# 蒸馏一致性兜底开关（阶段六新增）。本 skill 用于测试的桩 tool_executor
+# 通常直接回显参数、不一定在重放最后一步返回 data，因此默认打开，
+# 避免测试探索场景时踩阶段五记录过的"桩执行器不友好"的坑。
+distill:
+  trust_trace_data: true

@@ -1,0 +1,58 @@
+{
+  "members": {
+    "upper": {
+      "status": "trusted",
+      "intent_schema": {
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "result": {
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "properties": {
+              "text": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "success_count": 0,
+      "fail_count": 0,
+      "consecutive_failures": 0,
+      "last_success": null,
+      "last_failure": null
+    },
+    "reverse": {
+      "status": "trusted",
+      "intent_schema": {
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "result": {
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "properties": {
+              "text": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "success_count": 0,
+      "fail_count": 0,
+      "consecutive_failures": 0,
+      "last_success": null,
+      "last_failure": null
+    }
+  }
+}

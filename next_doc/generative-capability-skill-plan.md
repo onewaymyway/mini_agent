@@ -921,3 +921,119 @@ tests/test_generative_capability_engine.py      # 新增：11 个测试用例，
   一层问题，"引擎内部该不该复用项目已有的 LLM 调用基础设施"是下一层可以
   继续挖的优化点，因为改动面会涉及 `explorer_runtime.py` 内部实现细节
   （而不只是文件挪位置），本阶段范围内不做，留待后续阶段视实际需要推进。
+
+### 阶段八 —— 已完成
+
+**目标**：阶段一到阶段七验证的都是引擎骨架本身和两个具体业务 skill
+（`browser-site-scraper`/`doc-template-generation`），但两者要么依赖真实
+浏览器（无法在无网络沙箱里跑通完整成功路径），要么探索链路依赖较复杂的
+桩数据构造。本阶段新增一个刻意做得很小、零外部依赖（不需要浏览器/API
+key/网络）的第三个 generative-capability skill——`text-transform-
+capability`——专门用来在任意环境下快速验证机制本身（而不是验证某个具体
+业务能力）是否可用，并配套一份可独立执行的测试方法文档。
+
+**新增文件**：
+
+```
+.claude/skills/text-transform-capability/
+  SKILL.md                        # skill_type: generative-capability 声明 +
+                                    # 与另外两个 skill 的差异对照表
+  capability.yaml                  # keyword matchers；intent_schema_template
+                                    # 为 {result: {text: string}}；lifecycle
+                                    # 阈值调小为 2，便于测试快速触发 degraded；
+                                    # distill.trust_trace_data: true，便于用
+                                    # 简单桩 tool_executor 验证 explore/distill
+  explorer/prompt.md               # 占位角色设定（同 browser-core/doc-core
+                                    # 的处理方式，text-core 尚未实现）
+  explorer/tool_allowlist.json     # 占位工具白名单
+  _index.json                      # upper/reverse 两个 member 的检索摘要
+  registry.json                    # 两个 member 初始状态均为 trusted（人工
+                                    # 预置、纯逻辑实现，等同 doc-template-
+                                    # generation 对 standard_report 的处理）
+  members/upper/{script.py,meta.json}    # content.text 转大写，纯 Python
+  members/reverse/{script.py,meta.json}  # content.text 反转，纯 Python
+test_cases/text-transform-capability-testing-guide.md
+                                    # 配套测试方法文档，见下方说明
+next_doc/generative-capability-skill-plan.md   # 本文档（阶段八记录）
+```
+
+**设计要点**：
+
+- `upper`/`reverse` 两个预置 member 是纯 Python 字符串操作，不发起任何
+  网络请求、不读写文件、不依赖第三方库，因此"确定性匹配命中 + 执行成功"
+  这条路径在任意环境（包括完全离线的沙箱）里都能得到真实的 `success`
+  结果，不像 `browser-site-scraper` 那样受限于"沙箱无可用浏览器"而只能
+  验证到"命中后执行失败"为止。
+- 两个 member 都保留了"缺少 `content.text` 时显式返回 `fail`"的分支，
+  用于验证 `intent_schema` 校验与 `fail_count`/`consecutive_failures`
+  计数路径；`lifecycle.degrade_failure_threshold` 特意调小为 2（而非另
+  外两个 skill 用的 3），使"连续失败触发 degraded"这个场景只需 2 次调用
+  即可复现，降低测试成本。
+- 探索链路设计了一个不在预置 member 里的第三种变换（`shout`，测试文档里
+  给文本末尾加感叹号）来触发 `miss -> explore -> distill -> 落盘 -> 免
+  探索复用` 完整闭环；`capability.yaml` 显式打开
+  `distill.trust_trace_data: true`，这样测试文档里可以用一个不刻意在
+  "重放最后一步"精心构造 `data` 字段的简单桩 `tool_executor`
+  （`lambda name, inp: {"ok": True, "data": {...}}`），复现阶段五/阶段六
+  实施记录中提到的"该开关主要面向自测/CI 场景"的用法，而不需要像
+  `browser-site-scraper` 测试那样专门构造两组桩数据来绕开这个坑。
+- `text-transform-capability` 与 `browser-site-scraper`/`doc-template-
+  generation` 复用同一套引擎代码（`mini_agent.skills.
+  generative_capability`），本阶段未修改引擎任何一行代码，纯粹是新增一份
+  声明式配置 + 两个预置 member 脚本，这本身也是对"流程与领域分离"这条
+  核心设计原则的又一次验证。
+
+**验证结果**（均在解压后的沙箱环境、离线、不依赖 `ANTHROPIC_API_KEY` 完成，
+可复现步骤见 `test_cases/text-transform-capability-testing-guide.md`）：
+
+1. `CapabilityEngine(".claude/skills/text-transform-capability").call(...)`
+   对 `target.op="upper"` 与 `target.op="reverse"` 两个请求均正确通过
+   `keyword_match` 命中对应 member 并执行成功，返回的
+   `data == {"result": {"text": "..."}}` 与预期完全一致——这是本方案迄今
+   为止第一次在没有任何浏览器/网络的情况下，端到端跑出真实 `success`
+   结果（而非"命中但执行失败，因为缺浏览器"）。
+2. 对 `content` 缺少 `text` 字段的请求，`execute()` 正确返回失败并计入
+   `fail_count`；连续调用 2 次后 `registry.json` 中对应 member 的
+   `status` 正确从 `trusted` 流转为 `degraded`，`status_changed_at`
+   字段被正确写入（阶段六新增能力在第三个 skill 上同样成立）。
+3. 对一个三个预置 member 都无法匹配的 `target.op="shout"` 请求，注入桩
+   探索器（模拟调用一次 `text_transform_apply` 并在这一步的输出里直接带
+   `data`）与桩工具执行器 → `resolve()` 返回 `no_match` →
+   `explore()`/`distill()` 成功 → 沙箱自测通过 → 原子化落盘为新 member
+   （`members/shout_this_text/`，member_id 由请求文本自动推断，
+   `status: probation`）→ 用相同请求再次调用
+   （不注入 `explore_runner`，但需要保留 `tool_executor`，因为蒸馏产物
+   仍需要通过 `tool_runtime` 重放动作序列）→ 正确通过 `keyword_match`
+   命中并执行成功，验证了"免探索复用"链路。
+4. `run_patrol(skill_dir)` 对本 skill 目录跑一致性巡检，初始状态下
+   （两个 member 目录、`registry.json`、`_index.json` 三者一致）返回
+   0 条 finding，符合预期；测试文档里额外给出了"人为制造不一致后巡检能
+   正确识别"的可选步骤，复用阶段四已经验证过的 `health_patrol` 能力，
+   不在本 skill 里重复造轮子验证同一件事。
+
+**踩坑记录（写入测试文档，避免后来者重复踩坑）**：
+
+- 验证过程中发现，若直接对仓库里的真实 skill 目录
+  （`.claude/skills/text-transform-capability`，而非临时复制出的副本）
+  调用 `CapabilityEngine(...).call(...)`，`execute()` 成功/失败都会真实
+  写回该目录下的 `registry.json`（原子化写入，符合方案文档第 8 节要求），
+  这会导致仓库里的"初始状态"文件被测试过程污染，影响下一次测试或误导
+  阅读者以为这是最初状态。`test_cases/text-transform-capability-testing-
+  guide.md` 第一步就明确要求"先复制一份到临时目录再测试"，并说明了这个
+  坑的成因，而不是简单地说"记得复制"。
+
+**已知遗留（留给后续阶段）**：
+
+- 与另外两个 skill 一样，`text-core` 仍是占位声明，没有真正可执行的
+  实现；这是刻意的设计选择而非遗漏——本 skill 的目的是验证机制通用性，
+  不是新增一个真实可用的文本处理能力。若未来确有"探索出全新文本变换"的
+  真实业务需求，应该重新评估是否需要把 `text-core` 实现为一个真正的静态
+  skill，而不是直接在本 skill 基础上扩展。
+- 测试文档目前是 `test_cases/` 下的一份可手动/脚本执行的 markdown 指南，
+  未封装为 `tests/` 目录下的 pytest 用例（`tests/
+  test_generative_capability_engine.py` 已经用 `browser-site-scraper`/
+  `doc-template-generation` 覆盖了引擎层面的回归测试，本 skill 主要定位
+  是"给人看的、可独立复现的机制验证手册"，与自动化回归测试的定位不同，
+  两者不冲突；如果后续需要把它也纳入 CI，可以参照
+  `tests/test_generative_capability_engine.py` 的写法新增一个对应的
+  `tests/test_text_transform_capability.py`，本阶段范围内不做）。

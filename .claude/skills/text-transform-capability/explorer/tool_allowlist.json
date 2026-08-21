@@ -1,0 +1,10 @@
+{
+  "base_tools": ["text-core"],
+  "tools": [
+    {
+      "name": "text_transform_apply",
+      "description": "占位声明：对一段文本应用某种字符串变换。真实实现尚未接入（text-core 尚未从任何静态 skill 独立拆分出来），测试场景下通过桩 tool_executor 模拟。",
+      "status": "placeholder"
+    }
+  ]
+}
