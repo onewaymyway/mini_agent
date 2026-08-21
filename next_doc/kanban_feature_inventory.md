@@ -252,11 +252,13 @@
 
 - 关注对象列表（watchlist.yaml）
 - 分级汇报规则（report_tiers.yaml）
-- 待处理汇报列表（展开详情）
+- 待处理汇报列表（展开详情，支持分类筛选 + 批量标记已读）
 - 通知发送记录
 - 对应端点：`GET /notification/watchlist`、`GET /notification/report_tiers`、
-  `GET /notifications/pending`、`POST /notifications/pending/{id}/ack`、
-  `GET /notification/dispatch_log`
+  `GET /notifications/pending`（支持 `category` 参数）、
+  `GET /notifications/pending/categories`、
+  `POST /notifications/pending/{id}/ack`、
+  `POST /notifications/pending/batch_ack`、`GET /notification/dispatch_log`
 
 ---
 

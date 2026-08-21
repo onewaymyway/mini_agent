@@ -346,6 +346,15 @@ prompt 注入。**只有 `importance == "high"` 才写入**
   附"标记已读"按钮。跟网关"🔔 待处理告警"面板（外部输入网关 tab）
   **存储和展示都彻底分开**——前者是"你关注的对象按周期打包的汇总
   清单"，后者才是"需要你判断的外部告警"。
+  [分类+批量处理 新增] 面板顶部是一排分类 tab（全部/🔴 执行失败/
+  🟡 关注提醒/🔵 关注汇报/⚪ 其他，各带未读计数角标），按 `source`
+  字段归类（静态映射表，见 `reports_store.py::categorize_report()`，
+  未收录的新 source 归入"其他"，不影响展示）；每条汇报前有勾选框，
+  配合"☑️ 全选当前列表"/"⬜ 清空选择"/"✅ 批量标记已读"三个按钮可以
+  一次处理多条，切到某个分类 tab 时也可以直接点"✅ 标记该分类全部
+  已读"整批清空，不用一条条展开点。这个面板本身是独立的
+  `@st.fragment`，分类切换/勾选/批量操作只重跑这一块，不影响 tab 里
+  其它区块（关注对象/tier 配置/发送记录）。
 - **📮 通知发送记录**：`NotificationDispatcher` 每次 `dispatch()` 的
   发送结果（默认最近 50 条，倒序），每条显示各渠道成功/失败
   （✅/❌）——用于诊断"为什么我没收到邮件通知"这类问题。这份记录
@@ -367,8 +376,10 @@ prompt 注入。**只有 `importance == "high"` 才写入**
 | `GET /v1/notification/watchlist` | 关注对象列表（含 disabled），全量返回，看板前端分页展示 |
 | `GET /v1/notification/report_tiers` | tier 配置 + cron job 运行时状态 + 空转计数，全量返回，看板前端分页展示 |
 | `GET /v1/notification/dispatch_log?limit=50` | 最近 N 条通知发送记录（倒序），响应含 `has_more`，供看板"加载更多"分页 |
-| `GET /v1/notifications/pending?limit=20&offset=0` | [汇报独立存储 新增] 未读的 watchlist_report 汇报（分页，含完整 `detail` 正文），供"📋 待处理汇报"面板用 |
+| `GET /v1/notifications/pending?limit=20&offset=0&category=执行失败` | [汇报独立存储 新增；分类+批量处理 扩展] 未读的 watchlist_report 汇报（分页，含完整 `detail` 正文 + 只读 `category` 字段），供"📋 待处理汇报"面板用；`category` 留空返回全部 |
+| `GET /v1/notifications/pending/categories` | [分类+批量处理 新增] 各分类下未读汇报数量，供分类 tab 计数角标 |
 | `POST /v1/notifications/pending/{report_id}/ack` | [汇报独立存储 新增] 标记一条汇报为已读 |
+| `POST /v1/notifications/pending/batch_ack` | [分类+批量处理 新增] 批量标记已读，请求体 `{"report_ids": [...]}` 或 `{"category": "执行失败"}`（都不传 = 标记全部未读），返回实际标记成功的条数 |
 | `GET /v1/goals` | GoalBacklog 完整视图（每个节点已含 `external_context`/`last_external_advance_at`） |
 | `GET /v1/external_input/novelty_candidates?limit=20&offset=0` | `NoveltyJudge` 待确认候选（§6.4），分页返回 `status=pending` |
 | `POST /v1/external_input/novelty_candidates/{id}/confirm` | 确认候选：创建新 Goal（唯一允许创建新 Goal 的入口） |
@@ -475,13 +486,13 @@ alerts.jsonl                 命中，标题+详情去重后写入：           
 | `src/mini_agent/evolution/objective_executor.py` | `_format_external_context(_items)`、decompose/redecompose 的精确 prompt 注入 |
 | `src/mini_agent/notification/dispatcher.py` | `NotificationDispatcher`/`NotificationChannel` 骨架 |
 | `src/mini_agent/notification/config.py` | 通知渠道配置加载（`${ENV:...}` 占位符解析）+ `goal_advance_cooldown_seconds` |
-| `src/mini_agent/notification/reports_store.py` | [汇报独立存储 新增] `reports.jsonl` 独立存储：`list_pending_reports`/`count_pending_reports`/`acknowledge_report`，跟 `external_input/policy.py` 的 alerts 存储逻辑同构但完全独立 |
+| `src/mini_agent/notification/reports_store.py` | [汇报独立存储 新增] `reports.jsonl` 独立存储：`list_pending_reports`/`count_pending_reports`/`acknowledge_report`，跟 `external_input/policy.py` 的 alerts 存储逻辑同构但完全独立；[分类+批量处理 新增] `categorize_report()`（`source`→分类静态映射）、`acknowledge_reports()`（批量已读）、`count_pending_reports_by_category()` |
 | `src/mini_agent/notification/channels/kanban.py` | kanban 渠道实现，[汇报独立存储 变更] 写入 `notification_reports` 而非 `external_input_alerts` |
 | `src/mini_agent/notification/channels/email.py` | 邮件渠道实现 |
-| `src/mini_agent/api/routes.py` | `/v1/notification/{watchlist,report_tiers,dispatch_log}` 只读端点（P7）；[汇报独立存储 新增] `/v1/notifications/pending`（GET/ack）；[汇报独立存储 变更] `/v1/inbox` 不再聚合 watchlist_report 汇报 |
+| `src/mini_agent/api/routes.py` | `/v1/notification/{watchlist,report_tiers,dispatch_log}` 只读端点（P7）；[汇报独立存储 新增] `/v1/notifications/pending`（GET/ack）；[汇报独立存储 变更] `/v1/inbox` 不再聚合 watchlist_report 汇报；[分类+批量处理 新增] `/v1/notifications/pending/categories`、`/v1/notifications/pending/batch_ack`，`GET .../pending` 新增 `category` 查询参数 |
 | `src/mini_agent/storage/paths.py` | `notification_dispatch_log` 等路径属性；[汇报独立存储 新增] `notification_reports` |
-| `apps/mini_agent_kanban/client.py` | `notification_watchlist/report_tiers/dispatch_log()` 客户端方法（P7）；[汇报独立存储 新增] `notification_pending_reports()`/`ack_notification_report()` |
-| `apps/mini_agent_kanban/app.py` | "🔔 关注与通知" tab + Goal 卡片"🔗相关外部信息"面板（P7）；[汇报独立存储 新增] "📋 待处理汇报"面板 |
+| `apps/mini_agent_kanban/client.py` | `notification_watchlist/report_tiers/dispatch_log()` 客户端方法（P7）；[汇报独立存储 新增] `notification_pending_reports()`/`ack_notification_report()`；[分类+批量处理 新增] `notification_pending_report_categories()`/`batch_ack_notification_reports()`，`notification_pending_reports()` 新增 `category` 参数 |
+| `apps/mini_agent_kanban/app.py` | "🔔 关注与通知" tab + Goal 卡片"🔗相关外部信息"面板（P7）；[汇报独立存储 新增] "📋 待处理汇报"面板；[分类+批量处理 变更] 该面板重构为独立 `@st.fragment`（`_render_pending_reports_panel()`），加入分类 tab + 勾选框 + 批量已读按钮 |
 | `.agent/external_input/watchlist.yaml` | 用户关注对象**实际配置**（已落地，非 `.example`，当前 3 条见 §2.1） |
 | `.agent/external_input/watchlist.yaml.example` | 关注对象配置模板/字段说明参考，复制改名即为实际配置 |
 | `.agent/notification/report_tiers.yaml` | 分级汇报 tier **实际配置**（已落地，非 `.example`，当前 4 档见 §3.1） |
