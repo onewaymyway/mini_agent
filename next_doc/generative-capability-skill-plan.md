@@ -332,7 +332,54 @@ next_doc/generative-capability-skill-plan.md          # 本文档（重命名为
 - LLM 二级检索尚未接入（阶段二）；探索子agent 与蒸馏逻辑尚未接入（阶段三）；
   生命周期状态机中 `degraded -> dead` 的重新探索判定依赖阶段三完成后才能触发。
 
-### 阶段二 —— 未开始
+### 阶段二 —— 已完成
+
+**目标**：接入 LLM 二级检索裁决，替代/补充关键词匹配的召回盲区。
+
+**新增/修改文件**：
+
+```
+.claude/skills/_engine/llm_resolver.py               # 新增：LLM 二级检索裁决器
+.claude/skills/_engine/capability_engine.py           # 修改：resolve() 捕获 llm_resolver
+                                                        # 异常并与 no_match 语义区分；
+                                                        # __main__ 增加 --stub-llm-hit 调试参数
+.claude/skills/browser-site-scraper/SKILL.md          # 更新阶段说明
+```
+
+**已实现能力**：
+
+- `build_llm_resolver()`：真实调用 Anthropic Messages API 的检索裁决器。系统提示词职责
+  单一——只做"从候选清单里选出匹配的 member_id"，输入仅为请求文本 + 候选摘要（不含
+  member_id 之外的字段、不含主对话历史），输出强制要求纯 JSON，解析失败会显式抛异常
+  而不是静默返回空列表。
+- `build_stub_resolver()`：用于离线自测/CI 的桩实现，验证引擎与 resolver 的接线逻辑，
+  不代表真实语义裁决质量，命令行通过 `--stub-llm-hit <member_id>` 触发。
+- `CapabilityEngine.resolve()`：明确区分两种"没有命中"的语义——
+  ① `no_match`：确定性匹配和 LLM 均未找到匹配（或未注入 resolver）；
+  ② `llm_error: ...`：LLM 调用本身失败（网络/未配置 API key 等环境问题）。
+  两者都会导致后续走向 `explore()`，但 reason 字段保留了可诊断的区分度，
+  避免把"环境配置问题"误判成"语义上确实没有这个能力"。
+- 引擎对 LLM 返回的 `member_ids` 做候选集合过滤，防止模型幻觉出清单之外不存在的 id
+  被当作命中结果传递给 `execute()`。
+
+**验证结果**（沙盒环境未配置 `ANTHROPIC_API_KEY`，属预期情况）：
+
+1. 真实 `build_llm_resolver()`，对一个确定性匹配（domain/keyword）都不命中的请求
+   （`https://random-forum.example/...`）调用 `resolve()` → 正确捕获异常并返回
+   `status=miss, reason="llm_error: 未配置 ANTHROPIC_API_KEY..."`，未被误判为 `no_match`。
+2. 桩实现 `--stub-llm-hit baidu`：对同一请求触发 `call()` 全流程 → `resolve_reason` 正确
+   显示为 `llm_match`，随后进入 `execute(baidu, ...)`（因沙盒无可用浏览器而执行失败，
+   属预期），验证了"确定性匹配未命中 → LLM 裁决命中 → 执行"这条链路接线正确。
+3. 桩实现返回一个候选集合外的虚构 id（`nonexistent_id`）→ 引擎正确过滤，
+   最终 `resolve_reason` 回落为 `no_match`，验证了防幻觉过滤生效。
+
+**已知遗留（留给后续阶段）**：
+
+- 真实语义裁决质量（LLM 是否能准确从几十/上百候选中选对）尚未在有效 API key 环境下
+  做实际调用验证，仅验证了工程接线；建议在阶段五做真实场景下的准确率评估。
+- 候选摘要清单规模变大后（比如 `_index.json` 增长到几百个 member）的 prompt 体量与
+  裁决延迟尚未做压测，超过一定规模可能需要引入分批裁决或先按大类目再二次检索的策略。
+
 ### 阶段三 —— 未开始
 ### 阶段四 —— 未开始
 ### 阶段五 —— 未开始

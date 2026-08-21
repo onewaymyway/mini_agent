@@ -133,7 +133,15 @@ class CapabilityEngine:
                 {"member_id": c["member_id"], "description": c.get("description", "")}
                 for c in candidates
             ]
-            picked = self.llm_resolver(request.get("text", ""), summaries)
+            try:
+                picked = self.llm_resolver(request.get("text", ""), summaries)
+            except Exception as e:  # noqa: BLE001
+                # LLM 调用失败(网络/配置问题)与"语义上确实无匹配"是两种不同语义，
+                # 不能混为一谈地当作 no_match 静默吞掉，需要在 reason 里如实标注，
+                # 上层可据此决定是重试检索还是直接进入 explore。
+                return ResolveResult(status="miss", member_ids=[], reason=f"llm_error: {e}")
+
+            # 过滤掉候选集合之外的 id，防止模型幻觉出不存在的 member
             picked = [p for p in picked if p in {c["member_id"] for c in candidates}]
             if picked:
                 return ResolveResult(status="hit", member_ids=picked, reason="llm_match")
@@ -321,9 +329,17 @@ if __name__ == "__main__":
     parser.add_argument("skill_dir", help="generative-capability skill 目录路径")
     parser.add_argument("--url", required=True, help="目标 URL，用于 domain_pattern 匹配测试")
     parser.add_argument("--query", default="", help="搜索关键词，透传给 member")
+    parser.add_argument("--stub-llm-hit", default=None,
+                         help="调试用：注入一个固定返回该 member_id 的 LLM 桩解析器，"
+                              "用于验证第二级检索的接线逻辑（不代表真实语义裁决）")
     args = parser.parse_args()
 
-    engine = CapabilityEngine(args.skill_dir)
+    resolver = None
+    if args.stub_llm_hit:
+        from llm_resolver import build_stub_resolver
+        resolver = build_stub_resolver([args.stub_llm_hit])
+
+    engine = CapabilityEngine(args.skill_dir, llm_resolver=resolver)
     req = {"text": args.url, "target": {"url": args.url}, "query": args.query}
     result = engine.call(req)
     print(json.dumps(result.__dict__, ensure_ascii=False, indent=2))

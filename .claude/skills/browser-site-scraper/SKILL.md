@@ -33,8 +33,11 @@ result = engine.call({
 
 ## 当前阶段说明
 
-本 skill 处于方案实施 **阶段一**：resolve/execute 两步骨架 + 确定性匹配 + registry/index
-读写已实现并验证；探索子agent（explore/distill）尚未接入，命中/执行失败或检索未命中时
-会返回 `not_implemented`，明确提示需要人工新增 member 或等待阶段三上线。
+本 skill 处于方案实施 **阶段二**：在阶段一（resolve/execute 两步骨架 + 确定性匹配 +
+registry/index 读写）基础上，已接入 LLM 二级检索裁决（`_engine/llm_resolver.py`），
+仅在第一级确定性匹配（domain/keyword）未命中时才触发，输入只有候选摘要清单与请求文本，
+不携带主对话历史。真实调用需要环境变量 `ANTHROPIC_API_KEY`；未配置时会明确报出
+`llm_error`，不会与"语义上确实无匹配"的 `no_match` 混淆。探索子agent（explore/distill）
+仍未接入，命中/执行失败或检索最终未命中时返回 `not_implemented`。
 
 详见 `next_doc/generative-capability-skill-plan.md`。

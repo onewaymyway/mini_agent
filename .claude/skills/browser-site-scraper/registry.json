@@ -4,33 +4,21 @@
       "status": "trusted",
       "intent_schema": {
         "type": "object",
-        "required": [
-          "results"
-        ],
-        "properties": {
-          "results": {
-            "type": "array"
-          }
-        }
+        "required": ["results"],
+        "properties": { "results": { "type": "array" } }
       },
       "success_count": 0,
-      "fail_count": 1,
-      "consecutive_failures": 1,
+      "fail_count": 0,
+      "consecutive_failures": 0,
       "last_success": null,
-      "last_failure": "2026-08-21 02:46:07"
+      "last_failure": null
     },
     "zhihu": {
       "status": "trusted",
       "intent_schema": {
         "type": "object",
-        "required": [
-          "results"
-        ],
-        "properties": {
-          "results": {
-            "type": "array"
-          }
-        }
+        "required": ["results"],
+        "properties": { "results": { "type": "array" } }
       },
       "success_count": 0,
       "fail_count": 0,
