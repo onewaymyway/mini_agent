@@ -33,11 +33,33 @@ result = engine.call({
 
 ## 当前阶段说明
 
-本 skill 处于方案实施 **阶段二**：在阶段一（resolve/execute 两步骨架 + 确定性匹配 +
-registry/index 读写）基础上，已接入 LLM 二级检索裁决（`_engine/llm_resolver.py`），
-仅在第一级确定性匹配（domain/keyword）未命中时才触发，输入只有候选摘要清单与请求文本，
-不携带主对话历史。真实调用需要环境变量 `ANTHROPIC_API_KEY`；未配置时会明确报出
-`llm_error`，不会与"语义上确实无匹配"的 `no_match` 混淆。探索子agent（explore/distill）
-仍未接入，命中/执行失败或检索最终未命中时返回 `not_implemented`。
+本 skill 处于方案实施 **阶段三**：在阶段一（resolve/execute 两步骨架）、阶段二
+（LLM 二级检索裁决）基础上，已接入探索子agent与蒸馏固化：
+
+- `_engine/explorer_runtime.py`：探索子agent的决策循环。仅接受
+  `request/intent_schema/explorer_config` 三样输入（不携带主对话历史），
+  只能调用 `capability.yaml -> explorer.tool_allowlist` 中声明的工具，
+  越权调用会被引擎拒绝并作为失败结果反馈给模型；受 `max_steps`/`max_seconds`
+  硬预算约束，超出直接判定失败。模型通过调用内置的 `finish` 工具提交最终
+  数据，或调用 `report_failure` 如实报告失败原因（如遇到验证码/登录墙）。
+- `_engine/distiller.py`：把探索得到的动作序列蒸馏为参数化脚本（把
+  `target.url`/`query` 等与本次请求相同的值替换为占位符，而不是原样保存
+  trace），蒸馏产物必须先在沙箱内自测（重新跑一遍 `run()` 并用
+  `intent_schema` 再校验一次），自测通过才允许原子化落盘
+  （`members/`、`registry.json`、`_index.json` 一起更新），不通过则丢弃、
+  不污染检索池。
+- `_engine/tool_runtime.py`：蒸馏脚本运行时的工具执行器注入点，蒸馏脚本
+  本身不实现任何具体浏览器控制逻辑，只保存"调用哪个工具、传什么参数"。
+- 生命周期状态机的 `degraded -> 重新探索 -> trusted(probation)/dead` 闭环
+  已在 `CapabilityEngine.call()` 中打通：命中的候选全部执行失败且该 member
+  已处于 `degraded` 时，会触发针对同一个 member_id 的重新探索；探索+蒸馏
+  成功则原地升版本号回到 `probation`，失败则按 `capability.yaml` 的
+  `dead_after_reexplore_fail` 标记为 `dead`。
+
+探索能力默认不启用（未注入 `explore_runner`/`tool_executor` 时 `explore()`
+会明确返回未注入的错误信息，不会伪造成功），需要宿主 agent 框架接入真实的
+`browser-core` 工具执行器后才能在生产环境生效；`capability_engine.py` 提供
+了 `--stub-explore-success` / `--stub-explore-fail` 命令行参数用于离线验证
+接线逻辑。
 
 详见 `next_doc/generative-capability-skill-plan.md`。

@@ -380,6 +380,102 @@ next_doc/generative-capability-skill-plan.md          # 本文档（重命名为
 - 候选摘要清单规模变大后（比如 `_index.json` 增长到几百个 member）的 prompt 体量与
   裁决延迟尚未做压测，超过一定规模可能需要引入分批裁决或先按大类目再二次检索的策略。
 
-### 阶段三 —— 未开始
+### 阶段三 —— 已完成
+
+**目标**：接入探索子agent（explore + distill），从单一领域（`browser-site-scraper`）
+试点，验证蒸馏产物质量与自测机制的可靠性。
+
+**新增/修改文件**：
+
+```
+.claude/skills/_engine/explorer_runtime.py           # 新增：探索子agent决策循环
+.claude/skills/_engine/distiller.py                  # 新增：trace -> 参数化脚本蒸馏器
+.claude/skills/_engine/tool_runtime.py                # 新增：蒸馏脚本运行时工具执行器注入点
+.claude/skills/_engine/capability_engine.py           # 修改：接入 explore_runner/tool_executor
+                                                        # 构造参数；explore()/_distill() 实现；
+                                                        # execute() 执行前注入 tool_runtime；
+                                                        # call() 打通 degraded->重新探索->
+                                                        # trusted(probation)/dead 闭环；
+                                                        # __main__ 增加 --stub-explore-success/
+                                                        # --stub-explore-fail 调试参数
+.claude/skills/browser-site-scraper/SKILL.md          # 更新阶段说明
+```
+
+**已实现能力**：
+
+- `explorer_runtime.build_llm_explorer()`：真实调用 Anthropic Messages API 的探索循环。
+  只接受 `request/intent_schema/explorer_config` 三样输入，不携带主对话历史；通过
+  `tools` 参数把 `capability.yaml -> explorer.tool_allowlist` 中的工具名暴露给模型，
+  并额外注入两个决策元工具 `finish`（提交最终数据）与 `report_failure`（如实报告
+  失败原因）。模型试图调用白名单之外的工具会被引擎拒绝执行，并把拒绝原因作为一次
+  失败的工具调用结果反馈给模型（不静默放行、不越权执行）；循环受 `max_steps`/
+  `max_seconds` 硬预算约束，超出直接终止并判定失败。
+- `distiller.distill()`：把 `ExploreTrace` 中的动作序列蒸馏为参数化脚本——把与本次
+  `request` 相同的 `target.url`/`query` 值替换为占位符，其余步骤原样固化为对
+  `tool_runtime` 注入的执行器的重放序列（而非把 trace 原样保存当脚本用）。蒸馏产物
+  必须先在独立的沙箱临时目录中自测（重新跑一遍生成的 `run()` 并用 `intent_schema`
+  再校验一次数据），自测通过后才把 `script.py`/`meta.json`/`registry.json`/
+  `_index.json` 一起原子化落盘（先写各自的 `.tmp` 临时文件，全部写完后再逐一
+  `replace()`，缩小"部分文件已提交、部分未提交"的窗口）；自测不通过则直接丢弃临时
+  目录，不落盘、不污染检索池，按方案文档第 6 节要求返回明确的失败原因。
+- `tool_runtime.py`：一个模块级的执行器注入点（`set_tool_executor`/
+  `get_tool_executor`），蒸馏脚本本身不实现任何具体浏览器控制逻辑，只保存"调用哪个
+  工具、传什么参数"的动作序列，真正执行交给调用方注入的执行器；`execute()` 在加载
+  任意 member 脚本前都会先注入当前引擎持有的 `tool_executor`，保证探索蒸馏出的
+  member 与人工手写的 member 在同一套统一接口下运行。
+- `CapabilityEngine.explore(request, reexplore_member_id=None)`：区分"全新领域探索"
+  与"针对已 degraded member 的重新探索"两种场景。前者蒸馏成功后按目标域名/请求文本
+  生成新的 `member_id` 落盘为新 member（`status: probation`, `version: 1`）；后者
+  蒸馏成功则原地复用同一个 `member_id`、版本号 +1、状态回到 `probation`，蒸馏失败则
+  按 `capability.yaml` 中 `dead_after_reexplore_fail` 配置把该 member 标记为 `dead`
+  （对应方案文档第 7 节生命周期状态机 `degraded -> 重新探索 -> trusted/dead` 的完整
+  闭环）。`explore_runner`/`tool_executor` 未注入时返回明确的错误信息，不伪造成功。
+- `CapabilityEngine.call()`：命中的候选全部执行失败时，若该 member 当前状态已是
+  `degraded`，自动带上 `reexplore_member_id` 触发针对该 member 的重新探索；否则走
+  全新探索路径。miss 场景保持不变，直接走全新探索。
+
+**验证结果**（沙盒环境无可用真实浏览器/CDP 连接、未配置 `ANTHROPIC_API_KEY`，
+均通过桩探索器/桩工具执行器验证接线逻辑，属预期情况）：
+
+1. 全新领域探索：对一个确定性匹配未命中的新域名请求，注入桩探索器（模拟
+   `browser_navigate` + `browser_extract_content` 两步后 `finish`）与桩工具执行器
+   → `resolve` 返回 `no_match` → `explore()` 成功 → `distill()` 沙箱自测通过 → 原子
+   落盘新 member（`members/some-new-site/`，`registry.json` 新增
+   `status: probation`，`_index.json` 新增摘要及基于域名自动推断的
+   `domain_pattern`）→ 最终 `call()` 返回 `status: success`。
+2. 落盘后免探索复用：不注入 `explore_runner`，仅注入 `tool_executor`，对同一请求
+   再次 `call()` → `resolve` 通过 `domain_pattern_match` 直接命中刚蒸馏出的 member
+   → `execute()` 成功，验证了蒸馏产物本身可被后续请求直接检索命中执行，无需每次
+   都重新探索。
+3. 连续失败触发 degraded：对 `baidu`（沙盒无可用浏览器，执行必然失败）连续调用
+   3 次且不注入 `explore_runner` → 每次都在 `execute()` 失败后尝试 `explore()`，
+   因未注入而返回 `not_implemented`；`registry.json` 中 `baidu` 的
+   `consecutive_failures` 正确累积，第 3 次后状态正确流转为 `degraded`。
+4. degraded 重新探索失败 -> dead：对已 `degraded` 的 `baidu` 再次 `call()`，注入
+   一个固定失败的桩探索器 → `execute()` 失败 → 检测到状态为 `degraded`，带
+   `reexplore_member_id="baidu"` 调用 `explore()` → 桩探索器失败 →
+   `_handle_reexplore_failure()` 按 `dead_after_reexplore_fail: true` 把
+   `baidu` 标记为 `dead`，验证通过。
+5. degraded 重新探索成功 -> probation + 版本升级：同样从 `degraded` 状态出发，改为
+   注入一个固定成功的桩探索器与桩工具执行器 → `distill()` 复用同一个
+   `member_id="baidu"` 落盘 → `registry.json` 中 `baidu.status` 回到
+   `probation`，`meta.json` 中 `version` 从 1 变为 2，验证了"原地升版本号"而非
+   "生成一个新的重复 member" 的设计。
+
+**已知遗留（留给后续阶段）**：
+
+- `explorer_runtime.build_llm_explorer()` 与真实 `browser-core` 工具集合的对接
+  （即真正可执行的 `tool_executor` 实现）尚未完成——这依赖 `browser-core` 从
+  `browser-cdp` 独立拆分为静态 skill（迁移路径第 1 步），当前仍是本文档"已知遗留"
+  中标注的过渡期写法。在此之前，探索能力只能通过桩实现验证接线逻辑，无法在生产
+  环境中真正抓取新网站。
+- 蒸馏策略目前是"逐步骤参数化重放"，还没有处理更复杂的情况：探索过程中出现的
+  条件分支（如"如果出现弹窗则先关闭"）、循环滚动加载等非线性动作序列，当前会被
+  原样按顺序固化，遇到这类场景蒸馏出的脚本鲁棒性可能不足，建议阶段五做真实场景
+  下的蒸馏质量评估时一并覆盖。
+- `_validate_schema` 仍只做必填字段存在性校验，未接入完整 JSON Schema 校验
+  （类型/结构/嵌套），阶段一遗留问题延续到本阶段，建议在完整生命周期状态机与
+  健康巡检（阶段四）之前一并补齐，避免探索蒸馏产物被浅层校验放过。
+
 ### 阶段四 —— 未开始
 ### 阶段五 —— 未开始
