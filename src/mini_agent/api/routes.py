@@ -152,8 +152,9 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/self/task_concurrency [kanban_concurrency_control_plan.md]
                                        顶栏"daemon 正在执行 N 项任务"对应的
                                        任务执行并发：Objective/Goal 通道、
-                                       Cron 通道各自的 running/current_cap/
-                                       hard_ceiling
+                                       Cron 通道各自的 running/current_cap
+                                       （current_cap 没有硬天花板，来自
+                                       agent_config.json 或看板热改）
     POST   /v1/self/task_concurrency [kanban_concurrency_control_plan.md]
                                        运行时热改 Objective/Goal 通道、Cron
                                        通道各自的最大并发执行数
@@ -2894,7 +2895,10 @@ async def get_self_scheduling_overview(request: Request):
             except Exception:
                 effective_max = MAX_CONCURRENT_OBJECTIVES
             try:
-                static_cap = oe.hard_ceiling()
+                # [并发上限可配置化] 没有硬天花板了，static_cap 展示的是
+                # agent_config.json 里配置的持久化值（configured_cap()），
+                # 仅供参考，不代表上限。
+                static_cap = oe.configured_cap()
             except Exception:
                 static_cap = MAX_CONCURRENT_OBJECTIVES
             result["goal_channel"]["objective_slots"] = {
@@ -3400,16 +3404,17 @@ async def get_self_task_concurrency(request: Request):
 
     返回结构：
     {
-      "objectives": {"current_cap": int, "hard_ceiling": int, "running": int},
+      "objectives": {"current_cap": int, "running": int},
       "cron":       {"current_cap": int | None, "running": int | None}
     }
 
-    `objectives.hard_ceiling` 是当前生效的绝对天花板，读的是
-    `autonomy.max_concurrent_objectives_hard_ceiling`（可以在
-    agent_config.json 里配置，未配置时退化为改造前写死的
-    `MAX_CONCURRENT_OBJECTIVES=2`）——`current_cap` 只能在
-    `[1, hard_ceiling]` 之间调整，调大到超过天花板不会有效果（详见
-    `ObjectiveExecutor.effective_max_concurrent()` 的"只降不升"设计）。
+    `objectives.current_cap` 就是当前生效的 Goal 并发上限，来自
+    `autonomy.max_concurrent_objectives_cap`——没有额外的硬天花板，
+    看板热改（`POST /v1/self/task_concurrency`）可以把它调成任意
+    `>= 1` 的值，不受模块级默认值（`MAX_CONCURRENT_OBJECTIVES=2`，仅
+    在完全没有 cfg 时才会用到）限制。热改只影响运行时内存态，不会写回
+    agent_config.json，daemon 重启后会掉回配置文件里的值（未配置则是
+    默认值 2）。
     `cron` 字段在 CronJobRunner 未启用（走的是旧的 submit_fn 路径）时为
     `None`，前端应据此隐藏 cron 那一栏的编辑控件。
     """
@@ -3425,19 +3430,14 @@ async def get_self_task_concurrency(request: Request):
     if oe is None:
         oe = getattr(http_server.bridge, "_objective_executor", None)
 
-    objectives_info = {"current_cap": MAX_CONCURRENT_OBJECTIVES, "hard_ceiling": MAX_CONCURRENT_OBJECTIVES, "running": 0}
+    objectives_info = {"current_cap": MAX_CONCURRENT_OBJECTIVES, "running": 0}
     if oe is not None:
         try:
-            # [并发上限可配置化] hard_ceiling 现在来自
-            # `autonomy.max_concurrent_objectives_hard_ceiling`（可配置/可
-            # 热改），不再是写死的模块级常量；未配置时 oe.hard_ceiling()
-            # 会退化返回 MAX_CONCURRENT_OBJECTIVES，行为与改造前一致。
-            ceiling = oe.hard_ceiling()
-            autonomy_cfg = getattr(oe._cfg, "autonomy", None) if getattr(oe, "_cfg", None) is not None else None
-            configured_cap = getattr(autonomy_cfg, "max_concurrent_objectives_cap", ceiling) if autonomy_cfg is not None else ceiling
+            # [并发上限可配置化] 没有硬天花板，current_cap 就是
+            # configured_cap()（读的是 autonomy.max_concurrent_objectives_
+            # cap，未配置时退化为模块级默认值 MAX_CONCURRENT_OBJECTIVES）。
             objectives_info = {
-                "current_cap": min(ceiling, int(configured_cap)),
-                "hard_ceiling": ceiling,
+                "current_cap": oe.configured_cap(),
                 "running": oe.running_count(),
             }
         except Exception as _mini_agent_exc:
@@ -3469,13 +3469,11 @@ async def post_self_task_concurrency(request: Request):
     Body: {"max_objectives": int} 和/或 {"max_cron_jobs": int}，至少提供
     一个。
 
-    - `max_objectives` 会被 clamp 到 `[1, hard_ceiling]`，`hard_ceiling`
-      读的是 `autonomy.max_concurrent_objectives_hard_ceiling`（可以在
-      agent_config.json 里配置，未配置时退化为改造前写死的
-      `MAX_CONCURRENT_OBJECTIVES=2`，这是设计上的安全阀，不是 bug）；
-      直接改的是 `ObjectiveExecutor._cfg.autonomy.
-      max_concurrent_objectives_cap`，`effective_max_concurrent()` 每次
-      调用都会重新读这个字段，所以立刻生效，不需要重启。
+    - `max_objectives` 只要求 `>= 1`，没有上限——[并发上限可配置化]
+      需求：看板热改不再受任何硬天花板限制。直接改的是
+      `ObjectiveExecutor._cfg.autonomy.max_concurrent_objectives_cap`
+      （运行时内存态），`effective_max_concurrent()` 每次调用都会重新读
+      这个字段，所以立刻生效，不需要重启。
     - `max_cron_jobs` 直接改 `CronJobRunner._max_concurrent`（要求
       `>= 1`），同样立刻生效；等待槽位的调度循环会用最新值重新计算。
       如果当前 cron 走的是旧路径（`CronJobRunner` 未启用），返回
@@ -3496,8 +3494,6 @@ async def post_self_task_concurrency(request: Request):
     if max_objectives is None and max_cron_jobs is None:
         raise HTTPException(status_code=400, detail="需要提供 max_objectives 或 max_cron_jobs 中至少一个")
 
-    from mini_agent.evolution.objective_executor import MAX_CONCURRENT_OBJECTIVES
-
     if max_objectives is not None:
         try:
             max_objectives = int(max_objectives)
@@ -3516,10 +3512,9 @@ async def post_self_task_concurrency(request: Request):
         autonomy_cfg = getattr(cfg, "autonomy", None) if cfg is not None else None
         if autonomy_cfg is None:
             raise HTTPException(status_code=503, detail="autonomy config not available")
-        # [并发上限可配置化] clamp 对象是可配置的 hard_ceiling()（默认
-        # 退化为 MAX_CONCURRENT_OBJECTIVES，与改造前行为一致），不再是写死
-        # 的模块级常量本身。
-        autonomy_cfg.max_concurrent_objectives_cap = min(max_objectives, oe.hard_ceiling())
+        # [并发上限可配置化] 没有硬天花板，只要求 >= 1（前面已校验），
+        # 直接写入配置对象的运行时内存态，不做任何 clamp。
+        autonomy_cfg.max_concurrent_objectives_cap = max_objectives
 
     if max_cron_jobs is not None:
         try:
@@ -3883,7 +3878,7 @@ async def get_autonomous_status(request: Request):
                     log_exception(_mini_agent_exc, where='mini_agent.api.routes')
                     effective_max = MAX_CONCURRENT_OBJECTIVES
                 try:
-                    static_cap = oe.hard_ceiling()
+                    static_cap = oe.configured_cap()
                 except Exception as _mini_agent_exc:
                     from mini_agent.errors import log_exception
                     log_exception(_mini_agent_exc, where='mini_agent.api.routes')

@@ -5,16 +5,18 @@ tests/test_objective_executor_adaptive_concurrency.py
 （并发数自适应）：
 
 - 未提供 cfg 时，`effective_max_concurrent()` 恒等于模块级常量
-  `MAX_CONCURRENT_OBJECTIVES`，`can_start_new()` 行为与改造前完全一致。
-- 提供 cfg 但 `adaptive_concurrency_enabled=False` 时，同样恒定返回天花板
-  （`min(MAX_CONCURRENT_OBJECTIVES, max_concurrent_objectives_cap)`）。
+  `MAX_CONCURRENT_OBJECTIVES`（仅作为无 cfg 时的兜底默认值）。
+- 提供 cfg 但 `adaptive_concurrency_enabled=False` 时，同样恒定返回
+  `configured_cap()`（即 `autonomy.max_concurrent_objectives_cap`，没有
+  额外的硬天花板/clamp）。
 - 提供 cfg 且开启自适应：
   - 样本不足时不下调。
   - 最近失败率达到阈值 → 下调一档。
   - 最近平均耗时达到阈值 → 再下调一档（可与失败率信号叠加）。
   - 无论如何不会低于 `adaptive_concurrency_min`。
-  - `max_concurrent_objectives_cap` 配置得比模块常量还大时，天花板仍以
-    模块常量为准（安全阀不能被配置突破）。
+  - `max_concurrent_objectives_cap` 配置得比模块常量还大时，直接以配置值
+    为准（[并发上限可配置化] 需求：配置项/看板热改都不再受模块常量限制，
+    没有硬天花板）。
 
 运行方式（仓库暂无 pytest.ini/conftest.py 设置 PYTHONPATH，手动指定 src）：
     PYTHONPATH=src python3 -m pytest tests/test_objective_executor_adaptive_concurrency.py -q
@@ -120,10 +122,12 @@ class TestAdaptiveConcurrency(unittest.TestCase):
             self._seed_execution(oe, status, duration=3600, idx=i)
         self.assertEqual(oe.effective_max_concurrent(), 1)
 
-    def test_configured_cap_cannot_exceed_static_constant(self):
+    def test_configured_cap_can_exceed_static_constant(self):
+        """[并发上限可配置化] 配置值可以超过模块常量——不再有硬天花板，
+        `effective_max_concurrent()` 直接以配置值为准。"""
         cfg = _make_cfg(max_concurrent_objectives_cap=MAX_CONCURRENT_OBJECTIVES + 5)
         oe = self._executor(cfg=cfg)
-        self.assertEqual(oe.effective_max_concurrent(), MAX_CONCURRENT_OBJECTIVES)
+        self.assertEqual(oe.effective_max_concurrent(), MAX_CONCURRENT_OBJECTIVES + 5)
 
     def test_can_start_new_respects_effective_limit(self):
         cfg = _make_cfg(max_concurrent_objectives_cap=1)

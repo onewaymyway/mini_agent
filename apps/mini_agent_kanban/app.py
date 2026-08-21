@@ -972,24 +972,24 @@ def _render_concurrency_control(client: AgentClient) -> None:
             "跑的任务。"
         )
 
-        hard_ceiling = int(obj.get("hard_ceiling", 2) or 2)
+        current_cap = int(obj.get("current_cap", 2) or 2)
         c1, c2 = st.columns(2)
         with c1:
             st.metric(
                 "目标(Goal)执行并发",
                 f"{obj.get('running', 0)} / {obj.get('current_cap', '—')}",
                 help=(
-                    f"硬天花板 {hard_ceiling}（读自 agent_config.json 的 "
-                    "autonomy.max_concurrent_objectives_hard_ceiling，改这个"
-                    "配置项、重启 daemon 后可以调高天花板本身）"
+                    "没有硬天花板，可以调成任意 >= 1 的值；持久化配置在 "
+                    "agent_config.json 的 autonomy.max_concurrent_objectives_"
+                    "cap，daemon 重启后会掉回配置文件里的值（未配置则是默认值 2）。"
                 ),
             )
             new_max_obj = st.number_input(
                 "最大并发 Objective 数",
-                min_value=1, max_value=hard_ceiling, step=1,
-                value=min(hard_ceiling, int(obj.get("current_cap", hard_ceiling) or hard_ceiling)),
+                min_value=1, step=1,
+                value=current_cap,
                 key="task_concurrency_max_obj_input",
-                help=f"取值范围 1～{hard_ceiling}",
+                help="没有上限，只要 >= 1 即可；调低只影响新任务排队，不会打断正在跑的任务。",
             )
             if st.button("应用", key="task_concurrency_apply_obj_btn"):
                 res = client.set_task_concurrency(max_objectives=int(new_max_obj))

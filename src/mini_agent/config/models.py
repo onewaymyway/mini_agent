@@ -1388,25 +1388,24 @@ class AutonomyConfig:
     # 单个 Goal 最多自动拆出几个 Objective（LLM 拆解失败/不可用时，
     # 降级为 1 个与 Goal 同名的 Objective，不受此上限影响）。
     auto_objective_max_per_goal: int = 3
-    # [看板与自主性改进方案 Track K] 并发数自适应：默认开启，因为这是一个
-    # 只降不升的机制——`max_concurrent_objectives_cap` 仍是配置得到的
-    # 硬上限（等价于改造前写死的 MAX_CONCURRENT_OBJECTIVES=2），自适应
-    # 逻辑只会在"最近失败率高"/"最近平均耗时长"时把实际生效的并发数往下
-    # 调，不会让并发数超过这个上限，因此默认开启不会让行为变得比"改造前"
-    # 更激进，只会更保守。
+    # [并发上限可配置化] 默认开启，因为这是一个只降不升的机制——
+    # `max_concurrent_objectives_cap` 才是真正生效的并发上限（可通过
+    # agent_config.json 配置，也可以在看板上热改，没有额外的硬天花板），
+    # 自适应逻辑只会在“最近失败率高”/“最近平均耗时长”时把实际生效的并发数
+    # 往下调，不会超过这个上限，因此默认开启不会让行为变得更激进，只会
+    # 更保守。
     adaptive_concurrency_enabled: bool = True
-    # 并发数硬上限（安全阀）：无论自适应逻辑如何计算，生效并发数不会超过
-    # 这个值，也不会超过 `max_concurrent_objectives_hard_ceiling`（两者取
-    # 更小的一个）。默认与改造前的硬编码值保持一致。
+    # [并发上限可配置化] 目标(Goal)执行的最大并发数——原来是写死在代码里
+    # 的模块级常量 MAX_CONCURRENT_OBJECTIVES=2，怎么调都突破不了；现在
+    # 这里就是唯一的上限，没有额外的硬天花板：
+    #   - 持久化配置：写在 agent_config.json 的 autonomy.
+    #     max_concurrent_objectives_cap，daemon 启动时读取生效，重启后
+    #     仍然有效。
+    #   - 运行时热改：看板“🎛️ 任务并发上限”面板 POST /self/task_concurrency
+    #     直接改的就是这个字段（内存态），立刻生效但不写回配置文件——
+    #     daemon 重启后会掉回配置文件里的值（没配置就是这里的默认值 2）。
+    # 默认值 2 与改造前的硬编码值保持一致，不配置的话行为不变。
     max_concurrent_objectives_cap: int = 2
-    # [并发上限可配置化] 绝对天花板：改造前是写死在代码里的模块级常量
-    # `MAX_CONCURRENT_OBJECTIVES=2`，`max_concurrent_objectives_cap` 无论
-    # 怎么调都突破不了它。现在改成可通过 agent_config.json 的
-    # `autonomy.max_concurrent_objectives_hard_ceiling` 配置，看板的并发
-    # 滑块也是拿这个值当 max_value——调大这个值就能让看板允许把并发调得
-    # 更高，不用改代码。默认值维持 2，与改造前行为完全一致，不配置的话
-    # 什么都不会变。低于 1 会被视为非法值，退化回默认值。
-    max_concurrent_objectives_hard_ceiling: int = 2
     # 生效并发数的下限（安全阀的另一端）：无论历史多差，自适应逻辑都不会
     # 把并发数降到 0（那等价于自主执行被整体停摆，属于 Track J 的资源
     # 门控范畴，不是本 Track 该做的事）。

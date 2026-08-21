@@ -51,12 +51,13 @@ if TYPE_CHECKING:
     from mini_agent.perception.goal_backlog import GoalBacklog, GoalNode
 
 
-# [并发上限可配置化] 这个模块级常量现在只是"没有可用 cfg 时的兜底默认
-# 值"，不再是不可突破的绝对天花板——真正生效的绝对天花板改由
-# `AppConfig.autonomy.max_concurrent_objectives_hard_ceiling` 提供（见
-# `ObjectiveExecutor.hard_ceiling()`），可以通过 agent_config.json 配置，
-# 也可以在看板上热改（`POST /v1/self/task_concurrency`）。未提供 cfg 或
-# cfg 里没有这个字段时，行为与改造前完全一致（等价于硬编码为 2）。
+# [并发上限可配置化] 这个模块级常量现在只是"没有可用 cfg（或 cfg 里没配置
+# `autonomy.max_concurrent_objectives_cap`）时的兜底默认值"，不是不可
+# 突破的硬天花板——真正生效的并发上限就是
+# `AppConfig.autonomy.max_concurrent_objectives_cap` 本身，没有额外的
+# clamp。它可以通过 agent_config.json 持久化配置，也可以在看板上运行时
+# 热改（`POST /v1/self/task_concurrency`，只改内存态、不写回配置文件，
+# daemon 重启后掉回配置文件里的值，没配置就是这里的默认值 2）。
 MAX_CONCURRENT_OBJECTIVES = 2
 MAX_STEP_RETRIES = 2
 MAX_STEPS_PER_OBJECTIVE = 8
@@ -678,38 +679,36 @@ class ObjectiveExecutor:
         self.save()
         return True
 
-    def hard_ceiling(self) -> int:
-        """[并发上限可配置化] 返回当前生效的绝对天花板。
-
-        优先读取 `cfg.autonomy.max_concurrent_objectives_hard_ceiling`
-        （可通过 agent_config.json 配置，也可以在看板上热改）；未提供
-        cfg、字段不存在、或配置了非法值（< 1）时，退化为模块级常量
-        `MAX_CONCURRENT_OBJECTIVES`（等价于改造前写死为 2 的行为）。
+    def configured_cap(self) -> int:
+        """[并发上限可配置化] 返回配置得到的目标(Goal)并发上限——即
+        `autonomy.max_concurrent_objectives_cap`，没有额外的硬天花板/
+        clamp。未提供 cfg、字段不存在、或配置了非法值（< 1）时，退化为
+        模块级常量 `MAX_CONCURRENT_OBJECTIVES`（等价于改造前写死为 2）。
         """
         autonomy_cfg = getattr(self._cfg, "autonomy", None) if self._cfg is not None else None
         if autonomy_cfg is None:
             return MAX_CONCURRENT_OBJECTIVES
         try:
-            ceiling = int(getattr(
-                autonomy_cfg, "max_concurrent_objectives_hard_ceiling", MAX_CONCURRENT_OBJECTIVES
+            cap = int(getattr(
+                autonomy_cfg, "max_concurrent_objectives_cap", MAX_CONCURRENT_OBJECTIVES
             ))
         except (TypeError, ValueError):
             return MAX_CONCURRENT_OBJECTIVES
-        return ceiling if ceiling >= 1 else MAX_CONCURRENT_OBJECTIVES
+        return cap if cap >= 1 else MAX_CONCURRENT_OBJECTIVES
 
     def effective_max_concurrent(self) -> int:
         """[Track K] 计算当前生效的并发上限。
 
-        规则（只降不升，安全阀在两端）：
-          - 起点是 `min(hard_ceiling(), cfg.autonomy.
-            max_concurrent_objectives_cap)`——`hard_ceiling()` 是可配置的
-            绝对天花板（见 `hard_ceiling()`，默认等价于改造前写死的
-            `MAX_CONCURRENT_OBJECTIVES=2`），`max_concurrent_objectives_cap`
-            只能在这个天花板以内调整，不能突破它。
+        规则（只降不升）：
+          - 起点是 `configured_cap()`——即 `autonomy.
+            max_concurrent_objectives_cap`，没有额外的硬天花板：这个值
+            既可以写在 agent_config.json 里持久化，也可以在看板上运行时
+            热改（只改内存态，不写回配置文件，daemon 重启后掉回配置文件
+            里的值）。
           - 未提供 `cfg`，或 `cfg.autonomy.adaptive_concurrency_enabled`
-            为 False 时，直接返回上面这个天花板，等价于改造前"写死用
-            MAX_CONCURRENT_OBJECTIVES"的行为（前提是也没配置更低的
-            cap——这是默认配置下的实际效果）。
+            为 False 时，直接返回 `configured_cap()`，等价于改造前"写死
+            用 MAX_CONCURRENT_OBJECTIVES"的行为（前提是也没有配置这个
+            字段——这是默认配置下的实际效果）。
           - 否则读取最近 `adaptive_concurrency_window` 个已结束
             （completed/failed）execution：
               - 样本数 < `adaptive_concurrency_min_samples` → 不参与判定，
@@ -721,16 +720,12 @@ class ObjectiveExecutor:
                 一档（可与上面失败率信号叠加）。
           - 最终结果不低于 `adaptive_concurrency_min`。
 
-        失败静默降级：任何异常都退化为返回天花板值（不下调），保持"没有
-        这个 Track"时的原始行为，不会因为统计逻辑本身出错而让并发数被
-        错误地砍掉。
+        失败静默降级：任何异常都退化为返回 `configured_cap()`（不下调），
+        保持"没有这个 Track"时的原始行为，不会因为统计逻辑本身出错而让
+        并发数被错误地砍掉。
         """
         autonomy_cfg = getattr(self._cfg, "autonomy", None) if self._cfg is not None else None
-        ceiling = self.hard_ceiling()
-        cap = ceiling
-        if autonomy_cfg is not None:
-            configured_cap = getattr(autonomy_cfg, "max_concurrent_objectives_cap", ceiling)
-            cap = min(ceiling, configured_cap)
+        cap = self.configured_cap()
 
         # [Track J] 资源门控降级：优先级高于 Track K 的自适应逻辑（两者都是
         # "只降不升"，取更严格的那一个即可）——ResourceArbiter 判定为
