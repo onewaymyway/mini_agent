@@ -34,3 +34,6 @@ lifecycle:
   probation_success_threshold: 3
   degrade_failure_threshold: 3
   dead_after_reexplore_fail: true
+  # 以下两项供 _engine/health_patrol.py 使用（阶段四）：
+  health_patrol_stale_days: 30        # 超过N天无任何成功/失败记录，标记为"长期未调用"
+  health_patrol_dead_retention_days: 14  # dead 状态保留N天供人工审查，超过后建议/可清理

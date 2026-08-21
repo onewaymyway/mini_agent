@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from explorer_runtime import ExploreStep, ExploreTrace
+from schema_validator import validate as _validate_schema_errors
 
 
 @dataclass
@@ -277,12 +278,9 @@ def _sandbox_run(script_path: Path, request: dict, tool_executor) -> dict:
 
 
 def _validate_schema(data: Any, schema: Optional[dict]) -> bool:
-    if not schema:
-        return data is not None
-    required = schema.get("required", [])
-    if not isinstance(data, dict):
-        return False
-    return all(field_name in data for field_name in required)
+    """完整 JSON Schema 子集校验（阶段四起改为复用 schema_validator，
+    不再是阶段一/三遗留的浅层必填字段检查）。"""
+    return len(_validate_schema_errors(data, schema)) == 0
 
 
 def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, request: dict,

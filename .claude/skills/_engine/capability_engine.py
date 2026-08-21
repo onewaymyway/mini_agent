@@ -243,10 +243,15 @@ class CapabilityEngine:
                 error=result.get("error") if isinstance(result, dict) else "member 返回格式非法",
             )
 
-        # schema 校验（阶段一做最基础的结构校验，占位；完整 JSON Schema 校验见后续阶段）
-        if not self._validate_schema(result.get("data"), entry.get("intent_schema")):
+        # schema 校验：使用 schema_validator 做完整校验（类型/结构/嵌套），
+        # 而不只是阶段一遗留的"必填字段是否存在"浅层检查（阶段四补齐）。
+        schema_errors = self._validate_schema(result.get("data"), entry.get("intent_schema"))
+        if schema_errors:
             self._record_execution(member_id, success=False)
-            return ExecuteResult(status="fail", member_id=member_id, error="返回数据未通过 intent_schema 校验")
+            return ExecuteResult(
+                status="fail", member_id=member_id,
+                error="返回数据未通过 intent_schema 校验: " + "; ".join(schema_errors),
+            )
 
         self._record_execution(member_id, success=True)
         return ExecuteResult(status="success", member_id=member_id, data=result.get("data"))
@@ -262,13 +267,15 @@ class CapabilityEngine:
         return getattr(module, "run", None)
 
     @staticmethod
-    def _validate_schema(data: Any, schema: Optional[dict]) -> bool:
-        if not schema:
-            return data is not None
-        required = schema.get("required", [])
-        if not isinstance(data, dict):
-            return False
-        return all(field_name in data for field_name in required)
+    def _validate_schema(data: Any, schema: Optional[dict]) -> list[str]:
+        """完整 JSON Schema 子集校验，见 schema_validator.py（阶段四）。
+        返回错误信息列表；空列表表示校验通过。"""
+        import sys as _sys
+        engine_dir = str(Path(__file__).resolve().parent)
+        if engine_dir not in _sys.path:
+            _sys.path.insert(0, engine_dir)
+        from schema_validator import validate as _validate
+        return _validate(data, schema)
 
     def _record_execution(self, member_id: str, success: bool) -> None:
         entry = self.registry["members"].setdefault(member_id, {})

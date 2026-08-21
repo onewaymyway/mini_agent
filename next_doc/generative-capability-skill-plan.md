@@ -477,5 +477,100 @@ next_doc/generative-capability-skill-plan.md          # 本文档（重命名为
   （类型/结构/嵌套），阶段一遗留问题延续到本阶段，建议在完整生命周期状态机与
   健康巡检（阶段四）之前一并补齐，避免探索蒸馏产物被浅层校验放过。
 
-### 阶段四 —— 未开始
+### 阶段四 —— 已完成
+
+**目标**：接入完整生命周期状态机（probation/trusted/degraded/dead）与定期健康巡检。
+
+**新增/修改文件**：
+
+```
+.claude/skills/_engine/schema_validator.py            # 新增：无第三方依赖的最小 JSON Schema 校验器
+.claude/skills/_engine/health_patrol.py               # 新增：定期健康巡检（低频后台任务）
+.claude/skills/_engine/capability_engine.py            # 修改：execute() 改用 schema_validator 做
+                                                         # 完整校验（不再是浅层必填字段检查）
+.claude/skills/_engine/distiller.py                    # 修改：蒸馏产物自测同样改用 schema_validator
+.claude/skills/browser-site-scraper/capability.yaml     # 修改：新增 health_patrol_stale_days /
+                                                         # health_patrol_dead_retention_days 配置
+.claude/skills/browser-site-scraper/SKILL.md           # 更新阶段说明
+```
+
+**已实现能力**：
+
+- `schema_validator.validate(data, schema) -> list[str]`：覆盖 intent_schema_template
+  实际会用到的关键字子集（`type`/`required`/`properties`/`items`/`enum`），递归校验
+  嵌套的 object/array 结构，类型不匹配时携带具体路径（如 `$.results[0].title`）与
+  期望/实际类型的错误信息，而不只是布尔值。刻意不引入 `jsonschema` 第三方依赖，
+  保持引擎自身零外部依赖、可在任意沙箱环境直接运行；不支持的高级关键字
+  （`oneOf`/`pattern` 等）会被忽略而非报错，避免过度拒绝。
+- `CapabilityEngine.execute()` 与 `distiller.distill()` 现在共用同一套校验逻辑，
+  解决了阶段一/阶段三"已知遗留"中明确记录的问题——此前"字段存在但类型/结构不对"
+  的数据会被浅层校验放过，现在会被正确判定为失败并计入 `fail_count`/触发降级，
+  探索蒸馏产物同理，类型不对的探索结果不会被误固化为新 member。
+- `health_patrol.run_patrol(skill_dir, fix_inconsistencies=False, apply_cleanup=False)`：
+  - **一致性检查**（只读）：交叉比对 `_index.json` / `registry.json` /
+    `members/` 目录三者的 member id 集合，识别出四类不一致
+    （`index_without_registry` / `registry_without_index` /
+    `member_dir_without_registry` / `registry_without_member_dir`），对应方案
+    文档第 8 节明确点名的"脚本能跑但检索不到"与"检索能到但脚本已被清理"两种
+    腐化状态，以及新增的"registry 有状态但脚本已丢失"情形。
+  - **不一致修复**（`fix_inconsistencies=True` 才生效）：以 `registry.json`
+    （member 真实生命周期状态的唯一权威来源）为准做最小修复——移除 index 中
+    找不到对应状态记录的孤立摘要；为 registry 中存在但 index 缺失摘要的
+    member 补一条最小摘要，确保能被检索到。`members/` 目录与 registry 之间
+    的不一致不自动修复（脚本文件本身无法凭空补出来），只提示人工审查。
+  - **长期未调用检测**（只读）：对超过 `health_patrol_stale_days`
+    （默认 30 天）没有任何成功/失败记录的非 dead member 生成 `stale` 提示；
+    对自建立以来从未被检索命中执行过一次的 member 单独提示，不计入清理候选。
+  - **dead 过期检测与清理**：对已进入 `dead` 状态且超过
+    `health_patrol_dead_retention_days`（默认 14 天）保留期的 member 生成
+    `dead_expired` 提示；仅当显式传入 `apply_cleanup=True` 时才真正删除
+    `members/<id>/` 目录并从 `registry.json`/`_index.json` 中移除，删除前会把
+    该 member 的 `meta.json` 内容记入报告，保证清理动作可审计、不是"静默丢弃"。
+    默认（不传 `apply_cleanup`）只生成"建议清理"清单，符合方案文档"清理或提示
+    人工审查"里"提示"优先于"清理"的表述，避免自动化巡检误删还在被低频使用的
+    能力。
+  - 提供命令行入口，支持 `--fix-inconsistencies` / `--apply-cleanup` 两个显式
+    开关，默认两者都不开启（纯只读巡检），便于先接入定时任务观察报告，再决定
+    要不要打开自动修复/清理。
+
+**验证结果**：
+
+1. `schema_validator`：对 `{"results": [...]}` 结构做类型正确/必填字段缺失/
+   字段类型错误/嵌套元素类型错误/无 schema 时兜底为"非 None 即通过" 五种场景
+   分别验证，返回的错误信息均携带正确的路径与类型描述。
+2. `execute()`/`distill()` 接入完整校验后回归测试：对一次成功的探索
+   （`{"results": [...]}` 结构合法）验证仍能正常蒸馏落盘；额外构造一次
+   `results` 字段类型为字符串（不满足 `type: array`）的探索结果，验证
+   `distill()` 正确在 `_validate_schema` 阶段拒绝蒸馏，不再像浅层校验那样
+   因为字段存在就误判通过。
+3. `health_patrol`：构造一个人为不一致的沙盒环境
+   （`_index.json` 中的孤立摘要 `orphan_in_index`、`registry.json` 中缺失
+   摘要且缺脚本目录的 `ghost_member`、`registry.json` 中一个时间戳造假为
+   2020 年、状态为 `dead` 的 `old_dead` 且带完整 `members/old_dead/` 目录），
+   先以只读模式跑一遍 `run_patrol()`，确认四类不一致 + `stale` + `dead_expired`
+   均被正确识别且未发生任何写操作；再以
+   `fix_inconsistencies=True, apply_cleanup=True` 跑一遍，确认
+   `orphan_in_index` 被移除、`ghost_member`/`old_dead` 被补全摘要、
+   `old_dead` 被真正清理（`members/old_dead/` 目录删除、`registry.json`/
+   `_index.json` 中对应条目移除，且报告中带有清理前的 `meta.json` 备份内容），
+   而没有脚本目录但非 `dead` 状态的 `ghost_member` 被正确保留供人工审查、
+   未被误删。
+
+**已知遗留（留给后续阶段）**：
+
+- `health_patrol.py` 目前用 `last_success`/`last_failure` 的较大值近似"进入
+  dead 状态的时间点"（`_dead_since()`），registry.json 尚未单独记录状态流转
+  时间戳；如果一个 member 长期 degraded 后才被判 dead，且此前很久没有失败记录
+  更新，这个近似值可能偏早，导致保留期计算不够精确。更准确的做法是在
+  `_apply_lifecycle()`/`_handle_reexplore_failure()` 写入 `registry.json` 时
+  额外记录 `status_changed_at` 时间戳，建议阶段五结合真实运行数据一并补齐。
+- `health_patrol.py` 尚未接入任何调度器（cron/定时任务），当前只是一个可被
+  低频调用的独立脚本/函数，实际接入自动化调度属于宿主 agent 框架
+  （`mini_agent` 自身的 cron/goal 系统）的集成工作，不在本方案引擎职责范围内，
+  仅在文档中给出命令行入口。
+- `schema_validator` 仍是"实际会用到的子集"而非完整 JSON Schema 规范
+  （不支持 `oneOf`/`anyOf`/`pattern`/数值范围等），如果后续领域
+  （第 11 节 `api-integration`/`doc-template-generation`）的 `intent_schema`
+  需要更严格的约束，需要按需扩展而非现在就引入完整实现。
+
 ### 阶段五 —— 未开始
