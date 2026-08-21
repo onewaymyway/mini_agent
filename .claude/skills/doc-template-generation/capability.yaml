@@ -1,0 +1,46 @@
+skill_type: generative-capability
+name: doc-template-generation
+
+# 第一级免LLM匹配规则（零成本，命中优先）。
+# 具体的 pattern/keyword 值来自各 member 目录下 _index.json 中的 "match" 字段。
+domain_matchers:
+  - type: keyword
+    field: target.template_name
+  - type: keyword
+    field: text
+
+# 该领域所有 member 输出必须满足的 schema 结构约束模板。
+intent_schema_template:
+  type: object
+  required: [document]
+  properties:
+    document:
+      type: object
+      required: [format, sections]
+      properties:
+        format:
+          type: string
+        sections:
+          type: array
+
+# 探索阶段配置（复用与 browser-site-scraper 相同的引擎接线；
+# base_tools 换成本领域自己的底层原语声明，占位，尚未实现）。
+explorer:
+  base_tools: [doc-core]
+  prompt: explorer/prompt.md
+  tool_allowlist: explorer/tool_allowlist.json
+  max_steps: 25
+  max_seconds: 120
+
+# member 的统一函数入口约定，引擎按此调用，通常无需改动。
+member_interface:
+  entrypoint: "run(input: dict) -> dict"
+
+# 生命周期阈值（可覆盖引擎默认值）。
+lifecycle:
+  probation_success_threshold: 3
+  degrade_failure_threshold: 3
+  dead_after_reexplore_fail: true
+  # 以下两项供 _engine/health_patrol.py 使用：
+  health_patrol_stale_days: 30
+  health_patrol_dead_retention_days: 14

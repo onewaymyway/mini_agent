@@ -1,0 +1,11 @@
+{
+  "members": [
+    {
+      "member_id": "standard_report",
+      "description": "标准报告模板：把 {title, body_sections:[{heading, text}]} 结构渲染为统一格式的 markdown 文档",
+      "match": {
+        "keyword": ["standard_report", "标准报告", "standard report template", "标准报告模板"]
+      }
+    }
+  ]
+}

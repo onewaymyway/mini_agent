@@ -1,0 +1,19 @@
+{
+  "source": "human",
+  "version": 1,
+  "intent_schema": {
+    "type": "object",
+    "required": ["document"],
+    "properties": {
+      "document": {
+        "type": "object",
+        "required": ["format", "sections"],
+        "properties": {
+          "format": { "type": "string" },
+          "sections": { "type": "array" }
+        }
+      }
+    }
+  },
+  "migrated_from": null
+}

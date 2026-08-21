@@ -50,7 +50,17 @@ result = engine.call({
     member，默认只在报告里给出"建议清理"，`--apply-cleanup` 时才真正删除
     （删除前会把 `meta.json` 内容记入报告，避免误删且不可审计）。
 
-探索能力（阶段三）仍需真实 `tool_executor` 接入才能在生产环境生效，本阶段
+探索能力（阶段三）仍需真实 `tool_executor` 接入才能在生产环境生效，阶段四
 未改变这一现状。
+
+## 阶段五：作为可复用 SDK 被验证
+
+`.claude/skills/_engine` 现在是一个可以直接 `from _engine import CapabilityEngine`
+的包（原先要求调用方自己 `sys.path.insert(...)` 塞入 `_engine` 目录再用
+flat 模块名 `import capability_engine` 的写法仍然兼容，但不再是唯一/推荐用法）。
+调度骨架、状态机、检索逻辑本身在本阶段**零改动**——阶段五只做了两件事：把引擎
+包装成稳定的公开接口，以及新增第二个 generative-capability skill
+`doc-template-generation` 验证复用性，详见该目录的 SKILL.md 与本文档阶段五
+实施记录。
 
 详见 `next_doc/generative-capability-skill-plan.md`。

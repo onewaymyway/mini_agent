@@ -1,0 +1,35 @@
+{
+  "members": {
+    "standard_report": {
+      "status": "trusted",
+      "intent_schema": {
+        "type": "object",
+        "required": [
+          "document"
+        ],
+        "properties": {
+          "document": {
+            "type": "object",
+            "required": [
+              "format",
+              "sections"
+            ],
+            "properties": {
+              "format": {
+                "type": "string"
+              },
+              "sections": {
+                "type": "array"
+              }
+            }
+          }
+        }
+      },
+      "success_count": 1,
+      "fail_count": 1,
+      "consecutive_failures": 1,
+      "last_success": "2026-08-21 05:34:42",
+      "last_failure": "2026-08-21 05:34:42"
+    }
+  }
+}

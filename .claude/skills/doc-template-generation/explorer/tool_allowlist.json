@@ -1,0 +1,9 @@
+{
+  "allowed_tools": [
+    "doc_read_sample",
+    "doc_extract_structure",
+    "doc_write_section",
+    "doc_render"
+  ],
+  "note": "占位声明，对应 capability.yaml 中 explorer.base_tools: [doc-core]。doc-core 这个静态 skill（文档解析/写入通用原语）尚未实现，与 browser-site-scraper 早期阶段对 browser-core 的处理方式一致。真正接入后，调度引擎将强制校验探索过程只调用此处声明的工具，其余能力一律拒绝，这一约束逻辑本身来自引擎（explorer_runtime.py），不需要本 skill 自己实现。"
+}

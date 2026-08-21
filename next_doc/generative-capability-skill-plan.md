@@ -573,4 +573,114 @@ next_doc/generative-capability-skill-plan.md          # 本文档（重命名为
   （第 11 节 `api-integration`/`doc-template-generation`）的 `intent_schema`
   需要更严格的约束，需要按需扩展而非现在就引入完整实现。
 
-### 阶段五 —— 未开始
+### 阶段五 —— 已完成
+
+**目标**：抽象出跨领域复用的引擎 SDK，支持第二个 `generative-capability` skill
+落地，验证方案泛化性。
+
+**新增/修改文件**：
+
+```
+.claude/skills/_engine/__init__.py                    # 新增：SDK 打包入口，
+                                                         # re-export 精简公开 API，
+                                                         # 内部各模块不改一行
+.claude/skills/browser-site-scraper/SKILL.md            # 更新阶段说明
+.claude/skills/doc-template-generation/                 # 新增：第二个 generative-
+                                                         # capability skill（对应
+                                                         # 第 11 节 "doc-template-
+                                                         # generation" 示例）
+  SKILL.md
+  capability.yaml
+  _index.json
+  registry.json
+  explorer/prompt.md                                     # 占位，doc-core 尚未实现
+  explorer/tool_allowlist.json                            # 占位，doc-core 尚未实现
+  members/standard_report/script.py                        # 纯逻辑 member，不依赖
+                                                            # 任何底层原语 skill
+  members/standard_report/meta.json
+next_doc/generative-capability-skill-plan.md              # 本文档（阶段五记录）
+```
+
+**已实现能力**：
+
+- **SDK 打包**（不改动任何内部调度/状态机逻辑）：`_engine/__init__.py` 把
+  `_engine` 目录变成一个可被 `from _engine import CapabilityEngine, ...`
+  的包。做法是先把自身目录插入 `sys.path`（保证包内各模块原有的 flat import
+  语句——如 `capability_engine.py` 里的 `from explorer_runtime import ...`——
+  不用改一行，避免为了"打包"而引入行为变化风险），再统一 re-export 一份精简
+  的公开 API：`CapabilityEngine`/`ResolveResult`/`ExecuteResult`/
+  `CapabilityCallResult`、`build_llm_resolver`/`build_stub_resolver`、
+  `ExploreStep`/`ExploreTrace`/`build_llm_explorer`/`build_stub_explorer`、
+  `distill`/`DistillResult`、`validate_schema`、`run_patrol`/`PatrolReport`/
+  `PatrolFinding`、`set_tool_executor`/`get_tool_executor`。调用方从此只需要
+  认识这一份接口，不需要知道引擎内部具体拆成了哪几个文件。
+- **第二个 generative-capability skill**：`doc-template-generation`，对应方案
+  文档第 11 节"可复用性验证"里提到的示例（intent 为"按某公司特定格式生成文档"）。
+  仅通过 `capability.yaml`（`domain_matchers` 换成基于 `target.template_name`
+  的关键词匹配、`intent_schema_template` 换成 `{document: {format, sections}}`、
+  `explorer.base_tools` 换成占位的 `doc-core`）与预置 member `standard_report`
+  （纯逻辑实现：把 `{title, body_sections}` 渲染为 markdown 分段结构，不依赖
+  任何外部 skill）落地，`capability_engine.py`/`distiller.py`/
+  `explorer_runtime.py`/`schema_validator.py`/`health_patrol.py` 全部零改动。
+
+**验证结果**：
+
+1. 通过 `from _engine import CapabilityEngine, ...` 直接 import 成功（无需
+   调用方手写 `sys.path` hack），验证 SDK 打包本身接线正确。
+2. `doc-template-generation` 命中路径：`{"target": {"template_name":
+   "standard_report"}, ...}` → `resolve()` 通过 `keyword_match` 命中
+   `standard_report` → `execute()` 成功，返回渲染后的 `document.sections`。
+3. `doc-template-generation` 命中但执行失败（`content` 缺字段）→
+   `execute()` 因 `run()` 内部校验失败而返回 fail → 未注入 `explore_runner`
+   时正确落回 `not_implemented`，与 `browser-site-scraper` 行为一致（因为这是
+   引擎的通用行为，不是本 skill 自己实现的）。
+4. `doc-template-generation` 全新领域探索（miss → 桩探索器成功 → 蒸馏落盘 →
+   新 member `weekly_update` 以 `probation` 状态写入 `registry.json`/
+   `_index.json`）→ 用相同请求文本再次调用（不注入 `explore_runner`），
+   `resolve_reason` 正确变为 `keyword_match`（而非 `explored`），确认蒸馏产物
+   无需每次重新探索即可被后续请求直接检索命中执行——与阶段三对
+   `browser-site-scraper` 验证过的行为一致，证明同一套 `explore`/`distill`
+   闭环在第二个领域下同样成立。
+5. 用 `browser-site-scraper` 阶段三实施记录里原样记录的桩探索场景（单步
+   `browser_navigate`、`tool_executor` 为 `lambda name, inp: {"ok": True,
+   "echo": inp}`）重新跑了一遍，**未能复现"探索成功→蒸馏落盘"的结果**，
+   而是在蒸馏自测阶段失败（`重放完成但未获得可用数据`）。逐行核对
+   `distiller.py::SCRIPT_TEMPLATE` 后确认原因：模板里 `_FINAL_DATA_TEMPLATE`
+   在 `distill()` 生成脚本代码时会被无条件 `.replace(..., "None")`，即蒸馏
+   出的脚本从不把探索阶段拿到的 `trace.data` 直接固化进去，完全依赖"重放
+   动作序列后最后一步工具调用的返回值里恰好带有形状正确的 `data` 字段"——
+   这要求自测/生产环境注入的 `tool_executor` 在被重放的最后一步就返回最终
+   数据（例如真实 `browser_extract_content`/`doc_render` 这类"提取/产出"
+   类工具通常会这样），而不是任意回显式的桩执行器。这不是本阶段引入的
+   回归，是阶段三代码自身一直如此；阶段三实施记录里"验证通过"的表述与
+   当前代码行为对不上，本阶段如实记录这一发现，不做静默掩盖，也不在阶段五
+   范围内改动 `distiller.py` 的这部分行为（属于蒸馏策略本身的设计取舍，
+   见下方"已知遗留"）。改用一个"最后一步工具返回带 `data` 字段"的
+   `tool_executor`（在 `doc-template-generation` 上用 `doc_render` 模拟）
+   后，完整 explore→distill→复用 闭环按预期跑通（即上面第 4 条）。
+
+**已知遗留（留给后续阶段）**：
+
+- 上一条发现的蒸馏产物"依赖重放最后一步工具输出里的 `data` 字段"这一设计，
+  对真实浏览器/文档场景是合理的（提取类工具的返回值本来就应该是最终数据），
+  但对自测/CI 场景不太友好——任何不精心构造"最后一步返回正确 `data`"的
+  桩 `tool_executor`，蒸馏都会在自测阶段失败，容易被误判为"探索失败"而非
+  "自测环境没配对"。建议后续阶段要么在 `ExploreTrace.data`（探索阶段已经
+  拿到的、经过 `intent_schema` 校验的最终数据）与"重放推导出的 data"之间
+  提供一个可选的一致性兜底（如两者不一致时报警而非直接判失败，或允许
+  `capability.yaml` 声明"信任 trace.data"的领域级开关），要么在文档/测试
+  辅助函数层面把"桩 `tool_executor` 必须让最后一步返回 `data`"这个约束
+  写得更显式，避免下一个接入 `generative-capability` 的 skill 作者重复
+  踩同一个坑。
+- `doc-template-generation` 的 `explorer/tool_allowlist.json` 中 `doc-core`
+  仍是占位声明，真正的文档解析/写入原语尚未实现（与 `browser-site-scraper`
+  当年对 `browser-core` 的处理方式一致），因此该 skill 的探索能力目前也
+  只能通过桩探索器验证接线逻辑，不代表已具备"学会一种全新公司文档格式"的
+  生产能力——这不影响阶段五本身的验证目标（验证调度骨架能否零改动跨领域
+  复用），特此说明避免造成能力已完备的误解。
+- SDK 目前仍以 `_engine` 为包名对外暴露（`from _engine import ...`），
+  没有做成本地可独立 `pip install` 的分发包（无 `pyproject.toml`/`setup.py`），
+  因为当前唯二两个调用方（`browser-site-scraper`、`doc-template-generation`）
+  都在同一个 `.claude/skills/` 目录下，用同级目录 `sys.path` 约定已经够用；
+  如果未来 `generative-capability` skill 需要被仓库之外的项目复用，再考虑
+  拆成独立可安装包。
