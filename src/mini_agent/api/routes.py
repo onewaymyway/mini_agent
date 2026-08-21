@@ -5921,10 +5921,11 @@ async def ack_external_alert(request: Request, alert_id: str):
 # notification/reports_store.py 模块 docstring。
 
 @router.get("/notifications/pending")
-async def get_pending_reports(request: Request, limit: int = 20, offset: int = 0):
-    """GET /v1/notifications/pending?limit=20&offset=0 — 分页返回未读的
-    watchlist_report 汇报，每条都带完整 `detail`（汇报正文，含命中明细），
-    供看板"关注与通知"tab 的"📋 待处理汇报"面板展开显示。"""
+async def get_pending_reports(request: Request, limit: int = 20, offset: int = 0, category: str = ""):
+    """GET /v1/notifications/pending?limit=20&offset=0&category=执行失败 — 分页
+    返回未读的 watchlist_report 汇报，每条都带完整 `detail`（汇报正文，
+    含命中明细）以及只读的 `category` 字段，供看板"关注与通知"tab 的
+    "📋 待处理汇报"面板展开显示、按分类筛选。`category` 留空返回全部。"""
     http_server = getattr(request.app.state, "http_server", None)
     if http_server is None:
         raise HTTPException(status_code=503, detail="HttpServer not available")
@@ -5937,13 +5938,34 @@ async def get_pending_reports(request: Request, limit: int = 20, offset: int = 0
     from mini_agent.notification.reports_store import list_pending_reports, count_pending_reports
     from mini_agent.storage.paths import AgentPaths
     paths = AgentPaths(proj_root)
-    total = count_pending_reports(paths)
-    reports = list_pending_reports(paths, limit=limit, offset=offset)
+    cat = category or None
+    total = count_pending_reports(paths, category=cat)
+    reports = list_pending_reports(paths, limit=limit, offset=offset, category=cat)
     return {
         "reports": reports,
         "total": total,
         "has_more": offset + len(reports) < total,
     }
+
+
+@router.get("/notifications/pending/categories")
+async def get_pending_report_categories(request: Request):
+    """GET /v1/notifications/pending/categories — 返回各分类下的未读
+    汇报数量，供看板渲染分类 tab 上的计数角标（不需要额外拉一次全量
+    列表来现算）。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    from mini_agent.notification.reports_store import count_pending_reports_by_category, ALL_CATEGORIES
+    from mini_agent.storage.paths import AgentPaths
+    counts = count_pending_reports_by_category(AgentPaths(proj_root))
+    return {"categories": ALL_CATEGORIES, "counts": counts}
 
 
 @router.post("/notifications/pending/{report_id}/ack")
@@ -5965,6 +5987,42 @@ async def ack_pending_report(request: Request, report_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail=f"Report {report_id!r} not found or already acknowledged")
     return {"ok": True}
+
+
+@router.post("/notifications/pending/batch_ack")
+async def batch_ack_pending_reports(request: Request):
+    """POST /v1/notifications/pending/batch_ack — 批量标记已读。请求体
+    二选一：
+      {"report_ids": ["id1", "id2", ...]}   — 标记指定的若干条
+      {"category": "执行失败"}               — 标记该分类下当前全部未读
+                                                （不传 category 或传空
+                                                字符串则标记全部未读）
+    两者都提供时以 `report_ids` 为准（更精确的显式选择优先于分类批量
+    操作）。返回实际标记成功的条数。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    from mini_agent.notification.reports_store import (
+        acknowledge_reports, list_pending_reports,
+    )
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(proj_root)
+
+    body = await request.json()
+    report_ids = (body or {}).get("report_ids")
+    if report_ids:
+        n = acknowledge_reports(paths, set(report_ids))
+    else:
+        category = (body or {}).get("category") or None
+        ids = {d["report_id"] for d in list_pending_reports(paths, category=category) if d.get("report_id")}
+        n = acknowledge_reports(paths, ids)
+    return {"ok": True, "acknowledged": n}
 
 
 # ── 外部输入网关 REST API（看板"🔌 外部输入"面板，P6）────────────────────────

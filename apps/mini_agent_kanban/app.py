@@ -9534,6 +9534,112 @@ def render_external_input_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# [关注与通知 待处理汇报 分类+批量处理] "📋 待处理汇报"面板独立成一个
+# @st.fragment 函数：分类切换/勾选/批量已读只应该重跑这个面板本身，不
+# 应该带动整个 render_notification_tab()（关注对象列表、tier 配置、
+# 通知发送记录）一起重新请求。
+_REPORT_CATEGORY_ALL = "全部"
+_REPORT_CATEGORY_ICONS = {
+    "执行失败": "🔴", "关注提醒": "🟡", "关注汇报": "🔵", "其他": "⚪",
+}
+
+
+@st.fragment
+def _render_pending_reports_panel(client: "AgentClient"):
+    st.markdown("##### 📋 待处理汇报")
+
+    cat_resp = client.notification_pending_report_categories() or {}
+    counts = cat_resp.get("counts") or {}
+    total_unread = sum(counts.values())
+    tab_labels = [f"{_REPORT_CATEGORY_ALL}（{total_unread}）"] + [
+        f"{_REPORT_CATEGORY_ICONS.get(c, '')} {c}（{counts.get(c, 0)}）"
+        for c in (cat_resp.get("categories") or [])
+    ]
+    selected_tab = st.radio(
+        "分类筛选", tab_labels, horizontal=True, label_visibility="collapsed",
+        key="notif_reports_category_tab",
+    )
+    # tab_labels 里带了计数，按位置换回纯分类名（第 0 项固定是"全部"）。
+    tab_idx = tab_labels.index(selected_tab) if selected_tab in tab_labels else 0
+    active_category = "" if tab_idx == 0 else (cat_resp.get("categories") or [])[tab_idx - 1]
+
+    reports_limit = st.session_state.get("notif_reports_limit", 20)
+    reports_resp = client.notification_pending_reports(
+        limit=reports_limit, category=active_category,
+    ) or {}
+    if "_error" in reports_resp:
+        st.caption(f"获取待处理汇报失败：{reports_resp['_error']}")
+        return
+
+    reports = reports_resp.get("reports") or []
+    if not reports:
+        st.info("当前没有未读的关注对象汇报。" if not active_category
+                 else f"「{active_category}」分类下当前没有未读汇报。")
+        return
+
+    st.caption(f"共 {reports_resp.get('total', len(reports))} 条未读，当前展示 {len(reports)} 条。")
+
+    # ── 批量处理 ──────────────────────────────────────────────────────
+    select_key = "notif_reports_selected_ids"
+    selected_ids: set = st.session_state.setdefault(select_key, set())
+    # 分类/翻页切换后，选中集合里可能残留当前列表看不到的 id，不清空
+    # （用户可能是想跨页勾选批量处理），但下面渲染时只显示当前列表的
+    # 勾选状态，不会误导。
+    bc1, bc2, bc3 = st.columns([1, 1, 2])
+    if bc1.button("☑️ 全选当前列表", key="notif_reports_select_all"):
+        selected_ids.update(r.get("report_id") for r in reports if r.get("report_id"))
+        st.rerun()
+    if bc2.button("⬜ 清空选择", key="notif_reports_clear_selection"):
+        selected_ids.clear()
+        st.rerun()
+    with bc3:
+        disabled = not selected_ids
+        if st.button(f"✅ 批量标记已读（已选 {len(selected_ids)} 条）",
+                      key="notif_reports_batch_ack", disabled=disabled):
+            res = client.batch_ack_notification_reports(report_ids=list(selected_ids))
+            if res and "_error" in res:
+                st.error(f"批量标记失败：{res['_error']}")
+            else:
+                st.success(f"已标记 {res.get('acknowledged', 0)} 条为已读。")
+                selected_ids.clear()
+                st.rerun()
+    if active_category:
+        if st.button(f"✅ 标记「{active_category}」全部为已读", key="notif_reports_ack_category"):
+            res = client.batch_ack_notification_reports(category=active_category)
+            if res and "_error" in res:
+                st.error(f"批量标记失败：{res['_error']}")
+            else:
+                st.success(f"已标记 {res.get('acknowledged', 0)} 条为已读。")
+                selected_ids.clear()
+                st.rerun()
+
+    for idx, rep in enumerate(reports):
+        rid = rep.get("report_id")
+        cat = rep.get("category") or "其他"
+        row_cb, row_expander = st.columns([0.06, 0.94])
+        checked = row_cb.checkbox(
+            "选择", value=rid in selected_ids, key=f"notif_report_cb_{idx}_{rid}",
+            label_visibility="collapsed",
+        )
+        if checked:
+            selected_ids.add(rid)
+        else:
+            selected_ids.discard(rid)
+        with row_expander:
+            icon = _REPORT_CATEGORY_ICONS.get(cat, "⚪")
+            with st.expander(f"{icon} [{cat}] {rep.get('title', '(无标题)')}", expanded=False):
+                st.markdown(rep.get("detail") or "（无正文）")
+                if st.button("标记已读", key=f"notif_report_ack_{idx}_{rid}"):
+                    res = client.ack_notification_report(rid)
+                    if res and "_error" in res:
+                        st.error(f"标记失败：{res['_error']}")
+                    else:
+                        selected_ids.discard(rid)
+                        st.rerun()
+    _load_more_control("notif_reports_limit", 20, 20, bool(reports_resp.get("has_more")))
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab: 🔔 关注与通知（Watchlist & Notification，P7）
 # ═══════════════════════════════════════════════════════════════════════
 def render_notification_tab(client: AgentClient):
@@ -9613,28 +9719,7 @@ def render_notification_tab(client: AgentClient):
     # 这里是"你关注的对象按周期打包汇总了一份清单"，不是需要你处理的
     # 告警。存储在独立的 reports.jsonl，也不再出现在 /v1/inbox 全局
     # 待办中心里。
-    st.markdown("##### 📋 待处理汇报")
-    reports_limit = st.session_state.get("notif_reports_limit", 20)
-    reports_resp = client.notification_pending_reports(limit=reports_limit) or {}
-    if "_error" in reports_resp:
-        st.caption("获取待处理汇报失败，暂不展示。")
-    else:
-        reports = reports_resp.get("reports") or []
-        if not reports:
-            st.info("当前没有未读的关注对象汇报。")
-        else:
-            st.caption(f"共 {reports_resp.get('total', len(reports))} 条未读，当前展示 {len(reports)} 条。")
-        for idx, rep in enumerate(reports):
-            rid = rep.get("report_id")
-            with st.expander(f"📋 {rep.get('title', '(无标题)')}", expanded=False):
-                st.markdown(rep.get("detail") or "（无正文）")
-                if st.button("标记已读", key=f"notif_report_ack_{idx}_{rid}"):
-                    res = client.ack_notification_report(rid)
-                    if res and "_error" in res:
-                        st.error(f"标记失败：{res['_error']}")
-                    else:
-                        st.rerun()
-        _load_more_control("notif_reports_limit", 20, 20, bool(reports_resp.get("has_more")))
+    _render_pending_reports_panel(client)
 
     st.divider()
 

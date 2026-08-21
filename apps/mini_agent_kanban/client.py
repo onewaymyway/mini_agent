@@ -666,15 +666,33 @@ class AgentClient:
         """标记一条 notify_only 告警已处理（不再出现在 /v1/inbox 里）。"""
         return self._post(f"/inbox/external_alerts/{alert_id}/ack")
 
-    def notification_pending_reports(self, limit: int = 20, offset: int = 0):
-        """分页返回未读的 watchlist_report 分级汇报（含完整 detail 正文），
-        供"关注与通知"tab 的"📋 待处理汇报"面板用。跟 external_input_alerts
-        是两个完全独立的存储/端点，见 notification/reports_store.py。"""
-        return self._get("/notifications/pending", params={"limit": limit, "offset": offset})
+    def notification_pending_reports(self, limit: int = 20, offset: int = 0, category: str = ""):
+        """分页返回未读的 watchlist_report 分级汇报（含完整 detail 正文，
+        及只读 `category` 字段），供"关注与通知"tab 的"📋 待处理汇报"
+        面板用。跟 external_input_alerts 是两个完全独立的存储/端点，见
+        notification/reports_store.py。`category` 非空时只返回该分类。"""
+        params = {"limit": limit, "offset": offset}
+        if category:
+            params["category"] = category
+        return self._get("/notifications/pending", params=params)
+
+    def notification_pending_report_categories(self):
+        """返回各分类下的未读汇报数量，供分类 tab 计数角标用。"""
+        return self._get("/notifications/pending/categories")
 
     def ack_notification_report(self, report_id: str):
         """标记一条 watchlist_report 汇报为已读。"""
         return self._post(f"/notifications/pending/{report_id}/ack")
+
+    def batch_ack_notification_reports(self, report_ids: list = None, category: str = ""):
+        """批量标记已读。传 `report_ids` 标记指定几条；不传时用
+        `category`（留空 = 全部未读）。"""
+        body = {}
+        if report_ids:
+            body["report_ids"] = report_ids
+        elif category:
+            body["category"] = category
+        return self._post("/notifications/pending/batch_ack", json_body=body)
 
     def novelty_candidates(self, limit: int = 20, offset: int = 0):
         """§2 新颖信号候选：分页返回待确认候选（status=pending）。"""
