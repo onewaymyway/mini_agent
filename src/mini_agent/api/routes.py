@@ -8458,6 +8458,7 @@ async def post_growth_align_confirm_match(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/growth/health_trend")
 async def get_growth_health_trend(request: Request):
     """GET /v1/growth/health_trend — [next_doc/growth_advisor_improvement_plan_v4.md
     方向三 N1] 返回全局健康度快照序列（最近若干天，按时间正序），供看板

@@ -5635,6 +5635,17 @@ def _render_growth_health_trend(client: "AgentClient"):
         except Exception as e:
             st.caption(f"趋势数据加载失败：{e}")
             return
+        # [bugfix] AgentClient._get() 请求失败时不抛异常，而是返回
+        # {"_error": "..."}（这是本文件里其它几十个调用点统一遵守的
+        # 约定，见 `"_error" in resp` 的检查）。这里此前没有检查这个
+        # 标记，导致一次真实的接口错误（网络问题/后端异常）会被
+        # `data.get("health_trend") or []` 悄悄吞成空列表，进而显示
+        # "暂无历史快照"这条误导性文案——哪怕 growth_health_trend.jsonl
+        # 里实际已经有数据。现在显式区分"请求失败"和"确实没有数据"
+        # 两种情况。
+        if "_error" in data:
+            st.caption(f"趋势数据加载失败：{data['_error']}")
+            return
         rows = data.get("health_trend") or []
         if not rows:
             st.caption("暂无历史快照——健康度趋势在每天一轮的自动扫描"
