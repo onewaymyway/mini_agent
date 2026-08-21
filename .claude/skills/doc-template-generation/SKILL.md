@@ -1,7 +1,8 @@
 ---
 name: doc-template-generation
 skill_type: generative-capability
-description: 按特定公司/场景格式生成结构化文档（标准报告、周报等模板）。不在主 context 中展开具体模板列表，按需通过 capability_engine 检索并加载对应 member；未命中或已有模板失效时触发探索（解析样例文档）自动补全并沉淀为新模板 member。
+category_summary: 按特定公司/场景格式生成结构化文档（标准报告、周报等模板），未命中或已有模板失效时自动探索补全。
+description: 按特定公司/场景格式生成结构化文档（标准报告、周报等模板）。不在主 context 中展开具体模板列表，按需通过 capability_call 工具检索并加载对应 member；未命中或已有模板失效时触发探索（解析样例文档）自动补全并沉淀为新模板 member。
 triggers: 生成文档, 按模板出文档, 公司格式报告, doc template
 platforms: windows, macos, linux, pc
 ---
@@ -9,9 +10,8 @@ platforms: windows, macos, linux, pc
 # doc-template-generation（generative-capability skill）
 
 本 skill 与 `browser-site-scraper` 复用**同一套**通用调度引擎
-`.claude/skills/_engine`（对外作为 `capability_sdk` 使用，见该目录下
-`__init__.py`），仅通过本目录下的 `capability.yaml` / `explorer/` /
-`members/` 声明领域差异，引擎代码零改动。
+`mini_agent.skills.generative_capability`，仅通过本目录下的
+`capability.yaml` / `explorer/` / `members/` 声明领域差异，引擎代码零改动。
 
 这是方案文档 `next_doc/generative-capability-skill-plan.md` 第 11 节
 "可复用性验证：泛化到其他领域"中提到的 `doc-template-generation` 示例，
@@ -21,16 +21,13 @@ platforms: windows, macos, linux, pc
 
 ## 调用方式
 
+- **agent 在对话中**：调用 `capability_call(skill_name="doc-template-generation", request={...})` 工具。
+- **代码/脚本中直接使用引擎**：
+
 ```python
-import sys
-from pathlib import Path
+from mini_agent.skills.generative_capability import CapabilityEngine
 
-_SKILLS_DIR = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_SKILLS_DIR))
-
-from _engine import CapabilityEngine
-
-engine = CapabilityEngine(_SKILLS_DIR / "doc-template-generation")
+engine = CapabilityEngine("path/to/doc-template-generation")
 result = engine.call({
     "text": "帮我按 standard_report 模板生成一份文档",
     "target": {"template_name": "standard_report"},
@@ -56,7 +53,8 @@ result = engine.call({
 
 调度骨架（`resolve`/`execute`/`explore`/`distill`）、生命周期状态机
 （probation/trusted/degraded/dead）、检索两级过滤逻辑与
-`browser-site-scraper` 完全相同，来自 `_engine` 的同一份代码。
+`browser-site-scraper` 完全相同，来自 `mini_agent.skills.
+generative_capability` 的同一份代码。
 
 ## 已知遗留
 
@@ -68,4 +66,10 @@ result = engine.call({
   验证的是调度骨架能否零改动复用，不是要求两个 skill 同时达到相同的
   探索能力成熟度。
 
-详见 `next_doc/generative-capability-skill-plan.md` 阶段五实施记录。
+## 阶段七：引擎迁入主项目正常子包
+
+`.claude/skills/_engine` 目录已删除，引擎代码现在位于
+`src/mini_agent/skills/generative_capability/`。agent 现在可以通过
+`capability_call` 工具在对话中直接调用本 skill，详见方案文档阶段七实施记录。
+
+详见 `next_doc/generative-capability-skill-plan.md` 阶段五、阶段七实施记录。

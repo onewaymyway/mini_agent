@@ -773,3 +773,151 @@ next_doc/generative-capability-skill-plan.md              # 本文档（阶段�
   中偏架构性的两项——`browser-core`/`doc-core` 从领域 skill 中真正独立拆分
   为静态 skill、`schema_validator` 扩展到完整 JSON Schema 关键字集合——仍待
   后续阶段推进，本阶段范围内不涉及，避免在没有真实业务驱动前过度设计。
+
+### 阶段七 —— 已完成
+
+**目标**：回应"引擎代码放在 `.claude/skills/_engine`（skill 内容目录）
+是否合理"的架构复核。结论是不合理，原因不是风格问题，是三个可验证的实际
+后果：(1) `src/mini_agent` 里没有任何地方引用这套引擎代码，agent 运行时
+完全没有工具能触发 `capability_call()`，阶段一到阶段六的"验证结果"全部
+只能靠手动跑 CLI 自测入口完成；(2) 没有进 `tests/` 目录的 pytest 回归
+覆盖；(3) 模块间互相 import 要靠 `sys.path.insert(...)` 手工塞目录，这正是
+"这坨代码不该待在 skill 空间里"的直接症状。方案文档本身在第 1 条设计原则
+（"流程与领域分离"）、第 9 节表格（"调度引擎、状态机、检索逻辑全平台复用"）、
+第 10 节第 4 点（"`tests/`、`scripts/eval_*.py` 等开发期工具从 skill 目录中
+移出，归入项目工程目录"）里已经隐含了这个结论，本阶段是把这个结论落到实处。
+
+**改动范围**：两层拆分，不是整体搬家——引擎"代码"迁入主项目，各 skill 的
+"声明式配置与运行时数据"留在原地。
+
+```
+迁移（新增，主项目正常子包，模块间改为相对 import，不再需要 sys.path hack）：
+src/mini_agent/skills/generative_capability/__init__.py         # 新增：公开 API re-export
+src/mini_agent/skills/generative_capability/capability_engine.py # 从 .claude/skills/_engine/ 迁入
+src/mini_agent/skills/generative_capability/distiller.py         # 同上
+src/mini_agent/skills/generative_capability/explorer_runtime.py  # 同上
+src/mini_agent/skills/generative_capability/health_patrol.py     # 同上
+src/mini_agent/skills/generative_capability/llm_resolver.py      # 同上
+src/mini_agent/skills/generative_capability/schema_validator.py  # 同上
+src/mini_agent/skills/generative_capability/tool_runtime.py      # 同上
+
+删除：
+.claude/skills/_engine/                                          # 整个目录删除，内容已迁移
+
+新增（接线，让 agent 真正能调用到引擎）：
+src/mini_agent/tools/capability_call.py         # 新增：capability_call 工具
+src/mini_agent/agent/core.py                    # 修改：Agent.__init__ 注册 capability_call 工具
+src/mini_agent/skills/__init__.py               # 修改：Skill 增加 skill_type/category_summary/
+                                                   # is_generative_capability；_parse_skill() 解析这两个
+                                                   # frontmatter 字段；build_context() 对这类 skill 只注入
+                                                   # 一行摘要不整段注入正文；get_catalog() 附带标记
+
+新增（回归测试，替代此前"手动 CLI 验证"）：
+tests/test_generative_capability_engine.py      # 新增：11 个测试用例，覆盖包 import、
+                                                   # resolve/execute/explore/distill 全流程、
+                                                   # 第二领域复用、SkillLoader 特殊处理、
+                                                   # capability_call 工具边界条件
+
+保留原地不变（声明式配置与运行时数据，本阶段未改动内容，仅是路径引用不再
+指向已删除的 `_engine`）：
+.claude/skills/browser-site-scraper/{SKILL.md, capability.yaml, explorer/, _index.json, registry.json, members/}
+.claude/skills/doc-template-generation/{同上结构}
+```
+
+**已实现能力**：
+
+1. **引擎从 skill 空间迁入主项目正常子包**：`mini_agent.skills.
+   generative_capability` 现在可以被正常 `import`，不需要任何 `sys.path`
+   操作；包内 `capability_engine.py`/`distiller.py`/`explorer_runtime.py`
+   等互相引用改为 `from .xxx import yyy` 相对 import。唯一保留的
+   `sys.path` 用法是 `CapabilityEngine.execute()` 与
+   `distiller._sandbox_run()` 加载/自测 member 脚本文件——这些是运行时
+   按路径动态生成、`importlib` 加载的独立文件，不属于本包，脚本内部对
+   `tool_runtime` 的引用仍是 flat import（`SCRIPT_TEMPLATE` 里写死的），
+   保留这一处 `sys.path.insert` 是必要的运行时机制，不是图省事的遗留写法，
+   已在 `capability_engine.py`/`__init__.py` 头部注释中说明区别。
+2. **agent 现在真的能调用到引擎**：新增 `tools/capability_call.py`，注册
+   `capability_call(skill_name, request)` 工具，在 `Agent.__init__` 里与
+   `skill_list`/`skill_activate` 等工具一起注册（复用同样的
+   `override=True` 约定，兼容 SubAgent 持有独立 `skill_loader` 的场景）。
+   工具只接受 `skill_type: generative-capability` 的 skill，对普通静态
+   skill 和不存在的 skill 名都给出明确的错误信息与正确的下一步提示，不
+   静默尝试或伪造结果。默认注入 `build_llm_resolver()`（真实调用第二级
+   LLM 检索裁决，这一步不依赖任何领域特定的底层工具，因此可以无条件开启）；
+   **默认不注入 `explore_runner`/`tool_executor`**——底层操作原语
+   （`browser-core` 等）仍是阶段四/阶段五"已知遗留"里明确记录、尚未从
+   各领域 skill 独立拆分出来的部分，本工具没有能力代为实现，命中 miss
+   或需要探索的请求会如实返回 `not_implemented` 并在 `note` 字段说明原因，
+   不会被伪造成功——这是诚实暴露"阶段十仍未完成"这件事，而不是掩盖它。
+3. **`SkillLoader` 认得 `skill_type: generative-capability`**：`_parse_skill()`
+   新增解析 `skill_type`/`category_summary` 两个 frontmatter 字段（这正是
+   方案文档第 2 节从一开始就定义好的格式，本阶段是第一次真正实现它的解析
+   与消费）；`Skill.is_generative_capability` 属性、`build_context()` 对这
+   类 skill 只注入一行摘要 + 一句"调用 capability_call"的引导，不整段注入
+   `SKILL.md` 正文（即使作者不小心在正文里写了 member 清单细节，也不会
+   泄漏进主 context）；`get_catalog()` 附带 `skill_type`/`category_summary`
+   字段，让 `skill_list` 工具的返回结果里能看出这是一个"按需调用"而非
+   "需要 skill_activate 加载正文"的 skill。
+4. **两个既有 generative-capability skill 的 `SKILL.md`/`capability.yaml`/
+   `registry.json`/`members/` 内容本身未改动**，只是文档里"引擎代码在哪"
+   这一句描述从 `.claude/skills/_engine` 更新为
+   `src/mini_agent/skills/generative_capability`。
+5. **补齐 `tests/` 目录的正常 pytest 回归覆盖**：新增
+   `tests/test_generative_capability_engine.py`，11 个用例覆盖：包能否
+   正常 import、`resolve()`/`execute()` 命中已有 trusted member 执行成功、
+   未命中且未注入探索器时如实返回 `not_implemented`（不伪造成功）、LLM
+   桩解析器命中、完整 explore→distill→落盘→免探索复用闭环（用桩探索器，
+   不依赖真实网络）、第二个 generative-capability skill（`doc-template-
+   generation`）复用同一套引擎、`SkillLoader` 对 `skill_type`/
+   `category_summary` 的解析与 `build_context()` 摘要注入行为、
+   `capability_call` 工具对静态 skill 和未知 skill 名的边界条件。此前
+   阶段一到阶段六的"验证结果"全部依赖临时构造的沙盒场景手动跑一次，本次
+   之后这些场景成为可重复执行的自动化回归测试。
+
+**验证结果**：
+
+1. `pytest tests/test_generative_capability_engine.py -v` → 11 passed。
+2. 对比修改前后：把项目原始压缩包解到独立目录，跑同一批既有 skill 相关
+   测试（`test_skill_cli.py`/`test_skill_compact.py`/`test_skill_manager.py`/
+   `test_skill_propose.py`/`test_skill_usage_detector.py`）→ 修改前后结果
+   完全一致，均为 `42 failed, 120 passed, 12 errors`（失败原因是这些测试
+   文件里的 `make_loader()` 辅助函数用 `SkillLoader.__new__()` 手工构造
+   实例、未同步设置 `_auto_activate_blocked` 等属性，是项目原始压缩包里
+   已经存在的、与本次改动完全无关的既有缺陷，不在本次任务范围内），确认
+   本阶段改动没有引入任何新的测试回归。
+3. `pytest tests/test_capability_cmd.py tests/test_capability_notification_v021.py
+   tests/test_capability_outline_suggestions_v021.py
+   tests/test_external_trend_capability_link.py
+   tests/test_capability_persona_wiki_scopes_binding.py
+   tests/test_capability_learning_empty_retrieval_fix.py
+   tests/test_capability_learning_p1.py tests/test_capability_wiki_freshness.py
+   tests/test_capability_routes_mount.py tests/test_external_input_watch.py`
+   → 140 passed，确认与项目里另一套同名前缀但完全不相关的
+   `capability_learning`/`capability_routes` 子系统（persona 能力学习，
+   与 generative-capability skill 引擎是两回事，只是碰巧都叫
+   "capability"）没有任何相互影响。
+4. 用沙盒副本重新跑一遍阶段一到阶段六实施记录里手工验证过的关键路径
+   （domain_pattern_match 命中执行失败、no_match 无探索器返回
+   not_implemented、LLM 桩解析器命中、完整 explore→distill→复用闭环、
+   `doc-template-generation` 复用同一引擎）→ 结果与之前的实施记录完全
+   一致，确认迁移过程中行为没有发生任何变化，纯粹是"代码挪了位置、补上了
+   之前缺失的接线和测试"，不是一次隐藏了行为改动的重构。
+
+**已知遗留（留给后续阶段）**：
+
+- `capability_call` 工具目前默认不注入 `explore_runner`/`tool_executor`，
+  这意味着通过真实运行的 agent 调用时，只有命中已有 trusted/probation
+  member 并执行成功的路径完全可用；需要触发探索的路径仍会如实返回
+  `not_implemented`。要让探索路径也在真实 agent 里跑通，需要先完成方案
+  文档第 10 节"迁移路径"里提到的 `browser-core`/`doc-core` 独立拆分为
+  静态 skill 这一步，拿到一个可以被安全注入进 `tool_executor` 的、有明确
+  权限边界的底层操作原语执行器；这本身工作量不小，且涉及到探索子agent的
+  真实网络/浏览器操作权限模型设计，留给专门的后续阶段处理，不在本次范围
+  内草率接线。
+- `explorer_runtime.build_llm_explorer()` 目前仍是自己用 `urllib` 手写的
+  一套 Anthropic Messages API 调用，没有复用 `src/mini_agent/llm/*` 已有的
+  客户端池、重试策略、debug 日志等基础设施；这两套调用链路的鉴权/配置/
+  模型选择目前是彼此独立的。本阶段迁移只解决了"引擎代码放在哪个目录"这
+  一层问题，"引擎内部该不该复用项目已有的 LLM 调用基础设施"是下一层可以
+  继续挖的优化点，因为改动面会涉及 `explorer_runtime.py` 内部实现细节
+  （而不只是文件挪位置），本阶段范围内不做，留待后续阶段视实际需要推进。

@@ -53,6 +53,19 @@ class Skill:
     # [渐进式加载] 结构化子资源（可加载）与自助浏览提示（不受管理，agent 自己查）
     resources: list["SkillResource"] = field(default_factory=list)
     browse_paths: list[dict] = field(default_factory=list)  # [{"path":..., "description":...}]
+    # [阶段七 / generative-capability] 见
+    # next_doc/generative-capability-skill-plan.md 第 2 节"Skill 类型声明"。
+    # 静态 skill（默认）留空字符串；`skill_type: generative-capability` 的
+    # skill 内部是一个"领域功能包"（如 browser-site-scraper），成员清单不
+    # 应整段注入主 context，只暴露 category_summary 这一行摘要，具体检索/
+    # 执行/探索走 mini_agent.skills.generative_capability.CapabilityEngine
+    # （见 tools/capability_call.py）。
+    skill_type: str = ""
+    category_summary: str = ""
+
+    @property
+    def is_generative_capability(self) -> bool:
+        return self.skill_type == "generative-capability"
 
     def matches_query(self, query: str) -> bool:
         """Heuristic: does the user query seem to need this skill?"""
@@ -501,6 +514,24 @@ class SkillLoader:
         parts = []
         for name in self._active:
             skill = self._all[name]
+            # [阶段七 / generative-capability] 见方案文档第2节：这类 skill 在
+            # 主 context 中只暴露一行摘要，不整段注入 SKILL.md 正文（正文本身
+            # 也应当写得很简短，但这里显式短路，即使作者不小心写多了也不会
+            # 把 member 清单/探索细节泄漏进主 context）。具体检索/执行/探索
+            # 走 capability_call 工具（tools/capability_call.py），不走
+            # build_context 这条"整段内容注入"的路径。
+            if skill.is_generative_capability:
+                summary = skill.category_summary or skill.description
+                parts.append(
+                    f"## Skill: {skill.name}  [generative-capability]\n\n"
+                    f"{summary}\n\n"
+                    f"这是一个按需检索的领域功能包，内部成员清单不在此处展开。"
+                    f"需要用到该能力时，调用 `capability_call(skill_name=\"{skill.name}\", "
+                    f"request={{...}})` 工具——传入你的目标与期望的数据结构，会得到"
+                    f"结果或明确的失败原因，不需要（也不应该）自己去读 "
+                    f"`{skill.location.parent}` 目录下的 members/ 内容。"
+                )
+                continue
             if query:
                 _content = self._relevant_chunks(skill.content, query)
             else:
@@ -715,6 +746,13 @@ class SkillLoader:
                 "description": skill.description,
                 "active":      is_active,
             }
+            if skill.is_generative_capability:
+                # [阶段七] 标记出来，让 skill_list 的调用方（agent）知道这类
+                # skill 不需要 skill_activate 去加载正文，直接用
+                # capability_call(skill_name=..., request=...) 即可，
+                # category_summary 就是它对外唯一暴露的一行说明。
+                entry["skill_type"] = "generative-capability"
+                entry["category_summary"] = skill.category_summary or skill.description
             if is_active:
                 entry["location"] = str(skill.location.parent)
             else:
@@ -850,6 +888,10 @@ def _parse_skill(path: Path) -> Optional[Skill]:
     # [platform_filter] platforms / tags：逗号分隔，未声明 = 不限制（见 platform_filter.py）
     platforms = _parse_list(fields.get("platforms", "") if fm_match else "")
     skill_tags = _parse_list(fields.get("tags", "") if fm_match else "")
+    # [阶段七 / generative-capability] 静态 skill 不声明这两个字段，保持
+    # 默认空字符串，_skill_allowed/build_context 等既有逻辑完全不受影响。
+    skill_type = fields.get("skill_type", "").strip() if fm_match else ""
+    category_summary = fields.get("category_summary", "").strip() if fm_match else ""
     confidence_score = 1.0
     if fm_match:
         try:
@@ -897,6 +939,8 @@ def _parse_skill(path: Path) -> Optional[Skill]:
         tags=skill_tags,
         resources=resources,
         browse_paths=browse_paths,
+        skill_type=skill_type,
+        category_summary=category_summary,
     )
 
 

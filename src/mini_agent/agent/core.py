@@ -286,6 +286,12 @@ class Agent(
             # [渐进式加载] 子资源级 skill_resource_list/load/unload，让 agent 能
             # 自主判断是否需要加载某个子文档，而不是只靠关键词自动触发
             register_skill_resource_tools(self.registry, self.skill_loader)
+            # [阶段七 / generative-capability] capability_call：让 agent 能真正
+            # 调用 skill_type: generative-capability 的领域功能包（如
+            # browser-site-scraper），见 tools/capability_call.py 与
+            # next_doc/generative-capability-skill-plan.md 阶段七实施记录。
+            from mini_agent.tools.capability_call import register_capability_tools
+            register_capability_tools(self.registry, self.skill_loader)
 
         # ── [SYS-SLASH-TOOL] 注册 run_slash_command 工具 ──────────────────────
         # 根因修复：cron/自主任务提交的消息经常是"自然语言 + 内嵌 /xxx 命令"
