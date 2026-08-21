@@ -169,6 +169,8 @@ if args.skills_dir:
 | `platforms` / `tags` | 限制该 skill 只在特定平台或 tag 策略下才会被发现/加载（不满足条件时连描述都不会注入 system prompt）；详见 [Skill/Agent/Hook/Tool 平台与 Tag 过滤指南](platform-tag-loading-guide.md) |
 | `resources` | （2026-07 新增）结构化子资源列表，见第 3.6 节「渐进式加载」 |
 | `browse_paths` | （2026-07 新增）纯提示性子资源库路径，不受任何加载机制管理，见第 3.6 节 |
+| `skill_type` | （阶段七新增）留空 = 普通静态 skill（默认）；`generative-capability` = 领域功能包，见第 3.8 节 |
+| `category_summary` | （阶段七新增）仅 `skill_type: generative-capability` 使用，`build_context()` 对这类 skill 只注入这一行摘要，不整段注入正文 |
 
 `SKILL.md` 可以使用 frontmatter 声明元数据；若缺失，系统会从正文和文件名推断名称、描述和触发词。
 
@@ -296,6 +298,7 @@ Agent 初始化时，如果传入了 `skill_loader`，会注册以下技能管�
 | `skill_resource_list` | （2026-07 新增）列出某个已激活 skill 下的子资源、加载状态与历史使用次数 |
 | `skill_resource_load` | （2026-07 新增）主动加载指定子资源，不依赖关键词命中 |
 | `skill_resource_unload` | （2026-07 新增）主动卸载子资源，释放 context，使用记录不清零 |
+| `capability_call` | （阶段七新增）调用 `skill_type: generative-capability` 的 skill，见第 3.8 节，与上面几个工具服务的"普通静态 skill"是完全不同的一类 |
 
 这些工具让模型可以先查看目录，再按任务阶段加载或卸载相关 skill（或 skill 下的子资源）。
 
@@ -462,6 +465,112 @@ tier 固定 T1）写到一个独立的 `evolve/<date>-skill-<name>` git 分支�
 等待人工 `/evolution show|diff` 审核后手动 `git merge`，合并后才会被
 `SkillLoader` 在下次启动时发现。详见
 [自我演化 lesson → skill 闭环指南（Stage 3.1）](self-evolution-stage3-1-guide.md)。
+
+### 3.8 `generative-capability` skill：按需调用的领域能力包（阶段七新增）
+
+本节说的是本文档目前唯一的第二类 skill——前面所有小节讲的都是"静态 skill"
+（`skill_type` 留空，正文整段可能被 `build_context()` 注入 context，
+`skill_activate`/`skill_resource_load` 都是围绕它设计的）。`generative-
+capability` 是完全不同的另一类：**skill 内部是一批"成员"（member），每个
+成员对应一个具体的、可执行的小能力（如某个网站的抓取脚本、某个模板的文档
+生成脚本），成员数量可能长期持续增长（几十到几百个），主 context 里永远
+不展开这份清单，只暴露一行 `category_summary`。**
+
+#### 什么时候用这个而不是普通 skill
+
+| | 普通静态 skill | `generative-capability` skill |
+|---|---|---|
+| 适用场景 | 成员少、变化慢、通用性强（如 docx/pptx 处理规范） | 成员多、长尾、持续增长（如按站点定制的抓取能力、按公司模板定制的文档生成） |
+| 主 context 占用 | 激活后正文（或分片）整段注入 | 仅 `category_summary` 一行 |
+| 内容怎么变多 | 人工编辑 `SKILL.md`/`references/` | 人工预置成员脚本，或由探索子agent自动补全生成 |
+| 调用方式 | `skill_activate` + 之后正常对话 | `capability_call(skill_name, request)` 工具，每次都是一次独立调用，不进入"激活状态" |
+
+不要把普通 skill 硬塞成 `generative-capability`（会白白损失掉正文对模型的
+直接指导价值），也不要把该拆成"探索式领域能力包"的东西硬写成一份越写越长
+的普通 `SKILL.md`（迟早会撑爆 context 或需要频繁人工维护）。判断标准就是
+上表第二行："这个能力的具体清单，模型需不需要提前看到"——需要就是普通
+skill，不需要（模型只需要知道"有这个能力，给个目标就能拿到结果或明确失败
+原因"）就是 `generative-capability`。
+
+#### 声明方式
+
+```yaml
+---
+name: browser-site-scraper
+skill_type: generative-capability
+category_summary: 针对具体网站的网页抓取能力，支持自动扩展新网站
+description: （给普通 skill 消费方/未识别 skill_type 的旧代码路径用的兜底文案，写法与静态 skill 一致）
+---
+```
+
+`_parse_skill()` 解析出 `skill_type`/`category_summary` 两个字段（缺失时
+`skill_type` 默认为空字符串，等价于普通静态 skill，**旧格式 `SKILL.md`
+不受任何影响**）；`Skill.is_generative_capability` 是这两个字段的便捷判断
+属性。
+
+#### `build_context()` 的特殊处理
+
+对 `is_generative_capability` 为真的 skill，`build_context()` 不走"整段
+注入正文（或按 3.6 节分片）"这条路径，而是短路成：
+
+```
+## Skill: browser-site-scraper  [generative-capability]
+
+针对具体网站的网页抓取能力，支持自动扩展新网站
+
+这是一个按需检索的领域功能包，内部成员清单不在此处展开。
+需要用到该能力时，调用 `capability_call(skill_name="browser-site-scraper",
+request={...})` 工具——传入你的目标与期望的数据结构，会得到结果或明确的
+失败原因，不需要（也不应该）自己去读 <skill目录> 目录下的 members/ 内容。
+```
+
+即使 skill 作者不小心在 `SKILL.md` 正文里写了成员清单细节，这条短路逻辑
+也保证它们不会泄漏进主 context——因为正文根本没有被读取用于注入，只用了
+`category_summary`/`description`。`get_catalog()`（`skill_list` 工具的数据
+来源）也会给这类 skill 附带 `skill_type`/`category_summary` 字段，方便模型
+在列目录时就能分辨"这个该用 `skill_activate` 还是该用 `capability_call`"。
+
+#### `capability_call` 工具
+
+`src/mini_agent/tools/capability_call.py::register_capability_tools()` 在
+`Agent.__init__` 里与其他 skill 工具一起注册（同样遵循 `override=True` 约定，
+兼容 SubAgent 持有独立 `skill_loader` 的场景）。工具接受 `skill_name` +
+`request`（领域自定义的请求体，如 `{"text": "...", "target": {"url":
+"..."}, "query": "..."}`），内部构造一个 `mini_agent.skills.
+generative_capability.CapabilityEngine` 实例并调用其 `call(request)`，
+按 `resolve → execute → explore → distill` 的标准流程处理（流程细节、
+成员生命周期状态机、安全边界见
+[generative-capability-skill-plan.md](../next_doc/generative-capability-skill-plan.md)
+第 6–8 节，这是引擎侧的通用行为，本文档不重复展开）。
+
+工具对两类误用会明确拒绝而不是静默尝试：
+
+- `skill_name` 对应的是普通静态 skill（`skill_type` 未声明为
+  `generative-capability`）→ 返回错误，提示应改用 `skill_activate`。
+- `skill_name` 不存在 → 返回错误，并附上当前所有 `generative-capability`
+  类型 skill 的名称列表，方便模型自行改正而不是瞎猜。
+
+**已知限制（如实告知，不是遗漏）**：`capability_call` 默认只注入
+`build_llm_resolver()`（真实的第二级检索裁决），**不注入
+`explore_runner`/`tool_executor`**——真正的底层操作原语（如
+`browser-core` 的浏览器操作）仍是方案文档"已知遗留"里明确记录、尚未从
+各领域 skill 独立拆分出来的部分。这意味着：命中已有 trusted/probation
+成员并执行成功的路径完全可用；命中失败或未命中、需要触发探索的路径，
+会得到 `status: not_implemented` 并在 `note` 字段说明原因，而不是被
+伪造成功。
+
+#### 引擎代码在哪
+
+`mini_agent.skills.generative_capability`（`src/mini_agent/skills/
+generative_capability/`）是**平台内置代码**，跨所有 `generative-capability`
+skill 复用，不因领域不同而重写——这与本文档前面所有小节讲的"skill 内容
+就是 `SKILL.md` 本身"是不同的模型：`generative-capability` skill 目录下
+（如 `.claude/skills/browser-site-scraper/`）只放**声明式配置和运行时
+数据**（`SKILL.md`、`capability.yaml`、`explorer/`、`_index.json`、
+`registry.json`、`members/`），调度骨架/状态机/检索逻辑的实现代码住在
+主项目里，理由与验证过程见
+[generative-capability-skill-plan.md](../next_doc/generative-capability-skill-plan.md)
+阶段七实施记录。
 
 ---
 
@@ -702,6 +811,10 @@ loader.auto_activate_blocked   # -> ['docx', ...]
 | `.claude/skills/skill-generator/SKILL.md` | 生成新 skill 的规范与流程，含单文件/分层结构判断标准（2026-07 更新） |
 | `.claude/skills/skill-generator/references/progressive-loading.md` | 渐进式加载机制详解（该 skill 自身的可加载子资源，也是分层结构的自举示例） |
 | `.claude/skills/skill-generator/references/examples.md` | 单文件/分层/browse_paths 三种完整示例 |
+| `src/mini_agent/skills/generative_capability/` | （阶段七新增）`generative-capability` skill 的通用调度引擎（`CapabilityEngine`/`distiller`/`explorer_runtime`/`health_patrol`/`llm_resolver`/`schema_validator`/`tool_runtime`），跨所有该类型 skill 复用，见第 3.8 节 |
+| `src/mini_agent/tools/capability_call.py` | （阶段七新增）`capability_call` 工具注册，第 3.8 节详述 |
+| `.claude/skills/browser-site-scraper/`、`.claude/skills/doc-template-generation/` | 两个已落地的 `generative-capability` skill 示例，仅含声明式配置与运行时数据 |
+| `next_doc/generative-capability-skill-plan.md` | `generative-capability` skill 完整设计方案与各阶段实施记录，第 3.8 节只讲"static skill 系统这一侧需要知道什么"，引擎内部机制以此文档为准 |
 
 ---
 
@@ -726,7 +839,15 @@ loader.auto_activate_blocked   # -> ['docx', ...]
 
 ---
 
-> 最后更新：2026-07（新增第 2.1 节「三类实际观察到的不稳定表现与对应修复」：
+> 最后更新：2026-08（新增第 3.8 节「`generative-capability` skill：按需调用的
+> 领域能力包」——`Skill` 新增 `skill_type`/`category_summary` 字段与
+> `is_generative_capability` 属性，`build_context()` 对此类 skill 只注入一行
+> 摘要不整段注入正文，新增 `capability_call` 工具；引擎代码
+> `mini_agent.skills.generative_capability` 迁入主项目正常子包，`generative-
+> capability` skill 目录下只保留声明式配置与运行时数据，详见
+> `next_doc/generative-capability-skill-plan.md` 阶段七实施记录；同步更新
+> 第 2.3/3.2/9 节；
+> 此前更新：2026-07（新增第 2.1 节「三类实际观察到的不稳定表现与对应修复」：
 > (a) `SkillLoader.find_inactive_candidates()` + `_inject_reminders_for_skill_candidates()`
 > 生成候选 skill 激活提醒（问题0：该激活而没激活）；(b) `get_catalog()` 不再对
 > 未激活 skill 返回磁盘路径，`skill_list`/`skill_activate` 工具 description 补充

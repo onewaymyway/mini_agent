@@ -49,7 +49,7 @@ mini_agent/
         ├── tools/          # 工具系统
         ├── orchestrator/   # 并发编排
         ├── prompts/        # Prompt 管理
-        ├── skills/         # Skill 系统
+        ├── skills/         # Skill 系统（含 skills/generative_capability/ 引擎子包，阶段七新增，见 skill-system-guide.md §3.8）
         ├── perception/     # 感知与记忆
         ├── history/        # 历史压缩管理
         ├── storage/        # 存储层

@@ -798,11 +798,23 @@ mini-agent self status
 
 | 工具 | 说明 |
 |------|------|
-| `skill_list` | 列出所有技能的名称、描述、激活状态 |
-| `skill_activate` | 按名称激活技能，需提供原因 |
+| `skill_list` | 列出所有技能的名称、描述、激活状态；`skill_type: generative-capability` 的技能会额外带 `skill_type`/`category_summary` 字段 |
+| `skill_activate` | 按名称激活技能，需提供原因（仅适用于普通静态 skill；`generative-capability` skill 不需要、也不应该被 `skill_activate`，见下方 `capability_call`） |
 | `skill_deactivate` | 按名称卸载技能，需提供原因 |
 | `skill_stats` | 返回技能使用追踪和预算状态 |
 | `compact_history` | 触发带 Skill 重附逻辑的历史压缩 |
+
+### Generative-capability 调用（capability_call.py，由 Agent 动态注册）
+
+针对 `skill_type: generative-capability` 类型的技能（领域功能包，如按网站的抓取能力、
+按模板的文档生成能力）——这类技能的成员清单不会整段注入 context，只暴露一行
+`category_summary`，需要用到时通过下面这个工具触发检索/执行/（有条件的）探索。
+详见 [Skill 系统说明 §3.8「generative-capability skill」](skill-system-guide.md) 与
+[generative-capability-skill-plan.md](../next_doc/generative-capability-skill-plan.md)。
+
+| 工具 | 说明 |
+|------|------|
+| `capability_call` | 调用一个 `generative-capability` 类型的 skill：传 `skill_name` + `request`，返回 `{status, data, error, member_id, resolve_reason}`；`status` 为 `success`/`fail`/`not_implemented`，`not_implemented` 时会附 `note` 说明是命中/未命中都需要触发探索、但当前环境未接入真实底层操作原语执行器 |
 
 ### 自感知系统（introspection.py，由 Agent 动态注册）
 
@@ -905,4 +917,4 @@ mini-agent --debug-llm-console
 
 ---
 
-*最后更新：2026-06*
+*最后更新：2026-08（新增 Generative-capability 调用 `capability_call` 工具，见 Skill 系统说明 §3.8）*
