@@ -3451,7 +3451,10 @@ async def get_self_task_concurrency(request: Request):
         try:
             cron_info = {
                 "current_cap": int(getattr(runner, "_max_concurrent", 2)),
-                "running": runner.running_count(),
+                # [bugfix] CronJobRunner.running_count 是 @property，不是
+                # 方法——之前误加了 () 调用，导致 TypeError: 'int' object
+                # is not callable。
+                "running": runner.running_count,
             }
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
