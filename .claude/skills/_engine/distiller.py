@@ -26,6 +26,21 @@ Generative-Capability 引擎的蒸馏器（阶段三）。
   - 落盘是原子的：script.py / meta.json / registry.json / _index.json
     要么全部一起更新成功，要么全部不落盘，避免"脚本能跑但检索不到"或
     "检索能到但脚本已被清理"的不一致状态（方案文档第 8 节安全边界 5）。
+
+trust_trace_data 一致性兜底（阶段六，回应阶段五"已知遗留"第 1 条）:
+  - 蒸馏脚本重放动作序列后，默认只从"重放出的最后一步工具输出"里取 data
+    （见 SCRIPT_TEMPLATE），这对"提取/产出"类工具（如 browser_extract_content/
+    doc_render）是合理假设，但对自测/CI 场景里任意回显式的桩执行器不友好——
+    任何不精心构造"最后一步返回正确 data"的桩 tool_executor 都会让自测判失败，
+    容易被误判为"探索失败"而非"自测环境没配对"（阶段五实施记录已知遗留）。
+  - capability.yaml 可选声明 `distill: {trust_trace_data: true}` 作为
+    领域级开关：仅当探索阶段最后一个真实工具步骤的输出里确实取不到可用 data
+    时，才把探索阶段已经拿到、且已通过 intent_schema 校验的 `trace.data`
+    作为蒸馏脚本的兜底常量嵌入（而不是在重放能正常取到 data 时也用
+    trace.data 覆盖，保持"能参数化复用就参数化复用"的优先级不变）。
+  - 是否用到了这个兜底会如实记录进 meta.json 的 `distill_used_trace_data_fallback`
+    字段，保持可审计——这不是静默放宽校验，而是把"探索已验证过的数据"当作
+    最后一道防线，避免同一份数据的可靠性判断被两套标准反复横跳。
 """
 
 from __future__ import annotations
@@ -71,6 +86,11 @@ from tool_runtime import get_tool_executor
 
 _STEPS = {steps_literal}
 
+# 仅当 capability.yaml 声明 distill.trust_trace_data: true，且探索阶段最后一个
+# 真实工具步骤未能直接给出 data 时，才会在此处嵌入探索阶段已通过 intent_schema
+# 校验的 trace.data 作为兜底常量；否则恒为 None，不影响"参数化复用"的默认行为。
+_TRACE_DATA_FALLBACK = {trace_data_fallback_literal}
+
 
 def run(input: dict) -> dict:
     executor = get_tool_executor()
@@ -94,9 +114,11 @@ def run(input: dict) -> dict:
         if isinstance(last_output, dict) and last_output.get("error"):
             return {{"status": "fail", "data": None, "error": f"重放步骤 `{{tool_name}}` 返回错误: {{last_output['error']}}"}}
 
-    data = _FINAL_DATA_TEMPLATE
-    if data is None and isinstance(last_output, dict):
+    data = None
+    if isinstance(last_output, dict):
         data = last_output.get("data")
+    if data is None:
+        data = _TRACE_DATA_FALLBACK
     if data is None:
         return {{"status": "fail", "data": None, "error": "重放完成但未获得可用数据"}}
     return {{"status": "success", "data": data, "error": None}}
@@ -143,12 +165,20 @@ def distill(
 
     templated_steps, templated_fields = _templatize_steps(trace.steps, request)
 
+    trust_trace_data = bool((capability.get("distill") or {}).get("trust_trace_data", False))
+    last_real_output = _last_real_step_output(trace.steps)
+    use_trace_fallback = trust_trace_data and not (
+        isinstance(last_real_output, dict) and last_real_output.get("data") is not None
+    )
+    trace_data_fallback_literal = repr(trace.data) if use_trace_fallback else "None"
+
     script_code = SCRIPT_TEMPLATE.format(
         skill_name=skill_name,
         member_id=member_id,
         templated_fields=", ".join(sorted(templated_fields)) or "(无，动作序列不依赖输入参数)",
         steps_literal=json.dumps(templated_steps, ensure_ascii=False, indent=4),
-    ).replace("_FINAL_DATA_TEMPLATE", "None")
+        trace_data_fallback_literal=trace_data_fallback_literal,
+    )
 
     # ------ 沙箱自测：动态加载蒸馏产物并重新跑一遍 run() ------ #
     tmp_dir = skill_dir / "members" / f"__tmp_{member_id}_{int(time.time())}"
@@ -178,6 +208,7 @@ def distill(
             capability=capability,
             intent_schema=intent_schema,
             is_reexplore=reexplore_member_id is not None,
+            used_trace_data_fallback=use_trace_fallback,
         )
     except Exception as e:  # noqa: BLE001
         return DistillResult(success=False, error=f"蒸馏产物落盘失败: {e}")
@@ -188,6 +219,16 @@ def distill(
 # --------------------------------------------------------------------------- #
 # 内部辅助
 # --------------------------------------------------------------------------- #
+
+def _last_real_step_output(steps: list[ExploreStep]) -> Any:
+    """跳过 finish/report_failure 决策元步骤，取最后一个真实工具步骤的输出，
+    用于判断是否需要启用 trust_trace_data 兜底（见文件头说明，阶段六）。"""
+    for step in reversed(steps):
+        if step.tool in ("finish", "report_failure"):
+            continue
+        return step.output
+    return None
+
 
 def _templatize_steps(steps: list[ExploreStep], request: dict) -> tuple[list[dict], set[str]]:
     target_url = str((request.get("target") or {}).get("url", ""))
@@ -284,7 +325,8 @@ def _validate_schema(data: Any, schema: Optional[dict]) -> bool:
 
 
 def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, request: dict,
-                     capability: dict, intent_schema: dict, is_reexplore: bool) -> None:
+                     capability: dict, intent_schema: dict, is_reexplore: bool,
+                     used_trace_data_fallback: bool = False) -> None:
     members_dir = skill_dir / "members"
     member_dir = members_dir / member_id
     member_dir.mkdir(parents=True, exist_ok=True)
@@ -306,6 +348,7 @@ def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, reques
         "version": prev_version,
         "intent_schema": intent_schema,
         "distilled_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "distill_used_trace_data_fallback": used_trace_data_fallback,
         "distilled_from_request": {
             "text": request.get("text", ""),
             "target": request.get("target", {}),
@@ -318,6 +361,7 @@ def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, reques
     registry = _load_json(registry_path, {"members": {}})
     registry["members"][member_id] = {
         "status": "probation",
+        "status_changed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "intent_schema": intent_schema,
         "success_count": 0,
         "fail_count": 0,

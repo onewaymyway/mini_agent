@@ -8,6 +8,10 @@ Generative-Capability Skill 的通用调度引擎（平台内置，跨 skill 复
           接入探索子agent(explore) 与蒸馏固化(distill)，见 `explorer_runtime.py`
           与 `distiller.py`。生命周期状态机的 degraded -> 重新探索 -> trusted/dead
           闭环在本阶段打通。
+          阶段六在此基础上，为状态流转（`_apply_lifecycle`/
+          `_handle_reexplore_failure`）额外写入 `status_changed_at` 时间戳，
+          供 `health_patrol.py` 精确计算"进入 dead 多久了"（回应阶段四"已知
+          遗留"）。
 
 设计原则:
   - 本文件是"引擎"，任何 generative-capability 类型的 skill 都复用同一份代码。
@@ -302,8 +306,10 @@ class CapabilityEngine:
         status = entry.get("status", "probation")
         if status == "probation" and entry.get("success_count", 0) >= promote_at:
             entry["status"] = "trusted"
+            entry["status_changed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         elif status in {"trusted", "probation"} and entry.get("consecutive_failures", 0) >= degrade_at:
             entry["status"] = "degraded"
+            entry["status_changed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     # ---------------------- 第 3/4 步: explore / distill（阶段三） ---------------------- #
 
@@ -382,6 +388,7 @@ class CapabilityEngine:
         if entry is None:
             return
         entry["status"] = "dead"
+        entry["status_changed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         self._save_registry()
 
     # ---------------------- 对外统一入口 ---------------------- #

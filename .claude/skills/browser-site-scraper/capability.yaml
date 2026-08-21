@@ -29,6 +29,16 @@ explorer:
 member_interface:
   entrypoint: "run(input: dict) -> dict"
 
+# 蒸馏一致性兜底开关（阶段六新增，默认关闭，见 next_doc 方案文档阶段五"已知
+# 遗留"第 1 条 / _engine/distiller.py 文件头说明）：
+# 仅当探索阶段最后一个真实工具步骤未能直接给出 data 时，是否信任探索阶段
+# 已通过 intent_schema 校验的 trace.data 作为蒸馏脚本的兜底常量。真实
+# browser-core 的提取类工具（如 browser_extract_content）通常最后一步就会
+# 返回 data，生产环境不需要开启；仅建议在自测/CI 用任意回显式桩工具执行器时
+# 临时开启，避免"自测环境没配对"被误判为"探索失败"。
+distill:
+  trust_trace_data: false
+
 # 生命周期阈值（可覆盖引擎默认值）。
 lifecycle:
   probation_success_threshold: 3

@@ -684,3 +684,92 @@ next_doc/generative-capability-skill-plan.md              # 本文档（阶段�
   都在同一个 `.claude/skills/` 目录下，用同级目录 `sys.path` 约定已经够用；
   如果未来 `generative-capability` skill 需要被仓库之外的项目复用，再考虑
   拆成独立可安装包。
+
+### 阶段六 —— 已完成
+
+**目标**：第 12 节列出的五个阶段均已完成，本阶段不新增流程能力，而是回应
+阶段四、阶段五实施记录中明确标注、且已经给出解决方向的两条"已知遗留"，
+避免它们无限期悬而不决。
+
+**新增/修改文件**：
+
+```
+.claude/skills/_engine/capability_engine.py             # 修改：_apply_lifecycle() /
+                                                           # _handle_reexplore_failure()
+                                                           # 状态流转时写入 status_changed_at
+.claude/skills/_engine/distiller.py                      # 修改：新增 distill.trust_trace_data
+                                                           # 一致性兜底；_atomic_persist() 写入
+                                                           # status_changed_at 与
+                                                           # distill_used_trace_data_fallback
+.claude/skills/_engine/health_patrol.py                  # 修改：_dead_since() 优先读取
+                                                           # status_changed_at，存量数据缺失时
+                                                           # 退化为原近似算法
+.claude/skills/browser-site-scraper/capability.yaml      # 修改：新增 distill.trust_trace_data
+                                                           # 开关（默认 false）
+.claude/skills/browser-site-scraper/SKILL.md             # 更新阶段说明
+```
+
+**已实现能力**：
+
+- **`status_changed_at` 精确时间戳**（回应阶段四"已知遗留"第 1 条）：
+  `CapabilityEngine._apply_lifecycle()` 在 `probation -> trusted`、
+  `(trusted|probation) -> degraded` 发生时写入该字段；
+  `_handle_reexplore_failure()` 在标记 `dead` 时写入；`distiller._atomic_persist()`
+  在新建/重探索成功回到 `probation` 落盘时同样写入。`health_patrol._dead_since()`
+  改为优先读取这个精确值，只有 registry.json 中缺该字段的存量数据才退化为
+  原来"用 `last_failure` 或 `meta.json` mtime 近似"的算法，新旧数据都能被
+  正确处理，不需要一次性迁移存量 `registry.json`。
+- **`distill.trust_trace_data` 一致性兜底开关**（回应阶段五"已知遗留"第 1
+  条）：`capability.yaml` 新增可选的 `distill: {trust_trace_data: true}`
+  领域级声明。`distiller.distill()` 在蒸馏时先取"探索阶段最后一个真实工具
+  步骤"（跳过 `finish`/`report_failure` 决策元步骤）的输出，只有该输出确实
+  取不到可用 `data`、且该开关显式打开时，才把探索阶段已经拿到、且已通过
+  `intent_schema` 校验的 `trace.data` 作为蒸馏脚本 `_TRACE_DATA_FALLBACK`
+  常量嵌入；重放能正常取到 `data` 时，兜底常量恒为 `None`，不影响"能参数化
+  复用就参数化复用"的默认优先级。是否用到兜底会如实记入新 member 的
+  `meta.json -> distill_used_trace_data_fallback` 字段，保持可审计——这不是
+  放宽校验标准，而是把"探索阶段已经验证过的数据"当最后一道防线，而不是让
+  同一份数据的可靠性判断在探索阶段和蒸馏自测阶段用两套不一致的标准。
+  `browser-site-scraper` 的 `capability.yaml` 默认关闭该开关（真实
+  `browser-core` 提取类工具通常最后一步就会直接返回 `data`，不需要开启），
+  仅在文档中说明该开关主要面向自测/CI 场景。
+
+**验证结果**：
+
+1. 复现阶段五实施记录第 5 条描述的失败场景（沙盒 `browser-site-scraper` 副本，
+   `trust_trace_data: false`，单步 `browser_navigate` + 桩执行器
+   `lambda name, inp: {"ok": True, "echo": inp}`）→ 确认与阶段五记录一致，
+   仍在蒸馏自测阶段失败（`重放完成但未获得可用数据`），验证本阶段修改前
+   问题确实存在、未被静默掩盖。
+2. 将同一份沙盒 `capability.yaml` 的 `trust_trace_data` 改为 `true`，
+   其余条件不变，重新调用 `capability_engine.py --stub-explore-success` →
+   `call()` 返回 `status: success`，新 member `some-new-site` 的
+   `meta.json` 中 `distill_used_trace_data_fallback: true`，`registry.json`
+   对应条目 `status: probation` 且带 `status_changed_at`，证明兜底开关按
+   预期生效、且不影响原有蒸馏落盘流程（脚本/meta/registry/index 仍然
+   原子化一起写入）。
+3. 对同一新 member，不注入 `explore_runner`（只注入 `tool_executor`）用
+   相同请求再次 `call()` → 通过 `domain_pattern_match` 直接命中并执行成功，
+   证明开启该开关落盘的 member 与普通蒸馏产物一样可被后续请求直接检索
+   复用，不需要每次都重新走兜底逻辑。
+4. 连续 3 次调用 `baidu`（沙盒无可用浏览器且不注入 `explore_runner`）→
+   状态如预期流转为 `degraded`，`registry.json` 中新增的
+   `status_changed_at` 与流转发生的时刻一致。
+5. 人为把 `baidu` 标记为 `dead` 且设置 `status_changed_at` 为 2020 年初
+   （模拟"很久以前进入 dead"），运行 `health_patrol.run_patrol()` → 正确
+   识别为 `dead_expired` 且天数计算精确对应设置的时间戳，而不是像旧近似
+   算法那样可能受 `last_failure` 时间偏差影响，验证 `_dead_since()` 优先级
+   切换生效。
+
+**已知遗留（留给后续阶段）**：
+
+- `trust_trace_data` 兜底目前是"探索最后一步无 data 就整体信任
+  `trace.data`"的粗粒度判断，没有做"重放出的 `last_output.data` 与
+  `trace.data` 都存在但内容不一致"时的报警机制（阶段五遗留里提到的另一个
+  可选方向）；如果未来某个领域的探索/重放之间容易出现语义漂移（如目标页面
+  内容随时间变化），建议在此基础上补充"两者都存在但不一致"的显式报警分支，
+  而不是简单地"重放优先，兜底止步于重放为空的情况"。
+- 本方案第 12 节列出的五个实施阶段、以及阶段四/阶段五各自记录的"已知遗留"
+  中偏架构性的两项——`browser-core`/`doc-core` 从领域 skill 中真正独立拆分
+  为静态 skill、`schema_validator` 扩展到完整 JSON Schema 关键字集合——仍待
+  后续阶段推进，本阶段范围内不涉及，避免在没有真实业务驱动前过度设计。

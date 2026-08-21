@@ -19,6 +19,11 @@ Generative-Capability 引擎的定期健康巡检（阶段四，低频后台任�
     报告里，避免误删且无法审计。默认调用方式（`apply_cleanup=False`）只
     输出"建议清理"清单，交给人工审查决定，符合方案文档"清理或提示人工
     审查"里"提示"优先于"清理"的表述。
+
+阶段六更新: `_dead_since()` 现在优先读取 `registry.json` 中的
+  `status_changed_at`（由 `capability_engine.py`/`distiller.py` 在状态流转
+  时写入的精确时间戳），只有存量数据缺这个字段时才退化为原来的近似算法，
+  回应阶段四"已知遗留"中"`_dead_since()` 近似值可能偏早"的问题。
 """
 
 from __future__ import annotations
@@ -224,9 +229,19 @@ def _latest_timestamp(entry: dict) -> Optional[float]:
 
 
 def _dead_since(skill_dir: Path, member_id: str, entry: dict) -> Optional[float]:
-    """registry.json 目前没有单独记录"进入 dead 的时间点"，退化为使用
-    last_failure（进入 dead 前的最后一次失败通常紧邻状态流转）作为近似；
-    如果两者都没有，回退到 meta.json 的 mtime。"""
+    """优先使用 registry.json 中的 `status_changed_at`（阶段六新增，在
+    `_apply_lifecycle`/`_handle_reexplore_failure`/蒸馏落盘时写入，是状态
+    流转发生时刻的准确记录）。
+
+    对于阶段六之前生成、registry.json 里还没有这个字段的既有数据，退化为
+    旧的近似逻辑：用 last_failure（进入 dead 前的最后一次失败通常紧邻状态
+    流转）作为近似；如果两者都没有，回退到 meta.json 的 mtime。这一退化
+    路径保留是为了兼容存量 registry.json，而不是主路径。"""
+    changed_at = entry.get("status_changed_at")
+    if changed_at:
+        parsed = _parse_ts(changed_at)
+        if parsed is not None:
+            return parsed
     ts = _latest_timestamp(entry)
     if ts is not None:
         return ts

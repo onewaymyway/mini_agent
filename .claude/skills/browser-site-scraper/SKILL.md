@@ -63,4 +63,21 @@ flat 模块名 `import capability_engine` 的写法仍然兼容，但不再是�
 `doc-template-generation` 验证复用性，详见该目录的 SKILL.md 与本文档阶段五
 实施记录。
 
+## 阶段六：修复阶段五记录的两处遗留问题
+
+1. **状态流转时间戳（`status_changed_at`）**：`registry.json` 中每个 member
+   在 `probation -> trusted` / `-> degraded` / `-> dead` 发生时都会写入
+   `status_changed_at`，蒸馏新建/重探索成功回到 `probation` 时同样写入。
+   `_engine/health_patrol.py::_dead_since()` 现在优先用这个精确时间戳判断
+   "进入 dead 多久了"，只有存量数据缺这个字段时才退化为原来的近似算法
+   （用 `last_failure` 或 `meta.json` mtime 近似），保持向后兼容。
+2. **`distill_trust_trace_data` 一致性兜底**：`capability.yaml` 新增可选
+   `distill.trust_trace_data` 开关（本 skill 默认 `false`，不影响生产行为）。
+   开启后，仅当蒸馏脚本重放动作序列、最后一个真实工具步骤取不到 `data` 时，
+   才把探索阶段已通过 `intent_schema` 校验的 `trace.data` 当兜底常量嵌入
+   脚本，而不是像阶段五记录的那样直接判定"探索未能生成可靠方案"。是否用到
+   兜底会记入新 member 的 `meta.json -> distill_used_trace_data_fallback`
+   字段，保持可审计。该开关只建议在自测/CI 场景临时开启；真实
+   `browser-core` 提取类工具通常最后一步就会返回 `data`，无需开启。
+
 详见 `next_doc/generative-capability-skill-plan.md`。
