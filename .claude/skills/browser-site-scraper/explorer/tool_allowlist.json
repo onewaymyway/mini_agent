@@ -1,0 +1,12 @@
+{
+  "allowed_tools": [
+    "browser_navigate",
+    "browser_screenshot_annotated",
+    "browser_click",
+    "browser_type",
+    "browser_scroll",
+    "browser_extract_content",
+    "browser_wait_for_selector"
+  ],
+  "note": "阶段三接入探索子agent时，调度引擎将强制校验探索过程只调用此处声明的工具，其余能力一律拒绝。"
+}

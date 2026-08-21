@@ -1,0 +1,10 @@
+{
+  "source": "human",
+  "version": 1,
+  "intent_schema": {
+    "type": "object",
+    "required": ["results"],
+    "properties": { "results": { "type": "array" } }
+  },
+  "migrated_from": "browser-cdp/references/zhihu-search.md, src/searchers/zhihu_search.py"
+}

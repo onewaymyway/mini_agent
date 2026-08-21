@@ -1,0 +1,20 @@
+{
+  "members": [
+    {
+      "member_id": "baidu",
+      "description": "百度搜索：关键词搜索并提取结构化结果（标题/URL/摘要，可选详情页内容）",
+      "match": {
+        "domain_pattern": "*.baidu.com/s*",
+        "keyword": ["百度搜索", "baidu search", "百度"]
+      }
+    },
+    {
+      "member_id": "zhihu",
+      "description": "知乎内容搜索：通过百度 site:zhihu.com 获取知乎问答和专栏",
+      "match": {
+        "domain_pattern": "*.zhihu.com*",
+        "keyword": ["知乎搜索", "zhihu search", "知乎"]
+      }
+    }
+  ]
+}

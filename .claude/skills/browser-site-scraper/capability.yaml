@@ -1,0 +1,36 @@
+skill_type: generative-capability
+name: browser-site-scraper
+
+# 第一级免LLM匹配规则（零成本，命中优先）。
+# 具体的 pattern/keyword 值来自各 member 目录下 _index.json 中的 "match" 字段。
+domain_matchers:
+  - type: domain_pattern
+    field: target.url
+  - type: keyword
+    field: text
+
+# 该领域所有 member 输出必须满足的 schema 结构约束模板。
+intent_schema_template:
+  type: object
+  required: [results]
+  properties:
+    results:
+      type: array
+
+# 探索阶段配置（阶段三接入，当前先声明配置占位，供引擎读取但尚未生效）。
+explorer:
+  base_tools: [browser-core]
+  prompt: explorer/prompt.md
+  tool_allowlist: explorer/tool_allowlist.json
+  max_steps: 40
+  max_seconds: 180
+
+# member 的统一函数入口约定，引擎按此调用，通常无需改动。
+member_interface:
+  entrypoint: "run(input: dict) -> dict"
+
+# 生命周期阈值（可覆盖引擎默认值）。
+lifecycle:
+  probation_success_threshold: 3
+  degrade_failure_threshold: 3
+  dead_after_reexplore_fail: true
