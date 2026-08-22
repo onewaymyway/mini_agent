@@ -297,9 +297,16 @@ class ToolExecutor:
                         # [SYS-TRIM] 工具调用结果截断（按工具类型分策略）
                         result_str = self._trim_result(tc.name, result_str, tool_input)
 
+                        # [FIX] 命令行打印同样不应该截断 view_raw_result 的结果：
+                        # 用户显式调用它就是为了看完整原文，CLI 侧再截一次会让
+                        # 这个工具名存实亡。其余工具维持原有的 2000 字符预览截断
+                        # （raw_output 模式下全局不截断）。
                         R.print_tool_result(
                             tc.name, result_str,
-                            truncate=None if getattr(self.cfg, "raw_output", False) else 2000,
+                            truncate=None if (
+                                getattr(self.cfg, "raw_output", False)
+                                or tc.name == "view_raw_result"
+                            ) else 2000,
                         )
 
                         # [SYS-TOOLCACHE] 写入缓存
@@ -541,6 +548,12 @@ class ToolExecutor:
             通过 view_raw_result 工具按需回看完整原文。
         """
         if not self.cfg.tool_result_trim_enabled:
+            return result
+        # [FIX] view_raw_result 本身就是"取回完整原文"的工具，其返回结果绝不能
+        # 再被截断/摘要——否则用户/agent 通过 result_id 拿回来的东西还是被截断
+        # 过的，工具就失去了意义。直接原样返回，不进入下面的截断/摘要/RawResultStore
+        # 流程（也不需要再存一遍，因为它本来就是从 RawResultStore 里取出来的）。
+        if tool_name == "view_raw_result":
             return result
         threshold = self.cfg.tool_result_trim_threshold
         if len(result) <= threshold:

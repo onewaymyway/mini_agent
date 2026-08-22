@@ -694,7 +694,7 @@ mini-agent self status
 | `grep` | ❌ | `pattern`, `path`, `file_pattern`, `case_sensitive` | 正则搜索文件内容 |
 | `diff_files` | ❌ | `path_a`, `path_b`, `context_lines` | 比较两个文件，返回 unified diff（默认 3 行上下文，最多 20 行），结尾附加变更行数统计 |
 | `tree_summary` | ❌ | `path`, `depth`, `show_files`, `include_hidden` | 输出紧凑的目录骨架（只显示目录+文件数+总大小），比 `list_dir` 更省 token；自动跳过 `.git`/`__pycache__`/`node_modules`/`.venv` 等常见构建/缓存目录 |
-| `view_raw_result` | ❌ | `result_id`, `start_line`, `end_line` | 回看某次被截断/LLM 摘要过的工具结果的完整原文（`result_id` 来自截断结果末尾的提示），支持行号范围；详见 [工具结果原始留存与智能摘要指南](tool-result-raw-store-and-smart-summary-guide.md) |
+| `view_raw_result` | ❌ | `result_id`, `start_line`, `end_line` | 回看某次被截断/LLM 摘要过的工具结果的完整原文（`result_id` 来自截断结果末尾的提示），支持行号范围；返回结果不会再被二次截断（agent 侧的 `_trim_result` 与命令行侧的默认预览截断均已跳过此工具），详见 [工具结果原始留存与智能摘要指南](tool-result-raw-store-and-smart-summary-guide.md) |
 
 ### Shell（builtin.py）
 

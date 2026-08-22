@@ -53,6 +53,14 @@ agent 看到这条提示后，如果判断截断/摘要后的内容不够用，�
 `view_raw_result` 工具取回完整原文——用法与 `read_file` 一致，支持
 `start_line` / `end_line`，避免一次性把整段原文重新塞回上下文。
 
+> **[FIX] `view_raw_result` 的结果绝不会被再次截断。**
+> `view_raw_result` 存在的意义就是"取回完整原文"，因此它的返回结果会跳过
+> `_trim_result` 的截断/摘要流程（`tool_executor.py::_trim_result` 对
+> `tool_name == "view_raw_result"` 直接原样返回），命令行渲染
+> （`renderer.py::print_tool_result`）也不会再套用默认的 2000 字符预览截断。
+> 无论通过 agent 取回的结果，还是命令行里直接打印出来的结果，看到的都是
+> 完整原文，不会出现"取回的原文其实还是被截断过的一段"这种情况。
+
 ### 存储特性
 
 - **session 内内存 LRU**，不做跨进程持久化（session 结束随进程释放）。
