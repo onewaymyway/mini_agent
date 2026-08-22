@@ -231,6 +231,100 @@ class TestRequestFormatValidation(unittest.TestCase):
         self.assertEqual(result.data, {"result": {"text": "HELLO WORLD"}})
 
 
+class _ScriptedLLMHelper:
+    """
+    duck-type 一个最小的 LLMHelper：按顺序吐出预先写好的 LLMResponse 列表，
+    不发起任何真实网络调用，用于验证 build_llm_explorer() 的真实决策循环
+    接线（而不是像 build_stub_explorer 那样整个绕过循环本身）。
+    """
+
+    def __init__(self, responses: list):
+        self._responses = list(responses)
+
+    def chat(self, **kwargs):  # noqa: ANN003 - 签名故意宽松匹配 LLMHelper.chat
+        return self._responses.pop(0)
+
+
+@unittest.skipUnless(TEXT_TRANSFORM_CAPABILITY_DIR.is_dir(), "text-transform-capability skill 目录不存在")
+class TestRealTextCoreExploreEndToEnd(unittest.TestCase):
+    """
+    [阶段十二] 验证"真正接入 explore_runner"这条链路：真实的
+    build_llm_explorer() 决策循环（用脚本化的假 LLMHelper 代替真实网络调用）
+    + 真实的 build_default_tool_executor()（text_transform_apply 是真实
+    Python 实现，不是桩），组合探索出一个此前不存在的变换（"shout"：转大写
+    再加感叹号），完整跑通 explore -> distill -> 落盘 -> 免探索复用。
+    """
+
+    def setUp(self):
+        self.skill_dir = _copy_skill_dir(TEXT_TRANSFORM_CAPABILITY_DIR)
+
+    def tearDown(self):
+        shutil.rmtree(self.skill_dir.parent, ignore_errors=True)
+
+    def test_scripted_explore_composes_real_tool_calls_into_new_member(self):
+        from mini_agent.skills.generative_capability import (
+            CapabilityEngine, build_llm_explorer, build_default_tool_executor,
+        )
+        from mini_agent.llm.base import LLMResponse, LLMUsage, ToolCall
+
+        tool_executor = build_default_tool_executor()
+
+        # 直接验证真实工具实现本身（不经过探索循环）：upper 再 append "!"。
+        step1 = tool_executor("text_transform_apply", {"text": "hi", "op": "upper"})
+        self.assertEqual(step1, {"result": "HI"})
+        step2 = tool_executor("text_transform_apply", {"text": step1["result"], "op": "append", "args": {"suffix": "!"}})
+        self.assertEqual(step2, {"result": "HI!"})
+
+        # 脚本化探索器：模拟模型真实会走的三步决策（两次工具调用 + finish），
+        # 但底层 tool_executor 真的在执行 text_transform_apply，不是桩。
+        responses = [
+            LLMResponse(
+                text="", tool_calls=[ToolCall(id="t1", name="text_transform_apply",
+                                               input={"text": "hi", "op": "upper"})],
+                usage=LLMUsage(), stop_reason="tool_use",
+            ),
+            LLMResponse(
+                text="", tool_calls=[ToolCall(id="t2", name="text_transform_apply",
+                                               input={"text": "HI", "op": "append", "args": {"suffix": "!"}})],
+                usage=LLMUsage(), stop_reason="tool_use",
+            ),
+            LLMResponse(
+                text="", tool_calls=[ToolCall(id="t3", name="finish",
+                                               input={"data": {"result": {"text": "HI!"}}})],
+                usage=LLMUsage(), stop_reason="tool_use",
+            ),
+        ]
+        explorer = build_llm_explorer(tool_executor, llm_helper=_ScriptedLLMHelper(responses))
+
+        engine = CapabilityEngine(self.skill_dir, explore_runner=explorer, tool_executor=tool_executor)
+        request = {
+            "text": "把这段文字变成喊叫的语气，末尾加感叹号",
+            "target": {"op": "shout"},
+            "content": {"text": "hi"},
+        }
+        result = engine.call(request)
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.data, {"result": {"text": "HI!"}})
+        self.assertEqual(result.resolve_reason, "explored")
+        self.assertIsNotNone(result.member_id)
+
+        # 免探索复用：同一请求不再注入 explore_runner，应直接命中刚落盘的
+        # shout member（通过 text 字段的 keyword_match）。
+        engine2 = CapabilityEngine(self.skill_dir, tool_executor=tool_executor)
+        result2 = engine2.call(request)
+        self.assertEqual(result2.status, "success")
+        self.assertEqual(result2.data, {"result": {"text": "HI!"}})
+        self.assertEqual(result2.resolve_reason, "keyword_match")
+
+    def test_unknown_tool_name_returns_honest_error_not_fabricated_success(self):
+        from mini_agent.skills.generative_capability import build_default_tool_executor
+
+        tool_executor = build_default_tool_executor()
+        result = tool_executor("browser_extract_content", {"url": "https://example.com"})
+        self.assertIn("error", result)
+        self.assertIn("占位声明", result["error"])
+
+
 @unittest.skipUnless(DOC_TEMPLATE_GENERATION_DIR.is_dir(), "doc-template-generation skill 目录不存在")
 class TestSecondDomainReuse(unittest.TestCase):
     """验证第二个 generative-capability skill 复用同一套引擎（阶段五泛化性验证的回归覆盖）。"""

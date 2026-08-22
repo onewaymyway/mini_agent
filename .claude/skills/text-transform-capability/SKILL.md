@@ -82,10 +82,13 @@ explore -> distill -> 落盘 -> 免探索复用 的完整链路，探索阶段�
 
 ## 已知限制
 
-- `explorer/prompt.md`、`explorer/tool_allowlist.json` 中的 `text-core` 是
-  占位声明，没有真正可执行的实现；这是刻意的——本 skill 的目的是验证机制，
-  不是提供真实的文本处理能力，真正需要文本变换能力时应该用更合适的静态 skill
-  或直接写代码，不建议在生产场景中依赖本 skill。
+- `explorer/tool_allowlist.json` 里的 `text_transform_apply`（阶段十二起）
+  是真正接了执行器的实现（见
+  `src/mini_agent/skills/generative_capability/real_tools.py`），可以在
+  真实对话里跑通完整的 `resolve -> miss -> explore(真实 LLM 决策循环) ->
+  distill -> 落盘复用` 全链路，不再是纯粹的机制自检；`browser-core`/
+  `doc-core` 仍是占位声明，另外两个 skill 的探索路径仍会诚实返回
+  `not_implemented`，直到有人把它们的真实实现也补进 `real_tools.py`。
 - 与另外两个 skill 一样，`schema_validator` 仍是常用关键字子集而非完整 JSON
   Schema 规范。
 

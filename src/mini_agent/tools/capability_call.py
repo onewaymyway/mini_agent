@@ -29,14 +29,20 @@ agent 自己完全没有办法在对话里调用它。这个文件是这条链�
   （同一个约定 `run_ensemble_llm` 等已经在用，跟随 /model 切换），取不到时
   （理论上不会发生——本工具只会在已完成 `Agent.__init__` 的 agent 内被调用）
   才退化为报错，不会静默回退到某个写死的模型。
-- **默认不注入 `explore_runner`/`tool_executor`**——探索子agent真正要用的
-  底层操作原语（`browser-core` 等）仍是方案文档"已知遗留"里明确记录、尚未
-  从各领域 skill 中独立拆分出来的部分，本工具没有能力代为实现它们。这意味着
-  通过本工具调用时：命中已有 trusted/probation member 并执行成功的路径已经
-  完全可用；miss 或命中全部失败后需要"探索"的路径，会得到
-  `status: not_implemented` 及可读的原因说明，而不是被静默伪造成功——这是
-  `CapabilityEngine.explore()` 本来就有的行为（未注入 explore_runner 时明确
-  返回 not_implemented），本工具如实透传，不做任何掩盖。
+- **默认注入一个通用的真实 `tool_executor`/`explore_runner`**（阶段十二起）：
+  `build_default_tool_executor()` 按工具名分发到 `real_tools.py` 里已经
+  真正实现的底层原语（目前只有 `text-core` 的 `text_transform_apply`，供
+  `text-transform-capability` 使用）；命中已实现工具的会真的执行，未命中
+  的（如 `browser-core`/`doc-core` 下的工具，仍是各 skill
+  `explorer/tool_allowlist.json` 里的占位声明）会得到一条如实的"未接入
+  真实执行器"错误，反馈给探索子agent后由它自行判断调用 `report_failure`
+  ——不是静默失败，也不会被伪造成功。这意味着：`text-transform-capability`
+  这类"确实可以用纯逻辑/无外部依赖实现底层原语"的领域，现在能在真实对话
+  里跑通完整的 `resolve -> miss -> explore(真实 LLM 决策循环) -> distill ->
+  落盘复用` 全链路；`browser-site-scraper`/`doc-template-generation`
+  这类依赖真实浏览器/文档生成能力的领域，探索路径依然会诚实地
+  `not_implemented`，直到有人把 `browser-core`/`doc-core` 的真实实现也
+  补进 `real_tools.py`（见该文件顶部说明）。
 """
 
 from __future__ import annotations
@@ -95,7 +101,9 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
                 ensure_ascii=False,
             )
 
-        from mini_agent.skills.generative_capability import CapabilityEngine, build_llm_resolver
+        from mini_agent.skills.generative_capability import (
+            CapabilityEngine, build_llm_resolver, build_llm_explorer, build_default_tool_executor,
+        )
         from mini_agent.tools.orchestration import get_current_llm_helper
 
         skill_dir = skill.location.parent
@@ -118,8 +126,16 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
             )
 
         try:
+            # [阶段十二] 注入通用真实 tool_executor + 基于它构造的 explore_runner，
+            # 让声明了真实底层原语（目前是 text-core）的 skill 能跑通真实探索链路；
+            # 未实现的原语（browser-core/doc-core）会在探索时得到如实的失败反馈，
+            # 见 real_tools.py 顶部说明。
+            tool_executor = build_default_tool_executor()
             engine = CapabilityEngine(
-                skill_dir, llm_resolver=build_llm_resolver(current_llm_helper)
+                skill_dir,
+                llm_resolver=build_llm_resolver(current_llm_helper),
+                explore_runner=build_llm_explorer(tool_executor, llm_helper=current_llm_helper),
+                tool_executor=tool_executor,
             )
         except Exception as e:  # noqa: BLE001
             return json.dumps(

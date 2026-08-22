@@ -3,8 +3,8 @@
   "tools": [
     {
       "name": "text_transform_apply",
-      "description": "占位声明：对一段文本应用某种字符串变换。真实实现尚未接入（text-core 尚未从任何静态 skill 独立拆分出来），测试场景下通过桩 tool_executor 模拟。",
-      "status": "placeholder"
+      "description": "对一段文本执行一个原子字符串操作，返回处理后的文本。input: {\"text\": <当前文本>, \"op\": <操作名>, \"args\": {...}}。op 支持: upper/lower/reverse/strip/title/capitalize/swapcase（无需 args）、append（args.suffix）、prepend（args.prefix）、replace（args.old/args.new）。output: {\"result\": <处理后文本>} 或 {\"error\": ...}。可以多次调用，把上一次的 result 作为下一次的 text 传入，组合出复杂变换（如「转大写再加感叹号」= 先 op=upper，再用返回的 result 调 op=append, args.suffix=\"!\"）。",
+      "status": "implemented"
     }
   ]
 }

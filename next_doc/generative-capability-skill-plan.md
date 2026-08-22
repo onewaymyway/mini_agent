@@ -1318,3 +1318,75 @@ scraper 场景）、`TestRequestFormatBackwardCompat`（未声明 `request_forma
   这也是常见的误用模式，可以在 `_check_request_format` 里加一层轻量类型
   检查，思路与 `schema_validator.py` 现有的"常用关键字子集"校验风格保持
   一致，不必现在就做。
+
+### 阶段十二 —— 已完成
+
+**触发场景**：阶段十一修好"请求格式"这一层之后，真实对话里按正确格式调用
+`text-transform-capability` 探索一个未知变换（`shout`：转大写再加感叹号）
+时，因为 `capability_call.py` 一直"故意不注入 `explore_runner`/
+`tool_executor`"，探索直接返回 `not_implemented`。用户追问"怎么真正接入
+`explore_runner`"。
+
+**分析**：`explorer_runtime.build_llm_explorer()` 本身早就是真实可用的
+LLM 决策循环（阶段九已改接框架统一 `LLMHelper`），之所以一直没被注入，是
+因为各领域声明的底层操作原语（`browser-core`/`doc-core`/`text-core`）全部
+还是占位声明，注入了也是空转。但 `text-transform-capability` 声明的
+`text-core`（只有一个 `text_transform_apply`）本质是纯字符串操作，跟
+`browser-core`/`doc-core` 不同——**它是唯一一个真的能不依赖任何外部服务
+就实现出来的底层原语**，值得单独打通。
+
+**改动**：
+
+- 新增 `src/mini_agent/skills/generative_capability/real_tools.py`：
+  - `text_transform_apply(tool_input)`：真实实现，支持
+    `upper/lower/reverse/strip/title/capitalize/swapcase/append/prepend/
+    replace`，探索子agent可以多次调用组合出复杂变换（如 shout = upper +
+    append "!"），不需要为每种可能的变换单独声明工具。
+  - `build_default_tool_executor()`：返回一个通用 `tool_executor`，命中
+    `REAL_TOOL_IMPLEMENTATIONS` 表里的工具名会真的执行；未命中的（当前是
+    `browser-core`/`doc-core` 下的全部工具）如实返回"仍是占位声明，未接入
+    真实执行器"的 `{"error": ...}`，不抛异常、不伪造成功——后续要接
+    `browser-core`/`doc-core`，只需要往这个表里加实现，调用方代码不用改。
+  - 从包 `__init__.py` 导出 `build_default_tool_executor` /
+    `REAL_TOOL_IMPLEMENTATIONS`。
+- `tools/capability_call.py`：不再"默认不注入"，改为默认构造
+  `tool_executor = build_default_tool_executor()`，同时注入
+  `explore_runner=build_llm_explorer(tool_executor, llm_helper=...)` 和
+  `tool_executor=tool_executor`。命中真实实现的领域（目前只有
+  `text-transform-capability`）现在能在真实对话里跑通完整
+  `resolve -> miss -> explore(真实 LLM 决策循环 + 真实工具执行) -> distill ->
+  落盘 -> 免探索复用` 全链路；`browser-site-scraper`/
+  `doc-template-generation` 因为它们的原语仍是占位，探索路径依旧诚实返回
+  `not_implemented`（工具执行阶段会明确报"未接入真实执行器"，探索子agent
+  据此调用 `report_failure`），不会因为这次改动而被误判成"能用了"。
+- 同步更新 `text-transform-capability` 的
+  `explorer/tool_allowlist.json`（`status: implemented`，写清楚真实的
+  input/output 结构与组合调用方式）和 `explorer/prompt.md`（不再说
+  "占位/测试场景不会被真实 LLM 读取"），以及 `SKILL.md`"已知限制"一节。
+
+**测试**：
+
+- `tests/test_generative_capability_real_tools.py`（新文件）：
+  `text_transform_apply` 各 op 的纯逻辑正确性、参数校验分支、
+  `build_default_tool_executor` 对已知/未知工具的分发行为、内部异常不会
+  向上抛出。
+- `tests/test_generative_capability_engine.py::TestRealTextCoreExploreEndToEnd`：
+  用一个脚本化的假 `LLMHelper`（duck-type `.chat()`，按顺序吐出预先写好
+  的 `LLMResponse`，不发真实网络请求）驱动真实的 `build_llm_explorer()`
+  决策循环 + 真实的 `build_default_tool_executor()`，完整验证
+  探索出新变换 -> 蒸馏落盘 -> 免探索复用（`resolve_reason: keyword_match`）
+  这条此前只能靠 `build_stub_explorer` 绕过循环本身来验证接线的链路，现在
+  连"决策循环怎么调用工具"这一层也是真的在跑。全量测试通过（不含这两个
+  新文件的既有 15 + 6 个用例，加上新增用例）。
+
+**已知遗留（留给后续阶段）**：
+
+- `browser-core`/`doc-core` 仍是占位声明，`browser-site-scraper`/
+  `doc-template-generation` 两个 skill 的探索路径依旧只能拿到
+  `not_implemented`；要打通它们需要真的接一个无头浏览器 /
+  文档生成库作为底层原语实现，工作量和风险都远大于 `text-core`，不在本
+  阶段范围内，思路已经在 `real_tools.py` 文件头注释里写清楚（往
+  `REAL_TOOL_IMPLEMENTATIONS` 加实现即可，调用方不用改）。
+- `text_transform_apply` 目前只覆盖常见字符串操作，遇到探索子agent认为
+  "组合现有 op 也做不到"的变换需求（如需要正则/语言学分析的变换）会如实
+  `report_failure`，这是预期行为，不是 bug。

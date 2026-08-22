@@ -89,6 +89,7 @@ from .distiller import distill, DistillResult
 from .schema_validator import validate as validate_schema
 from .health_patrol import run_patrol, PatrolReport, PatrolFinding
 from .tool_runtime import set_tool_executor, get_tool_executor
+from .real_tools import build_default_tool_executor, REAL_TOOL_IMPLEMENTATIONS
 
 __all__ = [
     # 调度引擎主体
@@ -116,6 +117,9 @@ __all__ = [
     # 蒸馏脚本运行时工具执行器注入点
     "set_tool_executor",
     "get_tool_executor",
+    # 真实底层操作原语注册表（阶段十二新增，目前只有 text-core 是真实实现）
+    "build_default_tool_executor",
+    "REAL_TOOL_IMPLEMENTATIONS",
 ]
 
 __sdk_version__ = "0.7.0"  # 对应方案文档阶段七（迁入 src/mini_agent 正式子包）
