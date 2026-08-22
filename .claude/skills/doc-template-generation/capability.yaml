@@ -9,6 +9,21 @@ domain_matchers:
   - type: keyword
     field: text
 
+# [FIX] 见 text-transform-capability/capability.yaml 里的同名注释：
+# request_formats 让 resolve() 之前多一道零成本的形状检查，形状不对时
+# 直接返回 invalid_request + example，不会被误判成"需要探索新模板"。
+request_formats:
+  - name: doc_generate_request
+    description: >
+      按指定模板生成一份文档。text 放生成意图的自然语言描述（用于一级
+      关键词匹配/二级 LLM 裁决，需包含模板相关关键词），模板名放
+      target.template_name，生成文档所需的结构化数据放 content。
+    required_fields: [text, target.template_name]
+    example:
+      text: "生成一份周报"
+      target: {template_name: "weekly-report"}
+      content: {}
+
 # 该领域所有 member 输出必须满足的 schema 结构约束模板。
 intent_schema_template:
   type: object

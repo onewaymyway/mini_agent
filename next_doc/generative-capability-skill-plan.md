@@ -1266,3 +1266,55 @@ next_doc/generative-capability-skill-plan.md              # 本文档（阶段�
   `tests/test_generative_capability_engine.py`、附录脚本的定位都不一样）；
   如果后续需要把"agent 会不会正确使用这个 skill"也纳入自动化 CI，应该
   作为独立的对话级集成测试基础设施来做，不建议现在就往本指南里塞。
+
+### 阶段十一 —— 已完成
+
+**触发场景**：真实对话里用 `text-transform-capability` 测试大写变换时，
+调用方（agent）把 `request` 构造成了 `{"text": "hello world", "transformation":
+"uppercase"}`——待转换内容误放进 `text`（`text` 实际语义是"意图描述"，
+用于一级关键词匹配/二级 LLM 裁决），`transformation` 又是个 schema 里根本
+不存在的字段。结果一级、二级 resolve 都 `no_match`，一路滑进 `explore()`，
+因为测试环境没注入 `explore_runner`，最终看到 `status: not_implemented`。
+这个反馈具有很强的误导性：`upper` member 明明是 `trusted` 状态、纯 Python
+实现，只要 `request` 形状对了应该秒回成功，`not_implemented` 会让人误以为
+是"探索能力没接线"，而看不出真正原因是"参数传错了"。
+
+**改动**：
+
+- `capability.yaml` 新增可选字段 `request_formats`：声明该 skill 接受的
+  一种或多种 `request` 形状，每种给出 `required_fields`（点号路径列表，
+  如 `target.op`/`content.text`）+ 一份可直接照抄的 `example`。
+- `CapabilityEngine.call()` 在 `resolve()` 之前先调用新增的
+  `_check_request_format()`：只要 `request` 满足声明的任意一种格式的
+  `required_fields`（字段存在且非空，不做类型/语义校验）就放行，交给
+  原有 resolve/execute/explore 逻辑处理；一种都不满足则直接短路返回新增
+  的 `CapabilityCallResult(status="invalid_request", ...)`，`data` 里带上
+  全部声明格式的 `name`/`description`/`required_fields`/`example`，**不
+  消耗探索预算**。
+- 未声明 `request_formats` 的 skill（存量/忘了加）直接跳过这层检查，行为
+  与阶段十之前完全一致，见 `tests/test_generative_capability_engine.py::
+  TestRequestFormatBackwardCompat`。
+- `tools/capability_call.py` 透传新增的 `invalid_request` 状态，并在
+  `note` 字段里明确告诉调用方"去看 `data.expected_formats`，照着
+  `example` 重新构造 `request` 后重试"，工具描述里的 status 枚举同步更新。
+- 已给 `browser-site-scraper`、`doc-template-generation`、
+  `text-transform-capability` 三个 skill 的 `capability.yaml` 都补上了各自
+  的 `request_formats` 声明。
+
+**测试**：`tests/test_generative_capability_engine.py` 新增
+`TestRequestFormatValidation`（复现真实转录里的错误调用形状，验证返回
+`invalid_request` 而非 `not_implemented`，且 `example` 与正确形状确实能
+成功执行）、`TestCapabilityEngineResolveExecute::
+test_request_missing_required_field_returns_invalid_request`（browser-site-
+scraper 场景）、`TestRequestFormatBackwardCompat`（未声明 `request_formats`
+的 skill 完全不受影响）。全量 15 个用例通过。
+
+**已知遗留（留给后续阶段）**：
+
+- `required_fields` 目前只做"存在且非空"检查，不校验字段类型（如
+  `target.op` 是不是字符串）；如果调用方传了正确的字段名但类型错误
+  （如 `target.op` 传成数字），仍然会被判定为形状合法，放行到 resolve()，
+  可能因为一级关键词匹配用 `str` 操作报错或静默 no_match。如果后续发现
+  这也是常见的误用模式，可以在 `_check_request_format` 里加一层轻量类型
+  检查，思路与 `schema_validator.py` 现有的"常用关键字子集"校验风格保持
+  一致，不必现在就做。

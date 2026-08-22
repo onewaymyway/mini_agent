@@ -68,7 +68,7 @@ class ExecuteResult:
 
 @dataclass
 class CapabilityCallResult:
-    status: str                     # "success" | "fail" | "not_implemented"
+    status: str                     # "success" | "fail" | "not_implemented" | "invalid_request"
     data: Optional[dict] = None
     error: Optional[str] = None
     member_id: Optional[str] = None
@@ -139,6 +139,54 @@ class CapabilityEngine:
 
     def _save_registry(self) -> None:
         self._save_json(self.registry_path, self.registry)
+
+    # ---------------------- 第 0 步: 输入形状校验 ---------------------- #
+    #
+    # 背景：resolve() 的一级/二级匹配都假设 request 里存在特定字段
+    # （如 target.op / content.text），但调用方（agent）经常猜错字段名，
+    # 结果不是报错而是安静地 no_match，一路滑进 explore()，把"我传的
+    # request 形状不对"和"这个能力真的还不存在，需要探索"两种完全不同的
+    # 情况混成了同一个含糊的 not_implemented，agent 拿到反馈也无从纠正。
+    #
+    # request_formats（capability.yaml 可选字段）让 skill 作者显式声明
+    # 自己接受的一种或多种 request 形状，每种给出 required_fields（点号
+    # 路径列表）+ 一个可直接照抄的 example。调用前先做一次零成本的"形状"
+    # 检查（只看字段是否存在且非空，不校验类型/语义），只要满足声明的
+    # 任意一种形状就放行，交给 resolve()/explore() 按原有逻辑处理；一种
+    # 都不满足则直接短路返回 invalid_request，把所有声明的格式连同 example
+    # 一起带回去，供 agent 据此重新生成调用——不占用探索预算，也不会被
+    # 误判成"这个变换需要探索"。
+    #
+    # 未声明 request_formats 的 skill（存量的手写 capability.yaml 忘了加）
+    # 直接跳过检查，行为与阶段七之前完全一致，不会因为这个新机制而回归。
+
+    def _check_request_format(self, request: dict) -> Optional[list[dict]]:
+        """
+        返回 None 表示形状合法（或该 skill 未声明 request_formats，不做检查）。
+        否则返回 request_formats 的规整化列表，供上层拼成"期望格式"提示。
+        """
+        formats = self.capability.get("request_formats")
+        if not formats:
+            return None
+
+        def _present(path: str) -> bool:
+            value = self._get_field(request, path)
+            return value is not None and value != "" and value != []
+
+        for fmt in formats:
+            required = fmt.get("required_fields", [])
+            if all(_present(path) for path in required):
+                return None  # 至少一种声明的格式满足，形状合法
+
+        return [
+            {
+                "name": fmt.get("name", ""),
+                "description": fmt.get("description", ""),
+                "required_fields": fmt.get("required_fields", []),
+                "example": fmt.get("example", {}),
+            }
+            for fmt in formats
+        ]
 
     # ---------------------- 第 1 步: resolve ---------------------- #
 
@@ -401,6 +449,18 @@ class CapabilityEngine:
     # ---------------------- 对外统一入口 ---------------------- #
 
     def call(self, request: dict) -> CapabilityCallResult:
+        expected_formats = self._check_request_format(request)
+        if expected_formats is not None:
+            return CapabilityCallResult(
+                status="invalid_request",
+                error=(
+                    "request 不满足该 skill 声明的任何一种 request_formats（形状/必填"
+                    "字段不对），未进入 resolve/explore（不消耗探索预算）。"
+                ),
+                resolve_reason="invalid_request",
+                data={"expected_formats": expected_formats},
+            )
+
         resolved = self.resolve(request)
         if resolved.status == "hit":
             last_failed_member_id: Optional[str] = None

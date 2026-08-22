@@ -9,6 +9,24 @@ domain_matchers:
   - type: keyword
     field: text
 
+# [FIX] agent 调用方常犯的错误：把待处理内容直接塞进 text（text 其实是
+# 用于一级关键词匹配/二级 LLM 裁决的"意图描述"），或者自己发明一个不存在
+# 的字段名（如 transformation）代替 target.op。声明 request_formats 后，
+# 引擎在 resolve 之前会先做一次零成本的形状检查，形状不对时直接返回
+# invalid_request + 本处的 example，不会被误判成"需要探索新能力"。
+request_formats:
+  - name: transform_request
+    description: >
+      对一段文本做一次变换（已知的 upper/reverse，或触发探索一个新变换）。
+      text 放"这次要做什么"的自然语言描述，必须包含操作类关键词（如
+      "转大写"/"反转"），供一级关键词匹配命中；实际要变换的原始文本放在
+      content.text，不要直接塞进 text。
+    required_fields: [text, target.op, content.text]
+    example:
+      text: "把这段文字转大写"
+      target: {op: "upper"}
+      content: {text: "hello world"}
+
 # 该领域所有 member 输出必须满足的 schema 结构约束模板。
 intent_schema_template:
   type: object

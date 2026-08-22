@@ -47,8 +47,14 @@ result = engine.call({
 # result.data == {"result": {"text": "HELLO WORLD"}}
 ```
 
-`result.status` 为 `success` / `fail` / `not_implemented`，含义与
-`browser-site-scraper` / `doc-template-generation` 完全一致（引擎通用行为）。
+`result.status` 为 `success` / `fail` / `not_implemented` / `invalid_request`，
+含义与 `browser-site-scraper` / `doc-template-generation` 完全一致（引擎通用
+行为）。其中 `invalid_request`（阶段十一新增）表示 `request` 的字段形状不
+满足 `capability.yaml` 里 `request_formats` 声明的任何一种格式（例如把待
+处理内容直接塞进 `text`，或者用了 `transformation` 这种不存在的字段名代替
+`target.op`）——这种情况不会消耗探索预算，`data.expected_formats` 会带回
+本 skill 声明的全部格式及可直接照抄的 `example`，照着重新构造 `request`
+即可。
 
 ## 与另外两个 generative-capability skill 的差异（仅在 capability.yaml / explorer 层）
 

@@ -96,6 +96,23 @@ class TestCapabilityEngineResolveExecute(unittest.TestCase):
         self.assertEqual(result.resolve_reason, "domain_pattern_match")
         self.assertEqual(result.status, "not_implemented")
 
+    def test_request_missing_required_field_returns_invalid_request(self):
+        # [FIX] request 形状不对（缺 target.url）时，应该在 resolve/explore 之前
+        # 就短路返回 invalid_request，而不是安静地滑进 no_match -> explore ->
+        # not_implemented，让调用方误以为"这个能力还没实现"。
+        from mini_agent.skills.generative_capability import CapabilityEngine
+
+        engine = CapabilityEngine(self.skill_dir)
+        result = engine.call({"text": "帮我抓一下百度搜索结果", "query": "test"})
+        self.assertEqual(result.status, "invalid_request")
+        self.assertEqual(result.resolve_reason, "invalid_request")
+        self.assertIsNotNone(result.data)
+        expected = result.data["expected_formats"]
+        self.assertTrue(expected)
+        self.assertIn("required_fields", expected[0])
+        self.assertIn("example", expected[0])
+        self.assertIn("target", expected[0]["example"])
+
     def test_no_match_without_explore_runner_returns_not_implemented(self):
         from mini_agent.skills.generative_capability import CapabilityEngine
 
@@ -170,6 +187,50 @@ class TestCapabilityEngineResolveExecute(unittest.TestCase):
         self.assertEqual(result3.resolve_reason, "domain_pattern_match")
 
 
+TEXT_TRANSFORM_CAPABILITY_DIR = REPO_ROOT / ".claude" / "skills" / "text-transform-capability"
+
+
+@unittest.skipUnless(TEXT_TRANSFORM_CAPABILITY_DIR.is_dir(), "text-transform-capability skill 目录不存在")
+class TestRequestFormatValidation(unittest.TestCase):
+    """
+    [FIX] 复现真实对话里踩过的坑：agent 把待转换内容直接塞进 text，
+    又发明了一个不存在的 transformation 字段，而不是按 SKILL.md 给的
+    {"target": {"op": ...}, "content": {"text": ...}} 形状调用。
+    有了 request_formats 校验后，这种情况应该直接得到 invalid_request +
+    可照抄的 example，而不是被误判成"需要探索新变换"。
+    """
+
+    def setUp(self):
+        self.skill_dir = _copy_skill_dir(TEXT_TRANSFORM_CAPABILITY_DIR)
+
+    def tearDown(self):
+        shutil.rmtree(self.skill_dir.parent, ignore_errors=True)
+
+    def test_wrong_shape_returns_invalid_request_not_not_implemented(self):
+        from mini_agent.skills.generative_capability import CapabilityEngine
+
+        engine = CapabilityEngine(self.skill_dir)
+        # 复现真实转录里的错误调用形状。
+        result = engine.call({"text": "hello world", "transformation": "uppercase"})
+        self.assertEqual(result.status, "invalid_request")
+        example = result.data["expected_formats"][0]["example"]
+        self.assertEqual(example["target"]["op"], "upper")
+        self.assertEqual(example["content"]["text"], "hello world")
+
+    def test_correct_shape_resolves_and_executes_without_explore(self):
+        from mini_agent.skills.generative_capability import CapabilityEngine
+
+        engine = CapabilityEngine(self.skill_dir)
+        result = engine.call({
+            "text": "把这段文字转大写",
+            "target": {"op": "upper"},
+            "content": {"text": "hello world"},
+        })
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.member_id, "upper")
+        self.assertEqual(result.data, {"result": {"text": "HELLO WORLD"}})
+
+
 @unittest.skipUnless(DOC_TEMPLATE_GENERATION_DIR.is_dir(), "doc-template-generation skill 目录不存在")
 class TestSecondDomainReuse(unittest.TestCase):
     """验证第二个 generative-capability skill 复用同一套引擎（阶段五泛化性验证的回归覆盖）。"""
@@ -191,6 +252,52 @@ class TestSecondDomainReuse(unittest.TestCase):
         })
         self.assertEqual(result.status, "success")
         self.assertEqual(result.member_id, "standard_report")
+
+
+class TestRequestFormatBackwardCompat(unittest.TestCase):
+    """
+    [FIX] request_formats 是 capability.yaml 的可选新字段；没声明它的存量
+    skill（或忘了加的手写 skill）应该完全跳过形状校验，行为和这个机制
+    加入之前一模一样，不能因为这个新机制而让原本能跑的 skill 突然报
+    invalid_request。
+    """
+
+    def _write_minimal_skill(self, root: Path) -> Path:
+        skill_dir = root / "no-request-formats-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "capability.yaml").write_text(
+            "skill_type: generative-capability\n"
+            "name: no-request-formats-skill\n"
+            "domain_matchers:\n"
+            "  - type: keyword\n"
+            "    field: text\n"
+            "intent_schema_template:\n"
+            "  type: object\n"
+            "  required: [result]\n"
+            "  properties:\n"
+            "    result:\n"
+            "      type: object\n"
+            "member_interface:\n"
+            "  entrypoint: \"run(input: dict) -> dict\"\n",
+            encoding="utf-8",
+        )
+        (skill_dir / "_index.json").write_text("{\"members\": []}", encoding="utf-8")
+        return skill_dir
+
+    def test_no_request_formats_declared_skips_validation(self):
+        from mini_agent.skills.generative_capability import CapabilityEngine
+
+        with tempfile.TemporaryDirectory() as tmp:
+            skill_dir = self._write_minimal_skill(Path(tmp))
+            engine = CapabilityEngine(skill_dir)
+            # 完全没有 request_formats，_check_request_format 必须直接放行
+            # （返回 None），走到原来的 resolve() 逻辑（这里因为没有 member
+            # 候选，无 explore_runner，最终应落到 not_implemented 而不是
+            # invalid_request）。
+            self.assertIsNone(engine._check_request_format({"whatever": 1}))
+            result = engine.call({"whatever": 1})
+            self.assertEqual(result.status, "not_implemented")
+            self.assertNotEqual(result.resolve_reason, "invalid_request")
 
 
 class TestSkillLoaderGenerativeCapabilityAwareness(unittest.TestCase):

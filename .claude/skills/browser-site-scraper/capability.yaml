@@ -9,6 +9,21 @@ domain_matchers:
   - type: keyword
     field: text
 
+# [FIX] 见 text-transform-capability/capability.yaml 里的同名注释：
+# request_formats 让 resolve() 之前多一道零成本的形状检查，形状不对时
+# 直接返回 invalid_request + example，不会被误判成"需要探索新站点"。
+request_formats:
+  - name: scrape_request
+    description: >
+      对指定站点发起一次抓取请求。text 放本次抓取意图的自然语言描述
+      （用于一级关键词匹配/二级 LLM 裁决），目标站点 URL 放 target.url，
+      需要提取的信息放 query。
+    required_fields: [text, target.url]
+    example:
+      text: "抓取知乎某个问题下的高赞回答"
+      target: {url: "https://www.zhihu.com/question/xxxxxxxx"}
+      query: "高赞回答的正文内容"
+
 # 该领域所有 member 输出必须满足的 schema 结构约束模板。
 intent_schema_template:
   type: object

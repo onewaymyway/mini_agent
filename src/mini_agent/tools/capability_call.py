@@ -133,7 +133,7 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
             return json.dumps({"status": "error", "error": f"调用过程中发生异常: {e}"}, ensure_ascii=False)
 
         payload = {
-            "status": result.status,   # "success" | "fail" | "not_implemented"
+            "status": result.status,   # "success" | "fail" | "not_implemented" | "invalid_request"
             "data": result.data,
             "error": result.error,
             "member_id": result.member_id,
@@ -145,6 +145,14 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
                 "而当前运行环境尚未接入真正的底层操作原语执行器（explore_runner/"
                 "tool_executor），因此如实返回 not_implemented，而不是伪造成功。"
                 "这不是本次调用的偶发失败，是该 skill 探索能力尚未完全接线的已知限制。"
+            )
+        elif result.status == "invalid_request":
+            payload["note"] = (
+                "这次调用的 request 字段形状不满足该 skill 声明的任何一种输入格式"
+                "（不是能力缺失，纯粹是参数传错了），因此没有消耗探索预算就直接短路"
+                "返回。请查看 data.expected_formats：每一项都给出了 required_fields"
+                "（必须存在且非空的字段路径）和一个可直接照抄改写的 example，按其中"
+                "任意一种格式重新构造 request 后重试即可。"
             )
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -159,9 +167,12 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
             "dict describing your target and, if relevant, the input data. Returns "
             "{status, data, error, member_id, resolve_reason}: status is 'success' when "
             "the data satisfies the skill's schema, 'fail' on a genuine execution error, "
-            "or 'not_implemented' when the request would need the skill's exploration "
-            "capability and that hasn't been wired up in this environment yet. Never "
-            "fabricates success — always trust the returned status over your own guess."
+            "'not_implemented' when the request would need the skill's exploration "
+            "capability and that hasn't been wired up in this environment yet, or "
+            "'invalid_request' when the request's shape doesn't match any format the "
+            "skill declares (check data.expected_formats for required_fields + a copyable "
+            "example per format, then retry with the right shape). Never fabricates "
+            "success — always trust the returned status over your own guess."
         ),
         input_schema={
             "type": "object",
