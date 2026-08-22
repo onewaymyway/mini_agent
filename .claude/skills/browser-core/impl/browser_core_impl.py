@@ -41,6 +41,20 @@ def _debug_context(session: Optional[CDPSession]) -> dict:
     取失败（比如页面已经导航走/连接已断）就安静省略，不让"取调试信息"
     这件事本身又制造一层新的异常掩盖原始错误。
     """
+    return capture_debug_context(session)
+
+
+def capture_debug_context(session: Optional[CDPSession]) -> dict:
+    """
+    公开版本（阶段十七）：`_debug_context` 原本是 browser_core_impl.py 内部
+    工具失败分支专用的私有函数；`browser-site-scraper` 下的人工预置 member
+    （`baidu`/`zhihu`）不经过 `tool_executor` 通用分发层，是直接 `import
+    session_manager` 自己调用 `session.navigate`/`session.eval_js`（见各自
+    `script.py` 文件头"设计说明"），原本拿不到这份调试上下文——这正是本次
+    要修的问题：member 判定为"提取到 0 条结果"这类可疑成功时，也应该能
+    附带同一份调试信息，不需要重复实现一遍。改成公开函数供 member 直接
+    `from browser_core_impl import capture_debug_context` 复用。
+    """
     if session is None:
         return {}
     try:

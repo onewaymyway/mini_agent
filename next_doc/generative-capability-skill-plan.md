@@ -1897,3 +1897,94 @@ next_doc/generative-capability-skill-plan.md                  # 本文档（阶�
   手动改脚本再验证"这条路径变得顺手，是否要做成完全自动的"看到失败 →
   自动生成补丁 → 自动验证"闭环，留给有真实失败样本积累之后再评估，避免
   在没有真实数据支撑前过度设计。
+
+### 阶段十七 —— 已完成
+
+**触发**：真实使用中观察到一个具体反例——对百度搜索"test"这样必然有结果
+的查询，`capability_call` 返回 `{"status": "success", "data": {"results":
+[]}}"`，看起来像是调用成功了，实际上什么有用信息都没有，也没有任何调试
+线索能判断是"真的没结果"还是"哪一步出了问题"。这正是"没有用的结果同样
+是有问题的，但缺少调试信息"这条反馈指出的问题。
+
+**根因**：`baidu`/`zhihu` 两个人工预置 member 只在命中已知反爬/登录墙
+关键词时才判失败；提取脚本因为选择器过期/页面结构变化/内容尚未渲染完成
+等**未被预料到的原因**找不到任何结果容器时，会落到"没有异常、也没有命中
+已知关键词"的默认路径，直接返回 `status: success, results: []`——这是一个
+真实的逻辑漏洞，不是概率性的偶发失败。
+
+**改动内容**：
+
+```
+.claude/skills/browser-core/impl/browser_core_impl.py           # 修改：_debug_context()
+                                                                    # 改为调用新公开的
+                                                                    # capture_debug_context()
+.claude/skills/browser-site-scraper/members/baidu/script.py      # 修改：0 条结果且未命中
+                                                                    # 已知关键词时改为 fail +
+                                                                    # 附带调试快照
+.claude/skills/browser-site-scraper/members/zhihu/script.py      # 修改：同上
+.claude/skills/browser-core/SKILL.md                              # 修改：说明 capture_debug_context
+                                                                    # 可被 member 复用
+.claude/skills/browser-site-scraper/SKILL.md                      # 修改："已知限制"补充说明
+tests/test_browser_site_scraper_members.py                        # 新增：5 个用例
+next_doc/generative-capability-skill-plan.md                      # 本文档（阶段十七记录）
+```
+
+**已实现能力**：
+
+- `browser_core_impl.py` 新增公开函数 `capture_debug_context(session)`
+  （原 `_debug_context()` 改为直接调用它，行为不变，向后兼容），供不经过
+  `tool_executor` 通用分发层的 member（`baidu`/`zhihu` 直接 `import
+  session_manager` 自己调用 `session.navigate`/`eval_js`）复用同一份"取
+  url/title/正文摘要"的调试快照逻辑，不用重复实现。
+- `baidu`/`zhihu` 的 `run()`：提取到 0 条结果、且未命中各自已有的反爬/
+  登录墙关键词检测时，不再直接返回成功，而是调用 `capture_debug_context()`
+  附带调试快照后返回 `status: fail`，错误信息里明确说明"更可能是选择器
+  过期/页面结构变化/内容未渲染完成，而不是真的没有搜索结果"——这个失败
+  会正常计入 `registry.json` 的 `fail_count`/`consecutive_failures`，达到
+  阈值后触发既有的 `degraded → 重新探索` 生命周期流转（第 6/7 节既有机制），
+  而不是像此前那样因为"看起来成功"而完全绕过这条自愈路径。
+- 已知的反爬关键词命中路径不受影响（`baidu` 检测到验证码/风控关键词、
+  `zhihu` 检测到登录墙关键词时，仍然按原有逻辑返回带具体原因的失败）。
+
+**验证结果**：
+
+1. `pytest tests/test_browser_site_scraper_members.py -q` → 5 passed：
+   - `baidu`/`zhihu` 各自验证"0 条结果+无已知关键词 → fail 且 error 里带
+     调试信息（含页面 url）"；
+   - `baidu`/`zhihu` 各自验证"非空结果 → 仍然 success"（确认修复没有把
+     正常场景也判失败）；
+   - `baidu` 额外验证"命中已知验证码关键词 → fail 且原因具体"这条既有
+     路径未被破坏。
+   - 测试通过 monkeypatch `sys.modules['session_manager']`（而非误以为
+     `session_manager` 是 script 模块的属性——它其实是 `run()` 函数内部
+     的局部 flat import）验证：局部 import 在 `sys.modules` 已有同名模块
+     时只是绑定同一个模块对象的引用，因此打桩模块对象本身即可让 member
+     内部的局部 import 生效，不需要真实浏览器/网络。
+2. `pytest tests/test_generative_capability_engine.py
+   tests/test_generative_capability_real_tools.py
+   tests/test_browser_core_session_manager.py
+   tests/test_browser_site_scraper_members.py -q` → 40 passed（阶段十六
+   35 个既有用例全部保持通过 + 本阶段新增 5 个），确认改动没有影响
+   `capability_engine`/`real_tools`/`session_manager` 其余既有行为。
+
+**已知遗留（留给后续阶段）**：
+
+- "0 条结果一律判失败"是一个启发式，对某些查询词真实结果本来就是 0 条
+  的场景（理论上存在，但对 `baidu`/`zhihu` 这类通用搜索场景极其罕见）会
+  产生误判——判断"这是不是一个真的会有结果的查询"需要更多上下文（比如
+  历史同类查询的结果分布），本阶段没有做这类统计判断，只是把"明显可疑的
+  空结果"从"静默成功"改为"如实失败+带调试信息"，这本身已经是更诚实的
+  默认行为，比此前的"一律成功"更安全。
+- 调试信息目前是拼进 `error` 字符串（`f"...: {debug!r}"`），可读但不是
+  结构化字段；`capability_call.py` 的 payload 目前也没有单独的 `debug`
+  顶层字段（`ExecuteResult`/`CapabilityCallResult` 只有
+  `status/data/error/member_id/resolve_reason`）。如果后续需要更精细地
+  展示调试信息（比如单独渲染 url/title，而不是整段塞进错误文案），需要
+  扩展 `ExecuteResult`/`CapabilityCallResult` 数据结构，本阶段为了不影响
+  既有调用方解析 `error` 字段的方式，选择了侵入性最小的字符串拼接方案。
+- 探索链路（`explorer_runtime`/`distiller`）目前不受本次改动影响——本次
+  只修了两个**人工预置** member 自己的判断逻辑；未来蒸馏产生的新 member
+  是否也该有类似"结果为空时不轻易判成功"的保护，取决于具体领域的
+  `intent_schema` 语义，留给以后接入更多真实站点时按需处理，不在本阶段
+  强行推广成引擎级别的通用规则（"结果数组为空"不一定对所有领域都是可疑
+  信号，比如某些查询场景下"确实没有匹配项"就是正确答案）。

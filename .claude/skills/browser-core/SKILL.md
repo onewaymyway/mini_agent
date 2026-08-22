@@ -315,7 +315,13 @@ output: {"ok": true, "url": "...", "title": "...", "body_excerpt": "...",
   是同步调用、单次探索内顺序执行，暂不构成实际问题；如果未来支持并发探索，
   需要在 `session_manager.py` 里补充按调用方隔离的 session key，这是刻意
   留给后续阶段的已知限制，不在本次范围内处理。
-- **调试时改脚本立即生效（阶段十六）**：`real_tools.py` 现在每次调用前会
+- **调试上下文可被 member 复用（阶段十七）**：`_debug_context()` 背后的
+  实现已改为公开函数 `capture_debug_context(session)`（`_debug_context`
+  仍保留、内部改为直接调用它，向后兼容）——`browser-site-scraper` 下不
+  经过 `tool_executor` 通用分发层的人工预置 member（`baidu`/`zhihu`）可以
+  `from browser_core_impl import capture_debug_context` 直接复用同一份
+  调试快照逻辑，不需要重复实现，见 `browser-site-scraper/SKILL.md`"已知
+  限制"一节里"0 条结果视为失败"的用法。`real_tools.py` 现在每次调用前会
   清掉 `impl/` 目录下所有文件的模块缓存再重新加载，所以修改
   `browser_core_impl.py`/`session_manager.py`/`cdp_client.py`/
   `browser_launch.py` 后，下一次 `capability_call`（或 `dev/debug_run.py`）

@@ -103,6 +103,7 @@ def run(input: dict) -> dict:
     try:
         import session_manager  # type: ignore
         from cdp_client import CDPError  # type: ignore
+        from browser_core_impl import capture_debug_context  # type: ignore
     except Exception as e:  # noqa: BLE001
         return {"status": "fail", "data": None, "error": f"加载 browser-core 失败: {e}"}
 
@@ -138,4 +139,24 @@ def run(input: dict) -> dict:
 
     max_results = input.get("max_results", 10)
     results = raw_results[:max_results]
+
+    if not results:
+        # 阶段十七：已知问题——已知的反爬关键词都没命中，但提取脚本还是找
+        # 不到任何结果容器时，此前会直接返回"成功但 results: []"，看起来
+        # 像是真的搜索到 0 条结果，实际更可能是选择器过期/页面结构变化/
+        # 内容异步渲染还没完成/命中了未知类型的拦截页——对"test"这类肯定
+        # 有结果的查询词，0 条结果本身就是一个需要排查的信号，不应该被
+        # 静默当成成功。这里附带一份调试快照（url/title/正文摘要）一起
+        # 报告失败，而不是让调用方拿着一个内容为空、无从排查的"success"。
+        debug = capture_debug_context(session)
+        return {
+            "status": "fail",
+            "data": None,
+            "error": (
+                "提取到 0 条结果，且未命中已知的验证码/风控关键词——更可能是"
+                "选择器过期/页面结构变化/内容尚未渲染完成，而不是真的没有搜索"
+                f"结果。调试信息: {debug!r}"
+            ),
+        }
+
     return {"status": "success", "data": {"results": results}, "error": None}

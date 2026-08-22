@@ -107,6 +107,7 @@ def run(input: dict) -> dict:
     try:
         import session_manager  # type: ignore
         from cdp_client import CDPError  # type: ignore
+        from browser_core_impl import capture_debug_context  # type: ignore
     except Exception as e:  # noqa: BLE001
         return {"status": "fail", "data": None, "error": f"加载 browser-core 失败: {e}"}
 
@@ -140,4 +141,20 @@ def run(input: dict) -> dict:
 
     max_results = input.get("max_results", 10)
     results = raw_results[:max_results]
+
+    if not results:
+        # 阶段十七：同 baidu/script.py 的修复——没命中已知登录墙关键词，但
+        # 提取脚本仍找不到任何结果容器时，此前会直接返回"成功但 results: []"。
+        # 附带调试快照一起报告失败，而不是静默返回一个无从排查的空成功。
+        debug = capture_debug_context(session)
+        return {
+            "status": "fail",
+            "data": None,
+            "error": (
+                "提取到 0 条结果，且未命中已知的登录墙/验证码关键词——更可能是"
+                "选择器过期/页面结构变化/内容尚未渲染完成，而不是真的没有搜索"
+                f"结果。调试信息: {debug!r}"
+            ),
+        }
+
     return {"status": "success", "data": {"results": results}, "error": None}

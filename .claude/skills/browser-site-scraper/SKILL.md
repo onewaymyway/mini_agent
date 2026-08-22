@@ -71,12 +71,16 @@ result = engine.call({
     member 额外做了"检测到验证码/风控拦截页时明确报错"的处理（而不是像
     改造前那样把空结果误判成"成功但没抓到东西"），`zhihu` member 同理
     检测登录墙；
+  - `baidu`/`zhihu` 这两个人工预置 member 提取到 0 条结果、且没有命中已知
+    反爬/登录墙关键词时（阶段十七起），不再静默返回"成功但空结果"，而是
+    返回失败并在 `error` 里附带调试快照（url/title/正文摘要），提示更可能
+    是选择器过期/页面结构变化/内容未渲染完成，而不是真的没有搜索结果；
   - `browser_extract_content` 是通用提取，不针对具体网站定制，复杂页面
     结构下探索子agent可能需要多轮 `wait_for_selector`/`click`/`scroll`
     才能拿到符合 `intent_schema` 的数据，见 `browser-core/SKILL.md`
     "已知限制"一节。`baidu`/`zhihu` 这两个人工预置 member 则是自己直接写
     了针对性的提取 JS（不经过通用的 `browser_extract_content`），所以不受
-    这条限制影响。
+    这条限制影响，但同样适用上一条"0 条结果视为失败"的处理。
 
 ## 调试（阶段十六）
 
