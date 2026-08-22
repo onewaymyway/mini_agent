@@ -90,3 +90,12 @@ explore -> distill -> 落盘 -> 免探索复用 的完整链路，探索阶段�
   或直接写代码，不建议在生产场景中依赖本 skill。
 - 与另外两个 skill 一样，`schema_validator` 仍是常用关键字子集而非完整 JSON
   Schema 规范，见方案文档阶段四已知遗留。
+
+## 阶段九：检索裁决/探索子agent 改接框架统一 LLM 调用基础设施
+
+与 `browser-site-scraper`/`doc-template-generation` 一样，本 skill 通过
+`capability_call` 调用时，第二级检索裁决与探索子agent决策循环现在都走
+`llm/service.py::LLMHelper`（跟随 `/model` 切换、复用 `LLMClientPool`），
+不再自行拼 urllib 请求写死 Anthropic。测试文档中用 `build_stub_resolver`/
+`build_stub_explorer` 的桩验证路径不受影响（桩实现本来就不发起任何网络
+调用）。详见方案文档阶段九实施记录。

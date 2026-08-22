@@ -73,3 +73,15 @@ generative_capability` 的同一份代码。
 `capability_call` 工具在对话中直接调用本 skill，详见方案文档阶段七实施记录。
 
 详见 `next_doc/generative-capability-skill-plan.md` 阶段五、阶段七实施记录。
+
+## 阶段九：检索裁决/探索子agent 改接框架统一 LLM 调用基础设施
+
+`llm_resolver.py`（第二级检索裁决）与 `explorer_runtime.py`（探索子agent
+决策循环）此前各自用 urllib 直连 Anthropic Messages API，是引擎里仅有的两处
+没有走 `llm/service.py::LLMHelper` 的地方——固定写死 provider=anthropic，
+不跟随 `/model` 切换。阶段九改为接收调用方传入的 `llm_helper`（通常是
+`Agent.llm_helper`，`capability_call` 工具通过 `tools/orchestration.py::
+get_current_llm_helper()` 拿到），自动获得多 provider 支持、`/model` 切换
+跟随、`LLMClientPool` 的多 key/fallback 与统一 `RetryPolicy`。本 skill 的
+`capability.yaml`/`registry.json`/`members/` 未改动，行为对本 skill 使用者
+透明。详见方案文档阶段九实施记录。

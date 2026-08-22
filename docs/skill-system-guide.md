@@ -550,14 +550,43 @@ generative_capability.CapabilityEngine` 实例并调用其 `call(request)`，
 - `skill_name` 不存在 → 返回错误，并附上当前所有 `generative-capability`
   类型 skill 的名称列表，方便模型自行改正而不是瞎猜。
 
-**已知限制（如实告知，不是遗漏）**：`capability_call` 默认只注入
-`build_llm_resolver()`（真实的第二级检索裁决），**不注入
-`explore_runner`/`tool_executor`**——真正的底层操作原语（如
-`browser-core` 的浏览器操作）仍是方案文档"已知遗留"里明确记录、尚未从
-各领域 skill 独立拆分出来的部分。这意味着：命中已有 trusted/probation
-成员并执行成功的路径完全可用；命中失败或未命中、需要触发探索的路径，
-会得到 `status: not_implemented` 并在 `note` 字段说明原因，而不是被
-伪造成功。
+**已知限制（如实告知，不是遗漏）**：`capability_call` 默认注入
+`build_llm_resolver(current_llm_helper)`（第二级检索裁决），
+`current_llm_helper` 通过 `tools/orchestration.py::get_current_llm_helper()`
+拿到当前 `Agent.llm_helper`（跟随 `/model` 切换，见下方"检索裁决/探索子agent
+的 LLM 调用"一节），**不注入 `explore_runner`/`tool_executor`**——真正的
+底层操作原语（如 `browser-core` 的浏览器操作）仍是方案文档"已知遗留"里
+明确记录、尚未从各领域 skill 独立拆分出来的部分。这意味着：命中已有
+trusted/probation 成员并执行成功的路径完全可用；命中失败或未命中、需要
+触发探索的路径，会得到 `status: not_implemented` 并在 `note` 字段说明
+原因，而不是被伪造成功。
+
+#### 检索裁决/探索子agent 的 LLM 调用（阶段九）
+
+`llm_resolver.py`（第二级检索裁决）与 `explorer_runtime.py`（探索子agent
+决策循环）此前各自用 `urllib` 直连 Anthropic Messages API，是引擎里仅有的
+两处没有走框架统一 LLM 调用基础设施
+（[`LLMHelper`](llm-helper-guide.md)，见 `llm/service.py`）的地方——固定
+写死 `provider=anthropic`，不跟随 `/model` 切换，不复用 `LLMClientPool`
+的多 key/多配置 fallback 与统一 `RetryPolicy`。阶段九改为：
+
+- `build_llm_resolver(llm_helper=None, *, cfg=None, override_model=None,
+  override_provider=None, max_retries=2)`：内部改用 `helper.ask(...)`；
+- `build_llm_explorer(tool_executor, llm_helper=None, *, cfg=None,
+  override_model=None, override_provider=None, max_retries=2)`：内部改用
+  `helper.chat(messages=, system=, tools=, ...)`，`tools` 用
+  `mini_agent.llm.base.ToolSchema`，消息历史沿用与
+  `history_manager.py::HistoryManager` 完全相同的 provider 无关内部约定。
+
+两者都优先用传入的 `llm_helper`（`capability_call` 工具通过
+`get_current_llm_helper()` 拿到当前 Agent 实例），否则退化为
+`LLMHelper.from_config(cfg)`，与 `ensemble/judge.py::judge_llm(llm_helper=...)`
+的既有约定一致。都未传时：`build_llm_resolver` 在调用时抛出
+`RuntimeError`（与此前"未配置 API key"抛异常的语义一致）；
+`build_llm_explorer` 返回 `ExploreTrace(success=False,
+stop_reason="llm_error")`（探索循环里"失败是一等公民"的既有约定）。
+既有的工具白名单强制、步数/时间预算硬上限、`finish`/`report_failure`
+决策元工具等安全约束均未改动。详见方案文档阶段九实施记录。
 
 #### 引擎代码在哪
 
@@ -839,7 +868,14 @@ loader.auto_activate_blocked   # -> ['docx', ...]
 
 ---
 
-> 最后更新：2026-08（新增第 3.8 节「`generative-capability` skill：按需调用的
+> 最后更新：2026-08（阶段九：`generative-capability` 引擎的第二级检索裁决
+> `llm_resolver.py`、探索子agent决策循环 `explorer_runtime.py` 改接框架统一
+> `LLMHelper`——不再自行拼 `urllib` 直连 Anthropic，跟随 `/model` 切换、复用
+> `LLMClientPool` 多 key/fallback 与统一 `RetryPolicy`；`capability_call`
+> 工具改用 `tools/orchestration.get_current_llm_helper()` 取当前
+> `Agent.llm_helper`，详见 `next_doc/generative-capability-skill-plan.md`
+> 阶段九实施记录，同步更新第 3.8 节）
+> 此前更新：2026-08（新增第 3.8 节「`generative-capability` skill：按需调用的
 > 领域能力包」——`Skill` 新增 `skill_type`/`category_summary` 字段与
 > `is_generative_capability` 属性，`build_context()` 对此类 skill 只注入一行
 > 摘要不整段注入正文，新增 `capability_call` 工具；引擎代码

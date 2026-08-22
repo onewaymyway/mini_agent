@@ -5,7 +5,7 @@
 mini-agent 里"发起一次 LLM 请求"分两大类场景：
 
 1. **主对话循环**：`agent/turn_loop.py` 及其直接协作模块（`compaction.py`、`lifecycle.py`、`reflection.py`、`profile.py`、`role_judge.py`、`snapshot.py`、`history_manager.py` 等），统一走 `self._llm.chat_with_retry(...)`，天然复用 `LLMClientPool` 的多 key 轮转 + 多配置 fallback，并跟随 `/model` 实时切换。
-2. **主对话循环之外**：judge 评审、ensemble 候选生成、目标自动拆解、路由判定、记忆摘要重写……这类"旁路"调用**统一通过 `LLMHelper`**（`src/mini_agent/llm/service.py`），不再各自裸调 `client.chat()` 或各自 `LLMConfig.from_app_config(cfg)` 重新拼一份配置。
+2. **主对话循环之外**：judge 评审、ensemble 候选生成、目标自动拆解、路由判定、记忆摘要重写、`generative-capability` skill 引擎的第二级检索裁决/探索子agent 决策循环……这类"旁路"调用**统一通过 `LLMHelper`**（`src/mini_agent/llm/service.py`），不再各自裸调 `client.chat()` 或各自 `LLMConfig.from_app_config(cfg)` 重新拼一份配置。
 
 > 背景与迁移过程详见 `next_doc/llm_helper_unification_plan.md`（改造计划，状态：已收尾）。本文档面向"如何使用"和"以后新增旁路调用该怎么接入"。
 
@@ -167,6 +167,8 @@ grep -rn "LLMConfig.from_app_config" src/
 - `src/mini_agent/evolution/objective_executor.py` — `_default_llm_decompose`
 - `src/mini_agent/perception/goal_backlog.py` — `_llm_decompose`
 - `src/mini_agent/ensemble/judge.py` / `decision.py` / `strategies.py` / `runner.py`
+- `src/mini_agent/skills/generative_capability/llm_resolver.py` / `explorer_runtime.py` — 第二级检索裁决 / 探索子agent 决策循环，阶段九接入（详见 `next_doc/generative-capability-skill-plan.md` 实施记录阶段九、[Skill 系统说明 §3.8](skill-system-guide.md)）
+- `src/mini_agent/tools/capability_call.py` — 通过 `orchestration.get_current_llm_helper()` 取当前 `Agent.llm_helper` 注入 `build_llm_resolver()`
 - `tests/test_llm_helper.py` — `LLMHelper` 单测（default/override 路径、重试、目标拆解回归）
 - `tests/test_orchestration_llm_helper_provider.py` — thread-local provider 注册/降级/透传单测
 - `next_doc/llm_helper_unification_plan.md` — 完整改造计划与排查记录

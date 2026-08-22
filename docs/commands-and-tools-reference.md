@@ -917,4 +917,5 @@ mini-agent --debug-llm-console
 
 ---
 
-*最后更新：2026-08（新增 Generative-capability 调用 `capability_call` 工具，见 Skill 系统说明 §3.8）*
+*最后更新：2026-08（`capability_call` 底层检索裁决改接框架统一 `LLMHelper`，跟随 `/model` 切换，详见 Skill 系统说明 §3.8「检索裁决/探索子agent 的 LLM 调用」）*
+*此前更新：2026-08（新增 Generative-capability 调用 `capability_call` 工具，见 Skill 系统说明 §3.8）*
