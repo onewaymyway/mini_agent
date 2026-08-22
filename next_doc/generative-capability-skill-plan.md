@@ -2125,3 +2125,87 @@ next_doc/generative-capability-skill-plan.md                        # 本文档�
   `Browser.getWindowBounds` 返回的窗口尺寸是否等于不可见的默认值，或者
   直接检测系统层面是否有对应的可见窗口句柄——后者需要平台特定代码，超出
   当前"跨平台 CDP 客户端"的定位，留给以后按需评估）。
+
+### 阶段十九 —— 已完成
+
+**触发**：抓取知乎搜索页时，`capability_call` 返回
+`error: "探索超出时间预算(max_seconds)"`，除此之外没有任何别的线索——不
+知道命中的 `zhihu` member 自己第一次执行到底为什么失败（大概率是登录墙，
+`members/zhihu/script.py` 本身有检测逻辑，但那次失败原因没有出现在最终
+结果里），也不知道探索子agent 180 秒里到底卡在哪一步。
+
+**根因（两个独立问题，和阶段十八是同一类"信息在链路中间被丢弃/参数没有
+随真实执行场景更新"的问题）**：
+
+1. `capability_engine.py::call()` 在"命中 member 执行失败 → 触发探索 →
+   探索也失败"这条路径上，只把 `explore_result.error` 塞进最终结果，
+   `exec_result.error`（trusted member 自己那次执行失败的具体原因，比如
+   `members/zhihu/script.py` 检测到的"登录知乎"关键词）在 `for member_id
+   in resolved.member_ids:` 循环里赋值给 `last_failed_member_id` 之后就
+   再也没被读取过，直接丢了。对用户来说，member 自己的失败原因往往比
+   探索子agent最后的失败原因更有诊断价值（前者是精确的"为什么"，后者
+   经常只是"没来得及/超预算"这种表面原因）。
+2. `explorer/tool_allowlist.json`/`capability.yaml` 里的 `max_seconds:
+   180` 是阶段三接入配置占位、阶段十二之前用桩探索器（`build_stub_
+   explorer`，没有真实网络/LLM延迟）验证接线逻辑时定的数值，阶段十二起
+   `explore_runner`/`tool_executor` 换成真实实现后，这个数值没有跟着重新
+   评估过。真实探索一步 = 一次 LLM 网络往返（数秒到十几秒，视 provider/
+   网络状况）+ 一次真实浏览器操作（`browser_navigate` 默认 20s 超时，
+   `browser_wait_for_selector` 默认 8s 超时），零反爬拦截的站点通常几步
+   就能走完，但像知乎这类有登录墙的站点，模型需要多试几步（导航→提取→
+   发现异常→用 `browser_get_page_source`/`browser_get_debug_snapshot` 确认
+   →才敢下判断调用 `report_failure`）才能给出诚实的失败原因，180s 经常
+   不够用，模型还没来得及诚实收尾就被 `max_seconds` 强制掐断，最终只剩下
+   一句没有信息量的"超出时间预算"。
+
+**改动内容**：
+
+```
+src/mini_agent/skills/generative_capability/capability_engine.py   # 修改：
+                                                                      # call() 不再丢弃 member 自身的执行失败原因
+src/mini_agent/skills/generative_capability/explorer_runtime.py     # 修改：
+                                                                      # 剩余时间 <30s 时提醒模型尽快 finish/report_failure
+.claude/skills/browser-site-scraper/capability.yaml                  # 修改：
+                                                                      # max_seconds 180 -> 300
+next_doc/generative-capability-skill-plan.md                         # 本文档（阶段十九记录）
+```
+
+**已实现能力**：
+
+- `CapabilityEngine.call()` 新增 `last_exec_error` 跟踪最后一个命中 member
+  的执行失败原因；命中 member 执行失败 + 随后探索也失败的路径，最终
+  `error` 会把两段原因都如实拼在一起：`"已有能力(member=zhihu)执行失败:
+  ...；随后触发的探索子agent也失败: ..."`，不再只剩探索侧一句话。只有
+  member 执行本身成功、或者一开始就是 `resolve() miss`（没有命中任何
+  member，无 `exec_result` 可言）时，行为与之前一致。
+- `explorer_runtime.py` 的探索主循环每一步都会重新计算 `remaining =
+  max_seconds - elapsed`；`remaining < 30` 时，只在**当轮**发给 LLM 的
+  消息末尾（不写回持久化的 `messages` 历史、也不改 `system_prompt`）追加
+  一条提醒："时间预算只剩 N 秒，接下来可能只够再发起 1 次工具调用，能
+  finish 就 finish，走不通就立刻 report_failure，不要再尝试新操作"。这样
+  真的快超时的场景下，模型有机会用最后一步给出一个有信息量的诚实失败
+  原因，而不是被下一轮循环开头的时间检查直接判"超出时间预算"。
+- `browser-site-scraper/capability.yaml` 的 `explorer.max_seconds` 从
+  180 调到 300，`max_steps` 保持 40 不变（步数预算本身没有暴露出问题）。
+  `text-transform-capability`（纯本地逻辑，无网络）与
+  `doc-template-generation`（`doc-core` 仍是占位，探索还跑不起来）的
+  `max_seconds` 未改动，这两个场景不存在"真实网络延迟"这个变量。
+
+**验证结果**：`python3 -m py_compile` 通过两个修改的 `.py` 文件；
+`yaml.safe_load` 确认 `capability.yaml` 改动后仍是合法 YAML。
+
+**已知遗留（留给后续阶段）**：
+
+- 300s 仍是一个经验值，不是理论推导出来的上界——如果目标站点反爬拦截
+  更重（比如每次导航都触发验证码，模型需要反复重试才能确认"这条路真的
+  走不通"），仍有可能不够用。更彻底的方案是把 `max_seconds`
+  做成可以按站点/请求覆盖的参数（比如 `request.explore_budget_seconds`），
+  而不是写死在 `capability.yaml` 里对所有请求一视同仁，这个改动涉及
+  `request_formats` 校验规则联动，本阶段未做，留给后续按需评估。
+- "命中 member 执行失败"这一步的原因目前只有文本 `error` 字符串，没有
+  结构化的失败类型（比如 `login_wall`/`captcha`/`selector_not_found`）。
+  如果未来想让上层（比如 Growth Advisor 或告警）能自动区分"这是该换
+  `session.mode=attach` 的信号"还是"这是选择器该修了"，需要把
+  `members/*/script.py` 的失败返回从纯文本 `error` 升级成带分类字段的
+  结构体，这会影响所有已有 member 脚本的返回约定，是一次更大的改动，
+  本阶段未做。

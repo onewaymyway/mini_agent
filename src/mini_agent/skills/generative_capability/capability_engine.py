@@ -464,6 +464,7 @@ class CapabilityEngine:
         resolved = self.resolve(request)
         if resolved.status == "hit":
             last_failed_member_id: Optional[str] = None
+            last_exec_error: Optional[str] = None
             for member_id in resolved.member_ids:
                 exec_result = self.execute(member_id, request)
                 if exec_result.status == "success":
@@ -474,6 +475,7 @@ class CapabilityEngine:
                         resolve_reason=resolved.reason,
                     )
                 last_failed_member_id = member_id
+                last_exec_error = exec_result.error
 
             # 命中的候选全部执行失败：若该 member 已被判定 degraded，这是一次
             # "重新探索"（复用同一个 member_id，见状态机第 7 节）；否则按普通探索处理。
@@ -487,7 +489,19 @@ class CapabilityEngine:
             if explore_result.status == "success":
                 return CapabilityCallResult(status="success", data=explore_result.data,
                                              member_id=explore_result.member_id, resolve_reason="explored")
-            return CapabilityCallResult(status="not_implemented", error=explore_result.error,
+            # [阶段十九修复] 此前这里只返回 explore_result.error，命中的 member
+            # 自己第一次执行失败的具体原因（比如登录墙/验证码关键词，往往比
+            # 探索子agent最后超时/报告的原因信息量大得多）被直接丢弃，调用方
+            # 只能看到"探索超出时间预算"这类和真实病因（登录墙）毫无关系的
+            # 表面原因，完全没法据此判断该不该换 session.mode="attach"。这里
+            # 把两段原因都如实带回去。
+            combined_error = explore_result.error
+            if last_exec_error:
+                combined_error = (
+                    f"已有能力(member={last_failed_member_id})执行失败: {last_exec_error}；"
+                    f"随后触发的探索子agent也失败: {explore_result.error}"
+                )
+            return CapabilityCallResult(status="not_implemented", error=combined_error,
                                          resolve_reason=resolved.reason)
 
         # miss -> 全新探索

@@ -38,7 +38,15 @@ explorer:
   prompt: explorer/prompt.md
   tool_allowlist: explorer/tool_allowlist.json
   max_steps: 40
-  max_seconds: 180
+  # [阶段十九] 180s 是早期用桩探索器（无真实网络/LLM延迟）验证接线时定的
+  # 数值，真实探索一步就包含一次 LLM 往返（数秒到十几秒不等，视 provider/
+  # 网络而定）+ 一次真实浏览器操作（navigate 默认 20s 超时，wait_for_
+  # selector 默认 8s 超时），零反爬拦截的站点通常几步就能完成，但像知乎
+  # 这类有登录墙的站点，模型需要多几步试探+确认才能判断"走不通"，180s
+  # 经常不够、还没来得及诚实调用 report_failure 就先被 max_seconds 掐断，
+  # 导致最终 error 只剩下一句无信息量的"超出时间预算"。调到 300s，配合
+  # explorer_runtime.py 新增的"剩余时间<30s 时提醒模型尽快收尾"机制。
+  max_seconds: 300
 
 # member 的统一函数入口约定，引擎按此调用，通常无需改动。
 member_interface:

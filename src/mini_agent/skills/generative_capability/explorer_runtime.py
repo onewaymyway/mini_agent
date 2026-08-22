@@ -141,13 +141,34 @@ def build_llm_explorer(
         start = time.time()
 
         for _step_index in range(max_steps):
-            if time.time() - start > max_seconds:
+            elapsed = time.time() - start
+            if elapsed > max_seconds:
                 return ExploreTrace(success=False, error="探索超出时间预算(max_seconds)",
                                      steps=steps, stop_reason="time_budget")
 
+            step_messages = messages
+            remaining = max_seconds - elapsed
+            # [阶段十九] 之前模型完全不知道自己还剩多少时间，容易在预算快耗尽
+            # 时还去发起一次耗时的工具调用（比如又一次 navigate/wait_for_
+            # selector），下一轮循环开头才会因为超时被强制判失败——白白浪费了
+            # 一次本可以用来诚实调用 report_failure/finish 收尾的机会。剩余
+            # 时间紧张时，在当轮 LLM 调用前追加一条提醒，不修改
+            # system_prompt 本身（避免每轮都变化增加 prompt 缓存失效成本）。
+            if remaining < 30:
+                step_messages = messages + [{
+                    "role": "user",
+                    "content": (
+                        f"[系统提醒] 时间预算只剩 {remaining:.0f} 秒，接下来可能"
+                        "只够再发起 1 次工具调用。如果已经拿到足够数据，请立刻"
+                        "调用 finish；如果已经能判断走不通（如登录墙/验证码/"
+                        "选择器一直找不到），请立刻调用 report_failure 如实说明"
+                        "原因，不要再尝试新的操作。"
+                    ),
+                }]
+
             try:
                 response = helper.chat(
-                    messages=messages,
+                    messages=step_messages,
                     system=system_prompt,
                     tools=tool_schemas,
                     max_retries=max_retries,
