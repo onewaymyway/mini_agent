@@ -128,6 +128,11 @@ TestSkillLocalToolImplementationLoading`）：
 
 ## 6. 给未来验证者的自测步骤（在有真实浏览器的环境下）
 
+> 也可以直接用 `test_cases/browser-core-testing-guide.md`——那份文档是
+> 面向"在 agent 对话里"验证的版本（覆盖 skill 发现、命中已有 member、
+> 探索新站点、`attach` 登录场景、无浏览器时的诚实失败共 5 步），本节是
+> 更偏"直接调用 `capability_call` 工具函数"的最短验证路径，两者互补。
+
 1. 安装依赖：`pip install websocket-client --break-system-packages`
    （`requests`/`PyYAML` 项目本身已依赖）；确认本机有 Chrome/Chromium。
 2. **最短链路自测**（headless，不需要登录）：
