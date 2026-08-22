@@ -1,236 +1,188 @@
-# text-transform-capability 测试指南
+# text-transform-capability 测试指南（在 agent 里对话验证）
 
 > 对应 `.claude/skills/text-transform-capability/`（一个刻意做得很小、零外部
-> 依赖的 `generative-capability` skill），以及方案文档
-> `next_doc/generative-capability-skill-plan.md` 阶段八实施记录。
+> 依赖的 `generative-capability` skill）。
 >
-> 目的：不是测试某个具体业务能力，而是验证 `generative-capability` 机制
-> 本身（`resolve`/`execute`/`explore`/`distill`/生命周期状态机/健康巡检）
-> 在真实项目环境里确实可用。所有步骤均可在离线沙箱环境完成，不需要
-> `ANTHROPIC_API_KEY`、不需要浏览器、不需要网络。
+> 目的：验证 `generative-capability` 这套新 skill 机制**在真实 agent 对话
+> 场景里可用**——不是走代码直接调用引擎（那部分回归覆盖见
+> `tests/test_generative_capability_engine.py`），而是像真实用户一样在
+> mini-agent 的对话界面里输入内容，检查 agent 是否会：
+> 1. 通过 `skill_list` 发现这是一个 `generative-capability` 类型的 skill；
+> 2. 调用 `capability_call` 工具而不是 `skill_activate`；
+> 3. 拿到正确的转换结果，并如实转述给你（成功就是成功，做不到就说明原因，
+>    不会编造一个看似合理的答案）。
+>
+> 需要一个能实际对话的 mini-agent 会话（配置好任意一个 provider 的 API
+> key）。下面每一步都给出：**该在会话里输入什么** + **预期看到什么**。
 
 ---
 
 ## 前置条件
 
-1. 项目根目录下能正常 `import mini_agent`（即 `src/` 在 `PYTHONPATH` 里，
-   或已用 `pip install -e .` 之类方式安装）。
-2. **不要直接对 `.claude/skills/text-transform-capability` 这个真实目录跑
-   会写数据的测试**——`CapabilityEngine.execute()`/`distill()` 会原子化把
-   `registry.json`/`_index.json`/`members/` 的变化真实写回它所指向的目录
-   （这是方案文档第 8 节"原子化写入"要求的正确行为，不是 bug）。如果直接
-   对仓库里的真实目录跑，会污染仓库里"初始状态"文件，下次测试结果就不再
-   是一次干净的验证。**每次测试前先复制一份到临时目录**，本文档所有示例
-   都遵循这个约定。
+1. 已经能正常启动 mini-agent CLI 并进行对话（`mini-agent` 或项目里对应的
+   启动方式），且配置了可用的 LLM provider。
+2. `.claude/skills/text-transform-capability/` 在当前项目目录下存在（随
+   仓库自带，无需额外安装）。
+3. 不需要 `ANTHROPIC_API_KEY` 之外的任何东西——本 skill 的两个预置 member
+   （`upper`/`reverse`）是纯 Python 逻辑，不发起网络请求；触发探索路径时
+   （见步骤 4）也不需要真的探索成功，重点是验证 agent 会如实报告限制。
 
-```bash
-# 打开一个 Python 交互环境，或把下面的代码存成脚本执行
-python3 - <<'PY'
-import sys, shutil, tempfile
-from pathlib import Path
-
-REPO_ROOT = Path(".").resolve()   # 在项目根目录下执行
-sys.path.insert(0, str(REPO_ROOT / "src"))
-
-SRC_SKILL = REPO_ROOT / ".claude" / "skills" / "text-transform-capability"
-tmp_dir = Path(tempfile.mkdtemp(prefix="text_transform_test_"))
-SKILL_DIR = tmp_dir / "text-transform-capability"
-shutil.copytree(SRC_SKILL, SKILL_DIR)
-print("测试用副本路径:", SKILL_DIR)
-PY
-```
-
-以下每一步都假设已经有一份这样的 `SKILL_DIR` 临时副本；建议把本文档的
-Python 片段拼接成一个脚本，在同一个 Python 进程里依次执行，这样步骤之间的
-状态（尤其是"连续失败触发 degraded"）能自然累积。
+> 每一步都在**同一个会话**里连续输入即可，不需要每次重启。
 
 ---
 
-## 步骤 1：确定性匹配命中 + 执行成功（验证 resolve + execute + schema 通过）
+## 步骤 1：确认 agent 能发现这个 skill
 
-```python
-from mini_agent.skills.generative_capability import CapabilityEngine
+**输入：**
 
-engine = CapabilityEngine(SKILL_DIR)
-
-r_upper = engine.call({
-    "text": "帮我把这段文字转大写",
-    "target": {"op": "upper"},
-    "content": {"text": "hello world"},
-})
-assert r_upper.status == "success"
-assert r_upper.resolve_reason == "keyword_match"
-assert r_upper.data == {"result": {"text": "HELLO WORLD"}}
-
-r_reverse = engine.call({
-    "text": "反转一下",
-    "target": {"op": "reverse"},
-    "content": {"text": "abcdef"},
-})
-assert r_reverse.status == "success"
-assert r_reverse.data == {"result": {"text": "fedcba"}}
-
-print("步骤 1 通过：两个预置 member 均能被确定性匹配命中并真实执行成功")
+```
+看一下项目里有哪些 generative-capability 类型的 skill，分别是做什么的？
 ```
 
-**预期结果**：两次调用 `status` 均为 `success`，`resolve_reason` 均为
-`keyword_match`（第一级免 LLM 匹配命中，命中依据是 `_index.json` 里
-`upper`/`reverse` 各自的 `match.keyword` 列表）。这是本方案里少数几个
-"不需要任何桩、不需要任何外部依赖就能跑出真实 `success` 结果"的场景，
-因为两个 member 都是纯 Python 字符串操作。
+**预期效果：**
+
+- agent 应该调用 `skill_list` 工具（你可能会在工具调用日志/详情里看到），
+  返回的 skill 目录里 `text-transform-capability` 这一项会带
+  `"skill_type": "generative-capability"` 和 `"category_summary"` 字段。
+- agent 的回复里应该提到 `text-transform-capability`（连同
+  `browser-site-scraper`、`doc-template-generation`），并用
+  `category_summary` 里的话描述它是"对一段文本做简单确定性变换（大写/
+  反转等），用于验证机制本身，不建议作为真实业务能力使用"这类说法，而不是
+  把它当成一个真实能力来推荐。
+
+这一步验证的是：`generative-capability` skill 不会把 member 清单（`upper`/
+`reverse` 具体代码）泄漏进 agent 的主 context，agent 只能看到一行摘要——
+这正是方案设计的"按需检索"，而不是"全量加载"。
 
 ---
 
-## 步骤 2：schema 校验失败 + 连续失败触发 degraded（验证生命周期状态机）
+## 步骤 2：确定性匹配命中 + 真实执行成功（大写）
 
-```python
-r_fail_1 = engine.call({"text": "upper", "target": {"op": "upper"}, "content": {}})
-r_fail_2 = engine.call({"text": "upper", "target": {"op": "upper"}, "content": {}})
-assert r_fail_1.status == "not_implemented"   # execute 失败后落入 explore，
-assert r_fail_2.status == "not_implemented"   # 未注入 explore_runner，如实返回
+**输入：**
 
-import json
-registry = json.loads((SKILL_DIR / "registry.json").read_text(encoding="utf-8"))
-upper_state = registry["members"]["upper"]
-assert upper_state["fail_count"] >= 2
-assert upper_state["consecutive_failures"] >= 2
-assert upper_state["status"] == "degraded"
-assert "status_changed_at" in upper_state
-
-print("步骤 2 通过：缺字段请求被 schema 校验正确拦截，连续 2 次失败后 upper 状态流转为 degraded")
+```
+用 text-transform-capability 这个 skill，把 "hello world" 转成大写
 ```
 
-**预期结果**：`content` 缺少 `text` 字段时，`upper` 的 `run()` 会显式返回
-`{"status": "fail", ...}`，引擎据此把 `fail_count`/`consecutive_failures`
-+1；`capability.yaml` 里 `lifecycle.degrade_failure_threshold` 设为
-`2`（比另外两个 skill 用的 `3` 更小，方便测试快速复现），因此第 2 次失败
-后 `registry.json` 中 `upper.status` 应变为 `degraded`，且带有阶段六新增
-的 `status_changed_at` 时间戳。
+**预期效果：**
 
----
+- agent 调用 `capability_call(skill_name="text-transform-capability",
+  request={...})` 工具（不会调用 `skill_activate`——`category_summary`
+  里已经告诉过它这类 skill 不需要激活）。
+- 工具返回类似：
 
-## 步骤 3：miss → explore → distill → 落盘 → 免探索复用（验证探索闭环）
-
-```python
-from mini_agent.skills.generative_capability import ExploreStep, build_stub_explorer
-
-# "shout" 不在预置 member 里，会先经过 resolve() 判定为 no_match
-shout_request = {
-    "text": "shout this text",
-    "target": {"op": "shout"},
-    "content": {"text": "hi"},
+```json
+{
+  "status": "success",
+  "data": { "result": { "text": "HELLO WORLD" } },
+  "error": null,
+  "member_id": "upper",
+  "resolve_reason": "keyword_match"
 }
-
-# 桩探索器：模拟"调用一次 text_transform_apply 就拿到最终数据"
-steps = [
-    ExploreStep(
-        tool="text_transform_apply",
-        input={"op": "shout", "text": "hi"},
-        output={"data": {"result": {"text": "HI!"}}},
-    )
-]
-explorer = build_stub_explorer(steps=steps, final_data={"result": {"text": "HI!"}})
-
-# 桩工具执行器：不需要真实实现 text-core，直接回显固定结果即可
-# （capability.yaml 里 distill.trust_trace_data: true，
-#  所以即使桩执行器没有精心构造"重放最后一步"的返回值，蒸馏也能兜底成功）
-tool_executor = lambda name, inp: {"ok": True, "data": {"result": {"text": "HI!"}}}
-
-engine_explore = CapabilityEngine(SKILL_DIR, explore_runner=explorer, tool_executor=tool_executor)
-r_explore = engine_explore.call(shout_request)
-assert r_explore.status == "success"
-assert r_explore.resolve_reason == "explored"
-assert r_explore.member_id is not None
-new_member_id = r_explore.member_id
-print("探索生成的新 member_id:", new_member_id)
-
-# 验证落盘：members/ 目录、registry.json、_index.json 三者应同步更新
-assert (SKILL_DIR / "members" / new_member_id / "script.py").exists()
-registry_after = json.loads((SKILL_DIR / "registry.json").read_text(encoding="utf-8"))
-assert registry_after["members"][new_member_id]["status"] == "probation"
-index_after = json.loads((SKILL_DIR / "_index.json").read_text(encoding="utf-8"))
-assert any(m["member_id"] == new_member_id for m in index_after["members"])
-
-# 免探索复用：不再注入 explore_runner，但仍需注入 tool_executor
-# （蒸馏出的脚本仍会通过 tool_runtime 重放动作序列，不是纯本地逻辑）
-engine_reuse = CapabilityEngine(SKILL_DIR, tool_executor=tool_executor)
-r_reuse = engine_reuse.call(shout_request)
-assert r_reuse.status == "success"
-assert r_reuse.resolve_reason == "keyword_match"  # 新 member 已被索引，直接命中
-
-print("步骤 3 通过：未知变换触发探索，蒸馏产物原子化落盘，后续请求可免探索直接复用")
 ```
 
-**预期结果**：`resolve()` 对 `shout` 请求先判定 `no_match`，触发
-`explore()`；桩探索器/桩工具执行器让探索与蒸馏自测都成功，新 member 以
-`probation` 状态原子化写入 `members/`、`registry.json`、`_index.json`；
-用同一请求再次调用时（不注入 `explore_runner`，但仍需注入
-`tool_executor`），能直接通过 `keyword_match` 命中新 member 并执行成功，
-不需要重新探索。
+- agent 的最终回复里应该明确给出 **`HELLO WORLD`** 这个结果。
 
-> **常见踩坑**：如果去掉 `capability.yaml` 里的 `distill: {trust_trace_data:
-> true}` 这一行，且桩 `tool_executor` 没有在"重放的最后一步"精确返回
-> `data` 字段，蒸馏自测会失败（`重放完成但未获得可用数据`），`explore()`
-> 整体判定为失败。这不是 bug，是方案文档阶段五/阶段六实施记录里明确讨论
-> 过的设计取舍——`text-transform-capability` 默认打开这个兜底开关正是为了
-> 让测试用的简单桩执行器也能跑通，如果你在别的 skill 上复现类似测试但没打
-> 开这个开关，记得让桩执行器的最后一步返回值里带上正确的 `data` 字段。
+**这一步验证了什么**：请求文本里包含 `upper` 相关关键词，触发的是引擎的
+**第一级免 LLM 确定性匹配**（`resolve_reason: keyword_match`），命中已有
+`upper` member 并真实执行成功——这是全流程里成本最低、也是最常见的一条
+路径。
 
 ---
 
-## 步骤 4：健康巡检（验证 health_patrol）
+## 步骤 3：确定性匹配命中 + 真实执行成功（反转）
 
-```python
-from mini_agent.skills.generative_capability import run_patrol
+**输入：**
 
-report = run_patrol(SKILL_DIR)
-print("一致性 finding 数量:", len(report.findings))
-# 经过步骤 1-3 后，members/ 目录、registry.json、_index.json 三者应保持一致，
-# 预期为 0 条不一致 finding（stale/dead_expired 提示不算"不一致"，
-# 由于测试是刚发生的调用，也不会触发 30 天未调用的 stale 判定）
-assert all(f.kind not in ("index_without_registry", "registry_without_index",
-                           "member_dir_without_registry", "registry_without_member_dir")
-           for f in report.findings)
-
-print("步骤 4 通过：健康巡检未发现数据不一致")
+```
+再用 text-transform-capability 把 "abcdef" 反转一下
 ```
 
-**可选扩展**：如果想验证 `health_patrol` 真的能识别不一致/过期数据（而不
-只是验证"没有问题时不报假警"），可以参照方案文档阶段四实施记录里的做法，
-手工在 `SKILL_DIR` 副本里构造一个孤立摘要（只在 `_index.json` 里存在、
-`registry.json` 里没有对应记录的 member id），再跑一遍 `run_patrol`，
-确认能被正确识别为 `index_without_registry`。这条能力已经在
-`browser-site-scraper` 上验证过，本 skill 不必重复验证同一件事，本步骤
-的重点是"确认这套通用巡检逻辑对第三个 skill 同样适用"。
+**预期效果：** agent 应回复反转结果 **`fedcba`**，`capability_call` 返回
+`member_id: "reverse"`、`resolve_reason: "keyword_match"`。
 
 ---
 
-## 步骤 5（可选）：确定性匹配 + LLM 二级检索的组合（验证 resolve 两级过滤）
+## 步骤 4：语义相近但不含关键词 —— 验证第二级 LLM 裁决
 
-```python
-from mini_agent.skills.generative_capability import build_stub_resolver
+**输入：**
 
-# 用一个既不含 target.op 关键词、也不含 text 关键词的请求，
-# 验证第一级匹配 miss 后能正确 fallback 到（桩）LLM 裁决
-resolver = build_stub_resolver(["upper"])
-engine_llm = CapabilityEngine(SKILL_DIR, llm_resolver=resolver)
-r_llm = engine_llm.call({
-    "text": "把这段话弄得醒目一点",   # 不含 upper/转大写/uppercase/大写 等关键词
-    "target": {},
-    "content": {"text": "hello"},
-})
-assert r_llm.resolve_reason == "llm_match"
-assert r_llm.status == "success"
-
-print("步骤 5 通过：确定性匹配未命中时，桩 LLM 裁决器能接管并命中 upper")
+```
+用 text-transform-capability 帮我把这段话弄得更醒目一点："hello"
 ```
 
-**预期结果**：`resolve_reason` 为 `llm_match`（区别于步骤 1 的
-`keyword_match`），验证了 `resolve()` 两级过滤的第二级确实会在第一级未
-命中时被调用，且引擎会对 LLM 返回的候选做"是否在候选集合内"的防幻觉过滤
-（`build_stub_resolver` 本身已经模拟了这层过滤后的结果，如果想验证过滤
-逻辑本身，可以参照 `tests/test_generative_capability_engine.py` 里的
-`test_llm_resolver_hit_via_stub` 用例）。
+这句话故意不含 `upper`/`转大写`/`uppercase` 等关键词，第一级确定性匹配大概率
+会 miss。
+
+**预期效果：**
+
+- `capability_call` 返回的 `resolve_reason` 应为 **`llm_match`**（而不是
+  `keyword_match`）——说明引擎在第一级没命中后，真的发起了一次独立的、
+  轻量的 LLM 调用去裁决"这句话该匹配哪个 member"，并选中了 `upper`（把
+  文字变大写是让文字"更醒目"最直接的方式）。
+- 结果应为成功，`data.result.text == "HELLO"`。
+
+> 这一步的具体判断（选中 `upper` 还是判定完全不匹配）最终由真实模型的语义
+> 理解决定，不是硬编码规则，因此结果可能因所用模型而略有差异。重点看
+> `resolve_reason` 是否变成了 `llm_match`（证明第二级裁决确实被触发），而
+> 不必纠结选中的具体是不是 `upper`。
+
+**这一步验证了什么**：这是本次改造（阶段九）真正要验证的重点——第二级检索
+裁决现在通过框架统一的 `LLMHelper` 发起，跟随当前 agent 正在用的
+provider/model（如果你在会话里 `/model` 切换过 provider，这次裁决用的也是
+切换后的那个，而不是写死的某个模型）。如果这一步的 `resolve_reason` 变成
+`llm_match` 且结果正确，说明"检索裁决改接框架 LLM 调用基础设施"这件事在真实
+对话链路里确实生效了，不只是单元测试里能过。
+
+> 如果这一步 agent 没有触发工具调用、而是直接自己回答"HELLO"——说明它绕过了
+> skill 机制自己算了答案，不算通过；请在提示里更明确地要求"必须调用
+> text-transform-capability 这个 skill 来做"，再重新观察一次 `resolve_reason`。
+
+---
+
+## 步骤 5：诚实失败 —— 探索能力尚未接线时如实报告，不编造结果
+
+**输入：**
+
+```
+用 text-transform-capability 帮我把这段文字变成喊叫的语气，末尾加感叹号："hi"
+```
+
+这是一个两个预置 member（`upper`/`reverse`）都覆盖不到的全新变换（对应方案
+文档里"探索出 `shout` 变换"的场景）。
+
+**预期效果：**
+
+- `capability_call` 返回 `status: "not_implemented"`，并在 `note` 字段里
+  说明"当前运行环境尚未接入真正的底层操作原语执行器（explore_runner/
+  tool_executor）"。
+- agent 的最终回复应该**如实告诉你它做不到**，说明原因是这个 skill 的
+  "自动探索新变换"能力在当前环境里还没有真正接上执行器，而不是：
+  - 假装成功、编造一个"HI!"之类的答案；也不是
+  - 静默换一种方式（比如自己在对话里直接算出结果）糊弄过去。
+
+**这一步验证了什么**：`generative-capability` 机制的一条核心设计原则是
+"不自我认定成功"——命中已有能力就老老实实执行，做不到就老老实实说做不到，
+永远不伪造数据。这一步专门验证的是"做不到"这条路径在真实 agent 对话里
+也遵守这个原则，而不只是引擎内部代码层面的约定。
+
+---
+
+## 步骤 6（可选）：缺参数导致的执行失败
+
+**输入：**
+
+```
+用 text-transform-capability 把这段文字转大写（不用给具体文字，就测试一下缺内容会怎样）
+```
+
+**预期效果**：如果 agent 真的用一个缺 `content.text` 的 `request` 去调用
+工具，`capability_call` 会返回 `status: "not_implemented"`（`execute()`
+因 schema 校验失败而失败，进而尝试触发探索，同样因未接入探索能力而如实
+返回 `not_implemented`）。这一步不是必测项——agent 很可能会先反问你要转换
+的文字是什么，而不会真的拿空内容去调用工具，属于正常且更好的行为；只有当
+你确实想验证"schema 校验能拦住残缺请求"这条路径时才需要坚持发出这个模糊
+指令。
 
 ---
 
@@ -238,13 +190,69 @@ print("步骤 5 通过：确定性匹配未命中时，桩 LLM 裁决器能接�
 
 | 步骤 | 覆盖的机制点 | 对应方案文档章节 |
 |---|---|---|
-| 1 | 第一级确定性 keyword 匹配 + member 执行 + intent_schema 校验通过 | 第 6 节 resolve/execute |
-| 2 | schema 校验失败 + fail_count/consecutive_failures 计数 + degraded 流转 | 第 6/7 节、阶段六 status_changed_at |
-| 3 | miss → explore → distill → 沙箱自测 → 原子化落盘 → 免探索复用 | 第 6 节 explore/distill、第 8 节安全边界 |
-| 4 | 一致性巡检（index/registry/members 三者对齐） | 第 8 节、阶段四 health_patrol |
-| 5 | 第二级 LLM 裁决 fallback + 防幻觉过滤 | 第 6 节、阶段二 |
+| 1 | `skill_list` 对 generative-capability skill 的特殊呈现（只给摘要，不泄漏 member 清单） | 第 2 节 Skill 类型声明 |
+| 2/3 | 第一级确定性 keyword 匹配 + member 执行 + intent_schema 校验通过 | 第 6 节 resolve/execute |
+| 4 | 第二级 LLM 裁决 fallback（阶段九：改接框架 `LLMHelper`，跟随 `/model` 切换） | 第 6 节、阶段二、阶段九 |
+| 5 | 探索能力未接线时如实返回 `not_implemented`，不伪造成功 | 第 1 节原则 4、阶段七"已知遗留" |
+| 6（可选）| intent_schema 校验拦截缺参数请求 | 第 6 节 execute |
 
-如果全部 5 步都能顺利跑通（`assert` 均不报错），说明
-`generative-capability` 机制在当前环境下的核心链路（resolve 两级过滤、
-execute+schema 校验、explore+distill 闭环、生命周期状态机、健康巡检）
-均可用。
+如果步骤 1–5 都符合预期（尤其是步骤 4 的 `resolve_reason` 确实变成
+`llm_match`、步骤 5 确实得到诚实的失败说明而不是编造结果），说明
+`generative-capability` 机制在真实 agent 对话场景里是可行的：agent 能
+正确发现、调用这类 skill，检索裁决走的是框架统一的 LLM 调用基础设施，
+且"命中执行成功 / 命中但失败 / 未命中需要探索"三种结果都被如实呈现，
+没有被伪造成一个看起来还行的假答案。
+
+---
+
+## 附：无法进行真人对话测试时，如何验证同样的调用链路
+
+如果暂时没有可用的 LLM/API key 做真人对话测试，可以用下面的脚本直接调用
+**真实的 `capability_call` 工具函数本身**（不是绕开它直接调引擎）——这就是
+agent 在对话里会执行的同一段代码，只是用一个固定行为的假 `LLMHelper` 代替
+真实模型，因此可以在离线环境里验证"工具注册、`skill_list`/`capability_call`
+接线、`get_current_llm_helper()` 取值"这些集成点是否正常，但不能验证"模型
+会不会主动选择调用这个工具"这一层（这一层只有真人对话或真实模型驱动的测试
+才能验证，是本指南步骤 1-6 存在的原因）：
+
+```python
+import sys, json, shutil, tempfile
+from pathlib import Path
+sys.path.insert(0, "src")
+
+from mini_agent.skills import SkillLoader
+from mini_agent.tools import ToolRegistry
+from mini_agent.tools.capability_call import register_capability_tools
+from mini_agent.tools.orchestration import set_current_llm_helper_provider
+
+tmp = Path(tempfile.mkdtemp())
+skills_root = tmp / "skills"
+skills_root.mkdir()
+shutil.copytree(".claude/skills/text-transform-capability", skills_root / "text-transform-capability")
+
+loader = SkillLoader([skills_root])
+registry = ToolRegistry()
+register_capability_tools(registry, loader)
+tool = registry.get("capability_call")
+
+# 模拟"当前有一个正在跑的 Agent 实例"（真实场景由 Agent.__init__ 自动注册）
+class FakeLLMHelper:
+    def ask(self, prompt, **kwargs):
+        return json.dumps({"member_ids": []})
+    def chat(self, *a, **k):
+        raise AssertionError("不应该走到探索循环")
+
+set_current_llm_helper_provider(lambda: FakeLLMHelper())
+
+result = json.loads(tool.fn(skill_name="text-transform-capability", request={
+    "text": "把 hello world 转成大写", "target": {"op": "upper"}, "content": {"text": "hello world"},
+}))
+print(json.dumps(result, ensure_ascii=False, indent=2))
+# 预期: {"status": "success", "data": {"result": {"text": "HELLO WORLD"}}, ...}
+```
+
+这段脚本已经用真实的 `.claude/skills/text-transform-capability` 目录副本
+实测通过（见方案文档阶段九验证记录），可以作为"真人对话测试跑不通时"的
+兜底排查手段：如果连这一层都失败，说明问题出在工具接线本身；如果这一层
+正常但真人对话测试没有触发工具调用，说明问题在于模型没有被正确引导去使用
+这个工具，而不是机制本身坏了。

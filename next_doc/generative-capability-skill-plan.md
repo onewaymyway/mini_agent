@@ -953,7 +953,8 @@ capability`——专门用来在任意环境下快速验证机制本身（而不
   members/upper/{script.py,meta.json}    # content.text 转大写，纯 Python
   members/reverse/{script.py,meta.json}  # content.text 反转，纯 Python
 test_cases/text-transform-capability-testing-guide.md
-                                    # 配套测试方法文档，见下方说明
+                                    # 配套测试方法文档，见下方说明（阶段十已
+                                    # 将其重写为对话式测试指南，见阶段十记录）
 next_doc/generative-capability-skill-plan.md   # 本文档（阶段八记录）
 ```
 
@@ -1166,3 +1167,102 @@ next_doc/generative-capability-skill-plan.md                       # 本文档�
   的最坏延迟有所上升；`max_retries` 默认给了较保守的 `2`（小于主对话循环
   常用的 `3`），如果后续实测发现探索场景需要不同的取值，应在
   `capability.yaml` 层面暴露成可配置项，而不是在代码里硬编码调整。
+
+### 阶段十 —— 已完成
+
+**目标**：`test_cases/text-transform-capability-testing-guide.md`（阶段八
+产物）此前写的是"如何用代码直接调用 `CapabilityEngine`/`build_stub_*`
+去验证效果"，验证的是引擎本身的行为是否符合设计，但没有回答一个更贴近
+实际使用场景的问题：**这套 `generative-capability` 机制在真实 agent 对话
+里是否真的可行**——模型会不会正确发现这类 skill、会不会调用
+`capability_call` 而不是 `skill_activate`、检索裁决与"诚实失败"这两条
+关键行为在真人对话链路里是否也成立。本阶段把该测试文档重写为对话式指南：
+每一步给出"该在 agent 会话里输入什么"和"预期看到什么"，而不是一段可以
+直接跑的 Python 脚本。同时补充了三个 SKILL.md 里被移除的阶段历史记录该往
+何处放的说明（详见下方"顺带修复"）。
+
+**修改文件**：
+
+```
+test_cases/text-transform-capability-testing-guide.md   # 重写：从"代码调用
+                                                            # 引擎的验证脚本"
+                                                            # 改为"agent 对话
+                                                            # 输入/预期输出"
+                                                            # 的测试指南；文末
+                                                            # 附录保留一份可
+                                                            # 离线执行的
+                                                            # capability_call
+                                                            # 工具级验证脚本，
+                                                            # 用于"没有真人
+                                                            # 对话条件时的
+                                                            # 排查兜底"，与
+                                                            # 主体的对话式
+                                                            # 步骤角色不同
+next_doc/generative-capability-skill-plan.md              # 本文档（阶段十记录）
+```
+
+**已实现能力**：
+
+- 新指南分六步，覆盖：(1) `skill_list` 能否正确呈现
+  `generative-capability` skill 的一行摘要而不泄漏 member 清单；
+  (2)(3) 关键词命中已有 member 并真实执行成功（大写/反转）；
+  (4) 请求文本不含关键词时是否真的触发第二级 LLM 裁决
+  （`resolve_reason: llm_match`）——这正是阶段九"检索裁决改接框架
+  `LLMHelper`"改造后最值得在真实对话里复核的一点，因为它现在跟随当前
+  agent 正在用的 provider/model，而不是写死的模型；(5) 触发一个三个
+  预置 member 都覆盖不到的全新变换，验证 agent 会如实转述
+  `not_implemented` 及原因，而不是编造一个看似合理的结果；(6，可选)
+  缺参数请求触发 schema 校验失败。每一步都给出了具体输入文案与预期的
+  `capability_call` 返回结构/`resolve_reason` 取值，而不是笼统地说"应该
+  能用"。
+- 文末保留一个"附：无法进行真人对话测试时，如何验证同样的调用链路"的
+  兜底脚本——不是走 `CapabilityEngine` 直接调用（那样绕开了
+  `capability_call` 工具本身的封装逻辑），而是通过
+  `register_capability_tools()` 注册出真实的 `capability_call` 工具，
+  用 `tools/orchestration.set_current_llm_helper_provider()` 模拟"当前有
+  一个正在跑的 Agent 实例"（真实场景下这一步由 `Agent.__init__` 自动完成），
+  再调用工具函数本身。这段脚本验证的是"工具注册、`skill_list`/
+  `capability_call` 接线、`get_current_llm_helper()` 取值"这些集成点，
+  明确说明它不能替代真人对话验证"模型会不会主动选择调用这个工具"这一层，
+  避免读者把兜底脚本的通过等同于"对话式测试已经做过了"。
+
+**验证结果**：
+
+用文档里附录脚本的原文（逐字复制，未做任何调整）离线跑了一遍，确认输出与
+文档中给出的预期完全一致：
+
+```json
+{
+  "status": "success",
+  "data": {"result": {"text": "HELLO WORLD"}},
+  "error": null,
+  "member_id": "upper",
+  "resolve_reason": "keyword_match"
+}
+```
+
+此外用同一套真实 `capability_call` 工具（而非直接调引擎）额外验证了指南
+主体步骤 2/3/5 对应的三个场景，确认工具级输出与指南文档中给出的预期完全
+一致：
+
+- 大写/反转命中：`status: success`，`resolve_reason: keyword_match`，
+  `data` 分别为 `HELLO WORLD`/`fedcba`。
+- 未知变换（`shout`）：`status: not_implemented`，`resolve_reason:
+  no_match`，`note` 字段准确说明"当前运行环境尚未接入真正的底层操作原语
+  执行器"，不会伪造成功。
+- 额外验证了"完全没有注册 `llm_helper`"这种异常场景（对应真人对话测试里
+  不会出现、但脚本化排查时可能误配置的情况）：工具正确返回
+  `status: error` 并说明原因，而不是静默用某个写死的模型继续跑。
+
+**已知遗留**：
+
+- 指南步骤 4（触发第二级 LLM 裁决）的具体裁决结果依赖真实模型的语义判断，
+  不是硬编码规则，因此"选中哪个 member"在不同模型下可能有出入；指南里已
+  提示读者应关注 `resolve_reason` 是否变为 `llm_match`，而不必纠结具体
+  选中的是不是 `upper`，避免把模型的正常差异误判为机制故障。
+- 指南目前仍是给人读、人工在真实 agent 会话里逐步操作的 markdown 文档，
+  没有做成可以自动跑的对话级回归测试（这需要一个能驱动真实 `Agent` 实例
+  收发消息、且能对模型的自然语言回复做语义断言的测试框架，成本和现有
+  `tests/test_generative_capability_engine.py`、附录脚本的定位都不一样）；
+  如果后续需要把"agent 会不会正确使用这个 skill"也纳入自动化 CI，应该
+  作为独立的对话级集成测试基础设施来做，不建议现在就往本指南里塞。
