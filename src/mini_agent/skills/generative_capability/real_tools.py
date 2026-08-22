@@ -38,11 +38,38 @@ skills/generative_capability/real_tools.py — 探索子agent的"真实底层操
   生成库），只需要在这里补一个新的实现函数、加进
   `REAL_TOOL_IMPLEMENTATIONS`，`capability_call.py` 与 explorer 侧代码都
   不需要改动。
+
+阶段十四：skill 自带实现的动态加载（`load_skill_local_tool_implementations`）
+----------------------------------------------------------------------------
+上面这套"直接把实现函数写进本文件、塞进 `REAL_TOOL_IMPLEMENTATIONS`"的
+模式对 `text_transform_apply` 这种纯逻辑、几十行代码的原语是合理的，但对
+`browser-core` 这类需要维护浏览器会话/CDP 连接等大量领域特定代码的静态
+skill 并不合适——那样会把"具体某个 skill 怎么实现"的代码写进项目工程
+目录，违反 skill 系统的既有原则（各 skill 的具体功能代码应该留在各自的
+`.claude/skills/<name>/` 目录下，项目代码只保留"引擎怎么发现/调度这些
+实现"这一层通用机制）。
+
+本阶段新增 `load_skill_local_tool_implementations(explorer_base_tools,
+skills_root)`：按 `capability.yaml -> explorer.base_tools` 里声明的静态
+skill 名（如 `["browser-core"]`），去每个 `<skills_root>/<name>/impl/
+tools_impl.py` 这个**约定路径**动态加载，取其中的
+`TOOL_IMPLEMENTATIONS: dict[str, Callable]` 并入分发表——项目代码完全不
+知道、也不需要知道 `browser-core` 内部具体是用 CDP 还是别的什么协议实现的，
+只认这一个约定的文件路径和变量名，这与 `capability_engine.py::
+_load_member_run()` 动态加载 `members/<id>/script.py` 是同一套设计风格。
+`build_default_tool_executor()` 因此新增可选的 `skill_dir` 参数：传入时，
+会在 `REAL_TOOL_IMPLEMENTATIONS`（项目内置的纯逻辑原语）之上，叠加该
+skill 通过 `explorer.base_tools` 声明的所有静态 skill 各自贡献的实现
+（同名工具以 skill 自带实现优先，因为项目内置表目前只有 `text_transform_
+apply` 一个条目，不存在真实冲突场景，这里的优先级只是防御性约定）。
 """
 
 from __future__ import annotations
 
-from typing import Callable
+import importlib.util
+import sys
+from pathlib import Path
+from typing import Callable, Optional
 
 
 # --------------------------------------------------------------------------- #
@@ -118,19 +145,120 @@ REAL_TOOL_IMPLEMENTATIONS: dict[str, Callable[[dict], dict]] = {
 }
 
 
-def build_default_tool_executor() -> Callable[[str, dict], dict]:
+def load_skill_local_tool_implementations(
+    explorer_base_tools: list[str],
+    skills_root: Path,
+) -> dict[str, Callable[[dict], dict]]:
+    """
+    按 `capability.yaml -> explorer.base_tools` 里声明的静态 skill 名，动态
+    加载各自 `impl/tools_impl.py` 里的 `TOOL_IMPLEMENTATIONS`，合并后返回。
+
+    这是纯粹的通用机制（约定路径 + 动态 import），不包含任何具体 skill 的
+    领域逻辑；某个 base tool skill 不存在 `impl/tools_impl.py`（如目前的
+    `doc-core`，仍只是占位声明）会被安静跳过——这不是错误，只是意味着该
+    skill 下的工具仍会在 `build_default_tool_executor()` 里落到"未接入真实
+    执行器"的分支，如实反馈给探索子agent。
+
+    动态加载失败（如目标 skill 依赖的第三方库未安装）不会中断整个引擎的
+    初始化——转换为对应工具名的一个"加载失败"标记函数，调用时才把具体的
+    加载异常如实报出来，这样一个 skill 的依赖缺失只影响它自己的工具，不会
+    连带让其他 base_tools 或项目内置的 `text_transform_apply` 也用不了。
+    """
+    merged: dict[str, Callable[[dict], dict]] = {}
+    for base_tool_name in explorer_base_tools or []:
+        impl_dir = skills_root / base_tool_name / "impl"
+        tools_impl_path = impl_dir / "tools_impl.py"
+        if not tools_impl_path.exists():
+            continue
+
+        impl_dir_str = str(impl_dir.resolve())
+        # 让 tools_impl.py 内部的 flat import（如 `from browser_core_impl
+        # import ...`）能找到同目录下的其他实现文件，风格与
+        # capability_engine.py::execute() 加载 member 脚本时的 sys.path
+        # 处理一致——这些都是运行时按路径加载的独立文件，不是本包的一部分。
+        if impl_dir_str not in sys.path:
+            sys.path.insert(0, impl_dir_str)
+
+        module_name = f"skill_tools_impl_{base_tool_name.replace('-', '_')}"
+        try:
+            spec = importlib.util.spec_from_file_location(module_name, tools_impl_path)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)  # type: ignore[union-attr]
+            impls = getattr(module, "TOOL_IMPLEMENTATIONS", {})
+            if not isinstance(impls, dict):
+                raise TypeError(
+                    f"{tools_impl_path} 的 TOOL_IMPLEMENTATIONS 必须是 dict，"
+                    f"实际是 {type(impls)!r}"
+                )
+        except Exception as load_error:  # noqa: BLE001 - 加载失败不应中断整体初始化
+
+            def _make_load_error_fn(name: str, err: Exception) -> Callable[[dict], dict]:
+                def _load_error_fn(_tool_input: dict) -> dict:
+                    return {
+                        "error": (
+                            f"skill `{name}` 的 impl/tools_impl.py 加载失败，"
+                            f"该 skill 声明的工具当前均不可用: {err}"
+                        )
+                    }
+
+                return _load_error_fn
+
+            # 记录一个占位错误函数到该 skill 声明的所有工具名下不可行（本层
+            # 不知道该 skill 具体声明了哪些工具名），退而求其次：把加载异常
+            # 记在一个以 skill 名为 key 的诊断条目里，调用方（本文件的
+            # `build_default_tool_executor`）在合并阶段直接跳过失败的模块，
+            # 未命中的工具名仍会走"未接入真实执行器"的默认提示；这里额外
+            # 打印一次，便于运行时/日志排查是不是依赖没装对。
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "加载 %s 的 impl/tools_impl.py 失败: %s", base_tool_name, load_error
+            )
+            continue
+
+        merged.update(impls)
+    return merged
+
+
+def build_default_tool_executor(
+    skill_dir: Optional[Path] = None,
+) -> Callable[[str, dict], dict]:
     """
     返回一个通用 tool_executor(tool_name, tool_input) -> dict，供
     `CapabilityEngine(explore_runner=..., tool_executor=...)` 使用。
 
-    命中 `REAL_TOOL_IMPLEMENTATIONS` 的工具名会真正执行；未命中的（当前是
-    所有 `browser-core`/`doc-core` 下的工具）会如实返回"未接入真实执行器"
-    的错误，不伪造成功——explorer_runtime 的 prompt 已要求模型遇到这种
-    情况调用 `report_failure`，不需要本函数额外做特殊处理。
+    `skill_dir` 可选（阶段十四新增）：传入某个 generative-capability skill
+    的目录时，会额外读取其 `capability.yaml -> explorer.base_tools`，把每个
+    静态 skill 自带的 `impl/tools_impl.py` 实现叠加进分发表（见
+    `load_skill_local_tool_implementations`）。不传时行为与阶段十二完全
+    一致，只包含项目内置的 `REAL_TOOL_IMPLEMENTATIONS`。
+
+    命中分发表的工具名会真正执行；未命中的（如仍未提供 `impl/tools_impl.py`
+    的 `doc-core`）会如实返回"未接入真实执行器"的错误，不伪造成功——
+    explorer_runtime 的 prompt 已要求模型遇到这种情况调用 `report_failure`，
+    不需要本函数额外做特殊处理。
     """
+    dispatch_table: dict[str, Callable[[dict], dict]] = dict(REAL_TOOL_IMPLEMENTATIONS)
+
+    if skill_dir is not None:
+        try:
+            import yaml  # PyYAML，与 capability_engine.py 是同一个可选依赖
+
+            cap_path = Path(skill_dir) / "capability.yaml"
+            if cap_path.exists():
+                with open(cap_path, "r", encoding="utf-8") as f:
+                    cap = yaml.safe_load(f) or {}
+                base_tools = ((cap.get("explorer") or {}).get("base_tools")) or []
+                skills_root = Path(skill_dir).resolve().parent
+                dispatch_table.update(
+                    load_skill_local_tool_implementations(base_tools, skills_root)
+                )
+        except Exception:  # noqa: BLE001 - 叠加层加载失败不应影响内置原语可用
+            pass
 
     def _executor(tool_name: str, tool_input: dict) -> dict:
-        impl = REAL_TOOL_IMPLEMENTATIONS.get(tool_name)
+        impl = dispatch_table.get(tool_name)
         if impl is None:
             return {
                 "error": (

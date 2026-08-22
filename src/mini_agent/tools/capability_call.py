@@ -29,20 +29,24 @@ agent 自己完全没有办法在对话里调用它。这个文件是这条链�
   （同一个约定 `run_ensemble_llm` 等已经在用，跟随 /model 切换），取不到时
   （理论上不会发生——本工具只会在已完成 `Agent.__init__` 的 agent 内被调用）
   才退化为报错，不会静默回退到某个写死的模型。
-- **默认注入一个通用的真实 `tool_executor`/`explore_runner`**（阶段十二起）：
-  `build_default_tool_executor()` 按工具名分发到 `real_tools.py` 里已经
-  真正实现的底层原语（目前只有 `text-core` 的 `text_transform_apply`，供
-  `text-transform-capability` 使用）；命中已实现工具的会真的执行，未命中
-  的（如 `browser-core`/`doc-core` 下的工具，仍是各 skill
-  `explorer/tool_allowlist.json` 里的占位声明）会得到一条如实的"未接入
-  真实执行器"错误，反馈给探索子agent后由它自行判断调用 `report_failure`
-  ——不是静默失败，也不会被伪造成功。这意味着：`text-transform-capability`
-  这类"确实可以用纯逻辑/无外部依赖实现底层原语"的领域，现在能在真实对话
-  里跑通完整的 `resolve -> miss -> explore(真实 LLM 决策循环) -> distill ->
-  落盘复用` 全链路；`browser-site-scraper`/`doc-template-generation`
-  这类依赖真实浏览器/文档生成能力的领域，探索路径依然会诚实地
-  `not_implemented`，直到有人把 `browser-core`/`doc-core` 的真实实现也
-  补进 `real_tools.py`（见该文件顶部说明）。
+- **默认注入一个通用的真实 `tool_executor`/`explore_runner`**（阶段十二起，
+  阶段十四扩展）：`build_default_tool_executor(skill_dir=skill_dir)` 按工具
+  名分发——分发表由两层组成：项目内置的 `REAL_TOOL_IMPLEMENTATIONS`（目前
+  只有 `text-core` 的 `text_transform_apply`），叠加当前目标 skill 通过
+  `capability.yaml -> explorer.base_tools` 声明的各静态 skill 自带的
+  `impl/tools_impl.py` 实现（阶段十四起，`browser-core` 已提供这份实现，见
+  `.claude/skills/browser-core/impl/`）。命中已实现工具的会真的执行，未命中
+  的（如仍未提供 `impl/tools_impl.py` 的 `doc-core` 下的工具）会得到一条
+  如实的"未接入真实执行器"错误，反馈给探索子agent后由它自行判断调用
+  `report_failure`——不是静默失败，也不会被伪造成功。这意味着：
+  `text-transform-capability`、`browser-site-scraper` 这两类领域现在都能
+  在真实对话里跑通完整的 `resolve -> miss -> explore(真实 LLM 决策循环) ->
+  distill -> 落盘复用` 全链路（后者依赖使用者本机/服务器有可用的 Chrome，
+  或提前手动启动好一个带调试端口的浏览器，见 `browser-core/SKILL.md`）；
+  `doc-template-generation` 这类依赖真实文档生成能力的领域，探索路径依然
+  会诚实地 `not_implemented`，直到有人把 `doc-core` 的真实实现也补进
+  `.claude/skills/doc-core/impl/tools_impl.py`（同一套约定路径机制，见
+  `real_tools.py` 顶部说明）。
 """
 
 from __future__ import annotations
@@ -130,7 +134,7 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
             # 让声明了真实底层原语（目前是 text-core）的 skill 能跑通真实探索链路；
             # 未实现的原语（browser-core/doc-core）会在探索时得到如实的失败反馈，
             # 见 real_tools.py 顶部说明。
-            tool_executor = build_default_tool_executor()
+            tool_executor = build_default_tool_executor(skill_dir=skill_dir)
             engine = CapabilityEngine(
                 skill_dir,
                 llm_resolver=build_llm_resolver(current_llm_helper),

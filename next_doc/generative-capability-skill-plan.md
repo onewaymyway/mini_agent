@@ -1565,3 +1565,114 @@ next_doc/generative-capability-skill-plan.md                      # 本文档
   真正接入时大概率会发现指南里遗漏的细节（比如 `browser-cdp` 里具体
   函数签名与本文档假设的契约存在出入），这是预期中的情况，接入者应该
   以真实调试结果为准，发现出入时更新契约文档而不是削足适履。
+
+### 阶段十四 —— 已完成
+
+**目标**：把 `browser-core` 从"契约文档 + 接入指南"推进为**真正可执行**
+的实现，并纠正一处设计判断——不应局限于无头浏览器，因为部分网站的抓取
+前提是登录，而登录往往需要人工操作，探索子agent的步数/时间预算不适合在
+探索中途等待人工介入。同时，本阶段严格执行"skill 具体功能代码留在 skill
+目录下，项目代码只保留通用机制"这条原则，所有浏览器/CDP 相关代码都新增
+在 `.claude/skills/browser-core/impl/` 下，项目工程目录只新增了一处**与
+浏览器无关**的通用动态加载机制。
+
+**改动内容**：
+
+- **新增 `.claude/skills/browser-core/impl/`**（skill 目录内，共 5 个
+  文件）：
+  - `cdp_client.py` —— 极简 CDP 客户端（HTTP `/json/*` tab 发现 +
+    WebSocket 发命令），风格与 `browser-cdp/src/core/cdp_client.py`
+    一致但大幅精简，**不 import `browser-cdp` 的任何代码**（原因见
+    `browser-core/SKILL.md`"实现与依赖"一节：两者定位边界不同——通用
+    原语 vs 网站定制脚本；且 impl 脚本理论上应该能被原样复制到别的项目
+    独立使用，不应依赖同仓库另一个 skill 目录的内部实现细节）。
+  - `browser_launch.py` —— 拉起一个带 `--remote-debugging-port` 的
+    Chrome/Chromium 进程，`headless`/`headed` 走同一份代码只是参数不同。
+  - `session_manager.py` —— **本阶段的核心新增**：`attach` /
+    `launch_headless` / `launch_headed` / `auto` 四种会话模式。`attach`
+    模式连接一个使用者已经手动启动、且可能已经手动登录好的浏览器实例，
+    直接解决了"不应局限于无头浏览器"的诉求——探索子agent自身不处理任何
+    登录逻辑，登录这件事从一开始就不在它的职责范围内，与
+    `explorer/prompt.md` 一直要求的"遇到登录墙如实报告，不尝试绕过"完全
+    兼容，只是多了一条"人先登录好、再交给它"的路径。
+  - `browser_core_impl.py` —— 7 个工具（`browser_navigate`/
+    `browser_click`/`browser_type`/`browser_scroll`/
+    `browser_wait_for_selector`/`browser_extract_content`/
+    `browser_screenshot_annotated`）的真实实现，均基于 `Runtime.evaluate`
+    执行 JS 完成 DOM 查询/操作，`Page.captureScreenshot` 完成截图；任何
+    异常都在函数内部捕获转成契约要求的 `{"ok": false, "error": "..."}`，
+    不向调用方抛出未捕获异常。`browser_extract_content` 采用通用（非网站
+    定制）提取策略，理由见 `browser-core/SKILL.md`"实现说明"一节。
+  - `tools_impl.py` —— 导出 `TOOL_IMPLEMENTATIONS: dict[str, Callable]`，
+    是本 skill 与项目侧通用引擎之间**唯一**的接口。
+- **项目代码新增一处通用机制**（`src/mini_agent/skills/generative_
+  capability/real_tools.py`）：新增
+  `load_skill_local_tool_implementations(explorer_base_tools,
+  skills_root)`，按 `capability.yaml -> explorer.base_tools` 声明的静态
+  skill 名，动态加载各自 `impl/tools_impl.py` 里的 `TOOL_IMPLEMENTATIONS`
+  并合并；`build_default_tool_executor()` 新增可选参数 `skill_dir`，传入
+  时会自动完成这一层叠加（不传时行为与阶段十二完全一致）。这是**纯粹的
+  约定路径 + 动态 import 机制**，不包含任何浏览器/CDP 相关代码，与
+  `capability_engine.py::_load_member_run()` 动态加载 member 脚本是同一
+  设计风格——项目代码完全不知道、也不需要知道 `browser-core` 内部具体
+  怎么实现。
+- `src/mini_agent/tools/capability_call.py`：`build_default_tool_
+  executor()` 调用处改为传入 `skill_dir=skill_dir`，一行改动，接好上面
+  新增的可选参数。
+- 文档同步更新：`browser-core/SKILL.md`（从"契约 + 指南"改写为"契约 +
+  实现说明 + 已知限制"）、`browser-core/HEADLESS_BROWSER_INTEGRATION.md`
+  （从"接入指南"改写为"实现记录 + 验证记录 + 给未来验证者的自测步骤"）、
+  `browser-site-scraper/SKILL.md`"已知限制"一节、
+  `browser-site-scraper/explorer/tool_allowlist.json` 的 `note` 字段。
+- 新增测试 `tests/test_generative_capability_real_tools.py::
+  TestSkillLocalToolImplementationLoading`（3 个用例）：验证
+  `build_default_tool_executor(skill_dir=...)` 能正确加载
+  `browser-core` 的真实实现、不传 `skill_dir` 时行为与阶段十二一致、
+  目标 skill 声明的某个 base tool 尚未提供 `impl/tools_impl.py`（如
+  `doc-core`）时能安静跳过、不影响其余分发表条目。
+
+**验证结果**：
+
+1. `pytest tests/test_generative_capability_engine.py
+   tests/test_generative_capability_real_tools.py -q` → 29 passed
+   （阶段十三的 26 个既有用例全部保持通过 + 本阶段新增 3 个），确认
+   `real_tools.py`/`capability_call.py` 的改动没有破坏
+   `text-transform-capability`/引擎骨架/阶段十三既有行为。
+2. 手工验证 `build_default_tool_executor(skill_dir=Path(".claude/skills/
+   browser-site-scraper"))`：调用 `browser_navigate` 且 `session.mode=
+   "attach"` 指向一个确定没有监听的端口，返回具体到"该怎么解决"的
+   错误信息（而不是笼统的"未实现"），确认 `browser-core` 的真实实现
+   已经生效、且失败是浏览器连接层面的诚实失败，不是占位声明。
+3. 手工验证沙盒环境（无 Chrome/Chromium）下 `auto`/`launch_headless`
+   模式：`browser_launch._find_chrome_binary()` 正确返回 `None`，
+   `browser_navigate`/`browser_click` 等工具返回带明确解决建议的
+   `{"ok": false, "error": "未找到可用的 Chrome/Chromium/Edge..."}"`，
+   没有抛出未捕获异常，探索循环不会因此崩溃。
+4. 手工验证未命中工具名（如一个不存在的工具名）仍然得到项目侧既有的
+   "占位声明，尚未接入真实执行器"提示，证明本阶段的改动没有影响对
+   `doc-core` 等仍未实现领域的既有诚实失败行为。
+5. `python3 -c "...text_transform_apply..."` 在叠加了 `browser-core`
+   实现的分发表里仍正确返回 `{"result": "HI"}`，确认叠加是纯粹的
+   "在内置表之上追加"，不会覆盖或影响项目内置的原语。
+
+**已知遗留（留给后续阶段，详见 `browser-core/HEADLESS_BROWSER_
+INTEGRATION.md` 第 6-7 节）**：
+
+- **未在真实浏览器环境下做过端到端验证**：本阶段完成时的沙盒环境没有
+  可安装/运行的 Chrome，所有验证都停留在"连接失败/依赖缺失时的错误处理
+  逻辑正确"这一层，没有验证过"真的打开一个网页、真的点击/输入/提取成功"。
+  这是诚实的状态说明——`browser-core/HEADLESS_BROWSER_INTEGRATION.md`
+  第 6 节给出了具体的自测步骤（含 `attach` 模式登录场景的验证方法），
+  留给下一个有真实浏览器环境的人执行并把结果补充进该文档。
+- `session_manager.py` 的会话管理是**进程级**的（模块级字典按
+  `(host, port)` 复用），如果宿主 agent 框架未来支持并发跑多个
+  `capability_call`，需要补充按调用方/探索会话 id 隔离 session key，
+  本阶段暂不涉及（当前引擎设计里探索本身就是同步调用）。
+- `doc-core`（`doc-template-generation` 依赖的底层原语）本阶段完全未
+  涉及，仍是阶段五遗留下来的占位状态；不过本阶段新增的
+  `load_skill_local_tool_implementations` 机制对它同样适用——未来接入
+  时只需要在 `.claude/skills/doc-core/impl/tools_impl.py` 提供
+  `TOOL_IMPLEMENTATIONS`，不需要改动任何项目代码。
+- `browser_extract_content` 的通用（非网站定制）提取策略在复杂页面结构
+  下可能拿不到符合 `intent_schema` 的数据，这是预期行为，见
+  `browser-core/SKILL.md`"已知限制"一节，不在本阶段解决范围内。

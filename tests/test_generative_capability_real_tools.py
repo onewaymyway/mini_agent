@@ -12,6 +12,7 @@ tests/test_generative_capability_real_tools.py
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 
 class TestTextTransformApply(unittest.TestCase):
@@ -90,6 +91,54 @@ class TestBuildDefaultToolExecutor(unittest.TestCase):
             self.assertIn("boom", result["error"])
         finally:
             real_tools.REAL_TOOL_IMPLEMENTATIONS["text_transform_apply"] = original
+
+
+class TestSkillLocalToolImplementationLoading(unittest.TestCase):
+    """阶段十四：build_default_tool_executor(skill_dir=...) 动态加载各
+    generative-capability skill 通过 explorer.base_tools 声明的静态 skill
+    自带实现（约定路径 <skills_root>/<base_tool>/impl/tools_impl.py）。"""
+
+    def test_browser_site_scraper_picks_up_browser_core_impl(self):
+        from mini_agent.skills.generative_capability.real_tools import build_default_tool_executor
+
+        repo_root = Path(__file__).resolve().parents[1]
+        skill_dir = repo_root / ".claude" / "skills" / "browser-site-scraper"
+        executor = build_default_tool_executor(skill_dir=skill_dir)
+
+        # browser-core 的真实实现应当被加载到，命中后不再是"占位声明"提示，
+        # 而是浏览器层面的诚实失败（沙盒环境不一定有可用浏览器/调试端口）。
+        result = executor(
+            "browser_navigate",
+            {"url": "https://example.com", "session": {"mode": "attach", "port": 19222}},
+        )
+        self.assertIn("ok", result)
+        self.assertFalse(result["ok"])
+        self.assertNotIn("占位声明", result.get("error", ""))
+        self.assertIn("remote-debugging-port", result["error"])
+
+        # 项目内置的 text_transform_apply 不应因为叠加了 browser-core 而失效。
+        text_result = executor("text_transform_apply", {"text": "hi", "op": "upper"})
+        self.assertEqual(text_result, {"result": "HI"})
+
+    def test_without_skill_dir_browser_tools_stay_placeholder(self):
+        from mini_agent.skills.generative_capability.real_tools import build_default_tool_executor
+
+        executor = build_default_tool_executor()  # 不传 skill_dir，行为应与阶段十二一致
+        result = executor("browser_navigate", {"url": "https://example.com"})
+        self.assertIn("占位声明", result.get("error", ""))
+
+    def test_skill_without_base_tools_impl_falls_back_gracefully(self):
+        from mini_agent.skills.generative_capability.real_tools import build_default_tool_executor
+
+        repo_root = Path(__file__).resolve().parents[1]
+        skill_dir = repo_root / ".claude" / "skills" / "doc-template-generation"
+        executor = build_default_tool_executor(skill_dir=skill_dir)
+        # doc-core 仍未提供 impl/tools_impl.py，应当安静跳过，不抛异常、
+        # 不影响其余分发表条目。
+        result = executor("doc_parse_sample", {})
+        self.assertIn("占位声明", result.get("error", ""))
+        text_result = executor("text_transform_apply", {"text": "hi", "op": "upper"})
+        self.assertEqual(text_result, {"result": "HI"})
 
 
 if __name__ == "__main__":

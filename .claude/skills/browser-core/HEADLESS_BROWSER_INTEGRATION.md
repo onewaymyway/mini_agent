@@ -1,134 +1,173 @@
-# browser-core 无头浏览器接入指南
+# browser-core 浏览器接入实现记录（阶段十四）
 
-面向对象：下一个有条件在真实浏览器环境（能安装 Chromium/Playwright、能
-开端口跑 CDP）里工作的实现者。本文档回答"照着 SKILL.md 的契约，具体应该
-怎么把真实浏览器接进来"。
+面向对象：使用/维护 `browser-core` 真实实现的人，以及下一个要在**真实
+浏览器环境**里验证/扩展它的人。
 
-沙盒环境（当前完成本文档的环境）没有可用的浏览器/网络出口去安装、启动、
-连接一个真实浏览器实例，因此本文档只写到"怎么接、接哪里、有哪些坑"，
-不包含跑通后的真实调用记录——这是诚实的边界，不是遗漏。
+本文档的角色发生了变化：阶段十三时这里写的是"怎么接、接哪里、有哪些坑"
+的**接入指南**（尚无代码）；阶段十四已经按这份指南把代码写出来了
+（`.claude/skills/browser-core/impl/`），所以本文档现在是**实现说明 +
+验证记录**，同时保留了原指南里仍然适用的坑/设计取舍，供后续维护参考。
 
-## 0. 起点：不要从零写，先看两个已有实现
+沙盒环境（完成本次改动的环境）仍然没有可安装/运行的 Chrome，因此本文档的
+"验证记录"一节只覆盖了"CDP 调用/错误处理逻辑本身没有低级 bug、动态加载
+机制接线正确"这一层，**没有**覆盖"连上一个真实网页、真的点击/输入/提取
+成功"——这是诚实的边界，不是遗漏，下一个有真实浏览器环境的人应该先跑一遍
+本文档"给未来验证者的自测步骤"一节，再放心使用。
 
-项目里已经有两套可以参考/直接复用的浏览器自动化代码，接入 `browser-core`
-时应该优先复用而不是重写：
+## 0. 最终没有直接复用 browser-cdp 代码，原因回顾
 
-1. `.claude/skills/browser-cdp/src/core/cdp_client.py` +
-   `browser_manager.py` +（可选）`playwright_session.py`——CDP 连接池、
-   浏览器进程生命周期管理、反检测（`stealth.py`/`anti_detection.py`）都
-   已经实现过一遍，`browser-core` 的连接管理层直接复用这些模块，只是
-   在其上包一层符合 `SKILL.md` 契约的窄接口，不要重新发明连接池。
-2. `.claude/skills/browser-cdp/src/core/browser_nav.py` /
-   `browser_interaction.py` / `browser_extract.py` / `browser_screenshot.py`
-   ——这几个文件里已经有跟 `SKILL.md` 里 7 个工具几乎一一对应的函数
-   （`navigate`/`click`/`type_text`/`scroll`/`extract_content`/
-   `screenshot_annotated` 等，具体函数名以文件内容为准），大概率是"改
-   参数名对齐契约 + 包一层返回值格式"的工作量，而不是从零实现。
+阶段十三/本文档最初版本设想"接入时应该优先复用 `browser-cdp` 已有的
+`cdp_client.py`/`browser_manager.py`/`browser_nav.py` 等模块"。实际实现
+时改为**自己写一份精简版**，原因见 `SKILL.md`"实现与依赖"一节：两者的
+定位边界不同（通用原语 vs 网站定制脚本），且 generative-capability 的
+impl 脚本是按路径独立加载的文件，不应该依赖同仓库另一个 skill 目录的
+内部实现细节。这不是"没有按指南做"，是指南本身在真正动手实现时发现的一处
+需要修正的判断，如实记录在这里，而不是悄悄改了指南却不说明为什么。
 
-## 1. 落点：一个新文件，不改调用方代码
+## 1. 代码组织（对应 SKILL.md"实现与依赖"一节）
 
 ```
-src/mini_agent/skills/generative_capability/browser_core_impl.py
+.claude/skills/browser-core/impl/
+  cdp_client.py       # 极简 CDP 客户端：tab 发现（HTTP /json/*）、
+                        # WebSocket 发命令、Page.navigate/Runtime.evaluate/
+                        # Page.captureScreenshot 三个 CDP 方法的薄封装
+  browser_launch.py    # spawn_browser(headless: bool)：拉起一个带
+                        # --remote-debugging-port 的 Chrome/Chromium 进程，
+                        # headless 与 headed 走同一份代码、只是参数不同
+  session_manager.py   # 会话管理：attach/launch_headless/launch_headed/auto
+                        # 四种模式；模块级字典按 (host, port) 复用会话，
+                        # atexit 注册清理（只清理自己 spawn 的进程，不动
+                        # attach 模式连接的、使用者自己启动的浏览器）
+  browser_core_impl.py  # 7 个工具的真实实现，函数签名统一为
+                        # (tool_input: dict) -> dict，任何异常都在函数内部
+                        # 捕获转成 {"ok": False, "error": "..."}，不向上抛
+  tools_impl.py          # 导出 TOOL_IMPLEMENTATIONS: dict[str, Callable]
 ```
 
-参照 `real_tools.py` 里 `text_transform_apply` 的写法：每个函数签名
-`(tool_input: dict) -> dict`，内部做真实浏览器操作，任何异常都要在函数
-内部捕获转成 `{"error": "..."}` 返回，不向上抛——探索循环依赖这个约定
-把失败信息喂回模型，而不是让整个探索因为一次异常直接崩溃。
+`tools_impl.py` 是本 skill 与项目侧通用引擎之间**唯一**的接口——项目代码
+（`real_tools.py::load_skill_local_tool_implementations()`）只认
+`<skill_dir>/impl/tools_impl.py` 这个约定路径和 `TOOL_IMPLEMENTATIONS`
+这个约定变量名，对 `impl/` 目录下其余文件的存在、命名、内部结构一无所知，
+也不需要知道——这就是"skill 具体功能代码留在 skill 目录，项目代码只保留
+通用机制"这条原则在本次改动里的落地方式（对应任务要求）。
 
-伪代码骨架（说明结构，不是可直接运行的代码）：
+## 2. 会话生命周期：怎么解决的（对应原指南第 2 节的三个问题）
 
-```python
-from .browser-cdp适配层 import get_or_create_session  # 具体路径按实际抽取结果调整
+- **每次探索调用是否复用同一个浏览器进程？** 是。`session_manager.py` 用
+  模块级字典 `_sessions: dict[(host, port), _SessionEntry]`，
+  `get_or_create_session()` 对同一个 `(host, port)` 只建立一次连接/只
+  启动一次浏览器进程，惰性初始化——命中已有 member 执行成功、根本不需要
+  浏览器的请求不会触发任何浏览器启动。
+- **一次探索结束后要不要关闭？** 用 `atexit.register(_cleanup_all)` 在
+  进程退出时统一清理，而不是在每次 `capability_call` 结束后立刻关闭——
+  这样同一个长期运行的 agent 进程内多次探索/多次命中同一 member 执行可以
+  持续复用同一个浏览器会话（含 launch 模式下积累的 cookies/登录状态），
+  避免"探索时登录了，紧接着免探索复用那次又要重新连接一个全新浏览器"的
+  体验割裂。代价是长时间运行的 agent 进程如果探索了很多不同网站，浏览器
+  子进程会逐渐积累；`reset_session()` 提供了显式清理单个会话的入口，供
+  未来需要主动管理生命周期的调用方使用（当前 `capability_call.py` 未调用
+  它，属于刻意保守的默认行为，不在本次范围内接线）。
+- **并发探索怎么办？** 当前引擎设计里探索是同步阻塞的单次调用，
+  `capability_call` 也是同步工具调用，暂不构成并发问题。但
+  `session_manager.py` 的会话字典是**进程级**的，如果宿主 agent 框架
+  未来支持并发跑多个 `capability_call`，两次并发请求用相同的
+  `(host, port)` 会意外共享同一个浏览器 tab——这是已知限制，已记录在
+  `SKILL.md`"已知限制"一节，留给后续阶段视实际需要处理（比如按调用方/
+  探索会话 id 隔离 session key）。
 
-def browser_navigate(tool_input: dict) -> dict:
-    url = tool_input.get("url")
-    if not url:
-        return {"ok": False, "error": "缺少 url 参数"}
-    session = get_or_create_session()
-    try:
-        result = session.navigate(url)  # 复用 browser-cdp 里已有的导航逻辑
-        return {"ok": True, "final_url": result.url, "title": result.title}
-    except Exception as e:
-        return {"ok": False, "error": f"导航失败: {e}"}
+## 3. `browser_extract_content` 的实现取舍
 
-# browser_click / browser_type / browser_scroll /
-# browser_wait_for_selector / browser_extract_content /
-# browser_screenshot_annotated 按同样的模式实现，
-# 输入输出结构严格对齐 SKILL.md 的契约表格。
-```
+沿用原指南强调的一点：探索链路的蒸馏产物很大程度上依赖"最后一次工具调用
+的返回值里直接带 `data`"这条既有约定。真实实现选择了**通用、非定制化**的
+提取策略（收集容器内的标题/链接元素 + 纯文本兜底，见 `SKILL.md`"实现
+说明"）而不是尝试针对 `schema_hint` 做"智能"的语义匹配——原因：
+`browser-core` 的职责边界是"通用浏览器操作"，"理解某个网站的内容语义
+结构"属于 `browser-site-scraper` 各 member（人工预置或蒸馏生成）的职责。
+这意味着复杂页面结构下，探索子agent可能需要先用 `wait_for_selector`/
+`click` 缩小范围、再调用 `browser_extract_content`（可传 `selector`
+限定容器），而不是指望一次调用就拿到语义正确的数据——这是刻意的设计取舍，
+不是待办事项。
 
-## 2. 会话生命周期：谁来开/关浏览器
+## 4. 反检测与验证码：仍然明确不做
 
-这是接入时最容易踩坑的一块，SKILL.md 的契约表格里没有覆盖，因为它属于
-"实现细节"而非"工具契约"：
+与原指南结论一致，本次实现**没有**加入任何"绕过反爬/验证码"的逻辑。
+`browser_navigate`/`browser_click` 等函数遇到网络/DOM 层面的失败会如实
+返回 `{"ok": False, "error": "..."}`，交给探索子agent按 `explorer/
+prompt.md` 的既有要求判断是否 `report_failure`；`browser-core` 本身不
+识别"这是不是验证码页面"，也不提供任何专门的绕过工具。
 
-- **每次探索调用是否复用同一个浏览器进程？** 建议是——在
-  `browser_core_impl.py` 模块级维护一个惰性初始化的会话（类似
-  `tool_runtime.py` 用模块级变量存 `_tool_executor` 的做法），第一次调用
-  任意 `browser_*` 工具时才真正启动浏览器，避免探索请求命中已有 member
-  执行成功的场景（根本不需要浏览器）也白白启动一次。
-- **一次探索结束后要不要关闭？** 建议由 `capability_call.py` 或
-  `CapabilityEngine.call()` 的调用方在探索结束后显式清理（可以加一个
-  `browser_core_impl.close_session()`），不要依赖 Python 垃圾回收——浏览器
-  子进程不清理会在长时间运行的 agent 进程里越攒越多。
-- **并发探索怎么办？** 当前引擎设计里探索是同步阻塞的单次调用
-  （`explorer_runtime.py` 的决策循环是一个 while 循环，不是并发任务），
-  如果宿主 agent 框架本身支持并发跑多个 `capability_call`，需要考虑要
-  给每次探索分配独立的浏览器上下文（Playwright 的 `BrowserContext`）而
-  不是共享同一个页面，否则不同探索之间会互相踩踏对方的页面状态。
+## 5. 验证记录（本次沙盒环境实际跑过的部分）
 
-## 3. `browser_extract_content` 是关键中的关键
+沙盒没有可用的 Chrome/CDP 端口，以下是在这个约束下能做、且已经做过的
+验证（可复现，见 `tests/test_generative_capability_real_tools.py::
+TestSkillLocalToolImplementationLoading`）：
 
-再强调一遍 SKILL.md 里已经写的一点：探索链路的蒸馏产物很大程度上依赖
-"最后一次工具调用（通常就是 `browser_extract_content`）的返回值里直接带
-`data`"这条既有约定（见 `distiller.py` 与
-`capability.yaml::distill.trust_trace_data` 的说明）。这意味着：
+1. **动态加载接线正确**：`build_default_tool_executor(skill_dir=
+   Path(".claude/skills/browser-site-scraper"))` 能正确找到并加载
+   `browser-core/impl/tools_impl.py`，7 个工具名全部出现在分发表里，
+   项目内置的 `text_transform_apply` 不受影响（叠加而非替换）。
+2. **`attach` 模式的诚实失败**：对一个确定没有监听的调试端口
+   （`session: {"mode": "attach", "port": 19222}`）调用
+   `browser_navigate`，返回 `{"ok": False, "error": "...没有可连接的
+   浏览器调试端口。请先手动启动一个带 --remote-debugging-port=19222 的
+   浏览器（如果这个抓取目标需要登录，应该在这一步手动登录好），再重试。"}`
+   ——不是笼统的"未实现"，是具体到"该怎么解决"的错误信息。
+3. **`auto`/`launch_*` 模式在无 Chrome 环境下的诚实失败**：沙盒没有安装
+   任何 Chrome/Chromium/Edge，`browser_launch._find_chrome_binary()`
+   正确返回 `None`，`browser_navigate`/`browser_click` 等工具返回
+   `{"ok": False, "error": "未找到可用的 Chrome/Chromium/Edge 可执行
+   文件。请安装浏览器，或改用 attach 模式..."}`，没有抛出未捕获异常。
+4. **未命中工具名仍走通用占位提示**：对一个不存在的工具名调用，仍然得到
+   项目侧 `real_tools.py` 里既有的"占位声明，尚未接入真实执行器"提示，
+   证明 browser-core 的加入没有破坏对其余未实现领域（如 `doc-core`）的
+   既有诚实失败行为。
+5. **既有回归测试全部通过**：`tests/test_generative_capability_engine.py`
+   + `tests/test_generative_capability_real_tools.py` 共 29 个用例全部
+   通过，确认本次改动没有影响此前 `text-transform-capability`/
+   `doc-template-generation`/引擎骨架本身的行为。
 
-- `browser_extract_content` 的实现质量直接决定蒸馏产物是否可用——如果
-  提取逻辑经常拿到空结果或结构对不上 `intent_schema`，即使浏览器操作
-  部分全部正确，`distill()` 的沙箱自测也会失败，蒸馏产物不会落盘。
-- 建议 `schema_hint`（也就是调用方传入的 `intent_schema`）被真正用起来：
-  比如 `intent_schema_template` 要求 `results` 是数组，提取逻辑就应该
-  尝试找页面里的列表型结构（如重复出现的卡片/列表项），而不是无差别地
-  把整页文本转成一个字符串塞进某个字段——`schema_validator.py` 会严格
-  校验类型，糊弄不过去。
+## 6. 给未来验证者的自测步骤（在有真实浏览器的环境下）
 
-## 4. 反检测与验证码：明确不做，不要在这里加
+1. 安装依赖：`pip install websocket-client --break-system-packages`
+   （`requests`/`PyYAML` 项目本身已依赖）；确认本机有 Chrome/Chromium。
+2. **最短链路自测**（headless，不需要登录）：
+   ```python
+   import sys; sys.path.insert(0, "src")
+   from pathlib import Path
+   from mini_agent.skills.generative_capability.real_tools import build_default_tool_executor
 
-`SKILL.md` 已经说明本契约不提供"绕过反爬/验证码"类工具。接入真实实现时
-如果发现某个网站有明显的反爬拦截或验证码墙，正确的做法是让
-`browser_navigate`/`browser_extract_content` 如实返回
-`{"ok": false, "error": "遇到验证码/登录墙: ..."}`，交给探索子agent按
-`explorer/prompt.md` 的既有要求调用 `report_failure`，**不要**在
-`browser_core_impl.py` 里悄悄接入 `browser-cdp/src/core/
-captcha_handler.py` 或 `cloudflare_bypass.py` 之类的模块去自动绕过——
-这类能力即使项目里已经有现成代码，是否应该在"自动探索、无人值守"的场景
-下使用也是一个需要单独评估的产品/合规决策，不应该在这次"接入通用浏览器
-操作原语"的改动里顺带打开。
+   executor = build_default_tool_executor(
+       skill_dir=Path(".claude/skills/browser-site-scraper")
+   )
+   print(executor("browser_navigate", {"url": "https://example.com"}))
+   print(executor("browser_extract_content", {}))
+   ```
+   预期：`browser_navigate` 返回 `ok: true` 且 `final_url`/`title` 正确；
+   `browser_extract_content` 返回 `ok: true` 且 `data.text_excerpt` 里能
+   看到 example.com 页面的文本内容。
+3. **`attach` 模式自测（登录场景的核心验证）**：手动执行
+   `google-chrome --remote-debugging-port=9333 --user-data-dir=/tmp/bc-test`
+   打开一个有界面的 Chrome，手动导航/登录任意网站；再调用
+   `executor("browser_extract_content", {"session": {"mode": "attach",
+   "port": 9333}})`，确认能从这个已登录的会话里正确提取内容——这一步
+   验证的正是本次改动的核心诉求。
+4. **完整探索闭环自测**：参照 `test_cases/text-transform-capability-
+   testing-guide.md` 的结构（真实 `LLMHelper` + 真实 `capability_call`
+   工具），对 `browser-site-scraper` 发起一个三个已有 member（baidu/
+   zhihu）都覆盖不到的新站点抓取请求，观察探索子agent是否能通过
+   `browser_navigate` -> `browser_wait_for_selector` ->
+   `browser_extract_content` 的组合拿到满足 `intent_schema` 的数据、
+   蒸馏落盘、并在下一次相同请求时免探索复用。
+5. 验证过程中如果发现某个工具的真实行为与 `SKILL.md` 契约描述有出入
+   （大概率会有，见"已知限制"），应该**更新契约文档**而不是让实现和
+   文档各说各话，并把验证结果补充进本文档的"验证记录"一节。
 
-## 5. 完成后如何自测（复用已验证过的模式）
+## 7. 完成后需要同步更新的文档（本次已完成的部分标 ✅）
 
-参照 `tests/test_generative_capability_real_tools.py`（`text-core` 的
-对应测试）与 `test_cases/text-transform-capability-testing-guide.md`
-（对话式测试指南）的结构，为 `browser-core` 补两类测试：
-
-1. **纯逻辑/mock 级单测**：不需要真实浏览器，mock 掉底层会话对象，验证
-   每个函数在正常/异常输入下的返回值结构符合契约。可以在没有真实浏览器
-   的环境（比如当前沙箱）里先写、先跑通这一层。
-2. **真实浏览器端到端测试**：需要真实浏览器环境，建议先用一个稳定的
-   静态测试页面（不依赖外部网络、不易变化的本地 HTML 或
-   `browser-cdp/config/websites/example.com.json` 对应的场景）跑通
-   `browser_navigate -> browser_extract_content` 最短链路，再逐步扩展到
-   `browser-site-scraper` 的真实探索场景（比如复现阶段十二对
-   `text-transform-capability` 做过的"用真实 LLM 决策循环 + 真实工具
-   执行器跑通 miss -> explore -> distill -> 落盘 -> 免探索复用"全链路）。
-
-## 6. 完成后需要同步更新的文档（清单）
-
-- `browser-core/SKILL.md`"已知限制"一节——去掉"仍会诚实失败"的描述。
-- `browser-site-scraper/explorer/tool_allowlist.json` 的 `note` 字段。
-- `browser-site-scraper/SKILL.md`"已知限制"一节。
-- `next_doc/generative-capability-skill-plan.md`——按既有格式新增一个
-  实施阶段记录（目标/改动文件/验证结果/已知遗留），不要直接覆盖或删除
-  之前阶段的记录。
+- ✅ `browser-core/SKILL.md`"已知限制"一节——已更新为"理论上可以工作，
+  实际取决于运行环境"的准确描述。
+- ✅ `browser-site-scraper/explorer/tool_allowlist.json` 的 `note` 字段。
+- ✅ `browser-site-scraper/SKILL.md`"已知限制"一节。
+- ✅ `next_doc/generative-capability-skill-plan.md`——已新增阶段十四记录。
+- ⬜ 真实浏览器环境下的端到端验证结果——留给下一个有条件的人补充进本文档
+  第 5 节，不在本次范围内（本次范围内的沙盒环境没有这个条件）。

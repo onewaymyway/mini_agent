@@ -1,58 +1,119 @@
 ---
 name: browser-core
 description: browser-site-scraper 在 capability.yaml 中把本 skill 声明为 explorer.base_tools；本 skill 本身不由探索子agent直接读取正文（探索子agent只读取 explorer/tool_allowlist.json 里的工具名与签名），SKILL.md 的作用是给"实现/维护这些原语的人"一份权威契约文档，静态 skill（skill_type 留空，遵循项目既有约定），不参与 generative-capability 的检索流程。
-triggers: browser-core, 浏览器操作原语, 无头浏览器接入
+triggers: browser-core, 浏览器操作原语, 无头浏览器接入, 普通浏览器登录
 platforms: windows, macos, linux, pc
 ---
 
-# browser-core（静态 skill：通用浏览器操作原语契约）
+# browser-core（静态 skill：通用浏览器操作原语，基于 CDP，已有真实实现）
 
 ## 这是什么
 
 `browser-core` 是 `next_doc/generative-capability-skill-plan.md` 第 10 节
-"迁移路径"第 1 步里提到、但至今仍是**占位声明**的静态 skill：把
-`browser-site-scraper` 探索子agent会用到的通用浏览器操作（导航/点击/输入/
-滚动/提取/等待/截图）从"每个网站各自实现"里抽出来，定义成一份**跨网站
-通用**的工具契约。
+"迁移路径"第 1 步里提到的静态 skill：把 `browser-site-scraper` 探索子agent
+会用到的通用浏览器操作（导航/点击/输入/滚动/提取/等待/截图）从"每个网站
+各自实现"里抽出来，定义成一份**跨网站通用**的工具契约，并提供真实实现。
 
-本次改动（阶段十三）把它从"完全空白的占位"推进为"契约已经写清楚、真实实现
-仍缺"的状态：
+- ✅ 已完成（阶段十三）：本文档 —— 每个工具的输入/输出结构、错误约定。
+- ✅ 已完成（阶段十三）：`HEADLESS_BROWSER_INTEGRATION.md` —— 接入设计
+  记录（阶段十四已按此文档完成实现，该文档同步更新为"实现说明+验证记录"）。
+- ✅ 已完成（**阶段十四**）：真实可执行的实现，位于 `impl/` 目录，采用
+  与 `browser-cdp` 一致的技术路线——**不依赖 Playwright/Selenium，直接用
+  Chrome DevTools Protocol（HTTP `/json/*` 做 tab 发现 + WebSocket 发送
+  CDP 命令）**，见下方"实现与依赖"一节。
+- ✅ 已完成（**阶段十四，本次改动的核心诉求**）：**不再局限于无头浏览器**。
+  `impl/session_manager.py` 提供 `attach` / `launch_headless` /
+  `launch_headed` / `auto` 四种会话模式——需要登录的网站可以先由使用者手动
+  启动一个普通的、有界面的浏览器并手动登录好，再让 browser-core 以
+  `attach` 模式连接这个已登录的浏览器实例，探索子agent不需要、也不会尝试
+  自己完成登录（`explorer/prompt.md` 一直要求"遇到登录墙如实报告，不尝试
+  绕过"，这一点没有变化——变化的是登录这件事从一开始就不在探索子agent的
+  职责范围内，由人在探索开始之前就做好）。
+- ⚠️ 未完成：真实浏览器环境下的端到端验证。当前沙箱环境没有可安装/运行的
+  Chrome，因此 `impl/` 下的代码只验证到"CDP 层面的调用/错误处理逻辑正确"
+  （见 `HEADLESS_BROWSER_INTEGRATION.md`"验证记录"一节），没有验证过"连上
+  一个真实网页、真的点击/输入/提取成功"。这是诚实的状态说明，不是掩盖——
+  下一个有真实浏览器环境的人使用前应该先跑一遍该文档给出的自测步骤。
 
-- ✅ 已完成：本文档 —— 每个工具的输入/输出结构、错误约定、与
-  `browser-site-scraper/explorer/tool_allowlist.json` 的对应关系。
-- ✅ 已完成：`browser-core/HEADLESS_BROWSER_INTEGRATION.md` —— 给未来
-  "真的要接一个无头浏览器"的实现者一份可以直接照做的接入指南。
-- ❌ 仍未完成、不在本次范围内：真正可执行的实现（用 Playwright/CDP 之类
-  驱动一个真实浏览器进程）。这需要在能够安装/运行浏览器的环境里完成，
-  当前沙箱环境不满足这个前提，勉强接入只会得到一个连不上真实浏览器、
-  看似实现了但实际仍会诚实失败的空壳，价值不大，所以本次只把"契约"和
-  "怎么接"两件事做实，把"真的去接"清楚地留给下一个有真实浏览器环境的
-  阶段。
+## 实现与依赖（阶段十四）
 
-## 为什么现在只做"契约 + 指南"两件事，而不是照抄 browser-cdp
+`impl/` 目录下是本 skill 自己维护的一份精简 CDP 客户端 + 会话管理 + 7 个
+工具实现，**不 import `browser-cdp` 的任何代码**，理由：
 
-`.claude/skills/browser-cdp/` 目录下已经有一套相当完整的浏览器自动化实现
-（`src/core/browser_*.py`、`cdp_client.py`、`playwright_session.py` 等），
-理论上可以直接抽取一部分函数当作 `browser-core` 的真实实现。但这次没有
-这么做，原因是：
+1. **两者的定位边界不同**。`browser-cdp` 里的实现是针对具体网站高度定制的
+   （每个 `*_search.py` 都有自己的选择器、反爬处理），而 `browser-core`
+   需要的是与网站无关的**通用原语**（"点击一个元素""等一个选择器出现"）。
+   直接复用 `browser-cdp` 的模块会让 browser-core 变得没法脱离 browser-cdp
+   独立存在，模糊了"通用原语 vs 网站定制脚本"这条本应清晰的边界。
+2. **generative-capability member/impl 脚本是按文件路径动态加载的独立
+   文件**（见 `capability_engine.py::_load_member_run()` 与
+   `real_tools.py::load_skill_local_tool_implementations()` 的实现），
+   不是这个仓库 Python 包的一部分——`browser-core` 整个 `.claude/skills/
+   browser-core/` 目录理论上应该能被原样复制到别的项目里独立使用，依赖同
+   仓库另一个 skill 目录的内部实现细节会破坏这一点。
+3. 技术路线与 `browser-cdp/src/core/cdp_client.py` 保持一致（HTTP `/json/*`
+   tab 发现 + WebSocket 发 CDP 命令，同步阻塞风格），但只保留 7 个原语真正
+   用得到的能力（`Page.navigate`/`Runtime.evaluate`/`Page.captureScreenshot`），
+   去掉了 `browser-cdp` 里面向"几十个网站定制抓取"的重试分类/事件订阅/
+   cookie 管理等重型基础设施——那些属于 `browser-cdp` 自己的职责范围。
 
-1. **沙箱环境本身没有可用的浏览器/CDP 端口**——即使把代码抽过来，
-   `real_tools.py::build_default_tool_executor()` 一调用就会因为连不上
-   真实浏览器而返回失败，与"完全没实现、如实报错"在效果上没有区别，却会
-   让读代码的人误以为"browser-core 已经接好了"，这正是
-   `text-transform-capability` 阶段十二实施记录里反复强调要避免的
-   "看似实现完备的误解"。
-2. **`browser-cdp` 里的实现是针对具体网站高度定制的**（每个 `*_search.py`
-   都有自己的选择器、反爬处理），而 `browser-core` 需要的是与网站无关的
-   **通用原语**（"点击一个元素""等一个选择器出现"），两者粒度不同，直接
-   抽取容易把网站特定逻辑也带进来，需要认真设计接口边界，不是简单的
-   "复制粘贴+改函数名"能做好的，属于本次范围之外的工作量。
-3. **`text-core` 已经验证过"先把契约和接线方式定清楚，实现单独放一个
-   模块，接入时只加一份实现、不改调用方"这套模式是可行的**
-   （见 `real_tools.py`）。本 skill 遵循同样的模式：先把契约钉死，真实
-   实现留出一个清晰的插槽（`browser_core_impl.py`，见下方"未来实现落点"），
-   下一个阶段接入时不需要改 `capability_call.py`/`capability_engine.py`
-   一行代码。
+**依赖**：`requests`（项目 `requirements.txt` 已包含）、`websocket-client`
+（`browser-cdp` 已经依赖同一个库，但 `browser-core` 作为独立静态 skill 不
+共享 Python 依赖环境假设，需要在运行环境里单独确认/安装：
+`pip install websocket-client --break-system-packages`）。可选依赖
+`Pillow`：装了才会在 `browser_screenshot_annotated` 的截图上画出元素编号框，
+不装也能正常工作，只是拿到的是未标注的原图 + 一份元素坐标列表（见
+`impl/browser_core_impl.py::_try_annotate()`）。
+
+**代码组织**（`skill具体功能代码留在skill目录`这条原则的落地）：
+
+```
+.claude/skills/browser-core/impl/
+  cdp_client.py          # 极简 CDP 客户端（tab 发现/连接/发命令）
+  browser_launch.py       # 拉起 headless 或 headed 的 Chrome/Chromium 进程
+  session_manager.py      # attach/launch_headless/launch_headed/auto 会话管理
+  browser_core_impl.py    # 7 个工具的真实实现（对应下方"工具契约"）
+  tools_impl.py            # 导出 TOOL_IMPLEMENTATIONS，供项目侧通用引擎
+                            # （real_tools.py::load_skill_local_tool_
+                            # implementations，纯粹的"按约定路径动态加载"
+                            # 机制，不含任何浏览器/CDP 相关代码）发现
+```
+
+项目代码（`src/mini_agent/skills/generative_capability/real_tools.py`）
+完全不知道、也不需要知道 browser-core 内部是用 CDP 还是别的什么协议实现的，
+只认 `<skill_dir>/impl/tools_impl.py` 这一个约定路径和 `TOOL_IMPLEMENTATIONS`
+这一个约定变量名。
+
+## 会话模式：`attach` / `launch_headless` / `launch_headed` / `auto`
+
+每个工具的 `input` 都可以附带一个可选的 `session` 字段（缺省为 `auto`），
+第一次调用时决定如何建立浏览器连接，同一次探索过程中后续调用复用同一个
+会话（不会每次都重新连接/重新启动浏览器）：
+
+```
+"session": {
+  "mode": "attach" | "launch_headless" | "launch_headed" | "auto",
+  "host": "127.0.0.1",     # 可选，默认 127.0.0.1
+  "port": 9222,             # 可选，默认 9222
+  "user_data_dir": null,    # 可选，仅 launch_* 模式使用
+}
+```
+
+- **`attach`**——连接一个**已经在运行**的浏览器（通过其
+  `--remote-debugging-port`）。**这是需要登录场景的标准用法**：由使用者
+  提前手动启动一个普通的、有界面的浏览器，手动登录好目标网站，再把调试
+  端口告诉 browser-core。探索子agent不会、也不应该尝试自己完成登录。
+- **`launch_headless`**——本 skill 自己拉起一个全新的无 GUI 浏览器实例，
+  适合不需要登录的纯抓取场景。
+- **`launch_headed`**——本 skill 自己拉起一个全新的、有 GUI 窗口的浏览器
+  实例（全新 profile，不带任何登录状态），主要用于本地调试，不解决登录
+  问题。
+- **`auto`**（默认）——先尝试连接默认端口，能连上就复用（可能已经是使用者
+  准备好、已登录的浏览器）；连不上则退化为启动一个新的 headless 实例，
+  保证"没有特意准备浏览器"时纯抓取场景仍然能跑通。
+
+会话管理的完整实现见 `impl/session_manager.py`，其文件头有更详细的设计
+说明。
 
 ## 工具契约（探索子agent可调用的全部原语）
 
@@ -62,6 +123,9 @@ platforms: windows, macos, linux, pc
 **契约**——无论未来用 Playwright、Selenium 还是别的什么驱动真实浏览器，
 `tool_executor(tool_name, tool_input) -> dict` 的行为都必须符合这份契约，
 `capability_engine.py`/`distiller.py`/探索子agent的 prompt 才不需要跟着改。
+
+每个工具的 `input` 都可以额外带一个可选的 `session` 字段（见上一节"会话
+模式"），下面各工具的 `input` 示例省略了这个字段，实际调用时按需附加。
 
 ### `browser_navigate`
 
@@ -124,9 +188,23 @@ output: {"ok": true} | {"ok": false, "error": "超时未等到目标状态"}
 input:  {"schema_hint": {...}, "selector": null}
         # schema_hint 通常直接传 intent_schema，帮助提取逻辑知道要什么结构；
         # selector 可选，限定只从某个容器内提取
-output: {"ok": true, "data": {"results": [...]}}
-      | {"ok": false, "error": "页面结构与预期不符/内容为空等"}
+output: {"ok": true, "data": {
+            "results": [...],       # 优先用容器内 <a href> 链接列表；没有
+                                     # 链接时退化为 h1-h3 标题列表
+            "headings": [...],       # 容器内 h1-h3 纯文本，最多 50 条
+            "text_excerpt": "...",   # 容器纯文本前 4000 字符，兜底信息
+            "url": "...", "title": "...",
+         }}
+      | {"ok": false, "error": "选择器未匹配到容器/页面异常等"}
 ```
+
+**实现说明**（阶段十四）：`browser_extract_content` 的真实实现是**通用**
+的（不针对任何具体网站定制选择器，那是 `browser-site-scraper` 各 member
+的职责）——策略是收集容器内的标题层级元素与链接作为"结果条目"候选，附带
+纯文本兜底。这不保证适配所有网站结构，是探索子agent"先看一眼页面有什么"
+的合理起点，不是精确的语义提取；如果这份通用提取拿到的数据无法通过
+`intent_schema` 校验，探索子agent应该组合 `wait_for_selector`/`click`/
+`scroll` 之后再调用本工具，而不是指望它自动理解页面的业务含义。
 
 ### `browser_screenshot_annotated`
 
@@ -147,26 +225,28 @@ output: {"ok": true, "image_ref": "供后续多模态消息引用的图片句柄
 原语），这是刻意的：`browser-core` 的职责边界是"通用浏览器操作"，不是
 "绕过网站的访问控制"，与方案文档第 8 节"安全与成本边界"的精神一致。
 
-## 未来实现落点（供下一个阶段接入时参照）
-
-按照 `real_tools.py` 已经验证过的模式，真实实现应该：
-
-1. 新增 `src/mini_agent/skills/generative_capability/browser_core_impl.py`，
-   内部维护一个真实浏览器会话（建议直接复用 `browser-cdp/src/core/
-   cdp_client.py` 或 `playwright_session.py` 里已经写好的连接/生命周期
-   管理代码，而不是重新发明），对外暴露 7 个与上表一一对应的函数。
-2. 在 `real_tools.py::REAL_TOOL_IMPLEMENTATIONS` 里补上这 7 个工具名到
-   对应函数的映射（`build_default_tool_executor()` 本身不需要改一行）。
-3. 把 `browser-site-scraper/explorer/tool_allowlist.json` 里的
-   `"note"` 字段从"仍是占位声明"更新为"已接入真实执行器"（参照
-   `text-transform-capability` 阶段十二的改法）。
-4. 详细步骤、依赖选型建议、常见坑，见同目录下的
-   `HEADLESS_BROWSER_INTEGRATION.md`。
-
 ## 已知限制
 
-- 本 skill 当前只提供契约文档，不提供任何可执行代码；`tool_executor` 命中
-  上述 7 个工具名时，`real_tools.py::build_default_tool_executor()` 仍会
-  如实返回"该工具仍是占位声明，尚未接入真实执行器"，不会伪造成功。
-- 依赖本契约的 `browser-site-scraper` 因此探索路径也仍会诚实失败，见
-  `browser-site-scraper/SKILL.md`"已知限制"一节。
+- **未在真实浏览器环境下验证过端到端行为**：当前沙箱没有可安装/运行的
+  Chrome，`impl/` 下的代码只验证到"CDP 调用/错误处理逻辑本身没有低级
+  bug"（见 `HEADLESS_BROWSER_INTEGRATION.md`"验证记录"一节：用一个不存在
+  的调试端口触发 `attach` 模式的诚实失败、确认没有安装 Chrome 时
+  `launch_*` 模式的诚实失败、确认 `real_tools.py` 的动态加载机制能正确
+  找到并调用这些实现）。真正连上一个网页、真的点击/输入/提取成功，需要在
+  有真实浏览器的环境下补一轮验证，见该文档给出的自测步骤。
+- `browser_extract_content` 是通用提取（见上文"实现说明"），不针对具体
+  网站定制，复杂页面结构下可能拿不到符合 `intent_schema` 的数据，这是预期
+  行为而非 bug——`browser-site-scraper` 的探索子agent应该组合其他工具后
+  再提取，而不是依赖它"智能理解"页面。
+- `browser_screenshot_annotated` 的可视化标注依赖可选的 `Pillow`；未安装
+  时仍会返回截图路径与元素坐标列表，只是没有画框（见 `_try_annotate()`）。
+- `session_manager.py` 的会话是**进程级**的（模块级字典），不是"探索
+  子agent专属"的——同一进程内两次并发的 `capability_call` 如果用相同的
+  `(host, port)`，会意外共享同一个浏览器会话/tab。当前 `capability_call`
+  是同步调用、单次探索内顺序执行，暂不构成实际问题；如果未来支持并发探索，
+  需要在 `session_manager.py` 里补充按调用方隔离的 session key，这是刻意
+  留给后续阶段的已知限制，不在本次范围内处理。
+- `browser-site-scraper` 依赖本契约，其探索路径现在**理论上可以真正工作**
+  （不再是必然 `not_implemented`），但实际成功与否取决于运行环境是否有
+  可用浏览器/合适的调试端口，见 `browser-site-scraper/SKILL.md`"已知
+  限制"一节的最新描述。

@@ -8,5 +8,5 @@
     "browser_extract_content",
     "browser_wait_for_selector"
   ],
-  "note": "调度引擎强制校验探索过程只调用此处声明的工具，其余能力一律拒绝（阶段三已生效）。工具契约详见 .claude/skills/browser-core/SKILL.md（阶段十三新增）；该契约目前只有文档，尚未接入真实执行器，命中这些工具名时 real_tools.py::build_default_tool_executor() 仍如实返回未实现，见 .claude/skills/browser-core/HEADLESS_BROWSER_INTEGRATION.md 了解如何接入真实无头浏览器。"
+  "note": "调度引擎强制校验探索过程只调用此处声明的工具，其余能力一律拒绝（阶段三已生效）。工具契约详见 .claude/skills/browser-core/SKILL.md；该 skill 已在阶段十四提供真实实现（.claude/skills/browser-core/impl/，基于 CDP，支持 attach 一个已手动登录的普通浏览器，也支持自己拉起 headless/headed 浏览器），real_tools.py::build_default_tool_executor(skill_dir=...) 会自动加载它。这些工具名现在会真正执行，能否成功取决于运行环境是否有可用浏览器/合适的调试端口，见 .claude/skills/browser-core/HEADLESS_BROWSER_INTEGRATION.md 的验证记录与自测步骤。"
 }
