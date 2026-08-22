@@ -32,8 +32,10 @@ result = engine.call({
 ```
 
 `result.status` 为 `success` / `fail` / `not_implemented`（命中/未命中都需要
-触发探索、但当前运行环境未接入真实 `explore_runner`/`tool_executor` 时的
-如实反馈）。
+触发探索、但探索本身失败——原因是目标底层原语未实现，或环境/站点导致真实
+执行失败——时的如实反馈；阶段十八起 `capability_call` 会在 `note` 字段
+据实区分这两种原因，不再是一句不分场景的固定文案，见 `docs/skill-system-
+guide.md`"已知限制"一节）。
 
 ## 依赖
 
@@ -82,7 +84,7 @@ result = engine.call({
     了针对性的提取 JS（不经过通用的 `browser_extract_content`），所以不受
     这条限制影响，但同样适用上一条"0 条结果视为失败"的处理。
 
-## 调试（阶段十六）
+## 调试（阶段十六 / 阶段十八）
 
 - 实际抓取失败时，`browser-core` 的失败返回会尽力附带 `debug` 字段
   （url/title/正文摘要），另外可以直接调用 `browser_get_page_source`/
@@ -91,6 +93,14 @@ result = engine.call({
 - 默认会话模式（`auto`）在连不上已有浏览器时，现在会退化为**有界面**
   浏览器（而不是无头），方便需要登录的网站直接在弹出的窗口里手动登录；
   纯后台场景可以在 `request.session.mode` 显式传 `"launch_headless"`。
+- **"感觉还是打开了无头浏览器/没看到窗口"排查（阶段十八）**：`auto` 模式
+  只在目标端口没有浏览器监听时才会拉起新的有界面窗口，如果端口上已经有
+  浏览器在监听（哪怕是之前遗留的无头进程），会直接静默复用，不会弹新窗口。
+  用 `browser_list_sessions` 工具（或不经过对话、直接跑
+  `python .claude/skills/browser-core/manage.py list`）看一下 9222 端口
+  现在是不是已经被占用；确认是遗留进程的话，用 `browser_close_session`
+  （或 `manage.py close --port 9222`）关掉，再重新发起请求，`auto` 才会
+  真正拉起一个新的有界面窗口。
 - 本地调试单个 member/URL 不需要走完整探索循环，可以用
   `dev/debug_run.py`（开发期工具，不进 `_index.json` 检索）：
   ```

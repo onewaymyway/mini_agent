@@ -47,8 +47,15 @@
 4. 按你想验证的场景，准备好下列**其中一种**环境（对应下面步骤 3/4 会分别
    用到）：
    - **场景 A（不需要登录的纯抓取）**：本机/服务器装好任意一个
-     Chrome/Chromium/Edge 即可，不需要手动做任何事——`browser-core` 会在
-     `auto` 模式下自己拉起一个 headless 实例。
+     Chrome/Chromium/Edge 即可，不需要手动做任何事——`browser-core` 在
+     `auto` 模式下会自己拉起一个**有界面（headed）**实例（阶段十六起的
+     默认行为，此前是 headless，本文档此前这里的描述已过期，阶段十八
+     订正）。如果确实只想要无头、不弹窗口，显式传
+     `session.mode="launch_headless"`。运行前建议先确认标准端口 9222
+     没有遗留的旧浏览器进程在监听（`python .claude/skills/browser-core/
+     manage.py list` 可以看，`manage.py close --port 9222` 可以清），否则
+     `auto` 会直接复用那个旧进程，不会弹出新窗口，容易被误判为"还是打开了
+     无头浏览器"。
    - **场景 B（需要登录）**：手动执行
      ```bash
      google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/browser-core-manual

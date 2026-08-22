@@ -13,10 +13,10 @@
           }
         }
       },
-      "success_count": 0,
+      "success_count": 1,
       "fail_count": 1,
-      "consecutive_failures": 1,
-      "last_success": null,
+      "consecutive_failures": 0,
+      "last_success": "2026-08-22 22:01:57",
       "last_failure": "2026-08-22 21:25:11"
     },
     "zhihu": {
@@ -33,10 +33,10 @@
         }
       },
       "success_count": 0,
-      "fail_count": 0,
-      "consecutive_failures": 0,
+      "fail_count": 2,
+      "consecutive_failures": 2,
       "last_success": null,
-      "last_failure": null
+      "last_failure": "2026-08-22 22:07:44"
     }
   }
 }

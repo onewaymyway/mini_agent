@@ -1988,3 +1988,140 @@ next_doc/generative-capability-skill-plan.md                      # 本文档（
   `intent_schema` 语义，留给以后接入更多真实站点时按需处理，不在本阶段
   强行推广成引擎级别的通用规则（"结果数组为空"不一定对所有领域都是可疑
   信号，比如某些查询场景下"确实没有匹配项"就是正确答案）。
+
+### 阶段十八 —— 已完成
+
+**触发**：真实使用 `browser-site-scraper` 抓百度搜索"test"时，`capability_call`
+返回 `status: not_implemented`，`note` 字段却固定写着"当前运行环境尚未接入
+真正的底层操作原语执行器（explore_runner/tool_executor）"——但实际上阶段
+十二/十四早已经把这条链路接好了（`build_default_tool_executor(skill_dir=...)`
+会加载 `browser-core/impl/tools_impl.py`），这次的真实原因是 `baidu` member
+执行 + 重新探索都撞上了百度自己的验证码/反爬拦截。用户据此误判为"接线没
+做"，排查方向被带偏。同时用户报告"感觉还是打开的无头浏览器"、看不到调试
+用的有界面窗口。
+
+**根因（两个独立问题）**：
+
+1. `tools/capability_call.py` 里 `if result.status == "not_implemented":`
+   分支下的 `note` 文案是阶段十二时写的固定字符串，只要状态是
+   `not_implemented` 就无条件贴上去，从未随后续阶段（十二起真的注入了
+   `tool_executor`）更新过——文案描述的是阶段十二**之前**的状态，阶段十二
+   之后就已经过期，但没人去改这段提示语。
+2. `session_manager.py` 的 `auto` 模式（阶段十六起默认 `launch_headed`）
+   只有在目标端口**没有**浏览器监听时才会拉起新的有界面浏览器；如果端口
+   上已经有浏览器在监听（不管是不是无头的、是不是本 skill 自己之前拉起的、
+   是不是这次调用还记得它），会直接复用，不会弹出新窗口。而
+   `real_tools.py::load_skill_local_tool_implementations` 为了支持热更新，
+   每次 `capability_call` 顶层调用都会强制清空 `session_manager.py` 模块
+   缓存重新加载一次，导致 `_sessions` 字典每次调用都从空开始——即使上一次
+   调用确实是本 skill 自己拉起的有界面浏览器，这次调用也已经"不认得"它了，
+   只知道端口上有东西在监听，于是走 attach 分支，静默复用（可能是无头的）
+   旧进程，用户看不到任何新窗口，误以为"又开了无头浏览器"。这不是一个
+   会抛异常的 bug，是"设计上刻意为了登录态延续而复用端口"与"用户想清楚
+   看到这次到底连的是谁、是不是有头"这两个诉求之间此前没有工具弥合的
+   缺口。
+
+**改动内容**：
+
+```
+src/mini_agent/tools/capability_call.py                          # 修改：note 改为据实检测
+src/mini_agent/skills/generative_capability/real_tools.py         # 修改：拆出 build_dispatch_table()
+src/mini_agent/skills/generative_capability/__init__.py           # 修改：导出 build_dispatch_table
+.claude/skills/browser-core/impl/session_manager.py                # 修改：会话记录 mode/headless 字段；
+                                                                     # 新增 detect_headless_hint()/
+                                                                     # list_sessions()/close_session()/
+                                                                     # close_all_sessions()
+.claude/skills/browser-core/impl/cdp_client.py                     # 新增：get_browser_version()
+.claude/skills/browser-core/impl/browser_core_impl.py               # 新增：browser_list_sessions()/
+                                                                     # browser_close_session()
+.claude/skills/browser-core/impl/tools_impl.py                      # 修改：导出上面两个新工具
+.claude/skills/browser-core/manage.py                               # 新增：独立 CLI，不经过
+                                                                     # capability_call/探索子agent
+.claude/skills/browser-site-scraper/explorer/tool_allowlist.json    # 修改：加入两个新工具名 + 说明
+docs/skill-system-guide.md                                          # 修改：更正"默认不注入
+                                                                     # explore_runner/tool_executor"
+                                                                     # 的过期表述
+next_doc/generative-capability-skill-plan.md                        # 本文档（阶段十八记录）
+```
+
+**已实现能力**：
+
+- **note 文案据实化**：`real_tools.py` 拆出 `build_dispatch_table(skill_dir=...)`
+  （只构造 `tool_name -> 实现函数` 的字典本身，不包装成 executor 闭包，纯
+  查表不调用），`capability_call.py` 新增 `_find_unwired_tools(skill_dir)`：
+  读 `explorer/tool_allowlist.json` 声明的工具名，逐个查分发表里有没有对应
+  实现。`not_implemented` 时：有工具确实缺实现 → note 里列出具体工具名；
+  全部已接线 → note 改为"接线没问题，这是真实探索/执行失败，看 error"。
+  刻意不直接调用 `tool_executor(tool_name, {})` 来探测，因为 `browser_
+  navigate` 这类工具一调用就会触发真实的 `get_or_create_session()`（可能
+  拉起浏览器进程），拿有副作用的调用做"是否已接线"的诊断不合理。
+- **会话可见性**：`session_manager.py` 的 `_SessionEntry` 新增 `mode`
+  （`attach`/`launch_headless`/`launch_headed`/`attach(auto)`/
+  `launch_headed(auto)`）与 `headless`（`True`/`False`/`None`）字段——
+  我们自己 `spawn_browser` 拉起的会话这个字段是确定已知的；`attach` 到的
+  会话不知道，留 `None`，交给新增的 `detect_headless_hint(host, port,
+  session=...)` 做启发式判断：优先看 `/json/version` 的 `Browser` 字段是否
+  含 `Headless`（只对旧版 `--headless` 有效，本 skill 默认用的
+  `--headless=new` 命中不了这个信号，命中时可信、没命中不能反推为有头）；
+  命中不了再退化为探测 `window.chrome` 对象是否存在（无头 Chrome 不管新旧
+  版本默认都不注入这个对象，覆盖面更广但不是协议承诺的特性，标 `medium`
+  置信度）；两个信号都拿不到时如实返回 `headless: None`，不瞎猜。
+  `list_sessions()` 汇总当前进程已知的会话及上述判断结果。
+- **列举/关闭工具**：`browser_list_sessions(tool_input)`——列出
+  `list_sessions()` 的结果，并默认额外探测标准端口 9222 是否有浏览器在
+  监听（不需要显式传参，因为热更新会清空 `_sessions`，"探测标准端口"是
+  唯一能跨越这个限制看到"9222 现在有没有东西"的办法；也支持
+  `tool_input.probe` 探测其他 host/port）。`browser_close_session(tool_input)`
+  ——关闭指定 `host`/`port`（默认 `127.0.0.1:9222`）或 `tool_input.all=True`
+  关闭全部已知会话；`kill_process`（默认 `True`）控制是否真的终止底层进程，
+  但只对本 skill 自己 `spawn_browser` 拉起的会话生效，`attach` 到的用户
+  自己启动的浏览器永远不会被杀（与既有约定一致）；对没有会话记录的
+  `host`/`port`（常见于热更新清空了记录，但进程其实还在跑）如实返回
+  `closed_our_session: False` 并在 `note` 里给出系统层面手动关闭的具体
+  命令（Windows: `netstat -ano | findstr <port>` + `taskkill /PID <pid> /F`）。
+  两个工具已加进 `browser-site-scraper/explorer/tool_allowlist.json`，探索
+  子agent遇到"怀疑连错了浏览器"时也能自己排查。
+- **独立管理 CLI**（`.claude/skills/browser-core/manage.py`）：`python
+  manage.py list` / `close --port 9222` / `close --all` / `close --port
+  9222 --no-kill`，不经过 `CapabilityEngine`/探索子agent，不消耗探索预算，
+  也不依赖 `Agent.llm_helper`。因为是独立一次性进程，`list` 同样默认探测
+  9222；`close` 在没有会话记录但目标端口确实存活时，会比 `browser_close_
+  session` 工具原语多做一步——先临时 `attach` 一次建立会话记录，再关闭
+  ——这一步只有本脚本会做（工具原语出于"不擅自发起未声明的连接"的原则不
+  这样做），方便用户直接从 PowerShell 清理遗留进程而不用去翻 `netstat`。
+- **文档纠偏**：`docs/skill-system-guide.md` "已知限制"一节此前仍写着
+  "`capability_call` 默认不注入 `explore_runner`/`tool_executor`"，是阶段
+  七时代的表述，阶段十二起已经不成立（与阶段十三"核对确认"时留下的同类
+  纠偏注释是同一类问题——阶段推进后，早前小节里的过期表述没有被同步更新）。
+  本阶段一并更正，改为准确描述阶段十二/十四之后的真实状态：`text-core`/
+  `browser-core` 已接入真实执行器，`doc-core` 仍是占位。
+
+**验证结果**：
+
+1. `python3 -m py_compile` 通过本阶段修改/新增的全部 `.py` 文件（项目代码
+   + `browser-core/impl/` + `browser-core/manage.py`），确认无语法错误。
+2. 人工核对 `capability_call.py` 的 `_find_unwired_tools()` 调用链：
+   `build_dispatch_table(skill_dir=...)` 返回的分发表 key 集合与
+   `tools_impl.py::TOOL_IMPLEMENTATIONS` 的 key 集合一致（`text_transform_
+   apply` + `browser_navigate` 等 9 个 browser-core 工具），`doc-core` 相关
+   工具（`doc-template-generation` 用）不在任何分发表里，仍会被判定为
+   "未接线"，符合预期。
+
+**已知遗留（留给后续阶段）**：
+
+- `session_manager.py` 的会话记录仍然是**单进程内存字典**，`list_sessions()`
+  只能看到"本次 `capability_call` 调用内已经建立过的会话"，看不到跨调用/
+  跨进程的历史（根因是阶段十六为了支持热更新引入的"每次强制清模块缓存"，
+  见 `load_skill_local_tool_implementations` 文件头的"已知限制"说明，本
+  阶段没有改变这个设计取舍，只是用"默认探测标准端口"这个变通办法缓解了
+  它对"列举/关闭"这两个新功能可用性的影响）。如果后续需要真正跨进程/跨
+  调用的会话registry（比如展示"过去 24 小时内启动过哪些调试浏览器"），
+  需要把会话元信息落盘（比如一个 JSON 文件），而不是继续依赖进程内内存
+  字典，这是一个更大的改动，本阶段未做。
+- `detect_headless_hint()` 的两个信号都是启发式，`--headless=new` 之后
+  Chrome 团队本身就是在刻意抹平有头/无头的可观测差异（用于反"网站按 UA
+  拒绝无头浏览器"检测），未来如果 Chrome 进一步收紧 `window.chrome` 这类
+  行为差异，`medium` 置信度的判断也可能失效，届时需要找新的信号（比如
+  `Browser.getWindowBounds` 返回的窗口尺寸是否等于不可见的默认值，或者
+  直接检测系统层面是否有对应的可见窗口句柄——后者需要平台特定代码，超出
+  当前"跨平台 CDP 客户端"的定位，留给以后按需评估）。

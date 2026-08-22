@@ -86,12 +86,19 @@ session_manager.py`，提取逻辑照搬未改，只是换了执行载体）。
 .claude/skills/browser-core/impl/
   cdp_client.py          # 极简 CDP 客户端（tab 发现/连接/发命令）
   browser_launch.py       # 拉起 headless 或 headed 的 Chrome/Chromium 进程
-  session_manager.py      # attach/launch_headless/launch_headed/auto 会话管理
-  browser_core_impl.py    # 7 个工具的真实实现（对应下方"工具契约"）
+  session_manager.py      # attach/launch_headless/launch_headed/auto 会话管理；
+                            # 阶段十八新增 list_sessions()/close_session()/
+                            # close_all_sessions()/detect_headless_hint()
+  browser_core_impl.py    # 工具的真实实现（对应下方"工具契约"）
   tools_impl.py            # 导出 TOOL_IMPLEMENTATIONS，供项目侧通用引擎
                             # （real_tools.py::load_skill_local_tool_
                             # implementations，纯粹的"按约定路径动态加载"
                             # 机制，不含任何浏览器/CDP 相关代码）发现
+.claude/skills/browser-core/manage.py
+                            # 阶段十八新增：独立命令行工具，直接列举/关闭
+                            # 调试浏览器会话，不经过 capability_call/探索
+                            # 子agent，见下方 browser_list_sessions/
+                            # browser_close_session 工具契约一节末尾用法
 ```
 
 项目代码（`src/mini_agent/skills/generative_capability/real_tools.py`）
@@ -147,10 +154,13 @@ session_manager.py`，提取逻辑照搬未改，只是换了执行载体）。
 
 ## 工具契约（探索子agent可调用的全部原语）
 
-以下 7 个工具名与 `browser-site-scraper/explorer/tool_allowlist.json` 中
+以下工具名与 `browser-site-scraper/explorer/tool_allowlist.json` 中
 `allowed_tools` 完全一致，是探索子agent（`explorer_runtime.build_llm_explorer`）
-真正能看到、能调用的工具集合。每个工具的 `input`/`output` 结构是
-**契约**——无论未来用 Playwright、Selenium 还是别的什么驱动真实浏览器，
+真正能看到、能调用的工具集合：7 个操作/提取类原语 + 阶段十六新增的 2 个
+调试原语（`browser_get_page_source`/`browser_get_debug_snapshot`）+ 阶段
+十八新增的 2 个会话管理原语（`browser_list_sessions`/`browser_close_
+session`）。每个工具的 `input`/`output` 结构是**契约**——无论未来用
+Playwright、Selenium 还是别的什么驱动真实浏览器，
 `tool_executor(tool_name, tool_input) -> dict` 的行为都必须符合这份契约，
 `capability_engine.py`/`distiller.py`/探索子agent的 prompt 才不需要跟着改。
 
@@ -275,7 +285,58 @@ output: {"ok": true, "url": "...", "title": "...", "body_excerpt": "...",
       | {"ok": false, "error": "..."}
 ```
 
-### 失败返回附带的 `debug` 字段（阶段十六）
+### `browser_list_sessions`（阶段十八新增，调试用）
+
+列出当前已建立的调试浏览器会话，附带尽力而为的有头/无头判断。用于排查
+"这次调用到底连的是哪个浏览器、是不是我以为的那个有界面窗口"。
+
+```
+input:  {"probe": [{"host": "127.0.0.1", "port": 9333}]}
+        # probe 可选，额外探测尚未建立会话的端口是否有浏览器在监听（只报告
+        # alive，不做有头/无头判断，因为没有 CDPSession 就测不了）；不传时
+        # 如果已知会话里没有 9222 端口，会自动补一条对 9222 的探测
+output: {"ok": true,
+         "sessions": [{"host": "...", "port": 9222, "mode": "launch_headed",
+                        "alive": true, "spawned_by_us": true, "pid": 12345,
+                        "headless": false, "headless_confidence": "certain"}],
+         "probed": [{"host": "...", "port": 9333, "alive": false}]}
+```
+
+`headless_confidence` 取值：`certain`（本 skill 自己拉起的，确定知道）、
+`high`/`medium`（attach 到的会话，靠启发式信号猜测，见
+`session_manager.py::detect_headless_hint()`）、`unknown`（两个信号都拿不到）。
+
+**已知限制**：只能看到"本次 `capability_call` 调用内已经建立过的会话"，
+看不到上一次调用遗留的浏览器进程（`real_tools.py` 的热更新机制每次都会
+清空 `session_manager.py` 的会话记录，见下方"已知限制"一节）——这正是本
+工具默认会额外探测标准端口 9222 的原因。
+
+### `browser_close_session`（阶段十八新增，调试用）
+
+关闭一个或全部调试浏览器会话，用于清理"怀疑是遗留的旧浏览器（尤其是
+无头的）"。
+
+```
+input:  {"host": "127.0.0.1", "port": 9222, "kill_process": true}
+        # 或 {"all": true, "kill_process": true} 关闭全部已知会话
+output: {"ok": true, "closed_our_session": true, "killed_process": true,
+         "pid": 12345, "host": "...", "port": 9222}
+      | {"ok": true, "closed_our_session": false, "killed_process": false,
+         "pid": null, "note": "本进程没有该 host:port 的会话记录，..."}
+```
+
+`kill_process=true`（默认）只对本 skill 自己 `spawn_browser` 拉起的会话
+生效——`attach` 到的、使用者自己启动的浏览器永远不会被杀掉。没有会话记录
+时（常见于热更新清空了记录）会在 `note` 里给出系统层面手动关闭的具体命令。
+
+如果不想经过探索子agent/`capability_call`，也可以直接用独立命令行工具
+`python .claude/skills/browser-core/manage.py list` /
+`manage.py close --port 9222` /
+`manage.py close --all`（不消耗探索预算，也不依赖 `Agent.llm_helper`，见
+该脚本文件头说明；关闭时如果发现没有会话记录但端口确实存活，会比工具
+原语多做一步——先临时 `attach` 建立记录再关闭）。
+
+
 
 除了上面两个专门的调试工具，`browser_navigate`/`browser_click`/
 `browser_type`/`browser_scroll`/`browser_wait_for_selector`/
@@ -315,6 +376,21 @@ output: {"ok": true, "url": "...", "title": "...", "body_excerpt": "...",
   是同步调用、单次探索内顺序执行，暂不构成实际问题；如果未来支持并发探索，
   需要在 `session_manager.py` 里补充按调用方隔离的 session key，这是刻意
   留给后续阶段的已知限制，不在本次范围内处理。
+- **会话记录看不到跨调用的历史（阶段十八，已部分缓解）**：`real_tools.py`
+  为了支持热更新，每次 `capability_call` 顶层调用都会清空 `session_
+  manager.py` 的模块缓存重新加载一次，`_sessions` 字典因此每次调用都从空
+  开始——`browser_list_sessions`/`manage.py list` 看到的只是"这一次调用
+  内已经建立过的会话"，看不到上一次调用遗留的浏览器进程（哪怕它还在跑）。
+  这也是"auto 模式复用了旧的、可能是无头的会话，却看不到新窗口弹出"这类
+  疑惑的根源——`auto` 会照常按端口探测存活并复用，只是这次调用"不记得"
+  那是谁启动的。阶段十八用"`browser_list_sessions` 默认额外探测标准端口
+  9222"这个变通办法缓解了可见性问题，但没有解决"记录不跨调用持久化"这个
+  根本限制；如果需要真正跨调用/跨进程的会话 registry，需要把会话元信息
+  落盘而不是只放在内存字典里，留给后续阶段按需处理。
+- `capability_call.py` 返回 `status: not_implemented` 时，`note` 字段
+  阶段十八之前是一句不区分原因的固定文案（"未接入执行器"），容易被误读成
+  "browser-core 没接线"；阶段十八已改为据实检测（该 skill 声明的工具是否
+  真的都有实现），不再是已知限制，这里记录一下避免后续又被同样的误读困扰。
 - **调试上下文可被 member 复用（阶段十七）**：`_debug_context()` 背后的
   实现已改为公开函数 `capture_debug_context(session)`（`_debug_context`
   仍保留、内部改为直接调用它，向后兼容）——`browser-site-scraper` 下不

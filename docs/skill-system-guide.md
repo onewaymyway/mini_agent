@@ -550,16 +550,25 @@ generative_capability.CapabilityEngine` 实例并调用其 `call(request)`，
 - `skill_name` 不存在 → 返回错误，并附上当前所有 `generative-capability`
   类型 skill 的名称列表，方便模型自行改正而不是瞎猜。
 
-**已知限制（如实告知，不是遗漏）**：`capability_call` 默认注入
-`build_llm_resolver(current_llm_helper)`（第二级检索裁决），
+**已知限制（阶段十二/十四已部分解决，如实告知当前状态）**：`capability_call`
+默认注入 `build_llm_resolver(current_llm_helper)`（第二级检索裁决），
 `current_llm_helper` 通过 `tools/orchestration.py::get_current_llm_helper()`
 拿到当前 `Agent.llm_helper`（跟随 `/model` 切换，见下方"检索裁决/探索子agent
-的 LLM 调用"一节），**不注入 `explore_runner`/`tool_executor`**——真正的
-底层操作原语（如 `browser-core` 的浏览器操作）仍是方案文档"已知遗留"里
-明确记录、尚未从各领域 skill 独立拆分出来的部分。这意味着：命中已有
-trusted/probation 成员并执行成功的路径完全可用；命中失败或未命中、需要
-触发探索的路径，会得到 `status: not_implemented` 并在 `note` 字段说明
-原因，而不是被伪造成功。
+的 LLM 调用"一节）；**阶段十二起也默认注入 `explore_runner`/`tool_executor`**
+（`build_default_tool_executor(skill_dir=skill_dir)`，见
+`generative-capability-skill-plan.md` 阶段十二/十四实施记录）：真正执行
+底层操作原语的代码，一部分是项目内置的纯逻辑实现（`text-core`），另一部分
+按 `capability.yaml -> explorer.base_tools` 声明动态加载各静态 skill 自带
+的 `impl/tools_impl.py`（`browser-core` 已提供，`doc-core` 仍是占位）。这
+意味着：命中已有 trusted/probation 成员并执行成功的路径完全可用；命中失败
+或未命中、需要触发探索的路径，如果目标领域声明的底层原语都已经有真实实现
+（如 `browser-core`），探索本身会真的跑（能否成功取决于目标站点/环境，比如
+反爬拦截），失败时得到 `status: not_implemented` 并在 `note` 字段据实说明
+——阶段十八之前 `note` 是一句不区分原因的固定文案，容易被误读成"没接线"，
+阶段十八改为先检测该 skill 声明的工具是否真的都有实现，再据此生成准确的
+提示（详见方案文档阶段十八）。仍未提供 `impl/tools_impl.py` 的领域（目前
+只有 `doc-core`）会得到"确实未接入真实执行器"的提示，这才是真正意义上的
+已知遗留，不是伪造成功。
 
 #### 检索裁决/探索子agent 的 LLM 调用（阶段九）
 
