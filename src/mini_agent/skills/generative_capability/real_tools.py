@@ -248,23 +248,16 @@ def load_skill_local_tool_implementations(
     return merged
 
 
-def build_default_tool_executor(
-    skill_dir: Optional[Path] = None,
-) -> Callable[[str, dict], dict]:
+def build_dispatch_table(skill_dir: Optional[Path] = None) -> dict[str, Callable[[dict], dict]]:
     """
-    返回一个通用 tool_executor(tool_name, tool_input) -> dict，供
-    `CapabilityEngine(explore_runner=..., tool_executor=...)` 使用。
+    构造 `tool_name -> 真实实现函数` 的分发表本身（不包装成 executor 闭包）。
 
-    `skill_dir` 可选（阶段十四新增）：传入某个 generative-capability skill
-    的目录时，会额外读取其 `capability.yaml -> explorer.base_tools`，把每个
-    静态 skill 自带的 `impl/tools_impl.py` 实现叠加进分发表（见
-    `load_skill_local_tool_implementations`）。不传时行为与阶段十二完全
-    一致，只包含项目内置的 `REAL_TOOL_IMPLEMENTATIONS`。
-
-    命中分发表的工具名会真正执行；未命中的（如仍未提供 `impl/tools_impl.py`
-    的 `doc-core`）会如实返回"未接入真实执行器"的错误，不伪造成功——
-    explorer_runtime 的 prompt 已要求模型遇到这种情况调用 `report_failure`，
-    不需要本函数额外做特殊处理。
+    从 `build_default_tool_executor()` 里拆出来的原因（阶段十八）：诊断/自省
+    场景（如 `capability_call.py` 判断某个工具是否"真的接了实现"、还是仍是
+    占位声明）只需要查一下这张表里有没有这个 key，不应该为了检测而真的调用
+    一次工具本身——尤其像 `browser_navigate` 这类工具，调用一次就会真的触发
+    `session_manager.get_or_create_session()`（可能拉起一个真实浏览器进程），
+    拿这种有副作用的调用来做"是否已接线"的诊断是不合理的。
     """
     dispatch_table: dict[str, Callable[[dict], dict]] = dict(REAL_TOOL_IMPLEMENTATIONS)
 
@@ -283,6 +276,29 @@ def build_default_tool_executor(
                 )
         except Exception:  # noqa: BLE001 - 叠加层加载失败不应影响内置原语可用
             pass
+
+    return dispatch_table
+
+
+def build_default_tool_executor(
+    skill_dir: Optional[Path] = None,
+) -> Callable[[str, dict], dict]:
+    """
+    返回一个通用 tool_executor(tool_name, tool_input) -> dict，供
+    `CapabilityEngine(explore_runner=..., tool_executor=...)` 使用。
+
+    `skill_dir` 可选（阶段十四新增）：传入某个 generative-capability skill
+    的目录时，会额外读取其 `capability.yaml -> explorer.base_tools`，把每个
+    静态 skill 自带的 `impl/tools_impl.py` 实现叠加进分发表（见
+    `load_skill_local_tool_implementations`）。不传时行为与阶段十二完全
+    一致，只包含项目内置的 `REAL_TOOL_IMPLEMENTATIONS`。
+
+    命中分发表的工具名会真正执行；未命中的（如仍未提供 `impl/tools_impl.py`
+    的 `doc-core`）会如实返回"未接入真实执行器"的错误，不伪造成功——
+    explorer_runtime 的 prompt 已要求模型遇到这种情况调用 `report_failure`，
+    不需要本函数额外做特殊处理。
+    """
+    dispatch_table = build_dispatch_table(skill_dir=skill_dir)
 
     def _executor(tool_name: str, tool_input: dict) -> dict:
         impl = dispatch_table.get(tool_name)

@@ -47,7 +47,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from cdp_client import CDPSession, connect_tab, is_debug_port_alive, list_tabs, new_tab
+from cdp_client import (
+    CDPSession,
+    connect_tab,
+    get_browser_version,
+    is_debug_port_alive,
+    list_tabs,
+    new_tab,
+)
 from browser_launch import spawn_browser, wait_port_alive
 
 DEFAULT_PORT = 9222
@@ -71,6 +78,11 @@ class _SessionEntry:
     host: str
     port: int
     proc: Optional[subprocess.Popen] = None  # 仅 launch 模式持有；attach 模式为 None，不由我们负责关闭
+    mode: str = "auto"  # 建立这个会话时实际落地的模式：attach/launch_headless/launch_headed
+    # 是否有头：launch_* 模式下我们自己拉起进程，这个值是确定已知的；attach
+    # 模式下浏览器不是我们启动的，这里先记 None（未知），真正展示时用
+    # `detect_headless_hint()` 做一次尽力而为的启发式探测（见该函数说明）。
+    headless: Optional[bool] = None
 
 
 _sessions: dict[tuple[str, int], _SessionEntry] = {}
@@ -127,6 +139,10 @@ def get_or_create_session(session_cfg: Optional[dict] = None) -> CDPSession:
 
         mode = cfg["mode"]
         proc: Optional[subprocess.Popen] = None
+        # 实际落地的会话来源与是否有头——auto 分支会在下面按实际走向覆盖；
+        # 其余分支在各自的 if/elif 里直接确定。
+        resolved_mode = mode
+        resolved_headless: Optional[bool] = None
 
         if mode == "attach":
             if not is_debug_port_alive(host, port):
@@ -157,9 +173,13 @@ def get_or_create_session(session_cfg: Optional[dict] = None) -> CDPSession:
             ok, err = wait_port_alive(lambda: is_debug_port_alive(host, port), proc=proc)
             if not ok:
                 raise RuntimeError(f"启动浏览器后等待调试端口就绪失败: {err or '超时'}")
+            resolved_headless = (mode == "launch_headless")
         elif mode == "auto":
             if is_debug_port_alive(host, port):
-                pass  # 复用使用者已经准备好的浏览器（可能已登录）
+                # 复用使用者已经准备好的浏览器（可能已登录）——这个浏览器不是
+                # 本次调用拉起的，我们不知道它有头无头，记为 attach + 未知，
+                # 交给 list_sessions()/detect_headless_hint() 做启发式探测。
+                resolved_mode = "attach(auto)"
             else:
                 # 阶段十六：默认退化为有界面浏览器（而不是无头），并复用与
                 # launch_headed 相同的持久化 profile 默认值，方便调试/登录。
@@ -168,27 +188,168 @@ def get_or_create_session(session_cfg: Optional[dict] = None) -> CDPSession:
                 ok, err = wait_port_alive(lambda: is_debug_port_alive(host, port), proc=proc)
                 if not ok:
                     raise RuntimeError(f"auto 模式启动有界面浏览器失败: {err or '超时'}")
+                resolved_mode = "launch_headed(auto)"
+                resolved_headless = False
         else:
             raise RuntimeError(f"未知的 session.mode={mode!r}，支持: attach/launch_headless/launch_headed/auto")
 
         tabs = list_tabs(host, port)
         target = tabs[0] if tabs else new_tab(host=host, port=port)
         session = connect_tab(target, host=host, port=port)
-        _sessions[key] = _SessionEntry(session=session, host=host, port=port, proc=proc)
+        _sessions[key] = _SessionEntry(
+            session=session, host=host, port=port, proc=proc,
+            mode=resolved_mode, headless=resolved_headless,
+        )
         return session
+
+
+def detect_headless_hint(host: str, port: int, session: Optional[CDPSession] = None) -> dict:
+    """
+    对一个**未知来源**（通常是 attach 到的、不是我们自己拉起的）浏览器会话，
+    尽力而为地猜测它是有头还是无头，返回 `{"headless": True/False/None,
+    "confidence": "low"|"medium", "signals": [...]}`。
+
+    没有任何 CDP 协议层面 100% 可靠的"是否有头"判据——尤其 `--headless=new`
+    刻意让自己在协议/UA 层面和有头浏览器几乎无法区分（这是 Chrome 团队有意
+    为之，用于反"网站按 UA 拒绝无头浏览器"的检测）。这里综合两个信号：
+
+    1. `/json/version` 的 `Browser` 字段：命中 "Headless" 字样 -> 高置信度
+       判定为无头（这个信号只对旧版 `--headless` 有效，对 `--headless=new`
+       无效，所以命中时可信，没命中不能反推为有头）。
+    2. `navigator.webdriver` + `window.chrome`：无头 Chrome（不管新旧版本）
+       默认都不会注入 `window.chrome` 这个对象（该对象只在有头/正常渲染路径
+       下由 Chrome 自己的扩展框架注入），而有头浏览器（不管是不是本 skill
+       自己拉起的、要不要 `--enable-automation`）通常都有。这个信号比信号 1
+       更能覆盖 `--headless=new` 的情况，但仍不是官方承诺的协议特性，只是
+       目前版本 Chrome 的实际行为，标记为 "medium" 置信度。
+
+    两个信号都拿不到时返回 `headless: None`（诚实报告"无法判断"，不瞎猜）。
+    """
+    signals: list[str] = []
+    headless: Optional[bool] = None
+    confidence = "low"
+
+    try:
+        version_info = get_browser_version(host, port)
+        browser_field = str(version_info.get("Browser", ""))
+        if "Headless" in browser_field:
+            headless = True
+            confidence = "high"
+            signals.append(f"/json/version Browser={browser_field!r} 含 Headless 字样")
+        else:
+            signals.append(f"/json/version Browser={browser_field!r}（未命中旧版 Headless 字样，不能判定为有头）")
+    except Exception as e:  # noqa: BLE001
+        signals.append(f"/json/version 查询失败: {e}")
+
+    if headless is None and session is not None:
+        try:
+            has_window_chrome = session.eval_js("!!window.chrome")
+            signals.append(f"window.chrome 是否存在: {has_window_chrome}")
+            if has_window_chrome is False:
+                headless = True
+                confidence = "medium"
+            elif has_window_chrome is True:
+                headless = False
+                confidence = "medium"
+        except Exception as e:  # noqa: BLE001
+            signals.append(f"探测 window.chrome 失败: {e}")
+
+    return {"headless": headless, "confidence": confidence if headless is not None else "unknown", "signals": signals}
+
+
+def list_sessions() -> list[dict]:
+    """
+    列出**当前进程**已经建立/复用过的浏览器会话（即通过本模块的
+    `get_or_create_session()` 至少调用过一次的那些 (host, port)）。
+
+    这不是"扫描系统里所有正在运行的 Chrome 实例"——CDP 协议本身没有提供
+    "枚举本机所有调试端口"的能力，只能对一个已知的 (host, port) 探测是否
+    有浏览器在监听。所以能看到的范围是：本模块自己启动过的、或者本模块
+    attach 过至少一次的浏览器。如果要检查一个还没被 attach 过的端口是否有
+    浏览器在监听，用 `is_debug_port_alive(host, port)` 或直接调用
+    `browser_navigate` 传入对应 `session.port`（会触发一次真正的 attach）。
+    """
+    with _lock:
+        entries = list(_sessions.items())
+
+    result = []
+    for (host, port), entry in entries:
+        alive = is_debug_port_alive(host, port)
+        item: dict = {
+            "host": host,
+            "port": port,
+            "mode": entry.mode,
+            "alive": alive,
+            "spawned_by_us": entry.proc is not None,
+            "pid": entry.proc.pid if entry.proc is not None else None,
+        }
+        if entry.headless is not None:
+            item["headless"] = entry.headless
+            item["headless_confidence"] = "certain"  # 我们自己拉起的，不是猜的
+        elif alive:
+            hint = detect_headless_hint(host, port, session=entry.session if alive else None)
+            item["headless"] = hint["headless"]
+            item["headless_confidence"] = hint["confidence"]
+            item["headless_signals"] = hint["signals"]
+        else:
+            item["headless"] = None
+            item["headless_confidence"] = "unknown"
+        result.append(item)
+    return result
 
 
 def reset_session(host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> None:
     """关闭并移除一个会话，供测试或显式"结束这次浏览会话"使用。"""
+    close_session(host=host, port=port)
+
+
+def close_session(host: str = "127.0.0.1", port: int = DEFAULT_PORT, kill_process: bool = True) -> dict:
+    """
+    关闭一个已建立的会话，供用户/explorer 显式清理"之前遗留的调试浏览器"。
+
+    - 断开我们这边的 CDP WebSocket 连接（不管是不是我们启动的浏览器，这一步
+      都做，因为这个连接本来就是我们建立的）。
+    - `kill_process=True`（默认）且这个会话是本模块自己 `spawn_browser` 拉起
+      的（`entry.proc is not None`）时，才会真的终止浏览器进程——`attach`
+      模式连接的浏览器是使用者自己启动的，不由我们负责关闭（与
+      `_cleanup_all()` 的既有约定一致），即使 `kill_process=True` 也不会碰。
+    - 对没有对应会话记录的 (host, port)（比如从未被这个进程 attach 过、只是
+      用户口头说"帮我关掉 9222 那个"），本函数无能为力返回
+      `closed_our_session=False`，调用方应提示用户自己去关闭该进程，或者先
+      用 `session.mode="attach"` 建立一次连接后再调用本函数。
+
+    返回 `{"closed_our_session": bool, "killed_process": bool, "pid": int|None}`。
+    """
     with _lock:
         entry = _sessions.pop((host, port), None)
-    if entry is not None:
+
+    if entry is None:
+        return {"closed_our_session": False, "killed_process": False, "pid": None}
+
+    try:
+        entry.session.close()
+    except Exception:
+        pass
+
+    killed = False
+    pid = entry.proc.pid if entry.proc is not None else None
+    if kill_process and entry.proc is not None:
         try:
-            entry.session.close()
+            entry.proc.terminate()
+            killed = True
         except Exception:
             pass
-        if entry.proc is not None:
-            try:
-                entry.proc.terminate()
-            except Exception:
-                pass
+
+    return {"closed_our_session": True, "killed_process": killed, "pid": pid}
+
+
+def close_all_sessions(kill_process: bool = True) -> list[dict]:
+    """对 `list_sessions()` 能看到的每一个会话调用一次 `close_session()`。"""
+    with _lock:
+        keys = list(_sessions.keys())
+    results = []
+    for host, port in keys:
+        r = close_session(host=host, port=port, kill_process=kill_process)
+        r.update({"host": host, "port": port})
+        results.append(r)
+    return results

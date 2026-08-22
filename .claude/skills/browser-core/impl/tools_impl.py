@@ -17,9 +17,11 @@ from __future__ import annotations
 
 from browser_core_impl import (
     browser_click,
+    browser_close_session,
     browser_extract_content,
     browser_get_debug_snapshot,
     browser_get_page_source,
+    browser_list_sessions,
     browser_navigate,
     browser_screenshot_annotated,
     browser_scroll,
@@ -38,4 +40,8 @@ TOOL_IMPLEMENTATIONS = {
     # 阶段十六新增：调试原语
     "browser_get_page_source": browser_get_page_source,
     "browser_get_debug_snapshot": browser_get_debug_snapshot,
+    # 阶段十八新增：调试浏览器会话的列举/关闭（见 browser_core_impl.py 对应
+    # 函数的说明——排查"auto 模式复用了旧的无头会话，看不到新窗口"这类问题）
+    "browser_list_sessions": browser_list_sessions,
+    "browser_close_session": browser_close_session,
 }

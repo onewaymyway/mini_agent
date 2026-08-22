@@ -8,7 +8,9 @@
     "browser_extract_content",
     "browser_wait_for_selector",
     "browser_get_page_source",
-    "browser_get_debug_snapshot"
+    "browser_get_debug_snapshot",
+    "browser_list_sessions",
+    "browser_close_session"
   ],
-  "note": "调度引擎强制校验探索过程只调用此处声明的工具，其余能力一律拒绝（阶段三已生效）。工具契约详见 .claude/skills/browser-core/SKILL.md；该 skill 已在阶段十四提供真实实现（.claude/skills/browser-core/impl/，基于 CDP，支持 attach 一个已手动登录的普通浏览器，也支持自己拉起 headless/headed 浏览器），real_tools.py::build_default_tool_executor(skill_dir=...) 会自动加载它。这些工具名现在会真正执行，能否成功取决于运行环境是否有可用浏览器/合适的调试端口，见 .claude/skills/browser-core/HEADLESS_BROWSER_INTEGRATION.md 的验证记录与自测步骤。阶段十六起 browser_navigate 等失败返回会尽力附带 debug 上下文（url/title/正文摘要），另新增 browser_get_page_source（取当前页 HTML）与 browser_get_debug_snapshot（一次性打包 url/title/正文摘要/HTML摘要/截图路径），用于排查选择器为什么找不到、是否命中验证码/登录墙等问题；默认会话模式也从无头改为有界面（launch_headed，见 browser-core/impl/session_manager.py），便于手动登录。"
+  "note": "调度引擎强制校验探索过程只调用此处声明的工具，其余能力一律拒绝（阶段三已生效）。工具契约详见 .claude/skills/browser-core/SKILL.md；该 skill 已在阶段十四提供真实实现（.claude/skills/browser-core/impl/，基于 CDP，支持 attach 一个已手动登录的普通浏览器，也支持自己拉起 headless/headed 浏览器），real_tools.py::build_default_tool_executor(skill_dir=...) 会自动加载它。这些工具名现在会真正执行，能否成功取决于运行环境是否有可用浏览器/合适的调试端口，见 .claude/skills/browser-core/HEADLESS_BROWSER_INTEGRATION.md 的验证记录与自测步骤。阶段十六起 browser_navigate 等失败返回会尽力附带 debug 上下文（url/title/正文摘要），另新增 browser_get_page_source（取当前页 HTML）与 browser_get_debug_snapshot（一次性打包 url/title/正文摘要/HTML摘要/截图路径），用于排查选择器为什么找不到、是否命中验证码/登录墙等问题；默认会话模式也从无头改为有界面（launch_headed，见 browser-core/impl/session_manager.py），便于手动登录。阶段十八新增 browser_list_sessions（列出当前已建立的调试浏览器会话，附带有头/无头的尽力判断）与 browser_close_session（关闭指定或全部会话，可选是否终止底层进程），用于排查/清理 auto 模式下可能被无声复用的旧会话（尤其是遗留的无头进程），见两函数各自的 docstring。"
 }

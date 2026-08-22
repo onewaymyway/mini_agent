@@ -60,6 +60,33 @@ if TYPE_CHECKING:
     from mini_agent.skills import SkillLoader
 
 
+def _find_unwired_tools(skill_dir) -> list[str]:
+    """
+    据实检测某个 generative-capability skill 在 `explorer/tool_allowlist.json`
+    里声明的工具名，有哪些在 `build_dispatch_table()` 里仍然缺真实实现（即
+    调用会落到 `real_tools.py::build_default_tool_executor` 统一的"占位声明，
+    尚未接入真实执行器"错误分支）。只用于给 not_implemented 结果生成准确的
+    诊断提示。
+
+    [阶段十八] 直接查表而不是真的调用一次 tool_executor 探测——像
+    `browser_navigate` 这类工具一调用就会触发真实的浏览器会话/进程，用来做
+    "是否已接线"这种诊断是不合理的副作用。
+    """
+    allowlist_path = skill_dir / "explorer" / "tool_allowlist.json"
+    if not allowlist_path.exists():
+        return []
+    try:
+        with open(allowlist_path, "r", encoding="utf-8") as f:
+            allowed_tools = json.load(f).get("allowed_tools", [])
+    except Exception:  # noqa: BLE001 - 诊断辅助函数，读取失败不应影响主流程
+        return []
+
+    from mini_agent.skills.generative_capability import build_dispatch_table
+
+    dispatch_table = build_dispatch_table(skill_dir=skill_dir)
+    return [name for name in allowed_tools if name not in dispatch_table]
+
+
 def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader") -> None:
     """
     将 capability_call 工具注册到指定 registry。
@@ -131,10 +158,19 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
 
         try:
             # [阶段十二] 注入通用真实 tool_executor + 基于它构造的 explore_runner，
-            # 让声明了真实底层原语（目前是 text-core）的 skill 能跑通真实探索链路；
-            # 未实现的原语（browser-core/doc-core）会在探索时得到如实的失败反馈，
-            # 见 real_tools.py 顶部说明。
+            # 让声明了真实底层原语（目前是 text-core/browser-core）的 skill 能跑通
+            # 真实探索链路；未实现的原语（如 doc-core）会在探索时得到如实的失败
+            # 反馈，见 real_tools.py 顶部说明。
             tool_executor = build_default_tool_executor(skill_dir=skill_dir)
+            # [阶段十八修复] 之前 not_implemented 分支无条件贴一句"未接入真实
+            # 执行器"的固定文案，哪怕该 skill 声明的 base_tools 其实已经全部
+            # 提供了真实实现（如 browser-core）——这会把"探索时真的撞上了反爬/
+            # 页面结构变化等正常失败"误导成"接线没做"，排查方向完全错误。这里
+            # 改成据实检测：真正去问 dispatch table 里，这个 skill 在
+            # capability.yaml -> explorer.base_tools 里声明的每个工具名是否有
+            # 真实实现（未命中的会被 build_default_tool_executor 回落到统一的
+            # "占位声明，尚未接入真实执行器"错误 dict）。
+            unwired_tools = _find_unwired_tools(skill_dir)
             engine = CapabilityEngine(
                 skill_dir,
                 llm_resolver=build_llm_resolver(current_llm_helper),
@@ -160,12 +196,21 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
             "resolve_reason": result.resolve_reason,
         }
         if result.status == "not_implemented":
-            payload["note"] = (
-                "该请求命中或未命中已有能力，但都需要触发探索子agent来补全/修复，"
-                "而当前运行环境尚未接入真正的底层操作原语执行器（explore_runner/"
-                "tool_executor），因此如实返回 not_implemented，而不是伪造成功。"
-                "这不是本次调用的偶发失败，是该 skill 探索能力尚未完全接线的已知限制。"
-            )
+            if unwired_tools:
+                payload["note"] = (
+                    "该请求命中或未命中已有能力，触发了探索子agent来补全/修复，"
+                    f"但该 skill 声明的工具中有 {unwired_tools} 仍是占位声明、尚未"
+                    "接入真实执行器（缺 impl/tools_impl.py 或对应实现），因此如实"
+                    "返回 not_implemented，而不是伪造成功。这是该 skill 探索能力"
+                    "尚未完全接线的已知限制，不是本次调用的偶发失败。"
+                )
+            else:
+                payload["note"] = (
+                    "该请求触发了探索子agent，且该 skill 声明的底层操作原语均已"
+                    "接入真实执行器（不是接线缺失）——本次 not_implemented 是真实"
+                    "探索/执行过程本身失败了（例如目标站点反爬拦截、页面结构变化、"
+                    "登录墙等），具体原因见 error 字段。"
+                )
         elif result.status == "invalid_request":
             payload["note"] = (
                 "这次调用的 request 字段形状不满足该 skill 声明的任何一种输入格式"

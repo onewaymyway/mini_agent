@@ -74,6 +74,18 @@ def is_debug_port_alive(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, time
         return False
 
 
+def get_browser_version(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, timeout: float = 3.0) -> dict:
+    """
+    对应 `/json/version` 端点，返回 Browser/Protocol-Version/User-Agent 等字段。
+    用于"列举已有调试浏览器"时的元信息展示，以及 headless 检测的第一道信号
+    （见 `browser_core_impl.py::detect_headless_hint` 的说明——这里返回的
+    `Browser` 字段对 `--headless`（旧版）会包含 HeadlessChrome 字样，但对
+    `--headless=new`（本 skill 默认使用的模式）不会，所以只能作为一个信号，
+    不能单独当作可靠判据）。
+    """
+    return _http_json(host, port, "/json/version", timeout=timeout)
+
+
 def list_tabs(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> list[dict]:
     targets = _http_json(host, port, "/json/list")
     return [t for t in targets if t.get("type") == "page"]

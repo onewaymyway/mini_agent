@@ -24,8 +24,13 @@ import tempfile
 import time
 from typing import Optional
 
-from cdp_client import CDPError, CDPSession
-from session_manager import get_or_create_session
+from cdp_client import CDPError, CDPSession, is_debug_port_alive
+from session_manager import (
+    close_all_sessions,
+    close_session,
+    get_or_create_session,
+    list_sessions,
+)
 
 _DEFAULT_WAIT_TIMEOUT_MS = 8000
 
@@ -443,3 +448,91 @@ def _try_annotate(image_path: str, elements: list[dict]) -> bool:
         return True
     except Exception:
         return False
+
+
+# --------------------------------------------------------------------------- #
+# 阶段十八新增：调试浏览器的列举与关闭
+#
+# 背景：`session.mode="auto"` 会在目标端口已有浏览器监听时直接复用，这在
+# "登录态延续"场景下是期望行为，但也导致一个常见的困惑——上一次探索/调试
+# 遗留下来的浏览器（可能是无头的）会被后续调用无声复用，用户以为"这次会
+# 弹出一个新的有头窗口"，实际上只是又接上了那个旧的无头进程，界面上什么都
+# 看不到。这两个工具让用户/explorer 能主动看清"现在到底连着哪个浏览器、是
+# 不是有头的"，以及在需要时干净地关掉它，而不必去手动翻 PowerShell/`ps`。
+# --------------------------------------------------------------------------- #
+
+
+def browser_list_sessions(tool_input: dict) -> dict:
+    """
+    列出当前进程已经建立/复用过的浏览器调试会话，附带尽力而为的有头/无头
+    判断（`headless_confidence`: "certain" 表示是本 skill 自己拉起的、能
+    确定；"high"/"medium" 表示启发式猜测；"unknown" 表示猜不出来，见
+    `session_manager.py::detect_headless_hint()` 的判据说明）。
+
+    可选 `tool_input.probe`: [{"host": "...", "port": ...}, ...] —— 额外探测
+    一些尚未被本进程 attach 过的端口是否有浏览器在监听（只报告存活与否，
+    不会去做有头/无头判断，因为没有 CDPSession 就无法探测 window.chrome，
+    也不会因为探测就真的建立/占用一个会话）。
+
+    注意（重要的已知限制）：`real_tools.py::load_skill_local_tool_implementations`
+    为了支持热更新，每次 `capability_call` 顶层调用都会强制清空
+    `session_manager.py` 等 impl 模块的缓存重新加载一次——这意味着 `sessions`
+    这部分（依赖模块级 `_sessions` 字典）只能看到"本次调用内已经建立过的
+    会话"，看不到上一次 `capability_call` 调用里连接过的浏览器，即使那个
+    浏览器进程本身还在跑（这正是本次要排查的"auto 复用了旧无头进程"问题的
+    根源之一）。因此默认总会额外探测标准端口 9222（不需要显式传 probe），
+    这样即使 `_sessions` 是空的，也能看出"9222 上现在有没有浏览器在监听"，
+    只是无法进一步判断它是不是有头的（没有已建立的 CDPSession 就没法探测
+    `window.chrome`），需要的话可以显式带 `session.mode="attach"` 先连一次
+    再调本工具，或者直接看 `probed` 里 alive=true 之后手动 attach。
+    """
+    sessions = list_sessions()
+    probe_targets = list(tool_input.get("probe") or [])
+    if not probe_targets and not any(s["port"] == 9222 for s in sessions):
+        probe_targets.append({"host": "127.0.0.1", "port": 9222})
+    probed: list[dict] = []
+    for target in probe_targets:
+        host = target.get("host", "127.0.0.1")
+        port = target.get("port", 9222)
+        probed.append({"host": host, "port": port, "alive": is_debug_port_alive(host, port)})
+    return {"ok": True, "sessions": sessions, "probed": probed}
+
+
+def browser_close_session(tool_input: dict) -> dict:
+    """
+    关闭一个（或全部）已建立的调试浏览器会话。
+
+    - `tool_input.all=True`：关闭 `browser_list_sessions()` 能看到的全部会话。
+    - 否则按 `tool_input.host`（默认 127.0.0.1）/`tool_input.port`（默认 9222）
+      关闭指定的一个。
+    - `tool_input.kill_process`（默认 True）：是否终止底层浏览器进程——仅对
+      本 skill 自己 `spawn_browser` 拉起的会话生效；`attach` 到的、使用者
+      自己启动的浏览器不会被杀掉（与既有的"不负责关闭用户自己的浏览器"约定
+      一致），返回的 `killed_process` 会如实反映有没有真的杀掉进程。
+    - 对没有会话记录的 (host, port)（本进程从未 attach 过）无能为力，
+      `closed_our_session` 会是 False——这不代表那个端口没有浏览器在跑，只是
+      本 skill 没有它的进程句柄/连接，需要用户自己在系统层面关闭。
+    """
+    kill_process = tool_input.get("kill_process", True)
+    if tool_input.get("all"):
+        results = close_all_sessions(kill_process=kill_process)
+        return {"ok": True, "closed": results}
+
+    host = tool_input.get("host", "127.0.0.1")
+    port = tool_input.get("port", 9222)
+    result = close_session(host=host, port=port, kill_process=kill_process)
+    result.update({"host": host, "port": port, "ok": True})
+    if not result["closed_our_session"]:
+        result["note"] = (
+            f"本进程没有 {host}:{port} 的会话记录，无法据此关闭进程。常见原因"
+            "有两个：(1) 这个浏览器从未被本 skill attach 过；(2) 更常见——"
+            "`capability_call` 每次顶层调用都会为了支持热更新而清空 "
+            "session_manager 的会话记录，所以哪怕上一次调用确实是本 skill 拉起"
+            "的这个浏览器，这一次调用也已经不认得它了（进程本身还在跑，只是"
+            "记录丢了）。如果只是想清理端口占用，最可靠的办法是先用 "
+            "`session.mode=\"attach\"` 连一次（此工具会记录下这个连接），"
+            "紧接着在同一次调用/同一次探索里再调 browser_close_session；或者"
+            "直接在系统层面关闭：Windows 下 `netstat -ano | findstr <port>` "
+            "找 PID 再 `taskkill /PID <pid> /F`。"
+        )
+    return result
