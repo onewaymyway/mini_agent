@@ -8,5 +8,5 @@
     "browser_extract_content",
     "browser_wait_for_selector"
   ],
-  "note": "阶段三接入探索子agent时，调度引擎将强制校验探索过程只调用此处声明的工具，其余能力一律拒绝。"
+  "note": "调度引擎强制校验探索过程只调用此处声明的工具，其余能力一律拒绝（阶段三已生效）。工具契约详见 .claude/skills/browser-core/SKILL.md（阶段十三新增）；该契约目前只有文档，尚未接入真实执行器，命中这些工具名时 real_tools.py::build_default_tool_executor() 仍如实返回未实现，见 .claude/skills/browser-core/HEADLESS_BROWSER_INTEGRATION.md 了解如何接入真实无头浏览器。"
 }

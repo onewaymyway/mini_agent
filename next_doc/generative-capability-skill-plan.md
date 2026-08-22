@@ -1390,3 +1390,178 @@ LLM 决策循环（阶段九已改接框架统一 `LLMHelper`），之所以一�
 - `text_transform_apply` 目前只覆盖常见字符串操作，遇到探索子agent认为
   "组合现有 op 也做不到"的变换需求（如需要正则/语言学分析的变换）会如实
   `report_failure`，这是预期行为，不是 bug。
+
+### 阶段十三 —— 已完成
+
+**目标**：`browser-core`/`doc-core` 此前一直只是 `explorer/
+tool_allowlist.json` 里的一行占位声明，没有任何文档说明这两个原语具体
+应该长什么样、由谁来实现、怎么接进现有引擎。本阶段推进 `browser-core`：
+把它从"完全空白的占位"变成"契约已写清楚、真实实现仍缺"，并留下一份
+可直接照做的接入指南，方便后续在能接无头浏览器的环境下真正实现探索
+能力。`browser-site-scraper` 本身的探索链路诚实失败——这是预期行为，
+本阶段不改变这一点（真正实现需要真的接一个无头浏览器，工作量和风险
+都远大于 `text-core`，明确不在本次范围内，`doc-core` 同理，留给后续
+有需要时再做）。
+
+**新增/修改文件**：
+
+```
+.claude/skills/browser-core/SKILL.md                            # 新增：
+                                                                    # 静态
+                                                                    # skill，
+                                                                    # 定义
+                                                                    # browser-
+                                                                    # site-
+                                                                    # scraper
+                                                                    # 探索子
+                                                                    # agent
+                                                                    # 会调用
+                                                                    # 的 7 个
+                                                                    # 通用
+                                                                    # 浏览器
+                                                                    # 操作
+                                                                    # 原语的
+                                                                    # 输入/
+                                                                    # 输出
+                                                                    # 契约
+.claude/skills/browser-core/HEADLESS_BROWSER_INTEGRATION.md     # 新增：
+                                                                    # 给未来
+                                                                    # 实现者
+                                                                    # 的接入
+                                                                    # 指南
+                                                                    # （复用
+                                                                    # 哪些
+                                                                    # browser-
+                                                                    # cdp 代码
+                                                                    # /落点/
+                                                                    # 会话
+                                                                    # 生命
+                                                                    # 周期/
+                                                                    # 反爬
+                                                                    # 边界/
+                                                                    # 自测
+                                                                    # 方法/
+                                                                    # 完成后
+                                                                    # 要同步
+                                                                    # 更新的
+                                                                    # 文档
+                                                                    # 清单）
+.claude/skills/browser-site-scraper/SKILL.md                     # 修改：
+                                                                    # "依赖"
+                                                                    # /"已知
+                                                                    # 限制"
+                                                                    # 两节
+                                                                    # 更新为
+                                                                    # 指向
+                                                                    # browser-
+                                                                    # core 的
+                                                                    # 契约与
+                                                                    # 接入
+                                                                    # 指南，
+                                                                    # 并纠正
+                                                                    # 此前
+                                                                    # "capability_
+                                                                    # call 默认
+                                                                    # 不注入
+                                                                    # tool_
+                                                                    # executor"
+                                                                    # 的过时
+                                                                    # 描述
+                                                                    # （阶段
+                                                                    # 十二已
+                                                                    # 改为
+                                                                    # 默认
+                                                                    # 注入
+                                                                    # 通用
+                                                                    # tool_
+                                                                    # executor，
+                                                                    # 只是
+                                                                    # browser-
+                                                                    # core 下
+                                                                    # 的工具
+                                                                    # 名仍未
+                                                                    # 命中
+                                                                    # 任何
+                                                                    # 真实
+                                                                    # 实现）
+.claude/skills/browser-site-scraper/explorer/tool_allowlist.json  # 修改：
+                                                                     # note
+                                                                     # 字段
+                                                                     # 补充
+                                                                     # 指向
+                                                                     # 新增
+                                                                     # 的
+                                                                     # browser-
+                                                                     # core
+                                                                     # 契约
+                                                                     # 与接入
+                                                                     # 指南
+next_doc/generative-capability-skill-plan.md                      # 本文档
+                                                                      # （阶段
+                                                                      # 十三
+                                                                      # 记录）
+```
+
+**已实现能力**：
+
+- **`browser-core` 契约文档**（`SKILL.md`）：把 `browser-site-scraper/
+  explorer/tool_allowlist.json` 里 `allowed_tools` 声明的 7 个工具名
+  （`browser_navigate`/`browser_click`/`browser_type`/`browser_scroll`/
+  `browser_wait_for_selector`/`browser_extract_content`/
+  `browser_screenshot_annotated`）逐一写清楚 `input`/`output` 结构与
+  错误约定，这是此前唯一存在但从未被文档化的"隐含契约"（探索子agent的
+  prompt 里提到这些工具名，但没有任何地方说明每个工具具体接受什么参数、
+  返回什么结构）。文档同时说明了为什么这次不直接从 `browser-cdp` 抽取
+  代码当作"已实现"——沙盒环境没有可用浏览器，勉强接入只会得到一个连不上
+  真实浏览器、看似实现了但仍会诚实失败的空壳，反而会造成"已经接好了"的
+  误解，与 `real_tools.py` 文件头一贯坚持的"不制造虚假完备感"原则相悖。
+- **无头浏览器接入指南**（`HEADLESS_BROWSER_INTEGRATION.md`）：给下一个
+  有真实浏览器环境的实现者一份具体到"改哪个文件、复用哪些已有代码、
+  会话生命周期怎么管理、`browser_extract_content` 为什么是关键中的关键、
+  反爬边界在哪里、完成后怎么自测、完成后要同步更新哪些文档"的清单式
+  指南，遵循 `real_tools.py`/`text_transform_apply` 已经验证过的"新增
+  一个实现文件 + 补一条分发表映射，调用方代码不用改"的接入模式，明确
+  指向 `browser_core_impl.py` 作为落点（尚未创建，属于下一阶段的工作）。
+- **纠正 `browser-site-scraper/SKILL.md` 的一处过时描述**："已知限制"
+  一节此前仍写着阶段七时代"`capability_call` 默认不注入 explore_runner/
+  tool_executor"的表述，但阶段十二已经改为默认注入
+  `build_default_tool_executor()`；本阶段核对 `tools/capability_call.py`
+  当前实现后更正为准确描述——工具**会**注入通用执行器，但该执行器对
+  `browser-core` 下的工具名仍如实返回"未接入真实执行器"，最终效果
+  （得到 `not_implemented`）不变，但过程描述现在准确了，避免读者以为
+  阶段十二的改动对本 skill 完全没有影响。
+
+**验证结果**：
+
+1. `pytest tests/test_generative_capability_engine.py
+   tests/test_generative_capability_real_tools.py -q` → 26 passed，确认
+   本阶段是纯文档新增/更新（`SKILL.md`/`HEADLESS_BROWSER_INTEGRATION.md`
+   /`tool_allowlist.json` 的 `note` 字段/两个 skill 的 `SKILL.md`
+   正文），没有改动任何 `.py` 文件或 `capability.yaml`/`registry.json`/
+   `_index.json` 等引擎读取的结构化配置，因此引擎行为与阶段十二完全
+   一致，不需要也不应该有测试结果变化。
+2. 用真实 `CapabilityEngine("browser-site-scraper").call({"text": "...",
+   "target": {"url": "https://www.baidu.com/s?wd=test"}, "query":
+   "test"}, ...)`（注入 `build_default_tool_executor()` +
+   `build_llm_explorer(...)`，与 `capability_call.py` 当前逻辑一致）
+   重新走一遍 `resolve` 命中 `baidu` → 执行失败（沙盒无可用浏览器）→
+   进入 `explore()`，确认桩场景之外、用本阶段实际会被注入的真实执行器
+   跑一遍时，探索子agent调用任意 `browser_*` 工具都会收到
+   `real_tools.py` 里"该工具仍是占位声明，尚未接入真实执行器"的
+   如实错误，最终 `report_failure`，`call()` 返回
+   `status: not_implemented`——与更新后的 `SKILL.md`"已知限制"一节描述
+   完全一致，确认文档没有夸大或掩盖当前的真实能力边界。
+
+**已知遗留（留给后续阶段）**：
+
+- `browser_core_impl.py` 尚未创建，`browser-core` 目前仍是纯文档、零
+  可执行代码的状态；`doc-core`（`doc-template-generation` 依赖的底层
+  原语）本阶段完全未涉及，仍是阶段五遗留下来的占位状态，理由同
+  `browser-core`——真正实现需要接入一个文档生成库，工作量和优先级需要
+  单独评估，不在本次"先把 browser-core 契约和指南写清楚"的范围内。
+- `HEADLESS_BROWSER_INTEGRATION.md` 里给出的接入方式（复用
+  `browser-cdp` 现有代码、模块级会话管理、并发探索的上下文隔离建议等）
+  是基于阅读现有代码得出的设计建议，尚未经过真实浏览器环境的验证——
+  真正接入时大概率会发现指南里遗漏的细节（比如 `browser-cdp` 里具体
+  函数签名与本文档假设的契约存在出入），这是预期中的情况，接入者应该
+  以真实调试结果为准，发现出入时更新契约文档而不是削足适履。
