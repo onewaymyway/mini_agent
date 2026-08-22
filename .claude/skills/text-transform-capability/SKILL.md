@@ -13,16 +13,8 @@ platforms: windows, macos, linux, pc
 调度引擎 `mini_agent.skills.generative_capability`，引擎代码零改动。它的存在
 目的与另外两个不同：**不是一个真实业务能力，而是一个刻意做得很小、很容易跑通、
 不依赖任何外部环境（无需浏览器/API key/网络）的"机制自检"skill**，用来验证
-`next_doc/generative-capability-skill-plan.md` 里描述的各个机制点确实可用：
-
-- 第一级确定性匹配（`keyword` matcher）命中已有 member 并执行成功；
-- `intent_schema` 校验：缺字段会被正确判定为失败，不会被浅层校验放过；
-- 连续失败触发 `probation/trusted -> degraded` 状态流转；
-- 未命中触发 `explore()`（用桩探索器，不需要真实 LLM/浏览器），蒸馏产物
-  自测通过后原子化落盘为新 member，并可被后续请求免探索直接复用；
-- `health_patrol` 对本 skill 目录的一致性巡检、`stale`/`dead_expired` 检测；
-- `SkillLoader` 对 `skill_type: generative-capability` 的解析与
-  `capability_call` 工具的调用链路。
+`resolve`/`execute`/`explore`/`distill`/生命周期状态机/健康巡检各机制点确实
+可用。
 
 配套的测试方法见 `test_cases/text-transform-capability-testing-guide.md`。
 
@@ -64,7 +56,7 @@ result = engine.call({
 |---|---|---|---|
 | `domain_matchers` | `target.url` 的 `domain_pattern` + `text` 的 `keyword` | `target.template_name` 的 `keyword` + `text` 的 `keyword` | `target.op` 的 `keyword` + `text` 的 `keyword` |
 | `intent_schema_template` | `{results: array}` | `{document: {format, sections}}` | `{result: {text: string}}` |
-| `explorer.base_tools` | `browser-core`（占位） | `doc-core`（占位） | `text-core`（占位，见下方说明） |
+| `explorer.base_tools` | `browser-core`（占位） | `doc-core`（占位） | `text-core`（占位） |
 | 预置 member 是否依赖外部服务 | 是（依赖浏览器） | 否（纯逻辑） | 否（纯逻辑，且刻意连本地文件/子进程都不用） |
 | 设计目的 | 真实业务能力 | 验证泛化性（第二个领域） | 验证机制本身（可完整自动化测试，无需任何桩之外的外部依赖） |
 
@@ -82,20 +74,17 @@ explore -> distill -> 落盘 -> 免探索复用 的完整链路，探索阶段�
 一样，`text-core` 目前仍是占位声明，本 skill 不主张已经具备"学会新文本变换"
 的生产能力，只用于验证引擎接线本身）。
 
-## 已知遗留
+## 已知限制
 
 - `explorer/prompt.md`、`explorer/tool_allowlist.json` 中的 `text-core` 是
   占位声明，没有真正可执行的实现；这是刻意的——本 skill 的目的是验证机制，
   不是提供真实的文本处理能力，真正需要文本变换能力时应该用更合适的静态 skill
   或直接写代码，不建议在生产场景中依赖本 skill。
 - 与另外两个 skill 一样，`schema_validator` 仍是常用关键字子集而非完整 JSON
-  Schema 规范，见方案文档阶段四已知遗留。
+  Schema 规范。
 
-## 阶段九：检索裁决/探索子agent 改接框架统一 LLM 调用基础设施
+## 更多信息
 
-与 `browser-site-scraper`/`doc-template-generation` 一样，本 skill 通过
-`capability_call` 调用时，第二级检索裁决与探索子agent决策循环现在都走
-`llm/service.py::LLMHelper`（跟随 `/model` 切换、复用 `LLMClientPool`），
-不再自行拼 urllib 请求写死 Anthropic。测试文档中用 `build_stub_resolver`/
-`build_stub_explorer` 的桩验证路径不受影响（桩实现本来就不发起任何网络
-调用）。详见方案文档阶段九实施记录。
+引擎设计、状态机、各版本演进历史见
+`next_doc/generative-capability-skill-plan.md`（本文件只描述"如何调用本
+skill"，不重复记录实施过程）。

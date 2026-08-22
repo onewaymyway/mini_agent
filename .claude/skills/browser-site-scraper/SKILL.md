@@ -33,81 +33,22 @@ result = engine.call({
 
 `result.status` 为 `success` / `fail` / `not_implemented`（命中/未命中都需要
 触发探索、但当前运行环境未接入真实 `explore_runner`/`tool_executor` 时的
-如实反馈，见方案文档阶段七"已知遗留"）。
+如实反馈）。
 
 ## 依赖
 
-- 底层通用浏览器操作能力: `browser-core`（本次拆分自原 `browser-cdp`，尚待独立拆分，
-  当前阶段 member 直接复用 `browser-cdp/src/searchers/*`，见 `capability.yaml`）。
+- 底层通用浏览器操作能力: `browser-core`（拆分自原 `browser-cdp`，尚待独立
+  拆分为静态 skill，当前 member 直接复用 `browser-cdp/src/searchers/*`，
+  见 `capability.yaml`）。
 
-## 当前阶段说明
+## 已知限制
 
-本 skill 处于方案实施 **阶段四**：在阶段三（探索子agent + 蒸馏固化）基础上，
-补齐了完整生命周期状态机所需的严格 schema 校验，并接入了定期健康巡检：
+- 探索能力（`explore()`/`distill()`）需要真实 `tool_executor` 接入才能在
+  生产环境生效；`capability_call` 工具目前默认不注入，命中失败/未命中会
+  如实返回 `not_implemented`，不会伪造成功。
 
-- `schema_validator.py`：无第三方依赖的最小 JSON Schema 校验器，支持
-  `type`/`required`/`properties`/`items`/`enum` 递归校验。命中执行（`execute()`）
-  与探索蒸馏产物（`distiller.distill()`）现在共用同一套严格校验，不再只检查
-  "必填字段是否存在"，类型/嵌套结构不对也会被判定失败。
-- `health_patrol.py`：低频后台巡检任务，默认只读扫描 + 生成结构化报告：
-  - 检测 `_index.json` / `registry.json` / `members/` 目录三者互相不一致的情况
-    （如"脚本能跑但检索不到"、"检索能到但脚本已被清理"），`--fix-inconsistencies`
-    时以 `registry.json` 为准做最小修复；
-  - 标记长期未被检索命中执行、或长期无成功/失败记录的 member（阈值见
-    `capability.yaml -> lifecycle.health_patrol_stale_days`），供人工审查；
-  - 标记已进入 `dead` 状态超过保留期（`health_patrol_dead_retention_days`）的
-    member，默认只在报告里给出"建议清理"，`--apply-cleanup` 时才真正删除
-    （删除前会把 `meta.json` 内容记入报告，避免误删且不可审计）。
+## 更多信息
 
-探索能力（阶段三）仍需真实 `tool_executor` 接入才能在生产环境生效，阶段四
-未改变这一现状。
-
-## 阶段五：作为可复用 SDK 被验证
-
-引擎打包成一个可以直接 `import` 的公开接口（原先要求调用方自己
-`sys.path.insert(...)` 塞目录、再用 flat 模块名互相引用的写法，阶段七
-已彻底移除）。调度骨架、状态机、检索逻辑本身在本阶段**零改动**——阶段五
-只做了两件事：把引擎包装成稳定的公开接口，以及新增第二个
-generative-capability skill `doc-template-generation` 验证复用性，详见该
-目录的 SKILL.md 与本文档阶段五实施记录。
-
-## 阶段六：修复阶段五记录的两处遗留问题
-
-1. **状态流转时间戳（`status_changed_at`）**：`registry.json` 中每个 member
-   在 `probation -> trusted` / `-> degraded` / `-> dead` 发生时都会写入
-   `status_changed_at`，蒸馏新建/重探索成功回到 `probation` 时同样写入。
-   `health_patrol.py::_dead_since()` 现在优先用这个精确时间戳判断
-   "进入 dead 多久了"，只有存量数据缺这个字段时才退化为原来的近似算法
-   （用 `last_failure` 或 `meta.json` mtime 近似），保持向后兼容。
-2. **`distill_trust_trace_data` 一致性兜底**：`capability.yaml` 新增可选
-   `distill.trust_trace_data` 开关（本 skill 默认 `false`，不影响生产行为）。
-   开启后，仅当蒸馏脚本重放动作序列、最后一个真实工具步骤取不到 `data` 时，
-   才把探索阶段已通过 `intent_schema` 校验的 `trace.data` 当兜底常量嵌入
-   脚本，而不是像阶段五记录的那样直接判定"探索未能生成可靠方案"。是否用到
-   兜底会记入新 member 的 `meta.json -> distill_used_trace_data_fallback`
-   字段，保持可审计。该开关只建议在自测/CI 场景临时开启；真实
-   `browser-core` 提取类工具通常最后一步就会返回 `data`，无需开启。
-
-## 阶段七：引擎迁入主项目正常子包
-
-`.claude/skills/_engine` 目录已删除，引擎代码现在位于
-`src/mini_agent/skills/generative_capability/`（`import mini_agent.skills.
-generative_capability`），本 skill 目录下只保留声明式配置与运行时数据
-（本文件、`capability.yaml`、`explorer/`、`_index.json`、`registry.json`、
-`members/`）。新增 `capability_call` 工具（`src/mini_agent/tools/
-capability_call.py`），agent 现在可以在对话中直接调用本 skill，不再需要
-人工手动跑 CLI 自测入口。详见方案文档阶段七实施记录。
-
-详见 `next_doc/generative-capability-skill-plan.md`。
-
-## 阶段九：检索裁决/探索子agent 改接框架统一 LLM 调用基础设施
-
-`llm_resolver.py`（第二级检索裁决）与 `explorer_runtime.py`（探索子agent
-决策循环）此前各自用 urllib 直连 Anthropic Messages API，是引擎里仅有的两处
-没有走 `llm/service.py::LLMHelper` 的地方——固定写死 provider=anthropic，
-不跟随 `/model` 切换。阶段九改为接收调用方传入的 `llm_helper`（通常是
-`Agent.llm_helper`，`capability_call` 工具通过 `tools/orchestration.py::
-get_current_llm_helper()` 拿到），自动获得多 provider 支持、`/model` 切换
-跟随、`LLMClientPool` 的多 key/fallback 与统一 `RetryPolicy`。本 skill 的
-`capability.yaml`/`registry.json`/`members/` 未改动，行为对本 skill 使用者
-透明。详见方案文档阶段九实施记录。
+引擎设计、状态机、各版本演进历史见
+`next_doc/generative-capability-skill-plan.md`（本文件只描述"如何调用本
+skill"，不重复记录实施过程）。
