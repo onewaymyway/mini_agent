@@ -38,10 +38,16 @@ result = engine.call({
 ## 依赖
 
 - 底层通用浏览器操作能力: `browser-core`（独立静态 skill，契约见
-  `.claude/skills/browser-core/SKILL.md`；阶段十四起已提供真实实现，见
-  `.claude/skills/browser-core/impl/`。当前 3 个已落盘的 member 仍直接
-  复用 `browser-cdp/src/searchers/*`，是各自蒸馏时生成的定制脚本；探索
-  链路调用的 7 个工具名与 `browser-core` 契约一一对应，现在会真正执行）。
+  `.claude/skills/browser-core/SKILL.md`；阶段十四起提供真实实现，见
+  `.claude/skills/browser-core/impl/`）。**`browser-core` 是本 skill
+  现在唯一的浏览器操作依赖**——阶段十五起，`baidu`/`zhihu` 这两个已落盘的
+  人工预置 member 已经从直接依赖 `browser-cdp/src/searchers/*` 改为直接
+  调用 `browser-core/impl/session_manager.py`（提取逻辑本身未变，只是换了
+  执行载体）；探索链路调用的 7 个工具名同样对应 `browser-core` 契约。
+  `browser-cdp` 即将被移除，`browser-core` + `browser-site-scraper` 是它
+  的替代方案（`browser-core` 提供通用浏览器操作原语，`browser-site-
+  scraper` 提供"针对具体网站怎么用这些原语抓取"的 member 层），本 skill
+  不应再有任何路径指向 `browser-cdp` 目录。
 
 ## 已知限制
 
@@ -55,13 +61,22 @@ result = engine.call({
   - 需要本机/服务器有可用的 Chrome/Chromium/Edge（`launch_headless`/
     `launch_headed` 模式），或者提前手动启动好一个带
     `--remote-debugging-port` 的浏览器（`attach` 模式，需要登录的网站
-    应该用这种方式，由使用者手动登录好再交给探索子agent）；
-  - 沙盒/CI 等没有可用浏览器的环境下，探索仍会诚实失败并如实返回
-    `not_implemented`/浏览器层面的具体错误，不会伪造成功；
+    应该用这种方式，由使用者手动登录好再交给探索子agent/member）；
+  - `launch_headed` 模式默认使用一份持久化、跨进程复用的用户数据目录
+    （见 `browser-core/SKILL.md`"会话模式"一节），第一次手动登录过某个
+    网站之后，后续再用普通（有界面）浏览器打开会自动带着这份登录态，
+    不需要每次都重新登录；
+  - 沙盒/CI 等没有可用浏览器的环境下，探索/member 执行仍会诚实失败并如实
+    返回 `not_implemented`/浏览器层面的具体错误，不会伪造成功——`baidu`
+    member 额外做了"检测到验证码/风控拦截页时明确报错"的处理（而不是像
+    改造前那样把空结果误判成"成功但没抓到东西"），`zhihu` member 同理
+    检测登录墙；
   - `browser_extract_content` 是通用提取，不针对具体网站定制，复杂页面
     结构下探索子agent可能需要多轮 `wait_for_selector`/`click`/`scroll`
     才能拿到符合 `intent_schema` 的数据，见 `browser-core/SKILL.md`
-    "已知限制"一节。
+    "已知限制"一节。`baidu`/`zhihu` 这两个人工预置 member 则是自己直接写
+    了针对性的提取 JS（不经过通用的 `browser_extract_content`），所以不受
+    这条限制影响。
 
 ## 更多信息
 

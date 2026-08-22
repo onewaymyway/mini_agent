@@ -6,5 +6,5 @@
     "required": ["results"],
     "properties": { "results": { "type": "array" } }
   },
-  "migrated_from": "browser-cdp/references/baidu-search.md, src/searchers/baidu_search.py"
+  "migrated_from": "browser-cdp/references/baidu-search.md, src/searchers/baidu_search.py（阶段十五起改为依赖 browser-core，不再依赖 browser-cdp；提取逻辑沿用，执行载体从 browser-cdp 自己的 CDP 封装换成 browser-core/impl/session_manager.py）"
 }

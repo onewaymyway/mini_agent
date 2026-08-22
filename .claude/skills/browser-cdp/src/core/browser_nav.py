@@ -145,7 +145,7 @@ async def async_cmd_goto(session, url: str, wait_load: bool, timeout: float,
         # 应用反检测模式
         if enable_stealth:
             stealth = StealthMode(session, StealthConfig())
-            stealth.apply()
+            await stealth.apply()
             logger.info("已启用反检测模式")
 
         # 记录当前 URL
@@ -282,8 +282,8 @@ def cmd_goto(session, url: str, wait_load: bool, timeout: float,
                     pass
         
         # 记录导航历史
-        new_url = asyncio.run(session.eval_js("location.href"))
-        title = asyncio.run(session.eval_js("document.title"))
+        new_url = session.eval_js("location.href")
+        title = session.eval_js("document.title")
         nav_entry = NavigationEntry(
             url=url,
             title=title,

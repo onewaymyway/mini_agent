@@ -14,6 +14,15 @@ platforms: windows, macos, linux, pc
 会用到的通用浏览器操作（导航/点击/输入/滚动/提取/等待/截图）从"每个网站
 各自实现"里抽出来，定义成一份**跨网站通用**的工具契约，并提供真实实现。
 
+**`browser-core` + `browser-site-scraper` 是 `browser-cdp` 的替代方案**
+（阶段十五起明确）：`browser-cdp` 即将从项目中移除，`browser-core` 承接它
+"打开浏览器、驱动浏览器完成操作"这部分通用能力，`browser-site-scraper` 的
+各 member（如 `baidu`/`zhihu`）承接它"针对具体网站怎么抓"这部分定制逻辑。
+`browser-site-scraper` 现在**只依赖 `browser-core`**，不应该再有任何代码
+路径指向 `browser-cdp` 目录（阶段十五已经把 `baidu`/`zhihu` 两个 member
+从直接依赖 `browser-cdp/src/searchers/*` 改为直接调用 `browser-core/impl/
+session_manager.py`，提取逻辑照搬未改，只是换了执行载体）。
+
 - ✅ 已完成（阶段十三）：本文档 —— 每个工具的输入/输出结构、错误约定。
 - ✅ 已完成（阶段十三）：`HEADLESS_BROWSER_INTEGRATION.md` —— 接入设计
   记录（阶段十四已按此文档完成实现，该文档同步更新为"实现说明+验证记录"）。
@@ -29,6 +38,12 @@ platforms: windows, macos, linux, pc
   自己完成登录（`explorer/prompt.md` 一直要求"遇到登录墙如实报告，不尝试
   绕过"，这一点没有变化——变化的是登录这件事从一开始就不在探索子agent的
   职责范围内，由人在探索开始之前就做好）。
+- ✅ 已完成（**阶段十五**）：`launch_headed`（本 skill 自己拉起的普通/有
+  界面浏览器）**默认使用同一个持久化的用户数据目录**（不是每次启动都是
+  全新 profile），第一次手动登录过某个网站后，后续再打开会自动带着这份
+  登录态，不需要反复登录——见下方"会话模式"一节。
+- ✅ 已完成（**阶段十五**）：`browser-site-scraper` 的两个人工预置 member
+  （`baidu`/`zhihu`）已从依赖 `browser-cdp` 改为依赖 `browser-core`。
 - ⚠️ 未完成：真实浏览器环境下的端到端验证。当前沙箱环境没有可安装/运行的
   Chrome，因此 `impl/` 下的代码只验证到"CDP 层面的调用/错误处理逻辑正确"
   （见 `HEADLESS_BROWSER_INTEGRATION.md`"验证记录"一节），没有验证过"连上
@@ -95,7 +110,7 @@ platforms: windows, macos, linux, pc
   "mode": "attach" | "launch_headless" | "launch_headed" | "auto",
   "host": "127.0.0.1",     # 可选，默认 127.0.0.1
   "port": 9222,             # 可选，默认 9222
-  "user_data_dir": null,    # 可选，仅 launch_* 模式使用
+  "user_data_dir": null,    # 可选；launch_headed 默认使用持久化目录，见下方
 }
 ```
 
@@ -103,17 +118,29 @@ platforms: windows, macos, linux, pc
   `--remote-debugging-port`）。**这是需要登录场景的标准用法**：由使用者
   提前手动启动一个普通的、有界面的浏览器，手动登录好目标网站，再把调试
   端口告诉 browser-core。探索子agent不会、也不应该尝试自己完成登录。
-- **`launch_headless`**——本 skill 自己拉起一个全新的无 GUI 浏览器实例，
-  适合不需要登录的纯抓取场景。
-- **`launch_headed`**——本 skill 自己拉起一个全新的、有 GUI 窗口的浏览器
-  实例（全新 profile，不带任何登录状态），主要用于本地调试，不解决登录
-  问题。
+- **`launch_headless`**——本 skill 自己拉起一个无 GUI 浏览器实例，适合
+  不需要登录的纯抓取场景；`user_data_dir` 缺省时使用按端口区分的临时
+  目录（不强行持久化——大多数 headless 抓取是无状态的一次性任务）。
+- **`launch_headed`**——本 skill 自己拉起一个有 GUI 窗口的浏览器实例。
+  **`user_data_dir` 缺省时默认使用一个固定的、跨进程/跨端口持久化的目录**
+  （`~/.mini_agent/browser-core/profile`，可用环境变量
+  `BROWSER_CORE_PROFILE_DIR` 整体覆盖），这是本次改动新增的行为：第一次
+  打开这个浏览器手动登录过某个网站后，后续任何一次 `launch_headed`（哪怕
+  是全新的 agent 进程、全新的探索）都会自动带着这份登录态，不需要每次都
+  重新登录。如果需要多个互不干扰的登录身份，显式传一个不同的
+  `session.user_data_dir` 即可覆盖这个默认值。
 - **`auto`**（默认）——先尝试连接默认端口，能连上就复用（可能已经是使用者
   准备好、已登录的浏览器）；连不上则退化为启动一个新的 headless 实例，
   保证"没有特意准备浏览器"时纯抓取场景仍然能跑通。
 
 会话管理的完整实现见 `impl/session_manager.py`，其文件头有更详细的设计
 说明。
+
+`browser-site-scraper` 的人工预置 member（`baidu`/`zhihu`）也是通过同一个
+`session_manager.get_or_create_session(input.get("session"))` 建立会话
+的——调用方（真实用户/agent）可以在 `capability_call` 的 `request` 里带上
+`"session": {"mode": "attach", "port": ...}`，让 member 直接复用一个已经
+手动登录好的浏览器，见各 member 的 `script.py` 文件头说明。
 
 ## 工具契约（探索子agent可调用的全部原语）
 
@@ -250,3 +277,13 @@ output: {"ok": true, "image_ref": "供后续多模态消息引用的图片句柄
   （不再是必然 `not_implemented`），但实际成功与否取决于运行环境是否有
   可用浏览器/合适的调试端口，见 `browser-site-scraper/SKILL.md`"已知
   限制"一节的最新描述。
+- **`browser-cdp` 尚未真正移除**：本次改动（阶段十五）已经把
+  `browser-site-scraper` 的所有代码路径改为只依赖 `browser-core`，但
+  `.claude/skills/browser-cdp/` 目录本身还在仓库里，删除它是一个独立的、
+  需要单独确认"没有其他 skill/脚本还在用它"的操作，不在本次范围内——本次
+  只保证"browser-site-scraper 不再需要它存在"，真正物理删除留给下一个
+  确认过全仓库范围内没有遗留引用的阶段执行。
+- `launch_headed` 默认持久化的 profile 目录（`~/.mini_agent/browser-core/
+  profile`）目前没有任何自动清理/大小限制机制——长期使用会不断积累浏览器
+  缓存/历史等数据，这是刻意的（持久化的核心诉求就是"不清空"），但意味着
+  需要使用者自己按需清理该目录，本 skill 不会主动做这件事。

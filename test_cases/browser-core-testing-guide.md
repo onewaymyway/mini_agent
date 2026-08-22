@@ -10,7 +10,11 @@
 > TestSkillLocalToolImplementationLoading`），而是像真实用户一样在
 > mini-agent 的对话界面里发起一次抓取请求，观察 `browser-site-scraper`
 > 探索子agent是否会：
-> 1. 命中已有 member（baidu/zhihu 等）时正常执行，不经过 `browser-core`；
+> 1. 命中已有 member（baidu/zhihu 等）时正常执行——阶段十五起这两个
+>    member 也已经改为直接依赖 `browser-core`（不再依赖即将被移除的
+>    `browser-cdp`），所以这条路径现在**也会**用到 browser-core，只是走的
+>    是 member 自己直接调用 `session_manager`，不经过探索循环的 7 个通用
+>    工具原语（这两种"用法"的区别见下方步骤 2）；
 > 2. 命中不了、需要探索新站点时，真的调用 `browser_navigate`/
 >    `browser_click`/`browser_extract_content` 等工具，且这些工具**真的
 >    执行**（不再是阶段十三时"占位声明，未接入真实执行器"的诚实拒绝）；
@@ -79,7 +83,7 @@
 
 ---
 
-## 步骤 2：确定性匹配命中已有 member —— 不经过 browser-core
+## 步骤 2：确定性匹配命中已有 member —— 直接调用 browser-core，不经过探索循环
 
 **输入：**
 
@@ -90,16 +94,25 @@
 **预期效果：**
 
 - `target.url` 命中已有 `baidu` member 的 domain_matcher，`capability_call`
-  走 `resolve` -> `execute`，**不会**进入探索、**不会**调用任何
-  `browser_*` 工具。
-- 若本机确实有可用浏览器/网络，`baidu` member 内部复用的是
-  `browser-cdp/src/searchers/*`（与本次改动无关的既有代码路径），返回
-  抓取结果；若没有可用浏览器，`baidu` member 执行失败，`capability_call`
-  会因为"命中但执行失败"触发**探索**兜底——此时会用到 `browser-core`，
-  直接跳到步骤 5 观察即可。
+  走 `resolve` -> `execute`，**不会**进入探索循环、**不会**调用探索子agent
+  可见的那 7 个 `browser_*` 工具名。
+- 但 `baidu` member 内部（阶段十五起）会直接 `import session_manager`、
+  调用 `session_manager.get_or_create_session()` + `session.navigate()` +
+  `session.eval_js()`，这**也是在用 `browser-core`**，只是走的是"member
+  自己知道百度搜索结果页结构、直接调用底层会话原语"这条路径，不是"探索
+  子agent一步步摸索"那条路径——两者共用同一份 `browser-core/impl/`，只是
+  调用方式不同（前者是 member 直接 import，后者是通过
+  `real_tools.py::build_default_tool_executor()` 分发的 7 个工具名）。
+  若本机确实有可用浏览器，会返回真实抓取结果；若没有可用浏览器，`baidu`
+  member 会得到诚实的浏览器层面失败（见步骤 5），`capability_call` 会因为
+  "命中但执行失败"触发**探索**兜底——这次会用到探索子agent可见的那 7 个
+  工具名，直接跳到步骤 3/5 观察即可。
 
 **这一步验证了什么**：确认"命中已有能力时走确定性路径，不浪费探索预算"
-这条既有行为没有被本次改动影响——`browser-core` 只在探索路径上被调用。
+这条既有行为没有被阶段十五的依赖切换影响；同时确认 `baidu`/`zhihu` 这两个
+member 现在是真的在调用 `browser-core`，而不是仍然悄悄依赖着即将被移除的
+`browser-cdp`（如果这一步观察到的报错信息里出现任何 `browser-cdp` 相关
+路径，说明依赖切换没有生效，是一个需要排查的问题）。
 
 ---
 
@@ -195,6 +208,23 @@ agent 应该把这条具体的错误原因转述给你（而不是笼统地说"�
 清晰、错误信息具体到"该怎么解决"的路径——这正是"把登录这件事从探索子agent
 的职责里挪走，交给人工提前准备"这个设计目标在真实对话里的体现。
 
+> **补充（阶段十五起同样适用于已有 member）**：不只是探索路径，`baidu`/
+> `zhihu` 这两个已落盘的 member 现在也接受同样的 `session` 参数透传——
+> 如果你想让 `zhihu` member 用一个已经登录好知乎的浏览器抓取，可以在请求
+> 里直接带上，比如：
+> ```
+> 用 browser-site-scraper 抓一下知乎搜索 "xxx" 的结果，target.url 用 https://www.zhihu.com/search?type=content&q=xxx，
+> 调用时 session.mode="attach"、session.port=9222，连接我已经手动登录好的浏览器
+> ```
+> 这条路径命中的是确定性匹配（`resolve_reason` 不是 `llm_match` 也不是
+> 探索），`zhihu` member 会把 `session` 原样传给
+> `session_manager.get_or_create_session()`，同样能拿到登录后才可见的
+> 内容。这也是本次改动"打开普通浏览器时默认使用同一个数据目录"这条要求的
+> 另一层含义：即使不显式指定 `attach`，只要之前用 `launch_headed` 手动
+> 登录过一次，同一台机器上后续的 `launch_headed` 调用（不管是探索路径还是
+> member 直接调用）默认都会复用同一份登录态，不需要每次都传 `session`
+> 参数。
+
 ---
 
 ## 步骤 5（场景 C，也是最容易复现的一步）：完全没有可用浏览器时的诚实失败
@@ -240,7 +270,7 @@ agent 应该把这条具体的错误原因转述给你（而不是笼统地说"�
 | 步骤 | 覆盖的机制点 | 对应文档 |
 |---|---|---|
 | 1 | skill 发现（复用既有机制，仅确认环境正常） | `text-transform-capability-testing-guide.md` |
-| 2 | 命中已有 member 时不经过 browser-core | `browser-site-scraper/SKILL.md` |
+| 2 | 命中已有 member 时，member 直接调用 browser-core（不再依赖 browser-cdp），不经过探索循环 | `browser-site-scraper/SKILL.md` |
 | 3 | 探索新站点，真实驱动浏览器完成导航+提取，探索成功后蒸馏落盘、下次免探索复用 | `browser-core/SKILL.md`、`HEADLESS_BROWSER_INTEGRATION.md` 第 6 节 |
 | 4 | `attach` 会话模式——登录场景的核心验证，及其失败时的具体错误提示 | `browser-core/SKILL.md`"会话模式"一节 |
 | 5 | 无可用浏览器时的诚实失败，且失败原因具体化（区别于阶段十三的笼统占位提示） | `next_doc/generative-capability-skill-plan.md` 阶段十四 |

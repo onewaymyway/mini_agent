@@ -16,9 +16,13 @@ browser-core/impl/session_manager.py — 维护"探索子agent这一轮调用期
   探索开始之前就做好。
 - **launch_headless**：不需要登录、不需要人工介入的纯抓取场景，本模块自己
   拉起一个全新的、无 GUI 的浏览器实例。
-- **launch_headed**：本模块自己拉起一个全新的、有 GUI 窗口的浏览器实例
-  （全新 profile，不带任何登录状态）。主要用于本地调试"看得见浏览器在做
-  什么"，不是登录场景的解法（见 browser_launch.py 文件头）。
+- **launch_headed**：本模块自己拉起一个有 GUI 窗口的浏览器实例。**默认使用
+  一个固定的、持久化的用户数据目录**（`DEFAULT_PERSISTENT_PROFILE_DIR`，
+  不随进程/端口变化，跨多次运行保留），这是本次改动新增的行为——第一次用
+  `launch_headed` 打开浏览器手动登录过某个网站后，后续再用 `launch_headed`
+  打开（哪怕是全新的 agent 进程/全新的探索）会复用同一份 cookies/登录态，
+  不需要每次都重新登录。如果需要多个互不影响的登录身份（比如测试多账号），
+  可以通过 `session.user_data_dir` 显式指定一个不同的目录来覆盖这个默认值。
 - **auto**（默认）：先尝试 attach 到默认端口，能连上就说明使用者已经准备好
   了一个浏览器（可能已登录），直接复用；连不上则退化为 launch_headless，
   保证"没有特意准备浏览器"时仍然能跑通纯抓取场景，不强制每次都要求先手动
@@ -37,12 +41,25 @@ import os
 import subprocess
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from cdp_client import CDPSession, connect_tab, is_debug_port_alive, list_tabs, new_tab
 from browser_launch import spawn_browser, wait_port_alive
 
 DEFAULT_PORT = 9222
+
+# launch_headed 模式默认使用的、跨进程/跨端口持久化的用户数据目录——这是
+# "打开普通浏览器时默认使用同一个数据目录，让用户登录的数据可以一直沿用"
+# 这条要求的落地：只要没有显式传 `session.user_data_dir`，每一次
+# `launch_headed` 都会打开同一个 profile，登录状态自然延续。可以通过
+# 环境变量 `BROWSER_CORE_PROFILE_DIR` 整体覆盖（比如需要隔离多台机器/多个
+# agent 实例各自的登录态时），也可以在单次调用里通过
+# `session.user_data_dir` 覆盖（比如需要多个互不干扰的登录身份）。
+DEFAULT_PERSISTENT_PROFILE_DIR = Path(
+    os.environ.get("BROWSER_CORE_PROFILE_DIR")
+    or (Path.home() / ".mini_agent" / "browser-core" / "profile")
+)
 
 
 @dataclass
@@ -122,10 +139,17 @@ def get_or_create_session(session_cfg: Optional[dict] = None) -> CDPSession:
                     f"遗留的进程，或使用者自己启动的浏览器）。如果想复用它，请改用"
                     f"mode='attach'；如果想用一个新端口，请显式指定不同的 port。"
                 )
+            user_data_dir = cfg["user_data_dir"]
+            if mode == "launch_headed" and not user_data_dir:
+                # 普通（有界面）浏览器默认复用同一个持久化 profile，让登录态
+                # 跨多次启动延续；headless 场景默认仍是按端口区分的临时目录
+                # （见 browser_launch.spawn_browser 的默认值），因为大多数
+                # headless 抓取是无状态的一次性任务，不需要强行持久化。
+                user_data_dir = str(DEFAULT_PERSISTENT_PROFILE_DIR)
             proc = spawn_browser(
                 port=port,
                 headless=(mode == "launch_headless"),
-                user_data_dir=cfg["user_data_dir"],
+                user_data_dir=user_data_dir,
             )
             ok, err = wait_port_alive(lambda: is_debug_port_alive(host, port), proc=proc)
             if not ok:

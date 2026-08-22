@@ -1676,3 +1676,98 @@ INTEGRATION.md` 第 6-7 节）**：
 - `browser_extract_content` 的通用（非网站定制）提取策略在复杂页面结构
   下可能拿不到符合 `intent_schema` 的数据，这是预期行为，见
   `browser-core/SKILL.md`"已知限制"一节，不在本阶段解决范围内。
+
+### 阶段十五 —— 已完成
+
+**目标**：明确 `browser-core` + `browser-site-scraper` 是 `browser-cdp`
+的替代方案（`browser-cdp` 即将从项目移除），把 `browser-site-scraper`
+现存的、仍直接依赖 `browser-cdp/src/searchers/*` 的两个人工预置 member
+（`baidu`/`zhihu`）改为直接依赖 `browser-core`；同时纠正 `launch_headed`
+（普通/有界面浏览器）的默认行为——打开普通浏览器时应默认使用同一个数据
+目录，让使用者手动登录过的数据能一直复用，而不是每次都是一个全新的、
+未登录的浏览器窗口。
+
+**改动内容**：
+
+- **`.claude/skills/browser-core/impl/session_manager.py`**：新增模块级
+  常量 `DEFAULT_PERSISTENT_PROFILE_DIR`（默认 `~/.mini_agent/browser-core/
+  profile`，可用环境变量 `BROWSER_CORE_PROFILE_DIR` 整体覆盖）。
+  `get_or_create_session()` 在 `mode="launch_headed"` 且调用方没有显式传
+  `session.user_data_dir` 时，自动把这个持久化目录作为
+  `spawn_browser(user_data_dir=...)` 的参数；`launch_headless` 不受影响，
+  仍沿用原来"缺省时按端口区分的临时目录"（headless 场景通常是无状态的
+  一次性抓取任务，不需要强行持久化，保持原样）。这是本阶段最核心的改动，
+  直接对应"打开普通浏览器时默认应该使用同一个数据目录，让用户登录的数据
+  可以一直使用"这条要求。
+- **`.claude/skills/browser-site-scraper/members/baidu/script.py`**（整体
+  重写）：不再 `sys.path.insert` 指向 `browser-cdp` 目录、不再 `import
+  src.searchers.baidu_search`，改为 `sys.path.insert` 指向
+  `browser-core/impl`、直接 `import session_manager`，用
+  `session_manager.get_or_create_session(input.get("session"))` 拿到一个
+  `CDPSession`，自己调用 `session.navigate()` + `session.eval_js()` 完成
+  导航和提取——**提取用的 JS 逻辑本身完整保留自原
+  `browser-cdp/src/searchers/baidu_search.py::_extract_results_js()`**，
+  没有重写，只是换了执行载体（从 browser-cdp 自己的 CDP 封装换成
+  browser-core 提供的 `CDPSession`）。额外新增了一段"检测页面是否命中
+  验证码/风控关键词"的 JS 检查——这是本阶段顺带修复的一个真实 bug（此前
+  某次真实对话里被观察到：百度返回验证码页时，提取 JS 找不到任何结果
+  容器、返回空数组，外层却把这当成"搜索成功但没有结果"，误导性地报告
+  `status: success`；现在会明确识别并报告"疑似验证码/风控拦截"，同时
+  建议改用 `attach` 模式）。
+- **`.claude/skills/browser-site-scraper/members/zhihu/script.py`**（整体
+  重写）：同样的改法，提取 JS 逻辑完整保留自原
+  `browser-cdp/src/searchers/zhihu_search.py::_extract_results_js()`，
+  新增登录墙检测（知乎对未登录访问限制更明显，检测到登录墙关键词且没有
+  提取到任何结果时，明确建议改用 `attach` 模式连接一个已登录的浏览器）。
+- 两个 member 的 `meta.json` 的 `migrated_from` 字段补充说明依赖关系的
+  变化，避免这份"迁移来源"记录显得像是仍然依赖 `browser-cdp`。
+- 文档同步更新：`browser-core/SKILL.md`（新增"`browser-core` +
+  `browser-site-scraper` 是 `browser-cdp` 替代方案"的明确说明、
+  `launch_headed` 持久化 profile 的行为说明、`browser-cdp` 尚未真正物理
+  删除的已知限制）、`browser-site-scraper/SKILL.md`"依赖"与"已知限制"
+  两节（明确"现在唯一的浏览器操作依赖是 browser-core"、两个 member 已经
+  改造完成、验证码/登录墙检测的行为说明）。
+- 新增测试 `tests/test_browser_core_session_manager.py`（4 个用例，
+  monkeypatch 掉 `spawn_browser`/`is_debug_port_alive` 等，不需要真实
+  Chrome）：验证 `launch_headed` 缺省时确实使用
+  `DEFAULT_PERSISTENT_PROFILE_DIR`、`launch_headless` 不受这条默认值
+  影响、显式传 `user_data_dir` 时能正确覆盖默认值、`attach` 模式在没有
+  监听端口时的报错信息具体可操作。
+
+**验证结果**：
+
+1. `pytest tests/test_generative_capability_engine.py
+   tests/test_generative_capability_real_tools.py
+   tests/test_browser_core_session_manager.py -q` → 33 passed（阶段十三
+   26 个 + 阶段十四新增 3 个 + 本阶段新增 4 个，全部保持通过）。
+2. `grep -rn "browser-cdp" .claude/skills/browser-site-scraper/members/`
+   确认只剩注释/`meta.json` 里的历史沿革说明（"迁移自 XXX，现已改为依赖
+   browser-core"这类文字），没有任何 `sys.path`/`import` 语句还指向
+   `browser-cdp` 目录，即"browser-site-scraper 不应该再依赖 browser-cdp"
+   这条要求在代码层面成立。
+3. 手工运行改写后的 `baidu`/`zhihu` member `run()` 函数（不依赖真实
+   Chrome）：均正确走到 `session_manager.get_or_create_session()` 尝试
+   拉起浏览器这一步，返回诚实的失败信息（`未找到可用的 Chrome...`/浏览器
+   进程提前退出等，取决于沙盒当时是否装了浏览器），证明依赖切换后调用链路
+   本身是通的，失败仅仅是因为沙盒没有可用的完整 Chrome/Chromium。
+4. `tests/test_browser_core_session_manager.py` 里的 4 个用例分别确认了
+   `launch_headed`/`launch_headless`/显式覆盖/`attach` 报错四条路径的
+   `user_data_dir` 取值符合预期，不依赖真实浏览器即可回归。
+
+**已知遗留（留给后续阶段）**：
+
+- `.claude/skills/browser-cdp/` 目录本身**尚未物理删除**——本阶段只保证
+  `browser-site-scraper` 不再需要它存在，真正删除前需要单独确认仓库里
+  没有其他脚本/文档/测试还在引用它（比如 `test_cases/browser_cdp_test.txt`
+  这类既有测试用例），这项确认工作量独立于本次改动，不在阶段十五范围内。
+- `DEFAULT_PERSISTENT_PROFILE_DIR` 目前没有任何自动清理/大小限制机制，
+  长期使用会不断积累浏览器数据，需要使用者自己按需清理，本 skill 不会
+  主动处理，见 `browser-core/SKILL.md`"已知限制"一节。
+- `browser-site-scraper` 目前仍只有 `baidu`/`zhihu` 两个人工预置
+  member（`SKILL.md` frontmatter 里的 `category_summary` 提到"淘宝/京东"
+  是既有的、比实际落盘 member 数量更宽泛的摘要性描述，本阶段未涉及，
+  留给后续需要新增这些 member 时一并核实修正）。
+- 本阶段沿用阶段十四"未在真实浏览器环境下做过端到端验证"的已知限制，
+  改写后的 `baidu`/`zhihu` member 同样只验证到"调用链路正确、失败信息
+  诚实"这一层，没有验证过"真的抓到了百度/知乎的真实搜索结果"，需要在有
+  真实浏览器的环境下补验证。
