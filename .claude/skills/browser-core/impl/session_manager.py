@@ -24,9 +24,12 @@ browser-core/impl/session_manager.py — 维护"探索子agent这一轮调用期
   不需要每次都重新登录。如果需要多个互不影响的登录身份（比如测试多账号），
   可以通过 `session.user_data_dir` 显式指定一个不同的目录来覆盖这个默认值。
 - **auto**（默认）：先尝试 attach 到默认端口，能连上就说明使用者已经准备好
-  了一个浏览器（可能已登录），直接复用；连不上则退化为 launch_headless，
-  保证"没有特意准备浏览器"时仍然能跑通纯抓取场景，不强制每次都要求先手动
-  启动一个浏览器。
+  了一个浏览器（可能已登录），直接复用；连不上则退化为 **launch_headed**
+  （阶段十六起，此前是 launch_headless）——默认打开一个看得见的普通浏览器
+  窗口，而不是无头浏览器，这样调试/首次遇到登录墙时使用者可以直接在这个
+  窗口里手动登录，且因为 launch_headed 默认使用持久化 profile，登录一次后
+  后续调用（哪怕是全新进程）都会带着登录态。纯后台抓取场景可以显式传
+  `session.mode="launch_headless"` 跳过界面。
 
 会话在**当前进程**内以 (host, port) 为 key 复用（模块级字典，风格与
 `mini_agent.skills.generative_capability.tool_runtime.py` 的
@@ -158,10 +161,13 @@ def get_or_create_session(session_cfg: Optional[dict] = None) -> CDPSession:
             if is_debug_port_alive(host, port):
                 pass  # 复用使用者已经准备好的浏览器（可能已登录）
             else:
-                proc = spawn_browser(port=port, headless=True, user_data_dir=cfg["user_data_dir"])
+                # 阶段十六：默认退化为有界面浏览器（而不是无头），并复用与
+                # launch_headed 相同的持久化 profile 默认值，方便调试/登录。
+                user_data_dir = cfg["user_data_dir"] or str(DEFAULT_PERSISTENT_PROFILE_DIR)
+                proc = spawn_browser(port=port, headless=False, user_data_dir=user_data_dir)
                 ok, err = wait_port_alive(lambda: is_debug_port_alive(host, port), proc=proc)
                 if not ok:
-                    raise RuntimeError(f"auto 模式启动 headless 浏览器失败: {err or '超时'}")
+                    raise RuntimeError(f"auto 模式启动有界面浏览器失败: {err or '超时'}")
         else:
             raise RuntimeError(f"未知的 session.mode={mode!r}，支持: attach/launch_headless/launch_headed/auto")
 

@@ -163,6 +163,15 @@ def load_skill_local_tool_implementations(
     初始化——转换为对应工具名的一个"加载失败"标记函数，调用时才把具体的
     加载异常如实报出来，这样一个 skill 的依赖缺失只影响它自己的工具，不会
     连带让其他 base_tools 或项目内置的 `text_transform_apply` 也用不了。
+
+    已知限制（阶段十六引入的热更新副作用）：每次都强制清缓存重新加载意味着
+    `session_manager.py` 模块级的 `_sessions` 会话复用字典也会被清空重建，
+    上一次调用里已经连接的浏览器 tab 不会跨 `capability_call` 调用保留在
+    Python 层——但浏览器进程本身、以及它已经登录的 cookies/profile（见
+    `DEFAULT_PERSISTENT_PROFILE_DIR`）不受影响，下一次调用会通过 attach/auto
+    重新连接同一个浏览器进程的某个 tab，登录态不会丢失，只是可能不是同一个
+    tab（会重新导航）。这是"调试时脚本必须能热更新"与"同进程内长期复用同一
+    tab"两者之间的权衡，调试阶段前者更重要。
     """
     merged: dict[str, Callable[[dict], dict]] = {}
     for base_tool_name in explorer_base_tools or []:
@@ -179,7 +188,25 @@ def load_skill_local_tool_implementations(
         if impl_dir_str not in sys.path:
             sys.path.insert(0, impl_dir_str)
 
+        # 阶段十六（热更新）：`tools_impl.py` 本身每次都用 importlib 按路径
+        # 重新读文件执行，天然热更新；但它内部对同目录下其他实现文件
+        # （如 browser_core_impl.py 里 `from session_manager import ...`）
+        # 用的是普通 flat import——第一次被 import 后会按模块名缓存进
+        # `sys.modules`，之后哪怕重新调这个函数、重新 exec tools_impl.py，
+        # 那些被它 flat import 的文件依然是内存里第一次加载时的旧版本，
+        # 不会因为磁盘上的文件被改过就重新读取。这里在每次加载前主动清掉
+        # 该 impl 目录下所有 .py 文件对应的模块名缓存（按目录下实际文件名
+        # 动态识别，不写死具体文件），强制下一次 flat import 重新从磁盘读取
+        # 最新代码——保证"改了 browser-core/impl 下的脚本，下一次调用
+        # capability_call 执行的就是最新脚本"，不需要重启整个 agent 进程。
+        # 这是纯粹的通用加载机制，不含任何具体 skill 的领域逻辑，对所有
+        # `impl/tools_impl.py` 类 skill（不只是 browser-core）都生效。
+        for py_file in impl_dir.glob("*.py"):
+            stale_module_name = py_file.stem
+            sys.modules.pop(stale_module_name, None)
+
         module_name = f"skill_tools_impl_{base_tool_name.replace('-', '_')}"
+        sys.modules.pop(module_name, None)
         try:
             spec = importlib.util.spec_from_file_location(module_name, tools_impl_path)
             module = importlib.util.module_from_spec(spec)

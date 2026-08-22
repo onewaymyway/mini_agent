@@ -78,6 +78,26 @@ result = engine.call({
     了针对性的提取 JS（不经过通用的 `browser_extract_content`），所以不受
     这条限制影响。
 
+## 调试（阶段十六）
+
+- 实际抓取失败时，`browser-core` 的失败返回会尽力附带 `debug` 字段
+  （url/title/正文摘要），另外可以直接调用 `browser_get_page_source`/
+  `browser_get_debug_snapshot` 两个新增的调试原语拿到更完整的页面 HTML/
+  截图，见 `browser-core/SKILL.md`"工具契约"一节。
+- 默认会话模式（`auto`）在连不上已有浏览器时，现在会退化为**有界面**
+  浏览器（而不是无头），方便需要登录的网站直接在弹出的窗口里手动登录；
+  纯后台场景可以在 `request.session.mode` 显式传 `"launch_headless"`。
+- 本地调试单个 member/URL 不需要走完整探索循环，可以用
+  `dev/debug_run.py`（开发期工具，不进 `_index.json` 检索）：
+  ```
+  python .claude/skills/browser-site-scraper/dev/debug_run.py \
+    --member baidu \
+    --request '{"target": {"url": "https://www.baidu.com/s?wd=test"}, "query": "test"}'
+  ```
+  失败时会打印带 `debug` 字段的错误详情；因为 `browser-core/impl/*.py`
+  现在每次调用前都会清缓存重新加载（阶段十六"热更新"），编辑完脚本后
+  直接重跑同一条命令即可看到最新代码的效果，不需要重启任何进程。
+
 ## 更多信息
 
 引擎设计、状态机、各版本演进历史见

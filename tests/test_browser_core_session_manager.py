@@ -112,6 +112,21 @@ class TestPersistentProfileDefault(unittest.TestCase):
             sm.get_or_create_session({"mode": "attach", "port": 39225})
         self.assertIn("remote-debugging-port", str(ctx.exception))
 
+    def test_auto_mode_falls_back_to_headed_not_headless(self):
+        """阶段十六：auto 模式 attach 不到时，应退化为有界面浏览器
+        （launch_headed 语义：headless=False + 复用持久化 profile 默认值），
+        而不是阶段十五及之前的 launch_headless，方便调试/登录场景。"""
+        sm = self.session_manager
+        self._patch_common(is_alive_side_effect=lambda *a, **k: False)
+        spawn_mock = mock.Mock(return_value=mock.Mock(name="fake_proc"))
+        with mock.patch.object(sm, "spawn_browser", spawn_mock):
+            sm.get_or_create_session({"mode": "auto", "port": 39226})
+
+        spawn_mock.assert_called_once()
+        _, kwargs = spawn_mock.call_args
+        self.assertEqual(kwargs["headless"], False)
+        self.assertEqual(kwargs["user_data_dir"], str(sm.DEFAULT_PERSISTENT_PROFILE_DIR))
+
 
 if __name__ == "__main__":
     unittest.main()

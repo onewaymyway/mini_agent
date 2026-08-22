@@ -18,6 +18,8 @@ from __future__ import annotations
 from browser_core_impl import (
     browser_click,
     browser_extract_content,
+    browser_get_debug_snapshot,
+    browser_get_page_source,
     browser_navigate,
     browser_screenshot_annotated,
     browser_scroll,
@@ -33,4 +35,7 @@ TOOL_IMPLEMENTATIONS = {
     "browser_wait_for_selector": browser_wait_for_selector,
     "browser_extract_content": browser_extract_content,
     "browser_screenshot_annotated": browser_screenshot_annotated,
+    # 阶段十六新增：调试原语
+    "browser_get_page_source": browser_get_page_source,
+    "browser_get_debug_snapshot": browser_get_debug_snapshot,
 }

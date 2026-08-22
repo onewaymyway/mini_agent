@@ -130,8 +130,11 @@ session_manager.py`，提取逻辑照搬未改，只是换了执行载体）。
   重新登录。如果需要多个互不干扰的登录身份，显式传一个不同的
   `session.user_data_dir` 即可覆盖这个默认值。
 - **`auto`**（默认）——先尝试连接默认端口，能连上就复用（可能已经是使用者
-  准备好、已登录的浏览器）；连不上则退化为启动一个新的 headless 实例，
-  保证"没有特意准备浏览器"时纯抓取场景仍然能跑通。
+  准备好、已登录的浏览器）；连不上则退化为启动一个新的**有界面（headed）**
+  实例（阶段十六起，此前退化为 headless），并同样使用上面提到的持久化
+  `user_data_dir`——默认打开一个看得见的普通浏览器窗口，方便在需要登录的
+  场景里直接手动登录，登录一次后续调用都会带着登录态。纯后台抓取场景可以
+  显式传 `session.mode = "launch_headless"` 跳过界面。
 
 会话管理的完整实现见 `impl/session_manager.py`，其文件头有更详细的设计
 说明。
@@ -244,6 +247,45 @@ output: {"ok": true, "image_ref": "供后续多模态消息引用的图片句柄
       | {"ok": false, "error": "截图失败原因"}
 ```
 
+### `browser_get_page_source`（阶段十六新增，调试用）
+
+返回当前页面的 HTML 源码，用于排查"选择器为什么找不到元素"——页面结构和
+预期不一样、内容是异步渲染的、命中了验证码/登录墙页面等。
+
+```
+input:  {"selector": null, "max_length": 20000}
+        # selector 可选，限定只取某个容器的 outerHTML；max_length 控制截断长度
+output: {"ok": true, "html": "...", "truncated": false, "full_length": 12345}
+      | {"ok": false, "error": "..."}
+```
+
+### `browser_get_debug_snapshot`（阶段十六新增，调试用）
+
+一次性打包排查失败所需的素材——url/title/正文摘要/HTML 摘要/截图文件
+路径，供探索子agent或人工调试脚本在"某一步失败了但不确定为什么"时一次性
+拿全上下文，不用再逐个单独调用 `browser_get_page_source`/
+`browser_screenshot_annotated`。
+
+```
+input:  {}
+output: {"ok": true, "url": "...", "title": "...", "body_excerpt": "...",
+         "html_excerpt": "...", "screenshot_path": "/tmp/..."}
+        # 截图本身失败（如浏览器已断开）不影响其余字段，改为附带
+        # "screenshot_error" 字段说明原因，其余调试信息仍会尽力返回
+      | {"ok": false, "error": "..."}
+```
+
+### 失败返回附带的 `debug` 字段（阶段十六）
+
+除了上面两个专门的调试工具，`browser_navigate`/`browser_click`/
+`browser_type`/`browser_scroll`/`browser_wait_for_selector`/
+`browser_extract_content`/`browser_screenshot_annotated` 这 7 个原有工具
+在失败时，只要当时的浏览器会话还能响应，就会尽力在返回里附带一个可选的
+`debug` 字段（`{"url": ..., "title": ..., "body_excerpt": ...}`），不需要
+额外调用调试工具就能看到失败当下页面大致是什么状态；取调试信息本身失败
+（如页面已经导航走/连接已断）时会安静省略这个字段，不会让"取调试信息"
+这件事本身又制造一层新的异常掩盖原始错误。
+
 ## 反爬/登录墙的处理原则（沿用 explorer/prompt.md 的既有约束）
 
 `browser-site-scraper/explorer/prompt.md` 已明确要求探索子agent"遇到
@@ -273,6 +315,16 @@ output: {"ok": true, "image_ref": "供后续多模态消息引用的图片句柄
   是同步调用、单次探索内顺序执行，暂不构成实际问题；如果未来支持并发探索，
   需要在 `session_manager.py` 里补充按调用方隔离的 session key，这是刻意
   留给后续阶段的已知限制，不在本次范围内处理。
+- **调试时改脚本立即生效（阶段十六）**：`real_tools.py` 现在每次调用前会
+  清掉 `impl/` 目录下所有文件的模块缓存再重新加载，所以修改
+  `browser_core_impl.py`/`session_manager.py`/`cdp_client.py`/
+  `browser_launch.py` 后，下一次 `capability_call`（或 `dev/debug_run.py`）
+  执行的就是最新代码，不需要重启 agent 进程。副作用是
+  `session_manager.py` 模块级的 `_sessions` 复用字典也会跟着清空重建——
+  上一次调用里已连接的浏览器 tab 不会跨调用保留在 Python 层，但浏览器
+  进程本身、以及它已登录的 cookies/profile 不受影响，下一次调用会重新
+  attach 到同一个浏览器进程（可能是不同 tab，会重新导航），登录态不会
+  丢失。见 `browser-site-scraper/dev/debug_run.py` 给出的调试循环用法。
 - `browser-site-scraper` 依赖本契约，其探索路径现在**理论上可以真正工作**
   （不再是必然 `not_implemented`），但实际成功与否取决于运行环境是否有
   可用浏览器/合适的调试端口，见 `browser-site-scraper/SKILL.md`"已知

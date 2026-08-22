@@ -141,5 +141,47 @@ class TestSkillLocalToolImplementationLoading(unittest.TestCase):
         self.assertEqual(text_result, {"result": "HI"})
 
 
+class TestHotReloadOfSkillLocalImplementations(unittest.TestCase):
+    """阶段十六：`impl/tools_impl.py` 内部通过 flat import 引用的同目录其他
+    实现文件（如 browser_core_impl.py 里 `from session_manager import ...`）
+    此前会在第一次加载后缓存进 sys.modules，之后即便磁盘上的文件被改过，
+    同一个进程内后续调用仍然执行旧代码。`load_skill_local_tool_implementations`
+    现在应该在每次加载前清掉该 impl 目录下的模块缓存，确保修改立即生效，
+    不需要重启进程——用一个临时构造的假 skill（而不是改动真实的
+    browser-core，避免污染仓库文件）验证这条行为。"""
+
+    def _make_fake_skill(self, tmp_path: Path, body: str) -> Path:
+        skill_dir = tmp_path / "fake-skill"
+        impl_dir = skill_dir / "impl"
+        impl_dir.mkdir(parents=True)
+        (impl_dir / "helper.py").write_text(body, encoding="utf-8")
+        (impl_dir / "tools_impl.py").write_text(
+            "from helper import fake_tool\nTOOL_IMPLEMENTATIONS = {'fake_tool': fake_tool}\n",
+            encoding="utf-8",
+        )
+        return skill_dir
+
+    def test_editing_impl_file_takes_effect_without_reimporting_process(self):
+        import tempfile
+        from mini_agent.skills.generative_capability.real_tools import (
+            load_skill_local_tool_implementations,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            skill_dir = self._make_fake_skill(
+                tmp_path, "def fake_tool(tool_input):\n    return {'value': 'v1'}\n"
+            )
+            impls_v1 = load_skill_local_tool_implementations(["fake-skill"], tmp_path)
+            self.assertEqual(impls_v1["fake_tool"]({}), {"value": "v1"})
+
+            # 模拟"调试时直接改脚本"：改掉磁盘上的文件内容
+            (skill_dir / "impl" / "helper.py").write_text(
+                "def fake_tool(tool_input):\n    return {'value': 'v2-edited'}\n", encoding="utf-8"
+            )
+            impls_v2 = load_skill_local_tool_implementations(["fake-skill"], tmp_path)
+            self.assertEqual(impls_v2["fake_tool"]({}), {"value": "v2-edited"})
+
+
 if __name__ == "__main__":
     unittest.main()

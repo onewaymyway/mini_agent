@@ -34,6 +34,34 @@ def _session(tool_input: dict) -> CDPSession:
     return get_or_create_session(tool_input.get("session"))
 
 
+def _debug_context(session: Optional[CDPSession]) -> dict:
+    """
+    阶段十六：失败时尽力附带的调试上下文——当前 url/title/正文摘要。
+    仅在 session 已经建立、且这次取上下文本身不再抛异常时才附带；
+    取失败（比如页面已经导航走/连接已断）就安静省略，不让"取调试信息"
+    这件事本身又制造一层新的异常掩盖原始错误。
+    """
+    if session is None:
+        return {}
+    try:
+        info = session.eval_js(
+            "({url: location.href, title: document.title, "
+            "body_excerpt: (document.body ? document.body.innerText : '').slice(0, 500)})"
+        )
+        return info if isinstance(info, dict) else {}
+    except Exception:  # noqa: BLE001 - 调试信息本身失败不应掩盖原始错误
+        return {}
+
+
+def _fail(error_msg: str, session: Optional[CDPSession] = None) -> dict:
+    """统一构造失败返回，尽力附带 debug 上下文（阶段十六：更详细的错误信息）。"""
+    result = {"ok": False, "error": error_msg}
+    debug = _debug_context(session)
+    if debug:
+        result["debug"] = debug
+    return result
+
+
 def browser_navigate(tool_input: dict) -> dict:
     url = tool_input.get("url")
     if not isinstance(url, str) or not url:
@@ -45,7 +73,7 @@ def browser_navigate(tool_input: dict) -> dict:
         title = session.eval_js("document.title")
         return {"ok": True, "final_url": final_url, "title": title}
     except Exception as e:  # noqa: BLE001 - 契约要求把任何失败都归一化为 ok:false
-        return {"ok": False, "error": f"导航失败: {e}"}
+        return _fail(f"导航失败: {e}", session=locals().get("session"))
 
 
 def _query_selector_js(selector: str) -> str:
@@ -81,9 +109,9 @@ def browser_click(tool_input: dict) -> dict:
             return {"ok": False, "error": f"点击返回了非预期结构: {result!r}"}
         return result
     except CDPError as e:
-        return {"ok": False, "error": f"点击失败: {e}"}
+        return _fail(f"点击失败: {e}", session=locals().get("session"))
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": f"点击时发生异常: {e}"}
+        return _fail(f"点击时发生异常: {e}", session=locals().get("session"))
 
 
 def browser_type(tool_input: dict) -> dict:
@@ -126,9 +154,9 @@ def browser_type(tool_input: dict) -> dict:
             return {"ok": False, "error": f"输入返回了非预期结构: {result!r}"}
         return result
     except CDPError as e:
-        return {"ok": False, "error": f"输入失败: {e}"}
+        return _fail(f"输入失败: {e}", session=locals().get("session"))
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": f"输入时发生异常: {e}"}
+        return _fail(f"输入时发生异常: {e}", session=locals().get("session"))
 
 
 def browser_scroll(tool_input: dict) -> dict:
@@ -175,9 +203,9 @@ def browser_scroll(tool_input: dict) -> dict:
             return {"ok": False, "error": f"滚动返回了非预期结构: {result!r}"}
         return result
     except CDPError as e:
-        return {"ok": False, "error": f"滚动失败: {e}"}
+        return _fail(f"滚动失败: {e}", session=locals().get("session"))
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": f"滚动时发生异常: {e}"}
+        return _fail(f"滚动时发生异常: {e}", session=locals().get("session"))
 
 
 def browser_wait_for_selector(tool_input: dict) -> dict:
@@ -221,9 +249,9 @@ def browser_wait_for_selector(tool_input: dict) -> dict:
             time.sleep(0.2)
         return {"ok": False, "error": f"超时未等到选择器 {selector!r} 达到状态 {state!r}"}
     except CDPError as e:
-        return {"ok": False, "error": f"等待失败: {e}"}
+        return _fail(f"等待失败: {e}", session=locals().get("session"))
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": f"等待时发生异常: {e}"}
+        return _fail(f"等待时发生异常: {e}", session=locals().get("session"))
 
 
 def browser_extract_content(tool_input: dict) -> dict:
@@ -266,9 +294,9 @@ def browser_extract_content(tool_input: dict) -> dict:
             return {"ok": False, "error": f"提取返回了非预期结构: {result!r}"}
         return result
     except CDPError as e:
-        return {"ok": False, "error": f"提取失败: {e}"}
+        return _fail(f"提取失败: {e}", session=locals().get("session"))
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": f"提取时发生异常: {e}"}
+        return _fail(f"提取时发生异常: {e}", session=locals().get("session"))
 
 
 def browser_screenshot_annotated(tool_input: dict) -> dict:
@@ -308,9 +336,77 @@ def browser_screenshot_annotated(tool_input: dict) -> dict:
             ),
         }
     except CDPError as e:
-        return {"ok": False, "error": f"截图失败: {e}"}
+        return _fail(f"截图失败: {e}", session=locals().get("session"))
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": f"截图时发生异常: {e}"}
+        return _fail(f"截图时发生异常: {e}", session=locals().get("session"))
+
+
+def browser_get_page_source(tool_input: dict) -> dict:
+    """
+    阶段十六新增的调试原语：返回当前页面的 HTML 源码（可选按 selector 限定
+    容器），用于排查"选择器为什么找不到元素"——比如页面结构和预期不一样、
+    内容是异步渲染进来的、命中了验证码/登录墙页面等。默认截断到
+    `max_length` 字符（防止整页 HTML 把探索子agent的上下文撑爆），可通过
+    `max_length` 参数放宽。
+    """
+    selector = tool_input.get("selector")
+    max_length = tool_input.get("max_length", 20000)
+    try:
+        max_length = int(max_length)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "max_length 必须是整数"}
+    try:
+        session = _session(tool_input)
+        root_expr = f"document.querySelector({_query_selector_js(selector)})" if selector else "document.documentElement"
+        html = session.eval_js(f"(() => {{ const r = {root_expr}; return r ? r.outerHTML : null; }})()")
+        if html is None:
+            return _fail(f"选择器 {selector!r} 未匹配到任何容器", session=session)
+        truncated = len(html) > max_length
+        return {
+            "ok": True,
+            "html": html[:max_length],
+            "truncated": truncated,
+            "full_length": len(html),
+        }
+    except CDPError as e:
+        return _fail(f"获取页面源码失败: {e}", session=locals().get("session"))
+    except Exception as e:  # noqa: BLE001
+        return _fail(f"获取页面源码时发生异常: {e}", session=locals().get("session"))
+
+
+def browser_get_debug_snapshot(tool_input: dict) -> dict:
+    """
+    阶段十六新增的调试原语：一次性打包排查失败所需的素材——url/title/正文
+    摘要/截图文件路径/HTML 摘要，供探索子agent或人工调试脚本在"某一步失败
+    了但不确定为什么"时一次性拿全上下文，不用再一个个单独调用
+    browser_get_page_source/browser_screenshot_annotated 反复试。截图失败
+    (如未安装 Pillow 之外的其他异常) 不影响其余字段返回，`screenshot_error`
+    如实记录原因。
+    """
+    try:
+        session = _session(tool_input)
+        info = session.eval_js(
+            "({url: location.href, title: document.title, "
+            "body_excerpt: (document.body ? document.body.innerText : '').slice(0, 2000), "
+            "html_excerpt: document.documentElement.outerHTML.slice(0, 4000)})"
+        )
+        if not isinstance(info, dict):
+            info = {}
+        snapshot: dict = {"ok": True, **info}
+        try:
+            png_b64 = session.capture_screenshot(full_page=False)
+            tmp_dir = tempfile.gettempdir()
+            image_path = os.path.join(tmp_dir, f"browser-core-debug-{int(time.time() * 1000)}.png")
+            with open(image_path, "wb") as f:
+                f.write(base64.b64decode(png_b64))
+            snapshot["screenshot_path"] = image_path
+        except Exception as screenshot_error:  # noqa: BLE001 - 截图失败不应影响其余调试字段
+            snapshot["screenshot_error"] = str(screenshot_error)
+        return snapshot
+    except CDPError as e:
+        return _fail(f"获取调试快照失败: {e}", session=locals().get("session"))
+    except Exception as e:  # noqa: BLE001
+        return _fail(f"获取调试快照时发生异常: {e}", session=locals().get("session"))
 
 
 def _try_annotate(image_path: str, elements: list[dict]) -> bool:

@@ -1771,3 +1771,129 @@ INTEGRATION.md` 第 6-7 节）**：
   改写后的 `baidu`/`zhihu` member 同样只验证到"调用链路正确、失败信息
   诚实"这一层，没有验证过"真的抓到了百度/知乎的真实搜索结果"，需要在有
   真实浏览器的环境下补验证。
+
+### 阶段十六 —— 已完成
+
+**背景**：`browser-site-scraper` 实际运行时经常失败，需要优化机制让 agent
+能根据错误信息自主修复 skill 脚本；同时确认 `browser-core`/`browser-site-scraper`
+是 `browser-cdp` 的最终替代（`browser-cdp` 后续将被移除）。
+
+**诊断到的问题**：
+
+1. **热更新不完整**：`members/<id>/script.py` 每次都是 `importlib` 重新读文件
+   执行，天然热更新；但 `browser-core/impl/*.py`（`browser_core_impl.py` /
+   `session_manager.py` / `cdp_client.py` / `browser_launch.py`）内部互相用
+   普通 flat `import`，第一次加载后被缓存进 `sys.modules`，之后哪怕重新调用
+   `capability_call`，这几个文件仍是内存里的旧版本——这是"改了 browser-core
+   脚本但执行的还是旧版本"的根因。
+2. **默认无头浏览器**：`session_manager._resolve_config` 默认 `mode=auto`，
+   attach 不到端口时退化为 `launch_headless`，不便于需要登录的场景。
+3. **失败信息薄**：所有工具失败只返回一句 `{"ok": false, "error": "..."}"`，
+   没有页面快照（HTML/截图/console），排查困难。
+4. **缺少面向"改脚本再验证"的调试入口**：只有 `capability_engine.py
+   --stub-...` 这种命令行自测，不面向真实网站调试。
+
+**改动方案（全部落在 skill 目录内，或纯粹的通用加载机制，不含浏览器逻辑）**：
+
+- **A. 热更新**（`real_tools.py`）：`load_skill_local_tool_implementations`
+  加载 `tools_impl.py` 前先清掉该 skill impl 目录下已缓存的旧模块（按目录下
+  实际文件名动态识别，不写死列表），再重新 import。纯通用机制，所有
+  `impl/tools_impl.py` 类 skill 都受益。
+- **B. 默认有头浏览器**（`browser-core/impl/session_manager.py`）：`auto`
+  模式兜底从 `launch_headless` 改为 `launch_headed`（复用阶段十五已加的
+  持久化 profile），保留显式 `launch_headless` 的纯后台抓取路径。
+- **C. 更详细的错误信息 + 调试原语**（`browser-core/impl/`）：现有工具失败
+  分支补充 `url`/`title`/正文摘要等上下文；新增 `browser_get_page_source`、
+  `browser_get_debug_snapshot`（html 摘要 + 截图 + console）两个调试工具。
+- **D. 调试循环支持**：`browser-site-scraper/dev/debug_run.py`（开发期工具，
+  不进 `_index.json` 检索，遵循第 10 节"开发期工具不进 skill 索引"的约定），
+  失败时打印结构化调试快照；文档给出"跑 debug_run → 看结构化错误 → 改脚本 →
+  因为 A 项热更新，无需重启进程直接重跑验证"的自助修复流程。
+
+**实施顺序**：A → B → C → D，每完成一步更新本文档与相关 `SKILL.md`，并打包
+该步骤新增/修改的文件（保持目录结构）供下载。
+
+**实际改动文件**：
+
+```
+src/mini_agent/skills/generative_capability/real_tools.py   # 修改：A 热更新
+.claude/skills/browser-core/impl/session_manager.py         # 修改：B 默认有头
+.claude/skills/browser-core/impl/browser_core_impl.py       # 修改：C 更详细错误信息 + 新增
+                                                               # browser_get_page_source /
+                                                               # browser_get_debug_snapshot
+.claude/skills/browser-core/impl/tools_impl.py               # 修改：导出两个新调试工具
+.claude/skills/browser-core/SKILL.md                          # 修改：契约 + 会话模式 + 已知限制更新
+.claude/skills/browser-site-scraper/explorer/tool_allowlist.json  # 修改：加入两个新调试工具
+.claude/skills/browser-site-scraper/SKILL.md                  # 修改：新增"调试"一节
+.claude/skills/browser-site-scraper/dev/debug_run.py          # 新增：D 调试循环入口（开发期工具，
+                                                               # 不进 _index.json 检索）
+tests/test_browser_core_session_manager.py                    # 修改：新增 auto->headed 回归用例
+tests/test_generative_capability_real_tools.py                # 修改：新增热更新回归用例
+next_doc/generative-capability-skill-plan.md                  # 本文档（阶段十六记录）
+```
+
+**已实现能力**：
+
+- **A. 热更新**：`load_skill_local_tool_implementations` 在加载
+  `tools_impl.py` 前，先按 impl 目录下实际存在的 `.py` 文件名清掉
+  `sys.modules` 里对应的缓存（不写死具体文件名），再重新加载——保证
+  `browser_core_impl.py`/`session_manager.py`/`cdp_client.py`/
+  `browser_launch.py` 这类被 flat import 引用的文件，修改后下一次
+  `capability_call` 调用就是最新代码，不需要重启 agent 进程。副作用（会话
+  复用字典 `_sessions` 跟着清空重建，浏览器进程/登录态不受影响）记入
+  `browser-core/SKILL.md`"已知限制"一节，不掩盖。
+- **B. 默认有头浏览器**：`session_manager.py` 的 `auto` 模式在 attach 不到
+  已有浏览器时，退化目标从 `launch_headless` 改为等价于 `launch_headed`
+  的行为（`headless=False` + 复用 `DEFAULT_PERSISTENT_PROFILE_DIR`），
+  方便需要登录的场景直接在弹出窗口里手动登录；`launch_headless` 仍可通过
+  显式指定 `session.mode` 使用。
+- **C. 更详细的错误信息**：`browser_core_impl.py` 新增 `_debug_context()`/
+  `_fail()` 两个内部辅助，原有 7 个工具的所有失败分支统一改用 `_fail()`，
+  只要当时浏览器会话还能响应就尽力附带 `debug`（url/title/正文摘要）字段；
+  取调试信息本身失败时安静省略，不掩盖原始错误。新增
+  `browser_get_page_source`（取当前页 HTML，可选按 selector 限定）与
+  `browser_get_debug_snapshot`（一次性打包 url/title/正文摘要/HTML摘要/
+  截图路径），两者都加入 `browser-site-scraper/explorer/tool_allowlist.json`，
+  供探索子agent在失败时主动排查。
+- **D. 调试循环**：新增 `browser-site-scraper/dev/debug_run.py`（放在
+  `dev/` 而非 `members/`，不进 `_index.json` 检索，遵循第 10 节既有约定），
+  对指定 member+request 跑一次真实 `execute()`，失败时打印带 `debug` 字段
+  的结构化错误；`SKILL.md` 给出"改脚本 → 因 A 项热更新直接重跑 → 无需重启"
+  的自助修复流程说明。
+
+**验证结果**：
+
+1. `pytest tests/test_generative_capability_engine.py
+   tests/test_generative_capability_real_tools.py
+   tests/test_browser_core_session_manager.py -q` → 35 passed（阶段十五
+   33 个既有用例全部保持通过 + 本阶段新增 2 个：`auto` 模式退化为有界面
+   浏览器的回归用例、`impl/` 目录下文件编辑后免重启立即生效的热更新回归
+   用例——后者用临时构造的假 skill 验证，不污染仓库文件）。
+2. 手工调用改造后的 `browser_get_page_source({})`（沙盒无可用 Chrome）→
+   如实返回"未找到可用的 Chrome/Chromium/Edge..."的具体错误，未抛出未捕获
+   异常，验证新工具的失败路径与既有 7 个工具风格一致（诚实失败，不伪造
+   成功）。
+3. `grep -c '_fail(' browser_core_impl.py` 确认原有 7 个工具的全部 13 处
+   失败分支（除 `browser_navigate` 单独手工替换的 1 处外，其余 12 处由
+   脚本批量替换）都已切换到统一的 `_fail()` helper，语法检查
+   （`ast.parse`）全部通过。
+
+**已知遗留（留给后续阶段）**：
+
+- 热更新的代价是 `session_manager._sessions` 复用字典每次调用都被清空
+  重建，同一次 `capability_call` 内部虽然依旧复用同一个会话（构造顺序上
+  `load_skill_local_tool_implementations` 只在最外层 `build_default_tool_
+  executor()` 调用一次），但跨越两次独立的 `capability_call`/`debug_run.py`
+  调用后，Python 层面的会话对象不再是同一个（会重新 attach、可能是不同
+  tab）。这是"调试时脚本必须能热更新"与"同进程内长期复用同一 tab"之间
+  刻意的取舍，后续如果需要两者兼得，需要把"是否清缓存"做成可选开关（如
+  只在检测到文件 mtime 变化时才清），本阶段未做这个优化。
+- `browser_get_page_source`/`browser_get_debug_snapshot` 与其余 7 个工具
+  一样，仍未在真实浏览器环境下做过端到端验证（沙盒无可用 Chrome），只验证
+  到"无浏览器时失败路径正确、诚实"这一层，延续阶段十四/十五已如实记录的
+  同一项已知限制。
+- 本阶段未改动 `explore()`/`distill()` 状态机本身、未新增"agent 根据错误
+  自动改写 member 脚本"的自动化机制——`dev/debug_run.py` 只是把"人工/agent
+  手动改脚本再验证"这条路径变得顺手，是否要做成完全自动的"看到失败 →
+  自动生成补丁 → 自动验证"闭环，留给有真实失败样本积累之后再评估，避免
+  在没有真实数据支撑前过度设计。
