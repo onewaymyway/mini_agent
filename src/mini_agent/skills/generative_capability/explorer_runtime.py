@@ -403,13 +403,29 @@ def build_subagent_explorer(
             return ExploreTrace(success=False, error=f"构造探索子agent失败: {e}", stop_reason="llm_error")
 
         # 若 _build_agent() 落回了全局默认 registry（task 未声明
-        # allowed_tools/allowed_tool_groups 时的既有行为），必须先换成一份
-        # 私有副本再注册 finish/report_failure/领域桥接工具——否则会污染
-        # 全局单例，被其它并发 agent/SubAgent 看到（同一坑见
+        # allowed_tools/allowed_tool_groups 时的既有行为——build_subagent_explorer()
+        # 构造的 Task 从不设置 allowed_tools，因此这个分支实际上*总是*会走到），
+        # 必须先换成一份私有副本再注册 finish/report_failure/领域桥接工具——
+        # 否则会污染全局单例，被其它并发 agent/SubAgent 看到（同一坑见
         # orchestrator/sub_agent.py::_build_agent 里 active_skills 分支的
         # 注释）。
+        #
+        # [BUGFIX] `Agent.__init__` 在构造期内部把 `self.registry` 的引用传给了
+        # `self._tool_executor`（`ToolExecutor(registry=self.registry, ...)`），
+        # 这个引用是在 `_build_agent()` 返回*之前*就已经捕获、固化的。这里对
+        # `agent.registry` 的重新赋值只更新了 `agent.registry` 这一个属性，
+        # `agent._tool_executor.registry` 仍指向重新赋值*之前*的那个（全局默认）
+        # registry 对象——两者从此不再是同一个对象，之后在这个新对象上
+        # `register_fn()` 注册的 finish/report_failure/领域桥接工具，实际工具
+        # 派发时（`agent.run_turn()` -> `ToolExecutor.execute_all()` ->
+        # `self.registry.call(name, ...)`）根本看不到，报
+        # `Unknown tool: 'browser_navigate'`（或 finish/report_failure 同样会
+        # 遇到，只是模型没恰好选中才没暴露）。必须把这份新的私有 registry 同步
+        # 写回 `agent._tool_executor.registry`，保持两者引用一致。
         if agent.registry is get_default_registry():
             agent.registry = agent.registry.filtered()
+            if getattr(agent, "_tool_executor", None) is not None:
+                agent._tool_executor.registry = agent.registry
 
         outcome: dict = {}
         agent.registry.register_fn(

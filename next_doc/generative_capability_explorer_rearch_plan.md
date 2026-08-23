@@ -1,6 +1,8 @@
 # Generative-Capability 探索机制重构方案
 
-- **版本**: v1.2（阶段一~五全部已实施，方案完结）
+- **版本**: v1.3（阶段一~五全部已实施；发现并修复一处生产环境复现的严重
+  bug——探索用 Agent 的 `_tool_executor.registry` 与 `agent.registry` 引用
+  分裂，导致领域桥接工具真实派发时报 `Unknown tool`，见第 7 节）
 - **关联文档**:
   - `next_doc/generative-capability-skill-plan.md`（第 6 节 explore()/distill()、
     第 8 节安全边界、实施记录阶段一~阶段十九——本方案是对其"探索"这一环节的
@@ -461,3 +463,91 @@ prompt.md 的具体文字内容，因此文案改写本身风险很低，主要�
 ---
 
 **本方案（v1.1 → v1.2）实施状态：阶段一~五全部完成。**
+
+---
+
+## 7. 生产环境复现问题修复记录
+
+### 7.1 `browser_navigate` 等桥接工具在真实派发时报 `Unknown tool`（严重，已修复）
+
+**触发**：用户在真实项目（非本仓库沙盒）里通过 `capability_call` 调用
+`browser-site-scraper` 时，探索子agent尝试调用 `browser_navigate`，得到：
+
+```
+✗ browser_navigate error: Unknown tool: 'browser_navigate' (namespace='default')
+```
+
+**根因**：`orchestrator/sub_agent.py::_build_agent()` 构造 `Agent` 实例时，
+`Agent.__init__` 内部会立即用当时的 `self.registry` 构造
+`self._tool_executor = ToolExecutor(registry=self.registry, ...)`——这个
+`registry` 引用在构造那一刻就被 `ToolExecutor` 捕获、固化了。
+
+而 `explorer_runtime.py::build_subagent_explorer()` 在 `_build_agent()`
+**返回之后**才做：
+
+```python
+if agent.registry is get_default_registry():
+    agent.registry = agent.registry.filtered()
+```
+
+这行代码只重新赋值了 `agent.registry` 这一个属性，把它换成一份新的私有
+`ToolRegistry` 对象（为了不污染全局单例），但 `agent._tool_executor.registry`
+仍然指向重新赋值*之前*的那个（全局默认）对象——从这一刻起两者不再是同一个
+对象。随后 `finish`/`report_failure`/领域桥接工具（`browser_navigate` 等）
+都是 `register_fn()` 到这个*新*对象上的。
+
+问题在于，`agent.run_turn()` 内部真正派发工具调用走的是
+`self._tool_executor.execute_all()` -> `self.registry.call(name, ...)`——
+用的是*旧*那个 `ToolExecutor.registry` 引用，从未被更新过，因此完全看不到
+新注册的工具，报 `Unknown tool`。
+
+由于 `build_subagent_explorer()` 构造的 `Task` 从不设置
+`task.allowed_tools`/`task.allowed_tool_groups`，`_build_agent()` 里
+`registry = None` 分支（进而落到 `agent.registry is get_default_registry()`
+为真）是**唯一会发生的情况**，也就是说这个 bug 对所有探索请求都必然触发，
+不是偶发或边界场景——只是此前没有任何一条真实链路把它逼出来过。
+
+**为什么阶段一~四的测试没有发现**：`test_explorer_runtime_subagent.py`/
+`test_explorer_subagent_engine_e2e.py` 里所有测试用例都是 monkeypatch
+`SubAgent._run_with_capture`，在其内部**直接调用**
+`agent.registry.get(FINISH_TOOL).fn(...)`——这是刻意为了不发起真实 LLM
+请求而设计的手法（模拟"探索子agent这一轮的决定"），但副作用是完全绕开了
+`agent.run_turn()` -> `ToolExecutor.execute_all()` 这条真实工具派发路径，
+天然掩盖了两个 `registry` 对象分裂的问题。这是一个测试盲区，而非"改了代码
+没跑测试"。
+
+**修复**：`explorer_runtime.py` 里重新赋值 `agent.registry` 之后，同步把
+`agent._tool_executor.registry` 指向同一个新对象：
+
+```python
+if agent.registry is get_default_registry():
+    agent.registry = agent.registry.filtered()
+    if getattr(agent, "_tool_executor", None) is not None:
+        agent._tool_executor.registry = agent.registry
+```
+
+**改动文件**:
+- `src/mini_agent/skills/generative_capability/explorer_runtime.py`
+- `tests/test_explorer_runtime_subagent.py`（新增
+  `TestBuildSubagentExplorerToolExecutorRegistrySync`，2 个用例）
+
+**新增测试要点**：不再像既有用例那样绕开真实派发路径，而是显式通过
+`agent._tool_executor.registry`（`ToolExecutor.execute_all()` 内部实际会
+用到的那个引用）去查找/调用 `finish`/`browser_navigate` 桥接工具：
+1. 断言 `agent._tool_executor.registry is agent.registry`（对象同一性，
+   直接命中本次 bug 的根因）。
+2. 通过 `agent._tool_executor.registry.call("browser_navigate", ...)` 实际
+   调用领域桥接工具并验证转发正确、`finish` 可达。
+
+**验证**：手动临时还原修复前的代码，确认新增的两个用例均会失败（复现原
+bug）；还原修复后两个用例通过。与阶段一~四全部既有测试合并运行共 139 个
+用例全部通过，无回归。
+
+**已知遗留**：这次 bug 提示"局部重新赋值 `agent.registry` 而不同步
+`agent._tool_executor.registry`"是一类容易再犯的错误模式——`Agent` 目前
+没有提供一个"安全替换 registry"的公开方法来保证内部各处引用一致，未来若
+再有类似需求（比如另一处也想在 `_build_agent()` 返回后动态扩充工具集），
+仍可能重蹈覆辙。更根治的做法是在 `Agent` 上加一个
+`replace_registry(new_registry)` 方法，内部统一处理"registry 变了，所有
+持有旧引用的地方都要跟着更新"，而不是让每个调用方各自记得手动同步。这个
+改动会影响 `Agent` 的公开接口，超出本次 bugfix 的范围，留给后续按需评估。

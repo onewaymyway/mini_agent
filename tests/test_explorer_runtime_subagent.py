@@ -202,5 +202,85 @@ class TestResolveDomainToolNames(unittest.TestCase):
         self.assertEqual(names, ["doc-core"])
 
 
+class TestBuildSubagentExplorerToolExecutorRegistrySync(unittest.TestCase):
+    """
+    [BUGFIX 回归测试] 探索用 Agent 的 `_tool_executor.registry` 必须与
+    `agent.registry` 是同一个对象，工具才能在真实派发路径
+    （`ToolExecutor.execute_all()` -> `self.registry.call(...)`）里被找到。
+
+    此前的 bug：`build_subagent_explorer()` 在 `_build_agent()` 返回*之后*
+    重新赋值了 `agent.registry`（换成私有 filtered 副本），但
+    `agent._tool_executor.registry` 在 `Agent.__init__` 期间已经捕获了
+    重新赋值*之前*的那个（全局默认）registry 对象引用，此后两者不再是同一
+    对象。`finish`/`report_failure`/领域桥接工具都注册在了新对象上，
+    但真实工具派发（`agent.run_turn()` 内部走的是
+    `self._tool_executor.execute_all()` -> `self.registry.call(name, ...)`）
+    用的是旧对象——导致模型一旦真的尝试调用 `browser_navigate` 之类的
+    工具，会得到 `Unknown tool: 'browser_navigate'`，即使
+    `agent.registry.names` 里明明有这个名字。
+
+    这个 bug 是 `test_finish_success_with_script_source` 等既有用例测不出来
+    的：那些用例直接调用 `agent.registry.get(FINISH_TOOL).fn(...)`，绕过了
+    `ToolExecutor.execute_all()` 这条真实派发路径，天然掩盖了两个 registry
+    对象分裂的问题。本测试改为通过 `agent._tool_executor.registry`（真实派发
+    时实际会用到的那个引用）去查找/调用工具，才能真正复现并锁定这个修复。
+    """
+
+    def test_tool_executor_registry_is_same_object_as_agent_registry(self):
+        cfg = make_cfg()
+        captured = {}
+
+        def fake_run_with_capture(self, agent, prompt):
+            captured["agent"] = agent
+            finish_fn = agent.registry.get(FINISH_TOOL).fn
+            return finish_fn(data={})
+
+        with patch.object(SubAgent, "_run_with_capture", fake_run_with_capture):
+            explorer = build_subagent_explorer(cfg)
+            explorer({"text": "t"}, {}, {})
+
+        agent = captured["agent"]
+        self.assertIsNotNone(getattr(agent, "_tool_executor", None))
+        self.assertIs(
+            agent._tool_executor.registry, agent.registry,
+            msg="agent._tool_executor.registry 必须与 agent.registry 是同一个"
+                "对象，否则真实工具派发路径（ToolExecutor.execute_all）会用"
+                "过期的 registry，看不到 finish/report_failure/领域桥接工具。",
+        )
+
+    def test_finish_tool_reachable_via_tool_executor_registry(self):
+        """更直接的回归：真实派发时会用到的引用（_tool_executor.registry）
+        必须能查到并成功调用 finish/领域桥接工具，而不只是 agent.registry。
+        """
+        cfg = make_cfg()
+        calls = []
+
+        def fake_tool_executor(name, tool_input):
+            calls.append((name, tool_input))
+            return {"ok": True}
+
+        captured = {}
+
+        def fake_run_with_capture(self, agent, prompt):
+            captured["agent"] = agent
+            # 故意不走 agent.registry，而是走真实派发时会用到的
+            # agent._tool_executor.registry，模拟 ToolExecutor.execute_all()
+            # 内部 self.registry.call(name, tool_input) 的真实查找路径。
+            exec_registry = agent._tool_executor.registry
+            bridge_result = exec_registry.call("browser_navigate", {"url": "https://example.com"})
+            finish_fn = exec_registry.get(FINISH_TOOL).fn
+            return finish_fn(data={"bridged": bridge_result})
+
+        with patch.object(SubAgent, "_run_with_capture", fake_run_with_capture):
+            explorer = build_subagent_explorer(cfg, tool_executor=fake_tool_executor)
+            trace = explorer(
+                {"text": "t"}, {},
+                {"allowed_tools": ["browser_navigate"], "max_turns": 5},
+            )
+
+        self.assertTrue(trace.success, msg=trace.error)
+        self.assertEqual(calls, [("browser_navigate", {"url": "https://example.com"})])
+
+
 if __name__ == "__main__":
     unittest.main()
