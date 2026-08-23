@@ -335,3 +335,43 @@ LLMHelper 而非自拼 API"的成果（provider 无关、跟随 `/model` 切换�
 既有测试合并运行共 135 个用例全部通过，无回归。
 
 ### 阶段三~五 —— 待实施
+### 阶段三 —— 三个 skill 的 capability.yaml/prompt.md 迁移（已完成）
+
+**改动文件**:
+- `.claude/skills/text-transform-capability/capability.yaml` +
+  `.claude/skills/text-transform-capability/explorer/prompt.md`
+- `.claude/skills/browser-site-scraper/capability.yaml` +
+  `.claude/skills/browser-site-scraper/explorer/prompt.md`
+- `.claude/skills/doc-template-generation/capability.yaml` +
+  `.claude/skills/doc-template-generation/explorer/prompt.md`
+
+**实现摘要**:
+- 三份 `capability.yaml` 的 `explorer.max_steps` 统一改名为
+  `explorer.max_turns`，直接对应 `Task.max_turns`；`explorer.max_seconds`
+  统一移除（阶段一起不再被 `build_subagent_explorer()` 读取，留着只会让人
+  误以为还生效）。`build_llm_explorer()`（遗留实现）仍然按自己的默认值
+  运行，不受这次 yaml 改动影响（其 `max_steps`/`max_seconds` 读取都带
+  默认值兜底）。
+- `browser-site-scraper/capability.yaml` 新增 `explorer.preferred_primitives`
+  （核心浏览器原语的建议顺序），作为"倾向提示"注入探索系统提示词，不是
+  限制——探索子agent走不通时仍可以用被允许的完整工具集。
+- `tool_allowlist.json` 三个文件均未改动，继续被 `_resolve_domain_tool_names()`
+  读取用于领域工具桥接（见阶段一）；capability.yaml 没有引入新的
+  `explorer.allowed_tools` 内联写法，因为现有 json 文件已经承担了这个职责，
+  没有必要为了"用新字段"而重复声明同一份数据。
+- 三份 `explorer/prompt.md` 同步改写：去掉"只允许调用 tool_allowlist.json
+  中列出的原语"这条已经不成立的旧约束（探索器现在是真实 SubAgent，天然拥有
+  bash/python 等系统通用工具），改为"优先用领域原语，原语覆盖不到时用通用
+  工具兜底"；步数/时间预算措辞同步改为只提 `max_turns`；新增"收尾"小节，
+  指导探索子agent在 `finish` 时判断是否要一并提交 `script_source`（阶段二
+  新增的可选路径），并明确 `report_failure` 是不确定/走不通时的正确出口。
+
+**验证**: 迁移后重跑 `test_generative_capability_engine.py` /
+`test_generative_capability_real_tools.py` /
+`test_explorer_runtime_subagent.py` / `test_distiller_script_source.py` /
+`test_orchestrator.py` / `test_subagent_inheritance.py`，共 135 个用例全部
+通过，无回归（这些测试大多用 `build_stub_explorer`/桩 LLM，不依赖
+prompt.md 的具体文字内容，因此文案改写本身风险很低，主要靠 yaml 结构变化
+的测试覆盖来兜底）。
+
+### 阶段四~五 —— 待实施

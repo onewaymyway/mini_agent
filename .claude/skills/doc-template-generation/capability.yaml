@@ -40,12 +40,13 @@ intent_schema_template:
 
 # 探索阶段配置（复用与 browser-site-scraper 相同的引擎接线；
 # base_tools 换成本领域自己的底层原语声明，占位，尚未实现）。
+# [阶段二十/阶段三] 字段名同步改为 max_turns，移除不再被读取的 max_seconds
+# （见 browser-site-scraper/capability.yaml 里的同名详细说明）。
 explorer:
   base_tools: [doc-core]
   prompt: explorer/prompt.md
   tool_allowlist: explorer/tool_allowlist.json
-  max_steps: 25
-  max_seconds: 120
+  max_turns: 25
 
 # member 的统一函数入口约定，引擎按此调用，通常无需改动。
 member_interface:

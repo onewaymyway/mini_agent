@@ -33,20 +33,29 @@ intent_schema_template:
       type: array
 
 # 探索阶段配置（阶段三接入，当前先声明配置占位，供引擎读取但尚未生效）。
+# [阶段二十/阶段三] 探索器已切换到 SubAgent 驱动，预算改为
+# orchestrator.task.Task.max_turns，字段名同步改为 max_turns；原先靠自造
+# 计时循环维护的 max_seconds 墙钟预算与"剩余时间<30s 提醒"机制（阶段十九）
+# 一并移除，不再需要——单步工具调用的耗时兜底交给工具自身超时机制
+# （browser_navigate 默认 20s、browser_wait_for_selector 默认 8s，均在
+# browser-core 内部实现），引擎层不再重复限时。40 个回合对真实探索（一步=
+# 一次 LLM 往返+一次浏览器操作）通常足够走到 report_failure/finish，比旧的
+# 300s 墙钟预算更贴合"探索子agent到底做了多少事"这个真实约束维度，而不是
+# 一个容易被网络抖动/LLM排队吃掉的时间数字。
+# tool_allowlist.json 里声明的 browser_navigate 等工具名现在会被桥接为
+# 探索用 SubAgent 上的真实工具，探索子agent同时还能用 bash/python 等系统
+# 通用工具兜底（例如解析非标准页面结构、临时写个脚本核对提取结果）。
 explorer:
   base_tools: [browser-core]
   prompt: explorer/prompt.md
   tool_allowlist: explorer/tool_allowlist.json
-  max_steps: 40
-  # [阶段十九] 180s 是早期用桩探索器（无真实网络/LLM延迟）验证接线时定的
-  # 数值，真实探索一步就包含一次 LLM 往返（数秒到十几秒不等，视 provider/
-  # 网络而定）+ 一次真实浏览器操作（navigate 默认 20s 超时，wait_for_
-  # selector 默认 8s 超时），零反爬拦截的站点通常几步就能完成，但像知乎
-  # 这类有登录墙的站点，模型需要多几步试探+确认才能判断"走不通"，180s
-  # 经常不够、还没来得及诚实调用 report_failure 就先被 max_seconds 掐断，
-  # 导致最终 error 只剩下一句无信息量的"超出时间预算"。调到 300s，配合
-  # explorer_runtime.py 新增的"剩余时间<30s 时提醒模型尽快收尾"机制。
-  max_seconds: 300
+  max_turns: 40
+  preferred_primitives:
+    - browser_navigate
+    - browser_extract_content
+    - browser_wait_for_selector
+    - browser_click
+    - browser_type
 
 # member 的统一函数入口约定，引擎按此调用，通常无需改动。
 member_interface:

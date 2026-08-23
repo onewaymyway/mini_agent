@@ -42,12 +42,18 @@ intent_schema_template:
 # 探索阶段配置（复用与 browser-site-scraper / doc-template-generation 相同的
 # 引擎接线；base_tools 是本领域自己的底层原语声明，占位，尚未实现，测试时用
 # 桩探索器 + 桩 tool_executor 验证接线逻辑）。
+# [阶段二十/阶段三] 探索器已切换到 SubAgent 驱动（见 explorer_runtime.py::
+# build_subagent_explorer()）：预算字段改名 max_steps -> max_turns，直接
+# 对应 orchestrator.task.Task.max_turns；不再有 max_seconds 这个独立的
+# 墙钟时间预算（原实现是引擎自己在决策循环里计时，现在改为复用 SubAgent
+# 既有的回合预算机制，不再自造）。tool_allowlist.json 里声明的
+# text_transform_apply 现在会被桥接为探索用 SubAgent 上的真实工具，探索
+# 子agent同时还能用 bash/python 等系统通用工具。
 explorer:
   base_tools: [text-core]
   prompt: explorer/prompt.md
   tool_allowlist: explorer/tool_allowlist.json
-  max_steps: 10
-  max_seconds: 30
+  max_turns: 10
 
 # member 的统一函数入口约定，引擎按此调用，通常无需改动。
 member_interface:
