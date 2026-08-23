@@ -95,6 +95,11 @@ class DistillResult:
     member_id: Optional[str] = None
     error: Optional[str] = None
     data: Optional[dict] = None  # 自测通过后的最终数据，success 时透传给调用方
+    # [本次新增] 无论成功与否都尽量携带的探索上下文（steps 摘要 + 最终数据 +
+    # 每条蒸馏候选路径的自测/修复历史），失败时用于让调用方（上层 agent /
+    # 人工）据此判断"探索明明成功了，为什么代码复用会炸"，而不是只拿到一句
+    # 摘要错误字符串；成功时也带上，方便审计修复过程。见文件头本次新增说明。
+    trace_context: Optional[dict] = None
 
 
 SCRIPT_TEMPLATE = '''"""
@@ -296,6 +301,105 @@ def _truncate_for_prompt(value: Any, limit: int = 600) -> Any:
     return text
 
 
+def _build_trace_context(trace: ExploreTrace) -> dict:
+    """[本次新增] 把探索 trace 整理成一份结构化上下文，贯穿蒸馏全过程：
+    既用于喂给"修复脚本"的 LLM 调用，也在最终失败时原样带回给调用方
+    （见 DistillResult.trace_context）。这样"探索明明成功了，脚本却复用
+    失败"这类落差，不再只体现为一句 attempt_errors 摘要，而是能让上层
+    agent/人工对照每一步真实工具调用和输出去判断代码到底哪里想当然了。"""
+    return {
+        "explore_success": trace.success,
+        "explore_stop_reason": trace.stop_reason,
+        "explore_final_data": trace.data,
+        "explore_steps": [
+            {
+                "tool": step.tool,
+                "input": step.input,
+                "output_preview": _truncate_for_prompt(step.output),
+                "error": step.error,
+            }
+            for step in trace.steps
+        ],
+    }
+
+
+_REPAIR_SYSTEM_PROMPT = """你是一个"蒸馏脚本修复器"。你会收到三样东西：
+1. 一次成功的探索过程的完整操作记录（每一步工具/参数/返回值），这证明了
+   目标网站/接口本身是可达的、这次任务是能被完成的——如果修复后的脚本还是
+   拿不到东西，大概率是脚本自己的问题，而不是"这事根本做不到"。
+2. 一段刚刚在沙箱自测中执行失败的 `run(input) -> dict` 脚本源码。
+3. 这次自测失败的具体报错信息（异常堆栈、或返回的 status/error 字段）。
+
+你的任务：对照探索记录里"实际生效的那条路径"，定位脚本为什么会在自测里
+失败（常见原因包括但不限于：选择器/等待时机和探索时不完全一致、把探索时
+的某个中间状态误当成稳定前提、异常处理过粗放导致把可重试的偶发错误也
+直接判失败、硬编码了本不该硬编码的值），然后输出一份修复后的完整脚本。
+
+硬性要求：
+1. 必须定义 `def run(input: dict) -> dict`，返回
+   `{"status": "success"|"fail", "data": ..., "error": ...}`。
+2. 脚本内如需调用底层操作原语（如 browser_navigate/browser_extract_content
+   这类领域工具），通过 `from tool_runtime import get_tool_executor` 拿到
+   执行器，用 `executor(tool_name, tool_input)` 调用——不要引入探索记录里
+   没出现过的工具名，也不要假设这些工具有其它调用方式。
+3. 不要硬编码探索时用到的具体 target.url / query 值，改为从 `input` 参数
+   读取。
+4. 如果失败原因看起来是"目标站点这次请求本身被限流/拦截"这类偶发性问题
+   而非脚本逻辑错误，可以在脚本里加合理的重试/退避，但不要仅仅通过"吞掉
+   异常然后返回一个编造的空 success"来掩盖失败。
+5. 只输出脚本源码本身，不要用 Markdown 代码块包裹，不要输出任何解释文字。
+"""
+
+
+def _repair_script_with_llm(
+    *, script_code: str, test_error: Any, trace_context: dict,
+    request: dict, intent_schema: dict, skill_name: str, member_id: str,
+    llm_helper: Any, header_template: str,
+) -> Optional[str]:
+    """[本次新增] 蒸馏候选路径自测失败时，不直接丢弃/退到下一条路径，而是
+    先把"探索上下文 + 失败脚本 + 失败原因"一起交给 LLM 尝试修复一次，修复
+    产物仍会走同一套沙箱自测，不享受任何特权。失败（LLM 调用异常/输出不像
+    Python 源码）时返回 None，调用方据此按原有逻辑继续走下一条路径，不会
+    抛异常中断整个 distill()。"""
+    try:
+        user_content = json.dumps(
+            {
+                "request": request,
+                "intent_schema": intent_schema,
+                "explore_context": trace_context,
+                "failing_script": script_code,
+                "self_test_error": test_error,
+            },
+            ensure_ascii=False,
+        )
+        raw = llm_helper.ask(
+            user_content,
+            system=_REPAIR_SYSTEM_PROMPT,
+            max_retries=2,
+            override_temperature=0.0,
+        )
+    except Exception as e:  # noqa: BLE001
+        from .capability_debug import capability_debug_log
+        capability_debug_log(
+            "distill_repair_call_failed", {"member_id": member_id, "error": str(e)},
+            where="distiller._repair_script_with_llm",
+        )
+        return None
+
+    code = raw.strip()
+    code = code.removeprefix("```python").removeprefix("```").removesuffix("```").strip()
+    if "def run(" not in code:
+        from .capability_debug import capability_debug_log
+        capability_debug_log(
+            "distill_repair_invalid_output",
+            {"member_id": member_id, "raw_preview": code[:300]},
+            where="distiller._repair_script_with_llm",
+        )
+        return None
+
+    return header_template.format(skill_name=skill_name, member_id=member_id) + code
+
+
 def distill(
     trace: ExploreTrace,
     request: dict,
@@ -324,8 +428,13 @@ def distill(
     if not trace.success or trace.data is None:
         return DistillResult(success=False, error="探索未成功，无 trace 可供蒸馏")
 
+    trace_context = _build_trace_context(trace)
+
     if not _validate_schema(trace.data, intent_schema):
-        return DistillResult(success=False, error="探索产出的数据未通过 intent_schema 校验，拒绝蒸馏")
+        return DistillResult(
+            success=False, error="探索产出的数据未通过 intent_schema 校验，拒绝蒸馏",
+            trace_context=trace_context,
+        )
 
     skill_name = capability.get("name", skill_dir.name)
     member_id = reexplore_member_id or _generate_member_id(request, skill_dir)
@@ -366,67 +475,117 @@ def distill(
 
     from .capability_debug import capability_debug_log
 
-    attempt_errors: list[dict] = []
-    for distill_source_kind, script_code in attempts:
-        use_trace_fallback = distill_source_kind == "trace_replay" and trace_fallback_used
+    # [本次新增] 自测失败后允许对同一候选路径做几轮"修复重试"，而不是探索
+    # 明明成功、只是自测这一步没通过就直接判该路径失败、退到下一条兜底路径
+    # （trace_replay 往往更脆弱，等于白白浪费了一次已经验证可行的方案）。
+    # 只对"代码是可修改的"两条路径（script_source / llm_synthesized）生效：
+    # trace_replay 本身就是逐步重放，没有"脚本逻辑"可供 LLM 修复。
+    # 轮数可由 capability.yaml 的 `distill.repair_attempts` 覆盖，默认 2，
+    # 需要 llm_helper 才能生效（未注入时行为等同此前版本，自动跳过）。
+    repair_budget = int((capability.get("distill") or {}).get("repair_attempts", 2))
 
-        tmp_dir = skill_dir / "members" / f"__tmp_{member_id}_{int(time.time())}"
+    def _run_self_test(code: str) -> dict:
+        tmp_dir = skill_dir / "members" / f"__tmp_{member_id}_{int(time.time() * 1000)}"
         tmp_dir.mkdir(parents=True, exist_ok=True)
         tmp_script = tmp_dir / "script.py"
-        tmp_script.write_text(script_code, encoding="utf-8")
+        tmp_script.write_text(code, encoding="utf-8")
         try:
-            test_result = _sandbox_run(tmp_script, request, self_test_executor)
+            return _sandbox_run(tmp_script, request, self_test_executor)
         finally:
             _rm_tree(tmp_dir)
 
-        if not test_result.get("ok"):
-            attempt_errors.append({"path": distill_source_kind, "error": test_result.get("error")})
-            continue
+    attempt_errors: list[dict] = []
+    for distill_source_kind, script_code in attempts:
+        use_trace_fallback = distill_source_kind == "trace_replay" and trace_fallback_used
+        repairable = distill_source_kind in ("script_source", "llm_synthesized") and llm_helper is not None
+        current_kind = distill_source_kind
+        current_code = script_code
+        round_errors: list[dict] = []
 
-        final_data = test_result.get("data")
-        if not _validate_schema(final_data, intent_schema):
-            attempt_errors.append({"path": distill_source_kind, "error": "自测数据未通过 intent_schema 校验"})
-            continue
+        for attempt_no in range(repair_budget + 1):  # 第 0 轮 = 原始候选本身
+            test_result = _run_self_test(current_code)
 
-        try:
-            _atomic_persist(
-                skill_dir=skill_dir,
-                member_id=member_id,
-                script_code=script_code,
+            if test_result.get("ok"):
+                final_data = test_result.get("data")
+                if not _validate_schema(final_data, intent_schema):
+                    round_errors.append({
+                        "path": current_kind, "round": attempt_no,
+                        "error": "自测数据未通过 intent_schema 校验",
+                    })
+                    break  # schema 不过不是"脚本能不能修"的问题，不再重复修复本候选
+
+                try:
+                    _atomic_persist(
+                        skill_dir=skill_dir,
+                        member_id=member_id,
+                        script_code=current_code,
+                        request=request,
+                        capability=capability,
+                        intent_schema=intent_schema,
+                        is_reexplore=reexplore_member_id is not None,
+                        used_trace_data_fallback=use_trace_fallback,
+                        distill_source_kind=current_kind,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    round_errors.append({"path": current_kind, "round": attempt_no, "error": f"落盘失败: {e}"})
+                    break
+
+                if attempt_errors or round_errors:
+                    # [阶段二十五+本次新增] 前面的候选/修复轮次失败了，但最终
+                    # 还是成功落盘——如实记录，不因为最终成功就静默吞掉，
+                    # 方便事后判断"修复"实际救回了多少次原本会被浪费的探索。
+                    capability_debug_log(
+                        "distill_attempt_partial_failure",
+                        {"member_id": member_id, "succeeded_path": current_kind,
+                         "repaired": attempt_no > 0,
+                         "failed_attempts": attempt_errors + round_errors},
+                        where="distiller.distill",
+                    )
+                return DistillResult(
+                    success=True, member_id=member_id, data=final_data, trace_context=trace_context,
+                )
+
+            round_errors.append({"path": current_kind, "round": attempt_no, "error": test_result.get("error")})
+
+            if attempt_no >= repair_budget or not repairable:
+                break
+
+            repaired = _repair_script_with_llm(
+                script_code=current_code,
+                test_error=test_result.get("error"),
+                trace_context=trace_context,
                 request=request,
-                capability=capability,
                 intent_schema=intent_schema,
-                is_reexplore=reexplore_member_id is not None,
-                used_trace_data_fallback=use_trace_fallback,
-                distill_source_kind=distill_source_kind,
+                skill_name=skill_name,
+                member_id=member_id,
+                llm_helper=llm_helper,
+                header_template=LLM_SYNTHESIZED_HEADER_TEMPLATE,
             )
-        except Exception as e:  # noqa: BLE001
-            attempt_errors.append({"path": distill_source_kind, "error": f"落盘失败: {e}"})
-            continue
+            if repaired is None:
+                break  # 修复调用本身失败（非脚本问题），不再浪费剩余修复预算
+            current_code = repaired
+            current_kind = "llm_repaired"
 
-        if attempt_errors:
-            # [阶段二十五] 前面的候选路径失败了，但最终还是成功落盘了——
-            # 这类"部分失败"信息如实记录，不因为最终成功就静默吞掉，方便
-            # 事后判断某条路径（尤其是 LLM 总结）实际成功率如何。
-            capability_debug_log(
-                "distill_attempt_partial_failure",
-                {"member_id": member_id, "succeeded_path": distill_source_kind,
-                 "failed_attempts": attempt_errors},
-                where="distiller.distill",
-            )
-        return DistillResult(success=True, member_id=member_id, data=final_data)
+        attempt_errors.extend(round_errors)
 
-    # [阶段二十五] 三条路径全部失败：完整记录每条路径各自的失败原因到
-    # capability_debug.jsonl（不做任何截断），不再依赖调用方把这些细节
-    # 一路透传到用户可见的 error 字符串里才算"看得到"。
+    # 三条路径（含各自的修复重试）全部失败：完整记录每条路径/每轮修复各自
+    # 的失败原因到 capability_debug.jsonl（不做任何截断），并把探索上下文
+    # 一并带回给调用方——不再只靠一句摘要字符串体现"探索明明成功了"这个
+    # 关键落差，上层 agent/人工可以直接对照 trace_context 判断代码到底
+    # 哪里想当然了、是否值得再手动修一次。
     capability_debug_log(
         "distill_all_paths_failed",
         {"member_id": member_id, "skill_name": skill_name, "request": request,
-         "attempted_paths": [k for k, _ in attempts], "attempt_errors": attempt_errors},
+         "attempted_paths": [k for k, _ in attempts], "attempt_errors": attempt_errors,
+         "repair_budget": repair_budget},
         where="distiller.distill",
     )
-    summary = "；".join(f"{a['path']}: {a['error']}" for a in attempt_errors)
-    return DistillResult(success=False, error=f"全部蒸馏路径均失败——{summary}")
+    summary = "；".join(f"{a['path']}#{a.get('round', 0)}: {a['error']}" for a in attempt_errors)
+    return DistillResult(
+        success=False,
+        error=f"全部蒸馏路径均失败（含修复重试）——{summary}",
+        trace_context=trace_context,
+    )
 
 
 # --------------------------------------------------------------------------- #

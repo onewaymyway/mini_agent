@@ -64,6 +64,10 @@ class ExecuteResult:
     member_id: Optional[str] = None
     data: Optional[dict] = None
     error: Optional[str] = None
+    # [本次新增] 蒸馏失败时(distill_result.trace_context)透传的探索上下文，
+    # 让"探索成功但蒸馏/自测失败"这种情况不再只剩一句摘要错误——调用方能
+    # 看到完整 steps/输出，判断是否值得再修一次。见 distiller.py 同名字段。
+    trace_context: Optional[dict] = None
 
 
 @dataclass
@@ -73,6 +77,10 @@ class CapabilityCallResult:
     error: Optional[str] = None
     member_id: Optional[str] = None
     resolve_reason: str = ""
+    # [本次新增] 同 ExecuteResult.trace_context：仅在 status="not_implemented"
+    # 且失败发生在蒸馏阶段时才可能非空，success 时探索上下文已无必要单独
+    # 携带（data 就是最终产物）。
+    trace_context: Optional[dict] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -436,7 +444,9 @@ class CapabilityEngine:
         if not distill_result.success:
             if reexplore_member_id:
                 self._handle_reexplore_failure(reexplore_member_id)
-            return ExecuteResult(status="fail", error=distill_result.error)
+            return ExecuteResult(
+                status="fail", error=distill_result.error, trace_context=distill_result.trace_context,
+            )
 
         # 蒸馏落盘会新增/覆盖 members 目录与 index/registry，重新加载进内存保持一致。
         self.index = self._load_json(self.index_path, default={"members": []})
@@ -545,7 +555,8 @@ class CapabilityEngine:
                 where="capability_engine.CapabilityEngine.call",
             )
             return CapabilityCallResult(status="not_implemented", error=combined_error,
-                                         resolve_reason=resolved.reason)
+                                         resolve_reason=resolved.reason,
+                                         trace_context=explore_result.trace_context)
 
         # miss -> 全新探索
         explore_result = self.explore(request)
@@ -559,7 +570,8 @@ class CapabilityEngine:
             where="capability_engine.CapabilityEngine.call",
         )
         return CapabilityCallResult(status="not_implemented", error=explore_result.error,
-                                     resolve_reason=resolved.reason)
+                                     resolve_reason=resolved.reason,
+                                     trace_context=explore_result.trace_context)
 
 
 # --------------------------------------------------------------------------- #
