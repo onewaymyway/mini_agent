@@ -32,7 +32,8 @@
   "max_turns_hard_limit": 250,
   "show_reasoning": false,
   "tool_trim": {
-    "enabled": true
+    "enabled": true,
+    "threshold":5000
   },
   "raw_output": false,
   "web_search": {
