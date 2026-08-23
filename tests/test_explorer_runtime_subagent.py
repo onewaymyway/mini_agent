@@ -282,5 +282,59 @@ class TestBuildSubagentExplorerToolExecutorRegistrySync(unittest.TestCase):
         self.assertEqual(calls, [("browser_navigate", {"url": "https://example.com"})])
 
 
+class TestExplorerExcludedTools(unittest.TestCase):
+    """[阶段二十二] 回归防止"嵌套探索"：探索子agent的 registry 里不应该出现
+    capability_call/skill_list/spawn_agent 等元编排类工具——否则探索子agent
+    能在探索过程中再触发一次 capability_call，递归构造出下一层探索子agent，
+    深度没有上限。"""
+
+    def test_capability_call_and_meta_tools_stripped_from_explorer_registry(self):
+        import mini_agent.tools.builtin  # noqa: F401
+        from mini_agent.tools import get_default_registry
+        from mini_agent.skills.generative_capability.explorer_runtime import (
+            _EXPLORER_EXCLUDED_TOOLS,
+        )
+
+        # 手工在全局默认 registry 里注册几个"元编排类"占位工具，模拟真实系统
+        # 里 capability_call/skill_list/spawn_agent 等工具已经注册好的情形
+        # （测试环境里 mini_agent.tools.builtin 不一定真的注册了 capability_call
+        # 这种上层工具，所以显式注册占位版本，只关心"是否被过滤掉"这件事）。
+        registry = get_default_registry()
+        for name in ("capability_call", "skill_list", "spawn_agent"):
+            if name not in registry.names:
+                registry.register_fn(
+                    fn=lambda **kw: {"ok": True},
+                    name=name,
+                    description="占位工具，仅用于验证探索子agent黑名单过滤",
+                    input_schema={"type": "object", "properties": {}},
+                )
+
+        cfg = make_cfg()
+        captured = {}
+
+        def fake_run_with_capture(self, agent, prompt):
+            captured["agent"] = agent
+            finish_fn = agent.registry.get(FINISH_TOOL).fn
+            return finish_fn(data={"result": {"text": "ok"}})
+
+        with patch.object(SubAgent, "_run_with_capture", fake_run_with_capture):
+            explorer = build_subagent_explorer(cfg)
+            trace = explorer({"text": "t"}, {"type": "object", "required": ["result"]}, {"max_turns": 5})
+
+        self.assertTrue(trace.success, msg=trace.error)
+        explorer_names = set(captured["agent"].registry.names)
+        for excluded_name in ("capability_call", "skill_list", "spawn_agent"):
+            self.assertNotIn(
+                excluded_name, explorer_names,
+                msg=f"{excluded_name} 不应该出现在探索子agent的工具集里（会导致嵌套探索/失控）",
+            )
+        # finish/report_failure 必须还在，不能被黑名单误伤
+        self.assertIn(FINISH_TOOL, explorer_names)
+        self.assertIn(REPORT_FAILURE_TOOL, explorer_names)
+        # 黑名单本身覆盖的这几个名字要跟常量定义对得上，防止以后有人改了黑名单
+        # 常量却忘了同步这条断言
+        self.assertTrue({"capability_call", "skill_list", "spawn_agent"} <= _EXPLORER_EXCLUDED_TOOLS)
+
+
 if __name__ == "__main__":
     unittest.main()

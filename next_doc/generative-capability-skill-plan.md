@@ -2305,3 +2305,44 @@ generative-capability 全链路的调用关系，落盘到独立日志文件；�
    共 60 用例）无回归；另外做了三个独立 smoke test 验证：默认关闭时不产生
    任何文件、打开后正确落盘到 `~/.agent/logs/capability_debug.jsonl`、
    `agent_config.json -> debug.capability_enabled` 到模块开关的端到端同步。
+
+### 阶段二十二 —— 已完成（修复"嵌套探索"：探索子agent工具黑名单）
+
+**触发**：真实使用中，通过阶段二十一新增的调试日志 + 命令行输出确认了一个
+比"registry 未同步"更严重的问题——探索子agent通过 `agent.registry =
+agent.registry.filtered()`（不传 names/groups，语义是"给全部工具"）拿到的
+是**当前系统注册的全部工具**，其中包含 `capability_call` 自己、
+`skill_list`/`skill_activate`、`spawn_agent` 等元编排类工具。真实复现到的
+后果：探索子agent会重新走一遍 `skill_list → skill_activate` 的技能发现
+仪式（浪费探索预算，且这条信息本该已经通过 `system_extra` 直接告知），并且
+理论上可以在探索过程中再调用 `capability_call`，递归构造出下一层探索
+子agent——即"嵌套探索"，没有深度上限。
+
+**决策**：用户提出"探索是否可以不用 SubAgent，让主agent直接探索"，分析后
+判断不采纳——SubAgent 隔离本身是对的（探索过程会产生大量中间产物，如某次
+`browser_get_page_source` 一次返回 25 万字符原始 HTML，不应该污染主agent
+上下文；独立 `max_turns` 也该跟主对话预算解耦），真正的问题是"给了探索
+子agent太多工具"，跟"要不要独立进程"是两件事，去掉 SubAgent 并不能修好
+嵌套调用问题（只要 `capability_call` 还在工具集里，同样的行为在主agent里
+一样会发生）。
+
+**实施**：`explorer_runtime.py` 新增模块级常量 `_EXPLORER_EXCLUDED_TOOLS`
+（通用机制，跟具体 skill 无关，不下沉到任何 skill 目录），覆盖四类工具：
+元编排/自我调度（`capability_call`/`skill_list`/`skill_activate`/…）、二次
+agent 派生（`spawn_agent`/`spawn_named_agent`/`run_ensemble_llm`/…）、面向
+用户交互（`ask_user`/…，探索子agent是 auto_approve 的后台任务）、workflow
+生成执行与自我修改类（`generate_workflow`/`run_workflow`/`agent_patch`/…）。
+`build_subagent_explorer()` 里原来的 `agent.registry.filtered()`（全量拷贝）
+改为显式传入 `names=agent.registry.names 中排除黑名单后的列表`；
+`capability_debug_log` 新增 `excluded_tools_stripped` 字段，可以直接从
+调试日志确认黑名单是否生效。`finish`/`report_failure`/领域桥接工具/
+`bash`/`read_file`/`web_search` 等通用与领域必需工具不受影响。
+
+新增 `tests/test_explorer_runtime_subagent.py::TestExplorerExcludedTools`
+直接断言 `capability_call`/`skill_list`/`spawn_agent` 不出现在探索子agent
+的 registry 里、`finish`/`report_failure` 不被误伤；相关测试
+（`test_explorer_runtime_subagent.py`/`test_explorer_subagent_engine_e2e.py`/
+`test_generative_capability_engine.py`/`test_generative_capability_real_tools.py`/
+`test_capability_cmd.py`/`test_capability_notification_v021.py`/
+`test_capability_outline_suggestions_v021.py`/`test_capability_learning_p1.py`，
+共 112 用例）全部通过，无回归。

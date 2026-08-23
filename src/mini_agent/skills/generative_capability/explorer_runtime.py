@@ -335,6 +335,51 @@ def _load_prompt(explorer_config: dict) -> str:
 # [阶段二十] SubAgent 驱动的探索器 —— 新的推荐实现
 # --------------------------------------------------------------------------- #
 
+# [阶段二十二] 探索子agent工具黑名单 —— 通用机制，跟具体 skill 无关，不放
+# 在任何 skill 目录下。
+#
+# 起因：`agent.registry.filtered()` 不传 names/groups 时的既有语义是"给全部
+# 工具"（这是 filtered() 从设计上就有意的行为，见其 docstring），探索子agent
+# 之前就是靠这条路径拿到全量 registry 的。但探索子agent是一个 auto_approve、
+# 有独立 max_turns 预算的后台任务，不应该拿到面向"顶层多轮交互式主agent"设计
+# 的全部工具——真实复现过的两个后果：
+#   1）探索子agent自己又重新走一遍 skill_list → skill_activate 的发现仪式，
+#      纯粹浪费探索预算（它本该通过 system_extra 直接被告知有哪些领域原语）；
+#   2）探索子agent的工具集里包含 capability_call 本身，一旦它在探索过程中
+#      调用 capability_call，就会递归构造出另一个探索子agent——即"嵌套探索"，
+#      理论上没有深度上限。
+#
+# 修法不是去掉 SubAgent 隔离（隔离本身是对的：探索过程会产生大量像整页 HTML
+# 这样的中间产物，不应该污染主agent的上下文；独立 max_turns 也应该跟主对话
+# 预算解耦），而是收窄探索子agent能拿到的工具集。
+_EXPLORER_EXCLUDED_TOOLS = frozenset({
+    # 元编排/自我调度类：探索子agent不该自己发现/激活别的 skill，更不该
+    # 递归调用 capability_call（这条是防"嵌套探索"最关键的一条）。
+    "capability_call",
+    "skill_list", "skill_activate", "skill_deactivate",
+    "skill_usage_stats", "skill_resource_list", "skill_resource_load",
+    "skill_resource_unload", "skill_propose",
+    # 二次 agent 派生类：避免探索子agent自己再派生出新的子agent。
+    "spawn_agent", "spawn_named_agent", "spawn_agents",
+    "run_ensemble_llm", "run_ensemble_subagents",
+    # 面向用户交互类：探索子agent是后台任务，不应该卡在等用户交互上。
+    "ask_user", "ask_user_confirm", "ask_user_choice",
+    # workflow 生成/执行/自我修改类：跟"探索一条可复用操作路径"这个任务
+    # 无关，纯粹是多余的攻击面/误用面。
+    "generate_workflow", "save_workflow", "patch_workflow_step",
+    "test_workflow_step", "list_recent_sessions",
+    "summarize_session_for_workflow", "build_workflow_from_summary",
+    "run_workflow", "list_workflows", "show_workflow", "delete_workflow",
+    "resume_workflow_run", "list_workflow_runs", "get_workflow_stats",
+    "get_workflow_run_status", "pause_workflow_run", "cancel_workflow_run",
+    "approve_workflow_step", "reject_workflow_step",
+    "provide_workflow_step_input", "list_workflow_templates",
+    "create_workflow_from_template", "preview_workflow",
+    "run_hybrid_exec_task", "list_hybrid_exec_tasks", "show_hybrid_exec_task",
+    "agent_status", "agent_inspect", "agent_patch", "agent_policy",
+})
+
+
 def build_subagent_explorer(
     base_cfg: Any,
     *,
@@ -430,7 +475,9 @@ def build_subagent_explorer(
         # 写回 `agent._tool_executor.registry`，保持两者引用一致。
         _registry_was_replaced = agent.registry is get_default_registry()
         if _registry_was_replaced:
-            agent.registry = agent.registry.filtered()
+            _excluded_present = [n for n in agent.registry.names if n in _EXPLORER_EXCLUDED_TOOLS]
+            _kept_names = [n for n in agent.registry.names if n not in _EXPLORER_EXCLUDED_TOOLS]
+            agent.registry = agent.registry.filtered(names=_kept_names)
             _synced = getattr(agent, "_tool_executor", None) is not None
             if _synced:
                 agent._tool_executor.registry = agent.registry
@@ -442,6 +489,10 @@ def build_subagent_explorer(
                     # _tool_executor.registry 是否真的同步跟上了。
                     "tool_executor_synced": _synced,
                     "registry_tool_count_before_domain_bridge": len(agent.registry.names),
+                    # [阶段二十二] 这条能直接确认"嵌套探索"黑名单是否真的生效
+                    # ——excluded_tools_stripped 里如果出现 capability_call，
+                    # 说明这次探索子agent确实拿不到它了。
+                    "excluded_tools_stripped": _excluded_present,
                 },
                 where="explorer_runtime.build_subagent_explorer",
             )
