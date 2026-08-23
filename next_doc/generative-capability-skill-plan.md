@@ -175,18 +175,25 @@ capability_call(skill_name, request) -> {status, data, error}
         → 进入 explore
 
 3. explore(request, intent_schema)
-   → 按 capability.yaml 中 explorer 配置，拉起隔离 context 的探索子agent
-   → 仅允许调用 base_tools 声明的底层原语
-   → 步数/时间超出预算硬性中止，判定失败
-   → 产出必须经过同一份 intent_schema 校验
+   → 按 capability.yaml 中 explorer 配置，构造一个真实 SubAgent（独立
+     context/session，装配系统全部已注册通用工具 + 领域声明的底层原语）
+     跑一次完整 agent turn（阶段二十起，取代早期"手写决策循环"实现）
+   → 安全边界交给 PermissionGuard/sandbox/task.allowed_tools（不再由
+     generative-capability 自造一份平行白名单）
+   → 步数预算复用 task.max_turns，超出直接判定失败（不再自造计时循环）
+   → 探索子agent通过 finish(data, script_source?) / report_failure(reason)
+     两个工具收尾；finish 的 data 必须经过同一份 intent_schema 校验
    ├─ 校验通过 → 进入 distill
    └─ 校验不过 → 返回 {status: fail, error: 具体失败原因}（不编造数据）
 
 4. distill(trace, intent_schema)
-   → 把探索动作序列蒸馏为参数化脚本（非原样保存trace）
+   → 若探索子agent在 finish 时一并提交了 script_source（自己判断"这段解法
+     可参数化复用"），优先校验并落盘这份自带脚本；否则退回把探索动作序列
+     蒸馏为参数化脚本（trace-replay 兜底路径，阶段二十前的原有策略）
    → 沙箱内自测该脚本，用 intent_schema 再校验一次
    ├─ 自测通过 → 原子化写入 members/、registry.json（status: probation）、
-   │    _index.json（新增摘要，供下次检索命中）
+   │    _index.json（新增摘要，供下次检索命中）；meta.json 记录
+   │    distill_source_kind（"script_source" | "trace_replay"）
    │    → 返回 {status: success, data}
    └─ 自测不通过 → 丢弃，不落盘，不污染检索池
       → 返回 {status: fail, error: "探索未能生成可靠方案"}
@@ -222,8 +229,13 @@ capability_call(skill_name, request) -> {status, data, error}
 
 ## 8. 安全与成本边界（引擎强制约束，非skill可选项）
 
-1. **工具白名单强制**：探索子agent 只能调用 `capability.yaml` 声明的 `base_tools`，不能任意扩展权限。
-2. **步数/时间预算硬上限**：超限直接判失败返回，禁止无限重试。
+1. **工具范围受限，非自造白名单**：探索子agent的可用工具面由系统统一的
+   `task.allowed_tools`/`allowed_tool_groups`（PermissionGuard/sandbox）决
+   定，领域可通过 `capability.yaml` 声明希望额外桥接的底层原语（历史字段
+   `explorer.tool_allowlist`/新字段 `explorer.allowed_tools`），但这只是
+   "范围声明"，不再是 generative-capability 自造的一套平行安全体系
+   （阶段二十，详见 `next_doc/generative_capability_explorer_rearch_plan.md`）。
+2. **步数预算硬上限**：复用 `task.max_turns`，超限直接判失败返回，禁止无限重试。
 3. **产物强制 schema 校验**：命中执行与探索生成，输出都必须过同一份 intent_schema 校验，不允许自我认定成功。
 4. **蒸馏产物强制沙箱自测**：探索 trace 不能直接当脚本使用，必须先蒸馏、自测通过才允许落盘。
 5. **原子化写入**：`distill` 落盘时必须同时更新 `registry.json` 与 `_index.json`，避免"脚本能跑但检索不到"或"检索能到但脚本已被清理"的不一致状态。
@@ -2209,3 +2221,43 @@ next_doc/generative-capability-skill-plan.md                         # 本文档
   `members/*/script.py` 的失败返回从纯文本 `error` 升级成带分类字段的
   结构体，这会影响所有已有 member 脚本的返回约定，是一次更大的改动，
   本阶段未做。
+
+### 阶段二十 —— 已完成
+
+**触发**：用户在实测中发现，探索子agent受限于自造的工具白名单/步数预算
+机制，能力天花板过低（浏览器操作型探索子agent在需要识别公开 API/处理签名
+请求的站点上天然到顶，与安全无关）。完整问题分析、方案设计、五个子阶段的
+实施记录见独立文档
+`next_doc/generative_capability_explorer_rearch_plan.md`（不在本文档重复，
+避免两份文档各自维护一份容易漂移的细节）。
+
+**摘要**（详见上述独立文档第 6 节"实施记录"）：
+
+1. `explore()` 从手写多轮 LLM 决策循环改为构造真实 `SubAgent` 驱动，隔离
+   性/安全边界/预算全部复用系统既有的 `SubAgent`/`PermissionGuard`/
+   `task.max_turns` 基础设施，不再自造平行机制；领域声明的底层原语（如
+   `browser_navigate`）通过桥接 `ToolDef` 转发给 `tool_executor`，与系统
+   通用工具（bash/python 等）共存于探索子agent的工具集，不再互斥。
+2. `distiller.py` 新增"探索者自带 `script_source`"这一优先蒸馏路径：探索
+   子agent在 `finish` 时可自行判断解法是否可参数化复用，提交符合
+   `run(input)->dict` 约定的脚本源码，交给与原有 trace-replay 路径完全
+   相同的"沙箱自测→intent_schema 校验→原子化落盘"流程校验；无
+   `script_source` 时原样退回 trace-replay 兜底，不回归。`meta.json` 新增
+   `distill_source_kind` 字段如实记录蒸馏来源。
+3. `browser-site-scraper`/`text-transform-capability`/
+   `doc-template-generation` 三个 skill 的 `capability.yaml`/`prompt.md`
+   完成配置迁移（`max_steps`→`max_turns`，移除不再生效的 `max_seconds`，
+   `tool_allowlist.json` 继续承担领域工具桥接职责）。
+4. 新增 `tests/test_explorer_runtime_subagent.py`、
+   `tests/test_distiller_script_source.py`、
+   `tests/test_explorer_subagent_engine_e2e.py` 三个测试文件，其中最后一个
+   补齐了"`build_subagent_explorer()` 通过 `CapabilityEngine.call()` 跑一次
+   完整 miss→explore→distill→落盘→免探索复用闭环"这一此前测试矩阵里缺失
+   的组合场景（脚本自带路径 + 预算耗尽不伪造成功两种终态）。与既有
+   `test_generative_capability_engine.py`/
+   `test_generative_capability_real_tools.py`/`test_orchestrator.py`/
+   `test_subagent_inheritance.py` 合并运行共 137 个用例全部通过，无回归。
+
+**本文档同步更新**：第 6 节 explore()/distill() 流程描述、第 8 节安全边界
+第 1/2 条措辞，已按上述改动对齐（不再提"base_tools 白名单"这一已废弃概念，
+改为准确描述 `task.allowed_tools`/`task.max_turns` 复用）。

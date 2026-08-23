@@ -573,7 +573,7 @@ generative_capability.CapabilityEngine` 实例并调用其 `call(request)`，
 #### 检索裁决/探索子agent 的 LLM 调用（阶段九）
 
 `llm_resolver.py`（第二级检索裁决）与 `explorer_runtime.py`（探索子agent
-决策循环）此前各自用 `urllib` 直连 Anthropic Messages API，是引擎里仅有的
+运行时）此前各自用 `urllib` 直连 Anthropic Messages API，是引擎里仅有的
 两处没有走框架统一 LLM 调用基础设施
 （[`LLMHelper`](llm-helper-guide.md)，见 `llm/service.py`）的地方——固定
 写死 `provider=anthropic`，不跟随 `/model` 切换，不复用 `LLMClientPool`
@@ -582,20 +582,43 @@ generative_capability.CapabilityEngine` 实例并调用其 `call(request)`，
 - `build_llm_resolver(llm_helper=None, *, cfg=None, override_model=None,
   override_provider=None, max_retries=2)`：内部改用 `helper.ask(...)`；
 - `build_llm_explorer(tool_executor, llm_helper=None, *, cfg=None,
-  override_model=None, override_provider=None, max_retries=2)`：内部改用
-  `helper.chat(messages=, system=, tools=, ...)`，`tools` 用
-  `mini_agent.llm.base.ToolSchema`，消息历史沿用与
-  `history_manager.py::HistoryManager` 完全相同的 provider 无关内部约定。
+  override_model=None, override_provider=None, max_retries=2)`：手写多轮
+  决策循环版本，内部改用 `helper.chat(messages=, system=, tools=, ...)`。
+  **阶段二十起为遗留实现**，不再是默认接线路径，保留仅供已有调用方/测试
+  继续工作。
+
+`build_llm_resolver` 目前仍是检索裁决的默认实现；探索这一环节的默认实现
+在阶段二十切换为 `build_subagent_explorer(base_cfg, *, tool_executor=None,
+session_id=None, session_dir=None, shared_tool_cache=None,
+override_model=None, override_provider=None)`——不再手写决策循环，而是
+构造一个真实 `orchestrator.sub_agent.SubAgent`（独立 context/session，
+装配系统全部已注册通用工具 bash/python/文件读写等，加上按
+`capability.yaml` 声明桥接进来的领域底层原语如 `browser_navigate`），跑
+一次真实 `agent.run_turn()`。这样阶段九"接入 `LLMHelper` 而非自拼 API"的
+成果被自然继承（`SubAgent`→`Agent` 链路本来就走统一 LLM 调用基础设施），
+且不再需要单独维护一套"provider 无关的消息历史格式"。
+
+安全边界（此前是 `capability.yaml -> explorer.tool_allowlist` 自造的一份
+平行白名单）改为交给系统统一的 `PermissionGuard`/`sandbox`/
+`task.allowed_tools`；步数预算（此前是手写 `max_steps`/`max_seconds` 计时
+循环）改为复用 `task.max_turns`。`finish`/`report_failure` 两个决策元工具
+的语义约束未变，只是从手写循环里的特判分支改为动态注册到探索用
+`Agent.registry` 上的真实工具；`finish` 新增可选 `script_source` 字段，
+供探索子agent自行判断"这段解法是否可参数化复用"并一并提交（见
+`distiller.py` 的 script_source 优先蒸馏路径）。完整问题分析、方案设计、
+分阶段实施记录见独立文档
+[generative_capability_explorer_rearch_plan.md](../next_doc/generative_capability_explorer_rearch_plan.md)，
+本文档不重复展开。
 
 两者都优先用传入的 `llm_helper`（`capability_call` 工具通过
 `get_current_llm_helper()` 拿到当前 Agent 实例），否则退化为
 `LLMHelper.from_config(cfg)`，与 `ensemble/judge.py::judge_llm(llm_helper=...)`
-的既有约定一致。都未传时：`build_llm_resolver` 在调用时抛出
-`RuntimeError`（与此前"未配置 API key"抛异常的语义一致）；
-`build_llm_explorer` 返回 `ExploreTrace(success=False,
-stop_reason="llm_error")`（探索循环里"失败是一等公民"的既有约定）。
-既有的工具白名单强制、步数/时间预算硬上限、`finish`/`report_failure`
-决策元工具等安全约束均未改动。详见方案文档阶段九实施记录。
+的既有约定一致（`build_subagent_explorer` 不直接消费 `llm_helper`，而是
+通过其内部构造的 `SubAgent`/`Agent` 间接走同一套 LLM 调用链路，语义等价）。
+`build_llm_resolver` 未传 `llm_helper` 时在调用时抛出 `RuntimeError`（与此前
+"未配置 API key"抛异常的语义一致）；`build_subagent_explorer` 探索失败时
+返回 `ExploreTrace(success=False, stop_reason=...)`（`"step_budget"` /
+`"llm_error"` 等，探索循环里"失败是一等公民"的既有约定未变）。
 
 #### 引擎代码在哪
 
@@ -877,7 +900,13 @@ loader.auto_activate_blocked   # -> ['docx', ...]
 
 ---
 
-> 最后更新：2026-08（阶段九：`generative-capability` 引擎的第二级检索裁决
+> 最后更新：2026-08（`generative_capability_explorer_rearch_plan.md` 阶段
+> 二十：探索器默认实现从 `build_llm_explorer`（手写决策循环，现为遗留实现）
+> 切换为 `build_subagent_explorer`（构造真实 SubAgent 驱动，隔离性/安全
+> 边界/预算复用系统既有 `SubAgent`/`PermissionGuard`/`task.max_turns` 基础
+> 设施）；`finish` 新增可选 `script_source` 字段，`distiller.py` 新增探索者
+> 自带脚本的优先蒸馏路径；同步更新第 9 节相关段落；
+> 此前更新：2026-08（阶段九：`generative-capability` 引擎的第二级检索裁决
 > `llm_resolver.py`、探索子agent决策循环 `explorer_runtime.py` 改接框架统一
 > `LLMHelper`——不再自行拼 `urllib` 直连 Anthropic，跟随 `/model` 切换、复用
 > `LLMClientPool` 多 key/fallback 与统一 `RetryPolicy`；`capability_call`

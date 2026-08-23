@@ -1,6 +1,6 @@
 # Generative-Capability 探索机制重构方案
 
-- **版本**: v1.1（阶段一已实施，阶段二~五待实施）
+- **版本**: v1.2（阶段一~五全部已实施，方案完结）
 - **关联文档**:
   - `next_doc/generative-capability-skill-plan.md`（第 6 节 explore()/distill()、
     第 8 节安全边界、实施记录阶段一~阶段十九——本方案是对其"探索"这一环节的
@@ -374,4 +374,90 @@ LLMHelper 而非自拼 API"的成果（provider 无关、跟随 `/model` 切换�
 prompt.md 的具体文字内容，因此文案改写本身风险很低，主要靠 yaml 结构变化
 的测试覆盖来兜底）。
 
-### 阶段四~五 —— 待实施
+### 阶段四 —— 测试与验证（已完成）
+
+**改动文件**:
+- 新增 `tests/test_explorer_subagent_engine_e2e.py`
+
+**实现摘要**:
+- 阶段一/二的既有测试（`test_explorer_runtime_subagent.py`/
+  `test_distiller_script_source.py`）已经覆盖了"探索器接线本身"（finish/
+  report_failure/领域工具桥接/预算判定）与"蒸馏两条路径各自的沙箱自测/
+  校验/落盘"，但缺一类组合场景：`build_subagent_explorer()` 真正接入
+  `CapabilityEngine.call()`，跑一次完整的 miss → explore → distill →
+  落盘 → 免探索复用闭环——这正是本文档"阶段四"最初列出、且用户十分看重的
+  端到端验证要求。
+- 新增两个测试类，均用 `text-transform-capability` skill（复制到临时目录，
+  不污染仓库真实数据），沿用与 `test_explorer_runtime_subagent.py` 一致的
+  手法（monkeypatch `SubAgent._run_with_capture`，在其内部直接调用探索用
+  `Agent` 上已注册的 `finish`/`report_failure` 工具，不发起真实网络请求）：
+  1. `TestSubagentExplorerScriptSourceEndToEnd`：探索子agent在 `finish`
+     时提交 `script_source`，验证 `CapabilityEngine.call()` 返回
+     `status=success`、`resolve_reason=explored`，`meta.json` 正确记录
+     `distill_source_kind="script_source"`，且不注入 `explore_runner` 的
+     后续同请求能通过 `domain_pattern_match`/`keyword_match` 免探索复用，
+     返回值与首次探索结果一致。
+  2. `TestSubagentExplorerBudgetExhaustedEndToEnd`：探索子agent既不调用
+     `finish` 也不调用 `report_failure`（模拟预算耗尽/模型未收敛），验证
+     `CapabilityEngine.call()` 如实返回 `status=not_implemented`，不伪造
+     成功，且不在 `members/` 下留下任何落盘残留。
+- 实施过程中发现并修正了两个测试构造细节（均非产品代码问题）：
+  1. 初版测试用的 `request.text`/`target.op` 恰好命中了
+     `text-transform-capability` 已有 member 的 keyword 匹配规则，导致
+     `resolve_reason` 是 `keyword_match` 而非预期的 `explored`——换成不含
+     任何已注册变换关键词的措辞后符合预期，这提醒了"选测试用的 request
+     文案时需要避开领域已有的检索关键词"，不是新发现的产品缺陷。
+  2. 初版 `script_source` 里 `run()` 直接返回 `{"result": {...}}`，与
+     `distiller.py` 校验期望的 `{"status": "success", "data": {...}}`
+     契约不符导致沙箱自测失败——修正后通过；这与
+     `test_distiller_script_source.py` 里 `VALID_SCRIPT_SOURCE` 的既有
+     约定一致，只是本文件是第一次在"经过完整 `CapabilityEngine` 链路"的
+     场景下触发这个契约检查，值得记录以防后续再犯同样的低级错误。
+
+**测试**: `tests/test_explorer_subagent_engine_e2e.py`（2 个用例），与阶段
+一~三新增测试及全部既有测试合并运行：
+`test_explorer_runtime_subagent.py` + `test_distiller_script_source.py` +
+`test_generative_capability_engine.py` + `test_generative_capability_real_tools.py`
++ `test_explorer_subagent_engine_e2e.py` + `test_orchestrator.py` +
+`test_subagent_inheritance.py` 共 137 个用例全部通过，无回归。
+
+### 阶段五 —— 文档收尾（已完成）
+
+**改动文件**:
+- `next_doc/generative-capability-skill-plan.md`
+- `docs/skill-system-guide.md`
+- 本文档（`next_doc/generative_capability_explorer_rearch_plan.md`）
+
+**实现摘要**:
+- `generative-capability-skill-plan.md`：
+  - 第 6 节"通用引擎：调度流程"的 `explore()`/`distill()` 步骤描述已按
+    新架构改写（SubAgent 驱动、`task.max_turns`、`script_source` 优先蒸馏
+    路径、`meta.json` 的 `distill_source_kind` 字段）。
+  - 第 8 节"安全与成本边界"第 1/2 条措辞已对齐：不再提已废弃的"探索子
+    agent 只能调用 `capability.yaml` 声明的 `base_tools`"这个已不成立的
+    约束，改为准确描述"工具范围受限于 `task.allowed_tools`，非
+    generative-capability 自造白名单"+"步数预算复用 `task.max_turns`"。
+  - 新增"阶段二十"实施记录小节（对应本方案的五个子阶段），指向本文档，
+    避免两份文档各自维护一份容易漂移的重复细节。
+- `docs/skill-system-guide.md`："引擎代码在哪"一节里描述
+  `build_llm_explorer`/`explorer_runtime.py` 的段落已更新：明确
+  `build_llm_explorer`（手写决策循环）阶段二十起降级为遗留实现，默认接线
+  路径是 `build_subagent_explorer`；补充说明安全边界/预算来源变化、
+  `finish` 新增 `script_source` 字段、探索失败终态语义（`stop_reason`
+  取值变化：不再有 `llm_error` 之外，新增 `step_budget`/
+  `reported_failure`/`finished` 等真实会出现的取值，此前文档只提过
+  `llm_error` 一种，容易让读者误以为这是唯一失败原因）；文档末尾"最后更新"
+  变更记录追加本次条目。
+- 本文档（`generative_capability_explorer_rearch_plan.md`）：阶段一~五
+  实施记录全部标记为"已完成"，方案文档的生命周期到此结束——后续若发现新
+  问题，按项目惯例开新的独立方案文档，不在此文档继续追加。
+
+**验证**: 本次改动仅为文档措辞，不涉及代码，未新增/修改测试；已确认改动后
+文档中的字段名、函数签名、`stop_reason` 取值等表述均与阶段一~四实际实现
+的代码一致（逐一对照 `explorer_runtime.py`/`distiller.py`/
+`tests/test_explorer_runtime_subagent.py`/
+`tests/test_explorer_subagent_engine_e2e.py` 核实）。
+
+---
+
+**本方案（v1.1 → v1.2）实施状态：阶段一~五全部完成。**
