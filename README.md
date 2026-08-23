@@ -972,7 +972,27 @@ MIT License
 
 ---
 
-*2026-08 Goal 执行规范自动生成 + 用户确认机制（GoalExecutionSpec）*：为
+*2026-08 generative-capability 三条蒸馏路径定位调整 + 领域原语来源自动化*：
+`distiller.py`/`explorer_runtime.py` 的 `_LLM_SYNTHESIZE_SYSTEM_PROMPT` 与
+探索子agent的 system_extra 提示，明确"纯逻辑处理（过滤/判空/正则清洗/
+重试）直接写标准 Python，不必强行套进 `tool_runtime.get_tool_executor()`——
+领域原语只是脚本里可选的一类调用，脚本主体是完全自由的 Python"。新增
+`explorer.depends_skills`（`base_tools` 语义更明确的新别名）：领域原语
+名单不再要求手写 `explorer/tool_allowlist.json`，改为自动从依赖 skill 的
+`impl/tools_impl.py::TOOL_IMPLEMENTATIONS` 派生（`_auto_derive_domain_
+tool_names()`），`tool_allowlist.json` 降级为可选的交集收窄声明（依赖
+skill 尚无真实实现时安静退回旧行为）。`distiller.py::_atomic_persist()`
+给 `distill_source_kind == "trace_replay"` 的蒸馏产物在 `registry.json`
+写入更保守的 `probation_success_threshold_override`（默认领域门槛的
+两倍），`capability_engine.py::_apply_lifecycle()` 优先读取该
+member 级别覆盖值——trace-replay 只会顺序重放动作序列、结构性缺乏
+分支/容错能力，明确其"最后兜底、更难转正"的产品定位，不再对其做结构
+增强（评估过给它加"内联处理原语"的方案，结论是会长成 `llm_synthesized`
+的简化版，边际价值被后者覆盖，故未采纳）。三条蒸馏路径
+`script_source > llm_synthesized > trace_replay` 的既有优先级不变。
+详见 [方案文档](next_doc/generative_capability_trace_replay_and_allowlist_plan.md)。
+
+
 `GoalBacklog` 里的具体 Goal（周期性 Goal + 拆多个子任务的一次性 Goal）
 自动生成一份结构化"执行规范"草稿——每轮该产出什么文件（`deliverables`）、
 跨轮次要显式传递哪些结构化信息（`handoff_fields`，固定用 ` ```handoff```

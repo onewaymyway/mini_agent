@@ -616,6 +616,68 @@ override_model=None, override_provider=None)`——不再手写决策循环，�
 [generative_capability_explorer_rearch_plan.md](../next_doc/generative_capability_explorer_rearch_plan.md)，
 本文档不重复展开。
 
+**领域原语从哪来（`depends_skills` 自动派生，取代手写 `tool_allowlist.
+json`）**：`capability.yaml -> explorer.depends_skills`（`base_tools` 的
+新别名，语义更贴近"这个领域依赖哪些静态 skill 提供的底层原语"，两者兼容）
+声明的每个静态 skill 名，会按约定路径 `<skills_root>/<name>/impl/
+tools_impl.py::TOOL_IMPLEMENTATIONS` 自动加载出真正有实现的原语名单
+（`explorer_runtime.py::_auto_derive_domain_tool_names()`，复用
+`real_tools.py::load_skill_local_tool_implementations()` 既有的动态加载
+机制）——这是"这个原语是否真的能跑"的唯一权威数据源，跟
+`build_default_tool_executor()` 最终真正派发时用的是同一份字典，不会再
+出现手写清单和真实实现脱节的情况。`explorer/tool_allowlist.json`（或
+`capability.yaml -> explorer.tool_allowlist`）两种历史写法仍然兼容，但
+语义从"唯一原语来源"降级为"在自动派生集合基础上做交集收窄"——只有当
+某个领域想屏蔽掉依赖 skill 提供的某些原语时才需要继续写这个文件；若
+自动派生结果为空（依赖 skill 尚无 `impl/tools_impl.py`，如目前的
+`doc-core`/`text-core`），安静退回旧行为直接使用该文件声明的列表，不影响
+存量 skill。解析优先级完整顺序（`explorer_runtime.py::
+_resolve_domain_tool_names()`）：`capability.yaml -> explorer.
+allowed_tools`（内联手写，最高优先级）> 自动派生 > `tool_allowlist.json`
+收窄/兜底 > `capability.yaml -> explorer.base_tools` 名字兜底（占位领域
+的最后一道保险）。
+
+**蒸馏产物不要求全程只调用领域原语**：`distiller.py` 的
+`script_source`/`llm_synthesized` 两条蒸馏路径（见下一段）产出的脚本，
+`tool_runtime.get_tool_executor()` 只用于真正需要驱动浏览器等外部系统的
+步骤；过滤空结果、判断验证码/登录墙关键词、正则清洗文本、重试这类纯逻辑
+处理，直接写标准 Python 就好，不需要也不应该硬套进 `executor()` 调用——
+脚本主体是完全自由的 Python，领域原语只是其中可选的一类调用。这一点
+体现在 `_LLM_SYNTHESIZE_SYSTEM_PROMPT` 的硬性要求与探索子agent
+system_extra 提示里，供 LLM/探索子agent写脚本时参考。
+
+**三条蒸馏路径与各自定位**：探索成功后，`distiller.py::distill()` 依次
+尝试三条路径，命中第一条能通过"沙箱自测 + intent_schema 校验"的就用它，
+落盘产物 `meta.json` 的 `distill_source_kind` 字段记录实际命中的是哪条：
+
+1. `script_source`（优先级最高）：探索子agent在调用 `finish` 时自己判断
+   这次解法可以整理成一个不依赖具体探索过程的 `run(input) -> dict`
+   脚本，直接把源码一并提交（`finish` 的 `script_source` 字段结构性
+   必填，只能显式提交源码或哨兵值 `"SKIP"`）。这是探索子agent自己对
+   "这段解法是否具备可复用形状"做出的判断，最贴近这次踩过的坑（验证码/
+   选择器），优先级最高。
+2. `llm_synthesized`（次优先级）：`script_source` 为空且调用方注入了
+   `llm_helper` 时，蒸馏器把完整探索 trace 交给 LLM，读懂"探索实际做对
+   了什么"（跳过探测性死胡同，只提炼真正走通的路径），总结成参数化脚本。
+   同样是完全自由的 Python，不强制只调用领域原语。
+3. `trace_replay`（最后兜底）：前两条都不可用时，把 trace 中每一步
+   `(tool, input)` 参数化后固化为一份顺序重放序列——这条路径结构性地
+   只能顺序调工具，没有 if/else、没有重试、无法对中间结果做二次加工，
+   遇到探索过程中混入的探测性失败调用（如先试 `bash curl` 失败才转向
+   `browser_*` 工具）会直接判定"重放步骤失败"，整个蒸馏产物被丢弃。
+   明确将其定位为"实在没辙的应急网"而非"第二种正常产出方式"：落盘时
+   会在 `registry.json` 里写入比另外两条路径更保守的
+   `probation_success_threshold_override`（默认领域门槛的两倍，见
+   `capability_engine.py::_apply_lifecycle()`），要求验证更多次成功才能
+   转正为 `trusted`；`degrade_failure_threshold`（降级速度）不受影响。
+   评估过给 trace-replay 加"内联处理原语"（在重放序列里插一段脚本处理
+   中间结果）的方案，结论是这类结构增强会让 trace-replay 长成
+   `llm_synthesized` 的简化版，边际价值被后者覆盖，因此未采纳，工程投入
+   优先给前两条路径。
+
+完整方案与分阶段实施记录见独立文档
+[generative_capability_trace_replay_and_allowlist_plan.md](../next_doc/generative_capability_trace_replay_and_allowlist_plan.md)。
+
 **探索子agent实际拿到的工具集（阶段二十二订正）**：并不是"系统全部已注册
 通用工具"——`build_subagent_explorer()` 内部把 `agent.registry` 换成私有
 副本时，会先按 `_EXPLORER_EXCLUDED_TOOLS` 黑名单排除掉一批工具，再桥接进
@@ -950,7 +1012,20 @@ loader.auto_activate_blocked   # -> ['docx', ...]
 
 ---
 
-> 最后更新：2026-08（阶段二十一/二十二/二十三：新增
+> 最后更新：2026-08（generative-capability 三条蒸馏路径定位调整 +
+> 领域原语来源自动化：新增 `explorer.depends_skills`（`base_tools` 新
+> 别名），领域原语名单不再要求手写 `tool_allowlist.json`，改为自动从
+> 依赖 skill 的 `impl/tools_impl.py::TOOL_IMPLEMENTATIONS` 派生
+> （`_auto_derive_domain_tool_names()`），`tool_allowlist.json` 降级为
+> 可选的交集收窄声明；`_LLM_SYNTHESIZE_SYSTEM_PROMPT`/探索子agent
+> system_extra 提示明确纯逻辑处理可直接写标准 Python，不必套
+> `tool_runtime`；`trace_replay` 蒸馏产物在 `registry.json` 写入更保守的
+> `probation_success_threshold_override`（默认领域门槛两倍），明确其
+> "最后兜底、更难转正"定位，评估后未采纳给它加"内联处理原语"的结构增强
+> 方案；三条路径 `script_source > llm_synthesized > trace_replay` 既有
+> 优先级不变，同步补充第 3.8 节相关小节，详见
+> `next_doc/generative_capability_trace_replay_and_allowlist_plan.md`）；
+> 此前更新：2026-08（阶段二十一/二十二/二十三：新增
 > `debug.capability_enabled` 全链路调试日志开关，落盘到
 > `~/.agent/logs/capability_debug.jsonl`，skill 的 `impl/*.py` 也可以直接
 > 调用；修复"嵌套探索"——探索子agent此前通过 `registry.filtered()` 拿到

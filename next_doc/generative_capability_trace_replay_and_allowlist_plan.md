@@ -217,3 +217,12 @@ websocket-client 库"两类环境性失败），新增 3 个用例全部通过�
 - `tests/test_generative_capability_engine.py`
 
 **本方案（v1.0）实施状态：阶段 A~D 全部完成。**
+
+## 4. 文档同步记录
+
+- `docs/skill-system-guide.md` 第 3.8 节：新增"领域原语从哪来"、"蒸馏
+  产物不要求全程只调用领域原语"、"三条蒸馏路径与各自定位"三个小节，
+  并在文末变更记录追加本次条目。
+- `README.md`：变更日志顶部追加本次改动摘要条目。
+- `CLAUDE.md`：文档索引新增指向 `skill-system-guide.md` 第 3.8 节与本
+  方案文档的条目。
