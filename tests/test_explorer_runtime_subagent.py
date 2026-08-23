@@ -202,6 +202,87 @@ class TestResolveDomainToolNames(unittest.TestCase):
         names = _resolve_domain_tool_names({"base_tools": ["doc-core"]})
         self.assertEqual(names, ["doc-core"])
 
+    def _make_fake_skills_root(self, tmp_root: Path, skill_name: str, tool_names: list[str]) -> Path:
+        """构造一个假的 `<skills_root>/<skill_name>/impl/tools_impl.py`，
+        供 `_auto_derive_domain_tool_names()`/`load_skill_local_tool_
+        implementations()` 动态加载，模拟真实 skill 目录结构。"""
+        impl_dir = tmp_root / skill_name / "impl"
+        impl_dir.mkdir(parents=True)
+        body = "\n".join(f"def _{n}(tool_input):\n    return {{'ok': True}}" for n in tool_names)
+        mapping = ", ".join(f"'{n}': _{n}" for n in tool_names)
+        (impl_dir / "tools_impl.py").write_text(
+            f"{body}\nTOOL_IMPLEMENTATIONS = {{{mapping}}}\n", encoding="utf-8"
+        )
+        fake_skill_dir = tmp_root / skill_name
+        (fake_skill_dir / "capability.yaml").write_text("skill_type: generative-capability\n", encoding="utf-8")
+        return fake_skill_dir
+
+    def test_auto_derive_from_depends_skills_when_no_allowlist_file(self):
+        """[本次新增] 未声明 tool_allowlist 时，直接使用依赖 skill 的
+        TOOL_IMPLEMENTATIONS 全量派生结果，不再要求手写 tool_allowlist.json。"""
+        import tempfile
+        from mini_agent.skills.generative_capability.explorer_runtime import _resolve_domain_tool_names
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_fake_skills_root(root, "fake-core", ["fake_navigate", "fake_click"])
+            # 调用方（generative-capability skill）自己的目录随便放一个，
+            # 只要和 fake-core 同处 skills_root 下即可。
+            caller_dir = root / "fake-capability"
+            caller_dir.mkdir()
+            names = _resolve_domain_tool_names({
+                "depends_skills": ["fake-core"],
+                "_resolved_skill_dir": str(caller_dir),
+            })
+        self.assertEqual(names, ["fake_click", "fake_navigate"])  # 排序输出
+
+    def test_allowlist_file_narrows_auto_derived_set(self):
+        """[本次新增] 声明了 tool_allowlist.json 时，语义降级为"交集收窄"，
+        不是唯一来源——收窄集合里不存在于自动派生结果中的名字会被剔除。"""
+        import json
+        import tempfile
+        from mini_agent.skills.generative_capability.explorer_runtime import _resolve_domain_tool_names
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_fake_skills_root(root, "fake-core", ["fake_navigate", "fake_click", "fake_danger"])
+            caller_dir = root / "fake-capability"
+            caller_dir.mkdir()
+            allowlist_path = caller_dir / "tool_allowlist.json"
+            # "fake_unknown" 不在自动派生结果里，应被交集收窄掉。
+            allowlist_path.write_text(
+                json.dumps({"allowed_tools": ["fake_navigate", "fake_unknown"]}), encoding="utf-8"
+            )
+            names = _resolve_domain_tool_names({
+                "depends_skills": ["fake-core"],
+                "_resolved_skill_dir": str(caller_dir),
+                "_resolved_tool_allowlist_path": str(allowlist_path),
+            })
+        self.assertEqual(names, ["fake_navigate"])
+
+    def test_allowlist_file_used_directly_when_auto_derive_empty(self):
+        """[本次新增] 依赖 skill 没有 impl/tools_impl.py（自动派生为空）时，
+        退回旧行为：直接使用 tool_allowlist.json 声明的列表，不因为自动
+        派生失败而丢失存量 skill 的可用原语。"""
+        import json
+        import tempfile
+        from mini_agent.skills.generative_capability.explorer_runtime import _resolve_domain_tool_names
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            caller_dir = root / "fake-capability"
+            caller_dir.mkdir()
+            allowlist_path = caller_dir / "tool_allowlist.json"
+            allowlist_path.write_text(
+                json.dumps({"allowed_tools": ["legacy_tool"]}), encoding="utf-8"
+            )
+            names = _resolve_domain_tool_names({
+                "depends_skills": ["nonexistent-skill"],
+                "_resolved_skill_dir": str(caller_dir),
+                "_resolved_tool_allowlist_path": str(allowlist_path),
+            })
+        self.assertEqual(names, ["legacy_tool"])
+
 
 class TestBuildSubagentExplorerToolExecutorRegistrySync(unittest.TestCase):
     """

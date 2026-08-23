@@ -96,6 +96,37 @@ class TestCapabilityEngineResolveExecute(unittest.TestCase):
         self.assertEqual(result.resolve_reason, "domain_pattern_match")
         self.assertEqual(result.status, "not_implemented")
 
+    def test_apply_lifecycle_honors_member_level_probation_override(self):
+        """[本次新增，阶段 C] registry.json 里某个 member 若带
+        `probation_success_threshold_override`（trace-replay 蒸馏产物），
+        `_apply_lifecycle()` 应优先用它而不是 capability.yaml 的领域默认
+        门槛；未带该字段的 member（script_source/llm_synthesized 产出）
+        行为不变。"""
+        from mini_agent.skills.generative_capability import CapabilityEngine
+
+        engine = CapabilityEngine(self.skill_dir)
+        engine.capability["lifecycle"] = {"probation_success_threshold": 3, "degrade_failure_threshold": 3}
+
+        # trace-replay 产物：默认门槛的两倍 override=6，连续 3 次成功不该转正。
+        engine.registry["members"]["trace_member"] = {
+            "status": "probation", "success_count": 0, "fail_count": 0,
+            "consecutive_failures": 0, "probation_success_threshold_override": 6,
+        }
+        for _ in range(3):
+            engine._record_execution("trace_member", success=True)
+        self.assertEqual(engine.registry["members"]["trace_member"]["status"], "probation")
+        for _ in range(3):
+            engine._record_execution("trace_member", success=True)
+        self.assertEqual(engine.registry["members"]["trace_member"]["status"], "trusted")
+
+        # script_source 产物：没有 override 字段，3 次成功后按领域默认门槛转正。
+        engine.registry["members"]["normal_member"] = {
+            "status": "probation", "success_count": 0, "fail_count": 0, "consecutive_failures": 0,
+        }
+        for _ in range(3):
+            engine._record_execution("normal_member", success=True)
+        self.assertEqual(engine.registry["members"]["normal_member"]["status"], "trusted")
+
     def test_request_missing_required_field_returns_invalid_request(self):
         # [FIX] request 形状不对（缺 target.url）时，应该在 resolve/explore 之前
         # 就短路返回 invalid_request，而不是安静地滑进 no_match -> explore ->

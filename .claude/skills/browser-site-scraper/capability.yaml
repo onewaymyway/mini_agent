@@ -46,7 +46,14 @@ intent_schema_template:
 # 探索用 SubAgent 上的真实工具，探索子agent同时还能用 bash/python 等系统
 # 通用工具兜底（例如解析非标准页面结构、临时写个脚本核对提取结果）。
 explorer:
-  base_tools: [browser-core]
+  base_tools: [browser-core]  # 兼容别名，等价于下面的 depends_skills
+  # [本次新增] depends_skills 是 base_tools 的语义更明确的新写法：声明这个
+  # generative-capability skill 依赖哪些静态 skill 提供的底层原语。引擎会
+  # 自动从 `<该 skill 目录>/impl/tools_impl.py::TOOL_IMPLEMENTATIONS` 里
+  # 派生可用原语名单，不再需要 explorer/tool_allowlist.json 手工抄一份
+  # （该文件仍可保留，语义降级为"在自动派生集合上做交集收窄"，见
+  # next_doc/generative_capability_trace_replay_and_allowlist_plan.md 阶段 B）。
+  depends_skills: [browser-core]
   prompt: explorer/prompt.md
   tool_allowlist: explorer/tool_allowlist.json
   max_turns: 40

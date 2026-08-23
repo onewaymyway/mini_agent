@@ -164,6 +164,49 @@ class TestDistillScriptSourcePath(unittest.TestCase):
         meta = json.loads((self.skill_dir / "members" / result.member_id / "meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["distill_source_kind"], "trace_replay")
 
+    def test_trace_replay_member_gets_conservative_probation_override(self):
+        """[本次新增，阶段 C] trace-replay 产出的 member 在 registry.json 里
+        应该带有更保守的 probation_success_threshold_override（默认领域门槛
+        的两倍），script_source 产出的 member 不应该有这个字段。"""
+        from mini_agent.skills.generative_capability.distiller import distill
+        from mini_agent.skills.generative_capability.explorer_runtime import ExploreStep, ExploreTrace
+
+        target_url = "https://y.example/"
+        steps = [ExploreStep(
+            tool="browser_extract_content", input={"url": target_url},
+            output={"data": {"results": [{"title": "t", "url": target_url}]}},
+        )]
+        trace = ExploreTrace(
+            success=True, data={"results": [{"title": "t", "url": target_url}]},
+            steps=steps, stop_reason="finished", script_source=None,
+        )
+        request = {"text": target_url, "target": {"url": target_url}, "query": ""}
+        capability_with_default = {"name": "browser-site-scraper", "lifecycle": {"probation_success_threshold": 3}}
+
+        result = distill(
+            trace, request, self.intent_schema, self.skill_dir, capability_with_default,
+            self_test_executor=lambda name, inp: {
+                "ok": True, "data": {"results": [{"title": "t", "url": target_url}]},
+            },
+        )
+
+        self.assertTrue(result.success, msg=result.error)
+        registry = json.loads((self.skill_dir / "registry.json").read_text(encoding="utf-8"))
+        entry = registry["members"][result.member_id]
+        self.assertEqual(entry.get("probation_success_threshold_override"), 6)
+
+        # 对照组：script_source 产出的 member 不应该有这个覆盖字段。
+        trace2 = self._make_trace(VALID_SCRIPT_SOURCE)
+        request2 = {"text": "t2", "target": {"url": "https://z.example/"}, "query": ""}
+        result2 = distill(
+            trace2, request2, self.intent_schema, self.skill_dir, capability_with_default,
+            self_test_executor=lambda name, inp: (_ for _ in ()).throw(AssertionError("不应调用")),
+        )
+        self.assertTrue(result2.success, msg=result2.error)
+        registry2 = json.loads((self.skill_dir / "registry.json").read_text(encoding="utf-8"))
+        entry2 = registry2["members"][result2.member_id]
+        self.assertNotIn("probation_success_threshold_override", entry2)
+
 
 if __name__ == "__main__":
     unittest.main()

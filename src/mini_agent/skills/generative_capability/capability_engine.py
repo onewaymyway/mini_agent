@@ -363,9 +363,19 @@ class CapabilityEngine:
     def _apply_lifecycle(self, member_id: str, entry: dict) -> None:
         """状态机流转: probation -> trusted / (trusted|probation) -> degraded。
         degraded -> dead 的判定发生在重新探索失败之后，见 explore() 中
-        `dead_after_reexplore_fail` 的处理（阶段三）。"""
+        `dead_after_reexplore_fail` 的处理（阶段三）。
+
+        [本次新增] trace-replay 弱信任: `distiller.py::_atomic_persist()`
+        落盘时，若该 member 是 `distill_source_kind == "trace_replay"`
+        产出，会在 registry 条目里写一个更保守的
+        `probation_success_threshold_override`（见该函数注释与
+        next_doc/generative_capability_trace_replay_and_allowlist_plan.md
+        阶段 C）。这里优先读取 member 级别的覆盖值，没有才退回
+        capability.yaml 的领域默认值——script_source/llm_synthesized 产出
+        的 member 不受影响，行为与阶段六完全一致。
+        """
         lifecycle = self.capability.get("lifecycle", {})
-        promote_at = lifecycle.get("probation_success_threshold", 3)
+        promote_at = entry.get("probation_success_threshold_override", lifecycle.get("probation_success_threshold", 3))
         degrade_at = lifecycle.get("degrade_failure_threshold", 3)
 
         status = entry.get("status", "probation")
@@ -402,6 +412,14 @@ class CapabilityEngine:
         explorer_cfg["_resolved_tool_allowlist_path"] = str(
             self.skill_dir / explorer_cfg.get("tool_allowlist", "explorer/tool_allowlist.json")
         )
+        # [本次新增] 让 explorer_runtime._resolve_domain_tool_names() 能够按
+        # `explorer.depends_skills`（或兼容别名 base_tools）声明的静态 skill
+        # 名，自动去 `<skills_root>/<name>/impl/tools_impl.py::
+        # TOOL_IMPLEMENTATIONS` 读取真正实现了的原语名单，而不必再靠
+        # tool_allowlist.json 手工抄一份。skills_root 约定为本 skill 目录的
+        # 父目录（即 `.claude/skills/`），与 `real_tools.py::
+        # load_skill_local_tool_implementations()` 既有的路径约定一致。
+        explorer_cfg["_resolved_skill_dir"] = str(self.skill_dir)
 
         try:
             trace = self.explore_runner(request, intent_schema, explorer_cfg)

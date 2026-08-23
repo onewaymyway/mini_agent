@@ -221,6 +221,11 @@ Python 脚本。
 3. 不要硬编码这次探索用到的具体 target.url / query 值，改为从 `input` 参数
    读取。
 4. 只输出脚本源码本身，不要用 Markdown 代码块包裹，不要输出任何解释文字。
+5. `tool_runtime.get_tool_executor()` 只用于驱动浏览器等外部系统的领域
+   原语调用；过滤空结果、判断验证码/登录墙关键词、正则清洗文本、重试这类
+   纯逻辑处理，直接用标准 Python（字符串/正则/循环/条件判断）实现，不要
+   为了"看起来统一"而把这些逻辑也硬塞进 `executor()` 调用——脚本主体是
+   完全自由的 Python，领域原语只是其中可选的一类调用。
 """
 
 
@@ -569,7 +574,7 @@ def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, reques
 
     registry_path = skill_dir / "registry.json"
     registry = _load_json(registry_path, {"members": {}})
-    registry["members"][member_id] = {
+    registry_entry = {
         "status": "probation",
         "status_changed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "intent_schema": intent_schema,
@@ -579,6 +584,24 @@ def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, reques
         "last_success": None,
         "last_failure": None,
     }
+    # [本次新增，阶段 C] trace-replay 兜底路径产出的脚本结构性脆弱（只会
+    # 顺序重放动作序列，遇到探索时的探测性弯路/环境差异容易在真实调用时
+    # 才炸），不应该和 script_source/llm_synthesized 产出的 member 享有
+    # 同样快的"转正"速度。这里写一个 member 级别的 probation 门槛覆盖值，
+    # 由 `capability_engine.py::_apply_lifecycle()` 优先读取；不覆盖
+    # `lifecycle.degrade_failure_threshold`（降级速度不变，脆弱脚本该多快
+    # 掉出 trusted 不受影响，只是变得更难升上去）。领域可以在
+    # capability.yaml -> lifecycle.trace_replay_probation_success_threshold
+    # 显式声明具体门槛；未声明时默认取"领域默认门槛的两倍"，作为一个不需要
+    # 额外配置就生效的合理保守值。
+    if distill_source_kind == "trace_replay":
+        lifecycle_cfg = capability.get("lifecycle", {})
+        default_threshold = lifecycle_cfg.get("probation_success_threshold", 3)
+        override = lifecycle_cfg.get(
+            "trace_replay_probation_success_threshold", default_threshold * 2
+        )
+        registry_entry["probation_success_threshold_override"] = override
+    registry["members"][member_id] = registry_entry
     registry_tmp = registry_path.with_suffix(".json.tmp")
     registry_tmp.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
 

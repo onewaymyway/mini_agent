@@ -767,21 +767,63 @@ def _make_domain_tool_bridge(name: str, tool_executor: Callable[[str, dict], dic
     return _bridge
 
 
+def _auto_derive_domain_tool_names(explorer_config: dict) -> list[str]:
+    """
+    [本次新增] 按 `explorer.depends_skills`（或兼容别名 `base_tools`）声明的
+    静态 skill 名，自动去 `<skills_root>/<name>/impl/tools_impl.py::
+    TOOL_IMPLEMENTATIONS` 读取真正有实现的原语名单——这是"这个原语是否真的
+    能跑"的唯一权威数据源（`real_tools.py::build_default_tool_executor()`
+    最终派发时用的也是同一份字典），不再需要 `tool_allowlist.json` 手工抄一
+    份、两边容易漂移。
+
+    `_resolved_skill_dir` 由 `capability_engine.py::explore()` 注入，
+    skills_root 约定为该目录的父目录（即 `.claude/skills/`）。任何一环
+    缺失（未声明 depends_skills、找不到 skills_root、目标 skill 没有
+    `impl/tools_impl.py`、依赖库未安装等）都安静返回空列表，不抛异常——
+    调用方据此退回 `tool_allowlist.json`/`base_tools` 兜底，行为上等价于
+    "没有可自动派生的领域原语"，不是新的失败模式。
+    """
+    depends_skills = explorer_config.get("depends_skills") or explorer_config.get("base_tools")
+    skill_dir_str = explorer_config.get("_resolved_skill_dir")
+    if not depends_skills or not skill_dir_str:
+        return []
+    skills_root = Path(skill_dir_str).parent
+    try:
+        from .real_tools import load_skill_local_tool_implementations
+        impls = load_skill_local_tool_implementations(list(depends_skills), skills_root)
+    except Exception:  # noqa: BLE001
+        return []
+    return sorted(impls.keys())
+
+
 def _resolve_domain_tool_names(explorer_config: dict) -> list[str]:
     """
-    解析该领域声明的底层原语工具名，兼容三种历史写法:
-      1. capability.yaml -> explorer.allowed_tools（新增，内联列表）
-      2. explorer/tool_allowlist.json -> {"allowed_tools": [...]}（browser-
-         site-scraper / doc-template-generation 现有写法）
-      3. explorer/tool_allowlist.json -> {"tools": [{"name": ...}, ...]}
-         （text-transform-capability 现有写法）
-      4. 都没有时退回 capability.yaml -> explorer.base_tools（占位/未接线
-         领域的静态 skill 名，不是真实工具名，仅作最后兜底）。
+    解析该领域声明的底层原语工具名。
+
+    优先级（[本次调整] 新增第 0/2 步，其余历史写法保持兼容）:
+      0. capability.yaml -> explorer.allowed_tools（内联列表，显式手写，
+         优先级最高，视为"就是要精确控制这个集合"）。
+      1. 自动派生：按 `explorer.depends_skills`（或兼容别名 base_tools）从
+         依赖的静态 skill 的 `impl/tools_impl.py::TOOL_IMPLEMENTATIONS`
+         读到的原语名单（见 `_auto_derive_domain_tool_names`）——默认全量
+         可用，这是本次改动新增的主路径。
+      2. 若同时存在 `tool_allowlist.json`/`capability.yaml ->
+         explorer.tool_allowlist`（历史写法），语义从"唯一原语来源"降级为
+         "在自动派生集合基础上做交集收窄"——自动派生集合非空时按交集收窄；
+         若自动派生集合为空（如目标 skill 尚无 impl/tools_impl.py，或本次
+         运行环境未装依赖库），则退回旧行为直接使用该文件声明的列表，不因
+         为自动派生失败而丢失存量 skill 的可用原语。
+      3. 都没有时退回 capability.yaml -> explorer.base_tools（占位/未接线
+         领域的静态 skill 名，不是真实工具名，仅作最后兜底，与阶段十四之前
+         行为一致）。
     """
     inline = explorer_config.get("allowed_tools")
     if inline:
         return list(inline)
 
+    auto_derived = _auto_derive_domain_tool_names(explorer_config)
+
+    allowlist_from_file: Optional[list[str]] = None
     path = explorer_config.get("_resolved_tool_allowlist_path")
     if path and Path(path).exists():
         try:
@@ -789,9 +831,20 @@ def _resolve_domain_tool_names(explorer_config: dict) -> list[str]:
         except Exception:  # noqa: BLE001
             data = {}
         if data.get("allowed_tools"):
-            return list(data["allowed_tools"])
-        if data.get("tools"):
-            return [t["name"] for t in data["tools"] if isinstance(t, dict) and t.get("name")]
+            allowlist_from_file = list(data["allowed_tools"])
+        elif data.get("tools"):
+            allowlist_from_file = [
+                t["name"] for t in data["tools"] if isinstance(t, dict) and t.get("name")
+            ]
+
+    if allowlist_from_file is not None:
+        if auto_derived:
+            narrowed = [name for name in allowlist_from_file if name in set(auto_derived)]
+            return narrowed
+        return allowlist_from_file
+
+    if auto_derived:
+        return auto_derived
 
     return list(explorer_config.get("base_tools", []))
 
@@ -829,6 +882,13 @@ def _build_explore_system_extra(
         "绑定在这次探索所在 session 下的，重放时大概率不存在，会导致这次"
         "探索的成果无法沉淀进 skill 目录——下次同样的请求还要从头重新探索"
         "一遍。"
+    )
+    parts.append(
+        "写 `script_source` 时不要求全程只调用领域原语：过滤空结果、判断"
+        "验证码/登录墙关键词、正则清洗文本、重试这类纯逻辑处理，直接写"
+        "标准 Python 就好；只有真正需要驱动浏览器等外部系统的步骤才需要"
+        "调用领域原语（脚本里通过 `from tool_runtime import get_tool_"
+        "executor` 取执行器）。"
     )
     parts.append(
         "如果确认这条路径走不通（如验证码/登录墙/明显反爬拦截/该需求本来就"
