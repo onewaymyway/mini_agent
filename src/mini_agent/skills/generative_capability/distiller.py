@@ -41,6 +41,25 @@ trust_trace_data 一致性兜底（阶段六，回应阶段五"已知遗留"第 
   - 是否用到了这个兜底会如实记录进 meta.json 的 `distill_used_trace_data_fallback`
     字段，保持可审计——这不是静默放宽校验，而是把"探索已验证过的数据"当作
     最后一道防线，避免同一份数据的可靠性判断被两套标准反复横跳。
+
+两条蒸馏路径（阶段二十/阶段二，对应
+next_doc/generative_capability_explorer_rearch_plan.md 3.2 节）:
+  - **script_source 路径（优先）**: 探索子agent在调用 `finish` 时，如果自己
+    判断这次解法可以整理成一个不依赖具体探索过程的 `run(input) -> dict`
+    脚本，会直接把源码通过 `finish` 的 `script_source` 参数一并提交
+    （见 explorer_runtime.py）。蒸馏器此时不再基于 trace 猜测动作形状，只是
+    把这份源码原样落盘前置一段生成来源说明注释，然后走与 trace-replay 完全
+    一致的"沙箱自测 → intent_schema 校验 → 原子落盘"流程。这是探索子agent
+    自己对"这段解法是否具备可复用的参数化形状"做出的判断，比蒸馏器事后从
+    一串工具调用里机械猜测更可靠，尤其是当探索子agent用到了 bash/python
+    等通用工具、trace 形状本来就不具备"动作原语序列"结构时（此时 trace-
+    replay 路径根本无法产出有意义的脚本）。
+  - **trace-replay 路径（兜底）**: `script_source` 为空时，沿用阶段三的原有
+    实现——把 trace 中每一步 (tool, input) 参数化后固化为重放序列。这条路径
+    现在只在"探索子agent没有提交/无法提交脚本源码"时触发，不再是唯一路径。
+  - 两条路径产出的最终落盘产物形状完全一致（script.py + meta.json 都在，
+    meta.json 里新增 `distill_source_kind` 字段区分来源: "script_source" |
+    "trace_replay"，便于事后审计/统计哪条路径实际承担了大部分蒸馏产出）。
 """
 
 from __future__ import annotations
@@ -139,6 +158,21 @@ def _resolve_placeholders(value: Any, context: dict) -> Any:
 '''
 
 
+SCRIPT_SOURCE_HEADER_TEMPLATE = '''"""
+{skill_name} / members / {member_id} / script.py
+
+统一接口: run(input: dict) -> dict
+
+本脚本由 generative-capability 引擎的探索子agent自动蒸馏生成
+（source: explored, distill_source_kind: script_source）。
+探索子agent在探索成功后自行判断这次解法具备可参数化复用的形状，直接提交了
+以下源码；蒸馏器只做了"沙箱自测 + intent_schema 校验 + 原子落盘"，未对动作
+序列做任何猜测或改写。
+"""
+
+'''
+
+
 def distill(
     trace: ExploreTrace,
     request: dict,
@@ -153,6 +187,10 @@ def distill(
     用于重放动作序列的工具执行器（阶段三里直接复用探索时的同一个
     tool_executor，因为自测的目的是验证"这条路径确实可复用"，
     而不是验证语法正确性——语法层面已经由本函数内的 import 校验覆盖）。
+
+    [阶段二十/阶段二] 若 trace.script_source 非空，走 script_source 路径
+    （见文件头"两条蒸馏路径"说明），否则退回 trace-replay 路径。两条路径
+    共享同一套自测/校验/落盘逻辑，仅"如何得到 script_code"不同。
     """
     if not trace.success or trace.data is None:
         return DistillResult(success=False, error="探索未成功，无 trace 可供蒸馏")
@@ -163,22 +201,31 @@ def distill(
     skill_name = capability.get("name", skill_dir.name)
     member_id = reexplore_member_id or _generate_member_id(request, skill_dir)
 
-    templated_steps, templated_fields = _templatize_steps(trace.steps, request)
+    use_trace_fallback = False
+    distill_source_kind = "trace_replay"
 
-    trust_trace_data = bool((capability.get("distill") or {}).get("trust_trace_data", False))
-    last_real_output = _last_real_step_output(trace.steps)
-    use_trace_fallback = trust_trace_data and not (
-        isinstance(last_real_output, dict) and last_real_output.get("data") is not None
-    )
-    trace_data_fallback_literal = repr(trace.data) if use_trace_fallback else "None"
+    if trace.script_source and trace.script_source.strip():
+        distill_source_kind = "script_source"
+        script_code = SCRIPT_SOURCE_HEADER_TEMPLATE.format(
+            skill_name=skill_name, member_id=member_id,
+        ) + trace.script_source
+    else:
+        templated_steps, templated_fields = _templatize_steps(trace.steps, request)
 
-    script_code = SCRIPT_TEMPLATE.format(
-        skill_name=skill_name,
-        member_id=member_id,
-        templated_fields=", ".join(sorted(templated_fields)) or "(无，动作序列不依赖输入参数)",
-        steps_literal=json.dumps(templated_steps, ensure_ascii=False, indent=4),
-        trace_data_fallback_literal=trace_data_fallback_literal,
-    )
+        trust_trace_data = bool((capability.get("distill") or {}).get("trust_trace_data", False))
+        last_real_output = _last_real_step_output(trace.steps)
+        use_trace_fallback = trust_trace_data and not (
+            isinstance(last_real_output, dict) and last_real_output.get("data") is not None
+        )
+        trace_data_fallback_literal = repr(trace.data) if use_trace_fallback else "None"
+
+        script_code = SCRIPT_TEMPLATE.format(
+            skill_name=skill_name,
+            member_id=member_id,
+            templated_fields=", ".join(sorted(templated_fields)) or "(无，动作序列不依赖输入参数)",
+            steps_literal=json.dumps(templated_steps, ensure_ascii=False, indent=4),
+            trace_data_fallback_literal=trace_data_fallback_literal,
+        )
 
     # ------ 沙箱自测：动态加载蒸馏产物并重新跑一遍 run() ------ #
     tmp_dir = skill_dir / "members" / f"__tmp_{member_id}_{int(time.time())}"
@@ -209,6 +256,7 @@ def distill(
             intent_schema=intent_schema,
             is_reexplore=reexplore_member_id is not None,
             used_trace_data_fallback=use_trace_fallback,
+            distill_source_kind=distill_source_kind,
         )
     except Exception as e:  # noqa: BLE001
         return DistillResult(success=False, error=f"蒸馏产物落盘失败: {e}")
@@ -326,7 +374,8 @@ def _validate_schema(data: Any, schema: Optional[dict]) -> bool:
 
 def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, request: dict,
                      capability: dict, intent_schema: dict, is_reexplore: bool,
-                     used_trace_data_fallback: bool = False) -> None:
+                     used_trace_data_fallback: bool = False,
+                     distill_source_kind: str = "trace_replay") -> None:
     members_dir = skill_dir / "members"
     member_dir = members_dir / member_id
     member_dir.mkdir(parents=True, exist_ok=True)
@@ -348,6 +397,7 @@ def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, reques
         "version": prev_version,
         "intent_schema": intent_schema,
         "distilled_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "distill_source_kind": distill_source_kind,
         "distill_used_trace_data_fallback": used_trace_data_fallback,
         "distilled_from_request": {
             "text": request.get("text", ""),

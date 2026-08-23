@@ -304,3 +304,34 @@ LLMHelper 而非自拼 API"的成果（provider 无关、跟随 `/model` 切换�
 `test_subagent_inheritance.py` 合并运行共 131 个用例全部通过，无回归。
 
 ### 阶段二~五 —— 待实施
+### 阶段二 —— distiller.py 支持 script_source 优先路径（已完成）
+
+**改动文件**:
+- `src/mini_agent/skills/generative_capability/distiller.py`
+- `src/mini_agent/skills/generative_capability/explorer_runtime.py`
+  （`build_stub_explorer()` 新增 `script_source` 形参，便于测试构造这条路径）
+- 新增 `tests/test_distiller_script_source.py`
+
+**实现摘要**:
+- `distill()` 新增分支：`trace.script_source` 非空时，跳过 `_templatize_steps()`
+  的 trace 猜测逻辑，直接把探索子agent提交的源码（前置一段生成来源说明注释，
+  见 `SCRIPT_SOURCE_HEADER_TEMPLATE`）作为 `script_code`；为空时保持阶段三
+  原有的 trace-replay 行为完全不变。
+- 两条路径之后共享完全相同的"沙箱自测（`_sandbox_run`）→
+  `intent_schema` 校验 → 原子落盘（`_atomic_persist`）"流程，不重复实现。
+- `meta.json` 新增 `distill_source_kind` 字段（`"script_source"` |
+  `"trace_replay"`），如实记录这次蒸馏走的是哪条路径，便于后续观察两条路径
+  各自的实际命中率/可靠性，不是只在文档里描述、代码里无法验证的声明。
+- `trust_trace_data` 兜底机制（阶段六）保持只对 trace-replay 路径生效——
+  script_source 路径下 `use_trace_fallback` 恒为 `False`，因为该兜底解决的
+  是"trace 重放最后一步取不到 data"这个 trace-replay 特有的问题，
+  script_source 路径的 `run()` 直接返回完整数据，不存在这个问题。
+
+**测试**: `tests/test_distiller_script_source.py`（4 个用例：script_source
+路径成功落盘且 `meta.json` 标记正确；`script_source` 缺少 `run()` 时自测
+失败、不留任何落盘残留；`script_source` 的 `run()` 返回值形状不对时自测
+失败；未提交 `script_source` 时正确退回 trace-replay 路径且
+`distill_source_kind` 标记为 `"trace_replay"`）。与阶段一新增测试及全部
+既有测试合并运行共 135 个用例全部通过，无回归。
+
+### 阶段三~五 —— 待实施

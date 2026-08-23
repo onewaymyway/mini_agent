@@ -659,10 +659,15 @@ def build_stub_explorer(
     steps: Optional[list[ExploreStep]] = None,
     final_data: Optional[dict] = None,
     final_error: Optional[str] = None,
+    script_source: Optional[str] = None,
 ) -> Callable[[dict, dict, dict], ExploreTrace]:
     """
     固定返回给定结果的桩探索器，仅用于验证 CapabilityEngine 与
     explore()/distill() 之间的接线逻辑，不代表真实探索质量。
+
+    script_source: 可选。传入时模拟探索子agent在 finish 时一并提交了可复用
+    脚本源码的情形（阶段二十/阶段二），用于测试 distiller.py 的
+    script_source 优先路径。
     """
 
     def _stub(request: dict, intent_schema: dict, explorer_config: dict) -> ExploreTrace:  # noqa: ARG001
@@ -670,6 +675,6 @@ def build_stub_explorer(
             return ExploreTrace(success=False, error=final_error, steps=steps or [],
                                  stop_reason="reported_failure")
         return ExploreTrace(success=True, data=final_data or {}, steps=steps or [],
-                             stop_reason="finished")
+                             stop_reason="finished", script_source=script_source)
 
     return _stub
