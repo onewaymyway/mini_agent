@@ -9,9 +9,24 @@ Generative-Capability 引擎的探索子agent运行时（阶段三）。
 设计要点:
   - 探索子agent运行在与主对话隔离的独立 context 中：这里只接受
     request/intent_schema/explorer_config 三样输入，不携带主对话历史。
-  - 工具白名单强制：模型只能调用 capability.yaml -> explorer.tool_allowlist
-    中列出的工具名；引擎侧对模型试图调用的工具名做二次校验，白名单之外
-    一律拒绝执行并作为一次失败的工具调用反馈给模型（不静默忽略、不越权执行）。
+  - 工具准入机制（[阶段二十五修订] 此前这里写的是"白名单强制"，与实际接线
+    不符，据实更正）：
+      * `build_llm_explorer()`（手写决策循环的历史实现，当前未被
+        `tools/capability_call.py` 实际接线使用）才是真正的白名单强制——
+        模型只能调用 `explorer.tool_allowlist` 中列出的工具名，白名单之外
+        一律拒绝执行（见该函数体内 `if name not in allowlist` 分支）。
+      * `build_subagent_explorer()`（阶段二十起真正接线、当前唯一在用的
+        探索器实现）走的是**黑名单**机制：探索子agent默认拥有 SubAgent
+        的完整通用工具集（`bash`/`python`/`write_file` 等），只排除
+        `_EXPLORER_EXCLUDED_TOOLS` 里列出的"元编排/递归调用/用户交互/
+        workflow"类工具（防止嵌套探索、误用攻击面），`explorer/
+        tool_allowlist.json` 声明的领域原语（如 `browser_navigate`）是在
+        这份默认工具集之上**追加**的桥接工具，不是收窄。这是刻意设计：
+        探索过程经常需要用 `bash`/`write_file` 现写现跑一段脚本来验证
+        思路（比如本例的知乎抓取，就需要先用 `bash` 试探 API 是否可行），
+        禁掉这些通用工具会让探索能力大幅退化。`tool_allowlist.json` 里
+        "调度引擎强制校验..." 的 note 字段描述的是 `build_llm_explorer()`
+        路径的行为，同样需要读者留意两条路径不是同一套准入逻辑。
   - 步数/时间预算硬上限：由调用方通过 explorer_config 传入
     max_steps / max_seconds，超出后直接终止并判定失败，不允许无限重试。
   - 真正执行工具的是调用方注入的 tool_executor（因为具体的浏览器操作原语
@@ -105,6 +120,11 @@ class ExploreTrace:
     # "校验并落盘" 路径，而不是靠 trace→重放脚本猜测动作形状；为空则沿用
     # 现有 trace-replay 兜底策略（见 distiller.py 文件头说明）。
     script_source: Optional[str] = None
+    # [阶段二十五] script_source 为空时，区分"探索子agent主动确认无法复用"
+    # 与"预算耗尽被强制放行"两种情形，供 distiller.py 决定兜底策略：
+    # 前者仍可尝试 LLM 事后总结（子agent当时的判断未必可靠），后者优先级更高。
+    script_source_skipped: bool = False
+    script_source_forced_empty: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -516,30 +536,42 @@ def build_subagent_explorer(
             )
 
         outcome: dict = {}
+        # [阶段二十五] script_source 从"prompt 里请求一下"改为结构性强制：
+        # finish() 的 input_schema 把 script_source 列为 required（模型的
+        # tool-calling 至少会被迫产出这个字段），且当它是空字符串时
+        # _make_finish_fn 不会把 outcome 标记为 finished，而是返回一条
+        # 明确的拒绝反馈让模型在预算内重试；只有显式提交哨兵值 "SKIP"
+        # （代表"我确认过，这次解法真的不具备参数化复用形状"）才允许放弃。
+        # 超过 _FINISH_SCRIPT_SOURCE_MAX_NUDGES 次仍未给出有效值才放行，
+        # 避免在预算耗尽边缘死循环——此时 outcome 里会记一个
+        # script_source_forced_empty 标记，供 distiller.py 决定走哪条兜底。
         agent.registry.register_fn(
             fn=_make_finish_fn(outcome),
             name=FINISH_TOOL,
             description=(
                 "探索成功，提交最终结构化数据（必须符合 intent_schema）。"
-                "如果这次解法可以整理成一个不依赖具体探索过程、符合 "
-                "`run(input: dict) -> dict` 接口约定的可复用脚本，请一并通过 "
-                "script_source 提交源码（可选；省略时引擎会尝试用本次探索的"
-                "工具调用序列重放兜底，但不保证同样可靠）。"
+                "同时必须通过 script_source 提交一个不依赖具体探索过程、"
+                "符合 `run(input: dict) -> dict` 接口约定的可复用脚本源码——"
+                "这是本次解法能否沉淀进 skill 目录、下次被直接复用的关键，"
+                "不是可有可无的附加信息。如果确认这次操作序列纯属碰运气、"
+                "不存在可参数化复用的形状（极少数情况），显式传字符串 "
+                "\"SKIP\" 而不是留空。"
             ),
             input_schema={
                 "type": "object",
-                "required": ["data"],
+                "required": ["data", "script_source"],
                 "properties": {
                     "data": intent_schema or {"type": "object"},
                     "script_source": {
                         "type": "string",
                         "description": (
-                            "可选。一个完整的 Python 模块源码，必须定义 "
+                            "一个完整的 Python 模块源码，必须定义 "
                             "`def run(input: dict) -> dict`，返回 "
                             "{\"status\": \"success\"|\"fail\", \"data\": ..., "
-                            "\"error\": ...}。仅当这次探索用到的方法可以在 "
-                            "target/query 等参数变化时被参数化复用时才提交；"
-                            "如果只是碰运气般的一次性操作序列，留空即可。"
+                            "\"error\": ...}。把 target.url / query 等本次 "
+                            "request 里的具体值替换成对 input 参数的引用，"
+                            "而不是硬编码这次探索用到的具体值。真的没有可"
+                            "复用形状时传 \"SKIP\"，不要留空。"
                         ),
                     },
                 },
@@ -645,6 +677,8 @@ def build_subagent_explorer(
             return ExploreTrace(
                 success=True, data=outcome.get("data"), steps=steps, stop_reason="finished",
                 script_source=script_source,
+                script_source_skipped=bool(outcome.get("script_source_skipped")),
+                script_source_forced_empty=bool(outcome.get("script_source_forced_empty")),
             )
         if outcome.get("failed"):
             capability_debug_log("explorer_reported_failure", {"reason": outcome.get("reason")},
@@ -670,12 +704,48 @@ def build_subagent_explorer(
     return _explorer
 
 
+_FINISH_SCRIPT_SOURCE_MAX_NUDGES = 2
+_SCRIPT_SOURCE_SKIP_SENTINEL = "SKIP"
+
+
 def _make_finish_fn(outcome: dict) -> Callable[..., str]:
+    nudges = {"count": 0}
+
     def finish(data: dict, script_source: str = "") -> str:
-        outcome["finished"] = True
-        outcome["data"] = data
-        outcome["script_source"] = script_source or None
-        return "已收到最终数据，探索到此结束。不要再调用任何工具，直接用一句话简短总结并结束本轮回复。"
+        script_source = (script_source or "").strip()
+        if script_source and script_source != _SCRIPT_SOURCE_SKIP_SENTINEL:
+            outcome["finished"] = True
+            outcome["data"] = data
+            outcome["script_source"] = script_source
+            return "已收到最终数据和可复用脚本，探索到此结束。不要再调用任何工具，直接用一句话简短总结并结束本轮回复。"
+
+        if script_source == _SCRIPT_SOURCE_SKIP_SENTINEL:
+            outcome["finished"] = True
+            outcome["data"] = data
+            outcome["script_source"] = None
+            outcome["script_source_skipped"] = True
+            return "已收到最终数据（明确放弃提交可复用脚本），探索到此结束。不要再调用任何工具，直接用一句话简短总结并结束本轮回复。"
+
+        nudges["count"] += 1
+        if nudges["count"] > _FINISH_SCRIPT_SOURCE_MAX_NUDGES:
+            # 预算即将耗尽，不再死磕：接受这次 finish，但如实标记
+            # script_source 是被强制放行的空值，供 distiller.py 走
+            # LLM 事后总结/trace-replay 兜底，而不是假装这是一次正常提交。
+            outcome["finished"] = True
+            outcome["data"] = data
+            outcome["script_source"] = None
+            outcome["script_source_forced_empty"] = True
+            return (
+                "已收到最终数据。script_source 多次留空，引擎将尝试事后从本次"
+                "探索过程自动总结出可复用脚本。探索到此结束，不要再调用任何工具。"
+            )
+
+        return (
+            "拒绝：script_source 不能留空。请基于刚才成功的操作路径，整理出一个 "
+            "`def run(input: dict) -> dict` 的可复用脚本源码，再次调用 finish 并"
+            "带上 script_source；如果确认这次真的不具备可复用形状，传字符串 "
+            "\"SKIP\"。"
+        )
     return finish
 
 

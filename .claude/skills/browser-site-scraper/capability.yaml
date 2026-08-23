@@ -61,15 +61,24 @@ explorer:
 member_interface:
   entrypoint: "run(input: dict) -> dict"
 
-# 蒸馏一致性兜底开关（阶段六新增，默认关闭，见 next_doc 方案文档阶段五"已知
-# 遗留"第 1 条 / _engine/distiller.py 文件头说明）：
+# 蒸馏一致性兜底开关（阶段六新增；阶段二十五起为 browser-site-scraper 打开）：
 # 仅当探索阶段最后一个真实工具步骤未能直接给出 data 时，是否信任探索阶段
 # 已通过 intent_schema 校验的 trace.data 作为蒸馏脚本的兜底常量。真实
 # browser-core 的提取类工具（如 browser_extract_content）通常最后一步就会
-# 返回 data，生产环境不需要开启；仅建议在自测/CI 用任意回显式桩工具执行器时
-# 临时开启，避免"自测环境没配对"被误判为"探索失败"。
+# 返回 data，理论上不需要这道兜底；但真实探索经常会在拿到数据前先走一段
+# 探测性弯路（试 bash/curl、换 selector 等），trace-replay 重放到这些弯路
+# 步骤时容易在 sandbox 自测阶段就失败——此时哪怕最终数据早已被
+# intent_schema 校验通过，也会因为"重放中间步骤失败"整体判负，白白丢弃一次
+# 本可沉淀的成功探索（阶段二十四实际复现过的问题）。权衡之后打开这道兜底：
+# 即使重放没能在自测里复现出 data，也允许用探索阶段已验证过的数据顶上，
+# 代价是 trace-replay 产出的脚本可能不是"完全可信地参数化复用"，而更接近
+# "这次探索确实拿到了正确数据，但脚本的重放骨架未必百分百可靠"——这个事实
+# 会如实记录进 meta.json 的 distill_used_trace_data_fallback 字段，保持可
+# 审计，不是静默放宽标准。真正的长期修复方向仍是阶段二十五新增的
+# script_source 结构性必填 + LLM 事后总结路径（见 distiller.py 文件头），
+# trace-replay 只是三条路径里的最后兜底。
 distill:
-  trust_trace_data: false
+  trust_trace_data: true
 
 # 生命周期阈值（可覆盖引擎默认值）。
 lifecycle:

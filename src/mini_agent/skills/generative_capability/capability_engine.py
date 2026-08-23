@@ -88,6 +88,7 @@ class CapabilityEngine:
         llm_resolver: Optional[Callable] = None,
         explore_runner: Optional[Callable[[dict, dict, dict], Any]] = None,
         tool_executor: Optional[Callable[[str, dict], dict]] = None,
+        llm_helper: Any = None,
     ):
         self.skill_dir = Path(skill_dir)
         self.capability = self._load_yaml(self.skill_dir / "capability.yaml")
@@ -108,6 +109,10 @@ class CapabilityEngine:
         # 阶段三新增：真正执行浏览器等底层操作原语的运行时钩子，探索循环与
         # 蒸馏产物的沙箱自测都复用同一个执行器（因为两者都需要"真的能做到"）。
         self.tool_executor = tool_executor
+        # llm_helper: [阶段二十五新增] 通常是当前 Agent.llm_helper，透传给
+        # distill() 用于 script_source 缺失时的"LLM 事后总结"路径（见
+        # distiller.py 文件头"三条蒸馏路径"）。未注入时该路径自动跳过。
+        self.llm_helper = llm_helper
 
     # ---------------------- 基础文件读写 ---------------------- #
 
@@ -433,6 +438,7 @@ class CapabilityEngine:
             capability=self.capability,
             self_test_executor=self.tool_executor,
             reexplore_member_id=reexplore_member_id,
+            llm_helper=self.llm_helper,
         )
 
     def _handle_reexplore_failure(self, member_id: str) -> None:
@@ -512,6 +518,14 @@ class CapabilityEngine:
                     f"已有能力(member={last_failed_member_id})执行失败: {last_exec_error}；"
                     f"随后触发的探索子agent也失败: {explore_result.error}"
                 )
+            capability_debug_log(
+                "engine_call_not_implemented",
+                {"skill_name": self.capability.get("name"), "request": request,
+                 "resolve_reason": resolved.reason, "last_failed_member_id": last_failed_member_id,
+                 "last_exec_error": last_exec_error, "explore_error": explore_result.error,
+                 "combined_error": combined_error},
+                where="capability_engine.CapabilityEngine.call",
+            )
             return CapabilityCallResult(status="not_implemented", error=combined_error,
                                          resolve_reason=resolved.reason)
 
@@ -520,6 +534,12 @@ class CapabilityEngine:
         if explore_result.status == "success":
             return CapabilityCallResult(status="success", data=explore_result.data,
                                          member_id=explore_result.member_id, resolve_reason="explored")
+        capability_debug_log(
+            "engine_call_not_implemented",
+            {"skill_name": self.capability.get("name"), "request": request,
+             "resolve_reason": resolved.reason, "explore_error": explore_result.error},
+            where="capability_engine.CapabilityEngine.call",
+        )
         return CapabilityCallResult(status="not_implemented", error=explore_result.error,
                                      resolve_reason=resolved.reason)
 

@@ -211,6 +211,10 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
                     shared_tool_cache=task_manager._shared_tool_cache,
                 ),
                 tool_executor=tool_executor,
+                # [阶段二十五] 透传给 distill() 的"LLM 事后总结"路径，见
+                # distiller.py 文件头"三条蒸馏路径"说明。复用同一个
+                # current_llm_helper，跟随 /model 切换，不额外构造新连接。
+                llm_helper=current_llm_helper,
             )
         except Exception as e:  # noqa: BLE001
             return json.dumps(

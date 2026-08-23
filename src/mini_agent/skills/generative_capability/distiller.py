@@ -42,24 +42,38 @@ trust_trace_data 一致性兜底（阶段六，回应阶段五"已知遗留"第 
     字段，保持可审计——这不是静默放宽校验，而是把"探索已验证过的数据"当作
     最后一道防线，避免同一份数据的可靠性判断被两套标准反复横跳。
 
-两条蒸馏路径（阶段二十/阶段二，对应
+三条蒸馏路径（阶段二十五扩充为三条，原两条见
 next_doc/generative_capability_explorer_rearch_plan.md 3.2 节）:
-  - **script_source 路径（优先）**: 探索子agent在调用 `finish` 时，如果自己
-    判断这次解法可以整理成一个不依赖具体探索过程的 `run(input) -> dict`
-    脚本，会直接把源码通过 `finish` 的 `script_source` 参数一并提交
-    （见 explorer_runtime.py）。蒸馏器此时不再基于 trace 猜测动作形状，只是
-    把这份源码原样落盘前置一段生成来源说明注释，然后走与 trace-replay 完全
-    一致的"沙箱自测 → intent_schema 校验 → 原子落盘"流程。这是探索子agent
-    自己对"这段解法是否具备可复用的参数化形状"做出的判断，比蒸馏器事后从
-    一串工具调用里机械猜测更可靠，尤其是当探索子agent用到了 bash/python
-    等通用工具、trace 形状本来就不具备"动作原语序列"结构时（此时 trace-
-    replay 路径根本无法产出有意义的脚本）。
-  - **trace-replay 路径（兜底）**: `script_source` 为空时，沿用阶段三的原有
-    实现——把 trace 中每一步 (tool, input) 参数化后固化为重放序列。这条路径
-    现在只在"探索子agent没有提交/无法提交脚本源码"时触发，不再是唯一路径。
-  - 两条路径产出的最终落盘产物形状完全一致（script.py + meta.json 都在，
-    meta.json 里新增 `distill_source_kind` 字段区分来源: "script_source" |
-    "trace_replay"，便于事后审计/统计哪条路径实际承担了大部分蒸馏产出）。
+  - **script_source 路径（优先级最高）**: 探索子agent在调用 `finish` 时，
+    如果自己判断这次解法可以整理成一个不依赖具体探索过程的
+    `run(input) -> dict` 脚本，会直接把源码通过 `finish` 的 `script_source`
+    参数一并提交（见 explorer_runtime.py；阶段二十五起该字段结构性必填，
+    只能显式提交源码或哨兵值 "SKIP"，不再允许静默留空）。蒸馏器此时不再
+    基于 trace 猜测动作形状，只是把这份源码原样落盘前置一段生成来源说明
+    注释，然后走与其余路径完全一致的"沙箱自测 → intent_schema 校验 →
+    原子落盘"流程。这是探索子agent自己对"这段解法是否具备可复用的参数化
+    形状"做出的判断，比蒸馏器事后从一串工具调用里机械猜测更可靠。
+  - **LLM 事后总结路径（阶段二十五新增，次优先级）**: `script_source` 为空
+    （探索子agent被预算强制放行、或显式 "SKIP" 后蒸馏器仍想再试一次）且
+    调用方注入了 `llm_helper` 时，蒸馏器用探索过程的完整 trace（每一步
+    tool/input/output）加上 request/intent_schema，请 LLM 直接"读一遍这次
+    探索走过的路，总结出一个参数化的 `run(input) -> dict`"——这利用的是
+    agent 本身的总结/泛化能力，而不是机械地把 trace 里的每一步原样重放
+    （trace 里混着探测性失败调用时，机械重放会把这些失败也一起录进去，
+    重放必炸，见下方 trace-replay 路径的已知局限）。产出同样要过沙箱自测/
+    schema 校验/原子落盘，失败就丢弃、退到 trace-replay。
+  - **trace-replay 路径（最后兜底）**: 前两条都不可用（没有 `llm_helper`
+    注入，或 LLM 总结产物没通过自测）时，沿用阶段三的原有实现——把 trace
+    中每一步 (tool, input) 参数化后固化为重放序列。这条路径的已知局限：
+    它不区分"探索过程中的死胡同"和"通往最终成功的关键步骤"，trace 里如果
+    混有失败的探测性调用（如日志里那次知乎抓取用 bash 试了几次 curl/urllib
+    都失败才转向 browser_* 工具），重放到这些失败步骤时会直接判定"重放
+    步骤失败"，整个蒸馏产物被丢弃——这也是当前默认只在前两条路径都不可用
+    时才会走到这里的原因。
+  - 三条路径产出的最终落盘产物形状完全一致（script.py + meta.json 都在，
+    meta.json 里 `distill_source_kind` 字段区分来源: "script_source" |
+    "llm_synthesized" | "trace_replay"，便于事后审计/统计哪条路径实际承担了
+    大部分蒸馏产出）。
 """
 
 from __future__ import annotations
@@ -173,6 +187,110 @@ SCRIPT_SOURCE_HEADER_TEMPLATE = '''"""
 '''
 
 
+LLM_SYNTHESIZED_HEADER_TEMPLATE = '''"""
+{skill_name} / members / {member_id} / script.py
+
+统一接口: run(input: dict) -> dict
+
+本脚本由 generative-capability 引擎在探索成功、但探索子agent未提交
+script_source 时，用 LLM 事后阅读整段探索 trace 总结生成
+（source: explored, distill_source_kind: llm_synthesized）。
+非人工手写，未逐字重放当次探索的工具调用序列，而是由 LLM 提炼出参数化的
+等价逻辑；仍需经过与其它路径完全一致的沙箱自测 + intent_schema 校验才会
+落盘。
+"""
+
+'''
+
+
+_LLM_SYNTHESIZE_SYSTEM_PROMPT = """你是一个"探索经验蒸馏器"。你会收到一次成功的网页/工具探索过程的完整
+操作记录（每一步调用了什么工具、传了什么参数、返回了什么），以及这次探索
+最终提交的结构化数据和它应满足的 schema。
+
+你的任务：读懂这次探索实际做对了什么（跳过其中失败的试探性步骤，只提炼
+真正走通的那条路径），总结成一个可以在 target/query 等参数变化时复用的
+Python 脚本。
+
+硬性要求：
+1. 必须定义 `def run(input: dict) -> dict`，返回
+   `{"status": "success"|"fail", "data": ..., "error": ...}`。
+2. 脚本内如需调用底层操作原语（如 browser_navigate/browser_extract_content
+   这类领域工具），通过 `from tool_runtime import get_tool_executor` 拿到
+   执行器，用 `executor(tool_name, tool_input)` 调用——不要假设这些工具有
+   其它调用方式，也不要引入这次探索记录里没出现过的工具名。
+3. 不要硬编码这次探索用到的具体 target.url / query 值，改为从 `input` 参数
+   读取。
+4. 只输出脚本源码本身，不要用 Markdown 代码块包裹，不要输出任何解释文字。
+"""
+
+
+def _llm_synthesize_script(
+    trace: ExploreTrace, request: dict, intent_schema: dict,
+    skill_name: str, member_id: str, llm_helper: Any,
+) -> Optional[str]:
+    """[阶段二十五] script_source 缺失时的次优先级兜底：把探索 trace 交给
+    LLM，让它凭借自身的总结/泛化能力提炼出参数化脚本，而不是机械地把
+    trace 里每一步（包括探索时的死胡同）原样重放。失败（LLM 调用异常/
+    返回内容不像 Python 源码）时返回 None，调用方据此退到 trace-replay，
+    不抛异常中断整个 distill()。
+    """
+    try:
+        steps_summary = [
+            {
+                "tool": step.tool,
+                "input": step.input,
+                # 输出可能很大（如整页 HTML），截断到合理长度，避免把
+                # LLM 上下文喂爆；这只影响总结质量，不影响最终产物是否
+                # 需要过自测——自测环节仍然是真实执行，不依赖这份摘要。
+                "output_preview": _truncate_for_prompt(step.output),
+                "error": step.error,
+            }
+            for step in trace.steps
+        ]
+        user_content = json.dumps(
+            {
+                "request": request,
+                "intent_schema": intent_schema,
+                "final_data": trace.data,
+                "steps": steps_summary,
+            },
+            ensure_ascii=False,
+        )
+        raw = llm_helper.ask(
+            user_content,
+            system=_LLM_SYNTHESIZE_SYSTEM_PROMPT,
+            max_retries=2,
+            override_temperature=0.0,
+        )
+    except Exception as e:  # noqa: BLE001
+        from .capability_debug import capability_debug_log
+        capability_debug_log(
+            "distill_llm_synthesize_call_failed", {"member_id": member_id, "error": str(e)},
+            where="distiller._llm_synthesize_script",
+        )
+        return None
+
+    code = raw.strip()
+    code = code.removeprefix("```python").removeprefix("```").removesuffix("```").strip()
+    if "def run(" not in code:
+        from .capability_debug import capability_debug_log
+        capability_debug_log(
+            "distill_llm_synthesize_invalid_output",
+            {"member_id": member_id, "raw_preview": code[:300]},
+            where="distiller._llm_synthesize_script",
+        )
+        return None
+
+    return LLM_SYNTHESIZED_HEADER_TEMPLATE.format(skill_name=skill_name, member_id=member_id) + code
+
+
+def _truncate_for_prompt(value: Any, limit: int = 600) -> Any:
+    text = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+    if len(text) > limit:
+        return text[:limit] + f"...(截断，原长度 {len(text)})"
+    return text
+
+
 def distill(
     trace: ExploreTrace,
     request: dict,
@@ -181,6 +299,7 @@ def distill(
     capability: dict,
     self_test_executor,
     reexplore_member_id: Optional[str] = None,
+    llm_helper: Any = None,
 ) -> DistillResult:
     """
     self_test_executor: Callable[[str, dict], dict] —— 蒸馏产物沙箱自测时
@@ -188,9 +307,14 @@ def distill(
     tool_executor，因为自测的目的是验证"这条路径确实可复用"，
     而不是验证语法正确性——语法层面已经由本函数内的 import 校验覆盖）。
 
-    [阶段二十/阶段二] 若 trace.script_source 非空，走 script_source 路径
-    （见文件头"两条蒸馏路径"说明），否则退回 trace-replay 路径。两条路径
-    共享同一套自测/校验/落盘逻辑，仅"如何得到 script_code"不同。
+    llm_helper: [阶段二十五新增] 通常是当前 `Agent.llm_helper`，用于
+    script_source 缺失时的"LLM 事后总结"路径（见文件头"三条蒸馏路径"）。
+    不传时该路径自动跳过，直接退到 trace-replay，行为等同阶段二十四。
+
+    依次尝试 script_source -> llm_synthesized -> trace_replay 三条路径
+    （见文件头说明），命中第一条产出即可通过自测/校验的就用它，不会
+    "既然有 script_source 就一定成功"地跳过后续自测——每条路径产出的
+    脚本都要经过同一套沙箱自测 + intent_schema 校验才允许落盘。
     """
     if not trace.success or trace.data is None:
         return DistillResult(success=False, error="探索未成功，无 trace 可供蒸馏")
@@ -201,67 +325,103 @@ def distill(
     skill_name = capability.get("name", skill_dir.name)
     member_id = reexplore_member_id or _generate_member_id(request, skill_dir)
 
-    use_trace_fallback = False
-    distill_source_kind = "trace_replay"
+    attempts: list[tuple[str, str]] = []  # [(distill_source_kind, script_code), ...] 按优先级排列
 
     if trace.script_source and trace.script_source.strip():
-        distill_source_kind = "script_source"
-        script_code = SCRIPT_SOURCE_HEADER_TEMPLATE.format(
-            skill_name=skill_name, member_id=member_id,
-        ) + trace.script_source
+        attempts.append((
+            "script_source",
+            SCRIPT_SOURCE_HEADER_TEMPLATE.format(skill_name=skill_name, member_id=member_id)
+            + trace.script_source,
+        ))
     else:
-        templated_steps, templated_fields = _templatize_steps(trace.steps, request)
+        if llm_helper is not None:
+            synthesized = _llm_synthesize_script(
+                trace=trace, request=request, intent_schema=intent_schema,
+                skill_name=skill_name, member_id=member_id, llm_helper=llm_helper,
+            )
+            if synthesized:
+                attempts.append(("llm_synthesized", synthesized))
 
-        trust_trace_data = bool((capability.get("distill") or {}).get("trust_trace_data", False))
-        last_real_output = _last_real_step_output(trace.steps)
-        use_trace_fallback = trust_trace_data and not (
-            isinstance(last_real_output, dict) and last_real_output.get("data") is not None
-        )
-        trace_data_fallback_literal = repr(trace.data) if use_trace_fallback else "None"
+    # trace-replay 兜底：始终作为最后一条候选加入（即使前面已经有候选，
+    # 前面的候选自测失败时还能落到这里，而不是直接判定整次探索无法沉淀）。
+    templated_steps, templated_fields = _templatize_steps(trace.steps, request)
+    trust_trace_data = bool((capability.get("distill") or {}).get("trust_trace_data", False))
+    last_real_output = _last_real_step_output(trace.steps)
+    trace_fallback_used = trust_trace_data and not (
+        isinstance(last_real_output, dict) and last_real_output.get("data") is not None
+    )
+    trace_replay_code = SCRIPT_TEMPLATE.format(
+        skill_name=skill_name,
+        member_id=member_id,
+        templated_fields=", ".join(sorted(templated_fields)) or "(无，动作序列不依赖输入参数)",
+        steps_literal=json.dumps(templated_steps, ensure_ascii=False, indent=4),
+        trace_data_fallback_literal=repr(trace.data) if trace_fallback_used else "None",
+    )
+    attempts.append(("trace_replay", trace_replay_code))
 
-        script_code = SCRIPT_TEMPLATE.format(
-            skill_name=skill_name,
-            member_id=member_id,
-            templated_fields=", ".join(sorted(templated_fields)) or "(无，动作序列不依赖输入参数)",
-            steps_literal=json.dumps(templated_steps, ensure_ascii=False, indent=4),
-            trace_data_fallback_literal=trace_data_fallback_literal,
-        )
+    from .capability_debug import capability_debug_log
 
-    # ------ 沙箱自测：动态加载蒸馏产物并重新跑一遍 run() ------ #
-    tmp_dir = skill_dir / "members" / f"__tmp_{member_id}_{int(time.time())}"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_script = tmp_dir / "script.py"
-    tmp_script.write_text(script_code, encoding="utf-8")
+    attempt_errors: list[dict] = []
+    for distill_source_kind, script_code in attempts:
+        use_trace_fallback = distill_source_kind == "trace_replay" and trace_fallback_used
 
-    try:
-        test_result = _sandbox_run(tmp_script, request, self_test_executor)
-    finally:
-        _rm_tree(tmp_dir)
+        tmp_dir = skill_dir / "members" / f"__tmp_{member_id}_{int(time.time())}"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_script = tmp_dir / "script.py"
+        tmp_script.write_text(script_code, encoding="utf-8")
+        try:
+            test_result = _sandbox_run(tmp_script, request, self_test_executor)
+        finally:
+            _rm_tree(tmp_dir)
 
-    if not test_result.get("ok"):
-        return DistillResult(success=False, error=f"蒸馏产物沙箱自测失败: {test_result.get('error')}")
+        if not test_result.get("ok"):
+            attempt_errors.append({"path": distill_source_kind, "error": test_result.get("error")})
+            continue
 
-    final_data = test_result.get("data")
-    if not _validate_schema(final_data, intent_schema):
-        return DistillResult(success=False, error="蒸馏产物自测数据未通过 intent_schema 校验")
+        final_data = test_result.get("data")
+        if not _validate_schema(final_data, intent_schema):
+            attempt_errors.append({"path": distill_source_kind, "error": "自测数据未通过 intent_schema 校验"})
+            continue
 
-    # ------ 通过自测，原子化落盘 ------ #
-    try:
-        _atomic_persist(
-            skill_dir=skill_dir,
-            member_id=member_id,
-            script_code=script_code,
-            request=request,
-            capability=capability,
-            intent_schema=intent_schema,
-            is_reexplore=reexplore_member_id is not None,
-            used_trace_data_fallback=use_trace_fallback,
-            distill_source_kind=distill_source_kind,
-        )
-    except Exception as e:  # noqa: BLE001
-        return DistillResult(success=False, error=f"蒸馏产物落盘失败: {e}")
+        try:
+            _atomic_persist(
+                skill_dir=skill_dir,
+                member_id=member_id,
+                script_code=script_code,
+                request=request,
+                capability=capability,
+                intent_schema=intent_schema,
+                is_reexplore=reexplore_member_id is not None,
+                used_trace_data_fallback=use_trace_fallback,
+                distill_source_kind=distill_source_kind,
+            )
+        except Exception as e:  # noqa: BLE001
+            attempt_errors.append({"path": distill_source_kind, "error": f"落盘失败: {e}"})
+            continue
 
-    return DistillResult(success=True, member_id=member_id, data=final_data)
+        if attempt_errors:
+            # [阶段二十五] 前面的候选路径失败了，但最终还是成功落盘了——
+            # 这类"部分失败"信息如实记录，不因为最终成功就静默吞掉，方便
+            # 事后判断某条路径（尤其是 LLM 总结）实际成功率如何。
+            capability_debug_log(
+                "distill_attempt_partial_failure",
+                {"member_id": member_id, "succeeded_path": distill_source_kind,
+                 "failed_attempts": attempt_errors},
+                where="distiller.distill",
+            )
+        return DistillResult(success=True, member_id=member_id, data=final_data)
+
+    # [阶段二十五] 三条路径全部失败：完整记录每条路径各自的失败原因到
+    # capability_debug.jsonl（不做任何截断），不再依赖调用方把这些细节
+    # 一路透传到用户可见的 error 字符串里才算"看得到"。
+    capability_debug_log(
+        "distill_all_paths_failed",
+        {"member_id": member_id, "skill_name": skill_name, "request": request,
+         "attempted_paths": [k for k, _ in attempts], "attempt_errors": attempt_errors},
+        where="distiller.distill",
+    )
+    summary = "；".join(f"{a['path']}: {a['error']}" for a in attempt_errors)
+    return DistillResult(success=False, error=f"全部蒸馏路径均失败——{summary}")
 
 
 # --------------------------------------------------------------------------- #
