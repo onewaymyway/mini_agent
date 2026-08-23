@@ -27,6 +27,7 @@ from mini_agent.skills.generative_capability.explorer_runtime import (
     build_subagent_explorer,
     FINISH_TOOL,
     REPORT_FAILURE_TOOL,
+    ExploreStep,
 )
 
 
@@ -361,6 +362,104 @@ class TestExplorerConsoleVerbose(unittest.TestCase):
             captured["agent"].cfg.verbose,
             msg="探索子agent自己的 cfg.verbose 应该被强制打开，控制台才能打印工具调用的完整参数",
         )
+
+
+class TestInferScriptSourceFromSteps(unittest.TestCase):
+    """[阶段二十四] finish 没带 script_source，但 trace 里能识别出
+    "write_file 写了个 .py 脚本 + 随后 bash 成功跑了它" 这个模式时，应该
+    自动把该脚本内容当 script_source 候选，而不是原样落回注定绑死 session
+    临时目录、大概率蒸馏失败的 trace-replay 兜底。"""
+
+    def _step(self, tool, input_, error=None):
+        return ExploreStep(tool=tool, input=input_, output={"error": error} if error else {"ok": True}, error=error)
+
+    def test_write_file_then_successful_bash_is_inferred(self):
+        from mini_agent.skills.generative_capability.explorer_runtime import (
+            _infer_script_source_from_steps,
+        )
+
+        script_body = "import json\nprint(json.dumps({'ok': True}))\n"
+        steps = [
+            self._step("browser_navigate", {"url": "https://example.com"}),
+            self._step("browser_extract_content", {"selector": ".x"}, error="选择器未匹配"),
+            self._step("write_file", {
+                "path": "E:/codes/mini_claude_code/.agent/sessions/abc/temp/parse.py",
+                "content": script_body,
+            }),
+            self._step("bash", {
+                "command": "python E:/codes/mini_claude_code/.agent/sessions/abc/temp/parse.py",
+            }),
+        ]
+        result = _infer_script_source_from_steps(steps)
+        self.assertEqual(result, script_body)
+
+    def test_no_bash_after_write_file_returns_none(self):
+        from mini_agent.skills.generative_capability.explorer_runtime import (
+            _infer_script_source_from_steps,
+        )
+        steps = [
+            self._step("write_file", {"path": "/tmp/x.py", "content": "print(1)"}),
+            # 没有后续 bash 引用同一路径
+        ]
+        self.assertIsNone(_infer_script_source_from_steps(steps))
+
+    def test_failed_bash_execution_is_not_inferred(self):
+        from mini_agent.skills.generative_capability.explorer_runtime import (
+            _infer_script_source_from_steps,
+        )
+        steps = [
+            self._step("write_file", {"path": "/tmp/x.py", "content": "print(1)"}),
+            self._step("bash", {"command": "python /tmp/x.py"}, error="Traceback..."),
+        ]
+        self.assertIsNone(_infer_script_source_from_steps(steps))
+
+    def test_non_py_write_file_is_ignored(self):
+        from mini_agent.skills.generative_capability.explorer_runtime import (
+            _infer_script_source_from_steps,
+        )
+        steps = [
+            self._step("write_file", {"path": "/tmp/data.json", "content": "{}"}),
+            self._step("bash", {"command": "cat /tmp/data.json"}),
+        ]
+        self.assertIsNone(_infer_script_source_from_steps(steps))
+
+    def test_finish_without_script_source_falls_back_to_inferred(self):
+        """端到端：探索子agent只 write_file+bash+finish(data=...)（不带
+        script_source），最终 ExploreTrace.script_source 应该被自动补上。"""
+        cfg = make_cfg()
+        script_body = "def run(input):\n    return {'result': {'text': 'ok'}}\n"
+
+        def fake_run_with_capture(self, agent, prompt):
+            wf = agent.registry.get("write_file")
+            bash_tool = agent.registry.get("bash")
+            finish_fn = agent.registry.get(FINISH_TOOL).fn
+            path = "/tmp/explorer_session/parse.py"
+            if wf is not None:
+                try:
+                    wf.fn(path=path, content=script_body)
+                except Exception:
+                    pass
+            if bash_tool is not None:
+                try:
+                    bash_tool.fn(command=f"python {path}")
+                except Exception:
+                    pass
+            return finish_fn(data={"result": {"text": "ok"}})  # 故意不带 script_source
+
+        with patch.object(SubAgent, "_run_with_capture", fake_run_with_capture):
+            explorer = build_subagent_explorer(cfg)
+            trace = explorer({"text": "t"}, {"type": "object", "required": ["result"]}, {"max_turns": 5})
+
+        self.assertTrue(trace.success, msg=trace.error)
+        # write_file/bash 是否真的执行成功、路径是否被 mock 工具接受，取决于
+        # 沙箱环境；这里只关心"识别逻辑被正确调用到"，用直接单测
+        # _infer_script_source_from_steps 覆盖精确匹配场景（上面几个测试），
+        # 这个端到端测试主要覆盖"steps 里确实出现了 write_file+bash 时，
+        # ExploreTrace.script_source 不再是 None"这条总的接线路径。
+        if any(s.tool == "write_file" and not s.error for s in trace.steps) and any(
+            s.tool == "bash" and not s.error for s in trace.steps
+        ):
+            self.assertIsNotNone(trace.script_source)
 
 
 if __name__ == "__main__":

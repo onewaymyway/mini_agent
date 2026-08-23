@@ -2387,3 +2387,64 @@ agent 派生（`spawn_agent`/`spawn_named_agent`/`run_ensemble_llm`/…）、面
 直接断言：即使 `base_cfg.verbose=False`，探索子agent自己的
 `agent.cfg.verbose` 也会被强制置为 `True`。相关测试（含前两阶段的用例）
 共 112 用例全部通过，无回归。
+
+### 阶段二十四 —— 已完成：探索成果未落盘到 skill 目录
+
+**触发**：真实使用中复现——探索子agent用 `browser_*` 原语把页面拿到手后，
+发现选择器已失效，转而用通用工具 `write_file` 把一个解析脚本写到
+`<project>/.agent/sessions/<sid>/temp/parse_xxx.py`，再用 `bash` 跑它，
+成功从已抓到的 HTML 里解析出结果，然后 `finish(data={...})`——**没有带
+`script_source`**。
+
+**根因**：`finish` 的 `script_source` 字段目前只是 system_extra 里的一句
+软性建议（"可选，省略时引擎会尝试用工具调用序列重放兜底"）。没带
+`script_source` 时蒸馏器只能走 trace-replay 兜底路径，而这次 trace 里最后
+几步是 `write_file(path="<session 临时目录>/parse_xxx.py")` +
+`bash(command="python <同一路径>")`——这个路径绑定在本次探索所在的
+session 临时目录下，天然不具备可复用性：下次真正命中这个 member、重放
+这段脚本时，session id 变了，这个临时目录大概率不存在，重放要么失败要么
+行为不确定。蒸馏器的"沙箱自测不通过则丢弃，不污染 members/"是既有的安全
+约束（行为本身没错），但结果是这次探索的成果只活在这一次 session 里，没有
+沉淀进 skill 目录——下次同样的请求还要从头再探索一遍。
+
+**方案（两层，都是项目通用机制，与具体 skill 无关）**：
+
+1. **技术兜底（关键，不依赖模型自觉）**：`explorer_runtime.py` 里对
+   "`finish` 调用时没带 `script_source`"这个情况加一个启发式识别——如果
+   trace 的最后几步能识别出"`write_file` 写了一个 `.py` 文件，随后
+   `bash` 执行了这同一个路径，且这是探索里实际产出最终结果的那一步"，就
+   自动把这个文件的内容当作 `script_source` 候选提交给蒸馏器（仍然要过
+   沙箱自测 + intent_schema 校验这两道既有关卡，不是绕过校验，只是把
+   "该不该走 script_source 路径"这个判断从"依赖模型记得提交"改成"引擎
+   自己识别常见模式"）。
+2. **加强 system_extra 提示（便宜，作为第一层之上的兜底）**：把"可选，
+   省略时引擎会尝试兜底"这句偏软的措辞改成明确说明后果——如果用
+   `write_file`+`bash` 写了脚本完成任务，必须通过 `script_source` 一并
+   提交，否则引擎的自动兜底无法正确处理写到临时目录里的脚本路径，成果
+   无法沉淀。
+
+两层不冲突：第一层修复"模型忘记了"的情况，第二层从源头减少这种情况发生的
+概率。实施完成后本节会更新为"已完成"并补充具体改动位置与测试记录。
+
+**实施（已完成）**：
+
+1. `explorer_runtime.py` 新增 `_infer_script_source_from_steps(steps)`——
+   从后往前找最后一个 `write_file`/`create_file` 步骤，若其 `path` 以
+   `.py` 结尾、`content` 非空，且其后存在一个成功执行、`command` 里引用了
+   同一路径的 `bash` 步骤，就把该文件内容作为 `script_source` 候选返回；
+   任何一环不满足则返回 `None`，原样落回既有 trace-replay 兜底，不改变
+   任何现有行为。`finished` 分支里：`outcome.get("script_source")` 为空时
+   才调用这个函数，调试日志新增 `script_source_submitted`/
+   `script_source_inferred` 两个字段，可以直接从日志确认这次是主动提交
+   还是靠启发式补上的——如果 `inferred` 频繁为 `True`，说明提示措辞还需要
+   再加强。识别结果仍然要过蒸馏器既有的沙箱自测 + intent_schema 校验两道
+   关卡，没有绕过任何既有安全约束。
+2. `_build_explore_system_extra()` 里 `script_source` 相关措辞从"可选，
+   省略时引擎会尝试兜底"改为明确说明后果：写了 `.py` 脚本完成任务时必须
+   一并提交源码，否则自动兜底会因为脚本路径绑定在本次 session 临时目录下
+   而大概率蒸馏失败。
+
+新增 `tests/test_explorer_runtime_subagent.py::TestInferScriptSourceFromSteps`
+（5 个用例：正常识别、无后续 bash、bash 执行失败、非 `.py` 文件、端到端
+接线），相关测试（含前三阶段的用例，以及 `test_distiller_script_source.py`）
+共 122 用例全部通过，无回归。

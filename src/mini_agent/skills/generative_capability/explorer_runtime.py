@@ -625,11 +625,26 @@ def build_subagent_explorer(
         )
 
         if outcome.get("finished"):
-            capability_debug_log("explorer_finished", {"data": outcome.get("data")},
-                                  where="explorer_runtime.build_subagent_explorer")
+            script_source = outcome.get("script_source")
+            inferred_script_source = False
+            if not script_source:
+                script_source = _infer_script_source_from_steps(steps)
+                inferred_script_source = script_source is not None
+            capability_debug_log(
+                "explorer_finished",
+                {
+                    "data": outcome.get("data"),
+                    "script_source_submitted": bool(outcome.get("script_source")),
+                    # [阶段二十四] 直接从调试日志确认这次是不是靠启发式兜底
+                    # 才补上的 script_source——如果这个字段频繁是 True，
+                    # 说明 system_extra 的提示力度还不够，值得再加强。
+                    "script_source_inferred": inferred_script_source,
+                },
+                where="explorer_runtime.build_subagent_explorer",
+            )
             return ExploreTrace(
                 success=True, data=outcome.get("data"), steps=steps, stop_reason="finished",
-                script_source=outcome.get("script_source"),
+                script_source=script_source,
             )
         if outcome.get("failed"):
             capability_debug_log("explorer_reported_failure", {"reason": outcome.get("reason")},
@@ -735,9 +750,15 @@ def _build_explore_system_extra(
     parts.append(
         "确认拿到符合 intent_schema 的结构化数据后，调用 `finish` 工具提交；"
         "如果这次解法可以整理成一个不依赖具体探索过程的 "
-        "`run(input: dict) -> dict` 脚本，请一并通过 `finish` 的 "
-        "`script_source` 字段提交源码（可选，省略时引擎会尝试用你的工具调用"
-        "序列重放兜底）。"
+        "`run(input: dict) -> dict` 脚本，**请务必**一并通过 `finish` 的 "
+        "`script_source` 字段提交源码——尤其是如果你用 `write_file`/"
+        "`create_file` 写了一个 `.py` 脚本来完成任务（比如自己解析已抓到的"
+        "页面内容），这份脚本本身就应该原样作为 `script_source` 提交。省略"
+        "`script_source` 不是安全的默认选择：引擎的自动兜底是"
+        "\"原样重放你调用过的工具序列\"，而你写到临时文件里的脚本路径是"
+        "绑定在这次探索所在 session 下的，重放时大概率不存在，会导致这次"
+        "探索的成果无法沉淀进 skill 目录——下次同样的请求还要从头重新探索"
+        "一遍。"
     )
     parts.append(
         "如果确认这条路径走不通（如验证码/登录墙/明显反爬拦截/该需求本来就"
@@ -745,6 +766,61 @@ def _build_explore_system_extra(
     )
     parts.append(f"intent_schema: {json.dumps(intent_schema, ensure_ascii=False)}")
     return "\n".join(p for p in parts if p)
+
+
+def _infer_script_source_from_steps(steps: list["ExploreStep"]) -> Optional[str]:
+    """
+    [阶段二十四] `finish` 调用时没带 `script_source` 的技术兜底。
+
+    真实复现过的模式：探索子agent用通用工具 `write_file` 把一段可复用的
+    解析/操作逻辑写成一个 `.py` 脚本（写到 session 临时目录下），再用
+    `bash` 执行它验证/拿结果，最后 `finish(data=...)` 却忘了把这份脚本
+    源码通过 `script_source` 一并提交。此时蒸馏器只能走 trace-replay 兜底
+    路径——而 trace 里记录的 `write_file`/`bash` 步骤，`path`/`command`
+    参数都绑定着这次探索所在 session 的临时目录，天然不可复用（下次探索
+    session id 变了，这个目录大概率不存在），trace-replay 大概率会在蒸馏
+    的沙箱自测阶段失败，导致这次探索成果完全无法沉淀进 skill 目录。
+
+    这里在放弃之前，先尝试识别这个具体模式并自动补上 `script_source`：
+    从后往前找最后一个 `write_file`（或 `create_file`）步骤，若其
+    `input.path` 以 `.py` 结尾、`input.content` 非空，且其后紧跟着至少一个
+    `bash` 步骤、其 `input.command` 里引用了同一个路径且该步骤没有报错
+    （即"写完就跑了，还跑成功了"），就认为这个文件的内容就是这次探索真正
+    要复用的逻辑，把它作为 `script_source` 候选返回。
+
+    找不到匹配模式时返回 None，调用方据此原样落回原有的 trace-replay 兜底，
+    行为完全不变——这只是新增一条更可能成功的路径，不影响任何既有分支。
+
+    这是纯粹的启发式识别，不代表这份脚本一定能通过后续的沙箱自测/
+    intent_schema 校验——那两道既有关卡不受这里的识别结果影响，识别错了
+    最多是"多尝试了一次注定会被自测拒绝的 script_source"，不会污染
+    members/。
+    """
+    write_file_tools = {"write_file", "create_file"}
+    last_write_idx: Optional[int] = None
+    for i in range(len(steps) - 1, -1, -1):
+        step = steps[i]
+        if step.tool not in write_file_tools:
+            continue
+        path = str((step.input or {}).get("path", ""))
+        content = (step.input or {}).get("content")
+        if not path.endswith(".py") or not content:
+            continue
+        # 这个 write_file 之后（不要求紧邻，允许中间夹杂其它探测性步骤）
+        # 是否有一个成功执行、且引用了同一路径的 bash 步骤。
+        for later in steps[i + 1:]:
+            if later.tool != "bash":
+                continue
+            command = str((later.input or {}).get("command", ""))
+            if path not in command:
+                continue
+            if later.error:
+                continue
+            last_write_idx = i
+            break
+        if last_write_idx is not None:
+            return str(content)
+    return None
 
 
 def _extract_steps_from_agent(agent: Any) -> list[ExploreStep]:
