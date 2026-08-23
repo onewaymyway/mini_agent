@@ -2346,3 +2346,44 @@ agent 派生（`spawn_agent`/`spawn_named_agent`/`run_ensemble_llm`/…）、面
 `test_capability_cmd.py`/`test_capability_notification_v021.py`/
 `test_capability_outline_suggestions_v021.py`/`test_capability_learning_p1.py`，
 共 112 用例）全部通过，无回归。
+
+### 阶段二十三 —— 已完成（探索子agent控制台打印完整 tool_input + 截断机制说明）
+
+**触发**：用户反馈探索子agent调用 `browser_get_debug_snapshot` 这类工具时，
+命令行只看得到调用结果，看不到调用参数，排查"这次到底传了什么导致失败"不
+方便；同时问"结果里的 `…[truncated]` 是只在显示层截断，还是实际 agent 拿到
+的也是被截断的"。
+
+**排查结论（第二问，纯说明，未改代码）**：这里其实是两层完全独立的截断，
+一层纯显示、一层真实影响喂给 LLM 的内容：
+
+1. `ui/renderer.py::print_tool_result()` 的 `truncate=2000` —— 只是终端
+   显示层面的省略号，不影响 LLM 实际收到的 `tool_result` 内容，跟"agent 看到
+   什么"无关。
+2. `tool_executor.py::_trim_result()` —— 当某次工具结果长度超过
+   `cfg.tool_result_trim_threshold` 时，**这一层是真实的**：LLM 收到的
+   `tool_result` 内容确实是被规则截断（或 LLM 摘要）过的版本，而不是原文。
+   但不是丢弃：只要发生了实质性截断，完整原文会存进 `RawResultStore`，被
+   截断的文本末尾会附一句
+   `[full output stored — N chars total. Use view_raw_result(result_id="...") ...]`，
+   agent（包括探索子agent，其内部 `Agent` 实例各自独立持有一份
+   `RawResultStore`，且 `view_raw_result` 工具没有被阶段二十二的黑名单排除）
+   可以按需调用 `view_raw_result` 取回完整原文。也就是说：**截断是真实的，
+   但不是不可逆的信息丢失**，探索子agent理论上有办法拿到完整内容，只是不会
+   默认把全文都塞进上下文。
+
+**实施（第一问）**：`explorer_runtime.py::build_subagent_explorer()` 里
+`sub._build_agent(task)` 返回后，追加 `agent.cfg.verbose = True`。根因是
+`orchestrator/sub_agent.py::SubAgent._build_agent()` 构造 cfg 时硬编码了
+`verbose=False`（通用的"子任务默认不刷屏"策略，跟顶层主agent自己是否开了
+`--verbose` 无关），导致 `tool_executor.py::execute_all()` 里
+`R.print_tool_call(tc.name, tc.input, verbose=self.cfg.verbose)` 一直拿到
+`False`，从不打印 `tool_input`。`agent.cfg` 与 `agent._tool_executor.cfg`
+是同一个对象（`ToolExecutor(cfg=self.cfg, ...)` 直接传引用），所以只覆盖
+探索子agent自己这一份 `cfg.verbose`，不影响顶层主agent或其它类型 SubAgent
+任务（如 workflow 里的批处理子任务）的控制台详略程度。
+
+新增 `tests/test_explorer_runtime_subagent.py::TestExplorerConsoleVerbose`
+直接断言：即使 `base_cfg.verbose=False`，探索子agent自己的
+`agent.cfg.verbose` 也会被强制置为 `True`。相关测试（含前两阶段的用例）
+共 112 用例全部通过，无回归。

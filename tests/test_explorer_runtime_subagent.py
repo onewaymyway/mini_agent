@@ -336,5 +336,32 @@ class TestExplorerExcludedTools(unittest.TestCase):
         self.assertTrue({"capability_call", "skill_list", "spawn_agent"} <= _EXPLORER_EXCLUDED_TOOLS)
 
 
+class TestExplorerConsoleVerbose(unittest.TestCase):
+    """[阶段二十三] 探索子agent自己的控制台输出应该带上完整 tool_input——
+    不依赖顶层主agent是否开了 --verbose（SubAgent._build_agent() 默认
+    verbose=False，是刷屏保护，跟"探索子agent排查工具调用参数"是两个不同的
+    需求，需要单独覆盖）。"""
+
+    def test_explorer_agent_cfg_verbose_forced_true(self):
+        cfg = make_cfg(verbose=False)
+        self.assertFalse(cfg.verbose, msg="前置条件：base_cfg 本身不是 verbose，才能验证是探索子agent自己覆盖的")
+        captured = {}
+
+        def fake_run_with_capture(self, agent, prompt):
+            captured["agent"] = agent
+            finish_fn = agent.registry.get(FINISH_TOOL).fn
+            return finish_fn(data={"result": {"text": "ok"}})
+
+        with patch.object(SubAgent, "_run_with_capture", fake_run_with_capture):
+            explorer = build_subagent_explorer(cfg)
+            trace = explorer({"text": "t"}, {"type": "object", "required": ["result"]}, {"max_turns": 5})
+
+        self.assertTrue(trace.success, msg=trace.error)
+        self.assertTrue(
+            captured["agent"].cfg.verbose,
+            msg="探索子agent自己的 cfg.verbose 应该被强制打开，控制台才能打印工具调用的完整参数",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

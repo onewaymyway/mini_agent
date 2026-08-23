@@ -453,6 +453,18 @@ def build_subagent_explorer(
             )
             return ExploreTrace(success=False, error=f"构造探索子agent失败: {e}", stop_reason="llm_error")
 
+        # [阶段二十三] 探索子agent自己的控制台输出，跟顶层主agent是否开了
+        # `--verbose` 完全无关——`SubAgent._build_agent()` 里构造 cfg 时硬编码
+        # 了 `verbose=False`（这是通用的 SubAgent 机制，任何子任务默认都不
+        # 打印详细参数，避免刷屏），导致探索子agent调用 browser_navigate/
+        # browser_get_debug_snapshot 这类工具时，控制台只看得到结果、看不到
+        # 调用参数，排查"这次到底传了什么参数导致失败"时很不方便。
+        # 这里只覆盖探索子agent自己这一份 cfg（`agent.cfg` 与
+        # `agent._tool_executor.cfg` 是同一个对象，`ToolExecutor.execute_all()`
+        # 里读的是 `self.cfg.verbose`，改这一处即可生效），不影响顶层主agent
+        # 或其它 SubAgent 任务的控制台详略程度。
+        agent.cfg.verbose = True
+
         # 若 _build_agent() 落回了全局默认 registry（task 未声明
         # allowed_tools/allowed_tool_groups 时的既有行为——build_subagent_explorer()
         # 构造的 Task 从不设置 allowed_tools，因此这个分支实际上*总是*会走到），
