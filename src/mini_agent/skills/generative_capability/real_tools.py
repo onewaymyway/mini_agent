@@ -299,10 +299,20 @@ def build_default_tool_executor(
     不需要本函数额外做特殊处理。
     """
     dispatch_table = build_dispatch_table(skill_dir=skill_dir)
+    from .capability_debug import capability_debug_log
+    capability_debug_log(
+        "dispatch_table_built",
+        {"skill_dir": str(skill_dir) if skill_dir else None, "wired_tools": sorted(dispatch_table)},
+        where="real_tools.build_default_tool_executor",
+    )
 
     def _executor(tool_name: str, tool_input: dict) -> dict:
         impl = dispatch_table.get(tool_name)
         if impl is None:
+            capability_debug_log(
+                "tool_executor_not_wired", {"tool_name": tool_name, "tool_input": tool_input},
+                where="real_tools.build_default_tool_executor._executor",
+            )
             return {
                 "error": (
                     f"工具 `{tool_name}` 仍是 capability.yaml/tool_allowlist.json "
@@ -312,8 +322,18 @@ def build_default_tool_executor(
                 )
             }
         try:
-            return impl(tool_input)
+            result = impl(tool_input)
+            capability_debug_log(
+                "tool_executor_dispatched",
+                {"tool_name": tool_name, "tool_input": tool_input, "result": result},
+                where="real_tools.build_default_tool_executor._executor",
+            )
+            return result
         except Exception as e:  # noqa: BLE001 - 工具执行异常需要转成可读的 tool_result
+            capability_debug_log(
+                "tool_executor_exception", {"tool_name": tool_name, "error": str(e)},
+                where="real_tools.build_default_tool_executor._executor",
+            )
             return {"error": f"工具执行异常: {e}"}
 
     return _executor

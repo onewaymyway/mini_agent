@@ -397,9 +397,15 @@ def build_subagent_explorer(
             session_id=session_id, session_dir=session_dir, shared_tool_cache=shared_tool_cache,
         )
 
+        from .capability_debug import capability_debug_log
+
         try:
             agent = sub._build_agent(task)
         except Exception as e:  # noqa: BLE001
+            capability_debug_log(
+                "explorer_build_agent_failed", {"error": str(e)},
+                where="explorer_runtime.build_subagent_explorer",
+            )
             return ExploreTrace(success=False, error=f"构造探索子agent失败: {e}", stop_reason="llm_error")
 
         # 若 _build_agent() 落回了全局默认 registry（task 未声明
@@ -422,10 +428,29 @@ def build_subagent_explorer(
         # `Unknown tool: 'browser_navigate'`（或 finish/report_failure 同样会
         # 遇到，只是模型没恰好选中才没暴露）。必须把这份新的私有 registry 同步
         # 写回 `agent._tool_executor.registry`，保持两者引用一致。
-        if agent.registry is get_default_registry():
+        _registry_was_replaced = agent.registry is get_default_registry()
+        if _registry_was_replaced:
             agent.registry = agent.registry.filtered()
-            if getattr(agent, "_tool_executor", None) is not None:
+            _synced = getattr(agent, "_tool_executor", None) is not None
+            if _synced:
                 agent._tool_executor.registry = agent.registry
+            capability_debug_log(
+                "explorer_registry_replaced_with_private_copy",
+                {
+                    # 这两个正是上次真实复现"Unknown tool: browser_navigate"
+                    # 时需要肉眼猜的信息：registry 是否真的被换成了私有副本、
+                    # _tool_executor.registry 是否真的同步跟上了。
+                    "tool_executor_synced": _synced,
+                    "registry_tool_count_before_domain_bridge": len(agent.registry.names),
+                },
+                where="explorer_runtime.build_subagent_explorer",
+            )
+        else:
+            capability_debug_log(
+                "explorer_registry_not_global_default",
+                {"registry_names_sample": agent.registry.names[:10]},
+                where="explorer_runtime.build_subagent_explorer",
+            )
 
         outcome: dict = {}
         agent.registry.register_fn(
@@ -472,9 +497,20 @@ def build_subagent_explorer(
             override=True,
         )
 
+        capability_debug_log(
+            "explorer_finish_report_failure_registered",
+            {"registry_names_after": agent.registry.names},
+            where="explorer_runtime.build_subagent_explorer",
+        )
+
         if tool_executor is not None:
             for name in domain_tool_names:
                 if name in agent.registry.names:
+                    capability_debug_log(
+                        "explorer_domain_tool_skipped_name_conflict",
+                        {"tool_name": name, "reason": "系统已有同名通用工具，不覆盖"},
+                        where="explorer_runtime.build_subagent_explorer",
+                    )
                     continue  # 系统已有同名通用工具时不覆盖，避免语义混淆
                 agent.registry.register_fn(
                     fn=_make_domain_tool_bridge(name, tool_executor),
@@ -484,23 +520,57 @@ def build_subagent_explorer(
                     requires_approval=False,
                     override=True,
                 )
+                capability_debug_log(
+                    "explorer_domain_tool_registered",
+                    {
+                        "tool_name": name,
+                        # call() 和 schema 生成分别读 _tool_executor.registry /
+                        # agent.registry，两边都确认一下，这就是这次复现里
+                        # 真正需要肉眼核对、之前没有直接证据的那件事。
+                        "in_agent_registry": name in agent.registry.names,
+                        "in_tool_executor_registry": (
+                            getattr(agent, "_tool_executor", None) is not None
+                            and name in agent._tool_executor.registry.names
+                        ),
+                    },
+                    where="explorer_runtime.build_subagent_explorer",
+                )
 
         try:
             output_text = sub._run_with_capture(agent, task.prompt)
         except Exception as e:  # noqa: BLE001
+            capability_debug_log(
+                "explorer_run_exception", {"error": str(e)},
+                where="explorer_runtime.build_subagent_explorer",
+            )
             return ExploreTrace(
                 success=False, error=f"探索子agent运行异常: {e}",
                 steps=_extract_steps_from_agent(agent), stop_reason="llm_error",
             )
 
         steps = _extract_steps_from_agent(agent)
+        capability_debug_log(
+            "explorer_steps_extracted",
+            {
+                "step_count": len(steps),
+                "steps": [
+                    {"tool": s.tool, "input": s.input, "error": s.error}
+                    for s in steps
+                ],
+            },
+            where="explorer_runtime.build_subagent_explorer",
+        )
 
         if outcome.get("finished"):
+            capability_debug_log("explorer_finished", {"data": outcome.get("data")},
+                                  where="explorer_runtime.build_subagent_explorer")
             return ExploreTrace(
                 success=True, data=outcome.get("data"), steps=steps, stop_reason="finished",
                 script_source=outcome.get("script_source"),
             )
         if outcome.get("failed"):
+            capability_debug_log("explorer_reported_failure", {"reason": outcome.get("reason")},
+                                  where="explorer_runtime.build_subagent_explorer")
             return ExploreTrace(
                 success=False, error=outcome.get("reason") or "探索子agent报告失败，未说明原因",
                 steps=steps, stop_reason="reported_failure",
@@ -508,6 +578,8 @@ def build_subagent_explorer(
         # max_turns 耗尽仍未调用 finish/report_failure：如实判失败，
         # 不臆测/伪造成功（对应 SubAgent 预算耗尽即失败的既有约定）。
         tail = (output_text or "").strip()[:200]
+        capability_debug_log("explorer_step_budget_exhausted", {"max_turns": max_turns, "tail": tail},
+                              where="explorer_runtime.build_subagent_explorer")
         return ExploreTrace(
             success=False,
             error=(

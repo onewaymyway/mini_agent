@@ -104,6 +104,13 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
         `generative-capability` and what `category_summary` describes their scope.
         Do NOT use this for ordinary skills — those should be loaded via skill_activate.
         """
+        from mini_agent.skills.generative_capability.capability_debug import capability_debug_log
+
+        capability_debug_log(
+            "capability_call_invoked", {"skill_name": skill_name, "request": request},
+            where="tools.capability_call.capability_call",
+        )
+
         skill = skill_loader.get(skill_name)
         if skill is None:
             known = sorted(
@@ -247,6 +254,12 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
                 "（必须存在且非空的字段路径）和一个可直接照抄改写的 example，按其中"
                 "任意一种格式重新构造 request 后重试即可。"
             )
+        capability_debug_log(
+            "capability_call_returned",
+            {"skill_name": skill_name, "status": result.status, "member_id": result.member_id,
+             "resolve_reason": result.resolve_reason, "error": result.error},
+            where="tools.capability_call.capability_call",
+        )
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
     registry.register_fn(

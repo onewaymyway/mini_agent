@@ -462,11 +462,22 @@ class CapabilityEngine:
             )
 
         resolved = self.resolve(request)
+        from .capability_debug import capability_debug_log
+        capability_debug_log(
+            "engine_resolved",
+            {"status": resolved.status, "member_ids": resolved.member_ids, "reason": resolved.reason},
+            where="capability_engine.CapabilityEngine.call",
+        )
         if resolved.status == "hit":
             last_failed_member_id: Optional[str] = None
             last_exec_error: Optional[str] = None
             for member_id in resolved.member_ids:
                 exec_result = self.execute(member_id, request)
+                capability_debug_log(
+                    "engine_execute_attempted",
+                    {"member_id": member_id, "status": exec_result.status, "error": exec_result.error},
+                    where="capability_engine.CapabilityEngine.call",
+                )
                 if exec_result.status == "success":
                     return CapabilityCallResult(
                         status="success",

@@ -355,6 +355,22 @@ output: {"ok": true, "closed_our_session": true, "killed_process": true,
 原语），这是刻意的：`browser-core` 的职责边界是"通用浏览器操作"，不是
 "绕过网站的访问控制"，与方案文档第 8 节"安全与成本边界"的精神一致。
 
+## 调试日志（阶段二十一新增）
+
+排查"探索子agent调用某个工具时到底发生了什么"这类问题时，不需要临时加
+`print`：项目提供了一个通用调试日志机制
+`mini_agent.skills.generative_capability.capability_debug.capability_debug_log()`，
+`impl/browser_core_impl.py` 的 `_session()`/`browser_navigate()` 已经在用
+（可以照抄这个写法给其他函数加）。**本 skill 代码里只管直接调用，不需要
+自己判断"调试开关开了没有"或者拼日志文件路径**——这两件事由项目侧的
+`capability_debug.py` 统一处理。
+
+开关本身在 `agent_config.json` 里打开：`{"debug": {"capability_enabled":
+true}}`（或设环境变量 `CAPABILITY_DEBUG=1`），打开后日志写到
+`~/.agent/logs/capability_debug.jsonl`（与全局 `error.jsonl` 同目录）；不
+打开时 `capability_debug_log()` 调用本身零开销，可以放心地在生产路径上
+保留调用，不用担心性能。
+
 ## 已知限制
 
 - **未在真实浏览器环境下验证过端到端行为**：当前沙箱没有可安装/运行的

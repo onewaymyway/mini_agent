@@ -91,6 +91,7 @@ from .schema_validator import validate as validate_schema
 from .health_patrol import run_patrol, PatrolReport, PatrolFinding
 from .tool_runtime import set_tool_executor, get_tool_executor
 from .real_tools import build_default_tool_executor, build_dispatch_table, REAL_TOOL_IMPLEMENTATIONS
+from .capability_debug import capability_debug_log, is_capability_debug_enabled
 
 __all__ = [
     # 调度引擎主体
@@ -122,6 +123,11 @@ __all__ = [
     "build_default_tool_executor",
     "build_dispatch_table",
     "REAL_TOOL_IMPLEMENTATIONS",
+    # 全链路调试日志（阶段二十一新增）：项目/skill 代码均可直接调用
+    # capability_debug_log()，是否落盘由 agent_config.json 的
+    # debug.capability_enabled 统一控制，见 capability_debug.py 文件头说明。
+    "capability_debug_log",
+    "is_capability_debug_enabled",
 ]
 
 __sdk_version__ = "0.7.0"  # 对应方案文档阶段七（迁入 src/mini_agent 正式子包）

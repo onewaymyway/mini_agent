@@ -584,11 +584,24 @@ def load_config(
         or os.environ.get("LLM_DEBUG_LOG_DIR", "")
     )
     _debug_log_dir = Path(_debug_log_dir_str) if _debug_log_dir_str else None
+    # [capability_debug_plan] 同一套优先级规则：nested > 旧 flat key >
+    # 环境变量 > 默认值。没有独立的 CLI 参数（不是高频切换项，需要时改
+    # agent_config.json 或设环境变量即可）。
+    _cap_debug_explicit = _debug_dict.get("capability_enabled", file_cfg.get("debug_capability"))
+    _env_cap_debug = os.environ.get("CAPABILITY_DEBUG", "").lower() in ("1", "true", "yes")
+    _cap_debug_v = bool(_cap_debug_explicit) if _cap_debug_explicit is not None else _env_cap_debug
     debug_cfg = DebugConfig(
         llm_enabled=_debug_llm_v,
         llm_console=_debug_console_v,
         log_dir=_debug_log_dir,
+        capability_enabled=_cap_debug_v,
     )
+    # capability_debug 是一个模块级开关（跟 configure_tool_executor_log_saving
+    # 同一种组织方式）：skill 侧的 impl 代码可以直接调用
+    # capability_debug_log()，是否真正落盘由这里统一同步的开关判断，调用方
+    # 不需要关心配置从哪里来。
+    from mini_agent.skills.generative_capability.capability_debug import configure_capability_debug
+    configure_capability_debug(_cap_debug_v)
     # [flat_nested_config_unification_migration_plan.md Stage 2 第 3 类]
     # http：13 字段，flat key 与字段名不一致（http_ring_maxlen →
     # ring_maxlen 等），且没有 CLI 覆盖需求（`load_config()` 签名里没有

@@ -563,6 +563,12 @@ class DebugConfig:
     llm_enabled: bool = False
     llm_console: bool = False
     log_dir: Optional[Path] = None
+    # [capability_debug_plan] generative-capability 引擎全链路调试开关。
+    # 打开后 capability_call/CapabilityEngine/explore/distill 全链路、以及
+    # 各 skill 自己的 impl/ 代码里主动调用的调试记录，会写入
+    # ~/.agent/logs/capability_debug.jsonl（与 error.jsonl 同目录，见
+    # storage/paths.py::global_capability_debug_log）。默认关闭，零开销。
+    capability_enabled: bool = False
 
 
 @dataclass
@@ -2671,6 +2677,8 @@ class AppConfig:
 
     @property
     def debug_llm(self) -> bool:                return self.debug.llm_enabled
+    @property
+    def debug_capability(self) -> bool:         return self.debug.capability_enabled
     @property
     def debug_llm_console(self) -> bool:        return self.debug.llm_console
     @property

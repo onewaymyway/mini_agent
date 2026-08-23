@@ -32,11 +32,25 @@ from session_manager import (
     list_sessions,
 )
 
+# [阶段二十一] 调试日志：这是项目侧的通用机制（mini_agent.skills.
+# generative_capability.capability_debug），skill 实现代码可以直接 import
+# 调用，是否真的落盘由 agent_config.json 的 debug.capability_enabled 统一
+# 控制，本文件不需要、也不应该自己判断开关状态或拼日志路径——那些都属于
+# "通用 skill 系统机制"，留在项目代码里。
+from mini_agent.skills.generative_capability.capability_debug import capability_debug_log
+
 _DEFAULT_WAIT_TIMEOUT_MS = 8000
 
 
 def _session(tool_input: dict) -> CDPSession:
-    return get_or_create_session(tool_input.get("session"))
+    session_arg = tool_input.get("session")
+    session = get_or_create_session(session_arg)
+    capability_debug_log(
+        "browser_core_session_established",
+        {"requested_session": session_arg, "port": getattr(session, "port", None)},
+        where="browser-core/impl/browser_core_impl.py:_session",
+    )
+    return session
 
 
 def _debug_context(session: Optional[CDPSession]) -> dict:
@@ -90,8 +104,16 @@ def browser_navigate(tool_input: dict) -> dict:
         session.navigate(url, timeout=float(tool_input.get("timeout_seconds", 20)))
         final_url = session.eval_js("location.href")
         title = session.eval_js("document.title")
+        capability_debug_log(
+            "browser_navigate_ok", {"url": url, "final_url": final_url, "title": title},
+            where="browser-core/impl/browser_core_impl.py:browser_navigate",
+        )
         return {"ok": True, "final_url": final_url, "title": title}
     except Exception as e:  # noqa: BLE001 - 契约要求把任何失败都归一化为 ok:false
+        capability_debug_log(
+            "browser_navigate_failed", {"url": url, "error": str(e)},
+            where="browser-core/impl/browser_core_impl.py:browser_navigate",
+        )
         return _fail(f"导航失败: {e}", session=locals().get("session"))
 
 

@@ -160,6 +160,19 @@ class AgentPaths:
         覆盖到别的路径，此属性只是"未显式配置时"的默认值。"""
         return self.global_logs_dir / "http_access.jsonl"
 
+    @property
+    def global_capability_debug_log(self) -> Path:
+        """~/.agent/logs/capability_debug.jsonl —— generative-capability
+        引擎全链路调试日志（JSON Lines），与 global_error_log 同目录、同
+        轮转策略。由 mini_agent.skills.generative_capability.capability_debug
+        统一写入，仅在 AppConfig.debug_capability（agent_config.json 的
+        debug.capability_enabled）打开时才产生内容；关闭时不创建/不写入。
+        记录范围覆盖 capability_call 调用链路（resolve/execute/explore/
+        distill）以及各 skill 自己（如 browser-core 的 impl/ 代码）主动调用
+        capability_debug_log() 写入的补充细节——skill 侧只管直接调用，是否
+        真正落盘由这里的开关统一判断，skill 代码不需要关心开关状态。"""
+        return self.global_logs_dir / "capability_debug.jsonl"
+
     def profile_path(self, user_id: Optional[str] = None) -> Path:
         """
         用户 profile 文件路径。

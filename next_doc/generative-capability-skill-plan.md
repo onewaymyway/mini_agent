@@ -2261,3 +2261,47 @@ next_doc/generative-capability-skill-plan.md                         # 本文档
 **本文档同步更新**：第 6 节 explore()/distill() 流程描述、第 8 节安全边界
 第 1/2 条措辞，已按上述改动对齐（不再提"base_tools 白名单"这一已废弃概念，
 改为准确描述 `task.allowed_tools`/`task.max_turns` 复用）。
+
+### 阶段二十一 —— 已完成（全链路调试日志开关）
+
+**触发**：真实使用中排查一次 `browser_navigate` 报 `Unknown tool` 的问题时，
+只能靠肉眼读 stdout/traceback 猜测"探索子agent的 registry 到底有没有被
+换成私有副本、`_tool_executor.registry` 有没有同步跟上、每个 domain 工具
+是否真的注册成功"——这些原本都需要在代码里加临时 print 才能看到。用户要求
+新增一个由 `agent_config.json` 控制的调试开关，打开后详细记录
+generative-capability 全链路的调用关系，落盘到独立日志文件；且要求 skill
+自己的实现代码（如 `browser-core/impl/*.py`）也能直接写调试信息，开关判断
+统一收口在项目通用代码里，skill 代码不需要关心开关状态。
+
+**实施**：
+
+1. 新增 `mini_agent.skills.generative_capability.capability_debug` 模块
+   （项目代码，通用机制，不属于任何具体 skill）：`capability_debug_log(event,
+   details, where=...)` 供任意调用方直接调用；`configure_capability_debug()`
+   同步开关状态（与 `errors.py::configure_tool_executor_log_saving()` 是
+   同一种组织方式）；关闭时提前返回，零开销。
+2. 日志路径：`~/.agent/logs/capability_debug.jsonl`，与 `error.jsonl` 同
+   目录、同轮转策略（`storage/paths.py::AgentPaths.global_capability_debug_log`）。
+3. 配置：`agent_config.json` 新增 `debug.capability_enabled`（默认
+   `false`），兼容旧 flat key `debug_capability` 和环境变量
+   `CAPABILITY_DEBUG`，解析优先级与 `debug.llm_enabled` 一致；
+   `config/loader.py::load_config()` 加载完成后调用
+   `configure_capability_debug()` 同步模块开关。
+4. 项目通用代码埋点：`tools/capability_call.py`（调用入口/返回）、
+   `capability_engine.py::call()`（resolve 结果、每个 member 的 execute
+   尝试结果）、`explorer_runtime.py::build_subagent_explorer()`（**registry
+   是否被替换为私有副本、`_tool_executor.registry` 是否同步、finish/
+   report_failure/每个 domain 工具的注册结果、探索步骤序列、探索终态**——
+   这正是上次真实复现问题时缺失的可观测性）、`real_tools.py`（分发表构建
+   结果、每次工具 dispatch 命中/未接线/异常）。
+5. skill 侧示例：`browser-core/impl/browser_core_impl.py` 的 `_session()`
+   与 `browser_navigate()` 直接 `import capability_debug_log` 调用，作为
+   "skill 实现代码可以直接写、不需要自己判断开关"这条约定的示范；其余
+   `browser_click`/`browser_extract_content` 等函数未加（不是必须每个都加，
+   按需在排查时补即可）。
+6. 全部改动跑通既有测试（`test_explorer_runtime_subagent.py`/
+   `test_explorer_subagent_engine_e2e.py`/`test_generative_capability_engine.py`/
+   `test_generative_capability_real_tools.py`/`test_capability_cmd.py`，
+   共 60 用例）无回归；另外做了三个独立 smoke test 验证：默认关闭时不产生
+   任何文件、打开后正确落盘到 `~/.agent/logs/capability_debug.jsonl`、
+   `agent_config.json -> debug.capability_enabled` 到模块开关的端到端同步。
