@@ -83,6 +83,7 @@ from .explorer_runtime import (
     ExploreStep,
     ExploreTrace,
     build_llm_explorer,
+    build_subagent_explorer,
     build_stub_explorer,
 )
 from .distiller import distill, DistillResult

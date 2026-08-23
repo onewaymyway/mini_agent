@@ -1,6 +1,6 @@
 # Generative-Capability 探索机制重构方案
 
-- **版本**: v1.0（方案阶段，尚未开始实施）
+- **版本**: v1.1（阶段一已实施，阶段二~五待实施）
 - **关联文档**:
   - `next_doc/generative-capability-skill-plan.md`（第 6 节 explore()/distill()、
     第 8 节安全边界、实施记录阶段一~阶段十九——本方案是对其"探索"这一环节的
@@ -224,3 +224,83 @@ LLMHelper 而非自拼 API"的成果（provider 无关、跟随 `/model` 切换�
 
 每个阶段完成后会更新本文档对应小节的状态，并打包该阶段修改/新增的文件（保
 持目录结构）供下载。
+
+---
+
+## 6. 实施记录
+
+### 阶段一 —— explore() 切换到 SubAgent 驱动（已完成）
+
+**改动文件**:
+- `src/mini_agent/skills/generative_capability/explorer_runtime.py`
+- `src/mini_agent/skills/generative_capability/__init__.py`
+- `src/mini_agent/tools/capability_call.py`
+- 新增 `tests/test_explorer_runtime_subagent.py`
+
+**实现摘要**:
+- 新增 `build_subagent_explorer(base_cfg, *, tool_executor=None, session_id=None,
+  session_dir=None, shared_tool_cache=None, override_model=None,
+  override_provider=None)`，返回符合 `CapabilityEngine.explore()` 签名的
+  explorer。内部构造真实 `Task`/`TaskRecord`/`SubAgent`，复用
+  `SubAgent._build_agent()` 拿到一个装配了系统全部已注册工具
+  （bash/python/文件读写等）的 `Agent`，再调用 `SubAgent._run_with_capture()`
+  跑一次真实 `agent.run_turn()`（含既有的 5xx/超时自动重试）。
+- 预算改为透传 `task.max_turns`（`explorer_config` 里的 `max_turns` 优先，
+  否则兼容旧字段名 `max_steps`）；不再自造 `max_seconds`/`stop_reason` 计时
+  循环——`max_seconds` 字段仍允许存在于旧 `capability.yaml` 里（不报错），
+  只是不再被读取，这是刻意的非破坏性忽略。
+- `finish`/`report_failure` 从手写循环里的两个特判分支，改为动态注册到探索
+  用 `Agent.registry` 上的两个真实工具（`ToolDef`，`requires_approval=False`）。
+  `finish` 新增可选 `script_source` 字段（阶段二的落点，`ExploreTrace` 已
+  同步新增 `script_source` 字段透传）。
+- **实施中发现并处理了方案文档未预料到的问题**：`browser_navigate` 等领域
+  声明的底层原语，并不是 `Agent` 自身注册表里的工具（`Agent` 内置的是
+  bash/python/文件读写等通用工具），而是历史上通过调用方注入的
+  `tool_executor(name, input) -> dict` 单独分发（`real_tools.py` +
+  `.claude/skills/browser-core/impl/tools_impl.py` 等）。若不处理，切到
+  "真实 SubAgent + 系统通用工具"后，探索子agent会直接失去这批已经接好的
+  真实能力，是一次不小的能力倒退。解决方式：`build_subagent_explorer()`
+  为 `capability.yaml`/`tool_allowlist.json` 里声明的每个领域工具名，各自
+  包一层桥接 `ToolDef`（`fn` 内部转发给 `tool_executor`），动态注册到探索
+  用 `Agent.registry`——探索子agent因此同时拥有"系统通用工具"与"领域底层
+  原语"两类工具，不再互斥，也不再被后者反向限制上限（对应第 1 节问题 1）。
+  新增 `_resolve_domain_tool_names()` 兼容三种历史写法：`capability.yaml
+  -> explorer.allowed_tools`（新增，内联列表）、`tool_allowlist.json ->
+  {"allowed_tools":[...]}`（browser-site-scraper/doc-template-generation
+  现有写法）、`tool_allowlist.json -> {"tools":[{"name":...}]}`
+  （text-transform-capability 现有写法），最终兜底 `explorer.base_tools`。
+- **`ExploreTrace.steps` 未被放弃**：新增 `_extract_steps_from_agent()`，从
+  探索用 `Agent` 内部的 `HistoryManager._history`（与
+  `history_manager.py` 内部消息约定完全一致，provider 无关）里按
+  `tool_use.id` 匹配 `tool_result`，尽力还原出 `(tool, input, output)`
+  步骤序列，保证 `distiller.py` 现有的 trace-replay 兜底路径在阶段二正式
+  接入 `script_source` 校验分支之前不会失去素材来源（这份"最佳努力"
+  实现的局限见下方"已知限制"）。
+- `tools/capability_call.py` 改为从全局 `TaskManager` 单例（`get_task_manager()`）
+  取 `base_cfg`/`session_id`/`session_dir`/`shared_tool_cache` 传给
+  `build_subagent_explorer()`；取不到 `TaskManager` 时如实报错，不静默退化。
+- 旧的 `build_llm_explorer()`（手写决策循环）保留，标记为遗留实现，供已有
+  调用方/测试继续工作；`build_stub_explorer()` 不变。
+
+**已知限制（留给阶段二/后续观察）**:
+1. `_extract_steps_from_agent()` 记录的是探索用 `Agent`**自己的工具调用**
+   （可能是 bash、也可能是桥接的领域原语），trace-replay 路径重放时用的是
+   `tool_runtime.get_tool_executor()`（`distiller.py` 沙箱自测/生产重放时
+   注入的执行器）。二者对同名工具（如 `browser_navigate`）的实现如果不是
+   同一份，重放可能对不上——这正是方案文档 3.2 节要解决的问题（"事后猜
+   trace 形状"不可靠），阶段二接入 `script_source` 后，trace-replay 会
+   降级为真正的"兜底"而不是主路径，届时这个限制的影响面会自然收窄。
+2. `max_seconds` 预算已按方案移除，若探索子agent在单次工具调用内部耗时
+   过长（如 `browser_navigate` 卡住），目前只能等到该次工具调用返回/超时
+   由工具自身的超时机制兜底，不再有引擎层面的"剩余时间提醒"（阶段十九的
+   那个机制）。如果后续实测发现这是真实问题，可以考虑在 `Task` 层面补一个
+   通用的 wall-clock 预算字段，而不是在 explorer_runtime 里再造一次。
+
+**测试**: `tests/test_explorer_runtime_subagent.py`（10 个用例，覆盖 finish
+成功+script_source 透传、report_failure 失败、预算耗尽不伪造成功、领域工具
+桥接转发/未注入 tool_executor 时不桥接、`_resolve_domain_tool_names()` 兼容
+三种历史写法），与既有 `test_generative_capability_engine.py` /
+`test_generative_capability_real_tools.py` / `test_orchestrator.py` /
+`test_subagent_inheritance.py` 合并运行共 131 个用例全部通过，无回归。
+
+### 阶段二~五 —— 待实施

@@ -34,6 +34,40 @@ Generative-Capability 引擎的探索子agent运行时（阶段三）。
     `[{"type":"tool_result","tool_use_id","content"}]` 列表），这套约定是
     provider 无关的——各 provider 的 client 内部各自负责转换成自己的 wire
     格式，因此这里天然适配任何已接入的 provider，不只是 Anthropic。
+
+阶段二十改造说明（对应 next_doc/generative_capability_explorer_rearch_plan.md，
+本文件"阶段一 —— explore() 切换到 SubAgent 驱动"的落地）:
+  - `build_llm_explorer()`（手写决策循环，只认白名单原语）标记为**遗留实现**，
+    继续保留供已有调用方/测试兼容，但不再是推荐路径。
+  - 新增 `build_subagent_explorer()`：不再手写 messages 历史/工具 schema/步数
+    计时，而是构造一个真实 `orchestrator.sub_agent.SubAgent`（完整
+    `Agent` + 系统里全部已注册工具：bash/python/文件读写等），驱动它跑完
+    一次真实 `agent.run_turn()`。隔离性（独立 context/session）、安全边界
+    （`PermissionGuard`+`sandbox`）、预算（`task.max_turns`）全部复用
+    `SubAgent`/`Task` 已有基础设施，不再自造 `max_seconds`/`stop_reason`
+    计时循环。
+  - `finish`/`report_failure` 契约保留，但改为在探索用的 `SubAgent` 的
+    `Agent.registry` 上以真实工具的形式动态注册（而不是手写循环里的两个
+    特判分支）；`finish` 新增可选 `script_source` 字段（阶段二铺垫，见
+    `distiller.py` 对应改造）。
+  - **领域声明的底层原语桥接**：`browser-site-scraper` 等 skill 在
+    `capability.yaml -> explorer.base_tools` / `explorer/tool_allowlist.json`
+    里声明的 `browser_navigate` 等工具名，历史上是通过调用方注入的
+    `tool_executor(name, input) -> dict` 分发（`real_tools.py` +
+    各静态 skill 自带的 `impl/tools_impl.py`），并不是 `Agent` 自身注册表里
+    的工具（`Agent` 内置的是 bash/python/文件读写等通用工具，没有
+    `browser_navigate` 这个名字）。为了不丢失这批已接入的真实底层能力，
+    `build_subagent_explorer()` 会把这些领域声明的工具名，各自包一层桥接
+    `ToolDef`（`fn` 内部转发给 `tool_executor`），动态注册到探索用
+    `SubAgent` 的 `Agent.registry` 上——探索子agent因此同时拥有"系统通用
+    工具"和"领域底层原语"两类工具，不再被后者反向限制上限（对应方案文档
+    第 1 节问题 1）。
+  - `tool_allowlist.json`/`capability.yaml -> explorer.tool_allowlist` 两种
+    历史写法（`{"allowed_tools":[...]}` 或 `{"tools":[{"name":...}]}`）都继续
+    兼容读取；新增 `explorer.allowed_tools`（内联列表，直接写在
+    capability.yaml 里，不必再单开一个 json 文件）与 `explorer.
+    preferred_primitives`（蒸馏提示，非限制，见方案文档 3.2 节）两个可选
+    字段，均为非破坏性新增。
 """
 
 from __future__ import annotations
@@ -66,6 +100,11 @@ class ExploreTrace:
     error: Optional[str] = None
     steps: list[ExploreStep] = field(default_factory=list)
     stop_reason: str = ""  # "finished" | "reported_failure" | "step_budget" | "time_budget" | "llm_error"
+    # [阶段二十/阶段二铺垫] 探索子agent自己在 `finish` 时一并提交的可复用
+    # `run(input) -> dict` 脚本源码（可选）。非空时 distiller.py 优先走
+    # "校验并落盘" 路径，而不是靠 trace→重放脚本猜测动作形状；为空则沿用
+    # 现有 trace-replay 兜底策略（见 distiller.py 文件头说明）。
+    script_source: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -290,6 +329,326 @@ def _load_prompt(explorer_config: dict) -> str:
     if path and Path(path).exists():
         return Path(path).read_text(encoding="utf-8")
     return "你正在为一个此前没有现成方案的需求探索可复用的操作路径。"
+
+
+# --------------------------------------------------------------------------- #
+# [阶段二十] SubAgent 驱动的探索器 —— 新的推荐实现
+# --------------------------------------------------------------------------- #
+
+def build_subagent_explorer(
+    base_cfg: Any,
+    *,
+    tool_executor: Optional[Callable[[str, dict], dict]] = None,
+    session_id: Optional[str] = None,
+    session_dir: Any = None,
+    shared_tool_cache: Any = None,
+    override_model: Optional[str] = None,
+    override_provider: Optional[str] = None,
+) -> Callable[[dict, dict, dict], ExploreTrace]:
+    """
+    返回一个符合 CapabilityEngine.explore() 所需签名的 explorer:
+        (request, intent_schema, explorer_config) -> ExploreTrace
+
+    与 `build_llm_explorer()` 的区别（见文件头"阶段二十改造说明"）:
+      - 不手写决策循环，而是构造一个真实 `orchestrator.sub_agent.SubAgent`，
+        跑一次真实的 `Agent.run_turn()`，隔离性/安全边界/预算全部复用
+        SubAgent/Task 既有基础设施。
+      - `tool_executor` 仍然可选注入：若给出，且该领域在 capability.yaml /
+        tool_allowlist.json 里声明了底层原语工具名，会把这些工具名各自桥接
+        成探索用 SubAgent 上的真实工具（转发调用 tool_executor），探索子
+        agent因此同时拥有系统通用工具（bash/python/文件读写等）与领域底层
+        原语（如 browser_navigate）。不给 tool_executor 时，探索子agent仍
+        可以用系统通用工具尝试解决问题，只是碰不到领域声明的这批原语。
+      - `base_cfg`/`session_id`/`session_dir`/`shared_tool_cache` 语义与
+        `orchestrator.sub_agent.SubAgent.__init__` 完全一致，调用方（通常是
+        `tools/capability_call.py`）从当前正在跑的 TaskManager/Agent 里取。
+    """
+
+    def _explorer(request: dict, intent_schema: dict, explorer_config: dict) -> ExploreTrace:
+        from mini_agent.orchestrator.task import Task, TaskRecord
+        from mini_agent.orchestrator.sub_agent import SubAgent
+        from mini_agent.tools import get_default_registry
+
+        domain_tool_names = _resolve_domain_tool_names(explorer_config)
+        preferred_primitives = list(explorer_config.get("preferred_primitives", []))
+        max_turns = int(explorer_config.get("max_turns") or explorer_config.get("max_steps", 40))
+        prompt_text = _load_prompt(explorer_config)
+
+        system_extra = _build_explore_system_extra(
+            prompt_text, intent_schema, domain_tool_names, preferred_primitives, max_turns,
+        )
+        user_prompt = json.dumps(
+            {"request": request, "intent_schema": intent_schema}, ensure_ascii=False
+        )
+
+        task = Task(
+            prompt=user_prompt,
+            name="generative_capability_explore",
+            system_extra=system_extra,
+            model=override_model,
+            provider=override_provider,
+            auto_approve=True,
+            max_turns=max_turns,
+            tags=["generative_capability_explore"],
+        )
+        record = TaskRecord(task=task)
+        sub = SubAgent(
+            record, base_cfg,
+            session_id=session_id, session_dir=session_dir, shared_tool_cache=shared_tool_cache,
+        )
+
+        try:
+            agent = sub._build_agent(task)
+        except Exception as e:  # noqa: BLE001
+            return ExploreTrace(success=False, error=f"构造探索子agent失败: {e}", stop_reason="llm_error")
+
+        # 若 _build_agent() 落回了全局默认 registry（task 未声明
+        # allowed_tools/allowed_tool_groups 时的既有行为），必须先换成一份
+        # 私有副本再注册 finish/report_failure/领域桥接工具——否则会污染
+        # 全局单例，被其它并发 agent/SubAgent 看到（同一坑见
+        # orchestrator/sub_agent.py::_build_agent 里 active_skills 分支的
+        # 注释）。
+        if agent.registry is get_default_registry():
+            agent.registry = agent.registry.filtered()
+
+        outcome: dict = {}
+        agent.registry.register_fn(
+            fn=_make_finish_fn(outcome),
+            name=FINISH_TOOL,
+            description=(
+                "探索成功，提交最终结构化数据（必须符合 intent_schema）。"
+                "如果这次解法可以整理成一个不依赖具体探索过程、符合 "
+                "`run(input: dict) -> dict` 接口约定的可复用脚本，请一并通过 "
+                "script_source 提交源码（可选；省略时引擎会尝试用本次探索的"
+                "工具调用序列重放兜底，但不保证同样可靠）。"
+            ),
+            input_schema={
+                "type": "object",
+                "required": ["data"],
+                "properties": {
+                    "data": intent_schema or {"type": "object"},
+                    "script_source": {
+                        "type": "string",
+                        "description": (
+                            "可选。一个完整的 Python 模块源码，必须定义 "
+                            "`def run(input: dict) -> dict`，返回 "
+                            "{\"status\": \"success\"|\"fail\", \"data\": ..., "
+                            "\"error\": ...}。仅当这次探索用到的方法可以在 "
+                            "target/query 等参数变化时被参数化复用时才提交；"
+                            "如果只是碰运气般的一次性操作序列，留空即可。"
+                        ),
+                    },
+                },
+            },
+            requires_approval=False,
+            override=True,
+        )
+        agent.registry.register_fn(
+            fn=_make_report_failure_fn(outcome),
+            name=REPORT_FAILURE_TOOL,
+            description="如实报告探索失败及原因（如验证码/登录墙/选择器一直找不到），不要编造数据。",
+            input_schema={
+                "type": "object",
+                "required": ["reason"],
+                "properties": {"reason": {"type": "string"}},
+            },
+            requires_approval=False,
+            override=True,
+        )
+
+        if tool_executor is not None:
+            for name in domain_tool_names:
+                if name in agent.registry.names:
+                    continue  # 系统已有同名通用工具时不覆盖，避免语义混淆
+                agent.registry.register_fn(
+                    fn=_make_domain_tool_bridge(name, tool_executor),
+                    name=name,
+                    description=f"该领域声明的底层操作原语 `{name}`（由运行时环境实现，具体参数依场景而定）。",
+                    input_schema={"type": "object", "properties": {}, "additionalProperties": True},
+                    requires_approval=False,
+                    override=True,
+                )
+
+        try:
+            output_text = sub._run_with_capture(agent, task.prompt)
+        except Exception as e:  # noqa: BLE001
+            return ExploreTrace(
+                success=False, error=f"探索子agent运行异常: {e}",
+                steps=_extract_steps_from_agent(agent), stop_reason="llm_error",
+            )
+
+        steps = _extract_steps_from_agent(agent)
+
+        if outcome.get("finished"):
+            return ExploreTrace(
+                success=True, data=outcome.get("data"), steps=steps, stop_reason="finished",
+                script_source=outcome.get("script_source"),
+            )
+        if outcome.get("failed"):
+            return ExploreTrace(
+                success=False, error=outcome.get("reason") or "探索子agent报告失败，未说明原因",
+                steps=steps, stop_reason="reported_failure",
+            )
+        # max_turns 耗尽仍未调用 finish/report_failure：如实判失败，
+        # 不臆测/伪造成功（对应 SubAgent 预算耗尽即失败的既有约定）。
+        tail = (output_text or "").strip()[:200]
+        return ExploreTrace(
+            success=False,
+            error=(
+                f"探索子agent在 max_turns={max_turns} 内未调用 `finish`/`report_failure`，"
+                f"判定为步数预算耗尽。" + (f" 最后一轮输出: {tail}" if tail else "")
+            ),
+            steps=steps, stop_reason="step_budget",
+        )
+
+    return _explorer
+
+
+def _make_finish_fn(outcome: dict) -> Callable[..., str]:
+    def finish(data: dict, script_source: str = "") -> str:
+        outcome["finished"] = True
+        outcome["data"] = data
+        outcome["script_source"] = script_source or None
+        return "已收到最终数据，探索到此结束。不要再调用任何工具，直接用一句话简短总结并结束本轮回复。"
+    return finish
+
+
+def _make_report_failure_fn(outcome: dict) -> Callable[..., str]:
+    def report_failure(reason: str) -> str:
+        outcome["failed"] = True
+        outcome["reason"] = reason
+        return "已收到失败报告，探索到此结束。不要再调用任何工具，直接结束本轮回复。"
+    return report_failure
+
+
+def _make_domain_tool_bridge(name: str, tool_executor: Callable[[str, dict], dict]) -> Callable[..., dict]:
+    def _bridge(**kwargs) -> dict:
+        try:
+            return tool_executor(name, kwargs)
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"工具 `{name}` 执行异常: {e}"}
+    _bridge.__name__ = name
+    return _bridge
+
+
+def _resolve_domain_tool_names(explorer_config: dict) -> list[str]:
+    """
+    解析该领域声明的底层原语工具名，兼容三种历史写法:
+      1. capability.yaml -> explorer.allowed_tools（新增，内联列表）
+      2. explorer/tool_allowlist.json -> {"allowed_tools": [...]}（browser-
+         site-scraper / doc-template-generation 现有写法）
+      3. explorer/tool_allowlist.json -> {"tools": [{"name": ...}, ...]}
+         （text-transform-capability 现有写法）
+      4. 都没有时退回 capability.yaml -> explorer.base_tools（占位/未接线
+         领域的静态 skill 名，不是真实工具名，仅作最后兜底）。
+    """
+    inline = explorer_config.get("allowed_tools")
+    if inline:
+        return list(inline)
+
+    path = explorer_config.get("_resolved_tool_allowlist_path")
+    if path and Path(path).exists():
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            data = {}
+        if data.get("allowed_tools"):
+            return list(data["allowed_tools"])
+        if data.get("tools"):
+            return [t["name"] for t in data["tools"] if isinstance(t, dict) and t.get("name")]
+
+    return list(explorer_config.get("base_tools", []))
+
+
+def _build_explore_system_extra(
+    prompt_text: str,
+    intent_schema: dict,
+    domain_tool_names: list[str],
+    preferred_primitives: list[str],
+    max_turns: int,
+) -> str:
+    parts = [prompt_text.strip(), ""]
+    parts.append(
+        "你正在为一个此前没有现成方案的需求探索可复用的解决路径。除了 bash/"
+        "python/文件读写等通用工具外，"
+        + (f"你还可以使用该领域提供的底层操作原语: {', '.join(domain_tool_names)}。"
+           if domain_tool_names else "该领域暂未声明可用的底层操作原语，请优先尝试通用工具。")
+    )
+    if preferred_primitives:
+        parts.append(
+            "该领域的探索倾向于产出可机械蒸馏的动作序列，建议优先尝试: "
+            f"{', '.join(preferred_primitives)}；但这只是提示，不是限制——这些"
+            "路径走不通时，你仍可以使用被允许的完整工具集（含 bash/python）。"
+        )
+    parts.append(f"最多执行 {max_turns} 个回合，超出会被判定为探索失败，请高效行动。")
+    parts.append(
+        "确认拿到符合 intent_schema 的结构化数据后，调用 `finish` 工具提交；"
+        "如果这次解法可以整理成一个不依赖具体探索过程的 "
+        "`run(input: dict) -> dict` 脚本，请一并通过 `finish` 的 "
+        "`script_source` 字段提交源码（可选，省略时引擎会尝试用你的工具调用"
+        "序列重放兜底）。"
+    )
+    parts.append(
+        "如果确认这条路径走不通（如验证码/登录墙/明显反爬拦截/该需求本来就"
+        "无法达成），调用 `report_failure` 如实说明原因，不要编造数据。"
+    )
+    parts.append(f"intent_schema: {json.dumps(intent_schema, ensure_ascii=False)}")
+    return "\n".join(p for p in parts if p)
+
+
+def _extract_steps_from_agent(agent: Any) -> list[ExploreStep]:
+    """
+    从探索用 SubAgent 内部 Agent 实例的对话历史里，尽力还原出一份
+    `(tool, input, output)` 步骤序列，供 distiller.py 现有的 trace-replay
+    兜底路径消费（`script_source` 未提交时用）。
+
+    最佳努力（best-effort）实现：直接读取
+    `HistoryManager._history`（与 `history_manager.py` 内部消息约定一致，
+    provider 无关），按 `tool_use.id` 匹配对应的 `tool_result`。任何解析
+    异常都不应该让探索流程失败——拿不到 steps 时 trace-replay 兜底路径
+    自然会没有素材可用，但 `script_source` 路径（阶段二）不受影响。
+    """
+    steps: list[ExploreStep] = []
+    try:
+        history = list(getattr(agent, "_hist")._history)
+    except Exception:  # noqa: BLE001
+        return steps
+
+    tool_uses: dict[str, tuple[str, dict]] = {}
+    order: list[str] = []
+    results: dict[str, Any] = {}
+
+    for msg in history:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "tool_use":
+                tid = block.get("id")
+                if tid:
+                    tool_uses[tid] = (block.get("name", ""), block.get("input") or {})
+                    order.append(tid)
+            elif btype == "tool_result":
+                tid = block.get("tool_use_id")
+                raw = block.get("content")
+                parsed = raw
+                if isinstance(raw, str):
+                    try:
+                        parsed = json.loads(raw)
+                    except Exception:  # noqa: BLE001
+                        parsed = raw
+                if tid:
+                    results[tid] = parsed
+
+    for tid in order:
+        name, tool_input = tool_uses[tid]
+        output = results.get(tid)
+        error = output.get("error") if isinstance(output, dict) else None
+        steps.append(ExploreStep(tool=name, input=tool_input, output=output, error=error))
+    return steps
 
 
 # --------------------------------------------------------------------------- #

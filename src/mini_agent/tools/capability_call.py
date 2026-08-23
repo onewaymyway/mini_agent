@@ -133,9 +133,9 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
             )
 
         from mini_agent.skills.generative_capability import (
-            CapabilityEngine, build_llm_resolver, build_llm_explorer, build_default_tool_executor,
+            CapabilityEngine, build_llm_resolver, build_subagent_explorer, build_default_tool_executor,
         )
-        from mini_agent.tools.orchestration import get_current_llm_helper
+        from mini_agent.tools.orchestration import get_current_llm_helper, get_task_manager
 
         skill_dir = skill.location.parent
         # 复用 run_ensemble_llm 等已经在用的 thread-local 约定，拿到当前
@@ -156,11 +156,33 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
                 ensure_ascii=False,
             )
 
+        # [阶段二十] 探索子agent改为构造真实 SubAgent 驱动（见
+        # explorer_runtime.py::build_subagent_explorer() 与
+        # next_doc/generative_capability_explorer_rearch_plan.md）。SubAgent
+        # 需要 base_cfg/session_id/session_dir/shared_tool_cache 才能正确落在
+        # 当前 session 目录下——这些信息挂在全局 TaskManager 单例上（主程序
+        # 启动时通过 init_task_manager(cfg) 注册，见 orchestration.py）。取不到
+        # 时说明本工具是在没有 TaskManager 的环境下被调用（例如独立脚本），
+        # 如实报错，不静默退化到某个假的默认配置。
+        task_manager = get_task_manager()
+        if task_manager is None:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": (
+                        "无法获取全局 TaskManager 实例，capability_call 的探索子agent"
+                        "（SubAgent 驱动）依赖它提供 base_cfg/session 上下文。这通常"
+                        "意味着当前环境未调用 init_task_manager(cfg)。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
         try:
-            # [阶段十二] 注入通用真实 tool_executor + 基于它构造的 explore_runner，
-            # 让声明了真实底层原语（目前是 text-core/browser-core）的 skill 能跑通
-            # 真实探索链路；未实现的原语（如 doc-core）会在探索时得到如实的失败
-            # 反馈，见 real_tools.py 顶部说明。
+            # [阶段十二] 注入通用真实 tool_executor，用于领域声明的底层原语
+            # （目前是 text-core/browser-core）桥接到探索用 SubAgent 的工具表；
+            # 未实现的原语（如 doc-core）会在被调用时得到如实的失败反馈，
+            # 见 real_tools.py 顶部说明。
             tool_executor = build_default_tool_executor(skill_dir=skill_dir)
             # [阶段十八修复] 之前 not_implemented 分支无条件贴一句"未接入真实
             # 执行器"的固定文案，哪怕该 skill 声明的 base_tools 其实已经全部
@@ -174,7 +196,13 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
             engine = CapabilityEngine(
                 skill_dir,
                 llm_resolver=build_llm_resolver(current_llm_helper),
-                explore_runner=build_llm_explorer(tool_executor, llm_helper=current_llm_helper),
+                explore_runner=build_subagent_explorer(
+                    task_manager.base_cfg,
+                    tool_executor=tool_executor,
+                    session_id=task_manager._session_id,
+                    session_dir=task_manager._session_dir,
+                    shared_tool_cache=task_manager._shared_tool_cache,
+                ),
                 tool_executor=tool_executor,
             )
         except Exception as e:  # noqa: BLE001
