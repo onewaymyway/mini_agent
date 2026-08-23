@@ -568,7 +568,10 @@ generative_capability.CapabilityEngine` 实例并调用其 `call(request)`，
 阶段十八改为先检测该 skill 声明的工具是否真的都有实现，再据此生成准确的
 提示（详见方案文档阶段十八）。仍未提供 `impl/tools_impl.py` 的领域（目前
 只有 `doc-core`）会得到"确实未接入真实执行器"的提示，这才是真正意义上的
-已知遗留，不是伪造成功。
+已知遗留，不是伪造成功。排查"为什么这次探索/执行失败了"，除了看
+`capability_call` 返回的 `error`/`note` 字段，也可以打开上面提到的
+`debug.capability_enabled` 调试日志，直接看到 registry 桥接、每个工具
+dispatch 命中/未接线的完整链路，不需要靠肉眼读命令行输出猜。
 
 #### 检索裁决/探索子agent 的 LLM 调用（阶段九）
 
@@ -592,16 +595,19 @@ generative_capability.CapabilityEngine` 实例并调用其 `call(request)`，
 session_id=None, session_dir=None, shared_tool_cache=None,
 override_model=None, override_provider=None)`——不再手写决策循环，而是
 构造一个真实 `orchestrator.sub_agent.SubAgent`（独立 context/session，
-装配系统全部已注册通用工具 bash/python/文件读写等，加上按
-`capability.yaml` 声明桥接进来的领域底层原语如 `browser_navigate`），跑
+装配系统已注册通用工具的一个子集——见下方"探索子agent实际拿到的工具集"，
+加上按 `capability.yaml` 声明桥接进来的领域底层原语如 `browser_navigate`），跑
 一次真实 `agent.run_turn()`。这样阶段九"接入 `LLMHelper` 而非自拼 API"的
 成果被自然继承（`SubAgent`→`Agent` 链路本来就走统一 LLM 调用基础设施），
 且不再需要单独维护一套"provider 无关的消息历史格式"。
 
 安全边界（此前是 `capability.yaml -> explorer.tool_allowlist` 自造的一份
-平行白名单）改为交给系统统一的 `PermissionGuard`/`sandbox`/
-`task.allowed_tools`；步数预算（此前是手写 `max_steps`/`max_seconds` 计时
-循环）改为复用 `task.max_turns`。`finish`/`report_failure` 两个决策元工具
+平行白名单）改为交给系统统一的 `PermissionGuard`/`sandbox`；工具集范围本
+应该也交给 `task.allowed_tools`/`task.allowed_tool_groups` 表达，但
+`build_subagent_explorer()` 构造的 `Task` 目前并未设置这两个字段（如实
+记录这处已知的文档与实现落差，非本次改动范围），实际生效的是阶段二十二
+新增的 `_EXPLORER_EXCLUDED_TOOLS` 黑名单（见下方说明）；步数预算（此前是
+手写 `max_steps`/`max_seconds` 计时循环）改为复用 `task.max_turns`。`finish`/`report_failure` 两个决策元工具
 的语义约束未变，只是从手写循环里的特判分支改为动态注册到探索用
 `Agent.registry` 上的真实工具；`finish` 新增可选 `script_source` 字段，
 供探索子agent自行判断"这段解法是否可参数化复用"并一并提交（见
@@ -609,6 +615,50 @@ override_model=None, override_provider=None)`——不再手写决策循环，�
 分阶段实施记录见独立文档
 [generative_capability_explorer_rearch_plan.md](../next_doc/generative_capability_explorer_rearch_plan.md)，
 本文档不重复展开。
+
+**探索子agent实际拿到的工具集（阶段二十二订正）**：并不是"系统全部已注册
+通用工具"——`build_subagent_explorer()` 内部把 `agent.registry` 换成私有
+副本时，会先按 `_EXPLORER_EXCLUDED_TOOLS` 黑名单排除掉一批工具，再桥接进
+`capability.yaml` 声明的领域底层原语（如 `browser_navigate`）。这个黑名单
+是通用机制（定义在 `explorer_runtime.py`，跟具体 skill 无关），覆盖四类：
+
+- 元编排/自我调度类：`capability_call` 本身、`skill_list`/`skill_activate`
+  等——**这条是关键**：早期实现里探索子agent的工具集包含 `capability_call`
+  自己，一旦探索过程中再调用一次 `capability_call`，会递归构造出下一层
+  探索子agent，即"嵌套探索"，理论上没有深度上限；同时探索子agent会自己
+  重新走一遍 `skill_list → skill_activate` 的技能发现仪式，浪费探索预算
+  （这些信息本该已经通过下面的 `system_extra` 直接告知）。
+- 二次 agent 派生类：`spawn_agent`/`spawn_named_agent`/`run_ensemble_llm` 等。
+- 面向用户交互类：`ask_user`/`ask_user_confirm`/`ask_user_choice`（探索
+  子agent是 `auto_approve=True` 的后台任务，不应该卡在等用户交互上）。
+- workflow 生成/执行/自我修改类：`generate_workflow`/`run_workflow`/
+  `agent_patch` 等，跟"探索一条可复用操作路径"无关。
+
+`bash`/`read_file`/`write_file`/`grep`/`glob`/`web_search` 等通用文件与
+脚本类工具、`finish`/`report_failure`、领域桥接原语不受影响。
+
+**控制台输出（阶段二十三）**：探索子agent自己的 `Agent` 实例，`cfg.verbose`
+会被强制设为 `True`（`orchestrator/sub_agent.py::SubAgent._build_agent()`
+默认构造 `verbose=False`，是给"顶层主agent是否开了 `--verbose`"用的通用
+刷屏保护，跟"排查探索子agent这次到底传了什么参数"是两个不同的诉求，两者
+分开处理），因此探索子agent在命令行里调用工具时会打印完整 `tool_input`，
+不再只看得到结果看不到参数。这只影响探索子agent自己的控制台详略程度，
+不影响顶层主agent或其它类型 SubAgent 任务。
+
+**排查探索失败的专用调试日志（阶段二十一）**：`agent_config.json` 新增
+`debug.capability_enabled`（默认 `false`，兼容环境变量
+`CAPABILITY_DEBUG`），打开后 `capability_call`→`CapabilityEngine.call()`
+→`explore()`→领域底层原语 dispatch 全链路会详细记录到
+`~/.agent/logs/capability_debug.jsonl`（与全局 `error.jsonl` 同目录），
+包括 resolve/execute 每一步的结果、探索子agent的 registry 是否被正确替换
+为私有副本（`_tool_executor.registry` 是否同步）、每个领域工具的注册结果、
+上面提到的黑名单实际排除了哪些工具名（`excluded_tools_stripped` 字段）、
+探索步骤序列与终态。这是项目通用机制
+（`mini_agent.skills.generative_capability.capability_debug`），各 skill
+的 `impl/*.py` 实现代码也可以直接 `import capability_debug_log` 调用写
+自己的调试信息，不需要自己判断开关状态或拼日志路径（`browser-core/
+impl/browser_core_impl.py` 已有示范）。完整背景与实施记录见
+`generative-capability-skill-plan.md` 阶段二十一/二十二/二十三。
 
 两者都优先用传入的 `llm_helper`（`capability_call` 工具通过
 `get_current_llm_helper()` 拿到当前 Agent 实例），否则退化为
@@ -900,7 +950,17 @@ loader.auto_activate_blocked   # -> ['docx', ...]
 
 ---
 
-> 最后更新：2026-08（`generative_capability_explorer_rearch_plan.md` 阶段
+> 最后更新：2026-08（阶段二十一/二十二/二十三：新增
+> `debug.capability_enabled` 全链路调试日志开关，落盘到
+> `~/.agent/logs/capability_debug.jsonl`，skill 的 `impl/*.py` 也可以直接
+> 调用；修复"嵌套探索"——探索子agent此前通过 `registry.filtered()` 拿到
+> 全部已注册工具（含 `capability_call` 自己），新增
+> `_EXPLORER_EXCLUDED_TOOLS` 黑名单排除元编排/二次派生/用户交互/workflow
+> 自我修改四类工具；探索子agent自己的 `cfg.verbose` 强制置为 `True`，
+> 命令行能看到完整 `tool_input`；同步更正第 3.8 节"安全边界交给
+> `task.allowed_tools`"这处与实现不符的历史描述、更新探索子agent实际工具集
+> 的说明，详见 `next_doc/generative-capability-skill-plan.md` 对应阶段）；
+> 此前更新：2026-08（`generative_capability_explorer_rearch_plan.md` 阶段
 > 二十：探索器默认实现从 `build_llm_explorer`（手写决策循环，现为遗留实现）
 > 切换为 `build_subagent_explorer`（构造真实 SubAgent 驱动，隔离性/安全
 > 边界/预算复用系统既有 `SubAgent`/`PermissionGuard`/`task.max_turns` 基础

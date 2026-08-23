@@ -16,8 +16,9 @@
 |---|---|---|---|
 | 全局错误日志 | `~/.agent/logs/error.jsonl` | 全局，跨项目 | 常开 |
 | LLM 调试日志 | `<project>/.agent/sessions/<sid>/llm_debug.jsonl` | session 级 | 关闭（需 `--debug-llm` 或配置开启） |
+| Generative-Capability 调试日志 | `~/.agent/logs/capability_debug.jsonl` | 全局，跨项目 | 关闭（需 `agent_config.json` 的 `debug.capability_enabled` 或环境变量 `CAPABILITY_DEBUG`） |
 | Daemon 控制台日志 | `<project>/.agent/daemon.log` | 项目级，daemon 进程 | daemon 后台模式常开 |
-| 代理池日志 | `<project>/.agent/proxy/proxy.log` | 项目级 | 常开（2026-07 已修复：原来只在独立脚本模式下生效，现在 agent 内部调用路径也会正确写入，详见第八节） |
+| 代理池日志 | `<project>/.agent/proxy/proxy.log` | 项目级 | 常开（2026-07 已修复：原来只在独立脚本模式下生效，现在 agent 内部调用路径也会正确写入，详见第九节） |
 
 **B. 观测/审计类数据流**——记录"agent 做了什么"，本质是结构化数据而非
 传统意义的日志，部分会被 巩固循环 / 自我演化 / 用户画像等模块**读回来当输入
@@ -142,7 +143,37 @@ daemon，`mini-agent`/`python main.py` 会直接短路进入"连接客户端"模
 
 ---
 
-## 四、Daemon 控制台日志（`cli/daemon.py`）
+## 四、Generative-Capability 调试日志（`skills/generative_capability/capability_debug.py`）
+
+针对 `capability_call` 全链路（resolve/execute/explore/distill、探索子agent
+的 registry 桥接、各领域底层原语 dispatch）的专用调试日志，组织方式刻意与
+第二节的全局错误日志保持一致（同目录、同轮转策略），便于关联排查。
+
+- 路径：`~/.agent/logs/capability_debug.jsonl`（`AgentPaths.
+  global_capability_debug_log`），与 `error.jsonl` 同目录、同 10MB/5 备份
+  轮转策略。
+- 开关：`agent_config.json` 的 `debug.capability_enabled`（默认 `false`，
+  兼容旧 flat key `debug_capability` 和环境变量 `CAPABILITY_DEBUG`）；
+  `config/loader.py::load_config()` 加载完成后同步一次模块级开关。**关闭时
+  `capability_debug_log()` 直接提前返回，不构造任何 record、不做任何 IO**。
+- 谁在写：项目通用代码（`tools/capability_call.py`/`capability_engine.py`/
+  `explorer_runtime.py`/`real_tools.py`）在关键节点调用；各
+  `generative-capability` skill 自己的 `impl/*.py` 实现代码也可以直接
+  `from mini_agent.skills.generative_capability.capability_debug import
+  capability_debug_log` 调用，不需要自己判断开关状态或拼日志路径——这两件
+  事统一由这个模块处理（`.claude/skills/browser-core/impl/
+  browser_core_impl.py` 已有示范）。
+- 典型用途：诊断"探索子agent的 registry 是否真的被替换成了私有副本"
+  "某个领域工具（如 `browser_navigate`）是否真的注册/接线成功"这类此前
+  只能靠肉眼读命令行输出猜的问题；也记录阶段二十二新增的探索子agent工具
+  黑名单实际排除了哪些工具名（`excluded_tools_stripped` 字段）。
+- 完整设计与埋点位置见
+  [Skill 系统说明](./skill-system-guide.md) 第 3.8 节、
+  `next_doc/generative-capability-skill-plan.md` 阶段二十一。
+
+---
+
+## 五、Daemon 控制台日志（`cli/daemon.py`）
 
 daemon 以后台模式启动时，子进程的 `stdout`/`stderr` 会被重定向到文件而非
 `DEVNULL`，方便进程崩溃时还能看到最后的输出：
@@ -156,7 +187,7 @@ daemon 以后台模式启动时，子进程的 `stdout`/`stderr` 会被重定向
 
 ---
 
-## 五、会话级观测追踪（`perception/observability.py::SessionTracer`）
+## 六、会话级观测追踪（`perception/observability.py::SessionTracer`）
 
 对应设计文档第 9 章（Stage 6），记录每个 session 内工具调用的时序、耗时、
 异常分类，是 巩固循环 剪枝判断和异常检测的数据基础，**不是纯诊断日志，会被
@@ -173,7 +204,7 @@ daemon 以后台模式启动时，子进程的 `stdout`/`stderr` 会被重定向
 
 ---
 
-## 六、用户行为感知事件（`perception/behavior/events.py::BehaviorEventStore`）
+## 七、用户行为感知事件（`perception/behavior/events.py::BehaviorEventStore`）
 
 **总开关默认关闭**（`behavior_config.json` 独立配置文件，跟 `agent_config.json`
 同级目录），采集范围详见
@@ -187,7 +218,7 @@ daemon 以后台模式启动时，子进程的 `stdout`/`stderr` 会被重定向
 
 ---
 
-## 七、其它审计类数据流
+## 八、其它审计类数据流
 
 这几个都是各子系统"顺手记一笔"的结构化数据，不是为了排错设计的，但排查
 相关功能行为时经常要看：
@@ -204,7 +235,7 @@ daemon 以后台模式启动时，子进程的 `stdout`/`stderr` 会被重定向
 
 ---
 
-## 八、`proxy.log` 缺口修复记录（2026-07）
+## 九、`proxy.log` 缺口修复记录（2026-07）
 
 ### 根因回顾
 
@@ -247,13 +278,14 @@ global_error_logging()` 早就给 root logger 加过 handler 了，所以就算�
 
 ---
 
-## 九、路径速查表
+## 十、路径速查表
 
 按"全局 vs 项目级 vs session/task 级"重新汇总一遍，方便按作用域查找：
 
 **全局（`~/.agent/` 或 `$MINI_AGENT_HOME`）**
 ```
 ~/.agent/logs/error.jsonl              # 全局错误日志（本文档第二节）
+~/.agent/logs/capability_debug.jsonl   # Generative-Capability 调试日志（本文档第四节）
 ~/.agent/activity_log.jsonl            # W3 全局活动流水
 ~/.agent/persona_usage.jsonl           # Persona 使用审计
 ~/.agent/behavior/events/<date>.jsonl  # 行为感知事件（按天）
@@ -296,3 +328,8 @@ events.jsonl  # task 事件流
 ---
 
 *首次编写：2026-07（系统梳理全项目日志/审计流保存机制，含已知缺口记录）*
+*更新：2026-08（新增第四节「Generative-Capability 调试日志」——
+`~/.agent/logs/capability_debug.jsonl`，`agent_config.json` 的
+`debug.capability_enabled` 控制，覆盖 `capability_call` 全链路 + 各
+generative-capability skill 的 `impl/*.py` 自行调用；原第四~九节顺延为
+第五~十节）*
