@@ -8,6 +8,9 @@
     "per_turn_retrieval_enabled": false,
     "wiki_quarantine_llm_repair_enabled":true
   },
+  "debug": {
+    "capability_enabled": true
+  },
   "lesson_rules_enabled": true,
   "lesson_fail_threshold": 3,
   "correction_detection_enabled": true,
