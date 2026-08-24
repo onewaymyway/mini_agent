@@ -486,6 +486,21 @@ SKILL 档"，本阶段已完成、不再属于未实施范围：
 
 ### 3.3c 本阶段新增：CapabilityEngine 试点接入 SKILL 档（不改动 registry.json 状态机）
 
+> **订正（`next_doc/generative_capability_three_tier_improvement_plan.md`
+> 第5节）**：本节以及下面 3.3d/3.3e 描述的 `_try_skill()`/playbook 落盘/
+> 升级三条逻辑，虽然在 `CapabilityEngine` 内部代码层面确实是"本阶段新增"
+> 并已完成，但 agent 对话唯一会调用的入口 `tools/capability_call.py`
+> **此前从未把 `playbook_repo`/`skill_runner` 注入进去**（`skill_tier
+> .build_skill_runner()` 的 `max_turns` 参数没有默认值、必须显式传入，
+> 见本节末尾第5节"开放问题"，接线的人因此一直没能补上这一步）——这意味着
+> 本节及 3.3d/3.3e 描述的行为**此前只在单元测试的桩环境里成立，在真实
+> 对话场景里 SKILL 档从未被触发过**。这一接线缺口已在
+> `generative_capability_three_tier_improvement_plan.md` 第5节修复：
+> `capability_call.py` 现在默认按 `AppConfig.generative_capability.
+> skill_tier_max_turns`（默认 40，可由 `agent_config.json` 覆盖）注入
+> `playbook_repo`/`skill_runner`，不再要求每个 skill 显式声明才能用上
+> 这一档。阅读本节时请知悉这一时间线，本节正文保留原文不做改写。
+
 对应 3.3b 原先列出的"三档执行顺序（script → skill → explore）在
 `capability_engine` 里的实际调度逻辑"，本阶段用一种风险更低的方式先落地：
 **不做** `capability_engine.resolve/execute` 整体委托给 `HybridExecutor`

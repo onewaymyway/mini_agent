@@ -550,13 +550,17 @@ generative_capability.CapabilityEngine` 实例并调用其 `call(request)`，
 - `skill_name` 不存在 → 返回错误，并附上当前所有 `generative-capability`
   类型 skill 的名称列表，方便模型自行改正而不是瞎猜。
 
-**已知限制（阶段十二/十四已部分解决，如实告知当前状态）**：`capability_call`
-默认注入 `build_llm_resolver(current_llm_helper)`（第二级检索裁决），
+**已知限制（阶段十二/十四已部分解决，三档 SKILL 档接线缺口已于后续订正修复，
+如实告知当前状态）**：`capability_call` 默认注入
+`build_llm_resolver(current_llm_helper)`（第二级检索裁决），
 `current_llm_helper` 通过 `tools/orchestration.py::get_current_llm_helper()`
 拿到当前 `Agent.llm_helper`（跟随 `/model` 切换，见下方"检索裁决/探索子agent
 的 LLM 调用"一节）；**阶段十二起也默认注入 `explore_runner`/`tool_executor`**
 （`build_default_tool_executor(skill_dir=skill_dir)`，见
-`generative-capability-skill-plan.md` 阶段十二/十四实施记录）：真正执行
+`generative-capability-skill-plan.md` 阶段十二/十四实施记录）；**下面"三档
+member 执行机制"一节提到的 `playbook_repo`/`skill_runner`（SKILL 档）此前
+一直未被注入，`generative_capability_three_tier_improvement_plan.md` 第5节
+已修复，现在同样默认注入**，见该小节末尾说明。真正执行
 底层操作原语的代码，一部分是项目内置的纯逻辑实现（`text-core`），另一部分
 按 `capability.yaml -> explorer.base_tools` 声明动态加载各静态 skill 自带
 的 `impl/tools_impl.py`（`browser-core` 已提供，`doc-core` 仍是占位）。这
@@ -703,7 +707,9 @@ tier 正是为了给两者合并铺路而新增的。
   `member_id` 时 `_try_skill()` 自动使用——这就打通了"探索失败但不是一无
   所获，至少留下一份步骤说明"这条路径。
 - **升级方向**：`_try_skill()` 每次成功后，如果开启了
-  `enable_skill_upgrade=True`（默认关闭）且该 playbook 累计成功次数达到
+  `enable_skill_upgrade=True`（**默认开启**，`generative_capability_
+  three_tier_improvement_plan.md` 第5节修复前默认是关闭，见下方
+  "SKILL 档接线缺口修复"说明）且该 playbook 累计成功次数达到
   `skill_upgrade_success_threshold`（默认 3），会尝试用 LLM 把 playbook 文本
   + 一次真实执行样例蒸馏成 `script.py`（`distiller.py::attempt_skill_upgrade()`，
   复用与 `distill()` 完全一致的沙箱自测/schema 校验/合理性检查/原子落盘），
@@ -748,6 +754,42 @@ playbook 的成败统计仍是两套完全独立的计数（互不影响，也�
   `registry.json`/playbook 的成败统计。这是"改进方向 #4"里提到的
   `hybrid_exec.TaskSpec.allow_tiers` 式精细控制在 `capability_engine`
   这一侧的最小实现，`resolve()` 的检索逻辑本身不受影响。
+
+**SKILL 档接线缺口修复（`three_tier_improvement_plan.md` 第5节）**：以上
+`_try_skill()`/playbook 落盘/升级三条逻辑此前虽然代码已实现，但
+`tools/capability_call.py` 从未把 `playbook_repo`/`skill_runner` 注入进
+`CapabilityEngine`（`skill_tier.build_skill_runner()` 的 `max_turns` 没
+有默认值、必须显式传入，接线的人一直没法确定该传什么数字），导致 SKILL
+档在真实对话场景里从未被触发过，只在单元测试桩环境里生效。现已修复：
+
+- 新增全局配置块 `AppConfig.generative_capability`
+  （`config/models.py::GenerativeCapabilityConfig`），可在
+  `agent_config.json` 里配置：
+
+  ```json
+  {
+    "generative_capability": {
+      "skill_tier_max_turns": 40,
+      "skill_upgrade_enabled": true,
+      "skill_upgrade_success_threshold": 3,
+      "skill_upgrade_retry_cooldown_seconds": 3600
+    }
+  }
+  ```
+
+  不配置时按上面这份默认值生效——`skill_tier_max_turns` 默认 **40**，
+  `skill_upgrade_enabled` 默认 **True**（此前 `enable_skill_upgrade` 参数
+  的既有默认值是 `False`，随本次修复一并调整为默认开启）。
+- `capability_call.py` 构造 `CapabilityEngine` 前，先读取该 skill 自己
+  `capability.yaml -> skill_tier`（可选，`max_turns`/`enable_upgrade`/
+  `upgrade_success_threshold`，skill 级覆盖优先于上面的全局默认值）合并
+  出最终生效值，`max_turns<=0` 视为该 skill 显式关闭 SKILL 档（保留退出
+  通道，等价于修复前的表现）。
+- 影响范围仅限"SKILL 档此前完全不可达"这一点，`_try_skill()`/
+  `distill()` 内部逻辑、`registry.json`/playbook 各自独立计数的既有边界
+  （见上面"当前实现边界"）均未改动。
+- 真人对话场景下如何验证，见
+  [test_cases/browser-site-scraper-three-tier-testing-guide.md](../test_cases/browser-site-scraper-three-tier-testing-guide.md)。
 
 **探索子agent实际拿到的工具集（阶段二十二订正）**：并不是"系统全部已注册
 通用工具"——`build_subagent_explorer()` 内部把 `agent.registry` 换成私有

@@ -150,3 +150,59 @@ patrol.py` 报告使用。**不参与任何现有决策逻辑**（`_apply_lifecy
 generative-capability skill 接入验证泛化性）仍按
 `generative_capability_raw_result_and_hybrid_merge_plan.md` 3.4 节的
 既有判断留待后续评估，不在本文档展开设计或实施。
+
+## 5. 阶段四（补充修复）：`tools/capability_call.py` 未注入 `playbook_repo`/`skill_runner` 的接线缺口
+
+**背景**：阶段一~三上线后经复核发现，`skill_tier.build_skill_runner()`
+的 `max_turns` 此前**没有默认值、必须显式传入**（见第 4 节"未纳入本次
+范围"上方 raw_result_and_hybrid_merge_plan.md 第5节"开放问题"里的原文
+判断：`skill` 档工具集/回合预算"暂不预设具体数值，留到实施 `PlaybookRunner`
+时结合真实场景一次性定下"）。这导致 agent 对话唯一会调用的入口
+`tools/capability_call.py` 构造 `CapabilityEngine` 时，从未传入
+`playbook_repo`/`skill_runner`/`enable_skill_upgrade` 三个参数——它们在
+`CapabilityEngine.__init__` 里全部落回默认值 `None`/`None`/`False`。
+
+实际后果：`_try_skill()` 里 `self.playbook_repo is None or self.
+skill_runner is None` 恒真，SKILL 档在**真实对话场景里从未被触发过**，
+即便某个 member 目录下确实存在 `playbooks/<id>/` 下的 active playbook；
+`distill()` 传给 `_maybe_upgrade_skill_to_script` 的 `playbook_repo` 同样
+是 `None`，探索失败兜底产出 `playbook.md`（3.3d 节）与 SKILL 档证明可靠后
+升级为 `script.py`（3.3e 节）这两条"双向流转"路径也从未在真实对话里跑通
+过——**上面 3.3c/3.3d/3.3e 三节描述的行为，此前只在单元测试的桩环境里
+成立，不是真人对话场景下的实际表现**，本节订正这一点。
+
+**修复方式**：不再要求每个 skill 显式声明才能用上 SKILL 档，改为"没配置
+就用合理默认值，而不是不开启"：
+
+- 新增全局配置块 `AppConfig.generative_capability`
+  （`src/mini_agent/config/models.py::GenerativeCapabilityConfig`），
+  `skill_tier_max_turns` 默认 **40**（与 `capability.yaml -> explorer.
+  max_turns` 常见配置量级一致），`skill_upgrade_enabled` 默认 **True**
+  （此前 3.3e 节 `enable_skill_upgrade` 参数的既有默认值 `False` 已随本次
+  修复一并调整），`skill_upgrade_success_threshold` 默认 3，
+  `skill_upgrade_retry_cooldown_seconds` 默认 3600（延续阶段二的既有值，
+  未改变）。可在 `agent_config.json` 里写
+  `"generative_capability": {"skill_tier_max_turns": 60, ...}` 覆盖，
+  走项目通用的 `NESTED_CONFIG_BLOCKS` 加载机制
+  （`config/param_registry.py`），不需要额外接线代码。
+- `tools/capability_call.py` 构造 `CapabilityEngine` 前，先读取该 skill
+  自己的 `capability.yaml -> skill_tier`（`max_turns`/`enable_upgrade`/
+  `upgrade_success_threshold`，可选，skill 级覆盖优先于全局默认值）合并
+  出最终生效值；`max_turns <= 0` 视为该 skill 显式关闭 SKILL 档（等价于
+  修复前的行为，保留这条退出通道），否则默认构造
+  `build_playbook_repo(skill_dir)`/`build_skill_runner(project_root,
+  max_turns=..., mini_agent_config=cfg)` 并注入 `CapabilityEngine`。
+- 影响范围：仅改变"SKILL 档此前完全不可达"这一点，`_try_skill()`/
+  `distill()` 内部逻辑本身、`registry.json`/playbook 各自独立计数的既有
+  边界（见上面"当前实现边界"一节）均未改动；`playbook_repo`/`skill_runner`
+  为 `None` 时 `_try_skill()` 的静默跳过行为完全保留，只是触发这一分支的
+  唯一途径从"默认状态"收窄为"用户显式配置 `max_turns<=0`"。
+- 回归验证：`tests/test_generative_capability_*.py` +
+  `tests/test_hybrid_exec_*.py` + `tests/test_config_*` 相关测试文件全部
+  通过（既有 2-3 个失败用例核实为环境依赖缺失/文档已知的预置失败，与本次
+  改动文件无引用关系，改动前后表现一致）。
+
+**测试指南**：真人对话场景下如何验证本节描述的修复，见
+[test_cases/browser-site-scraper-three-tier-testing-guide.md](../test_cases/browser-site-scraper-three-tier-testing-guide.md)，
+步骤2（验证 SKILL 档确实被调用）、步骤5（验证 `skill_tier_max_turns` 默认值
+生效且可配置/可显式关闭）是本节修复的直接对应测试。

@@ -489,6 +489,29 @@ class GlobalKnowledgeConfig:
 控制 W3 Global 知识层（`self_profile.json` / `projects_index.json` / `cross_project_index.json` / `activity_log.jsonl`）的维护与 context 注入。
 详见 [W2/W3 知识层指南](self-evolution-stage4-5-guide.md)。
 
+### GenerativeCapabilityConfig（`generative-capability` skill 三档机制）
+
+```python
+@dataclass
+class GenerativeCapabilityConfig:
+    skill_tier_max_turns: int = 40                    # <=0 视为显式关闭 SKILL 档
+    skill_upgrade_enabled: bool = True
+    skill_upgrade_success_threshold: int = 3
+    skill_upgrade_retry_cooldown_seconds: int = 3600
+```
+
+控制 `generative-capability` 类型 skill（如 `.claude/skills/browser-site-
+scraper/`）script→skill→explore 三档执行机制里 SKILL 档（`PlaybookRunner`
+参照 playbook 执行）的默认回合预算、以及 SKILL 档证明可靠后自动升级蒸馏
+为 `script.py` 的开关/门槛/冷却期。这是全局默认值，单个 skill 可以在自己
+的 `capability.yaml -> skill_tier` 下用同名字段覆盖（skill 级优先级更高）。
+`skill_tier_max_turns<=0`（无论是全局还是 skill 级配置）会让该范围内
+`capability_call` 不再注入 `playbook_repo`/`skill_runner`，SKILL 档回退
+为静默跳过（等价于该字段引入前的行为）。详见
+[skill-system-guide.md 3.8 节"三档 member 执行机制"](skill-system-guide.md#38-generative-capability-skill按需调用的领域能力包阶段七新增)，
+背景与实施记录见
+[generative_capability_three_tier_improvement_plan.md 第5节](../next_doc/generative_capability_three_tier_improvement_plan.md)。
+
 ### ObservabilityConfig（Stage 6）
 
 ```python
