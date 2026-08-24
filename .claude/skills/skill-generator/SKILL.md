@@ -1,7 +1,7 @@
 ---
 name: skill-generator
-description: 帮助用户创建符合 mini_agent 项目规范的新 SKILL.md 技能文件，支持"主文件 + 渐进式加载子资源"的分层结构。当用户说"帮我写一个skill"、"创建一个技能"、"生成SKILL.md"时使用。
-triggers: skill, skill.md, 技能, 创建skill, 生成skill
+description: 帮助用户创建符合 mini_agent 项目规范的新 skill——既覆盖"正文注入型"的普通 SKILL.md（支持单文件/分层结构），也覆盖"领域能力包"型的 generative-capability skill（capability.yaml + members/ + 探索式扩展）。当用户说"帮我写一个skill"、"创建一个技能"、"生成SKILL.md"、"新建一个能力包"、"给agent加一个新的抓取/生成类能力"时使用。
+triggers: skill, skill.md, 技能, 创建skill, 生成skill, 能力包, generative-capability, 新增能力, capability.yaml
 resources:
   - id: progressive-loading
     path: references/progressive-loading.md
@@ -11,13 +11,38 @@ resources:
     path: references/examples.md
     description: 完整示例：单文件小型skill、带resources的分层skill、带browse_paths的大型文档库skill
     triggers: 给个例子, 完整示例, 参考示例
+  - id: generative-capability-skill
+    path: references/generative-capability-skill.md
+    description: 如何从零创建一个 generative-capability 类型 skill（领域能力包：capability.yaml、members/、探索式扩展），与本文件覆盖的"正文注入型"SKILL.md 是完全不同的目标形态
+    triggers: generative-capability, 能力包, capability.yaml, 领域能力, 抓取能力, 探索式skill, member, 三档机制
 ---
 
 # Skill Generator
 
-用于创建符合本项目 `SkillLoader`（`src/mini_agent/skills/__init__.py`）解析规范的
-`SKILL.md` 文件。支持两种体量：**单文件**（内容不多，正文全部塞进 `SKILL.md`）和
-**分层结构**（内容较多，拆成主文件 + 按需加载的 `references/*.md`）。
+用于创建符合本项目 `SkillLoader`（`src/mini_agent/skills/__init__.py`）解析规范的 skill。
+本 skill 覆盖**两种完全不同的目标形态**，创建前务必先判断走哪一条——判断错了，用户会
+拿到一份格式不对、agent 根本用不上的文件。
+
+## 第零步：先判断创建的是哪种类型的 skill
+
+| | **静态 skill**（本文件下面的全部内容） | **generative-capability skill**（见 `generative-capability-skill` 子资源） |
+|---|---|---|
+| 典型场景 | "写一份 docx 处理规范"、"整理一套代码审查 checklist"、"记录某个内部工具的用法" | "给 agent 加一种可以按需调用、成员会持续增长的领域能力"，如"支持任意网站的抓取"、"支持任意公司模板的文档生成" |
+| 产出形态 | 一份（或分层的多份）`SKILL.md`，激活后正文整段注入 context | `capability.yaml` + `members/`（各成员脚本）+ `explorer/`（探索子agent配置）等一整套目录，主 context 里永远只有一行 `category_summary` |
+| 内容怎么变多 | 人工编辑正文/`references/` | 人工预置若干 member，其余靠 agent 实际对话时触发的探索自动补全、经验证后转正 |
+| 调用方式 | `skill_activate` + 之后正常对话 | `capability_call(skill_name, request)` 工具，每次都是独立调用 |
+
+判断依据（与 `skill-system-guide.md` 3.8 节"什么时候用这个而不是普通 skill"完全一致）：
+**这个能力的具体清单，模型需不需要提前看到完整内容？** 需要（如"docx 处理有哪些注意事项"）
+→ 静态 skill；不需要、只需要知道"给个目标就能拿到结果或明确失败原因"（如"能不能抓这个
+网站"）→ generative-capability skill。拿不准就直接问用户："这个能力的具体做法，你希望
+写死在一份文档里让 agent 参照执行，还是希望 agent 自己去尝试、成功了再固化下来？"前者是
+静态 skill，后者是 generative-capability skill。
+
+确认是 generative-capability skill 后，**不要继续读本文件剩余部分**，直接加载
+`generative-capability-skill` 子资源（`skill_resource_load(skill_name="skill-generator",
+resource_id="generative-capability-skill", reason=...)`），那里有完整的目录规范、
+`capability.yaml` 字段说明、最小可用脚手架示例。本文件剩余部分只覆盖静态 skill。
 
 ## 文件位置
 
@@ -29,7 +54,9 @@ resources:
 
 ## 第一步：判断体量，决定单文件还是分层
 
-先问自己（或问用户）：这个 skill 的知识总量，写成 Markdown 大概多少行？
+先问自己（或问用户）：这个 skill 的知识总量，写成 Markdown 大概多少行？（这一步和上面
+"第零步"是两回事——第零步判断的是"目标形态"，这一步判断的是"确认走静态 skill 之后，
+正文该不该分层"，只适用于第零步选择了"静态 skill"的情况。）
 
 - **预估 < 150 行、内容边界单一** → 用**单文件**结构，直接把知识写进 `SKILL.md` 正文，
   不要过度设计出一堆 `references/`。
@@ -125,8 +152,11 @@ browse_paths:
 4. 分层结构下，主文件正文只保留高频内容；细节挪到 `references/`，靠 `resources`
    索引和 agent 的判断按需拉取，不要图省事把所有内容都堆回主文件
 
-## 创建流程（生成此 skill 时遵循）
+## 创建流程（生成此 skill 时遵循，仅适用于第零步判断为"静态 skill"的情况；
+generative-capability skill 的创建流程见 `generative-capability-skill` 子资源）
 
+0. **先走第零步判断**：静态 skill 还是 generative-capability skill？判断错了
+   后面全部白做，宁可多问用户一句也不要凭猜测往下走。
 1. 向用户确认：
    - skill 的核心用途（一句话 description）
    - 触发场景关键词（中英文都列）
@@ -144,6 +174,8 @@ browse_paths:
 
 ## 参考
 
+- **要创建 generative-capability skill（领域能力包）** → 不要往下读，直接加载本
+  skill 的 `generative-capability-skill` 子资源（`references/generative-capability-skill.md`）
 - 渐进式加载机制原理、双通道加载、卸载后再加载的行为 → 本 skill 的
   `progressive-loading` 子资源（`references/progressive-loading.md`）
 - 完整示例（单文件/分层/browse_paths 三种） → 本 skill 的 `examples` 子资源
