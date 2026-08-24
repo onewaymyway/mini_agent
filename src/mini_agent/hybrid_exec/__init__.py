@@ -20,6 +20,7 @@ from .executor import HybridExecutor, default_executor
 from .explorer import AgentExplorer, Explorer, LLMExplorer
 from .fallback import FallbackExecutor
 from .kanban_summary import build_kanban_summary
+from .playbook_repository import PlaybookRecord, PlaybookRepository
 from .policy import ReexplorePolicy
 from .recorder import RunRecorder
 from .repairer import AgentRepairer, LLMRepairer, Repairer
@@ -47,6 +48,8 @@ __all__ = [
     "FallbackExecutor",
     "ScriptRepository",
     "ScriptRecord",
+    "PlaybookRepository",
+    "PlaybookRecord",
     "ScriptRunner",
     "RunnerAppConfig",
     "RunRecorder",

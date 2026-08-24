@@ -149,8 +149,17 @@ next_doc/generative-capability-skill-plan.md              # 追加阶段实施�
 
 ## 3. member 三档执行机制：合并 hybrid_exec
 
-**状态：设计阶段，尚未实施**——本次改动只完成第1、2节，第3节涉及两套
-现有机制的整合，范围较大，按第4节的建议顺序留待下一阶段单独实施。
+**状态：基础设施已实施一部分，主循环整合仍未开始**——本阶段完成了两个
+开放问题的决策落地（`ExecutionTier.SKILL` 定义、`PlaybookRepository` 独立
+版本化目录），以及与之相关、可独立验证的存储层代码；`capability_engine.py`
+委托给 `HybridExecutor` 执行、`PlaybookRunner`（skill 档真正的"参照 playbook
+执行"逻辑）、以及三档执行顺序的接线，仍未开始，留待下一阶段。
+
+**开放问题决策（用户已确认）**：
+1. playbook 不复用 `ScriptRepository` 的 `<task_id>/v{n}.py` 目录布局，
+   单独设计一套版本化目录——见 3.3a 节 `PlaybookRepository` 的实施说明。
+2. `skill` 档"轻量 Agent 参照 playbook 执行"的工具集范围、回合预算暂不
+   预设具体数值，留到接线 `PlaybookRunner` 时结合真实场景一次性定下。
 
 ### 3.1 动机
 
@@ -202,7 +211,48 @@ next_doc/generative-capability-skill-plan.md              # 追加阶段实施�
 `degraded` 判定按"当前实际在用的最低成本可用 tier 连续失败"计算，而非只有
 script 一档的成败统计——script 挂了不必然要重新探索，先尝试 skill 档更便宜。
 
-### 3.3 具体合并方式
+### 3.3a 本阶段已实施部分
+
+- `hybrid_exec/spec.py`：`ExecutionTier` 新增 `SKILL`，插在 `LLM` 和
+  `AGENT` 之间（枚举值 `"skill"`）。`TaskSpec.allow_tiers` 默认值不变
+  （仍是 `SCRIPT, LLM, AGENT`），`SKILL` 档需要调用方显式传入
+  `allow_tiers` 才会生效——因为 `PlaybookRunner`（真正执行"参照 playbook
+  跑一次轻量 Agent"的执行器）和 `HybridExecutor` 主循环的接线还没做，
+  现在把 `SKILL` 放进默认 `allow_tiers` 只会导致主循环遇到不认识的 tier。
+- `hybrid_exec/playbook_repository.py`（新增）：`PlaybookRepository`，
+  接口形状与 `ScriptRepository` 完全同构（`save_new_version`/
+  `record_success`/`record_failure`/`retire`/`list_versions` 等），落盘
+  目录改为 `<project_root>/.agent/hybrid_exec/playbooks/<task_id>/`，
+  文件后缀 `.md` 而非 `.py`。与 `ScriptRepository` 各自独立管理自己的
+  `meta.json`，同一个 `task_id` 可以同时有脚本版本历史和 playbook 版本
+  历史，互不干扰、由调用方决定当前实际采用哪一档。
+- `hybrid_exec/__init__.py`：导出 `PlaybookRepository`/`PlaybookRecord`。
+- `tests/test_hybrid_exec_playbook_repository.py`（新增）：8 个用例，
+  与 `tests/test_hybrid_exec.py::TestScriptRepository` 对称验证同一组
+  行为（存取/新版本转正/成功重置连续失败计数/连续失败自动退役/手动退役），
+  外加两个 playbook 专属用例：文件后缀确认为 `.md`、以及"同一 task_id 在
+  两个仓库里的版本历史完全独立"的显式回归验证。全量通过，既有
+  `test_hybrid_exec.py`/`test_hybrid_exec_p3.py`/`test_hybrid_exec_p4.py`/
+  `test_hybrid_exec_summary_route.py` 无回归（共 47 + 8 = 55 用例）。
+
+### 3.3b 仍未实施部分（下一阶段范围）
+
+- `PlaybookRunner`：真正"参照 playbook 执行"的执行器，对应
+  `hybrid_exec/explorer.py` 里 `LLMExplorer`/`AgentExplorer` 的定位，
+  需要新增一个"给定 playbook 文本 + input，拉起一个工具集受限、回合预算
+  较小的 Agent 执行一次"的类。工具集范围、回合预算按用户决策，届时结合
+  真实场景一次性定下，不预设具体数值。
+- `capability_engine.py` 的 `resolve/execute` 委托给 `HybridExecutor.run()`
+  执行（见下方 3.3 节，原设计不变）——这是范围最大、风险最高的一步，
+  涉及现有 `registry.json` 状态机与 `ScriptRepository`/`PlaybookRepository`
+  的字段映射，建议先在 `browser-site-scraper` 单一领域试点验证接线逻辑，
+  再考虑其余两个 generative-capability skill 是否同步迁移（与第4节实施
+  顺序建议一致）。
+- 三档执行顺序（script → skill → explore）在 `capability_engine` 里的
+  实际调度逻辑，以及 `meta.json` 新增 `available_tiers` 字段、
+  `degraded` 判定改为"按当前实际在用的最低成本可用 tier 连续失败计算"。
+
+### 3.4 具体合并方式（原设计，尚未实施）
 
 `capability_engine.py` 的 `resolve/execute` 找到目标 member 后，不再自己实现
 执行/重试/降级逻辑，而是构造一个 `hybrid_exec.spec.TaskSpec`
@@ -223,26 +273,27 @@ script 一档的成败统计——script 挂了不必然要重新探索，先尝
   "参照 playbook 执行"角色设定，以及 `explore` 档产出 `playbook.md` 时的
   整理规则）。
 
-### 3.4 改动文件清单（预估，本阶段先设计不动代码）
+### 3.5 改动文件清单（预估，尚未实施部分）
 
 ```
-src/mini_agent/hybrid_exec/spec.py                # 新增 ExecutionTier.SKILL
-src/mini_agent/hybrid_exec/repository.py          # ScriptRecord 是否需要扩展
-                                                    # 支持 playbook 产物的版本记录
-                                                    # （目前是纯 .py 版本文件布局，
-                                                    # 需要评估是否要扩展为
-                                                    # <task_id>/v{n}.py 或 .md 两种后缀）
-src/mini_agent/hybrid_exec/explorer.py            # 新增 SkillPlaybookExplorer /
-                                                    # PlaybookRunner 抽象
-                                                    # （对应"参照 playbook 执行"）
+src/mini_agent/hybrid_exec/explorer.py            # 新增 PlaybookRunner
+                                                    # （对应"参照 playbook 执行"，
+                                                    # 见 3.3b；spec.py/
+                                                    # playbook_repository.py
+                                                    # 已在本阶段实施完成，不再
+                                                    # 列入本清单）
 .claude/skills/_engine/capability_engine.py        # resolve() 保留，execute()
                                                     # 改为委托给 HybridExecutor
 .claude/skills/_engine/distiller.py                # 落盘逻辑改为经由
-                                                    # ScriptRepository 统一管理
+                                                    # ScriptRepository/
+                                                    # PlaybookRepository 统一管理
 next_doc/generative-capability-skill-plan.md       # 追加阶段实施记录，标注与
                                                     # hybrid_exec 合并后的新架构
 next_doc/hybrid_exec_design_plan.md                # 追加 ExecutionTier.SKILL 的
-                                                    # 设计说明
+                                                    # 设计说明（本阶段已在
+                                                    # spec.py 落地枚举定义，
+                                                    # 设计文档本身的同步说明
+                                                    # 仍待补充）
 ```
 
 ---
@@ -260,14 +311,10 @@ next_doc/hybrid_exec_design_plan.md                # 追加 ExecutionTier.SKILL 
    对得上之后，再考虑要不要让 `doc-template-generation` 等其它
    generative-capability skill 同步迁移。
 
-## 5. 待确认的开放问题
+## 5. 开放问题（已确认，供后续实施参照）
 
-- `ScriptRepository` 现有目录布局是按纯脚本版本设计的（`v1.py`/`v2.py`），
-  引入 `playbook.md` 这种非代码产物后，版本存储布局需要扩展；是否要为
-  playbook 单独设计一套版本化目录，还是复用同一套 `<task_id>/v{n}.{py|md}`
-  命名，需要在第三步动手前定下来。
-- `skill` 档执行时"轻量 Agent 参照 playbook"具体收多窄的工具集、多小的
-  回合预算，需要参考现有 `explorer.max_steps`/`max_seconds` 配置项，给
-  `skill` 档单独设一套更小的默认值（比如 explore 档 40 步/180 秒，skill
-  档可以定在 10-15 步/60 秒量级），具体数值建议第三步实施时结合真实场景
-  一次性定下，不在本计划里预设死数字。
+- **playbook 存储布局**：已确认——单独设计一套版本化目录，不复用
+  `ScriptRepository` 的 `<task_id>/v{n}.py` 命名。已落地为
+  `hybrid_exec/playbook_repository.py::PlaybookRepository`，见 3.3a。
+- **`skill` 档工具集/回合预算**：已确认——暂不预设具体数值，留到实施
+  `PlaybookRunner`（见 3.3b）时结合真实场景一次性定下。

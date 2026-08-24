@@ -2549,3 +2549,46 @@ store"，由每个 `Agent.__init__()` 调用 `configure_raw_result_store()` 写�
   `test_view_raw_result_tool_multiple_sessions_no_cross_talk` 两个回归
   测试，直接复现"多个 session 的 store 先后构造不应互相覆盖"这个场景。
   全量 15 用例通过。
+
+### 阶段二十七 —— 部分完成：三档 member 执行机制基础设施（合并 hybrid_exec 第一步）
+
+**背景**：next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+第3节提出把 member 的执行手段从"脚本 / 全新探索"两级扩展为
+"script > skill > explore"三档，并与项目里已有的 `hybrid_exec`
+（`ExecutionTier: SCRIPT → LLM → AGENT`）合并成一套状态机，而不是两套
+机制并行发展。用户对文档里两个开放问题给出了确认：
+1. playbook（skill 档的步骤说明文档）不复用 `ScriptRepository` 的
+   `<task_id>/v{n}.py` 目录布局，单独设计一套版本化目录。
+2. skill 档"轻量 Agent 参照 playbook 执行"的工具集/回合预算暂不预设
+   具体数值，留到后续实施 `PlaybookRunner` 时结合真实场景一次性定下。
+
+**本阶段完成的部分（基础设施，尚未接入 `capability_engine` 主循环）**：
+1. `hybrid_exec/spec.py`：`ExecutionTier` 新增 `SKILL`，插在 `LLM` 和
+   `AGENT` 之间。`TaskSpec.allow_tiers` 默认值保持不变（不含 `SKILL`），
+   避免在执行器还不认识这个 tier 的情况下被意外启用。
+2. `hybrid_exec/playbook_repository.py`（新增）：`PlaybookRepository`，
+   接口形状与 `ScriptRepository` 完全同构，落盘在独立目录
+   `<project_root>/.agent/hybrid_exec/playbooks/<task_id>/`，文件后缀
+   `.md`。与 `ScriptRepository` 各自管理自己的 `meta.json`，同一个
+   `task_id` 可以同时有脚本版本历史和 playbook 版本历史，互不干扰。
+3. `hybrid_exec/__init__.py` 导出新增的 `PlaybookRepository`/
+   `PlaybookRecord`。
+4. `tests/test_hybrid_exec_playbook_repository.py`（新增，8 用例）：与
+   `tests/test_hybrid_exec.py::TestScriptRepository` 对称验证同一组
+   仓库行为，外加"两个仓库目录完全独立"的显式回归验证。全量通过；
+   既有 `test_hybrid_exec.py`/`test_hybrid_exec_p3.py`/
+   `test_hybrid_exec_p4.py`/`test_hybrid_exec_summary_route.py`
+   （共 47 用例）无回归。
+
+**本阶段未完成、留待下一阶段的部分**（详见
+`generative_capability_raw_result_and_hybrid_merge_plan.md` 3.3b 节）：
+- `PlaybookRunner`：真正"给定 playbook 文本 + input，拉起工具集受限、
+  回合预算较小的 Agent 执行一次"的执行器，对应 `hybrid_exec/explorer.py`
+  里 `LLMExplorer`/`AgentExplorer` 的定位，尚未实现。
+- `capability_engine.py` 的 `resolve/execute` 委托给 `HybridExecutor.run()`
+  执行——范围最大、风险最高的一步，涉及现有 `registry.json` 状态机与
+  `ScriptRepository`/`PlaybookRepository` 的字段映射，尚未开始，建议先在
+  `browser-site-scraper` 单一领域试点。
+- `capability_engine` 里"script → skill → explore"三档实际调度顺序、
+  `meta.json` 新增 `available_tiers` 字段、`degraded` 判定改为"按当前
+  实际在用的最低成本可用 tier 连续失败计算"，均未实施。
