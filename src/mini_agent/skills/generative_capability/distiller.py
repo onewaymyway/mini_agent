@@ -302,6 +302,194 @@ def _llm_synthesize_script(
     return LLM_SYNTHESIZED_HEADER_TEMPLATE.format(skill_name=skill_name, member_id=member_id) + code
 
 
+# --------------------------------------------------------------------------- #
+# [本次新增] SKILL 档执行观察到可参数化 → 升级蒸馏为 script.py
+#
+# 对应 next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+# 第3节 3.3b 遗留的最后一项。与阶段三十的"脚本失败 → 退化落 playbook"方向
+# 相反：这里是"playbook 已经被证明可靠地用了几次 → 尝试把它升级成更便宜
+# 的 script.py"。没有逐步 trace 可用（PlaybookRunner 驱动的是一次自由的
+# Agent 执行，不是固定的工具调用序列），因此不能复用 trace_replay/
+# script_source 的既有蒸馏路径，只能走"LLM 阅读 playbook 文本 + 一次真实
+# 输入输出样例，总结出参数化脚本"这条路径——与 _llm_synthesize_script()
+# 的思路一致，只是喂给 LLM 的素材从"trace 的逐步操作记录"换成了"playbook
+# 描述的步骤 + 一次实际执行样例"。
+# --------------------------------------------------------------------------- #
+
+SKILL_UPGRADED_HEADER_TEMPLATE = '''"""
+{skill_name} / members / {member_id} / script.py
+
+统一接口: run(input: dict) -> dict
+
+本脚本由 generative-capability 引擎在 SKILL 档（playbook 驱动的轻量 Agent）
+多次执行被验证可靠后，用 LLM 阅读该 playbook 说明 + 一次真实执行样例总结
+生成（source: explored, distill_source_kind: skill_upgraded）。playbook.md
+本身仍然保留在 playbooks/ 目录下作为 SKILL 档兜底——本脚本若日后自测/
+实际调用失败，capability_engine 的既有降级路径会重新回落到 SKILL 档，
+而不是直接判 member 失败。
+"""
+
+'''
+
+_SKILL_UPGRADE_SYSTEM_PROMPT = """你是一个"能力升级蒸馏器"。你会收到一份人类可读的操作步骤说明
+（playbook，描述了大致该怎么完成一类任务），以及一次照着这份说明真实执行
+得到的输入/输出样例（证明这份说明确实可行）。
+
+你的任务：把 playbook 描述的步骤总结成一个可以在输入参数变化时复用的
+Python 脚本，语义上等价于"把这份 SOP 固化成确定性代码"。
+
+硬性要求：
+1. 必须定义 `def run(input: dict) -> dict`，返回
+   `{"status": "success"|"fail", "data": ..., "error": ...}`。
+2. 脚本内如需调用底层操作原语（如 browser_navigate/browser_extract_content
+   这类领域工具），通过 `from tool_runtime import get_tool_executor` 拿到
+   执行器，用 `executor(tool_name, tool_input)` 调用——只使用 playbook
+   文本中明确提到过的工具名，不要凭空引入。
+3. 不要硬编码样例里的具体 target.url / query 等值，改为从 `input` 参数
+   读取；也不要硬编码样例的具体返回数据（标题/URL/数字等），必须真实调用
+   工具执行器重新获取。
+4. 只输出脚本源码本身，不要用 Markdown 代码块包裹，不要输出任何解释文字。
+"""
+
+
+def _llm_synthesize_script_from_playbook(
+    playbook_content: str, request: dict, result_data: dict, intent_schema: dict,
+    skill_name: str, member_id: str, llm_helper: Any,
+) -> Optional[str]:
+    """失败（LLM 调用异常/返回内容不像 Python 源码）时返回 None，调用方据此
+    放弃本次升级尝试，不影响 playbook 继续作为 SKILL 档兜底使用。"""
+    try:
+        user_content = json.dumps(
+            {
+                "playbook": playbook_content,
+                "sample_request": request,
+                "intent_schema": intent_schema,
+                "sample_result_data": result_data,
+            },
+            ensure_ascii=False,
+        )
+        raw = llm_helper.ask(
+            user_content,
+            system=_SKILL_UPGRADE_SYSTEM_PROMPT,
+            max_retries=2,
+            override_temperature=0.0,
+        )
+    except Exception as e:  # noqa: BLE001
+        from .capability_debug import capability_debug_log
+        capability_debug_log(
+            "skill_upgrade_llm_call_failed", {"member_id": member_id, "error": str(e)},
+            where="distiller._llm_synthesize_script_from_playbook",
+        )
+        return None
+
+    code = raw.strip()
+    code = code.removeprefix("```python").removeprefix("```").removesuffix("```").strip()
+    if "def run(" not in code:
+        from .capability_debug import capability_debug_log
+        capability_debug_log(
+            "skill_upgrade_llm_invalid_output",
+            {"member_id": member_id, "raw_preview": code[:300]},
+            where="distiller._llm_synthesize_script_from_playbook",
+        )
+        return None
+
+    return SKILL_UPGRADED_HEADER_TEMPLATE.format(skill_name=skill_name, member_id=member_id) + code
+
+
+def attempt_skill_upgrade(
+    *, playbook_content: str, request: dict, result_data: dict, intent_schema: dict,
+    skill_dir: Path, capability: dict, member_id: str, skill_name: Optional[str] = None,
+    self_test_executor, llm_helper: Any,
+) -> bool:
+    """[本次新增] `capability_engine._try_skill()` 在 playbook 被证明可靠
+    （连续成功次数达到调用方配置的门槛）后调用本函数尝试一次升级。
+
+    与 `distill()` 的关系：这不是 `distill()` 的一条新路径（没有 trace 可
+    供 `distill()` 复用），而是一个独立的、"事后再给一次机会"的升级入口，
+    产物形状（script.py + meta.json + registry.json + _index.json）与
+    `distill()` 产出的 member 完全一致，复用同一个 `_atomic_persist()`，
+    只是 `distill_source_kind` 记为 `"skill_upgraded"` 以便审计区分。
+
+    返回 True 表示升级成功并已落盘（member 现在同时具备 script.py 和
+    playbook.md 两种手段，`execute()` 之后会优先走脚本）；返回 False 表示
+    本次升级尝试未成功（LLM 生成失败/自测未过/合理性检查未过/落盘异常），
+    playbook 本身不受任何影响，调用方无需特殊处理，继续按原样使用 SKILL
+    档即可——升级失败不是一次"失败尝试"，不计入任何 playbook 的成败统计。
+    """
+    from .capability_debug import capability_debug_log
+
+    skill_name = skill_name or capability.get("name", skill_dir.name)
+    code = _llm_synthesize_script_from_playbook(
+        playbook_content=playbook_content, request=request, result_data=result_data,
+        intent_schema=intent_schema, skill_name=skill_name, member_id=member_id,
+        llm_helper=llm_helper,
+    )
+    if code is None:
+        return False
+
+    tmp_dir = skill_dir / "members" / f"__tmp_upgrade_{member_id}_{int(time.time() * 1000)}"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_script = tmp_dir / "script.py"
+    try:
+        tmp_script.write_text(code, encoding="utf-8")
+        test_result = _sandbox_run(tmp_script, request, self_test_executor)
+    finally:
+        _rm_tree(tmp_dir)
+
+    if not test_result.get("ok"):
+        capability_debug_log(
+            "skill_upgrade_self_test_failed",
+            {"member_id": member_id, "error": test_result.get("error")},
+            where="distiller.attempt_skill_upgrade",
+        )
+        return False
+
+    final_data = test_result.get("data")
+    if not _validate_schema(final_data, intent_schema):
+        capability_debug_log(
+            "skill_upgrade_schema_invalid", {"member_id": member_id},
+            where="distiller.attempt_skill_upgrade",
+        )
+        return False
+
+    # 与 distill() 的 script_source/llm_synthesized 路径一致，同样要过一次
+    # "是否为假数据脚本"的合理性检查（见 _check_script_plausibility），
+    # 避免升级出一份看起来能跑、实际对任意输入都返回同一份固定数据的脚本。
+    plausible, plausibility_reason = _check_script_plausibility(
+        script_code=code, request=request, original_data=final_data,
+        self_test_executor=self_test_executor, llm_helper=llm_helper,
+        tmp_dir_factory=lambda: (
+            skill_dir / "members" / f"__tmp_upgrade_plausibility_{member_id}_{int(time.time() * 1000)}"
+        ).joinpath("script.py"),
+    )
+    if not plausible:
+        capability_debug_log(
+            "skill_upgrade_plausibility_failed",
+            {"member_id": member_id, "reason": plausibility_reason},
+            where="distiller.attempt_skill_upgrade",
+        )
+        return False
+
+    try:
+        _atomic_persist(
+            skill_dir=skill_dir, member_id=member_id, script_code=code, request=request,
+            capability=capability, intent_schema=intent_schema, is_reexplore=True,
+            used_trace_data_fallback=False, distill_source_kind="skill_upgraded",
+        )
+    except Exception as e:  # noqa: BLE001
+        capability_debug_log(
+            "skill_upgrade_persist_failed", {"member_id": member_id, "error": str(e)},
+            where="distiller.attempt_skill_upgrade",
+        )
+        return False
+
+    capability_debug_log(
+        "skill_upgrade_succeeded", {"member_id": member_id, "skill_name": skill_name},
+        where="distiller.attempt_skill_upgrade",
+    )
+    return True
+
+
 def _truncate_for_prompt(value: Any, limit: int = 600) -> Any:
     text = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
     if len(text) > limit:

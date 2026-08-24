@@ -99,6 +99,8 @@ class CapabilityEngine:
         llm_helper: Any = None,
         playbook_repo: Any = None,
         skill_runner: Optional[Callable[[dict, str], dict]] = None,
+        enable_skill_upgrade: bool = False,
+        skill_upgrade_success_threshold: int = 3,
     ):
         self.skill_dir = Path(skill_dir)
         self.capability = self._load_yaml(self.skill_dir / "capability.yaml")
@@ -133,6 +135,12 @@ class CapabilityEngine:
         # `(request) -> {"status", "data", "error"}` 契约。
         self.playbook_repo = playbook_repo
         self.skill_runner = skill_runner
+        # enable_skill_upgrade / skill_upgrade_success_threshold: [本次新增]
+        # 见 _maybe_upgrade_skill_to_script()。默认关闭、门槛 3 次——不影响
+        # 任何既有调用方（未显式开启时，即使注入了 llm_helper 也不会尝试
+        # 升级，保持"新增能力默认不生效"的一贯风格）。
+        self.enable_skill_upgrade = enable_skill_upgrade
+        self.skill_upgrade_success_threshold = skill_upgrade_success_threshold
 
     # ---------------------- 基础文件读写 ---------------------- #
 
@@ -456,7 +464,41 @@ class CapabilityEngine:
             return ExecuteResult(status="fail", member_id=member_id, error=msg)
 
         self.playbook_repo.record_success(member_id, active_pb.version)
+
+        # [本次新增，见 next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+        # 第3节 3.3b"SKILL 档执行时观察到可参数化则升级蒸馏为 script.py"]
+        # 该 playbook 被证明可靠地成功了足够多次、且调用方开启了升级开关并
+        # 注入了 llm_helper 时，尝试一次"把它固化成更便宜的 script.py"。
+        # 升级尝试本身失败不影响本次调用结果（playbook 已经成功执行过了），
+        # 只是静默放弃这次升级机会，不计入 playbook 的成败统计。
+        self._maybe_upgrade_skill_to_script(member_id, request, result.get("data"), content)
+
         return ExecuteResult(status="success", member_id=member_id, data=result.get("data"))
+
+    def _maybe_upgrade_skill_to_script(self, member_id: str, request: dict,
+                                        result_data: Any, playbook_content: str) -> None:
+        if not self.enable_skill_upgrade or self.llm_helper is None:
+            return
+        if (self.members_dir / member_id / "script.py").exists():
+            return  # 已经有脚本了，不需要重复升级
+        active_pb = self.playbook_repo.get_active_playbook(member_id)
+        if active_pb is None or active_pb.success_count < self.skill_upgrade_success_threshold:
+            return
+        entry = self.registry.get("members", {}).get(member_id, {})
+        from .distiller import attempt_skill_upgrade
+        try:
+            upgraded = attempt_skill_upgrade(
+                playbook_content=playbook_content, request=request, result_data=result_data,
+                intent_schema=entry.get("intent_schema", {}), skill_dir=self.skill_dir,
+                capability=self.capability, member_id=member_id,
+                self_test_executor=self.tool_executor, llm_helper=self.llm_helper,
+            )
+        except Exception:  # noqa: BLE001 — 升级本身出错不应影响本次已成功的调用结果
+            upgraded = False
+        if upgraded:
+            # 落盘改动了 registry.json/_index.json，重新加载保持内存一致。
+            self.index = self._load_json(self.index_path, default={"members": []})
+            self.registry = self._load_json(self.registry_path, default={"members": {}})
 
     # ---------------------- 第 3/4 步: explore / distill（阶段三） ---------------------- #
 

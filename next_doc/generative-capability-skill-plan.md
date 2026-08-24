@@ -2752,3 +2752,42 @@ script 状态机，只在 `CapabilityEngine.call()` 现有的"命中 member 执�
 - `meta.json`/`registry.json` 里 `available_tiers`/统一 `degraded` 判定
   仍未实施，本阶段新增的 `execution_tier: "skill_only"` 只是信息性标记，
   不是该统一视角的正式实现。
+
+### 阶段三十一 —— 完成：SKILL 档被证明可靠后自动升级蒸馏为 `script.py`
+
+**背景**：承接阶段三十遗留的最后一项"SKILL 档执行观察到可进一步参数化则
+顺手升级蒸馏为 script.py"。与阶段三十"脚本失败 → 退化落 playbook"方向
+相反，本阶段补上"playbook 用得好 → 固化成更便宜的脚本"这条升级路径，
+至此 3.3b 节列出的三项遗留工作全部完成。
+
+详见 `next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md`
+第3节 3.3e 节的完整实施记录，此处摘要：
+
+1. `distiller.py` 新增 `attempt_skill_upgrade()`：没有逐步 trace 可用
+   （`PlaybookRunner` 驱动的是自由 Agent 执行，不是固定工具调用序列），
+   走独立的"LLM 阅读 playbook 文本 + 一次真实执行样例 → 总结出参数化
+   脚本"路径（新增 `_llm_synthesize_script_from_playbook()`），产物同样
+   经过沙箱自测 + `intent_schema` 校验 + 合理性检查 + 原子落盘，
+   `distill_source_kind` 记为 `"skill_upgraded"`。任何一步失败都静默
+   返回 `False`，不影响 playbook 本身的成败统计。
+2. `CapabilityEngine.__init__` 新增可选参数 `enable_skill_upgrade`
+   （默认 `False`）、`skill_upgrade_success_threshold`（默认 3）。
+3. `_try_skill()` 每次成功后调用新增的 `_maybe_upgrade_skill_to_script()`
+   ——未开启开关/未注入 `llm_helper`/已有 script.py/成功次数未达门槛均
+   静默跳过；升级本身异常不影响本次已成功的调用结果；升级成功后重新
+   加载 index/registry 保持内存一致。
+4. `tests/test_generative_capability_skill_upgrade.py`（新增，3 用例）：
+   默认关闭不升级（向后兼容）、开启后正确落盘且落盘脚本可独立加载执行、
+   LLM 产出无效内容时静默放弃且不影响本次调用结果与 playbook 本身共 3
+   种场景，全部通过。连同既有全部相关测试文件，共 124 用例通过、2 个与
+   本次改动无关的既有环境相关失败，无新增回归。
+
+**已知限制（留待后续评估）**：
+- 升级门槛是简单的"累计成功次数 ≥ 门槛"，没有"已尝试过"标记，升级失败
+  后续次每次成功仍会重试——刻意简化，成本可控，暂不需要节流。
+- 升级产出脚本落盘时 `_infer_match_rule()` 会用触发升级那次的请求重新
+  生成该 member 的检索匹配规则，这是 `_atomic_persist()` 的既有行为，
+  不是本阶段引入的新问题，留给后续评估统一检索规则时一并考虑。
+- 至此 `capability_engine.resolve/execute` 整体委托给
+  `HybridExecutor.run()` 是 3.3b 节唯一仍未开始的部分，仍是原方案里
+  范围最大、风险最高的一步。

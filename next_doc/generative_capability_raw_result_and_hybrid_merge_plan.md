@@ -151,16 +151,17 @@ next_doc/generative-capability-skill-plan.md              # 追加阶段实施�
 
 **状态：`HybridExecutor` 主循环已接入 SKILL 档；`CapabilityEngine` 已用
 风险更低的方式试点接入 SKILL 档；探索失败脚本蒸馏时已能自动产出
-`playbook.md` 兜底；`capability_engine` 整体委托给 `HybridExecutor` 仍未
-开始**——继上一阶段完成 `HybridExecutor._run()` 的 SKILL 档决策分支接线
-（3.3a-2 节）、`CapabilityEngine` 试点接入 SKILL 档（3.3c 节）之后，本
-阶段进一步打通了"脚本蒸馏三条路径全部失败时自动落 playbook.md"（见
-3.3d 节），使 `browser-site-scraper` 等 generative-capability skill 的
-"script → skill → explore"优先级不再依赖人工预先放好 playbook——只要
-`capability_engine.py` 的调用方同时注入 `playbook_repo`/`skill_runner`
-（见 `skill_tier.py`），这个闭环即可自动运转。`capability_engine.resolve/
-execute` 整体委托给 `HybridExecutor.run()`（原方案范围最大、风险最高的
-一步）仍未开始。
+`playbook.md` 兜底；SKILL 档被证明可靠后已能自动升级蒸馏为 `script.py`；
+`capability_engine` 整体委托给 `HybridExecutor` 仍未开始**——本阶段
+（3.3e 节）补上了 3.3b 遗留的最后一项：`_try_skill()` 每次成功后检查
+该 playbook 的累计成功次数，达到调用方配置的门槛且开启了升级开关时，
+用 LLM 阅读 playbook 文本 + 一次真实执行样例，尝试蒸馏出等价的
+`script.py`（复用与 `distill()` 完全一致的沙箱自测/schema 校验/合理性
+检查/原子落盘）。至此，"script → skill → explore"三档不仅有"降级"方向
+（阶段三十：脚本失败退化为 playbook），也有"升级"方向（本阶段：playbook
+证明可靠后固化为脚本），3.3b 节列出的三项遗留工作全部完成，只剩
+`capability_engine.resolve/execute` 整体委托给 `HybridExecutor.run()`
+这一项范围最大、风险最高的重构仍未开始。
 
 **开放问题决策（用户已确认）**：
 1. playbook 不复用 `ScriptRepository` 的 `<task_id>/v{n}.py` 目录布局，
@@ -322,28 +323,91 @@ SKILL 档"，本阶段已完成、不再属于未实施范围：
 
 ### 3.3b 仍未实施部分（下一阶段范围）
 
-**[本次更新]** 第一项"`capability_engine.py` 委托给 `HybridExecutor.run()`
-执行"仍未开始，见下方说明；"三档执行顺序（script → skill → explore）在
-`capability_engine` 里的实际调度逻辑"这一项，已经用一种**更小范围的方式**
-部分完成——见 3.3c 节；第二项"`explore` 阶段产出 `playbook.md` 的整理
-规则"本阶段**已实施**，见 3.3d 节；"SKILL 档执行时观察到可进一步参数化则
-顺手升级蒸馏为 script.py"仍未开始。
+**[本次更新]** 3.3b 原先列出的三项遗留工作已全部完成：
+"三档执行顺序在 `capability_engine` 里的实际调度逻辑"见 3.3c 节，
+"`explore` 阶段产出 `playbook.md` 的整理规则"见 3.3d 节，
+"SKILL 档执行时观察到可参数化则升级蒸馏为 script.py"见 3.3e 节。
+唯一仍未开始的是范围最大、风险最高的一项：
 
 - `capability_engine.py` 的 `resolve/execute` **整体**委托给
-  `HybridExecutor.run()` 执行（见下方 3.4 节，原设计不变）——这仍是范围
-  最大、风险最高的一步，涉及现有 `registry.json` 状态机与
-  `ScriptRepository`/`PlaybookRepository` 的字段映射，尚未开始，留待
-  确认 3.3c 节的试点验证结果后再评估是否需要。
-- ~~`explore` 阶段产出 `playbook.md`（而非 `script.py`）的整理规则~~
-  **已实施，见 3.3d 节。** "SKILL 档执行时观察到可进一步参数化则顺手升级
-  蒸馏为 script.py"这条路径仍未开始，属于 `capability_engine`/
-  `skill_tier.py` 领域侧改造范围。
-- `meta.json` 新增 `available_tiers` 字段、`degraded` 判定改为"按当前
-  实际在用的最低成本可用 tier 连续失败计算"——3.3c/3.3d 节的实现刻意
-  **不**触碰 `registry.json` 里 script 那一档已有的状态机，playbook 的
-  成功率统计完全独立记在单独的 `playbooks/<member_id>/meta.json` 里，
-  二者互不影响，`available_tiers`/`degraded` 这类"统一视角"的字段仍未
-  实施。
+  `HybridExecutor.run()` 执行（见下方 3.4 节，原设计不变）——涉及现有
+  `registry.json` 状态机与 `ScriptRepository`/`PlaybookRepository` 的
+  字段映射，尚未开始，留待评估 3.3c/3.3d/3.3e 节的试点效果（即"不整体
+  迁移、只在 `capability_engine` 现有链路里分别接入 script→skill→explore
+  各个方向"这条更小风险路径本身是否已经足够）后再决定是否需要。
+- `meta.json`/`registry.json` 新增 `available_tiers` 字段、`degraded`
+  判定改为"按当前实际在用的最低成本可用 tier 连续失败计算"——3.3c/
+  3.3d/3.3e 节的实现刻意**不**触碰 `registry.json` 里 script 那一档已有
+  的状态机，playbook 的成功率统计完全独立记在单独的
+  `playbooks/<member_id>/meta.json` 里，二者互不影响，
+  `available_tiers`/`degraded` 这类"统一视角"的字段仍未实施。
+
+### 3.3e 本阶段新增：SKILL 档被证明可靠后自动升级蒸馏为 `script.py`
+
+对应 3.3b 原先列出的第三项，本阶段已实施、不再属于未实施范围。与阶段
+三十"脚本失败 → 退化落 playbook"方向相反：这是"playbook 已经被反复证明
+可靠 → 尝试把它固化成更便宜的 script.py"，让 3.3d 节打通的"落 playbook"
+与阶段二十九的"用 playbook"之间，再补上一条"用得好就升级"的路径，三档
+之间形成完整的双向流转（script ⇄ skill ⇄ explore），而不只是单向降级。
+
+**改动内容**：
+
+1. `distiller.py` 新增 `attempt_skill_upgrade(...)`：不是 `distill()` 的
+   一条新路径（没有逐步 trace 可用——`PlaybookRunner` 驱动的是一次自由
+   的 Agent 执行，不是固定工具调用序列，无法复用 `trace_replay`/
+   `script_source` 两条既有蒸馏路径），而是一个独立的"事后再给一次机会"
+   入口：用新增的 `_llm_synthesize_script_from_playbook()` 把 playbook
+   文本 + 一次真实执行的输入/输出样例交给 LLM（系统提示词
+   `_SKILL_UPGRADE_SYSTEM_PROMPT`，与 `_llm_synthesize_script()` 的
+   "不要硬编码样例具体值、必须真实调用工具执行器"等硬性要求一致），产出
+   的脚本经过与 `distill()` 完全一致的"沙箱自测 → `intent_schema` 校验 →
+   `_check_script_plausibility()` 合理性检查 → `_atomic_persist()` 原子
+   落盘"流程，`distill_source_kind` 记为 `"skill_upgraded"`
+   （`SKILL_UPGRADED_HEADER_TEMPLATE`）以便审计区分于另外三种来源。任何
+   一步失败都返回 `False`，playbook 本身不受任何影响、不计入其成败统计
+   ——升级是"锦上添花"，不是"必须成功的一步"。
+2. `capability_engine.py::CapabilityEngine.__init__` 新增两个可选参数
+   `enable_skill_upgrade: bool = False`、`skill_upgrade_success_threshold:
+   int = 3`——默认关闭，即使注入了 `llm_helper` 也不会尝试升级，与项目里
+   "新增能力默认不生效"的一贯风格一致。
+3. 新增私有方法 `_maybe_upgrade_skill_to_script(member_id, request,
+   result_data, playbook_content)`：`_try_skill()` 每次成功执行并
+   `record_success()` 之后调用。未开启升级开关、或未注入 `llm_helper`、
+   或该 member 已有 `script.py`、或 playbook 累计成功次数未达门槛，均
+   静默跳过。升级本身抛出的任何异常都被吞掉（`try/except`），不影响
+   `_try_skill()` 已经拿到的成功结果——本次调用的返回值不受升级尝试
+   成败影响。升级成功落盘后重新加载 `self.index`/`self.registry`，保持
+   内存与磁盘一致（下一次 `execute()` 就能直接加载到新脚本）。
+4. `tests/test_generative_capability_skill_upgrade.py`（新增，3 用例，
+   用桩 `llm_helper`/`skill_runner`/`tool_executor`，不依赖真实 LLM/
+   浏览器）：默认关闭时即使门槛达标也不升级（向后兼容）、开启后 LLM
+   产出的脚本通过全部校验时正确落盘（`meta.json` 的
+   `distill_source_kind`/`version` 字段、`playbooks/` 目录未受影响、
+   落盘的脚本可被独立加载并正确执行）、LLM 产出内容不像 Python 源码时
+   静默放弃升级且不影响本次已成功的调用结果、playbook 本身不受影响
+   共 3 种场景，全部通过。连同既有全部 `hybrid_exec`/
+   `generative_capability`/`distiller` 相关测试文件（同样排除需要
+   `fastapi` 的 `test_hybrid_exec_summary_route.py`），共 124 用例通过、
+   2 个与本次改动无关的既有环境相关失败（同阶段三十记录的
+   `test_full_explore_distill_reuse_cycle`、`websocket-client` 依赖
+   缺失），无新增回归。
+
+**已知限制（留给后续阶段）**：
+- 升级门槛（`skill_upgrade_success_threshold`）目前是简单的"累计成功次数
+  ≥ 门槛"，每次成功都会重新检查一次——如果第一次尝试升级失败（LLM 产出
+  没通过自测），后续每次成功仍会再次尝试升级（因为没有"升级已尝试过"的
+  标记），这是刻意的简化：升级尝试本身成本可控（一次 LLM 调用 + 一次
+  沙箱自测），且不消耗 playbook 的成败统计，暂不需要额外的"已尝试过"
+  状态位；如果后续发现升级失败率高、重复尝试造成不必要的 LLM 调用开销，
+  再补一个每 member 的"最近升级尝试时间/次数"节流。
+- 升级产出的 `script.py` 落盘时，`_atomic_persist()` 会用
+  `_infer_match_rule(request)` 基于**触发升级那一次的请求**重新生成该
+  member 的检索匹配规则（`_index.json` 里的 `match` 字段），这是
+  `_atomic_persist()` 本身的既有行为（`reexplore`/常规 `distill()` 产出
+  脚本时同样如此），不是本阶段新引入的问题，但值得记录：如果该 member
+  最初是通过 LLM 语义检索（而非确定性 `domain_pattern`/`keyword` 匹配）
+  命中的，升级后的匹配规则可能与升级前不同，需要在后续评估
+  `available_tiers`/统一检索规则时一并考虑。
 
 ### 3.3d 本阶段新增：`explore` 阶段产出 `playbook.md`（脚本蒸馏失败兜底）
 
