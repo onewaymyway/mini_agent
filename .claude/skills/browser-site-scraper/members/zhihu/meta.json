@@ -1,10 +1,24 @@
 {
-  "source": "human",
-  "version": 1,
+  "source": "explored",
+  "version": 2,
   "intent_schema": {
     "type": "object",
-    "required": ["results"],
-    "properties": { "results": { "type": "array" } }
+    "required": [
+      "results"
+    ],
+    "properties": {
+      "results": {
+        "type": "array"
+      }
+    }
   },
-  "migrated_from": "browser-cdp/references/zhihu-search.md, src/searchers/zhihu_search.py（阶段十五起改为依赖 browser-core，不再依赖 browser-cdp；提取逻辑沿用，执行载体从 browser-cdp 自己的 CDP 封装换成 browser-core/impl/session_manager.py）"
+  "distilled_at": "2026-08-24 18:51:05",
+  "distill_source_kind": "llm_repaired",
+  "distill_used_trace_data_fallback": false,
+  "distilled_from_request": {
+    "text": "抓取知乎搜索结果页面中关于自主进化Agent的内容，包括问题标题、回答摘要等",
+    "target": {
+      "url": "https://www.zhihu.com/search?type=content&q=自主进化Agent"
+    }
+  }
 }

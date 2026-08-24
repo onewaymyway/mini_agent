@@ -20,7 +20,8 @@
       "last_failure": "2026-08-22 21:25:11"
     },
     "zhihu": {
-      "status": "trusted",
+      "status": "probation",
+      "status_changed_at": "2026-08-24 18:51:05",
       "intent_schema": {
         "type": "object",
         "required": [
@@ -33,10 +34,10 @@
         }
       },
       "success_count": 0,
-      "fail_count": 2,
-      "consecutive_failures": 2,
+      "fail_count": 0,
+      "consecutive_failures": 0,
       "last_success": null,
-      "last_failure": "2026-08-22 22:07:44"
+      "last_failure": null
     }
   }
 }

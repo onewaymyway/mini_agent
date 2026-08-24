@@ -5,15 +5,24 @@
       "description": "百度搜索：关键词搜索并提取结构化结果（标题/URL/摘要，可选详情页内容）",
       "match": {
         "domain_pattern": "*.baidu.com/s*",
-        "keyword": ["百度搜索", "baidu search", "百度"]
+        "keyword": [
+          "百度搜索",
+          "baidu search",
+          "百度"
+        ]
       }
     },
     {
       "member_id": "zhihu",
-      "description": "知乎内容搜索：通过百度 site:zhihu.com 获取知乎问答和专栏",
+      "description": "知乎内容抓取：通过浏览器直接访问知乎搜索页面，提取问题、文章、想法等内容的标题、链接和类型",
       "match": {
         "domain_pattern": "*.zhihu.com*",
-        "keyword": ["知乎搜索", "zhihu search", "知乎"]
+        "keyword": [
+          "知乎搜索",
+          "zhihu search",
+          "知乎",
+          "知乎内容抓取"
+        ]
       }
     }
   ]

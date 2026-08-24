@@ -2,159 +2,161 @@
 browser-site-scraper / members / zhihu / script.py
 
 统一接口: run(input: dict) -> dict
-input 约定: {"text": "...", "target": {"url": "https://www.zhihu.com/search?..."},
-             "query": "关键词", "session": {...}}  # session 可选，见下方说明
-返回: {"status": "success"|"fail", "data": {"results": [...]} | None, "error": str | None}
 
-依赖 `browser-core`（不再依赖 `browser-cdp`），设计说明与
-`members/baidu/script.py` 完全一致，见该文件头注释；本文件不重复展开。
-
-知乎搜索页对未登录访问有比较明显的限制（部分内容需要登录才能看到完整
-正文/更多结果），这正是本次改动新增 `attach` 会话模式要解决的场景之一：
-如果发现搜索结果异常稀少或页面提示登录，应该建议调用方改用
-`session: {"mode": "attach", "port": ...}` 连接一个已经手动登录好知乎的
-浏览器，而不是本 member 自己尝试处理登录——登录不是这个 member 的职责，
-见 `browser-core/SKILL.md`"会话模式"一节。
+本脚本由 generative-capability 引擎在探索成功、但探索子agent未提交
+script_source 时，用 LLM 事后阅读整段探索 trace 总结生成
+（source: explored, distill_source_kind: llm_synthesized）。
+非人工手写，未逐字重放当次探索的工具调用序列，而是由 LLM 提炼出参数化的
+等价逻辑；仍需经过与其它路径完全一致的沙箱自测 + intent_schema 校验才会
+落盘。
 """
 
-from __future__ import annotations
-
-import sys
-import urllib.parse
-from pathlib import Path
-
-_BROWSER_CORE_IMPL_DIR = Path(__file__).resolve().parents[3] / "browser-core" / "impl"
-
-# 知乎搜索结果页的提取逻辑（迁移自原 browser-cdp/src/searchers/zhihu_search.py
-# 的 `_extract_results_js`，逻辑未改动，只是换了个执行载体）。
-_EXTRACT_RESULTS_JS = """
-(function() {
-    var results = [];
-
-    var selectors = [
-        '.List-item',
-        '.SearchResult-Item',
-        '[data-zop-search-result]',
-        '.ContentItem',
-        '.SearchResult'
-    ];
-
-    var containers = [];
-    selectors.forEach(function(sel) {
-        var elements = document.querySelectorAll(sel);
-        elements.forEach(function(el) {
-            if (el.querySelector('.ContentItem-title') || el.querySelector('a[href*="/question/"]')) {
-                containers.push(el);
-            }
-        });
-    });
-
-    containers.forEach(function(container) {
-        var titleEl = container.querySelector('.ContentItem-title, h1, h2, h3, a[href]');
-        var linkEl = container.querySelector('a[href*="/question/"], a[href*="/p/"]');
-        var snippetEl = container.querySelector('.ContentItem-content, .RichContent-inner, .SearchResult-Content');
-        var authorEl = container.querySelector('.AuthorInfo-name, [class*="author"]');
-
-        if (titleEl || linkEl) {
-            var title = titleEl ? titleEl.textContent.trim() : '';
-            var url = linkEl ? linkEl.href : '';
-            var snippet = snippetEl ? snippetEl.textContent.trim() : '';
-            var author = authorEl ? authorEl.textContent.trim() : '';
-
-            if (title && title.length > 2 && url && url.startsWith('http')) {
-                results.push({
-                    title: title.substring(0, 200),
-                    url: url,
-                    snippet: snippet.substring(0, 500),
-                    author: author
-                });
-            }
-        }
-    });
-
-    return results;
-})()
+# -*- coding: utf-8 -*-
+"""
+知乎搜索结果抓取脚本
+用于探索性抓取知乎搜索页面中的内容（问题标题、文章标题、想法摘要等）
 """
 
-_LOGIN_WALL_CHECK_JS = """
-(function() {
-    var text = document.body ? document.body.innerText : '';
-    var indicators = ['登录知乎', '打开知乎App', '验证码'];
-    for (var i = 0; i < indicators.length; i++) {
-        if (text.indexOf(indicators[i]) !== -1) return indicators[i];
-    }
-    return null;
-})()
-"""
+import json
+import re
+import time
 
 
 def run(input: dict) -> dict:
-    query = input.get("query") or input.get("text", "")
-    if not query:
-        return {"status": "fail", "data": None, "error": "缺少 query/text 参数"}
+    """
+    抓取知乎搜索结果页面。
 
-    if not _BROWSER_CORE_IMPL_DIR.exists():
+    Parameters
+    ----------
+    input : dict
+        必须包含 target.url（知乎搜索页面URL）和 query（可选，提取意图描述）。
+    Returns
+    -------
+    dict
+        {"status": "success"|"fail", "data": {"results": [...]}, "error": str}
+    """
+    # 验证必填字段
+    if "target" not in input or "url" not in input.get("target", {}):
         return {
             "status": "fail",
-            "data": None,
-            "error": f"依赖目录不存在: {_BROWSER_CORE_IMPL_DIR}（browser-core 未正确安装）",
+            "error": "缺少必填字段: target.url",
+            "data": {"results": []},
         }
 
-    impl_dir_str = str(_BROWSER_CORE_IMPL_DIR)
-    if impl_dir_str not in sys.path:
-        sys.path.insert(0, impl_dir_str)
+    url = input["target"]["url"]
+    query = input.get("query", "")
 
     try:
-        import session_manager  # type: ignore
-        from cdp_client import CDPError  # type: ignore
-        from browser_core_impl import capture_debug_context  # type: ignore
-    except Exception as e:  # noqa: BLE001
-        return {"status": "fail", "data": None, "error": f"加载 browser-core 失败: {e}"}
-
-    target_url = (input.get("target") or {}).get("url") or (
-        f"https://www.zhihu.com/search?type=content&q={urllib.parse.quote(query)}"
-    )
-
-    try:
-        session = session_manager.get_or_create_session(input.get("session"))
-        session.navigate(target_url, timeout=20.0)
-        blocked_reason = session.eval_js(_LOGIN_WALL_CHECK_JS)
-        raw_results = session.eval_js(_EXTRACT_RESULTS_JS)
-    except CDPError as e:
-        return {"status": "fail", "data": None, "error": f"搜索执行失败: {e}"}
-    except Exception as e:  # noqa: BLE001
-        return {"status": "fail", "data": None, "error": f"搜索执行失败(可能无可用浏览器): {e}"}
-
-    if not isinstance(raw_results, list):
-        return {"status": "fail", "data": None, "error": f"提取结果返回了非预期结构: {raw_results!r}"}
-
-    if not raw_results and blocked_reason:
+        from tool_runtime import get_tool_executor
+    except ImportError:
         return {
             "status": "fail",
-            "data": None,
-            "error": (
-                f"知乎页面提示需要登录/验证（检测到关键词「{blocked_reason}」），且没有提取到"
-                f"任何结果，如实报告失败。可以改用 session.mode='attach' 连接一个已经手动登录"
-                f"好知乎的浏览器再重试（见 browser-core/SKILL.md 会话模式一节）。"
-            ),
+            "error": "无法导入 tool_runtime，请检查运行环境",
+            "data": {"results": []},
         }
 
-    max_results = input.get("max_results", 10)
-    results = raw_results[:max_results]
+    executor = get_tool_executor()
 
-    if not results:
-        # 阶段十七：同 baidu/script.py 的修复——没命中已知登录墙关键词，但
-        # 提取脚本仍找不到任何结果容器时，此前会直接返回"成功但 results: []"。
-        # 附带调试快照一起报告失败，而不是静默返回一个无从排查的空成功。
-        debug = capture_debug_context(session)
+    # 步骤1：导航到搜索页面
+    nav_result = executor("browser_navigate", {"url": url})
+    if not nav_result.get("ok", False):
         return {
             "status": "fail",
-            "data": None,
-            "error": (
-                "提取到 0 条结果，且未命中已知的登录墙/验证码关键词——更可能是"
-                "选择器过期/页面结构变化/内容尚未渲染完成，而不是真的没有搜索"
-                f"结果。调试信息: {debug!r}"
-            ),
+            "error": f"导航失败: {nav_result}",
+            "data": {"results": []},
         }
 
-    return {"status": "success", "data": {"results": results}, "error": None}
+    # 步骤2：等待搜索结果渲染
+    time.sleep(2)
+    wait_result = executor("browser_wait_for_selector", {
+        "selector": ".List-item",
+        "timeout": 10,
+    })
+    if not wait_result.get("ok", False):
+        # 尝试直接提取
+        pass
+
+    # 步骤3：提取搜索结果内容
+    extract_result = executor("browser_extract_content", {
+        "selectors": [
+            {"selector": "a[href*='/question/']", "extraction": "text+href"},
+            {"selector": "a[href*='/p/']", "extraction": "text+href"},
+            {"selector": "a[href*='/pin/']", "extraction": "text+href"},
+        ],
+        "format": "json",
+    })
+
+    if not extract_result.get("ok", False):
+        return {
+            "status": "fail",
+            "error": f"内容提取失败: {extract_result}",
+            "data": {"results": []},
+        }
+
+    raw_results = extract_result["data"]["results"]
+
+    # 步骤4：过滤导航栏/Header项，保留实际搜索结果
+    nav_patterns = [
+        r"https://www\.zhihu\.com/follow",
+        r"https://www\.zhihu\.com/$",
+        r"https://www\.zhihu\.com/hot",
+        r"https://www\.zhihu\.com/column-square",
+        r"https://www\.zhihu\.com/ring-feeds",
+        r"https://www\.zhihu\.com/project-square",
+        r"https://www\.zhihu\.com/fiore",
+        r"https://zhida\.zhihu\.com/",
+        r"https://www\.zhihu\.com/creator",
+        r"https://www\.zhihu\.com/search\?q=.*type=",
+    ]
+
+    filtered = []
+    for item in raw_results:
+        text = item.get("text", "").strip()
+        href = item.get("href", "").strip()
+
+        # 跳过导航栏项
+        if any(re.search(p, href) for p in nav_patterns):
+            continue
+        # 跳过纯日期文本
+        if re.match(r"^发布于\d{4}-\d{2}-\d{2}", text):
+            continue
+        # 跳过知乎专栏/知乎用户等标签
+        if "知乎专栏" in text or "知乎用户" in text:
+            continue
+        # 跳过空文本
+        if not text:
+            continue
+
+        # 判断内容类型
+        content_type = "article"
+        if "/question/" in href:
+            content_type = "question"
+        elif "/pin/" in href:
+            content_type = "idea"
+        elif "/p/" in href:
+            content_type = "article"
+
+        filtered.append({
+            "title": text,
+            "url": href,
+            "type": content_type,
+            "query": query,
+        })
+
+    return {
+        "status": "success",
+        "data": {"results": filtered},
+    }
+
+
+if __name__ == "__main__":
+    # 测试运行
+    test_input = {
+        "text": "抓取知乎搜索结果页面中关于自主进化Agent的内容",
+        "target": {
+            "url": "https://www.zhihu.com/search?type=content&q=自主进化Agent"
+        },
+        "query": "搜索结果中的问题标题、链接、回答摘要"
+    }
+    result = run(test_input)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
