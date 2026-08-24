@@ -149,13 +149,16 @@ next_doc/generative-capability-skill-plan.md              # 追加阶段实施�
 
 ## 3. member 三档执行机制：合并 hybrid_exec
 
-**状态：`HybridExecutor` 主循环已接入 SKILL 档，`capability_engine` 整合仍未
-开始**——继上一阶段完成 `ExecutionTier.SKILL` 定义、`PlaybookRepository`、
-`PlaybookRunner` 三个执行原语之后，本阶段完成了 `HybridExecutor._run()` 的
-SKILL 档决策分支接线（见 3.3a-2 节），`generative-capability` 领域仍未迁移到
-这套统一执行骨架——`capability_engine.py` 委托给 `HybridExecutor` 执行（3.3b
-节所述范围最大、风险最高的一步）仍未开始，留待下一阶段，建议先在
-`browser-site-scraper` 单一领域试点。
+**状态：`HybridExecutor` 主循环已接入 SKILL 档；`CapabilityEngine` 已用
+风险更低的方式试点接入 SKILL 档；`capability_engine` 整体委托给
+`HybridExecutor` 仍未开始**——继上一阶段完成 `HybridExecutor._run()` 的
+SKILL 档决策分支接线（3.3a-2 节）之后，本阶段进一步在 `CapabilityEngine`
+现有调用链路（不改动 `registry.json` script 状态机）里接入了同一档能力
+（见 3.3c 节），使 `browser-site-scraper` 等 generative-capability skill
+理论上已经能用上"script → skill → explore"优先级——只是目前 playbook 仍
+需人工预先放好，探索子agent自动产出 playbook、以及
+`capability_engine.resolve/execute` 整体委托给 `HybridExecutor.run()`
+（原方案范围最大、风险最高的一步）仍未开始。
 
 **开放问题决策（用户已确认）**：
 1. playbook 不复用 `ScriptRepository` 的 `<task_id>/v{n}.py` 目录布局，
@@ -317,23 +320,90 @@ SKILL 档"，本阶段已完成、不再属于未实施范围：
 
 ### 3.3b 仍未实施部分（下一阶段范围）
 
-- `capability_engine.py` 的 `resolve/execute` 委托给 `HybridExecutor.run()`
-  执行（见下方 3.4 节，原设计不变）——这是范围最大、风险最高的一步，
-  涉及现有 `registry.json` 状态机与 `ScriptRepository`/`PlaybookRepository`
-  的字段映射，建议先在 `browser-site-scraper` 单一领域试点验证接线逻辑，
-  再考虑其余两个 generative-capability skill 是否同步迁移（与第4节实施
-  顺序建议一致）。`HybridExecutor` 主循环的 SKILL 档决策分支已在本阶段
-  接入（见 3.3a-2 节），但目前仍是"孤立能力"——只有 `capability_engine`
-  真正改为调用 `HybridExecutor.run()` 之后，`generative-capability` 领域的
-  探索子agent才会实际用上 SKILL 档，在此之前这条新分支只被
-  `tests/test_hybrid_exec_skill_tier.py` 覆盖，未接入生产调用路径。
-- 三档执行顺序（script → skill → explore）在 `capability_engine` 里的
-  实际调度逻辑，以及 `meta.json` 新增 `available_tiers` 字段、
-  `degraded` 判定改为"按当前实际在用的最低成本可用 tier 连续失败计算"。
+**[本次更新]** 第一项"`capability_engine.py` 委托给 `HybridExecutor.run()`
+执行"仍未开始，见下方说明；但"三档执行顺序（script → skill → explore）在
+`capability_engine` 里的实际调度逻辑"这一项，已经用一种**更小范围的方式**
+部分完成——见 3.3c 节。
+
+- `capability_engine.py` 的 `resolve/execute` **整体**委托给
+  `HybridExecutor.run()` 执行（见下方 3.4 节，原设计不变）——这仍是范围
+  最大、风险最高的一步，涉及现有 `registry.json` 状态机与
+  `ScriptRepository`/`PlaybookRepository` 的字段映射，尚未开始，留待
+  确认 3.3c 节的试点验证结果后再评估是否需要。
 - `explore` 阶段产出 `playbook.md`（而非 `script.py`）的整理规则、以及
   "SKILL 档执行时观察到可进一步参数化则顺手升级蒸馏为 script.py"这条
   路径，均属于 `capability_engine`/`explorer_runtime.py`/`distiller.py`
-  领域侧改造范围，尚未开始。
+  领域侧改造范围，尚未开始——3.3c 节的 SKILL 档目前只能使用**人工/其它
+  工具预先放好**的 playbook，探索子agent自己还不会产出 playbook。
+- `meta.json` 新增 `available_tiers` 字段、`degraded` 判定改为"按当前
+  实际在用的最低成本可用 tier 连续失败计算"——3.3c 节的实现刻意**不**
+  触碰 `registry.json` 里 script 那一档已有的状态机，playbook 的成功率
+  统计完全独立记在单独的 `playbooks/<member_id>/meta.json` 里，二者互不
+  影响，`available_tiers`/`degraded` 这类"统一视角"的字段仍未实施。
+
+### 3.3c 本阶段新增：CapabilityEngine 试点接入 SKILL 档（不改动 registry.json 状态机）
+
+对应 3.3b 原先列出的"三档执行顺序（script → skill → explore）在
+`capability_engine` 里的实际调度逻辑"，本阶段用一种风险更低的方式先落地：
+**不做** `capability_engine.resolve/execute` 整体委托给 `HybridExecutor`
+（那需要先解决 `registry.json` 状态机与 `ScriptRepository` 字段映射这个
+本身就复杂的问题），而是在 `CapabilityEngine.call()` 现有的"命中 member
+执行失败 → 判断是否重新探索 → 进入 explore()"这条既有链路里，插入一次
+"参照已有 playbook 跑一次轻量 Agent"的尝试，验证 script → skill → explore
+优先级本身在真实调用路径里是否成立，同时完全不改变 `registry.json` 里
+script 那一档的既有行为。
+
+**改动内容**：
+
+1. 新增 `src/mini_agent/skills/generative_capability/skill_tier.py`：
+   - `build_playbook_repo(skill_dir)`：把 skill 目录下新增的 `playbooks/`
+     子目录包成一个 `PlaybookRepository`（复用 `hybrid_exec` 里的同一个
+     实现，不重新发明），与 `members/` 平级但互不干扰——`member_id` 本身
+     直接作为 `PlaybookRepository` 的 `task_id`。
+   - `build_skill_runner(project_root, max_turns=..., mini_agent_config=None)`：
+     构造一个符合 member `run(request) -> {"status", "data", "error"}`
+     契约的 callable，内部用 `PlaybookRunner` 执行并把返回文本 `json.loads`
+     成结构化结果；解析失败（Agent 没按格式回复）与 schema 校验失败（结构
+     对但语义错）在错误信息里明确区分。`PlaybookInvalidError` 被转换成
+     一个专门前缀 `SKILL_RETIRE_ERROR_PREFIX = "PLAYBOOK_INVALID: "` 的
+     错误字符串（不抛异常，保持 member 契约"只返回 dict"的一致性）。
+2. `capability_engine.py::CapabilityEngine.__init__`：新增可选参数
+   `playbook_repo`/`skill_runner`，与既有 `explore_runner`/`tool_executor`
+   同样的 DI 风格，未注入时零影响。
+3. 新增 `CapabilityEngine._try_skill(member_id, request)`：没有配置依赖、
+   或该 member 没有 active playbook → 静默跳过（返回 `None`，不算失败
+   尝试）；有 → 调用 `skill_runner`，按 `SKILL_RETIRE_ERROR_PREFIX` 前缀
+   区分"直接 retire"和"记一次普通失败"，成功且通过
+   `_validate_schema()`（与 `execute()` 完全复用同一份 schema 校验逻辑，
+   不重写一套）才算成功。
+4. `CapabilityEngine.call()`：命中的候选 member 全部执行失败后、判断是否
+   "重新探索"（reexplore）之前，插入一次 `_try_skill()` 调用——成功则
+   直接返回 `resolve_reason="skill_playbook"`；失败则把 SKILL 档的失败
+   原因与 member 执行失败的原因合并进最终 `combined_error`，不丢弃诊断
+   信息，再继续走原有的 explore 流程。
+5. `src/mini_agent/skills/generative_capability/__init__.py`：导出
+   `build_playbook_repo`/`build_skill_runner`/`SKILL_RETIRE_ERROR_PREFIX`。
+6. `tests/test_generative_capability_skill_tier.py`（新增，6 用例，用最小
+   合成 skill 目录、不依赖真实浏览器/网络）：未接线时行为不变、无 active
+   playbook 时静默跳过、SKILL 档成功后不进入 explore、SKILL 档失败后错误
+   信息正确合并、`PLAYBOOK_INVALID` 前缀直接 retire、SKILL 档输出未过
+   schema 校验按失败处理。连同既有 `test_generative_capability_engine.py`
+   （17 用例通过，1 个与本次改动无关的既有失败——`test_full_explore_
+   distill_reuse_cycle` 在改动前的原始代码上跑同样报错，是环境相关的
+   预置失败，非本次改动引入的回归）及全部 hybrid_exec 相关测试文件，共
+   94 用例通过、1 个既有失败，无新增回归。
+
+**已知限制（留给后续阶段）**：
+- 目前没有任何自动机制往 `playbooks/<member_id>/` 写入新版本——`explore()`
+  失败时不会退化整理出 playbook，需要人工/其它工具预先调用
+  `PlaybookRepository.save_new_version()` 放一份 `v1.md` 才会被
+  `_try_skill()` 用到。这是刻意的范围收窄，验证"用上了会不会更好"比
+  "怎么自动产出"优先级更高。
+- `_try_skill()` 只在"命中的 member 全部执行失败"之后触发，没有独立的
+  `allow_tiers` 之类的开关来跳过 SCRIPT 档直接试 SKILL——这与
+  `hybrid_exec.HybridExecutor` 里 `TaskSpec.allow_tiers` 的可裁剪设计不
+  同，因为 `capability_engine` 目前没有等价于 `TaskSpec` 的调用方配置面，
+  引入这类精细控制留给"是否要整体迁移到 HybridExecutor"的评估结果来决定。
 
 ### 3.4 具体合并方式（原设计，尚未实施）
 
@@ -404,4 +474,5 @@ next_doc/hybrid_exec_design_plan.md                # 追加 ExecutionTier.SKILL 
 - **`skill` 档工具集/回合预算**：已确认——暂不预设具体数值，留到实施
   `PlaybookRunner`（见 3.3a）时结合真实场景一次性定下；`PlaybookRunner`
   的 `max_turns` 已按此原则实现为必传参数（无默认值），`default_executor`
-  的 `enable_skill_tier=True` 开关同样要求显式传入 `skill_max_turns`。
+  的 `enable_skill_tier=True` 开关、`skill_tier.build_skill_runner()` 均
+  同样要求显式传入回合预算参数。

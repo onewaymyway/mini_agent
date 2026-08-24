@@ -97,6 +97,8 @@ class CapabilityEngine:
         explore_runner: Optional[Callable[[dict, dict, dict], Any]] = None,
         tool_executor: Optional[Callable[[str, dict], dict]] = None,
         llm_helper: Any = None,
+        playbook_repo: Any = None,
+        skill_runner: Optional[Callable[[dict, str], dict]] = None,
     ):
         self.skill_dir = Path(skill_dir)
         self.capability = self._load_yaml(self.skill_dir / "capability.yaml")
@@ -121,6 +123,16 @@ class CapabilityEngine:
         # distill() 用于 script_source 缺失时的"LLM 事后总结"路径（见
         # distiller.py 文件头"三条蒸馏路径"）。未注入时该路径自动跳过。
         self.llm_helper = llm_helper
+        # playbook_repo / skill_runner: [本次新增，见 skill_tier.py]
+        # SKILL 档（playbook）依赖，均为可选注入——与 explore_runner/
+        # tool_executor 相同的 DI 风格，未注入时 `_try_skill()` 直接跳过，
+        # 不改变任何既有调用方的行为。`playbook_repo` 通常由
+        # `skill_tier.build_playbook_repo(skill_dir)` 构造；`skill_runner`
+        # 通常由 `skill_tier.build_skill_runner(project_root, max_turns=...)`
+        # 构造，遵循与 member `run()` 完全一致的
+        # `(request) -> {"status", "data", "error"}` 契约。
+        self.playbook_repo = playbook_repo
+        self.skill_runner = skill_runner
 
     # ---------------------- 基础文件读写 ---------------------- #
 
@@ -394,6 +406,58 @@ class CapabilityEngine:
             entry["status"] = "degraded"
             entry["status_changed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
+    # ---------------------- SKILL 档：script 失败后、explore 之前的尝试 ---------------------- #
+    #
+    # [本次新增] 对应 next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+    # 第3节，见文件头 skill_tier.py 的说明：这是"capability_engine 试点接入
+    # SKILL 档"这一步，不触碰 registry.json 的 script 状态机，playbook 的
+    # 版本/成功率统计完全独立记在 playbook_repo 里。
+
+    def _try_skill(self, member_id: str, request: dict) -> Optional[ExecuteResult]:
+        """尝试用 member_id 对应的 active playbook 跑一次 SKILL 档执行。
+        没有配置 playbook_repo/skill_runner，或该 member 没有 active
+        playbook 时，返回 None（跳过，不算失败尝试，调用方据此继续走
+        explore）。"""
+        if self.playbook_repo is None or self.skill_runner is None:
+            return None
+
+        active_pb = self.playbook_repo.get_active_playbook(member_id)
+        if active_pb is None:
+            return None
+
+        content = self.playbook_repo.load_content(member_id, active_pb.version)
+        try:
+            result = self.skill_runner(request, content)
+        except Exception as e:  # noqa: BLE001 — skill_runner 调用失败不应打断整体流程
+            err = f"skill_runner 执行异常: {type(e).__name__}: {e}"
+            self.playbook_repo.record_failure(member_id, active_pb.version, err)
+            return ExecuteResult(status="fail", member_id=member_id, error=err)
+
+        if not isinstance(result, dict) or result.get("status") != "success":
+            err = result.get("error") if isinstance(result, dict) else "skill_runner 返回格式非法"
+            err = err or "SKILL 档执行失败（未提供具体原因）"
+            from .skill_tier import SKILL_RETIRE_ERROR_PREFIX
+            if isinstance(err, str) and err.startswith(SKILL_RETIRE_ERROR_PREFIX):
+                # Agent 明确判定这份 playbook 根本走不通，直接退役，不走
+                # consecutive_fail 计数——与 hybrid_exec 主循环里
+                # `HybridExecutor._try_skill()` 对 PlaybookInvalidError 的
+                # 处理原则保持一致。
+                reason = err[len(SKILL_RETIRE_ERROR_PREFIX):]
+                self.playbook_repo.retire(member_id, active_pb.version, f"playbook 判定为不可用：{reason}")
+            else:
+                self.playbook_repo.record_failure(member_id, active_pb.version, err)
+            return ExecuteResult(status="fail", member_id=member_id, error=err)
+
+        entry = self.registry.get("members", {}).get(member_id, {})
+        schema_errors = self._validate_schema(result.get("data"), entry.get("intent_schema"))
+        if schema_errors:
+            msg = "SKILL 档返回数据未通过 intent_schema 校验: " + "; ".join(schema_errors)
+            self.playbook_repo.record_failure(member_id, active_pb.version, msg)
+            return ExecuteResult(status="fail", member_id=member_id, error=msg)
+
+        self.playbook_repo.record_success(member_id, active_pb.version)
+        return ExecuteResult(status="success", member_id=member_id, data=result.get("data"))
+
     # ---------------------- 第 3/4 步: explore / distill（阶段三） ---------------------- #
 
     def explore(self, request: dict, reexplore_member_id: Optional[str] = None) -> ExecuteResult:
@@ -522,8 +586,38 @@ class CapabilityEngine:
                 last_failed_member_id = member_id
                 last_exec_error = exec_result.error
 
-            # 命中的候选全部执行失败：若该 member 已被判定 degraded，这是一次
-            # "重新探索"（复用同一个 member_id，见状态机第 7 节）；否则按普通探索处理。
+            # 命中的候选全部执行失败：先看有没有更便宜的 SKILL 档（playbook）
+            # 可以顶上，再决定要不要真正进入全新 explore。[本次新增]
+            if last_failed_member_id is not None:
+                skill_result = self._try_skill(last_failed_member_id, request)
+                capability_debug_log(
+                    "engine_skill_attempted",
+                    {
+                        "member_id": last_failed_member_id,
+                        "attempted": skill_result is not None,
+                        "status": skill_result.status if skill_result is not None else None,
+                        "error": skill_result.error if skill_result is not None else None,
+                    },
+                    where="capability_engine.CapabilityEngine.call",
+                )
+                if skill_result is not None and skill_result.status == "success":
+                    return CapabilityCallResult(
+                        status="success",
+                        data=skill_result.data,
+                        member_id=last_failed_member_id,
+                        resolve_reason="skill_playbook",
+                    )
+                if skill_result is not None and skill_result.error:
+                    # SKILL 档也失败了：把这个原因也带进最终的 combined_error，
+                    # 与 last_exec_error 拼在一起，不丢弃任何一段诊断信息。
+                    last_exec_error = (
+                        f"{last_exec_error}；SKILL 档(playbook)执行也失败: {skill_result.error}"
+                        if last_exec_error else f"SKILL 档(playbook)执行也失败: {skill_result.error}"
+                    )
+
+            # 命中的候选（含 SKILL 档兜底）全部执行失败：若该 member 已被判定
+            # degraded，这是一次"重新探索"（复用同一个 member_id，见状态机
+            # 第 7 节）；否则按普通探索处理。
             reexplore_id = None
             if last_failed_member_id is not None:
                 status = self.registry.get("members", {}).get(last_failed_member_id, {}).get("status")

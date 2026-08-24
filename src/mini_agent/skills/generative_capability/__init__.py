@@ -92,6 +92,7 @@ from .health_patrol import run_patrol, PatrolReport, PatrolFinding
 from .tool_runtime import set_tool_executor, get_tool_executor
 from .real_tools import build_default_tool_executor, build_dispatch_table, REAL_TOOL_IMPLEMENTATIONS
 from .capability_debug import capability_debug_log, is_capability_debug_enabled
+from .skill_tier import build_playbook_repo, build_skill_runner, SKILL_RETIRE_ERROR_PREFIX
 
 __all__ = [
     # 调度引擎主体
@@ -128,6 +129,12 @@ __all__ = [
     # debug.capability_enabled 统一控制，见 capability_debug.py 文件头说明。
     "capability_debug_log",
     "is_capability_debug_enabled",
+    # SKILL 档（playbook）与 CapabilityEngine 的适配层（本次新增，见
+    # skill_tier.py 文件头说明：capability_engine 试点接入 SKILL 档，不涉及
+    # registry.json 状态机迁移）
+    "build_playbook_repo",
+    "build_skill_runner",
+    "SKILL_RETIRE_ERROR_PREFIX",
 ]
 
 __sdk_version__ = "0.7.0"  # 对应方案文档阶段七（迁入 src/mini_agent 正式子包）

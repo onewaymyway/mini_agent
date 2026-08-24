@@ -2654,3 +2654,51 @@ store"，由每个 `Agent.__init__()` 调用 `configure_raw_result_store()` 写�
 - `capability_engine` 里 `meta.json` 新增 `available_tiers` 字段、
   `degraded` 判定改为"按当前实际在用的最低成本可用 tier 连续失败计算"，
   均未实施。
+
+### 阶段二十九 —— 部分完成：CapabilityEngine 试点接入 SKILL 档（不改动 registry.json 状态机）
+
+**背景**：承接阶段二十八遗留的"`capability_engine` 里的三档实际调度逻辑
+尚未实施"。评估后认为"`capability_engine.resolve/execute` 整体委托给
+`HybridExecutor.run()`"（原方案范围最大、风险最高的一步，涉及
+`registry.json` 状态机与 `ScriptRepository`/`PlaybookRepository` 的字段
+映射）仍不适合直接开做，先用一种更小、更可控的方式验证"script → skill →
+explore"优先级本身在真实调用路径里是否成立：不动 `registry.json` 的
+script 状态机，只在 `CapabilityEngine.call()` 现有的"命中 member 执行
+失败 → 判断重新探索 → 进入 explore()"链路里插入一次 SKILL 档尝试。
+
+详见 `generative_capability_raw_result_and_hybrid_merge_plan.md` 第3节
+3.3c 节的完整实施记录，此处摘要：
+
+1. 新增 `skill_tier.py`：`build_playbook_repo(skill_dir)` 把 skill 目录下
+   新增的 `playbooks/` 子目录包成 `PlaybookRepository`（复用 hybrid_exec
+   的既有实现）；`build_skill_runner(project_root, max_turns=...)` 构造
+   符合 member `run()` 契约的 callable，内部用 `PlaybookRunner` 执行并
+   解析返回文本为结构化结果，`PlaybookInvalidError` 转换成专门前缀
+   `SKILL_RETIRE_ERROR_PREFIX` 的错误字符串（不抛异常，保持 member 只
+   返回 dict 的约定）。
+2. `CapabilityEngine.__init__` 新增可选参数 `playbook_repo`/`skill_runner`
+   （与 `explore_runner`/`tool_executor` 同样的 DI 风格，未注入零影响）。
+3. 新增 `_try_skill()`：无 active playbook 时静默跳过；命中 `retire` 前缀
+   直接退役、否则按普通失败记账；成功且通过 `_validate_schema()`（复用
+   `execute()` 同一份校验逻辑）才算成功。
+4. `call()` 里命中 member 全部失败后、判断"重新探索"之前插入 `_try_skill`
+   调用，成功则 `resolve_reason="skill_playbook"` 直接返回，失败则把
+   SKILL 档失败原因并入 `combined_error`，继续走既有 explore 流程。
+5. `tests/test_generative_capability_skill_tier.py`（新增，6 用例，用最小
+   合成 skill 目录，不依赖真实浏览器/网络）：未接线行为不变、无 active
+   playbook 静默跳过、SKILL 成功不进 explore、SKILL 失败错误正确合并、
+   `PLAYBOOK_INVALID` 前缀直接 retire、SKILL 输出未过 schema 校验按失败
+   处理。连同既有 `test_generative_capability_engine.py`（17 用例通过，
+   1 个既有失败——`test_full_explore_distill_reuse_cycle`，在改动前的
+   原始代码上跑同样报错，是与本次改动无关的环境相关预置失败）及全部
+   hybrid_exec 相关测试文件，共 94 用例通过、1 个既有失败，无新增回归。
+
+**本阶段未完成、留待下一阶段的部分**：
+- `explore()` 失败时退化整理出 `playbook.md` 的规则——目前 playbook 只能
+  人工/其它工具预先放好，探索子agent还不会自动产出。
+- `capability_engine.resolve/execute` 整体委托给 `HybridExecutor.run()`——
+  仍是原方案里范围最大、风险最高的一步，留待确认本阶段试点效果后再评估
+  是否需要，或是否"独立两套但共享 SKILL 档"这种折中方案已经足够。
+- `meta.json` 新增 `available_tiers` 字段、`degraded` 判定改为"按当前
+  实际在用的最低成本可用 tier 连续失败计算"——本阶段刻意不碰
+  `registry.json` 的既有状态机，这两项仍未实施。
