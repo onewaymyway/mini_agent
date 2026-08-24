@@ -149,12 +149,13 @@ next_doc/generative-capability-skill-plan.md              # 追加阶段实施�
 
 ## 3. member 三档执行机制：合并 hybrid_exec
 
-**状态：核心执行原语已实施，`capability_engine` 主循环整合仍未开始**——本阶段
-完成了两个开放问题的决策落地（`ExecutionTier.SKILL` 定义、`PlaybookRepository`
-独立版本化目录、`PlaybookRunner` 执行原语），以及与之相关、可独立验证的
-存储层+执行层代码；`capability_engine.py` 委托给 `HybridExecutor` 执行、
-`HybridExecutor` 主循环接入 SKILL 档、以及三档执行顺序的接线，仍未开始，
-留待下一阶段。
+**状态：`HybridExecutor` 主循环已接入 SKILL 档，`capability_engine` 整合仍未
+开始**——继上一阶段完成 `ExecutionTier.SKILL` 定义、`PlaybookRepository`、
+`PlaybookRunner` 三个执行原语之后，本阶段完成了 `HybridExecutor._run()` 的
+SKILL 档决策分支接线（见 3.3a-2 节），`generative-capability` 领域仍未迁移到
+这套统一执行骨架——`capability_engine.py` 委托给 `HybridExecutor` 执行（3.3b
+节所述范围最大、风险最高的一步）仍未开始，留待下一阶段，建议先在
+`browser-site-scraper` 单一领域试点。
 
 **开放问题决策（用户已确认）**：
 1. playbook 不复用 `ScriptRepository` 的 `<task_id>/v{n}.py` 目录布局，
@@ -256,6 +257,64 @@ script 一档的成败统计——script 挂了不必然要重新探索，先尝
   连同前述 `playbook_repository` 测试，本阶段新增 13 用例，加上既有
   hybrid_exec 全部测试文件共 91 用例，全部通过，无回归。
 
+### 3.3a-2 本阶段新增：HybridExecutor 主循环接入 SKILL 档
+
+对应 3.3b 原先列出的第一项"`HybridExecutor._run()` 的主循环状态机接入
+SKILL 档"，本阶段已完成、不再属于未实施范围：
+
+- `hybrid_exec/executor.py::HybridExecutor.__init__`：新增两个可选构造参数
+  `playbook_repo: Optional[PlaybookRepository]`、
+  `playbook_runner: Optional[PlaybookRunner]`，均默认 `None`——不传时
+  SKILL 档在 `_try_skill()` 里直接跳过，对所有既有调用方（未传新参数）
+  行为零影响，与 `TaskSpec.allow_tiers` 默认不含 `SKILL` 保持一致的
+  "不默认改变既有行为"原则。
+- 新增私有方法 `HybridExecutor._try_skill(task, attempts)`：
+  - `ExecutionTier.SKILL` 不在 `task.allow_tiers`，或
+    `playbook_repo`/`playbook_runner` 未配置，或该 `task_id` 没有 active
+    playbook（从未探索/落盘过）→ 直接返回 `None`（静默跳过，不产生
+    SKILL 相关 attempt 记录，不影响后续降级流程判断）。
+  - 有 active playbook → 调用 `PlaybookRunner.run(task, content)`：
+    - 抛 `PlaybookInvalidError`（Agent 判定 playbook 根本走不通）→
+      记一条失败 attempt，直接 `playbook_repo.retire(...)`（不走
+      `consecutive_fail` 计数——语义上这不是"偶发失败"而是"这份 playbook
+      本身该淘汰了"，与脚本档"多次失败才 retire"的判定原则不同，因为
+      Agent 已经明确给出了判断，不需要靠统计再确认一次）。
+    - 抛其它异常 → 记一条失败 attempt，`record_failure(...)`（走正常的
+      `consecutive_fail` 累计/自动 retire 路径，与脚本档一致）。
+    - 正常返回 → 用 `task.run_validator()` 校验输出：通过则
+      `record_success(...)` 并把输出向上返回（外层以
+      `tier_used=ExecutionTier.SKILL` 结束本次 `run()`）；不通过则视为
+      失败，`record_failure(...)`，继续向下降级。
+- `HybridExecutor._run()` 执行顺序调整为与
+  `next_doc/generative-capability-skill-plan.md`（原设计 §3.2）描述的
+  三档优先级一致：
+  1. 有 active 脚本 → 先跑脚本，失败则走 `_repair_loop`（不变）；
+  2. 脚本修复彻底失败，或从一开始就没有 active 脚本 → 尝试 `_try_skill`
+     （新增，插在原先"脚本路径耗尽"和"进入 explore/fallback"之间）；
+  3. SKILL 档也拿不到结果 → 仅当"从一开始就没有 active 脚本"时才尝试
+     `_explore`（脚本存在但修复失败的情形，沿用改造前的既有行为，不进入
+     `_explore`，直接下一步 Fallback——这一分支的行为在本次改造中刻意
+     保持不变，只是在它前面插入了 SKILL 档，避免过度扩大改动面）；
+  4. 都不行 → Fallback（不变）。
+- `hybrid_exec/executor.py::default_executor()`：新增
+  `enable_skill_tier: bool = False`、`skill_max_turns: Optional[int] = None`
+  两个参数。默认不启用（保持与既有调用方零差异）；`enable_skill_tier=True`
+  但未传 `skill_max_turns` 时显式 `raise ValueError`（SKILL 档轻量 Agent
+  的回合预算没有默认值，见 3.3a 节 `PlaybookRunner` 的既有约定，这里不
+  偷偷补一个默认值）；启用时会构造
+  `PlaybookRepository(project_root / ".agent" / "hybrid_exec" / "playbooks", ...)`
+  与 `PlaybookRunner(app_cfg, max_turns=skill_max_turns)` 并传入
+  `HybridExecutor`。
+- `tests/test_hybrid_exec_skill_tier.py`（新增，7 用例）：向后兼容性（不
+  传 playbook 依赖 / `allow_tiers` 不含 `SKILL` 时即使配置了依赖也不生效）、
+  脚本修复失败后 SKILL 顶上成功、无脚本时 SKILL 优先于 explore、SKILL
+  输出未过校验后正确降级并记失败、`PlaybookInvalidError` 直接 retire、
+  没有 active playbook 时静默跳过共 7 种场景。连同既有
+  `test_hybrid_exec.py`/`test_hybrid_exec_p2.py`/`test_hybrid_exec_p3.py`/
+  `test_hybrid_exec_p4.py`/`test_hybrid_exec_playbook_repository.py`/
+  `test_hybrid_exec_playbook_runner.py` 全量运行，共 71 用例全部通过，
+  无回归。
+
 ### 3.3b 仍未实施部分（下一阶段范围）
 
 - `capability_engine.py` 的 `resolve/execute` 委托给 `HybridExecutor.run()`
@@ -263,14 +322,18 @@ script 一档的成败统计——script 挂了不必然要重新探索，先尝
   涉及现有 `registry.json` 状态机与 `ScriptRepository`/`PlaybookRepository`
   的字段映射，建议先在 `browser-site-scraper` 单一领域试点验证接线逻辑，
   再考虑其余两个 generative-capability skill 是否同步迁移（与第4节实施
-  顺序建议一致）。`PlaybookRunner` 已实现（见 3.3a），但尚未接入
-  `HybridExecutor._run()` 的主循环状态机（脚本失败→修复→探索→fallback
-  这条既有链路里还没有 SKILL 档的位置）——`HybridExecutor` 是一个已经
-  上线、测试覆盖充分的成熟模块，在没有先跑通"capability_engine 直接调用
-  PlaybookRunner"这条更小路径之前，不贸然改动它的主决策链路。
+  顺序建议一致）。`HybridExecutor` 主循环的 SKILL 档决策分支已在本阶段
+  接入（见 3.3a-2 节），但目前仍是"孤立能力"——只有 `capability_engine`
+  真正改为调用 `HybridExecutor.run()` 之后，`generative-capability` 领域的
+  探索子agent才会实际用上 SKILL 档，在此之前这条新分支只被
+  `tests/test_hybrid_exec_skill_tier.py` 覆盖，未接入生产调用路径。
 - 三档执行顺序（script → skill → explore）在 `capability_engine` 里的
   实际调度逻辑，以及 `meta.json` 新增 `available_tiers` 字段、
   `degraded` 判定改为"按当前实际在用的最低成本可用 tier 连续失败计算"。
+- `explore` 阶段产出 `playbook.md`（而非 `script.py`）的整理规则、以及
+  "SKILL 档执行时观察到可进一步参数化则顺手升级蒸馏为 script.py"这条
+  路径，均属于 `capability_engine`/`explorer_runtime.py`/`distiller.py`
+  领域侧改造范围，尚未开始。
 
 ### 3.4 具体合并方式（原设计，尚未实施）
 
@@ -339,4 +402,6 @@ next_doc/hybrid_exec_design_plan.md                # 追加 ExecutionTier.SKILL 
   `ScriptRepository` 的 `<task_id>/v{n}.py` 命名。已落地为
   `hybrid_exec/playbook_repository.py::PlaybookRepository`，见 3.3a。
 - **`skill` 档工具集/回合预算**：已确认——暂不预设具体数值，留到实施
-  `PlaybookRunner`（见 3.3b）时结合真实场景一次性定下。
+  `PlaybookRunner`（见 3.3a）时结合真实场景一次性定下；`PlaybookRunner`
+  的 `max_turns` 已按此原则实现为必传参数（无默认值），`default_executor`
+  的 `enable_skill_tier=True` 开关同样要求显式传入 `skill_max_turns`。

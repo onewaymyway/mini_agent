@@ -2606,3 +2606,51 @@ store"，由每个 `Agent.__init__()` 调用 `configure_raw_result_store()` 写�
 - `capability_engine` 里"script → skill → explore"三档实际调度顺序、
   `meta.json` 新增 `available_tiers` 字段、`degraded` 判定改为"按当前
   实际在用的最低成本可用 tier 连续失败计算"，均未实施。
+
+### 阶段二十八 —— 部分完成：HybridExecutor 主循环接入 SKILL 档
+
+**背景**：承接阶段二十七遗留的第一项——`PlaybookRepository`/
+`PlaybookRunner` 两个执行原语已实现，但尚未接进 `HybridExecutor._run()`
+这条既有的、测试覆盖充分的成熟主循环。本阶段完成这一步接线，详见
+`generative_capability_raw_result_and_hybrid_merge_plan.md` 第3节 3.3a-2
+的完整实施记录，此处摘要：
+
+1. `hybrid_exec/executor.py::HybridExecutor.__init__`：新增可选构造参数
+   `playbook_repo`/`playbook_runner`，默认均为 `None`——不传时对既有调用方
+   零影响。
+2. 新增 `HybridExecutor._try_skill(task, attempts)`：`SKILL` 不在
+   `allow_tiers`、或依赖未配置、或该 `task_id` 无 active playbook 时静默
+   跳过；有 active playbook 时调用 `PlaybookRunner.run()`，`PlaybookInvalidError`
+   直接 `retire`（不走 `consecutive_fail` 计数），其它失败按
+   `record_failure` 累计，成功且通过 `output_validator` 校验则
+   `record_success` 并把输出向上返回（`tier_used=SKILL`）。
+3. `HybridExecutor._run()` 执行顺序调整：脚本修复彻底失败（或从一开始就
+   没有脚本）后，先尝试 `_try_skill`，仍不行才进入 `explore`/`Fallback`——
+   与 `next_doc/generative-capability-skill-plan.md`（原方案 §3.2）描述的
+   "script → skill → explore"优先级一致。脚本存在但修复失败这一分支
+   刻意保持"不进入 explore、直接 Fallback"的既有行为不变，只在它前面
+   插入 SKILL 档，控制改动面。
+4. `hybrid_exec/executor.py::default_executor()`：新增
+   `enable_skill_tier`（默认 `False`）/`skill_max_turns`（无默认值）两个
+   参数，启用但未传回合预算时显式 `raise ValueError`，不偷偷补默认值。
+5. `tests/test_hybrid_exec_skill_tier.py`（新增，7 用例）：向后兼容性、
+   脚本修复失败后 SKILL 顶上成功、无脚本时 SKILL 优先于 explore、SKILL
+   输出未过校验后正确降级、`PlaybookInvalidError` 直接 retire、无 active
+   playbook 时静默跳过。连同既有全部 hybrid_exec 测试文件（不含依赖
+   `fastapi` 的 `test_hybrid_exec_summary_route.py`，环境未装该依赖，
+   与本次改动无关，跳过），共 71 用例全部通过，无回归。
+
+**本阶段未完成、留待下一阶段的部分**（详见
+`generative_capability_raw_result_and_hybrid_merge_plan.md` 3.3b 节）：
+- `capability_engine.py` 的 `resolve/execute` 委托给 `HybridExecutor.run()`
+  执行——范围最大、风险最高的一步，尚未开始，建议先在
+  `browser-site-scraper` 单一领域试点。目前 SKILL 档在 `HybridExecutor`
+  里已经"接线完成但无人调用"——只有 `capability_engine` 真正切换到
+  `HybridExecutor.run()` 之后，探索子agent才会实际用上这一档。
+- `explore` 阶段产出 `playbook.md`（而非 `script.py`）的整理规则、以及
+  "SKILL 档执行时观察到可参数化则顺手升级蒸馏为 script.py"这条路径，
+  均属于 `capability_engine`/`explorer_runtime.py`/`distiller.py` 领域侧
+  改造范围，尚未开始。
+- `capability_engine` 里 `meta.json` 新增 `available_tiers` 字段、
+  `degraded` 判定改为"按当前实际在用的最低成本可用 tier 连续失败计算"，
+  均未实施。

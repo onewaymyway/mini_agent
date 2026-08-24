@@ -24,6 +24,8 @@ from typing import Optional
 
 from .explorer import AgentExplorer, Explorer, LLMExplorer
 from .fallback import FallbackExecutor
+from .playbook_repository import PlaybookRepository
+from .playbook_runner import PlaybookInvalidError, PlaybookRunner
 from .policy import ReexplorePolicy
 from .recorder import RunRecorder
 from .repairer import AgentRepairer, LLMRepairer, Repairer
@@ -44,6 +46,8 @@ class HybridExecutor:
         fallback: FallbackExecutor,
         run_recorder: Optional[RunRecorder] = None,
         reexplore_policy: Optional[ReexplorePolicy] = None,
+        playbook_repo: Optional[PlaybookRepository] = None,
+        playbook_runner: Optional[PlaybookRunner] = None,
     ) -> None:
         self.repo = repo
         self.script_runner = script_runner
@@ -54,6 +58,13 @@ class HybridExecutor:
         self.fallback = fallback
         self.run_recorder = run_recorder
         self.reexplore_policy = reexplore_policy
+        # [改进：next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+        #  第3节] SKILL 档（playbook）依赖，均为可选——不传时 SKILL 档在
+        # `_try_skill()` 里直接跳过，不影响任何既有调用方（未传即视为未启用，
+        # 与 `TaskSpec.allow_tiers` 默认不含 SKILL 保持一致的“不默认改变既有
+        # 行为”原则）。
+        self.playbook_repo = playbook_repo
+        self.playbook_runner = playbook_runner
 
     # -- 对外入口 ----------------------------------------------------------
 
@@ -103,15 +114,23 @@ class HybridExecutor:
             if repaired is not None:
                 return self._finish(True, repaired[1], ExecutionTier.SCRIPT, repaired[0], attempts, start)
             # 修复彻底失败：走到这里说明连续失败次数大概率已达阈值触发 retire，
-            # 无论是否 retire，都不再用这个脚本，直接进入 Fallback。
+            # 不再用这个脚本；不直接进 Fallback，先看有没有更便宜的 SKILL 档
+            # 可以顶上（对应 generative-capability 三档 member 设计 §3.2：
+            # script 失败/缺失 → 有 playbook.md → 用 playbook 驱动一次轻量
+            # Agent 执行）。
 
-        else:
+        # -- SKILL 档：有可用 playbook 时优先于全新 explore 尝试 -----------
+        skill_output = self._try_skill(task, attempts)
+        if skill_output is not None:
+            return self._finish(True, skill_output, ExecutionTier.SKILL, None, attempts, start)
+
+        if active is None:
             explored = self._explore(task, attempts)
             if explored is not None:
                 version, output = explored
                 return self._finish(True, output, ExecutionTier.SCRIPT, version, attempts, start)
 
-        # -- 脚本这条路走不通，Fallback --------------------------------
+        # -- 脚本、SKILL 这两条路都走不通，Fallback ------------------------
         result = self._fallback(task, attempts)
         return self._finish(result[0], result[1], result[2], None, attempts, start)
 
@@ -187,6 +206,52 @@ class HybridExecutor:
         rec = self.repo.save_new_version(task.task_id, code, created_by)
         self.repo.record_success(task.task_id, rec.version)
         return rec.version, outcome.output
+
+    # -- 内部：SKILL 档（playbook） ------------------------------------------
+
+    def _try_skill(self, task: TaskSpec, attempts: "list[AttemptRecord]") -> Optional[object]:
+        """尝试用当前 active 的 playbook 跑一次轻量 Agent 执行。没有开启 SKILL
+        档（`ExecutionTier.SKILL` 不在 `task.allow_tiers`）、没有配置
+        `playbook_repo`/`playbook_runner`、或没有可用的 active playbook 时，
+        直接返回 None（跳过，不算失败尝试），交由调用方继续走 explore/fallback。
+        """
+        if ExecutionTier.SKILL not in task.allow_tiers:
+            return None
+        if self.playbook_repo is None or self.playbook_runner is None:
+            return None
+
+        active_pb = self.playbook_repo.get_active_playbook(task.task_id)
+        if active_pb is None:
+            return None
+
+        content = self.playbook_repo.load_content(task.task_id, active_pb.version)
+        t0 = time.monotonic()
+        try:
+            output = self.playbook_runner.run(task, content)
+        except PlaybookInvalidError as e:
+            dur = time.monotonic() - t0
+            attempts.append(AttemptRecord("skill_playbook_invalid", ExecutionTier.SKILL, False, str(e), dur))
+            # Agent 明确判定这份 playbook 根本走不通（不是细节出入），直接
+            # 退役，而不是当作一次普通失败累计 consecutive_fail。
+            self.playbook_repo.retire(task.task_id, active_pb.version, f"playbook 判定为不可用：{e}")
+            return None
+        except Exception as e:  # noqa: BLE001 — SKILL 档调用失败不应打断整体流程
+            dur = time.monotonic() - t0
+            attempts.append(
+                AttemptRecord("skill_playbook_run", ExecutionTier.SKILL, False, f"{type(e).__name__}: {e}", dur)
+            )
+            self.playbook_repo.record_failure(task.task_id, active_pb.version, f"{type(e).__name__}: {e}")
+            return None
+
+        dur = time.monotonic() - t0
+        ok, reason = task.run_validator(output)
+        attempts.append(AttemptRecord("skill_playbook_run", ExecutionTier.SKILL, ok, reason, dur))
+        if not ok:
+            self.playbook_repo.record_failure(task.task_id, active_pb.version, f"输出未通过校验：{reason}")
+            return None
+
+        self.playbook_repo.record_success(task.task_id, active_pb.version)
+        return output
 
     # -- 内部：修复阶段 -----------------------------------------------------
 
@@ -314,6 +379,8 @@ def default_executor(
     llm: object = None,
     retire_after_consecutive_fail: int = 3,
     reexplore_policy: Optional[ReexplorePolicy] = None,
+    enable_skill_tier: bool = False,
+    skill_max_turns: Optional[int] = None,
 ) -> HybridExecutor:
     """便捷工厂：给定项目根目录（以及可选的已加载好的 mini_agent Config 对象），
     组装出一个默认配置的 HybridExecutor，供独立调用场景直接使用（无需手动拼
@@ -388,6 +455,28 @@ def default_executor(
     )
     script_runner = ScriptRunner(app_cfg)
     run_recorder = RunRecorder(project_root / ".agent" / "hybrid_exec" / "runs")
+
+    # SKILL 档默认不启用（与 `TaskSpec.allow_tiers` 默认不含 SKILL 一致），
+    # 需要调用方显式传 `enable_skill_tier=True` 才会构造
+    # `PlaybookRepository`/`PlaybookRunner` 并接线进 HybridExecutor——
+    # `skill_max_turns`（轻量 Agent 的回合预算）没有默认值，启用时必须
+    # 显式传入，避免在这里偷偷拍一个未经验证的数字（对应用户已确认的
+    # 开放问题决策，见 next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+    # 第3节）。
+    playbook_repo = None
+    playbook_runner_obj = None
+    if enable_skill_tier:
+        if skill_max_turns is None:
+            raise ValueError(
+                "enable_skill_tier=True 时必须显式传入 skill_max_turns（SKILL 档"
+                "轻量 Agent 的回合预算没有默认值，需结合具体场景决定）"
+            )
+        playbook_repo = PlaybookRepository(
+            project_root / ".agent" / "hybrid_exec" / "playbooks",
+            retire_after_consecutive_fail=retire_after_consecutive_fail,
+        )
+        playbook_runner_obj = PlaybookRunner(app_cfg, max_turns=skill_max_turns)
+
     return HybridExecutor(
         repo=repo,
         script_runner=script_runner,
@@ -398,4 +487,6 @@ def default_executor(
         fallback=FallbackExecutor(app_cfg, llm=shared_llm),
         run_recorder=run_recorder,
         reexplore_policy=reexplore_policy,
+        playbook_repo=playbook_repo,
+        playbook_runner=playbook_runner_obj,
     )

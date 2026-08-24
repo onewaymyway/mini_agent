@@ -60,8 +60,34 @@ hybrid_exec/
 class ExecutionTier(str, Enum):
     SCRIPT = "script"
     LLM = "llm"
+    SKILL = "skill"    # [新增，见下方说明]
     AGENT = "agent"
 ```
+
+> **[改进：next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+> 第3节]** 新增 `SKILL` 档，插在 `LLM` 和 `AGENT` 之间。与既有 `LLM` 档
+> （LLM 一次性把探索/执行过程总结成一份脚本草稿，之后按 SCRIPT 档反复执行，
+> 运行时成本低）不同，`SKILL` 档不产出可复用代码，而是产出一份人类可读的
+> 步骤说明（playbook），每次调用都由一个工具集受限、回合预算比 `AGENT` 档
+> 小得多的轻量 Agent 参照这份说明重新执行——运行时成本高于纯脚本，但远低于
+> 从零自由探索，且不会因为运行时细节变化（如页面选择器改版）就直接报废，
+> 这正是 `SCRIPT` 档最脆弱的地方。对应实现：
+> `hybrid_exec/playbook_repository.py::PlaybookRepository`（版本化存储，
+> 接口形状与 `ScriptRepository` 同构，落盘目录 `.agent/hybrid_exec/playbooks/`，
+> 文件后缀 `.md`）与 `hybrid_exec/playbook_runner.py::PlaybookRunner`
+> （执行原语，复用 `_agent.run_agent_prompt()` 的"临时起一个最小 Agent
+> 跑一次 prompt"逻辑，`max_turns` 无默认值、必须显式传入）。
+>
+> `HybridExecutor._run()` 主循环已接入该分支（`_try_skill()`）：有 active
+> 脚本时脚本优先，脚本修复彻底失败或从一开始就没有脚本时，若配置了
+> `playbook_repo`/`playbook_runner` 且存在 active playbook，则先试
+> `SKILL` 档，仍不行再走 `explore`/`Fallback`。`TaskSpec.allow_tiers`
+> 默认值**不含** `SKILL`（仍是 `(SCRIPT, LLM, AGENT)`），
+> `HybridExecutor` 的 `playbook_repo`/`playbook_runner` 构造参数、以及
+> `default_executor()` 的 `enable_skill_tier`/`skill_max_turns` 参数也都
+> 默认关闭——需要调用方显式开启才会启用，不改变任何既有调用方的行为。
+> 详见 `next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md`
+> 第3节 3.3a/3.3a-2 节的完整实施记录。
 
 ### 3.2 `TaskSpec`（一个"混合任务"的定义，调用方传入）
 
