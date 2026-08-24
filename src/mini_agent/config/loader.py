@@ -852,6 +852,8 @@ def load_config(
     digest_advisor_cfg = _nested_blocks["digest_advisor"]
     growth_advisor_cfg = _nested_blocks["growth_advisor"]
     capability_learning_cfg = _nested_blocks["capability_learning"]
+    # [next_doc/generative_capability_three_tier_improvement_plan.md]
+    generative_capability_cfg = _nested_blocks["generative_capability"]
     cron_cfg = _nested_blocks["cron"]
     autonomy_cfg = _nested_blocks["autonomy"]
     observability_cfg = _nested_blocks["observability"]
@@ -943,6 +945,7 @@ def load_config(
         digest_advisor=digest_advisor_cfg,
         growth_advisor=growth_advisor_cfg,
         capability_learning=capability_learning_cfg,
+        generative_capability=generative_capability_cfg,
         cron=cron_cfg,
         autonomy=autonomy_cfg,
         scheduler=scheduler_cfg,

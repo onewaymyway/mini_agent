@@ -2212,6 +2212,44 @@ class GrowthAdvisorConfig:
 
 
 @dataclass
+class GenerativeCapabilityConfig:
+    """[next_doc/generative_capability_three_tier_improvement_plan.md]
+    generative-capability 引擎（script→skill→explore 三档 member 机制）的
+    全局默认配置。
+
+    背景：`skill_tier.build_skill_runner()` 的 `max_turns`（SKILL 档轻量
+    Agent 参照 playbook 执行时的回合预算）此前没有默认值、必须显式传入，
+    导致 `tools/capability_call.py`（agent 真人对话唯一会调用的入口）
+    因为"不知道该传什么数字"而一直没有注入 `playbook_repo`/`skill_runner`，
+    使得 3.3c/3.3d 节已经实现的 SKILL 档调度与"探索失败兜底产出
+    playbook.md"这两条路径在真实对话里完全不会被触发（只在单元测试的桩
+    环境里生效）——这是纯粹的接线缺口，不是设计上刻意关闭。
+
+    本配置块把这个数字变成一个有合理默认值、可被用户按需覆盖的全局参数：
+    没在 `agent_config.json` 里配置时，SKILL 档默认按 `skill_tier_max_turns`
+    的默认值（40，与 `capability.yaml -> explorer.max_turns` 的既有默认
+    保持一致的量级）直接启用，而不是"配置缺失就整个不开启"——`capability_
+    call.py` 因此对所有 generative-capability skill 一视同仁地默认注入
+    `playbook_repo`/`skill_runner`，不再要求每个 skill 自己在
+    `capability.yaml` 里显式声明才能用上这一档。单个 skill 仍可以在自己
+    的 `capability.yaml -> skill_tier` 下覆盖这里的全局默认值（覆盖优先级
+    高于本配置块），但"完全不写"不再等价于"关闭"。
+    """
+    # SKILL 档（PlaybookRunner 参照 playbook 执行）轻量 Agent 的默认回合
+    # 预算。<=0 视为显式关闭 SKILL 档（等价于旧行为：_try_skill 静默跳过）。
+    skill_tier_max_turns: int = 40
+    # SKILL 档被证明可靠后是否允许自动升级蒸馏为 script.py
+    # （见 capability_engine.py::_maybe_upgrade_skill_to_script，对应
+    # three_tier_improvement_plan.md 阶段二/三 的"升级"方向）。
+    skill_upgrade_enabled: bool = True
+    # 升级门槛：某 playbook 累计成功次数达到这个数字才尝试蒸馏为脚本。
+    skill_upgrade_success_threshold: int = 3
+    # 升级失败后的冷却期（秒）——避免升级持续失败时每次 _try_skill 成功
+    # 都重新触发一次 LLM 调用，见 three_tier_improvement_plan.md 阶段二。
+    skill_upgrade_retry_cooldown_seconds: int = 3600
+
+
+@dataclass
 class CapabilityLearningConfig:
     """[next_doc/persona_capability_learning_design.md] 人设能力自主学习配置。
 
@@ -2567,6 +2605,9 @@ class AppConfig:
     digest_advisor: DigestAdvisorConfig = field(default_factory=DigestAdvisorConfig)
     growth_advisor: GrowthAdvisorConfig = field(default_factory=GrowthAdvisorConfig)
     capability_learning: CapabilityLearningConfig = field(default_factory=CapabilityLearningConfig)
+    # [next_doc/generative_capability_three_tier_improvement_plan.md]
+    # generative-capability 引擎 script→skill→explore 三档机制的全局默认值。
+    generative_capability: GenerativeCapabilityConfig = field(default_factory=GenerativeCapabilityConfig)
     cron: CronConfig = field(default_factory=CronConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     workflow:   WorkflowConfig   = field(default_factory=WorkflowConfig)

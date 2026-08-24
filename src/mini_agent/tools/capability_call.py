@@ -141,6 +141,7 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
 
         from mini_agent.skills.generative_capability import (
             CapabilityEngine, build_llm_resolver, build_subagent_explorer, build_default_tool_executor,
+            build_playbook_repo, build_skill_runner,
         )
         from mini_agent.tools.orchestration import get_current_llm_helper, get_task_manager
 
@@ -200,6 +201,50 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
             # 真实实现（未命中的会被 build_default_tool_executor 回落到统一的
             # "占位声明，尚未接入真实执行器"错误 dict）。
             unwired_tools = _find_unwired_tools(skill_dir)
+
+            # [next_doc/generative_capability_three_tier_improvement_plan.md]
+            # SKILL 档（playbook_repo/skill_runner）默认对所有
+            # generative-capability skill 启用——全局默认值来自
+            # AppConfig.generative_capability（agent_config.json 里
+            # "generative_capability": {"skill_tier_max_turns": ...}
+            # 可覆盖），单个 skill 还可以在自己的 capability.yaml 里用
+            # 同名 `skill_tier:` 块进一步覆盖全局默认值（skill 级配置优先级
+            # 更高）。默认值本身保证"没配置就用合理默认值"，而不是此前
+            # "没配置就整个不注入、SKILL 档在真人对话里永远走不到"的状态——
+            # 这是纯接线缺口的修复，不改变 SKILL 档本身"没有 active
+            # playbook 时静默跳过"的既有行为，也不影响没有 playbook 的
+            # skill（如 text-transform-capability）的任何现有表现。
+            gc_cfg = getattr(task_manager.base_cfg, "generative_capability", None)
+            global_max_turns = getattr(gc_cfg, "skill_tier_max_turns", 40) if gc_cfg else 40
+            global_upgrade_enabled = getattr(gc_cfg, "skill_upgrade_enabled", True) if gc_cfg else True
+            global_upgrade_threshold = getattr(gc_cfg, "skill_upgrade_success_threshold", 3) if gc_cfg else 3
+
+            try:
+                _capability_yaml = CapabilityEngine._load_yaml(skill_dir / "capability.yaml")
+            except Exception:  # noqa: BLE001 — 读取失败时退回全局默认值，
+                # 不让"读一下有没有 skill_tier 覆盖"这个次要动作打断主流程
+                # （capability.yaml 本身有问题的话，下面构造 CapabilityEngine
+                # 时会用同一份读取逻辑再报一次准确的错误）。
+                _capability_yaml = {}
+            skill_tier_cfg = (_capability_yaml or {}).get("skill_tier") or {}
+            skill_tier_max_turns = int(skill_tier_cfg.get("max_turns", global_max_turns) or 0)
+            skill_upgrade_enabled = bool(skill_tier_cfg.get("enable_upgrade", global_upgrade_enabled))
+            skill_upgrade_threshold = int(skill_tier_cfg.get("upgrade_success_threshold", global_upgrade_threshold))
+
+            if skill_tier_max_turns > 0:
+                playbook_repo = build_playbook_repo(skill_dir)
+                skill_runner = build_skill_runner(
+                    task_manager.base_cfg.project_root,
+                    max_turns=skill_tier_max_turns,
+                    mini_agent_config=task_manager.base_cfg,
+                )
+            else:
+                # <=0 是显式关闭 SKILL 档的方式（capability.yaml 或
+                # agent_config.json 里把 max_turns 设为 0/负数），保留跳过
+                # 通道，不强迫所有 skill 都必须启用这一档。
+                playbook_repo = None
+                skill_runner = None
+
             engine = CapabilityEngine(
                 skill_dir,
                 llm_resolver=build_llm_resolver(current_llm_helper),
@@ -215,6 +260,13 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
                 # distiller.py 文件头"三条蒸馏路径"说明。复用同一个
                 # current_llm_helper，跟随 /model 切换，不额外构造新连接。
                 llm_helper=current_llm_helper,
+                # [three_tier_improvement_plan.md 接线修复] 默认启用 SKILL
+                # 档 + 升级到 script 的能力，不再需要每个 skill 显式声明
+                # 才能用上。
+                playbook_repo=playbook_repo,
+                skill_runner=skill_runner,
+                enable_skill_upgrade=skill_upgrade_enabled and playbook_repo is not None,
+                skill_upgrade_success_threshold=skill_upgrade_threshold,
             )
         except Exception as e:  # noqa: BLE001
             return json.dumps(
