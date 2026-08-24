@@ -26,6 +26,11 @@
 
 ## 1. raw_result 落盘化
 
+**状态：已完成**（详见 `next_doc/generative-capability-skill-plan.md` 阶段
+二十六实施记录）。改动与本节设计基本一致，唯一偏差：`RawResultStore.get()`
+保留而非移除（便于测试直接按 id 断言），`view_raw_result` 工具改为按路径
+读取，`get()` 不再是该工具的主路径。
+
 ### 1.1 目标
 
 - 从"session 内存 LRU + 模块级全局单例传递 id"改为"落盘 + 传路径"，从根上消除
@@ -93,6 +98,14 @@ tests/test_raw_result_and_smart_summary.py       # 同步改写测试
 
 ## 2. 探索脚本假数据问题：合理性校验
 
+**状态：已完成**（详见 `next_doc/generative-capability-skill-plan.md` 阶段
+二十五实施记录）。与本节设计的唯一收窄：合理性检查只施加于
+`script_source`/`llm_synthesized` 两条路径，不施加于 `trace_replay`——
+运行既有测试后发现 `trace_replay` 自测执行器在测试/部分生产场景下天然不
+随输入变化，属于环境属性而非脚本本身硬编码的证据，纳入检查会造成误伤，
+故收窄范围（不影响本节要解决的核心问题——`script_source` 路径下探索
+子agent自己写的假数据脚本）。
+
 ### 2.1 现状问题
 
 `explorer/prompt.md` 只要求"整理成不依赖具体探索过程的脚本"，没有明确禁止把本次
@@ -135,6 +148,9 @@ next_doc/generative-capability-skill-plan.md              # 追加阶段实施�
 ---
 
 ## 3. member 三档执行机制：合并 hybrid_exec
+
+**状态：设计阶段，尚未实施**——本次改动只完成第1、2节，第3节涉及两套
+现有机制的整合，范围较大，按第4节的建议顺序留待下一阶段单独实施。
 
 ### 3.1 动机
 

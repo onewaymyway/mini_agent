@@ -514,6 +514,33 @@ def distill(
                     })
                     break  # schema 不过不是"脚本能不能修"的问题，不再重复修复本候选
 
+                # [本次新增] 结构/类型对齐之外，再做一次"是否为假数据脚本"的
+                # 合理性检查（见文件末尾 _check_script_plausibility 说明），
+                # schema 校验无法识别"结构对但数据是写死的"这类语义问题。
+                # 只对 script_source / llm_synthesized 两条"代码是探索子agent/
+                # LLM 自己写出来的"路径生效——trace_replay 路径的脚本只是把
+                # 动作序列原样转发给 self_test_executor，输出是否随 input 变化
+                # 取决于自测环境注入的执行器本身是否变化（例如测试/CI 里的桩
+                # 执行器常常不随输入变化），这是自测环境的属性，不是脚本本身
+                # 硬编码假数据的证据，不应该被这项检查误伤。
+                if current_kind in ("script_source", "llm_synthesized"):
+                    plausible, plausibility_reason = _check_script_plausibility(
+                        script_code=current_code,
+                        request=request,
+                        original_data=final_data,
+                        self_test_executor=self_test_executor,
+                        llm_helper=llm_helper,
+                        tmp_dir_factory=lambda: (
+                            skill_dir / "members" / f"__tmp_plausibility_{member_id}_{int(time.time() * 1000)}"
+                        ).joinpath("script.py"),
+                    )
+                    if not plausible:
+                        round_errors.append({
+                            "path": current_kind, "round": attempt_no,
+                            "error": f"合理性检查未通过（疑似假数据脚本）：{plausibility_reason}",
+                        })
+                        break  # 假数据不是"脚本能不能修"的问题，不再重复修复本候选
+
                 try:
                     _atomic_persist(
                         skill_dir=skill_dir,
@@ -694,6 +721,132 @@ def _validate_schema(data: Any, schema: Optional[dict]) -> bool:
     """完整 JSON Schema 子集校验（阶段四起改为复用 schema_validator，
     不再是阶段一/三遗留的浅层必填字段检查）。"""
     return len(_validate_schema_errors(data, schema)) == 0
+
+
+# --------------------------------------------------------------------------- #
+# 脚本合理性检查（假数据检测）
+#
+# 对应 next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md 第2节。
+#
+# 背景：schema 校验只保证"结构对、类型对"，天然无法识别"探索子agent把本次
+# 抓取到的具体结果硬编码进脚本、对任意 input 都返回同一份静态数据"这类语义
+# 问题——这类脚本可以轻松通过 intent_schema 校验，却完全不可复用。
+#
+# 分两级触发（与 capability_engine.resolve() 的"确定性匹配优先、命中失败
+# 再上 LLM"分级触发原则一致，避免每次蒸馏都产生 LLM 调用开销）：
+#   1. 规则预检（零成本）：用一个"扰动过的 request"（把 request 里的字符串
+#      字段替换成不同的取值）重新跑一遍脚本，若两次输出完全相同，判定为
+#      "可疑"——正常情况下换了 query/url，抓取结果不应该逐字节一致。
+#   2. 只有规则预检判定"可疑"时，才发起一次独立、单一职责的 LLM 复核：
+#      把脚本源码 + 本次 request 交给模型，只回答"是否把探索观察到的具体
+#      数据硬编码进了源码 / 是否真实依赖 input 参数执行"。
+#      未注入 llm_helper 时，规则预检判定可疑就直接判失败（保守默认——
+#      没有能力确认"可疑"是否只是巧合，不能放行）。
+# --------------------------------------------------------------------------- #
+
+_PLAUSIBILITY_PROMPT_TEMPLATE = """你在审查一个由"探索子agent"自动生成、声称可参数化复用的抓取/执行脚本。
+只做一件事：判断这段脚本是否把某一次探索过程中观察到的具体数据（标题/URL/
+数字/人名等具体值）硬编码进了源码，而不是真正使用 input 参数重新执行、
+对不同输入产生不同结果。
+
+本次探索的 request 参数（供参考，判断脚本是否真的用到了这些参数）：
+{request_json}
+
+脚本源码：
+```python
+{script_code}
+```
+
+只输出一个 JSON 对象，不要有任何其它文字：
+{{"hardcoded": true|false, "reason": "一句话说明判断依据"}}
+"""
+
+
+def _perturb_request(request: dict) -> Optional[dict]:
+    """构造一个"扰动过的" request：把顶层及 target 下的字符串字段换成不同取值。
+    找不到可扰动的字符串字段时返回 None（跳过规则预检，直接放行进入落盘，
+    避免对不含字符串参数的领域场景误伤）。
+    """
+    import copy
+
+    perturbed = copy.deepcopy(request)
+    changed = False
+
+    def _flip(d: dict) -> None:
+        nonlocal changed
+        for k, v in list(d.items()):
+            if isinstance(v, str) and v.strip():
+                d[k] = v + "__plausibility_probe__"
+                changed = True
+            elif isinstance(v, dict):
+                _flip(v)
+
+    _flip(perturbed)
+    return perturbed if changed else None
+
+
+def _check_script_plausibility(
+    script_code: str,
+    request: dict,
+    original_data: Any,
+    self_test_executor,
+    llm_helper: Any,
+    tmp_dir_factory,
+) -> "tuple[bool, str]":
+    """返回 (是否合理可信, 原因说明)。tmp_dir_factory() 返回一个可写的临时
+    脚本路径（调用方负责清理），复用与自测相同的沙箱执行方式。
+    """
+    perturbed_request = _perturb_request(request)
+    if perturbed_request is None:
+        return True, "request 中无可扰动的字符串字段，跳过规则预检"
+
+    tmp_script = tmp_dir_factory()
+    tmp_script.parent.mkdir(parents=True, exist_ok=True)
+    tmp_script.write_text(script_code, encoding="utf-8")
+    try:
+        perturbed_result = _sandbox_run(tmp_script, perturbed_request, self_test_executor)
+    finally:
+        _rm_tree(tmp_script.parent)
+
+    if not perturbed_result.get("ok"):
+        # 扰动后执行失败：不足以证明是"假数据脚本"（可能是真实依赖参数、
+        # 扰动值不合法导致的正常失败），不在此处判定，交由后续路径处理。
+        return True, f"扰动后执行失败（非假数据判定依据）：{perturbed_result.get('error')}"
+
+    if perturbed_result.get("data") != original_data:
+        return True, "扰动 request 后输出发生变化，规则预检通过"
+
+    # 规则预检判定可疑：换了参数但输出逐字节一致
+    if llm_helper is None:
+        return False, "扰动 request 后输出与原输出完全一致（疑似硬编码假数据），且未注入 llm_helper 无法复核"
+
+    from .capability_debug import capability_debug_log
+
+    try:
+        prompt = _PLAUSIBILITY_PROMPT_TEMPLATE.format(
+            request_json=json.dumps(request, ensure_ascii=False, indent=2),
+            script_code=script_code,
+        )
+        raw = llm_helper.ask(
+            prompt,
+            system="你是一名严谨的代码审查者，只输出 JSON，不输出多余解释。",
+        )
+        cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        verdict = json.loads(cleaned)
+        hardcoded = bool(verdict.get("hardcoded"))
+        reason = str(verdict.get("reason", ""))
+    except Exception as e:  # noqa: BLE001
+        capability_debug_log(
+            "distill_plausibility_llm_check_failed", {"error": str(e)},
+            where="distiller._check_script_plausibility",
+        )
+        # LLM 复核本身失败（非脚本问题）：保守起见按规则预检的可疑结论处理，
+        # 不放行——宁可错杀一次可复用探索，也不让假数据脚本蒸混过关。
+        return False, f"规则预检可疑，且 LLM 复核调用失败（保守判定为不合理）：{e}"
+
+    if hardcoded:
+        return False, f"LLM 复核判定疑似硬编码假数据：{reason}"
+    return True, f"规则预检可疑，但 LLM 复核判定为合理（如输出恰好稳定）：{reason}"
 
 
 def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, request: dict,

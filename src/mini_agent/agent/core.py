@@ -431,16 +431,23 @@ class Agent(
                 ToolResultCache(max_entries=cfg.perception.tool_cache_max_entries) if cfg.tool_cache_enabled else None
             )
 
-        # [SYS-RAWSTORE] 原始工具结果留存（截断/摘要后仍可通过 view_raw_result 回看）
+        # [SYS-RAWSTORE] 原始工具结果留存（截断/摘要后仍可通过 read_file 按路径回看）
+        #
+        # [改进：next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+        #  第1节] 不再通过 configure_raw_result_store() 写入 tools/builtin.py 的
+        # 模块级全局单例——多个 Agent/SubAgent 实例在同一进程内先后构造时，
+        # 各自都会覆盖那个全局指针，导致主 agent 之后查询自己存过的 raw_result
+        # 时读到探索子agent（或任何后构造的 Agent）的 store，报"找不到"。
+        # 现在 RawResultStore 按 (project_root, session_id) 落盘到独立目录，
+        # self._raw_result_store 只是这个 Agent 实例自己持有的引用，直接传给
+        # ToolExecutor 构造参数即可，不需要任何全局状态。
         self._raw_result_store: Optional[RawResultStore] = None
         if getattr(cfg, "raw_store_enabled", True):
             from mini_agent.perception.raw_result_store import RawResultStore as _RawResultStore
-            from mini_agent.tools.builtin import configure_raw_result_store
             self._raw_result_store = _RawResultStore(
-                max_entries=cfg.tool_trim.raw_store_max_entries,
-                max_total_chars=cfg.tool_trim.raw_store_max_total_chars,
+                project_root=cfg.project_root,
+                session_id=(self._session.id if self._session else ""),
             )
-            configure_raw_result_store(self._raw_result_store)
 
         # [SYS-MEMORY] 跨 session 长期记忆（通过工厂创建，支持多后端）
         self._memory: Optional[MemoryBackend] = None

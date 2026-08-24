@@ -372,11 +372,18 @@ class ToolTrimConfig:
     large_file_warn_marker: str = "⚠"         # 大文件在 list_dir 中的标记符
 
     # [SYS-RAWSTORE] 原始输出留存：只要发生了截断/摘要，完整原文都会被保存，
-    # 供 agent 通过 view_raw_result 工具按需回看。默认开启，几乎零成本
-    # （只是内存里多存一份字符串，不涉及额外 LLM 调用）。
+    # 供 agent 通过 view_raw_result 工具按需回看。默认开启。
+    #
+    # [改进：next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+    #  第1节] 存储已从"session 内内存 LRU"改为落盘
+    # （<project_root>/.agent/raw_results/<session_id>/），不再有内存条目数/
+    # 总字符数上限的概念，`raw_store_max_entries`/`raw_store_max_total_chars`
+    # 两个字段保留仅为兼容存量配置文件（不再被读取生效），磁盘落地后的容量/
+    # 保留期清理改由 perception/raw_result_cleanup.py 的低频巡检
+    # （retention_days / max_total_bytes 参数）负责，不在写入路径上同步生效。
     raw_store_enabled: bool = True
-    raw_store_max_entries: int = 128          # 原始结果 LRU 容量上限
-    raw_store_max_total_chars: int = 5_000_000  # 所有留存原文的总字符数上限（防止内存无界增长）
+    raw_store_max_entries: int = 128          # 已废弃，仅兼容旧配置，不再生效
+    raw_store_max_total_chars: int = 5_000_000  # 已废弃，仅兼容旧配置，不再生效
 
     # [SYS-SMARTTRIM] 智能摘要：结果超过 smart_summary_threshold 时，
     # 不再单纯按规则截断，而是调用 LLM 提炼出与本次调用相关的关键信息。

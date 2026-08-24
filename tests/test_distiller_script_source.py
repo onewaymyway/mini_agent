@@ -208,5 +208,134 @@ class TestDistillScriptSourcePath(unittest.TestCase):
         self.assertNotIn("probation_success_threshold_override", entry2)
 
 
+# --------------------------------------------------------------------------- #
+# 合理性检查（假数据脚本检测）
+#
+# 对应 next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md 第2节。
+# --------------------------------------------------------------------------- #
+
+FAKE_DATA_SCRIPT_SOURCE = '''
+def run(input: dict) -> dict:
+    # 忽略 input，永远返回同一份写死的数据（对应用户报告里知乎抓取脚本的问题）
+    return {"status": "success", "data": {"results": [
+        {"title": "自进化（Self-evolving/RSI），一篇就够了", "url": "https://zhuanlan.zhihu.com/p/2065227313973825752"},
+        {"title": "谷歌的推荐系统agent自进化", "url": "https://zhuanlan.zhihu.com/p/2062662963899716138"},
+    ]}}
+'''
+
+
+@unittest.skipUnless(BROWSER_SITE_SCRAPER_DIR.is_dir(), "browser-site-scraper skill 目录不存在")
+class TestDistillPlausibilityCheck(unittest.TestCase):
+    def setUp(self):
+        self.skill_dir = _copy_skill_dir(BROWSER_SITE_SCRAPER_DIR)
+        self.intent_schema = {
+            "type": "object",
+            "required": ["results"],
+            "properties": {"results": {"type": "array"}},
+        }
+        self.capability = {"name": "browser-site-scraper"}
+
+    def tearDown(self):
+        shutil.rmtree(self.skill_dir.parent, ignore_errors=True)
+
+    def _make_trace(self, script_source):
+        from mini_agent.skills.generative_capability.explorer_runtime import ExploreTrace
+        return ExploreTrace(
+            success=True,
+            data={"results": [{"title": "探索阶段拿到的数据", "url": "https://x.example/"}]},
+            steps=[],
+            stop_reason="finished",
+            script_source=script_source,
+        )
+
+    def test_fake_data_script_rejected_without_llm_helper(self):
+        """规则预检发现"换了 query 但输出逐字节不变"，未注入 llm_helper 时
+        保守拒绝落盘，不放行假数据脚本（对应用户报告的知乎抓取脚本场景）。"""
+        from mini_agent.skills.generative_capability.distiller import distill
+
+        trace = self._make_trace(FAKE_DATA_SCRIPT_SOURCE)
+        request = {"text": "t", "target": {"url": "https://zhihu.com/search"}, "query": "自主进化Agent"}
+
+        result = distill(
+            trace, request, self.intent_schema, self.skill_dir, self.capability,
+            self_test_executor=lambda name, inp: {"ok": True},
+            llm_helper=None,
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("假数据", result.error)
+        # 拒绝的产物不应该落盘
+        members_before = set(p.name for p in (self.skill_dir / "members").iterdir())
+        self.assertNotIn("zhihu_search", members_before)  # 不应新增以此请求命名的 member
+
+    def test_fake_data_script_rejected_when_llm_confirms_hardcoded(self):
+        """规则预检可疑 + LLM 复核确认硬编码 -> 拒绝。"""
+        from mini_agent.skills.generative_capability.distiller import distill
+
+        trace = self._make_trace(FAKE_DATA_SCRIPT_SOURCE)
+        request = {"text": "t", "target": {"url": "https://zhihu.com/search"}, "query": "自主进化Agent"}
+
+        class _FakeLLMHelper:
+            def ask(self, prompt, system=""):
+                return '{"hardcoded": true, "reason": "脚本忽略 input，返回固定数据"}'
+
+        result = distill(
+            trace, request, self.intent_schema, self.skill_dir, self.capability,
+            self_test_executor=lambda name, inp: {"ok": True},
+            llm_helper=_FakeLLMHelper(),
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("假数据", result.error)
+
+    def test_real_parametrized_script_accepted_when_llm_confirms_plausible(self):
+        """脚本本身真实使用 input 参数（VALID_SCRIPT_SOURCE），规则预检应该
+        直接因"输出随参数变化"而通过，不需要触发 LLM 复核。"""
+        from mini_agent.skills.generative_capability.distiller import distill
+
+        trace = self._make_trace(VALID_SCRIPT_SOURCE)
+        request = {"text": "t", "target": {"url": "https://x.example/"}, "query": ""}
+
+        class _NeverCalledLLMHelper:
+            def ask(self, prompt, system=""):
+                raise AssertionError("规则预检应已通过，不应触发 LLM 复核")
+
+        result = distill(
+            trace, request, self.intent_schema, self.skill_dir, self.capability,
+            self_test_executor=lambda name, inp: (_ for _ in ()).throw(AssertionError("不应调用")),
+            llm_helper=_NeverCalledLLMHelper(),
+        )
+
+        self.assertTrue(result.success, msg=result.error)
+
+    def test_trace_replay_path_not_subject_to_plausibility_check(self):
+        """trace_replay 路径的自测执行器在测试环境里天然不随输入变化，
+        这项检查不应该误伤该路径（只对 script_source/llm_synthesized 生效）。"""
+        from mini_agent.skills.generative_capability.distiller import distill
+        from mini_agent.skills.generative_capability.explorer_runtime import ExploreStep, ExploreTrace
+
+        target_url = "https://trace-replay-plausibility.example/"
+        steps = [ExploreStep(
+            tool="browser_extract_content", input={"url": target_url},
+            output={"data": {"results": [{"title": "t", "url": target_url}]}},
+        )]
+        trace = ExploreTrace(
+            success=True, data={"results": [{"title": "t", "url": target_url}]},
+            steps=steps, stop_reason="finished", script_source=None,
+        )
+        request = {"text": target_url, "target": {"url": target_url}, "query": ""}
+
+        # 自测执行器完全不随 input 变化（典型的桩执行器写法）
+        result = distill(
+            trace, request, self.intent_schema, self.skill_dir, self.capability,
+            self_test_executor=lambda name, inp: {
+                "ok": True, "data": {"results": [{"title": "t", "url": target_url}]},
+            },
+            llm_helper=None,
+        )
+
+        self.assertTrue(result.success, msg=result.error)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -579,24 +579,30 @@ class ToolExecutor:
     def _remember_raw(self, tool_name: str, original: str, trimmed: str) -> str:
         """
         [SYS-RAWSTORE] 若发生了实质性截断/摘要（trimmed != original），
-        把完整原文存入 RawResultStore，并在返回文本后附上取回提示。
-        raw_result_store 未注入或功能关闭时原样返回 trimmed，不受影响。
+        把完整原文落盘存入 RawResultStore，并在返回文本后附上可直接读取的
+        文件路径提示。raw_result_store 未注入或功能关闭时原样返回 trimmed，
+        不受影响。
+
+        [改进：next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+         第1节] 提示文案从 "result_id + view_raw_result 工具" 改为直接给出
+        落盘文件的完整路径，agent 用已有的 read_file 读取即可，不再依赖任何
+        全局单例查找 store。
         """
         if trimmed == original:
             return trimmed
         if not getattr(self.cfg.tool_trim, "raw_store_enabled", True) or self._raw_result_store is None:
             return trimmed
         try:
-            result_id = self._raw_result_store.put(original, tool_name=tool_name)
+            ref = self._raw_result_store.put(original, tool_name=tool_name)
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.tool_executor.ToolExecutor._remember_raw')
             return trimmed
         return (
             f"{trimmed}\n\n"
-            f"[full output stored — {len(original)} chars total. "
-            f"Use view_raw_result(result_id=\"{result_id}\") to inspect the original, "
-            f"optionally with start_line/end_line.]"
+            f"[full output saved — {len(original)} chars total. "
+            f"Use read_file(path=\"{ref.path}\") to inspect the original, "
+            f"optionally with a line range.]"
         )
 
     def _smart_summarize(self, tool_name: str, tool_input: dict, result: str) -> Optional[str]:

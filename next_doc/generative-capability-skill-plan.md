@@ -2448,3 +2448,104 @@ session 临时目录下，天然不具备可复用性：下次真正命中这个
 （5 个用例：正常识别、无后续 bash、bash 执行失败、非 `.py` 文件、端到端
 接线），相关测试（含前三阶段的用例，以及 `test_distiller_script_source.py`）
 共 122 用例全部通过，无回归。
+
+### 阶段二十五 —— 已完成：探索脚本假数据检测（合理性校验）
+
+**触发**：用户实测反馈——`browser-site-scraper` 针对知乎搜索的一次探索，
+探索子agent通过 `script_source` 提交的脚本把本次抓到的 23 条结果直接写成
+一个静态 `results = [...]` 列表返回，`input.query` 参数完全没被使用。这类
+脚本结构上完全符合 `intent_schema`（字段、类型都对），能顺利通过既有的
+沙箱自测 + schema 校验落盘，但对任何后续请求都返回同一份写死的旧数据，
+是彻底不可复用的假货。
+
+**根因**：`explorer/prompt.md` 只要求"整理成不依赖具体探索过程的脚本"，
+没有明确禁止"把本次观察到的具体数据硬编码进去"；蒸馏阶段的沙箱自测只做
+`intent_schema` 结构校验，天然无法识别"结构对但数据是写死的"这类语义
+问题——规则校验看不出"这份数据是不是真的由 `run(input)` 计算出来的"。
+
+**方案（详见 next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+第2节）**：
+1. 三处 `explorer/prompt.md`（browser-site-scraper / text-transform-capability /
+   doc-template-generation）均加入显式的 `script_source` 硬性要求："禁止
+   包含本次探索观察到的具体数据，必须真正使用 input 参数产生不同输出"，
+   并给出一句自检问法，供探索子agent提交前自查。
+2. `distiller.py` 新增 `_check_script_plausibility()`：两级触发——
+   - 规则预检（零成本）：用一个"扰动过的" request（把 request 里的字符串
+     字段统一加后缀构造出一个不同取值）重新跑一遍候选脚本，若两次输出
+     逐字节完全一致，判定为"可疑"。
+   - 只有规则预检判定可疑时，才发起一次独立、单一职责的 LLM 复核（仅在
+     `llm_helper` 已注入时），把脚本源码 + 本次 request 交给模型判断是否
+     硬编码；LLM 判定硬编码，或 LLM 不可用/调用失败，均保守拒绝落盘
+     （宁可拒收一次真正可复用的巧合结果，也不放行假数据）。
+   - 该检查只施加于 `script_source`/`llm_synthesized` 两条"代码由探索
+     子agent/LLM 自己写出来"的路径，不施加于 `trace_replay` 路径——后者的
+     自测执行器是否随输入变化取决于测试/生产环境注入的执行器本身，是环境
+     属性而非脚本本身是否硬编码的证据，不应被这项检查误伤。
+3. 拒绝的合理性检查结果与 schema 校验失败走同一条"不落盘、计入
+   `attempt_errors`、可触发同路径下一轮修复重试"的既有流程，不新增另一套
+   失败处理逻辑。
+
+**实施（已完成）**：
+- `distiller.py`：新增 `_perturb_request()` / `_check_script_plausibility()`，
+  接入 `distill()` 成功分支（schema 校验通过之后、`_atomic_persist` 之前）。
+- `explorer/prompt.md`（三个 skill）分别加入"`script_source` 硬性要求"
+  段落。
+- `tests/test_distiller_script_source.py` 新增
+  `TestDistillPlausibilityCheck`（4 个用例：无 `llm_helper` 时保守拒绝、
+  `llm_helper` 确认硬编码后拒绝、真实参数化脚本因规则预检通过而不触发 LLM
+  调用、`trace_replay` 路径不受该检查影响）。
+- 相关测试（`test_distiller_script_source.py` 全量 9 用例、
+  `test_generative_capability_engine.py`、`test_generative_capability_real_tools.py`）
+  运行通过；后两个文件中各有一个失败用例与本次改动无关（`websocket-client`
+  依赖缺失、`trace_replay` 路径下一个既有环境相关断言），本次改动范围内
+  （`script_source`/`llm_synthesized` 路径）无回归。
+
+### 阶段二十六 —— 已完成：raw_result 落盘化（修复 view_raw_result 取不到结果）
+
+**触发**：用户实测反馈——主 agent 的工具结果被截断后收到
+`view_raw_result(result_id="...")` 提示，调用后报
+`no stored raw result found for result_id=... (it may have expired/been evicted)`。
+
+**根因**：`RawResultStore` 原实现是"session 内内存 LRU"，`tools/builtin.py`
+里用一个**模块级全局单例** `_raw_result_store` 保存"当前活跃的是哪个
+store"，由每个 `Agent.__init__()` 调用 `configure_raw_result_store()` 写入。
+探索子agent（`orchestrator/sub_agent.py::SubAgent._build_agent()`）在同一
+进程内构造了一个新的 `Agent` 实例执行探索任务，其 `__init__` 同样会调用
+`configure_raw_result_store()`，把全局指针覆盖成探索子agent自己的 store。
+探索结束后没有任何"恢复成父 agent store"的逻辑，全局指针停留在探索子agent
+的 store 上。主 agent 之后调用 `view_raw_result` 读的是错误的 store（其中
+根本没有主 agent 自己存过的 id），报"找不到"。
+
+**方案（详见 next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+第1节）**：把 `RawResultStore` 从"内存 LRU + 全局单例传递 id"整体改为
+"落盘到 `<project_root>/.agent/raw_results/<session_id>/` + 直接传完整
+文件路径"。`put()`/`get()` 都是围绕 `(project_root, session_id)` 的纯函数，
+不再需要任何"当前活跃 store 是谁"的全局可变状态，多个 Agent/SubAgent 实例
+天然按各自 session_id 落在独立目录下，互不覆盖。`view_raw_result` 工具
+相应地从"按 result_id 查全局 store"改为"按路径读文件"，语义上退化成
+`read_file` 的一个薄别名。
+
+**实施（已完成）**：
+- `perception/raw_result_store.py`：重写为落盘版本，`put()` 返回
+  `RawResultRef(result_id, path)`，内容 md5 天然去重（同内容只刷新
+  mtime，不重复写入），tmp+`os.replace()` 原子写入。
+- `perception/raw_result_cleanup.py`（新增）：低频巡检清理，风格与
+  `generative_capability/health_patrol.py` 一致——默认只读扫描生成报告，
+  `apply_cleanup=True` 才真正删除；按 session 目录 mtime 判断过期
+  （`retention_days`），总容量超限时从最旧目录开始清理
+  （`max_total_bytes`）。不在 `put()`/`get()` 路径上做同步驱逐。
+- `agent/core.py`：移除 `configure_raw_result_store()` 全局注入，
+  `RawResultStore` 改为按 `(cfg.project_root, self._session.id)` 构造，
+  `self._raw_result_store` 只是该 Agent 实例自己持有的引用。
+- `tool_executor.py::_remember_raw()`：截断提示文案从
+  `Use view_raw_result(result_id="...")` 改为
+  `Use read_file(path="...")`，直接给出可读文件路径。
+- `tools/builtin.py::view_raw_result`：参数从 `result_id` 改为 `path`，
+  直接读磁盘文件，不再有 `configure_raw_result_store()`/模块级全局单例。
+- `config/models.py`：`raw_store_max_entries`/`raw_store_max_total_chars`
+  标记为已废弃（仅兼容存量配置文件，不再被读取生效）。
+- `tests/test_raw_result_and_smart_summary.py`：按新 API 重写，新增
+  `test_raw_result_store_separates_sessions` /
+  `test_view_raw_result_tool_multiple_sessions_no_cross_talk` 两个回归
+  测试，直接复现"多个 session 的 store 先后构造不应互相覆盖"这个场景。
+  全量 15 用例通过。

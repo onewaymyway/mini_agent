@@ -1387,15 +1387,17 @@ _web_search_cfg = None
 
 
 # ── view_raw_result [SYS-RAWSTORE] ───────────────────────────────────────────
-
-# 模块级引用（由 configure_raw_result_store 注入，None 时该工具直接报错提示）
-_raw_result_store = None
-
-
-def configure_raw_result_store(store) -> None:
-    """由 Agent 初始化时注入 RawResultStore 实例（session 内单例）。"""
-    global _raw_result_store
-    _raw_result_store = store
+#
+# [改进：next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+#  第1节] RawResultStore 已从"session 内内存 LRU + 模块级全局单例传递 id"
+# 改为"落盘到 <project_root>/.agent/raw_results/<session_id>/ + 直接传路径"。
+# 本工具不再依赖任何模块级全局状态（原来的 configure_raw_result_store()/
+# 模块级 `_raw_result_store` 单例已删除——那正是"多个 Agent/SubAgent 实例
+# 在同一进程内先后构造，互相覆盖全局指针"这个 bug 的根源）。现在提示文案
+# 里给的就是一个普通文件路径，本工具只是 read_file 的一个薄别名，直接按
+# 路径读取磁盘文件，语义上与 read_file 完全一致，保留独立工具名只是为了
+# 兼容历史上"trimmed 结果里提示调用 view_raw_result"这句话，不强制迁移
+# 调用方去认识 read_file。
 
 
 @tool(
@@ -1403,34 +1405,39 @@ def configure_raw_result_store(store) -> None:
     description=(
         "View the full, untruncated original output of a previous tool call "
         "that was truncated or LLM-summarized (its trimmed result will mention "
-        "a result_id you can use here). Supports an optional line range, same "
-        "as read_file, so you don't have to dump everything back into context."
+        "a file path you can pass here). Equivalent to read_file on that path — "
+        "supports an optional line range so you don't have to dump everything "
+        "back into context."
     ),
     schema={
         "type": "object",
         "properties": {
-            "result_id": {
+            "path": {
                 "type": "string",
-                "description": "The result_id mentioned in a previously trimmed/summarized tool result.",
+                "description": "The file path mentioned in a previously trimmed/summarized tool result.",
             },
             "start_line": {"type": "integer", "description": "First line to return (1-indexed)"},
             "end_line": {"type": "integer", "description": "Last line to return (inclusive)"},
         },
-        "required": ["result_id"],
+        "required": ["path"],
     },
     requires_approval=False,
 )
 def view_raw_result(
-    result_id: str,
+    path: str,
     start_line: Optional[int] = None,
     end_line: Optional[int] = None,
 ) -> str:
-    """Retrieve the full original content of a previously truncated/summarized tool result."""
-    if _raw_result_store is None:
-        return "[error: raw result store is not enabled]"
-    content = _raw_result_store.get(result_id)
-    if content is None:
-        return f"[error: no stored raw result found for result_id={result_id!r} (it may have expired/been evicted)]"
+    """Retrieve the full original content of a previously truncated/summarized tool result by path."""
+    import os
+
+    if not path or not os.path.isfile(path):
+        return f"[error: no raw result file found at path={path!r} (it may have been cleaned up)]"
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    except OSError as exc:
+        return f"[error: failed to read {path!r}: {exc}]"
 
     if start_line is None and end_line is None:
         return content
