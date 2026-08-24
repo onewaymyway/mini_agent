@@ -678,6 +678,55 @@ system_extra 提示里，供 LLM/探索子agent写脚本时参考。
 完整方案与分阶段实施记录见独立文档
 [generative_capability_trace_replay_and_allowlist_plan.md](../next_doc/generative_capability_trace_replay_and_allowlist_plan.md)。
 
+**三档 member 执行机制（script → skill → explore，本次订正补充）**：`execute()`
+命中 member 但脚本执行失败后，`call()` 不会直接判定该 member 失败就进入全新
+`explore()`，中间插入了一档更便宜的手段——`_try_skill()`：如果该 member 在
+`playbook_repo`（`.claude/skills/<name>/playbooks/<member_id>/`）下有一份
+`active` 的 `playbook.md`（人类可读的步骤说明，而非确定性代码），就用
+`skill_runner`（`skill_tier.build_skill_runner()`，内部是
+`hybrid_exec.PlaybookRunner`）跑一次参照该 playbook 执行的轻量 Agent，产出
+同样必须经过与 `execute()` 完全相同的 `intent_schema` 校验才算成功。三档的
+定位——`script`（确定性代码，最省成本但最脆）／`skill`（LLM 参照 playbook
+执行，成本居中、能应对页面细节变化）／`explore`（全新自由探索，最贵但泛化
+能力最强）——与项目里另一套独立的分级降级状态机 `hybrid_exec`
+（`ExecutionTier.SCRIPT/SKILL/AGENT`，见
+[hybrid-exec-guide.md](hybrid-exec-guide.md)）在语义上完全对应，`SKILL` 这一
+tier 正是为了给两者合并铺路而新增的。
+
+三档之间目前已打通**双向流转**，不只是单向降级：
+
+- **降级方向**：`distill()` 的三条脚本蒸馏路径（`script_source`/
+  `llm_synthesized`/`trace_replay`）全部失败，但探索本身成功且数据通过了
+  `intent_schema` 校验时，不再直接判"本次探索无沉淀"，而是把 trace 整理成
+  一份 `playbook.md` 落盘（`distill_source_kind: "playbook"`，
+  `registry.json` 标记 `execution_tier: "skill_only"`），供下次命中同一个
+  `member_id` 时 `_try_skill()` 自动使用——这就打通了"探索失败但不是一无
+  所获，至少留下一份步骤说明"这条路径。
+- **升级方向**：`_try_skill()` 每次成功后，如果开启了
+  `enable_skill_upgrade=True`（默认关闭）且该 playbook 累计成功次数达到
+  `skill_upgrade_success_threshold`（默认 3），会尝试用 LLM 把 playbook 文本
+  + 一次真实执行样例蒸馏成 `script.py`（`distiller.py::attempt_skill_upgrade()`，
+  复用与 `distill()` 完全一致的沙箱自测/schema 校验/合理性检查/原子落盘），
+  `distill_source_kind` 记为 `"skill_upgraded"`。升级失败不影响本次调用已经
+  拿到的成功结果，也不影响 playbook 本身的成败统计——纯粹是"锦上添花"。
+
+**当前实现边界（需注意）**：上述 `_try_skill()`/playbook 落盘/升级三条逻辑，
+都是**在 `CapabilityEngine` 现有的 `resolve→execute→explore→distill` 链路里
+直接插入的**，而不是把 `capability_engine` 整体委托给 `HybridExecutor.run()`
+执行——`registry.json` 里 script 那一档的 `probation/trusted/degraded/dead`
+状态机与 `playbooks/<member_id>/` 下 playbook 的成败统计是两套完全独立的
+计数（互不影响，也互不感知对方的状态），`meta.json`/`registry.json` 尚未有
+`available_tiers`（该 member 当前实际具备哪些手段）这类统一视角字段，
+`degraded` 判定目前仍只看 script 那一档的连续失败次数，不考虑"script 挂了
+但 skill 档还能用"这种情况。`_try_skill()` 也只有"命中 member 执行失败之后"
+这一个触发时机，没有类似 `hybrid_exec.TaskSpec.allow_tiers` 那样可以让调用方
+直接跳过 SCRIPT 档、指定优先用哪一档的精细控制。这些是刻意收窄的范围（先验证
+"三档顶用不用"，把"要不要整体迁移到 `HybridExecutor`"作为独立评估留给后续），
+不是遗漏。完整设计动机、与 `hybrid_exec` 的对应关系表、分阶段实施记录见独立
+文档
+[generative_capability_raw_result_and_hybrid_merge_plan.md](../next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md)
+第 3 节。
+
 **探索子agent实际拿到的工具集（阶段二十二订正）**：并不是"系统全部已注册
 通用工具"——`build_subagent_explorer()` 内部把 `agent.registry` 换成私有
 副本时，会先按 `_EXPLORER_EXCLUDED_TOOLS` 黑名单排除掉一批工具，再桥接进
@@ -1012,7 +1061,11 @@ loader.auto_activate_blocked   # -> ['docx', ...]
 
 ---
 
-> 最后更新：2026-08（generative-capability 三条蒸馏路径定位调整 +
+> 最后更新：2026-08（补充 generative-capability 三档 member 执行机制
+> script→skill→explore 的双向流转说明：`_try_skill()`/playbook 落盘兜底/
+> 升级蒸馏为 script.py，及其与 `HybridExecutor` 尚未整体合并的边界，详见
+> `next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md` 第3节）；
+> 此前更新：2026-08（generative-capability 三条蒸馏路径定位调整 +
 > 领域原语来源自动化：新增 `explorer.depends_skills`（`base_tools` 新
 > 别名），领域原语名单不再要求手写 `tool_allowlist.json`，改为自动从
 > 依赖 skill 的 `impl/tools_impl.py::TOOL_IMPLEMENTATIONS` 派生
