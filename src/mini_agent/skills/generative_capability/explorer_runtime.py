@@ -441,6 +441,7 @@ def build_subagent_explorer(
 
         system_extra = _build_explore_system_extra(
             prompt_text, intent_schema, domain_tool_names, preferred_primitives, max_turns,
+            request_formats=explorer_config.get("_request_formats"),
         )
         user_prompt = json.dumps(
             {"request": request, "intent_schema": intent_schema}, ensure_ascii=False
@@ -855,8 +856,23 @@ def _build_explore_system_extra(
     domain_tool_names: list[str],
     preferred_primitives: list[str],
     max_turns: int,
+    request_formats: Optional[list] = None,
 ) -> str:
     parts = [prompt_text.strip(), ""]
+    if request_formats:
+        parts.append(
+            "run(input: dict) 的输入契约（来自 capability.yaml 的 request_formats，"
+            "跨调用通用，不是只对这一次生效）：\n"
+            + json.dumps(request_formats, ensure_ascii=False, indent=2)
+            + "\n下面 user 消息里的 `request` 只是**这一次**触发探索的具体样本——"
+            "样本里出现的具体字段值（比如某个 query 关键词、某个 url）不代表"
+            "该字段的通用取值，只是这次恰好传了这个值。如果你最终提交 "
+            "`script_source`，脚本必须按上面这份契约里的字段名从 `input` 读取，"
+            "required_fields 缺失时应该直接返回失败（`status: fail` 并说明缺什么"
+            "字段），不允许把这次样本里的具体值当成默认兜底塞进代码；非 "
+            "required 的字段如果确实需要一个默认值，默认值必须是通用兜底逻辑"
+            "（如空值/合理的领域默认行为），不能是这次样本的具体内容。"
+        )
     parts.append(
         "你正在为一个此前没有现成方案的需求探索可复用的解决路径。除了 bash/"
         "python/文件读写等通用工具外，"

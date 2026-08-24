@@ -2791,3 +2791,95 @@ script 状态机，只在 `CapabilityEngine.call()` 现有的"命中 member 执�
 - 至此 `capability_engine.resolve/execute` 整体委托给
   `HybridExecutor.run()` 是 3.3b 节唯一仍未开始的部分，仍是原方案里
   范围最大、风险最高的一步。
+
+### 阶段三十二 —— 已完成：修复重新探索时 `_index.json` 检索摘要被单次请求覆盖 + 蒸馏脚本"默认值伪装成通用值"
+
+**背景**：真实使用中发现 `browser-site-scraper/zhihu` member 在触发一次
+"重新探索"（旧脚本连续失败 → degrade → explore）后暴露出两个问题：
+
+1. 蒸馏产物（`llm_synthesized` 路径）里 `run(input)` 对 `url` 字段的默认值
+   直接写成了这次探索用到的具体搜索页面（`input.get('url', 'https://www.
+   zhihu.com/search?...q=自主进化Agent')`），虽然技术上"读取了 input"，
+   但缺省时会静默复用这次样本的具体查询，本质是隐性硬编码。
+2. `_index.json` 里 zhihu 的 `description`/`match.keyword` 被这次探索
+   请求的原文整体覆盖：从"知乎内容搜索（通用）"退化成了"探索自动生成:
+   搜索知乎并抓取关于自主进化Agent的搜索结果页面内容"这种绑定单次查询词
+   的描述，导致下次别的知乎搜索请求反而匹配不上这个本该通用的 member。
+
+**根因定位**（区分引擎机制问题 vs skill 本身问题，详见本文档配套的问题
+分析）：两者都是**引擎机制**层面的缺陷，不是 `browser-site-scraper` 这个
+skill 配置本身写错了什么——探索子agent与蒸馏 LLM 手头只有"这一次触发的
+具体 request 实例"，从未见过 `capability.yaml` 里声明的 `request_formats`
+（`run(input)` 的字段契约：哪些字段必填、字段名分别是什么），自然只能把
+样本值当成"这个字段大概率长这样"去写进默认值；`_atomic_persist()` 落盘
+`_index.json` 时无条件用 `request.text[:60]` 生成 description、用
+`_infer_match_rule(request)` 重新推导 match，完全没有区分"这是全新 member
+首次创建"还是"这是重新探索一个已经有通用摘要的既有 member"。
+
+**新增/修改文件**：
+
+```
+src/mini_agent/skills/generative_capability/capability_engine.py   # explore() 新增 explorer_cfg["_request_formats"]
+src/mini_agent/skills/generative_capability/explorer_runtime.py    # _build_explore_system_extra() 注入 request_formats 契约说明
+src/mini_agent/skills/generative_capability/distiller.py           # 见下方明细
+.claude/skills/browser-site-scraper/explorer/prompt.md             # 补充"隐性硬编码"自检说明
+```
+
+**已实现能力**：
+
+1. **把 `request_formats` 传给探索子agent与蒸馏 LLM，而不是只给一份具体样本**：
+   - `CapabilityEngine.explore()` 把 `capability.get("request_formats")` 塞进
+     `explorer_cfg["_request_formats"]`，随 `explorer_config` 一起传给
+     `explore_runner`。
+   - `explorer_runtime._build_explore_system_extra()` 新增 `request_formats`
+     参数，注入 system prompt：显式给出该领域 `run(input)` 的字段契约，
+     并明确告知"user 消息里的 request 只是这一次的具体样本，不代表字段的
+     通用取值"；`script_source` 里 required 字段缺失应直接返回失败，
+     非 required 字段确需默认值只能是通用兜底，不能取自这次样本。
+   - `distiller._llm_synthesize_script()` 同步接收 `request_formats`，塞进
+     喂给 LLM 的 `user_content`，`_LLM_SYNTHESIZE_SYSTEM_PROMPT` 新增第 6 条
+     硬性要求表达同样的约束。`distill()` 从 `capability.get("request_formats")`
+     取值传入。
+   - `.claude/skills/browser-site-scraper/explorer/prompt.md` 补充一句
+     "隐性硬编码"的自检说明，与引擎注入的契约提示口径一致。
+
+2. **重新探索时 `_index.json` 摘要改为"归纳式更新"而不是"整体覆盖"**：
+   - 新增纯规则兜底 `_merge_index_description()`/`_merge_match_rule()`：
+     `existing_entry` 存在时优先沿用旧 description，`domain_pattern` 旧值
+     优先、`keyword` 取新旧并集去重（上限 8 个）；只有 member 首次创建
+     （无 `existing_entry`）才退回"从这次请求现推一个初始摘要"的旧逻辑。
+   - 新增轻量 LLM 归纳 `_llm_merge_index_summary()` + 统一入口
+     `_resolve_index_summary()`：仅在"重新探索既有 member 且注入了
+     `llm_helper`"时尝试——把旧 description/match、这次触发的 request、
+     新脚本（或 playbook 正文）源码摘要一并交给一次独立、单一职责的 LLM
+     调用，判断"新产物相对旧描述有没有实质能力变化"，输出更新后的通用
+     description/match；没有实质变化则直接沿用旧描述。LLM 调用失败/返回
+     非法内容时静默降级到上面的纯规则合并，不让 index 落盘因为一次可选
+     的 LLM 调用失败而整体失败（遵循方案原则 4"不自我认定成功"与原则 3
+     "确定性与不确定性分离"：合并逻辑本身是确定性代码，只有"判断是否有
+     实质变化、如何归纳表达"这一步真正需要理解，才调用 LLM，且不影响
+     蒸馏主流程的成败）。
+   - `_atomic_persist()`、`_persist_playbook_member()`（脚本蒸馏与 playbook
+     兜底两条路径共用同一套落盘语义）均改为调用 `_resolve_index_summary()`，
+     新增 `llm_helper` 形参并透传（`distill()`/`_distill_to_playbook()`/
+     `attempt_skill_upgrade()` 各调用点同步传入）。
+
+**验证结果**：
+- `python3 -m py_compile` 通过。
+- `tests/test_distiller_script_source.py`、
+  `tests/test_distiller_playbook_fallback.py`、
+  `tests/test_generative_capability_engine.py` 共 30 用例，29 通过、1 个
+  既有失败（`test_full_explore_distill_reuse_cycle`，与本次改动无关，
+  失败原因在用例自身注释里已注明，是环境相关的已知行为）。
+
+**已知遗留（留给后续评估）**：
+- `_llm_merge_index_summary()` 目前是"重新探索成功时"触发一次，`skill_
+  upgraded`（阶段三十一的 SKILL 档升级路径）与 `trace_replay` 兜底路径
+  也会经过 `_resolve_index_summary()`，但 `trace_replay` 产出的脚本本身
+  结构脆弱，其 index 摘要要不要同样交给 LLM 归纳、还是保持纯规则合并，
+  当前统一按同一套入口处理，未来如观察到 trace_replay 场景下 LLM 归纳
+  质量不稳定，可以在 `_resolve_index_summary()` 里按 `distill_source_kind`
+  再细分。
+- 该 LLM 调用与 `_llm_synthesize_script()`/`_check_script_plausibility()`
+  一样，会增加一次探索成功后的延迟与 token 开销；量大后可考虑跟这两个
+  调用合并成一次多任务 LLM 调用，目前为保持"单一职责"优先实现正确性。

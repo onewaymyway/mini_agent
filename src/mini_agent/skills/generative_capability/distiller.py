@@ -239,12 +239,21 @@ Python 脚本。
    纯逻辑处理，直接用标准 Python（字符串/正则/循环/条件判断）实现，不要
    为了"看起来统一"而把这些逻辑也硬塞进 `executor()` 调用——脚本主体是
    完全自由的 Python，领域原语只是其中可选的一类调用。
+6. 你会收到该领域 `run(input)` 的输入契约（`request_formats`：字段名、
+   哪些必填），以及这次探索实际使用的一份具体样本（`request`）。这份样本
+   只是众多可能调用里的一个实例，不代表字段的通用取值——`input.get(key,
+   default)` 里的 `default` 绝对不能是这份样本的具体值（比如样本里的搜索
+   关键词、样本里的 url），那等于把"这一次"伪装成"默认情况"。required
+   字段缺失时应直接 `return {"status": "fail", "data": None, "error":
+   "缺少必填字段: <字段名>"}`；非 required 字段确需默认值时，只能给通用的
+   领域兜底（如空字符串/空列表/合理的默认行为），不能取自这份样本。
 """
 
 
 def _llm_synthesize_script(
     trace: ExploreTrace, request: dict, intent_schema: dict,
     skill_name: str, member_id: str, llm_helper: Any,
+    request_formats: Optional[list] = None,
 ) -> Optional[str]:
     """[阶段二十五] script_source 缺失时的次优先级兜底：把探索 trace 交给
     LLM，让它凭借自身的总结/泛化能力提炼出参数化脚本，而不是机械地把
@@ -267,6 +276,7 @@ def _llm_synthesize_script(
         ]
         user_content = json.dumps(
             {
+                "request_formats": request_formats,
                 "request": request,
                 "intent_schema": intent_schema,
                 "final_data": trace.data,
@@ -475,6 +485,7 @@ def attempt_skill_upgrade(
             skill_dir=skill_dir, member_id=member_id, script_code=code, request=request,
             capability=capability, intent_schema=intent_schema, is_reexplore=True,
             used_trace_data_fallback=False, distill_source_kind="skill_upgraded",
+            llm_helper=llm_helper,
         )
     except Exception as e:  # noqa: BLE001
         capability_debug_log(
@@ -655,6 +666,7 @@ def distill(
             synthesized = _llm_synthesize_script(
                 trace=trace, request=request, intent_schema=intent_schema,
                 skill_name=skill_name, member_id=member_id, llm_helper=llm_helper,
+                request_formats=capability.get("request_formats"),
             )
             if synthesized:
                 attempts.append(("llm_synthesized", synthesized))
@@ -755,6 +767,7 @@ def distill(
                         is_reexplore=reexplore_member_id is not None,
                         used_trace_data_fallback=use_trace_fallback,
                         distill_source_kind=current_kind,
+                        llm_helper=llm_helper,
                     )
                 except Exception as e:  # noqa: BLE001
                     round_errors.append({"path": current_kind, "round": attempt_no, "error": f"落盘失败: {e}"})
@@ -822,7 +835,7 @@ def distill(
             trace=trace, request=request, skill_name=skill_name, member_id=member_id,
             skill_dir=skill_dir, capability=capability, intent_schema=intent_schema,
             is_reexplore=reexplore_member_id is not None, playbook_repo=playbook_repo,
-            script_failure_summary=summary,
+            script_failure_summary=summary, llm_helper=llm_helper,
         )
         if playbook_result is not None:
             capability_debug_log(
@@ -1077,7 +1090,8 @@ def _check_script_plausibility(
 def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, request: dict,
                      capability: dict, intent_schema: dict, is_reexplore: bool,
                      used_trace_data_fallback: bool = False,
-                     distill_source_kind: str = "trace_replay") -> None:
+                     distill_source_kind: str = "trace_replay",
+                     llm_helper: Any = None) -> None:
     members_dir = skill_dir / "members"
     member_dir = members_dir / member_id
     member_dir.mkdir(parents=True, exist_ok=True)
@@ -1144,11 +1158,18 @@ def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, reques
 
     index_path = skill_dir / "_index.json"
     index = _load_json(index_path, {"members": []})
+    existing_entry = next(
+        (m for m in index.get("members", []) if m.get("member_id") == member_id), None
+    )
     members_list = [m for m in index.get("members", []) if m.get("member_id") != member_id]
     members_list.append({
         "member_id": member_id,
-        "description": f"探索自动生成: {request.get('text', '')[:60]}",
-        "match": _infer_match_rule(request),
+        **_resolve_index_summary(
+            existing_entry=existing_entry, request=request, is_reexplore=is_reexplore,
+            content_preview=script_code, distill_source_kind=distill_source_kind,
+            skill_name=capability.get("name", skill_dir.name), member_id=member_id,
+            llm_helper=llm_helper,
+        ),
     })
     index["members"] = members_list
     index_tmp = index_path.with_suffix(".json.tmp")
@@ -1214,7 +1235,8 @@ def _build_playbook_markdown(trace: ExploreTrace, request: dict, skill_name: str
 
 
 def _persist_playbook_member(*, skill_dir: Path, member_id: str, request: dict,
-                              capability: dict, intent_schema: dict, is_reexplore: bool) -> None:
+                              capability: dict, intent_schema: dict, is_reexplore: bool,
+                              llm_helper: Any = None, playbook_markdown: str = "") -> None:
     """[本次新增] 与 `_atomic_persist()` 对称，但只登记 member 的检索元信息
     （meta.json + registry.json + _index.json），不写 `script.py`——playbook
     正文由调用方通过 `playbook_repo.save_new_version()` 单独落盘（复用
@@ -1273,11 +1295,23 @@ def _persist_playbook_member(*, skill_dir: Path, member_id: str, request: dict,
 
     index_path = skill_dir / "_index.json"
     index = _load_json(index_path, {"members": []})
+    existing_entry = next(
+        (m for m in index.get("members", []) if m.get("member_id") == member_id), None
+    )
     members_list = [m for m in index.get("members", []) if m.get("member_id") != member_id]
     members_list.append({
         "member_id": member_id,
-        "description": f"探索自动生成(playbook): {request.get('text', '')[:60]}",
-        "match": _infer_match_rule(request),
+        **(
+            _resolve_index_summary(
+                existing_entry=existing_entry, request=request, is_reexplore=is_reexplore,
+                content_preview=playbook_markdown, distill_source_kind="playbook",
+                skill_name=capability.get("name", skill_dir.name), member_id=member_id,
+                llm_helper=llm_helper,
+            ) if existing_entry else {
+                "description": f"探索自动生成(playbook): {request.get('text', '')[:60]}",
+                "match": _merge_match_rule(existing_entry, request, is_reexplore),
+            }
+        ),
     })
     index["members"] = members_list
     index_tmp = index_path.with_suffix(".json.tmp")
@@ -1290,7 +1324,8 @@ def _persist_playbook_member(*, skill_dir: Path, member_id: str, request: dict,
 
 def _distill_to_playbook(*, trace: ExploreTrace, request: dict, skill_name: str, member_id: str,
                           skill_dir: Path, capability: dict, intent_schema: dict, is_reexplore: bool,
-                          playbook_repo: Any, script_failure_summary: str) -> Optional["DistillResult"]:
+                          playbook_repo: Any, script_failure_summary: str,
+                          llm_helper: Any = None) -> Optional["DistillResult"]:
     """[本次新增] `distill()` 三条脚本路径全部失败后的兜底：整理 playbook.md
     并落盘登记 member。任何一步出错都静默返回 None（退回调用方原有的
     "全部路径失败"错误信息，不让 playbook 兜底本身的异常掩盖真正的失败
@@ -1302,6 +1337,7 @@ def _distill_to_playbook(*, trace: ExploreTrace, request: dict, skill_name: str,
         _persist_playbook_member(
             skill_dir=skill_dir, member_id=member_id, request=request,
             capability=capability, intent_schema=intent_schema, is_reexplore=is_reexplore,
+            llm_helper=llm_helper, playbook_markdown=markdown,
         )
     except Exception:  # noqa: BLE001 — 兜底路径本身失败时静默退回主失败结果
         return None
@@ -1324,6 +1360,190 @@ def _infer_match_rule(request: dict) -> dict:
     if text:
         match["keyword"] = [text[:30]]
     return match
+
+
+# [本次新增] `_infer_match_rule`/旧的 f"探索自动生成: {request['text'][:60]}"
+# 只适合"这个 member_id 第一次被创造"的场景——那时确实没有任何既有信息可
+# 参照，只能从这次触发的具体请求里现推一个起点。但重新探索（degraded ->
+# 再次 explore）针对的是**已经存在**的 member：它在 `_index.json` 里原本
+# 可能有一份更通用的 description/match（人工手写，或此前某次探索沉淀），
+# 不该被这次具体请求的措辞整个覆盖掉——那样一个原本通用的能力会被逐次
+# 收窄成"最后一次探索请求的样子"。这里不引入新的 LLM 调用（保持方案原则
+# "确定性与不确定性分离"：merge 是纯规则的、可预测的，不需要模型判断），
+# 只做保守的"保留 + 补充"：
+#   - description：existing_entry 存在时优先沿用旧描述（无论是人工写的还是
+#     上一次探索沉淀的），因为它大概率已经比单次请求原文更通用；只有真正
+#     第一次创建（existing_entry is None）才退回到"从这次请求现推一个初始
+#     描述"这条旧逻辑。
+#   - match：domain_pattern 以旧值优先（旧的通常经过验证），缺失时才用这次
+#     新推断的补上；keyword 取旧列表与新推断关键词的并集去重，而不是整体
+#     替换——避免这次探索用到的一个更窄的关键词把之前泛化过的关键词挤掉。
+def _merge_index_description(existing_entry: Optional[dict], request: dict, is_reexplore: bool) -> str:
+    if existing_entry and existing_entry.get("description"):
+        return existing_entry["description"]
+    return f"探索自动生成: {request.get('text', '')[:60]}"
+
+
+def _merge_match_rule(existing_entry: Optional[dict], request: dict, is_reexplore: bool) -> dict:
+    inferred = _infer_match_rule(request)
+    if not existing_entry:
+        return inferred
+
+    old_match = existing_entry.get("match") or {}
+    merged: dict = {}
+
+    domain_pattern = old_match.get("domain_pattern") or inferred.get("domain_pattern")
+    if domain_pattern:
+        merged["domain_pattern"] = domain_pattern
+
+    old_keywords = list(old_match.get("keyword") or [])
+    new_keywords = list(inferred.get("keyword") or [])
+    merged_keywords = list(dict.fromkeys(old_keywords + new_keywords))  # 去重，保序
+    if merged_keywords:
+        merged["keyword"] = merged_keywords[:8]  # 避免无限增长，跟 index/摘要体量挂钩
+
+    return merged or inferred
+
+
+# [本次新增] 上面 `_merge_index_description`/`_merge_match_rule` 是不依赖模型、
+# 纯规则的"保守合并"——重新探索时保留旧描述/旧 keyword，只做并集补充，避免
+# 被这次具体请求的措辞整体冲掉。但它有个明显局限：如果这次重新探索实际上
+# 带来了能力上的实质变化（比如从"通过百度 site:zhihu.com 间接检索"换成了
+# "直接站内搜索"），旧描述里那些已经不准确的实现细节会被无限期保留下去，
+# 纯规则合并没有能力判断"这算不算需要更新描述的实质变化"。
+#
+# 这一步需要"理解新旧两版能力分别是什么、有没有变化"，属于方案原则 3
+# （"确定性与不确定性分离：只有真正需要理解/判断的部分才调用 LLM"）里
+# 明确划给 LLM 的那一类工作，因此单独抽出一次职责单一的 LLM 调用：
+# 输入旧 description/match + 这次的 request + 新脚本源码，输出一份归纳后的
+# 通用描述与匹配规则；不携带主对话历史，失败/返回不合法内容时静默回退到
+# 上面的纯规则合并，不让 index 落盘因为一次可选的 LLM 调用失败而整体失败。
+_INDEX_SUMMARY_SYSTEM_PROMPT = """你在维护一个 agent skill 系统的检索摘要索引。
+
+背景：每个 member 在 `_index.json` 里有一份 description 与一份 match 规则
+（domain_pattern + keyword），用于"给定一个新请求，判断该不该复用这个
+member"这件事。现在这个 member 因为旧版本执行失败，被重新探索出了一版新
+脚本，你需要据此更新它的检索摘要。
+
+你会收到：
+- old_description / old_match：这个 member 之前的检索摘要（可能是人工写的，
+  也可能是上一次探索沉淀的，不一定完全准确）。
+- this_request：触发本次重新探索的一次具体请求（只是一个样本，不是这个
+  member 能处理的全部场景）。
+- new_script_preview：本次探索蒸馏出的新脚本源码（可能被截断）。
+
+你的任务：判断新脚本相对旧描述，能力/实现方式有没有实质变化（例如"通过
+搜索引擎间接检索"变成了"站内直接搜索"、支持的目标范围扩大或收窄了等），
+产出一份更新后的通用检索摘要：
+- description 必须描述这个 member **通用能做什么**，不能是这次具体请求的
+  复述或改写（例如不能写成"抓取关于 XX 的搜索结果"这种绑定了具体查询词的
+  句子）；如果新脚本相对旧描述没有实质变化，直接沿用旧 description。
+- match.domain_pattern：这个 member 适用的站点/资源匹配模式（通常是域名
+  通配符），没有变化就沿用旧值。
+- match.keyword：适合用于零成本关键词匹配的**通用**词/短语列表（3-8 个），
+  不要把这次请求里的具体查询词整体塞进去；可以在旧列表基础上增删。
+
+只输出一个 JSON 对象，不要 Markdown 代码块，不要任何解释文字，格式：
+{"description": "...", "match": {"domain_pattern": "...", "keyword": ["...", "..."]}}
+domain_pattern 字段没有合适值时可以省略。
+"""
+
+
+def _llm_merge_index_summary(
+    *, existing_entry: dict, request: dict, script_code: str,
+    distill_source_kind: str, skill_name: str, member_id: str, llm_helper: Any,
+) -> Optional[dict]:
+    from .capability_debug import capability_debug_log
+
+    try:
+        user_content = json.dumps(
+            {
+                "skill_name": skill_name,
+                "member_id": member_id,
+                "old_description": existing_entry.get("description"),
+                "old_match": existing_entry.get("match"),
+                "this_request": request,
+                "distill_source_kind": distill_source_kind,
+                "new_script_preview": script_code[:4000],
+            },
+            ensure_ascii=False,
+        )
+        raw = llm_helper.ask(
+            user_content, system=_INDEX_SUMMARY_SYSTEM_PROMPT,
+            max_retries=2, override_temperature=0.0,
+        )
+    except Exception as e:  # noqa: BLE001
+        capability_debug_log(
+            "distill_index_summary_llm_call_failed",
+            {"member_id": member_id, "error": str(e)},
+            where="distiller._llm_merge_index_summary",
+        )
+        return None
+
+    text = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    try:
+        parsed = json.loads(text)
+    except Exception:  # noqa: BLE001
+        capability_debug_log(
+            "distill_index_summary_llm_invalid_json",
+            {"member_id": member_id, "raw_preview": text[:300]},
+            where="distiller._llm_merge_index_summary",
+        )
+        return None
+
+    description = parsed.get("description")
+    match = parsed.get("match") or {}
+    if not isinstance(description, str) or not description.strip():
+        return None
+    if not isinstance(match, dict):
+        return None
+
+    result: dict = {"description": description.strip()}
+    resolved_match: dict = {}
+    domain_pattern = match.get("domain_pattern")
+    if isinstance(domain_pattern, str) and domain_pattern.strip():
+        resolved_match["domain_pattern"] = domain_pattern.strip()
+    keyword = match.get("keyword")
+    if isinstance(keyword, list):
+        keyword = [str(k).strip() for k in keyword if str(k).strip()]
+        if keyword:
+            resolved_match["keyword"] = keyword[:8]
+    result["match"] = resolved_match or (existing_entry.get("match") or {})
+    return result
+
+
+def _resolve_index_summary(
+    *, existing_entry: Optional[dict], request: dict, is_reexplore: bool,
+    content_preview: str, distill_source_kind: str, skill_name: str, member_id: str,
+    llm_helper: Any,
+) -> dict:
+    """决定这次落盘应该写进 `_index.json` 的 description/match。
+
+    `content_preview`：这次产出的新内容摘要，喂给 LLM 帮助判断"能力是否有
+    实质变化"——脚本路径传脚本源码，playbook 路径传 playbook 正文。
+
+    优先级：LLM 归纳（仅在"重新探索既有 member"且注入了 llm_helper 时尝试）
+    -> 纯规则合并 -> （首次创建时）从这次请求现推。任何一步失败都静默降级
+    到下一级，不让 index 落盘因为一次可选的 LLM 调用失败而整体失败。
+    """
+    if is_reexplore and existing_entry and llm_helper is not None:
+        merged = _llm_merge_index_summary(
+            existing_entry=existing_entry, request=request, script_code=content_preview,
+            distill_source_kind=distill_source_kind, skill_name=skill_name,
+            member_id=member_id, llm_helper=llm_helper,
+        )
+        if merged is not None:
+            from .capability_debug import capability_debug_log
+            capability_debug_log(
+                "distill_index_summary_llm_merged", {"member_id": member_id},
+                where="distiller._resolve_index_summary",
+            )
+            return merged
+
+    return {
+        "description": _merge_index_description(existing_entry, request, is_reexplore),
+        "match": _merge_match_rule(existing_entry, request, is_reexplore),
+    }
 
 
 def _load_json(path: Path, default: dict) -> dict:

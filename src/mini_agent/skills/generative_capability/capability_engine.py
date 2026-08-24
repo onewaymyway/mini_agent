@@ -534,6 +534,14 @@ class CapabilityEngine:
         # 父目录（即 `.claude/skills/`），与 `real_tools.py::
         # load_skill_local_tool_implementations()` 既有的路径约定一致。
         explorer_cfg["_resolved_skill_dir"] = str(self.skill_dir)
+        # [本次新增] 把 capability.yaml 里声明的 request_formats（run(input)
+        # 的输入字段契约：哪些字段必填、字段名分别是什么）一并传给探索子agent，
+        # 而不是只给它这一次触发探索的具体 request 实例。探索子agent/蒸馏
+        # LLM 手头如果只有一个具体样本，天然会把样本里的具体值当成"这个字段
+        # 大概率长这样"写进默认值/兜底逻辑（例如把这次的搜索关键词直接编码进
+        # url 默认值）；给出显式契约后，模型才能判断"哪些字段是这次请求碰巧
+        # 提供的值，哪些是接口层面本就该从 input 读取的通用字段"。
+        explorer_cfg["_request_formats"] = self.capability.get("request_formats")
 
         try:
             trace = self.explore_runner(request, intent_schema, explorer_cfg)
