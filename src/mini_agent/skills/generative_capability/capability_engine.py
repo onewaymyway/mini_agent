@@ -531,6 +531,12 @@ class CapabilityEngine:
             self_test_executor=self.tool_executor,
             reexplore_member_id=reexplore_member_id,
             llm_helper=self.llm_helper,
+            # [本次新增，见 next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+            # 3.3b"explore 阶段产出 playbook.md"] 未注入 playbook_repo 时
+            # distill() 行为不变（三条脚本路径失败即失败）；注入后，脚本
+            # 蒸馏全部失败时会退化为落一份 playbook.md，供 SKILL 档
+            # （self.skill_runner）今后参照执行。
+            playbook_repo=self.playbook_repo,
         )
 
     def _handle_reexplore_failure(self, member_id: str) -> None:

@@ -150,15 +150,17 @@ next_doc/generative-capability-skill-plan.md              # 追加阶段实施�
 ## 3. member 三档执行机制：合并 hybrid_exec
 
 **状态：`HybridExecutor` 主循环已接入 SKILL 档；`CapabilityEngine` 已用
-风险更低的方式试点接入 SKILL 档；`capability_engine` 整体委托给
-`HybridExecutor` 仍未开始**——继上一阶段完成 `HybridExecutor._run()` 的
-SKILL 档决策分支接线（3.3a-2 节）之后，本阶段进一步在 `CapabilityEngine`
-现有调用链路（不改动 `registry.json` script 状态机）里接入了同一档能力
-（见 3.3c 节），使 `browser-site-scraper` 等 generative-capability skill
-理论上已经能用上"script → skill → explore"优先级——只是目前 playbook 仍
-需人工预先放好，探索子agent自动产出 playbook、以及
-`capability_engine.resolve/execute` 整体委托给 `HybridExecutor.run()`
-（原方案范围最大、风险最高的一步）仍未开始。
+风险更低的方式试点接入 SKILL 档；探索失败脚本蒸馏时已能自动产出
+`playbook.md` 兜底；`capability_engine` 整体委托给 `HybridExecutor` 仍未
+开始**——继上一阶段完成 `HybridExecutor._run()` 的 SKILL 档决策分支接线
+（3.3a-2 节）、`CapabilityEngine` 试点接入 SKILL 档（3.3c 节）之后，本
+阶段进一步打通了"脚本蒸馏三条路径全部失败时自动落 playbook.md"（见
+3.3d 节），使 `browser-site-scraper` 等 generative-capability skill 的
+"script → skill → explore"优先级不再依赖人工预先放好 playbook——只要
+`capability_engine.py` 的调用方同时注入 `playbook_repo`/`skill_runner`
+（见 `skill_tier.py`），这个闭环即可自动运转。`capability_engine.resolve/
+execute` 整体委托给 `HybridExecutor.run()`（原方案范围最大、风险最高的
+一步）仍未开始。
 
 **开放问题决策（用户已确认）**：
 1. playbook 不复用 `ScriptRepository` 的 `<task_id>/v{n}.py` 目录布局，
@@ -321,25 +323,102 @@ SKILL 档"，本阶段已完成、不再属于未实施范围：
 ### 3.3b 仍未实施部分（下一阶段范围）
 
 **[本次更新]** 第一项"`capability_engine.py` 委托给 `HybridExecutor.run()`
-执行"仍未开始，见下方说明；但"三档执行顺序（script → skill → explore）在
+执行"仍未开始，见下方说明；"三档执行顺序（script → skill → explore）在
 `capability_engine` 里的实际调度逻辑"这一项，已经用一种**更小范围的方式**
-部分完成——见 3.3c 节。
+部分完成——见 3.3c 节；第二项"`explore` 阶段产出 `playbook.md` 的整理
+规则"本阶段**已实施**，见 3.3d 节；"SKILL 档执行时观察到可进一步参数化则
+顺手升级蒸馏为 script.py"仍未开始。
 
 - `capability_engine.py` 的 `resolve/execute` **整体**委托给
   `HybridExecutor.run()` 执行（见下方 3.4 节，原设计不变）——这仍是范围
   最大、风险最高的一步，涉及现有 `registry.json` 状态机与
   `ScriptRepository`/`PlaybookRepository` 的字段映射，尚未开始，留待
   确认 3.3c 节的试点验证结果后再评估是否需要。
-- `explore` 阶段产出 `playbook.md`（而非 `script.py`）的整理规则、以及
-  "SKILL 档执行时观察到可进一步参数化则顺手升级蒸馏为 script.py"这条
-  路径，均属于 `capability_engine`/`explorer_runtime.py`/`distiller.py`
-  领域侧改造范围，尚未开始——3.3c 节的 SKILL 档目前只能使用**人工/其它
-  工具预先放好**的 playbook，探索子agent自己还不会产出 playbook。
+- ~~`explore` 阶段产出 `playbook.md`（而非 `script.py`）的整理规则~~
+  **已实施，见 3.3d 节。** "SKILL 档执行时观察到可进一步参数化则顺手升级
+  蒸馏为 script.py"这条路径仍未开始，属于 `capability_engine`/
+  `skill_tier.py` 领域侧改造范围。
 - `meta.json` 新增 `available_tiers` 字段、`degraded` 判定改为"按当前
-  实际在用的最低成本可用 tier 连续失败计算"——3.3c 节的实现刻意**不**
-  触碰 `registry.json` 里 script 那一档已有的状态机，playbook 的成功率
-  统计完全独立记在单独的 `playbooks/<member_id>/meta.json` 里，二者互不
-  影响，`available_tiers`/`degraded` 这类"统一视角"的字段仍未实施。
+  实际在用的最低成本可用 tier 连续失败计算"——3.3c/3.3d 节的实现刻意
+  **不**触碰 `registry.json` 里 script 那一档已有的状态机，playbook 的
+  成功率统计完全独立记在单独的 `playbooks/<member_id>/meta.json` 里，
+  二者互不影响，`available_tiers`/`degraded` 这类"统一视角"的字段仍未
+  实施。
+
+### 3.3d 本阶段新增：`explore` 阶段产出 `playbook.md`（脚本蒸馏失败兜底）
+
+对应 3.3b 原先列出的第二项，本阶段已实施、不再属于未实施范围：脚本蒸馏
+三条路径（`script_source`/`llm_synthesized`/`trace_replay`，含各自的修复
+重试）**全部失败**、但探索本身确实成功且数据已通过 `intent_schema`
+校验时，`distill()` 不再直接判整次探索"无沉淀"，而是把探索过程整理成一份
+`playbook.md` 落盘，交给 3.3c 节的 SKILL 档今后参照执行——这正是打通"3.3c
+节 SKILL 档目前只能使用人工预先放好的 playbook"这一限制的自动化入口。
+
+**改动内容**：
+
+1. `distiller.py::DistillResult` 新增 `playbook_only: bool = False`
+   字段：脚本蒸馏全部失败但成功落 playbook 兜底时 `success=True` 且
+   `playbook_only=True`，调用方（`capability_engine.explore()`）据此得知
+   这次探索的沉淀物是 playbook 而非 script，但对现有 `explore()` 主流程
+   透明——`success=True` 时的处理逻辑不需要区分，行为与"蒸馏出脚本"完全
+   一致（重新加载 index/registry、返回 `status="success"`）。
+2. `distill()` 新增可选参数 `playbook_repo: Any = None`（通常是
+   `skill_tier.build_playbook_repo(skill_dir)` 构造的
+   `PlaybookRepository`）。未传时行为与此前完全一致，三条脚本路径失败
+   即直接返回失败——不默认改变任何既有调用方行为。
+3. 新增 `_build_playbook_markdown(trace, request, skill_name, member_id)`：
+   把 trace 中非失败的步骤（跳过探测性死胡同，与 trace_replay 脚本
+   "不区分死胡同和关键路径"的已知局限刻意划清界限）整理成"调用了什么
+   工具、参数结构大致什么样"的步骤列表，附上探索阶段实际拿到的数据形状
+   作为"预期产出形状"参考。刻意不把具体的标题/URL/数字等值写进步骤描述
+   本身，与 `explorer/prompt.md` 对 `script_source` 路径"禁止硬编码
+   具体数据"的既有要求保持一致的精神。
+4. 新增 `_persist_playbook_member(...)`：与 `_atomic_persist()` 对称，
+   但只登记 member 的检索元信息（`meta.json` + `registry.json` +
+   `_index.json`），不写 `script.py`——playbook 正文由
+   `playbook_repo.save_new_version()` 单独落盘（复用 3.3a 节已有的
+   `PlaybookRepository` 实现，不重复一套存储逻辑）。`registry.json`
+   条目新增 `execution_tier: "skill_only"` 标记（仅供人工/审计识别，不
+   参与任何现有状态机判断），`meta.json` 的 `distill_source_kind` 记为
+   `"playbook"`（区别于既有的 `script_source`/`llm_synthesized`/
+   `trace_replay` 三种）。member 目录下没有 `script.py` 时，
+   `CapabilityEngine._load_member_run()` 天然返回 `None`，`execute()`
+   判"脚本加载失败"，后续 `call()` 走到 3.3c 节的 `_try_skill()`，用
+   同一个 `member_id` 去 `playbook_repo` 里找 active playbook——两个
+   阶段（"产出 playbook"与"使用 playbook"）通过 `member_id` 这一既有
+   概念自然衔接，不需要新增映射机制。
+5. 新增 `_distill_to_playbook(...)`：串联上述两步，任何异常都静默返回
+   `None`（退回调用方原有的"全部路径失败"错误信息，不让这个兜底路径
+   本身的异常掩盖真正的失败原因）。
+6. `capability_engine.py::CapabilityEngine._distill()`：调用 `distill()`
+   时新增透传 `playbook_repo=self.playbook_repo`——`self.playbook_repo`
+   未注入时（既有调用方）仍是 `None`，行为不变；注入后（配合
+   `skill_tier.build_playbook_repo()`）即可自动打通"脚本蒸馏失败 →
+   落 playbook → 下次命中该 member 时 3.3c 节 SKILL 档自动使用"的完整
+   闭环。
+7. `tests/test_distiller_playbook_fallback.py`（新增，3 用例）：未注入
+   `playbook_repo` 时行为不变（向后兼容）、注入后脚本蒸馏失败正确落盘
+   playbook 且登记 member（`meta.json`/`registry.json`/`_index.json`
+   均验证，且确认没有 `script.py`）、`playbook_repo` 自身抛异常时不掩盖
+   原始的"全部路径失败"错误信息共 3 种场景，全部通过。连同既有
+   `test_generative_capability_engine.py`（45 用例通过，1 个与本次改动
+   无关的既有失败——`test_full_explore_distill_reuse_cycle`，与 3.3c
+   节记录的同一个环境相关预置失败，非本次改动引入）及全部
+   `hybrid_exec`/`generative_capability`/`distiller` 相关测试文件（排除
+   需要 `fastapi` 依赖、当前环境未安装的
+   `test_hybrid_exec_summary_route.py`），共 121 用例通过、2 个既有失败
+   （另一个是 `test_generative_capability_real_tools.py` 里缺少
+   `websocket-client` 依赖导致的环境相关失败，同样与本次改动无关），
+   无新增回归。
+
+**已知限制（留给后续阶段）**：
+- "SKILL 档执行时观察到可进一步参数化则顺手升级蒸馏为 `script.py`"仍未
+  实现——目前 playbook 一旦落盘，除非重新探索（`reexplore_member_id`），
+  不会自动尝试再次升级为脚本。
+- `meta.json`/`registry.json` 里 `execution_tier`/`available_tiers`/
+  统一 `degraded` 判定仍是 3.3b 节列出的未实施范围，本阶段的
+  `execution_tier: "skill_only"` 只是一个信息性标记，不是该统一视角的
+  正式实现。
 
 ### 3.3c 本阶段新增：CapabilityEngine 试点接入 SKILL 档（不改动 registry.json 状态机）
 

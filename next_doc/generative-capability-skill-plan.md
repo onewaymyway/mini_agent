@@ -2702,3 +2702,53 @@ script 状态机，只在 `CapabilityEngine.call()` 现有的"命中 member 执�
 - `meta.json` 新增 `available_tiers` 字段、`degraded` 判定改为"按当前
   实际在用的最低成本可用 tier 连续失败计算"——本阶段刻意不碰
   `registry.json` 的既有状态机，这两项仍未实施。
+
+### 阶段三十 —— 完成：`explore()` 脚本蒸馏失败时自动退化产出 `playbook.md`
+
+**背景**：承接阶段二十九遗留的第一项"`explore()` 失败时退化整理出
+`playbook.md` 的规则——目前 playbook 只能人工/其它工具预先放好"。本阶段
+补上这条自动化路径，使阶段二十九打通的"有 playbook 就优先于 explore 使用"
+与"没有 playbook 时如何自动产生第一份"两端首尾相接。
+
+详见 `next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md`
+第3节 3.3d 节的完整实施记录，此处摘要：
+
+1. `distiller.py::DistillResult` 新增 `playbook_only: bool = False` 字段；
+   `distill()` 新增可选参数 `playbook_repo`（未传时行为与此前完全一致）。
+2. 脚本蒸馏三条路径（`script_source`/`llm_synthesized`/`trace_replay`，
+   含各自的修复重试）全部失败、但探索本身成功且数据已通过
+   `intent_schema` 校验时，若注入了 `playbook_repo`，新增的
+   `_distill_to_playbook()` 会把探索过程整理成 `playbook.md`
+   （`_build_playbook_markdown()`：只保留"调用了什么工具、参数结构大致
+   什么样"，跳过探测性死胡同步骤，不硬编码具体观察到的数据值），通过
+   `playbook_repo.save_new_version()` 落盘，并用新增的
+   `_persist_playbook_member()` 登记 member 检索元信息（`meta.json` 的
+   `distill_source_kind` 记为 `"playbook"`，`registry.json` 条目新增
+   `execution_tier: "skill_only"` 标记），不写 `script.py`。任何异常都
+   静默返回 `None`，退回调用方原有的"全部路径失败"错误信息，不掩盖真实
+   失败原因。
+3. `capability_engine.py::CapabilityEngine._distill()` 调用 `distill()`
+   时透传 `playbook_repo=self.playbook_repo`——未注入时（既有调用方）
+   仍是 `None`，行为不变；注入后即可自动打通"脚本蒸馏失败 → 落
+   playbook → 下次命中该 member 时阶段二十九的 SKILL 档自动使用"闭环，
+   两阶段通过既有的 `member_id` 概念自然衔接。
+4. `tests/test_distiller_playbook_fallback.py`（新增，3 用例）：未注入
+   `playbook_repo` 行为不变、注入后正确落盘 playbook 且登记 member（且
+   确认没有 `script.py`）、`playbook_repo` 自身异常不掩盖原始失败信息。
+   连同既有 `test_generative_capability_engine.py`（45 用例通过，1 个与
+   本次改动无关的既有失败，与阶段二十九记录的同一个环境相关预置失败）
+   及全部 `hybrid_exec`/`generative_capability`/`distiller` 相关测试
+   文件（`test_hybrid_exec_summary_route.py` 因当前环境未安装 `fastapi`
+   排除在外），共 121 用例通过、2 个既有失败（另一个是
+   `test_generative_capability_real_tools.py` 里缺少 `websocket-client`
+   依赖导致的环境相关失败，同样与本次改动无关），无新增回归。
+
+**本阶段未完成、留待下一阶段的部分**：
+- "SKILL 档执行时观察到可进一步参数化则顺手升级蒸馏为 `script.py`"仍未
+  实现——playbook 一旦落盘，除非触发重新探索，不会自动尝试再次升级为
+  脚本。
+- `capability_engine.resolve/execute` 整体委托给 `HybridExecutor.run()`
+  仍未开始，同阶段二十九遗留说明。
+- `meta.json`/`registry.json` 里 `available_tiers`/统一 `degraded` 判定
+  仍未实施，本阶段新增的 `execution_tier: "skill_only"` 只是信息性标记，
+  不是该统一视角的正式实现。

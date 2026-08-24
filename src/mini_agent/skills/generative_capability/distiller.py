@@ -100,6 +100,14 @@ class DistillResult:
     # 人工）据此判断"探索明明成功了，为什么代码复用会炸"，而不是只拿到一句
     # 摘要错误字符串；成功时也带上，方便审计修复过程。见文件头本次新增说明。
     trace_context: Optional[dict] = None
+    # [本次新增，见 next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
+    # 第3节 3.3b"explore 阶段产出 playbook.md"] 当三条脚本蒸馏路径全部失败、
+    # 但调用方注入了 playbook_repo 时，distill() 会退化为把本次探索整理成一份
+    # playbook.md 落盘（而不是彻底判整次探索失败），这种情况下 success=True 但
+    # playbook_only=True，member 目录下没有 script.py，只有一份可供 SKILL 档
+    # （PlaybookRunner）参照执行的步骤说明——语义上是"script 挂了/写不出来，
+    # 退到更鲁棒但更贵的 skill 档"，而不是"这次探索完全没有任何沉淀"。
+    playbook_only: bool = False
 
 
 SCRIPT_TEMPLATE = '''"""
@@ -409,6 +417,7 @@ def distill(
     self_test_executor,
     reexplore_member_id: Optional[str] = None,
     llm_helper: Any = None,
+    playbook_repo: Any = None,
 ) -> DistillResult:
     """
     self_test_executor: Callable[[str, dict], dict] —— 蒸馏产物沙箱自测时
@@ -419,6 +428,12 @@ def distill(
     llm_helper: [阶段二十五新增] 通常是当前 `Agent.llm_helper`，用于
     script_source 缺失时的"LLM 事后总结"路径（见文件头"三条蒸馏路径"）。
     不传时该路径自动跳过，直接退到 trace-replay，行为等同阶段二十四。
+
+    playbook_repo: [本次新增，见 DistillResult.playbook_only 说明] 通常是
+    `skill_tier.build_playbook_repo(skill_dir)` 构造的
+    `hybrid_exec.playbook_repository.PlaybookRepository`。不传时行为与
+    此前完全一致——三条脚本路径全部失败即直接返回失败，不做任何 playbook
+    兜底（保持向后兼容，不默认改变既有调用方行为）。
 
     依次尝试 script_source -> llm_synthesized -> trace_replay 三条路径
     （见文件头说明），命中第一条产出即可通过自测/校验的就用它，不会
@@ -608,6 +623,28 @@ def distill(
         where="distiller.distill",
     )
     summary = "；".join(f"{a['path']}#{a.get('round', 0)}: {a['error']}" for a in attempt_errors)
+
+    # [本次新增] 三条脚本蒸馏路径全部失败，但探索本身确实成功、数据也已经
+    # 通过 intent_schema 校验（见函数开头）——这次探索不是"没有任何可复用
+    # 价值"，只是"这次没能固化成确定性代码"。playbook_repo 存在时，退化为
+    # 把探索过程整理成一份 playbook.md，交给更鲁棒（但更贵）的 SKILL 档
+    # （PlaybookRunner）今后参照执行，而不是彻底丢弃这次探索的沉淀。
+    if playbook_repo is not None:
+        playbook_result = _distill_to_playbook(
+            trace=trace, request=request, skill_name=skill_name, member_id=member_id,
+            skill_dir=skill_dir, capability=capability, intent_schema=intent_schema,
+            is_reexplore=reexplore_member_id is not None, playbook_repo=playbook_repo,
+            script_failure_summary=summary,
+        )
+        if playbook_result is not None:
+            capability_debug_log(
+                "distill_fallback_to_playbook",
+                {"member_id": member_id, "skill_name": skill_name,
+                 "script_failure_summary": summary},
+                where="distiller.distill",
+            )
+            return playbook_result
+
     return DistillResult(
         success=False,
         error=f"全部蒸馏路径均失败（含修复重试）——{summary}",
@@ -934,6 +971,159 @@ def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, reques
     meta_tmp.replace(meta_path)
     registry_tmp.replace(registry_path)
     index_tmp.replace(index_path)
+
+
+def _build_playbook_markdown(trace: ExploreTrace, request: dict, skill_name: str, member_id: str) -> str:
+    """[本次新增] 把一次成功探索的 trace 整理成人类可读的步骤说明（playbook），
+    供 SKILL 档（`hybrid_exec.playbook_runner.PlaybookRunner`）驱动的轻量
+    Agent 今后参照执行——不是逐动作固化重放（那是 trace_replay 脚本在做的
+    事，天然脆弱），而是给出"大致该怎么做"的 SOP，允许执行时按页面实际状态
+    做局部适应。刻意不把本次探索观察到的具体数据（标题/URL/数字等）写进
+    步骤描述本身，只保留"用了哪个工具、传了什么参数结构、目的是什么"，
+    与 explorer/prompt.md 里对 script_source 路径"禁止硬编码具体数据"的
+    要求保持一致的精神（playbook 同样不该是"这次跑出来的答案的说明书"，
+    而应该是"下次遇到类似请求该怎么做"的说明书）。
+    """
+    lines: list[str] = [
+        f"# {skill_name} / playbook / {member_id}",
+        "",
+        "本 playbook 由 generative-capability 引擎在脚本蒸馏失败后自动整理生成"
+        "（source: explored, distill_source_kind: playbook），供 SKILL 档轻量 "
+        "Agent 参照执行。它描述的是一套可复用的操作步骤，不是本次探索观察到的"
+        "具体结果——执行时请以当前 `input`/页面实际状态为准，选择器、文案等"
+        "细节如与描述不完全一致，按目的做合理调整。",
+        "",
+        "## 原始请求（仅供理解意图，不代表本次调用的 input）",
+        f"- text: {request.get('text', '')}",
+        f"- target: {json.dumps(request.get('target', {}), ensure_ascii=False)}",
+        "",
+        "## 步骤",
+    ]
+    step_no = 0
+    for step in trace.steps:
+        if step.error:
+            # 探索过程中的探测性失败/死胡同不写进 playbook 步骤序列——
+            # playbook 描述的是"该怎么做"，不是"探索时踩过哪些坑"，与
+            # trace_replay 脚本"不区分死胡同和关键路径导致重放必炸"的
+            # 已知局限刻意划清界限（见文件头三条蒸馏路径说明）。
+            continue
+        step_no += 1
+        input_desc = json.dumps(step.input, ensure_ascii=False) if step.input else "{}"
+        lines.append(f"{step_no}. 调用工具 `{step.tool}`，参数结构参考: `{input_desc}`")
+    if step_no == 0:
+        lines.append("（本次探索未记录到非失败的具体步骤，仅可参考最终产出的数据形状。）")
+    lines.extend([
+        "",
+        "## 预期产出形状",
+        "执行完成后应产出符合本 skill `intent_schema_template` 的结构化数据"
+        "（可参照下方本次探索实际取得的数据形状，具体取值仅供参考，不是"
+        "固定答案）：",
+        "```json",
+        json.dumps(trace.data, ensure_ascii=False, indent=2),
+        "```",
+    ])
+    return "\n".join(lines)
+
+
+def _persist_playbook_member(*, skill_dir: Path, member_id: str, request: dict,
+                              capability: dict, intent_schema: dict, is_reexplore: bool) -> None:
+    """[本次新增] 与 `_atomic_persist()` 对称，但只登记 member 的检索元信息
+    （meta.json + registry.json + _index.json），不写 `script.py`——playbook
+    正文由调用方通过 `playbook_repo.save_new_version()` 单独落盘（复用
+    `hybrid_exec.playbook_repository.PlaybookRepository` 的既有实现，不在
+    这里重复一套 playbook 存储逻辑）。member 目录下没有 script.py 时，
+    `CapabilityEngine._load_member_run()` 会返回 None，`execute()` 判该
+    member "脚本加载失败"，随后 `call()` 会走到 `_try_skill()`，用同一个
+    member_id 去 playbook_repo 里找 active playbook——这正是本函数存在的
+    目的：让 resolve() 今后能检索到这个 member，实际执行交给 SKILL 档。
+    """
+    members_dir = skill_dir / "members"
+    member_dir = members_dir / member_id
+    member_dir.mkdir(parents=True, exist_ok=True)
+
+    meta_path = member_dir / "meta.json"
+    prev_version = 1
+    if is_reexplore and meta_path.exists():
+        try:
+            prev_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            prev_version = int(prev_meta.get("version", 1)) + 1
+        except Exception:  # noqa: BLE001
+            prev_version = 2
+    meta = {
+        "source": "explored",
+        "version": prev_version,
+        "intent_schema": intent_schema,
+        "distilled_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "distill_source_kind": "playbook",
+        "distill_used_trace_data_fallback": False,
+        "distilled_from_request": {
+            "text": request.get("text", ""),
+            "target": request.get("target", {}),
+        },
+    }
+    meta_tmp = meta_path.with_suffix(".json.tmp")
+    meta_tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    registry_path = skill_dir / "registry.json"
+    registry = _load_json(registry_path, {"members": {}})
+    registry["members"][member_id] = {
+        "status": "probation",
+        "status_changed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "intent_schema": intent_schema,
+        "success_count": 0,
+        "fail_count": 0,
+        "consecutive_failures": 0,
+        "last_success": None,
+        "last_failure": None,
+        # 与 script 档区分：execute() 天然会因缺少 script.py 而失败，
+        # 该状态字段只是让人工/事后审计能一眼看出"这是一个只有 playbook
+        # 可用的 member"，不参与任何现有状态机判断逻辑。
+        "execution_tier": "skill_only",
+    }
+    registry_tmp = registry_path.with_suffix(".json.tmp")
+    registry_tmp.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    index_path = skill_dir / "_index.json"
+    index = _load_json(index_path, {"members": []})
+    members_list = [m for m in index.get("members", []) if m.get("member_id") != member_id]
+    members_list.append({
+        "member_id": member_id,
+        "description": f"探索自动生成(playbook): {request.get('text', '')[:60]}",
+        "match": _infer_match_rule(request),
+    })
+    index["members"] = members_list
+    index_tmp = index_path.with_suffix(".json.tmp")
+    index_tmp.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    meta_tmp.replace(meta_path)
+    registry_tmp.replace(registry_path)
+    index_tmp.replace(index_path)
+
+
+def _distill_to_playbook(*, trace: ExploreTrace, request: dict, skill_name: str, member_id: str,
+                          skill_dir: Path, capability: dict, intent_schema: dict, is_reexplore: bool,
+                          playbook_repo: Any, script_failure_summary: str) -> Optional["DistillResult"]:
+    """[本次新增] `distill()` 三条脚本路径全部失败后的兜底：整理 playbook.md
+    并落盘登记 member。任何一步出错都静默返回 None（退回调用方原有的
+    "全部路径失败"错误信息，不让 playbook 兜底本身的异常掩盖真正的失败
+    原因），因为这是锦上添花的兜底路径，不应该比它试图挽救的失败更显眼。
+    """
+    try:
+        markdown = _build_playbook_markdown(trace, request, skill_name, member_id)
+        playbook_repo.save_new_version(member_id, markdown, created_by="agent_explorer")
+        _persist_playbook_member(
+            skill_dir=skill_dir, member_id=member_id, request=request,
+            capability=capability, intent_schema=intent_schema, is_reexplore=is_reexplore,
+        )
+    except Exception:  # noqa: BLE001 — 兜底路径本身失败时静默退回主失败结果
+        return None
+
+    trace_context = _build_trace_context(trace)
+    trace_context["script_distill_failure_summary"] = script_failure_summary
+    return DistillResult(
+        success=True, member_id=member_id, data=trace.data,
+        trace_context=trace_context, playbook_only=True,
+    )
 
 
 def _infer_match_rule(request: dict) -> dict:
