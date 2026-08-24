@@ -21,6 +21,7 @@ from .explorer import AgentExplorer, Explorer, LLMExplorer
 from .fallback import FallbackExecutor
 from .kanban_summary import build_kanban_summary
 from .playbook_repository import PlaybookRecord, PlaybookRepository
+from .playbook_runner import PlaybookInvalidError, PlaybookRunner
 from .policy import ReexplorePolicy
 from .recorder import RunRecorder
 from .repairer import AgentRepairer, LLMRepairer, Repairer
@@ -50,6 +51,8 @@ __all__ = [
     "ScriptRecord",
     "PlaybookRepository",
     "PlaybookRecord",
+    "PlaybookRunner",
+    "PlaybookInvalidError",
     "ScriptRunner",
     "RunnerAppConfig",
     "RunRecorder",

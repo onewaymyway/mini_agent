@@ -2579,12 +2579,26 @@ store"，由每个 `Agent.__init__()` 调用 `configure_raw_result_store()` 写�
    既有 `test_hybrid_exec.py`/`test_hybrid_exec_p3.py`/
    `test_hybrid_exec_p4.py`/`test_hybrid_exec_summary_route.py`
    （共 47 用例）无回归。
+5. `hybrid_exec/playbook_runner.py`（新增）：`PlaybookRunner`，与
+   `explorer.py::AgentExplorer`/`FallbackExecutor.agent_direct` 同构地
+   复用 `_agent.run_agent_prompt()`，给定 playbook 文本 + `TaskSpec`，
+   拉起一次执行，返回 Agent 最后一轮的原始文本回复。约定回复以
+   `PLAYBOOK_INVALID:` 开头时抛出 `PlaybookInvalidError`，供调用方区分
+   "这次执行失败"和"这份 playbook 该退役了"。`max_turns` 构造参数没有
+   默认值，必须显式传入——对应用户确认的"skill 档工具集/回合预算暂不
+   预设数值"。新增 `prompts/run_playbook.md` 提示模板。
+6. `tests/test_hybrid_exec_playbook_runner.py`（新增，5 用例）：mock 掉
+   `_agent.run_agent_prompt`，验证 prompt 拼装、参数透传、`max_turns`
+   缺失时报错（而非静默用默认值）、`PLAYBOOK_INVALID:` 前缀识别。全量
+   通过；本阶段累计新增 13 用例，加上既有 hybrid_exec 全部测试文件共
+   91 用例，全部通过，无回归。
 
 **本阶段未完成、留待下一阶段的部分**（详见
 `generative_capability_raw_result_and_hybrid_merge_plan.md` 3.3b 节）：
-- `PlaybookRunner`：真正"给定 playbook 文本 + input，拉起工具集受限、
-  回合预算较小的 Agent 执行一次"的执行器，对应 `hybrid_exec/explorer.py`
-  里 `LLMExplorer`/`AgentExplorer` 的定位，尚未实现。
+- `HybridExecutor._run()` 主循环尚未接入 SKILL 档决策分支（脚本失败/
+  缺失后先试 `PlaybookRunner`，再降级到 explore/fallback）——`PlaybookRunner`
+  本身已实现且测试通过，但还没接进这条既有的、测试覆盖充分的成熟主循环，
+  避免在没有先验证更小范围接线的情况下贸然改动核心决策链路。
 - `capability_engine.py` 的 `resolve/execute` 委托给 `HybridExecutor.run()`
   执行——范围最大、风险最高的一步，涉及现有 `registry.json` 状态机与
   `ScriptRepository`/`PlaybookRepository` 的字段映射，尚未开始，建议先在

@@ -149,11 +149,12 @@ next_doc/generative-capability-skill-plan.md              # 追加阶段实施�
 
 ## 3. member 三档执行机制：合并 hybrid_exec
 
-**状态：基础设施已实施一部分，主循环整合仍未开始**——本阶段完成了两个
-开放问题的决策落地（`ExecutionTier.SKILL` 定义、`PlaybookRepository` 独立
-版本化目录），以及与之相关、可独立验证的存储层代码；`capability_engine.py`
-委托给 `HybridExecutor` 执行、`PlaybookRunner`（skill 档真正的"参照 playbook
-执行"逻辑）、以及三档执行顺序的接线，仍未开始，留待下一阶段。
+**状态：核心执行原语已实施，`capability_engine` 主循环整合仍未开始**——本阶段
+完成了两个开放问题的决策落地（`ExecutionTier.SKILL` 定义、`PlaybookRepository`
+独立版本化目录、`PlaybookRunner` 执行原语），以及与之相关、可独立验证的
+存储层+执行层代码；`capability_engine.py` 委托给 `HybridExecutor` 执行、
+`HybridExecutor` 主循环接入 SKILL 档、以及三档执行顺序的接线，仍未开始，
+留待下一阶段。
 
 **开放问题决策（用户已确认）**：
 1. playbook 不复用 `ScriptRepository` 的 `<task_id>/v{n}.py` 目录布局，
@@ -234,20 +235,39 @@ script 一档的成败统计——script 挂了不必然要重新探索，先尝
   两个仓库里的版本历史完全独立"的显式回归验证。全量通过，既有
   `test_hybrid_exec.py`/`test_hybrid_exec_p3.py`/`test_hybrid_exec_p4.py`/
   `test_hybrid_exec_summary_route.py` 无回归（共 47 + 8 = 55 用例）。
+- `hybrid_exec/playbook_runner.py`（新增）：`PlaybookRunner`，与
+  `explorer.py::AgentExplorer`/`FallbackExecutor.agent_direct` 同构地
+  复用 `_agent.run_agent_prompt()`（"临时起一个最小 Agent 跑一次 prompt"
+  的共享逻辑），给定 playbook 文本 + `TaskSpec`，拉起一次执行，返回 Agent
+  最后一轮的原始文本回复（是否/如何解析交给 `TaskSpec.output_validator`，
+  与 `agent_direct()` 的既有约定一致，不新增一套解析规则）。约定 Agent
+  最终回复以 `PLAYBOOK_INVALID:` 开头时视为"这份 playbook 根本走不通"，
+  抛出 `PlaybookInvalidError`（携带原因），供调用方区分"这次执行失败，
+  值得重试"和"这份 playbook 该退役了"两种情况。
+  **`max_turns` 构造参数没有默认值，必须显式传入**——对应用户已确认的
+  "skill 档工具集/回合预算暂不预设数值"，不在这里偷偷塞一个默认值。
+  新增 `prompts/run_playbook.md` 提示模板，风格与既有
+  `prompts/explore_script_agent.md`/`prompts/fallback_agent.md` 一致。
+- `tests/test_hybrid_exec_playbook_runner.py`（新增，5 用例）：mock 掉
+  `_agent.run_agent_prompt`（同 `test_hybrid_exec_p2.py` 的既有模式），
+  验证 prompt 拼装、`max_turns`/`session_label` 透传、`max_turns` 缺失时
+  报 `TypeError`（而不是静默用某个默认值）、`PLAYBOOK_INVALID:` 前缀正确
+  识别为 `PlaybookInvalidError`（含"未说明原因"兜底文案）。全量通过；
+  连同前述 `playbook_repository` 测试，本阶段新增 13 用例，加上既有
+  hybrid_exec 全部测试文件共 91 用例，全部通过，无回归。
 
 ### 3.3b 仍未实施部分（下一阶段范围）
 
-- `PlaybookRunner`：真正"参照 playbook 执行"的执行器，对应
-  `hybrid_exec/explorer.py` 里 `LLMExplorer`/`AgentExplorer` 的定位，
-  需要新增一个"给定 playbook 文本 + input，拉起一个工具集受限、回合预算
-  较小的 Agent 执行一次"的类。工具集范围、回合预算按用户决策，届时结合
-  真实场景一次性定下，不预设具体数值。
 - `capability_engine.py` 的 `resolve/execute` 委托给 `HybridExecutor.run()`
-  执行（见下方 3.3 节，原设计不变）——这是范围最大、风险最高的一步，
+  执行（见下方 3.4 节，原设计不变）——这是范围最大、风险最高的一步，
   涉及现有 `registry.json` 状态机与 `ScriptRepository`/`PlaybookRepository`
   的字段映射，建议先在 `browser-site-scraper` 单一领域试点验证接线逻辑，
   再考虑其余两个 generative-capability skill 是否同步迁移（与第4节实施
-  顺序建议一致）。
+  顺序建议一致）。`PlaybookRunner` 已实现（见 3.3a），但尚未接入
+  `HybridExecutor._run()` 的主循环状态机（脚本失败→修复→探索→fallback
+  这条既有链路里还没有 SKILL 档的位置）——`HybridExecutor` 是一个已经
+  上线、测试覆盖充分的成熟模块，在没有先跑通"capability_engine 直接调用
+  PlaybookRunner"这条更小路径之前，不贸然改动它的主决策链路。
 - 三档执行顺序（script → skill → explore）在 `capability_engine` 里的
   实际调度逻辑，以及 `meta.json` 新增 `available_tiers` 字段、
   `degraded` 判定改为"按当前实际在用的最低成本可用 tier 连续失败计算"。
@@ -276,12 +296,14 @@ script 一档的成败统计——script 挂了不必然要重新探索，先尝
 ### 3.5 改动文件清单（预估，尚未实施部分）
 
 ```
-src/mini_agent/hybrid_exec/explorer.py            # 新增 PlaybookRunner
-                                                    # （对应"参照 playbook 执行"，
-                                                    # 见 3.3b；spec.py/
-                                                    # playbook_repository.py
-                                                    # 已在本阶段实施完成，不再
-                                                    # 列入本清单）
+src/mini_agent/hybrid_exec/executor.py            # HybridExecutor._run() 接入
+                                                    # SKILL 档决策分支（脚本失败/
+                                                    # 缺失后先试 PlaybookRunner，
+                                                    # 再降级到 explore/fallback）；
+                                                    # spec.py/playbook_repository.py/
+                                                    # playbook_runner.py 均已在
+                                                    # 本阶段实施完成，不再列入
+                                                    # 本清单
 .claude/skills/_engine/capability_engine.py        # resolve() 保留，execute()
                                                     # 改为委托给 HybridExecutor
 .claude/skills/_engine/distiller.py                # 落盘逻辑改为经由
