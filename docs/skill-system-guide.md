@@ -710,22 +710,44 @@ tier 正是为了给两者合并铺路而新增的。
   `distill_source_kind` 记为 `"skill_upgraded"`。升级失败不影响本次调用已经
   拿到的成功结果，也不影响 playbook 本身的成败统计——纯粹是"锦上添花"。
 
-**当前实现边界（需注意）**：上述 `_try_skill()`/playbook 落盘/升级三条逻辑，
-都是**在 `CapabilityEngine` 现有的 `resolve→execute→explore→distill` 链路里
-直接插入的**，而不是把 `capability_engine` 整体委托给 `HybridExecutor.run()`
-执行——`registry.json` 里 script 那一档的 `probation/trusted/degraded/dead`
-状态机与 `playbooks/<member_id>/` 下 playbook 的成败统计是两套完全独立的
-计数（互不影响，也互不感知对方的状态），`meta.json`/`registry.json` 尚未有
-`available_tiers`（该 member 当前实际具备哪些手段）这类统一视角字段，
-`degraded` 判定目前仍只看 script 那一档的连续失败次数，不考虑"script 挂了
-但 skill 档还能用"这种情况。`_try_skill()` 也只有"命中 member 执行失败之后"
-这一个触发时机，没有类似 `hybrid_exec.TaskSpec.allow_tiers` 那样可以让调用方
-直接跳过 SCRIPT 档、指定优先用哪一档的精细控制。这些是刻意收窄的范围（先验证
-"三档顶用不用"，把"要不要整体迁移到 `HybridExecutor`"作为独立评估留给后续），
-不是遗漏。完整设计动机、与 `hybrid_exec` 的对应关系表、分阶段实施记录见独立
-文档
+**当前实现边界（需注意，本次订正）**：上述 `_try_skill()`/playbook 落盘/
+升级三条逻辑，都是**在 `CapabilityEngine` 现有的 `resolve→execute→explore→
+distill` 链路里直接插入的**，而不是把 `capability_engine` 整体委托给
+`HybridExecutor.run()` 执行——`registry.json` 里 script 那一档的
+`probation/trusted/degraded/dead` 状态机与 `playbooks/<member_id>/` 下
+playbook 的成败统计仍是两套完全独立的计数（互不影响，也互不感知对方的
+状态），`degraded` 判定目前仍只看 script 那一档的连续失败次数，不考虑
+"script 挂了但 skill 档还能用"这种情况。这是刻意收窄的范围（先验证"三档
+顶用不用"，把"要不要整体迁移到 `HybridExecutor`"作为独立评估留给后续），
+不是遗漏。完整设计动机、与 `hybrid_exec` 的对应关系表、分阶段实施记录见
+独立文档
 [generative_capability_raw_result_and_hybrid_merge_plan.md](../next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md)
 第 3 节。
+
+在上述边界之内，[generative_capability_three_tier_improvement_plan.md](../next_doc/generative_capability_three_tier_improvement_plan.md)
+已经补上三处小改进（均为可选/默认不改变既有行为）：
+
+- **`available_tiers` 信息性字段**（阶段一）：`registry.json` 每个 member
+  条目新增 `available_tiers` 字段（如 `["script"]`/`["skill"]`/
+  `["script", "skill"]`），记录该 member 当前实际具备哪些执行手段，供人工
+  排查使用。纯只读计算 + 写入，**不参与**任何现有决策逻辑（`_apply_
+  lifecycle`/`_try_skill`/`explore` 的触发条件均不读取这个字段）——不是
+  上面提到的那个真正统一的状态机，只是让状态可见。
+- **skill 升级尝试冷却期**（阶段二）：`_maybe_upgrade_skill_to_script`
+  升级失败后会在 playbook 的 `meta.json` 里记录
+  `last_upgrade_attempt_at`（`PlaybookRepository.record_upgrade_attempt()`），
+  距上次失败尝试未超过 `capability.yaml -> lifecycle -> skill_upgrade_
+  retry_cooldown_seconds`（默认 3600 秒，可覆盖）时跳过本次升级检查，
+  避免升级持续失败时每次 `_try_skill` 成功都重新触发一次 LLM 调用。
+  不影响 playbook 自身的 `success_count`/`fail_count` 统计。
+- **`call()` 支持 `allow_tiers`**（阶段三）：`CapabilityEngine.call(request,
+  allow_tiers=None)` 新增可选参数，值为 `{"script", "skill", "explore"}`
+  的子集，让调用方能主动跳过明知会失败的档位（例如已知该 member 刚被标记
+  `degraded`，跳过必然失败的 script 档、直接尝试 skill）。默认 `None`
+  时行为与此前完全一致；被跳过的档位不产生任何执行尝试，不计入
+  `registry.json`/playbook 的成败统计。这是"改进方向 #4"里提到的
+  `hybrid_exec.TaskSpec.allow_tiers` 式精细控制在 `capability_engine`
+  这一侧的最小实现，`resolve()` 的检索逻辑本身不受影响。
 
 **探索子agent实际拿到的工具集（阶段二十二订正）**：并不是"系统全部已注册
 通用工具"——`build_subagent_explorer()` 内部把 `agent.registry` 换成私有
@@ -1061,7 +1083,11 @@ loader.auto_activate_blocked   # -> ['docx', ...]
 
 ---
 
-> 最后更新：2026-08（补充 generative-capability 三档 member 执行机制
+> 最后更新：2026-08（generative_capability_three_tier_improvement_plan.md
+> 阶段一/二/三：`registry.json` 新增只读 `available_tiers` 字段、skill
+> 升级尝试加冷却期节流、`CapabilityEngine.call()` 新增可选 `allow_tiers`
+> 参数，均为可选/默认不改变既有行为，详见该文档实施记录）；
+> 此前更新：2026-08（补充 generative-capability 三档 member 执行机制
 > script→skill→explore 的双向流转说明：`_try_skill()`/playbook 落盘兜底/
 > 升级蒸馏为 script.py，及其与 `HybridExecutor` 尚未整体合并的边界，详见
 > `next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md` 第3节）；

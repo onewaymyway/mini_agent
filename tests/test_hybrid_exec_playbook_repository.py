@@ -101,6 +101,25 @@ class TestPlaybookRepository(unittest.TestCase):
         self.assertEqual(script_path.suffix, ".py")
         self.assertEqual(playbook_path.suffix, ".md")
 
+    def test_record_upgrade_attempt_writes_timestamp_without_touching_success_fail(self):
+        """对应 next_doc/generative_capability_three_tier_improvement_plan.md
+        阶段二：record_upgrade_attempt 只写 last_upgrade_attempt_at，不影响
+        success_count/fail_count/consecutive_fail 等 playbook 自身的执行
+        成败统计。"""
+        self.repo.save_new_version("t1", "说明", "agent_explorer")
+        self.repo.record_success("t1", 1)
+
+        before = self.repo.get_active_playbook("t1")
+        self.assertIsNone(before.last_upgrade_attempt_at)
+
+        self.repo.record_upgrade_attempt("t1", 1)
+
+        after = self.repo.get_active_playbook("t1")
+        self.assertIsNotNone(after.last_upgrade_attempt_at)
+        self.assertEqual(after.success_count, before.success_count)
+        self.assertEqual(after.fail_count, before.fail_count)
+        self.assertEqual(after.consecutive_fail, before.consecutive_fail)
+
 
 if __name__ == "__main__":
     unittest.main()

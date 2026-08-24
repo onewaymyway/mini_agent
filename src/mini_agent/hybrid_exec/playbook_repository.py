@@ -48,6 +48,12 @@ class PlaybookRecord:
     fail_count: int = 0
     consecutive_fail: int = 0
     last_error: Optional[str] = None
+    # [next_doc/generative_capability_three_tier_improvement_plan.md 阶段二新增]
+    # 上一次"尝试把该 playbook 升级蒸馏为 script.py"失败的时间（ISO
+    # 字符串），成功升级后不再需要读它（member 已经有 script.py，不会再
+    # 触发升级检查）。与 success_count/fail_count 等 playbook 自身的执行
+    # 成败统计完全独立——升级尝试的成败不影响 playbook 本身是否可靠。
+    last_upgrade_attempt_at: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -59,6 +65,7 @@ class PlaybookRecord:
             "fail_count": self.fail_count,
             "consecutive_fail": self.consecutive_fail,
             "last_error": self.last_error,
+            "last_upgrade_attempt_at": self.last_upgrade_attempt_at,
         }
 
     @classmethod
@@ -72,6 +79,7 @@ class PlaybookRecord:
             fail_count=d.get("fail_count", 0),
             consecutive_fail=d.get("consecutive_fail", 0),
             last_error=d.get("last_error"),
+            last_upgrade_attempt_at=d.get("last_upgrade_attempt_at"),
         )
 
 
@@ -184,6 +192,22 @@ class PlaybookRepository:
             rec["status"] = "retired"
             if meta.get("active_version") == version:
                 meta["active_version"] = None
+        self._save_meta(task_id, meta)
+
+    def record_upgrade_attempt(self, task_id: str, version: int) -> None:
+        """[next_doc/generative_capability_three_tier_improvement_plan.md
+        阶段二新增] 记录一次"尝试把该 playbook 升级蒸馏为 script.py"失败，
+        只写 `last_upgrade_attempt_at`，不触碰 success_count/fail_count/
+        consecutive_fail——升级尝试的成败与 playbook 本身作为 SKILL 档
+        手段是否可靠，是两件独立的事，不共用同一套统计。调用方（
+        `capability_engine._maybe_upgrade_skill_to_script`）据此实现一个
+        简单的冷却期节流，避免升级持续失败时每次成功执行都重新触发 LLM
+        调用。"""
+        meta = self._load_meta(task_id)
+        rec = meta.get("versions", {}).get(str(version))
+        if rec is None:
+            return
+        rec["last_upgrade_attempt_at"] = self._now_iso()
         self._save_meta(task_id, meta)
 
     def retire(self, task_id: str, version: int, reason: str) -> None:

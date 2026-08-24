@@ -525,5 +525,121 @@ class TestCapabilityCallTool(unittest.TestCase):
         self.assertIn("some-skill", result["available_generative_capability_skills"])
 
 
+class TestCapabilityEngineAllowTiers(unittest.TestCase):
+    """对应 next_doc/generative_capability_three_tier_improvement_plan.md
+    阶段三："call() 支持调用方声明 allow_tiers"。用最小合成 skill 目录，
+    与 test_generative_capability_skill_tier.py 的构造方式一致。"""
+
+    def _build_skill_dir(self):
+        import json
+        import shutil
+        import tempfile
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="gc_allow_tiers_"))
+        skill_dir = tmp_dir / "test-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "capability.yaml").write_text(
+            "name: test-skill\n"
+            "domain_matchers:\n"
+            "  - type: domain_pattern\n"
+            "    field: target.url\n"
+            "lifecycle:\n"
+            "  probation_success_threshold: 3\n"
+            "  degrade_failure_threshold: 3\n",
+            encoding="utf-8",
+        )
+        (skill_dir / "_index.json").write_text(json.dumps({
+            "members": [
+                {"member_id": "m1", "match": {"domain_pattern": "*.example.com*"}, "description": "test member"},
+            ],
+        }), encoding="utf-8")
+        (skill_dir / "registry.json").write_text(json.dumps({
+            "members": {
+                "m1": {"status": "trusted", "success_count": 5, "fail_count": 0,
+                       "consecutive_failures": 0, "intent_schema": None},
+            },
+        }), encoding="utf-8")
+        member_dir = skill_dir / "members" / "m1"
+        member_dir.mkdir(parents=True)
+        (member_dir / "script.py").write_text(
+            "def run(request):\n"
+            "    return {\"status\": \"fail\", \"error\": \"script 执行必定失败（测试用）\"}\n",
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: shutil.rmtree(tmp_dir, ignore_errors=True))
+        return skill_dir
+
+    def _request(self):
+        return {"text": "https://a.example.com/x", "target": {"url": "https://a.example.com/x"}}
+
+    def test_allow_tiers_none_matches_default_behavior(self):
+        from mini_agent.skills.generative_capability import CapabilityEngine
+
+        skill_dir = self._build_skill_dir()
+        engine = CapabilityEngine(skill_dir)
+        result_default = engine.call(self._request())
+        result_explicit_none = engine.call(self._request(), allow_tiers=None)
+        self.assertEqual(result_default.status, result_explicit_none.status)
+        self.assertEqual(result_default.error, result_explicit_none.error)
+
+    def test_allow_tiers_skip_script_goes_straight_to_skill(self):
+        from mini_agent.skills.generative_capability import CapabilityEngine, build_playbook_repo
+
+        skill_dir = self._build_skill_dir()
+        repo = build_playbook_repo(skill_dir)
+        repo.save_new_version("m1", "# 步骤说明 v1", "manual")
+        calls = []
+
+        def skill_runner(request, playbook_content):
+            calls.append(request)
+            return {"status": "success", "data": {"results": ["skill-result"]}}
+
+        engine = CapabilityEngine(skill_dir, playbook_repo=repo, skill_runner=skill_runner)
+        result = engine.call(self._request(), allow_tiers={"skill", "explore"})
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.resolve_reason, "skill_playbook")
+        self.assertEqual(len(calls), 1)
+        # script 档被跳过，不应该计入 registry 的 fail_count。
+        registry = json.loads((skill_dir / "registry.json").read_text(encoding="utf-8"))
+        self.assertEqual(registry["members"]["m1"]["fail_count"], 0)
+
+    def test_allow_tiers_script_only_skips_skill_and_explore(self):
+        from mini_agent.skills.generative_capability import CapabilityEngine, build_playbook_repo
+
+        skill_dir = self._build_skill_dir()
+        repo = build_playbook_repo(skill_dir)
+        repo.save_new_version("m1", "# 步骤说明 v1", "manual")
+
+        def skill_runner(request, playbook_content):
+            raise AssertionError("skill 档应该被 allow_tiers 跳过，不应该被调用")
+
+        def explore_runner(request, intent_schema, explorer_cfg):
+            raise AssertionError("explore 档应该被 allow_tiers 跳过，不应该被调用")
+
+        engine = CapabilityEngine(
+            skill_dir, playbook_repo=repo, skill_runner=skill_runner, explore_runner=explore_runner,
+        )
+        result = engine.call(self._request(), allow_tiers={"script"})
+
+        self.assertEqual(result.status, "not_implemented")
+        self.assertIn("script 执行必定失败", result.error)
+        self.assertIn("主动跳过", result.error)
+
+    def test_allow_tiers_script_and_skill_skip_explore_without_calling_it(self):
+        from mini_agent.skills.generative_capability import CapabilityEngine
+
+        skill_dir = self._build_skill_dir()
+
+        def explore_runner(request, intent_schema, explorer_cfg):
+            raise AssertionError("explore 档应该被 allow_tiers 跳过，不应该被调用")
+
+        engine = CapabilityEngine(skill_dir, explore_runner=explore_runner)
+        result = engine.call(self._request(), allow_tiers={"script", "skill"})
+
+        self.assertEqual(result.status, "not_implemented")
+        self.assertIn("主动跳过", result.error)
+
+
 if __name__ == "__main__":
     unittest.main()

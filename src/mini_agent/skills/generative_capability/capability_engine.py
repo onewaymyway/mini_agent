@@ -386,7 +386,35 @@ class CapabilityEngine:
             entry["last_failure"] = now
             entry["consecutive_failures"] = entry.get("consecutive_failures", 0) + 1
         self._apply_lifecycle(member_id, entry)
+        self._refresh_available_tiers(member_id, entry)
         self._save_registry()
+
+    # ---------------------- available_tiers（信息性字段，阶段一新增） ---------------------- #
+    #
+    # 对应 next_doc/generative_capability_three_tier_improvement_plan.md 阶段一。
+    # 纯只读计算 + 写入，**不参与**任何现有决策逻辑（_apply_lifecycle/_try_skill/
+    # explore 的触发条件均不读取这个字段）——目的只是让"该 member 当前实际
+    # 具备哪些执行手段"在 registry.json 里可见，供人工排查/未来 health_patrol.py
+    # 报告使用，不是"改进方向 #1 整体合并"里提到的那个真正统一的状态机。
+
+    def _compute_available_tiers(self, member_id: str) -> list[str]:
+        tiers: list[str] = []
+        if (self.members_dir / member_id / "script.py").exists():
+            tiers.append("script")
+        if self.playbook_repo is not None:
+            try:
+                if self.playbook_repo.get_active_playbook(member_id) is not None:
+                    tiers.append("skill")
+            except Exception:  # noqa: BLE001 — 计算这个信息性字段不应打断主流程
+                pass
+        return tiers
+
+    def _refresh_available_tiers(self, member_id: str, entry: Optional[dict] = None) -> None:
+        if entry is None:
+            entry = self.registry.get("members", {}).get(member_id)
+        if entry is None:
+            return
+        entry["available_tiers"] = self._compute_available_tiers(member_id)
 
     def _apply_lifecycle(self, member_id: str, entry: dict) -> None:
         """状态机流转: probation -> trusted / (trusted|probation) -> degraded。
@@ -439,6 +467,8 @@ class CapabilityEngine:
         except Exception as e:  # noqa: BLE001 — skill_runner 调用失败不应打断整体流程
             err = f"skill_runner 执行异常: {type(e).__name__}: {e}"
             self.playbook_repo.record_failure(member_id, active_pb.version, err)
+            self._refresh_available_tiers(member_id)
+            self._save_registry()
             return ExecuteResult(status="fail", member_id=member_id, error=err)
 
         if not isinstance(result, dict) or result.get("status") != "success":
@@ -454,6 +484,8 @@ class CapabilityEngine:
                 self.playbook_repo.retire(member_id, active_pb.version, f"playbook 判定为不可用：{reason}")
             else:
                 self.playbook_repo.record_failure(member_id, active_pb.version, err)
+            self._refresh_available_tiers(member_id)
+            self._save_registry()
             return ExecuteResult(status="fail", member_id=member_id, error=err)
 
         entry = self.registry.get("members", {}).get(member_id, {})
@@ -461,9 +493,13 @@ class CapabilityEngine:
         if schema_errors:
             msg = "SKILL 档返回数据未通过 intent_schema 校验: " + "; ".join(schema_errors)
             self.playbook_repo.record_failure(member_id, active_pb.version, msg)
+            self._refresh_available_tiers(member_id)
+            self._save_registry()
             return ExecuteResult(status="fail", member_id=member_id, error=msg)
 
         self.playbook_repo.record_success(member_id, active_pb.version)
+        self._refresh_available_tiers(member_id)
+        self._save_registry()
 
         # [本次新增，见 next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md
         # 第3节 3.3b"SKILL 档执行时观察到可参数化则升级蒸馏为 script.py"]
@@ -484,6 +520,16 @@ class CapabilityEngine:
         active_pb = self.playbook_repo.get_active_playbook(member_id)
         if active_pb is None or active_pb.success_count < self.skill_upgrade_success_threshold:
             return
+        # [next_doc/generative_capability_three_tier_improvement_plan.md
+        # 阶段二新增] 冷却期节流：升级持续失败时，避免每次 _try_skill 成功
+        # 都重新触发一次 LLM 调用。未记录过失败尝试（从未升级过，或上次
+        # 升级成功）时不受影响。
+        if active_pb.last_upgrade_attempt_at:
+            cooldown = self.capability.get("lifecycle", {}).get(
+                "skill_upgrade_retry_cooldown_seconds", 3600
+            )
+            if self._seconds_since_iso(active_pb.last_upgrade_attempt_at) < cooldown:
+                return
         entry = self.registry.get("members", {}).get(member_id, {})
         from .distiller import attempt_skill_upgrade
         try:
@@ -499,6 +545,24 @@ class CapabilityEngine:
             # 落盘改动了 registry.json/_index.json，重新加载保持内存一致。
             self.index = self._load_json(self.index_path, default={"members": []})
             self.registry = self._load_json(self.registry_path, default={"members": {}})
+        else:
+            # 升级失败（或过程中抛异常）：记一次尝试时间，供下次触发冷却期
+            # 判断，不影响 playbook 自身的成败统计。
+            try:
+                self.playbook_repo.record_upgrade_attempt(member_id, active_pb.version)
+            except Exception:  # noqa: BLE001 — 记录节流信息本身不应影响主流程
+                pass
+
+    @staticmethod
+    def _seconds_since_iso(iso_str: str) -> float:
+        from datetime import datetime, timezone
+        try:
+            dt = datetime.fromisoformat(iso_str)
+        except ValueError:
+            return float("inf")  # 解析失败按"很久以前"处理，不阻塞升级尝试
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds()
 
     # ---------------------- 第 3/4 步: explore / distill（阶段三） ---------------------- #
 
@@ -602,7 +666,15 @@ class CapabilityEngine:
 
     # ---------------------- 对外统一入口 ---------------------- #
 
-    def call(self, request: dict) -> CapabilityCallResult:
+    def call(self, request: dict, allow_tiers: Optional[set] = None) -> CapabilityCallResult:
+        """allow_tiers: [next_doc/generative_capability_three_tier_improvement_plan.md
+        阶段三新增] `{"script", "skill", "explore"}` 的子集，调用方用来主动
+        跳过某些执行档位（例如已知该 member 刚被标记 degraded，跳过必然
+        失败的 script 档直接尝试 skill）。默认 `None` 时行为与此前完全
+        一致（三档全部按既有顺序尝试）——是纯粹的"调用方主动跳过"，不改变
+        `resolve()` 的检索逻辑本身，也不影响 `registry.json`/playbook 的
+        成败统计：被跳过的档位不产生任何执行尝试，自然不计入成败计数。
+        """
         expected_formats = self._check_request_format(request)
         if expected_formats is not None:
             return CapabilityCallResult(
@@ -625,26 +697,35 @@ class CapabilityEngine:
         if resolved.status == "hit":
             last_failed_member_id: Optional[str] = None
             last_exec_error: Optional[str] = None
-            for member_id in resolved.member_ids:
-                exec_result = self.execute(member_id, request)
-                capability_debug_log(
-                    "engine_execute_attempted",
-                    {"member_id": member_id, "status": exec_result.status, "error": exec_result.error},
-                    where="capability_engine.CapabilityEngine.call",
-                )
-                if exec_result.status == "success":
-                    return CapabilityCallResult(
-                        status="success",
-                        data=exec_result.data,
-                        member_id=member_id,
-                        resolve_reason=resolved.reason,
+            if allow_tiers is None or "script" in allow_tiers:
+                for member_id in resolved.member_ids:
+                    exec_result = self.execute(member_id, request)
+                    capability_debug_log(
+                        "engine_execute_attempted",
+                        {"member_id": member_id, "status": exec_result.status, "error": exec_result.error},
+                        where="capability_engine.CapabilityEngine.call",
                     )
-                last_failed_member_id = member_id
-                last_exec_error = exec_result.error
+                    if exec_result.status == "success":
+                        return CapabilityCallResult(
+                            status="success",
+                            data=exec_result.data,
+                            member_id=member_id,
+                            resolve_reason=resolved.reason,
+                        )
+                    last_failed_member_id = member_id
+                    last_exec_error = exec_result.error
+            else:
+                # script 档被 allow_tiers 主动跳过：不产生任何执行尝试
+                # （不计入 registry.json 成败统计），直接把命中的最后一个
+                # 候选视为"待尝试 skill/explore 档"，与真实执行失败走同一
+                # 条后续逻辑。
+                last_failed_member_id = resolved.member_ids[-1] if resolved.member_ids else None
+                last_exec_error = "script 档被 allow_tiers 主动跳过，未实际执行"
 
-            # 命中的候选全部执行失败：先看有没有更便宜的 SKILL 档（playbook）
-            # 可以顶上，再决定要不要真正进入全新 explore。[本次新增]
-            if last_failed_member_id is not None:
+            # 命中的候选全部执行失败（或 script 档被跳过）：先看有没有更
+            # 便宜的 SKILL 档（playbook）可以顶上，再决定要不要真正进入
+            # 全新 explore。[本次新增]
+            if last_failed_member_id is not None and (allow_tiers is None or "skill" in allow_tiers):
                 skill_result = self._try_skill(last_failed_member_id, request)
                 capability_debug_log(
                     "engine_skill_attempted",
@@ -680,6 +761,16 @@ class CapabilityEngine:
                 if status == "degraded":
                     reexplore_id = last_failed_member_id
 
+            if allow_tiers is not None and "explore" not in allow_tiers:
+                # explore 档被 allow_tiers 主动跳过：不消耗探索预算，直接
+                # 返回 not_implemented，error 里说明是被主动跳过而非能力
+                # 缺失（区别于"探索了但没找到"）。
+                skip_error = "explore 档被 allow_tiers 主动跳过，未触发探索子agent"
+                if last_exec_error:
+                    skip_error = f"已有能力(member={last_failed_member_id})执行失败: {last_exec_error}；{skip_error}"
+                return CapabilityCallResult(status="not_implemented", error=skip_error,
+                                             resolve_reason=resolved.reason)
+
             explore_result = self.explore(request, reexplore_member_id=reexplore_id)
             if explore_result.status == "success":
                 return CapabilityCallResult(status="success", data=explore_result.data,
@@ -709,6 +800,12 @@ class CapabilityEngine:
                                          trace_context=explore_result.trace_context)
 
         # miss -> 全新探索
+        if allow_tiers is not None and "explore" not in allow_tiers:
+            return CapabilityCallResult(
+                status="not_implemented",
+                error="explore 档被 allow_tiers 主动跳过，未触发探索子agent",
+                resolve_reason=resolved.reason,
+            )
         explore_result = self.explore(request)
         if explore_result.status == "success":
             return CapabilityCallResult(status="success", data=explore_result.data,

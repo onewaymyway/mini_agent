@@ -216,6 +216,67 @@ class TestCapabilityEngineSkillUpgrade(unittest.TestCase):
         active = repo.get_active_playbook("m1")
         self.assertIsNotNone(active)  # 升级失败不影响 playbook 本身
 
+    def test_upgrade_retry_cooldown_skips_second_llm_call(self):
+        """对应 next_doc/generative_capability_three_tier_improvement_plan.md
+        阶段二：升级失败后记录 last_upgrade_attempt_at，冷却期内再次触发
+        _maybe_upgrade_skill_to_script 不应该重新调用 LLM。"""
+        from mini_agent.skills.generative_capability import CapabilityEngine
+
+        (self.skill_dir / "members" / "m1" / "script.py").unlink()
+        repo = self._make_playbook_repo(success_count=3)
+
+        def skill_runner(request, playbook_content):
+            return {"status": "success", "data": {"results": ["skill-result"]}}
+
+        llm_helper = _StubLLMHelper(_INVALID_UPGRADED_SCRIPT)  # 每次都升级失败
+        engine = CapabilityEngine(
+            self.skill_dir, playbook_repo=repo, skill_runner=skill_runner,
+            tool_executor=self._tool_executor, llm_helper=llm_helper,
+            enable_skill_upgrade=True, skill_upgrade_success_threshold=3,
+        )
+
+        engine.call(self._request)  # 第一次：升级失败，记一次 last_upgrade_attempt_at
+        self.assertEqual(llm_helper.calls, 1)
+        active = repo.get_active_playbook("m1")
+        self.assertIsNotNone(active.last_upgrade_attempt_at)
+
+        engine.call(self._request)  # 第二次：仍在默认 3600s 冷却期内，应跳过
+        self.assertEqual(llm_helper.calls, 1)
+
+    def test_upgrade_retry_after_cooldown_expires(self):
+        """冷却期过后应允许再次尝试升级（不是失败一次就永久放弃）。"""
+        from mini_agent.skills.generative_capability import CapabilityEngine
+
+        (self.skill_dir / "members" / "m1" / "script.py").unlink()
+        # 用一个 0 秒冷却期的 capability.yaml，模拟"冷却期已过"。
+        (self.skill_dir / "capability.yaml").write_text(
+            "name: test-skill\n"
+            "domain_matchers:\n"
+            "  - type: domain_pattern\n"
+            "    field: target.url\n"
+            "lifecycle:\n"
+            "  probation_success_threshold: 3\n"
+            "  degrade_failure_threshold: 3\n"
+            "  skill_upgrade_retry_cooldown_seconds: 0\n",
+            encoding="utf-8",
+        )
+        repo = self._make_playbook_repo(success_count=3)
+
+        def skill_runner(request, playbook_content):
+            return {"status": "success", "data": {"results": ["skill-result"]}}
+
+        llm_helper = _StubLLMHelper(_INVALID_UPGRADED_SCRIPT)
+        engine = CapabilityEngine(
+            self.skill_dir, playbook_repo=repo, skill_runner=skill_runner,
+            tool_executor=self._tool_executor, llm_helper=llm_helper,
+            enable_skill_upgrade=True, skill_upgrade_success_threshold=3,
+        )
+
+        engine.call(self._request)
+        self.assertEqual(llm_helper.calls, 1)
+        engine.call(self._request)  # 冷却期为 0，应该再次尝试
+        self.assertEqual(llm_helper.calls, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
