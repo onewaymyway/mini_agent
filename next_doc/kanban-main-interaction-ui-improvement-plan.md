@@ -1,0 +1,288 @@
+# mini-agent 看板 → 主交互界面 改进方案
+
+> 目标：把 `apps/mini_agent_kanban`（当前是一个 Streamlit 管理后台）逐步改造成用户与
+> agent 日常交互的**主界面**，而不是"偶尔看看状态"的辅助工具。
+> 本方案基于对现有代码（`app.py` / `client.py` / `src/mini_agent/api/routes.py`）的
+> 实际走查，尽量给出可以直接开工的条目，而不是泛泛的方向性建议。
+
+---
+
+## 0. 现状盘点（先说清楚"已经有什么"）
+
+后端 API（`routes.py`）其实已经相当完整，很多"看起来要新做"的能力后端已经具备，
+只是前端（Streamlit）没有用起来：
+
+| 能力 | 后端是否已有 | 前端是否已用 |
+|---|---|---|
+| SSE 实时事件流 `/v1/stream`（支持 `session_id` 过滤、`Last-Event-ID` 断线重连、按 `turn_id` 订阅） | ✅ 已有 | ❌ 未用，前端走 `/v1/events` 轮询 + `time.sleep()` |
+| 待审批权限队列 `/v1/permissions/pending` | ✅ 已有 | ✅ 已用，且 `render_topbar` 已经把它和待交互队列一起做成了跨 tab 常驻的顶部状态条（走查代码后发现比最初评估更完善，见下方"已完成"标注） |
+| 待回答通用交互 `/v1/interactions/pending`（ask_user / `/goal` 协商 / slash 命令） | ✅ 已有 | ✅ 已用，同上，已在顶栏常驻展示，不需要额外做"全局待办角标" |
+| 自主循环状态 `/v1/autonomous/status`、自我状态 `/v1/self/status` | ✅ 已有 | 只在"自我状态"tab 里看，没有全局常驻展示 |
+| 目标层级 `/v1/goals`（Goal/Objective 树） | ✅ 已有，但此前只返回 `active` 状态节点（已修复，见上次改动） | 有列展示，但拍平了父子关系 |
+| 多会话 `/v1/sessions`、按 URL query param 绑定 session | ✅ 已有基础设计（意图是对的） | 绑定机制有 rerun 竞态 bug（已修复），且不支持"同页多会话并排" |
+
+**结论**：后端已经是一个"SPA-ready"的 REST + SSE 服务，真正的瓶颈在前端——Streamlit
+的"每次交互整页重跑"模型，天然不适合做"实时、多会话、常驻状态"的主交互界面。
+所以本方案分两条线：
+
+- **短期（在 Streamlit 里能做的）**：把已有后端能力先用起来，止住明显的体验问题。
+- **中长期（架构级）**：评估是否把看板迁移到真正的前端框架（React/Vue 等），
+  因为后端已经不需要为此额外做什么，主要是前端重写。
+
+---
+
+## 1. 分领域改进项
+
+### 1.1 实时性：从轮询换成推送 ✅ 已完成（P0 部分）
+
+**现状问题**：`render_chat_tab` / 事件流渲染里能看到 `time.sleep(2)` /
+`time.sleep(3)` 这类固定周期轮询，`client.events(...)` 每次整页重跑都会重新拉一遍。
+代价：延迟高（最坏要等一个轮询周期）、请求量大、多个标签页各自轮询会放大后端压力。
+
+**改进方案**：
+1. 用 `st.fragment(run_every=...)`（Streamlit ≥1.33 提供）替换裸的
+   `while True: time.sleep(); st.rerun()` 模式：把"事件流""对话消息""待审批队列"这几块
+   拆成独立 fragment，只让这些小区域自己按更短周期（比如 1s）刷新，不拖动整页重跑，
+   这是**不改后端、投入最小、立刻见效**的一步。
+
+   > **✅ 已实施**：`render_topbar`（3s）、`_render_events_panel`（2s）、
+   > `_render_workflow_run_detail`（仅运行中时 2s）、`_render_pinned_sessions_panel`（3s）
+   > 均已改成 `st.fragment(run_every=...)` 局部刷新，`main()` 末尾原来的
+   > "整页阻塞 3 秒再 rerun" 已删除。`requirements.txt` 同步把 Streamlit 最低版本
+   > 提到 `>=1.33`（`run_every` 参数需要这个版本起）。
+   >
+   > **已知遗留**：`render_chat_tab` 里的对话历史消息列表本身还没有做成 fragment
+   > （只在用户主动交互——发消息/中断/审批时才重新拉取），如果另一个客户端往
+   > 同一 session 里发消息，本页面要等用户下一次交互才会看到，不是自动刷新。
+   > 这个留在下面第 2 步（真推送）里一起解决，不在本次 P0 范围内。
+
+2. 更进一步，用 `components.html` 注入一段 JS，用浏览器原生 `EventSource` 订阅
+   `/v1/stream?session_id=xxx`，收到消息后通过 `window.parent.postMessage` 把新事件
+   回传给 Streamlit（配合一个小的自定义组件或 `st.session_state` + 强制小范围 rerun），
+   彻底把"轮询"换成"推送"。这一步仍然是 **P2**，见第 3 节的架构评估——如果决定
+   迁移到 SPA，这块直接用标准 `EventSource` 几行代码就能做，不需要在 Streamlit
+   里折腾。
+
+### 1.2 全局状态栏 + 统一"待办 inbox" 🟡 部分完成
+
+**现状问题**（走查后修正）：走查代码发现 `render_topbar` 其实已经在页面顶部（`tabs`
+之前）常驻展示了待审批权限数、待回答交互数，并且在数量大于 0 时直接展开处理区，
+不管用户在哪个 tab 都能看到——这部分比最初评估的"藏在对话 tab 里"要完善，**不需要
+再新做一次"全局状态条"**。真正的问题只剩下面这条：
+
+- `ask_user` / `/goal` 协商 / slash 命令这几类"通用交互式请求"在 `render_interactions()`
+  函数里是按 `kind` 一条条 `if` 分支写的（`goal_negotiation` / `ask_user_confirm` /
+  `ask_user_choice` / 兜底分支），以后每加一种交互类型就要再加一个分支，长期会变成
+  一个巨大的 if-elif 链。
+
+**改进方案**（本条仍待做，未纳入本轮修改）：
+
+把"通用交互式请求"从"按 `kind` 分支渲染"重构成**统一的数据模型 + 单一渲染器**：
+
+```python
+@dataclass
+class PendingInteraction:
+    req_id: str
+    kind: str            # goal_negotiation / ask_user / repl_prompt / permission ...
+    title: str           # 展示用的标题（原来分散在各分支里拼的字符串）
+    body: str            # 主要展示内容（原 summary / prompt 文本）
+    actions: list[str]   # 可选的快捷操作，比如 ["/confirm", "/cancel"]
+    needs_freeform_input: bool = True   # 是否还需要一个文本框
+```
+
+渲染器只写一份：标题 + 正文 + （如果有）快捷按钮 + （如果需要）文本框。
+新增一种交互类型时，只需要在"数据组装"那一层加一个 `kind → PendingInteraction`
+的映射，不用再碰渲染代码。
+
+> **未实施说明**：这是一次有价值但改动面较大的重构（涉及 `goal_negotiation` /
+> `ask_user_confirm` / `ask_user_choice` / 兜底分支四种不同交互形态的行为要在
+> 新模型下完全保真），为了不在没有真实 UI 环境验证的情况下引入行为回归风险，
+> 本轮暂缓，留作下一轮迭代（建议先补一版针对 `render_interactions` 的手工
+> 测试清单，再动这个重构）。
+
+### 1.3 多会话支持：从"多开浏览器标签"升级到"同页多会话" ✅ 已完成（简化版）
+
+**现状**：`get_active_session_id()` / `set_active_session_id()` 的设计思路是对的——
+用 URL query param 而不是 `st.session_state` 来区分"标签页"，这样多开浏览器标签
+天然互不干扰。但目前只能"一个标签页看一个 session"，要同时盯 3 个会话就要开 3 个
+浏览器标签，来回切换。
+
+**改进方案**：
+1. 加一个"多会话看板"视图 —— **✅ 已实现（简化版）**：会话管理 tab 的每个会话卡片
+   加了"📎 加入/移出并排对比"按钮，选中的 session id 存在 `?pinned=sid1,sid2,...`
+   里；下方新增 `_render_pinned_sessions_panel`，用 `st.columns` 把每个固定 session
+   的状态 + 最近 30 条事件并排展示，并接了 `st.fragment(run_every="3s")` 局部自动
+   刷新。这一步没有做到"事件流+完整对话"级别的并排（只做了状态+事件摘要），
+   完整对话消息的并排展示留待下一轮（复用 `render_chat_tab` 里的消息渲染逻辑，
+   抽成可以按 session 传参调用的函数即可，不需要架构改动）。
+2. 会话列表（`render_sessions_tab`）里加"多选 + 在右侧并排打开"的入口 —— ✅ 已实现，
+   即上面的"加入/移出并排对比"按钮（一次一个的"多选"，不是批量勾选框，够用且改动小）。
+3. **跨标签页感知**：目前一个标签页新建了 session，其它已经打开的标签页不会
+   自动出现在列表里，得手动刷新——**仍未实现**，依赖第 1.1 节提到的"真推送"
+   （P2），这里不重复展开。
+
+### 1.4 目标看板：修复"数据不一致"之后，还可以更像真正的看板 🟡 部分完成
+
+上一轮已经修复了"`/v1/goals` 只返回 active 状态导致 paused/completed/abandoned
+三列永远是空的"这个数据不一致 bug。在此基础上：
+
+1. **层级展示 —— ✅ 已完成**：`goals_data` 里 Goal/Objective 是有 `parent_id` /
+   `children_ids` 的父子关系的，之前 `render_kanban_tab` 把 `goals + objectives`
+   拍平成一个列表按 status 分栏。现已改成：每列里先列 Goal 卡片，本列内属于该
+   Goal 的 Objective 缩进挂在下面；如果一个 Objective 的父 Goal 当前处于**别的**
+   状态列（比如 Goal 还"进行中"、其中一个 Objective 已经"完成"），不会消失，
+   会在本列末尾单独列出并标注"父目标：xxx"，避免用户以为数据丢了。
+2. **进度可见性 —— ❌ 本轮未做，原因：依赖的功能在当前代码库里还不存在**。
+   走查后发现 `goal_backlog.py` 的注释虽然提到 Objective 通过 `work_thread_ref`
+   关联 `work_index.json` 里的 `WorkThread`，但整个仓库里**并没有 `work_index.py`
+   或任何 `WorkThread` 的实际实现**（只在 `next_doc/` 的设计文档里出现过）。
+   这意味着"从关联的 WorkThread 读取最近进展"这条改进目前没有数据源可读，
+   属于"文档描述的能力还没真正落地"，不是这次看板改造能解决的问题——建议先在
+   `next_doc/work_index_proactive_reminder_design.md` 对应的功能落地之后，
+   再回来给目标卡片加这行"最近进展"。
+3. **可拖拽而不是下拉框**：不建议现阶段投入，理由同前（见架构评估一节）。
+
+### 1.5 Session / URL 状态管理规范化 ✅ 已完成
+
+上一轮修的"绑定会话按钮 URL 闪回"bug，本质原因是"`st.query_params` 赋值后又手动
+调了一次 `st.rerun()`，两次重跑竞态"。这类 bug 很容易在以后新加功能时被无意中
+再引入一次（比如某个新按钮又写了 `st.query_params[...] = xxx; st.rerun()`）。
+建议：
+
+1. 封装一个统一的小工具函数 —— **✅ 已实现**：新增 `update_query_params(**kv)`，
+   规则写死在函数文档里（"写入后不要手动 rerun"）。已经把文件里全部直接操作
+   `st.query_params` 的地方都改成走这个入口，包括：
+   - `set_active_session_id` / 新增的 `toggle_pinned_session`（会话绑定 / 并排对比）
+   - 登录成功写 `auth` token（原来这里也是"赋值后紧跟 st.rerun()"，属于同一个
+     反模式，走查时顺手一起修了）
+   - 退出登录删除 `auth` token（同上）
+
+   以后任何新代码只要调 `update_query_params(...)`，就不会再犯"写完手动 rerun"
+   这个错，不需要每个开发者都记住这条规则。
+
+2. 把 `session_id` 这个 query param 的"双重语义"（既是"产出预览过滤条件"又是
+   "标签页绑定的会话"）在代码注释和文档里明确写清楚——`apply_deep_link_query_params`
+   的 docstring 已经解释了；本文档也在 1.3 节记录了新增的 `pinned` 这个 query param
+   的语义（"这个标签页并排对比的 session 列表"），避免以后语义堆叠混乱。
+
+---
+
+## 2. 架构级选项：要不要把看板从 Streamlit 迁移出去
+
+这是一个需要决策的问题，本方案给出评估维度而不是替你拍板：
+
+| 维度 | 继续用 Streamlit（做上面 1.1~1.5 的改造） | 迁移到 React/Vue + 现有 REST/SSE 后端 |
+|---|---|---|
+| 开发速度（短期） | 快，改动小，团队已熟悉 | 慢，前端要从头搭 |
+| 实时性上限 | 受限于"整页重跑"模型，`st.fragment` 能缓解但不是原生事件驱动 | 原生支持，`EventSource` 几行代码 |
+| 多会话并排 / 多标签页协同 | 能做，但每加一个能力都要在 Streamlit 的限制里绕 | 原生支持，组件化天然契合 |
+| 拖拽看板、富交互 UI | 成本高，Streamlit 组件生态有限 | 有成熟的看板/拖拽组件库 |
+| 后端改动量 | 几乎不需要（已经是 REST + SSE） | 几乎不需要（同上，这是现有后端设计的红利） |
+| 维护成本 | 低（单文件 Streamlit app） | 中（需要前后端两套技能栈） |
+
+**建议**：先按 1.1~1.5 把 Streamlit 版本改到位（P0/P1，见路线图），
+真正用起来之后再看"实时性/多会话并排"这两块是不是团队最痛的点——如果是，
+再启动迁移；如果 Streamlit 改造后已经够用，没必要为了架构而架构。
+
+---
+
+## 3. 分阶段路线图
+
+### P0（本周内，止血 + 快速见效）
+- [x] `/v1/goals` 返回全量节点，修复目标看板数据不一致（已完成）
+- [x] 修复"绑定会话"按钮 URL 闪回（已完成）
+- [x] 顶部常驻状态条：聚合 `permissions/pending` + `interactions/pending` 的数字角标
+      （`render_topbar` / `_render_topbar_body`，任意 tab 都能看到"待审批/待回答"计数，
+      并可直接展开处理，不需要先切到"对话"tab）
+- [x] 用 `st.fragment(run_every=...)` 替换事件流 / 对话消息 / 工作流详情里的
+      `time.sleep()` 轮询（状态条 3s、事件流 2s、工作流运行详情 2s，均已改造，
+      不再整页阻塞）
+
+### P1（2~3 周，体验明显提升）
+- [x] 通用交互请求重构成统一 `PendingInteraction` 数据模型 + 单一渲染器
+      （`_build_pending_interaction()` 只负责"从 req 里取数据、归一成
+      dataclass"，`_render_pending_interaction()` 只负责"按 mode 渲染
+      控件"，两者解耦；`mode` 取值（confirm_freeform/yes_no/choices/
+      freeform）远少于 `kind`，以后新增 kind 大概率复用已有 mode，
+      不需要再碰渲染函数）
+- [x] 目标看板支持 Goal/Objective 父子层级展示
+      （`_render_goal_card` + `render_kanban_tab` 里按 `parent_id` 分组，
+      父 Goal 在别的状态列时也不会"凭空消失"，会在本列末尾标注父目标名）
+- [x] 目标卡片接入 WorkThread 的 `cumulative_progress` / `next_suggested`
+      （`/v1/goals` 后端为有 `work_thread_ref` 的 Objective 附加这两个字段，
+      不需要新增接口、看板也不用多发一次请求；卡片展示优先用这个动态进展，
+      没有时才回退到手填的 `progress_notes`）
+- [x] 会话列表支持多选 + 同页并排查看多个 session
+      （`?pinned=sid1,sid2` + `_render_pinned_sessions_panel`，会话列表下方
+      新增"并排对比"区域，每个固定的 session 独立一列展示状态 + 最近事件，
+      各自用 `st.fragment` 局部刷新）
+- [x] `update_query_params_and_rerun` 工具函数落地，清理所有旧的
+      "query_params 赋值 + 手动 rerun" 写法
+      （实际实现为 `update_query_params(**kv)`，全文件所有 query_params
+      写入点已统一改为调用它，且不再在其后手动 `st.rerun()`）
+
+### P2（架构评估 + 视情况执行）
+- [ ] 用浏览器原生 `EventSource` 接入 `/v1/stream`，把"推送"真正做到位——
+      **评估结论：本轮不做**。这需要 `st.components.v1.declare_component`
+      做一个真正的双向自定义组件（独立打包前端 + 组件协议），没有一个
+      跑起来的 Streamlit 实例根本没法验证是否真的工作，盲写这类代码
+      风险远大于收益。建议：如果 P0/P1 的 `st.fragment` 轮询方案（2~5s
+      级别的延迟）在实际使用中已经够用，就不必再投入；如果实测下来
+      延迟仍是痛点，直接把这个诉求和"是否迁移前端框架"合并评估，
+      迁移后原生 SSE 只是几行 `EventSource` 代码，不需要在 Streamlit
+      里绕弯子。
+- [x] 新建/删除 session 时的跨标签页感知——**用等效方案完成**：没有做
+      "后端全局广播 + 前端 EventSource 订阅"，而是加了一个低频（5s）
+      `st.fragment` 轻量对比会话 id 列表，变化时弹出"检测到变化，点击
+      刷新"的横幅，由用户决定何时刷新整个列表（详见
+      `_render_sessions_change_banner`）。没有做成"静默自动刷新整个
+      列表"，是因为 `st.expander` 的展开状态在 fragment 重跑时未必能
+      保住，会打断用户正在看的内容。
+- [x] 是否迁移前端框架——**本轮决策：暂不迁移**。P0/P1 已经解决了当初
+      最痛的几点（数据不一致、URL 竞态、待办不可见、多会话要开多个
+      标签页），且新增功能都能在 Streamlit 里落地，没有出现"做不到"的
+      硬限制。建议保持现状，把"迁移"作为一个持续观察项——如果后面
+      发现真实使用中"轮询延迟"或"Streamlit 组件生态限制"反复成为
+      抱怨点，再重新拿这份评估表（见第 2 节）出来决策，不用现在就动。
+
+---
+
+## 4. 验收标准（对照本方案检查）
+
+- [x] 用户在任意 tab 都能看到"当前有几项待处理（权限审批/交互确认）"，不需要先猜、先切 tab
+- [x] 事件流 / 对话消息的更新改为局部 `st.fragment` 刷新，不再整页阻塞；
+      **注意**：这仍然是轮询（周期已从固定 3s 降到 2~3s 且可独立配置），
+      不是真推送，"消除轮询"这条留给 P2
+- [x] 目标看板的四个状态列内容与 `.agent/goals.json` 实际内容一致，且能看出 Goal/Objective 的层级关系
+- [x] 可以在同一个页面里同时查看多个 session 的状态/最近事件（"并排对比"区域），不需要开多个浏览器标签
+- [x] 新建 / 删除 session 后，其它已打开的看板标签页能感知到变化
+      （通过"检测到变化，点击刷新"横幅，非静默自动刷新——见 P2 说明）
+- [x] 代码里不再出现"`st.query_params` 赋值后紧跟 `st.rerun()`"这种已知会导致 URL 竞态的写法
+
+### 本轮新增改动小结
+- 后端 `/v1/goals`：为有 `work_thread_ref` 的 Objective 附加
+  `work_thread_progress` / `work_thread_next_suggested` 两个字段（读
+  `work_index.json`，不新增接口）。
+- 前端目标卡片：展示上述动态进展，没有时回退到 `progress_notes`。
+- 通用交互请求重构：`PendingInteraction` 数据模型 + `_build_pending_interaction`
+  （数据组装）/ `_render_pending_interaction`（按 mode 渲染）拆分，
+  `render_interactions` 现在只是"逐条构建 + 渲染"两行代码。
+- 会话管理 tab 新增跨标签页变化感知横幅（`_render_sessions_change_banner`），
+  用低频 fragment 比对会话 id 列表，变化时提示用户手动刷新。
+- 决策：暂不迁移前端框架，原生 SSE 推送评估后本轮不做（理由见上）。
+
+至此，P0（2 项）、P1（5 项）全部完成；P2 三项里，"跨标签页感知"用等效
+方案完成，"是否迁移框架"已给出决策，只有"原生 SSE 推送"明确评估后
+暂不投入。
+
+### 后续如果要继续，建议的下一步
+- 目前已知没有遗留的"计划内但没做"的项。如果要继续深化，建议方向是
+  "运营/使用一段时间后收集真实反馈"，而不是继续在没有实测的情况下
+  凭空加功能——尤其是 P0/P1/P2 这些改动都还没有在真实 Streamlit 环境
+  里跑过，落地后建议优先验证：
+  1. `st.fragment(run_every=...)` 在实际浏览器里的刷新观感是否符合预期
+     （有没有出现视觉跳动、input 焦点丢失等 fragment 常见的副作用）；
+  2. 会话变化横幅的误报率（比如 agent 自己在后台创建的临时 session
+     是否也会触发提示，如果太吵可能需要加一层过滤）；
+  3. WorkThread 进展字段在真实 `work_index.json` 数据上的展示效果
+     （字段可能较长，卡片样式要不要做截断/展开）。

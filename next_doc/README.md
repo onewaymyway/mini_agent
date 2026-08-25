@@ -77,16 +77,14 @@ Goal/Objective 执行阶段、公平调度、输出目录、进度判定。
 18. `growth_summary_client_timeout_fix.md` — 修复：摘要客户端超时
 19. `growth_advisor_docs_reorganization_and_system_state_review.md` — 复盘：文档重组与系统状态审视（本次治理计划参考的前例之一）
 
-## wiki（Wiki 式知识库，约 14 篇，注意编码问题见文末）
+## wiki（Wiki 式知识库，约 14 篇）
 
-知识提取、组织层、缺口扫描、兜底清理。部分文件名为中文，在某些解压/传输
-环境下会显示为 `#Uxxxx` 转义乱码（详见文末"已知问题"），以下按内容而非
-乱码文件名列出：
+知识提取、组织层、缺口扫描、兜底清理。
 
-1. `wiki式知识库改进计划.md` — 计划：初版改进
-2. `wiki式知识库重构计划.md` — 计划：重构
-3. `wiki知识库提取与组织层改进计划.md` — 计划：提取与组织层
-4. `wiki提取层改进计划_E1实施记录.md` ~ `_E3实施记录.md`、`_O1` ~ `_O4实施记录.md` — 提取层改进计划分批（E/O 两条子方案）各阶段实施记录，共 7 篇
+1. `wiki-style-knowledge-base-improvement-plan.md` — 计划：初版改进
+2. `wiki-style-knowledge-base-refactor-plan.md` — 计划：重构
+3. `wiki-knowledge-base-extraction-and-organization-plan.md` — 计划：提取与组织层
+4. `wiki-extraction-layer-plan-e1-record.md` ~ `-e3-record.md`、`-o1-record.md` ~ `-o4-record.md` — 提取层改进计划分批（E/O 两条子方案）各阶段实施记录，共 7 篇
 5. `wiki_next_phase_improvement_plan.md` — 计划：下一阶段
 6. `wiki_next_phase_implementation_record.md` — 实施记录
 7. `capability_wiki_freshness_improvement_plan.md` — 计划：能力 wiki 新鲜度（与 `sys:wiki_gap_scan`/`sys:wiki_fallback_cleanup` 两个内置 cron job 对应，见 [定时任务完整参考](../docs/cron-jobs-reference.md)）
@@ -155,8 +153,8 @@ Explorer 重构、原始结果与混合合并、三层改进、trace 回放。
 12. `kanban_and_autonomy_improvement_plan.md` — 计划：看板与自主性联动改进
 13. `kanban_and_autonomy_improvement_implementation_record.md` — 实施记录
 14. `scheduling_unification_and_kanban_visibility_improvement_plan.md` — 计划：调度统一与看板可观测性（P1-P5，见 [定时任务完整参考 §7](../docs/cron-jobs-reference.md)）
-15. 看板主交互界面改进方案.md — 计划：主交互界面（中文文件名，见文末编码问题）
-16. 看板大数据量分页显示改进计划.md — 计划：大数据量分页（中文文件名，见文末编码问题）
+15. `kanban-main-interaction-ui-improvement-plan.md` — 计划：主交互界面
+16. `kanban-large-data-pagination-improvement-plan.md` — 计划：大数据量分页
 
 ## workflow（工作流引擎，约 15 篇）
 
@@ -177,7 +175,7 @@ Explorer 重构、原始结果与混合合并、三层改进、trace 回放。
 13. `workflow_python_step_and_zhihu_publish_plan.md` — 计划：Python 步骤与知乎发布
 14. `workflow_python_step_and_zhihu_publish_implementation_record.md` — 实施记录
 15. `workflow_system_next_directions.md` — 复盘：后续方向
-16. 工作流机制改进计划.md — 计划（中文文件名，早期版本，见文末编码问题）
+16. `workflow-mechanism-improvement-plan-early.md` — 计划：早期版本（`workflow_mechanism_improvement_proposal.md` 之前的最初方案）
 
 ---
 
@@ -192,10 +190,10 @@ Explorer 重构、原始结果与混合合并、三层改进、trace 回放。
 - `self_evolution_stage9_plan.md` — 计划：Stage9
 - `persona_capability_learning_design.md` — 设计：人设能力学习
 - `roleplay_persona_design.md` — 设计：角色扮演人设
-- `决策取舍知识提炼计划.md` — 计划（中文文件名，见文末编码问题）
+- `decision-tradeoff-knowledge-extraction-plan.md` — 计划：决策取舍知识提炼
 - `self_diagnosis_feedback_loop_deepening_plan.md` — 计划：自诊断闭环深化（见 [定时任务完整参考 §3.3](../docs/cron-jobs-reference.md)）
 - `system_connectivity_gaps_and_missing_capabilities_plan.md` — 计划：系统关联性断点与缺失能力
-- `主动推荐与数字分身机制设计方案.md` — 设计（中文文件名，见文末编码问题）
+- `proactive-recommendation-and-digital-persona-design.md` — 设计：主动推荐与数字分身机制
 - `watchlist_notification_goal_design.md` — 设计：关注对象分级通知
 - `work_index_proactive_reminder_design.md` — 设计：工作索引主动提醒
 - `memory_backfill_and_profile_update_plan.md` — 计划：记忆回填与用户画像更新
@@ -234,17 +232,7 @@ Explorer 重构、原始结果与混合合并、三层改进、trace 回放。
 
 ---
 
-## 已知问题：中文文件名的编码乱码
-
-`next_doc/` 下有 15 篇中文文件名文档（含上文按内容归类的 4 篇看板/主动
-推荐/决策取舍类 + 11 篇 wiki 类）。这些文件名在源码仓库里是正常的 UTF-8
-中文，但在某些压缩/解压环境（尤其是不区分大小写或用非 UTF-8 文件名编码
-处理 zip 的工具链）下会被转成 `#Uxxxx` 形式的 URL 编码转义乱码。这是
-`docs_governance_reorganization_plan.md` §0 第 8 条记录的已知问题，评估
-是否将这批文件改为英文 kebab-case/snake_case 文件名（正文标题保持中文）
-见该计划 §步骤五，因反向引用较多、建议单独排期，本轮治理未处理。
-
-## 本轮已处理事项（对应 `docs_governance_reorganization_plan.md`）
+## 已处理事项（对应 `docs_governance_reorganization_plan.md`）
 
 - 步骤二：同步了 `docs/cron-jobs-reference.md`、
   `docs/commands-and-tools-reference.md`、
@@ -259,3 +247,11 @@ Explorer 重构、原始结果与混合合并、三层改进、trace 回放。
   `docs/autonomous-daemon-design.md`，所有反向引用已更新（`next_doc/` 下
   同名但内容不同的 `autonomous_daemon_design.md` 未改动，两者是"设计方案
   → 实现说明"关系，不是同一份文件）。
+- 步骤五：`next_doc/` 下 15 篇 + `docs/` 下 1 篇中文文件名文档，已全部
+  改为英文 kebab-case 文件名（标题正文保持中文不变），本索引里出现的文件
+  名即改名后的最终结果。改名的直接动因：这批中文文件名在部分压缩/传输
+  环境（尤其是不区分大小写或用非 UTF-8 文件名编码处理 zip 的工具链）下会
+  被转成 `#Uxxxx` 形式的 URL 编码转义乱码——`docs_governance_reorganization_
+  plan.md` §0 第 8 条记录的问题，实测比该条目最初记录的 14 篇多一篇（应为
+  15 篇）。全项目所有反向引用（含 `README.md`"必读"链接、`CLAUDE.md`、
+  `docs/wiki-knowledge-base-guide.md` 等）已同步更新为新文件名。

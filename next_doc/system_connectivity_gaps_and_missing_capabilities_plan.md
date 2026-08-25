@@ -11,7 +11,7 @@
 > 关联代码：`src/mini_agent/evolution/`、`src/mini_agent/wiki/`、
 > `src/mini_agent/role_agents/`、`src/mini_agent/perception/goal_backlog.py`、
 > `src/mini_agent/history/`
-> 前置阅读：`docs/mini_agent_核心理念与长期规划.md`（本方案所有 Track 的
+> 前置阅读：`docs/mini-agent-philosophy-and-roadmap.md`（本方案所有 Track 的
 > 优先级排序都对齐该文档"能力增长以减少用户认知负担为北极星""自我进化
 > 先从自我诊断开始"两条理念，不包含任何"系统自主生成目标"的内容）
 

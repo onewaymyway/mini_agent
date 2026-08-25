@@ -1,6 +1,6 @@
 # Wiki 式知识库指南
 
-对应设计文档：项目根目录《wiki式知识库重构计划.md》（阶段一~四）、《wiki式知识库改进计划.md》（P0-P4）、《wiki知识库提取与组织层改进计划.md》（O1-O4、E1-E3，§十）。这是[图书馆式知识索引](library-index-guide.md)（分类树 + 实体索引 + 目录）之外的一套**平行新实现**，不替换旧系统，两者在过渡期并存运行，直到新检索路径经过实际验证效果稳定。
+对应设计文档：项目根目录《wiki式知识库重构计划.md》(`wiki-style-knowledge-base-refactor-plan.md`)（阶段一~四）、《wiki式知识库改进计划.md》(`wiki-style-knowledge-base-improvement-plan.md`)（P0-P4）、《wiki知识库提取与组织层改进计划.md》(`wiki-knowledge-base-extraction-and-organization-plan.md`)（O1-O4、E1-E3，§十）。这是[图书馆式知识索引](library-index-guide.md)（分类树 + 实体索引 + 目录）之外的一套**平行新实现**，不替换旧系统，两者在过渡期并存运行，直到新检索路径经过实际验证效果稳定。
 
 ## 一、为什么需要这套新系统
 
@@ -351,7 +351,7 @@ lesson 分组的 `key` 拼成 `proposal_summary`，调用 `recall_related_decisi
 
 ## 十、提取层与组织层改进计划（O1-O4、E1-E3，均已完成）
 
-对应设计文档《wiki知识库提取与组织层改进计划.md》，是对上面「阶段一~四 + P0-P4」落地后暴露出的两类深层问题的后续深化：**提取时机/耦合度/知识盲视**（E1-E3），以及**组织结构的信度分层/图谱表达力/动态性/生命周期一致性**（O1-O4）。建议实施顺序 O1 → E3 → E1 → E2 → O2 → O3 → O4，全部条目已按此顺序完成实现。
+对应设计文档《wiki知识库提取与组织层改进计划.md》(`wiki-knowledge-base-extraction-and-organization-plan.md`)，是对上面「阶段一~四 + P0-P4」落地后暴露出的两类深层问题的后续深化：**提取时机/耦合度/知识盲视**（E1-E3），以及**组织结构的信度分层/图谱表达力/动态性/生命周期一致性**（O1-O4）。建议实施顺序 O1 → E3 → E1 → E2 → O2 → O3 → O4，全部条目已按此顺序完成实现。
 
 ### O1：全量扫描架构分层
 
@@ -752,10 +752,10 @@ YAML 语法损坏这类"没有确定改法"的问题被有意排除在自动修�
 
 - [图书馆式知识索引指南](library-index-guide.md) — 旧的分类树/实体索引/两步检索系统，仍是当前的主索引
 - [巩固循环 后台循环指南（Stage 8）](self-evolution-consolidation-guide.md) — `consolidate()` 挂载的完整巡检流程
-- 项目根目录 `next_doc/wiki式知识库重构计划.md` — 阶段一~四的完整设计动机、阶段划分与逐条实现记录
-- 项目根目录 `next_doc/wiki式知识库改进计划.md` — P0-P4 的完整设计动机与实现记录
-- 项目根目录 `next_doc/wiki知识库提取与组织层改进计划.md` — O1-O4、E1-E3 的完整设计动机与问题分析（§十涉及部分的原始设计文档）
-- 项目根目录 `next_doc/wiki提取层改进计划_O1实施记录.md` ~ `_O4实施记录.md`、`_E1实施记录.md` ~ `_E3实施记录.md`（含 E2 方案B专项记录）— 每一项的详细实施记录、与原计划的差异说明、验收方式
+- 项目根目录 `next_doc/wiki-style-knowledge-base-refactor-plan.md` — 阶段一~四的完整设计动机、阶段划分与逐条实现记录
+- 项目根目录 `next_doc/wiki-style-knowledge-base-improvement-plan.md` — P0-P4 的完整设计动机与实现记录
+- 项目根目录 `next_doc/wiki-knowledge-base-extraction-and-organization-plan.md` — O1-O4、E1-E3 的完整设计动机与问题分析（§十涉及部分的原始设计文档）
+- 项目根目录 `next_doc/wiki-extraction-layer-plan-o1-record.md` ~ `_O4实施记录.md`、`_E1实施记录.md` ~ `_E3实施记录.md`（含 E2 方案B专项记录）— 每一项的详细实施记录、与原计划的差异说明、验收方式
 - 项目根目录 `next_doc/wiki_next_phase_improvement_plan.md` — 退轨评估 / 专题页退场 / 巩固分步熔断 / 世界知识独立触发 / daemon 定时任务的完整设计动机与实施状态总览
 - 项目根目录 `next_doc/wiki_next_phase_implementation_record.md` — 上述改进的逐文件改动清单、设计决策修正、测试验证记录
 

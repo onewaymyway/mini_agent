@@ -1,6 +1,6 @@
 # 主动推荐排序（Next Action Advisor）
 
-对应设计文档：`next_doc/主动推荐与数字分身机制设计方案.md` 第 4.2 节（阶段二）。
+对应设计文档：`next_doc/proactive-recommendation-and-digital-persona-design.md` 第 4.2 节（阶段二）。
 
 ## 是什么
 

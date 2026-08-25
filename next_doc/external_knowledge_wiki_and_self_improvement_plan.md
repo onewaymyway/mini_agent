@@ -12,7 +12,7 @@
   - `docs/external-input-gateway-guide.md`（外部输入网关，含 §11 当前实际数据流向）
   - `docs/wiki-knowledge-base-guide.md`（wiki 知识库）
   - `docs/watchlist-notification-guide.md`（`GoalRelevanceEngine`/`NoveltyJudge`）
-  - `docs/mini_agent_核心理念与长期规划.md`（本计划的优先级排序依据其中"数据采集不应先于数据消费"一条）
+  - `docs/mini-agent-philosophy-and-roadmap.md`（本计划的优先级排序依据其中"数据采集不应先于数据消费"一条）
 
 ---
 

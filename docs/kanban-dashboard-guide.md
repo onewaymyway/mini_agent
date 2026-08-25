@@ -291,7 +291,7 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
   - **失败重试携带原因**（Track F）：自动重试（超时/工具报错触发）时，下一次提交给
     agent 的 prompt 会附带上一次失败的具体原因，并提示"不要重复同样的做法"，而不是
     原样重发同一句任务描述。
-- **🗞️ 每日融合日报 / 💡 主动推荐 / 🧭 决策画像**（`主动推荐与数字分身机制设计方案.md`）：
+- **🗞️ 每日融合日报 / 💡 主动推荐 / 🧭 决策画像**（`proactive-recommendation-and-digital-persona-design.md`）：
   三张并排只读卡片，分别展示 `sys:daily_digest`（行为+目标进展融合日报）、
   `sys:next_action_digest`（停滞目标/注意力错配排序推荐）、
   `sys:decision_profile_update`（决策价值模式归纳，默认关闭）三个 cron job 的
@@ -619,7 +619,7 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 
 对话历史、事件流、session 列表三类数据在量特别大时都做了分页/增量处理，
 避免"全量拉取再前端截断"带来的性能问题（设计与动机详见
-`next_doc/看板大数据量分页显示改进计划.md`）：
+`next_doc/kanban-large-data-pagination-improvement-plan.md`）：
 
 - **对话历史**：`_render_chat_messages_body` 默认只拉最新一页
   （`limit=100`），历史更长时对话框顶部会出现"⬆️ 加载更早消息"按钮，
@@ -745,7 +745,7 @@ Tab 的"关键词管理"板块）最初没有包 `@st.fragment`，导致勾选/�
 - `docs/web-demo-guide.md` — 姊妹应用（纯聊天 Web Demo）
 - `docs/multi-user-guide.md`、`docs/autonomous-daemon-design.md`、
   `docs/goal-mode-guide.md`、`docs/embodied-agent-guide.md` — 看板中各功能区背后的机制
-- `next_doc/看板大数据量分页显示改进计划.md` — 本次分页改造的设计文档
+- `next_doc/kanban-large-data-pagination-improvement-plan.md` — 本次分页改造的设计文档
 - `next_doc/scheduling_unification_and_kanban_visibility_improvement_plan.md`
   — cron 仲裁接入 / priority 排序 / 仲裁状态可见 / recurring 语义合并 /
   "🗓️ 全局日程"Tab 的设计与实现记录

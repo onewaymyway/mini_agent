@@ -22,7 +22,7 @@
 5. `docs/project-readme.md`（248 行）与根目录 `README.md` 内容高度重复，权威版本不明确。
 6. `docs/tool_call_format_correction.md` 与 `docs/format-correction-detector-update.md` 是"正文 + 补充说明"关系，违反 `docs/` 不应拆分为补丁文档的规则，应合并。
 7. 命名风格不一致：`docs/autonomous-daemon-design.md`、`docs/tool_call_format_correction.md` 使用 snake_case，混入以 kebab-case 为主的 `docs/`。
-8. 中文文件名：`docs/` 1 篇（`mini_agent_核心理念与长期规划.md`）、`next_doc/` 14 篇，存在跨平台打包/传输时的编码乱码风险。
+8. 中文文件名：`docs/` 1 篇（`mini-agent-philosophy-and-roadmap.md`）、`next_doc/` 14 篇，存在跨平台打包/传输时的编码乱码风险。
 9. 部分单篇 `docs/` 文档体量失衡：`growth-advisor-guide.md`（1932 行）、`workflow-guide.md`（2323 行），已有可参考的拆分方案（见 `next_doc/growth_advisor_docs_reorganization_and_system_state_review.md` §2.2：拆成"稳定核心骨架"+"按时间线组织的演进日志"两篇）。
 
 ## 1. 执行步骤
@@ -56,7 +56,7 @@
 
 ### 步骤五：中文文件名评估（低风险，可选，建议单独排期）
 
-评估将 `docs/mini_agent_核心理念与长期规划.md` 及 `next_doc/` 下 14 篇中文文件名文档改为英文 kebab-case/snake_case 文件名（标题正文保持中文不变）。由于反向引用较多（`mini_agent_核心理念与长期规划.md` 是 README 首篇必读链接），建议单独排期，改名后需要全项目搜索确认无遗漏引用。
+评估将 `docs/mini-agent-philosophy-and-roadmap.md` 及 `next_doc/` 下 14 篇中文文件名文档改为英文 kebab-case/snake_case 文件名（标题正文保持中文不变）。由于反向引用较多（`mini-agent-philosophy-and-roadmap.md` 是 README 首篇必读链接），建议单独排期，改名后需要全项目搜索确认无遗漏引用。
 
 ### 步骤六（可选，视精力排期）：拆分体量失衡的单篇文档
 
@@ -74,7 +74,7 @@
   - `docs/format-correction-detector-update.md` 已合并进 `docs/tool-call-format-correction.md`（原 `docs/tool_call_format_correction.md`，合并时一并按规范改名）；反向引用（`docs/reminder-system-guide.md`）已更新。
   - `docs/project-readme.md` 内容已确认被根 `README.md`（项目结构/快速开始/扩展开发）与 `docs/code-structure-guide.md`（各层职责说明）完整覆盖且更新更及时，已删除；核对无其他文档反向引用。
 - ✅ **步骤四**：`docs/autonomous_daemon_design.md` 重命名为 `docs/autonomous-daemon-design.md`，更新了全部反向引用（`docs/daemon-autonomous-state-recovery-guide.md`、`docs/execution-mechanisms-overview.md`、`docs/cron-dedicated-execution-guide.md`、`docs/kanban-dashboard-guide.md`、`release_logs/v0.9.3.md`、`release_logs/v0.8.1.md`）。注意：`next_doc/autonomous_daemon_design.md` 是另一篇内容不同的设计文档（"设计方案" vs "docs/ 里的实现说明"关系），未改名。
-- ⏸️ **步骤五**（中文文件名评估）：未处理，按计划原文建议单独排期。另外发现一个新问题：`next_doc/` 下 15 篇中文文件名文档（原文档中记录为 14 篇，实际核对为 15 篇：4 篇看板/主动推荐/决策取舍类 + 11 篇 wiki 提取层类）在某些压缩/解压工具链下会被转成 `#Uxxxx` 转义乱码文件名，已在 `next_doc/README.md` 末尾记录该问题，具体成因（压缩包文件名编码）和修复建议留待步骤五一并处理。
+- ✅ **步骤五**（中文文件名评估→执行）：原计划标注"建议单独排期、仅评估"，实际执行时一并完成了改名。`next_doc/` 下 15 篇（原文档 §0 第 8 条记录为 14 篇，实测多 1 篇）+ `docs/mini_agent_核心理念与长期规划.md` 共 16 篇中文文件名文档，已全部改为英文 kebab-case 文件名（标题正文保持中文不变），全项目反向引用（含 `README.md`"必读"链接、`CLAUDE.md`、`docs/wiki-knowledge-base-guide.md`、`docs/kanban-dashboard-guide.md`、`docs/daily-digest-guide.md`、`docs/next-action-advisor-guide.md`、`docs/decision-profile-guide.md`、`release_logs/v0.9.3.md`、`release_logs/v0.9.4.md`、若干 `next_doc/` 内部互引）已同步更新为新文件名。改名清单见 `next_doc/README.md` 末尾"已处理事项"。触发改名的直接原因：这批中文文件名在部分压缩/解压工具链下会被转成 `#Uxxxx` URL 编码转义乱码，英文文件名从根本上规避了这个问题。
 - ⏸️ **步骤六**（拆分超长文档）：未处理，计划本身标注为最低优先级、独立排期，本轮不纳入。
 
 验收：`grep -r "project-readme\|tool_call_format_correction\|format-correction-detector-update" docs/ next_doc/ README.md` 已确认无残留失效链接（`next_doc/docs_governance_reorganization_plan.md` 本文档内的历史问题记录性引用除外，属正常存档描述）。

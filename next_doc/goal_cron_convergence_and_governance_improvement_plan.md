@@ -11,7 +11,7 @@
 > 落地；真正影响"可控、可用"的，是"统一"和"一致性"这两件事还没有完全
 > 做完。本方案聚焦收敛这两个维度，不新增任何面向用户的新能力。
 >
-> 前置阅读：`docs/mini_agent_核心理念与长期规划.md`（本方案 Track 1 直接
+> 前置阅读：`docs/mini-agent-philosophy-and-roadmap.md`（本方案 Track 1 直接
 > 回应"能力增长以减少用户认知负担为北极星"——统一调度层做完之后，减少
 > 的是维护者/未来自己理解系统行为的认知负担，逻辑上与"减少用户显式交代"
 > 同源）；`goal_cron_unified_scheduler_improvement_plan.md`（Track 1 的

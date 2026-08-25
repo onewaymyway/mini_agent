@@ -4,7 +4,7 @@
 
 ## 项目理念与长期规划
 
-**在做任何架构决策、评估新功能优先级、或起草改进计划之前，先阅读** [mini_agent 核心理念与长期规划](docs/mini_agent_核心理念与长期规划.md)——这是本项目所有长期方向决策的参照标准，包含：
+**在做任何架构决策、评估新功能优先级、或起草改进计划之前，先阅读** [mini_agent 核心理念与长期规划](docs/mini-agent-philosophy-and-roadmap.md)——这是本项目所有长期方向决策的参照标准，包含：
 
 - 终极目标（能力持续增强的超级 AI 系统）与个人代理场景的关系：个人代理不是过渡产物，而是能力增强过程获得可验证目标函数和反馈信号的唯一可靠来源；"系统自主生成目标"明确排除在近期/中期规划外
 - "自我进化"的正确理解：不是 AI 产生自己的意志，而是用户建模精度、任务自主执行程度、自我改进能力持续提高；唯一可操作的衡量标准是用户需要显式交代的比例是否持续下降
@@ -238,7 +238,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 
 ### Wiki 式知识库 (`src/mini_agent/wiki/`)
 
-> 图书馆式索引（`perception/classification.py`/`entity_index.py`/`catalog.py`/`library_index.py`）之外的平行实现，用 md 页面 + 显式关系图代替分类树 + 滚动覆盖摘要，解决"关系表达能力不足"与"知识不可直接阅读"两个结构性局限。两套系统过渡期并存，`LibraryIndex.wiki_paths` 非 `None` 时才启用双写/双检索，默认由 `MemoryConfig.wiki_enabled=True` 控制；`MemoryConfig.library_wiki_search_primary=True`（默认）时 wiki 检索是优先路径，未命中才回退 `shelf_search`。经 O1-O4/E1-E3 改进计划（`next_doc/wiki知识库提取与组织层改进计划.md`，全部已完成）与下一阶段改进计划（`next_doc/wiki_next_phase_improvement_plan.md`：双轨制退出评估/陈旧专题页标注/巩固分步超时熔断/世界知识独立触发信号/知识缺口主动扫描/daemon 定时任务，全部已完成）两轮深化。详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md)
+> 图书馆式索引（`perception/classification.py`/`entity_index.py`/`catalog.py`/`library_index.py`）之外的平行实现，用 md 页面 + 显式关系图代替分类树 + 滚动覆盖摘要，解决"关系表达能力不足"与"知识不可直接阅读"两个结构性局限。两套系统过渡期并存，`LibraryIndex.wiki_paths` 非 `None` 时才启用双写/双检索，默认由 `MemoryConfig.wiki_enabled=True` 控制；`MemoryConfig.library_wiki_search_primary=True`（默认）时 wiki 检索是优先路径，未命中才回退 `shelf_search`。经 O1-O4/E1-E3 改进计划（`next_doc/wiki-knowledge-base-extraction-and-organization-plan.md`，全部已完成）与下一阶段改进计划（`next_doc/wiki_next_phase_improvement_plan.md`：双轨制退出评估/陈旧专题页标注/巩固分步超时熔断/世界知识独立触发信号/知识缺口主动扫描/daemon 定时任务，全部已完成）两轮深化。详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md)
 
 - `parser.py` — 解析单个 md 页面：frontmatter（`id`/`type`/`tags`/`status`/`links`/`source_entries`/`grounded_hit_count`（O1）/`knowledge_state`/`last_validated_at`/`validated_by`（O4）等）+ 正文 + 正文内 `[[page-id]]` 弱引用（自动记为 `relation: mentions`）；`WikiPage.strong_links()`/`weak_links()` 按 `source` 字段（`"frontmatter"`|`"body"`）区分
 - `graph.py` — `GraphIndex`：内存图结构（正向边+反向边 dict，不引入 networkx），`expand(page_ids, strong_only=, max_hops=, decay=)`（O2：多跳衰减扩展，同节点多路径取最大权重）供检索"图扩展"阶段与 `validator.py` 死链检测复用，`expand_legacy()` 保留原一跳签名兼容既有调用
@@ -646,7 +646,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 
 ### Wiki 式知识库
 
-> 对应项目根目录《wiki式知识库重构计划.md》。图书馆式索引（分类树+实体索引）的平行新实现，核心动机是分类树"每条知识只有一个最合适位置"的单一归属假设与软件工程知识天然网状的结构不匹配
+> 对应项目根目录《wiki式知识库重构计划.md》(`wiki-style-knowledge-base-refactor-plan.md`)。图书馆式索引（分类树+实体索引）的平行新实现，核心动机是分类树"每条知识只有一个最合适位置"的单一归属假设与软件工程知识天然网状的结构不匹配
 
 - **阶段一（基础设施）**：新增 `src/mini_agent/wiki/` 包，页面用 md（frontmatter + 正文 + `[[link]]`）存储，`_index/` 下 `graph.json`/`tags.json`/`backlinks.json`/`search_index.json` 四个索引全部可随时删除、随时从 md 重新生成
 - **阶段二（迁移与双写）**：`migration.py::mirror_entity()` 把 `EntityStore` 实体镜像进 `wiki/entities/*.md`，接入 `LibraryIndex.on_new_entry()`/`consolidate()`；`dedup.py::find_similar_page()` 判重默认规则打分（tag重合度+关键词Jaccard）+ 不确定区间才问一次 LLM，embedding 保留为显式可选路径
@@ -654,7 +654,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - **阶段四（专题页与收尾）**：`topics.py::consolidate_topics()` 按 tag 聚类且强链接密度达标（默认页面数≥4、密度≥0.5）时 LLM 综合聚合成 `topics/*.md`，接入 `consolidate()` 步骤 7；新增 `/wiki <page-id>|list|search|rebuild` 命令
 - **接线修复**：`wiki_paths` 参数虽在阶段二就加入 `LibraryIndex.__init__`，但 `memory_factory.py` 此前从未真正传递过，双写路径在真实 agent 运行中从未被触发；本次补上 `MemoryConfig.wiki_enabled`（默认开启）完成接线
 - **P4 转正 + 实际切换**：`wiki/promotion.py` 把"内容占比/校验通过率/检索 A/B 命中率"三项转正标准量化为可持续观测的指标（`/wiki promotion` 只读展示）；`context_builder.py` 现在默认（`MemoryConfig.library_wiki_search_primary=True`）优先尝试 `wiki_search`，未命中才回退 `shelf_search`——这次切换是在没有完整 P4 观测数据支撑下执行的，`library_wiki_search_primary` 设为 `False` 可随时完全退回旧路径
-- **O1-O4、E1-E3 提取层与组织层改进计划**（`next_doc/wiki知识库提取与组织层改进计划.md`，全部已完成）：O1 索引复用（`index_reader.py`）+ 信度分层（`grounded_hit_count`）；E3 实体摘要反哺抽取（`entity_digest.py`）；E1 抽取与 compact 解耦（`history/extraction_trigger.py`，独立触发窗口）；E2 抽取任务拆分（JSON schema 字段重排到 decisions/entities/facts 优先于 compact_summary）；O2 多跳衰减图扩展（`GraphIndex.expand(max_hops=, decay=)`）；O3 topic 再巩固（追加进已有 topic 而非只生成新的）；O4 统一知识生命周期状态机（`wiki/lifecycle.py`，`knowledge_state`/`last_validated_at`/`validated_by` 三个新 frontmatter 字段，`/wiki lifecycle-scan` 命令）。详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) §十 与各项独立实施记录（`next_doc/wiki提取层改进计划_*.md`）
+- **O1-O4、E1-E3 提取层与组织层改进计划**（`next_doc/wiki-knowledge-base-extraction-and-organization-plan.md`，全部已完成）：O1 索引复用（`index_reader.py`）+ 信度分层（`grounded_hit_count`）；E3 实体摘要反哺抽取（`entity_digest.py`）；E1 抽取与 compact 解耦（`history/extraction_trigger.py`，独立触发窗口）；E2 抽取任务拆分（JSON schema 字段重排到 decisions/entities/facts 优先于 compact_summary）；O2 多跳衰减图扩展（`GraphIndex.expand(max_hops=, decay=)`）；O3 topic 再巩固（追加进已有 topic 而非只生成新的）；O4 统一知识生命周期状态机（`wiki/lifecycle.py`，`knowledge_state`/`last_validated_at`/`validated_by` 三个新 frontmatter 字段，`/wiki lifecycle-scan` 命令）。详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) §十 与各项独立实施记录（`next_doc/wiki提取层改进计划_*.md`）
 - **下一阶段改进计划**（`next_doc/wiki_next_phase_improvement_plan.md`，全部已完成）：双轨制退出评估（`wiki/decommission.py::check_and_plan()`，只读评估+三步执行清单，不自动删代码，挂载于巩固循环收尾）；陈旧专题页标注（`wiki/gap_scanner.py::mark_stale_topics()`，复用 O4 `knowledge_state`）；`consolidate()` 分步超时熔断（`evolution/step_runner.py`，每子步骤独立超时预算，`step_timings` 记录）；世界知识独立触发信号（`history/extraction_trigger.py` 新增 `trigger_reason="entity_density"`）；知识缺口主动扫描 + 兜底页归并清理（`wiki/gap_scanner.py::scan_gaps()`/`wiki/fallback_cleanup.py`，新增命令 `/wiki gap-scan`/`/wiki fallback-cleanup`）；daemon 新增 2 个内置 cron job（`sys:wiki_gap_scan`/`sys:wiki_fallback_cleanup`）；补上此前遗漏的 `/wiki` 命令行 Tab 补全注册（`ui/terminal.py::_COMMANDS`）。详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) 十一·5 节、`next_doc/wiki_next_phase_improvement_plan.md`、`next_doc/wiki_next_phase_implementation_record.md`
 
 ### 决策/取舍知识提炼

@@ -1,6 +1,6 @@
 # 决策画像（Decision Profile / Digital Twin 第二层）
 
-对应设计文档：`next_doc/主动推荐与数字分身机制设计方案.md` 第 4.4 节（阶段三）。
+对应设计文档：`next_doc/proactive-recommendation-and-digital-persona-design.md` 第 4.4 节（阶段三）。
 
 ## 是什么
 

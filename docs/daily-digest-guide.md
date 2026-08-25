@@ -1,6 +1,6 @@
 # 每日融合日报（Daily Digest）
 
-对应设计文档：`next_doc/主动推荐与数字分身机制设计方案.md` 第 4.1 节（阶段一）。
+对应设计文档：`next_doc/proactive-recommendation-and-digital-persona-design.md` 第 4.1 节（阶段一）。
 
 ## 是什么
 
