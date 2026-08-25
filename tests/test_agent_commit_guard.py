@@ -213,3 +213,72 @@ def test_opportunistic_scan_respects_throttle_and_sentinel(repo):
     guard._sentinel_path(repo).touch()
     events3 = guard.maybe_opportunistic_scan(repo)
     assert len(events3) == 1
+
+
+# ── /commit-guard CLI 命令（阶段 4） ─────────────────────────────────────────
+
+class _FakeCfg:
+    def __init__(self, project_root):
+        self.project_root = project_root
+        self.model = "test-model"
+
+
+class _FakeAgent:
+    def __init__(self, project_root, memory_sink=None):
+        self.cfg = _FakeCfg(project_root)
+        self.session_id = "s1"
+        self._memory = memory_sink
+
+
+def test_cli_status_on_off(repo, capsys):
+    from mini_agent.cli.commands.commit_guard import handle_commit_guard_cmd
+
+    agent = _FakeAgent(repo)
+    handle_commit_guard_cmd(["status"], agent)
+    handle_commit_guard_cmd(["off"], agent)
+    assert guard.load_config(repo).enabled is False
+    handle_commit_guard_cmd(["on"], agent)
+    assert guard.load_config(repo).enabled is True
+
+
+def test_cli_install_hooks_and_ledger(repo):
+    from mini_agent.cli.commands.commit_guard import handle_commit_guard_cmd
+
+    agent = _FakeAgent(repo)
+    handle_commit_guard_cmd(["install-hooks"], agent)
+    for name in ("post-checkout", "post-merge", "post-rewrite"):
+        assert (repo / ".git" / "hooks" / name).exists()
+
+    (repo / "f.txt").write_text("z")
+    _git(repo, "add", "f.txt")
+    _git(repo, "commit", "-q", "-m", "auto")
+    guard.record_agent_commit(repo, session_id="s1")
+
+    handle_commit_guard_cmd(["ledger"], agent)  # 只验证不抛异常
+    assert len(guard.CommitLedger(repo).load_all()) == 1
+
+
+def test_cli_scan_writes_lesson_when_memory_sink_present(repo):
+    from mini_agent.cli.commands.commit_guard import handle_commit_guard_cmd
+
+    (repo / "g.txt").write_text("secret")
+    _git(repo, "add", "g.txt")
+    _git(repo, "commit", "-q", "-m", "auto")
+    guard.record_agent_commit(repo, session_id="s1")
+    _git(repo, "reset", "--hard", "HEAD~1")
+
+    sink = _FakeMemorySink()
+    agent = _FakeAgent(repo, memory_sink=sink)
+    handle_commit_guard_cmd(["scan"], agent)
+
+    assert len(sink.entries) == 1
+    assert sink.entries[0].source == "revert_record"
+
+
+def test_cli_clear_removes_ledger_file(repo):
+    from mini_agent.cli.commands.commit_guard import handle_commit_guard_cmd
+
+    guard.record_agent_commit(repo, session_id="s1")
+    assert guard._ledger_path(repo).exists()
+    handle_commit_guard_cmd(["clear"], _FakeAgent(repo))
+    assert not guard._ledger_path(repo).exists()

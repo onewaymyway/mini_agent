@@ -15,6 +15,9 @@ cli/commands — slash 命令处理模块包
   platform    — /platform status|filtered|reload（可加载对象的平台/tag 过滤策略查看与重载）
   quarantine  — /quarantine status|list|remove|clear|reload|enable|disable
                 （运行时自动屏蔽：skill/tool/agent 因反复环境不兼容失败被自动拉黑，默认关闭）
+  commit_guard — /commit-guard status|scan|on|off|install-hooks|ledger|clear
+                （agent 自动 commit 撤销感知：daemon/cron 下 agent 自动提交的内容被用户
+                撤销后，自动生成 revert_record lesson → 下次提交前的前瞻提醒，默认开启）
   roles       — /role list|use|show|exit|status|reload（角色扮演 Persona 系统）
   proxy       — /proxy status|refresh|sources [add-mibei77|add-discovered]|integration [set <key> <value>]
                 （代理订阅池：抓取/验证/查看可用节点、可扩展订阅源类型、接入其它模块的开关，懒加载于 repl.py）
@@ -40,6 +43,7 @@ from mini_agent.cli.commands.agents import handle_agents_cmd
 from mini_agent.cli.commands.hooks import handle_hooks_cmd
 from mini_agent.cli.commands.platform import handle_platform_cmd
 from mini_agent.cli.commands.quarantine import handle_quarantine_cmd
+from mini_agent.cli.commands.commit_guard import handle_commit_guard_cmd
 from mini_agent.cli.commands.evolution import handle_evolution_cmd
 from mini_agent.cli.commands.evolve import handle_evolve_cmd
 from mini_agent.cli.commands.goals import handle_goals_cmd
@@ -71,6 +75,7 @@ __all__ = [
     "handle_hooks_cmd",
     "handle_platform_cmd",
     "handle_quarantine_cmd",
+    "handle_commit_guard_cmd",
     "handle_evolution_cmd",
     "handle_evolve_cmd",
     "handle_goals_cmd",

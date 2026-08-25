@@ -111,9 +111,11 @@ SessionStart / 每隔一段时间的机会性检查 ─────────�
       - **顺手清理了一处既有 bug**：`_handle_outcomes()` 函数体末尾
         原本混入了一份复制粘贴的死代码（引用了未定义的 `reverted` 变
         量，一旦被执行到会 `NameError`），已删除
-- [ ] 阶段 4：CLI 速查命令 `/commit-guard status|scan|on|off`（可选，
-      本次暂不做，账本/配置目前只能手动查看 `.agent/agent_commits.jsonl`
-      与 `agent_commit_guard_config.json`）
+- [x] 阶段 4：CLI 速查命令
+      - `src/mini_agent/cli/commands/commit_guard.py`：`/commit-guard
+        status|on|off|scan|install-hooks [repo]|ledger [n]|clear`
+      - 注册进 `cli/commands/__init__.py` 与 `cli/repl.py`（`/commit-guard`
+        分支），模式参照 `/quarantine`
 - [x] 阶段 5：测试（`tests/test_agent_commit_guard.py`）+ 文档更新
 
 > 约定：每完成一个阶段，回来把上面对应的复选框打勾，并在本文件末尾的
@@ -123,22 +125,34 @@ SessionStart / 每隔一段时间的机会性检查 ─────────�
 ## 涉及文件清单（本次改动）
 
 - 新增 `src/mini_agent/perception/agent_commit_guard.py` — 核心模块
-- 新增 `tests/test_agent_commit_guard.py` — 单元测试（10 条，用真实临时
-  git 仓库覆盖记账/核对/lesson 生成/hook 安装/节流+哨兵）
+- 新增 `src/mini_agent/cli/commands/commit_guard.py` — `/commit-guard` CLI 命令
+- 新增 `tests/test_agent_commit_guard.py` — 单元测试（14 条：核心模块
+  10 条 + CLI 命令 4 条，用真实临时 git 仓库覆盖记账/核对/lesson 生成/
+  hook 安装/节流+哨兵/CLI 各子命令）
 - 修改 `src/mini_agent/tool_executor.py` — PostToolUse 之后接入
   `on_bash_post_tool()`
 - 修改 `src/mini_agent/agent/lifecycle.py` — `_init_session` 里接入
   `on_session_start()`
 - 修改 `src/mini_agent/cli/commands/evolution.py` — `_record_revert_lesson`
   改调用共享函数；顺手清理 `_handle_outcomes` 末尾的死代码/潜在 NameError
+- 修改 `src/mini_agent/cli/commands/__init__.py` — 注册 `handle_commit_guard_cmd`
+  + 模块包说明里补一条命令列表
+- 修改 `src/mini_agent/cli/repl.py` — import + `/commit-guard` 分支
 - 新增 `next_doc/agent_commit_undo_guard_plan.md` — 本文档
+
+## 使用方式速查
+
+```
+/commit-guard status              查看开关状态 + 账本摘要
+/commit-guard on / off            开关（默认已开启）
+/commit-guard install-hooks       给当前仓库装 post-checkout/merge/rewrite 哨兵 hook
+/commit-guard scan                立即核对一次（忽略节流），命中即写 revert_record lesson
+/commit-guard ledger [n]          查看账本最近 n 条（默认 20）
+/commit-guard clear               清空账本（不影响已生成的 lesson/reminder）
+```
 
 ## 已知限制 / 后续可做
 
-- `/commit-guard` 系列 CLI 命令未实现（阶段 4），目前只能手动看
-  `.agent/agent_commits.jsonl` 和 `agent_commit_guard_config.json`，
-  也没有一键调用 `install_undo_scan_git_hooks()` 的命令入口（需要手动
-  在 Python 里调用，或后续加个 `/commit-guard install-hooks`）。
 - 机会性节流扫描的 `_last_scan_at` 是进程内内存字典，多进程/重启后会
   丢失节流状态（首次调用一定会跑一次），影响很小（只是多跑一次
   `merge-base --is-ancestor`），未做持久化。
@@ -149,6 +163,9 @@ SessionStart / 每隔一段时间的机会性检查 ─────────�
   agent 自主判断），但如果以后想要更强的确定性，可以考虑扩展
   `ReminderCondition` 支持文件路径正则，再由 `tool_executor.py` 在
   `PreToolUse` 阶段把 `tool_input.command` 传进去匹配。
+- `/commit-guard install-hooks` 需要用户手动执行一次（不会在检测到
+  git 仓库时自动安装），因为写 `.git/hooks/` 属于对用户仓库的修改，
+  应该显式触发而不是静默发生。
 
 ## 变更记录
 
@@ -156,3 +173,5 @@ SessionStart / 每隔一段时间的机会性检查 ─────────�
 - 2026-08-25：完成阶段 1～3、5（核心模块 / hooks 接入 / evolution.py
   重构复用 / 单元测试全绿）。阶段 4（CLI 命令）本次未做，已记入"已知
   限制"。
+- 2026-08-25：补完阶段 4（`/commit-guard` CLI 命令），全部 5 个阶段
+  完成。测试从 10 条增至 14 条，全部通过。
