@@ -244,7 +244,7 @@ EvaluatorAgent 的修订循环的关键区别：**Evaluator 循环在一次 `run
 **适用场景**：需要"无人值守、按时间/规则自动发生"的任务，比如每日
 简报、定期知识回顾——本身不决定"怎么做"，只决定"什么时候让谁去做"。
 
-详见 `docs/cron-jobs-reference.md`、`docs/autonomous_daemon_design.md`、
+详见 `docs/cron-jobs-reference.md`、`docs/autonomous-daemon-design.md`、
 `docs/self-evolution-stage9-guide.md`。
 
 ### 2.10 evolution（自我演化：StateRepo / EvolutionWorkspace）—— 特殊执行类型

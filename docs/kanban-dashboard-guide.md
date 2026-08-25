@@ -299,7 +299,7 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
   要立即刷新内容，仍需在 CLI 侧执行 `/digest daily`、`/next refresh`、
   `/decision_profile update`，或用 Cron Job 列表的"立即执行一次"按钮触发对应 job。
 
-详见 `docs/autonomous_daemon_design.md`、`docs/goal-mode-guide.md` 了解 Goal/Cron/
+详见 `docs/autonomous-daemon-design.md`、`docs/goal-mode-guide.md` 了解 Goal/Cron/
 Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策画像的归纳与
 矛盾处理逻辑。
 
@@ -743,7 +743,7 @@ Tab 的"关键词管理"板块）最初没有包 `@st.fragment`，导致勾选/�
 - `docs/http-api-guide.md` — HTTP API 完整参考
 - `docs/artifacts-dashboard-guide.md` — 产出物 Manifest 设计与自动侦测开关详解
 - `docs/web-demo-guide.md` — 姊妹应用（纯聊天 Web Demo）
-- `docs/multi-user-guide.md`、`docs/autonomous_daemon_design.md`、
+- `docs/multi-user-guide.md`、`docs/autonomous-daemon-design.md`、
   `docs/goal-mode-guide.md`、`docs/embodied-agent-guide.md` — 看板中各功能区背后的机制
 - `next_doc/看板大数据量分页显示改进计划.md` — 本次分页改造的设计文档
 - `next_doc/scheduling_unification_and_kanban_visibility_improvement_plan.md`

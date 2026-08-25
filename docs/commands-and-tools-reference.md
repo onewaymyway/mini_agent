@@ -500,10 +500,13 @@ cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6
 | id | 默认触发频率 | 说明 |
 |----|------------|------|
 | `sys:consolidation` | 每 6 小时 | 巩固循环 扫描：技能剪枝 + 能力地图更新 |
+| `sys:wiki_gap_scan` | 每 12 小时 | wiki 知识缺口扫描：标注浅层实体/孤儿页面/陈旧专题页，可派发补全子任务 |
+| `sys:wiki_fallback_cleanup` | 每 7 天 | wiki 兜底页面清理：归并/标记长期未合并的 session-facts fact |
 | `sys:workdir_sync` | 每 1 小时 | WorkdirKnowledge 整合：扫描文件变化，更新 WorkThread |
 | `sys:self_eval` | 每 24 小时 | 能力自评：回顾工具使用，更新 capability_map 置信度 |
 | `sys:goal_review` | 每 12 小时 | 目标清理：标记已完成/长期无进展的 Goal/Objective |
 | `sys:digest_trim` | 每 7 天 | 日志修剪：删除 30 天前的 `activity_digest.jsonl` 记录 |
+| `sys:session_cleanup` | 每 7 天 | Session 清理：清理长期不用的旧 session，候选未抽取过知识的先补跑一次离线抽取再删除 |
 | `sys:self_maintain` | 每 24 小时 | 自维护健康检查：扫描失效工具/过时 skill/矛盾经验/低有效性 skill，生成修复建议 |
 | `sys:daily_digest` | 每天 22:00 | 融合日报：合并行为分布+目标进展+git提交，默认开启（`digest_advisor.daily_digest_enabled`） |
 | `sys:next_action_digest` | 每 3 小时 | 主动推荐：停滞目标/注意力错配排序，候选为空则跳过，默认开启（`digest_advisor.next_action_enabled`） |
@@ -512,8 +515,10 @@ cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6
 | `sys:growth_advisor_daily` | 每天 22:30 | 成长顾问：候选扫描 + 高置信度候选调研报告 |
 | `sys:growth_monthly_retrospective` | 每 30 天 | 成长顾问：月度复盘摘要 |
 | `sys:memory_backfill_scan` | 每 6 小时 | 记忆回填：补跑遗漏摘要的存量 session |
+| `sys:capability_learning_cycle` | 每 6 小时 | 能力学习：单轮循环，推进各 active 能力/人设 Track 的缺口扫描+检索+问答队列 |
+| `sys:capability_question_sweep` | 每 24 小时 | 能力学习：过期问题清理，清理长期未回答的 CapabilityQuestion |
 
-除上表 16 个固定内置 job 外，daemon 启动时还会按需补注册十余个 `sys:` job
+除上表 18 个固定内置 job 外，daemon 启动时还会按需补注册十余个 `sys:` job
 （外部输入闭环、自诊断闭环深化、外部知识反馈闭环等计划各自的巡检/聚合/
 回看任务），同样遵循"缺失才补、不可 remove"的规则。**每个 job 的目的、
 触发频率、是否含 LLM 调用、默认启用状态、关联设计文档的完整清单见

@@ -18,7 +18,7 @@ LLM 调用"。本文档只做汇总和索引，不重复各 job 背后的详细�
 
 | 注册方式 | 位置 | 特点 |
 |---------|------|------|
-| **固定内置**（`_BUILTIN_JOBS`） | `evolution/cron_scheduler.py` | 16 个，首次 daemon 启动时一次性写入 `cron_jobs.json`，模块内静态列表 |
+| **固定内置**（`_BUILTIN_JOBS`） | `evolution/cron_scheduler.py` | 18 个，首次 daemon 启动时一次性写入 `cron_jobs.json`，模块内静态列表 |
 | **按需补注册**（`ensure_*_job()`） | 十余个独立模块 | daemon 每次启动时，`api/server.py::_build_autonomous_loop()` 依次调用各模块的 `ensure_*_job(paths, cron_scheduler)`；job_id 已存在则直接复用（不覆盖用户手动改过的 `schedule`/`enabled`），不存在才创建，默认 `enabled=True`（除非模块显式调用一次 `disable()`，见下方"默认禁用"标注） |
 
 两种方式产出的 `CronJob` 对象治理规则完全一致：`sys:` 前缀的 job **可以
@@ -70,6 +70,8 @@ Goal，到期时驱动 GoalBacklog 派生并启动一轮子 Objective，而不�
 | `sys:growth_advisor_daily` | 成长顾问：候选扫描 | `cron:30 22 * * *`（每天 22:30） | **含 LLM**（可选：为置信度最高的候选生成调研报告时调用 `llm_helper` 起草正文；未提供 `llm_helper` 时按规则模板兜底） | 是（随 `GrowthAdvisorConfig.enabled` opt-out） | 扫描近期记忆信号，生成/更新成长方向候选，为符合条件的候选生成调研报告，弱信号不生成候选 |
 | `sys:growth_monthly_retrospective` | 成长顾问：月度复盘 | `interval:2592000`（30d） | 零 LLM（纯规则统计聚合） | 是 | 统计成长候选的生成/采纳/忽略情况，生成一份月度复盘摘要 |
 | `sys:memory_backfill_scan` | 记忆回填：补跑遗漏摘要 | `interval:21600`（6h） | **含 LLM**（对待补摘要的 session 逐个调用一次摘要生成） | 是（随 `MemoryBackfillConfig.enabled` opt-out） | 扫描 summary 为空但内容达标的存量 session（如异常中断/摘要生成失败未重试），补生成摘要并写入长期记忆，是 growth_advisor 信号扫描和用户画像的共同上游数据源 |
+| `sys:capability_learning_cycle` | 能力学习：单轮循环 | `interval:21600`（6h） | **含 LLM**（检索+问答队列推进） | 是 | 遍历所有 active 能力/人设 Track，各推进一轮缺口扫描+检索+问答队列，默认使用真实检索并写入 wiki |
+| `sys:capability_question_sweep` | 能力学习：过期问题清理 | `interval:86400`（24h） | 零 LLM | 是 | 清理长期未回答的 `CapabilityQuestion`，自动标记为 expired，避免队列无限堆积，跟随 `sys:capability_learning_cycle` 一起默认打开 |
 
 > `sys:consolidation`/`sys:wiki_gap_scan`/`sys:wiki_fallback_cleanup` 的
 > handler 本身只做扫描/规则处理，但触发的下游动作（如 wiki 缺口补全）
@@ -157,7 +159,8 @@ SelfMaintenanceModule.health_check()`）内部做四项检查，结果合并写�
 `sys:wiki_utility_audit`、`sys:relevance_threshold_calibration`、
 `sys:monthly_trend_retrospective`、`sys:improvement_backlog_merge`、
 `sys:suggestion_outcome_review`、`sys:self_model_snapshot`、
-`sys:watchlist_report_<tier_id>`、`sys:archive_gc`。
+`sys:watchlist_report_<tier_id>`、`sys:archive_gc`、
+`sys:capability_question_sweep`。
 
 **含 LLM 调用**（成本由 cron 间隔控制，非每 tick 触发；其中标 ⏸ 的默认关闭，
 需要人工确认价值后再手动开启）：
@@ -168,7 +171,9 @@ SelfMaintenanceModule.health_check()`）内部做四项检查，结果合并写�
 轮次不产生 LLM 调用）、`sys:memory_backfill_scan`（仅对待补摘要的候选
 session 逐个调用一次摘要生成）、
 `sys:session_cleanup`（仅对待抽取的候选 session 逐个触发一次轻量抽取，
-非候选/已抽取/无需抽取的 session 不产生 LLM 调用）。
+非候选/已抽取/无需抽取的 session 不产生 LLM 调用）、
+`sys:capability_learning_cycle`（每轮循环对 active 能力/人设 Track 做检索+
+问答队列推进）。
 
 ## 5. 常用操作速查
 

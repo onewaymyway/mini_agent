@@ -1214,7 +1214,7 @@ import 总是失败，每次命中这个分支都会动态生成一个全新的�
 > `evolution/objective_executor.py`、`evolution/soft_goal_deriver.py`、
 > `cli/commands/cron.py`，以及 `api/routes.py` 里的 `/v1/autonomous/
 > status`、`/v1/goals`、`/v1/cron/jobs` 等端点，详见
-> `docs/autonomous_daemon_design.md`）。这两条线各自独立完成，需要合并
+> `docs/autonomous-daemon-design.md`）。这两条线各自独立完成，需要合并
 > 到同一个项目里。
 
 ### 12.1 合并范围排查
@@ -1235,7 +1235,7 @@ import 总是失败，每次命中这个分支都会动态生成一个全新的�
   `prompts/manager.py` 等 | 否 | 是 | 保留对方版本，不需要任何操作 |
 | `next_doc/daemon-multiuser-implementation-design.md`、
   `test_cases/daemon-multiuser-testing-guide.md` | 是 | 否（对方的设计内容写在
-  全新的 `autonomous_daemon_design.md` 里，没有动这两个文件） | 直接用我的版本整体覆盖 |
+  全新的 `autonomous-daemon-design.md` 里，没有动这两个文件） | 直接用我的版本整体覆盖 |
 | `tests/test_daemon_connected_statusbar.py` | 已删除（被
   `test_daemon_connected_full_features.py` 取代） | 对方项目里还保留着
   这个旧文件（第十节交付时的版本） | 删除旧文件，加入我后续新增的三个

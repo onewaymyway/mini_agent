@@ -206,7 +206,7 @@ Guardian 触发的吗？**
 ## 7. 相关文档
 
 - [Stage 9 自主运行时指南](self-evolution-stage9-guide.md) — `AutonomousLoop`/`ObjectiveExecutor`/`CronScheduler` 整体架构
-- [自主 Daemon 设计](autonomous_daemon_design.md) — daemon 进程内 `AutonomousLoop` 的 tick 档位与状态机
+- [自主 Daemon 设计](autonomous-daemon-design.md) — daemon 进程内 `AutonomousLoop` 的 tick 档位与状态机
 - [Cron 专属执行机制指南](cron-dedicated-execution-guide.md) — `cron_agent_bridge.py`/`CronJobExecutor` 已有的独立 Agent 实例模式，阶段三是同一模式在 Objective 上的对应实现
 - [Goal 模式指南](goal-mode-guide.md) — `StuckDetector`/`ProgressTracker`/dead-end 清单的原始实现与设计动机
 - [配置指南](config-guide.md#autonomyconfig好奇心评分--自主探索排序权重) — `AutonomyConfig` 完整字段列表

@@ -279,6 +279,8 @@ cron:<分 时 日 月 周>   5 字段 cron，如 cron:0 */6 * * *（每 6 小时
 | id | 默认间隔 | 用途 |
 |----|---------|------|
 | `sys:consolidation` | 6h | 巩固循环 扫描（技能剪枝 + 能力地图） |
+| `sys:wiki_gap_scan` | 12h | wiki 知识缺口扫描（浅层实体/孤儿页面/陈旧专题页） |
+| `sys:wiki_fallback_cleanup` | 7d | wiki 兜底页面清理（归并长期未合并的 session-facts fact） |
 | `sys:workdir_sync` | 1h | WorkdirKnowledge 整合（文件变化同步） |
 | `sys:self_eval` | 24h | 能力自评（capability_map 置信度更新） |
 | `sys:goal_review` | 12h | Goal 清理（标记已完成/无进展的目标） |
@@ -292,8 +294,10 @@ cron:<分 时 日 月 周>   5 字段 cron，如 cron:0 */6 * * *（每 6 小时
 | `sys:growth_advisor_daily` | 每天 22:30 | 成长顾问：候选扫描 + 调研报告 |
 | `sys:growth_monthly_retrospective` | 30d | 成长顾问：月度复盘摘要 |
 | `sys:memory_backfill_scan` | 6h | 记忆回填：补跑遗漏摘要 |
+| `sys:capability_learning_cycle` | 6h | 能力学习：单轮循环（缺口扫描+检索+问答队列） |
+| `sys:capability_question_sweep` | 24h | 能力学习：过期问题清理（CapabilityQuestion 自动 expired） |
 
-除以上 `cron_scheduler.py::_BUILTIN_JOBS` 里固定注册的 16 个之外，daemon 启动
+除以上 `cron_scheduler.py::_BUILTIN_JOBS` 里固定注册的 18 个之外，daemon 启动
 流程（`api/server.py::_build_autonomous_loop()`）里还有十余个模块各自用
 `ensure_*_job()`（缺失才补注册，不影响用户已手动调整的 schedule/enabled）
 按需补挂的 job——外部输入闭环、自诊断闭环深化、外部知识反馈闭环等计划都

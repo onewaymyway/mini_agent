@@ -18,10 +18,10 @@
 1. `next_doc/` 内同一子系统的文档分散、缺少索引：`growth_advisor_*` 前缀 19 篇、`goal_*`/`goal_cron_*` 前缀约 25 篇，均无索引说明阅读顺序与文档间关系。
 2. `next_doc/`、`docs/` 均无 `README.md` 索引文件。
 3. 汇总型文档漏同步：`docs/cron-jobs-reference.md` 记载的内置 cron job 数量（9 个）落后于代码实际数量（16 个），且同一份简表被复制到 `docs/commands-and-tools-reference.md`、`docs/self-evolution-stage9-guide.md`，三处均未同步更新。
-4. `docs/cron-dedicated-execution-guide.md` 第 6 行存在错误链接：链接文字写"具身智能改进指南"，实际指向 `autonomous_daemon_design.md`（自主 Daemon 设计），与链接文字不符。
+4. `docs/cron-dedicated-execution-guide.md` 第 6 行存在错误链接：链接文字写"具身智能改进指南"，实际指向 `autonomous-daemon-design.md`（自主 Daemon 设计），与链接文字不符。
 5. `docs/project-readme.md`（248 行）与根目录 `README.md` 内容高度重复，权威版本不明确。
 6. `docs/tool_call_format_correction.md` 与 `docs/format-correction-detector-update.md` 是"正文 + 补充说明"关系，违反 `docs/` 不应拆分为补丁文档的规则，应合并。
-7. 命名风格不一致：`docs/autonomous_daemon_design.md`、`docs/tool_call_format_correction.md` 使用 snake_case，混入以 kebab-case 为主的 `docs/`。
+7. 命名风格不一致：`docs/autonomous-daemon-design.md`、`docs/tool_call_format_correction.md` 使用 snake_case，混入以 kebab-case 为主的 `docs/`。
 8. 中文文件名：`docs/` 1 篇（`mini_agent_核心理念与长期规划.md`）、`next_doc/` 14 篇，存在跨平台打包/传输时的编码乱码风险。
 9. 部分单篇 `docs/` 文档体量失衡：`growth-advisor-guide.md`（1932 行）、`workflow-guide.md`（2323 行），已有可参考的拆分方案（见 `next_doc/growth_advisor_docs_reorganization_and_system_state_review.md` §2.2：拆成"稳定核心骨架"+"按时间线组织的演进日志"两篇）。
 
@@ -39,7 +39,7 @@
 ### 步骤二：修复已发现的具体错误（低风险，改动范围明确）
 
 1. 核对 `evolution/cron_scheduler.py::_BUILTIN_JOBS` 实际数量与内容，同步更新 `docs/cron-jobs-reference.md`、`docs/commands-and-tools-reference.md`、`docs/self-evolution-stage9-guide.md` 三处的 cron job 清单，并在 `cron-jobs-reference.md` 维护说明里注明这三处是同步副本，以后变更需一并检查（对齐 `documentation-guidelines.md` §2.3 的要求）。
-2. 修正 `docs/cron-dedicated-execution-guide.md` 第 6 行的错误链接，改为指向正确的 `embodied-agent-guide.md`（如果原意确实是想链接具身智能相关内容），或修正链接文字使其与 `autonomous_daemon_design.md` 相符（需先确认作者原意）。
+2. 修正 `docs/cron-dedicated-execution-guide.md` 第 6 行的错误链接，改为指向正确的 `embodied-agent-guide.md`（如果原意确实是想链接具身智能相关内容），或修正链接文字使其与 `autonomous-daemon-design.md` 相符（需先确认作者原意）。
 
 验收标准：`grep` 全部 `docs/*.md` 中的相对链接，逐条确认目标文件存在且链接文字与目标内容相符。
 
@@ -52,7 +52,7 @@
 
 ### 步骤四：命名规范修正（低风险，仅涉及 2 篇文件 + 反向链接更新）
 
-将 `docs/autonomous_daemon_design.md` 重命名为 `docs/autonomous-daemon-design.md`（步骤三合并后 `tool_call_format_correction.md` 已处理，此处仅剩这一篇）。重命名后同步更新所有反向引用（已知至少 `docs/cron-dedicated-execution-guide.md` 引用了这篇）。
+将 `docs/autonomous-daemon-design.md` 重命名为 `docs/autonomous-daemon-design.md`（步骤三合并后 `tool_call_format_correction.md` 已处理，此处仅剩这一篇）。重命名后同步更新所有反向引用（已知至少 `docs/cron-dedicated-execution-guide.md` 引用了这篇）。
 
 ### 步骤五：中文文件名评估（低风险，可选，建议单独排期）
 
@@ -65,3 +65,16 @@
 ## 2. 后续维护
 
 步骤一、二完成后，`documentation-guidelines.md` 里的规则（同前缀文档超过 3 篇需同步更新 `next_doc/README.md`、同一清单有多处副本需一并更新等）即可正式作为新增文档的强制要求生效。建议在下一次涉及 goal/cron 或 growth_advisor 主线的改动时，作为规则落地后的第一次实际检验。
+
+## 3. 执行进度（本轮）
+
+- ✅ **步骤一**：新增 `next_doc/README.md`（按能力主线分组，覆盖 goal_cron/goal/growth_advisor/wiki/daemon/embodied_agent/external_input/generative_capability/kanban/workflow 十条主线 + "其他"零散分组）与 `docs/README.md`（goal-*/self-evolution-*/daemon-*/wiki 记忆相关四组导读 + 汇总型文档同步提醒）。根 `README.md` 文档索引章节已补上指向这两份索引的入口。
+- ✅ **步骤二**：核对 `evolution/cron_scheduler.py::_BUILTIN_JOBS` 实际为 **18 个**（不是 16 个，更不是最初发现问题时的 9 个），补齐 `sys:wiki_gap_scan`/`sys:wiki_fallback_cleanup`/`sys:capability_learning_cycle`/`sys:capability_question_sweep` 等遗漏条目，同步更新了 `docs/cron-jobs-reference.md`、`docs/commands-and-tools-reference.md`、`docs/self-evolution-stage9-guide.md` 三处清单（含 §4 按 LLM 成本分类速查表）。修正了 `docs/cron-dedicated-execution-guide.md` 的错误链接文字。
+- ✅ **步骤三**：
+  - `docs/format-correction-detector-update.md` 已合并进 `docs/tool-call-format-correction.md`（原 `docs/tool_call_format_correction.md`，合并时一并按规范改名）；反向引用（`docs/reminder-system-guide.md`）已更新。
+  - `docs/project-readme.md` 内容已确认被根 `README.md`（项目结构/快速开始/扩展开发）与 `docs/code-structure-guide.md`（各层职责说明）完整覆盖且更新更及时，已删除；核对无其他文档反向引用。
+- ✅ **步骤四**：`docs/autonomous_daemon_design.md` 重命名为 `docs/autonomous-daemon-design.md`，更新了全部反向引用（`docs/daemon-autonomous-state-recovery-guide.md`、`docs/execution-mechanisms-overview.md`、`docs/cron-dedicated-execution-guide.md`、`docs/kanban-dashboard-guide.md`、`release_logs/v0.9.3.md`、`release_logs/v0.8.1.md`）。注意：`next_doc/autonomous_daemon_design.md` 是另一篇内容不同的设计文档（"设计方案" vs "docs/ 里的实现说明"关系），未改名。
+- ⏸️ **步骤五**（中文文件名评估）：未处理，按计划原文建议单独排期。另外发现一个新问题：`next_doc/` 下 15 篇中文文件名文档（原文档中记录为 14 篇，实际核对为 15 篇：4 篇看板/主动推荐/决策取舍类 + 11 篇 wiki 提取层类）在某些压缩/解压工具链下会被转成 `#Uxxxx` 转义乱码文件名，已在 `next_doc/README.md` 末尾记录该问题，具体成因（压缩包文件名编码）和修复建议留待步骤五一并处理。
+- ⏸️ **步骤六**（拆分超长文档）：未处理，计划本身标注为最低优先级、独立排期，本轮不纳入。
+
+验收：`grep -r "project-readme\|tool_call_format_correction\|format-correction-detector-update" docs/ next_doc/ README.md` 已确认无残留失效链接（`next_doc/docs_governance_reorganization_plan.md` 本文档内的历史问题记录性引用除外，属正常存档描述）。

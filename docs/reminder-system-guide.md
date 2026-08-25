@@ -92,7 +92,7 @@ enabled: true
 > ——这个"自动续跑"的行为由 `perception/format_correction_detector.py` +
 > `FormatCorrectionConfig` 控制，与 `format_issue_enabled` 开关无关；该开关
 > 只决定"续跑时用哪份文案"（找不到自定义文案时退回内置默认文案）。
-> 详见 [工具调用格式纠错](tool_call_format_correction.md#统一化与-reminder-系统打通--新增-write_file_truncated-规则2026-07)。
+> 详见 [工具调用格式纠错](tool-call-format-correction.md#统一化与-reminder-系统打通--新增-write_file_truncated-规则2026-07)。
 
 ### condition 字段说明
 

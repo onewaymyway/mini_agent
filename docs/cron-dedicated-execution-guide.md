@@ -3,7 +3,7 @@
 - **设计文档**：`next_doc/cron_dedicated_execution_improvement_plan.md`
 - **实施记录**：`next_doc/cron_dedicated_execution_implementation_record.md`
 - **前置依赖**：daemon 模式的基础 cron 调度（`evolution/cron_scheduler.py`，
-  见 [具身智能改进指南](autonomous_daemon_design.md) 里 CronScheduler 的
+  见 [自主 Daemon 设计](autonomous-daemon-design.md) 里 CronScheduler 的
   说明）——本文只讲"job 到期之后，具体怎么被执行"这一段，job 的增删改查、
   schedule 语法本身不重复展开。
 - **当前状态**：Track A-M 全部完成，核心执行链路、REST API、看板 tab、

@@ -309,7 +309,7 @@ P0-B/P1/P2）全部完成，均带有开关可一键回退到升级前行为。
 面向使用者的说明文档已补齐：新增
 [`docs/daemon-autonomous-state-recovery-guide.md`](../docs/daemon-autonomous-state-recovery-guide.md)
 （四个阶段各自的"做什么/怎么开/怎么用"+ 常见问题），并在
-`docs/autonomous_daemon_design.md`（实现状态表）、
+`docs/autonomous-daemon-design.md`（实现状态表）、
 `docs/config-guide.md`（`AutonomyConfig` 章节 + 相关文档列表）、
 `docs/commands-and-tools-reference.md`（补上此前未文档化的
 `/agent goals reset-step` 命令）三处加了交叉引用。

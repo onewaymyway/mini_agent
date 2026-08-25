@@ -239,7 +239,9 @@ triggers: keyword1, keyword2
 
 ### 添加新 LLM Provider
 
-参见 `docs/README.md` 的"扩展"章节。
+1. 在 `src/mini_agent/llm/providers/` 下创建新文件
+2. 继承 `LLMClient`，实现 `chat()` 和 `stream()`
+3. 在 `src/mini_agent/llm/factory.py` 的 `_REGISTRY` 中注册懒加载函数
 
 ## 配置
 
@@ -275,6 +277,8 @@ python -m pytest tests/ -q
 ## 文档索引
 
 - **必读**：[mini_agent 核心理念与长期规划](docs/mini_agent_核心理念与长期规划.md)
+- **`docs/` 主题群导读**：[docs/README.md](docs/README.md)（goal-*/self-evolution-*/daemon-*/wiki 记忆相关等超过 5 篇的主题群分组）
+- **在研设计/计划索引**：[next_doc/README.md](next_doc/README.md)（按能力主线分组的 next_doc/ 全量索引）
 
 **核心机制**
 - [系统概览](docs/system-overview.md) · [Agent 设计](docs/agent-design.md) · [CLI I/O 机制](docs/cli-io-mechanism.md)
