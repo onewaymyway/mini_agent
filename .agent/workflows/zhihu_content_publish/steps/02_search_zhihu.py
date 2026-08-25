@@ -88,8 +88,11 @@ _SCROLL_JS = r"""
 
 
 _LAUNCH_HINT = (
-    "请先运行 steps/launch_zhihu_logged_in.py 启动已登录知乎的浏览器实例"
-    "（固定调试端口 9336），完成登录后再重新执行/续跑本 workflow"
+    "请先在终端运行（不要让 Agent 直接同步阻塞调用——这个命令默认会一直"
+    "占用前台等待登录，Agent 需要用 --auto-continue 让脚本在检测到登录后"
+    "自动退出，并给这条 bash 调用设置一个几分钟量级的超时/放到后台执行）：\n"
+    "  python steps/launch_zhihu_logged_in.py --auto-continue\n"
+    "完成登录后脚本会自动退出并返回，再重新执行/续跑本 workflow"
     "（resume_workflow_run）。"
 )
 

@@ -85,19 +85,29 @@ def _remove_stale_singleton_locks(user_data_dir: Path) -> None:
 def check_zhihu_logged_in(port: int) -> bool:
     """检查知乎是否已登录。
 
-    通过 CDP `/json/list` 看是否已经有一个 zhihu.com 的 tab——未登录时知乎
-    会重定向到登录页而不是保持在正常页面，这里的判定是"存在知乎 tab 就
-    假设已登录"，不追求 100% 精确（精确判定需要真的执行一段 JS 检查页面上
-    的用户头像元素，但那需要一次额外的 CDP WebSocket 往返，这个脚本只是
-    登录态启动器，不需要做到这么精确）。
+    通过 CDP `/json/list` 看是否已经有一个"看起来是已登录状态"的 zhihu.com
+    tab。之前的实现只判断 url 是否包含 "zhihu.com"——但未登录时知乎会跳转到
+    `https://www.zhihu.com/signin?...`，这个 URL 本身也包含 "zhihu.com"，
+    会被误判成"已登录"。配合 --auto-continue 使用时，这个误判会导致脚本在
+    用户还没来得及扫码/输入账号密码时就提前判定登录成功并退出。
+
+    这里排除掉明显是登录/验证相关路径的 URL（signin、unhuman 滑块验证等），
+    不追求 100% 精确（精确判定需要真的执行一段 JS 检查页面上的用户头像
+    元素，但那需要一次额外的 CDP WebSocket 往返，这个脚本只是登录态启动器，
+    不需要做到这么精确）。
     """
+    _LOGIN_URL_MARKERS = ("/signin", "/login", "unhuman", "/account/")
     try:
         import urllib.request
         with urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list', timeout=3) as resp:
             tabs = json.loads(resp.read().decode())
-            zhihu_tabs = [t for t in tabs if 'zhihu.com' in (t.get('url') or '')]
+            zhihu_tabs = [
+                t for t in tabs
+                if 'zhihu.com' in (t.get('url') or '')
+                and not any(marker in (t.get('url') or '') for marker in _LOGIN_URL_MARKERS)
+            ]
             if zhihu_tabs:
-                print(f"  [debug] 找到 {len(zhihu_tabs)} 个知乎 tab，假设已登录")
+                print(f"  [debug] 找到 {len(zhihu_tabs)} 个知乎 tab（非登录页），假设已登录")
                 return True
         return False
     except Exception as e:
