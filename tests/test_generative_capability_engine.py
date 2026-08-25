@@ -185,27 +185,45 @@ class TestCapabilityEngineResolveExecute(unittest.TestCase):
         request = {"text": target_url, "target": {"url": target_url}, "query": ""}
         result = engine.call(request)
 
-        # trust_trace_data 默认 false，重放最后一步是 browser_navigate（无 data），
-        # 因此蒸馏自测预期会在这里失败——这是阶段五/阶段六实施记录里明确记录过的
-        # 已知行为，不是本测试的 bug。用一个真正会在最后一步返回 data 的桩步骤
-        # 来验证成功路径。
-        self.assertEqual(result.status, "not_implemented")
+        # [订正，见 next_doc/generative_capability_three_tier_improvement_plan.md
+        # 第6.3节] browser-site-scraper 的 capability.yaml 显式声明了
+        # `distill: {trust_trace_data: true}`（不是引擎默认值 false）：重放
+        # 最后一步 browser_navigate 虽然没有直接返回 data，但蒸馏器会把探索
+        # 阶段已通过 intent_schema 校验的 trace.data 作为兜底常量嵌入脚本，
+        # 因此这次探索直接蒸馏成功（trace_replay 路径），不是此前记录的
+        # "预期失败 not_implemented"。
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.resolve_reason, "explored")
+        self.assertEqual(result.member_id, "some-new-ci-site")
 
+        # 同一个 request 再调一次：应直接命中刚蒸馏出的 script.py（script 档），
+        # 不再需要重新探索——这是"探索一次、蒸馏落盘、后续复用"闭环的验证点。
+        engine_reuse = CapabilityEngine(self.skill_dir, tool_executor=tool_executor)
+        result_reuse = engine_reuse.call(request)
+        self.assertEqual(result_reuse.status, "success")
+        self.assertEqual(result_reuse.member_id, "some-new-ci-site")
+        self.assertEqual(result_reuse.resolve_reason, "domain_pattern_match")
+
+        # 另一个新域名：探索阶段本身就拿到了真实 data（browser_extract_content
+        # 直接返回 data），验证"探索成功 -> 蒸馏 -> 立即可用"这条路径在不依赖
+        # trust_trace_data 兜底时同样成立（保留原用例覆盖的场景）。
+        target_url2 = "https://www.another-new-ci-site.example/y"
         steps_with_data = [
             ExploreStep(
                 tool="browser_extract_content",
-                input={"url": target_url},
-                output={"data": {"results": [{"title": "桩数据", "url": target_url}]}},
+                input={"url": target_url2},
+                output={"data": {"results": [{"title": "桩数据2", "url": target_url2}]}},
             )
         ]
         explorer2 = build_stub_explorer(
-            steps=steps_with_data, final_data={"results": [{"title": "桩数据", "url": target_url}]},
+            steps=steps_with_data, final_data={"results": [{"title": "桩数据2", "url": target_url2}]},
         )
         tool_executor2 = lambda name, inp: {  # noqa: E731
-            "ok": True, "data": {"results": [{"title": "桩数据", "url": target_url}]},
+            "ok": True, "data": {"results": [{"title": "桩数据2", "url": target_url2}]},
         }
+        request2 = {"text": target_url2, "target": {"url": target_url2}, "query": ""}
         engine2 = CapabilityEngine(self.skill_dir, explore_runner=explorer2, tool_executor=tool_executor2)
-        result2 = engine2.call(request)
+        result2 = engine2.call(request2)
         self.assertEqual(result2.status, "success")
         self.assertIsNotNone(result2.member_id)
         self.assertEqual(result2.resolve_reason, "explored")

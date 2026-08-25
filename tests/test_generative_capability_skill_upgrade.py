@@ -164,7 +164,13 @@ class TestCapabilityEngineSkillUpgrade(unittest.TestCase):
 
         self.assertEqual(result.status, "success")
         self.assertEqual(result.resolve_reason, "skill_playbook")
-        self.assertEqual(llm_helper.calls, 1)
+        # [订正，见 next_doc/generative_capability_three_tier_improvement_plan.md
+        # 第6.3节] 升级会消耗 2 次 llm_helper 调用，不是 1 次：第1次是
+        # _llm_synthesize_script_from_playbook() 合成脚本；第2次是
+        # _atomic_persist(..., is_reexplore=True) 触发的 _infer_match_rule()
+        # LLM 归纳检索匹配规则（is_reexplore 在 attempt_skill_upgrade() 里
+        # 被硬编码为 True，这是既有行为，只是此前断言没有把它算进调用次数）。
+        self.assertEqual(llm_helper.calls, 2)
 
         script_path = self.skill_dir / "members" / "m1" / "script.py"
         self.assertTrue(script_path.exists())

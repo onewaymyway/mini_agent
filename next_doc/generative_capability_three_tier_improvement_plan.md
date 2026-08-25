@@ -16,7 +16,7 @@
 
 | # | 方向 | 现状问题 | 风险/工作量 |
 |---|---|---|---|
-| 1 | 整体合并到 `HybridExecutor.run()` | `registry.json`（script 状态机）与 `playbooks/<id>/meta.json`（playbook 成败统计）是两套独立计数，`degraded` 判定只看 script 一档 | 最大——涉及 `ScriptRepository` 字段映射，是 raw_result_and_hybrid_merge_plan.md 3.4 节已规划但未实施的项 |
+| 1 | ~~整体合并到 `HybridExecutor.run()`~~ **[已否决，见第6.1节]** | `registry.json`（script 状态机）与 `playbooks/<id>/meta.json`（playbook 成败统计）是两套独立计数，`degraded` 判定只看 script 一档 | 最大——涉及 `ScriptRepository` 字段映射；已评估后决定不做，长期保留两套独立实现 |
 | 2 | `meta.json`/`registry.json` 补 `available_tiers` 字段 | 无法从 registry 一眼看出某 member 当前实际具备 script/skill 哪几档手段 | 小——纯信息性字段，只读计算 + 写入，不改变任何决策逻辑 |
 | 3 | skill 升级尝试加节流 | `_maybe_upgrade_skill_to_script` 每次 `_try_skill` 成功都会重新检查，失败没有"已尝试过"标记，可能重复触发 LLM 调用（raw_result_and_hybrid_merge_plan.md 3.3e 节已知限制） | 小——独立函数内部加一个时间/次数节流 |
 | 4 | `call()` 支持调用方声明 `allow_tiers` | 明知道 script 必然失败（比如刚被标记 degraded）时仍会先跑一遍脚本再降级，浪费一次注定失败的执行 | 中——需要给 `call()`/`execute()` 加可选参数，且不能改变未传参调用方的既有行为 |
@@ -146,10 +146,10 @@ patrol.py` 报告使用。**不参与任何现有决策逻辑**（`_apply_lifecy
 
 ## 4. 未纳入本次范围
 
-改进方向 #1（整体合并到 `HybridExecutor.run()`）与 #5（第二个
-generative-capability skill 接入验证泛化性）仍按
-`generative_capability_raw_result_and_hybrid_merge_plan.md` 3.4 节的
-既有判断留待后续评估，不在本文档展开设计或实施。
+改进方向 #1（整体合并到 `HybridExecutor.run()`）**已在第6.1节评估并
+否决**，不再留待后续评估——长期保留两套独立实现。改进方向 #5（第二个
+generative-capability skill 接入验证泛化性）仍留待后续评估，不在本文档
+展开设计或实施。
 
 ## 5. 阶段四（补充修复）：`tools/capability_call.py` 未注入 `playbook_repo`/`skill_runner` 的接线缺口
 
@@ -206,3 +206,190 @@ skill_runner is None` 恒真，SKILL 档在**真实对话场景里从未被触�
 [test_cases/browser-site-scraper-three-tier-testing-guide.md](../test_cases/browser-site-scraper-three-tier-testing-guide.md)，
 步骤2（验证 SKILL 档确实被调用）、步骤5（验证 `skill_tier_max_turns` 默认值
 生效且可配置/可显式关闭）是本节修复的直接对应测试。
+
+## 6. 阶段五：机制全貌记录 + "不合并 HybridExecutor"决策 + 测试断言漂移订正
+
+### 6.1 决策：不再推进"整体委托给 `HybridExecutor.run()`"
+
+**结论（用户已确认）**：`next_doc/generative_capability_raw_result_and_hybrid_merge_plan.md`
+3.4 节原设计的"`capability_engine.py` 的 `resolve/execute` 整体委托给
+`HybridExecutor.run()`"，**不再推进**。原设计文档 3.4 节内容保留作为历史
+记录，但状态改为"已评估，决定不实施"，不再是"待评估的下一步"。
+
+**理由**：`generative-capability` 这套机制后续预期会持续出现"只对这类
+领域场景本身有意义"的定制修改（例如三条蒸馏路径各自的优先级/合理性检查
+细节、`playbook.md` 的整理规则、探索子agent的领域原语接入方式、`skill`
+档升级判据等）——这些改动天然是"贴着 generative-capability 这一层语义"
+去做的，如果先把执行骨架整体迁移到 `HybridExecutor` 之上，每一次这类定制
+修改都要多绕一层"这个改动该加在 `CapabilityEngine` 的领域适配层，还是
+`HybridExecutor` 的通用执行层"的判断成本，且 `HybridExecutor` 同时还要
+服务于其它非 generative-capability 场景的通用需求，两边的演进节奏和改动
+诉求并不同步。维持两套独立实现，`generative-capability` 一侧可以按自己
+的节奏自由定制，代价是两套状态机长期并存、`available_tiers` 只能停留在
+信息性字段、`degraded` 判定继续只看 script 一档——这是权衡后接受的已知
+限制，不是待办事项。
+
+**后续原则**：
+- `CapabilityEngine`/`skill_tier.py`/`distiller.py` 这条链路的改动，
+  按 generative-capability 自身的语义直接改，不再需要为"是否要向
+  `HybridExecutor` 对齐字段/接口"做额外设计约束。
+- `hybrid_exec.HybridExecutor` 自己（`_try_skill`/`PlaybookRepository`/
+  `PlaybookRunner` 等）继续作为独立、通用的"低成本手段优先"执行框架
+  演进，服务于它自己的既有调用方（`workflow_integration.py` 等），不
+  再需要为对齐 `CapabilityEngine` 的字段语义做妥协。
+- 两套实现之间目前唯一共享的是设计思路（script→skill→explore 分级）和
+  `PlaybookRepository`/`PlaybookRunner` 这两个具体模块的**代码复用**——
+  这一层复用继续保留（不重复造轮子），但仅限于"可独立复用的基础设施"，
+  不代表两套状态机会在语义上统一。
+
+### 6.2 当前完整机制记录（据代码梳理，供后续改动前快速回顾）
+
+本节把当前 `CapabilityEngine` 实际运行的完整机制记录一遍（不是设计稿，
+是对 `capability_engine.py`/`distiller.py`/`explorer_runtime.py`/
+`skill_tier.py`/`tools/capability_call.py` 现状的如实梳理），后续每次
+改动应该同步更新本节，而不是任由文档与代码继续漂移。
+
+**入口与调度**：
+- `tools/capability_call.py::capability_call(skill_name, request)` 每次
+  调用现构造一个 `CapabilityEngine` 实例（成本低，不做跨调用缓存），
+  按 `AppConfig.generative_capability`（可被 `capability.yaml -> skill_tier`
+  单 skill 覆盖）默认注入 `playbook_repo`/`skill_runner`。
+- `resolve(request)`：两级检索，只判断"该由哪个/哪些 member 处理"，不
+  涉及执行——第一级确定性匹配（`domain_pattern`/`keyword`，零成本），
+  第二级 LLM 裁决（`llm_resolver`，规则匹配不到候选时才触发）。
+- `call(request, allow_tiers=None)` 是三档调度中枢：
+  1. `hit` → 依次对候选 member 跑 script 档（`execute()`）；
+  2. 全部失败 → `_try_skill(last_failed_member_id, request)`（没有
+     active playbook 时静默跳过，不计入任何成败统计）；
+  3. script+skill 都不行 → 判断该 member 是否已 `degraded`，是则
+     `reexplore_member_id=` 该 member（复用同一 member_id 重新探索），
+     否则视为全新场景 → `explore()`；
+  4. `no_match` → 直接 `explore()`。
+  - `allow_tiers` 支持调用方主动跳过某档（跳过的档位不产生执行尝试、
+    不计入成败统计），但目前完全依赖调用方显式传参，引擎自己不会根据
+    "已知 degraded"这类内部状态自动决定跳过 script 档。
+
+**explore（第三档，全新探索）**：
+- `explorer_runtime.py::build_subagent_explorer()` 构造真正的 `SubAgent`
+  驱动探索（复用主 Agent 执行框架，不是另起一套探索循环），默认拥有完整
+  通用工具集，领域原语是"追加"而非"收窄"——来源经 `capability.yaml ->
+  explorer.depends_skills` 自动派生（复用
+  `real_tools.py::load_skill_local_tool_implementations()`），
+  `tool_allowlist.json` 降级为可选的交集收窄声明。
+- 探索子agent收敛出解法后调 `finish()`：`script_source` 结构性必填，
+  要么给源码要么显式 `"SKIP"`，不允许静默留空。
+
+**distill（蒸馏，三条路径，优先级从高到低）**：
+1. `script_source`——探索子agent自己判断能参数化，直接交源码。
+2. `llm_synthesized`——`script_source` 为空/`SKIP` 且注入了
+   `llm_helper` 时，LLM 读完整 trace 总结出参数化脚本。
+3. `trace_replay`（最后兜底）——前两条都不可用时，把 trace 里每步
+   `(tool, input)` 参数化后固化重放；已知局限是分不清死胡同和关键路径，
+   trace 混有失败探测调用时重放必炸。
+   - 生命周期上被标记"弱信任"：`distill_source_kind == "trace_replay"`
+     的 member 使用更保守的 `probation_success_threshold_override`
+     （默认取领域默认门槛的两倍），需要验证更多次成功才能转正。
+- 三条路径共同的假数据防护：规则预检（扰动 `input` 重跑一次，输出雷同
+  则可疑）+ LLM 复核两级校验，未通过直接丢弃、不落盘。
+- 三条脚本路径全部失败但探索本身成功 → 不判"无沉淀"，自动整理成
+  `playbook.md` 落盘（`distill_source_kind: "playbook"`，
+  `registry.json` 标记 `execution_tier: "skill_only"`，member 目录下
+  没有 `script.py`），交给下次命中该 member 时的 skill 档使用。
+
+**skill 档（第二档，playbook 驱动轻量 Agent）**：
+- `_try_skill()`：无 `playbook_repo`/`skill_runner` 或无 active
+  playbook → 静默跳过；有 → 调 `skill_runner(request, playbook_content)`
+  （内部是 `PlaybookRunner` 拉起一次轻量 Agent，工具集/回合预算受限，
+  区别于全量探索）。返回内容带 `SKILL_RETIRE_ERROR_PREFIX` 前缀
+  （对应 `PlaybookInvalidError`，Agent 明确判定"这份 playbook 走不通"）
+  → 直接 `retire`，不走"多次失败才退役"统计；其它失败 → `record_failure`
+  走正常 `consecutive_fail` 累计；成功且通过 schema 校验 →
+  `record_success`，`resolve_reason="skill_playbook"`。
+
+**升级方向（skill 证明可靠 → 固化为 script）**：
+- `_try_skill()` 每次成功后调 `_maybe_upgrade_skill_to_script()`：未
+  开启升级开关（全局默认已开）、未注入 `llm_helper`、已有 `script.py`、
+  或 playbook 累计成功次数未达门槛（默认 3）→ 静默跳过。
+- 达标 → `attempt_skill_upgrade()`：playbook 文本 + 一次真实执行样例
+  交给 LLM 合成脚本，走与 `distill()` 完全一致的自测/校验/落盘流程，
+  `distill_source_kind` 记为 `"skill_upgraded"`。
+- 升级失败记录 `last_upgrade_attempt_at`，配合
+  `skill_upgrade_retry_cooldown_seconds`（默认 3600s）节流，避免每次
+  成功都重新触发一次 LLM 调用。
+- **[本次订正]** 升级落盘时 `_atomic_persist(..., is_reexplore=True,
+  llm_helper=llm_helper)` 里 `is_reexplore` 被硬编码为 `True`，这会
+  额外触发一次"LLM 归纳检索匹配规则"的调用（`_infer_match_rule` 那条
+  仅在"重新探索既有 member"且注入了 `llm_helper` 时才生效的路径）。
+  也就是说**升级一次实际消耗 2 次 LLM 调用**（脚本合成 + 匹配规则
+  归纳），而不是只有脚本合成这 1 次。这一点此前只在 3.3e 节"已知限制"
+  里提到"`_infer_match_rule` 会基于触发升级那一次的请求重新生成匹配
+  规则"，但没有点出这会导致 `llm_helper` 调用次数变化，本次予以明确。
+
+**至此，script ⇄ skill ⇄ explore 三档之间是双向流转**：script 失败
+降级到 skill，skill 不行降级到 explore；explore 成功优先升格为
+script，退而求其次落为 playbook；playbook 用得好又能升格回 script。
+
+**全局默认值与接线**：`AppConfig.generative_capability`
+（`skill_tier_max_turns=40`、`skill_upgrade_enabled=True`、
+`skill_upgrade_success_threshold=3`、
+`skill_upgrade_retry_cooldown_seconds=3600`）保证不配置也默认启用，
+`tools/capability_call.py` 每次调用据此注入依赖，`capability.yaml ->
+skill_tier` 可单 skill 覆盖，`max_turns<=0` 是显式关闭通道。
+
+**统一视角的现状边界**：`registry.json` 每个 member 有 `available_tiers`
+字段（`_compute_available_tiers`/`_refresh_available_tiers`），但只是
+信息性字段，不参与 `_apply_lifecycle`/`_try_skill`/`explore` 任何触发
+判断；`degraded` 判定仍只看 script 一档的成败计数，script 和 skill 是
+两套独立计数，互不感知——这一点在 6.1 节的决策下将长期保留，不再是
+"待合并解决"的临时状态。
+
+### 6.3 测试断言漂移订正（据实际运行发现，已修复）
+
+复跑相关测试文件发现两处文档记录与代码实际行为不一致，均属于**代码演进
+后测试断言未同步更新**，不是本次新引入的问题。**两处均已在本节修复**：
+
+1. **`tests/test_generative_capability_skill_upgrade.py::
+   test_upgrade_succeeds_and_persists_script`**：此前实际失败
+   （`self.assertEqual(llm_helper.calls, 1)` 断言不成立，实际调用 2 次，
+   原因见上方 6.2 节"升级方向"最后一条订正——升级会消耗 2 次 LLM 调用：
+   脚本合成 + `_atomic_persist(..., is_reexplore=True)` 触发的匹配规则
+   归纳）。**已修复**：断言改为 `self.assertEqual(llm_helper.calls, 2)`，
+   并加注释说明两次调用分别对应哪个环节。
+
+2. **`tests/test_generative_capability_engine.py::
+   TestCapabilityEngineResolveExecute::test_full_explore_distill_reuse_cycle`**：
+   此前多处文档（3.3c/3.3d/3.3e 节验证记录）反复引用"1 个与本次改动
+   无关的既有失败"，暗示失败原因始终不变。核实后发现**真正原因**并非
+   之前推测的"3.3d 节 playbook 兜底路径生效"，而是：这条测试复用的
+   `.claude/skills/browser-site-scraper/capability.yaml` 本身显式声明了
+   `distill: {trust_trace_data: true}`（不是引擎默认值 `false`）——测试
+   注释里"trust_trace_data 默认 false"这句话描述的是**引擎默认值**，但
+   忽略了测试实际加载的是**已经显式覆盖过这个开关的真实 skill 配置**，
+   两者不是一回事。`trust_trace_data: true` 使得重放最后一步
+   `browser_navigate`（无 `data`）时，蒸馏器会把探索阶段已通过
+   `intent_schema` 校验的 `trace.data` 作为兜底常量嵌入脚本
+   （`distill_used_trace_data_fallback: true`），蒸馏经 `trace_replay`
+   路径直接成功，而不是原断言预期的 `not_implemented`。**已修复**：
+   - 第一次调用断言改为 `status == "success"`、
+     `resolve_reason == "explored"`、`member_id == "some-new-ci-site"`。
+   - 新增一次"同一 request 再调一次"的验证，断言直接命中已蒸馏的
+     `script.py`（`resolve_reason == "domain_pattern_match"`），把"探索
+     一次、蒸馏落盘、后续复用"这条闭环的复用点真正验证到，而不只是验证
+     蒸馏本身成功。
+   - 原测试后半段"新域名走完整探索"的场景改用第二个域名
+     `another-new-ci-site.example`（避免与第一段共用同一个 member_id
+     产生耦合），保留原有覆盖的"探索拿到真实 data → 蒸馏 → 立即
+     可用"场景，断言不变（`status == "success"`、
+     `resolve_reason == "explored"`）。
+
+**验证**：修复后 `tests/test_generative_capability_engine.py` +
+`tests/test_generative_capability_skill_tier.py` +
+`tests/test_generative_capability_skill_upgrade.py` +
+`tests/test_generative_capability_available_tiers.py` +
+`tests/test_distiller_playbook_fallback.py` +
+`tests/test_distiller_script_source.py` +
+`tests/test_hybrid_exec*.py`（`test_hybrid_exec_summary_route.py` 因
+本地环境缺 `fastapi` 依赖被跳过，与本次改动无关）共 121 用例全部通过，
+无失败、无跳过。今后不应再有"已知无关失败"这个分类挂在
+generative-capability 相关测试上——上述两条曾经被这样归类的用例已确认
+并非环境问题，均是断言本身过期，修复后应当保持全绿。

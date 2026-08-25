@@ -563,7 +563,18 @@ script 那一档的既有行为。
   同，因为 `capability_engine` 目前没有等价于 `TaskSpec` 的调用方配置面，
   引入这类精细控制留给"是否要整体迁移到 HybridExecutor"的评估结果来决定。
 
-### 3.4 具体合并方式（原设计，尚未实施）
+### 3.4 具体合并方式（原设计，已评估，决定不实施）
+
+> **[决策更新，见 `next_doc/generative_capability_three_tier_improvement_plan.md`
+> 第6.1节]** 用户已确认：本节"整体委托给 `HybridExecutor.run()`"的重构
+> **不再推进**。理由是 `generative-capability` 这套机制后续会持续出现
+> 只对这类领域场景本身有意义的定制修改（三条蒸馏路径细节、`playbook.md`
+> 整理规则、探索原语接入方式、skill 升级判据等），先把执行骨架迁移到
+> `HybridExecutor` 之上会让每次定制修改都多一层"该改在领域适配层还是
+> 通用执行层"的判断成本，且两边服务对象、演进节奏并不同步。维持两套
+> 独立实现是权衡后接受的长期状态，不是待办事项——`available_tiers` 会
+> 继续只是信息性字段，`degraded` 判定会继续只看 script 一档。本节下方
+> 原设计内容保留作为历史记录，不再执行。
 
 `capability_engine.py` 的 `resolve/execute` 找到目标 member 后，不再自己实现
 执行/重试/降级逻辑，而是构造一个 `hybrid_exec.spec.TaskSpec`
