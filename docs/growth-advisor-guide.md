@@ -5,10 +5,10 @@
 > 完成）、`next_doc/growth_advisor_improvement_plan_v3.md`（P5-0~P5-6，
 > 已全部完成）；逐阶段实施细节见
 > `next_doc/growth_advisor_implementation_record.md`。P6（反馈粒度细化
-> + LLM 增强路径可观测性）见本文档 2.7/2.8 节；Goal/Cron 打通见
-> `next_doc/growth_advisor_goal_cron_integration_plan.md` 与本文档
-> 2.9 节；调研信息获取与整理见
-> `next_doc/growth_advisor_research_quality_plan.md` 与本文档 2.10 节。
+> + LLM 增强路径可观测性）、Goal/Cron 打通、调研信息获取与整理等后续
+> 能力方向的落地细节，已迁移到
+> [growth-advisor-directions-history.md](growth-advisor-directions-history.md)
+> （演进日志 §2.7-2.10 等，按方案批次组织）。
 > 代码入口：`src/mini_agent/evolution/growth_advisor.py`（模块头部
 > docstring 是最权威的阶段变更历史，本文档是面向使用者的整理版）。
 
@@ -53,13 +53,13 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
 
 - **"采纳"应该是一个起点，而不是终点**。用户对一个方向表达认可之后，
   系统应该把这当作"可以开始自主推进了"的信号，而不是仅仅记一条反馈、
-  然后停在原地等用户发出下一条明确指令。2.12 节的"采纳即启动"就是
+  然后停在原地等用户发出下一条明确指令。演进日志 §2.12的"采纳即启动"就是
   这条理念在当前版本的落地：默认把"采纳"和"开始持续调研"绑在一起，
   而不是让两者成为需要用户分别触发的两个独立动作。
 - **"持续"意味着不能在原地打转**。每一轮推进都应该在上一轮的基础上
   往深/往新走——避免重复讲已经讲过的内容、避免用不同措辞重写同一份
   素材。这要求执行规范/模板层面有专门的"增量"约束和"已覆盖话题"记忆
-  （见 2.12 节 growth_pursuit 模板的 handoff_fields 设计），而不能只
+  （见 演进日志 §2.12 growth_pursuit 模板的 handoff_fields 设计），而不能只
   套用通用的"随手调研一下"模板。
 - **素材要能沉淀成用户可以直接拿去学习的东西**，而不是散落的、互不
   衔接的多份一次性报告。倾向于让同一个方向的素材汇聚到同一份持续更新
@@ -84,7 +84,7 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
 - 每一轮新产出的素材，相比上一轮是真的有实质性推进，还是在换一种
   说法重复已有内容？
 - 用户能不能在看板/CLI 上一眼看出"哪些方向正在被自主推进、进展到
-  哪一步了"？（2.9 节末尾、2.12 节提到的"看板要能看到正在被推进的
+  哪一步了"？（演进日志 §2.9末尾、演进日志 §2.12提到的"看板要能看到正在被推进的
   方向"是这条理念尚未完全做到的部分，后续如果要继续投入，应该优先
   往这个方向补，而不是继续叠加新的手动衔接点）
 - 这个改动是不是又把某个原本自动衔接的步骤，重新变成了需要用户单独
@@ -193,1095 +193,10 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
   目前只支持这一种覆盖值，不支持按类别设置独立的 daily/weekly_digest
   频率。
 
-### 2.5 关键词表 / 自定义主题 / 类别系统
-
-- 内置 7 个主题（`_TOPIC_KEYWORDS`）+ 用户自定义（看板"➕ 添加自定义
-  主题"）+ LLM 学到、待确认或已自动转正的主题，三者运行时合并成一份
-  有效关键词表；用户可以隐藏某个内置主题（不删除，只是黑名单标记，
-  可随时"↩️ 恢复"，见 P4-7）。
-- **类别归类（P5-3）**：内置主题硬编码归入"技术类/管理类/表达类"三个
-  类别，自定义/LLM 学到的主题默认落进兜底的"其他类"。打开
-  `topic_category_llm_enabled`（默认关闭）后，新增/确认转正主题时会
-  额外调一次 LLM 做"4 选 1"粗粒度分类（不引入 embedding），结果持久化
-  在 `profile.derived["growth_topic_categories"]`，此后类别级反馈学习
-  （2.1 节）、按类别静音（2.4 节）、推送优先级加权（2.4 节）对这些
-  自定义主题同样生效。开关先开后关不会撤销已经分类的结果，只是不再
-  产生新的分类。
-
-### 2.6 数据生命周期 / 存储卫生（P5-0）
-
-只追加不轮转的 jsonl 文件长期运行会无限增长，P5-0 做了两处压缩（都不是
-简单删历史，而是先确认不会破坏依赖全量历史的统计口径）：
-
-- `growth_topic_trend.jsonl` **降采样**：超过 60 天的旧快照，按"同一
-  主题同一周只留最新一条"压缩，`growth_candidate_derive()` 每轮 cron
-  顺带自动执行。
-- `growth_reports_index.jsonl` **分层存储**：`compact_reports_index_
-  storage()` 把"不再是任何候选当前挂着的那份 + 生成超过 180 天"的旧
-  报告移到 `growth_reports.archive.jsonl`；查询侧同步兜底
-  （`get_report_by_id()` 查不到活跃索引会再查归档文件，`list_reports
-  (include_archived=True)` 供累计统计用），不会因为报告被归档就出现
-  404 或"报告生成总数"突然变少。这一步**不接入 `run_daily_cycle()`
-  自动触发**（改的是"能不能查到某份报告"这个用户可感知的行为，不适合
-  悄悄每天跑），留给人工维护脚本或未来单独排期的月度 cron。
-- `growth_feedback_ledger.jsonl` 的分层存储还没做（消费方全是累计
-  统计语义，需要先转持久化聚合计数再归档，改动量级更大，见
-  `growth_advisor_improvement_plan_v3.md` P5-0 小节），当前数据量还
-  不大，不紧急。
-
-### 2.6.1 候选去重：字面去重 + 可选的 LLM 语义判重（本次新增）
-
-`growth_candidate_derive()` 生成新候选前，原本只做**精确标题去重**
-（`normalize_title_key()`：去标点、转小写、分词排序后比较，能拦住
-"Python 工程实践" vs "python 工程 实践" 这类纯格式差异，但拦不住
-"学习 Rust 异步编程" vs "掌握 Rust async/await" 这类措辞不同、本质
-同一方向的重复）。
-
-打开 `duplicate_direction_llm_check_enabled`（默认关闭，与
-`llm_signal_augment_enabled`/`topic_category_llm_enabled` 同一惯例）
-后，精确去重没匹配到时会再用 LLM 判断一次：把新主题和"已存在的方向"
-——当前 pending/accepted 候选标题、已经采纳为 Goal 正在推进的方向
-标题、以及**仍在冷却期内被 dismiss 过的候选标题**——一次性交给 LLM，
-判断是不是本质同一件事。命中时：
-
-- 匹配到的是某个 pending/accepted 候选 → 合并证据到那个候选（跟精确
-  去重命中时行为一致），不产生新候选；
-- 匹配到的是某个 Goal（没有对应的候选，比如候选早就被采纳、Goal
-  已经在推进），或匹配到的是某个冷却期内被忽略过的候选 → 直接跳过，
-  不创建新候选——前者是这个方向已经在做了，后者是用户已经明确忽略过
-  这个方向、只是这次措辞不同，都不需要再单独提醒一次。
-
-> **修复记录**：这一步此前只把当前 pending/accepted 候选和已采纳 Goal
-> 的标题喂给 LLM，冷却期内的 dismissed 候选完全不在判重池子里——字面
-> 去重（`normalize_title_key()`）只能拦住标题完全一致的重复，导致
-> "学习 Rust 异步编程"被忽略后，下次以"掌握 Rust async/await"这种
-> 措辞出现时会绕开冷却期直接重新生成，表现为"待处理候选里反复出现
-> 明明已经忽略过的方向"。现在冷却期内的 dismissed 候选标题也纳入
-> 同一次 LLM 判重（冷却期已过的不受影响，仍会正常参与新一轮判重）。
-
-LLM 判断失败（异常、输出解析不出、输出的内容不在候选列表里）时统一
-退回"不是重复"，照常新建候选——最坏情况是多一条用户可以手动忽略的
-候选，比误判丢掉一个真正的新方向成本更低。开关关闭时这一步完全不
-生效，只保留原有的精确标题去重（此时冷却期判断仍然只按字面
-`dedupe_key` 匹配），行为与引入前完全一致。
-
-即使打开了这个开关，判断仍然可能有漏网之鱼（比如 Goal 标题和候选
-标题都在活跃列表里但表述差异很大，LLM 没判出来）——忽略候选时可以
-选择 `already_exists`（"已存在该主题"）原因，作为人工纠正的出口，
-见下一节。
-
-### 2.7 忽略原因：区分"方向错"和"报告差"（P6）
-
-此前"忽略一个候选"只有一个动作，系统没法知道你是"这个方向我压根不
-关心"还是"方向没错，只是这份报告写得不痛不痒"——两者被当成同一种
-负向信号，都会拿去压低这个方向（以及同类别）下次重新出现时的初始
-置信度。这可能错误地永久打压一个其实有价值、只是报告碰巧写得不好的
-方向。
-
-现在忽略候选时可以带一个可选的原因：
-
-| 原因 | 含义 | 是否影响置信度 |
-| --- | --- | --- |
-| `not_interested` | 这个方向我不关心 | 是，正常参与方向/类别衰减 |
-| `bad_timing` | 方向可以，但现在不是时候 | 是，正常参与方向/类别衰减 |
-| `report_not_useful` | 方向没错，是报告没写好 | **否**，不压低这个方向今后的置信度 |
-| `already_exists` | 和已有方向重复，不是新方向（见 2.6.1 节） | **否**，不压低这个方向今后的置信度 |
-| `unspecified`（默认，不传原因时的取值） | 未指定 | 是，行为与 P6 之前完全一致 |
-
-`report_not_useful` 的次数单独统计（`_report_quality_dismiss_counts()`），
-接入月度复盘的"报告质量待改进"排行和看板诊断面板，作为"这些方向该
-优先改进报告生成方式，而不是该少推荐"的信号，跟"最常被忽略"排行是
-两个独立的维度。
-
-- **看板**：待处理候选卡片新增一个"忽略原因"下拉框（默认"不说明
-  原因"），点"🙈 忽略"时一并提交；拖拽式看板视图暂不支持指定原因
-  （拖拽忽略统一记为 `unspecified`，卡片文案有提示，想细化原因请切到
-  列表视图操作）。
-- **CLI**：`/growth dismiss <id> [reason]`，`reason` 可省略。
-- **API**：`POST /growth/candidates/{id}/dismiss`，body 可选
-  `{"reason": "..."}`；不传 body 或不传该字段都等价于旧版本行为。
-
-旧数据兼容：P6 之前写入的 dismiss 记录没有 `reason` 字段，读取时统一
-视为 `unspecified`，继续正常参与衰减，不会因为升级就让历史反馈失效。
-
-### 2.8 LLM 增强调用状态可见（P6）
-
-`llm_signal_augment_enabled` / `report_quality_llm_enabled` /
-`topic_category_llm_enabled` 这三个 opt-in 开关，此前调用失败（异常、
-空响应、JSON 解析失败）只会静默退回默认路径（规则式扫描 / 模板报告 /
-"其他类"兜底），用户完全看不出"我打开的这个增强开关，到底有没有在
-正常工作"——对一个用户主动选择打开的能力来说，静默失败比默认关闭更
-容易造成误解。
-
-现在诊断面板（"🩺 我的数据 / 诊断信息"）新增一块"LLM 增强调用状态"，
-逐个展示三个调用点各自"最近一次调用结果"：
-
-- ✅ 成功 / 成功但本次没有新发现
-- ⚠️ 调用成功但响应为空 / 响应解析失败
-- ℹ️ 未命中记忆太少，本次跳过调用（仅信号增强扫描）
-- ❌ 调用抛出异常（附截断后的错误信息）
-
-只记"最近一次"，不追加历史（这是健康检查用的状态，不是审计日志）；
-从未触发过的调用点会显示"尚未触发过"，跟"触发过但失败"区分开。
-
-### 2.9 Goal/Cron 打通：对齐分析 + 一键落地 + 回访用真实进度（本次新增）
-
-> 对应方案：`next_doc/growth_advisor_goal_cron_integration_plan.md`。
-
-此前成长顾问从头到尾只读 memory 记忆，跟另一套同样成熟的机制——
-`GoalBacklog`（跨会话目标层级）+ `goal_cron_bridge`（目标的周期性自动
-推进）——完全没有交叉。现在打通了三层：
-
-**对齐分析（阶段 A，默认开启，默认零 LLM 成本，可选 LLM 增强）**：
-`goal_growth_alignment()` 默认用关键词匹配（跟内置主题关键词表同等
-复杂度，不引入 embedding），比对"证据数达标的兴趣方向 / 已采纳候选"
-和"GoalBacklog 里的 Goal 标题"，找出三类需要关注的情况：
-
-- **有兴趣信号但没建目标**：说明这个方向反复被聊到，但还没有落成一个
-  可追踪的目标；
-- **已建目标但停滞**：Goal `status="active"` 且 `last_touched_at`
-  超过 `goal_alignment_stalled_days`（默认 21 天）没动过；
-- **LLM 建议的潜在配对**（`goal_alignment_llm_enabled=True` 时才有，
-  默认关闭）：关键词匹配的局限在于，用户"随口聊起"一个方向和"正式
-  定成目标"时的措辞经常不一样（比如兴趣叫"数据分析能力"、Goal 叫
-  "提升可视化技能"），字面对不上但实质是一件事。打开这个开关后，
-  `/growth align` 会对"两条规则都没匹配上的兴趣方向 + Goal"各取一批
-  （各 20 条上限），额外调一次 LLM 做语义匹配，命中的配对单独列在
-  "LLM 建议关注的潜在配对"里——这是建议，不是确定关系，不会自动写入
-  任何持久化的关联；LLM 输出的 `topic`/`goal_id` 只有能在候选池里对上
-  号才会被采纳，防止幻觉匹配；调用结果计入诊断面板的"LLM 增强调用
-  状态"区块（`goal_alignment_match`，见 2.8 节），跟其余三个既有 LLM
-  调用点同等可观测。
-
-CLI：`/growth align`（`goal_alignment_llm_enabled=True` 时自动带上
-LLM 增强）；诊断面板新增
-`goal_alignment.unmatched_interests_count` /
-`goal_alignment.stalled_linked_goals_count` 两个计数（明细走
-`/growth align`，跟诊断面板一贯"只给计数，明细走专门入口"的惯例一致；
-诊断快照本身不触发 LLM 调用，保持零成本）；
-`goal_alignment_enabled=False` 或 GoalBacklog 不可用时两个计数整体为
-`None`，不影响诊断面板其余部分。
-
-**一键落地（阶段 B，用户显式触发，不会自动发生）**：一个候选已经生成
-过调研报告后，可以 `/growth adopt-goal <candidate_id>` 直接创建一个
-GoalBacklog Goal——标题用候选标题，`description` 用报告摘要 + 报告
-路径引用，打上 `growth_advisor` 标签；候选反向记一份
-`linked_goal_id`，如果候选此前还是 `pending` 会顺带流转成
-`accepted`。落地之后要不要把这个 Goal 设成周期性任务（绑定 cron），
-走既有的 Goal 管理命令即可，成长顾问不代管 Goal 的生命周期。**看板/
-API 入口（本次新增）**：`POST /v1/growth/candidates/{id}/adopt_goal`
-（`client.growth_candidate_adopt_goal()`），"📄 查看调研报告"折叠区
-里"🚀 落地为 Goal（继续调研）"按钮，此前这一步只有 CLI 能做，看板上
-"采纳"了一个方向之后除了改个状态字段，没有任何入口能让成长顾问真的
-"接着在这个方向上继续调研、收集素材"——用户体感上就是"采纳了但系统
-什么都没做"，本质是"采纳"（`accept`，只是反馈信号）和"落地推进"
-（`adopt_candidate_as_goal`，真正开始收集素材）是两个不同的动作，
-此前只有前者暴露在看板里。
-
-**回访优先用 Goal 真实状态（阶段 C，向后兼容）**：候选一旦有
-`linked_goal_id`，30 天回访（2.3 节）判断"要不要展示回访卡片"时，
-优先看这个 Goal 的真实状态而不是 memory 证据数走势：
-
-- Goal 已 `completed` → 视为显而易见的"已推进"，自动记录，不占用一次
-  主动询问；
-- Goal `active` 且近期有 touch → 仍在正常推进，跳过本轮、顺延；
-- Goal 已停滞（超过 `goal_alignment_stalled_days` 没动）、或
-  `paused`/`abandoned`/`failed`/`cancelled` → 正常展示回访卡片，
-  问法换成"这个方向对应的目标看起来有一阵没动了，要不要先放一放，或者
-  重新规划一下？"，比原来"有没有真的推进？"更贴合实际状态。
-
-没有关联 Goal 的候选、或调用方没有传入 GoalBacklog（比如某些老的调用
-路径尚未升级），行为跟此前完全一致，不受任何影响。
-
-### 2.10 调研信息获取与整理：从"计数/现编"到"真摘录/有来源/更具体"（本次新增）
-
-> 对应方案：`next_doc/growth_advisor_research_quality_plan.md`。
-
-此前调研报告生成（`generate_growth_report()`）本质是"一个 prompt
-直接让 LLM 现编 500 字四段式内容"：外部资讯即使打开
-`report_include_external_context` 也只是一个数字（"大约有 12 条相关
-资讯"），页面内容完全没被用上；报告结构固定是"为什么值得关注/怎么
-入门/常见资源/投入周期"四段，容易写成放之四海皆准的通用建议。这次
-做了四处增量改进，互相独立，任一开关关闭都退化到改动前的行为：
-
-- **外部资讯从"计数"升级为"摘录"**（复用 `report_include_external_
-  context` 这一个开关，不新增开关）：报告生成时真正取最近 2 条命中
-  wiki 页面的正文摘录（不只是数一数有几条），并要求 LLM 引用到的地方
-  用『（参考：页面id）』标注来源——用户能自己判断报告里的内容是不是
-  真的有依据，不是 LLM 凭训练知识现编。
-- **忽略原因驱动针对性调整**（`report_dismiss_reason_adaptive_
-  enabled`，默认开启，零额外成本）：复用已有的 `report_not_useful`
-  统计（2.7 节），如果这个方向之前的报告被标过"内容太笼统"，生成
-  prompt 时追加一句强约束，要求 LLM 这次给出具体、贴合用户处境的
-  建议，不要重蹈覆辙。
-- **两段式生成：先提纲、后填充**（`report_two_stage_enabled`，默认
-  关闭——多一次 LLM 调用，成本翻倍）：打开后先让 LLM 针对候选主题
-  提炼 3-4 个具体问题（不是"怎么入门"这种泛泛提问），再逐一回答，
-  替代固定的四段式结构。提纲阶段调用失败/空响应/解析失败都静默退回
-  单段式 prompt，不影响报告生成本身；调用结果计入诊断面板"LLM 增强
-  调用状态"区块的新调用点 `report_outline`。
-
-CLI/看板无需任何操作——这几项都发生在 `generate_growth_report()`
-内部，`/growth report <id>`、`/growth scan` 自动带上新行为，行为差异
-只体现在报告正文本身（有真实摘录 + 来源标注、更具体的结构）。
-
-### 2.11 cron 主动检索预算调度 / 检索质量反馈闭环 / Goal 状态历史（本次新增）
-
-> 对应方案：`next_doc/growth_advisor_cron_search_and_status_history_plan.md`。
-
-补齐三处此前留白的空隙：
-
-- **cron 路径也能触发主动检索**（`cron_triggered_active_search_
-  enabled`，默认关闭）：此前主动检索只有"手动触发调研报告"这一条
-  路径能用，`sys:growth_advisor_daily`（cron 无人值守路径）从不触发。
-  打开开关后，`run_daily_cycle()`（`/growth scan` 与 cron job 共用）
-  每个自然日最多对 `cron_triggered_active_search_daily_limit`（默认
-  1）个"证据数最高但从未有过任何外部背景"的候选触发一次定向检索，
-  复用既有的检索 → LLM 抽取 → 落盘 wiki 管道，产出跟手动触发路径共用
-  同一个 `source_kind="external_search"` 标记。预算按自然日计数，
-  跟推送节流是两套独立的计数器。
-- **主动检索的质量反馈闭环**（`tech_radar.quality_feedback_enabled`，
-  默认开启，零额外成本）：`sys:tech_radar_search` 种子轮转此前不看
-  历史检索质量——一个连续查不到任何有用内容的种子会被无限期继续
-  排队。现在种子连续 `tech_radar.low_quality_streak_threshold`
-  （默认 3）次检索都没有抽出 entity/fact，会在
-  `tech_radar.low_quality_cooldown_days`（默认 14 天）冷却期内暂时
-  跳过；冷却期内只要有一次查到有用内容，或冷却期满，都会自动重新
-  参与轮转——是降级不是拉黑。
-- **Goal 状态变更历史**：`GoalBacklog.set_status()` 现在会给 Goal
-  节点追加一条 `{"status", "at"}` 历史记录（状态真正变化时才追加，
-  重复 `set` 同一状态不产生冗余条目）。`growth_topic_lifecycle()` 消费
-  这份历史后，能在时间线里正确呈现"完成过一次又被重新打开"这种
-  往复（新增 `goal_reopened` 事件），而不只是展示最后一次状态；旧数据
-  没有这份历史时自动退回原有的"只看当前状态"展示，不受影响。
-
-三者都不需要用户在看板/CLI 做任何额外操作——前两项通过配置开关生效，
-Goal 状态历史是数据结构层面的补全，`growth_topic_lifecycle()` 的既有
-调用方（看板/CLI 展开某个主题详情）自动获得更完整的时间线。
-
-### 2.12 采纳即启动：从"每一步都要人工衔接"到"自主持续调研"（本次新增）
-
-> 与用户讨论后的方向性改动：成长顾问的定位应该是"自主根据用户需求
-> 规划成长方向，并在用户选择的方向上自主、不断地收集整理素材"，而
-> 不是"信号扫描之后每一步都要人工点一下的流水线"。
-
-**此前的问题**：2.9 节的"一键落地"虽然把"落地成 Goal"这一步接进了
-看板，但完整链路仍然是四段全部手动衔接：
-
-```
-信号扫描 → 候选 → [人工采纳] → [人工"落地为Goal"] → [人工设周期性] → [人工生成执行规范并确认]
-```
-
-任何一步没做，链条就断在那——用户点了"✅ 采纳"之后，系统除了改一个
-状态字段，什么都不会继续做，体感上就是"采纳了但什么都没发生"。
-
-**现在的行为**：`GrowthAdvisorConfig.auto_pursue_on_accept`（**默认
-开启**，是本次改动里少数默认开启而非 opt-in 的开关之一——"采纳"这个
-动作本身现在就等价于"开始持续调研"，对齐上面的定位）。用户点
-"✅ 采纳"（或看板拖拽到"已采纳"列）时，`auto_pursue_candidate()` 自动
-依次完成：
-
-1. **候选没有调研报告** → 先用零成本规则模板生成一份，保证这条自动
-   路径不强依赖 LLM 也能跑通；
-2. **落地为 Goal**（复用 2.9 节的 `adopt_candidate_as_goal()`；已经
-   落地过的候选直接复用已有 `linked_goal_id`，不会重复建 Goal）；
-3. **生成并直接确认一版执行规范**，使用新增的专用模板
-   `growth_pursuit`（而不是通用的 `research_exploration`——后者是给
-   "随手调研一下"用的最简骨架，不懂"持续深化同一个方向"这个场景的
-   特殊性）：
-   - 每一轮的产出物是同一份 `wiki/growth/<topic>.md`，**追加**新的、
-     带来源标注的内容块，而不是每轮各生成一份互不衔接的新报告——
-     久而久之这份页面本身就是一份可以直接拿去学习的素材库；
-   - `handoff_fields` 包含 `covered_subtopics`（已经讲过的子话题，
-     下一轮据此避免重复）、`open_questions`（上一轮留下但没展开的
-     方向，下一轮优先从这里推进）、`last_source_urls`（引用来源
-     去重）；
-   - `per_cycle_criteria` 要求"本轮必须比上一轮有实质性增量"，而不是
-     用不同措辞重写已有内容；
-   - 执行规范生成失败（比如 LLM 暂不可用）不会中断整条链路，只是这个
-     Goal 暂时沿用通用行为，后续可以在「🎯 目标」tab 手动补一份；
-4. **绑定周期性**，调度节奏由 `GrowthAdvisorConfig.auto_pursue_
-   schedule` 控制，**默认 `interval:86400`（每天一轮）**——与用户
-   确认过的默认节奏一致。已经绑定过的话复用已有 cron job，不会重复
-   创建。
-
-四步中任一后续步骤失败都不影响前面已经成功的部分（比如"生成报告"
-成功但"绑定周期性"失败时，Goal 仍然是已创建状态），失败信息通过
-`accept` 接口响应体的 `pursuit.errors` 字段返回，看板据此用
-`st.toast` 尽力而为地提示用户，不会让整个"采纳"动作因为某一个后续
-子步骤出错就跟着报错。
-
-**用户仍然拥有控制权**：
-
-- 自动绑定的周期性执行可以随时在「🎯 目标」tab 里 `unrecur`（暂停），
-  不会被自动重新绑定；
-- 想关掉"采纳即启动"、回到此前"每一步手动确认"的行为，把
-  `auto_pursue_on_accept` 设为 `False` 即可——此时"✅ 采纳"退回成
-  单纯的反馈信号，2.9 节的"🚀 落地为 Goal（继续调研）"按钮继续按
-  原有方式手动使用；
-- 调度节奏（`auto_pursue_schedule`）和执行规范模板
-  （`auto_pursue_template_id`）都可以在配置里覆盖，不强绑固定值。
-
-**API**：`POST /v1/growth/candidates/{id}/accept` 的响应体新增
-`pursuit` 字段：
-
-```jsonc
-{
-  "ok": true,
-  "candidate": { "...": "...", "linked_goal_id": "..." },
-  "pursuit": {
-    "goal": { "id": "...", "title": "..." },
-    "cron_job": { "id": "...", "schedule": "interval:86400" },
-    "report_generated": true,
-    "errors": []
-  }
-}
-```
-
-`auto_pursue_on_accept=False` 时不会出现 `pursuit` 字段，行为与
-此前完全一致。
-
-**新增/变更文件**：
-
-- `src/mini_agent/perception/goal_execution_spec_templates/growth_pursuit.json`
-  （新增模板）；
-- `src/mini_agent/config/models.py`：`GrowthAdvisorConfig` 新增
-  `auto_pursue_on_accept` / `auto_pursue_schedule` /
-  `auto_pursue_template_id` 三个字段；
-- `src/mini_agent/evolution/growth_advisor.py`：新增
-  `auto_pursue_candidate()`；
-- `src/mini_agent/api/routes.py`：`post_growth_candidate_action()`
-  的 `accept` 分支接入自动链路；
-- `apps/mini_agent_kanban/client.py`：`growth_candidate_action()`
-  的 `accept` 超时放宽到 90s（自动链路可能含 LLM 调用）；
-- `apps/mini_agent_kanban/app.py`：列表视图/拖拽视图的"✅ 采纳"按钮
-  展示 `pursuit` 结果的 toast 提示；报告查看折叠区的"已落地为 Goal"
-  提示文案更新为"正在自主持续调研"。
-
-### 2.13 落地 `growth_advisor_autonomy_deepening_plan.md`：A1 / A2 / B1 / B2 / D1 / D2（本次新增）
-
-在 2.12 节"采纳即启动"之后，按 `next_doc/growth_advisor_autonomy_
-deepening_plan.md` 的优先级建议（该文档第 6 节），实现了其中六个
-方向。B3/C1/C2/A3 仍按方案文档标注的理由暂缓（B3/A3 工作量和收益
-不确定，C1/C2 优先级低于先保证增量质量和可见性），保留在方案文档里
-供后续按需认领。
-
-**D1 + D2：看板可见性 + 就近控制**（方案文档"投入产出比最高"的一项）
-
-- 新增只读聚合端点 `GET /v1/growth/pursuits`：跨 `GrowthBacklog` +
-  `GoalBacklog` + `CronScheduler` + `growth_state.json` 四个既有
-  数据源拼装，不新增持久化。返回每个"已采纳且关联了 Goal"的候选的
-  周期性执行状态（第几轮、下次执行时间、cron job 是否启用）和饱和度
-  信号（见下面 B2）。
-- 看板成长顾问 tab 新增"🔄 正在自主推进"分区（`_render_growth_
-  pursuits()`），列出全部处于自主持续调研状态的方向，每条直接带
-  "⏸ 暂停"/"▶ 恢复"按钮（复用已有的 `unrecur_goal()`/`recur_goal()`，
-  没有新增后端能力）和一个"📄 素材"入口——用户不需要跳到「🎯 目标」
-  tab、也不需要理解"这背后是一个 Goal + 一个 cron job"，操作路径就近
-  收在成长顾问自己的界面里。
-
-**B1：增量质量的自动规则式初筛**
-
-- 新增 `growth_advisor.evaluate_cycle_increment(paths, goal_id)`：
-  读该 Goal 最近两轮的 manifest，从 `progress_note` 里的
-  ```handoff``` 块取出 `covered_subtopics`，算本轮相对上一轮的新增
-  子话题占比。占比过低（默认阈值 60% 重叠）判定"疑似低增量"。纯规则
-  式（集合差集），零 LLM 成本，只读、不阻断任何流程——方案文档里
-  "LLM 复核"这个可选的第二步（对被规则式标记的轮次再做一次语义级
-  判断）本轮未实现，留在方案文档里作为后续可选增强。
-- 轮次不足（少于 2 轮）或本轮 handoff 没有提供 `covered_subtopics`
-  时，明确返回 `evaluated=False`，不会被误判成"低增量"。
-
-**B2：饱和度信号**
-
-- 新增 `growth_advisor.record_pursuit_cycle_signal()` /
-  `get_pursuit_saturation()`：把"连续低增量轮次"计数存进
-  `growth_state.json` 的 `pursuit_saturation` 子字典（按 `goal_id`
-  分桶，不为这个信号单独开一份持久化文件）。连续达到阈值（默认 3
-  轮）判定"疑似饱和"；不再低增量时计数归零，同一次饱和状态只提示
-  一次（不重复打扰），归零后重新累计满阈值会触发新一轮提示。
-- 新增 `growth_advisor.process_pursuit_cycle_completion(paths, goal)`
-  把"算增量 → 记饱和度计数 → 刚跨过阈值时给出建议文案"串起来，只处理
-  打了 `growth_advisor` 标签的 Goal，其余 Goal 直接跳过。
-- 接入点：`goal_cron_bridge.reap_finished_cycles()` 里一轮子
-  Objective 以 `completed` 收尾时，顺带调用新增的
-  `_check_pursuit_saturation()`——刚判定饱和会通过既有通知网关
-  （`notification/dispatcher.py`）推一条"最近几轮新增内容不多了，
-  要不要降频/先告一段落"的提示。**只是提示，不自动降频或停止**，
-  对齐 1.5 节"自主不等于替用户做主"——异常整体吞掉，不影响
-  `reap_finished_cycles()` 的计数主流程。
-- 看板"🔄 正在自主推进"分区里，饱和的方向会带一条 `st.warning` 提示，
-  跟 D1 展示的执行状态在同一处呈现。
-
-**A1：report/refresh 与 Goal 周期性并轨**
-
-- `growth_advisor.reports_needing_refresh()` 新增可选参数
-  `goal_backlog`：传入时，已经落地成 Goal 且 `recurring=True` 的
-  候选会被跳过——它的素材已经由 `growth_pursuit` 周期性执行接管，
-  不再需要"报告刷新"这条独立路径继续提示。不传（默认 `None`）时
-  行为与改动前完全一致，向后兼容所有既有调用方。
-- `GET /v1/growth/reports/refresh_candidates` 路由已经改为传入
-  `goal_backlog`（拿不到 `GoalBacklog` 时优雅退化成不过滤）。
-
-**A2：Goal 停滞时先区分原因，再决定怎么问**
-
-- `followup_question_hint()` 对已绑定周期性执行的 Goal（`recurring=
-  True`）区分两类停滞原因，措辞不再一律是"要不要先放一放"：
-  - 命中 B2 饱和度信号（`get_pursuit_saturation().saturated`）→
-    判定是"素材讲得差不多了"，问法沿用 B2 通知里的措辞（"最近 N 轮
-    新增内容不多了，是已经了解得差不多，还是希望换个角度继续？"）；
-  - 没有命中饱和度信号但 Goal 仍然判定停滞 → 更可能是执行本身没有
-    真正跑起来（cron 被跳过/失败，或者当初绑定就没成功），措辞改为
-    "看起来有一阵没真正推进——更像是执行环节遇到了问题，建议去
-    「🎯 目标」tab 看一眼执行状态，而不是这个方向本身不值得继续"，
-    避免用户把"系统的问题"误解成"我不想继续了"。
-  - 一次性（非 recurring）Goal 停滞的语义跟"自主持续调研"场景不同，
-    继续走原有措辞，不受这次改动影响。
-- 这一步**只是措辞层面的自诊断/区分，不包含自动重试或自动修复**——
-  方案文档 A2 提到的"能自愈的自愈"这部分（比如自动检测 cron job
-  被 disable 并尝试重新绑定）本轮未实现，仍然需要用户去「🎯 目标」
-  tab 手动确认/处理，留作后续可能的增强。
-
-**新增/变更文件**：
-
-- `src/mini_agent/evolution/growth_advisor.py`：新增
-  `evaluate_cycle_increment()` / `record_pursuit_cycle_signal()` /
-  `get_pursuit_saturation()` / `process_pursuit_cycle_completion()`；
-  `reports_needing_refresh()` 新增 `goal_backlog` 参数；
-  `followup_question_hint()` 对已绑定周期性执行的 Goal 区分"饱和"vs
-  "执行卡住"两类停滞措辞（见下面 A2）；
-- `src/mini_agent/evolution/goal_cron_bridge.py`：
-  `reap_finished_cycles()` 一轮成功完成时接入
-  `_check_pursuit_saturation()`；
-- `src/mini_agent/api/routes.py`：新增
-  `GET /v1/growth/pursuits`；`refresh_candidates` 路由改为传入
-  `goal_backlog`；
-- `apps/mini_agent_kanban/client.py`：新增 `growth_pursuits()`；
-- `apps/mini_agent_kanban/app.py`：新增 `_render_growth_pursuits()`
-  并接入 `render_growth_tab()`。
-
-### 2.14 落地 `growth_advisor_autonomy_deepening_plan.md`：C1 / C2（本次新增）
-
-在 2.13 节落地 A1/A2/B1/B2/D1/D2 之后，按方案文档第 6 节排在其后的
-C1（定期整理）/ C2（新增摘要推送）也一并实施。A3/B3 仍按方案文档标注
-的理由暂缓（工作量和收益都有较大不确定性，不承诺进入下一轮实施范围），
-保留在方案文档里供后续按需认领。
-
-**C1：定期整理，从"线性追加"到"顺带重新组织"**
-
-- 新增 `growth_advisor.reorganize_hint_for_cycle(goal, cycle_no, cfg)`：
-  纯规则式判断（轮次号对 `cfg.reorganize_every_n_cycles` 取模，默认
-  10 轮，配成 0 或负数视为关闭），零 LLM 成本、不读取任何执行历史。
-  只对打了 `growth_advisor` 标签的 Goal 生效。
-- 接入点：`goal_cron_bridge.register_goal_cycle_handler()` 触发每一轮
-  子 Objective 时，新增 `_append_execution_spec_context()` 之后的一步
-  `_append_growth_reorganize_hint()`——累计满 N 轮的那一轮，会在拼给
-  模型的 description 末尾追加一段"这一轮先花点时间合并重复表述、按
-  子话题分节、把 handoff.open_questions 里已解决的问题移出，再继续
-  本轮新增部分"的提示。仍然是同一个执行循环里的一种特殊模式，没有
-  新增独立的 cron job 或数据结构，只是这一轮的 prompt 多了一段说明；
-  是否真的需要整理由模型在执行时自行判断，不代表这一轮的产出会因此
-  被强制要求包含整理内容（`per_cycle_criteria` 仍然是既有的
-  `manual_review`，不新增自动校验）。
-- 任何环节异常（拿不到配置/生成提示失败）都静默跳过，不影响 Goal
-  触发主流程。
-
-**C2：本轮新增摘要，复用已有推送节流，不额外消耗额度**
-
-- 新增 `growth_advisor.record_pursuit_cycle_digest(paths, goal, cfg)`：
-  一轮成功完成时，从最近两轮 manifest 的 handoff 里算出本轮新增的
-  `covered_subtopics` 差集，整理成一条"本轮新增摘要"，存进
-  `growth_state.json` 的 `pending_pursuit_digests` 队列（不为这个
-  信号单独开一份持久化文件，复用 B2 的既有取舍）；没有新增子话题或
-  没有可比较的 handoff 数据时不落任何记录。`cfg.pursuit_digest_
-  enabled=False`（默认 `True`）时整体跳过。队列超过 30 条自动丢弃
-  最旧的——这是一份待展示摘要，不是审计日志。
-- 接入点：`goal_cron_bridge.reap_finished_cycles()` 一轮子 Objective
-  以 `completed` 收尾、且是打了 `growth_advisor` 标签的 Goal 时，
-  紧跟在 B2 的 `_check_pursuit_saturation()` 之后调用新增的
-  `_record_pursuit_digest()`。
-- **真正推送时才打包带出，不新增一套独立的通知逻辑**：
-  `_maybe_dispatch_notification()`（`notification_frequency=daily`）
-  和 `_maybe_dispatch_weekly_digest()`（`notification_frequency=
-  weekly_digest`）在确实要发出一条消息时，各自调用新增的
-  `_pop_pending_pursuit_digest_lines()`（取出并清空队列）把摘要行拼进
-  同一条消息正文——不单独触发一次推送，也不占用
-  `notification_max_per_day` 的额外额度；`notification_frequency=
-  kanban_only` 时两条推送路径都不会触发，摘要会持续在队列里累积，
-  直到用户切换回 daily/weekly_digest 或直接在看板查看。
-- 看板可见性：新增只读函数 `growth_advisor.peek_pending_pursuit_
-  digests()`（不清空队列），`GET /v1/growth/pursuits` 每条记录新增
-  `pending_digest` 字段；看板"🔄 正在自主推进"分区（D1）每条方向下面
-  新增一行 `🆕 本轮新增：...` 展示还没被推送出去的最新进展，不需要
-  等到下一次日报/周报才看到。
-
-**新增/变更文件**：
-
-- `src/mini_agent/config/models.py`：`GrowthAdvisorConfig` 新增
-  `reorganize_every_n_cycles`（默认 10）/ `pursuit_digest_enabled`
-  （默认 `True`）两个字段；
-- `src/mini_agent/evolution/growth_advisor.py`：新增
-  `reorganize_hint_for_cycle()` / `record_pursuit_cycle_digest()` /
-  `_pop_pending_pursuit_digest_lines()` / `peek_pending_pursuit_
-  digests()`；`_maybe_dispatch_notification()` /
-  `_maybe_dispatch_weekly_digest()` 在实际推送时打包摘要；
-- `src/mini_agent/evolution/goal_cron_bridge.py`：新增
-  `_append_growth_reorganize_hint()`（接入
-  `register_goal_cycle_handler()`）与 `_record_pursuit_digest()`
-  （接入 `reap_finished_cycles()`）；
-- `src/mini_agent/api/routes.py`：`GET /v1/growth/pursuits` 每条记录
-  新增 `pending_digest` 字段；
-- `apps/mini_agent_kanban/app.py`：`_render_growth_pursuits()`
-  每条方向新增"🆕 本轮新增"展示。
-
-### 2.15 落地 `growth_advisor_autonomy_deepening_plan.md`：A3（本次新增）
-
-在 2.14 节落地 C1/C2 之后，按方案文档第 6 节排在最后一批的 A3（对齐
-分析结果批量落地）也一并实施。B3（跨主题去重/关联）仍按方案文档标注
-的理由暂缓——明确留待后续单独评估候选规模是否值得投入，不属于这一轮
-的实施范围。
-
-**A3：对齐分析结果支持批量落地**
-
-- 新增 `growth_advisor.batch_adopt_unmatched_interests()`：对
-  `goal_growth_alignment()` 找出的"有兴趣信号但没建目标"列表，逐条
-  复用已有的 `auto_pursue_candidate()`（生成报告 → 落地成 Goal → 生成
-  并确认执行规范 → 绑定周期性）。只处理列表中已经有对应候选记录
-  （`candidate_id` 非空）的条目——纯 focus_areas 信号但还没走到候选
-  生成这一步的条目无法直接采纳，原样跳过、计入 `skipped`，不报错，
-  提示"先走一轮 /growth scan 生成候选"。
-- **节流**：新增配置 `goal_alignment_adopt_all_max_batch`（默认 3），
-  单次最多处理这么多条（按 `evidence_count` 降序，跟
-  `goal_growth_alignment()` 返回顺序一致，不重新排序），避免"批量"
-  变成一次意外的成本爆炸（一次性触发多个"生成报告 + 生成执行规范"的
-  LLM 调用）。未处理到的条目通过 `remaining_count` 告知调用方，下次
-  再调用会继续出现在列表里，不会丢失。
-- **CLI**：`/growth align --adopt-all`——在原有 `/growth align` 只读
-  展示的基础上新增这个子命令，逐条打印落地结果（成功 → 目标 id；
-  失败 → 具体原因），并在还有剩余条目时提示"可再次执行继续"。
-- **API**：新增 `GET /v1/growth/align`（`goal_growth_alignment()` 的
-  只读端点，此前只有 CLI 能查看，现在看板也能拉取）和
-  `POST /v1/growth/align/adopt_all`（批量落地，内部复用同一个节流
-  逻辑）。
-- **看板**：成长顾问 tab 新增"🧭 有兴趣但还没建目标"折叠区，列出全部
-  未匹配方向（标注是否有候选记录、能不能批量落地），带一个"🚀 全部
-  采纳"按钮，点击后逐条 toast 反馈结果，剩余条目会提示"可再次点击
-  继续"。
-
-**新增/变更文件**：
-
-- `src/mini_agent/config/models.py`：`GrowthAdvisorConfig` 新增
-  `goal_alignment_adopt_all_max_batch`（默认 3）；
-- `src/mini_agent/evolution/growth_advisor.py`：新增
-  `batch_adopt_unmatched_interests()`；
-- `src/mini_agent/cli/commands/growth_cmd.py`：`/growth align` 新增
-  `--adopt-all` 子选项；
-- `src/mini_agent/api/routes.py`：新增 `GET /v1/growth/align` 与
-  `POST /v1/growth/align/adopt_all`；
-- `apps/mini_agent_kanban/client.py`：新增 `growth_align()` /
-  `growth_align_adopt_all()`；
-- `apps/mini_agent_kanban/app.py`：新增 `_render_growth_alignment()`
-  并接入 `render_growth_tab()`。
-
-### 2.16 落地 `growth_advisor_autonomy_deepening_plan_v2.md`：方向 4（remaining_topics）/ 方向 5（批量暂停/调频）（本次新增）
-
-v1 九个方向落地后，二次审视实现细节又识别出五处"有了但不够"的打磨点
-（详见 v2 方案文档），按其第 6 节的优先级排序，先落地成本最低的两项：
-
-**方向 4：A3 批量落地补充 `remaining_topics`**
-
-- **现状问题**：`batch_adopt_unmatched_interests()` 每次调用都会重新跑
-  一遍 `goal_growth_alignment()`，如果两次调用之间发生了新的信号扫描，
-  `unmatched_interests` 的 `evidence_count` 排序可能变化——原本只返回
-  一个 `remaining_count` 数字，用户不知道具体是哪几个方向还没处理。
-- **改动**：`batch_adopt_unmatched_interests()` 返回值新增
-  `remaining_topics: list[str]`——本次调用结束时仍待处理的 topic 名称
-  列表（按本次返回时的 `evidence_count` 降序）。这只是让"还剩哪些"对
-  用户可见，不引入新的状态持久化，也不改变实际处理顺序（顺序仍由下一
-  次调用时的最新排序决定），对应方案文档"方案一（更简单）"的选择，
-  未采用需要额外持久化"批量操作进度快照"的方案二。
-- **CLI**：`/growth align --adopt-all` 在提示"还有 N 条未处理"之后，
-  追加一行"待处理：<topic1>、<topic2>..."。
-- **看板**："🚀 全部采纳"按钮点击后，剩余提示同样附上具体方向名称。
-
-**方向 5：看板新增"批量暂停 / 批量调频"入口**
-
-- **现状问题**：2.13 节 D2 做到了单个方向的"⏸ 暂停"/"▶ 恢复"，但同时
-  有多个方向在自主推进时（比如要出差一段时间），只能逐个点，跟
-  "就近控制、不用理解 Goal/Cron 内部机制"的理念有落差。
-- **改动**：成长顾问 tab"🔄 正在自主推进"分区新增"⚙ 批量操作"入口
-  （`st.popover`），提供两个动作：
-  - **全部暂停**：对列表里全部方向依次调用 `unrecur_goal()`（跟单条
-    "⏸ 暂停"完全同一个后端能力，只是循环调用）；
-  - **全部调整频率**：提供"每天/每周"选择，对列表里全部方向依次调用
-    `recur_goal()` 传入新的 schedule。
-  两个动作都要求用户显式点击触发，不新增任何"系统自动决定暂停/降频"
-  的逻辑，对齐 1.5 节"自主不等于替用户做主"。**不提供"全部恢复"**——
-  按方案文档的判断，批量恢复的使用场景比批量暂停少见得多（恢复往往
-  是回来后逐条重新评估"这个方向还要不要继续"），如果后续用户反馈确实
-  需要再补。
-- 没有新增后端接口——完全复用 D2 已有的 `stop_goal_recurrence()` /
-  `make_goal_recurring()`，纯粹是看板侧循环调用 + 一个确认性质的批量
-  提示（"将对全部 N 个正在自主推进的方向生效"）。
-
-v2 方案文档其余两项（方向 1：B1 LLM 复核；方向 3：饱和度信号历史趋势）
-仍按方案文档第 6 节的优先级排序留待后续实施，方向 2（对齐分析 LLM
-建议一键确认）已在 2.17 节落地。
-
-**新增/变更文件**：
-
-- `src/mini_agent/evolution/growth_advisor.py`：
-  `batch_adopt_unmatched_interests()` 返回值新增 `remaining_topics`；
-- `src/mini_agent/cli/commands/growth_cmd.py`：`/growth align
-  --adopt-all` 打印 `remaining_topics`；
-- `apps/mini_agent_kanban/app.py`：`_render_growth_alignment()` 展示
-  `remaining_topics`；`_render_growth_pursuits()` 新增"⚙ 批量操作"
-  入口（批量暂停 / 批量调整频率）；
-- `tests/test_growth_advisor_goal_cron_integration.py`：新增
-  `TestBatchAdoptRemainingTopics`，覆盖 `remaining_topics` 在"部分
-  处理"和"全部处理完"两种场景下的行为。
-
-### 2.17 落地 `growth_advisor_autonomy_deepening_plan_v2.md`：方向 2（对齐分析 LLM 建议一键确认）（本次新增）
-
-**现状问题**：`goal_alignment_llm_enabled=True` 时，`goal_growth_
-alignment()` 会额外对"规则没匹配上的兴趣方向"和"规则没匹配上的
-Goal"做一次语义匹配，结果放进 `llm_suggested_matches`（比如兴趣叫
-"数据分析能力"、Goal 叫"提升可视化技能"）。这份建议此前只停留在
-"展示给你看"——CLI/看板都能看到建议列表，但没有任何"确认这条建议、
-正式关联"的入口，要正式关联只能走 `/growth adopt-goal`（新建一个
-Goal，跟建议的意思不一样）或手动改标题让关键词匹配上。
-
-**改动**：
-
-- 新增 `growth_advisor.confirm_llm_suggested_match(paths, topic,
-  goal_id, goal_backlog=None)`：找到 `topic` 对应的候选记录（按
-  `dedupe_key()` 或标题原文匹配），把它的 `linked_goal_id` 指向
-  `goal_id`（复用 `GrowthBacklog.set_linked_goal()`，不新建 Goal）。
-  `topic` 没有对应候选记录、或 `goal_id` 在 `goal_backlog` 里找不到
-  对应节点时，都返回 `{"ok": False, "reason": ...}`，不抛异常。
-- **CLI**：`/growth align --confirm-match "<兴趣方向>" <goal_id>`——
-  `/growth align` 展示 `llm_suggested_matches` 时，每条附带对应的
-  确认命令，方便直接复制执行。
-- **API**：新增 `POST /v1/growth/align/confirm_match`（请求体
-  `{"topic": str, "goal_id": str}`）。
-- **看板**："🧭 有兴趣但还没建目标"折叠区新增"🔗 语义相关的建议"子
-  分区，列出 `llm_suggested_matches`，每条带一个"🔗 关联"按钮，点击
-  即调用确认接口并 toast 反馈结果。
-- 这条改进依赖 `goal_alignment_llm_enabled` 已经打开（默认关闭），
-  跟既有的"新增能力默认 opt-in"取舍一致——建议本身不常出现，确认入口
-  的收益也主要在打开这个开关的用户身上。
-
-**新增/变更文件**：
-
-- `src/mini_agent/evolution/growth_advisor.py`：新增
-  `confirm_llm_suggested_match()`；
-- `src/mini_agent/cli/commands/growth_cmd.py`：`/growth align` 新增
-  `--confirm-match` 子选项；
-- `src/mini_agent/api/routes.py`：新增
-  `POST /v1/growth/align/confirm_match`；
-- `apps/mini_agent_kanban/client.py`：新增
-  `growth_align_confirm_match()`；
-- `apps/mini_agent_kanban/app.py`：`_render_growth_alignment()` 新增
-  "🔗 语义相关的建议"子分区；
-- `tests/test_growth_advisor_goal_cron_integration.py`：新增
-  `TestConfirmLlmSuggestedMatch`，覆盖成功关联、候选缺失、Goal 缺失
-  三种场景。
-
-### 2.18 落地 `growth_advisor_autonomy_deepening_plan_v2.md`：方向 3（饱和度信号历史趋势）（本次新增）
-
-**现状问题**：`get_pursuit_saturation()`（2.13 节 B2）只返回某个 Goal
-**当前**的 streak/saturated 状态，`pursuit_saturation` 在
-`growth_state.json` 里也只存最新一条，不是时间序列——看不出"这个方向
-饱和之后，用户听了建议真的降频了吗？降频之后新增内容是不是又回升了？
-还是说不管频率怎么调都一直低增量"。
-
-**改动**：
-
-- 新增只追加文件 `growth_pursuit_saturation_trend.jsonl`
-  （`AgentPaths.growth_pursuit_saturation_trend_path`），复用 v4 N1
-  健康度趋势（`_record_health_snapshot()` / `compact_health_trend_
-  storage()`）已经验证过的"按天降采样、旧数据自动压缩"模式——新增
-  `_compact_pursuit_saturation_trend_rows()` / `compact_pursuit_
-  saturation_trend_storage()`，按 `(goal_id, 天)` 分桶压缩，跟
-  `growth_health_trend.jsonl` 是平行但独立的文件（不复用同一份文件，
-  因为这里的记录天然按 goal_id 分桶，混在一份全局文件里查询反而更
-  麻烦）。压缩调用接在 `run_daily_cycle()` 尾部，跟健康度趋势同一个
-  节奏，不需要单独的调度点。
-- `record_pursuit_cycle_signal()` 在更新 `pursuit_saturation` 当前
-  状态的同时，顺带向这份文件追加一条记录（`goal_id`/`recorded_at`/
-  `low_increment`/`streak`/`saturated`）——追加失败只是少一条趋势
-  记录，不影响 streak 计数本身的返回值，对齐"诊断增强不影响主流程"
-  的既有取舍。
-- 新增只读函数 `get_pursuit_saturation_trend(paths, goal_id,
-  limit=30)`，返回某个 Goal 最近若干轮"是否低增量"的时间序列，按
-  时间正序。
-- **API**：新增 `GET /v1/growth/pursuits/{goal_id}/saturation_trend`
-  （按需拉取，不放进 `/growth/pursuits` 默认响应，避免每次打开 tab
-  都拉取历史数据，跟 `/growth/health_trend` 的调用契约一致）。
-- **看板**："🔄 正在自主推进"分区每条方向新增"📈 饱和度走势"折叠区，
-  用 🟢/🔴 两种颜色的紧凑记号展示最近若干轮是否低增量，不引入图表库
-  （风格延续 D1 已有的"证据数走势"箭头展示）。
-- 成本可控：只是多写一条降采样记录，不产生新的 LLM 调用或额外的
-  Goal 触发；本轮**不涉及**方案文档提到的"用趋势数据判断要不要重新
-  触发回访卡片"这个后续判断点——那是在有了真实趋势数据之后才能评估
-  的下一步，留给后续视实际情况决定。
-
-v2 方案文档最后一项（方向 1：B1 LLM 复核）见下面 2.19 节，至此
-`growth_advisor_autonomy_deepening_plan_v2.md` 五个方向全部落地。
-
-**新增/变更文件**：
-
-- `src/mini_agent/storage/paths.py`：新增
-  `growth_pursuit_saturation_trend_path`；
-- `src/mini_agent/evolution/growth_advisor.py`：
-  `record_pursuit_cycle_signal()` 顺带追加趋势记录；新增
-  `_compact_pursuit_saturation_trend_rows()` /
-  `compact_pursuit_saturation_trend_storage()` /
-  `get_pursuit_saturation_trend()`；`run_daily_cycle()` 尾部接入
-  压缩调用；
-- `src/mini_agent/api/routes.py`：新增
-  `GET /v1/growth/pursuits/{goal_id}/saturation_trend`；
-- `apps/mini_agent_kanban/client.py`：新增
-  `growth_pursuit_saturation_trend()`；
-- `apps/mini_agent_kanban/app.py`：`_render_growth_pursuits()` 每条
-  方向新增"📈 饱和度走势"折叠区；
-- `tests/test_growth_advisor_saturation_and_pursuit_visibility.py`：
-  新增 `TestPursuitSaturationTrend`，覆盖趋势累积、按 goal_id 隔离、
-  未记录时为空、压缩函数在无旧数据时为空操作四种场景。
-
-### 2.19 落地 `growth_advisor_autonomy_deepening_plan_v2.md`：方向 1（B1 增量质量校验的 LLM 复核）（本次新增）
-
-**现状问题**：2.13 节 B1 的 `evaluate_cycle_increment()` 只做规则式
-初筛——比对相邻两轮 `covered_subtopics` 的集合差集占比，重叠比例过高
-就标记"疑似低增量"。规则式初筛只能发现"字面上没什么新词"，发现不了
-"子话题标题凑巧重复、但内容其实已经往前推进了"这种更隐蔽的误判——
-比如上一轮和本轮的子话题标题都叫"性能优化"，规则式判断会认为这是
-100% 重叠，但本轮实际讨论的可能是完全不同的具体子问题。
-
-**改动**：
-
-- `evaluate_cycle_increment()` 新增可选参数 `llm_helper` / `llm_
-  review_enabled`（默认 `None`/`False`，不改变既有调用方不传参数时
-  的行为）：只在规则式初筛已经判定 `low_increment=True` 的轮次上，
-  才追加一次 LLM 复核——不对每一轮都调用，维持"规则式路径优先、LLM
-  增强作为 opt-in 补充"的既有取舍。
-- 新增 `_llm_review_cycle_increment()`：只把上一轮/本轮/新增的子话题
-  标题集合（不传完整正文）拼进 prompt，让 LLM 判断"这次重叠是不是
-  真的在原地打转"，返回结构化 JSON（`has_real_progress` +
-  一句话理由）。解析失败/空响应/异常统一走失败路径（记一次
-  `pursuit_increment_review` 的 `error`/`parse_error`/
-  `empty_response` 状态，复用既有的 `_record_llm_call_status()`
-  三态诊断机制，不吞掉真实失败让复核看起来"默认通过"）。
-- 复核结果放进返回值新增的三个字段——`llm_reviewed`（是否实际触发
-  过复核）、`llm_verdict`（`True`=LLM 同意规则式判断确实低增量，
-  `False`=LLM 认为其实有实质推进，`None`=未触发）、`llm_reason`
-  （一句话理由）——**不覆盖** `low_increment` 本身。两种信号刻意
-  分开记录：`record_pursuit_cycle_signal()` 的 streak 计数仍然只看
-  规则式 `low_increment`，不会因为 LLM 复核结果而改变计数口径，
-  避免"规则说低增量、LLM 说不是"被静默合并成一个结论——这一点是
-  方案文档明确要求的取舍，不是遗漏。
-- `record_pursuit_cycle_signal()` 新增可选的 `llm_reviewed`/
-  `llm_verdict`/`llm_reason` 参数，原样存进 `pursuit_saturation`
-  当前状态快照（供 `get_pursuit_saturation()` 展示"最近一次"）并
-  追加进 2.18 节已有的 `growth_pursuit_saturation_trend.jsonl`
-  （复用同一份趋势文件，不新开一份存储）。不传这三个参数时行为与
-  改动前完全一致（三个字段落盘为默认值），向后兼容所有既有调用方。
-- 新增配置项 `growth_advisor.pursuit_increment_llm_review_enabled`
-  （默认 `False`，opt-in——这是新增的 LLM 调用点，对齐"增加调用
-  成本的能力默认关闭"的一贯原则）。`process_pursuit_cycle_completion()`
-  新增 `llm_helper`/`cfg` 参数，读取这个开关决定要不要把 `llm_helper`
-  透传给 `evaluate_cycle_increment()`。
-- **接入点**：`goal_cron_bridge.reap_finished_cycles()` 新增可选的
-  `llm_helper_provider` 参数（惰性 `Callable[[], Any]`，跟
-  `tech_radar_search.py` 等 cron job 同一套约定），`_check_pursuit_
-  saturation()` 内部加载 `cfg.growth_advisor` 并取一次 `llm_helper`
-  透传下去；`AutonomousLoop` 新增同名构造参数，`api/server.py::
-  _build_autonomous_loop()` 传入 `lambda: getattr(agent, "llm_
-  helper", None)`（跟 `sys:tech_radar_search` 等既有 cron job 的
-  `llm_helper_provider` 完全同一种惰性获取写法）。不传时（比如
-  非 daemon 模式的测试路径）`evaluate_cycle_increment()` 拿不到
-  `llm_helper`，复核这一步自动跳过，不影响主流程。
-- **看板**：\"🔄 正在自主推进\"分区里，饱和警告下面只在
-  `llm_reviewed=True` 时追加一行 `st.caption`——LLM 认为其实有实质
-  推进时单独提示\"仅供参考，规则式判断不受影响\"，避免用户误以为
-  规则式饱和结论已经被推翻；\"📈 饱和度走势\"折叠区里额外统计\"其中
-  N 轮触发过 LLM 复核\"，具体理由仍以最新一条为准，不为每个历史点
-  都展开详情（保持跟已有走势展示同样的\"不引入图表库、只做紧凑
-  记号\"风格）。
-- 任何异常整体吞掉，不影响 `reap_finished_cycles()` 的计数主流程——
-  跟 B1/B2 落地时确立的取舍完全一致。
-
-**新增/变更文件**：
-
-- `src/mini_agent/config/models.py`：新增
-  `GrowthAdvisorConfig.pursuit_increment_llm_review_enabled`；
-- `src/mini_agent/evolution/growth_advisor.py`：
-  `evaluate_cycle_increment()` 新增 `llm_helper`/`llm_review_enabled`
-  参数及 `llm_reviewed`/`llm_verdict`/`llm_reason` 返回字段；新增
-  `_llm_review_cycle_increment()`；`_LLM_CALL_TYPES` 新增
-  `"pursuit_increment_review"`；`record_pursuit_cycle_signal()` 新增
-  `llm_reviewed`/`llm_verdict`/`llm_reason` 参数并写入快照+趋势；
-  `get_pursuit_saturation()`/`get_pursuit_saturation_trend()` 新增
-  对应展示字段；`process_pursuit_cycle_completion()` 新增
-  `llm_helper`/`cfg` 参数；
-- `src/mini_agent/evolution/goal_cron_bridge.py`：
-  `reap_finished_cycles()` / `_check_pursuit_saturation()` 新增
-  `llm_helper_provider` 参数并透传 `cfg`；
-- `src/mini_agent/evolution/autonomous_loop.py`：`AutonomousLoop`
-  新增 `llm_helper_provider` 构造参数，`_tick_maintenance()` 透传给
-  `reap_finished_cycles()`；
-- `src/mini_agent/api/server.py`：`_build_autonomous_loop()` 传入
-  `lambda: getattr(agent, "llm_helper", None)`；
-- `apps/mini_agent_kanban/app.py`：`_render_growth_pursuits()` 饱和
-  警告下追加 LLM 复核提示，走势折叠区追加复核轮次统计；
-- `tests/test_growth_advisor_pursuit_increment_llm_review.py`：新增，
-  覆盖默认关闭不触发调用、只在规则判定低增量时触发、LLM 同意/不同意
-  两种结果都不覆盖规则式判断、streak 计数不受 LLM 结果影响、调用
-  失败与响应解析失败的降级路径、`process_pursuit_cycle_completion()`
-  按 `cfg` 开关决定是否透传 `llm_helper`、`reap_finished_cycles()`
-  新签名可用等场景。
-
-### 2.20 落地 `growth_advisor_ideal_advisor_gap_and_roadmap_plan.md`：方向 6（调研风格智能分类）（本次新增）
-
-**现状问题**：无论是学一门技术、读一本理论书、还是培养一个习惯，
-`growth_pursuit` 模板产出的方式完全相同——都是持续增厚的 wiki 页面，
-没有区分"这类话题该怎么调研/呈现"。方案文档最初的建议是"先做用户
-手动选择、暂不做自动判断"；后续与用户讨论后，直接跳过手动选择这一
-中间态，做自动智能分类：规则式关键词匹配作为零成本默认路径（总是
-可用），LLM 复核作为 opt-in 增强（默认关闭）。
-
-**改动**：
-
-- 新增 3 个调研风格标签：`技能实操类`/`知识理论类`/`习惯养成类`——
-  跟 2.5 节的话题类别系统（技术类/管理类/表达类/其他类）是两个正交
-  维度：类别回答"是什么话题"，风格回答"这类话题该怎么调研/呈现"。
-- `_infer_pursuit_style_rule(topic, extra_text="")`：只登记"技能
-  实操类"（编程/开发/工程/代码/api 等）和"习惯养成类"（习惯/打卡/
-  坚持/作息/锻炼等）两类的高置信度关键词，命中数最多的胜出；全不
-  命中或平局兜底"知识理论类"（读书笔记式持续调研是模板最初、也是
-  最通用的产出形态，作为默认值最保守）。
-- `classify_pursuit_style_llm()` / `determine_pursuit_style()`：跟
-  2.5 节 `classify_topic_category_llm()` 同款"opt-in、宽松吸收"
-  模式——规则式结果总是先算出来，`pursuit_style_llm_enabled=True`
-  且有 `llm_helper` 时才额外调一次 LLM 复核，命中合法标签就覆盖，
-  解析失败/异常/未开启都静默沿用规则式结果，不影响返回值可用性。
-- `pursuit_style_hint()`：每种风格对应一段 prompt 追加指令（技能
-  实操类多给可复现操作步骤/代码示例；知识理论类维护结构化知识
-  脉络；习惯养成类以短小打卡式记录为主、不追求持续增厚知识库）。
-  跟 2.14 节 C1/2.19 节不同，这里**每一轮都带上**（不按累计轮次
-  取模触发）——风格是这个方向的持续属性，不是某个特定轮次才需要
-  的提醒。
-- **接入点**：`auto_pursue_candidate()` 落地成 Goal 之后，若尚未
-  分类过（避免每次自动推进都重算），判定一次并写入 `GoalNode.
-  growth_pursuit_style` 新字段；`goal_cron_bridge._trigger_cycle()`
-  跟 C1/方向 5 的两个 hint 函数在同一处串联调用
-  `_append_growth_pursuit_style_hint()`，往子 Objective description
-  里追加风格提示；任何环节异常静默跳过，不影响 Goal 触发主流程。
-- **看板**："🔄 正在自主推进"分区每条方向的调度信息行追加
-  `🧭 <风格>` 标记（未分类的旧 Goal 不展示，不影响既有布局）。
-- **API**：`GET /growth/pursuits` 每条方向新增 `pursuit_style` 字段，
-  纯只读透出。
-
-**新增/变更文件**：
-
-- `src/mini_agent/config/models.py`：新增
-  `GrowthAdvisorConfig.pursuit_style_llm_enabled`（默认 `False`）；
-- `src/mini_agent/perception/goal_backlog.py`：`GoalNode` 新增
-  `growth_pursuit_style: Optional[str] = None` 字段（同步 `to_dict`/
-  `from_dict`）；
-- `src/mini_agent/evolution/growth_advisor.py`：新增
-  `_PURSUIT_STYLE_LABELS`/`_PURSUIT_STYLE_KEYWORDS`/
-  `_infer_pursuit_style_rule()`/`classify_pursuit_style_llm()`/
-  `determine_pursuit_style()`/`_PURSUIT_STYLE_PROMPT_ADDENDUM`/
-  `pursuit_style_hint()`；`auto_pursue_candidate()` 新增落地后的
-  风格判定步骤；
-- `src/mini_agent/evolution/goal_cron_bridge.py`：新增
-  `_append_growth_pursuit_style_hint()` 并接入 `_trigger_cycle()`；
-- `src/mini_agent/api/routes.py`：`GET /growth/pursuits` 响应新增
-  `pursuit_style` 字段；
-- `apps/mini_agent_kanban/app.py`：`_render_growth_pursuits()` 调度
-  信息行追加风格标记；
-- `tests/test_growth_advisor_pursuit_style.py`：新增，覆盖规则式
-  分类（各风格关键词命中/无命中兜底/extra_text 参与匹配）、LLM 分类
-  （合法/非法标签、空响应、异常）、统一入口（默认只用规则/开关关闭
-  忽略 helper/开启无 helper 时降级/开启且有效时覆盖/LLM 非法值时
-  降级）、`pursuit_style_hint()`（非标签 Goal 不生效/未分类不生效/
-  三种风格都能正确生成提示/非法风格值返回 `None`）。
-
-### 2.21 方向 6 动态修正：调研风格按实际产出内容周期性重判（本次新增）
-
-**现状问题**：方向 6 的分类只在 Goal 首次落地时基于候选标题/
-rationale 判定一次——用一句话猜风格，容易猜错（比如"数据分析"这类
-标题，光看标题很难判断用户更想要动手案例还是结构化理论）。
-
-**改动**：
-
-- `maybe_reclassify_pursuit_style(paths, goal_backlog, goal, cycle_no,
-  cfg=None, llm_helper=None)`：累计满 `pursuit_style_reclassify_
-  every_n_cycles`（默认 8）轮时触发一次重新分类，用最近几轮实际
-  产出的 `covered_subtopics` 文本（而不是当初的候选标题）重新跑
-  `determine_pursuit_style()`——复用 2.20 节已有的规则默认 + LLM
-  opt-in 逻辑，不是另起一套分类器。
-- 新结果与当前值不同才写回，相同则不产生任何写入，避免无意义的
-  刷新；没有可用的产出内容时直接跳过。
-- **接入点**：`goal_cron_bridge._trigger_cycle()` 里，调用点放在
-  2.20 节 `_append_growth_pursuit_style_hint()` 之前，保证同一轮里
-  如果风格被修正了，紧接着追加的风格提示用的是修正后的新值。这一步
-  目前没有透传 `llm_helper`，即便全局开启 `pursuit_style_llm_
-  enabled` 也只走规则式重判，避免在 cron 触发路径上引入新的隐式
-  LLM 成本。
-
-**新增/变更文件**：`src/mini_agent/evolution/growth_advisor.py`
-（`_recent_covered_subtopics_text()`/`maybe_reclassify_pursuit_
-style()`）、`src/mini_agent/config/models.py`
-（`pursuit_style_reclassify_every_n_cycles`）、
-`src/mini_agent/evolution/goal_cron_bridge.py`
-（`_maybe_reclassify_growth_pursuit_style()`）。
-
-### 2.22 方向 7：报告质量自动闭环（本次新增）
-
-**现状问题**：`report_not_useful` 反馈（用户标"方向没错，报告没写好"）
-此前只是记录下来供月度复盘/诊断面板展示，从没被用来反过来指导报告
-生成策略——一个方向的报告哪怕被反复标"写得不好"，下一次仍然会用
-同样的固定模板再产出一份类似质量的内容。
-
-**改动**：
-
-- `_should_auto_upgrade_report_quality(paths, candidate, cfg=None)`：
-  `cfg.report_quality_auto_upgrade_enabled=False`（默认）时直接返回
-  `False`；开启后，复用既有的 `_report_quality_dismiss_counts()`
-  统计，命中 `cfg.report_quality_auto_upgrade_threshold`（默认 2）
-  才返回 `True`。
-- `generate_growth_report()` 新增 `quality_auto_upgraded` 参数：为
-  `True` 时正文开头追加一句提示，让用户知道这份报告为什么跟以往不
-  太一样（同 2.9 节"探索位"标注一样的"管理预期"展示方式），并透传
-  进 `GrowthReport.quality_auto_upgraded` 字段（跟 `source="llm"`
-  的区别是：后者可能只是全局开关打开导致，不代表这里有过负反馈）。
-- `run_daily_cycle()`：全局模板路径下，如果当前上下文确实拿得到
-  `llm_helper`（比如 cron 触发）且命中了升级判断，临时把这一份报告
-  升级为 LLM 生成——不修改全局 `report_quality_llm_enabled` 开关，
-  只影响这一次调用，同一轮里其余方向仍走各自原来的路径。
-
-**新增/变更文件**：`src/mini_agent/evolution/growth_advisor.py`
-（`_should_auto_upgrade_report_quality()`、`generate_growth_report()`
-新参数、`GrowthReport.quality_auto_upgraded` 字段、`run_daily_cycle()`
-报告生成循环改为显式判断）、`src/mini_agent/config/models.py`
-（`report_quality_auto_upgrade_enabled`/`report_quality_auto_upgrade_
-threshold`）。
-
-**两节共用测试**：`tests/test_growth_advisor_pursuit_style_reclassify_
-and_report_upgrade.py`（15 个用例）。
-
-### 2.23 推送的情境感知（软性节流）（本次新增）
-
-**现状问题**：推送节流此前完全是静态规则（置信度阈值、每天最多
-几条），不会感知"用户最近是不是明显没那么活跃"——理想情况下，如果
-最近几天对话密度骤降，可能不是推新方向的好时机，但系统只会机械按
-既定频率照常推送。
-
-**改动**：
-
-- `_recent_conversation_density_ratio(memory_store, recent_days=7,
-  baseline_weeks=4, now=None)`：最近一周记忆条目数相对更早 4 周
-  周均值的密度比值；数据不足（没有基线窗口数据）时返回 `None`，
-  不强行推断。
-- `_effective_notification_min_confidence(paths, cfg,
-  memory_store=None)`：只有开启 `notification_context_aware_
-  throttle_enabled` 且比值低于 `notification_low_activity_ratio_
-  threshold`（默认 0.3）时，才在 `notification_min_confidence`
-  基础上加 `notification_low_activity_confidence_boost`（默认
-  0.15，封顶 1.0）——**软性**抬高门槛，不是硬性跳过整轮推送；判断
-  "现在不适合推"完全靠间接信号推断，选择软性调整是为了把误判的
-  伤害限制在"少数中等置信度报告延后一天"，而不是"确实想看却被
-  拦下"。
-- `_maybe_dispatch_notification()` 接入这个有效门槛，`run_daily_
-  cycle()` 透传已有的 `memory_store`，不产生额外的 LLM/网络调用。
-
-**新增/变更文件**：`src/mini_agent/evolution/growth_advisor.py`
-（`_recent_conversation_density_ratio()`/`_effective_notification_
-min_confidence()`/`_maybe_dispatch_notification()` 新参数）、
-`src/mini_agent/config/models.py`
-（`notification_context_aware_throttle_enabled`/`notification_low_
-activity_ratio_threshold`/`notification_low_activity_confidence_
-boost`）。
-
-**测试**：`tests/test_growth_advisor_notification_context_aware_
-throttle.py`（12 个用例）。
-
-### 2.24 调研路径关联信号（规划维度候选）（本次新增）
-
-**现状问题**：多方向并行推进时，2.9 节的 `pursuits_portfolio_
-summary()` 只回答"我现在该先看哪几个方向"，不回答"这几个方向之间
-是不是有关联"——理想情况下，如果方向 A 的调研内容里反复出现方向 B
-的关键词，值得提示用户"这两个可以关联着看"。
-
-**改动**：
-
-- `related_pursuit_directions(paths, goal_backlog, profile=None)`：
-  对"🔄 正在自主推进"分区（口径同 2.9 节）里全部方向两两之间做一次
-  关键词共现扫描，复用 2.21 节动态修正已有的 `_recent_covered_
-  subtopics_text()` 拿方向 A 最近几轮的实际产出内容，复用
-  `_effective_topic_keywords()` 拿方向 B 登记的关键词，命中数达到
-  阈值（默认 2）就记一条"A 提到 B"的关联信号。刻意只做共现提示，不
-  判断"谁是谁的前置知识"这种更强的因果结论——共现不等于依赖顺序，
-  规则式关键词匹配也做不到这种语义判断，跟规划维度一贯"决策权交还
-  用户"的克制一致。方向是有意义的（A 提到 B 不代表 B 也提到 A），
-  不做对称去重。
-- `GET /growth/pursuits/related_directions`：跟 2.9 节
-  `/growth/pursuits/portfolio_summary` 同款只读聚合端点，看板展开
-  分区时按需请求。
-- 看板在"🔄 正在自主推进"展开分区里新增一行 `🔗 内容上可能有关联，
-  值得互相参考：...` 提示（没有关联信号时不展示）。
-
-**新增/变更文件**：`src/mini_agent/evolution/growth_advisor.py`
-（`related_pursuit_directions()`）、`src/mini_agent/api/routes.py`
-（`GET /growth/pursuits/related_directions`）、
-`apps/mini_agent_kanban/client.py`
-（`growth_pursuits_related_directions()`）、
-`apps/mini_agent_kanban/app.py`（`_render_growth_pursuits()` 新增
-关联提示行）。这个能力没有配置开关——纯规则式字符串匹配，零成本，
-跟 2.9 节一样按需拉取，不需要 opt-in。
-
-**测试**：`tests/test_growth_advisor_related_pursuit_directions.py`
-（7 个用例）。
-
-### 2.24a 跨方向全局视角摘要 + 学习效果自测环节（`growth_advisor_ideal_advisor_gap_and_roadmap_plan.md` 方向 4/5，此前遗漏未写入本指南）
-
-**方向 4：跨方向全局视角摘要**——`pursuits_portfolio_summary()` 对
-"🔄 正在自主推进"分区（口径同 2.9 节，只统计打了 `growth_advisor` 标签
-且 `recurring=True` 的 Goal）里全部方向做一次轻量聚合，回答"我现在该
-先看哪几个方向"这个全局问题：不引入新的判断维度、不产生新的持久化，
-只是把已经分散展示的饱和度信号（B2）和参与度信号（方向 1）组织成一句
-摘要。分类规则（同一方向可能同时命中两类，去重后只算一次"建议关注"）：
-
-- **饱和未处理**：`get_pursuit_saturation()` 判定 `saturated=True`；
-- **长期无人查看**：`cycles_since_last_view >= pursuit_long_unviewed_
-  threshold`（默认 5）且素材确实已有内容（避免刚创建的方向被误判）；
-- 其余归为"正常推进"。
-
-API：`GET /growth/pursuits/portfolio_summary`（可选 query 参数覆盖
-`long_unviewed_threshold`），看板"🔄 正在自主推进"分区展开时按需拉取
-展示汇总数字（总数/饱和数/长期未看数），跟 2.24 节的关联信号提示是
-同一批新增内容里先落地的部分。
-
-**方向 5：学习效果自测环节**——`self_check_hint_for_cycle(goal,
-cycle_no, cfg)`：累计满 `pursuit_self_check_every_n_cycles`（默认 5，
-`<=0` 关闭）轮时，往当轮子 Objective description 里追加一段"顺带生成
-几道自测题"的提示，复用同一次执行循环已有的 LLM 调用，零增量成本。
-刻意**不做自动判分、不要求用户提交答案**——自测题生成与否、质量如何，
-完全留给模型在这一轮执行时自行判断；一旦引入"系统给用户理解程度打分"，
-就跨过了 `growth_advisor_design.md` 明确写的非目标（"不做心理评估/
-主观判断"）边界。跟 2.14 节 C1、2.19 节的"累计满 N 轮追加一段 hint"
-是同一种实现模式在这里的第三次复用，不是新发明的接入方式。
-
-**新增/变更文件**：`src/mini_agent/evolution/growth_advisor.py`
-（`pursuits_portfolio_summary()`、`self_check_hint_for_cycle()`）、
-`src/mini_agent/config/models.py`（`pursuit_long_unviewed_threshold`
-默认 `5`、`pursuit_self_check_every_n_cycles` 默认 `5`）、
-`src/mini_agent/api/routes.py`（`GET /growth/pursuits/portfolio_
-summary`）、`apps/mini_agent_kanban/client.py`
-（`growth_pursuits_portfolio_summary()`）、`apps/mini_agent_kanban/
-app.py`（"🔄 正在自主推进"分区汇总展示）。
+> **§2.5-2.24a（各能力方向的落地细节）已迁移到**
+> [growth-advisor-directions-history.md](growth-advisor-directions-history.md)，
+> 按方案批次组织；下面 §5 配置表里标注的"（演进日志 §2.9 节）"这类引用，指向的就是
+> 演进日志里同编号的小节。
 
 ## 3. 默认行为速览
 
@@ -1294,7 +209,7 @@ app.py`（"🔄 正在自主推进"分区汇总展示）。
    （数量/采纳率/主题排行 + 跨候选的"成长主题地图"聚合）；
 3. 用户在看板/CLI/API 上采纳一个候选后（`auto_pursue_on_accept`
    默认开启），自动落地成 Goal 并绑定每天一轮的周期性执行，持续在
-   同一份 wiki 页面上追加素材——见 2.12 节。
+   同一份 wiki 页面上追加素材——见 演进日志 §2.12。
 
 除 `enabled` 本身与 `auto_pursue_on_accept` 外，本文档提到的所有
 细化能力（LLM 增强扫描、LLM 报告正文、LLM 主题分类、按类别静音、
@@ -1319,10 +234,10 @@ app.py`（"🔄 正在自主推进"分区汇总展示）。
 - "有没有推进？"回访卡片：满足回访窗口且被动信号初筛没有跳过的候选
   会展示在这里，两个按钮对应 progressed/stalled
 - "可以刷新一下这份报告"提示：`reports_needing_refresh()` 命中的报告，
-  按"最近是否突增"优先排序，一键重新生成（**[2.13 节 A1]** 已经落地
+  按"最近是否突增"优先排序，一键重新生成（**[演进日志 §2.13 A1]** 已经落地
   成 Goal 且绑定了周期性执行的候选不会出现在这里——它的素材已经由
   自主持续调研接管）
-- **[2.13 节 D1/D2 新增]**"🔄 正在自主推进"折叠区：列出所有已采纳
+- **[演进日志 §2.13 D1/D2 新增]**"🔄 正在自主推进"折叠区：列出所有已采纳
   且关联了 Goal 的方向，逐条展示第几轮、下次执行时间、连续低增量时
   的"疑似饱和"提示，并带"⏸ 暂停"/"▶ 恢复"/"📄 素材"按钮，不需要跳到
   「🎯 目标」tab
@@ -1376,7 +291,7 @@ app.py`（"🔄 正在自主推进"分区汇总展示）。
   完全自包含的板块各自独立刷新（`st.fragment`）：点里面的按钮只重跑
   这个板块本身，不会带着整页（含其它板块已展开的折叠区状态）一起
   刷新。
-- **候选去重覆盖冷却期内的相似方向**（**修复**，见 §2.6.1"修复记录"）：
+- **候选去重覆盖冷却期内的相似方向**（**修复**，见演进日志 §2.6.1"修复记录"）：
   开启 `duplicate_direction_llm_check_enabled` 后，语义判重现在也会
   覆盖"冷却期内被 dismiss 过的候选"，不再只依赖字面完全一致的标题
   去重，避免待处理候选里反复出现措辞不同但已经被忽略过的方向。
@@ -1388,14 +303,14 @@ app.py`（"🔄 正在自主推进"分区汇总展示）。
 /growth scan          # 手动触发一轮信号扫描 + 候选生成 + Top-N 调研报告
 /growth accept <id>   # 采纳某个候选
 /growth dismiss <id> [reason]  # 忽略某个候选（30 天内不会重新生成同一
-                       # 方向）；reason 可选，见 2.7 节，不传等价于
+                       # 方向）；reason 可选，见 演进日志 §2.7，不传等价于
                        # unspecified（行为与 P6 之前一致）
 /growth report <id>   # 查看（或按需生成）某候选的调研报告正文
 /growth retrospective # 查看月度成长复盘统计
-/growth align          # 兴趣方向 ⇄ 目标 对齐分析（见 2.9 节）：哪些方向
+/growth align          # 兴趣方向 ⇄ 目标 对齐分析（见 演进日志 §2.9）：哪些方向
                        # 有兴趣但没建目标、哪些已建目标但停滞
 /growth adopt-goal <id> # 把候选落地成一个 GoalBacklog 目标（要求候选
-                       # 已有调研报告，见 2.9 节阶段 B）
+                       # 已有调研报告，见 演进日志 §2.9阶段 B）
 ```
 
 回访、关键词管理、类别静音、探索位这些更细的操作目前只在看板/API 提供
@@ -1407,19 +322,19 @@ app.py`（"🔄 正在自主推进"分区汇总展示）。
 GET  /v1/growth/summary                              # 候选队列 + 报告列表 + 复盘统计 + 首次触达状态 + 诊断快照
 POST /v1/growth/first_touch_ack                       # 标记首次触达提示已展示（幂等）
 POST /v1/growth/scan                                   # 手动触发一轮扫描
-POST /v1/growth/candidates/{id}/accept|dismiss          # 采纳 / 忽略；dismiss 可选 body {"reason": "..."}（见 2.7 节）；accept 响应体新增 `pursuit` 字段（见 2.12 节，`auto_pursue_on_accept=false` 时不出现）
+POST /v1/growth/candidates/{id}/accept|dismiss          # 采纳 / 忽略；dismiss 可选 body {"reason": "..."}（见 演进日志 §2.7）；accept 响应体新增 `pursuit` 字段（见 演进日志 §2.12，`auto_pursue_on_accept=false` 时不出现）
 GET  /v1/growth/followups                              # 待回访候选列表（含 question_hint 提问措辞）
 POST /v1/growth/followups/{id}/progressed|stalled       # 回答一次回访
 POST /v1/growth/keywords                                # 添加自定义关键词主题
 POST /v1/growth/keywords/{topic}/confirm                # 确认保留一个待确认主题
 POST /v1/growth/keywords/{topic}/remove                 # 删除自定义主题 / 隐藏内置主题
 POST /v1/growth/keywords/{topic}/restore                 # 恢复一个被隐藏的内置主题
-GET  /v1/growth/reports/refresh_candidates               # "值得刷新"的报告列表（已进入自主持续调研的候选不再出现，见 2.13 节 A1）
+GET  /v1/growth/reports/refresh_candidates               # "值得刷新"的报告列表（已进入自主持续调研的候选不再出现，见 演进日志 §2.13 A1）
 POST /v1/growth/candidates/{id}/report/refresh            # 重新生成该候选的调研报告
 POST /v1/growth/candidates/{id}/adopt_goal                # 落地成 GoalBacklog Goal，交给 Goal/Cron 体系继续调研
 GET  /v1/growth/reports/{id}                             # 某份调研报告的完整元数据 + 正文
-GET  /v1/growth/health_trend                             # 健康度趋势快照序列（v4 N1，见 5.5 节）
-GET  /v1/growth/pursuits                                  # 正在被自主推进的方向列表（本次新增，见 2.13 节 D1）
+GET  /v1/growth/health_trend                             # 健康度趋势快照序列（v4 N1，见 演进日志 §5.5）
+GET  /v1/growth/pursuits                                  # 正在被自主推进的方向列表（本次新增，见 演进日志 §2.13 D1）
 ```
 
 ## 5. 常用配置项（`agent_config.json` / `growth_advisor` 块）
@@ -1427,7 +342,7 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `enabled` | `true` | 总开关，关闭后信号扫描/候选生成/cron job 全部跳过 |
-| `auto_pursue_on_accept` | `true` | 采纳候选时是否自动完成"生成报告 → 落地为 Goal → 生成并确认执行规范 → 绑定周期性"整条链路（见 2.12 节），是本文档里少数默认开启的增强开关之一 |
+| `auto_pursue_on_accept` | `true` | 采纳候选时是否自动完成"生成报告 → 落地为 Goal → 生成并确认执行规范 → 绑定周期性"整条链路（见 演进日志 §2.12），是本文档里少数默认开启的增强开关之一 |
 | `auto_pursue_schedule` | `"interval:86400"` | 自动绑定周期性时使用的调度表达式，默认每天一轮 |
 | `auto_pursue_template_id` | `"growth_pursuit"` | 自动生成执行规范草稿时使用的模板 id |
 | `generation_frequency` | `"daily"` | `daily` / `every_12h` / `weekly` / `manual` |
@@ -1450,35 +365,35 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 | `exploration_recent_window` | `5` | 判断"某类别最近是否出现过"时，往回看最近多少份报告（不含已归档的旧报告） |
 | `sync_confirmed_topics_to_tech_radar_enabled` | `false` | （v4 N3）打开后 `run_daily_cycle()` 收尾时把已确认关键词幂等同步进 `TechRadarConfig.keywords`；会实际修改 `agent_config.json` |
 | `report_include_external_context` | `false` | （v4 N4）打开后调研报告（LLM 生成路径）会把外部资讯命中数作为背景信息，独立于 `report_quality_llm_enabled` |
-| `goal_alignment_enabled` | `true` | （2.9 节）兴趣方向 ⇄ 目标 对齐分析总开关，纯规则式关键词匹配，零 LLM 成本 |
-| `goal_alignment_stalled_days` | `21` | （2.9 节）已关联 Goal 的方向，`active` 状态下超过这么多天没被 touch 就判定为"停滞"，独立于 `followup_review_days` |
-| `goal_alignment_llm_enabled` | `false` | （2.9 节）对齐分析是否额外做一次 LLM 语义匹配，找出关键词匹配漏掉的"字面不同、实质同一件事"配对；结果只出现在建议列表，不自动写入关联关系 |
+| `goal_alignment_enabled` | `true` | （演进日志 §2.9 节）兴趣方向 ⇄ 目标 对齐分析总开关，纯规则式关键词匹配，零 LLM 成本 |
+| `goal_alignment_stalled_days` | `21` | （演进日志 §2.9 节）已关联 Goal 的方向，`active` 状态下超过这么多天没被 touch 就判定为"停滞"，独立于 `followup_review_days` |
+| `goal_alignment_llm_enabled` | `false` | （演进日志 §2.9 节）对齐分析是否额外做一次 LLM 语义匹配，找出关键词匹配漏掉的"字面不同、实质同一件事"配对；结果只出现在建议列表，不自动写入关联关系 |
 | `feedback_pattern_llm_enabled` | `false` | （`growth_advisor_ideal_advisor_gap_and_roadmap_plan.md` 方向 2 第二步）诊断面板"反馈模式"区块是否额外调一次 LLM，把规则式统计出来的忽略原因/类别分布归纳成一两句自然语言（`llm_insight`）；只在规则式统计样本已达标时才触发，结果只是展示，不影响任何排序/加权 |
-| `report_two_stage_enabled` | `false` | （2.10 节）报告生成先让 LLM 提炼 3-4 个具体问题再逐一回答，替代固定的四段式结构；多一次 LLM 调用，默认关闭 |
-| `report_dismiss_reason_adaptive_enabled` | `true` | （2.10 节）报告曾被标"内容太笼统"时，下次生成追加针对性提醒；不产生额外 LLM 调用，默认开启 |
-| `report_active_search_enabled` | `false` | （2.11 节）手动触发调研报告（有 `web_search_fn` 的调用路径）时，被动扫描命中 0 条素材才现查一次；会实际发起检索调用，默认关闭 |
-| `report_active_search_max_calls` | `1` | （5.6 节阶段二）单次报告最多用几个关键词角度各查一次；调大会按倍数增加检索调用次数，默认 `1` 与改动前行为一致 |
-| `cron_triggered_active_search_enabled` | `false` | （2.11 节）`sys:growth_advisor_daily` cron 路径是否也触发主动检索，每天最多处理 `cron_triggered_active_search_daily_limit` 个"证据数最高但没有外部背景"的候选；会实际发起检索调用，默认关闭 |
-| `cron_triggered_active_search_daily_limit` | `1` | （2.11 节）cron 主动检索每个自然日的预算上限，开关关闭时不生效 |
-| `reorganize_every_n_cycles` | `10` | （2.14 节）`growth_pursuit` 模板累计满这么多轮，下一轮 prompt 里附加一段"顺带整理一下"的提示；配成 0 或负数视为关闭 |
-| `pursuit_digest_enabled` | `true` | （2.14 节）每轮持续调研完成后是否暂存"本轮新增摘要"，等下一次实际推送时打包带出，不额外消耗推送额度 |
-| `goal_alignment_adopt_all_max_batch` | `3` | （2.15 节）`/growth align --adopt-all` / 看板"全部采纳"单次最多批量落地的方向数，避免一次点击触发过多 LLM 调用 |
-| `pursuit_increment_llm_review_enabled` | `false` | （2.19 节）`evaluate_cycle_increment()` 规则式判定"疑似低增量"后，是否再追加一次 LLM 语义复核；结果只作诊断展示，不覆盖规则式判断、不影响 B2 饱和度 streak 计数；会实际发起一次 LLM 调用，默认关闭 |
-| `pursuit_style_llm_enabled` | `false` | （2.20 节，`growth_advisor_ideal_advisor_gap_and_roadmap_plan.md` 方向 6）调研风格（技能实操类/知识理论类/习惯养成类）分类默认走零成本的规则式关键词匹配，打开后额外调一次 LLM 复核/纠偏；只在 `auto_pursue_candidate()` 首次落地一个 Goal 时触发一次，不是每轮都调 |
-| `pursuit_style_reclassify_every_n_cycles` | `8` | （2.21 节，方向 6 动态修正）累计满多少轮后，用该方向最近几轮实际产出的内容重新判定一次调研风格（可能改写此前判定的结果）；`<=0` 关闭。目前只走规则式重判，不透传 `llm_helper` |
-| `report_quality_auto_upgrade_enabled` | `false` | （2.22 节，方向 7）某个方向的报告被反馈"内容太笼统"累计达到阈值时，是否自动把下一份报告临时升级为 LLM 生成（不修改全局 `report_quality_llm_enabled`）；只在调用方确实拿得到 `llm_helper` 时才生效 |
-| `report_quality_auto_upgrade_threshold` | `2` | （2.22 节）触发上面自动升级所需的"报告没写好"累计次数；`<=0` 视为关闭 |
-| `notification_context_aware_throttle_enabled` | `false` | （2.23 节）最近一周对话密度明显低于历史周均值时，是否软性抬高推送置信度门槛（依然可能推送，只是需要更高置信度）；不产生额外调用 |
-| `notification_low_activity_ratio_threshold` | `0.3` | （2.23 节）判定"明显更安静"的密度比值门槛，最近一周条目数 / 基线周均值低于这个值才触发；`<=0` 视为关闭 |
-| `notification_low_activity_confidence_boost` | `0.15` | （2.23 节）命中"更安静"时在 `notification_min_confidence` 基础上额外加多少（封顶 1.0） |
-| `pursuit_long_unviewed_threshold` | `5` | （2.24a 节，方向 4）某方向的素材已经比用户上次查看时新了多少轮，就计入 `pursuits_portfolio_summary()` 的"建议关注"分类 |
-| `pursuit_self_check_every_n_cycles` | `5` | （2.24a 节，方向 5）累计满多少轮后追加一段"生成自测题"的提示；`<=0` 关闭 |
-| `report_external_drift_min_changes` | `1` | （5.8 节）外部世界变化驱动刷新时，判定"值得刷新"所需的最少变化条数 |
-| `report_external_drift_refresh_enabled` | `false` | （5.8 节）打开后，候选关联的外部资讯发生变化达到 `report_external_drift_min_changes` 条时，提示报告可以刷新 |
+| `report_two_stage_enabled` | `false` | （演进日志 §2.10 节）报告生成先让 LLM 提炼 3-4 个具体问题再逐一回答，替代固定的四段式结构；多一次 LLM 调用，默认关闭 |
+| `report_dismiss_reason_adaptive_enabled` | `true` | （演进日志 §2.10 节）报告曾被标"内容太笼统"时，下次生成追加针对性提醒；不产生额外 LLM 调用，默认开启 |
+| `report_active_search_enabled` | `false` | （演进日志 §2.11 节）手动触发调研报告（有 `web_search_fn` 的调用路径）时，被动扫描命中 0 条素材才现查一次；会实际发起检索调用，默认关闭 |
+| `report_active_search_max_calls` | `1` | （演进日志 §5.6阶段二）单次报告最多用几个关键词角度各查一次；调大会按倍数增加检索调用次数，默认 `1` 与改动前行为一致 |
+| `cron_triggered_active_search_enabled` | `false` | （演进日志 §2.11 节）`sys:growth_advisor_daily` cron 路径是否也触发主动检索，每天最多处理 `cron_triggered_active_search_daily_limit` 个"证据数最高但没有外部背景"的候选；会实际发起检索调用，默认关闭 |
+| `cron_triggered_active_search_daily_limit` | `1` | （演进日志 §2.11 节）cron 主动检索每个自然日的预算上限，开关关闭时不生效 |
+| `reorganize_every_n_cycles` | `10` | （演进日志 §2.14 节）`growth_pursuit` 模板累计满这么多轮，下一轮 prompt 里附加一段"顺带整理一下"的提示；配成 0 或负数视为关闭 |
+| `pursuit_digest_enabled` | `true` | （演进日志 §2.14 节）每轮持续调研完成后是否暂存"本轮新增摘要"，等下一次实际推送时打包带出，不额外消耗推送额度 |
+| `goal_alignment_adopt_all_max_batch` | `3` | （演进日志 §2.15 节）`/growth align --adopt-all` / 看板"全部采纳"单次最多批量落地的方向数，避免一次点击触发过多 LLM 调用 |
+| `pursuit_increment_llm_review_enabled` | `false` | （演进日志 §2.19 节）`evaluate_cycle_increment()` 规则式判定"疑似低增量"后，是否再追加一次 LLM 语义复核；结果只作诊断展示，不覆盖规则式判断、不影响 B2 饱和度 streak 计数；会实际发起一次 LLM 调用，默认关闭 |
+| `pursuit_style_llm_enabled` | `false` | （演进日志 §2.20，`growth_advisor_ideal_advisor_gap_and_roadmap_plan.md` 方向 6）调研风格（技能实操类/知识理论类/习惯养成类）分类默认走零成本的规则式关键词匹配，打开后额外调一次 LLM 复核/纠偏；只在 `auto_pursue_candidate()` 首次落地一个 Goal 时触发一次，不是每轮都调 |
+| `pursuit_style_reclassify_every_n_cycles` | `8` | （演进日志 §2.21，方向 6 动态修正）累计满多少轮后，用该方向最近几轮实际产出的内容重新判定一次调研风格（可能改写此前判定的结果）；`<=0` 关闭。目前只走规则式重判，不透传 `llm_helper` |
+| `report_quality_auto_upgrade_enabled` | `false` | （演进日志 §2.22，方向 7）某个方向的报告被反馈"内容太笼统"累计达到阈值时，是否自动把下一份报告临时升级为 LLM 生成（不修改全局 `report_quality_llm_enabled`）；只在调用方确实拿得到 `llm_helper` 时才生效 |
+| `report_quality_auto_upgrade_threshold` | `2` | （演进日志 §2.22 节）触发上面自动升级所需的"报告没写好"累计次数；`<=0` 视为关闭 |
+| `notification_context_aware_throttle_enabled` | `false` | （演进日志 §2.23 节）最近一周对话密度明显低于历史周均值时，是否软性抬高推送置信度门槛（依然可能推送，只是需要更高置信度）；不产生额外调用 |
+| `notification_low_activity_ratio_threshold` | `0.3` | （演进日志 §2.23 节）判定"明显更安静"的密度比值门槛，最近一周条目数 / 基线周均值低于这个值才触发；`<=0` 视为关闭 |
+| `notification_low_activity_confidence_boost` | `0.15` | （演进日志 §2.23 节）命中"更安静"时在 `notification_min_confidence` 基础上额外加多少（封顶 1.0） |
+| `pursuit_long_unviewed_threshold` | `5` | （演进日志 §2.24a，方向 4）某方向的素材已经比用户上次查看时新了多少轮，就计入 `pursuits_portfolio_summary()` 的"建议关注"分类 |
+| `pursuit_self_check_every_n_cycles` | `5` | （演进日志 §2.24a，方向 5）累计满多少轮后追加一段"生成自测题"的提示；`<=0` 关闭 |
+| `report_external_drift_min_changes` | `1` | （演进日志 §5.8 节）外部世界变化驱动刷新时，判定"值得刷新"所需的最少变化条数 |
+| `report_external_drift_refresh_enabled` | `false` | （演进日志 §5.8 节）打开后，候选关联的外部资讯发生变化达到 `report_external_drift_min_changes` 条时，提示报告可以刷新 |
 
 另外 `memory_backfill.cron_run_backfill_enabled`（默认 `true`，v4 N2）
 控制 cron 任务收尾是否自动回填记忆，属于 `memory_backfill` 配置块而非
-`growth_advisor` 块，详见 5.5 节 N2 与 `docs/memory-backfill-guide.md`。
+`growth_advisor` 块，详见 演进日志 §5.5 N2 与 `docs/memory-backfill-guide.md`。
 
 不想要这个功能，把 `enabled` 设为 `false` 即可；已经生成的候选/报告数据
 不会被自动清除，需要的话手动删除 `.agent/growth_backlog.jsonl` /
@@ -1492,311 +407,9 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 不匹配时（比如本该是 dict 的字段被存成字符串），会回退到该字段的默认值
 并记一条 warning 日志，不会导致 Agent 起不来或者错误值静默流入下游。
 
-## 5.5 v4 新增能力（N1~N4，`next_doc/growth_advisor_improvement_plan_v4.md`）
-
-在 P1~P6（本文档 3~5 节描述的基线）之上，v4 计划的四个方向已全部落地
-（详见 `next_doc/growth_advisor_implementation_record.md` 对应章节）。
-四项均遵循同一个原则：**默认不改变任何既有行为**——新增的写操作/外部
-信号全部走独立开关，默认关闭或默认不产生副作用。
-
-### N1：诊断面板健康度趋势化
-
-`diagnostics_snapshot()` 只反映"当下"，无法看出"这周记忆总条数涨了
-多少"。v4 新增 `.agent/growth_health_trend.jsonl`：`run_daily_cycle()`
-每天结束时追加一条快照（`total_entries` / `entries_in_scan_window` /
-`backfill_candidates_count` / `pending_followups_count` /
-`reports_needing_refresh_count` / `topics_tracked_count`），超过窗口期
-的旧快照会被降采样压缩（复用 `growth_topic_trend.jsonl` 同款机制）。
-
-- 看板"🌱 成长顾问"tab 的诊断面板新增一个可折叠的"📈 健康度趋势"区块，
-  用折线图展示上述几个指标的走势；
-- API：`GET /v1/growth/health_trend`（独立于 `/growth/summary`，看板
-  展开该区块时才请求，不影响默认加载速度）。
-
-这是纯只读展示能力，不需要额外配置即可生效（只要总开关 `enabled` 为
-真、且 `sys:growth_advisor_daily` 正常运行）。
-
-**已知问题修复（本轮）**：`run_daily_cycle()` 收尾处记快照/做降采样压缩
-这段此前是裸 `except Exception: pass`——`_record_health_snapshot()`
-内部会调 `diagnostics_snapshot()` 做一整套子统计，任何一处子计算抛
-异常都会被这里完全静默吞掉，不留任何日志。表现为：cron job 侧显示
-"正常运行、连续失败次数 0"，但 `growth_health_trend.jsonl` 一直是空的，
-看板"📈 健康度趋势"区块也就一直没有数据，且没有任何线索能定位具体是哪
-一步失败——这跟本文档其它地方"静默降级但要 `log_exception`"的既定
-写法不一致。已改为出错时调用 `log_exception`（`where` 标记为
-`mini_agent.evolution.growth_advisor.run_daily_cycle.health_snapshot`），
-不改变"快照失败不影响主流程"的行为，只是让失败原因变得可排查——如果
-`sys:growth_advisor_daily` 已经运行多次但趋势仍是空的，下次运行后可以
-直接查错误日志定位根因，不用再靠猜。
-
-### N2：cron 记忆回填（对应 `docs/memory-backfill-guide.md` 方向一 M3）
-
-daemon/cron 任务此前完全不产出记忆——`cron_agent_bridge.py` 每次触发都
-重新构建 Agent、不跨触发保留 session 历史，M1/M2 的存量回填天然扫不到
-这类运行。v4 在 `CronJobExecutor.run_job()` 的收尾 `finally` 块里新增
-一次"记忆化"：
-
-- **触发条件**：仅当本次运行正常收尾（`final_status == idle`，不含
-  `timed_out`/`needs_human_review`）且有实质产出文本时才生成记忆；
-- **摘要生成**：`memory_backfill.py::generate_summary_from_text()`，
-  跟离线批量回填共享同一套摘要 prompt，额外把 job 的任务描述拼进输入
-  避免摘要读起来没有上下文；
-- **`session_id` 格式**：`cron:<job_id>:<run_id>`，跟真实 `Session.id`
-  取值空间不相交；
-- **去重**：同一 job 连续触发如果产出的摘要跟该 job 最近一条已生成的
-  记忆高度雷同，跳过写入（避免"每小时检查一次待办"这类高频重复任务把
-  记忆库刷成同质化内容），只影响本次记忆生成，不影响任务本身的其它
-  收尾逻辑（比如产出物清单照常写）。
-
-配置项：`memory_backfill.cron_run_backfill_enabled`（默认 `true`），
-关闭后 cron 任务恢复到 v4 之前"不产出记忆"的行为。上线效果可以直接用
-N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
-
-### N3：成长顾问关键词表 → tech_radar 检索种子同步
-
-成长顾问的关键词表（`profile.derived["growth_topic_keywords"]`）和
-外部输入网关的 `TechRadarConfig.keywords` 此前是两套互不感知的"用户
-关注点"表达。v4 新增单向桥接：`sync_confirmed_topics_to_tech_radar()`
-把已确认（`confirmed_by_user=True`，含内置主题）的关键词幂等合并进
-`TechRadarConfig.keywords`，供 `tech_radar_search.py` 的主动检索种子池
-使用。只增不删——隐藏/删除一个成长顾问主题不会反向删除对应的 tech_radar
-种子（两者语义不同：用户可能仍想关注外部动态，只是不想让它出现在成长
-顾问候选里）。
-
-- 配置项：`growth_advisor.sync_confirmed_topics_to_tech_radar_enabled`
-  （**默认 `false`**——这会实际修改 `agent_config.json`，属于有外部
-  效果的写操作，需要用户显式打开）；
-- 触发时机：`run_daily_cycle()` 收尾处，跟 N1 的健康度快照同一个"旁路
-  增强不能反过来影响主流程"模式，异常静默降级；
-- 写入路径复用配置系统既有的原子写入（`config_catalog.py` 新增
-  `apply_list_seed_merge()` / `write_config_file()`），不会绕过校验
-  直接改 JSON 文件。
-
-打开后需要注意：`daily_seed_limit`（默认 5，不受本次改动影响）不变，
-关键词表持续增长会让种子池覆盖一轮的周期变长——`tech_radar_search.py`
-本身的轮转游标机制能兜住（不丢种子，只是变慢），是已知、可接受的权衡。
-
-### N4：外部资讯作为候选/报告的展示背景（不参与判断）
-
-`knowledge_extractor.py` 沉淀进 wiki、带 `source_kind` 为
-`external_watch`/`external_search` 标记的条目，现在可以作为成长顾问
-调研报告的"背景参考"：
-
-- `_external_signal_count_for_topic()`：只读聚合，统计最近 N 天内 wiki
-  里有多少条外部资讯条目命中了某主题的关键词；
-- `generate_growth_report()` 新增可选参数 `profile`/`cfg`，仅当
-  `report_include_external_context` 为真、且报告走 LLM 生成路径
-  （`report_quality_llm_enabled` 打开且有 agent 上下文）时，才会把这个
-  计数作为背景信息拼进 prompt，并明确要求 LLM"报告的核心判断仍要基于
-  用户自己的记忆证据"。
-
-**关键约束**：这个数字只影响报告正文的 prompt 输入，**不会**改变
-`candidate.confidence`/证据数等任何落盘字段，也不影响候选排序或推送
-优先级——外部世界讨论的热度不等于用户自己的兴趣，成长顾问一贯坚持
-"置信度只反映用户自己证据"的原则在这里没有被打破。
-
-配置项：`growth_advisor.report_include_external_context`（默认
-`false`），**独立于** `report_quality_llm_enabled`（可以只要更好的
-报告质量、不要外部背景，两者分开控制）。当前只接入了报告生成路径，
-看板候选卡片上还没有展示这个计数（基础设施先行，展示位留给后续按需
-接入）。
-
-## 5.6 自主检索与素材沉淀改进（阶段一/阶段二/阶段三，`next_doc/growth_advisor_autonomous_search_and_material_improvement_plan.md`）
-
-主动检索能力（`report_active_search_enabled`/`cron_triggered_active_
-search_enabled`）此前只做到"从无到有查一次"，检索质量和素材利用率都比较
-初级，标注来源也没有验证步骤。本轮针对"查得深不深、查到的东西用没用上、
-标注的来源是不是真的对得上"做了三处改进，**默认行为完全不变**，只有
-显式调整相关配置项才会有差异：
-
-### 阶段一：检索结果真正被用上（默认生效，无需配置）
-
-此前主动检索虽然会把检索结果喂给 LLM 抽取出结构化的实体/事实（用于写入
-wiki pending 队列），但报告生成当次消费的摘录其实是**未经处理的原始
-检索文本**截断 150 字，抽取结果被"抽了但没用上"。现在改为优先用已抽取
-出的结构化候选构造摘录（每条实体/事实各是一条独立摘录，最多 200 字），
-信息密度更高、也能精确标注"这条来自哪个实体/事实"；只有这次抽取完全没
-产出任何有意义的实体/事实时，才退回原来的原始文本截断兜底。这一步不
-增加任何 LLM/检索调用，纯粹是"把已经花了成本查到、抽到的内容用得更
-充分"，因此默认生效、无需额外开关。
-
-### 阶段二：多角度查询（`report_active_search_max_calls`，默认 `1`）
-
-此前检索只用关键词表的第一个关键词查一次。`report_active_search_max_
-calls`（此前是预留字段，未被实际消费）现在真正生效：调大这个值后，会
-依次用关键词表里后续的关键词各追加一个查询角度，最多查 `report_
-active_search_max_calls` 次（关键词数量不够时不重复拼凑同一个角度）。
-每个角度独立容错——某一个角度检索失败不影响其它角度，最终摘录按来源
-`id` 去重合并。
-
-**默认值仍是 `1`，行为与改动前完全一致**；只有显式调大（比如设为 `3`）
-才会增加 `web_search_fn` 的调用次数，遵循"增加调用成本的能力默认不放大"
-的一贯原则。调大前建议先确认对应主题在关键词表里确实配置了多个关键词，
-否则即使调大这个值也不会产生额外查询。
-
-### 阶段三：生成后自检（默认生效，无需配置，只做诊断不拦截）
-
-此前"标注来源"只是 prompt 里对 LLM 的一句要求，正文写完之后从不核对
-模型是否真的照做、标注的来源是否对得上拼进 prompt 的摘录。现在
-`generate_growth_report()` 在正文生成后（仅当 `report_include_external_
-context` 开启、这次确实拿到了非空摘录、且正文由 LLM 生成——规则模板
-兜底路径不引用任何外部摘录，没有可核对的对象）会做一次纯字符串层面的
-核对，结果存进 `GrowthReport.citation_check` 字段：
-
-```json
-{
-  "excerpts_total": 2,          // 拼进 prompt 的摘录总数
-  "cited_count": 1,             // 正文里出现引用、且能对上摘录 id 的条数
-  "citation_mentions_total": 1, // 正文里『（参考：xxx）』的总次数
-  "hallucinated_refs": []       // 正文引用了但对不上任何摘录 id 的原文片段
-}
-```
-
-- **对得上"用双向子串匹配**：LLM 只要标注了 id 的一部分（比如把
-  `active_search:python 入门#entity:pandas` 简写成 `pandas`）也算命中，
-  不会把"合理简写"误判成"编造"；
-- 同一条摘录被多次引用只计入 `cited_count` 一次，`citation_mentions_
-  total` 记录标注总次数，两者对比能看出"是不是反复引用同一条撑数量"；
-- `hallucinated_refs`：正文里出现了标注格式的引用、但内容跟任何一条
-  摘录 id 都对不上，可能是真的编造，也可能是格式凑巧符合要求但引用了
-  其它内容——**这里只做记录，不会阻断报告生成、不影响候选排序**，交给
-  看板/CLI 展示时自行判断要不要提示用户；
-- `citation_check` 为 `None` 表示"这次没有可核对的引用"（外部背景没
-  开启 / 没拿到摘录 / 走的是规则模板），不代表"核对通过"，跟"核对
-  完全没有编造引用"（`hallucinated_refs` 为空列表）是两种不同的语义，
-  展示时需要区分。
-
-自检结果已经接入两处展示（本轮新增，纯只读，不影响任何生成/排序逻辑）：
-
-- **CLI `/growth report <candidate_id>`**：打印报告正文后，若这份报告
-  带 `citation_check`，追加一行摘要，例如`[自检] 引用了 1/2 条摘录，
-  检测到 1 处疑似编造引用：某个不存在的页面id`；没有该字段（多数场景）
-  时不打印任何额外内容；
-- **诊断面板（`GET /growth/summary` 等复用 `diagnostics_snapshot()` 的
-  接口）**：新增 `citation_check` 区块，汇总活跃索引里"做过自检"的
-  报告——`reports_checked`（分母）、`reports_with_hallucination`（至少
-  一条编造引用的报告数）、`total_excerpts_offered`/`total_excerpts_
-  cited`（加总的摘录数/命中数）、`citation_hit_rate`（总体命中率，
-  分母为 0 时为 `None` 而不是 `0.0`）。单份报告的完整 `citation_check`
-  也随 `GET /growth/reports/{id}` 原样透出（`report.to_dict()` 自动
-  包含新字段，接口本身不需要改动）。
-
-### 已知边界（本轮未做，见改进计划第 4 节）
-
-- 检索触发条件仍然是"被动扫描命中数是否为 0"，不会因为外部世界发生了
-  新变化而对已有素材的主题重新检索；
-- 自检结果目前只做展示，没有基于自检结果做任何自动重试（例如"编造
-  引用比例过高就换更强的 prompt 重试一次"）或主动提示用户的动作。
-
-## 5.7 报告与学习素材分层（`next_doc/growth_advisor_autonomous_search_and_material_improvement_plan.md`"报告与学习素材分层"方向）
-
-此前"报告"是唯一产物，兼顾"值不值得投入"和"投入之后怎么学"两种诉求，
-写得笼统就两头都不够用、写得具体又超出"决策向简报"该有的篇幅。现在
-新增一个平行但独立的产物——**学习素材**，跟报告各自独立生成、独立存储，
-互不依赖：
-
-- **定位区分**：报告（`GrowthReport`，`generate_growth_report()`）回答
-  "这个方向值不值得关注"，是自由格式 Markdown；学习素材
-  （`GrowthLearningMaterial`，`generate_learning_material()`）回答
-  "决定投入之后怎么学"，是固定三段结构化内容——**学习路径**（有序步骤
-  列表）、**资源清单**、**第一个可执行任务**（要求是"现在就能动手做"的
-  具体任务，不是"了解一下"这种笼统建议）。
-- **不强制先后依赖**：素材可以基于已有报告生成（`report=` 参数，复用
-  报告 `summary` 作为背景，不重复归纳"为什么值得关注"），也可以在候选
-  还没有报告时独立生成——不强制"先报告后素材"的顺序。
-- **LLM 增强、规则模板兜底**：传 `llm_helper` 时要求返回结构化 JSON
-  （`learning_path`/`resources`/`first_task`），解析失败/异常/字段
-  不完整（尤其是 `learning_path` 为空或 `first_task` 为空）时静默退回
-  规则模板（三步通用骨架 + 两条通用资源 + 一条"检索入门资料并写下 3
-  个具体问题"的默认任务），保证任何情况下都有可用产物。
-- **独立的存储**：索引 `.agent/growth_materials.jsonl`（只追加，暂不需要
-  归档机制——数量远小于报告），正文 `.agent/wiki/growth/<slug>-material.
-  md`；`GrowthCandidate` 新增 `material_id` 字段（跟 `report_id` 平行
-  独立），旧数据反序列化时自然落到 `None`。
-- **入口**：CLI `/growth material <candidate_id>`（候选没有素材时生成
-  并展示，已有时直接展示不重复生成）；API `POST /growth/candidates/
-  {id}/material/generate`（每次调用都生成一份新的，多次生成的历史都
-  保留，候选上挂着的 `material_id` 指向最新一份）+ `GET /growth/
-  materials/{id}`（返回结构化字段 + 正文）。
-- **本轮未做**（后续可能方向）：素材没有像报告一样接入
-  `reports_needing_refresh()` 式的"该不该刷新"判断；素材也没有接入
-  外部背景摘录/生成后自检（阶段一/二/三是报告专属的改进，素材是全新
-  产物，暂未对齐这些能力，是否有必要视实际使用情况再定）；看板暂未
-  接入学习素材的展示入口（目前只有 CLI/API）。
-
-## 5.8 外部世界变化驱动的刷新（`next_doc/growth_advisor_autonomous_search_and_material_improvement_plan.md`"外部世界变化驱动的刷新"方向）
-
-此前 `reports_needing_refresh()` 只看用户自己新增的记忆证据，完全不看
-"外部世界本身有没有变化"——一份报告哪怕参考的外部资讯早就过时了，只要
-用户自己没新增证据，也不会被标记为"该刷新"。现在新增一条独立的触发
-信号，**默认关闭**，跟证据数信号是 OR 关系（任一满足就纳入待刷新列表）：
-
-- **生成时留指纹**：`generate_growth_report()` 只要这次真的拿到了摘录
-  （无论最终正文走 LLM 还是模板兜底——这个信号回答"外部世界有没有
-  变化"，不要求 LLM 真的用上了这些摘录，触发条件比 `citation_check`
-  宽），就把摘录压缩成轻量指纹（`[{"id": 页面id, "hash": 内容前 12
-  位 md5}]`）写入 `GrowthReport.external_excerpt_fingerprint`，只存
-  id + 哈希，不存原文，避免索引文件无限增长。
-- **比对**：新增 `external_signal_drift_for_report(paths, report,
-  profile)`，拿这份指纹跟"现在被动扫描能拿到的摘录"做比对——纯只读，
-  只读本地已抓取落盘的 wiki 页面，**不触发任何新的检索或 LLM
-  调用**，成本接近于 0。返回 `{"new_excerpt_ids": [...],
-  "changed_excerpt_ids": [...], "drift_count": int}`；没有基线指纹
-  或找不到当前主题关键词时返回 `None`（不是"确认无变化"）。
-- **接入 `reports_needing_refresh()`**：新增 `profile=` 参数（默认
-  `None`）。只有同时传入 `profile` 且
-  `cfg.report_external_drift_refresh_enabled` 开启（默认 `False`）
-  时才会做比对；`drift_count` 达到 `cfg.report_external_drift_min_
-  changes`（默认 1）才计入待刷新，命中时行里带 `external_drift`
-  字段（未命中/未启用时不带这个键，保持默认行为的返回结构完全不变）。
-  证据数信号触发时不会额外做 drift 比对（避免不必要开销），因此
-  `external_drift` 只在"单独靠外部世界变化触发"时才出现。
-- 之前"证据快照缺失就整行跳过"的哨兵值逻辑（`evidence_count_at_
-  generation < 0`）现在只影响证据数这一条信号，drift 信号不受影响、
-  仍可独立触发——旧报告即便没有证据快照，只要有摘录指纹，依然能享受
-  这条新信号。
-- API `GET /growth/reports/refresh_candidates` 只有配置开启时才会
-  额外加载一次 `profile`，关闭时（默认）不产生任何额外开销。
-
-## 5.9 诊断快照"记忆回填候选数"：增量索引，不再全量扫描（`next_doc/session_backfill_index_incremental_plan.md`）
-
-诊断面板「🗄️ 记忆回填状态」里的候选数曾经依赖 `scan_sessions_for_backfill()`
-同步扫描全部历史 session 的 `meta.json`——session 数量积累多了之后曾触发过
-`growth_diagnostics_snapshot` 的 45s `blocking_guard` 超时。最初的修复是给
-这个数字加一层 5 分钟 TTL 缓存，但那只是摊薄了"重新全量扫描"的频率，没有
-降低单次冷计算本身随 session 数量线性增长的成本——TTL 一过期，只要 session
-数量涨到临界点，同样的超时还会复现。
-
-现在改成了**增量维护的候选索引**（`SessionManager` 内部）：
-- 候选资格（`summary` 为空 + `turns >= 4`）只在 session 真正被写入/删除时
-  才会变化——`SessionManager.save()`、`mark_summary_backfilled()`、
-  `delete()` 三个写路径上做 O(1) 增量更新（增/删一个 session_id），不再
-  重新扫描
-- 只有**进程内第一次查询**这个 session 目录时才会做一次全量扫描建立索引
-  （不可避免的一次性成本），此后所有查询都是直接读内存字典，跟 session
-  总数无关
-- 跨进程一致性：`mini-agent memory backfill` CLI 命令是独立进程，也会写
-  `meta.json`。为此每次候选资格变化时会 best-effort 递增一个磁盘上的小
-  生成计数器文件（`.backfill_index_gen`），daemon 侧下次查询前先廉价对比
-  这个计数器，发现被其它进程改过才会触发一次索引重建——不是每次都比对
-  全量内容，只是读一个几字节的小文件
-
-`diagnostics_snapshot()` 现在读到的数字**始终是最新的**，不再有"缓存过期
-前看到旧值"的概念；`memory.backfill_candidates_count_computed_at` 现在就是
-本次查询发生的时刻（因为查询本身已经足够便宜，不再需要区分"缓存写入
-时间"和"查询时间"）。
-
-看板诊断面板的「🔄 刷新诊断数据」按钮保留：点击后调用
-`GET /v1/growth/summary?refresh_diagnostics=true`，对应索引层"丢弃内存
-索引、强制重建一次"，主要用于"刚跑完一次 CLI 记忆回填、想立刻看到最新值，
-不想等索引的跨进程失效检测下次自然触发"这类场景。强制刷新这条路径客户端
-超时仍然放宽到 50s（默认路径 6s）——正常查询已经是 O(1) 不会慢，这个更宽
-的超时只是给"索引失效后需要重建"这个仍然是一次性全量扫描的分支留出足够
-时间。
-
-`scan_sessions_for_backfill()`（`evolution/memory_backfill.py`，供 CLI
-`mini-agent memory backfill --dry-run` 和实际回填复用）默认阈值下也改成
-读同一份索引，不再各自独立全量扫描。
+> **§5.5-5.9（v4/自主检索/报告分层/外部刷新/诊断性能优化）已迁移到**
+> [growth-advisor-directions-history.md](growth-advisor-directions-history.md)
+> 对应批次。
 
 ## 6. 数据存放位置
 
@@ -1854,7 +467,7 @@ context` 开启、这次确实拿到了非空摘录、且正文由 LLM 生成—
 - 报告质量信号（`report_not_useful`）目前只是"记录下来给人看"，还
   没有被用来反过来指导报告生成策略本身（比如自动为高频被标记的方向
   切换到 LLM 生成、或调整模板内容），这是留给未来版本的闭环；
-- Goal/Cron 打通（2.9 节）目前只做了"对齐分析 + 一键落地 + 回访读取
+- Goal/Cron 打通（演进日志 §2.9 节）目前只做了"对齐分析 + 一键落地 + 回访读取
   Goal 状态"三件事：候选 → Goal 本身仍是单向的（Goal 完成/停滞状态会
   反哺回访判断，但 Goal 的 `progress_notes` 更新不会自动同步成候选的
   新证据）；`next_doc/growth_advisor_ideal_advisor_gap_and_roadmap_
@@ -1873,7 +486,7 @@ context` 开启、这次确实拿到了非空摘录、且正文由 LLM 生成—
   `next_doc/growth_advisor_goal_cron_integration_plan.md` 明确标注的
   非目标，留给后续单独排期；看板前端也还没有接入 `/growth align` /
   `adopt-goal` 的可视化入口，目前只有 CLI；
-- 调研信息获取（2.10 节）目前只做了"复用现有 wiki 素材做摘录 + 结构
+- 调研信息获取（演进日志 §2.10 节）目前只做了"复用现有 wiki 素材做摘录 + 结构
   更具体 + 忽略原因驱动调整"三件事：不会在报告生成时主动触发新的
   外部检索（只从已经存在的 wiki 页面里取材，候选主题在 wiki 里完全
   没有相关页面时，摘录部分自然为空，报告仍然退回"只基于用户自己记忆
@@ -1884,7 +497,7 @@ context` 开启、这次确实拿到了非空摘录、且正文由 LLM 生成—
   比例是不是在上升）——这几项都是
   `next_doc/growth_advisor_research_quality_plan.md` 明确标注的
   非目标，留给后续单独排期。
-- 2.13 节落地的 B1/B2 增量质量/饱和度信号目前只是"提示"，不影响
+- 演进日志 §2.13落地的 B1/B2 增量质量/饱和度信号目前只是"提示"，不影响
   执行流程本身；且 B1 只做了规则式初筛（`covered_subtopics` 差集
   占比），`growth_advisor_autonomy_deepening_plan.md` 里提到的
   "LLM 语义级复核"这个可选增强步骤还没有做；相近主题之间仍然不共享
@@ -1896,25 +509,25 @@ context` 开启、这次确实拿到了非空摘录、且正文由 LLM 生成—
   按需认领。方向 A2（Goal 停滞时区分"素材饱和"vs"执行卡住"两类
   原因）已实施，但只做到"措辞区分、引导用户去看执行状态"这一层，
   不包含自动检测/重试执行失败的能力——这部分自愈能力仍然是留白。
-- 2.20 节落地的方向 6（调研风格智能分类）目前只影响 `growth_pursuit`
+- 演进日志 §2.20落地的方向 6（调研风格智能分类）目前只影响 `growth_pursuit`
   模板每一轮 prompt 里追加的一段文字提示，不做任何"根据风格切换成
   完全不同的模板结构/wiki 页面组织方式"——生成结果最终仍然取决于
   执行模型是否真的照做这段提示，不是强约束。分类曾经只在 Goal 首次
-  落地时判定一次，2.21 节的动态修正已经补上"按累计轮次用实际产出
+  落地时判定一次，演进日志 §2.21的动态修正已经补上"按累计轮次用实际产出
   内容重新判定"这一层，但修正的粒度仍然是"整个方向一个标签"，不会
   区分"这个方向早期偏理论、后期转向实操"这种阶段性变化；规则式
   关键词表覆盖面有限，边界情况（比如"数据分析"这类既偏实操又偏
   理论的主题）容易被兜底成默认的"知识理论类"，开启 `pursuit_style_
   llm_enabled` 能缓解但不能完全消除误判；动态修正的重判目前不透传
   `llm_helper`，即便全局开启该配置，重判这一步也只走规则式路径。
-- 2.22 节落地的方向 7（报告质量自动闭环）只处理了"要不要换成 LLM
+- 演进日志 §2.22落地的方向 7（报告质量自动闭环）只处理了"要不要换成 LLM
   生成"这一种最粗粒度的改进方式，不会根据具体的负反馈内容做更细
   的调整（比如用户觉得报告"太空泛"和"跟实际情况不符"，理想情况下
   应该对应不同的改进策略，目前统一按"升级成 LLM 生成"一刀切处理）；
   升级只发生在下一次生成时，不会主动重新生成已经存在的旧报告；且
   只有调用方（cron 触发路径）确实具备 `llm_helper` 时才会真正生效，
   纯模板环境下这个开关不产生任何效果。
-- 2.23 节落地的推送情境感知只是"软性抬高置信度门槛"，不是真正理解
+- 演进日志 §2.23落地的推送情境感知只是"软性抬高置信度门槛"，不是真正理解
   用户当前的精力/心情/时间可用性——对话密度骤降也可能只是因为用户
   在忙别的事、或者单纯这几天没怎么打开客户端，跟"不想被打扰"不是
   一回事，信号本身就是间接推断，存在误判空间；密度比值的窗口（最近
@@ -1922,7 +535,7 @@ context` 开启、这次确实拿到了非空摘录、且正文由 LLM 生成—
   调整，对使用频率本来就很低的用户（比如每周互动一两次）可能不适用
   （基线数据不足时函数会返回 `None`，直接跳过软性调整，但也意味着
   这类用户永远享受不到这个能力）。
-- 2.24 节落地的调研路径关联信号只做"共现提示"，不做"依赖顺序判断"
+- 演进日志 §2.24落地的调研路径关联信号只做"共现提示"，不做"依赖顺序判断"
   ——即便两个方向存在明显的先后关系（比如"Python 基础"应该先于
   "数据分析"），系统也只会说"这两个有关联"，不会建议学习顺序，这是
   刻意的克制而不是遗漏，但也确实是规划维度分析里提到的"纵向路径

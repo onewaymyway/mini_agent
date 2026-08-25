@@ -70,6 +70,20 @@ Lesson → Skill 提案安全网、巩固循环、效果回填、各阶段（Sta
 
 ---
 
+## 拆分文档（原单篇超长，已拆为"稳定骨架 + 演进日志"）
+
+以下两组文档原为单篇超长文档，按
+[growth_advisor_docs_reorganization_and_system_state_review.md §2.2](../next_doc/growth_advisor_docs_reorganization_and_system_state_review.md#22-建议拆分--保留时间线索引而不是简单加索引层)
+的拆分原则一并处理：
+
+| 骨架（稳定核心机制/配置/参考） | 演进日志（按批次记录各能力方向何时因何落地） |
+|---|---|
+| [growth-advisor-guide.md](growth-advisor-guide.md) | [growth-advisor-directions-history.md](growth-advisor-directions-history.md) |
+| [workflow-guide.md](workflow-guide.md) | [workflow-directions-history.md](workflow-directions-history.md) |
+
+想了解"现在是什么样的"看骨架；想了解"某个具体能力当初为什么这么设计、
+是哪个方案落地的"看演进日志。
+
 ## 汇总型文档（跨主题引用，改动需同步多处）
 
 以下文档的部分内容是从别处复制/汇总的摘要，修改其中一份时必须同步检查
