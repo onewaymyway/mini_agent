@@ -71,39 +71,65 @@ cp providers.json.example providers.json
 
 ### 运行
 
-```bash
-# 交互式模式（推荐）
-python -m mini_agent
+实际使用中最常见的是下面两种方式。两者都建议先设置好环境变量：`PYTHONPATH` 指向 `src/` 目录（保证从任意路径启动都能正确导入 `mini_agent` 包），`TESTPROJ` 指向你要让 agent 工作的项目路径（按需替换为自己的项目路径，也可以省略直接用当前目录）。
 
-# 单次命令模式
-python -m mini_agent "写一个质数筛法的 Python 脚本"
+**Windows（PowerShell）：**
 
-# 沙箱模式（安全测试）
-python -m mini_agent --sandbox
-
-# eval 反馈环：对比某个 skill 开启/排除前后的 turns/token/tool 失败率
-mini-agent eval --scenario test_cases/ --skill docx
+```powershell
+$env:PYTHONPATH = "$PWD/src"
+$env:TESTPROJ = "E:/codes/mini_claude_code"
 ```
 
-常用参数：`--model`/`--provider` 切换模型、`--memory` 启用跨 session 记忆、`--http` 启动 HTTP API、`--simple-mode` 用于 Termux 等终端。完整参数列表见 [命令与工具参考](docs/commands-and-tools-reference.md)。
-
-### 常驻运行与多用户
-
-Agent 也可以以守护进程（daemon）常驻后台，多个客户端或多个用户共享同一个运行实例：
+**Linux / macOS（bash/zsh）：**
 
 ```bash
-# 后台常驻启动
-mini-agent daemon start --detach
+export PYTHONPATH="$PWD/src"
+export TESTPROJ="/home/user/codes/mini_claude_code"
+```
 
-# 任意终端自动检测并"连接"到已运行的 daemon
-mini-agent
+#### 方式一：daemon 模式 + 看板管理（推荐日常使用）
 
+Agent 以守护进程常驻后台，通过 Streamlit 看板远程管理目标、Cron、日报等，不依赖某个终端窗口一直开着。
+
+```bash
+# 启动 daemon（--project 指定工作目录，--yes 自动批准工具调用）
+python main.py daemon start --http-port 8765 --project "$TESTPROJ" --yes
+
+# 查看 daemon 状态
+python main.py daemon status --project "$TESTPROJ"
+
+# 结束 daemon
+python main.py daemon stop --project "$TESTPROJ"
+
+# 启动看板（--auto-token 自动读取/生成本地 owner token，无需手动填）
+streamlit run apps/mini_agent_kanban/app.py -- --auto-token
+```
+
+> PowerShell 下把 `"$TESTPROJ"` 换成 `"$env:TESTPROJ"`。
+
+#### 方式二：命令行直接对话（适合调试）
+
+不启动 daemon，直接在当前终端进入交互式对话，便于实时看日志排查问题：
+
+```bash
+python main.py --no-daemon --debug-llm --reminder-verbose --yes
+```
+
+`--debug-llm` 记录完整请求/响应日志，`--reminder-verbose` 打印 reminder 注入细节，`--yes` 自动批准工具调用（沙箱/生产环境请按需去掉）。
+
+其他常用参数：`--model`/`--provider` 切换模型、`--memory` 启用跨 session 记忆、`--sandbox` 沙箱模式、`--http` 启动 HTTP API、`--simple-mode` 用于 Termux 等终端。完整参数列表见 [命令与工具参考](docs/commands-and-tools-reference.md)。
+
+### 多用户模式
+
+在 daemon 模式基础上，还可以开启多用户模式，多个用户通过各自独立的 token 和角色权限连接到同一个 daemon：
+
+```bash
 # 开启多用户模式（每用户独立 token + 角色权限 + Session 隔离）
-mini-agent daemon start --http --http-multi-user --detach
+python main.py daemon start --http --http-multi-user --detach --project "$TESTPROJ"
 mini-agent user add --name "小明" --role colleague
 ```
 
-详见 [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md)、[守护进程多客户端架构指南](docs/daemon-multi-client-guide.md)、[多用户模式指南](docs/multi-user-guide.md)。
+详见 [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md)、[守护进程多客户端架构指南](docs/daemon-multi-client-guide.md)、[多用户模式指南](docs/multi-user-guide.md)、[Kanban 看板使用指南](docs/kanban-dashboard-guide.md)。
 
 ## 核心交互
 
