@@ -1,0 +1,215 @@
+"""
+tests/test_agent_commit_guard.py — agent_commit_guard 单元测试
+
+用真实的临时 git 仓库（subprocess 调 git）覆盖：
+  1. git commit 命令识别 + 记账
+  2. 正常情况下（未撤销）scan_for_undo 不产生 UndoEvent
+  3. reset 之后 scan_for_undo 能识别出撤销，并生成 revert_record lesson
+  4. 配置默认开启 / 可显式关闭
+  5. git hook 安装 + 哨兵文件消费
+"""
+
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+import pytest
+
+from mini_agent.perception import agent_commit_guard as guard
+
+
+# ── Fixtures ────────────────────────────────────────────────────────────────
+
+def _git(repo, *args):
+    subprocess.run(["git", "-C", str(repo)] + list(args), check=True,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+@pytest.fixture
+def repo(tmp_path):
+    r = tmp_path / "repo"
+    r.mkdir()
+    _git(r, "init", "-q")
+    _git(r, "config", "user.email", "test@example.com")
+    _git(r, "config", "user.name", "test")
+    (r / "a.txt").write_text("hello")
+    _git(r, "add", "a.txt")
+    _git(r, "commit", "-q", "-m", "init")
+    return r
+
+
+class _FakeMemorySink:
+    """极简 MemoryBackend 假实现，只记录 add() 被调用了什么。"""
+    def __init__(self):
+        self.entries = []
+
+    def add(self, entry):
+        self.entries.append(entry)
+
+
+# ── 命令识别 ────────────────────────────────────────────────────────────────
+
+def test_is_git_commit_command():
+    assert guard.is_git_commit_command("git commit -m 'wip'")
+    assert guard.is_git_commit_command("cd /tmp && git commit -am x")
+    assert not guard.is_git_commit_command("git status")
+    assert not guard.is_git_commit_command("git commit-graph write")
+
+
+def test_is_git_undo_command():
+    assert guard.is_git_undo_command("git reset --hard HEAD~1")
+    assert guard.is_git_undo_command("git revert --no-edit HEAD")
+    assert guard.is_git_undo_command("git commit --amend -m x")
+    assert guard.is_git_undo_command("git rebase -i HEAD~3")
+    assert not guard.is_git_undo_command("git commit -m 'reset the counter in code'")
+
+
+# ── 配置 ───────────────────────────────────────────────────────────────────
+
+def test_config_default_enabled(tmp_path):
+    cfg = guard.load_config(tmp_path)
+    assert cfg.enabled is True
+
+
+def test_config_can_be_disabled(tmp_path):
+    cfg = guard.AgentCommitGuardConfig(enabled=False)
+    guard.save_config(cfg, tmp_path)
+    loaded = guard.load_config(tmp_path)
+    assert loaded.enabled is False
+
+
+# ── 记账 + 撤销核对 ───────────────────────────────────────────────────────
+
+def test_record_and_no_undo(repo):
+    guard.record_agent_commit(repo, session_id="s1")
+    ledger = guard.CommitLedger(repo)
+    pending = ledger.pending()
+    assert len(pending) == 1
+
+    events = guard.scan_for_undo(repo)
+    assert events == []
+    # 核对完之后应该已经 resolved，且没有被判定为撤销
+    entries = ledger.load_all()
+    assert entries[0].resolved is True
+    assert entries[0].undone is False
+
+
+def test_detects_reset_undo_and_records_lesson(repo):
+    # agent 自动提交一个文件
+    (repo / "b.txt").write_text("secret stuff")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-q", "-m", "agent auto commit")
+    guard.record_agent_commit(repo, session_id="s1")
+
+    ledger = guard.CommitLedger(repo)
+    assert len(ledger.pending()) == 1
+    committed_hash = ledger.pending()[0].commit_hash
+
+    # 用户（在 agent 之外）reset 掉这次提交
+    _git(repo, "reset", "--hard", "HEAD~1")
+
+    events = guard.scan_for_undo(repo)
+    assert len(events) == 1
+    assert events[0].commit_hash == committed_hash
+    assert "b.txt" in events[0].files
+
+    # 再跑一次应该没有新事件（已经 resolved）
+    assert guard.scan_for_undo(repo) == []
+
+    sink = _FakeMemorySink()
+    entry = guard.record_undo_lesson(
+        memory_sink=sink, session_id="s1", model="test-model",
+        commit_hash=events[0].commit_hash, files=events[0].files,
+        subject=events[0].subject,
+    )
+    assert entry is not None
+    assert len(sink.entries) == 1
+    assert sink.entries[0].source == "revert_record"
+    assert "b.txt" in sink.entries[0].trigger
+
+
+def test_on_bash_post_tool_end_to_end(repo):
+    """模拟 tool_executor 的调用方式：先 commit 触发记账，再 reset 触发立即核对+写 lesson。"""
+    (repo / "c.txt").write_text("oops")
+    _git(repo, "add", "c.txt")
+    _git(repo, "commit", "-q", "-m", "cleanup commit")
+
+    sink = _FakeMemorySink()
+    guard.on_bash_post_tool(
+        project_root=repo, command="git commit -am 'cleanup commit'",
+        session_id="s1", memory_sink=sink, model="m",
+    )
+    assert len(guard.CommitLedger(repo).pending()) == 1
+
+    _git(repo, "reset", "--hard", "HEAD~1")
+
+    guard.on_bash_post_tool(
+        project_root=repo, command="git reset --hard HEAD~1",
+        session_id="s1", memory_sink=sink, model="m",
+    )
+    assert len(sink.entries) == 1
+    assert sink.entries[0].source == "revert_record"
+
+
+def test_disabled_config_short_circuits(repo):
+    guard.save_config(guard.AgentCommitGuardConfig(enabled=False), repo)
+    guard.record_agent_commit(repo, session_id="s1")
+    assert guard.CommitLedger(repo).pending() == []
+
+
+# ── git hook 安装 + 哨兵文件 ─────────────────────────────────────────────
+
+def test_install_hooks_and_sentinel(repo):
+    written = guard.install_undo_scan_git_hooks(repo)
+    assert len(written) == 3
+    for p in written:
+        assert p.exists()
+        assert guard._HOOK_MARKER_BEGIN in p.read_text(encoding="utf-8")
+
+    # 再装一次不应该重复追加
+    written2 = guard.install_undo_scan_git_hooks(repo)
+    for p in written2:
+        content = p.read_text(encoding="utf-8")
+        assert content.count(guard._HOOK_MARKER_BEGIN) == 1
+
+    # 模拟 post-checkout 触发：直接调用哨兵脚本效果（写文件），再验证消费逻辑
+    sentinel = guard._sentinel_path(repo)
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+    assert guard.consume_pending_sentinel(repo) is True
+    assert not sentinel.exists()
+    assert guard.consume_pending_sentinel(repo) is False
+
+
+def test_opportunistic_scan_respects_throttle_and_sentinel(repo):
+    guard._last_scan_at.clear()
+    cfg = guard.AgentCommitGuardConfig(opportunistic_scan_interval_sec=9999)
+    guard.save_config(cfg, repo)
+
+    (repo / "d.txt").write_text("x")
+    _git(repo, "add", "d.txt")
+    _git(repo, "commit", "-q", "-m", "auto")
+    guard.record_agent_commit(repo, session_id="s1")
+    _git(repo, "reset", "--hard", "HEAD~1")
+
+    # 第一次调用会跑（进程内还没有 last_scan 记录）
+    events1 = guard.maybe_opportunistic_scan(repo)
+    assert len(events1) == 1
+
+    # 制造第二条待撤销记录，但节流间隔很长，不哨兵触发的话不应该再跑
+    (repo / "e.txt").write_text("y")
+    _git(repo, "add", "e.txt")
+    _git(repo, "commit", "-q", "-m", "auto2")
+    guard.record_agent_commit(repo, session_id="s1")
+    _git(repo, "reset", "--hard", "HEAD~1")
+
+    events2 = guard.maybe_opportunistic_scan(repo)
+    assert events2 == []  # 被节流挡住
+
+    # 哨兵文件存在时应无视节流立即跑
+    guard._sentinel_path(repo).parent.mkdir(parents=True, exist_ok=True)
+    guard._sentinel_path(repo).touch()
+    events3 = guard.maybe_opportunistic_scan(repo)
+    assert len(events3) == 1

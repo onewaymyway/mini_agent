@@ -448,6 +448,27 @@ class ToolExecutor:
                 if post.context:
                     result_str = result_str + f"\n\n[hook note] {post.context}"
 
+            # [agent_commit_guard] bash 工具执行完 git commit / reset / revert
+            # 等命令后：记账 agent 自动提交 或 核对是否有历史提交被撤销。
+            # 默认开启，失败静默，不影响 bash 结果本身。见
+            # perception/agent_commit_guard.py 与
+            # next_doc/agent_commit_undo_guard_plan.md。
+            if tc.name == "bash":
+                try:
+                    _cmd = tool_input.get("command") if isinstance(tool_input, dict) else None
+                    if _cmd:
+                        from mini_agent.perception.agent_commit_guard import on_bash_post_tool
+                        on_bash_post_tool(
+                            project_root=self.cfg.project_root,
+                            command=_cmd,
+                            session_id=(self._session_id_getter() if self._session_id_getter else ""),
+                            memory_sink=self._memory_sink,
+                            model=getattr(self.cfg, "model", ""),
+                        )
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where="mini_agent.tool_executor.agent_commit_guard")
+
             # [SYS-LESSON] 规则触发：连续失败 / 权限拒绝后重试成功（Stage 1.2）
             # 不依赖 LLM，纯规则判断；命中时立即写入记忆，不等 SessionEnd。
             if self._lesson_engine is not None and self._memory_sink is not None:

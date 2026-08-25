@@ -400,6 +400,22 @@ class SessionLifecycleMixin:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.agent')
                 pass
+
+            # [agent_commit_guard] SessionStart 时做一次完整的"agent 自动
+            # commit 是否已被撤销"核对（不受机会性节流间隔限制，同时消费
+            # git hook 写的哨兵文件）。默认开启，失败静默。见
+            # perception/agent_commit_guard.py。
+            try:
+                from mini_agent.perception.agent_commit_guard import on_session_start
+                on_session_start(
+                    project_root=self.cfg.project_root,
+                    session_id=self._session.id if self._session else "",
+                    memory_sink=getattr(self, "_memory", None),
+                    model=getattr(self.cfg, "model", ""),
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.agent_commit_guard')
         except Exception as e:
             from mini_agent.errors import log_exception
             log_exception(e, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._init_session')

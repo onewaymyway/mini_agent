@@ -365,93 +365,44 @@ def _handle_outcomes(rest: list[str], agent) -> None:
         )
 
 
-
-    """
-    设计文档 4.3 节："回退记录反哺 lesson 库——每次 revert 生成一条
-    source='revert_record' 的 lesson"。
-
-    复用 Stage 1 已经打通的 MemoryEntry 写入路径（agent._memory.add() +
-    agent._append_memory_delta()），与 SessionEnd 反思 / 规则触发 lesson
-    走同一套存储，保证后续检索/剪枝/能力地图等机制对三种来源一视同仁。
-
-    失败（memory 未启用、写入异常等）只警告，不影响 revert 本身已经成功这件事——
-    revert 是一次 git 操作，已经完成；lesson 记录是锦上添花的审计产物。
-    """
-    if agent is None or getattr(agent, "_memory", None) is None:
-        return
-    try:
-        from mini_agent.perception.memory_store import MemoryEntry
-
-        trigger = f"曾提案改动 {reverted.commit[:8]}（{reverted.subject}），已通过 /evolution revert 撤销"
-        outcome = f"该改动被判定不应保留，已生成 revert commit {revert_commit[:8]} 撤销其效果"
-        entry = MemoryEntry(
-            session_id=getattr(agent, "session_id", "") or "",
-            summary="",
-            key_outcomes=[],
-            tags=["lesson", "revert_record"],
-            model=getattr(agent.cfg, "model", ""),
-            entry_type="lesson",
-            trigger=trigger,
-            outcome=outcome,
-            root_cause="",
-            suggested_action=f"不建议未经修改地重新尝试与 {reverted.commit[:8]} 同方向的改动",
-            confidence=0.9,  # 人工明确执行的 revert，可信度高于规则触发与自由反思
-            occurrence_count=1,
-            source="revert_record",
-        )
-        if entry.scope == "global" and getattr(agent, "_global_memory", None):
-            agent._global_memory.add(entry)
-        else:
-            agent._memory.add(entry)
-        if hasattr(agent, "_append_memory_delta"):
-            agent._append_memory_delta(entry)
-    except Exception as e:
-        from mini_agent.errors import log_exception
-        log_exception(e, where='mini_agent.cli.commands.evolution._handle_outcomes')
-        R.print_warning(f"[evolution] failed to record revert lesson: {e}")
-
-
 # ── /evolution lessons-to-reminders ──────────────────────────────────────────
+#
+# [agent_commit_undo_guard_plan 阶段 3] 原来这里和上面 `_handle_outcomes`
+# 结尾各自内联了一份几乎一样的 "revert → MemoryEntry(source=revert_record)"
+# 代码（后者甚至因为复制粘贴混入了未定义的 `reverted` 变量，属于死代码/
+# 潜在 bug，本次一并清理）。现在统一改为调用
+# `perception/agent_commit_guard.py::record_undo_lesson()`——那是
+# "agent 自动 commit 被撤销 → 写 revert_record lesson" 这件事更通用的
+# 版本（不仅覆盖 evolution 自我改进提案，也覆盖 daemon/cron 下的普通
+# 自动提交），两处共用同一份实现，不再维护两套。
 
 def _record_revert_lesson(agent, match, revert_commit: str) -> None:
-    """
-    设计文档 4.3 节："回退记录反哺 lesson 库——每次 revert 生成一条
-    source='revert_record' 的 lesson"。
+    """`/evolution revert` 撤销一个 evolution 提案 commit 后调用：写一条
+    `source="revert_record"` lesson，记录"这个方向的改动被人工撤销了"。
 
-    复用 Stage 1 已经打通的 MemoryEntry 写入路径（agent._memory.add() +
-    agent._append_memory_delta()），与 SessionEnd 反思 / 规则触发 lesson
-    走同一套存储，保证后续检索/剪枝/能力地图等机制对三种来源一视同仁。
-
-    失败（memory 未启用、写入异常等）只警告，不影响 revert 本身已经成功这件事——
-    revert 是一次 git 操作，已经完成；lesson 记录是锦上添花的审计产物。
+    失败只警告，不影响 revert 本身已经成功这件事。
     """
     if agent is None or getattr(agent, "_memory", None) is None:
         return
     try:
-        from mini_agent.perception.memory_store import MemoryEntry
+        from mini_agent.perception.agent_commit_guard import record_undo_lesson
 
-        trigger = f"曾提案改动 {match.commit[:8]}（{match.subject}），已通过 /evolution revert 撤销"
-        outcome = f"该改动被判定不应保留，已生成 revert commit {revert_commit[:8]} 撤销其效果"
-        entry = MemoryEntry(
+        short = match.commit[:8]
+        entry = record_undo_lesson(
+            memory_sink=agent._memory,
             session_id=getattr(agent, "session_id", "") or "",
-            summary="",
-            key_outcomes=[],
-            tags=["lesson", "revert_record"],
             model=getattr(agent.cfg, "model", ""),
-            entry_type="lesson",
-            trigger=trigger,
-            outcome=outcome,
-            root_cause="",
-            suggested_action=f"不建议未经修改地重新尝试与 {match.commit[:8]} 同方向的改动",
-            confidence=0.9,  # 人工明确执行的 revert，可信度高于规则触发与自由反思
-            occurrence_count=1,
-            source="revert_record",
+            commit_hash=match.commit,
+            files=[],
+            subject=match.subject,
+            trigger=f"曾提案改动 {short}（{match.subject}），已通过 /evolution revert 撤销",
+            outcome=f"该改动被判定不应保留，已生成 revert commit {revert_commit[:8]} 撤销其效果",
+            suggested_action=f"不建议未经修改地重新尝试与 {short} 同方向的改动",
+            tags=["evolution_revert"],
         )
-        if entry.scope == "global" and getattr(agent, "_global_memory", None):
-            agent._global_memory.add(entry)
-        else:
-            agent._memory.add(entry)
-        if hasattr(agent, "_append_memory_delta"):
+        # 保持跟原实现一致：写入的同一个 entry 也过一遍 agent 专属的会话内
+        # 增量记录回调（SessionEnd 汇总/审计能看到这条 delta）。
+        if entry is not None and hasattr(agent, "_append_memory_delta"):
             agent._append_memory_delta(entry)
     except Exception as e:
         from mini_agent.errors import log_exception
