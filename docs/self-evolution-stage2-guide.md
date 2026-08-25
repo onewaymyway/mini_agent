@@ -210,9 +210,11 @@ ws.destroy(delete_branch=True)    # 验证失败、确定要放弃这次尝试�
 
 设计文档 4.3 节："回退记录反哺 lesson 库——每次 revert 生成一条
 `source="revert_record"` 的 lesson。" `/evolution revert` 在 git revert 成功后，
-复用 Stage 1 已经打通的 `MemoryEntry` 写入路径（`agent._memory.add()` +
-`agent._append_memory_delta()`），与 SessionEnd 反思、规则触发的 lesson 走
-同一套存储，保证后续检索/剪枝/能力地图机制对三种来源一视同仁：
+调用 `perception/agent_commit_guard.py::record_undo_lesson()`（`cli/
+commands/evolution.py::_record_revert_lesson()` 只负责拼接 trigger/outcome
+文案再转调），复用 Stage 1 已经打通的 `MemoryEntry` 写入路径，与
+SessionEnd 反思、规则触发的 lesson 走同一套存储，保证后续检索/剪枝/
+能力地图机制对各来源一视同仁：
 
 ```python
 MemoryEntry(
@@ -220,10 +222,16 @@ MemoryEntry(
     trigger="曾提案改动 04bc5f88（Add foo skill），已通过 /evolution revert 撤销",
     outcome="该改动被判定不应保留，已生成 revert commit fe042736 撤销其效果",
     suggested_action="不建议未经修改地重新尝试与 04bc5f88 同方向的改动",
-    confidence=0.9,
+    confidence=0.85,
     source="revert_record",
 )
 ```
+
+`record_undo_lesson()` 不是 `/evolution revert` 专属——daemon/cron 模式下
+agent 自动提交的普通改动（不是 evolution 自我改进提案）被用户撤销时，
+`/commit-guard scan` 或 bash 工具执行 `git reset`/`revert`/`commit --amend`
+后的自动核对会走同一个函数生成同样结构的 lesson，两个场景共用一份实现，
+不重复维护。详见 [agent commit guard 指南](agent-commit-guard-guide.md)。
 
 lesson 写入失败（memory 未启用、写入异常）只会打印警告，不影响 revert 本身——
 revert 是一次已经完成的 git 操作，lesson 记录是锦上添花的审计产物。

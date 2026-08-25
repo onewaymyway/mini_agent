@@ -175,3 +175,12 @@ SessionStart / 每隔一段时间的机会性检查 ─────────�
   限制"。
 - 2026-08-25：补完阶段 4（`/commit-guard` CLI 命令），全部 5 个阶段
   完成。测试从 10 条增至 14 条，全部通过。
+- 2026-08-25：功能"毕业"进 `docs/`——新增
+  [docs/agent-commit-guard-guide.md](../docs/agent-commit-guard-guide.md)
+  作为稳定使用指南，并同步更新了
+  `docs/commands-and-tools-reference.md`（新增 `/commit-guard` 命令表 +
+  补充 `/evolution revert` 条目的联动说明）、
+  `docs/memory-and-self-evolution-complete-reference.md` §5.4、
+  `docs/self-evolution-stage2-guide.md` §6.1（均说明 `revert_record`
+  现在由 `record_undo_lesson()` 一份实现同时服务两个场景）。本文档
+  （`next_doc/`）不删除、不搬空，继续作为设计考古记录保留。

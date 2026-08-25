@@ -187,11 +187,18 @@ A2）**：检测用户消息中的直接纠正短语（"不对"、"应该用 xxx
 由具身智能 B4/SoftGoalDeriver 关联的 `ExplorationSandbox` 验证通过后生成
 （详见第三部分第 6 节），半衰期 60 天。
 
-### 5.4 `revert_record`：`/evolution revert` 联动
-`cli/commands/evolution.py::_record_revert_lesson()`：每次执行 `/evolution
-revert <commit>`，自动生成一条 `source="revert_record"` 的 lesson，记录
-"曾提案改动 X，已被判定不应保留、撤销"——**回退记录反哺 lesson 库**
-（设计文档 4.3 节），半衰期最快（14 天，一次性事件，不代表持续性问题）。
+### 5.4 `revert_record`：`/evolution revert` 与 `/commit-guard` 联动
+`perception/agent_commit_guard.py::record_undo_lesson()`：每次执行 `/evolution
+revert <commit>`（`cli/commands/evolution.py::_record_revert_lesson()` 内部
+调用它），或 agent 自动提交的内容被撤销（`/commit-guard scan`、bash 工具
+执行 `git commit`/`reset`/`revert` 后自动触发、SessionStart 时的机会性
+核对，见 [agent commit guard 指南](agent-commit-guard-guide.md)），都会
+生成一条 `source="revert_record"` 的 lesson，记录"曾提交/提案改动 X，
+已被判定不应保留、撤销"——**回退记录反哺 lesson 库**（设计文档 4.3 节，
+`/evolution revert` 场景；`next_doc/agent_commit_undo_guard_plan.md`，
+daemon/cron 自动 commit 场景），半衰期最快（14 天，一次性事件，不代表
+持续性问题）。这两个场景共用同一份 `record_undo_lesson()` 实现，不维护
+两套几乎一样的代码。
 
 四种来源的完整半衰期对照表见第三部分第 5 节（C2 时间加权记忆激活）。
 

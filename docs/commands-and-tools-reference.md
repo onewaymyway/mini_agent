@@ -15,6 +15,7 @@
 - [角色扮演（Persona）系统指南](persona-guide.md) — `/role` 命令背景
 - [Hooks 机制指南](hooks.md) — `/hooks` 命令背景
 - [自我演化安全网指南（Stage 2）](self-evolution-stage2-guide.md) — `/evolution` 命令组背景
+- [agent 自动 commit 撤销感知指南](agent-commit-guard-guide.md) — `/commit-guard` 命令背景
 - [自我演化 lesson → skill 闭环指南（Stage 3.1）](self-evolution-stage3-1-guide.md) — `/evolve` 命令与 `skill_propose` 工具背景
 - [自我演化 eval 反馈环指南（Stage 3.2）](self-evolution-stage3-2-guide.md) — `mini-agent eval` 完整说明
 
@@ -388,6 +389,19 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/quarantine reload` | 重新读取 `runtime_quarantine.json`（手动改过文件后热更新） |
 | `/quarantine enable` / `/quarantine disable` | 打开/关闭总开关（写回 `platform_policy.json`，**默认关闭**） |
 
+### agent 自动 commit 撤销感知（`src/mini_agent/cli/commands/commit_guard.py`）
+
+> 详见 [agent 自动 commit 撤销感知（agent commit guard）指南](agent-commit-guard-guide.md)
+
+| 命令 | 说明 |
+|------|------|
+| `/commit-guard` 或 `/commit-guard status` | 显示开关状态、配置摘要、账本统计（已记账/待核对/已确认撤销数量） |
+| `/commit-guard on` / `/commit-guard off` | 打开/关闭总开关（写回 `agent_commit_guard_config.json`，**默认开启**） |
+| `/commit-guard scan` | 立即核对一次账本里未确认的 commit 是否已被撤销（忽略机会性节流间隔），命中即写入 `source="revert_record"` lesson |
+| `/commit-guard install-hooks [repo]` | 在指定仓库（默认当前项目）`.git/hooks/` 下安装 `post-checkout`/`post-merge`/`post-rewrite` 哨兵 hook（只 touch 空文件，不采集/不上报内容） |
+| `/commit-guard ledger [n]` | 查看账本最近 n 条记录（默认 20），标注 pending/resolved/undone 状态 |
+| `/commit-guard clear` | 清空账本文件（不影响已经生成的 lesson/reminder） |
+
 （`src/mini_agent/cli/commands/evolution.py` / `evolve.py`）
 
 > 详见 [Stage 2 安全网指南](self-evolution-stage2-guide.md)、[Stage 3.1 lesson → skill 闭环指南](self-evolution-stage3-1-guide.md)、[巩固循环 后台循环指南](self-evolution-consolidation-guide.md)
@@ -397,7 +411,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/evolution log [N]` | 展示最近 N 条自我修改 commit（默认 10），表格形式 |
 | `/evolution show <commit>` | 展示单条 commit 的完整结构化信息 + diff |
 | `/evolution diff <commit>` | 展示某次 commit 的改动 diff（语法高亮） |
-| `/evolution revert <commit>` | 生成 revert commit，并自动记录一条 `source="revert_record"` 的 lesson；若该 commit 正处于效果回填观察期，提前结束观察 |
+| `/evolution revert <commit>` | 生成 revert commit，并自动记录一条 `source="revert_record"` 的 lesson（内部调用 `perception/agent_commit_guard.py::record_undo_lesson()`，与 `/commit-guard scan` 共用同一份实现，见 [agent commit guard 指南](agent-commit-guard-guide.md)）；若该 commit 正处于效果回填观察期，提前结束观察 |
 | `/evolution outcomes [--worsened]` | **新增**：列出自我进化 commit 的效果回填记录（`observing`/`improved`/`no_change`/`worsened`/`insufficient_data`/`reverted_by_user`）。`--worsened` 只看建议复核 revert 的记录。详见 [效果回填指南](self-evolution-outcome-tracking-guide.md) |
 | `/evolve review [--global] [--tier T1\|T2]` | 扫描 lesson（默认 workdir 级 `memory.jsonl`，`--global` 扫描 `~/.agent/memory.jsonl`），对达标分组 spawn `evolution-agent` 提案 |
 | `/evolve list [--global] [--tier T1\|T2]` | 同 `review`，但只扫描 + 列出达标分组，不 spawn agent、不消耗 LLM 调用 |
