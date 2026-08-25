@@ -28,15 +28,19 @@ steps/05_enrich_questions.py — python_step：逐个打开知乎问题详情页
 workflow_session）时，run() 一开始会先读这个文件，已经成功过的问题直接跳过，
 只补抓上次失败/还没抓到的部分，不用从头来过。
 
-前置条件（与原 skill_agent 版一致，见 prompts/04_enrich_questions.md 里的
-背景说明）：
-  - 需要先用 launch_zhihu_logged_in.py 起好已登录知乎的浏览器实例（固定
-    调试端口 9336）。
+前置条件：
+  - 需要先运行 steps/launch_zhihu_logged_in.py 起好已登录知乎的浏览器实例
+    （固定调试端口 9336）。
   - 运行 mini_agent 本体的 Python 环境需要能 import requests 和
-    websocket-client（`pip install websocket-client requests`）——这两个包
-    原来是被 skill_agent 派生出的子进程（跑 browser-cdp 目录下的脚本）用到，
-    现在 python_step 是在主进程的 Python 环境里直接 import cdp_client.py，
-    所以这个环境也要装了这两个包才行。
+    websocket-client（`pip install websocket-client requests`）。
+
+[browser-cdp 依赖清理] 此前本文件是靠 sys.path 注入
+`.claude/skills/browser-cdp` 目录、再 import 它的 `src/core/cdp_client.py`
+来拿 CDP 客户端的（见文件末尾旧版 `_resolve_skill_dir`/`_import_cdp_client`
+注释）。这会让本 workflow 依赖一个即将被移除的 skill 目录。实际只用到
+"列tab/连tab/发命令/跑JS/等事件"这几个能力，体量很小，已经原样搬进同目录下
+的 `_cdp_client.py`（本 workflow 私有，不属于任何 `.claude/skills/*`），
+本文件现在直接从同目录 import，不再触碰 browser-cdp。
 
 选择器脆弱性提醒：知乎前端 class 名可能随版本更新变化，本文件里的选择器是
 按当前（编写本文件时）实际页面结构总结的，如果知乎改版导致某个字段大面积
@@ -246,59 +250,21 @@ def _llm_fill_missing(ctx, url: str, page_text: str, missing: list[str]) -> dict
     return ctx.llm.ask_json(prompt, schema_hint=json.dumps(schema_pairs, ensure_ascii=False), max_retries=2)
 
 
-def _resolve_skill_dir(ctx) -> Path:
-    if ctx.workflow_dir is None:
-        raise ValueError("workflow_dir 未设置，无法定位 browser-cdp skill 目录")
-    # ctx.workflow_dir = <project_root>/.agent/workflows/zhihu_content_publish
-    # 往上 3 层（workflows -> .agent -> project_root）就是项目根目录。
-    project_root = ctx.workflow_dir.parents[2]
-    skill_dir = project_root / ".claude" / "skills" / "browser-cdp"
-    if not skill_dir.is_dir():
-        raise FileNotFoundError(f"browser-cdp skill 目录不存在：{skill_dir}")
-    return skill_dir
+sys.path.insert(0, str(Path(__file__).parent))
+from _cdp_client import list_tabs, connect_tab, CDPError, DEFAULT_HOST  # noqa: E402
 
 
-def _import_cdp_client(skill_dir: Path):
-    """把 browser-cdp skill 目录加进 sys.path 后 import 它现成的 CDP 客户端，
-    不重复实现一遍 tab 发现 / WebSocket 收发。
-
-    [browser-cdp skill 更新适配] skill 目录结构从 src/core/cdp_client.py 调整为
-    src/core/cdp_client.py（路径不变），但导入方式从 `from core import cdp_client`
-    改为直接 import 所需符号，避免依赖 sys.path 注入的相对导入。
-    """
-    skill_dir_str = str(skill_dir)
-    if skill_dir_str not in sys.path:
-        sys.path.insert(0, skill_dir_str)
-    try:
-        from src.core.cdp_client import list_tabs, connect_tab, CDPError  # noqa: F401
-    except ImportError as e:
-        raise ImportError(
-            "无法 import browser-cdp skill 的 cdp_client 模块，请确认：\n"
-            "  1) 运行 mini_agent 的 Python 环境已执行 "
-            "`pip install websocket-client requests`；\n"
-            f"  2) skill 目录存在：{skill_dir}"
-        ) from e
-    # 返回一个命名空间对象，保持下游代码对 cdp_client.list_tabs 等调用的兼容性
-    import types
-    _ns = types.ModuleType("cdp_client")
-    _ns.list_tabs = list_tabs
-    _ns.connect_tab = connect_tab
-    _ns.CDPError = CDPError
-    _ns.DEFAULT_HOST = "127.0.0.1"
-    return _ns
-
-
-def _get_zhihu_session(cdp_client, port: int):
+def _get_zhihu_session(port: int):
     """找一个当前打开着 zhihu.com 的 tab 并连接，之后逐个问题复用同一个 tab
     做 goto，不为每个问题都新开一个 tab。"""
-    tabs = cdp_client.list_tabs(port=port)
+    tabs = list_tabs(port=port)
     if not tabs:
         raise RuntimeError(
-            f"CDP 端口 {port} 上没有找到任何 tab，请先运行 launch_zhihu_logged_in.py "
+            f"CDP 端口 {port} 上没有找到任何 tab，请先运行 steps/launch_zhihu_logged_in.py "
             "启动已登录知乎的浏览器实例"
         )
     target = next((t for t in tabs if "zhihu.com" in (t.get("url") or "")), None) or tabs[0]
-    session = cdp_client.connect_tab(target, host=cdp_client.DEFAULT_HOST, port=port)
+    session = connect_tab(target, host=DEFAULT_HOST, port=port)
     for domain in ("Page", "DOM", "Runtime"):
         try:
             session.send(f"{domain}.enable")
@@ -307,7 +273,7 @@ def _get_zhihu_session(cdp_client, port: int):
     return session
 
 
-def _goto_and_extract(session, cdp_client, url: str) -> tuple[dict, str]:
+def _goto_and_extract(session, url: str) -> tuple[dict, str]:
     """导航到问题页后，先跑一次 DOM 精确抽取，再按需准备一份兜底用的整页文本。
 
     整页文本抽取放在同一次页面加载里一起做（而不是等确认缺字段了再单独
@@ -317,7 +283,7 @@ def _goto_and_extract(session, cdp_client, url: str) -> tuple[dict, str]:
     session.send("Page.navigate", {"url": url})
     try:
         session.wait_event("Page.loadEventFired", timeout=15.0)
-    except cdp_client.CDPError:
+    except CDPError:
         pass  # 知乎是 SPA，有时等不到标准 load 事件，退化成下面的固定等待
     time.sleep(PAGE_LOAD_WAIT_SECONDS)
 
@@ -350,8 +316,6 @@ def run(ctx) -> dict:
     if not candidates:
         return {"questions": [], "total_enriched": 0, "note": "filter_questions 没有产出待补全的问题"}
 
-    skill_dir = _resolve_skill_dir(ctx)
-    cdp_client = _import_cdp_client(skill_dir)
     port = int(ctx.params.get("cdp_port", ZHIHU_CDP_PORT))
 
     progress = _load_progress(ctx)
@@ -366,7 +330,7 @@ def run(ctx) -> dict:
             f"[enrich_questions] 共 {len(candidates)} 个问题，其中 {len(pending)} 个待抓取"
             f"（跳过此前已成功的 {len(done)} 个）"
         )
-        session = _get_zhihu_session(cdp_client, port)
+        session = _get_zhihu_session(port)
         dom_hit_counts = {"answer_count": 0, "follower_count": 0, "view_count": 0,
                            "description": 0, "top_answer": 0}
         try:
@@ -375,7 +339,7 @@ def run(ctx) -> dict:
                 url = q.get("url", "")
                 print(f"[enrich_questions] ({i}/{len(pending)}) 抓取 {qid}: {url}")
                 try:
-                    page_data, page_text = _goto_and_extract(session, cdp_client, url)
+                    page_data, page_text = _goto_and_extract(session, url)
                     if not page_data and not page_text.strip():
                         raise RuntimeError("页面为空，可能未登录 / 被风控拦截 / 加载失败")
 

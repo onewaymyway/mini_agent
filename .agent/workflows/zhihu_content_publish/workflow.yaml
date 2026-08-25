@@ -10,9 +10,19 @@
 # 运行前置条件：
 #   - agent_config.json 的 workflow 节需要设置 "python_step_enabled": true
 #     （python_step 默认关闭，见 next_doc/workflow_python_step_and_zhihu_publish_plan.md §B4）
-#   - 需要挂载 browser-cdp skill（.claude/skills/browser-cdp/），并已按
-#     next_doc/browser_cdp_stability_fixes.md 固定好 --name 专用实例
+#   - 需要先手动运行一次 `python steps/launch_zhihu_logged_in.py` 启动一个
+#     已登录知乎的浏览器实例（固定调试端口 9336），并在弹出的浏览器窗口里
+#     完成登录；登录态会持久化在 steps/temp_data/zhihu_logged_in_profile
+#     目录，之后重复运行同一命令会自动带着登录态，不需要每次都重新登录。
 #   - 运行参数：run_workflow(inputs={"doc_path": "<本地文档绝对路径>"})
+#
+# [browser-cdp 依赖清理] 本 workflow 原来依赖 .claude/skills/browser-cdp/
+# skill（search_zhihu 步骤是挂载它的 skill_agent，enrich_questions 步骤 sys.path
+# 注入它的 cdp_client 模块）。browser-cdp 即将从项目中移除，本 workflow 已把
+# 实际用到的那一小部分 CDP 收发/搜索/登录启动逻辑原样搬进本目录下的
+# steps/_cdp_client.py、steps/02_search_zhihu.py、
+# steps/launch_zhihu_logged_in.py，不再依赖 .claude/skills/ 下任何目录，
+# 也不再需要挂载任何 skill。
 #
 # [修复记录] python_step 的 `step.params` 字段是纯字面量透传（executors.py::
 # PythonStepExecutor.execute 直接 `step.params or {}` 序列化给子进程），不会
@@ -65,16 +75,24 @@ steps:
     retry_on_error: 1
 
   - id: search_zhihu
-    type: skill_agent
-    skill_name: browser-cdp
-    prompt_file: prompts/02_search_zhihu.md
+    # [browser-cdp 依赖清理] 原来是 skill_agent（挂载 browser-cdp skill，让
+    # LLM 子agent自己决定怎么调用其搜索脚本）。实际搜索逻辑是确定性的
+    # （给定关键词 -> 打开知乎搜索页 -> 滚动加载 -> 提取结果），不需要每次
+    # 都走一轮 LLM 决策，改成 python_step 直接跑 steps/02_search_zhihu.py，
+    # 不再依赖 browser-cdp、也更快更稳定（跟 enrich_questions 当年从
+    # skill_agent 改 python_step 是同一个理由）。
+    type: python_step
+    script_path: steps/02_search_zhihu.py
     depends_on: [analyze_doc]
-    output_file: search_results.json      # 仍保留：runner 事后转录的对话原文存档，供人工排查
-    result_file: search_results_data.json # [skill_agent 结果文件契约] 真正被下游消费的结构化产物，
-                                           # 由 agent 亲手用文件工具写入，runner 校验通过才算该步骤成功
-    result_file_required_keys: [questions]
-    max_turns: 25
+    output_file: search_results_data.json
+    params:
+      cdp_port: 9336                # 对应 launch_zhihu_logged_in.py 起的已登录实例
+      min_results: 30
+      max_results: 60
+      max_scrolls: 12
+      scroll_pause: 3.0
     timeout: 900
+    retry_on_error: 1
 
   - id: filter_questions
     type: python_step
