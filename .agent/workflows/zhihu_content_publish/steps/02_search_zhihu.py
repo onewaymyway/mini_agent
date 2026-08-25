@@ -31,7 +31,13 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _cdp_client import list_tabs, connect_tab, CDPError  # noqa: E402
+from _cdp_client import (  # noqa: E402
+    list_tabs,
+    connect_tab,
+    CDPError,
+    CDPPortNotListeningError,
+    CDPNoTabsError,
+)
 
 DEFAULT_PORT = 9336
 DEFAULT_MIN_RESULTS = 30
@@ -81,16 +87,56 @@ _SCROLL_JS = r"""
 """
 
 
+_LAUNCH_HINT = (
+    "请先运行 steps/launch_zhihu_logged_in.py 启动已登录知乎的浏览器实例"
+    "（固定调试端口 9336），完成登录后再重新执行/续跑本 workflow"
+    "（resume_workflow_run）。"
+)
+
+
 def _get_zhihu_session(port: int):
     """找一个已经打开着 zhihu.com 的 tab 并连接，供本轮所有关键词复用同一个
-    tab 做 goto，不为每个关键词都新开一个 tab。"""
-    tabs = list_tabs(port=port)
+    tab 做 goto，不为每个关键词都新开一个 tab。
+
+    这里刻意把"知乎场景下该怎么办"（remediation 文案、error_code 前缀）
+    留在本文件补充，而不是让通用的 `_cdp_client.py` 知道"知乎"这件事——
+    同一个 CDP 客户端以后完全可能被别的网站/workflow 复用。
+    """
+    try:
+        tabs = list_tabs(port=port)
+    except CDPPortNotListeningError as e:
+        # 端口都没监听：浏览器实例大概率根本没启动，这是最常见的一类情况，
+        # 也是最容易被 requests.exceptions.ConnectionError/WinError 10061
+        # 这类底层网络异常淹没、导致读者（人类或 agent）猜错根因的情况。
+        e.error_code = f"ZHIHU_SEARCH_{e.error_code}"  # -> ZHIHU_SEARCH_CDP_PORT_NOT_LISTENING
+        e.remediation = f"CDP 端口 {port} 未监听，知乎浏览器实例大概率没有启动。{_LAUNCH_HINT}"
+        raise
+
     if not tabs:
-        raise RuntimeError(
-            f"CDP 端口 {port} 上没有找到任何 tab，请先运行 "
-            "steps/launch_zhihu_logged_in.py 启动已登录知乎的浏览器实例"
+        err = CDPNoTabsError(host="127.0.0.1", port=port)
+        err.error_code = f"ZHIHU_SEARCH_{err.error_code}"  # -> ZHIHU_SEARCH_CDP_NO_TABS
+        err.remediation = (
+            f"CDP 端口 {port} 已监听，但没有任何打开的 tab（浏览器可能被手动关闭）。{_LAUNCH_HINT}"
         )
-    target = next((t for t in tabs if "zhihu.com" in (t.get("url") or "")), None) or tabs[0]
+        raise err
+
+    target = next((t for t in tabs if "zhihu.com" in (t.get("url") or "")), None)
+    if target is None:
+        # 端口通、有 tab，但没有一个是知乎——原来这里是 `... or tabs[0]`，
+        # 会悄悄拿一个不相关的 tab 继续跑，不会立刻报错，而是在后面
+        # goto/抓取阶段产出一堆莫名其妙的空结果，比直接报错更难排查。
+        err = RuntimeError(
+            f"CDP 端口 {port} 有 {len(tabs)} 个 tab，但没有一个是 zhihu.com"
+            f"（当前 tab: {[t.get('url') for t in tabs]}）。"
+            f"登录会话可能已失效，或该浏览器实例被导航去了别的页面。"
+        )
+        err.error_code = "ZHIHU_SEARCH_NO_ZHIHU_TAB"
+        err.remediation = (
+            "请在 launch_zhihu_logged_in.py 启动的浏览器实例中手动打开 zhihu.com "
+            "并确认登录状态，再重新执行/续跑本 workflow。"
+        )
+        raise err
+
     session = connect_tab(target, port=port)
     for domain in ("Page", "Runtime"):
         try:

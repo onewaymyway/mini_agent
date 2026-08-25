@@ -1435,6 +1435,21 @@ class WorkflowRunner:
             if sr.error_type in _STRUCTURAL_ERROR_TYPES:
                 sr.status = StepStatus.NEEDS_FIX
                 break
+            # [人工前置条件缺失] 有些失败不是"配置写错了"（NEEDS_FIX 的本意），
+            # 也不是网络抖动之类的瞬时故障（重试可能有用），而是依赖了一个
+            # 需要真人去做的前置动作（比如启动并登录一个浏览器实例）——重试
+            # 在几秒/几十秒内大概率不会自愈，白白消耗 retry_on_error 预算。
+            # 这类错误由具体 step 脚本通过给异常挂 `.error_code` 标记，本文件
+            # 不假设任何具体网站/业务的 error_code 取值，只按一个通用约定
+            # 识别："需要人工介入"类错误码里带有 remediation 字段。
+            if sr.context.get("remediation") and sr.context.get("error_code"):
+                sr.status = StepStatus.NEEDS_FIX
+                R.print_warning(
+                    f"[Workflow] 🧑 步骤 {step.id} 需要人工介入"
+                    f"（error_code={sr.context.get('error_code')}），"
+                    f"跳过剩余重试预算。建议：{sr.context.get('remediation')}"
+                )
+                break
             # [workflow_mechanism_improvement_plan_p10.md §3] 看护趋势感知：
             # 把这次失败上报给 watchdog，若同一 step 连续（中间没有成功）
             # 达到 escalate_threshold 次同一 error_type，视为"大概率不是瞬时
@@ -1631,13 +1646,31 @@ class WorkflowRunner:
         except Exception as e:
             from mini_agent.errors import log_exception
             log_exception(e, where='mini_agent.workflow.runner.WorkflowRunner._execute_step')
+            # [error_code/remediation 透传] python_step 子进程内实际抛出的异常
+            # 类型/结构化诊断信息，由 executors.py::PythonStepExecutor 挂在了
+            # 外层 RuntimeError 的 inner_error_type/error_code/remediation 属性
+            # 上（其它 step 类型的异常没有这些属性，getattr 兜底为 None，行为
+            # 不变）。这里优先用它们，避免所有 python_step 失败的 error_type
+            # 都被冲成同一个 "RuntimeError"，导致 _STRUCTURAL_ERROR_TYPES /
+            # escalate_after_n_same_failures 这类按类型做的分类形同虚设。
+            error_type = getattr(e, "inner_error_type", None) or type(e).__name__
+            error_code = getattr(e, "error_code", None)
+            remediation = getattr(e, "remediation", None)
+            # inner_traceback 是子进程内真实的堆栈（更贴近根因），有就优先用；
+            # 没有就退回本进程这里抓到的 traceback（比如非 python_step 类型）。
+            step_traceback = getattr(e, "inner_traceback", None) or _traceback.format_exc()
+            context = self._build_error_context(step, resolved_prompt)
+            if error_code:
+                context["error_code"] = error_code
+            if remediation:
+                context["remediation"] = remediation
             return StepResult(
                 step_id=step.id,
                 status=StepStatus.FAILED,
                 error=str(e),
-                error_type=type(e).__name__,
-                traceback=_traceback.format_exc(),
-                context=self._build_error_context(step, resolved_prompt),
+                error_type=error_type,
+                traceback=step_traceback,
+                context=context,
                 duration_seconds=time.monotonic() - t_start,
                 debug_log=dict(getattr(self, "_last_subprocess_debug", None) or {}),
                 agent_sessions=list(getattr(self, "_last_step_agent_sessions", None) or []),

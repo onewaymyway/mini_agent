@@ -748,6 +748,14 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             if sr.status in _error_statuses and sr.error:
                 hint = "（这是定义/配置问题，重跑无效，请先用 patch_workflow_step 修改后再 force_rerun_from 续跑）" if sr.status == StepStatus.NEEDS_FIX else ""
                 lines.append(f"  ⚠️ {sr.error_type or 'Error'}: {sr.error}{hint}")
+                # [error_code/remediation] 步骤脚本可以给异常挂 error_code/
+                # remediation（见 workflow/py_step_runner.py 顶部说明），
+                # _execute_step 会原样写进 context——这两项是专门为"不用读
+                # 完整 traceback 就能决定下一步动作"设计的，默认（非 verbose）
+                # 就展示，不用等 verbose=True 才能看到。
+                if sr.context.get("remediation"):
+                    code_str = f"[{sr.context['error_code']}] " if sr.context.get("error_code") else ""
+                    lines.append(f"  💡 {code_str}建议：{sr.context['remediation']}")
                 if verbose:
                     if sr.traceback:
                         lines.append(f"  ```\n{sr.traceback}\n  ```")

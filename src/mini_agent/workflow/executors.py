@@ -640,12 +640,23 @@ class PythonStepExecutor(StepExecutor):
                 result = {}
 
             if returncode != 0 or not result.get("ok"):
-                raise RuntimeError(
-                    f"python_step 执行失败（returncode={returncode}）：\n"
-                    f"error: {result.get('error')}\n"
-                    f"traceback: {result.get('traceback')}\n"
-                    f"stdout: {stdout_text}\nstderr: {stderr_text}"
+                # [error_code/remediation 透传] 之前这里无论子进程内实际抛的是
+                # 什么异常类型，一律包成一个新的 RuntimeError——外层拿到的
+                # error_type 永远是 "RuntimeError"，导致 runner.py 里按
+                # error_type 做的分类（_STRUCTURAL_ERROR_TYPES、
+                # escalate_after_n_same_failures 等）对 python_step 形同虚设。
+                # 这里改成：消息正文只保留 error 摘要（完整 traceback 单独走
+                # inner_traceback，不在消息字符串里重复一遍），并把子进程真实
+                # 的 error_type/error_code/remediation 挂到异常对象属性上，
+                # 供 _execute_step 构造 StepResult 时使用。
+                err = RuntimeError(
+                    f"python_step 执行失败（returncode={returncode}）：{result.get('error')}"
                 )
+                err.inner_error_type = result.get("error_type")
+                err.inner_traceback = result.get("traceback")
+                err.error_code = result.get("error_code")
+                err.remediation = result.get("remediation")
+                raise err
             return result.get("output", "")
 
 

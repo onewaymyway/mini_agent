@@ -50,8 +50,45 @@ class CDPError(RuntimeError):
     pass
 
 
+class CDPPortNotListeningError(CDPError):
+    """CDP 调试端口没有任何进程在监听（连接被拒绝）。
+
+    只描述"通用 CDP 客户端"能观察到的事实——端口连不上，不对"应该是谁在
+    监听、该怎么启动它"做任何假设。这两件事是调用方（具体某个 workflow
+    的某个 step）才知道的场景信息，调用方捕获本异常后应自行补充
+    `remediation`（人类可读的下一步建议）和更具体的 `error_code` 前缀，
+    不要在本文件里硬编码任何具体网站/业务的名字。
+    """
+
+    def __init__(self, host: str, port: int):
+        super().__init__(f"CDP 端口 {host}:{port} 未监听（连接被拒绝）")
+        self.error_code = "CDP_PORT_NOT_LISTENING"
+        self.host = host
+        self.port = port
+        self.remediation: Optional[str] = None
+
+
+class CDPNoTabsError(CDPError):
+    """CDP 端口已监听，但没有任何 `type == "page"` 的 target（tab）。"""
+
+    def __init__(self, host: str, port: int):
+        super().__init__(f"CDP 端口 {host}:{port} 已监听，但没有找到任何 tab")
+        self.error_code = "CDP_NO_TABS"
+        self.host = host
+        self.port = port
+        self.remediation: Optional[str] = None
+
+
 def list_tabs(host: str = DEFAULT_HOST, port: int = 9336) -> list[dict]:
-    resp = requests.get(f"http://{host}:{port}/json/list", timeout=5.0)
+    try:
+        resp = requests.get(f"http://{host}:{port}/json/list", timeout=5.0)
+    except requests.exceptions.ConnectionError as e:
+        # 端口连不上是最常见、也最容易被上层 traceback 淹没的一类失败——
+        # 原始的 requests.exceptions.ConnectionError/WinError 10061 这类
+        # 底层网络异常对读者（人类或 agent）没有直接的行动指引，这里转成
+        # 一个带 error_code 的专用异常，方便上层按 error_code 做分类/给出
+        # remediation，而不必解析 traceback 文本。
+        raise CDPPortNotListeningError(host, port) from e
     resp.raise_for_status()
     targets = resp.json()
     return [t for t in targets if t.get("type") == "page"]

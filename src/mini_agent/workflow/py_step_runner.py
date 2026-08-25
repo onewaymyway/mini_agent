@@ -17,7 +17,16 @@ workflow/py_step_runner.py — python_step 子进程侧入口
 
 约定的结果包格式（stdout 最后一行，单行 JSON）：
   {"ok": true, "output": "...", "output_is_json": false}
-  {"ok": false, "error": "...", "error_type": "ValueError", "traceback": "..."}
+  {"ok": false, "error": "...", "error_type": "ValueError", "traceback": "...",
+   "error_code": null, "remediation": null}
+
+`error_code`/`remediation` 是可选的结构化诊断字段：脚本 raise 的异常如果
+带有 `.error_code`（机器可读、跨重跑稳定的短字符串，如
+"ZHIHU_SEARCH_CDP_PORT_NOT_LISTENING"）和/或 `.remediation`（人类可读的
+下一步建议），这里会原样透传到结果包，再经 executors.py::PythonStepExecutor
+挂到异常对象上、最终写进 StepResult.context，供 workflow 引擎按 error_code
+做分类（比如判断是否值得重试）、供主 agent 或人类直接读 remediation 决定
+下一步动作，不必每次都从一大段 traceback 里现场推理根因。
 
 脚本内部如果想输出调试信息，用 print() 到 stdout 也没关系——父进程按
 "最后一行是结果包，之前的行是普通日志"来解析，不是逐行 JSON。
@@ -157,6 +166,10 @@ def main() -> int:
             "error": str(e),
             "error_type": type(e).__name__,
             "traceback": traceback.format_exc(),
+            # 可选结构化诊断字段，见本文件顶部说明；脚本没有设置就是 None，
+            # 不影响任何现有脚本的行为。
+            "error_code": getattr(e, "error_code", None),
+            "remediation": getattr(e, "remediation", None),
         }, ensure_ascii=False))
         return 1
 
