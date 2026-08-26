@@ -395,11 +395,11 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 
 | 命令 | 说明 |
 |------|------|
-| `/commit-guard` 或 `/commit-guard status` | 显示开关状态、配置摘要、账本统计（已记账/待核对/已确认撤销数量） |
+| `/commit-guard` 或 `/commit-guard status` | 显示开关状态、配置摘要、账本统计（已记账 / 待首次核对 pending / 复查窗口内 rechecking / 已确认撤销 undone 数量） |
 | `/commit-guard on` / `/commit-guard off` | 打开/关闭总开关（写回 `agent_commit_guard_config.json`，**默认开启**） |
-| `/commit-guard scan` | 立即核对一次账本里未确认的 commit 是否已被撤销（忽略机会性节流间隔），命中即写入 `source="revert_record"` lesson |
+| `/commit-guard scan` | 立即核对一次账本里未结案（含仍在复查窗口内）的 commit 是否已被撤销（忽略机会性节流间隔），命中即写入 `source="revert_record"` lesson |
 | `/commit-guard install-hooks [repo]` | 在指定仓库（默认当前项目）`.git/hooks/` 下安装 `post-checkout`/`post-merge`/`post-rewrite` 哨兵 hook（只 touch 空文件，不采集/不上报内容） |
-| `/commit-guard ledger [n]` | 查看账本最近 n 条记录（默认 20），标注 pending/resolved/undone 状态 |
+| `/commit-guard ledger [n]` | 查看账本最近 n 条记录（默认 20），标注 pending/rechecking/resolved/undone 状态（`resolved` 才是真正结案，`rechecking` 是复查窗口内的当前判断，之后可能翻成 `undone`；详见 [agent commit guard 指南](agent-commit-guard-guide.md)） |
 | `/commit-guard clear` | 清空账本文件（不影响已经生成的 lesson/reminder） |
 
 （`src/mini_agent/cli/commands/evolution.py` / `evolve.py`）

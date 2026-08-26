@@ -34,6 +34,16 @@ perception/agent_commit_guard.py — agent 自动 commit 撤销感知与前瞻�
     参照 `auto_quarantine.py` 的接入方式（默认开启、失败静默、不阻塞
     主流程）。
   - 任何一步失败都只警告，不影响原有 git 操作/agent 主流程。
+  - "核对过一次=永久结案"是错的：如果一条记录第一次被核对时"仍在历史
+    里"就直接永久冻结（不再复查），会漏掉"核对之后才发生的撤销"这个
+    典型场景——机会性节流核对几乎总是在 commit 之后很快就跑一次，
+    先于用户随后手动 `reset` 的时间点，导致"用户之后在终端 reset"这个
+    本应是核心场景的情况反而测不到。所以"仍在历史里"这个结论只是
+    `resolved=True` 的"当前判断"，不是终态：只要还在 `RECHECK_WINDOW_SEC`
+    （commit 后 3 天）复查窗口内、且未达 `MAX_RECHECK_COUNT` 复查次数
+    上限，就会被 `CommitLedger.recheckable()` 继续选中复查；`undone=True`
+    才是真正的终态，一旦确认立即冻结，不会再翻回去。窗口过期后也会
+    结案（`LedgerEntry.is_finalized()`），避免账本无限复查/无限增长。
 """
 
 from __future__ import annotations
@@ -57,6 +67,13 @@ _GIT_UNDO_RE = re.compile(
 )
 
 _DEFAULT_SCAN_INTERVAL_SEC = 600.0  # 机会性检查节流间隔（10 分钟）
+
+# 一条记录被核对到"仍在历史里"之后，不会立即永久冻结（resolved=True 不再
+# 代表终态），而是在 commit 后的这段时间内持续被机会性/SessionStart 扫描
+# 复查，覆盖"用户在 agent 会话外、核对窗口之后才手动 reset"这种滞后撤销
+# 场景。窗口过后才真正冻结（不再复查），避免账本无限增长/无限复查。
+RECHECK_WINDOW_SEC = 3 * 24 * 3600.0  # commit 后 3 天内持续复查
+MAX_RECHECK_COUNT = 50                # 兜底：极端情况下也不无限复查
 
 
 # ── 配置 ──────────────────────────────────────────────────────────────────
@@ -119,9 +136,27 @@ class LedgerEntry:
     subject: str = ""
     session_id: str = ""
     created_at: float = field(default_factory=time.time)
-    resolved: bool = False           # True = 已经核对过（无论是"仍在"还是"已撤销"）
-    undone: bool = False             # True = 确认被撤销
+    resolved: bool = False           # True = 已经"结案"（不再被复查）；语义见下
+    undone: bool = False             # True = 确认被撤销（终态，一旦置真不会再翻回去）
     resolved_at: float = 0.0
+    last_checked_at: float = 0.0     # 最近一次核对时间（用于判断是否还在复查窗口内）
+    checked_count: int = 0           # 已核对次数（用于 MAX_RECHECK_COUNT 兜底）
+
+    def is_finalized(self, now: Optional[float] = None) -> bool:
+        """是否已经真正结案（不会再被 scan_for_undo 复查）。
+
+        `undone=True` 一旦确认就是终态，立即结案；`undone=False` 时
+        `resolved=True` 不再代表永久结案，只有超过 RECHECK_WINDOW_SEC
+        复查窗口（或达到 MAX_RECHECK_COUNT 复查次数上限）才算真正结案。
+        """
+        if not self.resolved:
+            return False
+        if self.undone:
+            return True
+        now = now if now is not None else time.time()
+        if self.checked_count >= MAX_RECHECK_COUNT:
+            return True
+        return (now - self.created_at) >= RECHECK_WINDOW_SEC
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -172,15 +207,15 @@ class CommitLedger:
         self._maybe_compact(max_pending)
 
     def _maybe_compact(self, max_pending: int) -> None:
-        """未确认（resolved=False）条目超过上限时，丢弃最旧的一批，避免无界增长。
-        已确认的条目本身价值有限（只是审计用），顺手也裁掉过老的，保持文件不膨胀。
+        """未结案（未 finalize）条目超过上限时，丢弃最旧的一批，避免无界增长。
+        已结案的条目本身价值有限（只是审计用），顺手也裁掉过老的，保持文件不膨胀。
         """
         entries = self.load_all()
-        pending = [e for e in entries if not e.resolved]
-        if len(pending) <= max_pending:
+        active = [e for e in entries if not e.is_finalized()]
+        if len(active) <= max_pending:
             return
-        pending.sort(key=lambda e: e.created_at)
-        drop = set(id(e) for e in pending[: len(pending) - max_pending])
+        active.sort(key=lambda e: e.created_at)
+        drop = set(id(e) for e in active[: len(active) - max_pending])
         kept = [e for e in entries if id(e) not in drop]
         self._rewrite(kept)
 
@@ -191,20 +226,42 @@ class CommitLedger:
                 f.write(json.dumps(e.to_dict(), ensure_ascii=False) + "\n")
         tmp.replace(self.path)
 
-    def mark_resolved(self, commit_hash: str, undone: bool) -> None:
+    def mark_checked(self, commit_hash: str, undone: bool) -> None:
+        """记录一次核对结果。
+
+        `undone=True`：立即置为终态（`resolved=True, undone=True`），
+        不会再被复查。
+        `undone=False`（"仍在历史里"）：置 `resolved=True` 但不代表永久
+        结案，只是记录"当前判断"——只要还在 `RECHECK_WINDOW_SEC` 复查窗口
+        内（且未达 `MAX_RECHECK_COUNT`），仍会被 `recheckable()` 选中继续
+        复查；一旦某次复查中发现被撤销了，`undone` 会翻成 `True` 并立即
+        终态化。
+        """
         entries = self.load_all()
+        now = time.time()
         changed = False
         for e in entries:
-            if e.commit_hash == commit_hash and not e.resolved:
+            if e.commit_hash == commit_hash and not e.is_finalized(now):
                 e.resolved = True
                 e.undone = undone
-                e.resolved_at = time.time()
+                e.resolved_at = now
+                e.last_checked_at = now
+                e.checked_count += 1
                 changed = True
         if changed:
             self._rewrite(entries)
 
     def pending(self) -> list[LedgerEntry]:
+        """未曾核对过的记录（`resolved=False`）。"""
         return [e for e in self.load_all() if not e.resolved]
+
+    def recheckable(self) -> list[LedgerEntry]:
+        """本次 scan 应该核对的记录：从未核对过的，加上仍在复查窗口内、
+        还没被确认撤销的已核对记录。真正结案（`is_finalized()`）的记录
+        不会再出现在这里。
+        """
+        now = time.time()
+        return [e for e in self.load_all() if not e.is_finalized(now)]
 
 
 # ── git 命令识别 ─────────────────────────────────────────────────────────
@@ -298,13 +355,16 @@ class UndoEvent:
 
 
 def scan_for_undo(project_root: Path, cfg: Optional[AgentCommitGuardConfig] = None, via: str = "ancestor_check") -> list:
-    """核对账本里所有未确认的 commit，返回本次新确认的撤销事件列表。
+    """核对账本里所有"未结案"的 commit，返回本次新确认的撤销事件列表。
 
-    对每条 pending 记录做 `merge-base --is-ancestor`：
-      - True  → 仍在当前分支历史里，标记 resolved=True, undone=False
-      - False → 已被 reset/rebase/amend 挤出历史，标记 undone=True，
-                作为一次 UndoEvent 返回
-      - None（无法判断，如已经不是 git 仓库） → 保持 pending，跳过
+    对每条 `recheckable()` 记录（从未核对过的 + 仍在复查窗口内、尚未
+    确认撤销的已核对记录）做 `merge-base --is-ancestor`：
+      - True  → 仍在当前分支历史里，标记 resolved=True, undone=False。
+                这不是永久结案——只要还在 `RECHECK_WINDOW_SEC` 复查窗口
+                内，下次 scan 还会再核对一次，直到窗口过期或确认撤销。
+      - False → 已被 reset/rebase/amend 挤出历史，标记 undone=True
+                （终态，不会再复查），作为一次 UndoEvent 返回。
+      - None（无法判断，如已经不是 git 仓库） → 保持原状，跳过
     """
     cfg = cfg or load_config(project_root)
     if not cfg.enabled:
@@ -312,11 +372,11 @@ def scan_for_undo(project_root: Path, cfg: Optional[AgentCommitGuardConfig] = No
     events: list = []
     try:
         ledger = CommitLedger(project_root)
-        for entry in ledger.pending():
+        for entry in ledger.recheckable():
             ancestor = _is_ancestor(project_root, entry.commit_hash)
             if ancestor is None:
                 continue
-            ledger.mark_resolved(entry.commit_hash, undone=not ancestor)
+            ledger.mark_checked(entry.commit_hash, undone=not ancestor)
             if not ancestor:
                 events.append(UndoEvent(
                     commit_hash=entry.commit_hash,

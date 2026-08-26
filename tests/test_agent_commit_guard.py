@@ -153,6 +153,68 @@ def test_on_bash_post_tool_end_to_end(repo):
     assert sink.entries[0].source == "revert_record"
 
 
+def test_recheck_window_catches_later_undo(repo, monkeypatch):
+    """修复回归测试：第一次核对判定"仍在历史里"之后不应永久冻结——
+    如果撤销发生在第一次机会性核对之后（复查窗口内），下一次 scan
+    应该仍然能发现它。"""
+    (repo / "d.txt").write_text("later undo")
+    _git(repo, "add", "d.txt")
+    _git(repo, "commit", "-q", "-m", "will be reset later")
+    guard.record_agent_commit(repo, session_id="s1")
+
+    ledger = guard.CommitLedger(repo)
+    committed_hash = ledger.pending()[0].commit_hash
+
+    # 第一次核对：这时还没做任何撤销操作，应该判定"仍在历史里"
+    assert guard.scan_for_undo(repo) == []
+    entry = ledger.load_all()[0]
+    assert entry.resolved is True
+    assert entry.undone is False
+    assert entry.checked_count == 1
+    # 还在复查窗口内，不是终态
+    assert entry.is_finalized() is False
+    assert entry.commit_hash == committed_hash
+
+    # 用户这时候才在终端里 reset 掉
+    _git(repo, "reset", "--hard", "HEAD~1")
+
+    # 复查窗口内的下一次 scan 应该能抓到这次滞后的撤销
+    events = guard.scan_for_undo(repo)
+    assert len(events) == 1
+    assert events[0].commit_hash == committed_hash
+    entry = ledger.load_all()[0]
+    assert entry.undone is True
+    assert entry.is_finalized() is True
+
+    # undone 是终态，再跑一次不会再产生事件
+    assert guard.scan_for_undo(repo) == []
+
+
+def test_recheck_window_expires_and_finalizes(repo, monkeypatch):
+    """超过复查窗口之后，"仍在历史里"的记录应该真正结案，不再被复查
+    （即使之后真的被撤销也检测不到——这是窗口机制刻意的取舍）。"""
+    (repo / "e.txt").write_text("stale")
+    _git(repo, "add", "e.txt")
+    _git(repo, "commit", "-q", "-m", "stale commit")
+    guard.record_agent_commit(repo, session_id="s1")
+
+    assert guard.scan_for_undo(repo) == []
+    ledger = guard.CommitLedger(repo)
+    entry = ledger.load_all()[0]
+    assert entry.is_finalized() is False
+
+    # 模拟已经过了复查窗口
+    future = entry.created_at + guard.RECHECK_WINDOW_SEC + 1
+    assert entry.is_finalized(now=future) is True
+
+    _git(repo, "reset", "--hard", "HEAD~1")
+    monkeypatch.setattr(guard.time, "time", lambda: future)
+    assert len(ledger.recheckable()) == 0
+
+    # 窗口过期后，scan_for_undo 不会再去核对这条记录（即使此刻它已被 reset 掉）
+    assert guard.scan_for_undo(repo) == []
+
+
 def test_disabled_config_short_circuits(repo):
     guard.save_config(guard.AgentCommitGuardConfig(enabled=False), repo)
     guard.record_agent_commit(repo, session_id="s1")

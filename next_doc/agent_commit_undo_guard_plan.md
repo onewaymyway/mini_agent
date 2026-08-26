@@ -184,3 +184,35 @@ SessionStart / 每隔一段时间的机会性检查 ─────────�
   `docs/self-evolution-stage2-guide.md` §6.1（均说明 `revert_record`
   现在由 `record_undo_lesson()` 一份实现同时服务两个场景）。本文档
   （`next_doc/`）不删除、不搬空，继续作为设计考古记录保留。
+- 2026-08-26：**修复 bug**——`scan_for_undo()` 原实现里，一条记录只要
+  被核对过一次（`resolved=True`）就永久冻结，之后不管发生什么撤销都
+  不会再被复查。而机会性节流核对几乎总是在 commit 之后很快就跑一次
+  （下一次 bash 调用大概率紧随其后），那时候用户还没来得及做任何撤销
+  操作，于是几乎所有记录都会在"用户真正 reset 之前"就被判定"仍在历史
+  里"并永久冻结，导致本方案最核心的场景（"用户在 agent 会话外、之后
+  才手动 reset"）反而几乎测不到。改动：
+    - `LedgerEntry` 新增 `last_checked_at`/`checked_count` 字段 +
+      `is_finalized()` 方法：`undone=True` 才是终态，`resolved=True`
+      且 `undone=False` 只代表"当前判断"，在 `RECHECK_WINDOW_SEC`
+      （3 天）复查窗口内、且 `checked_count < MAX_RECHECK_COUNT`
+      （50）时都不算真正结案。
+    - `CommitLedger.mark_resolved()` 重命名/重实现为 `mark_checked()`
+      （语义从"标记永久结案"改为"记录一次核对结果，是否结案由
+      `is_finalized()` 判断"）；新增 `recheckable()`（取代 `scan_for_undo`
+      里原来直接用的 `pending()`），返回"从未核对过的 + 仍在复查窗口内
+      未结案的"记录集合。`pending()` 保留，语义不变（仅"从未核对过"）。
+    - `scan_for_undo()` 改为遍历 `ledger.recheckable()` 并调用
+      `mark_checked()`。
+    - `/commit-guard status` 新增 `rechecking` 计数；`/commit-guard
+      ledger` 新增 `rechecking` 状态（区分"复查窗口内的当前判断"和
+      "窗口已过期的真正结案"）。
+    - `CommitLedger._maybe_compact()` 的账本上限判断从"未 resolved"
+      改为"未 is_finalized()"，避免复查窗口内的记录被误当作"已结案"
+      提前裁剪掉导致复查中断。
+    - 新增回归测试 `test_recheck_window_catches_later_undo`（验证滞后
+      撤销能被复查抓到）和 `test_recheck_window_expires_and_finalizes`
+      （验证窗口过期后不再复查）。
+    - 同步更新了本文档、`docs/agent-commit-guard-guide.md`
+      （§2 流程说明 + 新增"核对一次≠永久结案"小节 + §4 配置表补充两个
+      模块常量 + §5 命令表 + §6 数据字段 + §8 已知限制新增"复查窗口
+      过期后仍测不到"一条）。

@@ -113,11 +113,21 @@ def handle_commit_guard_cmd(args: list[str], agent=None) -> None:
             return
         import time as _time
         for e in entries:
-            state = "undone" if e.undone else ("resolved" if e.resolved else "pending")
-            color = {"undone": "red", "resolved": "green", "pending": "yellow"}[state]
+            if e.undone:
+                state = "undone"
+            elif not e.resolved:
+                state = "pending"
+            elif not e.is_finalized():
+                state = "rechecking"
+            else:
+                state = "resolved"
+            color = {
+                "undone": "red", "resolved": "green",
+                "pending": "yellow", "rechecking": "cyan",
+            }[state]
             date_str = _time.strftime("%Y-%m-%d %H:%M", _time.localtime(e.created_at))
             R.console.print(
-                f"  [{color}]{state:<8}[/{color}] {e.commit_hash[:8]}  {date_str}  "
+                f"  [{color}]{state:<10}[/{color}] {e.commit_hash[:8]}  {date_str}  "
                 f"{e.subject or '(no subject)'}"
             )
         return
@@ -126,6 +136,7 @@ def handle_commit_guard_cmd(args: list[str], agent=None) -> None:
     cfg = guard.load_config(root)
     all_entries = guard.CommitLedger(root).load_all()
     pending = [e for e in all_entries if not e.resolved]
+    rechecking = [e for e in all_entries if e.resolved and not e.undone and not e.is_finalized()]
     undone = [e for e in all_entries if e.undone]
 
     R.console.print("\n[bold]Agent Commit Guard[/bold]")
@@ -135,7 +146,10 @@ def handle_commit_guard_cmd(args: list[str], agent=None) -> None:
     )
     R.console.print(f"  Config file         : {root}/agent_commit_guard_config.json")
     R.console.print(f"  Ledger file         : {guard._ledger_path(root)}")
-    R.console.print(f"  Total commits logged: {len(all_entries)}  (pending: {len(pending)}, undone: {len(undone)})")
+    R.console.print(
+        f"  Total commits logged: {len(all_entries)}  "
+        f"(pending: {len(pending)}, rechecking: {len(rechecking)}, undone: {len(undone)})"
+    )
     R.console.print(
         f"  Immediate undo check: {'on' if cfg.immediate_undo_check else 'off'}  "
         f"Opportunistic scan  : {'on' if cfg.opportunistic_scan_enabled else 'off'} "
