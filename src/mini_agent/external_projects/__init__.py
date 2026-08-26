@@ -14,6 +14,12 @@ mini_agent/external_projects — 外部项目契约、注册表与调度支持
 
 状态账本（`run_status.jsonl` 读写、聚合视图）见 `ledger.py`（读写）与
 `status.py`（健康检查探测 + 聚合），对应阶段 4。
+
+`maintenance.py`（阶段 5）：以某个外部项目自己的目录为根，复用
+`evolution/state_repo.py`/`evolution/workspace.py` 的 git worktree
+隔离 + 提案验证机制，触发一次独立的维护改动尝试（原则四"深度介入走
+触发一次独立运行，不是 in-process 直接操作"）。供 `tools/
+external_projects.py` 的 `propose_fix` 工具调用。
 """
 
 from mini_agent.external_projects.manifest import (
@@ -32,6 +38,12 @@ from mini_agent.external_projects.status import (
     probe_health,
     project_status_snapshot,
 )
+from mini_agent.external_projects.maintenance import (
+    MaintenanceError,
+    MaintenanceProposalResult,
+    land_maintenance_fix,
+    propose_maintenance_fix,
+)
 
 __all__ = [
     "EntrypointSpec",
@@ -49,4 +61,8 @@ __all__ = [
     "aggregate_status",
     "probe_health",
     "project_status_snapshot",
+    "MaintenanceError",
+    "MaintenanceProposalResult",
+    "propose_maintenance_fix",
+    "land_maintenance_fix",
 ]

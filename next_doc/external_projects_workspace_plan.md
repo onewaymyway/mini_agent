@@ -432,15 +432,44 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
       抛异常中断调用方）
 
 ### 阶段 5：维护类交互标准化（大管家能力）
-- [ ] 设计"以目标外部项目 `Workspace` 为根触发独立运行"的标准调用
+- [x] 设计"以目标外部项目 `Workspace` 为根触发独立运行"的标准调用
       方式，复用 self-evolution 现有的 git worktree 隔离 + 提案验证
       落地流程，评估是否需要为"外部项目"场景做适配（外部项目未必是
       mini_agent 自身仓库的一部分，git worktree 是否适用需要先验证）
-- [ ] daemon 侧新增一组标准工具供大管家 agent 调用：`list_projects`
+      —— **评估结论**：`StateRepo`/`EvolutionWorkspace` 从设计上就
+      只依赖"传入的 root 是/能成为一个 git 仓库"，不假设 root 是
+      mini_agent 自身仓库的一部分（`StateRepo._ensure_initialized()`
+      在没有 `.git` 时会自动 `git init`），因此对外部项目开箱即用，
+      不需要任何适配层。新增 `external_projects/maintenance.py::
+      propose_maintenance_fix()`/`land_maintenance_fix()`，直接复用
+      这两个既有类，只是把"以外部项目自己的目录为根"这件事显式包一
+      层，不新增任何隔离逻辑；tier 默认改为 `T2`（lint + 目标项目自己
+      `tests/`，若有），而不是 `skill_propose` 固定用的 `T1`——`T1`
+      的"声明式资产加载校验"是针对 SKILL.md 等 mini_agent 特有资产
+      设计的，对外部项目的任意脚本文件不适用
+- [x] daemon 侧新增一组标准工具供大管家 agent 调用：`list_projects`
       `inspect_project`（读 manifest + 最近执行账本 + 日志）
       `trigger_run` `propose_fix`
-- [ ] 端到端验证：模拟"某个外部项目的抓取脚本因网站改版失效"场景，
+      —— 新增 `src/mini_agent/tools/external_projects.py`（4 个
+      `@tool`），仿照 `tools/evolution.py::skill_propose` 的
+      "JSON 字符串返回、失败不抛异常"约定；`list_projects`/
+      `inspect_project` 只读、`requires_approval=False`，`trigger_run`
+      会真的执行外部项目自己的代码，保留 `requires_approval=True`，
+      `propose_fix` 落在独立分支不影响当前 checkout、把关在校验流水线，
+      `requires_approval=False`（与 `skill_propose` 同一取舍）。在
+      `cli/app.py` 的内置工具 side-effect import 列表里新增一行接入
+- [x] 端到端验证：模拟"某个外部项目的抓取脚本因网站改版失效"场景，
       走完整的"发现问题 → 提案改动 → 验证 → 落地"链路
+      —— `tests/test_external_projects_maintenance.py::
+      test_propose_fix_tool_end_to_end_scrape_repair`：`trigger_run`
+      触发一个会抛异常的脚本（模拟失效）→ 账本记下失败、
+      `inspect_project` 读到 `health="unhealthy"` → `propose_fix`
+      提交修复到独立分支（当前 checkout 仍是坏的）→
+      `land_maintenance_fix()` 合并落地 → 再次 `trigger_run` 确认
+      `health="healthy"`。**范围说明**：这是单测层面对"整条链路"的
+      端到端验证（真实调用每个工具函数，不 mock 中间环节），不是接入
+      真实大管家 agent 会话的验证——后者要等阶段 6 有真实外部项目、
+      或明确需要时再做，避免为了"更真实"而引入不必要的测试基础设施
 
 ### 阶段 6：股票监控系统作为首个落地案例
 - [ ] 按第 5.1 节标准结构，在阶段 1～4 完成后（不需要等阶段 5）新建
@@ -470,6 +499,14 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
 - [x] 新增 `docs/external-projects-guide.md` — 功能"毕业"后的稳定使用
   指南（参照 `docs/agent-commit-guard-guide.md` 的文档分层模式，本
   `next_doc/` 文档保留作为设计考古记录）
+- [x] 新增 `src/mini_agent/external_projects/maintenance.py` —
+  `propose_maintenance_fix()`（复用 `EvolutionWorkspace` 的 git
+  worktree 隔离，在目标外部项目自己仓库的独立分支上尝试一次改动并
+  校验）、`land_maintenance_fix()`（人工 review 通过后合并分支）
+- [x] 新增 `src/mini_agent/tools/external_projects.py` — 大管家标准
+  工具集 `list_projects`/`inspect_project`/`trigger_run`/
+  `propose_fix`，在 `cli/app.py` 内置工具 side-effect import 列表里
+  新增一行接入
 - （案例）新增外部路径下的 `stock_watch/` 项目 — 不属于 mini_agent
   自身仓库，仅通过注册表关联
 
@@ -556,3 +593,34 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   优先取 `health_check` 结果而不是账本。daemon 主循环真正定时调用
   `run_due_entrypoints()`、以及第 5 节的"维护类交互标准化"（阶段 5）
   待开始。
+- 2026-08-26：阶段 5 完成。新增 `external_projects/maintenance.py`：
+  `propose_maintenance_fix()` 以目标外部项目**自己的目录**为根（不是
+  mini_agent 自身仓库），复用 `evolution/state_repo.py::StateRepo` +
+  `evolution/workspace.py::EvolutionWorkspace` 的 git worktree 隔离，
+  在独立 `evolve/<date>-fix-<slug>` 分支上尝试改动并按 tier 校验（默认
+  `T2`：lint 改动的 `.py` 文件 + 若目标项目自己有 `tests/` 则跑一遍），
+  校验失败不落盘、不 commit；`land_maintenance_fix()` 是显式的分支合并
+  （`StateRepo.merge_branch()` 薄封装），不由 `propose_maintenance_fix()`
+  自动调用，落地始终是独立动作（呼应原则四）。**评估结论**（阶段 5
+  第一项要求）：`StateRepo`/`EvolutionWorkspace` 从设计上就只依赖"传入
+  的 root 是/能成为一个 git 仓库"，不假设 root 是 mini_agent 自身仓库
+  的一部分（无 `.git` 时会自动 `git init`），因此对外部项目开箱即用，
+  不需要任何新的隔离逻辑或适配层。新增 `src/mini_agent/tools/
+  external_projects.py`：大管家标准工具集 `list_projects`/
+  `inspect_project`/`trigger_run`/`propose_fix`（`@tool` 装饰器注册，
+  仿照 `tools/evolution.py::skill_propose` 的"JSON 字符串返回、失败
+  不抛异常"约定；`trigger_run` 会真的执行外部项目自己的代码，保留
+  `requires_approval=True`，其余三个把关在只读或独立分支+校验流水线，
+  `requires_approval=False`），在 `cli/app.py` 内置工具 side-effect
+  import 列表新增一行接入。新增 `tests/test_external_projects_
+  maintenance.py`（11 用例：fresh-repo 自动 git init、分支与当前
+  checkout 隔离、校验失败不落盘不新增分支、`land_maintenance_fix`
+  合并、四个工具的独立单测、以及阶段 5 第三项要求的端到端场景——模拟
+  抓取脚本因网站改版失效：`trigger_run` 触发失败并记账 →
+  `inspect_project` 读到 `health="unhealthy"` → `propose_fix` 提交
+  修复到独立分支（当前 checkout 仍是坏的）→ `land_maintenance_fix`
+  落地 → 再次 `trigger_run` 确认 `health="healthy"`），全部通过；连同
+  阶段 3/4 测试共 100 用例全部通过，未引入回归。**范围说明**：端到端
+  验证是单测层面对整条链路的真实调用（不 mock 中间环节），不是接入
+  真实大管家 agent 会话的验证，后者留给阶段 6 有真实外部项目、或明确
+  需要时再做。阶段 6（股票监控系统作为首个落地案例）待开始。

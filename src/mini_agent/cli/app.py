@@ -167,6 +167,7 @@ def _main_inner() -> None:
     import mini_agent.tools.plan          # noqa: F401
     import mini_agent.tools.user_input    # noqa: F401
     import mini_agent.tools.evolution     # noqa: F401  [Phase C / 3.1] skill_propose
+    import mini_agent.tools.external_projects  # noqa: F401  [external_projects_workspace_plan 阶段5] list_projects/inspect_project/trigger_run/propose_fix
     import mini_agent.tools.workdir_knowledge  # noqa: F401  [W2 / Stage 4] add_open_thread/update_work_thread/update_knowledge/search_knowledge
     import mini_agent.tools.notepad       # noqa: F401  [记事本] notepad_add/update/remove/list/summarize
     import mini_agent.tools.recall_history  # noqa: F401  [compact_mechanism_improvement_plan P2-B] recall_from_raw_history

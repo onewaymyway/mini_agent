@@ -170,7 +170,62 @@ kanban 直接渲染，不需要理解注册表/账本文件本身的存储细节
 `disable` 的所有 entrypoint，触发后自动写账本。这是"daemon 在场时的
 锦上添花"，不触发不影响这些 entrypoint 被 OS cron / 手动独立执行。
 
-## 8. 已知限制 / 尚未实现
+## 8. 大管家维护工具（`propose_fix` 等）
+
+除了展示状态、手动触发，agent（大管家）还可以调用一组标准工具去
+**理解**、**触发**、**协助维护**已注册的外部项目，工具名与
+`mini-agent projects` CLI 子命令一一对应但服务于不同调用方（前者给
+LLM 工具调用，后者给人 / 脚本）：
+
+| 工具 | 只读？ | 作用 |
+|---|---|---|
+| `list_projects` | 是 | 列出所有已注册外部项目 |
+| `inspect_project` | 是 | 读 manifest + 健康状态 + 最近执行账本 |
+| `trigger_run` | 否（执行外部代码，保留人工确认） | 立即触发某个 entrypoint 一次 |
+| `propose_fix` | 否（但落在独立分支，不改当前 checkout） | 提出一次维护改动 |
+
+`propose_fix` 的核心机制**直接复用** self-evolution 已有的
+"git worktree 隔离 + 提案验证 + 落地"流程
+（`evolution/state_repo.py::StateRepo` + `evolution/workspace.py::
+EvolutionWorkspace`，与 `skill_propose` 同一套底层类），以**目标外部
+项目自己的目录**为 git 仓库根（不是 mini_agent 自身仓库），落地方式：
+
+```python
+from mini_agent.external_projects.maintenance import (
+    propose_maintenance_fix, land_maintenance_fix,
+)
+
+result = propose_maintenance_fix(
+    "/data/stock_watch",
+    {"entrypoints/run_hotlist_scan.py": new_content},
+    "Fix selector after site redesign",
+    reason="old-price selector no longer exists",
+)
+# result.ok=True 时，改动已经 commit 在 result.branch 上（目标项目自己
+# 仓库里的一个独立分支），当前 checkout 完全不受影响，尚未合并。
+
+# 人工 review 通过后：
+land_maintenance_fix("/data/stock_watch", result.branch)
+```
+
+要点：
+
+- 目标项目如果还没有 `.git`，`propose_maintenance_fix()` 会自动
+  `git init` 一个（fresh-repo 场景的兜底，与 `skill_propose` 一致）；
+  **git worktree 隔离机制对外部项目开箱即用，不需要任何适配层**——
+  `StateRepo`/`EvolutionWorkspace` 本来就只依赖"传入的 root 是/能
+  成为一个 git 仓库"，不假设 root 是 mini_agent 自身仓库的一部分。
+- 校验默认用 `tier="T2"`（改动的 `.py` 文件过语法/ruff lint，且如果
+  目标项目自己有 `tests/` 目录会跑一遍其中的测试），而不是
+  `skill_propose` 固定用的 `T1`——外部项目的维护对象通常是任意脚本，
+  不是 mini_agent 的声明式资产（SKILL.md 等）。校验失败时不写入、不
+  commit，`propose_fix` 返回 `validation_errors`。
+- 落地（合并分支）永远是一步**显式**动作
+  （`land_maintenance_fix()` / 人工 `git merge`），`propose_fix`
+  本身不会自动合并——呼应原则四"daemon 的角色始终是触发者/协调者，
+  不是执行者本身"。
+
+## 9. 已知限制 / 尚未实现
 
 - **daemon 主循环尚未真正接入调度器**：`run_due_entrypoints()` 本身
   已经过测试、可独立调用，但 daemon 主循环定时（每分钟）调用它这一
@@ -178,13 +233,19 @@ kanban 直接渲染，不需要理解注册表/账本文件本身的存储细节
   触发或 OS cron。
 - **cron 语法是最小子集**：不支持步进 (`*/5`) 等复杂表达式。
 - **补跑策略未定义**：daemon 重启后错过的调度不会自动补跑。
-- **"大管家"维护类交互标准化**（`list_projects`/`inspect_project`/
-  `trigger_run`/`propose_fix` 工具化）是阶段 5 的范围，尚未开始。
+- **`land_maintenance_fix()` 目前还没有对应的 `mini-agent projects`
+  CLI 子命令**（合并提案分支目前只能用这个 Python 函数或直接
+  `git merge`，`propose_fix` 工具已经在返回消息里给出提示）；工具化
+  的 `list_projects`/`inspect_project`/`trigger_run`/`propose_fix`
+  已完成（阶段 5）。
+- **还没有第二个真实落地的外部项目**（阶段 6：股票监控系统作为首个
+  案例）——以上机制目前只有测试场景和单元测试验证过，尚未在真实、
+  长期运行的外部项目上跑过。
 
-以上限制均按刻意留白处理，等真实需求出现（阶段 5，或第二个外部
-项目落地后）再回来补，避免过早设计。
+以上限制均按刻意留白处理，等真实需求出现（第二个外部项目落地后）
+再回来补，避免过早设计。
 
-## 9. 相关文档
+## 10. 相关文档
 
 - [next_doc/external_projects_workspace_plan.md](../next_doc/external_projects_workspace_plan.md) —
   完整的架构设计过程、四条核心原则、为什么否决了"每个项目自己起
