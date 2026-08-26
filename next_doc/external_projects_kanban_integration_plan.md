@@ -177,3 +177,12 @@ client.py`）✅已完成
   触发 + 注册项目）后端与前端代码均已完成，仅剩人工过一遍真实 UI
   这一项验收留给使用者自行确认。第二期（`propose_fix`/
   `land_maintenance_fix` 看板化）仍按第4节约定暂不实施。
+- 2026-08-26：附带修复一个与本文档功能无关、但同样发生在 `app.py`
+  里的既有 bug：使用者实测时触发了「🌱 成长顾问」tab「正在自主推进」
+  列表（`_render_growth_pursuits`）的 `StreamlitDuplicateElementKey`
+  崩溃——后端 `growth_pursuits()` 返回了重复 `goal_id` 的记录，而该
+  区块的按钮 `key` 只用 `goal_id` 拼出，没有区分同一 `goal_id` 出现
+  第几次。给 `active`/`paused` 两个循环的按钮 key 各加一个序号后缀
+  （`_{idx}`）作为最小兜底，让 UI 不再因为这类重复数据崩溃；没有去
+  排查 `growth_pursuits()` 为什么会返回重复项——那是数据层问题，不
+  属于本文档范围，如需彻底修复应另开一份文档追踪。

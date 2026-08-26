@@ -6323,7 +6323,7 @@ def _render_growth_pursuits(client: "AgentClient"):
                         client.recur_goal(row["goal_id"], new_schedule)
                     st.toast(f"已将 {len(active)} 个方向的调度频率批量调整", icon="⚙")
                     st.rerun()
-        for row in active:
+        for _idx, row in enumerate(active):
             saturation = row.get("saturation") or {}
             cols = st.columns([4, 1.2, 1])
             with cols[0]:
@@ -6394,12 +6394,12 @@ def _render_growth_pursuits(client: "AgentClient"):
                 elif cycles_since:
                     st.caption(f"👀 距你上次查看已经过了 {cycles_since} 轮新内容")
             with cols[1]:
-                if st.button("⏸ 暂停", key=f"growth_pursuit_pause_{row['goal_id']}"):
+                if st.button("⏸ 暂停", key=f"growth_pursuit_pause_{row['goal_id']}_{_idx}"):
                     client.unrecur_goal(row["goal_id"])
                     st.toast(f"已暂停「{row.get('title')}」的自主调研", icon="⏸")
                     st.rerun()
             with cols[2]:
-                if st.button("📄 素材", key=f"growth_pursuit_view_{row['goal_id']}"):
+                if st.button("📄 素材", key=f"growth_pursuit_view_{row['goal_id']}_{_idx}"):
                     # [方向 1] 记一次查看埋点；失败不阻塞打开素材本身。
                     try:
                         client.growth_pursuit_view_material(row["goal_id"])
@@ -6409,10 +6409,10 @@ def _render_growth_pursuits(client: "AgentClient"):
                     st.rerun()
         if paused:
             st.markdown("**已暂停**")
-            for row in paused:
+            for _pidx, row in enumerate(paused):
                 cols = st.columns([4, 1])
                 cols[0].write(f"{row.get('title')} — 已完成 {row.get('cycle_count', 0)} 轮")
-                if cols[1].button("▶ 恢复", key=f"growth_pursuit_resume_{row['goal_id']}"):
+                if cols[1].button("▶ 恢复", key=f"growth_pursuit_resume_{row['goal_id']}_{_pidx}"):
                     schedule = row.get("schedule") or "interval:86400"
                     client.recur_goal(row["goal_id"], schedule)
                     st.toast(f"已恢复「{row.get('title')}」的自主调研", icon="▶")
