@@ -263,6 +263,69 @@ def _cmd_ledger(args: List[str]) -> int:
     return 0
 
 
+def _cmd_backlog(args: List[str]) -> int:
+    """`mini-agent projects backlog <name> [list|add <summary> [source] [evidence_ref]]`
+
+    对应 `next_doc/stock_watch_continuous_improvement_plan.md` 阶段 1
+    第 4 项：人工不必进 agent 对话，也能直接查看/写入某个外部项目的
+    改进积压账本。不带子命令或带 `list` 时列出全部条目（可选状态
+    过滤），带 `add` 时追加一条状态为 `open` 的新条目，`source` 默认
+    `user_feedback`（人工直接敲命令行录入的绝大多数场景就是这一类）。
+    """
+    from mini_agent.external_projects import ExternalProjectRegistry
+    from mini_agent.external_projects.backlog import BacklogError, append_item, read_backlog
+    from mini_agent.external_projects.manifest import ProjectManifestError
+    from mini_agent.external_projects.registry import ExternalProjectRegistryError
+
+    if not args:
+        _err("用法: mini-agent projects backlog <name> [list [status]|add <summary> [source] [evidence_ref]]")
+        return 1
+    name = args[0]
+    rest = args[1:]
+
+    registry = ExternalProjectRegistry()
+    try:
+        manifest = registry.load_manifest_for(name)
+    except (ExternalProjectRegistryError, ProjectManifestError) as exc:
+        _err(str(exc))
+        return 1
+    if manifest.source_dir is None:
+        _err("无法定位该项目的 workspace 根目录")
+        return 1
+    root = manifest.source_dir
+
+    if not rest or rest[0] == "list":
+        status_filter = rest[1] if len(rest) > 1 else None
+        items = read_backlog(root, status=status_filter)
+        if not items:
+            _print("改进积压账本为空。")
+            return 0
+        for item in items:
+            line = f"[{item.status}] {item.id} ({item.source}) {item.summary}"
+            if item.evidence_ref:
+                line += f" | evidence={item.evidence_ref}"
+            _print(line)
+        return 0
+
+    if rest[0] == "add":
+        if len(rest) < 2:
+            _err("用法: mini-agent projects backlog <name> add <summary> [source] [evidence_ref]")
+            return 1
+        summary = rest[1]
+        source = rest[2] if len(rest) > 2 else "user_feedback"
+        evidence_ref = rest[3] if len(rest) > 3 else None
+        try:
+            item = append_item(root, source=source, summary=summary, evidence_ref=evidence_ref)
+        except BacklogError as exc:
+            _err(str(exc))
+            return 1
+        _print(f"已记录待办 {item.id}: {item.summary}")
+        return 0
+
+    _err(f"未知子命令 'backlog {rest[0]}'。可用: list, add")
+    return 1
+
+
 _SUBCOMMANDS = {
     "list": _cmd_list,
     "status": _cmd_status,
@@ -272,6 +335,7 @@ _SUBCOMMANDS = {
     "enable": lambda args: _cmd_set_enabled(args, True),
     "disable": lambda args: _cmd_set_enabled(args, False),
     "ledger": _cmd_ledger,
+    "backlog": _cmd_backlog,
 }
 
 

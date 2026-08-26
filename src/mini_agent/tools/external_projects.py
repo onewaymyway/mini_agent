@@ -219,12 +219,29 @@ def trigger_run(name: str, entrypoint: str) -> str:
                 "type": "string",
                 "description": "Risk tier T0-T3 (see evolution/validators.py). Default T2.",
             },
+            "change_type": {
+                "type": "string",
+                "description": (
+                    "'fix' (default — corrects a hard failure, verifiable by health_check/exit "
+                    "code) or 'enhancement' (no hard failure signal; whether it's actually "
+                    "better is a subjective judgment call). Passing validation never implies an "
+                    "enhancement should be auto-landed — only a human may land one, after "
+                    "reviewing the evidence."
+                ),
+            },
         },
         "required": ["name", "changes", "message"],
     },
     requires_approval=False,  # 落在独立分支，不影响目标项目当前分支；把关在校验流水线 + 人工 merge
 )
-def propose_fix(name: str, changes: dict, message: str, reason: str = "", tier: str = "T2") -> str:
+def propose_fix(
+    name: str,
+    changes: dict,
+    message: str,
+    reason: str = "",
+    tier: str = "T2",
+    change_type: str = "fix",
+) -> str:
     from mini_agent.external_projects.maintenance import MaintenanceError, propose_maintenance_fix
     from mini_agent.external_projects.registry import ExternalProjectRegistryError
 
@@ -242,6 +259,7 @@ def propose_fix(name: str, changes: dict, message: str, reason: str = "", tier: 
             slug=name,
             reason=reason,
             tier=tier,
+            change_type=change_type,
         )
     except MaintenanceError as e:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
@@ -254,11 +272,20 @@ def propose_fix(name: str, changes: dict, message: str, reason: str = "", tier: 
                 "tier": result.tier,
                 "forced_tier": result.forced_tier,
                 "validation_errors": result.validation_errors,
+                "change_type": result.change_type,
             },
             indent=2,
             ensure_ascii=False,
         )
 
+    land_note = (
+        "This is an ENHANCEMENT proposal (no hard failure signal — passing tests only means "
+        "no known regression, not that it's actually better). Do not land it yourself; surface "
+        "the branch and evidence to the user and let them decide."
+        if result.change_type == "enhancement"
+        else "Review (e.g. git -C <path> diff <base>..<branch>) and merge manually to apply it, "
+        "or delete the branch to discard."
+    )
     return json.dumps(
         {
             "ok": True,
@@ -266,10 +293,10 @@ def propose_fix(name: str, changes: dict, message: str, reason: str = "", tier: 
             "branch": result.branch,
             "commit": result.commit,
             "tier": result.tier,
+            "change_type": result.change_type,
             "message": (
-                f"Fix proposed on branch '{result.branch}' ({result.commit[:8]}) inside "
-                f"{record.path}. Review (e.g. git -C {record.path} diff <base>..{result.branch}) "
-                "and merge manually to apply it, or delete the branch to discard."
+                f"{'Fix' if result.change_type == 'fix' else 'Enhancement'} proposed on branch "
+                f"'{result.branch}' ({result.commit[:8]}) inside {record.path}. {land_note}"
             ),
         },
         indent=2,
@@ -277,4 +304,100 @@ def propose_fix(name: str, changes: dict, message: str, reason: str = "", tier: 
     )
 
 
-__all__ = ["list_projects", "inspect_project", "trigger_run", "propose_fix"]
+@tool(
+    name="list_backlog",
+    description=(
+        "List improvement-backlog items for one registered external project (soft-quality "
+        "issues without a hard failure signal — outcome-review findings, user feedback, "
+        "health trends). Read-only. Optionally filter by status "
+        "(open/proposed/landed/dismissed)."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Registered external project name."},
+            "status": {
+                "type": "string",
+                "description": "Optional status filter: open, proposed, landed, or dismissed.",
+            },
+        },
+        "required": ["name"],
+    },
+    requires_approval=False,
+)
+def list_backlog(name: str, status: str = "") -> str:
+    from mini_agent.external_projects.backlog import read_backlog
+    from mini_agent.external_projects.registry import ExternalProjectRegistryError
+
+    registry = _registry()
+    try:
+        record = registry.get(name)
+    except ExternalProjectRegistryError as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+    items = read_backlog(Path(record.path), status=status or None)
+    return json.dumps(
+        {"ok": True, "items": [i.to_dict() for i in items]},
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+@tool(
+    name="append_backlog_item",
+    description=(
+        "Append one improvement-backlog item to a registered external project — use this to "
+        "durably record a soft-quality issue or a piece of user feedback (e.g. 'this week's "
+        "candidate-pool report missed an obvious hot stock') so a future review pass can find "
+        "it, instead of letting it disappear at the end of this conversation. This only writes "
+        "a to-do record — it does not execute or change any project code."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Registered external project name."},
+            "source": {
+                "type": "string",
+                "description": "One of: outcome_review, user_feedback, health_trend.",
+            },
+            "summary": {"type": "string", "description": "One-sentence description of the issue."},
+            "evidence_ref": {
+                "type": "string",
+                "description": "Optional pointer to supporting evidence (a file path, report, etc.).",
+            },
+        },
+        "required": ["name", "source", "summary"],
+    },
+    requires_approval=False,
+)
+def append_backlog_item(name: str, source: str, summary: str, evidence_ref: str = "") -> str:
+    from mini_agent.external_projects.backlog import BacklogError, append_item
+    from mini_agent.external_projects.registry import ExternalProjectRegistryError
+
+    registry = _registry()
+    try:
+        record = registry.get(name)
+    except ExternalProjectRegistryError as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+    try:
+        item = append_item(
+            Path(record.path),
+            source=source,
+            summary=summary,
+            evidence_ref=evidence_ref or None,
+        )
+    except BacklogError as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+    return json.dumps({"ok": True, "item": item.to_dict()}, indent=2, ensure_ascii=False)
+
+
+__all__ = [
+    "list_projects",
+    "inspect_project",
+    "trigger_run",
+    "propose_fix",
+    "list_backlog",
+    "append_backlog_item",
+]

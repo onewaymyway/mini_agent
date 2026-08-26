@@ -123,6 +123,17 @@ class Workspace:
         return self.root / ".agent" / "run_status.jsonl"
 
     @property
+    def backlog_path(self) -> Path:
+        """改进积压账本位置：`<root>/.agent/improvement_backlog.jsonl`。
+
+        对应 `next_doc/stock_watch_continuous_improvement_plan.md`
+        阶段 1，与 `run_status_path` 对称——都是外部项目自己写、
+        daemon/review session 被动读的账本，只是记录的内容不同
+        （执行成败 vs 待优化的软问题）。
+        """
+        return self.root / ".agent" / "improvement_backlog.jsonl"
+
+    @property
     def project_yaml_path(self) -> Path:
         """阶段 3（`project.yaml` 契约）预留位置，本阶段不解析内容。"""
         return self.root / "project.yaml"

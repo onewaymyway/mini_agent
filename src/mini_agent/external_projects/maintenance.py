@@ -66,6 +66,7 @@ class MaintenanceProposalResult:
     forced_tier: bool = False
     validation_errors: List[str] = field(default_factory=list)
     error: str = ""
+    change_type: str = "fix"
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9\-]+")
@@ -89,6 +90,7 @@ def propose_maintenance_fix(
     slug: str = "",
     reason: str = "",
     tier: str = "T2",
+    change_type: str = "fix",
 ) -> MaintenanceProposalResult:
     """
     以 `project_root`（某个外部项目自己的根目录，即它的 `Workspace.root`）
@@ -103,6 +105,18 @@ def propose_maintenance_fix(
         reason: 记入 commit message body，说明为什么提出这次改动。
         tier: 风险分级，默认 "T2"，决定使用哪一组校验函数
             （见 `evolution/validators.py::validators_for_tier`）。
+        change_type: "fix"（默认，纠错——有客观失败信号、能被
+            health_check/entrypoint 退出码验证是否解决）或
+            "enhancement"（优化——没有硬失败信号，效果好坏是主观权衡，
+            见 `next_doc/stock_watch_continuous_improvement_plan.md`
+            第 2 节）。纯附加字段，只透传进返回结果供调用方（daemon/
+            CLI/大管家）展示不同的风险提示，不影响本函数内部任何校验
+            逻辑——`change_type="enhancement"` 不会放宽或收紧 tier
+            校验，两者是正交的两个维度。**约定**（不由代码强制）：
+            `change_type="enhancement"` 的提案，`land_maintenance_fix`
+            只能由人工在核对过证据后手动调用，禁止任何自动化脚本或
+            agent 自主调用——校验通过只代表"没有引入已知的回归错误"，
+            不代表"这个改动值得采纳"，两者是两件事。
 
     Returns:
         `MaintenanceProposalResult`。`ok=True` 时分支和 commit 已经留在
@@ -113,6 +127,10 @@ def propose_maintenance_fix(
         raise MaintenanceError(f"目标外部项目目录不存在: {root}")
     if not changes:
         raise MaintenanceError("changes 不能为空——没有改动就不需要发起一次维护提案")
+    if change_type not in ("fix", "enhancement"):
+        raise MaintenanceError(
+            f"change_type 必须是 'fix' 或 'enhancement'，得到 '{change_type}'"
+        )
 
     try:
         main_repo = StateRepo(root)
@@ -147,7 +165,7 @@ def propose_maintenance_fix(
 
         log_exception(e, where="mini_agent.external_projects.maintenance.propose_maintenance_fix")
         ws.destroy(delete_branch=True)
-        return MaintenanceProposalResult(ok=False, error=f"apply 过程中出现异常: {e}")
+        return MaintenanceProposalResult(ok=False, error=f"apply 过程中出现异常: {e}", change_type=change_type)
 
     if not result.ok:
         ws.destroy(delete_branch=True)
@@ -157,6 +175,7 @@ def propose_maintenance_fix(
             forced_tier=result.forced_tier,
             validation_errors=result.validation_errors,
             error="校验失败，提案未提交（未落盘、未 commit）",
+            change_type=change_type,
         )
 
     ws.destroy(delete_branch=False)
@@ -166,6 +185,7 @@ def propose_maintenance_fix(
         commit=result.commit,
         tier=result.tier,
         forced_tier=result.forced_tier,
+        change_type=change_type,
     )
 
 
