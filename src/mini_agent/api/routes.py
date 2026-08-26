@@ -74,6 +74,16 @@ api/routes.py — FastAPI 路由定义
                                        （health + 最近执行记录，读注册表 +
                                        账本，daemon 不在场也不影响外部项目
                                        本身，本端点只是"顺手看一眼"）
+    POST   /v1/external_projects/register  [external_projects_kanban_
+                                       integration_plan.md 阶段1] 注册新的
+                                       外部项目
+    POST   /v1/external_projects/{name}/trigger_run  同上，手动触发一次
+                                       entrypoint
+    GET    /v1/external_projects/{name}/ledger       同上，读执行账本
+    GET/POST /v1/external_projects/{name}/backlog    同上，读/写改进积压
+                                       账本（POST 固定 source=user_feedback）
+    GET    /v1/external_projects/{name}/review       同上，生成 review
+                                       任务模板预览（不实际发起）
     GET    /v1/self/llm_call_stats   [同上 方向 B.2] 按天聚合的 LLM 调用计数
     GET    /v1/objectives/completion_trend  [同上 方向 D.1] Objective 完成率
                                        每日趋势（快照挂在 /growth/scan 上记录）
@@ -703,6 +713,229 @@ async def get_self_external_projects(request: Request):
             where="mini_agent.api.routes.get_self_external_projects",
         )
         return {"projects": []}
+
+
+# ── 外部项目管理接入看板（external_projects_kanban_integration_plan.md 阶段1）──
+# 背景：上面的 GET /v1/self/external_projects 只读聚合状态已经存在，但
+# "注册/手动触发/账本/backlog/review 预览"这些此前只有 CLI（`mini-agent
+# projects ...`）能访问的能力还没有对应的 HTTP 路由。这里严格复用现成
+# 后端实现（registry.py/scheduler.py/ledger.py/backlog.py/review.py），
+# 只新增"接线"，不重新实现任何判断逻辑——具体对应关系见该计划文档第2节
+# 的表格。风格对齐本文件已有的 `/evolution/proposals*`/`/cron/jobs*` 一批
+# 端点：owner-only、目标项目不存在/manifest 解析失败时返回结构化错误
+# （4xx + detail），而不是让整个请求 500。
+
+
+def _external_project_error_status(exc: Exception) -> int:
+    """把 external_projects 各模块抛出的业务异常映射成合适的 HTTP 状态码。
+
+    `ExternalProjectRegistryError`/`BacklogError` 本身不区分"项目不存在"
+    和"参数不合法"这两种子情况（都是同一个 ValueError 子类），这里用
+    异常信息里是否提到"未注册"做一个不精确但够用的启发式区分——精确区分
+    需要给这两个异常类加错误码字段，属于过度设计，看板前端目前只需要
+    知道"是不是 404"来决定展示什么提示文案。
+    """
+    msg = str(exc)
+    if "未注册" in msg or "不存在" in msg:
+        return 404
+    return 400
+
+
+@router.post("/external_projects/register")
+async def post_external_projects_register(request: Request):
+    """POST /v1/external_projects/register — 注册一个外部项目。
+
+    Body: {"path": str, "name": str (可选，缺省用路径最后一段目录名),
+           "validate": bool (可选，默认 True)}
+
+    直接包装 `ExternalProjectRegistry.register()`，不做额外判断——
+    `validate=True`（默认）时会顺带校验一次目标路径下的 `project.yaml`
+    是否合法，与 CLI `mini-agent projects register` 行为一致。
+    """
+    _require_owner(request)
+    body = await request.json()
+    path = (body.get("path") or "").strip()
+    if not path:
+        raise HTTPException(status_code=400, detail="path is required")
+    name = (body.get("name") or "").strip() or Path(path).name
+    validate = bool(body.get("validate", True))
+
+    try:
+        from mini_agent.external_projects.registry import (
+            ExternalProjectRegistry,
+            ExternalProjectRegistryError,
+        )
+
+        registry = ExternalProjectRegistry()
+        record = registry.register(name, Path(path), validate=validate)
+        return {"project": record.to_dict()}
+    except ExternalProjectRegistryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/external_projects/{name}/trigger_run")
+async def post_external_projects_trigger_run(name: str, request: Request):
+    """POST /v1/external_projects/{name}/trigger_run — 立即触发一次 entrypoint。
+
+    Body: {"entrypoint": str}
+
+    包装 `scheduler.trigger_run()`，`trigger` 固定为 `"manual"`——与命令行
+    `mini-agent projects run` 走的是同一条执行路径，风险等级相同（详见
+    `external_projects_kanban_integration_plan.md` 第3节）。
+    """
+    _require_owner(request)
+    body = await request.json()
+    entrypoint = (body.get("entrypoint") or "").strip()
+    if not entrypoint:
+        raise HTTPException(status_code=400, detail="entrypoint is required")
+
+    try:
+        from mini_agent.external_projects.registry import (
+            ExternalProjectRegistry,
+            ExternalProjectRegistryError,
+        )
+        from mini_agent.external_projects.scheduler import trigger_run
+
+        registry = ExternalProjectRegistry()
+        result = trigger_run(registry, name, entrypoint, trigger="manual")
+        return {
+            "project_name": result.project_name,
+            "entrypoint_key": result.entrypoint_key,
+            "returncode": result.returncode,
+            "trigger": result.trigger,
+        }
+    except ExternalProjectRegistryError as exc:
+        raise HTTPException(status_code=_external_project_error_status(exc), detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/external_projects/{name}/ledger")
+async def get_external_projects_ledger(name: str, request: Request, limit: int = 50):
+    """GET /v1/external_projects/{name}/ledger?limit=50 — 该项目的执行账本。
+
+    包装 `ledger.read_ledger()`，按时间正序返回（最旧的在前，与底层实现
+    一致），`limit` 语义同底层（保留最近 N 条）。
+    """
+    _require_owner(request)
+    try:
+        from mini_agent.external_projects.ledger import read_ledger
+        from mini_agent.external_projects.registry import (
+            ExternalProjectRegistry,
+            ExternalProjectRegistryError,
+        )
+
+        registry = ExternalProjectRegistry()
+        manifest = registry.load_manifest_for(name)
+        if manifest.source_dir is None:
+            return {"records": []}
+        records = read_ledger(manifest.source_dir, limit=limit)
+        return {"records": [r.to_dict() for r in records]}
+    except ExternalProjectRegistryError as exc:
+        raise HTTPException(status_code=_external_project_error_status(exc), detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/external_projects/{name}/backlog")
+async def get_external_projects_backlog(name: str, request: Request, status: str = ""):
+    """GET /v1/external_projects/{name}/backlog?status=open — 该项目的改进积压账本。
+
+    包装 `backlog.read_backlog()`，`status` 为空字符串（默认）时不过滤，
+    返回全部状态的条目。
+    """
+    _require_owner(request)
+    try:
+        from mini_agent.external_projects.backlog import read_backlog
+        from mini_agent.external_projects.registry import (
+            ExternalProjectRegistry,
+            ExternalProjectRegistryError,
+        )
+
+        registry = ExternalProjectRegistry()
+        manifest = registry.load_manifest_for(name)
+        if manifest.source_dir is None:
+            return {"items": []}
+        items = read_backlog(manifest.source_dir, status=status or None)
+        return {"items": [i.to_dict() for i in items]}
+    except ExternalProjectRegistryError as exc:
+        raise HTTPException(status_code=_external_project_error_status(exc), detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/external_projects/{name}/backlog")
+async def post_external_projects_backlog(name: str, request: Request):
+    """POST /v1/external_projects/{name}/backlog — 新增一条改进积压待办。
+
+    Body: {"summary": str, "evidence_ref": str (可选)}
+
+    `source` 不接受前端传入、固定写死为 `"user_feedback"`——看板手填的
+    这条路径语义上就是"人工反馈"，`outcome_review`/`health_trend` 应该
+    继续只由 entrypoint/review session 自动写入（详见
+    `external_projects_kanban_integration_plan.md` 阶段1 的说明），避免
+    在 UI 上开放让人手填成看起来像是系统自动发现的。
+    """
+    _require_owner(request)
+    body = await request.json()
+    summary = (body.get("summary") or "").strip()
+    if not summary:
+        raise HTTPException(status_code=400, detail="summary is required")
+    evidence_ref = body.get("evidence_ref") or None
+
+    try:
+        from mini_agent.external_projects.backlog import append_item
+        from mini_agent.external_projects.registry import (
+            ExternalProjectRegistry,
+            ExternalProjectRegistryError,
+        )
+
+        registry = ExternalProjectRegistry()
+        manifest = registry.load_manifest_for(name)
+        if manifest.source_dir is None:
+            raise HTTPException(status_code=400, detail=f"项目 '{name}' 的 manifest 没有 source_dir")
+        item = append_item(
+            manifest.source_dir,
+            source="user_feedback",
+            summary=summary,
+            evidence_ref=evidence_ref,
+        )
+        return {"item": item.to_dict()}
+    except ExternalProjectRegistryError as exc:
+        raise HTTPException(status_code=_external_project_error_status(exc), detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/external_projects/{name}/review")
+async def get_external_projects_review(name: str, request: Request):
+    """GET /v1/external_projects/{name}/review — 生成 review 任务模板预览。
+
+    包装 `review.build_review_task_template_for()`。`review.enabled=False`
+    时不报错——返回模板文本 + `"enabled": false`，看板前端据此提示"未开启
+    定期 review，但仍可手动预览"（详见
+    `external_projects_kanban_integration_plan.md` 阶段1 的说明）。
+    """
+    _require_owner(request)
+    try:
+        from mini_agent.external_projects.registry import (
+            ExternalProjectRegistry,
+            ExternalProjectRegistryError,
+        )
+        from mini_agent.external_projects.review import build_review_task_template_for
+
+        registry = ExternalProjectRegistry()
+        manifest = registry.load_manifest_for(name)
+        template = build_review_task_template_for(manifest)
+        return {"template": template, "enabled": bool(manifest.review.enabled)}
+    except ExternalProjectRegistryError as exc:
+        raise HTTPException(status_code=_external_project_error_status(exc), detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ── 调度公平性诊断（goal_fairness_scheduling_diagnostics_plan.md）──────────

@@ -756,6 +756,42 @@ class AgentClient:
         """[Track I] 一键合并提案分支；risk=high 时需要显式传 force=True。"""
         return self._post(f"/evolution/proposals/{branch}/merge", {"force": force}, timeout=30)
 
+    # ── 看板：外部项目管理接入（external_projects_kanban_integration_plan.md）──
+    def external_projects_status(self):
+        """已注册外部项目的聚合状态（健康 + 最近5条执行记录）。"""
+        return self._get("/self/external_projects")
+
+    def register_external_project(self, path: str, name: str = "", validate: bool = True):
+        """注册一个新的外部项目。`name` 留空时后端用路径最后一段目录名。"""
+        body = {"path": path, "validate": validate}
+        if name:
+            body["name"] = name
+        return self._post("/external_projects/register", body)
+
+    def trigger_external_project_run(self, name: str, entrypoint: str):
+        """立即触发某个已注册项目的某个 entrypoint 一次。"""
+        return self._post(f"/external_projects/{name}/trigger_run", {"entrypoint": entrypoint}, timeout=120)
+
+    def external_project_ledger(self, name: str, limit: int = 20):
+        """该项目的执行账本，最近 `limit` 条（旧到新）。"""
+        return self._get(f"/external_projects/{name}/ledger", params={"limit": limit})
+
+    def external_project_backlog(self, name: str, status: str = ""):
+        """该项目的改进积压账本；`status` 为空表示不过滤。"""
+        params = {"status": status} if status else None
+        return self._get(f"/external_projects/{name}/backlog", params=params)
+
+    def append_external_project_backlog(self, name: str, summary: str, evidence_ref: str = ""):
+        """新增一条 `source=user_feedback` 的待办（source 由后端固定写死）。"""
+        body = {"summary": summary}
+        if evidence_ref:
+            body["evidence_ref"] = evidence_ref
+        return self._post(f"/external_projects/{name}/backlog", body)
+
+    def external_project_review(self, name: str):
+        """生成该项目的 review 任务模板预览（不实际发起 review）。"""
+        return self._get(f"/external_projects/{name}/review")
+
     def feedback_loop_summary(self):
         """[外部知识反馈闭环 P1-P5] 一次性汇总五个模块（候选队列过期巡检/
         wiki 利用率/阈值自校准/外部趋势候选/生态定位扫描/月度战略回顾）

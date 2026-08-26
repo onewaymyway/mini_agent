@@ -102,52 +102,78 @@ review 模板预览、注册新项目。全部是"只读展示 + 低风险写操
 
 > 约定：每完成一项，回来把对应复选框打勾，并在文末"变更记录"补一行。
 
-### 阶段 1：后端 — 新增 HTTP 路由（`api/routes.py`）
-- [ ] `POST /v1/external_projects/register`：body `{path, name?,
+### 阶段 1：后端 — 新增 HTTP 路由（`api/routes.py`）✅已完成
+- [x] `POST /v1/external_projects/register`：body `{path, name?,
       validate?}`，包装 `ExternalProjectRegistry.register()`。
-- [ ] `POST /v1/external_projects/{name}/trigger_run`：body
+- [x] `POST /v1/external_projects/{name}/trigger_run`：body
       `{entrypoint}`，包装 `scheduler.trigger_run()`。
-- [ ] `GET /v1/external_projects/{name}/ledger`：query `limit`，包装
+- [x] `GET /v1/external_projects/{name}/ledger`：query `limit`，包装
       `ledger.read_ledger()`。
-- [ ] `GET /v1/external_projects/{name}/backlog`：query `status?`，
+- [x] `GET /v1/external_projects/{name}/backlog`：query `status?`，
       包装 `backlog.read_backlog()`。
-- [ ] `POST /v1/external_projects/{name}/backlog`：body
+- [x] `POST /v1/external_projects/{name}/backlog`：body
       `{source, summary, evidence_ref?}`，包装 `backlog.append_item()`
       （`source` 固定只允许 `user_feedback`——看板手填的这条路径语义
       上就是"人工反馈"，`outcome_review`/`health_trend` 应该继续由
       entrypoint 自动写入，不应该在 UI 上开放让人手填成看起来像是
       系统自动发现的）。
-- [ ] `GET /v1/external_projects/{name}/review`：包装
+- [x] `GET /v1/external_projects/{name}/review`：包装
       `review.build_review_task_template_for()`，`review.enabled=
       false` 时不报错，返回模板文本 + `enabled: false` 字段，UI 侧
       据此提示"未开启定期 review，但仍可手动预览"。
-- [ ] 全部 owner-only（`_require_owner()`），全部遵循"目标项目不存在/
-      manifest 解析失败"时返回结构化错误而不是 500 的既有约定。
+- [x] 全部 owner-only（`_require_owner()`），全部遵循"目标项目不存在/
+      manifest 解析失败"时返回结构化错误而不是 500 的既有约定（用
+      `_external_project_error_status()` 这个小启发式，把
+      `ExternalProjectRegistryError` 的信息里含"未注册"的映射成 404，
+      其余映射成 400）。
 
 ### 阶段 2：`AgentClient` 新增对应方法（`apps/mini_agent_kanban/
-client.py`）
-- [ ] `external_projects_status()` / `register_external_project()` /
+client.py`）✅已完成
+- [x] `external_projects_status()` / `register_external_project()` /
       `trigger_external_project_run()` / `external_project_ledger()` /
       `external_project_backlog()` / `append_external_project_backlog()`
       / `external_project_review()`，风格对齐既有的
       `evolution_proposals()`/`merge_evolution_proposal()` 一组方法。
 
-### 阶段 3：看板新 tab（`apps/mini_agent_kanban/app.py`）
-- [ ] `render_external_projects_tab()`：总览卡片列表 + 健康徽标。
-- [ ] 卡片内「手动触发」「改进积压」「Review 预览」三个子区域。
-- [ ] 顶部「注册新项目」表单。
-- [ ] 在 `st.tabs([...])` 列表与对应 `with tabs[i]:` 分支里插入这个
+### 阶段 3：看板新 tab（`apps/mini_agent_kanban/app.py`）✅已完成
+- [x] `render_external_projects_tab()`：总览卡片列表 + 健康徽标。
+- [x] 卡片内「手动触发」「改进积压」「Review 预览」三个子区域。
+- [x] 顶部「注册新项目」表单。
+- [x] 在 `st.tabs([...])` 列表与对应 `with tabs[i]:` 分支里插入这个
       新 tab（放在"🧬 进化提案"之后、"⏰ Cron 任务"之前，与后端管理类
-      tab 归在一组）。
+      tab 归在一组）。附带实现："Review 预览"里「📋 复制到对话框」
+      按钮通过新增的 `chat_prefill_text` 会话状态 + 既有的
+      `_pending_tab_switch`/`_inject_tab_switch_script` 跳转机制，把
+      模板文本写进对话输入框并切到"💬 对话" tab——只是预填文本，不
+      自动发送，真正发起 review session 仍由用户自己点发送。
 
 ### 阶段 4：端到端验证
-- [ ] 后端路由单元测试（`tests/test_api_external_projects_routes.py`
-      或并入现有相关测试文件），覆盖：注册/触发/账本/backlog 读写/
-      review 预览的正常路径 + 项目不存在时的错误路径。
-- [ ] 手动过一遍看板 UI：把 stock_watch 注册进去、看健康状态卡片、
+- [x] 后端路由单元测试（`tests/test_api_external_projects_routes.py`），
+      覆盖：注册（成功/缺路径/重复注册/manifest 不合法）、触发执行
+      （成功/项目未注册/缺 entrypoint）、账本（空/项目未注册/触发后
+      能读到）、backlog（读空/缺 summary/写入后 source 被强制改写为
+      user_feedback+按状态过滤）、review 预览（成功返回模板+enabled
+      标记/项目未注册）共 15 个用例，全部通过；额外跑了原有
+      `test_external_projects*.py`（64 个用例）确认无回归。
+- [x] 静态验证：`app.py`/`client.py`/`routes.py` 三个文件的 `ast.parse`
+      + `py_compile` 编译检查通过；对 `st.tabs([...])` 标签列表与
+      `with tabs[i]:` 分支索引做了脚本化交叉核对，19 个 tab 标签与
+      18 个 `render_*_tab(client)` 调用（索引 1-18，索引 0 是对话
+      tab，单独处理）一一对应，无错位。
+- [ ] 手动过一遍看板 UI（需要真实拉起 daemon + streamlit，当前环境
+      无法交互式验证）：把 stock_watch 注册进去、看健康状态卡片、
       手动触发一次 entrypoint、加一条 backlog、预览 review 模板、
-      点"复制到对话框"确认文本正确写入输入框。
+      点"复制到对话框"确认文本正确写入输入框——**这一项留给使用者
+      在自己的开发环境里跑一遍确认**，本文档后续如发现 UI 层的问题
+      会在"变更记录"里补充修复记录。
 
 ## 6. 变更记录
 
 - 2026-08-26：文档创建，设计确认（第1-4节）。阶段1-4待开始。
+- 2026-08-26：完成阶段1（后端 6 个新路由）、阶段2（AgentClient 7 个
+  新方法）、阶段3（看板新 tab「🗂️ 外部项目」+ 对话框预填联动机制）、
+  阶段4的自动化部分（15 个新单元测试 + 64 个既有测试回归通过 + 静态
+  语法/结构校验）。第一期（只读监控 + backlog + review 预览 + 手动
+  触发 + 注册项目）后端与前端代码均已完成，仅剩人工过一遍真实 UI
+  这一项验收留给使用者自行确认。第二期（`propose_fix`/
+  `land_maintenance_fix` 看板化）仍按第4节约定暂不实施。

@@ -412,6 +412,10 @@ def init_state():
         "kanban_focus_node_id": None,
         "cron_focus_job_id": None,
         "_pending_tab_switch": None,
+        # [external_projects_kanban_integration_plan.md 阶段3] "外部项目"
+        # tab 里"复制到对话框"按钮写入的待发送文本，供 render_chat_tab
+        # 的输入框读取后清空——消费一次的临时状态，不是持久偏好。
+        "chat_prefill_text": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1770,8 +1774,14 @@ def render_chat_tab(client: AgentClient, session_id: str = ""):
         _inject_scroll_script()
 
         with st.form("chat_form", clear_on_submit=True):
+            # [external_projects_kanban_integration_plan.md 阶段3] "外部项目"
+            # tab 的"复制到对话框"按钮会把 review 任务模板文本写进
+            # `chat_prefill_text` 再 rerun；这里读一次就 pop 掉，避免用户
+            # 清空重写后再刷新页面又被塞回旧文本。只是把文本填进输入框，
+            # 不自动发送——真正发起 review session 仍然要用户自己点发送。
+            prefill = st.session_state.pop("chat_prefill_text", "") or ""
             msg = st.text_area("输入消息", height=80, label_visibility="collapsed",
-                                placeholder="和 Agent 说点什么…")
+                                value=prefill, placeholder="和 Agent 说点什么…")
             c1, c2 = st.columns([1, 1])
             send = c1.form_submit_button("发送 ➤", width='stretch')
             interrupt = c2.form_submit_button("⏹ 中断当前任务", width='stretch')
@@ -7956,6 +7966,182 @@ def render_evolution_proposals_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: 🗂️ 外部项目（external_projects_kanban_integration_plan.md 第一期）
+# ═══════════════════════════════════════════════════════════════════════
+
+_EXTERNAL_PROJECT_HEALTH_LABEL = {
+    "healthy": "🟢 健康",
+    "unhealthy": "🔴 不健康",
+    "unknown": "⚪ 未知",
+}
+
+_EXTERNAL_PROJECT_BACKLOG_STATUS_LABEL = {
+    "open": "待处理",
+    "proposed": "已提出方案",
+    "landed": "已落地",
+    "dismissed": "已忽略",
+}
+
+
+def render_external_projects_tab(client: AgentClient):
+    """[external_projects_kanban_integration_plan.md 第一期] 把此前只有
+    `mini-agent projects ...` 命令行能访问的外部项目管理能力接入看板：
+    项目总览 + 健康徽标、手动触发 entrypoint、改进积压查看/新增、
+    review 任务模板预览、注册新项目。全部严格复用现成后端判断逻辑
+    （`external_projects/*.py`），本函数只负责 UI 接线。
+
+    `propose_fix`/`land_maintenance_fix` 的看板化明确不在本次范围（见
+    该文档第4节"分期"）——第一期只做"发现问题→记录→触发 review 对话"
+    这条低风险链路，落地按钮这种"一键就可能合并代码"的操作留到后续。
+    """
+    st.markdown("#### 🗂️ 外部项目")
+    st.caption(
+        "此前只能通过 `mini-agent projects` 命令行管理的外部项目（如 "
+        "stock_watch），在这里查看健康状态、手动触发执行、查看/新增改进 "
+        "积压待办、预览周期性 review 任务模板。"
+    )
+
+    with st.expander("➕ 注册新项目"):
+        with st.form("register_external_project_form", clear_on_submit=True):
+            reg_path = st.text_input("项目根目录路径（需包含 project.yaml）")
+            reg_name = st.text_input("项目名称（留空则用路径最后一段目录名）")
+            reg_submit = st.form_submit_button("注册")
+        if reg_submit:
+            if not reg_path.strip():
+                st.error("请填写项目根目录路径。")
+            else:
+                res = client.register_external_project(reg_path.strip(), reg_name.strip())
+                if res and "_error" in res:
+                    st.error(f"注册失败：{res['_error']}")
+                else:
+                    st.success(f"已注册项目 '{res.get('project', {}).get('name', '')}'。")
+                    st.rerun()
+
+    if st.button("🔄 刷新", key="ext_projects_refresh"):
+        st.rerun()
+
+    resp = client.external_projects_status()
+    if resp and "_error" in resp:
+        st.error(f"获取外部项目状态失败：{resp['_error']}")
+        return
+    projects = (resp or {}).get("projects") or []
+    if not projects:
+        st.info("当前没有已注册的外部项目。可以在上方「注册新项目」里添加一个。")
+        return
+
+    for proj in projects:
+        name = proj.get("name", "")
+        health = proj.get("health", "unknown")
+        health_label = _EXTERNAL_PROJECT_HEALTH_LABEL.get(health, health)
+        with st.container(border=True):
+            top1, top2, top3 = st.columns([3, 1, 1])
+            top1.markdown(f"**{name}**")
+            top2.markdown(health_label)
+            top3.caption("已启用" if proj.get("enabled") else "已停用")
+            st.caption(f"路径：{proj.get('path', '')}")
+
+            if proj.get("manifest_error"):
+                st.warning(f"manifest 解析失败：{proj['manifest_error']}")
+
+            last_run = proj.get("last_run")
+            if last_run:
+                status_txt = "✅ 成功" if last_run.get("exit_code") == 0 else "❌ 失败"
+                st.caption(
+                    f"最近一次执行：{last_run.get('entrypoint', '')} · {status_txt} "
+                    f"· {last_run.get('finished_at', '')}"
+                )
+            else:
+                st.caption("最近一次执行：（暂无记录）")
+
+            recent_runs = proj.get("recent_runs") or []
+            if recent_runs:
+                with st.expander(f"最近 {len(recent_runs)} 条执行记录"):
+                    for r in reversed(recent_runs):
+                        status_txt = "✅" if r.get("exit_code") == 0 else "❌"
+                        st.caption(
+                            f"{status_txt} {r.get('entrypoint', '')} · {r.get('trigger', '')} "
+                            f"· {r.get('started_at', '')} → {r.get('finished_at', '')}"
+                        )
+                        if r.get("error_summary"):
+                            st.caption(f"　　{r['error_summary']}")
+
+            with st.expander("▶️ 手动触发"):
+                entrypoint_key = st.text_input(
+                    "entrypoint key（见该项目 project.yaml）", key=f"ext_trigger_ep_{name}"
+                )
+                if st.button("▶️ 触发", key=f"ext_trigger_btn_{name}"):
+                    if not entrypoint_key.strip():
+                        st.error("请填写 entrypoint key。")
+                    else:
+                        res = client.trigger_external_project_run(name, entrypoint_key.strip())
+                        if res and "_error" in res:
+                            st.error(f"触发失败：{res['_error']}")
+                        else:
+                            ok = res.get("returncode") == 0
+                            (st.success if ok else st.error)(
+                                f"执行完成，returncode={res.get('returncode')}"
+                            )
+
+            with st.expander("📋 改进积压"):
+                status_filter = st.selectbox(
+                    "按状态筛选",
+                    ["全部", "open", "proposed", "landed", "dismissed"],
+                    key=f"ext_backlog_status_{name}",
+                )
+                backlog_resp = client.external_project_backlog(
+                    name, status="" if status_filter == "全部" else status_filter
+                )
+                if backlog_resp and "_error" in backlog_resp:
+                    st.error(f"获取改进积压失败：{backlog_resp['_error']}")
+                else:
+                    items = (backlog_resp or {}).get("items") or []
+                    if not items:
+                        st.caption("（暂无符合条件的待办）")
+                    for item in items:
+                        label = _EXTERNAL_PROJECT_BACKLOG_STATUS_LABEL.get(
+                            item.get("status", ""), item.get("status", "")
+                        )
+                        st.caption(f"[{item.get('source', '')} · {label}] {item.get('summary', '')}")
+                        if item.get("evidence_ref"):
+                            st.caption(f"　　证据：{item['evidence_ref']}")
+
+                st.markdown("---")
+                new_summary = st.text_area(
+                    "新增一条待办（source 固定为用户反馈）", key=f"ext_backlog_new_{name}", height=68
+                )
+                if st.button("➕ 提交待办", key=f"ext_backlog_submit_{name}"):
+                    if not new_summary.strip():
+                        st.error("待办内容不能为空。")
+                    else:
+                        res = client.append_external_project_backlog(name, new_summary.strip())
+                        if res and "_error" in res:
+                            st.error(f"新增失败：{res['_error']}")
+                        else:
+                            st.success("已新增一条待办。")
+                            st.rerun()
+
+            with st.expander("🔍 Review 预览"):
+                if st.button("生成本周 review 任务模板", key=f"ext_review_gen_{name}"):
+                    res = client.external_project_review(name)
+                    if res and "_error" in res:
+                        st.error(f"生成失败：{res['_error']}")
+                    else:
+                        if not res.get("enabled"):
+                            st.caption("⚪ 未开启定期 review，但仍可手动预览下方模板。")
+                        st.code(res.get("template", ""), language="markdown")
+                        st.session_state[f"ext_review_template_{name}"] = res.get("template", "")
+
+                cached_template = st.session_state.get(f"ext_review_template_{name}")
+                if cached_template and st.button("📋 复制到对话框", key=f"ext_review_copy_{name}"):
+                    # 只是把模板文本送进对话输入框，不自动发送——真正发起
+                    # review session 仍然由用户自己点发送，agent 仍然要走
+                    # 一遍正常的工具调用+权限确认流程。
+                    st.session_state["chat_prefill_text"] = cached_template
+                    st.session_state["_pending_tab_switch"] = "💬 对话"
+                    st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab: ⏰ Cron 任务（专属执行机制：进度/超时/卡死检测/prompt 编辑）
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -9778,8 +9964,8 @@ def main():
     render_topbar(client, get_active_session_id())
 
     tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
-                    "🧠 自我状态", "🌱 成长顾问", "🎓 能力学习", "🧬 进化提案", "⏰ Cron 任务", "🗓️ 全局日程", "🔌 外部输入",
-                    "🔔 关注与通知", "⚙️ 配置", "🔧 诊断", "🧪 混合执行", "📛 错误日志"])
+                    "🧠 自我状态", "🌱 成长顾问", "🎓 能力学习", "🧬 进化提案", "🗂️ 外部项目", "⏰ Cron 任务",
+                    "🗓️ 全局日程", "🔌 外部输入", "🔔 关注与通知", "⚙️ 配置", "🔧 诊断", "🧪 混合执行", "📛 错误日志"])
 
     # [daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
     # 顶栏"正在执行"列表的"🔍 查看并控制"按钮点击后，把目标 tab 名记到
@@ -9812,20 +9998,22 @@ def main():
     with tabs[9]:
         render_evolution_proposals_tab(client)
     with tabs[10]:
-        render_cron_jobs_tab(client)
+        render_external_projects_tab(client)
     with tabs[11]:
-        render_global_schedule_tab(client)
+        render_cron_jobs_tab(client)
     with tabs[12]:
-        render_external_input_tab(client)
+        render_global_schedule_tab(client)
     with tabs[13]:
-        render_notification_tab(client)
+        render_external_input_tab(client)
     with tabs[14]:
-        render_config_tab(client)
+        render_notification_tab(client)
     with tabs[15]:
-        render_diagnostics_tab(client)
+        render_config_tab(client)
     with tabs[16]:
-        render_hybrid_exec_tab(client)
+        render_diagnostics_tab(client)
     with tabs[17]:
+        render_hybrid_exec_tab(client)
+    with tabs[18]:
         render_error_log_tab(client)
 
     # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——
