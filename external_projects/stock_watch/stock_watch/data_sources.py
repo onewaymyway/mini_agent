@@ -315,6 +315,41 @@ def fetch_iwencai_screener(query: str, top_n: int = 100) -> List[Dict[str, Any]]
     return _fetch_iwencai_web(query, top_n=top_n)
 
 
+def fetch_price_change_pct(code: str, entry_type: str, start_date: str, end_date: str) -> float:
+    """给定起止日期（`YYYYMMDD`），返回该标的收盘价的涨跌幅（百分比）。
+
+    供 `stock_watch/outcomes.py` 的结果回溯任务使用：拿候选池某天的
+    快照标的，核对到评估日为止的实际涨跌。不复权（`adjust=""`），因为
+    这里只关心区间涨跌幅这一个数字，复权与否对涨跌幅计算影响很小，
+    且不复权价格更直观、不需要额外解释给报告的读者。
+    """
+    ak = _import_akshare()
+    try:
+        if entry_type == "etf":
+            df = ak.fund_etf_hist_em(
+                symbol=code, period="daily", start_date=start_date, end_date=end_date, adjust="",
+            )
+        else:
+            df = ak.stock_zh_a_hist(
+                symbol=code, period="daily", start_date=start_date, end_date=end_date, adjust="",
+            )
+    except Exception as exc:  # noqa: BLE001
+        raise DataSourceError(f"获取 {code} 区间行情失败: {exc}") from exc
+
+    if df is None or df.empty:
+        raise DataSourceError(f"{code} 在 {start_date}~{end_date} 区间没有行情数据（可能停牌/退市）")
+
+    close_col = "收盘" if "收盘" in df.columns else "close"
+    if close_col not in df.columns:
+        raise DataSourceError(f"{code} 行情数据缺少收盘价列，akshare 返回列名可能已变化")
+
+    first_close = float(df.iloc[0][close_col])
+    last_close = float(df.iloc[-1][close_col])
+    if first_close == 0:
+        raise DataSourceError(f"{code} 起始收盘价为 0，无法计算涨跌幅")
+    return (last_close - first_close) / first_close * 100.0
+
+
 def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
     """问财网页版结果兜底抓取（`www.iwencai.com` 的选股结果接口）。"""
     url = "https://www.iwencai.com/customized/chart/get-robot-data"

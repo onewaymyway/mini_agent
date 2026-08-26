@@ -95,3 +95,40 @@ def render_analysis_report(analysis: StockAnalysis, out_path: Path) -> Path:
         "用 LLM 给出综合研判结论——本报告只负责把材料收集、结构化好。）"
     )
     return _write(out_path, "\n".join(lines) + "\n")
+
+
+def render_outcome_report(
+    records,
+    bucket_summary: Dict[str, dict],
+    out_path: Path,
+    *,
+    snapshot_date: str,
+    generated_at: str,
+) -> Path:
+    """结果回溯报告（对应 `next_doc/stock_watch_continuous_improvement_plan.md`
+    第 3.2 节）：把某天候选池快照 vs 实际涨跌幅的对照结果渲染成 Markdown，
+    供人 / review session 快速判断评分逻辑是不是真的有效。
+    """
+    lines = [
+        f"# 结果回溯报告 — 快照日期 {snapshot_date}（生成于 {generated_at}）",
+        "",
+        "## 按打分区间汇总平均涨跌幅",
+        "",
+        "| 分数区间 | 样本数 | 平均涨跌幅(%) |",
+        "|---|---|---|",
+    ]
+    for bucket, stats in bucket_summary.items():
+        avg = stats["avg_change_pct"]
+        avg_str = f"{avg:.2f}" if avg is not None else "（无数据）"
+        lines.append(f"| {bucket} | {stats['count']} | {avg_str} |")
+
+    lines.append("")
+    lines.append(f"## 明细（{len(records)} 只标的）")
+    lines.append("| 代码 | 名称 | 快照分数 | 涨跌幅(%) | 备注 |")
+    lines.append("|---|---|---|---|---|")
+    for r in records:
+        change_str = f"{r.change_pct:.2f}" if r.ok else "（查询失败）"
+        note = r.error or ""
+        lines.append(f"| {r.code} | {r.name} | {r.score_at_snapshot:.1f} | {change_str} | {note} |")
+
+    return _write(out_path, "\n".join(lines) + "\n")

@@ -70,6 +70,58 @@ def save_pool(path: Path, pool: Dict[str, CandidateEntry]) -> None:
     tmp.replace(path)
 
 
+def save_pool_snapshot(
+    snapshots_dir: Path, pool: Dict[str, CandidateEntry], *, on: Optional[str] = None
+) -> Path:
+    """把候选池当前状态额外归档一份到 `snapshots_dir/<date>.json`。
+
+    与 `save_pool()` 覆盖式保存的当前快照（`data/candidate_pool.json`）
+    不同——这里是"追加一份带日期的历史存档"，供
+    `entrypoints/reconcile_outcomes.py` 回溯"N 天前打了高分的标的后续
+    表现如何"用。同一天多次运行（比如手动重跑）直接覆盖当天的存档文件，
+    不追加多份，因为回溯只关心"当天收盘时的候选池状态"这个粒度，不需要
+    日内多次快照。
+
+    对应 `next_doc/stock_watch_continuous_improvement_plan.md` 阶段 3——
+    该文档指出这是 `candidate_pool.py` 此前实现的一个缺口：`save_pool`
+    只保留当下快照，没有历史，导致结果回溯无源可查。
+    """
+    date_str = on or datetime.now(timezone.utc).strftime("%Y%m%d")
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    out_path = snapshots_dir / f"{date_str}.json"
+    ordered = sorted(pool.values(), key=lambda e: e.score, reverse=True)
+    tmp = out_path.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps([e.to_dict() for e in ordered], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    tmp.replace(out_path)
+    return out_path
+
+
+def load_pool_snapshot(snapshots_dir: Path, date_str: str) -> Dict[str, CandidateEntry]:
+    """读取某一天的候选池归档快照；文件不存在或损坏时返回空字典
+    （与 `load_pool()` 同样的容错约定——回溯任务里某一天恰好没有存档，
+    不应该让整次回溯作业崩掉，跳过那一天即可）。
+    """
+    path = snapshots_dir / f"{date_str}.json"
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return {item["code"]: CandidateEntry.from_dict(item) for item in raw}
+
+
+def list_snapshot_dates(snapshots_dir: Path) -> List[str]:
+    """列出已归档的快照日期（`YYYYMMDD`），按时间升序。"""
+    if not snapshots_dir.exists():
+        return []
+    dates = [p.stem for p in snapshots_dir.glob("*.json") if p.stem.isdigit()]
+    return sorted(dates)
+
+
 def merge_hot_items(
     pool: Dict[str, CandidateEntry],
     items: List[HotStockItem],

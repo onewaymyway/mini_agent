@@ -46,6 +46,26 @@ def tracked_run(entrypoint: str, *, trigger: str = "external_cron") -> Iterator[
         yield
 
 
+def append_backlog(summary: str, *, source: str = "outcome_review", evidence_ref: str = "") -> None:
+    """往改进积压账本（`.agent/improvement_backlog.jsonl`）追加一条待办。
+
+    与 `tracked_run` 同样的降级约定：检测不到 mini_agent 框架时静默
+    跳过，不影响 entrypoint 本身的执行结果——写不写得进改进积压账本，
+    从来不应该是"这次数据抓取/回溯任务算不算成功"的判定条件。
+    """
+    try:
+        from mini_agent.external_projects.backlog import append_item
+    except ImportError:
+        logging.getLogger("stock_watch").info(
+            "未检测到 mini_agent 框架，跳过改进积压账本写入（不影响本次执行）"
+        )
+        return
+    try:
+        append_item(PROJECT_ROOT, source=source, summary=summary, evidence_ref=evidence_ref or None)
+    except Exception as exc:  # noqa: BLE001 - 记待办失败不应该让 entrypoint 本身失败
+        logging.getLogger("stock_watch").warning("写入改进积压账本失败（已忽略）: %s", exc)
+
+
 def run_entrypoint(entrypoint: str, main_fn, *, trigger: str = "external_cron") -> int:
     """统一的 entrypoint 执行入口：跑 `main_fn()`（返回 int 退出码），
     在 `tracked_run` 里执行，非 0 退出码会被转换成一次异常，确保账本

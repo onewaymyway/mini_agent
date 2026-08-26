@@ -69,14 +69,18 @@ stock_watch/
 │   ├── run_kline_batch.py      # 功能 2：K 线批量生成
 │   ├── run_screener.py         # 功能 3：条件选股
 │   ├── run_stock_analysis.py   # 功能 4：个股综合分析
-│   └── health.py               # project.yaml health_check 对应的探测脚本
+│   ├── reconcile_outcomes.py   # 结果回溯：候选池打分 vs 实际涨跌，见持续优化机制
+│   ├── health.py               # project.yaml health_check 对应的探测脚本
+│   └── _common.py              # entrypoint 公共引导（sys.path、账本/积压账本降级写入）
 ├── stock_watch/                 # 项目私有库代码
 │   ├── config.py                # 观察列表 / 抓取参数配置加载
 │   ├── data_sources.py          # akshare 封装 + 网页抓取公共层（UA/重试/限速）
-│   ├── candidate_pool.py        # 候选池账本（去重/合并/评分）
+│   ├── candidate_pool.py        # 候选池账本（去重/合并/评分）+ 归档快照
 │   ├── kline.py                 # K 线数据获取 + 绘图
 │   ├── screener.py              # 问财等网站选股结果抓取
 │   ├── analysis.py              # 个股综合分析（公告/帖子/新闻 → 报告）
+│   ├── outcomes.py              # 结果回溯纯逻辑：预测 vs 实际涨跌幅
+│   ├── source_health.py         # 数据源级别成败记录（细粒度信号）
 │   └── report.py                # 报告渲染（Markdown）公共函数
 ├── config/
 │   └── watchlist.yaml            # 候选池种子标的 + 抓取源配置
@@ -96,6 +100,18 @@ python entrypoints/run_kline_batch.py            # 功能 2
 python entrypoints/run_screener.py "今日涨停"    # 功能 3（参数为问财自然语言查询）
 python entrypoints/run_stock_analysis.py 600519  # 功能 4（参数为标的代码）
 ```
+
+## 持续优化迭代（新增，见 `next_doc/stock_watch_continuous_improvement_plan.md`）
+
+除了四项核心功能，项目还落地了该文档设计的"结果回溯"能力：
+`entrypoints/reconcile_outcomes.py` 定期把 N 天前候选池的归档快照
+（`data/pool_snapshots/`）与实际涨跌幅对照，写入 `data/
+outcome_ledger.jsonl` 并渲染报告；涨跌幅超出阈值的案例会自动记入
+改进积压账本（`.agent/improvement_backlog.jsonl`，`mini-agent projects
+backlog stock_watch list` 可查看），供后续人工或"周期性 review"判断
+评分逻辑是否需要调整。数据源级别的成败也会记进 `data/
+source_health.jsonl`（`stock_watch/source_health.py`），供判断"哪个
+数据源经常挂"。这些都是纯附加能力，不影响四项核心功能的既有行为。
 
 每个 entrypoint 都会往 `.agent/run_status.jsonl` 写执行记录
 （`trigger="external_cron"` 或未显式指定时的默认值，见各脚本内

@@ -34,3 +34,7 @@ screener:
 kline:
   days: 120          # 每次生成 K 线图取最近多少个交易日
   adjust: "qfq"       # 复权方式：qfq 前复权 / hfq 后复权 / "" 不复权
+
+outcomes:
+  lookback_days: 7          # 结果回溯：拿多少天前的候选池快照去核对后续涨跌
+  notable_gain_pct: 15.0    # 涨跌幅绝对值超过这个百分比，记入改进积压账本供 review 参考

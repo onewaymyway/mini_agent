@@ -1,4 +1,6 @@
 data/*.json
+data/*.jsonl
+data/pool_snapshots/*.json
 reports/**/*.md
 reports/**/*.png
 .agent/

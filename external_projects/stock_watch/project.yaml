@@ -18,6 +18,10 @@ entrypoints:
     # 无 schedule：按需触发（大管家 trigger_run 或手动传入标的代码），
     # 不适合无差别定时跑全市场个股分析
     timeout_sec: 600
+  reconcile_outcomes:
+    cmd: "python entrypoints/reconcile_outcomes.py"
+    schedule: "cron: 0 18 * * 1"     # 每周一盘后，核对一周前候选池快照的实际表现
+    timeout_sec: 600
 
 health_check:
   cmd: "python entrypoints/health.py"

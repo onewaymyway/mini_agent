@@ -134,20 +134,36 @@ stock_watch 的业务逻辑，不是框架能力。
       不新增自动化捷径"，不是要新写校验代码去拦截。
 
 ### 阶段 3：stock_watch — 细粒度执行信号 + 结果回溯任务
-- [ ] `stock_watch/source_health.py`：数据源级别成败记录的轻量封装，
-      `hotlist_scan`/`run_stock_analysis` 内部改用它记录每个数据源
-      本次成败（对应 3.1）。
-- [ ] 新增 `entrypoints/reconcile_outcomes.py` + `stock_watch/
-      outcomes.py`：从候选池历史快照（需要先补：候选池落盘时除了
-      覆盖式保存当前状态，还要追加一份按日期归档的快照，供回溯用）
-      取 N 天前的记录，查实际涨跌幅，写入 `data/outcome_ledger.jsonl`
-      （对应 3.2）。加进 `project.yaml` 的 `entrypoints`（周期建议：
-      每周一次，因为需要足够时间窗口才有意义的回溯结果）。
-- [ ] `candidate_pool.py::save_pool` 补一份归档快照写入（`data/
-      pool_snapshots/<date>.json`），否则 `reconcile_outcomes` 无源
-      可查——**这是本次设计里发现的、`candidate_pool.py` 当前实现
-      的一个缺口**：现在 `save_pool` 是覆盖式保存，没有历史，需要
-      在阶段3实现时一并补上。
+- [x] `stock_watch/source_health.py`：数据源级别成败记录的轻量封装，
+      `hotlist_scan` 内部改用它记录每个数据源本次成败（对应 3.1）。
+      `run_stock_analysis.py` 暂未接入（它本来就已经把三类材料各自的
+      成败记进 `StockAnalysis.errors` 并体现在报告里，粒度已经够用，
+      接入 `source_health.py` 留到真的需要跨次趋势分析时再做，避免
+      为了统一而统一）。
+- [x] 新增 `entrypoints/reconcile_outcomes.py` + `stock_watch/
+      outcomes.py`：从候选池历史快照（`candidate_pool.py` 新增
+      `save_pool_snapshot`/`load_pool_snapshot`/`list_snapshot_dates`，
+      `hotlist_scan` 每次运行额外归档一份）取 N 天前的记录，查实际
+      涨跌幅，写入 `data/outcome_ledger.jsonl`（对应 3.2）。已加进
+      `project.yaml` 的 `entrypoints`（`cron: 0 18 * * 1`，每周一
+      盘后）。涨跌幅超过 `outcomes.notable_gain_pct` 阈值的案例，
+      通过 `entrypoints/_common.py::append_backlog()` 自动写入改进
+      积压账本（该函数遵循与 `tracked_run` 相同的降级约定：检测不到
+      mini_agent 框架时静默跳过，不影响 entrypoint 本身的执行结果）。
+- [x] `candidate_pool.py::save_pool` 补一份归档快照写入——落地为
+      独立函数 `save_pool_snapshot()`（`hotlist_scan` 在 `save_pool`
+      之后额外调用一次），而不是改 `save_pool` 本身的行为，因为两者
+      语义不同（当前状态 vs 历史存档），保持职责分离比在一个函数里
+      做两件事更清楚。
+- [x] 单元测试：`tests/test_outcomes_and_source_health.py`（9 项，
+      快照归档读写容错、`outcomes.py` 结果拼装/阈值筛选/分桶汇总、
+      `source_health.py` 记录/失败率统计），加上原有 7 项，stock_watch
+      离线单测共 16 项全部通过。用 mock 涨跌幅数据端到端跑通了一遍
+      `reconcile_outcomes.py`（快照归档 → 回溯 → 报告 → 改进积压账本
+      写入），确认涨跌幅 22% 的案例被正确判定为"值得关注"并写入
+      backlog；框架 `manifest.py::load_manifest()` 确认新增的
+      `reconcile_outcomes` entrypoint 能被正常解析（`cron`/
+      `timeout_sec` 均正确）。
 
 ### 阶段 4：框架层 — daemon 侧周期性 review session
 - [ ] 设计"review session"的触发方式：**不是** `project.yaml` 的
@@ -223,3 +239,19 @@ stock_watch 的业务逻辑，不是框架能力。
   读写容错/状态流转/`change_type` 透传与校验），完整外部项目测试套件
   （65 项）无回归；CLI `projects backlog add/list` 做了端到端手测。
   阶段3（stock_watch 细粒度信号 + 结果回溯任务）待开始。
+- 2026-08-26：阶段3 完成。`candidate_pool.py` 新增
+  `save_pool_snapshot`/`load_pool_snapshot`/`list_snapshot_dates`
+  （归档快照，修补此前"只有当下状态、没有历史"的缺口）；新增
+  `stock_watch/source_health.py`（数据源级别成败记录，`hotlist_scan`
+  已接入）、`stock_watch/outcomes.py`（结果回溯纯逻辑）、
+  `entrypoints/reconcile_outcomes.py`（结果回溯 entrypoint，已加入
+  `project.yaml`，每周一盘后跑）；`data_sources.py` 新增
+  `fetch_price_change_pct`；`report.py` 新增
+  `render_outcome_report`；`_common.py` 新增 `append_backlog()`
+  （与 `tracked_run` 同样的框架降级约定）。新增
+  `tests/test_outcomes_and_source_health.py`（9 项），stock_watch
+  离线单测共 16 项全部通过。用 mock 涨跌幅数据端到端跑通了
+  `reconcile_outcomes.py` 全流程（归档快照 → 回溯 → 报告 → 改进
+  积压账本），22% 涨幅案例被正确判定为"值得关注"并写入 backlog；
+  `manifest.py` 确认新 entrypoint 解析正确。阶段4（daemon 侧周期性
+  review session）待开始。

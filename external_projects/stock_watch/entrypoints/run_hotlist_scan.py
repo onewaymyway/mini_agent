@@ -23,10 +23,19 @@ from stock_watch.candidate_pool import (
     load_pool,
     merge_hot_items,
     save_pool,
+    save_pool_snapshot,
 )
-from stock_watch.config import DATA_DIR, REPORTS_DIR, ensure_dirs, load_config
+from stock_watch.config import (
+    DATA_DIR,
+    POOL_SNAPSHOTS_DIR,
+    REPORTS_DIR,
+    SOURCE_HEALTH_PATH,
+    ensure_dirs,
+    load_config,
+)
 from stock_watch.data_sources import DataSourceError, fetch_eastmoney_guba_hot, fetch_eastmoney_hot_rank, fetch_xueqiu_hot_stock
 from stock_watch.report import render_candidate_pool_report
+from stock_watch.source_health import tracked_source
 
 logger = logging.getLogger("stock_watch.hotlist_scan")
 
@@ -50,7 +59,9 @@ def main() -> int:
         if not cfg.source_enabled(source_name):
             continue
         try:
-            items = fetcher()
+            with tracked_source(SOURCE_HEALTH_PATH, source=source_name, entrypoint="hotlist_scan") as h:
+                items = fetcher()
+                h.item_count = len(items)
         except DataSourceError as exc:
             logger.warning("数据源 %s 抓取失败，跳过: %s", source_name, exc)
             failures.append(f"{source_name}: {exc}")
@@ -61,6 +72,7 @@ def main() -> int:
     pool = apply_decay(pool, decay_days=cfg.score_decay_days)
     pool = enforce_max_size(pool, cfg.max_pool_size)
     save_pool(POOL_PATH, pool)
+    save_pool_snapshot(POOL_SNAPSHOTS_DIR, pool)
 
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     out_path = REPORTS_DIR / "candidate_pool" / f"{datetime.now().strftime('%Y%m%d')}.md"
