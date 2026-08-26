@@ -288,19 +288,35 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
 - [x] 起源、背景、核心理念、核心原则、整体架构、长期规划确认
 
 ### 阶段 1：引入显式 `Workspace` 抽象（框架核心改造，其余阶段的地基）
-- [ ] 新增 `mini_agent/workspace.py`：定义 `Workspace` 数据类，聚合
+- [x] 新增 `mini_agent/workspace.py`：定义 `Workspace` 数据类，聚合
       skills 搜索路径（本地优先 + 全局内置兜底）、workflow 路径、
       memory store 路径、session 路径、资源策略来源
-- [ ] 梳理 `config/models.py` 里所有隐式依赖 `project_root` 推导路径的
+- [x] 梳理 `config/models.py` 里所有隐式依赖 `project_root` 推导路径的
       配置项（`MemoryConfig.store_path`、`SessionConfig.dir` 等），
       改为从传入的 `Workspace` 派生，而不是从"当前目录"隐式推导
       —— **注意**：这一步只做"支持显式传入"，默认行为（不传时退化为
       现状的隐式推导）保持不变，避免破坏现有交互式使用方式
-- [ ] skill loader 支持多路径分层搜索（项目私有优先，全局内置兜底），
+      —— **核实结果（调整记录，见下）**：`MemoryConfig.store_path` /
+      `SessionConfig.dir` 已经是"None = 从 `AgentPaths(cfg.project_root)`
+      派生"的约定（`memory_factory.py::_load_local`、`session.py`
+      `SessionManager.__init__` 均已如此实现），不需要新增一层单独的
+      "从 Workspace 派生"逻辑——`Workspace.apply_to(cfg)` 只需要设置
+      `cfg.project_root = self.root`，已有派生链路自动生效，改动量比
+      原计划小，行为完全等价
+- [x] skill loader 支持多路径分层搜索（项目私有优先，全局内置兜底），
       当前是否已支持需要先核实（见 `tools/skill_manager.py`），如未
       支持则补上
-- [ ] 单元测试：同一份代码用两个不同 `Workspace.root` 分别跑一次，
+      —— **核实结果**：`SkillLoader` 本身已支持多目录构造（按目录顺序
+      加载，同名后者覆盖前者），`workflow/resource_bundle.py::
+      WorkflowResourceBundle._build_skill_loader()` 已经在用"全局目录
+      在前、本地目录在后"的分层约定，只是这个约定被锁在 workflow 私有
+      资源包里、没有作为通用能力暴露。`Workspace.skills_search_dirs`
+      / `Workspace.build_skill_loader()` 把同一约定提升为可独立于
+      workflow 上下文复用的通用方法，不改动 `SkillLoader` 本身
+- [x] 单元测试：同一份代码用两个不同 `Workspace.root` 分别跑一次，
       验证 memory/session/skill 解析结果完全隔离、互不污染
+      —— `tests/test_workspace.py`，8 个用例全部通过（隔离性 + 本地
+      优先覆盖 + `apply_to` 不越权改动其它字段 + 路径规范化）
 
 ### 阶段 2：CLI headless 单次执行入口
 - [ ] 新增 `mini_agent run --workspace <path> --workflow <name>` 命令
@@ -380,3 +396,21 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
 - 2026-08-26：文档创建。方案确认，来源于"A 股监控分析系统"需求讨论
   过程中逐步收敛出的、面向所有外部定制系统的通用架构设计。进入阶段 0
   确认完成，尚未开始阶段 1 的代码改造。
+- 2026-08-26：阶段 1 完成。新增 `src/mini_agent/workspace.py`
+  （`Workspace` 数据类：`root`/`global_skills_dir` 构造，派生
+  `skills_dir`/`skills_search_dirs`/`workflows_dir`/
+  `memory_store_path`/`sessions_dir`/`data_dir`/`reports_dir`/
+  `run_status_path`（阶段4预留）/`project_yaml_path`（阶段3预留）；
+  `build_skill_loader()`、`apply_to(cfg)`）。核实发现 `MemoryConfig.
+  store_path`/`SessionConfig.dir` 早已是"None 时从
+  `AgentPaths(project_root)` 派生"的既有约定，`SkillLoader` 也早已
+  支持多目录分层加载（`workflow/resource_bundle.py` 里已有先例）——
+  因此本阶段的落地方式比原计划更轻量：`Workspace` 复用这些既有派生
+  逻辑，只新增一个显式、可独立传递的入口对象，未修改
+  `config/models.py`/`skills/__init__.py` 本身的任何行为，向后完全
+  兼容。新增 `tests/test_workspace.py`（8 用例，覆盖 memory/session/
+  skill 三类路径的跨 workspace 隔离性、本地 skill 覆盖全局同名 skill、
+  `apply_to()` 不越权修改其它已有配置字段、路径规范化），全部通过；
+  抽查跑过 `tests/test_workflow_p11.py` 确认改动未引入新的回归（唯一
+  失败项是既有已知的 flaky 计时测试，与本次改动无关）。阶段 2（CLI
+  headless 单次执行入口）待开始。
