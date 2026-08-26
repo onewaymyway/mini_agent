@@ -63,8 +63,22 @@ cli/commands/workflow_cmd.py — workflow 子命令处理
                                              需要该次执行开启了
                                              cfg.workflow.debug_log_enabled
 
-独立 CLI 独有参数：`--project`/`-p <path>` 指定项目根目录（默认当前目录），
-解析方式与 daemon/user/self 子命令一致，见 cli/app.py::_extract_project_root。
+独立 CLI 独有参数：`--project`/`-p <path>`（或别名 `--workspace`/`-w`）指定
+项目根目录（默认当前目录），解析方式与 daemon/user/self 子命令一致，见
+cli/app.py::_extract_project_root。
+
+[external_projects_workspace_plan.md 阶段 2] 这条独立 CLI 路径本身就是
+该文档所要求的"headless 单次执行入口"：`run_workflow_cli()` 只调用
+`load_config(project_root=...)`（等价于 `Workspace(root=...).apply_to(cfg)`
+之后读取同一份配置），不初始化 HTTP API / SSE / kanban 等 daemon 专属
+基础设施；前台执行分支（`workflow run <name>`，不带 `--background`）里
+`WorkflowRunner(cfg).run(wf, inputs)` 是纯同步调用，跑完即返回、进程随即
+退出——`mini-agent workflow run <name> --workspace <path>` 因此天然满足
+"daemon 完全没有启动也能被 OS 原生 cron / Windows 计划任务直接调用、产出
+正确结果"这条验收标准，不需要另外新增一条并行的 `mini-agent run` 命令。
+`--background` 分支（见 `_spawn_detached_run`）额外验证了同一条原则在
+"父进程/触发它的 shell 提前退出"场景下依然成立：spawn 出的子进程不继承
+父进程生命周期，父进程（含触发它的 cron）退出后子进程仍会跑完。
 """
 
 from __future__ import annotations
@@ -174,7 +188,7 @@ def _print_usage() -> None:
         "  workflow diff <name>                   查看该 workflow 定义相对上次 commit 的改动\n"
         "  workflow debug <workflow_session_id> <step_id>\n"
         "                                         打印某个 step 的完整调试日志（需开启 debug_log_enabled）\n"
-        "命令行独有参数：--project/-p <path> 指定项目根目录（默认当前目录）"
+        "命令行独有参数：--project/-p <path>（或别名 --workspace/-w）指定项目根目录（默认当前目录）"
     )
 
 

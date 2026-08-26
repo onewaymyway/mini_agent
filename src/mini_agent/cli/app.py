@@ -20,8 +20,15 @@ import mini_agent.ui.renderer as R
 
 def _extract_project_root(argv: list[str]) -> tuple[Path, list[str]]:
     """
-    从子命令的 argv 里取出 --project/-p 的值，并返回"去掉这两个 token 之后"的
-    剩余 argv。
+    从子命令的 argv 里取出 --project/-p（或别名 --workspace/-w）的值，
+    并返回"去掉这两个 token 之后"的剩余 argv。
+
+    [external_projects_workspace_plan.md 阶段 2] `--workspace`/`-w` 是
+    `--project`/`-p` 的别名，语义完全相同（都是"以哪个目录为根加载
+    配置"），只是外部项目场景下用 `--workspace` 更贴合
+    `mini_agent.workspace.Workspace` 的概念，不强制用户改用这个更偏
+    "交互式项目根"历史命名的 `--project`。两个别名可以互换，同一次
+    调用只需要传其中一个。
 
     修复一个真实存在的 bug：之前 daemon/user/self 三处子命令短路各自写了一份
     几乎一样的"扫描 --project，找到就记下值"的代码，但只是**读取**，从来没有
@@ -42,7 +49,7 @@ def _extract_project_root(argv: list[str]) -> tuple[Path, list[str]]:
     rest: list[str] = []
     i = 0
     while i < len(argv):
-        if argv[i] in ("--project", "-p"):
+        if argv[i] in ("--project", "-p", "--workspace", "-w"):
             if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
                 # 正常情况：--project <path>
                 val = argv[i + 1].strip()

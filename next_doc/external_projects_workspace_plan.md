@@ -319,14 +319,36 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
       优先覆盖 + `apply_to` 不越权改动其它字段 + 路径规范化）
 
 ### 阶段 2：CLI headless 单次执行入口
-- [ ] 新增 `mini_agent run --workspace <path> --workflow <name>` 命令
+- [x] 新增 `mini_agent run --workspace <path> --workflow <name>` 命令
       （或复用已有 `cli/commands/workflow_cmd.py` 扩展 `--workspace`
       参数，具体走哪条路径待看现有 `workflow_cmd.py` 实现后再定）
-- [ ] 该命令只加载对应 `Workspace`，不初始化 HTTP API / SSE / kanban
+      —— **核实结果（调整记录）**：读代码发现 `mini-agent workflow run
+      <name> --project <path>`（`run_workflow_cli()`）已经完整具备这
+      个入口的全部特征——只 `load_config(project_root=...)`、不构造
+      Agent、不初始化 HTTP/SSE/kanban、前台分支是同步调用跑完即退出。
+      新增一条并行的 `mini-agent run` 命令会违反项目"通用/架构解而不是
+      一次性 workaround"的既有约定（重复实现同一件事）。因此改为最小
+      改动：把 `--workspace`/`-w` 加成 `--project`/`-p` 的别名（见
+      `cli/app.py::_extract_project_root`），语义完全一致，只是术语上
+      对齐 `Workspace` 概念，供外部项目场景使用；`workflow_cmd.py`
+      顶部 docstring 补充说明这条路径即阶段 2 的 headless 入口
+- [x] 该命令只加载对应 `Workspace`，不初始化 HTTP API / SSE / kanban
       等 daemon 专属基础设施；执行完退出，产出结构化结果（复用现有
       `WORKFLOW_RESULT_FILE_PATH` 模式）
-- [ ] 验收标准：该命令可以被 OS 原生 cron / Windows 计划任务直接调用，
+      —— 结构化结果复用的是已有的 `WorkflowSession`/`step_results`
+      落盘机制（`.agent/workflow_sessions/<id>/`），而不是
+      `WORKFLOW_RESULT_FILE_PATH`——后者核实后发现是 `python_step`/
+      `script` 类型 step 内部"子进程如何把结果回传给 runner"的机制，
+      不是"整条 CLI 调用的结果"该用的东西，两者不是同一层次的概念，
+      这里不套用避免张冠李戴
+- [x] 验收标准：该命令可以被 OS 原生 cron / Windows 计划任务直接调用，
       在 daemon 完全没有启动的情况下产出正确结果
+      —— 用 `tests/test_workflow_cli_headless.py` 做了单测层面的验证
+      （非真实 cron 环境，但验证了等价条件）：纯 `script` 类型 step
+      （不依赖 LLM/网络）跑通全流程、执行前后 `mini_agent.api.*`
+      模块集合不变（证明没有引入任何 daemon/HTTP 依赖）、两个不同
+      `--project`/`--workspace` 根之间执行记录完全隔离；另新增
+      `--workspace`/`-w` 别名解析测试
 
 ### 阶段 3：`project.yaml` 契约 + daemon 侧外部项目注册表
 - [ ] 定义 `project.yaml` 的 schema（`entrypoints` / `health_check` /
@@ -412,5 +434,15 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   skill 三类路径的跨 workspace 隔离性、本地 skill 覆盖全局同名 skill、
   `apply_to()` 不越权修改其它已有配置字段、路径规范化），全部通过；
   抽查跑过 `tests/test_workflow_p11.py` 确认改动未引入新的回归（唯一
-  失败项是既有已知的 flaky 计时测试，与本次改动无关）。阶段 2（CLI
-  headless 单次执行入口）待开始。
+  失败项是既有已知的 flaky 计时测试，与本次改动无关）。
+- 2026-08-26：阶段 2 完成。核实发现 `cli/commands/workflow_cmd.py::
+  run_workflow_cli()`（`mini-agent workflow run <name> --project
+  <path>`）已经是原计划要新增的 headless 单次执行入口，因此没有新增
+  并行的 `mini-agent run` 命令，改为给 `--project`/`-p` 加一个
+  `--workspace`/`-w` 别名（`cli/app.py::_extract_project_root`），
+  并在 `workflow_cmd.py` 顶部 docstring 里把这条已有路径与阶段 2 的
+  验收标准显式对应起来。新增 `tests/test_workflow_cli_headless.py`
+  （3 用例）：别名解析等价性、纯 `script` step 端到端同步执行成功且
+  过程中不引入任何 `mini_agent.api.*`（daemon/HTTP）模块、两个不同
+  workspace 根之间的工作流定义与执行记录完全隔离，全部通过。阶段 3
+  （`project.yaml` 契约 + daemon 侧外部项目注册表）待开始。
