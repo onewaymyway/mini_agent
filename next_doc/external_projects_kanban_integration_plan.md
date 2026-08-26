@@ -1,0 +1,153 @@
+# 外部项目管理接入 Streamlit 看板（第一期：只读监控 + backlog + review 预览）
+
+> **这篇文档管什么**：把目前只能通过 `mini-agent projects ...` 命令行
+> 操作的外部项目管理能力（`external_projects_workspace_plan.md`/
+> `stock_watch_continuous_improvement_plan.md` 已经落地的注册表、
+> 执行账本、改进积压账本、review session 任务模板），接入
+> `apps/mini_agent_kanban/app.py` 看板，做成新的一个 tab。
+>
+> **不管什么**：不改动任何底层机制本身（注册表格式、backlog 账本
+> schema、review 任务模板拼装逻辑一律复用现成实现，本文档只是给它们
+> 接一层 HTTP 路由 + Streamlit UI）；不实现 propose_fix/land 的
+> 看板化（见第4节"分期"）。
+
+## 1. 起因
+
+前两份文档（`external_projects_workspace_plan.md`、
+`stock_watch_continuous_improvement_plan.md`）把外部项目管理机制从
+"设计"做到了"能跑"，但入口一直停留在命令行（`mini-agent projects
+list/status/run/backlog/review`）和 agent 对话里的工具调用
+（`list_projects`/`inspect_project`/`trigger_run`/`list_backlog`/
+`append_backlog_item`/`propose_fix`）。看板（`apps/mini_agent_kanban/
+app.py`）已经是日常管理 Goal/Cron/进化提案的主要入口，外部项目管理
+留在命令行侧，导致：
+
+- 日常查看 stock_watch 是否健康、backlog 里堆了什么问题，得单独开一个
+  终端跑命令，而不是像其它子系统一样在看板里一眼看到。
+- 已经有一个只读聚合状态接口 `GET /v1/self/external_projects`
+  （`api/routes.py`，`external_projects_workspace_plan.md` 阶段4），
+  但看板前端从未消费它——**这是本次要补的最基础的一块**。
+- backlog/review 这两个"阶段5/6"新增的机制，目前只有 CLI
+  （`mini-agent projects backlog/review`）能访问，看板完全看不到。
+
+## 2. 复用与新增的边界
+
+严格复用现成后端逻辑，本次只新增"接线"，不重新实现任何判断：
+
+| 能力 | 现成实现（不改动） | 本次新增 |
+|---|---|---|
+| 项目列表 + 健康聚合 | `external_projects/status.py::aggregate_status()`，已有路由 `GET /v1/self/external_projects` | 无需新路由，看板直接消费现成接口 |
+| 注册新项目 | `ExternalProjectRegistry.register()` | 新路由 `POST /v1/external_projects/register` |
+| 手动触发 entrypoint | `scheduler.py::trigger_run()` | 新路由 `POST /v1/external_projects/{name}/trigger_run` |
+| 执行账本 | `ledger.py::read_ledger()` | 新路由 `GET /v1/external_projects/{name}/ledger` |
+| 改进积压账本 | `backlog.py::read_backlog()`/`append_item()` | 新路由 `GET`/`POST /v1/external_projects/{name}/backlog` |
+| review 任务模板预览 | `review.py::build_review_task_template_for()` | 新路由 `GET /v1/external_projects/{name}/review` |
+
+路由风格对齐仓库已有约定（参照 `/evolution/proposals*`/`/cron/jobs*`
+这一批既有端点）：owner-only（`_require_owner()`）、失败时返回结构化
+错误而不是让整个请求 500、路径参数用项目 `name` 而不是内部 id。
+
+## 3. 页面设计
+
+新增 tab `🗂️ 外部项目`（`render_external_projects_tab()`，代码位置
+与其它 tab 一致，紧邻 `render_evolution_proposals_tab` 之后），内部
+再分两个子区域（不用嵌套 `st.tabs`，用 `st.expander`/分割线，因为
+看板顶层 tab 已经很多，参照 `render_growth_tab` 内部用 expander 组织
+子模块的既有写法）：
+
+1. **项目总览**：卡片列表，每张卡片一个已注册项目——名称、启用状态、
+   健康状态徽标（🟢健康/🔴不健康/⚪未知，与 `_PROPOSAL_RISK_LABEL`
+   同样的徽标风格）、最近一次执行摘要。卡片内可展开看最近5条执行
+   记录（复用 `aggregate_status()` 已返回的 `recent_runs`）。
+2. **每个项目卡片内**再嵌 3 个小按钮/expander：
+   - 「▶️ 手动触发」：下拉选 entrypoint + 按钮，调
+     `trigger_run`，成功/失败直接在卡片内提示（不做二次确认——手动
+     跑一次 entrypoint 本身没有破坏性，和命令行 `projects run` 一样
+     的风险等级）。
+   - 「📋 改进积压」expander：列出该项目的 backlog（`status` 筛选下拉：
+     open/proposed/landed/dismissed/全部），一个文本框 + 按钮可以新增
+     一条 `source="user_feedback"` 的待办——这是本次最直接补上"用户
+     在看板里随口反馈一句，也能被记下来"这个诉求的地方。
+   - 「🔍 Review 预览」expander：按钮"生成本周 review 任务模板"，
+     调用 `review` 路由，把返回的任务模板文本用 `st.code` 展示，并给
+     一个"复制到对话框"的按钮（写入 `st.session_state` 里对话输入框
+     绑定的 key，与看板其它"发送到对话"入口的既有模式一致，具体参照
+     `render_topbar` 里"🔍 查看并控制"按钮跳转+回填输入框的写法）——
+     **这一步只是把模板文本送进对话输入框，不自动发送**，真正发起
+     review session 仍然是用户自己点发送，agent 仍然要走一遍正常的
+     工具调用+权限确认流程，不因为多了这个按钮就绕过任何既有的审批
+     机制。
+3. **注册新项目**：总览区顶部一个小表单（路径 + 可选名称 + 「注册」
+   按钮），调用新增的 `register` 路由。
+
+## 4. 分期
+
+**第一期（本文档实现范围）**：项目总览、手动触发、backlog 查看/新增、
+review 模板预览、注册新项目。全部是"只读展示 + 低风险写操作"（触发
+执行、写一条待办、注册项目——都不涉及改代码或合并分支）。
+
+**第二期（明确不在本次范围）**：`propose_fix` 生成 enhancement/fix
+提案分支 + diff 查看 + `land_maintenance_fix` 落地按钮的看板化。这块
+延后不是技术难度问题（`render_evolution_proposals_tab` 已经有现成的
+"diff 展示 + 风险分级 + 二次确认合并"UI 模式，抄一份接上
+`propose_fix`/`land_maintenance_fix` 的后端并不难），而是刻意的风险
+控制：`stock_watch_continuous_improvement_plan.md` 第5节反复强调
+"enhancement 类改动的最终落地永远保留给人工"，第一期先把"发现问题→
+记录→触发 review 对话"这条低风险链路接上看板，落地按钮这种"一键就
+可能合并代码"的操作留到确认了"团队真的会在看板上而不是命令行上做这类
+判断"之后再做，避免为了"看起来功能完整"而在还没想清楚二次确认交互
+之前就把高风险按钮摆到界面上。
+
+## 5. 具体改造计划
+
+> 约定：每完成一项，回来把对应复选框打勾，并在文末"变更记录"补一行。
+
+### 阶段 1：后端 — 新增 HTTP 路由（`api/routes.py`）
+- [ ] `POST /v1/external_projects/register`：body `{path, name?,
+      validate?}`，包装 `ExternalProjectRegistry.register()`。
+- [ ] `POST /v1/external_projects/{name}/trigger_run`：body
+      `{entrypoint}`，包装 `scheduler.trigger_run()`。
+- [ ] `GET /v1/external_projects/{name}/ledger`：query `limit`，包装
+      `ledger.read_ledger()`。
+- [ ] `GET /v1/external_projects/{name}/backlog`：query `status?`，
+      包装 `backlog.read_backlog()`。
+- [ ] `POST /v1/external_projects/{name}/backlog`：body
+      `{source, summary, evidence_ref?}`，包装 `backlog.append_item()`
+      （`source` 固定只允许 `user_feedback`——看板手填的这条路径语义
+      上就是"人工反馈"，`outcome_review`/`health_trend` 应该继续由
+      entrypoint 自动写入，不应该在 UI 上开放让人手填成看起来像是
+      系统自动发现的）。
+- [ ] `GET /v1/external_projects/{name}/review`：包装
+      `review.build_review_task_template_for()`，`review.enabled=
+      false` 时不报错，返回模板文本 + `enabled: false` 字段，UI 侧
+      据此提示"未开启定期 review，但仍可手动预览"。
+- [ ] 全部 owner-only（`_require_owner()`），全部遵循"目标项目不存在/
+      manifest 解析失败"时返回结构化错误而不是 500 的既有约定。
+
+### 阶段 2：`AgentClient` 新增对应方法（`apps/mini_agent_kanban/
+client.py`）
+- [ ] `external_projects_status()` / `register_external_project()` /
+      `trigger_external_project_run()` / `external_project_ledger()` /
+      `external_project_backlog()` / `append_external_project_backlog()`
+      / `external_project_review()`，风格对齐既有的
+      `evolution_proposals()`/`merge_evolution_proposal()` 一组方法。
+
+### 阶段 3：看板新 tab（`apps/mini_agent_kanban/app.py`）
+- [ ] `render_external_projects_tab()`：总览卡片列表 + 健康徽标。
+- [ ] 卡片内「手动触发」「改进积压」「Review 预览」三个子区域。
+- [ ] 顶部「注册新项目」表单。
+- [ ] 在 `st.tabs([...])` 列表与对应 `with tabs[i]:` 分支里插入这个
+      新 tab（放在"🧬 进化提案"之后、"⏰ Cron 任务"之前，与后端管理类
+      tab 归在一组）。
+
+### 阶段 4：端到端验证
+- [ ] 后端路由单元测试（`tests/test_api_external_projects_routes.py`
+      或并入现有相关测试文件），覆盖：注册/触发/账本/backlog 读写/
+      review 预览的正常路径 + 项目不存在时的错误路径。
+- [ ] 手动过一遍看板 UI：把 stock_watch 注册进去、看健康状态卡片、
+      手动触发一次 entrypoint、加一条 backlog、预览 review 模板、
+      点"复制到对话框"确认文本正确写入输入框。
+
+## 6. 变更记录
+
+- 2026-08-26：文档创建，设计确认（第1-4节）。阶段1-4待开始。
