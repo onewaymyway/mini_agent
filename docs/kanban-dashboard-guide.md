@@ -149,6 +149,7 @@ streamlit run app.py
 | 🧠 自我状态 | 具身智能自省信息（自主循环摘要、活跃目标数、最近活动、多用户会话池 SessionPool 概况） |
 | 🎓 能力学习 | 能力学习 / 人设养成 Track 管理（新建/暂停/恢复/删除）、大纲覆盖状态与学习台账、异步问答队列（提交/忽略回答、历史问答），见下方专节 |
 | 🧬 进化提案 | Skill 提案列表、git worktree diff、批准/拒绝 |
+| 🗂️ 外部项目 | 外部项目（`mini-agent projects`）管理接入看板：注册项目、健康状态总览、手动触发 entrypoint、改进积压 backlog 查看/新增、周期性 review 任务模板预览（见下方专节） |
 | ⏰ Cron 任务 | Cron Job 列表（含 priority）、启用/禁用、手动触发、新建、删除（非 sys: job） |
 | 🗓️ 全局日程 | cron job 到期时间线 / 周期性 Goal 下次触发 / 仲裁状态变化时间线，三类合并展示（见下方专节） |
 | 🔌 外部输入 | 外部输入网关配置与最近事件 |
@@ -493,6 +494,41 @@ cron job 已注册但默认 `enabled=False`（opt-in，见设计文档「实施
 的 `/capability cycle` 命令，或在 ⏰ Cron 任务 Tab 里手动打开对应
 cron job 后等待其按 cadence 自动触发。
 
+### 🗂️ 外部项目 Tab
+
+对应 `next_doc/external_projects_kanban_integration_plan.md` 第一期，把
+此前只能通过 `mini-agent projects ...` 命令行操作的外部项目管理能力
+（详见 [docs/external-projects-guide.md](./external-projects-guide.md)）
+接入看板。**只读展示 + 低风险写操作**（触发执行、写一条待办、注册
+项目），不涉及改代码或合并分支——`propose_fix`/`land_maintenance_fix`
+的看板化明确不在本次范围（风险控制考量见该计划文档第4节）。
+
+- **顶部「➕ 注册新项目」**：填项目根目录路径（需包含 `project.yaml`）+
+  可选项目名称，调用 `POST /v1/external_projects/register`。
+- **项目总览卡片**：每个已注册项目一张卡片——名称、健康徽标
+  （🟢健康/🔴不健康/⚪未知，数据来自既有的 `GET /v1/self/
+  external_projects` 聚合端点）、启用状态、最近一次执行摘要，可展开
+  查看最近 5 条执行记录。
+- **卡片内「▶️ 手动触发」**：填 entrypoint key，调用
+  `POST /v1/external_projects/{name}/trigger_run`，与 `mini-agent
+  projects run` 走同一条执行路径，成功/失败直接在卡片内提示，不做
+  二次确认（触发一次 entrypoint 本身没有破坏性）。
+- **卡片内「📋 改进积压」**：按状态（open/proposed/landed/dismissed/
+  全部）筛选查看该项目的改进积压账本（`GET /v1/external_projects/
+  {name}/backlog`），下方文本框可新增一条待办
+  （`POST /v1/external_projects/{name}/backlog`）——**`source` 后端
+  固定写死为 `user_feedback`**，不接受前端传入，因为看板手填的这条
+  路径语义上就是"人工反馈"，`outcome_review`/`health_trend` 应该继续
+  只由 entrypoint/review session 自动写入。
+- **卡片内「🔍 Review 预览」**：按钮生成本次 review 任务模板文本
+  （`GET /v1/external_projects/{name}/review`，`review.enabled=false`
+  时不报错，附带提示"未开启定期 review，但仍可手动预览"），旁边
+  「📋 复制到对话框」按钮会把模板文本写进"💬 对话"Tab 的输入框并跳转
+  过去——**只是预填文本，不自动发送**，真正发起 review session 仍需
+  用户自己点发送，agent 仍要走一遍正常的工具调用+权限确认流程。
+
+对应的 `AgentClient` 方法见下方"`AgentClient` 封装的 API 端点"一节。
+
 ### ⏰ Cron 任务 Tab
 
 Cron Job 列表、启用/禁用、手动触发、新建，`priority` 字段的展示与编辑
@@ -593,6 +629,13 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `llm_call_stats(days=7)` | `GET /v1/self/llm_call_stats` | 按天聚合的 LLM 调用计数：调用次数/成功失败数/切换次数/token 用量/平均耗时（只读，方向 B.2） |
 | `objective_completion_trend(limit=30)` | `GET /v1/objectives/completion_trend` | Objective 完成率每日快照序列：完成/失败数、平均重试次数、活跃数（只读，方向 D.1） |
 | `wiki_quarantine_status()` | `GET /v1/wiki/quarantine_status` | wiki 隔离区当前积压情况，不含已修复记录（只读，方向 E） |
+| `external_projects_status()` | `GET /v1/self/external_projects` | 已注册外部项目的聚合状态（健康 + 最近5条执行记录），"🗂️ 外部项目"Tab 总览卡片数据来源 |
+| `register_external_project(path, name=, validate=True)` | `POST /v1/external_projects/register` | 注册一个新的外部项目 |
+| `trigger_external_project_run(name, entrypoint)` | `POST /v1/external_projects/{name}/trigger_run` | 立即触发某个已注册项目的某个 entrypoint 一次 |
+| `external_project_ledger(name, limit=20)` | `GET /v1/external_projects/{name}/ledger` | 该项目的执行账本，最近 `limit` 条 |
+| `external_project_backlog(name, status=)` | `GET /v1/external_projects/{name}/backlog` | 该项目的改进积压账本；`status` 留空表示不过滤 |
+| `append_external_project_backlog(name, summary, evidence_ref=)` | `POST /v1/external_projects/{name}/backlog` | 新增一条待办，`source` 由后端固定写死为 `user_feedback` |
+| `external_project_review(name)` | `GET /v1/external_projects/{name}/review` | 生成该项目的 review 任务模板预览（不实际发起 review） |
 | `sentinel_summary(cron_failure_threshold=2)` | `GET /v1/sentinel/summary` | 哨兵聚合面板：cron 连续失败 + Objective 重试热点 + wiki 隔离区积压 + LLM 故障转移状态 + 近 7 天仲裁降级/阻塞占比一次性拉取（只读，方向 A） |
 | `concurrency_status()` | `GET /v1/self/concurrency` | SubAgent/LLM 请求这两个底层信号量的并发状态快照（只读，高级用法） |
 | `set_concurrency(max_tasks=, max_llm_calls=)` | `POST /v1/self/concurrency` | 运行时热改最大并发 SubAgent 数 / 最大并发 LLM 调用数，立即生效、不写回配置文件 |

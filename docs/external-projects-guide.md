@@ -1,11 +1,13 @@
 # 外部项目（用户定制系统）使用指南
 
 > **这篇文档管什么**：外部项目机制"现在是什么样"——`Workspace`、
-> `project.yaml` 契约、注册表、`mini-agent projects` 命令、headless
-> 执行入口，怎么用、数据存哪、已知限制。
+> `project.yaml` 契约、注册表、`mini-agent projects` 命令（含 backlog/
+> review 子命令）、headless 执行入口、看板集成，怎么用、数据存哪、
+> 已知限制。
 > **不管什么**：为什么这样设计、否决过哪些备选方案、各阶段具体怎么
-> 实现的——这些记录在
-> [next_doc/external_projects_workspace_plan.md](../next_doc/external_projects_workspace_plan.md)，
+> 实现的——这些记录在 [next_doc/external_projects_workspace_plan.md](../next_doc/external_projects_workspace_plan.md)、
+> [next_doc/stock_watch_continuous_improvement_plan.md](../next_doc/stock_watch_continuous_improvement_plan.md)、
+> [next_doc/external_projects_kanban_integration_plan.md](../next_doc/external_projects_kanban_integration_plan.md)，
 > 本文档只链接过去，不复制内容。
 
 ## 1. 解决什么问题
@@ -97,6 +99,8 @@ mini-agent projects run stock_watch hotlist_scan
 mini-agent projects enable stock_watch
 mini-agent projects disable stock_watch
 mini-agent projects unregister stock_watch
+mini-agent projects backlog stock_watch list        # 改进积压账本，见 §6.1
+mini-agent projects review stock_watch               # review 任务模板，见 §6.2
 ```
 
 - `disable` 只影响 daemon 侧调度器是否会自动触发该项目，**不影响**它
@@ -162,6 +166,68 @@ mini-agent projects ledger stock_watch 100      # 最近 100 条
 daemon 在运行时，`GET /v1/self/external_projects` 端点会把所有已注册
 项目的这套聚合视图（health + 最近 5 条执行记录）一次性返回，供前端
 kanban 直接渲染，不需要理解注册表/账本文件本身的存储细节。
+
+## 6.1 改进积压账本（backlog）
+
+```bash
+mini-agent projects backlog stock_watch list              # 全部待办
+mini-agent projects backlog stock_watch list open         # 按状态筛选
+mini-agent projects backlog stock_watch add "选股结果偶尔重复" \
+    user_feedback ".agent/improvement_backlog.jsonl:12"    # 新增一条
+```
+
+每条待办记 `source`（`outcome_review`/`user_feedback`/`health_trend`）、
+`summary`、可选 `evidence_ref`、`status`（`open`→`proposed`→
+`landed`/`dismissed`）。用于回答"这个项目有哪些值得优化但还没处理的
+问题"——这是账本（阶段4）"执行成败"之外的另一份同级账本，账本本身
+不做任何判断，靠 review session 或用户手动写入/流转状态。
+
+## 6.2 周期性 review 任务模板
+
+```bash
+mini-agent projects review stock_watch
+```
+
+生成一段可以直接投进 mini_agent 输入队列的任务描述文本：带上最近
+执行记录摘要 + 当前 open 状态的 backlog 条目 + 任务边界说明（判断
+有没有值得优化的地方、能不能形成具体机械可回归测试的改动、`propose_
+fix(change_type="enhancement")` 生成提案分支但不自行落地）。
+`project.yaml` 未声明 `review.enabled: true` 时不报错，仍会生成模板
+供预览，只是提示"未开启定期 review"。
+
+**这一步只生成文本，不会自动发起 review session**——真正让 agent 按
+这份模板执行，需要用户自己把文本发进对话（CLI 下手动复制，看板下用
+"复制到对话框"按钮，见 §6.3）。`review.cadence` 到 `cron_scheduler.py`
+认识的 cron 表达式的换算规则见 `next_doc/stock_watch_continuous_
+improvement_plan.md` 阶段4，daemon 主循环自动按 cadence 定期发起
+review 这一具体接线动作目前还没做，见第9节"已知限制"。
+
+## 6.3 看板集成
+
+`next_doc/external_projects_kanban_integration_plan.md`（第一期）把
+以上大部分命令行能力接入了看板（`apps/mini_agent_kanban/app.py`
+「🗂️ 外部项目」Tab），日常查看/低风险操作不再需要单独开终端：
+
+| 能力 | HTTP 端点 | 对应命令行 |
+|---|---|---|
+| 注册新项目 | `POST /v1/external_projects/register` | `mini-agent projects register` |
+| 手动触发 entrypoint | `POST /v1/external_projects/{name}/trigger_run` | `mini-agent projects run` |
+| 执行账本 | `GET /v1/external_projects/{name}/ledger` | `mini-agent projects ledger` |
+| 改进积压：查看 | `GET /v1/external_projects/{name}/backlog` | `mini-agent projects backlog list` |
+| 改进积压：新增 | `POST /v1/external_projects/{name}/backlog` | `mini-agent projects backlog add` |
+| review 任务模板预览 | `GET /v1/external_projects/{name}/review` | `mini-agent projects review` |
+
+全部端点 owner-only，目标项目不存在/manifest 解析失败时返回结构化
+错误（4xx + detail）而不是 500。看板侧新增待办时 `source` 固定只能是
+`user_feedback`（看板手填语义上就是"人工反馈"，`outcome_review`/
+`health_trend` 继续只由 entrypoint/review session 自动写入），且
+review 模板预览旁边的「复制到对话框」按钮只是把生成的文本填进看板
+"💬 对话"Tab 的输入框、并不自动发送——真正发起 review session 仍由
+用户自己点发送。使用细节见
+[docs/kanban-dashboard-guide.md](./kanban-dashboard-guide.md)
+「🗂️ 外部项目 Tab」一节；`propose_fix`/`land_maintenance_fix`（提出
+维护改动/落地分支，见第8节）明确不在这一期看板化范围内，仍然只能
+通过 agent 工具调用或 Python 函数/`git merge` 完成。
 
 ## 7. daemon 侧调度器（可选）
 
@@ -250,5 +316,12 @@ land_maintenance_fix("/data/stock_watch", result.branch)
 - [next_doc/external_projects_workspace_plan.md](../next_doc/external_projects_workspace_plan.md) —
   完整的架构设计过程、四条核心原则、为什么否决了"每个项目自己起
   daemon"等备选方案。
+- [next_doc/stock_watch_continuous_improvement_plan.md](../next_doc/stock_watch_continuous_improvement_plan.md) —
+  改进积压账本（backlog）、周期性 review 任务模板这两块机制的设计
+  过程，以及股票监控系统作为首个落地案例的完整记录。
+- [next_doc/external_projects_kanban_integration_plan.md](../next_doc/external_projects_kanban_integration_plan.md) —
+  §6.3 看板集成的设计过程与分期考量。
+- [docs/kanban-dashboard-guide.md](./kanban-dashboard-guide.md) —
+  「🗂️ 外部项目 Tab」一节，看板侧的具体操作说明。
 - [docs/agent-commit-guard-guide.md](./agent-commit-guard-guide.md) —
   本文档的文档分层模式参照对象。

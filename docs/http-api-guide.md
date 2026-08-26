@@ -453,6 +453,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8765/v1/diagnostics
 - [产出物看板指南](artifacts-dashboard-guide.md) — 产出物 Manifest 设计、自动侦测开关
 - [用户行为感知系统指南](behavior-perception-guide.md) — 桌面/浏览器/手机端行为采集与工作生活画像日报
 - [Kanban 看板使用指南](kanban-dashboard-guide.md) — Goal 执行规范生成/反馈迭代/确认的看板 UI 入口
+- [外部项目使用指南](external-projects-guide.md) — `/v1/external_projects/*`、`/v1/self/external_projects` 对应的 `mini-agent projects` 命令行机制
 
 ---
 
@@ -979,6 +980,53 @@ session 尚未创建 Agent 时，由 `_save_cognitive_anchor()` 自身的 no-op 
 `ok: true` 只表示"这次调用被受理并尝试执行"，不保证锚点一定生成成功
 （锚点内容由 LLM 生成，可能因为 history 太短、LLM 调用失败等原因静默跳过——
 与本地模式的行为一致）。
+
+### /v1/external_projects/* — 外部项目管理 REST API（owner only）
+
+`next_doc/external_projects_kanban_integration_plan.md` 第一期新增，
+把 `mini-agent projects ...` 命令行能力（详见
+[外部项目使用指南](external-projects-guide.md)）接入 HTTP，供看板
+「🗂️ 外部项目」Tab 使用。全部端点目标项目不存在/manifest 解析失败时
+返回结构化错误（4xx + `detail`），不是裸 500。
+
+```bash
+# 已注册外部项目的聚合状态（health + 最近 5 条执行记录）——
+# 早于本次新增的既有端点，一并列在这里方便查阅
+GET /v1/self/external_projects
+
+# 注册一个新的外部项目
+POST /v1/external_projects/register
+Body: { "path": "/data/stock_watch", "name": "stock_watch", "validate": true }
+# name 留空则用路径最后一段目录名；validate=false 可跳过 project.yaml 校验先占位注册
+
+# 立即触发一次 entrypoint（与 `mini-agent projects run` 同一条执行路径）
+POST /v1/external_projects/{name}/trigger_run
+Body: { "entrypoint": "hotlist_scan" }
+
+# 执行账本
+GET /v1/external_projects/{name}/ledger?limit=20
+
+# 改进积压账本
+GET /v1/external_projects/{name}/backlog?status=open   # status 可选，缺省不过滤
+POST /v1/external_projects/{name}/backlog
+Body: { "summary": "选股结果偶尔重复", "evidence_ref": "..." }
+# source 由后端固定写死为 "user_feedback"，不接受前端传入
+
+# review 任务模板预览（不实际发起 review session）
+GET /v1/external_projects/{name}/review
+```
+
+`GET /v1/external_projects/{name}/review` 响应示例：
+
+```json
+{
+  "template": "对外部项目 'stock_watch' 做一次周期性改进 review ...",
+  "enabled": true
+}
+```
+
+`enabled=false`（`project.yaml` 未声明 `review: {enabled: true}`）时
+不报错，仍返回模板文本，供先预览格式。
 
 ### Session 清理保护 / 批量清理
 
