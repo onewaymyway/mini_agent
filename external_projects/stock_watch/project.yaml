@@ -1,0 +1,33 @@
+name: stock_watch
+
+entrypoints:
+  hotlist_scan:
+    cmd: "python entrypoints/run_hotlist_scan.py"
+    schedule: "cron: 30 8 * * 1-5"   # 盘前 08:30，交易日
+    timeout_sec: 600
+  kline_batch:
+    cmd: "python entrypoints/run_kline_batch.py"
+    schedule: "cron: 30 15 * * 1-5"  # 盘后 15:30，交易日
+    timeout_sec: 900
+  screener:
+    cmd: "python entrypoints/run_screener.py"
+    schedule: "cron: 0 9 * * 1-5"    # 开盘前 09:00，跑一遍默认条件集
+    timeout_sec: 300
+  stock_analysis:
+    cmd: "python entrypoints/run_stock_analysis.py"
+    # 无 schedule：按需触发（大管家 trigger_run 或手动传入标的代码），
+    # 不适合无差别定时跑全市场个股分析
+    timeout_sec: 600
+
+health_check:
+  cmd: "python entrypoints/health.py"
+
+resources:
+  allowed_domains:
+    - "eastmoney.com"
+    - "guba.eastmoney.com"
+    - "xueqiu.com"
+    - "iwencai.com"
+    - "10jqka.com.cn"
+    - "sina.com.cn"
+  max_concurrency: 1

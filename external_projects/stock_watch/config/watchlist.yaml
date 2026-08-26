@@ -1,0 +1,36 @@
+# 候选池种子配置 + 抓取源开关
+# code 统一用 akshare 习惯的"6位代码"，market 用于区分 A股/ETF 等，
+# 便于 data_sources.py 选择正确的 akshare 接口前缀。
+
+seeds:
+  # 手动种子标的：即使抓取源当天没发现，也始终保留在候选池里跟踪
+  - code: "600519"
+    name: "贵州茅台"
+    market: "sh"
+    type: "stock"
+  - code: "510300"
+    name: "沪深300ETF"
+    market: "sh"
+    type: "etf"
+
+sources:
+  eastmoney_hot_rank: true      # 东方财富人气榜
+  eastmoney_guba_hot: true      # 东方财富股吧热帖
+  xueqiu_hot_stock: true        # 雪球热门股票
+  iwencai_screener: true        # 问财自然语言选股（功能 3 复用）
+
+candidate_pool:
+  max_size: 100          # 候选池上限，超出按热度分数淘汰最低分
+  score_decay_days: 7    # 超过 N 天未被任何抓取源再次提及，分数开始衰减
+
+screener:
+  # 功能 3 的默认查询集合，run_screener.py 不传参数时依次跑这些
+  default_queries:
+    - "今日涨停"
+    - "连续三日放量上涨"
+    - "探底回升"
+    - "MACD金叉且成交量放大"
+
+kline:
+  days: 120          # 每次生成 K 线图取最近多少个交易日
+  adjust: "qfq"       # 复权方式：qfq 前复权 / hfq 后复权 / "" 不复权

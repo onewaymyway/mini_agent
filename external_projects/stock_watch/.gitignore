@@ -1,0 +1,6 @@
+data/*.json
+reports/**/*.md
+reports/**/*.png
+.agent/
+__pycache__/
+*.pyc

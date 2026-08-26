@@ -472,10 +472,46 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
       或明确需要时再做，避免为了"更真实"而引入不必要的测试基础设施
 
 ### 阶段 6：股票监控系统作为首个落地案例
-- [ ] 按第 5.1 节标准结构，在阶段 1～4 完成后（不需要等阶段 5）新建
+- [x] 按第 5.1 节标准结构，在阶段 1～4 完成后（不需要等阶段 5）新建
       `stock_watch` 外部项目，验证整套机制在真实场景下是否顺畅
-- [ ] 记录落地过程中暴露出的、本文档未预料到的问题，回填进本文档的
-      "变更记录"和相关章节
+      —— 落地在 `external_projects/stock_watch/`（`external_projects/`
+      是一个不属于 mini_agent 自身代码树逻辑的普通目录，只是当前先放
+      在仓库里方便随代码一起分发；可以整体移动到任意路径/独立 git 仓库，
+      移动后只需重新 `mini-agent projects register <新路径>`，不需要
+      改任何一行 `stock_watch` 自己的代码——这也是本次落地对"路径独立
+      需求"（第 2 节问题 3）的直接验证）。实现了需求提出的全部四项
+      功能，均落成独立 entrypoint：`hotlist_scan`（热点候选池抓取，
+      多数据源打分合并 + 淘汰 + Markdown 报告）、`kline_batch`（候选池
+      全量标的 K 线批量生成，股票/ETF 分开走 akshare 对应接口）、
+      `screener`（选股，直接复用问财 iwencai 自然语言选股结果，不
+      自研技术指标引擎，采纳用户在需求里提出的思路）、`stock_analysis`
+      （个股综合分析，抓取公告/股吧帖子/新闻，结构化材料留给上层
+      mini_agent 会话做 LLM 综合研判，本项目只负责收集/结构化）。
+      数据源策略：优先 `akshare`（免费、封装好行情/K线/公告/新闻/部分
+      热榜接口），`akshare` 覆盖不到的（股吧帖子网页版兜底、问财网页版
+      结果）用项目自己的 `data_sources.py::fetch_html()` 轻量抓取
+      （UA + 超时 + 重试退避 + 限速），全程没有引入付费数据源。
+- [x] 记录落地过程中暴露出的、本文档未预料到的问题，回填进本文档的
+      "变更记录"和相关章节 —— 见下方变更记录，核心发现：(1) 框架此前
+      对"外部项目的 entrypoint 完全脱离 mini_agent 环境独立运行"这个
+      场景，缺一个"账本写入失败时静默降级"的公共封装——`track_run()`
+      本身没问题，但要求调用方能 `import mini_agent`，直接
+      `python entrypoints/xxx.py` 独立运行、且 mini_agent 未装进同一
+      环境时会 `ImportError`；本次在 `stock_watch` 自己的
+      `entrypoints/_common.py` 里补了一层 `tracked_run()` 包装做
+      `try/except ImportError` 降级，这是"外部项目自己实现"还是"框架
+      该提供一个可选依赖的官方 helper"，留到出现第二个外部项目、能看到
+      是否是共性问题时再决定要不要把这层降级逻辑上收进框架本身（呼应
+      第 7 节"跨项目经验沉淀"的刻意留白原则，不在只有一个案例时提前
+      抽象）；(2) 端到端验证发现 `track_run()`/`record_run()` 只识别
+      `Exception`，而 Python 惯用的 `raise SystemExit(exit_code)` 继承
+      `BaseException` 不会被捕获，会导致"entrypoint 实际以非零码退出，
+      账本却错记成功"——这不是框架 bug（`scheduler.py::_run_entrypoint`
+      走 subprocess + 自己判断退出码，不受影响，阶段 4 的验收本来就是
+      针对这条路径），而是"entrypoint 脚本自己在 `tracked_run` 块内
+      直接 `sys.exit()`"这种写法的通用陷阱，`stock_watch` 的
+      `_common.py::run_entrypoint()` 里用"非零返回值转普通异常"的方式
+      规避，这个模式值得未来写脚手架/文档时提醒用户。
 
 ## 9. 涉及文件清单（预期，具体以各阶段实施时为准）
 
@@ -507,8 +543,15 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   工具集 `list_projects`/`inspect_project`/`trigger_run`/
   `propose_fix`，在 `cli/app.py` 内置工具 side-effect import 列表里
   新增一行接入
-- （案例）新增外部路径下的 `stock_watch/` 项目 — 不属于 mini_agent
-  自身仓库，仅通过注册表关联
+- [x] （案例）新增 `external_projects/stock_watch/` 项目 — 按第 5.1
+  节标准结构落地：`project.yaml`、`PROJECT.md`、`requirements.txt`、
+  `entrypoints/`（`run_hotlist_scan.py`/`run_kline_batch.py`/
+  `run_screener.py`/`run_stock_analysis.py`/`health.py`/`_common.py`）、
+  `stock_watch/`（`config.py`/`data_sources.py`/`candidate_pool.py`/
+  `kline.py`/`screener.py`/`analysis.py`/`report.py`）、
+  `config/watchlist.yaml`、`tests/test_offline_logic.py`。当前物理放在
+  mini_agent 仓库内只是分发方便，逻辑上不属于 mini_agent 自身代码树，
+  可整体移动到任意路径/独立 git 仓库，只需重新注册
 
 ## 10. 变更记录
 
@@ -624,3 +667,32 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   验证是单测层面对整条链路的真实调用（不 mock 中间环节），不是接入
   真实大管家 agent 会话的验证，后者留给阶段 6 有真实外部项目、或明确
   需要时再做。阶段 6（股票监控系统作为首个落地案例）待开始。
+- 2026-08-26：阶段 6 完成。新增 `external_projects/stock_watch/`，
+  用户需求原文的四项功能均已实现为独立 headless entrypoint（见本节
+  阶段 6 复选框下的详细说明）。数据源全部走免费方案：`akshare` 为主，
+  `requests`+`BeautifulSoup` 做 `akshare` 覆盖不到的网页兜底（股吧
+  帖子、问财自然语言选股网页版结果），未引入任何付费接口。**验证方式
+  与范围说明**：沙箱构建环境没有到财经网站/`akshare` 数据源的出网
+  权限（网络白名单只包含包管理器域名），因此本次验证分两层——(1)
+  `tests/test_offline_logic.py`（7 用例，候选池合并/去重/衰减/淘汰/
+  账本读写容错/报告渲染，全部用固定 mock 数据，不需要网络，全部通过）；
+  (2) 装真实 `akshare`/`requests`/`beautifulsoup4`/`mplfinance` 依赖后，
+  完整跑通了一遍框架集成链路：`mini-agent projects register` 注册 →
+  `projects status` 读到 manifest/health_check 正常 → `projects run
+  stock_watch hotlist_scan` 实际触发（因沙箱无出网权限，三个数据源
+  依次抓取失败，但**行为完全符合设计**：种子标的仍进入候选池、报告
+  正常生成、失败原因逐条记录进日志、整体判定为失败并把 `exit_code=1`
+  正确写入账本）→ `projects status`/`projects ledger` 能读到这条失败
+  记录 → 用框架 `manifest.py::load_manifest()` 直接校验
+  `project.yaml`，字段解析（entrypoints/cron/health_check/resources）
+  全部正确。这一层验证的是"框架机制在真实（但网络失败）条件下的行为
+  正确性"，不是"抓取逻辑本身在真实网络下能拿到正确数据"——后者见
+  PROJECT.md「已知限制」一节，需要用户在有网络的机器上首次运行时核对
+  `akshare` 具体接口签名/返回列名、股吧与问财的页面结构是否与代码假设
+  一致，这类问题正是阶段 5"维护类交互标准化"（`propose_fix`）机制要
+  承接的典型场景。落地过程中的两处框架层发现见本节阶段 6 第二项复选
+  框下的说明（entrypoint 独立运行时的账本写入降级、`SystemExit` 不被
+  `track_run` 捕获的通用陷阱）。至此 `next_doc/
+  external_projects_workspace_plan.md` 规划的全部 6 个阶段均已完成；
+  后续如果出现第二个外部项目，再回来处理第 7 节里刻意留白的"跨项目
+  经验沉淀"与"权限模型精细化"两项。
