@@ -397,17 +397,39 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
       的文档分层模式）
 
 ### 阶段 4：状态账本约定 + daemon 侧状态聚合
-- [ ] 定义 `<project_root>/.agent/run_status.jsonl` 的标准 schema
+- [x] 定义 `<project_root>/.agent/run_status.jsonl` 的标准 schema
       （entrypoint / started_at / finished_at / exit_code / trigger /
       错误摘要），trigger 字段区分 `daemon` / `external_cron` /
       `manual`
-- [ ] 提供一个轻量库函数（外部项目的 entrypoint 里 import 调用即可）
+      —— `external_projects/ledger.py::RunRecord`
+- [x] 提供一个轻量库函数（外部项目的 entrypoint 里 import 调用即可）
       负责往这份账本写记录，降低外部项目遵循这个约定的成本，避免
       每个项目自己重新实现一遍写账本逻辑
-- [ ] daemon 侧新增"读取已注册项目账本 → 聚合成统一视图"的逻辑，
+      —— `ledger.py::record_run()`（底层单次写入）+ `ledger.py::
+      track_run()`（推荐用法，`with track_run(root, key, trigger=...)`
+      上下文管理器，自动填 `started_at`/`finished_at`，块内抛异常自动
+      记为失败并把异常信息写进 `error_summary`，异常本身照常向外抛出
+      不吞掉）；`scheduler.py::_run_entrypoint()`（阶段 3 已实现的
+      daemon/CLI 触发路径）已经改为触发后自动调用 `record_run()`，不
+      需要外部项目自己在 entrypoint 里重复处理"被 daemon/CLI 触发"这
+      一种来源，只有"被 OS cron 直接触发、完全绕过 mini-agent"这种
+      来源才需要脚本自己用 `track_run()` 上报（`trigger="external_cron"`）
+- [x] daemon 侧新增"读取已注册项目账本 → 聚合成统一视图"的逻辑，
       接入现有 kanban dashboard 展示
-- [ ] （若项目声明了 `health_check`）daemon 侧新增健康检查探测，
+      —— `external_projects/status.py::aggregate_status()`（单项目
+      失败不传染，逐项目 try/except）；新增只读端点 `GET /v1/self/
+      external_projects`（`api/routes.py`，仿照 `/self/
+      fairness_diagnostics` 的 owner-only + 异常降级为空列表的模式）
+      直接把聚合结果透给 daemon 前端；CLI 侧 `projects list`（追加
+      `LAST_RUN` 列，只读账本不触发探测）、`projects status`（展示
+      health + 最近一次执行 + 最近 5 条记录）、新增 `projects ledger
+      <name> [limit]`（完整账本浏览）三处一并接入
+- [x] （若项目声明了 `health_check`）daemon 侧新增健康检查探测，
       探测失败时退化为读取账本最后一条记录，而不是报错中断
+      —— `status.py::probe_health()`（30s 超时，命令本身抛异常按
+      False 处理）+ `project_status_snapshot()`（未声明/探测不了时
+      退化为账本最后一条记录，账本也没有时才是 `"unknown"`，全程不
+      抛异常中断调用方）
 
 ### 阶段 5：维护类交互标准化（大管家能力）
 - [ ] 设计"以目标外部项目 `Workspace` 为根触发独立运行"的标准调用
@@ -436,11 +458,15 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   后未新增，复用 `workflow_cmd.py` 现有入口（见阶段 2 变更记录）
 - [x] 新增 `src/mini_agent/external_projects/` — `manifest.py`
   （`project.yaml` 解析/校验）、`registry.py`（注册表增删查改）、
-  `scheduler.py`（cron 匹配 + 触发执行）；状态聚合是阶段 4 范围，
-  暂未实现
+  `scheduler.py`（cron 匹配 + 触发执行 + 自动记账）、`ledger.py`
+  （账本 schema + `record_run`/`track_run`/`read_ledger`）、
+  `status.py`（health_check 探测 + 退化到账本 + 聚合视图）
 - [x] 新增 `src/mini_agent/cli/commands/projects_cmd.py` — `projects`
   系列 CLI 命令（`list`/`status`/`run`/`register`/`unregister`/
-  `enable`/`disable`），在 `cli/app.py` 新增短路分支接入
+  `enable`/`disable`/`ledger`），在 `cli/app.py` 新增短路分支接入
+- [x] 修改 `src/mini_agent/api/routes.py` — 新增 `GET /v1/self/
+  external_projects` 只读端点，透出 `status.py::aggregate_status()`
+  聚合结果供 daemon 前端 kanban 使用
 - [x] 新增 `docs/external-projects-guide.md` — 功能"毕业"后的稳定使用
   指南（参照 `docs/agent-commit-guard-guide.md` 的文档分层模式，本
   `next_doc/` 文档保留作为设计考古记录）
@@ -504,3 +530,29 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   聚合）待开始；daemon 主循环真正接入 `run_due_entrypoints()` 定时调用
   这一具体接线动作留待阶段 4/5 实际改造 daemon 主循环时顺带做（见阶段
   3 第三项调整记录），不阻塞当前验收。
+- 2026-08-26：阶段 4 完成。新增 `external_projects/ledger.py`
+  （`RunRecord` schema + `record_run()` 底层写入 + `track_run()`
+  上下文管理器推荐用法 + `read_ledger()`/`last_record()` 读取，损坏行
+  跳过不炸整份账本）；`scheduler.py::_run_entrypoint()` 改为触发后
+  自动调用 `record_run()`（成功/非零退出码/超时三种结果都会记账，
+  `trigger` 原样透传 `"daemon"`/`"manual"`），阶段 3 的
+  `trigger_run`/`run_due_entrypoints` 因此不需要额外改动就自动获得
+  记账能力。新增 `external_projects/status.py`（`probe_health()`
+  30s 超时探测 + `project_status_snapshot()` 三级退化：health_check
+  → 账本最后一条 → `"unknown"` + `aggregate_status()` 批量视图、
+  单项目失败不传染）。`api/routes.py` 新增 `GET /v1/self/
+  external_projects` 只读端点（owner-only，仿照 `/self/
+  fairness_diagnostics` 的异常降级模式）。`cli/commands/
+  projects_cmd.py` 的 `list` 追加 `LAST_RUN` 列（只读账本，不主动探测
+  health_check，保持"被动可读"）、`status` 追加 health + 最近执行
+  展示、新增 `ledger <name> [limit]` 子命令浏览完整账本。新增
+  `tests/test_external_projects_ledger_and_status.py`（22 用例：
+  账本写读/损坏容错/`track_run` 成功与异常两条路径、health_check
+  探测 true/false/未声明、三级退化的每一级、聚合视图多项目/空注册表、
+  scheduler 触发后自动记账的成功与失败两条路径、CLI `ledger` 子命令
+  端到端），全部通过；连同阶段 3 测试共 52 用例全部通过。另外用真实
+  子进程跑了一遍 `register → run → list → status → ledger` 全流程
+  （含 `health_check` 声明），确认 `status` 里 `health_source` 正确
+  优先取 `health_check` 结果而不是账本。daemon 主循环真正定时调用
+  `run_due_entrypoints()`、以及第 5 节的"维护类交互标准化"（阶段 5）
+  待开始。

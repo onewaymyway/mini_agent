@@ -8,6 +8,7 @@ cli/commands/projects_cmd.py — `mini-agent projects` 独立命令行入口
     mini-agent projects list
     mini-agent projects status <name>
     mini-agent projects run <name> <entrypoint>
+    mini-agent projects ledger <name> [limit]
     mini-agent projects register <path> [--name <name>]
     mini-agent projects unregister <name>
     mini-agent projects enable <name>
@@ -38,15 +39,25 @@ def _err(msg: str) -> None:
 
 def _cmd_list(_args: List[str]) -> int:
     from mini_agent.external_projects import ExternalProjectRegistry
+    from mini_agent.external_projects.ledger import last_record
+    from mini_agent.external_projects.manifest import ProjectManifestError
 
     registry = ExternalProjectRegistry()
     projects = registry.list()
     if not projects:
         _print("尚未注册任何外部项目。用 `mini-agent projects register <path>` 注册一个。")
         return 0
-    _print(f"{'NAME':<20}{'ENABLED':<10}{'PATH'}")
+    _print(f"{'NAME':<20}{'ENABLED':<10}{'LAST_RUN':<12}{'PATH'}")
     for p in projects:
-        _print(f"{p.name:<20}{str(p.enabled):<10}{p.path}")
+        # 只读账本，不主动探测 health_check——`list` 应该是纯被动、瞬时
+        # 完成的操作（原则三），真正想探测健康检查用 `projects status`。
+        try:
+            manifest = registry.load_manifest_for(p.name)
+            last = last_record(manifest.source_dir) if manifest.source_dir else None
+            last_run = ("OK" if last.success else "FAIL") if last else "(none)"
+        except ProjectManifestError:
+            last_run = "(bad manifest)"
+        _print(f"{p.name:<20}{str(p.enabled):<10}{last_run:<12}{p.path}")
     return 0
 
 
@@ -87,12 +98,28 @@ def _cmd_status(args: List[str]) -> int:
         _print(f"resources.allowed_domains: {manifest.resources.allowed_domains}")
     _print(f"resources.max_concurrency: {manifest.resources.max_concurrency}")
 
-    # 阶段 4（状态账本）尚未实现，这里先如实说明，避免用户以为 status
-    # 会显示最近执行记录却什么都看不到。
-    _print(
-        "\n(执行历史账本聚合属于阶段 4，尚未实现——当前可用 "
-        "`mini-agent projects run` 触发一次并观察其退出码)"
-    )
+    from mini_agent.external_projects.status import project_status_snapshot
+    from mini_agent.external_projects.ledger import read_ledger
+
+    snap = project_status_snapshot(registry, name)
+    _print(f"\nhealth: {snap.health} (source={snap.health_source})")
+    if snap.last_run:
+        lr = snap.last_run
+        _print(
+            f"last_run: entrypoint={lr.entrypoint} exit_code={lr.exit_code} "
+            f"trigger={lr.trigger} finished_at={lr.finished_at}"
+        )
+        if lr.error_summary:
+            _print(f"  error: {lr.error_summary}")
+    else:
+        _print("last_run: (账本为空，该项目还没有任何执行记录)")
+
+    recent = read_ledger(manifest.source_dir, limit=5) if manifest.source_dir else []
+    if len(recent) > 1:
+        _print("recent runs:")
+        for rec in reversed(recent):
+            mark = "OK" if rec.success else "FAIL"
+            _print(f"  [{mark}] {rec.entrypoint} @ {rec.finished_at} (trigger={rec.trigger})")
     return 0
 
 
@@ -196,6 +223,46 @@ def _cmd_set_enabled(args: List[str], enabled: bool) -> int:
     return 0
 
 
+def _cmd_ledger(args: List[str]) -> int:
+    from mini_agent.external_projects import ExternalProjectRegistry
+    from mini_agent.external_projects.manifest import ProjectManifestError
+    from mini_agent.external_projects.registry import ExternalProjectRegistryError
+    from mini_agent.external_projects.ledger import read_ledger
+
+    if not args:
+        _err("用法: mini-agent projects ledger <name> [limit]")
+        return 1
+    name = args[0]
+    limit = int(args[1]) if len(args) > 1 else 20
+
+    registry = ExternalProjectRegistry()
+    try:
+        manifest = registry.load_manifest_for(name)
+    except (ExternalProjectRegistryError, ProjectManifestError) as exc:
+        _err(str(exc))
+        return 1
+
+    if manifest.source_dir is None:
+        _err("无法定位该项目的 workspace 根目录")
+        return 1
+
+    records = read_ledger(manifest.source_dir, limit=limit)
+    if not records:
+        _print("账本为空，该项目还没有任何执行记录。")
+        return 0
+    for rec in records:
+        mark = "OK" if rec.success else "FAIL"
+        line = (
+            f"[{mark}] {rec.entrypoint} exit_code={rec.exit_code} "
+            f"trigger={rec.trigger} started_at={rec.started_at} "
+            f"finished_at={rec.finished_at}"
+        )
+        if rec.error_summary:
+            line += f" error={rec.error_summary!r}"
+        _print(line)
+    return 0
+
+
 _SUBCOMMANDS = {
     "list": _cmd_list,
     "status": _cmd_status,
@@ -204,6 +271,7 @@ _SUBCOMMANDS = {
     "unregister": _cmd_unregister,
     "enable": lambda args: _cmd_set_enabled(args, True),
     "disable": lambda args: _cmd_set_enabled(args, False),
+    "ledger": _cmd_ledger,
 }
 
 

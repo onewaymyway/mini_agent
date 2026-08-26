@@ -69,6 +69,11 @@ api/routes.py — FastAPI 路由定义
                                        gaps_improvement_plan.md 方向 C）
     GET    /v1/self/llm_pool_status  [kanban_perception_gaps_improvement_plan.md
                                        方向 B.1] LLMClientPool 故障转移状态
+    GET    /v1/self/external_projects  [external_projects_workspace_plan.md
+                                       阶段 4] 已注册外部项目的聚合状态视图
+                                       （health + 最近执行记录，读注册表 +
+                                       账本，daemon 不在场也不影响外部项目
+                                       本身，本端点只是"顺手看一眼"）
     GET    /v1/self/llm_call_stats   [同上 方向 B.2] 按天聚合的 LLM 调用计数
     GET    /v1/objectives/completion_trend  [同上 方向 D.1] Objective 完成率
                                        每日趋势（快照挂在 /growth/scan 上记录）
@@ -653,6 +658,51 @@ async def get_self_llm_pool_status(request: Request):
     if snap is None:
         return {"entries": [], "current": 0, "switched_from_preferred": False, "enabled": False}
     return {**snap, "enabled": True}
+
+
+# ── 外部项目聚合状态视图（external_projects_workspace_plan.md 阶段 4）─────────
+# 背景：daemon 作为"大管家"看外部项目现在情况如何，不要求外部项目主动
+# 连接汇报（原则三），而是读注册表 + 读各项目自己的账本/health_check。
+# 这个端点就是把 external_projects/status.py::aggregate_status() 的结果
+# 直接透出，daemon 前端 kanban 可以直接拉这一个端点渲染外部项目面板，
+# 不需要理解注册表文件/账本文件本身的存储细节。
+@router.get("/self/external_projects")
+async def get_self_external_projects(request: Request):
+    """GET /v1/self/external_projects — 已注册外部项目的聚合状态：
+
+    返回结构：
+    {
+      "projects": [
+        {
+          "name": str, "path": str, "enabled": bool,
+          "health": "healthy"|"unhealthy"|"unknown",
+          "health_source": "health_check"|"ledger"|"none",
+          "manifest_error": str | null,
+          "last_run": {entrypoint, started_at, finished_at, exit_code,
+                        trigger, error_summary} | null,
+          "recent_runs": [同上结构, ...]   # 最近 5 条，旧到新
+        }, ...
+      ]
+    }
+
+    注册表为空时返回 `{"projects": []}`，不是错误。单个项目聚合失败
+    （比如注册路径已被移走）不会让整个请求 500，那个项目会带着
+    `manifest_error` 字段出现在结果里（见 aggregate_status() 实现）。
+    """
+    _require_owner(request)
+    try:
+        from mini_agent.external_projects.registry import ExternalProjectRegistry
+        from mini_agent.external_projects.status import aggregate_status
+
+        registry = ExternalProjectRegistry()
+        return {"projects": aggregate_status(registry)}
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(
+            _mini_agent_exc,
+            where="mini_agent.api.routes.get_self_external_projects",
+        )
+        return {"projects": []}
 
 
 # ── 调度公平性诊断（goal_fairness_scheduling_diagnostics_plan.md）──────────

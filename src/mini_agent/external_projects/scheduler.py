@@ -91,23 +91,48 @@ def _run_entrypoint(
     """
     在外部项目自己的根目录下、以子进程方式执行一条 entrypoint 命令。
 
-    刻意不捕获/解析 stdout 结构化结果——阶段 3 只负责"触发一次独立
-    运行"（原则四），执行记录的标准化落盘是阶段 4（状态账本）的范围；
-    这里只保证子进程的 cwd 是该外部项目的根，环境与 daemon 自身进程
-    隔离（`subprocess.run` 默认继承环境变量但不共享 daemon 进程内存
-    状态，满足原则二）。
+    执行完成后（无论成功/失败/超时）都会往该项目自己的
+    `<root>/.agent/run_status.jsonl` 写一条账本记录（阶段 4：
+    `external_projects/ledger.py::record_run`），trigger 字段原样
+    传入的 "daemon" 或 "manual"，与 entrypoint 脚本自己用 `track_run()`
+    上报、或用户直接被 OS cron 触发写 `trigger="external_cron"`，三者
+    共用同一份账本、同一个 schema，daemon 侧读的时候不需要区分来源。
     """
     cwd = manifest.source_dir
-    proc = subprocess.run(
-        entrypoint.cmd,
-        shell=True,
-        cwd=str(cwd) if cwd else None,
-        timeout=entrypoint.timeout_sec,
-    )
+    started_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    error_summary: Optional[str] = None
+    try:
+        proc = subprocess.run(
+            entrypoint.cmd,
+            shell=True,
+            cwd=str(cwd) if cwd else None,
+            timeout=entrypoint.timeout_sec,
+        )
+        returncode = proc.returncode
+        if returncode != 0:
+            error_summary = f"entrypoint exited with code {returncode}"
+    except subprocess.TimeoutExpired:
+        returncode = -1
+        error_summary = f"entrypoint timed out after {entrypoint.timeout_sec}s"
+    finished_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+    if cwd is not None:
+        from mini_agent.external_projects.ledger import record_run
+
+        record_run(
+            cwd,
+            entrypoint.key,
+            returncode,
+            trigger,
+            started_at=started_at,
+            finished_at=finished_at,
+            error_summary=error_summary,
+        )
+
     return EntrypointRunResult(
         project_name=manifest.name,
         entrypoint_key=entrypoint.key,
-        returncode=proc.returncode,
+        returncode=returncode,
         trigger=trigger,
     )
 

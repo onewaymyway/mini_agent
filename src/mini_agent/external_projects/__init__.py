@@ -12,8 +12,8 @@ mini_agent/external_projects — 外部项目契约、注册表与调度支持
                     entrypoint（原则二：调度只是可选加成，未被调度到的
                     entrypoint 依然可以被 OS cron / 用户手动独立执行）
 
-状态账本（`run_status.jsonl` 读写、聚合视图）是阶段 4 的范围，本包这一
-阶段不实现，只在 `manifest.py` 里预留 `health_check` 字段供阶段 4 使用。
+状态账本（`run_status.jsonl` 读写、聚合视图）见 `ledger.py`（读写）与
+`status.py`（健康检查探测 + 聚合），对应阶段 4。
 """
 
 from mini_agent.external_projects.manifest import (
@@ -25,6 +25,13 @@ from mini_agent.external_projects.manifest import (
     load_manifest,
 )
 from mini_agent.external_projects.registry import ExternalProjectRegistry
+from mini_agent.external_projects.ledger import RunRecord, read_ledger, record_run, track_run
+from mini_agent.external_projects.status import (
+    ProjectStatusSnapshot,
+    aggregate_status,
+    probe_health,
+    project_status_snapshot,
+)
 
 __all__ = [
     "EntrypointSpec",
@@ -34,4 +41,12 @@ __all__ = [
     "ResourceSpec",
     "load_manifest",
     "ExternalProjectRegistry",
+    "RunRecord",
+    "read_ledger",
+    "record_run",
+    "track_run",
+    "ProjectStatusSnapshot",
+    "aggregate_status",
+    "probe_health",
+    "project_status_snapshot",
 ]

@@ -118,28 +118,73 @@ mini-agent workflow run <workflow_name> --workspace /data/stock_watch
 `--workspace` 是 `--project` 的别名，语义完全一致，只是在外部项目场景
 下术语上对齐 `Workspace` 概念。
 
-## 5. daemon 侧调度器（可选）
+## 5. 状态账本：记录每一次执行
+
+每个外部项目按统一约定，把自己的每次执行记录写进自己
+`<root>/.agent/run_status.jsonl`，不管这次执行是被 `mini-agent
+projects run` 触发、被 daemon 调度器触发、还是被 OS cron 完全绕开
+mini_agent 直接触发的，都写同一份账本、同一个 schema。
+
+**被 `mini-agent projects run` 或 daemon 调度器触发时**：账本自动写，
+不需要你的 entrypoint 脚本做任何事。
+
+**被 OS cron 直接触发、完全绕开 mini_agent 时**：脚本自己 import 一个
+上下文管理器上报即可：
+
+```python
+from mini_agent.external_projects.ledger import track_run
+
+with track_run(".", "hotlist_scan", trigger="external_cron"):
+    do_the_actual_scan()  # 正常跑完记一条成功；抛异常自动记失败并重新抛出
+```
+
+查看账本：
+
+```bash
+mini-agent projects ledger stock_watch          # 最近 20 条
+mini-agent projects ledger stock_watch 100      # 最近 100 条
+```
+
+## 6. 健康检查与状态聚合
+
+`mini-agent projects status <name>` 会：
+
+1. 如果 `project.yaml` 声明了 `health_check`，主动探测一次
+   （30 秒超时），探测结果直接作为健康状态；
+2. 没声明，或探测失败到"探测不了"的程度，退化为读账本最后一条记录
+   （`exit_code == 0` → healthy，非 0 → unhealthy）；
+3. 两者都没有 → `unknown`。
+
+`mini-agent projects list` 只读账本（不主动探测 `health_check`，保持
+纯被动、瞬时完成），`LAST_RUN` 列显示最近一次执行是 `OK`/`FAIL`/
+`(none)`。
+
+daemon 在运行时，`GET /v1/self/external_projects` 端点会把所有已注册
+项目的这套聚合视图（health + 最近 5 条执行记录）一次性返回，供前端
+kanban 直接渲染，不需要理解注册表/账本文件本身的存储细节。
+
+## 7. daemon 侧调度器（可选）
 
 `mini_agent.external_projects.scheduler.run_due_entrypoints(registry)`
 供 daemon 的后台循环按分钟粒度调用，会触发本分钟内到期、且项目未被
-`disable` 的所有 entrypoint。这是"daemon 在场时的锦上添花"，不触发
-不影响这些 entrypoint 被 OS cron / 手动独立执行。
+`disable` 的所有 entrypoint，触发后自动写账本。这是"daemon 在场时的
+锦上添花"，不触发不影响这些 entrypoint 被 OS cron / 手动独立执行。
 
-## 6. 已知限制 / 尚未实现
+## 8. 已知限制 / 尚未实现
 
-- **状态账本聚合尚未实现**（`next_doc` 阶段 4 范围）：目前
-  `projects status` 只能展示 manifest 内容，看不到历史执行记录；每次
-  执行的成败目前只能靠 `projects run` 的退出码或 `health_check` 自行
-  判断。
-- **健康检查尚未接入调度器**：`project.yaml` 的 `health_check` 字段
-  目前只被解析和展示，daemon 还不会主动探测。
+- **daemon 主循环尚未真正接入调度器**：`run_due_entrypoints()` 本身
+  已经过测试、可独立调用，但 daemon 主循环定时（每分钟）调用它这一
+  具体接线动作还没做，目前调度只能靠 `mini-agent projects run` 手动
+  触发或 OS cron。
 - **cron 语法是最小子集**：不支持步进 (`*/5`) 等复杂表达式。
 - **补跑策略未定义**：daemon 重启后错过的调度不会自动补跑。
+- **"大管家"维护类交互标准化**（`list_projects`/`inspect_project`/
+  `trigger_run`/`propose_fix` 工具化）是阶段 5 的范围，尚未开始。
 
-以上限制均按刻意留白处理，等真实需求出现（阶段 4/5，或第二个外部
+以上限制均按刻意留白处理，等真实需求出现（阶段 5，或第二个外部
 项目落地后）再回来补，避免过早设计。
 
-## 7. 相关文档
+## 9. 相关文档
 
 - [next_doc/external_projects_workspace_plan.md](../next_doc/external_projects_workspace_plan.md) —
   完整的架构设计过程、四条核心原则、为什么否决了"每个项目自己起
