@@ -73,6 +73,24 @@ class ResourceSpec:
 
 
 @dataclass
+class ReviewSpec:
+    """`project.yaml` 里可选的 `review` 块——周期性"改进 review session"
+    的调度声明。对应
+    `next_doc/stock_watch_continuous_improvement_plan.md` 阶段 4。
+
+    刻意不放进 `entrypoints`：`entrypoints.schedule` 触发的是"跑既定
+    代码的子进程"（无 LLM 参与），而 review session 是"daemon 发起一次
+    真实 mini_agent 会话，读账本/积压账本/结果回溯，判断有没有值得
+    处理的优化项"——语义完全不同，混在一起会让 `entrypoints` 的契约
+    变得模糊（调用方无法再假设"entrypoints 里的每一项都是可以直接
+    subprocess 执行的命令"）。
+    """
+
+    cadence: str = "weekly"
+    enabled: bool = False
+
+
+@dataclass
 class ProjectManifest:
     """一份已校验通过的 `project.yaml` 内容。"""
 
@@ -80,6 +98,7 @@ class ProjectManifest:
     entrypoints: Dict[str, EntrypointSpec]
     health_check: Optional[HealthCheckSpec] = None
     resources: ResourceSpec = field(default_factory=ResourceSpec)
+    review: ReviewSpec = field(default_factory=ReviewSpec)
     # manifest 所在目录，即该外部项目的 Workspace root。不是 project.yaml
     # 文件本身声明的字段，而是 load_manifest() 加载时按来源路径回填，方便
     # 调用方（registry/scheduler）不用另外再传一份 root。
@@ -177,6 +196,23 @@ def _parse_resources(raw: Any) -> ResourceSpec:
     return ResourceSpec(allowed_domains=list(allowed_domains), max_concurrency=max_concurrency)
 
 
+def _parse_review(raw: Any) -> ReviewSpec:
+    if raw is None:
+        return ReviewSpec()
+    if not isinstance(raw, dict):
+        raise ProjectManifestError("review: 必须是一个映射（cadence/enabled）")
+
+    cadence = raw.get("cadence", "weekly")
+    if not isinstance(cadence, str) or not cadence.strip():
+        raise ProjectManifestError("review.cadence: 必须是非空字符串")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ProjectManifestError("review.enabled: 必须是布尔值")
+
+    return ReviewSpec(cadence=cadence.strip(), enabled=enabled)
+
+
 def parse_manifest(text: str, *, source_dir: Optional[Path] = None) -> ProjectManifest:
     """从 `project.yaml` 的文本内容解析出 `ProjectManifest`，做结构校验。"""
     try:
@@ -198,12 +234,14 @@ def parse_manifest(text: str, *, source_dir: Optional[Path] = None) -> ProjectMa
 
     health_check = _parse_health_check(data.get("health_check"))
     resources = _parse_resources(data.get("resources"))
+    review = _parse_review(data.get("review"))
 
     return ProjectManifest(
         name=name,
         entrypoints=entrypoints,
         health_check=health_check,
         resources=resources,
+        review=review,
         source_dir=Path(source_dir).expanduser().resolve() if source_dir else None,
     )
 

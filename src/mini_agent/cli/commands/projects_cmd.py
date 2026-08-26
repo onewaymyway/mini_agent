@@ -326,6 +326,49 @@ def _cmd_backlog(args: List[str]) -> int:
     return 1
 
 
+def _cmd_review(args: List[str]) -> int:
+    """`mini-agent projects review <name>` — 生成一次周期性 review 的
+    任务模板文本并打印到标准输出。
+
+    对应 `next_doc/stock_watch_continuous_improvement_plan.md` 阶段 4。
+    这条命令本身**不**发起真实的 agent 会话，也**不**把生成的任务模板
+    注册进任何正在运行的 daemon 调度循环——那部分（接入
+    `CronScheduler.add_job`）是该文档明确标注的"待接线"部分，本命令
+    只负责把"这次 review 该带着什么材料、交代什么任务边界"这件事做
+    对、且可以离线验证（不需要真的跑起一个 daemon）。当前用法：把输出
+    的文本手动粘贴进一次 mini_agent 对话，或者存起来供未来接线时直接
+    作为 `task_template` 使用。
+    """
+    from mini_agent.external_projects import ExternalProjectRegistry
+    from mini_agent.external_projects.manifest import ProjectManifestError
+    from mini_agent.external_projects.registry import ExternalProjectRegistryError
+    from mini_agent.external_projects.review import build_review_task_template_for
+
+    if not args:
+        _err("用法: mini-agent projects review <n>")
+        return 1
+    name = args[0]
+
+    registry = ExternalProjectRegistry()
+    try:
+        manifest = registry.load_manifest_for(name)
+    except (ExternalProjectRegistryError, ProjectManifestError) as exc:
+        _err(str(exc))
+        return 1
+
+    if not manifest.review.enabled:
+        _err(
+            f"项目 '{name}' 未开启 review（project.yaml 需要 "
+            "`review: {enabled: true}`），但仍然生成一次任务模板供预览。"
+        )
+        # 不 return——未开启只是"daemon 不会自动周期性触发"，不妨碍手动
+        # 预览一次任务模板长什么样，方便用户先看看再决定要不要开启。
+
+    template = build_review_task_template_for(manifest)
+    _print(template)
+    return 0
+
+
 _SUBCOMMANDS = {
     "list": _cmd_list,
     "status": _cmd_status,
@@ -336,6 +379,7 @@ _SUBCOMMANDS = {
     "disable": lambda args: _cmd_set_enabled(args, False),
     "ledger": _cmd_ledger,
     "backlog": _cmd_backlog,
+    "review": _cmd_review,
 }
 
 

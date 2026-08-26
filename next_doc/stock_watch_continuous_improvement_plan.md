@@ -166,27 +166,56 @@ stock_watch 的业务逻辑，不是框架能力。
       `timeout_sec` 均正确）。
 
 ### 阶段 4：框架层 — daemon 侧周期性 review session
-- [ ] 设计"review session"的触发方式：**不是** `project.yaml` 的
+- [x] 设计"review session"的触发方式：**不是** `project.yaml` 的
       `entrypoints.schedule`（那是"跑既定代码的子进程"，不涉及 LLM
-      判断），而是 daemon 侧新的、独立的调度概念——按周期为已注册
-      项目发起一次真实 mini_agent 会话，工具集限定为
-      `list_projects`/`inspect_project`/`list_backlog`/
-      `append_backlog_item`/`propose_fix`（`change_type=
-      "enhancement"`），以目标项目的 `Workspace` 为根（复用原则四）。
-- [ ] 会话读写目标项目自己的 memory（`Workspace.memory_store_path`），
-      把"问财周一早高峰容易被限流"这类经验沉淀下来，供以后的 review
-      session 和日常诊断复用，不用每次从零发现——这是本文档第一次
-      让 review session 真正用上 `Workspace` 早就预留、但一直没有
-      使用方接入的 memory 隔离能力。
-- [ ] 系统提示词设计：读最近的账本/细粒度信号/结果回溯/改进积压，
-      判断有没有值得处理的项；机械性、有回归测试兜底的直接走
-      `propose_fix(change_type="enhancement")` 生成可审核分支；判断
-      不了或者影响面大的，写成 backlog 条目或者直接生成一份给用户看
-      的文字建议，不擅自决定。
-- [ ] 调度频率与开关：`project.yaml` 新增可选字段 `review:
+      判断），而是复用本仓库已经验证过的 `evolution/cron_scheduler.py
+      ::CronJob.task_template` 模式（daemon 自身的 `sys:
+      growth_advisor_daily` 等内置任务走的就是这条路：定时把一段任务
+      描述文本提交进输入队列，由带着相应工具的 agent 去执行）——不是
+      发明一套新的调度概念。工具集限定为 `list_projects`/
+      `inspect_project`/`list_backlog`/`append_backlog_item`/
+      `propose_fix`（`external_projects/review.py::
+      REVIEW_SESSION_TOOLS`），以目标项目的 `Workspace` 为根（复用
+      原则四）。**已落地**：`project.yaml` 新增可选 `review:
+      {cadence, enabled}` 块（`manifest.py::ReviewSpec`），
+      `external_projects/review.py` 提供 `gather_review_briefing()`
+      （读目标项目自己的 `run_status.jsonl`/`improvement_backlog.
+      jsonl`）+ `build_review_task_template()`（拼成任务描述文本）+
+      `cadence_to_cron()`（"weekly"/"daily"/"monthly" → cron 表达式，
+      供未来接线用）；CLI 新增 `projects review <name>` 打印生成的
+      任务模板。**未落地、明确留到需要时再做**：把生成的任务模板
+      实际注册进正在运行的 daemon 的 `CronScheduler`——当前
+      `DaemonClient` 只暴露了 `list_cron_jobs`/`run_cron_job`，没有
+      "新增 job"的远程接口，接线需要先给运行中的 daemon 加一个 HTTP
+      端点，风险/工作量都不小，且不影响本阶段其余产出的可验证性
+      （`build_review_task_template_for()` 全程离线可测，`projects
+      review` 命令端到端手测已验证），因此按文档第5节"刻意留白"的
+      原则明确推迟，接线方式已经在 `review.py` 顶部 docstring 里写清楚
+      （用 `CronScheduler.add_job(schedule=f"cron:{cadence_to_cron(...)}",
+      task_template=build_review_task_template_for(...), tags=
+      ["external_project_review", name])`）。
+- [ ] 会话读写目标项目自己的 memory（`Workspace.memory_store_path`）
+      ——**明确推迟**：这一项依赖"真的有一次会话在跑"，本阶段既然
+      还没接线真实的 review session 触发，就没有可验证的落点；留到
+      真正接线（上一条的"未落地"部分）完成、有真实会话产生时一并
+      验证，避免写一段没有调用方、无法端到端验证的代码。
+- [x] 系统提示词设计：见 `build_review_task_template()`——读最近执行
+      记录/改进积压账本，交代任务边界（不是纠错、证据不足不要臆断）、
+      交代权限边界（enhancement 提案只生成分支不落地）、交代产出物
+      要求（可以是提案分支、可以是待办账本条目、可以是给用户的总结，
+      不强求每次都要有一个具体动作）。已用固定材料单元测试拼装结果
+      （含关键短语断言：`change_type`/`enhancement` 一定出现，确保
+      权限边界不会在未来改动中被无意间删掉）。
+- [x] 调度频率与开关：`project.yaml` 新增可选字段 `review:
       {cadence: "weekly", enabled: true}`（不放进 `entrypoints`，
-      避免和"跑代码"的语义混在一起）；daemon 主循环按此周期触发，
-      默认关闭（`enabled: false`），需要项目自己显式打开。
+      避免和"跑代码"的语义混在一起）；stock_watch 自己的
+      `project.yaml` 已经加上这个块作为真实用例（`enabled: true`，
+      `mini-agent projects review stock_watch` 端到端验证通过，能正确
+      读到候选池反馈类待办并拼进任务模板）。daemon 主循环按此周期
+      真正触发，等上面"未落地"部分完成后才会生效——`enabled: true`
+      目前只影响 CLI 命令的一句提示文案，不会导致任何自动行为，这一点
+      在 `project.yaml` 里已经写成注释，避免用户误以为现在已经在自动
+      跑了。
 
 ### 阶段 5：stock_watch — 黄金案例回归测试沉淀
 - [ ] `reconcile_outcomes` 跑出的"预测 vs 结果"里，误判幅度大的典型
@@ -255,3 +284,22 @@ stock_watch 的业务逻辑，不是框架能力。
   积压账本），22% 涨幅案例被正确判定为"值得关注"并写入 backlog；
   `manifest.py` 确认新 entrypoint 解析正确。阶段4（daemon 侧周期性
   review session）待开始。
+- 2026-08-26：阶段4 部分完成（设计落地 + 可验证部分已实现，daemon 实际
+  接线明确推迟，见阶段4 详情）。`manifest.py` 新增 `ReviewSpec` +
+  `project.yaml` 的可选 `review: {cadence, enabled}` 块解析；新增
+  `src/mini_agent/external_projects/review.py`
+  （`gather_review_briefing`/`build_review_task_template`/
+  `build_review_task_template_for`/`cadence_to_cron`/
+  `REVIEW_SESSION_TOOLS`）；CLI 新增 `projects review <name>`。核心
+  设计决定：review session 复用本仓库已有的 `CronJob.task_template`
+  调度模式（而非新造机制），但把生成的任务模板实际注册进运行中
+  daemon 的 `CronScheduler` 需要先给 daemon 加一个"新增 job"的 HTTP
+  端点，这部分工作量与风险超出本阶段范围，明确推迟，接线方式已经写进
+  `review.py` 的模块 docstring。stock_watch 自己的 `project.yaml` 已
+  加上 `review: {cadence: weekly, enabled: true}` 作为真实用例。新增
+  `tests/test_external_projects_review.py`（10 项），完整外部项目
+  测试套件（75 项）全部通过；`mini-agent projects review stock_watch`
+  端到端手测通过（正确读到候选池反馈类待办并拼进任务模板文本）。
+  阶段5（黄金案例回归测试沉淀）、阶段6（端到端验证）待开始；阶段4
+  剩余的 daemon 接线部分，等真正需要跑起来（而不只是设计验证）时
+  再回来做。

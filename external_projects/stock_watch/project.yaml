@@ -35,3 +35,13 @@ resources:
     - "10jqka.com.cn"
     - "sina.com.cn"
   max_concurrency: 1
+
+# 持续优化迭代机制（见 next_doc/stock_watch_continuous_improvement_plan.md
+# 阶段 4）：每周由 daemon 发起一次 review session，读账本/改进积压账本，
+# 判断有没有值得处理的优化项。当前这一步的实际调度接线（接入运行中
+# daemon 的 CronScheduler）还没做，`enabled: true` 只影响
+# `mini-agent projects review stock_watch` 这条命令是否打印"未开启"的
+# 提示，不会导致任何自动行为——见该文档阶段 4 的验收说明。
+review:
+  cadence: weekly
+  enabled: true
