@@ -351,19 +351,50 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
       `--workspace`/`-w` 别名解析测试
 
 ### 阶段 3：`project.yaml` 契约 + daemon 侧外部项目注册表
-- [ ] 定义 `project.yaml` 的 schema（`entrypoints` / `health_check` /
+- [x] 定义 `project.yaml` 的 schema（`entrypoints` / `health_check` /
       `resources`），落一份 JSON Schema 或 pydantic 模型供校验
-- [ ] daemon 侧新增外部项目注册表存储（如
+      —— **调整记录**：未引入 pydantic/JSON Schema，改为手写
+      dataclass（`EntrypointSpec`/`HealthCheckSpec`/`ResourceSpec`/
+      `ProjectManifest`）+ 显式校验函数（`external_projects/
+      manifest.py::parse_manifest()`），与 `workspace.py` 已经确立的
+      "数据类 + 显式校验"风格保持一致，且不为一份足够小的 schema 新增
+      依赖
+- [x] daemon 侧新增外部项目注册表存储（如
       `~/.mini_agent/external_projects.json`，与 daemon 自身代码树
       无关的独立位置），支持增/删/查已注册项目
-- [ ] daemon 侧新增按 `project.yaml` 里 `schedule` 触发对应
+      —— `external_projects/registry.py::ExternalProjectRegistry`，
+      JSON 文件存储，`register()` 默认顺带校验目标 `project.yaml`
+      是否合法（可用 `validate=False` 跳过），注册表文件损坏时按原则三
+      的精神退化为"当前没有已注册项目"而不是抛异常炸掉调用方
+- [x] daemon 侧新增按 `project.yaml` 里 `schedule` 触发对应
       entrypoint 的调度器（复用 workflow 引擎已有的 subprocess
       isolation / watchdog 机制，调用目标从"daemon 内部脚本"换成
       "外部项目的 headless 入口"）
-- [ ] `/commit-guard` 之外新增一个类似的 `/projects` 系列 CLI 命令
+      —— **调整记录**：核实后发现 workflow 的 watchdog/runner 是围绕
+      "workflow step"这个更重的概念设计的，而外部项目 entrypoint 只是
+      "任意一条 shell 命令"，假设比 workflow step 少得多；直接复用会
+      引入不必要的耦合，因此改为 `external_projects/scheduler.py` 里
+      用标准库 `subprocess.run` 独立实现最小化的 cron 匹配
+      （`cron_matches()`，支持 `*`/单值/逗号列表/`-`区间，不支持步进）
+      + 触发执行（`run_due_entrypoints()` 供 daemon 后台循环调用，
+      `trigger_run()` 供 CLI `projects run` 复用同一条执行路径）。
+      daemon 后台循环真正接入 `run_due_entrypoints()` 定时调用，留待
+      daemon 主循环模块实际改造时再做（本阶段先把可独立调用、可单测的
+      调度判断+触发逻辑做完，接入点是后续的薄改动，不影响验收）
+- [x] `/commit-guard` 之外新增一个类似的 `/projects` 系列 CLI 命令
       （`list` / `status <name>` / `run <name> <entrypoint>` /
       `register <path>` / `unregister <name>`），参照
       `agent_commit_guard_guide.md` 的文档模式单独出一份使用指南
+      —— **调整记录**：`/commit-guard` 是 REPL 内斜杠命令；核实后发现
+      更贴近 `mini-agent projects ...` 使用场景（脚本/cron 里独立调用，
+      不需要先进交互模式）的参照对象是 `workflow`/`daemon`/`user`/
+      `self` 这几个已有的顶层 CLI 短路子命令（`cli/app.py::main()`），
+      因此 `projects_cmd.py` 按这个模式实现（新增 `list`/`status`/
+      `run`/`register`/`unregister`，并追加了 `enable`/`disable` 便于
+      不移除注册也能临时关闭 daemon 侧调度），在 `cli/app.py` 里新增
+      `sys.argv[1] == "projects"` 短路分支；使用指南见新增的
+      `docs/external-projects-guide.md`（`agent-commit-guard-guide.md`
+      的文档分层模式）
 
 ### 阶段 4：状态账本约定 + daemon 侧状态聚合
 - [ ] 定义 `<project_root>/.agent/run_status.jsonl` 的标准 schema
@@ -401,14 +432,17 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
 - 修改 `src/mini_agent/config/models.py` — 支持从显式 `Workspace` 派生
   路径配置
 - 修改/新增 `src/mini_agent/tools/skill_manager.py` — 分层 skill 搜索
-- 新增 `src/mini_agent/cli/commands/run_headless.py`（或扩展
-  `workflow_cmd.py`）— headless 单次执行入口
-- 新增 `src/mini_agent/external_projects/` — `project.yaml` 解析、
-  注册表管理、调度器、状态聚合
-- 新增 `src/mini_agent/cli/commands/projects_cmd.py` — `/projects`
-  系列 CLI 命令
-- 新增 `docs/external-projects-guide.md` — 功能"毕业"后的稳定使用指南
-  （参照 `docs/agent-commit-guard-guide.md` 的文档分层模式，本
+- ~~新增 `src/mini_agent/cli/commands/run_headless.py`~~ — 阶段 2 核实
+  后未新增，复用 `workflow_cmd.py` 现有入口（见阶段 2 变更记录）
+- [x] 新增 `src/mini_agent/external_projects/` — `manifest.py`
+  （`project.yaml` 解析/校验）、`registry.py`（注册表增删查改）、
+  `scheduler.py`（cron 匹配 + 触发执行）；状态聚合是阶段 4 范围，
+  暂未实现
+- [x] 新增 `src/mini_agent/cli/commands/projects_cmd.py` — `projects`
+  系列 CLI 命令（`list`/`status`/`run`/`register`/`unregister`/
+  `enable`/`disable`），在 `cli/app.py` 新增短路分支接入
+- [x] 新增 `docs/external-projects-guide.md` — 功能"毕业"后的稳定使用
+  指南（参照 `docs/agent-commit-guard-guide.md` 的文档分层模式，本
   `next_doc/` 文档保留作为设计考古记录）
 - （案例）新增外部路径下的 `stock_watch/` 项目 — 不属于 mini_agent
   自身仓库，仅通过注册表关联
@@ -446,3 +480,27 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   过程中不引入任何 `mini_agent.api.*`（daemon/HTTP）模块、两个不同
   workspace 根之间的工作流定义与执行记录完全隔离，全部通过。阶段 3
   （`project.yaml` 契约 + daemon 侧外部项目注册表）待开始。
+- 2026-08-26：阶段 3 完成。新增 `src/mini_agent/external_projects/`
+  三个模块：`manifest.py`（`project.yaml` schema，手写 dataclass +
+  校验函数，未引入 pydantic/JSON Schema，理由见阶段 3 变更记录）、
+  `registry.py`（`ExternalProjectRegistry`，JSON 文件存储于
+  `~/.mini_agent/external_projects.json`，register/unregister/list/
+  get/set_enabled，register 默认顺带校验 manifest 合法性）、
+  `scheduler.py`（最小化 cron 匹配 `cron_matches()` + `_run_entrypoint()`
+  subprocess 执行 + `run_due_entrypoints()`/`trigger_run()`，未直接
+  复用 workflow watchdog，理由见阶段 3 变更记录）。新增
+  `src/mini_agent/cli/commands/projects_cmd.py`（`mini-agent projects
+  list/status/run/register/unregister/enable/disable`），仿照
+  `workflow`/`daemon`/`user`/`self` 的短路模式接入 `cli/app.py::main()`。
+  新增 `docs/external-projects-guide.md`（面向用户的稳定使用指南）。
+  新增 `tests/test_external_projects.py`（23 用例：manifest 解析
+  合法/非法各类场景、registry 增删查改/重复注册/损坏文件容错/多
+  store_path 隔离、scheduler cron 匹配与到期触发、CLI 端到端），全部
+  通过；另外用真实子进程跑了一遍 `python -m mini_agent projects
+  register/status/run/unregister` 全流程做端到端冒烟验证（非纯单测，
+  确认命令在裸 `HOME` 环境下、不依赖 daemon 也能正确工作），抽查跑过
+  `tests/test_workspace.py`、`tests/test_workflow_cli_headless.py`
+  确认改动未引入回归，全部通过。阶段 4（状态账本约定 + daemon 侧状态
+  聚合）待开始；daemon 主循环真正接入 `run_due_entrypoints()` 定时调用
+  这一具体接线动作留待阶段 4/5 实际改造 daemon 主循环时顺带做（见阶段
+  3 第三项调整记录），不阻塞当前验收。

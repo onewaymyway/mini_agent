@@ -1,0 +1,232 @@
+"""
+cli/commands/projects_cmd.py — `mini-agent projects` 独立命令行入口
+
+对应 `next_doc/external_projects_workspace_plan.md` 阶段 3 第四项。
+
+用法（与 `mini-agent workflow` / `mini-agent daemon` 短路方式完全一致，
+见 `cli/app.py::main()` 里的对应分支）：
+    mini-agent projects list
+    mini-agent projects status <name>
+    mini-agent projects run <name> <entrypoint>
+    mini-agent projects register <path> [--name <name>]
+    mini-agent projects unregister <name>
+    mini-agent projects enable <name>
+    mini-agent projects disable <name>
+
+这一层只是注册表 + manifest 解析 + 触发一次执行的薄封装，不构造 Agent、
+不依赖 daemon 是否在运行——`list`/`status`/`register`/`unregister` 直接
+操作本地注册表文件，`run` 直接以子进程方式执行对应 entrypoint 的 `cmd`，
+与 daemon 内部调度器（`external_projects/scheduler.py::run_due_entrypoints`）
+触发同一个 entrypoint 时走的是同一条 `_run_entrypoint` 路径，结果完全
+等价（呼应原则二：daemon 只是可选加成）。
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from typing import List, Optional
+
+
+def _print(msg: str) -> None:
+    print(msg)
+
+
+def _err(msg: str) -> None:
+    print(msg, file=sys.stderr)
+
+
+def _cmd_list(_args: List[str]) -> int:
+    from mini_agent.external_projects import ExternalProjectRegistry
+
+    registry = ExternalProjectRegistry()
+    projects = registry.list()
+    if not projects:
+        _print("尚未注册任何外部项目。用 `mini-agent projects register <path>` 注册一个。")
+        return 0
+    _print(f"{'NAME':<20}{'ENABLED':<10}{'PATH'}")
+    for p in projects:
+        _print(f"{p.name:<20}{str(p.enabled):<10}{p.path}")
+    return 0
+
+
+def _cmd_status(args: List[str]) -> int:
+    from mini_agent.external_projects import ExternalProjectRegistry
+    from mini_agent.external_projects.manifest import ProjectManifestError
+    from mini_agent.external_projects.registry import ExternalProjectRegistryError
+
+    if not args:
+        _err("用法: mini-agent projects status <name>")
+        return 1
+    name = args[0]
+    registry = ExternalProjectRegistry()
+    try:
+        record = registry.get(name)
+    except ExternalProjectRegistryError as exc:
+        _err(str(exc))
+        return 1
+
+    _print(f"name:      {record.name}")
+    _print(f"path:      {record.path}")
+    _print(f"enabled:   {record.enabled}")
+    _print(f"registered_at: {record.registered_at}")
+
+    try:
+        manifest = registry.load_manifest_for(name)
+    except ProjectManifestError as exc:
+        _err(f"警告: project.yaml 当前无法解析: {exc}")
+        return 1
+
+    _print("entrypoints:")
+    for key, ep in manifest.entrypoints.items():
+        schedule = ep.schedule or "(手动/外部触发)"
+        _print(f"  - {key}: cmd={ep.cmd!r} schedule={schedule}")
+    if manifest.health_check:
+        _print(f"health_check: {manifest.health_check.cmd!r}")
+    if manifest.resources.allowed_domains:
+        _print(f"resources.allowed_domains: {manifest.resources.allowed_domains}")
+    _print(f"resources.max_concurrency: {manifest.resources.max_concurrency}")
+
+    # 阶段 4（状态账本）尚未实现，这里先如实说明，避免用户以为 status
+    # 会显示最近执行记录却什么都看不到。
+    _print(
+        "\n(执行历史账本聚合属于阶段 4，尚未实现——当前可用 "
+        "`mini-agent projects run` 触发一次并观察其退出码)"
+    )
+    return 0
+
+
+def _cmd_run(args: List[str]) -> int:
+    from mini_agent.external_projects import ExternalProjectRegistry
+    from mini_agent.external_projects.manifest import ProjectManifestError
+    from mini_agent.external_projects.registry import ExternalProjectRegistryError
+    from mini_agent.external_projects.scheduler import trigger_run
+
+    if len(args) < 2:
+        _err("用法: mini-agent projects run <name> <entrypoint>")
+        return 1
+    name, entrypoint_key = args[0], args[1]
+    registry = ExternalProjectRegistry()
+    try:
+        result = trigger_run(registry, name, entrypoint_key, trigger="manual")
+    except (ExternalProjectRegistryError, ProjectManifestError, ValueError) as exc:
+        _err(str(exc))
+        return 1
+
+    _print(
+        f"[{result.project_name}/{result.entrypoint_key}] "
+        f"exit_code={result.returncode} trigger={result.trigger}"
+    )
+    return 0 if result.returncode == 0 else result.returncode
+
+
+def _cmd_register(args: List[str]) -> int:
+    from mini_agent.external_projects import ExternalProjectRegistry
+    from mini_agent.external_projects.registry import ExternalProjectRegistryError
+
+    if not args:
+        _err("用法: mini-agent projects register <path> [--name <name>] [--no-validate]")
+        return 1
+
+    path_str = args[0]
+    name: Optional[str] = None
+    validate = True
+    i = 1
+    while i < len(args):
+        if args[i] == "--name" and i + 1 < len(args):
+            name = args[i + 1]
+            i += 2
+        elif args[i] == "--no-validate":
+            validate = False
+            i += 1
+        else:
+            i += 1
+
+    path = Path(path_str).expanduser().resolve()
+    if name is None:
+        name = path.name
+
+    registry = ExternalProjectRegistry()
+    try:
+        record = registry.register(name, path, validate=validate)
+    except ExternalProjectRegistryError as exc:
+        _err(str(exc))
+        return 1
+
+    _print(f"已注册外部项目 '{record.name}' -> {record.path}")
+    return 0
+
+
+def _cmd_unregister(args: List[str]) -> int:
+    from mini_agent.external_projects import ExternalProjectRegistry
+    from mini_agent.external_projects.registry import ExternalProjectRegistryError
+
+    if not args:
+        _err("用法: mini-agent projects unregister <name>")
+        return 1
+    name = args[0]
+    registry = ExternalProjectRegistry()
+    try:
+        registry.unregister(name)
+    except ExternalProjectRegistryError as exc:
+        _err(str(exc))
+        return 1
+    _print(f"已移除外部项目 '{name}'（其自身代码/数据不受影响，只是取消注册）。")
+    return 0
+
+
+def _cmd_set_enabled(args: List[str], enabled: bool) -> int:
+    from mini_agent.external_projects import ExternalProjectRegistry
+    from mini_agent.external_projects.registry import ExternalProjectRegistryError
+
+    verb = "enable" if enabled else "disable"
+    if not args:
+        _err(f"用法: mini-agent projects {verb} <name>")
+        return 1
+    name = args[0]
+    registry = ExternalProjectRegistry()
+    try:
+        registry.set_enabled(name, enabled)
+    except ExternalProjectRegistryError as exc:
+        _err(str(exc))
+        return 1
+    _print(f"'{name}' 已{'启用' if enabled else '禁用'}"
+           f"（禁用只影响 daemon 侧调度器是否会自动触发它，不影响该项目"
+           f"被 OS cron / 手动直接执行）。")
+    return 0
+
+
+_SUBCOMMANDS = {
+    "list": _cmd_list,
+    "status": _cmd_status,
+    "run": _cmd_run,
+    "register": _cmd_register,
+    "unregister": _cmd_unregister,
+    "enable": lambda args: _cmd_set_enabled(args, True),
+    "disable": lambda args: _cmd_set_enabled(args, False),
+}
+
+
+def run_projects_cli(argv: List[str], project_root: Optional[Path] = None) -> int:
+    """
+    `mini-agent projects <sub> ...` 的入口，由 `cli/app.py::main()` 短路调用。
+
+    `project_root` 参数与 `workflow`/`daemon` 等其它短路子命令保持同样
+    的签名（来自 `_extract_project_root` 解析出的 `--project`/`--workspace`），
+    但 `projects` 子命令的注册表本身是用户级、与任何单个项目根无关，
+    因此当前不使用这个参数，只是保持调用签名一致，方便未来如果需要
+    "只看某个 project_root 下相关的外部项目"这类过滤能力时不用改
+    `app.py` 的调用点。
+    """
+    del project_root  # 当前未使用，见上方说明
+
+    if not argv or argv[0] in ("-h", "--help"):
+        _print(__doc__ or "")
+        return 0
+
+    sub, rest = argv[0], argv[1:]
+    handler = _SUBCOMMANDS.get(sub)
+    if handler is None:
+        _err(f"未知子命令 '{sub}'。可用: {', '.join(sorted(_SUBCOMMANDS))}")
+        return 1
+    return handler(rest)

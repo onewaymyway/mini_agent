@@ -130,6 +130,16 @@ def main() -> int:
         project_root, rest = _extract_project_root(sys.argv[2:])
         return run_hybrid_exec_cli(rest, project_root)
 
+    # ── projects 子命令短路：`mini-agent projects ...` 外部项目注册表 ────────
+    # 对应 next_doc/external_projects_workspace_plan.md 阶段 3。与
+    # workflow/hybrid-exec 短路方式完全一致：不构造 Agent，只操作本地
+    # 注册表文件 + 按需触发一次 entrypoint 子进程执行。见
+    # cli/commands/projects_cmd.py 顶部说明。
+    if len(sys.argv) > 1 and sys.argv[1] == "projects":
+        from mini_agent.cli.commands.projects_cmd import run_projects_cli
+        project_root, rest = _extract_project_root(sys.argv[2:])
+        return run_projects_cli(rest, project_root)
+
     # ── 全局异常捕获：确保任何启动错误都能显示 ────────────────────────────────
     try:
         _main_inner()
