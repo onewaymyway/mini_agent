@@ -8066,20 +8066,25 @@ def render_external_projects_tab(client: AgentClient):
                             st.caption(f"　　{r['error_summary']}")
 
             with st.expander("▶️ 手动触发"):
-                entrypoint_key = st.text_input(
-                    "entrypoint key（见该项目 project.yaml）", key=f"ext_trigger_ep_{name}"
-                )
-                if st.button("▶️ 触发", key=f"ext_trigger_btn_{name}"):
-                    if not entrypoint_key.strip():
-                        st.error("请填写 entrypoint key。")
-                    else:
-                        res = client.trigger_external_project_run(name, entrypoint_key.strip())
+                entrypoints = proj.get("entrypoints") or []
+                if not entrypoints:
+                    st.caption(
+                        "该项目的 project.yaml 未声明任何 entrypoints，或 manifest "
+                        "解析失败（见上方警告），没有可触发的按钮。"
+                    )
+                for ep in entrypoints:
+                    ep_key = ep.get("key", "")
+                    ep_cols = st.columns([3, 1])
+                    schedule_txt = f" · {ep['schedule']}" if ep.get("schedule") else ""
+                    ep_cols[0].caption(f"`{ep_key}`{schedule_txt}\n\n{ep.get('cmd', '')}")
+                    if ep_cols[1].button("▶️ 触发", key=f"ext_trigger_btn_{name}_{ep_key}"):
+                        res = client.trigger_external_project_run(name, ep_key)
                         if res and "_error" in res:
                             st.error(f"触发失败：{res['_error']}")
                         else:
                             ok = res.get("returncode") == 0
                             (st.success if ok else st.error)(
-                                f"执行完成，returncode={res.get('returncode')}"
+                                f"「{ep_key}」执行完成，returncode={res.get('returncode')}"
                             )
 
             with st.expander("📋 改进积压"):

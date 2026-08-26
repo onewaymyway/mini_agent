@@ -200,6 +200,43 @@ def test_aggregate_status_empty_registry(tmp_path):
     assert aggregate_status(registry) == []
 
 
+def test_aggregate_status_includes_entrypoints(tmp_path):
+    # [external_projects_kanban_integration_plan.md 阶段5] 看板"手动
+    # 触发"从要求用户手填 entrypoint key 改成直接列按钮，需要
+    # aggregate_status() 把每个项目声明的 entrypoints 也带出来。
+    registry, root = _register(tmp_path, "proj_ep")
+    (root / "project.yaml").write_text(
+        f"""
+name: proj_ep
+entrypoints:
+  scan:
+    cmd: "{sys.executable} -c \\"pass\\""
+    schedule: "cron: 0 9 * * 1-5"
+  backfill:
+    cmd: "{sys.executable} -c \\"pass\\""
+""",
+        encoding="utf-8",
+    )
+
+    results = aggregate_status(registry)
+    by_name = {r["name"]: r for r in results}
+    entrypoints = {ep["key"]: ep for ep in by_name["proj_ep"]["entrypoints"]}
+    assert set(entrypoints) == {"scan", "backfill"}
+    assert entrypoints["scan"]["schedule"] == "cron: 0 9 * * 1-5"
+    assert entrypoints["backfill"]["schedule"] is None
+    assert entrypoints["scan"]["cmd"]
+
+
+def test_aggregate_status_entrypoints_empty_when_manifest_broken(tmp_path):
+    registry, root = _register(tmp_path, "proj_bad")
+    (root / "project.yaml").write_text("not: [valid", encoding="utf-8")
+
+    results = aggregate_status(registry)
+    by_name = {r["name"]: r for r in results}
+    assert by_name["proj_bad"]["entrypoints"] == []
+    assert by_name["proj_bad"]["manifest_error"]
+
+
 # ── scheduler.py 自动写账本（阶段 3 的 _run_entrypoint 现在会自动记账）───────
 
 

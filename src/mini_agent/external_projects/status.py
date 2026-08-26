@@ -128,12 +128,17 @@ def aggregate_status(
     for r in registry.list():
         try:
             snap = project_status_snapshot(registry, r.name)
-            recent = []
+            manifest = None
+            entrypoints: List[dict] = []
             try:
                 manifest = registry.load_manifest_for(r.name)
                 recent = [
                     rr.to_dict()
                     for rr in read_ledger(manifest.source_dir, limit=recent_runs_limit)
+                ]
+                entrypoints = [
+                    {"key": ep.key, "cmd": ep.cmd, "schedule": ep.schedule}
+                    for ep in manifest.entrypoints.values()
                 ]
             except ProjectManifestError:
                 recent = []
@@ -147,6 +152,11 @@ def aggregate_status(
                     "manifest_error": snap.manifest_error,
                     "last_run": snap.last_run.to_dict() if snap.last_run else None,
                     "recent_runs": recent,
+                    # [external_projects_kanban_integration_plan.md 阶段5]
+                    # 供看板"手动触发"直接列出按钮，不用用户手填 entrypoint
+                    # key。manifest 解析失败时留空列表——manifest_error
+                    # 字段已经说明了原因，这里不重复报错。
+                    "entrypoints": entrypoints,
                 }
             )
         except Exception as exc:  # noqa: BLE001 - 聚合视图刻意不让单项目错误传染
@@ -160,6 +170,7 @@ def aggregate_status(
                     "manifest_error": str(exc),
                     "last_run": None,
                     "recent_runs": [],
+                    "entrypoints": [],
                 }
             )
     return results

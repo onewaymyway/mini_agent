@@ -91,6 +91,17 @@ class TestExternalProjectsKanbanRoutes(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
+    def test_status_route_includes_entrypoints_for_buttons(self):
+        # [external_projects_kanban_integration_plan.md 阶段5] 看板改成
+        # 直接列 entrypoints 按钮而不是让用户手填 key，前提是
+        # GET /v1/self/external_projects 里带上了每个项目的 entrypoints。
+        self._register_project()
+        resp = self.client.get("/v1/self/external_projects")
+        self.assertEqual(resp.status_code, 200)
+        projects = {p["name"]: p for p in resp.json()["projects"]}
+        keys = {ep["key"] for ep in projects["demo_project"]["entrypoints"]}
+        self.assertEqual(keys, {"scan"})
+
     def test_register_invalid_manifest_returns_400(self):
         bad_dir = self.tmp_path / "bad_project"
         bad_dir.mkdir()

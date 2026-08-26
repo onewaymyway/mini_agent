@@ -186,3 +186,28 @@ client.py`）✅已完成
   （`_{idx}`）作为最小兜底，让 UI 不再因为这类重复数据崩溃；没有去
   排查 `growth_pursuits()` 为什么会返回重复项——那是数据层问题，不
   属于本文档范围，如需彻底修复应另开一份文档追踪。
+
+### 阶段 5：手动触发改为按钮列表（使用者反馈驱动）
+
+- [x] 「▶️ 手动触发」原来要求用户手填 entrypoint key（容易记错/写错，
+      也没法知道这个项目到底有哪些 entrypoint），改成直接把
+      `project.yaml` 里声明的 entrypoints 全部列出来，一个 entrypoint
+      一个按钮，点了就是那个 key，不再有手填环节。
+- [x] 后端：`external_projects/status.py` 的 `aggregate_status()`
+      新增 `entrypoints` 字段（`[{key, cmd, schedule}]`），复用已加载
+      的 `manifest.entrypoints`，manifest 解析失败时该字段为空列表
+      （`manifest_error` 已经说明原因，不重复报错）。`GET /v1/self/
+      external_projects` 不用改代码，直接透传新字段。
+- [x] 前端：`app.py` 的「▶️ 手动触发」expander 改成遍历
+      `proj["entrypoints"]`，每条渲染一行——`key`（含 schedule，如
+      有）+ 命令预览 + 「▶️ 触发」按钮（key 按 `name_entrypointkey`
+      拼，不会跟别的项目撞），点击直接调用既有的
+      `trigger_external_project_run(name, ep_key)`，没有 entrypoints
+      时给出提示文案而不是空白一片。
+- [x] 测试：`test_external_projects_ledger_and_status.py` 新增 2 个
+      用例（`entrypoints` 字段内容正确性 + manifest 损坏时为空列表），
+      `test_api_external_projects_routes.py` 新增 1 个用例（HTTP 层
+      能拿到 entrypoints）。三个相关测试文件共 81 个用例全部通过，
+      无回归。
+- [x] 文档：`docs/kanban-dashboard-guide.md`「🗂️ 外部项目 Tab」一节
+      同步更新触发方式的描述。

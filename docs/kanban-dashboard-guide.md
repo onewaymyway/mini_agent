@@ -509,10 +509,14 @@ cron job 后等待其按 cadence 自动触发。
   （🟢健康/🔴不健康/⚪未知，数据来自既有的 `GET /v1/self/
   external_projects` 聚合端点）、启用状态、最近一次执行摘要，可展开
   查看最近 5 条执行记录。
-- **卡片内「▶️ 手动触发」**：填 entrypoint key，调用
-  `POST /v1/external_projects/{name}/trigger_run`，与 `mini-agent
-  projects run` 走同一条执行路径，成功/失败直接在卡片内提示，不做
-  二次确认（触发一次 entrypoint 本身没有破坏性）。
+- **卡片内「▶️ 手动触发」**：把该项目 `project.yaml` 声明的 entrypoints
+  全部列出来，一个 entrypoint 对应一行（key + schedule[如有] + 命令
+  预览 + 「▶️ 触发」按钮），点按钮直接调用
+  `POST /v1/external_projects/{name}/trigger_run`——**不需要手填
+  entrypoint key**，与 `mini-agent projects run` 走同一条执行路径，
+  成功/失败直接在该行下方提示，不做二次确认（触发一次 entrypoint
+  本身没有破坏性）。manifest 解析失败或没有声明 entrypoints 时该区块
+  给出对应提示文案，不是空白一片。
 - **卡片内「📋 改进积压」**：按状态（open/proposed/landed/dismissed/
   全部）筛选查看该项目的改进积压账本（`GET /v1/external_projects/
   {name}/backlog`），下方文本框可新增一条待办
