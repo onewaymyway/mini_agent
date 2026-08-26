@@ -216,3 +216,57 @@ SessionStart / 每隔一段时间的机会性检查 ─────────�
       （§2 流程说明 + 新增"核对一次≠永久结案"小节 + §4 配置表补充两个
       模块常量 + §5 命令表 + §6 数据字段 + §8 已知限制新增"复查窗口
       过期后仍测不到"一条）。
+- 2026-08-26：**修复 bug**——使用者实测反馈"会把修改的文件给还原了"。
+  排查确认 `agent_commit_guard.py` 核心模块本身不执行任何
+  `checkout`/`reset`/`restore` 命令（只做记账/核对），问题出在
+  `record_undo_lesson()` 生成的默认 `outcome`/`suggested_action`
+  文案含糊——"用户不希望该次提交生效"这句话被 agent 过度解读为"应该
+  清空/还原这些文件"，主动执行了破坏性 git 命令，把用户尚未提交的
+  修改也一并抹掉。**这个功能的目的是"以后不要再提交这类文件"，不是
+  "把已经撤销过 commit 的文件还原成撤销前的样子"**——改动内容本身
+  应该正常保留在工作区，agent 只是不应该把它纳入下一次 commit。改动：
+    - 重写 `outcome` 默认文案，明确"撤销的是提交动作本身，不是要求
+      清空/还原文件当前的修改内容"。
+    - 重写 `suggested_action` 默认文案，除了原有的"跳过这些文件/征询
+      用户确认"，新增一句显式禁止："**绝对不要**执行 `git
+      checkout`/`git restore`/`git reset --hard` 等命令去"清理"或
+      "还原"这些文件"。
+    - 这两个字段是 `lesson_to_reminder.py` 生成 reminder 时会原样注入
+      给 agent 的内容（`trigger` 展示在 reminder 正文，
+      `suggested_action` 展示在"建议"列表），改完即可切断误读源头，
+      不需要改 `lesson_to_reminder.py` 本身。
+    - `/evolution revert` 场景（`cli/commands/evolution.py::
+      _record_revert_lesson`）自己传了独立的 `outcome`/
+      `suggested_action` 文案，不受这次默认值改动影响——该场景语义
+      本来就是"这个改进方向被否决了"，措辞不存在同样的歧义。
+- 2026-08-26：**新增能力（跨模块）**——使用者反馈"daemon 执行例行
+  维护时会自行 `git push`，在没有用户明确指令的情况下应该禁止"。这个
+  问题不在 `agent_commit_guard.py` 范围内（commit guard 只管"要不要
+  提交"，push 是另一层"要不要推到远端"），改动落在
+  `src/mini_agent/permissions.py`（`PermissionGuard`），记在本文档
+  是因为同属"daemon/cron 自动化场景下 agent 自主 git 操作的治理"这个
+  大主题，方便以后一起查阅。改动：
+    - 新增 `is_git_push_command()`：识别 `git push`/`git -C <path>
+      push`/带 `--force` 等常见写法的 bash 命令。
+    - `PermissionGuard.check()` 新增专门分支，插入在 `auto_approve`
+      短路判断**之前**（原逻辑是 `auto_approve=True` 时 risky 工具
+      直接放行，`git push` 作为普通 bash 命令会被无声放行）：
+      - `auto_approve=True` 或 headless（daemon 无交互终端，没有人
+        能在场批准）→ 一律拒绝，不发起任何审批交互，只打印拦截提示
+        （`permission_labels.md` 新增 `GIT_PUSH_BLOCKED_AUTO` 片段）。
+      - 交互场景 → 强制走一次人工确认（`_prompt`/
+        `_prompt_with_http`，标记 `is_dangerous=True`），且**不检查
+        `_is_allowed()` 白名单**——即使用户之前对 bash 开过"全放行"，
+        push 仍然每次都要单独确认，因为它是"一旦做了很难无损撤回"的
+        操作（推到远端/触发 CI），风险量级与普通 bash 命令不对等。
+    - 新增 `tests/test_git_push_guard.py`（7 条）：正则识别（含不应
+      误判 `git commit -m 'push xxx'` 这类子串出现在别处的情况）、
+      auto_approve/headless 场景拒绝且不发起审批交互、交互场景强制
+      确认且不被白名单绕过、确认不误伤 `git commit`/`git pull` 等其他
+      git 命令。
+    - 回归验证：`test_agent_commit_guard.py`/
+      `test_permissions_persist_preference.py`/
+      `test_permissions_interrupted_by_http.py` 等使用
+      `PermissionGuard` 的既有测试文件全部通过，无回归。
+    - 同步更新了 `docs/permission-guide.md`（新增"git push 单独管控"
+      小节）。

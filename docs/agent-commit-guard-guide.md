@@ -20,6 +20,16 @@ daemon/cron 模式下，agent 会在整理工作区、执行例行任务时自�
 前参考——是否要把历史上被撤销过的文件排除在本次提交之外，由 agent
 自主判断，不是写死的黑名单。
 
+> **这个功能管的是"要不要提交"，不是"要不要还原文件"**：撤销
+> commit 只代表用户不希望那次提交生效，提醒的目的是让 agent 下次
+> 别再把这些文件纳入自动提交——文件本身当下的修改内容应该正常保留
+> 在工作区，继续编辑/修改都不受影响。agent 看到提醒后**不应该**主动
+> 执行 `git checkout`/`git restore`/`git reset --hard` 之类的命令去
+> "清理"或"还原"这些文件；如果确实发生了这种情况，是 agent 对提醒的
+> 误读，不是本功能的设计意图（历史上出现过这个问题，2026-08-26 已经
+> 收紧了提醒文案，见本文档 §2 和 `next_doc/
+> agent_commit_undo_guard_plan.md` 变更记录）。
+
 ## 2. 整体流程（现状）
 
 ```
@@ -85,6 +95,16 @@ agent 之外直接 reset"这种情况，无法被实时捕获，只能靠上面�
 真正的终态，不会再复查。超过复查窗口后，"仍在历史里"的记录才会真正
 结案——这是刻意的取舍，用有限的复查窗口换账本不会无限增长/无限复查，
 超窗口后才发生的撤销仍然测不到，属于已知限制（见第 8 节）。
+
+**提醒措辞明确"不提交≠还原文件"（2026-08-26 修复）**：早期实现里，
+写入 lesson 的 `outcome`/`suggested_action` 默认文案比较含糊（"用户
+不希望该次提交生效"），实践中出现过 agent 读到提醒后过度解读、主动
+执行 `git checkout`/`git reset --hard` 把用户尚未提交的修改也一并
+清空的情况——这不是本功能的设计意图。现在两个字段的默认文案都明确
+写清楚了"撤销的是提交动作本身，文件当前的修改内容应该正常保留"，并
+加了一句显式禁止（不要执行 checkout/restore/reset --hard 去"清理"
+文件）。`suggested_action` 是 reminder 正文"建议"部分会原样展示给
+agent 的内容，改完文案即可切断误读源头。
 
 ## 3. 默认行为
 
@@ -189,6 +209,12 @@ commit（既可能是人工 `/commit-guard scan` 触发，也可能是系统自�
   （只是多跑一次 `git merge-base --is-ancestor`）。
 - **`install-hooks` 需要手动执行**：检测到是 git 仓库不会自动安装
   哨兵 hook，需要用户显式跑一次 `/commit-guard install-hooks`。
+- **`reminder` 只管"要不要提交"，不管"要不要推到远端"**：本功能与
+  `git push` 的访问控制是两回事——是否允许 agent 在没有用户明确指令
+  的情况下自行 `git push`，由 `PermissionGuard`（`src/mini_agent/
+  permissions.py`）单独把关，详见
+  [权限系统指南 §「git push 单独管控」](permission-guide.md)，不属于
+  `agent_commit_guard` 的范围。
 
 ## 9. 相关文档
 
@@ -196,4 +222,5 @@ commit（既可能是人工 `/commit-guard scan` 触发，也可能是系统自�
 - [记忆与自我演化完整参考 §5.4](memory-and-self-evolution-complete-reference.md#54-revert_record-evolution-revert-与-commit-guard-联动) — `revert_record` 来源在整个记忆体系里的位置
 - [Stage 2 自我演化安全网指南 §6.1](self-evolution-stage2-guide.md#61-revert-自动反哺-lesson) — `/evolution revert` 联动细节
 - [Reminder 系统指南](reminder-system-guide.md) — reminder 生成/匹配/注入的通用机制
+- [权限系统指南](permission-guide.md) — `git push` 单独管控（daemon/auto-approve 场景禁止 push）
 - [命令与工具速查](commands-and-tools-reference.md) — `/commit-guard` 命令简表（同步副本，改动需一并更新）

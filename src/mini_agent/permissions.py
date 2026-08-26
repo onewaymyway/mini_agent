@@ -49,6 +49,22 @@ _DANGER_PATTERNS = [
     r"\bchmod\s+777\b",
 ]
 
+# [git push 兜底拦截] daemon/cron 例行维护会话通常跑在 auto_approve=True
+# 下（没有人在场可以审批），git commit 之类的普通风险操作走 _RISKY_TOOLS
+# 正常放行是符合预期的，但 `git push` 会把本地历史真的推到远端——一旦
+# 推错，不是"重来一次"能解决的（尤其是共享分支/CI 会被触发）。这里单独
+# 识别 `git push`（含 `-C <path>`/`--force`/`git -C x push` 等常见写法），
+# 让它绕开 auto_approve 短路和"bash 全部放行"白名单，见 check() 里的
+# 专门分支：daemon/headless 场景直接拒绝（没人能批），交互场景下强制走
+# 一次人工确认（不消耗/不检查 allow_list，每次都问）。
+_GIT_PUSH_RE = re.compile(
+    r"(?:^|[;&|]\s*)git\s+(?:-C\s+\S+\s+)?push\b"
+)
+
+
+def is_git_push_command(command: str) -> bool:
+    return bool(command) and bool(_GIT_PUSH_RE.search(command))
+
 
 _HEADLESS_MODE = False
 
@@ -179,6 +195,42 @@ class PermissionGuard:
             _term.print(f"[yellow]{blocked}[/yellow]")
             _term.print(f"  [dim]{would_have}: {_summarise(tool_name, tool_input)}[/dim]")
             return False
+
+        # [git push 兜底拦截] 必须先于 auto_approve/allow_list/safe_tools 短路
+        # 判断——否则 daemon/cron 例行维护（auto_approve=True）或用户曾经
+        # 给过 "bash 全部放行" 白名单时，`git push` 会像普通 bash 命令一样
+        # 被无声放行，完全绕开人工审批。
+        if tool_name == "bash" and is_git_push_command(str(tool_input.get("command", ""))):
+            if self.auto_approve or _HEADLESS_MODE:
+                # 没有人能在场批准（daemon 例行维护、无交互终端），且用户
+                # 没有在当前对话里明确要求 push —— 一律拒绝，不重试、不
+                # 排队等待，agent 应改为只 commit 到本地，把"需要 push"
+                # 这件事汇报给用户，由用户显式指示后再做。
+                msg = pm.fragment("permission_labels", "GIT_PUSH_BLOCKED_AUTO")
+                _term.print(f"[red]{msg}[/red]")
+                return False
+            # 交互场景：强制走一次人工确认，不看 allow_list/白名单——push
+            # 是"一旦做了很难无损撤回"的操作，即使用户之前对 bash 开过
+            # 全放行白名单，也不应该被这条白名单默默覆盖。
+            is_dangerous = True
+            http_gate = _get_http_gate()
+            if http_gate is not None:
+                turn_id = _get_current_turn_id()
+                original_input_repr = dict(tool_input)
+                approved, edited_input = self._prompt_with_http(
+                    tool_name, tool_input, is_dangerous, http_gate, turn_id
+                )
+                if approved and edited_input:
+                    if edited_input != original_input_repr:
+                        self.last_edit = {
+                            "tool_name": tool_name,
+                            "original": self._edit_repr(tool_name, original_input_repr),
+                            "edited": self._edit_repr(tool_name, edited_input),
+                        }
+                    tool_input.clear()
+                    tool_input.update(edited_input)
+                return approved
+            return self._prompt(tool_name, tool_input, is_dangerous)
 
         # Safe tools: always allowed
         if tool_name in _SAFE_TOOLS:

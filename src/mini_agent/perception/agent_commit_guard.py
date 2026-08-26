@@ -544,11 +544,20 @@ def record_undo_lesson(
                 f"工具 `bash` 调用 `git commit` 自动提交了 {file_list}"
                 f"（commit {short}{subj}），事后被用户以 git 操作撤销"
             ),
-            outcome=outcome or f"用户不希望该次提交生效，已通过 git 操作撤销 commit {short}",
+            outcome=outcome or (
+                f"用户不希望 {file_list} 被自动提交，已通过 git 操作撤销 "
+                f"commit {short}（撤销的是这次提交动作本身，不是要求清空/还原"
+                f"这些文件当前的修改内容）"
+            ),
             root_cause="",
             suggested_action=suggested_action or (
                 f"下次准备 `git commit` 时，若改动涉及 {file_list} 中的路径，"
-                f"先跳过这些文件或征询用户确认，不要默认一并自动提交"
+                f"跳过这些文件、只 commit 其余改动，或先征询用户确认——"
+                f"文件本身的修改内容仍然保留在工作区，正常编辑/继续修改，"
+                f"只是不要把它们纳入自动提交。"
+                f"**绝对不要**执行 `git checkout`/`git restore`/"
+                f"`git reset --hard` 等命令去\"清理\"或\"还原\"这些文件——"
+                f"那会丢失用户当前的实际修改，不是本提醒的目的。"
             ),
             confidence=0.85,
             occurrence_count=1,

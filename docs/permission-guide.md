@@ -37,6 +37,10 @@
     │沙箱模式？│ ─── 是且为风险工具 ──→ 阻断 (SANDBOX_BLOCKED)
     └────┬────┘
          │ 否
+    ┌────▼──────────┐
+    │ 是 `git push`？ │ ─── 是 ──→ 见下方「git push 单独管控」，
+    └────┬──────────┘        不进入下面几步（不受 auto_approve/
+         │ 否                 白名单短路影响）
     ┌────▼─────┐
     │ 安全工具？│ ─── 是 ──→ 允许
     └────┬─────┘
@@ -57,6 +61,34 @@
     │ 用户交互 │ ──→ 等待用户选择
     └─────────┘
 ```
+
+## `git push` 单独管控（2026-08-26 新增）
+
+`git push` 会把本地历史真的推到远端——一旦推错，不是"重来一次"能
+解决的（尤其是共享分支/触发 CI 的场景），风险量级和普通 bash 命令
+不对等，所以单独判断，判断时机在**沙箱检查之后、`auto_approve`/
+安全工具/白名单短路判断之前**（`is_git_push_command()` 识别 `git
+push`/`git -C <path> push`/带 `--force` 等常见写法）：
+
+- **`auto_approve=True` 或 headless 模式**（daemon/cron 例行维护、
+  无交互终端——没有人能在场审批）→ **一律拒绝**，不发起任何审批
+  交互，只打印拦截提示（`permission_labels.md` 的
+  `GIT_PUSH_BLOCKED_AUTO` 片段）。这条规则不看白名单、不看
+  `auto_approve` 本身——就是要保证"没有用户在场明确指示"的场景下
+  agent 绝对不会自行 push。
+- **交互场景**（有真人在场的会话）→ 强制走一次人工确认
+  （`_prompt`/`_prompt_with_http`，标记为危险操作），且**不检查
+  `_is_allowed()` 白名单**——即使用户之前对 `bash` 开过"全部放行"，
+  push 仍然每次都要单独确认。用户在确认弹窗里选择允许，就是本次
+  push 的"明确指令"。
+- 只拦截 `git push` 本身，不影响 `git commit`/`git pull`/`git
+  fetch` 等其他 git 子命令——那些仍然走上面的普通决策流程。
+
+背景与本次问题排查过程见
+[next_doc/agent_commit_undo_guard_plan.md](../next_doc/agent_commit_undo_guard_plan.md)
+变更记录；这个能力和 `agent_commit_guard`（管"要不要提交"）是两回事，
+只是恰好都属于"daemon 自动化场景下 agent 自主 git 操作的治理"这个
+主题，参见 [agent commit guard 指南](agent-commit-guard-guide.md)。
 
 ## 用户交互选项
 
@@ -225,6 +257,15 @@ else:
 - [`perception/correction_detector.py`](../src/mini_agent/perception/correction_detector.py) — `(e)dit` 编辑内容转 lesson 的字段生成逻辑
 
 ## 更新日志
+
+### 2026-08-26
+
+- 新增 `is_git_push_command()` + `PermissionGuard.check()` 专门分支：
+  `git push` 在 auto_approve/headless（daemon 例行维护、无交互终端）
+  场景下一律拒绝，不再像普通 bash 命令一样被无声放行；交互场景强制
+  走一次人工确认，不受白名单短路影响。详见「git push 单独管控」一节。
+- `permission_labels.md` 新增 `GIT_PUSH_BLOCKED_AUTO` 文本片段。
+- 新增回归测试 `tests/test_git_push_guard.py`（7 条）。
 
 ### 2026-06（Stage 1.5）
 
