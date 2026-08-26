@@ -218,23 +218,58 @@ stock_watch 的业务逻辑，不是框架能力。
       跑了。
 
 ### 阶段 5：stock_watch — 黄金案例回归测试沉淀
-- [ ] `reconcile_outcomes` 跑出的"预测 vs 结果"里，误判幅度大的典型
-      案例，定期（人工或 review session 判断后）挑选固化进
-      `tests/test_golden_cases.py`：给定某个历史时点的行情快照，跑
-      当前评分/筛选逻辑，断言不能比历史已知的"应该选中/不应该选中"
-      结论差太多。这样阶段2里"enhancement 改动至少要过 T2"里的
-      `tests/` 会自动越来越有效，不需要框架改代码。
-- [ ] 明确黄金案例只做"回归护栏"（不能变得更差），不做"自动判断更
+- [x] 新增 `stock_watch/golden_cases.py`：`GoldenCase`/`GoldenCaseResult`
+      dataclass + `run_pipeline()`（复现
+      `run_hotlist_scan.main()` 的"`ensure_seeds` → `merge_hot_items`
+      → `apply_decay` → `enforce_max_size`"流水线顺序）+ `evaluate()`
+      （对照 `expected_included`/`expected_excluded`/`min_score` 判定
+      是否通过）+ `load_golden_cases()`（从 `tests/golden_cases/
+      cases.json` 读取，文件不存在时返回空列表，容错约定与仓库其它
+      账本一致）。案例数据用 JSON fixture 而不是写死在 Python 里，
+      方便今后 review session / 人工往里追加新案例时不用碰代码。
+- [x] `tests/golden_cases/cases.json` 固化 3 个案例（`tests/
+      test_golden_cases.py` 覆盖）：① `multi_source_consensus_
+      outranks_single_mention`——多数据源共识标的应稳定跑赢单来源
+      低热度标的，`max_size` 收紧时后者先被淘汰；② `seed_stock_
+      merged_even_without_hot_mentions`——种子标的即使本次没有任何
+      热点数据源提及也必须进候选池，且基础分保持 1.0；③
+      `seed_not_exempt_from_max_size_trim_known_gap`——**固化案例过程
+      中发现的一个真实差异**：`ensure_seeds()` 的 docstring 写"种子
+      标的...不受淘汰影响（...淘汰时另行豁免）"，但 `enforce_max_size()`
+      的实际实现并没有对种子做豁免，分数垫底的种子和普通标的一样会
+      被 `max_size` 截掉。本次**只固化当前真实行为**（不代表这是期望
+      行为），是否要修 `enforce_max_size()` 补豁免逻辑还是改 docstring
+      措辞，留给未来一次独立的 enhancement 决策——本身正是这套优化
+      循环机制该处理的问题类型，不在阶段5顺手改掉。
+- [x] 明确黄金案例只做"回归护栏"（不能变得更差），不做"自动判断更
       好"——是否更好仍然是第5节意义上的人工判断，测试通过只是"没有
-      引入已知的历史型错误"这个更弱的保证。
+      引入已知的历史型错误"这个更弱的保证；`test_golden_cases.py`
+      顶部 docstring 与 `golden_cases.py` 模块 docstring 都重申了这条
+      边界。stock_watch 离线单测新增 7 项（16→23），全部通过。
 
 ### 阶段 6：端到端验证
-- [ ] 模拟场景：`reconcile_outcomes` 发现某类打分逻辑长期高估某个
-      数据源来源的标的 → 写入 backlog → review session 读到 → 生成
-      `enhancement` 类型提案（带 `change_type` 标记）→ 人工查看提案
-      与证据 → 手动 `land_maintenance_fix` 落地 → 后续黄金案例测试
-      纳入这个案例。验证整条链路（可以是单测层面的端到端，不要求
-      接入真实 daemon 主循环的定时调度）。
+- [x] 新增 `tests/test_stock_watch_optimization_loop_e2e.py`（仓库
+      顶层，因为要串起框架层 `backlog`/`review`/`maintenance` 和
+      stock_watch 自己的 `outcomes`/`golden_cases`），模拟完整链路：
+      ① 用 mock 涨跌幅数据构造 `outcomes.build_outcome_records` +
+      `notable_outcomes`，复现"eastmoney_hot_rank 单来源打分标的
+      （000002）4 周后大跌 23.4%，多来源共识标的（600519）继续上涨"
+      这类模式 → ② `append_item(source="outcome_review", ...)` 写入
+      改进积压账本 → ③ `gather_review_briefing`/
+      `build_review_task_template_for` 确认 review session 能读到这条
+      待办并在任务模板里带上 `change_type=`/`enhancement` 措辞 →
+      ④ `tools/external_projects.py::propose_fix(change_type=
+      "enhancement")` 生成提案分支，确认返回的 `message` 里带着
+      "Do not land it yourself"提示、主分支不受影响 → ⑤ 用
+      `git diff` 模拟人工核对证据，确认差异符合预期后手动调用
+      `land_maintenance_fix` 落地，`update_status(..., "landed")`
+      标记待办 → ⑥ 断言阶段5固化的 `multi_source_consensus_
+      outranks_single_mention` 黄金案例仍然通过——呼应"后续黄金案例
+      测试纳入这个案例"：本次 outcome_review 发现的"单来源高分 vs
+      多来源共识"模式，已经有对应的回归护栏在守着。全程单测层面
+      模拟，不接入真实 daemon 主循环定时调度（阶段4"未落地"部分），
+      测试内对此有明确注释说明。完整外部项目测试套件（76 项，含本
+      文件）与 stock_watch 离线单测（23 项）全部通过，无回归。
 
 ## 5. 风险与刻意留白
 
@@ -303,3 +338,26 @@ stock_watch 的业务逻辑，不是框架能力。
   阶段5（黄金案例回归测试沉淀）、阶段6（端到端验证）待开始；阶段4
   剩余的 daemon 接线部分，等真正需要跑起来（而不只是设计验证）时
   再回来做。
+- 2026-08-26：阶段5、阶段6 完成，全部改造计划（阶段0-6）落地完毕。
+  新增 `stock_watch/golden_cases.py`（黄金案例回归护栏纯逻辑）+
+  `tests/golden_cases/cases.json`（3 个固化案例）+
+  `tests/test_golden_cases.py`（7 项）。固化案例过程中发现一个真实
+  的文档/实现差异：`candidate_pool.py::ensure_seeds()` 的 docstring
+  声称种子标的"淘汰时另行豁免"，但 `enforce_max_size()` 并未实现这层
+  豁免——已作为 `seed_not_exempt_from_max_size_trim_known_gap` 案例
+  如实固化当前行为（不代表这是期望行为），修不修留给未来一次独立的
+  enhancement 决策，呼应本机制"发现问题不等于立刻顺手改掉"的设计
+  态度。新增顶层 `tests/test_stock_watch_optimization_loop_e2e.py`
+  验证完整优化循环：outcome_review 发现问题（mock 涨跌幅：单来源高分
+  标的大跌、多来源共识标的上涨）→ 写入改进积压账本 → review session
+  材料收集/任务模板正确带上待办与 `enhancement` 权限提示 → `propose_
+  fix(change_type="enhancement")` 生成提案分支（返回消息正确提示
+  "不要自行落地"）→ 模拟人工用 `git diff` 核对证据后手动 `land_
+  maintenance_fix` 落地、标记待办为 `landed` → 断言阶段5固化的"多来源
+  共识 vs 单来源噪声"黄金案例仍然通过，代表这类问题模式已经有回归
+  护栏在守着。全程单测层面模拟，不接入真实 daemon 主循环定时调度。
+  完整外部项目测试套件（76 项）、stock_watch 离线单测（23 项）全部
+  通过，无回归。至此本文档第4节的改造计划全部完成；后续该做什么
+  （比如真的把 review session 接进运行中的 daemon，或者处理阶段5
+  发现的种子豁免差异）留给下一份独立的迭代文档决定，不在本文档继续
+  堆叠。

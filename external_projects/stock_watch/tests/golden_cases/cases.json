@@ -1,0 +1,51 @@
+[
+  {
+    "id": "multi_source_consensus_outranks_single_mention",
+    "description": "多数据源共同提及的标的（600519）应该稳定跑赢只被单个来源低热度提及的标的（000002），且在候选池上限收紧时应该是后者先被淘汰，不是前者。呼应 reconcile_outcomes 观察到的模式：多来源共识信号比单来源噪声更可信。",
+    "evidence_ref": "synthetic fixture, 呼应阶段3 reconcile_outcomes 设计动机（第3.2节），非某一条具体历史 outcome_ledger 记录",
+    "hot_items": [
+      {"code": "600519", "name": "贵州茅台", "source": "eastmoney_hot_rank", "heat_score": 90},
+      {"code": "600519", "name": "贵州茅台", "source": "xueqiu_hot_stock", "heat_score": 50},
+      {"code": "000858", "name": "五粮液", "source": "eastmoney_guba_hot", "heat_score": 30},
+      {"code": "300750", "name": "宁德时代", "source": "eastmoney_hot_rank", "heat_score": 8},
+      {"code": "000002", "name": "万科A", "source": "eastmoney_hot_rank", "heat_score": 5}
+    ],
+    "seeds": [],
+    "max_size": 3,
+    "expected_included": ["600519", "000858", "300750"],
+    "expected_excluded": ["000002"],
+    "min_score": {"600519": 100}
+  },
+  {
+    "id": "seed_stock_merged_even_without_hot_mentions",
+    "description": "自选种子标的（配置在 watchlist.yaml 里的长期关注对象）即使本次完全没有被任何热点数据源提及，也必须出现在候选池里（`ensure_seeds`），且初始分数保持 1.0 的既有约定不被意外改动。",
+    "evidence_ref": "synthetic fixture, 覆盖 ensure_seeds() 的基本契约",
+    "hot_items": [
+      {"code": "600519", "name": "贵州茅台", "source": "eastmoney_hot_rank", "heat_score": 20}
+    ],
+    "seeds": [
+      {"code": "510300", "name": "沪深300ETF", "market": "sh", "type": "etf"}
+    ],
+    "max_size": 10,
+    "expected_included": ["600519", "510300"],
+    "expected_excluded": [],
+    "min_score": {"510300": 1.0}
+  },
+  {
+    "id": "seed_not_exempt_from_max_size_trim_known_gap",
+    "description": "已知差异（非本次改动引入，阶段5固化黄金案例时发现）：`ensure_seeds()` 的 docstring 写的是'种子标的始终保留在候选池里，不受淘汰影响（...淘汰时另行豁免）'，但 `enforce_max_size()` 实际实现里并没有对种子做豁免——分数排序垫底的种子和普通标的一样会被截掉。这个案例把当前的真实行为（种子被截掉）固化成回归护栏，不代表这是期望行为；是否要修 `enforce_max_size()`（补上真正的豁免）还是改 docstring（去掉'另行豁免'的措辞）是一次独立的 enhancement 决策，应该走改进积压账本 + 人工判断的流程，不在本案例范围内顺手改掉。",
+    "evidence_ref": "discovered while authoring golden cases for stock_watch_continuous_improvement_plan.md stage 5, 2026-08-26",
+    "hot_items": [
+      {"code": "600519", "name": "贵州茅台", "source": "eastmoney_hot_rank", "heat_score": 50},
+      {"code": "000858", "name": "五粮液", "source": "eastmoney_hot_rank", "heat_score": 40},
+      {"code": "300750", "name": "宁德时代", "source": "eastmoney_hot_rank", "heat_score": 30}
+    ],
+    "seeds": [
+      {"code": "510300", "name": "沪深300ETF", "market": "sh", "type": "etf"}
+    ],
+    "max_size": 3,
+    "expected_included": ["600519", "000858", "300750"],
+    "expected_excluded": ["510300"],
+    "min_score": {}
+  }
+]
