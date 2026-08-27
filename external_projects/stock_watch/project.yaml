@@ -67,19 +67,32 @@ entrypoints:
   # 有显示器的桌面环境手动完成登录/验证，不适合无人值守定时跑；运行
   # daemon 的机器如果是纯服务器（无 GUI），这个 entrypoint 会直接失败，
   # 见 PROJECT.md"已知限制"一节。
+  #
+  # 三个 params 全部给了 default（而不是只标 required: false）：
+  # `manifest.py::build_cmd_with_params()` 对"没填值也没有 default"的
+  # 可选参数的处理是——直接不追加这个位置参数，也不追加它后面的所有
+  # 参数（因为这是位置参数语义，跳过中间一个会让后面的参数错位）。
+  # 之前只留空 port、单独填 spawn 就会导致 spawn 连同 --spawn 一起被
+  # 整体丢弃，看板等于"静默"退化成了非 spawn 模式——这是 2026-08-27
+  # 使用者实测踩到的坑。给三个参数都配上 default 后，不管用户填了哪几个、
+  # 留空了哪几个，都会用 default 补齐、按声明顺序完整拼出三个位置参数，
+  # 不会再出现"填了却因为前面留空而被吞掉"的情况。
   fetch_iwencai_cookie:
     cmd: "python entrypoints/fetch_iwencai_cookie.py"
     timeout_sec: 180
     params:
       - name: port
         required: false
-        help: "Chrome 调试端口，留空则用默认值 9222"
+        default: "9222"
+        help: "Chrome 调试端口，默认 9222"
       - name: spawn
         required: false
-        help: "1/true 表示自己拉起独立 Chrome 实例；留空/0 表示假设已用调试端口手动启动 Chrome"
+        default: "0"
+        help: "1/true 表示自己拉起独立 Chrome 实例；0/false 表示假设已用调试端口手动启动 Chrome（默认）"
       - name: timeout
         required: false
-        help: "等待用户完成登录/验证的秒数，留空则用默认值 120"
+        default: "120"
+        help: "等待用户完成登录/验证的秒数，默认 120"
 
 health_check:
   cmd: "python entrypoints/health.py"

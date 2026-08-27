@@ -178,6 +178,19 @@ python tools/fetch_iwencai_cookie.py --spawn    # 方式二：脚本自己拉起
 对象），命令行直接跑 `tools/fetch_iwencai_cookie.py` 不会留下账本记录，
 这是预期行为。
 
+三个 params 都在 `project.yaml` 里配了 `default`（`9222`/`0`/`120`），
+不是只标 `required: false`——`manifest.py::build_cmd_with_params()`
+对"没填值也没有 default"的可选位置参数的处理是：不追加这个参数，也
+**不追加它后面的所有参数**（位置参数语义，跳过中间一个会让后面的错位）。
+之前只给 `required: false`、不给 `default` 时，使用者留空 `port`、只填
+`spawn=true`，会导致 `spawn` 连同 `--spawn` 一起被整体丢弃、静默退化成
+非 spawn 模式（表现为"明明填了 spawn=true，报的却还是`未检测到调试
+端口`"）——2026-08-27 已修复，三个参数都补上 default 后不会再发生。
+若类似情况复现，`entrypoints/fetch_iwencai_cookie.py` 现在会把"看板
+实际传来的位置参数"和"翻译后真正调用 `tools` 脚本的完整命令"打印到
+stderr（失败时会体现在执行账本的 `detail` 字段里），可以直接对照排查
+是"翻译层的问题"还是"CDP/Chrome 环境本身的问题"。
+
 ## 持续优化迭代（新增，见 `next_doc/stock_watch_continuous_improvement_plan.md`）
 
 除了四项核心功能，项目还落地了该文档设计的"结果回溯"能力：

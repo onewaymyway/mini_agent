@@ -70,6 +70,19 @@ def main() -> int:
     if spawn:
         tool_argv.append("--spawn")
 
+    # 看板收到的位置参数（sys.argv[1:]）经常和使用者以为自己填的值不一致
+    # ——比如某个前面的可选参数留空时，`manifest.py::build_cmd_with_params()`
+    # 会连同它后面所有参数一起不追加（位置参数语义）。把"看板实际传来的
+    # 原始位置参数"和"翻译后真正调用 tools 脚本的完整命令"都打印到
+    # stderr，方便对照排查"我明明填了 spawn=true，怎么没生效"这类问题
+    # （执行账本的 detail 字段会带上失败时的 stderr 尾部）。
+    print(f"[fetch_iwencai_cookie] 收到的位置参数 sys.argv[1:]={sys.argv[1:]!r}", file=sys.stderr)
+    print(
+        "[fetch_iwencai_cookie] 实际调用: python tools/fetch_iwencai_cookie.py "
+        + " ".join(tool_argv[1:]),
+        file=sys.stderr,
+    )
+
     old_argv = sys.argv
     sys.argv = tool_argv
     try:
