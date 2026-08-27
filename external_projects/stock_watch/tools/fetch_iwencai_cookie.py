@@ -50,6 +50,30 @@ CDP WebSocket 握手时的 Origin 头，拒绝不在白名单内的连接来源�
 默认 `--port 9222` 路径，需要用户自己在启动参数里加上这个 flag（见上面
 更新后的示例），否则会在建立 WebSocket 会话这一步稳定失败。
 
+2026-08-27 再次追加（修复"根本没等登录就退出、拿到没用的 cookie"）：
+最初的实现把"检测到 `v` cookie 存在"当成"用户已完成登录/验证"的信号，
+逐秒轮询，第一次就命中直接返回。但 `stock_watch/data_sources.py`"问财
+hexin-v 令牌"一节说得很清楚：这个值是页面加载时那段混淆 JS **无条件**
+算出来的，跟有没有登录/有没有过验证无关——也就是说页面刚打开、用户
+还没来得及做任何操作，`v` cookie 就已经有值了。所以旧逻辑必然在第一
+个轮询 tick（≤1 秒）就"成功"退出，写进配置文件的是页面刚加载时那个
+未登录/未验证状态下算出来的令牌，服务端不认，等于白抓。
+
+修复方式：不再把"cookie 存在"当作完成信号，改成两层判断：
+  1. 交互式场景（`tools/fetch_iwencai_cookie.py` 由人在终端直接跑，
+     `sys.stdin` 是 tty）：导航到页面后先记一次"登录前基线值"
+     （仅用于后续比对，不作为结果），然后用 `input()` **真正阻塞**
+     等用户在浏览器里完成登录/验证后手动按回车确认，确认后再读一次
+     cookie。这是最可靠的信号来源——不去猜"登录成功"长什么样，直接
+     让做了这件事的人告诉脚本"我做完了"。
+  2. 非交互式场景（看板「▶️ 手动触发」调用 `entrypoints/` 那层包装时，
+     子进程的 stdin 通常没有连到真正的终端，`input()` 会立刻
+     `EOFError` 或永久阻塞，两者都不可用）：退化成"轮询等待值发生变化"
+     ——只要读到的 `v` 值还等于登录前基线值，就继续等，直到超时或值
+     变化。这不是 100% 可靠（理论上极端情况下问财可能登录前后算出同一
+     个值），但比"完全不判断、第一次命中就走"要靠谱得多，且不需要
+     交互输入。这条路径在 PROJECT.md"已知限制"里有对应说明。
+
 用法：
     cd external_projects/stock_watch
     # 方式一：自己先手动把 Chrome 用调试端口开起来（别忘了带上
@@ -327,20 +351,53 @@ def main() -> int:
             session.send("Network.enable")
             session.send("Page.navigate", {"url": IWENCAI_URL})
 
+            # 给页面加载 + 那段混淆 JS 跑完留一点时间，再去读"登录/验证前"
+            # 的基线值。注意：这个值本身就会有内容（见模块 docstring
+            # "2026-08-27 再次追加"一节），只是不能直接当结果用。
+            time.sleep(2)
+            baseline_result = session.send("Network.getCookies", {"urls": [IWENCAI_URL]})
+            baseline_value = _find_hexin_v(baseline_result.get("cookies", []))
+
             print(f"已通过 CDP 打开 {IWENCAI_URL} ...")
             print("如果页面要求登录/滑块验证/短信验证，请在浏览器窗口里手动完成。")
-            print(f"脚本会每秒检测一次 cookie，最多等待 {args.timeout} 秒。")
+            print(
+                "注意：页面刚打开时 cookie 里可能已经有一个值了，那是登录/验证前"
+                "算出来的临时值，服务端不认；请务必先在浏览器里实际完成登录/验证，"
+                "不要看到这里没报错就以为已经好了。"
+            )
 
             cookie_value: Optional[str] = None
-            deadline = time.monotonic() + args.timeout
-            while time.monotonic() < deadline:
+            if sys.stdin.isatty():
+                # 交互式：真正阻塞等用户确认，而不是靠轮询猜"是不是登录好了"。
+                input("完成登录/验证后，请回到这个终端按回车键确认：")
+                time.sleep(1)  # 给页面一点时间把确认后的新值写进 cookie
                 result = session.send("Network.getCookies", {"urls": [IWENCAI_URL]})
                 cookie_value = _find_hexin_v(result.get("cookies", []))
-                if cookie_value:
-                    break
-                time.sleep(1)
-                print(".", end="", flush=True)
-            print()
+                if cookie_value and cookie_value == baseline_value:
+                    print(
+                        "警告：按回车后读到的令牌跟登录/验证前一模一样，大概率还没有"
+                        "真正登录/验证成功（或者这次问财没有更新令牌），建议确认浏览器"
+                        "里确实已经登录后重跑本脚本。",
+                        file=sys.stderr,
+                    )
+            else:
+                # 非交互式（比如看板「▶️ 手动触发」）：没有终端可以按回车确认，
+                # 只能退化成"轮询等待值相对基线发生变化"，见模块 docstring。
+                print(
+                    "检测到当前不是交互式终端（stdin 非 tty），无法用回车确认，"
+                    f"改为轮询等待令牌相对登录前的基线值发生变化，最多等待 "
+                    f"{args.timeout} 秒。",
+                )
+                deadline = time.monotonic() + args.timeout
+                while time.monotonic() < deadline:
+                    result = session.send("Network.getCookies", {"urls": [IWENCAI_URL]})
+                    current = _find_hexin_v(result.get("cookies", []))
+                    if current and current != baseline_value:
+                        cookie_value = current
+                        break
+                    time.sleep(1)
+                    print(".", end="", flush=True)
+                print()
         finally:
             session.close()
     finally:
@@ -349,8 +406,13 @@ def main() -> int:
 
     if not cookie_value:
         print(
-            f"{args.timeout} 秒内没有检测到 hexin-v cookie。可能原因：\n"
-            "  - 验证/登录还没完成（可以加大 --timeout 再试一次）\n"
+            "没有拿到有效的 hexin-v 令牌。可能原因：\n"
+            "  - 交互式场景：按回车确认时其实还没真正完成登录/验证（重跑本脚本，"
+            "确认浏览器里已经登录/通过验证后再按回车）\n"
+            "  - 非交互式场景：等待 "
+            f"{args.timeout} 秒内令牌值一直没有相对登录前的基线发生变化，说明这段"
+            "时间内没有人在浏览器里完成登录/验证（可以加大 --timeout，或改成在有"
+            "终端的环境里交互式跑本脚本，登录后手动按回车确认）\n"
             "  - 问财这次改了 cookie 名称/存放位置（这个脚本按名字 'v' "
             "查找，需要重新确认）\n"
             "没有写入任何文件。",

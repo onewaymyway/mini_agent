@@ -74,6 +74,13 @@
   这是本项目目前唯一一个"看板手动触发一定会失败"的 entrypoint，需要
   改成在有桌面环境的机器上手动跑 `tools/fetch_iwencai_cookie.py`，再把
   生成的 `config/secrets.local.yaml` 同步到 daemon 所在机器。
+- `tools/fetch_iwencai_cookie.py` 判断"登录/验证是否完成"分两条路径
+  （2026-08-27 修复，详见该文件模块 docstring）：交互式终端下用回车
+  确认，可靠；看板「▶️ 手动触发」走的是非交互式路径（子进程 stdin 不是
+  真正的终端），只能靠"令牌值是否相对登录前的基线发生变化"这个间接
+  信号，不是 100% 可靠——如果通过看板触发总是超时或拿到没用的令牌，
+  建议改成在有桌面环境的终端里直接跑 `tools/fetch_iwencai_cookie.py`，
+  用回车确认那条路径。
 
 ## 目录结构
 
@@ -144,8 +151,18 @@ python entrypoints/fetch_iwencai_cookie.py                      # 获取问财�
 刻意不逆向那段加密逻辑；一个**真实浏览器**加载页面时会自动执行那段 JS、
 自动算出正确的令牌。`tools/fetch_iwencai_cookie.py` 通过 Chrome
 DevTools Protocol（CDP）连接一个真实 Chrome，让用户手动完成问财的
-登录/验证（如果网站要求），自动检测到令牌后写进
-`config/secrets.local.yaml` 的 `iwencai_cookie` 字段。
+登录/验证（如果网站要求），检测到令牌后写进 `config/secrets.local.yaml`
+的 `iwencai_cookie` 字段。
+
+**2026-08-27 修复**：这段 JS 是**无条件**执行的——页面刚打开、用户还
+没登录/验证时，`v` cookie 就已经有值了（只是服务端不认）。最初的实现
+把"cookie 存在"当成"用户登录/验证完成"，逐秒轮询，第一个 tick
+（≤1 秒）就命中退出，结果拿到的是没用的、登录前的值。现在改成：
+交互式终端下（直接跑 `tools/fetch_iwencai_cookie.py`）打开浏览器后会
+**真正阻塞等待**，需要用户在浏览器里完成登录/验证后回到终端按回车
+确认，脚本才会去读取令牌；非交互式场景（比如看板触发，见下文）没有
+终端可以按回车，退化成"轮询等待令牌值相对登录前的基线值发生变化"。
+详见 `tools/fetch_iwencai_cookie.py` 模块 docstring。
 
 两种连接方式：
 
