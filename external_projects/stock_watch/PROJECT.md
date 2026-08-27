@@ -152,10 +152,14 @@ DevTools Protocol（CDP）连接一个真实 Chrome，让用户手动完成问�
 - 默认（`--port 9222`）：假设已经用调试端口手动启动了 Chrome——复用
   用户默认 profile 的已有登录态。Windows 下建议做一个桌面快捷方式，
   目标改成 `"C:\Program Files\Google\Chrome\Application\chrome.exe"
-  --remote-debugging-port=9222`；macOS/Linux 类似，先完全退出 Chrome
-  再从终端加这个参数重新打开。
+  --remote-debugging-port=9222 --remote-allow-origins=*`；macOS/Linux
+  类似，先完全退出 Chrome 再从终端加这两个参数重新打开。
+  **`--remote-allow-origins=*` 不能省略**：较新版本 Chrome（约 111+）
+  出于安全加固，默认会拒绝这个脚本发起的 CDP WebSocket 连接（报
+  `403 Forbidden`），必须显式放开来源才能连上。
 - `--spawn`：不想碰用户默认 profile 时，让脚本自己拉起一个带独立临时
-  profile 的新 Chrome 实例（不保留登录态，每次都要重新过一遍验证）。
+  profile 的新 Chrome 实例（不保留登录态，每次都要重新过一遍验证），
+  已经自动带上了 `--remote-allow-origins=*`，不需要用户额外配置。
 
 命令行直接跑（可用全部选项）：
 

@@ -31,17 +31,31 @@ PROJECT.md），硬依赖主仓库里一个具体路径下的 skill 会破坏这
       打开的是用户的默认 profile，保留已有登录态，问财如果本来就登录
       过，可能不需要再验证一次。Windows 下建议创建一个桌面快捷方式，
       目标改成：
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222
-      macOS/Linux 类似，先完全退出 Chrome，再从终端加这个参数启动。
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222 --remote-allow-origins=*
+      macOS/Linux 类似，先完全退出 Chrome，再从终端加这两个参数启动。
+      **`--remote-allow-origins=*` 不能省略**：见下面 2026-08-27 追加
+      的说明，较新版本 Chrome 默认会拒绝这个脚本发起的 CDP WebSocket
+      连接。`--spawn` 方式（下面）已经自动带上了这个参数，只有"自己
+      手动启动 Chrome"这条路径需要用户自己在启动参数里加。
   --spawn：不想碰用户默认 profile 时，让本脚本自己拉起一个带独立临时
       profile 的新 Chrome 实例（用完不会保留登录态，每次都要重新过一遍
       验证/登录，但不影响用户平时在用的浏览器窗口）。
 
+2026-08-27 追加：较新版本 Chrome（约 111+）出于安全加固，默认会校验
+CDP WebSocket 握手时的 Origin 头，拒绝不在白名单内的连接来源——本脚本
+用 `requests`/`websocket-client` 发起的连接会稳定收到
+`403 Forbidden: Rejected an incoming WebSocket connection ...`（错误
+信息本身其实已经点出了解法）。`--spawn` 路径下 `_spawn_chrome()` 已经
+自动加上 `--remote-allow-origins=*` 规避；如果是手动启动 Chrome 走
+默认 `--port 9222` 路径，需要用户自己在启动参数里加上这个 flag（见上面
+更新后的示例），否则会在建立 WebSocket 会话这一步稳定失败。
+
 用法：
     cd external_projects/stock_watch
-    # 方式一：自己先手动把 Chrome 用调试端口开起来，然后：
+    # 方式一：自己先手动把 Chrome 用调试端口开起来（别忘了带上
+    # --remote-allow-origins=*，见上面的说明），然后：
     python tools/fetch_iwencai_cookie.py
-    # 方式二：让脚本自己拉起一个独立实例：
+    # 方式二：让脚本自己拉起一个独立实例（自动带上所需 flag）：
     python tools/fetch_iwencai_cookie.py --spawn
 
 这个脚本是给人手动跑的交互式工具，不是 `entrypoints/` 下那种被
@@ -195,7 +209,20 @@ def _spawn_chrome(port: int) -> subprocess.Popen:
         )
     profile_dir = tempfile.mkdtemp(prefix="stock_watch_iwencai_cdp_")
     proc = subprocess.Popen(
-        [binary, f"--remote-debugging-port={port}", f"--user-data-dir={profile_dir}", "--no-first-run"],
+        [
+            binary,
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={profile_dir}",
+            "--no-first-run",
+            # 见模块 docstring"2026-08-27 追加"一节：较新版本 Chrome
+            # （约 111+）默认会校验 CDP WebSocket 握手的 Origin 头，拒绝
+            # 非白名单来源的连接（DevTools 协议的一项安全加固，防止恶意
+            # 网页直接连本机调试端口）。不加这个参数，`_spawn_chrome()`
+            # 拉起的实例在 `CDPSession.__init__()` 建立 WebSocket 时会
+            # 稳定收到 403 Forbidden（`Rejected an incoming WebSocket
+            # connection ...`），报错信息本身其实已经点出了这个 flag。
+            "--remote-allow-origins=*",
+        ],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     deadline = time.time() + 15
@@ -257,9 +284,12 @@ def main() -> int:
                 f"{args.host}:{args.port} 上没有检测到可连接的 Chrome 调试端口。\n"
                 "可以：\n"
                 "  ① 手动完全退出 Chrome，再用命令行/快捷方式加上 "
-                f"--remote-debugging-port={args.port} 重新打开（保留你已有的登录态）\n"
-                "  ② 或者直接加 --spawn 让本脚本自己拉起一个独立实例（不带已有登录态，"
-                "每次都要重新过验证）",
+                f"--remote-debugging-port={args.port} --remote-allow-origins=* "
+                "重新打开（保留你已有的登录态；--remote-allow-origins=* 是较新版本 "
+                "Chrome 的必需项，缺了这个参数即使调试端口能连上，后面建立 CDP "
+                "WebSocket 会话时也会稳定收到 403 Forbidden）\n"
+                "  ② 或者直接加 --spawn 让本脚本自己拉起一个独立实例（已自动带上"
+                "所需参数，不带已有登录态，每次都要重新过验证）",
                 file=sys.stderr,
             )
             return 1
@@ -275,7 +305,23 @@ def main() -> int:
             print("拿到的 tab 没有 webSocketDebuggerUrl，异常情况，放弃", file=sys.stderr)
             return 1
 
-        session = CDPSession(ws_url, args.host, args.port)
+        try:
+            session = CDPSession(ws_url, args.host, args.port)
+        except Exception as exc:  # noqa: BLE001 - 转成对症的中文提示，而不是裸 traceback
+            text = str(exc)
+            if "403" in text or "Forbidden" in text or "remote-allow-origins" in text:
+                print(
+                    "建立 CDP WebSocket 会话被拒绝（403 Forbidden）。较新版本 Chrome"
+                    "（约 111+）默认会校验 CDP 连接的来源，需要在启动 Chrome 时加上 "
+                    "--remote-allow-origins=* 参数。若是手动启动的 Chrome（未加 "
+                    "--spawn），请完全退出后加上这个参数重新启动；--spawn 方式理论上"
+                    "已自动带上该参数，若仍出现此错误请确认脚本版本是否为最新。\n"
+                    f"原始错误: {exc}",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"建立 CDP WebSocket 会话失败: {exc}", file=sys.stderr)
+            return 1
         try:
             session.send("Page.enable")
             session.send("Network.enable")

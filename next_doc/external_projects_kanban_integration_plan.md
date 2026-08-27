@@ -347,3 +347,22 @@ client.py`）✅已完成
   照 §阶段6 的建议给每个都配 `default`，否则“部分留空”会有静默丢参的
   风险，且现象具有误导性（看起来像是传参格式错了，实际是位置参数被
   整体跳过）。
+
+- 2026-08-27：**第二个使用者实测反馈的 bug（Chrome 侧，非看板/params
+  机制问题）**——上面两条 `fetch_iwencai_cookie` 记录修好参数传递之后，
+  实测又在建立 CDP WebSocket 会话这一步报错：
+  `websocket._exceptions.WebSocketBadStatusException: Handshake status
+  403 Forbidden ... Rejected an incoming WebSocket connection ...
+  Use the command line flag --remote-allow-origins=... to allow
+  connections`。根因：较新版本 Chrome（约 111+）出于安全加固，默认会
+  校验 CDP WebSocket 握手的 Origin 头，拒绝不在白名单内的连接来源
+  （防止恶意网页直接连本机调试端口），这跟 `mini_agent` 仓库的
+  `.claude/skills/browser-cdp` 机制面对的是同一个 Chrome 版本变化，
+  与本文档"看板→trigger_run→entrypoint"这条链路本身无关。修复落在
+  `tools/fetch_iwencai_cookie.py`：`--spawn` 路径下 `_spawn_chrome()`
+  启动 Chrome 时自动加上 `--remote-allow-origins=*`；手动启动 Chrome
+  的默认路径（不加 `--spawn`）在模块 docstring 和运行期错误提示里都
+  补充了这个 flag 的说明，缺了它会在建立 WebSocket 会话时稳定失败。
+  同时给 `CDPSession(...)` 建立失败这一步加了针对 403 的对症中文提示
+  （之前是裸 traceback），看板「▶️ 手动触发」失败时账本 `detail` 字段
+  会直接带上这段更友好的诊断信息，不用再对照 Python 异常堆栈猜原因。
