@@ -16,6 +16,7 @@ raise 明确异常而不是静默返回空数据——调用方（entrypoints）
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -59,22 +60,61 @@ def _is_unauthorized(exc: DataSourceError) -> bool:
 
 
 # ── 问财（iwencai）hexin-v 令牌 ─────────────────────────────────────────
-# 2026-08-27 追加：`www.iwencai.com` 的选股结果接口现在要求带着
-# `hexin-v` 这个 cookie 才认，裸调直接 401。`hexin-v` 是同花顺系站点
-# 常见的反爬验证 cookie，正常浏览器打开首页时由服务端通过 `Set-Cookie`
-# 自动下发（不需要执行 JS 算出来）——这里用 `requests.Session()` 先走一
-# 遍同样的"打开首页"握手过程拿到这个 cookie，再复用同一个 session 发
-# 真正的数据请求。如果未来同花顺把验证升级成必须跑 JS 才能算出 token
-# 的形式，这个办法会失效，需要换成能跑 JS 的方案（Selenium/Playwright
-# headless，或参考现成的第三方库如 `pywencai` 的最新实现）。
+# 2026-08-27 追加，后续修正：最初以为 `hexin-v` 是像普通反爬 cookie 那样
+# 由服务端在首页响应的 `Set-Cookie` 里直接下发，实测（见
+# `stock_watch_continuous_improvement_plan.md` 变更记录）证明这个假设
+# 是错的——问财首页预热完成后根本拿不到 `hexin-v`，说明它不是简单的
+# 服务端 Set-Cookie，而是前端加载一段混淆过的 JS（`hexin-v.bundle.js`）
+# 在浏览器里动态算出来的令牌（公开的逆向分析文章证实了这一点）。
+#
+# 这里刻意不去逆向还原那段混淆 JS 的加密算法——那本质上是在实现"绕过
+# 对方网站的技术访问控制措施"，即便网上能搜到别人逆向出的实现，自己
+# 复刻一份也不是应该做的事。可行的两条正路：
+#   1. 装可选依赖 `pywencai`（社区维护的问财数据获取库，内部用 Node.js
+#      跑通那段 JS 算出 token，随依赖更新维护，不需要我们自己跟进对方
+#      每次改混淆逻辑）——检测到已安装时优先使用。
+#   2. 用户自己在浏览器登录/访问问财后，从开发者工具里复制当前有效的
+#      `hexin-v` cookie 值，通过环境变量 `STOCK_WATCH_IWENCAI_COOKIE`
+#      配置给本项目直接复用——这不是"破解"，只是把用户自己浏览器会话
+#      里已经合法拿到的令牌接过来用，但令牌会过期，需要用户自己定期
+#      更新这个环境变量（没有自动刷新能力）。
+# 两条路都不满足时，走原来的"首页预热"逻辑兜底（万一对方哪天把验证
+# 降级回了简单 Set-Cookie 形式，这段代码不需要改就能重新工作），但会
+# 明确提示这两个真正可行的解法，而不是让人对着一句"401"发懵。
+_IWENCAI_COOKIE_ENV = "STOCK_WATCH_IWENCAI_COOKIE"
+
 _iwencai_session: Optional["requests.Session"] = None
 _iwencai_session_ts: float = 0.0
 _IWENCAI_SESSION_TTL_SEC = 20 * 60  # hexin-v 实际有效期未知，20 分钟强制刷新一次兜底
 
 
+def _try_pywencai_screener(query: str, top_n: int) -> Optional[List[Dict[str, Any]]]:
+    """检测到已安装 `pywencai` 时优先用它拿问财结果（它自己负责跑 JS
+    算 `hexin-v`，不需要本模块关心令牌怎么来的）。未安装时返回 None，
+    调用方据此退化到下面的手动 cookie / 首页预热两条路径；`pywencai`
+    自身抛出的任何异常都转换成 `DataSourceError`，不让调用方处理两套
+    不同的异常类型。
+    """
+    try:
+        import pywencai  # type: ignore  # noqa: WPS433 - 可选依赖，未安装是正常状态
+    except ImportError:
+        return None
+    try:
+        df = pywencai.get(query=query, loop=False)
+    except Exception as exc:  # noqa: BLE001 - pywencai 内部异常类型不固定
+        raise DataSourceError(f"pywencai 查询失败: {exc}") from exc
+    if df is None:
+        return []
+    return df.head(top_n).to_dict("records")
+
+
 def _warm_up_iwencai_session() -> "requests.Session":
     session = requests.Session()
     session.headers.update({"User-Agent": _DEFAULT_UA})
+    manual_cookie = os.environ.get(_IWENCAI_COOKIE_ENV)
+    if manual_cookie:
+        session.cookies.set("v", manual_cookie)
+        return session
     try:
         session.get("https://www.iwencai.com/", timeout=15)
     except requests.RequestException as exc:
@@ -82,17 +122,28 @@ def _warm_up_iwencai_session() -> "requests.Session":
     if not session.cookies.get("hexin-v"):
         logger.warning(
             "问财首页预热完成，但响应里没有拿到 hexin-v cookie"
-            "（反爬验证机制可能已变化），仍尝试直接请求数据接口"
+            "（该令牌由前端 JS 动态计算，不是简单的服务端 Set-Cookie，"
+            "预热这条路大概率会持续 401）——建议装可选依赖 `pywencai` "
+            "（pip install pywencai，需要 Node.js），或者从浏览器复制"
+            f"当前有效的 hexin-v 值，通过环境变量 {_IWENCAI_COOKIE_ENV} "
+            "手动配置"
         )
     return session
 
 
 def _get_iwencai_session(*, force_refresh: bool = False) -> "requests.Session":
-    """拿一个已经带着 `hexin-v` cookie 的 session，按进程内缓存复用，
-    避免每次选股查询都重新走一遍首页握手（问财一次 screener 运行通常
-    要发多条自然语言查询，见 `run_screener.py`）。
+    """拿一个已经带着 `hexin-v`（或用户手动配置的等价 cookie）的
+    session，按进程内缓存复用，避免每次选股查询都重新走一遍首页握手
+    （问财一次 screener 运行通常要发多条自然语言查询，见
+    `run_screener.py`）。手动配置了 `STOCK_WATCH_IWENCAI_COOKIE` 时不
+    受 TTL 影响——那是用户自己维护有效期的静态值，这里没有能力判断它
+    是否已经过期，强制刷新也无济于事（依然是同一个值）。
     """
     global _iwencai_session, _iwencai_session_ts
+    if os.environ.get(_IWENCAI_COOKIE_ENV):
+        if _iwencai_session is None or force_refresh:
+            _iwencai_session = _warm_up_iwencai_session()
+        return _iwencai_session
     now = time.monotonic()
     if (
         force_refresh
@@ -452,16 +503,23 @@ def fetch_latest_close(code: str, entry_type: str) -> float:
 def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
     """问财网页版结果兜底抓取（`www.iwencai.com` 的选股结果接口）。
 
-    2026-08-27 追加：这个接口需要带着 `hexin-v` cookie 才认，裸调（只带
-    UA/Referer）会被判定成未授权爬虫请求，直接 401（见
-    `stock_watch_continuous_improvement_plan.md` 变更记录同日条目里的
-    实测日志）。`hexin-v` 由 `_get_iwencai_session()` 预热首页请求拿到、
-    按 session 缓存复用；这里没有直接调用通用的 `fetch_html()` 默认重试，
-    是因为通用重试逻辑（对任何 RequestException 都指数退避重试同一个
-    请求）对"令牌过期"这类 401 没有意义——同一个过期令牌重试 3 次结果
-    一样，真正有用的动作是刷新令牌后再试，所以这里自己实现"最多整体
-    尝试两轮，第 2 轮前强制刷新令牌"的逻辑。
+    2026-08-27 追加、后续修正：这个接口需要带着 `hexin-v` 令牌才认，
+    而这个令牌是前端 JS 动态算出来的、不是简单的服务端 Set-Cookie（见
+    上方"问财 hexin-v 令牌"小节的说明）。三层策略，从上到下依次尝试：
+      1. 已安装 `pywencai` → 直接用它（内部处理令牌计算）
+      2. 配了 `STOCK_WATCH_IWENCAI_COOKIE` 环境变量 → 用手动令牌请求
+      3. 都没有 → 退化到"首页预热"这条大概率会 401 的兜底路径，出错时
+         的提示信息会指向前两条真正可行的路
+    第 2/3 条路径没有直接调用通用的 `fetch_html()` 默认重试，是因为
+    通用重试逻辑（对任何 RequestException 都指数退避重试同一个请求）
+    对"令牌无效"这类 401 没有意义——同一个无效令牌重试 3 次结果一样，
+    真正有用的动作是换一次令牌来源再试，所以这里自己实现"最多整体
+    尝试两轮，第 2 轮前强制刷新 session"的逻辑。
     """
+    via_pywencai = _try_pywencai_screener(query, top_n)
+    if via_pywencai is not None:
+        return via_pywencai
+
     url = "https://www.iwencai.com/customized/chart/get-robot-data"
     payload = {
         "query": query,
@@ -474,6 +532,7 @@ def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
     headers = {"Referer": "https://www.iwencai.com/"}
 
     text: Optional[str] = None
+    last_exc: Optional[DataSourceError] = None
     for attempt in (1, 2):
         session = _get_iwencai_session(force_refresh=(attempt == 2))
         try:
@@ -482,10 +541,28 @@ def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
             )
             break
         except DataSourceError as exc:
+            last_exc = exc
             if attempt == 1 and _is_unauthorized(exc):
-                logger.info("问财接口返回 401，疑似 hexin-v 令牌过期，刷新 session 后重试一次")
+                logger.info("问财接口返回 401，疑似令牌无效，刷新 session 后重试一次")
                 continue
+            if _is_unauthorized(exc):
+                if os.environ.get(_IWENCAI_COOKIE_ENV):
+                    raise DataSourceError(
+                        f"问财接口持续 401：环境变量 {_IWENCAI_COOKIE_ENV} "
+                        "配置的令牌看起来已失效，需要从浏览器重新复制一个"
+                        "当前有效的 hexin-v cookie 值"
+                    ) from exc
+                raise DataSourceError(
+                    "问财接口持续 401（hexin-v 令牌由前端 JS 动态计算，"
+                    "简单的首页预热拿不到有效值）。可行的两条路：① 装可选"
+                    "依赖 pywencai（pip install pywencai，需要 Node.js）"
+                    f"；② 从浏览器复制当前有效的 hexin-v cookie 值，通过"
+                    f"环境变量 {_IWENCAI_COOKIE_ENV} 手动配置（会过期，"
+                    "需要自己定期更新）"
+                ) from exc
             raise
+    if text is None:  # pragma: no cover - 上面的循环要么 break 要么 raise
+        raise last_exc or DataSourceError("问财请求未知失败")
 
     import json
 
