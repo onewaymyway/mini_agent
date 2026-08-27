@@ -130,6 +130,7 @@ def aggregate_status(
             snap = project_status_snapshot(registry, r.name)
             manifest = None
             entrypoints: List[dict] = []
+            kanban_view: Optional[dict] = None
             try:
                 manifest = registry.load_manifest_for(r.name)
                 recent = [
@@ -156,6 +157,37 @@ def aggregate_status(
                     }
                     for ep in manifest.entrypoints.values()
                 ]
+                if manifest.kanban_view is not None:
+                    # [external_projects_generic_kanban_view_refactor_plan.md
+                    # 阶段B] 把通用看板视图的契约随聚合状态一起下发，供前端
+                    # 判断"这个项目有没有声明看板视图"而不必额外发一次请求去
+                    # 探测——与 entrypoints/params 字段是同一个模式。
+                    kv = manifest.kanban_view
+                    kanban_view = {
+                        "data_file": kv.data_file,
+                        "id_field": kv.id_field,
+                        "title_field": kv.title_field,
+                        "state_field": kv.state_field,
+                        "states": [
+                            {"value": s.value, "label": s.label, "collapsed": s.collapsed}
+                            for s in kv.states
+                        ],
+                        "metric_fields": [
+                            {"field": m.field, "label": m.label, "format": m.format}
+                            for m in kv.metric_fields
+                        ],
+                        "detail_list_field": kv.detail_list_field,
+                        "change_state": (
+                            {
+                                "entrypoint": kv.change_state.entrypoint,
+                                "id_param": kv.change_state.id_param,
+                                "state_param": kv.change_state.state_param,
+                                "note_param": kv.change_state.note_param,
+                            }
+                            if kv.change_state is not None
+                            else None
+                        ),
+                    }
             except ProjectManifestError:
                 recent = []
             results.append(
@@ -173,6 +205,9 @@ def aggregate_status(
                     # key。manifest 解析失败时留空列表——manifest_error
                     # 字段已经说明了原因，这里不重复报错。
                     "entrypoints": entrypoints,
+                    # [external_projects_generic_kanban_view_refactor_plan.md
+                    # 阶段B]
+                    "kanban_view": kanban_view,
                 }
             )
         except Exception as exc:  # noqa: BLE001 - 聚合视图刻意不让单项目错误传染
@@ -187,6 +222,7 @@ def aggregate_status(
                     "last_run": None,
                     "recent_runs": [],
                     "entrypoints": [],
+                    "kanban_view": None,
                 }
             )
     return results

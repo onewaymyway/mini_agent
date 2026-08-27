@@ -85,3 +85,45 @@ resources:
 review:
   cadence: weekly
   enabled: true
+
+# 通用看板视图声明（external_projects_generic_kanban_view_refactor_plan.md
+# 阶段D）：取代阶段4手写在看板前端的 stock_watch 专属渲染。字段名直接对应
+# `report.py::write_pool_tracking_json()` 已有的输出（
+# `data/pool_tracking_latest.json`，记录数组包在 "entries" 键下）：
+# code/name/state/current_price/score/reasons。不改动
+# candidate_pool.py/run_pool_tracking.py 的业务逻辑本身。
+dashboard:
+  kanban_view:
+    data_file: "data/pool_tracking_latest.json"
+    id_field: "code"
+    title_field: "name"
+    state_field: "state"
+    # 顺序与 candidate_pool.POOL_STATES 一致，按"关注程度递进"排列；
+    # dropped 放最后且默认折叠，已淘汰的标的不是日常需要盯的对象。
+    states:
+      - value: "watching"
+        label: "👀 观察池"
+      - value: "focused"
+        label: "🔎 重点关注"
+      - value: "buy_suggested"
+        label: "🟢 建议买入"
+      - value: "holding"
+        label: "📌 已建仓"
+      - value: "sell_suggested"
+        label: "🔴 建议卖出"
+      - value: "dropped"
+        label: "⚪ 已淘汰"
+        collapsed: true
+    metric_fields:
+      - field: "current_price"
+        label: "当前价"
+        format: "number"
+      - field: "score"
+        label: "分数"
+        format: "number"
+    detail_list_field: "reasons"
+    change_state:
+      entrypoint: "change_pool_state"
+      id_param: "code"
+      state_param: "state"
+      note_param: "note"

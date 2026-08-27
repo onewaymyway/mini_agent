@@ -296,3 +296,12 @@ client.py`）✅已完成
       请求刷新"的预期。没有声明 `params` 的 entrypoint 也套上同一个
       `st.form`（此时表单里只有一个提交按钮），保持所有 entrypoint
       行为一致，不用按"有没有参数"分两套代码路径。
+
+- 2026-08-27：本计划里"🗂️ 外部项目"tab 的通用框架（项目卡片、健康
+  徽标、执行账本、手动触发+参数表单、backlog、review 预览）保持不变。
+  另有一块由 `stock_watch_pool_state_tracking_and_kanban_plan.md`
+  阶段4引入、原本 stock_watch 专属的"状态跟踪"面板，已被
+  `next_doc/external_projects_generic_kanban_view_refactor_plan.md`
+  重构为通用的「📊 状态看板」机制（阶段 A-D 全部完成）：任何外部
+  项目通过 `project.yaml` 的 `dashboard.kanban_view` 声明即可接入，
+  不再是 stock_watch 专属代码。详见该文档。

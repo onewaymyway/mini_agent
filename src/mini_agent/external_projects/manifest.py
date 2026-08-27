@@ -120,6 +120,59 @@ class ReviewSpec:
 
 
 @dataclass
+class KanbanStateSpec:
+    """`kanban_view.states` 列表中的一项：一个状态列的取值与展示标签。
+
+    对应 `external_projects_generic_kanban_view_refactor_plan.md` 第3/4节。
+    """
+
+    value: str
+    label: str
+    collapsed: bool = False
+
+
+@dataclass
+class KanbanMetricSpec:
+    """`kanban_view.metric_fields` 列表中的一项：卡片正文展示的一个字段。"""
+
+    field: str
+    label: str
+    format: str = "text"  # "number" | "percent" | "text"
+
+
+@dataclass
+class KanbanChangeStateSpec:
+    """`kanban_view.change_state`：看板"变更状态"表单复用哪个 entrypoint。"""
+
+    entrypoint: str
+    id_param: str
+    state_param: str
+    note_param: Optional[str] = None
+
+
+_KANBAN_METRIC_FORMATS = {"number", "percent", "text"}
+
+
+@dataclass
+class KanbanViewSpec:
+    """`project.yaml` 里 `dashboard.kanban_view` 的完整声明。
+
+    看板前端只认这份 schema 去动态画列/画卡片/画变更状态表单，不认任何
+    具体项目名或字段名——详见
+    `external_projects_generic_kanban_view_refactor_plan.md` 第2/3节。
+    """
+
+    data_file: str
+    id_field: str
+    title_field: str
+    state_field: str
+    states: List[KanbanStateSpec]
+    metric_fields: List[KanbanMetricSpec] = field(default_factory=list)
+    detail_list_field: Optional[str] = None
+    change_state: Optional[KanbanChangeStateSpec] = None
+
+
+@dataclass
 class ProjectManifest:
     """一份已校验通过的 `project.yaml` 内容。"""
 
@@ -128,6 +181,7 @@ class ProjectManifest:
     health_check: Optional[HealthCheckSpec] = None
     resources: ResourceSpec = field(default_factory=ResourceSpec)
     review: ReviewSpec = field(default_factory=ReviewSpec)
+    kanban_view: Optional[KanbanViewSpec] = None
     # manifest 所在目录，即该外部项目的 Workspace root。不是 project.yaml
     # 文件本身声明的字段，而是 load_manifest() 加载时按来源路径回填，方便
     # 调用方（registry/scheduler）不用另外再传一份 root。
@@ -334,6 +388,108 @@ def _parse_review(raw: Any) -> ReviewSpec:
     return ReviewSpec(cadence=cadence.strip(), enabled=enabled)
 
 
+def _parse_kanban_states(raw: Any, *, ctx: str) -> List[KanbanStateSpec]:
+    if not isinstance(raw, list) or not raw:
+        raise ProjectManifestError(f"{ctx}: 'states' 必须是一个非空列表")
+    specs: List[KanbanStateSpec] = []
+    seen = set()
+    for idx, item in enumerate(raw):
+        item_ctx = f"{ctx}.states[{idx}]"
+        if not isinstance(item, dict):
+            raise ProjectManifestError(f"{item_ctx}: 必须是一个映射（value/label/collapsed）")
+        value = _require_str(item, "value", ctx=item_ctx)
+        if value in seen:
+            raise ProjectManifestError(f"{item_ctx}: 状态取值 '{value}' 重复声明")
+        seen.add(value)
+        label = _require_str(item, "label", ctx=item_ctx)
+        collapsed = item.get("collapsed", False)
+        if not isinstance(collapsed, bool):
+            raise ProjectManifestError(f"{item_ctx}: 'collapsed' 必须是布尔值")
+        specs.append(KanbanStateSpec(value=value, label=label, collapsed=collapsed))
+    return specs
+
+
+def _parse_kanban_metric_fields(raw: Any, *, ctx: str) -> List[KanbanMetricSpec]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ProjectManifestError(f"{ctx}: 'metric_fields' 必须是一个列表")
+    specs: List[KanbanMetricSpec] = []
+    for idx, item in enumerate(raw):
+        item_ctx = f"{ctx}.metric_fields[{idx}]"
+        if not isinstance(item, dict):
+            raise ProjectManifestError(f"{item_ctx}: 必须是一个映射（field/label/format）")
+        field_name = _require_str(item, "field", ctx=item_ctx)
+        label = _require_str(item, "label", ctx=item_ctx)
+        fmt = item.get("format", "text")
+        if fmt not in _KANBAN_METRIC_FORMATS:
+            raise ProjectManifestError(
+                f"{item_ctx}: 'format' 必须是 {sorted(_KANBAN_METRIC_FORMATS)} 之一，"
+                f"实际得到 {fmt!r}"
+            )
+        specs.append(KanbanMetricSpec(field=field_name, label=label, format=fmt))
+    return specs
+
+
+def _parse_kanban_change_state(raw: Any, *, ctx: str) -> Optional[KanbanChangeStateSpec]:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ProjectManifestError(f"{ctx}: 必须是一个映射（entrypoint/id_param/state_param/note_param）")
+    entrypoint = _require_str(raw, "entrypoint", ctx=ctx)
+    id_param = _require_str(raw, "id_param", ctx=ctx)
+    state_param = _require_str(raw, "state_param", ctx=ctx)
+    note_param = raw.get("note_param")
+    if note_param is not None and not isinstance(note_param, str):
+        raise ProjectManifestError(f"{ctx}: 'note_param' 必须是字符串")
+    return KanbanChangeStateSpec(
+        entrypoint=entrypoint, id_param=id_param, state_param=state_param, note_param=note_param
+    )
+
+
+def _parse_kanban_view(
+    raw: Any, *, entrypoints: Dict[str, EntrypointSpec]
+) -> Optional[KanbanViewSpec]:
+    """解析 `dashboard.kanban_view`。必须在 `entrypoints` 解析完成之后调用，
+    因为 `change_state.entrypoint` 是跨字段的引用完整性检查（第4节）。
+    """
+    if raw is None:
+        return None
+    ctx = "dashboard.kanban_view"
+    if not isinstance(raw, dict):
+        raise ProjectManifestError(f"{ctx}: 必须是一个映射")
+
+    data_file = _require_str(raw, "data_file", ctx=ctx)
+    id_field = _require_str(raw, "id_field", ctx=ctx)
+    title_field = _require_str(raw, "title_field", ctx=ctx)
+    state_field = _require_str(raw, "state_field", ctx=ctx)
+    states = _parse_kanban_states(raw.get("states"), ctx=ctx)
+    metric_fields = _parse_kanban_metric_fields(raw.get("metric_fields"), ctx=ctx)
+
+    detail_list_field = raw.get("detail_list_field")
+    if detail_list_field is not None and not isinstance(detail_list_field, str):
+        raise ProjectManifestError(f"{ctx}: 'detail_list_field' 必须是字符串")
+
+    change_state = _parse_kanban_change_state(raw.get("change_state"), ctx=f"{ctx}.change_state")
+    if change_state is not None and change_state.entrypoint not in entrypoints:
+        available = ", ".join(sorted(entrypoints)) or "(none)"
+        raise ProjectManifestError(
+            f"{ctx}.change_state: entrypoint '{change_state.entrypoint}' "
+            f"未在 project.yaml 的 entrypoints 中声明，可用: {available}"
+        )
+
+    return KanbanViewSpec(
+        data_file=data_file,
+        id_field=id_field,
+        title_field=title_field,
+        state_field=state_field,
+        states=states,
+        metric_fields=metric_fields,
+        detail_list_field=detail_list_field,
+        change_state=change_state,
+    )
+
+
 def parse_manifest(text: str, *, source_dir: Optional[Path] = None) -> ProjectManifest:
     """从 `project.yaml` 的文本内容解析出 `ProjectManifest`，做结构校验。"""
     try:
@@ -356,6 +512,12 @@ def parse_manifest(text: str, *, source_dir: Optional[Path] = None) -> ProjectMa
     health_check = _parse_health_check(data.get("health_check"))
     resources = _parse_resources(data.get("resources"))
     review = _parse_review(data.get("review"))
+    dashboard = data.get("dashboard")
+    if dashboard is not None and not isinstance(dashboard, dict):
+        raise ProjectManifestError("project.yaml: 'dashboard' 必须是一个映射")
+    kanban_view = _parse_kanban_view(
+        (dashboard or {}).get("kanban_view"), entrypoints=entrypoints
+    )
 
     return ProjectManifest(
         name=name,
@@ -363,6 +525,7 @@ def parse_manifest(text: str, *, source_dir: Optional[Path] = None) -> ProjectMa
         health_check=health_check,
         resources=resources,
         review=review,
+        kanban_view=kanban_view,
         source_dir=Path(source_dir).expanduser().resolve() if source_dir else None,
     )
 

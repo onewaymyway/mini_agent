@@ -277,14 +277,20 @@ XX 网站热榜"和"自算：MA5/MA20 金叉"这类不同来源的说明，保�
 > `state_returns` 做前端聚合（按状态汇总平均涨跌幅/胜率）——不需要
 > 额外的后端接口，数据本来就已经在页面上了。
 >
-> **⚠️ 后续变更**：本阶段的实现是 stock_watch 专属的（路由/字段名/
-> entrypoint 名硬编码），后来发现这个诉求应该做成通用机制——任何外部
-> 项目都能通过 `project.yaml` 声明去接入状态看板，而不是每接一个新
-> 项目就得改一遍看板代码。这部分已被
+> **⚠️ 后续变更（已完成）**：本阶段的实现是 stock_watch 专属的（路由/
+> 字段名/entrypoint 名硬编码），后来发现这个诉求应该做成通用机制——
+> 任何外部项目都能通过 `project.yaml` 声明去接入状态看板，而不是每接
+> 一个新项目就得改一遍看板代码。这部分已被
 > `next_doc/external_projects_generic_kanban_view_refactor_plan.md`
-> 重构取代，该文档实施完成后，本节描述的 `pool_tracking` 专属路由/
-> `_render_pool_tracking_panel()` 会被通用的 `kanban_data`/
-> `_render_kanban_view_panel()` 替换，具体进度以该文档为准。
+> 重构取代（阶段 A-D 已全部完成）：本节描述的 `pool_tracking` 专属
+> 路由/`_render_pool_tracking_panel()` 已被通用的 `kanban_data`/
+> `_render_kanban_view_panel()` 替换，stock_watch 通过
+> `project.yaml` 里的 `dashboard.kanban_view` 声明接入，不再有任何
+> stock_watch 专属的看板代码。下面 4.1-4.4 节的描述仅作历史记录，
+> **`4.4 回溯统计面板`未被纳入通用 schema，已随专属实现一起下线**
+> （原因见重构计划第7/9节：这是"字段语义是价格/收益率"的项目才有意义
+> 的功能，不是通用 `kanban_view` 接入方都需要，暂不做，如需要请单独
+> 立项）。
 
 依赖阶段 2 的数据结构（状态机 + 区间收益）先落地稳定。mini_agent
 已有"外部项目卡片"和"手动触发"的看板机制（`🗂️ 外部项目` tab，见
@@ -376,3 +382,17 @@ params=...)`，不是另一套后端逻辑。）
   相关测试文件共 114 个用例全部通过，无回归。手动过一遍真实 Streamlit
   UI（需要拉起 daemon）仍留给使用者自行验证，与
   `external_projects_kanban_integration_plan.md` 阶段4的既有约定一致。
+- 2026-08-27：阶段4的实现已被
+  `next_doc/external_projects_generic_kanban_view_refactor_plan.md`
+  重构取代（阶段 A-D 全部完成）。`GET /v1/external_projects/{name}/
+  pool_tracking` 路由、`AgentClient.external_project_pool_tracking()`、
+  `_render_pool_tracking_panel()` 均已删除，替换为通用的
+  `GET /v1/external_projects/{name}/kanban_data`、
+  `AgentClient.external_project_kanban_data()`、
+  `_render_kanban_view_panel()`。stock_watch 通过
+  `project.yaml` 的 `dashboard.kanban_view` 声明接入，字段名对应
+  `report.py::write_pool_tracking_json()` 已有输出，未改动
+  `candidate_pool.py`/`run_pool_tracking.py` 的业务逻辑本身。
+  `4.4 回溯统计面板`未被纳入通用 schema，本次一并下线（详见重构计划
+  第7/9节的取舍说明）。回归：`external_projects/stock_watch/tests/`
+  43 项 + 外部项目相关测试全部通过，无新增回归。

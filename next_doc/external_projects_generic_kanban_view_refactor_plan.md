@@ -310,45 +310,105 @@ key"直接改成按钮列表，没有保留旧交互）：
 
 ## 11. 实施步骤（每完成一项打勾，完成后在第12节补一行变更记录）
 
-### 阶段 A：`manifest.py` schema + 校验
-- [ ] `KanbanStateSpec`/`KanbanMetricSpec`/`KanbanChangeStateSpec`/
+### 阶段 A：`manifest.py` schema + 校验 ✅
+- [x] `KanbanStateSpec`/`KanbanMetricSpec`/`KanbanChangeStateSpec`/
       `KanbanViewSpec` 四个 dataclass
-- [ ] `ProjectManifest.kanban_view` 字段
-- [ ] `_parse_kanban_view()` 及校验规则（第4节全部规则，含
+- [x] `ProjectManifest.kanban_view` 字段
+- [x] `_parse_kanban_view()` 及校验规则（第4节全部规则，含
       `change_state.entrypoint` 引用完整性检查）
-- [ ] 单元测试：合法声明解析成功 / 各必填字段缺失报错 / `states`
+- [x] 单元测试：合法声明解析成功 / 各必填字段缺失报错 / `states`
       重复值报错 / `format` 非法枚举报错 / `change_state.entrypoint`
       引用不存在的 key 报错 / 未声明 `dashboard.kanban_view` 时
       `manifest.kanban_view is None`（向后兼容，不影响没有这段声明的
       现有外部项目）
+      → `tests/test_external_projects_kanban_view_manifest.py`，
+      新增 45 项用例（含既有 `test_external_projects.py` 回归）全部
+      通过。
 
-### 阶段 B：后端路由 + status 聚合
-- [ ] `GET /v1/external_projects/{name}/kanban_data`（含路径越界防护）
-- [ ] 删除 `GET /v1/external_projects/{name}/pool_tracking`
-- [ ] `aggregate_status()` 新增 `kanban_view` 字段
-- [ ] 单元测试：未声明返回 available=false / 文件不存在返回
+### 阶段 B：后端路由 + status 聚合 ✅
+- [x] `GET /v1/external_projects/{name}/kanban_data`（含路径越界防护）
+- [x] 删除 `GET /v1/external_projects/{name}/pool_tracking`
+- [x] `aggregate_status()` 新增 `kanban_view` 字段
+- [x] 单元测试：未声明返回 available=false / 文件不存在返回
       available=false / 文件存在正常返回 / 解析失败返回 error 字段 /
       `data_file` 试图路径穿越时拒绝并返回 400 / 项目未注册 404
+      → `tests/test_api_external_projects_routes.py`，`pool_tracking`
+      系列测试替换为 `kanban_data` 系列，新增
+      `test_status_route_includes_kanban_view_contract`。全部 28 项
+      通过。
 
-### 阶段 C：`AgentClient` + 前端通用渲染
-- [ ] `external_project_kanban_data()`，删除
+**实现中发现并处理的一处 gap（原文档未覆盖）**：`report.py::
+write_pool_tracking_json()` 的实际输出是 `{"generated_at": ...,
+"entries": [...]}`（记录数组包在 `"entries"` 键下），不是文档第8节
+描述的"顶层直接是列表"。`kanban_data` 路由按"原样透传 dict"处理，
+`data_file` 顶层若是 JSON 数组则包一层 `{"available": true, "entries":
+[...]}` 与既有 `"entries"` 键约定对齐，保证两种顶层形状（dict/array）
+在响应里都固定通过 `entries` 键取记录列表，前端（阶段C）不需要再区分
+顶层形状。
+
+### 阶段 C：`AgentClient` + 前端通用渲染 ✅
+- [x] `external_project_kanban_data()`，删除
       `external_project_pool_tracking()`
-- [ ] `_render_kanban_view_panel()` 通用渲染函数，删除
+- [x] `_render_kanban_view_panel()` 通用渲染函数，删除
       `_render_pool_tracking_panel()`
-- [ ] 状态列（含 `collapsed`）、卡片 metric 展示、`detail_list_field`
+- [x] 状态列（含 `collapsed`）、卡片 metric 展示、`detail_list_field`
       展开详情、`change_state` 表单，均按 spec 动态生成，函数体内不出现
       任何 stock_watch/pool_tracking 相关的硬编码字符串
 
-### 阶段 D：stock_watch 接入 + 回归验证
-- [ ] `external_projects/stock_watch/project.yaml` 补
+### 阶段 D：stock_watch 接入 + 回归验证 ✅
+- [x] `external_projects/stock_watch/project.yaml` 补
       `dashboard.kanban_view` 声明
-- [ ] 全量回归：外部项目相关测试文件 + stock_watch 自身测试全部通过
-- [ ] 文档同步：本文件状态更新、`stock_watch_pool_state_tracking_
-      and_kanban_plan.md` 第4节补充"该阶段的看板实现已被通用化重构，
-      详见本文档"的指引、`docs/kanban-dashboard-guide.md`「🗂️ 外部
-      项目 Tab」一节改成描述通用 `kanban_view` 机制、
+- [x] 全量回归：外部项目相关测试文件 + stock_watch 自身测试全部通过
+      （`external_projects/stock_watch/tests/` 43 项、
+      `tests/*external_projects*`/`test_api_external_projects_routes.py`
+      等 128+28 项，均通过；另跑了 `-k "external_projects or kanban"`
+      全量筛选，10 项失败均与本次改动无关——`test_goal_execution_spec_
+      kanban_routes.py`/`test_notification_dispatcher.py` 因缺测试环境
+      的 `external_input` 目录 fixture 失败，`test_kanban_growth_
+      dragdrop.py` 一项因 `FakeClient` 缺 `get_latest_async_job` 方法
+      失败，均为改动前既存的环境/fixture 问题，未触碰这几个文件）
+- [x] 文档同步：本文件状态更新；`stock_watch_pool_state_tracking_
+      and_kanban_plan.md` 第4节补充指引；
+      `docs/kanban-dashboard-guide.md`「🗂️ 外部项目 Tab」一节改为
+      描述通用 `kanban_view` 机制；
       `external_projects_kanban_integration_plan.md` 补变更记录
 
 ## 12. 变更记录
 
 - 2026-08-27：文档创建，设计确认（第1-10节）。阶段 A-D 待开始。
+- 2026-08-27：阶段 A 完成。`manifest.py` 新增
+  `KanbanStateSpec`/`KanbanMetricSpec`/`KanbanChangeStateSpec`/
+  `KanbanViewSpec` 四个 dataclass 及 `ProjectManifest.kanban_view`
+  字段；`_parse_kanban_view()`（连同 `_parse_kanban_states()`/
+  `_parse_kanban_metric_fields()`/`_parse_kanban_change_state()`）
+  实现第4节全部校验规则，在 `parse_manifest()` 里于 entrypoints
+  解析完成后调用，满足 `change_state.entrypoint` 的跨字段引用完整性
+  检查顺序要求。新增
+  `tests/test_external_projects_kanban_view_manifest.py`。
+- 2026-08-27：阶段 B 完成。`api/routes.py` 用
+  `GET /v1/external_projects/{name}/kanban_data` 替换阶段4的
+  `pool_tracking` 专属路由（含 `data_file` 路径越界防护、
+  available/error 语义与阶段4对齐）；`status.py::aggregate_status()`
+  新增 `kanban_view` 字段序列化。测试同步更新为
+  `test_kanban_data_*` 系列。
+- 2026-08-27：阶段 C 完成。`apps/mini_agent_kanban/client.py` 新增
+  `external_project_kanban_data()`，删除
+  `external_project_pool_tracking()`；`app.py` 新增
+  `_render_kanban_view_panel()`/`_kanban_metric_display()`，删除
+  `_render_pool_tracking_panel()`/`_POOL_STATE_LABEL`/
+  `_POOL_STATE_COLUMN_ORDER`，调用点改为
+  `_render_kanban_view_panel(client, name, proj.get("kanban_view"))`。
+  未纳入通用渲染的部分（阶段4 4.4"各状态区间表现汇总"）按第7节所述
+  留在 stock_watch 专属层面，本次不做。
+- 2026-08-27：阶段 D 完成。`external_projects/stock_watch/project.yaml`
+  补 `dashboard.kanban_view` 声明（字段对应 `report.py::
+  write_pool_tracking_json()` 已有输出，未改动业务逻辑），
+  `load_manifest()` 验证解析通过、`change_state.entrypoint` 引用
+  校验通过。全量回归：`external_projects/stock_watch/tests/`
+  43 项、外部项目相关测试 128+28 项均通过。文档同步见下方各文件的
+  对应更新。
+
+**实现细节留档**：`kanban_data` 路由把 `data_file` 顶层内容统一整理成
+`entries` 键下的记录数组（阶段B已记录的 gap 处理），前端
+`_render_kanban_view_panel()` 固定读 `resp.get("entries")`，不需要
+关心 `data_file` 顶层原本是 dict 还是 array。

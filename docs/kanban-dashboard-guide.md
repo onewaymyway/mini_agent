@@ -546,25 +546,31 @@ cron job 后等待其按 cadence 自动触发。
   「📋 复制到对话框」按钮会把模板文本写进"💬 对话"Tab 的输入框并跳转
   过去——**只是预填文本，不自动发送**，真正发起 review session 仍需
   用户自己点发送，agent 仍要走一遍正常的工具调用+权限确认流程。
-- **卡片内「📊 候选池状态跟踪」**（`stock_watch_pool_state_tracking_
-  and_kanban_plan.md` 阶段4，目前只有 `stock_watch` 会显示这块）：
-  读 `GET /v1/external_projects/{name}/pool_tracking`
-  （项目的 `data/pool_tracking_latest.json`，由 `run_pool_tracking.py`
-  每日产出），该文件不存在时整块面板不渲染，不在其它外部项目卡片上
-  留一个空白 expander。内容分四部分：
-  - **状态列视图**：按候选池六态（观察/重点关注/建议买入/已建仓/
-    建议卖出/淘汰，`淘汰`默认折叠）分栏，每列列出该状态下的标的、
-    区间涨跌幅、已持续天数、当前价。
-  - **变更状态**：逐个标的展开后有一个下拉选新状态 + 备注输入框的
-    表单，底层调用的还是 `change_pool_state` entrypoint（跟上面
-    「▶️ 手动触发」区块的按钮是同一条后端路径，这里只是更顺手的
-    入口，不是另一套逻辑）。
-  - **信号溯源**：展示该标的 `reasons` 全量列表（含外部网站热度和
-    自算信号，`stock_watch_pool_state_tracking_and_kanban_plan.md`
-    阶段3落地后两类来源都在这里）以及每一段状态历史各自的区间涨跌。
-  - **各状态区间表现汇总**：按状态汇总平均涨跌幅/胜率，帮助判断
-    "重点关注"这类人工判断动作相对"观察"阶段是否真的提升了后续表现；
-    数据直接来自同一次响应，不是单独的后端接口。
+- **卡片内「📊 状态看板」**（`external_projects_generic_kanban_view_
+  refactor_plan.md`，通用机制，任何声明了 `dashboard.kanban_view` 的
+  外部项目都会显示这块，不是 stock_watch 专属）：读
+  `GET /v1/external_projects/{name}/kanban_data`（`project.yaml` 里
+  `dashboard.kanban_view.data_file` 声明的文件，由项目自己的某个
+  entrypoint 产出），项目未声明该配置，或声明了但数据文件尚未产出，
+  整块面板都不渲染（或只给一行"暂无数据"提示），不在没有这项功能的
+  外部项目卡片上留一个空白 expander。内容按 `kanban_view` 声明动态
+  生成：
+  - **状态列视图**：按 `states` 声明的顺序分栏（`collapsed: true`
+    的状态放进单独折叠区，不占列位），每列列出该状态下的记录标题、
+    `metric_fields` 声明的正文字段。
+  - **变更状态**（可选，取决于是否声明 `change_state`）：逐条记录
+    展开后有一个下拉选新状态 + 可选备注输入框的表单，底层调用的是
+    `change_state.entrypoint` 声明的 entrypoint（跟「▶️ 手动触发」
+    区块走同一条后端路径，这里只是更顺手的入口，不是另一套逻辑）。
+  - **详情列表**（可选，取决于是否声明 `detail_list_field`）：展开
+    记录后展示该字段（字符串列表），比如 stock_watch 用它展示信号
+    溯源 `reasons`。
+  - stock_watch 是第一个接入方，通过 `project.yaml` 里的
+    `dashboard.kanban_view` 声明接入六态候选池看板；任何其它外部
+    项目只要在自己的 `project.yaml` 里声明同样的 schema、产出对应
+    格式的 JSON 文件，不用改一行看板代码就能获得同样的看板。
+    schema 完整说明见
+    `external_projects_generic_kanban_view_refactor_plan.md` 第3节。
 
 对应的 `AgentClient` 方法见下方"`AgentClient` 封装的 API 端点"一节。
 
@@ -675,7 +681,7 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `external_project_backlog(name, status=)` | `GET /v1/external_projects/{name}/backlog` | 该项目的改进积压账本；`status` 留空表示不过滤 |
 | `append_external_project_backlog(name, summary, evidence_ref=)` | `POST /v1/external_projects/{name}/backlog` | 新增一条待办，`source` 由后端固定写死为 `user_feedback` |
 | `external_project_review(name)` | `GET /v1/external_projects/{name}/review` | 生成该项目的 review 任务模板预览（不实际发起 review） |
-| `external_project_pool_tracking(name)` | `GET /v1/external_projects/{name}/pool_tracking` | 候选池状态区间跟踪最新快照；未产出该数据的项目返回 `available: false` |
+| `external_project_kanban_data(name)` | `GET /v1/external_projects/{name}/kanban_data` | 通用看板视图的结构化数据；未声明 `dashboard.kanban_view` 或数据文件尚未产出时返回 `available: false` |
 | `sentinel_summary(cron_failure_threshold=2)` | `GET /v1/sentinel/summary` | 哨兵聚合面板：cron 连续失败 + Objective 重试热点 + wiki 隔离区积压 + LLM 故障转移状态 + 近 7 天仲裁降级/阻塞占比一次性拉取（只读，方向 A） |
 | `concurrency_status()` | `GET /v1/self/concurrency` | SubAgent/LLM 请求这两个底层信号量的并发状态快照（只读，高级用法） |
 | `set_concurrency(max_tasks=, max_llm_calls=)` | `POST /v1/self/concurrency` | 运行时热改最大并发 SubAgent 数 / 最大并发 LLM 调用数，立即生效、不写回配置文件 |

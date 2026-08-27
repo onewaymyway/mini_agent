@@ -35,6 +35,37 @@ review:
   enabled: true
 """
 
+# 声明了 dashboard.kanban_view 的 manifest，供
+# `external_projects_generic_kanban_view_refactor_plan.md` 阶段B 的
+# kanban_data 路由测试使用。
+KANBAN_VIEW_MANIFEST = """
+name: demo_project
+entrypoints:
+  scan:
+    cmd: "python -c \\"print(1)\\""
+  change_state:
+    cmd: "python -c \\"print(1)\\""
+dashboard:
+  kanban_view:
+    data_file: "data/pool_tracking_latest.json"
+    id_field: "code"
+    title_field: "name"
+    state_field: "state"
+    states:
+      - value: "watching"
+        label: "观察池"
+      - value: "focused"
+        label: "重点关注"
+    metric_fields:
+      - field: "current_price"
+        label: "当前价"
+        format: "number"
+    change_state:
+      entrypoint: "change_state"
+      id_param: "code"
+      state_param: "state"
+"""
+
 
 def _make_app() -> TestClient:
     app = FastAPI()
@@ -73,6 +104,9 @@ class TestExternalProjectsKanbanRoutes(unittest.TestCase):
     def _register_project(self):
         registry = ExternalProjectRegistry(self.registry_path)
         registry.register("demo_project", self.project_dir)
+
+    def _write_kanban_view_manifest(self):
+        (self.project_dir / "project.yaml").write_text(KANBAN_VIEW_MANIFEST, encoding="utf-8")
 
     # ── register ─────────────────────────────────────────────────────
 
@@ -265,16 +299,25 @@ class TestExternalProjectsKanbanRoutes(unittest.TestCase):
         resp = self.client.get("/v1/external_projects/not_registered/review")
         self.assertEqual(resp.status_code, 404)
 
-    # ── pool_tracking [stock_watch_pool_state_tracking_and_kanban_plan.md
-    #    阶段4] ───────────────────────────────────────────────────────
+    # ── kanban_data [external_projects_generic_kanban_view_refactor_plan.md
+    #    阶段B，取代阶段4的 pool_tracking 专属路由] ───────────────────────
 
-    def test_pool_tracking_unavailable_when_file_missing(self):
+    def test_kanban_data_unavailable_when_not_declared(self):
+        # 未声明 dashboard.kanban_view 的默认 manifest。
         self._register_project()
-        resp = self.client.get("/v1/external_projects/demo_project/pool_tracking")
+        resp = self.client.get("/v1/external_projects/demo_project/kanban_data")
         self.assertEqual(resp.status_code, 200)
         self.assertFalse(resp.json()["available"])
 
-    def test_pool_tracking_returns_payload_when_file_present(self):
+    def test_kanban_data_unavailable_when_file_missing(self):
+        self._write_kanban_view_manifest()
+        self._register_project()
+        resp = self.client.get("/v1/external_projects/demo_project/kanban_data")
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["available"])
+
+    def test_kanban_data_returns_payload_when_file_present(self):
+        self._write_kanban_view_manifest()
         self._register_project()
         data_dir = self.project_dir / "data"
         data_dir.mkdir()
@@ -285,27 +328,52 @@ class TestExternalProjectsKanbanRoutes(unittest.TestCase):
             '"current_price": 1700.0, "price_error": null, "state_returns": []}]}'
         )
         (data_dir / "pool_tracking_latest.json").write_text(payload, encoding="utf-8")
-        resp = self.client.get("/v1/external_projects/demo_project/pool_tracking")
+        resp = self.client.get("/v1/external_projects/demo_project/kanban_data")
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertTrue(body["available"])
         self.assertEqual(len(body["entries"]), 1)
         self.assertEqual(body["entries"][0]["code"], "600519")
 
-    def test_pool_tracking_reports_error_on_malformed_json(self):
+    def test_kanban_data_reports_error_on_malformed_json(self):
+        self._write_kanban_view_manifest()
         self._register_project()
         data_dir = self.project_dir / "data"
         data_dir.mkdir()
         (data_dir / "pool_tracking_latest.json").write_text("{not valid json", encoding="utf-8")
-        resp = self.client.get("/v1/external_projects/demo_project/pool_tracking")
+        resp = self.client.get("/v1/external_projects/demo_project/kanban_data")
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertTrue(body["available"])
         self.assertIn("error", body)
 
-    def test_pool_tracking_unregistered_project_returns_404(self):
-        resp = self.client.get("/v1/external_projects/not_registered/pool_tracking")
+    def test_kanban_data_rejects_path_traversal(self):
+        manifest_text = KANBAN_VIEW_MANIFEST.replace(
+            'data_file: "data/pool_tracking_latest.json"',
+            'data_file: "../../etc/passwd"',
+        )
+        (self.project_dir / "project.yaml").write_text(manifest_text, encoding="utf-8")
+        self._register_project()
+        resp = self.client.get("/v1/external_projects/demo_project/kanban_data")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_kanban_data_unregistered_project_returns_404(self):
+        resp = self.client.get("/v1/external_projects/not_registered/kanban_data")
         self.assertEqual(resp.status_code, 404)
+
+    def test_status_route_includes_kanban_view_contract(self):
+        self._write_kanban_view_manifest()
+        self._register_project()
+        resp = self.client.get("/v1/self/external_projects")
+        self.assertEqual(resp.status_code, 200)
+        projects = resp.json()["projects"]
+        proj = next(p for p in projects if p["name"] == "demo_project")
+        self.assertIsNotNone(proj["kanban_view"])
+        self.assertEqual(proj["kanban_view"]["id_field"], "code")
+        self.assertEqual(
+            [s["value"] for s in proj["kanban_view"]["states"]], ["watching", "focused"]
+        )
+        self.assertEqual(proj["kanban_view"]["change_state"]["entrypoint"], "change_state")
 
 
 if __name__ == "__main__":

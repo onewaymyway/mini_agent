@@ -800,13 +800,13 @@ class AgentClient:
         """生成该项目的 review 任务模板预览（不实际发起 review）。"""
         return self._get(f"/external_projects/{name}/review")
 
-    def external_project_pool_tracking(self, name: str):
-        """候选池状态区间跟踪最新快照（阶段4，见
-        `stock_watch_pool_state_tracking_and_kanban_plan.md`）。目前只有
-        stock_watch 会产出这份数据，其它项目调用会拿到
-        `{"available": False}`，前端据此决定是否渲染这块面板。
+    def external_project_kanban_data(self, name: str):
+        """通用看板视图的结构化数据（`external_projects_generic_kanban_view_
+        refactor_plan.md` 阶段C，取代阶段4引入的 `external_project_
+        pool_tracking()`）。项目未声明 `dashboard.kanban_view` 或数据文件
+        尚未产出时返回 `{"available": False}`。
         """
-        return self._get(f"/external_projects/{name}/pool_tracking")
+        return self._get(f"/external_projects/{name}/kanban_data")
 
     def feedback_loop_summary(self):
         """[外部知识反馈闭环 P1-P5] 一次性汇总五个模块（候选队列过期巡检/
