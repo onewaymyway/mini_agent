@@ -438,3 +438,25 @@ stock_watch 的业务逻辑，不是框架能力。
     `iwencai_cookie`，文件不存在时返回 `None`；`_fetch_iwencai_web()`
     的手动令牌路径、"令牌已失效"提示、"未配置"提示三条消息都指向了
     正确的配置文件位置。`stock_watch/tests/` 43 个既有测试全部通过
+- 2026-08-27（续4）：新增交互式工具
+  `external_projects/stock_watch/tools/fetch_iwencai_cookie.py`，把
+  "手动 F12 复制 cookie 填配置文件"这最后一步机械操作也自动化掉：用
+  Playwright 打开一个**有窗口、非 headless** 的真实浏览器访问问财，
+  如果网站要求登录/验证，用户在弹出的窗口里手动完成（跟平时用浏览器
+  访问完全一样，脚本不代替用户"过验证"），脚本每秒轮询浏览器 cookie，
+  检测到 `v`（即 `hexin-v`）后自动写进 `config/secrets.local.yaml`
+  （保留文件里已有的其它字段，只更新这一个 key）。放在 `tools/` 而不
+  是 `entrypoints/`：这是给人手动跑的交互式工具，不接入
+  `_common.run_entrypoint()` 账本机制，也没法在 daemon/cron 的
+  headless 环境下用。
+  依赖 `playwright`（可选，`pip install playwright && playwright
+  install chromium`），刻意没写进 `requirements.txt` 强制安装——跟
+  `pywencai` 一样，只有用户选择用这条路径时才需要装，避免给不需要
+  这个功能的用户增加不必要的重依赖（Chromium 内核体积不小）。
+  `secrets.local.yaml.example` 模板同步更新，把这个新工具列为获取
+  令牌的首选方式，F12 手动复制降级为备选。
+  **未在真实环境验证**：本环境访问不了 iwencai.com、也没有可显示
+  窗口的桌面环境跑 Playwright headed 模式，`_find_hexin_v()`/
+  `_write_cookie_to_secrets()` 两个纯逻辑函数用单元测试验证过（cookie
+  查找、文件读写不覆盖其它字段），但"打开真实浏览器 → 检测到 cookie"
+  这条端到端路径需要用户自己验证。
