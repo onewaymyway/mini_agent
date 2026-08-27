@@ -62,6 +62,24 @@ entrypoints:
     cmd: "python entrypoints/run_signal_scan.py"
     schedule: "cron: 0 19 * * 1-5"   # 盘后，晚于 pool_tracking(15:45)，避免抢锁
     timeout_sec: 900
+  # tools/fetch_iwencai_cookie.py 的看板包装（见该 entrypoint 文件顶部
+  # docstring）：交互式获取问财 hexin-v 登录令牌。无 schedule——需要人在
+  # 有显示器的桌面环境手动完成登录/验证，不适合无人值守定时跑；运行
+  # daemon 的机器如果是纯服务器（无 GUI），这个 entrypoint 会直接失败，
+  # 见 PROJECT.md"已知限制"一节。
+  fetch_iwencai_cookie:
+    cmd: "python entrypoints/fetch_iwencai_cookie.py"
+    timeout_sec: 180
+    params:
+      - name: port
+        required: false
+        help: "Chrome 调试端口，留空则用默认值 9222"
+      - name: spawn
+        required: false
+        help: "1/true 表示自己拉起独立 Chrome 实例；留空/0 表示假设已用调试端口手动启动 Chrome"
+      - name: timeout
+        required: false
+        help: "等待用户完成登录/验证的秒数，留空则用默认值 120"
 
 health_check:
   cmd: "python entrypoints/health.py"

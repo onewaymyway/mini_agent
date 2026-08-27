@@ -310,3 +310,16 @@ client.py`）✅已完成
   进程 stdout/stderr 尾部），账本时间戳改为本地时间。属于
   `external_projects_workspace_plan.md` 阶段 4 账本 schema 的增强，
   不涉及本文档已完成阶段的返工，详见该文档"变更记录"2026-08-27 条目。
+
+- 2026-08-27：stock_watch 新增 `tools/fetch_iwencai_cookie.py`（交互式
+  获取问财登录令牌，见 `PROJECT.md`"问财登录令牌"一节）后，同时新增
+  `entrypoints/fetch_iwencai_cookie.py` 把它接进看板——是阶段 6
+  `params` 机制继 `stock_analysis`（`code`/`name`）之后第二个真实落地
+  案例，且暴露了一种新情况：`tools/` 下的脚本用 argparse 定义**选项型**
+  参数（`--port`/`--spawn`/`--timeout`），跟 `params` 机制"按声明顺序拼
+  成**位置参数**"的既有约定对不上，所以没有直接把 `tools/` 脚本注册进
+  `project.yaml`，而是在 `entrypoints/` 下加一层薄包装做参数翻译 +
+  接入 `run_entrypoint()` 账本。这个 entrypoint 还依赖能弹出真实浏览器
+  窗口的桌面环境，是目前唯一"看板手动触发在无 GUI 服务器上必然失败"的
+  entrypoint（已在 `PROJECT.md`"已知限制"一节记录）；不涉及本文档
+  `params` 机制本身的改动，仅作为使用案例补充记录。

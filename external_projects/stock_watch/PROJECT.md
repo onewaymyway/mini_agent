@@ -68,6 +68,12 @@
 - 候选池目前是本地 JSON 账本（`data/candidate_pool.json`），未来如果
   候选标的量级明显增长，可以考虑换 sqlite，但当前量级（数十到数百只）
   JSON 全量读写足够。
+- `entrypoints/fetch_iwencai_cookie.py`（问财登录令牌获取）需要运行
+  daemon 的机器有能显示窗口的桌面环境（会弹出一个真实 Chrome 窗口让
+  用户手动完成登录/验证）；如果 daemon 部署在无显示器的纯服务器上，
+  这是本项目目前唯一一个"看板手动触发一定会失败"的 entrypoint，需要
+  改成在有桌面环境的机器上手动跑 `tools/fetch_iwencai_cookie.py`，再把
+  生成的 `config/secrets.local.yaml` 同步到 daemon 所在机器。
 
 ## 目录结构
 
@@ -85,8 +91,11 @@ stock_watch/
 │   ├── run_pool_tracking.py    # 候选池状态区间每日跟踪（阶段2，新增）
 │   ├── change_pool_state.py    # 手动变更某标的的候选池状态（阶段2，新增）
 │   ├── run_signal_scan.py      # 自主挖掘信号扫描（阶段3，新增，默认关闭）
+│   ├── fetch_iwencai_cookie.py # 看板包装：交互式获取问财登录令牌（新增，见下方"问财登录令牌"一节）
 │   ├── health.py               # project.yaml health_check 对应的探测脚本
 │   └── _common.py              # entrypoint 公共引导（sys.path、账本/积压账本降级写入）
+├── tools/                        # 人工交互式工具，不接入 entrypoints/ 的账本机制
+│   └── fetch_iwencai_cookie.py   # 通过 CDP 连真实 Chrome 抓取问财 hexin-v 令牌（新增）
 ├── stock_watch/                 # 项目私有库代码
 │   ├── config.py                # 观察列表 / 抓取参数配置加载
 │   ├── data_sources.py          # akshare 封装 + 网页抓取公共层（UA/重试/限速）
@@ -124,7 +133,50 @@ python entrypoints/run_stock_analysis.py 600519  # 功能 4（参数为标的代
 python entrypoints/run_pool_tracking.py                        # 候选池状态区间每日跟踪
 python entrypoints/change_pool_state.py 600519 focused "关注中" # 手动变更某标的状态
 python entrypoints/run_signal_scan.py                           # 自主挖掘信号扫描（需先在 config/watchlist.yaml 打开开关）
+
+python entrypoints/fetch_iwencai_cookie.py                      # 获取问财登录令牌（需要桌面环境，会弹出 Chrome 窗口）
 ```
+
+## 问财登录令牌（`hexin-v` cookie）获取
+
+`stock_watch/data_sources.py`"问财 hexin-v 令牌"一节说明过，这个令牌是
+问财前端一段混淆 JS 动态算出来的，不是简单的服务端 `Set-Cookie`，本项目
+刻意不逆向那段加密逻辑；一个**真实浏览器**加载页面时会自动执行那段 JS、
+自动算出正确的令牌。`tools/fetch_iwencai_cookie.py` 通过 Chrome
+DevTools Protocol（CDP）连接一个真实 Chrome，让用户手动完成问财的
+登录/验证（如果网站要求），自动检测到令牌后写进
+`config/secrets.local.yaml` 的 `iwencai_cookie` 字段。
+
+两种连接方式：
+
+- 默认（`--port 9222`）：假设已经用调试端口手动启动了 Chrome——复用
+  用户默认 profile 的已有登录态。Windows 下建议做一个桌面快捷方式，
+  目标改成 `"C:\Program Files\Google\Chrome\Application\chrome.exe"
+  --remote-debugging-port=9222`；macOS/Linux 类似，先完全退出 Chrome
+  再从终端加这个参数重新打开。
+- `--spawn`：不想碰用户默认 profile 时，让脚本自己拉起一个带独立临时
+  profile 的新 Chrome 实例（不保留登录态，每次都要重新过一遍验证）。
+
+命令行直接跑（可用全部选项）：
+
+```bash
+cd external_projects/stock_watch
+python tools/fetch_iwencai_cookie.py            # 方式一：手动先把 Chrome 用调试端口开起来
+python tools/fetch_iwencai_cookie.py --spawn    # 方式二：脚本自己拉起独立实例
+```
+
+看板「🗂️ 外部项目」卡片「▶️ 手动触发」也可以调用：对应
+`entrypoints/fetch_iwencai_cookie.py`（`project.yaml` 里的
+`fetch_iwencai_cookie` entrypoint），是对 `tools/` 下交互式脚本的一层
+包装——把看板"按声明顺序传入的位置参数"（`port`/`spawn`/`timeout`，均
+可留空用默认值）翻译成 `tools` 脚本认识的 `--flag` 形式，并接入
+`_common.run_entrypoint()` 账本机制，方便在执行账本里看到"什么时候点了
+一次获取令牌、有没有成功"。**这个 entrypoint 依赖能弹出真实浏览器窗口
+的桌面环境**，运行 daemon 的机器如果是纯服务器（无 GUI），点这个按钮会
+直接失败——见下方"已知限制"一节。`tools/` 下的脚本本身不接入这套账本
+机制（它是给人手动跑的交互式工具，不是 daemon/cron 无人值守调度的
+对象），命令行直接跑 `tools/fetch_iwencai_cookie.py` 不会留下账本记录，
+这是预期行为。
 
 ## 持续优化迭代（新增，见 `next_doc/stock_watch_continuous_improvement_plan.md`）
 
