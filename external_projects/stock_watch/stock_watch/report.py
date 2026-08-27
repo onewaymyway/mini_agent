@@ -187,6 +187,8 @@ def write_pool_tracking_json(
                 "type": entry.type,
                 "state": entry.state,
                 "score": entry.score,
+                "sources": list(entry.sources),
+                "reasons": list(entry.reasons),
                 "current_price": current_price,
                 "price_error": price_error,
                 "state_returns": [

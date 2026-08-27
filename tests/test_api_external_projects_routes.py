@@ -265,6 +265,48 @@ class TestExternalProjectsKanbanRoutes(unittest.TestCase):
         resp = self.client.get("/v1/external_projects/not_registered/review")
         self.assertEqual(resp.status_code, 404)
 
+    # ── pool_tracking [stock_watch_pool_state_tracking_and_kanban_plan.md
+    #    阶段4] ───────────────────────────────────────────────────────
+
+    def test_pool_tracking_unavailable_when_file_missing(self):
+        self._register_project()
+        resp = self.client.get("/v1/external_projects/demo_project/pool_tracking")
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["available"])
+
+    def test_pool_tracking_returns_payload_when_file_present(self):
+        self._register_project()
+        data_dir = self.project_dir / "data"
+        data_dir.mkdir()
+        payload = (
+            '{"generated_at": "2026-08-27", "entries": '
+            '[{"code": "600519", "name": "贵州茅台", "state": "focused", '
+            '"score": 8.0, "sources": [], "reasons": ["MA金叉"], '
+            '"current_price": 1700.0, "price_error": null, "state_returns": []}]}'
+        )
+        (data_dir / "pool_tracking_latest.json").write_text(payload, encoding="utf-8")
+        resp = self.client.get("/v1/external_projects/demo_project/pool_tracking")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["available"])
+        self.assertEqual(len(body["entries"]), 1)
+        self.assertEqual(body["entries"][0]["code"], "600519")
+
+    def test_pool_tracking_reports_error_on_malformed_json(self):
+        self._register_project()
+        data_dir = self.project_dir / "data"
+        data_dir.mkdir()
+        (data_dir / "pool_tracking_latest.json").write_text("{not valid json", encoding="utf-8")
+        resp = self.client.get("/v1/external_projects/demo_project/pool_tracking")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["available"])
+        self.assertIn("error", body)
+
+    def test_pool_tracking_unregistered_project_returns_404(self):
+        resp = self.client.get("/v1/external_projects/not_registered/pool_tracking")
+        self.assertEqual(resp.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

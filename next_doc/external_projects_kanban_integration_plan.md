@@ -197,6 +197,12 @@ client.py`）✅已完成
   `GET /v1/self/external_projects`。修复：参数输入框 + 触发按钮包进
   `st.form`，改用 `st.form_submit_button` 提交，输入过程中不再重跑，
   只有点「▶️ 触发」才发请求。纯前端交互修复，未涉及后端/测试改动。
+- 2026-08-27：`next_doc/stock_watch_pool_state_tracking_and_kanban_
+  plan.md` 阶段4在本文档「🗂️ 外部项目」tab 基础上追加了一块
+  stock_watch 专属的「📊 候选池状态跟踪」折叠面板（状态列视图/变更
+  状态表单/信号溯源/回溯统计），新增路由 `GET /v1/external_projects/
+  {name}/pool_tracking`；只对产出了 `data/pool_tracking_latest.json`
+  的项目显示，不影响其它外部项目的现有行为，详细设计见该文档第4节。
 
 ### 阶段 5：手动触发改为按钮列表（使用者反馈驱动）
 

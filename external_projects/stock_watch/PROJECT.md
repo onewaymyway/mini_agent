@@ -224,6 +224,28 @@ sources` 里自算信号统一带 `signal:<category>:<name>` 前缀，一眼能
 
 本阶段（阶段3）尚未做的：真正的可视化看板，规划见上述文档阶段4。
 
+## 看板（新增，见同一文档阶段4）
+
+mini_agent 看板（`apps/mini_agent_kanban/app.py`）的 `🗂️ 外部项目` tab
+里，本项目的卡片会多出一块「📊 候选池状态跟踪」折叠面板（其它没有产出
+`data/pool_tracking_latest.json` 的外部项目不会显示这块）：
+
+- **状态列视图**：候选池按六态分栏，一眼看到每列有哪些标的、区间
+  涨跌幅、已持续天数。
+- **变更状态**：每个标的可以直接在看板上选新状态+填备注提交，底层
+  调用的就是本项目的 `change_pool_state` entrypoint。
+- **信号溯源**：展开标的能看到 `entry.reasons` 全量列表（外部网站
+  热度来源 + 阶段3自算信号来源都在里面）和每段状态历史的区间收益。
+- **各状态区间表现汇总**：按状态汇总平均涨跌幅/胜率。
+
+这块面板依赖 `entrypoints/run_pool_tracking.py` 每日产出的
+`data/pool_tracking_latest.json`——没有跑过这个 entrypoint（或候选池
+为空）时，看板上这块面板不会显示任何内容。详见
+`docs/kanban-dashboard-guide.md`「🗂️ 外部项目 Tab」一节。
+
+至此 `next_doc/stock_watch_pool_state_tracking_and_kanban_plan.md` 规划
+的四个阶段全部完成。
+
 ## 如何接入 daemon（可选）
 
 ```bash

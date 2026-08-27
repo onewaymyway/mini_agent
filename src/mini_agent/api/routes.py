@@ -84,6 +84,12 @@ api/routes.py — FastAPI 路由定义
                                        账本（POST 固定 source=user_feedback）
     GET    /v1/external_projects/{name}/review       同上，生成 review
                                        任务模板预览（不实际发起）
+    GET    /v1/external_projects/{name}/pool_tracking  [stock_watch_pool_
+                                       state_tracking_and_kanban_plan.md
+                                       阶段4] 候选池状态区间跟踪最新快照
+                                       （目前只有 stock_watch 会产出这个
+                                       文件，文件不存在时返回
+                                       {"available": false}）
     GET    /v1/self/llm_call_stats   [同上 方向 B.2] 按天聚合的 LLM 调用计数
     GET    /v1/objectives/completion_trend  [同上 方向 D.1] Objective 完成率
                                        每日趋势（快照挂在 /growth/scan 上记录）
@@ -942,6 +948,49 @@ async def get_external_projects_review(name: str, request: Request):
         manifest = registry.load_manifest_for(name)
         template = build_review_task_template_for(manifest)
         return {"template": template, "enabled": bool(manifest.review.enabled)}
+    except ExternalProjectRegistryError as exc:
+        raise HTTPException(status_code=_external_project_error_status(exc), detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/external_projects/{name}/pool_tracking")
+async def get_external_projects_pool_tracking(name: str, request: Request):
+    """GET /v1/external_projects/{name}/pool_tracking — 候选池状态区间跟踪
+    最新快照（`next_doc/stock_watch_pool_state_tracking_and_kanban_plan.md`
+    阶段4）。
+
+    直接读该项目 `data/pool_tracking_latest.json`（`entrypoints/
+    run_pool_tracking.py` 每日产出），不解析 Markdown。这是本项目里唯一
+    一个"项目特定"（目前只有 stock_watch 会产出这个文件）而不是通用的
+    外部项目路由——刻意不做成通用的"任意路径读文件"接口（存在路径穿越
+    风险），而是固定读这一个约定路径；对没有产出这个文件的项目（该文件
+    不存在），返回 `{"available": false}` 而不是报错，前端据此判断是否
+    渲染状态跟踪面板，不强迫所有外部项目都实现这个约定。
+    """
+    _require_owner(request)
+    try:
+        from mini_agent.external_projects.registry import (
+            ExternalProjectRegistry,
+            ExternalProjectRegistryError,
+        )
+
+        registry = ExternalProjectRegistry()
+        manifest = registry.load_manifest_for(name)
+        if manifest.source_dir is None:
+            return {"available": False}
+        path = manifest.source_dir / "data" / "pool_tracking_latest.json"
+        if not path.exists():
+            return {"available": False}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            # 文件存在但读取/解析失败（比如上次写入过程中被中断）：
+            # 明确标注失败原因，而不是当成"没有这个功能"静默返回
+            # available=false，二者对用户的含义不同。
+            return {"available": True, "error": str(exc)}
+        payload["available"] = True
+        return payload
     except ExternalProjectRegistryError as exc:
         raise HTTPException(status_code=_external_project_error_status(exc), detail=str(exc))
     except Exception as exc:  # noqa: BLE001

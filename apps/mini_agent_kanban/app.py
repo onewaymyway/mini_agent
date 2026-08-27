@@ -8180,6 +8180,179 @@ def render_external_projects_tab(client: AgentClient):
                     st.session_state["_pending_tab_switch"] = "💬 对话"
                     st.rerun()
 
+            _render_pool_tracking_panel(client, name)
+
+
+# [stock_watch_pool_state_tracking_and_kanban_plan.md 阶段4] 候选池状态
+# 六态到展示用中文标签 + emoji 的映射，与 candidate_pool.py::POOL_STATES
+# 保持一一对应；看板端不重新定义状态集合，只做展示层映射。
+_POOL_STATE_LABEL = {
+    "watching": "👀 观察池",
+    "focused": "🔎 重点关注",
+    "buy_suggested": "🟢 建议买入",
+    "holding": "📌 已建仓",
+    "sell_suggested": "🔴 建议卖出",
+    "dropped": "⚪ 已淘汰",
+}
+# 看板列展示顺序：按"关注程度递进"排列，与 candidate_pool.POOL_STATES
+# 顺序一致；dropped 放最后且默认折叠（见下方渲染逻辑），因为已淘汰的
+# 标的不是日常需要盯的对象。
+_POOL_STATE_COLUMN_ORDER = (
+    "watching", "focused", "buy_suggested", "holding", "sell_suggested", "dropped",
+)
+
+
+def _render_pool_tracking_panel(client: AgentClient, name: str):
+    """候选池状态列视图 + 操作入口 + 信号溯源面板（阶段4 4.1/4.2/4.3）。
+
+    只对产出了 `data/pool_tracking_latest.json` 的项目（目前只有
+    stock_watch）显示内容；其它外部项目调这个接口会拿到
+    `available: False`，本函数直接不渲染任何东西，不在界面上留一个
+    空白 expander 制造困惑。
+
+    「变更状态」操作复用阶段2已有的 `change_pool_state` entrypoint
+    （通用「▶️ 手动触发」区块已经能触发它），这里额外提供一个更顺手的
+    入口：卡片上直接选新状态+填备注，本质上还是调
+    `trigger_external_project_run(name, "change_pool_state", params=...)`，
+    不是另起一套后端逻辑。
+    """
+    resp = client.external_project_pool_tracking(name)
+    if resp and "_error" in resp:
+        # 网络/接口错误：仍然提示，但不阻塞其它 expander 的渲染
+        st.caption(f"候选池状态跟踪数据获取失败：{resp['_error']}")
+        return
+    if not (resp or {}).get("available"):
+        return  # 该项目未产出这份数据，不渲染任何东西
+
+    with st.expander("📊 候选池状态跟踪", expanded=False):
+        if resp.get("error"):
+            st.warning(f"状态跟踪数据读取失败：{resp['error']}")
+            return
+
+        entries = resp.get("entries") or []
+        if not entries:
+            st.caption("候选池当前为空，或所有标的都已是「已淘汰」状态。")
+            return
+        st.caption(f"数据生成时间：{resp.get('generated_at', '（未知）')}")
+
+        # —— 4.1 状态列视图：按状态分栏 ——
+        by_state: dict[str, list] = {s: [] for s in _POOL_STATE_COLUMN_ORDER}
+        for e in entries:
+            by_state.setdefault(e.get("state", "watching"), []).append(e)
+
+        visible_states = [s for s in _POOL_STATE_COLUMN_ORDER if s != "dropped"]
+        cols = st.columns(len(visible_states))
+        for col, state in zip(cols, visible_states):
+            items = by_state.get(state, [])
+            col.markdown(f"**{_POOL_STATE_LABEL.get(state, state)}**（{len(items)}）")
+            for e in items:
+                current_state_returns = [
+                    sr for sr in (e.get("state_returns") or []) if sr.get("state") == state
+                ]
+                latest = current_state_returns[-1] if current_state_returns else None
+                change_pct = latest.get("change_pct") if latest else None
+                days = latest.get("days_in_state") if latest else None
+                change_txt = f"{change_pct:+.2f}%" if change_pct is not None else "（无数据）"
+                days_txt = f"{days}天" if days is not None else ""
+                price_txt = (
+                    f"当前价 {e['current_price']:.2f}" if e.get("current_price") is not None
+                    else "（取价失败）"
+                )
+                col.caption(f"**{e.get('name', '')}**（{e.get('code', '')}）")
+                col.caption(f"{change_txt} · {days_txt} · {price_txt}")
+
+        if by_state.get("dropped"):
+            with st.expander(f"⚪ 已淘汰（{len(by_state['dropped'])}）"):
+                for e in by_state["dropped"]:
+                    st.caption(f"{e.get('name', '')}（{e.get('code', '')}）")
+
+        st.markdown("---")
+
+        # —— 4.4 回溯统计面板：按状态汇总胜率/平均涨跌幅 ——
+        # 直接用已经拉取的 state_returns 现算，不需要额外的后端接口：
+        # 判断"进入'重点关注'这个动作本身，相对'观察'阶段是否真的提升了
+        # 后续表现"，是逐段区间涨跌幅的汇总统计，数据本来就已经在这次
+        # 响应里了。
+        with st.expander("📈 各状态区间表现汇总"):
+            stats: dict[str, list[float]] = {s: [] for s in _POOL_STATE_COLUMN_ORDER}
+            for e in entries:
+                for sr in e.get("state_returns") or []:
+                    cp = sr.get("change_pct")
+                    if cp is not None:
+                        stats.setdefault(sr.get("state", ""), []).append(cp)
+            any_data = False
+            for state in _POOL_STATE_COLUMN_ORDER:
+                changes = stats.get(state) or []
+                if not changes:
+                    continue
+                any_data = True
+                avg = sum(changes) / len(changes)
+                win_rate = sum(1 for c in changes if c > 0) / len(changes) * 100
+                st.caption(
+                    f"{_POOL_STATE_LABEL.get(state, state)}：{len(changes)} 段区间，"
+                    f"平均涨跌 {avg:+.2f}%，胜率 {win_rate:.0f}%"
+                )
+            if not any_data:
+                st.caption("暂无足够数据（各段区间都缺入场价或当前价）。")
+
+        st.markdown("---")
+
+        # —— 4.2 操作入口 + 4.3 信号溯源面板：逐个标的展开 ——
+        for e in entries:
+            code = e.get("code", "")
+            with st.expander(f"{e.get('name', '')}（{code}）· {_POOL_STATE_LABEL.get(e.get('state', ''), '')}"):
+                if e.get("price_error"):
+                    st.caption(f"取价失败：{e['price_error']}")
+
+                st.markdown("**状态区间收益（每一段状态各自的涨跌幅）**")
+                for sr in e.get("state_returns") or []:
+                    cp = sr.get("change_pct")
+                    cp_txt = f"{cp:+.2f}%" if cp is not None else "（无数据，缺入场价或当前价）"
+                    st.caption(
+                        f"{_POOL_STATE_LABEL.get(sr.get('state', ''), sr.get('state', ''))}"
+                        f"：{sr.get('entered_at', '')} 起，已 {sr.get('days_in_state', 0)} 天，"
+                        f"区间涨跌 {cp_txt}"
+                    )
+
+                st.markdown("**信号来源**")
+                st.caption(f"当前分数：{e.get('score', 0):.1f}")
+                reasons = e.get("reasons") or []
+                if reasons:
+                    for r in reasons:
+                        # 自算信号（阶段3）来源前缀是 signal:<category>:<name>，
+                        # 外部网站热度来源没有这个前缀——用图标简单区分，不用
+                        # 额外查 sources 字段做精确匹配（reasons 本身的文案已
+                        # 经足够说明来源，见 candidate_pool.py::merge_signals）。
+                        st.caption(f"• {r}")
+                else:
+                    st.caption("（暂无记录的信号理由）")
+
+                # 「变更状态」表单，复用 change_pool_state entrypoint。
+                with st.form(key=f"pool_state_change_form_{name}_{code}"):
+                    new_state = st.selectbox(
+                        "变更为", list(_POOL_STATE_LABEL.keys()),
+                        format_func=lambda s: _POOL_STATE_LABEL.get(s, s),
+                        index=list(_POOL_STATE_LABEL.keys()).index(e.get("state", "watching"))
+                        if e.get("state") in _POOL_STATE_LABEL else 0,
+                        key=f"pool_state_select_{name}_{code}",
+                    )
+                    note = st.text_input("备注（可选）", key=f"pool_state_note_{name}_{code}")
+                    change_submitted = st.form_submit_button("变更状态")
+                if change_submitted:
+                    res = client.trigger_external_project_run(
+                        name, "change_pool_state",
+                        params={"code": code, "state": new_state, "note": note},
+                    )
+                    if res and "_error" in res:
+                        st.error(f"变更失败：{res['_error']}")
+                    else:
+                        ok = res.get("returncode") == 0
+                        (st.success if ok else st.error)(
+                            f"状态变更{'成功' if ok else '失败'}，returncode={res.get('returncode')}"
+                        )
+                        if ok:
+                            st.rerun()
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Tab: ⏰ Cron 任务（专属执行机制：进度/超时/卡死检测/prompt 编辑）

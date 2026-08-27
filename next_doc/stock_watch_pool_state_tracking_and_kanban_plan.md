@@ -270,10 +270,18 @@ XX 网站热榜"和"自算：MA5/MA20 金叉"这类不同来源的说明，保�
 
 ## 4. 阶段 4：看板
 
-> 依赖阶段 2 的数据结构（状态机 + 区间收益）先落地稳定。mini_agent
-> 已有"外部项目卡片"和"手动触发"渲染机制
-> （`next_doc/external_projects_kanban_integration_plan.md`），本阶段
-> 是在其基础上扩展 stock_watch 专属视图，不是另起一套 Web 后端。
+> 本阶段已实现（见第 6 节变更记录）。实际落地方式与设计稿基本一致，
+> 唯一的调整：`4.4 回溯统计面板` 没有另外接 `outcome_ledger.jsonl`
+> （那是"打分-实际涨跌"相关性的账本，语义与"状态区间收益"不同，见
+> 第 2.6 节的既有说明），而是直接对同一次响应里已经拿到的
+> `state_returns` 做前端聚合（按状态汇总平均涨跌幅/胜率）——不需要
+> 额外的后端接口，数据本来就已经在页面上了。
+
+依赖阶段 2 的数据结构（状态机 + 区间收益）先落地稳定。mini_agent
+已有"外部项目卡片"和"手动触发"的看板机制（`🗂️ 外部项目` tab，见
+`next_doc/external_projects_kanban_integration_plan.md`），本阶段是在
+其基础上给 stock_watch 专属扩展一个"📊 候选池状态跟踪"折叠面板，不是
+另起一套 Web 后端，也不是新增一个顶层 tab。
 
 ### 4.1 状态列视图
 候选池按状态分栏展示（`watching`/`focused`/`buy_suggested`/`holding`/
@@ -282,27 +290,43 @@ XX 网站热榜"和"自算：MA5/MA20 金叉"这类不同来源的说明，保�
 最新 `reports/pool_tracking/<日期>.md` 或其背后的结构化数据（建议
 `run_pool_tracking.py` 除了渲染 Markdown，额外落一份
 `data/pool_tracking_latest.json` 给看板直接读，不强迫看板解析
-Markdown 表格）。
+Markdown 表格）。（**实现**：看板列用 emoji + 中文标签区分状态，而非
+颜色底色——Streamlit 原生组件不方便精细控制卡片背景色，用 caption
+文本里的 `+`/`-` 符号和数值本身传达涨跌方向，信息完整度不受影响。）
 
 ### 4.2 操作入口
 每张卡片提供"变更状态"按钮，直接复用阶段 2 的
 `change_pool_state` entrypoint（看板"手动触发"机制已经能按
-`project.yaml` 的 `params` 渲染表单，不需要新增框架能力）。
+`project.yaml` 的 `params` 渲染表单，不需要新增框架能力）。（**实现**：
+除了通用的「▶️ 手动触发」区块本身就能触发 `change_pool_state`，状态
+跟踪面板内每个标的也提供了一个更顺手的下拉选择+备注输入表单，底层
+调的是同一个 `trigger_external_project_run(name, "change_pool_state",
+params=...)`，不是另一套后端逻辑。）
 
 ### 4.3 信号溯源面板
 点开标的展示 `entry.reasons` 全量列表（阶段 3 落地后会同时包含外部
-网站来源和自算信号来源），以及 `state_history` 的完整时间线。
+网站来源和自算信号来源），以及 `state_history` 的完整时间线。（**实现**：
+`pool_tracking_latest.json` 补充了 `reasons`/`sources` 字段（原先阶段2
+只有 `state`/`score`/`current_price`/`state_returns`），看板逐条展示
+`reasons` 文案；`state_history` 本身通过 `state_returns` 间接展示——
+每一段区间的 `entered_at`/`days_in_state`/`change_pct` 已经覆盖了
+时间线信息，未单独暴露 `price_at_entry`/`note` 字段到看板，避免信息
+密度过高，如后续需要可以再补。）
 
 ### 4.4 回溯统计面板
 读 `outcome_ledger.jsonl`（既有）+ 阶段 2 新增的状态区间收益数据，
 做胜率/平均涨跌幅汇总，判断"重点关注"这个动作本身相对"观察"阶段是否
-真的提升了后续表现。
+真的提升了后续表现。（**实现**：只用了 `state_returns` 在前端现算
+按状态汇总的平均涨跌幅/胜率，未接 `outcome_ledger.jsonl`——那是
+"打分-实际涨跌"相关性的账本，语义与"状态区间收益"不同，见 2.6 节
+的既有说明，且数据本来就已经在同一次响应里，不需要额外的后端接口。）
 
 ### 4.5 验收标准
-- [ ] `pool_tracking_latest.json` 结构化产出物
-- [ ] 看板状态列视图接入
-- [ ] 状态变更操作入口接入
-- [ ] 信号溯源 + 回溯统计面板接入
+- [x] `pool_tracking_latest.json` 结构化产出物（阶段2已完成，本阶段
+      补充 `reasons`/`sources` 字段以支持信号溯源面板）
+- [x] 看板状态列视图接入
+- [x] 状态变更操作入口接入
+- [x] 信号溯源 + 回溯统计面板接入
 
 ## 5. 变更记录
 
@@ -327,3 +351,19 @@ Markdown 表格）。
   段（默认全部关闭）、`project.yaml` 新增 `signal_scan` entrypoint
   声明、`tests/test_signals.py` 新增单测（共 43 个测试通过）。阶段 4
   （看板）尚未开始实现。
+- 2026-08-27：阶段 4（看板）实现完成。后端：新增路由 `GET /v1/
+  external_projects/{name}/pool_tracking`（`src/mini_agent/api/
+  routes.py`，读该项目 `data/pool_tracking_latest.json`，文件不存在
+  时返回 `available: false`，不强迫所有外部项目都实现这个约定）；
+  `AgentClient.external_project_pool_tracking()`
+  （`apps/mini_agent_kanban/client.py`）。前端：`🗂️ 外部项目` tab 内
+  新增 `📊 候选池状态跟踪` 折叠面板（`_render_pool_tracking_panel()`，
+  `apps/mini_agent_kanban/app.py`），含状态列视图（4.1）、变更状态
+  表单（4.2，复用 `change_pool_state` entrypoint）、逐标的信号溯源
+  （4.3，展示 `reasons` 列表 + 状态区间收益）、按状态汇总的胜率/
+  平均涨跌幅统计（4.4）。`stock_watch/report.py::write_pool_tracking_
+  json()` 补充 `reasons`/`sources` 字段以支持信号溯源面板。新增 4 个
+  路由测试（`tests/test_api_external_projects_routes.py`），外部项目
+  相关测试文件共 114 个用例全部通过，无回归。手动过一遍真实 Streamlit
+  UI（需要拉起 daemon）仍留给使用者自行验证，与
+  `external_projects_kanban_integration_plan.md` 阶段4的既有约定一致。
