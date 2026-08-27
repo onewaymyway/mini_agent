@@ -117,6 +117,42 @@ source_health.jsonl`（`stock_watch/source_health.py`），供判断"哪个
 （`trigger="external_cron"` 或未显式指定时的默认值，见各脚本内
 `track_run()` 调用），供大管家按阶段 4 的机制被动读取。
 
+## 结果文件存放位置
+
+每个 entrypoint 的产出物都是 `reports/` 下的 Markdown（`kline_batch`
+另外还有图片），路径由 `stock_watch/config.py::REPORTS_DIR` 统一定义
+（`REPORTS_DIR = <本项目根目录>/reports`，与运行时的当前工作目录无关，
+不管从哪个目录触发都写到这里）：
+
+| entrypoint | 输出路径 | 备注 |
+|---|---|---|
+| `hotlist_scan` | `reports/candidate_pool/<日期 YYYYMMDD>.md` | 一天一份，同日重复触发会覆盖 |
+| `kline_batch` | `reports/kline/<日期 YYYYMMDD>/` | 每只标的一张图，目录下多个文件 |
+| `screener` | `reports/screener/<时间戳 YYYYMMDD_HHMMSS>.md` | 每次触发一份新文件 |
+| `stock_analysis` | `reports/analysis/<代码>_<时间戳>.md` | **需要传入标的代码作为参数**，见下方说明 |
+| `reconcile_outcomes` | `reports/outcomes/<快照日期>_reconciled_<截止日期>.md` | 结果回溯报告 |
+
+`stock_analysis` 依赖位置参数（`sys.argv[1]` 是代码、`sys.argv[2]`
+可选是名称），命令行直接不带参数运行会在生成任何报告之前就以退出码 2
+提前返回（`entrypoints/run_stock_analysis.py::main()` 里的用法检查），
+**不会产出报告文件**——这不是 bug，是缺参数的正常表现：
+
+```bash
+python entrypoints/run_stock_analysis.py 600519 贵州茅台
+```
+
+通过 mini_agent 看板「🗂️ 外部项目」卡片「▶️ 手动触发」触发时，`analyze`
+所在行会按 `project.yaml` 里 `stock_analysis.params` 的声明渲染出
+`code`（必填）/`name`（可选）两个输入框，填好再点触发即可，不需要记
+命令行参数顺序（见 `next_doc/external_projects_kanban_integration_
+plan.md` 阶段6）。
+
+每次触发是否成功、退出码多少，记在执行账本
+`.agent/run_status.jsonl`（不是 `reports/` 目录，是两回事：账本记录
+"跑没跑成功"，`reports/` 存"跑出来的实际内容"）——看板卡片「最近5条
+执行记录」/「执行账本」区块就是读这份文件，命令行也可以
+`mini-agent projects ledger stock_watch` 直接查看。
+
 ## 如何接入 daemon（可选）
 
 ```bash
