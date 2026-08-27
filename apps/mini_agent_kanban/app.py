@@ -8074,18 +8074,50 @@ def render_external_projects_tab(client: AgentClient):
                     )
                 for ep in entrypoints:
                     ep_key = ep.get("key", "")
-                    ep_cols = st.columns([3, 1])
+                    ep_params = ep.get("params") or []
                     schedule_txt = f" · {ep['schedule']}" if ep.get("schedule") else ""
-                    ep_cols[0].caption(f"`{ep_key}`{schedule_txt}\n\n{ep.get('cmd', '')}")
-                    if ep_cols[1].button("▶️ 触发", key=f"ext_trigger_btn_{name}_{ep_key}"):
-                        res = client.trigger_external_project_run(name, ep_key)
-                        if res and "_error" in res:
-                            st.error(f"触发失败：{res['_error']}")
+                    st.caption(f"`{ep_key}`{schedule_txt}\n\n{ep.get('cmd', '')}")
+
+                    # [external_projects_kanban_integration_plan.md 阶段6]
+                    # 按 project.yaml 里该 entrypoint 声明的 params 逐个
+                    # 渲染输入框——之前没有地方能传参，需要参数的
+                    # entrypoint（如 stock_analysis 的 `code`）只能靠
+                    # 命令行手动传。输入框的值原样收集成 dict，交给后端
+                    # `build_cmd_with_params()` 校验/拼接，前端不做任何
+                    # 参数合法性判断，避免和后端校验逻辑产生分歧。
+                    param_values: dict[str, str] = {}
+                    for p in ep_params:
+                        p_name = p.get("name", "")
+                        required = p.get("required", True)
+                        default = p.get("default") or ""
+                        help_text = p.get("help") or ""
+                        label = f"{p_name}{'（必填）' if required else '（可选）'}"
+                        param_values[p_name] = st.text_input(
+                            label,
+                            value=default,
+                            help=help_text or None,
+                            key=f"ext_trigger_param_{name}_{ep_key}_{p_name}",
+                        )
+
+                    if st.button("▶️ 触发", key=f"ext_trigger_btn_{name}_{ep_key}"):
+                        missing = [
+                            p.get("name", "")
+                            for p in ep_params
+                            if p.get("required", True) and not param_values.get(p.get("name", "")).strip()
+                        ]
+                        if missing:
+                            st.error(f"缺少必填参数：{', '.join(missing)}")
                         else:
-                            ok = res.get("returncode") == 0
-                            (st.success if ok else st.error)(
-                                f"「{ep_key}」执行完成，returncode={res.get('returncode')}"
+                            res = client.trigger_external_project_run(
+                                name, ep_key, params=param_values or None
                             )
+                            if res and "_error" in res:
+                                st.error(f"触发失败：{res['_error']}")
+                            else:
+                                ok = res.get("returncode") == 0
+                                (st.success if ok else st.error)(
+                                    f"「{ep_key}」执行完成，returncode={res.get('returncode')}"
+                                )
 
             with st.expander("📋 改进积压"):
                 status_filter = st.selectbox(

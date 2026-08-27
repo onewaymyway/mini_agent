@@ -24,6 +24,12 @@ entrypoints:
   scan:
     cmd: "python -c \\"print(1)\\""
     timeout_sec: 30
+  analyze:
+    cmd: "python -c \\"import sys; print(sys.argv[1])\\""
+    params:
+      - name: code
+        required: true
+        help: "股票代码"
 review:
   cadence: weekly
   enabled: true
@@ -100,7 +106,7 @@ class TestExternalProjectsKanbanRoutes(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         projects = {p["name"]: p for p in resp.json()["projects"]}
         keys = {ep["key"] for ep in projects["demo_project"]["entrypoints"]}
-        self.assertEqual(keys, {"scan"})
+        self.assertEqual(keys, {"scan", "analyze"})
 
     def test_register_invalid_manifest_returns_400(self):
         bad_dir = self.tmp_path / "bad_project"
@@ -138,6 +144,52 @@ class TestExternalProjectsKanbanRoutes(unittest.TestCase):
         self.assertEqual(data["entrypoint_key"], "scan")
         self.assertEqual(data["returncode"], 0)
         self.assertEqual(data["trigger"], "manual")
+
+    # ── trigger_run 传参（external_projects_kanban_integration_plan.md 阶段6）──
+
+    def test_status_route_includes_entrypoint_params_schema(self):
+        self._register_project()
+        resp = self.client.get("/v1/self/external_projects")
+        self.assertEqual(resp.status_code, 200)
+        projects = {p["name"]: p for p in resp.json()["projects"]}
+        entrypoints = {ep["key"]: ep for ep in projects["demo_project"]["entrypoints"]}
+        params = {p["name"]: p for p in entrypoints["analyze"]["params"]}
+        self.assertEqual(params["code"]["required"], True)
+        self.assertEqual(entrypoints["scan"]["params"], [])
+
+    def test_trigger_run_with_params_happy_path(self):
+        self._register_project()
+        resp = self.client.post(
+            "/v1/external_projects/demo_project/trigger_run",
+            json={"entrypoint": "analyze", "params": {"code": "600519"}},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["returncode"], 0)
+
+    def test_trigger_run_missing_required_param_returns_400(self):
+        self._register_project()
+        resp = self.client.post(
+            "/v1/external_projects/demo_project/trigger_run",
+            json={"entrypoint": "analyze", "params": {}},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_trigger_run_unknown_param_returns_400(self):
+        self._register_project()
+        resp = self.client.post(
+            "/v1/external_projects/demo_project/trigger_run",
+            json={"entrypoint": "analyze", "params": {"code": "600519", "bogus": "x"}},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_trigger_run_params_not_object_returns_400(self):
+        self._register_project()
+        resp = self.client.post(
+            "/v1/external_projects/demo_project/trigger_run",
+            json={"entrypoint": "analyze", "params": "not-an-object"},
+        )
+        self.assertEqual(resp.status_code, 400)
 
     # ── ledger ───────────────────────────────────────────────────────
 

@@ -186,6 +186,12 @@ client.py`）✅已完成
   （`_{idx}`）作为最小兜底，让 UI 不再因为这类重复数据崩溃；没有去
   排查 `growth_pursuits()` 为什么会返回重复项——那是数据层问题，不
   属于本文档范围，如需彻底修复应另开一份文档追踪。
+- 2026-08-27：完成阶段6（entrypoint 参数化触发）——使用者反馈"有些
+  entrypoint 需要传参数，看板没地方传"。`project.yaml` 的 entrypoint
+  新增可选 `params` 声明，manifest/scheduler/status/路由/client/看板
+  UI 全链路接线，`stock_analysis` 补上 `code`/`name` 参数声明作为落地
+  案例；新增 16 个测试用例，六个外部项目相关测试文件共 110 个用例
+  全部通过。
 
 ### 阶段 5：手动触发改为按钮列表（使用者反馈驱动）
 
@@ -211,3 +217,48 @@ client.py`）✅已完成
       无回归。
 - [x] 文档：`docs/kanban-dashboard-guide.md`「🗂️ 外部项目 Tab」一节
       同步更新触发方式的描述。
+
+### 阶段 6：entrypoint 参数化触发（使用者反馈驱动）
+
+- [x] 起因：`stock_analysis` 等 entrypoint 依赖位置参数（`sys.argv[1:]`，
+      如股票代码），阶段5把"手动触发"做成按钮列表后反而更没法传参了——
+      看板上没有任何地方能填这些值，之前只能回退到命令行
+      `mini-agent projects run stock_watch stock_analysis 600519`。
+- [x] `manifest.py`：`project.yaml` 的 `entrypoints.<key>` 新增可选
+      `params` 列表，每项 `{name, required?, default?, help?}`；新增
+      `ParamSpec`、`EntrypointParamError`、
+      `build_cmd_with_params(entrypoint, values)`——按声明顺序把值拼成
+      位置参数（`shlex.quote()` 转义）追加在 `cmd` 后面，缺必填/传了
+      未声明的参数名都在这一步直接报错，不执行任何子进程。未声明
+      `params` 的 entrypoint 完全不受影响（忽略传入的 values，原样
+      执行 `cmd`，向后兼容阶段1-5的既有项目）。
+- [x] `scheduler.py`：`_run_entrypoint()`/`trigger_run()` 新增
+      `params: dict | None` 参数，内部改用 `build_cmd_with_params()`
+      算出最终命令行再 `subprocess.run()`。
+- [x] `status.py`：`aggregate_status()` 的 `entrypoints` 列表里每一项
+      新增 `params` 字段（完整 schema：name/required/default/help），
+      供看板据此渲染输入框，不用用户去猜 cmd 后面该传什么。
+- [x] 后端路由：`POST /v1/external_projects/{name}/trigger_run` 的
+      body 新增可选 `params: {name: value}` 字段；`EntrypointParamError`
+      映射成 400（而不是 500 或让命令带空参数跑起来）。
+- [x] `AgentClient.trigger_external_project_run()` 新增 `params` 可选
+      参数，透传给后端。
+- [x] 看板 `app.py`「▶️ 手动触发」：每个 entrypoint 按声明的 `params`
+      逐个渲染文本输入框（必填/可选标注 + help 文案），点「▶️ 触发」
+      前先在前端做一次"必填项是否为空"的粗校验（避免明知会失败还发
+      请求），真正的参数合法性判断仍然全部在后端
+      `build_cmd_with_params()`，前端不重复实现判断逻辑。
+- [x] `external_projects/stock_watch/project.yaml`：给 `stock_analysis`
+      补上 `params`（`code` 必填 + `name` 可选）作为落地验证案例——这
+      也是本次改动能直接生效的第一个真实受益 entrypoint。
+- [x] 测试：`tests/test_external_projects.py` 新增 `params` 解析/
+      `build_cmd_with_params()`（顺序拼接+转义/无声明时忽略传参/缺
+      必填/未声明参数名）/`trigger_run()` 端到端共 9 个用例；
+      `tests/test_external_projects_ledger_and_status.py` 新增 2 个
+      （`aggregate_status()` 的 `params` 字段内容 + 未声明时为空列表）；
+      `tests/test_api_external_projects_routes.py` 新增 5 个（HTTP 层
+      params schema 透传/带参触发成功/缺必填 400/未声明参数名 400/
+      params 非对象类型 400）。六个外部项目相关测试文件共 110 个用例
+      全部通过，无回归。
+- [x] 文档：`docs/kanban-dashboard-guide.md`「🗂️ 外部项目 Tab」一节
+      补充参数输入框的说明。

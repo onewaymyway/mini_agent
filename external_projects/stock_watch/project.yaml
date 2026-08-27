@@ -18,6 +18,17 @@ entrypoints:
     # 无 schedule：按需触发（大管家 trigger_run 或手动传入标的代码），
     # 不适合无差别定时跑全市场个股分析
     timeout_sec: 600
+    # entrypoint 需要传参数的声明（external_projects_kanban_integration_
+    # plan.md 阶段6）：按此顺序拼成位置参数追加在 cmd 后面，与
+    # run_stock_analysis.py 读 sys.argv[1]/sys.argv[2] 的既有写法对齐，
+    # 看板「▶️ 手动触发」据此渲染输入框。
+    params:
+      - name: code
+        required: true
+        help: "股票代码，如 600519"
+      - name: name
+        required: false
+        help: "股票名称（可选，缺省时用代码本身）"
   reconcile_outcomes:
     cmd: "python entrypoints/reconcile_outcomes.py"
     schedule: "cron: 0 18 * * 1"     # 每周一盘后，核对一周前候选池快照的实际表现

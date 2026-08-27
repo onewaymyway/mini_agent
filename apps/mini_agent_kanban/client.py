@@ -768,9 +768,17 @@ class AgentClient:
             body["name"] = name
         return self._post("/external_projects/register", body)
 
-    def trigger_external_project_run(self, name: str, entrypoint: str):
-        """立即触发某个已注册项目的某个 entrypoint 一次。"""
-        return self._post(f"/external_projects/{name}/trigger_run", {"entrypoint": entrypoint}, timeout=120)
+    def trigger_external_project_run(self, name: str, entrypoint: str, params: dict | None = None):
+        """立即触发某个已注册项目的某个 entrypoint 一次。
+
+        `params`（阶段6）：该 entrypoint 声明了 `project.yaml` 的
+        `params` 时，按参数名传值；未声明 params 的 entrypoint 可以
+        不传或传 `None`。
+        """
+        body = {"entrypoint": entrypoint}
+        if params:
+            body["params"] = params
+        return self._post(f"/external_projects/{name}/trigger_run", body, timeout=120)
 
     def external_project_ledger(self, name: str, limit: int = 20):
         """该项目的执行账本，最近 `limit` 条（旧到新）。"""

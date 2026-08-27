@@ -137,7 +137,23 @@ def aggregate_status(
                     for rr in read_ledger(manifest.source_dir, limit=recent_runs_limit)
                 ]
                 entrypoints = [
-                    {"key": ep.key, "cmd": ep.cmd, "schedule": ep.schedule}
+                    {
+                        "key": ep.key,
+                        "cmd": ep.cmd,
+                        "schedule": ep.schedule,
+                        # [external_projects_kanban_integration_plan.md 阶段6]
+                        # 供看板在「▶️ 触发」按钮旁按声明渲染参数输入框，
+                        # 不用用户去猜 cmd 后面该拼什么位置参数。
+                        "params": [
+                            {
+                                "name": p.name,
+                                "required": p.required,
+                                "default": p.default,
+                                "help": p.help,
+                            }
+                            for p in ep.params
+                        ],
+                    }
                     for ep in manifest.entrypoints.values()
                 ]
             except ProjectManifestError:

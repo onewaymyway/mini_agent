@@ -225,6 +225,41 @@ entrypoints:
     assert entrypoints["scan"]["schedule"] == "cron: 0 9 * * 1-5"
     assert entrypoints["backfill"]["schedule"] is None
     assert entrypoints["scan"]["cmd"]
+    # [阶段6] 未声明 params 的 entrypoint 返回空列表，不是 None/缺字段。
+    assert entrypoints["scan"]["params"] == []
+    assert entrypoints["backfill"]["params"] == []
+
+
+def test_aggregate_status_includes_entrypoint_params(tmp_path):
+    # [external_projects_kanban_integration_plan.md 阶段6] 看板需要按
+    # 声明渲染参数输入框，aggregate_status() 的 entrypoints 里每一项要
+    # 带上 params 的完整 schema（name/required/default/help）。
+    registry, root = _register(tmp_path, "proj_params")
+    (root / "project.yaml").write_text(
+        f"""
+name: proj_params
+entrypoints:
+  analyze:
+    cmd: "{sys.executable} -c \\"pass\\""
+    params:
+      - name: code
+        required: true
+        help: "股票代码"
+      - name: label
+        required: false
+        default: "unnamed"
+""",
+        encoding="utf-8",
+    )
+
+    results = aggregate_status(registry)
+    by_name = {r["name"]: r for r in results}
+    entrypoints = {ep["key"]: ep for ep in by_name["proj_params"]["entrypoints"]}
+    params = {p["name"]: p for p in entrypoints["analyze"]["params"]}
+    assert params["code"]["required"] is True
+    assert params["code"]["help"] == "股票代码"
+    assert params["label"]["required"] is False
+    assert params["label"]["default"] == "unnamed"
 
 
 def test_aggregate_status_entrypoints_empty_when_manifest_broken(tmp_path):

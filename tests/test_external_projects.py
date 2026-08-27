@@ -14,7 +14,9 @@ from pathlib import Path
 import pytest
 
 from mini_agent.external_projects.manifest import (
+    EntrypointParamError,
     ProjectManifestError,
+    build_cmd_with_params,
     load_manifest,
     parse_manifest,
 )
@@ -213,6 +215,119 @@ entrypoints:
     result = trigger_run(registry, "proj", "touch")
     assert result.returncode == 0
     assert (root / "out.txt").read_text(encoding="utf-8") == "ran"
+
+
+# ── entrypoint params（external_projects_kanban_integration_plan.md 阶段6）──
+
+
+PARAMS_YAML = """
+name: proj
+entrypoints:
+  analyze:
+    cmd: "python run.py"
+    params:
+      - name: code
+        required: true
+        help: "股票代码"
+      - name: label
+        required: false
+        default: "unnamed"
+"""
+
+
+def test_parse_manifest_params_happy_path():
+    manifest = parse_manifest(PARAMS_YAML)
+    ep = manifest.entrypoints["analyze"]
+    assert [p.name for p in ep.params] == ["code", "label"]
+    assert ep.params[0].required is True
+    assert ep.params[1].required is False
+    assert ep.params[1].default == "unnamed"
+
+
+@pytest.mark.parametrize(
+    "bad_yaml",
+    [
+        "name: p\nentrypoints:\n  a:\n    cmd: x\n    params: notalist\n",
+        "name: p\nentrypoints:\n  a:\n    cmd: x\n    params:\n      - required: true\n",  # 缺 name
+        "name: p\nentrypoints:\n  a:\n    cmd: x\n    params:\n      - name: c\n        required: notabool\n",
+        "name: p\nentrypoints:\n  a:\n    cmd: x\n    params:\n      - name: c\n      - name: c\n",  # 重复
+    ],
+)
+def test_parse_manifest_params_rejects_invalid(bad_yaml):
+    with pytest.raises(ProjectManifestError):
+        parse_manifest(bad_yaml)
+
+
+def test_build_cmd_with_params_appends_in_order_and_quotes():
+    manifest = parse_manifest(PARAMS_YAML)
+    ep = manifest.entrypoints["analyze"]
+    assert build_cmd_with_params(ep, {"code": "600519"}) == "python run.py 600519 unnamed"
+    assert (
+        build_cmd_with_params(ep, {"code": "600519", "label": "a b"})
+        == "python run.py 600519 'a b'"
+    )
+
+
+def test_build_cmd_with_params_no_params_ignores_values():
+    manifest = parse_manifest(VALID_YAML)
+    ep = manifest.entrypoints["hotlist_scan"]
+    assert build_cmd_with_params(ep, {"anything": "x"}) == ep.cmd
+    assert build_cmd_with_params(ep, None) == ep.cmd
+
+
+def test_build_cmd_with_params_missing_required_raises():
+    manifest = parse_manifest(PARAMS_YAML)
+    ep = manifest.entrypoints["analyze"]
+    with pytest.raises(EntrypointParamError):
+        build_cmd_with_params(ep, {})
+
+
+def test_build_cmd_with_params_unknown_param_raises():
+    manifest = parse_manifest(PARAMS_YAML)
+    ep = manifest.entrypoints["analyze"]
+    with pytest.raises(EntrypointParamError):
+        build_cmd_with_params(ep, {"code": "600519", "bogus": "x"})
+
+
+def test_trigger_run_passes_params_to_cmd(tmp_path):
+    root = tmp_path / "proj"
+    root.mkdir()
+    manifest_yaml = f"""
+name: proj
+entrypoints:
+  echo_code:
+    cmd: "{sys.executable} -c \\"import sys; open('out.txt','w').write(sys.argv[1])\\""
+    params:
+      - name: code
+        required: true
+"""
+    (root / "project.yaml").write_text(manifest_yaml, encoding="utf-8")
+    registry = ExternalProjectRegistry(store_path=tmp_path / "registry.json")
+    registry.register("proj", root)
+
+    result = trigger_run(registry, "proj", "echo_code", params={"code": "600519"})
+    assert result.returncode == 0
+    assert (root / "out.txt").read_text(encoding="utf-8") == "600519"
+
+
+def test_trigger_run_missing_required_param_raises(tmp_path):
+    root = tmp_path / "proj"
+    root.mkdir()
+    manifest_yaml = """
+name: proj
+entrypoints:
+  echo_code:
+    cmd: "python -c \\"pass\\""
+    params:
+      - name: code
+        required: true
+"""
+    (root / "project.yaml").write_text(manifest_yaml, encoding="utf-8")
+    registry = ExternalProjectRegistry(store_path=tmp_path / "registry.json")
+    registry.register("proj", root)
+
+    with pytest.raises(EntrypointParamError):
+        trigger_run(registry, "proj", "echo_code", params={})
 
 
 def test_trigger_run_unknown_entrypoint_raises(tmp_path):

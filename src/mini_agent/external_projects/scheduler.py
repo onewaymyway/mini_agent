@@ -26,9 +26,13 @@ from __future__ import annotations
 import datetime as _dt
 import subprocess
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from mini_agent.external_projects.manifest import EntrypointSpec, ProjectManifest
+from mini_agent.external_projects.manifest import (
+    EntrypointSpec,
+    ProjectManifest,
+    build_cmd_with_params,
+)
 from mini_agent.external_projects.registry import ExternalProjectRegistry, RegisteredProject
 
 
@@ -87,9 +91,16 @@ def _run_entrypoint(
     entrypoint: EntrypointSpec,
     *,
     trigger: str,
+    params: Optional[Dict[str, str]] = None,
 ) -> EntrypointRunResult:
     """
     在外部项目自己的根目录下、以子进程方式执行一条 entrypoint 命令。
+
+    `params`：按 `entrypoint.params` 声明拼成位置参数追加在 `cmd` 后面
+    （`manifest.py::build_cmd_with_params()`，阶段6）。声明缺失的必填
+    参数、或传了未声明的参数名，会在这里直接抛 `EntrypointParamError`
+    ——不会执行任何子进程，调用方（API 路由/CLI）据此返回 400 而不是
+    让命令带着空参数跑起来再报运行时错误。
 
     执行完成后（无论成功/失败/超时）都会往该项目自己的
     `<root>/.agent/run_status.jsonl` 写一条账本记录（阶段 4：
@@ -98,12 +109,13 @@ def _run_entrypoint(
     上报、或用户直接被 OS cron 触发写 `trigger="external_cron"`，三者
     共用同一份账本、同一个 schema，daemon 侧读的时候不需要区分来源。
     """
+    cmd = build_cmd_with_params(entrypoint, params)
     cwd = manifest.source_dir
     started_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
     error_summary: Optional[str] = None
     try:
         proc = subprocess.run(
-            entrypoint.cmd,
+            cmd,
             shell=True,
             cwd=str(cwd) if cwd else None,
             timeout=entrypoint.timeout_sec,
@@ -173,8 +185,10 @@ def trigger_run(
     entrypoint_key: str,
     *,
     trigger: str = "manual",
+    params: Optional[Dict[str, str]] = None,
 ) -> EntrypointRunResult:
-    """立即触发某个已注册项目的某个 entrypoint 一次（供 CLI `projects run` 使用）。"""
+    """立即触发某个已注册项目的某个 entrypoint 一次（供 CLI `projects run`/
+    看板「▶️ 手动触发」使用）。`params` 见 `_run_entrypoint()` 说明。"""
     manifest = registry.load_manifest_for(project_name)
     entrypoint = manifest.entrypoint(entrypoint_key)
-    return _run_entrypoint(manifest, entrypoint, trigger=trigger)
+    return _run_entrypoint(manifest, entrypoint, trigger=trigger, params=params)

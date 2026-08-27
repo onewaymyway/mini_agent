@@ -517,6 +517,18 @@ cron job 后等待其按 cadence 自动触发。
   成功/失败直接在该行下方提示，不做二次确认（触发一次 entrypoint
   本身没有破坏性）。manifest 解析失败或没有声明 entrypoints 时该区块
   给出对应提示文案，不是空白一片。
+  - **需要传参数的 entrypoint**（`external_projects_kanban_integration_
+    plan.md` 阶段6，如 `stock_watch` 的 `stock_analysis` 需要股票
+    代码）：`project.yaml` 里在该 entrypoint 下声明 `params` 列表
+    （`name`/`required`/`default`/`help`），看板会在「▶️ 触发」按钮
+    上方按声明逐个渲染文本输入框（必填/可选标注 + help 说明文字），
+    点击触发前前端先做一次"必填项是否为空"的粗校验；真正的参数
+    合法性判断（缺必填/传了未声明的参数名）全部在后端
+    `manifest.py::build_cmd_with_params()` 完成——按声明顺序把输入框
+    的值拼成位置参数（自动做 shell 转义）追加在 `cmd` 后面，与
+    entrypoint 脚本读 `sys.argv[1:]` 的既有写法直接对齐，不需要改
+    entrypoint 脚本本身。没有声明 `params` 的 entrypoint 不受影响，
+    按钮下方不会多出任何输入框。
 - **卡片内「📋 改进积压」**：按状态（open/proposed/landed/dismissed/
   全部）筛选查看该项目的改进积压账本（`GET /v1/external_projects/
   {name}/backlog`），下方文本框可新增一条待办
@@ -635,7 +647,7 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `wiki_quarantine_status()` | `GET /v1/wiki/quarantine_status` | wiki 隔离区当前积压情况，不含已修复记录（只读，方向 E） |
 | `external_projects_status()` | `GET /v1/self/external_projects` | 已注册外部项目的聚合状态（健康 + 最近5条执行记录），"🗂️ 外部项目"Tab 总览卡片数据来源 |
 | `register_external_project(path, name=, validate=True)` | `POST /v1/external_projects/register` | 注册一个新的外部项目 |
-| `trigger_external_project_run(name, entrypoint)` | `POST /v1/external_projects/{name}/trigger_run` | 立即触发某个已注册项目的某个 entrypoint 一次 |
+| `trigger_external_project_run(name, entrypoint, params=None)` | `POST /v1/external_projects/{name}/trigger_run` | 立即触发某个已注册项目的某个 entrypoint 一次；`params` 是该 entrypoint 在 `project.yaml` 里声明了 `params` 时按参数名传的值（阶段6） |
 | `external_project_ledger(name, limit=20)` | `GET /v1/external_projects/{name}/ledger` | 该项目的执行账本，最近 `limit` 条 |
 | `external_project_backlog(name, status=)` | `GET /v1/external_projects/{name}/backlog` | 该项目的改进积压账本；`status` 留空表示不过滤 |
 | `append_external_project_backlog(name, summary, evidence_ref=)` | `POST /v1/external_projects/{name}/backlog` | 新增一条待办，`source` 由后端固定写死为 `user_feedback` |

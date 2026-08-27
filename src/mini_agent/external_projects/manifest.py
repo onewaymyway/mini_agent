@@ -34,6 +34,34 @@ class ProjectManifestError(ValueError):
     """`project.yaml` 内容不合法（缺字段/类型错误/格式错误）。"""
 
 
+class EntrypointParamError(ValueError):
+    """触发 entrypoint 时传入的参数不合法（缺必填项/传了未声明的参数）。
+
+    与 `ProjectManifestError` 分开是因为触发时机不同：这个错误发生在
+    "运行时触发一次 entrypoint"，而不是"解析 project.yaml 本身"——
+    `project.yaml` 的 `params` 声明本身完全合法，只是这一次调用传的
+    值不满足声明（详见 `external_projects_kanban_integration_plan.md`
+    阶段6）。
+    """
+
+
+@dataclass
+class ParamSpec:
+    """`project.yaml` 里 `entrypoints.<key>.params` 列表中的一条参数声明。
+
+    只描述"看板/调用方需要收集什么"，不做任何类型转换——entrypoint 的
+    `cmd` 本来就是一条 shell 命令，最终传参方式是"按声明顺序拼成位置
+    参数追加在 `cmd` 后面"（`scheduler.py::_build_cmd_with_params()`），
+    与 `run_stock_analysis.py` 这类现成脚本读 `sys.argv[1:]` 的既有
+    写法直接对齐，不需要新的传参协议、也不需要脚本改造。
+    """
+
+    name: str
+    required: bool = True
+    default: Optional[str] = None
+    help: str = ""
+
+
 @dataclass
 class EntrypointSpec:
     """`project.yaml` 里 `entrypoints.<key>` 对应的一条声明。"""
@@ -42,6 +70,7 @@ class EntrypointSpec:
     cmd: str
     schedule: Optional[str] = None
     timeout_sec: Optional[int] = None
+    params: List[ParamSpec] = field(default_factory=list)
 
     @property
     def cron_expr(self) -> Optional[str]:
@@ -119,6 +148,58 @@ class ProjectManifest:
         return [ep for ep in self.entrypoints.values() if ep.schedule]
 
 
+def build_cmd_with_params(entrypoint: EntrypointSpec, values: Optional[Dict[str, str]]) -> str:
+    """把用户传入的参数值拼接到 `entrypoint.cmd` 后面，生成最终要执行的命令行。
+
+    规则（对应 `external_projects_kanban_integration_plan.md` 阶段6）：
+      - 没有声明 `params` 的 entrypoint：忽略传入的 `values`（不报错——
+        兼容"看板/CLI 统一都传一个可能为空的 params 参数"的调用方式），
+        原样返回 `cmd`。
+      - 按 `entrypoint.params` 声明的顺序，依次取值：`values` 里有就用
+        传入值；没有则看 `default`；`required=True` 且两者都没有 →
+        抛 `EntrypointParamError`。`required=False` 且都没有 → 跳过
+        （不追加这个位置参数，也不追加后面的参数——因为这是"位置参数"
+        语义，跳过中间一个会让后面的参数错位；如果确实需要跳过某个
+        可选参数、又要传后面的参数，应该在 project.yaml 里把该参数放
+        在参数列表最后，或者改用 `default` 兜底）。
+      - 值本身用 `shlex.quote()` 转义后再拼接，避免任何注入/被 shell
+        重新解释（entrypoint 本来就是 `shell=True` 执行，这一步不可
+        省略）。
+      - 不接受 `values` 里出现声明之外的参数名——静默忽略容易让使用者
+        以为传参生效了实际上没生效，明确报错更安全。
+    """
+    values = values or {}
+    if not entrypoint.params:
+        # 该 entrypoint 没有声明任何 params：视为"不支持传参"的 legacy
+        # entrypoint，直接忽略调用方可能传来的 values（兼容"看板/CLI
+        # 统一都传一个可能非空的 params 参数"的调用方式），不因为多传了
+        # 键就报错——报错留给"声明了 params 但传了声明之外的键"这种更
+        # 明确是使用者理解有误的情形（见下面的 unknown 检查）。
+        return entrypoint.cmd
+
+    unknown = set(values) - {p.name for p in entrypoint.params}
+    if unknown:
+        raise EntrypointParamError(
+            f"entrypoint '{entrypoint.key}' 未声明参数: {', '.join(sorted(unknown))}"
+        )
+
+    import shlex
+
+    parts = [entrypoint.cmd]
+    for spec in entrypoint.params:
+        raw_value = values.get(spec.name)
+        if raw_value is None or raw_value == "":
+            raw_value = spec.default
+        if raw_value is None or raw_value == "":
+            if spec.required:
+                raise EntrypointParamError(
+                    f"entrypoint '{entrypoint.key}' 缺少必填参数 '{spec.name}'"
+                )
+            break  # 位置参数语义：跳过一个可选参数后不再追加后续参数
+        parts.append(shlex.quote(raw_value))
+    return " ".join(parts)
+
+
 def _require(data: Dict[str, Any], key: str, *, ctx: str) -> Any:
     if key not in data:
         raise ProjectManifestError(f"{ctx}: 缺少必填字段 '{key}'")
@@ -141,10 +222,46 @@ def _validate_cron_shape(expr: str, *, ctx: str) -> None:
         )
 
 
+def _parse_params(raw: Any, *, ctx: str) -> List[ParamSpec]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ProjectManifestError(f"{ctx}: 'params' 必须是一个列表")
+    specs: List[ParamSpec] = []
+    seen = set()
+    for idx, item in enumerate(raw):
+        item_ctx = f"{ctx}.params[{idx}]"
+        if not isinstance(item, dict):
+            raise ProjectManifestError(f"{item_ctx}: 必须是一个映射（name/required/default/help）")
+        name = _require_str(item, "name", ctx=item_ctx)
+        if name in seen:
+            raise ProjectManifestError(f"{item_ctx}: 参数名 '{name}' 重复声明")
+        seen.add(name)
+
+        required = item.get("required", True)
+        if not isinstance(required, bool):
+            raise ProjectManifestError(f"{item_ctx}: 'required' 必须是布尔值")
+
+        default = item.get("default")
+        if default is not None and not isinstance(default, str):
+            raise ProjectManifestError(f"{item_ctx}: 'default' 必须是字符串")
+        # 有默认值的参数即使 required 没显式写 false，语义上也应该允许
+        # 不传——但这里不强行覆盖用户写的 required，只是把这条约束留给
+        # 调用方（scheduler.py）：required=True 且 default 非空时，缺省
+        # 传参会用 default 兜底而不是报错，见该模块的 `_build_cmd_with_params()`。
+
+        help_text = item.get("help", "")
+        if not isinstance(help_text, str):
+            raise ProjectManifestError(f"{item_ctx}: 'help' 必须是字符串")
+
+        specs.append(ParamSpec(name=name, required=required, default=default, help=help_text))
+    return specs
+
+
 def _parse_entrypoint(key: str, raw: Any) -> EntrypointSpec:
     ctx = f"entrypoints.{key}"
     if not isinstance(raw, dict):
-        raise ProjectManifestError(f"{ctx}: 必须是一个映射（cmd/schedule/timeout_sec）")
+        raise ProjectManifestError(f"{ctx}: 必须是一个映射（cmd/schedule/timeout_sec/params）")
     cmd = _require_str(raw, "cmd", ctx=ctx)
 
     schedule = raw.get("schedule")
@@ -161,7 +278,11 @@ def _parse_entrypoint(key: str, raw: Any) -> EntrypointSpec:
     ):
         raise ProjectManifestError(f"{ctx}: 'timeout_sec' 必须是正整数")
 
-    return EntrypointSpec(key=key, cmd=cmd, schedule=schedule, timeout_sec=timeout_sec)
+    params = _parse_params(raw.get("params"), ctx=ctx)
+
+    return EntrypointSpec(
+        key=key, cmd=cmd, schedule=schedule, timeout_sec=timeout_sec, params=params
+    )
 
 
 def _parse_health_check(raw: Any) -> Optional[HealthCheckSpec]:

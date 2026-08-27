@@ -779,19 +779,27 @@ async def post_external_projects_register(request: Request):
 async def post_external_projects_trigger_run(name: str, request: Request):
     """POST /v1/external_projects/{name}/trigger_run — 立即触发一次 entrypoint。
 
-    Body: {"entrypoint": str}
+    Body: {"entrypoint": str, "params": {name: value, ...}?}
 
     包装 `scheduler.trigger_run()`，`trigger` 固定为 `"manual"`——与命令行
     `mini-agent projects run` 走的是同一条执行路径，风险等级相同（详见
-    `external_projects_kanban_integration_plan.md` 第3节）。
+    `external_projects_kanban_integration_plan.md` 第3节）。`params` 是
+    可选字段（阶段6）：按该 entrypoint 在 `project.yaml` 里声明的
+    `params` 顺序拼成位置参数追加到 `cmd` 后面；缺必填参数/传了未声明的
+    参数名会被 `EntrypointParamError` 挡在真正执行子进程之前，映射成
+    400 而不是 500。
     """
     _require_owner(request)
     body = await request.json()
     entrypoint = (body.get("entrypoint") or "").strip()
     if not entrypoint:
         raise HTTPException(status_code=400, detail="entrypoint is required")
+    params = body.get("params") or None
+    if params is not None and not isinstance(params, dict):
+        raise HTTPException(status_code=400, detail="params must be an object")
 
     try:
+        from mini_agent.external_projects.manifest import EntrypointParamError
         from mini_agent.external_projects.registry import (
             ExternalProjectRegistry,
             ExternalProjectRegistryError,
@@ -799,13 +807,15 @@ async def post_external_projects_trigger_run(name: str, request: Request):
         from mini_agent.external_projects.scheduler import trigger_run
 
         registry = ExternalProjectRegistry()
-        result = trigger_run(registry, name, entrypoint, trigger="manual")
+        result = trigger_run(registry, name, entrypoint, trigger="manual", params=params)
         return {
             "project_name": result.project_name,
             "entrypoint_key": result.entrypoint_key,
             "returncode": result.returncode,
             "trigger": result.trigger,
         }
+    except EntrypointParamError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except ExternalProjectRegistryError as exc:
         raise HTTPException(status_code=_external_project_error_status(exc), detail=str(exc))
     except Exception as exc:  # noqa: BLE001

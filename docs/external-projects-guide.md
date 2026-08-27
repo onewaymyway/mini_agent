@@ -50,6 +50,15 @@ entrypoints:
     cmd: "python entrypoints/run_hotlist_scan.py"
     schedule: "cron: 0 9,13 * * 1-5"   # 可选；不写就是纯手动/外部触发
     timeout_sec: 600                    # 可选
+  stock_analysis:
+    cmd: "python entrypoints/run_stock_analysis.py"
+    params:                             # 可选（external_projects_kanban_
+      - name: code                      # integration_plan.md 阶段6）
+        required: true
+        help: "股票代码，如 600519"
+      - name: name
+        required: false
+        default: "unnamed"
 health_check:                            # 可选
   cmd: "python entrypoints/health.py"
 resources:                               # 可选
@@ -64,6 +73,13 @@ resources:                               # 可选
   周，`*`、单值、逗号列表、`-` 区间均支持；不支持步进 `*/5` 等更复杂
   语法——真的需要就交给 OS 原生 cron 直接调这个 entrypoint 的 `cmd`）；
 - `timeout_sec` 必须是正整数；
+- `params`（可选）：entrypoint 需要传参数时声明，每项
+  `{name, required?, default?, help?}`（`required` 默认 `true`）。
+  触发时按声明顺序把传入值拼成位置参数（自动做 shell 转义）追加在
+  `cmd` 后面，与 entrypoint 脚本读 `sys.argv[1:]` 的写法直接对齐；
+  缺必填参数、或传了未声明的参数名，会在真正执行子进程之前就报错
+  （`EntrypointParamError`）。看板「▶️ 手动触发」据此渲染输入框，见
+  `docs/kanban-dashboard-guide.md`；
 - `resources.max_concurrency` 必须 >= 1。
 
 结构不合法时 `load_manifest()` 抛 `ProjectManifestError`，错误信息会
