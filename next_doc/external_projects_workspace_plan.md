@@ -760,3 +760,15 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   `tests/test_external_projects_ledger_and_status.py` 等 34 个用例
   验证 schema 变更未破坏既有行为），后续如需要更细粒度的回归覆盖，
   可以在该测试文件里补充 `detail` 字段的专项用例。
+- 2026-08-27（续）：daemon 重启、代码确认已生效后，用户反馈"账本里
+  已经有 detail 字段了，但看板上还是看不到"——排查发现根因不在后端，
+  是 `apps/mini_agent_kanban/app.py`（`external_projects_kanban_
+  integration_plan.md` 阶段3新增的「🗂️ 外部项目」tab）从一开始就只
+  渲染 `error_summary`，从未读过 `detail` 字段，这次新增的诊断信息
+  实际上一直"存了但没显示"。已修复该文件三处：卡片"最近一次执行"
+  失败时自动展开详情、"最近 N 条执行记录"列表逐条展示 detail、
+  「▶️ 手动触发」结果失败时直接内联展示 detail。这次顺带确认了一个
+  历史遗留但非本次引入的现象：daemon 触发一次 entrypoint 会产生两条
+  账本记录（子进程内部 `track_run()` 一条 + daemon 父进程
+  `_run_entrypoint()` 一条），目前两条都携带有效信息，暂不处理，留作
+  后续如有需要再收敛。

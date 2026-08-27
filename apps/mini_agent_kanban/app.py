@@ -8050,6 +8050,14 @@ def render_external_projects_tab(client: AgentClient):
                     f"最近一次执行：{last_run.get('entrypoint', '')} · {status_txt} "
                     f"· {last_run.get('finished_at', '')}"
                 )
+                # [2026-08-27 追加] error_summary 只是一行摘要（比如
+                # "entrypoint exited with code 1"），排查问题时完全没有
+                # 信息量；detail 字段（子进程 stdout/stderr 尾部，或
+                # entrypoint 脚本主动上报的失败明细）才是真正能定位问题
+                # 的内容，之前只在账本文件里存了，看板从未渲染过。
+                if last_run.get("exit_code") != 0 and last_run.get("detail"):
+                    with st.expander("查看失败详情", expanded=True):
+                        st.code(last_run["detail"], language=None)
             else:
                 st.caption("最近一次执行：（暂无记录）")
 
@@ -8064,6 +8072,8 @@ def render_external_projects_tab(client: AgentClient):
                         )
                         if r.get("error_summary"):
                             st.caption(f"　　{r['error_summary']}")
+                        if r.get("detail"):
+                            st.code(r["detail"], language=None)
 
             with st.expander("▶️ 手动触发"):
                 entrypoints = proj.get("entrypoints") or []
@@ -8121,6 +8131,13 @@ def render_external_projects_tab(client: AgentClient):
                                 (st.success if ok else st.error)(
                                     f"「{ep_key}」执行完成，returncode={res.get('returncode')}"
                                 )
+                                # [2026-08-27 追加] 手动触发的响应现在也带
+                                # 上了 detail（见 scheduler.py::
+                                # EntrypointRunResult），失败时直接在这里
+                                # 展示，不用用户再去展开下方"最近执行记录"
+                                # 或翻账本文件。
+                                if not ok and res.get("detail"):
+                                    st.code(res["detail"], language=None)
 
             with st.expander("📋 改进积压"):
                 status_filter = st.selectbox(
