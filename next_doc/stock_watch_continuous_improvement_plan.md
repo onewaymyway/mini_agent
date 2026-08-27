@@ -361,3 +361,11 @@ stock_watch 的业务逻辑，不是框架能力。
   （比如真的把 review session 接进运行中的 daemon，或者处理阶段5
   发现的种子豁免差异）留给下一份独立的迭代文档决定，不在本文档继续
   堆叠。
+
+- 2026-08-27：第3.1节提到的"账本粒度掩盖数据源级失败趋势"缺口，先在
+  框架层做了一个更基础的前置改进：`run_status.jsonl` 新增 `detail`
+  字段（承载失败时的完整诊断信息），时间戳改为本地时间。这不等价于
+  3.1 节要求的"每数据源细粒度信号"（那仍需要 stock_watch 自己的
+  `data/source_health.jsonl`，尚未实施），但让`entrypoint`整体失败时
+  至少能看到具体原因，不用再去翻 daemon 日志。详见
+  `external_projects_workspace_plan.md` 阶段 4 2026-08-27 条目。

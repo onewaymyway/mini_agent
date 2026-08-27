@@ -305,3 +305,8 @@ client.py`）✅已完成
   重构为通用的「📊 状态看板」机制（阶段 A-D 全部完成）：任何外部
   项目通过 `project.yaml` 的 `dashboard.kanban_view` 声明即可接入，
   不再是 stock_watch 专属代码。详见该文档。
+
+- 2026-08-27：「▶️ 手动触发」的响应结构新增 `detail` 字段（失败时子
+  进程 stdout/stderr 尾部），账本时间戳改为本地时间。属于
+  `external_projects_workspace_plan.md` 阶段 4 账本 schema 的增强，
+  不涉及本文档已完成阶段的返工，详见该文档"变更记录"2026-08-27 条目。

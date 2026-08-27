@@ -33,6 +33,7 @@ def main() -> int:
 
     out_dir = REPORTS_DIR / "kline" / datetime.now().strftime("%Y%m%d")
     ok, failed = 0, []
+    failure_lines = []
     for entry in pool.values():
         try:
             plot_kline(
@@ -43,14 +44,24 @@ def main() -> int:
         except DataSourceError as exc:
             logger.warning("K 线生成失败: %s(%s) -> %s", entry.name, entry.code, exc)
             failed.append(entry.code)
+            failure_lines.append(f"{entry.name}({entry.code}): {exc}")
         except Exception as exc:  # noqa: BLE001 - 绘图库异常类型不固定，统一兜底不中断批处理
             logger.warning("K 线绘图异常: %s(%s) -> %s", entry.name, entry.code, exc)
             failed.append(entry.code)
+            failure_lines.append(f"{entry.name}({entry.code}): {type(exc).__name__}: {exc}")
 
     logger.info("K 线批量生成完成: 成功 %d, 失败 %d, 目录 %s", ok, len(failed), out_dir)
     # 只有全军覆没才算失败；部分失败是预期内的正常情况（个别标的当天
     # 停牌/接口临时抖动等），不应该让整批任务标红。
-    return 1 if ok == 0 and failed else 0
+    if ok == 0 and failed:
+        # 把"候选池里每只标的分别是什么错误"附到本次账本记录的 detail
+        # 字段——不然看板/CLI 只能看到 "kline_batch 以非零退出码结束: 1"
+        # 这种完全无法定位问题的摘要（改造前的行为）。
+        _common.set_run_detail(
+            f"候选池 {len(pool)} 只标的全部生成失败：\n" + "\n".join(failure_lines)
+        )
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

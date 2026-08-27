@@ -13,25 +13,64 @@ external_projects/ledger.py — 状态账本：读写 + 聚合
 schema（每行一条 JSON 记录）：
     {
       "entrypoint":    str,             # project.yaml 里的 entrypoint key
-      "started_at":    str,             # ISO-8601 UTC
-      "finished_at":   str,             # ISO-8601 UTC
+      "started_at":    str,             # ISO-8601 本地时间（带 UTC 偏移量）
+      "finished_at":   str,             # ISO-8601 本地时间（带 UTC 偏移量）
       "exit_code":     int,
       "trigger":       "daemon" | "external_cron" | "manual",
-      "error_summary": str | null       # 失败时的简要摘要，成功为 null
+      "error_summary": str | null,      # 失败时的简要摘要（一行），成功为 null
+      "detail":        str | null       # 失败时的详细诊断信息（多行，已截断），
+                                         # 成功为 null；例如子进程的 stderr/stdout
+                                         # 尾部、或 Python 异常的完整 traceback
     }
+
+时间字段说明：早期版本这里存的是 UTC（`datetime.now(timezone.utc)`），
+账本里能看到形如 `2026-08-27T04:34:42+00:00` 的记录、跟用户本地时钟对不
+上，看起来像是"未来"或"凌晨在跑"的错觉。现在统一改成
+`datetime.now().astimezone()`：取本机 wall-clock 时间，再补上本机时区的
+UTC 偏移量，序列化出来仍然是无歧义的 ISO-8601（比如
+`2026-08-27T12:34:42+08:00`），前端/CLI 直接显示这个字符串就是用户本地
+时间，不需要再做时区换算。`read_ledger()`/`from_dict()` 对老账本里遗留
+的 UTC（`+00:00`）记录不做迁移——它们本身仍是合法的 ISO-8601，只是历史
+记录，新写入的行会自然是本地时间。
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator, List, Optional
 
 from mini_agent.utils.atomic_write import atomic_append_jsonl
 
 VALID_TRIGGERS = ("daemon", "external_cron", "manual")
+
+# detail 字段的最大长度（字符数）。诊断信息只需要"够定位问题"，不需要
+# 完整保留——账本是长期追加的 jsonl，单条记录不加限制的话，一次异常
+# 输出很长的 traceback/子进程日志就可能让账本文件膨胀失控。超出的部分
+# 保留头部（异常类型/最外层调用栈通常在这）+ 尾部（实际抛出点通常在这），
+# 中间用省略提示替换。
+MAX_DETAIL_CHARS = 4000
+
+
+def _now_local_iso() -> str:
+    """当前本机时间，ISO-8601 格式，带本机时区偏移量（见模块 docstring）。"""
+    return datetime.now().astimezone().isoformat()
+
+
+def truncate_detail(text: Optional[str], *, limit: int = MAX_DETAIL_CHARS) -> Optional[str]:
+    """把 detail 文本裁剪到 `limit` 字符以内，`None`/空字符串原样返回 `None`。"""
+    if not text:
+        return None
+    text = text.strip()
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    head_len = limit * 2 // 3
+    tail_len = limit - head_len - 20
+    return f"{text[:head_len]}\n...(省略 {len(text) - head_len - tail_len} 字符)...\n{text[-tail_len:]}"
 
 
 @dataclass
@@ -42,6 +81,7 @@ class RunRecord:
     exit_code: int
     trigger: str
     error_summary: Optional[str] = None
+    detail: Optional[str] = None
 
     @property
     def success(self) -> bool:
@@ -59,6 +99,7 @@ class RunRecord:
             exit_code=int(data.get("exit_code", -1)),
             trigger=data.get("trigger", "manual"),
             error_summary=data.get("error_summary"),
+            detail=data.get("detail"),
         )
 
 
@@ -75,6 +116,7 @@ def record_run(
     started_at: Optional[str] = None,
     finished_at: Optional[str] = None,
     error_summary: Optional[str] = None,
+    detail: Optional[str] = None,
 ) -> RunRecord:
     """
     往 `<root>/.agent/run_status.jsonl` 追加一条执行记录。
@@ -83,14 +125,17 @@ def record_run(
     entrypoint 脚本里 `import` 这一个函数就能写账本，不需要自己处理
     路径拼接/JSON 序列化/原子写入。多数场景更推荐用下面的
     `track_run()` 上下文管理器，能自动填 `started_at`/`finished_at`/
-    失败时的 `error_summary`，这个函数留给需要完全自控这几个字段的
-    场景（比如 `scheduler.py::_run_entrypoint` 触发的是子进程，自己
-    的 Python 代码不会抛异常，用不上 `track_run` 的自动捕获）。
+    失败时的 `error_summary`/`detail`，这个函数留给需要完全自控这几个
+    字段的场景（比如 `scheduler.py::_run_entrypoint` 触发的是子进程，
+    自己的 Python 代码不会抛异常，用不上 `track_run` 的自动捕获）。
+
+    `detail` 会被截断到 `MAX_DETAIL_CHARS`（见 `truncate_detail()`），
+    调用方不需要自己控制长度。
     """
     if trigger not in VALID_TRIGGERS:
         raise ValueError(f"trigger 必须是 {VALID_TRIGGERS} 之一，得到 '{trigger}'")
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = _now_local_iso()
     record = RunRecord(
         entrypoint=entrypoint,
         started_at=started_at or now,
@@ -98,6 +143,7 @@ def record_run(
         exit_code=exit_code,
         trigger=trigger,
         error_summary=error_summary,
+        detail=truncate_detail(detail),
     )
     path = _ledger_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -116,21 +162,32 @@ def track_run(root: Path, entrypoint: str, *, trigger: str = "manual") -> Iterat
             do_the_actual_scan()
 
     正常退出 `with` 块 → 记一条 `exit_code=0` 的成功记录；块内抛异常
-    → 记一条 `exit_code=1`、`error_summary=<异常类型: 异常信息>` 的
-    失败记录，然后异常照常向外抛出（这里不吞异常，写账本只是旁路
-    副作用，不改变脚本本身的错误处理行为）。`started_at`/`finished_at`
-    全自动填，调用方完全不需要关心账本 schema 的细节。
+    → 记一条 `exit_code=1`、`error_summary=<异常类型: 异常信息>`、
+    `detail=<完整 traceback>` 的失败记录，然后异常照常向外抛出（这里
+    不吞异常，写账本只是旁路副作用，不改变脚本本身的错误处理行为）。
+    `started_at`/`finished_at` 全自动填，调用方完全不需要关心账本
+    schema 的细节。
+
+    如果块内代码已经知道比"异常类型: 异常信息"更有用的诊断信息（比如
+    `run_kline_batch.py` 想记录"候选池 37 只全部失败，代码列表：..."），
+    可以在 `yield` 出来的 `handle` 上提前设置
+    `handle.detail = "..."` ——只要 `handle.detail` 在异常抛出前已经被
+    设置过，这里就不会用 traceback 覆盖它。
     """
-    started_at = datetime.now(timezone.utc).isoformat()
+    started_at = _now_local_iso()
     handle = _RunHandle()
     try:
         yield handle
     except Exception as exc:
+        import traceback
+
         handle.exit_code = 1
         handle.error_summary = f"{type(exc).__name__}: {exc}"
+        if handle.detail is None:
+            handle.detail = traceback.format_exc()
         raise
     finally:
-        finished_at = datetime.now(timezone.utc).isoformat()
+        finished_at = _now_local_iso()
         record_run(
             root,
             entrypoint,
@@ -139,15 +196,17 @@ def track_run(root: Path, entrypoint: str, *, trigger: str = "manual") -> Iterat
             started_at=started_at,
             finished_at=finished_at,
             error_summary=handle.error_summary,
+            detail=handle.detail,
         )
 
 
 class _RunHandle:
-    """`track_run()` 让渡给 `with` 块的句柄，允许块内显式覆盖退出码/摘要。"""
+    """`track_run()` 让渡给 `with` 块的句柄，允许块内显式覆盖退出码/摘要/详情。"""
 
     def __init__(self) -> None:
         self.exit_code = 0
         self.error_summary: Optional[str] = None
+        self.detail: Optional[str] = None
 
 
 def read_ledger(root: Path, *, limit: Optional[int] = None) -> List[RunRecord]:

@@ -42,6 +42,7 @@ class EntrypointRunResult:
     entrypoint_key: str
     returncode: int
     trigger: str  # "daemon" | "manual"
+    detail: Optional[str] = None  # 失败时子进程 stdout/stderr 尾部，成功为 None
 
 
 def _cron_field_matches(field_expr: str, value: int) -> bool:
@@ -108,25 +109,43 @@ def _run_entrypoint(
     传入的 "daemon" 或 "manual"，与 entrypoint 脚本自己用 `track_run()`
     上报、或用户直接被 OS cron 触发写 `trigger="external_cron"`，三者
     共用同一份账本、同一个 schema，daemon 侧读的时候不需要区分来源。
+
+    stdout/stderr 会被捕获（而不是像早期版本那样直接继承父进程的
+    输出流）：一是这样才能在失败时把输出尾部存进账本的 `detail` 字段
+    （否则 `returncode=1` 之外用户在看板/CLI 里什么都看不到，只能去
+    翻 daemon 自己的日志，等于没记）；二是 `subprocess.run(shell=True)`
+    不捕获输出时，headless 场景（真正被 OS cron 触发、父进程根本不是
+    交互式终端）下这些输出本来就会被静默丢弃或混进 daemon 日志，捕获
+    下来反而更可靠。命令自身如果有需要持久化的产出（图表文件等），
+    走的是自己的文件系统写入，不受这里捕获 stdout 影响。
     """
     cmd = build_cmd_with_params(entrypoint, params)
     cwd = manifest.source_dir
-    started_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    started_at = _local_iso()
     error_summary: Optional[str] = None
+    detail: Optional[str] = None
     try:
         proc = subprocess.run(
             cmd,
             shell=True,
             cwd=str(cwd) if cwd else None,
             timeout=entrypoint.timeout_sec,
+            capture_output=True,
+            text=True,
+            errors="replace",
         )
         returncode = proc.returncode
         if returncode != 0:
             error_summary = f"entrypoint exited with code {returncode}"
-    except subprocess.TimeoutExpired:
+            detail = _format_process_output(proc.stdout, proc.stderr)
+    except subprocess.TimeoutExpired as exc:
         returncode = -1
         error_summary = f"entrypoint timed out after {entrypoint.timeout_sec}s"
-    finished_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        detail = _format_process_output(
+            exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else exc.stdout,
+            exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else exc.stderr,
+        )
+    finished_at = _local_iso()
 
     if cwd is not None:
         from mini_agent.external_projects.ledger import record_run
@@ -139,6 +158,7 @@ def _run_entrypoint(
             started_at=started_at,
             finished_at=finished_at,
             error_summary=error_summary,
+            detail=detail,
         )
 
     return EntrypointRunResult(
@@ -146,7 +166,38 @@ def _run_entrypoint(
         entrypoint_key=entrypoint.key,
         returncode=returncode,
         trigger=trigger,
+        detail=detail,
     )
+
+
+def _local_iso() -> str:
+    """本机本地时间的 ISO-8601 表示（带时区偏移量）。
+
+    与 `external_projects/ledger.py::_now_local_iso()` 是同一个逻辑，
+    这里不直接 import 复用是为了避免 `scheduler.py` 在没有写账本需求
+    的调用路径（`cwd is None`）上也强制依赖 ledger 模块的导入时机——
+    两处都是一行 stdlib 调用，重复比额外耦合更便宜。
+    """
+    return _dt.datetime.now().astimezone().isoformat()
+
+
+def _format_process_output(stdout: Optional[str], stderr: Optional[str]) -> Optional[str]:
+    """把子进程的 stdout/stderr 拼成一段人可读的 detail 文本。
+
+    优先展示 stderr（大多数程序的报错信息写在这里），stdout 附在后面
+    提供上下文；两者都为空时返回 None（比如命令被 shell 直接判定语法
+    错误、还没来得及产生任何输出）。真正的长度截断交给
+    `ledger.record_run()` 内部的 `truncate_detail()` 统一处理，这里
+    只负责拼接、不重复实现截断逻辑。
+    """
+    parts = []
+    if stderr and stderr.strip():
+        parts.append(f"[stderr]\n{stderr.strip()}")
+    if stdout and stdout.strip():
+        parts.append(f"[stdout]\n{stdout.strip()}")
+    if not parts:
+        return None
+    return "\n\n".join(parts)
 
 
 def run_due_entrypoints(

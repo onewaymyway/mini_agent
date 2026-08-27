@@ -111,6 +111,8 @@ def _cmd_status(args: List[str]) -> int:
         )
         if lr.error_summary:
             _print(f"  error: {lr.error_summary}")
+        if lr.detail:
+            _print(f"  detail:\n    " + lr.detail.replace("\n", "\n    "))
     else:
         _print("last_run: (账本为空，该项目还没有任何执行记录)")
 
@@ -144,6 +146,8 @@ def _cmd_run(args: List[str]) -> int:
         f"[{result.project_name}/{result.entrypoint_key}] "
         f"exit_code={result.returncode} trigger={result.trigger}"
     )
+    if result.detail:
+        _print("detail:\n  " + result.detail.replace("\n", "\n  "))
     return 0 if result.returncode == 0 else result.returncode
 
 
@@ -260,6 +264,8 @@ def _cmd_ledger(args: List[str]) -> int:
         if rec.error_summary:
             line += f" error={rec.error_summary!r}"
         _print(line)
+        if rec.detail:
+            _print("    detail:\n      " + rec.detail.replace("\n", "\n      "))
     return 0
 
 

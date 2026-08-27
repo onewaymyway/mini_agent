@@ -820,6 +820,7 @@ async def post_external_projects_trigger_run(name: str, request: Request):
             "entrypoint_key": result.entrypoint_key,
             "returncode": result.returncode,
             "trigger": result.trigger,
+            "detail": result.detail,
         }
     except EntrypointParamError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

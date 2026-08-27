@@ -402,6 +402,51 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
       错误摘要），trigger 字段区分 `daemon` / `external_cron` /
       `manual`
       —— `external_projects/ledger.py::RunRecord`
+  - [x]（2026-08-27 追加）针对实际使用中暴露的两个问题做了增强：
+    1. **时间字段改为本地时间**：早期版本 `started_at`/`finished_at`
+       存的是 `datetime.now(timezone.utc)`，用户在看板里看自己本地
+       白天的一次执行，账本上却显示凌晨时间，容易造成"是不是延迟了/
+       是不是跑错时间了"的误解。统一改成
+       `datetime.now().astimezone().isoformat()`（本机 wall-clock +
+       本机时区偏移量），序列化出来仍是无歧义的 ISO-8601（例如
+       `2026-08-27T12:34:42+08:00`），前端/CLI 不需要再做任何时区
+       换算就能直接显示成用户认知里的时间。老账本里遗留的 UTC 记录
+       不做迁移，本身仍是合法 ISO-8601。
+    2. **新增 `detail` 字段**：`error_summary` 只是一行摘要（比如
+       `entrypoint exited with code 1`），排查问题时完全没有信息量，
+       用户必须额外去翻 daemon 日志或项目自己的日志文件。新增
+       `detail: str | null` 字段承载更完整的诊断信息，按触发路径分
+       两种来源：
+       - `scheduler.py::_run_entrypoint()`（daemon/CLI/看板手动触发
+         的子进程路径）：改为 `capture_output=True` 捕获子进程
+         stdout/stderr，失败或超时时把 stderr（优先）+ stdout 尾部
+         拼进 `detail`；`EntrypointRunResult` 也带上这个字段，手动
+         触发的 HTTP 响应（`POST /v1/external_projects/<name>/run`）
+         和 CLI `projects run` 都直接透出，不需要用户再去查账本。
+       - `ledger.py::track_run()`（entrypoint 脚本自己 import 使用
+         的路径）：块内抛异常时自动把完整 `traceback.format_exc()`
+         存进 `detail`；如果脚本自己已经知道更精确的诊断信息（比如
+         "候选池 N 只标的分别因为什么原因失败"），可以在异常抛出前
+         主动设置 `handle.detail = "..."`，`track_run()` 检测到已被
+         设置就不再用 traceback 覆盖。`stock_watch` 的
+         `entrypoints/_common.py` 在此基础上包了一层
+         `set_run_detail(text)` 便捷函数，供 `run_kline_batch.py`
+         这类"部分失败不算错、全部失败才报错"的批处理脚本记录失败
+         明细（哪些标的、各自什么原因）。
+       - `detail` 统一在 `record_run()` 内部截断到
+         `ledger.MAX_DETAIL_CHARS`（4000 字符，头部 2/3 + 尾部
+         1/3，防止一次异常输出很长时账本文件膨胀失控）。
+       —— 涉及改动：`external_projects/ledger.py`（新增
+       `truncate_detail()`/`_now_local_iso()`，`RunRecord`/
+       `record_run()`/`track_run()` 加 `detail` 字段）、
+       `external_projects/scheduler.py`（捕获子进程输出、
+       `EntrypointRunResult.detail`）、`api/routes.py`（手动触发
+       响应带 `detail`）、`cli/commands/projects_cmd.py`（`status`/
+       `ledger`/`run` 三个子命令打印 `detail`）、
+       `external_projects/stock_watch/entrypoints/_common.py`
+       （`set_run_detail()`）、
+       `external_projects/stock_watch/entrypoints/run_kline_batch.py`
+       （示范用法：候选池全部失败时记录逐个标的的失败原因）
 - [x] 提供一个轻量库函数（外部项目的 entrypoint 里 import 调用即可）
       负责往这份账本写记录，降低外部项目遵循这个约定的成本，避免
       每个项目自己重新实现一遍写账本逻辑
@@ -696,3 +741,22 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   external_projects_workspace_plan.md` 规划的全部 6 个阶段均已完成；
   后续如果出现第二个外部项目，再回来处理第 7 节里刻意留白的"跨项目
   经验沉淀"与"权限模型精细化"两项。
+- 2026-08-27：用户实测反馈——`stock_watch` 的 `kline_batch` 在真实
+  daemon/看板环境下执行 `returncode=1`，但用户能看到的诊断信息只有
+  账本里一行 `error_summary: "entrypoint exited with code 1"`（或
+  `"kline_batch 以非零退出码结束: 1"`），完全无法定位是哪只标的、
+  什么原因失败；同时账本时间戳是 UTC，用户本地白天执行的一条记录显示
+  成了凌晨，容易造成误解。据此对阶段 4 的账本 schema 做了一次不破坏
+  兼容性的增强（详见阶段 4 复选框下方 2026-08-27 追加说明）：
+  `started_at`/`finished_at` 改为本机本地时间（带时区偏移量的
+  ISO-8601），新增 `detail` 字段承载失败时的完整诊断信息（子进程
+  stdout/stderr 尾部，或 Python 异常的完整 traceback，或 entrypoint
+  脚本主动上报的结构化失败明细），并截断到 4000 字符防止账本膨胀。
+  `RunRecord`/`record_run()`/`track_run()`/`EntrypointRunResult` 均
+  已同步更新，手动触发的 HTTP 响应与 CLI `projects status`/`ledger`/
+  `run` 三个子命令都已把 `detail` 透出。`stock_watch` 的
+  `run_kline_batch.py` 作为示范用法做了同步改造（候选池全部标的失败
+  时记录逐个标的的失败原因）。新增/修改代码未新增测试文件（复用既有
+  `tests/test_external_projects_ledger_and_status.py` 等 34 个用例
+  验证 schema 变更未破坏既有行为），后续如需要更细粒度的回归覆盖，
+  可以在该测试文件里补充 `detail` 字段的专项用例。
