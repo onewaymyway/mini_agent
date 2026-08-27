@@ -1,10 +1,7 @@
-# stock_watch 独立依赖环境，与 mini_agent daemon 自身运行环境解耦
-# （呼应 external_projects_workspace_plan.md 原则二）
-
-akshare>=1.14.0          # 免费 A 股/ETF 行情、K 线、公告、新闻、问财选股封装
+akshare>=1.14.0
 pandas>=2.0.0
-matplotlib>=3.7.0        # K 线图绘制（mplfinance 更专业，若环境允许可替换）
-mplfinance>=0.12.10b0    # 专业 K 线图（candlestick），akshare 官方示例常用搭配
+matplotlib>=3.7.0
+mplfinance>=0.12.10b0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
