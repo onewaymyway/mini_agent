@@ -419,3 +419,22 @@ stock_watch 的业务逻辑，不是框架能力。
   全部通过。**依然没有在真实网络下验证** `pywencai` 这条路径本身能
   不能跑通（受限于本环境访问不了 iwencai.com、也没装 Node.js）——
   需要用户自己在真实环境 `pip install pywencai` 后跑一次确认。
+- 2026-08-27（续3）：用户要求把 `STOCK_WATCH_IWENCAI_COOKIE` 环境变量
+  改成配置文件方式（更符合项目其它配置的一贯风格，也更方便在有 GUI
+  的机器上维护）。改动：
+  - 新增 `config/secrets.local.yaml`（**已加入 `.gitignore`**，不会被
+    提交）专门存这类敏感令牌，跟主配置 `watchlist.yaml` 分开，避免
+    改主配置时不小心把 cookie 一起提交；同时新增被跟踪的模板文件
+    `config/secrets.local.yaml.example`，`cp` 改名即可使用
+  - `config.py::WatchlistConfig` 新增 `secrets` 字段与
+    `iwencai_cookie` property；`load_config()` 新增 `secrets_path`
+    参数（默认 `DEFAULT_SECRETS_PATH`），文件不存在时静默返回空，不
+    报错（跟主配置文件的容错风格一致）
+  - `data_sources.py` 去掉了 `os.environ` 读取，改成模块级
+    `set_iwencai_cookie(cookie)` setter，由 `run_screener.py` 的
+    `main()` 加载完 `WatchlistConfig` 后调用一次注入；`_fetch_iwencai_
+    web()` 401 时的提示信息同步改成指向配置文件而不是环境变量
+  - 验证了 `load_config()` 正确读到 `secrets.local.yaml` 里的
+    `iwencai_cookie`，文件不存在时返回 `None`；`_fetch_iwencai_web()`
+    的手动令牌路径、"令牌已失效"提示、"未配置"提示三条消息都指向了
+    正确的配置文件位置。`stock_watch/tests/` 43 个既有测试全部通过

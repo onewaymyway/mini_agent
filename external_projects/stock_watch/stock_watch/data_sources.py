@@ -16,7 +16,6 @@ raise 明确异常而不是静默返回空数据——调用方（entrypoints）
 from __future__ import annotations
 
 import logging
-import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -74,18 +73,39 @@ def _is_unauthorized(exc: DataSourceError) -> bool:
 #      跑通那段 JS 算出 token，随依赖更新维护，不需要我们自己跟进对方
 #      每次改混淆逻辑）——检测到已安装时优先使用。
 #   2. 用户自己在浏览器登录/访问问财后，从开发者工具里复制当前有效的
-#      `hexin-v` cookie 值，通过环境变量 `STOCK_WATCH_IWENCAI_COOKIE`
-#      配置给本项目直接复用——这不是"破解"，只是把用户自己浏览器会话
-#      里已经合法拿到的令牌接过来用，但令牌会过期，需要用户自己定期
-#      更新这个环境变量（没有自动刷新能力）。
+#      `hexin-v` cookie 值，写进 `config/secrets.local.yaml` 的
+#      `iwencai_cookie` 字段（该文件已被 `.gitignore` 排除，不会被提交
+#      进版本库，见 `config.py::DEFAULT_SECRETS_PATH` 和
+#      `config/secrets.local.yaml.example` 模板）——这不是"破解"，只是
+#      把用户自己浏览器会话里已经合法拿到的令牌接过来用，但令牌会过
+#      期，需要用户自己定期更新这个文件，没有自动刷新能力。
 # 两条路都不满足时，走原来的"首页预热"逻辑兜底（万一对方哪天把验证
 # 降级回了简单 Set-Cookie 形式，这段代码不需要改就能重新工作），但会
 # 明确提示这两个真正可行的解法，而不是让人对着一句"401"发懵。
-_IWENCAI_COOKIE_ENV = "STOCK_WATCH_IWENCAI_COOKIE"
+#
+# 手动令牌值由 entrypoint 在启动时通过 `set_iwencai_cookie()` 从
+# `WatchlistConfig.iwencai_cookie`（即 `secrets.local.yaml`）注入进来
+# ——`data_sources.py` 本身不读配置文件，读配置是 `config.py` 的职责，
+# 这里只保存调用方传进来的值，保持模块职责单一。
+_manual_iwencai_cookie: Optional[str] = None
 
 _iwencai_session: Optional["requests.Session"] = None
 _iwencai_session_ts: float = 0.0
 _IWENCAI_SESSION_TTL_SEC = 20 * 60  # hexin-v 实际有效期未知，20 分钟强制刷新一次兜底
+
+
+def set_iwencai_cookie(cookie: Optional[str]) -> None:
+    """entrypoint 在 `main()` 里加载完 `WatchlistConfig` 后调用一次，
+    把 `config/secrets.local.yaml` 里配置的 `iwencai_cookie` 值注入进
+    本模块（见 `run_screener.py`）。传 `None`/空字符串等价于没配置，
+    退化到首页预热兜底路径。
+    """
+    global _manual_iwencai_cookie, _iwencai_session, _iwencai_session_ts
+    _manual_iwencai_cookie = cookie or None
+    # 令牌来源变了（比如用户改完配置文件后重新跑），旧 session 里缓存
+    # 的 cookie 可能对不上新配置，清空强制下次请求重新建立。
+    _iwencai_session = None
+    _iwencai_session_ts = 0.0
 
 
 def _try_pywencai_screener(query: str, top_n: int) -> Optional[List[Dict[str, Any]]]:
@@ -111,9 +131,8 @@ def _try_pywencai_screener(query: str, top_n: int) -> Optional[List[Dict[str, An
 def _warm_up_iwencai_session() -> "requests.Session":
     session = requests.Session()
     session.headers.update({"User-Agent": _DEFAULT_UA})
-    manual_cookie = os.environ.get(_IWENCAI_COOKIE_ENV)
-    if manual_cookie:
-        session.cookies.set("v", manual_cookie)
+    if _manual_iwencai_cookie:
+        session.cookies.set("v", _manual_iwencai_cookie)
         return session
     try:
         session.get("https://www.iwencai.com/", timeout=15)
@@ -125,8 +144,8 @@ def _warm_up_iwencai_session() -> "requests.Session":
             "（该令牌由前端 JS 动态计算，不是简单的服务端 Set-Cookie，"
             "预热这条路大概率会持续 401）——建议装可选依赖 `pywencai` "
             "（pip install pywencai，需要 Node.js），或者从浏览器复制"
-            f"当前有效的 hexin-v 值，通过环境变量 {_IWENCAI_COOKIE_ENV} "
-            "手动配置"
+            "当前有效的 hexin-v 值，写进 config/secrets.local.yaml 的 "
+            "iwencai_cookie 字段手动配置"
         )
     return session
 
@@ -135,12 +154,12 @@ def _get_iwencai_session(*, force_refresh: bool = False) -> "requests.Session":
     """拿一个已经带着 `hexin-v`（或用户手动配置的等价 cookie）的
     session，按进程内缓存复用，避免每次选股查询都重新走一遍首页握手
     （问财一次 screener 运行通常要发多条自然语言查询，见
-    `run_screener.py`）。手动配置了 `STOCK_WATCH_IWENCAI_COOKIE` 时不
-    受 TTL 影响——那是用户自己维护有效期的静态值，这里没有能力判断它
+    `run_screener.py`）。手动配置了 `_manual_iwencai_cookie` 时不受
+    TTL 影响——那是用户自己维护有效期的静态值，这里没有能力判断它
     是否已经过期，强制刷新也无济于事（依然是同一个值）。
     """
     global _iwencai_session, _iwencai_session_ts
-    if os.environ.get(_IWENCAI_COOKIE_ENV):
+    if _manual_iwencai_cookie:
         if _iwencai_session is None or force_refresh:
             _iwencai_session = _warm_up_iwencai_session()
         return _iwencai_session
@@ -546,19 +565,20 @@ def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
                 logger.info("问财接口返回 401，疑似令牌无效，刷新 session 后重试一次")
                 continue
             if _is_unauthorized(exc):
-                if os.environ.get(_IWENCAI_COOKIE_ENV):
+                if _manual_iwencai_cookie:
                     raise DataSourceError(
-                        f"问财接口持续 401：环境变量 {_IWENCAI_COOKIE_ENV} "
-                        "配置的令牌看起来已失效，需要从浏览器重新复制一个"
-                        "当前有效的 hexin-v cookie 值"
+                        "问财接口持续 401：config/secrets.local.yaml 里 "
+                        "iwencai_cookie 配置的令牌看起来已失效，需要从"
+                        "浏览器重新复制一个当前有效的 hexin-v cookie 值"
                     ) from exc
                 raise DataSourceError(
                     "问财接口持续 401（hexin-v 令牌由前端 JS 动态计算，"
                     "简单的首页预热拿不到有效值）。可行的两条路：① 装可选"
                     "依赖 pywencai（pip install pywencai，需要 Node.js）"
-                    f"；② 从浏览器复制当前有效的 hexin-v cookie 值，通过"
-                    f"环境变量 {_IWENCAI_COOKIE_ENV} 手动配置（会过期，"
-                    "需要自己定期更新）"
+                    "；② 从浏览器复制当前有效的 hexin-v cookie 值，写进 "
+                    "config/secrets.local.yaml 的 iwencai_cookie 字段"
+                    "（cp 一份 secrets.local.yaml.example 改名即可，会"
+                    "过期，需要自己定期更新）"
                 ) from exc
             raise
     if text is None:  # pragma: no cover - 上面的循环要么 break 要么 raise

@@ -8,12 +8,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "watchlist.yaml"
+# 存 Cookie/令牌这类敏感值的独立文件，跟主配置分开是为了能整个文件
+# `.gitignore` 掉，不至于哪天不小心把 `watchlist.yaml` 一起提交进版本
+# 库把 cookie 也带进去。仓库里带的 `secrets.local.yaml.example` 是模板
+# （被跟踪），用户 `cp` 一份改名成 `secrets.local.yaml` 后按需填值。
+DEFAULT_SECRETS_PATH = PROJECT_ROOT / "config" / "secrets.local.yaml"
 DATA_DIR = PROJECT_ROOT / "data"
 REPORTS_DIR = PROJECT_ROOT / "reports"
 POOL_SNAPSHOTS_DIR = DATA_DIR / "pool_snapshots"
@@ -46,6 +51,7 @@ class WatchlistConfig:
     kline: Dict[str, Any] = field(default_factory=dict)
     outcomes: Dict[str, Any] = field(default_factory=dict)
     signals: Dict[str, Any] = field(default_factory=dict)
+    secrets: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def max_pool_size(self) -> int:
@@ -105,10 +111,25 @@ class WatchlistConfig:
         整个候选池做行情+公告+新闻抓取，请求量过大）。"""
         return int(self.signals.get("scan_max_targets", 20))
 
+    @property
+    def iwencai_cookie(self) -> Optional[str]:
+        """问财（iwencai）`hexin-v` 令牌的手动配置值，来自
+        `config/secrets.local.yaml` 的 `iwencai_cookie` 字段（不是
+        `watchlist.yaml`——见该文件顶部关于为什么单独拆一个文件的说明）。
+        没配置时返回 `None`，`data_sources.py` 据此退化到其他策略。"""
+        value = self.secrets.get("iwencai_cookie")
+        return str(value) if value else None
 
-def load_config(path: Path = DEFAULT_CONFIG_PATH) -> WatchlistConfig:
+
+def _load_secrets(path: Path) -> Dict[str, Any]:
     if not path.exists():
-        return WatchlistConfig()
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def load_config(path: Path = DEFAULT_CONFIG_PATH, secrets_path: Path = DEFAULT_SECRETS_PATH) -> WatchlistConfig:
+    if not path.exists():
+        return WatchlistConfig(secrets=_load_secrets(secrets_path))
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     seeds = [SeedStock(**item) for item in raw.get("seeds", []) or []]
     return WatchlistConfig(
@@ -119,6 +140,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> WatchlistConfig:
         kline=raw.get("kline", {}) or {},
         outcomes=raw.get("outcomes", {}) or {},
         signals=raw.get("signals", {}) or {},
+        secrets=_load_secrets(secrets_path),
     )
 
 

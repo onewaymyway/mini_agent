@@ -6,3 +6,6 @@ reports/**/*.png
 .agent/
 __pycache__/
 *.pyc
+# 敏感令牌（问财 hexin-v cookie 等），见 config.py::DEFAULT_SECRETS_PATH
+# 和 config/secrets.local.yaml.example。这个文件本身不应该被提交。
+config/secrets.local.yaml

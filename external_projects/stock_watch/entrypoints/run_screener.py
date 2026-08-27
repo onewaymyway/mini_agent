@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 import _common  # noqa: F401
 
 from stock_watch.config import REPORTS_DIR, ensure_dirs, load_config
+from stock_watch.data_sources import set_iwencai_cookie
 from stock_watch.report import render_screener_report
 from stock_watch.screener import run_queries
 
@@ -27,6 +28,10 @@ logger = logging.getLogger("stock_watch.screener_entry")
 def main() -> int:
     ensure_dirs()
     cfg = load_config()
+    # config/secrets.local.yaml 的 iwencai_cookie（如果配了）在这里
+    # 一次性注入进 data_sources 模块，问财相关请求会自动用上，见
+    # data_sources.py 里"问财 hexin-v 令牌"小节的说明。
+    set_iwencai_cookie(cfg.iwencai_cookie)
 
     if len(sys.argv) > 1:
         queries = [" ".join(sys.argv[1:])]
