@@ -192,6 +192,11 @@ client.py`）✅已完成
   UI 全链路接线，`stock_analysis` 补上 `code`/`name` 参数声明作为落地
   案例；新增 16 个测试用例，六个外部项目相关测试文件共 110 个用例
   全部通过。
+- 2026-08-27：使用者实测反馈"填参数的时候看板会卡一下"——根因是裸
+  `st.text_input` 每次失焦/回车触发整页重跑，连带重新请求
+  `GET /v1/self/external_projects`。修复：参数输入框 + 触发按钮包进
+  `st.form`，改用 `st.form_submit_button` 提交，输入过程中不再重跑，
+  只有点「▶️ 触发」才发请求。纯前端交互修复，未涉及后端/测试改动。
 
 ### 阶段 5：手动触发改为按钮列表（使用者反馈驱动）
 
@@ -247,7 +252,9 @@ client.py`）✅已完成
       逐个渲染文本输入框（必填/可选标注 + help 文案），点「▶️ 触发」
       前先在前端做一次"必填项是否为空"的粗校验（避免明知会失败还发
       请求），真正的参数合法性判断仍然全部在后端
-      `build_cmd_with_params()`，前端不重复实现判断逻辑。
+      `build_cmd_with_params()`，前端不重复实现判断逻辑。参数输入框
+      + 触发按钮包在一个 `st.form` 里，不是裸的 `st.text_input` +
+      `st.button`——见下方"追加修复"，这是使用者实测后反馈才补上的。
 - [x] `external_projects/stock_watch/project.yaml`：给 `stock_analysis`
       补上 `params`（`code` 必填 + `name` 可选）作为落地验证案例——这
       也是本次改动能直接生效的第一个真实受益 entrypoint。
@@ -262,3 +269,15 @@ client.py`）✅已完成
       全部通过，无回归。
 - [x] 文档：`docs/kanban-dashboard-guide.md`「🗂️ 外部项目 Tab」一节
       补充参数输入框的说明。
+- [x] **追加修复（使用者实测反馈）**：原实现是裸的 `st.text_input` +
+      `st.button`，而 Streamlit 的 `st.text_input` 每次失焦/回车都会
+      触发整个脚本重跑——包括 `render_external_projects_tab()` 顶部的
+      `client.external_projects_status()` 网络请求，导致"填参数的时候
+      看板卡一下"。修复：把每个 entrypoint 的参数输入框 + 「▶️ 触发」
+      按钮一起包进 `st.form(key=f"ext_trigger_form_{name}_{ep_key}")`，
+      表单内控件变化不再触发重跑，只有点击
+      `st.form_submit_button("▶️ 触发")` 提交表单时才真正发一次
+      `trigger_run` 请求、才需要刷新——符合"只有真正点触发才需要提交
+      请求刷新"的预期。没有声明 `params` 的 entrypoint 也套上同一个
+      `st.form`（此时表单里只有一个提交按钮），保持所有 entrypoint
+      行为一致，不用按"有没有参数"分两套代码路径。

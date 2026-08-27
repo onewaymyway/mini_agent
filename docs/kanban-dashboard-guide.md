@@ -521,9 +521,13 @@ cron job 后等待其按 cadence 自动触发。
     plan.md` 阶段6，如 `stock_watch` 的 `stock_analysis` 需要股票
     代码）：`project.yaml` 里在该 entrypoint 下声明 `params` 列表
     （`name`/`required`/`default`/`help`），看板会在「▶️ 触发」按钮
-    上方按声明逐个渲染文本输入框（必填/可选标注 + help 说明文字），
-    点击触发前前端先做一次"必填项是否为空"的粗校验；真正的参数
-    合法性判断（缺必填/传了未声明的参数名）全部在后端
+    上方按声明逐个渲染文本输入框（必填/可选标注 + help 说明文字）。
+    这组输入框和触发按钮包在一个 `st.form` 里——填参数时只是在表单
+    内部改值，不会触发整页重跑（也就不会重新请求
+    `GET /v1/self/external_projects` 造成"打字就卡一下"），只有点
+    「▶️ 触发」（`st.form_submit_button`）提交表单时才真正发一次请求、
+    才需要刷新。提交后前端先做一次"必填项是否为空"的粗校验；真正的
+    参数合法性判断（缺必填/传了未声明的参数名）全部在后端
     `manifest.py::build_cmd_with_params()` 完成——按声明顺序把输入框
     的值拼成位置参数（自动做 shell 转义）追加在 `cmd` 后面，与
     entrypoint 脚本读 `sys.argv[1:]` 的既有写法直接对齐，不需要改

@@ -8078,28 +8078,31 @@ def render_external_projects_tab(client: AgentClient):
                     schedule_txt = f" · {ep['schedule']}" if ep.get("schedule") else ""
                     st.caption(f"`{ep_key}`{schedule_txt}\n\n{ep.get('cmd', '')}")
 
-                    # [external_projects_kanban_integration_plan.md 阶段6]
-                    # 按 project.yaml 里该 entrypoint 声明的 params 逐个
-                    # 渲染输入框——之前没有地方能传参，需要参数的
-                    # entrypoint（如 stock_analysis 的 `code`）只能靠
-                    # 命令行手动传。输入框的值原样收集成 dict，交给后端
-                    # `build_cmd_with_params()` 校验/拼接，前端不做任何
-                    # 参数合法性判断，避免和后端校验逻辑产生分歧。
-                    param_values: dict[str, str] = {}
-                    for p in ep_params:
-                        p_name = p.get("name", "")
-                        required = p.get("required", True)
-                        default = p.get("default") or ""
-                        help_text = p.get("help") or ""
-                        label = f"{p_name}{'（必填）' if required else '（可选）'}"
-                        param_values[p_name] = st.text_input(
-                            label,
-                            value=default,
-                            help=help_text or None,
-                            key=f"ext_trigger_param_{name}_{ep_key}_{p_name}",
-                        )
+                    # [external_projects_kanban_integration_plan.md 阶段6
+                    # 追加修复] 参数输入框必须包在 st.form 里：裸的
+                    # st.text_input 每次失焦/回车都会触发整个脚本重跑
+                    # （包括本函数顶部的 client.external_projects_status()
+                    # 网络请求），使用者反馈"填参数的时候看板会卡一下"
+                    # 正是这个原因。放进 st.form 后，表单内控件的变化不会
+                    # 触发重跑，只有点「▶️ 触发」（st.form_submit_button）
+                    # 才提交一次，此时才应该发请求、才应该刷新。
+                    with st.form(key=f"ext_trigger_form_{name}_{ep_key}"):
+                        param_values: dict[str, str] = {}
+                        for p in ep_params:
+                            p_name = p.get("name", "")
+                            required = p.get("required", True)
+                            default = p.get("default") or ""
+                            help_text = p.get("help") or ""
+                            label = f"{p_name}{'（必填）' if required else '（可选）'}"
+                            param_values[p_name] = st.text_input(
+                                label,
+                                value=default,
+                                help=help_text or None,
+                                key=f"ext_trigger_param_{name}_{ep_key}_{p_name}",
+                            )
+                        submitted = st.form_submit_button("▶️ 触发")
 
-                    if st.button("▶️ 触发", key=f"ext_trigger_btn_{name}_{ep_key}"):
+                    if submitted:
                         missing = [
                             p.get("name", "")
                             for p in ep_params
