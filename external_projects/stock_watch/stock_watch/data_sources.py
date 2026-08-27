@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -348,6 +349,38 @@ def fetch_price_change_pct(code: str, entry_type: str, start_date: str, end_date
     if first_close == 0:
         raise DataSourceError(f"{code} 起始收盘价为 0，无法计算涨跌幅")
     return (last_close - first_close) / first_close * 100.0
+
+
+def fetch_latest_close(code: str, entry_type: str) -> float:
+    """返回某标的最近一个交易日的收盘价。
+
+    供候选池状态机使用（`stock_watch_pool_state_tracking_and_kanban_plan.md`
+    阶段2）：状态变更时记录 `price_at_entry`、每日跟踪任务取当前价格
+    算区间涨跌。只取最近约一周的日K，避免像 `fetch_kline()` 那样拉一
+    整段历史（这里只需要最后一条），复用同样的 akshare 接口选择逻辑。
+    """
+    ak = _import_akshare()
+    end = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+    try:
+        if entry_type == "etf":
+            df = ak.fund_etf_hist_em(
+                symbol=code, period="daily", start_date=start, end_date=end, adjust="",
+            )
+        else:
+            df = ak.stock_zh_a_hist(
+                symbol=code, period="daily", start_date=start, end_date=end, adjust="",
+            )
+    except Exception as exc:  # noqa: BLE001
+        raise DataSourceError(f"获取 {code} 最新收盘价失败: {exc}") from exc
+
+    if df is None or df.empty:
+        raise DataSourceError(f"{code} 近期没有行情数据（可能停牌/退市）")
+
+    close_col = "收盘" if "收盘" in df.columns else "close"
+    if close_col not in df.columns:
+        raise DataSourceError(f"{code} 行情数据缺少收盘价列，akshare 返回列名可能已变化")
+    return float(df.iloc[-1][close_col])
 
 
 def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:

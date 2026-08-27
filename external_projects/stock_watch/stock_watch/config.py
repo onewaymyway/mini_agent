@@ -19,6 +19,9 @@ REPORTS_DIR = PROJECT_ROOT / "reports"
 POOL_SNAPSHOTS_DIR = DATA_DIR / "pool_snapshots"
 OUTCOME_LEDGER_PATH = DATA_DIR / "outcome_ledger.jsonl"
 SOURCE_HEALTH_PATH = DATA_DIR / "source_health.jsonl"
+# 阶段2（stock_watch_pool_state_tracking_and_kanban_plan.md）：状态区间
+# 跟踪的结构化产出物，供未来看板直接读取，不强迫看板解析 Markdown 表格。
+POOL_TRACKING_LATEST_PATH = DATA_DIR / "pool_tracking_latest.json"
 
 
 @dataclass
@@ -101,3 +104,4 @@ def ensure_dirs() -> None:
     (REPORTS_DIR / "candidate_pool").mkdir(parents=True, exist_ok=True)
     (REPORTS_DIR / "screener").mkdir(parents=True, exist_ok=True)
     (REPORTS_DIR / "analysis").mkdir(parents=True, exist_ok=True)
+    (REPORTS_DIR / "pool_tracking").mkdir(parents=True, exist_ok=True)

@@ -6,11 +6,12 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from stock_watch.analysis import StockAnalysis
-from stock_watch.candidate_pool import CandidateEntry
+from stock_watch.candidate_pool import CandidateEntry, StateReturn
 from stock_watch.screener import ScreenResult
 
 
@@ -24,11 +25,11 @@ def render_candidate_pool_report(
     pool: List[CandidateEntry], out_path: Path, *, generated_at: str
 ) -> Path:
     lines = [f"# 候选池报告 — {generated_at}", "", f"共 {len(pool)} 只标的\n"]
-    lines.append("| 代码 | 名称 | 类型 | 分数 | 来源 | 备注 |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| 代码 | 名称 | 类型 | 状态 | 分数 | 来源 | 备注 |")
+    lines.append("|---|---|---|---|---|---|---|")
     for e in pool:
         lines.append(
-            f"| {e.code} | {e.name} | {e.type} | {e.score:.1f} | "
+            f"| {e.code} | {e.name} | {e.type} | {e.state} | {e.score:.1f} | "
             f"{','.join(e.sources)} | {';'.join(e.reasons)[:60]} |"
         )
     return _write(out_path, "\n".join(lines) + "\n")
@@ -132,3 +133,78 @@ def render_outcome_report(
         lines.append(f"| {r.code} | {r.name} | {r.score_at_snapshot:.1f} | {change_str} | {note} |")
 
     return _write(out_path, "\n".join(lines) + "\n")
+
+
+def render_pool_tracking_report(
+    tracked: List[Tuple[CandidateEntry, Optional[float], List[StateReturn], Optional[str]]],
+    out_path: Path,
+    *,
+    generated_at: str,
+) -> Path:
+    """候选池状态区间跟踪报告（`stock_watch_pool_state_tracking_and_kanban_plan.md`
+    阶段2）：每只标的当前状态、当前价格，以及历史每一段状态各自的涨跌幅。
+
+    `tracked` 每项是 `(entry, current_price, state_returns, price_error)`，
+    `price_error` 为 `None` 表示本次取价成功，否则是取价失败的原因说明
+    （单只失败不影响其它标的继续渲染，与项目既有的容错风格一致）。
+    """
+    lines = [f"# 候选池状态跟踪报告 — {generated_at}", "", f"共 {len(tracked)} 只标的\n"]
+    for entry, current_price, state_returns, price_error in tracked:
+        price_str = f"{current_price:.2f}" if current_price is not None else "（取价失败）"
+        lines.append(f"## {entry.name}({entry.code}) — 当前状态: {entry.state}，当前价: {price_str}")
+        if price_error:
+            lines.append(f"> 取价失败: {price_error}")
+        lines.append("")
+        lines.append("| 状态 | 进入时间 | 进入时价格 | 已持续天数 | 区间涨跌幅(%) | 备注 |")
+        lines.append("|---|---|---|---|---|---|")
+        for sr in state_returns:
+            price_at_entry_str = f"{sr.price_at_entry:.2f}" if sr.price_at_entry is not None else "（无）"
+            change_str = f"{sr.change_pct:.2f}" if sr.change_pct is not None else "（无数据）"
+            lines.append(
+                f"| {sr.state} | {sr.entered_at} | {price_at_entry_str} | "
+                f"{sr.days_in_state} | {change_str} | |"
+            )
+        lines.append("")
+    return _write(out_path, "\n".join(lines) + "\n")
+
+
+def write_pool_tracking_json(
+    tracked: List[Tuple[CandidateEntry, Optional[float], List[StateReturn], Optional[str]]],
+    out_path: Path,
+    *,
+    generated_at: str,
+) -> Path:
+    """结构化产出物，供未来的看板直接读取（阶段4），不强迫看板解析
+    Markdown 表格。字段与 `render_pool_tracking_report()` 展示的信息
+    一一对应。
+    """
+    payload = {
+        "generated_at": generated_at,
+        "entries": [
+            {
+                "code": entry.code,
+                "name": entry.name,
+                "type": entry.type,
+                "state": entry.state,
+                "score": entry.score,
+                "current_price": current_price,
+                "price_error": price_error,
+                "state_returns": [
+                    {
+                        "state": sr.state,
+                        "entered_at": sr.entered_at,
+                        "price_at_entry": sr.price_at_entry,
+                        "days_in_state": sr.days_in_state,
+                        "change_pct": sr.change_pct,
+                    }
+                    for sr in state_returns
+                ],
+            }
+            for entry, current_price, state_returns, price_error in tracked
+        ],
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(out_path)
+    return out_path

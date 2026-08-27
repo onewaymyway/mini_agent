@@ -33,6 +33,27 @@ entrypoints:
     cmd: "python entrypoints/reconcile_outcomes.py"
     schedule: "cron: 0 18 * * 1"     # 每周一盘后，核对一周前候选池快照的实际表现
     timeout_sec: 600
+  # 以下两个 entrypoint 见 next_doc/stock_watch_pool_state_tracking_and_
+  # kanban_plan.md 阶段2：候选池状态机 + 按状态区间的涨跌跟踪。
+  pool_tracking:
+    cmd: "python entrypoints/run_pool_tracking.py"
+    schedule: "cron: 45 15 * * 1-5"  # 盘后，晚于 kline_batch(15:30)，避免抢锁
+    timeout_sec: 600
+  change_pool_state:
+    cmd: "python entrypoints/change_pool_state.py"
+    # 无 schedule：按需触发（看板「变更状态」按钮或人工调用），不适合
+    # 定时跑——状态变更应该是显式的人工判断动作。
+    timeout_sec: 60
+    params:
+      - name: code
+        required: true
+        help: "标的代码"
+      - name: state
+        required: true
+        help: "新状态：watching/focused/buy_suggested/holding/sell_suggested/dropped"
+      - name: note
+        required: false
+        help: "变更原因（可选）"
 
 health_check:
   cmd: "python entrypoints/health.py"

@@ -17,7 +17,9 @@ from datetime import datetime, timezone
 import _common  # noqa: F401 - 引导 sys.path + 提供 tracked_run
 
 from stock_watch.candidate_pool import (
+    DEFAULT_STATE,
     apply_decay,
+    backfill_entry_price,
     enforce_max_size,
     ensure_seeds,
     load_pool,
@@ -33,7 +35,13 @@ from stock_watch.config import (
     ensure_dirs,
     load_config,
 )
-from stock_watch.data_sources import DataSourceError, fetch_eastmoney_guba_hot, fetch_eastmoney_hot_rank, fetch_xueqiu_hot_stock
+from stock_watch.data_sources import (
+    DataSourceError,
+    fetch_eastmoney_guba_hot,
+    fetch_eastmoney_hot_rank,
+    fetch_latest_close,
+    fetch_xueqiu_hot_stock,
+)
 from stock_watch.report import render_candidate_pool_report
 from stock_watch.source_health import tracked_source
 
@@ -68,6 +76,23 @@ def main() -> int:
             continue
         pool = merge_hot_items(pool, items)
         logger.info("数据源 %s 抓取到 %d 条", source_name, len(items))
+
+    # 阶段2（stock_watch_pool_state_tracking_and_kanban_plan.md）：
+    # candidate_pool.py 是纯逻辑模块，不发起网络请求，新标的进池时
+    # price_at_entry 先留空，这里统一回填一次。只查刚新建的 watching
+    # 标的（`state_history` 只有一条且价格为空），已经存在的标的不重复
+    # 查价；单只失败不影响其它标的，不影响本次抓取任务的整体退出码。
+    for entry in pool.values():
+        if (
+            entry.state == DEFAULT_STATE
+            and len(entry.state_history) == 1
+            and entry.state_history[0].price_at_entry is None
+        ):
+            try:
+                price = fetch_latest_close(entry.code, entry.type)
+                backfill_entry_price(entry, price)
+            except DataSourceError as exc:
+                logger.info("回填 %s(%s) 进池价格失败（不影响本次抓取）: %s", entry.name, entry.code, exc)
 
     pool = apply_decay(pool, decay_days=cfg.score_decay_days)
     pool = enforce_max_size(pool, cfg.max_pool_size)

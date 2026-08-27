@@ -17,6 +17,13 @@
    选股能力，直接抓取其筛选结果，而不是自己重新实现技术指标引擎。
 4. **个股综合分析**：抓取单个标的的历史公告、论坛帖子、相关新闻，综合
    给出一份结构化分析报告。
+5. **候选池状态跟踪**（见 `next_doc/stock_watch_pool_state_tracking_and_
+   kanban_plan.md` 阶段2）：候选池内每只标的可以被标记为
+   `watching`（观察，默认）/ `focused`（重点关注）/ `buy_suggested`
+   （建议买入）/ `holding`（已建仓）/ `sell_suggested`（建议卖出）/
+   `dropped`（已淘汰）六种状态之一，每次状态变更都记一条历史事件
+   （进入时间 + 进入时价格），每天跑一次跟踪任务算出"历史每一段状态
+   各自的区间涨跌幅"，而不只是"自纳入观察以来"这一个粗粒度数字。
 
 ## 数据源与依赖策略
 
@@ -70,22 +77,26 @@ stock_watch/
 │   ├── run_screener.py         # 功能 3：条件选股
 │   ├── run_stock_analysis.py   # 功能 4：个股综合分析
 │   ├── reconcile_outcomes.py   # 结果回溯：候选池打分 vs 实际涨跌，见持续优化机制
+│   ├── run_pool_tracking.py    # 候选池状态区间每日跟踪（阶段2，新增）
+│   ├── change_pool_state.py    # 手动变更某标的的候选池状态（阶段2，新增）
 │   ├── health.py               # project.yaml health_check 对应的探测脚本
 │   └── _common.py              # entrypoint 公共引导（sys.path、账本/积压账本降级写入）
 ├── stock_watch/                 # 项目私有库代码
 │   ├── config.py                # 观察列表 / 抓取参数配置加载
 │   ├── data_sources.py          # akshare 封装 + 网页抓取公共层（UA/重试/限速）
-│   ├── candidate_pool.py        # 候选池账本（去重/合并/评分）+ 归档快照
+│   ├── candidate_pool.py        # 候选池账本（去重/合并/评分/状态机）+ 归档快照
 │   ├── kline.py                 # K 线数据获取 + 绘图
 │   ├── screener.py              # 问财等网站选股结果抓取
 │   ├── analysis.py              # 个股综合分析（公告/帖子/新闻 → 报告）
 │   ├── outcomes.py              # 结果回溯纯逻辑：预测 vs 实际涨跌幅
 │   ├── source_health.py         # 数据源级别成败记录（细粒度信号）
-│   └── report.py                # 报告渲染（Markdown）公共函数
+│   └── report.py                # 报告渲染（Markdown）公共函数 + 状态跟踪 JSON 导出
 ├── config/
 │   └── watchlist.yaml            # 候选池种子标的 + 抓取源配置
 ├── data/                          # 候选池账本、K 线缓存（不进 git 的运行期数据）
+│   └── pool_tracking_latest.json  # 状态区间跟踪最新快照（阶段2新增，供未来看板读取）
 ├── reports/                       # 面向人的产出物：候选池报告/K 线图/选股结果/个股分析
+│   └── pool_tracking/             # 阶段2新增：每日状态区间跟踪 Markdown 报告
 └── tests/                         # 纯逻辑单元测试（mock 数据，不需要网络）
 ```
 
@@ -99,6 +110,9 @@ python entrypoints/run_hotlist_scan.py          # 功能 1
 python entrypoints/run_kline_batch.py            # 功能 2
 python entrypoints/run_screener.py "今日涨停"    # 功能 3（参数为问财自然语言查询）
 python entrypoints/run_stock_analysis.py 600519  # 功能 4（参数为标的代码）
+
+python entrypoints/run_pool_tracking.py                        # 候选池状态区间每日跟踪
+python entrypoints/change_pool_state.py 600519 focused "关注中" # 手动变更某标的状态
 ```
 
 ## 持续优化迭代（新增，见 `next_doc/stock_watch_continuous_improvement_plan.md`）
@@ -131,6 +145,8 @@ source_health.jsonl`（`stock_watch/source_health.py`），供判断"哪个
 | `screener` | `reports/screener/<时间戳 YYYYMMDD_HHMMSS>.md` | 每次触发一份新文件 |
 | `stock_analysis` | `reports/analysis/<代码>_<时间戳>.md` | **需要传入标的代码作为参数**，见下方说明 |
 | `reconcile_outcomes` | `reports/outcomes/<快照日期>_reconciled_<截止日期>.md` | 结果回溯报告 |
+| `pool_tracking` | `reports/pool_tracking/<日期 YYYYMMDD>.md` | 状态区间跟踪报告；同时落一份结构化 `data/pool_tracking_latest.json` |
+| `change_pool_state` | 无报告文件，直接改 `data/candidate_pool.json` | 状态变更是否成功看执行账本退出码 |
 
 `stock_analysis` 依赖位置参数（`sys.argv[1]` 是代码、`sys.argv[2]`
 可选是名称），命令行直接不带参数运行会在生成任何报告之前就以退出码 2
@@ -152,6 +168,27 @@ plan.md` 阶段6）。
 "跑没跑成功"，`reports/` 存"跑出来的实际内容"）——看板卡片「最近5条
 执行记录」/「执行账本」区块就是读这份文件，命令行也可以
 `mini-agent projects ledger stock_watch` 直接查看。
+
+## 候选池状态跟踪（新增，见 `next_doc/stock_watch_pool_state_tracking_and_kanban_plan.md`）
+
+除了"打分排序"这一维度，候选池内每个标的还有一个独立的状态字段
+（`CandidateEntry.state`），六选一：`watching`（默认）/ `focused`/
+`buy_suggested`/`holding`/`sell_suggested`/`dropped`。每次状态变更都
+追加一条 `state_history` 事件（进入时间 + 进入时价格 + 备注），供
+`entrypoints/run_pool_tracking.py` 每天算出"历史每一段状态各自的区间
+涨跌幅"，而不只是笼统的"自纳入观察以来涨了多少"。
+
+- 手动变更状态：`python entrypoints/change_pool_state.py <代码> <状态> [备注]`，
+  也是看板未来「变更状态」按钮的落地对象（`project.yaml` 已声明
+  `params`，看板"手动触发"会自动渲染成输入框）。
+- 已经进入 `watching` 之外状态的标的不会被 `hotlist_scan` 的热度衰减
+  自动淘汰（见 `candidate_pool.py::enforce_max_size`），需要人工显式
+  操作降级到 `dropped`。
+- 状态区间跟踪的结构化产出物：`data/pool_tracking_latest.json`
+  （未来看板直接读，不需要解析 Markdown 表格）。
+
+本阶段（阶段2）尚未做的：自主挖掘信号层（不依赖外部网站结论的历史
+行情/公告/新闻分析）与真正的可视化看板，规划见上述文档阶段3/4。
 
 ## 如何接入 daemon（可选）
 
