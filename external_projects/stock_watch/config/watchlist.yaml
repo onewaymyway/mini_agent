@@ -38,3 +38,14 @@ kline:
 outcomes:
   lookback_days: 7          # 结果回溯：拿多少天前的候选池快照去核对后续涨跌
   notable_gain_pct: 15.0    # 涨跌幅绝对值超过这个百分比，记入改进积压账本供 review 参考
+
+# 阶段3自算信号（见 next_doc/stock_watch_pool_state_tracking_and_kanban_
+# plan.md 阶段3）：不依赖外部网站结论，自己分析历史行情/公告/新闻。
+# 默认全部关闭，需要显式打开，避免候选池分数/理由的语义突然变化。
+signals:
+  price_enabled: false          # 历史行情技术指标（MA金叉死叉/放量突破/布林带突破）
+  announcement_enabled: false   # 公告结构化分类（业绩预增/回购/减持等关键词分类）
+  news_enabled: false           # 新闻舆情统计（关键词词频 + 新闻数量突增）
+  scan_max_targets: 20          # run_signal_scan.py 每次最多分析多少只标的
+  announcement_weights: {}       # 可覆盖 announcement_signals.py 里各分类的默认分值
+    # 示例：earnings_beat: 8.0

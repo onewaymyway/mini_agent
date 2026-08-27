@@ -24,6 +24,11 @@
    `dropped`（已淘汰）六种状态之一，每次状态变更都记一条历史事件
    （进入时间 + 进入时价格），每天跑一次跟踪任务算出"历史每一段状态
    各自的区间涨跌幅"，而不只是"自纳入观察以来"这一个粗粒度数字。
+6. **自主挖掘信号**（见同一文档阶段3，默认关闭）：不依赖问财/股吧热榜
+   等外部网站的现成结论，自己分析候选池内标的的历史行情（MA金叉死叉/
+   放量突破/布林带压缩后突破）、公告（业绩预增/回购/减持等关键词
+   分类）、新闻（词频统计 + 新闻数量突增），算出的信号与外部网站热度
+   并行累加进候选池分数，来源分开记录以保持可解释、可回溯。
 
 ## 数据源与依赖策略
 
@@ -79,6 +84,7 @@ stock_watch/
 │   ├── reconcile_outcomes.py   # 结果回溯：候选池打分 vs 实际涨跌，见持续优化机制
 │   ├── run_pool_tracking.py    # 候选池状态区间每日跟踪（阶段2，新增）
 │   ├── change_pool_state.py    # 手动变更某标的的候选池状态（阶段2，新增）
+│   ├── run_signal_scan.py      # 自主挖掘信号扫描（阶段3，新增，默认关闭）
 │   ├── health.py               # project.yaml health_check 对应的探测脚本
 │   └── _common.py              # entrypoint 公共引导（sys.path、账本/积压账本降级写入）
 ├── stock_watch/                 # 项目私有库代码
@@ -90,6 +96,10 @@ stock_watch/
 │   ├── analysis.py              # 个股综合分析（公告/帖子/新闻 → 报告）
 │   ├── outcomes.py              # 结果回溯纯逻辑：预测 vs 实际涨跌幅
 │   ├── source_health.py         # 数据源级别成败记录（细粒度信号）
+│   ├── signals.py               # 阶段3：自算信号统一接口（Signal/SignalBundle）
+│   ├── indicators.py            # 阶段3a：历史行情技术指标信号
+│   ├── announcement_signals.py  # 阶段3b：公告关键词分类信号
+│   ├── news_signals.py          # 阶段3c：新闻词频统计信号
 │   └── report.py                # 报告渲染（Markdown）公共函数 + 状态跟踪 JSON 导出
 ├── config/
 │   └── watchlist.yaml            # 候选池种子标的 + 抓取源配置
@@ -113,6 +123,7 @@ python entrypoints/run_stock_analysis.py 600519  # 功能 4（参数为标的代
 
 python entrypoints/run_pool_tracking.py                        # 候选池状态区间每日跟踪
 python entrypoints/change_pool_state.py 600519 focused "关注中" # 手动变更某标的状态
+python entrypoints/run_signal_scan.py                           # 自主挖掘信号扫描（需先在 config/watchlist.yaml 打开开关）
 ```
 
 ## 持续优化迭代（新增，见 `next_doc/stock_watch_continuous_improvement_plan.md`）
@@ -147,6 +158,7 @@ source_health.jsonl`（`stock_watch/source_health.py`），供判断"哪个
 | `reconcile_outcomes` | `reports/outcomes/<快照日期>_reconciled_<截止日期>.md` | 结果回溯报告 |
 | `pool_tracking` | `reports/pool_tracking/<日期 YYYYMMDD>.md` | 状态区间跟踪报告；同时落一份结构化 `data/pool_tracking_latest.json` |
 | `change_pool_state` | 无报告文件，直接改 `data/candidate_pool.json` | 状态变更是否成功看执行账本退出码 |
+| `signal_scan` | `reports/candidate_pool/<日期>_signal_scan.md` | 自算信号合入候选池后的快照；需先开启 `signals.*_enabled` 才会有实际内容 |
 
 `stock_analysis` 依赖位置参数（`sys.argv[1]` 是代码、`sys.argv[2]`
 可选是名称），命令行直接不带参数运行会在生成任何报告之前就以退出码 2
@@ -189,6 +201,28 @@ plan.md` 阶段6）。
 
 本阶段（阶段2）尚未做的：自主挖掘信号层（不依赖外部网站结论的历史
 行情/公告/新闻分析）与真正的可视化看板，规划见上述文档阶段3/4。
+
+## 自主挖掘信号（新增，见同一文档阶段3，默认关闭）
+
+不再单纯依赖问财/股吧热榜等外部网站的现成结论，`stock_watch/
+indicators.py`/`announcement_signals.py`/`news_signals.py` 三个模块
+分别从历史行情、公告、新闻里自己算出信号（`Signal`，见
+`stock_watch/signals.py`），通过 `candidate_pool.merge_signals()` 并行
+累加进候选池分数——是与外部网站热度独立的第二条打分通路，`entry.
+sources` 里自算信号统一带 `signal:<category>:<name>` 前缀，一眼能
+区分"自己算的"和"转发外部网站的"。
+
+- 三类信号各自受开关控制（`config/watchlist.yaml` 的
+  `signals.price_enabled`/`announcement_enabled`/`news_enabled`），
+  **默认全部关闭**，需要显式打开才生效，避免升级后候选池分数/理由
+  语义突然变化。
+- 独立入口：`python entrypoints/run_signal_scan.py`，只分析候选池内
+  已有标的（受 `signals.scan_max_targets` 限制，默认20只，优先分析
+  最近更新的标的），不做全市场扫描。
+- 公告分类的权重可在 `config/watchlist.yaml` 的
+  `signals.announcement_weights` 调整，不用改代码。
+
+本阶段（阶段3）尚未做的：真正的可视化看板，规划见上述文档阶段4。
 
 ## 如何接入 daemon（可选）
 

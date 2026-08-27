@@ -208,9 +208,12 @@ entrypoint 都遵循"部分失败不影响整体，但网络是必需前提"的�
 
 ## 3. 阶段 3：自主挖掘信号层（不依赖外部网站结论）
 
-> 本阶段设计已确认，实现分三个子阶段独立交付，互不阻塞。落地时机
-> 视用户优先级另行安排，本文档先把接口形状定下来，避免阶段 2 的
-> `reasons`/`score` 字段设计和阶段 3 的信号输出对不上。
+> 本阶段已实现（见第 6 节变更记录）。落地时选择了与设计稿一处不同的
+> 实现方式：三类信号没有接入 `run_hotlist_scan.py`，而是新增独立的
+> `entrypoints/run_signal_scan.py`——职责更清晰（"抓别人发现的热点"
+> 和"自己分析候选池内已有标的"是两件不同的事），且只分析候选池内已有
+> 标的（受 `signals.scan_max_targets` 限制），不做全市场扫描，避免
+> 行情+公告+新闻三类抓取对全市场的请求量过大。
 
 ### 3.1 信号的统一接口
 
@@ -255,12 +258,15 @@ XX 网站热榜"和"自算：MA5/MA20 金叉"这类不同来源的说明，保�
 情感分析，本阶段先用规则方法验证"这层信号有没有用"这个更基础的问题。
 
 ### 3.5 验收标准（每个子阶段独立验收）
-- [ ] `signals.py` 统一接口 + 纯逻辑单测
-- [ ] 3a 历史行情指标计算 + 单测（mock K 线 DataFrame）
-- [ ] 3b 公告分类规则 + 单测（mock 公告列表）
-- [ ] 3c 新闻统计规则 + 单测（mock 新闻列表）
-- [ ] `run_hotlist_scan.py` 接入新信号（可通过 `sources.*` 开关逐个
-      灰度开启，不强制一次性替换外部网站热度）
+- [x] `signals.py` 统一接口 + 纯逻辑单测
+- [x] 3a 历史行情指标计算 + 单测（mock K 线 DataFrame）
+- [x] 3b 公告分类规则 + 单测（mock 公告列表）
+- [x] 3c 新闻统计规则 + 单测（mock 新闻列表）
+- [x] 新增 `entrypoints/run_signal_scan.py`：独立于 `run_hotlist_scan.py`
+      的自算信号扫描入口，只分析候选池内已有标的（受
+      `signals.scan_max_targets` 限制），三类信号各自受
+      `signals.*_enabled` 开关控制，默认全部关闭（灰度开启，不强制
+      一次性替换外部网站热度）
 
 ## 4. 阶段 4：看板
 
@@ -309,3 +315,15 @@ Markdown 表格）。
   `report.render_pool_tracking_report()`、`project.yaml` 新增两个
   entrypoint 声明、`PROJECT.md` 同步更新、`tests/test_pool_state.py`
   新增单测。阶段 3/4 尚未开始实现。
+- 2026-08-27：阶段 3（自主挖掘信号层）实现完成，见
+  `stock_watch/signals.py`（`Signal`/`SignalBundle` 统一接口）、
+  `stock_watch/indicators.py`（3a 历史行情技术指标：MA金叉死叉/放量
+  突破/布林带压缩后突破）、`stock_watch/announcement_signals.py`
+  （3b 公告关键词分类）、`stock_watch/news_signals.py`（3c 新闻词频
+  统计）、`candidate_pool.merge_signals()`（自算信号与外部网站热度
+  并行的第二条打分通路）、新增 entrypoint `run_signal_scan.py`、
+  `config.py` 新增 `signal_categories_enabled`/`announcement_weights`/
+  `signal_scan_max_targets`、`config/watchlist.yaml` 新增 `signals`
+  段（默认全部关闭）、`project.yaml` 新增 `signal_scan` entrypoint
+  声明、`tests/test_signals.py` 新增单测（共 43 个测试通过）。阶段 4
+  （看板）尚未开始实现。

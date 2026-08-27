@@ -54,6 +54,14 @@ entrypoints:
       - name: note
         required: false
         help: "变更原因（可选）"
+  # 阶段3（自主挖掘信号，见同一文档阶段3）：不依赖外部网站结论，自己
+  # 分析候选池内标的的历史行情/公告/新闻。默认关闭（见 config/
+  # watchlist.yaml 的 signals.*_enabled），因此即使有 schedule 声明，
+  # 三个信号开关全关时 main() 会立即跳过、不发起任何抓取。
+  signal_scan:
+    cmd: "python entrypoints/run_signal_scan.py"
+    schedule: "cron: 0 19 * * 1-5"   # 盘后，晚于 pool_tracking(15:45)，避免抢锁
+    timeout_sec: 900
 
 health_check:
   cmd: "python entrypoints/health.py"

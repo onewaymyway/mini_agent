@@ -45,6 +45,7 @@ class WatchlistConfig:
     screener: Dict[str, Any] = field(default_factory=dict)
     kline: Dict[str, Any] = field(default_factory=dict)
     outcomes: Dict[str, Any] = field(default_factory=dict)
+    signals: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def max_pool_size(self) -> int:
@@ -80,6 +81,30 @@ class WatchlistConfig:
     def source_enabled(self, name: str) -> bool:
         return bool(self.sources.get(name, False))
 
+    @property
+    def signal_categories_enabled(self) -> Dict[str, bool]:
+        """阶段3自算信号的分类开关（`price`/`announcement`/`news`），
+        默认全部关闭——自算信号是新增能力，需要用户在
+        `config/watchlist.yaml` 里显式打开，不随升级自动生效，避免
+        候选池分数/理由的语义突然发生变化（呼应
+        `stock_watch_pool_state_tracking_and_kanban_plan.md` 阶段3
+        "可通过 sources.* 开关逐个灰度开启"的设计）。"""
+        return {
+            "price": bool(self.signals.get("price_enabled", False)),
+            "announcement": bool(self.signals.get("announcement_enabled", False)),
+            "news": bool(self.signals.get("news_enabled", False)),
+        }
+
+    @property
+    def announcement_weights(self) -> Dict[str, float]:
+        return dict(self.signals.get("announcement_weights", {}) or {})
+
+    @property
+    def signal_scan_max_targets(self) -> int:
+        """每次 `run_signal_scan.py` 最多分析多少只标的（避免无差别对
+        整个候选池做行情+公告+新闻抓取，请求量过大）。"""
+        return int(self.signals.get("scan_max_targets", 20))
+
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> WatchlistConfig:
     if not path.exists():
@@ -93,6 +118,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> WatchlistConfig:
         screener=raw.get("screener", {}) or {},
         kline=raw.get("kline", {}) or {},
         outcomes=raw.get("outcomes", {}) or {},
+        signals=raw.get("signals", {}) or {},
     )
 
 

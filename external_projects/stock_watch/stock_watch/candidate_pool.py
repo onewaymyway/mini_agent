@@ -17,6 +17,7 @@ from typing import Dict, List, Optional
 logger = logging.getLogger("stock_watch.candidate_pool")
 
 from stock_watch.data_sources import HotStockItem
+from stock_watch.signals import Signal, summarize_signal_source
 
 # 候选池状态机（次-stock_watch_pool_state_tracking_and_kanban_plan.md 阶段2）。
 # 不用 Enum：与仓库既有的"轻量 dataclass 优先"风格保持一致，且状态值本身
@@ -216,6 +217,47 @@ def merge_hot_items(
         if item.reason and item.reason not in entry.reasons:
             entry.reasons.append(item.reason)
         entry.last_seen = now
+    return pool
+
+
+def merge_signals(
+    pool: Dict[str, CandidateEntry],
+    code: str,
+    name: str,
+    signals: List[Signal],
+    *,
+    entry_type: str = "stock",
+) -> Dict[str, CandidateEntry]:
+    """把一批自算信号（阶段3：`stock_watch/indicators.py` /
+    `announcement_signals.py` / `news_signals.py` 的输出）合并进候选池。
+
+    与 `merge_hot_items()`（外部网站热度）是并行的第二条打分通路，两者
+    的分数分开累计到同一个 `entry.score` 上，但来源/理由分开记录——
+    `entry.sources` 里自算信号统一走 `signal:<category>:<name>` 前缀
+    （见 `signals.py::summarize_signal_source`），报告里能一眼区分
+    "这条来源是自己算的还是转发外部网站的"，保证可解释、可回溯。
+
+    标的不在池中时按 `entry_type` 新建（与 `merge_hot_items` 对新标的
+    的处理方式一致，包括立即写入一条 watching 状态事件）。
+    """
+    if not signals:
+        return pool
+    now = _now_iso()
+    entry = pool.get(code)
+    if entry is None:
+        entry = CandidateEntry(code=code, name=name, type=entry_type, first_seen=now)
+        entry.state_history.append(StateEvent(state=DEFAULT_STATE, entered_at=now))
+        pool[code] = entry
+
+    entry.name = entry.name or name
+    for sig in signals:
+        entry.score += sig.score
+        source = summarize_signal_source(sig.name, sig.category)
+        if source not in entry.sources:
+            entry.sources.append(source)
+        if sig.reason and sig.reason not in entry.reasons:
+            entry.reasons.append(sig.reason)
+    entry.last_seen = now
     return pool
 
 
