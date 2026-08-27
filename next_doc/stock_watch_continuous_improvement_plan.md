@@ -369,3 +369,29 @@ stock_watch 的业务逻辑，不是框架能力。
   `data/source_health.jsonl`，尚未实施），但让`entrypoint`整体失败时
   至少能看到具体原因，不用再去翻 daemon 日志。详见
   `external_projects_workspace_plan.md` 阶段 4 2026-08-27 条目。
+- 2026-08-27（续）：用户实测反馈——账本能看到详情后，定位到 `screener`
+  失败的真实原因是问财（`www.iwencai.com/customized/chart/get-robot-
+  data`）4 条查询全部返回 `401 Unauthorized`（不是网络不通/解析失败），
+  推断该接口现在要求带 `hexin-v` 反爬 cookie。已改造
+  `stock_watch/data_sources.py`：
+  - `fetch_html()` 新增可选 `session` 参数，传入时复用调用方给的
+    `requests.Session`（保留原来"不传就用一次性 `requests.get()`"的
+    行为，不影响其它调用方）
+  - 新增 `_get_iwencai_session()`/`_warm_up_iwencai_session()`：用
+    `requests.Session()` 先请求一次问财首页，让服务端按正常浏览器
+    握手流程下发 `hexin-v` cookie，session 按进程内缓存复用（20 分钟
+    强制刷新兜底），不涉及逆向任何加密算法——如果未来验证升级成必须
+    跑 JS 才能算出 token，这个办法会失效，需要换 Selenium/Playwright
+    或参考 `pywencai` 之类现成库
+  - `_fetch_iwencai_web()` 改为自己实现"最多两轮尝试，第 2 轮前强制
+    刷新令牌"的重试逻辑（新增 `_is_unauthorized()` 顺着异常链判断根因
+    是不是 HTTP 401），不复用 `fetch_html()` 默认的"对任何请求异常都
+    原样重试"语义——同一个过期令牌重试 3 次没有意义
+  - 用 mock 验证了"第一次 401 → 刷新 session → 第二次成功"这条路径；
+    `external_projects/stock_watch/tests/` 43 个既有测试全部通过
+  - **未在真实网络下验证**：本次改造所在环境无法访问
+    `iwencai.com`，用户反馈"自己有网络环境可以测"，需要用户在真实
+    环境跑一次 `projects run stock_watch screener` 确认能拿到
+    `hexin-v` 且请求成功；如果问财这次改的验证机制比"首页
+    Set-Cookie"更复杂（比如真的需要跑 JS 算 token），这个方案会仍然
+    401，需要回来换方案

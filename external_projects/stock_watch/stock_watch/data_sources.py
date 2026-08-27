@@ -46,6 +46,64 @@ def _throttle() -> None:
     _last_request_ts = time.monotonic()
 
 
+def _is_unauthorized(exc: DataSourceError) -> bool:
+    """`fetch_html()` 失败时判断根因是不是 HTTP 401（令牌失效/未授权），
+    区别于超时/连接失败等值得原样重试的问题。`fetch_html()` 抛出的
+    `DataSourceError` 用 `raise ... from last_exc` 保留了原始异常链，
+    这里顺着 `__cause__` 找 `requests.HTTPError` 的状态码。
+    """
+    cause = exc.__cause__
+    if isinstance(cause, requests.HTTPError) and cause.response is not None:
+        return cause.response.status_code == 401
+    return False
+
+
+# ── 问财（iwencai）hexin-v 令牌 ─────────────────────────────────────────
+# 2026-08-27 追加：`www.iwencai.com` 的选股结果接口现在要求带着
+# `hexin-v` 这个 cookie 才认，裸调直接 401。`hexin-v` 是同花顺系站点
+# 常见的反爬验证 cookie，正常浏览器打开首页时由服务端通过 `Set-Cookie`
+# 自动下发（不需要执行 JS 算出来）——这里用 `requests.Session()` 先走一
+# 遍同样的"打开首页"握手过程拿到这个 cookie，再复用同一个 session 发
+# 真正的数据请求。如果未来同花顺把验证升级成必须跑 JS 才能算出 token
+# 的形式，这个办法会失效，需要换成能跑 JS 的方案（Selenium/Playwright
+# headless，或参考现成的第三方库如 `pywencai` 的最新实现）。
+_iwencai_session: Optional["requests.Session"] = None
+_iwencai_session_ts: float = 0.0
+_IWENCAI_SESSION_TTL_SEC = 20 * 60  # hexin-v 实际有效期未知，20 分钟强制刷新一次兜底
+
+
+def _warm_up_iwencai_session() -> "requests.Session":
+    session = requests.Session()
+    session.headers.update({"User-Agent": _DEFAULT_UA})
+    try:
+        session.get("https://www.iwencai.com/", timeout=15)
+    except requests.RequestException as exc:
+        raise DataSourceError(f"问财首页预热失败，无法获取 hexin-v 令牌: {exc}") from exc
+    if not session.cookies.get("hexin-v"):
+        logger.warning(
+            "问财首页预热完成，但响应里没有拿到 hexin-v cookie"
+            "（反爬验证机制可能已变化），仍尝试直接请求数据接口"
+        )
+    return session
+
+
+def _get_iwencai_session(*, force_refresh: bool = False) -> "requests.Session":
+    """拿一个已经带着 `hexin-v` cookie 的 session，按进程内缓存复用，
+    避免每次选股查询都重新走一遍首页握手（问财一次 screener 运行通常
+    要发多条自然语言查询，见 `run_screener.py`）。
+    """
+    global _iwencai_session, _iwencai_session_ts
+    now = time.monotonic()
+    if (
+        force_refresh
+        or _iwencai_session is None
+        or (now - _iwencai_session_ts) > _IWENCAI_SESSION_TTL_SEC
+    ):
+        _iwencai_session = _warm_up_iwencai_session()
+        _iwencai_session_ts = now
+    return _iwencai_session
+
+
 def fetch_html(
     url: str,
     *,
@@ -53,17 +111,25 @@ def fetch_html(
     headers: Optional[Dict[str, str]] = None,
     timeout: int = 15,
     max_retries: int = 3,
+    session: Optional[requests.Session] = None,
 ) -> str:
-    """抓取网页 HTML，带 UA / 超时 / 指数退避重试 / 简单限速。"""
+    """抓取网页 HTML，带 UA / 超时 / 指数退避重试 / 简单限速。
+
+    `session`：可选，传入时用这个 `requests.Session` 发请求（复用它
+    已经带着的 cookie，比如 `_get_iwencai_session()` 预热出来的
+    `hexin-v` 令牌），不传时退化为一次性的 `requests.get()`，和改造前
+    行为一致。
+    """
     req_headers = {"User-Agent": _DEFAULT_UA}
     if headers:
         req_headers.update(headers)
 
+    client = session if session is not None else requests
     last_exc: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
         _throttle()
         try:
-            resp = requests.get(
+            resp = client.get(
                 url, params=params, headers=req_headers, timeout=timeout
             )
             resp.raise_for_status()
@@ -384,7 +450,18 @@ def fetch_latest_close(code: str, entry_type: str) -> float:
 
 
 def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
-    """问财网页版结果兜底抓取（`www.iwencai.com` 的选股结果接口）。"""
+    """问财网页版结果兜底抓取（`www.iwencai.com` 的选股结果接口）。
+
+    2026-08-27 追加：这个接口需要带着 `hexin-v` cookie 才认，裸调（只带
+    UA/Referer）会被判定成未授权爬虫请求，直接 401（见
+    `stock_watch_continuous_improvement_plan.md` 变更记录同日条目里的
+    实测日志）。`hexin-v` 由 `_get_iwencai_session()` 预热首页请求拿到、
+    按 session 缓存复用；这里没有直接调用通用的 `fetch_html()` 默认重试，
+    是因为通用重试逻辑（对任何 RequestException 都指数退避重试同一个
+    请求）对"令牌过期"这类 401 没有意义——同一个过期令牌重试 3 次结果
+    一样，真正有用的动作是刷新令牌后再试，所以这里自己实现"最多整体
+    尝试两轮，第 2 轮前强制刷新令牌"的逻辑。
+    """
     url = "https://www.iwencai.com/customized/chart/get-robot-data"
     payload = {
         "query": query,
@@ -394,7 +471,22 @@ def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
         "source": "Ths_iwencai_Xuangu",
         "version": "2.0",
     }
-    text = fetch_html(url, params=payload, headers={"Referer": "https://www.iwencai.com/"})
+    headers = {"Referer": "https://www.iwencai.com/"}
+
+    text: Optional[str] = None
+    for attempt in (1, 2):
+        session = _get_iwencai_session(force_refresh=(attempt == 2))
+        try:
+            text = fetch_html(
+                url, params=payload, headers=headers, session=session, max_retries=1,
+            )
+            break
+        except DataSourceError as exc:
+            if attempt == 1 and _is_unauthorized(exc):
+                logger.info("问财接口返回 401，疑似 hexin-v 令牌过期，刷新 session 后重试一次")
+                continue
+            raise
+
     import json
 
     try:
