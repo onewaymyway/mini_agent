@@ -460,3 +460,29 @@ stock_watch 的业务逻辑，不是框架能力。
   `_write_cookie_to_secrets()` 两个纯逻辑函数用单元测试验证过（cookie
   查找、文件读写不覆盖其它字段），但"打开真实浏览器 → 检测到 cookie"
   这条端到端路径需要用户自己验证。
+- 2026-08-27（续5）：把 `tools/fetch_iwencai_cookie.py` 从 Playwright
+  改成 CDP（Chrome DevTools Protocol），跟 mini_agent 仓库里
+  `.claude/skills/browser-cdp` 这套浏览器自动化机制保持同样的思路——
+  直接用 Chrome 自带的 `--remote-debugging-port` 连接**用户已经在用的
+  真实 Chrome**（不像 Playwright 那样需要额外下载一份独立的 Chromium
+  内核，还跟用户已登录的会话是两码事）。
+  没有直接 import `.claude/skills/browser-cdp` 里的模块——那会让
+  stock_watch 硬依赖主仓库里一个具体路径下的 skill，违反 PROJECT.md
+  里"完全自包含、可独立移动到任意路径/独立 git 仓库"的设计前提。改为
+  自己实现了一份不到 200 行的最小 CDP 客户端（tab 发现 + WebSocket
+  命令收发 + `Network.getCookies`），只依赖通用的 `requests` 和
+  `websocket-client` 两个库，跟该 skill 底层用的是同一套协议、同一个
+  心智模型，只是不共享代码，用户不需要装 Playwright 那份独立浏览器
+  内核了。
+  支持该 skill 文档里"场景 A/B"两种连接方式：默认 `--port 9222` 假设
+  用户已经用调试端口手动打开 Chrome（保留已有登录态，问财如果之前
+  登录过可能不需要再验证）；`--spawn` 让脚本自己拉起一个带独立临时
+  profile 的新实例（不碰用户默认 profile，但每次都要重新过验证）。
+  验证方式：搭了一个假的 CDP 服务器（HTTP `/json/list` + WebSocket
+  应答 `Page.enable`/`Network.enable`/`Page.navigate`/
+  `Network.getCookies`，前两次轮询返回空 cookie、第三次返回带
+  `hexin-v` 的 cookie 模拟"用户还在验证中，过一会儿才出现"），跑通了
+  "连接 → 打开页面 → 轮询检测到 cookie → 写入配置文件"完整链路，
+  `stock_watch/tests/` 43 个既有测试全部通过。**依然没有在真实 Chrome
+  下验证**——本环境没有可显示窗口的桌面环境，需要用户自己跑一遍确认
+  真实浏览器的 CDP 消息格式跟这里假设的完全一致。

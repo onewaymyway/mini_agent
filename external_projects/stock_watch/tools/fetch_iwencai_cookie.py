@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""tools/fetch_iwencai_cookie.py — 打开一个真实浏览器窗口，让用户手动
-完成问财（iwencai）的登录/验证，自动检测到 `hexin-v` cookie 后写进
-`config/secrets.local.yaml`。
+"""tools/fetch_iwencai_cookie.py — 通过 Chrome DevTools Protocol (CDP)
+连接一个真实 Chrome，让用户手动完成问财（iwencai）的登录/验证，自动
+检测到 `hexin-v` cookie 后写进 `config/secrets.local.yaml`。
 
 背景：`data_sources.py` 里"问财 hexin-v 令牌"小节说明过，这个令牌是
 前端一段混淆 JS 动态算出来的，不是简单的服务端 Set-Cookie，本项目
@@ -12,42 +12,204 @@ JS、自动算出正确的令牌——用户只要用真实浏览器打开一次
 用户自己要做的事（如果网站要求）跟平时用浏览器访问问财完全一样，不
 存在这个脚本代替用户"骗过"验证的情况。
 
+2026-08-27 改用 CDP 而不是 Playwright：跟 mini_agent 仓库里
+`.claude/skills/browser-cdp` 这套浏览器自动化机制保持同样的思路——
+直接用 Chrome 自带的 `--remote-debugging-port` + DevTools Protocol
+连接**用户已经在用的真实 Chrome**，不需要额外装一个独立的 Chromium
+内核（Playwright 的 `playwright install` 会下载一份跟系统 Chrome
+分开的浏览器，重且跟用户已登录的会话是两码事）。这里没有直接 import
+`.claude/skills/browser-cdp` 里的模块，是因为 stock_watch 按设计是
+"完全自包含、可独立移动到任意路径/独立 git 仓库"的外部项目（见
+PROJECT.md），硬依赖主仓库里一个具体路径下的 skill 会破坏这个前提；
+所以这里用不到 200 行自己实现了一份足够用的最小 CDP 客户端（tab 发现
++ WebSocket 命令收发 + Network.getCookies），只依赖 `requests` 和
+`websocket-client` 这两个通用库，跟该 skill 底层用的是同一套协议、
+同一个心智模型，只是不共享代码。
+
+两种连接方式（对应该 skill 文档里的"场景 A/B"）：
+  --port 9222（默认）：假设用户已经用调试端口手动启动了 Chrome——这样
+      打开的是用户的默认 profile，保留已有登录态，问财如果本来就登录
+      过，可能不需要再验证一次。Windows 下建议创建一个桌面快捷方式，
+      目标改成：
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222
+      macOS/Linux 类似，先完全退出 Chrome，再从终端加这个参数启动。
+  --spawn：不想碰用户默认 profile 时，让本脚本自己拉起一个带独立临时
+      profile 的新 Chrome 实例（用完不会保留登录态，每次都要重新过一遍
+      验证/登录，但不影响用户平时在用的浏览器窗口）。
+
 用法：
     cd external_projects/stock_watch
-    pip install playwright
-    playwright install chromium      # 首次使用需要下载浏览器内核
+    # 方式一：自己先手动把 Chrome 用调试端口开起来，然后：
     python tools/fetch_iwencai_cookie.py
-
-    # 网站这次没有要求任何验证，长时间检测不到 cookie 时，也可以手动
-    # 在弹出的浏览器窗口里刷新页面、随便点点触发一下：
-    python tools/fetch_iwencai_cookie.py --timeout 180
+    # 方式二：让脚本自己拉起一个独立实例：
+    python tools/fetch_iwencai_cookie.py --spawn
 
 这个脚本是给人手动跑的交互式工具，不是 `entrypoints/` 下那种被
-daemon/cron 无人值守调度的脚本（headless 环境下用不了——需要一个能
-显示窗口、能让人操作的桌面环境），所以放在 `tools/` 而不是
-`entrypoints/`，也不接入 `_common.run_entrypoint()` 那套账本机制。
+daemon/cron 无人值守调度的脚本（需要一个能显示窗口、能让人操作的桌面
+环境），所以放在 `tools/` 而不是 `entrypoints/`，也不接入
+`_common.run_entrypoint()` 那套账本机制。
 """
 
 from __future__ import annotations
 
 import argparse
+import itertools
+import json
+import platform
+import shutil
+import subprocess
 import sys
+import tempfile
+import threading
 import time
+import urllib.parse
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
+import requests
 import yaml
+
+try:
+    import websocket  # websocket-client
+except ImportError:
+    websocket = None  # 延迟到 main() 里统一报错，给出安装指引
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from stock_watch.config import DEFAULT_SECRETS_PATH  # noqa: E402
 
 IWENCAI_URL = "https://www.iwencai.com/"
 COOKIE_NAME = "v"  # 页面里显示的参数名是 hexin-v，但实际存在 cookie 里的名字是 v
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 9222
 
 
-def _find_hexin_v(cookies: list) -> Optional[str]:
+# ── 最小 CDP 客户端（HTTP tab 发现 + WebSocket 命令收发） ──────────────
+# 只实现这个脚本需要的几个操作，完整版见 .claude/skills/browser-cdp
+# （见上方模块 docstring 关于为什么这里不直接复用那份代码的说明）。
+
+class CDPError(RuntimeError):
+    pass
+
+
+def _http_json(host: str, port: int, path: str, timeout: float = 5.0) -> Any:
+    resp = requests.get(f"http://{host}:{port}{path}", timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _is_debug_port_alive(host: str, port: int) -> bool:
+    try:
+        _http_json(host, port, "/json/version", timeout=1.0)
+        return True
+    except Exception:
+        return False
+
+
+def _list_tabs(host: str, port: int) -> List[dict]:
+    targets = _http_json(host, port, "/json/list")
+    return [t for t in targets if t.get("type") == "page"]
+
+
+def _new_tab(host: str, port: int, url: str) -> dict:
+    resp = requests.post(
+        f"http://{host}:{port}/json/new",
+        data=urllib.parse.quote(url), timeout=5.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+class CDPSession:
+    """对单个 tab 建立的 WebSocket 会话，只实现同步 `send()`。"""
+
+    def __init__(self, ws_url: str, host: str, port: int, timeout: float = 15.0):
+        self._id_counter = itertools.count(1)
+        self._lock = threading.Lock()
+        self._pending: Dict[int, dict] = {}
+        self.timeout = timeout
+        self._ws = websocket.create_connection(
+            ws_url, timeout=timeout, origin=f"http://{host}:{port}",
+        )
+
+    def send(self, method: str, params: Optional[dict] = None) -> dict:
+        msg_id = next(self._id_counter)
+        with self._lock:
+            self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+        deadline = time.time() + self.timeout
+        while time.time() < deadline:
+            if msg_id in self._pending:
+                return self._pending.pop(msg_id)
+            self._ws.settimeout(max(0.1, deadline - time.time()))
+            try:
+                raw = self._ws.recv()
+            except websocket.WebSocketTimeoutException:
+                continue
+            if not raw:
+                continue
+            data = json.loads(raw)
+            if data.get("id") == msg_id:
+                if "error" in data:
+                    raise CDPError(f"{method}: {data['error']}")
+                return data.get("result", {})
+            if "id" in data:
+                self._pending[data["id"]] = data.get("result", {})
+            # 其余是事件推送，这个脚本不关心，直接丢弃
+        raise CDPError(f"等待 CDP 响应超时: {method}")
+
+    def close(self) -> None:
+        try:
+            self._ws.close()
+        except Exception:
+            pass
+
+
+# ── Chrome 进程管理（仅 --spawn 用到） ──────────────────────────────────
+
+def _find_chrome_binary() -> Optional[str]:
+    system = platform.system()
+    candidates: List[str] = []
+    if system == "Windows":
+        candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ]
+    elif system == "Darwin":
+        candidates = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+    else:
+        candidates = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+    for c in candidates:
+        if Path(c).exists():
+            return c
+        found = shutil.which(c)
+        if found:
+            return found
+    return None
+
+
+def _spawn_chrome(port: int) -> subprocess.Popen:
+    binary = _find_chrome_binary()
+    if not binary:
+        raise RuntimeError(
+            "没找到 Chrome/Chromium 可执行文件，请手动用 --remote-debugging-port "
+            f"={port} 启动 Chrome 后不加 --spawn 重跑本脚本"
+        )
+    profile_dir = tempfile.mkdtemp(prefix="stock_watch_iwencai_cdp_")
+    proc = subprocess.Popen(
+        [binary, f"--remote-debugging-port={port}", f"--user-data-dir={profile_dir}", "--no-first-run"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if _is_debug_port_alive(DEFAULT_HOST, port):
+            return proc
+        time.sleep(0.3)
+    proc.kill()
+    raise RuntimeError(f"Chrome 启动后 {15}s 内调试端口仍不可用，已放弃")
+
+
+def _find_hexin_v(cookies: List[dict]) -> Optional[str]:
     for c in cookies:
-        if c.get("name") == COOKIE_NAME and "iwencai" in c.get("domain", ""):
+        if c.get("name") == COOKIE_NAME and "iwencai" in (c.get("domain") or ""):
             return c.get("value")
     return None
 
@@ -68,59 +230,76 @@ def _write_cookie_to_secrets(secrets_path: Path, cookie_value: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--timeout", type=int, default=120,
-        help="最多等待用户完成登录/验证的秒数（默认 120）",
-    )
-    parser.add_argument(
-        "--secrets-path", type=Path, default=DEFAULT_SECRETS_PATH,
-        help=f"写入的目标文件（默认 {DEFAULT_SECRETS_PATH}）",
-    )
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--host", default=DEFAULT_HOST)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                         help=f"Chrome 调试端口（默认 {DEFAULT_PORT}）")
+    parser.add_argument("--spawn", action="store_true",
+                         help="调试端口不可用时，自己拉起一个带独立临时 profile 的新 Chrome 实例")
+    parser.add_argument("--timeout", type=int, default=120,
+                         help="最多等待用户完成登录/验证的秒数（默认 120）")
+    parser.add_argument("--secrets-path", type=Path, default=DEFAULT_SECRETS_PATH,
+                         help=f"写入的目标文件（默认 {DEFAULT_SECRETS_PATH}）")
     args = parser.parse_args()
 
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
+    if websocket is None:
         print(
-            "未安装 playwright。请先运行：\n"
-            "  pip install playwright\n"
-            "  playwright install chromium\n"
-            "（后者会下载一个 Chromium 浏览器内核，第一次运行耗时较长，"
-            "属正常现象）",
+            "缺少依赖 websocket-client。请先运行：\n"
+            "  pip install websocket-client requests PyYAML",
             file=sys.stderr,
         )
         return 1
 
-    print(f"正在打开浏览器窗口，访问 {IWENCAI_URL} ...")
-    print("如果页面要求登录/滑块验证/短信验证，请在弹出的窗口里手动完成。")
-    print(f"脚本会每秒检测一次 cookie，最多等待 {args.timeout} 秒。")
+    spawned_proc: Optional[subprocess.Popen] = None
+    if not _is_debug_port_alive(args.host, args.port):
+        if not args.spawn:
+            print(
+                f"{args.host}:{args.port} 上没有检测到可连接的 Chrome 调试端口。\n"
+                "可以：\n"
+                "  ① 手动完全退出 Chrome，再用命令行/快捷方式加上 "
+                f"--remote-debugging-port={args.port} 重新打开（保留你已有的登录态）\n"
+                "  ② 或者直接加 --spawn 让本脚本自己拉起一个独立实例（不带已有登录态，"
+                "每次都要重新过验证）",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"未检测到可用的调试端口，正在拉起一个独立 Chrome 实例（端口 {args.port}）...")
+        spawned_proc = _spawn_chrome(args.port)
 
-    with sync_playwright() as p:
-        # headless=False：必须是有窗口、能看见、能操作的模式，这是这个
-        # 工具存在的意义——headless 浏览器一样会跑 JS 算出令牌，但用户
-        # 没法在里面手动完成登录/验证。
-        browser = p.chromium.launch(headless=False)
-        context = browser.new_context()
-        page = context.new_page()
-        try:
-            page.goto(IWENCAI_URL, timeout=30_000)
-        except Exception as exc:  # noqa: BLE001 - playwright 异常类型较多，统一提示
-            print(f"页面加载失败: {exc}", file=sys.stderr)
-            browser.close()
+    try:
+        tabs = _list_tabs(args.host, args.port)
+        tab = tabs[0] if tabs else _new_tab(args.host, args.port, IWENCAI_URL)
+        ws_url = tab.get("webSocketDebuggerUrl")
+        if not ws_url:
+            # /json/new 返回的对象里也带这个字段；两种来源统一走同一段逻辑
+            print("拿到的 tab 没有 webSocketDebuggerUrl，异常情况，放弃", file=sys.stderr)
             return 1
 
-        cookie_value: Optional[str] = None
-        deadline = time.monotonic() + args.timeout
-        while time.monotonic() < deadline:
-            cookie_value = _find_hexin_v(context.cookies())
-            if cookie_value:
-                break
-            time.sleep(1)
-            print(".", end="", flush=True)
-        print()
+        session = CDPSession(ws_url, args.host, args.port)
+        try:
+            session.send("Page.enable")
+            session.send("Network.enable")
+            session.send("Page.navigate", {"url": IWENCAI_URL})
 
-        browser.close()
+            print(f"已通过 CDP 打开 {IWENCAI_URL} ...")
+            print("如果页面要求登录/滑块验证/短信验证，请在浏览器窗口里手动完成。")
+            print(f"脚本会每秒检测一次 cookie，最多等待 {args.timeout} 秒。")
+
+            cookie_value: Optional[str] = None
+            deadline = time.monotonic() + args.timeout
+            while time.monotonic() < deadline:
+                result = session.send("Network.getCookies", {"urls": [IWENCAI_URL]})
+                cookie_value = _find_hexin_v(result.get("cookies", []))
+                if cookie_value:
+                    break
+                time.sleep(1)
+                print(".", end="", flush=True)
+            print()
+        finally:
+            session.close()
+    finally:
+        if spawned_proc is not None:
+            spawned_proc.kill()
 
     if not cookie_value:
         print(
