@@ -203,6 +203,15 @@ client.py`）✅已完成
   状态表单/信号溯源/回溯统计），新增路由 `GET /v1/external_projects/
   {name}/pool_tracking`；只对产出了 `data/pool_tracking_latest.json`
   的项目显示，不影响其它外部项目的现有行为，详细设计见该文档第4节。
+- 2026-08-27：上一条记录的"候选池状态跟踪"面板被识别为一次性、
+  stock_watch 专属的实现，不满足"任何外部项目都能声明接入"的通用性
+  诉求。已在
+  `next_doc/external_projects_generic_kanban_view_refactor_plan.md`
+  里设计了通用替代方案（`project.yaml` 新增 `dashboard.kanban_view`
+  声明 + 通用路由 `kanban_data` + 通用渲染函数），本文档描述的
+  `pool_tracking` 专属路由/面板将在该文档实施完成后被替换，具体
+  进度以该文档为准。本文档记录的其它通用机制（项目卡片/手动触发/
+  backlog/review）不受影响。
 
 ### 阶段 5：手动触发改为按钮列表（使用者反馈驱动）
 

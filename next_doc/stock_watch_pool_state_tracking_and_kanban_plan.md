@@ -276,6 +276,15 @@ XX 网站热榜"和"自算：MA5/MA20 金叉"这类不同来源的说明，保�
 > 第 2.6 节的既有说明），而是直接对同一次响应里已经拿到的
 > `state_returns` 做前端聚合（按状态汇总平均涨跌幅/胜率）——不需要
 > 额外的后端接口，数据本来就已经在页面上了。
+>
+> **⚠️ 后续变更**：本阶段的实现是 stock_watch 专属的（路由/字段名/
+> entrypoint 名硬编码），后来发现这个诉求应该做成通用机制——任何外部
+> 项目都能通过 `project.yaml` 声明去接入状态看板，而不是每接一个新
+> 项目就得改一遍看板代码。这部分已被
+> `next_doc/external_projects_generic_kanban_view_refactor_plan.md`
+> 重构取代，该文档实施完成后，本节描述的 `pool_tracking` 专属路由/
+> `_render_pool_tracking_panel()` 会被通用的 `kanban_data`/
+> `_render_kanban_view_panel()` 替换，具体进度以该文档为准。
 
 依赖阶段 2 的数据结构（状态机 + 区间收益）先落地稳定。mini_agent
 已有"外部项目卡片"和"手动触发"的看板机制（`🗂️ 外部项目` tab，见
