@@ -160,3 +160,8 @@ test_reports/
 # External input lock files
 .agent/external_input/*.lock
 
+# Capability learning state (generated, not needed in git)
+.agent/capability_tracks.json
+.agent/capability_notify_state.json
+.agent/affordance_snapshot.json
+
