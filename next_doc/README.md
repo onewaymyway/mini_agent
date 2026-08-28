@@ -207,7 +207,7 @@ Explorer 重构、原始结果与混合合并、三层改进、trace 回放。
 - `compact_mechanism_improvement_plan.md` — 计划：压缩机制
 - `hybrid_exec_design_plan.md` — 设计+计划：混合执行
 - `hybrid_exec_improvement_directions.md` — 分析：外部项目复用与执行载体生成方向
-- `hybrid_exec_external_integration_implementation_record.md` — 实施记录：A1/A2/B1 落地
+- `hybrid_exec_external_integration_implementation_record.md` — 实施记录：A1/A2/B1/A3 落地
 - `judge_unification_design.md` — 设计：判定器统一
 - `judge_profile_unification_migration_plan.md` — 计划：判定画像统一迁移
 - `llm_helper_unification_plan.md` — 计划：LLM helper 统一

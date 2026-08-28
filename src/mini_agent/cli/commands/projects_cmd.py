@@ -122,7 +122,51 @@ def _cmd_status(args: List[str]) -> int:
         for rec in reversed(recent):
             mark = "OK" if rec.success else "FAIL"
             _print(f"  [{mark}] {rec.entrypoint} @ {rec.finished_at} (trigger={rec.trigger})")
+
+    # [A3] next_doc/hybrid_exec_improvement_directions.md §3.A3 最小改动：
+    # 附带打印一眼该外部项目的 hybrid_exec 用量摘要，不要求用户额外
+    # `cd` 过去用 `mini-agent hybrid-exec list` 才能看到。纯只读、只在
+    # `.agent/hybrid_exec/` 目录确实存在时才探测，不存在（这个外部项目
+    # 从未用过 hybrid_exec）时完全不打印这部分，不制造噪音；探测本身
+    # 失败也只打印一句警告，不影响上面已经打印完的其它信息、不让整个
+    # `status` 命令因为这一项失败。
+    if manifest.source_dir is not None:
+        _print(_hybrid_exec_summary_line(manifest.source_dir))
     return 0
+
+
+def _hybrid_exec_summary_line(project_dir: Path) -> str:
+    """返回一行 hybrid_exec 用量摘要，供 `_cmd_status` 附带打印。
+
+    对应 next_doc/hybrid_exec_improvement_directions.md A3 最小改动路径：
+    只扫一眼 `<project_dir>/.agent/hybrid_exec/` 是否存在，存在则调用
+    `build_kanban_summary()` 汇总打印一行"N 个 hybrid_exec 任务，当前
+    命中率 xx%"。单独抽成函数方便单测覆盖三种分支（未使用/已使用/
+    探测失败）而不用每次都走完整的 `_cmd_status`。
+    """
+    hybrid_exec_dir = Path(project_dir) / ".agent" / "hybrid_exec"
+    if not hybrid_exec_dir.exists():
+        return "hybrid_exec: 未使用（.agent/hybrid_exec/ 不存在）"
+
+    try:
+        from mini_agent.hybrid_exec import build_kanban_summary
+
+        summary = build_kanban_summary(project_dir)
+        tasks = summary.get("tasks", [])
+        if not tasks:
+            return "hybrid_exec: 目录存在但暂无已归档任务"
+
+        active_count = sum(1 for t in tasks if t.get("active_status") == "active")
+        total_success = sum(t.get("active_success_count", 0) or 0 for t in tasks)
+        total_fail = sum(t.get("active_fail_count", 0) or 0 for t in tasks)
+        total_runs = total_success + total_fail
+        hit_rate = f"{total_success / total_runs * 100:.0f}%" if total_runs else "N/A"
+        return (
+            f"hybrid_exec: {len(tasks)} 个任务（{active_count} 个 active），"
+            f"当前脚本命中率 {hit_rate}（{total_success}/{total_runs}）"
+        )
+    except Exception as exc:  # noqa: BLE001 — 摘要探测失败不应影响 status 命令其它部分
+        return f"hybrid_exec: 摘要读取失败（{exc}）"
 
 
 def _cmd_run(args: List[str]) -> int:

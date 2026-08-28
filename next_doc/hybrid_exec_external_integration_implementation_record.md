@@ -6,12 +6,10 @@
 
 ## 落地范围
 
-按分析文档 §5 的顺序，实施了 **A1、A2、B1** 三项（成本从低到高、且有
-依赖关系的前三条）；**A3**（外部项目状态命令附带 hybrid_exec 摘要）、
-**B2**（TaskSpec 模板库）、**A4**（独立可安装子包）本次未动，留待后续
-单独立项——A3 依赖 A1 已经具备，但涉及改 `mini-agent projects status`
-命令的输出格式，属于新的一批改动，与 B2/A4 一样先记录在这份文档末尾的
-"未落地项"里，不在本次范围内。
+按分析文档 §5 的顺序，实施了 **A1、A2、B1、A3** 四项（成本从低到高、且
+有依赖关系的前四条）；**B2**（TaskSpec 模板库）、**A4**（独立可安装
+子包）本次未动，留待后续单独立项——两者理由与之前一致，见本文档末尾
+"未落地项"一节。
 
 ## A1：`Workspace` 补齐 hybrid_exec 相关路径属性
 
@@ -100,10 +98,49 @@
 无关）与 `tests/test_workspace.py` 全部通过，共 99 个用例（含本次新增
 的 16 个）。
 
+## A3：外部项目状态命令附带 hybrid_exec 用量摘要
+
+**改动文件**：`src/mini_agent/cli/commands/projects_cmd.py`
+
+按分析文档 A3 给出的两条路径里成本较低的第一条（"最小改动"）落地：
+
+- 新增纯函数 `_hybrid_exec_summary_line(project_dir) -> str`：先只读判断
+  `<project_dir>/.agent/hybrid_exec/` 是否存在——不存在（该外部项目从未
+  用过 hybrid_exec）直接返回一句"未使用"，不触发任何进一步扫描，保持
+  `list`/`status` 一贯的"纯被动、瞬时完成"风格（不新增探测开销）；存在
+  则调用 `hybrid_exec.build_kanban_summary()` 汇总，拼出一行"N 个任务
+  （M 个 active），当前脚本命中率 xx%（成功数/总数）"。
+- `build_kanban_summary()` 内部探测失败（比如 meta.json 损坏）时降级为
+  一句"摘要读取失败"提示，不让异常从这里往外抛、不影响 `status` 命令
+  已经打印完的其它信息——与 `aggregate_status()` 单项目失败不拖垮整体
+  视图的既有原则一致。
+- `_cmd_status()` 在打印完 `recent runs` 之后、`return 0` 之前，追加
+  调用这一行（仅当 `manifest.source_dir is not None` 时才调用，避免
+  manifest 没有可用本地路径时报错）。
+- **未做**分析文档 A3 提到的"更完整"路径（`external_projects` 跨项目
+  聚合看板里每个项目附带 hybrid_exec 摘要）——那部分需要先确认现有
+  `aggregate_status()`/看板前端是否已经有稳定的跨项目聚合视图可以挂，
+  属于更大的改动，留给后续按需评估。
+
+## 测试
+
+新增 `tests/test_hybrid_exec_projects_status_summary.py`（4 个用例）：
+- 目录不存在时返回"未使用"。
+- 目录存在但没有任何已归档任务时返回"暂无已归档任务"。
+- 真跑一次 hybrid_exec 任务（刻意传空 `allow_tiers` 让它必然走到
+  fallback 失败，只是为了把 `.agent/hybrid_exec/` 目录结构造出来）后，
+  摘要行能正常生成、包含"个任务"字样。
+- `build_kanban_summary` 内部抛异常时，摘要行降级为"摘要读取失败"提示
+  而不是让异常往外传播。
+
+回归验证：追加安装 `fastapi`/`uvicorn` 后，`tests/` 目录下与
+`hybrid_exec`/`workspace`/`projects` 相关的用例（含本次两批新增的 20
+个）共 335 个全部通过；此前因缺 `fastapi`/`uvicorn` 而无法收集的一批
+测试文件（`test_hybrid_exec_summary_route.py`、`test_session.py` 等）
+是环境预先缺少可选依赖导致，与本次改动无关，未在本次范围内处理。
+
 ## 未落地项（留待后续）
 
-- **A3**（外部项目状态命令附带 hybrid_exec 摘要）：依赖 A1，本次未做，
-  需要改 `mini-agent projects status` 命令的输出，属于下一批改动。
 - **B2**（常见任务类型的 `TaskSpec` 模板库）：内容型工作，按分析文档
   建议放最后，随时可以补充。
 - **A4**（hybrid_exec 独立可安装子包）：分析文档已明确暂缓，等真实
