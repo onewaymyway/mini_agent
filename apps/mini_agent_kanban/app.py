@@ -10067,6 +10067,102 @@ def _render_pending_reports_panel(client: "AgentClient"):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# [cron_async_user_feedback_mechanism_plan.md 阶段4] "🙋 待我反馈"面板：
+# cron 任务通过 ask_user_async 异步提出的问题，用户在这里异步作答，
+# 独立成 @st.fragment 函数——分页/提交答案只应该重跑这个面板本身，不带动
+# 整个 render_notification_tab() 一起重新请求关注对象/tier/发送记录。
+# ═══════════════════════════════════════════════════════════════════════
+@st.fragment
+def _render_cron_questions_panel(client: "AgentClient"):
+    st.markdown("##### 🙋 待我反馈")
+    st.caption(
+        "cron 任务在后台执行时如果遇到需要你决策/补充信息的节点，会在这里"
+        "异步提问后继续做其它可推进的工作，不会卡住等你——你可以慢慢看、"
+        "慢慢答。回答之后，下次该任务再被触发时会自动带上你的答案接着做。"
+    )
+
+    sub_tab_pending, sub_tab_history = st.tabs(["待处理", "历史记录"])
+
+    with sub_tab_pending:
+        pending_limit = st.session_state.get("cron_q_pending_limit", 20)
+        pending_resp = client.cron_questions_pending(limit=pending_limit) or {}
+        if "_error" in pending_resp:
+            st.caption(f"获取待回答问题失败：{pending_resp['_error']}")
+        else:
+            questions = pending_resp.get("questions") or []
+            if not questions:
+                st.info("当前没有待你回答的问题。")
+            for idx, q in enumerate(questions):
+                qid = q.get("question_id")
+                with st.container(border=True):
+                    st.markdown(f"**任务 `{q.get('job_id', '-')}`**")
+                    st.markdown(q.get("question") or "")
+                    if q.get("hint"):
+                        st.caption(f"提示：{q['hint']}")
+                    options = q.get("options") or []
+                    answer_key = f"cron_q_answer_{idx}_{qid}"
+                    if options:
+                        st.caption("参考选项（可直接选，也可以在下方输入其它内容）：" + "、".join(options))
+                        choice = st.radio(
+                            "参考选项", ["（自己输入）"] + options,
+                            key=f"cron_q_choice_{idx}_{qid}", label_visibility="collapsed",
+                            horizontal=True,
+                        )
+                        default_text = "" if choice == "（自己输入）" else choice
+                    else:
+                        default_text = ""
+                    answer_text = st.text_area(
+                        "你的回答", value=default_text, key=answer_key,
+                        label_visibility="collapsed", placeholder="在这里输入你的回答……",
+                    )
+                    if st.button("✅ 提交回答", key=f"cron_q_submit_{idx}_{qid}", disabled=not (answer_text or "").strip()):
+                        res = client.answer_cron_question(qid, answer_text)
+                        if res and "_error" in res:
+                            st.error(f"提交失败：{res['_error']}")
+                        else:
+                            st.success("已提交，下次该任务触发时会自动带上你的回答。")
+                            st.rerun()
+            _load_more_control("cron_q_pending_limit", 20, 20, bool(pending_resp.get("has_more")))
+
+    with sub_tab_history:
+        history_limit = st.session_state.get("cron_q_history_limit", 20)
+        history_resp = client.cron_questions_history(limit=history_limit) or {}
+        if "_error" in history_resp:
+            st.caption(f"获取历史记录失败：{history_resp['_error']}")
+        else:
+            history = history_resp.get("questions") or []
+            if not history:
+                st.info("暂无已回答的问题。")
+            for idx, q in enumerate(history):
+                qid = q.get("question_id")
+                with st.expander(f"任务 `{q.get('job_id', '-')}` · {q.get('question', '')[:40]}", expanded=False):
+                    st.markdown(f"**问题**：{q.get('question') or ''}")
+                    if q.get("hint"):
+                        st.caption(f"提示：{q['hint']}")
+                    st.markdown(f"**当前答案**：{q.get('answer') or ''}")
+                    history_versions = q.get("answer_history") or []
+                    if len(history_versions) > 1:
+                        st.caption("修改历史（旧→新）：")
+                        for v in history_versions:
+                            ts = v.get("at")
+                            ts_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else "-"
+                            st.caption(f"`{ts_str}` {v.get('text', '')}")
+                    edit_key = f"cron_q_edit_answer_{idx}_{qid}"
+                    new_answer = st.text_area(
+                        "修改答案", value=q.get("answer") or "", key=edit_key,
+                    )
+                    if st.button("✏️ 提交修改", key=f"cron_q_resubmit_{idx}_{qid}",
+                                  disabled=not (new_answer or "").strip() or new_answer == q.get("answer")):
+                        res = client.answer_cron_question(qid, new_answer)
+                        if res and "_error" in res:
+                            st.error(f"修改失败：{res['_error']}")
+                        else:
+                            st.success("答案已更新，旧版本仍保留在修改历史里。")
+                            st.rerun()
+            _load_more_control("cron_q_history_limit", 20, 20, bool(history_resp.get("has_more")))
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab: 🔔 关注与通知（Watchlist & Notification，P7）
 # ═══════════════════════════════════════════════════════════════════════
 def render_notification_tab(client: AgentClient):
@@ -10147,6 +10243,16 @@ def render_notification_tab(client: AgentClient):
     # 告警。存储在独立的 reports.jsonl，也不再出现在 /v1/inbox 全局
     # 待办中心里。
     _render_pending_reports_panel(client)
+
+    st.divider()
+
+    # ── 3.5 待我反馈（cron 异步用户反馈，见
+    #     next_doc/cron_async_user_feedback_mechanism_plan.md）────────────
+    # 跟上面"待处理汇报"是两个不同语义的东西："待处理汇报"是只读的
+    # watchlist 打包汇总，不需要你做任何事；这里是 cron 任务主动向你提出
+    # 的、需要你输入内容才能让任务继续的问题，所以单独一块、有独立的
+    # "待处理"/"历史记录"子面板和答题表单。
+    _render_cron_questions_panel(client)
 
     st.divider()
 

@@ -1,6 +1,6 @@
 # Cron 任务异步用户反馈机制设计方案
 
-> 状态：**方案已确认（照常触发 + 自由文本+提示），实施中 —— 阶段3完成**
+> 状态：**方案已确认（照常触发 + 自由文本+提示），实施中 —— 阶段4完成**
 > 关联现有代码：`src/mini_agent/tools/user_input.py`、`src/mini_agent/interaction.py`、
 > `src/mini_agent/notification/dispatcher.py`、`src/mini_agent/notification/channels/kanban.py`、
 > `src/mini_agent/notification/reports_store.py`、`src/mini_agent/evolution/cron_job_executor.py`、
@@ -208,7 +208,7 @@ pending_question_ids: list[str] = field(default_factory=list)
 - [x] 阶段1：数据层 `questions_store.py` + 单元测试
 - [x] 阶段2：`ask_user_async` 工具 + 执行链路集成
 - [x] 阶段3：API + 通知联动
-- [ ] 阶段4：Streamlit 看板
+- [x] 阶段4：Streamlit 看板
 - [ ] 阶段5：文档收尾
 
 ## 11. 阶段2实现记录（与设计的差异说明）
@@ -273,3 +273,36 @@ pending_question_ids: list[str] = field(default_factory=list)
   路由）
 - 新增 `tests/test_cron_questions_api_routes.py`（5 条测试，覆盖
   pending/history 过滤与分页、答案提交与修改、空答案/未知 ID 的错误处理）
+
+## 13. 阶段4实现记录（Streamlit 看板）
+
+按第7节设计原样实施，在 `apps/mini_agent_kanban/`"🔔 关注与通知"tab 下新增
+"🙋 待我反馈"子面板，独立成 `@st.fragment`（`_render_cron_questions_panel`），
+跟已有的"📋 待处理汇报"面板（`_render_pending_reports_panel`）风格保持一致：
+分页用同一套 `_load_more_control()`，翻页/提交只重跑面板本身，不带动整个
+`render_notification_tab()`（关注对象列表、tier 配置、通知发送记录）一起
+重新请求。
+
+- **待处理**子 tab：逐条展示 `job_id`/问题原文/`hint`；若带 `options`，用
+  单选按钮做"参考选项 + 自己输入"二选一的快捷填充（不做强校验，选完仍是
+  普通文本框可编辑，跟 §4"自由文本、`options` 仅展示提示"的设计一致）；
+  提交调 `POST /v1/cron_questions/{id}/answer`。
+- **历史记录**子 tab：每条用 `st.expander` 折叠展示问题/当前答案/完整
+  `answer_history`（时间+内容，旧→新排列）；展开后内置一个"修改答案"
+  文本框+提交按钮，复用同一个 `answer_cron_question()` 接口——跟设计文档
+  一致，不区分首次回答和修改回答的入口。
+- `client.py` 新增三个方法：`cron_questions_pending()`/
+  `cron_questions_history()`/`answer_cron_question()`，均为对
+  `/v1/cron_questions/*` 端点的薄封装，风格与 `notification_pending_reports()`
+  系列一致。
+
+未新增看板专用测试——项目里 Streamlit UI 代码（`apps/mini_agent_kanban/app.py`/
+`client.py`）一贯不做单元测试，只做 `py_compile` 语法检查，实际交互靠 API
+层的 `test_cron_questions_api_routes.py` 覆盖后端逻辑正确性。
+
+新增/修改文件清单：
+- 修改 `apps/mini_agent_kanban/client.py`（新增
+  `cron_questions_pending`/`cron_questions_history`/`answer_cron_question`
+  三个方法）
+- 修改 `apps/mini_agent_kanban/app.py`（新增 `_render_cron_questions_panel`
+  fragment，接入 `render_notification_tab()`）

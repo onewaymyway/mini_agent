@@ -694,6 +694,28 @@ class AgentClient:
             body["category"] = category
         return self._post("/notifications/pending/batch_ack", json_body=body)
 
+    # ── cron 异步用户反馈（"待我反馈"面板，见
+    #    next_doc/cron_async_user_feedback_mechanism_plan.md）──────────────
+    def cron_questions_pending(self, limit: int = 20, offset: int = 0, job_id: str = ""):
+        """分页返回仍待回答的 cron 异步问题（`ask_user_async` 提出的），
+        供"🙋 待我反馈"面板的"待处理"列表用。`job_id` 留空返回全部 job 的。"""
+        params = {"limit": limit, "offset": offset}
+        if job_id:
+            params["job_id"] = job_id
+        return self._get("/cron_questions/pending", params=params)
+
+    def cron_questions_history(self, limit: int = 20, offset: int = 0, job_id: str = ""):
+        """分页返回已回答的 cron 异步问题（含完整 `answer_history`），供
+        "历史记录"列表用，可在此发起"修改答案"。"""
+        params = {"limit": limit, "offset": offset}
+        if job_id:
+            params["job_id"] = job_id
+        return self._get("/cron_questions/history", params=params)
+
+    def answer_cron_question(self, question_id: str, answer: str):
+        """提交或修改一条问题的答案（新答/改答统一走这一个接口）。"""
+        return self._post(f"/cron_questions/{question_id}/answer", json_body={"answer": answer})
+
     def novelty_candidates(self, limit: int = 20, offset: int = 0):
         """§2 新颖信号候选：分页返回待确认候选（status=pending）。"""
         return self._get("/external_input/novelty_candidates", params={"limit": limit, "offset": offset})
