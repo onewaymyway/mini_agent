@@ -10079,9 +10079,12 @@ def _render_cron_questions_panel(client: "AgentClient"):
         "cron 任务在后台执行时如果遇到需要你决策/补充信息的节点，会在这里"
         "异步提问后继续做其它可推进的工作，不会卡住等你——你可以慢慢看、"
         "慢慢答。回答之后，下次该任务再被触发时会自动带上你的答案接着做。"
+        "注意：超过 14 天（可在 config.yaml 调整）没人回答的问题会被系统"
+        "自动关闭，避免无限堆积，关闭后会单独收到一条通知，也能在下方"
+        "\"已忽略\"里查到。"
     )
 
-    sub_tab_pending, sub_tab_history = st.tabs(["待处理", "历史记录"])
+    sub_tab_pending, sub_tab_history, sub_tab_dismissed = st.tabs(["待处理", "历史记录", "已忽略"])
 
     with sub_tab_pending:
         pending_limit = st.session_state.get("cron_q_pending_limit", 20)
@@ -10092,10 +10095,27 @@ def _render_cron_questions_panel(client: "AgentClient"):
             questions = pending_resp.get("questions") or []
             if not questions:
                 st.info("当前没有待你回答的问题。")
+            else:
+                # [cron_async_feedback_lifecycle_and_usability_plan.md E2]
+                # 拖得越久的问题越应该被优先看到，而不是淹没在新问题
+                # 后面——列表本身已经按 created_at 倒序（最新在前）从
+                # 后端拿到，这里按等待时长升序重排（等得最久的排最前），
+                # 配合下面的"已等待 N 天"提示，帮用户优先处理快要被系统
+                # 自动关闭（见 questions_store.expire_stale_pending_questions）
+                # 的旧问题，避免它们一直沉在列表底部没人注意到。
+                questions = sorted(questions, key=lambda q: q.get("created_at") or 0)
             for idx, q in enumerate(questions):
                 qid = q.get("question_id")
                 with st.container(border=True):
-                    st.markdown(f"**任务 `{q.get('job_id', '-')}`**")
+                    created_at = q.get("created_at")
+                    age_badge = ""
+                    if created_at:
+                        days = int((time.time() - created_at) // 86400)
+                        if days >= 7:
+                            age_badge = f" · :red[已等待 {days} 天]"
+                        elif days >= 1:
+                            age_badge = f" · 已等待 {days} 天"
+                    st.markdown(f"**任务 `{q.get('job_id', '-')}`**{age_badge}")
                     st.markdown(q.get("question") or "")
                     if q.get("hint"):
                         st.caption(f"提示：{q['hint']}")
@@ -10167,6 +10187,37 @@ def _render_cron_questions_panel(client: "AgentClient"):
                             st.success("答案已更新，旧版本仍保留在修改历史里。")
                             st.rerun()
             _load_more_control("cron_q_history_limit", 20, 20, bool(history_resp.get("has_more")))
+
+    with sub_tab_dismissed:
+        # [cron_async_feedback_lifecycle_and_usability_plan.md E2] 原设计里
+        # `dismiss_question` 保留了查询入口但看板一直没展示，忽略动作变成
+        # 一个查无对证的黑洞。这里补上——尤其是需要让用户能分辨"自己主动
+        # 忽略的"和"太久没回答被系统自动关闭的"，后者用户可能完全没意识到。
+        st.caption(
+            "已忽略或因长期无人回答被系统自动关闭的问题，仅供查阅——"
+            "不会再提醒你，也不会被当作答案带入下次任务触发。"
+        )
+        dismissed_limit = st.session_state.get("cron_q_dismissed_limit", 20)
+        dismissed_resp = client.cron_questions_dismissed(limit=dismissed_limit) or {}
+        if "_error" in dismissed_resp:
+            st.caption(f"获取已忽略问题失败：{dismissed_resp['_error']}")
+        else:
+            dismissed = dismissed_resp.get("questions") or []
+            if not dismissed:
+                st.info("暂无已忽略的问题。")
+            for q in dismissed:
+                reason = q.get("dismiss_reason") or "manual"
+                if reason == "stale_timeout":
+                    reason_badge = "⏱️ 长期未回答，系统自动关闭"
+                else:
+                    reason_badge = "🙈 用户手动忽略"
+                with st.container(border=True):
+                    st.markdown(f"**任务 `{q.get('job_id', '-')}`** · {reason_badge}")
+                    st.markdown(q.get("question") or "")
+                    ts = q.get("updated_at")
+                    if ts:
+                        st.caption(f"关闭时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))}")
+            _load_more_control("cron_q_dismissed_limit", 20, 20, bool(dismissed_resp.get("has_more")))
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -414,13 +414,28 @@ class CronJobWorkspace:
 
     def _format_unanswered_questions(self) -> str:
         """[cron_async_user_feedback_mechanism_plan] 取出本 job 仍处于待
-        回答状态的问题，提醒 agent 不要重复提问。异常兜底返回空字符串。"""
+        回答状态的问题，提醒 agent 不要重复提问。异常兜底返回空字符串。
+
+        [cron_async_feedback_lifecycle_and_usability_plan.md E1] 每条附带
+        "已等待 N 天"——一方面提示 agent 越拖越久的问题更应该优先想办法
+        自己给个合理默认值/绕过去，而不是无限期干等；另一方面这个问题
+        如果拖过维护性 tick 的 `stale_after_days` 阈值会被自动关闭，提前
+        让 agent（间接也是用户，因为 progress_summary 常被摘要进通知）
+        感知到"这个问题快要被系统放弃"的时间压力。
+        """
         try:
             from mini_agent.notification import questions_store
             rows = questions_store.list_pending_question_texts_for_job(self._paths, self.job_id)
             if not rows:
                 return ""
-            return "\n".join(f"- 「{r.get('question', '')}」（尚未回答）" for r in rows)
+            now = time.time()
+            lines = []
+            for r in rows:
+                created_at = r.get("created_at") or now
+                days = max(0, int((now - created_at) // 86400))
+                age_note = f"，已等待 {days} 天未回答" if days >= 1 else "，尚未回答"
+                lines.append(f"- 「{r.get('question', '')}」{age_note}")
+            return "\n".join(lines)
         except Exception as exc:
             from mini_agent.errors import log_exception
             log_exception(exc, where="mini_agent.evolution.cron_job_workspace._format_unanswered_questions")
@@ -428,15 +443,31 @@ class CronJobWorkspace:
 
     def _format_dismissed_questions(self, limit: int = 20) -> str:
         """[cron_async_feedback_hardening_plan.md D3] 取出本 job 最近被
-        用户明确忽略的问题（最多 `limit` 条，按时间倒序），提醒 agent
+        忽略/自动关闭的问题（最多 `limit` 条，按时间倒序），提醒 agent
         不要再问。异常兜底返回空字符串——这是感知增强，不能影响
-        render_prompt() 本身。"""
+        render_prompt() 本身。
+
+        [cron_async_feedback_lifecycle_and_usability_plan.md E1] 区分展示
+        "用户主动忽略" vs "长期无人回答被系统自动关闭"两种来源
+        （`dismiss_reason`）——后者要额外提醒 agent："不是用户不想要这个
+        答案，只是没来得及回而已，如果这个问题依旧关键，可以换个更容易
+        被顺手回答的方式重新问一次"，跟前者"用户明确不需要，绝对不要再问"
+        的语气不应该一样，否则 agent 会把"暂时没空回答"误解成"用户拒绝"。
+        """
         try:
             from mini_agent.notification import questions_store
             rows = questions_store.list_dismissed_questions(self._paths, job_id=self.job_id, limit=limit)
             if not rows:
                 return ""
-            return "\n".join(f"- 「{r.get('question', '')}」（用户已忽略，不要再问）" for r in rows)
+            lines = []
+            for r in rows:
+                reason = r.get("dismiss_reason") or questions_store.DISMISS_REASON_MANUAL
+                if reason == questions_store.DISMISS_REASON_STALE_TIMEOUT:
+                    note = "（长期无人回答，已被系统自动关闭；如果仍然关键，可以换个更容易顺手回答的方式重新问一次，不要用原话重复问）"
+                else:
+                    note = "（用户已忽略，不要再问）"
+                lines.append(f"- 「{r.get('question', '')}」{note}")
+            return "\n".join(lines)
         except Exception as exc:
             from mini_agent.errors import log_exception
             log_exception(exc, where="mini_agent.evolution.cron_job_workspace._format_dismissed_questions")

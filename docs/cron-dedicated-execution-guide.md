@@ -239,7 +239,14 @@ build_cron_agent()`），不跨触发复用同一个 Agent/history：
                                 （由 ask_user_async 提出），见
                                 cron-async-user-feedback-guide.md §5
 {{unanswered_questions}}     该 job 下仍未回答的问题列表，提醒 agent
-                                不要重复提问同一个问题
+                                不要重复提问同一个问题；每条附带"已
+                                等待 N 天"（超过 cron_question_stale_
+                                after_days 天会被自动关闭，见
+                                cron-async-user-feedback-guide.md §9）
+{{dismissed_questions}}      该 job 下最近已忽略/已自动关闭的问题，
+                                提醒 agent 不要再问（手动忽略）或换种
+                                方式重新问（自动关闭），见
+                                cron-async-user-feedback-guide.md §5
 ```
 
 `{{pending_answers}}`/`{{unanswered_questions}}` 是 cron 任务异步用户

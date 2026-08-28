@@ -721,6 +721,15 @@ class AgentClient:
         忽略后不会被当作答案注入下次 prompt。"""
         return self._post(f"/cron_questions/{question_id}/dismiss")
 
+    def cron_questions_dismissed(self, limit: int = 20, offset: int = 0, job_id: str = ""):
+        """[cron_async_feedback_lifecycle_and_usability_plan.md E2] 分页返回
+        已忽略/已自动关闭的问题（含 `dismiss_reason`），供"已忽略"子面板用，
+        让用户能区分"自己关的"和"系统嫌太久没回答自动关的"。"""
+        params = {"limit": limit, "offset": offset}
+        if job_id:
+            params["job_id"] = job_id
+        return self._get("/cron_questions/dismissed", params=params)
+
     def novelty_candidates(self, limit: int = 20, offset: int = 0):
         """§2 新颖信号候选：分页返回待确认候选（status=pending）。"""
         return self._get("/external_input/novelty_candidates", params={"limit": limit, "offset": offset})

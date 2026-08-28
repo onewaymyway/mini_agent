@@ -454,6 +454,61 @@ class TestDismissedQuestionsPlaceholder:
         rendered = ws.render_prompt("做点什么")
         assert "要不要重构模块 A？" not in rendered
 
+    def test_stale_timeout_dismissed_question_gets_different_note_than_manual(self, paths):
+        """[cron_async_feedback_lifecycle_and_usability_plan.md E1] 系统
+        因超时自动关闭的问题，跟用户手动忽略的问题在 prompt 里应该给
+        agent 不同的措辞——前者不是"用户拒绝"，不该说"不要再问"。"""
+        ws = CronJobWorkspace(paths, "user:test_job")
+        ws.ensure(default_task_template="{{task_description}}\n{{dismissed_questions}}\n")
+
+        manual_rec = questions_store.append_question(paths, "user:test_job", "手动忽略的问题")
+        questions_store.dismiss_question(paths, manual_rec["question_id"])
+
+        stale_rec = questions_store.append_question(paths, "user:test_job", "超时自动关闭的问题")
+        questions_store.expire_stale_pending_questions(paths, stale_after_days=0)
+
+        rendered = ws.render_prompt("做点什么")
+        assert "手动忽略的问题" in rendered
+        assert "超时自动关闭的问题" in rendered
+        # 手动忽略的那条附带"不要再问"的强提示。
+        manual_line = next(line for line in rendered.splitlines() if "手动忽略的问题" in line)
+        assert "不要再问" in manual_line
+        # 超时自动关闭的那条不应该说"不要再问"，语气应该更委婉。
+        stale_line = next(line for line in rendered.splitlines() if "超时自动关闭的问题" in line)
+        assert "自动关闭" in stale_line
+        assert "不要再问" not in stale_line
+
+
+class TestUnansweredQuestionsAgeHint:
+    """[cron_async_feedback_lifecycle_and_usability_plan.md E1]
+    {{unanswered_questions}} 里每条附带等待天数，提示 agent 越拖越久的
+    问题更应该优先自己拿主意或想别的办法绕过去。"""
+
+    def test_recent_question_shows_no_specific_day_count(self, paths):
+        ws = CronJobWorkspace(paths, "user:test_job")
+        ws.ensure(default_task_template="{{task_description}}\n{{unanswered_questions}}\n")
+        questions_store.append_question(paths, "user:test_job", "刚问的问题")
+
+        rendered = ws.render_prompt("做点什么")
+        assert "刚问的问题" in rendered
+        assert "尚未回答" in rendered
+
+    def test_old_question_shows_days_waited(self, paths):
+        import time
+        ws = CronJobWorkspace(paths, "user:test_job")
+        ws.ensure(default_task_template="{{task_description}}\n{{unanswered_questions}}\n")
+        rec = questions_store.append_question(paths, "user:test_job", "拖了很久的问题")
+
+        records = questions_store._load_all(paths)
+        for d in records:
+            if d.get("question_id") == rec["question_id"]:
+                d["created_at"] = time.time() - 5 * 86400
+        questions_store._write_all(paths, records)
+
+        rendered = ws.render_prompt("做点什么")
+        assert "拖了很久的问题" in rendered
+        assert "已等待 5 天" in rendered
+
 
 class TestFuzzyDeduplication:
     """[cron_async_feedback_hardening_plan.md D4] ask_user_async 默认开启

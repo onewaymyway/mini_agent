@@ -145,6 +145,46 @@ class TestCronQuestionsApiRoutes(unittest.TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
 
+    # [cron_async_feedback_lifecycle_and_usability_plan.md E2]
+    # GET /v1/cron_questions/dismissed
+    def test_dismissed_endpoint_returns_manual_and_auto_reasons(self):
+        q1 = questions_store.append_question(self.paths, "user:job1", "手动忽略的问题")
+        self.client.post(f"/v1/cron_questions/{q1['question_id']}/dismiss")
+
+        q2 = questions_store.append_question(self.paths, "user:job1", "超时的问题")
+        # 直接操作 store 回填 created_at，模拟"很久以前提出"。
+        records = questions_store._load_all(self.paths)
+        import time
+        for d in records:
+            if d.get("question_id") == q2["question_id"]:
+                d["created_at"] = time.time() - 30 * 86400
+        questions_store._write_all(self.paths, records)
+        questions_store.expire_stale_pending_questions(self.paths, stale_after_days=14)
+
+        resp = self.client.get("/v1/cron_questions/dismissed")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(len(body["questions"]), 2)
+        reasons = {d["question_id"]: d.get("dismiss_reason") for d in body["questions"]}
+        self.assertEqual(reasons[q1["question_id"]], "manual")
+        self.assertEqual(reasons[q2["question_id"]], "stale_timeout")
+
+    def test_dismissed_endpoint_supports_job_id_filter_and_pagination(self):
+        q1 = questions_store.append_question(self.paths, "user:job1", "问题A")
+        q2 = questions_store.append_question(self.paths, "user:job2", "问题B")
+        self.client.post(f"/v1/cron_questions/{q1['question_id']}/dismiss")
+        self.client.post(f"/v1/cron_questions/{q2['question_id']}/dismiss")
+
+        resp = self.client.get("/v1/cron_questions/dismissed", params={"job_id": "user:job1"})
+        body = resp.json()
+        self.assertEqual(len(body["questions"]), 1)
+        self.assertEqual(body["questions"][0]["question_id"], q1["question_id"])
+
+        resp2 = self.client.get("/v1/cron_questions/dismissed", params={"limit": 1})
+        body2 = resp2.json()
+        self.assertEqual(len(body2["questions"]), 1)
+        self.assertTrue(body2["has_more"])
+
 
 if __name__ == "__main__":
     unittest.main()

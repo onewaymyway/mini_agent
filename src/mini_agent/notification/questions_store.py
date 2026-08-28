@@ -47,6 +47,12 @@ STATUS_PENDING = "pending"
 STATUS_ANSWERED = "answered"
 STATUS_DISMISSED = "dismissed"
 
+# [cron_async_feedback_lifecycle_and_usability_plan.md E1] dismiss 的两种来源：
+# 用户在看板手动点"忽略" vs 长期无人回答被维护性 tick 自动关闭。历史记录
+# 里没有这个字段的旧数据一律按 "manual" 兜底（`.get(..., DISMISS_REASON_MANUAL)`）。
+DISMISS_REASON_MANUAL = "manual"
+DISMISS_REASON_STALE_TIMEOUT = "stale_timeout"
+
 
 def _new_question_id(job_id: str) -> str:
     return f"cq:{job_id}:{uuid.uuid4().hex[:12]}"
@@ -336,11 +342,13 @@ def mark_answers_consumed(paths: "AgentPaths", question_ids: "set[str] | list[st
     return matched
 
 
-def dismiss_question(paths: "AgentPaths", question_id: str) -> Optional[dict]:
-    """手动忽略/关闭一条**仍是 pending 状态**的问题——用户觉得这个问题
-    不再需要回答了（比如任务本身已经不重要/用户已经通过其它方式处理），
-    跟"回答"是两条不同的路径：忽略后 `status` 变为 `dismissed`，不会再
-    出现在 `list_pending_questions()`（不再打扰用户）或
+def dismiss_question(
+    paths: "AgentPaths", question_id: str, *, reason: str = DISMISS_REASON_MANUAL,
+) -> Optional[dict]:
+    """忽略/关闭一条**仍是 pending 状态**的问题——用户在看板点"忽略"，或
+    （`reason=DISMISS_REASON_STALE_TIMEOUT` 时）被维护性 tick 判定长期无人
+    回答后自动关闭。跟"回答"是两条不同的路径：忽略后 `status` 变为
+    `dismissed`，不会再出现在 `list_pending_questions()`（不再打扰用户）或
     `list_pending_question_texts_for_job()`（不再出现在
     `{{unanswered_questions}}` 里提醒 agent），但也不会像回答那样注入
     `{{pending_answers}}`——agent 下次触发看不到这个问题，也看不到任何
@@ -352,7 +360,12 @@ def dismiss_question(paths: "AgentPaths", question_id: str) -> Optional[dict]:
     `submit_answer()`，不应该被"忽略"成一个既不是回答也不是待办的
     中间状态——对已回答的问题调用本函数返回 `None`（跟"找不到"同一个
     错误分支，调用方无需区分）。已经是 `dismissed` 的问题重复调用是
-    幂等的（直接返回当前记录，不重复写文件）。
+    幂等的（直接返回当前记录，不重复写文件、不覆盖已记录的 `dismiss_reason`）。
+
+    `reason` 记录进 `dismiss_reason` 字段（`"manual"` | `"stale_timeout"`），
+    供看板"已忽略"子面板和 `{{dismissed_questions}}` 渲染时区分展示——
+    用户需要知道一个问题是自己主动关掉的，还是系统因为"太久没人回答"替
+    他关掉的，这是两种完全不同的语义，不能混为一谈地展示成同一句话。
 
     返回更新后（或已是 dismissed 的）完整记录；`question_id` 不存在，
     或该问题当前是 `answered` 状态，均返回 None。
@@ -372,9 +385,71 @@ def dismiss_question(paths: "AgentPaths", question_id: str) -> Optional[dict]:
         if target.get("status") != STATUS_PENDING:
             return None
         target["status"] = STATUS_DISMISSED
+        target["dismiss_reason"] = reason
         target["updated_at"] = time.time()
         _write_all(paths, records)
         return target
+
+
+def expire_stale_pending_questions(
+    paths: "AgentPaths",
+    *,
+    stale_after_days: float = 14,
+    job_id: Optional[str] = None,
+) -> list[dict]:
+    """[cron_async_feedback_lifecycle_and_usability_plan.md E1] 把创建超过
+    `stale_after_days` 天、仍然是 `pending`（长期没人回答）的问题自动关闭
+    （复用 `dismiss_question` 同一套状态转换，`dismiss_reason` 记为
+    `DISMISS_REASON_STALE_TIMEOUT`），避免这类问题在"待我反馈"列表里无限
+    堆积——原设计（`cron_async_user_feedback_mechanism_plan.md` §0 非目标）
+    明确不做超时机制，理由是"不确定用户是不是就是需要慢慢想"；但实际运行
+    后发现反面代价更大：无人问津的旧问题会一直挤占看板"待处理"列表、一直
+    出现在 `{{unanswered_questions}}` 里提醒 agent"这里还欠着"，agent 本该
+    能自己拿主意的边缘判断也会因为"以为用户还会来看"而一直搁置，形成越
+    积越多、谁都不会去清理的心理负担。这里改成"默认给用户留够时间
+    （14 天），超过之后系统替用户做主：视为放弃/不再需要这个问题，自动
+    关闭并明确告知 agent 和用户"，而不是让问题永远悬着。
+
+    只按 `created_at`（问题第一次被提出的时间）判定，不看 `updated_at`——
+    `updated_at` 在 `find_or_create_question()` 命中去重时不会更新（那条
+    路径根本不碰这条记录），所以 `created_at` 才是"这个问题挂了多久没人
+    理"的准确度量。`stale_after_days` 可配置（由调用方——通常是
+    `AutonomousLoop._tick_maintenance()`——从配置读取后传入，默认 14 天）。
+    传 `job_id` 时只处理该 job 名下的问题（供 `CronJobExecutor` 需要时按
+    job 粒度调用）；不传则处理全部 job（维护性 tick 的常规用法）。
+
+    返回本次被关闭的记录列表（关闭后的完整记录，含 `job_id`/`question`），
+    供调用方据此逐条发送"这个问题因长期未回答已自动关闭"的通知——自动
+    关闭如果完全静默，用户会困惑"这个问题怎么凭空消失了"，这本身就是一种
+    新的可用性缺陷，不能用"减少打扰"的名义制造"消失的问题去哪了"的疑惑。
+
+    异常兜底返回空列表——这是维护性操作，不能因为它失败影响到 cron 主
+    流程或问答功能本身的可用性。
+    """
+    try:
+        cutoff = time.time() - stale_after_days * 86400
+        p = paths.notification_cron_questions
+        with ExclusiveFileLock(p):
+            records = _load_all(paths)
+            expired: list[dict] = []
+            for d in records:
+                if d.get("status") != STATUS_PENDING:
+                    continue
+                if job_id is not None and d.get("job_id") != job_id:
+                    continue
+                created_at = d.get("created_at") or 0
+                if created_at and created_at < cutoff:
+                    d["status"] = STATUS_DISMISSED
+                    d["dismiss_reason"] = DISMISS_REASON_STALE_TIMEOUT
+                    d["updated_at"] = time.time()
+                    expired.append(d)
+            if expired:
+                _write_all(paths, records)
+            return expired
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.notification.questions_store.expire_stale_pending_questions")
+        return []
 
 
 def _archive_path(paths: "AgentPaths"):

@@ -6479,6 +6479,10 @@ async def batch_ack_pending_reports(request: Request):
 #   GET  /v1/cron_questions/pending          待回答问题列表（分页，可按 job_id 过滤）
 #   GET  /v1/cron_questions/history          已回答问题历史（分页，可按 job_id 过滤，
 #                                             含完整 answer_history）
+#   GET  /v1/cron_questions/dismissed        已忽略/已自动关闭问题列表（分页，可按
+#                                             job_id 过滤，含 dismiss_reason，见
+#                                             next_doc/cron_async_feedback_lifecycle_
+#                                             and_usability_plan.md E2）
 #   POST /v1/cron_questions/{id}/answer      提交/修改答案（新答、改答统一走这个接口）
 #
 # 存储在独立的 notification/cron_questions.jsonl，跟 reports.jsonl 彻底分开——
@@ -6536,6 +6540,40 @@ async def get_cron_questions_history(request: Request, limit: int = 20, offset: 
     jid = job_id or None
     questions = questions_store.list_answered_questions(paths, job_id=jid, limit=limit, offset=offset)
     more_probe = questions_store.list_answered_questions(paths, job_id=jid, limit=1, offset=offset + len(questions))
+    return {
+        "questions": questions,
+        "has_more": bool(more_probe),
+    }
+
+
+@router.get("/cron_questions/dismissed")
+async def get_cron_questions_dismissed(request: Request, limit: int = 20, offset: int = 0, job_id: str = ""):
+    """GET /v1/cron_questions/dismissed?limit=20&offset=0&job_id=... — 分页返回
+    已忽略/已自动关闭的 cron 异步问题（含 `dismiss_reason`：`"manual"` 用户
+    手动忽略，`"stale_timeout"` 长期无人回答被系统自动关闭），供看板"待我
+    反馈"面板的"已忽略"列表展示。
+
+    [cron_async_feedback_lifecycle_and_usability_plan.md E2] 原设计（见
+    `cron_async_user_feedback_mechanism_plan.md` §15）里 `dismiss_question`
+    虽然保留了 `list_dismissed_questions()` 查询入口，但"看板当前未展示
+    这个列表"——忽略动作变成一个查无对证的黑洞。补上这个只读端点，让用户
+    能回头确认"这个问题当初是我自己关掉的，还是系统嫌我太久没回答替我
+    关掉的"，尤其是后者：用户完全可能压根没意识到问题已经被自动关闭。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    from mini_agent.notification import questions_store
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(proj_root)
+    jid = job_id or None
+    questions = questions_store.list_dismissed_questions(paths, job_id=jid, limit=limit, offset=offset)
+    more_probe = questions_store.list_dismissed_questions(paths, job_id=jid, limit=1, offset=offset + len(questions))
     return {
         "questions": questions,
         "has_more": bool(more_probe),

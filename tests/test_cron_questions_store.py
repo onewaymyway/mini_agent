@@ -485,3 +485,142 @@ class TestOrphanedPendingQuestions:
         )
         append_question(paths, "adhoc", "交互式问题")  # 没有 run_id 字段
         assert list_orphaned_pending_questions(paths) == []
+
+
+# [cron_async_feedback_lifecycle_and_usability_plan.md E1] 长期无人回答的
+# 问题自动关闭机制。
+class TestExpireStalePendingQuestions:
+    def test_expires_pending_older_than_threshold(self, paths):
+        import time
+        from mini_agent.notification.questions_store import (
+            expire_stale_pending_questions,
+            DISMISS_REASON_STALE_TIMEOUT,
+        )
+
+        rec = append_question(paths, "user:job1", "要不要继续？")
+        # 直接改写 created_at 模拟"15 天前提出"，不依赖真的等待。
+        _backdate(paths, rec["question_id"], days_ago=15)
+
+        expired = expire_stale_pending_questions(paths, stale_after_days=14)
+        assert len(expired) == 1
+        assert expired[0]["question_id"] == rec["question_id"]
+        assert expired[0]["status"] == STATUS_DISMISSED
+        assert expired[0]["dismiss_reason"] == DISMISS_REASON_STALE_TIMEOUT
+
+        stored = get_question(paths, rec["question_id"])
+        assert stored["status"] == STATUS_DISMISSED
+        assert stored["dismiss_reason"] == DISMISS_REASON_STALE_TIMEOUT
+
+    def test_does_not_expire_recent_pending(self, paths):
+        from mini_agent.notification.questions_store import expire_stale_pending_questions
+
+        rec = append_question(paths, "user:job1", "要不要继续？")
+        _backdate(paths, rec["question_id"], days_ago=3)
+
+        expired = expire_stale_pending_questions(paths, stale_after_days=14)
+        assert expired == []
+        assert get_question(paths, rec["question_id"])["status"] == STATUS_PENDING
+
+    def test_expired_question_disappears_from_pending_and_unanswered(self, paths):
+        from mini_agent.notification.questions_store import (
+            expire_stale_pending_questions,
+            list_pending_question_texts_for_job,
+        )
+
+        rec = append_question(paths, "user:job1", "要不要继续？")
+        _backdate(paths, rec["question_id"], days_ago=30)
+        expire_stale_pending_questions(paths, stale_after_days=14)
+
+        assert list_pending_questions(paths) == []
+        assert list_pending_question_texts_for_job(paths, "user:job1") == []
+        # 不会被误当作"已回答"混进历史面板。
+        assert list_answered_questions(paths) == []
+
+    def test_expired_question_appears_in_dismissed_list_with_reason(self, paths):
+        from mini_agent.notification.questions_store import (
+            expire_stale_pending_questions,
+            DISMISS_REASON_STALE_TIMEOUT,
+        )
+
+        rec = append_question(paths, "user:job1", "要不要继续？")
+        _backdate(paths, rec["question_id"], days_ago=30)
+        expire_stale_pending_questions(paths, stale_after_days=14)
+
+        dismissed = list_dismissed_questions(paths)
+        assert len(dismissed) == 1
+        assert dismissed[0]["dismiss_reason"] == DISMISS_REASON_STALE_TIMEOUT
+
+    def test_filters_by_job_id(self, paths):
+        from mini_agent.notification.questions_store import expire_stale_pending_questions
+
+        rec1 = append_question(paths, "user:job1", "问题A")
+        rec2 = append_question(paths, "user:job2", "问题B")
+        _backdate(paths, rec1["question_id"], days_ago=30)
+        _backdate(paths, rec2["question_id"], days_ago=30)
+
+        expired = expire_stale_pending_questions(paths, stale_after_days=14, job_id="user:job1")
+        assert len(expired) == 1
+        assert expired[0]["question_id"] == rec1["question_id"]
+        # job2 的问题不受影响，仍是 pending。
+        assert get_question(paths, rec2["question_id"])["status"] == STATUS_PENDING
+
+    def test_answered_questions_never_expired(self, paths):
+        from mini_agent.notification.questions_store import expire_stale_pending_questions
+
+        rec = append_question(paths, "user:job1", "要不要继续？")
+        submit_answer(paths, rec["question_id"], "继续")
+        _backdate(paths, rec["question_id"], days_ago=30)
+
+        expired = expire_stale_pending_questions(paths, stale_after_days=14)
+        assert expired == []
+        assert get_question(paths, rec["question_id"])["status"] == STATUS_ANSWERED
+
+    def test_zero_or_negative_threshold_still_requires_explicit_call(self, paths):
+        # 阈值本身允许调用方传入非正数（调用方——autonomous_loop——是在
+        # <=0 时直接不调这个函数；store 层不强行拦截，语义上传 0 表示
+        # "立刻过期所有 pending"，是合法输入，不是错误。
+        from mini_agent.notification.questions_store import expire_stale_pending_questions
+
+        rec = append_question(paths, "user:job1", "要不要继续？")
+        expired = expire_stale_pending_questions(paths, stale_after_days=0)
+        assert len(expired) == 1
+        assert expired[0]["question_id"] == rec["question_id"]
+
+
+class TestDismissReason:
+    def test_manual_dismiss_records_manual_reason(self, paths):
+        from mini_agent.notification.questions_store import DISMISS_REASON_MANUAL
+
+        rec = append_question(paths, "user:job1", "要不要继续？")
+        updated = dismiss_question(paths, rec["question_id"])
+        assert updated["dismiss_reason"] == DISMISS_REASON_MANUAL
+
+    def test_idempotent_dismiss_does_not_overwrite_existing_reason(self, paths):
+        from mini_agent.notification.questions_store import (
+            DISMISS_REASON_MANUAL,
+            DISMISS_REASON_STALE_TIMEOUT,
+            expire_stale_pending_questions,
+        )
+
+        rec = append_question(paths, "user:job1", "要不要继续？")
+        _backdate(paths, rec["question_id"], days_ago=30)
+        expire_stale_pending_questions(paths, stale_after_days=14)
+
+        # 已经因超时被关闭的问题，再被用户手动点一次"忽略"（比如看板还没
+        # 刷新，用户没看到它其实已经关了）——幂等，理由不应该被覆盖成
+        # manual，因为它确实是超时关的，不是用户手动关的。
+        again = dismiss_question(paths, rec["question_id"])
+        assert again["dismiss_reason"] == DISMISS_REASON_STALE_TIMEOUT
+
+
+def _backdate(paths, question_id: str, *, days_ago: int) -> None:
+    """测试辅助：把某条记录的 created_at 往前拨，模拟"提出已经很久了"，
+    不依赖真实等待。"""
+    import time
+    from mini_agent.notification.questions_store import _load_all, _write_all
+
+    records = _load_all(paths)
+    for d in records:
+        if d.get("question_id") == question_id:
+            d["created_at"] = time.time() - days_ago * 86400
+    _write_all(paths, records)

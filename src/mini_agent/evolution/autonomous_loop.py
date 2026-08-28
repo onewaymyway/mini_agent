@@ -68,6 +68,7 @@ class AutonomousLoop:
         # 归档的上次执行时间，_tick_maintenance() 里节流成每 24 小时最多
         # 跑一次——归档是维护性操作，没必要每个 tick 都扫一遍全量记录。
         self._last_questions_archive_at: float = 0.0
+        self._last_questions_expire_at: float = 0.0
         self._tick_count: int = 0
         self._digest_records: list[dict] = []  # 待写入 activity_digest.jsonl 的记录
         # Phase 1 新增：CronScheduler 和 ObjectiveExecutor（可选注入，降级安全）
@@ -496,6 +497,48 @@ class AutonomousLoop:
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.archive_old_records')
+                pass
+
+        # [cron_async_feedback_lifecycle_and_usability_plan.md E1] 长期无人
+        # 回答的问题自动关闭：跟上面归档同一节流窗口（24 小时最多跑一次，
+        # 全量扫描成本不高但没必要每个 tick 都做），避免"待我反馈"列表
+        # 无限堆积。阈值从 `.agent/notification/config.yaml` 的
+        # `cron_question_stale_after_days` 读取（默认 14 天，<=0 关闭该
+        # 机制）。每条被关闭的问题都补发一条 kanban 通知，明确告诉用户
+        # "为什么这个问题消失了"——静默关闭本身就是一种新的可用性缺陷。
+        if now - self._last_questions_expire_at >= 86400:
+            self._last_questions_expire_at = now
+            try:
+                from mini_agent.notification import questions_store
+                from mini_agent.notification.config import load_notification_config
+                from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+                notif_cfg = load_notification_config(self._paths)
+                stale_after_days = notif_cfg.cron_question_stale_after_days
+                if stale_after_days and stale_after_days > 0:
+                    expired = questions_store.expire_stale_pending_questions(
+                        self._paths, stale_after_days=stale_after_days,
+                    )
+                    if expired:
+                        dispatcher = NotificationDispatcher(self._paths)
+                        for rec in expired:
+                            try:
+                                dispatcher.dispatch(NotificationMessage(
+                                    title=f"任务「{rec.get('job_id', '-')}」的一个问题因长期未回答已自动关闭",
+                                    body=(
+                                        f"{rec.get('question', '')}\n\n"
+                                        f"这个问题超过 {int(stale_after_days)} 天没有得到回答，系统已"
+                                        "自动关闭，不再提醒。如果仍然需要处理，可以直接在对应任务里"
+                                        "重新说明，或等它下次任务执行时再次被问到。"
+                                    ),
+                                    source="cron_question_expired",
+                                    meta={"job_id": rec.get("job_id"), "question_id": rec.get("question_id")},
+                                ))
+                            except Exception as _mini_agent_exc:
+                                from mini_agent.errors import log_exception
+                                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.expire_stale_pending_questions.notify')
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.expire_stale_pending_questions')
                 pass
 
         # ObjectiveExecutor：先回收卡死的 step（并发槽位卡死修复，见

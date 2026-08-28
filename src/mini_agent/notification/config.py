@@ -44,6 +44,14 @@ def _resolve_env(value):
 # watchlist_notification_goal_design.md §9.2 #4 的说明）。
 DEFAULT_GOAL_ADVANCE_COOLDOWN_SECONDS = 21600
 
+# [cron_async_feedback_lifecycle_and_usability_plan.md E1] ask_user_async
+# 提出的问题，超过这么多天仍是 pending（没人回答）就被维护性 tick 自动
+# 关闭，避免"待我反馈"列表无限堆积。14 天是"给用户留够时间但不会长年
+# 悬着没人管"之间的取舍，可通过 config.yaml 的
+# `cron_question_stale_after_days` 覆盖；设为 0 或负数视为关闭该机制
+# （问题永远只能靠用户手动忽略或回答清理，等价于原始行为）。
+DEFAULT_CRON_QUESTION_STALE_AFTER_DAYS = 14
+
 
 @dataclass
 class NotificationConfig:
@@ -51,6 +59,8 @@ class NotificationConfig:
     channels: dict = field(default_factory=dict)  # channel_name -> cfg dict（已解析 ${ENV:...}）
     # P5 新增：GoalRelevanceEngine `try_advance_goal` 的冷却期配置，见 §4.4。
     goal_advance_cooldown_seconds: float = DEFAULT_GOAL_ADVANCE_COOLDOWN_SECONDS
+    # [cron_async_feedback_lifecycle_and_usability_plan.md E1]
+    cron_question_stale_after_days: float = DEFAULT_CRON_QUESTION_STALE_AFTER_DAYS
 
     def channel_config(self, name: str) -> dict:
         return self.channels.get(name, {})
@@ -100,8 +110,16 @@ def load_notification_config(paths: "AgentPaths") -> NotificationConfig:
         cooldown = float(cooldown)
     except (TypeError, ValueError):
         cooldown = DEFAULT_GOAL_ADVANCE_COOLDOWN_SECONDS
+    stale_after_days = raw.get(
+        "cron_question_stale_after_days", DEFAULT_CRON_QUESTION_STALE_AFTER_DAYS
+    )
+    try:
+        stale_after_days = float(stale_after_days)
+    except (TypeError, ValueError):
+        stale_after_days = DEFAULT_CRON_QUESTION_STALE_AFTER_DAYS
     return NotificationConfig(
         default_channels=[str(c) for c in default_channels],
         channels=channels,
         goal_advance_cooldown_seconds=cooldown,
+        cron_question_stale_after_days=stale_after_days,
     )
