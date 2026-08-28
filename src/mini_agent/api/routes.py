@@ -6484,6 +6484,11 @@ async def batch_ack_pending_reports(request: Request):
 #                                             next_doc/cron_async_feedback_lifecycle_
 #                                             and_usability_plan.md E2）
 #   POST /v1/cron_questions/{id}/answer      提交/修改答案（新答、改答统一走这个接口）
+#   GET  /v1/cron_questions/counts           三种状态的精确计数（pending/answered/
+#                                             dismissed），可按 job_id 过滤，供看板
+#                                             tab 角标用，见
+#                                             next_doc/cron_async_feedback_further_
+#                                             improvements_plan.md F1
 #
 # 存储在独立的 notification/cron_questions.jsonl，跟 reports.jsonl 彻底分开——
 # 语义不同（问答 vs 只读汇报），见 notification/questions_store.py 模块 docstring
@@ -6577,6 +6582,34 @@ async def get_cron_questions_dismissed(request: Request, limit: int = 20, offset
     return {
         "questions": questions,
         "has_more": bool(more_probe),
+    }
+
+
+@router.get("/cron_questions/counts")
+async def get_cron_questions_counts(request: Request, job_id: str = ""):
+    """[cron_async_feedback_further_improvements_plan.md F1]
+    GET /v1/cron_questions/counts?job_id=... — 一次性返回三种状态的精确
+    计数 `{"pending": N, "answered": N, "dismissed": N}`，供看板三个子
+    tab 的角标使用，取代 E3 阶段"用 limit=200 探测请求的 len(questions)
+    近似"的做法（那种做法超过 200 条时角标固定卡在"200+"，且要多读一遍
+    正文字段，比纯计数浪费）。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    from mini_agent.notification import questions_store
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(proj_root)
+    jid = job_id or None
+    return {
+        "pending": questions_store.count_questions(paths, status=questions_store.STATUS_PENDING, job_id=jid),
+        "answered": questions_store.count_questions(paths, status=questions_store.STATUS_ANSWERED, job_id=jid),
+        "dismissed": questions_store.count_questions(paths, status=questions_store.STATUS_DISMISSED, job_id=jid),
     }
 
 

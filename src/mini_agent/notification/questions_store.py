@@ -275,6 +275,25 @@ def list_answered_questions(
     return result
 
 
+def count_questions(
+    paths: "AgentPaths", *, status: Optional[str] = None, job_id: Optional[str] = None,
+) -> int:
+    """[cron_async_feedback_further_improvements_plan.md F1] 纯计数，不
+    排序/不切片/不返回记录正文——供看板 tab 角标用。之前看板（E3）用
+    `list_pending_questions(limit=200)` 之类的分页接口"探测"数量，既不
+    精确（超过 200 条时角标固定卡在"200+"）又浪费（要把 200 条记录的
+    question/hint/answer_history 等正文字段全读出来才能数有多少条）。
+
+    `status=None` 时统计全部状态（含 pending/answered/dismissed）之和，
+    通常调用方会显式传 `status` 分别统计三种。"""
+    result = _load_all(paths)
+    if status:
+        result = [d for d in result if d.get("status") == status]
+    if job_id:
+        result = [d for d in result if d.get("job_id") == job_id]
+    return len(result)
+
+
 def submit_answer(paths: "AgentPaths", question_id: str, answer_text: str) -> Optional[dict]:
     """提交或修改一条问题的答案。新答、改答统一走这个入口（`questions_store`
     不区分"首次回答"和"修改回答"——只要调用这个函数，就把当前答案更新为

@@ -730,6 +730,17 @@ class AgentClient:
             params["job_id"] = job_id
         return self._get("/cron_questions/dismissed", params=params)
 
+    def cron_questions_counts(self, job_id: str = ""):
+        """[cron_async_feedback_further_improvements_plan.md F1] 一次性返回
+        `{"pending": N, "answered": N, "dismissed": N}` 精确计数，供"🙋 待我
+        反馈"面板三个子 tab 的角标使用，取代此前用 limit=200 探测列表长度
+        的近似做法。"""
+        params = {}
+        if job_id:
+            params["job_id"] = job_id
+        return self._get("/cron_questions/counts", params=params)
+
+
     def novelty_candidates(self, limit: int = 20, offset: int = 0):
         """§2 新颖信号候选：分页返回待确认候选（status=pending）。"""
         return self._get("/external_input/novelty_candidates", params={"limit": limit, "offset": offset})

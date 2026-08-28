@@ -9,6 +9,7 @@ import pytest
 
 from mini_agent.notification.questions_store import (
     append_question,
+    count_questions,
     dismiss_question,
     find_pending_by_fingerprint,
     get_question,
@@ -624,3 +625,32 @@ def _backdate(paths, question_id: str, *, days_ago: int) -> None:
         if d.get("question_id") == question_id:
             d["created_at"] = time.time() - days_ago * 86400
     _write_all(paths, records)
+
+
+class TestCountQuestions:
+    """[cron_async_feedback_further_improvements_plan.md F1]"""
+
+    def test_counts_by_status(self, paths):
+        append_question(paths, "user:job1", "问题A")
+        rec_b = append_question(paths, "user:job1", "问题B")
+        rec_c = append_question(paths, "user:job1", "问题C")
+        submit_answer(paths, rec_b["question_id"], "答案")
+        dismiss_question(paths, rec_c["question_id"])
+
+        assert count_questions(paths, status=STATUS_PENDING) == 1
+        assert count_questions(paths, status=STATUS_ANSWERED) == 1
+        assert count_questions(paths, status=STATUS_DISMISSED) == 1
+        assert count_questions(paths) == 3
+
+    def test_counts_filtered_by_job_id(self, paths):
+        append_question(paths, "user:job1", "问题A")
+        append_question(paths, "user:job1", "问题B")
+        append_question(paths, "user:job2", "问题C")
+
+        assert count_questions(paths, status=STATUS_PENDING, job_id="user:job1") == 2
+        assert count_questions(paths, status=STATUS_PENDING, job_id="user:job2") == 1
+        assert count_questions(paths, status=STATUS_PENDING, job_id="user:job3") == 0
+
+    def test_count_zero_when_no_records(self, paths):
+        assert count_questions(paths, status=STATUS_PENDING) == 0
+        assert count_questions(paths) == 0

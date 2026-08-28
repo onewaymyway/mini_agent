@@ -185,6 +185,29 @@ class TestCronQuestionsApiRoutes(unittest.TestCase):
         self.assertEqual(len(body2["questions"]), 1)
         self.assertTrue(body2["has_more"])
 
+    def test_counts_endpoint_returns_exact_counts_per_status(self):
+        """[cron_async_feedback_further_improvements_plan.md F1]"""
+        pending = questions_store.append_question(self.paths, "user:job1", "问题A")
+        questions_store.append_question(self.paths, "user:job1", "问题B")
+        answered = questions_store.append_question(self.paths, "user:job1", "问题C")
+        questions_store.submit_answer(self.paths, answered["question_id"], "答案")
+        dismissed = questions_store.append_question(self.paths, "user:job2", "问题D")
+        self.client.post(f"/v1/cron_questions/{dismissed['question_id']}/dismiss")
+
+        resp = self.client.get("/v1/cron_questions/counts")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body, {"pending": 2, "answered": 1, "dismissed": 1})
+
+    def test_counts_endpoint_supports_job_id_filter(self):
+        """[cron_async_feedback_further_improvements_plan.md F1]"""
+        questions_store.append_question(self.paths, "user:job1", "问题A")
+        questions_store.append_question(self.paths, "user:job2", "问题B")
+
+        resp = self.client.get("/v1/cron_questions/counts", params={"job_id": "user:job1"})
+        body = resp.json()
+        self.assertEqual(body, {"pending": 1, "answered": 0, "dismissed": 0})
+
 
 if __name__ == "__main__":
     unittest.main()

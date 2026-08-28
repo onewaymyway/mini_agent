@@ -10084,32 +10084,33 @@ def _render_cron_questions_panel(client: "AgentClient"):
         "\"已忽略\"里查到。"
     )
 
-    # [cron_async_feedback_lifecycle_and_usability_plan.md E3，本轮补做]
-    # tab 标题上带一个数量角标。API 层没有专门的 count 端点（量级小，之前
-    # 没必要加），这里复用下面 job 筛选框本就要发的 limit=200 探测请求，
-    # 用 len(questions) + ("+" 提示还有更多) 拼出角标，不额外加请求；
-    # 失败时角标退化为不显示数字（静默降级，不影响主体功能）。
-    def _tab_count(resp: dict) -> str:
-        if not resp or "_error" in resp:
-            return ""
-        n = len(resp.get("questions") or [])
-        if n == 0:
-            return ""
-        suffix = "+" if resp.get("has_more") else ""
-        return f" ({n}{suffix})"
+    # [cron_async_feedback_further_improvements_plan.md F1，本轮实现]
+    # tab 角标改用精确计数接口，不再用 limit=200 探测请求的 len(questions)
+    # 近似——旧做法超过 200 条时角标固定卡在"200+"且要多读一遍正文字段。
+    def _tab_count(n) -> str:
+        return f" ({n})" if n else ""
+
+    counts_resp = client.cron_questions_counts() or {}
+    if "_error" in counts_resp:
+        pending_n = history_n = dismissed_n = None
+    else:
+        pending_n = counts_resp.get("pending")
+        history_n = counts_resp.get("answered")
+        dismissed_n = counts_resp.get("dismissed")
 
     # [E3] job_id 筛选框——API 层早已支持 `job_id` 过滤参数，之前看板 UI
     # 一直没暴露；筛选选项从这里现取的一批问题里去重排序，量级小（个位数
     # 到十几个 job），不需要专门开一个"列出所有 job_id"的接口。这三个
-    # limit=200 请求同时也用来算上面的 tab 数量角标。
+    # limit=200 请求只用来拿 job_id 选项，不再用来算 tab 角标（角标改用
+    # 上面的精确计数接口，见 F1）。
     all_pending_resp = client.cron_questions_pending(limit=200) or {}
     all_history_resp = client.cron_questions_history(limit=200) or {}
     all_dismissed_resp = client.cron_questions_dismissed(limit=200) or {}
 
     sub_tab_pending, sub_tab_history, sub_tab_dismissed = st.tabs([
-        f"待处理{_tab_count(all_pending_resp)}",
-        f"历史记录{_tab_count(all_history_resp)}",
-        f"已忽略{_tab_count(all_dismissed_resp)}",
+        f"待处理{_tab_count(pending_n)}",
+        f"历史记录{_tab_count(history_n)}",
+        f"已忽略{_tab_count(dismissed_n)}",
     ])
 
     with sub_tab_pending:

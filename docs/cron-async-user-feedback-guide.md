@@ -4,12 +4,15 @@
   设计）、`next_doc/cron_async_feedback_hardening_plan.md`（D1–D6 加固）、
   `next_doc/cron_async_feedback_lifecycle_and_usability_plan.md`（E1/E2
   长期未回答自动关闭 + 看板可用性补齐；原本明确不做的 E3 批量操作/角标/
-  job_id 筛选，本轮补做，见该文档 §8）
+  job_id 筛选，本轮补做，见该文档 §8）、
+  `next_doc/cron_async_feedback_further_improvements_plan.md`（F1 精确
+  计数已完成，F2–F7 规划中）
 - **前置依赖**：[cron-dedicated-execution-guide.md](cron-dedicated-execution-guide.md)（cron
   任务专属执行机制本体，本功能是它的收尾状态扩展，不重复实现执行线程/
   `CronJobWorkspace` 记录链路）
 - **当前实施进度**：阶段1-5（原始设计）+ D1-D6（加固）+ E1-E2（生命周期
-  与看板可用性）+ E3（看板批量操作/角标/筛选）已全部实施完成。
+  与看板可用性）+ E3（看板批量操作/角标/筛选）+ F1（精确计数）已全部
+  实施完成；F2-F7 见 `cron_async_feedback_further_improvements_plan.md`。
 
 ---
 
@@ -116,9 +119,10 @@ cron 到期时任务依然正常执行，由 agent 根据 `{{unanswered_question
 ## 6. 在看板上查看和回答问题
 
 Streamlit 看板"🔔 关注与通知"tab 下新增"🙋 待我反馈"面板，分三个子 tab
-（**[E3 新增]** 三个 tab 标题都带数量角标，例如"待处理 (3)"；一次最多
-探测 200 条，超过时显示"+"；每个子 tab 顶部还有一个按 `job_id` 筛选的
-下拉框，方便只看某一个 cron job 的问答）：
+（**[E3]** 三个 tab 标题都带数量角标，例如"待处理 (3)"；**[F1 更新]**
+角标改为调用精确计数接口 `GET /v1/cron_questions/counts`，不再是
+"探测 200 条取近似值"，数字始终准确；每个子 tab 顶部还有一个按
+`job_id` 筛选的下拉框，方便只看某一个 cron job 的问答）：
 
 - **待处理**：逐条展示所属任务（`job_id`）、问题原文、`hint`；**[E2 新增]**
   按等待时长**升序**排列（等得最久的排最前）并附带"已等待 N 天"徽标
@@ -159,6 +163,7 @@ Streamlit 看板"🔔 关注与通知"tab 下新增"🙋 待我反馈"面板，�
 | `POST` | `/v1/cron_questions/{question_id}/answer` | 提交/修改答案，body: `{"answer": "..."}`；新答、改答统一走这一个接口；答案为空返回 `400`，`question_id` 不存在返回 `404` |
 | `POST` | `/v1/cron_questions/{question_id}/dismiss` | 忽略/关闭一条仍待回答的问题；问题不存在或已被回答返回 `404`；重复忽略同一条是幂等的 |
 | `GET` | `/v1/cron_questions/dismissed?limit=20&offset=0&job_id=` | **[E2 新增]** 已忽略/已自动关闭问题列表（含 `dismiss_reason`），分页，`job_id` 留空返回全部 |
+| `GET` | `/v1/cron_questions/counts?job_id=` | **[F1 新增]** 精确计数 `{"pending": N, "answered": N, "dismissed": N}`，`job_id` 留空统计全部 job；供看板 tab 角标使用，不返回记录正文 |
 
 这几个接口都是纯本地文件读写，耗时可忽略，不走
 `kanban_async_job_mechanism_plan.md` 里那套面向分钟级不可预测耗时的
@@ -257,7 +262,7 @@ questions()` 通过比较问题记录的 `run_id` 跟对应 job 当前
 
 | 文件 | 作用 |
 |---|---|
-| `src/mini_agent/notification/questions_store.py` | 问答记录存储：`append_question`/`find_or_create_question`（加锁原子操作，含模糊去重）/`find_pending_by_fingerprint`/`submit_answer`/`dismiss_question`（**[E1 新增]** `reason` 参数）/`expire_stale_pending_questions`（**[E1 新增]**）/`list_pending_questions`/`list_answered_questions`/`list_dismissed_questions`/`list_unconsumed_answers_for_job`/`mark_answers_consumed`/`list_pending_question_texts_for_job`/`archive_old_records`/`purge_questions_for_job`/`list_orphaned_pending_questions` |
+| `src/mini_agent/notification/questions_store.py` | 问答记录存储：`append_question`/`find_or_create_question`（加锁原子操作，含模糊去重）/`find_pending_by_fingerprint`/`submit_answer`/`dismiss_question`（**[E1 新增]** `reason` 参数）/`expire_stale_pending_questions`（**[E1 新增]**）/`list_pending_questions`/`list_answered_questions`/`list_dismissed_questions`/`list_unconsumed_answers_for_job`/`mark_answers_consumed`/`list_pending_question_texts_for_job`/`archive_old_records`/`purge_questions_for_job`/`list_orphaned_pending_questions`/`count_questions`（**[F1 新增]**） |
 | `src/mini_agent/notification/config.py` | **[E1 新增]** `cron_question_stale_after_days` 配置项加载 |
 | `src/mini_agent/tools/ask_user_async.py` | 异步提问工具本体，内部调用 `NotificationDispatcher.dispatch()`（`source="cron_question"`） |
 | `src/mini_agent/evolution/cron_context.py` | thread-local `job_id`/`run_id` 透传，供 `ask_user_async` 在 cron 执行线程内取到当前 job_id/run_id |
@@ -265,9 +270,9 @@ questions()` 通过比较问题记录的 `run_id` 跟对应 job 当前
 | `src/mini_agent/evolution/cron_job_executor.py` | `run_job()` 设置/清空 thread-local job_id/run_id、确认第一步成功后才消费答案、收尾时的 `waiting_feedback` 判定 |
 | `src/mini_agent/evolution/cron_scheduler.py` | `remove_job()` 顺带清理该 job 名下问答记录 |
 | `src/mini_agent/evolution/autonomous_loop.py` | `_tick_maintenance()` 每 24 小时触发一次问答记录归档，**[E1 新增]** 同窗口触发长期未回答问题自动关闭 + 逐条通知 |
-| `src/mini_agent/api/routes.py` | `/v1/cron_questions/{pending,history,dismissed,{id}/answer,{id}/dismiss}` 五个端点（**[E2 新增]** `dismissed`） |
-| `apps/mini_agent_kanban/client.py` | `cron_questions_pending`/`cron_questions_history`/`answer_cron_question`/`dismiss_cron_question`/`cron_questions_dismissed`（**[E2 新增]**）客户端方法 |
-| `apps/mini_agent_kanban/app.py` | "🔔 关注与通知"tab 下"🙋 待我反馈"面板（`_render_cron_questions_panel`，独立 `@st.fragment`），**[E2]** 待处理按等待时长排序+徽标、新增"已忽略"子 tab；**[E3 新增]** 三个子 tab 标题数量角标、job_id 筛选下拉框、"待处理"批量勾选+批量忽略 |
+| `src/mini_agent/api/routes.py` | `/v1/cron_questions/{pending,history,dismissed,counts,{id}/answer,{id}/dismiss}` 六个端点（**[E2 新增]** `dismissed`，**[F1 新增]** `counts`） |
+| `apps/mini_agent_kanban/client.py` | `cron_questions_pending`/`cron_questions_history`/`answer_cron_question`/`dismiss_cron_question`/`cron_questions_dismissed`（**[E2 新增]**）/`cron_questions_counts`（**[F1 新增]**）客户端方法 |
+| `apps/mini_agent_kanban/app.py` | "🔔 关注与通知"tab 下"🙋 待我反馈"面板（`_render_cron_questions_panel`，独立 `@st.fragment`），**[E2]** 待处理按等待时长排序+徽标、新增"已忽略"子 tab；**[E3 新增]** job_id 筛选下拉框、"待处理"批量勾选+批量忽略；**[F1 更新]** 三个子 tab 标题数量角标改用精确计数接口 |
 | `.agent/notification/cron_questions.jsonl` | 问答记录落地文件（运行时生成） |
 | `.agent/notification/cron_questions.archive.jsonl` | **[加固后新增]** 归档文件（运行时生成，超过保留期的 answered/dismissed 记录） |
 | `tests/test_cron_questions_store.py` | `questions_store.py` 单元测试（含并发/消费时机/归档/清理/孤儿识别/**[E1 新增]** 自动过期回归测试） |
