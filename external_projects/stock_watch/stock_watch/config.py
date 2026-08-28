@@ -144,6 +144,19 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH, secrets_path: Path = DEFAULT_S
     )
 
 
+def save_config(cfg: WatchlistConfig, secrets_path: Path = DEFAULT_SECRETS_PATH) -> None:
+    """把 WatchlistConfig 写回 secrets.local.yaml（只更新 secrets 部分）。
+
+    这是为 data_sources._try_refresh_iwencai_cookie_via_cdp() 提供的辅助，
+    用于在通过 CDP 拿到新 cookie 后自动更新配置文件。
+    """
+    secrets_path.parent.mkdir(parents=True, exist_ok=True)
+    secrets_path.write_text(
+        yaml.safe_dump(cfg.secrets or {}, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     POOL_SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)

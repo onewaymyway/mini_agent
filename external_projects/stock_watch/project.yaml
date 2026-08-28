@@ -33,6 +33,10 @@ entrypoints:
     cmd: "python entrypoints/reconcile_outcomes.py"
     schedule: "cron: 0 18 * * 1"     # 每周一盘后，核对一周前候选池快照的实际表现
     timeout_sec: 600
+  refresh_iwencai_cookie:
+    cmd: "python entrypoints/refresh_iwencai_cookie.py"
+    timeout_sec: 180
+    # 无 schedule：按需手动触发，用于 401 时刷新 cookie
   # 以下两个 entrypoint 见 next_doc/stock_watch_pool_state_tracking_and_
   # kanban_plan.md 阶段2：候选池状态机 + 按状态区间的涨跌跟踪。
   pool_tracking:

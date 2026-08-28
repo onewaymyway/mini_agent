@@ -432,23 +432,30 @@ def fetch_guba_posts(code: str, top_n: int = 30) -> List[Dict[str, Any]]:
 def fetch_iwencai_screener(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
     """问财（iwencai）自然语言选股结果。
 
-    优先用 `ak.stock_zh_a_alerts_cls`/`ak.stock_a_indicator_lg` 这类结构
-    化指标接口做不了自然语言查询，问财的核心价值就在"自然语言 → 选股
-    结果"，因此这里直接走 `ak.stock_zh_a_disclosure_report_cninfo`? ——
-    不对，akshare 实际提供了 `ak.stock_a_ttm_lyr` 等指标接口，但没有
-    通用自然语言问财封装，因此优先尝试较新版本 akshare 里可能存在的
-    `ak.stock_zh_a_st_em` 系列，若都不存在，走问财网页版接口兜底。
+    优先级：
+    1. 新 API（iwencai_api.fetch_iwencai_screener_direct）：通过 CDP 获取
+       hexin-v 令牌，调用 `unifiedwap/unified-wap/v2/result/get-robot-data`
+    2. 旧 API（_fetch_iwencai_web）：通过 _get_iwencai_session 获取令牌
+    3. pywencai（如果已安装）：作为最后兜底
     """
-    ak = _import_akshare()
-    fn = getattr(ak, "stock_zh_a_disclosure_relation_cninfo", None)
-    # 说明：上面这行只是"如果未来 akshare 提供了对应封装，优先复用"的
-    # 占位判断，当前版本通常没有，因此正常会走下面的网页版兜底。
-    if fn is not None:  # pragma: no cover - 依赖 akshare 具体版本
-        try:
-            return fn(query=query).head(top_n).to_dict("records")
-        except Exception:  # noqa: BLE001
-            pass
+    from stock_watch.iwencai_api import (
+        CDPError,
+        fetch_iwencai_screener_direct,
+    )
 
+    try:
+        return fetch_iwencai_screener_direct(query, top_n=top_n)
+    except DataSourceError as exc:
+        # 检查是否是 CDP 不可用的错误（不是 token 无效）
+        error_msg = str(exc)
+        if "无法获取 hexin-v 令牌" in error_msg or "CDP 端口" in error_msg:
+            logger.debug("CDP 不可用，回退到旧 API: %s", exc)
+        elif "401" in error_msg or "令牌无效" in error_msg or "401 认证失败" in error_msg:
+            logger.warning("新 API 令牌无效，回退到旧 API: %s", exc)
+        else:
+            raise
+
+    # 回退到旧 API
     return _fetch_iwencai_web(query, top_n=top_n)
 
 
@@ -519,6 +526,97 @@ def fetch_latest_close(code: str, entry_type: str) -> float:
     return float(df.iloc[-1][close_col])
 
 
+def _check_cdp_available(host: str = "127.0.0.1", port: int = 9222) -> bool:
+    """检查 Chrome DevTools Protocol 调试端口是否可用。
+
+    用于判断是否可以通过 CDP 自动刷新问财 cookie。
+    如果 Chrome 以 `--remote-debugging-port=9222` 启动，返回 True。
+    """
+    try:
+        import requests as _req
+        resp = _req.get(f"http://{host}:{port}/json/version", timeout=2)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _try_refresh_iwencai_cookie_via_cdp() -> bool:
+    """尝试通过 CDP 自动刷新问财 cookie。
+
+    如果 Chrome 调试端口可用且问财页面已打开（用户已登录），
+    可以自动读取当前的 `v` cookie 值并更新配置文件。
+
+    返回 True 表示成功刷新，False 表示 CDP 不可用或刷新失败。
+    """
+    if not _check_cdp_available():
+        return False
+
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+        import fetch_iwencai_cookie as _fic
+        # 非交互式模式：只读取当前 cookie，不启动新 Chrome
+        try:
+            new_cookie = _fic.read_cookie_from_cdp(host="127.0.0.1", port=9222)
+        except Exception as _exc:  # noqa: N806
+            logger.debug("CDP 读取 cookie 失败: %s", _exc)
+            new_cookie = None
+        if new_cookie:
+            # 更新配置文件
+            from stock_watch.config import DEFAULT_SECRETS_PATH, load_config, save_config
+            cfg = load_config()
+            cfg.iwencai_cookie = new_cookie
+            save_config(cfg)
+            # 同时更新内存中的全局变量
+            set_iwencai_cookie(new_cookie)
+            logger.info("问财 cookie 已通过 CDP 自动刷新")
+            return True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("CDP 刷新 cookie 失败: %s", exc)
+    return False
+
+
+def _build_iwencai_401_hint() -> str:
+    """构建 401 错误时的详细修复指引。"""
+    cdp_ok = _check_cdp_available()
+    lines = [
+        "问财接口持续 401：hexin-v cookie 已失效，需要刷新。",
+        "",
+        "修复方法（任选其一）：",
+        "",
+    ]
+
+    if cdp_ok:
+        lines.extend([
+            "① [自动] 通过 Chrome CDP 刷新 cookie：",
+            "   python entrypoints/fetch_iwencai_cookie.py",
+            "   （当前检测到 Chrome 调试端口 9222 可用，会自动读取 cookie）",
+            "",
+        ])
+    else:
+        lines.extend([
+            "① [自动] 先启动带调试端口的 Chrome，然后运行：",
+            "   python entrypoints/fetch_iwencai_cookie.py --spawn",
+            "   这会自动拉起一个新 Chrome 并等待你登录问财，",
+            "   完成后自动把 cookie 写入 config/secrets.local.yaml",
+            "",
+        ])
+
+    lines.extend([
+        "② [手动] 从浏览器复制 cookie：",
+        "   1. 打开 Chrome，访问 https://www.iwencai.com/ 并确保已登录",
+        "   2. F12 打开开发者工具 → Application → Cookies",
+        "   3. 找到域名 iwencai.com 下名为 `v` 的 cookie",
+        "   4. 复制其 Value 值",
+        "   5. 编辑 config/secrets.local.yaml，更新 iwencai_cookie 字段",
+        "",
+        "③ [推荐] 安装 pywencai（免维护 cookie）：",
+        "   pip install pywencai",
+        "   该库内部处理 hexin-v 令牌计算，不需要手动维护 cookie",
+        "",
+    ])
+    return "\n".join(lines)
+
+
 def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
     """问财网页版结果兜底抓取（`www.iwencai.com` 的选股结果接口）。
 
@@ -526,7 +624,7 @@ def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
     而这个令牌是前端 JS 动态算出来的、不是简单的服务端 Set-Cookie（见
     上方"问财 hexin-v 令牌"小节的说明）。三层策略，从上到下依次尝试：
       1. 已安装 `pywencai` → 直接用它（内部处理令牌计算）
-      2. 配了 `STOCK_WATCH_IWENCAI_COOKIE` 环境变量 → 用手动令牌请求
+      2. 配了 `iwencai_cookie` → 用手动令牌请求
       3. 都没有 → 退化到"首页预热"这条大概率会 401 的兜底路径，出错时
          的提示信息会指向前两条真正可行的路
     第 2/3 条路径没有直接调用通用的 `fetch_html()` 默认重试，是因为
@@ -565,21 +663,8 @@ def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
                 logger.info("问财接口返回 401，疑似令牌无效，刷新 session 后重试一次")
                 continue
             if _is_unauthorized(exc):
-                if _manual_iwencai_cookie:
-                    raise DataSourceError(
-                        "问财接口持续 401：config/secrets.local.yaml 里 "
-                        "iwencai_cookie 配置的令牌看起来已失效，需要从"
-                        "浏览器重新复制一个当前有效的 hexin-v cookie 值"
-                    ) from exc
-                raise DataSourceError(
-                    "问财接口持续 401（hexin-v 令牌由前端 JS 动态计算，"
-                    "简单的首页预热拿不到有效值）。可行的两条路：① 装可选"
-                    "依赖 pywencai（pip install pywencai，需要 Node.js）"
-                    "；② 从浏览器复制当前有效的 hexin-v cookie 值，写进 "
-                    "config/secrets.local.yaml 的 iwencai_cookie 字段"
-                    "（cp 一份 secrets.local.yaml.example 改名即可，会"
-                    "过期，需要自己定期更新）"
-                ) from exc
+                hint = _build_iwencai_401_hint()
+                raise DataSourceError(hint) from exc
             raise
     if text is None:  # pragma: no cover - 上面的循环要么 break 要么 raise
         raise last_exc or DataSourceError("问财请求未知失败")

@@ -265,6 +265,37 @@ def _find_hexin_v(cookies: List[dict]) -> Optional[str]:
     return None
 
 
+def read_cookie_from_cdp(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> Optional[str]:
+    """只读模式：连接到已有 Chrome 调试端口，读取问财的 hexin-v cookie。
+
+    不打开新标签页、不修改配置文件——纯粹作为 data_sources.py 的辅助函数，
+    用于在检测到 401 时尝试自动刷新 cookie。
+
+    如果 Chrome 不可用或问财页面未打开，返回 None。
+    """
+    if not _is_debug_port_alive(host, port):
+        return None
+    try:
+        tabs = _list_tabs(host, port)
+        if not tabs:
+            return None
+        # 使用第一个可用的 tab
+        tab = tabs[0]
+        ws_url = tab["webSocketDebuggerUrl"]
+        session = CDPSession(ws_url, host, port)
+        try:
+            session.send("Runtime.enable")
+            # 导航到问财首页确保有 cookie
+            session.send("Page.navigate", {"url": IWENCAI_URL})
+            time.sleep(2)  # 等待页面加载
+            result = session.send("Network.getCookies", {"urls": [IWENCAI_URL]})
+            return _find_hexin_v(result.get("cookies", []))
+        finally:
+            session.close()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _write_cookie_to_secrets(secrets_path: Path, cookie_value: str) -> None:
     """把拿到的令牌写进 `secrets.local.yaml`，保留文件里已有的其它字段
     （比如未来这个文件里存了别的敏感配置），不整体覆盖。
