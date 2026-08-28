@@ -6,9 +6,8 @@
 
 ## 落地范围
 
-按分析文档 §5 的顺序，实施了 **A1、A2、B1、A3** 四项（成本从低到高、且
-有依赖关系的前四条）；**B2**（TaskSpec 模板库）、**A4**（独立可安装
-子包）本次未动，留待后续单独立项——两者理由与之前一致，见本文档末尾
+按分析文档 §5 的顺序，实施了 **A1、A2、B1、A3、B2** 五项；仅
+**A4**（独立可安装子包）本次未动，分析文档已明确建议暂缓，见本文档末尾
 "未落地项"一节。
 
 ## A1：`Workspace` 补齐 hybrid_exec 相关路径属性
@@ -139,9 +138,45 @@
 测试文件（`test_hybrid_exec_summary_route.py`、`test_session.py` 等）
 是环境预先缺少可选依赖导致，与本次改动无关，未在本次范围内处理。
 
-## 未落地项（留待后续）
+## B2：hybrid_exec 常见任务类型 TaskSpec 模板库
 
-- **B2**（常见任务类型的 `TaskSpec` 模板库）：内容型工作，按分析文档
-  建议放最后，随时可以补充。
+**新增文件**：
+`.claude/skills/hybrid-exec-task-generator/reference/task_templates.md`
+**改动文件**：`.claude/skills/hybrid-exec-task-generator/SKILL.md`
+
+- 按分析文档 B2 的建议，整理了 5 类常见 hybrid_exec 任务类型（结构化
+  信息抽取、文本摘要、格式转换、简单分类判断、网页内容解析），每类给出
+  统一的四段式结构：适用场景 / `description` 措辞模板 /
+  `output_validator` 参考实现（工厂函数形式，`make_xxx_validator(参数)
+  -> Callable`，不写死具体字段名，方便直接抄改） / 建议 `allow_tiers`
+  组合。
+- "网页内容解析"一类里特意点出与 SKILL 档（playbook）机制的衔接——页面
+  结构容易变的场景建议 `allow_tiers` 里加 `SKILL` 而不是死磕脚本层，
+  并说明需要配合 `default_executor(..., enable_skill_tier=True)` 才会
+  生效。
+- 文档末尾附"如何继续补充"一节，明确这是内容型文档、不要求一次穷尽，
+  新增任务类型时该遵循的结构和判断依据（按"规则占主导/语义占主导/
+  环境不稳定但流程稳定/需要多轮探查环境"四种情况给 `allow_tiers` 定档
+  的启发式）。
+- `hybrid-exec-task-generator/SKILL.md` 第二步"起草 TaskSpec"字段表
+  后面加了一段指引，提示不确定怎么写时先查这份参考文档里最贴近的一类，
+  当前任务不属于已收录五类之一时才需要完全现场设计。
+
+## 测试（B2）
+
+新增 `tests/test_hybrid_exec_task_templates_doc.py`（11 个用例）：不测
+"文档写得好不好"，只测"文档里贴的 5 个 `output_validator` 工厂函数代码
+片段本身没写错"——从 markdown 里按 marker 提取对应 ```python``` 代码块、
+`exec()` 进干净命名空间、对工厂函数跑几组预期成功/失败的用例，并额外
+校验每个工厂产出的 validator 都满足 `(bool, str)` 的返回协议（与
+`spec.py::OutputValidator` 类型签名一致）。这样后续如果有人改坏了文档
+里的示例代码，CI 能第一时间发现，而不是等到真有人抄这份文档踩坑才发现
+示例本身是错的。
+
+回归验证：本次新增的 3 批测试（16+4+11=31 个）与此前全部
+`hybrid_exec`/`workspace` 相关用例合计 114 个全部通过。
+
+
+
 - **A4**（hybrid_exec 独立可安装子包）：分析文档已明确暂缓，等真实
   需求出现再评估，本次不动。

@@ -50,6 +50,12 @@ workflow-generator skill 的场景；hybrid_exec 任务只有明确要用"脚本
 | `force_reexplore` | 调试/迭代 description 时常用，强制忽略仓库里已有脚本重新探索一次 |
 | `agent_fs_write_enabled` | 默认 `False`，只读沙箱；确实需要 Explorer/Repairer 拉起的 Agent 读写项目文件时才显式打开 |
 
+**不确定 `description` 怎么措辞、`output_validator` 怎么写、`allow_tiers`
+该配哪几档时，先看 `reference/task_templates.md`**——里面按"结构化信息
+抽取 / 文本摘要 / 格式转换 / 简单分类判断 / 网页内容解析"五类常见任务
+类型整理了可以直接抄改的措辞模板 + 校验函数工厂 + 建议档位，比每次都
+从零现场设计快得多；当前任务不属于这五类之一时才需要完全现场设计。
+
 ## 第三步：跑一次验证（不要凭空猜结果）
 
 优先用现成的接入方式，而不是每次都手写驱动脚本——这三条路径底层都是同
