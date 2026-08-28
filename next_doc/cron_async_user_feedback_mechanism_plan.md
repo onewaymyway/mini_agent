@@ -1,6 +1,6 @@
 # Cron 任务异步用户反馈机制设计方案
 
-> 状态：**方案已确认（照常触发 + 自由文本+提示），实施中 —— 阶段1完成**
+> 状态：**方案已确认（照常触发 + 自由文本+提示），实施中 —— 阶段3完成**
 > 关联现有代码：`src/mini_agent/tools/user_input.py`、`src/mini_agent/interaction.py`、
 > `src/mini_agent/notification/dispatcher.py`、`src/mini_agent/notification/channels/kanban.py`、
 > `src/mini_agent/notification/reports_store.py`、`src/mini_agent/evolution/cron_job_executor.py`、
@@ -207,7 +207,7 @@ pending_question_ids: list[str] = field(default_factory=list)
 
 - [x] 阶段1：数据层 `questions_store.py` + 单元测试
 - [x] 阶段2：`ask_user_async` 工具 + 执行链路集成
-- [ ] 阶段3：API + 通知联动
+- [x] 阶段3：API + 通知联动
 - [ ] 阶段4：Streamlit 看板
 - [ ] 阶段5：文档收尾
 
@@ -244,3 +244,32 @@ pending_question_ids: list[str] = field(default_factory=list)
 - 修改 `src/mini_agent/cli/app.py`（注册 `ask_user_async` 工具 import）
 - 新增 `tests/test_cron_async_user_feedback.py`（23 条测试，覆盖
   cron_context/工具去重/状态机/占位符渲染）
+
+## 12. 阶段3实现记录（API + 通知联动）
+
+`ask_user_async` 工具在阶段2实施时就已经直接调用了
+`NotificationDispatcher.dispatch()`（`source="cron_question"`），第5节"通知
+联动"在阶段2就已完成，阶段3不需要再补——这里只补 API 层（第6节）。
+
+按第6节设计原样实施，路由并入现有 `src/mini_agent/api/routes.py`（跟在
+`/v1/notifications/pending` 系列端点后面，风格保持一致：`_require_owner()`
+鉴权 + `project_root` 就绪性检查 + 延迟 import 存储模块）：
+
+- `GET /v1/cron_questions/pending` — 分页，支持 `job_id` 过滤；用"多取一条
+  探测下一页是否存在"的方式给 `has_more`，没有在 `questions_store` 里加
+  `count_*` 辅助函数（量级小，没必要）。
+- `GET /v1/cron_questions/history` — 同上分页方式，返回完整
+  `answer_history`。
+- `POST /v1/cron_questions/{id}/answer` — 直接转发到
+  `questions_store.submit_answer()`；空答案拒绝（400），
+  未知 `question_id` 返回 404。新答/改答复用同一个接口，跟设计文档一致。
+
+未对 `reports_store.py` 的 `_SOURCE_CATEGORY_MAP` 做任何改动（第5节里"倾向
+不加"的开放问题，阶段3确认维持不加——`cron_question` 通知走独立的看板
+"待我反馈"面板，不复用"待处理汇报"分类体系）。
+
+新增/修改文件清单：
+- 修改 `src/mini_agent/api/routes.py`（新增 3 个 `/v1/cron_questions/*`
+  路由）
+- 新增 `tests/test_cron_questions_api_routes.py`（5 条测试，覆盖
+  pending/history 过滤与分页、答案提交与修改、空答案/未知 ID 的错误处理）

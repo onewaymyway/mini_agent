@@ -6474,6 +6474,103 @@ async def batch_ack_pending_reports(request: Request):
     return {"ok": True, "acknowledged": n}
 
 
+# ── cron 任务异步用户反馈专用端点（看板"待我反馈"面板）────────────────────────
+#
+#   GET  /v1/cron_questions/pending          待回答问题列表（分页，可按 job_id 过滤）
+#   GET  /v1/cron_questions/history          已回答问题历史（分页，可按 job_id 过滤，
+#                                             含完整 answer_history）
+#   POST /v1/cron_questions/{id}/answer      提交/修改答案（新答、改答统一走这个接口）
+#
+# 存储在独立的 notification/cron_questions.jsonl，跟 reports.jsonl 彻底分开——
+# 语义不同（问答 vs 只读汇报），见 notification/questions_store.py 模块 docstring
+# 与 next_doc/cron_async_user_feedback_mechanism_plan.md。这几个接口都是纯本地
+# 文件读写，耗时可忽略，不需要走 kanban_async_job_mechanism_plan.md 那套 LLM
+# 调用专用的异步任务机制。
+
+@router.get("/cron_questions/pending")
+async def get_pending_cron_questions(request: Request, limit: int = 20, offset: int = 0, job_id: str = ""):
+    """GET /v1/cron_questions/pending?limit=20&offset=0&job_id=... — 分页返回
+    仍待回答的 cron 异步问题，供看板"待我反馈"面板的"待处理"列表展示。
+    `job_id` 留空返回全部 job 的。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    from mini_agent.notification import questions_store
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(proj_root)
+    jid = job_id or None
+    # limit/offset 分页方式跟 list_pending_questions() 本身一致：先按全量
+    # 排序再切片，这里额外取一条来判断 has_more，避免看板还要单独发一个
+    # count 请求（该 store 目前没有 count_* 辅助函数，量级也小，没必要加）。
+    questions = questions_store.list_pending_questions(paths, job_id=jid, limit=limit, offset=offset)
+    more_probe = questions_store.list_pending_questions(paths, job_id=jid, limit=1, offset=offset + len(questions))
+    return {
+        "questions": questions,
+        "has_more": bool(more_probe),
+    }
+
+
+@router.get("/cron_questions/history")
+async def get_cron_questions_history(request: Request, limit: int = 20, offset: int = 0, job_id: str = ""):
+    """GET /v1/cron_questions/history?limit=20&offset=0&job_id=... — 分页返回
+    已回答的 cron 异步问题（含完整 `answer_history`），供看板"待我反馈"面板的
+    "历史记录"列表展示，用户可在此发起"修改答案"。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    from mini_agent.notification import questions_store
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(proj_root)
+    jid = job_id or None
+    questions = questions_store.list_answered_questions(paths, job_id=jid, limit=limit, offset=offset)
+    more_probe = questions_store.list_answered_questions(paths, job_id=jid, limit=1, offset=offset + len(questions))
+    return {
+        "questions": questions,
+        "has_more": bool(more_probe),
+    }
+
+
+@router.post("/cron_questions/{question_id}/answer")
+async def answer_cron_question(request: Request, question_id: str):
+    """POST /v1/cron_questions/{question_id}/answer — 提交或修改一条问题的
+    答案，body: `{"answer": "..."}`。新答、改答统一走这一个接口——
+    `questions_store.submit_answer()` 本身就不区分"首次回答"和"修改回答"，
+    每次提交都会往 `answer_history` 追加一条，不覆盖丢失旧版本。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    body = await request.json()
+    answer = (body or {}).get("answer") or ""
+    if not str(answer).strip():
+        raise HTTPException(status_code=400, detail="answer must not be empty")
+
+    from mini_agent.notification import questions_store
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(proj_root)
+    updated = questions_store.submit_answer(paths, question_id, str(answer))
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Question {question_id!r} not found")
+    return {"ok": True, "question": updated}
+
+
 # ── 外部输入网关 REST API（看板"🔌 外部输入"面板，P6）────────────────────────
 #
 #   GET  /v1/external_input/sources         已配置的 source 列表 + 运行时健康度
