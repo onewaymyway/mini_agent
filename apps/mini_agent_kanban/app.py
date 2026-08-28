@@ -8121,9 +8121,30 @@ def render_external_projects_tab(client: AgentClient):
                         if missing:
                             st.error(f"缺少必填参数：{', '.join(missing)}")
                         else:
-                            res = client.trigger_external_project_run(
-                                name, ep_key, params=param_values or None
-                            )
+                            # [2026-08-28 追加 — 「异步型按钮体验」改进]
+                            # trigger_run 现在服务端已经不会阻塞 daemon
+                            # 了（见 external_projects_kanban_integration_
+                            # plan.md 同日条目），但 HTTP 请求本身仍然
+                            # 要等 entrypoint 真正跑完才返回（部分
+                            # entrypoint 的 timeout_sec 声明到 900 秒），
+                            # 客户端超时也相应放宽到了 960s。Streamlit
+                            # 里一次脚本运行是同步的，点击按钮到收到
+                            # 响应之间页面本来就"卡住不动"，区别只在于
+                            # 有没有给用户一个"知道它在处理、不是坏了"
+                            # 的信号——`st.spinner()` 正是为这种"本轮
+                            # 脚本内有一次耗时阻塞调用"场景设计的：包住
+                            # 调用期间会在原地显示旋转图标+提示文案，
+                            # 调用返回后自动消失，紧接着显示的
+                            # success/error 就是"已完成"的提示，不需要
+                            # 额外状态机或轮询。
+                            spinner_msg = f"正在触发「{ep_key}」，请稍候…"
+                            ep_timeout = ep.get("timeout_sec")
+                            if ep_timeout:
+                                spinner_msg += f"（该 entrypoint 最长可能运行 {ep_timeout} 秒）"
+                            with st.spinner(spinner_msg):
+                                res = client.trigger_external_project_run(
+                                    name, ep_key, params=param_values or None
+                                )
                             if res and "_error" in res:
                                 st.error(f"触发失败：{res['_error']}")
                             else:
