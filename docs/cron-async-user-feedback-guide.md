@@ -110,7 +110,11 @@ Streamlit 看板"🔔 关注与通知"tab 下新增"🙋 待我反馈"面板，�
 - **待处理**：逐条展示所属任务（`job_id`）、问题原文、`hint`；如果
   该问题带了 `options`，会额外展示一组单选按钮作为快捷参考——选中即
   自动填入文本框，仍可以在文本框里改成任意其它内容再提交，**不是
-  强制枚举**。填好答案点"✅ 提交回答"即可。
+  强制枚举**。填好答案点"✅ 提交回答"即可。如果这个问题已经不需要
+  回答了（比如任务本身已经过时，或者你已经通过其它方式处理了），
+  可以点旁边的"🙈 忽略这个问题"——忽略后它从"待处理"列表消失，**不会**
+  被当作答案注入下次触发的 prompt，agent 就当这个问题从未存在过；已经
+  回答过的问题不能再被忽略（应该用下面的"修改答案"）。
 - **历史记录**：展示已回答问题，每条展开可见当前答案 + **完整修改
   历史**（每次提交/修改的时间与内容，旧→新排列，改答案不会覆盖丢失
   旧版本）。展开后内置一个文本框，可以直接修改答案再提交——新答、
@@ -129,6 +133,7 @@ Streamlit 看板"🔔 关注与通知"tab 下新增"🙋 待我反馈"面板，�
 | `GET` | `/v1/cron_questions/pending?limit=20&offset=0&job_id=` | 待回答问题列表，分页，`job_id` 留空返回全部 job 的 |
 | `GET` | `/v1/cron_questions/history?limit=20&offset=0&job_id=` | 已回答问题历史（含完整 `answer_history`），分页，`job_id` 留空返回全部 |
 | `POST` | `/v1/cron_questions/{question_id}/answer` | 提交/修改答案，body: `{"answer": "..."}`；新答、改答统一走这一个接口；答案为空返回 `400`，`question_id` 不存在返回 `404` |
+| `POST` | `/v1/cron_questions/{question_id}/dismiss` | 忽略/关闭一条仍待回答的问题；问题不存在或已被回答返回 `404`；重复忽略同一条是幂等的 |
 
 这几个接口都是纯本地文件读写，耗时可忽略，不走
 `kanban_async_job_mechanism_plan.md` 里那套面向分钟级不可预测耗时的
@@ -153,8 +158,8 @@ watchlist 分级汇报用的 `.agent/notification/reports.jsonl` 是两份彻底
 ## 9. 已知局限（本轮不做）
 
 - **不做超时/自动作废**：问题会一直挂在"待回答"列表里，直到用户回答
-  或在看板上手动关闭。当前版本还没有"关闭/忽略"这个动作，只有
-  "回答"这一条路径。
+  或在看板上手动忽略（见 §6"🙈 忽略这个问题"按钮）。忽略是本功能内
+  已实现的动作，"自动过期"（比如超过 N 天自动忽略）目前**没有**实现。
 - **不做语义判重**：只做同一 job 内的精确指纹去重（问题文本完全一致
   才会复用），不识别"这两个问题问的其实是一回事"这种情况。
 - **未回答问题下次触发时不会自动跳过**：当前固定"照常触发"，agent 见
@@ -165,13 +170,13 @@ watchlist 分级汇报用的 `.agent/notification/reports.jsonl` 是两份彻底
 
 | 文件 | 作用 |
 |---|---|
-| `src/mini_agent/notification/questions_store.py` | 问答记录存储：`append_question`/`find_pending_by_fingerprint`/`submit_answer`/`list_pending_questions`/`list_answered_questions`/`list_unconsumed_answers_for_job`/`mark_answers_consumed`/`list_pending_question_texts_for_job` |
+| `src/mini_agent/notification/questions_store.py` | 问答记录存储：`append_question`/`find_pending_by_fingerprint`/`submit_answer`/`dismiss_question`/`list_pending_questions`/`list_answered_questions`/`list_dismissed_questions`/`list_unconsumed_answers_for_job`/`mark_answers_consumed`/`list_pending_question_texts_for_job` |
 | `src/mini_agent/tools/ask_user_async.py` | 异步提问工具本体，内部调用 `NotificationDispatcher.dispatch()`（`source="cron_question"`） |
 | `src/mini_agent/evolution/cron_context.py` | thread-local `job_id` 透传，供 `ask_user_async` 在 cron 执行线程内取到当前 job_id |
 | `src/mini_agent/evolution/cron_job_workspace.py` | `STATUS_WAITING_FEEDBACK` 状态、`{{pending_answers}}`/`{{unanswered_questions}}` 占位符渲染 |
 | `src/mini_agent/evolution/cron_job_executor.py` | `run_job()` 设置/清空 thread-local job_id、收尾时的 `waiting_feedback` 判定 |
-| `src/mini_agent/api/routes.py` | `/v1/cron_questions/{pending,history,{id}/answer}` 三个端点 |
-| `apps/mini_agent_kanban/client.py` | `cron_questions_pending`/`cron_questions_history`/`answer_cron_question` 客户端方法 |
+| `src/mini_agent/api/routes.py` | `/v1/cron_questions/{pending,history,{id}/answer,{id}/dismiss}` 四个端点 |
+| `apps/mini_agent_kanban/client.py` | `cron_questions_pending`/`cron_questions_history`/`answer_cron_question`/`dismiss_cron_question` 客户端方法 |
 | `apps/mini_agent_kanban/app.py` | "🔔 关注与通知"tab 下"🙋 待我反馈"面板（`_render_cron_questions_panel`，独立 `@st.fragment`） |
 | `.agent/notification/cron_questions.jsonl` | 问答记录落地文件（运行时生成） |
 | `tests/test_cron_questions_store.py` | `questions_store.py` 单元测试 |

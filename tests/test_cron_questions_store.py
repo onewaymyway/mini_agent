@@ -9,8 +9,10 @@ import pytest
 
 from mini_agent.notification.questions_store import (
     append_question,
+    dismiss_question,
     find_pending_by_fingerprint,
     get_question,
+    list_dismissed_questions,
     list_pending_questions,
     list_answered_questions,
     list_pending_question_texts_for_job,
@@ -18,6 +20,7 @@ from mini_agent.notification.questions_store import (
     mark_answers_consumed,
     submit_answer,
     STATUS_ANSWERED,
+    STATUS_DISMISSED,
     STATUS_PENDING,
 )
 from mini_agent.storage.paths import AgentPaths
@@ -217,3 +220,60 @@ class TestPendingQuestionTextsForJob:
 
     def test_empty_when_no_pending(self, paths):
         assert list_pending_question_texts_for_job(paths, "user:job1") == []
+
+
+class TestDismissQuestion:
+    def test_dismisses_pending_question(self, paths):
+        rec = append_question(paths, "user:job1", "还需要回答吗？")
+        updated = dismiss_question(paths, rec["question_id"])
+        assert updated["status"] == STATUS_DISMISSED
+        stored = get_question(paths, rec["question_id"])
+        assert stored["status"] == STATUS_DISMISSED
+
+    def test_dismissed_question_disappears_from_pending_list(self, paths):
+        rec = append_question(paths, "user:job1", "还需要回答吗？")
+        dismiss_question(paths, rec["question_id"])
+        assert list_pending_questions(paths, job_id="user:job1") == []
+
+    def test_dismissed_question_not_in_unanswered_prompt_texts(self, paths):
+        rec = append_question(paths, "user:job1", "还需要回答吗？")
+        dismiss_question(paths, rec["question_id"])
+        assert list_pending_question_texts_for_job(paths, "user:job1") == []
+
+    def test_dismissed_question_does_not_appear_in_answered_list(self, paths):
+        rec = append_question(paths, "user:job1", "还需要回答吗？")
+        dismiss_question(paths, rec["question_id"])
+        assert list_answered_questions(paths, job_id="user:job1") == []
+
+    def test_dismissed_question_appears_in_dismissed_list(self, paths):
+        rec = append_question(paths, "user:job1", "还需要回答吗？")
+        dismiss_question(paths, rec["question_id"])
+        dismissed = list_dismissed_questions(paths, job_id="user:job1")
+        assert len(dismissed) == 1
+        assert dismissed[0]["question_id"] == rec["question_id"]
+
+    def test_dismissing_answered_question_returns_none(self, paths):
+        rec = append_question(paths, "user:job1", "问题")
+        submit_answer(paths, rec["question_id"], "答案")
+        assert dismiss_question(paths, rec["question_id"]) is None
+        # 状态不受影响，仍然是 answered
+        assert get_question(paths, rec["question_id"])["status"] == STATUS_ANSWERED
+
+    def test_dismissing_unknown_question_returns_none(self, paths):
+        assert dismiss_question(paths, "cq:nope:xxxx") is None
+
+    def test_dismissing_already_dismissed_is_idempotent(self, paths):
+        rec = append_question(paths, "user:job1", "问题")
+        first = dismiss_question(paths, rec["question_id"])
+        second = dismiss_question(paths, rec["question_id"])
+        assert first["status"] == STATUS_DISMISSED
+        assert second["status"] == STATUS_DISMISSED
+        # 没有产生第二条记录
+        assert len(list_dismissed_questions(paths, job_id="user:job1")) == 1
+
+    def test_dismissed_question_does_not_block_reasking_same_text(self, paths):
+        """去重只匹配 STATUS_PENDING，忽略后同一问题文本应该被当作
+        全新问题重新创建，不会被这条已忽略的记录挡住。"""
+        rec = append_question(paths, "user:job1", "还需要回答吗？")
+        dismiss_question(paths, rec["question_id"])
+        assert find_pending_by_fingerprint(paths, "user:job1", "还需要回答吗？") is None

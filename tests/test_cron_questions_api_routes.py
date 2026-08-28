@@ -111,6 +111,40 @@ class TestCronQuestionsApiRoutes(unittest.TestCase):
         resp = self.client.post("/v1/cron_questions/cq:nope:xxxx/answer", json={"answer": "x"})
         self.assertEqual(resp.status_code, 404)
 
+    def test_dismiss_endpoint_removes_from_pending(self):
+        q = questions_store.append_question(self.paths, "user:job1", "还需要回答吗？")
+        resp = self.client.post(f"/v1/cron_questions/{q['question_id']}/dismiss")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["question"]["status"], "dismissed")
+
+        pending = self.client.get("/v1/cron_questions/pending").json()["questions"]
+        self.assertEqual(len(pending), 0)
+        # 忽略不算回答，不应该出现在历史记录里
+        history = self.client.get("/v1/cron_questions/history").json()["questions"]
+        self.assertEqual(len(history), 0)
+
+    def test_dismiss_endpoint_rejects_already_answered_question(self):
+        q = questions_store.append_question(self.paths, "user:job1", "问题")
+        questions_store.submit_answer(self.paths, q["question_id"], "答案")
+        resp = self.client.post(f"/v1/cron_questions/{q['question_id']}/dismiss")
+        self.assertEqual(resp.status_code, 404)
+        # 状态不受影响
+        stored = questions_store.get_question(self.paths, q["question_id"])
+        self.assertEqual(stored["status"], "answered")
+
+    def test_dismiss_endpoint_404_for_unknown_question(self):
+        resp = self.client.post("/v1/cron_questions/cq:nope:xxxx/dismiss")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_dismiss_endpoint_is_idempotent(self):
+        q = questions_store.append_question(self.paths, "user:job1", "问题")
+        first = self.client.post(f"/v1/cron_questions/{q['question_id']}/dismiss")
+        second = self.client.post(f"/v1/cron_questions/{q['question_id']}/dismiss")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+
 
 if __name__ == "__main__":
     unittest.main()

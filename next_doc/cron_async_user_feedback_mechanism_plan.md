@@ -27,7 +27,7 @@
   工具服务于"交互式对话"场景（用户就在旁边），本方案是**新增**一条独立的异步问答通道，
   服务于"cron 后台无人值守"场景，两者并存、互不影响。
 - 不做"用户一直不回答"的强制超时/自动作废机制——问题会一直挂在"待回答"列表里，直到
-  用户回答或用户在看板上手动忽略/关闭（关闭动作本轮实现，但不做自动过期）。
+  用户回答或用户在看板上手动忽略/关闭（**关闭动作已实施，见 §15**，不做自动过期）。
 - 不做问题内容的语义判重/合并（比如"这两个问题问的其实是一回事"），只做同一 job 内
   按问题文本做**精确指纹去重**，避免同一个未回答问题被重复创建。
 
@@ -351,3 +351,54 @@ pending_question_ids: list[str] = field(default_factory=list)
 - 修改 `tests/test_cron_async_user_feedback.py`（新增
   `TestEndToEndAcrossApiAndPromptLayers`，2 条端到端测试）
 - 修改本文档：状态改为"已实施完成"，进度全部勾选
+
+## 15. 补完记录：忽略/关闭问题（原方案 §0 已承诺、阶段1-5 遗漏的动作）
+
+设计文档 §0 非目标一节原文写的是"关闭动作本轮实现，但不做自动过期"——
+即"忽略/关闭"这个动作本应在最初五个阶段内就落地，但复查代码后发现
+一直没有实现（`questions_store.py` 只有回答相关函数，没有忽略相关函数，
+API 层和看板都没有对应入口）。这一轮补上，属于补完既定范围内的遗漏，
+不是新需求。
+
+**数据层**（`notification/questions_store.py`）：
+- 新增 `STATUS_DISMISSED = "dismissed"`。
+- 新增 `dismiss_question(paths, question_id)`：只允许忽略仍是 `pending`
+  状态的问题；已回答的问题不能被忽略（应该走"修改答案"），返回
+  `None`；重复忽略同一条是幂等的（返回当前记录，不重复写文件、不重复
+  刷新 `updated_at`）；`question_id` 不存在同样返回 `None`。
+- 新增 `list_dismissed_questions()`，供需要查询已忽略记录的场景使用
+  （避免"忽略"变成一个查无对证的黑洞操作），看板当前未展示这个列表
+  （不打扰用户是忽略动作本身的目的），但接口保留。
+- 忽略后的问题：不出现在 `list_pending_questions()`（不再打扰用户）、
+  不出现在 `list_pending_question_texts_for_job()`（`{{unanswered_questions}}`
+  不会再提醒 agent 这个问题）、也不出现在 `list_answered_questions()`
+  （忽略不是回答，没有"答案"内容）。`find_pending_by_fingerprint()`
+  只匹配 `STATUS_PENDING`，所以同一问题文本被忽略后，agent 如果重新
+  问一遍会被当作全新问题创建，不会被这条已忽略的记录挡住去重。
+
+**API 层**：新增 `POST /v1/cron_questions/{question_id}/dismiss`，
+`404` 场景：问题不存在，或问题当前是 `answered` 状态（防止把"忽略"
+误用成清空一个已经有效答案的问题）。
+
+**看板**：`client.py` 新增 `dismiss_cron_question()`；"🙋 待我反馈"
+面板"待处理"子 tab 每条问题下方新增"🙈 忽略这个问题"按钮，跟"✅ 提交
+回答"按钮并列。
+
+**测试**：`tests/test_cron_questions_store.py` 新增 `TestDismissQuestion`
+（9 条：忽略成功、从待处理列表消失、不出现在 unanswered_questions/
+answered 列表、出现在 dismissed 列表、忽略已回答问题返回 None、忽略
+不存在的问题返回 None、幂等性、忽略后同一问题文本重新可被创建）；
+`tests/test_cron_questions_api_routes.py` 新增 4 条 API 端点测试。全部
+相关测试（含前五阶段）共 125 条全部通过。
+
+新增/修改文件清单：
+- 修改 `src/mini_agent/notification/questions_store.py`（新增
+  `STATUS_DISMISSED`/`dismiss_question`/`list_dismissed_questions`）
+- 修改 `src/mini_agent/api/routes.py`（新增
+  `POST /v1/cron_questions/{id}/dismiss`）
+- 修改 `apps/mini_agent_kanban/client.py`（新增 `dismiss_cron_question`）
+- 修改 `apps/mini_agent_kanban/app.py`（"待处理"子 tab 新增"忽略"按钮）
+- 修改 `tests/test_cron_questions_store.py`（新增 `TestDismissQuestion`，
+  9 条）
+- 修改 `tests/test_cron_questions_api_routes.py`（新增 4 条 dismiss 端点
+  测试）

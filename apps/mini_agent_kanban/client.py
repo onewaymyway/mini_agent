@@ -716,6 +716,11 @@ class AgentClient:
         """提交或修改一条问题的答案（新答/改答统一走这一个接口）。"""
         return self._post(f"/cron_questions/{question_id}/answer", json_body={"answer": answer})
 
+    def dismiss_cron_question(self, question_id: str):
+        """手动忽略/关闭一条仍待回答的问题——跟回答是两条不同路径，
+        忽略后不会被当作答案注入下次 prompt。"""
+        return self._post(f"/cron_questions/{question_id}/dismiss")
+
     def novelty_candidates(self, limit: int = 20, offset: int = 0):
         """§2 新颖信号候选：分页返回待确认候选（status=pending）。"""
         return self._get("/external_input/novelty_candidates", params={"limit": limit, "offset": offset})

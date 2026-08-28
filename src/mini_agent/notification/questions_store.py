@@ -10,7 +10,9 @@ jsonl 存储风格），但物理上是两份完全独立的文件，语义也�
 
 `ask_user_async` 工具调用 `append_question()`/`find_pending_by_fingerprint()`
 写入待回答问题；看板 API 调用 `submit_answer()` 提交/修改答案（同一入口，不
-区分首次回答和修改）；`CronJobWorkspace.render_prompt()` 调用
+区分首次回答和修改）；用户也可以调用 `dismiss_question()` 手动忽略一条
+仍未回答的问题（跟回答是两条不同路径，忽略后既不会再打扰用户，也不会
+被当作"答案"注入 prompt）；`CronJobWorkspace.render_prompt()` 调用
 `list_unconsumed_answers_for_job()` + `mark_answers_consumed()` 把已回答但
 还没喂给过 agent 的问答对注入下一次 prompt。
 """
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
 
 STATUS_PENDING = "pending"
 STATUS_ANSWERED = "answered"
+STATUS_DISMISSED = "dismissed"
 
 
 def _new_question_id(job_id: str) -> str:
@@ -221,6 +224,63 @@ def mark_answers_consumed(paths: "AgentPaths", question_ids: "set[str] | list[st
     if matched:
         _write_all(paths, records)
     return matched
+
+
+def dismiss_question(paths: "AgentPaths", question_id: str) -> Optional[dict]:
+    """手动忽略/关闭一条**仍是 pending 状态**的问题——用户觉得这个问题
+    不再需要回答了（比如任务本身已经不重要/用户已经通过其它方式处理），
+    跟"回答"是两条不同的路径：忽略后 `status` 变为 `dismissed`，不会再
+    出现在 `list_pending_questions()`（不再打扰用户）或
+    `list_pending_question_texts_for_job()`（不再出现在
+    `{{unanswered_questions}}` 里提醒 agent），但也不会像回答那样注入
+    `{{pending_answers}}`——agent 下次触发看不到这个问题，也看不到任何
+    "答案"，就当作它从未被回答过（`ask_user_async` 的精确指纹去重只匹配
+    `STATUS_PENDING`，所以同一问题文本被忽略后，agent 如果重新问一遍，
+    会被当作全新问题，不会被这条已忽略的记录挡住）。
+
+    只允许忽略 `pending` 状态的问题：已回答的问题要"改答案"应该走
+    `submit_answer()`，不应该被"忽略"成一个既不是回答也不是待办的
+    中间状态——对已回答的问题调用本函数返回 `None`（跟"找不到"同一个
+    错误分支，调用方无需区分）。已经是 `dismissed` 的问题重复调用是
+    幂等的（直接返回当前记录，不重复写文件）。
+
+    返回更新后（或已是 dismissed 的）完整记录；`question_id` 不存在，
+    或该问题当前是 `answered` 状态，均返回 None。
+    """
+    records = _load_all(paths)
+    target: Optional[dict] = None
+    for d in records:
+        if d.get("question_id") == question_id:
+            target = d
+            break
+    if target is None:
+        return None
+    if target.get("status") == STATUS_DISMISSED:
+        return target
+    if target.get("status") != STATUS_PENDING:
+        return None
+    target["status"] = STATUS_DISMISSED
+    target["updated_at"] = time.time()
+    _write_all(paths, records)
+    return target
+
+
+def list_dismissed_questions(
+    paths: "AgentPaths", job_id: Optional[str] = None,
+    limit: Optional[int] = None, offset: int = 0,
+) -> list[dict]:
+    """已忽略问题列表，按 updated_at 倒序，供看板"已忽略"子面板展示
+    （可选功能，忽略动作本身不需要用户再看它一眼，但保留可查询入口，
+    避免"忽略"变成一个查无对证的黑洞操作）。"""
+    result = [d for d in _load_all(paths) if d.get("status") == STATUS_DISMISSED]
+    if job_id:
+        result = [d for d in result if d.get("job_id") == job_id]
+    result.sort(key=lambda d: d.get("updated_at") or 0, reverse=True)
+    if offset:
+        result = result[offset:]
+    if limit is not None:
+        result = result[:limit]
+    return result
 
 
 def list_pending_question_texts_for_job(paths: "AgentPaths", job_id: str) -> list[dict]:

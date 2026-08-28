@@ -6571,6 +6571,34 @@ async def answer_cron_question(request: Request, question_id: str):
     return {"ok": True, "question": updated}
 
 
+@router.post("/cron_questions/{question_id}/dismiss")
+async def dismiss_cron_question(request: Request, question_id: str):
+    """POST /v1/cron_questions/{question_id}/dismiss — 手动忽略/关闭一条
+    仍是 pending 状态的问题，用户觉得不再需要回答了。跟"回答"是两条不同
+    路径：忽略后该问题从"待处理"列表消失，但不会被当作答案注入下次
+    prompt——agent 下次触发时就当这个问题从未存在过。已回答的问题不能
+    被忽略（应该走"修改答案"），返回 404；重复忽略同一条是幂等的。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    from mini_agent.notification import questions_store
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(proj_root)
+    updated = questions_store.dismiss_question(paths, question_id)
+    if updated is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Question {question_id!r} not found or not in a dismissible (pending) state",
+        )
+    return {"ok": True, "question": updated}
+
+
 # ── 外部输入网关 REST API（看板"🔌 外部输入"面板，P6）────────────────────────
 #
 #   GET  /v1/external_input/sources         已配置的 source 列表 + 运行时健康度

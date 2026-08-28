@@ -10122,6 +10122,13 @@ def _render_cron_questions_panel(client: "AgentClient"):
                         else:
                             st.success("已提交，下次该任务触发时会自动带上你的回答。")
                             st.rerun()
+                    if st.button("🙈 忽略这个问题", key=f"cron_q_dismiss_{idx}_{qid}"):
+                        res = client.dismiss_cron_question(qid)
+                        if res and "_error" in res:
+                            st.error(f"忽略失败：{res['_error']}")
+                        else:
+                            st.info("已忽略。这个问题不会再打扰你，也不会被当作答案带入下次任务触发。")
+                            st.rerun()
             _load_more_control("cron_q_pending_limit", 20, 20, bool(pending_resp.get("has_more")))
 
     with sub_tab_history:
