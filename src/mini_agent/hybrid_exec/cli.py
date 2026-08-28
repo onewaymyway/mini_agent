@@ -20,6 +20,10 @@ hybrid_exec/cli.py — `mini-agent hybrid-exec ...` 独立命令行子命令
       列举 .agent/hybrid_exec/scripts/ 下已归档的所有 task_id 及其当前状态。
   mini-agent hybrid-exec show <task_id>
       查看某个 task_id 的仓库元信息（meta.json）与当前 active 脚本源码。
+  mini-agent hybrid-exec scaffold <task_id> --carrier {script,workflow-step,entrypoint}
+                                             [--desc TEXT] [--output PATH] [--force]
+      生成一段"把 TaskSpec 接进某个可运行入口"的执行载体样板代码，对应
+      next_doc/hybrid_exec_improvement_directions.md B1，具体见 scaffold.py。
 
 独立 CLI 独有参数：`--project`/`-p <path>` 指定项目根目录（默认当前目录），
 与 workflow/daemon/user/self 子命令一致，由 cli/app.py::_extract_project_root
@@ -215,6 +219,57 @@ def _cmd_show(args: argparse.Namespace, project_root: Path) -> None:
             print(script_path.read_text(encoding="utf-8"))
 
 
+def _cmd_scaffold(args: argparse.Namespace, project_root: Path) -> None:
+    from .scaffold import CARRIER_CHOICES, default_output_filename, render_scaffold
+
+    if args.carrier not in CARRIER_CHOICES:
+        print(f"[hybrid-exec] --carrier 取值非法（可选 {', '.join(CARRIER_CHOICES)}）：{args.carrier!r}")
+        return
+
+    desc = args.desc or f"待完善描述：{args.task_id}"
+    code = render_scaffold(args.carrier, args.task_id, desc)
+
+    output_path = Path(args.output) if args.output else Path(default_output_filename(args.carrier, args.task_id))
+    if output_path.exists() and not args.force:
+        print(f"[hybrid-exec] 目标文件已存在，未覆盖（加 --force 允许覆盖）：{output_path}")
+        return
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(code, encoding="utf-8")
+    print(f"[hybrid-exec] 已生成 {args.carrier} 样板：{output_path}")
+
+    # [B3] 生成后做一次轻量自检：python/entrypoint 载体校验语法能否被编译，
+    # workflow-step 载体校验能否被解析成合法 YAML。只验证"样板本身没写
+    # 坏"（语法正确、能被 import/解析），不代表 TODO 里的业务逻辑已经补
+    # 完整——那部分仍需要调用方自己跑一遍 `hybrid-exec run` 验证。
+    if args.carrier in ("script", "entrypoint"):
+        try:
+            compile(code, str(output_path), "exec")
+        except SyntaxError as e:
+            print(f"[hybrid-exec] 警告：生成的样板存在语法错误，请检查：{e}")
+        else:
+            print("[hybrid-exec] 自检通过：样板语法正确（TODO 部分仍需手工补全）")
+        print(
+            f"[hybrid-exec] 提示：填完 TODO 后，建议先跑一次 "
+            f"`mini-agent hybrid-exec run {args.task_id} --project <path> -v` "
+            "看 attempts 决策轨迹是否符合预期。"
+        )
+    else:
+        try:
+            import yaml  # type: ignore
+
+            yaml.safe_load(code)
+        except ImportError:
+            print("[hybrid-exec] 提示：未安装 pyyaml，跳过 YAML 语法自检（不影响生成结果）")
+        except Exception as e:  # noqa: BLE001 — 自检失败只提示，不影响已生成的文件
+            print(f"[hybrid-exec] 警告：生成的样板 YAML 解析失败，请检查：{e}")
+        else:
+            print("[hybrid-exec] 自检通过：样板 YAML 语法正确（TODO 部分仍需手工补全）")
+        print(
+            "[hybrid-exec] 提示：把这段片段粘进目标 workflow 的 steps 列表、填完 TODO 后，"
+            "建议用 `mini-agent workflow run <workflow_name> --project <path>` 跑一次验证。"
+        )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mini-agent hybrid-exec", add_help=True)
     sub = parser.add_subparsers(dest="subcommand", required=True)
@@ -242,6 +297,23 @@ def _build_parser() -> argparse.ArgumentParser:
     p_show = sub.add_parser("show", help="查看某个任务的仓库元信息与当前脚本")
     p_show.add_argument("task_id")
     p_show.set_defaults(func=_cmd_show)
+
+    p_scaffold = sub.add_parser(
+        "scaffold", help="生成一段接入 hybrid_exec 的执行载体样板代码（script/workflow-step/entrypoint）"
+    )
+    p_scaffold.add_argument("task_id", help="任务标识，会作为 TaskSpec.task_id 写进生成的样板里")
+    p_scaffold.add_argument(
+        "--carrier",
+        required=True,
+        choices=("script", "workflow-step", "entrypoint"),
+        help="生成哪一类载体：script=独立可运行脚本，"
+             "workflow-step=可粘进 workflow yaml 的 hybrid_step 节点片段，"
+             "entrypoint=贴合 external_projects 结构、含降级包装的 entrypoint 样板",
+    )
+    p_scaffold.add_argument("--desc", default=None, help="任务的一句话描述，写进生成样板的 TaskSpec.description")
+    p_scaffold.add_argument("--output", default=None, help="输出文件路径，不传则用 <task_id> 派生的默认文件名")
+    p_scaffold.add_argument("--force", action="store_true", help="目标文件已存在时允许覆盖")
+    p_scaffold.set_defaults(func=_cmd_scaffold)
 
     return parser
 

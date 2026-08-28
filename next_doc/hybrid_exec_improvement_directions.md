@@ -1,5 +1,10 @@
 # hybrid_exec 机制现状梳理与改进方向分析
 
+> **实施状态**：§5 优先级建议里的 **A1、A2、B1** 已落地，实施细节见
+> `next_doc/hybrid_exec_external_integration_implementation_record.md`；
+> A3/B2/A4 仍未做，具体原因见该实施记录末尾"未落地项"一节。本文档正文
+> 保留原样不改，作为当时的分析产出存档。
+>
 > **这篇文档管什么**：盘点 `hybrid_exec`（脚本/LLM/Agent 混合执行系统）
 > 当前的实现现状，重点分析两个方向：①如何让这套机制更容易被"当前
 > daemon 项目之外的地方"（其它 workflow、独立脚本、尤其是`external_

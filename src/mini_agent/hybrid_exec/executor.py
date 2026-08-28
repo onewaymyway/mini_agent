@@ -373,8 +373,9 @@ class HybridExecutor:
 
 
 def default_executor(
-    project_root,
+    project_root=None,
     *,
+    workspace=None,
     mini_agent_config=None,
     llm: object = None,
     retire_after_consecutive_fail: int = 3,
@@ -409,8 +410,30 @@ def default_executor(
 
     reexplore_policy 默认不传（即不启用主动重探索，P4 §8 里说明的"跨 run
     自动重探索触发"是 opt-in 的，避免默认行为在没有实际使用数据支撑时就
-    悄悄改变已有脚本的稳定使用）。"""
-    project_root = Path(project_root)
+    悄悄改变已有脚本的稳定使用）。
+
+    `project_root`/`workspace` 二选一（对应
+    next_doc/hybrid_exec_improvement_directions.md A1）：`workspace`
+    优先——传入一个 `mini_agent.workspace.Workspace` 对象时，脚本仓库/
+    运行记录/playbook 仓库这三个目录改用 `workspace.hybrid_exec_
+    scripts_dir` / `workspace.hybrid_exec_runs_dir` / `workspace.
+    hybrid_exec_playbooks_dir` 显式派生，而不是在本函数内部重新拼一遍
+    `<root>/.agent/hybrid_exec/...` 字符串；两条路径在数值上完全相同，
+    区别只在于"是否经过一个可被未来 Workspace 路径重映射能力感知到的
+    显式接口"。不传 `workspace` 时行为与之前完全一致（`project_root`
+    裸路径 + 内部硬编码拼接），不影响任何现有调用方。"""
+    if workspace is not None:
+        project_root = Path(workspace.root)
+        scripts_dir = workspace.hybrid_exec_scripts_dir
+        runs_dir = workspace.hybrid_exec_runs_dir
+        playbooks_dir = workspace.hybrid_exec_playbooks_dir
+    else:
+        if project_root is None:
+            raise ValueError("default_executor() 需要传入 project_root 或 workspace 二者之一")
+        project_root = Path(project_root)
+        scripts_dir = project_root / ".agent" / "hybrid_exec" / "scripts"
+        runs_dir = project_root / ".agent" / "hybrid_exec" / "runs"
+        playbooks_dir = project_root / ".agent" / "hybrid_exec" / "playbooks"
     if mini_agent_config is not None:
         app_cfg = RunnerAppConfig.from_mini_agent_config(mini_agent_config)
     else:
@@ -450,11 +473,11 @@ def default_executor(
             shared_llm = None
 
     repo = ScriptRepository(
-        project_root / ".agent" / "hybrid_exec" / "scripts",
+        scripts_dir,
         retire_after_consecutive_fail=retire_after_consecutive_fail,
     )
     script_runner = ScriptRunner(app_cfg)
-    run_recorder = RunRecorder(project_root / ".agent" / "hybrid_exec" / "runs")
+    run_recorder = RunRecorder(runs_dir)
 
     # SKILL 档默认不启用（与 `TaskSpec.allow_tiers` 默认不含 SKILL 一致），
     # 需要调用方显式传 `enable_skill_tier=True` 才会构造
@@ -472,7 +495,7 @@ def default_executor(
                 "轻量 Agent 的回合预算没有默认值，需结合具体场景决定）"
             )
         playbook_repo = PlaybookRepository(
-            project_root / ".agent" / "hybrid_exec" / "playbooks",
+            playbooks_dir,
             retire_after_consecutive_fail=retire_after_consecutive_fail,
         )
         playbook_runner_obj = PlaybookRunner(app_cfg, max_turns=skill_max_turns)

@@ -20,6 +20,7 @@ from .executor import HybridExecutor, default_executor
 from .explorer import AgentExplorer, Explorer, LLMExplorer
 from .fallback import FallbackExecutor
 from .kanban_summary import build_kanban_summary
+from .optional import try_hybrid_exec
 from .playbook_repository import PlaybookRecord, PlaybookRepository
 from .playbook_runner import PlaybookInvalidError, PlaybookRunner
 from .policy import ReexplorePolicy
@@ -58,6 +59,7 @@ __all__ = [
     "RunRecorder",
     "ReexplorePolicy",
     "build_kanban_summary",
+    "try_hybrid_exec",
     "TaskSpec",
     "ExecutionTier",
     "ExecutionResult",

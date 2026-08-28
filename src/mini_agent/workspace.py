@@ -138,6 +138,38 @@ class Workspace:
         """阶段 3（`project.yaml` 契约）预留位置，本阶段不解析内容。"""
         return self.root / "project.yaml"
 
+    @property
+    def hybrid_exec_scripts_dir(self) -> Path:
+        """hybrid_exec 脚本仓库目录：`<root>/.agent/hybrid_exec/scripts/`。
+
+        对应 `next_doc/hybrid_exec_improvement_directions.md` A1：把
+        `hybrid_exec.default_executor()` 内部拼死的
+        `project_root / ".agent" / "hybrid_exec" / "scripts"` 路径提升为
+        `Workspace` 上显式声明的属性，让"外部项目用 `Workspace` 对象一路
+        传下去"这条线不再依赖"裸路径字符串恰好和 `Workspace.root` 对齐"
+        这种巧合式兼容。与 `ScriptRepository` 构造时使用的路径保持一致。
+        """
+        return self.root / ".agent" / "hybrid_exec" / "scripts"
+
+    @property
+    def hybrid_exec_runs_dir(self) -> Path:
+        """hybrid_exec 执行记录目录：`<root>/.agent/hybrid_exec/runs/`。
+
+        与 `RunRecorder` 构造时使用的路径保持一致，见
+        `hybrid_exec_scripts_dir` 的说明。
+        """
+        return self.root / ".agent" / "hybrid_exec" / "runs"
+
+    @property
+    def hybrid_exec_playbooks_dir(self) -> Path:
+        """hybrid_exec SKILL 档（playbook）仓库目录：
+        `<root>/.agent/hybrid_exec/playbooks/`。
+
+        与 `enable_skill_tier=True` 时 `PlaybookRepository` 构造使用的
+        路径保持一致，见 `hybrid_exec_scripts_dir` 的说明。
+        """
+        return self.root / ".agent" / "hybrid_exec" / "playbooks"
+
     # ── 构造/接入辅助 ──────────────────────────────────────────────────────
 
     def build_skill_loader(self, **kwargs):
