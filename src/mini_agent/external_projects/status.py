@@ -14,8 +14,9 @@ external_projects/status.py — 健康检查 + 账本聚合视图
 from __future__ import annotations
 
 import subprocess
+import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from mini_agent.external_projects.ledger import RunRecord, last_record, read_ledger
 from mini_agent.external_projects.manifest import ProjectManifest, ProjectManifestError
@@ -25,6 +26,24 @@ from mini_agent.external_projects.registry import ExternalProjectRegistry
 # 单独暴露 timeout 配置项（如果未来发现有需要，可以在 manifest.py 里加，
 # 属于第 5 节里刻意留白的"权限模型精细化"同一类问题，不提前设计）。
 _HEALTH_CHECK_TIMEOUT_SEC = 30
+
+# [2026-08-28 追加 — external_projects_kanban_integration_plan.md
+# 「看板切换外部项目 tab 卡顿排查」] `probe_health()` 每次都要 fork 一个
+# 新的 Python 解释器去 `import akshare/pandas` 之类的重依赖，冷启动
+# 单次就要 1~5 秒，看板每次切换 tab（Streamlit 整页重跑）都会重新拉一次
+# `/self/external_projects`，若不缓存，用户体验就是"点一下 tab，卡几秒
+# 才出内容"，即便结果这几秒内根本不会变。这里给 probe_health() 结果加一
+# 层进程内 TTL 缓存：同一个 (项目名, health_check 命令) 在 TTL 窗口内
+# 只探测一次，命中缓存直接返回，不再 fork 子进程。TTL 默认 60s——比看板
+# 用户正常切 tab 的间隔短得多，不会让"健康状态"明显滞后于真实情况，但
+# 足以吸收"来回切几次 tab"这种短时间重复请求。
+_HEALTH_CACHE_TTL_SEC = 60.0
+_health_cache: Dict[Tuple[str, str], Tuple[float, Optional[bool]]] = {}
+
+
+def _clear_health_cache() -> None:
+    """仅供测试使用：清空探测缓存，避免用例之间互相污染。"""
+    _health_cache.clear()
 
 
 @dataclass
@@ -37,7 +56,7 @@ class ProjectStatusSnapshot:
     manifest_error: Optional[str] = None
 
 
-def probe_health(manifest: ProjectManifest) -> Optional[bool]:
+def probe_health(manifest: ProjectManifest, *, use_cache: bool = True) -> Optional[bool]:
     """
     执行 `project.yaml` 声明的 `health_check.cmd`（若有）。
 
@@ -45,9 +64,22 @@ def probe_health(manifest: ProjectManifest) -> Optional[bool]:
     （不是"不健康"，是"没法回答这个问题"，调用方需要据此决定是否退化
     为读账本）。探测本身抛异常（命令不存在/超时等）按 False 处理，不
     向上抛出——健康检查探测失败本身就是"不健康"这个结论的一部分。
+
+    `use_cache=True`（默认）时，命中 `_HEALTH_CACHE_TTL_SEC` 内的缓存
+    会直接返回，不再 fork 子进程；`aggregate_status()` 的看板高频轮询
+    场景应使用默认值，CLI `mini-agent projects status` 这类"用户主动
+    要一个当下准确结果"的场景可以传 `use_cache=False` 强制重新探测。
     """
     if manifest.health_check is None:
         return None
+
+    cache_key = (manifest.name, manifest.health_check.cmd)
+    now = time.monotonic()
+    if use_cache:
+        cached = _health_cache.get(cache_key)
+        if cached is not None and (now - cached[0]) < _HEALTH_CACHE_TTL_SEC:
+            return cached[1]
+
     try:
         proc = subprocess.run(
             manifest.health_check.cmd,
@@ -57,13 +89,16 @@ def probe_health(manifest: ProjectManifest) -> Optional[bool]:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        return proc.returncode == 0
+        result: Optional[bool] = proc.returncode == 0
     except Exception:
-        return False
+        result = False
+
+    _health_cache[cache_key] = (now, result)
+    return result
 
 
 def project_status_snapshot(
-    registry: ExternalProjectRegistry, name: str
+    registry: ExternalProjectRegistry, name: str, *, use_cache: bool = True
 ) -> ProjectStatusSnapshot:
     """
     聚合出一个外部项目"现在情况如何"的快照：
@@ -93,7 +128,7 @@ def project_status_snapshot(
         )
 
     last = last_record(manifest.source_dir) if manifest.source_dir else None
-    probed = probe_health(manifest)
+    probed = probe_health(manifest, use_cache=use_cache)
 
     if probed is not None:
         health = "healthy" if probed else "unhealthy"
@@ -115,7 +150,7 @@ def project_status_snapshot(
 
 
 def aggregate_status(
-    registry: ExternalProjectRegistry, *, recent_runs_limit: int = 5
+    registry: ExternalProjectRegistry, *, recent_runs_limit: int = 5, use_cache: bool = True
 ) -> List[dict]:
     """
     对注册表里所有项目批量生成状态视图，供 HTTP 端点/CLI 直接序列化。
@@ -123,11 +158,18 @@ def aggregate_status(
     单个项目聚合失败（比如 manifest 目录被移走）不应该拖垮整个视图，
     这里逐项目 try/except，出问题的项目本身仍然出现在结果里、只是标出
     错误原因，不让它消失或让整个请求 500。
+
+    `use_cache`：透传给 `probe_health()`（见其 docstring）。看板高频
+    轮询用默认 True 吃 TTL 缓存；这个函数本身仍是同步阻塞的（未缓存命中
+    时依然会 fork 子进程逐项目探测），调用方如果在 asyncio 事件循环里
+    用，必须自己 `asyncio.to_thread()` 包一层——不在这里改成 async，是
+    因为 CLI（`mini-agent projects status`）也直接同步调用它，没有事件
+    循环可言。
     """
     results: List[dict] = []
     for r in registry.list():
         try:
-            snap = project_status_snapshot(registry, r.name)
+            snap = project_status_snapshot(registry, r.name, use_cache=use_cache)
             manifest = None
             entrypoints: List[dict] = []
             kanban_view: Optional[dict] = None

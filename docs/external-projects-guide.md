@@ -183,6 +183,25 @@ daemon 在运行时，`GET /v1/self/external_projects` 端点会把所有已注�
 项目的这套聚合视图（health + 最近 5 条执行记录）一次性返回，供前端
 kanban 直接渲染，不需要理解注册表/账本文件本身的存储细节。
 
+**性能说明（2026-08-28 追加）**：`health_check` 的子进程探测结果在
+daemon 侧有 60 秒 TTL 缓存（按项目名 + 探测命令为 key），同一分钟内
+反复请求 `/v1/self/external_projects`（比如看板来回切 tab）不会每次
+都重新 fork 子进程；且该探测已经放进了线程池执行，不会阻塞 daemon
+处理其它请求。如果需要绕过缓存拿到当下最新结果，CLI 侧可以直接调用
+`external_projects.status.project_status_snapshot(registry, name,
+use_cache=False)`（暂无对应 CLI flag，需要时再加）。
+
+**手动触发的阻塞防护（2026-08-28 追加）**：`trigger_run`
+（`POST /v1/external_projects/{name}/trigger_run` / `mini-agent
+projects run`）内部执行 entrypoint 用的是同步子进程调用，`daemon` 侧
+已经把它放进独立线程池执行（不占用主事件循环），所以触发一个长
+entrypoint（`timeout_sec` 声明到 900 秒的，如 stock_watch 的
+`kline_batch`/`signal_scan`）不会导致 daemon 对其它请求失去响应；但
+HTTP 响应本身仍然要等 entrypoint 跑完才返回，看板一侧的请求超时已经
+放宽到 960 秒。同一个 `(项目, entrypoint)` 不允许并发触发第二次——
+执行期间再次触发会收到 409（"已有一次执行正在进行中"），避免重复
+点击堆出多个并发子进程。
+
 ## 6.1 改进积压账本（backlog）
 
 ```bash

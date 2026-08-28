@@ -710,9 +710,27 @@ async def get_self_external_projects(request: Request):
     try:
         from mini_agent.external_projects.registry import ExternalProjectRegistry
         from mini_agent.external_projects.status import aggregate_status
+        from mini_agent.utils.blocking_guard import run_blocking
 
         registry = ExternalProjectRegistry()
-        return {"projects": aggregate_status(registry)}
+        # [2026-08-28 追加 — 看板切"外部项目" tab 卡顿排查] aggregate_status()
+        # 内部对每个声明了 health_check 的项目都要同步 fork 一次子进程探测
+        # （见 status.py 内的详细说明，单次可能 1~5s，多个项目还会累加），
+        # 如果直接在这个 async 处理函数里同步调用，会独占 uvicorn 的事件
+        # 循环，阻塞期间所有其它请求（包括其它看板 tab/SSE 推送）都会一并
+        # 卡住。改用已有的 `blocking_guard.run_blocking()`（LLM 调用等处
+        # 已经在用的同一套线程池+超时+熔断防护，而不是自己再发明一套裸
+        # `asyncio.to_thread`）丢进线程池执行——事件循环本身不阻塞；加上
+        # status.py 新增的 60s TTL 探测缓存，两者一起把"切 tab 卡顿"从
+        # "事件循环级联阻塞"降级为"最多一次线程池等待"。超时给 30s（略高
+        # 于单次 health_check 的 `_HEALTH_CHECK_TIMEOUT_SEC`，因为最坏
+        # 情况可能有一个项目探测未命中缓存），超时/熔断时 fallback 到
+        # 空列表——前端已经把"没有已注册项目"和"聚合失败"都处理成非致命
+        # 提示，不会因为一次超时就整页报错。
+        projects = await run_blocking(
+            aggregate_status, registry, where="external_projects_status", timeout=30.0, fallback=[],
+        )
+        return {"projects": projects}
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(
@@ -811,10 +829,60 @@ async def post_external_projects_trigger_run(name: str, request: Request):
             ExternalProjectRegistry,
             ExternalProjectRegistryError,
         )
-        from mini_agent.external_projects.scheduler import trigger_run
+        from mini_agent.external_projects.scheduler import (
+            EntrypointAlreadyRunningError,
+            trigger_run,
+        )
+        from mini_agent.utils.blocking_guard import run_blocking
 
         registry = ExternalProjectRegistry()
-        result = trigger_run(registry, name, entrypoint, trigger="manual", params=params)
+        # [2026-08-28 追加 — 「看板触发有导致 daemon 卡死的风险」修复]
+        # `trigger_run()` 内部是同步阻塞的 `subprocess.run(timeout=
+        # entrypoint.timeout_sec)`，timeout_sec 最长声明到 900s。直接在
+        # 这个 async 处理函数里同步调用，会独占 uvicorn 单事件循环整整
+        # 900 秒，其间 daemon 对所有其它请求（含其它 session 的对话、
+        # SSE 推送）都没有响应，等同于卡死。改用与上面 `/self/
+        # external_projects` 同一套 `blocking_guard.run_blocking()` 丢进
+        # 线程池执行，事件循环本身不受影响。超时给 entrypoint 声明的
+        # `timeout_sec + 10`（留一点余量给子进程收尾/写账本），保证
+        # `run_blocking` 自己的硬超时不会早于子进程自身的 timeout 触发；
+        # 不传 fallback——触发失败应该让用户看到明确的 504/错误，而不是
+        # 静默返回一个看起来像"成功"的空结果。scheduler.py 侧另外加了
+        # 同 entrypoint 并发触发保护（见 EntrypointAlreadyRunningError），
+        # 两处修复分别解决"阻塞事件循环"和"重复点击堆并发子进程"两个
+        # 独立风险点。超时用固定 930s（略高于目前已知最长的 entrypoint
+        # timeout_sec=900），不再额外读一次 manifest 去精确匹配单个
+        # entrypoint 的 timeout_sec——`trigger_run()` 内部的
+        # `subprocess.run(timeout=entrypoint.timeout_sec)` 才是真正生效
+        # 的执行超时，这里的 930s 只是"最坏情况下线程池调用本身该等多久"
+        # 的上限保护，precision 没有必要。
+        #
+        # [实现测试时发现的真实问题，顺手修了] `run_blocking()` 把 `fn`
+        # 抛出的任何异常都计入熔断失败计数（见 blocking_guard.py 的
+        # `except Exception` 分支）。但 `EntrypointParamError`/
+        # `ExternalProjectRegistryError`/`EntrypointAlreadyRunningError`
+        # 是"用户填错参数/项目名/重复点击"这类正常业务错误，不代表
+        # "触发这个操作本身不健康"——如果直接让它们像基础设施故障一样
+        # 计入熔断，用户连续填错几次参数就会把整个触发功能熔断掉 120
+        # 秒，殃及其他项目的正常触发请求。这里用一个哨兵包装：业务异常
+        # 不 raise、而是作为返回值带出线程池，熔断计数只统计"线程池调用
+        # 本身失败"（比如未预料的 bug），业务异常在拿到返回值后再按原来
+        # 的语义转换成对应的 HTTP 状态码。
+        result = await run_blocking(
+            _trigger_run_catching_business_errors,
+            registry,
+            name,
+            entrypoint,
+            params,
+            where="external_projects_trigger_run",
+            timeout=930.0,
+        )
+        if isinstance(result, EntrypointAlreadyRunningError):
+            raise HTTPException(status_code=409, detail=str(result))
+        if isinstance(result, EntrypointParamError):
+            raise HTTPException(status_code=400, detail=str(result))
+        if isinstance(result, ExternalProjectRegistryError):
+            raise HTTPException(status_code=_external_project_error_status(result), detail=str(result))
         return {
             "project_name": result.project_name,
             "entrypoint_key": result.entrypoint_key,
@@ -822,12 +890,24 @@ async def post_external_projects_trigger_run(name: str, request: Request):
             "trigger": result.trigger,
             "detail": result.detail,
         }
-    except EntrypointParamError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except ExternalProjectRegistryError as exc:
-        raise HTTPException(status_code=_external_project_error_status(exc), detail=str(exc))
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+def _trigger_run_catching_business_errors(registry, name: str, entrypoint: str, params):
+    """`trigger_run()` 的包装：把预期内的业务异常当返回值带出线程池，
+    而不是 raise——供 `run_blocking()` 的熔断计数只统计真正的意外失败。
+    见 `post_external_projects_trigger_run()` 里的详细说明。"""
+    from mini_agent.external_projects.manifest import EntrypointParamError
+    from mini_agent.external_projects.registry import ExternalProjectRegistryError
+    from mini_agent.external_projects.scheduler import EntrypointAlreadyRunningError, trigger_run
+
+    try:
+        return trigger_run(registry, name, entrypoint, trigger="manual", params=params)
+    except (EntrypointParamError, ExternalProjectRegistryError, EntrypointAlreadyRunningError) as exc:
+        return exc
 
 
 @router.get("/external_projects/{name}/ledger")

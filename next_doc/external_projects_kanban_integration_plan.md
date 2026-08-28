@@ -393,3 +393,63 @@ client.py`）✅已完成
   值变化"，更严格的话应该是"用户主动确认"），不要用"某个值存在"这种
   从页面一加载就恒真的条件当完成信号——尤其是当那个值本身就是无条件
   生成的（如本例的混淆 JS）时，"存在"和"有效"是两回事。
+
+- 2026-08-28：**使用者实测反馈两个性能/稳定性问题——「切到外部项目 tab
+  总是卡很久才刷新」+「看板手动触发有导致 daemon 卡死的风险」**。排查
+  定位到同一类根因：`GET /v1/self/external_projects`
+  （`external_projects/status.py::aggregate_status()`）和
+  `POST /external_projects/{name}/trigger_run`
+  （`external_projects/scheduler.py::trigger_run()`）内部分别是同步
+  阻塞的 `subprocess.run(shell=True, timeout=...)`——前者是每个声明了
+  `health_check` 的项目探测一次（stock_watch 的 `health.py` 要 `import
+  akshare/pandas`，单次冷启动就有明显耗时），后者是真正执行 entrypoint
+  （`project.yaml` 里 `timeout_sec` 最长声明到 900s，如 `kline_batch`/
+  `signal_scan`）。两处都是在 FastAPI 的 `async def` 路由里直接同步
+  调用，会独占 uvicorn 单事件循环——`aggregate_status()` 侧表现为"切
+  tab 卡几秒"，`trigger_run()` 侧更严重："手动触发一次长 entrypoint，
+  daemon 对所有其它请求（其它 session 对话、SSE 推送、其它看板 tab）
+  900 秒内都没有响应"，跟使用者的两个反馈完全对应。
+
+  修复（不改变对外契约，纯内部实现）：
+  1. `status.py::probe_health()` 新增 60s TTL 进程内缓存（按
+     `(项目名, health_check 命令)` 为 key），命中缓存不再 fork 子
+     进程——直接把"切 tab 反复触发探测"这一大头开销砍掉。
+     `aggregate_status()`/`project_status_snapshot()` 透传
+     `use_cache` 参数，CLI 场景可传 `False` 强制拿到当下最新结果。
+  2. `api/routes.py` 的 `get_self_external_projects()`/
+     `post_external_projects_trigger_run()` 改用仓库里已有的
+     `utils/blocking_guard.py::run_blocking()`（跟 LLM 调用同一套
+     线程池 + 超时 + 熔断防护，不是新发明一套裸
+     `asyncio.to_thread`）把这两处阻塞调用丢进线程池执行，事件循环
+     本身不再被占用——这是解决"daemon 卡死"的关键一步。
+  3. `scheduler.py::trigger_run()` 新增 `EntrypointAlreadyRunningError`：
+     同一个 `(project, entrypoint)` 有一次执行正在进行时直接拒绝
+     （409），防止用户在等待响应期间误以为没反应而连续点击「触发」，
+     堆出多个并发子进程进一步放大资源占用——这是独立于"阻塞事件循环"
+     之外的第二个风险点，一并修了。
+  4. **实现过程中顺手发现并修复的真实 bug**：`run_blocking()` 把
+     `fn` 抛出的任何异常都计入熔断失败计数，但 `EntrypointParamError`/
+     `ExternalProjectRegistryError`/`EntrypointAlreadyRunningError`
+     是"用户填错参数/项目名/重复点击"这类正常业务错误，不代表触发
+     操作本身不健康——如果不处理，连续填错几次参数就会把整个触发
+     功能熔断 120 秒，殃及其它项目的正常触发请求。加了一层"业务异常
+     不 raise、作为返回值带出线程池"的包装（`_trigger_run_catching_
+     business_errors()`），熔断计数只统计线程池调用本身的意外失败。
+  5. `apps/mini_agent_kanban/client.py::trigger_external_project_run()`
+     的 HTTP 客户端超时从 120s 放宽到 960s（略高于目前已知最长的
+     entrypoint timeout_sec=900）——之前 120s 比部分 entrypoint 的
+     声明超时短，长任务场景下客户端会先于服务端超时，看到一个"触发
+     失败"的假报错，实际后台还在继续跑；现在服务端已经不会阻塞
+     daemon，可以放心让客户端多等一会儿。
+
+  验证：`tests/test_api_external_projects_routes.py` +
+  `test_external_projects*.py` 共 128 个用例全部通过（含新增覆盖
+  `EntrypointAlreadyRunningError` 409 路径的用例）。
+
+  **刻意不做的事**（记录决策，避免以后重复纠结）：没有把
+  `trigger_run` 改成"立即返回 + 后台异步执行，前端轮询状态"这种更
+  彻底的架构——当前"阻塞线程池 + 放宽客户端超时"已经解决了"daemon
+  卡死"这个更严重的问题，改成异步轮询需要新增任务 ID/状态存储/前端
+  轮询 UI，属于超出本次"发现卡顿→定位→修复"范围的架构变更，如果未来
+  长 entrypoint 场景变多、用户对"触发后立刻拿到反馈"的需求变强，可以
+  再单独立项做。

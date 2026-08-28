@@ -778,7 +778,14 @@ class AgentClient:
         body = {"entrypoint": entrypoint}
         if params:
             body["params"] = params
-        return self._post(f"/external_projects/{name}/trigger_run", body, timeout=120)
+        # [2026-08-28 追加] 原来 timeout=120s，比 project.yaml 里部分
+        # entrypoint 声明的 timeout_sec（如 kline_batch/signal_scan 到
+        # 900s）短——服务端现已用 asyncio.to_thread() 把执行挪出事件
+        # 循环（daemon 不再因此卡死），但客户端如果先于服务端超时，
+        # 用户会看到一个"触发失败"的假报错，而后台其实还在继续跑。
+        # 放宽到 960s（略高于目前最长的 900s），换来"宁可等久一点也
+        # 不误报失败"。
+        return self._post(f"/external_projects/{name}/trigger_run", body, timeout=960)
 
     def external_project_ledger(self, name: str, limit: int = 20):
         """该项目的执行账本，最近 `limit` 条（旧到新）。"""

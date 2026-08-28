@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import subprocess
+import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -43,6 +44,36 @@ class EntrypointRunResult:
     returncode: int
     trigger: str  # "daemon" | "manual"
     detail: Optional[str] = None  # 失败时子进程 stdout/stderr 尾部，成功为 None
+
+
+class EntrypointAlreadyRunningError(RuntimeError):
+    """同一个 (项目, entrypoint) 已经有一次执行在进行中。"""
+
+
+# [2026-08-28 追加 — 「看板触发接口有导致 daemon 卡死的风险」排查]
+# `_run_entrypoint()` 用的是同步阻塞的 `subprocess.run(timeout=...)`，
+# 单个 entrypoint 的 timeout_sec 最长声明到 900s（见 stock_watch 的
+# kline_batch/signal_scan）。这个函数本身对"是否在事件循环里跑"完全
+# 无感知——它就是个普通同步函数，最初设计时假设调用方（CLI）本来就是
+# 单次同步执行、跑完直接退出，不存在"阻塞谁"的问题。
+#
+# 问题出在 API 路由层把它直接摆进了 `async def` 处理函数里当同步函数用
+# （见 api/routes.py::post_external_projects_trigger_run），FastAPI/
+# uvicorn 默认单事件循环，`async def` 里的同步阻塞调用不会被自动挪到
+# 线程池——于是一次手动触发 kline_batch，daemon 的事件循环会被独占
+# 阻塞到 900 秒，其间所有其它请求（SSE 推送、其它看板 tab、甚至别的
+# session 的对话）全部卡住，表现就是"daemon 卡死"。
+#
+# 这里只在 scheduler.py 层面加一个轻量防御：同一个 (project, entrypoint)
+# 不允许并发触发第二次——防止用户在等待响应间隙误以为没反应而连续点击
+# 「触发」按钮，导致同一个重活 entrypoint 堆出多个并发子进程，进一步
+# 放大资源占用（这在"是否阻塞事件循环"之外是独立的一个风险点，两个问题
+# 一起修）。真正解决"阻塞事件循环"本身的手段是调用方用
+# `asyncio.to_thread()`/`run_in_executor()` 把这个同步函数丢到线程池
+# 执行——已经在 `api/routes.py` 里改了，这里不重复处理事件循环相关逻辑
+# （scheduler.py 本身不依赖 asyncio，CLI 场景没有事件循环可言）。
+_running_lock = threading.Lock()
+_running_keys: set[tuple[str, str]] = set()
 
 
 def _cron_field_matches(field_expr: str, value: int) -> bool:
@@ -239,7 +270,25 @@ def trigger_run(
     params: Optional[Dict[str, str]] = None,
 ) -> EntrypointRunResult:
     """立即触发某个已注册项目的某个 entrypoint 一次（供 CLI `projects run`/
-    看板「▶️ 手动触发」使用）。`params` 见 `_run_entrypoint()` 说明。"""
-    manifest = registry.load_manifest_for(project_name)
-    entrypoint = manifest.entrypoint(entrypoint_key)
-    return _run_entrypoint(manifest, entrypoint, trigger=trigger, params=params)
+    看板「▶️ 手动触发」使用）。`params` 见 `_run_entrypoint()` 说明。
+
+    同一个 (project_name, entrypoint_key) 有一次执行正在进行时会直接
+    抛 `EntrypointAlreadyRunningError`（不排队、不静默丢弃）——避免
+    用户在长 entrypoint（比如 900s 的 kline_batch）响应还没回来时误
+    以为没反应而重复点「触发」，堆出多个并发子进程。调用方（API 路由/
+    CLI）据此给用户一个"正在执行中，请稍候"的明确提示。
+    """
+    key = (project_name, entrypoint_key)
+    with _running_lock:
+        if key in _running_keys:
+            raise EntrypointAlreadyRunningError(
+                f"{project_name}/{entrypoint_key} 已有一次执行正在进行中，请等待完成后再试"
+            )
+        _running_keys.add(key)
+    try:
+        manifest = registry.load_manifest_for(project_name)
+        entrypoint = manifest.entrypoint(entrypoint_key)
+        return _run_entrypoint(manifest, entrypoint, trigger=trigger, params=params)
+    finally:
+        with _running_lock:
+            _running_keys.discard(key)
