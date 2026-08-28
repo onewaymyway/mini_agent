@@ -33,7 +33,7 @@ import subprocess
 import tempfile
 import time
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import requests
 
@@ -376,9 +376,11 @@ def fetch_iwencai_screener_direct(
     max_retries = 3
     for attempt in range(max_retries):
         try:
+            from urllib.parse import urlencode
+            encoded_payload = urlencode(payload, encoding='utf-8')
             resp = requests.post(
                 API_URL,
-                data=payload,
+                data=encoded_payload,
                 headers=headers,
                 timeout=20,
                 allow_redirects=False,
