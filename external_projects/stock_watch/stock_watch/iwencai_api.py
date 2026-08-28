@@ -373,43 +373,51 @@ def fetch_iwencai_screener_direct(
         "Origin": IWENCAI_URL,
     }
 
-    try:
-        resp = requests.post(
-            API_URL,
-            data=payload,
-            headers=headers,
-            timeout=20,
-            allow_redirects=False,
-        )
-        resp.raise_for_status()
-    except requests.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code == 401:
-            # 令牌过期，强制刷新后重试一次
-            logger.warning("hexin-v 令牌 401，强制刷新后重试...")
-            token = _get_hexin_v(force_refresh=True)
-            if not token:
-                raise DataSourceError(
-                    "hexin-v 令牌刷新失败，请重新在 Chrome 中登录问财"
-                ) from exc
-            headers["hexin-v"] = token
-            try:
-                resp = requests.post(
-                    API_URL,
-                    data=payload,
-                    headers=headers,
-                    timeout=20,
-                    allow_redirects=False,
-                )
-                resp.raise_for_status()
-            except requests.HTTPError:
-                raise DataSourceError(
-                    f"问财 API 401 认证失败（令牌已刷新但仍无效）。"
-                    f"请确认 Chrome 已登录问财：{exc}"
-                ) from exc
-        else:
-            raise DataSourceError(f"问财 API 请求失败: {exc}") from exc
-    except requests.RequestException as exc:
-        raise DataSourceError(f"问财 API 请求异常: {exc}") from exc
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(
+                API_URL,
+                data=payload,
+                headers=headers,
+                timeout=20,
+                allow_redirects=False,
+            )
+            resp.raise_for_status()
+            break  # 成功则跳出重试循环
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 401:
+                # 令牌过期，强制刷新后重试
+                logger.warning("hexin-v 令牌 401，强制刷新后重试...")
+                token = _get_hexin_v(force_refresh=True)
+                if not token:
+                    raise DataSourceError(
+                        "hexin-v 令牌刷新失败，请重新在 Chrome 中登录问财"
+                    ) from exc
+                headers["hexin-v"] = token
+                continue  # 使用新令牌重试
+            elif exc.response is not None and exc.response.status_code == 403:
+                if attempt < max_retries - 1:
+                    wait = 2 ** attempt  # 指数退避：2s, 4s, 8s
+                    logger.warning(f"问财 API 403 频率限制，等待 {wait}s 后重试 ({attempt+1}/{max_retries})")
+                    time.sleep(wait)
+                    continue
+                else:
+                    raise DataSourceError(
+                        f"问财 API 403 频率限制（已重试 {max_retries} 次）。请稍后再试。"
+                    ) from exc
+            else:
+                raise DataSourceError(f"问财 API 请求失败: {exc}") from exc
+        except requests.RequestException as exc:
+            if attempt < max_retries - 1:
+                wait = 2 ** attempt
+                logger.warning(f"问财 API 请求异常: {exc}，等待 {wait}s 后重试")
+                time.sleep(wait)
+                continue
+            raise DataSourceError(f"问财 API 请求异常: {exc}") from exc
+    else:
+        # 重试耗尽
+        raise DataSourceError(f"问财 API 请求失败（已重试 {max_retries} 次）")
 
     # 解析响应
     try:
