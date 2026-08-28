@@ -72,7 +72,7 @@ done/
 echo/
 mkdir/
 READY/
-
+release_logs/*_raw.txt
 temp_test/
 test_reports/
 
