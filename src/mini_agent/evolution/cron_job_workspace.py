@@ -38,6 +38,13 @@ STATUS_IDLE = "idle"
 STATUS_RUNNING = "running"
 STATUS_NEEDS_REVIEW = "needs_human_review"
 STATUS_TIMED_OUT = "timed_out"
+# [cron_async_user_feedback_mechanism_plan] 本次触发过程中通过
+# ask_user_async 提了问题、还在等用户异步作答，其它部分该跑的已经跑完/
+# 无法再推进。跟 STATUS_NEEDS_REVIEW（StuckDetector 判定 GIVE_UP，代表
+# "卡死放弃"）语义不同：这不是失败，不计入 consecutive_failures，也不
+# 触发熔断——纯粹是"等一个具体问题的答案"，下次照常按周期触发（见方案
+# 文档已确认：未回答时下次到期照常触发，agent 见机行事）。
+STATUS_WAITING_FEEDBACK = "waiting_feedback"
 
 DEFAULT_TIMEOUT_SECONDS = 20 * 60
 DEFAULT_MAX_STEPS = 60
@@ -112,6 +119,18 @@ DEFAULT_PROMPT_TEMPLATE = (
     "请从上述进度继续，不要从头重新开始。\n"
     "{{/progress}}\n"
     "\n"
+    "{{#pending_answers}}\n"
+    "--- 上次搁置的问题，用户已回答 ---\n"
+    "{{pending_answers}}\n"
+    "请据此继续之前搁置的工作。\n"
+    "{{/pending_answers}}\n"
+    "\n"
+    "{{#unanswered_questions}}\n"
+    "--- 以下问题仍未收到回复 ---\n"
+    "{{unanswered_questions}}\n"
+    "不要重复调用 ask_user_async 问同一个问题，先处理其它可推进的部分。\n"
+    "{{/unanswered_questions}}\n"
+    "\n"
     "{{#previous_output}}\n"
     "--- 上一轮产出（{{previous_output_dir}}） ---\n"
     "{{previous_output}}\n"
@@ -161,7 +180,11 @@ class CronJobWorkspace:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         if not self.prompt_path.exists():
-            content = default_task_template or "{{task_description}}\n\n{{progress}}\n"
+            content = default_task_template or (
+                "{{task_description}}\n\n{{progress}}\n"
+                "{{#pending_answers}}\n{{pending_answers}}\n{{/pending_answers}}\n"
+                "{{#unanswered_questions}}\n{{unanswered_questions}}\n{{/unanswered_questions}}\n"
+            )
             self.prompt_path.write_text(content, encoding="utf-8")
         if not self.config_path.exists():
             atomic_write_json(self.config_path, {})
@@ -263,8 +286,19 @@ class CronJobWorkspace:
                                      由 output_workspace.allocate_run_dir()
                                      幂等创建。run_id 未传入时（调用方还没
                                      生成 run_id）留空，不创建目录。
-        以及两个极简的 {{#xxx}}...{{/xxx}} 条件块：progress/previous_output
-        为空时整段连同标记一起去掉，避免每次都印出一段空标题。
+          {{pending_answers}}      — [cron_async_user_feedback_mechanism_plan]
+                                     上次通过 ask_user_async 提出、现在已经
+                                     被用户回答、但还没喂给过 agent 的问答对
+                                     （"上次你问过「X」，用户回答：Y"），
+                                     渲染后会调用 questions_store.
+                                     mark_answers_consumed() 标记为已消费，
+                                     避免同一个答案被后续多次触发反复注入。
+          {{unanswered_questions}} — 仍处于待回答状态的问题列表，提醒 agent
+                                     不要重复调用 ask_user_async 问同一个
+                                     问题，先处理其它可推进的部分。
+        以及四个极简的 {{#xxx}}...{{/xxx}} 条件块：progress/previous_output/
+        pending_answers/unanswered_questions 为空时整段连同标记一起去掉，
+        避免每次都印出一段空标题。
         """
         template = self.read_prompt()
         state = self.read_state()
@@ -283,14 +317,21 @@ class CronJobWorkspace:
                 previous_output_text = output_workspace.format_manifest_for_prompt(prev_manifest)
                 previous_output_dir_text = prev_manifest.get("_dir", "")
 
+        pending_answers_text = self._format_pending_answers()
+        unanswered_questions_text = self._format_unanswered_questions()
+
         template = self._render_condition_block(template, "progress", bool(progress))
         template = self._render_condition_block(template, "previous_output", bool(previous_output_text))
+        template = self._render_condition_block(template, "pending_answers", bool(pending_answers_text))
+        template = self._render_condition_block(template, "unanswered_questions", bool(unanswered_questions_text))
 
         template = template.replace("{{task_description}}", task_description)
         template = template.replace("{{progress}}", progress)
         template = template.replace("{{previous_output}}", previous_output_text)
         template = template.replace("{{previous_output_dir}}", previous_output_dir_text)
         template = template.replace("{{output_dir}}", output_dir_text)
+        template = template.replace("{{pending_answers}}", pending_answers_text)
+        template = template.replace("{{unanswered_questions}}", unanswered_questions_text)
         if "{{output_policy}}" in template:
             try:
                 from mini_agent.evolution.output_path_policy import load_policy
@@ -299,6 +340,41 @@ class CronJobWorkspace:
                 policy_text = ""
             template = template.replace("{{output_policy}}", policy_text)
         return template
+
+    def _format_pending_answers(self) -> str:
+        """[cron_async_user_feedback_mechanism_plan] 取出本 job 已回答但
+        还没消费过的问答对，格式化成文本并标记为已消费。异常兜底返回空
+        字符串——问答续接是感知增强，不能反过来影响 render_prompt() 本身。
+        """
+        try:
+            from mini_agent.notification import questions_store
+            rows = questions_store.list_unconsumed_answers_for_job(self._paths, self.job_id)
+            if not rows:
+                return ""
+            lines = [
+                f"- 上次你问过「{r.get('question', '')}」，用户回答：{r.get('answer', '')}"
+                for r in rows
+            ]
+            questions_store.mark_answers_consumed(self._paths, [r["question_id"] for r in rows])
+            return "\n".join(lines)
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.evolution.cron_job_workspace._format_pending_answers")
+            return ""
+
+    def _format_unanswered_questions(self) -> str:
+        """[cron_async_user_feedback_mechanism_plan] 取出本 job 仍处于待
+        回答状态的问题，提醒 agent 不要重复提问。异常兜底返回空字符串。"""
+        try:
+            from mini_agent.notification import questions_store
+            rows = questions_store.list_pending_question_texts_for_job(self._paths, self.job_id)
+            if not rows:
+                return ""
+            return "\n".join(f"- 「{r.get('question', '')}」（尚未回答）" for r in rows)
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.evolution.cron_job_workspace._format_unanswered_questions")
+            return ""
 
     @staticmethod
     def _render_condition_block(template: str, name: str, keep: bool) -> str:

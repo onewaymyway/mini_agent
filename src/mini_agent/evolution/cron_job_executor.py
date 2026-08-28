@@ -36,9 +36,10 @@ from typing import Callable, Optional, TYPE_CHECKING
 
 from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal
 from mini_agent.evolution.circuit_breaker_core import classify_error_type
+from mini_agent.evolution.cron_context import set_current_cron_job_id, clear_current_cron_job_id
 from mini_agent.evolution.cron_job_workspace import (
     CronJobWorkspace, CronJobState, CronJobConfig,
-    STATUS_IDLE, STATUS_RUNNING, STATUS_NEEDS_REVIEW, STATUS_TIMED_OUT,
+    STATUS_IDLE, STATUS_RUNNING, STATUS_NEEDS_REVIEW, STATUS_TIMED_OUT, STATUS_WAITING_FEEDBACK,
 )
 
 if TYPE_CHECKING:
@@ -158,6 +159,12 @@ class CronJobExecutor:
         cfg = ws.read_config(default=default_config)
         state = ws.read_state()
 
+        # [cron_async_user_feedback_mechanism_plan] 整次 job 执行期间（含内部
+        # 多次 submit_step_fn 调用，都跑在同一条 cron 执行线程上），把 job_id
+        # 写进 thread-local，供本步执行到的 ask_user_async 工具据此归属问题；
+        # finally 里清空，避免残留到这条线程之后的非 cron 调用。
+        set_current_cron_job_id(job.id)
+
         # 上次异常退出、state 还停在 running 的僵尸状态：记一次失败但不
         # 阻止本次继续执行——避免"一次异常退出就永久卡在 running 无法
         # 再被调度"（tick() 只看 CronJob.enabled/next_run_at，不看这里
@@ -253,6 +260,25 @@ class CronJobExecutor:
                     })
                     break
         finally:
+            # [cron_async_user_feedback_mechanism_plan] 本次触发过程中如果通过
+            # ask_user_async 提了问、其它部分已经跑完（final_status 走到了
+            # "正常完成"），但那个问题此刻仍未被用户回答，不应该被记成"完全
+            # 结束"（否则 progress_summary 会被下面的逻辑清空，下次触发时
+            # {{unanswered_questions}} 虽然还能查到，但已经丢失了这一步的
+            # 执行上下文）——改记成 STATUS_WAITING_FEEDBACK，不计入失败。
+            # 只在 final_status 已经是"正常完成"时才覆盖：timed_out/
+            # needs_human_review 语义上更紧急，维持原状，不被这里抢占。
+            if final_status == STATUS_IDLE:
+                try:
+                    from mini_agent.notification import questions_store
+                    still_pending = questions_store.list_pending_question_texts_for_job(self._paths, job.id)
+                except Exception as exc:  # noqa: BLE001 — 感知增强不能影响主流程
+                    from mini_agent.errors import log_exception
+                    log_exception(exc, where="mini_agent.evolution.cron_job_executor.run_job._check_pending_questions")
+                    still_pending = []
+                if still_pending:
+                    final_status = STATUS_WAITING_FEEDBACK
+
             duration = time.time() - state.last_run_started_at
             state.status = final_status
             state.last_run_finished_at = time.time()
@@ -266,9 +292,9 @@ class CronJobExecutor:
                     )
             else:
                 state.consecutive_failures = 0
-            # timed_out / needs_human_review 时保留最后一步输出作为下次续接的
-            # progress 摘要；正常完成（idle）则清空，避免下次触发时读到一段
-            # 已经过时的"进度"。
+            # timed_out / needs_human_review / waiting_feedback 时保留最后一步
+            # 输出作为下次续接的 progress 摘要；正常完成（idle）则清空，避免
+            # 下次触发时读到一段已经过时的"进度"。
             if final_status == STATUS_IDLE:
                 state.progress_summary = ""
             else:
@@ -288,11 +314,13 @@ class CronJobExecutor:
             # `_write_output_manifest()` 并列的"收尾时顺带做的感知增强，
             # 不能反过来影响主流程"——严格限定只有正常收尾
             # （`final_status == STATUS_IDLE`，不含 timed_out/
-            # needs_human_review）且 `last_text` 非空才会生成记忆。
+            # needs_human_review/waiting_feedback）且 `last_text` 非空才会
+            # 生成记忆。
             if final_status == STATUS_IDLE and last_text.strip():
                 self._maybe_backfill_memory(
                     job=job, run_id=run_id, last_text=last_text,
                 )
+            clear_current_cron_job_id()
 
         return RunOutcome(
             run_id=run_id, status=final_status,

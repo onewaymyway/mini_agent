@@ -206,7 +206,41 @@ pending_question_ids: list[str] = field(default_factory=list)
 ## 10. 实施进度
 
 - [x] 阶段1：数据层 `questions_store.py` + 单元测试
-- [ ] 阶段2：`ask_user_async` 工具 + 执行链路集成
+- [x] 阶段2：`ask_user_async` 工具 + 执行链路集成
 - [ ] 阶段3：API + 通知联动
 - [ ] 阶段4：Streamlit 看板
 - [ ] 阶段5：文档收尾
+
+## 11. 阶段2实现记录（与设计的差异说明）
+
+实施时做了一处简化，比原方案更干净，记录在这里：
+
+- **没有给 `CronJobState` 新增 `pending_question_ids` 字段。** 原方案设想
+  在 `state.json` 里额外记一份"这个 job 关联哪些 question_id"，但
+  `questions_store` 里每条问题记录本身已经带 `job_id` 字段——
+  `render_prompt()` 和 `CronJobExecutor` 直接按 `job_id` 查询
+  `questions_store`（`list_unconsumed_answers_for_job`/
+  `list_pending_question_texts_for_job`）就够用，不需要在两处重复记账，
+  也不会有"两份记录不同步"的风险。
+
+`STATUS_WAITING_FEEDBACK` 判定时机：`CronJobExecutor.run_job()` 收尾时，
+如果本次触发的执行结果原本是"正常完成"（`STATUS_IDLE`），但该 job 通过
+`questions_store` 查到仍有未回答的问题，就把最终状态改记成
+`STATUS_WAITING_FEEDBACK`（不计入 `consecutive_failures`，`progress_summary`
+保留最后一步输出，供下次触发续接）。`STATUS_TIMED_OUT`/
+`STATUS_NEEDS_REVIEW` 语义上更紧急，不会被这个判定覆盖。
+
+新增/修改文件清单：
+- 新增 `src/mini_agent/evolution/cron_context.py`（thread-local job_id 透传）
+- 新增 `src/mini_agent/tools/ask_user_async.py`（异步提问工具）
+- 修改 `src/mini_agent/evolution/cron_job_workspace.py`（新增
+  `STATUS_WAITING_FEEDBACK`、`{{pending_answers}}`/`{{unanswered_questions}}`
+  占位符及其格式化辅助方法、`DEFAULT_PROMPT_TEMPLATE` 和 `ensure()` 最小
+  默认模板同步更新）
+- 修改 `src/mini_agent/evolution/cron_job_executor.py`（`run_job()` 设置/
+  清空 thread-local job_id、收尾时的 waiting_feedback 判定）
+- 修改 `src/mini_agent/agent/core.py`（为 `ask_user_async` 注册
+  project_root provider）
+- 修改 `src/mini_agent/cli/app.py`（注册 `ask_user_async` 工具 import）
+- 新增 `tests/test_cron_async_user_feedback.py`（23 条测试，覆盖
+  cron_context/工具去重/状态机/占位符渲染）

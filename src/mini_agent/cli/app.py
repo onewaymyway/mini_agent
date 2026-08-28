@@ -171,6 +171,7 @@ def _main_inner() -> None:
     import mini_agent.tools.workdir_knowledge  # noqa: F401  [W2 / Stage 4] add_open_thread/update_work_thread/update_knowledge/search_knowledge
     import mini_agent.tools.notepad       # noqa: F401  [记事本] notepad_add/update/remove/list/summarize
     import mini_agent.tools.recall_history  # noqa: F401  [compact_mechanism_improvement_plan P2-B] recall_from_raw_history
+    import mini_agent.tools.ask_user_async  # noqa: F401  [cron_async_user_feedback_mechanism_plan] ask_user_async
     # tools.skill_manager 由 Agent.__init__ 懒注册（需要 SkillLoader 实例）
 
     from mini_agent.cli.parser import build_parser

@@ -160,6 +160,14 @@ class Agent(
             lambda: self._session.id if self._session else ""
         )
 
+        # [cron_async_user_feedback_mechanism_plan] 同样为 tools/ask_user_async.py
+        # 注册 project_root provider——ask_user_async 需要据此构造 AgentPaths
+        # 才能定位到正确项目的 .agent/notification/cron_questions.jsonl。
+        from mini_agent.tools.ask_user_async import (
+            set_project_root_provider as _set_aua_project_root_provider,
+        )
+        _set_aua_project_root_provider(lambda: self.cfg.project_root)
+
         # daemon 多用户架构 Phase 2：导入 tools/user_memory.py 触发
         # remember_about_user 的 @tool 注册（与上面两处同样的写法——
         # 仅仅是 import 这个模块就会执行模块级的 @tool 装饰器）。
