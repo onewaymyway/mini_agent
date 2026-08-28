@@ -1,6 +1,6 @@
 # Cron 任务异步用户反馈机制设计方案
 
-> 状态：**设计阶段，待用户确认后实施**
+> 状态：**方案已确认（照常触发 + 自由文本+提示），实施中 —— 阶段1完成**
 > 关联现有代码：`src/mini_agent/tools/user_input.py`、`src/mini_agent/interaction.py`、
 > `src/mini_agent/notification/dispatcher.py`、`src/mini_agent/notification/channels/kanban.py`、
 > `src/mini_agent/notification/reports_store.py`、`src/mini_agent/evolution/cron_job_executor.py`、
@@ -198,7 +198,15 @@ pending_question_ids: list[str] = field(default_factory=list)
 - 仍有未回答问题时，下次 cron 到期是否应该**照常触发**（默认方案，agent 见机行事去做
   其它部分）还是**跳过本次触发**？本方案默认"照常触发"，如果你更倾向"跳过直到有人
   回答"，实施阶段可以改成可配置项。
-- `ask_user_async` 是否需要支持 `ask_user_choice` 那样的严格选项校验（用户必须选
-  预设选项之一），还是统一按自由文本处理、`options` 只作为 UI 提示？本方案倾向后者
-  （自由文本 + `options` 仅做展示提示），实现更简单，也不会因为用户输入不完全匹配
-  预设选项而卡住。
+- ~~`ask_user_async` 是否需要支持 `ask_user_choice` 那样的严格选项校验~~ ——
+  **已确认**：自由文本 + `options` 仅做展示提示，不做强校验。
+- ~~仍有未回答问题时下次 cron 到期是否照常触发~~ —— **已确认**：照常触发，
+  agent 见机行事去做其它可推进的部分。
+
+## 10. 实施进度
+
+- [x] 阶段1：数据层 `questions_store.py` + 单元测试
+- [ ] 阶段2：`ask_user_async` 工具 + 执行链路集成
+- [ ] 阶段3：API + 通知联动
+- [ ] 阶段4：Streamlit 看板
+- [ ] 阶段5：文档收尾

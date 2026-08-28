@@ -1030,6 +1030,18 @@ class AgentPaths:
         return self.notification_dir / "novelty_candidates.jsonl"
 
     @property
+    def notification_cron_questions(self) -> Path:
+        """<project_root>/.agent/notification/cron_questions.jsonl — cron 任务
+        异步用户反馈问答记录（见
+        next_doc/cron_async_user_feedback_mechanism_plan.md）。跟
+        reports.jsonl 是两回事：reports 是只读汇报 + 已读标记，这份文件是
+        **双向问答**——ask_user_async 工具写入待回答问题，用户在看板上提交/
+        修改答案也写回这份文件（`answer_history` 保留每次修改），下次对应
+        cron job 触发时 `CronJobWorkspace.render_prompt()` 会读取已回答但
+        未消费过的记录注入 prompt。独立存放，不跟 reports.jsonl 共用。"""
+        return self.notification_dir / "cron_questions.jsonl"
+
+    @property
     def notification_dispatch_log(self) -> Path:
         """<project_root>/.agent/notification/dispatch_log.jsonl — 每次
         NotificationDispatcher.dispatch() 的发送结果记录（P7 新增，见
