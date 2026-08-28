@@ -1,6 +1,6 @@
 # Cron 任务异步用户反馈机制设计方案
 
-> 状态：**方案已确认（照常触发 + 自由文本+提示），实施中 —— 阶段4完成**
+> 状态：**方案已确认（照常触发 + 自由文本+提示），已实施完成**
 > 关联现有代码：`src/mini_agent/tools/user_input.py`、`src/mini_agent/interaction.py`、
 > `src/mini_agent/notification/dispatcher.py`、`src/mini_agent/notification/channels/kanban.py`、
 > `src/mini_agent/notification/reports_store.py`、`src/mini_agent/evolution/cron_job_executor.py`、
@@ -209,7 +209,7 @@ pending_question_ids: list[str] = field(default_factory=list)
 - [x] 阶段2：`ask_user_async` 工具 + 执行链路集成
 - [x] 阶段3：API + 通知联动
 - [x] 阶段4：Streamlit 看板
-- [ ] 阶段5：文档收尾
+- [x] 阶段5：文档收尾
 
 ## 11. 阶段2实现记录（与设计的差异说明）
 
@@ -306,3 +306,48 @@ pending_question_ids: list[str] = field(default_factory=list)
   三个方法）
 - 修改 `apps/mini_agent_kanban/app.py`（新增 `_render_cron_questions_panel`
   fragment，接入 `render_notification_tab()`）
+
+## 14. 阶段5实现记录（文档收尾 + 端到端测试）
+
+新增用户向文档 `docs/cron-async-user-feedback-guide.md`，覆盖：机制解决
+的问题、`ask_user_async` 工具用法与去重语义、`waiting_feedback` 状态机、
+两个 prompt 占位符、看板操作方式、REST API、数据存储结构、已知局限
+（不做超时/自动作废、不做语义判重、未回答问题不自动跳过触发）。单篇
+文档，未在 `docs/README.md` 索引里单列（该索引只给超过 5 篇同前缀文档群
+加导读，零散单篇按文件名查找即可，符合 `documentation-guidelines.md` §2
+第 4 条）。
+
+在既有的 [cron-dedicated-execution-guide.md](../docs/cron-dedicated-execution-guide.md)
+里做了两处最小交叉引用同步（该文档§6.1/§6.3 列出的占位符/状态清单是
+"权威汇总"，新增的东西必须同步进去，否则会造成信息漂移）：
+- §6.1 占位符表格补充 `{{pending_answers}}`/`{{unanswered_questions}}`
+  两行，并链接到新文档 §5。
+- §6.3 `state.json` 状态表补充 `waiting_feedback` 一行，并链接到新文档
+  §4。
+
+端到端测试：在 `tests/test_cron_async_user_feedback.py` 新增
+`TestEndToEndAcrossApiAndPromptLayers`，贯穿此前分阶段各自测试过的三层
+（工具 → API → prompt 渲染），验证拼在一起确实能跑通完整用户故事，
+而不只是各层单元测试各自通过：
+- `test_full_round_trip_tool_then_api_answer_then_prompt_injection`：
+  `ask_user_async` 提问 → `render_prompt()` 能看到未答问题 →
+  真实 FastAPI `TestClient` 调 `POST /v1/cron_questions/{id}/answer`
+  提交答案 → pending/history 列表各自变化正确 → `render_prompt()` 自动
+  注入答案且只注入一次（`consumed` 生效）→ 通过 API 修改答案后答案
+  重新出现在下一次渲染里 → `answer_history` 完整保留两版。
+- `test_deduplicated_question_across_multiple_triggers_only_notified_once`：
+  同一 job 连续两次提出完全相同的问题，API 层 pending 列表只应该有
+  一条记录。
+
+全量相关测试跑通：`test_cron_async_user_feedback.py`（25，含新增 2 条
+端到端）+ `test_cron_questions_store.py` + `test_cron_questions_api_routes.py`
++ `test_cron_job_workspace_and_executor.py` + `test_cron_job_executor_step_detail.py`
+共 106 条全部通过。
+
+新增/修改文件清单：
+- 新增 `docs/cron-async-user-feedback-guide.md`（用户向使用指南）
+- 修改 `docs/cron-dedicated-execution-guide.md`（§6.1 占位符表、§6.3
+  状态表两处交叉引用同步）
+- 修改 `tests/test_cron_async_user_feedback.py`（新增
+  `TestEndToEndAcrossApiAndPromptLayers`，2 条端到端测试）
+- 修改本文档：状态改为"已实施完成"，进度全部勾选

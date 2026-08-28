@@ -235,7 +235,16 @@ build_cron_agent()`），不跨触发复用同一个 Agent/history：
 {{#progress}}...{{/progress}}  条件块：progress 为空时整段连同标记
                                 一起去掉，避免每次都印出一段空的
                                 "上次进度"标题
+{{pending_answers}}          用户已回答但还没喂给过 agent 的问答对
+                                （由 ask_user_async 提出），见
+                                cron-async-user-feedback-guide.md §5
+{{unanswered_questions}}     该 job 下仍未回答的问题列表，提醒 agent
+                                不要重复提问同一个问题
 ```
+
+`{{pending_answers}}`/`{{unanswered_questions}}` 是 cron 任务异步用户
+反馈机制新增的两个占位符，同样复用条件块机制（为空时整段隐藏），详见
+[cron-async-user-feedback-guide.md](cron-async-user-feedback-guide.md)。
 
 默认模板：
 
@@ -301,6 +310,7 @@ build_cron_agent()`），不跨触发复用同一个 Agent/history：
 | `running` | 当前正在执行（用于检测"上次异常退出、state 还留在 running"的僵尸状态） |
 | `needs_human_review` | `StuckDetector` 判定 `GIVE_UP`，或单步执行异常，或 Agent 构造失败 |
 | `timed_out` | 上次因触达硬超时/步数上限被收尾（不算失败，下次会带着进度继续） |
+| `waiting_feedback` | 本次本来正常完成，但通过 `ask_user_async` 提出的问题仍有未回答的——**不计入** `consecutive_failures`，语义是"等一个具体问题的答案"而非"卡死放弃"，详见 [cron-async-user-feedback-guide.md §4](cron-async-user-feedback-guide.md#4-任务状态如何体现等反馈中不算失败) |
 
 ## 7. 全局默认配置
 

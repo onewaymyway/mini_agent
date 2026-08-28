@@ -291,3 +291,103 @@ class TestRenderPromptPlaceholders:
 
         rendered = ws.render_prompt("做点什么")
         assert rendered == "就是一个普通的自定义模板，没有任何占位符"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 阶段5：端到端冒烟测试 —— 贯穿全部层次：
+#   ask_user_async 工具（提问） → API 层 /v1/cron_questions/*（用户查看/
+#   回答/修改） → CronJobWorkspace.render_prompt()（下次触发自动续接）
+# 用来验证各阶段接口拼在一起确实能跑通完整的用户故事，而不只是各层各自
+# 的单元测试都通过。
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestEndToEndAcrossApiAndPromptLayers:
+    def _make_api_client(self, project_root):
+        from types import SimpleNamespace
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from mini_agent.api.routes import router
+
+        app = FastAPI()
+        app.include_router(router)
+        cfg = SimpleNamespace(project_root=project_root)
+        bridge = SimpleNamespace(agent=SimpleNamespace(cfg=cfg))
+        app.state.http_server = SimpleNamespace(bridge=bridge)
+        return TestClient(app)
+
+    def test_full_round_trip_tool_then_api_answer_then_prompt_injection(self, paths, tmp_path):
+        from mini_agent.tools.ask_user_async import ask_user_async, set_project_root_provider
+
+        job_id = "user:e2e_job"
+
+        # 1) cron 任务执行时调用 ask_user_async 提问，立刻拿到 pending。
+        set_project_root_provider(lambda: tmp_path)
+        set_current_cron_job_id(job_id)
+        try:
+            raw = ask_user_async("要不要把预算提到 8000？", hint="当前是 5000")
+        finally:
+            clear_current_cron_job_id()
+        result = json.loads(raw)
+        assert result["status"] == "pending"
+        question_id = result["question_id"]
+
+        # 提问当下 render_prompt() 应该在 unanswered_questions 里列出它，
+        # pending_answers 应为空（还没人回答）。
+        ws = CronJobWorkspace(paths, job_id)
+        ws.ensure()
+        rendered_before = ws.render_prompt("继续做预算相关的任务")
+        assert "要不要把预算提到 8000" in rendered_before
+
+        # 2) 用户在看板上通过 REST API 回答（模拟前端调用）。
+        client = self._make_api_client(tmp_path)
+        resp = client.post(f"/v1/cron_questions/{question_id}/answer", json={"answer": "同意提到 8000"})
+        assert resp.status_code == 200
+        assert resp.json()["question"]["status"] == "answered"
+
+        # API 的 pending 列表应该不再包含它，history 里能看到。
+        pending = client.get("/v1/cron_questions/pending", params={"job_id": job_id}).json()["questions"]
+        assert all(q["question_id"] != question_id for q in pending)
+        history = client.get("/v1/cron_questions/history", params={"job_id": job_id}).json()["questions"]
+        assert any(q["question_id"] == question_id for q in history)
+
+        # 3) 下次该 job 被调度触发，render_prompt() 应该自动把答案注入。
+        rendered_after = ws.render_prompt("继续做预算相关的任务")
+        assert "同意提到 8000" in rendered_after
+        # 已消费过一次之后，再次渲染不应该重复注入同一个答案。
+        rendered_third = ws.render_prompt("继续做预算相关的任务")
+        assert "同意提到 8000" not in rendered_third
+
+        # 4) 用户后来改主意，通过 API 修改答案——应该让答案重新出现在
+        #    下一次渲染里（哪怕已经被消费过）。
+        resp2 = client.post(f"/v1/cron_questions/{question_id}/answer", json={"answer": "改主意了，维持 5000"})
+        assert resp2.status_code == 200
+        rendered_fourth = ws.render_prompt("继续做预算相关的任务")
+        assert "改主意了，维持 5000" in rendered_fourth
+
+        # history 应该保留两条修改记录，旧答案不丢失。
+        history_after_edit = client.get("/v1/cron_questions/history", params={"job_id": job_id}).json()["questions"]
+        record = next(q for q in history_after_edit if q["question_id"] == question_id)
+        answer_texts = [a["text"] for a in record["answer_history"]]
+        assert answer_texts == ["同意提到 8000", "改主意了，维持 5000"]
+
+    def test_deduplicated_question_across_multiple_triggers_only_notified_once(self, paths, tmp_path):
+        """同一个 job 连续两次触发都问了同一个问题（比如 agent 每次都
+        判断需要确认同一件事）时，第二次应该被去重，不产生第二条待办。"""
+        from mini_agent.tools.ask_user_async import ask_user_async, set_project_root_provider
+
+        set_project_root_provider(lambda: tmp_path)
+        set_current_cron_job_id("user:e2e_dedup_job")
+        try:
+            first = json.loads(ask_user_async("需要审批吗？"))
+            second = json.loads(ask_user_async("需要审批吗？"))
+        finally:
+            clear_current_cron_job_id()
+
+        assert first["question_id"] == second["question_id"]
+        client = self._make_api_client(tmp_path)
+        pending = client.get(
+            "/v1/cron_questions/pending", params={"job_id": "user:e2e_dedup_job"}
+        ).json()["questions"]
+        assert len(pending) == 1
