@@ -376,7 +376,6 @@ def fetch_iwencai_screener_direct(
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            from urllib.parse import urlencode
             encoded_payload = urlencode(payload, encoding='utf-8')
             resp = requests.post(
                 API_URL,
