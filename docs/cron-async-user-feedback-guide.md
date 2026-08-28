@@ -57,11 +57,16 @@ agent（模型自己）在 cron 任务执行过程中，遇到需要用户输入
 
 - **不阻塞、不超时**：内部不调用 `interaction.ask()`，工具本身是一次
   纯本地文件写入 + 一次通知分发，毫秒级返回。
-- **同一 job 内自动去重**：同一个 job 对**完全相同**的问题文本（去除
-  首尾空白后精确比较）重复调用，会直接复用已有的 `question_id`
-  （`deduplicated: true`），不会在看板上刷出重复通知。这是**精确指纹
-  去重**，不做语义判重——"这两个问题问的其实是一回事"这种情况不会被
-  识别为重复。
+- **同一 job 内自动去重（精确匹配 + 模糊兜底）**：同一个 job 对**完全
+  相同**的问题文本（去除首尾空白后精确比较）重复调用，会直接复用已有
+  的 `question_id`（`deduplicated: true`）。**[加固后]** 精确匹配之外
+  新增一层模糊匹配兜底：规范化文本（去标点/空白/大小写）后用
+  `difflib.SequenceMatcher` 算相似度，达到阈值（默认 0.82）也判定为
+  重复——LLM 每次生成的问题措辞几乎不可能逐字相同，纯精确匹配在真实
+  场景下容易被换一种说法绕过，导致同语义问题反复刷屏，详见
+  `next_doc/cron_async_feedback_hardening_plan.md` D4。这仍然**不是
+  语义判重**，只是缓解常见的措辞微调场景，明显不同表述的问题不会被
+  误合并。
 - **非 cron 场景下的降级**：如果在普通交互式对话里直接调用这个工具
   （而不是在 cron 任务执行上下文里），问题仍然会被正常创建并通知到
   看板，只是会归到固定分组 `"adhoc"`，**不会**被任何 cron job 的
@@ -83,17 +88,18 @@ agent（模型自己）在 cron 任务执行过程中，遇到需要用户输入
 
 ## 5. 已回答的答案怎么自动喂回去：两个 prompt 占位符
 
-`CronJobWorkspace.render_prompt()` 新增两个占位符，跟已有的
+`CronJobWorkspace.render_prompt()` 新增三个占位符，跟已有的
 `{{progress}}`（续接进度）搭配使用：
 
 | 占位符 | 内容 | 消费后的处理 |
 |---|---|---|
-| `{{pending_answers}}` | 该 job 下**已回答但还没喂给过 agent** 的问答对，格式化成"上次你问过「X」，用户回答：Y"的列表 | 渲染后立即标记为已消费（`consumed=True`），避免同一个答案被反复注入好几次触发 |
+| `{{pending_answers}}` | 该 job 下**已回答但还没喂给过 agent** 的问答对，格式化成"上次你问过「X」，用户回答：Y"的列表 | **[加固后]** 渲染时只记录本次带出的 question_id，不立即标记消费；等 `CronJobExecutor` 确认这一步 `submit_step_fn()` 真正提交成功（未抛异常、`result.error` 为空）后才调用 `consume_last_rendered_answers()` 正式标记 `consumed=True`——如果这一步本身失败了，答案会保留"未消费"，下次触发能再次注入，不会静默丢失（详见 `next_doc/cron_async_feedback_hardening_plan.md` D2） |
 | `{{unanswered_questions}}` | 该 job 下**仍是 pending** 状态的问题列表 | 提醒 agent 不要针对同一个问题重复调用 `ask_user_async` |
+| `{{dismissed_questions}}` | **[新增]** 该 job 下最近 20 条**已被用户忽略**的问题原文 | 提醒 agent 这些问题用户已明确表示不需要回答，不要再问——原机制里"忽略"后问题对 agent 完全不可见，容易出现 agent 换个措辞反复问、用户反复忽略的死循环（详见 `next_doc/cron_async_feedback_hardening_plan.md` D3） |
 
-两者都复用 `_render_condition_block()` 现有的 `{{#name}}...{{/name}}`
-条件块机制——当前没有待消费答案/没有未答问题时，整段自动隐藏，不会在
-prompt 里插入一个空标题。
+三者都复用 `_render_condition_block()` 现有的 `{{#name}}...{{/name}}`
+条件块机制——当前没有待消费答案/没有未答问题/没有已忽略问题时，整段
+自动隐藏，不会在 prompt 里插入一个空标题。
 
 **用户修改已回答的答案**（见下面第7节）会把该问答对的 `consumed`
 重置为 `False`，让它在下一次该 job 触发时**再次**被注入——用户修改
@@ -153,32 +159,78 @@ watchlist 分级汇报用的 `.agent/notification/reports.jsonl` 是两份彻底
 单条记录字段：`question_id`/`job_id`/`question`/`hint`/`options`/
 `status`（`pending`/`answered`）/`created_at`/`updated_at`/`answer`/
 `answer_history`/`consumed`（内部字段，只影响 prompt 注入去重，不影响
-看板历史面板的展示——历史面板永远展示全部记录）。
+看板历史面板的展示——历史面板永远展示全部记录）/`run_id`（**[加固后]
+新增**，见下方"孤儿线程识别"）。
+
+**[加固后] 并发安全**：所有"读全部→改→整体覆盖写"的复合操作
+（`submit_answer`/`dismiss_question`/`mark_answers_consumed`/新建问题）
+都通过 `<file>.lock` 哨兵文件加独占锁，写文件走 tmp+replace 原子写入，
+详见 `next_doc/cron_async_feedback_hardening_plan.md` D1。
+
+**[加固后] 数据归档**：`AutonomousLoop._tick_maintenance()` 每 24 小时
+最多触发一次 `archive_old_records()`，把超过保留期（默认 90 天）的
+`answered`/`dismissed` 记录挪到同目录的 `cron_questions.archive.jsonl`
+（只追加、供审计查阅，不参与日常读取）；`pending` 状态的记录不论多老
+都不会被归档。job 被删除时（`CronScheduler.remove_job()`）会顺带清掉
+其名下所有问答记录（不分状态），避免永久遗留的孤儿数据。详见 D5。
+
+**[加固后] 孤儿线程识别**：`CronJobExecutor.run_job()` 生成 `run_id` 后
+连同 `job_id` 一起写进 thread-local，`ask_user_async` 写入问题时把当次
+`run_id` 一并记录。watchdog（`reap_stale_jobs()`）判定某次 run 卡死并
+代替它释放并发槽位后，卡死的旧线程本身杀不掉，可能成为孤儿线程事后才
+执行到 `ask_user_async`——`questions_store.list_orphaned_pending_
+questions()` 通过比较问题记录的 `run_id` 跟对应 job 当前
+`CronJobWorkspace.read_state().last_run_id` 是否一致来识别这类"迟到"
+写入。这一版只做**事后可识别**（供审计/看板展示用），不做写入时拦截
+——拦截需要反查 `CronJobRunner` 当前合法 run 状态，跨模块耦合成本高，
+留作后续如有需要再做。看板 UI 上的置灰/过滤展示本轮**未实现**，只有
+后端识别能力，见"已知局限"一节。详见 D6。
 
 ## 9. 已知局限（本轮不做）
 
 - **不做超时/自动作废**：问题会一直挂在"待回答"列表里，直到用户回答
   或在看板上手动忽略（见 §6"🙈 忽略这个问题"按钮）。忽略是本功能内
   已实现的动作，"自动过期"（比如超过 N 天自动忽略）目前**没有**实现。
-- **不做语义判重**：只做同一 job 内的精确指纹去重（问题文本完全一致
-  才会复用），不识别"这两个问题问的其实是一回事"这种情况。
+  **[加固后]** 这里说的是"pending 状态永不自动过期"——一旦被回答或
+  忽略，记录本身会在超过保留期（默认 90 天）后被 `archive_old_records()`
+  归档到 `cron_questions.archive.jsonl`，不再出现在日常读取路径里，
+  详见 D5。
+- **不做严格语义判重**：精确匹配 + 相似度兜底（见上方 §2），能覆盖
+  常见的措辞微调，但不识别真正意义上"这两个问题问的其实是一回事但
+  表述完全不同"的情况。
+- **忽略后仍会通过 `{{dismissed_questions}}` 提醒 agent**：**[加固后]**
+  忽略不再是对 agent 完全不可见的黑洞——下次 `render_prompt()` 会把
+  最近忽略的问题列出来提醒 agent 不要再问，缓解"忽略→agent 换个说法
+  重问→用户再忽略"的死循环，详见 D3。但 agent 仍有可能在措辞差异
+  较大、绕开模糊去重的情况下重新触发相似问题，这不是 100% 保证。
 - **未回答问题下次触发时不会自动跳过**：当前固定"照常触发"，agent 见
   机行事去做其它可推进的部分；如果希望"跳过直到有人回答"，需要后续
   单独实现为可配置项（当前未实现）。
+- **孤儿线程识别只有后端能力，看板 UI 未接入**：`list_orphaned_pending_
+  questions()` 能识别出"迟到"写入的问题，但 Streamlit 看板"🙋 待我
+  反馈"面板目前不区分展示，用户看不出某条问题是不是孤儿线程迟到问的。
+  也不做写入时拦截（不会阻止孤儿线程把问题写进去），只做事后可查询，
+  详见 D6。
 
 ## 10. 相关文件一览
 
 | 文件 | 作用 |
 |---|---|
-| `src/mini_agent/notification/questions_store.py` | 问答记录存储：`append_question`/`find_pending_by_fingerprint`/`submit_answer`/`dismiss_question`/`list_pending_questions`/`list_answered_questions`/`list_dismissed_questions`/`list_unconsumed_answers_for_job`/`mark_answers_consumed`/`list_pending_question_texts_for_job` |
+| `src/mini_agent/notification/questions_store.py` | 问答记录存储：`append_question`/`find_or_create_question`（加锁原子操作，含模糊去重）/`find_pending_by_fingerprint`/`submit_answer`/`dismiss_question`/`list_pending_questions`/`list_answered_questions`/`list_dismissed_questions`/`list_unconsumed_answers_for_job`/`mark_answers_consumed`/`list_pending_question_texts_for_job`/`archive_old_records`/`purge_questions_for_job`/`list_orphaned_pending_questions` |
 | `src/mini_agent/tools/ask_user_async.py` | 异步提问工具本体，内部调用 `NotificationDispatcher.dispatch()`（`source="cron_question"`） |
-| `src/mini_agent/evolution/cron_context.py` | thread-local `job_id` 透传，供 `ask_user_async` 在 cron 执行线程内取到当前 job_id |
-| `src/mini_agent/evolution/cron_job_workspace.py` | `STATUS_WAITING_FEEDBACK` 状态、`{{pending_answers}}`/`{{unanswered_questions}}` 占位符渲染 |
-| `src/mini_agent/evolution/cron_job_executor.py` | `run_job()` 设置/清空 thread-local job_id、收尾时的 `waiting_feedback` 判定 |
+| `src/mini_agent/evolution/cron_context.py` | thread-local `job_id`/`run_id` 透传，供 `ask_user_async` 在 cron 执行线程内取到当前 job_id/run_id |
+| `src/mini_agent/evolution/cron_job_workspace.py` | `STATUS_WAITING_FEEDBACK` 状态、`{{pending_answers}}`/`{{unanswered_questions}}`/`{{dismissed_questions}}` 占位符渲染、`consume_last_rendered_answers()` |
+| `src/mini_agent/evolution/cron_job_executor.py` | `run_job()` 设置/清空 thread-local job_id/run_id、确认第一步成功后才消费答案、收尾时的 `waiting_feedback` 判定 |
+| `src/mini_agent/evolution/cron_scheduler.py` | `remove_job()` 顺带清理该 job 名下问答记录 |
+| `src/mini_agent/evolution/autonomous_loop.py` | `_tick_maintenance()` 每 24 小时触发一次问答记录归档 |
 | `src/mini_agent/api/routes.py` | `/v1/cron_questions/{pending,history,{id}/answer,{id}/dismiss}` 四个端点 |
 | `apps/mini_agent_kanban/client.py` | `cron_questions_pending`/`cron_questions_history`/`answer_cron_question`/`dismiss_cron_question` 客户端方法 |
 | `apps/mini_agent_kanban/app.py` | "🔔 关注与通知"tab 下"🙋 待我反馈"面板（`_render_cron_questions_panel`，独立 `@st.fragment`） |
 | `.agent/notification/cron_questions.jsonl` | 问答记录落地文件（运行时生成） |
-| `tests/test_cron_questions_store.py` | `questions_store.py` 单元测试 |
-| `tests/test_cron_async_user_feedback.py` | 工具去重、状态机、占位符渲染等端到端覆盖 |
+| `.agent/notification/cron_questions.archive.jsonl` | **[加固后新增]** 归档文件（运行时生成，超过保留期的 answered/dismissed 记录） |
+| `tests/test_cron_questions_store.py` | `questions_store.py` 单元测试（含并发/消费时机/归档/清理/孤儿识别回归测试） |
+| `tests/test_cron_async_user_feedback.py` | 工具去重、状态机、占位符渲染、忽略提醒、模糊去重、run_id 传播等端到端覆盖 |
 | `tests/test_cron_questions_api_routes.py` | API 端点测试（pending/history 分页过滤、答案提交与修改、错误处理） |
+| `tests/test_cron_job_workspace_and_executor.py` | 含答案消费时机（D2）回归测试 |
+| `tests/test_cron_scheduler_reap_stale_jobs.py` | 含 `remove_job()` 清理问答记录（D5）回归测试 |
+| `next_doc/cron_async_feedback_hardening_plan.md` | **[加固后新增]** D1–D6 六个缺陷的方案设计 + 各阶段实现记录 |

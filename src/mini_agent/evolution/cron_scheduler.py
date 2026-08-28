@@ -974,6 +974,18 @@ class CronScheduler:
             return False  # 系统 job 不可删
         del self._jobs[job_id]
         self.save()
+        # [cron_async_feedback_hardening_plan.md D5] job 被删除后，其名下
+        # 的问答记录（不分 pending/answered/dismissed）失去了归属，永远
+        # 不会再被任何 render_prompt() 读取到，也不会再有人在看板上处理
+        # ——清掉避免永久遗留的孤儿数据。异常兜底在 purge_questions_for_job
+        # 内部已处理，这里不需要额外 try/except，清理失败不影响 job 已经
+        # 删除成功这个事实。
+        try:
+            from mini_agent.notification import questions_store
+            questions_store.purge_questions_for_job(self._paths, job_id)
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.evolution.cron_scheduler.CronScheduler.remove_job")
         return True
 
     def enable(self, job_id: str) -> bool:

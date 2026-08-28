@@ -277,3 +277,211 @@ class TestDismissQuestion:
         rec = append_question(paths, "user:job1", "还需要回答吗？")
         dismiss_question(paths, rec["question_id"])
         assert find_pending_by_fingerprint(paths, "user:job1", "还需要回答吗？") is None
+
+
+class TestFindOrCreateQuestionConcurrency:
+    """[cron_async_feedback_hardening_plan.md D1] 并发安全回归测试。"""
+
+    def test_concurrent_calls_same_question_only_create_one_record(self, paths):
+        from mini_agent.notification.questions_store import find_or_create_question
+        import threading
+
+        results = []
+        lock = threading.Lock()
+
+        def worker():
+            record, is_new = find_or_create_question(
+                paths, "job-x", "同一个问题", fuzzy_threshold=None,
+            )
+            with lock:
+                results.append((record["question_id"], is_new))
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        pending = list_pending_questions(paths, job_id="job-x")
+        assert len(pending) == 1
+        ids = {r[0] for r in results}
+        assert len(ids) == 1
+
+    def test_concurrent_submit_answer_and_dismiss_do_not_corrupt_file(self, paths):
+        from mini_agent.notification.questions_store import find_or_create_question
+        import threading
+
+        records = []
+        for i in range(20):
+            record, _ = find_or_create_question(
+                paths, "job-y", f"问题{i}", fuzzy_threshold=None,
+            )
+            records.append(record)
+
+        def answer_worker(qid):
+            submit_answer(paths, qid, "答案")
+
+        def dismiss_worker(qid):
+            dismiss_question(paths, qid)
+
+        threads = []
+        for i, r in enumerate(records):
+            fn = answer_worker if i % 2 == 0 else dismiss_worker
+            threads.append(threading.Thread(target=fn, args=(r["question_id"],)))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        answered = list_answered_questions(paths, job_id="job-y")
+        dismissed = list_dismissed_questions(paths, job_id="job-y")
+        assert len(answered) == 10
+        assert len(dismissed) == 10
+        # 文件本身仍是合法 jsonl，且总条数不丢不重
+        assert len(answered) + len(dismissed) == 20
+
+
+class TestArchiveOldRecords:
+    """[cron_async_feedback_hardening_plan.md D5] 数据归档：超过保留期的
+    answered/dismissed 记录挪到 archive 文件，pending 记录永不归档。"""
+
+    def test_old_answered_and_dismissed_are_archived(self, paths):
+        import time as _time
+        from mini_agent.notification.questions_store import archive_old_records
+
+        rec1 = append_question(paths, "job-a", "问题1")
+        submit_answer(paths, rec1["question_id"], "答案1")
+        rec2 = append_question(paths, "job-a", "问题2")
+        dismiss_question(paths, rec2["question_id"])
+        rec3 = append_question(paths, "job-a", "问题3")  # 仍 pending
+
+        # 手动把前两条的 updated_at 改到 100 天前，模拟"很久以前的记录"。
+        old_ts = _time.time() - 100 * 86400
+        raw = paths.notification_cron_questions.read_text(encoding="utf-8").splitlines()
+        import json as _json
+        rewritten = []
+        for line in raw:
+            d = _json.loads(line)
+            if d["question_id"] in (rec1["question_id"], rec2["question_id"]):
+                d["updated_at"] = old_ts
+            rewritten.append(_json.dumps(d, ensure_ascii=False))
+        paths.notification_cron_questions.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+
+        archived_count = archive_old_records(paths, retention_days=90)
+        assert archived_count == 2
+
+        # 主文件只剩 pending 的那条。
+        remaining = list_pending_questions(paths, job_id="job-a")
+        assert len(remaining) == 1
+        assert remaining[0]["question_id"] == rec3["question_id"]
+        assert get_question(paths, rec1["question_id"]) is None
+        assert get_question(paths, rec2["question_id"]) is None
+
+        # archive 文件里能找到被归档的两条。
+        archive_path = paths.notification_cron_questions.parent / "cron_questions.archive.jsonl"
+        assert archive_path.exists()
+        archived_ids = {
+            _json.loads(line)["question_id"]
+            for line in archive_path.read_text(encoding="utf-8").splitlines()
+        }
+        assert archived_ids == {rec1["question_id"], rec2["question_id"]}
+
+    def test_recent_records_are_not_archived(self, paths):
+        from mini_agent.notification.questions_store import archive_old_records
+
+        rec = append_question(paths, "job-a", "最近的问题")
+        submit_answer(paths, rec["question_id"], "答案")
+
+        archived_count = archive_old_records(paths, retention_days=90)
+        assert archived_count == 0
+        assert get_question(paths, rec["question_id"]) is not None
+
+    def test_pending_records_never_archived_regardless_of_age(self, paths):
+        import time as _time, json as _json
+        from mini_agent.notification.questions_store import archive_old_records
+
+        rec = append_question(paths, "job-a", "一直没人回答的老问题")
+        old_ts = _time.time() - 365 * 86400
+        raw = paths.notification_cron_questions.read_text(encoding="utf-8")
+        d = _json.loads(raw.strip())
+        d["created_at"] = old_ts
+        d["updated_at"] = old_ts
+        paths.notification_cron_questions.write_text(_json.dumps(d, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        archived_count = archive_old_records(paths, retention_days=90)
+        assert archived_count == 0
+        assert get_question(paths, rec["question_id"]) is not None
+
+
+class TestPurgeQuestionsForJob:
+    """[cron_async_feedback_hardening_plan.md D5] job 被删除时清掉其名下
+    所有问答记录，避免永久遗留的孤儿数据。"""
+
+    def test_purge_removes_all_statuses_for_job_only(self, paths):
+        from mini_agent.notification.questions_store import purge_questions_for_job
+
+        r1 = append_question(paths, "job-x", "问题A")
+        submit_answer(paths, r1["question_id"], "答案A")
+        r2 = append_question(paths, "job-x", "问题B")
+        dismiss_question(paths, r2["question_id"])
+        r3 = append_question(paths, "job-x", "问题C")  # pending
+        other = append_question(paths, "job-y", "别的 job 的问题")
+
+        removed = purge_questions_for_job(paths, "job-x")
+        assert removed == 3
+        assert get_question(paths, r1["question_id"]) is None
+        assert get_question(paths, r2["question_id"]) is None
+        assert get_question(paths, r3["question_id"]) is None
+        # 别的 job 不受影响。
+        assert get_question(paths, other["question_id"]) is not None
+
+    def test_purge_nonexistent_job_is_noop(self, paths):
+        from mini_agent.notification.questions_store import purge_questions_for_job
+        assert purge_questions_for_job(paths, "no-such-job") == 0
+
+
+class TestOrphanedPendingQuestions:
+    """[cron_async_feedback_hardening_plan.md D6] run_id 记录 + 事后识别
+    "孤儿线程迟到写入"的问题。"""
+
+    def test_question_run_id_matching_current_state_is_not_orphaned(self, paths):
+        from mini_agent.notification.questions_store import (
+            find_or_create_question, list_orphaned_pending_questions,
+        )
+        from mini_agent.evolution.cron_job_workspace import CronJobWorkspace
+
+        ws = CronJobWorkspace(paths, "user:job1")
+        ws.ensure()
+        state = ws.read_state()
+        state.last_run_id = "run-current"
+        ws.write_state(state)
+
+        find_or_create_question(paths, "user:job1", "问题A", run_id="run-current")
+
+        assert list_orphaned_pending_questions(paths) == []
+
+    def test_question_run_id_not_matching_current_state_is_orphaned(self, paths):
+        from mini_agent.notification.questions_store import (
+            find_or_create_question, list_orphaned_pending_questions,
+        )
+        from mini_agent.evolution.cron_job_workspace import CronJobWorkspace
+
+        ws = CronJobWorkspace(paths, "user:job1")
+        ws.ensure()
+        state = ws.read_state()
+        state.last_run_id = "run-newer"
+        ws.write_state(state)
+
+        # 模拟孤儿线程用一个已经不是最新的 run_id 迟到写入。
+        rec, _ = find_or_create_question(paths, "user:job1", "问题A", run_id="run-stale")
+
+        orphaned = list_orphaned_pending_questions(paths)
+        assert len(orphaned) == 1
+        assert orphaned[0]["question_id"] == rec["question_id"]
+
+    def test_adhoc_and_missing_run_id_never_flagged_as_orphaned(self, paths):
+        from mini_agent.notification.questions_store import (
+            append_question, list_orphaned_pending_questions,
+        )
+        append_question(paths, "adhoc", "交互式问题")  # 没有 run_id 字段
+        assert list_orphaned_pending_questions(paths) == []

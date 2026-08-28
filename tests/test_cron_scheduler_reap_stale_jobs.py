@@ -61,3 +61,22 @@ def test_execution_phase_delegates_to_job_runner(tmp_path):
     scheduler = CronScheduler(_FakePaths(tmp_path), job_runner=fake_runner)
     assert scheduler.execution_phase("user:job1") == "queued"
     assert fake_runner.phase_calls == ["user:job1"]
+
+
+class TestRemoveJobPurgesQuestions:
+    """[cron_async_feedback_hardening_plan.md D5] remove_job() 应该顺带
+    清掉该 job 名下的所有问答记录，不留孤儿数据。"""
+
+    def test_remove_job_purges_associated_questions(self, tmp_path):
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.notification import questions_store
+
+        paths = AgentPaths(tmp_path)
+        scheduler = CronScheduler(paths)
+        job = scheduler.add_job(name="测试任务", schedule="0 9 * * *", task_template="做点什么")
+
+        rec = questions_store.append_question(paths, job.id, "要不要继续？")
+        assert questions_store.get_question(paths, rec["question_id"]) is not None
+
+        assert scheduler.remove_job(job.id) is True
+        assert questions_store.get_question(paths, rec["question_id"]) is None

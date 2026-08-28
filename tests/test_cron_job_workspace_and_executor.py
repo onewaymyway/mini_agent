@@ -761,3 +761,70 @@ class TestCronJobExecutorMemoryBackfill:
         ws = CronJobWorkspace(paths, "user:test_job")
         state = ws.read_state()
         assert state.status == STATUS_IDLE
+
+
+class TestCronJobExecutorAnswerConsumptionTiming:
+    """[cron_async_feedback_hardening_plan.md D2] 答案消费时机回归测试：
+    只有第一步真正提交成功才应该标记消费，第一步失败/报错不应该消费。"""
+
+    def test_first_step_exception_does_not_consume_answer(self, tmp_path):
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.notification import questions_store
+
+        paths = AgentPaths(tmp_path)
+        job_id = "user:test_job"
+        rec = questions_store.append_question(paths, job_id, "要不要继续？")
+        questions_store.submit_answer(paths, rec["question_id"], "要")
+
+        ws = CronJobWorkspace(paths, job_id)
+        ws.ensure(default_task_template="{{task_description}}\n{{pending_answers}}\n")
+
+        def failing_step_fn(prompt):
+            raise RuntimeError("网络错误")
+
+        outcome = CronJobExecutor(paths).run_job(_FakeJob(job_id=job_id), failing_step_fn)
+        assert outcome.status == STATUS_NEEDS_REVIEW
+
+        # 答案不应该被消费掉——下次触发仍应看到它。
+        unconsumed = questions_store.list_unconsumed_answers_for_job(paths, job_id)
+        assert len(unconsumed) == 1
+
+    def test_first_step_result_error_does_not_consume_answer(self, tmp_path):
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.notification import questions_store
+
+        paths = AgentPaths(tmp_path)
+        job_id = "user:test_job"
+        rec = questions_store.append_question(paths, job_id, "要不要继续？")
+        questions_store.submit_answer(paths, rec["question_id"], "要")
+
+        ws = CronJobWorkspace(paths, job_id)
+        ws.ensure(default_task_template="{{task_description}}\n{{pending_answers}}\n")
+
+        def error_step_fn(prompt):
+            return StepResult(text="", done=False, error="内部工具报错")
+
+        CronJobExecutor(paths).run_job(_FakeJob(job_id=job_id), error_step_fn)
+
+        unconsumed = questions_store.list_unconsumed_answers_for_job(paths, job_id)
+        assert len(unconsumed) == 1
+
+    def test_first_step_success_consumes_answer(self, tmp_path):
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.notification import questions_store
+
+        paths = AgentPaths(tmp_path)
+        job_id = "user:test_job"
+        rec = questions_store.append_question(paths, job_id, "要不要继续？")
+        questions_store.submit_answer(paths, rec["question_id"], "要")
+
+        ws = CronJobWorkspace(paths, job_id)
+        ws.ensure(default_task_template="{{task_description}}\n{{pending_answers}}\n")
+
+        def ok_step_fn(prompt):
+            return StepResult(text="好的，已处理", done=True)
+
+        CronJobExecutor(paths).run_job(_FakeJob(job_id=job_id), ok_step_fn)
+
+        unconsumed = questions_store.list_unconsumed_answers_for_job(paths, job_id)
+        assert len(unconsumed) == 0

@@ -64,6 +64,10 @@ class AutonomousLoop:
         # LLM 复核使用；不传时该复核步骤自动跳过，行为与改动前一致。
         self._llm_helper_provider = llm_helper_provider
         self._last_tick_at: float = 0.0
+        # [cron_async_feedback_hardening_plan.md D5] cron_questions.jsonl
+        # 归档的上次执行时间，_tick_maintenance() 里节流成每 24 小时最多
+        # 跑一次——归档是维护性操作，没必要每个 tick 都扫一遍全量记录。
+        self._last_questions_archive_at: float = 0.0
         self._tick_count: int = 0
         self._digest_records: list[dict] = []  # 待写入 activity_digest.jsonl 的记录
         # Phase 1 新增：CronScheduler 和 ObjectiveExecutor（可选注入，降级安全）
@@ -476,6 +480,22 @@ class AutonomousLoop:
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.reap_stale_jobs')
+                pass
+
+        # [cron_async_feedback_hardening_plan.md D5] cron_questions.jsonl
+        # 归档：每 24 小时最多跑一次（维护性操作，节流避免每个 tick 都
+        # 扫一遍全量记录），把超过保留期的 answered/dismissed 记录挪到
+        # archive 文件，主文件只留 pending + 近期记录，控制线性增长。
+        # 失败静默降级，不影响 tick 其余步骤。
+        now = time.time()
+        if now - self._last_questions_archive_at >= 86400:
+            self._last_questions_archive_at = now
+            try:
+                from mini_agent.notification import questions_store
+                questions_store.archive_old_records(self._paths)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.archive_old_records')
                 pass
 
         # ObjectiveExecutor：先回收卡死的 step（并发槽位卡死修复，见

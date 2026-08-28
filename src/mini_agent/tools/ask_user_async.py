@@ -103,25 +103,26 @@ def _format_options_hint(options: Optional[list]) -> str:
 )
 def ask_user_async(question: str, hint: str = "", options: Optional[list] = None) -> str:
     """向用户异步提问，立刻返回 question_id，不等待回答。"""
-    from mini_agent.evolution.cron_context import get_current_cron_job_id
+    from mini_agent.evolution.cron_context import get_current_cron_job_id, get_current_cron_run_id
     from mini_agent.notification import questions_store
     from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
 
     job_id = get_current_cron_job_id()
+    run_id = get_current_cron_run_id()
     project_root = _get_project_root() or Path.cwd()
 
     from mini_agent.storage.paths import AgentPaths
     paths = AgentPaths(project_root)
 
-    existing = questions_store.find_pending_by_fingerprint(paths, job_id, question)
-    if existing is not None:
-        record = existing
-        is_new = False
-    else:
-        record = questions_store.append_question(
-            paths, job_id, question, hint=hint, options=options,
-        )
-        is_new = True
+    # [cron_async_feedback_hardening_plan.md D1+D4+D6] 查重+建新合并为一次
+    # 加锁操作。fuzzy_threshold 默认开启（0.82）：LLM 每次生成的问题措辞
+    # 几乎不可能逐字相同，精确匹配去重在真实场景下形同虚设，导致同一语义
+    # 问题反复触发都能绕过去重、看板被刷屏。规范化文本后用相似度兜底，
+    # 精确匹配仍然优先尝试。run_id 一并记录，供事后识别孤儿线程迟到写入
+    # （见 cron_context.set_current_cron_run_id 的说明）。
+    record, is_new = questions_store.find_or_create_question(
+        paths, job_id, question, hint=hint, options=options, run_id=run_id,
+    )
 
     if is_new:
         try:

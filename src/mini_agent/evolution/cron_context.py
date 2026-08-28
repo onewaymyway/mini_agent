@@ -43,6 +43,7 @@ def clear_current_cron_job_id() -> None:
     thread-local 残留到下一次非 cron 触发的调用（同一条 cron 执行线程之后
     可能被复用去做别的事）。"""
     _cron_ctx_local.job_id = DEFAULT_JOB_ID
+    _cron_ctx_local.run_id = None
 
 
 def get_current_cron_job_id() -> str:
@@ -51,9 +52,39 @@ def get_current_cron_job_id() -> str:
     return getattr(_cron_ctx_local, "job_id", DEFAULT_JOB_ID) or DEFAULT_JOB_ID
 
 
+def set_current_cron_run_id(run_id: str) -> None:
+    """[cron_async_feedback_hardening_plan.md D6] 由 `CronJobExecutor.
+    run_job()` 在生成本次触发的 `run_id` 之后调用，跟 `job_id` 一样写进
+    thread-local。
+
+    背景：`cron_job_runner.py` 的 watchdog（`reap_stale_jobs()`）判定某次
+    run 卡死后会代替它释放并发槽位，但**卡死的旧线程本身杀不掉**，可能
+    成为孤儿线程继续跑，事后才执行到 `ask_user_async`——这次调用写入
+    `questions_store` 时，`job.id` 依然读得到（同一线程），但这次 run 早
+    已经被判定"放弃"了。单靠 `job_id` 无法区分"这是当前这次触发问的"还是
+    "上一次已经被放弃的那次触发迟到问的"。
+
+    把 `run_id` 也一并透传，写入问题记录的 `run_id` 字段（仅用于事后
+    审计识别，不做写入时的拦截——拦截需要 `ask_user_async` 反查
+    `CronJobRunner` 当前合法 run 的状态，跨模块耦合成本高，本轮不做）。
+    调用方（看板/审计工具）可以拿这个字段跟对应
+    `CronJobWorkspace.read_state().last_run_id` 比较：不一致就说明这条
+    问题来自一次已经不是"当前最新"的 run，可能是孤儿线程迟到写入的。
+    """
+    _cron_ctx_local.run_id = run_id or ""
+
+
+def get_current_cron_run_id() -> str:
+    """返回当前线程正在执行的 cron run 的 run_id；未设置时返回空字符串
+    （非 cron 场景、或 cron 场景下调用方还没来得及设置）。"""
+    return getattr(_cron_ctx_local, "run_id", "") or ""
+
+
 __all__ = [
     "set_current_cron_job_id",
     "clear_current_cron_job_id",
     "get_current_cron_job_id",
+    "set_current_cron_run_id",
+    "get_current_cron_run_id",
     "DEFAULT_JOB_ID",
 ]

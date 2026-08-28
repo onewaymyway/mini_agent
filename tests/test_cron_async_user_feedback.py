@@ -235,16 +235,37 @@ class TestRenderPromptPlaceholders:
 
         first = ws.render_prompt("做点什么")
         assert "要不要继续？" in first
+        # [cron_async_feedback_hardening_plan.md D2] 消费不再在 render_prompt()
+        # 内部自动发生，要调用方确认这一步真正提交成功后显式调用。
+        ws.consume_last_rendered_answers()
 
         second = ws.render_prompt("做点什么")
         assert "要不要继续？" not in second
+
+    def test_pending_answers_not_consumed_if_never_explicitly_confirmed(self, paths):
+        """[cron_async_feedback_hardening_plan.md D2] 渲染了但没有调用
+        consume_last_rendered_answers()（模拟该步 submit_step_fn 失败、
+        agent 从未真正看到这段 prompt）——答案应该还能在下次渲染里再次
+        出现，不会静默丢失。"""
+        ws = CronJobWorkspace(paths, "user:test_job")
+        ws.ensure(default_task_template="{{task_description}}\n{{pending_answers}}\n")
+        rec = questions_store.append_question(paths, "user:test_job", "要不要继续？")
+        questions_store.submit_answer(paths, rec["question_id"], "要")
+
+        first = ws.render_prompt("做点什么")
+        assert "要不要继续？" in first
+        # 故意不调用 consume_last_rendered_answers()
+
+        second = ws.render_prompt("做点什么")
+        assert "要不要继续？" in second
 
     def test_editing_answer_makes_it_reappear(self, paths):
         ws = CronJobWorkspace(paths, "user:test_job")
         ws.ensure(default_task_template="{{task_description}}\n{{pending_answers}}\n")
         rec = questions_store.append_question(paths, "user:test_job", "要不要继续？")
         questions_store.submit_answer(paths, rec["question_id"], "要")
-        ws.render_prompt("做点什么")  # 第一次渲染，标记 consumed
+        ws.render_prompt("做点什么")  # 第一次渲染
+        ws.consume_last_rendered_answers()  # 模拟这一步成功提交给 agent
 
         questions_store.submit_answer(paths, rec["question_id"], "不要了，改主意了")
         rendered = ws.render_prompt("做点什么")
@@ -355,6 +376,9 @@ class TestEndToEndAcrossApiAndPromptLayers:
         # 3) 下次该 job 被调度触发，render_prompt() 应该自动把答案注入。
         rendered_after = ws.render_prompt("继续做预算相关的任务")
         assert "同意提到 8000" in rendered_after
+        # [cron_async_feedback_hardening_plan.md D2] 消费不再在渲染时自动
+        # 发生，模拟 CronJobExecutor 确认这一步真正提交成功后才消费。
+        ws.consume_last_rendered_answers()
         # 已消费过一次之后，再次渲染不应该重复注入同一个答案。
         rendered_third = ws.render_prompt("继续做预算相关的任务")
         assert "同意提到 8000" not in rendered_third
@@ -391,3 +415,107 @@ class TestEndToEndAcrossApiAndPromptLayers:
             "/v1/cron_questions/pending", params={"job_id": "user:e2e_dedup_job"}
         ).json()["questions"]
         assert len(pending) == 1
+
+
+class TestDismissedQuestionsPlaceholder:
+    """[cron_async_feedback_hardening_plan.md D3] {{dismissed_questions}}
+    占位符：忽略过的问题应该在下次渲染时提醒 agent 不要再问。"""
+
+    def test_dismissed_question_appears_in_placeholder(self, paths):
+        ws = CronJobWorkspace(
+            paths, "user:test_job",
+        )
+        ws.ensure(default_task_template="{{task_description}}\n{{dismissed_questions}}\n")
+        rec = questions_store.append_question(paths, "user:test_job", "要不要重构模块 A？")
+        questions_store.dismiss_question(paths, rec["question_id"])
+
+        rendered = ws.render_prompt("做点什么")
+        assert "要不要重构模块 A？" in rendered
+        assert "不要再问" in rendered
+
+    def test_dismissed_conditional_block_hidden_when_none(self, paths):
+        ws = CronJobWorkspace(paths, "user:test_job")
+        ws.ensure(default_task_template=(
+            "{{task_description}}\n"
+            "{{#dismissed_questions}}\nHAS_DISMISSED\n{{dismissed_questions}}\n{{/dismissed_questions}}\n"
+        ))
+        rendered = ws.render_prompt("做点什么")
+        assert "HAS_DISMISSED" not in rendered
+
+    def test_dismissed_question_never_reappears_as_answered_or_unanswered(self, paths):
+        ws = CronJobWorkspace(paths, "user:test_job")
+        ws.ensure(default_task_template=(
+            "{{task_description}}\n"
+            "{{#unanswered_questions}}\n{{unanswered_questions}}\n{{/unanswered_questions}}\n"
+            "{{#pending_answers}}\n{{pending_answers}}\n{{/pending_answers}}\n"
+        ))
+        rec = questions_store.append_question(paths, "user:test_job", "要不要重构模块 A？")
+        questions_store.dismiss_question(paths, rec["question_id"])
+        rendered = ws.render_prompt("做点什么")
+        assert "要不要重构模块 A？" not in rendered
+
+
+class TestFuzzyDeduplication:
+    """[cron_async_feedback_hardening_plan.md D4] ask_user_async 默认开启
+    模糊去重：LLM 换个措辞问同一个语义问题应该被合并，不产生新通知。"""
+
+    def test_semantically_similar_rephrasing_is_deduplicated(self, paths, tmp_path):
+        from mini_agent.tools.ask_user_async import ask_user_async, set_project_root_provider
+
+        set_project_root_provider(lambda: tmp_path)
+        set_current_cron_job_id("user:fuzzy_job")
+        try:
+            r1 = json.loads(ask_user_async("你希望预算提高到多少？"))
+            r2 = json.loads(ask_user_async("你希望把预算提高到多少呢？"))
+        finally:
+            clear_current_cron_job_id()
+
+        assert r1["question_id"] == r2["question_id"]
+        assert r2["deduplicated"] is True
+        pending = questions_store.list_pending_questions(paths, job_id="user:fuzzy_job")
+        assert len(pending) == 1
+
+    def test_genuinely_different_questions_are_not_merged(self, paths, tmp_path):
+        from mini_agent.tools.ask_user_async import ask_user_async, set_project_root_provider
+
+        set_project_root_provider(lambda: tmp_path)
+        set_current_cron_job_id("user:fuzzy_job2")
+        try:
+            r1 = json.loads(ask_user_async("要不要提高预算？"))
+            r2 = json.loads(ask_user_async("周报要不要发给张三？"))
+        finally:
+            clear_current_cron_job_id()
+
+        assert r1["question_id"] != r2["question_id"]
+        pending = questions_store.list_pending_questions(paths, job_id="user:fuzzy_job2")
+        assert len(pending) == 2
+
+
+class TestRunIdPropagationForOrphanDetection:
+    """[cron_async_feedback_hardening_plan.md D6] CronJobExecutor.run_job()
+    执行期间调用 ask_user_async 应该把当次 run_id 记进问题记录。"""
+
+    def test_run_job_sets_run_id_visible_to_ask_user_async(self, paths, tmp_path):
+        from mini_agent.evolution.cron_job_executor import CronJobExecutor, StepResult
+        from mini_agent.tools.ask_user_async import ask_user_async, set_project_root_provider
+
+        class _FakeJob:
+            id = "user:e2e_run_id_job"
+            name = "测试"
+            task_template = "做点什么"
+
+        set_project_root_provider(lambda: tmp_path)
+        captured = {}
+
+        def step_fn(prompt):
+            raw = ask_user_async("要不要继续？")
+            captured["result"] = json.loads(raw)
+            return StepResult(text="已提问", done=True)
+
+        CronJobExecutor(paths).run_job(_FakeJob(), step_fn)
+
+        rec = questions_store.get_question(paths, captured["result"]["question_id"])
+        ws = CronJobWorkspace(paths, "user:e2e_run_id_job")
+        assert rec["run_id"] == ws.read_state().last_run_id
+        assert rec["run_id"] != ""
+        assert questions_store.list_orphaned_pending_questions(paths) == []

@@ -173,6 +173,11 @@ class CronJobExecutor:
             state.consecutive_failures += 1
 
         run_id = ws.new_run_id()
+        # [cron_async_feedback_hardening_plan.md D6] run_id 生成后立刻写入
+        # thread-local，供本次 run 期间任意一步调用到的 ask_user_async
+        # 把它记进问题记录，供事后识别"孤儿线程迟到写入"的场景。
+        from mini_agent.evolution.cron_context import set_current_cron_run_id
+        set_current_cron_run_id(run_id)
         state.status = STATUS_RUNNING
         state.last_run_started_at = time.time()
         state.last_run_id = run_id
@@ -211,7 +216,8 @@ class CronJobExecutor:
                     })
                     break
 
-                step_input = prompt if step_index == 0 else "继续"
+                is_first_step = step_index == 0
+                step_input = prompt if is_first_step else "继续"
                 try:
                     result = submit_step_fn(step_input)
                 except Exception as e:  # noqa: BLE001 — 单步异常不能让整个 job 崩溃
@@ -222,7 +228,23 @@ class CronJobExecutor:
                     ws.append_run_event(run_id, {
                         "type": "step_error", "step_index": step_index, "error": error_text,
                     })
+                    # [cron_async_feedback_hardening_plan.md D2] 第一步（携带
+                    # {{pending_answers}} 的那次 prompt）本身调用失败——agent
+                    # 从未真正看到这段 prompt，不能标记答案已消费，故意
+                    # 不调用 ws.consume_last_rendered_answers()，让这些答案
+                    # 留在"未消费"状态，下次触发能再被注入一次。
                     break
+
+                if is_first_step:
+                    # [cron_async_feedback_hardening_plan.md D2] 确认第一步
+                    # 真正提交成功（未抛异常）才把这次渲染带出去的答案标记
+                    # 为已消费，避免"渲染了但没送达"导致答案静默丢失。
+                    # result.error 非空的情况下同样跳过消费——那也是"没有
+                    # 真正跑通"的一种失败，跟 §14 的既有约定（下面紧接着
+                    # 判断 result.error 会把 final_status 改成
+                    # NEEDS_REVIEW）保持一致的"失败就不消费"语义。
+                    if not result.error and hasattr(ws, "consume_last_rendered_answers"):
+                        ws.consume_last_rendered_answers()
 
                 step_index += 1
                 last_text = result.text or ""

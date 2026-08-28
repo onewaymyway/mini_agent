@@ -2,6 +2,18 @@
 
 设计背景见 next_doc/cron_async_user_feedback_mechanism_plan.md。
 
+[cron_async_feedback_hardening_plan.md D1] `cron_job_runner.py` 支持
+`max_concurrent_jobs>1`，多个 cron job 线程 + API 请求线程可能并发读写
+本文件对应的 `cron_questions.jsonl`。所有"读全部→改→整体覆盖写"的复合
+操作（`submit_answer`/`dismiss_question`/`mark_answers_consumed`）都用
+`external_input/filelock.py::ExclusiveFileLock` 包裹整个读改写窗口（跟
+`pending_hits.jsonl` 的既有先例同款用法），写文件统一走
+`utils/atomic_write.py::atomic_write_jsonl`（tmp+replace，避免读端看到半截
+内容）。`append_question` 本身是纯追加，语义上不需要跟"整体重写"互斥，
+但为了避免追加发生在另一线程"读全部"的中间导致该线程漏读到这条新记录
+（读到的是追加前的快照，随后又整体覆盖写回去——虽然不会丢别的字段，但
+会让那次读改写的调用方判断依据是过期数据），追加也纳入同一把锁。
+
 跟 `reports_store.py` 刻意保持同构（同样是"小文件、低频写、整体重写"的
 jsonl 存储风格），但物理上是两份完全独立的文件，语义也不同：
 
@@ -23,6 +35,9 @@ import json
 import time
 import uuid
 from typing import TYPE_CHECKING, Optional
+
+from mini_agent.external_input.filelock import ExclusiveFileLock
+from mini_agent.utils.atomic_write import atomic_write_jsonl
 
 if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
@@ -61,9 +76,7 @@ def _load_all(paths: "AgentPaths") -> list[dict]:
 
 def _write_all(paths: "AgentPaths", records: list[dict]) -> None:
     p = paths.notification_cron_questions
-    p.parent.mkdir(parents=True, exist_ok=True)
-    lines = [json.dumps(d, ensure_ascii=False) for d in records]
-    p.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    atomic_write_jsonl(p, records)
 
 
 def append_question(
@@ -95,9 +108,10 @@ def append_question(
     }
     try:
         p = paths.notification_cron_questions
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        with ExclusiveFileLock(p):
+            records = _load_all(paths)
+            records.append(record)
+            _write_all(paths, records)
     except Exception as exc:
         from mini_agent.errors import log_exception
         log_exception(exc, where="mini_agent.notification.questions_store.append_question")
@@ -118,6 +132,98 @@ def find_pending_by_fingerprint(paths: "AgentPaths", job_id: str, question: str)
             and (d.get("question") or "").strip() == q
         ):
             return d
+    return None
+
+
+def find_or_create_question(
+    paths: "AgentPaths",
+    job_id: str,
+    question: str,
+    hint: str = "",
+    options: Optional[list] = None,
+    *,
+    fuzzy_threshold: Optional[float] = 0.82,
+    run_id: str = "",
+) -> tuple[dict, bool]:
+    """[cron_async_feedback_hardening_plan.md D1/D4] 查重 + 建新在同一把锁内
+    原子完成，返回 `(record, is_new)`。
+
+    D1：调用方（`ask_user_async`）原先是先 `find_pending_by_fingerprint()`
+    再单独 `append_question()`，两次调用各自加锁、之间有空隙——两个线程
+    可能同时判定"没有重复，需要新建"，都各自建了一条，造成同一问题被
+    发了两条通知。合并成一次加锁内完成查重+建新，消除这个时间窗口。
+
+    D4：精确指纹匹配之外新增一层模糊匹配兜底（规范化文本后用
+    `difflib.SequenceMatcher` 算相似度，`fuzzy_threshold` 及以上也判定为
+    重复，默认 0.82）。传 `fuzzy_threshold=None` 关闭模糊匹配、只用精确
+    匹配（兼容旧行为，供不希望误合并的调用方使用）。
+    """
+    p = paths.notification_cron_questions
+    with ExclusiveFileLock(p):
+        existing = _find_pending_by_fingerprint_locked(paths, job_id, question, fuzzy_threshold)
+        if existing is not None:
+            return existing, False
+        record = {
+            "question_id": _new_question_id(job_id),
+            "job_id": job_id,
+            "question": question,
+            "hint": hint or "",
+            "options": list(options) if options else [],
+            "status": STATUS_PENDING,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "answer": "",
+            "answer_history": [],
+            "consumed": False,
+            # [cron_async_feedback_hardening_plan.md D6] 写入这条问题时
+            # 所处的 cron run_id（非 cron 场景下为空字符串）。仅用于事后
+            # 审计——跟对应 job 的 CronJobWorkspace.read_state().last_run_id
+            # 比较，不一致说明这条问题可能来自一次已经不是"当前最新"的
+            # run（比如被 watchdog 判定卡死放弃后，孤儿线程才迟到执行到
+            # 这里）。不做写入时拦截，只做可识别标记。
+            "run_id": run_id or "",
+        }
+        records = _load_all(paths)
+        records.append(record)
+        _write_all(paths, records)
+        return record, True
+
+
+def _normalize_question_text(text: str) -> str:
+    import re
+    t = (text or "").strip().lower()
+    t = re.sub(r"[\s,.。，、！!?？；;:：'\"“”‘’()（）\-—]+", "", t)
+    return t
+
+
+def _find_pending_by_fingerprint_locked(
+    paths: "AgentPaths", job_id: str, question: str, fuzzy_threshold: Optional[float],
+) -> Optional[dict]:
+    q = (question or "").strip()
+    if not q:
+        return None
+    candidates = [
+        d for d in _load_all(paths)
+        if d.get("job_id") == job_id and d.get("status") == STATUS_PENDING
+    ]
+    for d in candidates:
+        if (d.get("question") or "").strip() == q:
+            return d
+    if fuzzy_threshold is not None:
+        import difflib
+        norm_q = _normalize_question_text(q)
+        if norm_q:
+            best: Optional[dict] = None
+            best_ratio = 0.0
+            for d in candidates:
+                norm_c = _normalize_question_text(d.get("question") or "")
+                if not norm_c:
+                    continue
+                ratio = difflib.SequenceMatcher(None, norm_q, norm_c).ratio()
+                if ratio >= fuzzy_threshold and ratio > best_ratio:
+                    best, best_ratio = d, ratio
+            if best is not None:
+                return best
     return None
 
 
@@ -178,20 +284,22 @@ def submit_answer(paths: "AgentPaths", question_id: str, answer_text: str) -> Op
     text = (answer_text or "").strip()
     if not text:
         return None
-    records = _load_all(paths)
-    updated: Optional[dict] = None
-    for d in records:
-        if d.get("question_id") == question_id:
-            now = time.time()
-            d["answer"] = text
-            d.setdefault("answer_history", []).append({"text": text, "at": now})
-            d["status"] = STATUS_ANSWERED
-            d["updated_at"] = now
-            d["consumed"] = False
-            updated = d
-            break
-    if updated is not None:
-        _write_all(paths, records)
+    p = paths.notification_cron_questions
+    with ExclusiveFileLock(p):
+        records = _load_all(paths)
+        updated: Optional[dict] = None
+        for d in records:
+            if d.get("question_id") == question_id:
+                now = time.time()
+                d["answer"] = text
+                d.setdefault("answer_history", []).append({"text": text, "at": now})
+                d["status"] = STATUS_ANSWERED
+                d["updated_at"] = now
+                d["consumed"] = False
+                updated = d
+                break
+        if updated is not None:
+            _write_all(paths, records)
     return updated
 
 
@@ -215,14 +323,16 @@ def mark_answers_consumed(paths: "AgentPaths", question_ids: "set[str] | list[st
     ids = set(question_ids)
     if not ids:
         return 0
-    records = _load_all(paths)
-    matched = 0
-    for d in records:
-        if d.get("question_id") in ids and not d.get("consumed"):
-            d["consumed"] = True
-            matched += 1
-    if matched:
-        _write_all(paths, records)
+    p = paths.notification_cron_questions
+    with ExclusiveFileLock(p):
+        records = _load_all(paths)
+        matched = 0
+        for d in records:
+            if d.get("question_id") in ids and not d.get("consumed"):
+                d["consumed"] = True
+                matched += 1
+        if matched:
+            _write_all(paths, records)
     return matched
 
 
@@ -247,22 +357,123 @@ def dismiss_question(paths: "AgentPaths", question_id: str) -> Optional[dict]:
     返回更新后（或已是 dismissed 的）完整记录；`question_id` 不存在，
     或该问题当前是 `answered` 状态，均返回 None。
     """
-    records = _load_all(paths)
-    target: Optional[dict] = None
-    for d in records:
-        if d.get("question_id") == question_id:
-            target = d
-            break
-    if target is None:
-        return None
-    if target.get("status") == STATUS_DISMISSED:
+    p = paths.notification_cron_questions
+    with ExclusiveFileLock(p):
+        records = _load_all(paths)
+        target: Optional[dict] = None
+        for d in records:
+            if d.get("question_id") == question_id:
+                target = d
+                break
+        if target is None:
+            return None
+        if target.get("status") == STATUS_DISMISSED:
+            return target
+        if target.get("status") != STATUS_PENDING:
+            return None
+        target["status"] = STATUS_DISMISSED
+        target["updated_at"] = time.time()
+        _write_all(paths, records)
         return target
-    if target.get("status") != STATUS_PENDING:
-        return None
-    target["status"] = STATUS_DISMISSED
-    target["updated_at"] = time.time()
-    _write_all(paths, records)
-    return target
+
+
+def _archive_path(paths: "AgentPaths"):
+    p = paths.notification_cron_questions
+    return p.parent / (p.stem + ".archive.jsonl")
+
+
+def archive_old_records(paths: "AgentPaths", *, retention_days: int = 90) -> int:
+    """[cron_async_feedback_hardening_plan.md D5] 把超过 `retention_days`
+    天的 `answered`/`dismissed` 记录从主文件挪到同目录的
+    `cron_questions.archive.jsonl`（只追加，供审计查阅，不参与
+    `_load_all()` 的日常读取路径）。`pending` 状态的记录永远不会被归档，
+    不管多老——只要还没被回答/忽略就还是"活"的。
+
+    返回归档的记录数。异常兜底返回 0，绝不能因为归档失败影响到问答功能
+    本身的可用性（归档是维护性操作，不是关键路径）。
+    """
+    try:
+        p = paths.notification_cron_questions
+        cutoff = time.time() - retention_days * 86400
+        with ExclusiveFileLock(p):
+            records = _load_all(paths)
+            keep: list[dict] = []
+            archived: list[dict] = []
+            for d in records:
+                status = d.get("status")
+                updated_at = d.get("updated_at") or d.get("created_at") or 0
+                if status in (STATUS_ANSWERED, STATUS_DISMISSED) and updated_at < cutoff:
+                    archived.append(d)
+                else:
+                    keep.append(d)
+            if not archived:
+                return 0
+            archive_p = _archive_path(paths)
+            archive_p.parent.mkdir(parents=True, exist_ok=True)
+            with open(archive_p, "a", encoding="utf-8") as f:
+                for d in archived:
+                    f.write(json.dumps(d, ensure_ascii=False) + "\n")
+            _write_all(paths, keep)
+            return len(archived)
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.notification.questions_store.archive_old_records")
+        return 0
+
+
+def purge_questions_for_job(paths: "AgentPaths", job_id: str) -> int:
+    """[cron_async_feedback_hardening_plan.md D5] cron job 被删除时调用，
+    清掉该 job 名下所有问答记录（不分状态），避免永久遗留的孤儿数据。
+    返回删除的记录数。异常兜底返回 0——清理失败不应该阻断 job 删除本身
+    这个更重要的操作。"""
+    try:
+        p = paths.notification_cron_questions
+        with ExclusiveFileLock(p):
+            records = _load_all(paths)
+            keep = [d for d in records if d.get("job_id") != job_id]
+            removed = len(records) - len(keep)
+            if removed:
+                _write_all(paths, keep)
+            return removed
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.notification.questions_store.purge_questions_for_job")
+        return 0
+
+
+def list_orphaned_pending_questions(paths: "AgentPaths") -> list[dict]:
+    """[cron_async_feedback_hardening_plan.md D6] 找出所有"疑似孤儿线程
+    迟到写入"的 pending 问题：记录的 `run_id` 跟对应 job 当前
+    `CronJobWorkspace.read_state().last_run_id` 不一致，说明这条问题写入
+    时所在的那次 run，已经不是这个 job 最近一次的 run 了——可能是
+    watchdog 判定卡死放弃之后，孤儿线程才迟到执行到 `ask_user_async`。
+
+    只做识别，不做任何自动处理（不删除、不隐藏）——看板/审计工具可以
+    用这个列表做置灰展示或提示，具体呈现方式留给调用方决定。`run_id`
+    为空（非 cron 场景的 `"adhoc"` 分组，或旧数据没有这个字段）的记录
+    不参与判定，直接跳过。异常兜底返回空列表。
+    """
+    try:
+        from mini_agent.evolution.cron_job_workspace import CronJobWorkspace
+        result = []
+        state_cache: dict[str, str] = {}
+        for d in list_pending_questions(paths):
+            rid = d.get("run_id") or ""
+            job_id = d.get("job_id") or ""
+            if not rid or not job_id or job_id == "adhoc":
+                continue
+            if job_id not in state_cache:
+                try:
+                    state_cache[job_id] = CronJobWorkspace(paths, job_id).read_state().last_run_id or ""
+                except Exception:
+                    state_cache[job_id] = ""
+            if state_cache[job_id] and rid != state_cache[job_id]:
+                result.append(d)
+        return result
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.notification.questions_store.list_orphaned_pending_questions")
+        return []
 
 
 def list_dismissed_questions(

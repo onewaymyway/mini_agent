@@ -131,6 +131,11 @@ DEFAULT_PROMPT_TEMPLATE = (
     "不要重复调用 ask_user_async 问同一个问题，先处理其它可推进的部分。\n"
     "{{/unanswered_questions}}\n"
     "\n"
+    "{{#dismissed_questions}}\n"
+    "--- 以下问题用户已明确表示不需要回答，不要再问 ---\n"
+    "{{dismissed_questions}}\n"
+    "{{/dismissed_questions}}\n"
+    "\n"
     "{{#previous_output}}\n"
     "--- 上一轮产出（{{previous_output_dir}}） ---\n"
     "{{previous_output}}\n"
@@ -156,6 +161,10 @@ class CronJobWorkspace:
         self.config_path = self.dir / "config.json"
         self.state_path = self.dir / "state.json"
         self.runs_dir = self.dir / "runs"
+        # [cron_async_feedback_hardening_plan.md D2] 上一次 render_prompt()
+        # 渲染进 {{pending_answers}} 的 question_id 列表，供
+        # consume_last_rendered_answers() 延迟标记消费。
+        self._last_rendered_answer_ids: list[str] = []
 
     # ── 初始化 / 幂等 ensure ──────────────────────────────────────────────
 
@@ -184,6 +193,7 @@ class CronJobWorkspace:
                 "{{task_description}}\n\n{{progress}}\n"
                 "{{#pending_answers}}\n{{pending_answers}}\n{{/pending_answers}}\n"
                 "{{#unanswered_questions}}\n{{unanswered_questions}}\n{{/unanswered_questions}}\n"
+                "{{#dismissed_questions}}\n{{dismissed_questions}}\n{{/dismissed_questions}}\n"
             )
             self.prompt_path.write_text(content, encoding="utf-8")
         if not self.config_path.exists():
@@ -296,6 +306,12 @@ class CronJobWorkspace:
           {{unanswered_questions}} — 仍处于待回答状态的问题列表，提醒 agent
                                      不要重复调用 ask_user_async 问同一个
                                      问题，先处理其它可推进的部分。
+          {{dismissed_questions}}  — [cron_async_feedback_hardening_plan.md
+                                     D3] 用户已明确忽略（不想回答）的问题，
+                                     最近 20 条，提醒 agent 不要再问这些
+                                     问题——原机制里"忽略"后问题对 agent
+                                     完全不可见，导致 agent 换个措辞反复
+                                     问同一件事、用户反复忽略的死循环。
         以及四个极简的 {{#xxx}}...{{/xxx}} 条件块：progress/previous_output/
         pending_answers/unanswered_questions 为空时整段连同标记一起去掉，
         避免每次都印出一段空标题。
@@ -319,11 +335,13 @@ class CronJobWorkspace:
 
         pending_answers_text = self._format_pending_answers()
         unanswered_questions_text = self._format_unanswered_questions()
+        dismissed_questions_text = self._format_dismissed_questions()
 
         template = self._render_condition_block(template, "progress", bool(progress))
         template = self._render_condition_block(template, "previous_output", bool(previous_output_text))
         template = self._render_condition_block(template, "pending_answers", bool(pending_answers_text))
         template = self._render_condition_block(template, "unanswered_questions", bool(unanswered_questions_text))
+        template = self._render_condition_block(template, "dismissed_questions", bool(dismissed_questions_text))
 
         template = template.replace("{{task_description}}", task_description)
         template = template.replace("{{progress}}", progress)
@@ -332,6 +350,7 @@ class CronJobWorkspace:
         template = template.replace("{{output_dir}}", output_dir_text)
         template = template.replace("{{pending_answers}}", pending_answers_text)
         template = template.replace("{{unanswered_questions}}", unanswered_questions_text)
+        template = template.replace("{{dismissed_questions}}", dismissed_questions_text)
         if "{{output_policy}}" in template:
             try:
                 from mini_agent.evolution.output_path_policy import load_policy
@@ -343,24 +362,55 @@ class CronJobWorkspace:
 
     def _format_pending_answers(self) -> str:
         """[cron_async_user_feedback_mechanism_plan] 取出本 job 已回答但
-        还没消费过的问答对，格式化成文本并标记为已消费。异常兜底返回空
-        字符串——问答续接是感知增强，不能反过来影响 render_prompt() 本身。
+        还没消费过的问答对，格式化成文本。异常兜底返回空字符串——问答
+        续接是感知增强，不能反过来影响 render_prompt() 本身。
+
+        [cron_async_feedback_hardening_plan.md D2] **不在这里标记
+        consumed。** 原实现在渲染时刻就调用 `mark_answers_consumed()`，
+        但渲染发生在 `submit_step_fn()` 真正调用/成功之前——如果这一步
+        LLM 调用本身失败（网络错误等），agent 从未看到这段 prompt，答案
+        却已经被标记消费、下次触发查不到了，等于静默丢答案。现在只把
+        本次渲染取到的 question_id 记到 `self._last_rendered_answer_ids`，
+        真正的"标记消费"挪到 `consume_last_rendered_answers()`，由调用方
+        （`CronJobExecutor.run_job()`）确认第一步执行成功后再调用。
         """
         try:
             from mini_agent.notification import questions_store
             rows = questions_store.list_unconsumed_answers_for_job(self._paths, self.job_id)
+            self._last_rendered_answer_ids = [r["question_id"] for r in rows]
             if not rows:
                 return ""
             lines = [
                 f"- 上次你问过「{r.get('question', '')}」，用户回答：{r.get('answer', '')}"
                 for r in rows
             ]
-            questions_store.mark_answers_consumed(self._paths, [r["question_id"] for r in rows])
             return "\n".join(lines)
         except Exception as exc:
             from mini_agent.errors import log_exception
             log_exception(exc, where="mini_agent.evolution.cron_job_workspace._format_pending_answers")
+            self._last_rendered_answer_ids = []
             return ""
+
+    def consume_last_rendered_answers(self) -> int:
+        """[cron_async_feedback_hardening_plan.md D2] 把上一次
+        `render_prompt()` 渲染进 `{{pending_answers}}` 的问答对正式标记为
+        已消费。调用方应在确认这次渲染出的 prompt 已经被成功提交给
+        agent（第一步 `submit_step_fn()` 未抛异常、且 `result.error` 为空）
+        之后再调用；如果那一步失败了，就不要调用——让这些答案留在
+        "未消费"状态，下次触发时能再被注入一次，不会因为这一步没跑起来
+        就永久丢失。没有调用过 `render_prompt()`，或那次渲染里没有任何
+        待消费答案时，是安全的空操作（返回 0）。
+        """
+        ids = getattr(self, "_last_rendered_answer_ids", None) or []
+        if not ids:
+            return 0
+        try:
+            from mini_agent.notification import questions_store
+            return questions_store.mark_answers_consumed(self._paths, ids)
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.evolution.cron_job_workspace.consume_last_rendered_answers")
+            return 0
 
     def _format_unanswered_questions(self) -> str:
         """[cron_async_user_feedback_mechanism_plan] 取出本 job 仍处于待
@@ -374,6 +424,22 @@ class CronJobWorkspace:
         except Exception as exc:
             from mini_agent.errors import log_exception
             log_exception(exc, where="mini_agent.evolution.cron_job_workspace._format_unanswered_questions")
+            return ""
+
+    def _format_dismissed_questions(self, limit: int = 20) -> str:
+        """[cron_async_feedback_hardening_plan.md D3] 取出本 job 最近被
+        用户明确忽略的问题（最多 `limit` 条，按时间倒序），提醒 agent
+        不要再问。异常兜底返回空字符串——这是感知增强，不能影响
+        render_prompt() 本身。"""
+        try:
+            from mini_agent.notification import questions_store
+            rows = questions_store.list_dismissed_questions(self._paths, job_id=self.job_id, limit=limit)
+            if not rows:
+                return ""
+            return "\n".join(f"- 「{r.get('question', '')}」（用户已忽略，不要再问）" for r in rows)
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.evolution.cron_job_workspace._format_dismissed_questions")
             return ""
 
     @staticmethod
