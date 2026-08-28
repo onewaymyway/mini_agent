@@ -3,12 +3,13 @@
 - **设计文档**：`next_doc/cron_async_user_feedback_mechanism_plan.md`（原始
   设计）、`next_doc/cron_async_feedback_hardening_plan.md`（D1–D6 加固）、
   `next_doc/cron_async_feedback_lifecycle_and_usability_plan.md`（E1/E2
-  长期未回答自动关闭 + 看板可用性补齐）
+  长期未回答自动关闭 + 看板可用性补齐；原本明确不做的 E3 批量操作/角标/
+  job_id 筛选，本轮补做，见该文档 §8）
 - **前置依赖**：[cron-dedicated-execution-guide.md](cron-dedicated-execution-guide.md)（cron
   任务专属执行机制本体，本功能是它的收尾状态扩展，不重复实现执行线程/
   `CronJobWorkspace` 记录链路）
 - **当前实施进度**：阶段1-5（原始设计）+ D1-D6（加固）+ E1-E2（生命周期
-  与看板可用性）已全部实施完成。
+  与看板可用性）+ E3（看板批量操作/角标/筛选）已全部实施完成。
 
 ---
 
@@ -114,7 +115,10 @@ cron 到期时任务依然正常执行，由 agent 根据 `{{unanswered_question
 
 ## 6. 在看板上查看和回答问题
 
-Streamlit 看板"🔔 关注与通知"tab 下新增"🙋 待我反馈"面板，分三个子 tab：
+Streamlit 看板"🔔 关注与通知"tab 下新增"🙋 待我反馈"面板，分三个子 tab
+（**[E3 新增]** 三个 tab 标题都带数量角标，例如"待处理 (3)"；一次最多
+探测 200 条，超过时显示"+"；每个子 tab 顶部还有一个按 `job_id` 筛选的
+下拉框，方便只看某一个 cron job 的问答）：
 
 - **待处理**：逐条展示所属任务（`job_id`）、问题原文、`hint`；**[E2 新增]**
   按等待时长**升序**排列（等得最久的排最前）并附带"已等待 N 天"徽标
@@ -125,7 +129,10 @@ Streamlit 看板"🔔 关注与通知"tab 下新增"🙋 待我反馈"面板，�
   过时，或者你已经通过其它方式处理了），可以点旁边的"🙈 忽略这个问题"
   ——忽略后它从"待处理"列表消失，**不会**被当作答案注入下次触发的
   prompt，agent 就当这个问题从未存在过；已经回答过的问题不能再被忽略
-  （应该用下面的"修改答案"）。
+  （应该用下面的"修改答案"）。**[E3 新增]** 每条问题前有一个"批量选中
+  此条"勾选框，勾选多条后点面板顶部的"🙈 批量忽略（已选 N 条）"可以
+  一次性忽略——内部是循环调用同一个单条忽略接口，不是新增的批量端点，
+  语义上等价于依次点了好几次"忽略这个问题"。
 - **历史记录**：展示已回答问题，每条展开可见当前答案 + **完整修改
   历史**（每次提交/修改的时间与内容，旧→新排列，改答案不会覆盖丢失
   旧版本）。展开后内置一个文本框，可以直接修改答案再提交——新答、
@@ -237,11 +244,14 @@ questions()` 通过比较问题记录的 `run_id` 跟对应 job 当前
   反馈"面板目前不区分展示，用户看不出某条问题是不是孤儿线程迟到问的。
   也不做写入时拦截（不会阻止孤儿线程把问题写进去），只做事后可查询，
   详见 D6。
-- **[E3，明确不做]** 没有 tab 角标未读数提醒、没有批量忽略/批量回答、
-  看板 UI 没有暴露按 job_id 筛选或按等待时长排序的控件（API 层已支持
-  `job_id` 过滤，只是没做成 UI 输入框）——当前问题量级下这几项的
-  边际收益低于实现成本，留作后续按需再做，详见
-  `next_doc/cron_async_feedback_lifecycle_and_usability_plan.md` §4。
+- **[E3 已解决，不再是局限]** 原来这里写的是"没有 tab 角标未读数提醒、
+  没有批量忽略/批量回答、看板 UI 没有暴露按 job_id 筛选的控件"——现在
+  三个子 tab 标题都带数量角标（如"待处理 (3)"，超过一页显示"+"）；
+  "待处理"子 tab 支持勾选多条后"批量忽略"（复用已有的单条忽略接口
+  循环调用，未新增批量后端端点）；三个子 tab 都新增了按 job_id 筛选的
+  下拉框（API 层的 `job_id` 参数早已支持，这次补上 UI）。仍然没做的是
+  "按等待时长排序的独立控件"——"待处理"子 tab 本身已经默认按等待时长
+  升序排列（见 §6），不需要额外的排序控件。
 
 ## 10. 相关文件一览
 
@@ -257,7 +267,7 @@ questions()` 通过比较问题记录的 `run_id` 跟对应 job 当前
 | `src/mini_agent/evolution/autonomous_loop.py` | `_tick_maintenance()` 每 24 小时触发一次问答记录归档，**[E1 新增]** 同窗口触发长期未回答问题自动关闭 + 逐条通知 |
 | `src/mini_agent/api/routes.py` | `/v1/cron_questions/{pending,history,dismissed,{id}/answer,{id}/dismiss}` 五个端点（**[E2 新增]** `dismissed`） |
 | `apps/mini_agent_kanban/client.py` | `cron_questions_pending`/`cron_questions_history`/`answer_cron_question`/`dismiss_cron_question`/`cron_questions_dismissed`（**[E2 新增]**）客户端方法 |
-| `apps/mini_agent_kanban/app.py` | "🔔 关注与通知"tab 下"🙋 待我反馈"面板（`_render_cron_questions_panel`，独立 `@st.fragment`），**[E2]** 待处理按等待时长排序+徽标、新增"已忽略"子 tab |
+| `apps/mini_agent_kanban/app.py` | "🔔 关注与通知"tab 下"🙋 待我反馈"面板（`_render_cron_questions_panel`，独立 `@st.fragment`），**[E2]** 待处理按等待时长排序+徽标、新增"已忽略"子 tab；**[E3 新增]** 三个子 tab 标题数量角标、job_id 筛选下拉框、"待处理"批量勾选+批量忽略 |
 | `.agent/notification/cron_questions.jsonl` | 问答记录落地文件（运行时生成） |
 | `.agent/notification/cron_questions.archive.jsonl` | **[加固后新增]** 归档文件（运行时生成，超过保留期的 answered/dismissed 记录） |
 | `tests/test_cron_questions_store.py` | `questions_store.py` 单元测试（含并发/消费时机/归档/清理/孤儿识别/**[E1 新增]** 自动过期回归测试） |

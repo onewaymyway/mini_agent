@@ -10084,17 +10084,53 @@ def _render_cron_questions_panel(client: "AgentClient"):
         "\"已忽略\"里查到。"
     )
 
-    sub_tab_pending, sub_tab_history, sub_tab_dismissed = st.tabs(["待处理", "历史记录", "已忽略"])
+    # [cron_async_feedback_lifecycle_and_usability_plan.md E3，本轮补做]
+    # tab 标题上带一个数量角标。API 层没有专门的 count 端点（量级小，之前
+    # 没必要加），这里复用下面 job 筛选框本就要发的 limit=200 探测请求，
+    # 用 len(questions) + ("+" 提示还有更多) 拼出角标，不额外加请求；
+    # 失败时角标退化为不显示数字（静默降级，不影响主体功能）。
+    def _tab_count(resp: dict) -> str:
+        if not resp or "_error" in resp:
+            return ""
+        n = len(resp.get("questions") or [])
+        if n == 0:
+            return ""
+        suffix = "+" if resp.get("has_more") else ""
+        return f" ({n}{suffix})"
+
+    # [E3] job_id 筛选框——API 层早已支持 `job_id` 过滤参数，之前看板 UI
+    # 一直没暴露；筛选选项从这里现取的一批问题里去重排序，量级小（个位数
+    # 到十几个 job），不需要专门开一个"列出所有 job_id"的接口。这三个
+    # limit=200 请求同时也用来算上面的 tab 数量角标。
+    all_pending_resp = client.cron_questions_pending(limit=200) or {}
+    all_history_resp = client.cron_questions_history(limit=200) or {}
+    all_dismissed_resp = client.cron_questions_dismissed(limit=200) or {}
+
+    sub_tab_pending, sub_tab_history, sub_tab_dismissed = st.tabs([
+        f"待处理{_tab_count(all_pending_resp)}",
+        f"历史记录{_tab_count(all_history_resp)}",
+        f"已忽略{_tab_count(all_dismissed_resp)}",
+    ])
 
     with sub_tab_pending:
         pending_limit = st.session_state.get("cron_q_pending_limit", 20)
-        pending_resp = client.cron_questions_pending(limit=pending_limit) or {}
+        all_job_ids = sorted({
+            q.get("job_id") for q in (all_pending_resp.get("questions") or [])
+            if q.get("job_id")
+        }) if "_error" not in all_pending_resp else []
+        job_filter = st.selectbox(
+            "按任务筛选", ["（全部任务）"] + all_job_ids,
+            key="cron_q_pending_job_filter", label_visibility="collapsed",
+        )
+        job_filter_value = "" if job_filter == "（全部任务）" else job_filter
+        pending_resp = client.cron_questions_pending(limit=pending_limit, job_id=job_filter_value) or {}
         if "_error" in pending_resp:
             st.caption(f"获取待回答问题失败：{pending_resp['_error']}")
         else:
             questions = pending_resp.get("questions") or []
             if not questions:
-                st.info("当前没有待你回答的问题。")
+                st.info("当前没有待你回答的问题。" if not job_filter_value
+                         else f"任务 `{job_filter_value}` 当前没有待你回答的问题。")
             else:
                 # [cron_async_feedback_lifecycle_and_usability_plan.md E2]
                 # 拖得越久的问题越应该被优先看到，而不是淹没在新问题
@@ -10104,62 +10140,108 @@ def _render_cron_questions_panel(client: "AgentClient"):
                 # 自动关闭（见 questions_store.expire_stale_pending_questions）
                 # 的旧问题，避免它们一直沉在列表底部没人注意到。
                 questions = sorted(questions, key=lambda q: q.get("created_at") or 0)
-            for idx, q in enumerate(questions):
-                qid = q.get("question_id")
-                with st.container(border=True):
-                    created_at = q.get("created_at")
-                    age_badge = ""
-                    if created_at:
-                        days = int((time.time() - created_at) // 86400)
-                        if days >= 7:
-                            age_badge = f" · :red[已等待 {days} 天]"
-                        elif days >= 1:
-                            age_badge = f" · 已等待 {days} 天"
-                    st.markdown(f"**任务 `{q.get('job_id', '-')}`**{age_badge}")
-                    st.markdown(q.get("question") or "")
-                    if q.get("hint"):
-                        st.caption(f"提示：{q['hint']}")
-                    options = q.get("options") or []
-                    answer_key = f"cron_q_answer_{idx}_{qid}"
-                    if options:
-                        st.caption("参考选项（可直接选，也可以在下方输入其它内容）：" + "、".join(options))
-                        choice = st.radio(
-                            "参考选项", ["（自己输入）"] + options,
-                            key=f"cron_q_choice_{idx}_{qid}", label_visibility="collapsed",
-                            horizontal=True,
+
+                # [E3] 批量忽略——量级不大的情况下用"逐条勾选 + 循环调用
+                # 已有的单条 dismiss 接口"实现，跟 growth 面板"批量隐藏/
+                # 批量恢复"的既有模式一致，不新增专门的批量后端接口。
+                select_key = "cron_q_pending_selected_ids"
+                selected_ids: set = st.session_state.setdefault(select_key, set())
+                bc1, bc2 = st.columns([1, 3])
+                if bc1.button("⬜ 清空选择", key="cron_q_pending_clear_selection"):
+                    selected_ids.clear()
+                    st.rerun()
+                with bc2:
+                    disabled = not selected_ids
+                    if st.button(f"🙈 批量忽略（已选 {len(selected_ids)} 条）",
+                                  key="cron_q_pending_batch_dismiss", disabled=disabled):
+                        failed = 0
+                        for sid in list(selected_ids):
+                            res = client.dismiss_cron_question(sid)
+                            if not res or "_error" in res:
+                                failed += 1
+                        if failed:
+                            st.error(f"{failed} 条忽略失败，其余已忽略。")
+                        else:
+                            st.success("已批量忽略选中的问题。")
+                        selected_ids.clear()
+                        st.rerun()
+
+                for idx, q in enumerate(questions):
+                    qid = q.get("question_id")
+                    with st.container(border=True):
+                        checked = st.checkbox(
+                            "批量选中此条", value=qid in selected_ids,
+                            key=f"cron_q_pending_cb_{idx}_{qid}",
                         )
-                        default_text = "" if choice == "（自己输入）" else choice
-                    else:
-                        default_text = ""
-                    answer_text = st.text_area(
-                        "你的回答", value=default_text, key=answer_key,
-                        label_visibility="collapsed", placeholder="在这里输入你的回答……",
-                    )
-                    if st.button("✅ 提交回答", key=f"cron_q_submit_{idx}_{qid}", disabled=not (answer_text or "").strip()):
-                        res = client.answer_cron_question(qid, answer_text)
-                        if res and "_error" in res:
-                            st.error(f"提交失败：{res['_error']}")
+                        if checked:
+                            selected_ids.add(qid)
                         else:
-                            st.success("已提交，下次该任务触发时会自动带上你的回答。")
-                            st.rerun()
-                    if st.button("🙈 忽略这个问题", key=f"cron_q_dismiss_{idx}_{qid}"):
-                        res = client.dismiss_cron_question(qid)
-                        if res and "_error" in res:
-                            st.error(f"忽略失败：{res['_error']}")
+                            selected_ids.discard(qid)
+                        created_at = q.get("created_at")
+                        age_badge = ""
+                        if created_at:
+                            days = int((time.time() - created_at) // 86400)
+                            if days >= 7:
+                                age_badge = f" · :red[已等待 {days} 天]"
+                            elif days >= 1:
+                                age_badge = f" · 已等待 {days} 天"
+                        st.markdown(f"**任务 `{q.get('job_id', '-')}`**{age_badge}")
+                        st.markdown(q.get("question") or "")
+                        if q.get("hint"):
+                            st.caption(f"提示：{q['hint']}")
+                        options = q.get("options") or []
+                        answer_key = f"cron_q_answer_{idx}_{qid}"
+                        if options:
+                            st.caption("参考选项（可直接选，也可以在下方输入其它内容）：" + "、".join(options))
+                            choice = st.radio(
+                                "参考选项", ["（自己输入）"] + options,
+                                key=f"cron_q_choice_{idx}_{qid}", label_visibility="collapsed",
+                                horizontal=True,
+                            )
+                            default_text = "" if choice == "（自己输入）" else choice
                         else:
-                            st.info("已忽略。这个问题不会再打扰你，也不会被当作答案带入下次任务触发。")
-                            st.rerun()
+                            default_text = ""
+                        answer_text = st.text_area(
+                            "你的回答", value=default_text, key=answer_key,
+                            label_visibility="collapsed", placeholder="在这里输入你的回答……",
+                        )
+                        if st.button("✅ 提交回答", key=f"cron_q_submit_{idx}_{qid}", disabled=not (answer_text or "").strip()):
+                            res = client.answer_cron_question(qid, answer_text)
+                            if res and "_error" in res:
+                                st.error(f"提交失败：{res['_error']}")
+                            else:
+                                st.success("已提交，下次该任务触发时会自动带上你的回答。")
+                                st.rerun()
+                        if st.button("🙈 忽略这个问题", key=f"cron_q_dismiss_{idx}_{qid}"):
+                            res = client.dismiss_cron_question(qid)
+                            if res and "_error" in res:
+                                st.error(f"忽略失败：{res['_error']}")
+                            else:
+                                st.info("已忽略。这个问题不会再打扰你，也不会被当作答案带入下次任务触发。")
+                                st.rerun()
             _load_more_control("cron_q_pending_limit", 20, 20, bool(pending_resp.get("has_more")))
 
     with sub_tab_history:
         history_limit = st.session_state.get("cron_q_history_limit", 20)
-        history_resp = client.cron_questions_history(limit=history_limit) or {}
+        # [E3] 同上，为历史记录也补上 job_id 筛选框（复用上面已经拿到的
+        # all_history_resp，不重复发请求）。
+        history_job_ids = sorted({
+            q.get("job_id") for q in (all_history_resp.get("questions") or [])
+            if q.get("job_id")
+        }) if "_error" not in all_history_resp else []
+        history_job_filter = st.selectbox(
+            "按任务筛选", ["（全部任务）"] + history_job_ids,
+            key="cron_q_history_job_filter", label_visibility="collapsed",
+        )
+        history_job_filter_value = "" if history_job_filter == "（全部任务）" else history_job_filter
+        history_resp = client.cron_questions_history(limit=history_limit, job_id=history_job_filter_value) or {}
         if "_error" in history_resp:
             st.caption(f"获取历史记录失败：{history_resp['_error']}")
         else:
             history = history_resp.get("questions") or []
             if not history:
-                st.info("暂无已回答的问题。")
+                st.info("暂无已回答的问题。" if not history_job_filter_value
+                         else f"任务 `{history_job_filter_value}` 暂无已回答的问题。")
             for idx, q in enumerate(history):
                 qid = q.get("question_id")
                 with st.expander(f"任务 `{q.get('job_id', '-')}` · {q.get('question', '')[:40]}", expanded=False):
@@ -10198,13 +10280,25 @@ def _render_cron_questions_panel(client: "AgentClient"):
             "不会再提醒你，也不会被当作答案带入下次任务触发。"
         )
         dismissed_limit = st.session_state.get("cron_q_dismissed_limit", 20)
-        dismissed_resp = client.cron_questions_dismissed(limit=dismissed_limit) or {}
+        # [E3] 同上，已忽略列表也补上 job_id 筛选框（复用上面已经拿到的
+        # all_dismissed_resp，不重复发请求）。
+        dismissed_job_ids = sorted({
+            q.get("job_id") for q in (all_dismissed_resp.get("questions") or [])
+            if q.get("job_id")
+        }) if "_error" not in all_dismissed_resp else []
+        dismissed_job_filter = st.selectbox(
+            "按任务筛选", ["（全部任务）"] + dismissed_job_ids,
+            key="cron_q_dismissed_job_filter", label_visibility="collapsed",
+        )
+        dismissed_job_filter_value = "" if dismissed_job_filter == "（全部任务）" else dismissed_job_filter
+        dismissed_resp = client.cron_questions_dismissed(limit=dismissed_limit, job_id=dismissed_job_filter_value) or {}
         if "_error" in dismissed_resp:
             st.caption(f"获取已忽略问题失败：{dismissed_resp['_error']}")
         else:
             dismissed = dismissed_resp.get("questions") or []
             if not dismissed:
-                st.info("暂无已忽略的问题。")
+                st.info("暂无已忽略的问题。" if not dismissed_job_filter_value
+                         else f"任务 `{dismissed_job_filter_value}` 暂无已忽略的问题。")
             for q in dismissed:
                 reason = q.get("dismiss_reason") or "manual"
                 if reason == "stale_timeout":
