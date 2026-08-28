@@ -165,3 +165,4 @@ test_reports/
 .agent/capability_notify_state.json
 .agent/affordance_snapshot.json
 
+.agent/external_input/novelty_candidates_raw.jsonl
