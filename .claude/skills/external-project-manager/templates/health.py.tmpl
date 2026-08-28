@@ -1,0 +1,38 @@
+#!/usr/bin/env python
+"""entrypoints/health.py — project.yaml 的 `health_check.cmd`。
+
+约定：退出码 0 = 健康，非 0 = 不健康。健康检查应该只验证"依赖能正常
+导入 + 本地状态文件可读"，不要依赖外部网络/第三方服务是否可用——那样
+一旦某个数据源临时抖动，会把整个项目误判为不健康（参考
+external_projects/stock_watch/entrypoints/health.py 的同款约定）。
+"""
+
+from __future__ import annotations
+
+import sys
+
+
+def main() -> int:
+    try:
+        # TODO：把这个项目真正依赖的第三方库 import 一遍，import 失败
+        # 就说明运行环境没装好。
+        pass
+    except ImportError as exc:
+        print(f"依赖未安装: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        # TODO：读一下本项目关键的本地状态文件（比如账本 json），确认
+        # 它存在且可解析。文件不存在时如果"从未运行过"是合法状态，
+        # 这里不应该报错——按实际业务判断。
+        pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"状态文件读取异常: {exc}", file=sys.stderr)
+        return 1
+
+    print("ok")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

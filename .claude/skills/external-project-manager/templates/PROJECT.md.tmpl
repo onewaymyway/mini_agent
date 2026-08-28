@@ -1,0 +1,57 @@
+# {{PROJECT_NAME}} — {{PROJECT_SUMMARY}}
+
+> 本项目遵循 `next_doc/external_projects_workspace_plan.md` 确立的外部
+> 项目标准结构：完全自包含、可独立于 mini_agent daemon 运行。可以整体
+> 移动到任意路径、放进独立 git 仓库，只要在 daemon 侧重新
+> `mini-agent projects register <新路径>` 一下即可继续被"大管家"看见。
+
+## 目标
+
+TODO：这个项目要解决什么问题？列出核心功能点（对齐 `project.yaml` 里
+的 entrypoints，每个功能点最终应该能映射到一个 entrypoint）。
+
+1. TODO
+
+## 数据源与依赖策略
+
+TODO：这个项目依赖哪些外部数据源/服务？优先用什么方式获取（现成库 vs
+自己抓取）？`requirements.txt` 里的每个依赖为什么需要？
+
+## 已知限制 / 待验证事项
+
+TODO：目前还没验证过的假设、已知的脆弱点（比如依赖某个网站的页面结构，
+改版就会失效）、需要人工介入的步骤（比如需要图形界面才能完成的登录）。
+
+## 目录结构
+
+```
+{{PROJECT_NAME}}/
+├── project.yaml            # daemon 与本项目之间的契约
+├── PROJECT.md               # 本文件
+├── requirements.txt          # 独立依赖环境
+├── entrypoints/              # headless 单次执行入口
+├── {{PACKAGE_NAME}}/         # 业务代码
+├── config/                    # 配置文件
+├── data/                      # 项目状态数据（账本类）
+├── reports/                   # 面向人的产出物
+├── tests/                     # 单元测试
+└── .agent/
+    ├── run_status.jsonl        # 执行状态账本（框架自动读写，见 ledger.py）
+    └── improvement_backlog.jsonl  # 改进积压账本（可选，见 backlog.py）
+```
+
+## 运行与维护
+
+- 本地单独跑一个 entrypoint：`python entrypoints/<key>.py`（不依赖
+  daemon 是否在运行）。
+- 注册到 daemon：`mini-agent projects register <本项目路径>`。
+- 查看状态：`mini-agent projects status {{PROJECT_NAME}}`。
+- 查看执行历史：`mini-agent projects ledger {{PROJECT_NAME}} [limit]`。
+- 手动触发某个 entrypoint：`mini-agent projects run {{PROJECT_NAME}} <entrypoint>`。
+- 查看/追加改进积压：`mini-agent projects backlog {{PROJECT_NAME}} list|add`。
+- 发起复盘：`mini-agent projects review {{PROJECT_NAME}}`（需要
+  `project.yaml` 里 `review.enabled: true`）。
+
+## 变更记录
+
+- {{DATE}}：由 external-project-manager skill 生成初始骨架。

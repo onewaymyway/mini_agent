@@ -1,0 +1,47 @@
+#!/usr/bin/env python
+"""entrypoints/{{ENTRYPOINT_KEY}}.py — project.yaml 里 `entrypoints.{{ENTRYPOINT_KEY}}.cmd` 对应的入口。
+
+约定（对齐 external_projects_workspace_plan.md 原则二/三）：
+  - 必须能在完全没有 daemon 进程的情况下，被 `python
+    entrypoints/{{ENTRYPOINT_KEY}}.py` 或 OS 原生调度直接正确执行。
+  - 必须用 `track_run()` 把这次执行记进 `.agent/run_status.jsonl`，
+    不管这次执行是被 daemon、OS cron 还是人手动触发的，都写同一份账本。
+  - `trigger` 参数：daemon/scheduler 触发子进程时会通过环境变量或参数
+    另行标注；脚本自己被直接跑时默认 "manual" 即可，不需要精确区分
+    "是不是 OS cron 拉起的"（如果确实需要区分，可以约定一个环境变量，
+    参考 stock_watch 里各 entrypoint 的写法）。
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# 让本脚本可以在"直接用 python 跑"和"被别的路径 import"两种场景下都能
+# 找到 mini_agent 包与本项目自己的包，与 stock_watch/entrypoints/_common.py
+# 的写法保持一致——如果本项目也有类似的 `entrypoints/_common.py`，改成
+# `import _common` 复用即可，这里给出独立写法方便脚手架直接生成。
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+from mini_agent.external_projects.ledger import track_run  # noqa: E402
+
+
+def run(argv: list[str]) -> None:
+    """TODO：真正的业务逻辑写在这里；argv 是 project.yaml 里 `params`
+    按声明顺序拼出的位置参数（如果这个 entrypoint 没有声明 params，
+    argv 通常为空）。"""
+    raise NotImplementedError(
+        "TODO: 实现 {{ENTRYPOINT_KEY}} 的业务逻辑，完成后删除这一行"
+    )
+
+
+def main() -> int:
+    with track_run(_PROJECT_ROOT, "{{ENTRYPOINT_KEY}}", trigger="manual") as handle:
+        run(sys.argv[1:])
+        # 如果想在成功时也留一句摘要（可选），可以设置：
+        # handle.detail = "本次处理了 N 条记录"
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
