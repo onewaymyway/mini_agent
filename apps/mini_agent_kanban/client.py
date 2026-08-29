@@ -1085,25 +1085,26 @@ class AgentClient:
         return self._post("/growth/keywords", json_body={"topic": topic, "keywords": keywords})
 
     def growth_keyword_confirm(self, topic: str):
-        # [BUGFIX] topic 是 LLM 学出来的主题名，可能包含空格、`/`、`?`、
-        # `&`、`#` 等在 URL 路径里有特殊含义的字符（比如"前端 / React"）
-        # ——不编码直接拼进路径，requests 会把 `/` 当成额外路径分隔符、
-        # `?` 后面的内容会被切成 query string，导致实际请求打不到
-        # `{topic}/confirm` 这条路由（多为静默 404，前端又没有对返回值
-        # 报错），表现为"点了没反应，删不掉/确认不了"。用
-        # `requests.utils.quote(topic, safe="")` 把 topic 整体编码成单个
-        # 路径 segment（`safe=""` 连 `/` 也一并编码成 `%2F`，不然它依然
-        # 会被当成路径分隔符）。
-        return self._post(f"/growth/keywords/{requests.utils.quote(topic, safe='')}/confirm")
+        # [BUGFIX] topic 是 LLM 学出来的主题名，很容易带 `/`（比如
+        # "Conversation summarization / structured output"）。原来把
+        # topic 拼进 URL 路径当路径参数——就算客户端把 `/` percent-encode
+        # 成 `%2F`，uvicorn/starlette 默认会在路由匹配*之前*先解码回
+        # `/`，解码后路径多一段，匹配不上单段的 `{topic}/confirm` 路由，
+        # 直接 404（还是静默的，前端没检查返回值），表现为"点了没反应，
+        # 删不掉/确认不了"。只要 topic 带 `/`，不管客户端怎么编码，走
+        # "路径参数"这条路本身就有结构性缺陷。改成把 topic 放进 JSON
+        # body（对应后端 `/growth/keywords/confirm`），不再依赖 URL 路径，
+        # 任何字符都不受影响。
+        return self._post("/growth/keywords/confirm", json_body={"topic": topic})
 
     def growth_keyword_remove(self, topic: str):
         # [BUGFIX] 同上，见 growth_keyword_confirm() 的注释。
-        return self._post(f"/growth/keywords/{requests.utils.quote(topic, safe='')}/remove")
+        return self._post("/growth/keywords/remove", json_body={"topic": topic})
 
     # [next_doc/growth_advisor_improvement_plan_v2.md P4-7] 恢复被隐藏的内置主题
     def growth_keyword_restore(self, topic: str):
         # [BUGFIX] 同上，见 growth_keyword_confirm() 的注释。
-        return self._post(f"/growth/keywords/{requests.utils.quote(topic, safe='')}/restore")
+        return self._post("/growth/keywords/restore", json_body={"topic": topic})
 
     # [next_doc/growth_advisor_improvement_plan_v2.md P4-3] 采纳后回访
     def growth_followups(self):

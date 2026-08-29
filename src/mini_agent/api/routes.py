@@ -8879,10 +8879,30 @@ async def post_growth_keyword_add(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/growth/keywords/{topic}/confirm")
-async def post_growth_keyword_confirm(request: Request, topic: str):
-    """POST /v1/growth/keywords/{topic}/confirm — 把一个系统学到、待确认
-    的主题标记为已确认（看板"✅ 保留"按钮）。"""
+# [BUGFIX] 这三个接口原来是 `POST /growth/keywords/{topic}/confirm|remove|
+# restore`，把 topic 塞进 URL 路径当单段路径参数。LLM 学出来的主题名很
+# 容易带 `/`（比如"Conversation summarization / structured output"、
+# "Skill/能力体系管理"）——即使客户端把 `/` percent-encode 成 `%2F` 再拼
+# 到路径里，uvicorn/starlette 默认会在路由匹配*之前*把 `%2F` 解码回
+# `/`，解码后路径多了一段，匹配不上单段的 `{topic}` 路由，直接 404，
+# 且是静默失败（前端没检查返回值），表现为"批量删/单个删都没反应，
+# 这几个关键词怎么点都删不掉"。只要 topic 带 `/`，不管客户端怎么编码，
+# 走"路径参数"这条路本身就有结构性缺陷。改成 topic 走 JSON body
+# 而不是 URL 路径，从根上绕开这个问题（body 内容按 UTF-8 JSON 编码，
+# 不受 URL 路径分隔符限制）。为兼容可能还没升级的旧前端/脚本，保留旧的
+# `{topic}` 路径版本作为 fallback（新前端已经不再调用它们）。
+from pydantic import BaseModel as _BaseModel
+
+
+class _GrowthKeywordTopicBody(_BaseModel):
+    topic: str
+
+
+@router.post("/growth/keywords/confirm")
+async def post_growth_keyword_confirm(request: Request, body: _GrowthKeywordTopicBody):
+    """POST /v1/growth/keywords/confirm — 把一个系统学到、待确认
+    的主题标记为已确认（看板"✅ 保留"按钮）。topic 走 body，避免 topic
+    含 `/` 等字符时走 URL 路径参数导致路由匹配失败（见上方说明）。"""
     _require_owner(request)
     try:
         paths = _get_paths_for_request(request)
@@ -8891,7 +8911,7 @@ async def post_growth_keyword_confirm(request: Request, topic: str):
 
         mgr = UserProfileManager(paths)
         profile = mgr.load()
-        changed = ga.confirm_topic_keyword(profile, topic)
+        changed = ga.confirm_topic_keyword(profile, body.topic)
         if changed:
             mgr.save()
         return {"ok": True, "changed": changed}
@@ -8899,50 +8919,74 @@ async def post_growth_keyword_confirm(request: Request, topic: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/growth/keywords/remove")
+async def post_growth_keyword_remove(request: Request, body: _GrowthKeywordTopicBody):
+    """POST /v1/growth/keywords/remove — 删除自定义主题，或隐藏
+    一个内置主题（看板"❌ 删除"/"🙈 隐藏"按钮）。topic 走 body，理由同上。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.profile import UserProfileManager
+
+        mgr = UserProfileManager(paths)
+        profile = mgr.load()
+        changed = ga.remove_topic_keyword(profile, body.topic)
+        if changed:
+            mgr.save()
+        return {"ok": True, "changed": changed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/growth/keywords/restore")
+async def post_growth_keyword_restore(request: Request, body: _GrowthKeywordTopicBody):
+    """POST /v1/growth/keywords/restore — 恢复一个被隐藏的内置
+    主题（P4-7，`remove` 的对称操作）。topic 走 body，理由同上。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.profile import UserProfileManager
+
+        mgr = UserProfileManager(paths)
+        profile = mgr.load()
+        changed = ga.restore_builtin_topic_keyword(profile, body.topic)
+        if changed:
+            mgr.save()
+        return {"ok": True, "changed": changed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# [兼容] 旧路径版本（topic 当路径参数）——含 `/` 的 topic 在这条老路由上
+# 本来就有结构性缺陷（见上方说明），保留只是为了不让还没升级的旧调用方
+# 直接 404，新看板已经改走上面的 body 版本。
+@router.post("/growth/keywords/{topic}/confirm")
+async def post_growth_keyword_confirm_legacy(request: Request, topic: str):
+    """[legacy] 见 `post_growth_keyword_confirm`；topic 带 `/` 时本身就
+    打不到这条路由，仅对不含特殊字符的 topic 兼容有效。"""
+    return await post_growth_keyword_confirm(request, _GrowthKeywordTopicBody(topic=topic))
 
 
 @router.post("/growth/keywords/{topic}/remove")
-async def post_growth_keyword_remove(request: Request, topic: str):
-    """POST /v1/growth/keywords/{topic}/remove — 删除自定义主题，或隐藏
-    一个内置主题（看板"❌ 删除"/"🙈 隐藏"按钮）。"""
-    _require_owner(request)
-    try:
-        paths = _get_paths_for_request(request)
-        from mini_agent.evolution import growth_advisor as ga
-        from mini_agent.profile import UserProfileManager
-
-        mgr = UserProfileManager(paths)
-        profile = mgr.load()
-        changed = ga.remove_topic_keyword(profile, topic)
-        if changed:
-            mgr.save()
-        return {"ok": True, "changed": changed}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def post_growth_keyword_remove_legacy(request: Request, topic: str):
+    """[legacy] 见 `post_growth_keyword_remove`；topic 带 `/` 时本身就
+    打不到这条路由，仅对不含特殊字符的 topic 兼容有效。"""
+    return await post_growth_keyword_remove(request, _GrowthKeywordTopicBody(topic=topic))
 
 
 @router.post("/growth/keywords/{topic}/restore")
-async def post_growth_keyword_restore(request: Request, topic: str):
-    """POST /v1/growth/keywords/{topic}/restore — 恢复一个被隐藏的内置
-    主题（P4-7，`remove` 的对称操作）。"""
-    _require_owner(request)
-    try:
-        paths = _get_paths_for_request(request)
-        from mini_agent.evolution import growth_advisor as ga
-        from mini_agent.profile import UserProfileManager
-
-        mgr = UserProfileManager(paths)
-        profile = mgr.load()
-        changed = ga.restore_builtin_topic_keyword(profile, topic)
-        if changed:
-            mgr.save()
-        return {"ok": True, "changed": changed}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def post_growth_keyword_restore_legacy(request: Request, topic: str):
+    """[legacy] 见 `post_growth_keyword_restore`；topic 带 `/` 时本身就
+    打不到这条路由，仅对不含特殊字符的 topic 兼容有效。"""
+    return await post_growth_keyword_restore(request, _GrowthKeywordTopicBody(topic=topic))
 
 
 @router.get("/growth/reports/refresh_candidates")

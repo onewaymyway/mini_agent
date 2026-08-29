@@ -280,12 +280,20 @@ export const recordGrowthFollowup = (candidateId: string, outcome: "progressed" 
   );
 export const addGrowthKeyword = (topic: string, keywords: string) =>
   apiPost<{ ok?: boolean }>("/growth/keywords", { topic, keywords });
+// [BUGFIX] topic 是 LLM 学出来的主题名，很容易带 "/"（比如
+// "Conversation summarization / structured output"）。原来把 topic 拼进
+// URL 路径当路径参数——就算用 encodeURIComponent 把 "/" 编码成
+// "%2F"，uvicorn/starlette 默认会在路由匹配*之前*先把 "%2F" 解码回
+// "/"，解码后路径多一段，匹配不上单段的 `{topic}/confirm` 路由，直接
+// 404，表现为"点了没反应，删不掉/确认不了"。改成把 topic 放进 JSON
+// body（对应后端 `/growth/keywords/confirm` 等，不再依赖 URL 路径），
+// 任何字符都不受影响。
 export const confirmGrowthKeyword = (topic: string) =>
-  apiPost<{ ok?: boolean; changed?: boolean }>(`/growth/keywords/${encodeURIComponent(topic)}/confirm`);
+  apiPost<{ ok?: boolean; changed?: boolean }>("/growth/keywords/confirm", { topic });
 export const removeGrowthKeyword = (topic: string) =>
-  apiPost<{ ok?: boolean; changed?: boolean }>(`/growth/keywords/${encodeURIComponent(topic)}/remove`);
+  apiPost<{ ok?: boolean; changed?: boolean }>("/growth/keywords/remove", { topic });
 export const restoreGrowthKeyword = (topic: string) =>
-  apiPost<{ ok?: boolean; changed?: boolean }>(`/growth/keywords/${encodeURIComponent(topic)}/restore`);
+  apiPost<{ ok?: boolean; changed?: boolean }>("/growth/keywords/restore", { topic });
 export const getGrowthReportsRefreshCandidates = () =>
   apiGet<{ refresh_candidates: unknown[] }>("/growth/reports/refresh_candidates");
 export const getGrowthPursuits = () => apiGet<{ pursuits: GrowthPursuit[] }>("/growth/pursuits");
