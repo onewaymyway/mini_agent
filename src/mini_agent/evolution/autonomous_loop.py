@@ -512,21 +512,49 @@ class AutonomousLoop:
                 from mini_agent.notification import questions_store
                 from mini_agent.notification.config import load_notification_config
                 from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+                from mini_agent.evolution.cron_job_workspace import CronJobWorkspace
                 notif_cfg = load_notification_config(self._paths)
                 stale_after_days = notif_cfg.cron_question_stale_after_days
                 if stale_after_days and stale_after_days > 0:
-                    expired = questions_store.expire_stale_pending_questions(
+                    expired: list = []
+                    # [cron_async_feedback_further_improvements_plan.md F4]
+                    # 先处理设置了专属阈值的 job（各自用自己的
+                    # question_stale_after_days_override），再用全局阈值
+                    # 处理其余 job——`exclude_job_ids` 排除掉已经按专属
+                    # 阈值单独处理过的那些，避免同一批 job 被两种阈值各
+                    # 处理一遍导致专属阈值"更严格"的意图被全局阈值架空。
+                    # 只扫描 cron_scheduler 已知的 job（`list_jobs()`），
+                    # 没有专属阈值的 job 走下面的全局兜底调用，覆盖到
+                    # 包括"scheduler 已不认识但仍留有 pending 问题"的
+                    # job（比如已被删除的 job）——不会因为不在 scheduler
+                    # 列表里就漏处理。
+                    override_days_by_job: dict = {}
+                    if self._cron_scheduler is not None:
+                        try:
+                            for _job in self._cron_scheduler.list_jobs():
+                                _override = CronJobWorkspace(self._paths, _job.id).read_question_stale_after_days_override()
+                                if _override is not None:
+                                    override_days_by_job[_job.id] = _override
+                                    expired.extend(questions_store.expire_stale_pending_questions(
+                                        self._paths, stale_after_days=_override, job_id=_job.id,
+                                    ))
+                        except Exception as _mini_agent_exc:
+                            from mini_agent.errors import log_exception
+                            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.expire_stale_pending_questions.per_job_override')
+                    expired.extend(questions_store.expire_stale_pending_questions(
                         self._paths, stale_after_days=stale_after_days,
-                    )
+                        exclude_job_ids=set(override_days_by_job.keys()),
+                    ))
                     if expired:
                         dispatcher = NotificationDispatcher(self._paths)
                         for rec in expired:
                             try:
+                                _rec_stale_days = override_days_by_job.get(rec.get("job_id"), stale_after_days)
                                 dispatcher.dispatch(NotificationMessage(
                                     title=f"任务「{rec.get('job_id', '-')}」的一个问题因长期未回答已自动关闭",
                                     body=(
                                         f"{rec.get('question', '')}\n\n"
-                                        f"这个问题超过 {int(stale_after_days)} 天没有得到回答，系统已"
+                                        f"这个问题超过 {int(_rec_stale_days)} 天没有得到回答，系统已"
                                         "自动关闭，不再提醒。如果仍然需要处理，可以直接在对应任务里"
                                         "重新说明，或等它下次任务执行时再次被问到。"
                                     ),

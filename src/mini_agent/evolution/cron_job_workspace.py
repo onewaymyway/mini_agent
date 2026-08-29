@@ -234,6 +234,41 @@ class CronJobWorkspace:
         except (OSError, json.JSONDecodeError):
             return {}
 
+    # [cron_async_feedback_further_improvements_plan.md F4] config.json 里
+    # 一个独立的、只读生效的键名——不在 CronJobConfig.OVERRIDE_FIELDS 白名单
+    # 里，因此不会被 write_config_overrides()/对应的 API 端点接受（那个
+    # 端点用白名单校验请求体，不在名单里的键会被直接拒绝），也不会出现在
+    # 看板"限制覆盖"表单里。这是刻意的：跟仓库里其它"只能直接改文件"的
+    # 配置（如 watchlist.yaml）保持同一种风格——本轮只做"设置了就生效"，
+    # 不提供在线编辑入口；要设置的话，用户需要自己打开对应 job 目录下的
+    # config.json 手动加上这个字段。
+    QUESTION_STALE_AFTER_DAYS_OVERRIDE_KEY = "question_stale_after_days_override"
+
+    def read_question_stale_after_days_override(self) -> Optional[float]:
+        """[F4] 读取该 job 专属的"问题多久没人回答就自动关闭"天数覆盖值
+        （`config.json` 里的 `question_stale_after_days_override`）。不同
+        频率的 job（每天巡检 vs 每周汇总）对"多久算没人理"的合理阈值天然
+        不同，全局配置 `cron_question_stale_after_days` 对所有 job 一刀切
+        在 job 数量/调度频率差异变大时会两头不讨好。
+
+        没设置（字段不存在）、值非法（非正数/非数字）、文件缺失或损坏都
+        返回 `None`，调用方（`AutonomousLoop._tick_maintenance()`）据此
+        回退到全局配置——跟 `expire_stale_pending_questions()` 里
+        `stale_after_days<=0` 关闭该机制的既有语义一致，这里的非法值不
+        触发异常，只是"当作没设置处理"。
+        """
+        try:
+            d = json.loads(self.config_path.read_text(encoding="utf-8"))
+            if not isinstance(d, dict):
+                return None
+            v = d.get(self.QUESTION_STALE_AFTER_DAYS_OVERRIDE_KEY)
+            if v is None:
+                return None
+            v = float(v)
+            return v if v > 0 else None
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return None
+
     def read_state(self) -> CronJobState:
         try:
             d = json.loads(self.state_path.read_text(encoding="utf-8"))

@@ -684,6 +684,40 @@ class TestExpireStalePendingQuestions:
         assert len(expired) == 1
         assert expired[0]["repeat_dismiss_count"] == 2
 
+    def test_exclude_job_ids_skips_listed_jobs_in_global_pass(self, paths):
+        """[cron_async_feedback_further_improvements_plan.md F4]
+        `exclude_job_ids` 供调用方在"先按专属阈值单独处理过某些 job，
+        再用全局阈值兜底处理其余 job"时，排除掉已经处理过的那些，避免
+        同一批 job 被两种阈值重复处理。"""
+        from mini_agent.notification.questions_store import expire_stale_pending_questions
+
+        rec1 = append_question(paths, "user:job1", "问题A")
+        rec2 = append_question(paths, "user:job2", "问题B")
+        _backdate(paths, rec1["question_id"], days_ago=30)
+        _backdate(paths, rec2["question_id"], days_ago=30)
+
+        expired = expire_stale_pending_questions(
+            paths, stale_after_days=14, exclude_job_ids={"user:job1"},
+        )
+        assert len(expired) == 1
+        assert expired[0]["question_id"] == rec2["question_id"]
+        # job1 被排除，仍然是 pending。
+        assert get_question(paths, rec1["question_id"])["status"] == STATUS_PENDING
+
+    def test_exclude_job_ids_ignored_when_job_id_also_passed(self, paths):
+        """`job_id` 单独生效时 `exclude_job_ids` 没有意义，不应该被
+        误用来意外排除掉这次显式指定要处理的 job。"""
+        from mini_agent.notification.questions_store import expire_stale_pending_questions
+
+        rec = append_question(paths, "user:job1", "问题A")
+        _backdate(paths, rec["question_id"], days_ago=30)
+
+        expired = expire_stale_pending_questions(
+            paths, stale_after_days=14, job_id="user:job1", exclude_job_ids={"user:job1"},
+        )
+        assert len(expired) == 1
+        assert expired[0]["question_id"] == rec["question_id"]
+
 
 class TestDismissReason:
     def test_manual_dismiss_records_manual_reason(self, paths):

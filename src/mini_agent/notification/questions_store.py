@@ -509,6 +509,7 @@ def expire_stale_pending_questions(
     *,
     stale_after_days: float = 14,
     job_id: Optional[str] = None,
+    exclude_job_ids: Optional[set] = None,
 ) -> list[dict]:
     """[cron_async_feedback_lifecycle_and_usability_plan.md E1] 把创建超过
     `stale_after_days` 天、仍然是 `pending`（长期没人回答）的问题自动关闭
@@ -531,6 +532,18 @@ def expire_stale_pending_questions(
     传 `job_id` 时只处理该 job 名下的问题（供 `CronJobExecutor` 需要时按
     job 粒度调用）；不传则处理全部 job（维护性 tick 的常规用法）。
 
+    [cron_async_feedback_further_improvements_plan.md F4] `exclude_job_ids`
+    （只在 `job_id` 为 `None` 的"处理全部 job"模式下有意义，跟 `job_id`
+    同时传是没有意义的组合，此时以 `job_id` 单独生效为准，`exclude_job_ids`
+    被忽略）——供调用方实现"按 job 覆盖阈值"：调用方先对每个设置了专属
+    阈值的 job 各自调一次（传各自的 `stale_after_days` + 对应 `job_id`），
+    再对"没有专属阈值的其余 job"调一次全局阈值、用 `exclude_job_ids` 排除
+    掉刚才已经按专属阈值单独处理过的那些 job，避免它们被全局阈值重复
+    处理一遍（重复处理本身不会产生副作用，因为第一轮已经不是 pending 的
+    记录不会再被选中，但如果全局阈值比专属阈值更松，会让"专属阈值本该
+    更严格更快关闭"的语义被架空，所以必须显式排除，不能依赖"重复处理无
+    副作用"这个事实心存侥幸）。
+
     返回本次被关闭的记录列表（关闭后的完整记录，含 `job_id`/`question`），
     供调用方据此逐条发送"这个问题因长期未回答已自动关闭"的通知——自动
     关闭如果完全静默，用户会困惑"这个问题怎么凭空消失了"，这本身就是一种
@@ -548,7 +561,10 @@ def expire_stale_pending_questions(
             for d in records:
                 if d.get("status") != STATUS_PENDING:
                     continue
-                if job_id is not None and d.get("job_id") != job_id:
+                if job_id is not None:
+                    if d.get("job_id") != job_id:
+                        continue
+                elif exclude_job_ids and d.get("job_id") in exclude_job_ids:
                     continue
                 created_at = d.get("created_at") or 0
                 if created_at and created_at < cutoff:

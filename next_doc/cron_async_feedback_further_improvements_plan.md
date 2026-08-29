@@ -1,6 +1,8 @@
 # Cron 异步用户反馈机制 —— 后续改进方向规划
 
-> 状态：**方案已确认，阶段1/阶段2/阶段3/阶段4/阶段5已实施完成**
+> 状态：**方案已确认，阶段1–6（F1/F2/F3/F5/F6/F4）已全部实施完成，
+> 收尾阶段（阶段7）已完成；F7（job 可读名称）留待后续视需要再单独
+> 立项**
 > 前置文档：`next_doc/cron_async_user_feedback_mechanism_plan.md`（原始设计）、
 > `next_doc/cron_async_feedback_hardening_plan.md`（D1–D6 加固）、
 > `next_doc/cron_async_feedback_lifecycle_and_usability_plan.md`（E1–E3
@@ -160,8 +162,8 @@ F7（job 可读名称）不排进以上阶段，留待后续视需要再单独�
 - [x] 阶段3：F3 问题紧急程度
 - [x] 阶段4：F5 忽略语义审计
 - [x] 阶段5：F6 占位符长度保护
-- [ ] 阶段6：F4 按 job 覆盖阈值
-- [ ] 阶段7：收尾
+- [x] 阶段6：F4 按 job 覆盖阈值
+- [x] 阶段7：收尾
 
 ## 6. 阶段1实现记录（F1 精确计数）
 
@@ -392,3 +394,100 @@ F7（job 可读名称）不排进以上阶段，留待后续视需要再单独�
 `test_cron_job_workspace_and_executor.py`（44，未改动仍全部通过），
 共 180 条全部通过（`test_cron_job_runner.py`/
 `test_cron_scheduler_reap_stale_jobs.py` 本阶段未涉及，未重复运行）。
+
+## 11. 阶段6实现记录（F4 按 job 覆盖自动关闭阈值）
+
+按第 2 节 F4 方案原样实施，有一处比方案原文更明确的取舍：方案原文写的
+是"cron job 的 `state.json`（或对应的 job 配置结构，实施时确认具体
+挂载位置）新增可选字段"——实施时确认挂载位置为 `config.json`（而不是
+`state.json`）：`state.json` 是跨次启动持久化的**运行时状态机**
+（status/progress_summary/consecutive_failures 等，由程序在运行过程中
+写入），`config.json` 才是"用户可编辑的专属限制覆盖"这个语义分类下的
+既有位置（`CronJobConfig`/`timeout_seconds`/`max_steps` 等都在这里）。
+`question_stale_after_days_override` 是一个用户配置项，不是运行时状态，
+放进 `config.json` 跟既有分类一致，放进 `state.json` 反而会破坏
+"state.json 只由程序写入、不建议用户手改"的既有约定。
+
+- `CronJobWorkspace` 新增只读方法 `read_question_stale_after_days_
+  override()`：直接读取 `config.json` 原始 JSON 里的
+  `question_stale_after_days_override` 键，**刻意不经过**
+  `CronJobConfig`/`CronJobConfig.OVERRIDE_FIELDS`/`read_config()`/
+  `write_config_overrides()` 这一整套既有的"限制覆盖"机制——这套机制
+  背后接了一个已有的通用 API 端点（`POST /v1/cron_jobs/{job_id}/config`，
+  白名单里的字段可以直接被这个端点写入）和看板"限制覆盖"表单，如果把
+  新字段塞进 `OVERRIDE_FIELDS`，会意外经这条既有通路变成"可在线编辑"，
+  跟方案 §2 F4"看板/API 暂不提供在线编辑入口"的设计相悖。用独立的键名
+  + 独立的只读方法，从机制上保证了"只能改文件、不能通过已有 API/UI
+  设置"，不依赖"UI 没做"这种容易被绕过的软约束。
+  非正数/非数字/字段不存在/文件缺失或损坏，统一返回 `None`（当作没
+  设置处理），不抛异常。
+- `questions_store.expire_stale_pending_questions()` 新增可选
+  `exclude_job_ids: Optional[set]` 参数：只在 `job_id=None`（"处理全部
+  job"模式）时生效，供调用方排除掉"已经按专属阈值单独处理过"的 job，
+  避免同一批 job 被全局阈值重复处理一遍——重复处理本身不会产生副作用
+  （已经不是 pending 的记录不会被选中），但如果全局阈值比专属阈值更
+  宽松，会让专属阈值"本该更严格更快关闭"的意图被架空，所以必须显式
+  排除。
+- `AutonomousLoop._tick_maintenance()`：原来对全部 job 用同一个全局
+  `stale_after_days` 调一次 `expire_stale_pending_questions()`，现在
+  改为两段式：先遍历 `CronScheduler.list_jobs()`，对设置了
+  `question_stale_after_days_override` 的 job 各自用自己的阈值单独调
+  一次（同时收集这些 job_id 到 `override_days_by_job`），再对其余 job
+  用全局阈值调一次、传 `exclude_job_ids=set(override_days_by_job.keys())`
+  排除掉前面已经处理过的。只扫描 `cron_scheduler` 已知的 job 来判断
+  "有没有专属阈值"，但全局兜底那一次调用不限定 `job_id`（除了
+  exclude），所以"scheduler 已不认识但仍留有 pending 问题的 job"（比如
+  已被删除的 job）依然会被全局阈值兜底处理，不会因为不在 `list_jobs()`
+  结果里就被漏掉。通知文案里"超过 N 天没有得到回答"的 N，按记录所属
+  job 是否命中 `override_days_by_job` 分别取对应的天数，不再对所有
+  记录统一用全局天数（避免专属阈值 3 天关闭的记录被通知成"超过 14 天"，
+  数字对不上）。
+- 非目标部分按方案执行：看板/API 本轮都不提供编辑这个覆盖值的入口。
+
+新增/修改文件清单：
+- 修改 `src/mini_agent/evolution/cron_job_workspace.py`（新增
+  `QUESTION_STALE_AFTER_DAYS_OVERRIDE_KEY` 常量、
+  `read_question_stale_after_days_override()`）
+- 修改 `src/mini_agent/notification/questions_store.py`
+  （`expire_stale_pending_questions()` 新增 `exclude_job_ids` 参数）
+- 修改 `src/mini_agent/evolution/autonomous_loop.py`
+  （`_tick_maintenance()` 长期未回答自动关闭改为"先按专属阈值单独处理
+  + 再用全局阈值兜底处理其余 job"两段式，通知文案按 job 取各自阈值）
+- 修改 `tests/test_cron_job_workspace_and_executor.py`（新增 5 条
+  `read_question_stale_after_days_override()` 相关测试，含"不接入
+  `write_config_overrides()` 白名单"的回归锁定）
+- 修改 `tests/test_cron_questions_store.py`（`TestExpireStalePendingQuestions`
+  新增 2 条 `exclude_job_ids` 相关测试）
+- 修改 `docs/cron-async-user-feedback-guide.md`（§0 进度说明、§8 长期
+  未回答自动关闭章节新增按 job 覆盖说明、§10 文件清单同步 F4）
+
+全量相关测试跑通：`test_cron_questions_store.py`（81）+
+`test_cron_questions_api_routes.py`（15）+
+`test_cron_async_user_feedback.py`（42）+
+`test_cron_job_workspace_and_executor.py`（49）+
+`test_cron_job_runner.py`/`test_cron_scheduler_reap_stale_jobs.py`
+（19，未改动仍全部通过），共 206 条全部通过。
+
+## 12. 阶段7实现记录（收尾）
+
+F1–F6 全部实施完成，逐阶段都已按第 4 节要求同步更新
+`docs/cron-async-user-feedback-guide.md` 对应章节（占位符表格、API
+表格、字段清单、文件清单）与本文档的实施进度/实现记录，本阶段做的是
+最后一轮确认性检查，没有产生新的代码改动：
+
+- 复查 `docs/cron-async-user-feedback-guide.md` 全文，确认头部"当前
+  实施进度"总结行、每个占位符/API/字段的行内标注（`[F1 新增]`/
+  `[F2 新增]`/…/`[F6 复查]`）跟实际实现一致，没有遗漏或过时的描述。
+- 本文档"实施进度"勾选项（第 5 节）全部勾选（阶段1–7）；顶部状态行
+  更新为反映 F1/F2/F3/F4/F5/F6 均已完成、F7 仍留待后续单独立项的最终
+  状态。
+- 回归测试：`test_cron_questions_store.py`（81）+
+  `test_cron_questions_api_routes.py`（15）+
+  `test_cron_async_user_feedback.py`（42）+
+  `test_cron_job_workspace_and_executor.py`（49）+
+  `test_cron_job_runner.py`（部分）+
+  `test_cron_scheduler_reap_stale_jobs.py`（部分），共 206 条全部通过，
+  没有因为跨阶段的修改互相影响。
+
+F7（job 可读名称）保持在"待评估"状态，不在本轮范围内，原因见第 2 节
+F7 条目：优先级低、锦上添花性质，等真正需要时再单独立项设计。

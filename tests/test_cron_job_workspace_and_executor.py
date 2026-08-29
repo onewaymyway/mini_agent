@@ -142,6 +142,57 @@ class TestCronJobWorkspace:
         ws.write_config_overrides({"not_a_real_field": 123})
         assert "not_a_real_field" not in ws.read_raw_overrides()
 
+    def test_question_stale_after_days_override_absent_by_default(self, tmp_path):
+        """[cron_async_feedback_further_improvements_plan.md F4] 没有手动
+        编辑 config.json 时，覆盖值不存在，读取返回 None。"""
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.ensure()
+        assert ws.read_question_stale_after_days_override() is None
+
+    def test_question_stale_after_days_override_reads_manually_set_value(self, tmp_path):
+        """[F4] 这个字段刻意不走 write_config_overrides()/OVERRIDE_FIELDS
+        白名单（不提供在线编辑入口），只支持直接改 config.json 文件后被
+        读取生效——这里模拟"用户手动编辑文件"的场景。"""
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.ensure()
+        raw = json.loads(ws.config_path.read_text(encoding="utf-8"))
+        raw["question_stale_after_days_override"] = 3
+        ws.config_path.write_text(json.dumps(raw), encoding="utf-8")
+        assert ws.read_question_stale_after_days_override() == 3.0
+
+    def test_question_stale_after_days_override_not_settable_via_write_config_overrides(self, tmp_path):
+        """[F4] 不在 OVERRIDE_FIELDS 白名单里，走既有的
+        write_config_overrides() 这条路径设置不进去（跟 API 端点的白名单
+        校验行为一致，本轮不提供在线编辑入口）。"""
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.ensure()
+        ws.write_config_overrides({"question_stale_after_days_override": 3})
+        assert ws.read_question_stale_after_days_override() is None
+
+    def test_question_stale_after_days_override_non_positive_treated_as_unset(self, tmp_path):
+        """[F4] 非正数视为非法输入，当作没设置处理，而不是抛异常或让
+        `expire_stale_pending_questions()` 拿到一个会导致奇怪行为的值。"""
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.ensure()
+        raw = json.loads(ws.config_path.read_text(encoding="utf-8"))
+        raw["question_stale_after_days_override"] = 0
+        ws.config_path.write_text(json.dumps(raw), encoding="utf-8")
+        assert ws.read_question_stale_after_days_override() is None
+
+    def test_question_stale_after_days_override_non_numeric_treated_as_unset(self, tmp_path):
+        """[F4] 非数字值（比如被手动改坏）同样当作没设置处理，不抛异常。"""
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.ensure()
+        raw = json.loads(ws.config_path.read_text(encoding="utf-8"))
+        raw["question_stale_after_days_override"] = "not-a-number"
+        ws.config_path.write_text(json.dumps(raw), encoding="utf-8")
+        assert ws.read_question_stale_after_days_override() is None
+
     def test_read_config_falls_back_to_default_for_missing_fields(self, tmp_path):
         """config.json 里没写的字段，read_config(default=...) 应跟随全局配置
         实时生效，不需要针对已存在的 job 做迁移。"""
