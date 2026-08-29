@@ -334,6 +334,15 @@ Track 列表的那个函数附近）新增一个子区域"🎭 候选人设"：
 - `config/models.py::PersonaCandidateConfig`：独立配置块，默认
   `enabled=False`（opt-in），已挂到 `AppConfig.persona_candidates`，并
   注册进 `config_catalog.py`（配置 UI/CLI 自动可见）。
+- `config/param_registry.py`：`NestedBlockSpec("persona_candidates", ...)`
+  注册进 `_build_nested_blocks()`；`config/loader.py` 里 `_nested_blocks
+  ["persona_candidates"]` 显式取值并传给 `AppConfig(...)`——**这一步是
+  首轮实现时遗漏的**（只在 `config_catalog.py` 注册了展示项，没接入真正
+  的加载链路，等价于本文件头部反复提到的"新增配置块忘了接入
+  loader.py，agent_config.json 写了也不生效"这类历史 bug 的重演）。已
+  用 `load_config(project_root=...)` 读取一份写了 `persona_candidates`
+  块的 `agent_config.json` 验证：`cfg.persona_candidates.enabled` 等字段
+  确实读到了配置文件里的值，不再是 dataclass 默认值。
 - `api/persona_candidate_routes.py`：4 个端点（GET 列表 / POST scan
   异步任务 / POST accept / POST dismiss），已挂载到 `api/server.py`。
 - `cli/commands/capability_cmd.py`：新增

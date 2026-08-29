@@ -292,6 +292,11 @@ def _build_nested_blocks() -> list:
         NestedBlockSpec("digest_advisor", _m.DigestAdvisorConfig),
         NestedBlockSpec("growth_advisor", _m.GrowthAdvisorConfig),
         NestedBlockSpec("capability_learning", _m.CapabilityLearningConfig),
+        # [next_doc/persona_candidate_autoscan_plan.md] 候选人设/能力自动
+        # 检测配置块，走通用加载机制——第一次实现时就补齐注册，避免重演
+        # 本文件头部提到的"新增子配置块忘了接入 loader.py，agent_config.json
+        # 里写了 persona_candidates.enabled=true 也不起作用"问题。
+        NestedBlockSpec("persona_candidates", _m.PersonaCandidateConfig),
         NestedBlockSpec("generative_capability", _m.GenerativeCapabilityConfig),
         NestedBlockSpec("cron", _m.CronConfig),
         NestedBlockSpec("autonomy", _m.AutonomyConfig),

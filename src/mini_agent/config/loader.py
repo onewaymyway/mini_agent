@@ -852,6 +852,10 @@ def load_config(
     digest_advisor_cfg = _nested_blocks["digest_advisor"]
     growth_advisor_cfg = _nested_blocks["growth_advisor"]
     capability_learning_cfg = _nested_blocks["capability_learning"]
+    # [next_doc/persona_candidate_autoscan_plan.md] 候选人设/能力自动检测
+    # 配置，同样走通用加载——紧跟 capability_learning_cfg 之后取值，避免
+    # 分散在文件各处导致后续遗漏。
+    persona_candidates_cfg = _nested_blocks["persona_candidates"]
     # [next_doc/generative_capability_three_tier_improvement_plan.md]
     generative_capability_cfg = _nested_blocks["generative_capability"]
     cron_cfg = _nested_blocks["cron"]
@@ -945,6 +949,7 @@ def load_config(
         digest_advisor=digest_advisor_cfg,
         growth_advisor=growth_advisor_cfg,
         capability_learning=capability_learning_cfg,
+        persona_candidates=persona_candidates_cfg,
         generative_capability=generative_capability_cfg,
         cron=cron_cfg,
         autonomy=autonomy_cfg,
