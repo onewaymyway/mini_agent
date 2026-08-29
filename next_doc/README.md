@@ -107,6 +107,8 @@ daemon 执行模型、多用户隔离、稳定性、状态恢复、任务卡死�
 8. `daemon_stability_and_ux_improvement_plan.md` — 计划：稳定性与体验改进
 9. `daemon_stability_and_ux_improvement_implementation_record.md` — 实施记录
 10. `daemon_task_hang_recovery_and_watchdog_hardening_plan.md` — 计划：任务卡死恢复与看门狗加固
+11. `daemon_crash_recovery_and_alert_plan.md` — 计划：daemon 进程崩溃自愈与告警（已完成，四阶段）
+12. `daemon_hang_detection_and_alert_escalation_plan.md` — 计划：daemon 卡死检测与告警升级（承接上一篇，覆盖"进程未退出但已不可用"的盲区）
 
 ## embodied_agent（具身智能，3 篇，注意版本迭代关系）
 
