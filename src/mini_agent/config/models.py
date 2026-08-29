@@ -611,6 +611,18 @@ class HttpConfig:
     # 也可以显式指定一个绝对路径，把它单独存到别处。
     access_log_path: str = ""
 
+    # [daemon_crash_recovery_and_alert_plan.md 阶段二] daemon 崩溃自动重启。
+    # 只影响 `daemon start --detach`（后台 supervisor 监控），前台模式
+    # 阶段三才会接入。默认开启——崩溃后原地不动需要用户手动介入，跟
+    # "daemon 是常驻自动化基础设施"的定位相悖；预算保守（10 分钟内最多
+    # 5 次），超出预算就放弃并发一条"需要人工介入"的告警，不会无限重启。
+    daemon_auto_restart_enabled: bool = True
+    daemon_restart_max_attempts: int = 5
+    daemon_restart_window_seconds: float = 600.0
+    daemon_restart_backoff_seconds: list = field(
+        default_factory=lambda: [1, 2, 4, 8, 16, 30, 60]
+    )
+
 
 @dataclass
 class WebSearchConfig:

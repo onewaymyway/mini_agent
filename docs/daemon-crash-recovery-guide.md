@@ -15,18 +15,21 @@ daemon 进程偶尔会在执行过程中崩溃（未捕获异常、被外部信�
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 阶段一 | 崩溃信息持久化 + 独立告警通道 | ✅ 已完成 |
-| 阶段二 | 后台（`--detach`）自动重启（预算/退避） | ⏳ 未开始 |
+| 阶段二 | 后台（`--detach`）自动重启（预算/退避） | ✅ 已完成 |
 | 阶段三 | 前台模式自愈 + `daemon stop` 联动收敛 | ⏳ 未开始 |
 | 阶段四 | 文档完善 + 更多测试覆盖 | 🔄 本阶段随实现同步完成 |
 
-**重要**：阶段一目前**只做"感知"，不做"自动重启"**——`daemon start --detach`
-现在会额外拉起一个 supervisor 进程负责监控，崩溃发生时会记录诊断信息、
-推送告警，但 supervisor 检测到崩溃后**当前固定不重启**（`daemon_supervisor.py`
-里的 `auto_restart` 目前恒为 `False`），需要用户手动 `daemon start`。自动
-重启会在阶段二加入。
+**默认行为变更（阶段二起）**：`daemon start --detach` 现在**默认自动重启**
+（`daemon_auto_restart_enabled=true`）——崩溃后 supervisor 会在指数退避
+（1s/2s/4s/8s/16s/30s/60s）后自动拉起新的子进程，10 分钟滑动窗口内最多
+重试 5 次，超出预算就放弃并发一条"需要人工介入"的告警，不会无限重启。
+不想要自动重启可以在 `agent_config.json` 里设置：
+```json
+{"http": {"daemon_auto_restart_enabled": false}}
+```
 
 前台模式（不带 `--detach`）目前**还没有**接入 supervisor，崩溃行为与之前
-一致（不会有崩溃记录/告警）；这部分是阶段三的范围。
+一致（不会有崩溃记录/告警/自动重启）；这部分是阶段三的范围。
 
 ## 3. 怎么看崩溃信息
 
@@ -98,3 +101,30 @@ mini-agent daemon status   # 应该能看到"最近一次崩溃"摘要
 `daemon stop` 不会触发这套崩溃记录/告警——`daemon stop` 在动手停止前会先
 把 `daemon_run_state.json` 标成 `stopped_by_user`，supervisor 据此判断这是
 预期停止，不算崩溃。
+
+## 7. 自动重启配置项
+
+在 `agent_config.json` 的 `http` 块下可调：
+
+```json
+{
+  "http": {
+    "daemon_auto_restart_enabled": true,
+    "daemon_restart_max_attempts": 5,
+    "daemon_restart_window_seconds": 600,
+    "daemon_restart_backoff_seconds": [1, 2, 4, 8, 16, 30, 60]
+  }
+}
+```
+
+- `daemon_auto_restart_enabled`：总开关，关掉后行为等同阶段一（只记录+
+  告警，不重启）
+- `daemon_restart_max_attempts` / `daemon_restart_window_seconds`：滑动窗口
+  预算——`window_seconds` 内重启次数超过 `max_attempts` 就放弃，避免"崩溃
+  →重启→秒崩"的重启风暴
+- `daemon_restart_backoff_seconds`：每次重启前的等待时间序列，超出数组
+  长度后固定用最后一个值（默认封顶 60s）
+
+预算耗尽后 `daemon status` 会提示"Auto-restart budget exhausted — manual
+`daemon start` required"，看板告警详情里也会标注 `restart_decision:
+"giveup"`。

@@ -320,3 +320,29 @@ CLI 命令本身依然立即返回（等待逻辑不变，只是等的是 superv
   fixture、未触碰的 external_input/goal_execution_spec 模块）不受影响
 - 未做（留给后续阶段）：前台模式的 `execv`→`Popen+wait` 收敛（阶段三）；
   `auto_restart`/`daemon_restart_max_attempts` 等配置项接入（阶段二）
+
+### 阶段二（已完成）
+
+- `config/models.py::HttpConfig` 新增 `daemon_auto_restart_enabled`（默认
+  `True`）/`daemon_restart_max_attempts`（默认 5）/
+  `daemon_restart_window_seconds`（默认 600）/`daemon_restart_backoff_seconds`
+  （默认 `[1,2,4,8,16,30,60]`）。跟其它 daemon/http 相关配置放在一起，走
+  `load_nested_block_with_flat_compat` 现有的自动装配机制——不需要改
+  `loader.py`，`agent_config.json` 的 `"http": {"daemon_auto_restart_enabled": false}`
+  即可覆盖
+- `cmd_daemon_start(detach=True)` 启动前调用 `load_config()` 读取这几项，
+  转成 `--auto-restart --max-attempts N --window-seconds S` 传给
+  supervisor（`daemon_supervisor.py::_main()` 已在阶段一预留好这几个参数）
+- `daemon_supervisor.py::run_supervisor()` 的循环结构阶段一就已按最终形态
+  写好（滑动窗口重启预算 + 指数退避），阶段二只是把调用方传入的
+  `auto_restart` 从恒定 `False` 换成真实配置值，循环本身零改动
+- 重启前会清掉上一轮残留的 `daemon_run_state.json`，避免新子进程写
+  `running` 之前的空档期读到陈旧状态
+- 测试新增 `TestSupervisorAutoRestart`（3 用例）：多次崩溃后最终恢复成功
+  （`restarted`×2 + 最终优雅停止）、预算耗尽后正确 `giveup`（不无限重启）、
+  `auto_restart=False` 时无论预算多大都不重启；daemon 相关测试合计 130
+  passed（含 config 装配通用测试）
+- 未做（留给阶段三）：前台模式仍未接入 supervisor/自动重启；`daemon status`
+  展示的"重启次数"目前只能从崩溃历史文件反推最后一条的
+  `restart_attempt`，没有单独暴露"当前滑动窗口内还剩几次预算"这个实时值
+  （supervisor 进程内部状态，跨进程查询需要额外接口，评估后续是否有必要）

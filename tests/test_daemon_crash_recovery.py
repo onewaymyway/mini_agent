@@ -285,5 +285,104 @@ class TestSupervisorCrashDetection(_IsolatedHomeTestCase):
         self.assertFalse(sup_pid_path.exists())
 
 
+# ── 阶段二：自动重启（预算 + 退避）─────────────────────────────────────────
+
+_CHILD_ALWAYS_CRASH_SCRIPT = """
+import sys
+sys.exit(1)
+"""
+
+_CHILD_RESTART_MARKER_SCRIPT = """
+import sys
+from pathlib import Path
+
+marker = Path({marker!r})
+count = int(marker.read_text()) if marker.exists() else 0
+count += 1
+marker.write_text(str(count))
+if count < {succeed_on}:
+    sys.exit(1)
+# 第 succeed_on 次成功：模拟"恢复后正常运行到被 daemon stop"——直接标记
+# stopped_by_user 然后正常退出，验证重启预算生效后不再是"崩溃"。
+sys.path.insert(0, {src!r})
+from mini_agent.cli.daemon import mark_stopped_by_user
+mark_stopped_by_user(Path({project_root!r}), 1)
+sys.exit(0)
+"""
+
+
+class TestSupervisorAutoRestart(_IsolatedHomeTestCase):
+    def _src_dir(self) -> str:
+        return str(Path(__file__).resolve().parents[1] / "src")
+
+    def test_auto_restart_retries_and_eventually_succeeds(self):
+        marker = self.project_root / "restart_count.txt"
+        script_path = self.project_root / "child_restart.py"
+        script_path.write_text(
+            _CHILD_RESTART_MARKER_SCRIPT.format(
+                marker=str(marker), succeed_on=3,
+                src=self._src_dir(), project_root=str(self.project_root),
+            ),
+            encoding="utf-8",
+        )
+
+        daemon_supervisor.run_supervisor(
+            self.project_root,
+            [sys.executable, str(script_path)],
+            auto_restart=True,
+            max_attempts=5,
+            window_seconds=600.0,
+            backoff_seconds=[0.01, 0.01, 0.01, 0.01, 0.01],
+        )
+
+        # 崩溃了 2 次（第 1、2 次退出码非 0），第 3 次成功并优雅停止
+        self.assertEqual(int(marker.read_text()), 3)
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+        decisions = [json.loads(l)["restart_decision"] for l in lines]
+        self.assertEqual(decisions, ["restarted", "restarted"])
+
+        # 最终优雅停止后 supervisor 不再重启，run_state 停在 stopped_by_user
+        state = daemon_mod._read_run_state(self.project_root)
+        self.assertEqual(state["status"], daemon_mod._STATUS_STOPPED_BY_USER)
+
+    def test_auto_restart_gives_up_after_budget_exhausted(self):
+        script_path = self.project_root / "child_always_crash.py"
+        script_path.write_text(_CHILD_ALWAYS_CRASH_SCRIPT, encoding="utf-8")
+
+        daemon_supervisor.run_supervisor(
+            self.project_root,
+            [sys.executable, str(script_path)],
+            auto_restart=True,
+            max_attempts=2,
+            window_seconds=600.0,
+            backoff_seconds=[0.01, 0.01, 0.01],
+        )
+
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        decisions = [json.loads(l)["restart_decision"] for l in lines]
+        # 预算内的先 restarted，最后一次超出预算 giveup，不会无限重启
+        self.assertEqual(len(decisions), 3)  # max_attempts=2 → 2 次 restarted + 1 次 giveup
+        self.assertEqual(decisions, ["restarted", "restarted", "giveup"])
+
+    def test_auto_restart_disabled_never_restarts_regardless_of_budget(self):
+        script_path = self.project_root / "child_always_crash.py"
+        script_path.write_text(_CHILD_ALWAYS_CRASH_SCRIPT, encoding="utf-8")
+
+        daemon_supervisor.run_supervisor(
+            self.project_root,
+            [sys.executable, str(script_path)],
+            auto_restart=False,
+            max_attempts=99,
+        )
+
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0])["restart_decision"], "no_restart")
+
+
 if __name__ == "__main__":
     unittest.main()

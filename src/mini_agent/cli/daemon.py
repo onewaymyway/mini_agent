@@ -1098,6 +1098,26 @@ def cmd_daemon_start(
             python_exec, "-m", "mini_agent.cli.daemon_supervisor",
             "--project", str(project_root),
         ]
+        # [daemon_crash_recovery_and_alert_plan.md 阶段二] 自动重启开关/预算
+        # 从 agent_config.json 的 http 块读取（HttpConfig.daemon_auto_restart_*），
+        # 跟其它 daemon/http 相关配置放在一起，不单独开一个配置文件。
+        try:
+            from mini_agent.config import load_config
+            _cfg = load_config(project_root=project_root)
+            _http_cfg = getattr(_cfg, "http", None)
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.cli.daemon.cmd_daemon_start.load_config")
+            _http_cfg = None
+        auto_restart = getattr(_http_cfg, "daemon_auto_restart_enabled", True)
+        max_attempts = getattr(_http_cfg, "daemon_restart_max_attempts", 5)
+        window_seconds = getattr(_http_cfg, "daemon_restart_window_seconds", 600.0)
+        if auto_restart:
+            supervisor_cmd += ["--auto-restart"]
+        supervisor_cmd += [
+            "--max-attempts", str(max_attempts),
+            "--window-seconds", str(window_seconds),
+        ]
         env = os.environ.copy()
         env["MINI_AGENT_SUPERVISOR_CHILD_ARGV"] = json.dumps(base_cmd)
 
