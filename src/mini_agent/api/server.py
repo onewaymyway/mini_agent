@@ -1186,6 +1186,36 @@ class HttpServer:
         # 加锁/解锁本身无害，回收成 None 反而会让 runner 与 AgentRunner
         # 持有不一致的锁状态。
 
+        # [daemon_hang_detection_and_alert_escalation_plan.md 阶段三 §3.2]
+        # 未确认崩溃告警的超时升级重推——独立后台线程，与
+        # SchedulerHeartbeat/GatewayPoller 是同一种"独立于主循环"模式，
+        # 跟卡死探测（daemon_supervisor.py）是否启用、supervisor 是否
+        # 存在都无关：只要 HTTP 服务本身活着就跑。轮询间隔固定用
+        # escalation_hours 的 1/2（下限 5 分钟、上限 30 分钟），不单独
+        # 开一个配置项——多一个"轮询间隔"配置项对用户没有实际意义，
+        # 用户只关心"多久没读会被提醒"这一个语义。
+        self._crash_alert_escalation = None
+        try:
+            _escalation_hours = float(
+                getattr(agent.cfg.http, "daemon_crash_alert_escalation_hours", 1.0)
+            )
+            if _escalation_hours > 0:
+                from mini_agent.notification.daemon_crash_escalation import (
+                    CrashAlertEscalationThread,
+                )
+                _poll_interval = min(1800.0, max(300.0, _escalation_hours * 3600 / 2))
+                self._crash_alert_escalation = CrashAlertEscalationThread(
+                    project_root=project_root,
+                    escalation_hours=_escalation_hours,
+                    max_escalations=1,
+                    poll_interval_seconds=_poll_interval,
+                )
+                self._crash_alert_escalation.start()
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer.__init__.crash_alert_escalation')
+            self._crash_alert_escalation = None
+
         # AgentRunner（后台驱动 agent.run_turn），注入 AutonomousLoop + RoleProfileManager
         # + SelfMessageBus（Phase 4：这条 AgentRunner 就是"Self"，需要消费
         # SessionAgentPool 发过来的 session_crashed/session_summary 等消息）。
@@ -2007,6 +2037,14 @@ class HttpServer:
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer.stop.scheduler_heartbeat')
+        # [daemon_hang_detection_and_alert_escalation_plan.md 阶段三 §3.2]
+        crash_alert_escalation = getattr(self, "_crash_alert_escalation", None)
+        if crash_alert_escalation is not None:
+            try:
+                crash_alert_escalation.stop()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer.stop.crash_alert_escalation')
         # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md 阶段一]
         persistent_runner = getattr(self, "_objective_persistent_runner", None)
         if persistent_runner is not None:

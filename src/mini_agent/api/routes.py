@@ -8314,6 +8314,28 @@ async def get_notification_dispatch_log(request: Request, limit: int = Query(50,
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/daemon/crash_alerts/pending_count")
+async def get_pending_crash_alerts_count(request: Request):
+    """GET /v1/daemon/crash_alerts/pending_count —
+    daemon_hang_detection_and_alert_escalation_plan.md §3.2"交互时顺带
+    提示"用的轻量端点。
+
+    只返回一个数字（未确认崩溃/卡死告警条数），不返回具体内容——具体内容
+    走 `daemon status`（本地 CLI 直接读文件）或看板横幅查看，这个端点的
+    唯一职责是让 `daemon connect`/REPL 等交互入口能在连接建立时判断
+    "要不要顺带打印一句提示"，不需要为此专门发起一次完整的
+    `daemon status` 往返。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.notification.daemon_crash_store import count_unacknowledged_crash_alerts
+        return {"pending_count": count_unacknowledged_crash_alerts(paths)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/digest/pending_startup")
 async def get_pending_startup_digest(request: Request):
     """GET /v1/digest/pending_startup — daemon connected 客户端专用。

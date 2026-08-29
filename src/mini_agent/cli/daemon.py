@@ -363,7 +363,20 @@ def record_daemon_crash(
         "summary": summary,
     }
 
-    # 崩溃历史：只追加、超过上限截断，跟 dispatch_log.jsonl 同样的策略。
+    # [daemon_hang_detection_and_alert_escalation_plan.md §3.3] 崩溃历史：
+    # 只追加、超过配置的最大条数（默认 1000，`daemon_crash_history_max_
+    # entries`）截断，保留最近的窗口——排查用途上"最近 N 条"已经足够，
+    # 不需要保留完整历史。读配置失败时退化为原来的固定 500 条，不阻断
+    # 主流程（崩溃记录本身必须尽力落盘成功，配置读取失败不该反过来
+    # 影响它）。
+    max_history_entries = 500
+    try:
+        from mini_agent.config import load_config
+        max_history_entries = int(
+            getattr(load_config(project_root=project_root).http, "daemon_crash_history_max_entries", 1000)
+        )
+    except Exception:
+        pass
     try:
         p = _crash_history_file(project_root)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -371,8 +384,8 @@ def record_daemon_crash(
         if p.exists():
             lines = p.read_text(encoding="utf-8").splitlines()
         lines.append(json.dumps(history_record, ensure_ascii=False))
-        if len(lines) > 500:
-            lines = lines[-500:]
+        if len(lines) > max_history_entries:
+            lines = lines[-max_history_entries:]
         p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except Exception as exc:
         from mini_agent.errors import log_exception
@@ -382,48 +395,89 @@ def record_daemon_crash(
     # 再顺带走一遍已配置的外部渠道广播（邮件/webhook 等，失败不影响
     # 上面的落盘）。
     try:
-        from mini_agent.notification.daemon_crash_store import append_crash_alert
+        from mini_agent.notification.daemon_crash_store import (
+            append_crash_alert,
+            rotate_crash_alerts_if_needed,
+        )
         from mini_agent.storage.paths import AgentPaths
         paths = AgentPaths(project_root)
         alert_record = append_crash_alert(paths, dict(history_record))
-        # 注意：这里刻意不走 NotificationDispatcher.dispatch()——它会
-        # 无条件强制带上 ALWAYS_ON_CHANNEL="kanban"，而 KanbanChannel
-        # 写的正是 reports.jsonl（watchlist_report 那套通用汇报列表），
-        # 跟本方案"崩溃告警要有专门通道、不跟常规通知混在一起"的设计
-        # 初衷矛盾（daemon_crash_store 本身已经是"看板一定能看到"的
-        # 保证，不需要再借道 kanban 渠道重复一份）。这里只手动广播给
-        # 用户配置的其它外部渠道（邮件/webhook 等），显式跳过 kanban。
-        try:
-            from mini_agent.notification.config import load_notification_config
-            from mini_agent.notification.dispatcher import get_channel_class, NotificationMessage
-            cfg = load_notification_config(paths)
-            message = NotificationMessage(
-                title="⚠️ Daemon 卡死" if hang_reason is not None else "⚠️ Daemon 崩溃",
-                body=summary,
-                source="daemon_crash",
-                meta={"alert_id": alert_record.get("alert_id")},
-            )
-            for name in cfg.default_channels:
-                if name == "kanban":
-                    continue
-                if not cfg.is_enabled(name):
-                    continue
-                channel_cls = get_channel_class(name)
-                if channel_cls is None:
-                    continue
-                try:
-                    channel_cls().send(message, cfg.channel_config(name), paths)
-                except Exception as exc:
-                    from mini_agent.errors import log_exception
-                    log_exception(exc, where=f"mini_agent.cli.daemon.record_daemon_crash.broadcast[{name}]")
-        except Exception as exc:
-            from mini_agent.errors import log_exception
-            log_exception(exc, where="mini_agent.cli.daemon.record_daemon_crash.dispatch")
+        # §3.3：告警文件同样按配置的最大条数轮转（append_crash_alert 内部
+        # 还有一层固定 500 条的兜底截断，两者不冲突，谁先命中谁生效）。
+        rotate_crash_alerts_if_needed(paths, max_entries=max_history_entries)
+        broadcast_crash_alert_to_external_channels(
+            project_root,
+            title="⚠️ Daemon 卡死" if hang_reason is not None else "⚠️ Daemon 崩溃",
+            summary=summary,
+            alert_id=alert_record.get("alert_id"),
+            paths=paths,
+        )
     except Exception as exc:
         from mini_agent.errors import log_exception
         log_exception(exc, where="mini_agent.cli.daemon.record_daemon_crash.alert")
 
     return history_record
+
+
+def broadcast_crash_alert_to_external_channels(
+    project_root: Path,
+    title: str,
+    summary: str,
+    alert_id: Optional[str],
+    paths=None,
+) -> None:
+    """把一条崩溃/卡死告警广播给用户已配置的外部渠道（邮件/webhook 等）。
+
+    从 `record_daemon_crash()` 里抽出来的公共部分（阶段三 §3.2），供两处
+    共用：
+    1. 崩溃/卡死刚发生时（`record_daemon_crash()`，`title` 固定是
+       "⚠️ Daemon 崩溃"/"⚠️ Daemon 卡死"）；
+    2. 未确认告警超时升级重推时（`notification.daemon_crash_escalation`，
+       `title` 会带上"提醒"前缀，`summary` 也会），复用同一套"跳过
+       kanban、只广播其它已启用渠道"的逻辑，不需要重新实现一遍。
+
+    注意：这里刻意不走 `NotificationDispatcher.dispatch()`——它会无条件
+    强制带上 `ALWAYS_ON_CHANNEL="kanban"`，而 `KanbanChannel` 写的正是
+    `reports.jsonl`（watchlist_report 那套通用汇报列表），跟本方案"崩溃
+    告警要有专门通道、不跟常规通知混在一起"的设计初衷矛盾
+    （`daemon_crash_store` 本身已经是"看板一定能看到"的保证，不需要再
+    借道 kanban 渠道重复一份）。这里只手动广播给用户配置的其它外部渠道，
+    显式跳过 kanban。失败不抛异常——广播失败不应该反过来影响调用方的
+    其它流程。"""
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        if paths is None:
+            paths = AgentPaths(project_root)
+        from mini_agent.notification.config import load_notification_config
+        from mini_agent.notification.dispatcher import get_channel_class, NotificationMessage
+        cfg = load_notification_config(paths)
+        message = NotificationMessage(
+            title=title,
+            body=summary,
+            source="daemon_crash",
+            meta={"alert_id": alert_id},
+        )
+        for name in cfg.default_channels:
+            if name == "kanban":
+                continue
+            if not cfg.is_enabled(name):
+                continue
+            channel_cls = get_channel_class(name)
+            if channel_cls is None:
+                continue
+            try:
+                channel_cls().send(message, cfg.channel_config(name), paths)
+            except Exception as exc:
+                from mini_agent.errors import log_exception
+                log_exception(
+                    exc,
+                    where=f"mini_agent.cli.daemon.broadcast_crash_alert_to_external_channels[{name}]",
+                )
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(
+            exc, where="mini_agent.cli.daemon.broadcast_crash_alert_to_external_channels"
+        )
 
 
 def _is_process_alive(pid: int) -> bool:
@@ -902,6 +956,16 @@ class DaemonClient:
         不新增重复路由。
         """
         return self._get_json("/v1/self/status")
+
+    def get_pending_crash_alerts_count(self) -> Optional[int]:
+        """GET /v1/daemon/crash_alerts/pending_count —
+        daemon_hang_detection_and_alert_escalation_plan.md §3.2"交互时
+        顺带提示"用。请求失败（旧版 daemon 不支持该端点等）时静默返回
+        None，调用方按"拿不到就跳过这行提示"处理，不影响正常连接。"""
+        resp = self._get_json("/v1/daemon/crash_alerts/pending_count")
+        if not resp:
+            return None
+        return resp.get("pending_count")
 
     def get_pending_startup_digest(self) -> Optional[dict]:
         """GET /v1/digest/pending_startup — 取一份尚未展示过的日报（若有）。
@@ -2372,6 +2436,26 @@ def _handle_connected_goals(client: "DaemonClient", _out) -> None:
             )
 
 
+def _print_pending_crash_alert_notice_connected(client: "DaemonClient", _out) -> None:
+    """[daemon_hang_detection_and_alert_escalation_plan.md §3.2"交互时
+    顺带提示"] `daemon connect` 建立连接时，如果存在未确认的崩溃/卡死
+    告警，顺带打印一句轻量提示（不打断正常连接流程）。天然按"每次连接
+    只提示一次"节流——这个函数只在连接建立那一刻被调用一次，不在后续
+    交互里重复调用。请求失败/端点不存在（旧版 daemon）时静默跳过。"""
+    try:
+        count = client.get_pending_crash_alerts_count()
+        if not count:
+            return
+        _out(f"[daemon] ⚠️ 有 {count} 条未读的 daemon 崩溃/卡死记录，运行 `daemon status` 查看")
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(
+            _mini_agent_exc,
+            where='mini_agent.cli.daemon._print_pending_crash_alert_notice_connected',
+        )
+        pass
+
+
 def _print_startup_digest_connected(client: "DaemonClient", _out) -> None:
     """daemon connected 模式下的启动日报提示（对应本地 run_repl() 里的
     cli/repl.py::_print_startup_digest_and_advisor()）。
@@ -2634,6 +2718,8 @@ def run_connected_repl(
     # ── 启动日报提示：daemon connected 客户端专用（对齐 run_repl() 体验）──
     if not quiet_connect:
         _print_startup_digest_connected(client, _out)
+        # [daemon_hang_detection_and_alert_escalation_plan.md §3.2]
+        _print_pending_crash_alert_notice_connected(client, _out)
 
     # ── 状态栏：注册 connected 模式专用 provider ─────────────────────────────
     # app.py 在检测到 daemon 存在后调用了 stop_status_bar()，这里重新启动，

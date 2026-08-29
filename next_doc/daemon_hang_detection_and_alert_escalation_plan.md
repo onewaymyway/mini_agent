@@ -417,4 +417,80 @@ Python 层面卡死（死锁、无限循环）时，如果子进程还能响应�
   超时重推 + 交互入口顺带提示）；`daemon_crash_history.jsonl`/
   `daemon_crash_alerts.jsonl` 的按条数/时间跨度轮转清理
 
+### 阶段三（已完成）
+
+- `notification/daemon_crash_store.py` 新增三个函数：
+  - `list_stale_unacknowledged_alerts(paths, escalation_hours, max_escalations)`：
+    筛选"创建超过 escalation_hours 仍未确认、且升级次数还没到上限"的告警；
+    `escalation_count` 字段不存在时按 0 处理（阶段一~二写入的老数据天然
+    符合"还没升级过"）
+  - `mark_escalated(paths, alert_id)`：`escalation_count` 加 1 并记录
+    `last_escalated_at`，整体重写文件，跟 `acknowledge_crash_alert` 的
+    处理方式一致
+  - `rotate_crash_alerts_if_needed(paths, max_entries)`（§3.3）：超过上限
+    时保留最近 N 条，返回本次裁剪掉的条数；跟 `append_crash_alert` 内部
+    固定 500 条的兜底截断不冲突，谁先命中谁生效
+- `cli/daemon.py::broadcast_crash_alert_to_external_channels()`（新函数，
+  从 `record_daemon_crash()` 里抽出来的公共部分）：把"跳过 kanban、只广播
+  已启用的其它外部渠道"这段逻辑独立出来，供崩溃发生时的首次广播和升级
+  重推共用，不需要重写一遍
+- `record_daemon_crash()`：
+  - 历史文件截断从写死的 500 条改为读 `HttpConfig.daemon_crash_history_
+    max_entries`（默认 1000），读取失败时退化回 500，不阻断崩溃记录本身
+    必须尽力落盘成功这一主线；
+  - 告警落盘后顺带调用 `rotate_crash_alerts_if_needed()`，同样按配置的
+    最大条数轮转
+- `notification/daemon_crash_escalation.py`（新模块）：
+  - `check_and_escalate_crash_alerts(project_root, escalation_hours,
+    max_escalations)`：扫描一次未确认告警，超时的重新广播到外部渠道并
+    打上升级标记，返回本次实际升级的条数；读取/广播失败不抛异常
+  - `CrashAlertEscalationThread`：独立后台线程（daemon=True），按固定
+    轮询间隔调用上面的检查函数；轮询间隔取
+    `min(1800, max(300, escalation_hours * 3600 / 2))`（escalation_hours
+    的一半，下限 5 分钟、上限 30 分钟），不单独开一个"轮询间隔"配置项——
+    用户只关心"多久没读会被提醒"这一个语义；与
+    `evolution/scheduler_heartbeat.py::SchedulerHeartbeat` 是同一种
+    "独立于主循环"模式，跟 supervisor/卡死探测是否启用完全无关
+- `api/server.py::HttpServer`：`__init__` 里构造完 `SchedulerHeartbeat`
+  之后紧接着构造并启动 `CrashAlertEscalationThread`
+  （`daemon_crash_alert_escalation_hours <= 0` 时不启动，等价于关闭这项
+  功能）；`stop()` 里对称地调用 `.stop()`
+- `api/routes.py` 新增只读端点 `GET /v1/daemon/crash_alerts/pending_count`
+  （§3.2"交互时顺带提示"用）：只返回未确认崩溃/卡死告警条数，不返回
+  具体内容——具体内容走 `daemon status`（本地直读文件）或看板横幅；
+  `cli/daemon.py::DaemonClient.get_pending_crash_alerts_count()` 对接
+- `cli/daemon.py::_print_pending_crash_alert_notice_connected()` /
+  `cli/repl.py::_print_startup_digest_and_advisor()` 内新增一段：`daemon
+  connect` 建立连接时（走 HTTP 端点）/ 本地 REPL 启动时（直接读文件）
+  分别顺带打印一句"有 N 条未读的 daemon 崩溃/卡死记录"提示，天然按
+  "每次连接/每次启动只提示一次"节流（提示只在连接/启动那一刻打印一次，
+  不在后续交互里重复调用），失败静默跳过不影响正常启动/连接流程
+- `config/models.py::HttpConfig` 新增 `daemon_crash_alert_escalation_hours`
+  （默认 1.0）、`daemon_crash_history_max_entries`（默认 1000）
+- 测试：`tests/test_daemon_crash_recovery.py` 新增
+  `TestCrashAlertEscalationStore`（5 用例：`list_stale_unacknowledged_
+  alerts` 正确遵守时间窗口和已确认过滤、`mark_escalated` 递增计数且达到
+  上限后不再被选中、升级未知 alert_id 返回 False、`rotate_crash_alerts_
+  if_needed` 保留最近 N 条、未超限时返回 0）、`TestCrashHistoryRotation`
+  （1 用例：`record_daemon_crash` 遵守配置的历史文件最大条数而不是写死
+  500）、`TestCrashAlertEscalationCheck`（3 用例：`check_and_escalate_
+  crash_alerts` 只升级超时未读的告警并正确打标记、没有待升级告警时返回
+  0、`CrashAlertEscalationThread` 按轮询间隔真的触发检查且能被干净地
+  停止）
+  - 全量 `tests/test_daemon_crash_recovery.py` 47 passed（阶段一~四共 27
+    + 卡死检测阶段一 4 + 阶段二 7 + 阶段三新增 9）
+  - `pytest -k "daemon or config or server or routes or repl"`（排除环境
+    本身缺依赖导致收集错误的几个测试文件后）额外发现 21 个失败，逐一
+    抽查确认均为环境本身缺失依赖（`anthropic` SDK 未装）或与本次改动
+    完全无关的既有测试基础设施问题（比如 `test_goal_execution_spec_
+    kanban_routes.py` 依赖 `request.app.state.async_jobs` 但测试 fixture
+    没有设置，属于该测试文件自身的既有 bug）——用"临时摘除本次新增的
+    `/v1/daemon/crash_alerts/pending_count` 端点后重跑同一个失败用例"的
+    方式验证过，摘除前后失败结果完全一致，确认与本次改动无关；445
+    passed，daemon/config/server/routes/repl 相关的核心测试无回归
+- 未做（留给阶段四）：`daemon status` 展示 `escalation_count`（目前只
+  展示未确认数，不单独展示"这条已经升级提醒过几次"）；`daemon status`
+  展示崩溃/告警文件的轮转历史（比如"最近一次因为超过 1000 条被裁剪掉了
+  N 条"）——都是锦上添花的展示细节，不影响核心的升级/轮转机制本身是否
+  生效
 

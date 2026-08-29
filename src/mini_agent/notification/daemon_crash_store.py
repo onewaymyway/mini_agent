@@ -131,3 +131,90 @@ def acknowledge_crash_alert(paths: "AgentPaths", alert_id: str) -> bool:
             log_exception(exc, where="mini_agent.notification.daemon_crash_store.acknowledge_crash_alert")
             return False
     return matched
+
+
+# ── daemon_hang_detection_and_alert_escalation_plan.md §3.2：未确认告警 ──
+# 超时升级重推 + 交互入口顺带提示 ──────────────────────────────────────────
+
+def list_stale_unacknowledged_alerts(
+    paths: "AgentPaths", escalation_hours: float, max_escalations: int = 1,
+) -> list[dict]:
+    """返回"创建超过 escalation_hours 仍未确认、且升级次数还没到上限"的
+    崩溃告警。`escalation_count` 字段不存在时按 0 处理（老数据/阶段一~二
+    写入的记录没有这个字段，天然符合"还没升级过"）。"""
+    now = time.time()
+    cutoff = now - escalation_hours * 3600
+    items = list_crash_alerts(paths, unacknowledged_only=True)
+    result = []
+    for d in items:
+        created_at = d.get("created_at") or 0
+        if created_at > cutoff:
+            continue
+        if int(d.get("escalation_count", 0)) >= max_escalations:
+            continue
+        result.append(d)
+    return result
+
+
+def mark_escalated(paths: "AgentPaths", alert_id: str) -> bool:
+    """把一条崩溃告警的 `escalation_count` 加 1，记录"已经升级重推过一次
+    "（避免每次定时检查都重复推送同一条——见 append_crash_alert 顶部
+    schema 说明里没列出这个字段是因为它只在升级发生后才第一次出现，
+    默认不存在等价于 0）。整体重写，跟 acknowledge_crash_alert 处理方式
+    一致。"""
+    p = paths.notification_daemon_crash_alerts
+    if not p.exists():
+        return False
+    lines = p.read_text(encoding="utf-8").splitlines()
+    matched = False
+    new_lines = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            new_lines.append(line)
+            continue
+        if d.get("alert_id") == alert_id:
+            d["escalation_count"] = int(d.get("escalation_count", 0)) + 1
+            d["last_escalated_at"] = time.time()
+            matched = True
+        new_lines.append(json.dumps(d, ensure_ascii=False))
+    if matched:
+        try:
+            p.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.notification.daemon_crash_store.mark_escalated")
+            return False
+    return matched
+
+
+# ── §3.3：崩溃告警文件轮转（跟 append_crash_alert 顶部的 _MAX_LINES 截断 ──
+# 是同一个机制，这里单独暴露一个函数供 `daemon status`/看板等读取路径 ────
+# 复用，避免各处各写一遍截断逻辑）────────────────────────────────────────
+
+def rotate_crash_alerts_if_needed(
+    paths: "AgentPaths", max_entries: int = _MAX_LINES,
+) -> int:
+    """如果告警文件超过 `max_entries` 条，保留最近的 `max_entries` 条
+    （按写入顺序，即文件里靠后的），旧记录直接丢弃（不需要保留完整
+    历史，排查用途上"最近 N 条"已经足够，与 §3.3 描述一致）。返回本次
+    裁剪掉的条数（未超限时返回 0）。写入失败不抛异常。"""
+    p = paths.notification_daemon_crash_alerts
+    if not p.exists():
+        return 0
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+        lines = [l for l in lines if l.strip()]
+        if len(lines) <= max_entries:
+            return 0
+        trimmed = len(lines) - max_entries
+        p.write_text("\n".join(lines[-max_entries:]) + "\n", encoding="utf-8")
+        return trimmed
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.notification.daemon_crash_store.rotate_crash_alerts_if_needed")
+        return 0

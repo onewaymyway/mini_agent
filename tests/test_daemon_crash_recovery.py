@@ -1053,5 +1053,188 @@ class TestPostRestartHealthCheck(_IsolatedHomeTestCase):
         self.assertEqual(json.loads(lines[0])["restart_decision"], "no_restart")
 
 
+# ── daemon_hang_detection_and_alert_escalation_plan.md 阶段三 ────────────
+
+class TestCrashAlertEscalationStore(_IsolatedHomeTestCase):
+    """§3.2/§3.3 新增的 daemon_crash_store 函数：升级候选筛选、打标记、
+    告警文件轮转。"""
+
+    def setUp(self):
+        super().setUp()
+        self.paths = AgentPaths(self.project_root)
+
+    def test_list_stale_unacknowledged_alerts_respects_hours_and_ack(self):
+        now = time.time()
+        old = daemon_crash_store.append_crash_alert(
+            self.paths, {"pid": 1, "summary": "old"}
+        )
+        # 手动把 created_at 改到 2 小时前（超过默认 1 小时的升级阈值）。
+        self._rewrite_created_at(old["alert_id"], now - 7200)
+        fresh = daemon_crash_store.append_crash_alert(
+            self.paths, {"pid": 2, "summary": "fresh"}
+        )  # created_at 就是"现在"，不该被选中
+        acked = daemon_crash_store.append_crash_alert(
+            self.paths, {"pid": 3, "summary": "acked-old"}
+        )
+        self._rewrite_created_at(acked["alert_id"], now - 7200)
+        daemon_crash_store.acknowledge_crash_alert(self.paths, acked["alert_id"])
+
+        stale = daemon_crash_store.list_stale_unacknowledged_alerts(
+            self.paths, escalation_hours=1.0
+        )
+        stale_ids = {d["alert_id"] for d in stale}
+        self.assertEqual(stale_ids, {old["alert_id"]})
+
+    def _rewrite_created_at(self, alert_id: str, created_at: float) -> None:
+        p = self.paths.notification_daemon_crash_alerts
+        lines = p.read_text(encoding="utf-8").splitlines()
+        new_lines = []
+        for line in lines:
+            d = json.loads(line)
+            if d.get("alert_id") == alert_id:
+                d["created_at"] = created_at
+            new_lines.append(json.dumps(d, ensure_ascii=False))
+        p.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+    def test_mark_escalated_increments_count_and_excludes_after_max(self):
+        rec = daemon_crash_store.append_crash_alert(self.paths, {"pid": 1})
+        self._rewrite_created_at(rec["alert_id"], time.time() - 7200)
+
+        stale = daemon_crash_store.list_stale_unacknowledged_alerts(
+            self.paths, escalation_hours=1.0, max_escalations=1
+        )
+        self.assertEqual(len(stale), 1)
+
+        self.assertTrue(daemon_crash_store.mark_escalated(self.paths, rec["alert_id"]))
+        all_alerts = daemon_crash_store.list_crash_alerts(self.paths, unacknowledged_only=False)
+        self.assertEqual(all_alerts[0]["escalation_count"], 1)
+
+        # 已经升级过 1 次，达到 max_escalations=1 上限，不应再被选中。
+        stale_again = daemon_crash_store.list_stale_unacknowledged_alerts(
+            self.paths, escalation_hours=1.0, max_escalations=1
+        )
+        self.assertEqual(stale_again, [])
+
+    def test_mark_escalated_unknown_id_returns_false(self):
+        self.assertFalse(daemon_crash_store.mark_escalated(self.paths, "does-not-exist"))
+
+    def test_rotate_crash_alerts_if_needed_keeps_most_recent(self):
+        for i in range(10):
+            daemon_crash_store.append_crash_alert(self.paths, {"pid": i, "summary": f"crash-{i}"})
+        trimmed = daemon_crash_store.rotate_crash_alerts_if_needed(self.paths, max_entries=3)
+        self.assertEqual(trimmed, 7)
+        remaining = daemon_crash_store.list_crash_alerts(self.paths, unacknowledged_only=False)
+        self.assertEqual(len(remaining), 3)
+        # 保留的应该是最近写入的那几条（pid 7/8/9）。
+        remaining_pids = sorted(d["pid"] for d in remaining)
+        self.assertEqual(remaining_pids, [7, 8, 9])
+
+    def test_rotate_not_needed_returns_zero(self):
+        daemon_crash_store.append_crash_alert(self.paths, {"pid": 1})
+        self.assertEqual(
+            daemon_crash_store.rotate_crash_alerts_if_needed(self.paths, max_entries=500), 0
+        )
+
+
+class TestCrashHistoryRotation(_IsolatedHomeTestCase):
+    """§3.3：`daemon_crash_history.jsonl` 按 `daemon_crash_history_max_
+    entries` 配置截断，而不是写死的 500 条。"""
+
+    def test_record_daemon_crash_respects_configured_max_entries(self):
+        cfg_path = self.project_root / "agent_config.json"
+        cfg_path.write_text(
+            json.dumps({"http": {"daemon_crash_history_max_entries": 3}}),
+            encoding="utf-8",
+        )
+
+        log_path = self.project_root / ".agent" / "daemon.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("", encoding="utf-8")
+
+        for i in range(5):
+            daemon_mod.record_daemon_crash(
+                self.project_root, pid=1000 + i, exit_code=1,
+                started_at=time.time(), log_path=log_path,
+            )
+
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 3)
+        pids = [json.loads(l)["pid"] for l in lines]
+        self.assertEqual(pids, [1002, 1003, 1004])
+
+
+class TestCrashAlertEscalationCheck(_IsolatedHomeTestCase):
+    """`notification/daemon_crash_escalation.py::check_and_escalate_crash_
+    alerts()`：端到端验证"超时未读的告警被重新广播一次并打上升级标记，
+    未超时的/已经升级过的不受影响"。"""
+
+    def test_escalates_only_stale_alerts_and_marks_them(self):
+        from mini_agent.notification import daemon_crash_escalation
+
+        paths = AgentPaths(self.project_root)
+        stale = daemon_crash_store.append_crash_alert(
+            paths, {"pid": 1, "summary": "Daemon（PID=1）意外退出"}
+        )
+        fresh = daemon_crash_store.append_crash_alert(
+            paths, {"pid": 2, "summary": "Daemon（PID=2）意外退出"}
+        )
+        p = paths.notification_daemon_crash_alerts
+        lines = p.read_text(encoding="utf-8").splitlines()
+        new_lines = []
+        for line in lines:
+            d = json.loads(line)
+            if d.get("alert_id") == stale["alert_id"]:
+                d["created_at"] = time.time() - 7200
+            new_lines.append(json.dumps(d, ensure_ascii=False))
+        p.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+        broadcast_calls = []
+        with unittest.mock.patch(
+            "mini_agent.cli.daemon.broadcast_crash_alert_to_external_channels",
+            side_effect=lambda *a, **kw: broadcast_calls.append(kw.get("alert_id")),
+        ):
+            count = daemon_crash_escalation.check_and_escalate_crash_alerts(
+                self.project_root, escalation_hours=1.0, max_escalations=1
+            )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(broadcast_calls, [stale["alert_id"]])
+
+        all_alerts = daemon_crash_store.list_crash_alerts(paths, unacknowledged_only=False)
+        by_id = {d["alert_id"]: d for d in all_alerts}
+        self.assertEqual(by_id[stale["alert_id"]]["escalation_count"], 1)
+        self.assertEqual(by_id[fresh["alert_id"]].get("escalation_count", 0), 0)
+
+    def test_no_stale_alerts_returns_zero(self):
+        from mini_agent.notification import daemon_crash_escalation
+
+        count = daemon_crash_escalation.check_and_escalate_crash_alerts(
+            self.project_root, escalation_hours=1.0
+        )
+        self.assertEqual(count, 0)
+
+    def test_escalation_thread_runs_check_on_tick_and_stops_cleanly(self):
+        from mini_agent.notification import daemon_crash_escalation
+
+        calls = []
+        with unittest.mock.patch.object(
+            daemon_crash_escalation,
+            "check_and_escalate_crash_alerts",
+            side_effect=lambda *a, **kw: calls.append(1) or 0,
+        ):
+            t = daemon_crash_escalation.CrashAlertEscalationThread(
+                project_root=self.project_root,
+                escalation_hours=1.0,
+                poll_interval_seconds=0.05,
+            )
+            t.start()
+            time.sleep(0.2)
+            t.stop()
+            t.join(timeout=2)
+            self.assertFalse(t.is_alive())
+        self.assertGreaterEqual(len(calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

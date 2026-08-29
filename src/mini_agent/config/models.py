@@ -639,6 +639,10 @@ class HttpConfig:
     # `cmd_daemon_start` 现有的启动等待逻辑保持同样的默认超时（30s）。
     daemon_post_restart_health_check_seconds: float = 30.0
 
+    # [daemon_hang_detection_and_alert_escalation_plan.md 阶段三 §3.2/§3.3]
+    daemon_crash_alert_escalation_hours: float = 1.0
+    daemon_crash_history_max_entries: int = 1000
+
 
 @dataclass
 class WebSearchConfig:

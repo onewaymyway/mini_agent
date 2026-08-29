@@ -97,6 +97,20 @@ def _print_startup_digest_and_advisor(agent: Agent) -> None:
     if paths is None:
         return
 
+    # [daemon_hang_detection_and_alert_escalation_plan.md §3.2"交互时
+    # 顺带提示"] 本地 REPL 场景直接读文件（不像 daemon connected 客户端
+    # 需要走 HTTP 端点），跟上面的日报/推荐提示共用同一层 try/except
+    # 静默失败策略——一次会话只在这里打印一次，天然节流。
+    try:
+        from mini_agent.notification.daemon_crash_store import count_unacknowledged_crash_alerts
+        pending = count_unacknowledged_crash_alerts(paths)
+        if pending:
+            R.print_info(
+                f"⚠️ 有 {pending} 条未读的 daemon 崩溃/卡死记录，运行 `daemon status` 查看"
+            )
+    except Exception:
+        pass
+
     if digest_advisor_cfg is not None and not digest_advisor_cfg.next_action_startup_print_enabled:
         return
 
