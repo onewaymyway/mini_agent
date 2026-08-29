@@ -108,6 +108,266 @@ def _cleanup_pid_files(project_root: Path) -> None:
             pass
 
 
+# ── 崩溃自愈：运行状态标记 + 崩溃历史（daemon_crash_recovery_and_alert_plan.md）──
+#
+# 核心机制：daemon 子进程启动时把 daemon_run_state.json 标成 "running"；
+# 只有"预期内的停止路径"（HTTP /v1/shutdown、SIGTERM/SIGINT/SIGBREAK、
+# `daemon stop` 命令本身）才会把它改写成 "stopped_by_user"。监控者
+# （supervisor，见 daemon_supervisor.py）在子进程退出后读这个文件：
+# 仍是 "running" 就判定为非预期退出（崩溃），不管崩溃原因是未捕获异常、
+# 被外部信号杀死、还是 OOM/native crash（这些完全不会经过 Python 异常
+# 路径，run_state 文件天然停留在 "running" 就是唯一能捕捉到的信号）。
+
+_STATUS_RUNNING = "running"
+_STATUS_STOPPED_BY_USER = "stopped_by_user"
+
+
+def _run_state_file(project_root: Path) -> Path:
+    return project_root / ".agent" / "daemon_run_state.json"
+
+
+def _crash_history_file(project_root: Path) -> Path:
+    return project_root / ".agent" / "daemon_crash_history.jsonl"
+
+
+def _supervisor_pid_file(project_root: Path) -> Path:
+    return project_root / ".agent" / "daemon_supervisor.pid"
+
+
+def _write_run_state(project_root: Path, pid: int, status: str) -> None:
+    """写 daemon_run_state.json。调用方需保证不抛异常影响主流程——这里
+    内部已经 try/except 兜底，写入失败只记全局异常日志，不向上抛。"""
+    try:
+        p = _run_state_file(project_root)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps(
+                {"pid": pid, "status": status, "updated_at": time.time()},
+                ensure_ascii=False,
+            )
+        )
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.cli.daemon._write_run_state")
+
+
+def _read_run_state(project_root: Path) -> Optional[dict]:
+    try:
+        p = _run_state_file(project_root)
+        if not p.exists():
+            return None
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.cli.daemon._read_run_state")
+        return None
+
+
+def _stop_supervisor(project_root: Path, timeout_seconds: float = 5.0) -> None:
+    """`daemon stop` 收尾时确认 supervisor（如果存在）也已退出，避免它
+    残留成孤儿进程继续监控一个已经不存在的子进程。正常情况下 supervisor
+    自己的循环会在读到 stopped_by_user 后很快退出并清理自己的 PID 文件
+    （见 daemon_supervisor.py），这里只是等一等 + 超时兜底强杀。前台
+    模式没有 supervisor pid 文件，静默跳过。"""
+    p = _supervisor_pid_file(project_root)
+    if not p.exists():
+        return
+    try:
+        sup_pid = int(p.read_text().strip())
+    except (ValueError, OSError):
+        p.unlink(missing_ok=True)
+        return
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if not _is_process_alive(sup_pid):
+            p.unlink(missing_ok=True)
+            return
+        time.sleep(0.3)
+    # 超时仍未退出：强杀兜底，不应该因为 supervisor 卡住而让
+    # `daemon stop` 本身失败。
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.kernel32.TerminateProcess(
+                ctypes.windll.kernel32.OpenProcess(1, False, sup_pid), 0
+            )
+        else:
+            os.kill(sup_pid, signal.SIGKILL)
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.cli.daemon._stop_supervisor")
+    p.unlink(missing_ok=True)
+
+
+def mark_stopped_by_user(project_root: Path, pid: Optional[int] = None) -> None:
+    """把 run_state 标记为"预期停止"。任何触发停止的一方（daemon 自身的
+    优雅关停 finally、`daemon stop` 命令）都应该在动手停止之前/期间调用
+    这个函数——`daemon stop` 甚至要在信号还没发出去之前就先写，因为一旦
+    走到强杀（SIGKILL/TerminateProcess），子进程根本来不及自己写这个
+    标记，必须由发起停止的一方兜底。"""
+    if pid is None:
+        state = _read_run_state(project_root)
+        pid = (state or {}).get("pid") or 0
+    _write_run_state(project_root, pid, _STATUS_STOPPED_BY_USER)
+
+
+def _tail_lines(path: Path, n: int = 30) -> list[str]:
+    """读取一个文本文件的最后 n 行；文件不存在/读取失败时返回空列表，
+    不抛异常（诊断信息收集本身失败不应该阻断崩溃记录流程）。"""
+    try:
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return lines[-n:] if len(lines) > n else lines
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.cli.daemon._tail_lines")
+        return []
+
+
+def _find_last_global_exception(pid: int, since_ts: Optional[float] = None) -> Optional[dict]:
+    """在全局异常日志（~/.agent/logs/error.jsonl，跨项目共用）里找一条
+    大概率与本次崩溃相关的记录：按 pid 精确匹配（同一操作系统 pid 短期内
+    不会复用），并且发生时间不早于 `since_ts`（一般传子进程的
+    started_at，避免翻出上一次生命周期里同 pid 复用前的陈旧记录——
+    虽然 pid 复用概率本就很低，双重过滤更保险）。找不到时返回 None，
+    调用方应据此提示"未捕获到 Python 异常，可能是外部信号杀死或底层
+    崩溃"，不能瞎猜。只扫最后 200 行，避免全局日志很大时拖慢崩溃处理。"""
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        p = AgentPaths().global_error_log
+        if not p.exists():
+            return None
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        for line in reversed(lines[-200:]):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if rec.get("pid") != pid:
+                continue
+            # errors.py 落盘的 ts 字段是 iso_local() 字符串，没有 unix
+            # 时间戳，这里不做二次时间过滤——按 pid 精确匹配已经足够可靠
+            # （同一操作系统 pid 短期内不会复用），since_ts 参数保留仅为
+            # 未来 errors.py 补充 unix ts 字段时可以直接接上。
+            return rec
+        return None
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.cli.daemon._find_last_global_exception")
+        return None
+
+
+def record_daemon_crash(
+    project_root: Path,
+    pid: int,
+    exit_code: Optional[int],
+    started_at: Optional[float],
+    log_path: Path,
+    restart_attempt: int = 0,
+    restart_decision: str = "no_restart",
+) -> dict:
+    """收集崩溃诊断信息、写入 daemon_crash_history.jsonl，并发送一条
+    daemon_crash 告警（独立通道，见 notification/daemon_crash_store.py）。
+    返回写入的崩溃历史记录，供调用方（supervisor）打日志/决策使用。
+
+    "先感知后恢复"：这个函数只负责记录 + 告警，不做任何重启决策——调用方
+    应该在决定是否重启之前就调用它，即使后续重启逻辑本身出错，告警也
+    已经发出去了。
+    """
+    now = time.time()
+    uptime = (now - started_at) if started_at else None
+    log_tail = _tail_lines(log_path, 30)
+    last_exc = _find_last_global_exception(pid, since_ts=started_at)
+
+    if last_exc:
+        reason = f"{last_exc.get('exc_type')}: {last_exc.get('message')}"
+    elif exit_code is not None and exit_code < 0:
+        reason = f"被信号杀死（信号 {-exit_code}），未捕获到 Python 异常，疑似 OOM 或外部信号"
+    else:
+        reason = "未捕获到 Python 异常，可能是外部信号杀死或底层（native）崩溃"
+
+    uptime_str = f"存活 {int(uptime // 3600)}h{int((uptime % 3600) // 60)}m" if uptime else "存活时长未知"
+    summary = f"Daemon（PID={pid}）意外退出，{uptime_str}，原因：{reason}"
+
+    history_record = {
+        "timestamp": now,
+        "pid": pid,
+        "exit_code": exit_code,
+        "uptime_seconds": uptime,
+        "restart_attempt": restart_attempt,
+        "restart_decision": restart_decision,
+        "last_exception": last_exc,
+        "log_tail": log_tail,
+        "summary": summary,
+    }
+
+    # 崩溃历史：只追加、超过上限截断，跟 dispatch_log.jsonl 同样的策略。
+    try:
+        p = _crash_history_file(project_root)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        lines: list[str] = []
+        if p.exists():
+            lines = p.read_text(encoding="utf-8").splitlines()
+        lines.append(json.dumps(history_record, ensure_ascii=False))
+        if len(lines) > 500:
+            lines = lines[-500:]
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.cli.daemon.record_daemon_crash.history")
+
+    # 独立告警通道（3.2）：先保证落到看板专属存储（恒真、不可关闭），
+    # 再顺带走一遍已配置的外部渠道广播（邮件/webhook 等，失败不影响
+    # 上面的落盘）。
+    try:
+        from mini_agent.notification.daemon_crash_store import append_crash_alert
+        from mini_agent.storage.paths import AgentPaths
+        paths = AgentPaths(project_root)
+        alert_record = append_crash_alert(paths, dict(history_record))
+        # 注意：这里刻意不走 NotificationDispatcher.dispatch()——它会
+        # 无条件强制带上 ALWAYS_ON_CHANNEL="kanban"，而 KanbanChannel
+        # 写的正是 reports.jsonl（watchlist_report 那套通用汇报列表），
+        # 跟本方案"崩溃告警要有专门通道、不跟常规通知混在一起"的设计
+        # 初衷矛盾（daemon_crash_store 本身已经是"看板一定能看到"的
+        # 保证，不需要再借道 kanban 渠道重复一份）。这里只手动广播给
+        # 用户配置的其它外部渠道（邮件/webhook 等），显式跳过 kanban。
+        try:
+            from mini_agent.notification.config import load_notification_config
+            from mini_agent.notification.dispatcher import get_channel_class, NotificationMessage
+            cfg = load_notification_config(paths)
+            message = NotificationMessage(
+                title="⚠️ Daemon 崩溃",
+                body=summary,
+                source="daemon_crash",
+                meta={"alert_id": alert_record.get("alert_id")},
+            )
+            for name in cfg.default_channels:
+                if name == "kanban":
+                    continue
+                if not cfg.is_enabled(name):
+                    continue
+                channel_cls = get_channel_class(name)
+                if channel_cls is None:
+                    continue
+                try:
+                    channel_cls().send(message, cfg.channel_config(name), paths)
+                except Exception as exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(exc, where=f"mini_agent.cli.daemon.record_daemon_crash.broadcast[{name}]")
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.cli.daemon.record_daemon_crash.dispatch")
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.cli.daemon.record_daemon_crash.alert")
+
+    return history_record
+
+
 def _is_process_alive(pid: int) -> bool:
     """检查进程是否存活（跨平台）。"""
     try:
@@ -820,14 +1080,26 @@ def cmd_daemon_start(
                 print(f"[daemon] Failed to exec: {e}", file=sys.stderr)
                 return 1
     else:
-        # 后台进程
+        # 后台进程：不再直接 Popen 真正的 daemon 子进程，而是先拉起一个
+        # supervisor 进程（daemon_supervisor.py），由它去 Popen 真正的
+        # daemon 子进程并常驻监控——这样即使子进程崩溃，也有一个进程外的
+        # 监控者能感知到并记录/告警（阶段一）、按预算自动重启（阶段二）。
+        # 见 next_doc/daemon_crash_recovery_and_alert_plan.md §3.3。
         print(f"[daemon] Starting in background on port {http_port}...")
 
-        # daemon 进程的 stdout/stderr 重定向到日志文件而非 DEVNULL，
-        # 崩溃时可查看：<project_root>/.agent/daemon.log
         log_path = project_root / ".agent" / "daemon.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_path, "w", encoding="utf-8", errors="replace")
+        # 每次 `daemon start` 是一次全新的会话，先清空旧日志；supervisor
+        # 内部按追加方式写，同一个 supervisor 生命周期内多次重启的日志
+        # 会累积在一起，方便回看"重启前后分别发生了什么"。
+        log_path.write_text("", encoding="utf-8")
+
+        supervisor_cmd = [
+            python_exec, "-m", "mini_agent.cli.daemon_supervisor",
+            "--project", str(project_root),
+        ]
+        env = os.environ.copy()
+        env["MINI_AGENT_SUPERVISOR_CHILD_ARGV"] = json.dumps(base_cmd)
 
         if sys.platform == "win32":
             # Windows 没有 start_new_session；必须用 creationflags 让子进程
@@ -839,82 +1111,76 @@ def cmd_daemon_start(
             CREATE_NEW_PROCESS_GROUP = 0x00000200
             kwargs = {
                 "stdin": subprocess.DEVNULL,
-                "stdout": log_file,
-                "stderr": log_file,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
                 "creationflags": DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                "env": env,
             }
         else:
             kwargs = {
                 "stdin": subprocess.DEVNULL,
-                "stdout": log_file,
-                "stderr": log_file,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
                 "close_fds": True,
                 "start_new_session": True,
+                "env": env,
             }
 
         try:
-            proc = subprocess.Popen(base_cmd, **kwargs)
+            supervisor_proc = subprocess.Popen(supervisor_cmd, **kwargs)
         except Exception as e:
             from mini_agent.errors import log_exception
             log_exception(e, where='mini_agent.cli.daemon.cmd_daemon_start')
             print(f"[daemon] Failed to start: {e}", file=sys.stderr)
             return 1
 
-        pid = proc.pid
-        print(f"[daemon] Started: PID={pid}, port={http_port}")
+        supervisor_pid = supervisor_proc.pid
+        print(f"[daemon] Supervisor started: PID={supervisor_pid}, port={http_port}")
         print(f"[daemon] PID file: {_pid_file(project_root)}")
 
-        # PID 文件由 daemon 子进程自身在 --daemon-mode 路径里写入
-        # （app.py 的 daemon-mode 段调用 _write_pid(os.getpid(), ...)）。
-        # 父进程这里不再写文件，避免两处写入竞争以及子进程还未来得及
-        # 写文件就被误判"已死"的时序问题。
-        #
-        # 不过需要等子进程写完 PID 文件后，health_check 才有意义；
-        # 因此下面的等待循环里顺便也等 PID 文件出现。
-
-        # 等待 HTTP 服务就绪（最多 15 秒）
-        # 同时等 PID 文件（由子进程自己写）出现，再做 health_check。
+        # PID 文件由真正的 daemon 子进程自身在 --daemon-mode 路径里写入
+        # （app.py 的 daemon-mode 段调用 _write_pid(os.getpid(), ...)），
+        # 这里只负责等它出现 + health_check。
         client = DaemonClient(http_port, project_root=project_root)
         pid_path = _pid_file(project_root)
+        last_child_pid: Optional[int] = None
         for i in range(30):
             time.sleep(0.5)
-            # 子进程可能已崩溃
-            if not _is_process_alive(pid):
-                log_file.flush()
-                log_file.close()
-                print(
-                    f"[daemon] Error: daemon process (PID={pid}) exited unexpectedly.",
-                    file=sys.stderr,
-                )
-                print(
-                    f"[daemon] Check log for details: {log_path}",
-                    file=sys.stderr,
-                )
-                # 打印日志末尾 30 行，方便直接看到错误
+            if pid_path.exists():
                 try:
-                    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                    tail = lines[-30:] if len(lines) > 30 else lines
-                    if tail:
-                        print("[daemon] --- daemon.log tail ---", file=sys.stderr)
-                        for l in tail:
-                            print(f"  {l}", file=sys.stderr)
-                        print("[daemon] --- end ---", file=sys.stderr)
-                except Exception as _mini_agent_exc:
-                    from mini_agent.errors import log_exception
-                    log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
-                    pass
-                _cleanup_pid_files(project_root)
-                return 1
+                    last_child_pid = int(pid_path.read_text().strip())
+                except (ValueError, OSError):
+                    last_child_pid = None
             if pid_path.exists() and client.health_check():
-                log_file.close()
                 print(f"[daemon] HTTP service ready at http://127.0.0.1:{http_port}")
                 print(f"[daemon] Log: {log_path}")
                 return 0
+            supervisor_alive = _is_process_alive(supervisor_pid)
+            child_alive = _is_process_alive(last_child_pid) if last_child_pid else False
+            if not supervisor_alive and not child_alive:
+                # supervisor 已经退出，且子进程也不在——大概率是启动阶段
+                # 就崩溃了（比如配置错误），阶段一的记录逻辑已经在
+                # daemon_crash_history.jsonl 里留了一份详细诊断。
+                print(
+                    "[daemon] Error: daemon failed to start (supervisor exited).",
+                    file=sys.stderr,
+                )
+                print(f"[daemon] Check log for details: {log_path}", file=sys.stderr)
+                tail = _tail_lines(log_path, 30)
+                if tail:
+                    print("[daemon] --- daemon.log tail ---", file=sys.stderr)
+                    for l in tail:
+                        print(f"  {l}", file=sys.stderr)
+                    print("[daemon] --- end ---", file=sys.stderr)
+                crash_hist = _crash_history_file(project_root)
+                if crash_hist.exists():
+                    print(f"[daemon] Crash details recorded: {crash_hist}", file=sys.stderr)
+                _cleanup_pid_files(project_root)
+                return 1
 
-        log_file.close()
         print(
             "[daemon] Warning: HTTP service did not respond within 15s, "
-            "but daemon process is running."
+            "but process is running."
         )
         print(f"[daemon] Log: {log_path}")
         return 0
@@ -952,9 +1218,17 @@ def cmd_daemon_stop(project_root: Path) -> int:
     port = info.get("http_port")
     print(f"[daemon] Stopping daemon PID={pid}...")
 
+    # [daemon_crash_recovery_and_alert_plan.md §3.4] 在动手停止之前先把
+    # run_state 标记为 "预期停止"——即便接下来一路降级到第 3 级强杀
+    # （子进程根本来不及自己写这个标记），supervisor 也不会把这次
+    # `daemon stop` 误判成崩溃从而把它又拉起来。这一步必须由发起停止的
+    # 一方兜底写，不能完全依赖子进程自己写成功。
+    mark_stopped_by_user(project_root, pid)
+
     if not _is_process_alive(pid):
         print("[daemon] Process already gone.")
         _cleanup_pid_files(project_root)
+        _stop_supervisor(project_root)
         return 0
 
     # ── 第 1 级：HTTP 优雅关停（平台无关，优先尝试）───────────────────────
@@ -980,6 +1254,7 @@ def cmd_daemon_stop(project_root: Path) -> int:
             time.sleep(0.5)
             if not _is_process_alive(pid):
                 _cleanup_pid_files(project_root)
+                _stop_supervisor(project_root)
                 print("[daemon] Stopped.")
                 return 0
         print("[daemon] Did not exit after HTTP shutdown request, trying signal...")
@@ -999,6 +1274,7 @@ def cmd_daemon_stop(project_root: Path) -> int:
     except ProcessLookupError:
         print("[daemon] Process already gone.")
         _cleanup_pid_files(project_root)
+        _stop_supervisor(project_root)
         return 0
     except Exception as e:
         from mini_agent.errors import log_exception
@@ -1009,6 +1285,7 @@ def cmd_daemon_stop(project_root: Path) -> int:
         time.sleep(0.5)
         if not _is_process_alive(pid):
             _cleanup_pid_files(project_root)
+            _stop_supervisor(project_root)
             print("[daemon] Stopped.")
             return 0
 
@@ -1028,8 +1305,36 @@ def cmd_daemon_stop(project_root: Path) -> int:
         pass
     time.sleep(0.5)
     _cleanup_pid_files(project_root)
+    _stop_supervisor(project_root)
     print("[daemon] Stopped (forced).")
     return 0
+
+
+def _print_crash_summary(project_root: Path) -> None:
+    """`daemon status` 里附带展示最近一次崩溃摘要（如果有）。刻意读的是
+    崩溃历史文件的最后一条，不是"未确认告警"列表——status 命令是主动
+    查询，跟看板横幅"有没有未读"是两回事，这里只关心"最近发生过什么"。
+    """
+    p = _crash_history_file(project_root)
+    if not p.exists():
+        return
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+        if not lines:
+            return
+        last = json.loads(lines[-1])
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.cli.daemon._print_crash_summary")
+        return
+    ts = last.get("timestamp")
+    when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else "未知时间"
+    print(f"[daemon] Last crash: {when} — {last.get('summary', '(无摘要)')}")
+    decision = last.get("restart_decision")
+    if decision == "giveup":
+        print("[daemon] Auto-restart budget exhausted — manual `daemon start` required.")
+    elif decision == "no_restart":
+        print("[daemon] Auto-restart is disabled — this crash was only recorded, not restarted.")
 
 
 def cmd_daemon_status(project_root: Path) -> int:
@@ -1040,6 +1345,7 @@ def cmd_daemon_status(project_root: Path) -> int:
     info = _read_daemon_info(project_root)
     if not info:
         print("[daemon] Not running.")
+        _print_crash_summary(project_root)
         return 1
 
     pid = info["pid"]
@@ -1050,6 +1356,22 @@ def cmd_daemon_status(project_root: Path) -> int:
     print(f"[daemon] Running: PID={pid}, HTTP port={port}")
     if uptime > 0:
         print(f"[daemon] Uptime: {_format_duration(uptime)}")
+
+    sup_pid_path = _supervisor_pid_file(project_root)
+    if sup_pid_path.exists():
+        try:
+            sup_pid = int(sup_pid_path.read_text().strip())
+            sup_alive = _is_process_alive(sup_pid)
+        except (ValueError, OSError):
+            sup_pid, sup_alive = None, False
+        if sup_alive:
+            print(f"[daemon] Supervised: yes (supervisor PID={sup_pid}, crash 自动检测已启用)")
+        else:
+            print("[daemon] Supervised: supervisor PID 文件存在但进程已不在（可能异常退出）")
+    else:
+        print("[daemon] Supervised: no（前台模式或旧版本启动，无崩溃自动检测/重启）")
+
+    _print_crash_summary(project_root)
 
     # 尝试获取详细状态
     client = DaemonClient(port, project_root=project_root)

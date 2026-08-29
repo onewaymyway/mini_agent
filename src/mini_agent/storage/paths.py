@@ -1054,6 +1054,16 @@ class AgentPaths:
         精确对账的审计日志。"""
         return self.notification_dir / "dispatch_log.jsonl"
 
+    @property
+    def notification_daemon_crash_alerts(self) -> Path:
+        """<project_root>/.agent/notification/daemon_crash_alerts.jsonl —
+        daemon 崩溃告警的独立存储，见
+        next_doc/daemon_crash_recovery_and_alert_plan.md §3.2。刻意跟
+        reports.jsonl（周期性汇报，可批量已读、可慢慢看）彻底分开：崩溃
+        告警时效性强、不该被淹没在常规通知列表里，看板走专门的常驻横幅
+        展示，不是"关注与通知"tab 下的一个分类筛选项。"""
+        return self.notification_dir / "daemon_crash_alerts.jsonl"
+
     # ── 长期归档（archive.gc，改造方案 §4）─────────────────────────────────
     # 热文件里"已处理超过 retention_hours"的记录按自然月迁出到这里，只追加、
     # 视为只读；跟 sessions_dir 平级，不挂在任何具体模块目录下面，因为

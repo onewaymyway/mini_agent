@@ -592,10 +592,14 @@ def _main_inner() -> None:
 
         # 写入 PID 文件
         try:
-            from mini_agent.cli.daemon import _write_pid
+            from mini_agent.cli.daemon import _write_pid, _write_run_state, _STATUS_RUNNING
             http_port = getattr(args, "http_port", None) or 8765
             _agent_name = getattr(cfg, "agent_name", None) or None
             _write_pid(project_root, os.getpid(), http_port, agent_name=_agent_name)
+            # [daemon_crash_recovery_and_alert_plan.md §3.1] 崩溃检测的
+            # 起点：先假定"运行中"，只有真正预期内的停止路径才会把它改写
+            # 成 stopped_by_user（见下面的 finally）。
+            _write_run_state(project_root, os.getpid(), _STATUS_RUNNING)
             R.print_info(f"[daemon] Running in daemon mode, PID={os.getpid()}, port={http_port}")
         except Exception as e:
             from mini_agent.errors import log_exception
@@ -661,6 +665,13 @@ def _main_inner() -> None:
         # 结束后再读下一行输入。期间出现的权限审批/交互提问，走的是上面
         # 打开的"本地 CLI + HTTP 双路"，在同一个终端里直接问、直接答，
         # 不会被 observer 抢答，也不会重复打印。
+        # [daemon_crash_recovery_and_alert_plan.md §3.1] 只有真正走完这个
+        # try 块（没有异常逃逸出去）才算"预期内的关停"，下面的 finally 据此
+        # 决定要不要标记 run_state = stopped_by_user——万一未来这段代码
+        # 改动引入了会向外传播的异常，_crashed_out 能保证那种情况仍然
+        # 被正确地视为崩溃（不误标记），而不是依赖"当前代码里其实没有
+        # 异常会逃出去"这个容易被后续改动打破的隐含假设。
+        _crashed_out = False
         try:
             if attach_console:
                 from mini_agent.cli.daemon import DaemonClient, _read_daemon_info
@@ -783,10 +794,28 @@ def _main_inner() -> None:
                 # 持续等待，直到收到停止信号（SIGTERM/SIGINT）
                 while not stop_event.is_set():
                     stop_event.wait(timeout=5.0)
+        except Exception as _daemon_loop_exc:
+            _crashed_out = True
+            from mini_agent.errors import log_exception
+            log_exception(_daemon_loop_exc, where='mini_agent.cli.app.daemon_mode.wait_loop')
+            raise
         finally:
             R.print_info("[daemon] Shutting down daemon...")
             if http_server:
                 http_server.stop()
+            # [daemon_crash_recovery_and_alert_plan.md §3.1] 只有非崩溃退出
+            # （信号 handler / HTTP /v1/shutdown / 前台 attach-console 输入
+            # 循环自己退出）才标记 run_state = stopped_by_user，这样
+            # supervisor（如果有）不会把这次退出误判成崩溃。`_crashed_out`
+            # 由上面的 except 在异常真正向外传播时置位。
+            if not _crashed_out:
+                try:
+                    from mini_agent.cli.daemon import mark_stopped_by_user
+                    mark_stopped_by_user(project_root, os.getpid())
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.cli.app')
+                    pass
             # 清理 PID 文件
             try:
                 from mini_agent.cli.daemon import _cleanup_pid_files

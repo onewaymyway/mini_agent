@@ -6474,6 +6474,76 @@ async def batch_ack_pending_reports(request: Request):
     return {"ok": True, "acknowledged": n}
 
 
+# ── daemon 崩溃告警专用端点（看板顶栏常驻横幅，独立于 watchlist_report）───
+#
+#   GET  /v1/daemon/crash_alerts              未确认的崩溃告警（供横幅展示）
+#   GET  /v1/daemon/crash_alerts/history       全部崩溃历史（含已确认，供"查看历史"）
+#   POST /v1/daemon/crash_alerts/{id}/ack      标记一条崩溃告警为已读
+#
+# 存储在独立的 notification/daemon_crash_alerts.jsonl，见
+# next_doc/daemon_crash_recovery_and_alert_plan.md §3.2 与
+# notification/daemon_crash_store.py 模块 docstring。
+
+@router.get("/daemon/crash_alerts")
+async def get_daemon_crash_alerts(request: Request, limit: int = 10):
+    """GET /v1/daemon/crash_alerts?limit=10 — 未确认的 daemon 崩溃告警，
+    按时间倒序，供看板顶栏常驻横幅展示。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    from mini_agent.notification.daemon_crash_store import list_crash_alerts, count_unacknowledged_crash_alerts
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(proj_root)
+    alerts = list_crash_alerts(paths, limit=limit, unacknowledged_only=True)
+    return {"alerts": alerts, "total": count_unacknowledged_crash_alerts(paths)}
+
+
+@router.get("/daemon/crash_alerts/history")
+async def get_daemon_crash_alert_history(request: Request, limit: int = 30):
+    """GET /v1/daemon/crash_alerts/history?limit=30 — 全部崩溃历史
+    （含已确认），供"查看历史崩溃记录"展开面板。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    from mini_agent.notification.daemon_crash_store import list_crash_alerts
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(proj_root)
+    return {"alerts": list_crash_alerts(paths, limit=limit, unacknowledged_only=False)}
+
+
+@router.post("/daemon/crash_alerts/{alert_id}/ack")
+async def ack_daemon_crash_alert(request: Request, alert_id: str):
+    """POST /v1/daemon/crash_alerts/{alert_id}/ack — 标记一条崩溃告警为
+    已读，之后不再出现在横幅里（历史记录里仍能查到）。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    from mini_agent.notification.daemon_crash_store import acknowledge_crash_alert
+    from mini_agent.storage.paths import AgentPaths
+    ok = acknowledge_crash_alert(AgentPaths(proj_root), alert_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Crash alert {alert_id!r} not found or already acknowledged")
+    return {"ok": True}
+
+
 # ── cron 任务异步用户反馈专用端点（看板"待我反馈"面板）────────────────────────
 #
 #   GET  /v1/cron_questions/pending          待回答问题列表（分页，可按 job_id 过滤）

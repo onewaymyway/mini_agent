@@ -273,3 +273,50 @@ CLI 命令本身依然立即返回（等待逻辑不变，只是等的是 superv
        "先感知后恢复"的顺序保证）
 
 每阶段完成后按约定更新对应文档并打包该阶段改动/新增文件供下载。
+
+---
+
+## 5. 实现记录
+
+### 阶段一（已完成）
+
+- `daemon_run_state.json`（`cli/daemon.py::_write_run_state`/`_read_run_state`/
+  `mark_stopped_by_user`）：daemon-mode 启动即写 `running`；`app.py` 用一个
+  局部 `_crashed_out` 标志精确标记"finally 是否由异常传播触发"，只有非崩溃
+  路径才改写成 `stopped_by_user`；`daemon stop` 在动手停止前（甚至第 1 级
+  HTTP 优雅关停发起之前）就先兜底写这个标记，不依赖子进程自己写成功
+- `record_daemon_crash()`（`cli/daemon.py`）：收集退出码/存活时长/日志尾部
+  30 行/关联的最近一次全局异常（按 pid 精确匹配 `~/.agent/logs/error.jsonl`
+  最后 200 行），生成人类可读摘要，写入 `daemon_crash_history.jsonl`
+- `notification/daemon_crash_store.py`（新文件）：独立存储
+  `daemon_crash_alerts.jsonl`，`append`/`list`/`ack`/`count`
+- 崩溃告警广播**刻意不走** `NotificationDispatcher.dispatch()`——它会无条件
+  强制带上 `ALWAYS_ON_CHANNEL="kanban"`，而 `KanbanChannel` 写的正是
+  `reports.jsonl`（watchlist_report 那套通用列表），与本方案"崩溃告警要
+  独立、不跟常规通知混在一起"的设计初衷矛盾。改为手动遍历用户在
+  `notification_config.json` 里配置的非 kanban 渠道逐个广播
+- `cli/daemon_supervisor.py`（新文件）：`daemon start --detach` 改为拉起这个
+  supervisor 进程（通过 `MINI_AGENT_SUPERVISOR_CHILD_ARGV` 环境变量传子进程
+  启动参数），supervisor 循环 Popen 子进程 → wait → 读 run_state 判定崩溃/
+  预期停止 → 崩溃时记录+告警。**阶段一 `auto_restart` 固定传 `False`**——
+  循环结构已经按最终形态实现（重启预算滑动窗口、退避序列都写好了），阶段
+  二只需要把这个参数接上配置项、默认打开，不需要重写循环
+- 副作用（正面）：原本"daemon 启动阶段就崩溃"（比如配置错误）会在
+  `cmd_daemon_start` 的等待循环里被当场感知（supervisor 退出且子进程也不
+  在 → 判定失败），现在这条路径复用同一套崩溃记录机制，`daemon start`
+  失败时能顺带提示"崩溃详情已记录在 daemon_crash_history.jsonl"
+- `cli/daemon.py::cmd_daemon_stop`/`cmd_daemon_status` 相应联动：`stop` 收尾
+  确认 supervisor 也已退出（超时兜底强杀）；`status` 展示是否处于 supervisor
+  监控下 + 最近一次崩溃摘要
+- `api/routes.py`：`GET /v1/daemon/crash_alerts`、
+  `GET /v1/daemon/crash_alerts/history`、`POST /v1/daemon/crash_alerts/{id}/ack`
+- `apps/mini_agent_kanban/client.py` + `app.py`：顶栏常驻红色横幅
+  （`st.error`，非折叠展示），独立于"系统状态哨兵"面板；每条告警可展开看
+  日志尾部/关联异常/重启决策，附"标记已读"按钮
+- 测试：`tests/test_daemon_crash_recovery.py`（16 用例，覆盖 run_state 标记、
+  崩溃诊断收集、独立存储 CRUD、supervisor 崩溃/预期停止判定、supervisor 自身
+  PID 文件生命周期）；daemon 相关测试全量回归 98 passed（82 原有 + 16 新增），
+  另确认 10 个跟本次改动无关的沙盒环境预置失败（缺 fastapi/streamlit 相关
+  fixture、未触碰的 external_input/goal_execution_spec 模块）不受影响
+- 未做（留给后续阶段）：前台模式的 `execv`→`Popen+wait` 收敛（阶段三）；
+  `auto_restart`/`daemon_restart_max_attempts` 等配置项接入（阶段二）

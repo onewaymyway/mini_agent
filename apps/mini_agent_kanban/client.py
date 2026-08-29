@@ -344,6 +344,18 @@ class AgentClient:
         当前积压情况（不含已修复记录）。"""
         return self._get("/wiki/quarantine_status")
 
+    def daemon_crash_alerts(self, limit: int = 10):
+        """[daemon_crash_recovery_and_alert_plan.md §3.2] 未确认的 daemon
+        崩溃告警，供顶栏常驻横幅展示。"""
+        return self._get("/daemon/crash_alerts", params={"limit": limit})
+
+    def daemon_crash_alert_history(self, limit: int = 30):
+        """全部崩溃历史（含已确认），供"查看历史崩溃记录"展开面板。"""
+        return self._get("/daemon/crash_alerts/history", params={"limit": limit})
+
+    def ack_daemon_crash_alert(self, alert_id: str):
+        return self._post(f"/daemon/crash_alerts/{alert_id}/ack")
+
     def sentinel_summary(self, cron_failure_threshold: int = 2):
         """[kanban_perception_gaps_improvement_plan.md 方向 A] 哨兵聚合面板：
         cron 连续失败 + Objective 重试热点 + wiki 隔离区积压 + LLM 故障转移

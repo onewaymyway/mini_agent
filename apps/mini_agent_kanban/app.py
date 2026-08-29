@@ -1215,9 +1215,59 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
         with st.expander(f"💬 有 {pending_ix_n} 个待回答的交互请求，点击处理", expanded=True):
             render_interactions(client, pending_ix_list)
 
+    _render_daemon_crash_banner(client)
+
     _render_global_inbox(client, session_id)
 
     _render_sentinel_panel(client)
+
+
+# [daemon_crash_recovery_and_alert_plan.md §3.2] "⚠️ Daemon 崩溃"专属常驻
+# 横幅——刻意不是"关注与通知"tab 下的一个分类筛选项，也不跟"系统状态
+# 哨兵"面板合并：崩溃是时效性极强、用户必须第一时间知道的事件，跟
+# "值得留意但可以慢慢看"的哨兵信号语义不同，需要在顶栏最显眼的位置、
+# 默认展开展示，而不是折叠在某个 expander 里等用户自己点开。
+def _render_daemon_crash_banner(client: AgentClient) -> None:
+    data = client.daemon_crash_alerts(limit=10) or {}
+    if "_error" in data:
+        # 静默失败：这是增强能力，不应影响顶栏其它内容的展示
+        return
+
+    alerts = data.get("alerts") or []
+    if not alerts:
+        return
+
+    total = data.get("total", len(alerts))
+    st.error(f"⚠️ 检测到 {total} 次 Daemon 崩溃，尚未确认", icon="⚠️")
+    for alert in alerts:
+        ts = alert.get("timestamp")
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else "未知时间"
+        with st.expander(f"{when} — {alert.get('summary', '(无摘要)')}", expanded=False):
+            log_tail = alert.get("log_tail") or []
+            last_exc = alert.get("last_exception")
+            c1, c2 = st.columns([5, 1])
+            with c1:
+                if last_exc:
+                    st.caption(f"最近一次未捕获异常：`{last_exc.get('exc_type')}`：{last_exc.get('message')}")
+                    st.caption(f"发生位置：{last_exc.get('where', '未知')}")
+                else:
+                    st.caption("未捕获到 Python 异常，可能是外部信号杀死或底层（native）崩溃")
+                restart_decision = alert.get("restart_decision")
+                if restart_decision == "no_restart":
+                    st.caption("自动重启未启用，本次崩溃仅记录，daemon 需要手动 `daemon start`")
+                elif restart_decision == "giveup":
+                    st.caption("自动重启预算已耗尽，daemon 需要手动 `daemon start`")
+                elif restart_decision == "restarted":
+                    st.caption("已自动重启")
+                if log_tail:
+                    st.code("\n".join(log_tail), language="text")
+            with c2:
+                if st.button("标记已读", key=f"crash_ack_{alert.get('alert_id')}"):
+                    res = client.ack_daemon_crash_alert(alert.get("alert_id"))
+                    if res and "_error" not in res:
+                        st.rerun()
+                    else:
+                        st.error((res or {}).get("_error", "标记失败"))
 
 
 # [kanban_perception_gaps_improvement_plan.md 方向 A] "⚠️ 系统状态哨兵"
