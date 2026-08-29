@@ -1,6 +1,12 @@
 # 候选人设/能力自动检测方案（Persona Candidate Auto-Scan）
 
-- **版本**：v0.1（设计草案，尚未实现）
+- **版本**：v0.2（设计草案，尚未实现。**本轮改动**：用户反馈"候选生成
+  本身也应该用 LLM，因为直接复用 growth_advisor/wiki miss 现成的主题/
+  条目，是从别的场景的视角提炼出来的，角度不一样，不一定能直接映射成
+  一个合适的人设/能力方向"。原方案里"候选生成规则式、只有去重判重用
+  LLM"的分层被推翻——改成候选生成（从原始信号提炼出人设标题+描述）
+  和去重判断都用 LLM，只是原始信号收集（哪些记忆条目/wiki miss 记录
+  值得喂给 LLM）仍然是规则式的粗筛，降低 LLM 调用量级。详见 §4。）
 - **背景**：`next_doc/persona_capability_learning_design.md` 里
   `target_type="persona"` 全链路已经打通（草稿合成/发布/看板 UI），
   但**新建 Track/人设的入口目前只有用户主动发起**——用户在看板/CLI
@@ -40,7 +46,7 @@
 |---|---|
 | 候选生成→用户裁决的状态机范式（pending/accepted/dismissed + 冷却期） | `growth_advisor.py::GrowthBacklog`（`STATUS_*`、`dismissed_cooldown_days` 处理逻辑） |
 | 通用 LLM 调用入口 | `llm/service.py::LLMHelper`（`.ask(prompt)`），获取方式对齐 `api/routes.py` 里 `/growth/summary` 已有的 `llm_helper = lambda prompt: helper.ask(prompt)` 写法 |
-| LLM 语义判重的 prompt 设计范式 | `growth_advisor.py::_llm_find_duplicate_direction()`（"给一个新标题 + 一份已有标题列表，判断是否本质同一件事，命中原样返回，未命中输出 `NONE`"）——本方案直接照搬这个契约，只是判断对象从"成长方向"换成"人设/能力方向" |
+| LLM 语义判重的 prompt 设计范式 | `growth_advisor.py::_llm_find_duplicate_direction()`（"给一个新标题 + 一份已有标题列表，判断是否本质同一件事，命中原样返回，未命中输出 `NONE`"）——本方案直接照搬这个契约，只是判断对象从"成长方向"换成"人设/能力方向"（去重判断复用，候选*生成*本身是本方案新增的 LLM 提炼步骤，见 §4） |
 | 已存在人设读取 | `orchestrator/persona_profiles.py::list_personas_for_paths(paths)` |
 | 已存在能力 Track 读取 | `evolution/capability_learning.py::CapabilityTrackStore.list_tracks()` |
 | 采纳后创建 Track | `evolution/capability_learning.py::CapabilityTrackStore.create(..., target_type="persona")` |
@@ -106,37 +112,103 @@ class PersonaCandidate:
 
 `scan_persona_candidates(paths, cfg, profile, memory_store, llm_helper)`：
 
-1. **收集信号**（规则式，不调用 LLM，成本低，先过一轮粗筛）：
+原方案打算"候选生成规则式（直接把 growth_advisor 的主题名/wiki miss
+的检索词当候选标题）、只有去重判重过 LLM"，但这些信号本身是从别的
+场景的视角提炼出来的（growth_advisor 的主题是"用户的成长方向"，wiki
+miss 记录的是"某次具体检索的原始查询词"），直接拿来当"人设/能力方向
+标题"角度不一定对——比如一个 growth 主题叫"Rust 异步编程"，未必适合
+直接开一个叫"Rust 异步编程"的人设，可能更合适的是"系统编程陪练"这种
+更贴近"人设"语境的提炼。因此**候选生成本身也要过 LLM**，只是原始信号
+的采集/粗筛仍是规则式，控制喂给 LLM 的输入量级和调用频次：
+
+1. **收集原始信号**（规则式，不调用 LLM，只做采集+粗筛，不做提炼）：
    - 复用 `growth_advisor._effective_topic_keywords()` 里
-     `confirmed_by_user=True` 或 `auto_confirmed=True` 的主题——这些
-     是已经被验证"用户持续关注"的方向，是人设候选的第一来源；
+     `confirmed_by_user=True` 或 `auto_confirmed=True` 的主题及其
+     `keywords`——这些是已经被验证"用户持续关注"的方向，作为原始
+     素材而非直接当标题；
    - 复用 `capability_learning.py` 的 wiki miss 台账（`record_wiki_miss`
-     累积的高频未命中检索）——反复查不到、说明该领域目前没有对应
-     人设/知识沉淀在支撑；
-   - 两类信号各自按 `evidence_count` 排序，取 Top N（避免一次扫描
-     生成过多候选，对齐 `GrowthAdvisorConfig.max_pending_candidates`
-     的节流思路）。
-2. **候选去重过滤**（LLM 判重，本方案的核心新增点）：
+     累积的高频未命中检索）——按检索词聚类，取出现次数较高的一批
+     原始查询词，同样作为素材而非直接当标题；
+   - 两类信号各自按 `evidence_count`/出现次数排序，取 Top N 截断
+     （避免一次把过多原始素材塞进 prompt，对齐
+     `GrowthAdvisorConfig.max_pending_candidates` 的节流思路，也控制
+     单次 LLM 调用的输入长度）。
+2. **LLM 提炼候选**（新增的核心步骤）：
+   - 把 §1 收集到的原始信号（主题名+关键词、高频未命中检索词，各自
+     标注来源）整批交给一次 `llm_helper.ask(prompt)` 调用（prompt
+     设计见 §4.1），要求 LLM 站在"这个人是否适合养成一个专属人设/
+     能力方向来持续支撑 ta"的角度，重新提炼出 0~N 条候选，每条包含
+     `title`（人设/能力方向标题，不要求和原始素材字面一致）+
+     `persona_desc`（一段简介）+ `rationale`（为什么建议，需要指出
+     依据了哪些原始信号）；
+   - 要求结构化输出（JSON），解析失败/为空时静默跳过本轮（不重试、
+     不报错中断整个扫描——对齐 `capability_learning.py` 里
+     `draft_outline_with_llm()` "起草辅助而非关键路径，失败退回空"
+     的一贯降级策略）；
+   - 每条候选保留原始信号的弱引用（`evidence_refs`），供 §5 去重和
+     用户查看理由使用。
+3. **候选去重过滤**（LLM 判重，独立于第 2 步的另一次 LLM 调用）：
    - 收集"已存在标题池"：`list_personas_for_paths(paths)` 的
      `display_name`（或 `name`）+ `CapabilityTrackStore.list_tracks()`
      的 `title`（active/paused，archived 不计入，允许重新提议）；
    - 收集"近期被忽略标题池"：`status == "dismissed"` 且
      `decided_at` 在 `dismissed_cooldown_days` 冷却期内的
      `PersonaCandidate.title`；
-   - 对每个新粗筛出来的候选标题，调用
-     `llm_helper.ask(prompt)`（prompt 设计见 §4.1），一次性把两个
-     标题池都交给 LLM 判断，只要命中任意一个池子就跳过，不生成新
+   - 对第 2 步 LLM 提炼出的每个候选标题，调用
+     `llm_helper.ask(prompt)`（prompt 设计见 §4.2），一次性把两个
+     标题池都交给 LLM 判断，只要命中任意一个池子就跳过，不落盘该
      候选；
    - LLM 调用失败/输出解析不出时（对齐
      `_llm_find_duplicate_direction()` 的降级策略）：**当作不重复**，
      宁可多生成一条候选让用户手动 dismiss，也不要因为一次判断失败
      就悄悄漏掉一个真正的新方向。
-3. **落盘**：新增 `PersonaCandidate(status="pending")`，`persona_desc`
-   规则式生成一段简短描述（沿用 `capability_learning.py` 里已有的
-   "规则先行、LLM 起草作为可选增强"的分层，`persona_desc` 的 LLM
-   润色留作后续 opt-in 项，不在本轮范围内）。
+4. **落盘**：通过去重过滤的候选，写入 `PersonaCandidate(status="pending")`。
 
-### 4.1 LLM 判重 Prompt（草案）
+这样第 2、3 步是两次独立的 LLM 调用（提炼 1 次批量调用产出多条候选，
+判重则每条候选各 1 次调用——判重沿用 `_llm_find_duplicate_direction()`
+现成实现，不合并进提炼那一次调用，保持"一次调用只做一件事"、prompt
+职责单一，也方便判重逻辑被其它场景复用）。单轮扫描的 LLM 调用总量
+= 1（提炼）+ N（判重，N = 提炼出的候选数，受 Top N 截断和
+`max_pending_candidates` 节流，量级可控）。
+
+### 4.1 LLM 候选提炼 Prompt（草案）
+
+```
+下面是从这个人最近的对话记忆/知识检索记录里整理出的一些原始信号
+（不代表最终结论，只是素材）：
+
+【持续关注的方向】（来自成长顾问，用户反复表现出兴趣并已确认）
+- <主题 1>（关键词：...）
+- <主题 2>（关键词：...）
+
+【反复检索但目前没有对应知识沉淀的内容】（来自知识库未命中记录）
+- <高频查询词 1>（出现 N 次）
+- <高频查询词 2>（出现 N 次）
+
+请你站在"是否值得为这个人养成一个专属的人设/能力方向，让 Agent 持续
+学习、专精支撑 ta"的角度，重新判断、提炼出 0 到 5 个值得建议的人设/
+能力方向。不要求和上面的原始素材字面一致——原始素材可能是从别的场景
+（成长方向追踪/单次检索）提炼出来的，角度不一定适合直接当人设标题，
+请你重新组织表述。如果原始素材不足以支撑任何靠谱的建议，可以输出
+空列表，不要为了凑数量硬造。
+
+请只输出如下 JSON 数组，不要输出任何其它文字：
+[
+  {
+    "title": "人设/能力方向标题，简洁，不超过 20 字",
+    "persona_desc": "一段 1-2 句的简介，说明这个人设/能力方向具体是
+      指什么、大致覆盖哪些子领域",
+    "rationale": "为什么建议这个方向，需要提到依据了上面哪些原始信号"
+  }
+]
+```
+
+解析约定：要求 LLM 只输出 JSON 数组，解析时仍要做防御式处理（strip
+markdown 代码块围栏、`json.loads` 失败时整批放弃本轮提炼），对齐
+项目里其它"要求 LLM 输出结构化数据"场景（如
+`classify_topic_category_llm()`）的既有容错写法。
+
+### 4.2 LLM 判重 Prompt（草案）
 
 直接照搬 `_llm_find_duplicate_direction()` 的契约（一次性把已有标题
 列表 + 新标题交给 LLM，命中要求逐字复制原文，未命中输出 `NONE`），
@@ -212,9 +284,11 @@ Track 列表的那个函数附近）新增一个子区域"🎭 候选人设"：
   `target_type="persona"` 的 Track，是否/何时正式发布成人设文件，
   沿用 `persona_capability_learning_design.md` §10 已有的发布流程，
   由用户在 Track 详情页决定；
-- `persona_desc` 初版只做规则拼装，不接 LLM 润色（LLM 只用在"去重
-  判断"这一步，符合用户"去重要用 LLM"的明确诉求，避免顺带扩大 LLM
-  调用面）；
+- 原始信号的采集/粗筛（哪些记忆条目/wiki miss 记录值得喂给 LLM）
+  仍是规则式，不整批交给 LLM 自由发挥去翻记忆库——避免单次扫描的
+  输入长度/成本失控，也避免绕开 growth_advisor/capability_learning
+  已有的"知情但克制"边界（不把原始记忆条目全文交给候选提炼这一步，
+  只传聚合后的主题名/关键词/高频查询词）；
 - cron 定时扫描默认关闭（`enabled: False`），先支持看板手动触发，
   观察实际候选质量/去重准确率后再评估要不要 opt-out。
 
