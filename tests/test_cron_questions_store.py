@@ -312,6 +312,55 @@ class TestDismissQuestion:
         second = dismiss_question(paths, rec["question_id"])  # 不传 note
         assert second["dismiss_note"] == "第一次的原因"
 
+    def test_first_dismiss_has_repeat_count_one(self, paths):
+        """[cron_async_feedback_further_improvements_plan.md F5] 第一次被
+        忽略时，`repeat_dismiss_count` 是 1（"这是第一次"），不是 0。"""
+        rec = append_question(paths, "user:job1", "还需要回答吗？")
+        updated = dismiss_question(paths, rec["question_id"])
+        assert updated["repeat_dismiss_count"] == 1
+
+    def test_second_semantically_similar_question_has_repeat_count_two(self, paths):
+        """同一 job_id 下，第二次问了一个用词不同但语义相似的问题、也被
+        忽略，`repeat_dismiss_count` 应该累加成 2。"""
+        rec1 = append_question(paths, "user:job1", "还需要继续跑这个任务吗？")
+        dismiss_question(paths, rec1["question_id"])
+        rec2 = append_question(paths, "user:job1", "还需要继续跑这个任务吗")
+        updated2 = dismiss_question(paths, rec2["question_id"])
+        assert updated2["repeat_dismiss_count"] == 2
+
+    def test_dismiss_count_does_not_cross_job_boundary(self, paths):
+        """不同 job_id 下即使问题文本完全相同，也不应该互相计数——
+        "同一件事反复问"是同一个 job 内的信号。"""
+        rec1 = append_question(paths, "user:job1", "还需要回答吗？")
+        dismiss_question(paths, rec1["question_id"])
+        rec2 = append_question(paths, "user:job2", "还需要回答吗？")
+        updated2 = dismiss_question(paths, rec2["question_id"])
+        assert updated2["repeat_dismiss_count"] == 1
+
+    def test_dissimilar_questions_do_not_increment_repeat_count(self, paths):
+        """完全不相关的两个问题被忽略，互不计数。"""
+        rec1 = append_question(paths, "user:job1", "要不要升级依赖版本？")
+        dismiss_question(paths, rec1["question_id"])
+        rec2 = append_question(paths, "user:job1", "预算超支了怎么办？")
+        updated2 = dismiss_question(paths, rec2["question_id"])
+        assert updated2["repeat_dismiss_count"] == 1
+
+    def test_answered_questions_do_not_count_toward_repeat_dismiss(self, paths):
+        """已回答（而非忽略）的问题不应该被计入"被忽略次数"。"""
+        rec1 = append_question(paths, "user:job1", "还需要回答吗？")
+        submit_answer(paths, rec1["question_id"], "需要")
+        rec2 = append_question(paths, "user:job1", "还需要回答吗？")
+        updated2 = dismiss_question(paths, rec2["question_id"])
+        assert updated2["repeat_dismiss_count"] == 1
+
+    def test_repeat_dismiss_count_idempotent_on_repeat_call(self, paths):
+        """幂等重复调用不应该让 repeat_dismiss_count 递增（第二次调用直接
+        返回已有记录，不重新计算）。"""
+        rec = append_question(paths, "user:job1", "还需要回答吗？")
+        first = dismiss_question(paths, rec["question_id"])
+        second = dismiss_question(paths, rec["question_id"])
+        assert first["repeat_dismiss_count"] == second["repeat_dismiss_count"] == 1
+
 
 class TestFindOrCreateQuestionConcurrency:
     """[cron_async_feedback_hardening_plan.md D1] 并发安全回归测试。"""
@@ -619,6 +668,21 @@ class TestExpireStalePendingQuestions:
         expired = expire_stale_pending_questions(paths, stale_after_days=0)
         assert len(expired) == 1
         assert expired[0]["question_id"] == rec["question_id"]
+
+    def test_auto_expire_also_computes_repeat_dismiss_count(self, paths):
+        """[cron_async_feedback_further_improvements_plan.md F5] 超时自动
+        关闭跟手动忽略共用同一套 repeat_dismiss_count 统计，不能只在
+        `dismiss_question()` 路径生效。"""
+        from mini_agent.notification.questions_store import expire_stale_pending_questions
+
+        rec1 = append_question(paths, "user:job1", "还需要回答吗？")
+        dismiss_question(paths, rec1["question_id"])
+        rec2 = append_question(paths, "user:job1", "还需要回答吗？")
+        _backdate(paths, rec2["question_id"], days_ago=30)
+
+        expired = expire_stale_pending_questions(paths, stale_after_days=14)
+        assert len(expired) == 1
+        assert expired[0]["repeat_dismiss_count"] == 2
 
 
 class TestDismissReason:

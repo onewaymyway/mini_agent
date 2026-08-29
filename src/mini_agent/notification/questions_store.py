@@ -261,6 +261,52 @@ def _find_pending_by_fingerprint_locked(
     return None
 
 
+def _count_prior_dismissed_matches(
+    records: list, job_id: str, question: str, exclude_question_id: str,
+    fuzzy_threshold: Optional[float] = 0.82,
+) -> int:
+    """[cron_async_feedback_further_improvements_plan.md F5] 在**已经加载
+    到内存**的 `records`（调用方在同一把锁内 `_load_all()` 得到的快照）里，
+    统计同一 `job_id` 下、语义上跟 `question` 相似、状态已经是
+    `dismissed` 的历史记录条数（不含 `exclude_question_id` 自己——本函数
+    在"即将把某条记录标记为 dismissed"之前调用，此时那条记录在 `records`
+    里可能还是 `pending`，也可能因为调用方传入的是刚构造的新记录而根本
+    不在 `records` 里，两种情况都需要显式排除，避免自我匹配把计数多算
+    一次）。
+
+    复用 D4（`find_or_create_question`）同一套"精确匹配优先，其次
+    `_normalize_question_text` + `difflib.SequenceMatcher` 模糊匹配"的
+    判定逻辑，语义保持一致：同一个问题换了个说法重新问，依然应该被认成
+    "同一件事"。`fuzzy_threshold=None` 时只做精确匹配（预留给未来可能
+    需要关闭模糊匹配的调用方，当前所有调用点都用默认值）。
+
+    返回值只是"匹配到的历史条数"，不含"这一次"——调用方拿到这个数后自己
+    `+ 1` 得到 `repeat_dismiss_count`（"这是第几次因为同一件事被忽略"）。
+    """
+    q = (question or "").strip()
+    if not q:
+        return 0
+    candidates = [
+        d for d in records
+        if d.get("job_id") == job_id
+        and d.get("status") == STATUS_DISMISSED
+        and d.get("question_id") != exclude_question_id
+    ]
+    count = 0
+    norm_q = _normalize_question_text(q) if fuzzy_threshold is not None else ""
+    for d in candidates:
+        c = (d.get("question") or "").strip()
+        if c == q:
+            count += 1
+            continue
+        if fuzzy_threshold is not None and norm_q:
+            import difflib
+            norm_c = _normalize_question_text(c)
+            if norm_c and difflib.SequenceMatcher(None, norm_q, norm_c).ratio() >= fuzzy_threshold:
+                count += 1
+    return count
+
+
 def get_question(paths: "AgentPaths", question_id: str) -> Optional[dict]:
     for d in _load_all(paths):
         if d.get("question_id") == question_id:
@@ -443,6 +489,16 @@ def dismiss_question(
         target["dismiss_reason"] = reason
         if note:
             target["dismiss_note"] = note
+        # [cron_async_feedback_further_improvements_plan.md F5] 在写入
+        # dismissed 之前，先用同一份 records 快照统计"这个问题之前已经
+        # 被语义相似地忽略过几次"，+1 就是这一次。必须在
+        # `target["status"] = STATUS_DISMISSED` 之后、`_write_all` 之前
+        # 计算——此时 `records`（含 `target` 本身）里其它历史 dismissed
+        # 记录都还是原样，`target` 自己已经被排除在统计之外
+        # （`exclude_question_id`）。
+        target["repeat_dismiss_count"] = 1 + _count_prior_dismissed_matches(
+            records, target.get("job_id") or "", target.get("question") or "", question_id,
+        )
         target["updated_at"] = time.time()
         _write_all(paths, records)
         return target
@@ -498,6 +554,11 @@ def expire_stale_pending_questions(
                 if created_at and created_at < cutoff:
                     d["status"] = STATUS_DISMISSED
                     d["dismiss_reason"] = DISMISS_REASON_STALE_TIMEOUT
+                    # [F5] 跟 dismiss_question() 同一套统计逻辑，超时自动
+                    # 关闭也算一次"忽略"，同样需要计入 repeat_dismiss_count。
+                    d["repeat_dismiss_count"] = 1 + _count_prior_dismissed_matches(
+                        records, d.get("job_id") or "", d.get("question") or "", d.get("question_id") or "",
+                    )
                     d["updated_at"] = time.time()
                     expired.append(d)
             if expired:

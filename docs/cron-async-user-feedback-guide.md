@@ -6,14 +6,15 @@
   长期未回答自动关闭 + 看板可用性补齐；原本明确不做的 E3 批量操作/角标/
   job_id 筛选，本轮补做，见该文档 §8）、
   `next_doc/cron_async_feedback_further_improvements_plan.md`（F1 精确
-  计数、F2 忽略原因、F3 问题紧急程度已完成，F4-F7 规划中）
+  计数、F2 忽略原因、F3 问题紧急程度、F5 忽略语义审计已完成，
+  F4/F6/F7 规划中）
 - **前置依赖**：[cron-dedicated-execution-guide.md](cron-dedicated-execution-guide.md)（cron
   任务专属执行机制本体，本功能是它的收尾状态扩展，不重复实现执行线程/
   `CronJobWorkspace` 记录链路）
 - **当前实施进度**：阶段1-5（原始设计）+ D1-D6（加固）+ E1-E2（生命周期
   与看板可用性）+ E3（看板批量操作/角标/筛选）+ F1（精确计数）+ F2
-  （忽略原因）+ F3（问题紧急程度）已全部实施完成；F4-F7 见
-  `cron_async_feedback_further_improvements_plan.md`。
+  （忽略原因）+ F3（问题紧急程度）+ F5（忽略语义审计）已全部实施完成；
+  F4/F6/F7 见 `cron_async_feedback_further_improvements_plan.md`。
 
 ---
 
@@ -167,7 +168,15 @@ Streamlit 看板"🔔 关注与通知"tab 下新增"🙋 待我反馈"面板，�
   关闭"这种用户可能完全没意识到发生过的情况，需要一个能回头确认的地方。
   **[F2 新增]** 如果这条记录带了忽略原因（见上面"待处理"子 tab 的说明），
   会额外展示一行"忽略原因：xxx"；系统自动关闭的记录没有这个字段（自动
-  关闭是维护性 tick 触发的，不涉及用户主动选原因）。
+  关闭是维护性 tick 触发的，不涉及用户主动选原因）。**[F5 新增]** 每条
+  记录关闭时都会跟同一 job_id 下历史 dismissed 记录做一次语义相似度
+  比对（复用 D4 的模糊匹配逻辑），算出这条问题（含语义上说法不同但是
+  "同一件事"的历史记录）总共被忽略过几次，记进 `repeat_dismiss_count`；
+  当这个次数 `>= 2` 时，会在这条记录下方额外展示一条黄色提示"这个问题
+  已经被忽略过 N 次了，agent 可能一直在换着法子问同一件事，如果确实不
+  需要，可以考虑在任务 prompt 里显式说明不需要这项信息"——这只是一个
+  可见性提示，不会触发任何自动干预（比如自动禁止 agent 再问），完全
+  交给用户判断。手动忽略和自动过期关闭都会计入这个统计。
 
 三个子面板都用"⬇️ 加载更多"做增量分页，不会一次性把全部历史记录渲染
 出来。
@@ -205,7 +214,12 @@ watchlist 分级汇报用的 `.agent/notification/reports.jsonl` 是两份彻底
 `answer`/`answer_history`/`consumed`（内部字段，只影响 prompt 注入去重，
 不影响看板历史面板的展示——历史面板永远展示全部记录）/`run_id`（**[加固后]
 新增**，见下方"孤儿线程识别"）/`dismiss_reason`（**[E1 新增]**，
-`"manual"` | `"stale_timeout"`，只在 `status=dismissed` 时有意义）。
+`"manual"` | `"stale_timeout"`，只在 `status=dismissed` 时有意义）/
+`dismiss_note`（**[F2 新增]**，可选，忽略原因说明，字段可能不存在）/
+`urgency`（**[F3 新增]**，`"normal"` | `"blocking"`，旧数据缺省按
+`"normal"` 兜底）/`repeat_dismiss_count`（**[F5 新增]**，只在
+`status=dismissed` 时写入，表示这个问题——含语义相似的历史提问——总共
+被忽略过几次，旧数据没有这个字段）。
 
 **[加固后] 并发安全**：所有"读全部→改→整体覆盖写"的复合操作
 （`submit_answer`/`dismiss_question`/`mark_answers_consumed`/新建问题）
@@ -282,7 +296,7 @@ questions()` 通过比较问题记录的 `run_id` 跟对应 job 当前
 
 | 文件 | 作用 |
 |---|---|
-| `src/mini_agent/notification/questions_store.py` | 问答记录存储：`append_question`/`find_or_create_question`（加锁原子操作，含模糊去重）/`find_pending_by_fingerprint`/`submit_answer`/`dismiss_question`（**[E1 新增]** `reason` 参数）/`expire_stale_pending_questions`（**[E1 新增]**）/`list_pending_questions`/`list_answered_questions`/`list_dismissed_questions`/`list_unconsumed_answers_for_job`/`mark_answers_consumed`/`list_pending_question_texts_for_job`/`archive_old_records`/`purge_questions_for_job`/`list_orphaned_pending_questions`/`count_questions`（**[F1 新增]**）/`dismiss_question` 新增 `note` 参数（**[F2 新增]**）/`normalize_urgency`、`append_question`/`find_or_create_question` 新增 `urgency` 参数、`list_pending_question_texts_for_job` 排序调整（**[F3 新增]**） |
+| `src/mini_agent/notification/questions_store.py` | 问答记录存储：`append_question`/`find_or_create_question`（加锁原子操作，含模糊去重）/`find_pending_by_fingerprint`/`submit_answer`/`dismiss_question`（**[E1 新增]** `reason` 参数）/`expire_stale_pending_questions`（**[E1 新增]**）/`list_pending_questions`/`list_answered_questions`/`list_dismissed_questions`/`list_unconsumed_answers_for_job`/`mark_answers_consumed`/`list_pending_question_texts_for_job`/`archive_old_records`/`purge_questions_for_job`/`list_orphaned_pending_questions`/`count_questions`（**[F1 新增]**）/`dismiss_question` 新增 `note` 参数（**[F2 新增]**）/`normalize_urgency`、`append_question`/`find_or_create_question` 新增 `urgency` 参数、`list_pending_question_texts_for_job` 排序调整（**[F3 新增]**）/`_count_prior_dismissed_matches`、`dismiss_question`/`expire_stale_pending_questions` 写入 `repeat_dismiss_count`（**[F5 新增]**） |
 | `src/mini_agent/notification/config.py` | **[E1 新增]** `cron_question_stale_after_days` 配置项加载 |
 | `src/mini_agent/tools/ask_user_async.py` | 异步提问工具本体，内部调用 `NotificationDispatcher.dispatch()`（`source="cron_question"`）；**[F3 新增]** `urgency` 参数、blocking 问题通知标题加 `⛔` 前缀 |
 | `src/mini_agent/evolution/cron_context.py` | thread-local `job_id`/`run_id` 透传，供 `ask_user_async` 在 cron 执行线程内取到当前 job_id/run_id |
@@ -292,10 +306,10 @@ questions()` 通过比较问题记录的 `run_id` 跟对应 job 当前
 | `src/mini_agent/evolution/autonomous_loop.py` | `_tick_maintenance()` 每 24 小时触发一次问答记录归档，**[E1 新增]** 同窗口触发长期未回答问题自动关闭 + 逐条通知 |
 | `src/mini_agent/api/routes.py` | `/v1/cron_questions/{pending,history,dismissed,counts,{id}/answer,{id}/dismiss}` 六个端点（**[E2 新增]** `dismissed`，**[F1 新增]** `counts`） |
 | `apps/mini_agent_kanban/client.py` | `cron_questions_pending`/`cron_questions_history`/`answer_cron_question`/`dismiss_cron_question`（**[F2 更新]** 新增可选 `note` 参数）/`cron_questions_dismissed`（**[E2 新增]**）/`cron_questions_counts`（**[F1 新增]**）客户端方法 |
-| `apps/mini_agent_kanban/app.py` | "🔔 关注与通知"tab 下"🙋 待我反馈"面板（`_render_cron_questions_panel`，独立 `@st.fragment`），**[E2]** 待处理按等待时长排序+徽标、新增"已忽略"子 tab；**[E3 新增]** job_id 筛选下拉框、"待处理"批量勾选+批量忽略；**[F1 更新]** 三个子 tab 标题数量角标改用精确计数接口；**[F2 新增]** "待处理"忽略原因下拉框、"已忽略"展示 `dismiss_note`；**[F3 新增]** "待处理"排序叠加 blocking 优先、"⛔ 阻塞"徽标 |
+| `apps/mini_agent_kanban/app.py` | "🔔 关注与通知"tab 下"🙋 待我反馈"面板（`_render_cron_questions_panel`，独立 `@st.fragment`），**[E2]** 待处理按等待时长排序+徽标、新增"已忽略"子 tab；**[E3 新增]** job_id 筛选下拉框、"待处理"批量勾选+批量忽略；**[F1 更新]** 三个子 tab 标题数量角标改用精确计数接口；**[F2 新增]** "待处理"忽略原因下拉框、"已忽略"展示 `dismiss_note`；**[F3 新增]** "待处理"排序叠加 blocking 优先、"⛔ 阻塞"徽标；**[F5 新增]** "已忽略"子 tab 展示 `repeat_dismiss_count >= 2` 的重复忽略提示 |
 | `.agent/notification/cron_questions.jsonl` | 问答记录落地文件（运行时生成） |
 | `.agent/notification/cron_questions.archive.jsonl` | **[加固后新增]** 归档文件（运行时生成，超过保留期的 answered/dismissed 记录） |
-| `tests/test_cron_questions_store.py` | `questions_store.py` 单元测试（含并发/消费时机/归档/清理/孤儿识别/**[E1 新增]** 自动过期/**[F1]** 精确计数/**[F2]** 忽略原因/**[F3]** 紧急程度回归测试） |
+| `tests/test_cron_questions_store.py` | `questions_store.py` 单元测试（含并发/消费时机/归档/清理/孤儿识别/**[E1 新增]** 自动过期/**[F1]** 精确计数/**[F2]** 忽略原因/**[F3]** 紧急程度/**[F5]** 重复忽略计数回归测试） |
 | `tests/test_cron_async_user_feedback.py` | 工具去重、状态机、占位符渲染（**[E1 新增]** 等待天数/超时措辞区分，**[F3 新增]** blocking 标记与排序）、忽略提醒、模糊去重、run_id 传播等端到端覆盖 |
 | `tests/test_cron_questions_api_routes.py` | API 端点测试（pending/history/**[E2 新增]** dismissed 分页过滤、答案提交与修改、**[F1 新增]** counts、**[F2 新增]** dismiss note、错误处理） |
 | `tests/test_cron_job_workspace_and_executor.py` | 含答案消费时机（D2）回归测试 |

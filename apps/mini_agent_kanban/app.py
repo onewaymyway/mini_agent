@@ -10348,6 +10348,17 @@ def _render_cron_questions_panel(client: "AgentClient"):
                     # 自动过期没有原因时不存在这个字段），有才展示。
                     if q.get("dismiss_note"):
                         st.caption(f"忽略原因：{q['dismiss_note']}")
+                    # [cron_async_feedback_further_improvements_plan.md F5]
+                    # repeat_dismiss_count 是"语义重复计数"，旧数据没有这个
+                    # 字段（.get 兜底为 0/None），只在 >=2 时才提示——等于 1
+                    # 就是这个问题第一次被忽略，没有"重复"可言，不需要打扰。
+                    repeat_count = q.get("repeat_dismiss_count") or 0
+                    if repeat_count >= 2:
+                        st.warning(
+                            f"这个问题已经被忽略过 {repeat_count} 次了，agent 可能一直在"
+                            "换着法子问同一件事，如果确实不需要，可以考虑在任务 prompt "
+                            "里显式说明不需要这项信息。"
+                        )
                     ts = q.get("updated_at")
                     if ts:
                         st.caption(f"关闭时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))}")

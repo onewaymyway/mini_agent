@@ -1,6 +1,6 @@
 # Cron 异步用户反馈机制 —— 后续改进方向规划
 
-> 状态：**方案已确认，阶段1/阶段2/阶段3已实施完成**
+> 状态：**方案已确认，阶段1/阶段2/阶段3/阶段4已实施完成**
 > 前置文档：`next_doc/cron_async_user_feedback_mechanism_plan.md`（原始设计）、
 > `next_doc/cron_async_feedback_hardening_plan.md`（D1–D6 加固）、
 > `next_doc/cron_async_feedback_lifecycle_and_usability_plan.md`（E1–E3
@@ -158,7 +158,7 @@ F7（job 可读名称）不排进以上阶段，留待后续视需要再单独�
 - [x] 阶段1：F1 精确计数
 - [x] 阶段2：F2 忽略原因
 - [x] 阶段3：F3 问题紧急程度
-- [ ] 阶段4：F5 忽略语义审计
+- [x] 阶段4：F5 忽略语义审计
 - [ ] 阶段5：F6 占位符长度保护
 - [ ] 阶段6：F4 按 job 覆盖阈值
 - [ ] 阶段7：收尾
@@ -302,3 +302,48 @@ F7（job 可读名称）不排进以上阶段，留待后续视需要再单独�
 `test_cron_job_workspace_and_executor.py`（44）+
 `test_cron_job_runner.py`/`test_cron_scheduler_reap_stale_jobs.py`
 （19，未改动仍全部通过），共 188 条全部通过。
+
+## 9. 阶段4实现记录（F5 忽略语义审计）
+
+按第 2 节 F5 方案原样实施，没有出现需要偏离方案的情况。
+
+- 新增私有函数 `_count_prior_dismissed_matches(records, job_id, question,
+  exclude_question_id, fuzzy_threshold=0.82)`：在调用方已经持锁
+  `_load_all()` 得到的 `records` 快照里，统计同一 `job_id` 下、状态已经
+  是 `dismissed`、跟 `question` 语义相似（精确匹配优先，其次复用 D4
+  同款 `_normalize_question_text` + `difflib.SequenceMatcher` 模糊匹配，
+  阈值同为 0.82）的历史记录条数，显式排除 `exclude_question_id` 自己，
+  避免自我匹配把计数多算一次。只返回"历史匹配条数"，不含"这一次"。
+- `dismiss_question()`：在把 `target["status"]` 改为 `STATUS_DISMISSED`
+  之后、`_write_all()` 之前，调用上述函数算出
+  `target["repeat_dismiss_count"] = 1 + 历史匹配条数`。幂等重复调用
+  （已经是 `dismissed` 的记录再次调用）直接在函数早期 `return target`，
+  不会重新计算、不会重复递增。
+- `expire_stale_pending_questions()`：同一份 `records` 快照内，每条被
+  判定为过期的记录在标记 `dismissed` 时用同样的方式计算
+  `repeat_dismiss_count`——手动忽略和自动过期关闭共用同一套统计逻辑，
+  不是各算各的。
+- 看板"已忽略"子 tab：`repeat_dismiss_count >= 2` 时在该条记录下方追加
+  `st.warning`，文案跟方案原文一致；`< 2`（含旧数据缺省的 `0`/`None`）
+  不展示，避免"第一次忽略"也被打上"重复"标签造成误解。
+- 非目标部分按方案执行：不做任何自动干预（比如自动阻止 agent 再问同
+  一件事），只做可见性提示。
+
+新增/修改文件清单：
+- 修改 `src/mini_agent/notification/questions_store.py`（新增
+  `_count_prior_dismissed_matches`；`dismiss_question`/
+  `expire_stale_pending_questions` 写入 `repeat_dismiss_count`）
+- 修改 `apps/mini_agent_kanban/app.py`（"已忽略"子 tab 新增重复忽略
+  提示）
+- 修改 `tests/test_cron_questions_store.py`（`TestDismissQuestion` 新增
+  6 条 `repeat_dismiss_count` 相关测试；`TestExpireStalePendingQuestions`
+  新增 1 条自动过期路径的等价测试）
+- 修改 `docs/cron-async-user-feedback-guide.md`（§0 进度说明、§6 已忽略
+  子 tab 说明、§7 API 说明、§10 字段清单与文件清单同步 F5）
+
+全量相关测试跑通：`test_cron_questions_store.py`（79）+
+`test_cron_questions_api_routes.py`（15）+
+`test_cron_async_user_feedback.py`（38）+
+`test_cron_job_workspace_and_executor.py`（44，未改动仍全部通过），
+共 176 条全部通过（`test_cron_job_runner.py`/
+`test_cron_scheduler_reap_stale_jobs.py` 本阶段未涉及，未重复运行）。
