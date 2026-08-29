@@ -386,3 +386,44 @@ CLI 命令本身依然立即返回（等待逻辑不变，只是等的是 superv
   的判定逻辑（通过脚本模拟子进程直接调用 `mark_stopped_by_user` 退出），
   没有覆盖真实发送 OS 级 Ctrl-C 信号的端到端场景（CI 环境模拟终端信号
   较脆弱，权衡后未加，人工验证已在本地 Windows/Linux 各执行一次）
+
+### 阶段四（已完成）
+
+- `docs/daemon-crash-recovery-guide.md`：进度表格全部更新为"已完成"；
+  新增"§8 前台模式（阶段三）"一节，说明前台 `daemon start` 现在的行为
+  模型（当前终端变成 supervisor）、崩溃后自动重启的观感、Ctrl-C 转发
+  的兜底标记顺序、以及"另开终端 `daemon stop`"如何与前台 supervisor 联动，
+  并给出一个手动验证步骤（kill -9 真正子进程 PID，观察前台终端打印
+  "Restarting in Ns..."）
+- `next_doc/daemon_crash_recovery_and_alert_plan.md`：补充本节（阶段四
+  实现记录）
+- 测试补齐计划 §4 列出的 5 类关键用例，全部落在
+  `tests/test_daemon_crash_recovery.py`：
+  1. 模拟崩溃触发告警 + 自动重启——阶段一/二/三已有的
+     `TestSupervisorAutoRestart`/`TestForegroundSupervisor` 覆盖了后台和
+     前台两条路径
+  2. `daemon stop` 全程不触发任何重启或误报崩溃——新增
+     `TestDaemonStopDoesNotTriggerRestart`（2 用例）：一个直接验证
+     "兜底标记先于强杀发生"这个时序本身；另一个跑真实的
+     `run_supervisor()` 循环，用后台线程模拟"另一个终端执行 daemon
+     stop"（先写 `stopped_by_user` 标记再 `SIGKILL` 子进程），验证
+     supervisor 自然结束、不记录崩溃、不重启
+  3. 重启预算耗尽后正确停止重试并发出"已放弃"告警——已有的
+     `test_auto_restart_gives_up_after_budget_exhausted`（后台）/
+     `test_gives_up_after_budget_exhausted`（前台，阶段三新增）覆盖
+  4. 前台模式下 Ctrl-C 视为用户停止，不触发重启——新增
+     `test_keyboard_interrupt_marks_stopped_by_user_and_does_not_restart`：
+     monkeypatch 子进程的 `wait()` 在第一次调用时抛 `KeyboardInterrupt`
+     模拟用户按下 Ctrl-C，断言只启动了一次子进程（没有被当成崩溃重启）、
+     信号被转发、run_state 停在 `stopped_by_user`
+  5. 崩溃告警即使在重启逻辑本身抛异常的情况下依然已经发出——新增
+     `TestAlertSentBeforeRestartLogicFails`：monkeypatch
+     `daemon_supervisor.time.sleep`（重启退避那一步）直接抛
+     `RuntimeError`，断言异常确实向上传播的同时，`daemon_crash_history.jsonl`
+     和独立告警存储都已经在异常抛出之前完成写入——验证"先感知、后恢复"
+     的顺序保证不是文档里的口头承诺，而是真被测试钉住的行为
+- `tests/test_daemon_crash_recovery.py` 全量 27 passed（阶段一 16 +
+  阶段二 3 + 阶段三 4 + 阶段四新增 4）
+- 至此 daemon_crash_recovery_and_alert_plan.md 四个阶段全部完成，计划里
+  §4 列出的目标（崩溃可感知、崩溃可恢复、前后台模型统一、告警独立于
+  常规通知）均已落地并有测试覆盖

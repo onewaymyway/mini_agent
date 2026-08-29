@@ -10,26 +10,26 @@ daemon 进程偶尔会在执行过程中崩溃（未捕获异常、被外部信�
 底层 native crash 等），此前崩溃后进程直接消失，既不会主动通知用户，也
 不会自动恢复，需要用户碰巧执行 `daemon status` 或尝试连接才会发现。
 
-## 2. 目前的实现进度（阶段一）
+## 2. 目前的实现进度
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 阶段一 | 崩溃信息持久化 + 独立告警通道 | ✅ 已完成 |
 | 阶段二 | 后台（`--detach`）自动重启（预算/退避） | ✅ 已完成 |
-| 阶段三 | 前台模式自愈 + `daemon stop` 联动收敛 | ⏳ 未开始 |
-| 阶段四 | 文档完善 + 更多测试覆盖 | 🔄 本阶段随实现同步完成 |
+| 阶段三 | 前台模式自愈 + `daemon stop` 联动收敛 | ✅ 已完成 |
+| 阶段四 | 文档完善 + 更多测试覆盖 | ✅ 已完成 |
 
-**默认行为变更（阶段二起）**：`daemon start --detach` 现在**默认自动重启**
-（`daemon_auto_restart_enabled=true`）——崩溃后 supervisor 会在指数退避
-（1s/2s/4s/8s/16s/30s/60s）后自动拉起新的子进程，10 分钟滑动窗口内最多
-重试 5 次，超出预算就放弃并发一条"需要人工介入"的告警，不会无限重启。
-不想要自动重启可以在 `agent_config.json` 里设置：
+**默认行为变更（阶段二起）**：`daemon start`（无论带不带 `--detach`）现在
+**默认自动重启**（`daemon_auto_restart_enabled=true`）——崩溃后 supervisor
+会在指数退避（1s/2s/4s/8s/16s/30s/60s）后自动拉起新的子进程，10 分钟滑动
+窗口内最多重试 5 次，超出预算就放弃并发一条"需要人工介入"的告警，不会
+无限重启。不想要自动重启可以在 `agent_config.json` 里设置：
 ```json
 {"http": {"daemon_auto_restart_enabled": false}}
 ```
 
-前台模式（不带 `--detach`）目前**还没有**接入 supervisor，崩溃行为与之前
-一致（不会有崩溃记录/告警/自动重启）；这部分是阶段三的范围。
+**行为变更（阶段三起）**：前台模式（不带 `--detach`）现在与后台共享同一套
+崩溃自愈能力，见下面第 8 节的详细说明。
 
 ## 3. 怎么看崩溃信息
 
@@ -128,3 +128,40 @@ mini-agent daemon status   # 应该能看到"最近一次崩溃"摘要
 预算耗尽后 `daemon status` 会提示"Auto-restart budget exhausted — manual
 `daemon start` required"，看板告警详情里也会标注 `restart_decision:
 "giveup"`。
+
+## 8. 前台模式（阶段三）
+
+`mini-agent daemon start`（不带 `--detach`）现在的行为模型和后台完全一致：
+当前终端进程本身变成一个 supervisor，真正的 daemon 是它的子进程。
+
+- **看起来没变**：daemon 的实时输出依然直接打印在你这个终端里，Ctrl-C
+  依然能停止它——这两点跟以前一样；
+- **实际变了什么**：以前（POSIX 下用 `os.execv` 做进程替换）当前终端跑的
+  就是 daemon 自己，一旦它崩溃，终端里只会看到一个非零退出码，没有任何
+  自愈或告警。现在当前终端跑的是 supervisor，daemon 子进程崩溃后：
+  1. supervisor 立即按第 5、6 节描述的方式记录崩溃 + 发送告警（看板横幅
+     一样会出现）；
+  2. 如果 `daemon_auto_restart_enabled=true`（默认），supervisor 会按退避
+     序列自动拉起一个新的子进程，继续在同一个终端里输出，你不需要手动
+     重新执行 `daemon start`；
+  3. 如果预算耗尽，supervisor 打印"Auto-restart budget exhausted, giving
+     up"并退出，此时才需要你手动重新执行 `daemon start`。
+- **Ctrl-C 行为**：按下 Ctrl-C 时，supervisor 会先把这次停止标记为
+  "用户主动停止"（不会被当成崩溃），再把信号转发给子进程，等它真正退出
+  后 supervisor 才退出——和以前"按一下 Ctrl-C 就能退出"的体感一致，只是
+  内部多了一层转发。
+- **另开一个终端执行 `daemon stop`**：跟后台模式完全一样地工作——
+  `daemon stop` 会先兜底标记 `stopped_by_user`，然后按 HTTP → 信号 → 强杀
+  三级尝试停止子进程，并等待/兜底强杀前台那个 supervisor 终端进程。
+
+一个直观的验证方法：
+
+```bash
+mini-agent daemon start
+# 在另一个终端：
+cat .agent/daemon.pid   # 记下真正 daemon 子进程的 PID（不是前台终端本身）
+kill -9 <该 PID>
+# 回到第一个终端，应该能看到类似：
+#   [daemon] Crashed (exit=-9). Restarting in 1s (attempt 1/5)...
+# 随后子进程自动重新拉起，daemon.log/看板横幅同样会出现这次崩溃记录
+```

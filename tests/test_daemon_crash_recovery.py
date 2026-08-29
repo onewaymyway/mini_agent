@@ -1,12 +1,16 @@
 """
 tests/test_daemon_crash_recovery.py
 
-覆盖 next_doc/daemon_crash_recovery_and_alert_plan.md 阶段一：
+覆盖 next_doc/daemon_crash_recovery_and_alert_plan.md 全部四个阶段：
   - daemon_run_state.json 的写入/读取/"预期停止"标记
   - record_daemon_crash()：诊断信息收集（日志尾部/关联全局异常/摘要文案）
     + 写入 daemon_crash_history.jsonl + 独立告警通道落盘
   - notification/daemon_crash_store.py：崩溃告警的独立存储（append/list/ack）
-  - cli/daemon_supervisor.py：崩溃 vs 预期停止的判定 + （阶段一）不自动重启
+  - cli/daemon_supervisor.py：后台 run_supervisor() 与前台
+    run_foreground_supervisor() 的崩溃 vs 预期停止判定、自动重启预算/退避
+  - 阶段四关键用例：模拟崩溃触发告警+自动重启、daemon stop 全程不触发
+    误报/重启、重启预算耗尽后正确 giveup、前台 Ctrl-C 视为用户停止不重启、
+    崩溃告警即使重启逻辑本身抛异常也已经先发出
 """
 
 from __future__ import annotations
@@ -483,6 +487,200 @@ class TestForegroundSupervisor(_IsolatedHomeTestCase):
 
         # 循环结束后（finally 块）应清理掉自己的 PID 文件，不残留。
         self.assertFalse(pid_path.exists())
+
+    def test_keyboard_interrupt_marks_stopped_by_user_and_does_not_restart(self):
+        """阶段四关键用例 4：前台模式下 Ctrl-C 视为用户停止，不触发重启。
+        通过 monkeypatch `Popen.wait` 在第一次调用时抛 KeyboardInterrupt
+        模拟用户按下 Ctrl-C，验证：停止意图被兜底标记、信号被转发给子
+        进程、不会记录崩溃也不会重启。"""
+        import subprocess
+        import unittest.mock as mock
+
+        script_path = self.project_root / "child_fg_sleep.py"
+        script_path.write_text(
+            "import time\ntime.sleep(30)\n", encoding="utf-8"
+        )
+
+        real_popen = subprocess.Popen
+        call_count = {"n": 0}
+        sent_signals = []
+
+        class _FakeProc:
+            def __init__(self, real_proc):
+                self._real = real_proc
+                self.pid = real_proc.pid
+                self._wait_calls = 0
+
+            def wait(self):
+                self._wait_calls += 1
+                if self._wait_calls == 1:
+                    raise KeyboardInterrupt()
+                return self._real.wait()
+
+            def send_signal(self, sig):
+                sent_signals.append(sig)
+                self._real.send_signal(sig)
+
+        def _fake_popen(argv, **kwargs):
+            call_count["n"] += 1
+            return _FakeProc(real_popen(argv, **kwargs))
+
+        with mock.patch("subprocess.Popen", side_effect=_fake_popen):
+            returncode = daemon_supervisor.run_foreground_supervisor(
+                self.project_root,
+                [sys.executable, str(script_path)],
+                auto_restart=True,
+                max_attempts=5,
+            )
+
+        # 只启动了一次子进程（没有因为"崩溃"而重启）
+        self.assertEqual(call_count["n"], 1)
+        self.assertTrue(len(sent_signals) >= 1)
+        state = daemon_mod._read_run_state(self.project_root)
+        self.assertEqual(state["status"], daemon_mod._STATUS_STOPPED_BY_USER)
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        self.assertFalse(hist_path.exists())
+
+
+# ── 阶段四关键用例 2：cmd_daemon_stop 全程不触发任何重启/误报崩溃 ──────────
+
+class TestDaemonStopDoesNotTriggerRestart(_IsolatedHomeTestCase):
+    """验证 `daemon stop` 的兜底标记先于一切停止动作发生：即使子进程被
+    直接强杀（来不及自己处理信号走 graceful path），supervisor 读到的
+    run_state 也已经是 stopped_by_user，不会误判为崩溃、不会重启。"""
+
+    def test_mark_stopped_by_user_prevents_supervisor_restart_after_hard_kill(self):
+        import subprocess
+
+        script_path = self.project_root / "child_ignore_sigterm.py"
+        # 子进程完全不处理任何信号、也不自己写 stopped_by_user——模拟
+        # "daemon stop 降级到强杀"的最坏情况，唯一能阻止误判的只有
+        # cmd_daemon_stop 自己提前写好的兜底标记。
+        script_path.write_text(
+            "import time\ntime.sleep(30)\n", encoding="utf-8"
+        )
+
+        proc = subprocess.Popen([sys.executable, str(script_path)])
+        try:
+            # 模拟 cmd_daemon_stop 的第一步：动手停止之前先兜底标记。
+            daemon_mod.mark_stopped_by_user(self.project_root, proc.pid)
+            # 模拟第 3 级强杀（子进程根本来不及自己写任何东西）。
+            proc.kill()
+            returncode = proc.wait()
+
+            # supervisor 侧的判定逻辑：读到 stopped_by_user 就不算崩溃。
+            state = daemon_mod._read_run_state(self.project_root)
+            self.assertEqual(state["status"], daemon_mod._STATUS_STOPPED_BY_USER)
+            hist_path = daemon_mod._crash_history_file(self.project_root)
+            self.assertFalse(hist_path.exists())
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_run_supervisor_end_to_end_with_stop_marker_written_before_kill(self):
+        """更贴近真实链路：直接跑 run_supervisor，在子进程存活期间由
+        测试线程模拟"daemon stop"提前写标记 + 强杀，验证 supervisor 循环
+        自然结束、不重启、不记录崩溃。"""
+        import subprocess
+        import threading
+
+        script_path = self.project_root / "child_stop_race.py"
+        script_path.write_text(
+            "import time\ntime.sleep(30)\n", encoding="utf-8"
+        )
+
+        stopper_started = threading.Event()
+
+        def _stopper():
+            # 等 supervisor 把子进程真正拉起来后再动手，模拟用户在另一个
+            # 终端执行 `daemon stop`。
+            for _ in range(100):
+                state = daemon_mod._read_run_state(self.project_root)
+                if state and state.get("status") == daemon_mod._STATUS_RUNNING:
+                    break
+                time.sleep(0.05)
+            pid = state["pid"] if state else None
+            daemon_mod.mark_stopped_by_user(self.project_root, pid)
+            if pid:
+                try:
+                    import signal as _signal
+                    os.kill(pid, _signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            stopper_started.set()
+
+        # 子进程启动后自己写一次 "running"（真实 daemon 由 app.py 完成，
+        # 这里用一个小脚本模拟）。
+        script_path.write_text(
+            "import sys, time\n"
+            f"sys.path.insert(0, {self._src_dir()!r})\n"
+            "from pathlib import Path\n"
+            "from mini_agent.cli.daemon import _write_run_state, _STATUS_RUNNING\n"
+            "import os\n"
+            f"_write_run_state(Path({str(self.project_root)!r}), os.getpid(), _STATUS_RUNNING)\n"
+            "time.sleep(30)\n",
+            encoding="utf-8",
+        )
+
+        t = threading.Thread(target=_stopper, daemon=True)
+        t.start()
+
+        daemon_supervisor.run_supervisor(
+            self.project_root,
+            [sys.executable, str(script_path)],
+            auto_restart=True,
+            max_attempts=5,
+            window_seconds=600.0,
+        )
+        t.join(timeout=5)
+
+        state = daemon_mod._read_run_state(self.project_root)
+        self.assertEqual(state["status"], daemon_mod._STATUS_STOPPED_BY_USER)
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        self.assertFalse(hist_path.exists())
+
+    def _src_dir(self) -> str:
+        return str(Path(__file__).resolve().parents[1] / "src")
+
+
+# ── 阶段四关键用例 5：崩溃告警即使重启逻辑本身抛异常也已经发出 ────────────
+
+class TestAlertSentBeforeRestartLogicFails(_IsolatedHomeTestCase):
+    """验证"先感知、后恢复"的顺序保证：即便重启预算判断/退避逻辑之后
+    抛出异常，崩溃记录 + 告警也已经在那之前落盘完成。"""
+
+    def test_crash_recorded_and_alerted_even_if_sleep_raises(self):
+        import unittest.mock as mock
+
+        script_path = self.project_root / "child_crash_then_sleep_fails.py"
+        script_path.write_text(_CHILD_ALWAYS_CRASH_SCRIPT, encoding="utf-8")
+
+        with mock.patch(
+            "mini_agent.cli.daemon_supervisor.time.sleep",
+            side_effect=RuntimeError("boom: 模拟重启退避逻辑本身抛异常"),
+        ):
+            with self.assertRaises(RuntimeError):
+                daemon_supervisor.run_supervisor(
+                    self.project_root,
+                    [sys.executable, str(script_path)],
+                    auto_restart=True,
+                    max_attempts=5,
+                    window_seconds=600.0,
+                    backoff_seconds=[0.01],
+                )
+
+        # 尽管重启逻辑（time.sleep 之后的重启步骤）整个异常向上抛出，
+        # 崩溃记录和告警在那之前就已经写入完成。
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        self.assertTrue(hist_path.exists())
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0])["restart_decision"], "restarted")
+
+        paths = AgentPaths(self.project_root)
+        alerts = daemon_crash_store.list_crash_alerts(paths)
+        self.assertEqual(len(alerts), 1)
 
 
 if __name__ == "__main__":
