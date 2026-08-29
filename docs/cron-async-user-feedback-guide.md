@@ -6,15 +6,16 @@
   长期未回答自动关闭 + 看板可用性补齐；原本明确不做的 E3 批量操作/角标/
   job_id 筛选，本轮补做，见该文档 §8）、
   `next_doc/cron_async_feedback_further_improvements_plan.md`（F1 精确
-  计数、F2 忽略原因、F3 问题紧急程度、F5 忽略语义审计已完成，
-  F4/F6/F7 规划中）
+  计数、F2 忽略原因、F3 问题紧急程度、F5 忽略语义审计、F6 占位符长度
+  保护已完成，F4/F7 规划中）
 - **前置依赖**：[cron-dedicated-execution-guide.md](cron-dedicated-execution-guide.md)（cron
   任务专属执行机制本体，本功能是它的收尾状态扩展，不重复实现执行线程/
   `CronJobWorkspace` 记录链路）
 - **当前实施进度**：阶段1-5（原始设计）+ D1-D6（加固）+ E1-E2（生命周期
   与看板可用性）+ E3（看板批量操作/角标/筛选）+ F1（精确计数）+ F2
-  （忽略原因）+ F3（问题紧急程度）+ F5（忽略语义审计）已全部实施完成；
-  F4/F6/F7 见 `cron_async_feedback_further_improvements_plan.md`。
+  （忽略原因）+ F3（问题紧急程度）+ F5（忽略语义审计）+ F6（占位符
+  长度保护）已全部实施完成；F4/F7 见
+  `cron_async_feedback_further_improvements_plan.md`。
 
 ---
 
@@ -109,7 +110,7 @@ agent（模型自己）在 cron 任务执行过程中，遇到需要用户输入
 | 占位符 | 内容 | 消费后的处理 |
 |---|---|---|
 | `{{pending_answers}}` | 该 job 下**已回答但还没喂给过 agent** 的问答对，格式化成"上次你问过「X」，用户回答：Y"的列表 | **[加固后]** 渲染时只记录本次带出的 question_id，不立即标记消费；等 `CronJobExecutor` 确认这一步 `submit_step_fn()` 真正提交成功（未抛异常、`result.error` 为空）后才调用 `consume_last_rendered_answers()` 正式标记 `consumed=True`——如果这一步本身失败了，答案会保留"未消费"，下次触发能再次注入，不会静默丢失（详见 `next_doc/cron_async_feedback_hardening_plan.md` D2） |
-| `{{unanswered_questions}}` | 该 job 下**仍是 pending** 状态的问题列表，**[E1 新增]** 每条附带"已等待 N 天"；**[F3 新增]** `urgency="blocking"` 的问题排在最前面并加"（阻塞）"前缀 | 提醒 agent 不要针对同一个问题重复调用 `ask_user_async`；等待天数越久越应该优先考虑自己拿主意或换个方式绕过去，因为快接近自动关闭阈值了；带"（阻塞）"前缀的问题意味着 agent 自己判断过"这个子任务没有答案真的没法继续"，理应比其它问题更优先被留意到 |
+| `{{unanswered_questions}}` | 该 job 下**仍是 pending** 状态的问题列表，**[E1 新增]** 每条附带"已等待 N 天"；**[F3 新增]** `urgency="blocking"` 的问题排在最前面并加"（阻塞）"前缀；**[F6 新增]** 最多渲染 20 条，超出的用一行"还有 M 条更早的未回答问题，见看板"收尾（不影响看板"待处理"子 tab 展示全部） | 提醒 agent 不要针对同一个问题重复调用 `ask_user_async`；等待天数越久越应该优先考虑自己拿主意或换个方式绕过去，因为快接近自动关闭阈值了；带"（阻塞）"前缀的问题意味着 agent 自己判断过"这个子任务没有答案真的没法继续"，理应比其它问题更优先被留意到 |
 | `{{dismissed_questions}}` | 该 job 下最近 20 条已忽略/已自动关闭的问题原文 | **[E1 更新]** 区分两种措辞：用户手动忽略的提示"不要再问"；**[E1 新增]** 因长期无人回答被系统自动关闭的提示"如果仍然关键，可以换个更容易顺手回答的方式重新问一次，不要用原话重复问"——两者语义不同，不能混为一谈 |
 
 三者都复用 `_render_condition_block()` 现有的 `{{#name}}...{{/name}}`
@@ -300,7 +301,7 @@ questions()` 通过比较问题记录的 `run_id` 跟对应 job 当前
 | `src/mini_agent/notification/config.py` | **[E1 新增]** `cron_question_stale_after_days` 配置项加载 |
 | `src/mini_agent/tools/ask_user_async.py` | 异步提问工具本体，内部调用 `NotificationDispatcher.dispatch()`（`source="cron_question"`）；**[F3 新增]** `urgency` 参数、blocking 问题通知标题加 `⛔` 前缀 |
 | `src/mini_agent/evolution/cron_context.py` | thread-local `job_id`/`run_id` 透传，供 `ask_user_async` 在 cron 执行线程内取到当前 job_id/run_id |
-| `src/mini_agent/evolution/cron_job_workspace.py` | `STATUS_WAITING_FEEDBACK` 状态、`{{pending_answers}}`/`{{unanswered_questions}}`（**[E1]** 附带等待天数，**[F3 新增]** blocking 问题加"（阻塞）"前缀）/`{{dismissed_questions}}`（**[E1]** 区分手动/超时措辞）占位符渲染、`consume_last_rendered_answers()` |
+| `src/mini_agent/evolution/cron_job_workspace.py` | `STATUS_WAITING_FEEDBACK` 状态、`{{pending_answers}}`/`{{unanswered_questions}}`（**[E1]** 附带等待天数，**[F3 新增]** blocking 问题加"（阻塞）"前缀，**[F6 新增]** 最多渲染 20 条 + 截断收尾行）/`{{dismissed_questions}}`（**[E1]** 区分手动/超时措辞，**[F6 复查]** `limit=20` 早已生效）占位符渲染、`consume_last_rendered_answers()` |
 | `src/mini_agent/evolution/cron_job_executor.py` | `run_job()` 设置/清空 thread-local job_id/run_id、确认第一步成功后才消费答案、收尾时的 `waiting_feedback` 判定 |
 | `src/mini_agent/evolution/cron_scheduler.py` | `remove_job()` 顺带清理该 job 名下问答记录 |
 | `src/mini_agent/evolution/autonomous_loop.py` | `_tick_maintenance()` 每 24 小时触发一次问答记录归档，**[E1 新增]** 同窗口触发长期未回答问题自动关闭 + 逐条通知 |
@@ -310,7 +311,7 @@ questions()` 通过比较问题记录的 `run_id` 跟对应 job 当前
 | `.agent/notification/cron_questions.jsonl` | 问答记录落地文件（运行时生成） |
 | `.agent/notification/cron_questions.archive.jsonl` | **[加固后新增]** 归档文件（运行时生成，超过保留期的 answered/dismissed 记录） |
 | `tests/test_cron_questions_store.py` | `questions_store.py` 单元测试（含并发/消费时机/归档/清理/孤儿识别/**[E1 新增]** 自动过期/**[F1]** 精确计数/**[F2]** 忽略原因/**[F3]** 紧急程度/**[F5]** 重复忽略计数回归测试） |
-| `tests/test_cron_async_user_feedback.py` | 工具去重、状态机、占位符渲染（**[E1 新增]** 等待天数/超时措辞区分，**[F3 新增]** blocking 标记与排序）、忽略提醒、模糊去重、run_id 传播等端到端覆盖 |
+| `tests/test_cron_async_user_feedback.py` | 工具去重、状态机、占位符渲染（**[E1 新增]** 等待天数/超时措辞区分，**[F3 新增]** blocking 标记与排序，**[F6 新增]** 截断与收尾行）、忽略提醒、模糊去重、run_id 传播等端到端覆盖 |
 | `tests/test_cron_questions_api_routes.py` | API 端点测试（pending/history/**[E2 新增]** dismissed 分页过滤、答案提交与修改、**[F1 新增]** counts、**[F2 新增]** dismiss note、错误处理） |
 | `tests/test_cron_job_workspace_and_executor.py` | 含答案消费时机（D2）回归测试 |
 | `tests/test_cron_scheduler_reap_stale_jobs.py` | 含 `remove_job()` 清理问答记录（D5）回归测试 |

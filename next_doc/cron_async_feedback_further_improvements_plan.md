@@ -1,6 +1,6 @@
 # Cron 异步用户反馈机制 —— 后续改进方向规划
 
-> 状态：**方案已确认，阶段1/阶段2/阶段3/阶段4已实施完成**
+> 状态：**方案已确认，阶段1/阶段2/阶段3/阶段4/阶段5已实施完成**
 > 前置文档：`next_doc/cron_async_user_feedback_mechanism_plan.md`（原始设计）、
 > `next_doc/cron_async_feedback_hardening_plan.md`（D1–D6 加固）、
 > `next_doc/cron_async_feedback_lifecycle_and_usability_plan.md`（E1–E3
@@ -159,7 +159,7 @@ F7（job 可读名称）不排进以上阶段，留待后续视需要再单独�
 - [x] 阶段2：F2 忽略原因
 - [x] 阶段3：F3 问题紧急程度
 - [x] 阶段4：F5 忽略语义审计
-- [ ] 阶段5：F6 占位符长度保护
+- [x] 阶段5：F6 占位符长度保护
 - [ ] 阶段6：F4 按 job 覆盖阈值
 - [ ] 阶段7：收尾
 
@@ -346,4 +346,49 @@ F7（job 可读名称）不排进以上阶段，留待后续视需要再单独�
 `test_cron_async_user_feedback.py`（38）+
 `test_cron_job_workspace_and_executor.py`（44，未改动仍全部通过），
 共 176 条全部通过（`test_cron_job_runner.py`/
+`test_cron_scheduler_reap_stale_jobs.py` 本阶段未涉及，未重复运行）。
+
+## 10. 阶段5实现记录（F6 占位符长度保护）
+
+按第 2 节 F6 方案原样实施——复查环节确认了方案设想的两种情况各出现
+一种：`{{dismissed_questions}}` 从一开始就有真实的 `limit=20` 保护（不
+是"文档说了、代码没做"），`{{unanswered_questions}}` 则确实没有任何
+上限，是本阶段唯一需要补的代码改动。
+
+- 复查 `_format_dismissed_questions(self, limit: int = 20)`：函数签名
+  自带 `limit=20` 默认参数，且原样传给
+  `questions_store.list_dismissed_questions(..., limit=limit)`，后者内部
+  `result[:limit]` 是真正的切片截断，不是仅文档描述。确认符合预期，
+  补充了一段说明性 docstring，不算新增代码改动（方案 §2 F6 原文允许
+  "复查后发现已有保护，本项降级为确认现状"）。
+- `_format_unanswered_questions()` 新增 `limit: int = 20` 参数（跟
+  `_format_dismissed_questions` 同款默认值，两个占位符对 agent/用户的
+  观感一致）：取到全部 pending 问题后（已经是 blocking 优先、组内按
+  `created_at` 正序排好的结果），若总数超过 `limit`，保留前 `limit`
+  条，被截断掉的必然是"normal 且等待时间较短"的那些——不会误伤更紧急
+  或等待更久的问题。截断发生时追加一行"还有 M 条更早的未回答问题，见
+  看板"，保持列表结构完整（不是砍断最后一条的文本），且明确告诉
+  agent/用户"这不是全部，还有更多，去看板看"，不是静默丢弃。
+- 只改变"渲染进 prompt 的条数"这一件事：`list_pending_question_texts_
+  for_job()` 本身不加 limit 参数（仍返回全部，供未来其它调用方需要完整
+  列表时使用）；看板"待处理"子 tab 走独立的分页 API，不受这里影响；
+  `expire_stale_pending_questions()` 等维护性逻辑同样不经过这个函数，
+  不受影响。
+
+新增/修改文件清单：
+- 修改 `src/mini_agent/evolution/cron_job_workspace.py`
+  （`_format_unanswered_questions()` 新增 `limit` 参数与截断收尾逻辑；
+  `_format_dismissed_questions()` 补充复查确认的说明性注释）
+- 修改 `tests/test_cron_async_user_feedback.py`（新增
+  `TestUnansweredQuestionsTruncation`，4 条：未超限不截断、超限截断+
+  收尾行、blocking 问题不被截断优先保留、`{{dismissed_questions}}`
+  既有 20 条上限的回归锁定）
+- 修改 `docs/cron-async-user-feedback-guide.md`（§0 进度说明、§4 占位符
+  表格、§10 文件清单同步 F6）
+
+全量相关测试跑通：`test_cron_questions_store.py`（79）+
+`test_cron_questions_api_routes.py`（15）+
+`test_cron_async_user_feedback.py`（42）+
+`test_cron_job_workspace_and_executor.py`（44，未改动仍全部通过），
+共 180 条全部通过（`test_cron_job_runner.py`/
 `test_cron_scheduler_reap_stale_jobs.py` 本阶段未涉及，未重复运行）。

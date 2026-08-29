@@ -533,6 +533,63 @@ class TestUnansweredQuestionsAgeHint:
         assert rendered.index("阻塞问题") < rendered.index("普通问题")
 
 
+class TestUnansweredQuestionsTruncation:
+    """[cron_async_feedback_further_improvements_plan.md F6]
+    `{{unanswered_questions}}` 长期堆积多条未回答问题时需要做上限保护，
+    避免把 prompt 撑得很长；截断要有可见的收尾提示，不能悄悄丢数据。"""
+
+    def test_under_limit_shows_all_and_no_summary_line(self, paths):
+        ws = CronJobWorkspace(paths, "user:test_job")
+        ws.ensure(default_task_template="{{task_description}}\n{{unanswered_questions}}\n")
+        for i in range(5):
+            questions_store.append_question(paths, "user:test_job", f"问题{i}")
+
+        rendered = ws.render_prompt("做点什么")
+        for i in range(5):
+            assert f"问题{i}" in rendered
+        assert "更早的未回答问题" not in rendered
+
+    def test_over_limit_truncates_and_appends_summary_line(self, paths):
+        ws = CronJobWorkspace(paths, "user:test_job")
+        ws.ensure(default_task_template="{{task_description}}\n{{unanswered_questions}}\n")
+        for i in range(25):
+            questions_store.append_question(paths, "user:test_job", f"问题{i:02d}")
+
+        rendered = ws.render_prompt("做点什么")
+        # 排序按 created_at 正序（先创建的在前），保留前 20 条应该是
+        # 问题00 ~ 问题19，问题20 ~ 问题24 被截断掉。
+        for i in range(20):
+            assert f"问题{i:02d}」" in rendered
+        for i in range(20, 25):
+            assert f"问题{i:02d}」" not in rendered
+        assert "还有 5 条更早的未回答问题，见看板" in rendered
+
+    def test_blocking_questions_are_prioritized_over_truncation(self, paths):
+        """截断只应该丢掉"normal 且等待较短"的问题，blocking 问题即使
+        后创建也不应该被截断掉（排序已经把 blocking 整体放最前面）。"""
+        ws = CronJobWorkspace(paths, "user:test_job")
+        ws.ensure(default_task_template="{{task_description}}\n{{unanswered_questions}}\n")
+        for i in range(20):
+            questions_store.append_question(paths, "user:test_job", f"普通问题{i:02d}")
+        questions_store.append_question(paths, "user:test_job", "最后才问的阻塞问题", urgency="blocking")
+
+        rendered = ws.render_prompt("做点什么")
+        assert "（阻塞）「最后才问的阻塞问题」" in rendered
+        assert "还有 1 条更早的未回答问题，见看板" in rendered
+
+    def test_dismissed_questions_already_capped_without_extra_change(self, paths):
+        """[F6] 复查确认项：`{{dismissed_questions}}` 一直有 `limit=20`
+        保护，本轮不需要新代码；这里补一条回归测试锁定这个既有行为。"""
+        ws = CronJobWorkspace(paths, "user:test_job")
+        ws.ensure(default_task_template="{{task_description}}\n{{dismissed_questions}}\n")
+        for i in range(25):
+            rec = questions_store.append_question(paths, "user:test_job", f"忽略问题{i:02d}")
+            questions_store.dismiss_question(paths, rec["question_id"])
+
+        rendered = ws.render_prompt("做点什么")
+        assert rendered.count("忽略问题") == 20
+
+
 class TestFuzzyDeduplication:
     """[cron_async_feedback_hardening_plan.md D4] ask_user_async 默认开启
     模糊去重：LLM 换个措辞问同一个语义问题应该被合并，不产生新通知。"""

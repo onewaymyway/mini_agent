@@ -412,7 +412,7 @@ class CronJobWorkspace:
             log_exception(exc, where="mini_agent.evolution.cron_job_workspace.consume_last_rendered_answers")
             return 0
 
-    def _format_unanswered_questions(self) -> str:
+    def _format_unanswered_questions(self, limit: int = 20) -> str:
         """[cron_async_user_feedback_mechanism_plan] 取出本 job 仍处于待
         回答状态的问题，提醒 agent 不要重复提问。异常兜底返回空字符串。
 
@@ -427,12 +427,32 @@ class CronJobWorkspace:
         由 `list_pending_question_texts_for_job()` 排好序（blocking 在前），
         这里额外给 `urgency=blocking` 的问题加一个"（阻塞）"前缀标记，
         帮 agent 一眼看出"这几条不是随便问问，是真的卡住了没法继续"。
+
+        [cron_async_feedback_further_improvements_plan.md F6]
+        `list_pending_question_texts_for_job()` 本身不做数量上限（跟
+        `list_dismissed_questions()` 不同，那边调用方一直传了
+        `limit=20`），长期没人处理、pending 问题持续堆积时会把这段
+        prompt 撑得很长。这里在渲染层面补上上限（默认 20 条，跟
+        `{{dismissed_questions}}` 同款数字，两个占位符对 agent/用户来说
+        观感一致）——只截断"渲染进 prompt 的条数"，不影响看板"待处理"
+        子 tab（那边走独立的分页接口，展示全部）也不影响
+        `expire_stale_pending_questions()` 等其它读取路径。超出部分不是
+        直接丢弃静默截断，而是补一行"还有 M 条更早的未回答问题，见看板"
+        收尾，保持这是一个完整的 markdown 列表项、不会把最后一条的文本
+        腰斩导致结构损坏。已经排好序（blocking 优先、组内按提出时间正序）
+        ，所以被截断丢掉的必然是"normal 且等待时间较短"的那些，保留的
+        始终是更紧急/等待更久的问题。
         """
         try:
             from mini_agent.notification import questions_store
             rows = questions_store.list_pending_question_texts_for_job(self._paths, self.job_id)
             if not rows:
                 return ""
+            total = len(rows)
+            remaining = 0
+            if total > limit:
+                remaining = total - limit
+                rows = rows[:limit]
             now = time.time()
             lines = []
             for r in rows:
@@ -441,6 +461,8 @@ class CronJobWorkspace:
                 age_note = f"，已等待 {days} 天未回答" if days >= 1 else "，尚未回答"
                 urgency_prefix = "（阻塞）" if questions_store.normalize_urgency(r.get("urgency")) == questions_store.URGENCY_BLOCKING else ""
                 lines.append(f"- {urgency_prefix}「{r.get('question', '')}」{age_note}")
+            if remaining:
+                lines.append(f"- 还有 {remaining} 条更早的未回答问题，见看板")
             return "\n".join(lines)
         except Exception as exc:
             from mini_agent.errors import log_exception
@@ -459,6 +481,13 @@ class CronJobWorkspace:
         答案，只是没来得及回而已，如果这个问题依旧关键，可以换个更容易
         被顺手回答的方式重新问一次"，跟前者"用户明确不需要，绝对不要再问"
         的语气不应该一样，否则 agent 会把"暂时没空回答"误解成"用户拒绝"。
+
+        [cron_async_feedback_further_improvements_plan.md F6] 复查确认：
+        这里从一开始就有 `limit=20` 的默认参数，且原样传给
+        `list_dismissed_questions(limit=limit)`（后者内部 `result[:limit]`
+        真正做了截断，不是只在文档里写"最近 20 条"却没实现），不存在
+        `{{unanswered_questions}}` 那种"文档说了限制、代码没做"的落差，
+        本项不需要新增代码改动。
         """
         try:
             from mini_agent.notification import questions_store
