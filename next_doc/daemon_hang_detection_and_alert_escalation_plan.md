@@ -494,3 +494,27 @@ Python 层面卡死（死锁、无限循环）时，如果子进程还能响应�
   N 条"）——都是锦上添花的展示细节，不影响核心的升级/轮转机制本身是否
   生效
 
+### 阶段四（已完成）
+
+- 补齐 §6 关键测试用例清单里唯一还缺的一项（第 5 条"崩溃历史文件超过
+  配置的最大条数后，读取/展示逻辑正确截断，不影响 `daemon status`/看板
+  功能"）：新增 `TestCrashHistoryRotation` 里的
+  `test_history_rotation_does_not_break_status_summary`——预置
+  `daemon_crash_history_max_entries=2`、连续记录 4 次崩溃触发轮转，验证
+  `_print_crash_summary()`（`daemon status` 用来展示"最近一次崩溃"的
+  那段逻辑）仍然正常读到轮转后文件的最后一条，且已被裁剪掉的最早记录
+  不会出现在输出里。其余 4 条关键用例在阶段一~三实现时已经写好
+  （`TestHangDetection`/`TestRestartBudgetPersistence`/
+  `TestPostRestartHealthCheck`/`TestCrashAlertEscalationStore`），阶段四
+  只是核对清单、补上遗漏的这一条，不需要重新设计测试结构
+- 文档：本节（§7 实现记录）与 `docs/daemon-crash-recovery-guide.md`
+  在阶段一~三推进过程中已经逐阶段同步更新（每完成一个阶段就补一节），
+  阶段四没有新增文档章节，只是确认两份文档与最终代码状态一致（未发现
+  遗漏或过时的描述）
+- 全量 `tests/test_daemon_crash_recovery.py` 48 passed（阶段一~四共 27
+  + 卡死检测阶段一 4 + 阶段二 7 + 阶段三 9 + 阶段四 1）
+
+至此，daemon_hang_detection_and_alert_escalation_plan.md 的 §1/§2/§3/§6
+（阶段一~四）已全部完成；§4（崩溃诊断信息颗粒度）按计划文档 §4 说明的
+理由保持"暂不实施"。
+

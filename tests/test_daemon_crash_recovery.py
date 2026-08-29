@@ -1236,5 +1236,39 @@ class TestCrashAlertEscalationCheck(_IsolatedHomeTestCase):
         self.assertGreaterEqual(len(calls), 1)
 
 
+    def test_history_rotation_does_not_break_status_summary(self):
+        """§6 阶段四关键用例 5：崩溃历史文件超过配置的最大条数被截断后，
+        `daemon status` 读取最后一条摘要的逻辑（`_print_crash_summary()`）
+        仍然正常工作，不受轮转影响——它本来就只读最后一行，天然对轮转
+        不敏感，这里显式验证一遍，避免以后改动截断逻辑时不小心破坏。"""
+        cfg_path = self.project_root / "agent_config.json"
+        cfg_path.write_text(
+            json.dumps({"http": {"daemon_crash_history_max_entries": 2}}),
+            encoding="utf-8",
+        )
+        log_path = self.project_root / ".agent" / "daemon.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("", encoding="utf-8")
+
+        for i in range(4):
+            daemon_mod.record_daemon_crash(
+                self.project_root, pid=2000 + i, exit_code=1,
+                started_at=time.time(), log_path=log_path,
+            )
+
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)  # 轮转生效，只保留最后 2 条
+
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            daemon_mod._print_crash_summary(self.project_root)
+        output = buf.getvalue()
+        self.assertIn("2003", output)  # 最后一条（pid=2003）的摘要仍能正常展示
+        self.assertNotIn("2000", output)  # 已被轮转掉的最早一条不应出现
+
+
 if __name__ == "__main__":
     unittest.main()
