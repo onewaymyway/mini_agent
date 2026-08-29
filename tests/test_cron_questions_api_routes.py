@@ -145,6 +145,26 @@ class TestCronQuestionsApiRoutes(unittest.TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
 
+    def test_dismiss_endpoint_accepts_optional_note(self):
+        """[cron_async_feedback_further_improvements_plan.md F2]"""
+        q = questions_store.append_question(self.paths, "user:job1", "问题")
+        resp = self.client.post(
+            f"/v1/cron_questions/{q['question_id']}/dismiss",
+            json={"note": "不再需要这个信息了"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["question"]["dismiss_note"], "不再需要这个信息了")
+
+        dismissed = self.client.get("/v1/cron_questions/dismissed").json()["questions"]
+        self.assertEqual(dismissed[0]["dismiss_note"], "不再需要这个信息了")
+
+    def test_dismiss_endpoint_without_body_has_no_note(self):
+        """[F2] 不带 body 时行为跟改动前完全一致，不写入 dismiss_note。"""
+        q = questions_store.append_question(self.paths, "user:job1", "问题")
+        resp = self.client.post(f"/v1/cron_questions/{q['question_id']}/dismiss")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("dismiss_note", resp.json()["question"])
+
     # [cron_async_feedback_lifecycle_and_usability_plan.md E2]
     # GET /v1/cron_questions/dismissed
     def test_dismissed_endpoint_returns_manual_and_auto_reasons(self):

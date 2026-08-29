@@ -716,10 +716,13 @@ class AgentClient:
         """提交或修改一条问题的答案（新答/改答统一走这一个接口）。"""
         return self._post(f"/cron_questions/{question_id}/answer", json_body={"answer": answer})
 
-    def dismiss_cron_question(self, question_id: str):
+    def dismiss_cron_question(self, question_id: str, note: str = ""):
         """手动忽略/关闭一条仍待回答的问题——跟回答是两条不同路径，
-        忽略后不会被当作答案注入下次 prompt。"""
-        return self._post(f"/cron_questions/{question_id}/dismiss")
+        忽略后不会被当作答案注入下次 prompt。
+        [cron_async_feedback_further_improvements_plan.md F2] `note` 可选，
+        记录忽略原因说明，落盘为 `dismiss_note` 字段。"""
+        body = {"note": note} if note else None
+        return self._post(f"/cron_questions/{question_id}/dismiss", json_body=body)
 
     def cron_questions_dismissed(self, limit: int = 20, offset: int = 0, job_id: str = ""):
         """[cron_async_feedback_lifecycle_and_usability_plan.md E2] 分页返回

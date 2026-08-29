@@ -6648,7 +6648,13 @@ async def dismiss_cron_question(request: Request, question_id: str):
     仍是 pending 状态的问题，用户觉得不再需要回答了。跟"回答"是两条不同
     路径：忽略后该问题从"待处理"列表消失，但不会被当作答案注入下次
     prompt——agent 下次触发时就当这个问题从未存在过。已回答的问题不能
-    被忽略（应该走"修改答案"），返回 404；重复忽略同一条是幂等的。"""
+    被忽略（应该走"修改答案"），返回 404；重复忽略同一条是幂等的。
+
+    [cron_async_feedback_further_improvements_plan.md F2] body 可选带
+    `{"note": "..."}`——忽略原因说明（比如看板下拉框选的"不再需要"/
+    "已通过其它方式解决"，或用户自己填的文字），落盘为 `dismiss_note`
+    字段，供"已忽略"子面板展示。不传 body 或不带 `note` 时行为跟之前
+    完全一致（`dismiss_note` 字段不写入）。"""
     http_server = getattr(request.app.state, "http_server", None)
     if http_server is None:
         raise HTTPException(status_code=503, detail="HttpServer not available")
@@ -6658,10 +6664,17 @@ async def dismiss_cron_question(request: Request, question_id: str):
     if proj_root is None:
         raise HTTPException(status_code=503, detail="project_root not available")
 
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    note = (body or {}).get("note") or None
+
     from mini_agent.notification import questions_store
     from mini_agent.storage.paths import AgentPaths
     paths = AgentPaths(proj_root)
-    updated = questions_store.dismiss_question(paths, question_id)
+    updated = questions_store.dismiss_question(paths, question_id, note=note)
     if updated is None:
         raise HTTPException(
             status_code=404,

@@ -362,7 +362,8 @@ def mark_answers_consumed(paths: "AgentPaths", question_ids: "set[str] | list[st
 
 
 def dismiss_question(
-    paths: "AgentPaths", question_id: str, *, reason: str = DISMISS_REASON_MANUAL,
+    paths: "AgentPaths", question_id: str, *,
+    reason: str = DISMISS_REASON_MANUAL, note: Optional[str] = None,
 ) -> Optional[dict]:
     """忽略/关闭一条**仍是 pending 状态**的问题——用户在看板点"忽略"，或
     （`reason=DISMISS_REASON_STALE_TIMEOUT` 时）被维护性 tick 判定长期无人
@@ -379,12 +380,19 @@ def dismiss_question(
     `submit_answer()`，不应该被"忽略"成一个既不是回答也不是待办的
     中间状态——对已回答的问题调用本函数返回 `None`（跟"找不到"同一个
     错误分支，调用方无需区分）。已经是 `dismissed` 的问题重复调用是
-    幂等的（直接返回当前记录，不重复写文件、不覆盖已记录的 `dismiss_reason`）。
+    幂等的（直接返回当前记录，不重复写文件、不覆盖已记录的
+    `dismiss_reason`/`dismiss_note`）。
 
     `reason` 记录进 `dismiss_reason` 字段（`"manual"` | `"stale_timeout"`），
     供看板"已忽略"子面板和 `{{dismissed_questions}}` 渲染时区分展示——
     用户需要知道一个问题是自己主动关掉的，还是系统因为"太久没人回答"替
     他关掉的，这是两种完全不同的语义，不能混为一谈地展示成同一句话。
+
+    [cron_async_feedback_further_improvements_plan.md F2] `note` 是可选的
+    忽略原因说明（比如看板下拉框选的"不再需要"/"已通过其它方式解决"等，
+    或用户自己填的文字），记录进 `dismiss_note` 字段。旧数据/未传参时
+    该字段不存在，`.get("dismiss_note")` 兜底为 `None`。只是采集展示，
+    当前没有任何下游逻辑会读取它做判断（留给未来的分析场景用）。
 
     返回更新后（或已是 dismissed 的）完整记录；`question_id` 不存在，
     或该问题当前是 `answered` 状态，均返回 None。
@@ -405,6 +413,8 @@ def dismiss_question(
             return None
         target["status"] = STATUS_DISMISSED
         target["dismiss_reason"] = reason
+        if note:
+            target["dismiss_note"] = note
         target["updated_at"] = time.time()
         _write_all(paths, records)
         return target

@@ -1,6 +1,6 @@
 # Cron 异步用户反馈机制 —— 后续改进方向规划
 
-> 状态：**方案已确认，阶段1已实施完成**
+> 状态：**方案已确认，阶段1/阶段2已实施完成**
 > 前置文档：`next_doc/cron_async_user_feedback_mechanism_plan.md`（原始设计）、
 > `next_doc/cron_async_feedback_hardening_plan.md`（D1–D6 加固）、
 > `next_doc/cron_async_feedback_lifecycle_and_usability_plan.md`（E1–E3
@@ -156,7 +156,7 @@ F7（job 可读名称）不排进以上阶段，留待后续视需要再单独�
 ## 5. 实施进度
 
 - [x] 阶段1：F1 精确计数
-- [ ] 阶段2：F2 忽略原因
+- [x] 阶段2：F2 忽略原因
 - [ ] 阶段3：F3 问题紧急程度
 - [ ] 阶段4：F5 忽略语义审计
 - [ ] 阶段5：F6 占位符长度保护
@@ -202,3 +202,49 @@ F7（job 可读名称）不排进以上阶段，留待后续视需要再单独�
 `test_cron_questions_api_routes.py`（13）+
 `test_cron_async_user_feedback.py`/`test_cron_job_workspace_and_executor.py`
 （79，未改动仍全部通过）。
+
+## 7. 阶段2实现记录（F2 忽略原因）
+
+按第 2 节 F2 方案原样实施，有一处小取舍跟原方案略有不同：原方案设想
+"批量忽略不支持逐条选原因，统一记'不说明原因'"——实际实现时选择让
+批量忽略**完全不传 note**（等价于不写入 `dismiss_note` 字段），而不是
+显式写入"不说明原因"这个字符串。理由：`dismiss_note` 字段本来就是
+"不存在 = 没说明原因"的语义（旧数据、自动过期、单条忽略选默认选项时
+都是字段不存在），批量忽略再显式写一个"不说明原因"的字符串反而制造了
+"该说的都说了但其实什么都没说"的冗余数据，不如保持字段不存在这一种
+"没说明"的表示方式。
+
+- `questions_store.dismiss_question()` 新增可选 `note` 参数，写入
+  `dismiss_note` 字段；不传/传空串都不写入该字段（幂等重复调用也不会
+  用后一次的空 note 覆盖已记录的 note，见
+  `test_dismiss_note_not_overwritten_on_idempotent_repeat_call`）。
+- API `POST /v1/cron_questions/{id}/dismiss` body 新增可选
+  `{"note": "..."}`；不带 body（原有调用方式）行为完全不变。
+- `client.py` 的 `dismiss_cron_question()` 新增可选 `note` 参数。
+- 看板"待处理"子 tab：每条问题的"提交回答"和"忽略这个问题"之间新增
+  一个"忽略原因（可选）"下拉框（`_CRON_QUESTION_DISMISS_REASON_OPTIONS`），
+  默认"（不说明原因）"，选了别的选项才会带 note 一起提交；批量忽略
+  按钮不带原因选择器，维持"逐条勾选 + 循环调用单条接口"不变，只是这次
+  调用时不传 note。
+- 看板"已忽略"子 tab：`dismiss_note` 存在时在问题下方多展示一行
+  "忽略原因：xxx"。
+
+新增/修改文件清单：
+- 修改 `src/mini_agent/notification/questions_store.py`（`dismiss_question`
+  新增 `note` 参数）
+- 修改 `src/mini_agent/api/routes.py`（`/dismiss` 端点解析可选 body）
+- 修改 `apps/mini_agent_kanban/client.py`（`dismiss_cron_question` 新增
+  `note` 参数）
+- 修改 `apps/mini_agent_kanban/app.py`（新增
+  `_CRON_QUESTION_DISMISS_REASON_OPTIONS`；"待处理"子 tab 忽略原因
+  下拉框；"已忽略"子 tab 展示 `dismiss_note`）
+- 修改 `tests/test_cron_questions_store.py`（新增 4 条 `note` 相关测试）
+- 修改 `tests/test_cron_questions_api_routes.py`（新增 2 条 `note`
+  相关测试）
+- 修改 `docs/cron-async-user-feedback-guide.md`（§6/§7/§10 同步 note
+  参数）
+
+全量相关测试跑通：`test_cron_questions_store.py`（63）+
+`test_cron_questions_api_routes.py`（15）+
+`test_cron_async_user_feedback.py`/`test_cron_job_workspace_and_executor.py`
+（79，未改动仍全部通过），共 157 条全部通过。

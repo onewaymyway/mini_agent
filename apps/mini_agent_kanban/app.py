@@ -6484,6 +6484,18 @@ _GROWTH_DISMISS_REASON_OPTIONS = [
     ("already_exists", "已存在该主题（和已有方向重复）"),
 ]
 
+# [cron_async_feedback_further_improvements_plan.md F2] "🙋 待我反馈"面板
+# "忽略这个问题"用的原因选项——跟上面 growth 面板的选项分开维护，因为
+# 语义场景不同（这里是"问题为什么不需要回答了"，不是"候选方向为什么不
+# 采纳"），值直接用作 dismiss_note 的文本内容（不像 growth 那边落盘的是
+# 内部 value 再单独维护展示映射），选项本身已经是给用户看的完整短句。
+_CRON_QUESTION_DISMISS_REASON_OPTIONS = [
+    "（不说明原因）",
+    "不再需要这个信息了",
+    "已经通过其它方式解决了",
+    "这个问题问得不清楚，agent 应该换个方式问",
+]
+
 # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2] 诊断面板
 # "反馈模式"区块展示用的短标签，跟上面 selectbox 里的长句子分开——诊断
 # 区块是概览性质，用更短的词更适合跟数字拼在一句 caption 里。
@@ -10213,8 +10225,16 @@ def _render_cron_questions_panel(client: "AgentClient"):
                             else:
                                 st.success("已提交，下次该任务触发时会自动带上你的回答。")
                                 st.rerun()
+                        # [cron_async_feedback_further_improvements_plan.md F2]
+                        # 忽略原因是可选的——不选就是"不说明原因"，跟之前
+                        # 直接点忽略按钮的行为完全一致，不强制用户多做一步。
+                        dismiss_reason_choice = st.selectbox(
+                            "忽略原因（可选）", _CRON_QUESTION_DISMISS_REASON_OPTIONS,
+                            key=f"cron_q_dismiss_reason_{idx}_{qid}", label_visibility="collapsed",
+                        )
                         if st.button("🙈 忽略这个问题", key=f"cron_q_dismiss_{idx}_{qid}"):
-                            res = client.dismiss_cron_question(qid)
+                            note = "" if dismiss_reason_choice == "（不说明原因）" else dismiss_reason_choice
+                            res = client.dismiss_cron_question(qid, note=note)
                             if res and "_error" in res:
                                 st.error(f"忽略失败：{res['_error']}")
                             else:
@@ -10309,6 +10329,11 @@ def _render_cron_questions_panel(client: "AgentClient"):
                 with st.container(border=True):
                     st.markdown(f"**任务 `{q.get('job_id', '-')}`** · {reason_badge}")
                     st.markdown(q.get("question") or "")
+                    # [cron_async_feedback_further_improvements_plan.md F2]
+                    # dismiss_note 是可选的（用户选了忽略原因，或批量忽略/
+                    # 自动过期没有原因时不存在这个字段），有才展示。
+                    if q.get("dismiss_note"):
+                        st.caption(f"忽略原因：{q['dismiss_note']}")
                     ts = q.get("updated_at")
                     if ts:
                         st.caption(f"关闭时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))}")

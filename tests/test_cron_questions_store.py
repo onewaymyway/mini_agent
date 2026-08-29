@@ -279,6 +279,35 @@ class TestDismissQuestion:
         dismiss_question(paths, rec["question_id"])
         assert find_pending_by_fingerprint(paths, "user:job1", "还需要回答吗？") is None
 
+    def test_dismiss_with_note_records_dismiss_note(self, paths):
+        """[cron_async_feedback_further_improvements_plan.md F2]"""
+        rec = append_question(paths, "user:job1", "还需要回答吗？")
+        updated = dismiss_question(paths, rec["question_id"], note="不再需要这个信息了")
+        assert updated["dismiss_note"] == "不再需要这个信息了"
+        stored = get_question(paths, rec["question_id"])
+        assert stored["dismiss_note"] == "不再需要这个信息了"
+
+    def test_dismiss_without_note_leaves_dismiss_note_absent(self, paths):
+        """[cron_async_feedback_further_improvements_plan.md F2] 不传 note
+        时不写入该字段，跟改动前的行为完全一致（向后兼容）。"""
+        rec = append_question(paths, "user:job1", "还需要回答吗？")
+        updated = dismiss_question(paths, rec["question_id"])
+        assert "dismiss_note" not in updated
+
+    def test_dismiss_with_empty_note_leaves_dismiss_note_absent(self, paths):
+        """[F2] 空字符串等价于不传——不写入空的 dismiss_note。"""
+        rec = append_question(paths, "user:job1", "还需要回答吗？")
+        updated = dismiss_question(paths, rec["question_id"], note="")
+        assert "dismiss_note" not in updated
+
+    def test_dismiss_note_not_overwritten_on_idempotent_repeat_call(self, paths):
+        """[F2] 已经是 dismissed 的问题重复调用是幂等的，不应该用第二次
+        调用传入的（可能为空的）note 覆盖第一次记录的原因。"""
+        rec = append_question(paths, "user:job1", "还需要回答吗？")
+        dismiss_question(paths, rec["question_id"], note="第一次的原因")
+        second = dismiss_question(paths, rec["question_id"])  # 不传 note
+        assert second["dismiss_note"] == "第一次的原因"
+
 
 class TestFindOrCreateQuestionConcurrency:
     """[cron_async_feedback_hardening_plan.md D1] 并发安全回归测试。"""
