@@ -165,3 +165,7 @@ test_reports/
 .agent/async_jobs/
 .agent/artifacts_index.jsonl
 daily_reports/
+
+# Agent & AI research data directories
+research/agent_and_ai/papers/
+research/agent_and_ai/articles/
