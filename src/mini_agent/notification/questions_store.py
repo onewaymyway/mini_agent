@@ -53,6 +53,20 @@ STATUS_DISMISSED = "dismissed"
 DISMISS_REASON_MANUAL = "manual"
 DISMISS_REASON_STALE_TIMEOUT = "stale_timeout"
 
+# [cron_async_feedback_further_improvements_plan.md F3] agent 调用
+# `ask_user_async` 时对问题紧急程度的自我判断——"blocking" 表示这个子
+# 任务确实没法在没有答案的情况下继续；"normal"（默认）表示答了更好，
+# 但不影响 agent 继续做其它可推进的工作。旧数据没有这个字段一律按
+# "normal" 兜底（`.get("urgency") or URGENCY_NORMAL`）。
+URGENCY_BLOCKING = "blocking"
+URGENCY_NORMAL = "normal"
+_VALID_URGENCY = {URGENCY_BLOCKING, URGENCY_NORMAL}
+
+
+def normalize_urgency(urgency: Optional[str]) -> str:
+    return urgency if urgency in _VALID_URGENCY else URGENCY_NORMAL
+
+
 
 def _new_question_id(job_id: str) -> str:
     return f"cq:{job_id}:{uuid.uuid4().hex[:12]}"
@@ -91,6 +105,7 @@ def append_question(
     question: str,
     hint: str = "",
     options: Optional[list] = None,
+    urgency: Optional[str] = None,
 ) -> dict:
     """新建一条待回答问题，返回写入的完整记录（含新生成的 question_id）。
 
@@ -98,6 +113,10 @@ def append_question(
     查重，确认确实需要新建时再调用本函数——本函数本身不做去重判断，允许
     调用方在明确需要"同一问题再问一次"的场景下（用户已经关闭/忽略了上一条）
     绕过查重直接新建。
+
+    [cron_async_feedback_further_improvements_plan.md F3] `urgency` 传
+    `None`/非法值时按 `URGENCY_NORMAL` 兜底，不拒绝调用——这是 agent 自己
+    的主观判断，不值得因为传错值让整个提问失败。
     """
     record = {
         "question_id": _new_question_id(job_id),
@@ -111,6 +130,7 @@ def append_question(
         "answer": "",
         "answer_history": [],
         "consumed": False,
+        "urgency": normalize_urgency(urgency),
     }
     try:
         p = paths.notification_cron_questions
@@ -150,6 +170,7 @@ def find_or_create_question(
     *,
     fuzzy_threshold: Optional[float] = 0.82,
     run_id: str = "",
+    urgency: Optional[str] = None,
 ) -> tuple[dict, bool]:
     """[cron_async_feedback_hardening_plan.md D1/D4] 查重 + 建新在同一把锁内
     原子完成，返回 `(record, is_new)`。
@@ -163,6 +184,12 @@ def find_or_create_question(
     `difflib.SequenceMatcher` 算相似度，`fuzzy_threshold` 及以上也判定为
     重复，默认 0.82）。传 `fuzzy_threshold=None` 关闭模糊匹配、只用精确
     匹配（兼容旧行为，供不希望误合并的调用方使用）。
+
+    [cron_async_feedback_further_improvements_plan.md F3] `urgency` 只在
+    真正新建记录时生效（`normalize_urgency` 兜底非法值）；命中去重时
+    返回的是已存在的记录，**不会**用这次调用的 `urgency` 覆盖已记录的
+    值——语义上，去重命中意味着"这其实是同一个问题"，紧急程度应该以
+    第一次提出时的判断为准，不应该被后续重复调用的参数悄悄改变。
     """
     p = paths.notification_cron_questions
     with ExclusiveFileLock(p):
@@ -188,6 +215,7 @@ def find_or_create_question(
             # run（比如被 watchdog 判定卡死放弃后，孤儿线程才迟到执行到
             # 这里）。不做写入时拦截，只做可识别标记。
             "run_id": run_id or "",
+            "urgency": normalize_urgency(urgency),
         }
         records = _load_all(paths)
         records.append(record)
@@ -601,10 +629,19 @@ def list_dismissed_questions(
 def list_pending_question_texts_for_job(paths: "AgentPaths", job_id: str) -> list[dict]:
     """取出某个 job 下仍是 pending 状态的问题，供 `render_prompt()` 渲染
     `{{unanswered_questions}}` 占位符，提醒 agent 不要重复提问同一个问题。
-    按 created_at 正序。"""
+
+    [cron_async_feedback_further_improvements_plan.md F3] 排序改为
+    "urgency=blocking 的排最前，同一组内部再按 created_at 正序"——
+    `{{unanswered_questions}}` 是喂给 agent 自己看的，让它优先看到"哪些
+    问题曾经判断为阻塞、还没等到答案"，跟看板"待处理"子 tab（E2，喂给
+    用户看，按等待时长排）是两个不同的排序需求，不共用同一份排序逻辑。
+    """
     result = [
         d for d in _load_all(paths)
         if d.get("job_id") == job_id and d.get("status") == STATUS_PENDING
     ]
-    result.sort(key=lambda d: d.get("created_at") or 0)
+    result.sort(key=lambda d: (
+        0 if normalize_urgency(d.get("urgency")) == URGENCY_BLOCKING else 1,
+        d.get("created_at") or 0,
+    ))
     return result

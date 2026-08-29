@@ -6,13 +6,13 @@
   长期未回答自动关闭 + 看板可用性补齐；原本明确不做的 E3 批量操作/角标/
   job_id 筛选，本轮补做，见该文档 §8）、
   `next_doc/cron_async_feedback_further_improvements_plan.md`（F1 精确
-  计数、F2 忽略原因已完成，F3–F7 规划中）
+  计数、F2 忽略原因、F3 问题紧急程度已完成，F4-F7 规划中）
 - **前置依赖**：[cron-dedicated-execution-guide.md](cron-dedicated-execution-guide.md)（cron
   任务专属执行机制本体，本功能是它的收尾状态扩展，不重复实现执行线程/
   `CronJobWorkspace` 记录链路）
 - **当前实施进度**：阶段1-5（原始设计）+ D1-D6（加固）+ E1-E2（生命周期
   与看板可用性）+ E3（看板批量操作/角标/筛选）+ F1（精确计数）+ F2
-  （忽略原因）已全部实施完成；F3-F7 见
+  （忽略原因）+ F3（问题紧急程度）已全部实施完成；F4-F7 见
   `cron_async_feedback_further_improvements_plan.md`。
 
 ---
@@ -51,6 +51,7 @@ agent（模型自己）在 cron 任务执行过程中，遇到需要用户输入
 | `question` | 是 | 问题原文，会展示在看板上 |
 | `hint` | 否 | 附加提示/上下文，展示在问题下方 |
 | `options` | 否 | 参考选项列表，**仅做展示提示，不做强校验**——用户仍可以输入不在列表里的任意文本 |
+| `urgency` | 否 | **[F3 新增]** `"normal"`（默认）\| `"blocking"`。`blocking` 表示这个子任务不答就真的没法继续，看板上会更醒目地标出来、在下次触发的提醒里排在最前面；agent 拿不准时用默认值即可，不强制要求每次都判断 |
 
 调用后立刻返回：
 
@@ -79,6 +80,11 @@ agent（模型自己）在 cron 任务执行过程中，遇到需要用户输入
   （而不是在 cron 任务执行上下文里），问题仍然会被正常创建并通知到
   看板，只是会归到固定分组 `"adhoc"`，**不会**被任何 cron job 的
   `render_prompt()` 自动续接消费——因为它压根不属于哪个 job。
+- **[F3 新增] `urgency` 只影响展示优先级，不影响任何自动化行为**：
+  标了 `blocking` 不会让系统做任何额外动作（不会更频繁通知、不会缩短
+  自动关闭阈值），纯粹是"排序和视觉优先级"的信号，帮用户判断先处理
+  哪个；同一 job 下模糊去重命中已有问题时，`urgency` 以第一次提问时
+  记录的值为准，不会被后续重复调用的参数覆盖。
 
 ## 4. 任务状态如何体现："等反馈中"不算失败
 
@@ -102,7 +108,7 @@ agent（模型自己）在 cron 任务执行过程中，遇到需要用户输入
 | 占位符 | 内容 | 消费后的处理 |
 |---|---|---|
 | `{{pending_answers}}` | 该 job 下**已回答但还没喂给过 agent** 的问答对，格式化成"上次你问过「X」，用户回答：Y"的列表 | **[加固后]** 渲染时只记录本次带出的 question_id，不立即标记消费；等 `CronJobExecutor` 确认这一步 `submit_step_fn()` 真正提交成功（未抛异常、`result.error` 为空）后才调用 `consume_last_rendered_answers()` 正式标记 `consumed=True`——如果这一步本身失败了，答案会保留"未消费"，下次触发能再次注入，不会静默丢失（详见 `next_doc/cron_async_feedback_hardening_plan.md` D2） |
-| `{{unanswered_questions}}` | 该 job 下**仍是 pending** 状态的问题列表，**[E1 新增]** 每条附带"已等待 N 天" | 提醒 agent 不要针对同一个问题重复调用 `ask_user_async`；等待天数越久越应该优先考虑自己拿主意或换个方式绕过去，因为快接近自动关闭阈值了 |
+| `{{unanswered_questions}}` | 该 job 下**仍是 pending** 状态的问题列表，**[E1 新增]** 每条附带"已等待 N 天"；**[F3 新增]** `urgency="blocking"` 的问题排在最前面并加"（阻塞）"前缀 | 提醒 agent 不要针对同一个问题重复调用 `ask_user_async`；等待天数越久越应该优先考虑自己拿主意或换个方式绕过去，因为快接近自动关闭阈值了；带"（阻塞）"前缀的问题意味着 agent 自己判断过"这个子任务没有答案真的没法继续"，理应比其它问题更优先被留意到 |
 | `{{dismissed_questions}}` | 该 job 下最近 20 条已忽略/已自动关闭的问题原文 | **[E1 更新]** 区分两种措辞：用户手动忽略的提示"不要再问"；**[E1 新增]** 因长期无人回答被系统自动关闭的提示"如果仍然关键，可以换个更容易顺手回答的方式重新问一次，不要用原话重复问"——两者语义不同，不能混为一谈 |
 
 三者都复用 `_render_condition_block()` 现有的 `{{#name}}...{{/name}}`
@@ -127,7 +133,11 @@ Streamlit 看板"🔔 关注与通知"tab 下新增"🙋 待我反馈"面板，�
 
 - **待处理**：逐条展示所属任务（`job_id`）、问题原文、`hint`；**[E2 新增]**
   按等待时长**升序**排列（等得最久的排最前）并附带"已等待 N 天"徽标
-  （≥7 天变红），帮助优先处理接近自动关闭阈值的旧问题。如果该问题带了
+  （≥7 天变红）。**[F3 新增]** 排序在此基础上叠加一层：`urgency="blocking"`
+  的问题整体排在最前面（同一 urgency 组内部仍按等待时长排），标题旁
+  额外带一个红色"⛔ 阻塞"徽标，跟"已等待≥7天"的红色徽标可以同时出现、
+  分别表达不同的信号（一个是"等太久了"，一个是"agent 判断这个不答不行"）。
+  这些帮助优先处理接近自动关闭阈值或真正卡住进度的问题。如果该问题带了
   `options`，会额外展示一组单选按钮作为快捷参考——选中即自动填入文本框，
   仍可以在文本框里改成任意其它内容再提交，**不是强制枚举**。填好答案点
   "✅ 提交回答"即可。如果这个问题已经不需要回答了（比如任务本身已经
@@ -272,22 +282,22 @@ questions()` 通过比较问题记录的 `run_id` 跟对应 job 当前
 
 | 文件 | 作用 |
 |---|---|
-| `src/mini_agent/notification/questions_store.py` | 问答记录存储：`append_question`/`find_or_create_question`（加锁原子操作，含模糊去重）/`find_pending_by_fingerprint`/`submit_answer`/`dismiss_question`（**[E1 新增]** `reason` 参数）/`expire_stale_pending_questions`（**[E1 新增]**）/`list_pending_questions`/`list_answered_questions`/`list_dismissed_questions`/`list_unconsumed_answers_for_job`/`mark_answers_consumed`/`list_pending_question_texts_for_job`/`archive_old_records`/`purge_questions_for_job`/`list_orphaned_pending_questions`/`count_questions`（**[F1 新增]**）/`dismiss_question` 新增 `note` 参数（**[F2 新增]**） |
+| `src/mini_agent/notification/questions_store.py` | 问答记录存储：`append_question`/`find_or_create_question`（加锁原子操作，含模糊去重）/`find_pending_by_fingerprint`/`submit_answer`/`dismiss_question`（**[E1 新增]** `reason` 参数）/`expire_stale_pending_questions`（**[E1 新增]**）/`list_pending_questions`/`list_answered_questions`/`list_dismissed_questions`/`list_unconsumed_answers_for_job`/`mark_answers_consumed`/`list_pending_question_texts_for_job`/`archive_old_records`/`purge_questions_for_job`/`list_orphaned_pending_questions`/`count_questions`（**[F1 新增]**）/`dismiss_question` 新增 `note` 参数（**[F2 新增]**）/`normalize_urgency`、`append_question`/`find_or_create_question` 新增 `urgency` 参数、`list_pending_question_texts_for_job` 排序调整（**[F3 新增]**） |
 | `src/mini_agent/notification/config.py` | **[E1 新增]** `cron_question_stale_after_days` 配置项加载 |
-| `src/mini_agent/tools/ask_user_async.py` | 异步提问工具本体，内部调用 `NotificationDispatcher.dispatch()`（`source="cron_question"`） |
+| `src/mini_agent/tools/ask_user_async.py` | 异步提问工具本体，内部调用 `NotificationDispatcher.dispatch()`（`source="cron_question"`）；**[F3 新增]** `urgency` 参数、blocking 问题通知标题加 `⛔` 前缀 |
 | `src/mini_agent/evolution/cron_context.py` | thread-local `job_id`/`run_id` 透传，供 `ask_user_async` 在 cron 执行线程内取到当前 job_id/run_id |
-| `src/mini_agent/evolution/cron_job_workspace.py` | `STATUS_WAITING_FEEDBACK` 状态、`{{pending_answers}}`/`{{unanswered_questions}}`（**[E1]** 附带等待天数）/`{{dismissed_questions}}`（**[E1]** 区分手动/超时措辞）占位符渲染、`consume_last_rendered_answers()` |
+| `src/mini_agent/evolution/cron_job_workspace.py` | `STATUS_WAITING_FEEDBACK` 状态、`{{pending_answers}}`/`{{unanswered_questions}}`（**[E1]** 附带等待天数，**[F3 新增]** blocking 问题加"（阻塞）"前缀）/`{{dismissed_questions}}`（**[E1]** 区分手动/超时措辞）占位符渲染、`consume_last_rendered_answers()` |
 | `src/mini_agent/evolution/cron_job_executor.py` | `run_job()` 设置/清空 thread-local job_id/run_id、确认第一步成功后才消费答案、收尾时的 `waiting_feedback` 判定 |
 | `src/mini_agent/evolution/cron_scheduler.py` | `remove_job()` 顺带清理该 job 名下问答记录 |
 | `src/mini_agent/evolution/autonomous_loop.py` | `_tick_maintenance()` 每 24 小时触发一次问答记录归档，**[E1 新增]** 同窗口触发长期未回答问题自动关闭 + 逐条通知 |
 | `src/mini_agent/api/routes.py` | `/v1/cron_questions/{pending,history,dismissed,counts,{id}/answer,{id}/dismiss}` 六个端点（**[E2 新增]** `dismissed`，**[F1 新增]** `counts`） |
 | `apps/mini_agent_kanban/client.py` | `cron_questions_pending`/`cron_questions_history`/`answer_cron_question`/`dismiss_cron_question`（**[F2 更新]** 新增可选 `note` 参数）/`cron_questions_dismissed`（**[E2 新增]**）/`cron_questions_counts`（**[F1 新增]**）客户端方法 |
-| `apps/mini_agent_kanban/app.py` | "🔔 关注与通知"tab 下"🙋 待我反馈"面板（`_render_cron_questions_panel`，独立 `@st.fragment`），**[E2]** 待处理按等待时长排序+徽标、新增"已忽略"子 tab；**[E3 新增]** job_id 筛选下拉框、"待处理"批量勾选+批量忽略；**[F1 更新]** 三个子 tab 标题数量角标改用精确计数接口；**[F2 新增]** "待处理"忽略原因下拉框、"已忽略"展示 `dismiss_note` |
+| `apps/mini_agent_kanban/app.py` | "🔔 关注与通知"tab 下"🙋 待我反馈"面板（`_render_cron_questions_panel`，独立 `@st.fragment`），**[E2]** 待处理按等待时长排序+徽标、新增"已忽略"子 tab；**[E3 新增]** job_id 筛选下拉框、"待处理"批量勾选+批量忽略；**[F1 更新]** 三个子 tab 标题数量角标改用精确计数接口；**[F2 新增]** "待处理"忽略原因下拉框、"已忽略"展示 `dismiss_note`；**[F3 新增]** "待处理"排序叠加 blocking 优先、"⛔ 阻塞"徽标 |
 | `.agent/notification/cron_questions.jsonl` | 问答记录落地文件（运行时生成） |
 | `.agent/notification/cron_questions.archive.jsonl` | **[加固后新增]** 归档文件（运行时生成，超过保留期的 answered/dismissed 记录） |
-| `tests/test_cron_questions_store.py` | `questions_store.py` 单元测试（含并发/消费时机/归档/清理/孤儿识别/**[E1 新增]** 自动过期回归测试） |
-| `tests/test_cron_async_user_feedback.py` | 工具去重、状态机、占位符渲染（**[E1 新增]** 等待天数/超时措辞区分）、忽略提醒、模糊去重、run_id 传播等端到端覆盖 |
-| `tests/test_cron_questions_api_routes.py` | API 端点测试（pending/history/**[E2 新增]** dismissed 分页过滤、答案提交与修改、错误处理） |
+| `tests/test_cron_questions_store.py` | `questions_store.py` 单元测试（含并发/消费时机/归档/清理/孤儿识别/**[E1 新增]** 自动过期/**[F1]** 精确计数/**[F2]** 忽略原因/**[F3]** 紧急程度回归测试） |
+| `tests/test_cron_async_user_feedback.py` | 工具去重、状态机、占位符渲染（**[E1 新增]** 等待天数/超时措辞区分，**[F3 新增]** blocking 标记与排序）、忽略提醒、模糊去重、run_id 传播等端到端覆盖 |
+| `tests/test_cron_questions_api_routes.py` | API 端点测试（pending/history/**[E2 新增]** dismissed 分页过滤、答案提交与修改、**[F1 新增]** counts、**[F2 新增]** dismiss note、错误处理） |
 | `tests/test_cron_job_workspace_and_executor.py` | 含答案消费时机（D2）回归测试 |
 | `tests/test_cron_scheduler_reap_stale_jobs.py` | 含 `remove_job()` 清理问答记录（D5）回归测试 |
 | `next_doc/cron_async_feedback_hardening_plan.md` | **[加固后新增]** D1–D6 六个缺陷的方案设计 + 各阶段实现记录 |

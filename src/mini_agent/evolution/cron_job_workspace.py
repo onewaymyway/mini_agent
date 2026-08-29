@@ -422,6 +422,11 @@ class CronJobWorkspace:
         如果拖过维护性 tick 的 `stale_after_days` 阈值会被自动关闭，提前
         让 agent（间接也是用户，因为 progress_summary 常被摘要进通知）
         感知到"这个问题快要被系统放弃"的时间压力。
+
+        [cron_async_feedback_further_improvements_plan.md F3] 列表本身已经
+        由 `list_pending_question_texts_for_job()` 排好序（blocking 在前），
+        这里额外给 `urgency=blocking` 的问题加一个"（阻塞）"前缀标记，
+        帮 agent 一眼看出"这几条不是随便问问，是真的卡住了没法继续"。
         """
         try:
             from mini_agent.notification import questions_store
@@ -434,7 +439,8 @@ class CronJobWorkspace:
                 created_at = r.get("created_at") or now
                 days = max(0, int((now - created_at) // 86400))
                 age_note = f"，已等待 {days} 天未回答" if days >= 1 else "，尚未回答"
-                lines.append(f"- 「{r.get('question', '')}」{age_note}")
+                urgency_prefix = "（阻塞）" if questions_store.normalize_urgency(r.get("urgency")) == questions_store.URGENCY_BLOCKING else ""
+                lines.append(f"- {urgency_prefix}「{r.get('question', '')}」{age_note}")
             return "\n".join(lines)
         except Exception as exc:
             from mini_agent.errors import log_exception

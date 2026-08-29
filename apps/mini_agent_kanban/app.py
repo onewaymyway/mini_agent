@@ -10152,7 +10152,17 @@ def _render_cron_questions_panel(client: "AgentClient"):
                 # 配合下面的"已等待 N 天"提示，帮用户优先处理快要被系统
                 # 自动关闭（见 questions_store.expire_stale_pending_questions）
                 # 的旧问题，避免它们一直沉在列表底部没人注意到。
-                questions = sorted(questions, key=lambda q: q.get("created_at") or 0)
+                # [cron_async_feedback_further_improvements_plan.md F3]
+                # 在等待时长排序之上再叠一层：urgency=blocking 的整体排在
+                # normal 前面（同一组内部仍按等待时长升序）——"确实卡住了
+                # 没法继续"的问题理应比"答不答都行"的问题更优先被用户看到。
+                questions = sorted(
+                    questions,
+                    key=lambda q: (
+                        0 if (q.get("urgency") or "normal") == "blocking" else 1,
+                        q.get("created_at") or 0,
+                    ),
+                )
 
                 # [E3] 批量忽略——量级不大的情况下用"逐条勾选 + 循环调用
                 # 已有的单条 dismiss 接口"实现，跟 growth 面板"批量隐藏/
@@ -10198,7 +10208,11 @@ def _render_cron_questions_panel(client: "AgentClient"):
                                 age_badge = f" · :red[已等待 {days} 天]"
                             elif days >= 1:
                                 age_badge = f" · 已等待 {days} 天"
-                        st.markdown(f"**任务 `{q.get('job_id', '-')}`**{age_badge}")
+                        # [cron_async_feedback_further_improvements_plan.md F3]
+                        # blocking 用红色徽标区分，跟"已等待≥7天"共用红色
+                        # 视觉语言（都是"该优先看"），但语义分开写在文字里。
+                        urgency_badge = " · :red[⛔ 阻塞]" if (q.get("urgency") or "normal") == "blocking" else ""
+                        st.markdown(f"**任务 `{q.get('job_id', '-')}`**{urgency_badge}{age_badge}")
                         st.markdown(q.get("question") or "")
                         if q.get("hint"):
                             st.caption(f"提示：{q['hint']}")

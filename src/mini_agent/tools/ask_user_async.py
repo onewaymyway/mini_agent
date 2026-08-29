@@ -96,12 +96,26 @@ def _format_options_hint(options: Optional[list]) -> str:
                     "option, this is NOT a strict enum."
                 ),
             },
+            "urgency": {
+                "type": "string",
+                "enum": ["normal", "blocking"],
+                "description": (
+                    "Optional, defaults to 'normal'. Use 'blocking' only when THIS specific "
+                    "sub-task genuinely cannot proceed at all without an answer — it will be "
+                    "shown more prominently on the dashboard and listed first in the reminder "
+                    "you see next run. Use 'normal' (or just omit this) when the answer would "
+                    "help but you can still make progress on other things without it. Don't "
+                    "overthink this — 'normal' is a safe default if you're unsure."
+                ),
+            },
         },
         "required": ["question"],
     },
     requires_approval=False,
 )
-def ask_user_async(question: str, hint: str = "", options: Optional[list] = None) -> str:
+def ask_user_async(
+    question: str, hint: str = "", options: Optional[list] = None, urgency: str = "",
+) -> str:
     """向用户异步提问，立刻返回 question_id，不等待回答。"""
     from mini_agent.evolution.cron_context import get_current_cron_job_id, get_current_cron_run_id
     from mini_agent.notification import questions_store
@@ -121,7 +135,7 @@ def ask_user_async(question: str, hint: str = "", options: Optional[list] = None
     # 精确匹配仍然优先尝试。run_id 一并记录，供事后识别孤儿线程迟到写入
     # （见 cron_context.set_current_cron_run_id 的说明）。
     record, is_new = questions_store.find_or_create_question(
-        paths, job_id, question, hint=hint, options=options, run_id=run_id,
+        paths, job_id, question, hint=hint, options=options, run_id=run_id, urgency=urgency,
     )
 
     if is_new:
@@ -133,8 +147,11 @@ def ask_user_async(question: str, hint: str = "", options: Optional[list] = None
             if opt_hint:
                 body_lines.append(f"\n{opt_hint}")
             dispatcher = NotificationDispatcher(paths)
+            title = f"任务「{job_id}」需要你的反馈"
+            if record.get("urgency") == questions_store.URGENCY_BLOCKING:
+                title = f"⛔ 任务「{job_id}」被阻塞，需要你的反馈"
             dispatcher.dispatch(NotificationMessage(
-                title=f"任务「{job_id}」需要你的反馈",
+                title=title,
                 body="\n".join(body_lines),
                 source="cron_question",
                 meta={"job_id": job_id, "question_id": record["question_id"]},

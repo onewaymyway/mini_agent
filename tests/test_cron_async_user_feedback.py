@@ -71,13 +71,13 @@ class TestCronContext:
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestAskUserAsyncTool:
-    def _call(self, paths, tmp_path, question, hint="", options=None, job_id="user:job1"):
+    def _call(self, paths, tmp_path, question, hint="", options=None, job_id="user:job1", urgency=""):
         from mini_agent.tools.ask_user_async import ask_user_async, set_project_root_provider
 
         set_project_root_provider(lambda: tmp_path)
         set_current_cron_job_id(job_id)
         try:
-            raw = ask_user_async(question, hint=hint, options=options)
+            raw = ask_user_async(question, hint=hint, options=options, urgency=urgency)
         finally:
             clear_current_cron_job_id()
         return json.loads(raw)
@@ -133,6 +133,17 @@ class TestAskUserAsyncTool:
         # 自由文本回答，不校验是否在 options 里
         updated = questions_store.submit_answer(paths, result["question_id"], "都不选，我要 C")
         assert updated["answer"] == "都不选，我要 C"
+
+    def test_urgency_blocking_is_stored(self, paths, tmp_path):
+        """[cron_async_feedback_further_improvements_plan.md F3]"""
+        result = self._call(paths, tmp_path, "阻塞的问题", urgency="blocking")
+        rec = questions_store.get_question(paths, result["question_id"])
+        assert rec["urgency"] == "blocking"
+
+    def test_urgency_defaults_to_normal_when_omitted(self, paths, tmp_path):
+        result = self._call(paths, tmp_path, "普通问题")
+        rec = questions_store.get_question(paths, result["question_id"])
+        assert rec["urgency"] == "normal"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -508,6 +519,18 @@ class TestUnansweredQuestionsAgeHint:
         rendered = ws.render_prompt("做点什么")
         assert "拖了很久的问题" in rendered
         assert "已等待 5 天" in rendered
+
+    def test_blocking_question_gets_marker_and_sorts_first(self, paths):
+        """[cron_async_feedback_further_improvements_plan.md F3]"""
+        ws = CronJobWorkspace(paths, "user:test_job")
+        ws.ensure(default_task_template="{{task_description}}\n{{unanswered_questions}}\n")
+        questions_store.append_question(paths, "user:test_job", "普通问题", urgency="normal")
+        questions_store.append_question(paths, "user:test_job", "阻塞问题", urgency="blocking")
+
+        rendered = ws.render_prompt("做点什么")
+        assert "（阻塞）「阻塞问题」" in rendered
+        # blocking 排在 normal 前面
+        assert rendered.index("阻塞问题") < rendered.index("普通问题")
 
 
 class TestFuzzyDeduplication:

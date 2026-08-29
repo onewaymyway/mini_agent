@@ -1,6 +1,6 @@
 # Cron 异步用户反馈机制 —— 后续改进方向规划
 
-> 状态：**方案已确认，阶段1/阶段2已实施完成**
+> 状态：**方案已确认，阶段1/阶段2/阶段3已实施完成**
 > 前置文档：`next_doc/cron_async_user_feedback_mechanism_plan.md`（原始设计）、
 > `next_doc/cron_async_feedback_hardening_plan.md`（D1–D6 加固）、
 > `next_doc/cron_async_feedback_lifecycle_and_usability_plan.md`（E1–E3
@@ -157,7 +157,7 @@ F7（job 可读名称）不排进以上阶段，留待后续视需要再单独�
 
 - [x] 阶段1：F1 精确计数
 - [x] 阶段2：F2 忽略原因
-- [ ] 阶段3：F3 问题紧急程度
+- [x] 阶段3：F3 问题紧急程度
 - [ ] 阶段4：F5 忽略语义审计
 - [ ] 阶段5：F6 占位符长度保护
 - [ ] 阶段6：F4 按 job 覆盖阈值
@@ -248,3 +248,57 @@ F7（job 可读名称）不排进以上阶段，留待后续视需要再单独�
 `test_cron_questions_api_routes.py`（15）+
 `test_cron_async_user_feedback.py`/`test_cron_job_workspace_and_executor.py`
 （79，未改动仍全部通过），共 157 条全部通过。
+
+## 8. 阶段3实现记录（F3 问题紧急程度）
+
+按第 2 节 F3 方案原样实施，一处小调整：`ask_user_async` 工具函数签名用
+`urgency: str = ""`（空字符串默认值）而不是 `Optional[str] = None`——
+跟同一工具里 `hint: str = ""` 的既有风格保持一致（这个工具的其它可选
+字符串参数都是这个写法），传空串到 `questions_store.normalize_urgency()`
+一样会兜底成 `"normal"`，语义没有差别。
+
+- `questions_store.py` 新增 `URGENCY_BLOCKING`/`URGENCY_NORMAL` 常量和
+  `normalize_urgency()`（做成公开函数，因为 `cron_job_workspace.py` 需要
+  跨模块调用它判断某条记录是否 blocking，不适合用下划线私有名）。
+- `append_question()`/`find_or_create_question()` 都新增可选 `urgency`
+  参数，落盘为 `urgency` 字段（新记录一律经过 `normalize_urgency()` 归一，
+  不存在"非法值污染存储"的情况）。**去重命中已存在记录时不会用这次调用
+  的 urgency 覆盖已记录的值**——语义上去重命中意味着"这其实是同一个
+  问题"，紧急程度应该以第一次提出时的判断为准。
+- `tools/ask_user_async.py`：工具 schema 新增可选 `urgency` 参数
+  （`"normal"` | `"blocking"`，枚举），description 里说明"拿不准用默认
+  值就行，不强制要求"；新问题被判定为 `blocking` 时，kanban 通知标题
+  额外加 `⛔` 前缀和"被阻塞"字样，跟 `normal` 问题的通知区分开。
+- `questions_store.list_pending_question_texts_for_job()`（供
+  `{{unanswered_questions}}` 占位符用）排序改为"blocking 组在前，组内
+  仍按 created_at 正序"；`cron_job_workspace._format_unanswered_questions()`
+  给 blocking 的问题加"（阻塞）"文本前缀。
+- 看板"待处理"子 tab：排序在 E2 的"按等待时长升序"基础上叠一层
+  "blocking 整体排在 normal 前面"；每条问题标题旁加一个红色"⛔ 阻塞"
+  徽标（有别于"已等待≥7天"的红色"已等待 N 天"徽标，两者可以同时出现）。
+- 看板"历史记录"/"已忽略"子 tab 未改动——`urgency` 是"这个问题还没被
+  回答时有多紧急"的信号，问题一旦有了结果（回答/忽略），紧急程度已经
+  不再是决策依据，不需要在这两个 tab 里展示。
+
+新增/修改文件清单：
+- 修改 `src/mini_agent/notification/questions_store.py`（`URGENCY_*`
+  常量、`normalize_urgency()`、`append_question`/`find_or_create_question`
+  新增 `urgency` 参数、`list_pending_question_texts_for_job()` 排序调整）
+- 修改 `src/mini_agent/tools/ask_user_async.py`（工具 schema 新增
+  `urgency` 参数、blocking 通知标题加前缀）
+- 修改 `src/mini_agent/evolution/cron_job_workspace.py`
+  （`_format_unanswered_questions()` 加"（阻塞）"前缀）
+- 修改 `apps/mini_agent_kanban/app.py`（"待处理"子 tab 排序叠加
+  blocking 优先、新增"⛔ 阻塞"徽标）
+- 修改 `tests/test_cron_questions_store.py`（新增 `TestUrgency`，9 条）
+- 修改 `tests/test_cron_async_user_feedback.py`（新增 2 条工具层测试 +
+  1 条 `{{unanswered_questions}}` 排序/标记测试）
+- 修改 `docs/cron-async-user-feedback-guide.md`（§4 工具参数、§6 看板
+  说明、§10 文件清单同步 F3）
+
+全量相关测试跑通：`test_cron_questions_store.py`（72）+
+`test_cron_questions_api_routes.py`（15）+
+`test_cron_async_user_feedback.py`（38）+
+`test_cron_job_workspace_and_executor.py`（44）+
+`test_cron_job_runner.py`/`test_cron_scheduler_reap_stale_jobs.py`
+（19，未改动仍全部通过），共 188 条全部通过。

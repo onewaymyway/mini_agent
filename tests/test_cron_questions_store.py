@@ -12,6 +12,7 @@ from mini_agent.notification.questions_store import (
     count_questions,
     dismiss_question,
     find_pending_by_fingerprint,
+    find_or_create_question,
     get_question,
     list_dismissed_questions,
     list_pending_questions,
@@ -19,10 +20,13 @@ from mini_agent.notification.questions_store import (
     list_pending_question_texts_for_job,
     list_unconsumed_answers_for_job,
     mark_answers_consumed,
+    normalize_urgency,
     submit_answer,
     STATUS_ANSWERED,
     STATUS_DISMISSED,
     STATUS_PENDING,
+    URGENCY_BLOCKING,
+    URGENCY_NORMAL,
 )
 from mini_agent.storage.paths import AgentPaths
 
@@ -683,3 +687,61 @@ class TestCountQuestions:
     def test_count_zero_when_no_records(self, paths):
         assert count_questions(paths, status=STATUS_PENDING) == 0
         assert count_questions(paths) == 0
+
+
+class TestUrgency:
+    """[cron_async_feedback_further_improvements_plan.md F3]"""
+
+    def test_normalize_urgency_valid_values_passthrough(self):
+        assert normalize_urgency("blocking") == URGENCY_BLOCKING
+        assert normalize_urgency("normal") == URGENCY_NORMAL
+
+    def test_normalize_urgency_invalid_or_missing_falls_back_to_normal(self):
+        assert normalize_urgency(None) == URGENCY_NORMAL
+        assert normalize_urgency("") == URGENCY_NORMAL
+        assert normalize_urgency("urgent!!!") == URGENCY_NORMAL
+
+    def test_append_question_stores_urgency(self, paths):
+        rec = append_question(paths, "user:job1", "问题", urgency="blocking")
+        assert rec["urgency"] == URGENCY_BLOCKING
+        stored = get_question(paths, rec["question_id"])
+        assert stored["urgency"] == URGENCY_BLOCKING
+
+    def test_append_question_defaults_to_normal(self, paths):
+        rec = append_question(paths, "user:job1", "问题")
+        assert rec["urgency"] == URGENCY_NORMAL
+
+    def test_append_question_invalid_urgency_falls_back_to_normal(self, paths):
+        rec = append_question(paths, "user:job1", "问题", urgency="超级紧急")
+        assert rec["urgency"] == URGENCY_NORMAL
+
+    def test_find_or_create_question_stores_urgency_on_new_record(self, paths):
+        rec, is_new = find_or_create_question(paths, "user:job1", "问题", urgency="blocking")
+        assert is_new is True
+        assert rec["urgency"] == URGENCY_BLOCKING
+
+    def test_find_or_create_question_dedup_does_not_overwrite_urgency(self, paths):
+        """去重命中已存在的问题时，不应该用这次调用的 urgency 覆盖第一次
+        记录的值——语义上这是"同一个问题"，紧急程度以第一次判断为准。"""
+        first, _ = find_or_create_question(paths, "user:job1", "还需要回答吗？", urgency="blocking")
+        second, is_new = find_or_create_question(paths, "user:job1", "还需要回答吗？", urgency="normal")
+        assert is_new is False
+        assert second["question_id"] == first["question_id"]
+        assert second["urgency"] == URGENCY_BLOCKING
+
+    def test_unanswered_texts_sorts_blocking_first(self, paths):
+        append_question(paths, "user:job1", "普通问题1", urgency="normal")
+        blocking = append_question(paths, "user:job1", "阻塞问题", urgency="blocking")
+        append_question(paths, "user:job1", "普通问题2", urgency="normal")
+
+        rows = list_pending_question_texts_for_job(paths, "user:job1")
+        assert rows[0]["question_id"] == blocking["question_id"]
+
+    def test_unanswered_texts_normal_group_sorted_by_created_at(self, paths):
+        """同一 urgency 分组内部仍按 created_at 正序（等得最久的排最前），
+        不因为叠加 urgency 排序就丢了原有的时间序。"""
+        q1 = append_question(paths, "user:job1", "问题1")
+        q2 = append_question(paths, "user:job1", "问题2")
+        rows = list_pending_question_texts_for_job(paths, "user:job1")
+        ids = [r["question_id"] for r in rows]
+        assert ids.index(q1["question_id"]) < ids.index(q2["question_id"])
