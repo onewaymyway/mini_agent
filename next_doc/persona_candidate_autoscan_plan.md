@@ -1,5 +1,10 @@
 # 候选人设/能力自动检测方案（Persona Candidate Auto-Scan）
 
+- **版本**：v0.3（**已实现**，P1 落地完成。实现时对 §8 三个待确认问题的
+  取舍：1) `PersonaCandidateConfig` 独立成配置块；2) HTTP 路由新开
+  `api/persona_candidate_routes.py`；3) 看板"✅ 采纳"后直接创建空大纲
+  Track，不弹出"补充大纲"交互，静默留给用户之后去 Track 详情页补充——
+  均按方案原有倾向落地，未做变更。)
 - **版本**：v0.2（设计草案，尚未实现。**本轮改动**：用户反馈"候选生成
   本身也应该用 LLM，因为直接复用 growth_advisor/wiki miss 现成的主题/
   条目，是从别的场景的视角提炼出来的，角度不一样，不一定能直接映射成
@@ -312,3 +317,50 @@ Track 列表的那个函数附近）新增一个子区域"🎭 候选人设"：
 
 以上三点不影响核心架构，实现时按现有代码最贴近的先例决定即可；如果
 你有明确倾向，请直接告知，我会在实现前对齐。
+
+---
+
+## 9. 实施状态（v0.3 落地记录）
+
+已全部完成：
+
+- `evolution/persona_candidates.py`：`PersonaCandidate` 数据模型 +
+  `PersonaCandidateStore`（单文件 JSON）+ 三步扫描流程
+  （`_collect_topic_signals`/`_collect_wiki_miss_signals` 规则式采集 →
+  `_extract_candidates_with_llm` LLM 提炼 → 复用
+  `growth_advisor._llm_find_duplicate_direction()` LLM 判重）+
+  `accept_candidate()`/`dismiss_candidate()`。
+- `AgentPaths.persona_candidates_path`：`.agent/persona_candidates.json`。
+- `config/models.py::PersonaCandidateConfig`：独立配置块，默认
+  `enabled=False`（opt-in），已挂到 `AppConfig.persona_candidates`，并
+  注册进 `config_catalog.py`（配置 UI/CLI 自动可见）。
+- `api/persona_candidate_routes.py`：4 个端点（GET 列表 / POST scan
+  异步任务 / POST accept / POST dismiss），已挂载到 `api/server.py`。
+- `cli/commands/capability_cmd.py`：新增
+  `/capability persona_candidates [scan|accept|dismiss|list]` 子命令，
+  供 cron task_template 引用（同 `/capability cycle` 的中间层模式）。
+- `cron_scheduler.py`：新增 `sys:persona_candidate_scan`
+  （`interval:86400`，**默认 `enabled: False`**，opt-in）。
+- `apps/mini_agent_kanban/client.py`：`persona_candidates()` /
+  `persona_candidate_scan()` / `persona_candidate_accept()` /
+  `persona_candidate_dismiss()` 四个客户端方法。
+- `apps/mini_agent_kanban/app.py`：能力学习 Tab 内新增
+  `_render_persona_candidates_section()`，"🎭 候选人设（自动检测）"
+  折叠区域——"🔍 扫描候选"按钮（异步任务轮询）+ 候选列表（逐条/批量
+  采纳或忽略）。
+
+**实现相对方案 §3 数据模型的一处简化**：`PersonaCandidate` 未实现
+`STATUS_EXPIRED`/TTL 自动过期——候选量级受 `max_pending_candidates`
+（默认 10）节流，不像 `growth_advisor` 的成长方向那样持续产生，暂时
+只有 pending/accepted/dismissed 三态，待实际使用后再评估是否需要补上
+过期机制（见 `persona_candidates.py` 模块顶部说明）。
+
+**尚未做（有意，对齐 §7 明确不做的部分，未变更）**：不自动创建
+`.agent/personas/*.md` 人设文件；原始信号采集仍是规则式，不整批交给
+LLM 自由翻记忆库；cron 定时扫描默认关闭。
+
+**验证方式**：本轮改动均已通过 `python3 -m py_compile` 语法检查；因
+本地环境未接入真实 LLM/HTTP daemon，未做端到端集成测试，建议接入后
+先用 `/capability persona_candidates scan`（需要先在配置里把
+`persona_candidates.enabled` 设为 `true`）手动验证一轮扫描的候选质量，
+再考虑是否打开 `sys:persona_candidate_scan` cron job。

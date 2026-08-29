@@ -24,6 +24,7 @@ evolution/cron_scheduler.py — Daemon 模式定时任务调度器
   sys:growth_monthly_retrospective — 成长顾问月度复盘（默认开启）      interval:2592000
   sys:capability_learning_cycle    — 能力学习/人设养成循环（默认开启，见下方说明）interval:21600
   sys:capability_question_sweep    — 能力学习异步问题过期清理（默认开启）interval:86400
+  sys:persona_candidate_scan       — 候选人设/能力自动检测（默认关闭，见下方说明）interval:86400
 
 存储：<project_root>/.agent/cron_jobs.json
 """
@@ -383,6 +384,27 @@ _BUILTIN_JOBS: list[dict] = [
         "task_template": "[能力学习] 执行一次 /capability questions --sweep-expired",
         "tags": ["capability_learning"],
         "enabled": True,
+    },
+    {
+        # [next_doc/persona_candidate_autoscan_plan.md] 候选人设/能力自动
+        # 检测：Agent 执行过程中主动检测"可能值得养成的人设/能力方向"，
+        # 生成候选供用户在看板挑选（体验对齐 growth_advisor 的信号扫描 →
+        # 候选 → 用户采纳/忽略范式）。候选生成本身要过 LLM（不是规则式
+        # 直接搬运 growth_advisor 主题名/wiki miss 检索词当标题，见
+        # persona_candidates.py 顶部说明），且是一个刚落地的新机制——
+        # 默认 `enabled: False`（opt-in），和 `capability_learning_cycle`
+        # 刚上线时的保守默认一致，先支持看板"🔍 扫描候选"按钮手动触发，
+        # 观察实际候选质量/去重准确率后再评估要不要 opt-out。同时受
+        # `PersonaCandidateConfig.enabled`（同样默认 False）双重开关
+        # 保护——这条 cron job 即使被误开，扫描函数内部仍会因为
+        # `cfg.enabled=False` 直接跳过、不发起任何 LLM 调用。
+        "id": "sys:persona_candidate_scan",
+        "name": "候选人设：自动检测",
+        "schedule": "interval:86400",
+        "description": "扫描成长方向/知识缺口信号，LLM 提炼候选人设/能力方向供用户在看板采纳或忽略（每 24 小时，默认关闭）",
+        "task_template": "[候选人设] 执行一次 /capability persona_candidates scan",
+        "tags": ["capability_learning", "persona_candidates"],
+        "enabled": False,
     },
 ]
 

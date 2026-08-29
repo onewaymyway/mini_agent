@@ -440,6 +440,69 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
             )
         return
 
+    if sub == "persona_candidates":
+        from mini_agent.evolution.persona_candidates import (
+            PersonaCandidateStore,
+            accept_candidate,
+            dismiss_candidate,
+            scan_persona_candidates,
+        )
+
+        action = args[1] if len(args) > 1 else "list"
+
+        if action == "scan":
+            cfg = getattr(agent.cfg, "persona_candidates", None) if agent is not None else None
+            if cfg is None:
+                from mini_agent.config.models import PersonaCandidateConfig
+                cfg = PersonaCandidateConfig()
+            if not getattr(cfg, "enabled", False):
+                R.print_info("persona_candidates.enabled=False，跳过扫描（未发起 LLM 调用）。")
+                return
+            from mini_agent.profile import UserProfileManager
+
+            profile = UserProfileManager(paths).load()
+            created = scan_persona_candidates(paths, cfg, profile, _get_llm_helper(agent))
+            if not created:
+                R.print_info("本轮扫描没有产生新候选。")
+                return
+            for c in created:
+                R.print_success(f"[{c.candidate_id}] {c.title} —— {c.rationale}")
+            return
+
+        if action in ("accept", "dismiss"):
+            if len(args) < 3:
+                R.print_error(f"用法：/capability persona_candidates {action} <candidate_id>")
+                return
+            candidate_id = args[2]
+            if action == "accept":
+                result = accept_candidate(paths, candidate_id)
+                if result is None:
+                    R.print_error(f"未找到待处理候选：{candidate_id}（可能已处理过/id 有误）")
+                    return
+                track = result["track"]
+                R.print_success(
+                    f"已采纳，新建 Track [{track['track_id']}] 「{track['title']}」"
+                    f"（target_type=persona，空大纲，可在看板补充）。"
+                )
+                return
+            else:
+                candidate = dismiss_candidate(paths, candidate_id)
+                if candidate is None:
+                    R.print_error(f"未找到待处理候选：{candidate_id}")
+                    return
+                R.print_success("已忽略该候选。")
+                return
+
+        store = PersonaCandidateStore(paths)
+        pending = store.list_candidates(status="pending")
+        if not pending:
+            R.print_info("暂无待处理的候选人设，可用 /capability persona_candidates scan 触发一次扫描。")
+            return
+        for c in pending:
+            R.print_info(f"[{c.candidate_id}] {c.title}\n  {c.rationale}")
+        return
+
     R.print_error(
-        f"未知子命令：{sub}。可用：list | create | cycle | questions | answer | suggestions | persona"
+        f"未知子命令：{sub}。可用：list | create | cycle | questions | answer | "
+        f"suggestions | persona | persona_candidates"
     )

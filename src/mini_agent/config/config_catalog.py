@@ -163,6 +163,7 @@ _NESTED_BLOCKS = [
     ("digest_advisor", "日报与主动推荐", "📰", "digest_advisor", _models.DigestAdvisorConfig, {}),
     ("growth_advisor", "🌱 成长顾问", "🌱", "growth_advisor", _models.GrowthAdvisorConfig, {}),
     ("capability_learning", "🎓 能力学习", "🎓", "capability_learning", _models.CapabilityLearningConfig, {}),
+    ("persona_candidates", "🔍 候选人设扫描", "🔍", "persona_candidates", _models.PersonaCandidateConfig, {}),
     ("cron", "Cron 任务执行", "⏰", "cron", _models.CronConfig, {}),
     ("autonomy", "自主性调度 Autonomy", "🤖", "autonomy", _models.AutonomyConfig, {}),
     ("observability", "可观测性", "📊", "observability", _models.ObservabilityConfig, {}),

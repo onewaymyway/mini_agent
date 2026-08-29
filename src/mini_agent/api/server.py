@@ -965,6 +965,14 @@ def create_app(
     from mini_agent.api.capability_routes import capability_router
     app.include_router(capability_router)
 
+    # 候选人设/能力自动检测（persona_candidates，见
+    # next_doc/persona_candidate_autoscan_plan.md）。独立 router，见
+    # api/persona_candidate_routes.py 顶部注释。默认 `PersonaCandidateConfig.
+    # enabled=False`（opt-in），挂载本身不影响任何默认自动运行行为——
+    # 端点存在但 /scan 在配置关闭时直接返回空结果，不发起 LLM 调用。
+    from mini_agent.api.persona_candidate_routes import persona_candidate_router
+    app.include_router(persona_candidate_router)
+
     @app.get("/")
     async def root():
         return {

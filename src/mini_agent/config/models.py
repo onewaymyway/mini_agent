@@ -2413,6 +2413,41 @@ class CapabilityLearningConfig:
 
 
 @dataclass
+class PersonaCandidateConfig:
+    """[next_doc/persona_candidate_autoscan_plan.md] 候选人设/能力自动检测
+    配置。独立于 `CapabilityLearningConfig`——候选扫描的开关/冷却期语义
+    和"某条 Track 内部怎么学习"是两件事，参照 `GrowthAdvisorConfig` 独立
+    于 `CapabilityLearningConfig` 的现状（方案 §8 待确认问题 1，倾向独立）。
+
+    候选生成本身要过 LLM（不是规则式直接搬运 growth_advisor 主题名/wiki
+    miss 检索词当标题，见 persona_candidates.py 顶部说明），所以这里默认
+    `enabled=False`——和新机制"先保守默认"的项目惯例一致，观察实际候选
+    质量/去重准确率后再评估要不要 opt-out（对齐
+    `capability_learning_cycle` 刚上线时的保守默认）。
+    """
+
+    # 总开关：是否允许 `sys:persona_candidate_scan` cron job 生效 / 看板
+    # "扫描候选"按钮实际调用 LLM。默认 False，opt-in。
+    enabled: bool = False
+
+    # 候选标题在被用户忽略（dismiss）后，多少天内不会被再次提议同一个
+    # 方向（字面/语义重复），与 `GrowthBacklog.dismissed_cooldown_days`
+    # 语义一致。
+    dismissed_cooldown_days: int = 30
+
+    # 同时处于 pending 状态的候选数量上限，超过后本轮扫描不再生成新候选
+    # （避免看板堆积过多待处理建议）。
+    max_pending_candidates: int = 10
+
+    # 原始信号采集阶段（规则式，不调用 LLM）各自的 Top N 截断：
+    # 成长顾问已确认主题、capability Track 高频 wiki miss 检索词。
+    # 控制单次 LLM 提炼调用的输入长度，对齐
+    # `GrowthAdvisorConfig.max_pending_candidates` 的节流思路。
+    topic_signal_top_n: int = 8
+    wiki_miss_signal_top_n: int = 8
+
+
+@dataclass
 class ReminderConfig:
     """[SYS-REMINDER] 动态 Reminder 提示注入配置。
 
@@ -2637,6 +2672,7 @@ class AppConfig:
     digest_advisor: DigestAdvisorConfig = field(default_factory=DigestAdvisorConfig)
     growth_advisor: GrowthAdvisorConfig = field(default_factory=GrowthAdvisorConfig)
     capability_learning: CapabilityLearningConfig = field(default_factory=CapabilityLearningConfig)
+    persona_candidates: PersonaCandidateConfig = field(default_factory=PersonaCandidateConfig)
     # [next_doc/generative_capability_three_tier_improvement_plan.md]
     # generative-capability 引擎 script→skill→explore 三档机制的全局默认值。
     generative_capability: GenerativeCapabilityConfig = field(default_factory=GenerativeCapabilityConfig)

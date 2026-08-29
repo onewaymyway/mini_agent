@@ -6903,6 +6903,115 @@ def _render_growth_kanban_dragdrop(client: "AgentClient", candidates: list[dict]
 # 检索沉淀，不再需要用户手动敲 `/capability cycle`。仍可以在看板「⏰ Cron
 # 任务」Tab 里单独 disable 这两个 job，或去配置里关掉 retriever_enabled
 # 只保留手动触发。
+# ── [next_doc/persona_candidate_autoscan_plan.md] 🎭 候选人设子区域 ─────
+#
+# Agent 执行过程中主动检测"可能值得养成的人设/能力方向"，生成候选供用户
+# 挑选（体验对齐上面「🌱 成长顾问」的信号扫描 → 候选 → 用户采纳/忽略
+# 范式）。候选一旦被采纳，就是一条普通的 target_type="persona" Track，
+# 之后完全走本 Tab 已有的 Track 列表/进度/发布闭环——本区域只负责候选本身
+# 的产生与裁决。默认 `PersonaCandidateConfig.enabled=False`（opt-in），
+# 「🔍 扫描候选」按钮点击后如果配置未开启，会提示去配置里打开，不会静默
+# 什么都不做也不报错。
+def _render_persona_candidates_section(client: "AgentClient"):
+    with st.expander("🎭 候选人设（自动检测）", expanded=False):
+        st.caption(
+            "扫描你最近持续关注的成长方向、以及知识库里反复检索但还没有沉淀的"
+            "内容，用 LLM 重新提炼出可能值得养成的人设/能力方向，供你挑选是否"
+            "开一条新的能力学习 Track。默认不会自动运行，需要点击下面的按钮"
+            "手动触发一次扫描；若想让它按 cron 定时自动跑，去「⏰ Cron 任务」"
+            "Tab 打开 `sys:persona_candidate_scan`，并在配置里把 "
+            "`persona_candidates.enabled` 设为 True。"
+        )
+
+        scan_col, scan_hint_col = st.columns([1, 3])
+        with scan_col:
+            if st.button("🔍 扫描候选", key="persona_candidate_scan_btn"):
+                if start_async_job(client, "persona_candidate_scan", lambda: client.persona_candidate_scan()):
+                    st.rerun()
+        with scan_hint_col:
+            st.caption("扫描会调用一次 LLM 批量提炼候选，再对每条候选做一次去重判断，通常几秒到十几秒。")
+
+        scan_result = run_async_job(client, "persona_candidate_scan", label="正在扫描候选人设")
+        if scan_result is not None:
+            if isinstance(scan_result, dict) and scan_result.get("_error"):
+                st.toast(f"❌ 扫描失败：{scan_result['_error']}", icon="❌")
+            elif isinstance(scan_result, dict) and scan_result.get("skipped"):
+                st.toast("⚠️ persona_candidates.enabled=False，未发起扫描（可在配置里打开）", icon="⚠️")
+            else:
+                created = (scan_result or {}).get("candidates", [])
+                if created:
+                    st.toast(f"✅ 本轮新增 {len(created)} 条候选", icon="✅")
+                else:
+                    st.toast("本轮扫描没有产生新候选。", icon="ℹ️")
+            st.rerun()
+
+        pending_resp = client.persona_candidates(status="pending")
+        if isinstance(pending_resp, dict) and pending_resp.get("_error"):
+            st.warning(f"拉取候选人设失败：{pending_resp['_error']}")
+            return
+        pending = pending_resp.get("candidates", []) if isinstance(pending_resp, dict) else []
+        if not pending:
+            st.caption("暂无待处理候选。")
+            return
+
+        # 批量勾选 + 批量操作，避免候选一多逐条点很烦（复用上一轮已修好的
+        # 「批量操作」模式，`_kw_batch_bar` 那一套勾选+批量按钮写法）。
+        selected_ids: list[str] = []
+        for c in pending:
+            cid = c["candidate_id"]
+            with st.container(border=True):
+                head_col, check_col = st.columns([5, 1])
+                with head_col:
+                    st.markdown(f"**{c['title']}**")
+                    if c.get("rationale"):
+                        st.caption(c["rationale"])
+                    st.caption(f"证据数：{c.get('evidence_count', 0)}")
+                with check_col:
+                    if st.checkbox("选中", key=f"persona_cand_sel_{cid}", label_visibility="collapsed"):
+                        selected_ids.append(cid)
+                with st.expander("人设方向简介", expanded=False):
+                    st.write(c.get("persona_desc", ""))
+
+                act_col1, act_col2 = st.columns(2)
+                accept_clicked = act_col1.button("✅ 采纳", key=f"persona_cand_accept_{cid}")
+                dismiss_clicked = act_col2.button("❌ 不要", key=f"persona_cand_dismiss_{cid}")
+                if accept_clicked:
+                    resp = client.persona_candidate_accept(cid)
+                    if isinstance(resp, dict) and resp.get("_error"):
+                        st.error(f"采纳失败：{resp['_error']}")
+                    else:
+                        track = (resp or {}).get("track", {})
+                        st.success(f"已创建 Track「{track.get('title', c['title'])}」，可在下方列表继续补充大纲。")
+                        st.rerun()
+                if dismiss_clicked:
+                    resp = client.persona_candidate_dismiss(cid)
+                    if isinstance(resp, dict) and resp.get("_error"):
+                        st.error(f"忽略失败：{resp['_error']}")
+                    else:
+                        st.rerun()
+
+        if selected_ids:
+            batch_col1, batch_col2 = st.columns(2)
+            if batch_col1.button(f"✅ 批量采纳（{len(selected_ids)}）", key="persona_cand_batch_accept"):
+                errors = []
+                for cid in selected_ids:
+                    resp = client.persona_candidate_accept(cid)
+                    if isinstance(resp, dict) and resp.get("_error"):
+                        errors.append(f"{cid}: {resp['_error']}")
+                if errors:
+                    st.error("部分采纳失败：\n" + "\n".join(errors))
+                st.rerun()
+            if batch_col2.button(f"❌ 批量忽略（{len(selected_ids)}）", key="persona_cand_batch_dismiss"):
+                errors = []
+                for cid in selected_ids:
+                    resp = client.persona_candidate_dismiss(cid)
+                    if isinstance(resp, dict) and resp.get("_error"):
+                        errors.append(f"{cid}: {resp['_error']}")
+                if errors:
+                    st.error("部分忽略失败：\n" + "\n".join(errors))
+                st.rerun()
+
+
 def render_capability_tab(client: "AgentClient"):
     st.markdown("#### 🎓 能力学习 / 人设养成 (Capability Learning)")
     st.caption(
@@ -6958,7 +7067,10 @@ def render_capability_tab(client: "AgentClient"):
 
     if not tracks:
         st.info("还没有任何能力 Track，先在上面创建一个。")
+        _render_persona_candidates_section(client)
         return
+
+    _render_persona_candidates_section(client)
 
     st.markdown("##### 人设 / 能力方向列表")
     refresh_all_col, refresh_all_hint_col = st.columns([1, 3])

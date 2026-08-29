@@ -1375,6 +1375,14 @@ class AgentPaths:
         return d / f"{track_id}.jsonl"
 
     @property
+    def persona_candidates_path(self) -> Path:
+        """<project_root>/.agent/persona_candidates.json — 候选人设/能力
+        方向列表（next_doc/persona_candidate_autoscan_plan.md），与
+        `capability_tracks_path` 平级。单文件落盘，含全部
+        pending/accepted/dismissed 记录，量级不大，不做分文件。"""
+        return self.workdir_dir / "persona_candidates.json"
+
+    @property
     def capability_questions_path(self) -> Path:
         """<project_root>/.agent/capability_questions.jsonl — CapabilityQuestion
         异步问答队列，追加写；status: pending/answered/dismissed/expired，

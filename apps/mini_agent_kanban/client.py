@@ -1317,3 +1317,22 @@ class AgentClient:
     def publish_capability_persona(self, track_id: str):
         """把已落盘的草稿显式发布到 `.agent/personas/`。"""
         return self._post(f"/capability/tracks/{track_id}/persona/publish")
+
+    # ── next_doc/persona_candidate_autoscan_plan.md 候选人设/能力自动检测 ──
+
+    def persona_candidates(self, status: str = None):
+        params = {"status": status} if status else None
+        return self._get("/capability/persona_candidates", params=params)
+
+    def persona_candidate_scan(self):
+        # 服务端立即返回 `{"job_id", "key": "persona_candidate_scan"}`，
+        # 提交本身很快，真正的 LLM 调用等待交给 async_job_ui.run_async_job()
+        # 轮询（同 growth_scan()）。
+        return self._post("/capability/persona_candidates/scan")
+
+    def persona_candidate_accept(self, candidate_id: str):
+        return self._post(f"/capability/persona_candidates/{candidate_id}/accept")
+
+    def persona_candidate_dismiss(self, candidate_id: str, *, reason: str | None = None):
+        body = {"reason": reason} if reason else {}
+        return self._post(f"/capability/persona_candidates/{candidate_id}/dismiss", body)
