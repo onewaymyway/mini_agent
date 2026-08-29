@@ -384,5 +384,106 @@ class TestSupervisorAutoRestart(_IsolatedHomeTestCase):
         self.assertEqual(json.loads(lines[0])["restart_decision"], "no_restart")
 
 
+# ── 阶段三：前台 supervisor（run_foreground_supervisor）──────────────────
+
+class TestForegroundSupervisor(_IsolatedHomeTestCase):
+    """覆盖 next_doc/daemon_crash_recovery_and_alert_plan.md 阶段三：
+    POSIX/Windows 前台模式统一收敛为 Popen+wait 的 supervisor 模型，
+    与后台 run_supervisor 共用同一套崩溃判定/记录/重启预算逻辑。"""
+
+    def _src_dir(self) -> str:
+        return str(Path(__file__).resolve().parents[1] / "src")
+
+    def test_crash_is_recorded_and_restarted_until_success(self):
+        marker = self.project_root / "fg_restart_count.txt"
+        script_path = self.project_root / "child_fg_restart.py"
+        script_path.write_text(
+            _CHILD_RESTART_MARKER_SCRIPT.format(
+                marker=str(marker), succeed_on=2,
+                src=self._src_dir(), project_root=str(self.project_root),
+            ),
+            encoding="utf-8",
+        )
+
+        returncode = daemon_supervisor.run_foreground_supervisor(
+            self.project_root,
+            [sys.executable, str(script_path)],
+            auto_restart=True,
+            max_attempts=5,
+            window_seconds=600.0,
+            backoff_seconds=[0.01, 0.01, 0.01],
+        )
+
+        self.assertEqual(returncode, 0)
+        self.assertEqual(int(marker.read_text()), 2)
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0])["restart_decision"], "restarted")
+        state = daemon_mod._read_run_state(self.project_root)
+        self.assertEqual(state["status"], daemon_mod._STATUS_STOPPED_BY_USER)
+
+    def test_gives_up_after_budget_exhausted(self):
+        script_path = self.project_root / "child_fg_always_crash.py"
+        script_path.write_text(_CHILD_ALWAYS_CRASH_SCRIPT, encoding="utf-8")
+
+        returncode = daemon_supervisor.run_foreground_supervisor(
+            self.project_root,
+            [sys.executable, str(script_path)],
+            auto_restart=True,
+            max_attempts=1,
+            window_seconds=600.0,
+            backoff_seconds=[0.01, 0.01],
+        )
+
+        self.assertEqual(returncode, 1)
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        decisions = [
+            json.loads(l)["restart_decision"]
+            for l in hist_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(decisions, ["restarted", "giveup"])
+
+    def test_graceful_stop_is_not_recorded_as_crash(self):
+        script_path = self.project_root / "child_fg_graceful.py"
+        script_path.write_text(
+            _CHILD_GRACEFUL_SCRIPT.format(
+                src=self._src_dir(), project_root=str(self.project_root)
+            ),
+            encoding="utf-8",
+        )
+
+        returncode = daemon_supervisor.run_foreground_supervisor(
+            self.project_root,
+            [sys.executable, str(script_path)],
+            auto_restart=True,
+            max_attempts=5,
+        )
+
+        self.assertEqual(returncode, 0)
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        self.assertFalse(hist_path.exists())
+
+    def test_writes_and_cleans_its_own_pid_file(self):
+        script_path = self.project_root / "child_fg_graceful2.py"
+        script_path.write_text(
+            _CHILD_GRACEFUL_SCRIPT.format(
+                src=self._src_dir(), project_root=str(self.project_root)
+            ),
+            encoding="utf-8",
+        )
+        pid_path = daemon_mod._supervisor_pid_file(self.project_root)
+        self.assertFalse(pid_path.exists())
+
+        daemon_supervisor.run_foreground_supervisor(
+            self.project_root,
+            [sys.executable, str(script_path)],
+            auto_restart=False,
+        )
+
+        # 循环结束后（finally 块）应清理掉自己的 PID 文件，不残留。
+        self.assertFalse(pid_path.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

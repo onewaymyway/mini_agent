@@ -346,3 +346,43 @@ CLI 命令本身依然立即返回（等待逻辑不变，只是等的是 superv
   展示的"重启次数"目前只能从崩溃历史文件反推最后一条的
   `restart_attempt`，没有单独暴露"当前滑动窗口内还剩几次预算"这个实时值
   （supervisor 进程内部状态，跨进程查询需要额外接口，评估后续是否有必要）
+
+### 阶段三（已完成）
+
+- `cli/daemon_supervisor.py::run_foreground_supervisor()`（新函数）：前台
+  （不带 `--detach`）统一改用与后台 `run_supervisor()` 相同的判定顺序
+  （崩溃检测 → 记录 `daemon_crash_history.jsonl` → 告警 → 按滑动窗口预算
+  决定是否重启），POSIX 和 Windows 从"两套不同模型"收敛为同一套：
+  - 子进程原样继承当前控制台的 stdin/stdout/stderr（不重定向到
+    `daemon.log`），用户依然在终端里直接看到 daemon 实时输出，效果与旧版
+    `os.execv`/Windows 分支一致；
+  - supervisor 自身不 detach（就是用户手上这个终端进程），但同样写
+    `daemon_supervisor.pid`，使得另一个终端里 `daemon stop` 能通过既有的
+    `_stop_supervisor()`（无需区分前台/后台，逻辑本就通用）找到并等待/
+    兜底强杀它；
+  - Ctrl-C（`KeyboardInterrupt`）在 supervisor 层捕获：先调用
+    `mark_stopped_by_user()` 标记停止意图（防止子进程来不及处理信号被杀
+    时被误判为崩溃），再把信号转发给子进程（POSIX 发 `SIGINT`，Windows
+    发 `CTRL_C_EVENT`，Windows 侧沿用 `CREATE_NEW_PROCESS_GROUP` 创建子
+    进程以支持精确转发），然后继续等待子进程真正退出
+- `cli/daemon.py::cmd_daemon_start()` 前台分支：移除 POSIX 的 `os.execv`
+  整段和 Windows 专用的 `Popen+wait`/Ctrl-C 转发整段，统一改为读取
+  `HttpConfig.daemon_auto_restart_*` 配置（与后台 `--detach` 分支读取方式
+  完全一致）后调用 `run_foreground_supervisor()`，返回值作为进程退出码
+- `cmd_daemon_stop()`/`_stop_supervisor()` 不需要任何改动——两者从阶段一
+  开始就没有区分前台/后台，只认 `daemon_supervisor.pid` 是否存在，阶段三
+  只是让前台模式也开始写这个文件，自然接入了现有联动
+- 副作用（正面）：前台模式现在与后台共享完全相同的"先感知后恢复"顺序
+  保证——即使重启逻辑本身抛异常，崩溃记录和告警也已经在决定是否重启之前
+  发出；前台模式此前完全没有崩溃自愈/告警能力，现在与后台行为对齐
+- 测试：`tests/test_daemon_crash_recovery.py` 新增
+  `TestForegroundSupervisor`（4 用例）：崩溃后自动重启直至成功、预算耗尽
+  后正确 `giveup`（返回非零退出码）、`daemon stop` 触发的预期停止不记录
+  为崩溃、supervisor 自身 PID 文件生命周期（写入 + 循环结束后清理）；
+  `tests/test_daemon_crash_recovery.py` 全量 23 passed
+- 未做（留给阶段四）：用户可见的 `docs/` 使用指南尚未更新前台模式行为
+  变化的说明（"前台终端现在是 supervisor，daemon 是它的子进程"）；
+  `KeyboardInterrupt`/信号转发路径目前只有单元测试覆盖了 supervisor 内部
+  的判定逻辑（通过脚本模拟子进程直接调用 `mark_stopped_by_user` 退出），
+  没有覆盖真实发送 OS 级 Ctrl-C 信号的端到端场景（CI 环境模拟终端信号
+  较脆弱，权衡后未加，人工验证已在本地 Windows/Linux 各执行一次）

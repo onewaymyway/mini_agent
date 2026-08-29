@@ -1021,64 +1021,43 @@ def cmd_daemon_start(
         print(f"[daemon] Starting in foreground on port {http_port}...")
         print(f"[daemon] Press Ctrl-C to stop.")
 
-        # [FIX] os.execv 在 Windows 上不是真正的"进程镜像替换"——CPython
-        # 用 _spawnv(P_OVERLAY) 模拟，实际效果是：另起一个新进程，然后让
-        # 当前 `python main.py ...` 这个进程自己退出。PowerShell/cmd 只会
-        # 等待它直接启动的那个进程（也就是这个即将退出的父进程）结束，
-        # 一旦父进程退出，PowerShell 立刻拿回提示符和键盘输入焦点——但
-        # 真正的 daemon 子进程其实还挂在同一个控制台上继续跑（它没有
-        # 崩溃：HTTP 服务正常、PID 文件正常、`daemon start` 会提示"已在
-        # 运行"）。结果是两个进程同时 attach 在同一个 console 上抢键盘
-        # 输入，PowerShell 先抢到，用户敲的内容被当成 shell 命令解析，
-        # daemon 侧的 input()/prompt_user() 完全收不到输入——表现出来
-        # 就是"daemon 进程在命令行输入之后就结束了"，其实进程根本没结束，
-        # 只是丢失了控制台输入的归属权。
-        #
-        # 解决办法：Windows 下不追求"进程替换"的效果，而是让子进程原样
-        # 继承当前控制台（不加 DETACHED_PROCESS/CREATE_NEW_CONSOLE 等
-        # 分离标志），父进程同步 wait() 阻塞在这里，直到子进程真正退出
-        # 后再用相同 exit code 退出自己——这样 PowerShell 会一直等到
-        # daemon 子进程结束才拿回控制台，中途不会有"抢输入"的问题。
-        # POSIX 下 os.execv 是真正可靠的进程替换，继续用原来的写法。
-        if sys.platform == "win32":
-            try:
-                # [daemon-stop-graceful-fix] CREATE_NEW_PROCESS_GROUP 让子
-                # 进程成为独立的控制台进程组，这样 cmd_daemon_stop 的第 2
-                # 级兜底才能用 GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT)
-                # 精确定点到这个子进程（而不会连带把发送信号的调用方自己
-                # 也一起打断）。不影响这里紧接着的 Ctrl-C 转发逻辑——那个
-                # 用的是 CTRL_C_EVENT，proc.send_signal 内部已经处理好了
-                # 新进程组下的转发。
-                CREATE_NEW_PROCESS_GROUP = 0x00000200
-                proc = subprocess.Popen(
-                    foreground_cmd, creationflags=CREATE_NEW_PROCESS_GROUP
-                )
-                try:
-                    returncode = proc.wait()
-                except KeyboardInterrupt:
-                    # Ctrl-C：转发给子进程（子进程自己的 SIGINT handler
-                    # 会走优雅关停），这里继续等待其真正退出，不要提前
-                    # 返回，否则又会重蹈"父进程先退出、控制台被抢"的覆辙。
-                    try:
-                        proc.send_signal(signal.CTRL_C_EVENT)  # type: ignore[attr-defined]
-                    except Exception as _mini_agent_exc:
-                        from mini_agent.errors import log_exception
-                        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.cmd_daemon_start')
-                    returncode = proc.wait()
-                return returncode or 0
-            except Exception as e:
-                from mini_agent.errors import log_exception
-                log_exception(e, where='mini_agent.cli.daemon.cmd_daemon_start')
-                print(f"[daemon] Failed to start foreground daemon: {e}", file=sys.stderr)
-                return 1
-        else:
-            try:
-                os.execv(python_exec, foreground_cmd)
-            except Exception as e:
-                from mini_agent.errors import log_exception
-                log_exception(e, where='mini_agent.cli.daemon.cmd_daemon_start')
-                print(f"[daemon] Failed to exec: {e}", file=sys.stderr)
-                return 1
+        # [daemon_crash_recovery_and_alert_plan.md 阶段三] 前台模式不再用
+        # POSIX 的 os.execv 做"进程镜像替换"（Windows 从来就做不到真正的
+        # 替换，见历史注释）——两个平台统一收敛为同一个模型：当前终端进程
+        # 本身变成一个 supervisor，daemon 子进程原样继承控制台运行，
+        # supervisor 常驻 wait()，子进程崩溃时按与后台 --detach 完全相同的
+        # 判定顺序记录+告警+（可选）自动重启。这样前台模式也具备崩溃自愈
+        # 能力，而不再是"进程替换后一旦崩溃就彻底没人知道"。
+        try:
+            from mini_agent.config import load_config
+            _cfg = load_config(project_root=project_root)
+            _http_cfg = getattr(_cfg, "http", None)
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.cli.daemon.cmd_daemon_start.load_config")
+            _http_cfg = None
+        auto_restart = getattr(_http_cfg, "daemon_auto_restart_enabled", True)
+        max_attempts = getattr(_http_cfg, "daemon_restart_max_attempts", 5)
+        window_seconds = getattr(_http_cfg, "daemon_restart_window_seconds", 600.0)
+        backoff_seconds = getattr(
+            _http_cfg, "daemon_restart_backoff_seconds", None
+        ) or [1, 2, 4, 8, 16, 30, 60]
+
+        try:
+            from mini_agent.cli.daemon_supervisor import run_foreground_supervisor
+            return run_foreground_supervisor(
+                project_root,
+                foreground_cmd,
+                auto_restart=auto_restart,
+                max_attempts=max_attempts,
+                window_seconds=window_seconds,
+                backoff_seconds=backoff_seconds,
+            )
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.daemon.cmd_daemon_start')
+            print(f"[daemon] Failed to start foreground daemon: {e}", file=sys.stderr)
+            return 1
     else:
         # 后台进程：不再直接 Popen 真正的 daemon 子进程，而是先拉起一个
         # supervisor 进程（daemon_supervisor.py），由它去 Popen 真正的
