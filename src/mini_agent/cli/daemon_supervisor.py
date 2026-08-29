@@ -48,9 +48,11 @@ def _wait_child(
     hang_check_interval_seconds: float,
     hang_check_timeout_seconds: float,
     hang_consecutive_failures: int,
+    post_restart_health_check_seconds: float = 0.0,
 ) -> tuple[Optional[int], bool, str]:
     """等待子进程退出，期间按配置做主动探活（daemon_hang_detection_and_
-    alert_escalation_plan.md §1.2）。
+    alert_escalation_plan.md §1.2），并可选地在启动阶段先做一次一次性的
+    健康验证（§2.2）。
 
     返回 `(returncode, was_hang, hang_reason)`：
     - 子进程正常退出（含被信号杀死）：`(returncode, False, "")`
@@ -67,6 +69,41 @@ def _wait_child(
     from mini_agent.cli.daemon import DaemonClient, _force_kill_process
 
     client = DaemonClient(http_port, project_root=project_root)
+
+    # [daemon_hang_detection_and_alert_escalation_plan.md §2.2] 重启后一次性
+    # 健康验证：原来判定"这轮重启是否成功"只看"新子进程有没有立刻退出"，
+    # 不代表 HTTP 服务真的起来了——如果新进程卡在初始化阶段，要等它自己
+    # 再崩一次，或者等常规探活轮询走完多轮判定才会被发现，期间用户完全
+    # 不知情。这里在进入下面的常规探活轮询之前，先给新进程一个固定的
+    # 窗口期（`post_restart_health_check_seconds`）证明自己真的可用；
+    # 窗口期内子进程自己退出（比如配置错误直接崩了）按正常"进程退出"
+    # 处理，不算卡死；窗口期内一直没通过健康检查则按卡死处理（本质上是
+    # 把"启动阶段的卡死"和"运行期间的卡死"统一到同一套判定逻辑）。
+    if post_restart_health_check_seconds > 0:
+        deadline = time.time() + post_restart_health_check_seconds
+        became_healthy = False
+        poll_interval = min(1.0, max(0.2, hang_check_interval_seconds))
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                return proc.returncode, False, ""
+            if client.health_check(timeout=hang_check_timeout_seconds):
+                became_healthy = True
+                break
+            time.sleep(poll_interval)
+        if not became_healthy:
+            if proc.poll() is not None:
+                return proc.returncode, False, ""
+            reason = (
+                f"重启后 {post_restart_health_check_seconds:.0f}s 内未通过健康检查"
+                "（新进程可能卡在初始化阶段），已强制终止"
+            )
+            _force_kill_process(proc.pid)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return None, True, reason
+
     consecutive_failures = 0
     interval = max(0.5, hang_check_interval_seconds)
 
@@ -112,6 +149,7 @@ def run_supervisor(
     hang_check_interval_seconds: float = 10.0,
     hang_check_timeout_seconds: float = 2.0,
     hang_consecutive_failures: int = 3,
+    post_restart_health_check_seconds: float = 0.0,
 ) -> None:
     """核心监控循环。阶段一调用方固定传 `auto_restart=False`——检测到
     崩溃后只记录+告警，不重启，循环在这一次崩溃后自然结束（等价于"预算
@@ -121,7 +159,11 @@ def run_supervisor(
     daemon_hang_detection_and_alert_escalation_plan.md 阶段一新增的卡死
     主动探活参数——子进程"退出"和"存活但无响应"是两种性质不同的故障，
     原来只能感知前者（`proc.wait()` 永远不返回后者的情况）。`http_port`
-    为 None 时自动退化为不探活（比如调用方没能读到端口配置）。"""
+    为 None 时自动退化为不探活（比如调用方没能读到端口配置）。
+
+    `post_restart_health_check_seconds`：阶段二 §2.2 新增，每次 Popen 新
+    子进程后先给它这么长时间证明自己真的把 HTTP 服务起来了，超时未通过
+    则按卡死处理，不必等到常规探活轮询的多轮判定。传 0 关闭这项检查。"""
     from mini_agent.cli.daemon import (
         _cleanup_pid_files,
         _supervisor_pid_file,
@@ -129,6 +171,7 @@ def run_supervisor(
         _run_state_file,
         _STATUS_STOPPED_BY_USER,
         record_daemon_crash,
+        count_recent_restart_events,
     )
 
     backoff_seconds = backoff_seconds or [1, 2, 4, 8, 16, 30, 60]
@@ -182,6 +225,7 @@ def run_supervisor(
                 hang_check_interval_seconds,
                 hang_check_timeout_seconds,
                 hang_consecutive_failures,
+                post_restart_health_check_seconds,
             )
 
             if not was_hang:
@@ -199,7 +243,17 @@ def run_supervisor(
             cutoff = time.time() - window_seconds
             restart_timestamps = [t for t in restart_timestamps if t >= cutoff]
 
-            will_restart = auto_restart and len(restart_timestamps) <= max_attempts
+            # [daemon_hang_detection_and_alert_escalation_plan.md §2.1]
+            # 预算判断不再只看内存里的 restart_timestamps（supervisor
+            # 自身如果异常退出，下次是全新实例、内存计数归零）——回溯
+            # daemon_crash_history.jsonl 里最近 window_seconds 内已经真实
+            # 发生过的重启次数，与内存计数取较大值。file 计数在这次事件
+            # 写入历史文件之前统计，所以 +1 补上"这次事件本身"（内存计数
+            # 已经在上面 append 时天然包含了这次）。
+            file_restart_count = count_recent_restart_events(project_root, window_seconds) + 1
+            effective_count = max(len(restart_timestamps), file_restart_count)
+
+            will_restart = auto_restart and effective_count <= max_attempts
             if was_hang:
                 decision = "restarted" if will_restart else ("giveup" if auto_restart else "hang_killed")
             else:
@@ -253,6 +307,7 @@ def run_foreground_supervisor(
     hang_check_interval_seconds: float = 10.0,
     hang_check_timeout_seconds: float = 2.0,
     hang_consecutive_failures: int = 3,
+    post_restart_health_check_seconds: float = 0.0,
 ) -> int:
     """前台（不带 --detach）统一使用的 supervisor 循环（阶段三）。
 
@@ -280,6 +335,7 @@ def run_foreground_supervisor(
         _STATUS_STOPPED_BY_USER,
         record_daemon_crash,
         mark_stopped_by_user,
+        count_recent_restart_events,
     )
 
     backoff_seconds = backoff_seconds or [1, 2, 4, 8, 16, 30, 60]
@@ -324,6 +380,7 @@ def run_foreground_supervisor(
                     hang_check_interval_seconds,
                     hang_check_timeout_seconds,
                     hang_consecutive_failures,
+                    post_restart_health_check_seconds,
                 )
             except KeyboardInterrupt:
                 user_interrupted = True
@@ -355,7 +412,10 @@ def run_foreground_supervisor(
             cutoff = time.time() - window_seconds
             restart_timestamps = [t for t in restart_timestamps if t >= cutoff]
 
-            will_restart = auto_restart and len(restart_timestamps) <= max_attempts
+            file_restart_count = count_recent_restart_events(project_root, window_seconds) + 1
+            effective_count = max(len(restart_timestamps), file_restart_count)
+
+            will_restart = auto_restart and effective_count <= max_attempts
             if was_hang:
                 decision = "restarted" if will_restart else ("giveup" if auto_restart else "hang_killed")
             else:
@@ -425,6 +485,7 @@ def _main() -> int:
     parser.add_argument("--hang-check-interval", type=float, default=10.0)
     parser.add_argument("--hang-check-timeout", type=float, default=2.0)
     parser.add_argument("--hang-consecutive-failures", type=int, default=3)
+    parser.add_argument("--post-restart-health-check-seconds", type=float, default=30.0)
     args = parser.parse_args()
 
     project_root = Path(args.project)
@@ -445,6 +506,7 @@ def _main() -> int:
         hang_check_interval_seconds=args.hang_check_interval,
         hang_check_timeout_seconds=args.hang_check_timeout,
         hang_consecutive_failures=args.hang_consecutive_failures,
+        post_restart_health_check_seconds=args.post_restart_health_check_seconds,
     )
     return 0
 

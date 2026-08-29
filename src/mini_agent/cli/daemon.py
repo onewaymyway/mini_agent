@@ -130,6 +130,48 @@ def _crash_history_file(project_root: Path) -> Path:
     return project_root / ".agent" / "daemon_crash_history.jsonl"
 
 
+def count_recent_restart_events(project_root: Path, window_seconds: float) -> int:
+    """[daemon_hang_detection_and_alert_escalation_plan.md §2.1] 从
+    `daemon_crash_history.jsonl` 回溯统计最近 `window_seconds` 内
+    `restart_decision` 为 `"restarted"`/`"hang_killed"` 的记录数量——这两个
+    值代表"这次异常之后 supervisor 确实又拉起过一次新进程"，`giveup`/
+    `no_restart` 不算（那两种情况下没有发生真正的重启）。
+
+    这是重启预算"跨 supervisor 生命周期延续"的依据：supervisor 自身如果
+    因为某种原因异常退出（宿主机重启等），下次 `daemon start` 是全新的
+    进程、内存里的 `restart_timestamps` 从零开始，但磁盘上的历史记录还在，
+    据此仍能正确判断"这是不是一次持续性问题"，不会因为 supervisor 重启
+    就把预算窗口刷新掉、掩盖真实的稳定性问题。
+
+    读取/解析失败时返回 0（不阻断主流程——预算判断退化为只看内存计数，
+    等价于阶段一之前的行为）。"""
+    try:
+        p = _crash_history_file(project_root)
+        if not p.exists():
+            return 0
+        cutoff = time.time() - window_seconds
+        count = 0
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if rec.get("restart_decision") not in ("restarted", "hang_killed"):
+                continue
+            ts = rec.get("timestamp")
+            if ts is None or ts < cutoff:
+                continue
+            count += 1
+        return count
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.cli.daemon.count_recent_restart_events")
+        return 0
+
+
 def _supervisor_pid_file(project_root: Path) -> Path:
     return project_root / ".agent" / "daemon_supervisor.pid"
 
@@ -1088,6 +1130,9 @@ def cmd_daemon_start(
         hang_check_interval_seconds = getattr(_http_cfg, "daemon_hang_check_interval_seconds", 10.0)
         hang_check_timeout_seconds = getattr(_http_cfg, "daemon_hang_check_timeout_seconds", 2.0)
         hang_consecutive_failures = getattr(_http_cfg, "daemon_hang_consecutive_failures", 3)
+        post_restart_health_check_seconds = getattr(
+            _http_cfg, "daemon_post_restart_health_check_seconds", 30.0
+        )
 
         try:
             from mini_agent.cli.daemon_supervisor import run_foreground_supervisor
@@ -1103,6 +1148,7 @@ def cmd_daemon_start(
                 hang_check_interval_seconds=hang_check_interval_seconds,
                 hang_check_timeout_seconds=hang_check_timeout_seconds,
                 hang_consecutive_failures=hang_consecutive_failures,
+                post_restart_health_check_seconds=post_restart_health_check_seconds,
             )
         except Exception as e:
             from mini_agent.errors import log_exception
@@ -1147,6 +1193,9 @@ def cmd_daemon_start(
         hang_check_interval_seconds = getattr(_http_cfg, "daemon_hang_check_interval_seconds", 10.0)
         hang_check_timeout_seconds = getattr(_http_cfg, "daemon_hang_check_timeout_seconds", 2.0)
         hang_consecutive_failures = getattr(_http_cfg, "daemon_hang_consecutive_failures", 3)
+        post_restart_health_check_seconds = getattr(
+            _http_cfg, "daemon_post_restart_health_check_seconds", 30.0
+        )
         if auto_restart:
             supervisor_cmd += ["--auto-restart"]
         supervisor_cmd += [
@@ -1156,6 +1205,7 @@ def cmd_daemon_start(
             "--hang-check-interval", str(hang_check_interval_seconds),
             "--hang-check-timeout", str(hang_check_timeout_seconds),
             "--hang-consecutive-failures", str(hang_consecutive_failures),
+            "--post-restart-health-check-seconds", str(post_restart_health_check_seconds),
         ]
         if hang_detection_enabled:
             supervisor_cmd += ["--hang-detection"]

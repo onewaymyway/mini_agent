@@ -845,5 +845,213 @@ class TestHangDetection(_IsolatedHomeTestCase):
         self.assertTrue(marker.exists())
 
 
+# ── daemon_hang_detection_and_alert_escalation_plan.md 阶段二 ────────────
+
+class TestRestartBudgetPersistence(_IsolatedHomeTestCase):
+    """§2.1：重启预算判断不再只看内存计数，要与
+    `daemon_crash_history.jsonl` 里最近 window_seconds 内的
+    `restarted`/`hang_killed` 记录数取较大值，保证跨 supervisor 生命周期
+    延续。"""
+
+    def test_count_recent_restart_events_only_counts_restarted_and_hang_killed(self):
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        hist_path.parent.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        records = [
+            {"timestamp": now - 10, "restart_decision": "restarted"},
+            {"timestamp": now - 20, "restart_decision": "hang_killed"},
+            {"timestamp": now - 30, "restart_decision": "giveup"},
+            {"timestamp": now - 40, "restart_decision": "no_restart"},
+            {"timestamp": now - 9999, "restart_decision": "restarted"},  # 超出窗口
+        ]
+        hist_path.write_text(
+            "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
+        )
+        count = daemon_mod.count_recent_restart_events(self.project_root, window_seconds=600)
+        self.assertEqual(count, 2)  # 只有窗口内的 restarted + hang_killed
+
+    def test_budget_persists_across_supervisor_lifecycles(self):
+        """预置一批"历史崩溃记录"（模拟上一个 supervisor 生命周期已经
+        用掉的重启次数），新的 supervisor 实例（内存计数从零开始）应该
+        据此正确判断预算已经耗尽，直接 giveup，不再重启。"""
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        hist_path.parent.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        # 预置 2 条 "restarted" 记录，配合 max_attempts=2，预算已经用满。
+        records = [
+            {"timestamp": now - 5, "restart_decision": "restarted"},
+            {"timestamp": now - 3, "restart_decision": "restarted"},
+        ]
+        hist_path.write_text(
+            "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
+        )
+
+        script_path = self.project_root / "child_always_crash.py"
+        script_path.write_text(_CHILD_ALWAYS_CRASH_SCRIPT, encoding="utf-8")
+
+        # 全新的 supervisor 实例（内存里的 restart_timestamps 从零开始），
+        # 但磁盘历史里已经有 2 条 restarted——按 §2.1，本次崩溃应直接判定
+        # 预算耗尽（giveup），不会先"restarted"一次再耗尽。
+        daemon_supervisor.run_supervisor(
+            self.project_root,
+            [sys.executable, str(script_path)],
+            auto_restart=True,
+            max_attempts=2,
+            window_seconds=600.0,
+            backoff_seconds=[0.01],
+        )
+
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        # 预置的 2 条 + 这次新增的 1 条
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(json.loads(lines[-1])["restart_decision"], "giveup")
+
+    def test_memory_count_still_wins_when_history_file_missing(self):
+        """历史文件缺失/读取失败时预算判断退化为只看内存计数，不阻断
+        主流程（`count_recent_restart_events` 内部已经兜底返回 0）。"""
+        script_path = self.project_root / "child_always_crash.py"
+        script_path.write_text(_CHILD_ALWAYS_CRASH_SCRIPT, encoding="utf-8")
+
+        daemon_supervisor.run_supervisor(
+            self.project_root,
+            [sys.executable, str(script_path)],
+            auto_restart=True,
+            max_attempts=2,
+            window_seconds=600.0,
+            backoff_seconds=[0.01, 0.01, 0.01],
+        )
+
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        decisions = [json.loads(l)["restart_decision"] for l in lines]
+        # 没有预置历史文件时，行为应与阶段一/纯内存计数完全一致。
+        self.assertEqual(decisions, ["restarted", "restarted", "giveup"])
+
+
+class TestPostRestartHealthCheck(_IsolatedHomeTestCase):
+    """§2.2：每次 Popen 新子进程后先给它一个固定窗口期证明自己真的把
+    HTTP 服务起来了，超时未通过按卡死处理，不必等常规探活轮询的多轮
+    判定。"""
+
+    def test_process_never_becomes_healthy_is_killed_as_hang(self):
+        script_path = self.project_root / "child_sleep_forever.py"
+        script_path.write_text(
+            _CHILD_SLEEP_FOREVER_SCRIPT.format(
+                pid_marker=str(self.project_root / "child.pid")
+            ),
+            encoding="utf-8",
+        )
+
+        with unittest.mock.patch.object(
+            daemon_mod.DaemonClient, "health_check", return_value=False
+        ):
+            daemon_supervisor.run_supervisor(
+                self.project_root,
+                [sys.executable, str(script_path)],
+                auto_restart=False,
+                http_port=1,
+                hang_detection_enabled=True,
+                hang_check_interval_seconds=0.05,
+                hang_check_timeout_seconds=0.05,
+                hang_consecutive_failures=3,
+                post_restart_health_check_seconds=0.15,
+            )
+
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        record = json.loads(lines[0])
+        self.assertEqual(record["restart_decision"], "hang_killed")
+        self.assertIn("重启后", record["summary"])
+        self.assertIn("未通过健康检查", record["summary"])
+
+    def test_process_becomes_healthy_within_window_is_not_killed(self):
+        """启动阶段健康检查一次成功后，应该正常进入常规探活轮询（不会
+        被判定为卡死），子进程随后正常退出时按普通"崩溃"记录。"""
+        script_path = self.project_root / "child_always_crash.py"
+        script_path.write_text(_CHILD_ALWAYS_CRASH_SCRIPT, encoding="utf-8")
+
+        with unittest.mock.patch.object(
+            daemon_mod.DaemonClient, "health_check", return_value=True
+        ):
+            daemon_supervisor.run_supervisor(
+                self.project_root,
+                [sys.executable, str(script_path)],
+                auto_restart=False,
+                http_port=1,
+                hang_detection_enabled=True,
+                hang_check_interval_seconds=0.05,
+                hang_check_timeout_seconds=0.05,
+                hang_consecutive_failures=2,
+                post_restart_health_check_seconds=0.2,
+            )
+
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        record = json.loads(lines[0])
+        # 健康检查一直返回 True，走的是正常"进程退出"路径，不是卡死。
+        self.assertEqual(record["restart_decision"], "no_restart")
+        self.assertIsNotNone(record["exit_code"])
+
+    def test_process_exits_during_health_check_window_is_treated_as_normal_exit(self):
+        """启动健康检查窗口期内子进程自己就退出了（比如配置错误直接
+        崩了），应该按正常"进程退出"处理，不算卡死——被强杀的语义只适用
+        于"进程还活着但不响应"的场景。"""
+        script_path = self.project_root / "child_quick_crash.py"
+        script_path.write_text("import sys, time\ntime.sleep(0.05)\nsys.exit(7)\n", encoding="utf-8")
+
+        with unittest.mock.patch.object(
+            daemon_mod.DaemonClient, "health_check", return_value=False
+        ):
+            daemon_supervisor.run_supervisor(
+                self.project_root,
+                [sys.executable, str(script_path)],
+                auto_restart=False,
+                http_port=1,
+                hang_detection_enabled=True,
+                hang_check_interval_seconds=0.05,
+                hang_check_timeout_seconds=0.05,
+                hang_consecutive_failures=2,
+                post_restart_health_check_seconds=5.0,
+            )
+
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        record = json.loads(lines[0])
+        self.assertEqual(record["restart_decision"], "no_restart")
+        self.assertEqual(record["exit_code"], 7)
+
+    def test_disabled_by_default_zero_does_not_delay_normal_flow(self):
+        """`post_restart_health_check_seconds=0`（函数默认值）完全跳过这
+        项检查，行为与阶段一完全一致——保证没有显式配置这个新参数的调用方
+        （包括阶段一写的既有测试）不受影响。"""
+        script_path = self.project_root / "child_always_crash.py"
+        script_path.write_text(_CHILD_ALWAYS_CRASH_SCRIPT, encoding="utf-8")
+
+        start = time.time()
+        with unittest.mock.patch.object(
+            daemon_mod.DaemonClient, "health_check", return_value=False
+        ):
+            daemon_supervisor.run_supervisor(
+                self.project_root,
+                [sys.executable, str(script_path)],
+                auto_restart=False,
+                http_port=1,
+                hang_detection_enabled=True,
+                hang_check_interval_seconds=0.05,
+                hang_check_timeout_seconds=0.05,
+                hang_consecutive_failures=2,
+                # post_restart_health_check_seconds 不传，默认 0.0
+            )
+        elapsed = time.time() - start
+        self.assertLess(elapsed, 2.0)
+
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(json.loads(lines[0])["restart_decision"], "no_restart")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -361,3 +361,60 @@ Python 层面卡死（死锁、无限循环）时，如果子进程还能响应�
   信号处理器方案的原因见 §1.3 本身"锦上添花，不是必要环节"）；§2 重启
   预算落盘/重启后健康验证；§3 告警升级/历史文件轮转
 
+### 阶段二（已完成）
+
+- `cli/daemon.py::count_recent_restart_events()`（新函数）：从
+  `daemon_crash_history.jsonl` 回溯统计最近 `window_seconds` 内
+  `restart_decision` 为 `"restarted"`/`"hang_killed"` 的记录数量（这两个
+  值代表"确实又拉起过一次新进程"，`giveup`/`no_restart` 不算）。读取/
+  解析失败时兜底返回 0，不阻断主流程——预算判断退化为只看内存计数，
+  等价于阶段二之前的行为
+- `cli/daemon_supervisor.py::run_supervisor()`/`run_foreground_supervisor()`
+  §2.1：预算判断从"只看内存里的 `restart_timestamps`"改为"内存计数与
+  `count_recent_restart_events()` 回溯计数取较大值"（`file_count + 1`，
+  `+1` 补上"这次事件本身"——文件计数统计发生在这次事件写入历史文件
+  之前，天然不包含它，而内存计数在这一步已经 `append` 过了）。这样
+  supervisor 自身如果异常退出后重新拉起（预算内存归零），只要历史文件
+  还在，跨生命周期的持续性崩溃/卡死仍然会被正确识别为"预算已耗尽"，
+  不会被"看起来一直在正常重启"掩盖
+- `cli/daemon_supervisor.py::_wait_child()` 新增
+  `post_restart_health_check_seconds` 参数（§2.2）：每次 Popen 新子进程
+  后，在进入常规探活轮询之前，先给它这么长时间证明自己真的把 HTTP 服务
+  起来了（复用同一个 `DaemonClient.health_check()`）：
+  - 窗口期内子进程自己退出（比如配置错误直接崩了）→ 按正常"进程退出"
+    处理，不算卡死——强杀语义只适用于"进程还活着但不响应"的场景；
+  - 窗口期内探测到一次健康检查成功 → 正常进入下面的常规探活轮询；
+  - 窗口期耗尽仍未通过 → 按卡死处理（`restart_decision="hang_killed"`，
+    摘要文案区别于常规卡死："重启后 Ns 内未通过健康检查（新进程可能卡在
+    初始化阶段）"），复用与常规卡死完全相同的记录+告警+预算判定逻辑，
+    不需要单独再写一套判定分支
+  - 函数级默认值刻意设为 `0.0`（关闭），而不是配置项的真实默认值
+    30.0——避免阶段一写的既有测试（显式传了 `hang_detection_enabled=True`
+    但没有显式传这个新参数）意外触发这项新检查、拖慢/改变原有断言；
+    `HttpConfig.daemon_post_restart_health_check_seconds`（默认 30.0，与
+    `cmd_daemon_start` 现有启动等待逻辑的默认超时保持一致）才是用户实际
+    会用到的默认值，由 `cmd_daemon_start`/`_main()` 显式传入
+- `config/models.py::HttpConfig` 新增 `daemon_post_restart_health_check_seconds`
+  （默认 30.0），跟其它 `daemon_hang_*`/`daemon_restart_*` 配置项放在一起
+- `cli/daemon.py::cmd_daemon_start()` 前台/后台两个分支均读取新配置项并
+  传给 supervisor；`_main()` CLI 新增 `--post-restart-health-check-seconds`
+  参数（默认 30.0，与配置项默认值一致）
+- 测试：`tests/test_daemon_crash_recovery.py` 新增
+  `TestRestartBudgetPersistence`（3 用例：`count_recent_restart_events()`
+  只统计 `restarted`/`hang_killed` 且遵守窗口范围、预算跨 supervisor
+  生命周期正确延续（预置历史记录后新实例直接 giveup，不会先重启一次再
+  耗尽）、历史文件缺失时预算判断退化为纯内存计数不受影响）与
+  `TestPostRestartHealthCheck`（4 用例：新进程持续不健康被判定为卡死并
+  强杀、健康检查一次成功后正常进入常规轮询、窗口期内子进程自己退出按
+  普通"进程退出"处理而非卡死、函数默认值 0.0 完全跳过这项检查不拖慢
+  既有阶段一测试）
+  - 全量 `tests/test_daemon_crash_recovery.py` 38 passed（阶段一~四共 27
+    + 卡死检测阶段一 4 + 阶段二新增 7）
+  - `pytest -k "daemon or config"`（同样排除环境本身缺依赖导致的收集
+    错误后）273 passed，无回归；仍是同样的 5 个 `json_repair` 缺失导致
+    的失败，与本次改动无关
+- 未做（留给阶段三）：§3 告警发出后的"确保被看到"升级机制（未确认告警
+  超时重推 + 交互入口顺带提示）；`daemon_crash_history.jsonl`/
+  `daemon_crash_alerts.jsonl` 的按条数/时间跨度轮转清理
+
+

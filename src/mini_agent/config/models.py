@@ -633,6 +633,12 @@ class HttpConfig:
     daemon_hang_check_timeout_seconds: float = 2.0
     daemon_hang_consecutive_failures: int = 3
 
+    # [daemon_hang_detection_and_alert_escalation_plan.md 阶段二 §2.2]
+    # 每次重启后给新子进程这么长时间证明自己真的把 HTTP 服务起来了，
+    # 超时未通过则按卡死处理（不必等到常规探活轮询的多轮判定）。跟
+    # `cmd_daemon_start` 现有的启动等待逻辑保持同样的默认超时（30s）。
+    daemon_post_restart_health_check_seconds: float = 30.0
+
 
 @dataclass
 class WebSearchConfig:
