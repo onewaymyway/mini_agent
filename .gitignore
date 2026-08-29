@@ -170,3 +170,4 @@ daily_reports/
 research/agent_and_ai/papers/
 research/agent_and_ai/articles/
 .agent/daemon_run_state.json
+.agent/daemon_supervisor.pid
