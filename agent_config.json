@@ -242,6 +242,9 @@
     "agent_wiki_writer_max_turns": 20,
     "agent_wiki_writer_timeout_seconds": 2400
   },
+  "persona_candidates":{
+    "enabled": true
+  },
   "cron": {
     "default_timeout_seconds": 2400,
     "stale_job_watchdog_grace_seconds": 300
