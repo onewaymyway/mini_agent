@@ -164,3 +164,4 @@ test_reports/
 .agent/external_input/novelty_candidates_raw.jsonl
 .agent/async_jobs/
 .agent/artifacts_index.jsonl
+daily_reports/
