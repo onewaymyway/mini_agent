@@ -623,6 +623,16 @@ class HttpConfig:
         default_factory=lambda: [1, 2, 4, 8, 16, 30, 60]
     )
 
+    # [daemon_hang_detection_and_alert_escalation_plan.md 阶段一] 卡死检测。
+    # 与上面的 daemon_auto_restart_enabled 是正交的两个开关：前者管"进程
+    # 退出后要不要自动重启"，这里管"进程没退出但已经无响应时要不要主动
+    # 探测并强杀"。默认开启，探测参数保守（30s 内连续 3 次探测失败才
+    # 判定为卡死，避免正常的长耗时请求被误判）。
+    daemon_hang_detection_enabled: bool = True
+    daemon_hang_check_interval_seconds: float = 10.0
+    daemon_hang_check_timeout_seconds: float = 2.0
+    daemon_hang_consecutive_failures: int = 3
+
 
 @dataclass
 class WebSearchConfig:

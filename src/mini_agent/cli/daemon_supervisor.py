@@ -31,6 +31,75 @@ def _log_path(project_root: Path) -> Path:
     return project_root / ".agent" / "daemon.log"
 
 
+class _HangDetected(Exception):
+    """内部信号：探活判定为卡死。不是真正的异常，只是用来跳出等待循环，
+    携带诊断用的 reason 字符串。"""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _wait_child(
+    proc: "subprocess.Popen",
+    project_root: Path,
+    http_port: Optional[int],
+    hang_detection_enabled: bool,
+    hang_check_interval_seconds: float,
+    hang_check_timeout_seconds: float,
+    hang_consecutive_failures: int,
+) -> tuple[Optional[int], bool, str]:
+    """等待子进程退出，期间按配置做主动探活（daemon_hang_detection_and_
+    alert_escalation_plan.md §1.2）。
+
+    返回 `(returncode, was_hang, hang_reason)`：
+    - 子进程正常退出（含被信号杀死）：`(returncode, False, "")`
+    - 被判定为卡死并强杀：`(None, True, reason)`，`reason` 是给
+      `record_daemon_crash(hang_reason=...)` 用的人类可读描述。
+
+    `http_port` 为 None（比如调用方没能读到端口配置）或
+    `hang_detection_enabled=False` 时，退化为原来的"一直阻塞直到子进程
+    退出"（`proc.wait()`），完全不做探活，行为与阶段一之前一致。
+    """
+    if not hang_detection_enabled or not http_port:
+        return proc.wait(), False, ""
+
+    from mini_agent.cli.daemon import DaemonClient, _force_kill_process
+
+    client = DaemonClient(http_port, project_root=project_root)
+    consecutive_failures = 0
+    interval = max(0.5, hang_check_interval_seconds)
+
+    while True:
+        try:
+            returncode = proc.wait(timeout=interval)
+            return returncode, False, ""
+        except subprocess.TimeoutExpired:
+            pass
+
+        if client.health_check(timeout=hang_check_timeout_seconds):
+            consecutive_failures = 0
+            continue
+
+        consecutive_failures += 1
+        if consecutive_failures < hang_consecutive_failures:
+            continue
+
+        # 连续多次探测无响应，判定为卡死：进程仍存活但已经无法正常工作，
+        # 直接强杀（跳过优雅关停尝试，见 _force_kill_process 的注释）。
+        reason = (
+            f"连续 {consecutive_failures} 次健康检查无响应"
+            f"（每次间隔 {interval:.0f}s，超时 {hang_check_timeout_seconds:.0f}s），"
+            "已强制终止"
+        )
+        _force_kill_process(proc.pid)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        return None, True, reason
+
+
 def run_supervisor(
     project_root: Path,
     child_argv: list[str],
@@ -38,10 +107,21 @@ def run_supervisor(
     max_attempts: int = 5,
     window_seconds: float = 600.0,
     backoff_seconds: Optional[list[float]] = None,
+    http_port: Optional[int] = None,
+    hang_detection_enabled: bool = True,
+    hang_check_interval_seconds: float = 10.0,
+    hang_check_timeout_seconds: float = 2.0,
+    hang_consecutive_failures: int = 3,
 ) -> None:
     """核心监控循环。阶段一调用方固定传 `auto_restart=False`——检测到
     崩溃后只记录+告警，不重启，循环在这一次崩溃后自然结束（等价于"预算
-    为 0 次"）。阶段二会把 `auto_restart` 接到配置项、默认打开。"""
+    为 0 次"）。阶段二会把 `auto_restart` 接到配置项、默认打开。
+
+    `http_port`/`hang_detection_enabled`/`hang_check_*`：
+    daemon_hang_detection_and_alert_escalation_plan.md 阶段一新增的卡死
+    主动探活参数——子进程"退出"和"存活但无响应"是两种性质不同的故障，
+    原来只能感知前者（`proc.wait()` 永远不返回后者的情况）。`http_port`
+    为 None 时自动退化为不探活（比如调用方没能读到端口配置）。"""
     from mini_agent.cli.daemon import (
         _cleanup_pid_files,
         _supervisor_pid_file,
@@ -94,24 +174,36 @@ def run_supervisor(
 
             started_at = time.time()
             child_pid = proc.pid
-            returncode = proc.wait()
+            returncode, was_hang, hang_reason = _wait_child(
+                proc,
+                project_root,
+                http_port,
+                hang_detection_enabled,
+                hang_check_interval_seconds,
+                hang_check_timeout_seconds,
+                hang_consecutive_failures,
+            )
 
-            state = _read_run_state(project_root)
-            if state and state.get("status") == _STATUS_STOPPED_BY_USER:
-                # 预期内的停止（daemon stop / HTTP shutdown / 信号）——
-                # supervisor 也随之退出，不记录崩溃、不重启。
-                break
+            if not was_hang:
+                state = _read_run_state(project_root)
+                if state and state.get("status") == _STATUS_STOPPED_BY_USER:
+                    # 预期内的停止（daemon stop / HTTP shutdown / 信号）——
+                    # supervisor 也随之退出，不记录崩溃、不重启。
+                    break
 
-            # 非预期退出：无论是未捕获异常、被外部信号杀死、还是
-            # OOM/native crash，run_state 都还停留在 "running"（或者
-            # 干脆读不到——子进程可能在写文件之前就挂了），这里统一按
-            # "崩溃" 处理。
+            # 非预期退出（含被判定为卡死后强杀）：无论是未捕获异常、被外部
+            # 信号杀死、OOM/native crash，还是卡死，run_state 都还停留在
+            # "running"（或者干脆读不到——子进程可能在写文件之前就挂了），
+            # 这里统一按"异常"处理，只是 decision/summary 会区分卡死场景。
             restart_timestamps.append(time.time())
             cutoff = time.time() - window_seconds
             restart_timestamps = [t for t in restart_timestamps if t >= cutoff]
 
             will_restart = auto_restart and len(restart_timestamps) <= max_attempts
-            decision = "restarted" if will_restart else ("giveup" if auto_restart else "no_restart")
+            if was_hang:
+                decision = "restarted" if will_restart else ("giveup" if auto_restart else "hang_killed")
+            else:
+                decision = "restarted" if will_restart else ("giveup" if auto_restart else "no_restart")
 
             record_daemon_crash(
                 project_root,
@@ -121,6 +213,7 @@ def run_supervisor(
                 log_path=log_path,
                 restart_attempt=attempt,
                 restart_decision=decision,
+                hang_reason=hang_reason if was_hang else None,
             )
 
             if not will_restart:
@@ -155,6 +248,11 @@ def run_foreground_supervisor(
     max_attempts: int = 5,
     window_seconds: float = 600.0,
     backoff_seconds: Optional[list[float]] = None,
+    http_port: Optional[int] = None,
+    hang_detection_enabled: bool = True,
+    hang_check_interval_seconds: float = 10.0,
+    hang_check_timeout_seconds: float = 2.0,
+    hang_consecutive_failures: int = 3,
 ) -> int:
     """前台（不带 --detach）统一使用的 supervisor 循环（阶段三）。
 
@@ -215,8 +313,18 @@ def run_foreground_supervisor(
             started_at = time.time()
             child_pid = proc.pid
             user_interrupted = False
+            was_hang = False
+            hang_reason = ""
             try:
-                returncode = proc.wait()
+                returncode, was_hang, hang_reason = _wait_child(
+                    proc,
+                    project_root,
+                    http_port,
+                    hang_detection_enabled,
+                    hang_check_interval_seconds,
+                    hang_check_timeout_seconds,
+                    hang_consecutive_failures,
+                )
             except KeyboardInterrupt:
                 user_interrupted = True
                 mark_stopped_by_user(project_root, pid=child_pid)
@@ -236,22 +344,26 @@ def run_foreground_supervisor(
 
             final_returncode = returncode or 0
 
-            state = _read_run_state(project_root)
-            if user_interrupted or (
-                state and state.get("status") == _STATUS_STOPPED_BY_USER
-            ):
-                break
+            if not was_hang:
+                state = _read_run_state(project_root)
+                if user_interrupted or (
+                    state and state.get("status") == _STATUS_STOPPED_BY_USER
+                ):
+                    break
 
             restart_timestamps.append(time.time())
             cutoff = time.time() - window_seconds
             restart_timestamps = [t for t in restart_timestamps if t >= cutoff]
 
             will_restart = auto_restart and len(restart_timestamps) <= max_attempts
-            decision = (
-                "restarted"
-                if will_restart
-                else ("giveup" if auto_restart else "no_restart")
-            )
+            if was_hang:
+                decision = "restarted" if will_restart else ("giveup" if auto_restart else "hang_killed")
+            else:
+                decision = (
+                    "restarted"
+                    if will_restart
+                    else ("giveup" if auto_restart else "no_restart")
+                )
 
             record_daemon_crash(
                 project_root,
@@ -261,22 +373,25 @@ def run_foreground_supervisor(
                 log_path=log_path,
                 restart_attempt=attempt,
                 restart_decision=decision,
+                hang_reason=hang_reason if was_hang else None,
             )
 
             if not will_restart:
+                label = "Hung" if was_hang else "Crashed"
                 if decision == "giveup":
                     print(
-                        f"[daemon] Crashed (exit={returncode}). "
+                        f"[daemon] {label} (exit={returncode}). "
                         f"Auto-restart budget exhausted, giving up."
                     )
                 else:
-                    print(f"[daemon] Crashed (exit={returncode}). Not restarting.")
+                    print(f"[daemon] {label} (exit={returncode}). Not restarting.")
                 break
 
             attempt += 1
             delay = backoff_seconds[min(attempt - 1, len(backoff_seconds) - 1)]
+            label = "Hung" if was_hang else "Crashed"
             print(
-                f"[daemon] Crashed (exit={returncode}). "
+                f"[daemon] {label} (exit={returncode}). "
                 f"Restarting in {delay}s (attempt {attempt}/{max_attempts})..."
             )
             time.sleep(delay)
@@ -305,6 +420,11 @@ def _main() -> int:
     parser.add_argument("--auto-restart", action="store_true", default=False)
     parser.add_argument("--max-attempts", type=int, default=5)
     parser.add_argument("--window-seconds", type=float, default=600.0)
+    parser.add_argument("--http-port", type=int, default=None)
+    parser.add_argument("--hang-detection", action="store_true", default=False)
+    parser.add_argument("--hang-check-interval", type=float, default=10.0)
+    parser.add_argument("--hang-check-timeout", type=float, default=2.0)
+    parser.add_argument("--hang-consecutive-failures", type=int, default=3)
     args = parser.parse_args()
 
     project_root = Path(args.project)
@@ -320,6 +440,11 @@ def _main() -> int:
         auto_restart=args.auto_restart,
         max_attempts=args.max_attempts,
         window_seconds=args.window_seconds,
+        http_port=args.http_port,
+        hang_detection_enabled=args.hang_detection,
+        hang_check_interval_seconds=args.hang_check_interval,
+        hang_check_timeout_seconds=args.hang_check_timeout,
+        hang_consecutive_failures=args.hang_consecutive_failures,
     )
     return 0
 

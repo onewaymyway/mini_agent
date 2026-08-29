@@ -20,8 +20,10 @@ import os
 import sys
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Optional
 
 from mini_agent.cli import daemon as daemon_mod
 from mini_agent.cli import daemon_supervisor
@@ -681,6 +683,166 @@ class TestAlertSentBeforeRestartLogicFails(_IsolatedHomeTestCase):
         paths = AgentPaths(self.project_root)
         alerts = daemon_crash_store.list_crash_alerts(paths)
         self.assertEqual(len(alerts), 1)
+
+
+# ── daemon_hang_detection_and_alert_escalation_plan.md 阶段一：卡死检测 ──
+
+_CHILD_SLEEP_FOREVER_SCRIPT = """
+import os
+import time
+from pathlib import Path
+
+Path({pid_marker!r}).write_text(str(os.getpid()))
+time.sleep(3600)
+"""
+
+
+class TestHangDetection(_IsolatedHomeTestCase):
+    """子进程存活但对健康检查完全无响应，应被判定为卡死、强杀、记录为
+    `restart_decision == "hang_killed"`，且不能和"进程自己退出"的崩溃场景
+    混为一谈（见计划 §1 用例 1）。"""
+
+    def _src_dir(self) -> str:
+        return str(Path(__file__).resolve().parents[1] / "src")
+
+    def _write_sleep_forever_script(self, pid_marker: Optional[Path] = None) -> Path:
+        script_path = self.project_root / "child_sleep_forever.py"
+        script_path.write_text(
+            _CHILD_SLEEP_FOREVER_SCRIPT.format(
+                pid_marker=str(pid_marker or (self.project_root / "child.pid"))
+            ),
+            encoding="utf-8",
+        )
+        return script_path
+
+    def test_unresponsive_process_is_detected_killed_and_recorded(self):
+        script_path = self._write_sleep_forever_script()
+
+        with unittest.mock.patch.object(
+            daemon_mod.DaemonClient, "health_check", return_value=False
+        ):
+            daemon_supervisor.run_supervisor(
+                self.project_root,
+                [sys.executable, str(script_path)],
+                auto_restart=False,
+                http_port=1,  # 端口本身不重要，health_check 已被 mock
+                hang_detection_enabled=True,
+                hang_check_interval_seconds=0.05,
+                hang_check_timeout_seconds=0.05,
+                hang_consecutive_failures=2,
+            )
+
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        record = json.loads(lines[0])
+        self.assertEqual(record["restart_decision"], "hang_killed")
+        self.assertIsNone(record["exit_code"])
+        self.assertIsNone(record["last_exception"])
+        self.assertIn("卡死", record["summary"])
+        self.assertIn("健康检查无响应", record["summary"])
+
+    def test_intermittent_health_check_success_resets_failure_counter(self):
+        """健康检查偶尔成功一次不应该被判定为卡死——连续失败计数需要在
+        探测成功后清零，避免正常场景下的一次慢响应被误判。"""
+        pid_marker = self.project_root / "child.pid"
+        script_path = self._write_sleep_forever_script(pid_marker)
+
+        call_count = {"n": 0}
+
+        def _flaky_health_check(self_client, timeout=2.0):
+            call_count["n"] += 1
+            # 每 3 次里成功 1 次，连续失败次数永远达不到阈值 2。
+            return call_count["n"] % 3 == 0
+
+        with unittest.mock.patch.object(
+            daemon_mod.DaemonClient, "health_check", _flaky_health_check
+        ):
+            proc_result = {}
+
+            def _run():
+                proc_result["rc"] = daemon_supervisor.run_supervisor(
+                    self.project_root,
+                    [sys.executable, str(script_path)],
+                    auto_restart=False,
+                    http_port=1,
+                    hang_detection_enabled=True,
+                    hang_check_interval_seconds=0.02,
+                    hang_check_timeout_seconds=0.02,
+                    hang_consecutive_failures=2,
+                )
+
+            import threading
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            # 跑一小段时间后主动标记 stopped_by_user 并结束子进程，
+            # 验证这段时间内没有被误判为卡死（不会产生任何崩溃记录）。
+            time.sleep(0.3)
+            child_pid = None
+            if pid_marker.exists():
+                try:
+                    child_pid = int(pid_marker.read_text().strip())
+                except (ValueError, OSError):
+                    child_pid = None
+            daemon_mod.mark_stopped_by_user(self.project_root, child_pid or 0)
+            if child_pid:
+                daemon_mod._force_kill_process(child_pid)
+            t.join(timeout=5)
+
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        self.assertFalse(hist_path.exists())
+
+    def test_hang_detection_disabled_falls_back_to_plain_wait(self):
+        """`hang_detection_enabled=False` 时完全不做探活，行为与阶段一
+        之前完全一致（不会因为 http_port 缺失/health_check 失败而被
+        误杀）。用一个正常快速退出的子进程验证不受影响。"""
+        marker = self.project_root / "ran.txt"
+        script_path = self.project_root / "child_quick_exit.py"
+        script_path.write_text(
+            f"from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('1')\n",
+            encoding="utf-8",
+        )
+
+        with unittest.mock.patch.object(
+            daemon_mod.DaemonClient, "health_check", return_value=False
+        ):
+            daemon_supervisor.run_supervisor(
+                self.project_root,
+                [sys.executable, str(script_path)],
+                auto_restart=False,
+                http_port=1,
+                hang_detection_enabled=False,
+            )
+
+        self.assertTrue(marker.exists())
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        # 脚本正常退出码为 0，但没有走 stopped_by_user 标记，所以仍会被
+        # 判定为"崩溃"（这是既有行为，与卡死检测无关）——这里只关心
+        # restart_decision 不是 "hang_killed"，证明探活分支完全没有介入。
+        lines = hist_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(json.loads(lines[0])["restart_decision"], "no_restart")
+
+    def test_no_http_port_falls_back_to_plain_wait(self):
+        """`http_port=None`（比如调用方没能读到端口配置）时同样退化为
+        不探活，不应该因为拿不到端口就报错或误杀。"""
+        marker = self.project_root / "ran2.txt"
+        script_path = self.project_root / "child_quick_exit2.py"
+        script_path.write_text(
+            f"from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('1')\n",
+            encoding="utf-8",
+        )
+
+        daemon_supervisor.run_supervisor(
+            self.project_root,
+            [sys.executable, str(script_path)],
+            auto_restart=False,
+            http_port=None,
+            hang_detection_enabled=True,
+        )
+
+        self.assertTrue(marker.exists())
 
 
 if __name__ == "__main__":

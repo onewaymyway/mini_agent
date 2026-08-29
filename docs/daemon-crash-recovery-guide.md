@@ -165,3 +165,71 @@ kill -9 <该 PID>
 #   [daemon] Crashed (exit=-9). Restarting in 1s (attempt 1/5)...
 # 随后子进程自动重新拉起，daemon.log/看板横幅同样会出现这次崩溃记录
 ```
+
+## 9. 卡死检测（daemon_hang_detection_and_alert_escalation_plan.md 阶段一）
+
+前面几节覆盖的都是"子进程退出"这一类故障。但更隐蔽的情况是**子进程没有
+退出，但已经完全无法工作**——比如事件循环卡在某个同步阻塞调用里、主线程
+死锁。这种情况下 `daemon status` 会显示"运行中"，但 HTTP 请求全部超时，
+且不会触发上面几节的任何自愈/告警链路（`proc.wait()` 永远不返回）。
+
+从这个阶段开始，supervisor 不再是"一直阻塞等子进程退出"，而是**带超时的
+轮询等待 + 主动探活**：每隔一段时间（默认 10s）如果子进程还没退出，就顺带
+探一次 `GET /v1/health`（超时 2s）。连续探测失败达到阈值（默认 3 次，即约
+30s 内完全无响应）后，判定为"卡死"，直接强杀（跳过优雅关停尝试，因为连
+HTTP 都不响应，`SIGTERM` 大概率也处理不了），然后走跟"崩溃"完全相同的
+记录 + 告警 + 重启预算判定流程——只是 `daemon_crash_history.jsonl` 里的
+`restart_decision` 会是 `"hang_killed"` 而不是 `"restarted"`/`"giveup"`，
+摘要文案也会明确写"判定为卡死"，跟"进程自己意外退出"区分开（两者排查
+方向完全不同）。
+
+`daemon status` 展示上的区别：
+
+```
+[daemon] Supervised: yes (supervisor PID=1234, crash 自动检测已启用)
+[daemon] Last hang (killed): 08-29 15:02:11 — Daemon（PID=5678）进程存活但无响应，
+判定为卡死，存活 0h42m，连续 3 次健康检查无响应（每次间隔 10s，超时 2s），已强制终止
+```
+
+（普通崩溃则显示为 `Last crash: ... — Daemon（PID=...）意外退出，...`。）
+
+### 配置项
+
+```json
+{
+  "http": {
+    "daemon_hang_detection_enabled": true,
+    "daemon_hang_check_interval_seconds": 10,
+    "daemon_hang_check_timeout_seconds": 2,
+    "daemon_hang_consecutive_failures": 3
+  }
+}
+```
+
+- `daemon_hang_detection_enabled`：总开关，跟 `daemon_auto_restart_enabled`
+  是正交的两个开关——可以只开崩溃自愈不开卡死探测，反之同理。关掉后
+  supervisor 退化为阶段一~三的纯 `proc.wait()` 行为，不做任何探活；
+- `daemon_hang_check_interval_seconds`/`daemon_hang_check_timeout_seconds`/
+  `daemon_hang_consecutive_failures`：探活的轮询间隔、单次超时、判定为
+  卡死所需的连续失败次数，三者共同决定"最坏情况下卡死到被发现之间的
+  延迟"（默认配置下约 30s）；健康检查偶尔成功一次会把连续失败计数清零，
+  避免正常场景下一次慢响应被误判为卡死。
+
+前台模式（`daemon start`，不带 `--detach`）与后台 `--detach` 共用完全相同
+的卡死探测逻辑，行为一致。
+
+一个直观的验证方法（模拟卡死而不是崩溃——进程存活但故意不响应 HTTP，
+比较取巧的办法是临时把 `daemon_hang_check_interval_seconds`/
+`daemon_hang_consecutive_failures` 调小、再用调试器/断点手段让 daemon
+主线程卡住）：观察 `daemon.log`/`daemon status` 是否在约
+`interval × consecutive_failures` 秒内出现 `hang_killed` 记录，而不是
+被误判为普通崩溃或者完全没反应。
+
+### 尚未覆盖（留给后续阶段，见计划文档 §2/§3）
+
+- 重启预算目前仍是内存态，supervisor 自身异常退出后预算归零重来；
+- 重启后只是"子进程没有立刻退出"就算成功，不会主动验证 HTTP 服务真的
+  起来了；
+- 崩溃/卡死告警发出后没有"确保被看到"的超时升级机制；
+- `daemon_crash_history.jsonl`/`daemon_crash_alerts.jsonl` 仍然只追加，
+  没有按条数/时间跨度做轮转清理。

@@ -269,6 +269,7 @@ def record_daemon_crash(
     log_path: Path,
     restart_attempt: int = 0,
     restart_decision: str = "no_restart",
+    hang_reason: Optional[str] = None,
 ) -> dict:
     """收集崩溃诊断信息、写入 daemon_crash_history.jsonl，并发送一条
     daemon_crash 告警（独立通道，见 notification/daemon_crash_store.py）。
@@ -277,21 +278,36 @@ def record_daemon_crash(
     "先感知后恢复"：这个函数只负责记录 + 告警，不做任何重启决策——调用方
     应该在决定是否重启之前就调用它，即使后续重启逻辑本身出错，告警也
     已经发出去了。
+
+    `hang_reason`：非 None 时表示这不是"进程自己退出"，而是被 supervisor
+    判定为卡死后主动强杀的（见 daemon_hang_detection_and_alert_escalation_plan.md
+    §1.2），此时跳过"进程退出原因"的推断逻辑（那套逻辑假设进程已经退出，
+    对"存活但无响应、被 supervisor 强杀"的场景没有意义——全局异常日志
+    里根本不会有对应记录，进程是被外部强制终止的，不是自己抛异常退出），
+    直接使用调用方传入的诊断描述作为 reason。摘要文案上也明确区分\"意外
+    退出\"和\"卡死\"，避免运维排查时把两类完全不同性质的故障混为一谈。
     """
     now = time.time()
     uptime = (now - started_at) if started_at else None
     log_tail = _tail_lines(log_path, 30)
-    last_exc = _find_last_global_exception(pid, since_ts=started_at)
 
-    if last_exc:
-        reason = f"{last_exc.get('exc_type')}: {last_exc.get('message')}"
-    elif exit_code is not None and exit_code < 0:
-        reason = f"被信号杀死（信号 {-exit_code}），未捕获到 Python 异常，疑似 OOM 或外部信号"
+    if hang_reason is not None:
+        last_exc = None
+        reason = hang_reason
+        uptime_str = f"存活 {int(uptime // 3600)}h{int((uptime % 3600) // 60)}m" if uptime else "存活时长未知"
+        summary = f"Daemon（PID={pid}）进程存活但无响应，判定为卡死，{uptime_str}，{reason}"
     else:
-        reason = "未捕获到 Python 异常，可能是外部信号杀死或底层（native）崩溃"
+        last_exc = _find_last_global_exception(pid, since_ts=started_at)
 
-    uptime_str = f"存活 {int(uptime // 3600)}h{int((uptime % 3600) // 60)}m" if uptime else "存活时长未知"
-    summary = f"Daemon（PID={pid}）意外退出，{uptime_str}，原因：{reason}"
+        if last_exc:
+            reason = f"{last_exc.get('exc_type')}: {last_exc.get('message')}"
+        elif exit_code is not None and exit_code < 0:
+            reason = f"被信号杀死（信号 {-exit_code}），未捕获到 Python 异常，疑似 OOM 或外部信号"
+        else:
+            reason = "未捕获到 Python 异常，可能是外部信号杀死或底层（native）崩溃"
+
+        uptime_str = f"存活 {int(uptime // 3600)}h{int((uptime % 3600) // 60)}m" if uptime else "存活时长未知"
+        summary = f"Daemon（PID={pid}）意外退出，{uptime_str}，原因：{reason}"
 
     history_record = {
         "timestamp": now,
@@ -340,7 +356,7 @@ def record_daemon_crash(
             from mini_agent.notification.dispatcher import get_channel_class, NotificationMessage
             cfg = load_notification_config(paths)
             message = NotificationMessage(
-                title="⚠️ Daemon 崩溃",
+                title="⚠️ Daemon 卡死" if hang_reason is not None else "⚠️ Daemon 崩溃",
                 body=summary,
                 source="daemon_crash",
                 meta={"alert_id": alert_record.get("alert_id")},
@@ -401,6 +417,28 @@ def _is_process_alive(pid: int) -> bool:
         return False
 
 
+def _force_kill_process(pid: int) -> None:
+    """强制终止一个进程（Unix SIGKILL / Windows TerminateProcess），不做
+    优雅关停尝试。用于 §1.2 卡死判定后的强杀——进程本身已经对 HTTP 请求
+    无响应，`SIGTERM` 大概率也无法被正常处理（如果是死锁/事件循环卡死，
+    信号处理器本身可能都排不上队），直接跳过优雅关停，不做无意义等待。
+    进程已经不在时静默忽略。"""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            handle = ctypes.windll.kernel32.OpenProcess(1, False, pid)
+            if handle:
+                ctypes.windll.kernel32.TerminateProcess(handle, 1)
+                ctypes.windll.kernel32.CloseHandle(handle)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.cli.daemon._force_kill_process")
+
+
 # ── HTTP 客户端：CLI 连接到已存在的 daemon ────────────────────────────────────
 
 class DaemonClient:
@@ -448,15 +486,18 @@ class DaemonClient:
             h["Authorization"] = f"Bearer {self.token}"
         return h
 
-    def health_check(self) -> bool:
-        """检查 daemon HTTP 服务是否就绪。"""
+    def health_check(self, timeout: float = 3.0) -> bool:
+        """检查 daemon HTTP 服务是否就绪。`timeout` 默认 3s（原有启动等待
+        场景）；卡死探测（daemon_supervisor.py）会传更短的超时（默认 2s，
+        见 HttpConfig.daemon_hang_check_timeout_seconds），避免健康检查
+        本身卡住 supervisor 太久。"""
         try:
             import urllib.request
             req = urllib.request.Request(
                 f"{self.base_url}/v1/health",
                 headers=self._headers(),
             )
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.status == 200
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
@@ -1042,6 +1083,11 @@ def cmd_daemon_start(
         backoff_seconds = getattr(
             _http_cfg, "daemon_restart_backoff_seconds", None
         ) or [1, 2, 4, 8, 16, 30, 60]
+        # [daemon_hang_detection_and_alert_escalation_plan.md 阶段一]
+        hang_detection_enabled = getattr(_http_cfg, "daemon_hang_detection_enabled", True)
+        hang_check_interval_seconds = getattr(_http_cfg, "daemon_hang_check_interval_seconds", 10.0)
+        hang_check_timeout_seconds = getattr(_http_cfg, "daemon_hang_check_timeout_seconds", 2.0)
+        hang_consecutive_failures = getattr(_http_cfg, "daemon_hang_consecutive_failures", 3)
 
         try:
             from mini_agent.cli.daemon_supervisor import run_foreground_supervisor
@@ -1052,6 +1098,11 @@ def cmd_daemon_start(
                 max_attempts=max_attempts,
                 window_seconds=window_seconds,
                 backoff_seconds=backoff_seconds,
+                http_port=http_port,
+                hang_detection_enabled=hang_detection_enabled,
+                hang_check_interval_seconds=hang_check_interval_seconds,
+                hang_check_timeout_seconds=hang_check_timeout_seconds,
+                hang_consecutive_failures=hang_consecutive_failures,
             )
         except Exception as e:
             from mini_agent.errors import log_exception
@@ -1091,12 +1142,23 @@ def cmd_daemon_start(
         auto_restart = getattr(_http_cfg, "daemon_auto_restart_enabled", True)
         max_attempts = getattr(_http_cfg, "daemon_restart_max_attempts", 5)
         window_seconds = getattr(_http_cfg, "daemon_restart_window_seconds", 600.0)
+        # [daemon_hang_detection_and_alert_escalation_plan.md 阶段一]
+        hang_detection_enabled = getattr(_http_cfg, "daemon_hang_detection_enabled", True)
+        hang_check_interval_seconds = getattr(_http_cfg, "daemon_hang_check_interval_seconds", 10.0)
+        hang_check_timeout_seconds = getattr(_http_cfg, "daemon_hang_check_timeout_seconds", 2.0)
+        hang_consecutive_failures = getattr(_http_cfg, "daemon_hang_consecutive_failures", 3)
         if auto_restart:
             supervisor_cmd += ["--auto-restart"]
         supervisor_cmd += [
             "--max-attempts", str(max_attempts),
             "--window-seconds", str(window_seconds),
+            "--http-port", str(http_port),
+            "--hang-check-interval", str(hang_check_interval_seconds),
+            "--hang-check-timeout", str(hang_check_timeout_seconds),
+            "--hang-consecutive-failures", str(hang_consecutive_failures),
         ]
+        if hang_detection_enabled:
+            supervisor_cmd += ["--hang-detection"]
         env = os.environ.copy()
         env["MINI_AGENT_SUPERVISOR_CHILD_ARGV"] = json.dumps(base_cmd)
 
@@ -1328,8 +1390,9 @@ def _print_crash_summary(project_root: Path) -> None:
         return
     ts = last.get("timestamp")
     when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else "未知时间"
-    print(f"[daemon] Last crash: {when} — {last.get('summary', '(无摘要)')}")
     decision = last.get("restart_decision")
+    label = "Last hang (killed)" if decision == "hang_killed" else "Last crash"
+    print(f"[daemon] {label}: {when} — {last.get('summary', '(无摘要)')}")
     if decision == "giveup":
         print("[daemon] Auto-restart budget exhausted — manual `daemon start` required.")
     elif decision == "no_restart":
@@ -1364,7 +1427,19 @@ def cmd_daemon_status(project_root: Path) -> int:
         except (ValueError, OSError):
             sup_pid, sup_alive = None, False
         if sup_alive:
-            print(f"[daemon] Supervised: yes (supervisor PID={sup_pid}, crash 自动检测已启用)")
+            hang_note = ""
+            try:
+                from mini_agent.config import load_config
+                _http_cfg = getattr(load_config(project_root=project_root), "http", None)
+                if not getattr(_http_cfg, "daemon_hang_detection_enabled", True):
+                    hang_note = "，卡死探测已关闭"
+            except Exception as exc:
+                from mini_agent.errors import log_exception
+                log_exception(exc, where="mini_agent.cli.daemon.cmd_daemon_status.hang_note")
+            print(
+                f"[daemon] Supervised: yes (supervisor PID={sup_pid}, "
+                f"crash 自动检测已启用{hang_note})"
+            )
         else:
             print("[daemon] Supervised: supervisor PID 文件存在但进程已不在（可能异常退出）")
     else:

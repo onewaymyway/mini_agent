@@ -292,4 +292,72 @@ Python 层面卡死（死锁、无限循环）时，如果子进程还能响应�
 
 ## 7. 实现记录
 
-（尚未开始实施）
+### 阶段一（已完成）
+
+- `config/models.py::HttpConfig` 新增 4 个卡死探测配置项：
+  `daemon_hang_detection_enabled`（默认 `True`）/
+  `daemon_hang_check_interval_seconds`（默认 10.0）/
+  `daemon_hang_check_timeout_seconds`（默认 2.0）/
+  `daemon_hang_consecutive_failures`（默认 3）。与 `daemon_restart_*` 放在
+  一起，走现成的 `load_nested_block_with_flat_compat` 自动装配，不需要改
+  `loader.py`
+- `cli/daemon.py::DaemonClient.health_check()` 新增 `timeout` 参数（默认
+  仍是 3s，保持原有启动等待场景不变；supervisor 卡死探测会传更短的
+  `daemon_hang_check_timeout_seconds`）
+- `cli/daemon.py::record_daemon_crash()` 新增 `hang_reason` 参数：非
+  `None` 时表示这条记录是"存活但无响应、被强杀"，跳过"进程退出原因"的
+  推断逻辑（`_find_last_global_exception`/退出码符号判断对这种场景没有
+  意义——进程是被外部强制终止的，不是自己抛异常退出），摘要文案明确写
+  "判定为卡死"，与"意外退出"的崩溃摘要区分开，避免运维排查时混为一谈；
+  `last_exception` 字段固定为 `None`
+- `cli/daemon.py::_force_kill_process()`（新函数）：跨平台强杀（Unix
+  `SIGKILL`/Windows `TerminateProcess`），跳过优雅关停尝试——进程已经对
+  HTTP 无响应，`SIGTERM` 大概率也处理不了
+- `cli/daemon_supervisor.py::_wait_child()`（新函数）：把原来"一直阻塞
+  直到子进程退出"的 `proc.wait()` 改造为"带超时的轮询等待 + 探活"：
+  - `http_port` 为 `None` 或 `hang_detection_enabled=False` 时退化为原
+    行为（纯 `proc.wait()`），保证阶段一之前的调用方（比如没能读到端口
+    配置的场景）完全不受影响；
+  - 否则每轮 `proc.wait(timeout=interval)` 超时后调用
+    `DaemonClient.health_check(timeout=...)` 探测一次，探测成功则把
+    连续失败计数清零（避免正常场景下偶尔一次慢响应被误判），连续失败
+    达到阈值后判定为卡死，调用 `_force_kill_process` 强杀并返回
+    `(None, True, reason)` 供调用方走"卡死"分支
+- `run_supervisor()`/`run_foreground_supervisor()` 均已接入
+  `_wait_child()`：非 `was_hang` 分支的行为与阶段一之前完全一致；
+  `was_hang` 分支复用与崩溃场景相同的重启预算/退避判定，只是
+  `restart_decision` 用 `"hang_killed"` 而不是 `"no_restart"`
+  （预算耗尽时两者统一走 `"giveup"`，保持 `daemon status`/`_print_crash_
+  summary` 的既有展示逻辑不需要区分来源）；前台模式的打印文案（"Crashed"
+  vs "Hung"）据此区分
+- `_main()` CLI 参数打通：`--http-port`/`--hang-detection`/
+  `--hang-check-interval`/`--hang-check-timeout`/
+  `--hang-consecutive-failures`
+- `cli/daemon.py::cmd_daemon_start()` 前台/后台两个分支均读取
+  `HttpConfig.daemon_hang_*` 配置并传给 supervisor（前台直接函数调用
+  传参；后台通过命令行参数传给 supervisor 子进程）
+- `cli/daemon.py::cmd_daemon_status()`：`Supervised: yes` 那一行补充
+  "卡死探测已关闭"提示（仅当配置关闭时显示）；`_print_crash_summary()`
+  区分展示 `Last crash`/`Last hang (killed)`
+- 测试：`tests/test_daemon_crash_recovery.py` 新增 `TestHangDetection`
+  （4 用例）：
+  1. 子进程存活但健康检查持续失败，被判定为卡死、强杀，
+     `restart_decision == "hang_killed"`，`exit_code`/`last_exception`
+     均为空，摘要文案包含"卡死"与"健康检查无响应"
+  2. 健康检查间歇性成功（每 3 次成功 1 次）时连续失败计数被正确清零，
+     不会被误判为卡死——用后台线程跑 supervisor，主线程验证在一段时间
+     内没有产生任何崩溃记录
+  3. `hang_detection_enabled=False` 时完全退化为原有"纯等待退出"行为，
+     不会因为 `health_check` mock 返回失败就被误杀
+  4. `http_port=None` 时同样退化为不探活，不因为拿不到端口而报错/误判
+  - 全量 `tests/test_daemon_crash_recovery.py` 31 passed（阶段一~四共 27
+    + 卡死检测阶段一新增 4）
+  - 额外验证：`pytest -k "daemon or config"`（排除环境本身缺 `rich`/
+    `starlette`/`json_repair`/`_flock` 等依赖导致的收集错误后）266
+    passed，确认本次改动对 daemon/config 相关测试无回归；仅有的 5 个
+    失败均为 `ModuleNotFoundError: No module named 'json_repair'`，与本
+    次改动无关（`role_agents/verdict.py` 的既有依赖缺失，沙盒环境未装）
+- 未做（留给后续阶段）：§1.3 的线程栈快照（可选增强，本阶段未做，跳过
+  信号处理器方案的原因见 §1.3 本身"锦上添花，不是必要环节"）；§2 重启
+  预算落盘/重启后健康验证；§3 告警升级/历史文件轮转
+
