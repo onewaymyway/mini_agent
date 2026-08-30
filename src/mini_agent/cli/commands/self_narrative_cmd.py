@@ -39,6 +39,7 @@ def handle_self_narrative_cmd(args: list[str], agent=None) -> None:
     from mini_agent.evolution.self_narrative import (
         generate_self_narrative,
         load_self_narrative_history,
+        get_current_narrative,
     )
 
     if args and args[0] == "update":
@@ -66,8 +67,8 @@ def handle_self_narrative_cmd(args: list[str], agent=None) -> None:
             R.console.print(f"[{date_str}] {entry.get('narrative', '')}")
         return
 
-    history = load_self_narrative_history(paths, limit=1)
-    if not history:
+    current = get_current_narrative(paths)
+    if not current:
         R.print_info("还没有自我叙事，执行 /self_narrative update 生成一次（需要足够的自我认知数据积累）。")
         return
-    R.console.print(history[0].get("narrative", ""))
+    R.console.print(current.get("narrative", ""))

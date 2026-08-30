@@ -284,15 +284,41 @@ def _collect_failure_signals(paths: AgentPaths, top_n: int, min_occurrence: int)
     ]
 
 
+def _collect_narrative_signals(paths: AgentPaths, top_n: int) -> list[dict]:
+    """[self_narrative_incremental_evolution_plan.md §2.5] 第四路信号：
+    读取 `self_narrative.py` 当前叙事（`get_current_narrative()`）里已经
+    产出的 `capability_focus_suggestions`——这是叙事综合六路证据后判断
+    "值得针对性学习/补强的方向"，与前三路（growth_topic/wiki_miss/
+    failure_pattern）视角不同：前三路各自是单一信号源的直接聚合，这一路
+    是叙事整体视角综合后的判断，可能捕捉到单一信号源看不到的组合性洞察。
+
+    直接复用叙事已经生成好的建议文本，不重新调用 LLM 做二次提炼（避免
+    重复推理）；`self_narrative.py` 生成时已经做过"没有实质内容就给空
+    数组"的克制处理，这里只需要按 top_n 截断。"""
+    from mini_agent.evolution.self_narrative import get_current_narrative
+
+    current = get_current_narrative(paths)
+    if not current:
+        return []
+    suggestions = current.get("capability_focus_suggestions") or []
+    return [{"suggestion": s} for s in suggestions[:top_n]]
+
+
 # ── §4.1 LLM 候选提炼 prompt/解析 ────────────────────────────────────────
 
-_CANDIDATE_SOURCES = ("growth_topic", "wiki_miss", "failure_pattern", "manual_scan")
+_CANDIDATE_SOURCES = (
+    "growth_topic", "wiki_miss", "failure_pattern", "narrative_reflection", "manual_scan",
+)
 
 
 def _build_extraction_prompt(
-    topic_signals: list[dict], miss_signals: list[dict], failure_signals: Optional[list[dict]] = None
+    topic_signals: list[dict],
+    miss_signals: list[dict],
+    failure_signals: Optional[list[dict]] = None,
+    narrative_signals: Optional[list[dict]] = None,
 ) -> str:
     failure_signals = failure_signals or []
+    narrative_signals = narrative_signals or []
     topic_lines = "\n".join(
         f"- {s['topic']}（关键词：{', '.join(s['keywords'])}）"
         for s in topic_signals
@@ -306,9 +332,12 @@ def _build_extraction_prompt(
         + "）"
         for s in failure_signals
     ) or "（无）"
+    narrative_lines = "\n".join(
+        f"- {s['suggestion']}" for s in narrative_signals
+    ) or "（无）"
     return (
-        "下面是从这个人最近的对话记忆/知识检索记录/任务执行失败记录里整理出的"
-        "一些原始信号（不代表最终结论，只是素材）：\n\n"
+        "下面是从这个人最近的对话记忆/知识检索记录/任务执行失败记录/自我叙事"
+        "综合判断里整理出的一些原始信号（不代表最终结论，只是素材）：\n\n"
         "【持续关注的方向】（来自成长顾问，用户反复表现出兴趣并已确认）\n"
         f"{topic_lines}\n\n"
         "【反复检索但目前没有对应知识沉淀的内容】（来自知识库未命中记录）\n"
@@ -316,11 +345,17 @@ def _build_extraction_prompt(
         "【反复暴露的短板】（来自任务执行失败模式聚合，同一类任务反复卡在"
         "同一语义原因）\n"
         f"{failure_lines}\n\n"
-        "请你站在两个角度分别判断，提炼出 0 到 5 个值得建议的人设/能力方向：\n"
+        "【自我叙事综合判断后认为值得补强的方向】（来自 agent 自身对"
+        "能力/价值观/漂移/失败/子任务经历等多方面证据综合后的判断，"
+        "不是单一信号源的直接聚合）\n"
+        f"{narrative_lines}\n\n"
+        "请你站在三个角度分别判断，提炼出 0 到 5 个值得建议的人设/能力方向：\n"
         "1）对【持续关注的方向】【反复检索但没有沉淀的内容】——是否值得为这个人"
         "养成一个专属的人设/能力方向，让 Agent 持续学习、专精支撑 ta；\n"
         "2）对【反复暴露的短板】——是否值得专门养成一个人设/能力方向来针对性"
-        "补强这个短板。\n"
+        "补强这个短板；\n"
+        "3）对【自我叙事综合判断后认为值得补强的方向】——是否值得直接采纳为"
+        "一个人设/能力方向候选。\n"
         "不要求和上面的原始素材字面一致——原始素材可能是从别的场景提炼出来的，"
         "角度不一定适合直接当人设标题，请你重新组织表述。如果某一类原始素材"
         "不足以支撑任何靠谱的建议，对应角度可以不产出，不要为了凑数量硬造。\n\n"
@@ -332,8 +367,8 @@ def _build_extraction_prompt(
         "指什么、大致覆盖哪些子领域\",\n"
         "    \"rationale\": \"为什么建议这个方向，需要提到依据了上面哪些原始信号\",\n"
         "    \"source\": \"这条候选主要依据哪类信号，只能是 growth_topic / "
-        "wiki_miss / failure_pattern 三者之一；如果确实是混合多类信号得出，"
-        "才用 manual_scan\"\n"
+        "wiki_miss / failure_pattern / narrative_reflection 四者之一；如果"
+        "确实是混合多类信号得出，才用 manual_scan\"\n"
         "  }\n"
         "]"
     )
@@ -384,11 +419,13 @@ def _extract_candidates_with_llm(
     miss_signals: list[dict],
     llm_helper: Callable[[str], str],
     failure_signals: Optional[list[dict]] = None,
+    narrative_signals: Optional[list[dict]] = None,
 ) -> list[dict]:
     failure_signals = failure_signals or []
-    if not topic_signals and not miss_signals and not failure_signals:
+    narrative_signals = narrative_signals or []
+    if not topic_signals and not miss_signals and not failure_signals and not narrative_signals:
         return []
-    prompt = _build_extraction_prompt(topic_signals, miss_signals, failure_signals)
+    prompt = _build_extraction_prompt(topic_signals, miss_signals, failure_signals, narrative_signals)
     try:
         raw = llm_helper(prompt)
     except Exception:
@@ -467,16 +504,19 @@ def scan_persona_candidates(
     miss_top_n = getattr(cfg, "wiki_miss_signal_top_n", 8)
     failure_top_n = getattr(cfg, "failure_signal_top_n", 8)
     failure_min_occurrence = getattr(cfg, "failure_signal_min_occurrence", 3)
+    narrative_top_n = getattr(cfg, "narrative_signal_top_n", 5)
     cooldown_days = getattr(cfg, "dismissed_cooldown_days", 30)
 
     topic_signals = _collect_topic_signals(profile, topic_top_n)
     miss_signals = _collect_wiki_miss_signals(paths, track_store, miss_top_n)
     failure_signals = _collect_failure_signals(paths, failure_top_n, failure_min_occurrence)
-    if not topic_signals and not miss_signals and not failure_signals:
+    narrative_signals = _collect_narrative_signals(paths, narrative_top_n)
+    if not topic_signals and not miss_signals and not failure_signals and not narrative_signals:
         return []
 
     raw_candidates = _extract_candidates_with_llm(
-        topic_signals, miss_signals, llm_helper, failure_signals=failure_signals
+        topic_signals, miss_signals, llm_helper,
+        failure_signals=failure_signals, narrative_signals=narrative_signals,
     )
     if not raw_candidates:
         return []
@@ -489,6 +529,7 @@ def scan_persona_candidates(
         [f"topic:{s['topic']}" for s in topic_signals]
         + [f"wiki_miss:{s['query']}" for s in miss_signals]
         + [f"failure_pattern:{s['task_category']}" for s in failure_signals]
+        + [f"narrative_reflection:{s['suggestion']}" for s in narrative_signals]
     )
     evidence_count = len(evidence_refs)
 

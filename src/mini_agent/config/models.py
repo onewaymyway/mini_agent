@@ -2468,6 +2468,13 @@ class PersonaCandidateConfig:
     failure_signal_top_n: int = 8
     failure_signal_min_occurrence: int = 3
 
+    # [self_narrative_incremental_evolution_plan.md §2.5] 自我叙事候选
+    # 信号：第四路信号来源，读取 self_narrative.py 当前叙事已经产出的
+    # capability_focus_suggestions（叙事综合多方证据后的判断，不是单一
+    # 信号源的直接聚合）。直接复用叙事已生成的文本，不重新调用 LLM，
+    # 这里只截断条数。
+    narrative_signal_top_n: int = 5
+
 
 @dataclass
 class ReminderConfig:

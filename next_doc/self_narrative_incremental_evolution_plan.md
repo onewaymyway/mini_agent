@@ -132,7 +132,7 @@
 
 ## 3. 实施阶段划分
 
-### 阶段一：生成逻辑改造（核心）
+### 阶段一：生成逻辑改造（核心）— 已完成（2026-08-30）
 - `_gather_evidence()` 支持 `since_cursor` 过滤（仅可追加型来源）
 - `_build_narrative_prompt()` 改为编辑式 prompt（上一版 + delta）
 - 空 delta 跳过逻辑
@@ -141,12 +141,69 @@
 - 测试：延续现有 `tests/test_self_narrative.py` 补充增量场景用例
   （首次生成/无新增跳过/有新增编辑更新/新旧证据冲突措辞）
 
-### 阶段二：能力学习候选接入
+**已实现**：
+- `evolution/self_narrative.py` 全量重写：`_gather_evidence()` 新增
+  `since_cursor` 参数，证据分"可追加型"（`sub_agent_experience` 按
+  `at` 过滤、`failure_pattern` 按 `last_seen` 过滤、
+  `agent_value_profile` 按 `first_observed`/`last_reinforced` 日期字符串
+  过滤）和"快照型"（`identity`/`self_assessment`/
+  `capability_top_domains`/`drift_signals`/`lineage`，不过滤，每次全量）。
+- 新增 `_snapshot_fingerprint()`（快照型证据的 sha256 指纹）和
+  `_delta_is_empty()`（可追加型证据是否为空）；`generate_self_narrative()`
+  在已有历史版本时用两者共同判断"自上一版以来有没有新证据"，都为
+  "无变化"时直接返回 `None`，不调用 LLM、不生成新版本。
+- `_build_narrative_prompt()` 分两路：无上一版时走原有的独立综合 prompt；
+  有上一版时走编辑式 prompt（传入上一版全文 + delta + 当前快照，要求
+  "编辑更新而不是重写"，冲突处用"我曾经认为…，现在看来…"措辞）。
+- 新增 `get_current_narrative(paths)` 便捷函数，`api/routes.py`
+  （`/self/portrait`）与 `cli/commands/self_narrative_cmd.py` 均已改为
+  调用它，不再各自重复"取最后一条"的逻辑。
+- **顺手修复的一个死循环 bug**：最初实现把 `identity` 计入快照指纹，
+  但 `identity.purpose` 正是本模块每次生成结束时自己写回的字段——这样
+  会导致指纹在每次生成后必然变化，"无新证据则跳过"永远失效。修复为
+  指纹计算排除 `identity`（详见 `_snapshot_fingerprint` 注释），由
+  `tests/test_self_narrative.py::test_second_generation_without_new_
+  evidence_is_skipped` 覆盖回归。
+- `storage/paths.py::self_narrative_log_path` 文档字符串同步更新，说明
+  新增的 `evidence_cursor`/`snapshot_fingerprint`/
+  `capability_focus_suggestions` 三个字段。
+
+**测试**：`tests/test_self_narrative.py` 重写，17 个用例全部通过（新增
+delta/指纹判断、"无新证据跳过"、"编辑式 prompt 包含上一版全文"、
+`get_current_narrative` 等场景）；连带回归
+`tests/test_self_model_drift.py`/`tests/test_sub_agent_experience.py`/
+`tests/test_lineage_view.py` 共 34 passed。
+
+### 阶段二：能力学习候选接入 — 已完成（2026-08-30）
 - `capability_focus_suggestions` 字段生成（prompt + 解析）
 - `persona_candidates.py::_collect_narrative_signals()`
 - `_CANDIDATE_SOURCES` 扩展 + `source` 校验
 - 测试：延续 `tests/test_persona_candidates_failure_signal.py` 同等模式
   补充 narrative 信号场景用例
+
+**已实现**：
+- `capability_focus_suggestions` 字段的生成/解析已在阶段一
+  `self_narrative.py` 重写时一并完成（prompt 要求 LLM 输出该字段、
+  `_parse_narrative_response` 解析、允许为空数组不强行凑数）；本阶段
+  只需要在 `persona_candidates.py` 里消费它。
+- `persona_candidates.py` 新增 `_collect_narrative_signals(paths, top_n)`：
+  读取 `self_narrative.get_current_narrative()`（只取最新一条，不合并
+  历史版本），返回其 `capability_focus_suggestions` 按 `top_n` 截断，
+  不重新调用 LLM。
+- `_CANDIDATE_SOURCES` 增加 `"narrative_reflection"`；`_build_extraction_
+  prompt()` 新增第四路信号区块（"自我叙事综合判断后认为值得补强的方向"），
+  提炼视角从"两个角度"扩展为"三个角度"，第三个角度直接问"是否值得采纳
+  为候选"；`_extract_candidates_with_llm()` / `scan_persona_candidates()`
+  同步接入第四路信号，`evidence_refs` 新增 `narrative_reflection:` 前缀。
+- `PersonaCandidateConfig` 新增 `narrative_signal_top_n`（默认 5）。
+- 决策权边界确认：这一路信号和前三路走完全相同的
+  `pending → accepted | dismissed` 流程，候选落盘后仍需用户显式采纳，
+  不自动创建 Track、不自动触发学习。
+
+**测试**：新增 `tests/test_persona_candidates_narrative_signal.py`
+（10 用例，覆盖信号采集/prompt 拼装/source 解析/scan 主流程），连带
+`tests/test_persona_candidates_failure_signal.py` 等既有测试全部通过；
+阶段一 + 阶段二相关测试合计 85 passed（含既有回归）。
 
 ### 阶段三（可选，视阶段一实际运行效果决定是否需要）
 - 若阶段一运行一段时间后，`self_narrative_log.jsonl` 版本数依然显著

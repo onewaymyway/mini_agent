@@ -4346,10 +4346,9 @@ async def get_self_portrait(request: Request):
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.body_inventory')
 
     try:
-        from mini_agent.evolution.self_narrative import load_self_narrative_history
+        from mini_agent.evolution.self_narrative import get_current_narrative
 
-        history = load_self_narrative_history(paths, limit=1)
-        result["self_narrative"] = history[0] if history else None
+        result["self_narrative"] = get_current_narrative(paths)
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.self_narrative')

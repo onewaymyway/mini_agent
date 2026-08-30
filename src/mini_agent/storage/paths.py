@@ -386,7 +386,12 @@ class AgentPaths:
     def self_narrative_log_path(self) -> Path:
         """<project_root>/.agent/self_narrative_log.jsonl — 自我叙事日志
         （self_awareness_identity_evolution_plan.md §2.2），追加式存档
-        （类似日记，不覆盖旧版本），每行一条 {at, narrative, purpose_summary}。"""
+        （类似日记，不覆盖旧版本）。每行一条
+        {at, narrative, purpose_summary, capability_focus_suggestions,
+        evidence_cursor, snapshot_fingerprint}——后三个字段是
+        next_doc/self_narrative_incremental_evolution_plan.md 阶段一新增，
+        支撑"编辑上一版 + 新增证据"的增量生成，取"最新一条"即为当前状态
+        （见 evolution/self_narrative.py::get_current_narrative）。"""
         return self.workdir_dir / "self_narrative_log.jsonl"
 
     @property
