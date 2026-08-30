@@ -324,14 +324,39 @@ skill 系统、tool registry、hybrid_exec 里各自配置，没有一个地方�
 `tests/test_sub_agent_experience.py`（8），阶段二相关测试合计 22
 passed；阶段一 + 阶段二全部相关测试合计 103 passed（含既有回归）。
 
-### 阶段三（认知框架调整 + 为未来预留接口，不要求立刻实现）
+### 阶段三（认知框架调整 + 为未来预留接口，不要求立刻实现）— 第 7 项已完成（2026-08-30）
 
 7. §2.3 Evolve 分支谱系化：先做叙事和展示层面的重新表述（谱系视图、
    "尝试过但被淘汰"也计入自我认知），評估是否需要支持多分支并行竞争
    再决定是否推进底层调度改动。
+   - **已实现**：新增 `evolution/lineage_view.py::compute_lineage_view()`，
+     只读把 `evolve/*` 分支重新表述为"变体候选自己"：
+     `active_variants`（当前存在的 `evolve/*` 分支，含 commit 数与
+     `StateRepo` 风险分级 tier 集合，即"变异幅度"）、`merged_variants`
+     （扫描 commit log 里 `"Merge evolve proposal: <branch>"` 格式的
+     merge commit 识别"被保留的变体"）。已接入 `/self/portrait` 的
+     `lineage` 只读字段，以及 `self_narrative.py`（§2.2）的证据汇总
+     （作为叙事的额外上下文，不单独建立新的展示层）。
+   - **如实记录的数据缺口（未实现，不臆造）**：`discarded_variants`
+     （被淘汰的变体）当前无法从 git 历史可靠还原——`EvolutionWorkspace.
+     destroy()` 只清理 worktree，`StateRepo.delete_branch()` 删除分支
+     后 git 正常历史不留存"曾经存在过、为什么被放弃"的记录，项目也
+     没有独立的"进化尝试结果"日志。返回空列表 + `discarded_note`
+     字段如实说明这个缺口，不用启发式或 LLM 编造。若后续要补上，需要
+     在评审/丢弃动作发生时新增一条独立的落盘记录（不属于本次改动
+     范围）。
+   - **未实现（评估结论：暂不需要）**："多分支并行 + 按 §2.1 价值观
+     排序择优"的调度改动——方案原文本身标注这是"中期可选"，当前
+     `EvolutionWorkspace` 使用场景（`skill_propose` 走 evolve 分支）
+     仍是串行的一次一个候选，没有出现需要并行竞争择优的实际信号，
+     不预先实现用不上的调度接口。
 8. 预留项（来自更早分析，不属于本方案强制范围，仅记录以防遗忘）：
    `external_projects` 子系统作为"AI 组织"雏形的进一步加强；跨实例
    身份关系模型的接口预留（`project_id_for()` 附近）。
+   - 未实现，维持"仅记录以防遗忘"的原状态，不在本轮改动范围内。
+
+**测试**：`tests/test_lineage_view.py`（5），阶段三第 7 项测试合计 5
+passed；阶段一 + 二 + 三全部相关测试合计 108 passed（含既有回归）。
 
 ## 4. 设计原则（贯穿全部方案项，供后续实现时对照）
 

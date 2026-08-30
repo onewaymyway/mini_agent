@@ -4236,6 +4236,14 @@ async def get_self_portrait(request: Request):
                              历史信念（self_assessment.confidence_by_domain）
                              与当前 workdir 实测（capability_map）算出的
                              落差列表，不做任何写入。
+      lineage                — [self_awareness_identity_evolution_plan.md
+                             §2.3]"谱系"视图：evolution/lineage_view.py
+                             把 evolve 分支重新表述为"变体候选自己"，只读
+                             聚合当前尝试中的分支（active_variants）与已
+                             合并保留的分支（merged_variants）；被淘汰的
+                             分支目前无法从 git 历史可靠还原，
+                             `discarded_note` 字段如实说明这个数据缺口，
+                             不做启发式猜测。
 
     全部只读聚合，不触发任何计算/写入；单用户模式下也可用。
     """
@@ -4255,6 +4263,7 @@ async def get_self_portrait(request: Request):
         "body_inventory": {},
         "self_narrative": None,
         "drift_signals": [],
+        "lineage": {},
     }
 
     self_agent = http_server.bridge.agent
@@ -4352,6 +4361,14 @@ async def get_self_portrait(request: Request):
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.drift_signals')
+
+    try:
+        from mini_agent.evolution.lineage_view import compute_lineage_view
+
+        result["lineage"] = compute_lineage_view(paths).to_dict()
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.lineage')
 
     return result
 

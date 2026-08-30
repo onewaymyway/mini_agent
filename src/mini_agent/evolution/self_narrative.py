@@ -43,6 +43,7 @@ def _gather_evidence(paths) -> dict:
         "drift_signals": [],
         "recent_failure_patterns": [],
         "recent_sub_agent_experiences": [],
+        "lineage": None,
     }
 
     try:
@@ -80,6 +81,15 @@ def _gather_evidence(paths) -> dict:
         pass
 
     try:
+        # [self_awareness_identity_evolution_plan.md §2.3] 谱系视图：把
+        # evolve 分支重新表述为"变体候选自己"，作为叙事的额外证据源。
+        from mini_agent.evolution.lineage_view import compute_lineage_view
+
+        evidence["lineage"] = compute_lineage_view(paths).to_dict()
+    except Exception:
+        pass
+
+    try:
         from mini_agent.evolution.failure_pattern_store import load_failure_patterns
 
         patterns = sorted(
@@ -110,6 +120,8 @@ def _has_any_evidence(evidence: dict) -> bool:
         or bool(evidence.get("drift_signals"))
         or bool(evidence.get("recent_failure_patterns"))
         or bool(evidence.get("recent_sub_agent_experiences"))
+        or bool((evidence.get("lineage") or {}).get("active_variants"))
+        or bool((evidence.get("lineage") or {}).get("merged_variants"))
         or bool((evidence.get("self_assessment") or {}).get("strengths"))
         or bool((evidence.get("self_assessment") or {}).get("weak_areas"))
     )
@@ -131,7 +143,9 @@ def _build_narrative_prompt(evidence: dict) -> str:
         f"【反复卡住的地方】"
         f"{json.dumps(evidence.get('recent_failure_patterns'), ensure_ascii=False)}\n"
         f"【最近委派给子任务、值得关注的经历】"
-        f"{json.dumps(evidence.get('recent_sub_agent_experiences'), ensure_ascii=False)}\n\n"
+        f"{json.dumps(evidence.get('recent_sub_agent_experiences'), ensure_ascii=False)}\n"
+        f"【我的谱系：尝试过的变体候选自己（evolve 分支，尚在验证中/已被"
+        f"保留下来的）】{json.dumps(evidence.get('lineage'), ensure_ascii=False)}\n\n"
         "请你以第一人称，写一段 3-6 句的叙事，综合上面这些记录，描述"
         "\"我现在如何理解自己\"——包括我目前擅长什么、我倾向于怎么做选择、"
         "有没有发现自己过去的自我认识和实测不太一样、还有哪些地方反复"
