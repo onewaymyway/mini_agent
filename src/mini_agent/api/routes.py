@@ -77,6 +77,10 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/external_projects/register  [external_projects_kanban_
                                        integration_plan.md 阶段1] 注册新的
                                        外部项目
+    PATCH  /v1/external_projects/{name}/enabled       [external_projects_
+                                       cron_dispatch_plan.md] 切换项目粒度
+                                       的 daemon 自动调度开关，联动对齐
+                                       ext:* cron job
     POST   /v1/external_projects/{name}/trigger_run  同上，手动触发一次
                                        entrypoint
     GET    /v1/external_projects/{name}/ledger       同上，读执行账本
@@ -798,6 +802,62 @@ async def post_external_projects_register(request: Request):
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.patch("/external_projects/{name}/enabled")
+async def patch_external_projects_enabled(name: str, request: Request):
+    """PATCH /v1/external_projects/{name}/enabled — 切换项目粒度的
+    daemon 自动调度开关（external_projects_cron_dispatch_plan.md 3.3）。
+
+    Body: {"enabled": bool}
+
+    包装 `ExternalProjectRegistry.set_enabled()`，并联动调用
+    `ensure_external_project_cron_jobs()` 把该项目名下的 `ext:*`
+    cron job 与新状态对齐：关闭时真删（不是 disable），打开时按当前
+    `project.yaml` 重新生成。看板项目卡片的开关就是这个端点——不允许
+    在通用 cron 编辑表单里直接改这批 job 的 schedule，看板对
+    `ext:*` job 会展示"请前往对应项目目录修改 project.yaml"的提示
+    （见 3.4）。
+    """
+    _require_owner(request)
+    body = await request.json()
+    if "enabled" not in body:
+        raise HTTPException(status_code=400, detail="enabled is required")
+    enabled = bool(body.get("enabled"))
+
+    try:
+        from mini_agent.external_projects.registry import (
+            ExternalProjectRegistry,
+            ExternalProjectRegistryError,
+        )
+
+        registry = ExternalProjectRegistry()
+        record = registry.set_enabled(name, enabled)
+    except ExternalProjectRegistryError as exc:
+        raise HTTPException(status_code=_external_project_error_status(exc), detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # 联动对齐 cron job：daemon 未运行/cron_scheduler 不可用时静默跳过
+    # ——注册表本身已经落盘成功，下次 daemon 启动时的批量
+    # ensure_external_project_cron_jobs() 会自然补齐这一步，不影响
+    # `enabled` 字段本身已经生效这个事实。
+    try:
+        http_server = getattr(request.app.state, "http_server", None)
+        cron_scheduler = None
+        if http_server is not None:
+            al = getattr(http_server, "autonomous_loop", None)
+            cron_scheduler = getattr(al, "_cron_scheduler", None) if al is not None else None
+            if cron_scheduler is None:
+                cron_scheduler = getattr(http_server.bridge, "_cron_scheduler", None)
+        if cron_scheduler is not None:
+            from mini_agent.external_projects.scheduler import ensure_external_project_cron_jobs
+            ensure_external_project_cron_jobs(name, registry, cron_scheduler)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.patch_external_projects_enabled.ensure_cron_jobs')
+
+    return {"project": record.to_dict()}
 
 
 @router.post("/external_projects/{name}/trigger_run")

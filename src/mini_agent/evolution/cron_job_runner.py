@@ -502,6 +502,77 @@ class CronJobRunner:
             if self._tokens.get(job.id) == token:
                 self._sem_acquired.add(job.id)
         try:
+            if job.run_mode == "external_entrypoint":
+                # [external_projects_cron_dispatch_plan.md 3.2] 外部项目
+                # entrypoint 走独立 worker：不构造 agent/不经过
+                # cron_agent_bridge/CronJobExecutor（那条路径假设"这是一轮
+                # agent 对话"），而是复用
+                # external_projects.scheduler._run_entrypoint() 现成实现，
+                # 但共用同一份槽位（_acquire_slot 已在上面拿到）/
+                # ResourceArbiter 仲裁（submit() 里已做）/watchdog 卡死回收
+                # （_effective_timeout_seconds 见下方特判）。
+                self._run_external_entrypoint_job(job)
+                return
+            self._run_message_job(job)
+        finally:
+            # [阶段一] 只有自己仍是这个 job 当前合法的执行者（没有被
+            # reap_stale_jobs() 强制回收过）才清理共享状态、释放 semaphore；
+            # 否则说明自己是一个"迟到的孤儿"——watchdog 已经代为清理并释放
+            # 过一次 semaphore 了，这里绝不能重复释放，也不能 touch 任何
+            # 可能已经属于下一轮重新提交的共享状态。
+            released = False
+            with self._lock:
+                if self._tokens.get(job.id) == token:
+                    self._running_job_ids.discard(job.id)
+                    self._threads.pop(job.id, None)
+                    self._started_at.pop(job.id, None)
+                    self._tokens.pop(job.id, None)
+                    self._sem_acquired.discard(job.id)
+                    released = True
+            if released:
+                self._release_slot()
+
+    def _run_external_entrypoint_job(self, job: "CronJob") -> None:
+        """[external_projects_cron_dispatch_plan.md 3.2] worker：加载
+        `job.external_project` 当前的 manifest，定位
+        `job.external_entrypoint` 对应的 EntrypointSpec，调用现成的
+        `_run_entrypoint()`（不改动其内部执行/记账逻辑），`trigger`
+        固定为 `"daemon"`，与手动触发（`trigger="manual"`）在账本里可
+        区分。项目被禁用/manifest 解析失败/entrypoint 已被从
+        project.yaml 删除这几种情况在这里都只是静默跳过本次触发——
+        不应该让 daemon 主循环因为某个外部项目配置错误而受影响；下次
+        daemon 启动或该项目开关切换时，`ensure_external_project_cron_jobs()`
+        的全量对齐会自然清理掉这条不再有效的 job。"""
+        try:
+            from mini_agent.external_projects.registry import (
+                ExternalProjectRegistry, ExternalProjectRegistryError,
+            )
+            from mini_agent.external_projects.scheduler import _run_entrypoint
+
+            registry = ExternalProjectRegistry()
+            try:
+                record = registry.get(job.external_project)
+            except ExternalProjectRegistryError:
+                return
+            if not record.enabled:
+                return
+            manifest = registry.load_manifest_for(job.external_project)
+            entrypoint = manifest.entrypoint(job.external_entrypoint)
+            _run_entrypoint(manifest, entrypoint, trigger="daemon")
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(
+                _mini_agent_exc,
+                where="mini_agent.evolution.cron_job_runner.CronJobRunner._run_external_entrypoint_job",
+            )
+
+    def _run_message_job(self, job: "CronJob") -> None:
+        """既有 run_mode="message" worker：构造一次性 cron agent，走
+        CronJobExecutor 执行一轮"任务"，产出 CronJobWorkspace 执行记录。
+        从原 `_run_job_thread()` 平移而来，逻辑不变，只是拆成独立方法，
+        与新增的 `_run_external_entrypoint_job()` 在 `_run_job_thread()`
+        里对称分派。"""
+        try:
             from mini_agent.evolution.cron_agent_bridge import (
                 build_cron_agent, make_submit_step_fn,
             )
@@ -582,23 +653,6 @@ class CronJobRunner:
                 ws.write_state(state)
             except Exception:
                 pass
-        finally:
-            # [阶段一] 只有自己仍是这个 job 当前合法的执行者（没有被
-            # reap_stale_jobs() 强制回收过）才清理共享状态、释放 semaphore；
-            # 否则说明自己是一个"迟到的孤儿"——watchdog 已经代为清理并释放
-            # 过一次 semaphore 了，这里绝不能重复释放，也不能 touch 任何
-            # 可能已经属于下一轮重新提交的共享状态。
-            released = False
-            with self._lock:
-                if self._tokens.get(job.id) == token:
-                    self._running_job_ids.discard(job.id)
-                    self._threads.pop(job.id, None)
-                    self._started_at.pop(job.id, None)
-                    self._tokens.pop(job.id, None)
-                    self._sem_acquired.discard(job.id)
-                    released = True
-            if released:
-                self._release_slot()
 
 
 __all__ = ["CronJobRunner"]

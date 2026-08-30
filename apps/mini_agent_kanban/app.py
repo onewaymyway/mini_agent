@@ -8188,7 +8188,12 @@ def render_external_projects_tab(client: AgentClient):
                 if res and "_error" in res:
                     st.error(f"注册失败：{res['_error']}")
                 else:
-                    st.success(f"已注册项目 '{res.get('project', {}).get('name', '')}'。")
+                    st.success(
+                        f"已注册项目 '{res.get('project', {}).get('name', '')}'。"
+                        "默认未开启「自动调度」，daemon 暂不会按 project.yaml 里"
+                        "的 schedule 自动触发，确认项目行为符合预期后可在下方"
+                        "项目卡片上手动打开。"
+                    )
                     st.rerun()
 
     if st.button("🔄 刷新", key="ext_projects_refresh"):
@@ -8211,7 +8216,24 @@ def render_external_projects_tab(client: AgentClient):
             top1, top2, top3 = st.columns([3, 1, 1])
             top1.markdown(f"**{name}**")
             top2.markdown(health_label)
-            top3.caption("已启用" if proj.get("enabled") else "已停用")
+            # [external_projects_cron_dispatch_plan.md 3.3/3.4] 项目粒度
+            # 的 daemon 自动调度开关：勾选后 daemon 会按 project.yaml 里
+            # 每个 entrypoint 的 schedule 自动触发（走与普通 cron job
+            # 共享并发/仲裁资源的同一条通道）；取消勾选会把该项目名下
+            # 的 ext:* cron job 真正删除，不是仅仅 disable。不影响该
+            # 项目被 OS 原生 cron / 上面「▶️ 手动触发」按钮触发。
+            new_enabled = top3.checkbox(
+                "自动调度",
+                value=bool(proj.get("enabled")),
+                key=f"ext_proj_enabled_{name}",
+                help="按 project.yaml 声明的 schedule 由 daemon 自动触发定时 entrypoint",
+            )
+            if new_enabled != bool(proj.get("enabled")):
+                res = client.set_external_project_enabled(name, new_enabled)
+                if res and "_error" in res:
+                    st.error(f"切换失败：{res['_error']}")
+                else:
+                    st.rerun()
             st.caption(f"路径：{proj.get('path', '')}")
 
             if proj.get("manifest_error"):
@@ -8673,12 +8695,15 @@ def _render_cron_job_card(client: AgentClient, job: dict) -> None:
     "📋 详情 / 操作"后弹出的对话框。"""
     job_id = job.get("id", "")
     is_system_job = bool(job.get("is_system")) or job_id.startswith("sys:")
+    is_external_job = job_id.startswith("ext:")
     exec_phase = job.get("execution_phase", "not_running")
     with st.container(border=True):
         top1, top2, top3 = st.columns([3, 2, 2])
         name_label = f"**{job.get('name', job_id)}**"
         if is_system_job:
             name_label += "　🛠️ 系统任务"
+        if is_external_job:
+            name_label += "　🗂️ 外部项目"
         top1.markdown(name_label)
         top1.caption(job_id)
         top2.caption(f"schedule: `{job.get('schedule', '')}`")
@@ -8762,6 +8787,19 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
     因为要传递跨函数状态把代码搞复杂）。"""
     job_id = job.get("id", "")
     is_system_job = bool(job.get("is_system")) or job_id.startswith("sys:")
+    is_external_job = job_id.startswith("ext:")
+    if is_external_job:
+        # [external_projects_cron_dispatch_plan.md 3.4] ext:* job 的
+        # schedule 权威来源是对应外部项目的 project.yaml，daemon 每次
+        # 启动、以及项目开关切换时都会按 project.yaml 重新对齐——在这里
+        # 改 schedule 没有意义（没有暴露编辑入口，也不会生效，下次对齐
+        # 会被原样覆盖回去），改用一行提示替代，运行/启停/查看执行记录
+        # 等其余操作不受影响。
+        st.info(
+            f"该任务的调度由外部项目 **{job.get('external_project', '')}** 自己的 "
+            f"project.yaml 定义（entrypoint: `{job.get('external_entrypoint', '')}`），"
+            "请前往对应项目目录修改，看板不提供 schedule 编辑入口。"
+        )
     # [NameError bugfix] `exec_phase` 原来是 `_render_cron_job_card`（卡片
     # 正文）局部变量算好之后，靠"同一个 for 循环体里往下接着用"这种隐式
     # 共享拿到的；拆成独立函数后这个变量就不存在了，这里必须重新从 job

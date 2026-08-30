@@ -88,6 +88,16 @@ class CronJob:
     # 缺省 0 保证旧 cron_jobs.json 反序列化后行为等同于改造前。
     consecutive_skip_count: int = 0
 
+    # [external_projects_cron_dispatch_plan.md] run_mode="external_entrypoint"
+    # 时，标识这条 job 对应哪个已注册外部项目、哪个 entrypoint——
+    # CronJobRunner._run_job_thread() 据此加载 manifest 并复用
+    # external_projects.scheduler._run_entrypoint() 执行，不经过
+    # cron_agent_bridge/CronJobExecutor 那条"当一轮 agent 对话处理"的路径。
+    # run_mode="message"/"goal_cycle" 时这两个字段始终为 None，不影响
+    # 既有行为；旧 cron_jobs.json 反序列化后自动补 None。
+    external_project: Optional[str] = None
+    external_entrypoint: Optional[str] = None
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -106,6 +116,8 @@ class CronJob:
             "priority": self.priority,
             "user_feedback": self.user_feedback,
             "consecutive_skip_count": self.consecutive_skip_count,
+            "external_project": self.external_project,
+            "external_entrypoint": self.external_entrypoint,
             # [看板 cron 面板补齐删除功能] 显式下发 is_system，避免前端
             # 只能靠 id.startswith("sys:") 这种约定猜测，接口更自描述。
             "is_system": self.is_system,
@@ -130,6 +142,8 @@ class CronJob:
             priority=d.get("priority", 0),
             user_feedback=d.get("user_feedback", []),
             consecutive_skip_count=d.get("consecutive_skip_count", 0),
+            external_project=d.get("external_project"),
+            external_entrypoint=d.get("external_entrypoint"),
         )
 
     @property
@@ -982,6 +996,56 @@ class CronScheduler:
             enabled=True,
             initiator=initiator,
             next_run_at=compute_next_run(schedule, 0.0),
+        )
+        self._jobs[job_id] = job
+        self.save()
+        return job
+
+    def upsert_external_entrypoint_job(
+        self,
+        job_id: str,
+        name: str,
+        schedule: str,
+        external_project: str,
+        external_entrypoint: str,
+        tags: Optional[list[str]] = None,
+    ) -> CronJob:
+        """[external_projects_cron_dispatch_plan.md 3.1/3.3] 供
+        `external_projects.scheduler.ensure_external_project_cron_jobs()`
+        做"全量对齐"用：`job_id` 已存在时原地更新 `schedule`/`name`（并按
+        新 schedule 重算 `next_run_at`，不动 `enabled`/`last_run_at`/
+        `run_count` 等运行时状态，避免每次对齐都重置用户视角的历史）；
+        不存在时新建一条，`enabled=True`（外部项目开关本身已经在
+        registry 层控制"要不要走到这里"，job 级别不需要再叠加一层
+        默认关闭）。与 `add_job()`（生成 `user:` 前缀 id）/`ensure_job()`
+        （"缺失才补"，不更新已存在 job 的 schedule）都不同，这里 id
+        由调用方显式传入（`ext:{project}:{entrypoint_key}`），且明确
+        允许覆盖 schedule——因为 schedule 的唯一权威来源是
+        `project.yaml`，每次对齐都应该以它为准。
+        """
+        existing = self._jobs.get(job_id)
+        if existing is not None:
+            existing.name = name
+            if existing.schedule != schedule:
+                existing.schedule = schedule
+                existing.next_run_at = compute_next_run(schedule, existing.last_run_at)
+            existing.external_project = external_project
+            existing.external_entrypoint = external_entrypoint
+            existing.run_mode = "external_entrypoint"
+            self.save()
+            return existing
+        job = CronJob(
+            id=job_id,
+            name=name,
+            schedule=schedule,
+            task_template="",
+            tags=tags or ["external_project", external_project],
+            enabled=True,
+            initiator="cron",
+            next_run_at=compute_next_run(schedule, 0.0),
+            run_mode="external_entrypoint",
+            external_project=external_project,
+            external_entrypoint=external_entrypoint,
         )
         self._jobs[job_id] = job
         self.save()

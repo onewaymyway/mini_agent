@@ -46,7 +46,9 @@ class RegisteredProject:
 
     name: str
     path: str  # 外部项目根目录（= 该项目的 Workspace.root），存字符串便于 JSON 序列化
-    enabled: bool = True
+    # [external_projects_cron_dispatch_plan.md 待确认问题 2] 默认 False，
+    # 与 register() 的默认值保持一致——见 register() 文档字符串。
+    enabled: bool = False
     registered_at: str = ""
 
     def to_dict(self) -> Dict:
@@ -104,7 +106,7 @@ class ExternalProjectRegistry:
         name: str,
         path: Path,
         *,
-        enabled: bool = True,
+        enabled: bool = False,
         validate: bool = True,
     ) -> RegisteredProject:
         """
@@ -114,6 +116,16 @@ class ExternalProjectRegistry:
         这个路径下确实有一份结构合法的 `project.yaml`，避免注册表里
         混入无法使用的条目；调用方如果只是想先占个位、稍后再补
         `project.yaml`，可以传 `validate=False` 跳过。
+
+        [external_projects_cron_dispatch_plan.md 待确认问题 2] `enabled`
+        默认改为 `False`（opt-in）：这个字段现在同时控制"看板/CLI 展示"
+        和"daemon 是否会按 project.yaml 里的 schedule 自动调度这个项目
+        的 entrypoint"（见 `external_projects/scheduler.py::
+        ensure_external_project_cron_jobs()`）。新注册的项目默认不会
+        立刻开始自动跑定时任务，需要用户在看板上手动打开开关（或
+        `mini-agent projects enable <name>`），确认过项目行为符合预期
+        后再启用，避免"刚接入就开始按 cron 跑陌生代码"的意外。不影响
+        该项目被 OS 原生 cron / 用户手动触发。
         """
         path = Path(path).expanduser().resolve()
         if validate:

@@ -1319,6 +1319,32 @@ class HttpServer:
                 digest_advisor_cfg=getattr(cfg, "digest_advisor", None),
                 job_runner=cron_job_runner,
             )
+            # external_projects_cron_dispatch_plan.md 3.3：daemon 启动时
+            # 对所有已注册外部项目各调一次 ensure_external_project_cron_jobs()，
+            # 把 project.yaml 里声明的定时 entrypoint 与 cron_jobs.json
+            # 里的 ext:{name}:* job 全量对齐（新增/更新 schedule/清理
+            # 已失效的 job；项目开关关闭的直接清空）。单个项目的对齐
+            # 失败不应该挡住其它项目/daemon 其余启动流程。
+            try:
+                from mini_agent.external_projects.registry import ExternalProjectRegistry
+                from mini_agent.external_projects.scheduler import ensure_external_project_cron_jobs
+
+                _ext_registry = ExternalProjectRegistry()
+                for _ext_record in _ext_registry.list():
+                    try:
+                        ensure_external_project_cron_jobs(
+                            _ext_record.name, _ext_registry, cron_scheduler,
+                        )
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(
+                            _mini_agent_exc,
+                            where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_external_project_cron_jobs.per_project',
+                        )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_external_project_cron_jobs')
+
             # P3：按 .agent/notification/report_tiers.yaml 动态补注册
             # sys:watchlist_report_<tier_id> job + 本地回调 handler（零 LLM
             # 成本），见 next_doc/watchlist_notification_goal_design.md §6 P3。

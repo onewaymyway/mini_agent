@@ -830,6 +830,13 @@ class AgentClient:
             body["name"] = name
         return self._post("/external_projects/register", body)
 
+    def set_external_project_enabled(self, name: str, enabled: bool):
+        """[external_projects_cron_dispatch_plan.md 3.3] 切换项目粒度的
+        daemon 自动调度开关——看板项目卡片上的开关就是这个。打开时后端
+        会按当前 project.yaml 重新生成该项目名下的 ext:* cron job，
+        关闭时会把这些 job 真正删除（不是 disable）。"""
+        return self._patch(f"/external_projects/{name}/enabled", {"enabled": enabled})
+
     def trigger_external_project_run(self, name: str, entrypoint: str, params: dict | None = None):
         """立即触发某个已注册项目的某个 entrypoint 一次。
 

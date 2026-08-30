@@ -24,7 +24,12 @@ from mini_agent.external_projects.registry import (
     ExternalProjectRegistry,
     ExternalProjectRegistryError,
 )
-from mini_agent.external_projects.scheduler import cron_matches, run_due_entrypoints, trigger_run
+from mini_agent.external_projects.scheduler import (
+    cron_matches,
+    ensure_external_project_cron_jobs,
+    run_due_entrypoints,
+    trigger_run,
+)
 
 VALID_YAML = """
 name: stock_watch
@@ -106,8 +111,10 @@ def test_registry_register_list_get_unregister(tmp_path):
     project_dir = _make_project_dir(tmp_path)
     registry = ExternalProjectRegistry(store_path=store)
 
+    # external_projects_cron_dispatch_plan.md 待确认问题 2：新注册项目
+    # 默认 enabled=False（opt-in），需要显式打开。
     record = registry.register("stock_watch", project_dir)
-    assert record.enabled is True
+    assert record.enabled is False
     assert store.exists()
 
     listed = registry.list()
@@ -354,7 +361,9 @@ entrypoints:
 """
     (root / "project.yaml").write_text(manifest_yaml, encoding="utf-8")
     registry = ExternalProjectRegistry(store_path=tmp_path / "registry.json")
-    registry.register("proj", root)
+    # register() 默认 enabled=False（opt-in），这个测试要验证"已启用项目"
+    # 的扫描逻辑，显式打开。
+    registry.register("proj", root, enabled=True)
 
     moment = dt.datetime(2026, 8, 24, 9, 0)  # 周一 9:00，命中 due，不命中 not_due
     results = run_due_entrypoints(registry, now=moment)
@@ -413,3 +422,92 @@ entrypoints:
     assert run_projects_cli(["register", str(root)]) == 0
     assert run_projects_cli(["run", "proj", "touch"]) == 0
     assert (root / "out.txt").read_text(encoding="utf-8") == "ran"
+
+
+# ── external_projects_cron_dispatch_plan.md 3.3 ── ensure_external_project_cron_jobs ──
+
+
+def _make_scheduled_project_dir(tmp_path: Path, name: str = "proj") -> Path:
+    root = tmp_path / name
+    root.mkdir()
+    manifest_yaml = f"""
+name: {name}
+entrypoints:
+  scan:
+    cmd: "{sys.executable} -c \\"pass\\""
+    schedule: "cron: 0 9 * * 1-5"
+  batch:
+    cmd: "{sys.executable} -c \\"pass\\""
+    schedule: "cron: 0 16 * * 1-5"
+  unscheduled:
+    cmd: "{sys.executable} -c \\"pass\\""
+"""
+    (root / "project.yaml").write_text(manifest_yaml, encoding="utf-8")
+    return root
+
+
+def _fresh_cron_scheduler(tmp_path: Path):
+    from mini_agent.evolution.cron_scheduler import CronScheduler
+    from mini_agent.storage.paths import AgentPaths
+
+    workdir = tmp_path / "agent_workdir"
+    workdir.mkdir()
+    paths = AgentPaths(project_root=workdir)
+    cs = CronScheduler(paths)
+    cs.load()
+    return cs
+
+
+def test_ensure_external_project_cron_jobs_registers_scheduled_entrypoints(tmp_path):
+    root = _make_scheduled_project_dir(tmp_path)
+    registry = ExternalProjectRegistry(store_path=tmp_path / "registry.json")
+    registry.register("proj", root, enabled=True)
+    cs = _fresh_cron_scheduler(tmp_path)
+
+    ensure_external_project_cron_jobs("proj", registry, cs)
+
+    job_ids = {j.id for j in cs.list_jobs() if j.id.startswith("ext:proj:")}
+    assert job_ids == {"ext:proj:scan", "ext:proj:batch"}
+    scan_job = cs.get("ext:proj:scan")
+    assert scan_job.run_mode == "external_entrypoint"
+    assert scan_job.external_project == "proj"
+    assert scan_job.external_entrypoint == "scan"
+    assert scan_job.schedule == "cron: 0 9 * * 1-5"
+
+
+def test_ensure_external_project_cron_jobs_disabled_project_clears_jobs(tmp_path):
+    root = _make_scheduled_project_dir(tmp_path)
+    registry = ExternalProjectRegistry(store_path=tmp_path / "registry.json")
+    registry.register("proj", root, enabled=True)
+    cs = _fresh_cron_scheduler(tmp_path)
+    ensure_external_project_cron_jobs("proj", registry, cs)
+    assert len([j for j in cs.list_jobs() if j.id.startswith("ext:proj:")]) == 2
+
+    registry.set_enabled("proj", False)
+    ensure_external_project_cron_jobs("proj", registry, cs)
+
+    assert [j for j in cs.list_jobs() if j.id.startswith("ext:proj:")] == []
+
+
+def test_ensure_external_project_cron_jobs_realigns_after_manifest_change(tmp_path):
+    root = _make_scheduled_project_dir(tmp_path)
+    registry = ExternalProjectRegistry(store_path=tmp_path / "registry.json")
+    registry.register("proj", root, enabled=True)
+    cs = _fresh_cron_scheduler(tmp_path)
+    ensure_external_project_cron_jobs("proj", registry, cs)
+
+    # 改写 project.yaml：删掉 batch，改 scan 的 schedule
+    manifest_yaml = f"""
+name: proj
+entrypoints:
+  scan:
+    cmd: "{sys.executable} -c \\"pass\\""
+    schedule: "cron: 30 10 * * 1-5"
+"""
+    (root / "project.yaml").write_text(manifest_yaml, encoding="utf-8")
+
+    ensure_external_project_cron_jobs("proj", registry, cs)
+
+    job_ids = {j.id for j in cs.list_jobs() if j.id.startswith("ext:proj:")}
+    assert job_ids == {"ext:proj:scan"}
+    assert cs.get("ext:proj:scan").schedule == "cron: 30 10 * * 1-5"

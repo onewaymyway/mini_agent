@@ -34,7 +34,11 @@ from mini_agent.external_projects.manifest import (
     ProjectManifest,
     build_cmd_with_params,
 )
-from mini_agent.external_projects.registry import ExternalProjectRegistry, RegisteredProject
+from mini_agent.external_projects.registry import (
+    ExternalProjectRegistry,
+    ExternalProjectRegistryError,
+    RegisteredProject,
+)
 
 
 @dataclass
@@ -237,11 +241,20 @@ def run_due_entrypoints(
     now: Optional[_dt.datetime] = None,
 ) -> List[EntrypointRunResult]:
     """
-    扫描注册表里所有已启用的项目，触发本分钟内到期的 entrypoint。
+    [DEPRECATED — external_projects_cron_dispatch_plan.md] 从写出来那
+    一刻起就没有被 daemon 任何调度循环真正调用过。daemon 侧现在的调度
+    路径是 `ensure_external_project_cron_jobs()` 把每个到期 entrypoint
+    注册成 `evolution/cron_scheduler.py::CronJob`（`run_mode=
+    "external_entrypoint"`），到期判断/`next_run_at` 计算交给
+    `CronScheduler.tick()`，不再需要这里自己扫描到期。
 
-    供 daemon 的后台调度循环每分钟调用一次；单次调用只触发"当前这一
-    分钟"命中的 entrypoint，不做"错过的补跑"（补跑策略留给未来有实际
-    需求时再设计，避免过早假设用户想要什么样的补跑语义）。
+    本函数、以及下面的 `cron_matches()`/`_cron_field_matches()`/
+    `_cron_weekday_matches()` 保留（不删除）是为了不破坏已有测试
+    （`tests/test_external_projects.py`）和任何直接调用它的脚本，但新
+    代码不应该再依赖这条路径——真正生效的 cron 表达式解析用的是
+    `evolution/cron_scheduler.py::compute_next_run()`。
+
+    扫描注册表里所有已启用的项目，触发本分钟内到期的 entrypoint。
     """
     moment = now or _dt.datetime.now()
     results: List[EntrypointRunResult] = []
@@ -259,6 +272,82 @@ def run_due_entrypoints(
             if cron_matches(cron_expr, moment):
                 results.append(_run_entrypoint(manifest, entrypoint, trigger="daemon"))
     return results
+
+
+def ensure_external_project_cron_jobs(
+    project_name: str,
+    registry: ExternalProjectRegistry,
+    cron_scheduler,
+) -> List[str]:
+    """[external_projects_cron_dispatch_plan.md 3.3] 把某个外部项目当前
+    `project.yaml` 里声明的定时 entrypoint，与 daemon 的
+    `evolution/cron_scheduler.py::CronScheduler` 里 `ext:{project_name}:*`
+    这批 job 做一次**全量对齐**（不是"缺失才补"）：
+
+      - manifest 里新增的 entrypoint → 补注册
+      - manifest 里已删除/取消 schedule 的 entrypoint → 从
+        `cron_jobs.json` 里删除对应 job
+      - schedule 声明有变化的 → 更新 job 的 schedule（
+        `upsert_external_entrypoint_job()` 内部处理）
+      - 项目本身被禁用（`registry.get(project_name).enabled=False`）→
+        清空该项目名下所有 `ext:*` job（不是 disable，是真删——
+        与项目粒度开关"关闭时真删"的语义保持一致，见 3.3）
+
+    两处调用方共用同一个函数：daemon 启动时对所有已注册项目各调一次；
+    `PATCH /external_projects/{name}/enabled` 切换开关时对该项目调一次。
+    manifest 解析失败（比如 project.yaml 被手动改坏）时只跳过"新增/更新"
+    这一步，不清空已有 job——避免一次笔误的编辑把用户已经跑起来的调度
+    全部打掉；`enabled=False`（含项目被禁用、以及注册表里查无此项目）
+    时的"清空"分支不依赖 manifest，始终执行。
+
+    返回本次实际发生变化（新增/更新/删除）的 job_id 列表，供调用方
+    打日志，纯观测用途。
+    """
+    prefix = f"ext:{project_name}:"
+    existing_ext_ids = {
+        j.id for j in cron_scheduler.list_jobs() if j.id.startswith(prefix)
+    }
+
+    changed: List[str] = []
+    try:
+        record = registry.get(project_name)
+    except Exception:
+        record = None
+
+    if record is None or not record.enabled:
+        for job_id in existing_ext_ids:
+            if cron_scheduler.remove_job(job_id):
+                changed.append(job_id)
+        return changed
+
+    try:
+        manifest = registry.load_manifest_for(project_name)
+    except Exception:
+        # manifest 解析失败：保留现状，不新增/不清空，等用户修好
+        # project.yaml 后下一次对齐（daemon 重启或再次切换开关）自然
+        # 生效。
+        return changed
+
+    wanted: Dict[str, "EntrypointSpec"] = {
+        f"{prefix}{ep.key}": ep for ep in manifest.scheduled_entrypoints()
+    }
+
+    for job_id, ep in wanted.items():
+        job = cron_scheduler.upsert_external_entrypoint_job(
+            job_id=job_id,
+            name=f"[外部项目] {project_name}/{ep.key}",
+            schedule=ep.schedule,
+            external_project=project_name,
+            external_entrypoint=ep.key,
+            tags=["external_project", project_name],
+        )
+        changed.append(job.id)
+
+    for job_id in existing_ext_ids - set(wanted.keys()):
+        if cron_scheduler.remove_job(job_id):
+            changed.append(job_id)
+
+    return changed
 
 
 def trigger_run(

@@ -772,3 +772,13 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   账本记录（子进程内部 `track_run()` 一条 + daemon 父进程
   `_run_entrypoint()` 一条），目前两条都携带有效信息，暂不处理，留作
   后续如有需要再收敛。
+- 2026-08-30：本文档"如何接入 daemon"一节遗留的最后一块拼图（`scheduler.py::
+  run_due_entrypoints()` 从写出来就没被 daemon 任何调度循环真正调用过）
+  已按 `next_doc/external_projects_cron_dispatch_plan.md`（v1.0）落地：
+  外部项目 entrypoint 的调度整体挪到 `evolution/cron_scheduler.py` 体系
+  （每个到期 entrypoint 成为一条 `run_mode="external_entrypoint"` 的
+  `CronJob`，到期判断/并发/仲裁资源与普通 cron job 完全共享），项目
+  粒度开关（看板项目卡片"自动调度"）关闭时真删对应 job、打开时按
+  `project.yaml` 全量重新生成。新注册项目默认 `enabled=False`（opt-in），
+  需要用户在看板/CLI 手动打开后 daemon 才会开始自动调度。详见该文档
+  第 6 节"实现记录"。

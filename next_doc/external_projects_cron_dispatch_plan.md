@@ -1,6 +1,27 @@
 # 外部项目 entrypoint 接入 daemon 常驻调度方案（External Projects Cron Dispatch）
 
-- **版本**：v0.3（设计方案，尚未实现，等待用户确认后动手）
+- **版本**：v1.0（已实现并通过测试，见第 6 节）
+- **实现摘要**（相对 v0.3 设计方案的取舍，详见第 6 节"实现记录"）：
+  - 3.2 节设计的 `_fire()` 新分支 + `set_external_entrypoint_handler()`
+    **未实现**——读码确认既有的 `job_runner` 分支（`_fire()` 里
+    `if self._job_runner is not None: return self._job_runner.submit(job)`）
+    对任意非 `goal_cycle`、未注册 local_handler 的 job 本来就会命中，
+    `run_mode="external_entrypoint"` 的 job 不需要专门加一条对称分支
+    就能走到 `CronJobRunner.submit()`——同一份并发/仲裁资源，代码量
+    更小。`CronJob` 仍按设计新增了 `external_project`/
+    `external_entrypoint` 字段。
+  - 3.2 节"`CronJobRunner.submit()` 按 `run_mode` 分派 worker"按设计
+    实现，落在 `_run_job_thread()` 里（拆成 `_run_message_job()` /
+    `_run_external_entrypoint_job()` 两个 worker）。
+  - 待确认问题 1（是否允许编辑 `ext:*` job 的 schedule）：确认当前看板
+    根本没有"编辑已存在 job 的 schedule"这个入口（只有创建新 job 时
+    选 schedule），所以不存在"允许/禁止编辑"的选择——按 3.4 节的精神
+    在详情弹窗顶部加了一行说明，指向对应项目的 `project.yaml`。
+  - 待确认问题 2（项目开关默认状态）：**已确认按"默认关闭（opt-in）"
+    实现**——`RegisteredProject.enabled`/`register()` 默认值从 `True`
+    改为 `False`，新注册项目需要用户在看板上手动打开"自动调度"开关
+    （或 `mini-agent projects enable <name>`）后，daemon 才会开始按
+    `project.yaml` 的 schedule 自动触发。
 - **背景**：`external_projects/scheduler.py::run_due_entrypoints()` 从写出来
   那一刻起就没有被任何地方真正调用过——`project.yaml` 里声明的
   `schedule: "cron: ..."` 只是"声明"，daemon 常驻运行期间没有任何东西
@@ -219,3 +240,52 @@ toggle + `PATCH /external_projects/{name}/enabled` 路由），这次补充
 
 以上两点不影响核心架构，实现前请明确告知倾向，我会据此实现，不再
 额外确认。
+
+---
+
+## 6. 实现记录（v1.0）
+
+### 6.1 改动清单（对照第 4 节预告逐项核对）
+
+| 层 | 实际改动 |
+|---|---|
+| `evolution/cron_scheduler.py` | `CronJob` 新增 `external_project`/`external_entrypoint` 字段（`to_dict`/`from_dict` 同步）；新增 `upsert_external_entrypoint_job(job_id, name, schedule, external_project, external_entrypoint, tags)`——存在则原地更新 schedule/name（重算 `next_run_at`，不动 `enabled`/`run_count` 等运行时状态），不存在则新建，`enabled=True`。**未新增** `run_mode="external_entrypoint"` 专属 `_fire()` 分支/`set_external_entrypoint_handler()`（见上方"实现摘要"，既有 `job_runner` 分支已覆盖） |
+| `evolution/cron_job_runner.py` | `_run_job_thread()` 拆成分派入口：`run_mode="external_entrypoint"` → `_run_external_entrypoint_job()`（加载 manifest/entrypoint，调用 `external_projects.scheduler._run_entrypoint()`，`trigger="daemon"`；项目被禁用/manifest 解析失败/entrypoint 已被删除时静默跳过本次触发，不抛异常影响其它 job）；`run_mode="message"`（默认）→ `_run_message_job()`（原有逻辑原样平移，行为不变）。槽位获取/释放/token 记账/watchdog 判活在分派之外统一处理，两条 worker 共用 |
+| `external_projects/scheduler.py` | 新增 `ensure_external_project_cron_jobs(project_name, registry, cron_scheduler)`：全量对齐（新增/更新 schedule/删除失效 job；项目 `enabled=False` 或注册表查无此项目时清空该项目名下所有 `ext:*` job；manifest 解析失败时保留现状，等下次对齐）。`run_due_entrypoints()`/`cron_matches()`/`_cron_field_matches()`/`_cron_weekday_matches()`/`_run_entrypoint()`/`trigger_run()` 全部保留未删除（前四个标注 DEPRECATED，供旧测试/脚本兼容，新代码不应依赖） |
+| `external_projects/registry.py` | `RegisteredProject.enabled` 默认值、`register()` 的 `enabled` 参数默认值均由 `True` 改为 `False`（opt-in，见待确认问题 2） |
+| `api/server.py` | daemon 启动流程（`HttpServer._build_autonomous_loop`，紧跟 `cron_scheduler` 构造之后）对 `ExternalProjectRegistry().list()` 里每个已注册项目调用一次 `ensure_external_project_cron_jobs()`；单个项目对齐失败不影响其它项目/daemon 其余启动步骤 |
+| `api/routes.py` | 新增 `PATCH /v1/external_projects/{name}/enabled`（body `{"enabled": bool}`）：`registry.set_enabled()` 落盘后，若当前进程有活跃的 `cron_scheduler`（从 `request.app.state.http_server` 拿），联动调用 `ensure_external_project_cron_jobs()` 即时对齐；daemon 未运行时静默跳过，注册表状态已经生效，下次 daemon 启动时的批量对齐会自然补上 |
+| `apps/mini_agent_kanban/client.py` | 新增 `set_external_project_enabled(name, enabled)`，`_patch()` 到上面的新路由 |
+| `apps/mini_agent_kanban/app.py` | 外部项目卡片顶部原来的"已启用/已停用"纯展示 caption 换成一个可点的 `st.checkbox`（"自动调度"），勾选状态变化时即时调用新客户端方法并 `st.rerun()`；注册新项目成功提示里补充"默认未开启自动调度"的说明；「⏰ Cron 任务」tab 的精简卡片给 `ext:*` job 加"🗂️ 外部项目"徽标，详情弹窗顶部给 `ext:*` job 加一行 `st.info()` 提示调度权威来源是 `project.yaml`（看板本身没有"编辑已存在 job 的 schedule"入口，不存在需要额外禁用的编辑控件） |
+
+### 6.2 测试
+
+`tests/test_external_projects.py` 新增 3 个用例覆盖
+`ensure_external_project_cron_jobs()`：注册到期 entrypoint、项目禁用时
+真删、`project.yaml` 改动后的全量对齐（新增/更新 schedule/删除）；同时
+修正了 2 个因 `enabled` 默认值变化而需要更新的既有断言。
+
+验证范围：`tests/test_external_projects.py`（37 通过）+
+`tests/test_cron_job_runner.py` / `test_cron_job_runner_resource_arbiter.py`
+/ `test_cron_scheduler_local_handler.py` / `test_cron_scheduler_priority.py`
+/ `test_cron_scheduler_reap_stale_jobs.py` / `test_cron_schedule_validation.py`
+/ `test_goal_cron_bridge.py`（合计 120 通过），确认本次改动未影响既有
+cron/goal-cron 调度行为。
+
+### 6.3 已知遗留 / 未覆盖场景
+
+- CLI `mini-agent projects enable|disable` 未联动 `ensure_external_project_cron_jobs()`
+  ——CLI 是无状态的一次性进程，不知道该对齐哪个 daemon 实例持有的
+  `cron_jobs.json`（`cron_jobs.json` 挂在某个 agent 的 `workdir_dir`
+  下，是 daemon 侧概念，注册表本身是全局的），强行对齐还有和正在运行的
+  daemon 并发写同一份 `cron_jobs.json` 的竞态风险。当前行为：CLI
+  切换开关后注册表状态立即生效，`ext:*` job 的对齐推迟到 daemon 下次
+  启动（或用户在看板上再切一次开关触发即时对齐）时发生。CLI 输出文案
+  未来可以补一句提示，本次未改。
+- 3.3 节提到的"项目从 registry 整体移除时清理 `ext:*` job"：
+  `ExternalProjectRegistry` 目前没有"注销"功能（`unregister()` 只是
+  从注册表删记录，不感知 cron 侧），这次也未新增该联动——维持原文档
+  "先记录这个联动点，等该功能出现时一并处理"的结论。
+- 未新增看板端"手动触发一次全量对齐"的按钮（比如用户怀疑 `ext:*`
+  job 和 `project.yaml` 不同步时）；当前对齐时机是"daemon 启动时"和
+  "开关切换时"，覆盖了文档列出的主要触发点，暂不需要额外入口。
