@@ -456,6 +456,31 @@ plan.md` 方向 D.2）：`growth_health_trend.jsonl` 已经覆盖了"记忆总�
 的机制（比如并行多路径择优）"之类的立项决策提供真实触发频率参考，而不是
 凭感觉决定。
 
+Tab 最末是**🪞 自我画像 / 能力地图**区块（`GET /v1/self/portrait`，
+`next_doc/streamlit_self_cognition_dashboard_plan.md`）：把此前散落在
+`self_profile.json`（`identity`/`self_assessment`/`operating_state`）、
+当前 workdir 实测能力地图（`consolidation.build_capability_map()`）、
+`self_model_history.jsonl` 弱项数量走势、以及已发现技能目录
+（`SkillLoader.get_catalog()`）一次性拉平展示：
+
+- 顶部引用块展示 `identity.purpose`（若已设置）；
+- 四个指标：累计运行 session 数、涉足项目数、自主等级、当前活跃项目；
+- **历史强项 / 历史待加强领域**——`SelfAssessment.strengths`/`weak_areas`，
+  跨 session、跨项目的慢变量汇总；
+- 可展开的**全局领域置信度**——`confidence_by_domain`（global scope）；
+- 可展开的**当前项目能力地图**（实测，workdir scope）——按置信度排序，
+  每条显示 🟢/🟡/🔴（≥70%/50%~70%/<50%）+ 成功/失败次数，与上面的全局
+  置信度是两份不同粒度的数据（一个是当前项目实测，一个是跨项目历史
+  汇总），不应混淆；
+- **弱项数量走势**折线图——`self_model_snapshot.py` 日频落盘的历史快照，
+  至少有 2 个数据点时才展示；
+- 可展开的**已发现技能目录**——所有已被 `SkillLoader` 发现的技能
+  （不止当前激活的），🟢/⚪ 标记是否激活，用于回答"我现在具备哪些能力
+  （声明层面），当前用上了哪些（激活层面）"。
+
+纯只读展示，不提供任何编辑/触发入口——`self_profile.json` 的写入是巩固
+循环（Stage 8）的职责，不是看板要接管的操作。
+
 ### 🎓 能力学习 Tab
 
 对应 `next_doc/persona_capability_learning_design.md` §7 三个区域，数据来自

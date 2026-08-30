@@ -144,9 +144,13 @@
 - LLM 调用统计（按天）
 - 自我配置查看与在线编辑（config get/patch，按分类展示 + 关键字过滤）
 - 自我运行状态总览（self/status）
+- 🪞 自我画像 / 能力地图：identity/self_assessment/operating_state、当前
+  项目实测能力地图、弱项数量走势、已发现技能目录（新增，见
+  `next_doc/streamlit_self_cognition_dashboard_plan.md`）
 - 对应端点：`GET /goal_mode/stuck_stats`、`GET /self/llm_pool_status`、
   `GET /self/fairness_diagnostics`、`GET /self/llm_call_stats`、
-  `GET/PATCH /self/config`、`GET /self/status`、`GET /self/error_log_stats`
+  `GET/PATCH /self/config`、`GET /self/status`、`GET /self/error_log_stats`、
+  `GET /self/portrait`
 
 ---
 

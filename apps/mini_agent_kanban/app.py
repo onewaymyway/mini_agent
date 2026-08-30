@@ -9,7 +9,9 @@ Mini-Agent 看板 (Kanban Dashboard)
   - Tab4 📁 产出物：.agent/ 目录文件浏览与预览下载
   - Tab4.5 🖼️ 产出预览：按任务/session 登记的产出物 manifest 语义化展示
                   （图片内联预览、文档下载，支持 ?manifest_id=/?session_id= 深链接）
-  - Tab5 🧠 自我状态：具身智能自省信息、SessionPool 概况
+  - Tab5 🧠 自我状态：具身智能自省信息、SessionPool 概况、🪞 自我画像/能力地图
+    （identity/self_assessment/operating_state/capability_map/技能目录，见
+    `/self/portrait`，next_doc/streamlit_self_cognition_dashboard_plan.md）
   - Tab5.5 ⚙️ 配置：分类展示/编辑 agent_config.json（kanban_config_management_plan.md）
   - Tab6 🔧 诊断：/diagnostics 原始信息，方便调试
 
@@ -5429,6 +5431,85 @@ def render_self_tab(client: AgentClient):
 
     st.divider()
     _render_goal_stuck_stats(client)
+
+    st.divider()
+    _render_self_portrait(client)
+
+
+# [streamlit_self_cognition_dashboard_plan.md] "🪞 自我画像 / 能力地图"——把
+# `/self/portrait` 一次性拉平的 identity/self_assessment/operating_state/
+# capability_map/capability_trend/skills 六块数据渲染出来。放在"🧠 自我状态"
+# tab 末尾（而不是新开一个 tab）：这些内容本质上都是"自我状态"的一部分，
+# 跟本 tab 已有的自主循环摘要、诊断反馈等属于同一语义层级，拆成独立 tab
+# 反而会让用户要在两个地方来回找"我现在是什么样子"的答案。纯只读展示，
+# 不提供任何编辑入口（self_profile.json 的写入是后台巩固循环的职责，不是
+# 看板要接管的操作）。
+def _render_self_portrait(client: AgentClient) -> None:
+    st.markdown("**🪞 自我画像 / 能力地图**（Self Portrait & Capability Map）")
+    data = client.self_portrait() or {}
+    if "_error" in data:
+        st.caption(f"读取失败：{data['_error']}")
+        return
+
+    identity = data.get("identity") or {}
+    assessment = data.get("self_assessment") or {}
+    operating = data.get("operating_state") or {}
+
+    if identity.get("purpose"):
+        st.markdown(f"> {identity['purpose']}")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("累计运行 session 数", operating.get("total_sessions_lifetime", 0))
+    c2.metric("涉足项目数", operating.get("total_projects_worked", 0))
+    c3.metric("自主等级", operating.get("autonomy_level", "—"))
+    c4.metric("当前活跃项目", operating.get("active_project") or "—")
+
+    strengths = assessment.get("strengths") or []
+    weak_areas = assessment.get("weak_areas") or []
+    if strengths or weak_areas:
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            st.markdown("**历史强项**（跨 session 汇总）")
+            st.caption("、".join(strengths) if strengths else "暂无")
+        with sc2:
+            st.markdown("**历史待加强领域**")
+            st.caption("、".join(weak_areas) if weak_areas else "暂无")
+
+    conf_global = assessment.get("confidence_by_domain") or {}
+    if conf_global:
+        with st.expander("📈 全局领域置信度（跨项目历史汇总）", expanded=False):
+            for domain, conf in sorted(conf_global.items(), key=lambda kv: -kv[1]):
+                st.caption(f"{domain}：{conf:.0%}")
+
+    cap_map = data.get("capability_map") or []
+    if cap_map:
+        with st.expander(f"🗺️ 当前项目能力地图（实测，共 {len(cap_map)} 个领域）", expanded=False):
+            for entry in sorted(cap_map, key=lambda e: -e.get("confidence", 0)):
+                conf = entry.get("confidence", 0.0)
+                icon = "🟢" if conf >= 0.7 else ("🟡" if conf >= 0.5 else "🔴")
+                st.caption(
+                    f"{icon} **{entry.get('domain')}** — 置信度 {conf:.0%}"
+                    f"（成功 {entry.get('success_count', 0)} / 失败 {entry.get('failure_count', 0)}）"
+                )
+    else:
+        st.caption("暂无实测能力地图数据（task_manifest 记录不足）")
+
+    trend = data.get("capability_trend") or []
+    if len(trend) >= 2:
+        import pandas as pd
+        df = pd.DataFrame(trend)
+        df["date"] = pd.to_datetime(df["at"], unit="s")
+        df = df.set_index("date")[["weak_domain_count"]]
+        st.markdown("**弱项数量走势**（自我能力快照，日频）")
+        st.line_chart(df)
+
+    skills = data.get("skills") or []
+    if skills:
+        active_skills = [s for s in skills if s.get("active")]
+        with st.expander(f"🧩 已发现技能目录（共 {len(skills)} 个，激活 {len(active_skills)} 个）", expanded=False):
+            for s in sorted(skills, key=lambda s: (not s.get("active"), s.get("name", ""))):
+                mark = "🟢" if s.get("active") else "⚪"
+                st.caption(f"{mark} **{s.get('name')}** — {s.get('description', '')}")
 
 
 # [goal_stuck_stats_and_llm_progress_judge_plan.md §1] "🧊 Goal Stuck 历史

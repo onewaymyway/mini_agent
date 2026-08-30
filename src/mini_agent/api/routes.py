@@ -44,6 +44,8 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/users/{user_id}/token 重新生成 token
   Self 状态（daemon 多用户架构 Phase 4，owner only）
     GET    /v1/self/status           GoalBacklog + 最近自主活动 + SessionAgentPool 概况
+    GET    /v1/self/portrait         自我画像 + 能力地图聚合（identity/self_assessment/
+                                       operating_state/capability_map/capability_trend/skills）
   文件系统
     GET    /v1/fs/list               列目录（?path=xxx）
     GET    /v1/fs/read               读文件（?path=xxx）
@@ -4181,6 +4183,101 @@ async def get_self_status(request: Request):
                 for e in entries
             ],
         }
+
+    return result
+
+
+@router.get("/self/portrait")
+async def get_self_portrait(request: Request):
+    """GET /v1/self/portrait — 自我画像 + 能力地图聚合视图
+    （streamlit_self_cognition_dashboard_plan.md）。
+
+    把散落在多处的"自我认知"相关数据一次性拉平，供看板"🪞 自我认知"
+    区块使用，避免看板自己拼装多个端点：
+
+      identity            — perception/global_knowledge.py::SelfIdentity
+                             （purpose、创建时间），来自 self_profile.json
+      self_assessment     — SelfAssessment：跨 session 历史强项/弱项/
+                             confidence_by_domain（global scope）
+      operating_state      — OperatingState：autonomy_level、
+                             总运行 session 数、涉足项目数、活跃项目
+      capability_map       — 当前 workdir 实测能力地图（evolution/
+                             consolidation.py::build_capability_map），
+                             workdir scope，与 self_assessment 的 global
+                             scope 互补，不是同一份数据
+      capability_trend     — self_model_snapshot.py 落盘的历史快照序列
+                             （最近 30 条，仅 at + weak_domain_count，
+                             用于画"弱项数量走势"，不返回完整
+                             capability_snapshot 避免响应过大）
+      skills               — SkillLoader.get_catalog()：已发现技能目录
+                             （name/description/active），程序化列出
+                             "现在有哪些能力可用"，与 capability_map的
+                             "实测结果"互补（一个是声明，一个是实测）
+
+    全部只读聚合，不触发任何计算/写入；单用户模式下也可用。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    result: dict = {
+        "identity": None,
+        "self_assessment": None,
+        "operating_state": None,
+        "capability_map": [],
+        "capability_trend": [],
+        "skills": [],
+    }
+
+    self_agent = http_server.bridge.agent
+
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.global_knowledge import load_self_profile
+
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if project_root is not None:
+            paths = AgentPaths(project_root)
+
+            profile = load_self_profile(paths)
+            if profile is not None:
+                result["identity"] = profile.identity.to_dict()
+                result["self_assessment"] = profile.self_assessment.to_dict()
+                result["operating_state"] = profile.operating_state.to_dict()
+
+            try:
+                from mini_agent.evolution.consolidation import build_capability_map
+                entries = build_capability_map(paths, None)
+                result["capability_map"] = [e.to_dict() for e in entries]
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.capability_map')
+
+            try:
+                from mini_agent.evolution.self_model_snapshot import load_snapshot_history, _weak_domains
+                history = load_snapshot_history(paths)
+                result["capability_trend"] = [
+                    {
+                        "at": rec.at,
+                        "weak_domain_count": len(_weak_domains(rec.capability_snapshot)),
+                    }
+                    for rec in history[-30:]
+                ]
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.capability_trend')
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait')
+
+    try:
+        skill_loader = getattr(self_agent, "skill_loader", None) if self_agent else None
+        if skill_loader is not None:
+            result["skills"] = skill_loader.get_catalog()
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.skills')
 
     return result
 

@@ -271,6 +271,11 @@ class AgentClient:
     def self_status(self):
         return self._get("/self/status")
 
+    def self_portrait(self):
+        """[streamlit_self_cognition_dashboard_plan.md] 自我画像 + 能力地图
+        聚合视图，供"🪞 自我认知"区块使用。"""
+        return self._get("/self/portrait")
+
     def autonomous_status(self):
         return self._get("/autonomous/status")
 
