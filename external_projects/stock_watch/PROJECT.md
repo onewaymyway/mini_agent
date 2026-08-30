@@ -199,10 +199,20 @@ run_stock_analysis_ai.py
 - **LLM 配置（API key/provider/model）不用在本项目下单独配一份**：
   `stock_watch` 自己目录下没有、也不需要 `providers.json`/
   `agent_config.json`——`run_stock_analysis_ai.py` 触发 workflow 时会
-  自动继承主 agent 项目（`external_projects/` 的上一级目录）的这两份
-  配置，详见同一文档第 1.4 节。如果确实需要本项目单独用不同的
-  provider/API key，在这里放一份 `providers.json`/`agent_config.json`
-  即可覆盖继承的默认值。
+  自动继承主 agent 项目的这两份配置，但前提是满足以下两条之一（详见
+  `next_doc/external_projects_agent_skill_workflow_integration_plan.md`
+  第 1.4 节）：
+  1. 本项目是用 `mini-agent projects register stock_watch <本项目路径>`
+     在主项目目录下注册过的（注册表会记住"当时在哪个主项目目录下
+     注册"，与本项目实际路径无关，可以在磁盘任意位置）；或
+  2. 运行本 entrypoint 前设置了环境变量
+     `MINI_AGENT_MAIN_PROJECT_ROOT=<主项目根目录>`。
+
+  两条都不满足时会退回到"看环境变量里有没有直接配好的 API key"，找不到
+  就会在 `judge` 这一步失败（表现为 workflow 状态非 `done`，
+  entrypoint 会把具体报错记进账本 `detail` 字段）。如果确实需要本项目
+  单独用不同的 provider/API key，在这里放一份
+  `providers.json`/`agent_config.json` 即可覆盖继承的默认值。
 
 - **`run_stock_analysis` vs `run_stock_analysis_ai` 怎么选**：前者只要
   材料、不产生 LLM 调用成本时用；后者需要研判结论、看板"手动触发"想

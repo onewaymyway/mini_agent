@@ -994,22 +994,48 @@ def load_config(
 
 def _resolve_main_project_root(root: Path) -> Optional[Path]:
     """
-    [external_projects_agent_skill_workflow_integration_plan.md 第2节]
-    若 `root` 是一个外部项目根（`<root>/project.yaml` 存在）且按约定挂在
-    `<主项目根>/external_projects/<name>/` 下，返回主项目根；否则返回
-    `None`（包括 `root` 本身就是主项目根、或不是外部项目、或外部项目没有
-    按约定摆放这三种情况——都不做无依据的向上猜测式遍历，找不到就是
-    `None`，交回环境变量兜底）。
+    [external_projects_agent_skill_workflow_integration_plan.md 第1.4节]
+    外部项目路径可以在磁盘任意位置（不保证挂在主项目目录下，见该文档
+    "路径不一定在主项目目录下"的修正记录），不能从 `root` 的目录结构
+    反推主项目根，因此改用两条更可靠的信息源，按优先级：
+
+    1. 环境变量 `MINI_AGENT_MAIN_PROJECT_ROOT`——daemon/scheduler 拉起
+       外部项目的 entrypoint 子进程时可以显式设置，最直接、无需查表。
+    2. `ExternalProjectRegistry`（`~/.mini_agent/external_projects.json`）
+       里按 `root` 反查注册记录的 `main_project_root` 字段——这是
+       `register()` 时记下来的"注册这个外部项目时所在的主项目"，与
+       `root` 实际路径无关，不受目录布局影响。
+
+    `root` 必须是一个外部项目根（`<root>/project.yaml` 存在）才会走这
+    两条查找；不是外部项目、或两条都没查到，返回 `None`，调用方据此
+    继续走"环境变量兜底 api_key"这条既有路径，不报错。
     """
     try:
         if not (root / "project.yaml").exists():
             return None
-        if root.parent.name != "external_projects":
-            return None
-        main_root = root.parent.parent
-        return main_root if main_root.is_dir() else None
     except OSError:
         return None
+
+    import os as _os
+    env_root = _os.environ.get("MINI_AGENT_MAIN_PROJECT_ROOT")
+    if env_root:
+        p = Path(env_root).expanduser()
+        if p.is_dir():
+            return p
+
+    try:
+        from mini_agent.external_projects.registry import ExternalProjectRegistry
+        record = ExternalProjectRegistry().find_by_path(root)
+        if record and record.main_project_root:
+            p = Path(record.main_project_root).expanduser()
+            if p.is_dir():
+                return p
+    except Exception:
+        # 注册表不可用/未注册/其它任何异常都不应该拖垮 load_config()
+        # 本身——外部项目照样能跑，只是拿不到主项目 LLM 配置的 fallback。
+        pass
+
+    return None
 
 
 def _load_config_file(path: Path) -> dict:

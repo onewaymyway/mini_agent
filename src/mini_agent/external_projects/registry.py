@@ -46,6 +46,13 @@ class RegisteredProject:
 
     name: str
     path: str  # 外部项目根目录（= 该项目的 Workspace.root），存字符串便于 JSON 序列化
+    # [external_projects_agent_skill_workflow_integration_plan.md 第1.4节]
+    # 外部项目路径可以在磁盘任意位置（不保证挂在主项目目录下），无法从
+    # `path` 反推主项目根，因此显式记录"注册这个外部项目时所在的主项目
+    # 根目录"，供 `config/loader.py::load_config()` 在外部项目自己没有
+    # `agent_config.json`/`providers.json` 时回退过去继承 LLM 配置。
+    # 默认在 `register()` 里取注册时的 `Path.cwd()`，也可以显式传入。
+    main_project_root: str = ""
     # [external_projects_cron_dispatch_plan.md 待确认问题 2] 默认 False，
     # 与 register() 的默认值保持一致——见 register() 文档字符串。
     enabled: bool = False
@@ -59,6 +66,7 @@ class RegisteredProject:
         return cls(
             name=data["name"],
             path=data["path"],
+            main_project_root=data.get("main_project_root", ""),
             enabled=data.get("enabled", True),
             registered_at=data.get("registered_at", ""),
         )
@@ -108,6 +116,7 @@ class ExternalProjectRegistry:
         *,
         enabled: bool = False,
         validate: bool = True,
+        main_project_root: Optional[Path] = None,
     ) -> RegisteredProject:
         """
         注册一个外部项目。
@@ -116,6 +125,16 @@ class ExternalProjectRegistry:
         这个路径下确实有一份结构合法的 `project.yaml`，避免注册表里
         混入无法使用的条目；调用方如果只是想先占个位、稍后再补
         `project.yaml`，可以传 `validate=False` 跳过。
+
+        `main_project_root`：[external_projects_agent_skill_workflow_
+        integration_plan.md 第1.4节] 外部项目 `path` 可以在磁盘任意
+        位置，不能假设它挂在主项目目录下，因此这里显式记录"注册这个
+        外部项目时所在的主项目根"，供 `config/loader.py::load_config()`
+        在外部项目自己没有 `agent_config.json`/`providers.json` 时
+        回退过去继承 LLM 配置（provider/model/api_key）。未显式传入时
+        默认取注册命令执行时的 `Path.cwd()`——`mini-agent projects
+        register` 约定就是在主项目目录下执行，这个默认值覆盖最常见的
+        用法；确实需要跨目录注册（比如脚本化批量注册）时可以显式传入。
 
         [external_projects_cron_dispatch_plan.md 待确认问题 2] `enabled`
         默认改为 `False`（opt-in）：这个字段现在同时控制"看板/CLI 展示"
@@ -145,15 +164,38 @@ class ExternalProjectRegistry:
 
         from datetime import datetime, timezone
 
+        _main_root = Path(main_project_root).expanduser().resolve() if main_project_root else Path.cwd()
         record = RegisteredProject(
             name=name,
             path=str(path),
+            main_project_root=str(_main_root),
             enabled=enabled,
             registered_at=datetime.now(timezone.utc).isoformat(),
         )
         projects[name] = record
         self._save(projects)
         return record
+
+    def find_by_path(self, path: Path) -> Optional[RegisteredProject]:
+        """
+        [external_projects_agent_skill_workflow_integration_plan.md
+        第1.4节] 按外部项目根目录反查注册表条目——`config/loader.py::
+        load_config()` 用它来找"这个外部项目当初是在哪个主项目下注册
+        的"，从而回退继承主项目的 LLM 配置。找不到匹配条目（比如这个
+        路径根本没注册过，只是碰巧有个 `project.yaml`）返回 `None`，
+        调用方据此继续往下走"环境变量兜底"这条既有路径，不报错。
+        """
+        try:
+            resolved = Path(path).expanduser().resolve()
+        except OSError:
+            return None
+        for record in self._load().values():
+            try:
+                if Path(record.path).expanduser().resolve() == resolved:
+                    return record
+            except OSError:
+                continue
+        return None
 
     def unregister(self, name: str) -> None:
         projects = self._load()

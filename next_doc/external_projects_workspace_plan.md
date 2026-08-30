@@ -797,8 +797,11 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   第 1 节。
 - 2026-08-30（同上，补记）：同一轮实测还发现外部项目触发 workflow/
   skill_agent 时无法拿到 LLM API key（外部项目自己目录下没有
-  `providers.json`，环境变量里也未必有）。已给 `load_config()` 加了
-  "外部项目自己没有 `agent_config.json`/`providers.json` 时，回退到
-  `<主项目根>/external_projects/<name>/` 约定推出的主项目根去找同名
-  文件"这条 fallback，外部项目不再需要重复维护一份 API key。详见同一
-  文档第 1.4 节。
+  `providers.json`，环境变量里也未必有）。最初按"外部项目挂在
+  `<主项目根>/external_projects/<name>/` 下"这条目录布局假设去猜主
+  项目根，后来发现这个假设不成立——外部项目路径可以在磁盘任意位置，
+  已改为不依赖目录布局的方案：环境变量 `MINI_AGENT_MAIN_PROJECT_ROOT`
+  + `ExternalProjectRegistry` 新增 `main_project_root` 字段（注册时
+  记录，按外部项目实际路径反查）。外部项目自己没有
+  `agent_config.json`/`providers.json` 时，回退到查到的主项目根去找
+  同名文件。详见同一文档第 1.4 节。

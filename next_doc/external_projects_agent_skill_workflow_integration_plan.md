@@ -87,7 +87,7 @@
 
 修完 1.2 节两处路径解析后，实测触发 `stock_analysis_ai` workflow 仍然
 在 2 秒内就失败、`workflow run` 的 CLI 子进程 `returncode=0`（见变更
-记录里记的复现现象）。定位到两个问题，这里记第二个（第一个见 2.1 节
+记录里记的复现现象）。定位到两个问题，这里记第二个（第一个见 1.5 节
 "改用 `WorkflowRunner` 直接调用，不再依赖 CLI 子进程退出码"）：
 
 `config/loader.py::load_config(project_root=...)` 读取 `providers.json`
@@ -97,19 +97,49 @@
 如果主 agent 的 API key 是放在主项目的 `providers.json` 里而不是环境
 变量里，外部项目这边就拿到空 `api_key`，`skill_agent` step 一上来初始化
 LLM 客户端就失败，正好对应"跑得飞快、CLI 退出码却是 0"这个现象（CLI
-退出码本来就不代表 workflow 是否成功，见 2.1 节）。
+退出码本来就不代表 workflow 是否成功，见 1.5 节）。
 
-修正：`load_config()` 新增 `_resolve_main_project_root(root)`——按
-`external_projects_workspace_plan.md` 5.1 节"外部项目固定挂在
-`<主项目根>/external_projects/<name>/` 下"这条已有约定，从
-`root.parent.parent` 直接推出主项目根（`root.parent.name ==
-"external_projects"` 时才生效，不做无依据的向上猜测式遍历）。
+**第一版修正（已废弃，见下方修正记录）**：曾经从 `root.parent.parent`
+按"外部项目固定挂在 `<主项目根>/external_projects/<name>/` 下"这条
+目录布局约定去猜主项目根——这个假设是错的：外部项目的 `path` 可以在
+磁盘任意位置（`ExternalProjectRegistry` 本身就没有对路径位置做任何
+约束，`register()` 接受任意绝对路径），不能从目录结构反推。
+
+**修正后的方案**：改用两条不依赖目录布局的信息源，按优先级：
+
+1. **环境变量 `MINI_AGENT_MAIN_PROJECT_ROOT`**——daemon/scheduler 拉起
+   外部项目的 entrypoint 子进程时可以显式设置这个环境变量，最直接、
+   无需查表，也是唯一对"本次调用明确知道自己是被谁、以什么身份触发"
+   这件事最敏感的信息源（适合未来 daemon 侧接线时用）。
+2. **`ExternalProjectRegistry`（`~/.mini_agent/external_projects.json`）
+   反查**——`RegisteredProject` 新增 `main_project_root` 字段，
+   `register(name, path, ...)` 时默认记录"执行注册命令那一刻的
+   `Path.cwd()`"（`mini-agent projects register` 的既有用法就是在主
+   项目目录下执行，这个默认值覆盖最常见场景；需要跨目录注册可以显式
+   传 `main_project_root` 参数覆盖）。`load_config()` 里新增
+   `ExternalProjectRegistry.find_by_path(root)`，按外部项目的实际路径
+   反查注册表，拿到对应记录的 `main_project_root`，与 `root` 本身在
+   磁盘哪个位置完全无关。
+
+两条都没查到时返回 `None`，最终落到"环境变量兜底 api_key"这条既有
+路径，不报错——即使外部项目从未注册过、也没设环境变量，行为退化为
+"这次拿不到继承的配置"，而不是抛异常炸掉整个 `load_config()`。
+
 `agent_config.json`/`providers.json` 的解析都改成"先看外部项目自己
-目录下有没有 → 没有则回退到主项目根目录下的同名文件 → 都没有才落到
-环境变量"，外部项目自己有配置时优先级不变（仍然是自己的优先），只在
-自己没有时才继承主项目的。已用临时目录跑了三种场景验证：外部项目无
-自身配置时正确拿到主项目 api_key/provider；外部项目有自身配置时优先用
-自己的；普通交互式目录（无 `project.yaml`）行为完全不受影响。
+目录下有没有 → 没有则用上面两条信息源找到的主项目根下的同名文件 →
+都没有才落到环境变量"，外部项目自己有配置时优先级不变（仍然是自己的
+优先），只在自己没有时才继承主项目的。已用临时目录验证：外部项目和
+主项目分别放在互不相关的两个目录树下（不满足任何父子路径关系）时，
+注册表反查和环境变量两条路径都能正确拿到主项目 api_key/provider；
+外部项目有自身配置时优先用自己的；普通交互式目录（无 `project.yaml`）
+完全不受影响。
+
+**已注册过的外部项目怎么办**：这次改动前注册的条目（比如
+`stock_watch`）不会自动有 `main_project_root` 字段（JSON 里读不到时
+`from_dict` 给空字符串），需要二选一：(a) `mini-agent projects
+unregister stock_watch` 后在主项目目录下重新 `register`，让新记录带上
+这个字段；(b) 手动跑本 entrypoint 时临时设一下
+`MINI_AGENT_MAIN_PROJECT_ROOT` 环境变量指向主项目根，不用重新注册。
 
 ### 1.5 另一处实测踩坑：CLI 子进程退出码不代表 workflow 成败
 
@@ -240,3 +270,16 @@ hybrid_exec"的判断依据，供后续迭代参考：
     `mini-agent workflow run` CLI），原因见 1.5 节——CLI 子进程退出码
     不代表 workflow 内部成败，直接拿结构化 `WorkflowRunResult` 更可靠，
     失败原因也能准确记进账本。
+- 2026-08-30（再次补记，纠正上一条的错误假设）：上一条记录的
+  `_resolve_main_project_root()` 最初实现是从 `root.parent.parent`
+  按"外部项目挂在 `<主项目根>/external_projects/<name>/` 下"这条目录
+  布局猜主项目根——用户指出这个假设不成立，外部项目路径可以在磁盘任意
+  位置，`ExternalProjectRegistry` 本身就不对注册路径做任何位置约束。
+  已改为不依赖目录布局的方案：`RegisteredProject` 新增
+  `main_project_root` 字段（`register()` 时默认记录 `Path.cwd()`，也
+  可显式传入），`ExternalProjectRegistry.find_by_path()` 按外部项目
+  实际路径反查该字段；`load_config()` 优先读环境变量
+  `MINI_AGENT_MAIN_PROJECT_ROOT`，其次查注册表，都没有则回退环境变量
+  兜底 api_key 这条既有路径，不报错。已用"主项目和外部项目分别放在
+  互不相关的两棵目录树下"这种明确不满足父子路径关系的场景验证过。
+  详见 1.4 节。
