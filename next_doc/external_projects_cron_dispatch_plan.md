@@ -282,10 +282,15 @@ cron/goal-cron 调度行为。
   切换开关后注册表状态立即生效，`ext:*` job 的对齐推迟到 daemon 下次
   启动（或用户在看板上再切一次开关触发即时对齐）时发生。CLI 输出文案
   未来可以补一句提示，本次未改。
-- 3.3 节提到的"项目从 registry 整体移除时清理 `ext:*` job"：
-  `ExternalProjectRegistry` 目前没有"注销"功能（`unregister()` 只是
-  从注册表删记录，不感知 cron 侧），这次也未新增该联动——维持原文档
-  "先记录这个联动点，等该功能出现时一并处理"的结论。
+- 3.3 节提到的"项目从 registry 整体移除时清理 `ext:*` job"：已在
+  2026-08-30 补上——新增 `DELETE /v1/external_projects/{name}` 路由，
+  内部先 `registry.unregister(name)`，再复用既有的
+  `ensure_external_project_cron_jobs()`（`record is None` 分支本来就是
+  为这个场景准备的，清空该项目名下所有 `ext:*` job）。看板"外部项目"
+  页每个项目卡片新增"⚠️ 危险操作"折叠区里的"🗑️ 注销此项目"按钮（二次
+  确认），只删注册表记录，不删项目文件。详见
+  `next_doc/external_projects_agent_skill_workflow_integration_plan.md`
+  第 2 节。
 - 未新增看板端"手动触发一次全量对齐"的按钮（比如用户怀疑 `ext:*`
   job 和 `project.yaml` 不同步时）；当前对齐时机是"daemon 启动时"和
   "开关切换时"，覆盖了文档列出的主要触发点，暂不需要额外入口。

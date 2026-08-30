@@ -194,7 +194,15 @@ run_stock_analysis_ai.py <code> [name]
   不单独开新的调度通道，未来若接入 daemon 定时触发，天然复用同一份
   `CronJobRunner` 并发资源。
 
-## 2. workflow / hybrid_exec 分别适合股票系统的什么功能（设计思考，本轮暂不实现）
+## 2. 看板「外部项目」页新增注销功能
+
+此前 `apps/mini_agent_kanban/app.py` 的外部项目页只有"注册"和"切换自动调度开关"，没有"注销"——`ExternalProjectRegistry.unregister()`本来就有，只是没接 HTTP 路由和 UI，且此前一直遗留一个待办："项目从 registry 整体移除时要联动清理 `ext:*` cron job"（见`external_projects_cron_dispatch_plan.md` §3.3）。本次一并补上：
+
+- 新增 `DELETE /v1/external_projects/{name}` 路由（`api/routes.py`）：先 `registry.unregister(name)`，再复用既有的`ensure_external_project_cron_jobs()`——其docstring 里"`enabled=False`（含...注册表里查无此项目）时的清空分支"本来就是为这个场景准备的，不需要新写清理逻辑，只是把它接上。
+- `apps/mini_agent_kanban/client.py` 新增 `unregister_external_project(name)`。
+- 看板每个项目卡片底部新增"⚠️ 危险操作"折叠区，里面的"🗑️ 注销此项目"按钮走跟 cron job 删除同一套二次确认交互模式（`confirm_unregister_ext_proj_<name>` session_state 标记 + "确认注销"/"取消"两个按钮），避免误触。文案明确说明"只删注册表记录，不删项目文件，之后可以重新注册接回来"，降低用户对这个操作的顾虑——外部项目本来就是"引擎的调用方"，注销只是让 daemon 不再管理它，不是销毁数据。
+
+## 3. workflow / hybrid_exec 分别适合股票系统的什么功能（设计思考，本轮暂不实现）
 
 结合 `stock_watch` 现有四大功能（热点候选池、K 线批量、条件选股、个股
 分析）和候选池状态跟踪机制，梳理"这类需求该用 skill、workflow 还是
@@ -239,7 +247,7 @@ hybrid_exec"的判断依据，供后续迭代参考：
   过早实现容易设计错，留到看到"研判功能实际用起来之后暴露出的真实
   需求"时再动手。
 
-## 3. 变更记录
+## 4. 变更记录
 
 - 2026-08-30：
   - 修正 `config/prompt_builder.py::_resolve_skills_dir()`、
@@ -283,3 +291,9 @@ hybrid_exec"的判断依据，供后续迭代参考：
   兜底 api_key 这条既有路径，不报错。已用"主项目和外部项目分别放在
   互不相关的两棵目录树下"这种明确不满足父子路径关系的场景验证过。
   详见 1.4 节。
+- 2026-08-30（补记）：看板「外部项目」页新增注销功能，新增
+  `DELETE /v1/external_projects/{name}` 路由、
+  `client.py::unregister_external_project()`、项目卡片"⚠️ 危险操作"
+  折叠区里的二次确认注销按钮，联动清理该项目名下所有 `ext:*` cron job，
+  顺带补上 `external_projects_cron_dispatch_plan.md` §3.3 此前一直
+  遗留的"项目从 registry 整体移除时清理 ext:* job"待办。详见第 2 节。

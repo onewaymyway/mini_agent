@@ -8416,6 +8416,36 @@ def render_external_projects_tab(client: AgentClient):
 
             _render_kanban_view_panel(client, name, proj.get("kanban_view"))
 
+            # [external_projects_agent_skill_workflow_integration_plan.md]
+            # 注销项目——只删注册表记录，不删项目本身的文件（外部项目的
+            # 代码/数据不归 daemon 管）；后端会联动清理该项目名下所有
+            # ext:* cron job。放进折叠区 + 二次确认，与上面 cron job 的
+            # 删除交互（confirm_delete_cron_<id>）同一套模式，避免误触。
+            with st.expander("⚠️ 危险操作"):
+                st.caption(
+                    "注销后 daemon 不再管理该项目（自动调度会被关闭、"
+                    "ext:* 定时任务会被删除），但不会删除项目本身的任何"
+                    "文件——之后仍可以用「注册新项目」重新接回来。"
+                )
+                confirm_key = f"confirm_unregister_ext_proj_{name}"
+                if not st.session_state.get(confirm_key):
+                    if st.button("🗑️ 注销此项目", key=f"unregister_ext_proj_{name}"):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
+                else:
+                    uc1, uc2 = st.columns(2)
+                    if uc1.button("⚠️ 确认注销", key=f"unregister_ext_proj_confirm_{name}"):
+                        res = client.unregister_external_project(name)
+                        st.session_state.pop(confirm_key, None)
+                        if res and "_error" in res:
+                            st.error(f"注销失败：{res['_error']}")
+                        else:
+                            st.success(f"已注销项目 '{name}'。")
+                            st.rerun()
+                    if uc2.button("取消", key=f"unregister_ext_proj_cancel_{name}"):
+                        st.session_state.pop(confirm_key, None)
+                        st.rerun()
+
 
 # [external_projects_generic_kanban_view_refactor_plan.md 阶段C] 通用看板
 # 视图渲染函数：不认任何具体项目名/字段名，全部按 `proj["kanban_view"]`

@@ -81,6 +81,10 @@ api/routes.py — FastAPI 路由定义
                                        cron_dispatch_plan.md] 切换项目粒度
                                        的 daemon 自动调度开关，联动对齐
                                        ext:* cron job
+    DELETE /v1/external_projects/{name}  [external_projects_agent_skill_
+                                       workflow_integration_plan.md] 注销
+                                       项目（只删注册表记录，不删项目文件），
+                                       联动清理该项目名下所有 ext:* cron job
     POST   /v1/external_projects/{name}/trigger_run  同上，手动触发一次
                                        entrypoint
     GET    /v1/external_projects/{name}/ledger       同上，读执行账本
@@ -858,6 +862,57 @@ async def patch_external_projects_enabled(name: str, request: Request):
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.patch_external_projects_enabled.ensure_cron_jobs')
 
     return {"project": record.to_dict()}
+
+
+@router.delete("/external_projects/{name}")
+async def delete_external_projects(name: str, request: Request):
+    """DELETE /v1/external_projects/{name} — 注销一个外部项目。
+
+    只从注册表（`~/.mini_agent/external_projects.json`）里删除这条记录，
+    **不删除项目本身的文件**（外部项目的代码/数据不归 daemon 管，注销只
+    是"daemon 不再知道/不再管理它"）。联动清理该项目名下所有 `ext:*`
+    cron job（与 `PATCH .../enabled` 关闭开关时"真删不是 disable"的
+    语义一致，复用同一个 `ensure_external_project_cron_jobs()`——见其
+    docstring "`enabled=False`（含...注册表里查无此项目）时的清空分支"，
+    正是为这个场景准备的）。呼应 `external_projects_cron_dispatch_plan.md`
+    §3.3 此前记录的待办"项目从 registry 整体移除时清理 ext:* job"。
+    """
+    _require_owner(request)
+
+    try:
+        from mini_agent.external_projects.registry import (
+            ExternalProjectRegistry,
+            ExternalProjectRegistryError,
+        )
+
+        registry = ExternalProjectRegistry()
+        registry.unregister(name)
+    except ExternalProjectRegistryError as exc:
+        raise HTTPException(status_code=_external_project_error_status(exc), detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # 联动清理 ext:* cron job：daemon 未运行/cron_scheduler 不可用时静默
+    # 跳过——注册表本身已经删除成功，这批 job 至多在下次 daemon 启动的
+    # 批量对齐里才会被清理（此时 registry.get() 已经查无此项目，走的是
+    # ensure_external_project_cron_jobs() 里 record is None 的清空分支），
+    # 不影响"已注销"这个事实本身。
+    try:
+        http_server = getattr(request.app.state, "http_server", None)
+        cron_scheduler = None
+        if http_server is not None:
+            al = getattr(http_server, "autonomous_loop", None)
+            cron_scheduler = getattr(al, "_cron_scheduler", None) if al is not None else None
+            if cron_scheduler is None:
+                cron_scheduler = getattr(http_server.bridge, "_cron_scheduler", None)
+        if cron_scheduler is not None:
+            from mini_agent.external_projects.scheduler import ensure_external_project_cron_jobs
+            ensure_external_project_cron_jobs(name, registry, cron_scheduler)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.delete_external_projects.ensure_cron_jobs')
+
+    return {"unregistered": name}
 
 
 @router.post("/external_projects/{name}/trigger_run")

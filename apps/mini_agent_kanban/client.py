@@ -830,6 +830,13 @@ class AgentClient:
             body["name"] = name
         return self._post("/external_projects/register", body)
 
+    def unregister_external_project(self, name: str):
+        """[external_projects_agent_skill_workflow_integration_plan.md]
+        注销一个外部项目——只删注册表记录，不删项目本身的文件；后端会
+        联动清理该项目名下所有 ext:* cron job（真删不是 disable，与
+        「自动调度」开关关闭时的语义一致）。"""
+        return self._delete(f"/external_projects/{name}")
+
     def set_external_project_enabled(self, name: str, enabled: bool):
         """[external_projects_cron_dispatch_plan.md 3.3] 切换项目粒度的
         daemon 自动调度开关——看板项目卡片上的开关就是这个。打开时后端
