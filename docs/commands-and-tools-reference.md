@@ -8,6 +8,7 @@
 - [记忆管理指南](memory-management-guide.md) — `/memory` 命令背景
 - [用户画像系统指南](user-profile-guide.md) — `/profile` 命令背景
 - [决策画像指南](decision-profile-guide.md) — `/decision_profile` 命令背景（注意与上一行的 `/profile` 是两个不相关的系统）
+- [自我意识 / 身份演化指南](self-awareness-identity-guide.md) — `/agent_value_profile`、`/self_narrative` 命令背景
 - [每日融合日报指南](daily-digest-guide.md) — `/digest daily` 命令背景
 - [主动推荐排序指南](next-action-advisor-guide.md) — `/next` 命令背景
 - [Kanban 看板使用指南](kanban-dashboard-guide.md) — 日报/推荐/决策画像三张卡片的可视化入口
@@ -173,6 +174,8 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/memory` | 立即在后台生成/刷新 session 摘要 + 写入长期记忆 + 刷新用户画像（跳过轮次间隔门槛），需 `--memory` 启用；详见 [记忆管理指南](memory-management-guide.md) |
 | `/profile` | 立即在后台刷新用户画像（跳过刷新间隔），需在 `agent_config.json` 中设置 `profile_enabled: true`（无对应 CLI flag）；详见 [用户画像系统指南](user-profile-guide.md) |
 | `/decision_profile [update]` | 查看/更新**决策画像**（`UserProfile` 的自动学习之外，另一套从历史技术决策归纳出的价值取向模式）；命名上与上一行的 `/profile` 刻意区分，两者互不相关；详见 [决策画像指南](decision-profile-guide.md) |
+| `/agent_value_profile [update]` | 查看/更新 **Agent 自身价值观**（观察对象是 agent 自己的历史选择行为，不是用户）；详见 [self-awareness-identity-guide.md](self-awareness-identity-guide.md) |
+| `/self_narrative [update\|history]` | 查看/更新/查看历史 **自我叙事**（综合已落盘的自我认知数据生成第一人称叙事，追加式存档）；详见 [self-awareness-identity-guide.md](self-awareness-identity-guide.md) |
 | `/raw-output` | 切换 raw output 模式（Toggle）：开启后工具调用结果不截断传给 LLM，也不截断终端显示；详见 [Raw Output 模式说明](raw-output-mode-guide.md) |
 | `/reasoning` | 切换是否打印模型的 reasoning/思考过程（Toggle，默认开启）。对应 `AppConfig.show_reasoning`，可用 `--hide-reasoning` CLI 参数或 `agent_config.json` 里的 `"show_reasoning": false` 在启动时就关闭 |
 | `/reload` | 强制热重载 Skills 和 Agent Profiles（跳过 debounce，立即重扫磁盘）；详见 [热重载机制说明](hot-reload-guide.md) |
@@ -525,6 +528,8 @@ cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6
 | `sys:daily_digest` | 每天 22:00 | 融合日报：合并行为分布+目标进展+git提交，默认开启（`digest_advisor.daily_digest_enabled`） |
 | `sys:next_action_digest` | 每 3 小时 | 主动推荐：停滞目标/注意力错配排序，候选为空则跳过，默认开启（`digest_advisor.next_action_enabled`） |
 | `sys:decision_profile_update` | 每 7 天 | 决策画像归纳，**默认关闭**（`digest_advisor.decision_profile_enabled`），建议积累数周数据后手动开启 |
+| `sys:agent_value_profile_update` | 每 7 天 | Agent 自身价值观归纳，**默认关闭**（`digest_advisor.agent_value_profile_enabled`）；详见 [self-awareness-identity-guide.md](self-awareness-identity-guide.md) |
+| `sys:self_narrative_update` | 每 7 天 | 自我叙事生成（追加式存档），**默认关闭**（`digest_advisor.self_narrative_enabled`）；详见 [self-awareness-identity-guide.md](self-awareness-identity-guide.md) |
 | `sys:wiki_quarantine_repair` | 每 6 小时 | wiki 问题页面自动修复（本地回调，零 LLM） |
 | `sys:growth_advisor_daily` | 每天 22:30 | 成长顾问：候选扫描 + 高置信度候选调研报告 |
 | `sys:growth_monthly_retrospective` | 每 30 天 | 成长顾问：月度复盘摘要 |

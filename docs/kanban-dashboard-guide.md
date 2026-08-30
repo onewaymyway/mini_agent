@@ -478,6 +478,13 @@ Tab 最末是**🪞 自我画像 / 能力地图**区块（`GET /v1/self/portrait
   （不止当前激活的），🟢/⚪ 标记是否激活，用于回答"我现在具备哪些能力
   （声明层面），当前用上了哪些（激活层面）"。
 
+`GET /v1/self/portrait` 后续又新增了 `agent_value_profile`/`body_inventory`/
+`self_narrative`/`drift_signals`/`lineage` 五个只读字段（Agent 自身价值观、
+身体清单、自我叙事、自我模型漂移信号、谱系视图），详见
+[self-awareness-identity-guide.md](self-awareness-identity-guide.md)。
+**这几个新字段目前只在 API 层暴露，本区块尚未渲染**——如需在看板展示，
+按上面同样的"只读聚合、无操作按钮"模式扩展即可。
+
 纯只读展示，不提供任何编辑/触发入口——`self_profile.json` 的写入是巩固
 循环（Stage 8）的职责，不是看板要接管的操作。
 

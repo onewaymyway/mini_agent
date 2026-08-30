@@ -290,6 +290,8 @@ cron:<分 时 日 月 周>   5 字段 cron，如 cron:0 */6 * * *（每 6 小时
 | `sys:daily_digest` | 每天 22:00 | 每日融合日报 |
 | `sys:next_action_digest` | 3h | 主动推荐排序 |
 | `sys:decision_profile_update` | 7d（默认关闭） | 决策画像归纳 |
+| `sys:agent_value_profile_update` | 7d（默认关闭） | Agent 自身价值观归纳，详见 [self-awareness-identity-guide.md](self-awareness-identity-guide.md) |
+| `sys:self_narrative_update` | 7d（默认关闭） | 自我叙事生成（追加式存档），详见 [self-awareness-identity-guide.md](self-awareness-identity-guide.md) |
 | `sys:wiki_quarantine_repair` | 6h | wiki 问题页面自动修复（本地回调，零 LLM） |
 | `sys:growth_advisor_daily` | 每天 22:30 | 成长顾问：候选扫描 + 调研报告 |
 | `sys:growth_monthly_retrospective` | 30d | 成长顾问：月度复盘摘要 |

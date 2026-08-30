@@ -2,6 +2,10 @@
 
 对应设计文档：`next_doc/proactive-recommendation-and-digital-persona-design.md` 第 4.4 节（阶段三）。
 
+姊妹机制：本文档归纳**用户**的决策价值取向；`agent` 自己的历史选择行为
+归纳见 [self-awareness-identity-guide.md](self-awareness-identity-guide.md)
+第 1 节（`agent_value_profile_builder.py`），三层结构与矛盾处理策略完全同构。
+
 ## 是什么
 
 在已有的单条决策记录（`history/decision_extraction.py` + `wiki/decision_writer.py`

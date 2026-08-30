@@ -67,6 +67,8 @@ Goal，到期时驱动 GoalBacklog 派生并启动一轮子 Objective，而不�
 | `sys:daily_digest` | 每日融合日报 | `cron:0 22 * * *`（每天 22:00） | 零 LLM | 是 | 合并当天行为分布/目标进展/代码提交，生成融合日报 |
 | `sys:next_action_digest` | 主动推荐排序 | `interval:10800`（3h） | 零 LLM | 是 | 对停滞目标/注意力错配候选排序生成推荐，候选为空则跳过 |
 | `sys:decision_profile_update` | 决策画像归纳 | `interval:604800`（7d） | 零 LLM（规则归纳） | **否**（默认关闭） | 从历史决策记录归纳可追溯的用户价值模式，证据不足 3 条不落地 |
+| `sys:agent_value_profile_update` | Agent 自身价值观归纳 | `interval:604800`（7d） | **含 LLM**（语义归纳） | **否**（默认关闭） | 从 agent 自身历史选择行为（`StateRepo` 风险分级 commit）归纳可追溯的偏好模式，证据不足 3 条不落地；详见 [self-awareness-identity-guide.md](self-awareness-identity-guide.md) 第 1 节 |
+| `sys:self_narrative_update` | 自我叙事生成 | `interval:604800`（7d） | **含 LLM**（语义综合） | **否**（默认关闭） | 综合已落盘的自我认知数据（画像/能力地图/漂移信号/失败模式/子 Agent 经历/谱系）生成一段第一人称叙事，追加式存档，证据不足时跳过；详见 [self-awareness-identity-guide.md](self-awareness-identity-guide.md) 第 2 节 |
 | `sys:growth_advisor_daily` | 成长顾问：候选扫描 | `cron:30 22 * * *`（每天 22:30） | **含 LLM**（可选：为置信度最高的候选生成调研报告时调用 `llm_helper` 起草正文；未提供 `llm_helper` 时按规则模板兜底） | 是（随 `GrowthAdvisorConfig.enabled` opt-out） | 扫描近期记忆信号，生成/更新成长方向候选，为符合条件的候选生成调研报告，弱信号不生成候选 |
 | `sys:growth_monthly_retrospective` | 成长顾问：月度复盘 | `interval:2592000`（30d） | 零 LLM（纯规则统计聚合） | 是 | 统计成长候选的生成/采纳/忽略情况，生成一份月度复盘摘要 |
 | `sys:memory_backfill_scan` | 记忆回填：补跑遗漏摘要 | `interval:21600`（6h） | **含 LLM**（对待补摘要的 session 逐个调用一次摘要生成） | 是（随 `MemoryBackfillConfig.enabled` opt-out） | 扫描 summary 为空但内容达标的存量 session（如异常中断/摘要生成失败未重试），补生成摘要并写入长期记忆，是 growth_advisor 信号扫描和用户画像的共同上游数据源 |

@@ -46,6 +46,7 @@ Lesson → Skill 提案安全网、巩固循环、效果回填、各阶段（Sta
 | [self-evolution-stage9-guide.md](self-evolution-stage9-guide.md) | Stage9：自主运行时（daemon/cron 相关内容的另一入口） |
 | [self-evolution-consolidation-guide.md](self-evolution-consolidation-guide.md) | 巩固循环（`sys:consolidation`） |
 | [self-evolution-outcome-tracking-guide.md](self-evolution-outcome-tracking-guide.md) | 效果回填/追踪 |
+| [self-awareness-identity-guide.md](self-awareness-identity-guide.md) | Agent 自身价值观 / 自我叙事 / 自我模型漂移检测 / 子 Agent 经历回写 / 谱系视图 |
 
 ## daemon-*（常驻守护进程，4 篇）
 
