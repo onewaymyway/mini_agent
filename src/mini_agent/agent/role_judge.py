@@ -436,9 +436,10 @@ class RoleJudgeMixin:
         # [方案 E 阶段 4] 与本轮 evaluator 的最终判定做一次轻量交叉校验：
         # evaluator 修订到最后一轮仍未通过（质量有明确问题），但 TurnJudge
         # 却判定 AUTO_CONTINUE（认为不需要真人介入）——这是一组比较值得
-        # 关注的矛盾信号，先记录下来，不在本次改造中据此改变 TurnJudge 的
-        # 判定（是否要"取更保守值"留给积累足够数据后再决定，见计划文档
-        # 阶段 4）。
+        # 关注的矛盾信号。默认只记录事件；开启
+        # cfg.turn_judge.conflict_resolution_enabled 后，进一步把这次判定
+        # 覆盖为更保守的 NEED_USER（复用 judge_calibration.
+        # more_conservative_status()），不再自动继续。
         try:
             last_eval = getattr(self, "_last_evaluator_result", None)
             if (
@@ -447,7 +448,9 @@ class RoleJudgeMixin:
                 and last_eval.get("passed") is False
                 and status == "AUTO_CONTINUE"
             ):
-                from mini_agent.role_agents.judge_calibration import record_conflict_event
+                from mini_agent.role_agents.judge_calibration import (
+                    record_conflict_event, more_conservative_status,
+                )
                 from mini_agent.storage.paths import AgentPaths as _ConflictPaths
                 record_conflict_event(
                     _ConflictPaths(self.cfg.project_root),
@@ -459,6 +462,17 @@ class RoleJudgeMixin:
                     session_id=self._session.id if self._session else "",
                     context="TurnJudge 判定 AUTO_CONTINUE，但同轮 evaluator 修订到最后一轮仍未通过。",
                 )
+                if getattr(tj_cfg, "conflict_resolution_enabled", False):
+                    # evaluator 修订失败在保守优先级映射里视为 "NEED_USER"
+                    # 语义（质量有明确问题、需要真人判断），取更保守的一方。
+                    resolved = more_conservative_status(status, "NEED_USER")
+                    if resolved != status:
+                        R.print_warning(
+                            "[TurnJudge] 检测到与 evaluator 判定矛盾（evaluator 修订到"
+                            "最后一轮仍未通过），已把本轮判定从 AUTO_CONTINUE 收紧为"
+                            "NEED_USER，交还真人确认。"
+                        )
+                        status = resolved
         except Exception:
             pass
 

@@ -241,15 +241,31 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
             return
         _cmd_reset_step(agent, paths, rest[0], rest[1], " ".join(rest[2:]) if len(rest) > 2 else "")
 
+    elif subcmd == "judge-calibration":
+        # [next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+        # 方案 D.4 后半段 / 阶段 4] /agent goals judge-calibration
+        # 只读展示判官校准建议报告，不会自动修改任何配置或 prompt。
+        _cmd_judge_calibration(paths)
+
     else:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
-            "progress, feedback, recur, unrecur, migrate-legacy, spec, phase, diagnose, tune, status, reset-step"
+            "progress, feedback, recur, unrecur, migrate-legacy, spec, phase, diagnose, "
+            "tune, status, reset-step, judge-calibration"
         )
 
 
 # ── 子命令实现 ─────────────────────────────────────────────────────────────────
+
+def _cmd_judge_calibration(paths) -> None:
+    """[next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+    方案 D.4 后半段 / 阶段 4] 展示判官校准建议报告——只读，纯统计视角，
+    不会自动修改任何配置或 prompt。"""
+    from mini_agent.role_agents.judge_calibration import generate_calibration_suggestions
+    report = generate_calibration_suggestions(paths)
+    R.console.print(report)
+
 
 def _cmd_list(gb) -> None:
     """列出所有 Goals 和 Objectives。"""

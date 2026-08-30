@@ -170,10 +170,111 @@ log_path = _log_path
 append_event = _append_event
 
 
+def _read_events(paths: "AgentPaths", name: str, *, limit: int = 2000) -> list[dict]:
+    import json as _json
+
+    try:
+        path = _log_path(paths, name)
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+        rows: list[dict] = []
+        for line in lines[-limit:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(_json.loads(line))
+            except Exception:
+                continue
+        return rows
+    except Exception:
+        return []
+
+
+def generate_calibration_suggestions(paths: "AgentPaths", *, limit: int = 2000) -> str:
+    """[next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+    方案 D.4 后半段 / 阶段 4] 读取 `judge_calibration_events.jsonl` 与
+    `judge_conflict_events.jsonl`，生成一份**人类可读的调整建议文本**——
+    不自动修改任何判官 prompt 或阈值，只是把统计结果整理成"值得关注的
+    模式"，交给人工判断是否要据此调整。
+
+    这是刻意保守的设计：判官行为的自动演化风险较高，计划文档明确要求
+    "先生成建议、人工确认后应用"，不做全自动闭环。本函数只负责"生成建议"
+    这一半，"人工确认后应用"需要人工阅读输出后自行去调整对应的
+    system prompt / 阈值配置，不在本函数范围内。
+
+    统计维度目前比较朴素（按 judge_name/status 计数、按判官对计数冲突次数），
+    只是给人工复盘提供一个起点，不是严谨的统计分析，样本量小的时候得出的
+    结论价值有限，调用方应结合实际情况判断。
+    """
+    calibration_events = _read_events(paths, _CALIBRATION_LOG_NAME, limit=limit)
+    conflict_events = _read_events(paths, _CONFLICT_LOG_NAME, limit=limit)
+
+    lines: list[str] = [
+        "# 判官校准建议报告（自动生成，仅供参考，不会自动生效）",
+        "",
+        f"- 已记录判定事件：{len(calibration_events)} 条",
+        f"- 已记录冲突事件：{len(conflict_events)} 条",
+        "",
+    ]
+
+    if not calibration_events and not conflict_events:
+        lines.append("暂无足够数据，建议先运行一段时间积累样本后再复盘。")
+        return "\n".join(lines)
+
+    # 按 judge_name × status 计数
+    status_counts: dict[str, dict[str, int]] = {}
+    for ev in calibration_events:
+        judge = ev.get("judge_name", "unknown")
+        status = ev.get("status", "unknown")
+        status_counts.setdefault(judge, {}).setdefault(status, 0)
+        status_counts[judge][status] += 1
+
+    if status_counts:
+        lines.append("## 各判官判定分布")
+        for judge, counts in status_counts.items():
+            total = sum(counts.values())
+            parts = ", ".join(f"{k}={v}({v/total:.0%})" for k, v in sorted(counts.items(), key=lambda kv: -kv[1]))
+            lines.append(f"- {judge}（共 {total} 次）：{parts}")
+        lines.append("")
+
+    # 按判官对计数冲突
+    if conflict_events:
+        pair_counts: dict[str, int] = {}
+        example_by_pair: dict[str, str] = {}
+        for ev in conflict_events:
+            pair = f"{ev.get('judge_a', '?')} vs {ev.get('judge_b', '?')}"
+            pair_counts[pair] = pair_counts.get(pair, 0) + 1
+            example_by_pair.setdefault(pair, ev.get("context", ""))
+        lines.append("## 判官冲突分布")
+        for pair, count in sorted(pair_counts.items(), key=lambda kv: -kv[1]):
+            example = example_by_pair.get(pair, "")
+            lines.append(f"- {pair}：{count} 次" + (f"（示例：{example}）" if example else ""))
+        lines.append("")
+        lines.append(
+            "建议：冲突次数较高的判官对，可以考虑在这两个判官的 system prompt 里"
+            "互相引用对方的判定依据，或者按方案 E 的思路把这个组合接入"
+            "`cfg.turn_judge.conflict_resolution_enabled`（如果适用）做实际的"
+            "保守值收紧，而不只是记录。"
+        )
+    else:
+        lines.append("暂未记录到判官冲突事件。")
+
+    lines.append("")
+    lines.append(
+        "⚠️ 以上只是基于事件计数的粗粒度观察，不构成"
+        "「应该如何调整判官 prompt/阈值」的确定性结论，请结合具体案例人工复核"
+        "后再决定是否调整，本函数不会自动修改任何配置或 prompt 文件。"
+    )
+    return "\n".join(lines)
+
+
 __all__ = [
     "record_calibration_event",
     "record_conflict_event",
     "more_conservative_status",
+    "generate_calibration_suggestions",
     "log_path",
     "append_event",
 ]

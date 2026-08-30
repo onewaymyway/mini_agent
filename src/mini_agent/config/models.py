@@ -1253,6 +1253,18 @@ class TurnJudgeConfig:
     auto_continue_with_note_enabled: bool = False
     auto_continue_confidence_threshold: float = 0.6
 
+    # ── [next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+    # 方案 E 阶段 4] 冲突消解：目前唯一接入的具体场景是"同轮 Evaluator 修订到
+    # 最后一轮仍未通过，但 TurnJudge 判定 AUTO_CONTINUE"。开启后，检测到这个
+    # 冲突时不再只是记录事件，而是把 TurnJudge 的判定覆盖为更保守的
+    # NEED_USER（复用 `judge_calibration.more_conservative_status()`），
+    # 把控制权交还真人，而不是在质量有明确疑问的情况下自动继续。
+    #
+    # 默认关闭：这是"从仅记录升级为实际影响判定"的第一步，按计划要求先
+    # 观察 judge_conflict_events.jsonl 里的真实冲突频率和误报率，确认这个
+    # 场景确实值得自动降级处理，再考虑默认开启。
+    conflict_resolution_enabled: bool = False
+
 
 @dataclass
 class EnvInfoConfig:

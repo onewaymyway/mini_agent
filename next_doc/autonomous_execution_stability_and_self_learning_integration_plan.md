@@ -3,10 +3,11 @@
 > **实施状态（持续更新）**：阶段 0（观测先行）、阶段 1（归因与自检）、
 > 阶段 2（分级响应）、阶段 3（判定过程回写经验，含 2D 失败模式聚合、预检
 > 事件沉淀、以及完整接入 lesson_review 门槛判定）已完成代码落地，均默认
-> 关闭或纯增量、向后兼容。阶段 4 的"多判官冲突记录"（TurnJudge vs
-> Evaluator 交叉校验）已完成一个具体场景的落地；"取更保守值实际影响判定"
-> 与"判官自动调整建议"仍是设计阶段，按计划要求"先生成建议、人工确认"，
-> 不做全自动闭环。各阶段的具体改动清单见文末"实施记录"一节。
+> 关闭或纯增量、向后兼容。阶段 4（多判官冲突记录、限定场景的"取更保守值"
+> 实际收紧、判官校准建议报告 + `/agent goals judge-calibration` 命令）
+> 已完成主要工作，均默认关闭或纯只读展示；"覆盖更多判官组合"与"自动
+> 改写判官 prompt/阈值"仍明确不做，按计划要求需要人工介入。各阶段的
+> 具体改动清单见文末"实施记录"一节。
 
 > 基于 `mini_agent-master` 实际代码梳理（`role_agents/turn_judge.py`、`role_agents/goal_judge.py`、
 > `role_agents/stuck_detector.py`、`role_agents/dispatcher.py`、`goal_mode/`、
@@ -279,7 +280,7 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
 - 这三项都是"接入已有基础设施"的性质，互相独立，可以并行推进，不要求全部完成才上线。
 
 ### 阶段 4：多判官协同与自动化决策收紧（谨慎推进）
-**状态：部分实现（TurnJudge × Evaluator 冲突记录已落地，其余仍是设计阶段）。**
+**状态：部分实现——冲突记录、"取更保守值"实际接入（限定场景）、调整建议报告均已落地；仍未做全自动 prompt/阈值调整。**
 - 方案 E 的"仅记录"部分已经在一个具体场景落地：`agent/role_judge.py` 现在
   会在同一轮内比较 TurnJudge 的判定与本轮 Evaluator（若启用）的最终判定——
   当 Evaluator 修订到最后一轮仍未通过、但 TurnJudge 却判定 AUTO_CONTINUE
@@ -287,12 +288,19 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
   "同一轮确实会跑两个独立判官"最典型的场景，其余判官组合（如 GoalJudge
   与外部角色 Agent 同轮触发）留给后续按需扩展，接口
   （`record_conflict_event`）已经通用，不需要重新设计。
-- 从"仅记录"升级为"实际影响判定"（取多判官最保守值，`more_conservative_
-  status()` 已提供但尚未接入任何决策路径）——未实现，按计划等待阶段 0-3
-  积累的真实数据支撑这个决策。
-- 基于阶段 0-3 积累的真实校准数据，评估是否要开始自动调整判官 prompt/阈值
-  （方案 D.4 后半段）——未实现，这一步涉及判官行为的自动演化，风险较高，
-  建议放在最后，且优先做成"生成调整建议，人工确认后应用"，而不是全自动生效。
+- "取更保守值实际影响判定"——**已针对上述同一个场景落地**：新增
+  `cfg.turn_judge.conflict_resolution_enabled`（默认 False），开启后检测到
+  该冲突时不再只是记录，而是调用 `more_conservative_status()` 把 TurnJudge
+  的判定从 `AUTO_CONTINUE` 收紧为 `NEED_USER`。仍然默认关闭——按计划要求
+  先观察冲突事件的真实频率和误报率，确认这个场景确实值得自动降级处理，
+  再考虑默认开启；其余判官组合的"取保守值"仍未接入，属于后续按需扩展项。
+- 判官自动调整建议生成——已提供 `generate_calibration_suggestions()`，
+  读取 `judge_calibration_events.jsonl` / `judge_conflict_events.jsonl`
+  生成一份人类可读的统计报告（各判官判定分布、冲突判官对分布），并通过
+  `/agent goals judge-calibration` 命令暴露给用户查看。**明确不做**"自动
+  应用调整"——报告末尾会显式声明这只是粗粒度观察，需要人工结合具体案例
+  复核后再决定是否调整判官 prompt/阈值，符合计划要求的"先生成建议、
+  人工确认后应用"，不做全自动闭环。
 
 ---
 
@@ -380,18 +388,20 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
 | `src/mini_agent/evolution/failure_pattern_store.py` | 修改 | `_read_dead_end_failures()` 优先使用结构化 `stuck_category`（回退正则分类）；新增 `record_goal_spec_preflight_issue()` / `_read_goal_spec_preflight_issues()` 并接入 `run_failure_pattern_aggregation_once()`；新增 `get_stuck_category_breakdown()` 供后续 `sys:self_eval` 精准降置信度使用；新增 `record_goal_spec_preflight_lesson()`，把预检问题同时写成正式 `entry_type="lesson"` 记忆条目，接入 `perception/lesson_review.py` 门槛判定链路 |
 | `src/mini_agent/cli/commands/goal_mode_cmd.py` | 修改 | 协商循环发现预检问题时，同时调用 `record_goal_spec_preflight_issue()` 与 `record_goal_spec_preflight_lesson()` |
 
-### 阶段 4：TurnJudge × Evaluator 冲突记录已落地，其余仍是设计
+### 阶段 4：TurnJudge × Evaluator 冲突记录 + 收紧 + 建议报告已落地
 
 | 文件 | 改动类型 | 说明 |
 |---|---|---|
-| `src/mini_agent/agent/role_judge.py` | 修改 | `_run_role_agents_output()` 记录本轮最后一次 evaluator 判定（`self._last_evaluator_result`）；`_maybe_run_turn_judge()` 在 TurnJudge 判定后与该结果做交叉校验，矛盾时调用 `record_conflict_event()` |
+| `src/mini_agent/agent/role_judge.py` | 修改 | `_run_role_agents_output()` 记录本轮最后一次 evaluator 判定（`self._last_evaluator_result`）；`_maybe_run_turn_judge()` 在 TurnJudge 判定后与该结果做交叉校验，矛盾时调用 `record_conflict_event()`；开启 `conflict_resolution_enabled` 后进一步把判定收紧为 `NEED_USER` |
+| `src/mini_agent/config/models.py` | 修改 | `TurnJudgeConfig` 新增 `conflict_resolution_enabled`（默认 False） |
+| `src/mini_agent/role_agents/judge_calibration.py` | 修改 | 新增 `generate_calibration_suggestions()`，读取两份事件日志生成人类可读的统计建议报告（不自动应用任何调整） |
+| `src/mini_agent/cli/commands/goals.py` | 修改 | 新增 `judge-calibration` 子命令（`/agent goals judge-calibration`），只读展示上述报告 |
 
-设计已在第三节"方案 E"和第四节阶段规划中给出，"取更保守值实际影响判定"与
-"判官自动调整建议生成"两部分代码层面仍只提供了
-`judge_calibration.more_conservative_status()` 这一个可复用的纯函数，尚未
-接入任何实际决策路径。后续实施建议：先用阶段 0 积累至少若干周的
-`judge_calibration_events.jsonl` / `judge_conflict_events.jsonl` 真实数据，
-确认冲突频率和误判模式后，再决定是否值得投入。
+以上覆盖了阶段 4 三项工作中的"冲突记录""取保守值实际接入（限定场景）"
+"生成调整建议"，均满足"默认关闭/纯只读展示 + 不自动修改判官 prompt 或
+阈值"的谨慎推进原则。尚未覆盖：其余判官组合（GoalJudge 与其它角色 Agent
+同轮触发）的冲突检测与消解、基于建议报告的判官 prompt 自动改写工具
+（明确不做，需要人工执行）。
 
 ### 后续可继续推进的方向（不影响当前已交付内容）
 
@@ -400,7 +410,8 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
    在 DONE/CONTINUE/NEED_COMPACT 语义下"低置信度"的等价定义是什么，不能
    直接照搬 TurnJudge 的二元语义，需要单独设计）。
 2. TurnJudge confidence 与 GoalJudge stuck_category 的联合判断（阶段2遗留，价值待评估）。
-3. 阶段 4 的"取更保守值"实际接入决策路径，以及判官自动调整建议生成
-   （需要先有阶段 0 数据支撑）。
-4. 扩展阶段 4 冲突检测覆盖更多判官组合（当前只覆盖 TurnJudge × Evaluator
-   这一个同轮双判官的场景）。
+3. 扩展阶段 4 冲突检测/收紧覆盖更多判官组合（当前只覆盖 TurnJudge ×
+   Evaluator 这一个同轮双判官的场景）。
+4. `conflict_resolution_enabled` 默认开启的时机评估——需要先通过
+   `/agent goals judge-calibration` 观察一段时间的真实冲突频率和收紧后的
+   用户反馈，再决定是否把默认值改为 True。
