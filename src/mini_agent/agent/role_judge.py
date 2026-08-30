@@ -388,6 +388,36 @@ class RoleJudgeMixin:
         )
         display_text = _verdict.feedback if (_verdict.parse_ok and _verdict.feedback) else raw
 
+        # [next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+        # 方案 C 分级响应] 只在 cfg.turn_judge.auto_continue_with_note_enabled=True
+        # 且判官确实给出了合法的 0-1 confidence 时才生效；否则 confidence 恒为
+        # None，下面的降级判断天然跳过，完全退化为升级前的二元行为。
+        confidence: Optional[float] = None
+        if getattr(tj_cfg, "auto_continue_with_note_enabled", False) and _verdict.parse_ok:
+            raw_conf = _verdict.extra.get("confidence")
+            try:
+                if raw_conf is not None:
+                    parsed_conf = float(raw_conf)
+                    if 0.0 <= parsed_conf <= 1.0:
+                        confidence = parsed_conf
+            except (TypeError, ValueError):
+                confidence = None
+
+        # [阶段 0 观测先行] 记录一次 TurnJudge 判定事件，供后续复盘（方案 D.4）。
+        try:
+            from mini_agent.role_agents.judge_calibration import record_calibration_event
+            from mini_agent.storage.paths import AgentPaths as _CalibrationPaths
+            record_calibration_event(
+                _CalibrationPaths(self.cfg.project_root),
+                judge_name="turn_judge",
+                status=status,
+                round_no=auto_round_no,
+                session_id=self._session.id if self._session else "",
+                note=f"confidence={confidence}" if confidence is not None else "",
+            )
+        except Exception:
+            pass
+
         feedback_obj = RoleFeedback(
             role_name="turn_judge",
             role_type="turn_judge",
@@ -422,6 +452,29 @@ class RoleJudgeMixin:
                 return
             auto_msg = "[TurnJudge 自动接管] 历史已压缩，请根据目标继续推进任务。"
         else:  # AUTO_CONTINUE
+            # [方案 C 分级响应] 低置信度场景：不强行升级为 NEED_USER 打断，
+            # 也不是"什么都不做"，而是记一条可事后审阅的执行摘要，正常继续。
+            threshold = getattr(tj_cfg, "auto_continue_confidence_threshold", 0.6)
+            if confidence is not None and confidence < threshold:
+                try:
+                    from mini_agent.role_agents.execution_notes import append_execution_note
+                    from mini_agent.storage.paths import AgentPaths as _NotePaths
+                    append_execution_note(
+                        _NotePaths(self.cfg.project_root),
+                        source="turn_judge",
+                        status="AUTO_CONTINUE_WITH_NOTE",
+                        confidence=confidence,
+                        summary=(display_text or raw)[:300],
+                        round_no=auto_round_no,
+                        session_id=self._session.id if self._session else "",
+                    )
+                    R.print_info(
+                        f"[TurnJudge] 判定为 AUTO_CONTINUE 但置信度较低（{confidence:.2f} < "
+                        f"{threshold}），已记录执行摘要供事后审阅，本轮继续自动推进。"
+                    )
+                except Exception:
+                    pass
+
             # 优先用解析出的结构化 `feedback` 字段作为注入文本，找不到（JSON 解析
             # 失败等历史遗留情况）就用完整判定文本兜底。
             auto_msg = raw

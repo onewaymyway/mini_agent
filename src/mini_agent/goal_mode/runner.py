@@ -160,6 +160,13 @@ class GoalRunner:
             self._state_store = GoalStateStore(paths, sid)
 
         self._last_stuck_signal: StuckSignal = StuckSignal.NONE
+        # [方案 A 卡住归因分类] 最近一次判官给出的卡住原因分类，仅在
+        # cfg.goal_mode.stuck_attribution_enabled=True 时会被赋非 "unknown" 值。
+        self._last_stuck_category: str = "unknown"
+        # [方案 D.1 经验回写] 标记"当前是否处于一次卡住恢复之后、还未确认是否
+        # 真的走出困境"的状态，用于在下一轮判定进展为 SUBSTANTIVE_ADVANCE（或
+        # StuckSignal 重新变为 NONE）时，把这次成功的恢复过程写成正面经验。
+        self._pending_recovery_context: Optional[dict] = None
         self._stuck_detector = StuckDetector(
             similarity_threshold=self._gm_cfg.same_feedback_similarity_threshold,
             consecutive_limit=self._gm_cfg.consecutive_same_feedback_limit,
@@ -394,7 +401,13 @@ class GoalRunner:
             if self._maybe_proactive_compact():
                 continue  # 主动 compact 只重新钉住上下文，不计入卡住恢复额度，直接进入下一轮
 
-            if self._check_stuck(judge_feedback, progress_info):
+            stuck_now = self._check_stuck(judge_feedback, progress_info)
+            if not stuck_now:
+                # [方案 D.1 经验回写] 上一次判定发生过卡住恢复、这一轮又确认
+                # 没有再次卡住——说明这次恢复大概率是有效的，把"卡住原因 +
+                # 恢复动作 + 结果"写成正面经验，供未来同类场景检索复用。
+                self._maybe_record_recovery_success(progress_info)
+            if stuck_now:
                 if self._try_stuck_recovery():
                     continue  # 已压缩历史+重置卡住计数，本轮判定不终止，继续跑
                 if self._last_stuck_reason == "pseudo_progress":
@@ -591,6 +604,7 @@ class GoalRunner:
             R.console.print()
 
         process_integrity_enabled = getattr(self._gm_cfg, "process_integrity_check_enabled", True)
+        stuck_attribution_enabled = getattr(self._gm_cfg, "stuck_attribution_enabled", False)
         raw = run_goal_judge(
             profile=profile,
             base_cfg=self._cfg,
@@ -602,6 +616,7 @@ class GoalRunner:
             prior_checklist_lines=prior_checklist_lines,
             verification_result=verification_result,
             process_integrity_enabled=process_integrity_enabled,
+            stuck_attribution_enabled=stuck_attribution_enabled,
             parent_session_id=getattr(self._agent, "session_id", None),
             parent_session_dir=(
                 self._agent._current_session_dir()
@@ -639,7 +654,10 @@ class GoalRunner:
         # =False）或模型没有按扩展 schema 输出时，progress/checklist 都拿不到，
         # progress_info 里 "progress" 为 None——调用方（_check_stuck）据此自动
         # 回退到旧的文本相似度规则，不会因为字段缺失而报错或误判。
-        progress_info: dict = {"progress": None, "progress_reason": "", "process_flags": []}
+        progress_info: dict = {
+            "progress": None, "progress_reason": "", "process_flags": [],
+            "stuck_category": "unknown",
+        }
         process_info: dict = {"process_flags": []}
         if _verdict.parse_ok:
             raw_progress = _verdict.extra.get("progress")
@@ -650,6 +668,17 @@ class GoalRunner:
             raw_reason = _verdict.extra.get("progress_reason")
             if isinstance(raw_reason, str):
                 progress_info["progress_reason"] = raw_reason
+
+            # [方案 A 卡住归因分类] 只在开关开启且模型确实输出了合法枚举值时
+            # 才采用，否则保持默认的 "unknown"——完全退化为升级前的通用恢复
+            # 逻辑，不影响现有行为。
+            if stuck_attribution_enabled:
+                raw_category = _verdict.extra.get("stuck_category")
+                if isinstance(raw_category, str) and raw_category.strip().lower() in (
+                    "env_blocked", "goal_ambiguous", "tool_format_error",
+                    "genuine_difficulty", "unknown",
+                ):
+                    progress_info["stuck_category"] = raw_category.strip().lower()
 
             if criteria_tracking_enabled:
                 raw_checklist = _verdict.extra.get("checklist")
@@ -764,6 +793,22 @@ class GoalRunner:
         R.console.print(format_feedback(feedback_obj))
         R.console.print()
 
+        # [阶段 0 观测先行] 记录一次 GoalJudge 判定事件，供后续复盘"判官整体
+        # 靠不靠谱、哪类场景容易误判"（方案 D.4）。纯记录，不影响任何决策。
+        try:
+            from mini_agent.role_agents.judge_calibration import record_calibration_event
+            record_calibration_event(
+                self._paths,
+                judge_name="goal_judge",
+                status=status,
+                round_no=self._round + 1,
+                session_id=getattr(self._agent, "session_id", "") or "",
+                note=progress_info.get("stuck_category", ""),
+            )
+        except Exception:
+            pass
+
+        self._last_stuck_category = progress_info.get("stuck_category", "unknown")
         return status, display_text, progress_info
 
     # ── 内部：进展分数（§3.1）────────────────────────────────────────────
@@ -817,12 +862,22 @@ class GoalRunner:
         """[goal_mode_stuck_compact_plan.md §1.2] 追加一条 dead-end 记录，
         与已有记录做粗粒度相似度去重（复用 spec.py 现成的 _is_near_duplicate），
         避免同一条已验证无效的路径被反复记录、把提示block撑得又臭又长。
+
+        [方案 A/D.2] 附带记录 `self._last_stuck_category`（未开启归因分类时
+        恒为 "unknown"），供 `evolution/failure_pattern_store.py` 做
+        (task_category × stuck_category) 二维聚合，比纯正则猜测根因更准确；
+        字段是纯追加，不影响任何既有读取方（未升级的读取逻辑忽略这个字段）。
         """
         from .spec import _is_near_duplicate
 
         if any(_is_near_duplicate(reason, d.get("reason", "")) for d in self._dead_ends):
             return
-        self._dead_ends.append({"round": round_no, "progress": progress, "reason": reason})
+        self._dead_ends.append({
+            "round": round_no,
+            "progress": progress,
+            "reason": reason,
+            "stuck_category": getattr(self, "_last_stuck_category", "unknown"),
+        })
 
     def _render_dead_ends_block(self) -> str:
         """把持久化 dead_ends 清单渲染成"已验证无效路径"提示文本，
@@ -1043,6 +1098,117 @@ class GoalRunner:
 
         return self._last_stuck_signal is not StuckSignal.NONE
 
+    def _try_attributed_recovery(self, stuck_category: str) -> Optional[bool]:
+        """[方案 A 卡住归因分类] 按 GoalJudge 给出的 stuck_category 分流恢复
+        策略。返回 True/False 表示"已经按归因分类处理完毕"（True=已处理，
+        调用方应 continue；False=判定应终止），返回 None 表示"这个分类不需要
+        特殊处理，交给调用方走原有的通用 compact 恢复逻辑"（genuine_difficulty
+        / unknown 都在这一档）。
+
+        这里做的事只是"选择更对症的提示 + 是否需要压缩历史"，不改变
+        `StuckDetector` 已经维护的恢复额度计数——额度耗尽时依然会在
+        `_try_stuck_recovery` 一开始就被拦下（GIVE_UP），本函数不重复判断。
+        """
+        from ._compat import make_goal_context
+
+        if stuck_category == "env_blocked":
+            R.print_warning(
+                "[GoalRunner] 归因判定为环境/依赖/权限问题（env_blocked），"
+                "跳过历史压缩，直接提示排查环境，而不是反复重试同样的操作。"
+            )
+            # 只提示，不压缩历史——环境问题即使换个思路重试也大概率无效，
+            # 压缩历史反而可能丢掉排查环境问题时已经收集到的线索。
+            self._pin_goal_context()
+            hint = (
+                "[GoalRunner 提示] 判定为环境/依赖/权限类问题：请先明确检查\n"
+                "是否缺少必要的依赖/命令、进程是否能正常启动、是否有足够的\n"
+                "访问权限，把诊断结果（具体报错、缺失的具体依赖名）写清楚，\n"
+                "再决定下一步——不要在没有先诊断清楚的情况下重复同样的操作。"
+            )
+            self._pending_recovery_context = {
+                "stuck_category": "env_blocked",
+                "hint_summary": "提示先诊断环境/依赖/权限问题，不重复原操作",
+            }
+            self._agent._hist.append_raw_dict(make_goal_context(hint))
+            self._save_state(status="running")
+            return True
+
+        if stuck_category == "goal_ambiguous":
+            R.print_warning(
+                "[GoalRunner] 归因判定为目标/验收标准存在歧义（goal_ambiguous），"
+                "跳过常规恢复轮次，直接征求重规划提议。"
+            )
+            self._pin_goal_context()
+            replan_mode = getattr(self._gm_cfg, "replan_proposal_mode", "off")
+            hint = (
+                "[GoalRunner 提示] 判定为目标定义本身可能存在歧义或矛盾"
+                "（而不是执行方法的问题）。请说明你认为目标描述或验收标准中\n"
+                "具体哪里存在歧义/矛盾/依赖了不存在的前提。"
+            )
+            if replan_mode != "off":
+                from mini_agent.prompts import pm
+                hint = hint + "\n\n" + pm.fragment("goal_mode", "REPLAN_PROPOSAL_REQUEST_BLOCK")
+                self._awaiting_replan_proposal = True
+            self._pending_recovery_context = {
+                "stuck_category": "goal_ambiguous",
+                "hint_summary": "征求目标/验收标准歧义点的重规划提议",
+            }
+            self._agent._hist.append_raw_dict(make_goal_context(hint))
+            self._save_state(status="running")
+            return True
+
+        if stuck_category == "tool_format_error":
+            R.print_warning(
+                "[GoalRunner] 归因判定为工具调用格式反复出错（tool_format_error），"
+                "先只提示、不压缩历史，避免把还有用的上下文过早清空。"
+            )
+            self._pin_goal_context()
+            hint = (
+                "[GoalRunner 提示] 判定为反复卡在工具调用格式/协议问题上，\n"
+                "不是任务本身的语义困难。请重新检查刚才失败的工具调用格式\n"
+                "是否符合要求（参数名、闭合标签、JSON 是否完整），修正后重试。"
+            )
+            self._pending_recovery_context = {
+                "stuck_category": "tool_format_error",
+                "hint_summary": "提示重新检查工具调用格式/协议后重试",
+            }
+            self._agent._hist.append_raw_dict(make_goal_context(hint))
+            self._save_state(status="running")
+            return True
+
+        # genuine_difficulty / unknown：不做特殊处理，交给通用逻辑。
+        return None
+
+    def _maybe_record_recovery_success(self, progress_info: dict) -> None:
+        """[方案 D.1 经验回写] 若上一次判定确实触发过卡住恢复
+        （`self._pending_recovery_context` 非空）、这一轮又确认没有再次卡住，
+        把这次恢复过程写成正面经验。只在
+        cfg.goal_mode.stuck_recovery_experience_write_enabled=True 时生效，
+        任何异常都不应影响主流程。
+        """
+        ctx = self._pending_recovery_context
+        self._pending_recovery_context = None
+        if not ctx:
+            return
+        if not getattr(self._gm_cfg, "stuck_recovery_experience_write_enabled", False):
+            return
+        try:
+            from mini_agent.wiki.experience_writer import write_experience
+            progress = progress_info.get("progress") or "unknown"
+            write_experience(
+                self._paths,
+                trigger=(
+                    f"目标执行中卡住（归因：{ctx.get('stuck_category', 'unknown')}）："
+                    f"{self._spec.goal_text[:120]}"
+                ),
+                approach=ctx.get("hint_summary", ""),
+                outcome=f"下一轮判定为 {progress}，卡住状态解除。",
+                reusable=True,
+                confidence=0.5,
+            )
+        except Exception:
+            pass
+
     def _try_stuck_recovery(self) -> bool:
         """
         判定"卡住"后的第一反应不应该是直接认输——很可能只是主 Agent 的历史里
@@ -1073,6 +1239,16 @@ class GoalRunner:
         max_compacts = self._gm_cfg.max_total_compacts
         if self._compacts_done >= max_compacts:
             return False
+
+        # [方案 A 卡住归因分类] 归因分类可用时，优先按分类分流恢复策略，而不是
+        # 一律走通用的"compact + 换角度提示"路径。只在
+        # cfg.goal_mode.stuck_attribution_enabled=True 且判官给出了非 "unknown"
+        # 分类时生效；否则 self._last_stuck_category 恒为 "unknown"，直接落到
+        # 下方原有逻辑，行为与升级前完全一致。
+        if getattr(self._gm_cfg, "stuck_attribution_enabled", False):
+            handled = self._try_attributed_recovery(self._last_stuck_category)
+            if handled is not None:
+                return handled
 
         if self._last_stuck_reason == "pseudo_progress":
             recovery_log_reason = (
@@ -1155,6 +1331,14 @@ class GoalRunner:
             self._awaiting_replan_proposal = True
 
         self._agent._hist.append_raw_dict(make_goal_context(hint))
+
+        # [方案 D.1 经验回写] 通用恢复路径（genuine_difficulty/unknown 或未
+        # 开启归因分类）也记录待确认的恢复上下文，成功走出卡住后同样有机会
+        # 沉淀经验，不只是归因分流路径才有这个能力。
+        self._pending_recovery_context = {
+            "stuck_category": getattr(self, "_last_stuck_category", "unknown"),
+            "hint_summary": "压缩历史 + 换角度提示（通用恢复路径）",
+        }
 
         self._save_state(status="running")
         return True

@@ -235,6 +235,36 @@ def _negotiate_loop(builder, spec, agent):
 
     while True:
         R.console.print(spec.render_summary_for_user())
+
+        # [方案 B 验收标准自检] 冻结前提示可能难以判定的验收标准，纯提前
+        # 预警，不阻止用户继续 /confirm。默认开启（cfg.goal_mode.
+        # goal_spec_preflight_check_enabled），异常不影响主流程。
+        try:
+            gm_cfg = getattr(getattr(builder, "_cfg", None), "goal_mode", None)
+            preflight_enabled = getattr(gm_cfg, "goal_spec_preflight_check_enabled", True)
+            if preflight_enabled:
+                preflight_warnings = spec.validate_verifiability()
+                if preflight_warnings:
+                    R.print_warning("[Goal 模式] 验收标准自检发现以下可能的问题（仅提示，不影响继续）：")
+                    for w in preflight_warnings:
+                        R.print_warning(f"  - {w}")
+                    # [方案 D.3 经验沉淀] 把预检问题记一笔，供后续按 task_category
+                    # 聚合、评估"哪类目标描述容易生成不可验证的验收标准"。
+                    try:
+                        from mini_agent.evolution.failure_pattern_store import (
+                            record_goal_spec_preflight_issue,
+                        )
+                        from mini_agent.storage.paths import AgentPaths as _PreflightPaths
+                        record_goal_spec_preflight_issue(
+                            _PreflightPaths(getattr(builder, "_cfg", None).project_root),
+                            goal_text=spec.goal_text,
+                            issues=preflight_warnings,
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         R.print_info(
             "输入 [bold]/confirm[/bold] 确认并开始执行，"
             "输入修改意见继续调整草案，输入 [bold]/cancel[/bold] 放弃。"

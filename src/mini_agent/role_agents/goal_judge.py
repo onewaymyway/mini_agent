@@ -106,6 +106,7 @@ def run_goal_judge(
     prior_checklist_lines: str = "",
     verification_result: Optional[dict] = None,
     process_integrity_enabled: bool = False,
+    stuck_attribution_enabled: bool = False,
     parent_session_id: Optional[str] = None,
     parent_session_dir: Optional["Path"] = None,
     paths: Optional["object"] = None,
@@ -145,6 +146,12 @@ def run_goal_judge(
         cfg.goal_mode.process_integrity_check_enabled，与 extended_output_enabled
         （progress/checklist）是两个独立开关，可任意组合。False 时行为与升级前完全一致，
         不会要求也不会解析 process_flags。
+    stuck_attribution_enabled：[next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+        方案 A] True 时在 system prompt 里额外拼接"卡住归因分类"指令
+        （STUCK_ATTRIBUTION_INSTRUCTIONS），要求判官在判定没有实质进展时额外输出
+        stuck_category 字段。对应 cfg.goal_mode.stuck_attribution_enabled，与
+        extended_output_enabled / process_integrity_enabled 均为独立开关，可任意组合。
+        False 时行为与升级前完全一致，不会要求也不会解析 stuck_category。
     """
     # [Phase 3 重构] 样板逻辑收敛到 judge_factory.spawn_judge_agent /
     # run_judge_turn。函数签名和返回值保持完全不变。
@@ -179,6 +186,11 @@ def run_goal_judge(
                     ("\n" if extended_output_enabled else "")
                     + pm.fragment("goal_mode", "PROCESS_INTEGRITY_INSTRUCTIONS")
                     if process_integrity_enabled else ""
+                )
+                + (
+                    ("\n" if (extended_output_enabled or process_integrity_enabled) else "")
+                    + pm.fragment("goal_mode", "STUCK_ATTRIBUTION_INSTRUCTIONS")
+                    if stuck_attribution_enabled else ""
                 )
             ),
         ),

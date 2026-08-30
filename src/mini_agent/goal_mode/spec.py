@@ -112,6 +112,48 @@ class GoalSpec:
             lines.append(f"验证命令：{self.verification_command}")
         return "\n".join(lines)
 
+    def validate_verifiability(self) -> list[str]:
+        """[next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+        方案 B] 验收标准可验证性自检：纯启发式规则，不引入 LLM 语义判断
+        （与本文件其它启发式函数如 `_looks_like_verbatim_echo` 保持一致的
+        设计取舍）。
+
+        返回一份"可能难以判定通过与否"的验收标准清单（每项是一句面向用户
+        的警告文本），空列表表示没有发现明显问题。这只是提前暴露风险的
+        自检，不会阻止用户冻结 GoalSpec——GoalJudge 运行时依然会正常核查，
+        本函数只是把"运行时才会发现的一类问题"尽量提前到冻结前。
+
+        判定规则：
+          - 整份 GoalSpec 设置了 verification_method="run_command" 且
+            verification_command 非空时，视为"有客观验证手段兜底"，不逐条
+            检查（GoalJudge 可以直接跑这条命令验证，措辞是否精确没那么关键）。
+          - 否则逐条检查每条验收标准文本，是否包含至少一个"可判断依据"类
+            关键词（如"通过""完成""生成""输出""确认""验证""存在""无""不再"
+            等，覆盖常见的可核查表述）。完全不包含这类关键词、且文本很短
+            （容易是空泛描述）的条目会被标记为警告。
+        """
+        warnings: list[str] = []
+        if self.verification_method == "run_command" and self.verification_command:
+            return warnings
+
+        evidence_keywords = (
+            "通过", "完成", "生成", "输出", "确认", "验证", "存在", "不再",
+            "达到", "包含", "返回", "成功", "失败", "无", "为", "是",
+        )
+        for i, criterion in enumerate(self.acceptance_criteria):
+            text = (criterion or "").strip()
+            if not text:
+                warnings.append(f"第 {i+1} 条验收标准为空文本，无法核查。")
+                continue
+            has_keyword = any(kw in text for kw in evidence_keywords)
+            if not has_keyword and len(text) < 12:
+                warnings.append(
+                    f"第 {i+1} 条「{text}」看起来比较空泛，缺少明确的可核查依据"
+                    "（比如具体产出物、可观察的状态变化、可运行的验证命令），"
+                    "GoalJudge 后续可能难以判定是否通过。"
+                )
+        return warnings
+
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 _BRACE_RE = re.compile(r"\{.*\}", re.DOTALL)

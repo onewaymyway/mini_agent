@@ -39,3 +39,5 @@
   给主 AI 助手的具体下一步指令，语气就像在跟它说话。
 
 {{json_output_instructions}}
+
+{{confidence_instructions}}

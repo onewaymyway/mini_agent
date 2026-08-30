@@ -1020,6 +1020,29 @@ class GoalModeConfig:
     # agent 的输出直接改写。
     replan_proposal_mode: str = "off"
 
+    # ── [next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+    # 方案 A] 卡住归因分类：开启后，GoalJudge 在判定为 SAME_APPROACH_NO_GAIN /
+    # REGRESSED 时，额外输出 `stuck_category` 字段（env_blocked / goal_ambiguous /
+    # tool_format_error / genuine_difficulty / unknown），GoalRunner 据此在
+    # `_try_stuck_recovery` 中分流恢复策略，而不是所有卡住原因都走同一条
+    # "compact + 换角度提示"路径。字段缺省或无法识别时一律按 "unknown" 处理，
+    # 完全退化为升级前的通用恢复逻辑，不影响现有行为。默认关闭，需要显式开启。
+    stuck_attribution_enabled: bool = False
+
+    # ── [同上方案 B] GoalSpec 冻结前的验收标准可验证性自检：纯启发式规则（不
+    # 引入 LLM 语义判断），检查每条验收标准是否带 verification_command，或
+    # 文本里包含可判断的证据类关键词（如"通过""测试""输出""确认""验证"等），
+    # 两者都没有的条目会被判定为"可能难以判定通过与否"，在冻结前打印警告并
+    # 记录一条可复用的预检事件（供后续 lesson 化，见方案 D.3），但不会阻止
+    # 用户继续冻结——只是提前暴露风险，而不是留给运行时卡住检测事后发现。
+    goal_spec_preflight_check_enabled: bool = True
+
+    # ── [同上方案 D.1] 卡住恢复成功后是否把"卡住原因 + 恢复动作 + 结果"写入
+    # 正面经验（wiki/experiences/*.md），供未来同类卡住场景检索复用。默认
+    # 关闭：这是新增的经验沉淀路径，先由用户显式开启观察效果，避免经验库
+    # 被尚未验证过质量的记录污染。
+    stuck_recovery_experience_write_enabled: bool = False
+
 
 @dataclass
 class GoalExecutionSpecConfig:
@@ -1219,6 +1242,16 @@ class TurnJudgeConfig:
 
     # ── 纳入判定上下文的最近历史消息条数 ──────────────────────────────────────
     history_window: int = 6
+
+    # ── [next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+    # 方案 C] 分级响应：开启后，TurnJudge 额外输出一个 0-1 的 `confidence` 字段。
+    # 当判定为 AUTO_CONTINUE 但 confidence 低于 `auto_continue_confidence_threshold`
+    # 时，不强制升级为 NEED_USER 打断用户，而是照常自动继续，同时把这次低置信度
+    # 判定的依据记一条"执行摘要"（见 role_agents/execution_notes.py），供用户事后
+    # 审阅，而不是每次都被迫实时响应。默认关闭；解析不到 confidence 字段（缺省 /
+    # 关闭）时完全退化为升级前的二元行为。
+    auto_continue_with_note_enabled: bool = False
+    auto_continue_confidence_threshold: float = 0.6
 
 
 @dataclass

@@ -189,14 +189,87 @@ def _read_dead_end_failures(paths: "AgentPaths") -> list[tuple[str, str, str, fl
                 # 而不是整条 dict 序列化后再匹配（后者会把 "round": 3 这类
                 # 数字噪音也混进正则匹配，降低 root_cause_tag 的准确度）。
                 text = dead_end.get("reason") or json.dumps(dead_end, ensure_ascii=False)
+                # [next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+                # 方案 D.2] 优先使用 GoalJudge 结构化给出的 stuck_category
+                # （比正则猜测的 root_cause_tag 更准确），字段缺失（未开启
+                # 归因分类 / 旧版本落盘数据）时回退到原有的正则分类，完全
+                # 向后兼容。
+                explicit_category = dead_end.get("stuck_category")
+                tag = (
+                    explicit_category
+                    if isinstance(explicit_category, str) and explicit_category and explicit_category != "unknown"
+                    else _root_cause_tag(text)
+                )
             else:
                 text = str(dead_end)
-            out.append((category, _root_cause_tag(text), text[:150], mtime))
+                tag = _root_cause_tag(text)
+            out.append((category, tag, text[:150], mtime))
     return out
 
 
 def _turn_judge_stuck_log_path(paths: "AgentPaths"):
     return paths.workdir_dir / "turn_judge_stuck_events.jsonl"
+
+
+def _goal_spec_preflight_log_path(paths: "AgentPaths"):
+    return paths.workdir_dir / "goal_spec_preflight_events.jsonl"
+
+
+def record_goal_spec_preflight_issue(paths: "AgentPaths", *, goal_text: str, issues: list[str]) -> None:
+    """[next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+    方案 D.3] 记录一次 GoalSpec 冻结前的验收标准可验证性自检发现的问题
+    （见 `goal_mode/spec.py::GoalSpec.validate_verifiability`），供后续按
+    task_category 聚合，回答"哪类目标描述容易生成不可验证的验收标准"。
+
+    与 `record_turn_judge_stuck_event` 同样的设计取舍：只做最简单的追加
+    写入，不做去重/聚合，聚合统一在 `run_failure_pattern_aggregation_once()`
+    里完成；异常不应向上抛出，这是冻结流程里的一个旁路记录动作。
+    """
+    if not issues:
+        return
+    try:
+        p = _goal_spec_preflight_log_path(paths)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.time(),
+                "goal_text": (goal_text or "")[:200],
+                "issue_count": len(issues),
+                "example_issue": (issues[0] or "")[:200],
+            }, ensure_ascii=False) + "\n")
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+
+        log_exception(_mini_agent_exc, where="mini_agent.evolution.failure_pattern_store.record_goal_spec_preflight_issue")
+
+
+def _read_goal_spec_preflight_issues(paths: "AgentPaths") -> list[tuple[str, str, str, float]]:
+    """读取 GoalSpec 预检问题日志，返回格式与其余数据源一致的
+    [(task_category, root_cause_tag, example_summary, ts), ...]。这里的
+    root_cause_tag 固定用一个专属标签，代表"验收标准可验证性问题"这一类，
+    不需要正则猜测（预检记录本身语义已经明确）。
+    """
+    out: list[tuple[str, str, str, float]] = []
+    p = _goal_spec_preflight_log_path(paths)
+    if not p.exists():
+        return out
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+
+        log_exception(_mini_agent_exc, where="mini_agent.evolution.failure_pattern_store._read_goal_spec_preflight_issues")
+        return out
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        category = _normalize_category(rec.get("goal_text", ""))
+        example = rec.get("example_issue", "")
+        ts = float(rec.get("ts", 0.0) or 0.0) or time.time()
+        out.append((category, "unverifiable_acceptance_criteria", example[:150], ts))
+    return out
 
 
 def record_turn_judge_stuck_event(paths: "AgentPaths", *, task_hint: str, reason: str) -> None:
@@ -325,6 +398,13 @@ def run_failure_pattern_aggregation_once(paths: "AgentPaths") -> FailurePatternA
     except Exception as exc:
         summary.errors.append(f"turn_judge_stuck_failed: {exc}")
 
+    try:
+        for category, tag, ex_summary, ts in _read_goal_spec_preflight_issues(paths):
+            raw.append(("goal_spec_preflight", category, tag, ex_summary, ts))
+        summary.sources_read.append("goal_spec_preflight_events")
+    except Exception as exc:
+        summary.errors.append(f"goal_spec_preflight_failed: {exc}")
+
     existing = {k: FailurePattern.from_dict(v) for k, v in _load_store(paths).items()}
 
     grouped: dict[str, list[tuple[str, str, str, float]]] = {}
@@ -408,6 +488,25 @@ def load_failure_patterns(paths: "AgentPaths") -> list[dict]:
     patterns = [FailurePattern.from_dict(v) for v in store.values()]
     patterns.sort(key=lambda p: -p.occurrence_count)
     return [p.to_dict() for p in patterns]
+
+
+def get_stuck_category_breakdown(paths: "AgentPaths", category_text: str) -> dict[str, int]:
+    """[next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+    方案 D.2] 给定一段标题/描述文本，返回该 task_category 下按
+    stuck_category（root_cause_tag）分布的出现次数字典，例如
+    `{"env_blocked": 5, "goal_ambiguous": 2}`。
+
+    这是对 `get_patterns_for_category()` 的一层薄封装：后者按
+    occurrence_count 阈值过滤后返回 FailurePattern 列表，本函数只是把
+    "同一 task_category 下有哪些具体原因、各自出现几次"整理成更便于
+    `sys:self_eval` 精准降置信度使用的字典形式，不改变底层存储或聚合逻辑。
+    min_occurrence=1，因为这里关心的是分布本身，不是"是否达到警示阈值"。
+    """
+    patterns = get_patterns_for_category(paths, category_text, min_occurrence=1)
+    breakdown: dict[str, int] = {}
+    for pat in patterns:
+        breakdown[pat.root_cause_tag] = breakdown.get(pat.root_cause_tag, 0) + pat.occurrence_count
+    return breakdown
 
 
 def ensure_failure_pattern_aggregation_job(

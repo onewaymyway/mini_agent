@@ -97,6 +97,13 @@ def run_turn_judge(
                 example_status="NEED_USER",
                 example_feedback="助手已完整回答用户问题，正在正常等待下一步指示。",
             ),
+            # [next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+            # 方案 C 分级响应] 仅在开关开启时拼接 confidence 字段指令，关闭时
+            # 渲染为空字符串，system prompt 与升级前完全一致。
+            confidence_instructions=(
+                pm.fragment("turn_judge", "CONFIDENCE_INSTRUCTIONS")
+                if getattr(tj_cfg_block, "auto_continue_with_note_enabled", False) else ""
+            ),
         ),
         max_turns=2,
         tools_enabled=False,   # 纯文本判定，不挂载任何工具（最小权限、最低延迟）

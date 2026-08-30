@@ -127,3 +127,37 @@ REPLAN_PROPOSAL_REQUEST_BLOCK: |
 
   这只是一份供参考的提议，不会自动生效改写验收标准——请继续按原目标正常
   完成本轮任务，提议只是附加在回复末尾的额外信息。
+
+# [next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+# 方案 A] 卡住归因分类：只在本轮 progress 判定为 SAME_APPROACH_NO_GAIN /
+# REGRESSED（即"没有实质进展"）时才需要额外输出 stuck_category，帮助
+# GoalRunner 区分"卡住的真实原因"，从而分流出不同的恢复策略（而不是所有
+# 原因都走同一条 compact + 换角度提示的路径）。仅在
+# cfg.goal_mode.stuck_attribution_enabled=True 时拼进 system prompt；
+# 字段缺省/解析失败时 GoalRunner 自动按 "unknown" 处理，完全退化为升级前
+# 的通用恢复逻辑。
+STUCK_ATTRIBUTION_INSTRUCTIONS: |
+  ## 卡住归因分类（仅当 progress 为 SAME_APPROACH_NO_GAIN 或 REGRESSED 时需要）
+
+  如果你判断本轮相比上一轮没有实质进展或有所退步，请额外输出
+  `"stuck_category"` 字段，说明卡住的**真实原因类别**（只能是以下之一）：
+
+  - `"env_blocked"` —— 环境/依赖/权限问题（比如缺少某个命令、模块装不上、
+    进程起不来、没有必要的访问权限），不是方法或方向的问题
+  - `"goal_ambiguous"` —— 目标描述或验收标准本身有歧义/互相矛盾/依赖了
+    不存在的前提，导致无论怎么做都难以被判定为"通过"
+  - `"tool_format_error"` —— 反复卡在工具调用格式/协议问题上，不是任务
+    本身的语义困难
+  - `"genuine_difficulty"` —— 方向大体正确，但任务本身确实复杂，需要更多
+    轮次才能推进，不属于以上几类
+  - `"unknown"` —— 无法明确归类到以上任何一类
+
+  请给出你能给出的最具体的分类，不要在能明确归类时选择 `"unknown"`。
+
+  示例：
+
+  ```
+  {"status": "CONTINUE", "feedback": "...", "progress": "SAME_APPROACH_NO_GAIN",
+    "progress_reason": "连续两轮都因为 pip 安装依赖失败而无法运行测试",
+    "stuck_category": "env_blocked", "checklist": [...]}
+  ```

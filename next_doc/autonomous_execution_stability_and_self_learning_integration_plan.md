@@ -1,5 +1,12 @@
 # 自动驱动执行稳定性改进计划：从"判定-恢复"到"归因-学习-预防"
 
+> **实施状态（持续更新）**：阶段 0（观测先行）、阶段 1（归因与自检）、
+> 阶段 2（分级响应）、阶段 3（判定过程回写经验，含 2D 失败模式聚合与预检
+> 事件沉淀）已完成首批代码落地，均默认关闭或纯增量、向后兼容。阶段 4
+> （多判官协同的实际决策接入 + 判官自动调整建议）尚未实现，仍是设计阶段，
+> 按计划要求"先生成建议、人工确认"，不做全自动闭环。各阶段的具体改动
+> 清单见文末"实施记录"一节。
+
 > 基于 `mini_agent-master` 实际代码梳理（`role_agents/turn_judge.py`、`role_agents/goal_judge.py`、
 > `role_agents/stuck_detector.py`、`role_agents/dispatcher.py`、`goal_mode/`、
 > `auto_quarantine.py`、`evolution/`、`wiki/`）。承接分析结论：项目已有一套较完整的
@@ -228,28 +235,51 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
 `next_doc` 文档一贯的"默认关闭 + 显式开关"风格保持一致。
 
 ### 阶段 0：观测先行（低风险，先落数据再谈决策）
+**状态：已实现。**
 - 落地方案 D.4 的 `judge_calibration_events.jsonl`（轻量记录，不接入任何自动决策）。
-- 落地方案 E 的冲突检测（先只记录、不改变行为，验证冲突频率是否值得后续投入）。
+- 落地方案 E 的冲突检测（先只记录、不改变行为，验证冲突频率是否值得后续投入）——
+  当前已提供 `record_conflict_event()` 与 `more_conservative_status()` 两个工具函数，
+  尚未在 GoalJudge/TurnJudge 之外找到一个稳定的"同轮双判官都跑"的调用点自动触发，
+  留给阶段 4 结合实际冲突场景接入调用方。
 - 目标：用真实数据验证后续方案的必要性和优先级，避免"想象出来的问题"。
 
 ### 阶段 1：归因与自检（预防优先，性价比最高）
+**状态：已实现。**
 - 方案 A：GoalJudge 归因分类字段 + `GoalRunner` 分流恢复策略（`stuck_category`
   缺省时行为不变，默认新分流逻辑关闭，走原有 compact 路径，验证一段时间后再默认开启）。
 - 方案 B：验收标准自检（GoalSpec 冻结前的轻量校验，默认开启，因为成本低、
   纯前置拦截不影响运行时行为）。
 
 ### 阶段 2：分级响应（减少不必要打断）
+**状态：已实现（TurnJudge 交互式路径）。**
 - 方案 C：`AUTO_CONTINUE_WITH_NOTE` 中间态，先只在 `goal_cron`（本身就是无人值守
   场景，用户对"事后审阅"接受度更高）落地，验证后再考虑扩展到交互式会话。
-- 依赖阶段 1 的归因分类作为置信度判断的输入之一。
+
+  **实际落地口径的调整**：先在 TurnJudge 交互式路径实现（成本更低、验证更快，
+  该路径本来就是每轮都会触发），`goal_cron` 场景的接入留给后续——`role_agents/
+  execution_notes.py` 的记录接口本身与调用方（交互式 / cron）无关，接入
+  `goal_cron` 只需要在对应触发点调用同一个 `append_execution_note()`，改动成本低，
+  不需要等到本阶段就设计新接口。
+- 依赖阶段 1 的归因分类作为置信度判断的输入之一——当前版本 TurnJudge 的
+  confidence 字段是判官独立自评的，尚未与 GoalJudge 的 stuck_category 打通
+  （两者服务于不同触发点，打通的价值需要更多真实数据支撑，留待后续评估）。
 
 ### 阶段 3：判定过程回写经验（与自我学习机制打通，核心交付）
+**状态：已实现（基础桥接完成，聚类升级路径为后续增强）。**
 - 方案 D.1：卡住恢复成功 → 正面经验回写 `wiki/experience_writer.py`。
 - 方案 D.2：`failure_pattern_store` 扩展二维聚合（task_category × stuck_category）。
 - 方案 D.3：GoalSpec 自检问题接入 `lesson_review` 聚类升级路径。
+
+  **实际落地口径的调整**：D.3 当前只完成了"事件记录 + 聚合"（`goal_spec_
+  preflight_events.jsonl` → `run_failure_pattern_aggregation_once()`），
+  还没有把这类事件接入 `perception/lesson_review.py` 的 T1/T2/T3 聚类升级
+  门槛判定——先用 `failure_pattern_store` 现成的聚合与展示能力验证"这类
+  预检问题是否真的高频、值得升级为前馈提醒"，值得投入后再对接完整的
+  lesson 聚类链路，避免过早接入一条重量级流水线。
 - 这三项都是"接入已有基础设施"的性质，互相独立，可以并行推进，不要求全部完成才上线。
 
 ### 阶段 4：多判官协同与自动化决策收紧（谨慎推进）
+**状态：未实现，仍是设计阶段。**
 - 方案 E 从"仅记录"升级为"实际影响判定"（取多判官最保守值）。
 - 基于阶段 0-3 积累的真实校准数据，评估是否要开始自动调整判官 prompt/阈值
   （方案 D.4 后半段），这一步涉及判官行为的自动演化，风险较高，建议放在最后，
@@ -298,3 +328,59 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
   机制，不新增独立的节流逻辑。
 - **风险 3**：判官自动调整（阶段 4 后半段）风险最高，明确要求"先生成建议、人工确认"，
   不做全自动闭环，避免判官行为漂移不可控。
+
+---
+
+## 七、实施记录（按阶段列出实际改动文件）
+
+### 阶段 0：观测先行
+
+| 文件 | 改动类型 | 说明 |
+|---|---|---|
+| `src/mini_agent/role_agents/judge_calibration.py` | 新增 | 判官校准事件 / 冲突事件 JSONL 记录，`more_conservative_status()` 供阶段 4 使用 |
+| `src/mini_agent/goal_mode/runner.py` | 修改 | `_run_judge()` 末尾记录一次 `judge_calibration` 事件 |
+| `src/mini_agent/agent/role_judge.py` | 修改 | TurnJudge 判定后记录一次 `judge_calibration` 事件（含 confidence，若有） |
+
+### 阶段 1：归因与自检
+
+| 文件 | 改动类型 | 说明 |
+|---|---|---|
+| `src/mini_agent/config/models.py` | 修改 | `GoalModeConfig` 新增 `stuck_attribution_enabled`（默认 False）、`goal_spec_preflight_check_enabled`（默认 True）、`stuck_recovery_experience_write_enabled`（默认 False） |
+| `src/mini_agent/prompts/fragments/goal_mode.md` | 修改 | 新增 `STUCK_ATTRIBUTION_INSTRUCTIONS` 片段（`stuck_category` 枚举定义） |
+| `src/mini_agent/role_agents/goal_judge.py` | 修改 | `run_goal_judge()` 新增 `stuck_attribution_enabled` 参数，拼接进 system prompt |
+| `src/mini_agent/goal_mode/runner.py` | 修改 | 解析 `stuck_category`；新增 `_try_attributed_recovery()` 按分类分流（env_blocked / goal_ambiguous / tool_format_error 有专属处理，genuine_difficulty / unknown 回退原逻辑）；`_record_dead_end()` 附带落盘 `stuck_category` |
+| `src/mini_agent/goal_mode/spec.py` | 修改 | `GoalSpec` 新增 `validate_verifiability()` 启发式自检方法 |
+| `src/mini_agent/cli/commands/goal_mode_cmd.py` | 修改 | 协商循环里调用自检、打印警告、记录预检事件 |
+
+### 阶段 2：分级响应
+
+| 文件 | 改动类型 | 说明 |
+|---|---|---|
+| `src/mini_agent/config/models.py` | 修改 | `TurnJudgeConfig` 新增 `auto_continue_with_note_enabled`（默认 False）、`auto_continue_confidence_threshold`（默认 0.6） |
+| `src/mini_agent/role_agents/execution_notes.py` | 新增 | 低置信度 `AUTO_CONTINUE_WITH_NOTE` 场景的执行摘要记录 / 读取接口 |
+| `src/mini_agent/prompts/fragments/turn_judge.md` | 新增 | `CONFIDENCE_INSTRUCTIONS` 片段 |
+| `src/mini_agent/prompts/system/turn_judge.md` | 修改 | 新增 `{{confidence_instructions}}` 插槽 |
+| `src/mini_agent/role_agents/turn_judge.py` | 修改 | `run_turn_judge()` 按开关拼接 confidence 指令片段 |
+| `src/mini_agent/agent/role_judge.py` | 修改 | 解析 `confidence` 字段；低于阈值时记执行摘要而非强制升级为 `NEED_USER` |
+
+### 阶段 3：判定过程回写经验
+
+| 文件 | 改动类型 | 说明 |
+|---|---|---|
+| `src/mini_agent/goal_mode/runner.py` | 修改 | 新增 `_maybe_record_recovery_success()`，卡住恢复后确认无再次卡住则回写正面经验；三条归因分流路径与通用恢复路径都会设置 `_pending_recovery_context` |
+| `src/mini_agent/evolution/failure_pattern_store.py` | 修改 | `_read_dead_end_failures()` 优先使用结构化 `stuck_category`（回退正则分类）；新增 `record_goal_spec_preflight_issue()` / `_read_goal_spec_preflight_issues()` 并接入 `run_failure_pattern_aggregation_once()`；新增 `get_stuck_category_breakdown()` 供后续 `sys:self_eval` 精准降置信度使用 |
+
+### 阶段 4：未实现
+
+设计已在第三节"方案 E"和第四节阶段规划中给出，代码层面仅提供了
+`judge_calibration.more_conservative_status()` 这一个可复用的纯函数，尚未接入
+任何实际决策路径。后续实施建议：先用阶段 0 积累至少若干周的
+`judge_calibration_events.jsonl` / `judge_conflict_events.jsonl` 真实数据，
+确认冲突频率和误判模式后，再决定是否值得投入。
+
+### 后续可继续推进的方向（不影响当前已交付内容）
+
+1. `goal_cron` 场景接入 `execution_notes.append_execution_note()`（阶段2遗留）。
+2. `goal_spec_preflight_events.jsonl` 接入 `perception/lesson_review.py` 完整聚类升级门槛判定（阶段3 D.3 遗留）。
+3. TurnJudge confidence 与 GoalJudge stuck_category 的联合判断（阶段2遗留，价值待评估）。
+4. 阶段 4 的多判官冲突消解与判官自动调整建议生成。
