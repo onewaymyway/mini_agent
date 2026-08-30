@@ -1885,6 +1885,14 @@ class DigestAdvisorConfig:
     decision_profile_enabled: bool = False
     decision_profile_min_evidence_count: int = 3
 
+    # ── [self_awareness_identity_evolution_plan.md §2.1] Agent 自身价值观 ──
+    # 归纳逻辑本身默认可用（/agent_value_profile update 手动触发不受此项
+    # 影响），这里的 enabled 只控制 sys:agent_value_profile_update cron
+    # job 的默认状态；与 decision_profile 同一取舍（阶段三/新机制先保守
+    # 默认 opt-in cron，手动触发不受限）。
+    agent_value_profile_enabled: bool = False
+    agent_value_profile_min_evidence_count: int = 3
+
 
 @dataclass
 class GrowthAdvisorConfig:
@@ -2445,6 +2453,14 @@ class PersonaCandidateConfig:
     # `GrowthAdvisorConfig.max_pending_candidates` 的节流思路。
     topic_signal_top_n: int = 8
     wiki_miss_signal_top_n: int = 8
+
+    # [self_awareness_identity_evolution_plan.md §2.7] 失败驱动候选信号：
+    # 第三路信号来源，读取 failure_pattern_store 里达到 min_occurrence
+    # 阈值的高频失败类别。默认阈值沿用 failure_pattern_store 已有的
+    # min_occurrence=3，比 growth/wiki_miss 更保守，避免偶发失败被
+    # 过度解读为"需要专门人设"。
+    failure_signal_top_n: int = 8
+    failure_signal_min_occurrence: int = 3
 
 
 @dataclass

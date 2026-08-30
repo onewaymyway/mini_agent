@@ -45,6 +45,7 @@ from mini_agent.cli.commands import (
     handle_profile_cmd,
     handle_growth_cmd,
     handle_capability_cmd,)
+from mini_agent.cli.commands.agent_value_profile_cmd import handle_agent_value_profile_cmd
 
 
 def _print_resume_hint(agent: Agent) -> None:
@@ -474,6 +475,12 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         # 已经在用的 `sys:decision_profile_update` cron job 命名保持一致，
         # 避免语义混淆的同时也不需要再抢占既有的 /profile 语义。
         handle_profile_cmd(parts[1:], agent)
+
+    elif name == "agent_value_profile":
+        # [next_doc/self_awareness_identity_evolution_plan.md §2.1] 姊妹
+        # 命令：/decision_profile 归纳用户决策画像，这里归纳 agent 自己的
+        # 历史选择行为。
+        handle_agent_value_profile_cmd(parts[1:], agent)
 
     elif name == "growth":
         # [next_doc/growth_advisor_design.md] 成长顾问：见

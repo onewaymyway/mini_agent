@@ -73,7 +73,7 @@ class PersonaCandidate:
     rationale: str
     evidence_count: int
     evidence_refs: list[str] = field(default_factory=list)
-    source: str = "manual_scan"       # growth_topic / wiki_miss / manual_scan（混合信号时用 manual_scan）
+    source: str = "manual_scan"       # growth_topic / wiki_miss / failure_pattern / manual_scan（混合信号时用 manual_scan）
     dedupe_key: str = ""
     status: str = STATUS_PENDING
     created_at: float = field(default_factory=time.time)
@@ -256,10 +256,43 @@ def _collect_wiki_miss_signals(paths: AgentPaths, track_store, top_n: int) -> li
     return [{"query": q, "count": n} for q, n in ranked[:top_n]]
 
 
+def _collect_failure_signals(paths: AgentPaths, top_n: int, min_occurrence: int) -> list[dict]:
+    """[self_awareness_identity_evolution_plan.md §2.7] 第三路信号：读取
+    `failure_pattern_store.py` 已经聚合好的高频失败类别（同一类任务反复
+    卡在同一语义原因），不新增第二套失败统计，直接复用
+    `load_failure_patterns()` 按 `min_occurrence` 过滤后取 Top N。
+
+    与 `_collect_topic_signals`/`_collect_wiki_miss_signals` 取向不同：
+    那两路问"这是不是值得养成的兴趣方向"，这一路问"这是不是一个反复暴露
+    短板、值得专门养成一个人设/能力方向来补强的领域"。
+    """
+    from mini_agent.evolution.failure_pattern_store import load_failure_patterns
+
+    patterns = load_failure_patterns(paths)
+    ranked = [
+        p for p in patterns
+        if int(p.get("occurrence_count", 0) or 0) >= min_occurrence
+    ]
+    return [
+        {
+            "task_category": p.get("task_category", ""),
+            "root_cause_tag": p.get("root_cause_tag", ""),
+            "occurrence_count": p.get("occurrence_count", 0),
+            "example_summary": p.get("example_summary", ""),
+        }
+        for p in ranked[:top_n]
+    ]
+
+
 # ── §4.1 LLM 候选提炼 prompt/解析 ────────────────────────────────────────
 
+_CANDIDATE_SOURCES = ("growth_topic", "wiki_miss", "failure_pattern", "manual_scan")
 
-def _build_extraction_prompt(topic_signals: list[dict], miss_signals: list[dict]) -> str:
+
+def _build_extraction_prompt(
+    topic_signals: list[dict], miss_signals: list[dict], failure_signals: Optional[list[dict]] = None
+) -> str:
+    failure_signals = failure_signals or []
     topic_lines = "\n".join(
         f"- {s['topic']}（关键词：{', '.join(s['keywords'])}）"
         for s in topic_signals
@@ -267,26 +300,40 @@ def _build_extraction_prompt(topic_signals: list[dict], miss_signals: list[dict]
     miss_lines = "\n".join(
         f"- {s['query']}（出现 {s['count']} 次）" for s in miss_signals
     ) or "（无）"
+    failure_lines = "\n".join(
+        f"- {s['task_category']}（因「{s['root_cause_tag']}」反复失败 {s['occurrence_count']} 次"
+        + (f"：{s['example_summary']}" if s.get("example_summary") else "")
+        + "）"
+        for s in failure_signals
+    ) or "（无）"
     return (
-        "下面是从这个人最近的对话记忆/知识检索记录里整理出的一些原始信号"
-        "（不代表最终结论，只是素材）：\n\n"
+        "下面是从这个人最近的对话记忆/知识检索记录/任务执行失败记录里整理出的"
+        "一些原始信号（不代表最终结论，只是素材）：\n\n"
         "【持续关注的方向】（来自成长顾问，用户反复表现出兴趣并已确认）\n"
         f"{topic_lines}\n\n"
         "【反复检索但目前没有对应知识沉淀的内容】（来自知识库未命中记录）\n"
         f"{miss_lines}\n\n"
-        "请你站在\"是否值得为这个人养成一个专属的人设/能力方向，让 Agent 持续"
-        "学习、专精支撑 ta\"的角度，重新判断、提炼出 0 到 5 个值得建议的人设/"
-        "能力方向。不要求和上面的原始素材字面一致——原始素材可能是从别的场景"
-        "（成长方向追踪/单次检索）提炼出来的，角度不一定适合直接当人设标题，"
-        "请你重新组织表述。如果原始素材不足以支撑任何靠谱的建议，可以输出"
-        "空列表，不要为了凑数量硬造。\n\n"
+        "【反复暴露的短板】（来自任务执行失败模式聚合，同一类任务反复卡在"
+        "同一语义原因）\n"
+        f"{failure_lines}\n\n"
+        "请你站在两个角度分别判断，提炼出 0 到 5 个值得建议的人设/能力方向：\n"
+        "1）对【持续关注的方向】【反复检索但没有沉淀的内容】——是否值得为这个人"
+        "养成一个专属的人设/能力方向，让 Agent 持续学习、专精支撑 ta；\n"
+        "2）对【反复暴露的短板】——是否值得专门养成一个人设/能力方向来针对性"
+        "补强这个短板。\n"
+        "不要求和上面的原始素材字面一致——原始素材可能是从别的场景提炼出来的，"
+        "角度不一定适合直接当人设标题，请你重新组织表述。如果某一类原始素材"
+        "不足以支撑任何靠谱的建议，对应角度可以不产出，不要为了凑数量硬造。\n\n"
         "请只输出如下 JSON 数组，不要输出任何其它文字：\n"
         "[\n"
         "  {\n"
         "    \"title\": \"人设/能力方向标题，简洁，不超过 20 字\",\n"
         "    \"persona_desc\": \"一段 1-2 句的简介，说明这个人设/能力方向具体是"
         "指什么、大致覆盖哪些子领域\",\n"
-        "    \"rationale\": \"为什么建议这个方向，需要提到依据了上面哪些原始信号\"\n"
+        "    \"rationale\": \"为什么建议这个方向，需要提到依据了上面哪些原始信号\",\n"
+        "    \"source\": \"这条候选主要依据哪类信号，只能是 growth_topic / "
+        "wiki_miss / failure_pattern 三者之一；如果确实是混合多类信号得出，"
+        "才用 manual_scan\"\n"
         "  }\n"
         "]"
     )
@@ -320,7 +367,15 @@ def _parse_llm_candidates_json(raw: str) -> list[dict]:
         rationale = str(item.get("rationale", "")).strip()
         if not title or not persona_desc:
             continue
-        out.append({"title": title[:60], "persona_desc": persona_desc, "rationale": rationale})
+        source = str(item.get("source", "")).strip()
+        if source not in _CANDIDATE_SOURCES:
+            source = "manual_scan"
+        out.append({
+            "title": title[:60],
+            "persona_desc": persona_desc,
+            "rationale": rationale,
+            "source": source,
+        })
     return out
 
 
@@ -328,10 +383,12 @@ def _extract_candidates_with_llm(
     topic_signals: list[dict],
     miss_signals: list[dict],
     llm_helper: Callable[[str], str],
+    failure_signals: Optional[list[dict]] = None,
 ) -> list[dict]:
-    if not topic_signals and not miss_signals:
+    failure_signals = failure_signals or []
+    if not topic_signals and not miss_signals and not failure_signals:
         return []
-    prompt = _build_extraction_prompt(topic_signals, miss_signals)
+    prompt = _build_extraction_prompt(topic_signals, miss_signals, failure_signals)
     try:
         raw = llm_helper(prompt)
     except Exception:
@@ -408,14 +465,19 @@ def scan_persona_candidates(
 
     topic_top_n = getattr(cfg, "topic_signal_top_n", 8)
     miss_top_n = getattr(cfg, "wiki_miss_signal_top_n", 8)
+    failure_top_n = getattr(cfg, "failure_signal_top_n", 8)
+    failure_min_occurrence = getattr(cfg, "failure_signal_min_occurrence", 3)
     cooldown_days = getattr(cfg, "dismissed_cooldown_days", 30)
 
     topic_signals = _collect_topic_signals(profile, topic_top_n)
     miss_signals = _collect_wiki_miss_signals(paths, track_store, miss_top_n)
-    if not topic_signals and not miss_signals:
+    failure_signals = _collect_failure_signals(paths, failure_top_n, failure_min_occurrence)
+    if not topic_signals and not miss_signals and not failure_signals:
         return []
 
-    raw_candidates = _extract_candidates_with_llm(topic_signals, miss_signals, llm_helper)
+    raw_candidates = _extract_candidates_with_llm(
+        topic_signals, miss_signals, llm_helper, failure_signals=failure_signals
+    )
     if not raw_candidates:
         return []
 
@@ -423,9 +485,11 @@ def scan_persona_candidates(
     dismissed_titles = _dismissed_title_pool(candidate_store, cooldown_days)
     dedupe_pool = existing_titles + dismissed_titles
 
-    evidence_refs = [f"topic:{s['topic']}" for s in topic_signals] + [
-        f"wiki_miss:{s['query']}" for s in miss_signals
-    ]
+    evidence_refs = (
+        [f"topic:{s['topic']}" for s in topic_signals]
+        + [f"wiki_miss:{s['query']}" for s in miss_signals]
+        + [f"failure_pattern:{s['task_category']}" for s in failure_signals]
+    )
     evidence_count = len(evidence_refs)
 
     created: list[PersonaCandidate] = []
@@ -453,7 +517,7 @@ def scan_persona_candidates(
             rationale=item.get("rationale", ""),
             evidence_count=evidence_count,
             evidence_refs=evidence_refs,
-            source="manual_scan",
+            source=item.get("source", "manual_scan"),
             dedupe_key=key,
         )
         candidate_store.add(candidate)

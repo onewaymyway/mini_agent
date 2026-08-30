@@ -320,6 +320,19 @@ _BUILTIN_JOBS: list[dict] = [
         "enabled": False,
     },
     {
+        # [next_doc/self_awareness_identity_evolution_plan.md §2.1] Agent
+        # 自身价值观：观察 agent 自己的历史选择行为（当前接入 StateRepo
+        # 风险分级 commit），与 decision_profile_update（观察用户决策）
+        # 是姊妹 job，同一保守默认（opt-in）。
+        "id": "sys:agent_value_profile_update",
+        "name": "Agent 自身价值观归纳",
+        "schedule": "interval:604800",
+        "description": "从 agent 自身历史选择行为（StateRepo 风险分级 commit）归纳可追溯的偏好模式（每 7 天，证据不足 3 条的模式不落地）",
+        "task_template": "[画像] 执行一次 /agent_value_profile update，归纳 agent 自身价值观并落盘",
+        "tags": ["profile", "wiki", "self-awareness"],
+        "enabled": False,
+    },
+    {
         # [next_doc/growth_advisor_design.md] 成长顾问：信号扫描 + 候选生成 +
         # Top-N 调研报告。默认 enabled=True 与 GrowthAdvisorConfig.enabled
         # 的默认值保持一致（opt-out），实际是否运行由
@@ -661,6 +674,10 @@ class CronScheduler:
             ),
             "sys:decision_profile_update": (
                 self._digest_advisor_cfg.decision_profile_enabled
+                if self._digest_advisor_cfg is not None else None
+            ),
+            "sys:agent_value_profile_update": (
+                self._digest_advisor_cfg.agent_value_profile_enabled
                 if self._digest_advisor_cfg is not None else None
             ),
         }

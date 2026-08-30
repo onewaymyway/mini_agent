@@ -4213,6 +4213,19 @@ async def get_self_portrait(request: Request):
                              （name/description/active），程序化列出
                              "现在有哪些能力可用"，与 capability_map的
                              "实测结果"互补（一个是声明，一个是实测）
+      agent_value_profile   — [self_awareness_identity_evolution_plan.md
+                             §2.1] evolution/agent_value_profile_builder.py
+                             产出的 AgentValuePattern 列表：agent 自己的
+                             历史选择行为（当前仅接入 StateRepo 风险分级
+                             commit）归纳出的偏好倾向，与 self_assessment
+                             （能力自评）是两个维度，互不覆盖
+      body_inventory       — [self_awareness_identity_evolution_plan.md
+                             §2.5]"身体清单"：把 LLM provider 池/技能目录/
+                             子 agent 编排能力这几类已存在的行动接口，
+                             重新组织为一份"我现在有哪些身体"的视图。
+                             纯展示层面重新组织，数据全部来自本端点内
+                             已经在计算的 llm_pool 状态和 skills 目录，
+                             不新增采集逻辑。
 
     全部只读聚合，不触发任何计算/写入；单用户模式下也可用。
     """
@@ -4228,6 +4241,8 @@ async def get_self_portrait(request: Request):
         "capability_map": [],
         "capability_trend": [],
         "skills": [],
+        "agent_value_profile": [],
+        "body_inventory": {},
     }
 
     self_agent = http_server.bridge.agent
@@ -4267,6 +4282,13 @@ async def get_self_portrait(request: Request):
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.capability_trend')
+
+            try:
+                from mini_agent.evolution.agent_value_profile_builder import load_agent_value_profile
+                result["agent_value_profile"] = load_agent_value_profile(paths)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.agent_value_profile')
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait')
@@ -4278,6 +4300,29 @@ async def get_self_portrait(request: Request):
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.skills')
+
+    try:
+        # [self_awareness_identity_evolution_plan.md §2.5] "身体清单"：
+        # 复用已有健康检查数据（LLM provider 池故障转移状态、skills 目录、
+        # 是否具备子 agent 编排能力），按"行动接口"分类重新组织展示，
+        # 不新增采集逻辑。
+        from mini_agent.perception.sentinel import read_llm_pool_snapshot
+
+        pool = getattr(self_agent, "_client_pool", None) if self_agent else None
+        llm_snap = read_llm_pool_snapshot(pool)
+        skills_list = result["skills"] if isinstance(result["skills"], list) else []
+        result["body_inventory"] = {
+            "llm_providers": (
+                {**llm_snap, "enabled": True} if llm_snap is not None
+                else {"entries": [], "current": 0, "switched_from_preferred": False, "enabled": False}
+            ),
+            "skills": {"count": len(skills_list)},
+            "browser_core": {"available": bool(getattr(self_agent, "browser_core", None))} if self_agent else {"available": False},
+            "sub_agent_orchestration": {"available": bool(getattr(self_agent, "task_manager", None))} if self_agent else {"available": False},
+        }
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.body_inventory')
 
     return result
 

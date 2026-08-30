@@ -222,15 +222,57 @@ skill 系统、tool registry、hybrid_exec 里各自配置，没有一个地方�
 
 ## 3. 实施阶段划分
 
-### 阶段一（近期，直接复用现有基础设施，改动集中、风险低）
+### 阶段一（近期，直接复用现有基础设施，改动集中、风险低）— 已完成（2026-08-30）
 
 1. §2.1 Agent 自身价值观：`AgentValueProfile` 数据结构 + 归纳 job +
    `agent_value_profile.md` 落盘 + 只读端点。
+   - **已实现**：新增 `evolution/agent_value_profile_builder.py`（复用
+     `decision_profile_builder.py` 的三层结构：证据 → LLM 归纳 → 落盘，
+     矛盾证据不覆盖只降权）；`/agent_value_profile [update]` CLI 命令
+     （`cli/commands/agent_value_profile_cmd.py`）；
+     `sys:agent_value_profile_update` cron job（默认 `enabled: False`，
+     与 `sys:decision_profile_update` 同一保守默认）；`/self/portrait`
+     新增 `agent_value_profile` 只读字段。
+   - **证据源范围（已知限制，如实记录）**：本阶段仅接入了 `StateRepo`
+     commit 历史的风险分级（T0-T3）作为证据源。方案原文提到的另外两个
+     证据源——Goal/Objective 优先级选择、`soft_goal_deriver` 候选取舍
+     记录——未接入：`GoalNode`/`_DeriveCandidate` 当前不持久化候选的
+     `source_tag`（capability/workthread/lesson/...），无法从落盘的
+     `goal_backlog.json` 可靠反查"当初是因为哪类信号被选中"，强行从
+     标题/优先级反推容易引入不实归因，因此没有实现，留待 `GoalNode`
+     补上 `source_tag` 持久化字段后再接入。
 2. §2.7 人格候选新增失败信号来源：`_collect_failure_signals()` +
    prompt 调整 + `PersonaCandidate.source` 字段，复用现有状态机和
    HTTP/CLI/cron 接线模式。
+   - **已实现**：`evolution/persona_candidates.py` 新增
+     `_collect_failure_signals()`（复用
+     `failure_pattern_store.load_failure_patterns()`，按
+     `failure_signal_min_occurrence` 过滤 + Top N 截断）；LLM 候选提炼
+     prompt 新增"反复暴露的短板"信号区块，要求 LLM 从"是否值得养成兴趣
+     方向"和"是否值得针对性补短板"两个角度分别判断；LLM 输出新增
+     `source` 字段（`growth_topic`/`wiki_miss`/`failure_pattern`/
+     `manual_scan`），解析时校验合法性、非法或缺失回退 `manual_scan`；
+     `PersonaCandidateConfig` 新增 `failure_signal_top_n`/
+     `failure_signal_min_occurrence`（默认沿用 `failure_pattern_store`
+     的 `min_occurrence=3`）。
+   - **顺手修复**：此前 `scan_persona_candidates()` 里 `source` 字段
+     一直硬编码为 `"manual_scan"`，尽管 dataclass 注释早已声明
+     `growth_topic`/`wiki_miss` 两个值——候选来源从未被真实归因过。
+     现在改为让 LLM 在提炼阶段直接标注来源，三路信号（含新增的
+     `failure_pattern`）都能在候选列表里被正确区分。
 3. §2.5 身体清单：`/self/portrait` 扩展一个只读区块，聚合已有健康检查
    端点数据，不新增采集逻辑，改动量最小。
+   - **已实现**：`/self/portrait` 新增 `body_inventory` 字段，聚合
+     LLM provider 池故障转移状态（复用 `perception/sentinel.py::
+     read_llm_pool_snapshot()`，与 `/self/llm_pool_status` 同一份逻辑）、
+     skills 目录计数（复用本端点已经计算的 `skills` 字段）、
+     browser_core/子 agent 编排（`task_manager`）是否可用。纯展示层
+     重新组织，未新增采集逻辑。
+
+**测试**：`tests/test_agent_value_profile_builder.py`（10 用例）+
+`tests/test_persona_candidates_failure_signal.py`（10 用例），阶段一
+相关测试合计 79 passed（含既有 `test_failure_pattern_store.py`/
+`test_state_repo.py`/`test_cron_scheduler.py` 回归）。
 
 ### 阶段二（中期，需要新的周期性 job 和叙事生成逻辑）
 

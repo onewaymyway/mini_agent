@@ -371,6 +371,17 @@ class AgentPaths:
         """<project_root>/.agent/decision_profile_state.json — 决策画像归纳的运行状态（上次扫描时间等）"""
         return self.workdir_dir / "decision_profile_state.json"
 
+    @property
+    def agent_value_profile_path(self) -> Path:
+        """<project_root>/.agent/wiki/agent_value_profile.md — Agent 自身价值观
+        （self_awareness_identity_evolution_plan.md §2.1，区别于 user_value_profile.md）"""
+        return self.wiki_dir / "agent_value_profile.md"
+
+    @property
+    def agent_value_profile_state_path(self) -> Path:
+        """<project_root>/.agent/agent_value_profile_state.json — Agent 自身价值观归纳的运行状态"""
+        return self.workdir_dir / "agent_value_profile_state.json"
+
     # ── 成长顾问 Growth Advisor（growth_advisor_design.md）────────────────
 
     @property

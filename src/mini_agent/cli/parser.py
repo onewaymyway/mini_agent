@@ -121,6 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
               /next [refresh]             Show (or recompute) the ranked next-action recommendations
               /decision_profile           Show the current decision/value profile (wiki/user_value_profile.md)
               /decision_profile update    Re-summarize the decision profile now (requires LLM helper)
+              /agent_value_profile        Show the agent's own value profile (wiki/agent_value_profile.md)
+              /agent_value_profile update Re-summarize the agent's own value profile now (requires LLM helper)
               /growth [list]              Show pending growth-direction candidates (Growth Advisor)
               /growth scan                Run one signal scan + candidate derive + top-N report cycle now
               /growth accept|dismiss <id> Mark a candidate accepted/dismissed
