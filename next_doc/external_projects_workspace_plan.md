@@ -795,3 +795,10 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   `<root>/workflows`，没有 `project.yaml` 的普通目录行为不变。详见
   `next_doc/external_projects_agent_skill_workflow_integration_plan.md`
   第 1 节。
+- 2026-08-30（同上，补记）：同一轮实测还发现外部项目触发 workflow/
+  skill_agent 时无法拿到 LLM API key（外部项目自己目录下没有
+  `providers.json`，环境变量里也未必有）。已给 `load_config()` 加了
+  "外部项目自己没有 `agent_config.json`/`providers.json` 时，回退到
+  `<主项目根>/external_projects/<name>/` 约定推出的主项目根去找同名
+  文件"这条 fallback，外部项目不再需要重复维护一份 API key。详见同一
+  文档第 1.4 节。

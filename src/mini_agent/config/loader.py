@@ -182,21 +182,37 @@ def load_config(
     """
     root = project_root or Path.cwd()
 
+    # [external_projects_agent_skill_workflow_integration_plan.md 第2节]
+    # 外部项目（`<root>/project.yaml` 存在）调用 workflow/skill_agent 等
+    # 主 agent 功能时，LLM 相关配置（provider/model/api_key）应该沿用
+    # 主 agent 项目的配置，而不是要求每个外部项目自己维护一份
+    # agent_config.json/providers.json——外部项目关心的是自己的业务逻辑
+    # （抓取、报告），不应该也不需要重复管理 API key。约定：外部项目固定
+    # 挂在 `<主项目根>/external_projects/<name>/` 下（与
+    # `external_projects_workspace_plan.md` 5.1 节的目录结构一致），据此
+    # 直接推导主项目根，不需要额外配置或猜测式向上遍历。
+    _main_project_root = _resolve_main_project_root(root)
+
     # ── JSON 配置文件 ─────────────────────────────────────────────────────────
     file_cfg: dict = {}
     if config_file is not None:
         file_cfg = _load_config_file(config_file)
     else:
         default_cfg_path = root / "agent_config.json"
+        if not default_cfg_path.exists() and _main_project_root is not None:
+            default_cfg_path = _main_project_root / "agent_config.json"
         if default_cfg_path.exists():
             file_cfg = _load_config_file(default_cfg_path)
 
     # ── Providers 独立配置文件（含 API key，默认 providers.json）─────────────
-    # 优先级：--providers-config CLI 参数 > 项目根目录的 providers.json
-    _providers_cfg_path: Optional[Path] = (
-        providers_config_file
-        or (root / "providers.json" if (root / "providers.json").exists() else None)
-    )
+    # 优先级：--providers-config CLI 参数 > 项目根目录的 providers.json >
+    # 主 agent 项目根目录的 providers.json（外部项目专属 fallback，见上）
+    _providers_cfg_path: Optional[Path] = providers_config_file
+    if _providers_cfg_path is None:
+        if (root / "providers.json").exists():
+            _providers_cfg_path = root / "providers.json"
+        elif _main_project_root is not None and (_main_project_root / "providers.json").exists():
+            _providers_cfg_path = _main_project_root / "providers.json"
     _providers_cfg: dict = (
         _load_providers_config(_providers_cfg_path)
         if _providers_cfg_path is not None
@@ -975,6 +991,26 @@ def load_config(
 
 
 # ── 辅助函数（不变）──────────────────────────────────────────────────────────
+
+def _resolve_main_project_root(root: Path) -> Optional[Path]:
+    """
+    [external_projects_agent_skill_workflow_integration_plan.md 第2节]
+    若 `root` 是一个外部项目根（`<root>/project.yaml` 存在）且按约定挂在
+    `<主项目根>/external_projects/<name>/` 下，返回主项目根；否则返回
+    `None`（包括 `root` 本身就是主项目根、或不是外部项目、或外部项目没有
+    按约定摆放这三种情况——都不做无依据的向上猜测式遍历，找不到就是
+    `None`，交回环境变量兜底）。
+    """
+    try:
+        if not (root / "project.yaml").exists():
+            return None
+        if root.parent.name != "external_projects":
+            return None
+        main_root = root.parent.parent
+        return main_root if main_root.is_dir() else None
+    except OSError:
+        return None
+
 
 def _load_config_file(path: Path) -> dict:
     import json as _json

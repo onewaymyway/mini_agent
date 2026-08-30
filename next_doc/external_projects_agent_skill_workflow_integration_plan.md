@@ -83,7 +83,47 @@
 `apply_to()` 显式写 `cfg.skills_dir = self.skills_dir` 这一步，本次不
 提前做（避免在没有真实用例的情况下猜测该覆盖到什么粒度）。
 
-## 2. stock_watch 落地案例：个股 AI 综合研判
+### 1.4 LLM 配置（api_key/provider/model）同样要从主项目继承
+
+修完 1.2 节两处路径解析后，实测触发 `stock_analysis_ai` workflow 仍然
+在 2 秒内就失败、`workflow run` 的 CLI 子进程 `returncode=0`（见变更
+记录里记的复现现象）。定位到两个问题，这里记第二个（第一个见 2.1 节
+"改用 `WorkflowRunner` 直接调用，不再依赖 CLI 子进程退出码"）：
+
+`config/loader.py::load_config(project_root=...)` 读取 `providers.json`
+（含 API key）/`agent_config.json` 时，只认 `<project_root>/providers.json`
+——外部项目自己的目录下本来就没有、也不应该有这两个文件（外部项目关心
+业务逻辑，不应该重复维护一份 API key），于是 `api_key` 兜底到环境变量，
+如果主 agent 的 API key 是放在主项目的 `providers.json` 里而不是环境
+变量里，外部项目这边就拿到空 `api_key`，`skill_agent` step 一上来初始化
+LLM 客户端就失败，正好对应"跑得飞快、CLI 退出码却是 0"这个现象（CLI
+退出码本来就不代表 workflow 是否成功，见 2.1 节）。
+
+修正：`load_config()` 新增 `_resolve_main_project_root(root)`——按
+`external_projects_workspace_plan.md` 5.1 节"外部项目固定挂在
+`<主项目根>/external_projects/<name>/` 下"这条已有约定，从
+`root.parent.parent` 直接推出主项目根（`root.parent.name ==
+"external_projects"` 时才生效，不做无依据的向上猜测式遍历）。
+`agent_config.json`/`providers.json` 的解析都改成"先看外部项目自己
+目录下有没有 → 没有则回退到主项目根目录下的同名文件 → 都没有才落到
+环境变量"，外部项目自己有配置时优先级不变（仍然是自己的优先），只在
+自己没有时才继承主项目的。已用临时目录跑了三种场景验证：外部项目无
+自身配置时正确拿到主项目 api_key/provider；外部项目有自身配置时优先用
+自己的；普通交互式目录（无 `project.yaml`）行为完全不受影响。
+
+### 1.5 另一处实测踩坑：CLI 子进程退出码不代表 workflow 成败
+
+除 1.4 节记的 LLM 配置继承问题外，`run_stock_analysis_ai.py` 最初版本
+还有一个独立问题：用 `subprocess` 调 `mini-agent workflow run` CLI，而
+`run_workflow_cli()` 的既有约定是"命令本身有没有跑起来"和"工作流执行
+结果好不好"是两回事——前台同步执行即使工作流内部某个 step 失败，CLI
+进程退出码依然是 0（结果只体现在打印到 stdout 的摘要文本里，跨进程用
+文本解析结构化结果本来就脆弱）。已改为直接在 entrypoint 进程内调用
+`WorkflowRunner.run()`，拿到结构化的 `WorkflowRunResult`
+（`status`/`step_results[].error`），不再依赖子进程退出码或文本输出
+判断成败，失败原因也能准确记进账本的 `detail` 字段，便于事后排查。
+
+
 
 `run_stock_analysis.py`（既有）只抓材料、不调 LLM。新增
 `run_stock_analysis_ai.py`，补上"AI 综合研判"这一步，同时是本文档
@@ -124,7 +164,7 @@ run_stock_analysis_ai.py <code> [name]
   不单独开新的调度通道，未来若接入 daemon 定时触发，天然复用同一份
   `CronJobRunner` 并发资源。
 
-## 3. workflow / hybrid_exec 分别适合股票系统的什么功能（设计思考，本轮暂不实现）
+## 2. workflow / hybrid_exec 分别适合股票系统的什么功能（设计思考，本轮暂不实现）
 
 结合 `stock_watch` 现有四大功能（热点候选池、K 线批量、条件选股、个股
 分析）和候选池状态跟踪机制，梳理"这类需求该用 skill、workflow 还是
@@ -169,7 +209,7 @@ hybrid_exec"的判断依据，供后续迭代参考：
   过早实现容易设计错，留到看到"研判功能实际用起来之后暴露出的真实
   需求"时再动手。
 
-## 4. 变更记录
+## 3. 变更记录
 
 - 2026-08-30：
   - 修正 `config/prompt_builder.py::_resolve_skills_dir()`、
@@ -186,3 +226,17 @@ hybrid_exec"的判断依据，供后续迭代参考：
     章节及目录结构/独立运行章节同步更新。
   - 第 3 节"workflow/hybrid_exec 分别适合什么功能"的设计思考已记录，
     本轮不实现，留作后续迭代依据。
+- 2026-08-30（补记，实测报错后的修正，见 1.4/1.5 节）：
+  - `config/loader.py::load_config()` 新增 `_resolve_main_project_root()`，
+    外部项目（`<root>/project.yaml` 存在且挂在
+    `<主项目根>/external_projects/<name>/` 下）解析
+    `agent_config.json`/`providers.json` 时，自己目录下没有则回退到
+    主项目根目录下的同名文件，不再要求每个外部项目自己维护一份含
+    API key 的配置。已用临时目录验证三种场景（外部项目无自身配置时
+    继承主项目 api_key/provider；外部项目有自身配置时优先用自己的；
+    普通交互式目录不受影响）均符合预期。
+  - `external_projects/stock_watch/entrypoints/run_stock_analysis_ai.py`
+    改为直接调用 `WorkflowRunner.run()`（不再 `subprocess` 调
+    `mini-agent workflow run` CLI），原因见 1.5 节——CLI 子进程退出码
+    不代表 workflow 内部成败，直接拿结构化 `WorkflowRunResult` 更可靠，
+    失败原因也能准确记进账本。
