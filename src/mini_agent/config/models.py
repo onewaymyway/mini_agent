@@ -1893,6 +1893,12 @@ class DigestAdvisorConfig:
     agent_value_profile_enabled: bool = False
     agent_value_profile_min_evidence_count: int = 3
 
+    # ── [self_awareness_identity_evolution_plan.md §2.2] 自我叙事生成 ──
+    # 归纳逻辑本身默认可用（/self_narrative update 手动触发不受此项
+    # 影响），这里的 enabled 只控制 sys:self_narrative_update cron job
+    # 的默认状态；同一保守默认（opt-in）。
+    self_narrative_enabled: bool = False
+
 
 @dataclass
 class GrowthAdvisorConfig:

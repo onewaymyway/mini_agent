@@ -382,6 +382,21 @@ class AgentPaths:
         """<project_root>/.agent/agent_value_profile_state.json — Agent 自身价值观归纳的运行状态"""
         return self.workdir_dir / "agent_value_profile_state.json"
 
+    @property
+    def self_narrative_log_path(self) -> Path:
+        """<project_root>/.agent/self_narrative_log.jsonl — 自我叙事日志
+        （self_awareness_identity_evolution_plan.md §2.2），追加式存档
+        （类似日记，不覆盖旧版本），每行一条 {at, narrative, purpose_summary}。"""
+        return self.workdir_dir / "self_narrative_log.jsonl"
+
+    @property
+    def sub_agent_experience_log_path(self) -> Path:
+        """<project_root>/.agent/sub_agent_experience_log.jsonl — 子 Agent
+        经历回写（self_awareness_identity_evolution_plan.md §2.4），只在
+        SubAgent 生命周期结束时检测到信号（失败/异常耗时）才追加一条，
+        供 self_narrative 生成时作为额外证据源。"""
+        return self.workdir_dir / "sub_agent_experience_log.jsonl"
+
     # ── 成长顾问 Growth Advisor（growth_advisor_design.md）────────────────
 
     @property

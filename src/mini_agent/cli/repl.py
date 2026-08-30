@@ -46,6 +46,7 @@ from mini_agent.cli.commands import (
     handle_growth_cmd,
     handle_capability_cmd,)
 from mini_agent.cli.commands.agent_value_profile_cmd import handle_agent_value_profile_cmd
+from mini_agent.cli.commands.self_narrative_cmd import handle_self_narrative_cmd
 
 
 def _print_resume_hint(agent: Agent) -> None:
@@ -481,6 +482,11 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         # 命令：/decision_profile 归纳用户决策画像，这里归纳 agent 自己的
         # 历史选择行为。
         handle_agent_value_profile_cmd(parts[1:], agent)
+
+    elif name == "self_narrative":
+        # [next_doc/self_awareness_identity_evolution_plan.md §2.2] 综合
+        # 已落盘的自我认知数据生成一段第一人称叙事，追加式存档。
+        handle_self_narrative_cmd(parts[1:], agent)
 
     elif name == "growth":
         # [next_doc/growth_advisor_design.md] 成长顾问：见

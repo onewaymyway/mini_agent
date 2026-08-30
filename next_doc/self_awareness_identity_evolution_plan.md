@@ -274,14 +274,55 @@ skill 系统、tool registry、hybrid_exec 里各自配置，没有一个地方�
 相关测试合计 79 passed（含既有 `test_failure_pattern_store.py`/
 `test_state_repo.py`/`test_cron_scheduler.py` 回归）。
 
-### 阶段二（中期，需要新的周期性 job 和叙事生成逻辑）
+### 阶段二（中期，需要新的周期性 job 和叙事生成逻辑）— 已完成（2026-08-30）
 
 4. §2.2 Identity 叙事主线：与自我叙事文档（已在讨论中）合并推进，
    周期性生成第一人称叙事、追加式存档、`identity.purpose` 从叙事提炼。
+   - **已实现**：新增 `evolution/self_narrative.py`。证据汇总
+     `_gather_evidence()` 综合 `self_profile`（identity/self_assessment/
+     operating_state）、`capability_map`（最近实测 top 5）、
+     `agent_value_profile`（§2.1，最多 5 条）、`self_model_drift`
+     （§2.6，最多 5 条）、`failure_pattern_store`（最多 5 条）、
+     `sub_agent_experience`（§2.4，最多 5 条）——全部只读，任一来源
+     读取失败降级为该来源留空，不影响其余来源。`_has_any_evidence()`
+     判定"有没有实质内容可写"，全空时直接返回 None，不生成空洞叙事。
+     LLM 生成的叙事 + 一句话 `purpose_summary` 追加写入
+     `self_narrative_log.jsonl`（真正的追加式存档，不覆盖旧版本，
+     `load_self_narrative_history()` 按写入顺序倒序读取，"最新优先"）；
+     `purpose_summary` 同时回写 `self_profile.identity.purpose`（这是
+     本模块唯一直接可写的 `SelfProfile` 字段，其余字段仍归各自建立者
+     所有）。`/self_narrative [update|history]` CLI 命令 +
+     `sys:self_narrative_update` cron（默认关闭）+ `/self/portrait`
+     新增 `self_narrative` 只读字段（取最新一条）。
 5. §2.4 子 Agent 经历回写：SubAgent 生命周期结束时的轻量摘要回写，
    接入 §2.1/§2.2 的证据源。
+   - **已实现**：新增 `evolution/sub_agent_experience.py::
+     maybe_record_experience()`，接入 `orchestrator/sub_agent.py::
+     SubAgent._run_body()` 的 `finally` 块（`write_manifest()` /
+     `SubagentStop` hook 同一位置）。**纯规则式判断，不发起 LLM 调用**
+     ——这个 finally 块跑在 SubAgent 自己的线程上，是任务生命周期的
+     收尾路径，同步加一次可能阻塞/超时的 LLM 反思调用风险较高，与项目
+     里"cron 后台异步做语义总结、热路径只做规则式轻量记录"的既有取舍
+     一致（对照 `agent/reflection.py` 里巩固循环从同步 session-end
+     路径迁移到 `CronScheduler` 的说明）。只在检测到信号时才写
+     （失败且有非空 error，或 turns/tool_calls 超出经验阈值的"异常
+     耗时"），对齐"没有摩擦和洞察就返回空数组"的克制原则。写入内容是
+     纯事实性摘要，语义提炼交给 §2.2 `self_narrative.py` 的周期性
+     LLM 归纳。
 6. §2.6 自我模型漂移检测：`capability_map` vs `confidence_by_domain`
    的校准信号，接入叙事生成上下文。
+   - **已实现**：新增 `evolution/self_model_drift.py::
+     compute_belief_drift_signals()`，只读比较
+     `self_assessment.confidence_by_domain`（历史信念）与当前 workdir
+     `capability_map`（最近实测），两边都有数据且落差 ≥ 阈值（默认
+     0.3）才算漂移信号，按 `|delta|` 降序排列。不做任何写入，不自动
+     覆盖 `confidence_by_domain`——落差只作为 §2.2 自我叙事生成的
+     上下文信号，以及 `/self/portrait` 的 `drift_signals` 只读字段。
+
+**测试**：`tests/test_self_narrative.py`（10）+
+`tests/test_self_model_drift.py`（4）+
+`tests/test_sub_agent_experience.py`（8），阶段二相关测试合计 22
+passed；阶段一 + 阶段二全部相关测试合计 103 passed（含既有回归）。
 
 ### 阶段三（认知框架调整 + 为未来预留接口，不要求立刻实现）
 

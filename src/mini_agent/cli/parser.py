@@ -123,6 +123,9 @@ def build_parser() -> argparse.ArgumentParser:
               /decision_profile update    Re-summarize the decision profile now (requires LLM helper)
               /agent_value_profile        Show the agent's own value profile (wiki/agent_value_profile.md)
               /agent_value_profile update Re-summarize the agent's own value profile now (requires LLM helper)
+              /self_narrative             Show the latest self-narrative entry
+              /self_narrative history     Show recent self-narrative log entries (append-only)
+              /self_narrative update      Generate a new self-narrative entry now (requires LLM helper)
               /growth [list]              Show pending growth-direction candidates (Growth Advisor)
               /growth scan                Run one signal scan + candidate derive + top-N report cycle now
               /growth accept|dismiss <id> Mark a candidate accepted/dismissed

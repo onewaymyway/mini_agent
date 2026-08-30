@@ -333,6 +333,19 @@ _BUILTIN_JOBS: list[dict] = [
         "enabled": False,
     },
     {
+        # [next_doc/self_awareness_identity_evolution_plan.md §2.2] 自我
+        # 叙事：综合 self_profile/agent_value_profile/capability_map/
+        # self_model_drift/failure_pattern/sub_agent_experience 已落盘的
+        # 事实，生成一段第一人称叙事，追加式存档（不覆盖旧版本）。
+        "id": "sys:self_narrative_update",
+        "name": "自我叙事生成",
+        "schedule": "interval:604800",
+        "description": "综合已落盘的自我认知数据，生成一段第一人称自我叙事并追加存档（每 7 天，证据不足时跳过不生成空洞叙事）",
+        "task_template": "[画像] 执行一次 /self_narrative update，生成自我叙事并追加存档",
+        "tags": ["profile", "wiki", "self-awareness"],
+        "enabled": False,
+    },
+    {
         # [next_doc/growth_advisor_design.md] 成长顾问：信号扫描 + 候选生成 +
         # Top-N 调研报告。默认 enabled=True 与 GrowthAdvisorConfig.enabled
         # 的默认值保持一致（opt-out），实际是否运行由
@@ -678,6 +691,10 @@ class CronScheduler:
             ),
             "sys:agent_value_profile_update": (
                 self._digest_advisor_cfg.agent_value_profile_enabled
+                if self._digest_advisor_cfg is not None else None
+            ),
+            "sys:self_narrative_update": (
+                self._digest_advisor_cfg.self_narrative_enabled
                 if self._digest_advisor_cfg is not None else None
             ),
         }

@@ -4226,6 +4226,16 @@ async def get_self_portrait(request: Request):
                              纯展示层面重新组织，数据全部来自本端点内
                              已经在计算的 llm_pool 状态和 skills 目录，
                              不新增采集逻辑。
+      self_narrative        — [self_awareness_identity_evolution_plan.md
+                             §2.2] evolution/self_narrative.py 产出的最新
+                             一条第一人称自我叙事（追加式存档，这里只取
+                             最新一条只读展示，完整历史用
+                             `/self_narrative history` 命令查看）。
+      drift_signals         — [self_awareness_identity_evolution_plan.md
+                             §2.6] evolution/self_model_drift.py 只读比较
+                             历史信念（self_assessment.confidence_by_domain）
+                             与当前 workdir 实测（capability_map）算出的
+                             落差列表，不做任何写入。
 
     全部只读聚合，不触发任何计算/写入；单用户模式下也可用。
     """
@@ -4243,6 +4253,8 @@ async def get_self_portrait(request: Request):
         "skills": [],
         "agent_value_profile": [],
         "body_inventory": {},
+        "self_narrative": None,
+        "drift_signals": [],
     }
 
     self_agent = http_server.bridge.agent
@@ -4323,6 +4335,23 @@ async def get_self_portrait(request: Request):
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.body_inventory')
+
+    try:
+        from mini_agent.evolution.self_narrative import load_self_narrative_history
+
+        history = load_self_narrative_history(paths, limit=1)
+        result["self_narrative"] = history[0] if history else None
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.self_narrative')
+
+    try:
+        from mini_agent.evolution.self_model_drift import compute_belief_drift_signals
+
+        result["drift_signals"] = [s.to_dict() for s in compute_belief_drift_signals(paths)]
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.drift_signals')
 
     return result
 

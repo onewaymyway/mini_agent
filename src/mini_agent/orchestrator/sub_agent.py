@@ -292,6 +292,31 @@ class SubAgent:
                 # 任务结束时补写 outcome 块到 manifest.json（DONE/FAILED/CANCELLED 三种终态统一处理）
                 if self.record.is_terminal:
                     self.record.write_manifest()
+                # [self_awareness_identity_evolution_plan.md §2.4] 子 Agent
+                # 经历回写：只在检测到信号（失败/异常耗时）时才写一条轻量
+                # 记录，供主身份的自我叙事生成（self_narrative.py）作为
+                # 额外证据源。纯规则式判断，不发起 LLM 调用，失败降级为
+                # 静默跳过（不影响任务本身的终态处理）。
+                if self.record.is_terminal:
+                    try:
+                        from mini_agent.evolution.sub_agent_experience import maybe_record_experience
+                        result = self.record.result
+                        maybe_record_experience(
+                            AgentPaths(self.base_cfg.project_root),
+                            task_id=self.record.task_id,
+                            task_name=task.name,
+                            status=(
+                                self.record.status.value
+                                if hasattr(self.record.status, "value")
+                                else str(self.record.status)
+                            ),
+                            error=(result.error if result else "") or "",
+                            turns=(result.turns if result else 0) or 0,
+                            tool_calls=(result.tool_calls if result else 0) or 0,
+                        )
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.orchestrator.sub_agent.experience_writeback')
                 # 通知终态（只通知一次）
                 if self.record.is_terminal and self.record.status not in self._terminal_notified:
                     self._terminal_notified.add(self.record.status)
