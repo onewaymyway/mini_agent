@@ -15,12 +15,15 @@ raise 明确异常而不是静默返回空数据——调用方（entrypoints）
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode as _urllib_parse_urlencode
 
+import pandas as pd
 import requests
 
 logger = logging.getLogger("stock_watch.data_sources")
@@ -247,13 +250,65 @@ class HotStockItem:
     reason: str = ""
 
 
+def _eastmoney_rank_direct() -> pd.DataFrame:
+    """绕过 akshare 直接调东方财富人气榜 API（兼容 urllib3/requests 代理冲突场景）。"""
+    import json as _json
+    import http.client as _http
+    payload = _json.dumps({
+        "appId": "appId01", "globalId": "786e4c21-70dc-435a-93bb-38",
+        "marketType": "", "pageNo": 1, "pageSize": 100,
+    }).encode()
+    conn = _http.HTTPSConnection("emappdata.eastmoney.com", timeout=15)
+    try:
+        conn.request("POST", "/stockrank/getAllCurrentList",
+                     body=payload, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        data = _json.loads(resp.read().decode())
+        if data.get("code") != 0:
+            raise DataSourceError(f"API 返回非零 code: {data}")
+        raw = pd.DataFrame(data["data"])
+        raw["mark"] = [
+            "0" + "." + item[2:] if "SZ" in item else "1" + "." + item[2:]
+            for item in raw["sc"]
+        ]
+        secids = ",".join(raw["mark"]) + "?v=08926209912590994"
+        conn2 = _http.HTTPSConnection("push2.eastmoney.com", timeout=15)
+        params = _urllib_parse_urlencode({
+            "ut": "f057cbcbce2a86e2866ab8877db1d059",
+            "fltt": "2", "invt": "2",
+            "fields": "f14,f3,f12,f2",
+            "secids": secids,
+        })
+        conn2.request("GET", f"/api/qt/ulist.np/get?{params}")
+        r2 = conn2.getresponse()
+        jd2 = _json.loads(r2.read().decode())
+        df2 = pd.DataFrame(jd2["data"]["diff"])
+        df2.columns = ["最新价", "涨跌幅", "代码", "股票名称"]
+        df2["最新价"] = pd.to_numeric(df2["最新价"], errors="coerce")
+        df2["涨跌幅"] = pd.to_numeric(df2["涨跌幅"], errors="coerce")
+        df2["涨跌额"] = df2["最新价"] * df2["涨跌幅"] / 100
+        df2["当前排名"] = raw["rk"].values[:len(df2)]
+        df2["代码"] = raw["sc"].values[:len(df2)]
+        return df2[["当前排名", "代码", "股票名称", "最新价", "涨跌额", "涨跌幅"]]
+    finally:
+        conn.close()
+        try: conn2.close()
+        except Exception: pass
+
+
 def fetch_eastmoney_hot_rank(top_n: int = 50) -> List[HotStockItem]:
     """东方财富人气榜（`ak.stock_hot_rank_em`）。"""
     ak = _import_akshare()
     try:
         df = ak.stock_hot_rank_em()
-    except Exception as exc:  # akshare 内部异常类型不固定，统一兜底
-        raise DataSourceError(f"stock_hot_rank_em 调用失败: {exc}") from exc
+    except Exception as exc:
+        # urllib3/requests 与 emappdata.eastmoney.com chunked 响应兼容问题
+        # 降级为直接 HTTP 调用
+        logger.warning("stock_hot_rank_em 失败 (%s)，降级到直接 API", exc)
+        try:
+            df = _eastmoney_rank_direct()
+        except Exception as exc2:
+            raise DataSourceError(f"stock_hot_rank_em 直连也失败: {exc2}") from exc2
 
     items: List[HotStockItem] = []
     for _, row in df.head(top_n).iterrows():
@@ -370,13 +425,23 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
 
 
 def fetch_announcements(code: str, top_n: int = 20):
-    """个股历史公告（`ak.stock_notice_report`）。"""
+    """个股历史公告（巨潮资讯 API，按股票代码查询）。
+
+    使用 akshare 的 `stock_zh_a_disclosure_report_cninfo` 接口，
+    该接口直接从巨潮资讯网抓取，支持按股票代码精确筛选。
+    """
     ak = _import_akshare()
+    today = datetime.now()
+    one_year_ago = today - timedelta(days=365)
+    start_date = one_year_ago.strftime("%Y%m%d")
+    end_date = today.strftime("%Y%m%d")
     try:
-        df = ak.stock_notice_report(symbol=code)
-    except Exception as exc:  # noqa: BLE001
-        raise DataSourceError(f"stock_notice_report({code}) 调用失败: {exc}") from exc
-    return df.head(top_n)
+        df = ak.stock_zh_a_disclosure_report_cninfo(symbol=code, start_date=start_date, end_date=end_date)
+    except Exception as exc:
+        raise DataSourceError(f"公告抓取失败 ({code}): {exc}") from exc
+    df = df.head(top_n)
+    df["公告日期"] = pd.to_datetime(df["公告时间"], errors="coerce").dt.strftime("%Y-%m-%d")
+    return df[["代码", "简称", "公告标题", "公告日期", "公告链接"]]
 
 
 def fetch_news(code: str, top_n: int = 20):
@@ -412,16 +477,16 @@ def fetch_guba_posts(code: str, top_n: int = 30) -> List[Dict[str, Any]]:
     html = fetch_html(url)
     soup = BeautifulSoup(html, "lxml")
     posts: List[Dict[str, Any]] = []
-    for row in soup.select(".articleh")[:top_n]:
-        cells = row.select("span")
+    # 页面结构：tr.listitem > td.read / td.reply / td.title / td.author / td.update
+    for row in soup.select("tr.listitem")[:top_n]:
+        cells = row.select("td")
         if len(cells) < 5:
             continue
-        title_tag = row.select_one("a")
         posts.append(
             {
                 "read": cells[0].get_text(strip=True),
                 "reply": cells[1].get_text(strip=True),
-                "title": title_tag.get_text(strip=True) if title_tag else "",
+                "title": cells[2].get_text(strip=True),
                 "author": cells[3].get_text(strip=True),
                 "time": cells[4].get_text(strip=True),
             }
@@ -683,3 +748,106 @@ def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
             "问财返回结构与预期不符（可能是接口改版），需要更新解析逻辑"
         ) from exc
     return table[:top_n]
+
+
+def _fetch_eastmoney_sectors(by_flow: bool = False) -> List[Dict[str, Any]]:
+    """从东方财富直接拉取行业板块数据（绕过问财代理问题）。
+
+    Args:
+        by_flow: True时返回资金流向数据[{sector, net_inflow}]，False时返回涨跌幅数据[{sector, change_pct}]
+    """
+    import http.client as _hc
+    result: List[Dict[str, Any]] = []
+    try:
+        fid = "f62" if by_flow else "f3"
+        field = "net_inflow" if by_flow else "change_pct"
+        pz = 20 if by_flow else 50
+        conn = _hc.HTTPSConnection("push2.eastmoney.com", timeout=15)
+        conn.request(
+            "GET",
+            f"/api/qt/clist/get?ut=b2884a393a59ad64002b997c1ab683cb&fid={fid}&po=1&pz={pz}&pn=1&np=1&fltt=2&invt=2&fs=m:90+t:2&fields=f12,f14,{fid}"
+        )
+        r = conn.getresponse()
+        data = json.loads(r.read())
+        conn.close()
+        for d in data.get("data", {}).get("diff", []) or []:
+            name = str(d.get("f14", ""))
+            val = d.get(fid)
+            if name and val is not None:
+                try:
+                    result.append({"sector": name, field: float(val)})
+                except (ValueError, TypeError):
+                    pass
+    except Exception as exc:
+        logger.warning("东财板块数据获取失败: %s", exc)
+    return result
+
+
+def fetch_sector_performance(top_n: int = 50) -> List[Dict[str, Any]]:
+    """获取板块涨跌幅排名。
+
+    优先使用东方财富API（稳定），问财兜底。
+    """
+    try:
+        em_data = _fetch_eastmoney_sectors()
+        if em_data:
+            # 过滤出有change_pct的条目并排序
+            by_pct = [d for d in em_data if "change_pct" in d]
+            if by_pct:
+                return sorted(by_pct, key=lambda x: x["change_pct"], reverse=True)[:top_n]
+    except Exception as exc:
+        logger.warning("东财板块数据获取异常: %s", exc)
+    # 兜底：问财
+    query = "今日各行业板块涨跌幅排名前50"
+    try:
+        data = fetch_iwencai_screener(query, top_n=top_n)
+        if not data:
+            return []
+        results = []
+        for row in data:
+            sector_name = row.get("板块名称") or row.get("行业") or row.get("name", "")
+            change_pct = row.get("涨跌幅") or row.get("change_pct") or row.get("涨跌", "")
+            if sector_name and change_pct:
+                try:
+                    pct = float(str(change_pct).replace("%", ""))
+                    results.append({"sector": sector_name, "change_pct": pct})
+                except (ValueError, TypeError):
+                    continue
+        return sorted(results, key=lambda x: x["change_pct"], reverse=True)[:top_n]
+    except Exception as exc:
+        logger.warning("获取板块涨跌幅失败: %s", exc)
+        return []
+
+
+def fetch_sector_rotation_analysis() -> Dict[str, Any]:
+    """获取板块轮动分析（使用东方财富API，绕过问财403限制）。
+
+    从东财拉取行业板块涨跌幅与资金流向，推导强势/弱势板块及主力净流入。
+    """
+    try:
+        # 涨跌排名
+        sectors_pct = _fetch_eastmoney_sectors()  # [{sector, change_pct}]
+        sectors_flow = _fetch_eastmoney_sectors(by_flow=True)  # [{sector, net_inflow}]
+
+        # 按涨跌幅排序，强势=涨幅前10，弱势=跌幅前10（即涨幅最小的10个）
+        by_pct = sorted(sectors_pct, key=lambda x: x.get("change_pct", 0), reverse=True)
+        strong_list = by_pct[:10]
+        weak_list = list(reversed(by_pct[-10:]))  # 倒序后取最后10个（最小涨幅）
+
+        # 按资金流向排序（净流入为正，单位转为亿元）
+        by_flow = sorted(sectors_flow, key=lambda x: x.get("net_inflow", 0), reverse=True)
+        flow_list = []
+        for s in by_flow:
+            inflow = s.get("net_inflow", 0)
+            if inflow > 0:
+                flow_list.append({"sector": s["sector"], "net_inflow": inflow / 1e8})  # 转为亿元
+        flow_list = flow_list[:10]
+
+        return {
+            "strong_sectors": strong_list,
+            "weak_sectors": weak_list,
+            "capital_flow": flow_list,
+        }
+    except Exception as exc:
+        logger.warning("获取板块轮动分析失败: %s", exc)
+        return {"strong_sectors": [], "weak_sectors": [], "capital_flow": []}

@@ -83,6 +83,10 @@ entrypoints:
     cmd: "python entrypoints/run_signal_scan.py"
     schedule: "cron: 0 19 * * 1-5"   # 盘后，晚于 pool_tracking(15:45)，避免抢锁
     timeout_sec: 900
+  sector_rotation:
+    cmd: "python entrypoints/run_sector_rotation.py"
+    schedule: "cron: 30 16 * * 1-5"   # 盘后 16:30，晚于信号扫描
+    timeout_sec: 600
   # tools/fetch_iwencai_cookie.py 的看板包装（见该 entrypoint 文件顶部
   # docstring）：交互式获取问财 hexin-v 登录令牌。无 schedule——需要人在
   # 有显示器的桌面环境手动完成登录/验证，不适合无人值守定时跑；运行
