@@ -172,3 +172,4 @@ research/agent_and_ai/articles/
 .agent/daemon_run_state.json
 .agent/daemon_supervisor.pid
 .agent/daemon_crash_history.jsonl
+.agent/cron_state.db
