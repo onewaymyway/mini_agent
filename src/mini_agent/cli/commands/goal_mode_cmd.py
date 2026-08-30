@@ -253,10 +253,21 @@ def _negotiate_loop(builder, spec, agent):
                     try:
                         from mini_agent.evolution.failure_pattern_store import (
                             record_goal_spec_preflight_issue,
+                            record_goal_spec_preflight_lesson,
                         )
                         from mini_agent.storage.paths import AgentPaths as _PreflightPaths
+                        _cfg = getattr(builder, "_cfg", None)
                         record_goal_spec_preflight_issue(
-                            _PreflightPaths(getattr(builder, "_cfg", None).project_root),
+                            _PreflightPaths(_cfg.project_root),
+                            goal_text=spec.goal_text,
+                            issues=preflight_warnings,
+                        )
+                        # [方案 D.3 完整闭环] 同时写入正式 lesson 记忆条目，
+                        # 接入 lesson_review 的 T1/T2/T3 门槛判定，反复出现时
+                        # 会被自动升级为改进提案，而不只是停留在事件日志里。
+                        record_goal_spec_preflight_lesson(
+                            _cfg,
+                            session_id=getattr(getattr(agent, "_session", None), "id", "") or "",
                             goal_text=spec.goal_text,
                             issues=preflight_warnings,
                         )

@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from mini_agent.evolution.cron_scheduler import CronJob, CronScheduler
     from mini_agent.storage.paths import AgentPaths
+    from mini_agent.config import AppConfig
 
 JOB_ID = "sys:failure_pattern_aggregation"
 
@@ -241,6 +242,52 @@ def record_goal_spec_preflight_issue(paths: "AgentPaths", *, goal_text: str, iss
         from mini_agent.errors import log_exception
 
         log_exception(_mini_agent_exc, where="mini_agent.evolution.failure_pattern_store.record_goal_spec_preflight_issue")
+
+
+def record_goal_spec_preflight_lesson(
+    cfg: "AppConfig", *, session_id: str, goal_text: str, issues: list[str],
+) -> None:
+    """[next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+    方案 D.3 完整闭环] 除了 `record_goal_spec_preflight_issue()` 落的轻量
+    JSONL 事件外，同时把这次预检问题写成一条正式的 `entry_type="lesson"`
+    记忆条目，接入既有的 `perception/lesson_review.py` 分组 + T1/T2/T3
+    门槛判定链路——同一类"目标描述容易生成不可验证验收标准"的问题在多个
+    session 反复出现、达到门槛后，会被 evolution-agent 自动生成改进提案
+    （比如调整 GoalSpecBuilder 的生成 prompt），而不需要人工发现规律。
+
+    与 `agent/reflection.py::_maybe_write_session_lessons` 使用同样的
+    MemoryEntry 写入方式（entry_type="lesson"、source="self_reflection"、
+    occurrence_count=1，重复出现次数由 lesson_review 的分组逻辑负责统计，
+    不在写入时预先判断"是否已经出现过"）。任何异常都不应影响 GoalSpec
+    冻结主流程，因此整体包一层 try/except。
+    """
+    if not issues:
+        return
+    try:
+        from mini_agent.perception.memory_store import MemoryEntry
+        from mini_agent.perception.memory_factory import create_memory_backend
+
+        memory = create_memory_backend(cfg)
+        entry = MemoryEntry(
+            session_id=session_id,
+            summary="",
+            key_outcomes=[],
+            tags=["lesson", "goal_spec_preflight"],
+            model=getattr(cfg, "model", ""),
+            entry_type="lesson",
+            trigger=f"GoalSpec 冻结前自检：{(goal_text or '')[:200]}",
+            outcome=f"发现 {len(issues)} 条验收标准可能难以判定通过与否：{(issues[0] or '')[:200]}",
+            root_cause="目标描述或验收标准表述缺少明确的可核查依据",
+            suggested_action="生成验收标准时优先落到具体产出物/可观察状态变化/可运行验证命令",
+            confidence=0.4,
+            occurrence_count=1,
+            source="self_reflection",
+        )
+        memory.add(entry)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+
+        log_exception(_mini_agent_exc, where="mini_agent.evolution.failure_pattern_store.record_goal_spec_preflight_lesson")
 
 
 def _read_goal_spec_preflight_issues(paths: "AgentPaths") -> list[tuple[str, str, str, float]]:

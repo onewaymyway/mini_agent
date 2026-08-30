@@ -99,6 +99,13 @@ class RoleJudgeMixin:
 
         current_output = initial_output
 
+        # [next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+        # 方案 E 阶段 4] 记录本轮最后一次 evaluator 的判定结果，供
+        # `_maybe_run_turn_judge()` 与 TurnJudge 的判定做交叉校验（同一轮内
+        # 两个独立判官的信号如果互相矛盾，值得记一笔）。多个 evaluator profile
+        # 时以最后一个为准，这是当前最简单可用的近似，不做加权/优先级判断。
+        self._last_evaluator_result: Optional[dict] = None
+
         # 对每个 output 角色，做最多 max_iterations 轮
         for profile in dispatcher._output_roles:
             max_iter = profile.max_iterations if profile.role_type == "evaluator" else 1
@@ -158,6 +165,14 @@ class RoleJudgeMixin:
                     score_pct = int(score * 100)
                     status = "✅ 通过" if passed else "⚠️ 需修订"
                     R.print_info(f"[RoleAgent:{profile.name}] 评分 {score_pct}/100 {status}")
+
+                if profile.role_type == "evaluator":
+                    self._last_evaluator_result = {
+                        "role_name": profile.name,
+                        "score": score,
+                        "passed": passed,
+                        "final_iteration": iteration >= max_iter,
+                    }
 
                 # 通过或最后一轮，不再循环
                 if passed or iteration >= max_iter:
@@ -415,6 +430,35 @@ class RoleJudgeMixin:
                 session_id=self._session.id if self._session else "",
                 note=f"confidence={confidence}" if confidence is not None else "",
             )
+        except Exception:
+            pass
+
+        # [方案 E 阶段 4] 与本轮 evaluator 的最终判定做一次轻量交叉校验：
+        # evaluator 修订到最后一轮仍未通过（质量有明确问题），但 TurnJudge
+        # 却判定 AUTO_CONTINUE（认为不需要真人介入）——这是一组比较值得
+        # 关注的矛盾信号，先记录下来，不在本次改造中据此改变 TurnJudge 的
+        # 判定（是否要"取更保守值"留给积累足够数据后再决定，见计划文档
+        # 阶段 4）。
+        try:
+            last_eval = getattr(self, "_last_evaluator_result", None)
+            if (
+                last_eval is not None
+                and last_eval.get("final_iteration")
+                and last_eval.get("passed") is False
+                and status == "AUTO_CONTINUE"
+            ):
+                from mini_agent.role_agents.judge_calibration import record_conflict_event
+                from mini_agent.storage.paths import AgentPaths as _ConflictPaths
+                record_conflict_event(
+                    _ConflictPaths(self.cfg.project_root),
+                    judge_a="turn_judge",
+                    status_a=status,
+                    judge_b=f"evaluator:{last_eval.get('role_name', '')}",
+                    status_b=f"FAILED(score={last_eval.get('score')})",
+                    round_no=auto_round_no,
+                    session_id=self._session.id if self._session else "",
+                    context="TurnJudge 判定 AUTO_CONTINUE，但同轮 evaluator 修订到最后一轮仍未通过。",
+                )
         except Exception:
             pass
 

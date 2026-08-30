@@ -1,11 +1,12 @@
 # 自动驱动执行稳定性改进计划：从"判定-恢复"到"归因-学习-预防"
 
 > **实施状态（持续更新）**：阶段 0（观测先行）、阶段 1（归因与自检）、
-> 阶段 2（分级响应）、阶段 3（判定过程回写经验，含 2D 失败模式聚合与预检
-> 事件沉淀）已完成首批代码落地，均默认关闭或纯增量、向后兼容。阶段 4
-> （多判官协同的实际决策接入 + 判官自动调整建议）尚未实现，仍是设计阶段，
-> 按计划要求"先生成建议、人工确认"，不做全自动闭环。各阶段的具体改动
-> 清单见文末"实施记录"一节。
+> 阶段 2（分级响应）、阶段 3（判定过程回写经验，含 2D 失败模式聚合、预检
+> 事件沉淀、以及完整接入 lesson_review 门槛判定）已完成代码落地，均默认
+> 关闭或纯增量、向后兼容。阶段 4 的"多判官冲突记录"（TurnJudge vs
+> Evaluator 交叉校验）已完成一个具体场景的落地；"取更保守值实际影响判定"
+> 与"判官自动调整建议"仍是设计阶段，按计划要求"先生成建议、人工确认"，
+> 不做全自动闭环。各阶段的具体改动清单见文末"实施记录"一节。
 
 > 基于 `mini_agent-master` 实际代码梳理（`role_agents/turn_judge.py`、`role_agents/goal_judge.py`、
 > `role_agents/stuck_detector.py`、`role_agents/dispatcher.py`、`goal_mode/`、
@@ -265,25 +266,33 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
   （两者服务于不同触发点，打通的价值需要更多真实数据支撑，留待后续评估）。
 
 ### 阶段 3：判定过程回写经验（与自我学习机制打通，核心交付）
-**状态：已实现（基础桥接完成，聚类升级路径为后续增强）。**
+**状态：已实现（含完整 lesson_review 闭环）。**
 - 方案 D.1：卡住恢复成功 → 正面经验回写 `wiki/experience_writer.py`。
 - 方案 D.2：`failure_pattern_store` 扩展二维聚合（task_category × stuck_category）。
-- 方案 D.3：GoalSpec 自检问题接入 `lesson_review` 聚类升级路径。
-
-  **实际落地口径的调整**：D.3 当前只完成了"事件记录 + 聚合"（`goal_spec_
-  preflight_events.jsonl` → `run_failure_pattern_aggregation_once()`），
-  还没有把这类事件接入 `perception/lesson_review.py` 的 T1/T2/T3 聚类升级
-  门槛判定——先用 `failure_pattern_store` 现成的聚合与展示能力验证"这类
-  预检问题是否真的高频、值得升级为前馈提醒"，值得投入后再对接完整的
-  lesson 聚类链路，避免过早接入一条重量级流水线。
+- 方案 D.3：GoalSpec 自检问题接入 `lesson_review` 聚类升级路径——已完成。
+  除了轻量 JSONL 事件记录（`goal_spec_preflight_events.jsonl`）外，现在同时
+  写入一条正式的 `entry_type="lesson"` 记忆条目（`record_goal_spec_
+  preflight_lesson()`），复用 `agent/reflection.py` 同款的 MemoryEntry 写入
+  方式，能被 `perception/lesson_review.py` 的分组与 T1/T2/T3 门槛判定直接
+  识别，反复出现的同类问题达到门槛后会自动进入 evolution-agent 的提案
+  生成流程，不再需要额外的对接工作。
 - 这三项都是"接入已有基础设施"的性质，互相独立，可以并行推进，不要求全部完成才上线。
 
 ### 阶段 4：多判官协同与自动化决策收紧（谨慎推进）
-**状态：未实现，仍是设计阶段。**
-- 方案 E 从"仅记录"升级为"实际影响判定"（取多判官最保守值）。
+**状态：部分实现（TurnJudge × Evaluator 冲突记录已落地，其余仍是设计阶段）。**
+- 方案 E 的"仅记录"部分已经在一个具体场景落地：`agent/role_judge.py` 现在
+  会在同一轮内比较 TurnJudge 的判定与本轮 Evaluator（若启用）的最终判定——
+  当 Evaluator 修订到最后一轮仍未通过、但 TurnJudge 却判定 AUTO_CONTINUE
+  时，记录一条冲突事件（`judge_conflict_events.jsonl`）。这是当前代码库里
+  "同一轮确实会跑两个独立判官"最典型的场景，其余判官组合（如 GoalJudge
+  与外部角色 Agent 同轮触发）留给后续按需扩展，接口
+  （`record_conflict_event`）已经通用，不需要重新设计。
+- 从"仅记录"升级为"实际影响判定"（取多判官最保守值，`more_conservative_
+  status()` 已提供但尚未接入任何决策路径）——未实现，按计划等待阶段 0-3
+  积累的真实数据支撑这个决策。
 - 基于阶段 0-3 积累的真实校准数据，评估是否要开始自动调整判官 prompt/阈值
-  （方案 D.4 后半段），这一步涉及判官行为的自动演化，风险较高，建议放在最后，
-  且优先做成"生成调整建议，人工确认后应用"，而不是全自动生效。
+  （方案 D.4 后半段）——未实现，这一步涉及判官行为的自动演化，风险较高，
+  建议放在最后，且优先做成"生成调整建议，人工确认后应用"，而不是全自动生效。
 
 ---
 
@@ -368,19 +377,30 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
 | 文件 | 改动类型 | 说明 |
 |---|---|---|
 | `src/mini_agent/goal_mode/runner.py` | 修改 | 新增 `_maybe_record_recovery_success()`，卡住恢复后确认无再次卡住则回写正面经验；三条归因分流路径与通用恢复路径都会设置 `_pending_recovery_context` |
-| `src/mini_agent/evolution/failure_pattern_store.py` | 修改 | `_read_dead_end_failures()` 优先使用结构化 `stuck_category`（回退正则分类）；新增 `record_goal_spec_preflight_issue()` / `_read_goal_spec_preflight_issues()` 并接入 `run_failure_pattern_aggregation_once()`；新增 `get_stuck_category_breakdown()` 供后续 `sys:self_eval` 精准降置信度使用 |
+| `src/mini_agent/evolution/failure_pattern_store.py` | 修改 | `_read_dead_end_failures()` 优先使用结构化 `stuck_category`（回退正则分类）；新增 `record_goal_spec_preflight_issue()` / `_read_goal_spec_preflight_issues()` 并接入 `run_failure_pattern_aggregation_once()`；新增 `get_stuck_category_breakdown()` 供后续 `sys:self_eval` 精准降置信度使用；新增 `record_goal_spec_preflight_lesson()`，把预检问题同时写成正式 `entry_type="lesson"` 记忆条目，接入 `perception/lesson_review.py` 门槛判定链路 |
+| `src/mini_agent/cli/commands/goal_mode_cmd.py` | 修改 | 协商循环发现预检问题时，同时调用 `record_goal_spec_preflight_issue()` 与 `record_goal_spec_preflight_lesson()` |
 
-### 阶段 4：未实现
+### 阶段 4：TurnJudge × Evaluator 冲突记录已落地，其余仍是设计
 
-设计已在第三节"方案 E"和第四节阶段规划中给出，代码层面仅提供了
-`judge_calibration.more_conservative_status()` 这一个可复用的纯函数，尚未接入
-任何实际决策路径。后续实施建议：先用阶段 0 积累至少若干周的
+| 文件 | 改动类型 | 说明 |
+|---|---|---|
+| `src/mini_agent/agent/role_judge.py` | 修改 | `_run_role_agents_output()` 记录本轮最后一次 evaluator 判定（`self._last_evaluator_result`）；`_maybe_run_turn_judge()` 在 TurnJudge 判定后与该结果做交叉校验，矛盾时调用 `record_conflict_event()` |
+
+设计已在第三节"方案 E"和第四节阶段规划中给出，"取更保守值实际影响判定"与
+"判官自动调整建议生成"两部分代码层面仍只提供了
+`judge_calibration.more_conservative_status()` 这一个可复用的纯函数，尚未
+接入任何实际决策路径。后续实施建议：先用阶段 0 积累至少若干周的
 `judge_calibration_events.jsonl` / `judge_conflict_events.jsonl` 真实数据，
 确认冲突频率和误判模式后，再决定是否值得投入。
 
 ### 后续可继续推进的方向（不影响当前已交付内容）
 
-1. `goal_cron` 场景接入 `execution_notes.append_execution_note()`（阶段2遗留）。
-2. `goal_spec_preflight_events.jsonl` 接入 `perception/lesson_review.py` 完整聚类升级门槛判定（阶段3 D.3 遗留）。
-3. TurnJudge confidence 与 GoalJudge stuck_category 的联合判断（阶段2遗留，价值待评估）。
-4. 阶段 4 的多判官冲突消解与判官自动调整建议生成。
+1. `goal_cron` 场景接入 `execution_notes.append_execution_note()`（阶段2遗留；
+   `goal_cron` 走的是 GoalRunner/GoalJudge 而非 TurnJudge，接入时需要先确认
+   在 DONE/CONTINUE/NEED_COMPACT 语义下"低置信度"的等价定义是什么，不能
+   直接照搬 TurnJudge 的二元语义，需要单独设计）。
+2. TurnJudge confidence 与 GoalJudge stuck_category 的联合判断（阶段2遗留，价值待评估）。
+3. 阶段 4 的"取更保守值"实际接入决策路径，以及判官自动调整建议生成
+   （需要先有阶段 0 数据支撑）。
+4. 扩展阶段 4 冲突检测覆盖更多判官组合（当前只覆盖 TurnJudge × Evaluator
+   这一个同轮双判官的场景）。
