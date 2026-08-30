@@ -63,11 +63,20 @@ def _resolve_prompts_dir(root: Path) -> Optional[Path]:
 def _resolve_skills_dir(root: Path) -> Optional[Path]:
     from mini_agent.storage.paths import AgentPaths
     paths = AgentPaths(root)
-    candidates = [
+    candidates = []
+    # [external_projects_workspace_plan.md 5.1] 外部项目（`<root>/project.yaml`
+    # 存在即视为外部项目根，与 `WorkflowStore`/`Workspace.project_yaml_path`
+    # 的判定标准一致）的项目私有 skill 放在 `<root>/skills/`，不是
+    # `<root>/.claude/skills/`——外部项目是"引擎的调用方"，不应该借用
+    # mini_agent 交互式会话自己那套 `.claude/` 目录；普通交互式项目目录
+    # （没有 project.yaml）行为完全不变，仍然优先 `.claude/skills/`。
+    if (root / "project.yaml").exists():
+        candidates.append(root / "skills")
+    candidates.extend([
         root / ".claude" / "skills",           # 旧路径，兼容保留
         paths.global_skills_dir,               # ~/.agent/skills（新路径）
         Path.home() / ".claude" / "skills",    # 旧全局路径，兼容保留
-    ]
+    ])
     for c in candidates:
         if c.is_dir():
             return c

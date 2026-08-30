@@ -1,0 +1,40 @@
+name: stock_analysis_ai
+description: >-
+  个股 AI 综合研判工作流（external_projects_agent_skill_workflow_
+  integration_plan.md 阶段1）。material_json 由调用方（entrypoints/
+  run_stock_analysis_ai.py）提前用 stock_watch.analysis.collect() 抓好，
+  本工作流只负责"理解材料 + 给出研判 + 落盘最终报告"这一段需要 LLM
+  判断力的工作，抓取本身仍是确定性 Python 代码，不进 workflow。
+version: "1.0"
+steps:
+  - id: judge
+    name: AI 综合研判
+    type: skill_agent
+    skill_name: stock-analysis-judge   # 匹配本项目 skills/stock-analysis-judge/SKILL.md
+    result_file: judgment.json
+    result_file_required_keys:
+      - verdict
+      - summary
+      - key_signals
+      - risk_points
+      - action_suggestion
+      - report_markdown
+    prompt: |
+      标的代码：{code}
+      标的名称：{name}
+
+      以下是已抓取好的结构化材料（JSON，字段含义见 skill 说明）：
+      {material_json}
+
+      请按 stock-analysis-judge skill 的规范给出综合研判，并生成完整的
+      report_markdown 报告正文。
+
+  - id: save_report
+    name: 落盘最终报告
+    type: tool_call
+    tool_name: write_file
+    depends_on:
+      - judge
+    tool_args:
+      path: "reports/analysis/{code}_{run_ts}_ai.md"
+      content: "{judge.result_file:report_markdown}"

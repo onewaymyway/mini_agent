@@ -289,3 +289,11 @@ cron/goal-cron 调度行为。
 - 未新增看板端"手动触发一次全量对齐"的按钮（比如用户怀疑 `ext:*`
   job 和 `project.yaml` 不同步时）；当前对齐时机是"daemon 启动时"和
   "开关切换时"，覆盖了文档列出的主要触发点，暂不需要额外入口。
+- 2026-08-30（补记，非本文档主题范围内的关联修正）：`stock_watch` 新增
+  的 `stock_analysis_ai` entrypoint（个股 AI 综合研判，会触发 LLM 调用）
+  未带 `schedule`，本次不涉及本文档描述的定时调度接线；仅按本文档 §1.3
+  的既有取舍——凡会调 LLM 的外部项目 entrypoint，一旦未来声明
+  `schedule` 接入自动调度，天然与普通 cron job 共享同一份
+  `CronJobRunner` 并发闸门，不需要为此新增分支。详见
+  `next_doc/external_projects_agent_skill_workflow_integration_plan.md`
+  第 2 节。

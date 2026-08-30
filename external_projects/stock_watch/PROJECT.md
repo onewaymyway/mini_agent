@@ -93,7 +93,8 @@ stock_watch/
 │   ├── run_hotlist_scan.py     # 功能 1：热点候选池抓取
 │   ├── run_kline_batch.py      # 功能 2：K 线批量生成
 │   ├── run_screener.py         # 功能 3：条件选股
-│   ├── run_stock_analysis.py   # 功能 4：个股综合分析
+│   ├── run_stock_analysis.py   # 功能 4：个股综合分析（材料，不调 LLM）
+│   ├── run_stock_analysis_ai.py # 功能 4 的 AI 版：材料 + AI 综合研判（新增，见下方"AI 综合研判"一节）
 │   ├── reconcile_outcomes.py   # 结果回溯：候选池打分 vs 实际涨跌，见持续优化机制
 │   ├── run_pool_tracking.py    # 候选池状态区间每日跟踪（阶段2，新增）
 │   ├── change_pool_state.py    # 手动变更某标的的候选池状态（阶段2，新增）
@@ -101,6 +102,10 @@ stock_watch/
 │   ├── fetch_iwencai_cookie.py # 看板包装：交互式获取问财登录令牌（新增，见下方"问财登录令牌"一节）
 │   ├── health.py               # project.yaml health_check 对应的探测脚本
 │   └── _common.py              # entrypoint 公共引导（sys.path、账本/积压账本降级写入）
+├── skills/                       # 项目私有 skill（新增，external_projects_
+│   └── stock-analysis-judge/     # workspace_plan.md 5.1 节约定的路径）
+├── workflows/                    # 项目私有 workflow（新增，同上）
+│   └── stock_analysis_ai.yaml    # skill_agent 研判 + tool_call 落盘报告
 ├── tools/                        # 人工交互式工具，不接入 entrypoints/ 的账本机制
 │   └── fetch_iwencai_cookie.py   # 通过 CDP 连真实 Chrome 抓取问财 hexin-v 令牌（新增）
 ├── stock_watch/                 # 项目私有库代码
@@ -135,7 +140,8 @@ pip install -r requirements.txt
 python entrypoints/run_hotlist_scan.py          # 功能 1
 python entrypoints/run_kline_batch.py            # 功能 2
 python entrypoints/run_screener.py "今日涨停"    # 功能 3（参数为问财自然语言查询）
-python entrypoints/run_stock_analysis.py 600519  # 功能 4（参数为标的代码）
+python entrypoints/run_stock_analysis.py 600519  # 功能 4（参数为标的代码，材料报告）
+python entrypoints/run_stock_analysis_ai.py 600519 贵州茅台  # 功能 4 AI 版：材料 + AI 综合研判（会触发 LLM 调用）
 
 python entrypoints/run_pool_tracking.py                        # 候选池状态区间每日跟踪
 python entrypoints/change_pool_state.py 600519 focused "关注中" # 手动变更某标的状态
@@ -143,6 +149,58 @@ python entrypoints/run_signal_scan.py                           # 自主挖掘�
 
 python entrypoints/fetch_iwencai_cookie.py                      # 获取问财登录令牌（需要桌面环境，会弹出 Chrome 窗口）
 ```
+
+## AI 综合研判（新增，见 `next_doc/external_projects_agent_skill_workflow_
+integration_plan.md` 阶段1）
+
+`run_stock_analysis.py` 只抓材料、不调 LLM——"AI 综合研判"这一步此前
+一直是空白（见 `report.py::render_analysis_report()` 里"综合研判"小节
+的占位说明）。本次新增 `run_stock_analysis_ai.py`，把这一步补上，同时
+借此验证"外部项目机制"（`Workspace`/项目私有 `skills`/`workflows`）在
+一个真实场景里能不能跑通，而不只是停留在框架层设计：
+
+```
+run_stock_analysis_ai.py
+  1. collect(code, name)                     # 确定性 Python，抓材料（复用既有代码，不改）
+  2. subprocess: mini-agent workflow run stock_analysis_ai <inputs_json> --project .
+       └── workflow: workflows/stock_analysis_ai.yaml
+             step "judge"（type: skill_agent，skill_name: stock-analysis-judge）
+               → 临时起一个只挂载本项目 skills/stock-analysis-judge/
+                 SKILL.md 的最小 Agent，读材料 JSON，产出结构化研判
+                 （verdict/summary/key_signals/risk_points/
+                 action_suggestion/report_markdown），写进
+                 result_file（judgment.json，校验失败会自动 resume/
+                 重开重试，见 SkillAgentStepExecutor）
+             step "save_report"（type: tool_call，write_file）
+               → 把 judge 产出的 report_markdown 字段落盘到
+                 reports/analysis/<code>_<run_ts>_ai.md
+  3. 校验预期报告文件确实存在，作为 entrypoint 成功与否的判定依据
+```
+
+- **为什么"抓取"不进 workflow**：抓取是确定性代码，进 workflow 只会
+  多一层子进程/LLM 调度开销，没有收益；只有"理解材料给出研判"这一步
+  真正需要 LLM 的判断力，所以只让这一段发生在 workflow/skill 里——
+  呼应 `external_projects_cron_dispatch_plan.md` §1.3"所有声明了
+  schedule 的 entrypoint 统一走同一条并发通道"的取舍精神：这里进一步
+  收窄，让"要不要经过 LLM"由具体一个 workflow step 决定，而不是整个
+  entrypoint 要不要触发。
+- **`skills/`/`workflows/` 而不是 `.claude/skills/`/`.agent/workflows/`**：
+  这是外部项目与普通交互式 agent 目录的本质区别——外部项目
+  （`<root>/project.yaml` 存在）是引擎的调用方，不应该借用 mini_agent
+  交互式会话自己那套 `.claude/`/`.agent/` 运行期目录。读码核实
+  `config/prompt_builder.py::_resolve_skills_dir()` 和
+  `workflow/store.py::WorkflowStore` 原来的确只认
+  `<root>/.claude/skills` 和 `<root>/.agent/workflows`——这是框架侧
+  实现落后于 `external_projects_workspace_plan.md` 5.1 节设计的一处
+  遗留问题，本次已按设计把两处都改成"检测到 `<root>/project.yaml`
+  即视为外部项目根，优先用 `<root>/skills`/`<root>/workflows`；没有
+  `project.yaml` 的普通交互式项目目录行为不变"，详见
+  `next_doc/external_projects_agent_skill_workflow_integration_plan.md`。
+
+- **`run_stock_analysis` vs `run_stock_analysis_ai` 怎么选**：前者只要
+  材料、不产生 LLM 调用成本时用；后者需要研判结论、看板"手动触发"想
+  直接拿到可读结论时用。两者都不带 `schedule`（见 `project.yaml`），
+  都是按需对具体标的触发，不适合无差别定时跑全市场个股。
 
 ## 问财登录令牌（`hexin-v` cookie）获取
 

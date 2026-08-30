@@ -24,12 +24,23 @@ class WorkflowStore:
     """工作流文件存储管理器。"""
 
     WORKFLOWS_DIR = ".agent/workflows"
+    # [external_projects_workspace_plan.md 5.1] 外部项目（`<root>/project.yaml`
+    # 存在即视为外部项目根，与 `Workspace.project_yaml_path` 的判定标准一致）
+    # 的 workflow 定义放在 `<root>/workflows/`，不是 `.agent/workflows/`——
+    # 外部项目是"引擎的调用方"，不应该把自己的领域 workflow 混进
+    # mini_agent 交互式会话自己那套 `.agent/` 运行期目录里；普通交互式
+    # 项目目录（没有 project.yaml）行为完全不变，仍然是 `.agent/workflows/`。
+    EXTERNAL_PROJECT_WORKFLOWS_DIR = "workflows"
     # [P7-③2 workflow_mechanism_improvement_plan.md] 可复用 step 片段存放目录。
     SNIPPETS_DIR = ".agent/workflow_snippets"
 
     def __init__(self, project_root: Path) -> None:
         self._root = project_root
-        self._dir = project_root / self.WORKFLOWS_DIR
+        self._is_external_project = (project_root / "project.yaml").exists()
+        if self._is_external_project:
+            self._dir = project_root / self.EXTERNAL_PROJECT_WORKFLOWS_DIR
+        else:
+            self._dir = project_root / self.WORKFLOWS_DIR
         self._dir.mkdir(parents=True, exist_ok=True)
         self._snippets_dir = project_root / self.SNIPPETS_DIR
 

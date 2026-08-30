@@ -782,3 +782,16 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   `project.yaml` 全量重新生成。新注册项目默认 `enabled=False`（opt-in），
   需要用户在看板/CLI 手动打开后 daemon 才会开始自动调度。详见该文档
   第 6 节"实现记录"。
+- 2026-08-30：用 `stock_watch` 落地首个实际使用项目私有 `skills/`/
+  `workflows/` 的案例（个股 AI 综合研判）时，读码发现本节 5.1 节画的
+  `<root>/skills/`、`<root>/workflows/` 目录约定，框架侧实际路径解析
+  （`config/prompt_builder.py::_resolve_skills_dir()`、
+  `workflow/store.py::WorkflowStore`）从未真正支持过——一直硬编码走
+  普通交互式 agent 那套 `<root>/.claude/skills`、`<root>/.agent/
+  workflows` 约定，`阶段1` 新增的 `Workspace.skills_dir`/
+  `workflows_dir` 两个属性形同虚设（从未被这两处代码读取）。已按本节
+  设计修正这两处框架代码：以 `<root>/project.yaml` 是否存在判定"外部
+  项目 vs 普通交互式 agent 目录"，外部项目走 `<root>/skills`/
+  `<root>/workflows`，没有 `project.yaml` 的普通目录行为不变。详见
+  `next_doc/external_projects_agent_skill_workflow_integration_plan.md`
+  第 1 节。

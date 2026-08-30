@@ -29,6 +29,23 @@ entrypoints:
       - name: name
         required: false
         help: "股票名称（可选，缺省时用代码本身）"
+  # AI 化版本（next_doc/external_projects_agent_skill_workflow_
+  # integration_plan.md 阶段1）：复用同一份 collect()，多跑一次
+  # stock_analysis_ai workflow（skill_agent 用 stock-analysis-judge
+  # skill 给出综合研判 + tool_call 落盘最终报告），会产生 LLM 调用，
+  # 因此和其它会调 LLM 的 entrypoint 一样，共享同一份 CronJobRunner
+  # 并发闸门（见 external_projects_cron_dispatch_plan.md §1.3）。同样
+  # 无 schedule——按需对具体标的触发，不适合无差别定时跑全市场。
+  stock_analysis_ai:
+    cmd: "python entrypoints/run_stock_analysis_ai.py"
+    timeout_sec: 900
+    params:
+      - name: code
+        required: true
+        help: "股票代码，如 600519"
+      - name: name
+        required: false
+        help: "股票名称（可选，缺省时用代码本身）"
   reconcile_outcomes:
     cmd: "python entrypoints/reconcile_outcomes.py"
     schedule: "cron: 0 18 * * 1"     # 每周一盘后，核对一周前候选池快照的实际表现
