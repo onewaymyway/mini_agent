@@ -1209,6 +1209,46 @@ class GoalRunner:
         except Exception:
             pass
 
+    def _maybe_record_goal_cron_execution_note(self) -> None:
+        """[方案 C 阶段2遗留项1] genuine_difficulty 分类下、已消耗过至少一次
+        恢复额度时，记一条可事后审阅的执行摘要，不影响后续的通用 compact
+        恢复流程（调用方在本方法返回后仍会继续走原有逻辑）。
+
+        触发条件与方案 C 设计文档一致："归因为 genuine_difficulty 且已消耗
+        过一次恢复额度"——`self._stuck_detector.recoveries_used` 在
+        `_check_stuck`/`observe()` 里已经加过本次计数，`>= 2` 表示这不是
+        第一次触发卡住恢复了。只在
+        cfg.goal_mode.goal_cron_execution_note_enabled=True 时生效，任何
+        异常都不应影响主流程。
+        """
+        if not getattr(self._gm_cfg, "goal_cron_execution_note_enabled", False):
+            return
+        if self._last_stuck_category != "genuine_difficulty":
+            return
+        try:
+            recoveries_used = int(self._stuck_detector.recoveries_used)
+        except Exception:
+            return
+        if recoveries_used < 2:
+            return
+        try:
+            from mini_agent.role_agents.execution_notes import append_execution_note
+
+            append_execution_note(
+                self._paths,
+                source="goal_judge",
+                status="CONTINUE",
+                confidence=0.5,
+                summary=(
+                    f"归因为 genuine_difficulty，已是第 {recoveries_used} 次卡住恢复，"
+                    f"仍判定方向正确、继续执行：{self._spec.goal_text[:120]}"
+                ),
+                round_no=self._round + 1,
+                session_id=self._agent.session_id or "",
+            )
+        except Exception:
+            pass
+
     def _try_stuck_recovery(self) -> bool:
         """
         判定"卡住"后的第一反应不应该是直接认输——很可能只是主 Agent 的历史里
@@ -1249,6 +1289,7 @@ class GoalRunner:
             handled = self._try_attributed_recovery(self._last_stuck_category)
             if handled is not None:
                 return handled
+            self._maybe_record_goal_cron_execution_note()
 
         if self._last_stuck_reason == "pseudo_progress":
             recovery_log_reason = (

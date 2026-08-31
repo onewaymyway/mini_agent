@@ -379,6 +379,8 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
 | `src/mini_agent/prompts/system/turn_judge.md` | 修改 | 新增 `{{confidence_instructions}}` 插槽 |
 | `src/mini_agent/role_agents/turn_judge.py` | 修改 | `run_turn_judge()` 按开关拼接 confidence 指令片段 |
 | `src/mini_agent/agent/role_judge.py` | 修改 | 解析 `confidence` 字段；低于阈值时记执行摘要而非强制升级为 `NEED_USER` |
+| `src/mini_agent/config/models.py` | 修改 | `GoalModeConfig` 新增 `goal_cron_execution_note_enabled`（默认 False），供 GoalRunner 侧的执行摘要接入使用（见下方"后续可继续推进的方向"第1项） |
+| `src/mini_agent/goal_mode/runner.py` | 修改 | 新增 `_maybe_record_goal_cron_execution_note()`：`genuine_difficulty` 归因且 `recoveries_used >= 2` 时记一条 `execution_notes` 摘要，在 `_try_stuck_recovery` 中 `_try_attributed_recovery` 返回 `None` 后调用 |
 
 ### 阶段 3：判定过程回写经验
 
@@ -405,10 +407,18 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
 
 ### 后续可继续推进的方向（不影响当前已交付内容）
 
-1. `goal_cron` 场景接入 `execution_notes.append_execution_note()`（阶段2遗留；
-   `goal_cron` 走的是 GoalRunner/GoalJudge 而非 TurnJudge，接入时需要先确认
-   在 DONE/CONTINUE/NEED_COMPACT 语义下"低置信度"的等价定义是什么，不能
-   直接照搬 TurnJudge 的二元语义，需要单独设计）。
+1. ~~`goal_cron` 场景接入 `execution_notes.append_execution_note()`~~ ——**已实现。**
+   `goal_cron` 走的是 GoalRunner/GoalJudge 而非 TurnJudge，没有独立的
+   `confidence` 字段，因此没有照搬 TurnJudge 的二元语义，而是复用方案 C
+   设计文档里当时就写明的等价触发条件——"归因为 `genuine_difficulty` 且
+   已消耗过一次恢复额度"（即：判官认为方向没错、只是任务本身较难，但已经
+   不是第一次卡在同一个问题上）。新增 `cfg.goal_mode.
+   goal_cron_execution_note_enabled`（默认 False），依赖
+   `stuck_attribution_enabled=True`；开启后 `GoalRunner._try_stuck_recovery`
+   在 `_try_attributed_recovery` 判定为 `genuine_difficulty`（返回 `None`）
+   时，若 `StuckDetector.recoveries_used >= 2`，调用
+   `_maybe_record_goal_cron_execution_note()` 记一条执行摘要（`source=
+   "goal_judge"`），不打断、不影响后续仍走通用 compact 恢复流程。
 2. TurnJudge confidence 与 GoalJudge stuck_category 的联合判断（阶段2遗留，价值待评估）。
 3. 扩展阶段 4 冲突检测/收紧覆盖更多判官组合（当前只覆盖 TurnJudge ×
    Evaluator 这一个同轮双判官的场景）。

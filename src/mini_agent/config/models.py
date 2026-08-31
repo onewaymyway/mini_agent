@@ -1043,6 +1043,17 @@ class GoalModeConfig:
     # 被尚未验证过质量的记录污染。
     stuck_recovery_experience_write_enabled: bool = False
 
+    # ── [同上方案 C，阶段2遗留项1] GoalRunner（goal_cron 等无人值守场景）接入
+    # execution_notes：GoalJudge/GoalRunner 不像 TurnJudge 那样输出独立的
+    # confidence 字段，这里复用方案 C 设计时就写明的等价触发条件——"归因为
+    # genuine_difficulty 且已消耗过一次恢复额度"（即：判官认为方向没错、只是
+    # 任务本身较难，但已经不是第一次卡在同一个问题上），把这一轮的归因结论
+    # 和已采取的恢复动作记一条可事后审阅的执行摘要（复用
+    # role_agents/execution_notes.py），不打断执行、不升级为需要用户介入。
+    # 依赖 stuck_attribution_enabled=True（否则 stuck_category 恒为
+    # "unknown"，不会触发）。默认关闭，与其余分级响应开关一致。
+    goal_cron_execution_note_enabled: bool = False
+
 
 @dataclass
 class GoalExecutionSpecConfig:
