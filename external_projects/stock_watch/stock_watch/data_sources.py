@@ -381,12 +381,113 @@ def fetch_xueqiu_hot_stock(top_n: int = 50) -> List[HotStockItem]:
     return items
 
 
+# CDP 浏览器连接器：用于在 Python 网络层有代理/TLS 问题时绕过
+_BROWSER_CDP_PORT = 9333
+_BROWSER_CDP_TAB_ID = None
+
+
+def _get_cdp_session():
+    """懒加载 CDP 会话（连接到已有专用浏览器实例）。"""
+    from .cdp_client import CDPSession, list_tabs
+    global _BROWSER_CDP_TAB_ID
+    try:
+        tabs = list_tabs(port=_BROWSER_CDP_PORT)
+        tab = next((t for t in tabs if t.get("type") == "page"), None)
+        if tab and not _BROWSER_CDP_TAB_ID:
+            _BROWSER_CDP_TAB_ID = tab["id"]
+        if not tab:
+            raise DataSourceError("未找到可用的浏览器 tab，请先运行 browser_launch.py --dedicated")
+        return CDPSession(ws_url=tab["webSocketDebuggerUrl"]), tab
+    except Exception as e:
+        raise DataSourceError(f"CDP 连接失败: {e}") from e
+
+
+def _eastmoney_kline_cdp_fetch(url: str, timeout: int = 15) -> str:
+    """通过 CDP 导航到 URL 并返回页面文本内容（绕过 Python 网络层）。"""
+    from .cdp_client import CDPSession, list_tabs
+    try:
+        tabs = list_tabs(port=_BROWSER_CDP_PORT)
+        tab = next((t for t in tabs if t.get("type") == "page"), None)
+        if not tab:
+            raise DataSourceError("未找到可用的浏览器 tab，请先运行 browser_launch.py --dedicated")
+        session = CDPSession(ws_url=tab["webSocketDebuggerUrl"])
+        try:
+            # 通过 Runtime.evaluate 导航
+            session.eval_js(f"location.href={json.dumps(url)}", await_promise=False)
+            time.sleep(2)  # 等待导航完成
+            body = session.eval_js("document.body.innerText", await_promise=True)
+            return body or ""
+        finally:
+            session.close()
+    except Exception as e:
+        raise DataSourceError(f"CDP 导航失败: {e}") from e
+
+
+def _eastmoney_kline_direct(
+    code: str, market: str, days: int, adjust: str = "qfq"
+) -> pd.DataFrame:
+    """通过 CDP 浏览器导航东方财富 K 线 API 获取数据。
+
+    Python 网络层（requests/http.client）在 Windows 上受系统代理/SChannel
+    问题影响无法直连 eastmoney；借助已启动的专用 Chrome 实例（端口 {_BROWSER_CDP_PORT}）
+    执行 HTTP 请求，完全绕过 Python 层的网络配置。
+    """
+    import datetime
+
+    prefix = "1" if market == "sh" else "0"
+    secid = f"{prefix}.{code}"
+    fqt_map = {"qfq": 1, "hfq": 2, "": 0}
+    fqt = fqt_map.get(adjust, 1)
+    end = datetime.date.today()
+    start = end - datetime.timedelta(days=int(days * 1.7) + 10)
+    limit = days + 10
+    params = _urllib_parse_urlencode({
+        "secid": secid,
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        "klt": "101", "fqt": fqt,
+        "end": end.strftime("%Y%m%d"),
+        "lmt": str(limit),
+        "beg": start.strftime("%Y%m%d"),
+    })
+    url = f"https://push2his.eastmoney.com/api/qt/stock/kline/get?{params}"
+
+    raw = _eastmoney_kline_cdp_fetch(url)
+    if not raw or raw.startswith("ERR"):
+        raise DataSourceError(f"CDP 获取 K 线数据失败，响应: {raw[:200]}")
+    data = json.loads(raw)
+    # API 使用 rc 作为响应码（0 表示成功）
+    if data.get("rc") != 0:
+        raise DataSourceError(f"东方财富 K 线 API 返回错误: {data.get('dsc', data.get('message', 'Unknown'))}")
+    klines = data["data"]["klines"]
+    if not klines:
+        raise DataSourceError(f"东方财富 K 线 API 返回空数据: {code}")
+    rows = []
+    for k in klines:
+        parts = k.split(",")
+        rows.append({
+            "date": parts[0],
+            "open": float(parts[1]), "close": float(parts[2]),
+            "high": float(parts[3]), "low": float(parts[4]),
+            "volume": float(parts[5]), "amount": float(parts[6]),
+        })
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"])
+    return df.tail(days).reset_index(drop=True)
+
+
 def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
     """获取最近 `days` 个交易日的日 K 线（`ak.stock_zh_a_hist`）。
 
     ETF 走 `ak.fund_etf_hist_em`，用 `type=="etf"` 由调用方决定走哪个
     函数（见 `kline.py`），本函数只负责普通 A 股。
     """
+    # 优先直连东方财富（绕过 Windows 系统代理冲突）
+    try:
+        df = _eastmoney_kline_direct(code, market, days, adjust)
+        return df
+    except Exception as exc:
+        logger.warning("东方财富直连失败 (%s)，降级到 akshare", exc)
     import datetime
 
     ak = _import_akshare()
@@ -400,12 +501,22 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
             end_date=end.strftime("%Y%m%d"),
             adjust=adjust,
         )
-    except Exception as exc:  # noqa: BLE001
-        raise DataSourceError(f"stock_zh_a_hist({code}) 调用失败: {exc}") from exc
+    except Exception as exc2:
+        raise DataSourceError(
+            f"东方财富直连及 stock_zh_a_hist({code}) 均失败: {exc2}"
+        ) from exc2
     return df.tail(days)
 
 
 def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
+    # ETF 代码前缀判断市场：510xxx 沪市，159xxx 深市
+    import re
+    market = "sh" if code.startswith(("510", "518")) else "sz"
+    try:
+        df = _eastmoney_kline_direct(code, market, days, adjust)
+        return df
+    except Exception as exc:
+        logger.warning("东方财富直连失败 (%s)，降级到 akshare", exc)
     import datetime
 
     ak = _import_akshare()
@@ -419,8 +530,8 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
             end_date=end.strftime("%Y%m%d"),
             adjust=adjust,
         )
-    except Exception as exc:  # noqa: BLE001
-        raise DataSourceError(f"fund_etf_hist_em({code}) 调用失败: {exc}") from exc
+    except Exception as exc2:  # noqa: BLE001
+        raise DataSourceError(f"fund_etf_hist_em({code}) 调用失败: {exc2}") from exc2
     return df.tail(days)
 
 

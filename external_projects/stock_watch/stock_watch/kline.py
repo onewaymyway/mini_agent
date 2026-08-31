@@ -20,11 +20,17 @@ def _configure_chinese_font():
     if _matplotlib_font_configured:
         return
     _matplotlib_font_configured = True
-    # Windows 优先用 SimHei，macOS 用 PingFang SC
     import platform
+    import os
     system = platform.system()
+    # Windows 优先使用微软雅黑（路径直指定，规避字体缓存问题）
     if system == "Windows":
-        plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "Noto Sans SC", "sans-serif"]
+        yahei_path = r"C:\Windows\Fonts\msyh.ttc"
+        if os.path.exists(yahei_path):
+            prop = matplotlib.font_manager.FontProperties(fname=yahei_path)
+            plt.rcParams["font.family"] = prop.get_name()
+        else:
+            plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Noto Sans SC", "sans-serif"]
     elif system == "Darwin":
         plt.rcParams["font.sans-serif"] = ["PingFang SC", "Hei", "Noto Sans SC", "sans-serif"]
     else:
@@ -33,6 +39,7 @@ def _configure_chinese_font():
     plt.rcParams["axes.unicode_minus"] = False
     # 清除 font manager 缓存，确保新配置生效
     matplotlib.font_manager._load_fontmanager(try_read_cache=False)
+
 
 logger = logging.getLogger("stock_watch.kline")
 
@@ -46,11 +53,27 @@ _COLUMN_MAP = {
     "成交量": "Volume",
 }
 
+# CDP 返回的列名（英文）
+_CDP_COLUMN_MAP = {
+    "date": "Date",
+    "open": "Open",
+    "close": "Close",
+    "high": "High",
+    "low": "Low",
+    "volume": "Volume",
+}
+
 
 def _normalize_df(df):
     import pandas as pd
 
-    df = df.rename(columns=_COLUMN_MAP)
+    # 检测列名语言，选择对应的映射表
+    if "date" in df.columns:
+        col_map = _CDP_COLUMN_MAP
+    else:
+        col_map = _COLUMN_MAP
+
+    df = df.rename(columns=col_map)
     missing = [c for c in ("Date", "Open", "Close", "High", "Low", "Volume") if c not in df.columns]
     if missing:
         raise DataSourceError(f"K 线数据缺少必要列: {missing}，akshare 返回列名可能已变化")
@@ -64,7 +87,9 @@ def get_kline_df(code: str, entry_type: str, days: int, adjust: str = "qfq"):
     if entry_type == "etf":
         raw = fetch_etf_kline(code, days=days, adjust=adjust)
     else:
-        raw = fetch_kline(code, market="", days=days, adjust=adjust)
+        # A 股需要提供 market，这里根据代码前缀判断
+        market = "sh" if code.startswith(("6", "51")) else "sz"
+        raw = fetch_kline(code, market=market, days=days, adjust=adjust)
     return _normalize_df(raw)
 
 
@@ -79,21 +104,36 @@ def plot_kline(
     """生成并保存单个标的的 K 线图，返回图片路径；失败抛 DataSourceError。"""
     _configure_chinese_font()
     import mplfinance as mpf
+    from matplotlib import font_manager
 
     df = get_kline_df(code, entry_type, days=days, adjust=adjust)
     if df.empty:
         raise DataSourceError(f"{code} 没有可用的 K 线数据")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{code}_{name}.png".replace("/", "_")
+    out_path = out_dir / f"{code}_{name}.png"
 
-    mpf.plot(
+    # 使用微软雅黑字体显示中文标题
+    import os
+    yahei_path = r"C:\Windows\Fonts\msyh.ttc"
+    fp = font_manager.FontProperties(fname=yahei_path) if os.path.exists(yahei_path) else None
+
+    result = mpf.plot(
         df,
         type="candle",
         volume=True,
         style="charles",
-        title=f"{name}({code})",
-        savefig=dict(fname=str(out_path), dpi=150, bbox_inches="tight"),
+        title="",  # 不设置标题，手动添加
+        returnfig=True,
     )
+    fig, axes = result
+
+    # 用指定字体添加中文标题
+    if fp:
+        axes[0].set_title(f"{name} ({code})", fontsize=14, fontproperties=fp)
+    else:
+        axes[0].set_title(f"{name} ({code})", fontsize=14)
+
+    fig.savefig(str(out_path), dpi=150, bbox_inches="tight")
     logger.info("K 线图已生成: %s", out_path)
     return out_path
