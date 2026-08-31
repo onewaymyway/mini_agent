@@ -382,35 +382,29 @@ def fetch_xueqiu_hot_stock(top_n: int = 50) -> List[HotStockItem]:
 
 
 # CDP 浏览器连接器：用于在 Python 网络层有代理/TLS 问题时绕过
+from .browser_manager import ensure_browser_running, get_cdp_session, is_browser_running
+
 _BROWSER_CDP_PORT = 9333
 _BROWSER_CDP_TAB_ID = None
 
 
 def _get_cdp_session():
-    """懒加载 CDP 会话（连接到已有专用浏览器实例）。"""
-    from .cdp_client import CDPSession, list_tabs
+    """懒加载 CDP 会话（自动确保浏览器运行）。"""
     global _BROWSER_CDP_TAB_ID
     try:
-        tabs = list_tabs(port=_BROWSER_CDP_PORT)
-        tab = next((t for t in tabs if t.get("type") == "page"), None)
-        if tab and not _BROWSER_CDP_TAB_ID:
-            _BROWSER_CDP_TAB_ID = tab["id"]
-        if not tab:
-            raise DataSourceError("未找到可用的浏览器 tab，请先运行 browser_launch.py --dedicated")
-        return CDPSession(ws_url=tab["webSocketDebuggerUrl"]), tab
+        port, tab_id = ensure_browser_running(port=_BROWSER_CDP_PORT)
+        if tab_id and not _BROWSER_CDP_TAB_ID:
+            _BROWSER_CDP_TAB_ID = tab_id
+        session, tab = get_cdp_session(port=_BROWSER_CDP_PORT)
+        return session, tab
     except Exception as e:
         raise DataSourceError(f"CDP 连接失败: {e}") from e
 
 
 def _eastmoney_kline_cdp_fetch(url: str, timeout: int = 15) -> str:
     """通过 CDP 导航到 URL 并返回页面文本内容（绕过 Python 网络层）。"""
-    from .cdp_client import CDPSession, list_tabs
     try:
-        tabs = list_tabs(port=_BROWSER_CDP_PORT)
-        tab = next((t for t in tabs if t.get("type") == "page"), None)
-        if not tab:
-            raise DataSourceError("未找到可用的浏览器 tab，请先运行 browser_launch.py --dedicated")
-        session = CDPSession(ws_url=tab["webSocketDebuggerUrl"])
+        session, tab = get_cdp_session(port=_BROWSER_CDP_PORT)
         try:
             # 通过 Runtime.evaluate 导航
             session.eval_js(f"location.href={json.dumps(url)}", await_promise=False)
