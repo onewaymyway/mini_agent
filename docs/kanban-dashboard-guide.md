@@ -605,6 +605,29 @@ cron job 后等待其按 cadence 自动触发。
   （🟢健康/🔴不健康/⚪未知，数据来自既有的 `GET /v1/self/
   external_projects` 聚合端点）、启用状态、最近一次执行摘要，可展开
   查看最近 5 条执行记录。
+  - **「自动调度」开关**：勾选后 daemon 会按 `project.yaml` 里每个
+    entrypoint 的 `schedule` 自动触发，取消勾选会把该项目名下的
+    `ext:*` cron job 真正删除（不是仅 disable），语义详见
+    `ExternalProjectRegistry.register()` 文档字符串。
+  - **[2026-08-31 修复的 bug]**：曾经存在"关掉自动调度、daemon 重启
+    后又自动打开"的问题——根因在
+    `RegisteredProject.from_dict()`（`src/mini_agent/external_projects/
+    registry.py`）反序列化时，`enabled` 字段缺失时的兜底默认值错误地
+    给了 `True`，跟 dataclass 字段默认值、`register()` 默认值（两处都
+    是 `False`）不一致。`enabled` 字段是后来才加进这个 dataclass 的，
+    在这之前注册的项目，磁盘上 `~/.mini_agent/external_projects.json`
+    里那条记录本来就没有 `"enabled"` 这个 key；daemon 每次启动都会对
+    所有已注册项目跑一遍 `ensure_external_project_cron_jobs()`，命中
+    这个错误默认值的记录会被误判成"已启用"，从而重新生成对应的
+    `ext:*` cron job。已修正为默认 `False`（与其余两处保持一致，
+    "未显式开启就是关闭"），并补了对应的回归测试
+    （`tests/test_external_projects.py::
+    test_registry_from_dict_defaults_enabled_false_when_key_missing`）。
+    如果你在这次修复之前就注册过外部项目、且怀疑受过这个问题影响，
+    可以直接打开 `~/.mini_agent/external_projects.json` 检查对应项目
+    的条目是否有 `"enabled"` 字段；没有的话，在看板上重新点一次
+    「自动调度」开关（哪怕先开再关）就会把这个 key 正确落盘，之后不
+    会再复现。
 - **卡片内「▶️ 手动触发」**：把该项目 `project.yaml` 声明的 entrypoints
   全部列出来，一个 entrypoint 对应一行（key + schedule[如有] + 命令
   预览 + 「▶️ 触发」按钮），点按钮直接调用

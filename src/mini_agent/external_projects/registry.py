@@ -63,11 +63,25 @@ class RegisteredProject:
 
     @classmethod
     def from_dict(cls, data: Dict) -> "RegisteredProject":
+        # [2026-08-31 修复] 这里原来给 `enabled` 缺省 `True`，跟上面
+        # dataclass 字段默认值 `False`、`register()` 默认值 `False`
+        # 三处不一致——"enabled" 字段是后来才加进来的（见上方
+        # `external_projects_cron_dispatch_plan.md` 注释），如果某条
+        # 记录是在这个字段加入之前注册的，磁盘上的 JSON 就没有这个
+        # key；`from_dict()` 命中这个分支时错误地把它解析成
+        # `enabled=True`，而不是设计上"未显式开启就是关闭"的 opt-in
+        # 默认值。实际表现：用户在看板上关掉某个项目的「自动调度」→
+        # `set_enabled()` 正确落盘 `enabled=false` → 但如果同一批
+        # 记录里还有其它缺 key 的旧条目，daemon 重启时对*那些*旧条目
+        # 走到这个分支会被误判成"启用"，重新生成 `ext:*` cron job，
+        # 表现为"看似又自动调度了"。改成默认 `False`，与其余两处
+        # 定义保持一致，缺 key 时按"未启用"处理，不会凭空把没有明确
+        # 开启过的项目变成自动调度。
         return cls(
             name=data["name"],
             path=data["path"],
             main_project_root=data.get("main_project_root", ""),
-            enabled=data.get("enabled", True),
+            enabled=data.get("enabled", False),
             registered_at=data.get("registered_at", ""),
         )
 

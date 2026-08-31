@@ -189,6 +189,39 @@ def test_registry_corrupted_store_degrades_to_empty(tmp_path):
     assert registry.list() == []  # 原则三：注册表损坏不应炸掉调用方
 
 
+def test_registry_from_dict_defaults_enabled_false_when_key_missing(tmp_path):
+    """[2026-08-31 回归测试] `enabled` 字段是后加进 `RegisteredProject`
+    的，旧版本写盘的记录可能没有这个 key。`from_dict()` 缺 key 时的
+    回退默认值必须跟 `register()`/dataclass 字段默认值保持一致
+    （`False` = 未显式开启就是关闭），否则会出现"用户在看板上关掉了
+    某个项目的自动调度，daemon 重启后又自动重新打开"的问题——根因是
+    旧记录反序列化时被错误地当成 `enabled=True`，daemon 启动时对所有
+    已注册项目跑 `ensure_external_project_cron_jobs()` 会据此把
+    `ext:*` cron job 重新建出来。"""
+    import json
+
+    store = tmp_path / "registry.json"
+    # 手工构造一条"缺 enabled key"的记录，模拟老版本写盘的历史数据。
+    store.write_text(
+        json.dumps({
+            "projects": {
+                "legacy_project": {
+                    "name": "legacy_project",
+                    "path": str(tmp_path / "legacy_project"),
+                    "main_project_root": str(tmp_path),
+                    "registered_at": "2025-01-01T00:00:00+00:00",
+                    # 有意不写 "enabled" key
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    registry = ExternalProjectRegistry(store_path=store)
+    record = registry.get("legacy_project")
+    assert record.enabled is False
+    assert registry.list(enabled_only=True) == []
+
+
 # ── scheduler.py ─────────────────────────────────────────────────────────
 
 
