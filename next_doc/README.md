@@ -157,6 +157,7 @@ Explorer 重构、原始结果与混合合并、三层改进、trace 回放。
 14. `scheduling_unification_and_kanban_visibility_improvement_plan.md` — 计划：调度统一与看板可观测性（P1-P5，见 [定时任务完整参考 §7](../docs/cron-jobs-reference.md)）
 15. `kanban-main-interaction-ui-improvement-plan.md` — 计划：主交互界面
 16. `kanban-large-data-pagination-improvement-plan.md` — 计划：大数据量分页
+17. `tab_lazy_render_plan.md` — 计划：Tab 按需渲染（用"假 tabs"+session_state 替换 `st.tabs()`，避免未选中 tab 产生后台请求/fragment 轮询）
 
 ## workflow（工作流引擎，约 15 篇）
 

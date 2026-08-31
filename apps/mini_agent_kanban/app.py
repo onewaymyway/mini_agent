@@ -133,38 +133,14 @@ def _inject_scroll_script():
         components.html(script, height=0)
 
 
-def _inject_tab_switch_script(tab_label: str):
-    """[daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
-    st.tabs() 没有官方 API 可以\"程序化切换到第 N 个 tab\"——这里复用
-    `_inject_scroll_script()` 同款 `window.parent.document` + JS 注入的
-    做法：Streamlit 的 tabs 在 DOM 里渲染成一组
-    `button[data-baseweb="tab"]`，按钮的可见文本就是传给 `st.tabs([...])`
-    的字符串（含 emoji），直接按"文本包含关系"找到对应按钮并 `.click()`，
-    不依赖固定的 tab 顺序/下标（顺序调整不会悄悄破坏跳转功能）。
-
-    找不到匹配按钮（比如 tab 文案以后改了）时静默不做任何事，不抛异常
-    影响页面其余部分渲染——这是纯粹的体验增强，不是关键路径。
-    """
-    safe_label = json.dumps(tab_label)
-    script = f"""
-    <script>
-    (function() {{
-        const doc = window.parent.document;
-        const target = {safe_label};
-        const btns = doc.querySelectorAll('button[data-baseweb="tab"]');
-        for (const b of btns) {{
-            if (b.textContent && b.textContent.indexOf(target) !== -1) {{
-                b.click();
-                break;
-            }}
-        }}
-    }})();
-    </script>
-    """
-    if hasattr(st, "iframe"):
-        st.iframe(script, height=1)
-    else:
-        components.html(script, height=0)
+# [tab_lazy_render_plan.md / 阶段1] 原来这里有一个 `_inject_tab_switch_script()`
+# 函数，用 `window.parent.document` + JS 注入的方式模拟点击 `st.tabs()`
+# 生成的原生 tab 按钮，实现"顶栏跳转到指定 tab"。改成"假 tab"方案
+# （`TAB_DEFS` + `render_tab_nav()`，见 `main()` 附近）之后，"跳转到某个
+# tab"直接退化成"把 `st.session_state['_active_tab']` 设成目标 tab 的
+# key 再 `st.rerun()`"，是一次普通的 session_state 赋值，不再需要 DOM
+# 里找按钮模拟点击这层 JS hack，函数已删除；所有调用点见
+# `TAB_DEFS`/`_TAB_LABEL_TO_KEY` 附近的替换说明。
 
 
 STATE_LABELS = {
@@ -319,44 +295,13 @@ def inject_css():
     padding: 12px; margin: 8px 0;
 }
 
-/* 顶部 tab 切换栏（st.tabs）在窗口不够宽时默认是横向滚动、超出部分被
-   遮住看不见（不是真的换行）。这里强制 tab-list 换行展示，宽度不够时
-   自动变成多行，不再需要横向滚动才能看到剩下的 tab；同时隐藏原本用来
-   横向滚动的左右箭头按钮（换行之后不再需要）。选择器同时覆盖
-   data-baseweb 和 data-testid 两种属性，兼容不同 streamlit 版本的
-   DOM 结构差异。 */
-div[data-testid="stTabs"] [data-baseweb="tab-list"],
-div[data-testid="stTabs"] div[role="tablist"] {
-    flex-wrap: wrap !important;
-    overflow-x: visible !important;
-    row-gap: 4px;
-}
-div[data-testid="stTabs"] button[data-baseweb="tab"],
-div[data-testid="stTabs"] button[role="tab"] {
-    white-space: nowrap;
-    flex: 0 0 auto;
-}
-div[data-testid="stTabs"] button[data-testid="stTabsScrollButton"] {
-    display: none !important;
-}
-/* streamlit 原生的"选中态"是一根绝对定位、靠 transform: translateX +
-   宽度动画滑到当前 tab 下方的高亮条，这套定位算法假设所有 tab 在同一行
-   里——换行成多行后，这根条要么停在第一行的某个位置不动，要么整条跨
-   到别的行，看着就是"选中状态跟当前点的 tab 对不上"。这里直接隐藏这根
-   滑动高亮条，改成给每个 tab 按钮自己按 aria-selected 状态加下划线/
-   高亮底色，选中状态永远跟着按钮本身走，不受换行影响。 */
-div[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
-    display: none !important;
-}
-div[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="true"],
-div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
-    color: #ff4b4b;
-    border-bottom: 2.5px solid #ff4b4b;
-}
-div[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="false"],
-div[data-testid="stTabs"] button[role="tab"][aria-selected="false"] {
-    border-bottom: 2.5px solid transparent;
-}
+/* [tab_lazy_render_plan.md / 阶段1] 原来这里是给 `st.tabs()` 做"换行 +
+   隐藏原生滑动高亮条"的样式补丁。现在顶部导航改成一排 `st.button`
+   模拟的"假 tab"（见 `render_tab_nav()`），不再使用 `st.tabs()`，针对
+   `data-baseweb="tab"` 的选择器不再命中任何元素，整段删除，不再需要
+   替代样式——"假 tab"直接依赖 `st.button(type="primary"/"secondary")`
+   原生的实心/描边区分选中态，窄屏下 `st.columns` 本身会自动换行，
+   足够可用。 */
 </style>
 """, unsafe_allow_html=True)
 
@@ -407,13 +352,18 @@ def init_state():
         "wf_history_open_id": None,
         # [daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
         # 顶栏"正在执行"列表点击"🔍 查看并控制"后，记录要跳转定位到的
-        # Goal/Objective id、Cron job id，供对应 tab 渲染时高亮/置顶展示；
-        # "_pending_tab_switch" 记录本次 rerun 后需要用 JS 点击切到哪个
-        # tab（见 `_inject_tab_switch_script()`），消费一次后清空，不是
-        # 持久状态。
+        # Goal/Objective id、Cron job id，供对应 tab 渲染时高亮/置顶展示。
         "kanban_focus_node_id": None,
         "cron_focus_job_id": None,
-        "_pending_tab_switch": None,
+        # [tab_lazy_render_plan.md / 阶段1] 原来这里是 "_pending_tab_switch"
+        # ——记录本次 rerun 后需要用 JS 点击切到哪个 tab，消费一次后清空，
+        # 不是持久状态。改成"假 tab"方案（`TAB_DEFS`）之后，"当前停在哪个
+        # tab"本身就需要持久记住（决定这次 rerun 只渲染哪一个
+        # `render_*_tab()`），所以变成一个持久的 "_active_tab" 状态，值是
+        # `TAB_DEFS` 里的 key（默认停在"💬 对话"，即 "chat"）。顶栏跳转
+        # 现在直接复用这同一个 state：把它设成目标 tab 的 key 再
+        # `st.rerun()` 即可，不再需要单独的"待跳转"临时字段。
+        "_active_tab": "chat",
         # [external_projects_kanban_integration_plan.md 阶段3] "外部项目"
         # tab 里"复制到对话框"按钮写入的待发送文本，供 render_chat_tab
         # 的输入框读取后清空——消费一次的临时状态，不是持久偏好。
@@ -438,14 +388,23 @@ def apply_deep_link_query_params():
          分享一条深链接既能定位产出，也能直接把对方带到同一个对话里，
          不用额外发第二个参数。
     只在参数存在时写入 session_state，交由渲染函数消费；不清空未出现的参数，
-    避免用户手动改 URL 时把其它 state 冲掉。"""
+    避免用户手动改 URL 时把其它 state 冲掉。
+
+    [tab_lazy_render_plan.md / 阶段1 兼容性增强] 改成"假 tab"按需渲染后，
+    只把 `artifacts_open_id`/`artifacts_session_filter` 写进 session_state
+    已经不够了——如果当前 `_active_tab` 停在别的 tab，"产出预览" tab 根本
+    不会被渲染，用户点开深链接后还要自己再点一下对应 tab 才能看到效果。
+    这里顺带把 `_active_tab` 设成 "artifacts_preview"，让深链接真正做到
+    "打开链接直接停在产出预览 tab"。"""
     qp = st.query_params
     manifest_id = qp.get("manifest_id")
     session_id = qp.get("session_id")
     if manifest_id:
         st.session_state.artifacts_open_id = manifest_id
+        st.session_state["_active_tab"] = "artifacts_preview"
     if session_id:
         st.session_state.artifacts_session_filter = session_id
+        st.session_state["_active_tab"] = "artifacts_preview"
 
 
 def update_query_params(**kv) -> None:
@@ -881,7 +840,7 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
                 c1.markdown(f"🎯 **来源：目标(Goal)**　{title}　({progress}){detail}")
                 if c2.button("🔍 查看并控制", key=f"jump_obj_{ex.get('execution_id') or ex.get('objective_id')}"):
                     st.session_state["kanban_focus_node_id"] = ex.get("objective_id")
-                    st.session_state["_pending_tab_switch"] = "📌 目标看板"
+                    st.session_state["_active_tab"] = "kanban"
                     st.rerun()
             for job in running_crons:
                 job_id = job.get("id", "")
@@ -890,7 +849,7 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
                 c1.markdown(f"⏰ **来源：Cron 定时任务**　{name}　`{job_id}`")
                 if c2.button("🔍 查看并控制", key=f"jump_cron_{job_id}"):
                     st.session_state["cron_focus_job_id"] = job_id
-                    st.session_state["_pending_tab_switch"] = "⏰ Cron 任务"
+                    st.session_state["_active_tab"] = "cron_jobs"
                     st.rerun()
             for r in running_wfs:
                 wf_name = r.get("workflow_name") or r.get("name") or ""
@@ -901,7 +860,7 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
                 c1.markdown(f"🔄 **来源：工作流(Workflow)**　{wf_name}　`{rid}`{detail}")
                 if c2.button("🔍 查看并控制", key=f"jump_wf_{rid}"):
                     st.session_state["wf_active_run_id"] = rid
-                    st.session_state["_pending_tab_switch"] = "🔄 工作流"
+                    st.session_state["_active_tab"] = "workflow"
                     st.rerun()
 
     if stale_wfs:
@@ -1303,7 +1262,7 @@ def _render_sentinel_panel(client: AgentClient) -> None:
                 )
                 if c2.button("跳转", key=f"sentinel_jump_cron_{job.get('job_id')}"):
                     st.session_state["cron_focus_job_id"] = job.get("job_id")
-                    st.session_state["_pending_tab_switch"] = "⏰ Cron 任务"
+                    st.session_state["_active_tab"] = "cron_jobs"
                     st.rerun()
 
         obj_items = data.get("stuck_objective_steps") or []
@@ -8592,7 +8551,7 @@ def render_external_projects_tab(client: AgentClient):
                     # review session 仍然由用户自己点发送，agent 仍然要走
                     # 一遍正常的工具调用+权限确认流程。
                     st.session_state["chat_prefill_text"] = cached_template
-                    st.session_state["_pending_tab_switch"] = "💬 对话"
+                    st.session_state["_active_tab"] = "chat"
                     st.rerun()
 
             _render_kanban_view_panel(client, name, proj.get("kanban_view"))
@@ -11051,6 +11010,84 @@ def render_notification_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab 定义 + 按需渲染导航（tab_lazy_render_plan.md / 阶段1）
+# ═══════════════════════════════════════════════════════════════════════
+# 背景：`st.tabs()` 只是把内容分组到不同 CSS 容器做视觉切换，Streamlit
+# 脚本本身还是从头到尾整体重跑一遍——不管触发 rerun 的交互发生在哪个
+# tab 里，20 个 `render_*_tab()` 全部会被无条件调用一遍，各自内部的
+# HTTP 请求也都会发出去；里面挂着 `@st.fragment(run_every=...)` 的板块
+# （对话/会话管理下的几个）更是从看板打开那一刻起就在服务端常驻轮询，
+# 跟用户实际停在哪个 tab 完全无关。
+#
+# 这里改成"假 tab"：用一排 `st.button` 模拟 tab 外观，点击时把
+# `st.session_state["_active_tab"]` 设成目标 key 并 `st.rerun()`
+# （`st.button` 点击本身就会触发一次全量 rerun，不像 `st.tabs()` 切换是
+# 纯前端 CSS 行为）；rerun 之后只按 `_active_tab` 渲染对应的那一个
+# `render_*_tab()`，其余 19 个函数根本不会被调用——包括它们内部的
+# `@st.fragment` 挂载，也因为分支没执行到而不会被创建，切走之后原来的
+# fragment 自然停止轮询。
+#
+# 代价：tab 切换从"纯前端瞬切"变成"点击 → 服务端 rerun → 重新渲染"，会
+# 有一次网络往返（通常几十到一两百毫秒），不再是零延迟切换——用瞬时切换
+# 体验换取减少无效后台请求，是这个方案本质上的取舍。
+#
+# `TAB_DEFS` 是唯一的"tab 清单"来源：新增/删除/重排 tab 只改这一处，
+# `render_tab_nav()` 和 `_TAB_LABEL_TO_KEY`（供顶栏跳转按 label 反查
+# key，兼容旧调用点写法）都从这里派生，不用在多处手动保持同步。
+TAB_DEFS = [
+    ("chat", "💬 对话", lambda client: render_chat_tab(client, get_active_session_id())),
+    ("sessions", "🗂️ 会话管理", lambda client: render_sessions_tab(client)),
+    ("kanban", "📌 目标看板", lambda client: render_kanban_tab(client)),
+    ("workflow", "🔄 工作流", lambda client: render_workflow_tab(client)),
+    ("artifacts", "📁 产出物", lambda client: render_artifacts_tab(client)),
+    ("artifacts_preview", "🖼️ 产出预览", lambda client: render_artifacts_preview_tab(client)),
+    ("self", "🧠 自我状态", lambda client: render_self_tab(client)),
+    ("growth", "🌱 成长顾问", lambda client: render_growth_tab(client)),
+    ("capability", "🎓 能力学习", lambda client: render_capability_tab(client)),
+    ("evolution", "🧬 进化提案", lambda client: render_evolution_proposals_tab(client)),
+    ("external_projects", "🗂️ 外部项目", lambda client: render_external_projects_tab(client)),
+    ("cron_jobs", "⏰ Cron 任务", lambda client: render_cron_jobs_tab(client)),
+    ("global_schedule", "🗓️ 全局日程", lambda client: render_global_schedule_tab(client)),
+    ("external_input", "🔌 外部输入", lambda client: render_external_input_tab(client)),
+    ("notification", "🔔 关注与通知", lambda client: render_notification_tab(client)),
+    ("protected_files", "🛡️ 受保护文件", lambda client: render_protected_files_tab(client)),
+    ("config", "⚙️ 配置", lambda client: render_config_tab(client)),
+    ("diagnostics", "🔧 诊断", lambda client: render_diagnostics_tab(client)),
+    ("hybrid_exec", "🧪 混合执行", lambda client: render_hybrid_exec_tab(client)),
+    ("error_log", "📛 错误日志", lambda client: render_error_log_tab(client)),
+]
+_TAB_KEY_TO_LABEL = {key: label for key, label, _fn in TAB_DEFS}
+# 兼容旧的"按 label 跳转"写法（比如以后从别处复制代码习惯写 label）；
+# 目前代码里所有跳转点都已经改成直接写 key，这个映射主要作为防呆保留。
+_TAB_LABEL_TO_KEY = {label: key for key, label, _fn in TAB_DEFS}
+
+
+def render_tab_nav() -> str:
+    """渲染一排"假 tab"按钮，返回当前选中的 tab key。
+
+    选中态用 `st.button(type="primary")`（实心红底）区分未选中的
+    `type="secondary"`（描边），不需要额外 CSS。按钮本身按 `st.columns`
+    等宽分布，窄屏下 Streamlit 的列布局会自动换行，不需要手动处理。
+    """
+    active = st.session_state.get("_active_tab", TAB_DEFS[0][0])
+    if active not in _TAB_KEY_TO_LABEL:
+        active = TAB_DEFS[0][0]
+    cols = st.columns(len(TAB_DEFS))
+    for (key, label, _fn), col in zip(TAB_DEFS, cols):
+        with col:
+            is_active = key == active
+            if st.button(
+                label,
+                key=f"_tabnav_{key}",
+                type="primary" if is_active else "secondary",
+                use_container_width=True,
+            ) and not is_active:
+                st.session_state["_active_tab"] = key
+                st.rerun()
+    return active
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 主流程
 # ═══════════════════════════════════════════════════════════════════════
 def main():
@@ -11079,61 +11116,18 @@ def main():
 
     render_topbar(client, get_active_session_id())
 
-    tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
-                    "🧠 自我状态", "🌱 成长顾问", "🎓 能力学习", "🧬 进化提案", "🗂️ 外部项目", "⏰ Cron 任务",
-                    "🗓️ 全局日程", "🔌 外部输入", "🔔 关注与通知", "🛡️ 受保护文件", "⚙️ 配置", "🔧 诊断",
-                    "🧪 混合执行", "📛 错误日志"])
-
-    # [daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
-    # 顶栏"正在执行"列表的"🔍 查看并控制"按钮点击后，把目标 tab 名记到
-    # `_pending_tab_switch` 并 rerun；tabs 渲染出来之后（DOM 里已经有对应
-    # 的 tab 按钮了）才能真正点击切换，所以要放在 `st.tabs(...)` 之后、
-    # 消费一次就清空（不是持久状态，避免每次 rerun 都重复触发跳转，把
-    # 用户手动点开的其它 tab 又切回去）。
-    pending_tab = st.session_state.pop("_pending_tab_switch", None)
-    if pending_tab:
-        _inject_tab_switch_script(pending_tab)
-
-    with tabs[0]:
-        render_chat_tab(client, get_active_session_id())
-    with tabs[1]:
-        render_sessions_tab(client)
-    with tabs[2]:
-        render_kanban_tab(client)
-    with tabs[3]:
-        render_workflow_tab(client)
-    with tabs[4]:
-        render_artifacts_tab(client)
-    with tabs[5]:
-        render_artifacts_preview_tab(client)
-    with tabs[6]:
-        render_self_tab(client)
-    with tabs[7]:
-        render_growth_tab(client)
-    with tabs[8]:
-        render_capability_tab(client)
-    with tabs[9]:
-        render_evolution_proposals_tab(client)
-    with tabs[10]:
-        render_external_projects_tab(client)
-    with tabs[11]:
-        render_cron_jobs_tab(client)
-    with tabs[12]:
-        render_global_schedule_tab(client)
-    with tabs[13]:
-        render_external_input_tab(client)
-    with tabs[14]:
-        render_notification_tab(client)
-    with tabs[15]:
-        render_protected_files_tab(client)
-    with tabs[16]:
-        render_config_tab(client)
-    with tabs[17]:
-        render_diagnostics_tab(client)
-    with tabs[18]:
-        render_hybrid_exec_tab(client)
-    with tabs[19]:
-        render_error_log_tab(client)
+    # [tab_lazy_render_plan.md / 阶段1] 原来这里是 `st.tabs([...])` +
+    # 20 个 `with tabs[i]: render_xxx_tab(...)`，无条件把所有 tab 内容都
+    # 渲染一遍。现在改成 `render_tab_nav()` 渲染"假 tab"按钮行并返回当前
+    # 选中的 key，只调用 `TAB_DEFS` 里这一个 key 对应的渲染函数——顶栏
+    # "🔍 查看并控制"之类的跳转按钮，现在直接在点击处把
+    # `st.session_state["_active_tab"]` 设成目标 key 再 `st.rerun()`
+    # 即可生效，不再需要在这里额外处理"待跳转"逻辑。
+    active_key = render_tab_nav()
+    for key, _label, render_fn in TAB_DEFS:
+        if key == active_key:
+            render_fn(client)
+            break
 
     # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——
     # 整页阻塞 3 秒再重跑，期间所有 tab、所有正在填的表单都被冻结。
