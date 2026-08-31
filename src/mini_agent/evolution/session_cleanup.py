@@ -310,6 +310,11 @@ def cleanup_orphan_session_dirs(
         path = delete_by_name.get(item.dir_name)
         try:
             if path is not None and path.is_dir():
+                from mini_agent.utils.protected_files_guard import is_protected as _is_protected
+                if _is_protected(path, project_root):
+                    item.reason += "；命中受保护文件清单，跳过删除"
+                    failed.append(item)
+                    continue
                 shutil.rmtree(path, ignore_errors=False)
                 deleted.append(item)
             else:

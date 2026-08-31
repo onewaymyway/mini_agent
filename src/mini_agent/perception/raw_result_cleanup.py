@@ -148,6 +148,17 @@ def run_cleanup(
         for name in marked:
             target = root / name
             try:
+                from mini_agent.utils.protected_files_guard import is_protected
+                if is_protected(target, project_root):
+                    report.findings.append(
+                        CleanupFinding(
+                            session_id=name,
+                            kind="protected_skipped",
+                            detail="命中受保护文件清单，跳过删除",
+                            size_bytes=sizes.get(name, 0),
+                        )
+                    )
+                    continue
                 shutil.rmtree(target)
                 report.cleaned_sessions.append(name)
             except OSError:

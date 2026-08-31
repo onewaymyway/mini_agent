@@ -107,6 +107,7 @@ class PurgeReport:
     matched: int = 0             # 命中筛选条件（status）的记录数
     deleted: int = 0             # 成功删除文件 + 摘除记录的数量
     missing_file: int = 0        # 记录还在，但对应文件已经不存在（只摘记录）
+    protected_skipped: int = 0   # 命中受保护文件清单，跳过删除（记录本身也保留，不摘除）
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -114,6 +115,7 @@ class PurgeReport:
             "matched": self.matched,
             "deleted": self.deleted,
             "missing_file": self.missing_file,
+            "protected_skipped": self.protected_skipped,
             "errors": self.errors,
         }
 
@@ -279,6 +281,10 @@ def purge_quarantined(
         page_path = Path(key)
         try:
             if page_path.exists():
+                from mini_agent.utils.protected_files_guard import is_protected
+                if is_protected(page_path, paths.project_root):
+                    report.protected_skipped += 1
+                    continue
                 page_path.unlink()
                 report.deleted += 1
             else:

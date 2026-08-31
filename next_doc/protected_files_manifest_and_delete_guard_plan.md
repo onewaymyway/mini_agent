@@ -1,7 +1,7 @@
 # 受保护文件清单与删除防护机制改进计划
 
-> **状态**：阶段 0、阶段 1 已完成实施。本文档记录设计过程中的确认结论，
-> 供后续实施时对照，避免中途遗忘约定细节。
+> **状态**：阶段 0、阶段 1、阶段 2 已完成实施。本文档记录设计过程中的
+> 确认结论，供后续实施时对照，避免中途遗忘约定细节。
 
 ---
 
@@ -233,9 +233,53 @@ agent 主动执行的 bash 命令——这正是需要第 3 层兜底的原因�
 - 纯信息展示，不改变任何执行逻辑（阶段 2 的代码级 guard 仍待接入），
   默认开启符合"风险最低"的判断。
 
-### 阶段 2：代码级 guard 接入
-- 逐一接入"实施范围"表格列出的删除点。
-- 命中即跳过 + 记日志，不中断整体维护任务。
+### 阶段 2：代码级 guard 接入 ✅ 已完成
+- 新增统一封装 `src/mini_agent/utils/protected_files_guard.py`：
+  - 收敛"把仓库根目录加入 sys.path 再 import scripts.protected_files"这段
+    样板代码，各删除点只需要
+    `from mini_agent.utils.protected_files_guard import is_protected`。
+  - `is_protected(path, project_root)`：判定模块加载失败或扫描异常时
+    返回 `True`（视为受保护、跳过删除），取舍与 `evolution/state_repo.py`
+    对 `scripts/protected_paths.py` 加载失败时的"宁可错杀不可放过"一致——
+    判定不了时放行会让这层防护失去意义。
+- 已逐一接入"实施范围"表格列出的 6 个删除点（均已核对当前代码仍然存在，
+  无需调整实施范围）：
+  1. `evolution/session_cleanup.py::cleanup_orphan_session_dirs` ——
+     命中受保护路径的候选目录计入 `failed`（reason 追加"命中受保护文件
+     清单，跳过删除"），不计入 `deleted`，不中断对其余候选的处理。
+  2. `skills/generative_capability/health_patrol.py::_cleanup_member`
+     （经 `run_patrol` 调用）—— `run_patrol` 新增可选参数
+     `project_root`（未传时退化为 `Path.cwd()`，与项目里
+     `project_root or Path.cwd()` 的既有惯例一致）；命中时跳过
+     `shutil.rmtree`，registry/index 状态保持不变（不摘除），只在
+     `fixed_inconsistencies` 里记一条说明。
+  3. `perception/raw_result_cleanup.py::run_cleanup` —— 命中的 session
+     目录新增 `CleanupFinding(kind="protected_skipped")`，不计入
+     `cleaned_sessions`。
+  4. `perception/cycle_tuning.py::delete_proposals` —— 命中时直接返回
+     `False`（沿用函数原有的"删除是否成功"语义，调用方据此可以提示用户
+     手动处理），不做任何删除。
+  5. `perception/exploration_sandbox.py::_cleanup_worktree` —— 命中时
+     直接返回，不尝试 `EvolutionWorkspace.cleanup_worktree()` 也不
+     fallback 到 `shutil.rmtree`。
+  6. `wiki/quarantine.py::purge_quarantined` —— `PurgeReport` 新增字段
+     `protected_skipped`；命中的页面既不删除文件，也不摘除隔离区记录
+     （下次巡检仍会看到，保持可追溯）。
+- 已落地 `tests/test_protected_files_guard_integration.py`（7 个用例：
+  `is_protected` 封装本身的正/负例 + 上述 6 个删除点各一条集成测试，
+  均验证"命中受保护清单时文件/目录确实原地保留、且不中断/不报错"），
+  全部通过；连同阶段 0、阶段 1 与既有
+  `test_generative_capability_engine.py` /
+  `test_cycle_tuning.py` / `test_wiki_quarantine.py` /
+  `test_affordance_risk_gating.py` / `test_exploration_outcome_recording.py`
+  / `test_raw_result_and_smart_summary.py` 等相关测试一并跑过，共 175
+  项，无回归。
+- 尚未新增日志落盘（如 `activity_digest.jsonl` 里的专门事件类型）——
+  当前每个删除点各自的报告结构（`OrphanItem.reason` /
+  `CleanupFinding` / `PurgeReport.protected_skipped` 等）已经能让调用方
+  感知到"发生了跳过"，是否需要额外汇总进 `activity_digest.jsonl` 留给
+  阶段 3（届时"缺失核对"告警本来就要写这个文件，可以一并评估是否要把
+  "本轮维护跳过了哪些受保护路径"也带上，避免定义重复的日志入口）。
 
 ### 阶段 3：定期备份 + 缺失告警
 - 新增 `sys:protected_files_backup` cron job。

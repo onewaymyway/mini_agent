@@ -139,6 +139,12 @@ def delete_proposals(paths: "AgentPaths", goal_id: str) -> bool:
     d = _proposal_dir(paths, goal_id)
     try:
         if d.exists():
+            from mini_agent.utils.protected_files_guard import is_protected
+            if is_protected(d, paths.project_root):
+                # 命中受保护文件清单，跳过删除，不视为异常——按调用方约定
+                # （看板目标删除流程）返回 False 表示"未完成删除"，调用方
+                # 据此可以提示用户手动处理。
+                return False
             shutil.rmtree(d)
         return True
     except OSError as e:

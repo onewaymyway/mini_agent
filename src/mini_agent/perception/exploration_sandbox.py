@@ -305,6 +305,9 @@ class ExplorationSandbox:
 
     def _cleanup_worktree(self, worktree_path: Path) -> None:
         """清理 worktree（不抛出异常）。"""
+        from mini_agent.utils.protected_files_guard import is_protected
+        if is_protected(worktree_path, self._paths.project_root):
+            return
         try:
             from mini_agent.evolution.workspace import EvolutionWorkspace
             ws = EvolutionWorkspace(self._paths)

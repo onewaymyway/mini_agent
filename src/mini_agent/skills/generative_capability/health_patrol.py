@@ -76,8 +76,14 @@ def run_patrol(
     fix_inconsistencies: bool = False,
     apply_cleanup: bool = False,
     now: Optional[float] = None,
+    project_root: Optional[str | Path] = None,
 ) -> PatrolReport:
     skill_dir = Path(skill_dir)
+    # 用于受保护文件清单判定（阶段 2 guard）。调用方通常持有真正的项目根
+    # 目录，未显式传入时退化为当前工作目录——与项目里其他类似场景
+    # （见 session.py / plugins.py 等 `project_root or Path.cwd()` 惯例）
+    # 保持一致的兜底行为。
+    project_root = Path(project_root) if project_root is not None else Path.cwd()
     capability = _load_capability(skill_dir)
     lifecycle = capability.get("lifecycle", {})
     stale_days = lifecycle.get("health_patrol_stale_days", _DEFAULT_STALE_DAYS)
@@ -149,7 +155,7 @@ def run_patrol(
                         member_id=mid, kind="dead_expired",
                         detail=f"已 dead {age_days:.1f} 天（保留期 {dead_retention_days} 天已过），建议清理"))
                     if apply_cleanup:
-                        _cleanup_member(skill_dir, mid, registry, index, report)
+                        _cleanup_member(skill_dir, mid, registry, index, report, project_root)
 
     if apply_cleanup and report.cleaned_members:
         _save_json(registry_path, registry)
@@ -196,7 +202,10 @@ def _fix_inconsistencies(report: PatrolReport, registry: dict, index: dict,
         _save_json(index_path, index)
 
 
-def _cleanup_member(skill_dir: Path, member_id: str, registry: dict, index: dict, report: PatrolReport) -> None:
+def _cleanup_member(
+    skill_dir: Path, member_id: str, registry: dict, index: dict, report: PatrolReport,
+    project_root: str | Path,
+) -> None:
     member_dir = skill_dir / "members" / member_id
     backup_meta = None
     meta_path = member_dir / "meta.json"
@@ -207,6 +216,12 @@ def _cleanup_member(skill_dir: Path, member_id: str, registry: dict, index: dict
             backup_meta = None
 
     if member_dir.exists():
+        from mini_agent.utils.protected_files_guard import is_protected
+        if is_protected(member_dir, project_root):
+            report.fixed_inconsistencies.append(
+                f"member `{member_id}` 命中受保护文件清单，跳过删除（registry/index 状态仍保留，不做清理）"
+            )
+            return
         shutil.rmtree(member_dir)
     registry.get("members", {}).pop(member_id, None)
     index["members"] = [m for m in index.get("members", []) if m.get("member_id") != member_id]
