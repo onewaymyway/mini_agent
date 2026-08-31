@@ -3327,6 +3327,15 @@ async def get_self_execution_model_status(request: Request):
         "pool_rebuild_count": int,  # [阶段四] 共享线程池被整体重建的次数
         "stale_turn_count": int,    # [阶段四] 累计检测到的卡死 turn 数
       },
+      "http_busy": {               # [daemon_dual_signal_hang_detection_plan.md
+                                    # 阶段 C] HTTP 层 in-flight 请求忙碌度，
+                                    # 与下面的 scheduler_heartbeat 是两路独立
+                                    # 信号——前者反映"HTTP 服务此刻忙不忙"，
+                                    # 后者反映"核心调度是否真卡死"，看板分开
+                                    # 展示，避免用户混为一谈。
+        "in_flight_count": int,
+        "oldest_in_flight_seconds": float,
+      },
       "scheduler_heartbeat": {
         "enabled": bool,
         "alive": bool,             # 心跳线程是否仍在运行
@@ -3376,6 +3385,7 @@ async def get_self_execution_model_status(request: Request):
                                "discarded_worker_count": 0},
         "isolated_runner": {"enabled": False, "max_workers": 0,
                             "pool_rebuild_count": 0, "stale_turn_count": 0},
+        "http_busy": {"in_flight_count": 0, "oldest_in_flight_seconds": 0.0},
         "scheduler_heartbeat": {"enabled": False, "alive": False,
                                  "poll_interval_seconds": 0.0, "tick_interval_seconds": 0.0,
                                  "last_tick_started_at": 0.0, "last_tick_finished_at": 0.0,
@@ -3414,6 +3424,16 @@ async def get_self_execution_model_status(request: Request):
                 "pool_rebuild_count": getattr(isolated_runner, "pool_rebuild_count", 0),
                 "stale_turn_count": getattr(isolated_runner, "stale_turn_count", 0),
             }
+
+        # [阶段 C] HTTP in-flight 忙碌度快照——tracker 挂在 app.state.http_busy
+        # 上（见 api/server.py::create_app），本请求本身也会被计入（自己也是
+        # 一个 in-flight 请求），这是预期行为，不做特殊剔除，避免徒增复杂度。
+        http_busy_tracker = getattr(request.app.state, "http_busy", None)
+        if http_busy_tracker is not None:
+            try:
+                result["http_busy"] = http_busy_tracker.snapshot()
+            except Exception:
+                pass
 
         autonomous_loop = getattr(http_server, "_autonomous_loop", None)
         tick_interval_seconds = 60.0

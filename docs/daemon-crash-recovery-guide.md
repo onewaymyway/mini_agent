@@ -267,11 +267,52 @@ supervisor 不再直接强杀，而是先读这个文件裁决：
 `interval × consecutive_failures` 秒内出现 `hang_killed` 记录，而不是
 被误判为普通崩溃或者完全没反应。
 
+### 9.2 看板忙碌状态可视化（daemon_dual_signal_hang_detection_plan.md 阶段C）
+
+9.1 的双信号判定解决了 supervisor 侧"该不该强杀"的问题，但看板"🧠 自我
+状态"tab 之前一直把"HTTP 服务忙不忙"和"核心调度心跳"混在一段文字里，
+用户没法直观区分这两种严重程度完全不同的情况。阶段 C 补上这块可视化，
+不改变 9.1 的判定逻辑本身：
+
+- **HTTP 服务忙碌度**（新增）：`HttpServer` 内置一个进程内 in-flight
+  请求计数器（`api/http_busy.py::HttpBusyTracker`，`threading.Lock`
+  保护，配合一个纯 ASGI 中间件在请求进入/退出时自增自减），通过
+  `GET /v1/self/execution_model_status` 新增的 `http_busy` 字段暴露：
+
+  ```json
+  "http_busy": {
+    "in_flight_count": 3,
+    "oldest_in_flight_seconds": 12.4
+  }
+  ```
+
+  这个信号只在 event loop 还能正常调度时才读得出来（和 `/v1/health`
+  是同一条命），**不参与** supervisor 的卡死判定，纯粹是给看板一个
+  "此刻 HTTP 层忙不忙"的展示维度。
+
+- **核心调度心跳状态**：复用 9.1 已有的 `scheduler_heartbeat` 字段
+  （`last_tick_started_at`/`last_tick_finished_at`/`suspected_stuck`
+  等），阶段 C 只改看板展示方式，不改后端数据结构。
+
+看板（`apps/mini_agent_kanban/app.py`，"🧠 自我状态"tab → "⚙️ 执行模型"
+区块）把这两路信号拆成两个并列的小卡片展示：左边"🌐 HTTP 服务忙碌度"
+只反映请求排队/处理情况，右边"🫀 核心调度心跳"直接展示"距上次 tick
+完成已过 Xs"这种人可读的相对时间，不需要用户自己拿 `last_tick_
+finished_at` 心算。
+
+> 范围说明：本轮改造只覆盖 Streamlit 看板
+> （`apps/mini_agent_kanban/app.py`）。`apps/mini_agent_kanban_x`
+> （React SPA，`kanban_react_spa_replacement_plan.md` 引入的替代前端）
+> 的 `SelfStatus` 页面尚未同步接入 `http_busy` 字段，后端数据已就绪，
+> 留作独立的纯前端任务。
+
 ### 尚未覆盖（留给后续阶段，见计划文档 §3）
 
 - 崩溃/卡死告警发出后没有"确保被看到"的超时升级机制；
 - `daemon_crash_history.jsonl`/`daemon_crash_alerts.jsonl` 仍然只追加，
-  没有按条数/时间跨度做轮转清理。
+  没有按条数/时间跨度做轮转清理；
+- React SPA（`apps/mini_agent_kanban_x`）的自我状态页面尚未展示
+  `http_busy` 字段（见上方 9.2 范围说明）。
 
 ## 10. 重启预算落盘 + 重启后健康验证（阶段二）
 

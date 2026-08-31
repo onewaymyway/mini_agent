@@ -955,6 +955,16 @@ def create_app(
         log_path = access_log_path,
     )
 
+    # ── HTTP 忙碌度计数（daemon_dual_signal_hang_detection_plan.md 阶段 C）──
+    # 进程内 in-flight 请求计数，供看板"🧠 自我状态"区分"HTTP 层忙"与
+    # "核心调度真卡死"两种情况。不依赖也不影响阶段 B 的磁盘旁路判定逻辑，
+    # 纯展示用途。tracker 挂到 app.state.http_busy，供
+    # get_self_execution_model_status 直接读取快照。
+    from mini_agent.api.http_busy import HttpBusyMiddleware, HttpBusyTracker
+    _http_busy_tracker = HttpBusyTracker()
+    app.state.http_busy = _http_busy_tracker
+    app.add_middleware(HttpBusyMiddleware, tracker=_http_busy_tracker)
+
     # ── 路由 ──────────────────────────────────────────────────────────────
     app.include_router(router)
 

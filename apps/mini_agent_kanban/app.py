@@ -8024,11 +8024,41 @@ def _render_execution_model_status(client: AgentClient):
             st.caption(f"max_workers：{iso.get('max_workers', 0)}")
 
     with col2:
+        # [daemon_dual_signal_hang_detection_plan.md 阶段 C] HTTP 服务忙碌度
+        # 与核心调度心跳是两路独立信号，拆成两个并列小卡片分开展示，避免
+        # 像之前那样混在一段文字里，用户分不清"HTTP 层忙"和"核心调度真
+        # 卡死"这两种严重程度完全不同的情况。
+        hbusy = resp.get("http_busy") or {}
+        st.markdown("**🌐 HTTP 服务忙碌度**")
+        in_flight = hbusy.get("in_flight_count", 0)
+        oldest_seconds = hbusy.get("oldest_in_flight_seconds", 0.0)
+        if in_flight:
+            st.markdown(f"🟡 {in_flight} 个请求处理中")
+            st.caption(f"最早的一个已挂起 {oldest_seconds:.1f}s")
+        else:
+            st.markdown("🟢 空闲（无 in-flight 请求）")
+        st.caption(
+            "仅反映 HTTP 层是否忙——即使这里显示忙碌，也不代表核心调度卡死，"
+            "见下方「核心调度心跳」。"
+        )
+
+        st.markdown("**🫀 核心调度心跳**")
         hb = resp.get("scheduler_heartbeat") or {}
-        st.markdown("**调度心跳独立化**")
         if hb.get("enabled"):
             alive = hb.get("alive")
-            st.markdown("🟢 运行中" if alive else "🔴 已启用但线程未存活（异常，建议检查日志）")
+            suspected_stuck = hb.get("suspected_stuck")
+            if suspected_stuck:
+                st.markdown("🔴 疑似卡死（看门狗判定：长时间未产生新 tick）")
+            elif alive:
+                st.markdown("🟢 运行中")
+            else:
+                st.markdown("🔴 已启用但线程未存活（异常，建议检查日志）")
+            last_finished_at = hb.get("last_tick_finished_at", 0.0) or 0.0
+            since_last_tick = (time.time() - last_finished_at) if last_finished_at else None
+            if since_last_tick is not None:
+                st.caption(f"距上次 tick 完成已过 {since_last_tick:.0f}s")
+            else:
+                st.caption("尚未发生过 tick")
             st.caption(
                 f"轮询间隔 {hb.get('poll_interval_seconds', 0):.1f}s / "
                 f"AutonomousLoop tick 周期 {hb.get('tick_interval_seconds', 0):.1f}s"
@@ -8036,7 +8066,8 @@ def _render_execution_model_status(client: AgentClient):
         else:
             st.caption(
                 "未开启（`scheduler_heartbeat_enabled=False`，默认值）—— "
-                "AutonomousLoop 仍走原有的\"主循环 dequeue 超时后顺带 tick\"路径。"
+                "AutonomousLoop 仍走原有的\"主循环 dequeue 超时后顺带 tick\"路径，"
+                "daemon_supervisor 的卡死判定退化为纯 HTTP 探测（阶段一原有行为）。"
             )
 
     st.divider()

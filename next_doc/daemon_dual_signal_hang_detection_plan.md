@@ -40,7 +40,28 @@
 > `test_daemon_crash_recovery.py`（53）/`test_scheduler_heartbeat.py`（8）
 > 共 77 个测试全部通过，无回归；`docs/daemon-crash-recovery-guide.md`
 > 新增 §9.1、`next_doc/daemon_hang_detection_and_alert_escalation_plan.md`
-> 已加替换关系说明。阶段C（HTTP 忙碌度计数 + 看板拆分展示）尚未开始。
+> 已加替换关系说明。
+>
+> **[2026-09-01] 阶段C 已实施完成**：新增 `api/http_busy.py`
+> （`HttpBusyTracker` + `HttpBusyMiddleware`，进程内 in-flight 请求计数，
+> 线程安全、零额外线程开销）；`api/server.py::create_app()` 挂载 tracker
+> 到 `app.state.http_busy` 并接入中间件；`api/routes.py::
+> get_self_execution_model_status` 响应新增 `http_busy` 字段（
+> `in_flight_count` / `oldest_in_flight_seconds`），未挂载 tracker 或
+> 快照失败时均容错回默认零值；`apps/mini_agent_kanban/app.py`
+> （Streamlit 看板，"🧠 自我状态"tab）把 HTTP 忙碌度与核心调度心跳拆成
+> 两个并列小卡片展示，并直接展示"距上次 tick 完成已过 Xs"人可读格式。
+> 新增 `tests/test_daemon_dual_signal_hang_detection_stage_c.py`
+> （15 用例），与阶段B相关测试共 93 个测试全部通过，无回归；另用
+> `test_capability_routes_mount.py`（另一处 `create_app()` 调用点）
+> 交叉验证中间件挂载不影响既有路由，18 用例通过。
+>
+> 范围说明：本轮 React SPA（`apps/mini_agent_kanban_x`）的
+> `SelfStatus` 页面尚未同步展示新增的 `http_busy` 字段——该 SPA 是
+> `kanban_react_spa_replacement_plan.md` 引入的独立前端工程，与本方案
+> 聚焦范围（`next_doc/daemon_dual_signal_hang_detection_plan.md` 顶部
+> 列出的文件）不重叠，留作后续独立任务；后端字段已经就绪，SPA 侧接入
+> 只是纯前端展示改造，不需要再动 Python 侧代码。
 
 ---
 
@@ -129,7 +150,7 @@ supervisor（外部进程）能在 event loop 完全瘫痪的情况下仍然读�
 
 ---
 
-## 2.【阶段 C】看板忙碌状态可视化
+## 2.【阶段 C】看板忙碌状态可视化 [已实施完成]
 
 ### 2.1 HTTP 服务忙碌度（新增）
 
@@ -182,3 +203,13 @@ in-flight 计数 + 最早未完成请求的开始时间），通过一个 ASGI �
 
 阶段 B（1-3 步 + 对应测试/文档）完成后打包一次；阶段 C（4-6 步 +
 对应测试/文档）完成后再打包一次。
+
+**[2026-09-01] 两阶段均已完成打包**：阶段 C 实际落地时，4/5 步
+（`api/server.py` 中间件 + `api/routes.py` 字段）新增了独立模块
+`api/http_busy.py` 承载计数器与中间件实现，而不是把逻辑直接写进
+`server.py`——这是为了让 `HttpBusyTracker` 可以脱离完整 `HttpServer`
+单独单元测试（见 `tests/test_daemon_dual_signal_hang_detection_stage_c.
+py` 里对 tracker/middleware 的纯逻辑测试），`server.py` 里只保留几行
+"实例化 + 挂载 + add_middleware"的接线代码；6 步（看板拆分展示）只改
+了 `apps/mini_agent_kanban/app.py`（Streamlit 看板），未同步改动
+`apps/mini_agent_kanban_x`（React SPA），见上方"范围说明"。
