@@ -178,3 +178,4 @@ research/agent_and_ai/articles/
 .agent/scripts/
 .agent/protected_backup/
 .agent/persona_candidates.json
+.agent/monthly_trend_retrospective_state.json
