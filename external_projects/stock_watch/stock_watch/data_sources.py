@@ -429,30 +429,39 @@ def _get_cdp_session():
         raise DataSourceError(f"CDP 连接失败: {e}") from e
 
 
-def _eastmoney_kline_cdp_fetch(url: str, timeout: int = 15) -> str:
-    """通过 CDP 导航到 URL 并返回页面文本内容（绕过 Python 网络层）。"""
-    try:
-        session, tab = get_cdp_session(port=_BROWSER_CDP_PORT)
+def _eastmoney_kline_cdp_fetch(url: str, timeout: int = 15, max_retries: int = 3) -> str:
+    """通过 CDP 导航到 URL 并返回页面文本内容（绕过 Python 网络层）。
+
+    Windows 系统代理（127.0.0.1:10808）导致 requests/urllib 无法直连 eastmoney，
+    改用专用 Chrome 实例（端口 {_BROWSER_CDP_PORT}）执行 HTTP 请求。
+    支持自动重试，应对偶发的浏览器会话瞬断。
+    """
+    for attempt in range(1, max_retries + 1):
         try:
-            # 通过 Runtime.evaluate 导航
-            session.eval_js(f"location.href={json.dumps(url)}", await_promise=False)
-            time.sleep(2)  # 等待导航完成
-            body = session.eval_js("document.body.innerText", await_promise=True)
-            return body or ""
-        finally:
-            session.close()
-    except Exception as e:
-        raise DataSourceError(f"CDP 导航失败: {e}") from e
+            session, tab = get_cdp_session(port=_BROWSER_CDP_PORT)
+            try:
+                session.eval_js(f"location.href={json.dumps(url)}", await_promise=False)
+                time.sleep(2)
+                body = session.eval_js("document.body.innerText", await_promise=True)
+                if body:
+                    return body
+                raise DataSourceError("CDP 返回空内容")
+            finally:
+                session.close()
+        except Exception as e:
+            if attempt == max_retries:
+                raise DataSourceError(f"CDP 导航失败（已重试 {max_retries} 次）: {e}") from e
+            logger.debug("CDP 第 %d 次尝试失败: %s", attempt, e)
 
 
 def _eastmoney_kline_direct(
     code: str, market: str, days: int, adjust: str = "qfq"
 ) -> pd.DataFrame:
-    """通过 CDP 浏览器导航东方财富 K 线 API 获取数据。
+    """获取东方财富 K 线数据（DataFrame）。
 
-    Python 网络层（requests/http.client）在 Windows 上受系统代理/SChannel
-    问题影响无法直连 eastmoney；借助已启动的专用 Chrome 实例（端口 {_BROWSER_CDP_PORT}）
-    执行 HTTP 请求，完全绕过 Python 层的网络配置。
+    主路径：CDP 浏览器（绕过 Windows 系统代理冲突）。
+    降级路径：urllib.request 直连（不读系统代理设置）。
+    最终兜底：由调用方（fetch_kline / fetch_etf_kline）负责交给 akshare。
     """
     import datetime
 
@@ -474,13 +483,14 @@ def _eastmoney_kline_direct(
     })
     url = f"https://push2his.eastmoney.com/api/qt/stock/kline/get?{params}"
 
+    # 主路径：CDP 浏览器
     raw = _eastmoney_kline_cdp_fetch(url)
     if not raw or raw.startswith("ERR"):
-        logger.warning("CDP 获取 K 线失败，降级到无代理直连")
+        logger.warning("CDP 获取 K 线失败，降级到 urllib 直连")
         try:
             data = _fetch_json_no_proxy(url)
         except Exception as exc2:
-            raise DataSourceError(f"CDP 及无代理直连均失败: {exc2}") from exc2
+            raise DataSourceError(f"CDP 及 urllib 直连均失败: {exc2}") from exc2
     else:
         data = json.loads(raw)
     # API 使用 rc 作为响应码（0 表示成功）
@@ -504,12 +514,13 @@ def _eastmoney_kline_direct(
 
 
 def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
-    """获取最近 `days` 个交易日的日 K 线（`ak.stock_zh_a_hist`）。
+    """获取最近 `days` 个交易日的日 K 线。
 
-    ETF 走 `ak.fund_etf_hist_em`，用 `type=="etf"` 由调用方决定走哪个
-    函数（见 `kline.py`），本函数只负责普通 A 股。
+    执行顺序：
+      1. CDP 浏览器直连东方财富（绕过 Windows 系统代理冲突）
+      2. urllib.request 直连东方财富（不读系统代理）
+      3. akshare.stock_zh_a_hist（走系统代理，可能失败）
     """
-    # 优先直连东方财富（绕过 Windows 系统代理冲突）
     try:
         df = _eastmoney_kline_direct(code, market, days, adjust)
         return df
@@ -536,7 +547,13 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
 
 
 def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
-    # ETF 代码前缀判断市场：510xxx 沪市，159xxx 深市
+    """获取 ETF K 线数据。
+
+    执行顺序：
+      1. CDP 浏览器直连东方财富
+      2. urllib.request 直连东方财富
+      3. akshare.fund_etf_hist_em
+    """
     import re
     market = "sh" if code.startswith(("510", "518")) else "sz"
     try:

@@ -17,6 +17,7 @@ from stock_watch.candidate_pool import load_pool
 from stock_watch.config import DATA_DIR, REPORTS_DIR, ensure_dirs, load_config
 from stock_watch.data_sources import DataSourceError
 from stock_watch.kline import plot_kline
+from stock_watch.browser_manager import ensure_browser_running
 
 logger = logging.getLogger("stock_watch.kline_batch")
 
@@ -30,6 +31,13 @@ def main() -> int:
     if not pool:
         logger.warning("候选池为空，跳过 K 线生成（先跑 run_hotlist_scan.py 或配置 seeds）")
         return 0
+
+    # 确保 CDP 浏览器已启动（K 线默认走 CDP 路径）
+    try:
+        port, tab_id = ensure_browser_running(port=9333)
+        logger.info("CDP 浏览器就绪: 端口=%s 标签=%s", port, tab_id)
+    except Exception as exc:
+        logger.warning("CDP 浏览器启动失败，将降级到 urllib/akshare: %s", exc)
 
     out_dir = REPORTS_DIR / "kline" / datetime.now().strftime("%Y%m%d")
     ok, failed = 0, []
