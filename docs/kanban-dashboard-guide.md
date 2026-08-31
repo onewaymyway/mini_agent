@@ -142,7 +142,7 @@ streamlit run app.py
 |---|---|
 | 💬 对话 | 聊天、历史消息、事件流、发送/中断 |
 | 🗂️ 会话管理 | 会话列表、新建 / 恢复 / 删除会话、清理保护置顶、批量清理旧会话（见下方专节） |
-| 📌 目标看板 | Goal / Objective 看板（按状态分列）、新建目标、删除单个/一键删除全部目标（级联清理关联 cron job 与产出数据）、Cron Job 管理与手动触发、Objective 执行进度 |
+| 📌 目标看板 | Goal / Objective 看板（按状态分列）、新建目标、删除单个/一键删除全部目标（级联清理关联 cron job 与产出数据）、Cron Job 管理与手动触发、Objective 执行进度、按长期方向聚合视图（见下方专节） |
 | 🔄 工作流 | Workflow 运行面板、看板视图（按 Step 状态分列）、暂停/取消/续跑/审批、出错定位与单步修改重跑、历史执行列表 |
 | 📁 产出物 | 浏览 `.agent/` 等目录下产出文件，预览与下载 |
 | 🖼️ 产出预览 | 按任务/session 登记的产出物 manifest 语义化展示（图片内联、文档下载），支持深链接直达 |
@@ -340,6 +340,21 @@ widget()`），对接 `perception/goal_execution_spec.py`，与 CLI `/agent goal
   （时间 + 走的路径 + 结论：已关闭/暂不关闭），不再只是一次性 toast
   提示。详见 [Goal 执行规范指南 §7.2](goal-execution-spec-guide.md#72-看板手动重判整体是否可以关闭)。
   CLI 侧对应 `/agent goals spec close-check`。
+
+- **🧭 按长期方向聚合**（`next_doc/personal_researcher_and_coach_
+  capability_gap_plan.md` C1）：Goal 列表上方的折叠区块，展示一个可选
+  的"长期方向"分组视图——多个独立的 Goal（如"工作项目""投资学习"
+  "内容创作"）可能共同服务于同一个更高层、不需要验收标准、不会真正
+  "完成"的方向，这里把它们聚合展示出来。纯展示聚合，不参与
+  GoalJudge 判定、不影响任何 Goal 的执行/调度：
+  - 新建方向（标题即可，可选备注）
+  - 每个方向卡片显示关联 Goal 数、Goal 列表（标题 + 状态）
+  - 🗑️ 删除方向：只清空关联 Goal 的分组（`direction_id` 置空），不会
+    删除 Goal 本身
+  - 未分组的 Goal 可以在下方选择"目标 + 方向"手动关联
+  - 对应 API：`GET/POST /v1/directions`、`PATCH/DELETE
+    /v1/directions/{id}`、`POST /v1/goals/{goal_id}/direction`，
+    `GET /v1/goals` 的返回值里也带上了 `directions` 字段
 
 ### 🔄 工作流 Tab
 
@@ -706,7 +721,8 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `self_status()` / `autonomous_status()` | `/self/status`、`/self/autonomous` | 自省与自主循环状态 |
 | `pause_scheduling(reason=)` / `resume_scheduling()` | `POST /v1/autonomous/scheduling/pause\|resume` | 看板"停止调度"功能：全局暂停/恢复自动调度，见顶部状态条一节 |
 | `gating_history(limit=50)` | `GET /v1/autonomous/gating_history` | 仲裁状态（`full`/`degraded`/`blocked`）变化时间线，供"🗓️ 全局日程"Tab 使用（只读） |
-| `goals()` / `add_goal()` / `update_goal()` / `delete_goal()` / `delete_all_goals()` | `/v1/goals*` | Goal 看板：查看 / 新建 / 更新 / 删除单个（级联清理关联 cron job 与产出数据）/ 一键删除全部 |
+| `goals()` / `add_goal()` / `update_goal()` / `delete_goal()` / `delete_all_goals()` | `/v1/goals*` | Goal 看板：查看 / 新建 / 更新 / 删除单个（级联清理关联 cron job 与产出数据）/ 一键删除全部；`goals()` 返回值内嵌 `directions` 字段 |
+| `directions()` / `add_direction()` / `update_direction()` / `delete_direction()` / `assign_goal_direction()` | `/v1/directions*`、`POST /v1/goals/{id}/direction` | 长期方向分组：查看 / 新建 / 重命名改备注 / 删除（关联 Goal 自动清空分组）/ 把某个 Goal 关联或取消关联到某个方向（`personal_researcher_and_coach_capability_gap_plan.md` C1，纯展示聚合，不影响执行） |
 | `recur_goal()` / `unrecur_goal()` / `skip_goal_next_cycle()` | `POST /v1/goals/{id}/recur\|unrecur\|skip_next_cycle` | 周期性 Goal 绑定 / 解绑 / 跳过下一轮（Track A/B） |
 | `execution_spec_templates()` / `get_execution_spec()` | `GET /v1/goal_execution_spec_templates`、`GET /v1/goals/{id}/execution_spec` | Goal 执行规范：模板库摘要（带关键词匹配预选） / 查看当前草稿或已确认版本 |
 | `generate_execution_spec(mode=)` / `revise_execution_spec(locked_fields=, mode=)` | `POST .../execution_spec/generate\|revise` | 生成第 1 版草稿 / 基于反馈+字段级锁定重新生成，`mode` 单次覆盖 `builder_mode`，响应体带 `effective_path` |

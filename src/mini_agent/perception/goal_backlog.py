@@ -162,6 +162,14 @@ class GoalNode:
     # 不影响 recurring 本身、也不改变 ExecutionPhaseState.mode。
     next_cycle_lightweight: bool = False
 
+    # [personal_researcher_and_coach_capability_gap_plan.md C1] 可选的"长期
+    # 方向"分组标签，指向 GoalBacklog._directions 里的一个 Direction.id。
+    # 与 parent_id（"Objective 属于哪个 Goal"）语义不同——这里表达的是
+    # "多个独立的 Goal 共同服务于同一个更高层、没有验收标准的长期方向"，
+    # 不参与 GoalJudge 判定、不影响执行调度、不改变 level 的两值约束，
+    # 纯粹用于看板展示聚合。None 表示未分组。
+    direction_id: Optional[str] = None
+
     # [goal_output_directory_and_execution_phase_redesign_plan.md Stage 9]
     # 用户请求"下一次触发时附加一次历史数据迁移任务"——把旧模型
     # （每轮一个 cycle_NNNN/ 目录）下遗留的历史产出，搬迁进新的固定四目录
@@ -273,6 +281,7 @@ class GoalNode:
             "growth_pursuit_style": self.growth_pursuit_style,
             "user_output_dir": self.user_output_dir,
             "user_output_dir_suggested": self.user_output_dir_suggested,
+            "direction_id": self.direction_id,
         }
 
     @staticmethod
@@ -313,6 +322,7 @@ class GoalNode:
             growth_pursuit_style=d.get("growth_pursuit_style"),
             user_output_dir=d.get("user_output_dir"),
             user_output_dir_suggested=d.get("user_output_dir_suggested"),
+            direction_id=d.get("direction_id"),
         )
 
     @property
@@ -326,6 +336,42 @@ class GoalNode:
     @property
     def is_active(self) -> bool:
         return self.status == "active"
+
+
+@dataclass
+class Direction:
+    """[personal_researcher_and_coach_capability_gap_plan.md C1] "长期方向"
+    分组：多个独立的 Goal 可能共同服务于同一个更高层、没有验收标准的
+    长期方向（如"工作项目""投资学习""内容创作"）。
+
+    与 GoalNode 的本质区别：Goal 是"要做完的事"（有验收标准、参与
+    GoalJudge 判定、会进入完成态），Direction 是"一个不会真正'完成'
+    的方向"——只是标题 + 创建时间的纯展示聚合结构，不参与任何执行/判定
+    逻辑。刻意不复用 growth_advisor 的置信度/衰减机制——那套是为"候选
+    要不要生成"这个决策服务的，Direction 分组不需要决策逻辑。
+    """
+    id: str
+    title: str
+    created_at: float = 0.0
+    # 可选备注，供用户补充"这个方向具体指什么"
+    description: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "created_at": self.created_at,
+            "description": self.description,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> "Direction":
+        return Direction(
+            id=d.get("id", ""),
+            title=d.get("title", ""),
+            created_at=d.get("created_at", 0.0),
+            description=d.get("description", ""),
+        )
 
 
 def compose_context(parent_desc: str, own_desc: str) -> str:
@@ -470,6 +516,10 @@ class GoalBacklog:
         self._paths = paths
         self._goals_path = paths.workdir_dir / "goals.json"
         self._nodes: dict[str, GoalNode] = {}  # id -> GoalNode
+        # [personal_researcher_and_coach_capability_gap_plan.md C1]
+        # id -> Direction，与 _nodes 同文件持久化（goals.json 顶层新增
+        # "directions" 键），跟着 _locked() 走同一把并发锁。
+        self._directions: dict[str, Direction] = {}
 
     # ── 跨进程并发控制 ────────────────────────────────────────────────────────
 
@@ -522,12 +572,19 @@ class GoalBacklog:
                 for g in goals_list
                 if isinstance(g, dict) and "id" in g
             }
+            directions_list = data.get("directions", [])
+            self._directions = {
+                dr["id"]: Direction.from_dict(dr)
+                for dr in directions_list
+                if isinstance(dr, dict) and "id" in dr
+            }
             self._backfill_user_output_dir_suggestions()
         except Exception as _mini_agent_exc:
             # 读取失败不阻塞 agent 主流程
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.perception.goal_backlog.GoalBacklog.load')
             self._nodes = {}
+            self._directions = {}
 
     def _backfill_user_output_dir_suggestions(self) -> None:
         """[goal_user_output_dir_plan.md] 对"存量" Goal 自动补跑一次产出
@@ -574,6 +631,7 @@ class GoalBacklog:
         data = {
             "version": self.VERSION,
             "goals": [n.to_dict() for n in self._nodes.values()],
+            "directions": [dr.to_dict() for dr in self._directions.values()],
         }
         atomic_write_json(self._goals_path, data)
 
@@ -1300,6 +1358,82 @@ class GoalBacklog:
                 setattr(node, key, value)
             node.last_touched_at = time.time()
         return self._nodes.get(node_id)
+
+    # ── C1：长期方向分组（personal_researcher_and_coach_capability_gap_plan.md）──
+    # Direction 是纯展示聚合，不参与 GoalJudge 判定、不影响执行调度，见
+    # Direction 类注释。这里只提供最基础的增删查改 + 分组关联，不引入
+    # 任何置信度/衰减一类的决策逻辑。
+
+    def add_direction(self, title: str, description: str = "") -> Direction:
+        """新建一个长期方向分组。走 `_locked()`，与 Goal 写入同一把锁。"""
+        with self._locked():
+            direction = Direction(
+                id=f"dir_{uuid.uuid4().hex[:8]}",
+                title=title,
+                created_at=time.time(),
+                description=description,
+            )
+            self._directions[direction.id] = direction
+        return direction
+
+    def list_directions(self) -> list[Direction]:
+        """返回全部长期方向，按创建时间升序（早创建的排前面，跟目标
+        看板"先看到老方向"的直觉一致）。"""
+        return sorted(self._directions.values(), key=lambda d: d.created_at)
+
+    def get_direction(self, direction_id: str) -> Optional[Direction]:
+        return self._directions.get(direction_id)
+
+    def rename_direction(self, direction_id: str, title: str, description: Optional[str] = None) -> bool:
+        with self._locked():
+            direction = self._directions.get(direction_id)
+            if not direction:
+                return False
+            direction.title = title
+            if description is not None:
+                direction.description = description
+        return True
+
+    def delete_direction(self, direction_id: str) -> bool:
+        """删除一个长期方向分组。已挂在这个方向下的 Goal 不会被删除或
+        阻塞任何执行——只是把它们的 `direction_id` 清空为 None（未分组），
+        与"删除父节点不应该级联破坏子节点的执行状态"这一贯取舍一致。"""
+        with self._locked():
+            if direction_id not in self._directions:
+                return False
+            del self._directions[direction_id]
+            for node in self._nodes.values():
+                if node.direction_id == direction_id:
+                    node.direction_id = None
+        return True
+
+    def assign_direction(self, goal_id: str, direction_id: Optional[str]) -> bool:
+        """把一个 Goal（通常是 level="goal" 的节点，但不强制校验——纯展示
+        聚合，Objective 挂上去也不影响任何执行逻辑）关联到某个长期方向。
+        direction_id=None 表示取消分组。"""
+        with self._locked():
+            node = self._nodes.get(goal_id)
+            if not node:
+                return False
+            if direction_id is not None and direction_id not in self._directions:
+                return False
+            node.direction_id = direction_id
+            node.last_touched_at = time.time()
+        return True
+
+    def goals_by_direction(self) -> dict[Optional[str], list[GoalNode]]:
+        """按 direction_id 对全部 Goal（level="goal"）分组，供看板"按长期
+        方向聚合视图"直接消费。键为 direction_id（未分组的 Goal 归到
+        None 键下），值按 priority 降序排列。不过滤 status——聚合视图
+        需要看到完整状态分布，跟 `all_nodes()` 的取舍一致。"""
+        groups: dict[Optional[str], list[GoalNode]] = {}
+        for node in self._nodes.values():
+            if not node.is_goal:
+                continue
+            groups.setdefault(node.direction_id, []).append(node)
+        for key in groups:
+            groups[key].sort(key=lambda n: n.priority, reverse=True)
+        return groups
 
     # ── P5：外部信号驱动 Goal 执行 ────────────────────────────────────────────
     # 设计背景见 next_doc/watchlist_notification_goal_design.md §3.5/§4.4。

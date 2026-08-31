@@ -5008,10 +5008,168 @@ async def list_goals(request: Request):
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.api.routes.list_goals.work_thread_enrich')
 
+        # [personal_researcher_and_coach_capability_gap_plan.md C1] 一并带出
+        # 长期方向分组列表，看板"按长期方向聚合视图"不用再单独发一次请求。
+        directions = [dr.to_dict() for dr in backlog.list_directions()]
+
         return {
             "goals":      [n.to_dict() for n in all_nodes if n.is_goal],
             "objectives": objectives,
+            "directions": directions,
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/directions")
+async def list_directions(request: Request):
+    """GET /v1/directions — [personal_researcher_and_coach_capability_gap_plan.md
+    C1] 单独列出全部长期方向分组（看板已经能从 GET /v1/goals 里拿到，这个
+    端点主要供 CLI/其它只关心分组本身、不需要 Goal 全量数据的调用方使用）。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if not project_root:
+            return {"directions": []}
+        paths = AgentPaths(project_root)
+        backlog = load_goal_backlog(paths)
+        return {"directions": [dr.to_dict() for dr in backlog.list_directions()]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/directions")
+async def add_direction(request: Request):
+    """POST /v1/directions — 新建一个长期方向分组。
+    Body: {"title": str, "description": str?}
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    title = (body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title 不能为空")
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if not project_root:
+            raise HTTPException(status_code=503, detail="project_root 不可用")
+        paths = AgentPaths(project_root)
+        backlog = load_goal_backlog(paths)
+        direction = backlog.add_direction(title, description=body.get("description", ""))
+        return {"direction": direction.to_dict()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/directions/{direction_id}")
+async def update_direction(direction_id: str, request: Request):
+    """PATCH /v1/directions/{direction_id} — 重命名/更新备注。
+    Body: {"title": str?, "description": str?}
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if not project_root:
+            raise HTTPException(status_code=503, detail="project_root 不可用")
+        paths = AgentPaths(project_root)
+        backlog = load_goal_backlog(paths)
+        direction = backlog.get_direction(direction_id)
+        if not direction:
+            raise HTTPException(status_code=404, detail="direction not found")
+        title = body.get("title", direction.title)
+        ok = backlog.rename_direction(direction_id, title, description=body.get("description"))
+        if not ok:
+            raise HTTPException(status_code=404, detail="direction not found")
+        return {"direction": backlog.get_direction(direction_id).to_dict()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/directions/{direction_id}")
+async def delete_direction(direction_id: str, request: Request):
+    """DELETE /v1/directions/{direction_id} — 删除分组，挂在其下的 Goal
+    的 direction_id 会被清空为 None（未分组），不会被删除或阻塞执行。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if not project_root:
+            raise HTTPException(status_code=503, detail="project_root 不可用")
+        paths = AgentPaths(project_root)
+        backlog = load_goal_backlog(paths)
+        ok = backlog.delete_direction(direction_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="direction not found")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/goals/{goal_id}/direction")
+async def assign_goal_direction(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/direction — 把一个 Goal 关联到某个长期
+    方向分组。Body: {"direction_id": str | null}（null/省略表示取消分组）。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    direction_id = body.get("direction_id")
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if not project_root:
+            raise HTTPException(status_code=503, detail="project_root 不可用")
+        paths = AgentPaths(project_root)
+        backlog = load_goal_backlog(paths)
+        ok = backlog.assign_direction(goal_id, direction_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="goal or direction not found")
+        return {"goal": backlog.get(goal_id).to_dict()}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

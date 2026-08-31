@@ -520,6 +520,20 @@ class AgentPaths:
         return self.wiki_growth_dir / f"{slug}-material.md"
 
     @property
+    def wiki_research_dir(self) -> Path:
+        """<project_root>/.agent/wiki/research/ —
+        [personal_researcher_and_coach_capability_gap_plan.md R1] 通用持续
+        调研（`research_topic` 执行规范模板）正文目录，与 `wiki_growth_dir`
+        数据结构和推进逻辑相同，只是命名空间和触发场景不同（不要求 Goal
+        来自成长顾问候选）。wiki 索引/巩固循环等下游消费者按目录通用扫描，
+        不需要对这两个命名空间做区分处理。"""
+        return self.wiki_dir / "research"
+
+    def research_topic_path(self, slug: str) -> Path:
+        """…/wiki/research/<slug>.md"""
+        return self.wiki_research_dir / f"{slug}.md"
+
+    @property
     def gating_history_path(self) -> Path:
         """<project_root>/.agent/gating_history.jsonl — ResourceArbiter 三态门控
         （full/degraded/blocked）状态变化流水（调度统一化 + 看板可观测性改进

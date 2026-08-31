@@ -200,6 +200,7 @@ Explorer 重构、原始结果与混合合并、三层改进、trace 回放。
 - `work_index_proactive_reminder_design.md` — 设计：工作索引主动提醒
 - `memory_backfill_and_profile_update_plan.md` — 计划：记忆回填与用户画像更新
 - `personal_researcher_and_coach_capability_gap_plan.md` — 计划：对照个人 AI 助理能力框架梳理的 Personal Researcher / Personal Coach 缺口改进方案（与 growth_advisor 系列的关系见文档 0.3 节）
+- `personal_researcher_and_coach_capability_gap_implementation_record.md` — 实施记录：R1（通用调研模板 `research_topic`）+ C1（Goal 长期方向分组）落地情况，R2/C2/C3/C4/R3 延后
 
 **Cron 专属执行机制**
 - `cron_dedicated_execution_improvement_plan.md` — 计划

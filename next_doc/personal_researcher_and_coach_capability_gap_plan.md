@@ -1,5 +1,10 @@
 # 个人助理能力对照：Personal Researcher 与 Personal Coach 缺口改进方案
 
+> **实施状态（见配套的
+> `personal_researcher_and_coach_capability_gap_implementation_record.md`）**：
+> R1（通用调研模板 `research_topic`）与 C1（Goal 的"长期方向"分组）已
+> 落地。R2/C2/C3/C4/R3 按第 3 节的优先级建议延后，尚未实施。
+
 > 前置阅读：`docs/mini-agent-philosophy-and-roadmap.md`（项目理念与当前
 > 优先级）、`docs/growth-advisor-guide.md` 1.5 节"设计理念"（本文档的
 > "持续调研"部分完全延续这条理念，不推翻其中任何一条约束）、

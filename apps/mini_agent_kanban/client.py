@@ -503,6 +503,29 @@ class AgentClient:
         Goal 逐个执行与 delete_goal() 相同的级联删除，一次性清空看板。"""
         return self._delete("/goals")
 
+    # ── 看板：长期方向分组（personal_researcher_and_coach_capability_gap_
+    # plan.md C1）────────────────────────────────────────────────────────
+    def directions(self):
+        """单独列出全部长期方向分组；goals() 的返回值里已经内嵌了
+        directions 字段，多数场景直接用那份即可，这个方法主要供不需要
+        Goal 全量数据的场景使用。"""
+        return self._get("/directions")
+
+    def add_direction(self, title: str, description: str = ""):
+        return self._post("/directions", {"title": title, "description": description})
+
+    def update_direction(self, direction_id: str, **fields):
+        return self._patch(f"/directions/{direction_id}", fields)
+
+    def delete_direction(self, direction_id: str):
+        """删除分组，挂在其下的 Goal 会被清空 direction_id（未分组），
+        不会被删除或阻塞执行。"""
+        return self._delete(f"/directions/{direction_id}")
+
+    def assign_goal_direction(self, goal_id: str, direction_id):
+        """direction_id=None 表示取消分组。"""
+        return self._post(f"/goals/{goal_id}/direction", {"direction_id": direction_id})
+
     # ── 看板：周期性 Goal 绑定/解绑/跳过（goal_cron_visibility_and_
     # intervention_improvement_plan.md Track A/B）───────────────────────
     def recur_goal(self, goal_id: str, schedule: str, task_template: str = ""):

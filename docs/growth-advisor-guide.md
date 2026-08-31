@@ -60,7 +60,11 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
   往深/往新走——避免重复讲已经讲过的内容、避免用不同措辞重写同一份
   素材。这要求执行规范/模板层面有专门的"增量"约束和"已覆盖话题"记忆
   （见 演进日志 §2.12 growth_pursuit 模板的 handoff_fields 设计），而不能只
-  套用通用的"随手调研一下"模板。
+  套用通用的"随手调研一下"模板。这套"增量约束 + 跨轮次记忆"骨架已经
+  抽成不专属于成长顾问场景的通用模板 `research_topic`（用户可以在
+  成长顾问触发场景之外，直接对任意主题发起持续调研），细节见
+  `next_doc/personal_researcher_and_coach_capability_gap_plan.md` R1、
+  `next_doc/personal_researcher_and_coach_capability_gap_implementation_record.md`。
 - **素材要能沉淀成用户可以直接拿去学习的东西**，而不是散落的、互不
   衔接的多份一次性报告。倾向于让同一个方向的素材汇聚到同一份持续更新
   的页面里，带来源标注，而不是每跑一轮就新开一份文件。

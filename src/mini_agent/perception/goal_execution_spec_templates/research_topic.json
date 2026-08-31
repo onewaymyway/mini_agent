@@ -1,0 +1,58 @@
+{
+  "template_id": "research_topic",
+  "name": "通用持续调研",
+  "applicable_to": "用户直接指定一个调研主题（不限于自我成长，如追踪某个技术方案的社区讨论、某个第三方项目的动态、某个行业话题），需要按同一主题周期性、不重复地持续深化收集素材，供用户长期查阅，而不是每轮各自产出一份互不衔接的一次性报告。与 growth_pursuit 共享同一套骨架（追加式产出物 + 三个跨轮次 handoff 字段 + 本轮必须有实质性增量），区别仅在于触发场景不落在成长顾问信号扫描之内、产出物命名空间不同。",
+  "keywords": [
+    "持续研究",
+    "持续调研",
+    "持续追踪",
+    "跟踪进展",
+    "长期关注",
+    "调研主题"
+  ],
+  "skeleton": {
+    "deliverables": [
+      {
+        "name": "wiki/research/<topic>.md",
+        "description": "该调研主题的持续素材页面：每一轮在已有内容基础上追加新的、带来源标注的信息块，而不是覆盖重写或另起一份新文件；久而久之整份页面就是用户可以直接查阅的素材库。与 wiki/growth/ 下的成长方向页面共用同一套 wiki 治理机制（索引/巩固循环等下游消费者不需要额外区分对待），只是命名空间和触发场景不同。",
+        "naming_pattern": "wiki/research/<topic-slug>.md",
+        "required_every_cycle": true
+      }
+    ],
+    "handoff_fields": [
+      {
+        "name": "covered_subtopics",
+        "description": "已经展开讲过的子话题列表，下一轮必须先看这个字段，避免重复讲已经讲过的内容"
+      },
+      {
+        "name": "open_questions",
+        "description": "上一轮识别到但还没来得及展开的方向/问题，下一轮优先从这里挑选推进"
+      },
+      {
+        "name": "last_source_urls",
+        "description": "上一轮引用过的信息来源 URL/标识列表，用于去重，避免重复引用同一来源"
+      }
+    ],
+    "sub_directories": [],
+    "per_cycle_criteria": [
+      {
+        "text": "本轮必须相比上一轮有实质性增量——新增至少若干个具体的信息点或来源，而不是用不同的措辞重写一遍已有内容",
+        "verification_method": "manual_review"
+      },
+      {
+        "text": "本轮新增内容不与 handoff.covered_subtopics 中已覆盖的子话题重复；如确需再次提及，必须是在原有基础上往深/往新推进",
+        "verification_method": "manual_review"
+      },
+      {
+        "text": "新增内容块标注信息来源（页面 id / URL），不是无来源的泛泛而谈",
+        "verification_method": "manual_review"
+      }
+    ],
+    "overall_completion_criteria": [],
+    "special_constraints": [
+      "每一轮结束前更新 handoff 的 covered_subtopics / open_questions / last_source_urls 三个字段，供下一轮读取，这是这个模板能够持续、不重复推进的关键",
+      "素材追加到同一份 wiki 页面，不要每轮新建一份报告文件",
+      "本模板不要求 Goal 一定来自成长顾问候选，用户可以直接通过 /agent goals add 或对话表达持续调研意图后选用本模板"
+    ]
+  }
+}

@@ -4317,6 +4317,85 @@ def _render_cycle_health_overview(client: "AgentClient"):
                 st.rerun()
 
 
+def _render_goal_direction_overview(client: "AgentClient", goals: list, directions: list):
+    """[personal_researcher_and_coach_capability_gap_plan.md C1]
+    "按长期方向聚合"折叠区块：新建/重命名/删除方向分组、把某个 Goal
+    关联到某个方向、按方向列出关联的 Goal 及其状态。
+
+    与 `_render_cycle_health_overview` 同款\"默认折叠、只依赖已经拿到手
+    的 goals_data，不额外发请求\"的取舍一致——directions/goal.direction_id
+    已经随 client.goals() 一起返回。
+    """
+    with st.expander(f"🧭 按长期方向聚合（{len(directions)} 个方向）", expanded=False):
+        st.caption(
+            "\"长期方向\"是一个不需要验收标准、不会真正'完成'的分组标签，"
+            "用来看清楚哪几个 Goal 其实是在服务同一个更大的方向。纯展示"
+            "聚合，不影响任何 Goal 的执行/调度。"
+        )
+
+        with st.form("_new_direction_form", clear_on_submit=True):
+            dc1, dc2 = st.columns([3, 1])
+            new_title = dc1.text_input("新建方向", key="_new_direction_title_input", label_visibility="collapsed",
+                                        placeholder="例如：投资学习 / 内容创作")
+            new_submit = dc2.form_submit_button("➕ 新建")
+        if new_submit and new_title.strip():
+            res = client.add_direction(new_title.strip())
+            if isinstance(res, dict) and res.get("_error"):
+                st.error(f"创建失败：{res['_error']}")
+            else:
+                st.toast(f"✅ 已新建方向「{new_title.strip()}」", icon="🧭")
+            st.rerun()
+
+        direction_by_id = {d.get("id"): d for d in directions}
+        goals_by_dir: dict = {}
+        for g in goals:
+            goals_by_dir.setdefault(g.get("direction_id"), []).append(g)
+
+        if not directions:
+            st.caption("还没有任何长期方向，先在上面新建一个。")
+        for d in directions:
+            did = d.get("id")
+            members = goals_by_dir.get(did, [])
+            with st.container(border=True):
+                hc1, hc2 = st.columns([5, 1])
+                hc1.markdown(f"**{d.get('title', '')}**（{len(members)} 个目标）")
+                if hc2.button("🗑️", key=f"_del_direction_{did}", help="删除该方向（不会删除已关联的 Goal，只清空分组）"):
+                    res = client.delete_direction(did)
+                    if isinstance(res, dict) and res.get("_error"):
+                        st.error(f"删除失败：{res['_error']}")
+                    st.rerun()
+                if d.get("description"):
+                    st.caption(d["description"])
+                if not members:
+                    st.caption("暂无关联目标。")
+                else:
+                    for g in members:
+                        st.write(f"- [{g.get('status', '')}] {g.get('title', '')}")
+
+        unassigned = goals_by_dir.get(None, [])
+        if unassigned and directions:
+            st.markdown("**把一个未分组的目标挂到某个方向下：**")
+            options = {g.get("id"): g.get("title", "") for g in unassigned}
+            gc1, gc2, gc3 = st.columns([3, 3, 1])
+            pick_goal_id = gc1.selectbox(
+                "目标", options=list(options.keys()),
+                format_func=lambda gid: options.get(gid, gid),
+                key="_assign_direction_goal_select", label_visibility="collapsed",
+            )
+            pick_dir_id = gc2.selectbox(
+                "方向", options=list(direction_by_id.keys()),
+                format_func=lambda did: direction_by_id.get(did, {}).get("title", did),
+                key="_assign_direction_dir_select", label_visibility="collapsed",
+            )
+            if gc3.button("关联", key="_assign_direction_btn"):
+                res = client.assign_goal_direction(pick_goal_id, pick_dir_id)
+                if isinstance(res, dict) and res.get("_error"):
+                    st.error(f"关联失败：{res['_error']}")
+                else:
+                    st.toast("✅ 已关联", icon="🧭")
+                st.rerun()
+
+
 def render_kanban_tab(client: AgentClient):
     st.markdown("#### 📌 目标看板 (Goal Backlog)")
 
@@ -4474,6 +4553,13 @@ def render_kanban_tab(client: AgentClient):
         all_nodes = goals + objectives
         # 用于给"父 Goal 在别的状态列"的 Objective 显示父标题
         title_by_id = {n.get("id"): n.get("title", "") for n in all_nodes}
+
+        # [personal_researcher_and_coach_capability_gap_plan.md C1]
+        # "按长期方向聚合"视图：复用 growth-advisor 看板"🗺️ 成长主题地图"
+        # 折叠区块的现成 UI 模式（按方向聚合展示 Goal 列表），默认折叠，
+        # 不占首屏空间。Direction 是纯展示聚合，这里不涉及任何执行/判定
+        # 逻辑，只做增删改分组 + 把 Goal 挂到某个分组下。
+        _render_goal_direction_overview(client, goals, goals_data.get("directions", []))
 
         # [看板改进] 按 objective_id 索引 ObjectiveExecutor 的真实执行记录，
         # 供下面每张 Objective 卡片渲染分步计划/进度（见
