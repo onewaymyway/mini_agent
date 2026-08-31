@@ -312,6 +312,7 @@ def record_daemon_crash(
     restart_attempt: int = 0,
     restart_decision: str = "no_restart",
     hang_reason: Optional[str] = None,
+    hang_stack_dump: Optional[str] = None,
 ) -> dict:
     """收集崩溃诊断信息、写入 daemon_crash_history.jsonl，并发送一条
     daemon_crash 告警（独立通道，见 notification/daemon_crash_store.py）。
@@ -328,6 +329,11 @@ def record_daemon_crash(
     里根本不会有对应记录，进程是被外部强制终止的，不是自己抛异常退出），
     直接使用调用方传入的诊断描述作为 reason。摘要文案上也明确区分\"意外
     退出\"和\"卡死\"，避免运维排查时把两类完全不同性质的故障混为一谈。
+
+    `hang_stack_dump`：阶段四新增，`hang_reason` 不为 None 时，强杀之前
+    抓到的全线程栈快照文本（见 notification/hang_dump.py）——"卡死"这种
+    场景 `last_exception` 天生是空的（进程没死、没抛异常），这是目前
+    唯一能说明"卡在哪"的诊断信息，随记录一起落盘。非卡死场景恒为 None。
     """
     now = time.time()
     uptime = (now - started_at) if started_at else None
@@ -337,7 +343,13 @@ def record_daemon_crash(
         last_exc = None
         reason = hang_reason
         uptime_str = f"存活 {int(uptime // 3600)}h{int((uptime % 3600) // 60)}m" if uptime else "存活时长未知"
-        summary = f"Daemon（PID={pid}）进程存活但无响应，判定为卡死，{uptime_str}，{reason}"
+        if hang_stack_dump and not hang_stack_dump.startswith("[未获取到栈快照]"):
+            dump_note = "，已抓取强杀前全线程栈快照（见 hang_stack_dump 字段）"
+        elif hang_stack_dump:
+            dump_note = "，未能抓取到栈快照（见 hang_stack_dump 字段说明）"
+        else:
+            dump_note = ""
+        summary = f"Daemon（PID={pid}）进程存活但无响应，判定为卡死，{uptime_str}，{reason}{dump_note}"
     else:
         last_exc = _find_last_global_exception(pid, since_ts=started_at)
 
@@ -361,6 +373,7 @@ def record_daemon_crash(
         "last_exception": last_exc,
         "log_tail": log_tail,
         "summary": summary,
+        "hang_stack_dump": hang_stack_dump if hang_reason is not None else None,
     }
 
     # [daemon_hang_detection_and_alert_escalation_plan.md §3.3] 崩溃历史：
@@ -1197,6 +1210,11 @@ def cmd_daemon_start(
         post_restart_health_check_seconds = getattr(
             _http_cfg, "daemon_post_restart_health_check_seconds", 30.0
         )
+        # [daemon_hang_detection_and_alert_escalation_plan.md 阶段四]
+        hang_stack_dump_enabled = getattr(_http_cfg, "daemon_hang_stack_dump_enabled", True)
+        hang_stack_dump_wait_seconds = getattr(
+            _http_cfg, "daemon_hang_stack_dump_wait_seconds", 3.0
+        )
 
         try:
             from mini_agent.cli.daemon_supervisor import run_foreground_supervisor
@@ -1213,6 +1231,8 @@ def cmd_daemon_start(
                 hang_check_timeout_seconds=hang_check_timeout_seconds,
                 hang_consecutive_failures=hang_consecutive_failures,
                 post_restart_health_check_seconds=post_restart_health_check_seconds,
+                hang_stack_dump_enabled=hang_stack_dump_enabled,
+                hang_stack_dump_wait_seconds=hang_stack_dump_wait_seconds,
             )
         except Exception as e:
             from mini_agent.errors import log_exception
@@ -1260,6 +1280,11 @@ def cmd_daemon_start(
         post_restart_health_check_seconds = getattr(
             _http_cfg, "daemon_post_restart_health_check_seconds", 30.0
         )
+        # [daemon_hang_detection_and_alert_escalation_plan.md 阶段四]
+        hang_stack_dump_enabled = getattr(_http_cfg, "daemon_hang_stack_dump_enabled", True)
+        hang_stack_dump_wait_seconds = getattr(
+            _http_cfg, "daemon_hang_stack_dump_wait_seconds", 3.0
+        )
         if auto_restart:
             supervisor_cmd += ["--auto-restart"]
         supervisor_cmd += [
@@ -1270,9 +1295,12 @@ def cmd_daemon_start(
             "--hang-check-timeout", str(hang_check_timeout_seconds),
             "--hang-consecutive-failures", str(hang_consecutive_failures),
             "--post-restart-health-check-seconds", str(post_restart_health_check_seconds),
+            "--hang-stack-dump-wait-seconds", str(hang_stack_dump_wait_seconds),
         ]
         if hang_detection_enabled:
             supervisor_cmd += ["--hang-detection"]
+        if hang_stack_dump_enabled:
+            supervisor_cmd += ["--hang-stack-dump"]
         env = os.environ.copy()
         env["MINI_AGENT_SUPERVISOR_CHILD_ARGV"] = json.dumps(base_cmd)
 

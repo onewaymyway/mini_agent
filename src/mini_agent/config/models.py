@@ -639,6 +639,16 @@ class HttpConfig:
     # `cmd_daemon_start` 现有的启动等待逻辑保持同样的默认超时（30s）。
     daemon_post_restart_health_check_seconds: float = 30.0
 
+    # [daemon_hang_detection_and_alert_escalation_plan.md 阶段四] 卡死判定
+    # 成立、真正 SIGKILL 强杀之前，先用 `faulthandler.register(SIGUSR1)`
+    # 尽力抓一次全线程栈快照，随崩溃记录一起落盘——"卡死"场景
+    # `last_exception` 天生是空的（进程没死、没抛异常），这是目前唯一
+    # 能说明"卡在哪"的诊断信息。默认开启，等待窗口保守（3s），不会明显
+    # 拖慢强杀本身。Windows 上这个功能不可用（`faulthandler.register`
+    # 不支持自定义信号回调），会记录一条说明性文字而不是静默跳过。
+    daemon_hang_stack_dump_enabled: bool = True
+    daemon_hang_stack_dump_wait_seconds: float = 3.0
+
     # [daemon_hang_detection_and_alert_escalation_plan.md 阶段三 §3.2/§3.3]
     daemon_crash_alert_escalation_hours: float = 1.0
     daemon_crash_history_max_entries: int = 1000

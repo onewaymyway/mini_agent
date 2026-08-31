@@ -40,6 +40,22 @@ class _HangDetected(Exception):
         self.reason = reason
 
 
+def _capture_hang_dump_before_kill(
+    pid: int,
+    project_root: Path,
+    hang_stack_dump_enabled: bool,
+    hang_stack_dump_wait_seconds: float,
+) -> Optional[str]:
+    """卡死判定成立、强杀之前，尽力抓一次全线程栈快照（阶段四，见
+    notification/hang_dump.py）。`hang_stack_dump_enabled=False` 时直接
+    跳过，不发信号、不等待——保留一个显式关掉的开关，避免某些环境下
+    SIGUSR1 语义被占用/有顾虑时无法关闭。"""
+    if not hang_stack_dump_enabled:
+        return None
+    from mini_agent.notification.hang_dump import capture_hang_stack_dump
+    return capture_hang_stack_dump(pid, project_root, wait_seconds=hang_stack_dump_wait_seconds)
+
+
 def _wait_child(
     proc: "subprocess.Popen",
     project_root: Path,
@@ -49,22 +65,28 @@ def _wait_child(
     hang_check_timeout_seconds: float,
     hang_consecutive_failures: int,
     post_restart_health_check_seconds: float = 0.0,
-) -> tuple[Optional[int], bool, str]:
+    hang_stack_dump_enabled: bool = True,
+    hang_stack_dump_wait_seconds: float = 3.0,
+) -> tuple[Optional[int], bool, str, Optional[str]]:
     """等待子进程退出，期间按配置做主动探活（daemon_hang_detection_and_
     alert_escalation_plan.md §1.2），并可选地在启动阶段先做一次一次性的
     健康验证（§2.2）。
 
-    返回 `(returncode, was_hang, hang_reason)`：
-    - 子进程正常退出（含被信号杀死）：`(returncode, False, "")`
-    - 被判定为卡死并强杀：`(None, True, reason)`，`reason` 是给
-      `record_daemon_crash(hang_reason=...)` 用的人类可读描述。
+    返回 `(returncode, was_hang, hang_reason, hang_stack_dump)`：
+    - 子进程正常退出（含被信号杀死）：`(returncode, False, "", None)`
+    - 被判定为卡死并强杀：`(None, True, reason, stack_dump)`，`reason`
+      是给 `record_daemon_crash(hang_reason=...)` 用的人类可读描述，
+      `stack_dump` 是强杀前抓到的全线程栈快照文本（拿不到时是一段
+      `[未获取到栈快照]` 开头的说明，不是 None——见
+      `hang_dump.capture_hang_stack_dump` 的返回值约定；`hang_stack_dump_
+      enabled=False` 时才是真正的 None，表示这次根本没尝试）。
 
     `http_port` 为 None（比如调用方没能读到端口配置）或
     `hang_detection_enabled=False` 时，退化为原来的"一直阻塞直到子进程
     退出"（`proc.wait()`），完全不做探活，行为与阶段一之前一致。
     """
     if not hang_detection_enabled or not http_port:
-        return proc.wait(), False, ""
+        return proc.wait(), False, "", None
 
     from mini_agent.cli.daemon import DaemonClient, _force_kill_process
 
@@ -85,24 +107,27 @@ def _wait_child(
         poll_interval = min(1.0, max(0.2, hang_check_interval_seconds))
         while time.time() < deadline:
             if proc.poll() is not None:
-                return proc.returncode, False, ""
+                return proc.returncode, False, "", None
             if client.health_check(timeout=hang_check_timeout_seconds):
                 became_healthy = True
                 break
             time.sleep(poll_interval)
         if not became_healthy:
             if proc.poll() is not None:
-                return proc.returncode, False, ""
+                return proc.returncode, False, "", None
             reason = (
                 f"重启后 {post_restart_health_check_seconds:.0f}s 内未通过健康检查"
                 "（新进程可能卡在初始化阶段），已强制终止"
+            )
+            stack_dump = _capture_hang_dump_before_kill(
+                proc.pid, project_root, hang_stack_dump_enabled, hang_stack_dump_wait_seconds
             )
             _force_kill_process(proc.pid)
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-            return None, True, reason
+            return None, True, reason, stack_dump
 
     consecutive_failures = 0
     interval = max(0.5, hang_check_interval_seconds)
@@ -110,7 +135,7 @@ def _wait_child(
     while True:
         try:
             returncode = proc.wait(timeout=interval)
-            return returncode, False, ""
+            return returncode, False, "", None
         except subprocess.TimeoutExpired:
             pass
 
@@ -122,19 +147,25 @@ def _wait_child(
         if consecutive_failures < hang_consecutive_failures:
             continue
 
-        # 连续多次探测无响应，判定为卡死：进程仍存活但已经无法正常工作，
-        # 直接强杀（跳过优雅关停尝试，见 _force_kill_process 的注释）。
+        # 连续多次探测无响应，判定为卡死：进程仍存活但已经无法正常工作。
+        # 强杀之前先尽力抓一次全线程栈快照（见 hang_dump 模块顶部注释——
+        # 即使 event loop 被别的线程/死锁卡住，faulthandler 的信号级转储
+        # 也大概率能拿到东西），再强杀（跳过优雅关停尝试，见
+        # _force_kill_process 的注释）。
         reason = (
             f"连续 {consecutive_failures} 次健康检查无响应"
             f"（每次间隔 {interval:.0f}s，超时 {hang_check_timeout_seconds:.0f}s），"
             "已强制终止"
+        )
+        stack_dump = _capture_hang_dump_before_kill(
+            proc.pid, project_root, hang_stack_dump_enabled, hang_stack_dump_wait_seconds
         )
         _force_kill_process(proc.pid)
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pass
-        return None, True, reason
+        return None, True, reason, stack_dump
 
 
 def run_supervisor(
@@ -150,6 +181,8 @@ def run_supervisor(
     hang_check_timeout_seconds: float = 2.0,
     hang_consecutive_failures: int = 3,
     post_restart_health_check_seconds: float = 0.0,
+    hang_stack_dump_enabled: bool = True,
+    hang_stack_dump_wait_seconds: float = 3.0,
 ) -> None:
     """核心监控循环。阶段一调用方固定传 `auto_restart=False`——检测到
     崩溃后只记录+告警，不重启，循环在这一次崩溃后自然结束（等价于"预算
@@ -163,7 +196,12 @@ def run_supervisor(
 
     `post_restart_health_check_seconds`：阶段二 §2.2 新增，每次 Popen 新
     子进程后先给它这么长时间证明自己真的把 HTTP 服务起来了，超时未通过
-    则按卡死处理，不必等到常规探活轮询的多轮判定。传 0 关闭这项检查。"""
+    则按卡死处理，不必等到常规探活轮询的多轮判定。传 0 关闭这项检查。
+
+    `hang_stack_dump_enabled`/`hang_stack_dump_wait_seconds`：阶段四新增，
+    卡死判定成立、真正强杀之前，先尽力抓一次全线程栈快照（见
+    notification/hang_dump.py），随崩溃记录一起落盘，避免"卡死了但完全
+    不知道卡在哪"。"""
     from mini_agent.cli.daemon import (
         _cleanup_pid_files,
         _supervisor_pid_file,
@@ -217,7 +255,7 @@ def run_supervisor(
 
             started_at = time.time()
             child_pid = proc.pid
-            returncode, was_hang, hang_reason = _wait_child(
+            returncode, was_hang, hang_reason, hang_stack_dump = _wait_child(
                 proc,
                 project_root,
                 http_port,
@@ -226,6 +264,8 @@ def run_supervisor(
                 hang_check_timeout_seconds,
                 hang_consecutive_failures,
                 post_restart_health_check_seconds,
+                hang_stack_dump_enabled,
+                hang_stack_dump_wait_seconds,
             )
 
             if not was_hang:
@@ -268,6 +308,7 @@ def run_supervisor(
                 restart_attempt=attempt,
                 restart_decision=decision,
                 hang_reason=hang_reason if was_hang else None,
+                hang_stack_dump=hang_stack_dump if was_hang else None,
             )
 
             if not will_restart:
@@ -308,6 +349,8 @@ def run_foreground_supervisor(
     hang_check_timeout_seconds: float = 2.0,
     hang_consecutive_failures: int = 3,
     post_restart_health_check_seconds: float = 0.0,
+    hang_stack_dump_enabled: bool = True,
+    hang_stack_dump_wait_seconds: float = 3.0,
 ) -> int:
     """前台（不带 --detach）统一使用的 supervisor 循环（阶段三）。
 
@@ -371,8 +414,9 @@ def run_foreground_supervisor(
             user_interrupted = False
             was_hang = False
             hang_reason = ""
+            hang_stack_dump = None
             try:
-                returncode, was_hang, hang_reason = _wait_child(
+                returncode, was_hang, hang_reason, hang_stack_dump = _wait_child(
                     proc,
                     project_root,
                     http_port,
@@ -381,6 +425,8 @@ def run_foreground_supervisor(
                     hang_check_timeout_seconds,
                     hang_consecutive_failures,
                     post_restart_health_check_seconds,
+                    hang_stack_dump_enabled,
+                    hang_stack_dump_wait_seconds,
                 )
             except KeyboardInterrupt:
                 user_interrupted = True
@@ -434,6 +480,7 @@ def run_foreground_supervisor(
                 restart_attempt=attempt,
                 restart_decision=decision,
                 hang_reason=hang_reason if was_hang else None,
+                hang_stack_dump=hang_stack_dump if was_hang else None,
             )
 
             if not will_restart:
@@ -486,6 +533,8 @@ def _main() -> int:
     parser.add_argument("--hang-check-timeout", type=float, default=2.0)
     parser.add_argument("--hang-consecutive-failures", type=int, default=3)
     parser.add_argument("--post-restart-health-check-seconds", type=float, default=30.0)
+    parser.add_argument("--hang-stack-dump", action="store_true", default=False)
+    parser.add_argument("--hang-stack-dump-wait-seconds", type=float, default=3.0)
     args = parser.parse_args()
 
     project_root = Path(args.project)
@@ -507,6 +556,8 @@ def _main() -> int:
         hang_check_timeout_seconds=args.hang_check_timeout,
         hang_consecutive_failures=args.hang_consecutive_failures,
         post_restart_health_check_seconds=args.post_restart_health_check_seconds,
+        hang_stack_dump_enabled=args.hang_stack_dump,
+        hang_stack_dump_wait_seconds=args.hang_stack_dump_wait_seconds,
     )
     return 0
 

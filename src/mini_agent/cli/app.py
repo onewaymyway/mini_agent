@@ -606,6 +606,18 @@ def _main_inner() -> None:
             log_exception(e, where='mini_agent.cli.app._main_inner')
             R.print_warning(f"[daemon] Failed to write PID file: {e}")
 
+        # [daemon_hang_detection_and_alert_escalation_plan.md 阶段四] 卡死
+        # 诊断：注册一个 SIGUSR1 触发的全线程栈转储处理器（Windows 上是
+        # no-op），supervisor 判定卡死、SIGKILL 强杀之前会先发一次这个
+        # 信号，把转储读回来存进崩溃记录，避免"卡死了但完全不知道卡在
+        # 哪"。注册失败不应该影响 daemon 正常启动，这里吞掉异常。
+        try:
+            from mini_agent.notification.hang_dump import register_hang_dump_handler
+            register_hang_dump_handler(project_root)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.app._main_inner.hang_dump')
+
         stop_event = _threading.Event()
 
         def _shutdown_handler(signum, frame):

@@ -231,6 +231,8 @@
     "daemon_hang_check_timeout_seconds": 120,
     "daemon_hang_consecutive_failures": 3,
     "daemon_post_restart_health_check_seconds": 120,
+    "daemon_hang_stack_dump_enabled": true,
+    "daemon_hang_stack_dump_wait_seconds": 30,
     "daemon_crash_alert_escalation_hours": 1,
     "daemon_crash_history_max_entries": 1000
   },

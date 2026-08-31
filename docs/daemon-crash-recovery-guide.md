@@ -328,3 +328,88 @@ OOM killer 一并带走），下一次 `daemon start` 是全新的 supervisor �
 - `daemon status` 不展示崩溃/告警文件的轮转历史（比如"最近一次因为超过
   1000 条被裁剪掉了 N 条"）——都是展示细节，不影响升级/轮转机制本身
   是否生效。
+
+## 12. 卡死前全线程栈快照（阶段四）
+
+第 9 节的卡死判定只解决了"感知到卡死了"，但判定成立、强杀之后，
+`daemon_crash_history.jsonl` 里那条记录一直有个天生的盲区：进程没有
+抛异常、也没有退出，`last_exception`/`log_tail` 对这种场景来说本来就是
+空的——过去只知道"卡死了"，完全不知道卡在哪个函数、是不是被某把锁
+卡住了。
+
+这个阶段引入 `notification/hang_dump.py`：daemon 子进程启动时用标准库
+`faulthandler.register(signal.SIGUSR1, all_threads=True)` 注册一个信号
+触发的全线程栈转储处理器（正常运行时零开销，完全不会被触发）。
+supervisor 判定卡死、真正 `SIGKILL` 强杀之前，先给子进程发一次
+`SIGUSR1`，等一小段时间（默认 3s）把转储文件读回来，随崩溃记录一起
+落盘到新增的 `hang_stack_dump` 字段，再继续原有的强杀流程——多了一步
+诊断，不影响强杀本身的时效性。
+
+之所以用 `faulthandler` 而不是等子进程自己打日志：它是直接从信号处理器
+里用 `os.write()` 往文件描述符写 C 级别的帧信息，不需要拿到 GIL、不
+需要目标线程主动让出控制权——这正是"event loop 被某个同步阻塞调用
+独占，或者被跨线程死锁卡住"这类最常见的卡死场景下，仍然有很大概率能
+拿到东西的原因。
+
+```
+$ daemon status
+...
+[daemon] Last hang (killed): 08-31 22:14:05 — Daemon（PID=9008）进程存活但无响应，
+判定为卡死，存活 10h41m，连续 3 次健康检查无响应（每次间隔 10s，超时 2s），
+已强制终止，已抓取强杀前全线程栈快照（见 hang_stack_dump 字段）
+```
+
+`daemon_crash_history.jsonl` 对应记录新增的字段：
+
+```json
+{
+  "...": "...",
+  "hang_reason": null,
+  "hang_stack_dump": "Thread 0x... (active):\n  File \"...\", line ..., in ...\n..."
+}
+```
+
+（非卡死场景 `hang_stack_dump` 恒为 `null`；卡死但没能拿到内容时是一段
+以 `[未获取到栈快照]` 开头的说明文字，不是 `null`——方便区分"这次没
+尝试/不支持"和"尝试了但没拿到"。）
+
+### 配置项
+
+```json
+{
+  "http": {
+    "daemon_hang_stack_dump_enabled": true,
+    "daemon_hang_stack_dump_wait_seconds": 3
+  }
+}
+```
+
+- `daemon_hang_stack_dump_enabled`：总开关，默认开启。关掉后强杀前不会
+  发 `SIGUSR1`、不等待，行为退化到本阶段之前（`hang_stack_dump` 恒为
+  `null`）——如果担心 `SIGUSR1` 这个信号语义跟其它组件冲突，可以显式
+  关掉；
+- `daemon_hang_stack_dump_wait_seconds`：发出 `SIGUSR1` 后最多等待读回
+  结果的时间，默认 3s，不建议调得太大——毕竟这是"强杀前顺手多做一步"，
+  不应该明显拖延卡死恢复本身的时效性。
+
+### 已知限制
+
+- **Windows 不支持**：`faulthandler.register()` 的自定义信号回调在
+  Windows 上不可用（标准库文档明确写了 "Not available on Windows"），
+  这个功能在 Windows 上直接跳过，`hang_stack_dump` 会是一段说明性文字
+  （"Windows 平台不支持 faulthandler 的信号栈转储"），不是静默 `null`；
+- **子进程没走到注册那行代码就已经卡死**（比如卡在 import 阶段）：
+  `SIGUSR1` 送过去后，Python 对未注册信号的默认处置是终止进程——
+  效果上等价于提前触发了紧接着的 `SIGKILL`，不会有副作用，只是转储
+  自然拿不到内容；
+- 转储内容超过 40,000 字符会被截断（保留开头部分 + 提示信息），避免
+  线程/协程数量异常多时把单条崩溃记录撑得过大；崩溃历史文件本身仍然
+  按 `daemon_crash_history_max_entries` 做条数轮转。
+
+### 尚未覆盖（留给后续阶段）
+
+- `daemon status` 目前只把 `hang_stack_dump` 原样落在 JSONL 里，还没有
+  在终端摘要里对栈内容做进一步的高亮/聚合展示（比如自动标出哪个线程
+  持有哪把锁）；
+- 没有对多次卡死的栈快照做跨事件对比（比如"这次和上次是不是卡在同一
+  行"），目前需要人工比对。

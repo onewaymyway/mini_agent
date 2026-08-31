@@ -135,6 +135,47 @@ class TestRecordDaemonCrash(_IsolatedHomeTestCase):
         # 崩溃告警刻意不应该出现在通用的 watchlist_report 存储里
         self.assertFalse(paths.notification_reports.exists())
 
+    def test_hang_stack_dump_field_stored_and_noted_in_summary(self):
+        log_path = self.project_root / ".agent" / "daemon.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("", encoding="utf-8")
+
+        record = daemon_mod.record_daemon_crash(
+            self.project_root, pid=9, exit_code=None, started_at=time.time(),
+            log_path=log_path, hang_reason="连续 3 次健康检查无响应，已强制终止",
+            hang_stack_dump="Thread 0x1 (active):\n  File \"x.py\", line 1, in <module>\n",
+        )
+        self.assertEqual(
+            record["hang_stack_dump"],
+            "Thread 0x1 (active):\n  File \"x.py\", line 1, in <module>\n",
+        )
+        self.assertIn("已抓取强杀前全线程栈快照", record["summary"])
+
+    def test_hang_stack_dump_failure_text_noted_differently_in_summary(self):
+        log_path = self.project_root / ".agent" / "daemon.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("", encoding="utf-8")
+
+        record = daemon_mod.record_daemon_crash(
+            self.project_root, pid=10, exit_code=None, started_at=time.time(),
+            log_path=log_path, hang_reason="连续 3 次健康检查无响应，已强制终止",
+            hang_stack_dump="[未获取到栈快照] 等待超时",
+        )
+        self.assertIn("未能抓取到栈快照", record["summary"])
+
+    def test_hang_stack_dump_is_none_for_non_hang_crash(self):
+        log_path = self.project_root / ".agent" / "daemon.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("", encoding="utf-8")
+
+        # 非卡死场景即使误传了 hang_stack_dump，也不应该出现在记录里——
+        # 该字段只在 hang_reason 不为 None 时才有意义。
+        record = daemon_mod.record_daemon_crash(
+            self.project_root, pid=11, exit_code=1, started_at=time.time(),
+            log_path=log_path, hang_stack_dump="不该出现",
+        )
+        self.assertIsNone(record["hang_stack_dump"])
+
     def test_reason_without_captured_exception_is_explicit(self):
         # 没有 pid 匹配的全局异常记录、退出码也非负数信号时，摘要应该
         # 明确写"未捕获到 Python 异常"，不能瞎猜出一个具体原因
@@ -696,6 +737,22 @@ Path({pid_marker!r}).write_text(str(os.getpid()))
 time.sleep(3600)
 """
 
+# 与上面的区别：多注册一次 hang_dump 处理器，模拟 app.py::daemon_mode
+# 分支在真实 daemon 子进程启动时做的事情，用于验证 supervisor 强杀前
+# 抓栈快照这条链路真的端到端跑通（阶段四）。
+_CHILD_SLEEP_FOREVER_WITH_HANG_DUMP_SCRIPT = """
+import sys
+sys.path.insert(0, {src!r})
+import os
+import time
+from pathlib import Path
+from mini_agent.notification.hang_dump import register_hang_dump_handler
+
+register_hang_dump_handler(Path({project_root!r}))
+Path({pid_marker!r}).write_text(str(os.getpid()))
+time.sleep(3600)
+"""
+
 
 class TestHangDetection(_IsolatedHomeTestCase):
     """子进程存活但对健康检查完全无响应，应被判定为卡死、强杀、记录为
@@ -741,6 +798,73 @@ class TestHangDetection(_IsolatedHomeTestCase):
         self.assertIsNone(record["last_exception"])
         self.assertIn("卡死", record["summary"])
         self.assertIn("健康检查无响应", record["summary"])
+
+    @unittest.skipIf(sys.platform == "win32", "faulthandler 信号栈转储在 Windows 上不可用")
+    def test_hang_kill_captures_real_stack_dump_end_to_end(self):
+        """卡死判定成立、强杀之前，应该真的抓到一份子进程当时的全线程
+        栈快照，并原样落进 daemon_crash_history.jsonl 的 hang_stack_dump
+        字段（阶段四端到端链路：app.py 注册 → supervisor 强杀前触发）。"""
+        pid_marker = self.project_root / "child.pid"
+        script_path = self.project_root / "child_sleep_forever_with_dump.py"
+        script_path.write_text(
+            _CHILD_SLEEP_FOREVER_WITH_HANG_DUMP_SCRIPT.format(
+                src=self._src_dir(),
+                project_root=str(self.project_root),
+                pid_marker=str(pid_marker),
+            ),
+            encoding="utf-8",
+        )
+
+        with unittest.mock.patch.object(
+            daemon_mod.DaemonClient, "health_check", return_value=False
+        ):
+            daemon_supervisor.run_supervisor(
+                self.project_root,
+                [sys.executable, str(script_path)],
+                auto_restart=False,
+                http_port=1,
+                hang_detection_enabled=True,
+                hang_check_interval_seconds=0.05,
+                hang_check_timeout_seconds=0.05,
+                hang_consecutive_failures=2,
+                hang_stack_dump_enabled=True,
+                hang_stack_dump_wait_seconds=5.0,
+            )
+
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        record = json.loads(hist_path.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(record["restart_decision"], "hang_killed")
+        dump = record["hang_stack_dump"]
+        self.assertIsNotNone(dump)
+        self.assertFalse(dump.startswith("[未获取到栈快照]"), dump)
+        self.assertIn("child_sleep_forever_with_dump.py", dump)
+        self.assertIn("已抓取强杀前全线程栈快照", record["summary"])
+
+    def test_hang_kill_with_stack_dump_disabled_leaves_field_none(self):
+        """`hang_stack_dump_enabled=False` 时完全不发信号/不等待，
+        `hang_stack_dump` 字段应该是 None，而不是一段"未获取到"的说明——
+        两者语义不同：前者是"没尝试"，后者是"尝试了但失败"。"""
+        script_path = self._write_sleep_forever_script()
+
+        with unittest.mock.patch.object(
+            daemon_mod.DaemonClient, "health_check", return_value=False
+        ):
+            daemon_supervisor.run_supervisor(
+                self.project_root,
+                [sys.executable, str(script_path)],
+                auto_restart=False,
+                http_port=1,
+                hang_detection_enabled=True,
+                hang_check_interval_seconds=0.05,
+                hang_check_timeout_seconds=0.05,
+                hang_consecutive_failures=2,
+                hang_stack_dump_enabled=False,
+            )
+
+        hist_path = daemon_mod._crash_history_file(self.project_root)
+        record = json.loads(hist_path.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(record["restart_decision"], "hang_killed")
+        self.assertIsNone(record["hang_stack_dump"])
 
     def test_intermittent_health_check_success_resets_failure_counter(self):
         """健康检查偶尔成功一次不应该被判定为卡死——连续失败计数需要在
