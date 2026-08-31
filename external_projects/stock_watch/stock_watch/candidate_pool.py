@@ -83,6 +83,7 @@ class CandidateEntry:
     last_seen: str = ""
     state: str = DEFAULT_STATE
     state_history: List[StateEvent] = field(default_factory=list)
+    pool_type: str = "algo"       # "manual" 或 "algo"
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -106,6 +107,8 @@ class CandidateEntry:
             state_history=[
                 StateEvent.from_dict(e) for e in data.get("state_history", [])
             ],
+            # pool_type 是新字段，兼容旧数据时默认为 "algo"
+            pool_type=data.get("pool_type", "algo"),
         )
 
 
@@ -401,3 +404,41 @@ def ensure_seeds(
                 score=1.0, sources=["seed"], first_seen=now, last_seen=now,
             )
     return pool
+
+
+def ensure_manual_seeds(
+    pool: Dict[str, CandidateEntry], seeds
+) -> Dict[str, CandidateEntry]:
+    """确保手动池包含所有手动种子标的。
+
+    与 ensure_seeds() 的区别：
+    - 手动池没有淘汰上限，也不参与 score_decay
+    - 新添加的标的不自动加分，保持 score=0
+    - 用户可以随时增删，完全由自己管理
+    """
+    now = _now_iso()
+    for seed in seeds:
+        entry = pool.get(seed.code)
+        if entry is None:
+            entry = CandidateEntry(
+                code=seed.code, name=seed.name, type=seed.type,
+                score=0.0, sources=[], reasons=[],
+                first_seen=now, last_seen=now,
+            )
+            entry.state_history.append(StateEvent(state=DEFAULT_STATE, entered_at=now))
+            pool[seed.code] = entry
+    return pool
+
+
+def filter_pool_by_type(pool: Dict[str, CandidateEntry], pool_type: str) -> Dict[str, CandidateEntry]:
+    """按池类型过滤：'manual' 返回手动池，'algo' 返回算法池。
+
+    这里假设每个 CandidateEntry 都携带一个 'pool_type' 字段（由调用方写入）。
+    若字段缺失则默认归入 'algo'。
+    """
+    result = {}
+    for code, entry in pool.items():
+        entry_type = getattr(entry, 'pool_type', 'algo')
+        if entry_type == pool_type:
+            result[code] = entry
+    return result

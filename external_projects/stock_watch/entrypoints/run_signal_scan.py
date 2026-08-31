@@ -31,7 +31,7 @@ import _common  # noqa: F401 - 引导 sys.path + 提供 tracked_run
 
 from stock_watch.announcement_signals import classify_announcements
 from stock_watch.candidate_pool import load_pool, merge_signals, save_pool
-from stock_watch.config import DATA_DIR, REPORTS_DIR, ensure_dirs, load_config
+from stock_watch.config import ALGO_POOL_PATH, DATA_DIR, MANUAL_POOL_PATH, REPORTS_DIR, ensure_dirs, load_config
 from stock_watch.data_sources import (
     DataSourceError,
     fetch_announcements,
@@ -45,7 +45,7 @@ from stock_watch.report import render_candidate_pool_report
 
 logger = logging.getLogger("stock_watch.signal_scan")
 
-POOL_PATH = DATA_DIR / "candidate_pool.json"
+
 
 
 def _select_targets(pool, max_targets: int):
@@ -100,41 +100,41 @@ def main() -> int:
         logger.info("signals.*_enabled 均未开启，跳过本次自算信号扫描（见 config/watchlist.yaml）")
         return 0
 
-    pool = load_pool(POOL_PATH)
-    if not pool:
-        logger.info("候选池为空，跳过本次自算信号扫描")
+    # 分别加载算法池和手动池
+    algo_pool = load_pool(ALGO_POOL_PATH)
+    manual_pool = load_pool(MANUAL_POOL_PATH)
+
+    if not algo_pool and not manual_pool:
+        logger.info("双池均为空，跳过本次自算信号扫描")
         return 0
 
-    targets = _select_targets(pool, cfg.signal_scan_max_targets)
-    if not targets:
-        logger.info("候选池内没有可分析的标的（均为 dropped 状态），跳过")
-        return 0
+    # 只对算法池进行信号扫描（手动池由用户管理，不自动扫描）
+    if algo_pool:
+        targets = _select_targets(algo_pool, cfg.signal_scan_max_targets)
+        if not targets:
+            logger.info("算法池内没有可分析的标的（均为 dropped 状态），跳过")
+        else:
+            failures: list = []
+            for entry in targets:
+                if categories["price"]:
+                    _scan_price_signals(algo_pool, entry, cfg, failures)
+                if categories["announcement"]:
+                    _scan_announcement_signals(algo_pool, entry, cfg, failures)
+                if categories["news"]:
+                    _scan_news_signals(algo_pool, entry, failures)
+            save_pool(ALGO_POOL_PATH, algo_pool)
+            logger.info("算法池信号扫描完成: 分析 %d 只标的，%d 次抓取失败", len(targets), len(failures))
 
-    failures: list = []
-    for entry in targets:
-        if categories["price"]:
-            _scan_price_signals(pool, entry, cfg, failures)
-        if categories["announcement"]:
-            _scan_announcement_signals(pool, entry, cfg, failures)
-        if categories["news"]:
-            _scan_news_signals(pool, entry, failures)
+            # 只有"分析对象数 > 0 但每一次抓取都失败"才判整体失败
+            total_attempts = len(targets) * sum(1 for v in categories.values() if v)
+            if total_attempts > 0 and len(failures) >= total_attempts:
+                logger.error("算法池信号扫描全部抓取失败")
+                return 1
 
-    save_pool(POOL_PATH, pool)
+    # 手动池不进行信号扫描
+    if manual_pool:
+        logger.info("手动池 %d 只标的跳过信号扫描（由用户管理）", len(manual_pool))
 
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    out_path = REPORTS_DIR / "candidate_pool" / f"{datetime.now().strftime('%Y%m%d')}_signal_scan.md"
-    render_candidate_pool_report(list(pool.values()), out_path, generated_at=generated_at)
-    logger.info(
-        "自算信号扫描完成: %s（分析 %d 只标的，%d 次抓取失败）",
-        out_path, len(targets), len(failures),
-    )
-
-    # 与 hotlist_scan 一致的容错基调：单只标的/单类信号失败不影响其它，
-    # 只有"分析对象数 > 0 但每一次抓取都失败"才判整体失败。
-    total_attempts = len(targets) * sum(1 for v in categories.values() if v)
-    if total_attempts > 0 and len(failures) >= total_attempts:
-        logger.error("本次信号扫描全部抓取失败")
-        return 1
     return 0
 
 

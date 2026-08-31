@@ -22,11 +22,13 @@ from stock_watch.candidate_pool import (
     backfill_entry_price,
     enforce_max_size,
     ensure_seeds,
+    ensure_manual_seeds,
     load_pool,
     merge_hot_items,
     save_pool,
     save_pool_snapshot,
 )
+from stock_watch.config import ALGO_POOL_PATH, MANUAL_POOL_PATH
 from stock_watch.config import (
     DATA_DIR,
     POOL_SNAPSHOTS_DIR,
@@ -47,7 +49,7 @@ from stock_watch.source_health import tracked_source
 
 logger = logging.getLogger("stock_watch.hotlist_scan")
 
-POOL_PATH = DATA_DIR / "candidate_pool.json"
+
 
 _SOURCE_FETCHERS = {
     "eastmoney_hot_rank": fetch_eastmoney_hot_rank,
@@ -59,8 +61,14 @@ _SOURCE_FETCHERS = {
 def main() -> int:
     ensure_dirs()
     cfg = load_config()
-    pool = load_pool(POOL_PATH)
-    pool = ensure_seeds(pool, cfg.seeds)
+
+    # 算法池：从 data/algo_pool.json 加载，受上限和衰减控制
+    algo_pool = load_pool(ALGO_POOL_PATH)
+    algo_pool = ensure_seeds(algo_pool, cfg.seeds)
+
+    # 手动池：从 data/manual_pool.json 加载，无淘汰上限
+    manual_pool = load_pool(MANUAL_POOL_PATH)
+    manual_pool = ensure_manual_seeds(manual_pool, cfg.manual_seeds)
 
     failures = []
     for source_name, fetcher in _SOURCE_FETCHERS.items():
@@ -74,15 +82,11 @@ def main() -> int:
             logger.warning("数据源 %s 抓取失败，跳过: %s", source_name, exc)
             failures.append(f"{source_name}: {exc}")
             continue
-        pool = merge_hot_items(pool, items)
+        algo_pool = merge_hot_items(algo_pool, items)
         logger.info("数据源 %s 抓取到 %d 条", source_name, len(items))
 
-    # 阶段2（stock_watch_pool_state_tracking_and_kanban_plan.md）：
-    # candidate_pool.py 是纯逻辑模块，不发起网络请求，新标的进池时
-    # price_at_entry 先留空，这里统一回填一次。只查刚新建的 watching
-    # 标的（`state_history` 只有一条且价格为空），已经存在的标的不重复
-    # 查价；单只失败不影响其它标的，不影响本次抓取任务的整体退出码。
-    for entry in pool.values():
+    # 阶段2：对算法池新标的回填价格（手动池由用户管理，不自动回填）
+    for entry in algo_pool.values():
         if (
             entry.state == DEFAULT_STATE
             and len(entry.state_history) == 1
@@ -94,15 +98,21 @@ def main() -> int:
             except DataSourceError as exc:
                 logger.info("回填 %s(%s) 进池价格失败（不影响本次抓取）: %s", entry.name, entry.code, exc)
 
-    pool = apply_decay(pool, decay_days=cfg.score_decay_days)
-    pool = enforce_max_size(pool, cfg.max_pool_size)
-    save_pool(POOL_PATH, pool)
-    save_pool_snapshot(POOL_SNAPSHOTS_DIR, pool)
+    # 算法池：应用衰减和上限淘汰
+    algo_pool = apply_decay(algo_pool, decay_days=cfg.score_decay_days)
+    algo_pool = enforce_max_size(algo_pool, cfg.algo_max_pool_size)
+    save_pool(ALGO_POOL_PATH, algo_pool)
+    save_pool_snapshot(POOL_SNAPSHOTS_DIR, algo_pool)
 
+    # 手动池：直接保存（无衰减/淘汰）
+    save_pool(MANUAL_POOL_PATH, manual_pool)
+
+    # 生成双池合并报告
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     out_path = REPORTS_DIR / "candidate_pool" / f"{datetime.now().strftime('%Y%m%d')}.md"
-    render_candidate_pool_report(list(pool.values()), out_path, generated_at=generated_at)
-    logger.info("候选池报告已生成: %s（%d 只标的）", out_path, len(pool))
+    all_entries = list(algo_pool.values()) + list(manual_pool.values())
+    render_candidate_pool_report(all_entries, out_path, generated_at=generated_at)
+    logger.info("候选池报告已生成: %s（算法池%d只 + 手动池%d只）", out_path, len(algo_pool), len(manual_pool))
 
     if failures and len(failures) == len(
         [s for s in _SOURCE_FETCHERS if cfg.source_enabled(s)]

@@ -2,26 +2,26 @@
 # code 统一用 akshare 习惯的"6位代码"，market 用于区分 A股/ETF 等，
 # 便于 data_sources.py 选择正确的 akshare 接口前缀。
 
-seeds:
-  # 手动种子标的：即使抓取源当天没发现，也始终保留在候选池里跟踪
+# ── 手动添加的标的 ──────────────────────────────────────────────────────────
+# 这些标的不受算法淘汰影响，不会因连续 N 天不被提及而被移除。
+# 用户可通过 entrypoints/manage_pool.py 增删改，也可直接编辑本文件。
+manual_seeds:
   - code: "600519"
     name: "贵州茅台"
     market: "sh"
     type: "stock"
-  - code: "510300"
-    name: "沪深300ETF"
-    market: "sh"
-    type: "etf"
 
+# ── 自动抓取源开关 ──────────────────────────────────────────────────────────
 sources:
   eastmoney_hot_rank: true      # 东方财富人气榜
   eastmoney_guba_hot: true      # 东方财富股吧热帖
   xueqiu_hot_stock: true        # 雪球热门股票
   iwencai_screener: true        # 问财自然语言选股（功能 3 复用）
 
+# ── 候选池配置 ──────────────────────────────────────────────────────────────
 candidate_pool:
-  max_size: 100          # 候选池上限，超出按热度分数淘汰最低分
-  score_decay_days: 7    # 超过 N 天未被任何抓取源再次提及，分数开始衰减
+  algo_max_size: 50            # 算法池上限，超出按热度分数淘汰最低分
+  score_decay_days: 7          # 超过 N 天未被任何抓取源再次提及，分数开始衰减
 
 screener:
   # 功能 3 的默认查询集合，run_screener.py 不传参数时依次跑这些
@@ -47,5 +47,5 @@ signals:
   announcement_enabled: false   # 公告结构化分类（业绩预增/回购/减持等关键词分类）
   news_enabled: false           # 新闻舆情统计（关键词词频 + 新闻数量突增）
   scan_max_targets: 20          # run_signal_scan.py 每次最多分析多少只标的
-  announcement_weights: {}       # 可覆盖 announcement_signals.py 里各分类的默认分值
+  announcement_weights: {}
     # 示例：earnings_beat: 8.0

@@ -27,12 +27,10 @@ import sys
 import _common  # noqa: F401
 
 from stock_watch.candidate_pool import POOL_STATES, change_state, load_pool, save_pool
-from stock_watch.config import DATA_DIR, ensure_dirs
+from stock_watch.config import ALGO_POOL_PATH, DATA_DIR, MANUAL_POOL_PATH, ensure_dirs
 from stock_watch.data_sources import DataSourceError, fetch_latest_close
 
 logger = logging.getLogger("stock_watch.change_pool_state")
-
-POOL_PATH = DATA_DIR / "candidate_pool.json"
 
 
 def main() -> int:
@@ -51,10 +49,21 @@ def main() -> int:
         return 2
 
     ensure_dirs()
-    pool = load_pool(POOL_PATH)
-    if code not in pool:
-        logger.error("标的 %s 不在候选池中，无法变更状态（先跑一次 hotlist_scan 或确认代码是否正确）", code)
-        return 1
+
+    # 先在算法池查找
+    algo_pool = load_pool(ALGO_POOL_PATH)
+    if code in algo_pool:
+        pool = algo_pool
+        pool_path = ALGO_POOL_PATH
+    else:
+        # 再在手动池查找
+        manual_pool = load_pool(MANUAL_POOL_PATH)
+        if code in manual_pool:
+            pool = manual_pool
+            pool_path = MANUAL_POOL_PATH
+        else:
+            logger.error("标的 %s 不在候选池中，无法变更状态（先跑一次 hotlist_scan 或确认代码是否正确）", code)
+            return 1
 
     entry = pool[code]
     price = None
@@ -64,7 +73,7 @@ def main() -> int:
         logger.warning("取当前价格失败（不影响状态变更本身）: %s", exc)
 
     change_state(pool, code, new_state, price_at_entry=price, note=note)
-    save_pool(POOL_PATH, pool)
+    save_pool(pool_path, pool)
 
     price_str = f"{price:.2f}" if price is not None else "（未取到）"
     logger.info("已将 %s(%s) 状态变更为 %s，当前价 %s", entry.name, code, new_state, price_str)

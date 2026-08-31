@@ -27,6 +27,10 @@ SOURCE_HEALTH_PATH = DATA_DIR / "source_health.jsonl"
 # 阶段2（stock_watch_pool_state_tracking_and_kanban_plan.md）：状态区间
 # 跟踪的结构化产出物，供未来看板直接读取，不强迫看板解析 Markdown 表格。
 POOL_TRACKING_LATEST_PATH = DATA_DIR / "pool_tracking_latest.json"
+# 手动池（用户直接管理，无淘汰上限）
+MANUAL_POOL_PATH = DATA_DIR / "manual_pool.json"
+# 算法池（自动抓取，有上限 algo_max_size）
+ALGO_POOL_PATH = DATA_DIR / "algo_pool.json"
 
 
 @dataclass
@@ -44,6 +48,9 @@ class SeedStock:
 
 @dataclass
 class WatchlistConfig:
+    # 手动添加的标的（不受算法淘汰影响，无上限）
+    manual_seeds: List[SeedStock] = field(default_factory=list)
+    # 原有的算法抓取种子（兼容旧配置，后续可弃用）
     seeds: List[SeedStock] = field(default_factory=list)
     sources: Dict[str, bool] = field(default_factory=dict)
     candidate_pool: Dict[str, Any] = field(default_factory=dict)
@@ -54,8 +61,14 @@ class WatchlistConfig:
     secrets: Dict[str, Any] = field(default_factory=dict)
 
     @property
+    def algo_max_pool_size(self) -> int:
+        """算法池上限，默认50。"""
+        return int(self.candidate_pool.get("algo_max_size", 50))
+
+    @property
     def max_pool_size(self) -> int:
-        return int(self.candidate_pool.get("max_size", 100))
+        """向后兼容属性，返回 algo_max_pool_size。"""
+        return self.algo_max_pool_size
 
     @property
     def score_decay_days(self) -> int:
@@ -131,8 +144,12 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH, secrets_path: Path = DEFAULT_S
     if not path.exists():
         return WatchlistConfig(secrets=_load_secrets(secrets_path))
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    # 手动池种子：用户直接管理，无淘汰上限
+    manual_seeds = [SeedStock(**item) for item in raw.get("manual_seeds", []) or []]
+    # 算法池种子（兼容旧配置，使用 'seeds' 字段）
     seeds = [SeedStock(**item) for item in raw.get("seeds", []) or []]
     return WatchlistConfig(
+        manual_seeds=manual_seeds,
         seeds=seeds,
         sources=raw.get("sources", {}) or {},
         candidate_pool=raw.get("candidate_pool", {}) or {},
@@ -161,7 +178,9 @@ def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     POOL_SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    (REPORTS_DIR / "kline").mkdir(parents=True, exist_ok=True)
+    # K 线图：手动池和算法池分别存放
+    (REPORTS_DIR / "kline" / "manual").mkdir(parents=True, exist_ok=True)
+    (REPORTS_DIR / "kline" / "algo").mkdir(parents=True, exist_ok=True)
     (REPORTS_DIR / "candidate_pool").mkdir(parents=True, exist_ok=True)
     (REPORTS_DIR / "screener").mkdir(parents=True, exist_ok=True)
     (REPORTS_DIR / "analysis").mkdir(parents=True, exist_ok=True)
