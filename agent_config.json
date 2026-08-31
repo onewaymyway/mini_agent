@@ -227,10 +227,10 @@
     "access_log_enabled": true,
     "access_log_path": "",
     "daemon_hang_detection_enabled": true,
-    "daemon_hang_check_interval_seconds": 10,
-    "daemon_hang_check_timeout_seconds": 2,
+    "daemon_hang_check_interval_seconds": 120,
+    "daemon_hang_check_timeout_seconds": 120,
     "daemon_hang_consecutive_failures": 3,
-    "daemon_post_restart_health_check_seconds": 30,
+    "daemon_post_restart_health_check_seconds": 120,
     "daemon_crash_alert_escalation_hours": 1,
     "daemon_crash_history_max_entries": 1000
   },
