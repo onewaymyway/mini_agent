@@ -177,3 +177,4 @@ research/agent_and_ai/articles/
 .agent/sub_agent_experience_log.jsonl
 .agent/scripts/
 .agent/protected_backup/
+.agent/persona_candidates.json
