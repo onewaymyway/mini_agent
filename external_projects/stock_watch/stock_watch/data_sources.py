@@ -229,6 +229,34 @@ def fetch_json(url: str, **kwargs: Any) -> Any:
         raise DataSourceError(f"{url} 返回内容不是合法 JSON") from exc
 
 
+def _fetch_json_no_proxy(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 15) -> Any:
+    """绕过系统代理，直接连接东方财富 API。
+
+    使用 urllib.request 原生接口，完全忽略系统代理和 requests 库的代理逻辑。
+    适用于 Windows 上系统代理导致 requests 连接失败的场景。
+    """
+    import urllib.request
+    import json as _json
+
+    req = urllib.request.Request(url)
+    req.add_header("User-Agent", _DEFAULT_UA)
+    if headers:
+        for k, v in headers.items():
+            req.add_header(k, v)
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            status = resp.status
+            if status >= 400:
+                raise DataSourceError(f"HTTP {status}: {body[:200]}")
+            return _json.loads(body)
+    except urllib.error.HTTPError as e:
+        raise DataSourceError(f"HTTP {e.code}: {e.read().decode()[:200]}") from e
+    except urllib.error.URLError as e:
+        raise DataSourceError(f"网络连接失败: {e.reason}") from e
+
+
 # ── akshare 封装：行情/K 线/公告/新闻 ──────────────────────────────────
 
 def _import_akshare():
@@ -448,8 +476,13 @@ def _eastmoney_kline_direct(
 
     raw = _eastmoney_kline_cdp_fetch(url)
     if not raw or raw.startswith("ERR"):
-        raise DataSourceError(f"CDP 获取 K 线数据失败，响应: {raw[:200]}")
-    data = json.loads(raw)
+        logger.warning("CDP 获取 K 线失败，降级到无代理直连")
+        try:
+            data = _fetch_json_no_proxy(url)
+        except Exception as exc2:
+            raise DataSourceError(f"CDP 及无代理直连均失败: {exc2}") from exc2
+    else:
+        data = json.loads(raw)
     # API 使用 rc 作为响应码（0 表示成功）
     if data.get("rc") != 0:
         raise DataSourceError(f"东方财富 K 线 API 返回错误: {data.get('dsc', data.get('message', 'Unknown'))}")

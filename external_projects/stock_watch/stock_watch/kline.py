@@ -84,12 +84,19 @@ def _normalize_df(df):
 
 def get_kline_df(code: str, entry_type: str, days: int, adjust: str = "qfq"):
     """获取标准化后的 K 线 DataFrame（列：Open/High/Low/Close/Volume，索引：Date）。"""
+    # 清理市场前缀（如 SH600519 -> 600519, SZ000001 -> 000001）
+    clean_code = code
+    for prefix in ("SH", "SZ", "sh", "sz"):
+        if clean_code.upper().startswith(prefix):
+            clean_code = clean_code[2:]
+            break
+    
     if entry_type == "etf":
-        raw = fetch_etf_kline(code, days=days, adjust=adjust)
+        raw = fetch_etf_kline(clean_code, days=days, adjust=adjust)
     else:
         # A 股需要提供 market，这里根据代码前缀判断
-        market = "sh" if code.startswith(("6", "51")) else "sz"
-        raw = fetch_kline(code, market=market, days=days, adjust=adjust)
+        market = "sh" if clean_code.startswith(("6", "51")) else "sz"
+        raw = fetch_kline(clean_code, market=market, days=days, adjust=adjust)
     return _normalize_df(raw)
 
 
@@ -111,7 +118,10 @@ def plot_kline(
         raise DataSourceError(f"{code} 没有可用的 K 线数据")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{code}_{name}.png"
+    # 清理文件名中的非法字符（如 *、?、<、>、| 等）
+    import re
+    safe_name = re.sub(r'[\*\?<>|"\\/:]', '_', name)
+    out_path = out_dir / f"{code}_{safe_name}.png"
 
     # 使用微软雅黑字体显示中文标题
     import os
