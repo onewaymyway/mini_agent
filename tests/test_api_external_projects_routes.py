@@ -3,7 +3,7 @@
 
 风格对齐 tests/test_hybrid_exec_summary_route.py：不拉起完整 HttpServer，
 只挂 router 到一个最小 FastAPI app；`ExternalProjectRegistry` 存储路径
-指到临时目录，不污染真实的 ~/.mini_agent/external_projects.json。
+指到临时目录，不污染真实的 ~/.agent/external_projects.json。
 """
 
 from __future__ import annotations

@@ -88,7 +88,13 @@ resources:                               # 可选
 ### 2.3 注册表
 
 daemon（或你本机）通过一份与代码树无关的注册表记住"有哪些外部项目、
-路径在哪"，默认存放在 `~/.mini_agent/external_projects.json`：
+路径在哪"，默认存放在 `~/.agent/external_projects.json`（与
+`~/.agent/` 下其它全局数据同一父目录）：
+
+> **[2026-08-31] 路径迁移**：早期版本存放在 `~/.mini_agent/external_projects.json`。
+> 首次读取时若发现新路径不存在、旧路径存在，会自动一次性迁移到新路径
+> （旧文件保留不删）。不需要手工操作；如果你的 daemon 一直在跑，重启
+> 一次即可完成迁移。
 
 ```python
 from mini_agent.external_projects import ExternalProjectRegistry

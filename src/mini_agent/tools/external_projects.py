@@ -11,7 +11,7 @@ tools/external_projects.py — 大管家标准工具集（阶段 5 第二项）
     某个外部项目"，与调用它们的 Agent 会话本身所在的 project_root
     无关（大管家 daemon 的会话本身通常没有、也不需要一个有意义的
     project_root）。每个工具函数按需自己构造 `ExternalProjectRegistry()`
-    （默认路径 `~/.mini_agent/external_projects.json`）。
+    （默认路径 `~/.agent/external_projects.json`）。
   - 全部返回 JSON 字符串（与 skill_propose 一致的既有约定），失败时
     `{"ok": false, "error": "..."}`，不抛异常给调用方（LLM tool_use
     的错误处理路径统一是"读返回值里的 ok 字段"，不是"catch 异常"）。

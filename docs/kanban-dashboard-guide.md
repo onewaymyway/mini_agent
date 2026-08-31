@@ -615,7 +615,7 @@ cron job 后等待其按 cadence 自动触发。
     registry.py`）反序列化时，`enabled` 字段缺失时的兜底默认值错误地
     给了 `True`，跟 dataclass 字段默认值、`register()` 默认值（两处都
     是 `False`）不一致。`enabled` 字段是后来才加进这个 dataclass 的，
-    在这之前注册的项目，磁盘上 `~/.mini_agent/external_projects.json`
+    在这之前注册的项目，磁盘上 `~/.agent/external_projects.json`
     里那条记录本来就没有 `"enabled"` 这个 key；daemon 每次启动都会对
     所有已注册项目跑一遍 `ensure_external_project_cron_jobs()`，命中
     这个错误默认值的记录会被误判成"已启用"，从而重新生成对应的
@@ -624,7 +624,7 @@ cron job 后等待其按 cadence 自动触发。
     （`tests/test_external_projects.py::
     test_registry_from_dict_defaults_enabled_false_when_key_missing`）。
     如果你在这次修复之前就注册过外部项目、且怀疑受过这个问题影响，
-    可以直接打开 `~/.mini_agent/external_projects.json` 检查对应项目
+    可以直接打开 `~/.agent/external_projects.json` 检查对应项目
     的条目是否有 `"enabled"` 字段；没有的话，在看板上重新点一次
     「自动调度」开关（哪怕先开再关）就会把这个 key 正确落盘，之后不
     会再复现。

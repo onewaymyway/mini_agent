@@ -1001,7 +1001,7 @@ def _resolve_main_project_root(root: Path) -> Optional[Path]:
 
     1. 环境变量 `MINI_AGENT_MAIN_PROJECT_ROOT`——daemon/scheduler 拉起
        外部项目的 entrypoint 子进程时可以显式设置，最直接、无需查表。
-    2. `ExternalProjectRegistry`（`~/.mini_agent/external_projects.json`）
+    2. `ExternalProjectRegistry`（`~/.agent/external_projects.json`）
        里按 `root` 反查注册记录的 `main_project_root` 字段——这是
        `register()` 时记下来的"注册这个外部项目时所在的主项目"，与
        `root` 实际路径无关，不受目录布局影响。

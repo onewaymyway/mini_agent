@@ -222,6 +222,58 @@ def test_registry_from_dict_defaults_enabled_false_when_key_missing(tmp_path):
     assert registry.list(enabled_only=True) == []
 
 
+def test_registry_migrates_from_legacy_mini_agent_path(tmp_path, monkeypatch):
+    """[2026-08-31] 默认存储路径从 `~/.mini_agent/external_projects.json`
+    改为 `~/.agent/external_projects.json`；旧路径存在且新路径不存在时，
+    首次读取应自动一次性迁移，旧文件保留不删。"""
+    import json
+
+    from mini_agent.external_projects import registry as registry_module
+
+    legacy_path = tmp_path / ".mini_agent" / "external_projects.json"
+    new_path = tmp_path / ".agent" / "external_projects.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_payload = {
+        "projects": {
+            "old_project": {
+                "name": "old_project",
+                "path": str(tmp_path / "old_project"),
+                "main_project_root": str(tmp_path),
+                "enabled": True,
+                "registered_at": "2025-01-01T00:00:00+00:00",
+            }
+        }
+    }
+    legacy_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    monkeypatch.setattr(registry_module, "DEFAULT_REGISTRY_PATH", new_path)
+    monkeypatch.setattr(registry_module, "_LEGACY_REGISTRY_PATH", legacy_path)
+
+    registry = ExternalProjectRegistry()  # 用默认路径，触发迁移逻辑
+    assert registry.store_path == new_path
+    record = registry.get("old_project")
+    assert record.enabled is True
+    assert new_path.exists()
+    assert legacy_path.exists()  # 旧文件不删除
+
+
+def test_registry_no_migration_when_custom_store_path(tmp_path, monkeypatch):
+    """自定义 store_path（比如测试/隔离场景）不应触发旧路径迁移。"""
+    import json
+
+    from mini_agent.external_projects import registry as registry_module
+
+    legacy_path = tmp_path / ".mini_agent" / "external_projects.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(json.dumps({"projects": {}}), encoding="utf-8")
+    monkeypatch.setattr(registry_module, "_LEGACY_REGISTRY_PATH", legacy_path)
+
+    custom_path = tmp_path / "custom_registry.json"
+    registry = ExternalProjectRegistry(store_path=custom_path)
+    assert registry.list() == []
+    assert not custom_path.exists()  # 没写过任何内容，迁移也没有被触发
+
+
 # ── scheduler.py ─────────────────────────────────────────────────────────
 
 

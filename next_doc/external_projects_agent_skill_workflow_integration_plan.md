@@ -111,7 +111,7 @@ LLM 客户端就失败，正好对应"跑得飞快、CLI 退出码却是 0"这�
    外部项目的 entrypoint 子进程时可以显式设置这个环境变量，最直接、
    无需查表，也是唯一对"本次调用明确知道自己是被谁、以什么身份触发"
    这件事最敏感的信息源（适合未来 daemon 侧接线时用）。
-2. **`ExternalProjectRegistry`（`~/.mini_agent/external_projects.json`）
+2. **`ExternalProjectRegistry`（`~/.agent/external_projects.json`）
    反查**——`RegisteredProject` 新增 `main_project_root` 字段，
    `register(name, path, ...)` 时默认记录"执行注册命令那一刻的
    `Path.cwd()`"（`mini-agent projects register` 的既有用法就是在主

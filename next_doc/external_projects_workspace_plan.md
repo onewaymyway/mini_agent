@@ -360,7 +360,7 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
       "数据类 + 显式校验"风格保持一致，且不为一份足够小的 schema 新增
       依赖
 - [x] daemon 侧新增外部项目注册表存储（如
-      `~/.mini_agent/external_projects.json`，与 daemon 自身代码树
+      `~/.agent/external_projects.json`，与 daemon 自身代码树
       无关的独立位置），支持增/删/查已注册项目
       —— `external_projects/registry.py::ExternalProjectRegistry`，
       JSON 文件存储，`register()` 默认顺带校验目标 `project.yaml`
@@ -635,7 +635,7 @@ daemon 只需要解析这份文件，就能知道要不要调度、什么时候�
   三个模块：`manifest.py`（`project.yaml` schema，手写 dataclass +
   校验函数，未引入 pydantic/JSON Schema，理由见阶段 3 变更记录）、
   `registry.py`（`ExternalProjectRegistry`，JSON 文件存储于
-  `~/.mini_agent/external_projects.json`，register/unregister/list/
+  `~/.agent/external_projects.json`，register/unregister/list/
   get/set_enabled，register 默认顺带校验 manifest 合法性）、
   `scheduler.py`（最小化 cron 匹配 `cron_matches()` + `_run_entrypoint()`
   subprocess 执行 + `run_due_entrypoints()`/`trigger_run()`，未直接

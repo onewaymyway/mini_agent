@@ -3,10 +3,17 @@ external_projects/registry.py — daemon 侧外部项目注册表
 
 对应 `next_doc/external_projects_workspace_plan.md` §5、阶段 3 第二项。
 
-存储位置刻意选在 `~/.mini_agent/external_projects.json`（用户级目录，
-默认与 daemon 自身代码树/项目树都无关），呼应原则三"注册表与外部项目
-所在路径无关"——注册表只记"有哪些外部项目、路径在哪"，本身不属于任何
-一个外部项目，也不属于 mini_agent 自身仓库。
+存储位置选在 `~/.agent/external_projects.json`（用户级目录，默认与
+daemon 自身代码树/项目树都无关），呼应原则三"注册表与外部项目所在
+路径无关"——注册表只记"有哪些外部项目、路径在哪"，本身不属于任何
+一个外部项目，也不属于 mini_agent 自身仓库。`~/.agent/` 与
+`storage/paths.py::AgentPaths.global_dir` 等其它全局数据（全局记忆、
+全局技能库等）保持同一父目录，而不是自成一套 `~/.mini_agent/`。
+
+[2026-08-31 路径迁移] 早期版本落在 `~/.mini_agent/external_projects.json`
+（`_LEGACY_REGISTRY_PATH`）。首次读取新路径不存在但旧路径存在时，
+`_load()` 会自动做一次性迁移：把旧文件内容读出、写入新路径，不删除
+旧文件（留作用户核对/回滚），后续读写都只走新路径。
 
 存储格式选 JSON（而不是 sqlite 等）：条目数量级是"用户注册的外部项目
 个数"（十几到几十个），JSON 全量读写足够快，且方便用户直接打开文件
@@ -33,7 +40,9 @@ from mini_agent.external_projects.manifest import (
 )
 from mini_agent.utils.atomic_write import atomic_write_json
 
-DEFAULT_REGISTRY_PATH = Path.home() / ".mini_agent" / "external_projects.json"
+DEFAULT_REGISTRY_PATH = Path.home() / ".agent" / "external_projects.json"
+# [2026-08-31 路径迁移] 旧版本存储路径，仅用于 `_load()` 的一次性自动迁移。
+_LEGACY_REGISTRY_PATH = Path.home() / ".mini_agent" / "external_projects.json"
 
 
 class ExternalProjectRegistryError(ValueError):
@@ -92,7 +101,7 @@ class ExternalProjectRegistry:
 
     用法：
         registry = ExternalProjectRegistry()          # 默认落在
-                                                        # ~/.mini_agent/external_projects.json
+                                                        # ~/.agent/external_projects.json
         registry.register("stock_watch", "/data/stock_watch")
         registry.list()                                # -> [RegisteredProject(...), ...]
         registry.unregister("stock_watch")
@@ -103,7 +112,30 @@ class ExternalProjectRegistry:
 
     # ── 底层读写 ────────────────────────────────────────────────────────
 
+    def _maybe_migrate_legacy(self) -> None:
+        """新路径不存在、旧路径（`~/.mini_agent/...`）存在时，一次性迁移。
+
+        只在使用默认存储路径时触发（自定义 store_path 的调用方，比如
+        测试里传临时目录，不应被这个迁移逻辑影响）。旧文件保留不删，
+        迁移失败（旧文件损坏等）静默跳过，不影响正常使用新路径。
+        """
+        if self.store_path != DEFAULT_REGISTRY_PATH:
+            return
+        if self.store_path.exists() or not _LEGACY_REGISTRY_PATH.exists():
+            return
+        try:
+            raw = _LEGACY_REGISTRY_PATH.read_text(encoding="utf-8")
+            json.loads(raw or "{}")  # 校验旧文件确实是合法 JSON 再迁移
+        except (json.JSONDecodeError, OSError):
+            return
+        try:
+            self.store_path.parent.mkdir(parents=True, exist_ok=True)
+            self.store_path.write_text(raw, encoding="utf-8")
+        except OSError:
+            pass
+
     def _load(self) -> Dict[str, RegisteredProject]:
+        self._maybe_migrate_legacy()
         if not self.store_path.exists():
             return {}
         try:

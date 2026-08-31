@@ -886,7 +886,7 @@ async def patch_external_projects_enabled(name: str, request: Request):
 async def delete_external_projects(name: str, request: Request):
     """DELETE /v1/external_projects/{name} — 注销一个外部项目。
 
-    只从注册表（`~/.mini_agent/external_projects.json`）里删除这条记录，
+    只从注册表（`~/.agent/external_projects.json`）里删除这条记录，
     **不删除项目本身的文件**（外部项目的代码/数据不归 daemon 管，注销只
     是"daemon 不再知道/不再管理它"）。联动清理该项目名下所有 `ext:*`
     cron job（与 `PATCH .../enabled` 关闭开关时"真删不是 disable"的
