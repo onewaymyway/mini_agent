@@ -64,6 +64,7 @@ Goal，到期时驱动 GoalBacklog 派生并启动一轮子 Objective，而不�
 | `sys:digest_trim` | 日志修剪 | `interval:604800`（7d） | 零 LLM | 是 | 修剪 `activity_digest.jsonl`，保留最近 30 天 |
 | `sys:session_cleanup` | Session 清理 | `interval:604800`（7d） | 有 LLM（`--extract-first` 对待抽取的候选 session 各触发一次轻量抽取调用） | 是 | 清理长期不用的旧 session：跳过当前/pinned/goal 未结束/最近窗口内的，其余内容太少或已抽取的直接删，未抽取的先补跑一次离线抽取再删；详见 [evolution/session_cleanup.py](../src/mini_agent/evolution/session_cleanup.py) |
 | `sys:self_maintain` | 自维护健康检查 | `interval:86400`（24h） | 零 LLM | 是 | 见 §3.1（本 job 同时是自诊断闭环深化计划的信号源） |
+| `sys:protected_files_backup` | 受保护文件定期备份 | `interval:86400`（24h） | 零 LLM（本地回调） | 是 | 扫描 `protected_files.txt` 清单声明的路径，打包快照到 `.agent/protected_backup/<generation_id>/`，保留最近 N 份（默认 5，`cfg.protected_files_backup_keep_count`），并核对上一份快照相对当前是否有路径缺失（发现即写入 `activity_digest.jsonl` 告警，不做任何自动恢复）；详见 [受保护文件清单与删除防护机制](protected-files-guide.md) |
 | `sys:daily_digest` | 每日融合日报 | `cron:0 22 * * *`（每天 22:00） | 零 LLM | 是 | 合并当天行为分布/目标进展/代码提交，生成融合日报 |
 | `sys:next_action_digest` | 主动推荐排序 | `interval:10800`（3h） | 零 LLM | 是 | 对停滞目标/注意力错配候选排序生成推荐，候选为空则跳过 |
 | `sys:decision_profile_update` | 决策画像归纳 | `interval:604800`（7d） | 零 LLM（规则归纳） | **否**（默认关闭） | 从历史决策记录归纳可追溯的用户价值模式，证据不足 3 条不落地 |

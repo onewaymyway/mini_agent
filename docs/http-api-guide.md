@@ -454,6 +454,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8765/v1/diagnostics
 - [用户行为感知系统指南](behavior-perception-guide.md) — 桌面/浏览器/手机端行为采集与工作生活画像日报
 - [Kanban 看板使用指南](kanban-dashboard-guide.md) — Goal 执行规范生成/反馈迭代/确认的看板 UI 入口
 - [外部项目使用指南](external-projects-guide.md) — `/v1/external_projects/*`、`/v1/self/external_projects` 对应的 `mini-agent projects` 命令行机制
+- [受保护文件清单与删除防护机制](protected-files-guide.md) — `/v1/protected-files/*` 对应的 `/agent protected` 命令行机制与四层防护设计
 
 ---
 
@@ -1176,6 +1177,24 @@ LLM 调用统一走 owner 的 LLM 配置。
 ```
 
 客户端可通过此事件实时更新 Objective 执行进度条，无需轮询 `/v1/autonomous/status`。
+
+### 受保护文件管理（`/v1/protected-files/*`）
+
+[受保护文件清单与删除防护机制](protected-files-guide.md) 阶段 5 新增，
+把 CLI `/agent protected ...` 已有的判定/备份/恢复能力包装成 REST
+端点，供 Streamlit 看板等非 CLI 场景使用。全部端点 owner only，复用
+`scripts/protected_files.py` + `evolution/protected_files_backup.py`
+已落地的模块，不重新实现判定/打包/恢复逻辑。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/v1/protected-files/status` | 当前生效清单 + 最近快照概况 |
+| `POST` | `/v1/protected-files/entries` | 往清单文件追加一条声明（`manifest="top"`\|`"workdir"` 选择写 `protected_files.txt` 还是 `.agent/protected_files.txt`，不存在则新建） |
+| `DELETE` | `/v1/protected-files/entries` | 删除一条用户声明（不能删除清单文件自身这一条，该保护是自动规则不是可撤销声明） |
+| `POST` | `/v1/protected-files/backup` | 手动触发一次快照备份（正常情况下由 `sys:protected_files_backup` 每天自动跑一次） |
+| `GET` | `/v1/protected-files/snapshots` | 全部快照列表 |
+| `GET` | `/v1/protected-files/snapshots/{generation_id}` | 某一份快照的详细路径清单 |
+| `POST` | `/v1/protected-files/restore` | `force=False`（默认）只返回"将要覆盖哪些路径"的预览、不写盘；确认后 `force=True` 重新请求才真正执行（与 `POST /v1/sessions/cleanup` 的 `dry_run` 两段式交互同构） |
 
 ### Daemon 启动流程
 

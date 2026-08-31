@@ -662,6 +662,29 @@ notepad_enabled: bool = True  # 记事本功能总开关，默认开启
 registry 中，与其它 `xxx_enabled` 开关的既有取舍一致——只是功能层面禁用，
 不会让模型看不到工具定义）。详见 [记事本机制说明](notepad-guide.md)。
 
+### `protected_files_reminder_enabled` / `protected_files_backup_keep_count`（AppConfig 直接字段）
+
+```python
+protected_files_reminder_enabled: bool = True    # system prompt 受保护文件提醒总开关，默认开启
+protected_files_backup_keep_count: int = 5       # 受保护文件定期备份保留份数
+```
+
+`agent_config.json` 中配置：
+
+```json
+{
+  "protected_files_reminder_enabled": false,
+  "protected_files_backup_keep_count": 10
+}
+```
+
+`protected_files_reminder_enabled` 关闭后：`ContextBuilder` 不再向
+system prompt 注入受保护文件清单提醒片段（第 2 层代码级 guard 与第 3 层
+定期备份不受此开关影响，依然生效）。`protected_files_backup_keep_count`
+控制 `sys:protected_files_backup` 每次运行后保留的快照份数，超出部分
+按时间自动清理。详见
+[受保护文件清单与删除防护机制](protected-files-guide.md)。
+
 ### `recall_history_enabled` / `recall_history_mode`（AppConfig 直接字段，P2-B）
 
 ```python
@@ -866,6 +889,7 @@ import 列表和 `__all__`。
 - [Goal 模式指南](goal-mode-guide.md) — `GoalModeConfig` 的完整使用场景与架构说明
 - [轮次守门员指南](turn-judge-guide.md) — `TurnJudgeConfig` 的完整使用场景与架构说明
 - [用户行为感知系统指南](behavior-perception-guide.md) — `BehaviorConfig`（独立配置文件，不属于 `AppConfig`）的完整设计与使用
+- [受保护文件清单与删除防护机制](protected-files-guide.md) — `protected_files_reminder_enabled` / `protected_files_backup_keep_count` 两个字段的完整使用场景
 
 ---
 

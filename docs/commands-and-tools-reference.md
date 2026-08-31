@@ -405,6 +405,16 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/commit-guard ledger [n]` | 查看账本最近 n 条记录（默认 20），标注 pending/rechecking/resolved/undone 状态（`resolved` 才是真正结案，`rechecking` 是复查窗口内的当前判断，之后可能翻成 `undone`；详见 [agent commit guard 指南](agent-commit-guard-guide.md)） |
 | `/commit-guard clear` | 清空账本文件（不影响已经生成的 lesson/reminder） |
 
+### 受保护文件清单与删除防护（`src/mini_agent/cli/commands/protected_cmd.py`）
+
+> 详见 [受保护文件清单与删除防护机制指南](protected-files-guide.md)
+
+| 命令 | 说明 |
+|------|------|
+| `/agent protected status` | 当前生效的受保护清单（`protected_files.txt`）+ 最近一次快照概况 |
+| `/agent protected list [generation_id]` | 列出全部快照，或某一份快照的具体内容 |
+| `/agent protected restore <generation_id> [path] [--force]` | 从指定快照恢复；不加 `--force` 只打印将要覆盖的路径、不执行，确认无误后带 `--force` 重新执行才真正写盘 |
+
 （`src/mini_agent/cli/commands/evolution.py` / `evolve.py`）
 
 > 详见 [Stage 2 安全网指南](self-evolution-stage2-guide.md)、[Stage 3.1 lesson → skill 闭环指南](self-evolution-stage3-1-guide.md)、[巩固循环 后台循环指南](self-evolution-consolidation-guide.md)
