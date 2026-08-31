@@ -218,6 +218,48 @@ HTTP 都不响应，`SIGTERM` 大概率也处理不了），然后走跟"崩溃"
 前台模式（`daemon start`，不带 `--detach`）与后台 `--detach` 共用完全相同
 的卡死探测逻辑，行为一致。
 
+### 9.1 双信号判定（daemon_dual_signal_hang_detection_plan.md 阶段B）
+
+上面描述的判定只看 `GET /v1/health` 一个信号，存在两个问题：
+
+- **HTTP 层忙 ≠ 真卡死**：`/v1/health` 和看板其它接口共享同一个
+  asyncio event loop，如果某个接口内部有未经 `run_blocking()` 包装的
+  同步阻塞调用，会把 `/v1/health` 一起拖慢，daemon 明明只是在忙、并
+  没有卡死，却会被强杀；
+- **HTTP 层正常 ≠ 核心调度真活着**：daemon 存在的根本意义是自主任务
+  调度（cron/goal 执行），如果调度线程死锁但 HTTP 服务本身还能应答
+  `/v1/health`，阶段一的判定完全检测不到这种更危险的场景——用户看到
+  "daemon 运行正常"，实际自主任务早已停摆。
+
+当 `scheduler_heartbeat_enabled=true`（见
+`docs/daemon-execution-model-guide.md`）时，`SchedulerHeartbeat` 的
+看门狗线程会把"核心调度是否还在正常 tick"的观测状态，独立于 HTTP/
+asyncio 之外，直接写到磁盘旁路文件：
+
+```
+<project_root>/.agent/scheduler_heartbeat_status.json
+```
+
+HTTP 连续无响应达到 `daemon_hang_consecutive_failures` 阈值后，
+supervisor 不再直接强杀，而是先读这个文件裁决：
+
+| HTTP 探测 | 核心调度心跳（该文件） | 判定 |
+|---|---|---|
+| 连续超时 | 新鲜、未被看门狗判定为疑似卡死 | daemon 根本功能正常，HTTP 层只是暂时忙碌——**不强杀**，重置失败计数继续观察 |
+| 连续超时 | 过期，或 `suspected_stuck=true` | 核心调度真卡死——判定为卡死并强杀，即使 HTTP 碰巧还能应答也一样 |
+| 连续超时 | 文件不存在（未开启心跳，或还没有第一轮数据） | 退化为阶段一原有的纯 HTTP 判定（向后兼容） |
+
+对应地，`daemon_crash_history.jsonl` 里 `hang_killed` 记录新增一个
+`hang_signal` 字段：`"scheduler_heartbeat"`（核心调度心跳判定为卡死，
+当前最权威的信号）或 `"http_only"`（心跳信号不可用，退化判定）。摘要
+文案也会区分成"判定为核心任务调度卡死"和沿用原来的"连续 N 次健康检查
+无响应"两种，事后从历史记录里就能直接看出根因，不用回头翻栈快照猜。
+
+`scheduler_heartbeat_enabled` 目前默认 `true`（见
+[执行模型指南](daemon-execution-model-guide.md)），也就是说这套双信号
+判定对大多数部署默认生效；显式关掉该开关的部署没有旁路文件，行为退化
+为 9 节描述的阶段一纯 HTTP 判定，零改动。
+
 一个直观的验证方法（模拟卡死而不是崩溃——进程存活但故意不响应 HTTP，
 比较取巧的办法是临时把 `daemon_hang_check_interval_seconds`/
 `daemon_hang_consecutive_failures` 调小、再用调试器/断点手段让 daemon

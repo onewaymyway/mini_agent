@@ -56,16 +56,44 @@
   终于返回（`finally` 分支里 `last_tick_finished_at` 被刷新）才复位，
   下一次再卡住会重新告警——与 P2 的 `consecutive_skip_count == threshold`
   是同一节流思路。
+
+[daemon_dual_signal_hang_detection_plan.md 阶段B]
+  上面这些观测字段（`suspected_stuck` 等）此前只通过
+  `/v1/self/execution_model_status` 这个 HTTP 端点对外暴露——如果
+  daemon 的 event loop 被某个未经 `run_blocking()` 包装的慢请求整个
+  占满，这个端点和 `/v1/health` 一样会无响应，导致"核心调度已经卡死
+  但 HTTP 层还能勉强应答"这种更危险的场景完全检测不到。看门狗线程
+  `_check_stuck()` 每轮轮询结束后新增一步：把观测状态写入
+  `.agent/scheduler_heartbeat_status.json`（`_write_status_file()`），
+  完全不经过 HTTP/asyncio，供外部的 `cli/daemon_supervisor.py` 直接
+  读文件判定，与"核心调度心跳为主信号、HTTP 响应为辅助信号"的双信号
+  判定矩阵配套使用。仅在 `scheduler_heartbeat_enabled=True`（本类被
+  构造并启动）时才会产生这个文件；未开启心跳的部署没有该文件，
+  supervisor 端自动退化为纯 HTTP 判定，向后兼容。
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 import time
 from typing import Optional
 
 log = logging.getLogger(__name__)
+
+
+def heartbeat_status_file_path(project_root):
+    """[daemon_dual_signal_hang_detection_plan.md 阶段B] 调度心跳磁盘旁路
+    状态文件路径：`<project_root>/.agent/scheduler_heartbeat_status.json`。
+
+    独立于本模块定义（而不是依赖调用方自己拼字符串），供
+    `cli/daemon_supervisor.py`（读取方，外部进程）与本模块（写入方）
+    共享同一份路径约定，避免两处各写一份字符串产生不一致。
+    """
+    from pathlib import Path
+    return Path(project_root) / ".agent" / "scheduler_heartbeat_status.json"
 
 
 class SchedulerHeartbeat(threading.Thread):
@@ -235,6 +263,48 @@ class SchedulerHeartbeat(threading.Thread):
                 self._alert_stuck(stuck_seconds)
         except Exception as exc:
             log.warning("SchedulerHeartbeat._check_stuck() raised: %s", exc)
+        # [daemon_dual_signal_hang_detection_plan.md 阶段B] 无论本轮是否
+        # 命中卡死判定，都顺带写一次磁盘旁路状态文件——写入本身必须与上面
+        # 的判定逻辑解耦（各自 try/except），避免文件写入失败反过来影响
+        # 看门狗线程自身的存活或告警节流状态。
+        self._write_status_file()
+
+    def _write_status_file(self) -> None:
+        """[daemon_dual_signal_hang_detection_plan.md 阶段B] 把当前心跳
+        观测状态写入 `.agent/scheduler_heartbeat_status.json`，完全不经过
+        HTTP/asyncio——即使 event loop 被某个未包 `run_blocking()` 的慢
+        请求整个占满，这份状态依然能被外部的 supervisor 进程直接读到，
+        用来判断"核心调度是否真的卡死"，不必依赖 `/v1/health` 或
+        `/v1/self/execution_model_status` 这两个可能同样被堵住的 HTTP
+        端点。`self._paths` 为 None（未能构造 AgentPaths，理论上不该
+        发生但不排除极端环境）时直接跳过，不影响心跳线程本身。
+
+        用"临时文件 + 原子 rename"写入，避免读取方（supervisor）在写入
+        过程中读到半截 JSON；任何异常都吞掉，绝不能让状态文件写入失败
+        影响看门狗线程存活。
+        """
+        if self._paths is None:
+            return
+        try:
+            with self._stats_lock:
+                payload = {
+                    "written_at": time.time(),
+                    "last_tick_started_at": self._last_tick_started_at,
+                    "last_tick_finished_at": self._last_tick_finished_at,
+                    "last_tick_duration_seconds": self._last_tick_duration_seconds,
+                    "tick_interval_seconds": self._tick_interval_seconds,
+                    "suspected_stuck": self._suspected_stuck,
+                    "pid": os.getpid(),
+                }
+            target = heartbeat_status_file_path(self._paths.project_root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = target.with_suffix(target.suffix + f".tmp{os.getpid()}")
+            tmp_path.write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+            )
+            os.replace(tmp_path, target)
+        except Exception as exc:
+            log.warning("SchedulerHeartbeat._write_status_file() raised: %s", exc)
 
     def _alert_stuck(self, stuck_seconds: float) -> None:
         """告警失败静默降级，不影响心跳线程本身。"""

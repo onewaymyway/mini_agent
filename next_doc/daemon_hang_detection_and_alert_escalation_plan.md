@@ -1,5 +1,19 @@
 # mini-agent Daemon 卡死检测与告警升级：改进计划
 
+> **[2026-08-31 更新]** 本文档"阶段一"描述的判定逻辑（只看
+> `GET /v1/health` 单一信号）已被
+> `daemon_dual_signal_hang_detection_plan.md`（阶段B）**替换**——新方案
+> 在原有 HTTP 探测之外，新增核心调度心跳磁盘旁路信号，解决"HTTP 层忙
+> 被误判为卡死"和"核心调度真卡死但 HTTP 还能应答时完全漏判"这两个
+> 阶段一遗留的问题。阶段一新增的探活参数
+> （`daemon_hang_check_interval_seconds` 等）、崩溃记录字段
+> （`hang_reason`/`hang_stack_dump`）、`hang_killed` 这个
+> `restart_decision` 取值均保留、含义不变，只是判定成立的条件从"仅
+> HTTP 连续失败"变成"HTTP 连续失败 + 核心调度心跳裁决"，新增了一个
+> `hang_signal` 字段区分具体是哪个信号触发的。下面阶段一~四的正文按
+> 原样保留，作为背景与阶段二~四内容的说明；卡死**判定条件**本身请以
+> `daemon_dual_signal_hang_detection_plan.md` 为准。
+
 > 聚焦范围：`cli/daemon_supervisor.py`（supervisor 循环）、`cli/daemon.py`
 > （`daemon_run_state.json`/`daemon_crash_history.jsonl`/`cmd_daemon_status`）、
 > `notification/daemon_crash_store.py`、`config/models.py::HttpConfig`。

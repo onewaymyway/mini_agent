@@ -33,6 +33,15 @@
 
 分两个阶段实施：**阶段 B（核心）** 做信号解耦 + 判定矩阵；**阶段 C** 做看板可视化。均为默认开启的观测/判定升级，不新增需要用户手动打开的开关（沿用"卡死检测默认开启"的既有产品定位），但 B 阶段新旁路写入本身只在 `scheduler_heartbeat_enabled=True` 时才发生，未开启时零额外开销。
 
+> **[2026-08-31] 阶段B 已实施完成**：`scheduler_heartbeat.py` 磁盘旁路写入、
+> `daemon.py` 读取+新鲜度判定辅助函数、`daemon_supervisor.py` 双信号判定
+> 矩阵均已落地，`hang_signal` 字段已接入 `record_daemon_crash()`；新增
+> `tests/test_daemon_dual_signal_hang_detection.py`（16 用例），与既有
+> `test_daemon_crash_recovery.py`（53）/`test_scheduler_heartbeat.py`（8）
+> 共 77 个测试全部通过，无回归；`docs/daemon-crash-recovery-guide.md`
+> 新增 §9.1、`next_doc/daemon_hang_detection_and_alert_escalation_plan.md`
+> 已加替换关系说明。阶段C（HTTP 忙碌度计数 + 看板拆分展示）尚未开始。
+
 ---
 
 ## 1.【阶段 B】核心调度心跳磁盘旁路

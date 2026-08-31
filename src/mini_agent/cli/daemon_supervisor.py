@@ -19,12 +19,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 
 def _log_path(project_root: Path) -> Path:
@@ -67,28 +70,52 @@ def _wait_child(
     post_restart_health_check_seconds: float = 0.0,
     hang_stack_dump_enabled: bool = True,
     hang_stack_dump_wait_seconds: float = 3.0,
-) -> tuple[Optional[int], bool, str, Optional[str]]:
+    scheduler_heartbeat_staleness_multiplier: float = 2.0,
+) -> tuple[Optional[int], bool, str, Optional[str], Optional[str]]:
     """等待子进程退出，期间按配置做主动探活（daemon_hang_detection_and_
     alert_escalation_plan.md §1.2），并可选地在启动阶段先做一次一次性的
     健康验证（§2.2）。
 
-    返回 `(returncode, was_hang, hang_reason, hang_stack_dump)`：
-    - 子进程正常退出（含被信号杀死）：`(returncode, False, "", None)`
-    - 被判定为卡死并强杀：`(None, True, reason, stack_dump)`，`reason`
-      是给 `record_daemon_crash(hang_reason=...)` 用的人类可读描述，
-      `stack_dump` 是强杀前抓到的全线程栈快照文本（拿不到时是一段
+    返回 `(returncode, was_hang, hang_reason, hang_stack_dump, hang_signal)`：
+    - 子进程正常退出（含被信号杀死）：`(returncode, False, "", None, None)`
+    - 被判定为卡死并强杀：`(None, True, reason, stack_dump, hang_signal)`，
+      `reason` 是给 `record_daemon_crash(hang_reason=...)` 用的人类可读
+      描述，`stack_dump` 是强杀前抓到的全线程栈快照文本（拿不到时是一段
       `[未获取到栈快照]` 开头的说明，不是 None——见
       `hang_dump.capture_hang_stack_dump` 的返回值约定；`hang_stack_dump_
-      enabled=False` 时才是真正的 None，表示这次根本没尝试）。
+      enabled=False` 时才是真正的 None，表示这次根本没尝试），
+      `hang_signal` 是 `"scheduler_heartbeat"` 或 `"http_only"`（见
+      `record_daemon_crash(hang_signal=...)` 的说明）。
 
     `http_port` 为 None（比如调用方没能读到端口配置）或
     `hang_detection_enabled=False` 时，退化为原来的"一直阻塞直到子进程
     退出"（`proc.wait()`），完全不做探活，行为与阶段一之前一致。
+
+    [daemon_dual_signal_hang_detection_plan.md 阶段B] HTTP 连续无响应达到
+    `hang_consecutive_failures` 阈值后，不再直接判定为卡死并强杀，而是
+    先读一次 `.agent/scheduler_heartbeat_status.json`（核心调度心跳的
+    磁盘旁路状态，见 `evolution/scheduler_heartbeat.py`），据此裁决：
+
+    - 心跳信号不可用（未开启 `scheduler_heartbeat_enabled`，或心跳线程
+      还没跑出第一轮结果）：退化为阶段一原有的纯 HTTP 判定，直接强杀
+      （`hang_signal="http_only"`）——与本方案之前的行为完全一致；
+    - 心跳新鲜且未被看门狗判定为疑似卡死：说明 daemon 的核心自主调度
+      功能是好的，HTTP 层的连续无响应大概率只是被某个慢请求占住了
+      event loop——**不强杀**，只记一条日志，把 `consecutive_failures`
+      清零后继续常规探活轮询（不计入本次卡死重启预算）；
+    - 心跳过期或 `suspected_stuck=True`：核心调度确实卡死，即使 HTTP
+      层碰巧还能应答也应该按卡死处理（`hang_signal="scheduler_
+      heartbeat"`）——这是本方案要补上的、阶段一完全检测不到的场景。
     """
     if not hang_detection_enabled or not http_port:
-        return proc.wait(), False, "", None
+        return proc.wait(), False, "", None, None
 
-    from mini_agent.cli.daemon import DaemonClient, _force_kill_process
+    from mini_agent.cli.daemon import (
+        DaemonClient,
+        _force_kill_process,
+        read_scheduler_heartbeat_status,
+        evaluate_scheduler_heartbeat_freshness,
+    )
 
     client = DaemonClient(http_port, project_root=project_root)
 
@@ -107,14 +134,14 @@ def _wait_child(
         poll_interval = min(1.0, max(0.2, hang_check_interval_seconds))
         while time.time() < deadline:
             if proc.poll() is not None:
-                return proc.returncode, False, "", None
+                return proc.returncode, False, "", None, None
             if client.health_check(timeout=hang_check_timeout_seconds):
                 became_healthy = True
                 break
             time.sleep(poll_interval)
         if not became_healthy:
             if proc.poll() is not None:
-                return proc.returncode, False, "", None
+                return proc.returncode, False, "", None, None
             reason = (
                 f"重启后 {post_restart_health_check_seconds:.0f}s 内未通过健康检查"
                 "（新进程可能卡在初始化阶段），已强制终止"
@@ -127,7 +154,11 @@ def _wait_child(
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-            return None, True, reason, stack_dump
+            # 启动阶段的一次性验证窗口很短，核心调度心跳大概率还没跑出
+            # 第一轮结果，不去读旁路文件、直接按 http_only 处理——避免
+            # "刚起来、心跳文件是上一轮进程遗留的陈旧内容"这种边界情况
+            # 干扰启动阶段本该更简单直接的判定。
+            return None, True, reason, stack_dump, "http_only"
 
     consecutive_failures = 0
     interval = max(0.5, hang_check_interval_seconds)
@@ -135,7 +166,7 @@ def _wait_child(
     while True:
         try:
             returncode = proc.wait(timeout=interval)
-            return returncode, False, "", None
+            return returncode, False, "", None, None
         except subprocess.TimeoutExpired:
             pass
 
@@ -147,16 +178,54 @@ def _wait_child(
         if consecutive_failures < hang_consecutive_failures:
             continue
 
-        # 连续多次探测无响应，判定为卡死：进程仍存活但已经无法正常工作。
+        # [daemon_dual_signal_hang_detection_plan.md 阶段B] HTTP 连续无
+        # 响应达到阈值——先别急着强杀，读一次核心调度心跳的磁盘旁路状态，
+        # 用"daemon 的根本职责（自主任务调度）是否还在正常工作"这个更
+        # 准确的信号做裁决，而不是只看 HTTP 层。
+        heartbeat_status = read_scheduler_heartbeat_status(project_root)
+        heartbeat_healthy = evaluate_scheduler_heartbeat_freshness(
+            heartbeat_status, staleness_multiplier=scheduler_heartbeat_staleness_multiplier
+        )
+
+        if heartbeat_healthy is True:
+            # 核心调度心跳新鲜、看门狗未怀疑卡住：daemon 根本功能正常，
+            # HTTP 层的连续无响应大概率只是被某个未经 run_blocking()
+            # 包装的慢请求占住了 event loop——不强杀，只记日志，重置
+            # 计数继续观察，不计入卡死重启预算。
+            log.warning(
+                "HTTP health check 连续 %d 次无响应，但核心调度心跳仍新鲜"
+                "（未开启心跳时不会走到这个分支），判定为 HTTP 层暂时忙碌，"
+                "不判定为卡死，继续观察",
+                consecutive_failures,
+            )
+            consecutive_failures = 0
+            continue
+
+        # heartbeat_healthy 为 False（心跳过期/疑似卡死）或 None（信号
+        # 不可用，未开启心跳或还没有第一轮结果）：判定为卡死。两种情况
+        # 用不同的 hang_signal 和 reason 文案区分根因，方便事后从
+        # daemon_crash_history.jsonl 直接看出是"核心调度真卡死"还是
+        # "退化到了纯 HTTP 判定"。
+        if heartbeat_healthy is False:
+            hang_signal = "scheduler_heartbeat"
+            reason = (
+                f"连续 {consecutive_failures} 次健康检查无响应，且核心调度心跳"
+                "（scheduler_heartbeat_status.json）已过期或被看门狗判定为疑似"
+                "卡死，判定为核心任务调度卡死，已强制终止"
+            )
+        else:
+            hang_signal = "http_only"
+            reason = (
+                f"连续 {consecutive_failures} 次健康检查无响应"
+                f"（每次间隔 {interval:.0f}s，超时 {hang_check_timeout_seconds:.0f}s），"
+                "核心调度心跳信号不可用（未开启或尚无数据），退化为纯 HTTP 判定，"
+                "已强制终止"
+            )
+
         # 强杀之前先尽力抓一次全线程栈快照（见 hang_dump 模块顶部注释——
         # 即使 event loop 被别的线程/死锁卡住，faulthandler 的信号级转储
         # 也大概率能拿到东西），再强杀（跳过优雅关停尝试，见
         # _force_kill_process 的注释）。
-        reason = (
-            f"连续 {consecutive_failures} 次健康检查无响应"
-            f"（每次间隔 {interval:.0f}s，超时 {hang_check_timeout_seconds:.0f}s），"
-            "已强制终止"
-        )
         stack_dump = _capture_hang_dump_before_kill(
             proc.pid, project_root, hang_stack_dump_enabled, hang_stack_dump_wait_seconds
         )
@@ -165,7 +234,7 @@ def _wait_child(
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pass
-        return None, True, reason, stack_dump
+        return None, True, reason, stack_dump, hang_signal
 
 
 def run_supervisor(
@@ -255,7 +324,7 @@ def run_supervisor(
 
             started_at = time.time()
             child_pid = proc.pid
-            returncode, was_hang, hang_reason, hang_stack_dump = _wait_child(
+            returncode, was_hang, hang_reason, hang_stack_dump, hang_signal = _wait_child(
                 proc,
                 project_root,
                 http_port,
@@ -309,6 +378,7 @@ def run_supervisor(
                 restart_decision=decision,
                 hang_reason=hang_reason if was_hang else None,
                 hang_stack_dump=hang_stack_dump if was_hang else None,
+                hang_signal=hang_signal if was_hang else None,
             )
 
             if not will_restart:
@@ -415,8 +485,9 @@ def run_foreground_supervisor(
             was_hang = False
             hang_reason = ""
             hang_stack_dump = None
+            hang_signal = None
             try:
-                returncode, was_hang, hang_reason, hang_stack_dump = _wait_child(
+                returncode, was_hang, hang_reason, hang_stack_dump, hang_signal = _wait_child(
                     proc,
                     project_root,
                     http_port,
@@ -481,6 +552,7 @@ def run_foreground_supervisor(
                 restart_decision=decision,
                 hang_reason=hang_reason if was_hang else None,
                 hang_stack_dump=hang_stack_dump if was_hang else None,
+                hang_signal=hang_signal if was_hang else None,
             )
 
             if not will_restart:

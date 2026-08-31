@@ -176,6 +176,79 @@ def _supervisor_pid_file(project_root: Path) -> Path:
     return project_root / ".agent" / "daemon_supervisor.pid"
 
 
+# ── 卡死判定：核心调度心跳磁盘旁路（daemon_dual_signal_hang_detection_plan.md 阶段B）──
+#
+# 写入方是 `evolution/scheduler_heartbeat.py::SchedulerHeartbeat._write_status_file()`
+# （daemon 主进程内的看门狗线程，与本文件所在的 supervisor 进程分属两个
+# 进程）。这里只放读取方逻辑：supervisor 判定卡死时，除了现有的
+# `GET /v1/health` 探测，还要读一次这个文件，用"核心调度是否还在正常
+# tick"这个更贴近 daemon 根本职责的信号，而不是只看 HTTP 层有没有响应。
+
+
+def read_scheduler_heartbeat_status(project_root: Path) -> Optional[dict]:
+    """读取 `.agent/scheduler_heartbeat_status.json`。
+
+    返回 None 的两种情况都视为"这个信号不可用"，调用方应退化为纯 HTTP
+    判定：
+    - 文件不存在（部署没开 `scheduler_heartbeat_enabled`，或心跳线程
+      还没来得及跑完第一轮看门狗轮询——这两种都不该被当成"卡死"）；
+    - 文件存在但读取/解析失败（比如极端情况下读到了正在被 rename 覆盖
+      的中间状态，虽然写入方已经用了"临时文件+原子 rename"规避这个
+      窗口，这里仍然保留一层兜底，读取失败不阻断主流程）。
+    """
+    try:
+        from mini_agent.evolution.scheduler_heartbeat import heartbeat_status_file_path
+        p = heartbeat_status_file_path(project_root)
+        if not p.exists():
+            return None
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.cli.daemon.read_scheduler_heartbeat_status")
+        return None
+
+
+def evaluate_scheduler_heartbeat_freshness(
+    status: Optional[dict],
+    now: Optional[float] = None,
+    staleness_multiplier: float = 2.0,
+) -> Optional[bool]:
+    """把 `read_scheduler_heartbeat_status()` 的原始内容判定为一个布尔值：
+    "核心调度心跳当前是否健康（新鲜且未被看门狗判定为疑似卡死）"。
+
+    返回 None 表示"信号不可用"（`status` 为 None），调用方应退化为纯
+    HTTP 判定，不能把 None 当成"不健康"处理——那样会让所有没开启
+    `scheduler_heartbeat_enabled` 的部署全部退化成"HTTP 一超时就直接
+    判定核心卡死"，反而比阶段一之前更激进，不符合"未开启时零行为变化"
+    的兼容性要求。
+
+    返回 False 有两种独立的根因，调用方不需要区分（矩阵判定只关心
+    "是否需要按卡死处理"），但注释里写清楚方便排查：
+    - `status["suspected_stuck"]` 为 True——看门狗认为某次 tick() 卡住
+      没返回；
+    - `written_at` 本身已经过期（`now - written_at` 超过
+      `tick_interval_seconds * staleness_multiplier`）——说明连看门狗
+      线程自己都调度不动了（比阶段一的"HTTP 无响应"更底层的一种假死：
+      整个 Python 解释器/GIL 层面的问题，不只是某个协程卡住），这种
+      情况下旁路文件本身的"新鲜度"就是唯一还能用的证据。
+    """
+    if status is None:
+        return None
+    now = now if now is not None else time.time()
+    try:
+        written_at = float(status.get("written_at", 0.0))
+        tick_interval = float(status.get("tick_interval_seconds", 60.0))
+        suspected_stuck = bool(status.get("suspected_stuck", False))
+    except (TypeError, ValueError):
+        return None
+    if suspected_stuck:
+        return False
+    threshold = max(tick_interval, 1.0) * max(staleness_multiplier, 1.0)
+    if written_at <= 0.0 or (now - written_at) > threshold:
+        return False
+    return True
+
+
 def _write_run_state(project_root: Path, pid: int, status: str) -> None:
     """写 daemon_run_state.json。调用方需保证不抛异常影响主流程——这里
     内部已经 try/except 兜底，写入失败只记全局异常日志，不向上抛。"""
@@ -313,6 +386,7 @@ def record_daemon_crash(
     restart_decision: str = "no_restart",
     hang_reason: Optional[str] = None,
     hang_stack_dump: Optional[str] = None,
+    hang_signal: Optional[str] = None,
 ) -> dict:
     """收集崩溃诊断信息、写入 daemon_crash_history.jsonl，并发送一条
     daemon_crash 告警（独立通道，见 notification/daemon_crash_store.py）。
@@ -334,6 +408,14 @@ def record_daemon_crash(
     抓到的全线程栈快照文本（见 notification/hang_dump.py）——"卡死"这种
     场景 `last_exception` 天生是空的（进程没死、没抛异常），这是目前
     唯一能说明"卡在哪"的诊断信息，随记录一起落盘。非卡死场景恒为 None。
+
+    `hang_signal`：[daemon_dual_signal_hang_detection_plan.md 阶段B]
+    `hang_reason` 不为 None 时，标注这次卡死判定主要依据哪个信号——
+    `"scheduler_heartbeat"`（核心调度心跳判定为卡死/过期，是当前最
+    权威的信号）或 `"http_only"`（未开启心跳或心跳信号不可用，退化为
+    阶段一原有的纯 HTTP 判定）。随记录一起落盘，方便事后直接从
+    `daemon_crash_history.jsonl` 区分根因，不用回头翻栈快照猜。非卡死
+    场景恒为 None。
     """
     now = time.time()
     uptime = (now - started_at) if started_at else None
@@ -374,6 +456,7 @@ def record_daemon_crash(
         "log_tail": log_tail,
         "summary": summary,
         "hang_stack_dump": hang_stack_dump if hang_reason is not None else None,
+        "hang_signal": hang_signal if hang_reason is not None else None,
     }
 
     # [daemon_hang_detection_and_alert_escalation_plan.md §3.3] 崩溃历史：
