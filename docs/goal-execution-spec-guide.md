@@ -241,6 +241,15 @@ recurring Goal 使用[产出目录规范](goal-output-directory-guide.md)描述�
 选"不用模板"。CLI 目前未接入自动匹配，`--template` 仍要求显式传入
 `template_id`。
 
+> 上表只列常见的 5 类通用模板；`growth_pursuit`（成长顾问采纳候选后
+> 自动落地的持续调研模板）与 `research_topic`（用户直接指定任意主题的
+> 通用持续调研模板，`next_doc/personal_researcher_and_coach_capability_
+> gap_plan.md` R1）走同一套模板库/匹配机制，但因为语义更专门，文档放在
+> `docs/growth-advisor-guide.md` 里单独说明，这里不重复列出。两者共享
+> "追加式产出物 + 三个跨轮次 handoff 字段 + 本轮必须有实质性增量"的
+> 骨架，产出物分别落在 `wiki/growth/` 与 `wiki/research/` 两个命名
+> 空间下。
+
 ## 7. 触发入口
 
 ### 7.1 看板「⏰ 周期性设置」

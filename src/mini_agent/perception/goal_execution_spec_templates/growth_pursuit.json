@@ -43,7 +43,7 @@
         "verification_method": "manual_review"
       },
       {
-        "text": "新增内容块标注信息来源（页面 id / URL），不是无来源的泛泛而谈",
+        "text": "新增内容块标注信息来源（页面 id / URL），不是无来源的泛泛而谈；同时给每个来源标注一个粗粒度可信度标签——official（官方文档/项目自身仓库或网站）/ community（论坛、社区讨论、个人博客）/ secondary（转载、聚合站点、未标明原始出处），用域名或来源性质做零成本粗判即可，不要求逐条精确核实",
         "verification_method": "manual_review"
       }
     ],

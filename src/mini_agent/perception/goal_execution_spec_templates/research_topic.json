@@ -44,7 +44,7 @@
         "verification_method": "manual_review"
       },
       {
-        "text": "新增内容块标注信息来源（页面 id / URL），不是无来源的泛泛而谈",
+        "text": "新增内容块标注信息来源（页面 id / URL），不是无来源的泛泛而谈；同时给每个来源标注一个粗粒度可信度标签——official（官方文档/项目自身仓库或网站）/ community（论坛、社区讨论、个人博客）/ secondary（转载、聚合站点、未标明原始出处），用域名或来源性质做零成本粗判即可，不要求逐条精确核实",
         "verification_method": "manual_review"
       }
     ],
@@ -52,7 +52,8 @@
     "special_constraints": [
       "每一轮结束前更新 handoff 的 covered_subtopics / open_questions / last_source_urls 三个字段，供下一轮读取，这是这个模板能够持续、不重复推进的关键",
       "素材追加到同一份 wiki 页面，不要每轮新建一份报告文件",
-      "本模板不要求 Goal 一定来自成长顾问候选，用户可以直接通过 /agent goals add 或对话表达持续调研意图后选用本模板"
+      "本模板不要求 Goal 一定来自成长顾问候选，用户可以直接通过 /agent goals add 或对话表达持续调研意图后选用本模板",
+      "来源可信度标签（official/community/secondary）只是零成本粗判，标注在内容块里即可（如「来源：xxx.com（community）」），不需要额外调用工具或 LLM 做语义级核实"
     ]
   }
 }

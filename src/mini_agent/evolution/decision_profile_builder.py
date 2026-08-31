@@ -83,6 +83,52 @@ def _save_state(paths: AgentPaths, state: dict) -> None:
     p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# [personal_researcher_and_coach_capability_gap_plan.md C2] 供 Goal 创建
+# 时做"参照提示"用的只读查询——与 next_action_advisor.py::
+# _load_profile_patterns()/_apply_profile_weighting() 是同一套"关键词
+# 重合"判定口径（故意不做成公共函数：两处独立演进的匹配细节曾经出现过
+# 分歧，保持各自一份更省心，跟本文件顶部对 _extract_json 的取舍一致）。
+# 这里只返回"命中了哪条模式"，命中与否、要不要据此调整 Goal，完全由
+# 调用方（路由层）决定要不要展示提示——不阻断创建，不写回任何字段。
+
+
+def match_goal_against_profile(
+    paths: AgentPaths, text: str, min_confidence: float = 0.6
+) -> Optional[dict]:
+    """用 Goal 的 title+description 跟 user_value_profile.md 里的高置信度
+    模式做关键词重合匹配，命中时返回该模式的 dict（含 pattern/confidence/
+    evidence_refs），供路由层拼一句"这个方向和你过去反复表现出的 XX
+    倾向一致"式的提示。
+
+    读取失败（画像从未生成过——`sys:decision_profile_update` 默认关闭，
+    这是最常见的情况）或没有命中任何高置信度模式时返回 None，调用方应
+    该静默跳过提示，不需要额外处理"画像为空"的情况。
+
+    只做最朴素的关键词子串匹配（同 next_action_advisor 的口径），不引入
+    额外 LLM 调用——这一步是"提供参照"，不是"精确判断相关性"，匹配
+    错了代价很低（用户看完提示可以直接忽略）。
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        state = json.loads(paths.decision_profile_state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    patterns = state.get("patterns", [])
+    hay = text.lower()
+    best: Optional[dict] = None
+    for p in patterns:
+        if float(p.get("confidence", 0.0)) < min_confidence:
+            continue
+        pattern_text = p.get("pattern", "")
+        tokens = pattern_text.lower().replace("_", " ").replace("-", " ").split()
+        if any(len(tok) >= 2 and tok in hay for tok in tokens):
+            if best is None or float(p.get("confidence", 0.0)) > float(best.get("confidence", 0.0)):
+                best = p
+    return best
+
+
 def _extract_json_array(text: str) -> str:
     start = text.find("[")
     end = text.rfind("]")

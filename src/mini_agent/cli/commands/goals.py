@@ -105,7 +105,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         if not rest:
             R.print_error("Usage: /agent goals add <title> [--priority N] [--tag tag1,tag2]")
             return
-        _cmd_add_goal(gb, rest)
+        _cmd_add_goal(gb, rest, paths=paths)
 
     elif subcmd == "obj":
         if not rest or rest[0] != "add":
@@ -311,7 +311,7 @@ def _cmd_list(gb) -> None:
             R.print_info(f"\n（历史：{', '.join(parts)}）")
 
 
-def _cmd_add_goal(gb, args: list[str]) -> None:
+def _cmd_add_goal(gb, args: list[str], paths=None) -> None:
     """添加 Goal：/agent goals add <title> [--priority N] [--tag tag1,tag2]"""
     import argparse
     p = argparse.ArgumentParser(add_help=False)
@@ -332,6 +332,18 @@ def _cmd_add_goal(gb, args: list[str]) -> None:
     # 成用户本人操作，不依赖 thread-local 兜底值。
     node = gb.add_goal(title, source="user", priority=parsed.priority, tags=tags, source_initiator="user")
     R.print_success(f"Goal 已添加: {node.id} — {node.title}")
+
+    # [personal_researcher_and_coach_capability_gap_plan.md C2] 命中高
+    # 置信度价值取向模式时的参照提示，只提示不阻断；画像不存在（最常见
+    # 情况，见 sys:decision_profile_update 默认关闭）时静默跳过。
+    if paths is not None:
+        try:
+            from mini_agent.evolution.decision_profile_builder import match_goal_against_profile
+            hint = match_goal_against_profile(paths, title)
+            if hint:
+                R.print_info(f"💡 这个方向和你过去反复表现出的「{hint.get('pattern', '')}」倾向一致（仅供参考）。")
+        except Exception:
+            pass
 
 
 def _cmd_add_objective(gb, args: list[str]) -> None:

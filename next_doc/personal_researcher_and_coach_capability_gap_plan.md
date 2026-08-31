@@ -2,8 +2,9 @@
 
 > **实施状态（见配套的
 > `personal_researcher_and_coach_capability_gap_implementation_record.md`）**：
-> R1（通用调研模板 `research_topic`）与 C1（Goal 的"长期方向"分组）已
-> 落地。R2/C2/C3/C4/R3 按第 3 节的优先级建议延后，尚未实施。
+> R1（通用调研模板 `research_topic`）、C1（Goal 的"长期方向"分组）、
+> R2（信源可信度标注）、C2（`decision_profile` 参与 Goal 创建提示）
+> 均已落地。C3/C4/R3 按第 3 节的优先级建议继续延后，尚未实施。
 
 > 前置阅读：`docs/mini-agent-philosophy-and-roadmap.md`（项目理念与当前
 > 优先级）、`docs/growth-advisor-guide.md` 1.5 节"设计理念"（本文档的

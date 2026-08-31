@@ -62,6 +62,29 @@
    候选标题/理由与某条模式关键词重合时优先展示。加权只影响同类候选的相对顺序，
    不跨类别提升、不新增候选、不影响候选本身的产生逻辑。默认关闭。
 
+## 第三个用法：Goal 创建时的参照提示（C1/C2 追加）
+
+`next_doc/personal_researcher_and_coach_capability_gap_plan.md` C2 落地
+后，新增 `evolution/decision_profile_builder.py::match_goal_against_profile()`
+——跟 `next_action_advisor` 同一套"关键词重合"判定口径（title+description
+与某条高置信度模式的 `pattern` 文本有重合即命中，取匹配到的置信度最高
+的一条），供 Goal 创建时展示一句参照提示。
+
+- **触发位置**：`POST /v1/goals`（看板"➕ 新建目标"表单）与 CLI
+  `/agent goals add`，创建成功后各自独立地跑一次匹配，命中时展示
+  `💡` 提示，展示匹配到的模式文本，如"这个方向和你过去反复表现出的
+  『XX』倾向一致"（仅供参考）。
+- **只提示，不阻断**：不管命中与否，Goal 都会正常创建；这一步不写回
+  `GoalNode` 的任何字段，纯粹是路由层/CLI 层的一次性只读查询 + 展示。
+- **依赖前置条件**：`sys:decision_profile_update` 默认关闭，画像多数
+  情况下不存在，`match_goal_against_profile()` 此时静默返回 `None`，
+  调用方不需要对"画像为空"做任何特殊处理——用户开启该定时任务并积累
+  足够样本后，这条提示才会开始出现。
+- **匹配置信度门槛**：默认 `min_confidence=0.6`，比
+  `next_action_profile_weighting_min_confidence`（0.5）稍高一些——
+  Goal 创建提示是直接展示给用户看的一句话，门槛比排序内部加权更保守，
+  避免低置信度模式带来过多噪音提示。
+
 ## 相关配置（`agent_config.json` → `digest_advisor`）
 
 | 字段 | 默认值 | 说明 |

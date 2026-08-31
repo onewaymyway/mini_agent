@@ -1,9 +1,9 @@
-# 实施记录：Personal Researcher / Personal Coach 缺口改进（R1 + C1）
+# 实施记录：Personal Researcher / Personal Coach 缺口改进（R1 + C1 + R2 + C2）
 
 > 对应计划文档：`personal_researcher_and_coach_capability_gap_plan.md`。
-> 本记录只覆盖该计划第 3 节优先级表里标为"高"的两项——R1、C1；
-> R2/C2/C3/C4/R3 按计划文档的依赖关系说明暂未启动，留待观察 R1/C1
-> 实际使用效果后再评估。
+> 本记录覆盖已落地的四项——R1、C1（第一轮）、R2、C2（第二轮）；
+> C3/C4/R3 按计划文档的依赖关系说明继续延后，留待观察实际使用效果后
+> 再评估。
 
 ## 1. R1：通用持续调研模板 `research_topic`
 
@@ -37,11 +37,12 @@
   每轮会往 `wiki/research/<topic-slug>.md` 追加新内容，不会重复讲已经
   覆盖过的子话题。
 
-### 1.3 没做的部分（对应计划 R2/R3，按建议延后）
+### 1.3 没做的部分（对应计划 R3，按建议延后）
 
-- 信源可信度标注（R2）——依赖 R1 先跑起来积累实际使用情况。
 - 交叉验证质量门（R3）——计划文档明确不建议默认开启，需要先观察
   R1 落地后是否真的出现"事实性错误堆积"的问题。
+
+（R2——信源可信度标注——已在本轮落地，见第 3 节。）
 
 ## 2. C1：Goal 的"长期方向"分组
 
@@ -93,11 +94,8 @@
     删除按钮
   - 未分组 Goal → 选择目标 + 选择方向 → 关联按钮
 
-### 2.4 没做的部分（对应计划 C2/C3/C4，按建议延后）
+### 2.4 没做的部分（对应计划 C3/C4，按建议延后）
 
-- `decision_profile` 参与 Goal 创建提示（C2）——依赖用户已手动开启
-  `sys:decision_profile_update` 并积累样本，这个前置条件本身默认关闭，
-  C1 的分组落地不改变这个依赖关系。
 - `next_action_advisor` 复用成长顾问证据走势规则（C3）——计划建议先
   观察 C1/C2 效果再评估是否投入。
 - 全部 Goal 综合月报（C4）——明确依赖 C1 落地且需要先看分组是否被
@@ -106,7 +104,87 @@
   只能通过看板 UI 或直接调用 API 操作；如果后续证明分组是高频操作，
   可以补一版 CLI。
 
-## 3. 兼容性说明
+（C2——`decision_profile` 参与 Goal 创建提示——已在本轮落地，见第 4 节。）
+
+## 3. R2：信源可信度标注
+
+### 3.1 做了什么
+
+- `research_topic.json` 与 `growth_pursuit.json` 的 `per_cycle_criteria`
+  第三条（"新增内容块标注信息来源"）扩写为同时要求标注一个粗粒度
+  可信度标签——`official`（官方文档/项目自身仓库或网站）/
+  `community`（论坛、社区讨论、个人博客）/ `secondary`（转载、聚合站点、
+  未标明原始出处）。
+- `research_topic.json` 的 `special_constraints` 补一条说明：标签只是
+  零成本粗判（按域名/来源性质判断），标注在内容块里即可（如
+  "来源：xxx.com（community）"），不需要额外调用工具或 LLM 做语义级
+  核实——与计划文档"轻量级、不引入额外 LLM 调用"的定位一致。
+
+### 3.2 实现方式说明
+
+这一项**没有新增任何 Python 代码**——`handoff_fields`/
+`per_cycle_criteria`/`special_constraints` 都是执行规范模板里的纯文本
+字段，最终作为 prompt 片段注入给执行 Goal 的 LLM（见
+`goal_execution_spec.py` 里 `HandoffField`/`Criterion` 到 prompt 文本的
+拼接逻辑），标签本身由 LLM 在追加内容块时按指引写入 wiki 页面正文，
+不是由 Python 代码解析/校验的结构化字段。这与计划文档"规则可以简单到
+零成本判定，不强求语义级判断"的定位吻合：既然连信源类型的判定本身
+都不要求精确，标签校验也没有必要用代码强制。
+
+### 3.3 影响范围
+
+`growth_pursuit`/`research_topic` 两个模板都改了（计划文档 §1.3 的
+表述聚焦在 Personal Researcher 场景，但 `last_source_urls` 去重字段
+本身是两个模板共享的骨架，为保持两者行为一致，标签要求同步补齐）。
+不影响任何已有 Goal 的历史内容——只影响之后新触发的周期。
+
+## 4. C2：`decision_profile` 参与 Goal 创建时的提示
+
+### 4.1 做了什么
+
+- `src/mini_agent/evolution/decision_profile_builder.py` 新增
+  `match_goal_against_profile(paths, text, min_confidence=0.6)`：
+  跟 `next_action_advisor._apply_profile_weighting()` 同一套"关键词
+  重合"判定口径（Goal 的 title+description 与某条高置信度模式的
+  `pattern` 文本有词汇重合即命中，取匹配到的置信度最高的一条）。
+  读取失败（画像从未生成过，`sys:decision_profile_update` 默认关闭
+  时的常见情况）或没有命中时静默返回 `None`。
+- `src/mini_agent/api/routes.py::add_goal()`：Goal 创建成功后调用一次
+  该函数，命中时把匹配到的模式附在响应体的 `decision_profile_hint`
+  字段里；不管命中与否，Goal 都正常创建，这一步不写回 `GoalNode` 任何
+  字段，纯粹是路由层的一次性只读查询。
+- 看板 `apps/mini_agent_kanban/app.py`：命中时把提示文本存进
+  `st.session_state["_new_goal_decision_hint"]`，跨 `st.rerun()` 在
+  "➕ 新建目标"表单上方用 `st.info()` 展示一次（`st.toast()` 装不下
+  完整提示文本，改用这个模式），读取后立即清空，不会反复出现。
+- CLI `src/mini_agent/cli/commands/goals.py::_cmd_add_goal()`：新增
+  `paths` 参数（调用方 `handle()` 已经持有 `paths`，顺手传入），
+  Goal 添加成功后同样跑一次匹配，命中时用 `R.print_info()` 打印一行
+  提示。
+
+### 4.2 用户如何使用
+
+- 开启 `sys:decision_profile_update` cron job 并积累足够样本
+  （`decision_profile_min_evidence_count`，默认至少 3 条独立决策证据）
+  一段时间后，`wiki/user_value_profile.md` 会有一些高置信度模式。
+- 之后在看板"➕ 新建目标"表单提交，或 CLI 敲
+  `/agent goals add "标题"`，如果标题/描述与某条模式的关键词有重合，
+  会看到一句"这个方向和你过去反复表现出的『XX』倾向一致（仅供参考）"
+  的提示。
+
+### 4.3 没做的部分
+
+- 计划文档 C2 原文还提到"成长顾问生成候选待采纳时"也应该展示同样的
+  提示——本轮只落地了"用户新建 Goal"这一个触发点（`POST /v1/goals`
+  + CLI `/agent goals add`），成长顾问候选采纳流程（`accept_candidate`
+  一类入口）尚未接入。这部分不复杂（可以直接复用
+  `match_goal_against_profile()`），但涉及改动 `growth_advisor.py`
+  这条已经比较成熟的链路，按"尽量不改变 growth_advisor.py 现有行为"
+  的既定取舍（计划文档 0.3 节），留到确认这条提示在"新建 Goal"场景
+  确实有用之后再评估是否补上。
+
+## 5. 兼容性说明（更新）
+
 
 - `goals.json` 新增的 `"directions"` 顶层键、`GoalNode.direction_id`
   字段对旧数据完全向后兼容：`Direction.from_dict()`/
@@ -114,4 +192,11 @@
   兜底空列表，`direction_id` 缺失时兜底 `None`），旧版本写入的
   `goals.json` 可以被新代码直接加载，不需要迁移脚本。
 - `research_topic.json` 是纯新增文件，不改变任何已有模板/已有 Goal
-  的行为；`growth_pursuit` 模板本身未做任何修改。
+  的行为；`growth_pursuit` 模板改动仅限 `per_cycle_criteria` 文本描述，
+  不涉及 `handoff_fields`/`deliverables` 等结构性字段，正在进行中的
+  周期不受影响（下一轮触发时 prompt 会带上更新后的文本）。
+- `add_goal()` 响应体新增的 `decision_profile_hint` 字段是可选的
+  （只在命中时出现），旧版本前端/CLI 不读这个字段也完全不受影响，
+  纯粹是新增能力，不改变既有响应体的必需字段。
+- `_cmd_add_goal()` 新增的 `paths` 参数带默认值 `None`，其它调用方
+  （如果存在）不传这个参数时行为等同于跳过 C2 提示，不会报错。

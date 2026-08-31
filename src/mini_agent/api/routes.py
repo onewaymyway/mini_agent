@@ -5262,7 +5262,23 @@ async def add_goal(request: Request):
             source_initiator=body.get("source_initiator", "user"),
             status=init_status,
         )
-        return {"goal": goal.to_dict()}
+        result: dict = {"goal": goal.to_dict()}
+        # [personal_researcher_and_coach_capability_gap_plan.md C2] 只做
+        # 提示，不阻断创建——命中高置信度模式时附带一句参照，前端展示与
+        # 否自行决定；`sys:decision_profile_update` 默认关闭、画像多数
+        # 情况下不存在时 match_goal_against_profile() 静默返回 None，这里
+        # 不需要额外分支处理"画像为空"。
+        try:
+            from mini_agent.evolution.decision_profile_builder import match_goal_against_profile
+            hint = match_goal_against_profile(
+                paths, f"{title} {body.get('description', '')}",
+            )
+            if hint:
+                result["decision_profile_hint"] = hint
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.add_goal.decision_profile_hint')
+        return result
     except HTTPException:
         raise
     except Exception as e:

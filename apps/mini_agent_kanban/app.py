@@ -4449,6 +4449,13 @@ def render_kanban_tab(client: AgentClient):
 
     _render_objective_completion_trend(client)
 
+    # [personal_researcher_and_coach_capability_gap_plan.md C2] 上一次
+    # 新建目标命中的价值取向参照提示，只展示一次（读完立刻清空 session_
+    # state，避免刷新几次后仍然挂在页面上）。
+    _decision_hint = st.session_state.pop("_new_goal_decision_hint", None)
+    if _decision_hint:
+        st.info(f"💡 这个方向和你过去反复表现出的「{_decision_hint}」倾向一致（仅供参考，不影响本次创建）。")
+
     with st.expander("➕ 新建目标"):
         with st.form("new_goal", clear_on_submit=True):
             title = st.text_input("标题", key="_new_goal_title_input")
@@ -4487,6 +4494,13 @@ def render_kanban_tab(client: AgentClient):
                     st.toast(f"✅ 目标「{title.strip()}」已创建", icon="✅")
                 new_goal = res.get("goal") if isinstance(res, dict) else None
                 new_goal_id = (new_goal or {}).get("id") if isinstance(new_goal, dict) else None
+                # [personal_researcher_and_coach_capability_gap_plan.md C2]
+                # 命中高置信度价值取向模式时的参照提示，跨 st.rerun() 用
+                # session_state 传递（toast 太短，展示不下完整提示文本），
+                # 只展示一次，只是提示，不阻断/不影响本次创建结果。
+                hint = res.get("decision_profile_hint") if isinstance(res, dict) else None
+                if hint:
+                    st.session_state["_new_goal_decision_hint"] = hint.get("pattern", "")
                 if gen_spec and new_goal_id:
                     st.session_state["_ges_pending_new_goal"] = new_goal_id
                     st.session_state["_ges_pending_new_goal_title"] = (new_goal or {}).get("title", "")
