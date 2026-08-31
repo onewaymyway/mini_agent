@@ -66,9 +66,10 @@ class AgentClient:
         触发过任务，是合法状态。"""
         return self._get("/async_jobs/latest/by_key", params={"key": key}, timeout=8)
 
-    def _delete(self, path, params=None, timeout=8):
+    def _delete(self, path, params=None, json_body=None, timeout=8):
         try:
-            r = requests.delete(self._url(path), headers=self.headers, params=params, timeout=timeout)
+            r = requests.delete(self._url(path), headers=self.headers, params=params,
+                                 json=json_body, timeout=timeout)
             if r.status_code == 200:
                 return r.json()
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
@@ -262,6 +263,33 @@ class AgentClient:
         }
         timeout = 200 if extract_first else 35
         return self._post("/sessions/cleanup", json_body=body, timeout=timeout)
+
+    # ── 受保护文件清单 ──────────────────────────────────────────────────
+    def protected_files_status(self):
+        return self._get("/protected-files/status")
+
+    def protected_files_add_entry(self, path: str, *, is_dir: bool = False, manifest: str = "top"):
+        return self._post("/protected-files/entries",
+                           json_body={"path": path, "is_dir": is_dir, "manifest": manifest})
+
+    def protected_files_remove_entry(self, path: str):
+        return self._delete("/protected-files/entries", json_body={"path": path})
+
+    def protected_files_backup_now(self, *, keep_count: int = 5):
+        return self._post("/protected-files/backup", json_body={"keep_count": keep_count}, timeout=60)
+
+    def protected_files_list_snapshots(self):
+        return self._get("/protected-files/snapshots")
+
+    def protected_files_snapshot_detail(self, generation_id: str):
+        return self._get(f"/protected-files/snapshots/{generation_id}")
+
+    def protected_files_restore(self, generation_id: str, *, paths=None, force: bool = False):
+        return self._post(
+            "/protected-files/restore",
+            json_body={"generation_id": generation_id, "paths": paths or [], "force": force},
+            timeout=60,
+        )
 
     # ── 用户（多用户模式）────────────────────────────────────────────
     def users(self):

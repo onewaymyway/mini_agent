@@ -9696,6 +9696,161 @@ def render_diagnostics_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: 🛡️ 受保护文件（protected_files_manifest_and_delete_guard_plan.md
+# 四层防护的看板集成：查看当前生效清单、增删声明、手动备份、按快照恢复）
+# ═══════════════════════════════════════════════════════════════════════
+def render_protected_files_tab(client: AgentClient):
+    st.markdown("#### 🛡️ 受保护文件清单")
+    st.caption(
+        "声明在 `protected_files.txt`（项目根目录或 `.agent/`）里的路径不会被"
+        "任何例行维护任务删除，agent 的 system prompt 里也会看到同一份提醒。"
+        "定期备份（默认每天一次）打包快照到 `.agent/protected_backup/`，"
+        "误删后可以从快照恢复。owner 权限。"
+    )
+
+    status = client.protected_files_status()
+    if not status or "_error" in status:
+        st.error((status or {}).get("_error", "无法获取受保护文件状态"))
+        return
+
+    entries = status.get("entries", [])
+    st.markdown(f"**当前生效清单（{len(entries)} 条）**")
+    if entries:
+        st.dataframe(
+            [{"路径": e["path"] + ("/" if e["is_dir"] else ""),
+              "来源清单": e["source_manifest"]} for e in entries],
+            width='stretch', hide_index=True,
+        )
+    else:
+        st.caption("尚未声明任何受保护路径。")
+
+    sc1, sc2 = st.columns(2)
+    sc1.metric("已有快照数", status.get("snapshot_count", 0))
+    sc2.metric("最新快照", status.get("latest_generation_id") or "—")
+
+    st.markdown("---")
+
+    # ── 新增 / 删除声明 ────────────────────────────────────────────────
+    with st.expander("➕ 添加受保护路径", expanded=not entries):
+        ac1, ac2, ac3 = st.columns([3, 1, 1])
+        new_path = ac1.text_input(
+            "路径（相对项目根目录，或绝对路径）", key="pf_add_path",
+            placeholder="例如 important_notes/ 或 configs/secrets.json",
+        )
+        new_is_dir = ac2.checkbox("是目录", key="pf_add_is_dir")
+        new_manifest = ac3.selectbox(
+            "写入哪份清单", ["top", "workdir"], key="pf_add_manifest",
+            format_func=lambda v: "顶层 protected_files.txt" if v == "top" else ".agent/protected_files.txt",
+        )
+        if st.button("添加", key="pf_add_btn", disabled=not new_path.strip()):
+            res = client.protected_files_add_entry(
+                new_path.strip(), is_dir=new_is_dir, manifest=new_manifest,
+            )
+            if res and "_error" not in res:
+                st.success("已添加。")
+                st.rerun()
+            else:
+                st.error((res or {}).get("_error", "添加失败"))
+
+    if entries:
+        with st.expander("🗑️ 删除受保护路径声明"):
+            st.caption("只能删除用户自己声明的路径，清单文件本身（自动受保护，不是一条声明）无法通过这里删除。")
+            removable = [e for e in entries if not e["path"].endswith("protected_files.txt")]
+            if not removable:
+                st.caption("没有可删除的用户声明（只剩清单文件本身）。")
+            else:
+                options = {f"{e['path']}{'/' if e['is_dir'] else ''}": e["path"] for e in removable}
+                choice = st.selectbox("选择要删除的路径", list(options.keys()), key="pf_remove_choice")
+                if st.button("🗑️ 删除该声明", key="pf_remove_btn", type="secondary"):
+                    res = client.protected_files_remove_entry(options[choice])
+                    if res and "_error" not in res:
+                        st.success("已删除。")
+                        st.rerun()
+                    else:
+                        st.error((res or {}).get("_error", "删除失败"))
+
+    st.markdown("---")
+
+    # ── 手动备份 ─────────────────────────────────────────────────────
+    with st.expander("📦 手动备份快照"):
+        st.caption("正常情况下由 `sys:protected_files_backup` 每天自动跑一次；这里可以立即触发一次。")
+        keep_count = st.number_input("保留最近 N 份", min_value=1, value=5, step=1, key="pf_backup_keep")
+        if st.button("📦 立即备份", key="pf_backup_btn"):
+            res = client.protected_files_backup_now(keep_count=int(keep_count))
+            if res and "_error" not in res:
+                if res.get("errors"):
+                    st.warning(f"备份完成但有部分错误：{res['errors']}")
+                else:
+                    st.success(f"已备份 {len(res.get('backed_up', []))} 处路径，快照 ID：{res.get('generation_id')}")
+                if res.get("missing"):
+                    st.warning(f"⚠️ 发现 {len(res['missing'])} 处上次备份时还在、"
+                               f"本次已消失的路径（未自动恢复）：{res['missing']}")
+                st.rerun()
+            else:
+                st.error((res or {}).get("_error", "备份失败"))
+
+    # ── 快照浏览 + 恢复 ──────────────────────────────────────────────
+    snapshots = client.protected_files_list_snapshots()
+    if isinstance(snapshots, dict) and "_error" in snapshots:
+        st.error(snapshots["_error"])
+        return
+    snapshots = snapshots or []
+
+    with st.expander(f"🕰️ 快照与恢复（共 {len(snapshots)} 份）", expanded=False):
+        if not snapshots:
+            st.caption("尚无任何快照。")
+        else:
+            gen_options = {f"{s['generation_id']}（{s['path_count']} 条路径）": s["generation_id"]
+                            for s in reversed(snapshots)}
+            gen_choice = st.selectbox("选择快照", list(gen_options.keys()), key="pf_restore_gen")
+            gen_id = gen_options[gen_choice]
+
+            detail = client.protected_files_snapshot_detail(gen_id)
+            detail_paths = (detail or {}).get("paths", [])
+            if detail_paths:
+                st.dataframe([{"路径": p} for p in detail_paths], width='stretch', hide_index=True)
+
+            restore_all = st.checkbox("恢复该快照全部路径", value=True, key="pf_restore_all")
+            restore_paths = []
+            if not restore_all and detail_paths:
+                restore_paths = st.multiselect("只恢复以下路径", detail_paths, key="pf_restore_paths")
+
+            preview_key = "pf_restore_preview"
+            if st.button("🔍 预览恢复影响（不会真的写盘）", key="pf_restore_preview_btn"):
+                res = client.protected_files_restore(
+                    gen_id, paths=(None if restore_all else restore_paths), force=False,
+                )
+                if res and "_error" not in res:
+                    st.session_state[preview_key] = res.get("preview", [])
+                else:
+                    st.session_state.pop(preview_key, None)
+                    st.error((res or {}).get("_error", "预览失败"))
+
+            preview = st.session_state.get(preview_key)
+            if preview:
+                st.warning(f"将覆盖以下 {len(preview)} 处路径的当前内容：")
+                st.dataframe([{"路径": p} for p in preview], width='stretch', hide_index=True)
+                confirm = st.checkbox("我已确认以上列表，执行恢复", key="pf_restore_confirm")
+                if st.button("⚠️ 确认执行恢复（会覆盖当前文件）", disabled=not confirm,
+                              type="primary", key="pf_restore_confirm_btn"):
+                    res = client.protected_files_restore(
+                        gen_id, paths=(None if restore_all else restore_paths), force=True,
+                    )
+                    if res and "_error" not in res:
+                        st.success(f"已恢复 {len(res.get('restored', []))} 处路径。")
+                        if res.get("errors"):
+                            st.warning(f"部分失败：{res['errors']}")
+                        st.session_state.pop(preview_key, None)
+                        st.session_state.pop("pf_restore_confirm", None)
+                        st.rerun()
+                    else:
+                        st.error((res or {}).get("_error", "恢复执行失败"))
+
+
+MANIFEST_FILENAME_HINT = "protected_files.txt"
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab: 📛 错误日志（~/.agent/logs/error.jsonl 错误类型分布统计）
 # ═══════════════════════════════════════════════════════════════════════
 def render_error_log_tab(client: AgentClient):
@@ -10826,7 +10981,8 @@ def main():
 
     tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
                     "🧠 自我状态", "🌱 成长顾问", "🎓 能力学习", "🧬 进化提案", "🗂️ 外部项目", "⏰ Cron 任务",
-                    "🗓️ 全局日程", "🔌 外部输入", "🔔 关注与通知", "⚙️ 配置", "🔧 诊断", "🧪 混合执行", "📛 错误日志"])
+                    "🗓️ 全局日程", "🔌 外部输入", "🔔 关注与通知", "🛡️ 受保护文件", "⚙️ 配置", "🔧 诊断",
+                    "🧪 混合执行", "📛 错误日志"])
 
     # [daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
     # 顶栏"正在执行"列表的"🔍 查看并控制"按钮点击后，把目标 tab 名记到
@@ -10869,12 +11025,14 @@ def main():
     with tabs[14]:
         render_notification_tab(client)
     with tabs[15]:
-        render_config_tab(client)
+        render_protected_files_tab(client)
     with tabs[16]:
-        render_diagnostics_tab(client)
+        render_config_tab(client)
     with tabs[17]:
-        render_hybrid_exec_tab(client)
+        render_diagnostics_tab(client)
     with tabs[18]:
+        render_hybrid_exec_tab(client)
+    with tabs[19]:
         render_error_log_tab(client)
 
     # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——

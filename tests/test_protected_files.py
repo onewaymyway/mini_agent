@@ -123,6 +123,68 @@ def test_module_level_convenience_functions(tmp_path):
     assert len(entries) == 2  # 清单自身 + a.txt
 
 
+def test_add_entry_creates_manifest_and_is_idempotent(tmp_path):
+    from scripts.protected_files import add_entry
+
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    line1 = add_entry(tmp_path, tmp_path / "a.txt", is_dir=False)
+    assert line1 == "a.txt"
+
+    guard = ProtectedFilesGuard(tmp_path)
+    assert guard.is_protected(tmp_path / "a.txt")
+
+    # 幂等：重复添加不产生第二行
+    add_entry(tmp_path, tmp_path / "a.txt", is_dir=False)
+    content = (tmp_path / MANIFEST_FILENAME).read_text(encoding="utf-8")
+    assert content.count("a.txt") == 1
+
+
+def test_add_entry_directory_and_workdir_manifest(tmp_path):
+    from scripts.protected_files import add_entry
+
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    add_entry(tmp_path, notes, is_dir=True, manifest="workdir")
+
+    guard = ProtectedFilesGuard(tmp_path)
+    assert guard.is_protected(notes / "sub" / "n.md")
+    assert (tmp_path / ".agent" / MANIFEST_FILENAME).is_file()
+
+
+def test_remove_entry_deletes_declared_line(tmp_path):
+    from scripts.protected_files import add_entry, remove_entry
+
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("y", encoding="utf-8")
+    add_entry(tmp_path, tmp_path / "a.txt")
+    add_entry(tmp_path, tmp_path / "b.txt")
+
+    ok = remove_entry(tmp_path, tmp_path / "a.txt")
+    assert ok is True
+
+    guard = ProtectedFilesGuard(tmp_path)
+    assert not guard.is_protected(tmp_path / "a.txt")
+    assert guard.is_protected(tmp_path / "b.txt")
+
+
+def test_remove_entry_cannot_remove_manifest_itself(tmp_path):
+    from scripts.protected_files import add_entry, remove_entry
+
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    add_entry(tmp_path, tmp_path / "a.txt")
+
+    ok = remove_entry(tmp_path, tmp_path / MANIFEST_FILENAME)
+    assert ok is False
+    guard = ProtectedFilesGuard(tmp_path)
+    assert guard.is_protected(tmp_path / MANIFEST_FILENAME)
+
+
+def test_remove_entry_not_found_returns_false(tmp_path):
+    from scripts.protected_files import remove_entry
+
+    assert remove_entry(tmp_path, tmp_path / "nope.txt") is False
+
+
 def test_module_is_self_contained():
     """
     本模块不应 import mini_agent 包，理由同 protected_paths.py：一旦

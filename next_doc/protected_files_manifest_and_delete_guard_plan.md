@@ -1,9 +1,10 @@
 # 受保护文件清单与删除防护机制改进计划
 
-> **状态**：阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已全部完成实施。本
-> 文档记录设计过程中的确认结论，供后续实施时对照，避免中途遗忘约定
-> 细节。四层防护（判定模块 → prompt 提醒 → 代码级 guard → 定期备份 +
-> 手动恢复）已全部落地。
+> **状态**：阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已全部完成实施，另外
+> 补充了阶段 5（Streamlit 看板集成）。本文档记录设计过程中的确认结论，
+> 供后续实施时对照，避免中途遗忘约定细节。四层防护（判定模块 → prompt
+> 提醒 → 代码级 guard → 定期备份 + 手动恢复）已全部落地，并额外提供了
+> 图形化的看板操作入口。
 
 ---
 
@@ -362,6 +363,73 @@ agent 主动执行的 bash 命令——这正是需要第 3 层兜底的原因�
 - 至此，next_doc/protected_files_manifest_and_delete_guard_plan.md
   规划的四层防护（判定模块 → prompt 提醒 → 代码级 guard → 定期备份 +
   手动恢复）已全部落地，方案完整闭环。
+
+### 阶段 5（补充，非原方案范围）：Streamlit 看板集成 ✅ 已完成
+- 背景：阶段 0-4 的判定/备份/恢复能力此前只能通过 CLI
+  （`/agent protected ...`）或直接编辑 `protected_files.txt` 使用；本阶段
+  把同一套能力包装成 REST 端点 + Streamlit 看板 UI，方便非 CLI 场景下
+  查看、增删声明、手动备份、按快照恢复。
+- 新增 Pydantic 模型（`src/mini_agent/api/models.py`）：
+  `ProtectedFileEntry` / `ProtectedFilesStatusResponse` /
+  `ProtectedFileAddRequest` / `ProtectedFileRemoveRequest` /
+  `ProtectedFilesBackupRequest` / `ProtectedFilesBackupResponse` /
+  `ProtectedFilesSnapshotSummary` / `ProtectedFilesSnapshotDetailResponse` /
+  `ProtectedFilesRestoreRequest` / `ProtectedFilesRestoreResponse`。
+- 新增 REST 端点（`src/mini_agent/api/routes.py`，全部 owner only，
+  复用阶段 0-4 已落地的模块，不重新实现判定/打包/恢复逻辑）：
+  - `GET    /v1/protected-files/status` —— 当前生效清单 + 最近快照概况
+  - `POST   /v1/protected-files/entries` —— 往清单文件追加一条声明
+    （`manifest="top"|"workdir"` 选择写哪份，不存在则新建）
+  - `DELETE /v1/protected-files/entries` —— 删除一条用户声明（不能删除
+    清单文件自身这一条，该保护是自动规则不是可撤销声明）
+  - `POST   /v1/protected-files/backup` —— 手动触发一次快照备份（正常
+    情况下由 `sys:protected_files_backup` 每天自动跑一次）
+  - `GET    /v1/protected-files/snapshots` /
+    `GET /v1/protected-files/snapshots/{generation_id}` —— 快照列表 /
+    详情
+  - `POST   /v1/protected-files/restore` —— `force=False`（默认）只返回
+    "将要覆盖哪些路径"的预览、不写盘；确认后 `force=True` 重新请求才
+    真正执行（与既有 `POST /v1/sessions/cleanup` 的 `dry_run` 两段式
+    交互同构）
+- `scripts/protected_files.py` 新增 `add_entry()` / `remove_entry()`：
+  清单文件的增删声明操作首次有了程序化入口（此前阶段 0-4 只有只读的
+  `ProtectedFilesGuard`）。`add_entry()` 幂等（重复添加不产生第二行）、
+  自动创建清单文件（含 `.agent/` 目录）；`remove_entry()` 按规范化后的
+  绝对路径匹配（不要求跟清单里原始写法完全一致），拒绝删除清单文件
+  自身这一条。
+- `evolution/protected_files_backup.py` 的 `_snapshot_manifest()` 从
+  "返回路径集合"改为"返回 `{路径: 快照内 index}` 映射"——阶段 4 落地
+  `restore_from_snapshot()` 时已经改过一次（manifest.txt 存储格式改为
+  `index\tpath`，修正了"若打包时有条目被跳过，重新枚举下标会跟快照内
+  实际文件名错位"的潜在 bug），本阶段的看板端点直接复用这个已修正的
+  版本，未引入新的格式变更。
+- Streamlit 看板（`apps/mini_agent_kanban/`）：
+  - `client.py` 新增 `protected_files_status/add_entry/remove_entry/
+    backup_now/list_snapshots/snapshot_detail/restore` 7 个方法；
+    `_delete()` 新增 `json_body` 参数支持（DELETE 请求带 body，删除声明
+    需要在 body 里传具体路径）。
+  - `app.py` 新增 `render_protected_files_tab()`，接入主 tab 列表
+    （新增"🛡️ 受保护文件"tab，位置在"🔔 关注与通知"和"⚙️ 配置"之间）：
+    - 当前生效清单表格（路径 + 来源清单文件）+ 快照数量/最新快照 ID。
+    - "添加受保护路径"：路径输入 + 是否目录 + 写入顶层/`.agent/`
+      哪份清单，默认清单为空时自动展开。
+    - "删除受保护路径声明"：下拉选择 + 删除按钮，只列出用户声明的路径
+      （不含清单文件自身）。
+    - "手动备份快照"：保留份数输入 + 立即备份按钮，命中"缺失核对"时
+      直接在页面上给出警告。
+    - "快照与恢复"：快照选择 + 详情表格 + 恢复范围（全部/勾选部分）+
+      两段式确认流程（先"预览恢复影响"不写盘，展示将覆盖的路径列表，
+      勾选确认后才出现"确认执行恢复"按钮），与既有 session cleanup
+      面板的预览/确认交互模式保持一致，避免误触覆盖。
+- 已落地 `tests/test_protected_files_routes.py`（12 个用例，覆盖 7 个
+  端点的正常路径 + 边界情况：空清单、新增+幂等、缺 path 参数 400、
+  删除声明成功、删除不存在的路径 404、删除清单文件自身 404、手动备份+
+  查看快照列表、快照详情+未知快照 404、`force=False` 只预览不写盘、
+  `force=True` 真正写盘覆盖、恢复未知快照 404），沿用
+  `tests/test_kanban_config_routes.py` 的最小 FastAPI app 测试模式，
+  全部通过；连同阶段 0-4 及既有相关测试一并跑过，共 217 项，无回归。
+- 未覆盖：Streamlit UI 本身没有自动化测试（项目里现有的看板 tab 一贯
+  只测后端 REST 端点，不测 Streamlit 渲染逻辑，与既有惯例一致）。
 
 ---
 

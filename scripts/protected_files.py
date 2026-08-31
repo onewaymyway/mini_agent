@@ -176,10 +176,114 @@ def list_protected_files(
     return ProtectedFilesGuard(project_root).list_entries()
 
 
+def add_entry(
+    project_root: Union[str, Path], path: Union[str, Path], *, is_dir: bool = False,
+    manifest: str = "top",
+) -> str:
+    """往清单文件追加一条声明（看板"添加受保护路径"操作的落地实现）。
+
+    manifest="top" 写入 `<project_root>/protected_files.txt`（不存在则
+    新建）；manifest="workdir" 写入
+    `<project_root>/.agent/protected_files.txt`（不存在则连同 `.agent/`
+    一并创建）。写入前会做规范化 + 相对化（相对于该清单文件自身所在
+    目录，与 3.3 的解析约定对称）——保证追加的这一行读回来时用
+    `ProtectedFilesGuard` 解析出的绝对路径与传入的 path 一致。
+
+    幂等：路径已经在该清单文件里声明过（不论是否带末尾 "/"）则不重复
+    追加，直接返回。返回写入/已存在的那一行原始文本（供调用方展示）。
+    """
+    root = Path(project_root)
+    manifest_path = (
+        root / MANIFEST_FILENAME if manifest == "top"
+        else root / ".agent" / MANIFEST_FILENAME
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    target = Path(path)
+    if not target.is_absolute():
+        target = (root / target)
+    target = target.resolve()
+
+    base_dir = manifest_path.resolve().parent
+    try:
+        rel = target.relative_to(base_dir)
+        line_path = rel.as_posix()
+    except ValueError:
+        line_path = target.as_posix()
+
+    line = line_path + ("/" if is_dir else "")
+
+    existing = manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else ""
+    existing_lines = [ln.strip() for ln in existing.splitlines()]
+    if line in existing_lines or line.rstrip("/") in [l.rstrip("/") for l in existing_lines]:
+        return line
+
+    with manifest_path.open("a", encoding="utf-8") as f:
+        if existing and not existing.endswith("\n"):
+            f.write("\n")
+        f.write(line + "\n")
+
+    return line
+
+
+def remove_entry(project_root: Union[str, Path], path: Union[str, Path]) -> bool:
+    """从声明它的那份清单文件里删掉一行（看板"删除受保护路径"操作的落地
+    实现）。按 `ProtectedFilesGuard` 当前解析出的绝对路径匹配——传入的
+    path 可以是相对或绝对形式，最终都规范化后比较，不要求跟清单文件里
+    的原始写法（相对/绝对、是否带 "/")完全一致。
+
+    只删除"用户声明的一条路径"，不允许删除清单文件自身这一条（清单文件
+    受保护是自动规则，见模块顶部 3.4，不是可撤销的用户声明）。命中并
+    删除返回 True；未找到匹配返回 False。
+    """
+    root = Path(project_root)
+    target_norm = _normalize(path)
+
+    for manifest_path in _manifest_search_paths(root):
+        if not manifest_path.is_file():
+            continue
+        if target_norm == manifest_path.resolve().as_posix():
+            # 清单文件自身，不允许通过这个接口删除。
+            continue
+
+        base_dir = manifest_path.resolve().parent
+        raw_lines = manifest_path.read_text(encoding="utf-8").splitlines()
+        kept_lines: list[str] = []
+        removed = False
+
+        for line in raw_lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                kept_lines.append(line)
+                continue
+
+            is_dir = stripped.endswith("/")
+            raw = stripped[:-1] if is_dir else stripped
+            candidate = Path(raw)
+            resolved = candidate if candidate.is_absolute() else (base_dir / candidate)
+            entry_norm = resolved.resolve().as_posix()
+
+            if not removed and entry_norm == target_norm:
+                removed = True
+                continue
+            kept_lines.append(line)
+
+        if removed:
+            new_content = "\n".join(kept_lines)
+            if kept_lines:
+                new_content += "\n"
+            manifest_path.write_text(new_content, encoding="utf-8")
+            return True
+
+    return False
+
+
 __all__ = [
     "MANIFEST_FILENAME",
     "ProtectedEntry",
     "ProtectedFilesGuard",
     "is_protected_file",
     "list_protected_files",
+    "add_entry",
+    "remove_entry",
 ]

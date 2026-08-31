@@ -31,6 +31,17 @@ api/routes.py — FastAPI 路由定义
                                        dry_run 预览 / 实际执行同一个端点，规则与
                                        CLI `/session cleanup` 一致，见
                                        evolution/session_cleanup.py）
+  受保护文件清单（owner only，见
+  next_doc/protected_files_manifest_and_delete_guard_plan.md）
+    GET    /v1/protected-files/status            当前生效清单 + 最近快照概况
+    POST   /v1/protected-files/entries            往清单文件追加一条声明
+    DELETE /v1/protected-files/entries            从清单文件删掉一条声明
+                                                    （不能删清单文件自身）
+    POST   /v1/protected-files/backup              手动触发一次快照备份
+    GET    /v1/protected-files/snapshots           全部快照列表
+    GET    /v1/protected-files/snapshots/{gen_id}  某一份快照的详细路径清单
+    POST   /v1/protected-files/restore              从快照恢复；force=False
+                                                     只预览、不写盘
   权限审批
     GET  /v1/permissions/pending     待审批列表
     POST /v1/permissions/{req_id}    批准 / 拒绝
@@ -295,6 +306,11 @@ from .models import (
     SessionInfo, SessionsListResponse, SessionDetailResponse,
     SessionActionResponse, SessionDeleteResponse,
     SessionCleanupRequest, SessionCleanupResponse, SessionCleanupItem, OrphanCleanupItem,
+    ProtectedFileEntry, ProtectedFilesStatusResponse,
+    ProtectedFileAddRequest, ProtectedFileRemoveRequest,
+    ProtectedFilesBackupRequest, ProtectedFilesBackupResponse,
+    ProtectedFilesSnapshotSummary, ProtectedFilesSnapshotDetailResponse,
+    ProtectedFilesRestoreRequest, ProtectedFilesRestoreResponse,
     UserInfo, UsersListResponse, UserCreateRequest, UserCreateResponse,
     UserUpdateRequest, UserActionResponse, WhoamiResponse,
     InteractionRequestBody, InteractionResponse,
@@ -2455,6 +2471,187 @@ async def cleanup_sessions_endpoint(request: Request, body: SessionCleanupReques
         orphan_deleted=[_orphan_item_to_model(i) for i in report.orphan_deleted],
         orphan_failed=[_orphan_item_to_model(i) for i in report.orphan_failed],
     )
+
+
+# ── 受保护文件清单（看板集成，owner only）───────────────────────────────────
+#
+# 复用 next_doc/protected_files_manifest_and_delete_guard_plan.md 四层防护
+# 里已经落地的模块，不重新实现判定/打包/恢复逻辑：
+#   scripts/protected_files.py               清单判定 + 增删声明
+#   evolution/protected_files_backup.py      定期备份 + 缺失核对 + 手动恢复
+
+def _project_root_or_404(request: Request) -> "Path":
+    project_root = getattr(request.app.state, "project_root", None)
+    if project_root is None:
+        raise HTTPException(status_code=404, detail="project_root not configured")
+    return project_root
+
+
+@router.get("/protected-files/status", response_model=ProtectedFilesStatusResponse)
+async def protected_files_status(request: Request):
+    """当前生效的受保护清单 + 最近一次快照概况。"""
+    _require_owner(request)
+    project_root = _project_root_or_404(request)
+
+    from scripts.protected_files import ProtectedFilesGuard, _manifest_search_paths
+    from mini_agent.evolution.protected_files_backup import _backup_root, _list_generations
+
+    guard = ProtectedFilesGuard(project_root)
+    entries = guard.list_entries()
+    manifest_paths = [
+        str(p) for p in _manifest_search_paths(project_root) if p.is_file()
+    ]
+
+    generations = _list_generations(_backup_root(project_root))
+    return ProtectedFilesStatusResponse(
+        entries=[
+            ProtectedFileEntry(path=e.path, is_dir=e.is_dir, source_manifest=e.source_manifest)
+            for e in entries
+        ],
+        manifest_paths=manifest_paths,
+        snapshot_count=len(generations),
+        latest_generation_id=generations[-1].name if generations else "",
+    )
+
+
+@router.post("/protected-files/entries", response_model=ProtectedFilesStatusResponse)
+async def protected_files_add_entry(request: Request, body: ProtectedFileAddRequest):
+    """往清单文件追加一条受保护声明（`manifest="top"` 写顶层
+    `protected_files.txt`，`manifest="workdir"` 写 `.agent/protected_files.txt`，
+    不存在则新建）。返回追加后的最新状态，前端据此直接刷新列表。"""
+    _require_owner(request)
+    project_root = _project_root_or_404(request)
+
+    from scripts.protected_files import add_entry
+
+    if not body.path.strip():
+        raise HTTPException(status_code=400, detail="path is required")
+    manifest = "workdir" if body.manifest == "workdir" else "top"
+
+    await run_blocking(
+        add_entry, project_root, body.path, is_dir=body.is_dir, manifest=manifest,
+        where="protected_files_add_entry", timeout=10.0,
+    )
+    return await protected_files_status(request)
+
+
+@router.delete("/protected-files/entries", response_model=ProtectedFilesStatusResponse)
+async def protected_files_remove_entry(request: Request, body: ProtectedFileRemoveRequest):
+    """从声明它的清单文件里删掉这一行。只能删除用户声明的路径本身，
+    不能删除清单文件这一条（清单文件受保护是自动规则，见
+    scripts/protected_files.py 3.4）。"""
+    _require_owner(request)
+    project_root = _project_root_or_404(request)
+
+    from scripts.protected_files import remove_entry
+
+    if not body.path.strip():
+        raise HTTPException(status_code=400, detail="path is required")
+
+    ok = await run_blocking(
+        remove_entry, project_root, body.path,
+        where="protected_files_remove_entry", timeout=10.0,
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail="Path not found in any manifest (or it is the manifest file itself, which cannot be removed)",
+        )
+    return await protected_files_status(request)
+
+
+@router.post("/protected-files/backup", response_model=ProtectedFilesBackupResponse)
+async def protected_files_backup_now(request: Request, body: ProtectedFilesBackupRequest):
+    """手动触发一次快照备份（正常情况下由 `sys:protected_files_backup`
+    cron job 每天自动跑一次，这里给看板一个"立即备份"的按钮）。"""
+    _require_owner(request)
+    project_root = _project_root_or_404(request)
+
+    from mini_agent.evolution.protected_files_backup import run_backup_once
+
+    summary = await run_blocking(
+        run_backup_once, project_root, keep_count=body.keep_count,
+        where="protected_files_backup_now", timeout=60.0,
+    )
+    return ProtectedFilesBackupResponse(
+        generation_id=summary.generation_id,
+        backed_up=summary.backed_up,
+        missing=summary.missing,
+        pruned_generations=summary.pruned_generations,
+        errors=summary.errors,
+    )
+
+
+@router.get("/protected-files/snapshots", response_model=list[ProtectedFilesSnapshotSummary])
+async def protected_files_list_snapshots(request: Request):
+    """全部快照列表（按时间升序）。"""
+    _require_owner(request)
+    project_root = _project_root_or_404(request)
+
+    from mini_agent.evolution.protected_files_backup import _backup_root, _list_generations, _snapshot_manifest
+
+    generations = _list_generations(_backup_root(project_root))
+    return [
+        ProtectedFilesSnapshotSummary(
+            generation_id=g.name, path_count=len(_snapshot_manifest(g)),
+        )
+        for g in generations
+    ]
+
+
+@router.get("/protected-files/snapshots/{generation_id}", response_model=ProtectedFilesSnapshotDetailResponse)
+async def protected_files_snapshot_detail(request: Request, generation_id: str):
+    """某一份快照具体打包了哪些路径。"""
+    _require_owner(request)
+    project_root = _project_root_or_404(request)
+
+    from mini_agent.evolution.protected_files_backup import _backup_root, _snapshot_manifest
+
+    gen_dir = _backup_root(project_root) / generation_id
+    if not gen_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Snapshot not found: {generation_id!r}")
+
+    manifest = _snapshot_manifest(gen_dir)
+    return ProtectedFilesSnapshotDetailResponse(
+        generation_id=generation_id, paths=sorted(manifest),
+    )
+
+
+@router.post("/protected-files/restore", response_model=ProtectedFilesRestoreResponse)
+async def protected_files_restore(request: Request, body: ProtectedFilesRestoreRequest):
+    """从指定快照恢复。`force=False`（默认）只返回"将要覆盖哪些路径"的
+    预览、不写盘；前端展示确认后带 `force=True` 重新请求一次才真正执行
+    （与 session cleanup 的 dry_run 两段式交互同构，看板点击操作比 CLI
+    更容易误触，需要一道额外确认）。"""
+    _require_owner(request)
+    project_root = _project_root_or_404(request)
+
+    from mini_agent.evolution.protected_files_backup import _backup_root, _snapshot_manifest, restore_from_snapshot
+
+    gen_dir = _backup_root(project_root) / body.generation_id
+    if not gen_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Snapshot not found: {body.generation_id!r}")
+
+    manifest = _snapshot_manifest(gen_dir)
+    if not manifest:
+        raise HTTPException(status_code=400, detail="Snapshot has no restorable content")
+
+    if body.paths:
+        unknown = [p for p in body.paths if p not in manifest]
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"Path(s) not in this snapshot: {unknown}")
+        targets = body.paths
+    else:
+        targets = sorted(manifest)
+
+    if not body.force:
+        return ProtectedFilesRestoreResponse(preview=targets)
+
+    summary = await run_blocking(
+        restore_from_snapshot, project_root, body.generation_id, paths=targets,
+        where="protected_files_restore", timeout=60.0,
+    )
+    return ProtectedFilesRestoreResponse(restored=summary.restored, errors=summary.errors)
 
 
 # ── 权限审批 ──────────────────────────────────────────────────────────────────

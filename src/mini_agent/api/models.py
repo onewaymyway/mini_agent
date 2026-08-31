@@ -356,6 +356,84 @@ class SessionCleanupResponse(BaseModel):
     orphan_failed:                list[OrphanCleanupItem] = []
 
 
+# ── 受保护文件清单（protected_files_manifest_and_delete_guard_plan.md）────
+
+class ProtectedFileEntry(BaseModel):
+    """单条受保护路径（对应 scripts.protected_files.ProtectedEntry）。"""
+    path:            str
+    is_dir:          bool
+    source_manifest: str
+
+
+class ProtectedFilesStatusResponse(BaseModel):
+    """GET /v1/protected-files/status 响应：当前生效清单 + 最近快照概况。"""
+    entries:            list[ProtectedFileEntry] = []
+    manifest_paths:      list[str] = []   # 当前实际存在的清单文件（顶层 / .agent/），供"编辑哪份"选择
+    snapshot_count:      int = 0
+    latest_generation_id: str = ""
+
+
+class ProtectedFileAddRequest(BaseModel):
+    """POST /v1/protected-files/entries 请求体：往某份清单文件追加一条声明。
+
+    manifest 不传时默认写入顶层 `protected_files.txt`（不存在则新建）；
+    传 "workdir" 时写入 `.agent/protected_files.txt`。
+    """
+    path:      str
+    is_dir:    bool = False
+    manifest:  str = "top"   # "top" | "workdir"
+
+
+class ProtectedFileRemoveRequest(BaseModel):
+    """DELETE /v1/protected-files/entries 请求体：从声明它的那份清单文件里
+    删掉这一行。只允许删除"清单里声明的一条路径"本身，不允许删除清单
+    文件自身这一条（清单文件本身受保护是自动规则，不是用户声明的）。"""
+    path: str
+
+
+class ProtectedFilesBackupRequest(BaseModel):
+    """POST /v1/protected-files/backup 请求体：手动触发一次备份。"""
+    keep_count: int = 5
+
+
+class ProtectedFilesBackupResponse(BaseModel):
+    generation_id:      str = ""
+    backed_up:          list[str] = []
+    missing:            list[str] = []
+    pruned_generations: list[str] = []
+    errors:             list[str] = []
+
+
+class ProtectedFilesSnapshotSummary(BaseModel):
+    generation_id: str
+    path_count:    int
+
+
+class ProtectedFilesSnapshotDetailResponse(BaseModel):
+    generation_id: str
+    paths:         list[str] = []
+
+
+class ProtectedFilesRestoreRequest(BaseModel):
+    """POST /v1/protected-files/restore 请求体。
+
+    force 默认 False——看板是点击触发，比 CLI 更容易误触；force=False 时
+    后端只返回"将要覆盖哪些路径"的预览，不写盘，前端展示确认后再带
+    force=True 请求一次真正执行（与 session cleanup 的 dry_run 两段式
+    交互同构）。paths 为空列表时代表恢复该快照的全部路径。
+    """
+    generation_id: str
+    paths:         list[str] = []
+    force:         bool = False
+
+
+class ProtectedFilesRestoreResponse(BaseModel):
+    restored: list[str] = []
+    errors:   list[str] = []
+    # force=False 时的预览分支填这个字段，前端据此渲染"将要覆盖以下路径"
+    preview:  list[str] = []
+
+
 # ── 用户管理（daemon 多用户架构 Phase 1）────────────────────────────────────────
 
 class UserInfo(BaseModel):
