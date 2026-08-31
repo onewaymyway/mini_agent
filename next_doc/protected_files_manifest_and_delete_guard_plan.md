@@ -1,6 +1,6 @@
 # 受保护文件清单与删除防护机制改进计划
 
-> **状态**：方案设计阶段，尚未开始实施。本文档记录设计过程中的确认结论，
+> **状态**：阶段 0 已完成实施。本文档记录设计过程中的确认结论，
 > 供后续实施时对照，避免中途遗忘约定细节。
 
 ---
@@ -182,11 +182,26 @@ agent 主动执行的 bash 命令——这正是需要第 3 层兜底的原因�
 
 原则：与项目一贯的"默认关闭或纯增量、每阶段独立可交付"风格保持一致。
 
-### 阶段 0：清单发现 + 判定模块
-- 落地 `scripts/protected_files.py`：扫描、路径解析、判定函数、
-  "清单文件自身受保护"逻辑。
-- 无任何行为改变（还没有接入任何删除点或 prompt），可独立测试判定逻辑
-  本身的正确性。
+### 阶段 0：清单发现 + 判定模块 ✅ 已完成
+- 已落地 `scripts/protected_files.py`：
+  - `ProtectedFilesGuard`：单次扫描 + 判定的封装，构造时扫描
+    `<project_root>/protected_files.txt` 与
+    `<project_root>/.agent/protected_files.txt` 并取并集（不做常驻缓存，
+    每次新建实例都重新扫描，符合 3.2 约定）。
+  - `ProtectedEntry`：解析后的单条受保护条目（规范化绝对路径 + 是否目录
+    + 来源清单文件路径）。
+  - `is_protected()` / `list_entries()`：判定与枚举接口。
+  - 模块级便捷函数 `is_protected_file()` / `list_protected_files()`：
+    供低频调用场景一次性使用，内部各自新建 Guard。
+  - 与 `scripts/protected_paths.py` 保持同样的独立性约束：不放在
+    `src/mini_agent/` 包内、不 import `mini_agent.*`。
+- 已落地 `tests/test_protected_files.py`（11 个用例，覆盖：无清单时不
+  误伤、顶层清单、`.agent/` 清单、两处取并集、目录前缀匹配不误伤同名前缀
+  目录、相对路径以清单文件自身目录为基准解析、绝对路径条目、注释/空行
+  忽略、清单文件自身即使为空也受保护、模块级便捷函数、模块自包含性），
+  全部通过。
+- 尚未接入任何删除点或 prompt（阶段 1、2 的范围），当前无任何运行时
+  行为改变。
 
 ### 阶段 1：Prompt 提醒接入
 - `context_builder.py::build()` 注入受保护清单提示片段。
