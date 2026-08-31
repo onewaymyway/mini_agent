@@ -24,8 +24,9 @@ bash 命令删除文件。第 3 层不追求"拦得住"，追求"能找回来"�
   - 没有任何受保护路径时（清单为空或不存在），本次运行直接跳过，不
     产生空快照。
 
-手动恢复入口（`/agent protected restore` 一类命令）留给阶段 4，不在
-这里提供。
+手动恢复入口（`/agent protected restore`，阶段 4）见本文件下方
+`restore_from_snapshot()`，CLI 层在
+`cli/commands/protected_cmd.py::handle_protected_cmd` 里调用。
 """
 
 from __future__ import annotations
@@ -79,20 +80,30 @@ def _list_generations(backup_root: Path) -> list[Path]:
     return gens
 
 
-def _snapshot_manifest(generation_dir: Path) -> set[str]:
-    """读取某一份快照下已打包的路径清单（快照内以扁平化命名方式落盘，
-    见 `_pack_entry` 的命名规则），返回原始受保护路径的字符串集合。"""
+def _snapshot_manifest(generation_dir: Path) -> dict[str, int]:
+    """读取某一份快照下已打包的路径清单，返回 {原始路径: 打包时的
+    index} 映射——manifest.txt 每行格式为 `<index>\\t<original_path>`，
+    index 就是 `_safe_snapshot_name(path, index)` 用来生成快照内文件名
+    的那个值，恢复时必须依赖这个显式记录的 index 定位快照内容，不能靠
+    重新枚举（若打包时有条目被跳过，重新枚举的下标会跟实际文件名错位）。
+    """
     manifest_path = generation_dir / "manifest.txt"
     if not manifest_path.is_file():
-        return set()
+        return {}
+    result: dict[str, int] = {}
     try:
-        return {
-            line.strip()
-            for line in manifest_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        }
+        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or "\t" not in line:
+                continue
+            idx_str, _, path = line.partition("\t")
+            try:
+                result[path] = int(idx_str)
+            except ValueError:
+                continue
     except OSError:
-        return set()
+        return {}
+    return result
 
 
 def _safe_snapshot_name(original_path: str, index: int) -> str:
@@ -156,7 +167,7 @@ def run_backup_once(
                 shutil.copytree(src, dest, dirs_exist_ok=True)
             else:
                 shutil.copy2(src, dest)
-            manifest_lines.append(entry.path)
+            manifest_lines.append(f"{idx}\t{entry.path}")
             summary.backed_up.append(entry.path)
         except OSError as exc:
             summary.errors.append(f"backup_failed({entry.path}): {exc}")
@@ -179,6 +190,68 @@ def run_backup_once(
                 summary.pruned_generations.append(gen_dir.name)
             except OSError as exc:
                 summary.errors.append(f"prune_failed({gen_dir.name}): {exc}")
+
+    return summary
+
+
+@dataclass
+class RestoreSummary:
+    """一次手动恢复操作的执行摘要（阶段 4）。"""
+
+    restored: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+def restore_from_snapshot(
+    project_root: "Path | str",
+    generation_id: str,
+    *,
+    paths: Optional[list[str]] = None,
+) -> RestoreSummary:
+    """从指定快照恢复受保护路径（阶段 4，`/agent protected restore` 的
+    执行入口）。
+
+    paths 为 None 时恢复该快照 manifest 里的全部路径；否则只恢复给定的
+    这些路径（必须是该快照 manifest 里出现过的原始路径，调用方——即
+    CLI 命令层——负责校验，这里不重复校验，按需覆盖式恢复）。
+
+    还原方式：把快照目录下对应条目复制回原始绝对路径，文件用
+    `shutil.copy2` 直接覆盖，目录用 `shutil.copytree(dirs_exist_ok=True)`
+    合并覆盖（不会先删除目标目录，只覆盖快照里存在的文件，目标目录下
+    快照没有的文件保持不动——比"先删后拷"更保守，符合"宁可少改，不可
+    多删"的原则）。
+    """
+    project_root = Path(project_root)
+    summary = RestoreSummary()
+
+    backup_root = _backup_root(project_root)
+    generation_dir = backup_root / generation_id
+    if not generation_dir.is_dir():
+        summary.errors.append(f"snapshot_not_found: {generation_id}")
+        return summary
+
+    index_by_path = _snapshot_manifest(generation_dir)
+    targets = paths if paths is not None else sorted(index_by_path)
+
+    for original_path in targets:
+        if original_path not in index_by_path:
+            summary.errors.append(f"not_in_snapshot: {original_path}")
+            continue
+        idx = index_by_path[original_path]
+        src = generation_dir / _safe_snapshot_name(original_path, idx)
+        if not src.exists():
+            summary.errors.append(f"snapshot_content_missing: {original_path}")
+            continue
+        dest = Path(original_path)
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir():
+                shutil.copytree(src, dest, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dest)
+            summary.restored.append(original_path)
+        except OSError as exc:
+            summary.errors.append(f"restore_failed({original_path}): {exc}")
 
     return summary
 
@@ -240,6 +313,8 @@ def ensure_protected_files_backup_job(
 __all__ = [
     "JOB_ID",
     "BackupSummary",
+    "RestoreSummary",
     "run_backup_once",
+    "restore_from_snapshot",
     "ensure_protected_files_backup_job",
 ]

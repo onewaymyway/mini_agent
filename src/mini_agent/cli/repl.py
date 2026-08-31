@@ -536,9 +536,9 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 # ── 内联命令实现（行为简单、无独立拆分价值）────────────────────────────────
 
 def _handle_agent_subcmd(parts: list[str], agent) -> None:
-    """`/agent <subcmd>` 路由：goals / digest / daemon。"""
+    """`/agent <subcmd>` 路由：goals / digest / daemon / protected。"""
     if not parts:
-        R.print_info("Usage: /agent <goals|digest|daemon> [args...]")
+        R.print_info("Usage: /agent <goals|digest|daemon|protected> [args...]")
         return
     sub = parts[0].lower()
     rest = parts[1:]
@@ -547,6 +547,11 @@ def _handle_agent_subcmd(parts: list[str], agent) -> None:
         handle_goals_cmd(rest, agent)
     elif sub == "digest":
         _handle_digest_cmd(agent)
+    elif sub == "protected":
+        # 受保护文件清单方案阶段 4：定期备份的手动恢复入口，见
+        # next_doc/protected_files_manifest_and_delete_guard_plan.md。
+        from mini_agent.cli.commands.protected_cmd import handle_protected_cmd
+        handle_protected_cmd(rest, agent)
     elif sub == "daemon":
         # daemon 子命令（在 REPL 中仅支持 status）
         if not rest or rest[0] == "status":
@@ -557,7 +562,7 @@ def _handle_agent_subcmd(parts: list[str], agent) -> None:
                          "Use 'mini-agent daemon start|stop|status' in a separate terminal.")
     else:
         R.print_error(f"Unknown /agent subcommand: {sub!r}")
-        R.print_info("Available: goals, digest, daemon")
+        R.print_info("Available: goals, digest, daemon, protected")
 
 
 def _handle_digest_cmd(agent) -> None:

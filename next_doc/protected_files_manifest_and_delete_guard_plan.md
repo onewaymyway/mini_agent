@@ -1,7 +1,9 @@
 # 受保护文件清单与删除防护机制改进计划
 
-> **状态**：阶段 0、阶段 1、阶段 2、阶段 3 已完成实施。本文档记录设计
-> 过程中的确认结论，供后续实施时对照，避免中途遗忘约定细节。
+> **状态**：阶段 0、阶段 1、阶段 2、阶段 3、阶段 4 已全部完成实施。本
+> 文档记录设计过程中的确认结论，供后续实施时对照，避免中途遗忘约定
+> 细节。四层防护（判定模块 → prompt 提醒 → 代码级 guard → 定期备份 +
+> 手动恢复）已全部落地。
 
 ---
 
@@ -322,9 +324,44 @@ agent 主动执行的 bash 命令——这正是需要第 3 层兜底的原因�
 - **本阶段未覆盖**（按方案原文，留给阶段 4）：任何形式的自动恢复、
   手动恢复命令（`/agent protected restore` 一类）。
 
-### 阶段 4（可选，视阶段 3 观察结果决定是否推进）：手动恢复入口
-- 提供 `/agent protected restore` 一类命令，让用户在告警后可以显式选择
-  从某一份快照恢复，不做全自动闭环。
+### 阶段 4：手动恢复入口 ✅ 已完成
+- `evolution/protected_files_backup.py` 新增：
+  - `manifest.txt` 存储格式调整为 `<index>\t<original_path>` 每行一条
+    （阶段 3 落地时是纯路径列表 + 重新枚举取 index，实测发现"若某条目
+    在打包时被跳过，重新枚举得到的下标会跟快照内实际文件名错位"，
+    阶段 4 写恢复逻辑时改正：index 与打包时使用的
+    `_safe_snapshot_name(path, index)` 显式记录在同一行，不再依赖任何
+    形式的重新枚举/排序去推导）。
+  - `RestoreSummary` / `restore_from_snapshot(project_root, generation_id,
+    paths=None)`：从指定快照恢复；`paths=None` 时恢复该快照 manifest
+    里的全部路径，否则只恢复给定路径（未出现在该快照 manifest 里的
+    路径记为 `not_in_snapshot` 错误，不中断其余路径的恢复）。文件用
+    `shutil.copy2` 覆盖，目录用 `shutil.copytree(dirs_exist_ok=True)`
+    合并覆盖（不先删除目标目录，只覆盖快照里存在的文件，比"先删后拷"
+    更保守）。快照本身不存在、或快照内容缺失时返回明确错误，不抛异常。
+- 新增 CLI 命令 `src/mini_agent/cli/commands/protected_cmd.py`
+  （`handle_protected_cmd`），挂在既有的 `/agent <subcmd>` 路由下
+  （`cli/repl.py::_handle_agent_subcmd` 新增 `protected` 分支）：
+  - `/agent protected status` —— 当前生效的受保护清单 + 最近一次快照
+    概况。
+  - `/agent protected list [generation_id]` —— 列出全部快照，或某一份
+    快照的具体内容。
+  - `/agent protected restore <generation_id> [path] [--force]` ——
+    不加 `--force` 时只打印"将要覆盖哪些路径"、不执行；确认无误后
+    带 `--force` 重新执行才真正写盘（与 `/evolution merge --force`
+    的既有惯例保持一致，而不是引入一次性的交互式 `confirm()`，因为
+    `ui/renderer.py` 目前没有这个原语，`--force` 是项目里唯一现成的
+    "危险操作二次确认"模式）。**不做任何自动闭环**——是否恢复、恢复到
+    哪个版本，全程由用户显式决定，符合方案"默认保守"的既定取舍。
+- 已落地 `tests/test_protected_files_restore.py`（7 个用例：恢复全部
+  路径、只恢复指定单个路径、快照不存在时的错误处理、路径不在快照清单
+  里时的错误处理、`status`/`list` 子命令能正常跑通不抛异常、
+  `restore` 不加 `--force` 时确认不写盘、加 `--force` 后确认真的写盘
+  覆盖），全部通过；连同阶段 0-3 及既有相关测试一并跑过，共 194 项，
+  无回归。
+- 至此，next_doc/protected_files_manifest_and_delete_guard_plan.md
+  规划的四层防护（判定模块 → prompt 提醒 → 代码级 guard → 定期备份 +
+  手动恢复）已全部落地，方案完整闭环。
 
 ---
 
