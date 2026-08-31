@@ -114,6 +114,44 @@ for key, _label, render_fn in TAB_DEFS:
 
 未改动 20 个 `render_*_tab()` 函数内部的任何代码。
 
+## 阶段2：换行排版修正
+
+阶段1 上线后发现排版问题：`render_tab_nav()` 给每个 `st.button` 都传了
+`use_container_width=True`，20 个按钮均分 `st.columns(20)` 的等宽列，
+窄屏（或按钮多、单个页面容不下一行）时不会换行，而是把每一列越压越
+窄，文字挤在一起看不清——用户反馈的正是这个现象。
+
+排查发现文档里"窄屏下 `st.columns` 本身会自动换行"这句话本身就是错的：
+`st.columns()` 生成的 flex 容器默认不换行。修正方案：
+
+- 按钮不再传 `use_container_width`，宽度回归"跟文字内容匹配"的默认
+  行为（固定宽度，不随可用空间拉伸/压缩）；
+- `render_tab_nav()` 用 `st.container(key="tab_nav_row")` 包一层，靠
+  Streamlit 给带 `key` 的容器自动加 `st.key-<key>` CSS class 的特性，
+  把换行样式精确 scope 到这一个导航行：
+  ```css
+  div.st-key-tab_nav_row div[data-testid="stHorizontalBlock"] {
+      flex-wrap: wrap !important;
+      row-gap: 6px;
+  }
+  div.st-key-tab_nav_row div[data-testid="stColumn"] {
+      width: auto !important;
+      flex: 0 0 auto !important;
+      min-width: 0 !important;
+  }
+  ```
+  不 scope 到具体 key 的话，这条 `flex-wrap` 规则会影响页面其它地方
+  用 `st.columns()` 做的等宽布局（比如各 tab 内部大量的多列表单），
+  所以必须精确限定在这一行。
+- `apps/mini_agent_kanban/requirements.txt` 的 Streamlit 最低版本从
+  `>=1.37` 提到 `>=1.39`——`st.container(key=...)` 在 1.37 刚引入时不
+  确定已经带自动 CSS class，为保证换行样式生效，保险起见提高下限
+  （更早版本理论上仍可运行，只是那条换行 CSS 可能不生效，退化成"按钮
+  不换行、超宽时挤压"，不影响功能本身，不是硬性阻断）。
+
+效果：按钮保持各自固定宽度，一行放不下时整体换到下一行，不再出现
+"越压越窄"的排版问题。
+
 ## 状态
 
-已完成并验证（`python -m py_compile app.py` 通过）。
+阶段1 + 阶段2 均已完成并验证（`python -m py_compile app.py` 通过）。

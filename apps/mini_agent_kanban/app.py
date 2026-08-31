@@ -295,13 +295,32 @@ def inject_css():
     padding: 12px; margin: 8px 0;
 }
 
-/* [tab_lazy_render_plan.md / 阶段1] 原来这里是给 `st.tabs()` 做"换行 +
-   隐藏原生滑动高亮条"的样式补丁。现在顶部导航改成一排 `st.button`
-   模拟的"假 tab"（见 `render_tab_nav()`），不再使用 `st.tabs()`，针对
-   `data-baseweb="tab"` 的选择器不再命中任何元素，整段删除，不再需要
-   替代样式——"假 tab"直接依赖 `st.button(type="primary"/"secondary")`
-   原生的实心/描边区分选中态，窄屏下 `st.columns` 本身会自动换行，
-   足够可用。 */
+/* [tab_lazy_render_plan.md / 阶段2：换行排版修正] 上一版遗留的注释里
+   说"窄屏下 `st.columns` 本身会自动换行"，这个说法是错的——
+   `st.columns()` 生成的 flex 容器（`div[data-testid="stHorizontalBlock"]`）
+   默认并不换行，加上当时给每个按钮都传了 `use_container_width=True`，
+   20 个等宽列在窄屏下只会被压得越来越窄，挤成一条无法辨认的横条，而
+   不是换行。这里改成"固定宽度按钮 + 允许换行"：`render_tab_nav()` 不再
+   传 `use_container_width`（按钮宽度回归"跟文字内容匹配"的默认行为），
+   并用 `st.container(key="tab_nav_row")` 包一层，靠 Streamlit 会给带
+   `key` 的容器自动加 `st.key-<key>` class 这个特性，把下面的换行样式
+   精确 scope 到这一个导航行，不会影响页面其它地方用到的 `st.columns`
+   等宽布局。 */
+div.st-key-tab_nav_row div[data-testid="stHorizontalBlock"] {
+    flex-wrap: wrap !important;
+    row-gap: 6px;
+}
+div.st-key-tab_nav_row div[data-testid="stColumn"] {
+    width: auto !important;
+    flex: 0 0 auto !important;
+    min-width: 0 !important;
+}
+div.st-key-tab_nav_row div[data-testid="stButton"] {
+    width: auto !important;
+}
+div.st-key-tab_nav_row div[data-testid="stButton"] button {
+    white-space: nowrap;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -11065,25 +11084,29 @@ _TAB_LABEL_TO_KEY = {label: key for key, label, _fn in TAB_DEFS}
 def render_tab_nav() -> str:
     """渲染一排"假 tab"按钮，返回当前选中的 tab key。
 
+    [tab_lazy_render_plan.md / 阶段2：换行排版修正] 按钮**不**传
+    `use_container_width`，宽度跟着各自的文字内容走（固定宽度，不是
+    "20 等分可用宽度"）；用 `st.container(key="tab_nav_row")` 包一层，
+    配合 `inject_css()` 里 scope 到 `.st-key-tab_nav_row` 的 CSS，让这一
+    行在宽度不够时自动换行到下一行，而不是把每个按钮压得越来越窄。
     选中态用 `st.button(type="primary")`（实心红底）区分未选中的
-    `type="secondary"`（描边），不需要额外 CSS。按钮本身按 `st.columns`
-    等宽分布，窄屏下 Streamlit 的列布局会自动换行，不需要手动处理。
+    `type="secondary"`（描边），不需要额外 CSS。
     """
     active = st.session_state.get("_active_tab", TAB_DEFS[0][0])
     if active not in _TAB_KEY_TO_LABEL:
         active = TAB_DEFS[0][0]
-    cols = st.columns(len(TAB_DEFS))
-    for (key, label, _fn), col in zip(TAB_DEFS, cols):
-        with col:
-            is_active = key == active
-            if st.button(
-                label,
-                key=f"_tabnav_{key}",
-                type="primary" if is_active else "secondary",
-                use_container_width=True,
-            ) and not is_active:
-                st.session_state["_active_tab"] = key
-                st.rerun()
+    with st.container(key="tab_nav_row"):
+        cols = st.columns(len(TAB_DEFS))
+        for (key, label, _fn), col in zip(TAB_DEFS, cols):
+            with col:
+                is_active = key == active
+                if st.button(
+                    label,
+                    key=f"_tabnav_{key}",
+                    type="primary" if is_active else "secondary",
+                ) and not is_active:
+                    st.session_state["_active_tab"] = key
+                    st.rerun()
     return active
 
 

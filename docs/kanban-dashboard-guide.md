@@ -195,6 +195,18 @@ tab"（`render_tab_nav()`），点击某个按钮会把 `st.session_state["_acti
 渲染"，会有一次网络往返（通常几十到一两百毫秒），不再是零延迟切换——
 这是用瞬时切换体验换取减少无效后台请求的本质代价。
 
+**排版**（`tab_lazy_render_plan.md` 阶段2 修正）：按钮宽度跟着各自文字
+内容走（固定宽度），不是"20 个等分可用宽度"——早期版本给每个按钮传了
+`use_container_width=True`，20 等宽列在窄屏下会被压得越来越窄，挤成
+一条基本看不清文字的横条，而不是换行。现在 `render_tab_nav()` 用
+`st.container(key="tab_nav_row")` 包一层，配合 scope 到
+`.st-key-tab_nav_row` 的 CSS（`flex-wrap: wrap` + 每列 `flex: 0 0 auto`），
+宽度不够时整行自动换到下一行，每个按钮保持自身固定宽度不被压缩。这个
+scope 方式依赖 Streamlit 给带 `key` 的容器自动加 `st.key-<key>` CSS
+class 的特性，`apps/mini_agent_kanban/requirements.txt` 里 Streamlit 最低
+版本已相应提到 `1.39`（更早版本理论上仍可运行，只是这条换行 CSS 可能
+不生效，退化成"按钮不换行、超宽时挤压"，不影响功能本身）。
+
 ### 💬 对话 Tab
 
 事件展示逐类型解析（`tool_call` / `tool_result` / `tool_error` / `permission_req` /

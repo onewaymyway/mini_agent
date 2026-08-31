@@ -1,4 +1,10 @@
-streamlit>=1.37
+# [tab_lazy_render_plan.md / 阶段2] `render_tab_nav()` 用
+# `st.container(key="tab_nav_row")` 依赖 Streamlit 会给带 `key` 的
+# 容器自动加 `st.key-<key>` CSS class 这个特性来 scope 换行样式，这个
+# 特性在 1.37 刚引入 `st.container(key=...)` 时不一定已经带 CSS class，
+# 保险起见把最低版本提到 1.39（更早版本理论上仍可运行，只是那条换行
+# CSS 可能不生效，退化成"按钮不换行、超宽时挤压"，不影响功能本身）。
+streamlit>=1.39
 requests>=2.31
 # 可选：成长顾问 tab 的拖拽式看板视图（未安装时自动回退到列表 + 按钮，
 # 见 apps/mini_agent_kanban/app.py::_sortable_available）
