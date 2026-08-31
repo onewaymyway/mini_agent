@@ -175,3 +175,4 @@ research/agent_and_ai/articles/
 .agent/cron_state.db
 .agent/evolution
 .agent/sub_agent_experience_log.jsonl
+.agent/scripts/
