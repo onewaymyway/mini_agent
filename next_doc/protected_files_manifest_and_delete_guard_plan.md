@@ -1,7 +1,7 @@
 # 受保护文件清单与删除防护机制改进计划
 
-> **状态**：阶段 0、阶段 1、阶段 2 已完成实施。本文档记录设计过程中的
-> 确认结论，供后续实施时对照，避免中途遗忘约定细节。
+> **状态**：阶段 0、阶段 1、阶段 2、阶段 3 已完成实施。本文档记录设计
+> 过程中的确认结论，供后续实施时对照，避免中途遗忘约定细节。
 
 ---
 
@@ -281,9 +281,46 @@ agent 主动执行的 bash 命令——这正是需要第 3 层兜底的原因�
   阶段 3（届时"缺失核对"告警本来就要写这个文件，可以一并评估是否要把
   "本轮维护跳过了哪些受保护路径"也带上，避免定义重复的日志入口）。
 
-### 阶段 3：定期备份 + 缺失告警
-- 新增 `sys:protected_files_backup` cron job。
-- 保留份数可配置（默认 5），缺失时只告警、不自动恢复。
+### 阶段 3：定期备份 + 缺失告警 ✅ 已完成
+- 新增配置项 `AppConfig.protected_files_backup_keep_count`（默认 `5`，
+  紧邻阶段 1 的 `protected_files_reminder_enabled`）。
+- 新增 `src/mini_agent/evolution/protected_files_backup.py`（本地回调
+  handler，零 LLM 成本，写法与 `evolution/candidate_queue_triage.py::
+  ensure_candidate_queue_triage_job` 同构）：
+  - `run_backup_once(project_root, keep_count=5, now=None)`：核心执行
+    函数，每次运行重新通过 `ProtectedFilesGuard` 扫描当前生效的受保护
+    路径（含清单文件自身），逐一打包快照到
+    `<project_root>/.agent/protected_backup/<generation_id>/`
+    （`generation_id` 用 `%Y%m%d_%H%M%S` 时间戳命名，文件用
+    `shutil.copy2`、目录用 `shutil.copytree` 打包，另落盘一份
+    `manifest.txt` 记录本次快照包含的原始路径列表，供下次运行做缺失
+    核对）。
+  - 保留策略：`keep_count` 份以外的旧快照按 `generation_id` 排序清理
+    （备份目录本身不在受保护集合里，不会跟自身清理动作冲突）。
+  - 缺失核对：对比"上一份快照 manifest 里有、当前 guard 扫描结果里已
+    没有"的路径，计入 `BackupSummary.missing`；命中时由
+    `_write_missing_alert()` 写入 `activity_digest.jsonl`
+    （`type="protected_files_missing"`，复用
+    `evolution/resource_arbiter.py::append_activity_digest`），**不做
+    任何自动恢复**，符合方案"默认保守"的既定取舍。
+  - 没有任何受保护路径时（清单为空/不存在）直接跳过，不产生空快照
+    目录；缺失核对逻辑在"没有受保护路径"分支之前就已执行完，不受影响。
+  - `ensure_protected_files_backup_job(paths, cron_scheduler, keep_count)`：
+    daemon 启动时"缺失才补注册" `sys:protected_files_backup`
+    （`interval:86400`），已接入 `src/mini_agent/api/server.py` 的 daemon
+    启动流程（与 `ensure_wiki_quarantine_repair_job` 等既有 job 相邻，
+    同样的 try/except + `log_exception` 包裹写法），`keep_count` 从
+    `cfg.protected_files_backup_keep_count` 读取。
+- 已落地 `tests/test_protected_files_backup.py`（6 个用例：无受保护路径
+  时不产生快照、文件与目录两种条目都能正确打包、超出 `keep_count` 时
+  清理最旧快照、跨快照缺失核对能正确识别"消失的路径"且不误伤仍存在的
+  路径、缺失告警正确写入 `activity_digest.jsonl` 且确认没有发生任何
+  自动恢复、`ensure_protected_files_backup_job` 正确注册 job 与本地回调
+  且二次调用不重复新建），全部通过；连同阶段 0-2 及既有
+  `test_candidate_queue_triage.py` 等相关测试一并跑过，共 187 项，
+  无回归。
+- **本阶段未覆盖**（按方案原文，留给阶段 4）：任何形式的自动恢复、
+  手动恢复命令（`/agent protected restore` 一类）。
 
 ### 阶段 4（可选，视阶段 3 观察结果决定是否推进）：手动恢复入口
 - 提供 `/agent protected restore` 一类命令，让用户在告警后可以显式选择

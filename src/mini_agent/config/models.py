@@ -2718,6 +2718,11 @@ class AppConfig:
     # 不影响阶段 2 的代码级 guard（guard 判定与本开关无关，独立生效）。
     protected_files_reminder_enabled: bool = True
 
+    # [受保护文件清单] 阶段 3：定期备份 + 缺失告警。sys:protected_files_backup
+    # 每次快照保留的份数上限，超出的旧快照自动清理。默认 5，对齐方案文档
+    # 约定；调低可省磁盘空间，调高换更长的可回溯窗口。
+    protected_files_backup_keep_count: int = 5
+
     # ── Compact 机制主动化改进计划 P2-B（compact_mechanism_improvement_plan.md）──
     # recall_from_raw_history 只读工具总开关。默认关闭——工具本身仍注册在
     # 全局 registry 中（与 notepad_enabled 等既有取舍一致），关闭时调用直接

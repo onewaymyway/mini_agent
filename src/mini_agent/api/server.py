@@ -1569,6 +1569,25 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_improvement_backlog_merge_job')
 
+            # 受保护文件清单方案阶段 3：daemon 启动时补注册
+            # sys:protected_files_backup（扫描当前生效的受保护文件清单，
+            # 逐一打包快照，发现快照间缺失时只告警、不自动恢复，零 LLM
+            # 成本，本地回调），见
+            # next_doc/protected_files_manifest_and_delete_guard_plan.md 四、
+            # 第 3 层。
+            try:
+                from mini_agent.evolution.protected_files_backup import (
+                    ensure_protected_files_backup_job,
+                )
+
+                ensure_protected_files_backup_job(
+                    paths, cron_scheduler,
+                    keep_count=getattr(cfg, "protected_files_backup_keep_count", 5),
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_protected_files_backup_job')
+
             # 系统关联性断点改进方案 F2：daemon 启动时补注册
             # sys:failure_pattern_aggregation（把 ObjectiveExecution 步骤
             # 失败 + Goal dead_ends 按任务类别聚合为统一失败模式清单，
