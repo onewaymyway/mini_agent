@@ -1082,6 +1082,117 @@ class GoalStepExecutor(ABC):
 
 ---
 
+## 卡住归因分类：不只是"卡住了"，还要知道"卡在哪一类原因"
+
+> 对应 [`next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md`](../next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md)
+> 方案 A，`stuck_attribution_enabled` 控制（默认关闭）。
+
+上面"卡住恢复"一节里的 compact + 换角度提示是**统一动作**，不管卡住的真实
+原因是什么。开启 `stuck_attribution_enabled` 后，GoalJudge 在判定卡住信号
+（`SAME_APPROACH_NO_GAIN` / `REGRESSED`）时，额外输出一个 `stuck_category`
+字段，`GoalRunner._try_stuck_recovery` 据此分流到更对症的处理：
+
+| `stuck_category` | 含义 | 处理方式 |
+|---|---|---|
+| `env_blocked` | 依赖缺失/权限不足/工具环境问题 | 跳过压缩历史，直接提示先诊断环境（压缩反而可能丢掉已收集的诊断线索） |
+| `goal_ambiguous` | 目标或验收标准本身有歧义/矛盾 | 跳过通用恢复轮次，直接征求 [重规划提议](#goal-重规划提议卡住到底是因为目标定义本身有问题) |
+| `tool_format_error` | 工具调用持续格式错误，非语义问题 | 只提示、不压缩历史（轻量恢复，避免过早清空还有用的上下文） |
+| `genuine_difficulty` | 判官认为方向正确、只是任务本身复杂 | 回退到原有的通用 compact + 换角度提示逻辑，行为不变 |
+| `unknown` | 无法归类 | 同上，完全等价于关闭本功能时的行为 |
+
+字段缺省或解析失败时一律按 `unknown` 处理，向后完全兼容，不影响现有行为。
+
+## 验收标准自检：冻结前先看看标准本身靠不靠谱
+
+> 对应上述计划文档方案 B，`goal_spec_preflight_check_enabled` 控制
+> （默认开启，纯前置拦截、不影响运行时行为）。
+
+验收标准如果本身有歧义、互相矛盾、或没有可判断的证据形式，GoalJudge 会
+永远判不出 `DONE`，只能靠运行时卡住检测被动发现，白白浪费多轮执行。开启
+本功能后，`GoalSpec.validate_verifiability()` 会在目标冻结前做一次启发式
+自检：每条验收标准要么带 `verification_command`，要么文本里包含可判断的
+证据类关键词（"通过""测试""输出""确认""验证"等）。发现问题时会在协商
+循环里打印警告并记录一条预检事件，但**不会阻止**用户继续冻结——只是提前
+暴露风险。
+
+反复出现的同类"标准质量问题模式"会被同时写成一条正式的
+`entry_type="lesson"` 记忆条目（`record_goal_spec_preflight_lesson()`），
+接入下面"失败经验沉淀"一节的 `lesson_review` 门槛判定链路，达到门槛后
+自动进入 evolution-agent 的提案生成流程。
+
+## 分级响应：低置信度场景不必每次都打断
+
+> 对应上述计划文档方案 C。
+
+`DONE`/`CONTINUE`/`NEED_COMPACT` 是二元判定，低置信度场景以前只能"硬着
+头皮继续但什么痕迹都不留"或者"每次都让用户介入"。现在提供第三条路——
+`goal_cron_execution_note_enabled`（默认关闭，依赖
+`stuck_attribution_enabled=true`）开启后，若某一轮 GoalJudge 归因为
+`genuine_difficulty` 且已经不是第一次触发卡住恢复（`recoveries_used >= 2`），
+会记一条可事后审阅的"执行摘要"（`role_agents/execution_notes.py`），不打断
+执行，也不影响后续仍走通用 compact 恢复流程。尤其适合 `goal_cron` 这类本身
+就是无人值守的场景——用户可以事后批量查看，而不必每次都被迫实时响应。
+
+TurnJudge 一侧的同类机制（`AUTO_CONTINUE_WITH_NOTE`）见
+[轮次守门员指南](turn-judge-guide.md#分级响应低置信度自动继续时留一份可审阅的执行摘要)。
+两条路径写入同一份 `execution_notes.jsonl`（`source` 字段区分
+`"goal_judge"` / `"turn_judge"`），可以用同一个读取接口
+（`read_recent_execution_notes()`）一起查看。
+
+## 判定过程回写经验：卡住/失败不再是"用完即丢"
+
+> 对应上述计划文档方案 D，是"自动驱动执行"与"agent 自我学习机制"结合的
+> 核心落地点。
+
+- **卡住恢复成功 → 正面经验**（`stuck_recovery_experience_write_enabled`，
+  默认关闭）：`StuckDetector` 从 `RECOVER` 状态之后，若下一轮确认真的走出
+  了卡住，把"卡住原因（`stuck_category`）+ 采取的恢复动作 + 判官给出的关键
+  提示"打包写入一条正面经验（`wiki/experience_writer.py`）。后续遇到同类
+  `stuck_category` 时，GoalJudge/GoalRunner 可以通过 `decision_consumption`
+  同款检索机制命中这条经验，把"上次这样做成功走出困境"直接注入判官
+  prompt，而不用每次都从头摸索。
+- **恢复失败/放弃 → 更精准的失败模式聚合**：`evolution/failure_pattern_store.py`
+  的聚合维度从纯"按 task_category 计数"扩展为"按 `(task_category,
+  stuck_category)` 二维聚合"，能回答"这类任务反复卡在哪一类具体原因"而不
+  只是"卡住了几次"，方便后续针对性地降低对应能力的置信度，不会因为一类
+  原因（比如环境依赖问题）连累其他其实做得不错的子任务类型。
+- **验收标准质量问题 → lesson**：见上面"验收标准自检"一节。
+
+以上三项都是"接入项目已有经验沉淀基础设施"的性质，互相独立，不要求全部
+开启才有价值。
+
+## 判官冲突记录：GoalJudge 和 TurnJudge 意见不一致时
+
+> 对应上述计划文档方案 E / 阶段 4。
+
+GoalRunner 每一步执行内部会调用一次完整的 `agent.run_turn()`，这意味着
+**同一轮**里主 Agent 可能已经先跑过一次 TurnJudge（若开启了
+`cfg.turn_judge.enabled`），再由 GoalJudge 对本轮最终产出做核查——两个
+独立判官理论上可能给出矛盾结论。
+
+当 TurnJudge 在这一轮判定为 `AUTO_CONTINUE`（认为不需要打断用户），但
+GoalJudge 却判定 `NEED_COMPACT`（认为目标执行卡住需要压缩历史）时，会记
+一条冲突事件到 `judge_conflict_events.jsonl`（`judge_a="goal_judge"`,
+`judge_b="turn_judge"`）。**仅记录，不消解**——GoalRunner 已经有自己独立的
+`NEED_COMPACT`/卡住恢复处理逻辑，不套用 TurnJudge 一侧"收紧为
+`NEED_USER`"的消解方式。
+
+这条记录和 TurnJudge×Evaluator 那组冲突（见
+[轮次守门员指南](turn-judge-guide.md#判官冲突记录与保守值收紧)）共用同一份
+`judge_conflict_events.jsonl`，也共用同一个判官判定事件日志
+`judge_calibration_events.jsonl`——GoalJudge 每轮判定都会记一条校准事件，
+若同一 Agent 实例最近跑过 TurnJudge，还会把它的 `confidence` 一并拼进
+`note` 字段（`"genuine_difficulty;turn_judge_confidence=0.45"`），方便
+复盘时对照两个判官在同一时段的判断，不需要再按 `session_id`/`round` 手动
+对照两份日志。
+
+统计数据可以通过 `/agent goals judge-calibration` 命令查看人类可读的
+汇总报告（各判官判定分布、冲突判官对分布）——报告只做粗粒度观察，**不会
+自动修改**任何判官 prompt 或阈值，需要人工结合具体案例复核后再决定是否
+调整。
+
+---
+
 ## 文件位置一览
 
 | 文件 | 职责 |
@@ -1091,6 +1202,9 @@ class GoalStepExecutor(ABC):
 | `goal_mode/state.py` | `GoalState` + `GoalStateStore`（原子落盘/恢复）+ `find_resumable_session` / `list_resumable_sessions`（全量列出，支持 `include_all` 展示全部状态，供 `/goal list`）/ `scan_goal_states`（诊断用） |
 | `goal_mode/runner.py` | `GoalRunner` 外层驱动循环；`render_replan_proposal()` 模块级函数（§5，`GoalRunner`/CLI 共用） |
 | `role_agents/goal_judge.py` | GoalJudge：`build_goal_judge_prompt` / `run_goal_judge` |
+| `role_agents/judge_calibration.py` | 判官校准/冲突事件记录（`record_calibration_event` / `record_conflict_event` / `more_conservative_status` / `generate_calibration_suggestions`），GoalJudge 与 TurnJudge 共用 |
+| `role_agents/execution_notes.py` | 低置信度分级响应的执行摘要记录/读取（`append_execution_note` / `read_recent_execution_notes`），GoalJudge（`goal_cron_execution_note_enabled`）与 TurnJudge（`auto_continue_with_note_enabled`）共用 |
+| `evolution/failure_pattern_store.py` | 失败模式聚合（含 `(task_category, stuck_category)` 二维聚合、GoalSpec 预检问题记录） |
 | `role_agents/feedback.py` | `extract_goal_status()`，`RoleFeedback.goal_status` 字段 |
 | `cli/commands/goal_mode_cmd.py` | `/goal` 系列 slash 命令（含 `/goal from-history`、`/goal revise`，见 §5） |
 | `config/models.py::GoalModeConfig` | 配置模型 |

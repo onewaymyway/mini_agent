@@ -133,6 +133,9 @@ run_turn() 内部：
 | `consecutive_same_output_limit` | `3` | 连续 N 轮主 Agent 的输出高度雷同 → 判定"卡住"（没有实质进展），见下方"卡住恢复"一节 |
 | `same_output_similarity_threshold` | `0.9` | `difflib.SequenceMatcher` 相似度阈值，达到即计入"雷同" |
 | `max_stuck_recoveries` | `3` | 判定"卡住"后先压缩历史+提示换思路，最多连续尝试几次（不占用 `max_auto_rounds` 预算），额度耗尽后再卡住才强制交还真人；设为 `0` 关闭这个机制 |
+| `auto_continue_with_note_enabled` | `false` | 见下方"分级响应"一节：低置信度 `AUTO_CONTINUE` 时记执行摘要而不强行升级为 `NEED_USER` |
+| `auto_continue_confidence_threshold` | `0.6` | 上一项的置信度阈值，低于此值才触发 |
+| `conflict_resolution_enabled` | `false` | 见下方"判官冲突记录"一节：检测到与 Evaluator 判定矛盾时是否收紧为 `NEED_USER` |
 
 子 Agent（sub-agent / role agent 内部跑的 Agent 实例）永远不会触发 TurnJudge，
 避免嵌套判定。
@@ -235,6 +238,55 @@ GoalJudge 反馈的注入方式一致），保留可审计的判定痕迹，不�
 这个开关只影响运行时内存里的 `cfg.turn_judge.enabled`，不会回写
 `agent_config.json`——如果希望下次启动默认就是开启/关闭状态，请直接修改
 配置文件。
+
+---
+
+## 分级响应：低置信度自动继续时留一份可审阅的执行摘要
+
+> 对应 [`next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md`](../next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md)
+> 方案 C，`auto_continue_with_note_enabled` 控制（默认关闭）。
+
+TurnJudge 的判定原本是二元的：`AUTO_CONTINUE`（不打断）或 `NEED_USER`
+（打断）。低置信度的 `AUTO_CONTINUE`——判官认为大概率不需要用户介入，但
+把握不是特别足——以前只能"要么强行升级成 `NEED_USER` 打断用户"，"要么
+照常 `AUTO_CONTINUE` 但什么痕迹都不留"，两者都有成本：前者过度打扰用户，
+后者让用户即使想审阅也无据可查。
+
+开启后，TurnJudge 会在结构化输出里额外要求一个 `confidence`（0-1）字段；
+判定为 `AUTO_CONTINUE` 但 `confidence` 低于 `auto_continue_confidence_threshold`
+（默认 `0.6`）时，不强行升级为 `NEED_USER`，而是记一条可事后查看的"执行
+摘要"（`role_agents/execution_notes.py::append_execution_note`），仍然
+照常自动继续。高风险信号（过程正当性问题、判官冲突等）始终不允许走这条
+路径降级，必须继续直接 `NEED_USER`。
+
+Goal 模式一侧的同类机制见
+[Goal 模式指南](goal-mode-guide.md#分级响应低置信度场景不必每次都打断)——
+两条路径写入同一份 `execution_notes.jsonl`，用 `source` 字段区分。
+
+## 判官冲突记录与保守值收紧
+
+> 对应上述计划文档方案 E / 阶段 4。
+
+**TurnJudge × Evaluator**：若本轮启用了 EvaluatorAgent 做质量修订，且
+修订到最后一轮仍未通过（`passed=False`），但 TurnJudge 却判定
+`AUTO_CONTINUE`（认为不需要真人介入）——这是一组值得关注的矛盾信号：一个
+判官说"质量有明确问题"，另一个说"不用打断"。默认只记录一条冲突事件到
+`judge_conflict_events.jsonl`；开启 `conflict_resolution_enabled`（默认
+关闭）后，检测到该冲突时会进一步把这次判定从 `AUTO_CONTINUE` 收紧为
+`NEED_USER`，复用 `judge_calibration.more_conservative_status()` 取更
+保守的一方。仍然默认关闭——建议先观察冲突事件的真实频率和误报率，确认
+这个场景确实值得自动降级处理，再考虑默认开启。
+
+**GoalJudge × TurnJudge**：Goal 模式下，GoalRunner 每一步都会调用一次
+`agent.run_turn()`，同一轮内可能先跑过 TurnJudge 再跑 GoalJudge。若
+TurnJudge 判 `AUTO_CONTINUE` 而 GoalJudge 判 `NEED_COMPACT`，也会记一条
+冲突事件（**仅记录，不消解**——GoalRunner 有自己独立的
+`NEED_COMPACT`/卡住恢复处理逻辑，不套用这里的收紧方式）。详见
+[Goal 模式指南](goal-mode-guide.md#判官冲突记录goaljudge-和-turnjudge-意见不一致时)。
+
+两组冲突都可以通过 `/agent goals judge-calibration` 命令查看汇总统计
+（各判官判定分布、冲突判官对分布）——报告只做粗粒度观察，**不会自动修改**
+任何判官 prompt 或阈值，需要人工结合具体案例复核后再决定是否调整。
 
 ---
 
