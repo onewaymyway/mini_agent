@@ -797,13 +797,22 @@ class GoalRunner:
         # 靠不靠谱、哪类场景容易误判"（方案 D.4）。纯记录，不影响任何决策。
         try:
             from mini_agent.role_agents.judge_calibration import record_calibration_event
+            note = progress_info.get("stuck_category", "")
+            # [后续可继续推进的方向 第2项] 若同一个 Agent 实例最近跑过
+            # TurnJudge 并留下了 confidence（见 agent/role_judge.py），
+            # 一并带上，方便复盘时对照两个判官在同一时段的判断，不影响
+            # 现有 note 字段的消费方（generate_calibration_suggestions 只做
+            # 展示，不解析 note 内容）。
+            tj_confidence = getattr(self._agent, "_last_turn_judge_confidence", None)
+            if tj_confidence is not None:
+                note = f"{note};turn_judge_confidence={tj_confidence:.2f}" if note else f"turn_judge_confidence={tj_confidence:.2f}"
             record_calibration_event(
                 self._paths,
                 judge_name="goal_judge",
                 status=status,
                 round_no=self._round + 1,
                 session_id=getattr(self._agent, "session_id", "") or "",
-                note=progress_info.get("stuck_category", ""),
+                note=note,
             )
         except Exception:
             pass

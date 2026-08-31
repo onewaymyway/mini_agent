@@ -381,6 +381,8 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
 | `src/mini_agent/agent/role_judge.py` | 修改 | 解析 `confidence` 字段；低于阈值时记执行摘要而非强制升级为 `NEED_USER` |
 | `src/mini_agent/config/models.py` | 修改 | `GoalModeConfig` 新增 `goal_cron_execution_note_enabled`（默认 False），供 GoalRunner 侧的执行摘要接入使用（见下方"后续可继续推进的方向"第1项） |
 | `src/mini_agent/goal_mode/runner.py` | 修改 | 新增 `_maybe_record_goal_cron_execution_note()`：`genuine_difficulty` 归因且 `recoveries_used >= 2` 时记一条 `execution_notes` 摘要，在 `_try_stuck_recovery` 中 `_try_attributed_recovery` 返回 `None` 后调用 |
+| `src/mini_agent/agent/role_judge.py` | 修改 | `_maybe_run_turn_judge()` 把算出的 `confidence` 存入 `self._last_turn_judge_confidence`（无论是否为 `None`），供同一 Agent 实例的 GoalRunner 读取 |
+| `src/mini_agent/goal_mode/runner.py` | 修改 | `_run_judge()` 记录 goal_judge 校准事件时，若能读到 `self._agent._last_turn_judge_confidence`，拼进 `note` 字段，便于复盘时对照两个判官同时段的判断（不改变任何决策） |
 
 ### 阶段 3：判定过程回写经验
 
@@ -419,7 +421,19 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
    时，若 `StuckDetector.recoveries_used >= 2`，调用
    `_maybe_record_goal_cron_execution_note()` 记一条执行摘要（`source=
    "goal_judge"`），不打断、不影响后续仍走通用 compact 恢复流程。
-2. TurnJudge confidence 与 GoalJudge stuck_category 的联合判断（阶段2遗留，价值待评估）。
+2. ~~TurnJudge confidence 与 GoalJudge stuck_category 的联合判断~~ ——**已迈出第一步
+   （信号互相可见，暂不改变决策）。** `agent/role_judge.py` 的
+   `_maybe_run_turn_judge()` 现在把每次算出的 `confidence`（无论是否为
+   `None`）存到 `self._last_turn_judge_confidence`；`goal_mode/runner.py`
+   的 `_run_judge()` 在记录 goal_judge 校准事件时，若同一个 Agent 实例上
+   能读到这个值，就一并拼进 `note` 字段（如
+   `"genuine_difficulty;turn_judge_confidence=0.45"`）。这样复盘
+   `judge_calibration_events.jsonl` 时不需要再按 session_id/round 手动对照
+   两份判官的判定，能直接看到"同一时段 TurnJudge 置信度多少、GoalJudge
+   归因是什么"。**明确不做**：用这个联合信号去实际改变判定（比如归因为
+   `genuine_difficulty` 但同期 TurnJudge 置信度很低时提前升级为
+   `NEED_USER`）——按方案 D.4/阶段4一贯的"先观察真实数据分布，再决定是否
+   值得做"原则，留给后续评估。
 3. 扩展阶段 4 冲突检测/收紧覆盖更多判官组合（当前只覆盖 TurnJudge ×
    Evaluator 这一个同轮双判官的场景）。
 4. `conflict_resolution_enabled` 默认开启的时机评估——需要先通过

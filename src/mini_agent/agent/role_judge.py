@@ -418,6 +418,20 @@ class RoleJudgeMixin:
             except (TypeError, ValueError):
                 confidence = None
 
+        # [next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
+        # 后续可继续推进的方向 第2项：TurnJudge confidence 与 GoalJudge
+        # stuck_category 的联合判断] 先只做"信号互相可见"这一步——把本次
+        # TurnJudge 的 confidence 挂在 Agent 实例上，供同一个 goal_mode
+        # 会话里的 GoalRunner 在记录 goal_judge 校准事件时一并带上，
+        # 这样后续复盘 judge_calibration_events.jsonl 时能看到"同一时间段
+        # 内 TurnJudge 认为置信度多少、GoalJudge 归因判定是什么"，而不需要
+        # 再按 session_id/round 手动对照两份事件。是否要用这个联合信号去
+        # 真正影响判定（比如 GoalJudge 归因为 genuine_difficulty 但同期
+        # TurnJudge 置信度很低时提前升级），留给积累数据后再评估，这里不
+        # 引入任何决策变化，也不需要新增开关（本身只是复用已经在无条件记录
+        # 的 confidence 值，不产生额外信息暴露）。
+        self._last_turn_judge_confidence = confidence
+
         # [阶段 0 观测先行] 记录一次 TurnJudge 判定事件，供后续复盘（方案 D.4）。
         try:
             from mini_agent.role_agents.judge_calibration import record_calibration_event
