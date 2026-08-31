@@ -2712,6 +2712,12 @@ class AppConfig:
     # 全局 registry 中，与 workdir_knowledge_enabled 等开关的既有取舍一致）。
     notepad_enabled: bool = True
 
+    # [受保护文件清单] protected_files_manifest_and_delete_guard_plan.md 阶段 1。
+    # system prompt 注入"当前生效的受保护文件清单"提醒总开关。默认开启——
+    # 纯信息展示，不改变任何执行逻辑，风险最低。关闭后不再扫描/注入该提醒块，
+    # 不影响阶段 2 的代码级 guard（guard 判定与本开关无关，独立生效）。
+    protected_files_reminder_enabled: bool = True
+
     # ── Compact 机制主动化改进计划 P2-B（compact_mechanism_improvement_plan.md）──
     # recall_from_raw_history 只读工具总开关。默认关闭——工具本身仍注册在
     # 全局 registry 中（与 notepad_enabled 等既有取舍一致），关闭时调用直接

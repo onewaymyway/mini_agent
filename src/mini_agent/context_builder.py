@@ -454,6 +454,11 @@ class ContextBuilder:
         if gk_block:
             base += "\n\n" + gk_block
 
+        # ── 受保护文件清单提醒（阶段 1，纯信息展示）──────────────────────
+        pf_block = self._build_protected_files_reminder()
+        if pf_block:
+            base += "\n\n" + pf_block
+
         # ── AgentSelfModel（具身改进 C1）：session 级实时聚合视图 ─────────
         # 注入在 global knowledge 块（SelfAssessment 跨 session 历史评估）
         # 之后，补充 SelfAssessment 没有的实时维度：
@@ -490,6 +495,61 @@ class ContextBuilder:
         return base
 
     # ── 内部辅助 ──────────────────────────────────────────────────────────────
+
+    def _build_protected_files_reminder(self) -> str:
+        """
+        组装"受保护文件清单"提醒块（next_doc/
+        protected_files_manifest_and_delete_guard_plan.md 阶段 1，三层防护的
+        第 1 层：prompt 提醒，预防性、不保证生效）。
+
+        交互式会话和 daemon/cron 触发的 agent 共用本方法（build() 本身就是
+        两者共用的入口，不需要分别接入）。
+
+        cfg.protected_files_reminder_enabled=False 时整体跳过；没有任何
+        清单文件时也直接跳过（不注入空提醒）；扫描失败不应影响 system
+        prompt 的其他部分。
+
+        路径数量较多时做目录级摘要，避免无限增长地把完整清单塞进每次的
+        system prompt（设计文档"风险 2"）：超过 20 条时，只展示前 20 条，
+        末尾追加一行"还有 N 处未列出，见 protected_files.txt"。
+        """
+        if not getattr(self.cfg, "protected_files_reminder_enabled", True):
+            return ""
+
+        try:
+            import sys
+            from pathlib import Path as _Path
+            _repo_root = _Path(__file__).resolve().parents[2]
+            if str(_repo_root) not in sys.path:
+                sys.path.insert(0, str(_repo_root))
+            from scripts.protected_files import ProtectedFilesGuard
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._build_protected_files_reminder')
+            return ""
+
+        try:
+            guard = ProtectedFilesGuard(self.cfg.project_root)
+            entries = guard.list_entries()
+            if not entries:
+                return ""
+
+            _MAX_SHOWN = 20
+            shown = entries[:_MAX_SHOWN]
+            lines = [
+                f"- {e.path}" + ("/ (整个目录)" if e.is_dir else "")
+                for e in shown
+            ]
+            remaining = len(entries) - len(shown)
+            if remaining > 0:
+                lines.append(f"- …还有 {remaining} 处未列出，见 protected_files.txt")
+
+            from mini_agent.prompts import pm as _pm
+            return _pm.render("system/protected_files", protected_list="\n".join(lines))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._build_protected_files_reminder')
+            return ""
 
     def _build_workdir_knowledge_block(self) -> str:
         """

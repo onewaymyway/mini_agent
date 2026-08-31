@@ -1,6 +1,6 @@
 # 受保护文件清单与删除防护机制改进计划
 
-> **状态**：阶段 0 已完成实施。本文档记录设计过程中的确认结论，
+> **状态**：阶段 0、阶段 1 已完成实施。本文档记录设计过程中的确认结论，
 > 供后续实施时对照，避免中途遗忘约定细节。
 
 ---
@@ -203,9 +203,35 @@ agent 主动执行的 bash 命令——这正是需要第 3 层兜底的原因�
 - 尚未接入任何删除点或 prompt（阶段 1、2 的范围），当前无任何运行时
   行为改变。
 
-### 阶段 1：Prompt 提醒接入
-- `context_builder.py::build()` 注入受保护清单提示片段。
-- 纯信息展示，不改变任何执行逻辑，风险最低，可以默认开启。
+### 阶段 1：Prompt 提醒接入 ✅ 已完成
+- 新增配置开关 `AppConfig.protected_files_reminder_enabled`（默认
+  `True`，挂在顶层 `AppConfig`，紧邻 `notepad_enabled` 等同类总开关）。
+- 新增 prompt 模板 `src/mini_agent/prompts/system/protected_files.md`，
+  与 `notepad.md` 同样的 `{{variable}}` 占位符渲染方式，明确告知 agent
+  "这些文件/目录任何情况下都不能删除、移动、覆盖或清空内容，包括通过
+  bash 命令、脚本、或其他工具间接达成"，且要求"确实需要动这些路径时先
+  停下来问用户"。
+- `ContextBuilder` 新增 `_build_protected_files_reminder()`：
+  - 通过 `scripts.protected_files.ProtectedFilesGuard` 扫描当前生效的
+    受保护清单（复用阶段 0 的判定模块，逻辑不重复实现）。
+  - 没有任何清单文件时直接跳过，不注入空提醒。
+  - 路径数量摘要规则（对应"风险 2"）：超过 20 条时只展示前 20 条，末尾
+    追加一行"还有 N 处未列出，见 protected_files.txt"，避免无限增长地把
+    完整清单塞进每次的 system prompt。
+  - 扫描/渲染失败时静默降级为空字符串（记录到 `errors.log_exception`），
+    不影响 system prompt 其余部分的组装。
+  - 已接入 `build()` 主流程，位置在 Workdir/Global 知识层注入之前、
+    AgentSelfModel 注入之前；交互式会话与 daemon/cron 触发的 agent
+    共用同一个 `build()` 入口，不需要分别接入。
+- 已落地 `tests/test_context_builder_protected_files.py`（6 个用例，覆盖：
+  无清单时为空、`enabled=False` 时即使有清单也为空、条目正确注入且清单
+  文件自身出现在提醒里、超过阈值时摘要截断、`build()` 完整流程注入验证、
+  无清单时完整 prompt 里不出现提醒片段），全部通过；连同阶段 0 与既有
+  `test_context_builder_workdir_knowledge.py` /
+  `test_context_builder_global_knowledge.py` 等相关测试一并跑过，共 55
+  项，无回归。
+- 纯信息展示，不改变任何执行逻辑（阶段 2 的代码级 guard 仍待接入），
+  默认开启符合"风险最低"的判断。
 
 ### 阶段 2：代码级 guard 接入
 - 逐一接入"实施范围"表格列出的删除点。
