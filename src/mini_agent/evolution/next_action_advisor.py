@@ -100,6 +100,64 @@ def _find_stale_active_goals(
     return out
 
 
+def _find_momentum_goals(
+    paths: AgentPaths, *, window_days: float, min_recent_events: int, priority_floor: int = STALE_PRIORITY_FLOOR
+) -> list[Candidate]:
+    """[personal_researcher_and_coach_capability_gap_plan.md C3] 第三条
+    规则："最近活跃度走势上升"的 Goal——跟 `_find_stale_active_goals`
+    回答的是相反方向的问题：那条规则找"太久没碰、可能被遗忘了"的，
+    这条规则找"最近正在被频繁推进、可能值得趁热打铁"的。
+
+    信号来源：`GoalNode.status_history` 里的时间戳序列（Goal 没有像
+    成长顾问那样独立的"证据快照"文件，状态变更次数的时间分布是目前
+    最省成本的活跃度替代信号）。复用 `growth_advisor._recent_delta_
+    from_series()` 做"最新累计数 - 窗口基线累计数"的趋势计算，跟
+    P5-4 判断报告要不要刷新用的是同一套算法，避免另发明一套统计口径。
+
+    只从 `stale_active_goals` 覆盖不到的活跃 Goal 里找（即"最近有触碰、
+    没有停滞"的那些）——已经被判定为停滞的 Goal 不可能同时又"最近活跃
+    度上升"，两条规则的候选集合天然不重叠，不需要额外去重。
+    """
+    try:
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+        from mini_agent.evolution.growth_advisor import _recent_delta_from_series
+    except Exception:
+        return []
+
+    try:
+        backlog = load_goal_backlog(paths)
+    except Exception:
+        return []
+
+    out: list[Candidate] = []
+    for node in backlog.active_goals() + backlog.active_objectives():
+        if node.priority < priority_floor:
+            continue
+        history = node.status_history or []
+        if len(history) < 2:
+            continue
+        # 累计计数序列：第 i 条历史记录出现时，"到此为止一共发生过 i+1
+        # 次状态变更"，用这个累计量而不是原始事件本身去套用
+        # `_recent_delta_from_series` 的"最新点减基线点"算法。
+        series: list[tuple[float, int]] = [
+            (float(h.get("at", 0.0)), idx + 1)
+            for idx, h in enumerate(sorted(history, key=lambda h: h.get("at", 0.0)))
+        ]
+        delta = _recent_delta_from_series(series, window_days=window_days)
+        if delta is None or delta < min_recent_events:
+            continue
+        out.append(
+            Candidate(
+                kind="momentum_goal",
+                ref_id=node.id,
+                title=node.title,
+                reason=f"最近 {window_days:.0f} 天内有 {delta} 次状态变更，活跃度正在上升，可能值得趁热打铁",
+                evidence_refs=[f"goal:{node.id}"],
+            )
+        )
+    return out
+
+
 def _keyword_overlap(text_a: str, tags: list[str], text_b: str) -> bool:
     hay = (text_a + " " + " ".join(tags)).lower()
     for token in text_b.lower().replace("_", " ").replace("-", " ").split():
@@ -173,10 +231,13 @@ def _find_attention_mismatch(
 
 
 def _rule_based_rank(candidates: list[Candidate]) -> list[Candidate]:
-    """规则层排序：stale_goal 优先于 attention_mismatch（前者是明确的既定目标，
-    后者只是"可能"分心，确定性更低），同类内部按 ref_id 稳定排序。
+    """规则层排序：stale_goal 优先于 momentum_goal，momentum_goal 优先于
+    attention_mismatch。stale_goal 是明确的既定目标（用户已经承诺要做、
+    只是被搁置了），momentum_goal 是"正在发生的积极信号"（值得趁热打铁，
+    但不如"已经停滞"那么明确要处理），attention_mismatch 只是"可能"
+    分心，确定性最低。同类内部按 ref_id 稳定排序。
     """
-    order = {"stale_goal": 0, "attention_mismatch": 1}
+    order = {"stale_goal": 0, "momentum_goal": 1, "attention_mismatch": 2}
     ranked = sorted(candidates, key=lambda c: (order.get(c.kind, 9), c.ref_id))
     for i, c in enumerate(ranked):
         c.rank = i + 1
@@ -300,6 +361,17 @@ def generate_next_actions(
     candidates = _find_stale_active_goals(
         paths, stale_days=stale_days, priority_floor=priority_floor
     ) + _find_attention_mismatch(paths, window_hours=window_hours, mismatch_ratio=mismatch_ratio)
+
+    # [personal_researcher_and_coach_capability_gap_plan.md C3] 第三条
+    # 规则，默认关闭（cfg 未传入或未显式开启时不生效，向后兼容）。
+    if cfg is not None and cfg.next_action_momentum_enabled:
+        candidates = candidates + _find_momentum_goals(
+            paths,
+            window_days=cfg.next_action_momentum_window_days,
+            min_recent_events=cfg.next_action_momentum_min_recent_events,
+            priority_floor=priority_floor,
+        )
+
     if not candidates:
         return None
 

@@ -1124,6 +1124,18 @@ class GoalExecutionSpecConfig:
     overall_completion_agent_allowed_tool_groups: list = field(default_factory=list)
     overall_completion_agent_max_turns: int = 8
 
+    # [personal_researcher_and_coach_capability_gap_plan.md R3] 持续调研
+    # 模板（`research_topic`/`growth_pursuit`）的"交叉验证质量门"：开启后，
+    # 生成/修订执行规范草稿时，会往模板骨架的 per_cycle_criteria 里追加
+    # 一条"本轮结束前对新增内容做一次自我核验并标注置信度"的要求，让
+    # 执行 Goal 的 agent 在每轮结束前多花一步做自我核查。默认关闭——这条
+    # 要求本身会引导执行 agent 多做一轮自我核验（不是额外的独立 LLM
+    # 调用，是同一次执行过程里多一步思考/写作），与项目"默认零额外成本、
+    # 增强能力 opt-in"的一贯取舍一致，是否值得默认开启需要先观察 R1
+    # 落地后是否真的出现"事实性错误堆积"的问题。只影响这两个模板，
+    # 对其余模板/无模板生成完全没有影响。
+    research_quality_gate_enabled: bool = False
+
 
 @dataclass
 class CycleTuningConfig:
@@ -1933,6 +1945,22 @@ class DigestAdvisorConfig:
     next_action_push_threshold_hours: float = 2.0
     # 同一 daemon 会话内最多推送次数（避免重复错配信号反复推送）
     next_action_push_max_per_session: int = 1
+    # [personal_researcher_and_coach_capability_gap_plan.md C3] 第三条
+    # 规则："最近活跃度走势上升"的 Goal——复用成长顾问 P5-4 的\"最新点
+    # 减去窗口基线点\"趋势计算核心（`growth_advisor._recent_delta_from_
+    # series`），但套用在 Goal 自身的 status_history 时间戳序列上（Goal
+    # 没有成长顾问那种独立的\"证据快照\"文件，用状态变更次数的时间分布
+    # 做替代信号）。默认关闭——这条规则还没有跑过真实数据验证，是否真的
+    # 比现有两条规则更有参考价值有待观察，跟 R3（交叉验证质量门）一样，
+    # 属于\"先把机制写出来、默认不打扰用户\"的谨慎落地方式。
+    next_action_momentum_enabled: bool = False
+    # 判定"最近"的窗口天数，与 P5-4 的 _REPORT_REFRESH_RECENT_BURST_
+    # WINDOW_DAYS（14 天）保持一致的默认口径，避免无端引入新的数字
+    next_action_momentum_window_days: float = 14.0
+    # 窗口内至少要有这么多次状态变更才算"在加速"，避免 1 次状态变更就被
+    # 误判成"走势上升"（stale_days 默认 7 天，这个窗口是它的 2 倍，至少
+    # 要有 2 次变更才算真正意义上的连续活跃）
+    next_action_momentum_min_recent_events: int = 2
 
     # ── 阶段三：决策画像 decision_profile_builder ──────────────────────
     # 归纳逻辑本身默认可用（/decision_profile update 手动触发不受此项影响），

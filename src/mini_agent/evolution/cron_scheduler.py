@@ -18,10 +18,10 @@ evolution/cron_scheduler.py — Daemon 模式定时任务调度器
   sys:session_cleanup — Session 清理（保留在用/近期，其余先抽取再删）interval:604800
   sys:self_maintain  — 自维护健康检查（具身改进 C4）         interval:86400
   sys:daily_digest           — 每日融合日报（行为+目标+提交）      cron:0 22 * * *
-  sys:next_action_digest     — 主动推荐排序（停滞目标/注意力错配）  interval:10800
+  sys:next_action_digest     — 主动推荐排序（停滞目标/注意力错配/[C3]活跃度上升，默认关闭）interval:10800
   sys:decision_profile_update — 决策画像归纳（默认关闭，见改进计划）interval:604800
   sys:growth_advisor_daily        — 成长顾问候选扫描+调研报告（默认开启）cron:30 22 * * *
-  sys:growth_monthly_retrospective — 成长顾问月度复盘（默认开启）      interval:2592000
+  sys:growth_monthly_retrospective — 成长顾问月度复盘 + [C4]全部 Goal 概览（默认开启） interval:2592000
   sys:capability_learning_cycle    — 能力学习/人设养成循环（默认开启，见下方说明）interval:21600
   sys:capability_question_sweep    — 能力学习异步问题过期清理（默认开启）interval:86400
   sys:persona_candidate_scan       — 候选人设/能力自动检测（默认关闭，见下方说明）interval:86400
@@ -363,8 +363,8 @@ _BUILTIN_JOBS: list[dict] = [
         "id": "sys:growth_monthly_retrospective",
         "name": "成长顾问：月度复盘",
         "schedule": "interval:2592000",
-        "description": "统计成长候选的生成/采纳/忽略情况，生成一份月度复盘摘要（每 30 天）",
-        "task_template": "[成长顾问] 执行一次 /growth retrospective，生成月度成长复盘摘要",
+        "description": "统计成长候选的生成/采纳/忽略情况，以及全部 Goal 的整体状态/长期方向分布，生成一份月度复盘摘要（每 30 天）",
+        "task_template": "[成长顾问] 执行一次 /growth retrospective，生成月度成长复盘摘要（含全部 Goal 的整体概览）",
         "tags": ["growth_advisor", "digest"],
         "enabled": True,
     },

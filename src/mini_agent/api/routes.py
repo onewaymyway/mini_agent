@@ -9171,7 +9171,16 @@ async def get_growth_summary(request: Request, refresh_diagnostics: bool = False
         # 熔断/超时策略，且避免线程池里再嵌套起线程（分开一次调用，不是
         # 在 diagnostics_snapshot 内部再调 run_blocking）。
         def _load_backlog_reports_retro():
-            return backlog.load_all(), ga.list_reports(paths), ga.monthly_retrospective_summary(paths)
+            # [personal_researcher_and_coach_capability_gap_plan.md C4]
+            # 传入 GoalBacklog，月度复盘的返回值会带上 goal_overview
+            # 字段（全部 Goal 的整体统计），失败时静默降级为不带该字段，
+            # 不影响成长顾问自己的候选统计部分。
+            try:
+                from mini_agent.perception.goal_backlog import load_goal_backlog
+                gb = load_goal_backlog(paths)
+            except Exception:
+                gb = None
+            return backlog.load_all(), ga.list_reports(paths), ga.monthly_retrospective_summary(paths, goal_backlog=gb)
 
         candidates, reports, retro = await run_blocking(
             _load_backlog_reports_retro,

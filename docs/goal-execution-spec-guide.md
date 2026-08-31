@@ -370,10 +370,32 @@ use_agent`，对应 REST 请求体的 `use_agent`）+ 按钮，按钮上方常�
 | `soft_check_enabled` | `true` | §5.1 轻量核对总开关 |
 | `soft_check_alert_after_cycles` | `3` | 连续多少轮未匹配上才追加"建议复查执行规范"备注 |
 | `overall_completion_use_agent` | `false` | §4 整体关闭判定是否默认使用受限 Agent 核查产出文件内容（单次调用可覆盖） |
+| `research_quality_gate_enabled` | `false` | §6.1 交叉验证质量门总开关，仅影响 `research_topic`/`growth_pursuit` 模板 |
 
 `enabled=false`、`overall_completion_criteria` 为空、`execution_spec_
 confirmed=False` 均等价于"该 Goal/该能力不受本功能影响"，与方案引入前
 行为完全一致——本功能全程是**可选增强**，不是新增的必经关卡。
+
+### 6.1 持续调研模板的交叉验证质量门（R3，默认关闭）
+
+`next_doc/personal_researcher_and_coach_capability_gap_plan.md` R3。
+`research_quality_gate_enabled=true` 时，`GoalExecutionSpecBuilder.
+build_draft()` 生成 `research_topic`/`growth_pursuit` 模板草稿时，会在
+拼进 prompt 的模板骨架副本（不修改磁盘上的模板文件）里往
+`per_cycle_criteria` 追加一条要求：本轮结束前对新增内容做一次自我
+核验（逐条检查信息点是否有来源支撑、有没有把推测当结论），并标注
+一个粗粒度置信度（高/中/低）。
+
+**没有引入额外的独立 LLM 调用**——这条要求是让执行 Goal 的 agent 在
+同一次执行过程里多想一步、多写一段自我核验文字，而不是生成完之后再
+起一次单独的"审查"调用。
+
+只影响生成第 1 版草稿（`build_draft()`）；`revise()`（用户反馈驱动的
+迭代）不使用模板骨架，不涉及这个逻辑。已经生成过的执行规范不会被
+追溯修改，需要用户重新生成才会应用新的骨架。
+
+默认关闭的原因跟 R2 一样——`verification_method` 仍是 `manual_review`，
+"自我核验"本质是软约束，收益是否覆盖成本需要观察真实使用情况。
 
 ## 9. 已知限制 / 未实施清单
 

@@ -1152,8 +1152,28 @@ class GoalExecutionSpecBuilder:
         template = load_template(template_id) if template_id else None
         template_block = ""
         if template:
+            skeleton = template.get("skeleton", {})
+            # [personal_researcher_and_coach_capability_gap_plan.md R3]
+            # 交叉验证质量门：默认关闭，开启且命中持续调研模板时，往骨架
+            # 的 per_cycle_criteria 里追加一条自我核验要求。复制一份
+            # skeleton（不修改 load_template() 返回的原始 dict——它每次
+            # 调用都会重新从磁盘读取，本来就是新对象，但显式 copy 更清楚
+            # 不会有共享可变状态的风险），只影响这一次 prompt 拼接。
+            ges_cfg = getattr(self._cfg, "goal_execution_spec", None)
+            quality_gate_enabled = bool(getattr(ges_cfg, "research_quality_gate_enabled", False))
+            if quality_gate_enabled and template_id in ("research_topic", "growth_pursuit"):
+                skeleton = dict(skeleton)
+                skeleton["per_cycle_criteria"] = list(skeleton.get("per_cycle_criteria", [])) + [
+                    {
+                        "text": "[R3 交叉验证质量门，用户已显式开启] 本轮结束前对本轮新增的内容块做一次自我核验："
+                                "逐条检查引用的信息点是否有实际来源支撑、有没有把推测当结论表述，"
+                                "并在内容块末尾标注一个粗粒度置信度（高/中/低）。发现存疑内容时，"
+                                "要么补充核实、要么明确标注为待核实，不要悄悄隐去存疑标记。",
+                        "verification_method": "manual_review",
+                    }
+                ]
             template_block = "参考模板骨架（可在此基础上增删改，不要机械照搬）：\n" + json.dumps(
-                template.get("skeleton", {}), ensure_ascii=False, indent=2
+                skeleton, ensure_ascii=False, indent=2
             )
 
         history_block = ""

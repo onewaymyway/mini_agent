@@ -3,8 +3,13 @@
 > **实施状态（见配套的
 > `personal_researcher_and_coach_capability_gap_implementation_record.md`）**：
 > R1（通用调研模板 `research_topic`）、C1（Goal 的"长期方向"分组）、
-> R2（信源可信度标注）、C2（`decision_profile` 参与 Goal 创建提示）
-> 均已落地。C3/C4/R3 按第 3 节的优先级建议继续延后，尚未实施。
+> R2（信源可信度标注）、C2（`decision_profile` 参与 Goal 创建提示）、
+> C3（`next_action_advisor` 活跃度走势规则）、C4（全部 Goal 综合月报）、
+> R3（交叉验证质量门）均已落地。C3/R3 按第 3 节的说明默认关闭（配置项
+> `next_action_momentum_enabled`/`research_quality_gate_enabled`），
+> 机制已经写好，需要用户显式开启后才会生效——这是"跳过观察效果这个
+> 前提、先把代码写出来"的显式选择，实际是否默认打开仍然建议先观察
+> 使用情况。
 
 > 前置阅读：`docs/mini-agent-philosophy-and-roadmap.md`（项目理念与当前
 > 优先级）、`docs/growth-advisor-guide.md` 1.5 节"设计理念"（本文档的

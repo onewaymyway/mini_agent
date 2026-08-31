@@ -10,12 +10,15 @@
 - `soft_goal_deriver` 负责"发现该不该新建一个 Goal"，写入 `GoalBacklog`
 - 本模块负责"在已有信息里，这次该优先提醒用户哪一个、为什么"，**只读不写**
 
-候选来源两类：
+候选来源三类：
 
 1. **停滞目标**：`GoalBacklog` 中优先级 ≥1 且超过 7 天无 `last_touched_at` 更新的
    Goal/Objective
 2. **注意力错配**：最近 6 小时窗口内，某个 app/域名的时长占比超过 50%，且其名称与
    任何 active Goal 的 title/tags 都没有关键词重合
+3. **活跃度走势上升**（`momentum_goal`，默认关闭，见下方专节）：最近一段窗口内
+   `status_history` 变更次数明显增多的 Goal——跟"停滞目标"回答的是相反方向的
+   问题，两者候选集合天然不重叠
 
 候选为空时不生成任何输出（克制阈值），不会为了"有话可说"而凑一条平庸建议。
 
@@ -58,10 +61,36 @@ task_template 调用 `/next refresh`。候选为空时任务本身也会跳过�
 | `next_action_push_enabled` | `false` | 是否启用"注意力错配持续超时"的 daemon 主动推送（见下） |
 | `next_action_push_threshold_hours` | `2.0` | 同一错配信号需要连续检测到多久才推送一次 |
 | `next_action_push_max_per_session` | `1` | 同一 daemon 会话内、同一信号最多推送次数 |
+| `next_action_momentum_enabled` | `false` | 是否启用"活跃度走势上升"第三条规则（见下） |
+| `next_action_momentum_window_days` | `14.0` | 判定"最近"的窗口天数 |
+| `next_action_momentum_min_recent_events` | `2` | 窗口内至少要有这么多次状态变更才算"在加速" |
 
 `rank_with_llm`/停滞天数/注意力窗口等参数以前是 `next_action_advisor.py`
 里写死的模块级常量，现在改为优先从上表读取；`generate_next_actions()`
 未显式传 `cfg` 时仍回退到模块常量，向后兼容。
+
+## 活跃度走势规则（`momentum_goal`，已接入，默认关闭）
+
+`next_doc/personal_researcher_and_coach_capability_gap_plan.md` C3。
+`next_action_momentum_enabled=true` 时，`/next refresh` 会额外跑
+`_find_momentum_goals()`：对每个 active Goal/Objective，把
+`GoalNode.status_history` 的时间戳序列当成一串累计计数点，套用跟成长
+顾问 P5-4"报告要不要刷新"同一套"最新点减窗口基线点"算法（抽成了共享
+函数 `growth_advisor._recent_delta_from_series()`），算出最近
+`next_action_momentum_window_days` 天内发生了多少次状态变更；达到
+`next_action_momentum_min_recent_events` 门槛的 Goal 生成一条
+`momentum_goal` 候选，提醒"这个方向最近正在被频繁推进，可能值得趁热
+打铁"。
+
+排序位置在 `stale_goal` 和 `attention_mismatch` 之间——`stale_goal` 是
+明确的既定目标（用户已经承诺要做、只是被搁置了），`momentum_goal` 是
+"正在发生的积极信号"，`attention_mismatch` 只是"可能"分心，三者按
+确定性从高到低排列。
+
+**默认关闭的原因**：用状态变更次数代表"活跃度"是一个比较粗的代理指标，
+这条规则还没有跑过真实数据验证，是否真的比现有两条规则更有参考价值
+有待观察——机制已经就位，需要用户在 `agent_config.json` 显式开启才会
+生效。
 
 ## decision_profile 排序加权（已接入，默认关闭）
 

@@ -3200,6 +3200,34 @@ _DEFAULT_REPORT_REFRESH_MIN_NEW_EVIDENCE = 3
 _REPORT_REFRESH_RECENT_BURST_WINDOW_DAYS = 14
 
 
+# [personal_researcher_and_coach_capability_gap_plan.md C3] 抽出跟\"证据
+# 存在形式\"无关的纯计算核心——只依赖一串 `(timestamp, count)` 快照点，
+# 不关心这些点是从哪个文件/哪种候选类型来的。`_recent_evidence_delta()`
+# （成长顾问的调研候选）和 `next_action_advisor.py` 里 Goal 动态的\"最近
+# 活跃度走势\"规则共用这一个函数，避免两边分别实现同一套\"最新点减去
+# 窗口边界基线点\"算法后出现口径漂移。
+def _recent_delta_from_series(
+    series: list[tuple[float, int]], *, window_days: int
+) -> Optional[int]:
+    """`series` 是按时间升序排列的 `(timestamp, cumulative_count)` 点列表。
+    计算最近 `window_days` 天内的增量：用最新一个点减去"窗口边界之前
+    最后一个点"（如果全部点都落在窗口内，说明历史本身就短，直接把最早
+    的一个点当基线，相当于把全部增量都算作"最近"）。点数不足 2 个（数据
+    不够判断）时返回 `None`——调用方应当把这种情况当"没有额外信息"处理，
+    不能默认成 0（0 意味着"确定没有最近突增"，跟"不知道"是两回事）。
+    """
+    if len(series) < 2:
+        return None
+    cutoff = time.time() - max(0, window_days) * 86400
+    baseline = series[0]
+    for point in series:
+        if point[0] <= cutoff:
+            baseline = point
+        else:
+            break
+    return max(0, series[-1][1] - baseline[1])
+
+
 def _recent_evidence_delta(paths, dedupe_key: str, *, window_days: int) -> Optional[int]:
     """从趋势快照里估算最近 `window_days` 天内新增了多少证据：用最新一个
     快照点减去"窗口边界之前最后一个快照点"（如果全部快照都落在窗口内，
@@ -3212,14 +3240,8 @@ def _recent_evidence_delta(paths, dedupe_key: str, *, window_days: int) -> Optio
     series = _topic_trend_series(paths, dedupe_key)
     if len(series) < 2:
         return None
-    cutoff = time.time() - max(0, window_days) * 86400
-    baseline = series[0]
-    for point in series:
-        if point["scanned_at"] <= cutoff:
-            baseline = point
-        else:
-            break
-    return max(0, series[-1]["evidence_count"] - baseline["evidence_count"])
+    points = [(p["scanned_at"], p["evidence_count"]) for p in series]
+    return _recent_delta_from_series(points, window_days=window_days)
 
 
 def reports_needing_refresh(paths, cfg=None, *, goal_backlog=None, profile=None) -> list[dict]:
@@ -6213,10 +6235,21 @@ def growth_topic_lifecycle(paths, dedupe_key: str, *, goal_backlog=None) -> list
     return events
 
 
-def monthly_retrospective_summary(paths) -> dict[str, Any]:
+def monthly_retrospective_summary(paths, *, goal_backlog=None) -> dict[str, Any]:
     """月度成长复盘统计。P2 在 P1 的数量统计基础上新增 `acceptance_rate`
     （采纳率）与按候选标题聚合的采纳/忽略排行——对应方案第 6 节"推荐命中
-    率"这类自我评估指标；跨候选的能力地图聚合仍留给 P3。"""
+    率"这类自我评估指标；跨候选的能力地图聚合仍留给 P3。
+
+    `goal_backlog`：[personal_researcher_and_coach_capability_gap_plan.md
+    C4] 可选。传入时（`GoalBacklog` 实例），返回值额外带上 `goal_overview`
+    字段——覆盖用户"全部 Goal"（不限于成长顾问自己产出的候选）的整体
+    统计：总数/按状态分布/按长期方向分组情况。这一段统计是纯粹在已有
+    `GoalBacklog` 数据上做只读聚合，不新建任何数据结构、不重新扫描信号，
+    复用的是月度复盘本来就有的"统计 + 排行"管线，只是把统计范围从"成长
+    顾问自己的候选"扩大到"用户的全部 Goal"。不传（`None`，默认值）时
+    行为与改动前完全一致，向后兼容所有既有调用方——`goal_overview` 键
+    此时不出现在返回值里，而不是恒定返回一个空字典占位。
+    """
     backlog = GrowthBacklog(paths)
     all_c = backlog.load_all()
     ledger = GrowthFeedbackLedger(paths).all_entries()
@@ -6244,7 +6277,7 @@ def monthly_retrospective_summary(paths) -> dict[str, Any]:
     report_quality_counts = _report_quality_dismiss_counts(paths)
     top_report_quality_flags = sorted(report_quality_counts.items(), key=lambda kv: -kv[1])[:5]
 
-    return {
+    result: dict[str, Any] = {
         "total_candidates": len(all_c),
         "accepted": accepted,
         "dismissed": dismissed,
@@ -6259,6 +6292,48 @@ def monthly_retrospective_summary(paths) -> dict[str, Any]:
         "report_quality_flags_total": sum(report_quality_counts.values()),
         "top_report_quality_flags": top_report_quality_flags,
         "topic_map": growth_topic_map(paths),
+    }
+
+    if goal_backlog is not None:
+        try:
+            result["goal_overview"] = _goal_overview_for_retrospective(goal_backlog)
+        except Exception:
+            # [C4] 这一段是"锦上添花"的补充统计，任何异常都不该拖垮整份
+            # 月度复盘（本来就已经算出来的成长顾问部分应该正常返回）。
+            pass
+
+    return result
+
+
+def _goal_overview_for_retrospective(goal_backlog) -> dict[str, Any]:
+    """[personal_researcher_and_coach_capability_gap_plan.md C4] 全部 Goal
+    的整体统计，供月度复盘附加展示。只统计 level="goal" 的节点（不含
+    Objective 子节点——那是执行细节，月报关心的是"用户设立的目标本身"
+    这一层），按 status 分布 + 按长期方向（C1 的 `direction_id` 分组）
+    分布两个维度聚合。纯只读，不修改 GoalBacklog 任何状态。
+    """
+    goals = [n for n in goal_backlog.all_nodes() if n.is_goal]
+    status_counts: dict[str, int] = {}
+    for g in goals:
+        status_counts[g.status] = status_counts.get(g.status, 0) + 1
+
+    directions = {d.id: d.title for d in goal_backlog.list_directions()}
+    by_direction: list[dict[str, Any]] = []
+    grouped = goal_backlog.goals_by_direction()
+    for direction_id, members in grouped.items():
+        by_direction.append({
+            "direction_id": direction_id,
+            "direction_title": directions.get(direction_id, "（未分组）") if direction_id else "（未分组）",
+            "goal_count": len(members),
+            "active_count": sum(1 for m in members if m.status == "active"),
+        })
+    by_direction.sort(key=lambda d: -d["goal_count"])
+
+    return {
+        "total_goals": len(goals),
+        "status_counts": status_counts,
+        "direction_count": len(directions),
+        "by_direction": by_direction,
     }
 
 

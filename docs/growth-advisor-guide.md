@@ -65,6 +65,9 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
   成长顾问触发场景之外，直接对任意主题发起持续调研），细节见
   `next_doc/personal_researcher_and_coach_capability_gap_plan.md` R1、
   `next_doc/personal_researcher_and_coach_capability_gap_implementation_record.md`。
+  同一份计划文档的 R2/R3（信源可信度标注、交叉验证质量门）也是在这
+  两个模板的骨架上做的增强，R3 默认关闭，见 `docs/goal-execution-spec-guide.md`
+  "交叉验证质量门"一节。
 - **素材要能沉淀成用户可以直接拿去学习的东西**，而不是散落的、互不
   衔接的多份一次性报告。倾向于让同一个方向的素材汇聚到同一份持续更新
   的页面里，带来源标注，而不是每跑一轮就新开一份文件。
@@ -210,7 +213,9 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
 1. 每天 22:30（`sys:growth_advisor_daily` cron job）自动跑一遍 2.1~2.4
    节的完整流程；
 2. 每 30 天（`sys:growth_monthly_retrospective`）生成一次月度复盘统计
-   （数量/采纳率/主题排行 + 跨候选的"成长主题地图"聚合）；
+   （数量/采纳率/主题排行 + 跨候选的"成长主题地图"聚合 + [C4，
+   `next_doc/personal_researcher_and_coach_capability_gap_plan.md`]
+   全部 Goal 的整体状态/长期方向分布概览）；
 3. 用户在看板/CLI/API 上采纳一个候选后（`auto_pursue_on_accept`
    默认开启），自动落地成 Goal 并绑定每天一轮的周期性执行，持续在
    同一份 wiki 页面上追加素材——见 演进日志 §2.12。
@@ -457,8 +462,9 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
   "证据不够强就不推荐"的一贯克制原则，需要用户显式选择打开，不会
   悄悄改变默认的推荐排序行为；打开后也只影响 Top-N 报告生成，不影响
   推送优先级排序；
-- 月度复盘仍只有数量统计 + 采纳率 + 主题排行 + 跨候选主题地图 + P6
-  新增的报告质量排行；地图目前只是聚合展示，不做预测或自动排序推荐；
+- 月度复盘现在有数量统计 + 采纳率 + 主题排行 + 跨候选主题地图 + P6
+  的报告质量排行 + [C4] 全部 Goal 的整体状态/长期方向分布概览；地图和
+  Goal 概览都只是聚合展示，不做预测或自动排序推荐；
 - 看板拖拽式视图依赖可选包 `streamlit-sortables`，未安装时自动回退到
   列表 + 按钮；即便安装了，从"已采纳"/"已忽略"拖回"待处理"也不生效
   （后端 API 本来就不支持撤销采纳/忽略这个操作）；拖拽视图目前也不

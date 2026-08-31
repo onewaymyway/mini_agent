@@ -329,10 +329,26 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
         return
 
     if sub == "retrospective":
-        summary = ga.monthly_retrospective_summary(paths)
+        goal_backlog = _get_goal_backlog(paths)
+        summary = ga.monthly_retrospective_summary(paths, goal_backlog=goal_backlog)
         R.console.print("[bold]成长顾问月度复盘：[/bold]")
         for k, v in summary.items():
+            if k == "goal_overview":
+                continue
             R.console.print(f"  {k}: {v}")
+        # [personal_researcher_and_coach_capability_gap_plan.md C4]
+        # 全部 Goal 综合概览，单独一个段落展示，不跟成长顾问自己的候选
+        # 统计混排——两者是不同粒度的信息（"成长顾问候选的采纳情况" vs
+        # "用户全部 Goal 的整体状态"）。
+        overview = summary.get("goal_overview")
+        if overview:
+            R.console.print("\n[bold]全部 Goal 概览：[/bold]")
+            R.console.print(f"  总数: {overview['total_goals']}")
+            R.console.print(f"  按状态: {overview['status_counts']}")
+            if overview["by_direction"]:
+                R.console.print("  按长期方向:")
+                for d in overview["by_direction"]:
+                    R.console.print(f"    {d['direction_title']}: {d['goal_count']} 个（其中 active {d['active_count']} 个）")
         return
 
     if sub == "align":
