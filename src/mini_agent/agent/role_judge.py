@@ -490,6 +490,12 @@ class RoleJudgeMixin:
         except Exception:
             pass
 
+        # [方案 E 阶段 4 冲突检测扩展 第2组判官对] 暴露本轮 TurnJudge 的
+        # 最终判定状态（已含上面 evaluator 冲突消解后的结果），供 GoalRunner
+        # 在同一轮内与 GoalJudge 的判定做交叉校验（见 goal_mode/runner.py
+        # `_run_judge`）。只读暴露，不驱动 TurnJudge 自身的任何决策。
+        self._last_turn_judge_status = status
+
         feedback_obj = RoleFeedback(
             role_name="turn_judge",
             role_type="turn_judge",

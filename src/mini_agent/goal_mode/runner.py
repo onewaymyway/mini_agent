@@ -818,6 +818,34 @@ class GoalRunner:
             pass
 
         self._last_stuck_category = progress_info.get("stuck_category", "unknown")
+
+        # [方案 E 阶段 4 冲突检测扩展 第2组判官对：GoalJudge × TurnJudge]
+        # 同一轮内，若主 Agent 的 run_turn() 已经跑过 TurnJudge 并留下了
+        # 最终判定（见 agent/role_judge.py 的 self._last_turn_judge_status），
+        # 而 TurnJudge 判定为 AUTO_CONTINUE（认为不需要打断用户），但本轮
+        # GoalJudge 却判定 NEED_COMPACT（认为目标执行卡住需要压缩历史）——
+        # 这与已有的 TurnJudge×Evaluator 冲突是同一类矛盾信号（一个判官说
+        # "没问题、继续"，另一个判官说"有问题、需要更重的干预"），值得同样
+        # 记录下来供后续复盘。仅记录，不改变 GoalJudge 的判定（GoalRunner
+        # 有自己独立的 NEED_COMPACT/卡住恢复处理逻辑，不需要像 TurnJudge
+        # 那样"收紧为 NEED_USER"这种消解方式）。
+        try:
+            tj_status = getattr(self._agent, "_last_turn_judge_status", None)
+            if tj_status == "AUTO_CONTINUE" and status == "NEED_COMPACT":
+                from mini_agent.role_agents.judge_calibration import record_conflict_event
+                record_conflict_event(
+                    self._paths,
+                    judge_a="goal_judge",
+                    status_a=status,
+                    judge_b="turn_judge",
+                    status_b=tj_status,
+                    round_no=self._round + 1,
+                    session_id=getattr(self._agent, "session_id", "") or "",
+                    context="GoalJudge 判定 NEED_COMPACT（目标执行疑似卡住），但同轮 TurnJudge 判定 AUTO_CONTINUE。",
+                )
+        except Exception:
+            pass
+
         return status, display_text, progress_info
 
     # ── 内部：进展分数（§3.1）────────────────────────────────────────────

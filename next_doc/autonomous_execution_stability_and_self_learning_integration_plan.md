@@ -5,9 +5,11 @@
 > 事件沉淀、以及完整接入 lesson_review 门槛判定）已完成代码落地，均默认
 > 关闭或纯增量、向后兼容。阶段 4（多判官冲突记录、限定场景的"取更保守值"
 > 实际收紧、判官校准建议报告 + `/agent goals judge-calibration` 命令）
-> 已完成主要工作，均默认关闭或纯只读展示；"覆盖更多判官组合"与"自动
-> 改写判官 prompt/阈值"仍明确不做，按计划要求需要人工介入。各阶段的
-> 具体改动清单见文末"实施记录"一节。
+> 已完成主要工作，均默认关闭或纯只读展示；此外已补齐此前遗留的三个
+> 后续方向：`goal_cron` 场景接入 `execution_notes`、TurnJudge×GoalJudge
+> 信号互相可见（暂不改变决策）、冲突检测扩展到 GoalJudge×TurnJudge 第二组
+> 判官对。"自动改写判官 prompt/阈值"仍明确不做，按计划要求需要人工介入。
+> 各阶段的具体改动清单见文末"实施记录"一节。
 
 > 基于 `mini_agent-master` 实际代码梳理（`role_agents/turn_judge.py`、`role_agents/goal_judge.py`、
 > `role_agents/stuck_detector.py`、`role_agents/dispatcher.py`、`goal_mode/`、
@@ -383,6 +385,8 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
 | `src/mini_agent/goal_mode/runner.py` | 修改 | 新增 `_maybe_record_goal_cron_execution_note()`：`genuine_difficulty` 归因且 `recoveries_used >= 2` 时记一条 `execution_notes` 摘要，在 `_try_stuck_recovery` 中 `_try_attributed_recovery` 返回 `None` 后调用 |
 | `src/mini_agent/agent/role_judge.py` | 修改 | `_maybe_run_turn_judge()` 把算出的 `confidence` 存入 `self._last_turn_judge_confidence`（无论是否为 `None`），供同一 Agent 实例的 GoalRunner 读取 |
 | `src/mini_agent/goal_mode/runner.py` | 修改 | `_run_judge()` 记录 goal_judge 校准事件时，若能读到 `self._agent._last_turn_judge_confidence`，拼进 `note` 字段，便于复盘时对照两个判官同时段的判断（不改变任何决策） |
+| `src/mini_agent/agent/role_judge.py` | 修改 | `_maybe_run_turn_judge()` 在冲突消解逻辑之后暴露 `self._last_turn_judge_status`（本轮最终判定） |
+| `src/mini_agent/goal_mode/runner.py` | 修改 | `_run_judge()` 新增 GoalJudge×TurnJudge 冲突检测：本轮 TurnJudge 为 `AUTO_CONTINUE` 而 GoalJudge 为 `NEED_COMPACT` 时记一条 `judge_conflict_events.jsonl` 事件，仅记录不消解 |
 
 ### 阶段 3：判定过程回写经验
 
@@ -434,8 +438,20 @@ GoalJudge 永远判不出 DONE，只能靠运行时卡住检测被动发现，�
    `genuine_difficulty` 但同期 TurnJudge 置信度很低时提前升级为
    `NEED_USER`）——按方案 D.4/阶段4一贯的"先观察真实数据分布，再决定是否
    值得做"原则，留给后续评估。
-3. 扩展阶段 4 冲突检测/收紧覆盖更多判官组合（当前只覆盖 TurnJudge ×
-   Evaluator 这一个同轮双判官的场景）。
+3. ~~扩展阶段 4 冲突检测覆盖更多判官组合~~ ——**已扩展第二组：GoalJudge ×
+   TurnJudge。** `agent/role_judge.py` 的 `_maybe_run_turn_judge()` 在冲突
+   消解逻辑之后暴露 `self._last_turn_judge_status`（本轮 TurnJudge 的最终
+   判定，含 evaluator 冲突消解后的结果）；`goal_mode/runner.py` 的
+   `_run_judge()` 在算出 GoalJudge 本轮状态后，若同一 Agent 实例上的
+   `_last_turn_judge_status == "AUTO_CONTINUE"` 而 GoalJudge 本身判定为
+   `NEED_COMPACT`，记一条 `judge_conflict_events.jsonl` 事件（`judge_a=
+   "goal_judge"`, `judge_b="turn_judge"`）。与 TurnJudge×Evaluator 那组
+   一样，**只记录，不消解**——GoalRunner 已经有自己独立的
+   NEED_COMPACT/卡住恢复处理链路，不需要（也不适合）套用 TurnJudge 那种
+   "收紧为 NEED_USER"的消解方式，是否要在这组冲突上做类似的自动收紧，
+   留给积累数据后经 `/agent goals judge-calibration` 观察再评估。仍未覆盖：
+   GoalJudge 与 Evaluator/Coach 同轮触发的冲突（目前代码里两者不在同一次
+   `run_turn` 调用链路里直接可比，需要更多梳理）。
 4. `conflict_resolution_enabled` 默认开启的时机评估——需要先通过
    `/agent goals judge-calibration` 观察一段时间的真实冲突频率和收紧后的
    用户反馈，再决定是否把默认值改为 True。
