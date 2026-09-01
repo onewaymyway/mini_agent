@@ -124,15 +124,20 @@ def load_pool(path: Path) -> Dict[str, CandidateEntry]:
     except json.JSONDecodeError:
         # 与账本损坏容错的既有约定一致：损坏时退化为空池，而不是炸掉整次运行
         return {}
-    return {item["code"]: CandidateEntry.from_dict(item) for item in raw}
+    # 兼容两种格式：列表（旧格式）和字典（新双池格式）
+    if isinstance(raw, list):
+        return {item["code"]: CandidateEntry.from_dict(item) for item in raw}
+    elif isinstance(raw, dict):
+        return {code: CandidateEntry.from_dict(item) for code, item in raw.items()}
+    return {}
 
 
 def save_pool(path: Path, pool: Dict[str, CandidateEntry]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    ordered = sorted(pool.values(), key=lambda e: e.score, reverse=True)
+    # 保存为字典格式（code -> entry_dict），保持与 load_pool 兼容
     tmp = path.with_suffix(".tmp")
     tmp.write_text(
-        json.dumps([e.to_dict() for e in ordered], ensure_ascii=False, indent=2),
+        json.dumps({code: e.to_dict() for code, e in pool.items()}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     tmp.replace(path)
