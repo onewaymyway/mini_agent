@@ -181,3 +181,4 @@ research/agent_and_ai/articles/
 .agent/monthly_trend_retrospective_state.json
 .agent/scheduler_heartbeat_status.json
 .agent/judge_calibration_events.jsonl
+external_projects/stock_watch/reports/
