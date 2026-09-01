@@ -28,6 +28,8 @@ from mini_agent.evolution.capability_learning import (
     CapabilityQuestionStore,
     CapabilityTrackStore,
     accept_outline_suggestion,
+    apply_outline_revision,
+    revise_outline_with_llm,
 )
 from mini_agent.orchestrator.persona_profiles import (
     get_persona_loader,
@@ -97,6 +99,18 @@ class SetPersonaWikiScopesBody(BaseModel):
     wiki_scopes: list[str]
 
 
+class ApplyOutlineRevisionBody(BaseModel):
+    ops: list[dict]
+
+
+class AddOutlineTopicBody(BaseModel):
+    name: str
+
+
+class RenameOutlineTopicBody(BaseModel):
+    name: str
+
+
 # ── Track 端点 ───────────────────────────────────────────────────────────
 
 
@@ -164,6 +178,70 @@ def refresh_all_topics(request: Request, track_id: Optional[str] = None):
 def get_track_ledger(request: Request, track_id: str, limit: int = 50):
     store = CapabilityLedgerStore(_get_paths(request))
     return {"entries": [e.to_dict() for e in store.list_for_track(track_id, limit=limit)]}
+
+
+# ── [next_doc/outline_revision_and_suggestion_improvement_plan.md §一]
+# 大纲修订端点：LLM 生成 diff（不落盘，纯预览）→ 用户勾选后应用；
+# 以及手动增/改名/删三个薄端点。四个端点共用同一份落地逻辑
+# （apply_outline_revision），保证行为一致。
+
+
+@capability_router.post("/tracks/{track_id}/outline/revise")
+def revise_track_outline(request: Request, track_id: str):
+    """用 LLM 在当前大纲基础上生成修订建议（ADD/RENAME/REMOVE），不落盘，
+    供看板渲染成带复选框的清单，用户勾选后调用 apply_revision 端点写回。
+    拿不到 llm_helper 或 LLM 起草失败时返回 `{"ops": []}`（不报错）。"""
+    paths = _get_paths(request)
+    track = CapabilityTrackStore(paths).get(track_id)
+    if track is None:
+        raise HTTPException(status_code=404, detail="track not found")
+    llm_helper = _get_llm_helper(request)
+    ops = revise_outline_with_llm(track, llm_helper)
+    return {"track_id": track_id, "ops": ops}
+
+
+@capability_router.post("/tracks/{track_id}/outline/apply_revision")
+def apply_track_outline_revision(request: Request, track_id: str, body: ApplyOutlineRevisionBody):
+    """把用户勾选保留的 ops（revise 端点返回的子集，或前端自行拼装的
+    add/rename/remove 操作）应用到当前大纲上并落盘。"""
+    track = apply_outline_revision(_get_paths(request), track_id, body.ops)
+    if track is None:
+        raise HTTPException(status_code=404, detail="track not found")
+    return track.to_dict()
+
+
+@capability_router.post("/tracks/{track_id}/outline/topics")
+def add_track_outline_topic(request: Request, track_id: str, body: AddOutlineTopicBody):
+    """手动新增一个大纲子主题。"""
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name must not be empty")
+    track = CapabilityTrackStore(_get_paths(request)).add_outline_topic(track_id, name)
+    if track is None:
+        raise HTTPException(status_code=404, detail="track not found")
+    return track.to_dict()
+
+
+@capability_router.patch("/tracks/{track_id}/outline/topics/{topic_id}")
+def rename_track_outline_topic(request: Request, track_id: str, topic_id: str, body: RenameOutlineTopicBody):
+    """手动给某个子主题改名——只改 name，coverage_state/wiki_page_ids
+    等学习进度不变。"""
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name must not be empty")
+    track = CapabilityTrackStore(_get_paths(request)).rename_outline_topic(track_id, topic_id, name)
+    if track is None:
+        raise HTTPException(status_code=404, detail="track not found")
+    return track.to_dict()
+
+
+@capability_router.delete("/tracks/{track_id}/outline/topics/{topic_id}")
+def remove_track_outline_topic(request: Request, track_id: str, topic_id: str):
+    """手动删除一个子主题（不级联删除已沉淀的 wiki 页面）。"""
+    track = CapabilityTrackStore(_get_paths(request)).remove_outline_topic(track_id, topic_id)
+    if track is None:
+        raise HTTPException(status_code=404, detail="track not found")
+    return track.to_dict()
 
 
 # ── 异步问答端点 ─────────────────────────────────────────────────────────

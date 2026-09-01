@@ -1331,6 +1331,25 @@ class AgentClient:
     def capability_track_ledger(self, track_id: str, limit: int = 50):
         return self._get(f"/capability/tracks/{track_id}/ledger", params={"limit": limit})
 
+    # ── [next_doc/outline_revision_and_suggestion_improvement_plan.md §一]
+    # 大纲修订（LLM diff 预览 + 应用）与手动增/改名/删。
+    def revise_capability_outline(self, track_id: str):
+        """用 LLM 生成大纲修订建议（不落盘），返回 `{"ops": [...]}`。"""
+        return self._post(f"/capability/tracks/{track_id}/outline/revise")
+
+    def apply_capability_outline_revision(self, track_id: str, ops: list):
+        """把用户勾选保留的 ops 应用到大纲上并落盘。"""
+        return self._post(f"/capability/tracks/{track_id}/outline/apply_revision", {"ops": ops})
+
+    def add_capability_outline_topic(self, track_id: str, name: str):
+        return self._post(f"/capability/tracks/{track_id}/outline/topics", {"name": name})
+
+    def rename_capability_outline_topic(self, track_id: str, topic_id: str, name: str):
+        return self._patch(f"/capability/tracks/{track_id}/outline/topics/{topic_id}", {"name": name})
+
+    def remove_capability_outline_topic(self, track_id: str, topic_id: str):
+        return self._delete(f"/capability/tracks/{track_id}/outline/topics/{topic_id}")
+
     def capability_questions(self, status: str = None, track_id: str = None):
         params = {}
         if status:

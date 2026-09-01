@@ -7311,33 +7311,161 @@ def render_capability_tab(client: "AgentClient"):
                     st.success(f"已把 {resp.get('topics_reset', 0)} 个已覆盖子主题重置为待刷新。")
                     st.rerun()
 
+            # ── [next_doc/outline_revision_and_suggestion_improvement_plan.md
+            #    §一] 大纲修订区：LLM 生成 diff 预览（用户勾选后应用）+
+            #    手动新增子主题。放在"能力大纲覆盖状态"上方，空大纲场景
+            #    （本次问题的起因）复用同一个入口，等价于全部是 ADD。
+            track_id_for_outline = track.get("track_id", "")
+            st.markdown("**大纲编辑**")
+            revise_ops_key = f"cap_outline_revise_ops_{track_id_for_outline}"
+            if st.button("🤖 生成/刷新大纲建议", key=f"cap_outline_revise_btn_{track_id_for_outline}"):
+                resp = client.revise_capability_outline(track_id_for_outline)
+                if isinstance(resp, dict) and resp.get("_error"):
+                    st.error(f"生成建议失败：{resp['_error']}")
+                else:
+                    ops = resp.get("ops", []) if isinstance(resp, dict) else []
+                    st.session_state[revise_ops_key] = ops
+                    if not ops:
+                        st.info("本次没有生成有效的修订建议（可能是大纲已经很完整，或当前没有可用的 LLM）。")
+                    st.rerun()
+
+            pending_ops = st.session_state.get(revise_ops_key) or []
+            if pending_ops:
+                add_ops = [o for o in pending_ops if o.get("op") == "add"]
+                rename_ops = [o for o in pending_ops if o.get("op") == "rename"]
+                remove_ops = [o for o in pending_ops if o.get("op") == "remove"]
+                st.caption(
+                    f"建议新增 {len(add_ops)} 个　建议改名 {len(rename_ops)} 个　"
+                    f"建议移除 {len(remove_ops)} 个 —— 勾选保留、取消不需要的，再点「应用」。"
+                    "（新增默认勾选，改名/移除默认不勾选，更保守）"
+                )
+                selected_ops = []
+                for i, op in enumerate(add_ops):
+                    key = f"cap_outline_op_add_{track_id_for_outline}_{i}"
+                    checked = st.checkbox(f"➕ 新增「{op.get('name', '')}」", value=True, key=key)
+                    if checked:
+                        selected_ops.append(op)
+                for i, op in enumerate(rename_ops):
+                    key = f"cap_outline_op_rename_{track_id_for_outline}_{i}"
+                    checked = st.checkbox(
+                        f"✏️ 「{op.get('old_name', '')}」→「{op.get('name', '')}」",
+                        value=False, key=key,
+                    )
+                    if checked:
+                        selected_ops.append(op)
+                for i, op in enumerate(remove_ops):
+                    key = f"cap_outline_op_remove_{track_id_for_outline}_{i}"
+                    checked = st.checkbox(f"🗑️ 移除「{op.get('name', '')}」", value=False, key=key)
+                    if checked:
+                        selected_ops.append(op)
+                apply_col, discard_col = st.columns([1, 1])
+                with apply_col:
+                    if st.button("✅ 应用勾选的修订", key=f"cap_outline_apply_btn_{track_id_for_outline}"):
+                        if not selected_ops:
+                            st.warning("没有勾选任何修订，未做任何改动。")
+                        else:
+                            resp = client.apply_capability_outline_revision(track_id_for_outline, selected_ops)
+                            if isinstance(resp, dict) and resp.get("_error"):
+                                st.error(f"应用失败：{resp['_error']}")
+                            else:
+                                st.session_state.pop(revise_ops_key, None)
+                                st.success(f"已应用 {len(selected_ops)} 条修订。")
+                                st.rerun()
+                with discard_col:
+                    if st.button("放弃这批建议", key=f"cap_outline_discard_btn_{track_id_for_outline}"):
+                        st.session_state.pop(revise_ops_key, None)
+                        st.rerun()
+
+            with st.form(f"cap_outline_add_topic_form_{track_id_for_outline}", clear_on_submit=True):
+                new_topic_name = st.text_input("手动新增子主题", placeholder="龙虎榜数据解读")
+                add_submitted = st.form_submit_button("➕ 新增")
+            if add_submitted:
+                if not (new_topic_name or "").strip():
+                    st.warning("子主题名称不能为空。")
+                else:
+                    resp = client.add_capability_outline_topic(track_id_for_outline, new_topic_name.strip())
+                    if isinstance(resp, dict) and resp.get("_error"):
+                        st.error(f"新增失败：{resp['_error']}")
+                    else:
+                        st.success(f"已新增子主题「{new_topic_name.strip()}」。")
+                        st.rerun()
+
             # ── 7.2 进度展示区：大纲覆盖状态 + 学习台账 ──────────────
             if outline:
                 st.markdown("**能力大纲覆盖状态**")
                 state_icon = {"uncovered": "⬜", "partial": "🟨", "covered": "✅"}
                 for topic in outline:
+                    topic_id = topic.get("topic_id", "")
                     page_ids = topic.get("wiki_page_ids", []) or []
                     icon = state_icon.get(topic.get("coverage_state", "uncovered"), "⬜")
-                    row_cols = st.columns([5, 1]) if page_ids else [st.container()]
-                    with row_cols[0]:
+                    name_col, view_col, rename_col, delete_col = st.columns([5, 1, 1, 1])
+                    with name_col:
                         st.write(f"{icon} {topic.get('name', '')}"
                                  + (f"　（关联 {len(page_ids)} 篇 wiki 页面）" if page_ids else ""))
                     # 直接查看对应 wiki 内容，不只是显示"关联 N 篇"这个数字
+                    view_key = f"cap_wiki_view_{track_id_for_outline}_{topic_id}"
                     if page_ids:
-                        with row_cols[1]:
-                            view_key = f"cap_wiki_view_{track.get('track_id', '')}_{topic.get('topic_id', '')}"
+                        with view_col:
                             if st.button("查看", key=f"cap_wiki_btn_{view_key}"):
                                 st.session_state[view_key] = not st.session_state.get(view_key, False)
-                        if st.session_state.get(view_key):
-                            for pid in page_ids:
-                                page_resp = client.capability_wiki_page(pid)
-                                with st.expander(f"📄 {pid}", expanded=True):
-                                    if isinstance(page_resp, dict) and page_resp.get("_error"):
-                                        st.caption(f"页面加载失败：{page_resp['_error']}")
+                    # ✏️ 手动改名
+                    rename_open_key = f"cap_outline_rename_open_{track_id_for_outline}_{topic_id}"
+                    with rename_col:
+                        if st.button("✏️", key=f"cap_outline_rename_btn_{track_id_for_outline}_{topic_id}"):
+                            st.session_state[rename_open_key] = not st.session_state.get(rename_open_key, False)
+                    # 🗑️ 手动删除（二次确认）
+                    delete_confirm_key = f"cap_outline_delete_confirm_{track_id_for_outline}_{topic_id}"
+                    with delete_col:
+                        if st.button("🗑️", key=f"cap_outline_delete_btn_{track_id_for_outline}_{topic_id}"):
+                            st.session_state[delete_confirm_key] = not st.session_state.get(delete_confirm_key, False)
+
+                    if st.session_state.get(rename_open_key):
+                        rename_input_col, rename_submit_col = st.columns([4, 1])
+                        with rename_input_col:
+                            renamed = st.text_input(
+                                "新名称", value=topic.get("name", ""),
+                                key=f"cap_outline_rename_input_{track_id_for_outline}_{topic_id}",
+                                label_visibility="collapsed",
+                            )
+                        with rename_submit_col:
+                            if st.button("确认改名", key=f"cap_outline_rename_confirm_{track_id_for_outline}_{topic_id}"):
+                                if not (renamed or "").strip():
+                                    st.warning("名称不能为空。")
+                                else:
+                                    resp = client.rename_capability_outline_topic(
+                                        track_id_for_outline, topic_id, renamed.strip(),
+                                    )
+                                    if isinstance(resp, dict) and resp.get("_error"):
+                                        st.error(f"改名失败：{resp['_error']}")
                                     else:
-                                        st.markdown(page_resp.get("body", "") if isinstance(page_resp, dict) else "")
+                                        st.session_state[rename_open_key] = False
+                                        st.rerun()
+                    if st.session_state.get(delete_confirm_key):
+                        st.warning(f"确认删除子主题「{topic.get('name', '')}」？不会删除已沉淀的 wiki 页面。")
+                        confirm_col, cancel_col = st.columns([1, 1])
+                        with confirm_col:
+                            if st.button("确认删除", key=f"cap_outline_delete_confirm_btn_{track_id_for_outline}_{topic_id}"):
+                                resp = client.remove_capability_outline_topic(track_id_for_outline, topic_id)
+                                if isinstance(resp, dict) and resp.get("_error"):
+                                    st.error(f"删除失败：{resp['_error']}")
+                                else:
+                                    st.session_state[delete_confirm_key] = False
+                                    st.rerun()
+                        with cancel_col:
+                            if st.button("取消", key=f"cap_outline_delete_cancel_btn_{track_id_for_outline}_{topic_id}"):
+                                st.session_state[delete_confirm_key] = False
+                                st.rerun()
+
+                    if st.session_state.get(view_key):
+                        for pid in page_ids:
+                            page_resp = client.capability_wiki_page(pid)
+                            with st.expander(f"📄 {pid}", expanded=True):
+                                if isinstance(page_resp, dict) and page_resp.get("_error"):
+                                    st.caption(f"页面加载失败：{page_resp['_error']}")
+                                else:
+                                    st.markdown(page_resp.get("body", "") if isinstance(page_resp, dict) else "")
             else:
-                st.caption("这个 Track 还没有大纲子主题。")
+                st.caption("这个 Track 还没有大纲子主题。可以点上面「🤖 生成/刷新大纲建议」用 LLM 起草，或手动新增。")
 
             ledger_resp = client.capability_track_ledger(track.get("track_id", ""), limit=10)
             entries = ledger_resp.get("entries", []) if isinstance(ledger_resp, dict) else []
@@ -7347,6 +7475,9 @@ def render_capability_tab(client: "AgentClient"):
                     "researched": "🔍 已检索沉淀", "question_raised": "❓ 已生成问题",
                     "question_answered": "💬 已消费回答", "skipped": "⏭️ 已跳过",
                     "miss_observed": "📌 记录到一次检索未命中",
+                    "outline_suggested": "💡 生成大纲扩展建议",
+                    "reused": "♻️ 跨 Track 复用", "research_empty": "🕳️ 检索无结果",
+                    "research_thin": "🪶 检索内容偏薄",
                 }
                 for entry in entries[:10]:
                     ts = entry.get("cycle_ts")
@@ -7575,12 +7706,19 @@ def render_capability_tab(client: "AgentClient"):
         st.caption("目前没有待处理的大纲扩展建议（回答异步问题后，若答案里提到明显的新方向，会在这里出现）。")
     else:
         track_titles = {t["track_id"]: t.get("title", "") for t in tracks}
+        source_label = {
+            "answer": "💬 回答驱动", "miss_counts": "📌 检索未命中驱动",
+            "research": "🔍 检索沉淀驱动", "milestone": "🏁 覆盖率里程碑驱动",
+        }
         for s in pending_suggestions:
             with st.container(border=True):
                 st.write(f"建议新增子主题：**{s.get('suggested_name', '')}**")
                 if s.get("rationale"):
                     st.caption(s["rationale"])
-                st.caption(f"来自：{track_titles.get(s.get('track_id', ''), s.get('track_id', ''))}")
+                st.caption(
+                    f"来自：{track_titles.get(s.get('track_id', ''), s.get('track_id', ''))}　"
+                    f"{source_label.get(s.get('source', 'answer'), s.get('source', ''))}"
+                )
                 bcols = st.columns([1, 1, 6])
                 with bcols[0]:
                     if st.button("采纳", key=f"cap_sug_accept_{s['suggestion_id']}"):

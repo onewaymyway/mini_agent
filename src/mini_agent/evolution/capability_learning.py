@@ -95,6 +95,15 @@
       匹配）在其它 active Track 里找名字高度相似且已 covered 的子
       主题，命中就直接复用其 wiki 页面（台账记为 action="reused"），
       不重复检索——只在本子主题自己还没有任何 wiki 页面时才会触发
+    - [next_doc/outline_revision_and_suggestion_improvement_plan.md]
+      大纲修订从"整体替换"改成"基于旧大纲的 diff"：
+      `revise_outline_with_llm()` 只输出 ADD/RENAME/REMOVE 变更（不落盘，
+      纯预览），`apply_outline_revision()` 是"重新生成大纲"和"手动编辑
+      大纲"共同的落地函数（rename/remove 都不影响既有 coverage_state/
+      wiki_page_ids）。自动大纲建议新增三个并列来源：miss_counts 驱动
+      （规则式、默认开启）、检索沉淀驱动 / 覆盖率里程碑驱动（都要调
+      LLM、默认关闭），均由 `run_capability_learning_cycle()` 新增的
+      `outline_suggestion_*` 关键字参数控制
 
 留给 P3 的方向（P1/P2 刻意不做，避免过早引入不确定性/耦合）：
     - target_type="persona" 全链路（人设草稿生成 / 发布，见文档 §10）
@@ -180,6 +189,17 @@ class CapabilityTrack:
     # 向后兼容旧数据（旧 Track 文件没有这个字段时 from_dict 里默认 None）。
     last_advanced_at: Optional[float] = None
 
+    # [next_doc/outline_revision_and_suggestion_improvement_plan.md §二-2]
+    # "检索沉淀驱动"大纲建议的节流时间戳：每个 Track 每天最多触发一次 LLM
+    # 调用，避免每轮循环都额外多一次 LLM 调用。None = 从未触发过。
+    outline_research_suggestion_last_at: Optional[float] = None
+
+    # [next_doc/outline_revision_and_suggestion_improvement_plan.md §二-3]
+    # "覆盖率里程碑驱动"大纲建议是否已经为这个 Track 触发过一次——覆盖率
+    # 达到阈值时只问一次，不会因为后续每轮循环覆盖率仍然达标而重复生成
+    # 建议。默认 False（向后兼容：旧 Track 数据没有这个字段时视为未触发）。
+    outline_milestone_notified: bool = False
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["outline"] = [t.to_dict() for t in self.outline]
@@ -200,6 +220,8 @@ class CapabilityTrack:
             updated_at=d.get("updated_at", time.time()),
             cadence=d.get("cadence", "interval:21600"),
             last_advanced_at=d.get("last_advanced_at"),
+            outline_research_suggestion_last_at=d.get("outline_research_suggestion_last_at"),
+            outline_milestone_notified=d.get("outline_milestone_notified", False),
         )
 
 
@@ -276,6 +298,11 @@ class OutlineSuggestion:
     rationale: str = ""
     status: str = "pending"                       # pending / accepted / dismissed
     created_at: float = field(default_factory=time.time)
+    # [next_doc/outline_revision_and_suggestion_improvement_plan.md §二]
+    # 建议来源，供看板展示区分。"answer"（默认，此前唯一来源，向后兼容）/
+    # "miss_counts"（规则式，检索未命中驱动）/ "research"（检索沉淀驱动）/
+    # "milestone"（覆盖率里程碑驱动）。不影响任何既有行为，纯展示用途。
+    source: str = "answer"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -290,6 +317,7 @@ class OutlineSuggestion:
             rationale=d.get("rationale", ""),
             status=d.get("status", "pending"),
             created_at=d.get("created_at", time.time()),
+            source=d.get("source", "answer"),
         )
 
 
@@ -500,6 +528,26 @@ class CapabilityTrackStore:
         if topics_reset:
             self._save_all(tracks)
         return {"tracks_affected": tracks_affected, "topics_reset": topics_reset}
+
+    # ── [next_doc/outline_revision_and_suggestion_improvement_plan.md §一]
+    # 手动编辑大纲的三个薄封装——增/改名/删，内部都委托给
+    # `apply_outline_revision()`，和"重新生成大纲（LLM diff）"共用同一份
+    # 落地逻辑，保证两条路径行为一致（尤其是 rename/remove 都不影响
+    # coverage_state/wiki_page_ids/last_touched_at）。`paths` 参数取自
+    # `self._paths`，调用方不需要重复传入。
+
+    def add_outline_topic(self, track_id: str, name: str) -> Optional[CapabilityTrack]:
+        return apply_outline_revision(self._paths, track_id, [{"op": "add", "name": name}])
+
+    def rename_outline_topic(self, track_id: str, topic_id: str, name: str) -> Optional[CapabilityTrack]:
+        return apply_outline_revision(
+            self._paths, track_id, [{"op": "rename", "topic_id": topic_id, "name": name}],
+        )
+
+    def remove_outline_topic(self, track_id: str, topic_id: str) -> Optional[CapabilityTrack]:
+        return apply_outline_revision(
+            self._paths, track_id, [{"op": "remove", "topic_id": topic_id}],
+        )
 
 
 # ── CapabilityLedgerStore：单 Track 的进度台账 ─────────────────────────────
@@ -777,6 +825,341 @@ def accept_outline_suggestion(
     track_store.update(track.track_id, outline=track.outline + [new_topic])
     suggestion_store.mark_accepted(suggestion_id)
     return new_topic
+
+
+# ── 自动大纲建议的三个新来源（§二，next_doc/outline_revision_and_
+#    suggestion_improvement_plan.md）────────────────────────────────────
+#
+# 与上面 generate_outline_suggestion_from_answer() 是同一条 OutlineSuggestion
+# 队列的四个并列生产者，互不依赖；生成的建议一律走既有的
+# CapabilityOutlineSuggestionStore + 看板"💡 大纲扩展建议"区采纳/忽略。
+
+
+def _extract_miss_query_counts(
+    ledger_store: "CapabilityLedgerStore", track_id: str, limit: int = 200,
+) -> dict[str, int]:
+    """统计某个 Track 台账里最近 `limit` 条 `miss_observed` 记录中，各
+    检索 query 文本（`record_wiki_miss()` 落盘时 summary 格式固定为
+    "检索未命中：{query}"）出现的次数——和 `_topic_miss_counts()` 按
+    `topic_id` 聚合不同，这里按**具体查询文本**聚合，因为多数 miss
+    记录的 `topic_id` 就是 persona 名字或 "unclassified"（不对应任何
+    现有子主题），没法直接用来判断"哪个子主题该被优先推进"，但恰好
+    可以用来判断"哪个反复被问到的方向压根不在大纲里"。"""
+    entries = ledger_store.list_for_track(track_id, limit=limit)
+    counts: dict[str, int] = {}
+    for e in entries:
+        if e.action != "miss_observed":
+            continue
+        query = e.summary.split("：", 1)[-1].strip() if "：" in e.summary else e.summary.strip()
+        if not query:
+            continue
+        counts[query] = counts.get(query, 0) + 1
+    return counts
+
+
+def generate_outline_suggestion_from_miss_counts(
+    track: CapabilityTrack,
+    ledger_store: "CapabilityLedgerStore",
+    threshold: int = 3,
+    existing_pending_names: Optional[list[str]] = None,
+) -> Optional[OutlineSuggestion]:
+    """[规则式，不调用 LLM，默认开启] 检索未命中的查询文本在最近 200 条
+    台账里出现次数达到 `threshold` 次、且与现有大纲/已有 pending 建议都
+    不相似时，直接生成一条建议——用户反复搜不到答案的方向，本身就是
+    "大纲有缺口"的强信号，不需要 LLM 判断。
+
+    多个查询同时达标时，取出现次数最多的一个（最保守：每次调用最多
+    产出一条建议，调用方——`run_capability_learning_cycle()`——每轮每个
+    Track 只调用一次，避免同一轮里因为一堆相似的未命中查询生成多条
+    高度重复的建议）。没有任何达标查询时返回 None。"""
+    query_counts = _extract_miss_query_counts(ledger_store, track.track_id)
+    if not query_counts:
+        return None
+
+    existing_names = [t.name for t in track.outline] + list(existing_pending_names or [])
+    ranked = sorted(query_counts.items(), key=lambda kv: -kv[1])
+    for query, count in ranked:
+        if count < threshold:
+            break
+        name = query.strip()[:30]
+        if not name:
+            continue
+        if any(_topic_name_similarity(name, existing) >= CROSS_TRACK_REUSE_SIMILARITY_THRESHOLD
+               for existing in existing_names):
+            continue
+        return OutlineSuggestion(
+            suggestion_id=f"capsug_{uuid.uuid4().hex[:12]}",
+            track_id=track.track_id,
+            source_question_id="",
+            suggested_name=name,
+            rationale=f"最近检索「{query}」未命中 {count} 次，但不在现有大纲内，"
+                      f"可能是缺失的子主题",
+            source="miss_counts",
+        )
+    return None
+
+
+def generate_outline_suggestion_from_research(
+    track: CapabilityTrack,
+    topic: OutlineTopic,
+    results: list[dict],
+    llm_helper: Optional[Callable[[str], str]],
+    existing_pending_names: Optional[list[str]] = None,
+) -> Optional[OutlineSuggestion]:
+    """[要调 LLM，默认关闭] 某个子主题本轮检索沉淀（completeness=
+    sufficient）之后，把检索结果摘要 + 现有大纲交给 LLM，判断"这次
+    检索到的内容里有没有明显该独立开的子主题"。和
+    `generate_outline_suggestion_from_answer()` 同款"LLM 判定没有就输出
+    NONE，不做规则式猜测"的克制。调用方（`run_capability_learning_cycle()`）
+    负责按 `CapabilityTrack.outline_research_suggestion_last_at` 做
+    "每个 Track 每天最多触发一次"的节流，本函数本身不管节流。"""
+    if llm_helper is None:
+        return None
+    content = "\n".join(
+        (r.get("summary") or r.get("text") or "").strip() for r in results
+        if (r.get("summary") or r.get("text"))
+    )[:1500]
+    if not content:
+        return None
+
+    prompt = (
+        f"用户正在持续学习一个能力方向，标题是「{track.title}」，\n"
+        f"已有大纲子主题：{', '.join(t.name for t in track.outline) or '（暂无）'}\n\n"
+        f"刚刚针对子主题「{topic.name}」检索到以下内容摘要：\n{content}\n\n"
+        "如果这些内容里提到了一个明显在已有大纲之外、值得单独作为一个新"
+        "子主题加入大纲的方向，请只输出这个子主题的名称（4-12 个汉字"
+        "左右，不要标点、不要解释）。如果没有这样的新方向（内容已经被"
+        "现有子主题覆盖，或者不足以独立成一个新子主题），请只输出 NONE。"
+        "不要输出除以上两种情况之外的任何内容。"
+    )
+    try:
+        raw = llm_helper(prompt)
+    except Exception:
+        return None
+    if not raw or not raw.strip():
+        return None
+    name = raw.strip().splitlines()[0].strip().lstrip("0123456789.、-•* ").strip()
+    if not name or name.upper() == "NONE" or len(name) > 30:
+        return None
+
+    existing_names = [t.name for t in track.outline] + list(existing_pending_names or [])
+    for existing in existing_names:
+        if _topic_name_similarity(name, existing) >= CROSS_TRACK_REUSE_SIMILARITY_THRESHOLD:
+            return None
+
+    return OutlineSuggestion(
+        suggestion_id=f"capsug_{uuid.uuid4().hex[:12]}",
+        track_id=track.track_id,
+        source_question_id="",
+        suggested_name=name,
+        rationale=f"检索子主题「{topic.name}」时发现的内容里，可能存在一个大纲之外的新方向",
+        source="research",
+    )
+
+
+def generate_outline_suggestion_from_coverage_milestone(
+    track: CapabilityTrack,
+    llm_helper: Optional[Callable[[str], str]],
+    existing_pending_names: Optional[list[str]] = None,
+) -> Optional[OutlineSuggestion]:
+    """[要调 LLM，默认关闭] 大纲覆盖率（covered / total）首次达到阈值时，
+    触发一次"要不要往深/往新方向扩展"的建议。调用方
+    （`run_capability_learning_cycle()`）负责判断是否跨越阈值、以及
+    `CapabilityTrack.outline_milestone_notified` 去重标记的读写，本函数
+    只负责生成建议本身。"""
+    if llm_helper is None or not track.outline:
+        return None
+
+    prompt = (
+        f"用户正在持续学习一个能力方向，标题是「{track.title}」，\n"
+        f"已有大纲子主题：{', '.join(t.name for t in track.outline)}\n\n"
+        "这个方向的大纲已经基本学完了。请判断是否存在一个值得继续深入、"
+        "或者相关但还没覆盖到的新子主题，帮助用户继续往深/往新方向扩展。"
+        "如果有，请只输出这个子主题的名称（4-12 个汉字左右，不要标点、"
+        "不要解释）。如果暂时没有合适的扩展方向，请只输出 NONE。不要"
+        "输出除以上两种情况之外的任何内容。"
+    )
+    try:
+        raw = llm_helper(prompt)
+    except Exception:
+        return None
+    if not raw or not raw.strip():
+        return None
+    name = raw.strip().splitlines()[0].strip().lstrip("0123456789.、-•* ").strip()
+    if not name or name.upper() == "NONE" or len(name) > 30:
+        return None
+
+    existing_names = [t.name for t in track.outline] + list(existing_pending_names or [])
+    for existing in existing_names:
+        if _topic_name_similarity(name, existing) >= CROSS_TRACK_REUSE_SIMILARITY_THRESHOLD:
+            return None
+
+    return OutlineSuggestion(
+        suggestion_id=f"capsug_{uuid.uuid4().hex[:12]}",
+        track_id=track.track_id,
+        source_question_id="",
+        suggested_name=name,
+        rationale="大纲覆盖率已达到里程碑阈值，建议往深/往新方向继续扩展",
+        source="milestone",
+    )
+
+
+# ── 大纲修订：基于旧大纲的 diff（§一，next_doc/outline_revision_and_
+#    suggestion_improvement_plan.md）────────────────────────────────────
+#
+# 与 draft_outline_with_llm() 的关键区别：draft 是"从零起草"（创建 Track
+# 时旧大纲本来就不存在），revise 是"在已有大纲基础上修订"——旧子主题的
+# coverage_state/wiki_page_ids/last_touched_at 这些学习进度必须原样保留，
+# 不能因为用户点了一次"重新生成大纲"就被推倒重来。
+
+
+def apply_outline_revision(
+    paths: AgentPaths, track_id: str, ops: list[dict],
+) -> Optional[CapabilityTrack]:
+    """在**当前**大纲基础上按顺序应用一组修订操作，返回更新后的 Track。
+    Track 不存在时返回 None。这是"重新生成大纲（LLM diff，见
+    `revise_outline_with_llm()`）"和"手动编辑大纲"两条路径共同的落地
+    函数，保证两条路径行为完全一致。
+
+    每个 op 是一个 dict，`op` 字段取值：
+        - `{"op": "add", "name": str}`：追加一个新 `OutlineTopic`
+          （`coverage_state="uncovered"`）。`name` 为空时该条被忽略。
+        - `{"op": "rename", "topic_id": str, "name": str}`：只改
+          `name`，`topic_id`/`coverage_state`/`wiki_page_ids`/
+          `last_touched_at`/`volatility` 全部不变——改名不等于这个
+          方向的学习进度要清零。`topic_id` 匹配不到时该条被忽略。
+        - `{"op": "remove", "topic_id": str}`：从大纲摘除，但不删除
+          已经沉淀的 wiki 页面本身（对齐"删除 Track 不级联删 wiki"的
+          既有原则）。`topic_id` 匹配不到时该条被忽略。
+    未识别的 `op` 值同样被忽略，不抛异常——调用方（API/手动编辑表单）
+    传入的 ops 已经是用户确认过的操作，这里只做防御性容错，不做严格
+    校验报错。
+    """
+    track_store = CapabilityTrackStore(paths)
+    track = track_store.get(track_id)
+    if track is None:
+        return None
+
+    outline = list(track.outline)
+    for op in ops:
+        kind = (op or {}).get("op")
+        if kind == "add":
+            name = (op.get("name") or "").strip()
+            if name:
+                outline.append(OutlineTopic(topic_id=f"topic_{uuid.uuid4().hex[:8]}", name=name))
+        elif kind == "rename":
+            topic_id = op.get("topic_id")
+            name = (op.get("name") or "").strip()
+            if topic_id and name:
+                for t in outline:
+                    if t.topic_id == topic_id:
+                        t.name = name
+                        break
+        elif kind == "remove":
+            topic_id = op.get("topic_id")
+            if topic_id:
+                outline = [t for t in outline if t.topic_id != topic_id]
+        # 未识别的 op 静默忽略（见函数文档字符串）
+
+    return track_store.update(track_id, outline=outline)
+
+
+def revise_outline_with_llm(
+    track: CapabilityTrack, llm_helper: Optional[Callable[[str], str]],
+) -> list[dict]:
+    """把当前完整大纲（每个子主题名字 + coverage_state + 关联 wiki 页数）
+    连同 Track 标题/描述一起交给 LLM，要求只输出**变更**而不是整份新
+    大纲——每行一个操作，格式约定成：
+        KEEP <name>
+        ADD <name>
+        RENAME <old name> -> <new name>
+        REMOVE <name>
+
+    解析后只返回 `ADD`/`RENAME`/`REMOVE` 三种 op（`KEEP` 或未提及的
+    子主题保持原样，不需要用户处理，不出现在返回结果里）。`RENAME`/
+    `REMOVE` 必须能按名称精确匹配到现有子主题才会被采纳，匹配不到的
+    行直接丢弃（不猜测、不模糊匹配，避免误伤到错误的子主题）。`ADD`
+    建议如果与现有子主题或本次结果里其它 `ADD` 建议高度相似（复用
+    `_topic_name_similarity()`、同一阈值 `CROSS_TRACK_REUSE_SIMILARITY_
+    THRESHOLD`）会被丢弃，避免建议列表里出现重复项。
+
+    这一步**不落盘**，只返回预览用的 op 列表——真正写回由调用方拿到
+    用户勾选后的最终 op 子集，调用 `apply_outline_revision()` 完成。
+
+    没有 `llm_helper`、LLM 调用异常、或解析不出任何有效行时返回 `[]`，
+    不抛异常——和 `draft_outline_with_llm()` 同款"起草辅助而非关键
+    路径"的克制：LLM 不可用时用户仍然可以走手动编辑大纲的路径。
+    """
+    if llm_helper is None:
+        return []
+
+    outline_lines = "\n".join(
+        f"- {t.name}（状态：{t.coverage_state}，已关联 {len(t.wiki_page_ids)} 篇 wiki）"
+        for t in track.outline
+    ) or "（当前大纲为空）"
+    prompt = (
+        f"用户正在持续学习一个能力方向，标题是「{track.title}」，"
+        f"描述：{track.persona_desc}\n\n"
+        f"当前大纲子主题：\n{outline_lines}\n\n"
+        "请给出这份大纲的修订建议。只输出变更，每行一个操作，格式如下"
+        "（不要输出其它任何内容、不要编号、不要解释）：\n"
+        "KEEP <保持不变的子主题名>\n"
+        "ADD <建议新增的子主题名>\n"
+        "RENAME <旧名称> -> <新名称>\n"
+        "REMOVE <建议移除的子主题名>\n"
+        "如果某个子主题不需要变化，用 KEEP 列出；没有需要新增/改名/移除"
+        "的内容时对应类型可以不输出。子主题名 4-12 个汉字左右。"
+    )
+    try:
+        raw = llm_helper(prompt)
+    except Exception:
+        return []
+    if not raw or not raw.strip():
+        return []
+
+    by_name = {t.name: t for t in track.outline}
+    ops: list[dict] = []
+    add_names_seen: list[str] = []
+    for line in raw.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        upper = line.upper()
+        if upper.startswith("KEEP "):
+            continue
+        if upper.startswith("ADD "):
+            name = line[4:].strip().lstrip("0123456789.、-•* ").strip()
+            if not name or len(name) > 30:
+                continue
+            existing_names = list(by_name.keys()) + add_names_seen
+            if any(_topic_name_similarity(name, e) >= CROSS_TRACK_REUSE_SIMILARITY_THRESHOLD
+                   for e in existing_names):
+                continue
+            ops.append({"op": "add", "name": name, "topic_id": None, "old_name": None})
+            add_names_seen.append(name)
+        elif upper.startswith("RENAME "):
+            body = line[7:].strip()
+            if "->" not in body:
+                continue
+            old_name, _, new_name = body.partition("->")
+            old_name, new_name = old_name.strip(), new_name.strip()
+            topic = by_name.get(old_name)
+            if topic is None or not new_name or len(new_name) > 30:
+                continue
+            ops.append({
+                "op": "rename", "topic_id": topic.topic_id,
+                "name": new_name, "old_name": old_name,
+            })
+        elif upper.startswith("REMOVE "):
+            name = line[7:].strip()
+            topic = by_name.get(name)
+            if topic is None:
+                continue
+            ops.append({
+                "op": "remove", "topic_id": topic.topic_id,
+                "name": name, "old_name": name,
+            })
+    return ops
 
 
 # ── LLM 辅助大纲起草（§14 P2，opt-in，见 CapabilityTrackStore.create）──────
@@ -1064,6 +1447,11 @@ def run_capability_learning_cycle(
     topics_per_cycle: int = DEFAULT_TOPICS_PER_CYCLE,
     max_topics_per_run_cycle: Optional[int] = None,
     llm_helper: Optional[Callable[[str], str]] = None,
+    outline_suggestion_miss_count_enabled: bool = True,
+    outline_suggestion_miss_count_threshold: int = 3,
+    outline_suggestion_research_enabled: bool = False,
+    outline_suggestion_milestone_enabled: bool = False,
+    outline_suggestion_milestone_threshold: float = 0.8,
 ) -> dict:
     """sys:capability_learning_cycle 对应的单轮编排逻辑（§4 伪流程的落地）。
 
@@ -1088,12 +1476,22 @@ def run_capability_learning_cycle(
     `generate_outline_suggestion_from_answer()`）；不传时这一步整体跳过，
     行为与此前完全一致（向后兼容）。
 
+    [next_doc/outline_revision_and_suggestion_improvement_plan.md §二]
+    新增三个可选的大纲建议来源开关，默认值对齐该文档的"默认开启/关闭"
+    决策：`outline_suggestion_miss_count_enabled`（规则式、不需要
+    `llm_helper`，默认 True）、`outline_suggestion_research_enabled`/
+    `outline_suggestion_milestone_enabled`（都要调 LLM，默认 False）。
+    三者都关闭时行为与此前完全一致。
+
     返回一份本轮执行摘要（供 cron 日志 / 看板展示）。
     """
     track_store = CapabilityTrackStore(paths)
     ledger_store = CapabilityLedgerStore(paths)
     question_store = CapabilityQuestionStore(paths)
-    suggestion_store = CapabilityOutlineSuggestionStore(paths) if llm_helper is not None else None
+    suggestions_may_be_generated = (
+        llm_helper is not None or outline_suggestion_miss_count_enabled
+    )
+    suggestion_store = CapabilityOutlineSuggestionStore(paths) if suggestions_may_be_generated else None
 
     summary = {"tracks_processed": 0, "topics_researched": 0, "questions_raised": 0,
                "questions_consumed": 0, "topics_skipped": 0, "topics_reused": 0,
@@ -1145,6 +1543,30 @@ def run_capability_learning_cycle(
                     summary["outline_suggestions_generated"] += 1
             question_store.mark_consumed(q.question_id)
             summary["questions_consumed"] += 1
+
+        # [§二-1 miss_counts 驱动，规则式，默认开启] 每个 Track 每轮最多
+        # 生成 1 条这类建议，不占用检索类全局预算（不需要网络请求/LLM）。
+        if outline_suggestion_miss_count_enabled and suggestion_store is not None:
+            pending_names = [
+                s.suggested_name for s in suggestion_store.list_suggestions(
+                    status="pending", track_id=track.track_id,
+                )
+            ]
+            miss_suggestion = generate_outline_suggestion_from_miss_counts(
+                track, ledger_store,
+                threshold=outline_suggestion_miss_count_threshold,
+                existing_pending_names=pending_names,
+            )
+            if miss_suggestion is not None:
+                suggestion_store.add(miss_suggestion)
+                ledger_store.append(CapabilityLedgerEntry(
+                    track_id=track.track_id,
+                    topic_id="unclassified",
+                    action="outline_suggested",
+                    summary=f"从检索未命中统计中提炼出大纲外新关注点建议："
+                            f"「{miss_suggestion.suggested_name}」，等待用户在看板/CLI 采纳或忽略",
+                ))
+                summary["outline_suggestions_generated"] += 1
 
         if global_budget_remaining is not None and global_budget_remaining <= 0:
             # 全局预算已耗尽，本轮不再推进任何子主题（但上面已回答问题的
@@ -1321,6 +1743,37 @@ def run_capability_learning_cycle(
             if global_budget_remaining is not None:
                 global_budget_remaining -= 1
 
+            # [§二-2 检索沉淀驱动，要调 LLM，默认关闭] 每个 Track 每天最多
+            # 触发一次，节流用 outline_research_suggestion_last_at。
+            if (
+                outline_suggestion_research_enabled
+                and completeness == "sufficient"
+                and suggestion_store is not None
+                and llm_helper is not None
+            ):
+                last_at = track.outline_research_suggestion_last_at
+                if last_at is None or (time.time() - last_at) >= 86400:
+                    pending_names = [
+                        s.suggested_name for s in suggestion_store.list_suggestions(
+                            status="pending", track_id=track.track_id,
+                        )
+                    ]
+                    research_suggestion = generate_outline_suggestion_from_research(
+                        track, topic, results, llm_helper,
+                        existing_pending_names=pending_names,
+                    )
+                    track.outline_research_suggestion_last_at = time.time()
+                    if research_suggestion is not None:
+                        suggestion_store.add(research_suggestion)
+                        ledger_store.append(CapabilityLedgerEntry(
+                            track_id=track.track_id,
+                            topic_id=topic.topic_id,
+                            action="outline_suggested",
+                            summary=f"从本轮检索内容中提炼出大纲外新关注点建议："
+                                    f"「{research_suggestion.suggested_name}」，等待用户在看板/CLI 采纳或忽略",
+                        ))
+                        summary["outline_suggestions_generated"] += 1
+
             # 更新大纲覆盖状态：只有内容量达标（sufficient）才算 covered；
             # thin（内容太单薄）和 empty（没查到任何东西）都归 partial，
             # 保证下一轮还会被 `scan_outline_gaps()` 选中重试，不会因为
@@ -1329,7 +1782,43 @@ def run_capability_learning_cycle(
             topic.last_touched_at = time.time()
             topic.wiki_page_ids = list(set(topic.wiki_page_ids + page_ids))
 
-        update_fields = {"outline": track.outline}
+        # [§二-3 覆盖率里程碑驱动，要调 LLM，默认关闭] 覆盖率首次达到阈值时
+        # 触发一次，`outline_milestone_notified` 去重，每个 Track 只问一次。
+        if (
+            outline_suggestion_milestone_enabled
+            and suggestion_store is not None
+            and llm_helper is not None
+            and not track.outline_milestone_notified
+            and track.outline
+        ):
+            covered_count = sum(1 for t in track.outline if t.coverage_state == "covered")
+            coverage_ratio = covered_count / len(track.outline)
+            if coverage_ratio >= outline_suggestion_milestone_threshold:
+                pending_names = [
+                    s.suggested_name for s in suggestion_store.list_suggestions(
+                        status="pending", track_id=track.track_id,
+                    )
+                ]
+                milestone_suggestion = generate_outline_suggestion_from_coverage_milestone(
+                    track, llm_helper, existing_pending_names=pending_names,
+                )
+                track.outline_milestone_notified = True
+                if milestone_suggestion is not None:
+                    suggestion_store.add(milestone_suggestion)
+                    ledger_store.append(CapabilityLedgerEntry(
+                        track_id=track.track_id,
+                        topic_id="unclassified",
+                        action="outline_suggested",
+                        summary=f"大纲覆盖率已达里程碑，提炼出继续扩展方向建议："
+                                f"「{milestone_suggestion.suggested_name}」，等待用户在看板/CLI 采纳或忽略",
+                    ))
+                    summary["outline_suggestions_generated"] += 1
+
+        update_fields = {
+            "outline": track.outline,
+            "outline_research_suggestion_last_at": track.outline_research_suggestion_last_at,
+            "outline_milestone_notified": track.outline_milestone_notified,
+        }
         if track_advanced:
             update_fields["last_advanced_at"] = time.time()
         track_store.update(track.track_id, **update_fields)

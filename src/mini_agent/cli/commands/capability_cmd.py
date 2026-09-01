@@ -245,9 +245,23 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         # 大纲动态生长建议；拿不到（agent 未初始化/无 LLM 上下文）时这一步
         # 在 run_capability_learning_cycle 内部整体跳过，不影响循环本身。
         llm_helper = _get_llm_helper(agent)
+        # [next_doc/outline_revision_and_suggestion_improvement_plan.md §三]
+        # 自动大纲建议三个新来源的开关/阈值，从 CapabilityLearningConfig
+        # 读取；拿不到 cfg 时全部退回函数默认值（miss_counts 开、其余关）。
+        cap_cfg = getattr(cfg, "capability_learning", None)
         result = run_capability_learning_cycle(
             paths, retriever=retriever, wiki_writer=wiki_writer,
             llm_helper=llm_helper,
+            outline_suggestion_miss_count_enabled=bool(
+                getattr(cap_cfg, "outline_suggestion_miss_count_enabled", True)),
+            outline_suggestion_miss_count_threshold=int(
+                getattr(cap_cfg, "outline_suggestion_miss_count_threshold", 3)),
+            outline_suggestion_research_enabled=bool(
+                getattr(cap_cfg, "outline_suggestion_research_enabled", False)),
+            outline_suggestion_milestone_enabled=bool(
+                getattr(cap_cfg, "outline_suggestion_milestone_enabled", False)),
+            outline_suggestion_milestone_threshold=float(
+                getattr(cap_cfg, "outline_suggestion_milestone_threshold", 0.8)),
         )
         # v0.21 §8：本轮跑完后尝试推送一条按天节流的摘要通知（空轮/被
         # 节流/关闭时静默不发，不影响本命令的正常输出）。

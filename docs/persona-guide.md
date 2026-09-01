@@ -122,6 +122,14 @@ wiki_scopes:                        # 可选，该角色检索时优先使用的
    [`kanban-dashboard-guide.md`](kanban-dashboard-guide.md) 的
    "能力学习 Tab" 一节。
 
+**大纲为空/需要调整怎么办**：Track 创建时如果没传 `outline_names` 也没
+勾选 LLM 起草，会落地成空大纲——`sys:capability_learning_cycle` 遇到
+空大纲会一直"成功"但实际空转（不检索也不生成问题）。看板 Track 详情
+展开区新增了「🤖 生成/刷新大纲建议」（用 LLM 在当前大纲基础上生成
+新增/改名/移除的修订建议，勾选确认后才应用，不会推倒重来）和手动
+新增/改名/删除子主题的入口，见「§14.7 大纲修订与自动建议来源扩展」
+（`next_doc/persona_capability_learning_design.md`）。
+
 ## 多用户 / daemon 场景
 
 `SessionAgentPool` 为每个 session 持有独立的 `Agent()` 实例，`active_persona` 作为

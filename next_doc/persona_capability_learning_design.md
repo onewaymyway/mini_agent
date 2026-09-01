@@ -1,6 +1,19 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.25（用户提供 `sys:capability_learning_cycle` 一次真实执行的
+- **版本**：v0.26（用户发现某个 Track 空大纲导致 cron 一直"成功"但实际
+  空转（根因分析见 v0.25 版本记录之后的排查会话），据此改进两处：
+  ① 大纲修订从"整体替换"改成"基于旧大纲的 diff"——新增
+  `revise_outline_with_llm()`（只输出 ADD/RENAME/REMOVE 变更，不落盘，
+  纯预览）+ `apply_outline_revision()`（用户勾选确认后才应用，rename/
+  remove 都不影响既有 `coverage_state`/`wiki_page_ids`），并补齐手动
+  新增/改名/删除三个端点与看板内联编辑 UI；② 自动大纲建议新增三个
+  并列来源——`generate_outline_suggestion_from_miss_counts()`（规则式，
+  不调用 LLM，默认开启）、`generate_outline_suggestion_from_research()`/
+  `generate_outline_suggestion_from_coverage_milestone()`（都要调 LLM，
+  默认关闭，看板/`CapabilityLearningConfig` 可开）。详见
+  `next_doc/outline_revision_and_suggestion_improvement_plan.md` 与
+  「§14.7 大纲修订与自动建议来源扩展」小节。）
+- **上一版本**：v0.25（用户提供 `sys:capability_learning_cycle` 一次真实执行的
   命令行 compact 记录用于排查"cron 触发了但 wiki 没有真正更新"。**根因
   定位**：`sys:capability_learning_cycle` 的 `task_template` 只是一段
   自然语言文本（`"[能力学习] 执行一次 /capability cycle"`），cron 执行
@@ -566,6 +579,75 @@ Persona 详情页反向展示"绑定的知识范围"列表未单独实现——�
 - 看板暂未单独展示 `content_completeness` 字段（目前只落盘在
   frontmatter 里，wiki 页面详情本身已可见）——等有真实使用反馈后再
   评估是否值得在能力学习 Tab 加一个专属的完整性标记 UI。
+
+### §14.7 大纲修订与自动建议来源扩展（v0.26）—— ✅ 已实现
+
+背景：用户反馈某个 Track 展开看板显示"人设覆盖 0/?"、cron 记录显示每轮
+`处理 Track：N 个` 但检索/问题/建议全是 0，排查后发现是这个 Track 创建
+时既没传 `outline_names` 也没勾选 `llm_draft`，落地成一个空大纲——
+`scan_outline_gaps()` 天然空转，cron 却一直标记"✅ 成功"，用户很难从
+71 条 cron 日志里定位到"根本没有大纲"这个根因。完整方案见
+`next_doc/outline_revision_and_suggestion_improvement_plan.md`。
+
+**一、大纲修订：从"整体替换"改成"基于旧大纲的 diff"**：
+- `revise_outline_with_llm(track, llm_helper)`：把当前完整大纲（每个子
+  主题名字 + `coverage_state` + 关联 wiki 页数）连同 Track 标题/描述
+  一起交给 LLM，只输出变更（`KEEP`/`ADD`/`RENAME`/`REMOVE` 每行一个
+  操作），不落盘，纯预览。`RENAME`/`REMOVE` 必须精确匹配到现有子主题
+  才会被采纳；`ADD` 建议与现有/其它 `ADD` 建议高度相似时被丢弃。
+- `apply_outline_revision(paths, track_id, ops)`：在**当前**大纲基础上
+  应用一组 op，`rename`/`remove` 都不影响既有 `coverage_state`/
+  `wiki_page_ids`/`last_touched_at`——这是"重新生成大纲"和"手动编辑
+  大纲"共同的落地函数。`CapabilityTrackStore` 新增
+  `add_outline_topic`/`rename_outline_topic`/`remove_outline_topic`
+  三个薄封装，供手动编辑直接调用。
+- HTTP：`POST .../outline/revise`（返回 diff，不落盘）、
+  `POST .../outline/apply_revision`（落盘）、
+  `POST .../outline/topics`（手动新增）、
+  `PATCH .../outline/topics/{topic_id}`（手动改名）、
+  `DELETE .../outline/topics/{topic_id}`（手动删除）。
+- 看板：Track 展开卡片新增「大纲编辑」区块——「🤖 生成/刷新大纲建议」
+  按钮 + 带复选框的 diff 清单（新增默认勾选，改名/移除默认不勾选，更
+  保守）+「✅ 应用勾选的修订」；「能力大纲覆盖状态」每个子主题旁新增
+  ✏️（内联改名）/🗑️（二次确认删除）；手动新增子主题的表单。空大纲
+  场景复用同一套入口，等价于全部是 `ADD`。
+
+**二、自动大纲建议新增三个并列来源**（均写入既有的 `OutlineSuggestion`
+队列，复用看板「💡 大纲扩展建议」区，新增来源标签展示）：
+- `generate_outline_suggestion_from_miss_counts()`：规则式、不调用
+  LLM，**默认开启**。统计最近 200 条台账里 `miss_observed` 记录的
+  查询文本出现次数，达到阈值（`outline_suggestion_miss_count_
+  threshold`，默认 3）且与现有大纲/pending 建议都不相似时直接生成
+  建议，每个 Track 每轮最多 1 条。
+- `generate_outline_suggestion_from_research()`：要调 LLM，默认关闭
+  （`outline_suggestion_research_enabled`）。子主题检索沉淀
+  （`completeness=sufficient`）后，把检索内容摘要交给 LLM 判断是否
+  存在大纲外的新方向；`CapabilityTrack.outline_research_suggestion_
+  last_at` 节流"每个 Track 每天最多触发一次"。
+- `generate_outline_suggestion_from_coverage_milestone()`：要调 LLM，
+  默认关闭（`outline_suggestion_milestone_enabled`）。大纲覆盖率首次
+  达到阈值（`outline_suggestion_milestone_threshold`，默认 0.8）时，
+  触发一次"要不要往深/往新方向扩展"的建议；
+  `CapabilityTrack.outline_milestone_notified` 去重，每个 Track 只
+  触发一次。
+- `run_capability_learning_cycle()` 新增对应关键字参数接线三个来源，
+  `/capability cycle`（CLI）从 `CapabilityLearningConfig` 读取并透传。
+
+| 落地内容 | 状态 | 涉及文件 |
+| --- | --- | --- |
+| `revise_outline_with_llm()` / `apply_outline_revision()` / `CapabilityTrackStore.{add,rename,remove}_outline_topic()` | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
+| 大纲修订/手动编辑 5 个 HTTP 端点 | ✅ 已实现 | `src/mini_agent/api/capability_routes.py` |
+| 看板「大纲编辑」区块（diff 清单/内联改名/删除/手动新增） | ✅ 已实现 | `apps/mini_agent_kanban/client.py`、`apps/mini_agent_kanban/app.py` |
+| `generate_outline_suggestion_from_miss_counts/research/coverage_milestone()` + `OutlineSuggestion.source` 字段 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py` |
+| `CapabilityLearningConfig` 新增 5 个 `outline_suggestion_*` 字段 | ✅ 已实现 | `src/mini_agent/config/models.py` |
+| `run_capability_learning_cycle()` 接线三个来源 + `/capability cycle` 透传配置 | ✅ 已实现 | `src/mini_agent/evolution/capability_learning.py`、`src/mini_agent/cli/commands/capability_cmd.py` |
+| 单元测试（18 个新用例） | ✅ 全部通过 | `tests/test_capability_outline_revision_and_suggestions.py` |
+
+**留给后续的方向（本轮刻意不做）**：
+- 不做大纲子主题的拖拽排序（用户已确认"够用"）。
+- 不做"重新生成大纲"的一键整体替换路径。
+- `CapabilityTrackStore.create()` 起草初始大纲的行为不受影响（那时
+  还没有旧大纲可言，不存在"替换 vs 修订"的语义问题）。
 
 ### §14.1-a（`record_wiki_miss()` 接线）—— ✅ 已提前实现
 

@@ -2519,6 +2519,29 @@ class CapabilityLearningConfig:
     # wiki_write_mode="agent" 时，等待写入 SubAgent 完成的超时时间（秒）。
     agent_wiki_writer_timeout_seconds: int = 240
 
+    # ── [next_doc/outline_revision_and_suggestion_improvement_plan.md §三]
+    # 自动大纲建议的三个新来源开关。用户已确认的默认值：miss_counts
+    # 驱动（规则式、零 LLM 成本）默认开启；另外两个（要调 LLM）默认关闭，
+    # 看板加开关手动开。三者互相独立，关掉一个不影响其它两个和原有的
+    # "回答驱动"建议（generate_outline_suggestion_from_answer，不受这几个
+    # 开关控制，行为不变）。
+
+    # 检索未命中的查询文本在最近 200 条台账里出现次数达到这个阈值时，
+    # 直接生成一条大纲建议（不调用 LLM）。
+    outline_suggestion_miss_count_enabled: bool = True
+    outline_suggestion_miss_count_threshold: int = 3
+
+    # 每次子主题检索沉淀（completeness=sufficient）后，把检索内容摘要
+    # 交给 LLM 判断"是否存在明显该独立开的新子主题"。默认关闭（会额外
+    # 消耗 LLM 调用），开启后每个 Track 每天最多触发一次。
+    outline_suggestion_research_enabled: bool = False
+
+    # 大纲覆盖率（covered / total）首次达到这个阈值时，触发一次"要不要
+    # 往深/往新方向扩展"的 LLM 建议，每个 Track 只触发一次（见
+    # CapabilityTrack.outline_milestone_notified）。默认关闭。
+    outline_suggestion_milestone_enabled: bool = False
+    outline_suggestion_milestone_threshold: float = 0.8
+
 
 @dataclass
 class PersonaCandidateConfig:
