@@ -180,3 +180,4 @@ research/agent_and_ai/articles/
 .agent/persona_candidates.json
 .agent/monthly_trend_retrospective_state.json
 .agent/scheduler_heartbeat_status.json
+.agent/judge_calibration_events.jsonl
