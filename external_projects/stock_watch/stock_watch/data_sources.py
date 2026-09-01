@@ -229,15 +229,44 @@ def fetch_json(url: str, **kwargs: Any) -> Any:
         raise DataSourceError(f"{url} 返回内容不是合法 JSON") from exc
 
 
-def _fetch_json_no_proxy(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 15) -> Any:
-    """绕过系统代理，直接连接东方财富 API。
+def _fetch_json_with_socks_proxy(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 15) -> Any:
+    """通过 SOCKS5 代理连接东方财富 API。
 
-    使用 urllib.request 原生接口，完全忽略系统代理和 requests 库的代理逻辑。
-    适用于 Windows 上系统代理导致 requests 连接失败的场景。
+    本地 xray 提供 socks5://127.0.0.1:10808，可绕过东财对直连 IP 的反爬限制。
+    """
+    import json as _json
+    import requests
+
+    proxies = {"http": "socks5://127.0.0.1:10808", "https": "socks5://127.0.0.1:10808"}
+    req_headers = {"User-Agent": _DEFAULT_UA}
+    if headers:
+        req_headers.update(headers)
+
+    try:
+        r = requests.get(url, headers=req_headers, proxies=proxies, timeout=timeout)
+        if r.status_code >= 400:
+            raise DataSourceError(f"HTTP {r.status_code}: {r.text[:200]}")
+        return _json.loads(r.text)
+    except Exception as exc:
+        raise DataSourceError(f"SOCKS5 代理请求失败: {exc}") from exc
+
+
+def _fetch_json_no_proxy(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 15) -> Any:
+    """尝试 SOCKS5 代理连接东方财富 API，失败时降级到直连。
+
+    使用 SOCKS5 代理绕过东财对直连 IP 的反爬限制；若代理不可用则退回到
+    urllib.request 直连（可能因反爬被拒）。
     """
     import urllib.request
     import json as _json
 
+    # 优先走 SOCKS5 代理
+    try:
+        return _fetch_json_with_socks_proxy(url, headers, timeout)
+    except Exception as exc:
+        logger.warning("SOCKS5 代理失败 (%s)，降级到直连", exc)
+
+    # 降级：urllib 直连
     req = urllib.request.Request(url)
     req.add_header("User-Agent", _DEFAULT_UA)
     if headers:
@@ -279,19 +308,28 @@ class HotStockItem:
 
 
 def _eastmoney_rank_direct() -> pd.DataFrame:
-    """绕过 akshare 直接调东方财富人气榜 API（兼容 urllib3/requests 代理冲突场景）。"""
+    """通过 SOCKS5 代理调东方财富人气榜 API。
+
+    使用 requests + socks5 代理访问，绕过东财对直连 IP 的反爬限制。
+    """
     import json as _json
-    import http.client as _http
+    import requests
+
+    proxies = {"http": "socks5://127.0.0.1:10808", "https": "socks5://127.0.0.1:10808"}
+    headers = {"User-Agent": _DEFAULT_UA, "Content-Type": "application/json"}
+
+    # 第一步：获取人气榜列表
     payload = _json.dumps({
         "appId": "appId01", "globalId": "786e4c21-70dc-435a-93bb-38",
         "marketType": "", "pageNo": 1, "pageSize": 100,
-    }).encode()
-    conn = _http.HTTPSConnection("emappdata.eastmoney.com", timeout=15)
+    })
     try:
-        conn.request("POST", "/stockrank/getAllCurrentList",
-                     body=payload, headers={"Content-Type": "application/json"})
-        resp = conn.getresponse()
-        data = _json.loads(resp.read().decode())
+        r1 = requests.post(
+            "https://emappdata.eastmoney.com/stockrank/getAllCurrentList",
+            data=payload, headers=headers, proxies=proxies, timeout=15
+        )
+        r1.raise_for_status()
+        data = r1.json()
         if data.get("code") != 0:
             raise DataSourceError(f"API 返回非零 code: {data}")
         raw = pd.DataFrame(data["data"])
@@ -300,16 +338,19 @@ def _eastmoney_rank_direct() -> pd.DataFrame:
             for item in raw["sc"]
         ]
         secids = ",".join(raw["mark"]) + "?v=08926209912590994"
-        conn2 = _http.HTTPSConnection("push2.eastmoney.com", timeout=15)
+        # 第二步：获取实时行情
         params = _urllib_parse_urlencode({
             "ut": "f057cbcbce2a86e2866ab8877db1d059",
             "fltt": "2", "invt": "2",
             "fields": "f14,f3,f12,f2",
             "secids": secids,
         })
-        conn2.request("GET", f"/api/qt/ulist.np/get?{params}")
-        r2 = conn2.getresponse()
-        jd2 = _json.loads(r2.read().decode())
+        r2 = requests.get(
+            f"http://push2.eastmoney.com/api/qt/ulist.np/get?{params}",
+            headers={"User-Agent": _DEFAULT_UA}, proxies=proxies, timeout=15
+        )
+        r2.raise_for_status()
+        jd2 = r2.json()
         df2 = pd.DataFrame(jd2["data"]["diff"])
         df2.columns = ["最新价", "涨跌幅", "代码", "股票名称"]
         df2["最新价"] = pd.to_numeric(df2["最新价"], errors="coerce")
@@ -318,10 +359,8 @@ def _eastmoney_rank_direct() -> pd.DataFrame:
         df2["当前排名"] = raw["rk"].values[:len(df2)]
         df2["代码"] = raw["sc"].values[:len(df2)]
         return df2[["当前排名", "代码", "股票名称", "最新价", "涨跌额", "涨跌幅"]]
-    finally:
-        conn.close()
-        try: conn2.close()
-        except Exception: pass
+    except Exception as exc:
+        raise DataSourceError(f"_eastmoney_rank_direct 失败: {exc}") from exc
 
 
 def fetch_eastmoney_hot_rank(top_n: int = 50) -> List[HotStockItem]:
@@ -714,13 +753,23 @@ def fetch_price_change_pct(code: str, entry_type: str, start_date: str, end_date
     return (last_close - first_close) / first_close * 100.0
 
 
+def _code_to_sina(code: str, entry_type: str) -> str:
+    """将stock_watch代码格式转换为新浪代码格式(sh600519/sz000001)。"""
+    # 去除前缀 SZ/SH
+    code_clean = code.upper().replace("SZ", "").replace("SH", "")
+    if entry_type == "etf":
+        if code_clean.startswith("5"):
+            return f"sh{code_clean}"
+        return f"sz{code_clean}"
+    if code_clean.startswith(("6", "9")):
+        return f"sh{code_clean}"
+    return f"sz{code_clean}"
+
+
 def fetch_latest_close(code: str, entry_type: str) -> float:
     """返回某标的最近一个交易日的收盘价。
 
-    供候选池状态机使用（`stock_watch_pool_state_tracking_and_kanban_plan.md`
-    阶段2）：状态变更时记录 `price_at_entry`、每日跟踪任务取当前价格
-    算区间涨跌。只取最近约一周的日K，避免像 `fetch_kline()` 那样拉一
-    整段历史（这里只需要最后一条），复用同样的 akshare 接口选择逻辑。
+    优先用akshare（东财API），失败时降级到新浪财经API。
     """
     ak = _import_akshare()
     end = datetime.now().strftime("%Y%m%d")
@@ -734,16 +783,66 @@ def fetch_latest_close(code: str, entry_type: str) -> float:
             df = ak.stock_zh_a_hist(
                 symbol=code, period="daily", start_date=start, end_date=end, adjust="",
             )
-    except Exception as exc:  # noqa: BLE001
-        raise DataSourceError(f"获取 {code} 最新收盘价失败: {exc}") from exc
+        if df is not None and not df.empty:
+            close_col = "收盘" if "收盘" in df.columns else "close"
+            if close_col in df.columns:
+                return float(df.iloc[-1][close_col])
+    except Exception as exc:
+        logger.warning("akshare获取%s失败，降级到新浪API: %s", code, exc)
 
-    if df is None or df.empty:
-        raise DataSourceError(f"{code} 近期没有行情数据（可能停牌/退市）")
+    # 降级：新浪财经API
+    sina_code = _code_to_sina(code, entry_type)
+    result = fetch_sina_quote([sina_code])
+    if sina_code in result:
+        return result[sina_code]["price"]
+    raise DataSourceError(f"无法获取 {code} 收盘价：akshare和新浪API均失败")
 
-    close_col = "收盘" if "收盘" in df.columns else "close"
-    if close_col not in df.columns:
-        raise DataSourceError(f"{code} 行情数据缺少收盘价列，akshare 返回列名可能已变化")
-    return float(df.iloc[-1][close_col])
+
+def fetch_sina_quote(codes: List[str]) -> Dict[str, Dict[str, Any]]:
+    """通过新浪财经API获取实时行情（东财不可用时的备选方案）。
+
+    返回格式: {code: {name, price, change_pct, volume, amount}}
+    代码格式: sh600519, sz000001
+    """
+    result = {}
+    proxies = None
+    try:
+        # 尝试使用 SOCKS5 代理，提高稳定性
+        import socket
+        import socks
+        try:
+            proxies = {"http": "socks5://127.0.0.1:10808", "https": "socks5://127.0.0.1:10808"}
+        except Exception:
+            pass
+        url = "https://hq.sinajs.cn/list=" + ",".join(codes)
+        r = requests.get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=10, proxies=proxies)
+        r.raise_for_status()
+        # 解析返回: var hq_str_sh600519="名称,开盘价,昨收,当前价,最高,最低,...";
+        for line in r.text.strip().split(";\n"):
+            if not line.startswith("var hq_str_"):
+                continue
+            # 提取代码
+            code_part = line.split("=")[0].replace("var hq_str_", "").strip()
+            # 解析数据
+            data_match = line.split("=\"")[-1].split("\"")[0]
+            if not data_match or "null" in data_match:
+                continue
+            fields = data_match.split(",")
+            if len(fields) < 32:
+                continue
+            result[code_part] = {
+                "name": fields[0],
+                "price": float(fields[3]) if fields[3] else 0.0,
+                "open": float(fields[1]) if fields[1] else 0.0,
+                "high": float(fields[4]) if fields[4] else 0.0,
+                "low": float(fields[5]) if fields[5] else 0.0,
+                "volume": float(fields[8]) if fields[8] else 0.0,
+                "amount": float(fields[9]) if fields[9] else 0.0,
+                "change_pct": (float(fields[3]) - float(fields[2])) / float(fields[2]) * 100 if fields[2] and float(fields[2]) > 0 else 0.0,
+            }
+    except Exception as exc:
+        logger.warning("新浪行情获取失败: %s", exc)
+    return result
 
 
 def _check_cdp_available(host: str = "127.0.0.1", port: int = 9222) -> bool:
@@ -906,25 +1005,26 @@ def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
 
 
 def _fetch_eastmoney_sectors(by_flow: bool = False) -> List[Dict[str, Any]]:
-    """从东方财富直接拉取行业板块数据（绕过问财代理问题）。
+    """从东方财富直接拉取行业板块数据（通过SOCKS5代理）。
 
     Args:
         by_flow: True时返回资金流向数据[{sector, net_inflow}]，False时返回涨跌幅数据[{sector, change_pct}]
     """
-    import http.client as _hc
+    import requests
+    proxies = {"http": "socks5://127.0.0.1:10808", "https": "socks5://127.0.0.1:10808"}
     result: List[Dict[str, Any]] = []
     try:
         fid = "f62" if by_flow else "f3"
         field = "net_inflow" if by_flow else "change_pct"
         pz = 20 if by_flow else 50
-        conn = _hc.HTTPSConnection("push2.eastmoney.com", timeout=15)
-        conn.request(
-            "GET",
-            f"/api/qt/clist/get?ut=b2884a393a59ad64002b997c1ab683cb&fid={fid}&po=1&pz={pz}&pn=1&np=1&fltt=2&invt=2&fs=m:90+t:2&fields=f12,f14,{fid}"
-        )
-        r = conn.getresponse()
-        data = json.loads(r.read())
-        conn.close()
+        url = (f"http://push2.eastmoney.com/api/qt/clist/get"
+               f"?ut=b2884a393a59ad64002b997c1ab683cb&fid={fid}"
+               f"&po=1&pz={pz}&pn=1&np=1&fltt=2&invt=2"
+               f"&fs=m:90+t:2&fields=f12,f14,{fid}")
+        r = requests.get(url, headers={"User-Agent": _DEFAULT_UA},
+                        proxies=proxies, timeout=15)
+        r.raise_for_status()
+        data = r.json()
         for d in data.get("data", {}).get("diff", []) or []:
             name = str(d.get("f14", ""))
             val = d.get(fid)

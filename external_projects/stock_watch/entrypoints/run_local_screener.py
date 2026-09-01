@@ -144,9 +144,10 @@ def run_local_screener(
             pool = load_pool(pool_path)
             raw_symbols = list(pool.keys())
             # 统一格式：去掉交易所前缀（如 SZ300059 -> 300059），与数据库一致
+            import re
             symbols = []
             for s in raw_symbols:
-                clean = s.lstrip("SH").lstrip("SZ").lstrip("BJ")
+                clean = re.sub(r"^(SH|SZ|BJ)", "", s)
                 symbols.append(clean)
             symbols = list(dict.fromkeys(symbols))  # 去重，保留顺序
             logger.info("从 %s 候选池读取 %d 只标的（原始=%d，归一化=%d）", pool_type, len(symbols), len(raw_symbols), len(raw_symbols))
