@@ -322,25 +322,48 @@ def render_manual_pool(algo: Dict, manual: Dict):
                 df = df[df["状态"].isin(selected)]
                 st.dataframe(df, use_container_width=True, hide_index=True)
 
-            # 单行状态变更
+            # 状态修改（点击选中后直接显示编辑面板）
             st.markdown("---")
-            st.caption("快速变更状态：")
-            chg_code = st.text_input("代码", key="chg_code", placeholder="输入代码后回车")
-            chg_state = st.selectbox("新状态", POOL_STATES, key="chg_state")
-            chg_note = st.text_input("变更原因", key="chg_note")
-            if st.button("✅ 确认变更", key="chg_btn") and chg_code:
-                if chg_code in manual:
-                    now = datetime.now().isoformat()
-                    manual[chg_code].state = chg_state
-                    manual[chg_code].state_history.append(
-                        StateEvent(state=chg_state, entered_at=now, note=chg_note)
-                    )
-                    manual[chg_code].last_seen = now
-                    save_pool(MANUAL_POOL_PATH, manual)
-                    st.success(f"已将 {chg_code} 状态改为 {chg_state}")
-                    st.rerun()
-                else:
-                    st.error(f"{chg_code} 不在手动池中")
+            
+            # 选择标的 + 编辑面板联动
+            manual_options = [f"{code} | {entry.name} | {entry.state}" for code, entry in manual.items()]
+            selected_index = st.selectbox(
+                "👈 点击选择要修改的股票",
+                ["-- 请选择 --"] + manual_options,
+                key="pool_state_selector"
+            )
+            
+            if selected_index and selected_index != "-- 请选择 --":
+                chg_code = selected_index.split(" |")[0].strip()
+                entry = manual[chg_code]
+                
+                with st.expander(f"✏️ 修改 {entry.name}({chg_code}) 状态", expanded=True):
+                    col_e1, col_e2 = st.columns([2, 1])
+                    with col_e1:
+                        new_state = st.selectbox(
+                            "新状态",
+                            POOL_STATES,
+                            index=list(POOL_STATES).index(entry.state) if entry.state in POOL_STATES else 0,
+                            key=f"state_edit_{chg_code}"
+                        )
+                    with col_e2:
+                        save_note = st.text_input("变更原因", key=f"note_edit_{chg_code}", placeholder="可选")
+                    
+                    col_btn1, col_btn2 = st.columns([1, 2])
+                    with col_btn1:
+                        if st.button("✅ 保存", type="primary", use_container_width=True, key=f"save_{chg_code}"):
+                            now = datetime.now().isoformat()
+                            old = entry.state
+                            entry.state = new_state
+                            entry.state_history.append(
+                                StateEvent(state=new_state, entered_at=now, note=save_note)
+                            )
+                            entry.last_seen = now
+                            save_pool(MANUAL_POOL_PATH, manual)
+                            st.success(f"✅ {entry.name}({chg_code}): {old} → {new_state}")
+                            st.rerun()
+                    with col_btn2:
+                        st.button("取消", key=f"cancel_{chg_code}")
 
 
 def render_algo_pool(algo: Dict, manual: Dict):
