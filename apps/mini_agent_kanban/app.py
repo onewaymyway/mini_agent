@@ -1149,6 +1149,38 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
     # "现在还有几个请求在排队等着"。
     queue_depth = status.get("queue_depth", 0)
 
+    # [daemon_dual_signal_hang_detection_plan.md 阶段C 顶栏可视化] HTTP 忙碌度
+    # 和核心调度心跳是"daemon 到底是不是真的卡死"这两路关键判定信号，之前
+    # 只在"🧠 自我状态"tab 里才能看到，用户停在其它 tab（比如正在看"📌 看板"
+    # 或"💬 对话"）时完全不知道核心调度是不是已经停摆。改为顶栏常驻展示，
+    # 无论停在哪个 tab 都能第一时间看到，不需要专门切换过去才发现问题。
+    exec_status_for_topbar = client.execution_model_status() or {}
+    http_busy_badge = "—"
+    heartbeat_badge = "—"
+    heartbeat_detail = ""
+    if "_error" not in exec_status_for_topbar:
+        hbusy = exec_status_for_topbar.get("http_busy") or {}
+        in_flight = hbusy.get("in_flight_count", 0)
+        if in_flight:
+            oldest = hbusy.get("oldest_in_flight_seconds", 0.0)
+            http_busy_badge = f"🟡 {in_flight} 个请求处理中（最久 {oldest:.0f}s）"
+        else:
+            http_busy_badge = "🟢 空闲"
+
+        hb = exec_status_for_topbar.get("scheduler_heartbeat") or {}
+        if hb.get("enabled"):
+            if hb.get("suspected_stuck"):
+                heartbeat_badge = "🔴 疑似卡死"
+            elif hb.get("alive"):
+                heartbeat_badge = "🟢 运行中"
+            else:
+                heartbeat_badge = "🔴 线程未存活"
+            last_finished_at = hb.get("last_tick_finished_at", 0.0) or 0.0
+            if last_finished_at:
+                heartbeat_detail = f"距上次 tick 完成 {time.time() - last_finished_at:.0f}s"
+        else:
+            heartbeat_badge = "⚪ 未开启"
+
     st.markdown(f"""
 <div class="topbar">
   <div class="item"><span class="label">状态</span> {icon} {label}</div>
@@ -1158,6 +1190,8 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
   <div class="item"><span class="label">Turn</span> {status.get('turn_id') or '—'}</div>
   <div class="item"><span class="label">自主等级</span> {autonomy}</div>
   <div class="item"><span class="label">仲裁</span> {gating_icon} {gating_label}</div>
+  <div class="item"><span class="label">🌐 HTTP忙碌度</span> {http_busy_badge}</div>
+  <div class="item"><span class="label">🫀 核心调度心跳</span> {heartbeat_badge}</div>
   <div class="item"><span class="label">距下次Tick</span> {next_tick_str}</div>
   <div class="item"><span class="label">Tick计数</span> {tick_count}</div>
   <div class="item"><span class="label">订阅者</span> {subscribers}</div>
@@ -1166,6 +1200,8 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
   <div class="item"><span class="label">待回答</span> {'🔴 ' + str(pending_ix_n) if pending_ix_n else '0'}</div>
 </div>
 """, unsafe_allow_html=True)
+    if heartbeat_detail:
+        st.caption(f"🫀 {heartbeat_detail}")
     if status.get("session_dir"):
         st.caption(f"📁 session 目录: `{status['session_dir']}`")
 
@@ -8027,7 +8063,9 @@ def _render_execution_model_status(client: AgentClient):
         # [daemon_dual_signal_hang_detection_plan.md 阶段 C] HTTP 服务忙碌度
         # 与核心调度心跳是两路独立信号，拆成两个并列小卡片分开展示，避免
         # 像之前那样混在一段文字里，用户分不清"HTTP 层忙"和"核心调度真
-        # 卡死"这两种严重程度完全不同的情况。
+        # 卡死"这两种严重程度完全不同的情况。这两项关键状态同时也常驻
+        # 展示在页面顶部状态条（无论停在哪个 tab 都能看到），这里展示的
+        # 是更完整的细节（轮询间隔/tick 周期等），顶栏只是一眼概览。
         hbusy = resp.get("http_busy") or {}
         st.markdown("**🌐 HTTP 服务忙碌度**")
         in_flight = hbusy.get("in_flight_count", 0)

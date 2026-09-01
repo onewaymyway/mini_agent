@@ -49,12 +49,21 @@
 > get_self_execution_model_status` 响应新增 `http_busy` 字段（
 > `in_flight_count` / `oldest_in_flight_seconds`），未挂载 tracker 或
 > 快照失败时均容错回默认零值；`apps/mini_agent_kanban/app.py`
-> （Streamlit 看板，"🧠 自我状态"tab）把 HTTP 忙碌度与核心调度心跳拆成
-> 两个并列小卡片展示，并直接展示"距上次 tick 完成已过 Xs"人可读格式。
+> （Streamlit 看板）除了在"🧠 自我状态"tab 里把 HTTP 忙碌度与核心调度
+> 心跳拆成两个并列小卡片展示外，**这两项状态还同时常驻展示在页面顶部
+> 状态条**（`_render_topbar_body()`，无论停在哪个 tab 都能看到），因为
+> "HTTP 层是否忙"与"核心调度是否真卡死"是判断 daemon 健康度的关键信号，
+> 不应该要求用户先切换到某个 tab 才能看见；顶栏只做一眼概览（🟢/🟡/🔴
+> 状态徽标 + "距上次 tick 完成 Xs"），"🧠 自我状态"tab 内保留更完整的
+> 细节（轮询间隔、tick 周期等）。
 > 新增 `tests/test_daemon_dual_signal_hang_detection_stage_c.py`
 > （15 用例），与阶段B相关测试共 93 个测试全部通过，无回归；另用
 > `test_capability_routes_mount.py`（另一处 `create_app()` 调用点）
-> 交叉验证中间件挂载不影响既有路由，18 用例通过。
+> 交叉验证中间件挂载不影响既有路由，18 用例通过。顶栏渲染改动本身是
+> Streamlit UI 代码，沿用该文件既有惯例未加专门单测（仓库里没有对
+> `apps/mini_agent_kanban/app.py` 顶层渲染函数做 pytest 覆盖的先例，
+> 只对拆分出去的独立小模块如 `diff_view.py` 有测试），改动后已用
+> `ast.parse` 做语法校验确认无误。
 >
 > 范围说明：本轮 React SPA（`apps/mini_agent_kanban_x`）的
 > `SelfStatus` 页面尚未同步展示新增的 `http_busy` 字段——该 SPA 是

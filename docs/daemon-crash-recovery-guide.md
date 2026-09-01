@@ -300,6 +300,12 @@ supervisor 不再直接强杀，而是先读这个文件裁决：
 完成已过 Xs"这种人可读的相对时间，不需要用户自己拿 `last_tick_
 finished_at` 心算。
 
+**这两项状态同时常驻展示在页面顶部状态条**（`_render_topbar_body()`），
+不要求用户先切换到"🧠 自我状态"tab 才能看到——它们是判断 daemon 是否
+真正健康的关键信号，跟顶栏原有的"状态/仲裁/待审批"等徽标同等重要。
+顶栏只显示一眼概览（🟢/🟡/🔴 徽标 + 简短数字），完整细节（轮询间隔、
+tick 周期等）仍保留在 tab 内的卡片里。
+
 > 范围说明：本轮改造只覆盖 Streamlit 看板
 > （`apps/mini_agent_kanban/app.py`）。`apps/mini_agent_kanban_x`
 > （React SPA，`kanban_react_spa_replacement_plan.md` 引入的替代前端）
