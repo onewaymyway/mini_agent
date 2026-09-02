@@ -67,38 +67,45 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
     if _BASH_STREAM_OUTPUT_ENABLED:
         return _bash_stream(command, timeout=timeout, cwd=cwd, env=_env)
 
+    # [SYS-BASH-HANG-FIX] 两个已知会导致"永久卡死、timeout 形同虚设"的坑：
+    # 1) 不给 stdin 会继承父进程的 stdin；一旦命令触发交互式提示
+    #    （git 密码/host-key 确认、apt/npm 的 [Y/n]、误入分页器或 REPL），
+    #    子进程会永久阻塞等待输入，谁都救不了它。→ 显式 stdin=DEVNULL，
+    #    让这类命令要么走非交互 flag 正常跑完，要么立刻因读不到输入而报错退出。
+    # 2) subprocess.run(shell=True, timeout=...) 超时后只杀得掉 /bin/sh 这一层；
+    #    如果命令派生了孙子进程（后台服务、"cmd &" 没 disown 等），孙子进程会
+    #    继续占着 stdout/stderr 管道的写端不放。run() 内部超时后还会再调一次
+    #    不带 timeout 的 communicate() 收尾，这一步没有孙子进程也会等到天荒地老。
+    #    → 用 start_new_session=True 把整棵进程树放进独立进程组，超时时
+    #    os.killpg 一锅端，而不是只 kill 最外层的 proc。
+    import platform
+    import signal
+
+    _is_windows = platform.system() == "Windows"
+    _popen_kwargs: dict = {"stdin": subprocess.DEVNULL}
+    if _is_windows:
+        _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        _popen_kwargs["start_new_session"] = True
+
+    def decode(data: bytes) -> str:
+        for enc in ("utf-8", "gbk", "cp936"):
+            try:
+                return data.decode(enc)
+            except UnicodeDecodeError:
+                pass
+        return data.decode("utf-8", errors="replace")
+
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             command,
             shell=True,
             cwd=cwd,
-            capture_output=True,
-            timeout=timeout,
             env=_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            **_popen_kwargs,
         )
-
-        def decode(data: bytes) -> str:
-            for enc in ("utf-8", "gbk", "cp936"):
-                try:
-                    return data.decode(enc)
-                except UnicodeDecodeError:
-                    pass
-
-            return data.decode("utf-8", errors="replace")
-
-        stdout = decode(result.stdout)
-        stderr = decode(result.stderr)
-
-        combined = (stdout + stderr).rstrip()
-
-        if result.returncode != 0:
-            combined += f"\n[exit code: {result.returncode}]"
-
-        return combined or "(no output)"
-
-    except subprocess.TimeoutExpired:
-        return f"[timeout after {timeout}s]"
-
     except Exception as e:
         from mini_agent.errors import log_exception
         log_exception(e, where='mini_agent.tools.builtin.bash')
@@ -106,12 +113,64 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
         traceback.print_exc()
         return f"[error: {e}]"
 
+    def _kill_process_tree():
+        if _is_windows:
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True,
+                )
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        else:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    try:
+        stdout_b, stderr_b = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree()
+        # 进程组已被强制杀掉，这里的 communicate() 只是回收管道里
+        # 已经产生的残留输出，不会再无限期阻塞。
+        try:
+            stdout_b, stderr_b = proc.communicate(timeout=5)
+        except Exception:
+            stdout_b, stderr_b = b"", b""
+        combined = (decode(stdout_b) + decode(stderr_b)).rstrip()
+        note = f"[timeout after {timeout}s — partial output above, process killed]"
+        return (combined + "\n" + note) if combined else note
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.builtin.bash')
+        import traceback
+        traceback.print_exc()
+        _kill_process_tree()
+        return f"[error: {e}]"
+
+    combined = (decode(stdout_b) + decode(stderr_b)).rstrip()
+    if proc.returncode != 0:
+        combined += f"\n[exit code: {proc.returncode}]"
+
+    return combined or "(no output)"
+
 
 # [SYS-BASH-STREAM] bash 工具"边跑边看"开关，由 AppConfig.bash_stream_output_enabled
 # 驱动。工具函数本身（被 ToolRegistry.call 以 **tool_input 方式调用）拿不到 cfg，
 # 沿用本文件里 configure_web_search(cfg) 同款写法：Agent.__init__ 时注入一次，
-# 之后 bash() 读这个模块级变量。默认 False，行为与旧版完全一致。
-_BASH_STREAM_OUTPUT_ENABLED = False
+# 之后 bash() 读这个模块级变量。
+# [SYS-BASH-HANG-FIX] 默认改为 True：非流式路径虽然也修了进程组 kill 的坑，
+# 但流式路径能让调用方（人/日志）实时看到已经产生的输出，排查"卡在哪一步"
+# 更直接，作为默认体验更好。仍可通过 AppConfig.bash_stream_output_enabled=False
+# 显式关闭，行为会退回到刚修复过的非流式路径（同样不会再卡死）。
+_BASH_STREAM_OUTPUT_ENABLED = True
 
 
 def configure_bash(cfg) -> None:
@@ -148,7 +207,10 @@ def _bash_stream(command: str, *, timeout: int, cwd: Path, env: dict) -> str:
     import platform
 
     _is_windows = platform.system() == "Windows"
-    _popen_kwargs: dict = {}
+    # [SYS-BASH-HANG-FIX] 同上：显式关闭 stdin，避免命令触发交互式提示
+    # （git 密码/host-key 确认、apt/npm 的 [Y/n]、误入分页器或 REPL）时
+    # 永久阻塞等待输入。
+    _popen_kwargs: dict = {"stdin": subprocess.DEVNULL}
     if _is_windows:
         # Windows 没有 os.setsid/os.killpg 这套 POSIX 进程组机制，改用
         # CREATE_NEW_PROCESS_GROUP，超时时配合 taskkill /T /F 按进程树整棵杀。
