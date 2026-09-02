@@ -27,7 +27,9 @@ class CDPError(RuntimeError):
 def http_json(host: str, port: int, path: str, timeout: float = 5.0) -> Any:
     """发送 HTTP GET 请求并返回 JSON 响应。"""
     url = f"http://{host}:{port}{path}"
-    resp = requests.get(url, timeout=timeout)
+    # 绕过系统代理：本地 CDP 端口不应经过代理
+    proxies = {"http": None, "https": None}
+    resp = requests.get(url, timeout=timeout, proxies=proxies)
     resp.raise_for_status()
     return resp.json()
 
