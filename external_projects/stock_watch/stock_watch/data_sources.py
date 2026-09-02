@@ -1033,7 +1033,7 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
         )
         return df.tail(days)
     except Exception as exc2:  # noqa: BLE001
-        raise DataSourceError(f"所有数据源均失败 ({code}): CDP={exc}, baostock, sina, fund_etf_hist_em={exc2}") from exc2
+        raise DataSourceError(f"所有数据源均失败 ({code}): akshare={exc2}") from exc2
 
 
 def fetch_announcements(code: str, top_n: int = 20):
