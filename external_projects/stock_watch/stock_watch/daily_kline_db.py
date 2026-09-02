@@ -45,6 +45,26 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
+# ── baostock pandas 2.x 兼容性补丁（幂等）──────────────────────────────
+if not hasattr(pd.DataFrame, "append"):
+    pd.DataFrame.append = lambda self, other, **kwargs: pd.concat(
+        [self, other], ignore_index=True
+    )
+
+# ── baostock 懒加载单例（避免频繁 login/logout）───────────────────────
+_bs_instance = None
+
+
+def _get_bs():
+    import baostock as bs
+    global _bs_instance
+    if _bs_instance is None:
+        lg = bs.login()
+        if lg.error_code != "0":
+            raise RuntimeError(f"baostock 登录失败: {lg.error_msg}")
+        _bs_instance = bs
+    return _bs_instance
+
 logger = logging.getLogger("stock_watch.daily_kline_db")
 
 # ── 数据库路径（相对项目根目录）────────────────────────────────────────────
@@ -110,29 +130,67 @@ class DailyKlineDB:
 
     # ── 全市场代码列表 ────────────────────────────────────────────────────
     def fetch_all_symbols(self) -> List[str]:
-        """从 akshare 拉取全部 A 股标的代码（含主板/创业板/科创板/北交所）。
+        """获取全部 A 股标的代码（含主板/创业板/科创板/北交所）。
 
-        返回去重后的字符串列表，例如 ["600519", "000001", "300750", ...]。
-        拉取失败时尝试从本地候选池文件加载作为降级方案。
+        优先级：baostock（最稳定，不走代理）→ 新浪 → akshare → 本地候选池
         """
+        # 第一优先：baostock（TCP 协议，不受 HTTP 代理影响）
+        try:
+            bs = _get_bs()
+            rs = bs.query_all_stock(day="2026-09-01")
+            df = rs.get_data()
+            if df is not None and not df.empty:
+                clean = []
+                for _, row in df.iterrows():
+                    raw = str(row["code"])
+                    code = raw.split(".")[1] if "." in raw else raw
+                    if len(code) == 6 and code.isdigit():
+                        name = str(row.get("code_name", ""))
+                        if "指数" not in name:
+                            clean.append(code)
+                if clean:
+                    logger.info("从 baostock 获取到 %d 只 A 股标的", len(clean))
+                    return list(dict.fromkeys(clean))
+                logger.warning("baostock 返回格式异常，尝试新浪")
+        except Exception as e:
+            logger.warning("baostock stock list 失败 (%s)，降级", e)
+
+        # 第二优先：新浪财经
+        try:
+            from stock_watch.data_sources import _sina_fetch_stock_list
+            raw_symbols = _sina_fetch_stock_list(node="hs_a", max_pages=55)
+            if raw_symbols:
+                logger.info("从新浪财经获取到 %d 只 A 股标的", len(raw_symbols))
+                # 新浪返回格式: sh600519 / sz000001 / bj920000
+                # 过滤并提取纯 6 位代码
+                clean = []
+                for s in raw_symbols:
+                    prefix = s[:2] if len(s) >= 2 else ""
+                    code = s[2:] if len(s) > 2 else s
+                    if len(code) == 6 and code.isdigit() and prefix in ("sh", "sz", "bj"):
+                        clean.append(code)
+                if clean:
+                    return sorted(set(clean))
+                logger.warning("新浪财经返回的代码格式异常，尝试 akshare")
+        except Exception as e:
+            logger.warning("sina stock list 失败 (%s)，尝试 akshare", e)
+
+        # 第二优先：akshare
         try:
             from stock_watch.data_sources import _import_akshare
             ak = _import_akshare()
             df = ak.stock_zh_a_spot_em()
-            if df is None or df.empty:
-                logger.warning("stock_zh_a_spot_em 返回空数据")
-            else:
-                # 列名因 akshare 版本不同而异，尝试常见变体
+            if df is not None and not df.empty:
                 col = next((c for c in df.columns if "代码" in c or "code" in c.lower()), None)
                 if col is not None:
                     symbols = df[col].astype(str).str.strip().tolist()
-                    # 仅保留 6 位代码
-                    return list(dict.fromkeys(s for s in symbols if len(s) == 6))
-                logger.warning("无法识别股票代码列，列名: %s", list(df.columns))
+                    clean = [s for s in symbols if len(s) == 6 and s.isdigit()]
+                    if clean:
+                        return list(dict.fromkeys(clean))
         except Exception as e:
-            logger.warning("fetch_all_symbols 网络失败 (%s)，尝试从本地候选池加载", e)
+            logger.warning("akshare stock list 失败 (%s)，降级到本地候选池", e)
 
-        # 降级：从本地候选池文件加载
+        # 最后降级：从本地候选池文件加载
         return self._load_symbols_from_local_pools()
 
     def _load_symbols_from_local_pools(self) -> List[str]:
@@ -281,39 +339,125 @@ class DailyKlineDB:
         return rows
 
     def _fetch_via_stock_api(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
-        """使用 data_sources.fetch_kline 拉取股票日K（三层兜底）。"""
-        from stock_watch.data_sources import fetch_kline, DataSourceError
+        """拉取股票日K，按优先级尝试多个数据源。
+
+        优先级：baostock（TCP 直连，最稳定）→ 新浪直连 → Yahoo Finance → akshare
+        """
+        import pandas as pd
+        prefix = "sh" if symbol.startswith(("6", "5", "9")) else "sz"
+
+        # 1. Baostock（主数据源，不走 HTTP 代理）
         try:
-            df = fetch_kline(symbol, "sh" if symbol.startswith(("6", "5", "9")) else "sz", days=300)
-            if df is None or df.empty:
-                return None
-            # 按日期过滤范围
-            df["date_str"] = df["date"].dt.strftime("%Y%m%d")
-            df = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
-            df = df.drop(columns=["date_str"])
-            return df
-        except DataSourceError:
-            return None
+            bs = _get_bs()
+            adjustflag = "1"  # qfq
+            rs = bs.query_history_k_data_plus(
+                f"{prefix}.{symbol}",
+                "date,open,high,low,close,volume",
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag=adjustflag,
+            )
+            df = rs.get_data()
+            if df is not None and not df.empty:
+                df.columns = ["date", "open", "high", "low", "close", "volume"]
+                df["date"] = pd.to_datetime(df["date"])
+                df["date_str"] = df["date"].dt.strftime("%Y%m%d")
+                filtered = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
+                if len(filtered) > 0:
+                    return filtered.drop(columns=["date_str"])
         except Exception as e:
-            logger.debug("fetch_kline(%s) 失败: %s", symbol, e)
-            return None
+            logger.debug("baostock K线失败 (%s): %s", symbol, e)
+
+        # 2. 新浪直连（备用）
+        from stock_watch.data_sources import _sina_kline_fetch
+        sina_sym = prefix + symbol
+        df = _sina_kline_fetch(sina_sym, datalen=800)
+        if df is not None and not df.empty:
+            df["date_str"] = df["date"]
+            filtered = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
+            if len(filtered) > 0:
+                return filtered.drop(columns=["date_str"])
+
+        # 3. Yahoo Finance（复权数据）
+        from stock_watch.data_sources import _yahoo_kline_fetch
+        df = _yahoo_kline_fetch(symbol, days_back=1500)
+        if df is not None and not df.empty:
+            df["date_str"] = df["date"]
+            filtered = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
+            if len(filtered) > 0:
+                return filtered.drop(columns=["date_str"])
+
+        # 4. 备用：akshare
+        try:
+            from stock_watch.data_sources import fetch_kline, DataSourceError
+            df = fetch_kline(symbol, prefix, days=300)
+            if df is not None and not df.empty:
+                df["date_str"] = df["date"].dt.strftime("%Y%m%d")
+                df = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
+                df = df.drop(columns=["date_str"])
+                return df
+        except Exception as e:
+            logger.debug("备用数据源(%s)失败: %s", symbol, e)
+        return None
 
     def _fetch_via_etf_api(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
-        """使用 data_sources.fetch_etf_kline 拉取 ETF 日K。"""
-        from stock_watch.data_sources import fetch_etf_kline, DataSourceError
+        """拉取 ETF 日K，按优先级尝试多个数据源。"""
+        prefix = "sh" if symbol.startswith(("51", "50")) else "sz"
+
+        # 1. Baostock（主数据源）
         try:
-            df = fetch_etf_kline(symbol, days=300)
-            if df is None or df.empty:
-                return None
-            df["date_str"] = df["date"].dt.strftime("%Y%m%d")
-            df = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
-            df = df.drop(columns=["date_str"])
-            return df
-        except DataSourceError:
-            return None
+            bs = _get_bs()
+            rs = bs.query_history_k_data_plus(
+                f"{prefix}.{symbol}",
+                "date,open,high,low,close,volume",
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag="1",
+            )
+            df = rs.get_data()
+            if df is not None and not df.empty:
+                df.columns = ["date", "open", "high", "low", "close", "volume"]
+                df["date"] = pd.to_datetime(df["date"])
+                df["date_str"] = df["date"].dt.strftime("%Y%m%d")
+                filtered = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
+                if len(filtered) > 0:
+                    return filtered.drop(columns=["date_str"])
         except Exception as e:
-            logger.debug("fetch_etf_kline(%s) 失败: %s", symbol, e)
-            return None
+            logger.debug("baostock ETF K线失败 (%s): %s", symbol, e)
+
+        # 2. 新浪直连
+        from stock_watch.data_sources import _sina_kline_fetch
+        sina_sym = prefix + symbol
+        df = _sina_kline_fetch(sina_sym, datalen=800)
+        if df is not None and not df.empty:
+            df["date_str"] = df["date"]
+            filtered = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
+            if len(filtered) > 0:
+                return filtered.drop(columns=["date_str"])
+
+        # 3. Yahoo
+        from stock_watch.data_sources import _yahoo_kline_fetch
+        df = _yahoo_kline_fetch(symbol, days_back=1500)
+        if df is not None and not df.empty:
+            df["date_str"] = df["date"]
+            filtered = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
+            if len(filtered) > 0:
+                return filtered.drop(columns=["date_str"])
+
+        # 4. 备用
+        try:
+            from stock_watch.data_sources import fetch_etf_kline, DataSourceError
+            df = fetch_etf_kline(symbol, days=300)
+            if df is not None and not df.empty:
+                df["date_str"] = df["date"].dt.strftime("%Y%m%d")
+                df = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
+                df = df.drop(columns=["date_str"])
+                return df
+        except Exception as e:
+            logger.debug("ETF备用数据源(%s)失败: %s", symbol, e)
+        return None
 
     @staticmethod
     def _normalize_kline_rows(df: pd.DataFrame, symbol: str) -> List[Tuple]:

@@ -23,10 +23,174 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode as _urllib_parse_urlencode
 
+import gzip
 import pandas as pd
 import requests
+import urllib.request
+import ssl
 
 logger = logging.getLogger("stock_watch.data_sources")
+
+# ── 新浪财经 K 线封装（可靠，不受系统代理影响）────────────────────────────
+
+_SINA_KLINE_CTX = ssl.create_default_context()
+_SINA_KLINE_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+
+def _sina_kline_fetch(symbol: str, datalen: int = 800) -> Optional[pd.DataFrame]:
+    """通过新浪财经 API 拉取日 K 线（未复权）。
+
+    symbol 格式：sh600519 或 sz000001
+    单请求最多返回约 800 条，需要多次请求才能覆盖完整历史。
+    """
+    url = (
+        "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+        f"CN_MarketData.getKLineData?symbol={symbol}&scale=240&ma=no&datalen={datalen}"
+    )
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": _SINA_KLINE_UA,
+            "Referer": "https://finance.sina.com.cn/",
+        })
+        with urllib.request.urlopen(req, context=_SINA_KLINE_CTX, timeout=15) as r:
+            body = r.read()
+            if body[:2] == b"\x1f\x8b":
+                body = gzip.decompress(body)
+            data = json.loads(body.decode("utf-8", errors="replace"))
+            if not data:
+                return None
+            rows = []
+            for item in data:
+                try:
+                    rows.append({
+                        "date": item["day"][:10],
+                        "open": float(item["open"]),
+                        "high": float(item["high"]),
+                        "low": float(item["low"]),
+                        "close": float(item["close"]),
+                        "volume": float(item["volume"]),
+                        "amount": float(item.get("amount", 0)),
+                    })
+                except (KeyError, ValueError):
+                    continue
+            if not rows:
+                return None
+            df = pd.DataFrame(rows)
+            df["change_pct"] = df["close"].pct_change() * 100
+            return df
+    except Exception as e:
+        logger.debug("sina kline(%s) 失败: %s", symbol, e)
+        return None
+
+
+def _sina_fetch_stock_list(
+    node: str = "hs_a", page_size: int = 100, max_pages: int = 60
+) -> List[str]:
+    """从新浪财经获取 A 股标的代码列表。"""
+    symbols = set()
+    for page in range(1, max_pages + 1):
+        url = (
+            "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+            f"Market_Center.getHQNodeData?page={page}&num={page_size}&node={node}&sort=symbol&asc=1&style=json"
+        )
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": _SINA_KLINE_UA,
+                "Referer": "https://finance.sina.com.cn/",
+            })
+            with urllib.request.urlopen(req, context=_SINA_KLINE_CTX, timeout=15) as r:
+                body = r.read()
+                if body[:2] == b"\x1f\x8b":
+                    body = gzip.decompress(body)
+                items = json.loads(body.decode("utf-8", errors="replace"))
+                if not items:
+                    break
+                for item in items:
+                    sym = item.get("symbol", "")
+                    if sym:
+                        symbols.add(sym)
+                time.sleep(0.2)
+                if len(items) < page_size:
+                    break
+        except Exception as e:
+            logger.debug("sina stock list page %d 失败: %s", page, e)
+            break
+    return sorted(symbols)
+
+
+# ── Yahoo Finance K 线封装 ──────────────────────────────────────────────────
+
+_YAHOO_CTX = ssl.create_default_context()
+
+
+def _yahoo_kline_fetch(code_6digit: str, days_back: int = 1500) -> Optional[pd.DataFrame]:
+    """通过 Yahoo Finance API 拉取日 K 线（复权）。
+
+    code_6digit: 6位股票代码
+    返回包含完整历史的 DataFrame。
+    """
+    import datetime as _dt
+
+    # 判断市场
+    if code_6digit.startswith(("6", "5", "9")):
+        yf_sym = f"{code_6digit}.SS"
+    elif code_6digit.startswith(("0", "3")):
+        yf_sym = f"{code_6digit}.SZ"
+    else:
+        return None
+
+    end_ts = int(datetime.now().timestamp())
+    start_ts = int((datetime.now() - _dt.timedelta(days=days_back)).timestamp())
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_sym}?period1={start_ts}&period2={end_ts}&interval=1d"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": _SINA_KLINE_UA,
+            "Accept": "application/json",
+        })
+        with urllib.request.urlopen(req, context=_YAHOO_CTX, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        result = data.get("chart", {}).get("result", [None])[0]
+        if not result:
+            logger.debug("yahoo kline(%s) no result", yf_sym)
+            return None
+
+        timestamps = result.get("timestamp", [])
+        indicators = result.get("indicators", {})
+        quotes = indicators.get("quote", [{}])[0]
+        adj = indicators.get("adjclose", [{}])[0].get("adjclose", [])
+        closes = quotes.get("close", [])
+        opens = quotes.get("open", [])
+        highs = quotes.get("high", [])
+        lows = quotes.get("low", [])
+        volumes = quotes.get("volume", [])
+
+        # 优先用复权价
+        use_close = adj if adj and len(adj) >= len(closes) * 0.9 else closes
+
+        rows = []
+        for i, ts in enumerate(timestamps):
+            if i >= len(use_close):
+                break
+            d = _dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+            rows.append({
+                "date": d,
+                "open": float(opens[i]) if i < len(opens) else 0,
+                "high": float(highs[i]) if i < len(highs) else 0,
+                "low": float(lows[i]) if i < len(lows) else 0,
+                "close": float(use_close[i]),
+                "volume": float(volumes[i]) if i < len(volumes) else 0,
+            })
+        if not rows:
+            return None
+        df = pd.DataFrame(rows)
+        df["change_pct"] = df["close"].pct_change() * 100
+        return df
+    except Exception as e:
+        logger.debug("yahoo kline(%s) 失败: %s", yf_sym, e)
+        return None
 
 _DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -284,6 +448,108 @@ def _fetch_json_no_proxy(url: str, headers: Optional[Dict[str, str]] = None, tim
         raise DataSourceError(f"HTTP {e.code}: {e.read().decode()[:200]}") from e
     except urllib.error.URLError as e:
         raise DataSourceError(f"网络连接失败: {e.reason}") from e
+
+
+# ── baostock 封装：K 线 / 全市场代码列表 ────────────────────────────────
+# baostock 通过专有 TCP 协议连接，不走 HTTP 代理，是代理失效时的最稳兜底。
+
+
+def _import_baostock():
+    try:
+        import baostock as bs  # noqa: WPS433 - 延迟导入
+    except ImportError as exc:  # pragma: no cover
+        raise DataSourceError(
+            "未安装 baostock，请先 `pip install -r requirements.txt`"
+        ) from exc
+    return bs
+
+
+def _bs_compat_patch() -> None:
+    """兼容 pandas 2.x（baostock 0.9.x 使用已移除的 DataFrame.append）。"""
+    import pandas as pd
+    if not hasattr(pd.DataFrame, "append"):
+        pd.DataFrame.append = lambda self, other, **kwargs: pd.concat(
+            [self, other], ignore_index=True
+        )
+
+
+def fetch_kline_baostock(
+    code: str, market: str, days: int, adjust: str = "qfq"
+) -> pd.DataFrame:
+    """通过 baostock 拉取最近 `days` 个交易日的日 K 线。
+
+    code: 纯6位代码，如 "600519" / "000001" / "510050"
+    market: "sh" / "sz"
+    adjust: "qfq"=前复权, "hfq"=后复权, "3"=不复权
+    返回列名中文 DataFrame（日期/开盘/收盘/最高/最低/成交量）。
+    """
+    bs = _import_baostock()
+    _bs_compat_patch()
+
+    bs_code = f"{market}.{code}"
+    adjustflag = "3" if adjust == "none" else "2" if adjust == "hfq" else "1"
+
+    # baostock 登录（幂等，重复 login 无副作用）
+    lg = bs.login()
+    if lg.error_code != "0":
+        raise DataSourceError(f"baostock 登录失败: {lg.error_msg}")
+
+    try:
+        # 拉取较宽日期范围确保覆盖足够的交易日
+        import datetime
+        end = datetime.date.today()
+        start = end - datetime.timedelta(days=int(days * 1.7) + 30)
+        rs = bs.query_history_k_data_plus(
+            bs_code,
+            "date,open,high,low,close,volume",
+            start_date=start.strftime("%Y-%m-%d"),
+            end_date=end.strftime("%Y-%m-%d"),
+            frequency="d",
+            adjustflag=adjustflag,
+        )
+        rows = rs.get_data()
+    finally:
+        bs.logout()
+
+    if rows is None or rows.empty:
+        raise DataSourceError(f"baostock {bs_code} 无数据")
+
+    # 列名映射为中文（与 akshare 输出一致）
+    rows.columns = ["日期", "开盘", "收盘", "最高", "最低", "成交量"]
+    return rows.tail(days).reset_index(drop=True)
+
+
+def fetch_all_symbols_baostock() -> List[str]:
+    """通过 baostock 获取全市场 A 股 + ETF 代码列表。
+
+    过滤掉指数类标的，返回纯6位代码列表。
+    """
+    bs = _import_baostock()
+    _bs_compat_patch()
+
+    lg = bs.login()
+    if lg.error_code != "0":
+        raise DataSourceError(f"baostock 登录失败: {lg.error_msg}")
+
+    try:
+        rs = bs.query_all_stock(day="2026-09-01")
+        df = rs.get_data()
+    finally:
+        bs.logout()
+
+    if df is None or df.empty:
+        return []
+
+    clean = []
+    for _, row in df.iterrows():
+        raw_code = str(row["code"])
+        code = raw_code.split(".")[1] if "." in raw_code else raw_code
+        if len(code) == 6 and code.isdigit():
+            name = str(row.get("code_name", ""))
+            # 过滤指数、基金分类等
+            if "指数" not in name:
+                clean.append(code)
+    return list(dict.fromkeys(clean))
 
 
 # ── akshare 封装：行情/K 线/公告/新闻 ──────────────────────────────────
