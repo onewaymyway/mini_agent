@@ -25,6 +25,28 @@ class AgentClient:
         except Exception as e:
             return {"_error": str(e)}
 
+    def _get_bytes(self, path, params=None, timeout=30):
+        """带鉴权 header 取原始字节（下载用）。由看板后端（Streamlit 进程）
+        代为向 API 发起请求，浏览器不直接访问 API 的 URL——天然规避
+        「下载链接 host 跟不上用户实际访问地址」和「浏览器直连不带
+        Authorization header」这两个问题，参见 artifact_file_bytes /
+        fs_download_bytes 的调用方。"""
+        try:
+            r = requests.get(self._url(path), headers=self.headers, params=params, timeout=timeout)
+            if r.status_code == 200:
+                filename = None
+                cd = r.headers.get("Content-Disposition", "")
+                if "filename=" in cd:
+                    filename = cd.split("filename=")[-1].strip('"; ')
+                return {
+                    "content": r.content,
+                    "mime": r.headers.get("Content-Type") or "application/octet-stream",
+                    "filename": filename,
+                }
+            return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
+        except Exception as e:
+            return {"_error": str(e)}
+
     def _post(self, path, json_body=None, params=None, timeout=15):
         try:
             r = requests.post(self._url(path), headers=self.headers, json=json_body,
@@ -1255,8 +1277,23 @@ class AgentClient:
     def fs_read(self, path):
         return self._get("/fs/read", params={"path": path})
 
+    def _bearer_token(self) -> str:
+        return self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
     def fs_download_url(self, path):
-        return self._url(f"/fs/download?path={requests.utils.quote(path)}")
+        # 预览/新标签页打开等场景仍需要浏览器直连该 URL，补上 token
+        # query 参数（AuthMiddleware 支持 header 或 query 两种鉴权方式），
+        # 否则浏览器直接 GET 时不带 Authorization header 会 401。
+        token = self._bearer_token()
+        return self._url(
+            f"/fs/download?path={requests.utils.quote(path)}"
+            + (f"&token={requests.utils.quote(token)}" if token else "")
+        )
+
+    def fs_download_bytes(self, path):
+        """下载走看板后端代为请求 + st.download_button 下发，
+        不需要浏览器直连 API，见 _get_bytes 的说明。"""
+        return self._get_bytes("/fs/download", params={"path": path})
 
     def fs_mkdir(self, path):
         return self._post("/fs/mkdir", json_body={"path": path})
@@ -1291,12 +1328,25 @@ class AgentClient:
         return self._get(f"/artifacts/{manifest_id}", params=params)
 
     def artifact_file_url(self, manifest_id: str, index: int = 0, session_id: str = None, download: bool = False):
+        # 同 fs_download_url：仅供图片内联预览 / PDF 新标签页打开这类必须
+        # 浏览器直连的场景使用，补上 token query 参数以通过鉴权。
+        token = self._bearer_token()
         q = f"index={index}"
         if session_id:
             q += f"&session_id={requests.utils.quote(session_id)}"
         if download:
             q += "&download=true"
+        if token:
+            q += f"&token={requests.utils.quote(token)}"
         return self._url(f"/artifacts/{manifest_id}/file?{q}")
+
+    def artifact_file_bytes(self, manifest_id: str, index: int = 0, session_id: str = None):
+        """下载走看板后端代为请求 + st.download_button 下发，
+        不需要浏览器直连 API，见 _get_bytes 的说明。"""
+        params = {"index": index}
+        if session_id:
+            params["session_id"] = session_id
+        return self._get_bytes(f"/artifacts/{manifest_id}/file", params=params)
 
     # ── 能力学习 / 人设养成（persona_capability_learning_design.md §7.1）───
     def capability_tracks(self, status: str = None):

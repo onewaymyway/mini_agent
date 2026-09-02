@@ -5395,7 +5395,12 @@ def render_artifacts_tab(client: AgentClient):
             if c2.button("预览", key=f"prev_{full_path}"):
                 content = client.fs_read(full_path) or {}
                 st.session_state[f"preview_{full_path}"] = content.get("content", content.get("_error", ""))
-            c3.markdown(f"[⬇️下载]({client.fs_download_url(full_path)})")
+            with c3:
+                _download_via_streamlit(
+                    f"fs_{full_path}",
+                    lambda p=full_path: client.fs_download_bytes(p),
+                    fallback_name=name,
+                )
         preview_key = f"preview_{full_path}"
         if preview_key in st.session_state:
             with st.expander(f"预览: {name}", expanded=True):
@@ -5411,27 +5416,80 @@ ARTIFACT_TYPE_ICON = {
 }
 
 
+def _download_via_streamlit(cache_key: str, fetch_fn, label: str = "⬇️ 下载",
+                             fallback_name: str = "download", fallback_mime: str = "application/octet-stream"):
+    """通过 Streamlit 自身的下载机制下发文件，不需要浏览器直连 API。
+
+    两步交互：先点「📥 准备下载」，由看板后端（Python 进程，已持有鉴权
+    token）代为向 API 请求字节内容并缓存到 session_state；rerun 后展示
+    真正的 st.download_button，浏览器点击它时是从 Streamlit 自己的连接
+    拿数据——天然规避了「下载 URL 的 host 跟不上用户实际访问地址（内网 IP /
+    绑定域名）」以及「浏览器直连下载链接不带 Authorization header 导致
+    401 Invalid or missing token」这两个问题。
+    """
+    ready_key = f"_dl_ready_{cache_key}"
+    cached = st.session_state.get(ready_key)
+    if cached is None:
+        if st.button("📥 准备下载", key=f"_dl_prep_{cache_key}"):
+            result = fetch_fn()
+            if result.get("_error"):
+                st.error(result["_error"])
+                return
+            st.session_state[ready_key] = result
+            st.rerun()
+    else:
+        if "_error" in cached:
+            st.error(cached["_error"])
+            return
+        st.download_button(
+            label,
+            data=cached["content"],
+            file_name=cached.get("filename") or fallback_name,
+            mime=cached.get("mime") or fallback_mime,
+            key=f"_dl_btn_{cache_key}",
+        )
+
+
 def _render_artifact_file(client: AgentClient, manifest_id: str, session_id: str, idx: int, f: dict):
     ftype = f.get("type", "other")
     title = f.get("title") or f.get("path", "").split("/")[-1]
     icon = ARTIFACT_TYPE_ICON.get(ftype, "📦")
     file_url = client.artifact_file_url(manifest_id, index=idx, session_id=session_id)
-    download_url = client.artifact_file_url(manifest_id, index=idx, session_id=session_id, download=True)
+    dl_cache_key = f"artifact_{manifest_id}_{idx}"
 
     st.markdown(f"**{icon} {title}**  ·  `{f.get('path','')}`")
     if ftype == "image":
         st.image(file_url, caption=title)
+        _download_via_streamlit(
+            dl_cache_key,
+            lambda: client.artifact_file_bytes(manifest_id, index=idx, session_id=session_id),
+            fallback_name=title,
+        )
     elif ftype == "pdf":
-        st.markdown(f"[🔎 在新标签页打开预览]({file_url})  ·  [⬇️ 下载]({download_url})")
+        st.markdown(f"[🔎 在新标签页打开预览]({file_url})")
+        _download_via_streamlit(
+            dl_cache_key,
+            lambda: client.artifact_file_bytes(manifest_id, index=idx, session_id=session_id),
+            fallback_name=title, fallback_mime="application/pdf",
+        )
     elif ftype in ("code", "text"):
         data = client.fs_read(f.get("path", "")) or {}
         content = data.get("content")
         if content is not None:
             lang = "python" if f.get("path", "").endswith(".py") else None
             st.code(content[:5000], language=lang)
-        st.markdown(f"[⬇️ 下载]({download_url})")
+        _download_via_streamlit(
+            dl_cache_key,
+            lambda: client.artifact_file_bytes(manifest_id, index=idx, session_id=session_id),
+            fallback_name=title,
+        )
     else:
-        st.markdown(f"文档类产出暂不支持内联预览，请下载查看：[⬇️ 下载]({download_url})")
+        st.caption("文档类产出暂不支持内联预览，请下载查看：")
+        _download_via_streamlit(
+            dl_cache_key,
+            lambda: client.artifact_file_bytes(manifest_id, index=idx, session_id=session_id),
+            fallback_name=title,
+        )
     st.caption(f"大小: {f.get('size', '?')} bytes")
 
 
