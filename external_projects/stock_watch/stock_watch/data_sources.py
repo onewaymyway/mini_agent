@@ -574,26 +574,59 @@ class HotStockItem:
 
 
 def _eastmoney_rank_direct() -> pd.DataFrame:
-    """通过 SOCKS5 代理调东方财富人气榜 API。
+    """获取东方财富人气榜数据。
 
-    使用 requests + socks5 代理访问，绕过东财对直连 IP 的反爬限制。
+    主路径：CDP 浏览器（绕过 Windows 系统代理与 SOCKS5 代理冲突）。
+    降级路径：SOCKS5 代理直连；若代理不可用则返回空 DataFrame。
     """
     import json as _json
-    import requests
 
-    proxies = {"http": "socks5://127.0.0.1:10808", "https": "socks5://127.0.0.1:10808"}
     headers = {"User-Agent": _DEFAULT_UA, "Content-Type": "application/json"}
 
-    # 第一步：获取人气榜列表
+    # 第一步：通过 CDP 获取人气榜列表
     payload = _json.dumps({
         "appId": "appId01", "globalId": "786e4c21-70dc-435a-93bb-38",
         "marketType": "", "pageNo": 1, "pageSize": 100,
     })
+    url1 = "https://emappdata.eastmoney.com/stockrank/getAllCurrentList"
+    raw1 = _eastmoney_kline_cdp_fetch(url1, timeout=15)
+    if raw1 and not raw1.startswith("ERR"):
+        try:
+            data = _json.loads(raw1)
+            if data.get("code") == 0:
+                raw = pd.DataFrame(data["data"])
+                raw["mark"] = [
+                    "0" + "." + item[2:] if "SZ" in item else "1" + "." + item[2:]
+                    for item in raw["sc"]
+                ]
+                secids = ",".join(raw["mark"]) + "?v=08926209912590994"
+                # 第二步：获取实时行情
+                params = _urllib_parse_urlencode({
+                    "ut": "f057cbcbce2a86e2866ab8877db1d059",
+                    "fltt": "2", "invt": "2",
+                    "fields": "f14,f3,f12,f2",
+                    "secids": secids,
+                })
+                url2 = f"http://push2.eastmoney.com/api/qt/ulist.np/get?{params}"
+                raw2 = _eastmoney_kline_cdp_fetch(url2, timeout=15)
+                if raw2 and not raw2.startswith("ERR"):
+                    jd2 = _json.loads(raw2)
+                    df2 = pd.DataFrame(jd2["data"]["diff"])
+                    df2.columns = ["最新价", "涨跌幅", "代码", "股票名称"]
+                    df2["最新价"] = pd.to_numeric(df2["最新价"], errors="coerce")
+                    df2["涨跌幅"] = pd.to_numeric(df2["涨跌幅"], errors="coerce")
+                    df2["涨跌额"] = df2["最新价"] * df2["涨跌幅"] / 100
+                    df2["当前排名"] = raw["rk"].values[:len(df2)]
+                    df2["代码"] = raw["sc"].values[:len(df2)]
+                    return df2[["当前排名", "代码", "股票名称", "最新价", "涨跌额", "涨跌幅"]]
+        except Exception as exc:
+            logger.warning("CDP 获取人气榜失败 (%s)，尝试 SOCKS5 降级", exc)
+
+    # SOCKS5 降级
+    import requests
+    proxies = {"http": "socks5://127.0.0.1:10808", "https": "socks5://127.0.0.1:10808"}
     try:
-        r1 = requests.post(
-            "https://emappdata.eastmoney.com/stockrank/getAllCurrentList",
-            data=payload, headers=headers, proxies=proxies, timeout=15
-        )
+        r1 = requests.post(url1, data=payload, headers=headers, proxies=proxies, timeout=15)
         r1.raise_for_status()
         data = r1.json()
         if data.get("code") != 0:
@@ -604,7 +637,6 @@ def _eastmoney_rank_direct() -> pd.DataFrame:
             for item in raw["sc"]
         ]
         secids = ",".join(raw["mark"]) + "?v=08926209912590994"
-        # 第二步：获取实时行情
         params = _urllib_parse_urlencode({
             "ut": "f057cbcbce2a86e2866ab8877db1d059",
             "fltt": "2", "invt": "2",
@@ -626,7 +658,8 @@ def _eastmoney_rank_direct() -> pd.DataFrame:
         df2["代码"] = raw["sc"].values[:len(df2)]
         return df2[["当前排名", "代码", "股票名称", "最新价", "涨跌额", "涨跌幅"]]
     except Exception as exc:
-        raise DataSourceError(f"_eastmoney_rank_direct 失败: {exc}") from exc
+        logger.warning("SOCKS5 降级也失败: %s", exc)
+        raise DataSourceError(f"_eastmoney_rank_direct 完全失败: {exc}") from exc
 
 
 def fetch_eastmoney_hot_rank(top_n: int = 50) -> List[HotStockItem]:
@@ -765,7 +798,7 @@ def _eastmoney_kline_direct(
     """获取东方财富 K 线数据（DataFrame）。
 
     主路径：CDP 浏览器（绕过 Windows 系统代理冲突）。
-    降级路径：urllib.request 直连（不读系统代理设置）。
+    降级路径：urllib.request 直连 → 新浪财经 API。
     最终兜底：由调用方（fetch_kline / fetch_etf_kline）负责交给 akshare。
     """
     import datetime
@@ -790,14 +823,26 @@ def _eastmoney_kline_direct(
 
     # 主路径：CDP 浏览器
     raw = _eastmoney_kline_cdp_fetch(url)
-    if not raw or raw.startswith("ERR"):
+    if not raw or raw.startswith("ERR") or "503" in raw or "无法正常运作" in raw:
         logger.warning("CDP 获取 K 线失败，降级到 urllib 直连")
         try:
             data = _fetch_json_no_proxy(url)
         except Exception as exc2:
-            raise DataSourceError(f"CDP 及 urllib 直连均失败: {exc2}") from exc2
+            logger.warning("urllib 直连也失败 (%s)，降级到新浪", exc2)
+            data = None
     else:
         data = json.loads(raw)
+
+    # 新浪财经兜底
+    if data is None or data.get("rc") != 0:
+        logger.info("尝试新浪财经 K 线: %s", code)
+        sina_symbol = f"{'sh' if market == 'sh' else 'sz'}{code}"
+        sina_df = _sina_kline_fetch(sina_symbol, datalen=limit)
+        if sina_df is not None and not sina_df.empty:
+            sina_df = sina_df.tail(days).reset_index(drop=True)
+            return sina_df
+        raise DataSourceError(f"东财及新浪 K 线均失败: {code}")
+
     # API 使用 rc 作为响应码（0 表示成功）
     if data.get("rc") != 0:
         raise DataSourceError(f"东方财富 K 线 API 返回错误: {data.get('dsc', data.get('message', 'Unknown'))}")
@@ -1271,13 +1316,10 @@ def _fetch_iwencai_web(query: str, top_n: int = 100) -> List[Dict[str, Any]]:
 
 
 def _fetch_eastmoney_sectors(by_flow: bool = False) -> List[Dict[str, Any]]:
-    """从东方财富直接拉取行业板块数据（通过SOCKS5代理）。
+    """从东方财富直接拉取行业板块数据。
 
-    Args:
-        by_flow: True时返回资金流向数据[{sector, net_inflow}]，False时返回涨跌幅数据[{sector, change_pct}]
+    主路径：CDP 浏览器；降级路径：SOCKS5 代理。
     """
-    import requests
-    proxies = {"http": "socks5://127.0.0.1:10808", "https": "socks5://127.0.0.1:10808"}
     result: List[Dict[str, Any]] = []
     try:
         fid = "f62" if by_flow else "f3"
@@ -1287,6 +1329,28 @@ def _fetch_eastmoney_sectors(by_flow: bool = False) -> List[Dict[str, Any]]:
                f"?ut=b2884a393a59ad64002b997c1ab683cb&fid={fid}"
                f"&po=1&pz={pz}&pn=1&np=1&fltt=2&invt=2"
                f"&fs=m:90+t:2&fields=f12,f14,{fid}")
+        # 主路径：CDP 浏览器
+        raw = _eastmoney_kline_cdp_fetch(url, timeout=15)
+        if raw and not raw.startswith("ERR"):
+            import json as _json
+            data = _json.loads(raw)
+            for d in data.get("data", {}).get("diff", []) or []:
+                name = str(d.get("f14", ""))
+                val = d.get(fid)
+                if name and val is not None:
+                    try:
+                        result.append({"sector": name, field: float(val)})
+                    except (ValueError, TypeError):
+                        pass
+            if result:
+                return result
+    except Exception as exc:
+        logger.warning("CDP 获取东财板块数据失败 (%s)，尝试 SOCKS5 降级", exc)
+
+    # SOCKS5 降级
+    import requests
+    proxies = {"http": "socks5://127.0.0.1:10808", "https": "socks5://127.0.0.1:10808"}
+    try:
         r = requests.get(url, headers={"User-Agent": _DEFAULT_UA},
                         proxies=proxies, timeout=15)
         r.raise_for_status()
