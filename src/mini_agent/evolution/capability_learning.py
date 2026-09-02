@@ -230,8 +230,8 @@ class CapabilityLedgerEntry:
     track_id: str
     topic_id: str
     action: str                                  # researched / question_raised /
-                                                   # question_answered / skipped /
-                                                   # miss_observed（§14.1-a）
+                                                   # question_answered / question_reused /
+                                                   # skipped / miss_observed（§14.1-a）
     summary: str
     cycle_ts: float = field(default_factory=time.time)
     wiki_page_ids: list[str] = field(default_factory=list)
@@ -740,6 +740,107 @@ class CapabilityOutlineSuggestionStore:
                 self._save_all(items)
                 return s
         return None
+
+
+def _mark_topic_covered(
+    track_store: "CapabilityTrackStore", track: "CapabilityTrack", topic_id: str,
+) -> None:
+    """[capability_learning_duplicate_question_dedup_plan.md 根因一] 把
+    `track.outline` 里 `topic_id` 匹配的子主题标记为 `covered` 并刷新
+    `last_touched_at`，再落盘。用于"这个子主题已经有了确定答案（用户回答
+    或复用历史回答）"之后，让 `scan_outline_gaps()` 下一轮不再把它选回来
+    重复提问——这是修复"周期性问同一个问题"的关键一步：此前 `raise_
+    question()` 只写问题台账，从不回写 `coverage_state`，子主题永远停在
+    `uncovered`，每轮都会被重新选中。
+
+    找不到对应 `topic_id`（大纲被用户手动改过、子主题已被删除等）时静默
+    跳过，不影响调用方主流程。
+    """
+    changed = False
+    for t in track.outline:
+        if t.topic_id == topic_id and t.coverage_state != "covered":
+            t.coverage_state = "covered"
+            t.last_touched_at = time.time()
+            changed = True
+            break
+    if changed:
+        track_store.update(track.track_id, outline=track.outline)
+
+
+def find_reusable_answered_question(
+    new_question_text: str,
+    track: "CapabilityTrack",
+    question_store: "CapabilityQuestionStore",
+    llm_helper: Optional[Callable[[str], str]] = None,
+) -> Optional["CapabilityQuestion"]:
+    """[capability_learning_duplicate_question_dedup_plan.md 根因二] 在真正
+    向用户抛出一个新问题之前，检查这个 Track 下有没有已经问过、且语义上是
+    同一件事的历史问题——如果有，调用方应直接复用那条已回答的答案，不再
+    重复打扰用户。
+
+    背景：大纲里可能存在名字不同但实际在问同一件事的子主题（比如"数据
+    采集技术基础" vs "A股数据源类型"），各自独立触发提问，对用户来说就
+    是被换了个说法反复问同一个问题。字符串/关键词相似度（本文件里
+    `_topic_name_similarity()` 用的字符 2-gram Jaccard）对这类"字面不像、
+    语义一样"的情况基本无效，所以这里用 LLM 做语义判断。
+
+    只在"这个 Track 下确实存在已回答问题"时才调用 LLM（早退），避免空
+    Track / 冷启动场景产生无意义的 LLM 调用。`llm_helper` 为 `None`
+    （未接线）时直接返回 `None`，退化为原有行为（照常提问）。
+
+    判断偏保守：宁可漏判（正常提问一次，最多是稍微多问一次），也不要
+    误判成重复（导致该问的没问到）——LLM 调用异常、输出解析不出有效结果
+    时都按"不是重复"处理。
+
+    返回命中的历史 `CapabilityQuestion`（`status == "answered"`），未命中
+    或跳过判断时返回 `None`。
+    """
+    if llm_helper is None:
+        return None
+    answered = [
+        q for q in question_store.list_questions(status="answered", track_id=track.track_id)
+        if q.answer
+    ]
+    if not answered:
+        return None
+
+    numbered = "\n".join(
+        f"{i}. 问题：{q.question}\n   已有答案：{q.answer}"
+        for i, q in enumerate(answered)
+    )
+    prompt = (
+        f"下面是关于「{track.title}」这个能力学习方向，系统之前已经问过\n"
+        f"用户、并且已经拿到答案的历史问题列表：\n\n{numbered}\n\n"
+        f"现在系统准备问用户一个新问题：\n「{new_question_text}」\n\n"
+        "请判断这个新问题是否与上面某一条历史问题在语义上是同一件事"
+        "（即历史答案已经足够回答这个新问题，不需要再问用户一遍）。"
+        "只在你有把握时才判定为\"是同一件事\"，宁可漏判（正常提问），"
+        "也不要误判（导致该问的没问）。\n\n"
+        "如果是同一件事，请只输出上面列表里对应的那个序号数字（比如 0 或 "
+        "2），不要有任何其它文字。如果不是同一件事，或者没有把握，请只"
+        "输出 NONE。不要输出除以上两种情况之外的任何内容。"
+    )
+    try:
+        raw = llm_helper(prompt)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(
+            _mini_agent_exc,
+            where="mini_agent.evolution.capability_learning.find_reusable_answered_question",
+        )
+        return None
+    if not raw or not raw.strip():
+        return None
+    first_line = raw.strip().splitlines()[0].strip()
+    if first_line.upper() == "NONE":
+        return None
+    try:
+        idx = int(first_line)
+    except ValueError:
+        return None
+    if not (0 <= idx < len(answered)):
+        return None
+    return answered[idx]
 
 
 def generate_outline_suggestion_from_answer(
@@ -1496,7 +1597,7 @@ def run_capability_learning_cycle(
     summary = {"tracks_processed": 0, "topics_researched": 0, "questions_raised": 0,
                "questions_consumed": 0, "topics_skipped": 0, "topics_reused": 0,
                "outline_suggestions_generated": 0, "topics_research_empty": 0,
-               "topics_research_thin": 0}
+               "topics_research_thin": 0, "questions_reused": 0}
 
     active_tracks = sorted(
         track_store.list_tracks(status="active"),
@@ -1522,6 +1623,11 @@ def run_capability_learning_cycle(
                 action="question_answered",
                 summary=f"用户回答了「{q.question}」，答案已记录，供后续检索/草稿使用",
             ))
+            # [capability_learning_duplicate_question_dedup_plan.md 根因一]
+            # 回答被消费时把对应子主题标记为 covered，避免下一轮
+            # scan_outline_gaps() 把它重新选中、needs_user_context() 再问
+            # 一遍一模一样的问题。
+            _mark_topic_covered(track_store, track, q.topic_id)
             if suggestion_store is not None:
                 pending_names = [
                     s.suggested_name for s in suggestion_store.list_suggestions(
@@ -1604,11 +1710,36 @@ def run_capability_learning_cycle(
             if needs_user_context(topic, track):
                 if pending >= max_pending_questions:
                     continue
+                question_text = (
+                    f"关于「{topic.name}」，能告诉我更多你的具体偏好/背景吗？"
+                    f"这会影响后续推进的方向。"
+                )
+                # [capability_learning_duplicate_question_dedup_plan.md
+                # 根因二] 真正提问之前，先看这个 Track 下有没有语义上问的
+                # 是同一件事、且已经回答过的历史问题——命中就直接复用答案，
+                # 不再重复打扰用户；不生成新的 pending 问题，直接把子主题
+                # 标记为 covered。
+                reused = find_reusable_answered_question(
+                    question_text, track, question_store, llm_helper=llm_helper,
+                )
+                if reused is not None:
+                    _mark_topic_covered(track_store, track, topic.topic_id)
+                    ledger_store.append(CapabilityLedgerEntry(
+                        track_id=track.track_id,
+                        topic_id=topic.topic_id,
+                        action="question_reused",
+                        summary=f"「{topic.name}」与历史问题「{reused.question}」语义重复，"
+                                f"直接复用其答案「{reused.answer}」，未再次询问用户",
+                    ))
+                    summary["questions_reused"] += 1
+                    track_advanced = True
+                    if global_budget_remaining is not None:
+                        global_budget_remaining -= 1
+                    continue
                 q = question_store.raise_question(
                     track_id=track.track_id,
                     topic_id=topic.topic_id,
-                    question=f"关于「{topic.name}」，能告诉我更多你的具体偏好/背景吗？"
-                             f"这会影响后续推进的方向。",
+                    question=question_text,
                 )
                 ledger_store.append(CapabilityLedgerEntry(
                     track_id=track.track_id,
