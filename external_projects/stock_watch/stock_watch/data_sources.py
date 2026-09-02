@@ -784,39 +784,39 @@ def _get_persistent_cdp_session():
 def _eastmoney_kline_cdp_fetch(url: str, timeout: int = 15, max_retries: int = 3) -> str:
     """通过 CDP 导航到 URL 并返回页面文本内容（绕过 Windows 系统代理冲突）。
 
-    步骤：
-    1. 先访问 eastmoney.com 首页建立 cookie/session（东财反爬会拦截无 session 请求）
-    2. 再导航到目标 K 线 API URL
-
-    Windows 系统代理（127.0.0.1:10808）导致 requests/urllib 无法直连 eastmoney，
-    改用专用 Chrome 实例（端口 {_BROWSER_CDP_PORT}）执行 HTTP 请求。
-    支持自动重试，应对偶发的浏览器会话瞬断。
+    使用 fetch API 获取完整响应，避免 document.body.innerText 截断长 JSON。
     """
     for attempt in range(1, max_retries + 1):
         session = None
         try:
-            session = _get_persistent_cdp_session()
-            # Step 1: 先访问东财首页建立 session/cookie
+            session, _ = _get_cdp_session()
+            # Step 1: 先访问东财首页建立 session/cookie（增加等待时间）
             session.eval_js(f"location.href={json.dumps('https://www.eastmoney.com/')}", await_promise=False)
-            time.sleep(3)  # 等待首页加载和 JS 设置 cookie
+            time.sleep(5)  # 增加等待确保 cookie 设置完成
 
-            # Step 2: 再导航到 K 线 API
-            session.eval_js(f"location.href={json.dumps(url)}", await_promise=False)
-            time.sleep(2)
-            body = session.eval_js("document.body.innerText", await_promise=True)
-            if body:
+            # Step 2: 使用 fetch API 获取完整 JSON 数据
+            fetch_js = f'''
+fetch({json.dumps(url)}, {{
+  headers: {{'User-Agent': 'Mozilla/5.0'}}
+}})
+.then(r => r.text())
+.then(t => t.substring(0, 50000))
+.catch(e => 'FETCH_ERROR: ' + e.message)
+'''
+            body = session.eval_js(fetch_js, await_promise=True)
+            
+            if body and not body.startswith('FETCH_ERROR') and 'rc' in body:
                 return body
-            raise DataSourceError("CDP 返回空内容")
+            raise DataSourceError("CDP 返回无效内容")
         except Exception as e:
-            if attempt == max_retries:
-                raise DataSourceError(f"CDP 导航失败（已重试 {max_retries} 次）: {e}") from e
             logger.debug("CDP 第 %d 次尝试失败: %s", attempt, e)
+            if attempt < max_retries:
+                time.sleep(2)  # 增加重试间隔
+                continue
+            raise DataSourceError(f"CDP 获取失败（已重试 {max_retries} 次）: {e}") from e
+        finally:
             if session is not None:
-                try:
-                    session.close()
-                except:
-                    pass
-                session = None
+                session.close()
 
 
 def _eastmoney_kline_direct(
@@ -850,7 +850,7 @@ def _eastmoney_kline_direct(
 
     # 主路径：CDP 浏览器
     raw = _eastmoney_kline_cdp_fetch(url)
-    if not raw or raw.startswith("ERR") or "503" in raw or "无法正常运作" in raw:
+    if not raw or raw.startswith("ERR") or "无法正常运作" in raw:
         logger.warning("CDP 获取 K 线失败，降级到 urllib 直连")
         try:
             data = _fetch_json_no_proxy(url)
@@ -858,7 +858,12 @@ def _eastmoney_kline_direct(
             logger.warning("urllib 直连也失败 (%s)", exc2)
             data = None
     else:
-        data = json.loads(raw)
+        # 尝试解析 JSON，只有解析失败才判断为 CDP 失败
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            logger.warning("CDP 返回内容不是合法 JSON: %s", e)
+            data = None
 
     # 所有降级由调用方负责
     if data is None or data.get("rc") != 0:
