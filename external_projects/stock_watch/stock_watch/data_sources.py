@@ -416,21 +416,14 @@ def _fetch_json_with_socks_proxy(url: str, headers: Optional[Dict[str, str]] = N
 
 
 def _fetch_json_no_proxy(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 15) -> Any:
-    """尝试 SOCKS5 代理连接东方财富 API，失败时降级到直连。
+    """通过 urllib 直连东方财富 API（**不使用任何代理**）。
 
-    使用 SOCKS5 代理绕过东财对直连 IP 的反爬限制；若代理不可用则退回到
-    urllib.request 直连（可能因反爬被拒）。
+    ⚠️ 重要：此函数已禁用 SOCKS5 代理，直接访问目标 URL。
+    如果代理不可用，直接报错，不再尝试代理路径。
     """
     import urllib.request
     import json as _json
 
-    # 优先走 SOCKS5 代理
-    try:
-        return _fetch_json_with_socks_proxy(url, headers, timeout)
-    except Exception as exc:
-        logger.warning("SOCKS5 代理失败 (%s)，降级到直连", exc)
-
-    # 降级：urllib 直连
     req = urllib.request.Request(url)
     req.add_header("User-Agent", _DEFAULT_UA)
     if headers:
