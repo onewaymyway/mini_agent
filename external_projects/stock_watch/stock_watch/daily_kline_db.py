@@ -349,12 +349,15 @@ class DailyKlineDB:
         # 1. Baostock（主数据源，不走 HTTP 代理）
         try:
             bs = _get_bs()
+            # baostock 需要 YYYY-MM-DD 格式
+            bs_start = start_date[:4] + "-" + start_date[4:6] + "-" + start_date[6:]
+            bs_end = end_date[:4] + "-" + end_date[4:6] + "-" + end_date[6:]
             adjustflag = "1"  # qfq
             rs = bs.query_history_k_data_plus(
                 f"{prefix}.{symbol}",
                 "date,open,high,low,close,volume",
-                start_date=start_date,
-                end_date=end_date,
+                start_date=bs_start,
+                end_date=bs_end,
                 frequency="d",
                 adjustflag=adjustflag,
             )
@@ -408,11 +411,13 @@ class DailyKlineDB:
         # 1. Baostock（主数据源）
         try:
             bs = _get_bs()
+            bs_start = start_date[:4] + "-" + start_date[4:6] + "-" + start_date[6:]
+            bs_end = end_date[:4] + "-" + end_date[4:6] + "-" + end_date[6:]
             rs = bs.query_history_k_data_plus(
                 f"{prefix}.{symbol}",
                 "date,open,high,low,close,volume",
-                start_date=start_date,
-                end_date=end_date,
+                start_date=bs_start,
+                end_date=bs_end,
                 frequency="d",
                 adjustflag="1",
             )
