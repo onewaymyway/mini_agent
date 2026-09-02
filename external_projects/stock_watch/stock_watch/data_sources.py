@@ -746,6 +746,11 @@ from .browser_manager import ensure_browser_running, get_cdp_session, is_browser
 _BROWSER_CDP_PORT = 9333
 _BROWSER_CDP_TAB_ID = None
 
+# 持久化 CDP session，避免每次重新导航建立 session
+_cdp_session_cache = None
+_cdp_session_ts = 0.0
+_CDP_SESSION_TTL = 300  # 5分钟缓存
+
 
 def _get_cdp_session():
     """懒加载 CDP 会话（自动确保浏览器运行）。"""
@@ -760,29 +765,58 @@ def _get_cdp_session():
         raise DataSourceError(f"CDP 连接失败: {e}") from e
 
 
+def _get_persistent_cdp_session():
+    """获取持久化 CDP session（带 TTL 缓存）。"""
+    global _cdp_session_cache, _cdp_session_ts
+    import time
+    now = time.monotonic()
+    if _cdp_session_cache is None or (now - _cdp_session_ts) > _CDP_SESSION_TTL:
+        if _cdp_session_cache is not None:
+            try:
+                _cdp_session_cache.close()
+            except:
+                pass
+        _cdp_session_cache, _ = _get_cdp_session()
+        _cdp_session_ts = now
+    return _cdp_session_cache
+
+
 def _eastmoney_kline_cdp_fetch(url: str, timeout: int = 15, max_retries: int = 3) -> str:
-    """通过 CDP 导航到 URL 并返回页面文本内容（绕过 Python 网络层）。
+    """通过 CDP 导航到 URL 并返回页面文本内容（绕过 Windows 系统代理冲突）。
+
+    步骤：
+    1. 先访问 eastmoney.com 首页建立 cookie/session（东财反爬会拦截无 session 请求）
+    2. 再导航到目标 K 线 API URL
 
     Windows 系统代理（127.0.0.1:10808）导致 requests/urllib 无法直连 eastmoney，
     改用专用 Chrome 实例（端口 {_BROWSER_CDP_PORT}）执行 HTTP 请求。
     支持自动重试，应对偶发的浏览器会话瞬断。
     """
     for attempt in range(1, max_retries + 1):
+        session = None
         try:
-            session, tab = get_cdp_session(port=_BROWSER_CDP_PORT)
-            try:
-                session.eval_js(f"location.href={json.dumps(url)}", await_promise=False)
-                time.sleep(2)
-                body = session.eval_js("document.body.innerText", await_promise=True)
-                if body:
-                    return body
-                raise DataSourceError("CDP 返回空内容")
-            finally:
-                session.close()
+            session = _get_persistent_cdp_session()
+            # Step 1: 先访问东财首页建立 session/cookie
+            session.eval_js(f"location.href={json.dumps('https://www.eastmoney.com/')}", await_promise=False)
+            time.sleep(3)  # 等待首页加载和 JS 设置 cookie
+
+            # Step 2: 再导航到 K 线 API
+            session.eval_js(f"location.href={json.dumps(url)}", await_promise=False)
+            time.sleep(2)
+            body = session.eval_js("document.body.innerText", await_promise=True)
+            if body:
+                return body
+            raise DataSourceError("CDP 返回空内容")
         except Exception as e:
             if attempt == max_retries:
                 raise DataSourceError(f"CDP 导航失败（已重试 {max_retries} 次）: {e}") from e
             logger.debug("CDP 第 %d 次尝试失败: %s", attempt, e)
+            if session is not None:
+                try:
+                    session.close()
+                except:
+                    pass
+                session = None
 
 
 def _eastmoney_kline_direct(
