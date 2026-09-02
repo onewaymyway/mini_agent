@@ -818,6 +818,36 @@ def glob(pattern: str, root: str = ".") -> str:
 # node_modules 里的大文件时把一次 grep 拖得很慢。
 _GREP_MAX_LINE_CHARS = 1_000_000  # 单行（含没有真正换行符的病态大文件）读取上限
 
+# [性能 bugfix] 原实现用 `root.rglob(file_pattern)` 枚举文件，rglob 会无条件
+# 下钻进每一个子目录——哪怕是 .git/node_modules/__pycache__ 这种体积巨大、
+# 内容跟代码搜索基本无关的目录，也要完整遍历一遍，枚举到的文件最后再按
+# size/binary 过滤掉。目录越大，这个"先枚举再过滤"的开销越接近整个 grep
+# 耗时的大头，比"是否逐行流式读取"影响大得多。
+# 现在改用 `os.walk(topdown=True)`，在遍历过程中直接把这些目录从 dirnames
+# 里摘掉（不下钻），而不是事后过滤已经枚举出来的文件——避免了遍历这些目录
+# 本身的 IO/stat 开销。这是一个默认排除列表，不影响用户显式把 path 指向
+# 这些目录内部的情况（例如 path="node_modules/some-pkg"，此时 root 本身
+# 就在排除列表内，仍然正常搜索；排除只发生在遍历"经过"这些目录名的时候）。
+_GREP_EXCLUDED_DIRS = frozenset({
+    ".git", "node_modules", "__pycache__", ".venv", "venv", ".env",
+    "dist", "build", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    ".tox", ".idea", ".vscode", "egg-info", ".eggs", "target",
+})
+
+
+def _iter_grep_candidates(root: Path, file_pattern: str) -> list[Path]:
+    """遍历 root 下匹配 file_pattern 的文件，遇到 `_GREP_EXCLUDED_DIRS`
+    里的目录名直接剪枝（不下钻），而不是像 `rglob` 那样全部枚举完再过滤。
+    root 本身若就在排除目录内部（用户显式把 path 指向了 node_modules 下
+    某个包），不受影响——排除只作用于遍历"路过"这些目录名的时候。"""
+    results: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _GREP_EXCLUDED_DIRS]
+        for name in filenames:
+            if fnmatch.fnmatch(name, file_pattern):
+                results.append(Path(dirpath) / name)
+    return sorted(results)
+
 
 def _looks_binary(fpath: Path) -> bool:
     """只读前 8KB 做二进制嗅探（含 NUL 字节即判定为二进制），不读整个
@@ -931,12 +961,13 @@ def _grep_file_streaming(
         "Reads files line-by-line (streaming), never loading a whole file into memory, so "
         "large files are memory-safe by default; max_file_size_mb/skip_large_files only "
         "control whether a big file is searched at all (for speed), not memory safety. "
-        "PERFORMANCE: always pass a specific `path` (a subdirectory or single file) instead of "
-        "leaving it at the default '.' — searching the whole project root recursively is slow "
-        "when the tree has many files or very large files. Narrow the search to the "
+        "Common noise directories (.git, node_modules, __pycache__, .venv, dist, build, etc.) "
+        "are always pruned during traversal and never searched. "
+        "`path` is REQUIRED and must be a specific subdirectory or a single file — "
+        "'.', './' and empty/whitespace-only values are rejected. Narrow the search to the "
         "directory/module you actually care about whenever you can infer or already know it "
-        "(e.g. from a prior tree_summary/glob call); only fall back to the project root when "
-        "you genuinely don't know where the target might be."
+        "(e.g. from a prior tree_summary/glob call); pass the actual project root path "
+        "explicitly only when you genuinely need to search everything."
     ),
     schema={
         "type": "object",
@@ -945,8 +976,9 @@ def _grep_file_streaming(
             "path": {
                 "type": "string",
                 "description": (
-                    "File or directory to search. Prefer a narrow, specific path "
-                    "(e.g. 'src/mini_agent/tools') over the default '.' — this is the single "
+                    "File or directory to search. REQUIRED — '.', './' and empty values are "
+                    "rejected. Pass a narrow, specific path (e.g. 'src/mini_agent/tools') "
+                    "instead of the project root whenever possible; this is the single "
                     "biggest factor in how fast the search runs on large trees."
                 ),
             },
@@ -984,13 +1016,13 @@ def _grep_file_streaming(
                 ),
             },
         },
-        "required": ["pattern"],
+        "required": ["pattern", "path"],
     },
     requires_approval=False,
 )
 def grep(
     pattern: str,
-    path: str = ".",
+    path: str,
     file_pattern: str = "*",
     case_sensitive: bool = True,
     context_lines: int = 0,
@@ -999,6 +1031,18 @@ def grep(
     skip_large_files: bool = True,
     skip_binary_files: bool = True,
 ) -> str:
+    # [强制要求显式路径 bugfix] path 不再有默认值 "."，这里再做一层硬校验，
+    # 防止调用方传空字符串/纯空白，或者传 "."/"./" 这种等价于"不传"的写法
+    # 绕过 required 约束——两者都会导致从项目根目录做递归全量搜索，是最容易
+    # 拖慢/拖爆一次 grep 调用的用法，因此直接拒绝而不是静默兜底成当前目录。
+    stripped = path.strip()
+    normalized = stripped.rstrip("/").rstrip("\\")
+    if not stripped or normalized in (".", ""):
+        return (
+            "[grep 需要显式传入 path 参数，且不接受 '.'/'./'/空字符串——"
+            "请指定要搜索的具体子目录或单个文件，例如 'src/mini_agent/tools']"
+        )
+
     flags = 0 if case_sensitive else re.IGNORECASE
     try:
         regex = re.compile(pattern, flags)
@@ -1010,7 +1054,7 @@ def grep(
     max_file_size_bytes = max(0.0, max_file_size_mb) * 1024 * 1024
     root = Path(path).expanduser()
 
-    files = [root] if root.is_file() else sorted(root.rglob(file_pattern))
+    files = [root] if root.is_file() else _iter_grep_candidates(root, file_pattern)
 
     out: list[str] = []
     total_found = 0
