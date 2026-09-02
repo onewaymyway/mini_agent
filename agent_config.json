@@ -20,7 +20,7 @@
   "session_summary_enabled": true,
   "session_summary_min_turns": 3,
   "profile_enabled": true,
-  "bash_stream_output_enabled": false,
+  "bash_stream_output_enabled": true,
   "skill_keyword_activation_enabled": false,
   "artifact_auto_detect_enabled": false,
   "save_tool_executor_error_logs": false,
