@@ -474,17 +474,26 @@ class DailyKlineDB:
                 date_str = date_str[:10]
             if len(date_str) < 8:
                 continue
-            rows.append((
-                symbol,
-                date_str[:10],
-                float(row.get("open", 0)),
-                float(row.get("high", 0)),
-                float(row.get("low", 0)),
-                float(row.get("close", 0)),
-                float(row.get("volume", 0)),
-                float(row.get("amount", 0)),
-                float(row.get("change_pct", 0)),
-            ))
+            try:
+                # 安全转换：空字符串/None 转 0.0
+                def safe_float(v):
+                    try:
+                        return float(v) if v else 0.0
+                    except (ValueError, TypeError):
+                        return 0.0
+                rows.append((
+                    symbol,
+                    date_str[:10],
+                    safe_float(row.get("open")),
+                    safe_float(row.get("high")),
+                    safe_float(row.get("low")),
+                    safe_float(row.get("close")),
+                    safe_float(row.get("volume")),
+                    safe_float(row.get("amount")),
+                    safe_float(row.get("change_pct")),
+                ))
+            except Exception as e:
+                logger.debug("跳过异常行 %s: %s", date_str, e)
         return rows
 
     # ── 内部：批量写入（UPSERT）────────────────────────────────────────────
