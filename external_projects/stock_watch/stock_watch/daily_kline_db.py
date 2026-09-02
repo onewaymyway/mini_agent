@@ -65,6 +65,18 @@ def _get_bs():
         _bs_instance = bs
     return _bs_instance
 
+
+# ── TickFlow 懒加载单例（免费套餐，无需注册）────────────────────────
+_tf_instance = None
+
+
+def _get_tf():
+    import tickflow
+    global _tf_instance
+    if _tf_instance is None:
+        _tf_instance = tickflow.TickFlow.free()
+    return _tf_instance
+
 logger = logging.getLogger("stock_watch.daily_kline_db")
 
 # ── 数据库路径（相对项目根目录）────────────────────────────────────────────
@@ -341,12 +353,12 @@ class DailyKlineDB:
     def _fetch_via_stock_api(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
         """拉取股票日K，按优先级尝试多个数据源。
 
-        优先级：baostock（TCP 直连，最稳定）→ 新浪直连 → Yahoo Finance → akshare
+        优先级：baostock（TCP 直连，全量历史）→ TickFlow（增量补充）→ 新浪直连 → Yahoo Finance → akshare
         """
         import pandas as pd
         prefix = "sh" if symbol.startswith(("6", "5", "9")) else "sz"
 
-        # 1. Baostock（主数据源，不走 HTTP 代理）
+        # 1. Baostock（主数据源，不走 HTTP 代理，全量历史）
         try:
             bs = _get_bs()
             # baostock 需要 YYYY-MM-DD 格式
@@ -372,7 +384,27 @@ class DailyKlineDB:
         except Exception as e:
             logger.debug("baostock K线失败 (%s): %s", symbol, e)
 
-        # 2. 新浪直连（备用）
+        # 2. TickFlow（免费套餐，增量补充，最新~5个月数据）
+        try:
+            tf = _get_tf()
+            tf_symbol = f"{prefix.upper()}.{symbol}" if prefix == "sh" else f"SZ.{symbol}"
+            # 用 start_date 作为时间范围下界
+            import time as _time
+            start_ms = int(datetime.strptime(start_date, "%Y%m%d").timestamp() * 1000)
+            end_ms = int(datetime.strptime(end_date, "%Y%m%d").timestamp() * 1000) + 86400000
+            df = tf.klines.get(symbol=tf_symbol, period="1d", start_time=start_ms, end_time=end_ms, as_dataframe=True)
+            if df is not None and not df.empty:
+                df["date"] = pd.to_datetime(df["timestamp"], unit="ms").dt.strftime("%Y-%m-%d")
+                df = df.rename(columns={"close": "close", "open": "open", "high": "high", "low": "low", "volume": "volume", "amount": "amount"})
+                df = df[["date", "open", "high", "low", "close", "volume", "amount"]]
+                df["date_str"] = pd.to_datetime(df["date"]).dt.strftime("%Y%m%d")
+                filtered = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
+                if len(filtered) > 0:
+                    return filtered.drop(columns=["date_str"])
+        except Exception as e:
+            logger.debug("TickFlow K线失败 (%s): %s", symbol, e)
+
+        # 3. 新浪直连（备用）
         from stock_watch.data_sources import _sina_kline_fetch
         sina_sym = prefix + symbol
         df = _sina_kline_fetch(sina_sym, datalen=800)
@@ -382,7 +414,7 @@ class DailyKlineDB:
             if len(filtered) > 0:
                 return filtered.drop(columns=["date_str"])
 
-        # 3. Yahoo Finance（复权数据）
+        # 4. Yahoo Finance（复权数据）
         from stock_watch.data_sources import _yahoo_kline_fetch
         df = _yahoo_kline_fetch(symbol, days_back=1500)
         if df is not None and not df.empty:
@@ -391,7 +423,7 @@ class DailyKlineDB:
             if len(filtered) > 0:
                 return filtered.drop(columns=["date_str"])
 
-        # 4. 备用：akshare
+        # 5. 备用：akshare
         try:
             from stock_watch.data_sources import fetch_kline, DataSourceError
             df = fetch_kline(symbol, prefix, days=300)
@@ -432,7 +464,24 @@ class DailyKlineDB:
         except Exception as e:
             logger.debug("baostock ETF K线失败 (%s): %s", symbol, e)
 
-        # 2. 新浪直连
+        # 2. TickFlow（免费套餐，增量补充）
+        try:
+            tf = _get_tf()
+            tf_symbol = f"SH.{symbol}" if prefix == "sh" else f"SZ.{symbol}"
+            start_ms = int(datetime.strptime(start_date, "%Y%m%d").timestamp() * 1000)
+            end_ms = int(datetime.strptime(end_date, "%Y%m%d").timestamp() * 1000) + 86400000
+            df = tf.klines.get(symbol=tf_symbol, period="1d", start_time=start_ms, end_time=end_ms, as_dataframe=True)
+            if df is not None and not df.empty:
+                df["date"] = pd.to_datetime(df["timestamp"], unit="ms").dt.strftime("%Y-%m-%d")
+                df = df[["date", "open", "high", "low", "close", "volume", "amount"]]
+                df["date_str"] = pd.to_datetime(df["date"]).dt.strftime("%Y%m%d")
+                filtered = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
+                if len(filtered) > 0:
+                    return filtered.drop(columns=["date_str"])
+        except Exception as e:
+            logger.debug("TickFlow ETF K线失败 (%s): %s", symbol, e)
+
+        # 3. 新浪直连
         from stock_watch.data_sources import _sina_kline_fetch
         sina_sym = prefix + symbol
         df = _sina_kline_fetch(sina_sym, datalen=800)
@@ -442,7 +491,7 @@ class DailyKlineDB:
             if len(filtered) > 0:
                 return filtered.drop(columns=["date_str"])
 
-        # 3. Yahoo
+        # 4. Yahoo
         from stock_watch.data_sources import _yahoo_kline_fetch
         df = _yahoo_kline_fetch(symbol, days_back=1500)
         if df is not None and not df.empty:
@@ -451,7 +500,7 @@ class DailyKlineDB:
             if len(filtered) > 0:
                 return filtered.drop(columns=["date_str"])
 
-        # 4. 备用
+        # 5. 备用
         try:
             from stock_watch.data_sources import fetch_etf_kline, DataSourceError
             df = fetch_etf_kline(symbol, days=300)
