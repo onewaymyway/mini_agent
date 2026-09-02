@@ -2733,13 +2733,14 @@ class AppConfig:
     auto_approve: bool = False
     stream: bool = True
 
-    # [SYS-BASH-STREAM] bash 工具是否实时把子进程输出打印到终端（边跑边看），
-    # 默认关闭——保持原有 subprocess.run(capture_output=True) 的一次性返回行为
-    # 完全不变。开启后：
+    # [SYS-BASH-STREAM] bash 工具是否实时把子进程输出打印到终端（边跑边看）。
+    # [SYS-BASH-HANG-FIX] 默认改为 True：旧的 subprocess.run(capture_output=True)
+    # 一次性返回路径已被替换为带进程组管理的实现，不再是"更安全的旧行为"，
+    # 继续默认关闭流式输出没有意义，只会让人看不到命令卡在哪一步。
     #   - 终端会实时看到命令的逐行输出（不影响喂给 LLM 的最终工具结果内容）
     #   - 超时（timeout）时不再只返回 "[timeout after Ns]"，而是把已经产生的
     #     部分输出也一并返回，并在末尾追加明确的超时标记，避免部分输出被丢弃。
-    bash_stream_output_enabled: bool = False
+    bash_stream_output_enabled: bool = True
 
     # ── LLM Provider ──────────────────────────────────────────────────────────
     llm_provider: str = "anthropic"

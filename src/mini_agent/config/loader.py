@@ -925,10 +925,10 @@ def load_config(
         # [compact_mechanism_improvement_plan P2-B]
         recall_history_enabled=_fb("recall_history_enabled", None, False),
         recall_history_mode=_f("recall_history_mode", None) or "keyword",
-        # [SYS-BASH-STREAM] bash 工具是否实时打印子进程输出（边跑边看），
-        # 默认 False，保持旧版一次性返回行为不变；agent_config.json 里
-        # 配置 "bash_stream_output_enabled": true 即可开启。
-        bash_stream_output_enabled=_fb("bash_stream_output_enabled", None, False),
+        # [SYS-BASH-STREAM] bash 工具是否实时打印子进程输出（边跑边看）。
+        # [SYS-BASH-HANG-FIX] 默认改为 True，见 config/models.py 同名字段注释。
+        # agent_config.json 里显式配置 "bash_stream_output_enabled": false 可关闭。
+        bash_stream_output_enabled=_fb("bash_stream_output_enabled", None, True),
         # [next_doc/errors_tool_executor_log_toggle_plan.md] 全局错误日志
         # 是否落盘 tool_executor 来源的记录，默认 True（不改变原行为）。
         save_tool_executor_error_logs=_fb("save_tool_executor_error_logs", None, True),
