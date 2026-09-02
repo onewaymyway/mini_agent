@@ -28,9 +28,33 @@ def main() -> int:
 
     if args.spawn:
         # 走工具脚本的完整流程
+        # 注意：spawn 模式需要交互式终端（input() 等待用户按回车），
+        # 在 daemon/non-TTY 环境下直接调用会抛出 EOFError。
+        # 这里做前置检测，避免把错误传播到账本。
+        if not sys.stdin.isatty():
+            print(
+                "❌ --spawn 模式需要交互式终端（stdin 必须是 tty），\n"
+                "   当前环境不是交互式终端，无法使用此模式。\n"
+                "   请改为运行自动模式（不带 --spawn），\n"
+                "   或手动在终端里运行：\n"
+                "     python entrypoints/refresh_iwencai_cookie.py --spawn",
+                file=sys.stderr,
+            )
+            return 1
         sys.path.insert(0, str(_common.PROJECT_ROOT / "tools"))
         import fetch_iwencai_cookie as _fic
-        return _fic.main()
+        try:
+            return _fic.main()
+        except EOFError:
+            print(
+                "❌ --spawn 模式需要交互式终端（stdin 必须是 tty），\n"
+                "   当前环境不是交互式终端，无法使用此模式。\n"
+                "   请改为运行自动模式（不带 --spawn），\n"
+                "   或手动在终端里运行：\n"
+                "     python entrypoints/refresh_iwencai_cookie.py --spawn",
+                file=sys.stderr,
+            )
+            return 1
 
     # 自动模式：尝试通过 CDP 读取现有 cookie
     from stock_watch.data_sources import _try_refresh_iwencai_cookie_via_cdp
