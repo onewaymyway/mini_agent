@@ -5331,6 +5331,16 @@ async def update_goal(goal_id: str, request: Request):
         if node is None:
             raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
 
+        # [goal_cron_status_integrity_and_self_healing_plan.md] 周期性 Goal
+        # 不允许通过本通用 PATCH 入口直接写成 active/paused/abandoned 以外
+        # 的状态——历史上这是"周期性 Goal 被误写成 completed 后从此静默
+        # 停摆"问题的两个根因入口之一（另一个是 CLI `/agent goals done`）。
+        if "status" in body:
+            from mini_agent.perception.goal_backlog import validate_status_write_for_recurring_goal
+            reject_reason = validate_status_write_for_recurring_goal(node, body["status"])
+            if reject_reason:
+                raise HTTPException(status_code=409, detail=reject_reason)
+
         fields = {}
         if "status" in body:
             fields["status"] = body["status"]

@@ -135,10 +135,32 @@ def _fire_goal_cycle(
         # 可以在"⏰ Cron 任务"tab 或 `/cron remove` 手动清理。
         return False
 
-    if goal.status != "active":
-        # Goal 被暂停/放弃/取消：不触发，也不报错。这正是 P3 要解决的问题——
-        # 用户只需要管 Goal 的状态，不需要额外记得去 disable 对应 cron job。
+    if goal.status == "abandoned":
+        # 用户明确放弃：这是周期性 Goal 唯一的真终态，不触发，也不报错。
+        # 这正是 P3 要解决的问题——用户只需要管 Goal 的状态，不需要额外
+        # 记得去 disable 对应 cron job。
         return False
+
+    if goal.status == "paused":
+        # 用户主动暂停：保留既有语义，不触发、不报错、也不自动拉回
+        # active——"我先别跑"是显式意图，不应该被自愈逻辑覆盖掉。
+        return False
+
+    if goal.status != "active":
+        # [goal_cron_status_integrity_and_self_healing_plan.md] 走到这里说明
+        # status 既不是 active，也不是 abandoned/paused 这两个已知的合法
+        # "不触发"状态（比如被误写成了 completed/failed/cancelled）。对
+        # 周期性 Goal 而言，只有 abandoned 才是真终态，其余一律视为异常
+        # 写入——自动拉回 active 并继续本轮触发，同时留一条 progress_notes
+        # 方便事后排查是哪一轮出的问题、被写成了什么。
+        stale_status = goal.status
+        goal_backlog.set_status(goal.id, "active")
+        goal_backlog.append_progress_note(
+            goal.id,
+            f"⚠️ 检测到周期性 Goal 状态被写成 {stale_status!r}，"
+            f"已自动恢复为 active 并继续第 {goal.cycle_count + 1} 轮触发",
+        )
+        goal = goal_backlog.get(goal.id) or goal
 
     if goal.skip_next_cycle:
         # [goal_cron_visibility_and_intervention_improvement_plan.md Track B]

@@ -385,10 +385,21 @@ def _cmd_add_objective(gb, args: list[str]) -> None:
 
 
 def _cmd_set_status(gb, node_id: str, status: str) -> None:
-    """更新节点状态。"""
+    """更新节点状态。
+
+    [goal_cron_status_integrity_and_self_healing_plan.md] 写入前先校验：
+    周期性 Goal 不允许通过本命令（`/agent goals done|pause`）直接写成
+    `active`/`paused`/`abandoned` 以外的状态，防止重蹈"agent 误把父 Goal
+    标记为 completed，导致周期性从此静默停摆"的覆辙。
+    """
     node = gb.get(node_id)
     if not node:
         R.print_error(f"Not found: {node_id!r}")
+        return
+    from mini_agent.perception.goal_backlog import validate_status_write_for_recurring_goal
+    reject_reason = validate_status_write_for_recurring_goal(node, status)
+    if reject_reason:
+        R.print_error(reject_reason)
         return
     old_status = node.status
     gb.set_status(node_id, status)

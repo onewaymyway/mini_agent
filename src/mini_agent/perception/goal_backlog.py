@@ -374,6 +374,47 @@ class Direction:
         )
 
 
+# [goal_cron_status_integrity_and_self_healing_plan.md] 周期性 Goal 通过
+# "通用状态写入口"（CLI `/agent goals done|pause`、REST `PATCH /v1/goals/
+# {goal_id}`）允许直接写入的状态集合。这三个之外的状态（completed/failed/
+# cancelled 等）不是不能达成，而是不该由这些"不知道 recurring 是什么"的
+# 通用入口随手写入——它们要么应该走 `stop_goal_recurrence()`（先解绑周期性
+# 再谈"结束"），要么是只该由 `_sync_goal_status()`/`goal_cron_bridge` 这类
+# 明确知道自己在处理周期性语义的内部路径来写。
+_RECURRING_GOAL_ALLOWED_GENERIC_STATUSES = {"active", "paused", "abandoned"}
+
+
+def validate_status_write_for_recurring_goal(
+    node: Optional["GoalNode"], status: str,
+) -> Optional[str]:
+    """周期性 Goal 通过通用状态写入口写状态时的合法性校验。
+
+    背景（详见 next_doc/goal_cron_status_integrity_and_self_healing_plan.md）：
+    此前 `/agent goals done <id>` 和 `PATCH /v1/goals/{goal_id}` 都能无条件
+    把任意节点的 status 改成任意值，包括把一个 `recurring=True` 的 Goal 改
+    成 `completed`——而 `goal_cron_bridge._fire_goal_cycle()` 一旦发现
+    `goal.status != "active"` 就静默跳过触发，导致"周期性 Goal 永远不会
+    结束"这个设计不变量被悄悄打破，且没有任何报错或日志。
+
+    返回 `None` 表示允许写入；返回非空字符串表示拒绝，内容是可以直接展示
+    给调用方（CLI/REST）的错误说明。
+
+    只约束 `level == "goal"` 且 `recurring=True` 的节点——Objective 节点、
+    非周期性 Goal 都不受影响，沿用原有的"想改成什么就改成什么"行为。
+    """
+    if node is None or node.level != "goal" or not node.recurring:
+        return None
+    if status in _RECURRING_GOAL_ALLOWED_GENERIC_STATUSES:
+        return None
+    return (
+        f"{node.id} 是周期性 Goal（recurring=True），不允许通过通用状态"
+        f"写入口直接改成 {status!r}。如果确实要彻底结束这个周期性 Goal，"
+        f"请先执行 `/agent goals unrecur {node.id}` 停止周期性，再进行本次"
+        f"操作；如果只是想暂停这一轮/这段时间，请用 "
+        f"`/agent goals pause {node.id}`。"
+    )
+
+
 def compose_context(parent_desc: str, own_desc: str) -> str:
     """[goal_cron_feedback_and_output_policy_plan.md 4.2] 拼接父级说明与自身
     说明，父级在前、自身在后，都保留（不做二选一）。供 goal_cron_bridge 等
@@ -1103,6 +1144,11 @@ class GoalBacklog:
 
     def set_status(self, node_id: str, status: str) -> bool:
         """更新节点状态。
+        [goal_cron_status_integrity_and_self_healing_plan.md] 本方法本身不
+        做周期性 Goal 的合法性校验——它是最底层的写入原语，`goal_cron_bridge`
+        的自愈逻辑也要通过它把状态拉回 active。真正面向"通用调用方"的校验
+        在更上层的 CLI（`_cmd_set_status`）和 REST（`update_goal`）入口，
+        调用前先过 `validate_status_write_for_recurring_goal()`。
 
         内部会先重新加载磁盘最新状态，在最新数据基础上改这一个字段再落盘，
         避免与其他进程并发写入互相覆盖。
