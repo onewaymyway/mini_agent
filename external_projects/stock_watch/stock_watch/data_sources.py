@@ -798,8 +798,8 @@ def _eastmoney_kline_direct(
     """获取东方财富 K 线数据（DataFrame）。
 
     主路径：CDP 浏览器（绕过 Windows 系统代理冲突）。
-    降级路径：urllib.request 直连 → 新浪财经 API。
-    最终兜底：由调用方（fetch_kline / fetch_etf_kline）负责交给 akshare。
+    降级路径：urllib.request 直连。
+    注意：新浪财经兜底由调用方（fetch_kline / fetch_etf_kline）负责。
     """
     import datetime
 
@@ -828,20 +828,14 @@ def _eastmoney_kline_direct(
         try:
             data = _fetch_json_no_proxy(url)
         except Exception as exc2:
-            logger.warning("urllib 直连也失败 (%s)，降级到新浪", exc2)
+            logger.warning("urllib 直连也失败 (%s)", exc2)
             data = None
     else:
         data = json.loads(raw)
 
-    # 新浪财经兜底
+    # 所有降级由调用方负责
     if data is None or data.get("rc") != 0:
-        logger.info("尝试新浪财经 K 线: %s", code)
-        sina_symbol = f"{'sh' if market == 'sh' else 'sz'}{code}"
-        sina_df = _sina_kline_fetch(sina_symbol, datalen=limit)
-        if sina_df is not None and not sina_df.empty:
-            sina_df = sina_df.tail(days).reset_index(drop=True)
-            return sina_df
-        raise DataSourceError(f"东财及新浪 K 线均失败: {code}")
+        raise DataSourceError(f"东方财富 K 线 API 失败: {data.get('dsc', 'Unknown') if data else '无数据'}")
 
     # API 使用 rc 作为响应码（0 表示成功）
     if data.get("rc") != 0:
@@ -869,18 +863,58 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
     执行顺序：
       1. CDP 浏览器直连东方财富（绕过 Windows 系统代理冲突）
       2. urllib.request 直连东方财富（不读系统代理）
-      3. akshare.stock_zh_a_hist（走系统代理，可能失败）
+      3. baostock（TCP 直连，不受代理影响）
+      4. 新浪财经 API（绕过代理）
+      5. akshare.stock_zh_a_hist（走系统代理，可能失败）
     """
     try:
         df = _eastmoney_kline_direct(code, market, days, adjust)
         return df
     except Exception as exc:
-        logger.warning("东方财富直连失败 (%s)，降级到 akshare", exc)
-    import datetime
+        logger.warning("东方财富直连失败 (%s)，降级到 baostock", exc)
 
+    # 3. baostock（TCP 直连，最稳兜底）
+    try:
+        import datetime as _dt
+        end = _dt.date.today()
+        start = end - _dt.timedelta(days=int(days * 1.7) + 30)
+        bs = _import_baostock()
+        _bs_compat_patch()
+        bs_code = f"{market}.{code}"
+        adjustflag = "3" if adjust == "none" else "2" if adjust == "hfq" else "1"
+        lg = bs.login()
+        if lg.error_code == "0":
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,open,high,low,close,volume",
+                start_date=start.strftime("%Y-%m-%d"),
+                end_date=end.strftime("%Y-%m-%d"),
+                frequency="d",
+                adjustflag=adjustflag,
+            )
+            bs_df = rs.get_data()
+            bs.logout()
+            if bs_df is not None and not bs_df.empty:
+                bs_df.columns = ["date", "open", "high", "low", "close", "volume"]
+                bs_df["date"] = pd.to_datetime(bs_df["date"])
+                logger.info("baostock K 线成功: %s (%d 行)", code, len(bs_df))
+                return bs_df.tail(days).reset_index(drop=True)
+    except Exception as exc2:
+        logger.debug("baostock K 线失败 (%s)，降级到新浪", exc2)
+
+    # 4. 新浪财经兜底
+    try:
+        sina_df = _sina_kline_fetch(f"{'sh' if market == 'sh' else 'sz'}{code}", datalen=days + 10)
+        if sina_df is not None and not sina_df.empty:
+            return sina_df.tail(days).reset_index(drop=True)
+    except Exception as exc3:
+        logger.debug("新浪 K 线失败: %s", exc3)
+
+    # 5. akshare 最后备选
+    import datetime
     ak = _import_akshare()
     end = datetime.date.today()
-    start = end - datetime.timedelta(days=int(days * 1.7) + 10)  # 留出非交易日余量
+    start = end - datetime.timedelta(days=int(days * 1.7) + 10)
     try:
         df = ak.stock_zh_a_hist(
             symbol=code,
@@ -889,11 +923,11 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
             end_date=end.strftime("%Y%m%d"),
             adjust=adjust,
         )
+        return df.tail(days)
     except Exception as exc2:
         raise DataSourceError(
-            f"东方财富直连及 stock_zh_a_hist({code}) 均失败: {exc2}"
+            f"所有数据源均失败 ({code}): CDP={exc}, baostock, sina, akshare={exc2}"
         ) from exc2
-    return df.tail(days)
 
 
 def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
@@ -902,7 +936,9 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
     执行顺序：
       1. CDP 浏览器直连东方财富
       2. urllib.request 直连东方财富
-      3. akshare.fund_etf_hist_em
+      3. baostock（TCP 直连，最稳兜底）
+      4. 新浪财经 API
+      5. akshare.fund_etf_hist_em
     """
     import re
     market = "sh" if code.startswith(("510", "518")) else "sz"
@@ -910,9 +946,48 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
         df = _eastmoney_kline_direct(code, market, days, adjust)
         return df
     except Exception as exc:
-        logger.warning("东方财富直连失败 (%s)，降级到 akshare", exc)
-    import datetime
+        logger.warning("东方财富直连失败 (%s)，降级到 baostock", exc)
 
+    # 3. baostock（TCP 直连，最稳兜底）
+    try:
+        import datetime as _dt
+        end = _dt.date.today()
+        start = end - _dt.timedelta(days=int(days * 1.7) + 30)
+        bs = _import_baostock()
+        _bs_compat_patch()
+        bs_code = f"{market}.{code}"
+        adjustflag = "3" if adjust == "none" else "2" if adjust == "hfq" else "1"
+        lg = bs.login()
+        if lg.error_code == "0":
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,open,high,low,close,volume",
+                start_date=start.strftime("%Y-%m-%d"),
+                end_date=end.strftime("%Y-%m-%d"),
+                frequency="d",
+                adjustflag=adjustflag,
+            )
+            bs_df = rs.get_data()
+            bs.logout()
+            if bs_df is not None and not bs_df.empty:
+                bs_df.columns = ["date", "open", "high", "low", "close", "volume"]
+                bs_df["date"] = pd.to_datetime(bs_df["date"])
+                logger.info("baostock ETF K 线成功: %s (%d 行)", code, len(bs_df))
+                return bs_df.tail(days).reset_index(drop=True)
+    except Exception as exc2:
+        logger.debug("baostock ETF K 线失败 (%s)，降级到新浪", exc2)
+
+    # 4. 新浪财经兜底
+    try:
+        sina_symbol = f"{'sh' if market == 'sh' else 'sz'}{code}"
+        sina_df = _sina_kline_fetch(sina_symbol, datalen=days + 10)
+        if sina_df is not None and not sina_df.empty:
+            return sina_df.tail(days).reset_index(drop=True)
+    except Exception as exc3:
+        logger.debug("新浪 ETF K 线失败: %s", exc3)
+
+    # 5. akshare 最后备选
+    import datetime
     ak = _import_akshare()
     end = datetime.date.today()
     start = end - datetime.timedelta(days=int(days * 1.7) + 10)
@@ -924,9 +999,9 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
             end_date=end.strftime("%Y%m%d"),
             adjust=adjust,
         )
+        return df.tail(days)
     except Exception as exc2:  # noqa: BLE001
-        raise DataSourceError(f"fund_etf_hist_em({code}) 调用失败: {exc2}") from exc2
-    return df.tail(days)
+        raise DataSourceError(f"所有数据源均失败 ({code}): CDP={exc}, baostock, sina, fund_etf_hist_em={exc2}") from exc2
 
 
 def fetch_announcements(code: str, top_n: int = 20):
