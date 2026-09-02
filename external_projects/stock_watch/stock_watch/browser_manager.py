@@ -112,6 +112,7 @@ def _start_browser(port: int, headless: bool = True) -> subprocess.Popen:
         f"--user-data-dir={PROFILE_DIR}",
         "--no-first-run",
         "--no-default-browser-check",
+        "--remote-allow-origins=*",
     ]
     if headless:
         args.append("--headless=new")
