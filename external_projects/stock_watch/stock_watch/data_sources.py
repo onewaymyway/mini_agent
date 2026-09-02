@@ -973,7 +973,7 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
       5. akshare.fund_etf_hist_em
     """
     import re
-    market = "sh" if code.startswith(("510", "518")) else "sz"
+    market = "sh" if code.startswith(("5", "1")) else "sz"
     try:
         df = _eastmoney_kline_direct(code, market, days, adjust)
         return df
