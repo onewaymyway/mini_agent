@@ -173,6 +173,48 @@ _FIXERS: list[tuple[str, Callable[[dict], tuple[bool, dict]]]] = [
 ]
 
 
+# 目录名 -> type 的映射，跟 AgentPaths.wiki_type_dir() 反向对应，是
+# wiki/writer.py 落盘时固定死的机械约定，不是语义猜测。
+_DIR_TO_TYPE = {
+    "topics": "topic",
+    "entities": "entity",
+    "decisions": "decision",
+    "processes": "process",
+    "experiences": "experience",
+}
+
+
+def _fix_missing_id_and_type(fm: dict, page_path: Path) -> tuple[bool, dict]:
+    """`id` / `type` 是 `parse_page()` 唯一强制的两个必填字段（见
+    `wiki/parser.py::parse_page` 里 `for required in ("id", "type")` 那段），
+    但它们并不需要靠理解页面内容才能补全——`wiki/writer.py` 落盘时的约定
+    是「文件名固定为 `<page_id>.md`」「存放目录由 type 唯一决定
+    （`AgentPaths.wiki_type_dir()`）」，也就是说这两个值其实已经写在
+    `page_path` 本身里了，反推回去就行，不涉及任何"编一个值出来"的语义
+    猜测，属于跟 `_fix_string_links` 同一等级的"确定改法"。
+
+    2026-09 故障记录：这条规则补上之前，缺 `id`/`type` 的页面会被误判为
+    "只能靠 LLM 猜"——而 LLM 修复的 system prompt 明确要求"不要臆造你不
+    确定的信息"，面对"编一个 id"这种事会正确地拒绝、原样返回输入，导致
+    `llm_repair_still_fails` 每轮必现、5 次重试后转 `needs_human`，永远
+    好不了（这批页面在隔离区常年积压 44 条不动，就是这个原因）。跟其他
+    `_FIXERS` 不同，这条需要 `page_path` 而不只是 frontmatter dict，所以
+    没有放进 `_FIXERS` 注册表统一签名，由 `attempt_repair_page()` 在规则
+    修复的最前面单独调用一次。
+    """
+    changed = False
+    out = dict(fm)
+    if not out.get("id"):
+        out["id"] = page_path.stem
+        changed = True
+    if not out.get("type"):
+        inferred = _DIR_TO_TYPE.get(page_path.parent.name)
+        if inferred:
+            out["type"] = inferred
+            changed = True
+    return changed, out
+
+
 @dataclass
 class RepairOutcome:
     fixed: bool
@@ -212,6 +254,14 @@ def attempt_repair_page(page_path: Path, *, llm_helper: Any = None) -> RepairOut
     if isinstance(fm, dict):
         body = raw[m.end():]
         current = copy.deepcopy(fm)
+
+        # 先跑 id/type 反推——这条依赖 page_path，独立于下面 _FIXERS 的
+        # 统一签名，必须放在最前面（其它 fixer 都假设 id/type 已经存在，
+        # 只处理 links 之类的次要字段）。
+        id_type_changed, current = _fix_missing_id_and_type(current, page_path)
+        if id_type_changed:
+            applied.append("fix_missing_id_and_type")
+
         for name, fixer in _FIXERS:
             changed, current = fixer(current)
             if changed:
