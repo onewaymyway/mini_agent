@@ -185,3 +185,4 @@ external_projects/stock_watch/reports/
 .agent/capability_questions.jsonl
 .agent/activity_digest.jsonl.bak
 .agent/capability_outline_suggestions.jsonl
+.agent/memory_backfill_index.json
