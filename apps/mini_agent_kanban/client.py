@@ -402,8 +402,9 @@ class AgentClient:
     # ── wiki 信息统计 + 隔离区管理（本轮新增）───────────────────────────────
     def wiki_stats(self):
         """wiki 内容来源分布/知识生命周期状态/抽取批次充分性统计，对应
-        CLI `/wiki stats`。"""
-        return self._get("/wiki/stats")
+        CLI `/wiki stats`。compute_stats() 是全量扫描 + parse_page，页面
+        数变大后默认 6s 超时不够用，这里单独放宽到 30s。"""
+        return self._get("/wiki/stats", timeout=30)
 
     def wiki_promotion(self):
         """wiki 转正为主索引的三项标准达成情况，对应 CLI `/wiki promotion`。
