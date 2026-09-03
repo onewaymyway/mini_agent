@@ -4517,22 +4517,55 @@ def _render_goal_tree_research_section(client: AgentClient, node_id: str) -> Non
 
 def _render_goal_tree_node(
     client: AgentClient, tree_node: dict, id_to_title: dict, depth: int = 0,
-    next_step_node_ids: set | None = None,
+    next_step_node_ids: set | None = None, is_focus: bool = False,
 ) -> None:
-    """[goal_tree_system_plan.md §4.4] 递归渲染树形结构。"""
+    """[goal_tree_system_plan.md §4.4] 递归渲染树形结构。
+
+    真正的层级缩进：每往下一层用 `st.columns([1, 9])` 包一层，只把内容
+    放进右边那列——这是 Streamlit 里唯一能让"⚙️ 管理"折叠区/按钮这些
+    控件本身（不只是标题文字）跟着缩进的办法（markdown 里的 `&nbsp;`
+    只能缩进它自己那一行文字，管理折叠区仍然贴在最左边，看上去不像
+    树，是用户反馈的原始问题）。固定比例逐层复合，深度越大缩进量越小
+    （约 10%/层），避免叶子层级（objective，depth 可达 4）被挤到几乎
+    看不见内容的地步。
+    """
+    if depth > 0:
+        _spacer, content_col = st.columns([1, 9])
+        with content_col:
+            _render_goal_tree_node_body(
+                client, tree_node, id_to_title, depth, next_step_node_ids, is_focus,
+            )
+    else:
+        _render_goal_tree_node_body(
+            client, tree_node, id_to_title, depth, next_step_node_ids, is_focus,
+        )
+
+
+def _render_goal_tree_node_body(
+    client: AgentClient, tree_node: dict, id_to_title: dict, depth: int,
+    next_step_node_ids: set | None, is_focus: bool,
+) -> None:
+    """`_render_goal_tree_node()` 缩进列内部实际渲染的内容，拆出来是为了
+    让缩进包裹逻辑（`st.columns`）跟内容本身分开，避免每次改内容都要
+    小心别把缩进逻辑搞坏。"""
     node = tree_node.get("node") or {}
     node_id = node.get("id")
     level = node.get("level", "")
     icon = _GOAL_TREE_LEVEL_ICON.get(level, "❓")
     status_label = _GOAL_TREE_STATUS_LABEL.get(node.get("status", ""), node.get("status", ""))
-    indent = "&nbsp;&nbsp;&nbsp;&nbsp;" * depth
     # [goal_tree_research_and_action_recommendation_plan.md §4.5/阶段四]
     # "💡 建议"标记：该节点有未处理的 focus_next_step 候选时，标题旁加
     # 提示图标（具体建议内容在"⚙️ 管理"折叠区内的调研子区块附近，不单独
     # 开一个折叠区，避免用户要在两处折叠区之间来回找）。
-    badge = " 💡" if next_step_node_ids and node_id in next_step_node_ids else ""
+    next_step_badge = " 💡" if next_step_node_ids and node_id in next_step_node_ids else ""
+    # [看板反馈：原来单独一行"⭐ 以下为当前焦点"意义不明确——容易被读成
+    # "从这里往下所有节点都是焦点"，而实际只标记紧接着渲染的那一个子
+    # 节点] 改成直接在该节点自己的标题行末尾加"⭐"，跟"💡"同样是"贴在
+    # 当事节点自己身上"的标记方式，不再需要额外一行说明文字。
+    focus_badge = " ⭐" if is_focus else ""
     st.markdown(
-        f"{indent}{icon} **{node.get('title', '（无标题）')}** &nbsp;`{status_label}`{badge}",
+        f"{icon} **{node.get('title', '（无标题）')}** &nbsp;`{status_label}`"
+        f"{focus_badge}{next_step_badge}",
         unsafe_allow_html=True,
     )
 
@@ -4665,10 +4698,9 @@ def _render_goal_tree_node(
     focus_ids = set(node.get("current_focus_ids") or [])
     for child in tree_node.get("children") or []:
         c_id = (child.get("node") or {}).get("id")
-        if c_id in focus_ids:
-            st.markdown(f"{indent}&nbsp;&nbsp;&nbsp;&nbsp;⭐ *以下为当前焦点*", unsafe_allow_html=True)
         _render_goal_tree_node(
-            client, child, id_to_title, depth=depth + 1, next_step_node_ids=next_step_node_ids,
+            client, child, id_to_title, depth=depth + 1,
+            next_step_node_ids=next_step_node_ids, is_focus=(c_id in focus_ids),
         )
 
 
