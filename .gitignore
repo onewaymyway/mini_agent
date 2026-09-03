@@ -169,6 +169,9 @@ daily_reports/
 # Agent & AI research data directories
 research/agent_and_ai/papers/
 research/agent_and_ai/articles/
+research/agent_and_ai_advice/
+research/agent_and_ai/*.md
+research/agent_and_ai/*.json
 .agent/daemon_run_state.json
 .agent/daemon_supervisor.pid
 .agent/daemon_crash_history.jsonl
