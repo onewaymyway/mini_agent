@@ -11676,18 +11676,32 @@ def _render_cron_questions_panel(client: "AgentClient"):
                             st.caption(f"提示：{q['hint']}")
                         options = q.get("options") or []
                         answer_key = f"cron_q_answer_{idx}_{qid}"
+                        choice_key = f"cron_q_choice_{idx}_{qid}"
                         if options:
                             st.caption("参考选项（可直接选，也可以在下方输入其它内容）：" + "、".join(options))
-                            choice = st.radio(
+
+                            # [bugfix] text_area 带 key 后，Streamlit 只在该 key
+                            # 首次出现时采纳 value= 的初始值，之后每次 rerun 都会
+                            # 忽略 value= 而沿用 session_state 里已有的旧值——所以
+                            # 之前点选 radio 选项并不会把选中内容写进下面的文本框，
+                            # 只能靠手动输入后 session_state 才会变化，"提交回答"
+                            # 按钮才会被启用。这里改成用 radio 的 on_change 回调直接
+                            # 写 session_state[answer_key]，并且 text_area 不再传
+                            # value=，完全靠 session_state 驱动，这样点选项就能
+                            # 立刻同步到文本框、按钮也能正常点亮。
+                            def _sync_choice_to_answer(_answer_key=answer_key, _choice_key=choice_key):
+                                sel = st.session_state.get(_choice_key)
+                                if sel and sel != "（自己输入）":
+                                    st.session_state[_answer_key] = sel
+
+                            st.radio(
                                 "参考选项", ["（自己输入）"] + options,
-                                key=f"cron_q_choice_{idx}_{qid}", label_visibility="collapsed",
-                                horizontal=True,
+                                key=choice_key, label_visibility="collapsed",
+                                horizontal=True, on_change=_sync_choice_to_answer,
                             )
-                            default_text = "" if choice == "（自己输入）" else choice
-                        else:
-                            default_text = ""
+                        st.session_state.setdefault(answer_key, "")
                         answer_text = st.text_area(
-                            "你的回答", value=default_text, key=answer_key,
+                            "你的回答", key=answer_key,
                             label_visibility="collapsed", placeholder="在这里输入你的回答……",
                         )
                         if st.button("✅ 提交回答", key=f"cron_q_submit_{idx}_{qid}", disabled=not (answer_text or "").strip()):
