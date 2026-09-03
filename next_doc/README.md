@@ -53,6 +53,16 @@ Goal/Objective 执行阶段、公平调度、输出目录、进度判定。
 12. `goal_mode_stuck_compact_plan.md` — 计划：卡滞时的压缩策略
 13. `goal_stuck_stats_and_llm_progress_judge_plan.md` — 计划：卡滞统计与 LLM 进度判定
 
+## goal_tree（目标树/人生目标层级管理，新主线）
+
+把 Goal/Objective 的固定两层结构升级为任意深度的树（终极目标 → 领域方向 →
+阶段目标 → Goal → Objective），补上"针对任意节点持续自动分解""现阶段焦点
+自动刷新"两个动态能力，让目标系统从"单任务执行引擎"升级为"人生目标管理
+系统"。
+
+1. `goal_tree_system_plan.md` — 计划：整体设计方案（数据模型/自动分解/
+   现阶段焦点/看板树形视图/分阶段实施规划）
+
 ## growth_advisor（成长顾问，19 篇）
 
 扫描记忆信号、生成成长方向候选、调研报告、自主搜索与生命周期管理。
