@@ -1674,6 +1674,42 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_monthly_trend_retrospective_job')
 
+            # 目标树系统改进计划阶段三：daemon 启动时补注册
+            # sys:goal_tree_focus_recompute（自底向上重算 ultimate/domain/
+            # stage 三层节点的 current_focus_ids，零 LLM 成本，本地回调，
+            # 每小时一次），见
+            # next_doc/goal_tree_system_plan.md §4.3/§五 阶段三。
+            try:
+                from mini_agent.perception.goal_backlog import (
+                    ensure_goal_tree_focus_recompute_job,
+                )
+
+                ensure_goal_tree_focus_recompute_job(goal_backlog, cron_scheduler)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_goal_tree_focus_recompute_job')
+
+            # 目标树系统改进计划阶段三：daemon 启动时补注册
+            # sys:goal_tree_decompose_scan（§4.2 触发时机 1/2 的停滞巡检 +
+            # 完成态联动，接线到阶段二已写好的检测函数，opt-in LLM，每 24
+            # 小时一次），见
+            # next_doc/goal_tree_system_plan.md §4.2/§五 阶段三。
+            try:
+                from mini_agent.perception.goal_tree_decomposer import (
+                    ensure_goal_tree_decompose_scan_job,
+                )
+
+                def _goal_tree_decompose_llm_helper():
+                    return getattr(agent, "llm_helper", None)
+
+                ensure_goal_tree_decompose_scan_job(
+                    paths, goal_backlog, cron_scheduler,
+                    llm_helper_provider=_goal_tree_decompose_llm_helper,
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_goal_tree_decompose_scan_job')
+
             # ── ObjectiveExecutor ────────────────────────────────────────────
             def _obj_submit(message: str, initiator: str, meta: dict):
                 """提交自主步骤到 InputQueue，返回 turn_id。"""

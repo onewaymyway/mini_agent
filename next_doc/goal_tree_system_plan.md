@@ -6,8 +6,10 @@
 > **实施进度**：阶段一（数据模型）已完成，见
 > `next_doc/goal_tree_system_phase1_implementation_record.md`。阶段二
 > （自动分解）已完成，见
-> `next_doc/goal_tree_system_phase2_implementation_record.md`。阶段三/四
-> 尚未开始。
+> `next_doc/goal_tree_system_phase2_implementation_record.md`。阶段三
+> （现阶段焦点）已完成，见
+> `next_doc/goal_tree_system_phase3_implementation_record.md`。阶段四
+> （看板树形 UI）尚未开始。
 
 ## 一、背景
 

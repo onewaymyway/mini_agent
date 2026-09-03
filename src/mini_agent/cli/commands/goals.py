@@ -76,7 +76,8 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
   以下三项为目标树系统（next_doc/goal_tree_system_plan.md）阶段一/二新增：
   /agent goals tree [root_id]     — 文本树形打印目标树（省略 root_id 时用
                                      全局根节点），候选分解以"待确认"前缀
-                                     列在对应父节点下
+                                     列在对应父节点下，⭐ 标记
+                                     current_focus_ids 命中的节点
   /agent goals decompose <id> [--force]
                                    — 手动触发一次分解建议（§4.2 触发时机
                                      3），生成的候选落进该节点的
@@ -86,6 +87,16 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
   /agent goals candidates <id> accept|reject <candidate_id>
                                    — 处理分解候选：accept 创建真正的子
                                      节点，reject 移除候选并记 30 天去重
+
+  以下两项为目标树系统阶段三（§4.3 现阶段焦点）新增：
+  /agent goals focus <id>         — 查看某节点当前的 current_focus_ids/
+                                     focus_pinned_ids（配合直接子节点标题
+                                     一并打印，省去再手动查一遍 tree）
+  /agent goals focus pin|unpin <node_id> <child_id>
+                                   — 手动 pin/unpin 某个直接子节点为
+                                     "现阶段焦点"，立即重算该节点自身的
+                                     current_focus_ids（不用等下一次
+                                     sys:goal_tree_focus_recompute 巡检）
 """
 
 from __future__ import annotations
@@ -282,12 +293,29 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
             return
         _cmd_candidates(gb, paths, rest[0], rest[1], rest[2])
 
+    elif subcmd == "focus":
+        # [next_doc/goal_tree_system_plan.md §4.3 阶段三]
+        # /agent goals focus <id> | /agent goals focus pin|unpin <node_id> <child_id>
+        if not rest:
+            R.print_error(
+                "Usage: /agent goals focus <id> "
+                "| /agent goals focus pin|unpin <node_id> <child_id>"
+            )
+            return
+        if rest[0] in ("pin", "unpin"):
+            if len(rest) < 3:
+                R.print_error(f"Usage: /agent goals focus {rest[0]} <node_id> <child_id>")
+                return
+            _cmd_focus_pin(gb, rest[1], rest[2], pinned=(rest[0] == "pin"))
+        else:
+            _cmd_focus_show(gb, rest[0])
+
     else:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
             "progress, feedback, recur, unrecur, migrate-legacy, spec, phase, diagnose, "
-            "tune, status, reset-step, judge-calibration, tree, decompose, candidates"
+            "tune, status, reset-step, judge-calibration, tree, decompose, candidates, focus"
         )
 
 
@@ -1363,6 +1391,53 @@ def _cmd_candidates(gb, paths, node_id: str, action: str, candidate_id: str) -> 
         R.print_error(f"候选不存在：node={node_id} candidate={candidate_id}")
         return
     R.print_success("已忽略，30 天内不会再对该节点生成同主题候选。")
+
+
+def _cmd_focus_show(gb, node_id: str) -> None:
+    """[next_doc/goal_tree_system_plan.md §4.3/§4.5] /agent goals focus <id>
+
+    展示某节点当前的 current_focus_ids/focus_pinned_ids，附上直接子节点
+    标题（避免用户拿到一串 id 还要再手动查一遍）。
+    """
+    node = gb.get(node_id)
+    if node is None:
+        R.print_error(f"节点不存在：{node_id}")
+        return
+    if node.level not in ("ultimate", "domain", "stage"):
+        R.print_warning(
+            f"[{node.level}] 节点不参与 current_focus_ids 计算"
+            "（只有 ultimate/domain/stage 三层非叶子节点才有此字段）。"
+        )
+
+    def _title(cid: str) -> str:
+        child = gb.get(cid)
+        return child.title if child is not None else "（节点已不存在）"
+
+    R.print_info(f"[{node.level}] {node.title} ({node.id})")
+    if node.current_focus_ids:
+        R.print_info("现阶段焦点（current_focus_ids）：")
+        for cid in node.current_focus_ids:
+            pin_mark = " 📌" if cid in node.focus_pinned_ids else ""
+            R.console.print(f"  - {_title(cid)} ({cid}){pin_mark}")
+    else:
+        R.print_info("现阶段焦点为空（没有子节点，或子节点已全部进入终态——"
+                      "该节点可能会被停滞巡检捕获去生成新的分解候选）。")
+    if node.focus_pinned_ids:
+        R.print_info("已手动 pin（📌 上面已标出，此处不重复列出坐标）：" +
+                      "、".join(_title(cid) for cid in node.focus_pinned_ids))
+
+
+def _cmd_focus_pin(gb, node_id: str, child_id: str, *, pinned: bool) -> None:
+    """/agent goals focus pin|unpin <node_id> <child_id>"""
+    ok = gb.set_focus_pin(node_id, child_id, pinned)
+    if not ok:
+        R.print_error(
+            f"操作失败：节点不存在，或 {child_id} 不是 {node_id} 的直接子节点。"
+        )
+        return
+    action = "pin" if pinned else "unpin"
+    R.print_success(f"已{'📌 pin' if pinned else '取消 pin'}：{child_id} "
+                     f"({action})，current_focus_ids 已立即重算。")
 
 
 def _get_paths(agent):

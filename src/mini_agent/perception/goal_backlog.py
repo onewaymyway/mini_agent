@@ -33,11 +33,14 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from mini_agent import time_utils
 from mini_agent.storage.paths import AgentPaths
 from mini_agent.utils.atomic_write import atomic_write_json
+
+if TYPE_CHECKING:
+    from mini_agent.evolution.cron_scheduler import CronJob, CronScheduler
 
 try:
     import fcntl  # POSIX only（Linux / macOS）
@@ -626,6 +629,54 @@ def compute_aging_boost(
         return 0.0
     over_days = min(days_since - stale_days, max_boost_days)
     return over_days * boost_per_day
+
+
+# [goal_tree_system_plan.md §4.3 阶段三] current_focus_ids 的默认 top-N，
+# 方案原文"N 默认 1~3，可配置"，跟 compute_aging_boost 的常量一样只是
+# 量级参考，不是拍死的数值——`recompute_current_focus_tree()`/
+# `set_focus_pin()` 都允许调用方覆盖。
+DEFAULT_FOCUS_TOP_N = 3
+
+
+def compute_current_focus(
+    node: "GoalNode",
+    children: list["GoalNode"],
+    now: float,
+    *,
+    top_n: int = DEFAULT_FOCUS_TOP_N,
+) -> list[str]:
+    """[goal_tree_system_plan.md §4.3] 纯规则、同步、不调用 LLM，计算某个
+    非叶子节点当前应该关注的直接子节点 id 列表。
+
+    规则（方案原文）：先并入 `node.focus_pinned_ids`（用户手动 pin 的，
+    优先保留——只要求 id 仍然是 `children` 里的一个，不要求其状态是
+    active，因为"持续生效直到用户取消"是 pin 语义本身的承诺，不该被
+    状态变化悄悄撤销，用户需要看到"我 pin 的这个已经完成/放弃了"这个
+    事实本身，而不是被静默替换成别的子节点），再从剩余 **active** 直接
+    子节点里按 `priority + compute_aging_boost()` 老化加成降序排序，取
+    `top_n - len(pinned)` 个补足，最终按"pinned 在前、补足在后"合并去重
+    返回。
+
+    没有子节点，或全部 `completed`/`abandoned`（且没有 pin，或 pin 的也
+    已进入终态）时返回空列表——意味着该节点该被 §4.2 的停滞巡检捕获，
+    去生成新的分解候选，这正是 `current_focus_ids` 字段注释里
+    "空列表表示子节点已全部进入终态"这句话的计算侧落地。
+
+    只读、无副作用，不加锁——调用方（`recompute_current_focus_tree()`/
+    `set_focus_pin()`）负责在自己的锁临界区内调用并回写结果。
+    """
+    child_by_id = {c.id: c for c in children}
+    pinned = [cid for cid in node.focus_pinned_ids if cid in child_by_id]
+
+    pinned_set = set(pinned)
+    pool = [c for c in children if c.id not in pinned_set and c.status == "active"]
+    ranked = sorted(
+        pool, key=lambda c: c.priority + compute_aging_boost(c, now), reverse=True,
+    )
+    remaining_slots = max(top_n - len(pinned), 0)
+    picked = [c.id for c in ranked[:remaining_slots]]
+
+    return list(dict.fromkeys(pinned + picked))
 
 
 @dataclass
@@ -1331,6 +1382,96 @@ class GoalBacklog:
             }
 
         return _build(root_id, set())
+
+    # ── §4.3 现阶段焦点：pin / 重算 ──────────────────────────────────────────
+
+    def set_focus_pin(self, node_id: str, child_id: str, pinned: bool) -> bool:
+        """[goal_tree_system_plan.md §4.3/§4.5] 手动 pin/unpin 某个直接
+        子节点为"现阶段焦点"。`pinned=True` 时把 `child_id` 加入
+        `node.focus_pinned_ids`（已存在则不重复加）；`pinned=False` 时移除。
+
+        改动后立即用 `compute_current_focus()` 重算**该节点自身**的
+        `current_focus_ids`，不用等下一次 `sys:goal_tree_focus_recompute`
+        巡检才生效；不递归影响祖先——pin 只改变"这个节点该关注哪个子
+        节点"，不改变子节点自身在祖父节点排序里的 priority/aging，祖先的
+        `current_focus_ids` 由下一次巡检自然覆盖到。
+
+        `node_id` 不存在、或 `child_id` 不是它的直接子节点（
+        `node.children_ids`）时返回 `False`，不做任何修改。
+        """
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if node is None or child_id not in node.children_ids:
+                return False
+            pins = list(node.focus_pinned_ids)
+            if pinned:
+                if child_id not in pins:
+                    pins.append(child_id)
+            else:
+                pins = [cid for cid in pins if cid != child_id]
+            node.focus_pinned_ids = pins
+            children = [
+                self._nodes[cid] for cid in node.children_ids if cid in self._nodes
+            ]
+            node.current_focus_ids = compute_current_focus(node, children, time.time())
+        return True
+
+    def recompute_current_focus_tree(
+        self, root_id: Optional[str] = None, *, top_n: int = DEFAULT_FOCUS_TOP_N,
+    ) -> int:
+        """[goal_tree_system_plan.md §4.3] `sys:goal_tree_focus_recompute`
+        cron job 的核心逻辑：自底向上（后序遍历，子节点先算好，结果再
+        影响父节点排序）重算 `root_id`（默认全局根节点）为起点的整棵子树
+        的 `current_focus_ids`。
+
+        只对 `level` 在 `("ultimate", "domain", "stage")` 三层的非叶子
+        节点写回结果——跟 `GoalNode.current_focus_ids` 字段注释"仅这三层
+        非叶子节点使用"保持一致；`goal`/`objective` 两层继续只走既有的
+        `GoalRunner`/fairness 排序，不参与本次计算，即使某个 `goal` 节点
+        下面挂了别的 `goal`（"goal 挂 goal"场景）。
+
+        返回实际发生变化（新旧 `current_focus_ids` 不同）的节点数，供
+        cron handler 打日志；`root_id` 不存在（包括压根还没有全局根节点）
+        时返回 0，不做任何修改。
+        """
+        with self._locked():
+            if root_id is None:
+                root = next(
+                    (n for n in self._nodes.values() if n.level == "ultimate"), None,
+                )
+                if root is None:
+                    return 0
+                root_id = root.id
+            elif root_id not in self._nodes:
+                return 0
+
+            order: list[str] = []
+            seen: set[str] = set()
+
+            def _post_order(nid: str) -> None:
+                if nid in seen or nid not in self._nodes:
+                    return
+                seen.add(nid)
+                for cid in self._nodes[nid].children_ids:
+                    _post_order(cid)
+                order.append(nid)
+
+            _post_order(root_id)
+
+            now = time.time()
+            updated = 0
+            for nid in order:
+                node = self._nodes[nid]
+                if node.level not in ("ultimate", "domain", "stage"):
+                    continue
+                children = [
+                    self._nodes[cid] for cid in node.children_ids if cid in self._nodes
+                ]
+                new_focus = compute_current_focus(node, children, now, top_n=top_n)
+                if new_focus != node.current_focus_ids:
+                    node.current_focus_ids = new_focus
+                    updated += 1
+        return updated
 
     def goals_missing_objective(self) -> list[GoalNode]:
         """返回没有任何 active Objective 子节点的 active Goal（按优先级降序）。
@@ -2082,6 +2223,49 @@ def load_goal_backlog(paths: AgentPaths) -> GoalBacklog:
     return gb
 
 
+# [goal_tree_system_plan.md §4.3/§五 阶段三] sys:goal_tree_focus_recompute
+# 的 job id，daemon 启动时补注册，见 ensure_goal_tree_focus_recompute_job()。
+JOB_ID_FOCUS_RECOMPUTE = "sys:goal_tree_focus_recompute"
+
+
+def ensure_goal_tree_focus_recompute_job(
+    backlog: GoalBacklog, cron_scheduler: "CronScheduler",
+) -> bool:
+    """daemon 启动时调用：缺失才补注册 `sys:goal_tree_focus_recompute`
+    （§4.3，纯规则计算、零 LLM 成本、本地回调，与
+    `failure_pattern_store.ensure_failure_pattern_aggregation_job()` 同构）。
+
+    每小时（`interval:3600`，比停滞巡检的 24 小时短很多——方案原文"这个
+    只是纯规则计算、成本很低，可以比 LLM 驱动的巡检跑得更勤"）自底向上
+    重算全树的 `current_focus_ids`，直接调用
+    `GoalBacklog.recompute_current_focus_tree()`（默认从全局根节点开始）。
+
+    返回值同其它 `ensure_*_job()`：`True` 表示这次调用新建了该 job（此前
+    不存在），`False` 表示 job 已存在（不会覆盖用户可能已经手动改过的
+    schedule/enabled）。
+    """
+    existing_ids = {j.id for j in cron_scheduler.list_jobs()}
+    newly_added = JOB_ID_FOCUS_RECOMPUTE not in existing_ids
+    cron_scheduler.ensure_job(
+        job_id=JOB_ID_FOCUS_RECOMPUTE,
+        name="目标树现阶段焦点重算",
+        schedule="interval:3600",
+        description=(
+            "自底向上重算目标树上 ultimate/domain/stage 三层非叶子节点的 "
+            "current_focus_ids（优先级 + 停滞老化加成，叠加用户手动 pin），"
+            "零 LLM 成本、纯规则计算，每小时一次。"
+        ),
+        tags=["maintenance", "goal_tree"],
+    )
+
+    def _handler(job: "CronJob") -> bool:
+        backlog.recompute_current_focus_tree()
+        return True
+
+    cron_scheduler.register_local_handler(JOB_ID_FOCUS_RECOMPUTE, _handler)
+    return newly_added
+
+
 __all__ = [
     "GoalNode",
     "GoalBacklog",
@@ -2090,4 +2274,9 @@ __all__ = [
     "default_goal_to_objectives",
     "LEVEL_ORDER",
     "validate_node_hierarchy",
+    "compute_aging_boost",
+    "compute_current_focus",
+    "DEFAULT_FOCUS_TOP_N",
+    "JOB_ID_FOCUS_RECOMPUTE",
+    "ensure_goal_tree_focus_recompute_job",
 ]

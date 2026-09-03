@@ -28,8 +28,9 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from mini_agent.perception.goal_backlog import (
     GoalNode,
@@ -38,6 +39,7 @@ from mini_agent.perception.goal_backlog import (
 )
 
 if TYPE_CHECKING:
+    from mini_agent.evolution.cron_scheduler import CronJob, CronScheduler
     from mini_agent.perception.goal_backlog import GoalBacklog
     from mini_agent.storage.paths import AgentPaths
 
@@ -413,6 +415,171 @@ class GoalTreeDecomposer:
         return candidates
 
 
+# ── 阶段三：cron 巡检接线 ─────────────────────────────────────────────────────
+#
+# [goal_tree_system_plan.md §4.2/§五 阶段三] 把阶段二写好的
+# find_stale_nodes_for_scan() / find_parent_needing_decompose_after_
+# completion() 两个检测函数，接进一个真正定时跑的 cron job
+# （sys:goal_tree_decompose_scan）。
+#
+# §六"待实施阶段确认的细节"里遗留的两个问题在本阶段给出结论：
+#   1. 触发时机 2（完成态联动）到底走"同步内联进 set_status()"还是"走
+#      cron 下一拍捕获"——选择后者：run_decompose_scan_cycle() 每次运行时
+#      额外扫一遍"最近一个巡检间隔内被标记 completed 的非叶子节点"，对每
+#      个这样的节点调用 find_parent_needing_decompose_after_completion()，
+#      命中的父节点跟停滞巡检命中的节点合并去重后一起触发分解。这样
+#      set_status() 本身继续保持"毫秒级临界区写入"的语义不变，付出的代价
+#      是完成态联动最多要等一个巡检周期（默认 24 小时）才会生效，而不是
+#      立即触发——方案原文"不断更新现阶段目标"本来就是持续巡检的效果，不
+#      是强实时通知，这个延迟可以接受。
+#   2. sys:goal_tree_decompose_scan 是"轻量规则内部执行"还是"提交一个
+#      task_template 走完整 Agent 轮次"——选择前者（本地回调 handler，同
+#      `sys:wiki_quarantine_repair` 的取舍）：分解建议本身只是"调一次
+#      LLMHelper.ask() 落一份候选"，不需要工具调用/多轮 Agent 决策，走完整
+#      Agent 轮次是过度设计，且会占用主 Agent 的 InputQueue 轮次预算。
+
+
+# 完成态联动扫描的回看窗口：略大于巡检间隔本身（默认 24 小时对应
+# 86400 秒），避免"一个节点恰好在两次巡检之间的边界时刻完成"被漏判。
+COMPLETION_LINK_LOOKBACK_SECONDS_DEFAULT = 90000  # 25 小时
+
+# sys:goal_tree_decompose_scan 的 job id。
+JOB_ID_DECOMPOSE_SCAN = "sys:goal_tree_decompose_scan"
+
+
+@dataclass
+class DecomposeScanSummary:
+    """`run_decompose_scan_cycle()` 的返回值，供 cron handler 判定
+    ok/日志展示，也方便测试断言。"""
+
+    ok: bool = True
+    # 命中的停滞节点数（§4.2 触发时机 1）。
+    stale_node_count: int = 0
+    # 命中的"完成态联动"父节点数（§4.2 触发时机 2，去重后）。
+    completion_linked_count: int = 0
+    # 实际尝试调用 decompose() 的节点数（stale + completion_linked 去重
+    # 合并后的总数；节奏治理/no-op 情况仍计入，只是 candidate_count 为 0）。
+    scanned_count: int = 0
+    # 本轮新生成的候选总数（跨全部命中节点求和）。
+    candidate_count: int = 0
+    node_ids: list[str] = field(default_factory=list)
+
+
+def run_decompose_scan_cycle(
+    paths: "AgentPaths",
+    backlog: "GoalBacklog",
+    *,
+    llm_helper=None,
+    stale_days: float = STALE_DAYS_DEFAULT,
+    completion_lookback_seconds: float = COMPLETION_LINK_LOOKBACK_SECONDS_DEFAULT,
+) -> DecomposeScanSummary:
+    """[goal_tree_system_plan.md §4.2 触发时机 1/2，§五 阶段三]
+    `sys:goal_tree_decompose_scan` cron job 的核心逻辑，单次调用完成一整
+    轮巡检 + 分解：
+
+    1. `find_stale_nodes_for_scan()` 找出全部停滞节点；
+    2. 扫描最近 `completion_lookback_seconds` 内被标记 `completed` 的非
+       `objective` 节点，逐个调用
+       `find_parent_needing_decompose_after_completion()`，收集命中的
+       父节点（跟停滞节点集合去重合并）；
+    3. 对合并后的目标节点逐个调用 `GoalTreeDecomposer.decompose()`——
+       节奏治理（间隔/已有未处理候选）仍由 `decompose()` 内部的
+       `should_decompose()` 负责，本函数不重复判断，也不传 `force=True`
+       （巡检场景应该尊重节奏治理，不该绕过）。
+
+    `llm_helper` 未传时委托 `GoalTreeDecomposer.decompose()` 自己按
+    `LLMHelper.from_config()` 兜底构造——但调用方（daemon 侧
+    `ensure_goal_tree_decompose_scan_job()`）通常会做成"没有可用
+    llm_helper 时整个 job 直接跳过"，避免巡检本身触发一次隐式的默认模型
+    调用，见该函数说明。
+
+    不抛异常：内部逐节点调用已经由 `decompose()` 自己吞掉 LLM 异常，本
+    函数只是遍历汇总，`ok` 恒为 `True`（保留字段是为了跟其它 `ensure_*_job`
+    handler 返回 bool 的既有风格对齐，未来如果需要区分"部分失败"可以
+    在这里扩展）。
+    """
+    stale_nodes = find_stale_nodes_for_scan(backlog, stale_days=stale_days)
+
+    now = time.time()
+    completed_recent = [
+        n for n in backlog.all_nodes()
+        if n.status == "completed"
+        and n.level != "objective"
+        and (n.last_touched_at or n.created_at or 0) >= now - completion_lookback_seconds
+    ]
+    stale_ids = {n.id for n in stale_nodes}
+    linked_parents: list[GoalNode] = []
+    linked_seen: set[str] = set()
+    for completed_node in completed_recent:
+        parent = find_parent_needing_decompose_after_completion(backlog, completed_node.id)
+        if parent is None or parent.id in stale_ids or parent.id in linked_seen:
+            continue
+        linked_seen.add(parent.id)
+        linked_parents.append(parent)
+
+    targets = list(stale_nodes) + linked_parents
+
+    decomposer = GoalTreeDecomposer(paths, backlog)
+    candidate_count = 0
+    for node in targets:
+        candidates = decomposer.decompose(node.id, llm_helper=llm_helper)
+        candidate_count += len(candidates)
+
+    return DecomposeScanSummary(
+        ok=True,
+        stale_node_count=len(stale_nodes),
+        completion_linked_count=len(linked_parents),
+        scanned_count=len(targets),
+        candidate_count=candidate_count,
+        node_ids=[n.id for n in targets],
+    )
+
+
+def ensure_goal_tree_decompose_scan_job(
+    paths: "AgentPaths",
+    backlog: "GoalBacklog",
+    cron_scheduler: "CronScheduler",
+    *,
+    llm_helper_provider: Optional[Callable[[], Any]] = None,
+) -> bool:
+    """daemon 启动时调用：缺失才补注册 `sys:goal_tree_decompose_scan`
+    （§4.2 触发时机 1/2 的巡检 + 分解，每 24 小时一次，参考 `sys:goal_review`
+    的量级）。
+
+    `llm_helper_provider` 可选（opt-in，默认 `None`，与
+    `wiki_quarantine_repair.ensure_wiki_quarantine_repair_job()` 同一种
+    "调用方决定是否愿意为这个 job 花 LLM 调用"的约定）：不传或调用返回
+    `None` 时，本 job 每次触发都直接跳过（返回 `True`，不算失败）—— 分解
+    建议是"锦上添花"的主动巡检，不该在没有配置/没有可用 LLM 的环境下
+    产生噪音日志或意外报错。
+    """
+    existing_ids = {j.id for j in cron_scheduler.list_jobs()}
+    newly_added = JOB_ID_DECOMPOSE_SCAN not in existing_ids
+    cron_scheduler.ensure_job(
+        job_id=JOB_ID_DECOMPOSE_SCAN,
+        name="目标树停滞巡检与自动分解",
+        schedule="interval:86400",
+        description=(
+            "扫描目标树上停滞（无 active 子节点且超过 14 天未 touch）的"
+            "非叶子节点，以及最近因子节点全部完成而失去 active 子节点的"
+            "节点，各自触发一次 GoalTreeDecomposer 分解建议（受节奏治理"
+            "限制，不会重复打扰）；未配置可用 llm_helper 时静默跳过，不"
+            "算失败。"
+        ),
+        tags=["maintenance", "goal_tree"],
+    )
+
+    def _handler(job: "CronJob") -> bool:
+        helper = llm_helper_provider() if llm_helper_provider else None
+        if helper is None:
+            return True  # 没有可用 LLM，静默跳过，不算失败
+        result = run_decompose_scan_cycle(paths, backlog, llm_helper=helper)
+        return result.ok
+
+    cron_scheduler.register_local_handler(JOB_ID_DECOMPOSE_SCAN, _handler)
+    return newly_added
+
+
 __all__ = [
     "GoalTreeDecomposer",
     "find_stale_nodes_for_scan",
@@ -420,4 +587,9 @@ __all__ = [
     "STALE_DAYS_DEFAULT",
     "MIN_DECOMPOSE_INTERVAL_SECONDS",
     "REJECTED_TTL_SECONDS",
+    "DecomposeScanSummary",
+    "run_decompose_scan_cycle",
+    "ensure_goal_tree_decompose_scan_job",
+    "JOB_ID_DECOMPOSE_SCAN",
+    "COMPLETION_LINK_LOOKBACK_SECONDS_DEFAULT",
 ]
