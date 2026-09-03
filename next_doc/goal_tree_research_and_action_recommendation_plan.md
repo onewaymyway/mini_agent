@@ -3,6 +3,14 @@
 > 本文档记录设计方案本身，供实施前确认；具体分阶段实施进度另见后续
 > `*_implementation_record.md`（每个阶段完成后补一份，不混在本文档里）。
 >
+> **实施进度**：阶段一（绑定对象迁移）已完成，见
+> `next_doc/goal_tree_research_action_phase1_implementation_record.md`。
+> 阶段一落地时发现 `external_input/goal_relevance.py` 并未像最初调研时
+> 以为的那样绑定 `direction_id`（它本来就直接读 `GoalBacklog` 的
+> `GoalNode`），真正的缺口是扫描范围只到叶子 `goal` 层、漏掉了"现阶段
+> 焦点恰好停在 domain/stage 层"的情况，实施记录里有详细说明，§4.1 原文
+> 保留供参考、不回改。
+>
 > **前置阅读**：`next_doc/goal_tree_system_plan.md`（目标树结构，四个阶段
 > 已全部完成）、`docs/growth-advisor-guide.md` 1.5 节"设计理念"、
 > `next_doc/growth_advisor_ideal_advisor_gap_and_roadmap_plan.md`（成长

@@ -958,6 +958,40 @@ class GoalBacklog:
         ]
         return sorted(goals, key=lambda n: n.priority, reverse=True)
 
+    def focus_research_nodes(self) -> list[GoalNode]:
+        """[next_doc/goal_tree_research_and_action_recommendation_plan.md
+        §4.1] 供 `external_input/goal_relevance.py` 等"该往哪个方向找
+        外部信息"的调研入口使用的节点集合——在 `active_goals()`（叶子层，
+        有验收标准/执行内容）基础上，并入当前"现阶段焦点"里的结构节点
+        （`domain`/`stage`，即 §三 定义的纯结构层）。
+
+        动机：`current_focus_ids` 是树上"现在该关注哪"的权威信号，但
+        `active_goals()` 只看 `level=goal`，会漏掉"现阶段焦点恰好停在
+        domain/stage 这一层、下面还没细化出具体 goal"的情况——这种时候
+        恰恰更需要调研信息来帮用户想清楚下一步该往哪个方向细化，而不是
+        被现有扫描范围忽略。
+
+        只读、无副作用；结果按 `active_goals()` 相同的优先级降序排列，
+        结构节点排在其后（结构节点没有细粒度优先级语义时默认排在叶子
+        Goal 之后，不抢占既有 Goal 相关性判断的相对顺序）。
+        """
+        leaf_goals = self.active_goals()
+        seen_ids = {n.id for n in leaf_goals}
+        focus_structural_ids: set[str] = set()
+        for node in self._nodes.values():
+            if not node.is_active or not node.is_structural:
+                continue
+            for child_id in node.current_focus_ids:
+                child = self._nodes.get(child_id)
+                if child is not None and child.is_active and child.is_structural:
+                    focus_structural_ids.add(child_id)
+        structural_nodes = [
+            self._nodes[cid] for cid in focus_structural_ids
+            if cid not in seen_ids and cid in self._nodes
+        ]
+        structural_nodes.sort(key=lambda n: n.priority, reverse=True)
+        return leaf_goals + structural_nodes
+
     def all_nodes(self) -> list[GoalNode]:
         """返回全部节点（不按 status 过滤），按优先级降序。
 

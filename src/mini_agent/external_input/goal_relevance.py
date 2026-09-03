@@ -3,9 +3,12 @@
 设计背景见 next_doc/watchlist_notification_goal_design.md §4.2/§3.6。
 
 Stage①（本文件，P4 范围）：纯规则层，零 LLM 成本，每个 tick 都跑。对每条
-`external.*` 事件，与 `goal_backlog.active_goals()`（只看 level=goal 且
-status=active，不含 Objective）逐一计算一个廉价的 token 重合度分数，超过
-一个很低的阈值（默认宽松，只为过滤掉明显八竿子打不着的组合）即写入
+`external.*` 事件，与 `goal_backlog.focus_research_nodes()`（P4 原为
+`active_goals()`，只看 level=goal 且 status=active；
+`next_doc/goal_tree_research_and_action_recommendation_plan.md` §4.1
+扩展为额外并入当前"现阶段焦点"里的 domain/stage 结构节点，理由见该方法
+的 docstring）逐一计算一个廉价的 token 重合度分数，超过一个很低的阈值
+（默认宽松，只为过滤掉明显八竿子打不着的组合）即写入
 `goal_relevance_candidates.jsonl`，交给 Stage②（P5，LLM 批量判定）消费。
 
 这一层的设计原则是"宁可让 Stage② LLM 多判几个'不相关'，也不要在这一层
@@ -118,8 +121,10 @@ def run_goal_relevance_candidate_once(
     goal_backlog: "Optional[GoalBacklog]" = None,
     threshold: float = DEFAULT_PREFILTER_THRESHOLD,
 ) -> GoalRelevanceCandidateSummary:
-    """消费一批自上次游标之后的 external.* 事件，与当前 active Goal 逐一
-    计算重合度分数，超过阈值即写入候选队列。
+    """消费一批自上次游标之后的 external.* 事件，与当前"该关注的树节点"
+    （叶子 active Goal + 现阶段焦点里的结构节点，见
+    `GoalBacklog.focus_research_nodes()`）逐一计算重合度分数，超过阈值
+    即写入候选队列。
 
     `goal_backlog` 未传入时（测试/诊断场景）内部自行 `load_goal_backlog()`
     读一份只读快照——本函数不修改 GoalBacklog 任何字段，纯读取。
@@ -135,7 +140,7 @@ def run_goal_relevance_candidate_once(
             log_exception(exc, where="mini_agent.external_input.goal_relevance.run_goal_relevance_candidate_once.load_goal_backlog")
             goal_backlog = None
 
-    goals: list["GoalNode"] = list(goal_backlog.active_goals()) if goal_backlog is not None else []
+    goals: list["GoalNode"] = list(goal_backlog.focus_research_nodes()) if goal_backlog is not None else []
     summary.scanned_goals = len(goals)
 
     events = poll_external_events(paths, consumer_name=consumer_name)
