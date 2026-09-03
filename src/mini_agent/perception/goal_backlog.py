@@ -425,6 +425,22 @@ def validate_node_hierarchy(level: str, parent_level: Optional[str]) -> Optional
     return None
 
 
+def _next_default_level(parent_level: str) -> str:
+    """[goal_tree_system_plan.md §4.2] 默认子节点 level = 父节点在
+    `LEVEL_ORDER` 里的下一层；`parent_level` 未知或已经是最后一层
+    （`objective`）时兜底为 `"objective"`（`goal` 挂 `goal` 属于允许的
+    显式选择，不是"下一层"的默认推断结果，见 §4.1.1）。供
+    `GoalBacklog.accept_candidate()`/`GoalTreeDecomposer` 在候选没有给出
+    合法 level 建议时兜底使用。
+    """
+    if parent_level not in LEVEL_ORDER:
+        return "objective"
+    idx = LEVEL_ORDER.index(parent_level)
+    if idx + 1 < len(LEVEL_ORDER):
+        return LEVEL_ORDER[idx + 1]
+    return "objective"
+
+
 @dataclass
 class Direction:
     """[personal_researcher_and_coach_capability_gap_plan.md C1] "长期方向"
@@ -1183,6 +1199,139 @@ class GoalBacklog:
                         goal.parent_id = direction.id
         return report
 
+    def append_decompose_candidates(self, node_id: str, candidates: list[dict]) -> bool:
+        """[goal_tree_system_plan.md §4.2 落盘] 把 `GoalTreeDecomposer` 生成的
+        候选追加进节点的 `decompose_candidates`。不去重、不校验候选内容
+        （由 `GoalTreeDecomposer` 在生成阶段负责去重/合法性），本方法只
+        负责在锁保护下原子追加，避免与其他进程并发写入互相覆盖。
+
+        `node_id` 不存在时返回 `False`，不做任何修改。
+        """
+        if not candidates:
+            return True
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if node is None:
+                return False
+            node.decompose_candidates.extend(candidates)
+        return True
+
+    def accept_candidate(
+        self, node_id: str, candidate_id: str, overrides: Optional[dict] = None,
+    ) -> Optional[GoalNode]:
+        """[goal_tree_system_plan.md §4.5] 接受一个待确认的分解候选：从
+        `node.decompose_candidates` 里取出该候选、创建真正的 `GoalNode`
+        （挂在 `node_id` 下）、并把候选从待确认列表移除。
+
+        `overrides` 可选，用于"编辑后采纳"（§4.4 的"✏️ 编辑后采纳"）：
+        允许覆盖候选的 `title`/`description`/`level`，键名与这三者同名，
+        其它键会被忽略。
+
+        与 `add_node()` 做的事本质相同，但不能直接调用 `add_node()`——
+        两者都需要持有 `_locked()` 临界区，而 `_locked()` 底层的进程间
+        文件锁不可重入，嵌套调用会死锁，所以这里在同一个 `_locked()` 块
+        内内联完成校验 + 创建 + 候选移除。
+
+        候选不存在、`node_id` 不存在、或候选内容校验不通过（层级不合法）
+        时返回 `None`，不做任何修改。
+        """
+        overrides = overrides or {}
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if node is None:
+                return None
+            idx = next(
+                (i for i, c in enumerate(node.decompose_candidates)
+                 if c.get("id") == candidate_id),
+                None,
+            )
+            if idx is None:
+                return None
+            candidate = node.decompose_candidates[idx]
+            title = overrides.get("title", candidate.get("title", ""))
+            description = overrides.get("description", candidate.get("description", ""))
+            level = overrides.get("level", candidate.get("level") or _next_default_level(node.level))
+            err = validate_node_hierarchy(level, node.level)
+            if err:
+                return None
+            id_prefix = {"goal": "goal", "objective": "obj"}.get(level, level)
+            new_node = GoalNode(
+                id=f"{id_prefix}_{uuid.uuid4().hex[:8]}",
+                level=level,
+                title=title,
+                source="agent_derived",
+                status="active",
+                created_at=time.time(),
+                last_touched_at=time.time(),
+                parent_id=node_id,
+                description=description,
+            )
+            self._nodes[new_node.id] = new_node
+            node.children_ids.append(new_node.id)
+            del node.decompose_candidates[idx]
+        return new_node
+
+    def reject_candidate(self, node_id: str, candidate_id: str) -> Optional[dict]:
+        """从 `node.decompose_candidates` 移除一个候选（用户点"忽略"）。
+
+        只负责移除，不写"30 天内不再对同一节点重复生成同主题候选"的去重
+        记录——去重记录跟 `GoalTreeDecomposer` 的巡检节奏治理是同一套状态
+        （见该类 `record_rejected()`），调用方应优先用
+        `GoalTreeDecomposer.reject_candidate()`（同时做移除 + 记去重），
+        这里保留基础版本供不需要去重语义的场景（如测试、脚本清理）单独
+        调用。
+
+        返回被移除的候选 dict（供调用方拿到 title 去记去重），不存在时
+        返回 `None`，不做任何修改。
+        """
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if node is None:
+                return None
+            idx = next(
+                (i for i, c in enumerate(node.decompose_candidates)
+                 if c.get("id") == candidate_id),
+                None,
+            )
+            if idx is None:
+                return None
+            candidate = node.decompose_candidates[idx]
+            del node.decompose_candidates[idx]
+        return candidate
+
+    def get_tree(self, root_id: Optional[str] = None) -> Optional[dict]:
+        """[goal_tree_system_plan.md §4.5] 返回以 `root_id`（默认全局根
+        节点）为起点的完整子树，供看板/CLI 渲染。
+
+        返回结构：`{"node": GoalNode, "children": [同结构, ...]}`；
+        `root_id` 不存在时返回 `None`。存在环（数据异常）时对同一节点只
+        展开一次，避免死循环——正常数据不会出现环，这里只是防御。
+
+        只读查询，不加锁，与 `all_nodes()`/`goals_missing_objective()` 一致。
+        """
+        if root_id is None:
+            root = next((n for n in self._nodes.values() if n.level == "ultimate"), None)
+            if root is None:
+                return None
+            root_id = root.id
+
+        def _build(node_id: str, seen: set) -> Optional[dict]:
+            if node_id in seen:
+                return None
+            node = self._nodes.get(node_id)
+            if node is None:
+                return None
+            seen = seen | {node_id}
+            return {
+                "node": node,
+                "children": [
+                    child for cid in node.children_ids
+                    if (child := _build(cid, seen)) is not None
+                ],
+            }
+
+        return _build(root_id, set())
+
     def goals_missing_objective(self) -> list[GoalNode]:
         """返回没有任何 active Objective 子节点的 active Goal（按优先级降序）。
 
@@ -1939,4 +2088,6 @@ __all__ = [
     "AdvanceDecision",
     "load_goal_backlog",
     "default_goal_to_objectives",
+    "LEVEL_ORDER",
+    "validate_node_hierarchy",
 ]

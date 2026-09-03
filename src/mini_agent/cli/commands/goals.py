@@ -72,6 +72,20 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
                                    — 不含 `param=value` 时按自然语言意见
                                      处理，尝试用 LLM 解析成白名单参数
                                      改动；解析失败时提示改用具体命令
+
+  以下三项为目标树系统（next_doc/goal_tree_system_plan.md）阶段一/二新增：
+  /agent goals tree [root_id]     — 文本树形打印目标树（省略 root_id 时用
+                                     全局根节点），候选分解以"待确认"前缀
+                                     列在对应父节点下
+  /agent goals decompose <id> [--force]
+                                   — 手动触发一次分解建议（§4.2 触发时机
+                                     3），生成的候选落进该节点的
+                                     decompose_candidates；节奏治理（间隔/
+                                     已有未处理候选）拦下时给出提示，
+                                     --force 跳过拦截
+  /agent goals candidates <id> accept|reject <candidate_id>
+                                   — 处理分解候选：accept 创建真正的子
+                                     节点，reject 移除候选并记 30 天去重
 """
 
 from __future__ import annotations
@@ -247,12 +261,33 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         # 只读展示判官校准建议报告，不会自动修改任何配置或 prompt。
         _cmd_judge_calibration(paths)
 
+    elif subcmd == "tree":
+        # [next_doc/goal_tree_system_plan.md §4.5] /agent goals tree [root_id]
+        # 文本树形打印，root_id 省略时用全局根节点（level=ultimate）。
+        _cmd_tree(gb, rest[0] if rest else None)
+
+    elif subcmd == "decompose":
+        # [next_doc/goal_tree_system_plan.md §4.2/§4.5]
+        # /agent goals decompose <id> [--force]
+        if not rest:
+            R.print_error("Usage: /agent goals decompose <id> [--force]")
+            return
+        force = "--force" in rest[1:]
+        _cmd_decompose(gb, paths, rest[0], force=force)
+
+    elif subcmd == "candidates":
+        # /agent goals candidates <id> accept|reject <candidate_id>
+        if len(rest) < 3 or rest[1] not in ("accept", "reject"):
+            R.print_error("Usage: /agent goals candidates <id> accept|reject <candidate_id>")
+            return
+        _cmd_candidates(gb, paths, rest[0], rest[1], rest[2])
+
     else:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
             "progress, feedback, recur, unrecur, migrate-legacy, spec, phase, diagnose, "
-            "tune, status, reset-step, judge-calibration"
+            "tune, status, reset-step, judge-calibration, tree, decompose, candidates"
         )
 
 
@@ -1231,6 +1266,103 @@ def _format_ago(seconds: float) -> str:
         return f"{seconds/60:.1f}m"
     else:
         return f"{seconds/3600:.1f}h"
+
+
+_LEVEL_ICON = {
+    "ultimate": "🌍", "domain": "🧭", "stage": "📅", "goal": "🎯", "objective": "📌",
+}
+
+
+def _cmd_tree(gb, root_id: Optional[str]) -> None:
+    """[next_doc/goal_tree_system_plan.md §4.5] 文本树形打印，root_id 省略
+    时用全局根节点。缩进表达层级深度，节点标题前带 level 图标 + 状态，
+    候选分解（decompose_candidates）以 "待确认" 前缀单独列在子节点下面。
+    """
+    tree = gb.get_tree(root_id)
+    if tree is None:
+        if root_id is None:
+            R.print_info("目标树还没有根节点，用 /agent goals add 创建第一个 Goal 后，"
+                          "或直接创建 ultimate 节点后即可查看。")
+        else:
+            R.print_error(f"节点不存在：{root_id}")
+        return
+
+    def _print(entry: dict, depth: int) -> None:
+        node = entry["node"]
+        icon = _LEVEL_ICON.get(node.level, "•")
+        indent = "  " * depth
+        focus_mark = " ⭐" if node.current_focus_ids else ""
+        R.console.print(f"{indent}{icon} [{node.status}] {node.title} ({node.id}){focus_mark}")
+        for cand in node.decompose_candidates:
+            R.console.print(f"{indent}  ┊ 待确认候选：{cand.get('title', '')} "
+                             f"[{cand.get('level', '?')}] ({cand.get('id', '')})")
+        for child in entry["children"]:
+            _print(child, depth + 1)
+
+    _print(tree, 0)
+
+
+def _cmd_decompose(gb, paths, node_id: str, *, force: bool = False) -> None:
+    """[next_doc/goal_tree_system_plan.md §4.2/§4.5] /agent goals decompose <id>
+
+    手动触发一次分解建议（§4.2 触发时机 3）。生成的候选落进节点的
+    decompose_candidates，通过 `/agent goals candidates <id> accept|reject
+    <candidate_id>` 处理。
+    """
+    node = gb.get(node_id)
+    if node is None:
+        R.print_error(f"节点不存在：{node_id}")
+        return
+    try:
+        from mini_agent.perception.goal_tree_decomposer import GoalTreeDecomposer
+        decomposer = GoalTreeDecomposer(paths, gb)
+        if not force:
+            skip_reason = decomposer.should_decompose(node)
+            if skip_reason:
+                R.print_warning(f"跳过：{skip_reason}（可加 --force 强制触发）")
+                return
+        candidates = decomposer.decompose(node_id, force=force)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goals._cmd_decompose')
+        R.print_error(f"分解失败：{e}")
+        return
+
+    if not candidates:
+        R.print_info("本次没有生成新的候选（可能是 LLM 判断该节点已经足够具体）。")
+        return
+    R.print_success(f"生成了 {len(candidates)} 个候选，等待确认：")
+    for cand in candidates:
+        R.print_info(f"  [{cand['level']}] {cand['title']} —— {cand.get('description', '')} "
+                      f"(id={cand['id']})")
+    R.print_info(f"确认：/agent goals candidates {node_id} accept <candidate_id>")
+    R.print_info(f"忽略：/agent goals candidates {node_id} reject <candidate_id>")
+
+
+def _cmd_candidates(gb, paths, node_id: str, action: str, candidate_id: str) -> None:
+    """/agent goals candidates <id> accept|reject <candidate_id>"""
+    if action == "accept":
+        new_node = gb.accept_candidate(node_id, candidate_id)
+        if new_node is None:
+            R.print_error(f"候选不存在，或节点/层级不合法：node={node_id} candidate={candidate_id}")
+            return
+        R.print_success(f"已采纳，创建了新节点 [{new_node.level}] {new_node.title} ({new_node.id})")
+        return
+
+    # reject
+    try:
+        from mini_agent.perception.goal_tree_decomposer import GoalTreeDecomposer
+        decomposer = GoalTreeDecomposer(paths, gb)
+        ok = decomposer.reject_candidate(node_id, candidate_id)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goals._cmd_candidates')
+        R.print_error(f"忽略失败：{e}")
+        return
+    if not ok:
+        R.print_error(f"候选不存在：node={node_id} candidate={candidate_id}")
+        return
+    R.print_success("已忽略，30 天内不会再对该节点生成同主题候选。")
 
 
 def _get_paths(agent):
