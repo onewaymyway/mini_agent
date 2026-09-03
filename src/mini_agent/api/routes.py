@@ -154,6 +154,13 @@ api/routes.py — FastAPI 路由定义
     DELETE /v1/goals                 [看板"一键删除所有目标"] 对全部
                                        level=goal 节点逐个执行上面同一套
                                        级联删除
+    GET    /v1/goals/tree            [goal_tree_system_plan.md §4.5/阶段四]
+                                       目标树完整子树（含候选/焦点）
+    POST   /v1/goals/nodes           [同上] 通用节点创建入口（任意层级）
+    POST   /v1/goals/{id}/decompose  [同上] 手动触发分解（async_jobs 异步）
+    POST   /v1/goals/{id}/candidates/{cid}/accept  [同上] 采纳分解候选
+    POST   /v1/goals/{id}/candidates/{cid}/reject  [同上] 忽略分解候选
+    POST   /v1/goals/{id}/focus_pin  [同上] 手动 pin/unpin 现阶段焦点
     POST   /v1/goals/{goal_id}/feedback  持久化提意见（合入 description，双向同步 cron）
     GET    /v1/goals/{goal_id}/cycle_diagnostics  [goal_cron_cycle_diagnostics_
                                        and_interactive_tuning_plan.md Stage 1]
@@ -5320,6 +5327,157 @@ async def list_goals(request: Request):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _serialize_tree(tree: Optional[dict]) -> Optional[dict]:
+    """[goal_tree_system_plan.md §4.5/阶段四] `GoalBacklog.get_tree()` 返回的
+    是 `{"node": GoalNode, "children": [...]}`（`node` 是对象不是 dict），
+    这里递归转成纯 JSON 可序列化结构，供看板树形视图渲染。"""
+    if tree is None:
+        return None
+    return {
+        "node": tree["node"].to_dict(),
+        "children": [_serialize_tree(c) for c in tree["children"]],
+    }
+
+
+@router.get("/goals/tree")
+async def get_goal_tree(request: Request, root_id: Optional[str] = Query(default=None)):
+    """GET /v1/goals/tree?root_id=... — [goal_tree_system_plan.md §4.5/阶段四]
+    返回以 `root_id`（不传则用全局根节点）为起点的完整子树（含
+    `decompose_candidates`/`current_focus_ids`），供看板"🌳 目标树"子页渲染。
+    没有全局根节点（尚未创建）时返回 `{"tree": None}`，不是错误。
+    """
+    backlog = _goal_backlog_only(request)
+    try:
+        tree = backlog.get_tree(root_id)
+        return {"tree": _serialize_tree(tree)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/goals/nodes")
+async def add_goal_tree_node(request: Request):
+    """POST /v1/goals/nodes — [goal_tree_system_plan.md §4.5] 通用节点创建
+    入口，对应 `GoalBacklog.add_node()`，支持任意层级（ultimate/domain/
+    stage/goal/objective）。Body: {"level", "title", "parent_id"?,
+    "description"?, "priority"?, "tags"?}。层级校验失败（如父子顺序倒挂、
+    重复创建根节点）返回 400。
+    """
+    backlog = _goal_backlog_only(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    level = (body.get("level") or "").strip()
+    title = (body.get("title") or "").strip()
+    if not level or not title:
+        raise HTTPException(status_code=400, detail="level 和 title 均为必填")
+    try:
+        node = backlog.add_node(
+            level, title,
+            parent_id=body.get("parent_id"),
+            description=body.get("description", ""),
+            priority=int(body.get("priority") or 0),
+            tags=body.get("tags"),
+        )
+        return {"node": node.to_dict()}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/goals/{node_id}/decompose")
+async def decompose_goal_node(node_id: str, request: Request):
+    """POST /v1/goals/{node_id}/decompose — [goal_tree_system_plan.md
+    §4.2/§4.5] 手动触发一次针对该节点的自动分解，生成候选并落盘到
+    `decompose_candidates`。Body: {"force": bool?}（跳过节奏治理）。
+
+    分解调用 `LLMHelper.ask()`，耗时不可控，走 async_jobs 异步任务机制
+    （与 execution_spec/generate 等既有 LLM 端点同一套模式）：立即返回
+    `{"job_id", "key"}`，前端轮询 `GET /v1/async_jobs/{job_id}`，`result`
+    是 `{"candidates": [...]}`。
+    """
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"节点 '{node_id}' 不存在")
+    try:
+        body = await request.json() if await request.body() else {}
+    except Exception:
+        body = {}
+    force = bool(body.get("force"))
+    paths = _spec_paths(request)
+
+    def _do_decompose() -> dict:
+        from mini_agent.perception.goal_tree_decomposer import GoalTreeDecomposer
+        decomposer = GoalTreeDecomposer(paths, backlog)
+        candidates = decomposer.decompose(node_id, force=force)
+        return {"candidates": candidates}
+
+    key = f"goal_tree_decompose:{node_id}"
+    job_id = _async_jobs(request).start(_do_decompose, key=key, meta={"node_id": node_id})
+    return {"job_id": job_id, "key": key}
+
+
+@router.post("/goals/{node_id}/candidates/{candidate_id}/accept")
+async def accept_goal_tree_candidate(node_id: str, candidate_id: str, request: Request):
+    """POST /v1/goals/{node_id}/candidates/{candidate_id}/accept —
+    [goal_tree_system_plan.md §4.4/§4.5] 采纳一个待确认的分解候选，创建
+    真正的子节点。Body 可选 `{"title"?, "description"?, "level"?}`
+    对应看板"✏️ 编辑后采纳"——传了就覆盖候选原有内容。
+    """
+    backlog = _goal_backlog_only(request)
+    try:
+        body = await request.json() if await request.body() else {}
+    except Exception:
+        body = {}
+    overrides = {k: v for k, v in body.items() if k in ("title", "description", "level") and v}
+    new_node = backlog.accept_candidate(node_id, candidate_id, overrides=overrides or None)
+    if new_node is None:
+        raise HTTPException(status_code=404, detail="候选或节点不存在，或层级校验未通过")
+    return {"node": new_node.to_dict()}
+
+
+@router.post("/goals/{node_id}/candidates/{candidate_id}/reject")
+async def reject_goal_tree_candidate(node_id: str, candidate_id: str, request: Request):
+    """POST /v1/goals/{node_id}/candidates/{candidate_id}/reject —
+    [goal_tree_system_plan.md §4.4/§4.5] 忽略一个待确认候选；复用
+    `GoalTreeDecomposer.reject_candidate()`（移除 + 记 30 天去重），跟
+    CLI `/agent goals candidates <id> reject` 同一条路径，不是基础版
+    `GoalBacklog.reject_candidate()`。
+    """
+    backlog = _goal_backlog_only(request)
+    paths = _spec_paths(request)
+    from mini_agent.perception.goal_tree_decomposer import GoalTreeDecomposer
+    decomposer = GoalTreeDecomposer(paths, backlog)
+    ok = decomposer.reject_candidate(node_id, candidate_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="候选或节点不存在")
+    return {"ok": True}
+
+
+@router.post("/goals/{node_id}/focus_pin")
+async def set_goal_tree_focus_pin(node_id: str, request: Request):
+    """POST /v1/goals/{node_id}/focus_pin — [goal_tree_system_plan.md
+    §4.3/§4.5] 手动 pin/unpin 某个直接子节点为"现阶段焦点"，立即重算该
+    节点的 `current_focus_ids`（不用等下一次巡检）。
+    Body: {"child_id": str, "pinned": bool}。
+    """
+    backlog = _goal_backlog_only(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    child_id = body.get("child_id")
+    pinned = bool(body.get("pinned"))
+    if not child_id:
+        raise HTTPException(status_code=400, detail="child_id 不能为空")
+    ok = backlog.set_focus_pin(node_id, child_id, pinned)
+    if not ok:
+        raise HTTPException(status_code=404, detail="节点不存在，或 child_id 不是其直接子节点")
+    return {"node": backlog.get(node_id).to_dict()}
 
 
 @router.get("/directions")

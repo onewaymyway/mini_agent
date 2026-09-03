@@ -259,6 +259,31 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
 
 对接 Stage 9 自主 daemon 的 `GoalBacklog` 与 `CronScheduler`：
 
+- **🌳 目标树子页**（`next_doc/goal_tree_system_plan.md` 阶段四）：Tab
+  顶部有一个"📋 列表/看板视图" / "🌳 目标树"视图切换单选框（默认列表/看板
+  视图，不影响原有使用习惯）。切到"🌳 目标树"后：
+  - 从全局唯一根节点（`level=ultimate`）开始，递归展示完整的
+    `ultimate → domain → stage → goal → objective` 层级，每个节点标题前
+    带 level 图标（🌍/🧭/📅/🎯/📌）+ 状态标签，尚未创建根节点时提供
+    创建表单。
+  - 每个节点下方"⚙️ 管理"折叠区：编辑标题/描述/优先级、新建子节点
+    （选层级+标题+描述）；`ultimate`/`domain`/`stage` 三层非叶子节点
+    额外提供"🪄 帮我拆解此节点"按钮（手动触发 `GoalTreeDecomposer`，
+    走 `POST /v1/goals/{id}/decompose` 异步任务轮询，跟执行规范生成同
+    一套 `async_job_ui.start_async_job`/`run_async_job` 模式，不会
+    卡住页面）、以及对直接子节点的"📌 pin/取消 pin"现阶段焦点按钮。
+  - 待确认的分解候选（`decompose_candidates`）以虚线卡片形式挂在对应
+    父节点下方，提供"✅ 采纳"/"✖️ 忽略"/"✏️ 编辑后采纳"三个操作。
+  - 当前处于父节点 `current_focus_ids` 里的子节点，渲染前会有一行
+    "⭐ 以下为当前焦点"提示。
+  - 改 `parent_id`（重新挂载到别的父节点下）本阶段暂未提供 UI 入口
+    （方案 §4.4 里"下拉选择新父节点"这项留待后续需要时再补，目前可以
+    通过 CLI `/agent goals` 或直接编辑 `goals.json` 完成）。
+  - 对应新增 REST 端点：`GET /v1/goals/tree`、`POST /v1/goals/nodes`、
+    `POST /v1/goals/{id}/decompose`、
+    `POST /v1/goals/{id}/candidates/{cid}/accept|reject`、
+    `POST /v1/goals/{id}/focus_pin`，详见
+    [HTTP API 指南](http-api-guide.md)。
 - **📈 完成率趋势**（`GET /v1/objectives/completion_trend`，
   `next_doc/kanban_perception_gaps_improvement_plan.md` 方向 D.1）：折叠
   区块，展开才拉取。展示每日完成/失败 Objective 数的折线图，以及最近

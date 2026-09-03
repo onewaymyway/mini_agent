@@ -4410,8 +4410,216 @@ def _render_goal_direction_overview(client: "AgentClient", goals: list, directio
                 st.rerun()
 
 
+# ── 目标树（goal_tree_system_plan.md 阶段四）──────────────────────────────
+# level 图标，跟方案 §4.4 定义一致。
+_GOAL_TREE_LEVEL_ICON = {
+    "ultimate": "🌍", "domain": "🧭", "stage": "📅", "goal": "🎯", "objective": "📌",
+}
+_GOAL_TREE_NONLEAF_LEVELS = ("ultimate", "domain", "stage")
+_GOAL_TREE_LEVEL_ORDER = ["ultimate", "domain", "stage", "goal", "objective"]
+_GOAL_TREE_STATUS_LABEL = {
+    "active": "🟢 进行中", "paused": "⏸️ 暂停", "completed": "✅ 已完成",
+    "abandoned": "🗑️ 已放弃", "draft": "📝 待完善",
+}
+
+
+def _goal_tree_flatten_titles(tree_node: dict, out: dict) -> None:
+    """把树递归展开成 {id: title} 映射，供\"改父节点\"下拉框使用。"""
+    node = tree_node.get("node") or {}
+    if node.get("id"):
+        out[node["id"]] = node.get("title", "")
+    for child in tree_node.get("children") or []:
+        _goal_tree_flatten_titles(child, out)
+
+
+def _render_goal_tree_candidates(client: AgentClient, node_id: str, candidates: list) -> None:
+    """[goal_tree_system_plan.md §4.4] 待确认候选：✅ 采纳 / ✖️ 忽略 /
+    ✏️ 编辑后采纳，三个按钮，以虚线样式挂在父节点下方。"""
+    for cand in candidates:
+        cid = cand.get("id")
+        with st.container(border=True):
+            st.markdown(
+                f"*🕓 候选（待确认）：{_GOAL_TREE_LEVEL_ICON.get(cand.get('level'), '❓')} "
+                f"{cand.get('title', '')}*"
+            )
+            if cand.get("description"):
+                st.caption(cand["description"])
+            if cand.get("reason"):
+                st.caption(f"生成理由：{cand['reason']}")
+            edit_key = f"_gt_cand_edit_{node_id}_{cid}"
+            c1, c2, c3 = st.columns(3)
+            if c1.button("✅ 采纳", key=f"_gt_cand_accept_{node_id}_{cid}"):
+                res = client.accept_goal_tree_candidate(node_id, cid)
+                if isinstance(res, dict) and res.get("_error"):
+                    st.error(f"采纳失败：{res['_error']}")
+                else:
+                    st.rerun()
+            if c2.button("✖️ 忽略", key=f"_gt_cand_reject_{node_id}_{cid}"):
+                res = client.reject_goal_tree_candidate(node_id, cid)
+                if isinstance(res, dict) and res.get("_error"):
+                    st.error(f"忽略失败：{res['_error']}")
+                else:
+                    st.rerun()
+            if c3.button("✏️ 编辑后采纳", key=f"_gt_cand_editbtn_{node_id}_{cid}"):
+                st.session_state[edit_key] = True
+                st.rerun()
+            if st.session_state.get(edit_key):
+                with st.form(f"_gt_cand_editform_{node_id}_{cid}"):
+                    new_title = st.text_input("标题", value=cand.get("title", ""))
+                    new_desc = st.text_area("描述", value=cand.get("description", ""), height=60)
+                    if st.form_submit_button("确认采纳"):
+                        res = client.accept_goal_tree_candidate(
+                            node_id, cid, title=new_title.strip(), description=new_desc.strip(),
+                        )
+                        st.session_state.pop(edit_key, None)
+                        if isinstance(res, dict) and res.get("_error"):
+                            st.error(f"采纳失败：{res['_error']}")
+                        else:
+                            st.rerun()
+
+
+def _render_goal_tree_node(client: AgentClient, tree_node: dict, id_to_title: dict, depth: int = 0) -> None:
+    """[goal_tree_system_plan.md §4.4] 递归渲染树形结构。"""
+    node = tree_node.get("node") or {}
+    node_id = node.get("id")
+    level = node.get("level", "")
+    icon = _GOAL_TREE_LEVEL_ICON.get(level, "❓")
+    status_label = _GOAL_TREE_STATUS_LABEL.get(node.get("status", ""), node.get("status", ""))
+    indent = "&nbsp;&nbsp;&nbsp;&nbsp;" * depth
+    st.markdown(
+        f"{indent}{icon} **{node.get('title', '（无标题）')}** &nbsp;`{status_label}`",
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("⚙️ 管理", expanded=False):
+        st.caption(f"id: `{node_id}`　level: `{level}`")
+        if node.get("description"):
+            st.caption(node["description"])
+
+        with st.form(f"_gt_edit_{node_id}"):
+            new_title = st.text_input("标题", value=node.get("title", ""))
+            new_desc = st.text_area("描述", value=node.get("description", ""), height=60)
+            new_priority = st.slider("优先级", 0, 100, int(node.get("priority", 0) or 0))
+            if st.form_submit_button("保存修改"):
+                res = client.update_goal(
+                    node_id, title=new_title.strip(), description=new_desc.strip(), priority=new_priority,
+                )
+                if isinstance(res, dict) and res.get("_error"):
+                    st.error(f"保存失败：{res['_error']}")
+                else:
+                    st.rerun()
+
+        if level in _GOAL_TREE_NONLEAF_LEVELS:
+            # 手动触发分解，走 async_jobs 轮询（涉及 LLM 调用）。
+            async_key = f"goal_tree_decompose:{node_id}"
+            if st.button("🪄 帮我拆解此节点", key=f"_gt_decompose_btn_{node_id}"):
+                if start_async_job(client, async_key, lambda: client.decompose_goal_node(node_id, force=True)):
+                    st.rerun()
+            result = run_async_job(client, async_key, label="正在生成分解候选")
+            if result is not None:
+                if "_error" in result:
+                    st.error(f"分解失败：{result['_error']}")
+                else:
+                    n = len(result.get("candidates") or [])
+                    st.success(f"生成了 {n} 条候选" if n else "本次没有生成新候选（可能已有未处理候选，或节奏治理拦截）")
+                    st.rerun()
+
+        # 新建子节点。
+        with st.form(f"_gt_addchild_{node_id}"):
+            st.caption("➕ 新建子节点")
+            try:
+                default_level_idx = min(
+                    _GOAL_TREE_LEVEL_ORDER.index(level) + 1, len(_GOAL_TREE_LEVEL_ORDER) - 1,
+                )
+            except ValueError:
+                default_level_idx = 0
+            child_level = st.selectbox(
+                "层级", _GOAL_TREE_LEVEL_ORDER, index=default_level_idx, key=f"_gt_addchild_level_{node_id}",
+            )
+            child_title = st.text_input("标题", key=f"_gt_addchild_title_{node_id}")
+            child_desc = st.text_area("描述", height=50, key=f"_gt_addchild_desc_{node_id}")
+            if st.form_submit_button("创建子节点"):
+                if not child_title.strip():
+                    st.error("标题不能为空")
+                else:
+                    res = client.add_goal_tree_node(
+                        child_level, child_title.strip(), parent_id=node_id, description=child_desc.strip(),
+                    )
+                    if isinstance(res, dict) and res.get("_error"):
+                        st.error(f"创建失败：{res['_error']}")
+                    else:
+                        st.rerun()
+
+        # 现阶段焦点 pin/unpin（对直接子节点操作，只在非叶子节点展示）。
+        children = tree_node.get("children") or []
+        if level in _GOAL_TREE_NONLEAF_LEVELS and children:
+            st.caption("📌 现阶段焦点（pin 后持续生效，直到取消）")
+            focus_ids = set(node.get("current_focus_ids") or [])
+            pinned_ids = set(node.get("focus_pinned_ids") or [])
+            for child in children:
+                c_node = child.get("node") or {}
+                c_id = c_node.get("id")
+                is_pinned = c_id in pinned_ids
+                is_focus = c_id in focus_ids
+                label = f"{'📌 取消 pin' if is_pinned else '📌 pin'}：{c_node.get('title', '')}"
+                if is_focus and not is_pinned:
+                    label += "（当前焦点）"
+                if st.button(label, key=f"_gt_pin_{node_id}_{c_id}"):
+                    res = client.set_goal_tree_focus_pin(node_id, c_id, not is_pinned)
+                    if isinstance(res, dict) and res.get("_error"):
+                        st.error(f"操作失败：{res['_error']}")
+                    else:
+                        st.rerun()
+
+    candidates = node.get("decompose_candidates") or []
+    if candidates:
+        _render_goal_tree_candidates(client, node_id, candidates)
+
+    focus_ids = set(node.get("current_focus_ids") or [])
+    for child in tree_node.get("children") or []:
+        c_id = (child.get("node") or {}).get("id")
+        if c_id in focus_ids:
+            st.markdown(f"{indent}&nbsp;&nbsp;&nbsp;&nbsp;⭐ *以下为当前焦点*", unsafe_allow_html=True)
+        _render_goal_tree_node(client, child, id_to_title, depth=depth + 1)
+
+
+def _render_goal_tree_view(client: AgentClient) -> None:
+    """[goal_tree_system_plan.md §4.4/阶段四] Streamlit"🌳 目标树"子页：
+    从根节点开始的完整层级 + 候选采纳/忽略 + 手动管理（新建/编辑/pin），
+    与既有列表/看板视图并存（该视图专注"人生目标现状总览"，列表视图仍是
+    "看所有 Objective 执行状态"场景的首选）。"""
+    resp = client.goal_tree() or {}
+    if "_error" in resp:
+        st.warning(f"目标树数据获取失败：{resp['_error']}")
+        return
+    tree = resp.get("tree")
+    if tree is None:
+        st.info("还没有全局根节点（人生目标总览）。")
+        with st.form("_gt_create_root"):
+            root_title = st.text_input("根节点标题", value="我的人生目标")
+            root_desc = st.text_area("描述（可选）", height=60)
+            if st.form_submit_button("创建根节点"):
+                res = client.add_goal_tree_node("ultimate", root_title.strip() or "我的人生目标", description=root_desc.strip())
+                if isinstance(res, dict) and res.get("_error"):
+                    st.error(f"创建失败：{res['_error']}")
+                else:
+                    st.rerun()
+        return
+
+    id_to_title: dict = {}
+    _goal_tree_flatten_titles(tree, id_to_title)
+    _render_goal_tree_node(client, tree, id_to_title, depth=0)
+
+
 def render_kanban_tab(client: AgentClient):
     st.markdown("#### 📌 目标看板 (Goal Backlog)")
+
+    _goal_view_mode = st.radio(
+        "视图", ["📋 列表/看板视图", "🌳 目标树"], horizontal=True, key="_goal_view_mode_radio",
+    )
+    if _goal_view_mode == "🌳 目标树":
+        _render_goal_tree_view(client)
+        return
 
     # [看板"一键删除所有目标"功能] 破坏性最强的批量操作，单独放在标题
     # 正下方、独立折叠区里（默认收起，不占视线），二次确认门槛比单个

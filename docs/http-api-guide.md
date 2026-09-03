@@ -808,6 +808,54 @@ DELETE /v1/goals
 }
 ```
 
+### /v1/goals/tree — 目标树 REST API（goal_tree_system_plan.md 阶段四）
+
+```
+GET  /v1/goals/tree?root_id=...          获取完整子树（不传 root_id 用全局根节点）
+POST /v1/goals/nodes                      通用节点创建（任意层级）
+POST /v1/goals/{node_id}/decompose        手动触发分解（async_jobs 异步）
+POST /v1/goals/{node_id}/candidates/{candidate_id}/accept   采纳分解候选
+POST /v1/goals/{node_id}/candidates/{candidate_id}/reject   忽略分解候选
+POST /v1/goals/{node_id}/focus_pin        手动 pin/unpin 现阶段焦点
+```
+
+`GET /v1/goals/tree` 响应结构是 `{"node": GoalNode, "children": [同结构, ...]}`
+的递归嵌套（`tree` 字段可能为 `null`，表示还没有全局根节点）：
+
+```json
+{
+  "tree": {
+    "node": {"id": "ultimate_xxx", "level": "ultimate", "title": "我的人生目标",
+              "current_focus_ids": ["domain_yyy"], "focus_pinned_ids": [],
+              "decompose_candidates": []},
+    "children": [
+      {"node": {"id": "domain_yyy", "level": "domain", "title": "事业", ...},
+       "children": [...]}
+    ]
+  }
+}
+```
+
+`POST /v1/goals/nodes` Body：`{"level", "title", "parent_id"?, "description"?,
+"priority"?, "tags"?}`，对应 `GoalBacklog.add_node()`；父子层级顺序倒挂、或
+重复创建第二个 `level="ultimate"` 根节点时返回 400。
+
+`POST /v1/goals/{node_id}/decompose` Body：`{"force": bool?}`（`force=true`
+跳过节奏治理直接跑）。涉及 `LLMHelper.ask()` 调用，跟执行规范生成同一套
+async_jobs 异步任务模式：立即返回 `{"job_id", "key"}`，轮询
+`GET /v1/async_jobs/{job_id}` 直到 `status` 变成 `done`/`error`，`result`
+是 `{"candidates": [...]}`（节奏治理拦截或解析不出候选时为空列表，不算
+失败）。
+
+`POST /v1/goals/{node_id}/candidates/{candidate_id}/accept` Body 可选
+`{"title"?, "description"?, "level"?}`——传了就覆盖候选原有内容（"编辑后
+采纳"），成功返回 `{"node": <新创建的节点>}`。
+
+`POST /v1/goals/{node_id}/focus_pin` Body：`{"child_id": str, "pinned": bool}`，
+`child_id` 必须是 `node_id` 的直接子节点，否则返回 404；成功后立即返回
+重算后的父节点（`{"node": <父节点>}`），不用等下一次
+`sys:goal_tree_focus_recompute` 巡检。
+
 ### /v1/goals/{goal_id}/execution_spec — Goal 执行规范 REST API
 
 把一个（可能是周期性执行的）Goal 具体化成结构化执行规范：每一轮该产出

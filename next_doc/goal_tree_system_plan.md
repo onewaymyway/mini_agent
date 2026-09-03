@@ -9,7 +9,9 @@
 > `next_doc/goal_tree_system_phase2_implementation_record.md`。阶段三
 > （现阶段焦点）已完成，见
 > `next_doc/goal_tree_system_phase3_implementation_record.md`。阶段四
-> （看板树形 UI）尚未开始。
+> （看板树形 UI，现阶段焦点）已完成，见
+> `next_doc/goal_tree_system_phase4_implementation_record.md`——至此本文档
+> 五、分阶段实施规划的四个阶段全部完成。
 
 ## 一、背景
 

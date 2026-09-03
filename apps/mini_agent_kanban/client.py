@@ -579,6 +579,50 @@ class AgentClient:
         Goal 逐个执行与 delete_goal() 相同的级联删除，一次性清空看板。"""
         return self._delete("/goals")
 
+    # ── 看板：目标树（goal_tree_system_plan.md 阶段四）────────────────────
+    def goal_tree(self, root_id: str | None = None):
+        """GET /v1/goals/tree — 完整子树（含 decompose_candidates/
+        current_focus_ids），供"🌳 目标树"子页渲染。"""
+        params = {"root_id": root_id} if root_id else None
+        return self._get("/goals/tree", params=params)
+
+    def add_goal_tree_node(self, level: str, title: str, parent_id: str | None = None,
+                            description: str = "", priority: int = 0):
+        """POST /v1/goals/nodes — 通用节点创建入口，支持任意层级
+        （ultimate/domain/stage/goal/objective）。"""
+        return self._post("/goals/nodes", {
+            "level": level, "title": title, "parent_id": parent_id,
+            "description": description, "priority": priority,
+        })
+
+    def decompose_goal_node(self, node_id: str, force: bool = False):
+        """POST /v1/goals/{id}/decompose — 手动触发分解，走 async_jobs
+        异步任务（涉及 LLM 调用），返回 {"job_id", "key"}，配合
+        async_job_ui.start_async_job()/run_async_job() 使用。"""
+        return self._post(f"/goals/{node_id}/decompose", {"force": force})
+
+    def accept_goal_tree_candidate(self, node_id: str, candidate_id: str,
+                                    title: str | None = None, description: str | None = None,
+                                    level: str | None = None):
+        """POST /v1/goals/{id}/candidates/{cid}/accept — 采纳候选；传
+        title/description/level 对应"✏️ 编辑后采纳"，覆盖候选原有内容。"""
+        body = {}
+        if title:
+            body["title"] = title
+        if description:
+            body["description"] = description
+        if level:
+            body["level"] = level
+        return self._post(f"/goals/{node_id}/candidates/{candidate_id}/accept", body)
+
+    def reject_goal_tree_candidate(self, node_id: str, candidate_id: str):
+        """POST /v1/goals/{id}/candidates/{cid}/reject — 忽略候选。"""
+        return self._post(f"/goals/{node_id}/candidates/{candidate_id}/reject")
+
+    def set_goal_tree_focus_pin(self, node_id: str, child_id: str, pinned: bool):
+        """POST /v1/goals/{id}/focus_pin — 手动 pin/unpin 现阶段焦点。"""
+        return self._post(f"/goals/{node_id}/focus_pin", {"child_id": child_id, "pinned": pinned})
+
     # ── 看板：长期方向分组（personal_researcher_and_coach_capability_gap_
     # plan.md C1）────────────────────────────────────────────────────────
     def directions(self):
