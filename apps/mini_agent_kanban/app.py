@@ -10282,10 +10282,38 @@ _WIKI_STATE_LABEL = {"fresh": "🟢 fresh", "stale": "🟡 stale", "superseded":
 
 
 def _render_wiki_stats_section(client: AgentClient) -> None:
+    # [wiki_kanban_tab_async_plan.md] compute_stats() 是全量扫描 wiki/
+    # 目录 + 逐篇 parse_page，页面数一大就可能到几十秒，改用
+    # start_async_job/run_async_job 这套通用异步轮询，避免固定超时/堵住
+    # 界面。跟别处"点按钮才提交"不同，这个面板一进来就要有数据，所以第一次
+    # 渲染、还没有缓存结果时自动触发一次；之后用"🔄 重新统计"按钮手动刷新。
     st.markdown("##### 📊 内容分布统计")
-    stats = client.wiki_stats() or {}
-    if stats.get("_error"):
-        st.error(f"获取 wiki 统计失败：{stats['_error']}")
+
+    key = "wiki_stats"
+    cache_key = "_wiki_stats_cache"
+    auto_started_key = "_wiki_stats_auto_started"
+
+    if st.button("🔄 重新统计", key="wiki_stats_refresh_btn"):
+        st.session_state.pop(cache_key, None)
+        if start_async_job(client, key, lambda: client.wiki_stats()):
+            st.rerun()
+
+    result = run_async_job(client, key, label="正在统计 wiki 内容分布（全量扫描，页面较多时可能需要几十秒）")
+    if result is not None:
+        if "_error" in result:
+            st.error(f"获取 wiki 统计失败：{result['_error']}")
+        else:
+            st.session_state[cache_key] = result
+
+    stats = st.session_state.get(cache_key)
+    if stats is None:
+        # 还没有任何缓存结果：首次进入这个面板时自动提交一次，不用等用户
+        # 点"重新统计"。用 auto_started_key 去重，避免每次 rerun 重复提交。
+        if not st.session_state.get(auto_started_key) and st.session_state.get(f"_async_job_id::{key}") is None:
+            st.session_state[auto_started_key] = True
+            if start_async_job(client, key, lambda: client.wiki_stats()):
+                st.rerun()
+        st.caption("正在加载统计数据…")
         return
 
     st.metric("页面总数", stats.get("total_pages", 0))
@@ -10333,11 +10361,35 @@ def _render_wiki_stats_section(client: AgentClient) -> None:
 
 
 def _render_wiki_promotion_section(client: AgentClient) -> None:
+    # [wiki_kanban_tab_async_plan.md] 跟内容统计面板同一套异步轮询模式；
+    # evaluate_promotion_readiness() 本身通常比全量扫描快，但为了跟其它
+    # wiki 面板行为一致（+ 万一历史快照文件变多后也变慢），一并改成异步。
     st.markdown("##### 🎓 转正评估（wiki 是否已具备替代主索引的条件）")
     st.caption("三项标准同时满足才是 `overall_ready`；本面板只读展示，不会触发任何切换动作。")
-    readiness = client.wiki_promotion() or {}
-    if readiness.get("_error"):
-        st.error(f"获取转正评估失败：{readiness['_error']}")
+
+    key = "wiki_promotion"
+    cache_key = "_wiki_promotion_cache"
+    auto_started_key = "_wiki_promotion_auto_started"
+
+    if st.button("🔄 重新评估", key="wiki_promotion_refresh_btn"):
+        st.session_state.pop(cache_key, None)
+        if start_async_job(client, key, lambda: client.wiki_promotion()):
+            st.rerun()
+
+    result = run_async_job(client, key, label="正在评估转正标准达成情况")
+    if result is not None:
+        if "_error" in result:
+            st.error(f"获取转正评估失败：{result['_error']}")
+        else:
+            st.session_state[cache_key] = result
+
+    readiness = st.session_state.get(cache_key)
+    if readiness is None:
+        if not st.session_state.get(auto_started_key) and st.session_state.get(f"_async_job_id::{key}") is None:
+            st.session_state[auto_started_key] = True
+            if start_async_job(client, key, lambda: client.wiki_promotion()):
+                st.rerun()
+        st.caption("正在加载评估数据…")
         return
 
     overall = readiness.get("overall_ready")
@@ -10421,26 +10473,37 @@ def _render_wiki_quarantine_section(client: AgentClient) -> None:
     c2.metric("已转人工（needs_human）", data.get("needs_human_count", 0))
     c3.metric("历史已修复（repaired）", data.get("repaired_count", 0))
 
+    # [wiki_kanban_tab_async_plan.md] 这两个操作原来是同步 POST + 固定
+    # 超时（60s），隔离区记录一多容易被截断失败；改用 start_async_job/
+    # run_async_job，任务在后台允许跑到底，界面上会一直显示"⏳ 正在…"。
     ac1, ac2 = st.columns(2)
     with ac1:
         if st.button("🔄 立即扫描 + 修复", key="wiki_qz_repair_btn",
                       help="对应 /wiki quarantine repair：全量扫描 + 对 pending 记录尝试修复"):
-            report = client.wiki_quarantine_repair()
-            if report and "_error" not in report:
+            if start_async_job(client, "wiki_quarantine_repair", lambda: client.wiki_quarantine_repair()):
+                st.rerun()
+        report = run_async_job(client, "wiki_quarantine_repair", label="正在全量扫描 + 尝试修复")
+        if report is not None:
+            if "_error" in report:
+                st.error(report["_error"])
+            else:
                 st.success(
                     f"扫描 {report.get('scanned', 0)} 篇，尝试修复 {report.get('repair_attempted', 0)} 篇，"
                     f"成功 {report.get('repaired', 0)} 篇，仍失败 {report.get('still_failing', 0)} 篇，"
                     f"转人工 {report.get('needs_human', 0)} 篇"
                 )
                 st.rerun()
-            else:
-                st.error((report or {}).get("_error", "触发失败"))
     with ac2:
         if st.button("♻️ 重试已转人工记录", key="wiki_qz_retry_btn",
                       help="对应 /wiki quarantine retry：适合刚上线新修复策略后，把之前救不回来的旧记录重新捞一遍",
                       disabled=data.get("needs_human_count", 0) == 0):
-            res = client.wiki_quarantine_retry()
-            if res and "_error" not in res:
+            if start_async_job(client, "wiki_quarantine_retry", lambda: client.wiki_quarantine_retry()):
+                st.rerun()
+        res = run_async_job(client, "wiki_quarantine_retry", label="正在重置并重试已转人工记录")
+        if res is not None:
+            if "_error" in res:
+                st.error(res["_error"])
+            else:
                 reset_count = res.get("reset_count", 0)
                 if reset_count == 0:
                     st.info("没有 needs_human 记录需要重置。")
@@ -10451,8 +10514,6 @@ def _render_wiki_quarantine_section(client: AgentClient) -> None:
                         f"仍失败 {report.get('still_failing', 0)} 篇，转人工 {report.get('needs_human', 0)} 篇"
                     )
                 st.rerun()
-            else:
-                st.error((res or {}).get("_error", "触发失败"))
 
     if data.get("pending"):
         with st.expander(f"待修复列表（{data.get('pending_count', 0)} 篇）"):

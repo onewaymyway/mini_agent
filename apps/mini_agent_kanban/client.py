@@ -400,16 +400,22 @@ class AgentClient:
         return self._get("/wiki/quarantine_status")
 
     # ── wiki 信息统计 + 隔离区管理（本轮新增）───────────────────────────────
+    # [wiki_kanban_tab_async_plan.md] wiki 标签页下面这几个操作原来是直接
+    # `_get()`/`_post()` 同步等结果，页面数/隔离区记录数变大后固定超时
+    # 早晚不够用（`compute_stats()` 全量扫描尤其明显）。改成跟其它 tab
+    # 一致的"提交异步任务 + `async_job_ui.run_async_job()` 轮询"：这里的
+    # 方法只负责提交，返回 `{"job_id", "key"}`，不再同步等结果。
     def wiki_stats(self):
-        """wiki 内容来源分布/知识生命周期状态/抽取批次充分性统计，对应
-        CLI `/wiki stats`。compute_stats() 是全量扫描 + parse_page，页面
-        数变大后默认 6s 超时不够用，这里单独放宽到 30s。"""
-        return self._get("/wiki/stats", timeout=30)
+        """提交一次 wiki 内容来源分布/知识生命周期状态/抽取批次充分性统计
+        任务，对应 CLI `/wiki stats`。返回 `{"job_id", "key"}`，交给
+        `async_job_ui.run_async_job()` 轮询拿最终结果。"""
+        return self._post("/wiki/stats")
 
     def wiki_promotion(self):
-        """wiki 转正为主索引的三项标准达成情况，对应 CLI `/wiki promotion`。
-        只读评估，不触发任何切换动作。"""
-        return self._get("/wiki/promotion")
+        """提交一次 wiki 转正为主索引的三项标准达成情况评估，对应 CLI
+        `/wiki promotion`。只读评估，不触发任何切换动作。返回
+        `{"job_id", "key"}`，交给 `async_job_ui.run_async_job()` 轮询。"""
+        return self._post("/wiki/promotion")
 
     def wiki_quarantine(self):
         """隔离区完整视图：pending/needs_human/repaired 全量记录详情，
@@ -417,14 +423,17 @@ class AgentClient:
         return self._get("/wiki/quarantine")
 
     def wiki_quarantine_repair(self):
-        """手动触发一轮"全量扫描 + 尝试修复"，对应 CLI
-        `/wiki quarantine repair`。"""
-        return self._post("/wiki/quarantine/repair", timeout=60)
+        """提交一轮"全量扫描 + 尝试修复"任务，对应 CLI
+        `/wiki quarantine repair`。返回 `{"job_id", "key"}`，交给
+        `async_job_ui.run_async_job()` 轮询——不再受固定超时限制。"""
+        return self._post("/wiki/quarantine/repair")
 
     def wiki_quarantine_retry(self):
-        """把 needs_human 记录重置为 pending 并立即重新尝试修复，对应 CLI
-        `/wiki quarantine retry`（救回"新增修复策略前已放弃"的旧记录）。"""
-        return self._post("/wiki/quarantine/retry", timeout=60)
+        """提交"把 needs_human 记录重置为 pending 并立即重新尝试修复"任务，
+        对应 CLI `/wiki quarantine retry`（救回"新增修复策略前已放弃"的旧
+        记录）。返回 `{"job_id", "key"}`，交给 `async_job_ui.run_async_job()`
+        轮询。"""
+        return self._post("/wiki/quarantine/retry")
 
     def wiki_quarantine_purge(
         self, statuses: list[str] | None = None,

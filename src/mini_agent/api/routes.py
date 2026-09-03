@@ -116,16 +116,27 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/objectives/completion_trend  [同上 方向 D.1] Objective 完成率
                                        每日趋势（快照挂在 /growth/scan 上记录）
     GET    /v1/wiki/quarantine_status  [同上 方向 E] wiki 隔离区积压
-    GET    /v1/wiki/stats            [本轮新增] wiki 内容分布/知识生命周期
-                                       状态统计，看板 wiki 页信息统计面板
-    GET    /v1/wiki/promotion        [本轮新增] wiki 转正三项标准达成情况
-    GET    /v1/wiki/quarantine       [本轮新增] 隔离区完整视图（pending/
-                                       needs_human/repaired 全量记录详情）
-    POST   /v1/wiki/quarantine/repair [本轮新增] 手动触发一轮扫描+修复
-    POST   /v1/wiki/quarantine/retry  [本轮新增] 重置 needs_human→pending
-                                       并立即重试（用新增修复策略救旧记录）
-    POST   /v1/wiki/quarantine/purge  [本轮新增] 删除"确定救不回来"的问题
-                                       页面，默认 dry_run 预览、需二次确认
+    POST   /v1/wiki/stats            [wiki_kanban_tab_async_plan.md 改造为
+                                       异步任务] 提交一次 wiki 内容分布/知识
+                                       生命周期状态统计，立即返回
+                                       {job_id, key}，轮询 /async_jobs/{id}
+                                       拿 compute_stats() 全量扫描结果
+    POST   /v1/wiki/promotion        [wiki_kanban_tab_async_plan.md 改造为
+                                       异步任务] 提交一次 wiki 转正三项标准
+                                       达成情况评估，立即返回 {job_id, key}，
+                                       轮询 /async_jobs/{id} 拿结果
+    GET    /v1/wiki/quarantine       隔离区完整视图（pending/needs_human/
+                                       repaired 全量记录详情，读文件，保持
+                                       同步）
+    POST   /v1/wiki/quarantine/repair [wiki_kanban_tab_async_plan.md 改造为
+                                       异步任务] 手动触发一轮扫描+修复，
+                                       立即返回 {job_id, key}，不再受
+                                       run_blocking 固定超时限制
+    POST   /v1/wiki/quarantine/retry  [同上] 重置 needs_human→pending 并
+                                       立即重试，同样改为异步任务
+    POST   /v1/wiki/quarantine/purge  删除"确定救不回来"的问题页面，默认
+                                       dry_run 预览、需二次确认（命中记录数
+                                       通常有限，保持同步）
     GET    /v1/sentinel/summary      [同上 方向 A] 哨兵聚合面板
     GET    /v1/goal_mode/stuck_stats [goal_stuck_stats_and_llm_progress_judge_
                                        plan.md §1] Goal stuck 历史统计（只读）
@@ -1362,44 +1373,69 @@ async def get_wiki_quarantine_status(request: Request):
 # `wiki/quarantine_repair.py`），不重复实现任何判断逻辑，保证看板和 CLI
 # 看到的、触发的是同一件事。
 
-@router.get("/wiki/stats")
-async def get_wiki_stats(request: Request):
-    """GET /v1/wiki/stats — wiki 内容来源分布统计（P0）+ 知识生命周期状态
+@router.post("/wiki/stats")
+async def post_wiki_stats(request: Request):
+    """POST /v1/wiki/stats — wiki 内容来源分布统计（P0）+ 知识生命周期状态
     分布（O4）+ 抽取批次充分性指标（E2），复用 `/wiki stats` CLI 命令同一份
-    `compute_stats()`/`compute_extraction_stats()`，只读、无副作用。"""
+    `compute_stats()`/`compute_extraction_stats()`，只读、无副作用。
+
+    [wiki_kanban_tab_async_plan.md] 原来是 `GET`，但 handler 直接在
+    `async def` 里同步跑 `compute_stats()`（全量扫描 wiki/ 目录 + 逐篇
+    parse_page），不只是看板前端固定 6s 超时会不够用——这段时间会整个堵住
+    event loop，拖慢 daemon 对其它所有请求的响应。改成跟 `/growth/scan`
+    一样的通用异步任务机制：立即返回 `{job_id, key}`，真正的计算丢进
+    `asyncio.to_thread` 后台跑，前端轮询 `GET /v1/async_jobs/{job_id}`。
+    """
     _require_owner(request)
     paths = _get_paths_for_request(request)
-    try:
-        from mini_agent.wiki.stats import compute_stats, compute_extraction_stats
 
-        stats = compute_stats(paths).to_dict()
-        extraction = compute_extraction_stats(paths).to_dict()
-        total_pages = sum(stats.get("by_type", {}).values())
-        return {"total_pages": total_pages, **stats, "extraction": extraction}
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_wiki_stats')
-        return {
-            "total_pages": 0, "by_type": {}, "by_entity_type": {},
-            "by_source_kind": {}, "by_knowledge_state": {}, "extraction": {},
-        }
+    def _do_compute() -> dict:
+        try:
+            from mini_agent.wiki.stats import compute_stats, compute_extraction_stats
+
+            stats = compute_stats(paths).to_dict()
+            extraction = compute_extraction_stats(paths).to_dict()
+            total_pages = sum(stats.get("by_type", {}).values())
+            return {"total_pages": total_pages, **stats, "extraction": extraction}
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.post_wiki_stats')
+            return {
+                "total_pages": 0, "by_type": {}, "by_entity_type": {},
+                "by_source_kind": {}, "by_knowledge_state": {}, "extraction": {},
+            }
+
+    key = "wiki_stats"
+    job_id = _async_jobs(request).start(_do_compute, key=key)
+    return {"job_id": job_id, "key": key}
 
 
-@router.get("/wiki/promotion")
-async def get_wiki_promotion(request: Request):
-    """GET /v1/wiki/promotion — wiki 转正为主索引的三项标准（P4）当前达成
+@router.post("/wiki/promotion")
+async def post_wiki_promotion(request: Request):
+    """POST /v1/wiki/promotion — wiki 转正为主索引的三项标准（P4）当前达成
     情况，复用 `/wiki promotion` CLI 命令同一份 `evaluate_promotion_
-    readiness()`。只读聚合历史观测记录，不触发任何切换动作。"""
+    readiness()`。只读聚合历史观测记录，不触发任何切换动作。
+
+    [wiki_kanban_tab_async_plan.md] 同 `/wiki/stats`：原来是同步 `GET`，
+    改成异步任务提交，跟看板 wiki 页其它两个面板保持一致的"提交+轮询"
+    交互，不再依赖前端固定超时。
+    """
     _require_owner(request)
     paths = _get_paths_for_request(request)
-    try:
-        from mini_agent.wiki.promotion import evaluate_promotion_readiness
 
-        return evaluate_promotion_readiness(paths).to_dict()
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_wiki_promotion')
-        return {"overall_ready": False, "ratio": {}, "validation": {}, "search_ab": {}}
+    def _do_evaluate() -> dict:
+        try:
+            from mini_agent.wiki.promotion import evaluate_promotion_readiness
+
+            return evaluate_promotion_readiness(paths).to_dict()
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.post_wiki_promotion')
+            return {"overall_ready": False, "ratio": {}, "validation": {}, "search_ab": {}}
+
+    key = "wiki_promotion"
+    job_id = _async_jobs(request).start(_do_evaluate, key=key)
+    return {"job_id": job_id, "key": key}
 
 
 def _quarantine_record_to_dict(rec) -> dict:
@@ -1471,23 +1507,31 @@ async def post_wiki_quarantine_repair(request: Request):
     """POST /v1/wiki/quarantine/repair — 手动触发一轮"全量扫描 + 尝试修复"
     （对应 CLI `/wiki quarantine repair`），跟 `sys:wiki_quarantine_repair`
     cron job 是同一份逻辑（`run_quarantine_repair_cycle()`），用于看板上
-    "立即重新扫描"按钮，不想等定时任务。"""
+    "立即重新扫描"按钮，不想等定时任务。
+
+    [wiki_kanban_tab_async_plan.md] 原来用 `run_blocking(timeout=60.0)`
+    扔进线程池，但硬超时 60s——隔离区记录一多照样会被截断失败，跟
+    `async_jobs.py` 文档里点名批评的"固定超时早晚不够用"是同一个问题。
+    改用通用异步任务机制：立即返回 `{job_id, key}`，任务在后台允许跑到底。
+    """
     http_server = getattr(request.app.state, "http_server", None)
     if http_server is None:
         raise HTTPException(status_code=503, detail="HttpServer not available")
     _require_owner(request)
     paths = _get_paths_for_request(request)
 
-    from mini_agent.wiki.quarantine_repair import run_quarantine_repair_cycle
-
     self_agent = http_server.bridge.agent
     llm_helper = _wiki_llm_helper_for_agent(self_agent)
 
-    report = await run_blocking(
-        run_quarantine_repair_cycle, paths,
-        llm_helper=llm_helper, where="wiki_quarantine_repair", timeout=60.0,
-    )
-    return report.to_dict()
+    def _do_repair() -> dict:
+        from mini_agent.wiki.quarantine_repair import run_quarantine_repair_cycle
+
+        report = run_quarantine_repair_cycle(paths, llm_helper=llm_helper)
+        return report.to_dict()
+
+    key = "wiki_quarantine_repair"
+    job_id = _async_jobs(request).start(_do_repair, key=key)
+    return {"job_id": job_id, "key": key}
 
 
 @router.post("/wiki/quarantine/retry")
@@ -1496,30 +1540,37 @@ async def post_wiki_quarantine_retry(request: Request):
     `pending` 并立即重新触发一轮修复（对应 CLI `/wiki quarantine retry`）。
     用于"新增了修复策略（比如缺 id/type 反推），之前救不回来、长期积压在
     人工队列里的旧记录现在应该能修好了"这种场景——`repair`/cron 只处理
-    `pending` 状态的记录，不会自动重新捡回 `needs_human`，必须显式重置。"""
+    `pending` 状态的记录，不会自动重新捡回 `needs_human`，必须显式重置。
+
+    [wiki_kanban_tab_async_plan.md] 原来是"reset（30s run_blocking）+
+    repair（60s run_blocking）"串两段固定超时的同步调用，改成单个异步任务：
+    reset 本身很快，一起放进后台线程跑，避免"reset 段超时但 repair 段其实
+    该跑"这种半途而废的状态。`reset_count == 0` 时任务直接返回，不触发
+    repair。
+    """
     http_server = getattr(request.app.state, "http_server", None)
     if http_server is None:
         raise HTTPException(status_code=503, detail="HttpServer not available")
     _require_owner(request)
     paths = _get_paths_for_request(request)
 
-    from mini_agent.wiki.quarantine import STATUS_NEEDS_HUMAN, reset_to_pending
-    from mini_agent.wiki.quarantine_repair import run_quarantine_repair_cycle
-
-    reset_count = await run_blocking(
-        reset_to_pending, paths,
-        statuses={STATUS_NEEDS_HUMAN}, where="wiki_quarantine_reset", timeout=30.0,
-    )
-    if reset_count == 0:
-        return {"reset_count": 0, "report": None}
-
     self_agent = http_server.bridge.agent
     llm_helper = _wiki_llm_helper_for_agent(self_agent)
-    report = await run_blocking(
-        run_quarantine_repair_cycle, paths,
-        llm_helper=llm_helper, where="wiki_quarantine_repair", timeout=60.0,
-    )
-    return {"reset_count": reset_count, "report": report.to_dict()}
+
+    def _do_retry() -> dict:
+        from mini_agent.wiki.quarantine import STATUS_NEEDS_HUMAN, reset_to_pending
+        from mini_agent.wiki.quarantine_repair import run_quarantine_repair_cycle
+
+        reset_count = reset_to_pending(paths, statuses={STATUS_NEEDS_HUMAN})
+        if reset_count == 0:
+            return {"reset_count": 0, "report": None}
+
+        report = run_quarantine_repair_cycle(paths, llm_helper=llm_helper)
+        return {"reset_count": reset_count, "report": report.to_dict()}
+
+    key = "wiki_quarantine_retry"
+    job_id = _async_jobs(request).start(_do_retry, key=key)
+    return {"job_id": job_id, "key": key}
 
 
 from pydantic import BaseModel as _WikiBaseModel

@@ -806,6 +806,13 @@ YAML 语法损坏这类"没有确定改法"的问题被有意排除在自动修�
 
 *首次编写：2026-07（wiki 式知识库阶段一~四：md 页面存储 + 双写镜像 + 三段式检索 + 专题页生成 + `/wiki` 命令）*
 *更新：2026-07（提取层与组织层改进计划 O1-O4、E1-E3 全部完成：索引复用与信度分层、实体摘要反哺抽取、抽取与 compact 解耦、抽取任务拆分、多跳图扩展、topic 再巩固、统一知识生命周期状态机）*
+*更新：2026-09（看板 wiki 标签页改为异步任务：`GET /wiki/stats`、
+`GET /wiki/promotion` 改为 `POST` + 后台任务轮询，`POST /wiki/quarantine/
+repair|retry` 去掉固定超时改用同一套异步机制，避免页面数变大后
+`compute_stats()` 全量扫描堵住 daemon 事件循环/前端超时失败；详见
+`next_doc/wiki_kanban_tab_async_plan.md`。CLI `/wiki` 命令不受影响，仍是
+直接调用底层函数，不经过这几个 HTTP 端点）*
+
 *更新：2026-07（下一阶段改进：退轨评估 `wiki/decommission.py`、专题页退场标注、`consolidate()` 分步超时熔断、`entity_density` 独立触发信号、`/wiki gap-scan`/`fallback-cleanup` 新命令、daemon 新增 2 个内置 cron job；并补上此前遗漏的 `/wiki` 命令行 Tab 补全提示）*
 *更新：2026-08（外部知识反馈闭环计划 P1/P2/P5：候选队列过期巡检 `sys:candidate_queue_triage`、wiki 利用率审计 `sys:wiki_utility_audit`（统计层）、月度战略回顾 `sys:monthly_trend_retrospective`，见新增 §十三）*
 
