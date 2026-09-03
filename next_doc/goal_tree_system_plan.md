@@ -2,6 +2,10 @@
 
 > 本文档记录设计方案本身，供实施前确认；具体分阶段实施进度另见后续
 > `*_implementation_record.md`（每个阶段完成后补一份，不混在本文档里）。
+>
+> **实施进度**：阶段一（数据模型）已完成，见
+> `next_doc/goal_tree_system_phase1_implementation_record.md`。阶段二/
+> 三/四尚未开始。
 
 ## 一、背景
 

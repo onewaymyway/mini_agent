@@ -247,6 +247,27 @@ class GoalNode:
     # 落地前创建的旧 Goal），下游按"不追加风格提示"处理，不需要迁移。
     growth_pursuit_style: Optional[str] = None
 
+    # [next_doc/goal_tree_system_plan.md §4.1 阶段一] `level` 从"goal"/
+    # "objective" 两值开放为字符串，新增 "ultimate"/"domain"/"stage" 三个
+    # 纯结构层级（不进入完成态、不接入 GoalJudge/GoalRunner/cron 调度，见
+    # 该文档§三"执行语义只在树的下半段生效"）。以下三个字段仅这三层非叶子
+    # 节点使用：
+
+    # 当前应关注的直接子节点 id 列表，由 compute_current_focus()（规则计算，
+    # 见 §4.3）定期刷新，用户可通过 focus_pinned_ids 覆盖部分结果。空列表
+    # 表示"没有子节点，或子节点已全部进入终态"——意味着该节点该被停滞巡检
+    # 捕获，触发一次新的分解建议。
+    current_focus_ids: list[str] = field(default_factory=list)
+    # 用户手动 pin 的子节点 id，持续生效直到用户显式 unpin（不是一次性
+    # 标记）；计算 current_focus_ids 时优先并入这些 id，再从其余子节点里
+    # 按规则补足到 top-N。
+    focus_pinned_ids: list[str] = field(default_factory=list)
+    # GoalTreeDecomposer（阶段二实现）针对本节点生成、尚未被用户处理的分解
+    # 候选。每项：{"id", "title", "description", "level", "generated_at",
+    # "reason"}；这里的 "id" 是候选自己的临时 id，不是真实 GoalNode.id，
+    # accept 后才会用它创建真正的节点并从本列表移除。
+    decompose_candidates: list = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -282,6 +303,9 @@ class GoalNode:
             "user_output_dir": self.user_output_dir,
             "user_output_dir_suggested": self.user_output_dir_suggested,
             "direction_id": self.direction_id,
+            "current_focus_ids": self.current_focus_ids,
+            "focus_pinned_ids": self.focus_pinned_ids,
+            "decompose_candidates": self.decompose_candidates,
         }
 
     @staticmethod
@@ -323,6 +347,9 @@ class GoalNode:
             user_output_dir=d.get("user_output_dir"),
             user_output_dir_suggested=d.get("user_output_dir_suggested"),
             direction_id=d.get("direction_id"),
+            current_focus_ids=d.get("current_focus_ids", []),
+            focus_pinned_ids=d.get("focus_pinned_ids", []),
+            decompose_candidates=d.get("decompose_candidates", []),
         )
 
     @property
@@ -336,6 +363,66 @@ class GoalNode:
     @property
     def is_active(self) -> bool:
         return self.status == "active"
+
+    @property
+    def is_structural(self) -> bool:
+        """[goal_tree_system_plan.md §三] "ultimate"/"domain"/"stage" 三层是
+        纯结构+说明+聚合展示，不接入 GoalJudge、不会进入 completed 终态
+        判定、不会被 GoalRunner/cron 调度执行。"""
+        return self.level in _STRUCTURAL_LEVELS
+
+
+# [next_doc/goal_tree_system_plan.md §4.1] 允许的父子层级顺序（可跳级，
+# 校验规则见 validate_node_hierarchy()）。"goal"/"objective" 是原有的执行
+# 层，"ultimate"/"domain"/"stage" 是新增的三层纯结构节点。
+LEVEL_ORDER: tuple = ("ultimate", "domain", "stage", "goal", "objective")
+
+# 不接入 GoalJudge/GoalRunner/cron 调度、不进入 completed 终态判定的层级
+# （见方案文档§三"执行语义只在树的下半段生效"）。
+_STRUCTURAL_LEVELS = frozenset({"ultimate", "domain", "stage"})
+
+# 每个 level 允许挂靠的父节点 level 集合。None 代表"只能是根"。
+# - ultimate：全局唯一根节点，parent 必须为 None。
+# - domain：父节点只能是 ultimate（顺序表里紧邻的上一层，是"排在自己
+#   前面的层级"里唯一的一个）。
+# - stage：父节点可以是 ultimate 或 domain（允许跳过 domain 直接挂根）。
+# - goal：父节点可以是 domain/stage/goal（goal 挂 goal 下，即"大目标拆
+#   小目标，子目标本身仍要走 GoalJudge 判定"，现状本就没有禁止，保留）。
+# - objective：父节点只能是 goal（与现状一致，不变）。
+_ALLOWED_PARENT_LEVELS: dict = {
+    "ultimate": frozenset(),  # 仅允许 parent_id is None，见 validate_node_hierarchy
+    "domain": frozenset({"ultimate"}),
+    "stage": frozenset({"ultimate", "domain"}),
+    "goal": frozenset({"domain", "stage", "goal"}),
+    "objective": frozenset({"goal"}),
+}
+
+
+def validate_node_hierarchy(level: str, parent_level: Optional[str]) -> Optional[str]:
+    """[goal_tree_system_plan.md §4.1.1] 校验"把一个 level=level 的节点挂在
+    level=parent_level 的节点下"是否合法。
+
+    不强制"每层必须存在"（允许跳级，比如 domain 直接挂 goal），但父子之间
+    的 level 顺序不能倒挂（比如 goal 不能挂在 objective 下面）。
+
+    返回 None 表示合法；返回非空字符串表示不合法，内容可直接展示给调用方。
+    这里只做纯规则判断，不接触任何 GoalBacklog 状态（全局唯一性等需要看
+    "是否已存在其它节点"的校验由调用方 GoalBacklog.add_node() 补充）。
+    """
+    if level not in _ALLOWED_PARENT_LEVELS:
+        return f"未知的 level={level!r}，合法取值为 {LEVEL_ORDER}"
+    if level == "ultimate":
+        if parent_level is not None:
+            return "ultimate 是全局唯一根节点，parent_id 必须为空"
+        return None
+    allowed = _ALLOWED_PARENT_LEVELS[level]
+    if parent_level not in allowed:
+        allowed_desc = "/".join(sorted(allowed)) if allowed else "(无，只能是根节点)"
+        return (
+            f"level={level!r} 的节点不能挂在 level={parent_level!r} 的节点下，"
+            f"允许的父节点 level 为：{allowed_desc}"
+        )
+    return None
 
 
 @dataclass
@@ -941,6 +1028,160 @@ class GoalBacklog:
             if parent_id and parent_id in self._nodes:
                 self._nodes[parent_id].children_ids.append(node.id)
         return node
+
+    def add_node(
+        self,
+        level: str,
+        title: str,
+        parent_id: Optional[str] = None,
+        description: str = "",
+        source: str = "user",
+        priority: int = 0,
+        tags: Optional[list[str]] = None,
+        status: str = "active",
+        source_initiator: Optional[str] = None,
+    ) -> GoalNode:
+        """[goal_tree_system_plan.md §4.1.1 / §4.5] 通用节点创建入口，支持
+        `LEVEL_ORDER` 里的任意一层（"ultimate"/"domain"/"stage"/"goal"/
+        "objective"）。`add_goal()`/`add_objective()` 是对本方法的薄封装
+        （保留是因为两者各自还有一些该 level 专属的副作用，如 Goal 的产出
+        目录提示检测），新的三层结构节点应统一通过本方法创建。
+
+        校验规则见 `validate_node_hierarchy()`：父子 level 顺序不能倒挂；
+        `level="ultimate"` 额外要求全局唯一（`parent_id` 必须为空，且当前
+        不存在其它 ultimate 节点）。不合法时抛出 `ValueError`，不会创建
+        任何节点、不会落盘。
+
+        内部会先重新加载磁盘最新状态再追加，并立即落盘，避免与其他进程
+        并发写入互相覆盖（与 add_goal()/add_objective() 同样的并发语义）。
+        """
+        if source_initiator is None:
+            try:
+                from mini_agent.perception.turn_context import get_current_turn_initiator
+                source_initiator = get_current_turn_initiator()
+            except Exception:
+                source_initiator = "user"
+        with self._locked():
+            parent = self._nodes.get(parent_id) if parent_id else None
+            if parent_id and parent is None:
+                raise ValueError(f"parent_id={parent_id!r} 不存在")
+            parent_level = parent.level if parent is not None else None
+            err = validate_node_hierarchy(level, parent_level)
+            if err:
+                raise ValueError(err)
+            if level == "ultimate" and any(n.level == "ultimate" for n in self._nodes.values()):
+                raise ValueError("已存在全局根节点（level=ultimate），不允许创建第二个")
+            id_prefix = {"goal": "goal", "objective": "obj"}.get(level, level)
+            node = GoalNode(
+                id=f"{id_prefix}_{uuid.uuid4().hex[:8]}",
+                level=level,
+                title=title,
+                source=source,
+                status=status,
+                created_at=time.time(),
+                last_touched_at=time.time(),
+                parent_id=parent_id,
+                priority=priority,
+                tags=tags or [],
+                description=description,
+                source_initiator=source_initiator,
+            )
+            self._nodes[node.id] = node
+            if parent is not None:
+                parent.children_ids.append(node.id)
+        return node
+
+    def get_root_node(self) -> GoalNode:
+        """返回全局唯一的 `level="ultimate"` 根节点，不存在时自动创建一个
+        占位根节点（标题留空，等用户在看板里编辑）。保证任何时候调用本方法
+        都恰好返回同一个根节点（幂等）。见 §4.1"根节点"一节。"""
+        with self._locked():
+            for node in self._nodes.values():
+                if node.level == "ultimate":
+                    return node
+            node = GoalNode(
+                id=f"ultimate_{uuid.uuid4().hex[:8]}",
+                level="ultimate",
+                title="我的人生目标",
+                source="user",
+                status="active",
+                created_at=time.time(),
+                last_touched_at=time.time(),
+            )
+            self._nodes[node.id] = node
+        return node
+
+    def migrate_directions_to_domain_nodes(self, dry_run: bool = True) -> dict:
+        """[goal_tree_system_plan.md §4.1] 一次性迁移：把每条 `Direction`
+        转成 `level="domain"` 的 `GoalNode`（`id` 复用，挂在全局根节点下），
+        原来通过 `direction_id` 关联的 Goal 节点，改成直接 `parent_id`
+        指向对应的 domain 节点。
+
+        `dry_run=True`（默认）时只返回预览报告，不修改任何状态；
+        `dry_run=False` 时真正执行迁移并落盘。迁移前后旧版本代码路径
+        （`direction_id` 字段）保留读取兼容，本方法不会清空 `direction_id`
+        ——过渡期结束后再单独清理，见方案文档§4.1 相关段落。
+
+        返回 `{"directions_migrated": [...], "goals_reparented": [...]}`，
+        每项分别是 `{"direction_id", "domain_node_id", "title"}` 和
+        `{"goal_id", "old_parent_id", "new_parent_id"}`，方便调用方（CLI）
+        打印预览。已经迁移过的 Direction（即已存在一个
+        `id == direction_id` 的 domain 节点）会被跳过，保证多次调用幂等。
+        """
+        with self._locked():
+            root = None
+            for node in self._nodes.values():
+                if node.level == "ultimate":
+                    root = node
+                    break
+            if root is None and not dry_run:
+                root = GoalNode(
+                    id=f"ultimate_{uuid.uuid4().hex[:8]}",
+                    level="ultimate",
+                    title="我的人生目标",
+                    source="user",
+                    status="active",
+                    created_at=time.time(),
+                    last_touched_at=time.time(),
+                )
+                self._nodes[root.id] = root
+            report: dict = {"directions_migrated": [], "goals_reparented": []}
+            for direction in list(self._directions.values()):
+                if direction.id in self._nodes:
+                    continue  # 已经迁移过，幂等跳过
+                report["directions_migrated"].append({
+                    "direction_id": direction.id,
+                    "domain_node_id": direction.id,
+                    "title": direction.title,
+                })
+                if not dry_run:
+                    domain_node = GoalNode(
+                        id=direction.id,
+                        level="domain",
+                        title=direction.title,
+                        source="user",
+                        status="active",
+                        created_at=direction.created_at or time.time(),
+                        last_touched_at=time.time(),
+                        parent_id=root.id if root else None,
+                        description=direction.description,
+                    )
+                    self._nodes[domain_node.id] = domain_node
+                    if root is not None:
+                        root.children_ids.append(domain_node.id)
+                for goal in self._nodes.values():
+                    if goal.direction_id != direction.id or not goal.is_goal:
+                        continue
+                    if goal.parent_id == direction.id:
+                        continue  # 已经指向迁移后的 domain 节点，幂等跳过
+                    report["goals_reparented"].append({
+                        "goal_id": goal.id,
+                        "old_parent_id": goal.parent_id,
+                        "new_parent_id": direction.id,
+                    })
+                    if not dry_run:
+                        goal.parent_id = direction.id
+        return report
 
     def goals_missing_objective(self) -> list[GoalNode]:
         """返回没有任何 active Objective 子节点的 active Goal（按优先级降序）。
