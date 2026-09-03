@@ -1936,6 +1936,78 @@ class GoalBacklog:
             node.last_touched_at = time.time()
         return self._nodes.get(node_id)
 
+    def reparent_node(self, node_id: str, new_parent_id: Optional[str]) -> Optional[GoalNode]:
+        """[goal_tree_system_plan.md §4.4/阶段四遗留项] 把一个节点重新挂载到
+        另一个父节点下（看板"🌳 目标树"的"改父节点"下拉框对应的后端能力，
+        方案原文把"拖拽"排除在外、明确改成下拉选择新父节点）。
+
+        校验规则跟 `add_node()` 完全一致，走同一个 `validate_node_hierarchy()`：
+        新父节点的 level 顺序不能跟 `node_id` 自身 level 倒挂；
+        `level="ultimate"` 的根节点不允许被 reparent（`new_parent_id`
+        非空时直接拒绝——根节点定义上 `parent_id` 必须为空、全局唯一，
+        改父节点这个操作对根节点没有意义）。
+
+        额外校验"不能挂到自己的子孙节点下"（否则会在树里形成环，
+        `get_tree()` 虽然对环有防御性处理不会死循环，但那只是兜底，
+        正常数据不应该允许产生环）——沿 `new_parent_id` 往上遍历
+        `parent_id` 链，如果途中遇到 `node_id` 本身，说明 `new_parent_id`
+        是 `node_id` 的子孙，拒绝。
+
+        `new_parent_id=None` 表示"提升为根节点"，只有非 `ultimate`
+        节点可以这样做，且会跳过父子层级校验（没有父节点就无所谓层级
+        顺序），但结果节点会脱离原有树、不再能通过全局根节点遍历到——
+        `get_tree()` 只从 `ultimate` 根出发，一个 `parent_id=None` 但
+        `level != "ultimate"` 的节点会变成孤儿，UI 侧不建议提供"提升为
+        根节点"这个选项（看板下拉框留空态直接禁用改父节点操作），这里
+        仅在后端保留该语义完整性、不强行拒绝，供脚本/测试场景使用。
+
+        `node_id`/`new_parent_id`（非空时）不存在、`node_id` 是
+        `level="ultimate"`、层级校验不通过、或会形成环时都返回 `None`，
+        不做任何修改。
+        """
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if node is None:
+                return None
+            if node.level == "ultimate":
+                return None
+            if new_parent_id is not None:
+                new_parent = self._nodes.get(new_parent_id)
+                if new_parent is None:
+                    return None
+                if new_parent_id == node_id:
+                    return None
+                # 环检测：沿 new_parent_id 往上走 parent_id 链，如果碰到
+                # node_id 本身，说明 new_parent 是 node 的子孙，不能把
+                # node 挂到自己子孙下面（`visited` 只是防御已有环导致的
+                # 死循环，正常数据不会触发）。
+                cursor_id = new_parent_id
+                visited: set = set()
+                while cursor_id is not None:
+                    if cursor_id == node_id:
+                        return None
+                    if cursor_id in visited:
+                        break
+                    visited.add(cursor_id)
+                    cursor = self._nodes.get(cursor_id)
+                    cursor_id = cursor.parent_id if cursor else None
+                err = validate_node_hierarchy(node.level, new_parent.level)
+                if err:
+                    return None
+            old_parent_id = node.parent_id
+            if old_parent_id and old_parent_id in self._nodes:
+                old_parent = self._nodes[old_parent_id]
+                old_parent.children_ids = [
+                    cid for cid in old_parent.children_ids if cid != node_id
+                ]
+            node.parent_id = new_parent_id
+            if new_parent_id is not None:
+                new_parent = self._nodes[new_parent_id]
+                if node_id not in new_parent.children_ids:
+                    new_parent.children_ids.append(node_id)
+            node.last_touched_at = time.time()
+        return self._nodes.get(node_id)
+
     # ── C1：长期方向分组（personal_researcher_and_coach_capability_gap_plan.md）──
     # Direction 是纯展示聚合，不参与 GoalJudge 判定、不影响执行调度，见
     # Direction 类注释。这里只提供最基础的增删查改 + 分组关联，不引入

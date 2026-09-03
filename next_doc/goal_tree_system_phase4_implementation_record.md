@@ -178,3 +178,53 @@ mini_agent_kanban` 目前没有任何自动化测试覆盖），本阶段验证�
 端点（内部做跟 `add_node()` 一样的 `validate_node_hierarchy()` 校验 +
 从旧父节点 `children_ids` 移除、加入新父节点 `children_ids`）+ 看板下拉
 框 UI，是一个独立的小增量，不影响本文档记录的四个阶段已完成的范围。
+
+## 五、追加：补齐"改父节点"（`GoalBacklog.reparent_node()`）
+
+上一节列的遗留项已经补上，记录如下：
+
+- `src/mini_agent/perception/goal_backlog.py` 新增 `GoalBacklog.
+  reparent_node(node_id, new_parent_id)`，`_locked()` 临界区内完成：
+  1. `node.level == "ultimate"` 直接拒绝——全局根节点不允许被改父节点；
+  2. `new_parent_id` 非空时：拒绝挂到自己身上（`new_parent_id ==
+     node_id`）；沿 `new_parent_id` 的 `parent_id` 链往上走做环检测，
+     碰到 `node_id` 本身说明目标父节点是自己的子孙，拒绝（`visited`
+     集合防御已有脏数据成环导致死循环，正常数据不会触发）；再走一次
+     `validate_node_hierarchy(node.level, new_parent.level)`，跟
+     `add_node()` 共用同一套层级顺序校验；
+  3. 校验通过后，把 `node_id` 从旧父节点的 `children_ids` 移除、加入
+     新父节点的 `children_ids`，更新 `node.parent_id`。
+  4. `new_parent_id=None` 表示"提升为孤儿根节点"——校验步骤跳过（没有
+     父节点无所谓层级顺序），语义完整保留供脚本/测试使用，但方案与
+     UI 都不建议对着一个正常使用的树这么做（结果节点会脱离
+     `get_tree()` 从全局根出发的遍历，变成迷失节点）。
+  失败（`node_id`/`new_parent_id` 不存在、层级不合法、成环、目标是
+  `ultimate`）统一返回 `None`，不做任何修改，跟其它 `GoalBacklog`
+  写方法的失败约定一致。
+- `src/mini_agent/api/routes.py` 新增 `POST /v1/goals/{node_id}/reparent`，
+  Body `{"new_parent_id": str | null}`，`node_id` 不存在返回 404，
+  `reparent_node()` 返回 `None`（其余各类失败）统一映射成 400。路由
+  文档头部清单同步补充。
+- `apps/mini_agent_kanban/client.py` 新增
+  `reparent_goal_tree_node(node_id, new_parent_id)`。
+- `apps/mini_agent_kanban/app.py` 的 `_render_goal_tree_node()`"⚙️ 管理"
+  折叠区里新增"🔀 改父节点"表单（仅非根节点展示）：下拉框选项由
+  `id_to_title`（阶段四主体已有的全树 id→标题映射）过滤掉自己和自己的
+  全部子孙节点得到——子孙集合通过在当前渲染的 `tree_node` 子树上做一次
+  递归收集（`_collect_descendants()`），前端这层过滤只是减少无效选项、
+  提升体验，真正的环检测仍然在后端 `reparent_node()` 里兜底，不能只靠
+  前端过滤保证正确性（比如两个浏览器标签页并发操作的场景）。
+- 新增测试 `tests/test_goal_tree_phase4.py`（8 个用例）：正常移动、拒绝
+  改根节点、拒绝挂到自己、拒绝挂到自己子孙（环检测）、拒绝层级倒挂、
+  节点或目标父节点不存在、`new_parent_id=None` 提升为孤儿根、改动后
+  重新 `load()` 仍然持久化生效。跟阶段一/二/三既有测试一起跑
+  （`test_goal_tree_phase1/2/3/4.py` + `test_goal_backlog.py` +
+  `test_goal_execution_fairness.py`）共 112 个用例全部通过，无回归。
+- 文档同步更新：`docs/http-api-guide.md` 目标树 REST API 一节补充
+  `POST /v1/goals/{node_id}/reparent` 说明；
+  `docs/kanban-dashboard-guide.md` "🌳 目标树子页"一节把"暂未提供 UI
+  入口"的说明替换成实际的"🔀 改父节点"表单描述。
+
+至此，方案 §4.4 列出的目标树看板全部交互能力（新建/编辑/改父节点/pin
+焦点/手动触发拆解/候选采纳忽略）均已落地，没有更多已知遗留项。
+

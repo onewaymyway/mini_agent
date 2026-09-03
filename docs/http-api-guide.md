@@ -856,6 +856,16 @@ async_jobs 异步任务模式：立即返回 `{"job_id", "key"}`，轮询
 重算后的父节点（`{"node": <父节点>}`），不用等下一次
 `sys:goal_tree_focus_recompute` 巡检。
 
+`POST /v1/goals/{node_id}/reparent` Body：`{"new_parent_id": str | null}`，
+把节点重新挂载到另一个父节点下，对应看板"🌳 目标树"里每个非根节点
+"🔀 改父节点"下拉框。校验规则跟 `POST /v1/goals/nodes` 共用同一个
+`validate_node_hierarchy()`（父子 level 顺序不能倒挂），额外拒绝"挂到
+自己的子孙节点下"（会形成环）和"对全局根节点（`level=ultimate`）本身
+执行 reparent"；`new_parent_id` 传 `null` 表示"提升为孤儿根节点"，仅
+供脚本/测试场景使用，看板 UI 不提供这个选项（提升后的节点脱离原有树，
+`GET /v1/goals/tree` 从全局根节点出发的遍历不会再看到它）。校验失败
+返回 400，`node_id` 不存在返回 404。
+
 ### /v1/goals/{goal_id}/execution_spec — Goal 执行规范 REST API
 
 把一个（可能是周期性执行的）Goal 具体化成结构化执行规范：每一轮该产出

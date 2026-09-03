@@ -623,6 +623,11 @@ class AgentClient:
         """POST /v1/goals/{id}/focus_pin — 手动 pin/unpin 现阶段焦点。"""
         return self._post(f"/goals/{node_id}/focus_pin", {"child_id": child_id, "pinned": pinned})
 
+    def reparent_goal_tree_node(self, node_id: str, new_parent_id: str | None):
+        """POST /v1/goals/{id}/reparent — 修改父节点（阶段四遗留项，
+        对应看板"改父节点"下拉框）。"""
+        return self._post(f"/goals/{node_id}/reparent", {"new_parent_id": new_parent_id})
+
     # ── 看板：长期方向分组（personal_researcher_and_coach_capability_gap_
     # plan.md C1）────────────────────────────────────────────────────────
     def directions(self):

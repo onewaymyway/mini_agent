@@ -4509,6 +4509,45 @@ def _render_goal_tree_node(client: AgentClient, tree_node: dict, id_to_title: di
                 else:
                     st.rerun()
 
+        # 改父节点（阶段四遗留项，goal_tree_system_phase4_implementation_
+        # record.md §2.4）：根节点（ultimate）不允许改父节点，UI 不提供
+        # 下拉框；候选父节点排除自己和自己的全部子孙（子孙判断复用
+        # id_to_title 已经展开的树，找不到就保守地不排除——后端
+        # reparent_node() 会做真正的环检测兜底，前端只是减少无效选项）。
+        if level != "ultimate":
+            descendant_ids = set()
+
+            def _collect_descendants(n: dict) -> None:
+                for c in n.get("children") or []:
+                    c_id = (c.get("node") or {}).get("id")
+                    if c_id:
+                        descendant_ids.add(c_id)
+                    _collect_descendants(c)
+
+            _collect_descendants(tree_node)
+            candidate_parents = [
+                (pid, title) for pid, title in id_to_title.items()
+                if pid != node_id and pid not in descendant_ids
+            ]
+            if candidate_parents:
+                with st.form(f"_gt_reparent_{node_id}"):
+                    st.caption("🔀 改父节点")
+                    cur_parent_id = node.get("parent_id")
+                    labels = [f"{title}（{pid}）" for pid, title in candidate_parents]
+                    ids = [pid for pid, _ in candidate_parents]
+                    default_idx = ids.index(cur_parent_id) if cur_parent_id in ids else 0
+                    chosen_label = st.selectbox("新父节点", labels, index=default_idx, key=f"_gt_reparent_sel_{node_id}")
+                    if st.form_submit_button("确认改父节点"):
+                        chosen_id = ids[labels.index(chosen_label)]
+                        if chosen_id == cur_parent_id:
+                            st.caption("未改变父节点。")
+                        else:
+                            res = client.reparent_goal_tree_node(node_id, chosen_id)
+                            if isinstance(res, dict) and res.get("_error"):
+                                st.error(f"改父节点失败：{res['_error']}")
+                            else:
+                                st.rerun()
+
         if level in _GOAL_TREE_NONLEAF_LEVELS:
             # 手动触发分解，走 async_jobs 轮询（涉及 LLM 调用）。
             async_key = f"goal_tree_decompose:{node_id}"

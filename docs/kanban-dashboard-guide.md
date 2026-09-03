@@ -276,14 +276,18 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
     父节点下方，提供"✅ 采纳"/"✖️ 忽略"/"✏️ 编辑后采纳"三个操作。
   - 当前处于父节点 `current_focus_ids` 里的子节点，渲染前会有一行
     "⭐ 以下为当前焦点"提示。
-  - 改 `parent_id`（重新挂载到别的父节点下）本阶段暂未提供 UI 入口
-    （方案 §4.4 里"下拉选择新父节点"这项留待后续需要时再补，目前可以
-    通过 CLI `/agent goals` 或直接编辑 `goals.json` 完成）。
+  - **改父节点**（`POST /v1/goals/{id}/reparent`）：每个非根节点的
+    "⚙️ 管理"折叠区里有一个"🔀 改父节点"表单，下拉框列出全树里除自己和
+    自己的全部子孙之外的其它节点，选中后提交即生效；后端会拒绝会形成
+    环、层级顺序倒挂（如把 `domain` 挂到 `goal` 下面）的选择，前端下拉
+    框已经预先排除了"挂到自己子孙下"这一类选项（减少无效尝试，真正的
+    环检测仍在后端兜底）。根节点（`level=ultimate`）不允许改父节点，
+    不会展示这个表单。
   - 对应新增 REST 端点：`GET /v1/goals/tree`、`POST /v1/goals/nodes`、
     `POST /v1/goals/{id}/decompose`、
     `POST /v1/goals/{id}/candidates/{cid}/accept|reject`、
-    `POST /v1/goals/{id}/focus_pin`，详见
-    [HTTP API 指南](http-api-guide.md)。
+    `POST /v1/goals/{id}/focus_pin`、`POST /v1/goals/{id}/reparent`，
+    详见 [HTTP API 指南](http-api-guide.md)。
 - **📈 完成率趋势**（`GET /v1/objectives/completion_trend`，
   `next_doc/kanban_perception_gaps_improvement_plan.md` 方向 D.1）：折叠
   区块，展开才拉取。展示每日完成/失败 Objective 数的折线图，以及最近

@@ -161,6 +161,7 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/goals/{id}/candidates/{cid}/accept  [同上] 采纳分解候选
     POST   /v1/goals/{id}/candidates/{cid}/reject  [同上] 忽略分解候选
     POST   /v1/goals/{id}/focus_pin  [同上] 手动 pin/unpin 现阶段焦点
+    POST   /v1/goals/{id}/reparent   [同上/阶段四遗留项] 修改父节点
     POST   /v1/goals/{goal_id}/feedback  持久化提意见（合入 description，双向同步 cron）
     GET    /v1/goals/{goal_id}/cycle_diagnostics  [goal_cron_cycle_diagnostics_
                                        and_interactive_tuning_plan.md Stage 1]
@@ -5478,6 +5479,34 @@ async def set_goal_tree_focus_pin(node_id: str, request: Request):
     if not ok:
         raise HTTPException(status_code=404, detail="节点不存在，或 child_id 不是其直接子节点")
     return {"node": backlog.get(node_id).to_dict()}
+
+
+@router.post("/goals/{node_id}/reparent")
+async def reparent_goal_tree_node(node_id: str, request: Request):
+    """POST /v1/goals/{node_id}/reparent — [goal_tree_system_plan.md §4.4
+    阶段四遗留项] 把节点重新挂载到另一个父节点下，对应看板"🌳 目标树"的
+    "改父节点"下拉框。Body: {"new_parent_id": str | null}
+    （null 表示提升为根——仅供脚本/测试场景使用，看板 UI 不提供这个选项，
+    见 `GoalBacklog.reparent_node()` 文档字符串）。
+
+    校验失败（层级倒挂、会形成环、目标是全局根节点、new_parent_id 不
+    存在）时返回 400；`node_id` 不存在时返回 404。
+    """
+    backlog = _goal_backlog_only(request)
+    if backlog.get(node_id) is None:
+        raise HTTPException(status_code=404, detail=f"节点 '{node_id}' 不存在")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    new_parent_id = body.get("new_parent_id")
+    updated = backlog.reparent_node(node_id, new_parent_id)
+    if updated is None:
+        raise HTTPException(
+            status_code=400,
+            detail="改父节点失败：层级顺序不合法、会形成环、目标是全局根节点，或 new_parent_id 不存在",
+        )
+    return {"node": updated.to_dict()}
 
 
 @router.get("/directions")
