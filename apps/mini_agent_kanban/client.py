@@ -628,6 +628,25 @@ class AgentClient:
         对应看板"改父节点"下拉框）。"""
         return self._post(f"/goals/{node_id}/reparent", {"new_parent_id": new_parent_id})
 
+    # ── 看板：目标树 × 自主调研打通（goal_tree_research_and_action_
+    # recommendation_plan.md §4.6/阶段四）─────────────────────────────────
+    def goal_tree_research(self, node_id: str):
+        """GET /v1/goals/{id}/research — 该节点待处理调研候选 +
+        最近一次触发时间，供"📄 相关调研"入口渲染。"""
+        return self._get(f"/goals/{node_id}/research")
+
+    def trigger_goal_tree_research(self, node_id: str, force: bool = False):
+        """POST /v1/goals/{id}/research/trigger — 手动触发一次该节点的
+        焦点驱动调研，供"🔍 立即调研"按钮使用。"""
+        return self._post(f"/goals/{node_id}/research/trigger", {"force": force})
+
+    def goal_tree_next_steps(self, node_id: str | None = None):
+        """GET /v1/goals/next_steps — 当前落盘的"焦点行动建议"
+        （focus_next_step 候选），可选按 node_id 过滤，供"💡 建议"标记
+        渲染。"""
+        params = {"node_id": node_id} if node_id else None
+        return self._get("/goals/next_steps", params=params)
+
     # ── 看板：长期方向分组（personal_researcher_and_coach_capability_gap_
     # plan.md C1）────────────────────────────────────────────────────────
     def directions(self):

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
@@ -43,6 +44,16 @@ if TYPE_CHECKING:
 
 
 _STATE_FILENAME = "goal_tree_focus_research_state.json"
+
+# [阶段四 §4.2/§4.4/§五阶段四] 上一次巡检记录的\"焦点节点集合\"快照，跟每个
+# node_id 自己的触发时间戳记在同一个 state 文件里，用这个不会跟合法 node_id
+# 冲突的 key 区分开（node_id 由 uuid 生成，不会是这个字符串）。
+_FOCUS_SNAPSHOT_KEY = "__focus_snapshot__"
+
+# 每轮自动巡检最多触发几个\"新进入焦点\"的节点——焦点节点一次性大量新增时
+# （比如刚创建根节点、批量 pin）避免瞬间铺开一堆调研候选，多出来的留到
+# 下一轮巡检（快照仍然会整体刷新，不会被同一批节点反复重复统计为\"新增\"）。
+DEFAULT_MAX_NODES_PER_SCAN = 5
 
 # 结构节点（domain/stage）：以周为单位；叶子 Goal：以天为单位（§4.4）。
 MIN_INTERVAL_SECONDS_STRUCTURAL = 7 * 86400
@@ -100,6 +111,30 @@ class FocusResearchTrigger:
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where="mini_agent.evolution.focus_research_trigger.record_trigger")
+
+    # ── 阶段四：焦点快照持久化（供自动巡检做\"新进入焦点\"差集判断）───────────
+
+    def load_focus_snapshot(self) -> set:
+        """读取上一次巡检记录的焦点节点 id 集合，供
+        `find_newly_focused_nodes()` 做差集；从未巡检过（文件不存在/缺
+        该 key）时返回空集合，等价于\"本轮全部现有焦点节点都算新增\"——
+        `run_focus_research_scan_cycle()` 会用 `max_nodes` 截断，不会因此
+        一次性打爆。"""
+        data = self._load_state()
+        ids = data.get(_FOCUS_SNAPSHOT_KEY) or []
+        return set(ids) if isinstance(ids, list) else set()
+
+    def save_focus_snapshot(self, node_ids) -> None:
+        try:
+            data = self._load_state()
+            data[_FOCUS_SNAPSHOT_KEY] = sorted(set(node_ids))
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            self._state_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8",
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.focus_research_trigger.save_focus_snapshot")
 
     # ── 节奏治理：是否可以触发 ───────────────────────────────────────────────
 
@@ -222,3 +257,87 @@ def find_newly_focused_nodes(
     """
     current = backlog.focus_research_nodes()
     return [n for n in current if n.id not in previous_focus_ids]
+
+
+def list_pending_research_candidates(
+    paths: "AgentPaths", node_id: str,
+) -> list["GrowthCandidate"]:
+    """[§4.6] 只读查询：给定 `node_id`，返回该节点关联的、状态仍为
+    pending 的调研候选（`origin == "focus_research"` 且 `evidence_refs`
+    含 `goal_tree:<node_id>`）。供看板\"📄 相关调研\"入口和
+    `GET /v1/goals/{id}/research` 复用，不需要额外的数据结构（跟阶段三
+    实施记录\"三、后续阶段的影响\"里的预告一致）。"""
+    from mini_agent.evolution.growth_advisor import GrowthBacklog
+
+    ref = f"{FOCUS_EVIDENCE_REF_PREFIX}:{node_id}"
+    gb = GrowthBacklog(paths)
+    return [c for c in gb.pending() if c.origin == "focus_research" and ref in c.evidence_refs]
+
+
+@dataclass
+class FocusResearchScanSummary:
+    """`run_focus_research_scan_cycle()` 的返回值，纯汇总信息，供 cron
+    handler 日志/未来看板展示使用，`ok` 恒为 `True`（跟
+    `goal_tree_decomposer.DecomposeScanSummary` 同样的\"不抛异常、只汇总\"
+    约定，逐节点触发失败由 `FocusResearchTrigger.trigger()` 自己吞掉）。"""
+
+    ok: bool = True
+    newly_focused_count: int = 0
+    triggered_count: int = 0
+    node_ids: list = field(default_factory=list)
+
+
+def run_focus_research_scan_cycle(
+    paths: "AgentPaths",
+    backlog: "GoalBacklog",
+    *,
+    llm_helper: Optional[Callable[[str], str]] = None,
+    cfg=None,
+    max_nodes: int = DEFAULT_MAX_NODES_PER_SCAN,
+) -> FocusResearchScanSummary:
+    """[§4.2/§五 阶段四] `sys:goal_tree_focus_recompute` 巡检后的联动
+    触发：对比 `FocusResearchTrigger` 持久化的上一次焦点快照，找出\"新进
+    入焦点\"的节点，逐个调用 `trigger()`（内部仍受 `should_trigger()` 的
+    节奏治理约束，不传 `force`），最后把快照刷新成本轮的完整焦点集合。
+
+    `max_nodes` 截断同一轮巡检最多处理的新增节点数，避免焦点集合一次性
+    大幅变化（比如刚创建根节点、批量 pin）时瞬间铺开一堆调研候选——被
+    截断的节点不会\"丢失\"，因为快照只在本函数末尾整体刷新为\"当前完整
+    焦点集合\"，下一轮巡检时这些节点已经不在\"上一次快照\"里缺失的部分，
+    仍然会被判定为差集的一部分，直到真正被处理过。
+
+    不抛异常：单节点触发失败已经由 `FocusResearchTrigger.trigger()`/
+    `GrowthBacklog.add_or_merge()` 内部吞掉；本函数只是遍历汇总。
+    """
+    trigger = FocusResearchTrigger(paths, backlog)
+    previous_ids = trigger.load_focus_snapshot()
+    newly_focused = find_newly_focused_nodes(backlog, previous_ids)
+
+    triggered_count = 0
+    for node in newly_focused[:max_nodes]:
+        candidate = trigger.trigger(node.id, cfg=cfg, llm_helper=llm_helper)
+        if candidate is not None:
+            triggered_count += 1
+
+    current_ids = {n.id for n in backlog.focus_research_nodes()}
+    trigger.save_focus_snapshot(current_ids)
+
+    return FocusResearchScanSummary(
+        ok=True,
+        newly_focused_count=len(newly_focused),
+        triggered_count=triggered_count,
+        node_ids=[n.id for n in newly_focused],
+    )
+
+
+__all__ = [
+    "FocusResearchTrigger",
+    "find_newly_focused_nodes",
+    "list_pending_research_candidates",
+    "run_focus_research_scan_cycle",
+    "FocusResearchScanSummary",
+    "MIN_INTERVAL_SECONDS_STRUCTURAL",
+    "MIN_INTERVAL_SECONDS_GOAL",
+    "DEFAULT_MAX_NODES_PER_SCAN",
+    "FOCUS_EVIDENCE_REF_PREFIX",
+]

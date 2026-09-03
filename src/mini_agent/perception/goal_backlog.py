@@ -2366,6 +2366,33 @@ def ensure_goal_tree_focus_recompute_job(
 
     def _handler(job: "CronJob") -> bool:
         backlog.recompute_current_focus_tree()
+
+        # [goal_tree_research_and_action_recommendation_plan.md §4.2/§五
+        # 阶段四] 重算完成后，若用户已显式开启
+        # `goal_tree_focus_research_auto_trigger_enabled`，顺带跑一轮
+        # FocusResearchTrigger 自动巡检（对"新进入焦点"的节点触发调研
+        # 候选）。默认关闭时这里直接跳过，不产生任何额外行为/额外 IO，
+        # 与该配置项默认值保持零改动兼容。
+        try:
+            from mini_agent.config import load_config
+            cfg = load_config(backlog._paths.project_root)
+            growth_cfg = getattr(cfg, "growth_advisor", None)
+            if growth_cfg is not None and getattr(
+                growth_cfg, "goal_tree_focus_research_auto_trigger_enabled", False,
+            ):
+                from mini_agent.evolution.focus_research_trigger import (
+                    run_focus_research_scan_cycle,
+                )
+                run_focus_research_scan_cycle(
+                    backlog._paths, backlog, cfg=growth_cfg,
+                    max_nodes=getattr(
+                        growth_cfg, "goal_tree_focus_research_auto_trigger_max_nodes", 5,
+                    ),
+                )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.perception.goal_backlog.ensure_goal_tree_focus_recompute_job._handler.focus_research_scan")
+
         return True
 
     cron_scheduler.register_local_handler(JOB_ID_FOCUS_RECOMPUTE, _handler)

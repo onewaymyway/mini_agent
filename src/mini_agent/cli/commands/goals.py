@@ -97,6 +97,14 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
                                      "现阶段焦点"，立即重算该节点自身的
                                      current_focus_ids（不用等下一次
                                      sys:goal_tree_focus_recompute 巡检）
+
+  以下一项为目标树 × 自主调研打通计划阶段四
+  （next_doc/goal_tree_research_and_action_recommendation_plan.md §4.6）新增：
+  /agent goals next-steps [id]    — 打印当前所有 focus_next_step 候选
+                                     （"焦点行动建议"，不含 "research" 子
+                                     命令产出的调研候选那种），只读现有
+                                     落盘结果（跟看板/API 同一份数据），
+                                     传 id 时只看该节点的建议。
 """
 
 from __future__ import annotations
@@ -321,13 +329,20 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         force = "--force" in rest[1:]
         _cmd_research(gb, paths, rest[0], force=force)
 
+    elif subcmd == "next-steps":
+        # [next_doc/goal_tree_research_and_action_recommendation_plan.md
+        # §4.6 阶段四] /agent goals next-steps [id]
+        # 打印当前所有 focus_next_step 候选（可选按节点过滤），只读现有
+        # 落盘结果，不重新计算——跟看板/API 读同一份数据。
+        _cmd_next_steps(paths, rest[0] if rest else None)
+
     else:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
             "progress, feedback, recur, unrecur, migrate-legacy, spec, phase, diagnose, "
             "tune, status, reset-step, judge-calibration, tree, decompose, candidates, "
-            "focus, research"
+            "focus, research, next-steps"
         )
 
 
@@ -1489,6 +1504,30 @@ def _cmd_research(gb, paths, node_id: str, *, force: bool = False) -> None:
         return
     R.print_success(f"已生成/更新调研候选：{candidate.title} (id={candidate.candidate_id})")
     R.print_info(f"用 /agent growth 查看详情，或 /agent growth accept {candidate.candidate_id} 采纳。")
+
+
+def _cmd_next_steps(paths, node_id: Optional[str]) -> None:
+    """[next_doc/goal_tree_research_and_action_recommendation_plan.md
+    §4.6] /agent goals next-steps [id]
+
+    只读打印当前落盘的 focus_next_step 候选（不重新计算，跟
+    `GET /v1/goals/next_steps` 读同一份数据），CLI 场景不依赖看板。
+    """
+    from mini_agent.evolution.next_action_advisor import (
+        load_all_next_actions, filter_focus_next_step_items,
+    )
+    data = load_all_next_actions(paths)
+    items = filter_focus_next_step_items(data, node_id)
+    if not items:
+        scope = f"节点 {node_id} " if node_id else ""
+        R.print_info(
+            f"当前没有{scope}待处理的焦点行动建议（可能规则尚未开启 "
+            "`next_action_focus_next_step_enabled`，或还没有触发过一轮 "
+            "/next 生成，或该节点本身不在现阶段焦点范围内）。"
+        )
+        return
+    for it in items:
+        R.print_info(f"[{it.get('ref_id', '')}] {it.get('title', '')} —— {it.get('reason', '')}")
 
 
 def _get_paths(agent):

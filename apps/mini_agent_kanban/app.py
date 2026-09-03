@@ -4478,7 +4478,47 @@ def _render_goal_tree_candidates(client: AgentClient, node_id: str, candidates: 
                             st.rerun()
 
 
-def _render_goal_tree_node(client: AgentClient, tree_node: dict, id_to_title: dict, depth: int = 0) -> None:
+def _render_goal_tree_research_section(client: AgentClient, node_id: str) -> None:
+    """[goal_tree_research_and_action_recommendation_plan.md §4.5/阶段四]
+    "📄 相关调研"子区块：展示该节点待处理的调研候选 + 最近触发时间 +
+    "🔍 立即调研"手动触发按钮，挂在每个节点的"⚙️ 管理"折叠区内，跟
+    `growth_pursuit` 现有"📄 素材"按钮的展示克制原则一致——有内容才占
+    视线，没有就只留一行淡淡的状态说明。"""
+    resp = client.goal_tree_research(node_id) or {}
+    if isinstance(resp, dict) and resp.get("_error"):
+        st.caption(f"调研信息获取失败：{resp['_error']}")
+        return
+    candidates = resp.get("pending_candidates") or []
+    last_triggered_at = resp.get("last_triggered_at")
+    st.caption("📄 相关调研")
+    if last_triggered_at:
+        import datetime as _dt
+        ts_str = _dt.datetime.fromtimestamp(last_triggered_at).strftime("%Y-%m-%d %H:%M")
+        st.caption(f"上次触发调研：{ts_str}")
+    else:
+        st.caption("尚未触发过针对该节点的调研。")
+    for cand in candidates:
+        with st.container(border=True):
+            st.markdown(f"*🔎 {cand.get('title', '')}*")
+            if cand.get("rationale"):
+                st.caption(cand["rationale"])
+            st.caption(f"用 /agent growth accept {cand.get('candidate_id', '')} 采纳，或在「🌱 成长」tab 处理。")
+    if st.button("🔍 立即调研", key=f"_gt_research_trigger_{node_id}"):
+        res = client.trigger_goal_tree_research(node_id, force=True)
+        if isinstance(res, dict) and res.get("_error"):
+            st.error(f"触发失败：{res['_error']}")
+        elif isinstance(res, dict) and res.get("candidate"):
+            st.success(f"已生成/更新调研候选：{res['candidate'].get('title', '')}")
+            st.rerun()
+        else:
+            reason = (res or {}).get("skip_reason") or "本次没有生成新候选"
+            st.info(reason)
+
+
+def _render_goal_tree_node(
+    client: AgentClient, tree_node: dict, id_to_title: dict, depth: int = 0,
+    next_step_node_ids: set | None = None,
+) -> None:
     """[goal_tree_system_plan.md §4.4] 递归渲染树形结构。"""
     node = tree_node.get("node") or {}
     node_id = node.get("id")
@@ -4486,8 +4526,13 @@ def _render_goal_tree_node(client: AgentClient, tree_node: dict, id_to_title: di
     icon = _GOAL_TREE_LEVEL_ICON.get(level, "❓")
     status_label = _GOAL_TREE_STATUS_LABEL.get(node.get("status", ""), node.get("status", ""))
     indent = "&nbsp;&nbsp;&nbsp;&nbsp;" * depth
+    # [goal_tree_research_and_action_recommendation_plan.md §4.5/阶段四]
+    # "💡 建议"标记：该节点有未处理的 focus_next_step 候选时，标题旁加
+    # 提示图标（具体建议内容在"⚙️ 管理"折叠区内的调研子区块附近，不单独
+    # 开一个折叠区，避免用户要在两处折叠区之间来回找）。
+    badge = " 💡" if next_step_node_ids and node_id in next_step_node_ids else ""
     st.markdown(
-        f"{indent}{icon} **{node.get('title', '（无标题）')}** &nbsp;`{status_label}`",
+        f"{indent}{icon} **{node.get('title', '（无标题）')}** &nbsp;`{status_label}`{badge}",
         unsafe_allow_html=True,
     )
 
@@ -4610,6 +4655,9 @@ def _render_goal_tree_node(client: AgentClient, tree_node: dict, id_to_title: di
                     else:
                         st.rerun()
 
+        st.markdown("---")
+        _render_goal_tree_research_section(client, node_id)
+
     candidates = node.get("decompose_candidates") or []
     if candidates:
         _render_goal_tree_candidates(client, node_id, candidates)
@@ -4619,7 +4667,9 @@ def _render_goal_tree_node(client: AgentClient, tree_node: dict, id_to_title: di
         c_id = (child.get("node") or {}).get("id")
         if c_id in focus_ids:
             st.markdown(f"{indent}&nbsp;&nbsp;&nbsp;&nbsp;⭐ *以下为当前焦点*", unsafe_allow_html=True)
-        _render_goal_tree_node(client, child, id_to_title, depth=depth + 1)
+        _render_goal_tree_node(
+            client, child, id_to_title, depth=depth + 1, next_step_node_ids=next_step_node_ids,
+        )
 
 
 def _render_goal_tree_view(client: AgentClient) -> None:
@@ -4647,7 +4697,19 @@ def _render_goal_tree_view(client: AgentClient) -> None:
 
     id_to_title: dict = {}
     _goal_tree_flatten_titles(tree, id_to_title)
-    _render_goal_tree_node(client, tree, id_to_title, depth=0)
+
+    # [goal_tree_research_and_action_recommendation_plan.md §4.5/阶段四]
+    # 一次性拉取全部 focus_next_step 候选，构造"有待处理建议的节点 id"
+    # 集合，递归渲染时按 id 查集合而不是每个节点单独请求一次——避免树
+    # 较大时产生 N 次网络调用。
+    next_steps_resp = client.goal_tree_next_steps() or {}
+    next_step_node_ids = {
+        str(it.get("ref_id", "")).split(":")[0]
+        for it in (next_steps_resp.get("items") or [])
+        if it.get("ref_id")
+    }
+
+    _render_goal_tree_node(client, tree, id_to_title, depth=0, next_step_node_ids=next_step_node_ids)
 
 
 def render_kanban_tab(client: AgentClient):

@@ -162,6 +162,10 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/goals/{id}/candidates/{cid}/reject  [同上] 忽略分解候选
     POST   /v1/goals/{id}/focus_pin  [同上] 手动 pin/unpin 现阶段焦点
     POST   /v1/goals/{id}/reparent   [同上/阶段四遗留项] 修改父节点
+    GET    /v1/goals/{id}/research   [goal_tree_research_and_action_recommendation_plan.md
+                                      §4.6/阶段四] 查询该节点待处理调研候选
+    POST   /v1/goals/{id}/research/trigger  [同上] 手动触发一次焦点驱动调研
+    GET    /v1/goals/next_steps      [同上] 查询"焦点行动建议"（可选 ?node_id=）
     POST   /v1/goals/{goal_id}/feedback  持久化提意见（合入 description，双向同步 cron）
     GET    /v1/goals/{goal_id}/cycle_diagnostics  [goal_cron_cycle_diagnostics_
                                        and_interactive_tuning_plan.md Stage 1]
@@ -5507,6 +5511,99 @@ async def reparent_goal_tree_node(node_id: str, request: Request):
             detail="改父节点失败：层级顺序不合法、会形成环、目标是全局根节点，或 new_parent_id 不存在",
         )
     return {"node": updated.to_dict()}
+
+
+@router.get("/goals/{node_id}/research")
+async def get_goal_tree_research(node_id: str, request: Request):
+    """GET /v1/goals/{node_id}/research —
+    [goal_tree_research_and_action_recommendation_plan.md §4.6 阶段四]
+    只读查询该节点关联的调研信息：待处理的 `focus_research` 候选列表
+    （`GrowthBacklog` 里 `origin=="focus_research"` 且证据引用命中该
+    节点的 pending 候选）+ 最近一次触发调研的时间戳（`0` 表示从未
+    触发过）。供看板\"📄 相关调研\"入口使用。
+    """
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"节点 '{node_id}' 不存在")
+    paths = _spec_paths(request)
+    try:
+        from mini_agent.evolution.focus_research_trigger import (
+            FocusResearchTrigger, list_pending_research_candidates,
+        )
+        candidates = list_pending_research_candidates(paths, node_id)
+        trigger = FocusResearchTrigger(paths, backlog)
+        return {
+            "pending_candidates": [c.to_dict() for c in candidates],
+            "last_triggered_at": trigger.last_triggered_at(node_id) or None,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/goals/{node_id}/research/trigger")
+async def trigger_goal_tree_research(node_id: str, request: Request):
+    """POST /v1/goals/{node_id}/research/trigger —
+    [goal_tree_research_and_action_recommendation_plan.md §4.6 阶段四]
+    手动触发一次该节点的焦点驱动调研，跟 CLI
+    `/agent goals research <id> [--force]` 是同一条路径
+    （`FocusResearchTrigger.trigger()`），供看板\"🔍 立即调研\"按钮使用。
+    Body: {"force": bool?}（跳过节奏治理）。
+
+    返回 `{"candidate": null, "skip_reason": "..."}` 表示本次没有生成
+    新候选（节奏治理拦截/字面去重命中/冷却期/pending 已满，`skip_reason`
+    只在\"节奏治理拦截\"时给出明确原因，其余情况原因来自 `GrowthBacklog`
+    内部判定、不做二次归因，前端统一按\"本次未生成新候选\"展示）。
+    """
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"节点 '{node_id}' 不存在")
+    try:
+        body = await request.json() if await request.body() else {}
+    except Exception:
+        body = {}
+    force = bool(body.get("force"))
+    paths = _spec_paths(request)
+    try:
+        from mini_agent.evolution.focus_research_trigger import FocusResearchTrigger
+        trigger = FocusResearchTrigger(paths, backlog)
+        skip_reason = None
+        if not force:
+            skip_reason = trigger.should_trigger(node)
+            if skip_reason:
+                return {"candidate": None, "skip_reason": skip_reason}
+        candidate = trigger.trigger(node_id, force=force)
+        return {
+            "candidate": candidate.to_dict() if candidate else None,
+            "skip_reason": None if candidate else "未生成新候选（可能命中去重/冷却期/pending 上限）",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/goals/next_steps")
+async def get_goal_tree_next_steps(request: Request, node_id: Optional[str] = Query(default=None)):
+    """GET /v1/goals/next_steps?node_id=... —
+    [goal_tree_research_and_action_recommendation_plan.md §4.6 阶段四]
+    只读查询当前落盘的\"焦点行动建议\"（`next_action_advisor` 里
+    `kind == "focus_next_step"` 的候选），不重新计算——跟已有的
+    `GET /v1/next_actions` 读同一份落盘文件，这里只是按 `kind` 过滤、
+    可选再按 `node_id` 过滤到某一个焦点节点。不依赖
+    `cfg.next_action_focus_next_step_enabled` 是否开启：该配置只控制
+    `generate_next_actions()` 会不会生成这类候选，本端点只读现有落盘
+    结果，未开启/还没生成过时自然返回空列表。
+    """
+    paths = _spec_paths(request)
+    try:
+        from mini_agent.evolution.next_action_advisor import (
+            load_all_next_actions, filter_focus_next_step_items,
+        )
+        data = load_all_next_actions(paths)
+        items = filter_focus_next_step_items(data, node_id)
+        return {"items": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/directions")

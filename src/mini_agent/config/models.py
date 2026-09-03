@@ -2082,6 +2082,22 @@ class GrowthAdvisorConfig:
     # `research_exploration`（那个模板是给"随手调研一下"用的最简骨架）。
     auto_pursue_template_id: str = "growth_pursuit"
 
+    # ── [goal_tree_research_and_action_recommendation_plan.md §4.2/§五
+    # 阶段四] 焦点驱动调研自动巡检：`sys:goal_tree_focus_recompute`
+    # 每小时重算 `current_focus_ids` 后，是否顺带对\"新进入焦点\"的节点
+    # 自动触发一次 `FocusResearchTrigger`（阶段二/三已经能通过
+    # `/agent goals research <id>` 手动触发，这里是让它接上自动巡检）。
+    # 默认关闭——虽然触发本身零 LLM 成本、且复用 GrowthBacklog 现有的
+    # pending 上限/冷却期节流，但\"目标树焦点变化就自动生成调研候选\"是
+    # 新引入的自动化行为，先让用户手动用一段时间、确认候选质量和频率
+    # 都合适之后再考虑要不要默认开启，跟 next_action_momentum_enabled/
+    # next_action_focus_next_step_enabled 同一种\"先把机制写出来、默认
+    # 不打扰用户\"的落地方式。
+    goal_tree_focus_research_auto_trigger_enabled: bool = False
+    # 每轮巡检最多处理多少个\"新进入焦点\"的节点，对应
+    # `focus_research_trigger.DEFAULT_MAX_NODES_PER_SCAN`，这里允许覆盖。
+    goal_tree_focus_research_auto_trigger_max_nodes: int = 5
+
     # ── P4-3：采纳后回访（growth_advisor_improvement_plan_v2.md P4-3）───
     # 候选被采纳这么多天后，如果用户还没回答过"有没有推进"，看板会展示一张
     # 回访卡片；答案（progressed/stalled）反馈进置信度调权，不强制回答。

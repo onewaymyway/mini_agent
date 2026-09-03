@@ -564,6 +564,37 @@ def load_pending_next_actions(paths: AgentPaths) -> Optional[dict]:
     return data
 
 
+def load_all_next_actions(paths: AgentPaths) -> Optional[dict]:
+    """[goal_tree_research_and_action_recommendation_plan.md §4.6 阶段四]
+    跟 `load_pending_next_actions()` 的区别：不管 `shown_at` 是否已经
+    设置都返回落盘内容——`load_pending_next_actions()` 是给\"只在没展示
+    过时提醒一次\"的启动横幅场景用的，这里是给\"随时查询当前有哪些建议\"
+    的只读场景用的（`GET /v1/goals/next_steps`、CLI `next-steps`、看板
+    \"💡 建议\"标记），跟现有 `GET /v1/next_actions` 端点读取方式一致。
+    """
+    p = paths.next_actions_path
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def filter_focus_next_step_items(data: Optional[dict], node_id: Optional[str] = None) -> list[dict]:
+    """[§4.6] 从 `load_all_next_actions()` 的结果里挑出
+    `kind == "focus_next_step"` 的条目；传 `node_id` 时进一步只保留
+    `ref_id` 以 `<node_id>:` 开头的条目（阶段三实施记录里\"三、后续阶段
+    的影响\"预告的过滤方式：`ref_id.split(":")[0] == node_id`）。
+    `data` 为 `None`（还没生成过推荐）时返回空列表，不是 `None`。
+    """
+    items = (data or {}).get("items") or []
+    out = [it for it in items if it.get("kind") == "focus_next_step"]
+    if node_id:
+        out = [it for it in out if str(it.get("ref_id", "")).split(":")[0] == node_id]
+    return out
+
+
 def mark_shown(paths: AgentPaths) -> None:
     p = paths.next_actions_path
     if not p.exists():

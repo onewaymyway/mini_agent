@@ -866,6 +866,39 @@ async_jobs 异步任务模式：立即返回 `{"job_id", "key"}`，轮询
 `GET /v1/goals/tree` 从全局根节点出发的遍历不会再看到它）。校验失败
 返回 400，`node_id` 不存在返回 404。
 
+### /v1/goals/{node_id}/research、/v1/goals/next_steps — 目标树 × 自主调研
+（goal_tree_research_and_action_recommendation_plan.md §4.6 阶段四）
+
+```
+GET  /v1/goals/{node_id}/research         该节点待处理的调研候选 + 最近触发时间
+POST /v1/goals/{node_id}/research/trigger 手动触发一次焦点驱动调研
+GET  /v1/goals/next_steps?node_id=...     查询"焦点行动建议"（可选按节点过滤）
+```
+
+`GET /v1/goals/{node_id}/research` 返回
+`{"pending_candidates": [GrowthCandidate, ...], "last_triggered_at": float | null}`——
+`pending_candidates` 是 `GrowthBacklog` 里 `origin=="focus_research"` 且证据
+引用命中该节点（`evidence_refs` 含 `goal_tree:<node_id>`）的 pending 候选，
+`last_triggered_at` 为 `null` 表示从未针对该节点触发过调研。节点不存在时
+返回 404。
+
+`POST /v1/goals/{node_id}/research/trigger` Body：`{"force": bool?}`（跳过
+节奏治理，结构节点默认最小间隔 7 天、叶子 Goal 2 天）。返回
+`{"candidate": GrowthCandidate | null, "skip_reason": str | null}`——
+`candidate` 为 `null` 时 `skip_reason` 给出未生成新候选的原因（节奏治理
+拦截时给出明确剩余等待天数，其余情况——字面去重命中/冷却期/pending 已满
+——统一给出简要说明）。跟 CLI `/agent goals research <id> [--force]` 是
+同一条路径（`FocusResearchTrigger.trigger()`），产出的候选走
+`GrowthBacklog`，不是 `/v1/goals/{node_id}/candidates/*`（那套是目标树
+自己的分解候选，两套候选队列分开）。
+
+`GET /v1/goals/next_steps` 只读现有落盘结果（`next_action_advisor` 生成的
+`data.next_actions.json`，跟已有的 `GET /v1/next_actions` 读同一份文件），
+按 `kind == "focus_next_step"` 过滤，可选再传 `node_id` 过滤到某一个焦点
+节点（按 `ref_id` 前缀匹配）。返回 `{"items": [...]}`，未开启
+`next_action_focus_next_step_enabled` 配置或还没生成过一轮推荐时自然返回
+空列表，不是错误。
+
 ### /v1/goals/{goal_id}/execution_spec — Goal 执行规范 REST API
 
 把一个（可能是周期性执行的）Goal 具体化成结构化执行规范：每一轮该产出

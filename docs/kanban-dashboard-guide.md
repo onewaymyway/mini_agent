@@ -288,6 +288,33 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
     `POST /v1/goals/{id}/candidates/{cid}/accept|reject`、
     `POST /v1/goals/{id}/focus_pin`、`POST /v1/goals/{id}/reparent`，
     详见 [HTTP API 指南](http-api-guide.md)。
+  - **📄 相关调研 / 💡 建议**（`next_doc/goal_tree_research_and_action_
+    recommendation_plan.md` §4.5/阶段四）：每个节点的\"⚙️ 管理\"折叠区
+    底部新增\"📄 相关调研\"子区块——展示该节点当前待处理的调研候选（标题+
+    生成理由）、最近一次触发调研的时间，以及一个\"🔍 立即调研\"按钮
+    （对应 `POST /v1/goals/{id}/research/trigger`，`force=true`，手动
+    跳过节奏治理）。产出的候选走成长顾问既有的 `GrowthBacklog` 队列，
+    要采纳/忽略请到\"🌱 成长顾问\"tab 或用 `/agent growth accept|dismiss`
+    处理，本区块只做展示和手动触发，不重复一套候选处理 UI。
+    节点标题旁如果出现\"💡\"图标，表示该节点有未处理的\"焦点行动建议\"
+    （`focus_next_step` 候选，来自 `next_action_advisor`，需要先在
+    `agent_config.json` 里显式开启 `digest_advisor.next_action_focus_
+    next_step_enabled` 并触发过一轮 `/next` 生成才会有数据）；建议内容
+    本身走已有的\"💡 建议\"展示入口（晨报/`/next`），树形视图里只做\"有没有
+    待处理建议\"的提示，不重复展示具体建议文案。
+  - **自动巡检**（默认关闭）：`agent_config.json` 里
+    `growth_advisor.goal_tree_focus_research_auto_trigger_enabled` 设为
+    `true` 后，每小时一次的 `sys:goal_tree_focus_recompute` 巡检会在
+    重算 `current_focus_ids` 之后，顺带对\"新进入焦点\"的节点自动触发一次
+    `FocusResearchTrigger`（跟上面\"🔍 立即调研\"按钮走同一套函数，仍受
+    节奏治理约束），每轮最多处理
+    `growth_advisor.goal_tree_focus_research_auto_trigger_max_nodes`
+    （默认 5）个节点，避免焦点集合一次性大幅变化时瞬间铺开一堆调研候选。
+    默认关闭，先手动用\"🔍 立即调研\"/CLI `research` 命令观察候选质量，
+    确认合适后再考虑开启。
+  - 对应新增 REST 端点：`GET /v1/goals/{id}/research`、
+    `POST /v1/goals/{id}/research/trigger`、`GET /v1/goals/next_steps`，
+    详见 [HTTP API 指南](http-api-guide.md)。
 - **📈 完成率趋势**（`GET /v1/objectives/completion_trend`，
   `next_doc/kanban_perception_gaps_improvement_plan.md` 方向 D.1）：折叠
   区块，展开才拉取。展示每日完成/失败 Objective 数的折线图，以及最近
