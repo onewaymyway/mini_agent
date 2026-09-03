@@ -9,7 +9,13 @@
 > 以为的那样绑定 `direction_id`（它本来就直接读 `GoalBacklog` 的
 > `GoalNode`），真正的缺口是扫描范围只到叶子 `goal` 层、漏掉了"现阶段
 > 焦点恰好停在 domain/stage 层"的情况，实施记录里有详细说明，§4.1 原文
-> 保留供参考、不回改。
+> 保留供参考、不回改。阶段二（焦点驱动调研）已完成，见
+> `next_doc/goal_tree_research_action_phase2_implementation_record.md`。
+> 阶段二落地时同样发现 `growth_advisor.py` 的 `auto_pursue_candidate()`/
+> `GrowthBacklog` 本来就是按 `GoalNode` id（而非 `direction_id`）运作，
+> 不需要迁移绑定对象；新增的 `FocusResearchTrigger` 直接复用
+> `GrowthBacklog.add_or_merge()` 现有的"生成 → 用户确认"候选队列，没有
+> 新开一条调研素材流，比 §4.2 原文设想的改动量更小，详见实施记录。
 >
 > **前置阅读**：`next_doc/goal_tree_system_plan.md`（目标树结构，四个阶段
 > 已全部完成）、`docs/growth-advisor-guide.md` 1.5 节"设计理念"、

@@ -310,12 +310,24 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         else:
             _cmd_focus_show(gb, rest[0])
 
+    elif subcmd == "research":
+        # [next_doc/goal_tree_research_and_action_recommendation_plan.md
+        # §4.2/§4.6 阶段二] /agent goals research <id> [--force]
+        # 手动触发一次焦点驱动调研，生成的候选走 GrowthBacklog（跟 /agent
+        # growth 里已有的候选处理入口一致，不是 /agent goals candidates）。
+        if not rest:
+            R.print_error("Usage: /agent goals research <id> [--force]")
+            return
+        force = "--force" in rest[1:]
+        _cmd_research(gb, paths, rest[0], force=force)
+
     else:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
             "progress, feedback, recur, unrecur, migrate-legacy, spec, phase, diagnose, "
-            "tune, status, reset-step, judge-calibration, tree, decompose, candidates, focus"
+            "tune, status, reset-step, judge-calibration, tree, decompose, candidates, "
+            "focus, research"
         )
 
 
@@ -1438,6 +1450,45 @@ def _cmd_focus_pin(gb, node_id: str, child_id: str, *, pinned: bool) -> None:
     action = "pin" if pinned else "unpin"
     R.print_success(f"已{'📌 pin' if pinned else '取消 pin'}：{child_id} "
                      f"({action})，current_focus_ids 已立即重算。")
+
+
+def _cmd_research(gb, paths, node_id: str, *, force: bool = False) -> None:
+    """[next_doc/goal_tree_research_and_action_recommendation_plan.md
+    §4.2/§4.6] /agent goals research <id>
+
+    手动触发一次焦点驱动调研（阶段二只接 CLI，不接自动巡检）。生成/合并
+    的候选落进 GrowthBacklog（跟成长顾问已有的候选队列是同一份），通过
+    `/agent growth accept|dismiss <candidate_id>` 处理，不是
+    `/agent goals candidates`（那个是目标树的分解候选，两套候选队列
+    分开，见设计文档 §4.2 与 GoalTreeDecomposer 的关系说明）。
+    """
+    node = gb.get(node_id)
+    if node is None:
+        R.print_error(f"节点不存在：{node_id}")
+        return
+    try:
+        from mini_agent.evolution.focus_research_trigger import FocusResearchTrigger
+        trigger = FocusResearchTrigger(paths, gb)
+        if not force:
+            skip_reason = trigger.should_trigger(node)
+            if skip_reason:
+                R.print_warning(f"跳过：{skip_reason}（可加 --force 强制触发）")
+                return
+        candidate = trigger.trigger(node_id, force=force)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goals._cmd_research')
+        R.print_error(f"调研触发失败：{e}")
+        return
+
+    if candidate is None:
+        R.print_info(
+            "本次没有生成新的调研候选（可能命中了已有候选/冷却期/pending "
+            "已达上限，详见 GrowthBacklog 节流规则）。"
+        )
+        return
+    R.print_success(f"已生成/更新调研候选：{candidate.title} (id={candidate.candidate_id})")
+    R.print_info(f"用 /agent growth 查看详情，或 /agent growth accept {candidate.candidate_id} 采纳。")
 
 
 def _get_paths(agent):
