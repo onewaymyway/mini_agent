@@ -231,6 +231,46 @@ def resolve_if_present(paths: AgentPaths, page_path: Path) -> bool:
     return True
 
 
+def reset_to_pending(
+    paths: AgentPaths,
+    *,
+    statuses: Optional[set[str]] = None,
+    page_paths: Optional[set[str]] = None,
+) -> int:
+    """把已转 `needs_human`（或指定状态）的记录重新置回 `pending` 并清零
+    `repair_attempts` / `last_attempt_error`，让它们能重新进入下一轮
+    `run_quarantine_repair_cycle()` 的修复循环。
+
+    典型场景：`quarantine_repair.py` 新增了一条修复策略（比如新增了
+    `_fix_missing_id_and_type`），能救回一批之前因为\"没有匹配策略\"或
+    \"尝试次数已耗尽\"而堆在 `needs_human` 里的旧记录——但这些记录已经不是
+    `pending` 状态、也不会被 `run_quarantine_repair_cycle()` 自动捡回来，
+    需要显式重置一次，之后正常走 `/wiki quarantine repair`（或下一次
+    `sys:wiki_quarantine_repair` cron）就会用新策略重新尝试。
+
+    默认 `statuses={STATUS_NEEDS_HUMAN}`（只重置人工队列，不动 pending/
+    repaired），`page_paths=None` 时不按路径筛选、命中所有匹配状态的记录。
+    返回实际被重置的记录数。
+    """
+    if statuses is None:
+        statuses = {STATUS_NEEDS_HUMAN}
+    records = load_quarantine(paths)
+    reset_count = 0
+    for key, rec in records.items():
+        if rec.status not in statuses:
+            continue
+        if page_paths is not None and key not in page_paths:
+            continue
+        rec.status = STATUS_PENDING
+        rec.repair_attempts = 0
+        rec.last_attempt_at = None
+        rec.last_attempt_error = None
+        reset_count += 1
+    if reset_count:
+        _save_quarantine(paths, records)
+    return reset_count
+
+
 def purge_quarantined(
     paths: AgentPaths,
     *,
@@ -355,4 +395,5 @@ __all__ = [
     "record_issue",
     "resolve_if_present",
     "scan_and_record",
+    "reset_to_pending",
 ]

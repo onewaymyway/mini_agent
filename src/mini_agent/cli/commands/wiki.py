@@ -39,7 +39,7 @@ def handle_wiki_cmd(args: list[str], agent=None) -> None:
             "/wiki search <query> [--deep] | /wiki rebuild [--full] | "
             "/wiki stats | /wiki promotion | /wiki lifecycle-scan [--days N] | "
             "/wiki gap-scan [--max-results N] [--dispatch] | /wiki fallback-cleanup [--days N] | "
-            "/wiki quarantine [list|repair|purge]"
+            "/wiki quarantine [list|repair|retry|purge]"
         )
         return
 
@@ -603,7 +603,7 @@ def _handle_fallback_cleanup(rest: list[str], agent) -> None:
 
 
 def _handle_quarantine(rest: list[str], agent) -> None:
-    """/wiki quarantine [list|repair|purge] —— 解析失败页面隔离区（问题
+    """/wiki quarantine [list|repair|retry|purge] —— 解析失败页面隔离区（问题
     数据检测与自动修复机制，见 wiki/quarantine.py + wiki/quarantine_repair.py）。
 
     不传子命令等价于 list：展示当前隔离区里的 pending/needs_human 记录，
@@ -620,6 +620,29 @@ def _handle_quarantine(rest: list[str], agent) -> None:
 
     if action == "purge":
         _handle_quarantine_purge(rest[1:], paths)
+        return
+
+    if action == "retry":
+        from mini_agent.wiki.quarantine import STATUS_NEEDS_HUMAN, reset_to_pending
+
+        n = reset_to_pending(paths, statuses={STATUS_NEEDS_HUMAN})
+        if n == 0:
+            R.print_info("没有 needs_human 记录需要重置。")
+            return
+        R.print_success(f"已把 {n} 篇 needs_human 记录重置为 pending，正在重新尝试修复……")
+
+        from mini_agent.wiki.quarantine_repair import run_quarantine_repair_cycle
+
+        llm_helper = None
+        if getattr(agent.cfg.memory, "wiki_quarantine_llm_repair_enabled", False):
+            llm_helper = getattr(agent, "llm_helper", None)
+
+        report = run_quarantine_repair_cycle(paths, llm_helper=llm_helper)
+        R.print_success(
+            f"重试完成：尝试修复 {report.repair_attempted} 篇，成功 {report.repaired} 篇"
+            + (f"（其中 LLM 兜底修复 {report.llm_repaired} 篇）" if report.llm_repaired else "")
+            + f"，仍失败 {report.still_failing} 篇，转人工 {report.needs_human} 篇"
+        )
         return
 
     if action == "repair":
@@ -649,7 +672,7 @@ def _handle_quarantine(rest: list[str], agent) -> None:
         return
 
     if action != "list":
-        R.print_error("用法：/wiki quarantine [list|repair|purge]")
+        R.print_error("用法：/wiki quarantine [list|repair|retry|purge]")
         return
 
     from mini_agent.wiki.quarantine import STATUS_NEEDS_HUMAN, STATUS_PENDING, load_quarantine
