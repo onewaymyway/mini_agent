@@ -116,6 +116,16 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/objectives/completion_trend  [同上 方向 D.1] Objective 完成率
                                        每日趋势（快照挂在 /growth/scan 上记录）
     GET    /v1/wiki/quarantine_status  [同上 方向 E] wiki 隔离区积压
+    GET    /v1/wiki/stats            [本轮新增] wiki 内容分布/知识生命周期
+                                       状态统计，看板 wiki 页信息统计面板
+    GET    /v1/wiki/promotion        [本轮新增] wiki 转正三项标准达成情况
+    GET    /v1/wiki/quarantine       [本轮新增] 隔离区完整视图（pending/
+                                       needs_human/repaired 全量记录详情）
+    POST   /v1/wiki/quarantine/repair [本轮新增] 手动触发一轮扫描+修复
+    POST   /v1/wiki/quarantine/retry  [本轮新增] 重置 needs_human→pending
+                                       并立即重试（用新增修复策略救旧记录）
+    POST   /v1/wiki/quarantine/purge  [本轮新增] 删除"确定救不回来"的问题
+                                       页面，默认 dry_run 预览、需二次确认
     GET    /v1/sentinel/summary      [同上 方向 A] 哨兵聚合面板
     GET    /v1/goal_mode/stuck_stats [goal_stuck_stats_and_llm_progress_judge_
                                        plan.md §1] Goal stuck 历史统计（只读）
@@ -1339,6 +1349,226 @@ async def get_wiki_quarantine_status(request: Request):
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_wiki_quarantine_status')
         return {"pending_count": 0, "earliest_first_seen_at": None, "items": []}
+
+
+# ── wiki 看板信息统计 + 隔离区管理维护（本轮新增）───────────────────────────
+# 背景：上面的 `quarantine_status` 只读暴露了"待修复"这一小片（供哨兵面板
+# 提醒用），wiki 本身的内容分布统计（compute_stats）、转正评估
+# （evaluate_promotion_readiness）、隔离区完整视图（含 needs_human/repaired），
+# 以及 `repair`/`retry`/`purge` 这几个 CLI（`/wiki quarantine repair|retry|
+# purge`）已有的管理动作，此前都只能通过 CLI 敲命令才能看到/触发，看板完全
+# 是个盲区。这里补上对应的只读端点 + 3 个动作端点，都直接复用 CLI 同一份
+# 底层函数（`wiki/stats.py`/`wiki/promotion.py`/`wiki/quarantine.py`/
+# `wiki/quarantine_repair.py`），不重复实现任何判断逻辑，保证看板和 CLI
+# 看到的、触发的是同一件事。
+
+@router.get("/wiki/stats")
+async def get_wiki_stats(request: Request):
+    """GET /v1/wiki/stats — wiki 内容来源分布统计（P0）+ 知识生命周期状态
+    分布（O4）+ 抽取批次充分性指标（E2），复用 `/wiki stats` CLI 命令同一份
+    `compute_stats()`/`compute_extraction_stats()`，只读、无副作用。"""
+    _require_owner(request)
+    paths = _get_paths_for_request(request)
+    try:
+        from mini_agent.wiki.stats import compute_stats, compute_extraction_stats
+
+        stats = compute_stats(paths).to_dict()
+        extraction = compute_extraction_stats(paths).to_dict()
+        total_pages = sum(stats.get("by_type", {}).values())
+        return {"total_pages": total_pages, **stats, "extraction": extraction}
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_wiki_stats')
+        return {
+            "total_pages": 0, "by_type": {}, "by_entity_type": {},
+            "by_source_kind": {}, "by_knowledge_state": {}, "extraction": {},
+        }
+
+
+@router.get("/wiki/promotion")
+async def get_wiki_promotion(request: Request):
+    """GET /v1/wiki/promotion — wiki 转正为主索引的三项标准（P4）当前达成
+    情况，复用 `/wiki promotion` CLI 命令同一份 `evaluate_promotion_
+    readiness()`。只读聚合历史观测记录，不触发任何切换动作。"""
+    _require_owner(request)
+    paths = _get_paths_for_request(request)
+    try:
+        from mini_agent.wiki.promotion import evaluate_promotion_readiness
+
+        return evaluate_promotion_readiness(paths).to_dict()
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_wiki_promotion')
+        return {"overall_ready": False, "ratio": {}, "validation": {}, "search_ab": {}}
+
+
+def _quarantine_record_to_dict(rec) -> dict:
+    return {
+        "page_path": rec.page_path,
+        "error_type": rec.error_type,
+        "error_message": rec.error_message,
+        "status": rec.status,
+        "detect_count": rec.detect_count,
+        "repair_attempts": rec.repair_attempts,
+        "first_seen_at": rec.first_seen_at,
+        "last_seen_at": rec.last_seen_at,
+        "last_attempt_at": rec.last_attempt_at,
+        "last_attempt_error": rec.last_attempt_error,
+        "repaired_at": rec.repaired_at,
+        "repaired_by": rec.repaired_by,
+    }
+
+
+@router.get("/wiki/quarantine")
+async def get_wiki_quarantine(request: Request):
+    """GET /v1/wiki/quarantine — 隔离区完整视图（对应 `/wiki quarantine
+    list`）：按状态分组返回 pending/needs_human/repaired 全部记录详情
+    （路径、错误信息、检测/修复尝试次数），供看板展示 + 驱动下面的
+    `repair`/`retry`/`purge` 动作按钮。跟 `quarantine_status` 端点的区别是
+    后者只给哨兵面板用的精简 pending 计数，这里是给"隔离区管理"页面用的
+    完整数据。"""
+    _require_owner(request)
+    paths = _get_paths_for_request(request)
+    try:
+        from mini_agent.wiki.quarantine import (
+            STATUS_NEEDS_HUMAN, STATUS_PENDING, STATUS_REPAIRED, load_quarantine,
+        )
+
+        records = load_quarantine(paths)
+        pending = [r for r in records.values() if r.status == STATUS_PENDING]
+        needs_human = [r for r in records.values() if r.status == STATUS_NEEDS_HUMAN]
+        repaired = [r for r in records.values() if r.status == STATUS_REPAIRED]
+        return {
+            "pending_count": len(pending),
+            "needs_human_count": len(needs_human),
+            "repaired_count": len(repaired),
+            "pending": [_quarantine_record_to_dict(r) for r in sorted(pending, key=lambda x: -x.last_seen_at)],
+            "needs_human": [_quarantine_record_to_dict(r) for r in sorted(needs_human, key=lambda x: -x.last_seen_at)],
+            "repaired": [_quarantine_record_to_dict(r) for r in sorted(repaired, key=lambda x: -(x.repaired_at or 0))][:50],
+        }
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_wiki_quarantine')
+        return {
+            "pending_count": 0, "needs_human_count": 0, "repaired_count": 0,
+            "pending": [], "needs_human": [], "repaired": [],
+        }
+
+
+def _wiki_llm_helper_for_agent(self_agent):
+    """是否给隔离区修复循环传 `llm_helper`，跟 CLI `/wiki quarantine repair`
+    走同一个判断（`MemoryConfig.wiki_quarantine_llm_repair_enabled`，
+    默认关闭），保持手动触发（CLI/看板）和 cron 定时触发行为一致。"""
+    if self_agent is None:
+        return None
+    if not getattr(getattr(self_agent, "cfg", None).memory, "wiki_quarantine_llm_repair_enabled", False):
+        return None
+    return getattr(self_agent, "llm_helper", None)
+
+
+@router.post("/wiki/quarantine/repair")
+async def post_wiki_quarantine_repair(request: Request):
+    """POST /v1/wiki/quarantine/repair — 手动触发一轮"全量扫描 + 尝试修复"
+    （对应 CLI `/wiki quarantine repair`），跟 `sys:wiki_quarantine_repair`
+    cron job 是同一份逻辑（`run_quarantine_repair_cycle()`），用于看板上
+    "立即重新扫描"按钮，不想等定时任务。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    paths = _get_paths_for_request(request)
+
+    from mini_agent.wiki.quarantine_repair import run_quarantine_repair_cycle
+
+    self_agent = http_server.bridge.agent
+    llm_helper = _wiki_llm_helper_for_agent(self_agent)
+
+    report = await run_blocking(
+        run_quarantine_repair_cycle, paths,
+        llm_helper=llm_helper, where="wiki_quarantine_repair", timeout=60.0,
+    )
+    return report.to_dict()
+
+
+@router.post("/wiki/quarantine/retry")
+async def post_wiki_quarantine_retry(request: Request):
+    """POST /v1/wiki/quarantine/retry — 把 `needs_human` 记录重置为
+    `pending` 并立即重新触发一轮修复（对应 CLI `/wiki quarantine retry`）。
+    用于"新增了修复策略（比如缺 id/type 反推），之前救不回来、长期积压在
+    人工队列里的旧记录现在应该能修好了"这种场景——`repair`/cron 只处理
+    `pending` 状态的记录，不会自动重新捡回 `needs_human`，必须显式重置。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    paths = _get_paths_for_request(request)
+
+    from mini_agent.wiki.quarantine import STATUS_NEEDS_HUMAN, reset_to_pending
+    from mini_agent.wiki.quarantine_repair import run_quarantine_repair_cycle
+
+    reset_count = await run_blocking(
+        reset_to_pending, paths,
+        statuses={STATUS_NEEDS_HUMAN}, where="wiki_quarantine_reset", timeout=30.0,
+    )
+    if reset_count == 0:
+        return {"reset_count": 0, "report": None}
+
+    self_agent = http_server.bridge.agent
+    llm_helper = _wiki_llm_helper_for_agent(self_agent)
+    report = await run_blocking(
+        run_quarantine_repair_cycle, paths,
+        llm_helper=llm_helper, where="wiki_quarantine_repair", timeout=60.0,
+    )
+    return {"reset_count": reset_count, "report": report.to_dict()}
+
+
+from pydantic import BaseModel as _WikiBaseModel
+
+
+class _WikiQuarantinePurgeBody(_WikiBaseModel):
+    statuses: list[str] = ["needs_human"]   # 默认只筛"确定没救"最典型的一批
+    page_paths: Optional[list[str]] = None  # None = 不按路径筛选，命中 statuses 全部记录
+    dry_run: bool = True                    # 默认只预览，跟 CLI 两步确认惯例一致
+
+
+@router.post("/wiki/quarantine/purge")
+async def post_wiki_quarantine_purge(request: Request, body: _WikiQuarantinePurgeBody):
+    """POST /v1/wiki/quarantine/purge — 删除隔离区里"确定救不回来"的问题
+    页面（磁盘文件 + 隔离区记录一起清，对应 CLI `/wiki quarantine purge`）。
+    默认 `dry_run=True` 只返回会命中的记录数、不做任何写操作，供看板先
+    展示预览；用户确认后前端再带 `dry_run=False` 请求一次真正执行删除，
+    这一步不可恢复。`statuses` 只接受 `wiki/quarantine.py` 定义的合法状态
+    名，非法值直接拒绝，避免误传导致误删。"""
+    _require_owner(request)
+    paths = _get_paths_for_request(request)
+
+    from mini_agent.wiki.quarantine import (
+        STATUS_NEEDS_HUMAN, STATUS_PENDING, STATUS_REPAIRED, purge_quarantined,
+    )
+
+    valid_statuses = {STATUS_PENDING, STATUS_NEEDS_HUMAN, STATUS_REPAIRED}
+    statuses = set(body.statuses or [])
+    invalid = statuses - valid_statuses
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"未知状态：{sorted(invalid)}（合法值：{sorted(valid_statuses)}）")
+    if not statuses:
+        raise HTTPException(status_code=400, detail="statuses 不能为空——不加筛选会命中隔离区全部记录，必须显式指定")
+
+    page_paths = set(body.page_paths) if body.page_paths else None
+
+    report = await run_blocking(
+        purge_quarantined, paths,
+        statuses=statuses, page_paths=page_paths, dry_run=body.dry_run,
+        where="wiki_quarantine_purge", timeout=30.0,
+    )
+    return {
+        "dry_run": body.dry_run,
+        "matched": report.matched,
+        "deleted": report.deleted,
+        "missing_file": report.missing_file,
+        "protected_skipped": report.protected_skipped,
+        "errors": report.errors,
+    }
 
 
 # ── 哨兵聚合面板（kanban_perception_gaps_improvement_plan.md 方向 A）────────

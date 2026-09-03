@@ -10276,6 +10276,253 @@ def render_error_log_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: 📚 wiki 知识库（内容统计 + 隔离区管理，本轮新增）
+# ═══════════════════════════════════════════════════════════════════════
+_WIKI_STATE_LABEL = {"fresh": "🟢 fresh", "stale": "🟡 stale", "superseded": "⚪ superseded"}
+
+
+def _render_wiki_stats_section(client: AgentClient) -> None:
+    st.markdown("##### 📊 内容分布统计")
+    stats = client.wiki_stats() or {}
+    if stats.get("_error"):
+        st.error(f"获取 wiki 统计失败：{stats['_error']}")
+        return
+
+    st.metric("页面总数", stats.get("total_pages", 0))
+
+    by_type = stats.get("by_type") or {}
+    by_source_kind = stats.get("by_source_kind") or {}
+    by_knowledge_state = stats.get("by_knowledge_state") or {}
+    by_entity_type = stats.get("by_entity_type") or {}
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.caption("按页面类型（type）")
+        if by_type:
+            st.bar_chart(by_type)
+        else:
+            st.caption("暂无数据。")
+    with col2:
+        st.caption("按内容来源（source_kind）")
+        if by_source_kind:
+            st.bar_chart(by_source_kind)
+        else:
+            st.caption("暂无数据。")
+
+    if by_knowledge_state:
+        st.caption("按知识生命周期状态（fresh / stale / superseded）")
+        state_cols = st.columns(len(by_knowledge_state) or 1)
+        for col, (state, count) in zip(state_cols, sorted(by_knowledge_state.items())):
+            col.metric(_WIKI_STATE_LABEL.get(state, state), count)
+
+    if by_entity_type:
+        with st.expander("按实体类型（entity_type，仅 entity 页面）"):
+            st.dataframe(
+                [{"实体类型": k, "数量": v} for k, v in sorted(by_entity_type.items())],
+                width='stretch', hide_index=True,
+            )
+
+    extraction = stats.get("extraction") or {}
+    if extraction:
+        with st.expander("抽取批次充分性指标"):
+            ec1, ec2, ec3, ec4 = st.columns(4)
+            ec1.metric("统计批次数", extraction.get("sample_count", 0))
+            ec2.metric("场均决策数", extraction.get("avg_decisions_per_extraction", 0))
+            ec3.metric("场均实体数", extraction.get("avg_entities_per_extraction", 0))
+            ec4.metric("场均事实数", extraction.get("avg_facts_per_extraction", 0))
+
+
+def _render_wiki_promotion_section(client: AgentClient) -> None:
+    st.markdown("##### 🎓 转正评估（wiki 是否已具备替代主索引的条件）")
+    st.caption("三项标准同时满足才是 `overall_ready`；本面板只读展示，不会触发任何切换动作。")
+    readiness = client.wiki_promotion() or {}
+    if readiness.get("_error"):
+        st.error(f"获取转正评估失败：{readiness['_error']}")
+        return
+
+    overall = readiness.get("overall_ready")
+    if overall:
+        st.success("✅ 三项标准均已达成（`overall_ready = True`）。")
+    else:
+        st.info("尚未同时满足三项标准，继续观测中。")
+
+    ratio = readiness.get("ratio") or {}
+    validation = readiness.get("validation") or {}
+    ab = readiness.get("search_ab") or {}
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("**内容占比**")
+        st.metric(
+            "达标" if ratio.get("ok") else "未达标",
+            f"{ratio.get('current_ratio', 0):.0%}",
+            help=f"阈值 {ratio.get('threshold', 0):.0%}，"
+                 f"已连续达标 {ratio.get('days_observed', 0)}/{ratio.get('days_required', 0)} 天",
+        )
+    with c2:
+        st.markdown("**校验无错误**")
+        st.metric(
+            "达标" if validation.get("ok") else "未达标",
+            f"{validation.get('days_observed', 0)}/{validation.get('days_required', 0)} 天",
+            help=f"最近一次快照校验错误数：{validation.get('latest_errors')}",
+        )
+    with c3:
+        st.markdown("**检索 A/B 命中率**")
+        if ab.get("ok") is None:
+            st.metric("样本不足", f"{ab.get('sample_size', 0)} 条")
+        else:
+            st.metric(
+                "达标" if ab.get("ok") else "未达标",
+                f"wiki {ab.get('wiki_hit_rate', 0):.0%} vs shelf {ab.get('shelf_hit_rate', 0):.0%}",
+                help=f"样本数 {ab.get('sample_size', 0)}",
+            )
+
+
+def _render_wiki_quarantine_record_table(records: list[dict]) -> None:
+    if not records:
+        st.caption("无记录。")
+        return
+    import datetime as _dt
+
+    def _fmt_ts(ts):
+        return _dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "—"
+
+    st.dataframe(
+        [
+            {
+                "路径": r["page_path"],
+                "错误类型": r["error_type"],
+                "错误信息": (r.get("error_message") or "")[:120],
+                "检测次数": r["detect_count"],
+                "修复尝试": r["repair_attempts"],
+                "最近检测": _fmt_ts(r.get("last_seen_at")),
+                "最近失败原因": (r.get("last_attempt_error") or "")[:120],
+            }
+            for r in records
+        ],
+        width='stretch', hide_index=True,
+    )
+
+
+def _render_wiki_quarantine_section(client: AgentClient) -> None:
+    st.markdown("##### 🚧 问题页面隔离区")
+    st.caption(
+        "解析失败的 wiki 页面会被自动记录到隔离区并尝试自动修复，"
+        "对应 CLI `/wiki quarantine [list|repair|retry|purge]`。"
+    )
+
+    data = client.wiki_quarantine() or {}
+    if data.get("_error"):
+        st.error(f"获取隔离区数据失败：{data['_error']}")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("待修复（pending）", data.get("pending_count", 0))
+    c2.metric("已转人工（needs_human）", data.get("needs_human_count", 0))
+    c3.metric("历史已修复（repaired）", data.get("repaired_count", 0))
+
+    ac1, ac2 = st.columns(2)
+    with ac1:
+        if st.button("🔄 立即扫描 + 修复", key="wiki_qz_repair_btn",
+                      help="对应 /wiki quarantine repair：全量扫描 + 对 pending 记录尝试修复"):
+            report = client.wiki_quarantine_repair()
+            if report and "_error" not in report:
+                st.success(
+                    f"扫描 {report.get('scanned', 0)} 篇，尝试修复 {report.get('repair_attempted', 0)} 篇，"
+                    f"成功 {report.get('repaired', 0)} 篇，仍失败 {report.get('still_failing', 0)} 篇，"
+                    f"转人工 {report.get('needs_human', 0)} 篇"
+                )
+                st.rerun()
+            else:
+                st.error((report or {}).get("_error", "触发失败"))
+    with ac2:
+        if st.button("♻️ 重试已转人工记录", key="wiki_qz_retry_btn",
+                      help="对应 /wiki quarantine retry：适合刚上线新修复策略后，把之前救不回来的旧记录重新捞一遍",
+                      disabled=data.get("needs_human_count", 0) == 0):
+            res = client.wiki_quarantine_retry()
+            if res and "_error" not in res:
+                reset_count = res.get("reset_count", 0)
+                if reset_count == 0:
+                    st.info("没有 needs_human 记录需要重置。")
+                else:
+                    report = res.get("report") or {}
+                    st.success(
+                        f"已重置 {reset_count} 篇为 pending 并重新尝试：成功 {report.get('repaired', 0)} 篇，"
+                        f"仍失败 {report.get('still_failing', 0)} 篇，转人工 {report.get('needs_human', 0)} 篇"
+                    )
+                st.rerun()
+            else:
+                st.error((res or {}).get("_error", "触发失败"))
+
+    if data.get("pending"):
+        with st.expander(f"待修复列表（{data.get('pending_count', 0)} 篇）"):
+            _render_wiki_quarantine_record_table(data["pending"])
+
+    if data.get("needs_human"):
+        with st.expander(f"已转人工列表（{data.get('needs_human_count', 0)} 篇）", expanded=True):
+            _render_wiki_quarantine_record_table(data["needs_human"])
+
+    if data.get("repaired"):
+        with st.expander(f"历史已修复（最近 {len(data['repaired'])} 篇）"):
+            _render_wiki_quarantine_record_table(data["repaired"])
+
+    st.markdown("---")
+    with st.expander("🗑️ 清理\"确定救不回来\"的问题页面（purge，不可恢复）"):
+        st.caption(
+            "会同时删除磁盘上的 .md 文件和隔离区记录，只影响隔离区里已记录的页面，"
+            "不会碰任何能正常解析的 wiki 页面。默认先预览，确认无误后再执行。"
+        )
+        status_choices = st.multiselect(
+            "筛选状态", ["pending", "needs_human", "repaired"],
+            default=["needs_human"], key="wiki_qz_purge_statuses",
+        )
+        preview_key = "wiki_qz_purge_preview"
+        if st.button("🔍 预览将删除的记录数", key="wiki_qz_purge_preview_btn", disabled=not status_choices):
+            res = client.wiki_quarantine_purge(statuses=status_choices, dry_run=True)
+            if res and "_error" not in res:
+                st.session_state[preview_key] = res
+            else:
+                st.session_state.pop(preview_key, None)
+                st.error((res or {}).get("_error", "预览失败"))
+
+        preview = st.session_state.get(preview_key)
+        if preview:
+            st.warning(f"将删除 {preview.get('matched', 0)} 条记录对应的磁盘文件（不可恢复）。")
+            confirm = st.checkbox("我已确认以上范围，执行删除", key="wiki_qz_purge_confirm")
+            if st.button("⚠️ 确认执行删除", disabled=not confirm, type="primary", key="wiki_qz_purge_confirm_btn"):
+                res = client.wiki_quarantine_purge(statuses=status_choices, dry_run=False)
+                if res and "_error" not in res:
+                    st.success(
+                        f"已删除 {res.get('deleted', 0)} 篇；"
+                        f"{res.get('missing_file', 0)} 篇文件已不存在；"
+                        f"{res.get('protected_skipped', 0)} 篇因受保护跳过。"
+                    )
+                    if res.get("errors"):
+                        st.warning(f"部分失败：{res['errors']}")
+                    st.session_state.pop(preview_key, None)
+                    st.session_state.pop("wiki_qz_purge_confirm", None)
+                    st.rerun()
+                else:
+                    st.error((res or {}).get("_error", "删除执行失败"))
+
+
+def render_wiki_tab(client: AgentClient):
+    st.markdown("#### 📚 wiki 知识库")
+    st.caption(
+        "内容分布统计、转正评估（P4）、问题页面隔离区管理，数据来源与 CLI "
+        "`/wiki stats|promotion|quarantine` 完全一致。"
+    )
+
+    sub_stats, sub_promotion, sub_quarantine = st.tabs(["📊 内容统计", "🎓 转正评估", "🚧 隔离区管理"])
+    with sub_stats:
+        _render_wiki_stats_section(client)
+    with sub_promotion:
+        _render_wiki_promotion_section(client)
+    with sub_quarantine:
+        _render_wiki_quarantine_section(client)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab: 🧪 混合执行（hybrid_exec，next_doc/hybrid_exec_design_plan.md P4）
 # ═══════════════════════════════════════════════════════════════════════
 def render_hybrid_exec_tab(client: AgentClient):
@@ -11330,6 +11577,7 @@ TAB_DEFS = [
     ("capability", "🎓 能力学习", lambda client: render_capability_tab(client)),
     ("evolution", "🧬 进化提案", lambda client: render_evolution_proposals_tab(client)),
     ("external_projects", "🗂️ 外部项目", lambda client: render_external_projects_tab(client)),
+    ("wiki", "📚 wiki 知识库", lambda client: render_wiki_tab(client)),
     ("cron_jobs", "⏰ Cron 任务", lambda client: render_cron_jobs_tab(client)),
     ("global_schedule", "🗓️ 全局日程", lambda client: render_global_schedule_tab(client)),
     ("external_input", "🔌 外部输入", lambda client: render_external_input_tab(client)),

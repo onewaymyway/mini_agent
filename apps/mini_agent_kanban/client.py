@@ -399,6 +399,50 @@ class AgentClient:
         当前积压情况（不含已修复记录）。"""
         return self._get("/wiki/quarantine_status")
 
+    # ── wiki 信息统计 + 隔离区管理（本轮新增）───────────────────────────────
+    def wiki_stats(self):
+        """wiki 内容来源分布/知识生命周期状态/抽取批次充分性统计，对应
+        CLI `/wiki stats`。"""
+        return self._get("/wiki/stats")
+
+    def wiki_promotion(self):
+        """wiki 转正为主索引的三项标准达成情况，对应 CLI `/wiki promotion`。
+        只读评估，不触发任何切换动作。"""
+        return self._get("/wiki/promotion")
+
+    def wiki_quarantine(self):
+        """隔离区完整视图：pending/needs_human/repaired 全量记录详情，
+        对应 CLI `/wiki quarantine list`，驱动看板隔离区管理面板。"""
+        return self._get("/wiki/quarantine")
+
+    def wiki_quarantine_repair(self):
+        """手动触发一轮"全量扫描 + 尝试修复"，对应 CLI
+        `/wiki quarantine repair`。"""
+        return self._post("/wiki/quarantine/repair", timeout=60)
+
+    def wiki_quarantine_retry(self):
+        """把 needs_human 记录重置为 pending 并立即重新尝试修复，对应 CLI
+        `/wiki quarantine retry`（救回"新增修复策略前已放弃"的旧记录）。"""
+        return self._post("/wiki/quarantine/retry", timeout=60)
+
+    def wiki_quarantine_purge(
+        self, statuses: list[str] | None = None,
+        page_paths: list[str] | None = None, dry_run: bool = True,
+    ):
+        """删除隔离区里"确定救不回来"的问题页面（磁盘文件 + 记录一起清），
+        对应 CLI `/wiki quarantine purge`。默认 `dry_run=True` 只预览，
+        调用方（UI）应先展示预览结果，用户二次确认后再传
+        `dry_run=False` 真正执行——这一步不可恢复。"""
+        return self._post(
+            "/wiki/quarantine/purge",
+            json_body={
+                "statuses": statuses or ["needs_human"],
+                "page_paths": page_paths,
+                "dry_run": dry_run,
+            },
+            timeout=30,
+        )
+
     def daemon_crash_alerts(self, limit: int = 10):
         """[daemon_crash_recovery_and_alert_plan.md §3.2] 未确认的 daemon
         崩溃告警，供顶栏常驻横幅展示。"""
