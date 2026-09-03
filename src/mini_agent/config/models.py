@@ -1971,6 +1971,16 @@ class DigestAdvisorConfig:
     # 误判成"走势上升"（stale_days 默认 7 天，这个窗口是它的 2 倍，至少
     # 要有 2 次变更才算真正意义上的连续活跃）
     next_action_momentum_min_recent_events: int = 2
+    # [goal_tree_research_and_action_recommendation_plan.md §4.3 阶段三]
+    # "焦点行动建议"：针对目标树 current_focus_ids 指向的节点，从既有信息
+    # （execution_spec_confirmed/decompose_candidates/focus_research 调研
+    # 素材）里挑一条"具体下一步该做什么"的建议，不重新生成候选、只读
+    # 现有数据。默认关闭——先跑一段时间观察建议质量和打扰频率是否合适，
+    # 跟 momentum 规则一样走"先把机制写出来、默认不打扰用户"的落地方式。
+    next_action_focus_next_step_enabled: bool = False
+    # 每次生成最多采样多少个焦点节点参与本规则（焦点节点数量可能随目标树
+    # 增长而变多，采样上限避免推荐列表被单一规则的候选淹没）
+    next_action_focus_next_step_max_nodes: int = 20
 
     # ── 阶段三：决策画像 decision_profile_builder ──────────────────────
     # 归纳逻辑本身默认可用（/decision_profile update 手动触发不受此项影响），

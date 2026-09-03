@@ -158,6 +158,134 @@ def _find_momentum_goals(
     return out
 
 
+def _collect_current_focus_node_ids(backlog) -> list[str]:
+    """收集全树里所有 active 结构节点 `current_focus_ids` 指向的直接子节点
+    id（去重，不含结构节点自身）——即"现阶段焦点"覆盖到的全部节点，供
+    `_find_focus_next_step_candidates()` 逐个生成建议。
+
+    跟 `GoalBacklog.focus_research_nodes()`（阶段一新增）不是同一个概念：
+    `focus_research_nodes()` 是"叶子 Goal + 焦点里的结构节点"这个特定
+    组合，服务于外部调研相关性判断；这里要的是"current_focus_ids 里出现
+    过的全部节点"（可能是 goal/objective，也可能是 domain/stage），服务
+    于 §4.3 里针对不同 level 给不同建议的分支逻辑。
+    """
+    ids: list[str] = []
+    seen: set[str] = set()
+    for node in backlog.all_nodes():
+        if not node.is_active or not node.is_structural:
+            continue
+        for child_id in node.current_focus_ids:
+            if child_id not in seen:
+                seen.add(child_id)
+                ids.append(child_id)
+    return ids
+
+
+def _pending_focus_research_count(paths: AgentPaths, node_id: str) -> int:
+    """[§4.3"有新调研素材待查看"] 复用阶段二 `FocusResearchTrigger` 落下的
+    `origin=\"focus_research\"` 候选——只读查询，不触发新的调研、不改动
+    `GrowthBacklog` 状态。`evidence_refs` 里带 `goal_tree:<node_id>` 前缀
+    的候选即为该节点关联的调研素材（见 focus_research_trigger.py）。
+    """
+    try:
+        from mini_agent.evolution.growth_advisor import GrowthBacklog
+    except Exception:
+        return 0
+    try:
+        backlog = GrowthBacklog(paths)
+        pending = backlog.pending()
+    except Exception:
+        return 0
+    ref = f"goal_tree:{node_id}"
+    return sum(
+        1 for c in pending
+        if getattr(c, "origin", None) == "focus_research" and ref in (c.evidence_refs or [])
+    )
+
+
+def _find_focus_next_step_candidates(
+    paths: AgentPaths, *, max_nodes: int = 20
+) -> list[Candidate]:
+    """[goal_tree_research_and_action_recommendation_plan.md §4.3] 焦点行动
+    建议：只从既有信息（execution_spec_confirmed/decompose_candidates/
+    focus_research 调研素材）里挑，不重新生成候选、不调用 LLM——延续
+    `next_action_advisor` 一贯的"排序 + 讲道理"定位。
+
+    每个焦点节点最多产出以下几类建议中命中的那些（同一节点可以同时命中
+    多类，比如"待确认执行规范"+"有新调研素材"，各自成一条候选，`ref_id`
+    带条件后缀区分，避免互相覆盖；§4.4 节奏治理层面的"同一节点同一时间
+    只保留一份"由调用方/展示层收敛，这里只负责如实产出当前命中的建议）。
+    """
+    try:
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+    except Exception:
+        return []
+    try:
+        backlog = load_goal_backlog(paths)
+    except Exception:
+        return []
+
+    focus_ids = _collect_current_focus_node_ids(backlog)[:max_nodes]
+    out: list[Candidate] = []
+    for node_id in focus_ids:
+        node = backlog.get(node_id)
+        if node is None or not node.is_active:
+            continue
+
+        if node.is_goal or node.is_objective:
+            if getattr(node, "execution_spec_confirmed", False):
+                progress_lines = [
+                    line for line in (node.progress_notes or "").splitlines() if line.strip()
+                ]
+                latest = progress_lines[-1].strip() if progress_lines else None
+                reason = "执行规范已确认，是现阶段焦点，建议继续推进"
+                if latest:
+                    reason += f"（最近进展：{latest}）"
+                out.append(
+                    Candidate(
+                        kind="focus_next_step",
+                        ref_id=f"{node.id}:continue",
+                        title=node.title,
+                        reason=reason,
+                        evidence_refs=[f"goal:{node.id}"],
+                    )
+                )
+            else:
+                out.append(
+                    Candidate(
+                        kind="focus_next_step",
+                        ref_id=f"{node.id}:spec",
+                        title=node.title,
+                        reason="是现阶段焦点，但还没有确认执行规范，建议先确认执行规范再推进",
+                        evidence_refs=[f"goal:{node.id}"],
+                    )
+                )
+        elif node.is_structural and node.decompose_candidates:
+            n = len(node.decompose_candidates)
+            out.append(
+                Candidate(
+                    kind="focus_next_step",
+                    ref_id=f"{node.id}:decompose",
+                    title=node.title,
+                    reason=f"是现阶段焦点，有 {n} 个待确认的分解候选，建议去目标树页面处理",
+                    evidence_refs=[f"goal:{node.id}"],
+                )
+            )
+
+        material_count = _pending_focus_research_count(paths, node.id)
+        if material_count:
+            out.append(
+                Candidate(
+                    kind="focus_next_step",
+                    ref_id=f"{node.id}:research",
+                    title=node.title,
+                    reason=f"是现阶段焦点，有 {material_count} 条待处理的调研素材待查看",
+                    evidence_refs=[f"goal_tree:{node.id}"],
+                )
+            )
+    return out
+
+
 def _keyword_overlap(text_a: str, tags: list[str], text_b: str) -> bool:
     hay = (text_a + " " + " ".join(tags)).lower()
     for token in text_b.lower().replace("_", " ").replace("-", " ").split():
@@ -237,7 +365,12 @@ def _rule_based_rank(candidates: list[Candidate]) -> list[Candidate]:
     但不如"已经停滞"那么明确要处理），attention_mismatch 只是"可能"
     分心，确定性最低。同类内部按 ref_id 稳定排序。
     """
-    order = {"stale_goal": 0, "momentum_goal": 1, "attention_mismatch": 2}
+    # [goal_tree_research_and_action_recommendation_plan.md §4.3 阶段三]
+    # focus_next_step 排在 stale_goal 之后——两者都是"明确该处理的事"，
+    # 但 stale_goal 是"已经停滞、优先级更紧迫"，focus_next_step 只是
+    # "现阶段焦点的常规下一步"，紧迫程度略低，排在 momentum_goal 之前是
+    # 因为它挂在树的现阶段焦点上，比"最近活跃度上升"这种弱信号更明确。
+    order = {"stale_goal": 0, "focus_next_step": 1, "momentum_goal": 2, "attention_mismatch": 3}
     ranked = sorted(candidates, key=lambda c: (order.get(c.kind, 9), c.ref_id))
     for i, c in enumerate(ranked):
         c.rank = i + 1
@@ -370,6 +503,13 @@ def generate_next_actions(
             window_days=cfg.next_action_momentum_window_days,
             min_recent_events=cfg.next_action_momentum_min_recent_events,
             priority_floor=priority_floor,
+        )
+
+    # [goal_tree_research_and_action_recommendation_plan.md §4.3 阶段三]
+    # 默认关闭，跟 momentum 规则一样先观察一段时间再决定是否默认开启。
+    if cfg is not None and cfg.next_action_focus_next_step_enabled:
+        candidates = candidates + _find_focus_next_step_candidates(
+            paths, max_nodes=cfg.next_action_focus_next_step_max_nodes
         )
 
     if not candidates:

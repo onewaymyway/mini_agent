@@ -16,6 +16,14 @@
 > 不需要迁移绑定对象；新增的 `FocusResearchTrigger` 直接复用
 > `GrowthBacklog.add_or_merge()` 现有的"生成 → 用户确认"候选队列，没有
 > 新开一条调研素材流，比 §4.2 原文设想的改动量更小，详见实施记录。
+> 阶段三（焦点行动建议）已完成，见
+> `next_doc/goal_tree_research_action_phase3_implementation_record.md`。
+> `next_action_advisor.py` 新增 `Candidate.kind = "focus_next_step"`，
+> 默认关闭（`cfg.next_action_focus_next_step_enabled`），"有新调研素材
+> 待查看"这条规则直接查 `GrowthBacklog.pending()` 里 `origin==
+> "focus_research"` 的候选数量，没有复用 §4.3 原文设想的"素材参与度
+> 信号"（服务于更靠后的场景，语义不匹配），详见实施记录。剩余阶段四
+> （自动巡检 + 看板展示 + CLI/API 收尾）待实施。
 >
 > **前置阅读**：`next_doc/goal_tree_system_plan.md`（目标树结构，四个阶段
 > 已全部完成）、`docs/growth-advisor-guide.md` 1.5 节"设计理念"、
