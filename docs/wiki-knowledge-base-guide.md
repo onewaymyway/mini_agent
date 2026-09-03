@@ -721,7 +721,7 @@ monthly_trend_retrospective.py` 新增 cron job
   不写文件。单个页面自动修复尝试超过 `DEFAULT_MAX_REPAIR_ATTEMPTS`
   （默认 5 次）仍未成功，状态转 `needs_human`，不再参与后续自动修复
   循环，避免对一份自动策略解决不了的坏数据每个 cron 周期都重复尝试。
-- **LLM 兜底修复（本轮新增，opt-in，默认关闭）**：规则策略只覆盖
+- **LLM 兜底修复（opt-in，默认关闭）**：规则策略只覆盖
   "改法唯一"的已知故障模式，遇到没见过的结构性问题（YAML 语法错误、
   字段缺失/拼写错误等）只能转 `needs_human`。`MemoryConfig.
   wiki_quarantine_llm_repair_enabled=True` 时，规则修复兜底失败的页面
@@ -732,7 +732,16 @@ monthly_trend_retrospective.py` 新增 cron job
   （否则判定失败，不落盘）；LLM 调用异常/无输出/结果仍解析失败都当作
   这次修复未成功，转下一轮或最终 `needs_human`，不会比规则修复更
   "激进"。修复成功时 `repaired_by` 记为 `llm_repair`，跟规则策略名区分
-  以供追溯。
+  以供追溯。喂给模型的 prompt 里附带了 frontmatter 的必填字段/合法取值
+  （`PAGE_TYPES`/`STATUS_VALUES`）说明，以及从文件名/所在目录机械推导出
+  的 `id`/`type` 建议值（跟 `_fix_missing_id_and_type` 同一套推导逻辑，
+  不是猜测），减少模型选错枚举值或编错 `id` 的概率。
+  **整篇缺失 `---` frontmatter 块**（`no_frontmatter_block`，本次修复）
+  这类此前会直接跳过、不给 LLM 机会的情况，现在也会走到这条兜底分支——
+  之前 `attempt_repair_page()` 一旦匹配不到 frontmatter 就直接
+  `return`，即使调用方传了 `llm_helper` 也用不上；现在改成只记录
+  `rule_reason="no_frontmatter_block"`、继续往下走，让模型从正文内容
+  （配合上面的 `id`/`type` 强提示）重新搭出一段合法 frontmatter。
 - **cron 接入**：`sys:wiki_quarantine_repair`（`interval:21600`，每 6
   小时一次，本地回调 handler，默认 enabled）跑
   "全量扫描 + 对 pending 记录逐个尝试修复"的完整循环，即

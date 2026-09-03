@@ -93,19 +93,51 @@ def _strip_code_fence(text: str) -> str:
     return cleaned.strip() + "\n"
 
 
+def _derive_id_type_hint(page_path: Path) -> str:
+    """跟 `_fix_missing_id_and_type()` 同一套推导逻辑（文件名 -> id，目录
+    -> type），提前算出来喂给 LLM 兜底修复当强提示：这两个值不是"编"出来
+    的，而是从文件本身的落盘位置机械反推的，可以放心让模型直接采用，不
+    属于 system prompt 里"不要臆造信息"要规避的那类猜测。整篇 frontmatter
+    缺失（`no_frontmatter_block`）时模型需要从零搭出一个 frontmatter 块，
+    没有这个提示很容易编错 id 或者选错 type 目录。"""
+    inferred_type = _DIR_TO_TYPE.get(page_path.parent.name)
+    lines = [f"- id 应为：{page_path.stem}（来自文件名，必须原样使用，不要改动或翻译）"]
+    if inferred_type:
+        lines.append(f"- type 应为：{inferred_type}（来自所在目录，必须原样使用）")
+    else:
+        from mini_agent.wiki.parser import PAGE_TYPES
+
+        lines.append(f"- type 必须是以下取值之一：{', '.join(PAGE_TYPES)}（根据正文内容判断最贴切的一个）")
+    return "\n".join(lines)
+
+
 def _llm_repair_page_text(
     raw_text: str, error_type: str, error_message: str, llm_helper: Any,
+    *, page_path: Optional[Path] = None,
 ) -> Optional[str]:
     """调用 LLM 尝试修复整篇页面文本，失败（调用异常/输出为空）返回 None，
     调用方负责用 `parse_page()` 校验输出是否真的可用——这个函数只管"问一次
     模型"，不做校验、不做落盘。"""
     if len(raw_text) > _LLM_REPAIR_MAX_TEXT_CHARS:
         return None
-    prompt = (
-        f"页面解析失败，错误类型：{error_type}\n"
-        f"错误信息：{error_message}\n\n"
-        f"原始页面文本：\n{raw_text}"
-    )
+    from mini_agent.wiki.parser import PAGE_TYPES, STATUS_VALUES
+
+    hint_lines = [
+        f"页面解析失败，错误类型：{error_type}",
+        f"错误信息：{error_message}",
+        "",
+        "frontmatter 必填字段：id（字符串）、type（取值只能是 "
+        f"{', '.join(PAGE_TYPES)} 之一）。",
+        f"status 若要填写，取值只能是 {', '.join(STATUS_VALUES)} 之一，不填时默认 active。",
+        "links（可选）：列表，每项形如 {target: 目标id, relation: 关系（默认 mentions）, note: 备注（可选）}。",
+    ]
+    if page_path is not None:
+        hint_lines.append("")
+        hint_lines.append("以下两点是从文件本身的落盘位置机械推导出的确定信息，不是猜测，请直接采用：")
+        hint_lines.append(_derive_id_type_hint(page_path))
+    hint_lines.append("")
+    hint_lines.append(f"原始页面文本：\n{raw_text}")
+    prompt = "\n".join(hint_lines)
     try:
         text = llm_helper.ask(prompt, system=_LLM_REPAIR_SYSTEM_PROMPT)
     except Exception as exc:  # LLM 调用失败（超时/额度/网络）当作这次修复未成功，
@@ -237,19 +269,27 @@ def attempt_repair_page(page_path: Path, *, llm_helper: Any = None) -> RepairOut
 
     raw = page_path.read_text(encoding="utf-8")
     m = _FRONTMATTER_RE.match(raw)
-    if not m:
-        return RepairOutcome(fixed=False, reason="no_frontmatter_block")
 
     rule_reason = "no_applicable_fixer"
     applied: list[str] = []
-    try:
-        fm = yaml.safe_load(m.group(1)) or {}
-    except Exception as exc:
-        # YAML 语法本身就是坏的（比如缩进错误、未转义的特殊字符），规则
-        # 策略没有"确定改法"，不猜——但这类问题恰恰是 LLM 兜底最擅长处理
-        # 的场景之一，不在这里直接 return，往下走到 LLM 兜底分支。
-        rule_reason = f"yaml_syntax_error: {exc}"
-        fm = None
+    fm: Optional[dict] = None
+
+    if m is None:
+        # 整篇都没有 `---` 包裹的 frontmatter 块——规则策略无法处理（连
+        # 从哪个位置开始改都不知道），但这恰恰是 LLM 兜底最擅长的场景之
+        # 一：从正文内容 + 文件名/目录反推的 id/type 提示，重新搭出一段
+        # 合法 frontmatter。不在这里直接 return，往下走到 LLM 兜底分支
+        # （`llm_helper` 未传入时该分支会原样返回失败，行为跟改动前一致）。
+        rule_reason = "no_frontmatter_block"
+    else:
+        try:
+            fm = yaml.safe_load(m.group(1)) or {}
+        except Exception as exc:
+            # YAML 语法本身就是坏的（比如缩进错误、未转义的特殊字符），规则
+            # 策略没有"确定改法"，不猜——但这类问题恰恰是 LLM 兜底最擅长处理
+            # 的场景之一，不在这里直接 return，往下走到 LLM 兜底分支。
+            rule_reason = f"yaml_syntax_error: {exc}"
+            fm = None
 
     if isinstance(fm, dict):
         body = raw[m.end():]
@@ -287,7 +327,7 @@ def attempt_repair_page(page_path: Path, *, llm_helper: Any = None) -> RepairOut
         return RepairOutcome(fixed=False, reason=rule_reason, applied_fixers=applied)
 
     llm_applied = applied + [LLM_REPAIR_NAME]
-    candidate = _llm_repair_page_text(raw, "PageParseError", rule_reason, llm_helper)
+    candidate = _llm_repair_page_text(raw, "PageParseError", rule_reason, llm_helper, page_path=page_path)
     if candidate is None:
         return RepairOutcome(
             fixed=False, reason=f"llm_repair_no_output ({rule_reason})", applied_fixers=applied,
