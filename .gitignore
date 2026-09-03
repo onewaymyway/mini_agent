@@ -186,3 +186,4 @@ external_projects/stock_watch/reports/
 .agent/activity_digest.jsonl.bak
 .agent/capability_outline_suggestions.jsonl
 .agent/memory_backfill_index.json
+.agent/goal_tree_decompose_state.json
