@@ -174,7 +174,7 @@ query
 | `/wiki promotion` | wiki 转正为主索引的三项标准（P4）当前达成情况：内容占比连续达标天数、校验无错误连续天数、检索 A/B 命中率对比，末尾给出仅供参考的一句话结论——**该命令只读、不触发任何切换动作** |
 | `/wiki lifecycle-scan [--days N]` | O4：手动触发一次知识生命周期巡检（`stale_candidate_scan()`），把长期未被验证过的 `fresh` 页面标记为 `stale`。默认阈值取 `MemoryConfig.lifecycle_stale_threshold_days`（90 天），只做标记，默认不影响检索排序 |
 | `/wiki fallback-cleanup [--days N]` | 归并/标记 `session-facts` 兜底页里长期未被合并的 fact（见 §十一·5 新增子命令小节） |
-| `/wiki quarantine [list\|repair\|purge]` | 解析失败页面隔离区（见 §十四）：`list`（默认）只读展示当前 pending/needs_human 记录；`repair` 手动触发一轮"全量扫描 + 尝试修复"，跟 `sys:wiki_quarantine_repair` cron job 是同一份逻辑；`purge` 删除"确定救不回来"的问题页面（磁盘文件 + 隔离区记录一起清），两步确认，默认只预览、加 `--yes` 才真正执行 |
+| `/wiki quarantine [list\|repair\|retry\|purge]` | 解析失败页面隔离区（见 §十四）：`list`（默认）只读展示当前 pending/needs_human 记录；`repair` 手动触发一轮"全量扫描 + 尝试修复"，跟 `sys:wiki_quarantine_repair` cron job 是同一份逻辑；`retry` 把 `needs_human` 记录重置为 `pending` 并立即重新触发一轮修复，用于"新增了修复策略、想把之前救不回来的旧记录重新捞一遍"的场景；`purge` 删除"确定救不回来"的问题页面（磁盘文件 + 隔离区记录一起清），两步确认，默认只预览、加 `--yes` 才真正执行 |
 
 `/wiki <page-id>` 找不到 backlinks 时会提示先跑 `/wiki rebuild`，而不是静默显示"无 backlinks"——backlinks 只存在于 `_index/` 里，页面本身刚写入还没重建索引时是看不到的。
 
@@ -444,14 +444,18 @@ O4 未覆盖的部分（详见实施记录 §5）：`stale_candidate_scan()` 尚
 | `/wiki gap-scan [--max-results N] [--dispatch]` | 触发一次知识缺口扫描（浅层实体/孤儿页面/陈旧专题页），默认只打印报告；`--dispatch` 把每条缺口包装成任务提交进 `InputQueue`（仅在 daemon `autonomous_loop` 上下文里可用，交互式 CLI 会话没有 `InputQueue`，会提示而非报错） |
 | `/wiki fallback-cleanup [--days N]` | 对超过 N 天（默认 30）未处理的 `session-facts` 兜底页重新判重，命中合并、未命中标 `stale` |
 
-### 命令行输入提示（本轮补上的缺口）
+### 命令行输入提示（本轮补上的缺口 + 本次追加）
 
 `cli/commands/wiki.py::handle_wiki_cmd` 早已支持上述两个子命令，但驱动 REPL 里
 `Tab` 补全 / 敲 `/` 弹出候选列表的命令定义表 `ui/terminal.py::_COMMANDS` 之前
 **从未注册过 `/wiki` 这个顶级命令**——不影响命令本身能不能跑（`handle_wiki_cmd`
 自己解析 `args`，跟补全表是两套独立逻辑），但用户在交互式终端里敲 `/wiki `
 不会有任何提示，新加的 `gap-scan`/`fallback-cleanup` 更是无从发现，只能翻文档
-才知道存在。本轮补上：
+才知道存在。当时补上后仍然漏了一层：`quarantine` 作为 `/wiki` 的子命令本身
+**也从未出现在补全表里**（`handle_wiki_cmd` 里 `elif sub == "quarantine":`
+分支之下还有 `list`/`repair`/`retry`/`purge` 四个二级子命令，同样完全没有
+提示），本次一并补上，顺带把新增的 `retry` 子命令（见 §十四 needs_human
+重试）也纳入：
 
 ```python
 (
@@ -461,13 +465,25 @@ O4 未覆盖的部分（详见实施记录 §5）：`stale_candidate_scan()` 尚
         ("lifecycle-scan", ["--days"]),
         ("gap-scan", ["--max-results", "--dispatch"]),
         ("fallback-cleanup", ["--days"]),
+        (
+            "quarantine",
+            [
+                "list",
+                "repair",
+                "retry",
+                ("purge", ["--status", "--path", "--yes"]),
+            ],
+        ),
     ],
 ),
 ```
 
-补全效果：敲 `/w` → 弹出 `/wiki`；敲 `/wiki ` → 弹出全部 8 个子命令；敲
+补全效果：敲 `/w` → 弹出 `/wiki`；敲 `/wiki ` → 弹出全部 9 个子命令；敲
 `/wiki gap-scan ` → 弹出 `--max-results`/`--dispatch`；敲
-`/wiki fallback-cleanup ` / `/wiki lifecycle-scan ` → 弹出 `--days`。
+`/wiki fallback-cleanup ` / `/wiki lifecycle-scan ` → 弹出 `--days`；敲
+`/wiki quarantine ` → 弹出 `list`/`repair`/`retry`/`purge`；敲
+`/wiki quarantine purge ` → 进一步弹出 `--status`/`--path`/`--yes`
+（补全表支持任意深度嵌套，`_descend()` 递归下钻，不只两层）。
 回归测试见 `tests/test_wiki_slash_completer.py`（用
 `inspect.getsource(handle_wiki_cmd)` 反解出真实处理的子命令集合，和补全表逐一
 比对，防止未来再次出现"能处理但没提示"的不一致；并用 `_build_slash_completer()`
@@ -693,12 +709,18 @@ monthly_trend_retrospective.py` 新增 cron job
   语义猜测。首批两条策略均来自真实故障（`frontmatter.links` 写成裸
   字符串列表，如 `links: [tushare]` 而不是
   `links: [{target: tushare}]`）：`links` 列表内的字符串项 →
-  `{"target": 字符串}`；`links` 整个字段没包成列表 → 包一层。每次
-  修复后都会重新完整 `parse_page()` 验证，确认真的能通过校验才落盘，
-  半吊子的修复（改完还是解析失败）不写文件。单个页面自动修复尝试超过
-  `DEFAULT_MAX_REPAIR_ATTEMPTS`（默认 5 次）仍未成功，状态转
-  `needs_human`，不再参与后续自动修复循环，避免对一份自动策略解决不了
-  的坏数据每个 cron 周期都重复尝试。
+  `{"target": 字符串}`；`links` 整个字段没包成列表 → 包一层。后续又
+  补了一条 `_fix_missing_id_and_type`：`id`/`type` 是 `parse_page()`
+  唯一强制的两个必填字段，但落盘约定（`wiki/writer.py`：文件名固定为
+  `<page_id>.md`，存放目录由 `type` 唯一决定）已经把这两个值写在
+  `page_path` 本身里了，反推回去即可，不涉及编造内容，属于跟
+  `_fix_string_links` 同等级的"确定改法"——这条修复上线前，缺
+  `id`/`type` 的页面因为 LLM 兜底也明确拒绝"编一个 id"而永远修不好，
+  常年积压在 `needs_human` 里。每次修复后都会重新完整 `parse_page()`
+  验证，确认真的能通过校验才落盘，半吊子的修复（改完还是解析失败）
+  不写文件。单个页面自动修复尝试超过 `DEFAULT_MAX_REPAIR_ATTEMPTS`
+  （默认 5 次）仍未成功，状态转 `needs_human`，不再参与后续自动修复
+  循环，避免对一份自动策略解决不了的坏数据每个 cron 周期都重复尝试。
 - **LLM 兜底修复（本轮新增，opt-in，默认关闭）**：规则策略只覆盖
   "改法唯一"的已知故障模式，遇到没见过的结构性问题（YAML 语法错误、
   字段缺失/拼写错误等）只能转 `needs_human`。`MemoryConfig.
@@ -725,6 +747,18 @@ monthly_trend_retrospective.py` 新增 cron job
   开关），用于不想等定时任务、想立刻看到修复结果的场景。`needs_human`
   状态的记录人工改好对应文件后，下次扫描（cron 或手动 `repair`）会
   自动确认并摘除，不需要额外的"标记已处理"操作。
+- **重试已转人工的记录（`retry`，本次新增）**：`repair`/cron 只处理
+  `status == pending` 且 `repair_attempts < DEFAULT_MAX_REPAIR_ATTEMPTS`
+  的记录——一旦某条记录之前因为"没有匹配策略"或"尝试次数耗尽"转成了
+  `needs_human`，即使后来新增了能救回它的修复策略（比如上面的
+  `_fix_missing_id_and_type`），它也不会被自动重新捡回来，永远停在
+  `needs_human`，这正是这批"缺 id/type"页面长期积压 44 条不动的原因。
+  `quarantine.reset_to_pending()` 把指定状态（默认只筛 `needs_human`）
+  的记录重置为 `pending`、`repair_attempts` 清零；CLI `/wiki quarantine
+  retry` 调用它之后立即触发一轮 `run_quarantine_repair_cycle()`，一步
+  做完"重置 + 用最新策略重新尝试"。跟 `purge` 一样只信任隔离区记录里的
+  路径、不会碰任何当前是 `pending`/`repaired` 状态的记录（除非显式传
+  别的 `statuses`）。
 - **清理（`purge`，本轮新增）**：规则/LLM 修复都要求"改完必须重新
   通过 `parse_page()` 才落盘"，遇到结构性缺失（比如整篇没有 `---`
   frontmatter 块）这类连基本结构都不具备的坏数据，两条修复路径都无能

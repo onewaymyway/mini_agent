@@ -3206,6 +3206,15 @@ _COMMANDS: list[tuple[str, str, list]] = [
             ("lifecycle-scan", ["--days"]),
             ("gap-scan", ["--max-results", "--dispatch"]),
             ("fallback-cleanup", ["--days"]),
+            (
+                "quarantine",
+                [
+                    "list",
+                    "repair",
+                    "retry",
+                    ("purge", ["--status", "--path", "--yes"]),
+                ],
+            ),
         ],
     ),
     ("/proxy",       "Proxy pool: subscriptions/validation/integration switches", ["status", "refresh", "sources", "integration"]),
