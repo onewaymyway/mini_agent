@@ -245,9 +245,60 @@ mini_agent 现在有四个系统都在承担"主动性"相关的职责，但分�
     （另有 2 个失败为环境缺失依赖 `websocket-client` 等导致的既有失败，
     与本次改动无关，改动前同样失败）无新增回归。
 
-- **阶段三：抽取共享 ResearchService + 双向知识沉淀**（对应 4.3 + 4.4）
+- **阶段三：抽取共享 ResearchService + 双向知识沉淀**（对应 4.3 + 4.4）—— **已完成**
   抽取共享调研服务模块，`growth_advisor` 迁移到新服务（旧实现保留
   直至验证稳定）；新增"用户采纳成长报告 → 回写 wiki"路径。
+  - 实现记录（4.3 部分）：新增 `evolution/research_service.py`，把
+    `capability_learning.py` 里"通用但绑死在 `OutlineTopic`/
+    `CapabilityTrack` 类型上"的三块逻辑抽成不依赖具体类型的纯函数：
+    `filter_compliance_text()`/`is_disclaimer_required_domain()`
+    （句级合规过滤，接受 `domain_hint: str`）、
+    `research_via_web_search()`（web_search 检索，接受 `query: str`）、
+    `research_via_agent()`（只读 SubAgent 调研，接受 `prompt: str`）。
+    **已完成委托**：`capability_learning.apply_compliance_filter()`/
+    `is_disclaimer_required_track()`/`_filter_compliance_risky_text()`
+    三者内部改为调用 `research_service` 对应函数，外部签名/行为完全
+    不变（parity 测试直接对比抽取前后两边输出）。**尚未委托**：
+    `make_web_search_retriever()`/`make_agent_retriever()` 这两个
+    retriever 工厂函数暂时保留独立实现（与 `research_service.
+    research_via_web_search()`/`research_via_agent()` 核心逻辑一致，
+    但没有做委托改造）——收益（消除少量重复代码）相对于改动风险
+    （retriever 是 cron 无人值守路径，改动面更敏感）不够高，留给后续
+    有真实新调用方需要时再做，不是遗漏。`growth_advisor.py` 当前**未
+    接入** `research_service`（`generate_growth_report()` 保留自己的
+    active-search/two-stage prompt 实现不变）——它是被反复打磨过、有
+    大量测试覆盖的独立实现，"能用就不动"，`research_service` 的定位是
+    给未来新增调研能力的调用方用，不是要求把现有实现推翻重写（对齐
+    方案原文"旧实现待验证稳定后再逐步退役，不做一次性替换"，这里更进
+    一步：连"计划替换"都没有强行安排具体时间表，因为现有实现没有任何
+    已知问题需要替换）。
+  - 实现记录（4.4 部分）：新增 `growth_advisor.promote_growth_report_
+    to_wiki(paths, candidate, report, *, goal_id=None) -> page_id`，
+    复用 `wiki/writer.py::write_page()`（与 capability_learning 最终
+    落盘时走的同一层），页面 `page_id` 固定为 `growth_{candidate_id}`，
+    frontmatter 打 `source: "user_growth"` 区别于 Agent 自学内容。
+    "认真采纳"的判定标准：候选被 `adopt_candidate_as_goal()` 正式落地
+    成 Goal（而不只是点了"采纳"按钮）——复用已有的 Goal 关联作为信号，
+    不引入新的停留时长/展开次数埋点。`adopt_candidate_as_goal()` 新增
+    `cfg` 可选参数，`cfg.wiki_promotion_on_adopt_enabled`（默认
+    `False`，opt-in，因为这会往用户 wiki 库里写入新内容，属于可观察
+    行为变更）开启且落地成功后自动触发回写；写入异常不影响 Goal 已经
+    创建成功这个结果（try/except 兜底 + log_exception）。三个调用入口
+    中，CLI `/growth adopt-goal` 与"采纳即启动"内部的 `auto_pursue_
+    candidate()`（`auto_pursue_on_accept` 默认开启的主路径）都已接线
+    传入 `cfg`；API 路由 `POST /v1/growth/candidates/{id}/adopt_goal`
+    暂未接入（该路由此前就没有读取项目级 `AppConfig` 的既有基础设施，
+    补齐这部分基础设施超出本阶段范围，留待后续），该入口目前调用
+    `cfg=None`，等价于回写开关始终关闭，不影响其正确性只是暂不享受
+    这个新能力。
+  - 新增测试：`tests/test_initiative_stage3_wiki_promotion_and_
+    research_service.py`（8 用例：报告回写 wiki 内容校验、开关默认
+    关闭/未传 cfg 均不写入、开启后正确写入、写入异常不阻断 Goal 创建、
+    抽取前后 `apply_compliance_filter`/`filter_compliance_text` 输出
+    parity、确认真的委托而非重复实现）；全部通过。回归
+    `tests/test_capability_learning_p1.py`（含直接调用私有函数
+    `_filter_compliance_risky_text` 的既有用例）等 44 个用例无新增
+    失败。
 
 - **阶段四：顶层用户处境模型驱动的候选排序**（对应 4.5）
   `work_index`/`WorkThread` 升级为三条线共享的排序参考信号，第一版

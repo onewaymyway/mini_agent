@@ -2225,32 +2225,30 @@ _COMPLIANCE_DISCLAIMER_DOMAIN_KEYWORDS = [
 
 def _filter_compliance_risky_text(text: str) -> tuple[str, bool]:
     """按句号/换行切句，剔除命中风险短语的整句。返回（过滤后文本，是否有
-    内容被剔除）。空文本/无命中时原样返回，第二个返回值为 False。"""
-    import re
+    内容被剔除）。空文本/无命中时原样返回，第二个返回值为 False。
 
-    if not text:
-        return text, False
-    # 按中英文句末标点切句，保留标点本身，避免把风险短语所在句子的边界
-    # 判断依赖过于精细的分句库——够用即可，不追求语法学意义上的精确分句。
-    sentences = re.split(r"(?<=[。！？\n])", text)
-    kept: list[str] = []
-    filtered_any = False
-    for sent in sentences:
-        if not sent.strip():
-            continue
-        if any(re.search(pat, sent) for pat in _COMPLIANCE_RISKY_PHRASE_PATTERNS):
-            filtered_any = True
-            continue
-        kept.append(sent)
-    return "".join(kept).strip(), filtered_any
+    [next_doc/initiative_systems_unification_plan.md §4.3 阶段三] 保留
+    这个薄封装只是为了不破坏既有测试
+    （`tests/test_capability_learning_p1.py` 直接调用这个私有函数）——
+    实际逻辑已经和 `apply_compliance_filter()` 一起委托给共享的
+    `evolution/research_service._filter_risky_text()`。"""
+    from mini_agent.evolution import research_service
+    return research_service._filter_risky_text(text)
 
 
 def is_disclaimer_required_track(track: "CapabilityTrack") -> bool:
     """判断这个 Track 是否落在需要 `requires_disclaimer` 标记的专业建议
     领域（金融/医疗/法律等，见 §13.3-g）。规则式关键词匹配，宁可多标注
-    （对不需要的页面多加一句"仅供参考"没有实质坏处），也不漏标注。"""
+    （对不需要的页面多加一句"仅供参考"没有实质坏处），也不漏标注。
+
+    [next_doc/initiative_systems_unification_plan.md §4.3 阶段三] 实际
+    判定逻辑已抽取到 `evolution/research_service.is_disclaimer_required_
+    domain()`（不依赖 `CapabilityTrack` 类型，供 growth_advisor 等其它
+    调用方复用），这里只是把 `track` 拼成同样格式的 `domain_hint` 字符串
+    后委托过去——关键词表/判定口径与改动前完全一致。"""
+    from mini_agent.evolution import research_service
     haystack = f"{track.title} {track.persona_desc} {track.wiki_tag}"
-    return any(kw in haystack for kw in _COMPLIANCE_DISCLAIMER_DOMAIN_KEYWORDS)
+    return research_service.is_disclaimer_required_domain(haystack)
 
 
 def apply_compliance_filter(
@@ -2261,19 +2259,16 @@ def apply_compliance_filter(
     返回 (过滤后的 results 副本, 本次是否实际剔除了内容, 是否需要
     requires_disclaimer 标记)。不修改传入的 results，返回新列表——
     调用方（make_wiki_writer）用返回值渲染页面正文，不依赖副作用。
-    """
-    filtered_results: list[dict] = []
-    any_filtered = False
-    for r in results:
-        r2 = dict(r)
-        for key in ("summary", "text"):
-            if r2.get(key):
-                cleaned, did_filter = _filter_compliance_risky_text(r2[key])
-                r2[key] = cleaned
-                any_filtered = any_filtered or did_filter
-        filtered_results.append(r2)
-    requires_disclaimer = is_disclaimer_required_track(track) or any_filtered
-    return filtered_results, any_filtered, requires_disclaimer
+
+    [next_doc/initiative_systems_unification_plan.md §4.3 阶段三] 实际
+    过滤逻辑（风险短语正则表/句级切分）已抽取到共享的
+    `evolution/research_service.filter_compliance_text()`，这里只是把
+    `track` 拼成 `domain_hint` 字符串后委托过去——外部签名/行为与抽取前
+    完全一致，见 `tests/test_initiative_stage3_wiki_promotion_and_
+    research_service.py` 的 parity 测试。"""
+    from mini_agent.evolution import research_service
+    domain_hint = f"{track.title} {track.persona_desc} {track.wiki_tag}"
+    return research_service.filter_compliance_text(results, domain_hint=domain_hint)
 
 
 # ── 真实 wiki_writer 实现（§5 wiki 沉淀规范）───────────────────────────────

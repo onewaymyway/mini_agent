@@ -463,8 +463,9 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
             R.print_error(f"未找到候选：{cid}")
             return
         goal_backlog = _get_goal_backlog(paths)
+        cfg = _get_cfg(agent)
         try:
-            goal = ga.adopt_candidate_as_goal(paths, cand, goal_backlog=goal_backlog)
+            goal = ga.adopt_candidate_as_goal(paths, cand, goal_backlog=goal_backlog, cfg=cfg)
         except ValueError as exc:
             R.print_error(str(exc))
             return

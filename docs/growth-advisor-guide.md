@@ -367,6 +367,7 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 | `initiative_push_budget_enabled`（AppConfig 顶层字段，非 `growth_advisor` 块内） | `false` | 跨系统推送总闸，见上方"跨系统推送总闸"小节 |
 | `initiative_push_budget_max_per_day`（同上，AppConfig 顶层字段） | `3` | 上面总闸的单日共享总额，`growth_advisor`/`capability_learning` 共用 |
 | `notification_min_confidence` | `0.6` | 低于此置信度的报告只更新看板、不推送 |
+| `wiki_promotion_on_adopt_enabled` | `false` | [next_doc/initiative_systems_unification_plan.md §4.4 阶段三，默认关闭] 候选被 `/growth adopt-goal`（或"采纳即启动"自动流程）落地成 Goal 时，是否顺带把调研报告回写进 wiki 知识库（`source: "user_growth"`），供 Agent 后续复用；API 路由 `POST /v1/growth/candidates/{id}/adopt_goal` 暂未接入这个开关 |
 | `min_evidence_count` | `3` | 生成候选所需的最少证据条数 |
 | `max_pending_candidates` | `10` | 候选队列 pending 状态上限 |
 | `max_reports_per_run` | `2` | 每轮 cron 最多生成的调研报告数 |

@@ -2038,6 +2038,14 @@ class GrowthAdvisorConfig:
     # 值得推送的最低置信度阈值，低于此值当天只更新看板、不发通知
     notification_min_confidence: float = 0.6
 
+    # [next_doc/initiative_systems_unification_plan.md §4.4 阶段三 双向
+    # 知识沉淀] 默认关闭（opt-in）：候选被落地成 Goal（"认真采纳"，见
+    # adopt_candidate_as_goal() 文档字符串）时，是否顺带把调研报告回写
+    # 进 wiki 知识库，供 Agent 后续复用。默认关闭是因为这会往用户的
+    # wiki 知识库里写入新内容，属于"改变可观察状态"的行为变更，按仓库
+    # 一贯取向需要用户显式开启才生效，不因为这次改动而默默改变存量行为。
+    wiki_promotion_on_adopt_enabled: bool = False
+
     # ── 候选克制阈值（对齐 decision_profile_builder.MIN_EVIDENCE_COUNT）──
     min_evidence_count: int = 3
     # 候选队列 pending 状态上限，超过则本轮不再新增（避免无限堆积）

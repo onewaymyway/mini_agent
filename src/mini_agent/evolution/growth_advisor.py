@@ -3776,18 +3776,31 @@ def batch_adopt_unmatched_interests(
 
 def adopt_candidate_as_goal(
     paths, candidate: GrowthCandidate, *, goal_backlog=None, extra_tags: Optional[list[str]] = None,
+    cfg: Optional["GrowthAdvisorConfig"] = None,
 ) -> Any:
     """[growth_advisor_goal_cron_integration_plan.md 阶段 B] 把一个候选
     "落地"成 GoalBacklog 里的一个 Goal 节点：
 
     - 要求候选已经有调研报告（`report_id` 非空），没有报告时抛
       `ValueError`——调用方（CLI/API）负责提示用户先 `/growth report
-      <id>` 生成一份，体验上比\"建了个没有实质内容的 Goal\"更好。
+      <id>` 生成一份，体验上比"建了个没有实质内容的 Goal"更好。
     - Goal 的 `description` 用报告摘要 + 报告路径引用（不整篇塞报告
       正文——`description` 是给后续任务执行读的上下文，太长反而稀释
       重点，完整内容用户/Agent 需要时可以按路径读）。
     - 候选反向记 `linked_goal_id`；如果候选此前还是 `pending`，顺带
-      流转成 `accepted`（\"建了 Goal 去推进\"本身就是一种采纳）。
+      流转成 `accepted`（"建了 Goal 去推进"本身就是一种采纳）。
+
+    `cfg`：[next_doc/initiative_systems_unification_plan.md §4.4 阶段三
+    双向知识沉淀] 可选。这里把"落地成 Goal"这个动作本身作为"认真采纳"
+    的判定标准——只是点了一下"采纳"按钮（`accept_candidate()`）不算，
+    用户/自动化流程明确决定"把它变成一件要持续推进的正式任务"才算。
+    `cfg.wiki_promotion_on_adopt_enabled` 开启（默认 `False`，opt-in）
+    时，成功落地后顺带把这份候选的调研报告回写进 wiki 知识库（见
+    `promote_growth_report_to_wiki()`），供 Agent 后续在同一领域的调研/
+    对话里复用；写入失败不影响 Goal 已经创建成功这个结果，只是不产生
+    wiki 沉淀（try/except 兜底，见该函数文档字符串）。不传 `cfg`（比如
+    API 路由目前还没有接入项目级配置读取）时这一步直接跳过，等价于
+    改动前的行为。
 
     返回创建的 `GoalNode`。
     """
@@ -3830,7 +3843,75 @@ def adopt_candidate_as_goal(
         backlog.set_status(candidate.candidate_id, STATUS_ACCEPTED)
         GrowthFeedbackLedger(paths).record(candidate.candidate_id, STATUS_ACCEPTED, reason=None)
 
+    if cfg is not None and bool(getattr(cfg, "wiki_promotion_on_adopt_enabled", False)) and report is not None:
+        try:
+            promote_growth_report_to_wiki(paths, candidate, report, goal_id=goal.id)
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.evolution.growth_advisor.adopt_candidate_as_goal.wiki_promotion")
+
     return goal
+
+
+# ────────── [next_doc/initiative_systems_unification_plan.md §4.4 阶段三]
+# 双向知识沉淀：用户认真采纳的成长报告回写进 wiki ──────────
+# 此前调研沉淀是单向的——capability_learning 的调研结果写进 wiki 给
+# Agent 自己用；growth_advisor 的调研报告用户看完即止，即使用户认真
+# 采纳，Agent 也没有因此更懂这个领域。这里补上反向路径：复用
+# `wiki/writer.py::write_page()`（capability_learning 的 wiki 写入最终
+# 也是走这一层），页面打上 `source: "user_growth"` 区别于 Agent 自学的
+# 条目（`capability_learning` 写入的页面没有这个字段，或未来该模块
+# 迁移到共享写入路径后也会显式标注 `source: "agent_knowledge"`，两者
+# 在同一个 wiki 里可以按 `source` 过滤区分）。
+
+def promote_growth_report_to_wiki(
+    paths, candidate: GrowthCandidate, report: GrowthReport, *, goal_id: Optional[str] = None,
+) -> str:
+    """把一份成长顾问调研报告回写进 wiki 知识库，返回写入的 `page_id`。
+
+    "认真采纳"的判定标准（方案原文留给实现阶段确定）：本函数由
+    `adopt_candidate_as_goal()` 在候选被正式落地成 Goal（而不只是点了
+    "采纳"按钮）时调用——"愿意把这件事变成一个要持续推进的正式任务"
+    是比"点了一下接受"更强的信号，复用已有的 `GoalNode` 关联，不需要
+    额外引入停留时长/展开阅读次数这类新的埋点信号。
+
+    页面 `page_id` 固定为 `growth_{candidate_id}`，与 capability_learning
+    的 `cap_{track_id}_{topic_id}` 命名风格一致、命名空间不冲突（前缀不同）。
+    `overwrite=True`（`write_page()` 默认值）：同一个候选被多次调用本函数
+    （理论上不应该发生——`adopt_candidate_as_goal()` 只在 Goal 首次创建
+    时触发这条路径，重复调用会复用已有 Goal 见该函数幂等说明——但即使
+    发生也只是覆盖成最新内容，不会报错或产生重复页面）。
+
+    没有接入 `wiki/dedup.py` 判重——与 capability_learning 的
+    `make_wiki_writer()` 现状一致（该模块也明确标注"P2 再做"），本函数
+    对齐同一个未决问题，不在这里单独实现一套不一致的判重逻辑。
+    """
+    from datetime import datetime, timezone
+
+    from mini_agent.wiki.writer import write_page
+
+    page_id = f"growth_{candidate.candidate_id}"
+    body_lines = [f"# {candidate.title}", "", report.summary or candidate.rationale]
+    if report.body_path:
+        body_lines.append(f"\n完整报告：{report.body_path}")
+    body = "\n".join(p for p in body_lines if p)
+
+    extra_fm = {
+        "source": "user_growth",
+        "candidate_id": candidate.candidate_id,
+        "report_id": report.report_id,
+        "linked_goal_id": goal_id,
+        "promoted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    write_page(
+        paths=paths,
+        page_id=page_id,
+        page_type="topic",
+        body=body,
+        tags=["source:user_growth"],
+        extra_frontmatter=extra_fm,
+    )
+    return page_id
 
 
 # ────────────────── 采纳即启动：自主持续调研 ──────────────────
@@ -3919,7 +4000,7 @@ def auto_pursue_candidate(
             goal = None
     if goal is None:
         try:
-            goal = adopt_candidate_as_goal(paths, candidate, goal_backlog=goal_backlog)
+            goal = adopt_candidate_as_goal(paths, candidate, goal_backlog=goal_backlog, cfg=cfg)
         except Exception as e:
             from mini_agent.errors import log_exception
             log_exception(e, where="mini_agent.evolution.growth_advisor.auto_pursue_candidate.adopt")
