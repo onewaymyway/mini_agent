@@ -245,7 +245,8 @@
     "agent_retriever_tool_mode": "full",
     "wiki_write_mode": "agent",
     "agent_wiki_writer_max_turns": 20,
-    "agent_wiki_writer_timeout_seconds": 2400
+    "agent_wiki_writer_timeout_seconds": 2400,
+    "empty_outline_auto_draft_enabled": true
   },
   "persona_candidates": {
     "enabled": true
