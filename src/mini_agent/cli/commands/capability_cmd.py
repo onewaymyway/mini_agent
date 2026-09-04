@@ -65,6 +65,14 @@ cron_scheduler.py SYSTEM_JOBS 里对应条目的说明）。
                                      不传 track_id 时对所有 Track 生效；
                                      不清空已有 wiki 页面，重新检索到新内容
                                      前旧内容仍可读。幂等，可重复执行。
+  /capability adopt-goal <track_id> <topic_id>
+                                   — [next_doc/initiative_systems_
+                                     unification_plan.md §4.2 阶段二] 把
+                                     指定 Track 下的一个子主题落地成
+                                     GoalBacklog 里的一个 Goal，交给目标树
+                                     执行引擎 + ResourceArbiter 推进（与
+                                     /growth adopt-goal 对称）。幂等：已
+                                     落地过的子主题直接返回已有 Goal。
 """
 
 from __future__ import annotations
@@ -516,7 +524,32 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
             R.print_info(f"[{c.candidate_id}] {c.title}\n  {c.rationale}")
         return
 
+    if sub == "adopt-goal":
+        if len(args) < 3:
+            R.print_error("用法：/capability adopt-goal <track_id> <topic_id>")
+            return
+        track_id, topic_id = args[1], args[2]
+        store = CapabilityTrackStore(paths)
+        track = store.get(track_id)
+        if track is None:
+            R.print_error(f"未找到 Track：{track_id}")
+            return
+        topic = next((t for t in track.outline if t.topic_id == topic_id), None)
+        if topic is None:
+            R.print_error(f"Track {track_id} 下未找到子主题：{topic_id}")
+            return
+
+        from mini_agent.evolution.capability_learning import adopt_topic_as_goal
+
+        try:
+            goal = adopt_topic_as_goal(paths, track, topic, track_store=store)
+        except RuntimeError as exc:
+            R.print_error(str(exc))
+            return
+        R.print_info(f"已创建目标 [{goal.id}] {goal.title}，并关联到子主题 {topic_id}。")
+        return
+
     R.print_error(
         f"未知子命令：{sub}。可用：list | create | cycle | questions | answer | "
-        f"suggestions | persona | persona_candidates"
+        f"suggestions | persona | persona_candidates | adopt-goal"
     )

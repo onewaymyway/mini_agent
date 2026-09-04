@@ -932,6 +932,9 @@ def load_config(
         # [next_doc/errors_tool_executor_log_toggle_plan.md] 全局错误日志
         # 是否落盘 tool_executor 来源的记录，默认 True（不改变原行为）。
         save_tool_executor_error_logs=_fb("save_tool_executor_error_logs", None, True),
+        # [next_doc/initiative_systems_unification_plan.md §4.6]
+        initiative_push_budget_enabled=_fb("initiative_push_budget_enabled", None, False),
+        initiative_push_budget_max_per_day=_fn("initiative_push_budget_max_per_day", None, 3),
         # 子配置块
         memory=memory_cfg,
         compress=compress_cfg,

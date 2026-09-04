@@ -118,7 +118,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from mini_agent.storage.paths import AgentPaths
 
@@ -154,6 +154,14 @@ class OutlineTopic:
     volatility: str = "periodic"                # stable / periodic / volatile（§14.2-d）
     last_touched_at: Optional[float] = None
     wiki_page_ids: list[str] = field(default_factory=list)
+    # [next_doc/initiative_systems_unification_plan.md §4.2 阶段二] 该子
+    # 主题被"落地"成 GoalBacklog 里对应 GoalNode 的 id，None = 还没有对应
+    # 目标（默认路径：仍由 run_capability_learning_cycle() 的内部 cron
+    # 循环推进）。风格对齐 growth_advisor.GrowthCandidate.linked_goal_id
+    # ——只是反向指针，不改变 Track/Topic 本身既有的推进机制，见
+    # `adopt_topic_as_goal()` 文档字符串。向后兼容：旧数据没有这个字段时
+    # from_dict 默认 None。
+    linked_goal_id: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -167,6 +175,7 @@ class OutlineTopic:
             volatility=d.get("volatility", "periodic"),
             last_touched_at=d.get("last_touched_at"),
             wiki_page_ids=list(d.get("wiki_page_ids", [])),
+            linked_goal_id=d.get("linked_goal_id"),
         )
 
 
@@ -548,6 +557,101 @@ class CapabilityTrackStore:
         return apply_outline_revision(
             self._paths, track_id, [{"op": "remove", "topic_id": topic_id}],
         )
+
+
+# ────────── [next_doc/initiative_systems_unification_plan.md §4.2 阶段二]
+# 候选采纳 → 统一接入目标树执行 ──────────
+# growth_advisor.py 已经有 adopt_candidate_as_goal()（把一个成长候选落地
+# 成 GoalBacklog 里的 Goal，交给已有的执行引擎 + ResourceArbiter + fairness
+# scheduling 去跑）；capability_learning 这一侧此前完全没有对接，子主题
+# 的调研只能走 run_capability_learning_cycle() 内部自己的 cron 循环，不受
+# 统一的公平调度和资源仲裁约束。这里补齐对称的入口。
+
+def adopt_topic_as_goal(
+    paths: AgentPaths,
+    track: "CapabilityTrack",
+    topic: "OutlineTopic",
+    *,
+    goal_backlog=None,
+    track_store: Optional["CapabilityTrackStore"] = None,
+) -> Any:
+    """把一个 CapabilityTrack 里的子主题（`OutlineTopic`）"落地"成
+    `GoalBacklog` 里的一个 Goal 节点，交给目标树执行引擎 +
+    `ResourceArbiter` + fairness scheduling 去推进——用户/Agent 明确希望
+    "优先把这个子主题的调研当成一件正式任务来推"时使用，而不是继续等
+    `run_capability_learning_cycle()` 按内部排序轮到它。
+
+    与 `growth_advisor.adopt_candidate_as_goal()` 的关系：两者是同一个
+    "候选采纳 → GoalNode"范式在不同受益人（用户成长 / Agent 自身知识）
+    上的对称实现，`source` 上唯一实质差异是这里用 `"agent_derived"`——
+    子主题调研本质上是 Agent 自己补知识，不是用户直接下达的目标，跟
+    `soft_goal_deriver` 的候选落地时使用的 `source` 语义保持一致（区别于
+    `growth_advisor` 那边 `source="user"`，因为那是用户自己的成长方向）。
+
+    这不是"替代"`run_capability_learning_cycle()`——已落地成 Goal 的子
+    主题，`scan_outline_gaps()`/循环内部排序仍然可以照常把它选中处理
+    （`linked_goal_id` 只是一个反向指针，不改变 `coverage_state`/大纲
+    本身任何既有字段的语义或读取路径）；两条推进路径目前是**并行**的，
+    完全下线内部 cron 循环、把执行权彻底交给目标树，留给后续阶段验证
+    稳定后再做（对齐方案 §4.2 原文"逐步废弃"，不是一次性替换）。
+
+    幂等：`topic.linked_goal_id` 已存在时直接返回已有的 Goal（重新从
+    `goal_backlog` 加载，找不到——比如 Goal 被用户删除——则视为未落地，
+    继续走下面新建流程，不报错）。
+
+    返回创建（或复用）的 `GoalNode`。
+    """
+    if goal_backlog is None:
+        goal_backlog = _load_goal_backlog_safely(paths)
+    if goal_backlog is None:
+        raise RuntimeError("无法访问 GoalBacklog（项目路径不可用），无法创建目标。")
+
+    if topic.linked_goal_id:
+        try:
+            goal_backlog.load()
+        except Exception:
+            pass
+        existing = goal_backlog.get(topic.linked_goal_id)
+        if existing is not None:
+            return existing
+        # 反向指针失效（Goal 已被删除），清空后继续走新建流程。
+        topic.linked_goal_id = None
+
+    description_parts = [
+        f"能力学习子主题：{track.title} / {topic.name}",
+        f"人设描述：{track.persona_desc}" if track.persona_desc else "",
+        f"当前覆盖状态：{topic.coverage_state}",
+        f"来源：能力学习 Track {track.track_id} / 子主题 {topic.topic_id}",
+    ]
+    if topic.wiki_page_ids:
+        description_parts.append(f"已沉淀 wiki 页面：{', '.join(topic.wiki_page_ids)}")
+    description = "\n\n".join(p for p in description_parts if p)
+
+    goal = goal_backlog.add_goal(
+        title=f"[能力学习] {track.title}：{topic.name}",
+        description=description,
+        source="agent_derived",
+        tags=["capability_learning"],
+    )
+
+    if track_store is None:
+        track_store = CapabilityTrackStore(paths)
+    topic.linked_goal_id = goal.id
+    track_store.update(track.track_id, outline=track.outline)
+
+    return goal
+
+
+def _load_goal_backlog_safely(paths: AgentPaths):
+    """风格对齐 growth_advisor.py 同名私有函数：拿不到 GoalBacklog（比如
+    项目路径不可用、模块导入失败）时返回 None 而不是抛异常，调用方
+    （`adopt_topic_as_goal()`）自行决定如何处理，不在这里强行兜底出一个
+    行为不明确的默认值。"""
+    try:
+        from mini_agent.perception.goal_backlog import GoalBacklog
+        return GoalBacklog(paths)
+    except Exception:
+        return None
 
 
 # ── CapabilityLedgerStore：单 Track 的进度台账 ─────────────────────────────
@@ -2023,6 +2127,15 @@ def maybe_dispatch_capability_notification(
             state["last_notify_date"] = today
             state["notify_count_today"] = 0
         if state.get("notify_count_today", 0) >= max_per_day:
+            return None
+
+        # [next_doc/initiative_systems_unification_plan.md §4.6 跨系统
+        # 推送总闸] 叠加的第二层节流，与 growth_advisor 共用同一个
+        # perception/initiative_push_budget 模块 / 同一份共享预算状态；
+        # 默认关闭（agent_config.json 未开启 initiative_push_budget_enabled）
+        # 时是 no-op，不改变本函数改动前的行为。
+        from mini_agent.perception import initiative_push_budget
+        if not initiative_push_budget.check_and_consume_for_project(paths, "capability_learning"):
             return None
 
         from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage

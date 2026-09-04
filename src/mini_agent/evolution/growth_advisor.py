@@ -5253,6 +5253,12 @@ def _maybe_dispatch_weekly_digest(paths, cfg, profile=None) -> Optional[dict]:
         if digest_lines:
             body += "\n\n正在自主持续调研的方向本轮新增：\n" + "\n".join(digest_lines)
 
+        # [initiative_systems_unification_plan.md §4.6 跨系统推送总闸]
+        # 与 _maybe_dispatch_notification 同一条总闸；默认关闭时 no-op。
+        from mini_agent.perception import initiative_push_budget
+        if not initiative_push_budget.check_and_consume_for_project(paths, "growth_advisor"):
+            return None
+
         from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
         from mini_agent.notification import reports_store
 
@@ -5353,6 +5359,14 @@ def _maybe_dispatch_notification(
             state["last_notify_date"] = today
             state["notify_count_today"] = 0
         if state.get("notify_count_today", 0) >= max_per_day:
+            return None
+
+        # [initiative_systems_unification_plan.md §4.6 跨系统推送总闸]
+        # 叠加的第二层节流，只在 agent_config.json 里
+        # initiative_push_budget_enabled=true 时才生效；默认关闭时是
+        # no-op，不改变本函数改动前的行为。
+        from mini_agent.perception import initiative_push_budget
+        if not initiative_push_budget.check_and_consume_for_project(paths, "growth_advisor"):
             return None
 
         from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage

@@ -208,5 +208,56 @@ class TestPersonaSubcommands(unittest.TestCase):
             )  # 没有草稿，应该报错但不抛异常
 
 
+class TestAdoptGoal(unittest.TestCase):
+    """[next_doc/initiative_systems_unification_plan.md §4.2 阶段二]
+    `/capability adopt-goal <track_id> <topic_id>` —— 与
+    `/growth adopt-goal <candidate_id>` 对称的落地入口。"""
+
+    def test_adopt_goal_creates_goal_node(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            agent = _FakeAgent(paths)
+            track = CapabilityTrackStore(paths).create(
+                title="股票分析能力", persona_desc="x", outline_names=["技术分析基础"],
+            )
+            topic_id = track.outline[0].topic_id
+
+            capability_cmd.handle_capability_cmd(
+                ["adopt-goal", track.track_id, topic_id], agent=agent,
+            )
+
+            from mini_agent.perception.goal_backlog import GoalBacklog
+            backlog = GoalBacklog(paths)
+            backlog.load()
+            goals = backlog.all_nodes()
+            self.assertEqual(len(goals), 1)
+            self.assertIn("capability_learning", goals[0].tags)
+
+            reloaded = CapabilityTrackStore(paths).get(track.track_id)
+            self.assertEqual(reloaded.outline[0].linked_goal_id, goals[0].id)
+
+    def test_adopt_goal_missing_args_reports_error_not_exception(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            agent = _FakeAgent(paths)
+            capability_cmd.handle_capability_cmd(["adopt-goal"], agent=agent)
+            capability_cmd.handle_capability_cmd(["adopt-goal", "cap_nope"], agent=agent)
+
+    def test_adopt_goal_unknown_track_or_topic_reports_error_not_exception(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            agent = _FakeAgent(paths)
+            capability_cmd.handle_capability_cmd(
+                ["adopt-goal", "cap_nope", "topic_nope"], agent=agent,
+            )
+            track = CapabilityTrackStore(paths).create(title="T", persona_desc="")
+            capability_cmd.handle_capability_cmd(
+                ["adopt-goal", track.track_id, "topic_nope"], agent=agent,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

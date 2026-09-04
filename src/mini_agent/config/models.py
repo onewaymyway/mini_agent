@@ -2833,6 +2833,18 @@ class AppConfig:
     # 独立的开关，互不冲突，可以只开其中一个。
     save_tool_executor_error_logs: bool = True
 
+    # [next_doc/initiative_systems_unification_plan.md §4.6 跨系统推送总闸]
+    # 默认关闭（False）——开启前，growth_advisor/capability_learning 各自
+    # 的 notification_max_per_day 仍然完全独立生效，不受影响，保证存量
+    # 行为/测试不变。开启后，两边（以及后续接入的其它主动推送来源）在
+    # 各自原有的按天节流通过之后，还需要额外通过一个跨系统共享的"今日
+    # 主动推送预算"总闸（`perception/initiative_push_budget.py`），
+    # 谁先发谁先占用名额，用完当天不再有任何来源可以推送——这是叠加的
+    # 第二层节流，不替代任何一方已有的判断逻辑。
+    initiative_push_budget_enabled: bool = False
+    # 跨系统共享预算的单日总条数上限（仅在上面开关开启时生效）。
+    initiative_push_budget_max_per_day: int = 3
+
     # ── 功能子配置块（每个功能域独立聚合）────────────────────────────────────
     memory:     MemoryConfig     = field(default_factory=MemoryConfig)
     compress:   CompressConfig   = field(default_factory=CompressConfig)

@@ -1444,6 +1444,16 @@ class AgentPaths:
         """
         return self.workdir_dir / "capability_outline_suggestions.jsonl"
 
+    @property
+    def initiative_push_budget_path(self) -> Path:
+        """<project_root>/.agent/initiative_push_budget_state.json ——
+        [next_doc/initiative_systems_unification_plan.md §4.6] 跨系统
+        主动推送预算的按天节流状态（last_date/spent_today/spent_by_source），
+        独立于 growth_state_path / capability_notify_state_path 各自的
+        存量节流状态文件，是叠加在两者之上的第二层节流，见
+        perception/initiative_push_budget.py。"""
+        return self.workdir_dir / "initiative_push_budget_state.json"
+
     def capability_notify_state_path(self) -> Path:
         """<project_root>/.agent/capability_notify_state.json — v0.21 §8
         通知接入的按天节流状态（last_notify_date/notify_count_today），

@@ -199,13 +199,51 @@ mini_agent 现在有四个系统都在承担"主动性"相关的职责，但分�
     `test_growth_advisor.py`+`test_capability_learning*.py`
     共 226 用例无影响。
 
-- **阶段二：采纳后统一接入目标树执行**（对应 4.2 + 4.6）
+- **阶段二：采纳后统一接入目标树执行**（对应 4.2 + 4.6）—— **已完成**
   `capability_learning` 新增"候选采纳 → 生成 GoalNode"路径（参照
   `growth_advisor` 已有的 `adopt-goal` 机制）；两边采纳后的实际执行
   逐步迁移到目标树 + `ResourceArbiter`；同步收口跨系统推送预算。
   与 `growth_advisor_goal_cron_integration_plan.md` 已完成的部分衔接，
   不重复实现，只补齐 `capability_learning` 这一侧的缺口并把两边纳入
   同一套资源仲裁。
+  - 实现记录（4.2 部分）：`OutlineTopic` 新增 `linked_goal_id: Optional[str]`
+    字段（向后兼容，旧数据默认 `None`）；新增
+    `capability_learning.adopt_topic_as_goal(paths, track, topic, ...)`，
+    把一个子主题落地成 `GoalBacklog` 里的 Goal（`source="agent_derived"`，
+    `tags=["capability_learning"]`），幂等（`linked_goal_id` 已存在且对应
+    Goal 仍在时直接复用；Goal 被删除则反向指针失效并重建，不报错）。
+    这条路径是**并行**于 `run_capability_learning_cycle()` 内部 cron 循环
+    的新增入口，不是替换——已落地成 Goal 的子主题仍会被内部循环正常扫到
+    处理（`linked_goal_id` 只是反向指针，不改变 `coverage_state`/大纲
+    本身任何既有字段的读取路径），完全把执行权交给目标树留待后续阶段
+    验证稳定后再做，对齐方案原文"逐步废弃"而非一次性替换。CLI
+    `/capability adopt-goal <track_id> <topic_id>` 与 API
+    `POST /v1/capability/tracks/{track_id}/topics/{topic_id}/adopt_goal`
+    两个入口都已接好，与 `/growth adopt-goal` /
+    `POST /v1/growth/candidates/{id}/adopt_goal` 对称。
+  - 实现记录（4.6 部分）：新增 `perception/initiative_push_budget.py`，
+    提供跨系统共享的"今日主动推送预算"总闸（`try_consume()` /
+    `check_and_consume_for_project()`），是叠加在 `growth_advisor`/
+    `capability_learning` 各自原有按天节流**之上**的第二层节流，不替代
+    任何一方现有逻辑；已分别接入 `growth_advisor._maybe_dispatch_notification()`、
+    `_maybe_dispatch_weekly_digest()`、
+    `capability_learning.maybe_dispatch_capability_notification()`
+    （均在各自原有节流判断通过之后、真正 dispatch 之前多问一句）。
+    默认关闭（`AppConfig.initiative_push_budget_enabled=False`），关闭时
+    是纯粹的 no-op，不改变任何存量行为/测试；用户在 `agent_config.json`
+    里显式打开后才生效，单日共享总额由 `initiative_push_budget_max_per_day`
+    （默认 3）控制，按 `source` 记账供可观测性使用，但判定只看共享总数
+    （不做按来源的子配额切分，子配额留给未来需要时再加）。`watchlist`
+    通知节流暂未接入（本阶段只打通 growth_advisor/capability_learning
+    两边，watchlist 的节流逻辑改动面需要单独评估，留到后续阶段）。
+  - 新增测试：`tests/test_initiative_stage2_goal_bridge_and_push_budget.py`
+    （8 用例：落地/幂等/反向指针失效重建、总闸默认关闭 no-op/共享预算
+    跨来源互斥/按来源记账/只读查询不消耗/跨天重置）、
+    `tests/test_capability_cmd.py::TestAdoptGoal`（3 用例：CLI 创建/
+    缺参数报错/未知 track-topic 报错）；全部通过。回归测试覆盖
+    `growth`/`capability`/`initiative`/`push_budget` 关键词共 707 用例
+    （另有 2 个失败为环境缺失依赖 `websocket-client` 等导致的既有失败，
+    与本次改动无关，改动前同样失败）无新增回归。
 
 - **阶段三：抽取共享 ResearchService + 双向知识沉淀**（对应 4.3 + 4.4）
   抽取共享调研服务模块，`growth_advisor` 迁移到新服务（旧实现保留

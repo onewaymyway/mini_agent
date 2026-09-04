@@ -194,6 +194,13 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
   满 7 天"（非自然周）把窗口期内新生成的全部报告标题打包成一条摘要
   推送。
 - `notification_frequency=kanban_only`：完全不主动推送，只更新看板。
+- **跨系统推送总闸**（[next_doc/initiative_systems_unification_plan.md
+  §4.6 阶段二]，默认关闭）：在 `agent_config.json` 里显式设
+  `"initiative_push_budget_enabled": true` 后，上面这套节流通过之后，
+  还需要再通过一个和 `capability_learning` 共享的"今日主动推送预算"
+  总闸（单日总额 `initiative_push_budget_max_per_day`，默认 3）——谁先
+  发谁先占用名额，两边共用同一个池子，不是各自独立配额简单叠加。默认
+  关闭时完全不影响上面描述的行为。
 - **按类别覆盖（P4-5）**：`category_notification_frequency` 可以给
   单个类别（"技术类"/"管理类"/"表达类"/"其他类"）单独配成
   `"kanban_only"`，把这个类别完全静音（仍在看板展示，不主动推送），
@@ -357,6 +364,8 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 | `generation_frequency` | `"daily"` | `daily` / `every_12h` / `weekly` / `manual` |
 | `notification_frequency` | `"daily"` | `daily`（当天新报告里优先级最高的一条，最多 `notification_max_per_day` 条）/ `weekly_digest`（每 7 天把窗口期内新生成的全部报告打包成一条摘要推送）/ `kanban_only`（只更新看板，不推送） |
 | `notification_max_per_day` | `1` | `notification_frequency=daily` 时，单日最多推送条数 |
+| `initiative_push_budget_enabled`（AppConfig 顶层字段，非 `growth_advisor` 块内） | `false` | 跨系统推送总闸，见上方"跨系统推送总闸"小节 |
+| `initiative_push_budget_max_per_day`（同上，AppConfig 顶层字段） | `3` | 上面总闸的单日共享总额，`growth_advisor`/`capability_learning` 共用 |
 | `notification_min_confidence` | `0.6` | 低于此置信度的报告只更新看板、不推送 |
 | `min_evidence_count` | `3` | 生成候选所需的最少证据条数 |
 | `max_pending_candidates` | `10` | 候选队列 pending 状态上限 |

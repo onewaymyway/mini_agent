@@ -10827,6 +10827,47 @@ async def post_growth_candidate_adopt_goal(request: Request, candidate_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/capability/tracks/{track_id}/topics/{topic_id}/adopt_goal")
+async def post_capability_topic_adopt_goal(request: Request, track_id: str, topic_id: str):
+    """POST /v1/capability/tracks/{track_id}/topics/{topic_id}/adopt_goal
+    —— [next_doc/initiative_systems_unification_plan.md §4.2 阶段二] 把
+    CapabilityTrack 下的一个子主题落地成 GoalBacklog 里的 Goal，交给目标树
+    执行引擎 + ResourceArbiter 推进——与 `/growth/candidates/{id}/adopt_goal`
+    对称，是"候选采纳 → 统一接入目标树执行"在能力学习这一侧此前缺失的
+    对接点（CLI `/capability adopt-goal <track_id> <topic_id>` 是另一个
+    入口，行为完全复用同一个 `adopt_topic_as_goal()`）。
+
+    幂等：子主题已经落地过（`linked_goal_id` 非空且对应 Goal 仍存在）时
+    直接返回已有 Goal，不会重复创建。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution.capability_learning import (
+            CapabilityTrackStore,
+            adopt_topic_as_goal,
+        )
+        from mini_agent.perception.goal_backlog import GoalBacklog
+
+        store = CapabilityTrackStore(paths)
+        track = store.get(track_id)
+        if track is None:
+            raise HTTPException(status_code=404, detail="track not found")
+        topic = next((t for t in track.outline if t.topic_id == topic_id), None)
+        if topic is None:
+            raise HTTPException(status_code=404, detail="topic not found")
+
+        goal_backlog = GoalBacklog(paths)
+        goal = adopt_topic_as_goal(paths, track, topic, goal_backlog=goal_backlog, track_store=store)
+        return {"ok": True, "goal": goal.to_dict()}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/growth/reports/{report_id}")
 async def get_growth_report_body(request: Request, report_id: str):
     """GET /v1/growth/reports/{id} — 返回某份调研报告的 Markdown 正文。"""
