@@ -33,6 +33,16 @@
       `docs/kanban-dashboard-guide.md`"功能 Tab 一览"表补上
       "👤 账户管理"行，"Tab 导航与按需渲染"节把 `TAB_DEFS` 的描述更新为
       `_BASE_TAB_DEFS` + `get_tab_defs(cli_args)`。
+- [x] 用户实测反馈修复：`manage_users.py add <用户名> --users-file <路径>`
+      （`--users-file` 写在子命令 token 之后，即 README 里一直展示的
+      顺序）原来会报 `unrecognized arguments`——`--users-file` 之前只挂在
+      最外层 parser 上，argparse 的子命令机制下外层可选参数必须写在
+      子命令 token **之前**才能被识别，写在之后会被当成未知参数拒绝。
+      修复：把 `--users-file` 改成只挂在每个子命令自己的 parser 上（用
+      `parents=[users_file_parser]` 复用同一份定义），不再挂在最外层
+      parser——两者都挂会导致更隐蔽的 bug（外层解析到的值会被子命令
+      parser 自己的默认值覆盖掉，看似成功实际上写错了文件）。修复后
+      `add alice --users-file X` 这个顺序按预期工作。
 
 
 ## 背景

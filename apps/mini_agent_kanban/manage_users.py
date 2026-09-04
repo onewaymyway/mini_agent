@@ -34,26 +34,48 @@ from auth import LastAdminError, UserStore
 
 
 def main():
-    parser = argparse.ArgumentParser(description="mini-agent 看板账户管理")
-    parser.add_argument(
+    # [用户实测反馈修复] --users-file 原来只挂在最外层 parser 上：
+    # argparse 的子命令（subparsers）机制下，外层 parser 定义的可选参数
+    # 必须写在子命令 token 之前（`manage_users.py --users-file X add
+    # alice`），写在子命令后面（`manage_users.py add alice --users-file X`）
+    # 会报 "unrecognized arguments"——这正是本文件顶部"用法"示例和
+    # README 里一直写的顺序，实际跑起来会报错。用一个 `--users-file`
+    # 共用的 `parent_parser`（`add_help=False` 避免和子命令自己的 `-h`
+    # 冲突）分别 `parents=[...]` 挂到每个子命令 parser 上，两种顺序都能用，
+    # 不用强迫用户记"这个参数必须放在子命令前面"这种反直觉规则。
+    users_file_parser = argparse.ArgumentParser(add_help=False)
+    users_file_parser.add_argument(
         "--users-file", default=".agent/kanban_users.json",
         help="账户文件路径（默认 ./.agent/kanban_users.json，需要和 app.py 启动参数一致）",
     )
+
+    # [用户实测反馈修复] `--users-file` 只挂在每个子命令 parser 上（不
+    # 挂在最外层 parser），用 `parents=[users_file_parser]` 复用同一份
+    # 参数定义。注意：不能同时挂在最外层 parser 和子命令 parser 上——
+    # 那样当 `--users-file` 写在子命令 token 之前时，子命令 parser 自己
+    # 的默认值会在解析子命令参数时覆盖掉外层已经解析到的值，反而更容易
+    # 出错（同名 dest 在两层 parser 间不会"透传"，后解析的那层会赢）。
+    # 现在只有一处定义，`--users-file` 必须写在子命令 token 之后
+    # （`add alice --users-file X`），这也是本文件"用法"示例和 README
+    # 里一直展示的顺序。
+    parser = argparse.ArgumentParser(description="mini-agent 看板账户管理")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_add = sub.add_parser("add", help="新增账户 / 重置已有账户的密码")
+    p_add = sub.add_parser("add", help="新增账户 / 重置已有账户的密码", parents=[users_file_parser])
     p_add.add_argument("username")
     p_add.add_argument("--admin", action="store_true", help="把该账户设为管理员（可以在页面管理其他账户）")
 
-    p_rm = sub.add_parser("remove", help="删除账户（不能删除最后一个管理员）")
+    p_rm = sub.add_parser("remove", help="删除账户（不能删除最后一个管理员）", parents=[users_file_parser])
     p_rm.add_argument("username")
 
-    sub.add_parser("list", help="列出所有账户（管理员带 [admin] 标记）")
+    sub.add_parser("list", help="列出所有账户（管理员带 [admin] 标记）", parents=[users_file_parser])
 
-    p_set = sub.add_parser("set-admin", help="把已有账户设为管理员")
+    p_set = sub.add_parser("set-admin", help="把已有账户设为管理员", parents=[users_file_parser])
     p_set.add_argument("username")
 
-    p_unset = sub.add_parser("unset-admin", help="取消已有账户的管理员身份（不能取消最后一个管理员）")
+    p_unset = sub.add_parser(
+        "unset-admin", help="取消已有账户的管理员身份（不能取消最后一个管理员）", parents=[users_file_parser]
+    )
     p_unset.add_argument("username")
 
     args = parser.parse_args()
