@@ -1251,6 +1251,24 @@ def reap_finished_cycles(goal_backlog: "GoalBacklog", *, llm_helper_provider=Non
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge.reap_finished_cycles.archive')
+
+        # [goal_tree_visibility_wiki_and_report_plan.md Stage 3] 目标产出
+        # Wiki 自动刷新：跟 render_output_readme() 同一个取舍——机械重新
+        # 生成，不做增量 diff、不经过 LLM，只在阶段已收敛（running/tidy，
+        # 复用上面 allow_archive 已经算过的 effective_mode 判断，不重复
+        # 读取 phase_state）时刷新，explore/converge 期的早期尝试不值得
+        # 每轮都重写一份 wiki 页。只重建这一个节点（不递归整棵子树），
+        # 保持每次 tick 的开销可控——遍历整棵树的批量生成留给手动
+        # `/agent goals wiki build` 或看板未来的定时任务。任何异常整体
+        # 吞掉，不影响 reap 主流程的计数，也不影响归档。
+        try:
+            paths = getattr(goal_backlog, "_paths", None)
+            if paths is not None and allow_archive:
+                from mini_agent.evolution.goal_wiki import render_goal_wiki_page
+                render_goal_wiki_page(paths, goal_backlog, goal.id)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge.reap_finished_cycles.wiki_refresh')
     return reaped
 
 

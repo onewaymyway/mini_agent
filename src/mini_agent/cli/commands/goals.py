@@ -48,6 +48,19 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
                                      从单 Goal 提升到子树（见
                                      next_doc/goal_tree_visibility_wiki_and_
                                      report_plan.md Stage 1）。
+  /agent goals wiki build [root_id] — 手动触发一次目标产出 Wiki 落盘生成
+                                     （见 evolution/goal_wiki.py，next_doc/
+                                     goal_tree_visibility_wiki_and_report_
+                                     plan.md Stage 3）：把 show 同一份节点
+                                     详情页数据渲染成 Markdown，写入
+                                     `.agent/daemon_run_outputs/goals_wiki/
+                                     <id>/index.md`，子节点用相对链接串成
+                                     可点击浏览的静态目录。省略 root_id 时
+                                     遍历全局森林并刷新根索引，传 root_id
+                                     时只重建该（子）树。正常情况下由每轮
+                                     周期性执行结束时自动触发一次，这个
+                                     命令是手动补触发入口，风格上跟
+                                     `goals decompose --force` 类似。
   /agent goals status              — 显示 AutonomousLoop tick 状态
   /agent goals phase show <id>     — 查看当前执行阶段（见
                                      perception/execution_phase.py，
@@ -268,6 +281,14 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         root_id_arg = rest[0] if rest else None
         _cmd_report(gb, paths, root_id_arg)
 
+    elif subcmd == "wiki":
+        # [goal_tree_visibility_wiki_and_report_plan.md Stage 3]
+        # /agent goals wiki build [root_id]
+        if not rest or rest[0] != "build":
+            R.print_error("Usage: /agent goals wiki build [root_id]")
+            return
+        _cmd_wiki_build(gb, paths, rest[1] if len(rest) > 1 else None)
+
     elif subcmd == "tune":
         # [goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 2]
         if not rest:
@@ -375,7 +396,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
             "progress, feedback, recur, unrecur, migrate-legacy, spec, phase, diagnose, show, report, "
-            "tune, status, reset-step, judge-calibration, tree, decompose, candidates, "
+            "wiki build, tune, status, reset-step, judge-calibration, tree, decompose, candidates, "
             "focus, research, next-steps"
         )
 
@@ -1293,6 +1314,24 @@ def _cmd_report(gb, paths, root_id: Optional[str]) -> None:
         R.print_info("  最近产出速览:")
         for d in report.recent_outputs_digest:
             R.print_info(f"    [{d['id']}] {d['title']}: {d.get('task_summary', '')[:60]}")
+
+
+def _cmd_wiki_build(gb, paths, root_id: Optional[str]) -> None:
+    """[goal_tree_visibility_wiki_and_report_plan.md Stage 3]
+    /agent goals wiki build [root_id] — 手动触发一次目标产出 Wiki 落盘
+    生成。省略 root_id 时遍历全局森林并刷新 goals_wiki/index.md 全局
+    入口；传 root_id 时只重建该（子）树，root_id 不存在时提示错误。
+    """
+    if root_id is not None and gb.get(root_id) is None:
+        R.print_error(f"Goal/Objective 不存在：{root_id}")
+        return
+
+    from mini_agent.evolution.goal_wiki import build_goal_wiki_tree, goals_wiki_root
+
+    rendered = build_goal_wiki_tree(paths, gb, root_id)
+    scope = f"子树 {root_id}" if root_id else "全局森林（所有顶层节点）"
+    R.print_success(f"已生成目标产出 Wiki：{scope}，共 {len(rendered)} 个节点页。")
+    R.print_info(f"入口：{goals_wiki_root(paths)}" + ("/index.md" if root_id is None else f"/{root_id}/index.md"))
 
 
 def _print_tuning_proposal(proposal) -> None:

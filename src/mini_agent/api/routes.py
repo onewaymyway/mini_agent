@@ -190,6 +190,13 @@ api/routes.py — FastAPI 路由定义
                                        草案/待确认执行规范）+最近产出速览，
                                        粒度从单 Goal 提升到子树。省略
                                        root_id 时汇总全局森林。
+    POST   /v1/goals/wiki/build      [goal_tree_visibility_wiki_and_report_
+                                       plan.md Stage 3] 目标产出 Wiki 落盘
+                                       生成（可选 ?root_id=）：把节点详情页
+                                       渲染成 Markdown 写入 goals_wiki/
+                                       <id>/index.md，子节点相对链接串成
+                                       可点击浏览的静态目录。省略 root_id
+                                       时遍历全局森林并刷新根索引。
     POST   /v1/goals/{goal_id}/tuning_proposals  [同上 Stage 2] 生成调优草案
                                        （白名单参数：schedule/priority/
                                        execution_phase/task_template/
@@ -6913,6 +6920,33 @@ async def get_goal_tree_report(request: Request, root_id: Optional[str] = Query(
         log_exception(e, where='mini_agent.api.routes.get_goal_tree_report')
         raise HTTPException(status_code=500, detail=f"生成树级汇总报告失败：{e}")
     return {"tree_report": report.to_dict()}
+
+
+@router.post("/goals/wiki/build")
+async def build_goal_wiki(request: Request, root_id: Optional[str] = Query(default=None)):
+    """POST /v1/goals/wiki/build?root_id=... —
+    [goal_tree_visibility_wiki_and_report_plan.md Stage 3]
+    手动触发一次目标产出 Wiki 落盘生成，对应 CLI `/agent goals wiki
+    build`。把节点详情页（`/goals/{goal_id}/page` 同一份聚合逻辑）机械
+    渲染成 Markdown，写入 `<outputs_root>/goals_wiki/<goal_id>/
+    index.md`，子节点用相对链接串成可点击浏览的静态目录。省略 root_id
+    时遍历全局森林并刷新 `goals_wiki/index.md` 全局入口；root_id 指定但
+    不存在时返回 404。用 POST 而非 GET——这个端点会向磁盘写入一批文件，
+    跟 `/goals/{goal_id}/page` 里 `render_output_readme()` 那种顺带的
+    单文件重写不同量级，语义上是一次显式的批量生成动作。
+    """
+    backlog = _goal_backlog_only(request)
+    if root_id is not None and backlog.get(root_id) is None:
+        raise HTTPException(status_code=404, detail=f"Goal/Objective '{root_id}' not found")
+    paths = _spec_paths(request)
+    from mini_agent.evolution.goal_wiki import build_goal_wiki_tree
+    try:
+        rendered = build_goal_wiki_tree(paths, backlog, root_id)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.routes.build_goal_wiki')
+        raise HTTPException(status_code=500, detail=f"生成目标产出 Wiki 失败：{e}")
+    return {"root_id": root_id, "rendered_goal_ids": rendered, "rendered_count": len(rendered)}
 
 
 @router.get("/goals/cycle_diagnostics_overview")

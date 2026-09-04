@@ -1,7 +1,7 @@
 # 目标树可视化、产出 Wiki 化与汇总报告改进方案
 
-> 状态：**Stage 1（树级汇总报告，纯只读）/ Stage 2（节点详情页，纯只读）
-> 已实施**，Stage 3-5 未实施。
+> 状态：**Stage 1（树级汇总报告，纯只读）/ Stage 2（节点详情页，纯只读）/
+> Stage 3（目标产出 Wiki 落盘镜像）已实施**，Stage 4-5 未实施。
 > Stage 1 实现见 `src/mini_agent/perception/goal_tree_report.py`
 > （`build_goal_tree_report()`）、CLI `/agent goals report [root_id]`
 > （`cli/commands/goals.py::_cmd_report()`）、REST
@@ -12,8 +12,18 @@
 > `goal_tree_report.collect_pending_items_for_node()`，不重复实现）、CLI
 > `/agent goals show <id>`（`_cmd_show()`）、REST
 > `GET /v1/goals/{goal_id}/page`（`get_goal_node_page()`）、
-> `tests/test_goal_node_page.py`。看板集成（两个 Stage 都涉及的折叠区/
-> 详情面板）仍未做，见 §6。
+> `tests/test_goal_node_page.py`。
+> Stage 3 实现见 `src/mini_agent/evolution/goal_wiki.py`
+> （`render_goal_wiki_page()` 渲染单节点 Markdown 落盘、
+> `build_goal_wiki_tree()` 批量遍历子树，复用 `goal_node_page.
+> build_goal_node_page()`/`goal_tree_report._collect_subtree()`，不重复
+> 实现）、CLI `/agent goals wiki build [root_id]`（`_cmd_wiki_build()`）、
+> REST `POST /v1/goals/wiki/build`（`build_goal_wiki()`）、`goal_cron_
+> bridge.reap_finished_cycles()` 里挂了单节点自动刷新（阶段收敛为
+> running/tidy 时触发，不递归整棵子树，保持每次 tick 开销可控）、
+> `tests/test_goal_wiki.py`。通用 wiki 关联链接（§2.2 最后一点）按 §6
+> 建议暂不实现。看板集成（三个 Stage 都涉及的折叠区/详情面板/wiki 静态
+> 文件预览）仍未做，见 §6。
 > 触发背景：用户在实际使用目标树系统
 > （`goal_tree_system_plan.md` 系列）过程中发现，树形结构本身编辑已经
 > 很顺手（`goals tree` / `decompose` / `candidates` / `focus pin`），
@@ -284,15 +294,30 @@ class GoalTreeReport:
 - 验收标准：打开一个节点就能看到进度 + 产出 + 待办，不用再去翻
   output_dir 或单独跑 diagnose ✅
 
-**Stage 3 — 目标产出 Wiki 落盘镜像（能力 A 后半）**
-- 在 `output_workspace.py` 旁新增 `goal_wiki.py`（或作为其子模块），
-  复用 `scan_output_structure()`/`render_output_readme()`，新增
-  `render_goal_wiki_page()` + `build_goal_wiki_tree()`（批量遍历落盘）
-- CLI `goals wiki build [root_id]`，tidy 阶段挂一次自动触发
-- 回归：`tests/test_goal_wiki.py`，重点测"子节点链接是否正确对应树
-  结构"“重新生成是否幂等（不产生垃圾历史文件）”
+**Stage 3 — 目标产出 Wiki 落盘镜像（能力 A 后半）：✅ 已实施**
+- `evolution/goal_wiki.py`：`render_goal_wiki_page()`——直接复用
+  `goal_node_page.build_goal_node_page()` 的聚合结果渲染成 Markdown，
+  整份覆盖写入 `goals_wiki/<goal_id>/index.md`（子节点用相对链接
+  `<child_id>/index.md`，面包屑用 `../<id>/index.md`）；
+  `build_goal_wiki_tree()`——复用 `goal_tree_report._collect_subtree()`
+  的同一份 BFS 遍历批量落盘，`root_id=None` 时额外刷新全局根索引
+  `goals_wiki/index.md`
+- CLI `goals wiki build [root_id]`（`_cmd_wiki_build()`），REST
+  `POST /v1/goals/wiki/build?root_id=...`（`build_goal_wiki()`）
+- 自动触发：`goal_cron_bridge.reap_finished_cycles()` 里，跟既有的
+  "阶段收敛（running/tidy）才归档已完成子节点"用同一个 `allow_archive`
+  判断，命中时顺带刷新这一个 Goal 的 wiki 页（不递归整棵子树，避免
+  每次 tick 开销随树的规模线性增长）；批量重建整棵树仍然是手动
+  `/agent goals wiki build` 或未来看板定时任务的职责
+- 看板集成**未做**（跟 Stage 1/2 一起留到看板改造统一做，见 §6）
+- 回归：`tests/test_goal_wiki.py`（8 个用例），覆盖节点不存在返回
+  None 不写文件/单节点渲染落盘且含产出目录索引内容/子节点链接对应
+  树结构/`root_id=None` 遍历全局森林并生成根索引/`root_id=<id>` 只
+  重建子树且不生成根索引/重复生成幂等（文件集合不变）/root_id 不
+  存在返回空列表
 - 验收标准：`goals_wiki/` 目录点开根节点能一路点到任意子节点，内容
-  跟实际 output_dir 状态一致
+  跟实际 output_dir 状态一致 ✅（通用 wiki 关联链接增强按 §6 建议
+  暂不实现）
 
 **Stage 4 — 反馈闭环（能力 C）**
 - `goal_backlog.py` 里反馈记录加 `status` 字段 + `--about` 关联参数
@@ -310,16 +335,18 @@ class GoalTreeReport:
 
 ## 6. 开放问题
 
-- **看板集成延后到 Stage 1+2 一起做**：§3.1 设想的"📊 全局报告"折叠区、
-  节点"详情面板"都没有随各自 Stage 一起做（`apps/mini_agent_kanban/
-  app.py` 单文件 8000+ 行，改动面比后端聚合函数本身大得多，且没有独立
-  回归覆盖），CLI/REST 已经可用（`goals report`/`goals show` + 对应
-  REST 端点）。两者都要改同一处"目标树子页"，合并到一次看板改造里做，
-  避免分两次改互相冲突。
+- **看板集成延后到 Stage 1+2+3 一起做**：§3.1 设想的"📊 全局报告"折叠区、
+  节点"详情面板"、wiki 静态文件预览都没有随各自 Stage 一起做
+  （`apps/mini_agent_kanban/app.py` 单文件 8000+ 行，改动面比后端聚合
+  函数本身大得多，且没有独立回归覆盖），CLI/REST 已经可用（`goals
+  report`/`goals show`/`goals wiki build` + 对应 REST 端点）。三者都要
+  改同一处"目标树子页"，合并到一次看板改造里做，避免分次改互相冲突。
 
 - **Stage 3 的落盘量级**：树很大时 `goals_wiki/` 目录文件数会随节点数
   线性增长，是否需要限制深度或提供"只生成当前 focus 子树"的窄化选项，
-  留到实际用起来再看是否有必要。
+  留到实际用起来再看是否有必要。目前的自动触发只在 reap 到已完成子
+  节点时刷新单个节点（见 Stage 3 实施记录），本身不会因为树变大而让
+  单次 tick 开销失控，量级问题主要落在"手动/批量全量重建"这条路径上。
 - **看板"详情面板"与"全局报告"点击跳转**的具体交互（新开面板 vs 原地
   展开）留给 Stage 1/2 实现时结合 kanban 现有的 tab 懒渲染机制
   （`app.py` 里 `st.tabs()` 替换方案）具体设计，不在本文档里预先定死。
