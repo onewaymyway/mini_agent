@@ -6120,6 +6120,80 @@ def _render_llm_pool_status(client: AgentClient) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: 📥 主动建议（next_doc/initiative_systems_unification_plan.md 阶段一）
+# ═══════════════════════════════════════════════════════════════════════
+# 只读聚合视图：把"成长顾问 / 能力学习 / soft_goal_deriver"三条各自独立
+# 的候选队列汇总成一个统一收件箱，按分类（domain）筛选。这里刻意不提供
+# 采纳/忽略等写操作——底层三套存储各自的语义/校验规则不同（比如成长顾问
+# 候选采纳要走 `/growth adopt-goal`，能力学习问题要走文本回答），勉强
+# 在这层统一写接口反而会丢失各自的专属流程；这个 tab 的定位是"先看清楚
+# 全貌"，处理仍然去对应的原生 tab（页面上给出跳转提示）。
+_DOMAIN_LABELS = {
+    "user_growth": "🌱 用户成长（成长顾问）",
+    "agent_knowledge": "🎓 Agent 知识/人设（能力学习）",
+    "agent_behavior": "🧭 Agent 自身行为（soft_goal_deriver）",
+}
+_DOMAIN_JUMP_TAB = {
+    "user_growth": ("growth", "🌱 成长顾问"),
+    "agent_knowledge": ("capability", "🎓 能力学习"),
+    "agent_behavior": ("kanban", "📌 目标看板"),
+}
+
+
+def render_initiative_inbox_tab(client: "AgentClient"):
+    st.markdown("#### 📥 主动建议收件箱")
+    st.caption(
+        "成长顾问 / 能力学习 / 目标树三条主动性管线当前待你处理的候选，"
+        "汇总在这里方便一眼看全貌；具体的采纳/忽略/回答操作仍在各自的"
+        "原生 tab 里进行（下面每张卡片给出跳转提示）。"
+    )
+
+    domain_options = list(_DOMAIN_LABELS.keys())
+    selected_domains = st.multiselect(
+        "按类别筛选", domain_options,
+        default=domain_options,
+        format_func=lambda d: _DOMAIN_LABELS.get(d, d),
+        key="initiative_inbox_domain_filter",
+    )
+
+    resp = client.initiative_inbox(domains=selected_domains or None, limit=100)
+    if not resp or "_error" in resp:
+        st.error(f"加载失败：{(resp or {}).get('_error', '未知错误')}")
+        return
+
+    counts = resp.get("counts_by_domain") or {}
+    if counts:
+        cols = st.columns(len(_DOMAIN_LABELS))
+        for col, (d, label) in zip(cols, _DOMAIN_LABELS.items()):
+            col.metric(label.split("（")[0], counts.get(d, 0))
+
+    items = resp.get("items") or []
+    if not items:
+        st.info("当前没有待你处理的主动建议。")
+        return
+
+    for it in items:
+        domain = it.get("domain", "")
+        with st.container(border=True):
+            jump_key, jump_label = _DOMAIN_JUMP_TAB.get(domain, (None, None))
+            badge = _DOMAIN_LABELS.get(domain, domain)
+            st.markdown(f"**{it.get('title', '')}**  ·  {badge}")
+            if it.get("detail"):
+                st.caption(it["detail"])
+            meta_bits = []
+            conf = it.get("confidence")
+            if conf is not None:
+                meta_bits.append(f"置信度 {conf:.2f}")
+            created_at = it.get("created_at")
+            if created_at:
+                meta_bits.append(time.strftime("%Y-%m-%d %H:%M", time.localtime(created_at)))
+            if meta_bits:
+                st.caption(" · ".join(meta_bits))
+            if jump_label:
+                st.caption(f"→ 前往「{jump_label}」处理")
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab: 🌱 成长顾问（next_doc/growth_advisor_design.md，P1 里程碑）
 # ═══════════════════════════════════════════════════════════════════════
 # [用户反馈] "运行了一天，成长顾问里的数据都是 0" ——候选/报告数=0 本身
@@ -11989,6 +12063,7 @@ TAB_DEFS = [
     ("artifacts", "📁 产出物", lambda client: render_artifacts_tab(client)),
     ("artifacts_preview", "🖼️ 产出预览", lambda client: render_artifacts_preview_tab(client)),
     ("self", "🧠 自我状态", lambda client: render_self_tab(client)),
+    ("initiative_inbox", "📥 主动建议", lambda client: render_initiative_inbox_tab(client)),
     ("growth", "🌱 成长顾问", lambda client: render_growth_tab(client)),
     ("capability", "🎓 能力学习", lambda client: render_capability_tab(client)),
     ("evolution", "🧬 进化提案", lambda client: render_evolution_proposals_tab(client)),

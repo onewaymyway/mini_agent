@@ -182,11 +182,22 @@ mini_agent 现在有四个系统都在承担"主动性"相关的职责，但分�
 
 ## 6. 改进阶段划分
 
-- **阶段一：候选层对齐 + 统一收件箱视图**（对应 4.1）
+- **阶段一：候选层对齐 + 统一收件箱视图**（对应 4.1）—— **已完成**
   新增 `perception/initiative_inbox.py` 只读聚合三条线现有候选，
   Kanban 把三个独立 tab 收敛为一个带分类筛选的"主动建议"收件箱。
   不改动任何现有模块的内部逻辑与存储结构，纯展示层整合，风险最低，
   可独立上线。
+  - 实现记录：新增 `GET /v1/self/initiative_inbox` 只读路由（异常隔离，
+    单路来源读取失败不影响其它两路）；Kanban 新增「📥 主动建议」tab，
+    支持按 `domain` 筛选，卡片给出跳转提示但不提供写操作（写操作仍在
+    各自原生 tab，理由见 `docs/kanban-dashboard-guide.md` 对应小节）；
+    `soft_goal_deriver` 一路的候选判定是"agent_derived 且
+    created_at/last_touched_at 差值在 5 秒内"（即从未被单独 touch 过），
+    不是新增字段，纯读取既有数据推断；新增
+    `tests/test_initiative_inbox.py`（5 用例：空态/三路聚合/domain
+    过滤/已处理 Goal 不重复展示/单路异常隔离），全部通过，回归测试
+    `test_growth_advisor.py`+`test_capability_learning*.py`
+    共 226 用例无影响。
 
 - **阶段二：采纳后统一接入目标树执行**（对应 4.2 + 4.6）
   `capability_learning` 新增"候选采纳 → 生成 GoalNode"路径（参照

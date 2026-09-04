@@ -485,6 +485,16 @@ class AgentClient:
         时间片抢占暂停的 execution 列表。"""
         return self._get("/self/fairness_diagnostics")
 
+    def initiative_inbox(self, domains: list = None, limit: int = 100):
+        """[initiative_systems_unification_plan.md 阶段一] 三条主动性
+        管线（成长顾问/能力学习/soft_goal_deriver）候选的统一只读收件箱。
+        `domains` 传入子集（如 ["user_growth"]）只拉取对应分类，不传
+        返回全部三类。"""
+        params = {"limit": limit}
+        if domains:
+            params["domain"] = ",".join(domains)
+        return self._get("/self/initiative_inbox", params=params)
+
     def force_reap(self, target: str = "all"):
         """[kanban_execution_visibility_and_control_plan.md 阶段 B/C]
         看板"🚨 立即回收"按钮：不必等 watchdog 下一次 tick，立刻对指定

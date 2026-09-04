@@ -144,6 +144,9 @@ api/routes.py — FastAPI 路由定义
                                        diagnostics_plan.md] 调度公平性参数快照
     GET    /v1/goals/similar_confirmed_specs [cross_goal_experience_reuse_
                                        plan.md] 相似历史 Goal 执行规范推荐
+    GET    /v1/self/initiative_inbox [initiative_systems_unification_
+                                       plan.md 阶段一] 三条主动性管线候选
+                                       统一收件箱（只读聚合，不新增存储）
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
     POST   /v1/goals                 新增 Goal
     PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级/标题/描述
@@ -1313,6 +1316,47 @@ async def get_self_fairness_diagnostics(request: Request):
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_fairness_diagnostics')
         from mini_agent.perception.fairness_diagnostics import _empty_snapshot
         return _empty_snapshot()
+
+
+# ── 主动性候选统一收件箱（initiative_systems_unification_plan.md 阶段一）───
+@router.get("/self/initiative_inbox")
+async def get_self_initiative_inbox(
+    request: Request,
+    domain: Optional[str] = Query(
+        None,
+        description="逗号分隔的 domain 过滤：user_growth,agent_knowledge,agent_behavior；缺省返回全部",
+    ),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """GET /v1/self/initiative_inbox — 只读聚合成长顾问 / 能力学习 /
+    soft_goal_deriver 三条主动性管线当前待用户处理的候选，供看板渲染成
+    统一的"主动建议"收件箱。不修改任何底层存储，纯观测。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    try:
+        from mini_agent.perception.initiative_inbox import initiative_inbox_snapshot
+
+        self_agent = http_server.bridge.agent
+        cfg = getattr(self_agent, "cfg", None) if self_agent else None
+
+        al = http_server.autonomous_loop
+        paths = getattr(al, "_paths", None) if al is not None else None
+        if paths is None and cfg is not None and getattr(cfg, "project_root", None) is not None:
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(cfg.project_root)
+        if paths is None:
+            return {"generated_at": time.time(), "total": 0, "counts_by_domain": {}, "items": []}
+
+        domains = [d.strip() for d in domain.split(",") if d.strip()] if domain else None
+        return initiative_inbox_snapshot(paths, domains=domains, limit=limit)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_initiative_inbox')
+        return {"generated_at": time.time(), "total": 0, "counts_by_domain": {}, "items": []}
 
 
 # ── LLM 调用计数（方向 B.2）─────────────────────────────────────────────────
