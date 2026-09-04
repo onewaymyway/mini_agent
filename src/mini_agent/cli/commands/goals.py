@@ -30,6 +30,17 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
                                    — 手动（重新）触发一次"整体是否可以关闭"
                                      判定（见 §5 第二段，通常由子 Objective
                                      完成时自动触发，这里补一个手动入口）
+  /agent goals report [root_id]    — 树级汇总报告：省略 root_id 时汇总
+                                     全局森林（所有顶层节点及其整棵子树），
+                                     传 root_id 时只看该（子）树。按状态/
+                                     执行阶段分组统计 + 健康告警/cron 异常 +
+                                     全局待办清单（待处理分解候选/待确认
+                                     焦点/待处理调优草案/待确认执行规范）+
+                                     最近产出速览。纯只读聚合，复用
+                                     diagnose 同一套只读数据源，只是把粒度
+                                     从单 Goal 提升到子树（见
+                                     next_doc/goal_tree_visibility_wiki_and_
+                                     report_plan.md Stage 1）。
   /agent goals status              — 显示 AutonomousLoop tick 状态
   /agent goals phase show <id>     — 查看当前执行阶段（见
                                      perception/execution_phase.py，
@@ -234,6 +245,13 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         goal_id_arg = rest[0]
         _cmd_diagnose(gb, paths, goal_id_arg, agent=agent, summarize=summarize)
 
+    elif subcmd == "report":
+        # [goal_tree_visibility_wiki_and_report_plan.md Stage 1]
+        # /agent goals report [root_id] — 树级汇总报告：整棵（子）树的分组
+        # 统计 + 全局待办清单。省略 root_id 时汇总全局森林（所有顶层节点）。
+        root_id_arg = rest[0] if rest else None
+        _cmd_report(gb, paths, root_id_arg)
+
     elif subcmd == "tune":
         # [goal_cron_cycle_diagnostics_and_interactive_tuning_plan.md Stage 2]
         if not rest:
@@ -340,7 +358,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
-            "progress, feedback, recur, unrecur, migrate-legacy, spec, phase, diagnose, "
+            "progress, feedback, recur, unrecur, migrate-legacy, spec, phase, diagnose, report, "
             "tune, status, reset-step, judge-calibration, tree, decompose, candidates, "
             "focus, research, next-steps"
         )
@@ -1118,6 +1136,77 @@ def _cmd_diagnose(gb, paths, goal_id: str, *, agent=None, summarize: bool = Fals
                 R.print_info(f"    {summary}")
             else:
                 R.print_info("  （未能生成自然语言总结，仅展示以上结构化字段。）")
+
+
+def _cmd_report(gb, paths, root_id: Optional[str]) -> None:
+    """[goal_tree_visibility_wiki_and_report_plan.md Stage 1]
+    /agent goals report [root_id] — 打印树级汇总报告。纯只读展示；
+    省略 root_id 时汇总全局森林（所有顶层节点及其整棵子树）。
+    """
+    from mini_agent.perception.goal_tree_report import build_goal_tree_report
+
+    report = build_goal_tree_report(paths, gb, root_id)
+    if not report.found:
+        R.print_error(report.error or f"Goal/Objective '{root_id}' not found")
+        return
+
+    scope = f"{report.root_title} ({report.root_id})" if report.root_id else "全局森林（所有顶层节点）"
+    R.print_info(f"📊 目标树汇总报告：{scope}")
+    R.print_info(f"  节点总数: {report.node_count}")
+
+    if report.by_status:
+        R.print_info("  按状态分组:")
+        for status, items in sorted(report.by_status.items()):
+            R.print_info(f"    {status}: {len(items)} 个")
+
+    if report.by_phase:
+        R.print_info("  按执行阶段分组:")
+        for phase_mode, items in sorted(report.by_phase.items()):
+            R.print_info(f"    {phase_mode}: {len(items)} 个")
+
+    if report.stuck_or_alerted:
+        R.print_info("  ⚠️  健康告警:")
+        for a in report.stuck_or_alerted:
+            R.print_info(f"    [{a['id']}] {a['title']}: {a['message']}")
+
+    if report.cron_unhealthy:
+        R.print_info("  ⚠️  Cron 触发异常:")
+        for c in report.cron_unhealthy:
+            R.print_info(
+                f"    [{c['id']}] {c['title']}: "
+                f"consecutive_skip_count={c.get('consecutive_skip_count')}"
+            )
+
+    total_pending = (
+        len(report.pending_decompose_candidates)
+        + len(report.pending_focus_confirmation)
+        + len(report.pending_tuning_proposals)
+        + len(report.pending_execution_specs)
+    )
+    R.print_info(f"  待处理事项（共 {total_pending} 项）:")
+    if report.pending_decompose_candidates:
+        R.print_info("    待处理分解候选:")
+        for c in report.pending_decompose_candidates:
+            R.print_info(f"      [{c['id']}] {c['title']}  候选: {c.get('title')}")
+    if report.pending_focus_confirmation:
+        R.print_info("    待确认焦点（有子节点但 current_focus_ids 为空）:")
+        for f_ in report.pending_focus_confirmation:
+            R.print_info(f"      [{f_['id']}] {f_['title']}")
+    if report.pending_tuning_proposals:
+        R.print_info("    待处理调优草案:")
+        for p in report.pending_tuning_proposals:
+            R.print_info(f"      [{p['id']}] {p['title']}  proposal={p['proposal_id']} status={p['status']}")
+    if report.pending_execution_specs:
+        R.print_info("    待确认执行规范:")
+        for s in report.pending_execution_specs:
+            R.print_info(f"      [{s['id']}] {s['title']}  version={s['version']}")
+    if total_pending == 0:
+        R.print_info("    （当前没有待处理事项）")
+
+    if report.recent_outputs_digest:
+        R.print_info("  最近产出速览:")
+        for d in report.recent_outputs_digest:
+            R.print_info(f"    [{d['id']}] {d['title']}: {d.get('task_summary', '')[:60]}")
 
 
 def _print_tuning_proposal(proposal) -> None:

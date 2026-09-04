@@ -176,6 +176,14 @@ api/routes.py — FastAPI 路由定义
                                        最近轮次产出/机制说明一次性聚合返回。
                                        `?summarize=true`（Stage 3，可选，需
                                        配置开关）附一段 LLM 自然语言总结。
+    GET    /v1/goals/tree_report     [goal_tree_visibility_wiki_and_report_
+                                       plan.md Stage 1] 树级汇总报告（可选
+                                       ?root_id=）：按状态/执行阶段分组统计+
+                                       健康告警/cron 异常+全局待办清单（待
+                                       处理分解候选/待确认焦点/待处理调优
+                                       草案/待确认执行规范）+最近产出速览，
+                                       粒度从单 Goal 提升到子树。省略
+                                       root_id 时汇总全局森林。
     POST   /v1/goals/{goal_id}/tuning_proposals  [同上 Stage 2] 生成调优草案
                                        （白名单参数：schedule/priority/
                                        execution_phase/task_template/
@@ -6848,6 +6856,31 @@ async def get_goal_cycle_diagnostics(goal_id: str, request: Request):
                 report.llm_summary = None
 
     return {"diagnostics": report.to_dict()}
+
+
+@router.get("/goals/tree_report")
+async def get_goal_tree_report(request: Request, root_id: Optional[str] = Query(default=None)):
+    """GET /v1/goals/tree_report?root_id=... —
+    [goal_tree_visibility_wiki_and_report_plan.md Stage 1]
+    树级汇总报告：把粒度从单 Goal（`/goals/{goal_id}/cycle_diagnostics`）
+    提升到整棵（子）树——按状态/执行阶段分组统计、健康告警/cron 异常、
+    全局待办清单（待处理分解候选/待确认焦点/待处理调优草案/待确认执行
+    规范）、最近产出速览，对应 CLI `/agent goals report`。省略 root_id
+    时汇总全局森林（所有顶层节点及其整棵子树）。纯只读聚合，不修改任何
+    状态。root_id 指定但不存在时返回 404。
+    """
+    backlog = _goal_backlog_only(request)
+    if root_id is not None and backlog.get(root_id) is None:
+        raise HTTPException(status_code=404, detail=f"Goal/Objective '{root_id}' not found")
+    paths = _spec_paths(request)
+    from mini_agent.perception.goal_tree_report import build_goal_tree_report
+    try:
+        report = build_goal_tree_report(paths, backlog, root_id)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.routes.get_goal_tree_report')
+        raise HTTPException(status_code=500, detail=f"生成树级汇总报告失败：{e}")
+    return {"tree_report": report.to_dict()}
 
 
 @router.get("/goals/cycle_diagnostics_overview")

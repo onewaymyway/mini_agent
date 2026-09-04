@@ -1,6 +1,13 @@
 # 目标树可视化、产出 Wiki 化与汇总报告改进方案
 
-> 状态：**Proposed（未实施）**。触发背景：用户在实际使用目标树系统
+> 状态：**Stage 1（树级汇总报告，纯只读）已实施**，Stage 2-5 未实施。
+> Stage 1 实现见 `src/mini_agent/perception/goal_tree_report.py`
+> （`build_goal_tree_report()`）、CLI `/agent goals report [root_id]`
+> （`cli/commands/goals.py::_cmd_report()`）、REST
+> `GET /v1/goals/tree_report`（`api/routes.py::get_goal_tree_report()`）、
+> `tests/test_goal_tree_report.py`。看板集成（§3.1 "📊 全局报告"折叠区）
+> 未随 Stage 1 一起做，留待后续单独评估（见 §6 开放问题新增一条）。
+> 触发背景：用户在实际使用目标树系统
 > （`goal_tree_system_plan.md` 系列）过程中发现，树形结构本身编辑已经
 > 很顺手（`goals tree` / `decompose` / `candidates` / `focus pin`），
 > 但**看不清每个目标的进度和产出内容**；产出散落在
@@ -233,16 +240,26 @@ class GoalTreeReport:
 
 ## 5. 分阶段规划
 
+> 各 Stage 完成后在此处更新实施状态与实际落地位置，不新开"实施记录"
+> 文档——这份计划本身随实施进度滚动更新，跟 `goal_cron_cycle_
+> diagnostics_and_interactive_tuning_plan.md` 的做法一致。
+
 延续项目"每个 Stage 完成后更新文档 + 跑回归"的节奏，优先级按"风险低、
 立刻能用"排序：
 
-**Stage 1 — 树级汇总报告（能力 B，纯只读）**
-- `perception/goal_tree_report.py`：`build_goal_tree_report()`
-- CLI `goals report [root_id]`，REST `GET /v1/goals/tree_report`
-- 看板：目标树子页新增"📊 全局报告"折叠区
-- 回归：`tests/test_goal_tree_report.py`，覆盖空树/单节点/多层子树/
-  各类 pending 项混合场景
-- 验收标准：能一次性看到"整棵树有哪些事等我处理"，不用逐节点点开
+**Stage 1 — 树级汇总报告（能力 B，纯只读）：✅ 已实施**
+- `perception/goal_tree_report.py`：`build_goal_tree_report()`——按
+  `root_id`（省略时覆盖全局森林）BFS 收集子树节点，复用
+  `execution_phase.check_phase_health()`/`cycle_tuning.list_proposals()`/
+  `goal_execution_spec.load_spec()`/`output_workspace.read_all_manifests()`
+  等既有只读函数做分组聚合，不新增判定逻辑
+- CLI `goals report [root_id]`（`_cmd_report()`），REST
+  `GET /v1/goals/tree_report?root_id=...`（`get_goal_tree_report()`）
+- 看板集成**未做**（详情见 §6）
+- 回归：`tests/test_goal_tree_report.py`（9 个用例），覆盖 root_id 不存在/
+  空森林/子树范围裁剪/全局森林/按状态分组/按阶段分组（默认 explore）/
+  待处理分解候选/待确认焦点/结果可 JSON 序列化
+- 验收标准：能一次性看到"整棵树有哪些事等我处理"，不用逐节点点开 ✅
 
 **Stage 2 — 节点详情页（能力 A 前半，纯只读，不落盘）**
 - `perception/goal_node_page.py`：`build_goal_node_page()`
@@ -277,6 +294,12 @@ class GoalTreeReport:
   的既有实现（失败降级、不影响结构化内容本身）
 
 ## 6. 开放问题
+
+- **Stage 1 看板集成延后**：§3.1 设想的"📊 全局报告"折叠区没有随 Stage 1
+  一起做（`apps/mini_agent_kanban/app.py` 单文件 8000+ 行，改动面比后端
+  聚合函数本身大得多，且没有独立回归覆盖），CLI/REST 已经可用。是否/
+  何时补上看板折叠区留到 Stage 2（节点详情面板）一起做更划算——两者都
+  要改同一处"目标树子页"，分两次改反而更容易冲突。
 
 - **Stage 3 的落盘量级**：树很大时 `goals_wiki/` 目录文件数会随节点数
   线性增长，是否需要限制深度或提供"只生成当前 focus 子树"的窄化选项，
