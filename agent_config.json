@@ -6,7 +6,7 @@
   "memory_enabled": true,
   "memory": {
     "per_turn_retrieval_enabled": false,
-    "wiki_quarantine_llm_repair_enabled":true
+    "wiki_quarantine_llm_repair_enabled": true
   },
   "debug": {
     "capability_enabled": true
@@ -36,7 +36,7 @@
   "show_reasoning": false,
   "tool_trim": {
     "enabled": true,
-    "threshold":5000
+    "threshold": 5000
   },
   "raw_output": false,
   "web_search": {
@@ -209,7 +209,8 @@
     "cron_triggered_active_search_enabled": true,
     "pursuit_increment_llm_review_enabled": true,
     "report_external_drift_refresh_enabled": true,
-    "report_active_search_max_calls": 5
+    "report_active_search_max_calls": 5,
+    "wiki_promotion_on_adopt_enabled": true
   },
   "cycle_tuning": {
     "diagnostics_llm_summary_enabled": true,
@@ -236,19 +237,21 @@
     "daemon_crash_alert_escalation_hours": 1,
     "daemon_crash_history_max_entries": 1000
   },
-  "capability_learning":{
+  "capability_learning": {
     "retriever_mode": "agent",
     "agent_retriever_max_turns": 20,
-    "agent_retriever_tool_mode":"full",
-    "wiki_write_mode":"agent",
+    "agent_retriever_tool_mode": "full",
+    "wiki_write_mode": "agent",
     "agent_wiki_writer_max_turns": 20,
     "agent_wiki_writer_timeout_seconds": 2400
   },
-  "persona_candidates":{
+  "persona_candidates": {
     "enabled": true
   },
   "cron": {
     "default_timeout_seconds": 2400,
     "stale_job_watchdog_grace_seconds": 300
-  }
+  },
+  "initiative_push_budget_enabled": true,
+  "initiative_push_budget_max_per_day": 100
 }
