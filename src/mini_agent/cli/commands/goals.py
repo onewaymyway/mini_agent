@@ -1225,6 +1225,12 @@ def _cmd_show(gb, paths, goal_id: str) -> None:
     R.print_info(f"📄 {page.title} ({page.goal_id})")
     R.print_info(f"  路径: {breadcrumb}")
     R.print_info(f"  状态: {page.status}  |  层级: {page.level}  |  阶段: {page.execution_phase_mode}")
+    node = gb.get(goal_id)
+    if node is not None and getattr(node, "consecutive_failures", 0) > 0:
+        R.print_info(
+            f"  ⚠️ 连续失败 {node.consecutive_failures} 次"
+            + ("（失败后自动重试中）" if node.status in ("failed", "active") else "")
+        )
 
     if page.progress_notes_tail:
         R.print_info("  最近进展记录:")

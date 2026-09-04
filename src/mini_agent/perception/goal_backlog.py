@@ -271,6 +271,14 @@ class GoalNode:
     # accept 后才会用它创建真正的节点并从本列表移除。
     decompose_candidates: list = field(default_factory=list)
 
+    # [目标树节点失败自动重试，见 evolution/goal_node_retry.py] 连续失败
+    # 次数：每次 `retry_failed_goal_tree_nodes()` 把一个 status=="failed"
+    # 的 Objective 节点自动拉回 "active" 重试时 +1；节点某一轮成功完成
+    # （`set_status(node_id, "completed")`）时清零，代表"重新开始计一条
+    # 新的连续失败 streak"。只统计"failed"，不统计"cancelled"（用户主动
+    # 取消不算失败）。
+    consecutive_failures: int = 0
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -309,6 +317,7 @@ class GoalNode:
             "current_focus_ids": self.current_focus_ids,
             "focus_pinned_ids": self.focus_pinned_ids,
             "decompose_candidates": self.decompose_candidates,
+            "consecutive_failures": self.consecutive_failures,
         }
 
     @staticmethod
@@ -353,6 +362,7 @@ class GoalNode:
             current_focus_ids=d.get("current_focus_ids", []),
             focus_pinned_ids=d.get("focus_pinned_ids", []),
             decompose_candidates=d.get("decompose_candidates", []),
+            consecutive_failures=d.get("consecutive_failures", 0),
         )
 
     @property
@@ -1727,6 +1737,10 @@ class GoalBacklog:
         `status_history` 记录——同一状态被重复 set（比如外部调用方不
         判断当前状态就无脑调一次 `set_status(node_id, "active")`）不
         产生冗余历史条目，避免历史里全是无意义的重复记录。
+
+        [目标树节点失败自动重试] status 变为 "completed" 时顺带把
+        `consecutive_failures` 清零——这一轮成功了，之前的连续失败 streak
+        应该重新开始计数，不能让很久以前的失败继续压着后面的重试统计。
         """
         with self._locked():
             node = self._nodes.get(node_id)
@@ -1737,6 +1751,8 @@ class GoalBacklog:
                     {"status": status, "at": time.time()}
                 ]
             node.status = status
+            if status == "completed":
+                node.consecutive_failures = 0
             node.last_touched_at = time.time()
         return True
 
@@ -1873,6 +1889,20 @@ class GoalBacklog:
             if node is None:
                 return 0
             return self._mark_feedback_addressed_on_node(node, about)
+
+    def bump_consecutive_failures(self, node_id: str) -> Optional[int]:
+        """[目标树节点失败自动重试，见 evolution/goal_node_retry.py] 把
+        `node.consecutive_failures` 原子加一并返回新值，供
+        `retry_failed_goal_tree_nodes()` 在把节点从 "failed" 拉回
+        "active" 重试之前调用，记录"这是第几次连续失败"。`node_id` 不
+        存在时返回 `None`，不做任何修改。
+        """
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if node is None:
+                return None
+            node.consecutive_failures += 1
+            return node.consecutive_failures
 
     def effective_context(self, node_id: str) -> str:
         """[goal_cron_feedback_and_output_policy_plan.md 4.3] 执行侧兜底：向上

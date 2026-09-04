@@ -432,6 +432,19 @@ class AutonomousLoop:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.reap_finished_cycles')
             pass
 
+        # 目标树节点失败自动重试：把 status=="failed" 的 Objective 拉回
+        # "active"，交给下面/下一次 tick 的正常调度重新执行；不限重试
+        # 次数，连续失败次数超过阈值时额外推一条通知（不影响继续重试），
+        # 见 goal_node_retry.py 模块头部说明。同一档位边界理由——需要
+        # 读写 GoalBacklog，只能在 maintenance/autonomous 档位。
+        try:
+            from mini_agent.evolution.goal_node_retry import retry_failed_goal_tree_nodes
+            retry_failed_goal_tree_nodes(self._goal_backlog)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.retry_failed_goal_tree_nodes')
+            pass
+
         # ── 周期性 Goal/Cron 任务主动巡检推送（能力 C，见 next_doc/
         # goal_cron_cycle_proactive_patrol_and_health_overview_plan.md §2）──
         # 放在 _tick_maintenance() 而不是方案文档字面提到的 _tick_passive()：
