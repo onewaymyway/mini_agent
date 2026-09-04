@@ -193,3 +193,4 @@ external_projects/stock_watch/reports/
 .agent/goal_tree_decompose_state.json
 .agent/goal_tree_decompose_rejected.json
 .agent/goal_tree_focus_research_state.json
+.agent/initiative_push_budget_state.json
