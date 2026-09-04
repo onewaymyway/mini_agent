@@ -121,9 +121,21 @@ def _hash_password(password: str, salt: bytes) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITER).hex()
 
 
+class LastAdminError(Exception):
+    """尝试把最后一个管理员降级 / 删除时抛出——不允许操作把所有人锁在
+    账户管理门外（这之后就没有任何人能再把权限加回来，只能回到服务器
+    敲 manage_users.py，违背了这整个功能"不用登服务器"的初衷）。"""
+
+
 class UserStore:
     """管理看板账户。文件内容形如：
-        {"alice": {"salt": "<hex>", "hash": "<hex>"}, ...}
+        {"alice": {"salt": "<hex>", "hash": "<hex>",
+                    "is_admin": true, "created_at": 1234567890.0}, ...}
+
+    `is_admin` / `created_at` 是后加的字段——旧文件里没有这两个字段的
+    账户，读取时分别按 `False` / `None` 处理（`dict.get` 默认值），不需要
+    额外的文件迁移脚本，旧账户下次被 `add_user`/`set_admin` 写一次之后
+    才会补上这两个字段。
     """
 
     def __init__(self, users_file: Path):
@@ -150,19 +162,40 @@ class UserStore:
     def is_empty(self) -> bool:
         return len(self._load()) == 0
 
-    def add_user(self, username: str, password: str) -> None:
+    def add_user(self, username: str, password: str, is_admin: bool = False) -> None:
+        """新增账户，或者对已有账户做"重置密码"（同一个 username 再调一次
+        就是 upsert 语义，历史上一直如此，这次没有改变）。
+
+        `is_admin` 默认 `False`，不传时和改动前的行为完全一致——调用方
+        `manage_users.py add`（不带 `--admin`）、以及"改自己密码"路径
+        （显式传入当前 `is_admin` 值）都依赖这个默认值/显式传参组合来
+        保证不会误把已有账户的管理员身份重置掉。
+        """
         data = self._load()
         salt = os.urandom(16)
-        data[username] = {"salt": salt.hex(), "hash": _hash_password(password, salt)}
+        existing = data.get(username) or {}
+        entry = {
+            "salt": salt.hex(),
+            "hash": _hash_password(password, salt),
+            "is_admin": bool(is_admin),
+            "created_at": existing.get("created_at") or time.time(),
+        }
+        data[username] = entry
         self._save(data)
 
     def remove_user(self, username: str) -> bool:
+        """删除账户；如果目标是"最后一个管理员"则拒绝并抛出
+        `LastAdminError`，不做任何修改（和 `set_admin` 共享同一条保护
+        逻辑，命令行 `remove` 子命令和页面"删除账户"按钮都会走到这里，
+        不用在两处各自判断一遍）。"""
         data = self._load()
-        if username in data:
-            del data[username]
-            self._save(data)
-            return True
-        return False
+        if username not in data:
+            return False
+        if data[username].get("is_admin") and self._admin_count(data) <= 1:
+            raise LastAdminError(f"{username!r} 是最后一个管理员，不能删除")
+        del data[username]
+        self._save(data)
+        return True
 
     def list_users(self) -> list:
         return sorted(self._load().keys())
@@ -177,6 +210,53 @@ class UserStore:
             return False
         actual = _hash_password(password, salt)
         return hmac.compare_digest(entry.get("hash", ""), actual)
+
+    # ── 管理员身份 ────────────────────────────────────────────────────
+
+    def is_admin(self, username: str) -> bool:
+        entry = self._load().get(username)
+        return bool(entry and entry.get("is_admin", False))
+
+    @staticmethod
+    def _admin_count(data: dict) -> int:
+        return sum(1 for entry in data.values() if entry.get("is_admin"))
+
+    def admin_count(self) -> int:
+        return self._admin_count(self._load())
+
+    def set_admin(self, username: str, is_admin: bool) -> bool:
+        """设置/取消管理员身份。目标账户不存在返回 `False`。
+
+        "最后一个管理员不能被降级"的保护：只在 `is_admin=False`（降级）
+        且目标账户当前确实是管理员、且降级后会变成 0 个管理员时生效
+        （即 `_admin_count(data) <= 1`）——`admin_count() == 0` 的兜底期
+        不受影响，因为压根没有"当前是管理员"这个前提，走不到这条分支；
+        升级成管理员（`is_admin=True`）永远允许，不需要这层保护。
+        """
+        data = self._load()
+        entry = data.get(username)
+        if not entry:
+            return False
+        if not is_admin and entry.get("is_admin") and self._admin_count(data) <= 1:
+            raise LastAdminError(f"{username!r} 是最后一个管理员，不能取消管理员身份")
+        entry["is_admin"] = bool(is_admin)
+        self._save(data)
+        return True
+
+    def list_users_detailed(self) -> list:
+        """返回 `[{"username":, "is_admin":, "created_at":}, ...]`，按用户名
+        排序，供账户管理 tab 的表格用。`created_at` 是旧账户可能没有的
+        字段，缺失时给 `None`（UI 侧显示"未知"）。`list_users()` 原方法
+        保留不动，`manage_users.py list` 继续用它。"""
+        data = self._load()
+        return [
+            {
+                "username": username,
+                "is_admin": bool(entry.get("is_admin", False)),
+                "created_at": entry.get("created_at"),
+            }
+            for username, entry in sorted(data.items())
+        ]
 
 
 # ── 免登录 token：跨页面刷新保持登录态 ────────────────────────────────────

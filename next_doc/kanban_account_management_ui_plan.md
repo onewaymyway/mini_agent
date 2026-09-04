@@ -1,5 +1,35 @@
 # 看板账户管理 UI —— 改进计划
 
+## 实现进度
+
+- [x] 阶段 1：`auth.py::UserStore` 新增 `is_admin`/`created_at`、
+      `set_admin`/`is_admin`/`admin_count`/`list_users_detailed`，
+      `add_user` 新增 `is_admin` 参数（默认 `False`，向后兼容）；
+      新增 `LastAdminError` 异常，`remove_user`/`set_admin` 共享
+      "最后一个管理员不能被删除/降级"保护逻辑。单测见
+      `tests/test_kanban_auth_admin.py`（15 项，覆盖旧格式文件兼容、
+      admin_count 统计、最后一个管理员保护、兜底期不受保护逻辑影响）。
+- [x] 阶段 2：`manage_users.py` 同步更新——`add` 新增 `--admin` flag，
+      新增 `set-admin`/`unset-admin` 子命令，`list` 输出加 `[admin]`
+      标记（用 `list_users_detailed()`）。保护逻辑复用
+      `UserStore`，命令行侧不重复实现。
+- [x] 阶段 3：`TAB_DEFS` 拆成 `_BASE_TAB_DEFS`（固定部分）+
+      `get_tab_defs(cli_args)`（`--require-login` 为真时在末尾追加
+      "👤 账户管理"这一项），`render_tab_nav()`/`main()` 都改成按
+      `cli_args` 现算 tab 清单，不再依赖模块级常量。
+- [x] 阶段 4：`render_account_mgmt_tab(cli_args)`——A 区"改自己密码"
+      （所有登录用户可见，校验当前密码）；B 区"账户列表 + 增删改"
+      （仅管理员 / `admin_count() == 0` 兜底期可见）：表格展示
+      用户名/是否管理员/创建时间，新增账户、重置他人密码（不要求
+      验证旧密码）、切换管理员身份（最后一个管理员的复选框禁用）、
+      删除账户（同样保护最后一个管理员；删除自己时立刻清登录态并
+      清 URL 里的 auth token）。
+- [x] 验收：`tests/test_kanban_auth_admin.py` 15 项全部通过；
+      `manage_users.py add/set-admin/unset-admin/list` 手动验证行为
+      符合预期（含"最后一个管理员不能被取消"保护）；`app.py`/`auth.py`/
+      `manage_users.py` 均通过 `py_compile` 语法检查。
+
+
 ## 背景
 
 看板登录门禁（`apps/mini_agent_kanban/auth.py` + `manage_users.py`，见

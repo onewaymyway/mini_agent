@@ -621,6 +621,164 @@ def _current_fail_count(tracker, username: str, client_id: str) -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# 👤 账户管理 tab（仅 --require-login 模式出现，见 get_tab_defs）
+# [kanban_account_management_ui_plan.md]
+# ═══════════════════════════════════════════════════════════════════════
+def render_account_mgmt_tab(cli_args) -> None:
+    """在页面里直接管理看板账户，不用再登服务器敲 manage_users.py。
+
+    分两块：A"改自己密码"（所有已登录用户可见），B"账户列表 + 增删改"
+    （仅管理员可见；`admin_count() == 0` 的兜底期对所有登录用户可见，
+    避免升级后没人能管理账户的死锁）。"""
+    from auth import LastAdminError, UserStore
+
+    users_file, _secret_file, _attempts_file = _auth_paths(cli_args)
+    store = UserStore(users_file)
+    me = st.session_state.get("username", "")
+
+    st.markdown("## 👤 账户管理")
+
+    # ── A. 改自己的密码：所有已登录用户可见 ──────────────────────────
+    st.markdown("### 🔑 修改我的密码")
+    with st.form("account_mgmt_change_own_password"):
+        cur_pw = st.text_input("当前密码", type="password")
+        new_pw = st.text_input("新密码", type="password")
+        new_pw2 = st.text_input("确认新密码", type="password")
+        submitted = st.form_submit_button("修改密码")
+    if submitted:
+        if not store.verify(me, cur_pw):
+            st.error("当前密码不正确。")
+        elif new_pw != new_pw2:
+            st.error("两次输入的新密码不一致。")
+        elif len(new_pw) < 6:
+            st.error("新密码太短，建议至少 6 位。")
+        else:
+            # 保留原有 is_admin，不能被这条路径误改成 False（改自己密码
+            # 不应该影响自己的管理员身份）。
+            store.add_user(me, new_pw, is_admin=store.is_admin(me))
+            st.success(
+                "✅ 密码已修改。当前登录状态不受影响（token 只签用户名和"
+                "过期时间，和密码无关），不需要重新登录。"
+            )
+
+    st.divider()
+
+    # ── B. 账户列表 + 增删改：仅管理员 / 兜底期可见 ──────────────────
+    is_bootstrap = store.admin_count() == 0
+    is_admin_user = store.is_admin(me)
+    if not is_admin_user and not is_bootstrap:
+        st.markdown("### 📋 账户列表")
+        st.info("这部分仅管理员可访问。如果需要新增账户或重置密码，请联系管理员。")
+        return
+
+    st.markdown("### 📋 账户列表")
+    if is_bootstrap:
+        st.warning(
+            "⚠️ 当前没有任何账户被标记为管理员（可能是升级前用旧版工具"
+            "创建的账户），账户管理对所有登录用户开放，直到有人被设为"
+            "管理员为止。建议尽快把自己或某个账户设为管理员。"
+        )
+
+    users = store.list_users_detailed()
+    rows = []
+    for u in users:
+        created = u["created_at"]
+        created_str = (
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(created))
+            if created
+            else "未知"
+        )
+        rows.append({
+            "用户名": u["username"],
+            "管理员": "✅" if u["is_admin"] else "",
+            "创建时间": created_str,
+        })
+    st.dataframe(rows, width='stretch', hide_index=True)
+
+    admin_count = store.admin_count()
+
+    with st.expander("➕ 新增账户"):
+        with st.form("account_mgmt_add_user"):
+            new_username = st.text_input("用户名", key="account_mgmt_add_username")
+            new_password = st.text_input("密码", type="password", key="account_mgmt_add_password")
+            new_is_admin = st.checkbox("设为管理员", key="account_mgmt_add_is_admin")
+            add_submitted = st.form_submit_button("创建账户")
+        if add_submitted:
+            existing_usernames = {u["username"] for u in users}
+            if not new_username.strip():
+                st.error("用户名不能为空。")
+            elif new_username in existing_usernames:
+                st.error(f"账户 {new_username!r} 已存在。")
+            elif len(new_password) < 6:
+                st.error("密码太短，建议至少 6 位。")
+            else:
+                store.add_user(new_username, new_password, is_admin=new_is_admin)
+                st.success(f"✅ 账户 {new_username!r} 已创建。")
+                st.rerun()
+
+    with st.expander("🔁 重置某账户密码"):
+        target_usernames = [u["username"] for u in users]
+        with st.form("account_mgmt_reset_password"):
+            reset_target = st.selectbox("选择账户", target_usernames, key="account_mgmt_reset_target")
+            reset_password = st.text_input("新密码", type="password", key="account_mgmt_reset_password_input")
+            reset_submitted = st.form_submit_button("重置密码")
+        if reset_submitted:
+            if len(reset_password) < 6:
+                st.error("密码太短，建议至少 6 位。")
+            else:
+                # 管理员重置他人密码不要求验证旧密码——这是管理员权限的
+                # 应有能力，和上面 A 区"改自己密码"是两条独立路径。
+                store.add_user(reset_target, reset_password, is_admin=store.is_admin(reset_target))
+                st.success(f"✅ 账户 {reset_target!r} 的密码已重置。")
+
+    with st.expander("🛡️ 切换管理员身份"):
+        for u in users:
+            username = u["username"]
+            is_last_admin = u["is_admin"] and admin_count <= 1
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.write(username)
+            with col2:
+                checked = st.checkbox(
+                    "管理员",
+                    value=u["is_admin"],
+                    key=f"account_mgmt_admin_toggle_{username}",
+                    disabled=is_last_admin,
+                    help="最后一个管理员不能被取消，防止所有人被锁在账户管理门外。" if is_last_admin else None,
+                )
+            if checked != u["is_admin"]:
+                try:
+                    store.set_admin(username, checked)
+                    st.success(f"✅ {username!r} 现在{'是' if checked else '不是'}管理员。")
+                    st.rerun()
+                except LastAdminError as exc:
+                    st.error(f"❌ {exc}")
+
+    with st.expander("🗑️ 删除账户"):
+        target_usernames = [u["username"] for u in users]
+        with st.form("account_mgmt_delete_user"):
+            delete_target = st.selectbox("选择要删除的账户", target_usernames, key="account_mgmt_delete_target")
+            delete_confirmed = st.checkbox("我确认要删除这个账户", key="account_mgmt_delete_confirm")
+            delete_submitted = st.form_submit_button("删除账户", type="primary")
+        if delete_submitted:
+            if not delete_confirmed:
+                st.error("请先勾选确认框。")
+            else:
+                try:
+                    store.remove_user(delete_target)
+                    st.success(f"✅ 账户 {delete_target!r} 已删除。")
+                    if delete_target == me:
+                        # 删完自己不能还留在已登录状态里——立刻登出。
+                        st.session_state.authenticated = False
+                        st.session_state.pop("username", None)
+                        update_query_params(auth=None)
+                    else:
+                        st.rerun()
+                except LastAdminError as exc:
+                    st.error(f"❌ {exc}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 侧栏：连接配置
 # ═══════════════════════════════════════════════════════════════════════
 def render_sidebar():
@@ -12055,7 +12213,15 @@ def render_notification_tab(client: AgentClient):
 # `TAB_DEFS` 是唯一的"tab 清单"来源：新增/删除/重排 tab 只改这一处，
 # `render_tab_nav()` 和 `_TAB_LABEL_TO_KEY`（供顶栏跳转按 label 反查
 # key，兼容旧调用点写法）都从这里派生，不用在多处手动保持同步。
-TAB_DEFS = [
+#
+# [kanban_account_management_ui_plan.md] "👤 账户管理" tab 不在这个静态
+# 列表里——它只应该在 `--require-login` 模式下出现（没开登录门禁的部署，
+# 账户管理没有意义），而 `TAB_DEFS` 是模块加载时就求值的模块级常量，那时
+# 还拿不到 `cli_args`。所以拆成 `_BASE_TAB_DEFS`（固定部分）+
+# `get_tab_defs(cli_args)`（按 `cli_args.require_login` 决定要不要在末尾
+# 追加账户管理这一项），`render_tab_nav()`/`main()` 都改成调用
+# `get_tab_defs(cli_args)` 而不是直接读 `TAB_DEFS`。
+_BASE_TAB_DEFS = [
     ("chat", "💬 对话", lambda client: render_chat_tab(client, get_active_session_id())),
     ("sessions", "🗂️ 会话管理", lambda client: render_sessions_tab(client)),
     ("kanban", "📌 目标看板", lambda client: render_kanban_tab(client)),
@@ -12079,13 +12245,21 @@ TAB_DEFS = [
     ("hybrid_exec", "🧪 混合执行", lambda client: render_hybrid_exec_tab(client)),
     ("error_log", "📛 错误日志", lambda client: render_error_log_tab(client)),
 ]
-_TAB_KEY_TO_LABEL = {key: label for key, label, _fn in TAB_DEFS}
-# 兼容旧的"按 label 跳转"写法（比如以后从别处复制代码习惯写 label）；
-# 目前代码里所有跳转点都已经改成直接写 key，这个映射主要作为防呆保留。
-_TAB_LABEL_TO_KEY = {label: key for key, label, _fn in TAB_DEFS}
 
 
-def render_tab_nav() -> str:
+def get_tab_defs(cli_args) -> list:
+    """返回本次渲染实际要用的 tab 清单：`_BASE_TAB_DEFS` 固定在前，只有
+    `cli_args.require_login` 为真时才在末尾追加"👤 账户管理"这一项。
+    tab 内部（`render_account_mgmt_tab`）再按"是不是管理员 / 是否兜底期"
+    二次判断显示内容，这里只负责"这个 tab 按钮出不出现"。"""
+    if cli_args.require_login:
+        return _BASE_TAB_DEFS + [
+            ("account_mgmt", "👤 账户管理", lambda client: render_account_mgmt_tab(cli_args)),
+        ]
+    return _BASE_TAB_DEFS
+
+
+def render_tab_nav(cli_args) -> str:
     """渲染一排"假 tab"按钮，返回当前选中的 tab key。
 
     [tab_lazy_render_plan.md / 阶段2：换行排版修正] 按钮**不**传
@@ -12096,12 +12270,14 @@ def render_tab_nav() -> str:
     选中态用 `st.button(type="primary")`（实心红底）区分未选中的
     `type="secondary"`（描边），不需要额外 CSS。
     """
-    active = st.session_state.get("_active_tab", TAB_DEFS[0][0])
-    if active not in _TAB_KEY_TO_LABEL:
-        active = TAB_DEFS[0][0]
+    tab_defs = get_tab_defs(cli_args)
+    tab_key_to_label = {key: label for key, label, _fn in tab_defs}
+    active = st.session_state.get("_active_tab", tab_defs[0][0])
+    if active not in tab_key_to_label:
+        active = tab_defs[0][0]
     with st.container(key="tab_nav_row"):
-        cols = st.columns(len(TAB_DEFS))
-        for (key, label, _fn), col in zip(TAB_DEFS, cols):
+        cols = st.columns(len(tab_defs))
+        for (key, label, _fn), col in zip(tab_defs, cols):
             with col:
                 is_active = key == active
                 if st.button(
@@ -12150,8 +12326,8 @@ def main():
     # "🔍 查看并控制"之类的跳转按钮，现在直接在点击处把
     # `st.session_state["_active_tab"]` 设成目标 key 再 `st.rerun()`
     # 即可生效，不再需要在这里额外处理"待跳转"逻辑。
-    active_key = render_tab_nav()
-    for key, _label, render_fn in TAB_DEFS:
+    active_key = render_tab_nav(cli_args)
+    for key, _label, render_fn in get_tab_defs(cli_args):
         if key == active_key:
             render_fn(client)
             break
