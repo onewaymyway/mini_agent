@@ -300,11 +300,43 @@ mini_agent 现在有四个系统都在承担"主动性"相关的职责，但分�
     `_filter_compliance_risky_text` 的既有用例）等 44 个用例无新增
     失败。
 
-- **阶段四：顶层用户处境模型驱动的候选排序**（对应 4.5）
+- **阶段四：顶层用户处境模型驱动的候选排序**（对应 4.5）—— **已完成**
   `work_index`/`WorkThread` 升级为三条线共享的排序参考信号，第一版
   仅做只读的"相关度"标注，不改变各模块现有候选生成逻辑本身。
+  - 实现记录：新增 `perception/situational_relevance.py`（只读，不
+    新增持久化）。"用户处境"信号 = 状态为 `active` 的 `WorkThread`
+    （标题+累计进展+待解决问题+建议后续）∪ 状态为 `active` 的
+    `GoalNode`（标题+描述，不区分 `source`）。打分：字符级 bigram +
+    Jaccard 相似度（说明：没有直接复用 `wiki/indexer._tokenize`，那
+    个分词器对中文按单字切分又过滤长度 1 的 token，短标题场景下会导致
+    完全没有可比较的 token，改用更适合短中文文本的 bigram 分词，见该
+    模块 `_tokens()` 文档字符串），取"与任意一个处境信号的最高相似度"
+    而非"与全部信号拼接后的一个大文本相似度"（避免被信号数量稀释）。
+    `initiative_inbox.py`（阶段一已完成的统一收件箱）是唯一的接入
+    点：`InitiativeItem` 新增 `situational_relevance`/
+    `situational_relevance_source` 两个可选字段（默认 `None`），
+    `initiative_inbox_snapshot()` 新增 `annotate_relevance` 参数
+    （默认 `True`，无处境信号可比对/传 `False` 时字段保持 `None` 且
+    不出现在 `to_dict()` 输出里，向后兼容旧调用方——不改变
+    `items` 默认按 `created_at` 排序，不改变 `counts_by_domain`/
+    `total`，也完全不触碰 `growth_advisor`/`capability_learning`/
+    `soft_goal_deriver` 三路各自候选生成逻辑本身的任何一行）。
+  - 新增测试：`tests/test_initiative_stage4_situational_relevance.py`
+    （9 用例：空处境/空文本返回 0 分、命中信号得分更高且能定位到具体
+    信号、非 active Goal 不计入信号、`annotate_relevance` 默认开启时
+    无处境信号不产生字段、有处境信号时正确附加分数与来源标题、显式
+    关闭时不读取 `work_index`/`GoalBacklog`、开关前后 `items` 顺序/
+    `counts_by_domain`/`total` 完全一致）；全部通过。回归测试覆盖
+    `growth`/`capability`/`initiative`/`push_budget`/`research_service`/
+    `situational` 关键词共 723 用例（另有 2 个失败为环境缺失依赖
+    `websocket-client` 等导致的既有失败，与本次改动无关）无新增回归。
 
-每个阶段都可独立上线、独立验证，不要求一次性打包交付；阶段之间有
-依赖关系（三→依赖二完成的执行通道、四→依赖前几阶段打通的信号共享
-基础），但每个阶段本身的改动范围都收敛在"新增聚合/桥接层"，不重写
-已经跑通的核心算法逻辑，符合仓库一贯的演进风格。
+至此，`next_doc/initiative_systems_unification_plan.md` §6 划分的四个
+阶段（4.1 候选层对齐 + 统一收件箱、4.2 采纳后统一接入目标树执行 +
+4.6 跨系统推送总闸、4.3 抽取共享 ResearchService + 4.4 双向知识沉淀、
+4.5 顶层用户处境模型驱动优先级）全部完成。所有新增行为默认关闭或纯
+只读展示（`initiative_push_budget_enabled`/`wiki_promotion_on_adopt_
+enabled` 默认 `False`；`annotate_relevance` 默认 `True` 但只新增可选
+展示字段、不改变任何排序/生成逻辑），三条主动性管线各自原有的独立
+实现全部原样保留，符合方案 §6 "不重写已经跑通的核心算法逻辑，只新增
+聚合/桥接层"的一贯要求。

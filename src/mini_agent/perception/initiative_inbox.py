@@ -53,6 +53,15 @@ class InitiativeItem:
     # （accept/dismiss/answer 等）——聚合层本身不提供写操作。
     native_id: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
+    # [next_doc/initiative_systems_unification_plan.md §4.5 阶段四，
+    # 只读排序建议] 与当前"用户处境"（active WorkThread + active Goal）
+    # 的相关度，0~1，`None` 表示未计算（`initiative_inbox_snapshot(
+    # annotate_relevance=False)` 时的默认状态，向后兼容旧调用方——不
+    # 传这个参数、或显式传 False 时，返回结构与阶段四改动前完全一致）。
+    # 只是展示用的排序参考信号，**不改变**任何一路候选生成/排序的既有
+    # 逻辑本身，也不影响 `items` 列表默认的按 `created_at` 排序。
+    situational_relevance: Optional[float] = None
+    situational_relevance_source: Optional[str] = None  # 最相关的处境信号标题，纯展示
 
     def to_dict(self) -> dict:
         d = {
@@ -68,6 +77,10 @@ class InitiativeItem:
         }
         if self.extra:
             d["extra"] = self.extra
+        if self.situational_relevance is not None:
+            d["situational_relevance"] = self.situational_relevance
+            if self.situational_relevance_source:
+                d["situational_relevance_source"] = self.situational_relevance_source
         return d
 
 
@@ -188,12 +201,27 @@ def _from_soft_goal_deriver(paths) -> list[InitiativeItem]:
 
 def initiative_inbox_snapshot(
     paths, *, domains: Optional[list[str]] = None, limit: int = 100,
+    annotate_relevance: bool = True,
 ) -> dict[str, Any]:
     """聚合三条主动性管线（成长顾问 / 能力学习 / soft_goal_deriver）当前
     待用户处理的候选，按 `created_at` 倒序（最新在前）返回。
 
     `domains` 为 None 时返回全部三个 domain；传入子集时只聚合对应来源
     （跳过读取，不是先读全部再过滤，避免不必要的磁盘 I/O）。
+
+    `annotate_relevance`：[next_doc/initiative_systems_unification_
+    plan.md §4.5 阶段四] 默认 `True`——给每一项附加
+    `situational_relevance`/`situational_relevance_source`（见
+    `perception/situational_relevance.py`），供前端在候选旁标注"与你
+    当前处境的相关度"，**不改变** `items` 的默认排序（仍按
+    `created_at` 倒序，见上方说明），也不影响任何单路候选的生成逻辑。
+    传 `False` 时完全跳过这一步（不读取 `work_index`/`GoalBacklog`），
+    返回结构与阶段四改动前完全一致——旧调用方不传这个新参数时默认值是
+    `True`，会多出这两个字段，但既有字段的值/顺序不受影响，属于纯新增
+    字段的向后兼容扩展，不是破坏性变更。计算失败（比如
+    `situational_relevance` 模块导入异常）时整体降级为不标注，不影响
+    收件箱本身的展示，同 §4.1 阶段一"单路异常不搞坏整个视图"的一贯
+    容错风格。
 
     任何异常都不向上抛出——单路失败返回空列表，见模块顶部说明。
     """
@@ -208,6 +236,19 @@ def initiative_inbox_snapshot(
 
     items.sort(key=lambda it: it.created_at, reverse=True)
     items = items[: max(0, limit)]
+
+    if annotate_relevance and items:
+        try:
+            from mini_agent.perception import situational_relevance as sr
+
+            context = sr.load_situational_context(paths)
+            if not context.is_empty:
+                for it in items:
+                    score, best = sr.score_relevance(f"{it.title} {it.detail}", context)
+                    it.situational_relevance = round(score, 4)
+                    it.situational_relevance_source = best.title if best else None
+        except Exception:
+            pass
 
     counts_by_domain = {d: 0 for d in _ALL_DOMAINS}
     for it in items:
