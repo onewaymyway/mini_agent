@@ -1657,6 +1657,8 @@ def run_capability_learning_cycle(
     outline_suggestion_research_enabled: bool = False,
     outline_suggestion_milestone_enabled: bool = False,
     outline_suggestion_milestone_threshold: float = 0.8,
+    empty_outline_auto_draft_enabled: bool = False,
+    empty_outline_auto_draft_after_hours: float = 24.0,
 ) -> dict:
     """sys:capability_learning_cycle 对应的单轮编排逻辑（§4 伪流程的落地）。
 
@@ -1688,6 +1690,13 @@ def run_capability_learning_cycle(
     `outline_suggestion_milestone_enabled`（都要调 LLM，默认 False）。
     三者都关闭时行为与此前完全一致。
 
+    [next_doc/empty_outline_auto_draft_plan.md] `empty_outline_auto_draft_
+    enabled`（默认 False）开启且传入了 `llm_helper` 时，大纲为空且已创建
+    超过 `empty_outline_auto_draft_after_hours` 小时（默认 24，给用户
+    手动补充留窗口期）的 Track，会在本轮自动调用 `draft_outline_with_llm()`
+    起草一份初始大纲并落盘，避免永久卡在"进不了候选池"的空转状态；不满足
+    条件时（未开启/无 llm_helper/未超时/大纲本就非空）行为与此前完全一致。
+
     返回一份本轮执行摘要（供 cron 日志 / 看板展示）。
     """
     track_store = CapabilityTrackStore(paths)
@@ -1701,7 +1710,8 @@ def run_capability_learning_cycle(
     summary = {"tracks_processed": 0, "topics_researched": 0, "questions_raised": 0,
                "questions_consumed": 0, "topics_skipped": 0, "topics_reused": 0,
                "outline_suggestions_generated": 0, "topics_research_empty": 0,
-               "topics_research_thin": 0, "questions_reused": 0}
+               "topics_research_thin": 0, "questions_reused": 0,
+               "outline_auto_drafted": 0, "outline_auto_draft_skipped": 0}
 
     active_tracks = sorted(
         track_store.list_tracks(status="active"),
@@ -1712,6 +1722,42 @@ def run_capability_learning_cycle(
     for track in active_tracks:
         summary["tracks_processed"] += 1
         track_advanced = False
+
+        # [next_doc/empty_outline_auto_draft_plan.md] 空大纲超时兜底：
+        # 放在本轮最前面，这样一旦起草成功，本轮后续的 scan_outline_gaps()
+        # 等步骤能立刻用上新大纲，不用等到下一轮。
+        if (
+            empty_outline_auto_draft_enabled
+            and llm_helper is not None
+            and not track.outline
+            and (time.time() - track.created_at) >= empty_outline_auto_draft_after_hours * 3600
+        ):
+            drafted_names = draft_outline_with_llm(track.title, track.persona_desc, llm_helper)
+            if drafted_names:
+                updated_track = track_store.update(
+                    track.track_id,
+                    outline=[
+                        OutlineTopic(topic_id=f"topic_{uuid.uuid4().hex[:8]}", name=n)
+                        for n in drafted_names
+                    ],
+                )
+                if updated_track is not None:
+                    track = updated_track
+                ledger_store.append(CapabilityLedgerEntry(
+                    track_id=track.track_id,
+                    topic_id="unclassified",
+                    action="outline_auto_drafted",
+                    summary=f"大纲长期为空，自动起草了 {len(drafted_names)} 个子主题",
+                ))
+                summary["outline_auto_drafted"] += 1
+            else:
+                ledger_store.append(CapabilityLedgerEntry(
+                    track_id=track.track_id,
+                    topic_id="unclassified",
+                    action="outline_auto_draft_skipped",
+                    summary="大纲长期为空，尝试自动起草但 LLM 未返回可用子主题，下一轮会再次尝试",
+                ))
+                summary["outline_auto_draft_skipped"] += 1
 
         # 消费已回答但尚未处理的问题（§4 伪流程最后一步）——不占用检索/
         # 写入类的全局预算（成本可忽略：只是读一条已有答案记一笔台账），

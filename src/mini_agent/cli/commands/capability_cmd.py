@@ -270,6 +270,11 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
                 getattr(cap_cfg, "outline_suggestion_milestone_enabled", False)),
             outline_suggestion_milestone_threshold=float(
                 getattr(cap_cfg, "outline_suggestion_milestone_threshold", 0.8)),
+            # [next_doc/empty_outline_auto_draft_plan.md]
+            empty_outline_auto_draft_enabled=bool(
+                getattr(cap_cfg, "empty_outline_auto_draft_enabled", False)),
+            empty_outline_auto_draft_after_hours=float(
+                getattr(cap_cfg, "empty_outline_auto_draft_after_hours", 24.0)),
         )
         # v0.21 §8：本轮跑完后尝试推送一条按天节流的摘要通知（空轮/被
         # 节流/关闭时静默不发，不影响本命令的正常输出）。

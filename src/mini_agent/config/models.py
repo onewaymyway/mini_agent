@@ -2576,6 +2576,20 @@ class CapabilityLearningConfig:
     outline_suggestion_milestone_enabled: bool = False
     outline_suggestion_milestone_threshold: float = 0.8
 
+    # ── [next_doc/empty_outline_auto_draft_plan.md] 空大纲 Track 自动
+    # 起草大纲兜底。`accept_candidate()` 采纳候选时会创建一个空大纲的
+    # Track（设计上就是留给用户手动补充），但如果用户一直没去补，
+    # scan_outline_gaps() 对着空大纲永远返回 []，cron 会一直"成功"但
+    # 空转，且现有的三个自动大纲建议来源都依赖"大纲已有子主题"才能
+    # 触发，无法兜底这种情况。这里加一层超时兜底：大纲为空且超过
+    # empty_outline_auto_draft_after_hours 小时（给用户手动处理留窗口
+    # 期）时，自动调用 draft_outline_with_llm() 起草一份初始大纲。和
+    # 项目一贯"新机制先保守默认"的取向一致，默认关闭；且即使开启，也
+    # 仍然需要调用方传入 llm_helper 才会真正生效（没有 llm_helper 时
+    # 这一步整体跳过，与其它 LLM 辅助步骤的降级方式一致）。
+    empty_outline_auto_draft_enabled: bool = False
+    empty_outline_auto_draft_after_hours: float = 24.0
+
 
 @dataclass
 class PersonaCandidateConfig:
