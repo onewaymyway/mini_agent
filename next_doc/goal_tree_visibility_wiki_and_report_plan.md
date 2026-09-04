@@ -1,12 +1,19 @@
 # 目标树可视化、产出 Wiki 化与汇总报告改进方案
 
-> 状态：**Stage 1（树级汇总报告，纯只读）已实施**，Stage 2-5 未实施。
+> 状态：**Stage 1（树级汇总报告，纯只读）/ Stage 2（节点详情页，纯只读）
+> 已实施**，Stage 3-5 未实施。
 > Stage 1 实现见 `src/mini_agent/perception/goal_tree_report.py`
 > （`build_goal_tree_report()`）、CLI `/agent goals report [root_id]`
 > （`cli/commands/goals.py::_cmd_report()`）、REST
 > `GET /v1/goals/tree_report`（`api/routes.py::get_goal_tree_report()`）、
-> `tests/test_goal_tree_report.py`。看板集成（§3.1 "📊 全局报告"折叠区）
-> 未随 Stage 1 一起做，留待后续单独评估（见 §6 开放问题新增一条）。
+> `tests/test_goal_tree_report.py`。
+> Stage 2 实现见 `src/mini_agent/perception/goal_node_page.py`
+> （`build_goal_node_page()`，复用 `cycle_diagnostics`/`output_workspace`/
+> `goal_tree_report.collect_pending_items_for_node()`，不重复实现）、CLI
+> `/agent goals show <id>`（`_cmd_show()`）、REST
+> `GET /v1/goals/{goal_id}/page`（`get_goal_node_page()`）、
+> `tests/test_goal_node_page.py`。看板集成（两个 Stage 都涉及的折叠区/
+> 详情面板）仍未做，见 §6。
 > 触发背景：用户在实际使用目标树系统
 > （`goal_tree_system_plan.md` 系列）过程中发现，树形结构本身编辑已经
 > 很顺手（`goals tree` / `decompose` / `candidates` / `focus pin`），
@@ -261,13 +268,21 @@ class GoalTreeReport:
   待处理分解候选/待确认焦点/结果可 JSON 序列化
 - 验收标准：能一次性看到"整棵树有哪些事等我处理"，不用逐节点点开 ✅
 
-**Stage 2 — 节点详情页（能力 A 前半，纯只读，不落盘）**
-- `perception/goal_node_page.py`：`build_goal_node_page()`
-- CLI `goals show <id>`，REST `GET /v1/goals/{goal_id}/page`
-- 看板：目标树节点从"展开一行"升级为"详情面板"
-- 回归：`tests/test_goal_node_page.py`
+**Stage 2 — 节点详情页（能力 A 前半，纯只读，不落盘）：✅ 已实施**
+- `perception/goal_node_page.py`：`build_goal_node_page()`——面包屑
+  （父链回溯）+ 进度（复用 `cycle_diagnostics.build_cycle_diagnostics()`）
+  + 产出扫描（复用 `output_workspace.scan_output_structure()`/
+  `render_output_readme()`）+ 子节点导航（不递归展开）+ 待处理项（复用
+  Stage 1 新增的 `goal_tree_report.collect_pending_items_for_node()`，
+  两处逻辑合一）+ 反馈历史（直接读 `GoalNode.user_feedback`）
+- CLI `goals show <id>`（`_cmd_show()`），REST
+  `GET /v1/goals/{goal_id}/page`（`get_goal_node_page()`）
+- 看板集成**未做**（跟 Stage 1 一起留到看板改造统一做，见 §6）
+- 回归：`tests/test_goal_node_page.py`（8 个用例），覆盖节点不存在/基本
+  字段/多层面包屑/子节点列表/待办项与 Stage 1 helper 一致/反馈历史透传/
+  产出扫描非空/结果可 JSON 序列化
 - 验收标准：打开一个节点就能看到进度 + 产出 + 待办，不用再去翻
-  output_dir 或单独跑 diagnose
+  output_dir 或单独跑 diagnose ✅
 
 **Stage 3 — 目标产出 Wiki 落盘镜像（能力 A 后半）**
 - 在 `output_workspace.py` 旁新增 `goal_wiki.py`（或作为其子模块），
@@ -295,11 +310,12 @@ class GoalTreeReport:
 
 ## 6. 开放问题
 
-- **Stage 1 看板集成延后**：§3.1 设想的"📊 全局报告"折叠区没有随 Stage 1
-  一起做（`apps/mini_agent_kanban/app.py` 单文件 8000+ 行，改动面比后端
-  聚合函数本身大得多，且没有独立回归覆盖），CLI/REST 已经可用。是否/
-  何时补上看板折叠区留到 Stage 2（节点详情面板）一起做更划算——两者都
-  要改同一处"目标树子页"，分两次改反而更容易冲突。
+- **看板集成延后到 Stage 1+2 一起做**：§3.1 设想的"📊 全局报告"折叠区、
+  节点"详情面板"都没有随各自 Stage 一起做（`apps/mini_agent_kanban/
+  app.py` 单文件 8000+ 行，改动面比后端聚合函数本身大得多，且没有独立
+  回归覆盖），CLI/REST 已经可用（`goals report`/`goals show` + 对应
+  REST 端点）。两者都要改同一处"目标树子页"，合并到一次看板改造里做，
+  避免分两次改互相冲突。
 
 - **Stage 3 的落盘量级**：树很大时 `goals_wiki/` 目录文件数会随节点数
   线性增长，是否需要限制深度或提供"只生成当前 focus 子树"的窄化选项，

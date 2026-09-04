@@ -176,6 +176,12 @@ api/routes.py — FastAPI 路由定义
                                        最近轮次产出/机制说明一次性聚合返回。
                                        `?summarize=true`（Stage 3，可选，需
                                        配置开关）附一段 LLM 自然语言总结。
+    GET    /v1/goals/{goal_id}/page  [goal_tree_visibility_wiki_and_report_
+                                       plan.md Stage 2] 节点详情页：面包屑/
+                                       进度/产出目录扫描/子节点导航/待处理
+                                       事项/反馈历史一次性拼出来，人类友好
+                                       视角，跟 cycle_diagnostics 共用底层
+                                       数据但换了排列方式。
     GET    /v1/goals/tree_report     [goal_tree_visibility_wiki_and_report_
                                        plan.md Stage 1] 树级汇总报告（可选
                                        ?root_id=）：按状态/执行阶段分组统计+
@@ -6856,6 +6862,32 @@ async def get_goal_cycle_diagnostics(goal_id: str, request: Request):
                 report.llm_summary = None
 
     return {"diagnostics": report.to_dict()}
+
+
+@router.get("/goals/{goal_id}/page")
+async def get_goal_node_page(goal_id: str, request: Request):
+    """GET /v1/goals/{goal_id}/page —
+    [goal_tree_visibility_wiki_and_report_plan.md Stage 2]
+    节点详情页：面包屑/进度（复用 cycle_diagnostics）/产出目录扫描（复用
+    output_workspace）/子节点导航/待处理事项（复用 goal_tree_report 的
+    collect_pending_items_for_node）/反馈历史一次性拼出来，对应 CLI
+    `/agent goals show`。纯只读聚合，不修改任何状态；调用
+    output_workspace.render_output_readme() 会顺带把 output/README.md
+    机械重写一次（既有函数的既定行为，非本端点新增副作用）。节点不存在时
+    返回 404。
+    """
+    backlog = _goal_backlog_only(request)
+    if backlog.get(goal_id) is None:
+        raise HTTPException(status_code=404, detail=f"Goal/Objective '{goal_id}' not found")
+    paths = _spec_paths(request)
+    from mini_agent.perception.goal_node_page import build_goal_node_page
+    try:
+        page = build_goal_node_page(paths, backlog, goal_id)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.routes.get_goal_node_page')
+        raise HTTPException(status_code=500, detail=f"生成节点详情页失败：{e}")
+    return {"page": page.to_dict()}
 
 
 @router.get("/goals/tree_report")

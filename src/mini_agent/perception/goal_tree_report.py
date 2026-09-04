@@ -109,6 +109,51 @@ def _cron_health_for_goal(paths: "AgentPaths", node: "GoalNode") -> Optional[dic
         return None
 
 
+def collect_pending_items_for_node(paths: "AgentPaths", node: "GoalNode") -> dict:
+    """收集单个节点的四类待处理项（decompose 候选/焦点确认/调优草案/执行
+    规范），供 `build_goal_tree_report()` 和节点详情页
+    （`goal_node_page.py`）共用，避免同一份逻辑写两遍。
+
+    返回结构：
+    {
+      "decompose_candidates": [{"candidate_id","title"}],
+      "focus_confirmation": bool,        # 该节点自身是否待确认焦点
+      "tuning_proposals": [{"proposal_id","status"}],
+      "execution_specs": [{"version"}],  # 至多一条（草稿未确认）
+    }
+    """
+    out = {
+        "decompose_candidates": [],
+        "focus_confirmation": bool(node.children_ids and not node.current_focus_ids),
+        "tuning_proposals": [],
+        "execution_specs": [],
+    }
+
+    for cand in (node.decompose_candidates or []):
+        out["decompose_candidates"].append({
+            "candidate_id": cand.get("id") if isinstance(cand, dict) else None,
+            "title": cand.get("title") if isinstance(cand, dict) else str(cand),
+        })
+
+    try:
+        from mini_agent.perception.cycle_tuning import list_proposals
+        for prop in list_proposals(paths, node.id):
+            if prop.status in ("draft", "confirmed"):
+                out["tuning_proposals"].append({"proposal_id": prop.id, "status": prop.status})
+    except Exception:
+        pass
+
+    try:
+        from mini_agent.perception.goal_execution_spec import load_spec
+        spec = load_spec(paths, node.id)
+        if spec is not None and not spec.confirmed:
+            out["execution_specs"].append({"version": spec.version})
+    except Exception:
+        pass
+
+    return out
+
+
 def build_goal_tree_report(
     paths: "AgentPaths",
     goal_backlog: "GoalBacklog",
@@ -163,41 +208,23 @@ def build_goal_tree_report(
         if cron_health and cron_health.get("consecutive_skip_count", 0) >= cron_skip_alert_threshold:
             report.cron_unhealthy.append({**ref, **cron_health})
 
-        # ── 待办：decompose 候选 ──
-        for cand in (node.decompose_candidates or []):
+        # ── 待办：四类（decompose 候选/焦点确认/调优草案/执行规范），
+        # 复用 collect_pending_items_for_node()，跟节点详情页共用同一份逻辑 ──
+        pending = collect_pending_items_for_node(paths, node)
+        for cand in pending["decompose_candidates"]:
             report.pending_decompose_candidates.append({
                 **ref,
-                "candidate_id": cand.get("id") if isinstance(cand, dict) else None,
-                "title": cand.get("title") if isinstance(cand, dict) else str(cand),
+                "candidate_id": cand["candidate_id"],
+                "title": cand["title"],
                 "parent_id": node.id,
                 "parent_title": node.title,
             })
-
-        # ── 待办：焦点确认（有子节点但还没有任何 current_focus_ids）──
-        if node.children_ids and not node.current_focus_ids:
+        if pending["focus_confirmation"]:
             report.pending_focus_confirmation.append(ref)
-
-        # ── 待办：调优草案（仅 status="draft"/"confirmed" 未 apply）──
-        try:
-            from mini_agent.perception.cycle_tuning import list_proposals
-            for prop in list_proposals(paths, node.id):
-                if prop.status in ("draft", "confirmed"):
-                    report.pending_tuning_proposals.append({
-                        **ref,
-                        "proposal_id": prop.id,
-                        "status": prop.status,
-                    })
-        except Exception:
-            pass
-
-        # ── 待办：执行规范草稿未确认 ──
-        try:
-            from mini_agent.perception.goal_execution_spec import load_spec
-            spec = load_spec(paths, node.id)
-            if spec is not None and not spec.confirmed:
-                report.pending_execution_specs.append({**ref, "version": spec.version})
-        except Exception:
-            pass
+        for prop in pending["tuning_proposals"]:
+            report.pending_tuning_proposals.append({**ref, **prop})
+        for spec_info in pending["execution_specs"]:
+            report.pending_execution_specs.append({**ref, **spec_info})
 
         # ── 产出速览：只取最近一条 manifest（活跃 Goal 节点）──
         if node.is_goal and node.is_active:

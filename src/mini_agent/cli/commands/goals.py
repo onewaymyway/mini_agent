@@ -30,6 +30,13 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
                                    — 手动（重新）触发一次"整体是否可以关闭"
                                      判定（见 §5 第二段，通常由子 Objective
                                      完成时自动触发，这里补一个手动入口）
+  /agent goals show <id>            — 节点详情页：面包屑/进度/产出目录
+                                     扫描/子节点导航/待处理事项/反馈历史
+                                     一次性拼出来，人类友好格式，跟
+                                     diagnose 共用底层数据但换了个排列
+                                     方式（见 next_doc/goal_tree_
+                                     visibility_wiki_and_report_plan.md
+                                     Stage 2）。
   /agent goals report [root_id]    — 树级汇总报告：省略 root_id 时汇总
                                      全局森林（所有顶层节点及其整棵子树），
                                      传 root_id 时只看该（子）树。按状态/
@@ -245,6 +252,15 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         goal_id_arg = rest[0]
         _cmd_diagnose(gb, paths, goal_id_arg, agent=agent, summarize=summarize)
 
+    elif subcmd == "show":
+        # [goal_tree_visibility_wiki_and_report_plan.md Stage 2]
+        # /agent goals show <id> — 节点详情页：进度+产出+子节点+待办+反馈
+        # 一次性拼出来，纯只读展示。
+        if not rest:
+            R.print_error("Usage: /agent goals show <goal_id>")
+            return
+        _cmd_show(gb, paths, rest[0])
+
     elif subcmd == "report":
         # [goal_tree_visibility_wiki_and_report_plan.md Stage 1]
         # /agent goals report [root_id] — 树级汇总报告：整棵（子）树的分组
@@ -358,7 +374,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
-            "progress, feedback, recur, unrecur, migrate-legacy, spec, phase, diagnose, report, "
+            "progress, feedback, recur, unrecur, migrate-legacy, spec, phase, diagnose, show, report, "
             "tune, status, reset-step, judge-calibration, tree, decompose, candidates, "
             "focus, research, next-steps"
         )
@@ -1136,6 +1152,76 @@ def _cmd_diagnose(gb, paths, goal_id: str, *, agent=None, summarize: bool = Fals
                 R.print_info(f"    {summary}")
             else:
                 R.print_info("  （未能生成自然语言总结，仅展示以上结构化字段。）")
+
+
+def _cmd_show(gb, paths, goal_id: str) -> None:
+    """[goal_tree_visibility_wiki_and_report_plan.md Stage 2]
+    /agent goals show <goal_id> — 打印节点详情页。纯只读展示，跟
+    `diagnose` 共用底层数据，但排列成"人顺手读"的形状：进度→产出→子
+    节点→待办→反馈历史。
+    """
+    from mini_agent.perception.goal_node_page import build_goal_node_page
+
+    page = build_goal_node_page(paths, gb, goal_id)
+    if not page.found:
+        R.print_error(page.error or f"Goal/Objective '{goal_id}' not found")
+        return
+
+    breadcrumb = " / ".join(c["title"] for c in page.path_from_root)
+    R.print_info(f"📄 {page.title} ({page.goal_id})")
+    R.print_info(f"  路径: {breadcrumb}")
+    R.print_info(f"  状态: {page.status}  |  层级: {page.level}  |  阶段: {page.execution_phase_mode}")
+
+    if page.progress_notes_tail:
+        R.print_info("  最近进展记录:")
+        for line in page.progress_notes_tail.splitlines()[-5:]:
+            R.print_info(f"    {line}")
+
+    if page.recent_cycle_summaries:
+        R.print_info(f"  最近轮次（最多显示 {len(page.recent_cycle_summaries)} 条）:")
+        for s in page.recent_cycle_summaries[-10:]:
+            R.print_info(
+                f"    cycle={s.get('cycle')} status={s.get('status')} "
+                f"artifacts={s.get('artifact_count')}  {s.get('task_summary', '')[:60]}"
+            )
+
+    R.print_info(f"  产出目录: {page.output_dir}")
+    stats = page.output_structure or {}
+    if stats.get("sub_dirs"):
+        R.print_info("  产出子目录:")
+        for name, info in sorted(stats["sub_dirs"].items()):
+            R.print_info(f"    {name}/（{info.get('file_count')} 个文件）")
+    if stats.get("misc_count"):
+        R.print_info(f"  ⚠️  _misc/ 下有 {stats['misc_count']} 个待整理文件")
+
+    if page.children:
+        R.print_info(f"  子节点（{len(page.children)} 个）:")
+        for c in page.children:
+            R.print_info(f"    [{c['id']}] {c['title']}  status={c['status']} level={c['level']}")
+
+    pending = page.pending_items or {}
+    pending_count = (
+        len(pending.get("decompose_candidates", []))
+        + (1 if pending.get("focus_confirmation") else 0)
+        + len(pending.get("tuning_proposals", []))
+        + len(pending.get("execution_specs", []))
+    )
+    R.print_info(f"  待处理事项（共 {pending_count} 项）:")
+    for cand in pending.get("decompose_candidates", []):
+        R.print_info(f"    分解候选: {cand.get('title')} ({cand.get('candidate_id')})")
+    if pending.get("focus_confirmation"):
+        R.print_info("    焦点未确认（有子节点但 current_focus_ids 为空）")
+    for prop in pending.get("tuning_proposals", []):
+        R.print_info(f"    调优草案: {prop.get('proposal_id')} status={prop.get('status')}")
+    for spec_info in pending.get("execution_specs", []):
+        R.print_info(f"    执行规范草稿未确认: version={spec_info.get('version')}")
+    if pending_count == 0:
+        R.print_info("    （当前没有待处理事项）")
+
+    if page.feedback_history:
+        R.print_info(f"  反馈历史（{len(page.feedback_history)} 条）:")
+        for fb in page.feedback_history[-5:]:
+            R.print_info(f"    {fb.get('text')}")
 
 
 def _cmd_report(gb, paths, root_id: Optional[str]) -> None:
