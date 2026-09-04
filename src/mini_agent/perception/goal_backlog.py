@@ -1354,6 +1354,8 @@ class GoalBacklog:
             self._nodes[new_node.id] = new_node
             node.children_ids.append(new_node.id)
             del node.decompose_candidates[idx]
+            # [Stage 4 能力 C] 候选被 accept 处理，自动关闭关联到它的反馈
+            self._mark_feedback_addressed_on_node(node, f"candidate:{candidate_id}")
         return new_node
 
     def reject_candidate(self, node_id: str, candidate_id: str) -> Optional[dict]:
@@ -1382,6 +1384,8 @@ class GoalBacklog:
                 return None
             candidate = node.decompose_candidates[idx]
             del node.decompose_candidates[idx]
+            # [Stage 4 能力 C] 候选被 reject 处理，自动关闭关联到它的反馈
+            self._mark_feedback_addressed_on_node(node, f"candidate:{candidate_id}")
         return candidate
 
     def get_tree(self, root_id: Optional[str] = None) -> Optional[dict]:
@@ -1778,11 +1782,28 @@ class GoalBacklog:
 
         return to_delete
 
-    def add_user_feedback(self, node_id: str, text: str, *, _sync: bool = True) -> bool:
-        """[goal_cron_feedback_and_output_policy_plan.md Track B] 用户对某个
-        Goal/Objective「提意见」，持久化合入该节点的 description，此后所有
-        基于这个节点派生的执行都会带上——区别于 ObjectiveExecutor.inject_guidance()
+    def add_user_feedback(self, node_id: str, text: str, *, about: Optional[str] = None, _sync: bool = True) -> bool:
+        """[goal_cron_feedback_and_output_policy_plan.md Track B /
+        goal_tree_visibility_wiki_and_report_plan.md Stage 4 能力 C] 用户对
+        某个 Goal/Objective「提意见」，持久化合入该节点的 description，此后
+        所有基于这个节点派生的执行都会带上——区别于 ObjectiveExecutor.inject_guidance()
         只对下一次提交的单个 step 生效一次就清空的临时语义。
+
+        `about`：[Stage 4] 可选，把这条反馈关联到树级汇总报告
+        （`goal_tree_report.py`）里某一项具体待办的稳定 id，格式
+        `"candidate:<candidate_id>"` / `"proposal:<proposal_id>"`（当前
+        仅这两类支持自动关闭，其余取值原样存但没有对应的自动 addressed
+        钩子）。不传（`None`）时保持方案 §4 描述的"笼统贴在 Goal 上"这一
+        既有行为，反馈状态永远停留在 `pending`，靠 agent 下次派生执行时
+        自然消费，不影响向后兼容。
+
+        每条反馈落盘时都带一个 `status` 字段，初始值 `pending`；关联的
+        待办项被 `accept_candidate()`/`reject_candidate()`/
+        `cycle_tuning.confirm_tuning_proposal()`/`apply_tuning_proposal()`/
+        `reject_tuning_proposal()` 处理后，会调用 `mark_feedback_addressed()`
+        把 `about` 匹配的 `pending` 反馈自动标记为 `addressed`——判定完全
+        依附于这些已有动作本身，不新增任何自动语义匹配/LLM 判断（方案
+        §4 最后一条）。
 
         _sync=True 时，如果该节点是绑定了 recurring CronJob 的 Goal，会额外把
         同一条意见同步到 CronScheduler 一侧（见 CronScheduler.add_user_feedback()）；
@@ -1797,7 +1818,10 @@ class GoalBacklog:
             if not node:
                 return False
             text = text.strip()
-            node.user_feedback.append({"text": text, "at": time.time()})
+            entry = {"text": text, "at": time.time(), "status": "pending"}
+            if about:
+                entry["about"] = about
+            node.user_feedback.append(entry)
             stamp = f"[用户意见 {time_utils.ts_to_str(time.time())}] {text}"
             node.description = (
                 f"{node.description}\n\n{stamp}" if node.description else stamp
@@ -1818,6 +1842,37 @@ class GoalBacklog:
                     where="mini_agent.perception.goal_backlog.GoalBacklog.add_user_feedback",
                 )
         return True
+
+    @staticmethod
+    def _mark_feedback_addressed_on_node(node: GoalNode, about: str) -> int:
+        """[Stage 4 能力 C] 在已持有 `_locked()` 临界区（或不需要跨进程锁的
+        场景，比如刚从磁盘取出、尚未有其它写者的 `node`）内，把该节点
+        `user_feedback` 里 `about` 字段等于给定值、状态仍是 `pending` 的
+        条目标记为 `addressed`。纯内存操作，不落盘——调用方负责在
+        `_locked()` 块内调用完之后正常走已有的落盘路径（`accept_candidate()`
+        等方法本身在 `with self._locked():` 结束时会话统一保存）。
+
+        返回本次标记的条数（0 表示没有关联反馈，不是错误）。
+        """
+        count = 0
+        for entry in node.user_feedback:
+            if entry.get("about") == about and entry.get("status", "pending") == "pending":
+                entry["status"] = "addressed"
+                count += 1
+        return count
+
+    def mark_feedback_addressed(self, node_id: str, about: str) -> int:
+        """[Stage 4 能力 C] `_mark_feedback_addressed_on_node()` 的加锁版本，
+        供不在 `_locked()` 临界区内的调用方（比如 `cycle_tuning.py` 的
+        `confirm_tuning_proposal()`/`apply_tuning_proposal()`/
+        `reject_tuning_proposal()`，它们操作的是独立落盘的草案文件，不持有
+        `GoalBacklog._locked()`）使用。`node_id` 不存在时返回 0，不抛异常。
+        """
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if node is None:
+                return 0
+            return self._mark_feedback_addressed_on_node(node, about)
 
     def effective_context(self, node_id: str) -> str:
         """[goal_cron_feedback_and_output_policy_plan.md 4.3] 执行侧兜底：向上

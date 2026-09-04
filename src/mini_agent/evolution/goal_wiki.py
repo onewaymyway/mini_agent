@@ -131,7 +131,10 @@ def _render_markdown(page) -> str:
     if page.feedback_history:
         lines.append(f"## 反馈历史（{len(page.feedback_history)} 条）")
         for fb in page.feedback_history[-10:]:
-            lines.append(f"- {fb.get('text')}")
+            status = fb.get("status", "pending")
+            mark = "✅" if status == "addressed" else "⏳"
+            about = f"（关联：{fb.get('about')}）" if fb.get("about") else ""
+            lines.append(f"- {mark} [{status}] {fb.get('text')}{about}")
         lines.append("")
 
     return "\n".join(lines) + "\n"

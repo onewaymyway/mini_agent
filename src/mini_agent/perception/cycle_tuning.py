@@ -289,9 +289,18 @@ def suggest_tuning_from_diagnostics(
 
 # ── confirm / reject ────────────────────────────────────────────────────
 
-def confirm_tuning_proposal(paths: "AgentPaths", goal_id: str, proposal_id: str) -> CycleTuningProposal:
+def confirm_tuning_proposal(
+    paths: "AgentPaths", goal_id: str, proposal_id: str,
+    goal_backlog: Optional["GoalBacklog"] = None,
+) -> CycleTuningProposal:
     """确认草案本身，**此时仍未生效**——与 GoalExecutionSpec 的确认语义一致
-    （确认的是"这份草案"，不代表立即执行，真正生效要另外调用 apply）。"""
+    （确认的是"这份草案"，不代表立即执行，真正生效要另外调用 apply）。
+
+    `goal_backlog`：[goal_tree_visibility_wiki_and_report_plan.md Stage 4
+    能力 C] 可选传入，命中时把关联到这份草案（`about="proposal:<id>"`）
+    且仍是 `pending` 的反馈自动标记为 `addressed`。不传（默认 `None`，
+    向后兼容既有调用方）时跳过这一步，不影响确认动作本身。
+    """
     proposal = load_proposal(paths, goal_id, proposal_id)
     if proposal is None:
         raise ValueError(f"草案不存在：{goal_id}/{proposal_id}")
@@ -300,6 +309,11 @@ def confirm_tuning_proposal(paths: "AgentPaths", goal_id: str, proposal_id: str)
     proposal.status = "confirmed"
     proposal.confirmed_at = time.time()
     save_proposal(paths, proposal)
+    if goal_backlog is not None:
+        try:
+            goal_backlog.mark_feedback_addressed(goal_id, f"proposal:{proposal_id}")
+        except Exception:
+            pass
     return proposal
 
 
@@ -308,7 +322,8 @@ def reject_tuning_proposal(
 ) -> CycleTuningProposal:
     """拒绝草案，作废，不产生任何实际改动。留一条 progress_notes 记录
     "提出过但被拒绝"，避免下次诊断又提出同样的建议而用户不记得已经考虑过
-    （§3.2 第 5 步）。"""
+    （§3.2 第 5 步）。[Stage 4 能力 C] 顺带把关联到这份草案的 `pending`
+    反馈标记为 `addressed`——拒绝也是"处理过了"，不是没下文。"""
     proposal = load_proposal(paths, goal_id, proposal_id)
     if proposal is None:
         raise ValueError(f"草案不存在：{goal_id}/{proposal_id}")
@@ -323,6 +338,10 @@ def reject_tuning_proposal(
         if reason:
             note += f"，原因：{reason}"
         goal_backlog.append_progress_note(goal_id, note)
+    except Exception:
+        pass
+    try:
+        goal_backlog.mark_feedback_addressed(goal_id, f"proposal:{proposal_id}")
     except Exception:
         pass
     return proposal
@@ -380,6 +399,14 @@ def apply_tuning_proposal(
         summary = "; ".join(f"{c.param}->{c.to_value}" for c in proposal.proposed_changes)
         note = f"根据诊断报告调优（{proposal.id}，{ok_count}/{len(results)} 项成功）：{summary}"
         goal_backlog.append_progress_note(goal_id, note)
+    except Exception:
+        pass
+    # [goal_tree_visibility_wiki_and_report_plan.md Stage 4 能力 C] 草案被
+    # apply 处理，自动关闭关联到它的反馈（不论各项改动是否全部成功——
+    # apply_results 里已经明确标出失败项，反馈闭环只关心"这份草案被处理
+    # 过了"，不重复判断成败）。
+    try:
+        goal_backlog.mark_feedback_addressed(goal_id, f"proposal:{proposal_id}")
     except Exception:
         pass
     return proposal

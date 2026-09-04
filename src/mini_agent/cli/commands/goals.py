@@ -9,6 +9,20 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
   /agent goals done <id>           — 标记完成
   /agent goals abandon <id>        — 标记放弃
   /agent goals progress <id> <txt> — 更新进展记录
+  /agent goals feedback <id> <text> [--about candidate:<cid> | proposal:<pid>]
+                                   — 持久化提意见（见 goal_cron_feedback_and_
+                                     output_policy_plan.md 3.4），此后所有
+                                     基于这个 Goal/Objective 派生的执行都
+                                     会带着这条意见。--about 可选，把这条
+                                     反馈关联到某个具体待办项（分解候选/
+                                     调优草案），对应待办被 accept/reject/
+                                     confirm/apply 处理后自动标记为
+                                     addressed，回顾见 `goals show`/
+                                     `goals report` 的反馈历史（见
+                                     next_doc/goal_tree_visibility_wiki_
+                                     and_report_plan.md Stage 4 能力 C）。
+                                     不带 --about 时保持原有行为（笼统贴
+                                     在 Goal 上，状态永远是 pending）。
   /agent goals recur <id> <schedule> [task]  — 声明为周期性（见 goal_cron_bridge.py）
   /agent goals unrecur <id>        — 停止周期性（不删 Goal/cron job）
   /agent goals migrate-legacy <id> — 请求下一次触发时附加一次"历史数据迁移"
@@ -216,14 +230,29 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         _cmd_progress(gb, rest[0], " ".join(rest[1:]))
 
     elif subcmd == "feedback":
-        # [goal_cron_feedback_and_output_policy_plan.md 3.4]
-        # /agent goals feedback <id> <text> — 持久化提意见，此后所有基于这个
-        # Goal/Objective 派生的执行都会带着这条意见，区别于一次性的
-        # inject_guidance()。
+        # [goal_cron_feedback_and_output_policy_plan.md 3.4 /
+        # goal_tree_visibility_wiki_and_report_plan.md Stage 4]
+        # /agent goals feedback <id> <text> [--about candidate:<cid> | proposal:<pid>]
+        # 持久化提意见，此后所有基于这个 Goal/Objective 派生的执行都会带着
+        # 这条意见，区别于一次性的 inject_guidance()。带 --about 时把这条
+        # 反馈关联到某个具体待办项，对应待办被 accept/reject/confirm/apply
+        # 处理后会自动标记为 addressed（见 goals report/show 里的反馈历史）。
         if len(rest) < 2:
-            R.print_error("Usage: /agent goals feedback <id> <text>")
+            R.print_error("Usage: /agent goals feedback <id> <text> [--about candidate:<cid> | proposal:<pid>]")
             return
-        _cmd_feedback(gb, rest[0], " ".join(rest[1:]))
+        about = None
+        text_parts = rest[1:]
+        if "--about" in text_parts:
+            idx = text_parts.index("--about")
+            if idx + 1 >= len(text_parts):
+                R.print_error("Usage: /agent goals feedback <id> <text> [--about candidate:<cid> | proposal:<pid>]")
+                return
+            about = text_parts[idx + 1]
+            text_parts = text_parts[:idx] + text_parts[idx + 2:]
+        if not text_parts:
+            R.print_error("Usage: /agent goals feedback <id> <text> [--about candidate:<cid> | proposal:<pid>]")
+            return
+        _cmd_feedback(gb, rest[0], " ".join(text_parts), about=about)
 
     elif subcmd == "recur":
         # [goal_cron_binding_plan.md Track D] /agent goals recur <id> <schedule> [task]
@@ -626,18 +655,22 @@ def _cmd_progress(gb, node_id: str, notes: str) -> None:
     R.print_success(f"进展已更新: {node_id}")
 
 
-def _cmd_feedback(gb, node_id: str, text: str) -> None:
-    """[goal_cron_feedback_and_output_policy_plan.md 3.4] 持久化提意见，
+def _cmd_feedback(gb, node_id: str, text: str, *, about: Optional[str] = None) -> None:
+    """[goal_cron_feedback_and_output_policy_plan.md 3.4 /
+    goal_tree_visibility_wiki_and_report_plan.md Stage 4] 持久化提意见，
     合入该节点的 description，此后所有基于这个 Goal/Objective 派生的执行
     都会带着这条意见。若节点是绑定了周期性 CronJob 的 Goal，会自动双向
-    同步到对应 CronJob。"""
+    同步到对应 CronJob。`about` 非空时关联到某个具体待办项（见
+    `GoalBacklog.add_user_feedback()`），对应待办被处理后自动标记为
+    addressed。"""
     node = gb.get(node_id)
     if not node:
         R.print_error(f"Not found: {node_id!r}")
         return
-    ok = gb.add_user_feedback(node_id, text)
+    ok = gb.add_user_feedback(node_id, text, about=about)
     if ok:
-        R.print_success(f"意见已记录并合入说明: {node_id}")
+        suffix = f"（关联：{about}）" if about else ""
+        R.print_success(f"意见已记录并合入说明: {node_id}{suffix}")
     else:
         R.print_error(f"记录意见失败: {node_id}")
 
@@ -1242,7 +1275,10 @@ def _cmd_show(gb, paths, goal_id: str) -> None:
     if page.feedback_history:
         R.print_info(f"  反馈历史（{len(page.feedback_history)} 条）:")
         for fb in page.feedback_history[-5:]:
-            R.print_info(f"    {fb.get('text')}")
+            status = fb.get("status", "pending")
+            mark = "✅" if status == "addressed" else "⏳"
+            about = f"  关联: {fb.get('about')}" if fb.get("about") else ""
+            R.print_info(f"    {mark} [{status}] {fb.get('text')}{about}")
 
 
 def _cmd_report(gb, paths, root_id: Optional[str]) -> None:
@@ -1309,6 +1345,12 @@ def _cmd_report(gb, paths, root_id: Optional[str]) -> None:
             R.print_info(f"      [{s['id']}] {s['title']}  version={s['version']}")
     if total_pending == 0:
         R.print_info("    （当前没有待处理事项）")
+
+    if report.pending_feedback:
+        R.print_info(f"  未处理反馈（{len(report.pending_feedback)} 条，Stage 4 能力 C）:")
+        for fb in report.pending_feedback:
+            about = f"  关联: {fb.get('about')}" if fb.get("about") else ""
+            R.print_info(f"    [{fb['id']}] {fb['title']}: {fb.get('text')}{about}")
 
     if report.recent_outputs_digest:
         R.print_info("  最近产出速览:")
@@ -1410,7 +1452,7 @@ def _cmd_tune(gb, paths, goal_id: str, rest: list[str], *, agent=None) -> None:
             R.print_error(f"Usage: /agent goals tune confirm {target_goal_id} <proposal_id>")
             return
         try:
-            proposal = ct.confirm_tuning_proposal(paths, target_goal_id, action_rest[0])
+            proposal = ct.confirm_tuning_proposal(paths, target_goal_id, action_rest[0], goal_backlog=gb)
         except ValueError as e:
             R.print_error(str(e))
             return

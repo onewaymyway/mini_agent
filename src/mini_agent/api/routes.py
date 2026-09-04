@@ -169,7 +169,8 @@ api/routes.py — FastAPI 路由定义
                                       §4.6/阶段四] 查询该节点待处理调研候选
     POST   /v1/goals/{id}/research/trigger  [同上] 手动触发一次焦点驱动调研
     GET    /v1/goals/next_steps      [同上] 查询"焦点行动建议"（可选 ?node_id=）
-    POST   /v1/goals/{goal_id}/feedback  持久化提意见（合入 description，双向同步 cron）
+    POST   /v1/goals/{goal_id}/feedback  持久化提意见（合入 description，双向同步 cron；
+                                       [Stage 4] 可选 body.about 关联具体待办项）
     GET    /v1/goals/{goal_id}/cycle_diagnostics  [goal_cron_cycle_diagnostics_
                                        and_interactive_tuning_plan.md Stage 1]
                                        跨轮次诊断报告：阶段/健康告警/cron 状态/
@@ -187,9 +188,10 @@ api/routes.py — FastAPI 路由定义
                                        ?root_id=）：按状态/执行阶段分组统计+
                                        健康告警/cron 异常+全局待办清单（待
                                        处理分解候选/待确认焦点/待处理调优
-                                       草案/待确认执行规范）+最近产出速览，
-                                       粒度从单 Goal 提升到子树。省略
-                                       root_id 时汇总全局森林。
+                                       草案/待确认执行规范/[Stage 4] 未处理
+                                       反馈）+最近产出速览，粒度从单 Goal
+                                       提升到子树。省略 root_id 时汇总
+                                       全局森林。
     POST   /v1/goals/wiki/build      [goal_tree_visibility_wiki_and_report_
                                        plan.md Stage 3] 目标产出 Wiki 落盘
                                        生成（可选 ?root_id=）：把节点详情页
@@ -6389,21 +6391,25 @@ async def migrate_goal_legacy_cycles(goal_id: str, request: Request):
 @router.post("/goals/{goal_id}/feedback")
 async def add_goal_feedback(goal_id: str, request: Request):
     """POST /v1/goals/{goal_id}/feedback — [goal_cron_feedback_and_output_
-    policy_plan.md 3.5] 持久化提意见，合入该节点的 description，此后所有基于
+    policy_plan.md 3.5 / goal_tree_visibility_wiki_and_report_plan.md
+    Stage 4 能力 C] 持久化提意见，合入该节点的 description，此后所有基于
     这个 Goal/Objective 派生的执行都会带着这条意见。若该节点是绑定了周期性
     CronJob 的 Goal，会自动双向同步到对应 CronJob。
-    Body: { "text": str }
+    Body: { "text": str, "about": str (可选，"candidate:<cid>" 或
+           "proposal:<pid>"，把这条反馈关联到某个具体待办项，对应待办被
+           accept/reject/confirm/apply 处理后自动标记为 addressed) }
     返回更新后的节点摘要，供前端立即刷新。
     """
     body = await request.json()
     text = (body.get("text") or "").strip()
+    about = (body.get("about") or "").strip() or None
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
     backlog, _scheduler = _goal_backlog_and_scheduler(request)
     node = backlog.get(goal_id)
     if node is None:
         raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
-    ok = backlog.add_user_feedback(goal_id, text)
+    ok = backlog.add_user_feedback(goal_id, text, about=about)
     if not ok:
         raise HTTPException(status_code=500, detail="add_user_feedback failed")
     updated = backlog.get(goal_id)
@@ -6904,9 +6910,9 @@ async def get_goal_tree_report(request: Request, root_id: Optional[str] = Query(
     树级汇总报告：把粒度从单 Goal（`/goals/{goal_id}/cycle_diagnostics`）
     提升到整棵（子）树——按状态/执行阶段分组统计、健康告警/cron 异常、
     全局待办清单（待处理分解候选/待确认焦点/待处理调优草案/待确认执行
-    规范）、最近产出速览，对应 CLI `/agent goals report`。省略 root_id
-    时汇总全局森林（所有顶层节点及其整棵子树）。纯只读聚合，不修改任何
-    状态。root_id 指定但不存在时返回 404。
+    规范/[Stage 4] 未处理反馈）、最近产出速览，对应 CLI `/agent goals
+    report`。省略 root_id 时汇总全局森林（所有顶层节点及其整棵子树）。
+    纯只读聚合，不修改任何状态。root_id 指定但不存在时返回 404。
     """
     backlog = _goal_backlog_only(request)
     if root_id is not None and backlog.get(root_id) is None:
@@ -7086,7 +7092,8 @@ async def list_tuning_proposals(goal_id: str, request: Request):
 @router.post("/goals/{goal_id}/tuning_proposals/{proposal_id}/confirm")
 async def confirm_tuning_proposal_route(goal_id: str, proposal_id: str, request: Request):
     """POST /v1/goals/{goal_id}/tuning_proposals/{proposal_id}/confirm —
-    确认草案本身，此时仍未生效。"""
+    确认草案本身，此时仍未生效。[Stage 4 能力 C] 顺带把关联到这份草案的
+    pending 反馈标记为 addressed。"""
     backlog = _goal_backlog_only(request)
     node = backlog.get(goal_id)
     if node is None or not node.is_goal:
@@ -7094,7 +7101,7 @@ async def confirm_tuning_proposal_route(goal_id: str, proposal_id: str, request:
     paths = _spec_paths(request)
     from mini_agent.perception import cycle_tuning as ct
     try:
-        proposal = ct.confirm_tuning_proposal(paths, goal_id, proposal_id)
+        proposal = ct.confirm_tuning_proposal(paths, goal_id, proposal_id, goal_backlog=backlog)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"proposal": proposal.to_dict()}

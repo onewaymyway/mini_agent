@@ -1,7 +1,8 @@
 # 目标树可视化、产出 Wiki 化与汇总报告改进方案
 
 > 状态：**Stage 1（树级汇总报告，纯只读）/ Stage 2（节点详情页，纯只读）/
-> Stage 3（目标产出 Wiki 落盘镜像）已实施**，Stage 4-5 未实施。
+> Stage 3（目标产出 Wiki 落盘镜像）/ Stage 4（反馈闭环）已实施**，
+> Stage 5（可选，视使用效果再定）未实施。
 > Stage 1 实现见 `src/mini_agent/perception/goal_tree_report.py`
 > （`build_goal_tree_report()`）、CLI `/agent goals report [root_id]`
 > （`cli/commands/goals.py::_cmd_report()`）、REST
@@ -24,6 +25,14 @@
 > `tests/test_goal_wiki.py`。通用 wiki 关联链接（§2.2 最后一点）按 §6
 > 建议暂不实现。看板集成（三个 Stage 都涉及的折叠区/详情面板/wiki 静态
 > 文件预览）仍未做，见 §6。
+> Stage 4 实现见 `src/mini_agent/perception/goal_backlog.py`
+> （`add_user_feedback()` 加 `status`/`about` 字段、`mark_feedback_
+> addressed()`/`_mark_feedback_addressed_on_node()`）、
+> `src/mini_agent/perception/cycle_tuning.py`（`confirm_tuning_
+> proposal()`/`apply_tuning_proposal()`/`reject_tuning_proposal()` 挂
+> 反馈关闭钩子）、CLI `/agent goals feedback <id> <text> [--about ...]`、
+> REST `POST /v1/goals/{goal_id}/feedback` body 新增 `about`、
+> `tests/test_goal_feedback_loop.py`。
 > 触发背景：用户在实际使用目标树系统
 > （`goal_tree_system_plan.md` 系列）过程中发现，树形结构本身编辑已经
 > 很顺手（`goals tree` / `decompose` / `candidates` / `focus pin`），
@@ -319,28 +328,49 @@ class GoalTreeReport:
   跟实际 output_dir 状态一致 ✅（通用 wiki 关联链接增强按 §6 建议
   暂不实现）
 
-**Stage 4 — 反馈闭环（能力 C）**
-- `goal_backlog.py` 里反馈记录加 `status` 字段 + `--about` 关联参数
-- 在 accept/reject/confirm/apply 各既有入口里补一处"若存在关联反馈，
-  标记 addressed"的钩子
-- 能力 A/B 的展示层补上 `feedback_history` 渲染
-- 回归：`tests/test_goal_feedback_loop.py`
-- 验收标准：写一条关联到某个候选的反馈，`accept` 该候选后，报告里能
-  看到这条反馈自动变成 `addressed`
+**Stage 4 — 反馈闭环（能力 C）：✅ 已实施**
+- `goal_backlog.py::add_user_feedback()` 反馈记录加 `status` 字段（初始
+  `pending`）+ `about` 关联参数（`"candidate:<id>"` / `"proposal:<id>"`）；
+  新增 `mark_feedback_addressed()`（加锁版本，供不持有 `_locked()` 的
+  调用方用）+ `_mark_feedback_addressed_on_node()`（不加锁版本，供已在
+  `_locked()` 临界区内的方法内联调用，避免文件锁不可重入导致死锁）
+- 钩子落点：`accept_candidate()`/`reject_candidate()`（`goal_backlog.py`，
+  已在锁内直接调用不加锁版本）、`cycle_tuning.confirm_tuning_proposal()`
+  （新增可选 `goal_backlog` 参数，向后兼容不传时跳过）/
+  `apply_tuning_proposal()`/`reject_tuning_proposal()`（已有
+  `goal_backlog` 参数，直接调用加锁版本）；CLI/REST 对应调用点
+  （`_cmd_tune` confirm、`confirm_tuning_proposal_route`）同步传入
+  `goal_backlog`
+- CLI `goals feedback <id> <text> [--about candidate:<cid> |
+  proposal:<pid>]`；REST `POST /v1/goals/{goal_id}/feedback` body 新增
+  可选 `about` 字段
+- 展示层：能力 A 节点详情页（`_cmd_show`/`goal_wiki._render_markdown`）
+  反馈历史行加 `✅/⏳` + `status` + `about`；能力 B 树级报告新增
+  `pending_feedback` 字段（`goal_tree_report.py`），收集全树里状态仍是
+  `pending`（含 Stage 4 之前写入、没有 `status` 字段的旧数据，视同
+  `pending`）的反馈条目，CLI `goals report` 对应打印一段"未处理反馈"
+- 回归：`tests/test_goal_feedback_loop.py`（11 个用例），覆盖默认
+  `status=pending`/`about` 落盘/accept 关联反馈变 addressed 且不影响
+  笼统反馈/reject 同样触发/不关联的反馈不被误标/`mark_feedback_
+  addressed` 对不存在节点返回 0/confirm 不传 `goal_backlog` 时行为不变
+  （向后兼容）/confirm、apply、reject 三个入口分别验证标记/树级报告
+  `pending_feedback` 排除已 addressed 的条目
+- 验收标准：写一条关联到某个候选的反馈，`accept` 该候选后，`goals
+  show`/`goals report` 里能看到这条反馈自动变成 `addressed` ✅
 
-**Stage 5（可选，视 Stage 1-4 使用效果再定）— LLM 自然语言总结层**
-- 给 Stage 1 的树级报告、Stage 3 的 wiki 页分别加一层默认关闭的可选
-  LLM 摘要，做法对齐 `cycle_diagnostics.py::summarize_report_with_llm()`
-  的既有实现（失败降级、不影响结构化内容本身）
+**Stage 5（可选，视 Stage 1-4 使用效果再定）— LLM 自然语言总结层：未实施**
+- 按方案措辞是"可选、视前几个 Stage 实际使用效果再定"，不是既定必做
+  项，本轮暂不做，留到 Stage 1-4 用起来之后再评估是否需要。
 
 ## 6. 开放问题
 
-- **看板集成延后到 Stage 1+2+3 一起做**：§3.1 设想的"📊 全局报告"折叠区、
-  节点"详情面板"、wiki 静态文件预览都没有随各自 Stage 一起做
-  （`apps/mini_agent_kanban/app.py` 单文件 8000+ 行，改动面比后端聚合
+- **看板集成延后到 Stage 1+2+3+4 一起做**：§3.1 设想的"📊 全局报告"折叠区、
+  节点"详情面板"、wiki 静态文件预览、反馈状态标记都没有随各自 Stage 一起
+  做（`apps/mini_agent_kanban/app.py` 单文件 8000+ 行，改动面比后端聚合
   函数本身大得多，且没有独立回归覆盖），CLI/REST 已经可用（`goals
-  report`/`goals show`/`goals wiki build` + 对应 REST 端点）。三者都要
-  改同一处"目标树子页"，合并到一次看板改造里做，避免分次改互相冲突。
+  report`/`goals show`/`goals wiki build`/`goals feedback --about` +
+  对应 REST 端点）。四者都要改同一处"目标树子页"，合并到一次看板改造里
+  做，避免分次改互相冲突。
 
 - **Stage 3 的落盘量级**：树很大时 `goals_wiki/` 目录文件数会随节点数
   线性增长，是否需要限制深度或提供"只生成当前 focus 子树"的窄化选项，

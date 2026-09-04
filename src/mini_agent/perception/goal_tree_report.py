@@ -1,7 +1,8 @@
 """
-perception/goal_tree_report.py — 目标树级汇总报告（Stage 1）
+perception/goal_tree_report.py — 目标树级汇总报告（Stage 1，Stage 4 追加
+待处理反馈字段）
 
-见 next_doc/goal_tree_visibility_wiki_and_report_plan.md §3。
+见 next_doc/goal_tree_visibility_wiki_and_report_plan.md §3、§4。
 
 只读聚合，回答"这棵目标树整体状态如何、有哪些事在等用户处理"，粒度从
 `cycle_diagnostics.py` 的单 Goal 提升到子树。设计原则跟
@@ -48,6 +49,10 @@ class GoalTreeReport:
     pending_focus_confirmation: list = field(default_factory=list)
     pending_tuning_proposals: list = field(default_factory=list)
     pending_execution_specs: list = field(default_factory=list)
+
+    # ── [Stage 4 能力 C] 待处理反馈：跨节点收集仍是 pending 状态的用户
+    # 反馈，让"报告里回顾"覆盖到树级视角，不只是单节点详情页 ──
+    pending_feedback: list = field(default_factory=list)
 
     # ── 产出速览：每个活跃 Goal 节点最近一次产出的一句话摘要 ──
     recent_outputs_digest: list = field(default_factory=list)
@@ -225,6 +230,18 @@ def build_goal_tree_report(
             report.pending_tuning_proposals.append({**ref, **prop})
         for spec_info in pending["execution_specs"]:
             report.pending_execution_specs.append({**ref, **spec_info})
+
+        # ── [Stage 4 能力 C] 待处理反馈：user_feedback 里 status 仍是
+        # pending（含 Stage 4 之前写入、没有 status 字段的旧数据，视同
+        # pending）的条目，让反馈闭环在树级报告里也能回顾 ──
+        for fb in (node.user_feedback or []):
+            if fb.get("status", "pending") != "addressed":
+                report.pending_feedback.append({
+                    **ref,
+                    "text": fb.get("text"),
+                    "about": fb.get("about"),
+                    "at": fb.get("at"),
+                })
 
         # ── 产出速览：只取最近一条 manifest（活跃 Goal 节点）──
         if node.is_goal and node.is_active:
