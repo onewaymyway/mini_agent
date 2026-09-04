@@ -158,6 +158,7 @@ streamlit run app.py
 | ⚙️ 配置 | 运行时配置字段编辑 |
 | 🔧 诊断 | `/diagnostics` 原始信息，便于排障 |
 | 🧪 混合执行 | 混合执行模式相关面板 |
+| 👤 账户管理 | 仅 `--require-login` 模式出现：修改自己的密码（所有登录用户可见）；账户列表 + 新增/重置密码/切换管理员/删除（仅管理员可见，见 `apps/mini_agent_kanban/README.md`"登录鉴权"节） |
 
 ### Tab 导航与按需渲染（`tab_lazy_render_plan.md`）
 
@@ -179,9 +180,12 @@ tab"（`render_tab_nav()`），点击某个按钮会把 `st.session_state["_acti
 - 没被选中的 tab 里挂着的 `@st.fragment(run_every=...)` 也不会被创建，
   切走之后原来挂载的 fragment 自然停止轮询。
 
-**唯一的 tab 清单来源是 `TAB_DEFS`**（`app.py` 里紧挨着 `main()` 定义）：
-一个 `(key, label, render_fn)` 三元组列表，新增/删除/重排 tab 只改这一
-处。默认停在 `"chat"`（💬 对话）。
+**唯一的 tab 清单来源是 `_BASE_TAB_DEFS` + `get_tab_defs(cli_args)`**（`app.py`
+里紧挨着 `main()` 定义）：`_BASE_TAB_DEFS` 是固定的 `(key, label, render_fn)`
+三元组列表，新增/删除/重排常驻 tab 只改这一处；`get_tab_defs(cli_args)` 在此
+基础上按 `cli_args.require_login` 决定要不要在末尾追加"👤 账户管理"这一项
+（`--require-login` 关闭时这个 tab 完全不出现，见上方 Tab 一览表）。默认停在
+`"chat"`（💬 对话）。
 
 **顶栏跳转**（"🔍 查看并控制"之类的按钮）现在只是一次普通的
 `st.session_state["_active_tab"] = "<目标 tab 的 key>"` 赋值加

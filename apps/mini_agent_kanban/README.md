@@ -119,23 +119,48 @@ session 存储目录，以及待审批权限请求 / 待回答交互请求（点
 
 ### 创建 / 管理账户
 
-看板 UI 里没有"注册"功能，账户必须由管理员在服务器上用命令行工具创建：
+看板 UI 本身没有"自助注册"功能——账户创建永远需要已有管理员身份，但账户的
+增删改查现在有两条路径，二选一或搭配用都行：
+
+**1. 命令行**（部署时创建第一个管理员账户用这条，因为页面兜底需要"没有任何
+管理员"这个前提，命令行是最直接的路径）：
 
 ```bash
 cd apps/mini_agent_kanban
 
-# 新增账户（交互式输入两遍密码，不回显；密码至少 6 位）
-python manage_users.py add alice --users-file "E:\codes\mini_claude_code\.agent\kanban_users.json"
+# 新增账户，--admin 把它设为管理员（交互式输入两遍密码，不回显；密码至少 6 位）
+python manage_users.py add alice --admin --users-file "E:\codes\mini_claude_code\.agent\kanban_users.json"
 
-# 删除账户
+# 删除账户（不能删除最后一个管理员）
 python manage_users.py remove alice --users-file "E:\codes\mini_claude_code\.agent\kanban_users.json"
 
-# 列出所有账户（只列用户名，不显示密码）
+# 列出所有账户（管理员账户带 [admin] 标记，不显示密码）
 python manage_users.py list --users-file "E:\codes\mini_claude_code\.agent\kanban_users.json"
+
+# 把已有账户设为 / 取消管理员（不能取消最后一个管理员）
+python manage_users.py set-admin alice --users-file "E:\codes\mini_claude_code\.agent\kanban_users.json"
+python manage_users.py unset-admin alice --users-file "E:\codes\mini_claude_code\.agent\kanban_users.json"
 ```
 
 `--users-file` 需要和启动 `app.py` 时传的保持一致（或者都不传，两边都会落到
 `<项目根目录>/.agent/kanban_users.json`）。
+
+**2. 页面**：登录后顶部会出现"👤 账户管理" tab（仅 `--require-login` 模式
+出现），不用再登服务器敲命令：
+
+- 所有登录用户都能看到"🔑 修改我的密码"（需要输入当前密码验证）
+- 只有管理员账户能看到"📋 账户列表"（新增账户、重置他人密码、切换管理员
+  身份、删除账户）；非管理员账户点进这个 tab 只会看到"仅管理员可访问"的提示
+- 有一个例外：如果账户文件里**一个管理员都没有**（比如账户是升级前用旧版
+  `manage_users.py`/旧版 UI 建的，没有 `is_admin` 概念），账户管理对**所有
+  登录用户**开放，直到有人被设为管理员为止，避免升级后没人能管理账户的死锁；
+  一旦有了第一个管理员，这个兜底立刻失效，恢复"只有管理员可见"
+- 无论哪条路径，"最后一个管理员"都不能被删除或取消管理员身份——防止不小心
+  把所有人锁在账户管理门外，只能回服务器敲命令补救
+
+账户记录里的 `is_admin` 字段是后加的：旧版本创建的账户文件不需要手动迁移，
+读取时按 `is_admin=False` 处理，下次被命令行或页面改一次密码/权限之后才会
+补上这个字段。
 
 ### 免登录持久化
 

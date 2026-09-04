@@ -28,6 +28,11 @@
       `manage_users.py add/set-admin/unset-admin/list` 手动验证行为
       符合预期（含"最后一个管理员不能被取消"保护）；`app.py`/`auth.py`/
       `manage_users.py` 均通过 `py_compile` 语法检查。
+- [x] 文档同步：`apps/mini_agent_kanban/README.md`"登录鉴权 → 创建 /
+      管理账户"节改为命令行 + 页面两条路径并列说明；
+      `docs/kanban-dashboard-guide.md`"功能 Tab 一览"表补上
+      "👤 账户管理"行，"Tab 导航与按需渲染"节把 `TAB_DEFS` 的描述更新为
+      `_BASE_TAB_DEFS` + `get_tab_defs(cli_args)`。
 
 
 ## 背景
