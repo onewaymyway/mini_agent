@@ -196,4 +196,4 @@ external_projects/stock_watch/reports/
 .agent/initiative_push_budget_state.json
 .agent/kanban_session_secret
 .agent/kanban_users.json
-.claude/skills/browser-site-scraper/members/boaoai/meta.json
+.agent/kanban_sessions.json
