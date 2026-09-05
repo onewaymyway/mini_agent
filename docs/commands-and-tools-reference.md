@@ -220,6 +220,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 |------|------|
 | `ask_image` | 图片信息提取与问答（**不要**用 Read 工具直接读图片文件） |
 | `gen_image_with_text` | 文本生成图片（支持 text-to-image 和 image-to-image 编辑） |
+| `gen_video_with_text` | 文本/首尾帧/参考图片或音频生成视频（Agnes Video 2.5 Flash） |
 | `agent-generator` | 创建符合 mini_agent 规范的自定义子 agent |
 | `skill-generator` | 创建符合 mini_agent 规范的新 SKILL.md 技能文件 |
 | `iching_oracle` | 易经智慧顾问，提供人生决策指导 |

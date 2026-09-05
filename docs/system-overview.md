@@ -255,6 +255,7 @@ system prompt 构建顺序：
 |------|------|
 | `ask_image` | 图片信息提取与问答 |
 | `gen_image_with_text` | 文本生成图片（text-to-image / image-to-image） |
+| `gen_video_with_text` | 文本/首尾帧/参考图片或音频生成视频（Agnes Video 2.5 Flash） |
 | `agent-generator` | 创建自定义子 agent |
 | `skill-generator` | 创建新 SKILL.md 技能文件 |
 | `iching_oracle` | 易经智慧顾问 |

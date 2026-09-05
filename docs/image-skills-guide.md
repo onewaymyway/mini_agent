@@ -1,6 +1,6 @@
-# 图片技能使用指南
+# 图片/视频技能使用指南
 
-本文档说明 mini-agent 中处理图片相关的两个核心技能：`ask_image`（图片识别）和 `gen_image_with_text`（图片生成）。
+本文档说明 mini-agent 中处理图片、视频相关的三个核心技能：`ask_image`（图片识别）、`gen_image_with_text`（图片生成）和 `gen_video_with_text`（视频生成）。
 
 ---
 
@@ -142,7 +142,108 @@ export AGNES_API_KEY="sk-your-api-key-here"
 
 ---
 
-## 三、技能激活与管理
+## 三、gen_video_with_text - 文本生成视频
+
+### 功能说明
+
+该技能基于 **Agnes Video 2.5 Flash**（`agnes-video-2.5-flash`）模型，根据文本描述、首尾帧或参考图片/音频生成视频，支持三种模式：
+- **text**：纯文本生成视频（文生视频）
+- **keyframe**：首帧、尾帧或首尾帧控制生成
+- **reference**：基于参考图片和/或参考音频生成
+
+与图片生成不同，视频生成是**异步任务**：先创建任务拿到 `video_id`，再轮询查询状态直到 `completed` 或 `failed`。`gen_video.py` 已封装好创建 + 轮询 + 自动下载的完整流程，调用方无需自己写轮询逻辑。
+
+### API 密钥配置
+
+与 `gen_image_with_text` 共用同一套 `AGNES_API_KEY` 配置方式：
+
+**Windows PowerShell（当前会话）**：
+```powershell
+$env:AGNES_API_KEY="sk-your-api-key-here"
+```
+
+**Windows Bash / Git Bash**：
+```bash
+export AGNES_API_KEY="sk-your-api-key-here"
+```
+
+**永久设置（Windows）**：
+1. 右键"此电脑" → 属性 → 高级系统设置 → 环境变量
+2. 用户变量 → 新建 → 变量名：`AGNES_API_KEY`，变量值：你的 API Key
+3. 重启终端生效
+
+### 使用方法
+
+当你需要生成视频时，直接描述你想要的内容：
+
+```
+生成一段雨后未来城市街道的视频，霓虹灯倒映在地面，一辆银色跑车缓慢驶过，电影级运镜
+```
+
+首尾帧控制：
+
+```
+根据这两张图片生成首尾帧过渡视频：first.png 到 last.png，人物自然转身走向窗边
+```
+
+图片/音频参考：
+
+```
+参考这张角色图片，生成角色在花田中奔跑的视频：character.png
+```
+
+### 参数选项
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `mode` | `text` / `keyframe` / `reference`（必填） | - |
+| `prompt` | 视频描述文本（必填，与 `--prompt-file` 二选一） | - |
+| `--seconds` | 视频时长，字符串 `"4"`–`"12"` | `"5"` |
+| `--size` | 视频分辨率，Flash 仅支持 `"720P"` | `"720P"` |
+| `--aspect-ratio` | 画幅：`21:9`/`16:9`/`4:3`/`1:1`/`3:4`/`9:16` | `"16:9"` |
+| `--first-frame` / `--last-frame` | 首帧/尾帧图片 URL（`keyframe` 模式） | - |
+| `--images` | 参考图片 URL 列表，最多 5 张（`reference` 模式） | - |
+| `--audios` | 参考音频 URL 列表，最多 3 段（`reference` 模式） | - |
+| `--save-path` | 保存视频的路径 | 不保存 |
+
+### 三种模式的媒体字段互斥
+
+| `mode` | 必需媒体 | 不允许的媒体字段 |
+|--------|----------|------------------|
+| `text` | 无 | `first_frame`、`last_frame`、`images`、`audios` |
+| `keyframe` | `first_frame`/`last_frame` 至少一个 | `images`、`audios` |
+| `reference` | `images`/`audios` 至少一类非空 | `first_frame`、`last_frame` |
+
+Flash 专属限制：`size` 固定 `"720P"`；`images` 最多 5 张；`audios` 最多 3 段；不支持 `videos` 参考输入。`gen_video.py` 在发起请求前会本地校验这些限制，避免产生不必要的失败任务。
+
+### 示例场景
+
+**文生视频**：
+```
+生成一段夜晚森林中三只猫组成微型铜管乐队向前行进的视频，镜头平稳后退，月光穿过树叶
+```
+
+**首尾帧过渡**：
+```
+用这两张图做首尾帧，生成人物转身走向窗边的过渡视频：first.png -> last.png
+```
+
+**图片参考生成**（保持角色一致性）：
+```
+参考这张角色图，生成角色在花田中自然奔跑的视频，保持外观一致：character.png
+```
+
+### 提示
+
+1. **异步等待**：视频生成通常比图片耗时更长，`generate_video()` 默认最长等待 1800 秒，中途会每 2 秒轮询一次
+2. **英文 Prompt**：英文描述通常能获得更准确的生成结果
+3. **素材可访问性**：`keyframe`/`reference` 模式用到的图片/音频 URL 必须公开可访问，且在任务完成前保持有效
+4. **参考素材指代**：`reference` 模式下可在 prompt 中用 `<Picture N>`、`<Audio N>` 指代第 N 个 `images`/`audios` 素材
+5. **计费**：当前 Agnes Video 2.5 Flash 限时免费，具体以官方公告为准
+
+---
+
+## 四、技能激活与管理
 
 ### 查看图片相关技能状态
 
@@ -150,6 +251,7 @@ export AGNES_API_KEY="sk-your-api-key-here"
 /skills                              # 列出所有技能及状态
 /skill info ask_image                # 查看图片识别技能详情
 /skill info gen_image_with_text      # 查看图片生成技能详情
+/skill info gen_video_with_text      # 查看视频生成技能详情
 ```
 
 ### 手动激活技能
@@ -157,6 +259,7 @@ export AGNES_API_KEY="sk-your-api-key-here"
 ```bash
 /skill on ask_image                  # 激活图片识别技能
 /skill on gen_image_with_text        # 激活图片生成技能
+/skill on gen_video_with_text        # 激活视频生成技能
 ```
 
 ### 技能触发词
@@ -167,10 +270,11 @@ export AGNES_API_KEY="sk-your-api-key-here"
 |------|--------|
 | `ask_image` | 图片，读图，图片信息提取，ask_image，图 |
 | `gen_image_with_text` | 图片生成，生成图 |
+| `gen_video_with_text` | 视频生成，生成视频，gen_video，文生视频，首尾帧，keyframe，reference |
 
 ---
 
-## 四、与其他工具的配合
+## 五、与其他工具的配合
 
 ### 保存生成的图片
 
@@ -193,9 +297,16 @@ export AGNES_API_KEY="sk-your-api-key-here"
 帮我看看刚生成的这张图片效果如何：E:/output/cat.png
 ```
 
+### 保存生成的视频
+
+```bash
+# 生成并保存到指定路径
+生成一段星空延时的视频，保存到 E:/output/starry_night.mp4
+```
+
 ---
 
-## 五、技术实现说明
+## 六、技术实现说明
 
 ### ask_image 实现
 
@@ -209,18 +320,26 @@ export AGNES_API_KEY="sk-your-api-key-here"
 - 功能：`AgnesImageClient` 类封装 Agnes Image API 调用
 - 调用方式：`Bash` 工具执行 `gen_image.py` 脚本
 
+### gen_video_with_text 实现
+
+- 核心文件：`.claude/skills/gen_video_with_text/agnes_tools.py`
+- 功能：`AgnesVideoClient` 类封装 Agnes Video 2.5 Flash 异步任务接口（创建任务 `POST /v1/videos` + 轮询查询 `GET /agnesapi` + 下载保存）
+- 调用方式：`Bash` 工具执行 `gen_video.py` 脚本，或直接调用 `gen_video()`/`AgnesVideoClient.generate_video()`
+
 ---
 
-## 六、故障排查
+## 七、故障排查
 
 | 问题 | 可能原因 | 解决方案 |
 |------|----------|----------|
 | `UnicodeEncodeError` | Windows 编码问题 | 设置 `chcp 65001` 或忽略 |
 | `InsecureRequestWarning` | SSL 验证警告 | 可安全忽略 |
 | 图片生成失败 | API Key 无效 | 检查 `AGNES_API_KEY` 环境变量 |
+| 视频生成失败 | API Key 无效或参数超出 Flash 限制 | 检查 `AGNES_API_KEY`；确认 `size=720P`、`images`≤5、`audios`≤3 |
+| 视频生成超时 | 任务耗时超过 `max_wait_seconds`（默认 1800 秒） | 稍后用同一 `video_id` 手动查询，或调大超时时间 |
 | 读图返回空结果 | 使用了 read_file | 改用 `ask_image` 技能 |
 | 路径解析错误 | 使用了相对路径 | 改用绝对路径 |
 
 ---
 
-*最后更新：2026-06*
+*最后更新：2026-09*
