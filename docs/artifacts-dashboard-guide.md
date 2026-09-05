@@ -167,6 +167,42 @@ Kanban 看板（`apps/mini_agent_kanban/app.py`）新增「🖼️ 产出预览�
 
 详见 [Kanban 看板使用指南](kanban-dashboard-guide.md) 的"🖼️ 产出预览 Tab"一节。
 
+**「💬 对话」Tab 里也能直接看/下载**：`render_chat_tab` 新增了共用函数
+`_render_session_artifacts_block`（`app.py`），在两处渲染当前 session 的
+产出物列表——① 对话消息流末尾内联展示（新增条目默认展开）；② 右侧栏
+"事件流"上方的独立"📦 本次对话产出物"面板（始终可展开，不需要等新条目
+或滚动对话）。两处都复用 §5 提到的 `_render_artifact_file` 做单文件预览/
+下载，无需跳转到「产出预览」Tab。详见
+[Kanban 看板使用指南](kanban-dashboard-guide.md) 的"💬 对话 Tab"一节。
+
+## 5.1 新版看板（React，`mini_agent_kanban_x`）：对话页内联 + 独立面板
+
+新版 React 看板的「💬 对话」页（`apps/mini_agent_kanban_x/src/pages/Chat/index.tsx`）
+把产出物直接接入了对话本身，不需要跳到「产出物」全局浏览页：
+
+- **对话流内联**：消息列表末尾（滚动区域底部，输入框上方）展示
+  「📦 本次会话产出物」，随最新一条消息一起可见——一轮工具调用结束
+  （`turn_end`）后会自动 invalidate 对应 query 并刷新。
+- **独立面板**：右侧栏「事件流」上方新增「📦 本次对话产出物」卡片，
+  始终列出当前 session 的全部产出物，不随聊天区域滚动，可以在阅读
+  消息的同时随时展开查看。
+- 两处复用同一个组件 `components/ChatArtifactsPanel.tsx`：先拉
+  `GET /v1/artifacts?session_id=xxx` 的摘要列表（`useArtifactsList`），
+  点开某一条才用 `useArtifactDetail` 懒加载该 manifest 的文件明细，
+  避免打开对话页时对着每条产出都发一次详情请求。
+- 文件预览/下载逻辑抽成 `components/ArtifactPreview.tsx`（`ArtifactFileRow`
+  等），与「产出物」全局浏览页（`pages/Artifacts/index.tsx`）共用同一套
+  渲染规则：`image` 内联缩略图 + 下载原图链接，其它类型给"下载 / 查看"
+  链接。
+
+> **顺带修复**：`pages/Artifacts/index.tsx` 之前假设列表接口返回
+> `{manifests: [...]}`、文件对象有 `name` 字段——但后端 `GET /v1/artifacts`
+> 实际返回 `{items: [...], count}`（摘要用 `title`/`file_count`/`types`，
+> 见 `storage/artifacts.py::ArtifactManifest.to_summary()`），文件对象
+> 也只有 `path`/`title`/`type` 没有 `name`。这次一并改正了 `api/types.ts`
+> 里的 `ArtifactManifest`/`ArtifactsListResponse` 类型定义和该页面的渲染
+> 逻辑。
+
 ## 6. 后续可扩展方向（未实现）
 
 - `PostToolUse` 用户级 hooks（`hooks.md` 描述的外部 shell 钩子）里也调用一次
@@ -183,4 +219,4 @@ Kanban 看板（`apps/mini_agent_kanban/app.py`）新增「🖼️ 产出预览�
 
 ---
 
-*最后更新：2026-07-06*
+*最后更新：2026-09*

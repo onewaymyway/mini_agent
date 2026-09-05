@@ -218,6 +218,25 @@ class 的特性，`apps/mini_agent_kanban/requirements.txt` 里 Streamlit 最低
 `permission_done` / `turn_start` / `turn_done` / `error` / `token`），与
 Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
 
+**产出物：对话流内联 + 独立面板**
+
+对话 Tab 里能直接查看/下载本次会话产出的图片、文档等文件，不需要切到
+「🖼️ 产出预览」Tab 来回找：
+
+- **对话流内联**：消息列表末尾会出现"📦 本次会话产出物"，相比上次渲染
+  新出现的条目默认展开，其余折叠；本轮新增的产出物完成后会自动带出。
+- **右侧独立面板**：事件流上方新增"📦 本次对话产出物"小节，始终列出
+  当前 session 的全部产出物，不需要滚动对话或等新条目出现即可随时展开
+  预览/下载，没有产出物时会给出提示而不是留空。
+
+两处渲染逻辑共用同一个函数 `_render_session_artifacts_block`（`app.py`），
+按 `key_prefix` 区分"已读新增计数"和 expander 的 widget key，避免相互
+覆盖或 `DuplicateWidgetID`。单个产出文件的预览/下载复用
+`_render_artifact_file`：图片走 `st.image()` 内联展示，PDF 提供"新标签页
+打开预览"链接，code/text 走 `st.code()` 内联预览，document 类给下载按钮——
+和「🖼️ 产出预览」Tab（详见下方"🖼️ 产出预览 Tab"一节）用的是同一套渲染
+函数，两处保持一致。
+
 ### 🗂️ 会话管理 Tab
 
 会话列表支持分页（见下方"大数据量下的分页显示"），每个 session 卡片新增

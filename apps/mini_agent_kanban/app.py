@@ -2179,6 +2179,74 @@ def _render_chat_session_info(status: dict) -> None:
     st.caption(f"📁 {session_dir}")
 
 
+def _render_session_artifacts_block(
+    client: AgentClient,
+    session_id: str,
+    *,
+    key_prefix: str,
+    limit: int = 20,
+    track_new: bool = True,
+    show_empty_message: bool = False,
+) -> None:
+    """渲染"当前 session 产出物列表"这一整块（标题 + 逐条 expander）。
+
+    抽出来给两处复用：
+    1. `_render_chat_messages_body` 里嵌在对话流末尾的内联展示（`track_new=True`，
+       相比上次渲染新出现的条目默认展开；`show_empty_message=False`，没有产出物
+       时保持沉默，不在对话流里凭空多一行）；
+    2. `render_chat_tab` 右侧栏新增的"📦 本次对话产出物"独立面板
+       （`track_new=False`，不需要"新增"高亮，用户随时能在不滚动对话的情况下
+       打开查看；`show_empty_message=True`，这是个独立小节，没有产出物时也要
+       给个提示，不能留空白让人以为没加载出来）。
+
+    两处必须用不同的 `key_prefix`，否则"已读计数"这个 session_state 会被
+    两个位置的渲染互相覆盖，导致"新增"角标忽隐忽现；expander 的 `key` 同理，
+    避免两处渲染同一个 manifest 时 Streamlit 报 DuplicateWidgetID。
+    """
+    cur_status = client.status(session_id=session_id) or {}
+    cur_session_id = cur_status.get("session_id")
+    if not cur_session_id:
+        return
+
+    art_resp = client.list_artifacts(session_id=cur_session_id, limit=limit) or {}
+    art_items = art_resp.get("items", []) if "_error" not in art_resp else []
+    if not art_items:
+        if show_empty_message:
+            st.caption("暂无产出物。任务/工具调用产出图片、文档等文件后会自动出现在这里。")
+        return
+
+    new_n = 0
+    if track_new:
+        seen_key = f"artifacts_seen_count_{key_prefix}_{cur_session_id}"
+        prev_seen = st.session_state.get(seen_key, 0)
+        new_n = max(len(art_items) - prev_seen, 0)
+
+    st.markdown(
+        f'<div style="margin:8px 0 4px;font-size:13px;color:#888;">'
+        f'📦 本次会话产出物（{len(art_items)} 项{"，" + str(new_n) + " 项为新增" if new_n else ""}）</div>',
+        unsafe_allow_html=True,
+    )
+    for i, item in enumerate(art_items):
+        mid = item.get("manifest_id")
+        title = item.get("title", "未命名产出")
+        types_str = " ".join(ARTIFACT_TYPE_ICON.get(t, "📦") for t in item.get("types", []))
+        header = (f"{types_str} {title} · {item.get('created_at', '')[:19]} · "
+                  f"{item.get('file_count', 0)} 个文件")
+        with st.expander(header, expanded=(i < new_n), key=f"{key_prefix}_artifact_exp_{mid}"):
+            detail = client.get_artifact(mid, session_id=cur_session_id) or {}
+            if "_error" in detail:
+                st.error(detail["_error"])
+            else:
+                if detail.get("description"):
+                    st.markdown(f"> {detail['description']}")
+                for idx, f in enumerate(detail.get("files", [])):
+                    _render_artifact_file(client, mid, cur_session_id, idx, f)
+                    st.divider()
+
+    if track_new:
+        st.session_state[seen_key] = len(art_items)
+
+
 def render_chat_tab(client: AgentClient, session_id: str = ""):
     col_chat, col_events = st.columns([2, 1])
 
@@ -2285,6 +2353,11 @@ def render_chat_tab(client: AgentClient, session_id: str = ""):
                         st.caption(_event_text(e))
 
     with col_events:
+        st.markdown("#### 📦 本次对话产出物")
+        st.caption("当前 session 已登记的产出物（图片/文档等），无需滚动对话或切到"
+                    "「产出预览」Tab，随时展开预览/下载。")
+        _render_session_artifacts_block(client, session_id, key_prefix="panel", track_new=False, show_empty_message=True)
+
         st.markdown("#### 📡 事件流")
         _render_events_panel(client, session_id)
 
@@ -2370,40 +2443,10 @@ def _render_chat_messages_body(client: AgentClient, session_id: str = "") -> str
                 st.markdown(f'<div class="msg-tool">{body}</div>', unsafe_allow_html=True)
 
     # 产出物内联展示：把当前 session 已登记的产出物（图片/文档等）直接
-    # 嵌在对话流里，不用切去"产出预览" Tab 来回找。按 created_at 倒序
-    # （最新在前），本次渲染相比上次新出现的条目默认展开，其余折叠，
-    # 避免每次刷新都是一整屏都展开的产出物淹没对话内容。
-    cur_status = client.status(session_id=session_id) or {}
-    cur_session_id = cur_status.get("session_id")
-    if cur_session_id:
-        art_resp = client.list_artifacts(session_id=cur_session_id, limit=20) or {}
-        art_items = art_resp.get("items", []) if "_error" not in art_resp else []
-        if art_items:
-            seen_key = f"artifacts_seen_count_{cur_session_id}"
-            prev_seen = st.session_state.get(seen_key, 0)
-            new_n = max(len(art_items) - prev_seen, 0)
-            st.markdown(
-                f'<div style="margin:8px 0 4px;font-size:13px;color:#888;">'
-                f'📦 本次会话产出物（{len(art_items)} 项{"，" + str(new_n) + " 项为新增" if new_n else ""}）</div>',
-                unsafe_allow_html=True,
-            )
-            for i, item in enumerate(art_items):
-                mid = item.get("manifest_id")
-                title = item.get("title", "未命名产出")
-                types_str = " ".join(ARTIFACT_TYPE_ICON.get(t, "📦") for t in item.get("types", []))
-                header = (f"{types_str} {title} · {item.get('created_at', '')[:19]} · "
-                          f"{item.get('file_count', 0)} 个文件")
-                with st.expander(header, expanded=(i < new_n)):
-                    detail = client.get_artifact(mid, session_id=cur_session_id) or {}
-                    if "_error" in detail:
-                        st.error(detail["_error"])
-                    else:
-                        if detail.get("description"):
-                            st.markdown(f"> {detail['description']}")
-                        for idx, f in enumerate(detail.get("files", [])):
-                            _render_artifact_file(client, mid, cur_session_id, idx, f)
-                            st.divider()
-            st.session_state[seen_key] = len(art_items)
+    # 嵌在对话流里，不用切去"产出预览" Tab 来回找。渲染逻辑见
+    # `_render_session_artifacts_block`——右侧栏"📦 本次对话产出物"独立面板
+    # 用的是同一份逻辑（`key_prefix` 不同，互不干扰）。
+    _render_session_artifacts_block(client, session_id, key_prefix="chatflow", track_new=True)
 
     # 滚动锚点：每次渲染后用下面注入的 JS 把它滚到可视区域，从而把整个
     # 固定高度容器滚到底部，实现"自动滚动到最新消息"。
