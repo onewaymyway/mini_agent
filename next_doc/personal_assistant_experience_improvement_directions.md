@@ -1,8 +1,9 @@
 # 个人助手体验改进方向盘点（目标树 / 成长顾问 / 能力学习 / 通知）
 
-- **版本**: v1.1——优先级表中的**方向 1（IM webhook 通知渠道）、
-  方向 2（profile 接入 situational_relevance）已实施**，详见文末
-  "实施记录"；方向 3（三个已知收尾项）、方向 4（开放问题）尚未实施。
+- **版本**: v1.2——方向 1（IM webhook 通知渠道）、方向 2（profile
+  接入 situational_relevance）、第 4 节开放问题（跨系统"不感兴趣"
+  信号，只读标注版本）已实施，详见文末"实施记录"；方向 3（三个已知
+  收尾项）尚未实施。
 - **背景**: 用户要求跳出单点 bug 修复，围绕"目标树、成长顾问、能力
   学习"等主动性子系统，思考还有哪些方向能让整体更好地服务用户、更像
   一个真正的个人助手。
@@ -108,13 +109,13 @@ Agent 在主动帮他做事"的一环——本次反馈的起点（画像看板 
 
 ## 4. 值得关注但暂不建议现在做的方向（开放问题，先记录）
 
-- **跨系统的"不感兴趣"信号共享**：growth_advisor 有自己的类别级
-  dismiss 冷却机制，capability_learning 也有自己独立的 dismiss
-  status，但两边的"类别"分类体系（一个是面向用户成长方向、一个是
-  面向 Agent 知识大纲）语义不同，贸然打通可能会把"用户不想让 Agent
-  学某个知识"错误地映射成"用户对某个成长方向不感兴趣"，两者未必是
-  同一件事。这条先记录为开放问题，不建议直接动手——除非观察到具体的
-  "同一类建议被两条线反复推给用户"的真实案例。
+- **跨系统的"不感兴趣"信号共享**——**已实施（只读标注版本，见文末
+  实施记录）**。原本的顾虑（growth_advisor 面向用户成长、
+  capability_learning 面向 Agent 知识，两边"不感兴趣"语义不完全
+  等价，贸然合并可能错误压低有效候选）通过"只标注、不抑制"的方式
+  规避：不改变任何候选的 confidence/排序/生成逻辑，只在收件箱里
+  提示"这条候选跟另一个系统里被反复忽略过的某条历史候选很相似"，
+  是否要因此忽略仍然由用户自己判断。
 - **微信小程序完整落地**：`weixin_mini_agent_design.md` 方案本身完整，
   但是一整套独立工程（身份映射、斜杠指令路由、跨机部署），不建议
   跟本轮的"轻量 IM webhook 渠道"（第 1 节）混在一起——后者是"让通知
@@ -198,3 +199,63 @@ Agent 在主动帮他做事"的一环——本次反馈的起点（画像看板 
   一段完整叙述，不是"一条一条的事实清单"，直接整段参与 Jaccard 相似度
   计算容易因为文本过长、话题过杂而稀释信号，暂不处理，等有具体的
   "summary 里提到的内容排序不准"案例再评估要不要单独处理）。
+
+## 实施记录（跨系统"不感兴趣"信号——只读标注版本）
+
+用户已明确要求推进第 4 节里原本标记为"暂不建议"的开放问题。原本的
+顾虑（growth_advisor 面向用户成长、capability_learning 面向 Agent
+知识，两边"不感兴趣"语义不完全等价，贸然合并可能错误压低有效候选）
+通过"只标注、不抑制"的方式规避。
+
+- 新增 `src/mini_agent/perception/cross_system_dismiss_signal.py`：
+  - `load_cross_system_dismiss_signals(paths, min_count=2)`：聚合
+    `GrowthBacklog` 里 `status="dismissed"` 的候选（按
+    `dedupe_key()` 归一化计数）和 `CapabilityOutlineSuggestionStore`
+    里 `status="dismissed"` 的建议（按 `normalize_title_key()`
+    归一化计数），只保留达到 `min_count` 次的标题——单次 dismiss
+    可能只是"这次报告质量不好"，不代表方向层面不感兴趣（呼应
+    growth_advisor 自己已有的"报告质量差单独计数"设计）。
+  - `find_cross_system_match(text, own_system, signals,
+    min_similarity=0.5)`：复用 `situational_relevance.py` 已经验证
+    过的字符级 bigram + Jaccard 算法（直接导入 `_tokens`/`_jaccard`，
+    不重新实现），**只匹配跟 `own_system` 不同来源**的信号——同系统
+    内部的 dismiss 冷却已经在各自模块里正常工作，这里刻意不重复。
+  - `min_similarity` 默认 0.5，比 `situational_relevance` 的处境
+    相关度更保守——那边是排序参考，这边是提醒用户，误报的打扰成本
+    更高，宁可漏标不错标。
+- `src/mini_agent/perception/initiative_inbox.py`：`InitiativeItem`
+  新增 `cross_dismiss_similarity`/`cross_dismiss_source_title`/
+  `cross_dismiss_source_system` 三个可选字段（默认 `None`，同
+  `situational_relevance` 字段一样只在有值时才出现在 `to_dict()`
+  输出里，向后兼容旧调用方）；`initiative_inbox_snapshot()` 新增
+  `annotate_cross_dismiss` 参数（默认 `True`），行为约定跟已有的
+  `annotate_relevance` 完全一致（异常降级为不标注、传 `False` 跳过
+  读取、不改变 `items` 排序）。
+- **关键设计取舍**：这是**标注层**，不是**过滤/抑制层**——候选照常
+  生成、照常展示、照常参与已有的 confidence/排序计算，唯一的变化是
+  多了三个展示字段。用户在看板上看到"跟你之前忽略过的《XX》很像"这行
+  提示后，自己决定要不要因此忽略，Agent 不替用户下这个判断——这是为了
+  规避方案原文提出的风险（两个系统的"不感兴趣"语义不完全等价）而做的
+  刻意保守设计，不是实现上偷懒。
+
+### 验证
+
+新增 `tests/test_cross_system_dismiss_signal.py`（9 用例：空状态/
+单次 dismiss 不计入/达到 min_count 才计入/两个系统的信号来源分别
+正确聚合/`find_cross_system_match` 只匹配跨系统不匹配同系统/低于
+相似度阈值返回 None/收件箱集成——匹配项被正确标注、
+`annotate_cross_dismiss=False` 跳过标注、标注异常不影响收件箱其余
+展示）。连同此前两个方向的回归测试，累计 **69 个用例全部通过**。
+
+### 遗留/待观察
+
+- 目前只对比了 `GrowthBacklog`（候选标题）和
+  `CapabilityOutlineSuggestionStore`（大纲建议标题）两类历史 dismiss
+  记录，没有纳入 `CapabilityQuestionStore` 里被 dismiss 的问题
+  （`CapabilityQuestion.question` 是完整问句，不是"主题标题"，跟
+  候选标题的文本形态差异较大，直接拿来做 bigram 相似度可能噪音偏多，
+  暂不处理，等有需要再评估怎么从问句里提炼出可比较的主题词）。
+- `min_similarity=0.5`/`min_count=2` 是凭经验给的初始值，不是精确
+  调出来的——如果观察到误报（提示了但用户觉得完全不是一回事）或漏报
+  （明显该提示但没提示）比较多，可以调整这两个参数，不需要改动算法
+  结构本身。

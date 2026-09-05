@@ -62,6 +62,17 @@ class InitiativeItem:
     # 逻辑本身，也不影响 `items` 列表默认的按 `created_at` 排序。
     situational_relevance: Optional[float] = None
     situational_relevance_source: Optional[str] = None  # 最相关的处境信号标题，纯展示
+    # [next_doc/personal_assistant_experience_improvement_directions.md
+    # 第 4 节，跨系统"不感兴趣"信号] 这条候选的标题，跟"另一个系统"里
+    # 已经被反复 dismiss 过的历史候选有多相似，0~1，`None` 表示未计算
+    # 或未找到跨系统匹配。纯只读标注，**不影响**候选的 confidence/
+    # 排序/生成逻辑，也不自动隐藏或降权——是否要因此忽略这条候选，
+    # 交给用户自己判断（理由见 `cross_system_dismiss_signal.py` 模块
+    # 文档字符串：两个系统的"不感兴趣"语义不完全等价，不能替用户下
+    # 结论）。
+    cross_dismiss_similarity: Optional[float] = None
+    cross_dismiss_source_title: Optional[str] = None    # 命中的历史标题，纯展示
+    cross_dismiss_source_system: Optional[str] = None   # 命中标题所属的另一个系统
 
     def to_dict(self) -> dict:
         d = {
@@ -81,6 +92,10 @@ class InitiativeItem:
             d["situational_relevance"] = self.situational_relevance
             if self.situational_relevance_source:
                 d["situational_relevance_source"] = self.situational_relevance_source
+        if self.cross_dismiss_similarity is not None:
+            d["cross_dismiss_similarity"] = self.cross_dismiss_similarity
+            d["cross_dismiss_source_title"] = self.cross_dismiss_source_title
+            d["cross_dismiss_source_system"] = self.cross_dismiss_source_system
         return d
 
 
@@ -202,6 +217,7 @@ def _from_soft_goal_deriver(paths) -> list[InitiativeItem]:
 def initiative_inbox_snapshot(
     paths, *, domains: Optional[list[str]] = None, limit: int = 100,
     annotate_relevance: bool = True,
+    annotate_cross_dismiss: bool = True,
 ) -> dict[str, Any]:
     """聚合三条主动性管线（成长顾问 / 能力学习 / soft_goal_deriver）当前
     待用户处理的候选，按 `created_at` 倒序（最新在前）返回。
@@ -222,6 +238,15 @@ def initiative_inbox_snapshot(
     `situational_relevance` 模块导入异常）时整体降级为不标注，不影响
     收件箱本身的展示，同 §4.1 阶段一"单路异常不搞坏整个视图"的一贯
     容错风格。
+
+    `annotate_cross_dismiss`：[next_doc/personal_assistant_experience_
+    improvement_directions.md 第 4 节] 默认 `True`——给每一项附加
+    `cross_dismiss_similarity`/`cross_dismiss_source_title`/
+    `cross_dismiss_source_system`（见
+    `perception/cross_system_dismiss_signal.py`），只读标注、不改变
+    候选生成/排序，行为约定跟上面 `annotate_relevance` 完全一致
+    （异常降级为不标注、传 `False` 时不读取任何 dismiss 历史、旧调用
+    方不受影响）。
 
     任何异常都不向上抛出——单路失败返回空列表，见模块顶部说明。
     """
@@ -247,6 +272,22 @@ def initiative_inbox_snapshot(
                     score, best = sr.score_relevance(f"{it.title} {it.detail}", context)
                     it.situational_relevance = round(score, 4)
                     it.situational_relevance_source = best.title if best else None
+        except Exception:
+            pass
+
+    if annotate_cross_dismiss and items:
+        try:
+            from mini_agent.perception import cross_system_dismiss_signal as cds
+
+            signals = cds.load_cross_system_dismiss_signals(paths)
+            if signals:
+                for it in items:
+                    match = cds.find_cross_system_match(it.title, it.source_system, signals)
+                    if match is not None:
+                        score, sig = match
+                        it.cross_dismiss_similarity = round(score, 4)
+                        it.cross_dismiss_source_title = sig.text
+                        it.cross_dismiss_source_system = sig.source_system
         except Exception:
             pass
 
