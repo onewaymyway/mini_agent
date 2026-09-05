@@ -336,6 +336,19 @@ class AgentClient:
     def unpin_session(self, session_id: str):
         return self._post(f"/sessions/{session_id}/unpin")
 
+    # ── 用户画像偏好（profile.preferences） ──────────────────────────────
+    # [next_doc/profile_context_sources_completeness_plan.md 方向 D]
+    # 跟 CLI 的 `/profile set|unset|show` 是同一份数据、同一条写入路径
+    # （`UserProfileManager.set_preference()`），只是换了个入口。
+    def get_user_profile_preferences(self):
+        return self._get("/user_profile/preferences")
+
+    def set_user_profile_preference(self, key: str, value: str):
+        return self._post("/user_profile/preferences", json_body={"key": key, "value": value})
+
+    def delete_user_profile_preference(self, key: str):
+        return self._post("/user_profile/preferences/delete", json_body={"key": key})
+
     def cleanup_sessions(self, *, dry_run: bool = True, keep_recent_days: float = 30,
                           keep_recent_count: int = 20, extract_first: bool = False,
                           include_orphans: bool = False, orphan_min_age_hours: float = 6.0):

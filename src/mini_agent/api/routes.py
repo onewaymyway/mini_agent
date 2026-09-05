@@ -9881,6 +9881,97 @@ async def get_decision_profile(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/user_profile/preferences")
+async def get_user_profile_preferences(request: Request):
+    """GET /v1/user_profile/preferences — 读取 `profile.preferences`（用户
+    显式声明的偏好，见 `UserProfileManager.set_preference()`）。
+
+    [next_doc/profile_context_sources_completeness_plan.md 方向 D]
+    此前只有 CLI 的 `/profile set|unset|show` 能读写这份数据，看板一直
+    没有对应入口。这里补上只读端点，供看板"🌱 成长顾问"tab 在展示
+    "Agent 对你的了解"的同时，也能让用户直接查看/管理自己声明过的
+    偏好——跟 decision_profile 一样走"看板只读展示 + 少量显式动作"的
+    模式，不引入额外的自动判断逻辑。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.profile import UserProfileManager
+
+        profile = UserProfileManager(paths).load()
+        return {"preferences": dict(profile.preferences or {})}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# [下面两个 POST 端点的 body model 需要 pydantic BaseModel——这个模块里
+# 其它地方（`/growth/keywords/confirm` 等）后面才会 `from pydantic import
+# BaseModel as _BaseModel`，为了不依赖那处的定义顺序（也避免这两块各自
+# 独立演化时互相牵连），这里单独起一个别名。]
+from pydantic import BaseModel as _ProfilePrefBaseModel
+
+
+class _UserProfilePreferenceSetBody(_ProfilePrefBaseModel):
+    key: str
+    value: str
+
+
+@router.post("/user_profile/preferences")
+async def post_user_profile_preference_set(request: Request, body: _UserProfilePreferenceSetBody):
+    """POST /v1/user_profile/preferences — 新增/覆盖一条偏好，
+    body: {"key": str, "value": str}。跟 CLI 的 `/profile set` 是同一份
+    数据、同一条写入路径（`UserProfileManager.set_preference()`），两边
+    改了都会互相看到。"""
+    _require_owner(request)
+    key = body.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="key 不能为空")
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.profile import UserProfileManager
+
+        mgr = UserProfileManager(paths)
+        mgr.set_preference(key, body.value)
+        return {"ok": True, "key": key, "value": body.value}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class _UserProfilePreferenceDeleteBody(_ProfilePrefBaseModel):
+    key: str
+
+
+@router.post("/user_profile/preferences/delete")
+async def post_user_profile_preference_delete(request: Request, body: _UserProfilePreferenceDeleteBody):
+    """POST /v1/user_profile/preferences/delete — 删除一条偏好，
+    body: {"key": str}。用 POST + body 而不是 `DELETE /preferences/{key}`
+    路径参数——同 `/growth/keywords/{topic}/...` 曾经踩过的坑（见上方
+    BUGFIX 注释）：偏好的 key 是用户自由输入的文本，可能包含 `/` 等
+    URL 路径分隔符，放路径参数里容易在编码/解码环节出问题，body 不受
+    这个限制。"""
+    _require_owner(request)
+    key = body.key.strip()
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.profile import UserProfileManager
+
+        mgr = UserProfileManager(paths)
+        profile = mgr.load()
+        existed = key in profile.preferences
+        if existed:
+            del profile.preferences[key]
+            mgr.save()
+        return {"ok": True, "key": key, "existed": existed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── 成长顾问 Growth Advisor 看板端点 ────────────────────────────────────────
 # [next_doc/growth_advisor_design.md] P1 里程碑："看板 tab 上线"。
 # 与上面的 /notification/watchlist 系列一样走只读展示 + 少量显式动作

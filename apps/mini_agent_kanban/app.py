@@ -7128,6 +7128,51 @@ def _render_growth_profile_and_keywords(client: "AgentClient", diagnostics: dict
             if stale_habits:
                 st.caption("习惯：" + "、".join(stale_habits))
 
+    # [next_doc/profile_context_sources_completeness_plan.md 方向 D]
+    # profile.preferences 编辑区：此前只有 CLI 的 `/profile set|unset|
+    # show` 能读写这份数据，看板完全没有入口——跟上面"Agent 对你的了解"
+    # 是模型从记忆里"推断"出来的东西不同，这里是用户"明确声明"的偏好，
+    # 画像生成时会作为既定事实直接采信（见 profile.py::generate() 的
+    # preferences_block）。放在同一个区块下面，方便用户对照"agent 猜的"
+    # 和"我自己说的"两部分信息。
+    if client is not None:
+        with st.expander("✏️ 我的偏好设置（profile.preferences）"):
+            st.caption(
+                "这里设置的偏好会被画像生成直接采信，不需要等某次对话摘要"
+                "恰好提到才会被写进「Agent 对你的了解」。跟 CLI 的 "
+                "`/profile set/unset/show` 是同一份数据。"
+            )
+            prefs_resp = client.get_user_profile_preferences()
+            if isinstance(prefs_resp, dict) and prefs_resp.get("_error"):
+                st.info(f"偏好列表暂不可用：{prefs_resp['_error']}")
+            else:
+                prefs = (prefs_resp or {}).get("preferences") or {}
+                if not prefs:
+                    st.caption("尚未设置任何偏好。")
+                else:
+                    for pk, pv in prefs.items():
+                        pc1, pc2 = st.columns([5, 1])
+                        pc1.markdown(f"**{pk}**: {pv}")
+                        if pc2.button("🗑️", key=f"pref_del_{pk}", help=f"删除偏好 {pk}"):
+                            res = client.delete_user_profile_preference(pk)
+                            if isinstance(res, dict) and res.get("_error"):
+                                st.error(f"删除失败：{res['_error']}")
+                            else:
+                                st.rerun()
+
+                st.markdown("---")
+                with st.form(key="pref_add_form", clear_on_submit=True):
+                    fc1, fc2 = st.columns(2)
+                    new_key = fc1.text_input("键", placeholder="例如：回复风格")
+                    new_value = fc2.text_input("值", placeholder="例如：简洁、结构化，以 ## Goal 开头")
+                    if st.form_submit_button("➕ 添加/更新偏好") and new_key.strip():
+                        res = client.set_user_profile_preference(new_key.strip(), new_value)
+                        if isinstance(res, dict) and res.get("_error"):
+                            st.error(f"保存失败：{res['_error']}")
+                        else:
+                            st.success(f"已保存偏好 {new_key.strip()}")
+                            st.rerun()
+
     # [next_doc/memory_backfill_and_profile_update_plan.md M1 看板展示]
     # 记忆回填状态：还有多少存量 session 符合回填条件、系统内置回填
     # cron job 上一次/下一次运行时间——帮用户判断"记忆条目少"是不是因为

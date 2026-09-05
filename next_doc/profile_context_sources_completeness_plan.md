@@ -1,8 +1,8 @@
 # 用户画像"信息来源不够全"改进方案
 
-- **版本**: v2——方向 **A/B/C/D 均已实施**，详见文末"实施记录"一节；
-  只剩方向 E（架构性重构，纯重构不改变行为）按原计划留待后续需要时
-  再做。
+- **版本**: v3——方向 **A/B/C/D 均已实施**（方向 D 含 CLI + 看板双入口，
+  第五期已收尾），详见文末"实施记录"一节；只剩方向 E（架构性重构，
+  纯重构不改变行为）按原计划留待后续需要时再做。
 - **前置文档**:
   - `next_doc/profile_staleness_and_goal_tree_gap_plan.md`（已实施：
     画像刷新时间兜底 + 目标树接入画像，本文档是它的延续，处理"目标树
@@ -155,10 +155,8 @@ agent 自身知识沉淀的命名空间（避免稀释）。按 `updated`（缺�
 
 同步更新了 `ui/terminal.py` 里 `/help` 展示的 `/profile` 子命令列表。
 
-**已知限制**：这只打通了 CLI 侧的写入入口；看板（Streamlit
-`apps/mini_agent_kanban`）"⚙️ 配置"tab 目前还没有对应的可视化编辑区
-——本次判断 CLI 入口已经能解决"有能力用但没数据可用"这个核心问题，
-看板可视化编辑属于体验优化，不在本次范围内，需要时可以单独排期。
+**已知限制（第五期已解决，见下）**：这只打通了 CLI 侧的写入入口；看板
+（Streamlit `apps/mini_agent_kanban`）此前没有对应的可视化编辑区。
 
 ### 方向 E（架构性，未实施，暂不需要）：统一的 ProfileContextCollector
 
@@ -220,7 +218,7 @@ def _collect_context_blocks(paths, profile) -> str:
 - **第二期**（方向 D：preferences 写入入口）：
   - `cli/repl.py` 新增 `/profile set|unset|show` 三个子命令。
   - `ui/terminal.py` 的 `/help` 列表同步更新 `/profile` 子命令提示。
-  - 已知限制：仅 CLI 入口，看板可视化编辑未做（非本次必要范围）。
+  - 已知限制（第五期已解决）：当时仅 CLI 入口，看板可视化编辑未做。
 
 - **第三期**（方向 B：已完成目标快照）：
   - `perception/goal_tree_report.py::build_goal_tree_profile_snapshot()`
@@ -245,3 +243,24 @@ def _collect_context_blocks(paths, profile) -> str:
 显式偏好 + agent 自检测关注领域 + wiki 最近更新"共 8 类信息源，覆盖了
 本文档"现状核实"表格里除方向 E（架构重构，非信息源缺口）之外的全部
 已识别缺口。
+
+- **第五期**（方向 D 收尾：看板可视化编辑）：
+  - `api/routes.py` 新增三个端点：`GET /v1/user_profile/preferences`
+    （读取）、`POST /v1/user_profile/preferences`（新增/覆盖一条，
+    body `{"key","value"}`）、`POST /v1/user_profile/preferences/delete`
+    （删除一条，body `{"key"}`——沿用本文件 `/growth/keywords/{topic}/...`
+    历史 bug 的教训，key 走 body 不走路径参数，避免 `/` 等分隔符在
+    URL 编解码环节出问题）。三个端点内部都直接复用
+    `UserProfileManager`，跟 CLI 的 `/profile set/unset/show` 是同一份
+    数据、同一条写入路径，两边改了互相可见。
+  - `apps/mini_agent_kanban/client.py` 新增对应的
+    `get_user_profile_preferences()` / `set_user_profile_preference()`
+    / `delete_user_profile_preference()`。
+  - `apps/mini_agent_kanban/app.py` 在"🌱 成长顾问"tab 的"Agent 对你的
+    了解"区块下方新增"✏️ 我的偏好设置"可折叠编辑区：列出已有偏好
+    （每条带删除按钮）+ 一个新增/更新表单，跟"agent 从记忆里推断出的
+    画像"摆在同一处，方便对照"agent 猜的"和"我自己说的"。
+
+至此方向 D 的"已知限制"已解决，A/B/C/D 四个方向全部端到端完成
+（后端信息源接入 + 数据写入入口 + 看板可视化），只剩方向 E（架构性
+重构）按原计划留待后续需要时再做。
