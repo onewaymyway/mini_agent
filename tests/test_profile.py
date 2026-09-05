@@ -186,5 +186,94 @@ class TestIncrementalProfileUpdate(unittest.TestCase):
             self.assertEqual(tech_texts, ["新特征"])
 
 
+class _Cfg:
+    """[next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向一 A]
+    should_refresh() 只读这四个属性，用一个轻量假 cfg 代替完整
+    AppConfig，避免测试依赖整棵配置树。"""
+
+    def __init__(
+        self,
+        min_entries=1,
+        refresh_interval_entries=3,
+        force_refresh_after_days=14,
+    ):
+        self.profile_min_entries = min_entries
+        self.profile_refresh_interval_entries = refresh_interval_entries
+        self.profile_force_refresh_after_days = force_refresh_after_days
+
+
+class TestShouldRefreshTimeFallback(unittest.TestCase):
+    """[next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向一 A]
+    验证新增的时间兜底：增量不够门槛时，距上次刷新超过
+    force_refresh_after_days 天且期间有新记忆则强制刷新；没有新记忆则
+    仍然不刷新（刷新了也没有新信息可用）。"""
+
+    def test_no_new_entries_never_forces_refresh(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            mgr = UserProfileManager(paths)
+            profile = mgr.load()
+            profile.derived = {
+                "summary": "旧画像",
+                "source_entry_count": 5,
+                "updated_at": time.time() - 100 * 86400,  # 很久以前
+            }
+            mgr.save()
+
+            mgr2 = UserProfileManager(paths)
+            self.assertFalse(mgr2.should_refresh(5, _Cfg()))  # 没有新记忆
+
+    def test_stale_with_new_entries_forces_refresh_below_increment_threshold(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            mgr = UserProfileManager(paths)
+            profile = mgr.load()
+            profile.derived = {
+                "summary": "旧画像",
+                "source_entry_count": 5,
+                "updated_at": time.time() - 20 * 86400,  # 超过 14 天
+            }
+            mgr.save()
+
+            mgr2 = UserProfileManager(paths)
+            # 只新增 1 条，远低于 refresh_interval_entries=3，但时间超过
+            # force_refresh_after_days=14 应该强制刷新。
+            self.assertTrue(mgr2.should_refresh(6, _Cfg()))
+
+    def test_fresh_and_below_increment_threshold_does_not_refresh(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            mgr = UserProfileManager(paths)
+            profile = mgr.load()
+            profile.derived = {
+                "summary": "旧画像",
+                "source_entry_count": 5,
+                "updated_at": time.time() - 1 * 86400,  # 才过 1 天
+            }
+            mgr.save()
+
+            mgr2 = UserProfileManager(paths)
+            self.assertFalse(mgr2.should_refresh(6, _Cfg()))
+
+    def test_increment_threshold_still_works_without_time_fallback(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            mgr = UserProfileManager(paths)
+            profile = mgr.load()
+            profile.derived = {
+                "summary": "旧画像",
+                "source_entry_count": 5,
+                "updated_at": time.time(),
+            }
+            mgr.save()
+
+            mgr2 = UserProfileManager(paths)
+            self.assertTrue(mgr2.should_refresh(8, _Cfg()))  # +3 达到门槛
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -385,10 +385,28 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
             name="mini-agent-profile",
         ).start()
 
+    elif name == "profile" and len(parts) >= 2 and parts[1] == "scan":
+        # [next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向一 B]
+        # 跟无参数的 `/profile`（force=True，无条件刷新）不同，这里
+        # force=False——是否真的刷新仍由 should_refresh() 的增量/时间
+        # 兜底判断决定。用于挂在独立的周期性 cron job
+        # （`sys:profile_refresh_scan`）上，让画像刷新不再只依赖交互式
+        # 会话收尾这一条触发链路：只要记忆在缓慢累积、达到增量或时间
+        # 门槛，daemon/cron 自己跑这条也能把画像刷新驱动起来。
+        import threading
+        threading.Thread(
+            target=agent._maybe_refresh_profile,
+            kwargs={"force": False, "rebuild": False},
+            daemon=True,
+            name="mini-agent-profile-scan",
+        ).start()
+
     elif name == "profile":
         # [next_doc/memory_backfill_and_profile_update_plan.md 3.3 节]
         # 默认行为改为"立即刷新，走增量更新"（不丢弃已有画像）；
-        # 想从头重建请用 `/profile rebuild`。
+        # 想从头重建请用 `/profile rebuild`；想要"仅在门槛达到时才刷新"
+        # 请用 `/profile scan`（后者用于周期性 cron 挂载，见
+        # `sys:profile_refresh_scan`）。
         import threading
         threading.Thread(
             target=agent._maybe_refresh_profile,

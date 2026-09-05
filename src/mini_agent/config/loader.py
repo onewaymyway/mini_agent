@@ -574,6 +574,7 @@ def load_config(
             "min_entries": "profile_min_entries",
             "max_entries_for_profile": "profile_max_entries_for_profile",
             "stale_after_days": "profile_stale_after_days",
+            "force_refresh_after_days": "profile_force_refresh_after_days",
         },
     )
 

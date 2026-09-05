@@ -342,6 +342,15 @@ class CronJobExecutor:
                 self._maybe_backfill_memory(
                     job=job, run_id=run_id, last_text=last_text,
                 )
+            elif final_status != STATUS_IDLE and last_text.strip():
+                # [next_doc/profile_staleness_and_goal_tree_gap_plan.md
+                # 方向一 C] 未正常收尾的运行此前完全不产出记忆，导致这类
+                # 失败在 should_refresh() 的计数和成长顾问的信号扫描里都
+                # 完全没有留痕。这里补一条不调用 LLM 的降级记忆。
+                self._maybe_backfill_incomplete_memory(
+                    job=job, run_id=run_id, final_status=final_status,
+                    last_text=last_text,
+                )
             clear_current_cron_job_id()
 
         return RunOutcome(
@@ -414,6 +423,33 @@ class CronJobExecutor:
         except Exception as e:  # noqa: BLE001
             from mini_agent.errors import log_exception
             log_exception(e, where="mini_agent.evolution.cron_job_executor._maybe_backfill_memory")
+
+    def _maybe_backfill_incomplete_memory(
+        self, job: "CronJob", run_id: str, final_status: str, last_text: str,
+    ) -> None:
+        """[next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向一 C]
+        跟 `_maybe_backfill_memory()` 是同一条依赖检查（`memory_backend`
+        缺失即表示记忆功能未配置好，静默跳过），但不需要 `llm_client`
+        ——降级记忆不调用 LLM。同样整体异常兜底，不影响 `run_job()` 主
+        流程。
+        """
+        cfg = self.memory_backfill_cfg
+        if cfg is None or not getattr(cfg, "enabled", True):
+            return
+        if not getattr(cfg, "cron_run_backfill_enabled", True):
+            return
+        if self.memory_backend is None:
+            return
+        try:
+            from mini_agent.evolution.memory_backfill import backfill_incomplete_cron_run
+
+            backfill_incomplete_cron_run(
+                job.id, run_id, final_status, last_text,
+                memory_backend=self.memory_backend,
+            )
+        except Exception as e:  # noqa: BLE001
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.evolution.cron_job_executor._maybe_backfill_incomplete_memory")
 
 
 __all__ = ["CronJobExecutor", "StepResult", "RunOutcome"]

@@ -387,6 +387,25 @@ _BUILTIN_JOBS: list[dict] = [
         "enabled": True,
     },
     {
+        # [next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向一 B]
+        # 用户画像刷新此前只挂在交互式会话收尾（trigger_summary_and_profile）
+        # 这一条触发链路上——如果用户长期靠 daemon/cron 自主运行、极少开
+        # 交互式会话，即使 memory_backfill 持续在补记忆，画像也不会自动
+        # 跟着刷新。这里补一条独立的周期性检查：调用 `/profile scan`
+        # （force=False），是否真的触发 LLM 生成仍然完全由
+        # `UserProfileManager.should_refresh()` 的增量/时间兜底判断决定，
+        # 本 job 本身不产生任何强制开销。默认 enabled=True，与
+        # ProfileConfig.enabled 的默认值保持一致（opt-out），实际是否
+        # 运行由 cfg.profile.enabled 兜底跳过。
+        "id": "sys:profile_refresh_scan",
+        "name": "用户画像：周期性刷新检查",
+        "schedule": "interval:21600",
+        "description": "检查用户画像是否达到刷新门槛（增量条目数或强制刷新天数），达到则刷新，未达到则空跑（每 6 小时）",
+        "task_template": "[画像] 执行一次 /profile scan，按刷新门槛检查是否需要更新用户画像",
+        "tags": ["profile", "memory"],
+        "enabled": True,
+    },
+    {
         # [next_doc/persona_capability_learning_design.md §4] 能力学习/人设
         # 养成循环。task_template 引用 §4 提前实现的 `/capability cycle`
         # slash command 中间层（cli/commands/capability_cmd.py），不直接

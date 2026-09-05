@@ -6865,6 +6865,14 @@ def _render_growth_profile_and_keywords(client: "AgentClient", diagnostics: dict
             st.caption("习惯：" + "、".join(user_profile["habits"]))
         if user_profile.get("updated_at"):
             st.caption(f"更新时间：{time.strftime('%Y-%m-%d %H:%M', time.localtime(user_profile['updated_at']))}")
+            # [next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向三]
+            # 光有时间戳，用户得自己心算"这算不算太久"——直接给一个醒目
+            # 提示，阈值复用 profile.force_refresh_after_days（跟
+            # should_refresh() 的强制刷新判断口径一致，不是另起一套数字）。
+            age_days = (time.time() - user_profile["updated_at"]) / 86400.0
+            force_refresh_after_days = user_profile.get("force_refresh_after_days", 14)
+            if age_days > force_refresh_after_days:
+                st.warning(f"⚠️ 已 {age_days:.0f} 天未更新，可能滞后于近期进展")
         # [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md
         # 方向二] 展示当前检测到的用户常用语言，方便确认画像语言是否符合
         # 预期（检测结果由 profile.py::detect_primary_language 生成）。

@@ -1,6 +1,7 @@
 # 用户画像"更新滞后 + 目标树信息缺失"改进方案
 
-- **版本**: v1（草案，方向级 + 关键设计点级规划，尚未实施）
+- **版本**: v1——**第一期（方向一 A/B/C + 方向三）已实施**，详见文末
+  "实施记录"一节；第二期（方向二：目标树接入画像）尚未实施。
 - **前置文档**:
   - `next_doc/memory_backfill_and_profile_update_plan.md`（M1/M2 已完成——
     存量 session 回填；M3 已完成——cron 成功运行回填记忆，见下方"现状核实"）
@@ -172,4 +173,86 @@ if user_profile.get("updated_at"):
    现成的"轻量摘要"读取接口，没有的话先补这个接口，再接进
    `generate()`。
 
-以上待确认后再展开到可直接实现的代码级设计。
+---
+
+## 实施记录（第一期：方向一 A/B/C + 方向三）
+
+### 方向一 A：`should_refresh()` 时间兜底
+
+- `src/mini_agent/config/models.py`：`ProfileConfig` 新增
+  `force_refresh_after_days: int = 14`，并新增
+  `AppConfig.profile_force_refresh_after_days` 属性。
+- `src/mini_agent/config/loader.py`：`profile_cfg` 的 flat/nested 兼容
+  映射补上 `force_refresh_after_days` ↔ `profile_force_refresh_after_days`。
+- `src/mini_agent/profile.py`：`UserProfileManager.should_refresh()`
+  在原有"增量条目数达标"判断之外，新增"距上次刷新超过
+  `force_refresh_after_days` 天，且期间至少有 1 条新记忆"的强制刷新
+  分支；完全没有新记忆时不受影响（刷新了也没有新信息可用）。
+- 测试：`tests/test_profile.py::TestShouldRefreshTimeFallback`（4 个
+  用例：无新记忆不强制刷新 / 有新记忆且超时强制刷新 / 未超时不刷新 /
+  原有增量门槛判断不受影响）。
+
+### 方向一 B：刷新触发点从"仅交互式会话收尾"解耦
+
+- `src/mini_agent/cli/repl.py`：新增 `/profile scan` 子命令，调用
+  `agent._maybe_refresh_profile(force=False, rebuild=False)`——是否真的
+  刷新完全由 `should_refresh()` 判断，跟无参数的 `/profile`
+  （`force=True`，无条件刷新）区分开。
+- `src/mini_agent/evolution/cron_scheduler.py`：新增系统 cron job
+  `sys:profile_refresh_scan`（`interval:21600`，每 6 小时），
+  `task_template` 调用 `/profile scan`。默认 `enabled=True`，跟
+  `ProfileConfig.enabled` 的默认值一致（opt-out）。
+- 效果：即使用户长期不开交互式会话，只要 `memory_backfill` /
+  cron 记忆回填那条线在正常写记忆，画像也能在下一次
+  `sys:profile_refresh_scan` 运行时被动追上，不再完全依赖交互式会话
+  收尾这一条触发链路。
+
+### 方向一 C：未正常收尾的 cron 运行补一条降级记忆
+
+- `src/mini_agent/evolution/memory_backfill.py`：新增
+  `backfill_incomplete_cron_run()`——不调用 LLM，纯字符串拼接生成一条
+  `summary`（含 `final_status` 和最后 200 字进展），打
+  `["cron_incomplete", final_status]` 两个 tag，供下游（如
+  growth_advisor 信号扫描）按需过滤。
+- `src/mini_agent/evolution/cron_job_executor.py`：`run_job()` 收尾时，
+  `final_status != STATUS_IDLE` 且 `last_text` 非空的分支新增调用
+  `_maybe_backfill_incomplete_memory()`（新方法，依赖检查与现有
+  `_maybe_backfill_memory()` 一致，但不需要 `llm_client`）。
+- 测试：`tests/test_memory_backfill.py::TestBackfillIncompleteCronRun`
+  （2 个用例：写入降级记忆且 tag/内容正确 / 空文本不写入）。
+
+### 方向三：看板"距今 N 天未更新"提示
+
+- `src/mini_agent/evolution/growth_advisor.py`：
+  `user_profile_snapshot` 新增 `force_refresh_after_days` 字段（同
+  `stale_after_days` 的透出方式，取不到时退回 dataclass 默认值 14）。
+- `apps/mini_agent_kanban/app.py`：`_render_growth_profile_and_keywords`
+  在展示 `updated_at` 之后，若 `age_days > force_refresh_after_days`
+  则用 `st.warning()` 显式提示"已 N 天未更新，可能滞后于近期进展"，
+  阈值跟 `should_refresh()` 的时间兜底判断用同一个配置项。
+
+### 验证
+
+`tests/test_profile.py`、`tests/test_memory_backfill.py`、
+`tests/test_cron_job_workspace_and_executor.py`、
+`tests/test_cron_job_executor_step_detail.py`、
+`tests/test_cron_scheduler_priority.py`、
+`tests/test_flat_nested_config_compat.py`、
+`tests/test_growth_diagnostics_and_lang_fix.py`、
+`tests/test_growth_diagnostics_backfill_count_cache.py` 全部通过
+（含新增用例）。
+
+### 遗留/待观察
+
+- `sys:profile_refresh_scan` 和 `sys:memory_backfill_scan` 目前都是
+  `interval:21600`（6 小时），二者本质上是"先回填记忆、再检查是否该
+  刷新画像"的前后关系，若后续发现两个 job 调度时机对不上（回填还没跑
+  完刷新就先跑了），可以考虑把画像刷新检查也挂在
+  `sys:memory_backfill_scan` 跑完之后触发，而不是各自独立定时——本期
+  先用最简单的"各自独立定时"验证效果，非必要不引入两个 job 之间的
+  依赖耦合。
+- `cron_incomplete` 记忆是否会干扰 growth_advisor 现有的信号扫描/
+  主题地图，本期未评估（growth_advisor 相关测试全部通过，说明至少
+  没有破坏现有逻辑，但"降级记忆的语义是否应该参与成长信号计算"是一个
+  产品判断，留待观察实际效果后再决定要不要在 growth_advisor 里显式
+  排除 `cron_incomplete` tag）。

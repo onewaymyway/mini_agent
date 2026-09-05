@@ -245,7 +245,15 @@ class UserProfileManager:
         触发条件：
           - 记忆条目数 >= cfg.profile_min_entries，且
           - 尚未生成过画像（is_new），或
-          - 自上次生成以来新增的条目数 >= cfg.profile_refresh_interval_entries
+          - 自上次生成以来新增的条目数 >= cfg.profile_refresh_interval_entries，或
+          - [next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向一 A]
+            距上次刷新已超过 cfg.profile_force_refresh_after_days 天，且
+            期间至少有 1 条新记忆（纯粹"完全没有新记忆"时刷新也没有新
+            信息可更新，不做无意义的强制刷新）。
+
+        这条时间兜底解决的是"记忆缓慢累积、增量门槛一直跨不过"导致画像
+        长期停在很久以前的问题；它不解决"完全没有新记忆"的情况——那种
+        情况下即使强制刷新，LLM 也没有新证据可用。
         """
         if current_entry_count < cfg.profile_min_entries:
             return False
@@ -255,7 +263,19 @@ class UserProfileManager:
             return True
 
         last_count = profile.derived.get("source_entry_count", 0)
-        return (current_entry_count - last_count) >= cfg.profile_refresh_interval_entries
+        if (current_entry_count - last_count) >= cfg.profile_refresh_interval_entries:
+            return True
+
+        if current_entry_count <= last_count:
+            return False  # 完全没有新记忆，强制刷新也无意义
+
+        force_after_days = getattr(cfg, "profile_force_refresh_after_days", 14)
+        last_updated = float(profile.derived.get("updated_at", 0) or 0)
+        if last_updated and force_after_days:
+            if (time.time() - last_updated) >= force_after_days * 86400.0:
+                return True
+
+        return False
 
     def generate(
         self,

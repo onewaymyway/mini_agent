@@ -6573,6 +6573,16 @@ def diagnostics_snapshot(
     user_profile_snapshot["stale_habits"] = stale_habits
     user_profile_snapshot["stale_after_days"] = stale_after_days
 
+    # [next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向三]
+    # 透出强制刷新天数阈值，供看板判断"距今 N 天未更新"是否已经超出
+    # 正常范围——跟 should_refresh() 的时间兜底判断用同一个配置项，
+    # 避免看板另起一套硬编码数字跟实际刷新逻辑不一致。取不到时退回
+    # ProfileConfig 的 dataclass 默认值（14 天）。
+    force_refresh_after_days = getattr(profile_cfg, "force_refresh_after_days", None)
+    if force_refresh_after_days is None:
+        force_refresh_after_days = 14
+    user_profile_snapshot["force_refresh_after_days"] = force_refresh_after_days
+
     # [next_doc/memory_backfill_and_profile_update_plan.md M1 看板展示]
     # 记忆回填候选数：只读扫描（对齐 CLI `/memory backfill --dry-run` 的
     # 判定逻辑），不触发任何生成/写入，供看板解释"为什么记忆总条数这么

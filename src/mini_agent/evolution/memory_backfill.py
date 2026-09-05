@@ -287,6 +287,50 @@ def backfill_cron_run(
     return entry
 
 
+def backfill_incomplete_cron_run(
+    job_id: str,
+    run_id: str,
+    final_status: str,
+    last_text: str,
+    *,
+    memory_backend: "MemoryBackend",
+) -> Optional["MemoryEntry"]:
+    """[next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向一 C]
+    cron 任务未正常收尾（`timed_out`/`needs_human_review`/
+    `waiting_feedback` 等）时，此前完全不产出记忆——`backfill_cron_run()`
+    严格限定只在 `STATUS_IDLE` 时调用。这导致"工具调用失败/异常导致
+    结果作废"的运行在系统里没有任何留痕：`should_refresh()` 的记忆计数
+    感知不到，成长顾问的信号扫描也感知不到"这里发生过一次失败"。
+
+    这里不追求生成质量摘要（不调用 LLM，避免给一次已经失败的运行再
+    叠加一次可能失败的 LLM 调用），只做纯字符串拼接，把"发生过失败"
+    这件事本身落成一条降级记忆，打 `cron_incomplete` tag 供下游按需
+    过滤（growth_advisor 等如果不希望这类记忆参与信号扫描，可以按 tag
+    排除）。
+
+    返回写入的 `MemoryEntry`；`last_text` 为空时无内容可记录，返回
+    `None`。异常向上抛出，由调用方（`CronJobExecutor.run_job()`）的
+    try/except 负责静默降级，跟 `backfill_cron_run()` 保持同样的
+    职责边界。
+    """
+    text = (last_text or "").strip()
+    if not text:
+        return None
+
+    from mini_agent.perception.memory_store import MemoryEntry
+
+    summary = f"[cron:{job_id}] 本轮运行因 {final_status} 未正常完成，最后进展：{text[:200]}"
+    entry = MemoryEntry(
+        session_id=f"cron:{job_id}:{run_id}",
+        summary=summary,
+        key_outcomes=[text[:200]],
+        tags=["cron_incomplete", final_status],
+        model="",
+    )
+    memory_backend.upsert(entry)
+    return entry
+
+
 def _build_memory_entry(session_id: str, summary: str, user_turns: list[str], model: str) -> "MemoryEntry":
     from mini_agent.perception.memory_store import MemoryEntry
 

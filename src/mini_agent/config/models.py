@@ -527,6 +527,13 @@ class ProfileConfig:
     # 增量更新的 prompt 里被标注为"建议重新评估"（不是硬删，去留仍由
     # LLM 判断，见 profile.py::_stale_cutoff）
     stale_after_days: int = 90
+    # [next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向一 A]
+    # 距上次刷新超过该天数时，即使 entry 增量没跨过
+    # refresh_interval_entries 门槛，只要期间有过至少 1 条新记忆也强制
+    # 刷新一次——修复"记忆缓慢累积、增量门槛一直跨不过"导致画像长期不
+    # 更新的问题。纯"完全没有新记忆"的情况不受此项影响（刷新了也没有
+    # 新信息可更新，见 should_refresh() 的判断逻辑）。
+    force_refresh_after_days: int = 14
 
 
 @dataclass
@@ -2995,6 +3002,8 @@ class AppConfig:
     def profile_refresh_interval_entries(self) -> int: return self.profile.refresh_interval_entries
     @property
     def profile_min_entries(self) -> int:       return self.profile.min_entries
+    @property
+    def profile_force_refresh_after_days(self) -> int: return self.profile.force_refresh_after_days
 
     @property
     def session_dir(self) -> Optional[Path]:    return self.session.dir

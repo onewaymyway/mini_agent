@@ -22,6 +22,7 @@ from mini_agent.evolution.memory_backfill import (
     backfill_sessions,
     generate_summary_from_text,
     backfill_cron_run,
+    backfill_incomplete_cron_run,
 )
 
 
@@ -270,6 +271,34 @@ class TestBackfillCronRun(unittest.TestCase):
         )
         self.assertIsNotNone(entry)
         self.assertEqual(len(backend.entries), 1)
+
+
+class TestBackfillIncompleteCronRun(unittest.TestCase):
+    """[next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向一 C]
+    未正常收尾的 cron 运行也应该留一条降级记忆，不调用 LLM。"""
+
+    def test_writes_downgraded_entry_without_llm(self):
+        backend = _FakeMemoryBackend()
+        entry = backfill_incomplete_cron_run(
+            "sys:hourly_check", "run_9", "timed_out", "已经检查了一半的待办列表",
+            memory_backend=backend,
+        )
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.session_id, "cron:sys:hourly_check:run_9")
+        self.assertIn("timed_out", entry.summary)
+        self.assertIn("已经检查了一半的待办列表", entry.summary)
+        self.assertIn("cron_incomplete", entry.tags)
+        self.assertIn("timed_out", entry.tags)
+        self.assertEqual(len(backend.entries), 1)
+
+    def test_empty_last_text_does_not_write(self):
+        backend = _FakeMemoryBackend()
+        entry = backfill_incomplete_cron_run(
+            "sys:hourly_check", "run_10", "needs_human_review", "   ",
+            memory_backend=backend,
+        )
+        self.assertIsNone(entry)
+        self.assertEqual(len(backend.entries), 0)
 
 
 if __name__ == "__main__":
