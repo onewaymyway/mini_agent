@@ -212,7 +212,8 @@
     "report_active_search_max_calls": 5,
     "wiki_promotion_on_adopt_enabled": true,
     "goal_tree_focus_research_auto_trigger_max_nodes": 2,
-    "goal_tree_focus_research_auto_trigger_enabled": true
+    "goal_tree_focus_research_auto_trigger_enabled": true,
+    "duplicate_direction_llm_check_enabled": true
   },
   "cycle_tuning": {
     "diagnostics_llm_summary_enabled": true,
