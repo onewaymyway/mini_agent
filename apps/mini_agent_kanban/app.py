@@ -1095,9 +1095,14 @@ def render_sidebar():
     # 外部的绑定动作打架。
     if st.session_state.get("session_switcher_select") != desired_label:
         st.session_state["session_switcher_select"] = desired_label
-    idx = sess_options.index(cur_sid) if cur_sid in sess_options else 0
+    # [BUGFIX] 不要再传 `index=`：上面这行已经把 session_state[key] 显式
+    # 同步成了真实值，`index` 在 key 已存在 session_state 时完全是多余的
+    # ——同时传两者会触发 Streamlit 的
+    # "created with a default value but also had its value set via the
+    # Session State API" 警告（`index` 相当于给这个 widget 传默认值）。
+    # 只保留 session_state 这一条真值来源即可。
     choice = st.sidebar.selectbox(
-        "绑定到 session", sess_options, index=idx, key="session_switcher_select",
+        "绑定到 session", sess_options, key="session_switcher_select",
         help="决定这个标签页跟哪个 session 对话。不同标签页可以各选不同的 "
              "session，实现同时进行多个互不干扰的对话；选「(全局默认)」保持旧行为。",
     )
@@ -2285,7 +2290,13 @@ def _render_session_artifacts_block(
         types_str = " ".join(ARTIFACT_TYPE_ICON.get(t, "📦") for t in item.get("types", []))
         header = (f"{types_str} {title} · {item.get('created_at', '')[:19]} · "
                   f"{item.get('file_count', 0)} 个文件")
-        with st.expander(header, expanded=(i < new_n), key=f"{key_prefix}_artifact_exp_{mid}"):
+        # [兼容性] st.expander 的 `key=` 参数是较新版本 Streamlit 才有的
+        # （旧版本 `LayoutsMixin.expander()` 不接受这个关键字，会直接
+        # TypeError 崩掉整个渲染）。这里不再传 key，展开态改由 header
+        # 文本本身的唯一性（标题+创建时间+文件数）来区分，兼容旧版本
+        # Streamlit；极端情况下两个产出物标题、创建时间、文件数三者
+        # 完全相同才会共享展开状态，可接受。
+        with st.expander(header, expanded=(i < new_n)):
             detail = client.get_artifact(mid, session_id=cur_session_id) or {}
             if "_error" in detail:
                 st.error(detail["_error"])
