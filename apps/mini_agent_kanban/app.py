@@ -1046,6 +1046,16 @@ def render_sidebar():
     if "_error" not in sessions_data:
         sess_options += [s.get("id", "") for s in sessions_data.get("sessions", []) if s.get("id")]
     cur_sid = get_active_session_id()
+    # [bugfix] 之前这里如果 cur_sid 不在最近 limit=50 条 sessions 列表里
+    # （比如这个 session 比较旧被分页截掉了），idx 会被强制退回 0，
+    # 导致下拉框显示成"(全局默认)"；下面 155 行的"选项变了就写回 URL"
+    # 逻辑因此会把这次"列表凑巧没带上它"误判成"用户手动切成了全局默认"，
+    # 反手调用 set_active_session_id("") 把真正的绑定清掉——这正是"切
+    # 到其他 tab 触发一次 rerun、重新拉一次列表后绑定被莫名重置"的根因。
+    # 修法：只要 cur_sid 非空，就强制把它补进选项列表（即使不在最近 50
+    # 条里），这样 idx 永远能对上真实绑定，不会被列表内容的波动误伤。
+    if cur_sid and cur_sid not in sess_options:
+        sess_options.append(cur_sid)
     idx = sess_options.index(cur_sid) if cur_sid in sess_options else 0
     choice = st.sidebar.selectbox(
         "绑定到 session", sess_options, index=idx, key="session_switcher_select",
@@ -1053,6 +1063,10 @@ def render_sidebar():
              "session，实现同时进行多个互不干扰的对话；选「(全局默认)」保持旧行为。",
     )
     if choice != (cur_sid or "(全局默认)"):
+        # [体验改进] 绑定的目标是"跟这个 session 对话"，绑完之后应该直接
+        # 就能在「💬 对话」tab 看到对应的对话内容，不用绑完还要自己手动
+        # 再点一下"对话"tab——这里顺手把 _active_tab 切过去。
+        st.session_state["_active_tab"] = "chat"
         set_active_session_id("" if choice == "(全局默认)" else choice)
         st.rerun()
     if cur_sid:
@@ -2590,11 +2604,14 @@ def render_sessions_tab(client: AgentClient):
                 if new_sid:
                     # 顺手把本页面绑定到刚创建的新会话，免得用户创建后还要
                     # 再点一次"本页面绑定到此会话"。
+                    # [体验改进] 同时直接跳到「💬 对话」tab，创建完就能立刻
+                    # 开始跟这个新 session 对话，不用再手动切一次 tab。
                     # [BUGFIX] 这里不能再手动 st.rerun()：st.query_params
                     # 赋值本身就会自动触发一次重跑（Streamlit >=1.30 的
                     # 行为），紧接着再手动调一次 st.rerun() 等于同一次交互
                     # 触发两次重跑，两条 ForwardMsg 前后脚到达浏览器，表现
                     # 就是地址栏 URL 先跳到新值又立刻被回滚成重跑前的旧值。
+                    st.session_state["_active_tab"] = "chat"
                     set_active_session_id(new_sid)
                 else:
                     st.rerun()
@@ -2650,6 +2667,9 @@ def render_sessions_tab(client: AgentClient):
                 # 造成同一次交互里连续两次重跑的竞态：第二次重跑打断第一次
                 # 重跑对地址栏的 URL 更新，表现为"URL 瞬间跳到新值又变回
                 # 旧值"。去掉这行多余的 rerun 即可让 URL 正常停留在新值上。
+                # [体验改进] 绑完顺手跳到「💬 对话」tab，不用绑完还留在
+                # "会话管理"tab 里，看不到已经切换过去的对话内容。
+                st.session_state["_active_tab"] = "chat"
                 set_active_session_id(sid)
             if cc3.button("📎 加入/移出并排对比", key=f"pin_{sid}",
                            help="加入下方的并排对比区，可以同时看多个 session 的状态和最近事件，不用来回切换标签页"):
