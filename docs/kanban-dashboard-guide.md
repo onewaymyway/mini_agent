@@ -320,6 +320,13 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
   - 对应新增 REST 端点：`GET /v1/goals/{id}/research`、
     `POST /v1/goals/{id}/research/trigger`、`GET /v1/goals/next_steps`，
     详见 [HTTP API 指南](http-api-guide.md)。
+  - **收起/展开子树**（`next_doc/goal_tree_collapse_plan.md`）：有子节点
+    的节点标题前会带一个 ▼/▶ 折叠箭头，点击可以收起/展开该分支下的全部
+    子节点（叶子节点没有箭头）；收起后原地显示一行"（已收起 N 个子节点，
+    点击 ▶ 展开）"提示，不会跟叶子节点混淆。视图顶部另有"🔽 全部展开"/
+    "▶️ 全部收起"两个按钮，一键操作整棵树。这是纯前端展示偏好（存在
+    `st.session_state`），不落盘、不影响其他人看到的树结构，刷新浏览器
+    标签页/切到其它 tab 再切回来仍保留，关闭标签页后重置。
 - **📈 完成率趋势**（`GET /v1/objectives/completion_trend`，
   `next_doc/kanban_perception_gaps_improvement_plan.md` 方向 D.1）：折叠
   区块，展开才拉取。展示每日完成/失败 Objective 数的折线图，以及最近

@@ -387,6 +387,10 @@ def init_state():
         # tab 里"复制到对话框"按钮写入的待发送文本，供 render_chat_tab
         # 的输入框读取后清空——消费一次的临时状态，不是持久偏好。
         "chat_prefill_text": "",
+        # [goal_tree_collapse_plan.md] "🌳 目标树"视图里被用户手动收起
+        # 子树的节点 id 集合，纯前端展示偏好（不落盘、不传给后端），
+        # 只在当前浏览器标签页的 session 内生效，关闭标签页后重置。
+        "_gt_collapsed_ids": set(),
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -4800,6 +4804,18 @@ def _goal_tree_flatten_titles(tree_node: dict, out: dict) -> None:
         _goal_tree_flatten_titles(child, out)
 
 
+def _goal_tree_collect_branch_ids(tree_node: dict, out: set) -> None:
+    """[goal_tree_collapse_plan.md] 收集树里所有\"有子节点\"的节点 id，
+    供\"全部收起\"用——只有这些 id 放进 `_gt_collapsed_ids` 才有意义（叶子
+    节点本来就没有箭头，放进去也不会被读到，但没必要塞一堆无效 id）。"""
+    node = tree_node.get("node") or {}
+    children = tree_node.get("children") or []
+    if node.get("id") and children:
+        out.add(node["id"])
+    for child in children:
+        _goal_tree_collect_branch_ids(child, out)
+
+
 def _render_goal_tree_candidates(client: AgentClient, node_id: str, candidates: list) -> None:
     """[goal_tree_system_plan.md §4.4] 待确认候选：✅ 采纳 / ✖️ 忽略 /
     ✏️ 编辑后采纳，三个按钮，以虚线样式挂在父节点下方。"""
@@ -4931,11 +4947,35 @@ def _render_goal_tree_node_body(
     # 节点] 改成直接在该节点自己的标题行末尾加"⭐"，跟"💡"同样是"贴在
     # 当事节点自己身上"的标记方式，不再需要额外一行说明文字。
     focus_badge = " ⭐" if is_focus else ""
-    st.markdown(
+    # [goal_tree_collapse_plan.md] 只有"有子节点"的节点才需要折叠箭头，
+    # 叶子节点（没有子节点的 objective）不显示，避免视觉噪音；箭头状态
+    # 存在 `_gt_collapsed_ids` 里，跟节点标题行同一层缩进（复用外层
+    # `_render_goal_tree_node()` 已经做好的 `st.columns` 缩进包裹，这里
+    # 只需要在缩进列内部再横向切一刀放按钮，不影响缩进本身）。
+    children = tree_node.get("children") or []
+    collapsed_ids = st.session_state.setdefault("_gt_collapsed_ids", set())
+    is_collapsed = bool(children) and node_id in collapsed_ids
+    title_markdown = (
         f"{icon} **{node.get('title', '（无标题）')}** &nbsp;`{status_label}`"
-        f"{focus_badge}{next_step_badge}",
-        unsafe_allow_html=True,
+        f"{focus_badge}{next_step_badge}"
     )
+    if children:
+        toggle_col, title_col = st.columns([0.06, 0.94])
+        with toggle_col:
+            if st.button(
+                "▶" if is_collapsed else "▼",
+                key=f"_gt_toggle_{node_id}",
+                help="收起/展开子节点",
+            ):
+                if is_collapsed:
+                    collapsed_ids.discard(node_id)
+                else:
+                    collapsed_ids.add(node_id)
+                st.rerun()
+        with title_col:
+            st.markdown(title_markdown, unsafe_allow_html=True)
+    else:
+        st.markdown(title_markdown, unsafe_allow_html=True)
 
     with st.expander("⚙️ 管理", expanded=False):
         st.caption(f"id: `{node_id}`　level: `{level}`")
@@ -5036,7 +5076,6 @@ def _render_goal_tree_node_body(
                         st.rerun()
 
         # 现阶段焦点 pin/unpin（对直接子节点操作，只在非叶子节点展示）。
-        children = tree_node.get("children") or []
         if level in _GOAL_TREE_NONLEAF_LEVELS and children:
             st.caption("📌 现阶段焦点（pin 后持续生效，直到取消）")
             focus_ids = set(node.get("current_focus_ids") or [])
@@ -5064,12 +5103,18 @@ def _render_goal_tree_node_body(
         _render_goal_tree_candidates(client, node_id, candidates)
 
     focus_ids = set(node.get("current_focus_ids") or [])
-    for child in tree_node.get("children") or []:
-        c_id = (child.get("node") or {}).get("id")
-        _render_goal_tree_node(
-            client, child, id_to_title, depth=depth + 1,
-            next_step_node_ids=next_step_node_ids, is_focus=(c_id in focus_ids),
-        )
+    if is_collapsed:
+        # [goal_tree_collapse_plan.md] 收起时跳过子树的递归渲染，但要
+        # 留一行提示——不然会跟"没有子节点的叶子节点"看起来一模一样，
+        # 用户容易忘记这里其实还有内容、点了 ▶ 才能展开。
+        st.caption(f"（已收起 {len(children)} 个子节点，点击 ▶ 展开）")
+    else:
+        for child in children:
+            c_id = (child.get("node") or {}).get("id")
+            _render_goal_tree_node(
+                client, child, id_to_title, depth=depth + 1,
+                next_step_node_ids=next_step_node_ids, is_focus=(c_id in focus_ids),
+            )
 
 
 def _render_goal_tree_view(client: AgentClient) -> None:
@@ -5097,6 +5142,22 @@ def _render_goal_tree_view(client: AgentClient) -> None:
 
     id_to_title: dict = {}
     _goal_tree_flatten_titles(tree, id_to_title)
+
+    # [goal_tree_collapse_plan.md] "全部展开/全部收起"——树深的时候逐个
+    # 点箭头太慢。"全部收起"只收集"有子节点"的 id（叶子节点没有箭头，
+    # 塞进去也没意义）；"全部展开"直接清空整个集合最简单，反正
+    # `_gt_collapsed_ids` 只在渲染这棵树时才会被读到，清空不会影响别处。
+    _btn_col1, _btn_col2, _ = st.columns([1, 1, 6])
+    with _btn_col1:
+        if st.button("🔽 全部展开", key="_gt_expand_all"):
+            st.session_state["_gt_collapsed_ids"] = set()
+            st.rerun()
+    with _btn_col2:
+        if st.button("▶️ 全部收起", key="_gt_collapse_all"):
+            all_branch_ids: set = set()
+            _goal_tree_collect_branch_ids(tree, all_branch_ids)
+            st.session_state["_gt_collapsed_ids"] = all_branch_ids
+            st.rerun()
 
     # [goal_tree_research_and_action_recommendation_plan.md §4.5/阶段四]
     # 一次性拉取全部 focus_next_step 候选，构造"有待处理建议的节点 id"
