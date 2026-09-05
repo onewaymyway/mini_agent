@@ -521,9 +521,9 @@ def _read_token_from_project(project_root: str) -> tuple:
 # 登录门禁（可选，--require-login 开启）
 # ═══════════════════════════════════════════════════════════════════════
 def _auth_paths(cli_args) -> tuple:
-    """解析账户文件 / 签名密钥文件 / 登录失败限流记录文件的实际路径，都挂在
-    项目根目录的 .agent/ 下，和 token 自动读取共用同一个"项目根目录"概念，
-    避免用户要理解好几套路径规则。"""
+    """解析账户文件 / 签名密钥文件 / 登录失败限流记录文件 / 会话登记表
+    文件的实际路径，都挂在项目根目录的 .agent/ 下，和 token 自动读取
+    共用同一个"项目根目录"概念，避免用户要理解好几套路径规则。"""
     root = Path(cli_args.project_root).expanduser().resolve() if cli_args.project_root.strip() else Path.cwd().resolve()
     if cli_args.users_file.strip():
         users_file = Path(cli_args.users_file).expanduser()
@@ -533,7 +533,8 @@ def _auth_paths(cli_args) -> tuple:
         users_file = root / ".agent" / "kanban_users.json"
     secret_file = root / ".agent" / "kanban_session_secret"
     attempts_file = root / ".agent" / "kanban_login_attempts.json"
-    return users_file, secret_file, attempts_file
+    sessions_file = root / ".agent" / "kanban_sessions.json"
+    return users_file, secret_file, attempts_file, sessions_file
 
 
 def _client_id() -> str:
@@ -554,27 +555,58 @@ def _client_id() -> str:
 def render_login_gate(cli_args) -> bool:
     """登录门禁。返回 True 表示已通过验证，调用方可以继续往下渲染看板；
     返回 False 表示这里已经把登录表单/提示画完了，调用方应直接 return，
-    不能再渲染任何看板内容（否则未登录也能看到数据）。"""
-    from auth import UserStore, LoginAttemptTracker, make_token, verify_token, get_or_create_secret
+    不能再渲染任何看板内容（否则未登录也能看到数据）。
 
-    users_file, secret_file, attempts_file = _auth_paths(cli_args)
+    [kanban_session_management_plan.md] 引入 `SessionStore` 之后，"已登录"
+    不再是"`st.session_state.authenticated` 是 True 就永远放行"——每次
+    进到这个函数都会用 `st.session_state["session_id"]` 重新核对一下这个
+    会话是否还在登记表里。这样"退出登录"（撤销自己当前会话）、"退出所有
+    其他会话"（自助踢掉自己其他设备/标签页的登录）、管理员在"👤 账户
+    管理"里踢掉某个会话，都能在**下一次这个标签页触发任意 rerun**（点
+    按钮、切 tab……）时就生效，不需要等 token 自然过期，也不需要轮换
+    `kanban_session_secret` 连累所有人重新登录。
+    """
+    from auth import UserStore, LoginAttemptTracker, SessionStore, make_token, verify_token, get_or_create_secret
+
+    users_file, secret_file, attempts_file, sessions_file = _auth_paths(cli_args)
     store = UserStore(users_file)
     tracker = LoginAttemptTracker(attempts_file)
+    session_store = SessionStore(sessions_file)
 
     if st.session_state.get("authenticated"):
-        return True
+        sid = st.session_state.get("session_id", "")
+        username = st.session_state.get("username", "")
+        if session_store.is_valid(sid, username):
+            session_store.touch(sid)
+            return True
+        # 会话已被撤销（自己点了"退出所有其他会话"/"退出登录"，或管理员
+        # 把这个会话踢了）或者过期：清掉本地登录态和 URL 里的 token，
+        # 退回登录页，不再往下渲染任何看板内容。
+        st.session_state.authenticated = False
+        st.session_state.pop("username", None)
+        st.session_state.pop("session_id", None)
+        update_query_params(auth=None)
+        st.warning("⚠️ 当前会话已失效（可能已被撤销或过期），请重新登录。")
 
     secret = get_or_create_secret(secret_file)
 
     # 优先尝试用 URL 里的免登录 token 自动恢复登录态，这样刷新页面 /
-    # 重新打开浏览器标签不会强制要求重新输入密码（12 小时内有效）。
+    # 重新打开浏览器标签不会强制要求重新输入密码（12 小时内有效，除非
+    # 中途被撤销）。
     qp_token = st.query_params.get("auth")
     if qp_token:
-        username = verify_token(qp_token, secret)
-        if username:
-            st.session_state.authenticated = True
-            st.session_state.username = username
-            return True
+        result = verify_token(qp_token, secret)
+        if result:
+            username, sid = result
+            if session_store.is_valid(sid, username):
+                session_store.touch(sid)
+                st.session_state.authenticated = True
+                st.session_state.username = username
+                st.session_state.session_id = sid
+                return True
+        # 签名过期/篡改，或者签名合法但对应会话已被撤销：都清掉 URL 里的
+        # token，避免带着一个永远失效的 token 反复刷新却看不出原因。
+        update_query_params(auth=None)
 
     st.markdown("## 🔐 mini-agent 看板登录")
 
@@ -599,12 +631,14 @@ def render_login_gate(cli_args) -> bool:
             st.error(f"🔒 该账户登录失败次数过多，已被临时锁定，请约 {mins} 分钟后再试。")
         elif store.verify(username, password):
             tracker.record_success(username, client_id)
+            sid, exp = session_store.create(username, client_id)
             st.session_state.authenticated = True
             st.session_state.username = username
+            st.session_state.session_id = sid
             # [P1 一致性修复] 同"绑定会话"按钮踩过的坑：query_params 写入
             # 后不再手动 st.rerun()，交给它自带的自动重跑生效，避免两次
             # 重跑竞态导致 URL 里的 auth token 闪现又消失。
-            update_query_params(auth=make_token(username, secret))
+            update_query_params(auth=make_token(username, sid, exp, secret))
         else:
             tracker.record_failure(username, client_id)
             left = max(tracker.max_attempts - _current_fail_count(tracker, username, client_id), 0)
@@ -627,14 +661,18 @@ def _current_fail_count(tracker, username: str, client_id: str) -> int:
 def render_account_mgmt_tab(cli_args) -> None:
     """在页面里直接管理看板账户，不用再登服务器敲 manage_users.py。
 
-    分两块：A"改自己密码"（所有已登录用户可见），B"账户列表 + 增删改"
-    （仅管理员可见；`admin_count() == 0` 的兜底期对所有登录用户可见，
-    避免升级后没人能管理账户的死锁）。"""
-    from auth import LastAdminError, UserStore
+    分三块：A"改自己密码"（所有已登录用户可见）；B"我的会话"（所有已
+    登录用户可见，管理自己的登录会话，"退出所有其他会话"应对 token 泄露
+    场景）；C"账户列表 + 增删改 + 所有会话"（仅管理员可见；
+    `admin_count() == 0` 的兜底期对所有登录用户可见，避免升级后没人能
+    管理账户的死锁）。"""
+    from auth import LastAdminError, SessionStore, UserStore
 
-    users_file, _secret_file, _attempts_file = _auth_paths(cli_args)
+    users_file, _secret_file, _attempts_file, sessions_file = _auth_paths(cli_args)
     store = UserStore(users_file)
+    session_store = SessionStore(sessions_file)
     me = st.session_state.get("username", "")
+    my_session_id = st.session_state.get("session_id", "")
 
     st.markdown("## 👤 账户管理")
 
@@ -663,7 +701,12 @@ def render_account_mgmt_tab(cli_args) -> None:
 
     st.divider()
 
-    # ── B. 账户列表 + 增删改：仅管理员 / 兜底期可见 ──────────────────
+    # ── B. 我的会话：所有已登录用户可见 ──────────────────────────────
+    _render_my_sessions_section(session_store, me, my_session_id)
+
+    st.divider()
+
+    # ── C. 账户列表 + 增删改 + 所有会话：仅管理员 / 兜底期可见 ────────
     is_bootstrap = store.admin_count() == 0
     is_admin_user = store.is_admin(me)
     if not is_admin_user and not is_bootstrap:
@@ -766,16 +809,85 @@ def render_account_mgmt_tab(cli_args) -> None:
             else:
                 try:
                     store.remove_user(delete_target)
+                    # 账户都删了，它名下所有会话（包括别的设备/标签页里
+                    # 还开着的）也应该失效，不然会出现"账户已经不存在了
+                    # 但之前签发的免登录 token 还能登进来"的诡异状态。
+                    session_store.revoke_all_for_user(delete_target)
                     st.success(f"✅ 账户 {delete_target!r} 已删除。")
                     if delete_target == me:
                         # 删完自己不能还留在已登录状态里——立刻登出。
                         st.session_state.authenticated = False
                         st.session_state.pop("username", None)
+                        st.session_state.pop("session_id", None)
                         update_query_params(auth=None)
                     else:
                         st.rerun()
                 except LastAdminError as exc:
                     st.error(f"❌ {exc}")
+
+    with st.expander("🖥️ 所有会话"):
+        st.caption("列出所有用户当前有效（未过期）的登录会话，管理员可以撤销任意一个。")
+        all_sessions = session_store.list_sessions()
+        if not all_sessions:
+            st.caption("当前没有任何有效会话。")
+        else:
+            for sess in all_sessions:
+                is_me = sess["session_id"] == my_session_id
+                col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
+                with col1:
+                    st.write(("👉 " if is_me else "") + sess["username"])
+                with col2:
+                    st.caption("登录：" + time.strftime("%Y-%m-%d %H:%M", time.localtime(sess["issued_at"])))
+                with col3:
+                    st.caption("最近活跃：" + time.strftime("%Y-%m-%d %H:%M", time.localtime(sess["last_seen"])))
+                with col4:
+                    st.caption(f"客户端：{sess['client_id'] or '未知'}")
+                with col5:
+                    if st.button("撤销", key=f"account_mgmt_revoke_session_{sess['session_id']}"):
+                        session_store.revoke(sess["session_id"])
+                        st.success("✅ 已撤销该会话，对方下次交互时会被要求重新登录。")
+                        st.rerun()
+            st.divider()
+            if st.button("🧨 撤销所有会话（强制所有人重新登录，含我自己）", key="account_mgmt_revoke_all_sessions"):
+                count = session_store.revoke_all()
+                st.success(f"✅ 已撤销全部 {count} 个会话。")
+                st.rerun()
+
+
+def _render_my_sessions_section(session_store, me: str, my_session_id: str) -> None:
+    """"我的会话"小节：所有已登录用户可见（不需要管理员权限），只能看到/
+    操作自己名下的会话——这是应对"带 token 的 URL 意外泄露"场景的自助
+    工具：发现有一个自己不认识的会话在活跃，说明可能有人拿到了泄露出去
+    的链接，点一下"退出所有其他会话"就能把除了自己当前这个之外的会话
+    全部踢掉，不用联系管理员，也不用像轮换签名密钥那样惊动其他人。"""
+    st.markdown("### 🖥️ 我的会话")
+    my_sessions = session_store.list_sessions(username=me)
+    if not my_sessions:
+        st.caption("没有找到当前的登录会话（这不太应该发生，可能是会话刚好过期）。")
+    else:
+        for sess in my_sessions:
+            is_current = sess["session_id"] == my_session_id
+            col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+            with col1:
+                st.write("👉 当前会话" if is_current else "其他会话")
+            with col2:
+                st.caption("登录：" + time.strftime("%Y-%m-%d %H:%M", time.localtime(sess["issued_at"])))
+            with col3:
+                st.caption("最近活跃：" + time.strftime("%Y-%m-%d %H:%M", time.localtime(sess["last_seen"])))
+            with col4:
+                if not is_current and st.button("撤销", key=f"account_mgmt_revoke_my_session_{sess['session_id']}"):
+                    session_store.revoke(sess["session_id"])
+                    st.success("✅ 已撤销该会话。")
+                    st.rerun()
+        other_count = sum(1 for s in my_sessions if s["session_id"] != my_session_id)
+        if other_count:
+            st.caption(f"除了当前这一个，还有 {other_count} 个其他会话处于登录状态。")
+            if st.button("🚪 退出所有其他会话", key="account_mgmt_logout_other_sessions"):
+                revoked = session_store.revoke_all_for_user(me, except_session_id=my_session_id)
+                st.success(f"✅ 已退出 {revoked} 个其他会话，当前会话不受影响。")
+                st.rerun()
+        else:
+            st.caption("当前只有这一个会话在登录，没有其他会话需要退出。")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -12305,8 +12417,17 @@ def main():
         with st.sidebar:
             st.caption(f"👤 已登录：{st.session_state.get('username', '')}")
             if st.button("🚪 退出登录"):
+                # [kanban_session_management_plan.md] 不再只是清本地
+                # session_state / URL——同时把这个会话从 SessionStore 里
+                # 撤销掉，不然如果这条带 token 的链接之前被复制/泄露出去，
+                # "退出登录"之后那份泄露出去的链接其实仍然能用（token 签名
+                # 本身要到 12 小时后才自然过期）。
+                from auth import SessionStore
+                _users_file, _secret_file, _attempts_file, sessions_file = _auth_paths(cli_args)
+                SessionStore(sessions_file).revoke(st.session_state.get("session_id", ""))
                 st.session_state.authenticated = False
                 st.session_state.pop("username", None)
+                st.session_state.pop("session_id", None)
                 # [P1 一致性修复] 同上，写 query_params 后不再手动 st.rerun()。
                 update_query_params(auth=None)
             st.divider()

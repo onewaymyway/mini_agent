@@ -158,7 +158,7 @@ streamlit run app.py
 | ⚙️ 配置 | 运行时配置字段编辑 |
 | 🔧 诊断 | `/diagnostics` 原始信息，便于排障 |
 | 🧪 混合执行 | 混合执行模式相关面板 |
-| 👤 账户管理 | 仅 `--require-login` 模式出现：修改自己的密码（所有登录用户可见）；账户列表 + 新增/重置密码/切换管理员/删除（仅管理员可见，见 `apps/mini_agent_kanban/README.md`"登录鉴权"节） |
+| 👤 账户管理 | 仅 `--require-login` 模式出现：修改自己的密码、管理自己的登录会话（"退出所有其他会话"，应对免登录 token 泄露场景，所有登录用户可见）；账户列表 + 新增/重置密码/切换管理员/删除、所有用户的会话列表与撤销（仅管理员可见），见 `apps/mini_agent_kanban/README.md`"登录鉴权"节 |
 
 ### Tab 导航与按需渲染（`tab_lazy_render_plan.md`）
 

@@ -10,6 +10,16 @@ Bearer Token 鉴权（/v1/chat 等接口用的那个 token）是两回事，互�
 salt + PBKDF2 密码哈希，不存明文密码）；登录态用一个签名 token 持久化
 到 URL query param 里，避免用户刷新页面就被踢出登录。
 
+[kanban_session_management_plan.md] token 本身的签名一旦签发，在过期
+之前签名算法自己没法"撤销"——如果这个带 token 的 URL 意外泄露（分享
+链接时没打码、代理访问日志、浏览器历史……），撤销手段本来只有"轮换
+`kanban_session_secret` 签名密钥"这种会连累所有人重新登录的核选项。
+现在加了 `SessionStore`：每次登录都会在这张登记表里留一条记录（会话
+id、所属用户、签发/过期/最近活跃时间、客户端标识），`verify_token`
+校验签名通过之后还要再查一下这条记录是否还在表里，不在就当作已撤销、
+强制重新登录——这样"退出登录"、"退出所有其他会话"（自助）、"踢掉某个
+会话"（管理员）都能只影响目标会话，不用动签名密钥。
+
 账户管理走 manage_users.py 命令行脚本，不在 Streamlit UI 里做"注册"
 功能——看板本身没有用户自助注册的需求，账户应该由管理员在服务器上创建。
 """
@@ -259,12 +269,14 @@ class UserStore:
         ]
 
 
-# ── 免登录 token：跨页面刷新保持登录态 ────────────────────────────────────
+# ── 免登录 token：跨页面刷新保持登录态 + 会话管理（可撤销） ──────────────
 
 def get_or_create_secret(secret_file: Path) -> bytes:
     """签名密钥第一次用时自动生成并落盘（0600 权限），之后复用。
-    密钥丢失/更换会让所有已签发的 token 失效（相当于强制所有人重新登录），
-    这是预期行为，不是 bug。"""
+    密钥丢失/更换会让所有已签发的 token 全部失效（相当于强制所有人重新
+    登录）——这是"核弹级"的一次性踢下线所有人的手段；日常场景更细粒度的
+    需求（"只踢掉我自己另一个设备的登录"、"管理员踢掉某个人"）见下面
+    `SessionStore`，不需要动这个密钥文件。"""
     secret_file = Path(secret_file)
     if secret_file.exists():
         try:
@@ -283,24 +295,200 @@ def get_or_create_secret(secret_file: Path) -> bytes:
     return secret
 
 
-def make_token(username: str, secret: bytes, ttl_seconds: int = TOKEN_TTL_SECONDS) -> str:
-    exp = int(time.time()) + ttl_seconds
-    payload = f"{username}:{exp}"
+class SessionStore:
+    """登录会话登记表——用于回答"谁正在用看板/用的哪个会话"这个问题，
+    以及让"退出登录"、"退出所有其他会话"、管理员"踢掉某个会话"这几个
+    操作真正对已签发的免登录 token 生效（不用像轮换签名密钥那样把所有人
+    一次性全部踢掉）。
+
+    文件内容形如：
+        {"<session_id 十六进制>": {
+            "username": "alice",
+            "issued_at": 1234567890.0,
+            "expires_at": 1234567890.0,
+            "client_id": "1.2.3.4",   # 见 app.py::_client_id()，拿不到时是空串
+            "last_seen": 1234567890.0,
+        }, ...}
+
+    这是 URL 免登录 token 方案（见 `make_token`/`verify_token`）的必要
+    配套：signature 本身只能证明"这个 token 确实是服务器签发的、没被
+    篡改、没过期"，签名算法自己没有"撤销"这个概念——一旦签出去，在过期
+    之前永远有效。加上这张登记表之后，`verify_token` 校验通过只表示
+    "签名合法"，还要再查一下 `session_id` 是否还在这张表里，才能确认
+    "这个会话没有被撤销"。
+    """
+
+    def __init__(self, sessions_file: Path):
+        self.path = Path(sessions_file)
+
+    def _load(self) -> dict:
+        if not self.path.exists():
+            return {}
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _save(self, data: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self.path)
+        try:
+            os.chmod(self.path, 0o600)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _prune(data: dict) -> bool:
+        """原地删掉已过期的条目，返回是否有删除发生（调用方据此决定要不要
+        落盘，避免"读一次就白白写一次"）。过期只是从这张登记表里消失，
+        不影响 `verify_token` 本身对签名/时间戳的校验——两边都会各自判定
+        为"无效"，双重保险。"""
+        now = time.time()
+        expired = [sid for sid, entry in data.items() if entry.get("expires_at", 0) < now]
+        for sid in expired:
+            del data[sid]
+        return bool(expired)
+
+    def create(self, username: str, client_id: str = "", ttl_seconds: int = TOKEN_TTL_SECONDS) -> tuple:
+        """新登记一个会话，返回 `(session_id, exp)`；`exp` 是整数时间戳，
+        调用方拿去签 `make_token`，保证 token 里的过期时间和这张表里记的
+        完全一致。"""
+        data = self._load()
+        self._prune(data)
+        session_id = os.urandom(16).hex()
+        now = time.time()
+        exp = now + ttl_seconds
+        data[session_id] = {
+            "username": username,
+            "issued_at": now,
+            "expires_at": exp,
+            "client_id": client_id or "",
+            "last_seen": now,
+        }
+        self._save(data)
+        return session_id, int(exp)
+
+    def is_valid(self, session_id: str, username: Optional[str] = None) -> bool:
+        """会话是否还"活着"：存在、没过期，且（如果传了 username）确实
+        属于这个用户——最后一条是防止理论上的会话 id 被复用/伪造后冒充
+        成别的用户（虽然 session_id 是 16 字节随机数，实际碰撞概率可以
+        忽略，这里只是多一层防御）。"""
+        if not session_id:
+            return False
+        entry = self._load().get(session_id)
+        if not entry:
+            return False
+        if entry.get("expires_at", 0) < time.time():
+            return False
+        if username is not None and entry.get("username") != username:
+            return False
+        return True
+
+    def touch(self, session_id: str, min_interval: float = 300.0) -> None:
+        """更新"最近活跃时间"，节流写盘：距离上次记录的 `last_seen` 不满
+        `min_interval` 秒就跳过，不然 Streamlit 几乎每次交互都会重跑到
+        登录门禁这里，会变成"每次点击都写一次磁盘文件"。"""
+        data = self._load()
+        entry = data.get(session_id)
+        if not entry:
+            return
+        now = time.time()
+        if now - entry.get("last_seen", 0) < min_interval:
+            return
+        entry["last_seen"] = now
+        self._save(data)
+
+    def revoke(self, session_id: str) -> bool:
+        """撤销单个会话。撤销之后，即使拿着那个 token 的人还没刷新页面，
+        下一次和页面有任何交互（点按钮、切 tab……）触发 Streamlit rerun
+        时，登录门禁重新核对会话表就会发现它已经不在了，直接被退回登录页
+        ——不需要等 token 自然过期，也不需要轮换全局签名密钥连累其他人。"""
+        data = self._load()
+        if session_id in data:
+            del data[session_id]
+            self._save(data)
+            return True
+        return False
+
+    def revoke_all_for_user(self, username: str, except_session_id: Optional[str] = None) -> int:
+        """撤销某个用户的所有会话，`except_session_id` 可以排除"当前正在
+        用的这一个"（"退出所有其他会话"场景：不想把自己也顺手踢下线）。
+        返回实际撤销的数量。"""
+        data = self._load()
+        targets = [
+            sid for sid, entry in data.items()
+            if entry.get("username") == username and sid != except_session_id
+        ]
+        for sid in targets:
+            del data[sid]
+        if targets:
+            self._save(data)
+        return len(targets)
+
+    def revoke_all(self) -> int:
+        """撤销全部用户的全部会话（管理员的"核选项"，效果类似轮换签名
+        密钥，但不需要真的去改密钥文件）。返回撤销前的会话总数。"""
+        data = self._load()
+        count = len(data)
+        if data:
+            self._save({})
+        return count
+
+    def list_sessions(self, username: Optional[str] = None) -> list:
+        """列出未过期的会话（供页面表格展示），可选按用户名过滤。只读，
+        不会顺手把过期条目落盘删掉——真正的清理发生在 `create`/`revoke`
+        等本来就要写盘的操作里，避免"仅仅是打开一下列表页"就触发一次
+        磁盘写入。按 `issued_at` 倒序（最近登录的排前面）。"""
+        data = self._load()
+        now = time.time()
+        items = [
+            {"session_id": sid, **entry}
+            for sid, entry in data.items()
+            if entry.get("expires_at", 0) >= now and (username is None or entry.get("username") == username)
+        ]
+        items.sort(key=lambda item: item.get("issued_at", 0), reverse=True)
+        return items
+
+
+def make_token(username: str, session_id: str, exp: int, secret: bytes) -> str:
+    """签发免登录 token。`session_id`/`exp` 由 `SessionStore.create()`
+    产出，这里只负责签名，不自己算过期时间——保证 token 里的 `exp` 和
+    `SessionStore` 登记表里的 `expires_at` 永远是同一个值，不会出现"token
+    还没过期但会话表已经判定过期"这种两边打架的情况。"""
+    payload = f"{username}:{session_id}:{exp}"
     sig = hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
     return f"{payload}:{sig}"
 
 
-def verify_token(token: str, secret: bytes) -> Optional[str]:
-    """校验通过返回 username；过期/篡改/格式错误统一返回 None。"""
+def verify_token(token: str, secret: bytes) -> Optional[tuple]:
+    """校验签名和过期时间，通过则返回 `(username, session_id)`；格式
+    错误/过期/篡改统一返回 `None`。
+
+    注意：这个函数只验证"签名是否合法"，**不**查询 `SessionStore`——
+    一个签名合法但已被撤销的会话，这里仍然会返回非 None。调用方
+    （`render_login_gate`）必须在拿到返回值之后，再用
+    `SessionStore.is_valid(session_id, username)` 补一道"这个会话是否
+    还活着"的检查，两步都通过才能算真正登录成功。之所以不把这道检查
+    合并进来，是因为 `verify_token` 是不做 IO 的纯函数（方便单测），
+    `SessionStore` 需要读文件。
+
+    历史兼容性：升级前签发的旧格式 token（`username:exp:sig`，3 段）在
+    这里会因为 `split(":")` 解包成 3 个值而不是 4 个而抛异常、返回
+    `None`，效果等同于"这些旧 token 全部失效，需要重新登录"——和当年
+    引入这套机制、以及后续任何一次改变 token 内部格式的升级都是同样的
+    预期行为，不是需要修的 bug。
+    """
     try:
-        username, exp_str, sig = token.split(":")
+        username, session_id, exp_str, sig = token.split(":")
         exp = int(exp_str)
     except Exception:
         return None
     if time.time() > exp:
         return None
-    payload = f"{username}:{exp}"
+    payload = f"{username}:{session_id}:{exp}"
     expected_sig = hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected_sig, sig):
         return None
-    return username
+    return username, session_id

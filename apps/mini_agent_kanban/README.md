@@ -162,14 +162,51 @@ python manage_users.py unset-admin alice --users-file "E:\codes\mini_claude_code
 读取时按 `is_admin=False` 处理，下次被命令行或页面改一次密码/权限之后才会
 补上这个字段。
 
-### 免登录持久化
+### 免登录持久化 与 会话管理（可撤销）
 
 登录成功后会在 URL 里附加一个签名 token（`?auth=...`），12 小时内刷新页面/重新
 打开标签页不用重新输密码。签名密钥存在 `.agent/kanban_session_secret`，删掉这个
-文件会让所有已签发的免登录 token 失效（相当于强制所有人重新登录）。
+文件会让所有已签发的免登录 token **全部**失效（相当于强制所有人重新登录）——
+这是"核选项"，日常场景更常用的是下面的细粒度撤销。
 
-带 `?auth=` 的完整链接分享给别人，对方也能直接登录进去——请像对待密码一样对待
-这个链接，不要随手分享。
+**这个 token 本质上是一份免密登录凭证**：如果带 `?auth=...` 的完整链接意外
+泄露（分享链接时忘了打码、反向代理访问日志、浏览器历史记录、截图/录屏……），
+拿到它的人能直接登录进去，在 token 过期之前一直有效——所以请像对待密码一样
+对待这个链接，不要随手分享。
+
+为了能在怀疑泄露时"只撤销这一个会话"而不用把所有人都踢下线，看板会记一张
+会话登记表（`.agent/kanban_sessions.json`：谁登录了、用的哪个会话、登录/过期/
+最近活跃时间），配套三种撤销方式：
+
+- **退出登录**（侧边栏"🚪 退出登录"按钮）：撤销当前这一个会话，不影响其他
+  设备/标签页的登录。
+- **退出所有其他会话**（"👤 账户管理" tab →"🖥️ 我的会话"，所有登录用户可用）：
+  只能操作自己名下的会话——列出自己所有有效会话，一键撤销除当前会话之外的
+  全部，也能单独撤销某一条。发现有自己不认识的会话在活跃（怀疑链接被泄露）
+  时用这个自助补救，不用联系管理员。
+- **管理员踢会话**（"👤 账户管理" tab →"🖥️ 所有会话"，仅管理员可见）：能看到
+  所有用户的所有有效会话并撤销任意一个，也有"撤销所有会话"的核选项按钮。
+
+撤销生效的时机：目标会话所在的浏览器标签页**下一次任意交互**（点按钮、切
+tab……触发 Streamlit rerun）时就会被退回登录页，不需要等 token 自然过期，也
+不需要对方手动刷新页面。
+
+命令行同样能做（应急、不方便开浏览器时用）：
+
+```bash
+# 列出当前有效会话，可选按用户名过滤
+python manage_users.py list-sessions --sessions-file "E:\codes\mini_claude_code\.agent\kanban_sessions.json"
+python manage_users.py list-sessions --username alice --sessions-file "E:\codes\mini_claude_code\.agent\kanban_sessions.json"
+
+# 撤销单个会话（session id 从 list-sessions 输出里拿）
+python manage_users.py revoke-session <session_id> --sessions-file "E:\codes\mini_claude_code\.agent\kanban_sessions.json"
+
+# 撤销某个用户的全部会话；不传 --username 则撤销所有人的全部会话
+python manage_users.py revoke-all-sessions --username alice --sessions-file "E:\codes\mini_claude_code\.agent\kanban_sessions.json"
+```
+
+`--sessions-file` 不传时默认用 `<项目根目录>/.agent/kanban_sessions.json`，
+需要和启动 `app.py` 时用的项目根目录一致。
 
 ### 登录失败限流
 
