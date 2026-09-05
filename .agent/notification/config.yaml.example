@@ -20,6 +20,18 @@ channels:
     password: "${ENV:MINI_AGENT_SMTP_PASSWORD}"
     from_addr: "mini-agent@example.com"
     to_addrs: ["you@example.com"]
+  # [next_doc/personal_assistant_experience_improvement_directions.md
+  # 缺口一] 轻量 IM webhook 渠道——覆盖企业微信群机器人 / Server 酱 /
+  # Bark 等常见的个人即时推送服务，同一种"POST 一条消息到 URL"接入
+  # 模式，用 template 区分请求体格式。
+  webhook:
+    enabled: false
+    url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${ENV:MINI_AGENT_WECOM_KEY}"
+    # template 可选值：generic（默认，JSON {title,body,url}）/ wecom
+    # （企业微信群机器人文本消息格式）/ server_chan（Server 酱表单字段）/
+    # bark（Bark v2，格式与 generic 相同）。
+    template: "wecom"
+    timeout: 10
 
 # [P5 新增] GoalRelevanceEngine::try_advance_goal 的冷却期（秒）。同一个
 # Goal 被"主动拉起"之后，这段时间内即便又出现新的相关外部信息，也只会

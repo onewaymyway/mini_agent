@@ -141,5 +141,42 @@ class TestInitiativeInboxRelevanceAnnotation(unittest.TestCase):
         self.assertEqual(snap_on["total"], snap_off["total"])
 
 
+class TestProfileSignalInSituationalContext(unittest.TestCase):
+    """[next_doc/personal_assistant_experience_improvement_directions.md
+    缺口二] 画像里的 tech_stack/habits 应该作为处境信号参与相关度打分。"""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.paths = AgentPaths(Path(self._tmpdir.name))
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_no_profile_does_not_break_context_loading(self):
+        context = sr.load_situational_context(self.paths)
+        self.assertTrue(context.is_empty)
+
+    def test_tech_stack_and_habits_become_signals(self):
+        from mini_agent.profile import UserProfileManager
+
+        mgr = UserProfileManager(self.paths)
+        profile = mgr.load()
+        profile.derived = {
+            "summary": "示例画像",
+            "tech_stack": [{"text": "Python 爬虫开发", "last_confirmed_at": 1.0}],
+            "habits": [{"text": "使用继续指令恢复任务", "last_confirmed_at": 1.0}],
+        }
+        mgr.save()
+
+        context = sr.load_situational_context(self.paths)
+        kinds = {sig.kind for sig in context.signals}
+        self.assertIn("profile_tech_stack", kinds)
+        self.assertIn("profile_habit", kinds)
+
+        score, signal = sr.score_relevance("Python 爬虫相关的新工具", context)
+        self.assertGreater(score, 0.0)
+        self.assertEqual(signal.kind, "profile_tech_stack")
+
+
 if __name__ == "__main__":
     unittest.main()

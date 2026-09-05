@@ -133,6 +133,30 @@ def load_situational_context(paths) -> SituationalContext:
     except Exception:
         pass
 
+    try:
+        # [next_doc/personal_assistant_experience_improvement_directions.md
+        # 缺口二] 画像里的 tech_stack/habits 此前只用于看板展示，没有
+        # 参与候选排序——补上第三类处境信号，跟 WorkThread/Goal 同样的
+        # bigram+Jaccard 打分方式，不引入新算法。每条 tech_stack/habits
+        # 作为独立信号项（而不是拼成一整段大文本），理由跟
+        # `score_relevance()` 取"最大相似度"而非"整体相似度"一致：
+        # 画像条目数量的多少不应该稀释单条的可比较性。
+        from mini_agent.profile import UserProfileManager
+        profile = UserProfileManager(paths).load()
+        for kind, items in (
+            ("profile_tech_stack", profile.derived.get("tech_stack") or []),
+            ("profile_habit", profile.derived.get("habits") or []),
+        ):
+            for item in items:
+                text = item.get("text") if isinstance(item, dict) else str(item)
+                if not text:
+                    continue
+                signals.append(SituationalSignal(
+                    kind=kind, signal_id=f"{kind}:{text[:40]}", title=text, tokens=_tokens(text),
+                ))
+    except Exception:
+        pass
+
     return SituationalContext(signals=signals)
 
 

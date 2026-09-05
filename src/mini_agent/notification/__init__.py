@@ -19,6 +19,7 @@ from mini_agent.notification.dispatcher import (
 # 触发内置渠道的装饰器注册（import 副作用，跟 external_input/builtin 的模式一致）
 from mini_agent.notification.channels import kanban as _kanban_channel  # noqa: F401
 from mini_agent.notification.channels import email as _email_channel  # noqa: F401
+from mini_agent.notification.channels import webhook as _webhook_channel  # noqa: F401
 
 __all__ = [
     "NotificationChannel",
