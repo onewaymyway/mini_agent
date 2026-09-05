@@ -8,12 +8,22 @@ Bearer Token 鉴权（/v1/chat 等接口用的那个 token）是两回事，互�
 
 不依赖数据库或第三方服务：账户信息是一个本地 JSON 文件（明文用户名 +
 salt + PBKDF2 密码哈希，不存明文密码）；登录态用一个签名 token 持久化
-到 URL query param 里，避免用户刷新页面就被踢出登录。
+到浏览器 Cookie 里，避免用户刷新页面就被踢出登录。
+
+[kanban_auth_cookie_migration_plan.md] token 早期版本是存在 URL
+query param（`?auth=...`）里的，会随浏览器历史记录、反向代理/服务器
+访问日志、Referer 头、用户手动复制分享链接等途径泄露，这些泄露途径都
+是"URL 本身会被记录/转发"这个载体决定的，跟签名算法是否安全无关。
+现在改成存 Cookie（见 app.py::`_cookie_get_auth`/`_cookie_set_auth`/
+`_cookie_clear_auth`），本文件里 `make_token`/`verify_token` 签名和
+校验的逻辑完全不受影响——变的只是"签好的字符串放哪儿"，不是"怎么签"。
+注意这不是 HttpOnly Cookie，页面自身的 JS 依然能读到它，不能防 XSS
+窃取；能防的是"token 出现在 URL 里"这一类泄露面。
 
 [kanban_session_management_plan.md] token 本身的签名一旦签发，在过期
-之前签名算法自己没法"撤销"——如果这个带 token 的 URL 意外泄露（分享
-链接时没打码、代理访问日志、浏览器历史……），撤销手段本来只有"轮换
-`kanban_session_secret` 签名密钥"这种会连累所有人重新登录的核选项。
+之前签名算法自己没法"撤销"——如果这个 token 意外泄露（比如浏览器被
+共享、设备丢失），撤销手段本来只有"轮换 `kanban_session_secret` 签名
+密钥"这种会连累所有人重新登录的核选项。
 现在加了 `SessionStore`：每次登录都会在这张登记表里留一条记录（会话
 id、所属用户、签发/过期/最近活跃时间、客户端标识），`verify_token`
 校验签名通过之后还要再查一下这条记录是否还在表里，不在就当作已撤销、
@@ -310,7 +320,7 @@ class SessionStore:
             "last_seen": 1234567890.0,
         }, ...}
 
-    这是 URL 免登录 token 方案（见 `make_token`/`verify_token`）的必要
+    这是 Cookie 免登录 token 方案（见 `make_token`/`verify_token`）的必要
     配套：signature 本身只能证明"这个 token 确实是服务器签发的、没被
     篡改、没过期"，签名算法自己没有"撤销"这个概念——一旦签出去，在过期
     之前永远有效。加上这张登记表之后，`verify_token` 校验通过只表示

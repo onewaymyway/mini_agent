@@ -552,6 +552,92 @@ def _client_id() -> str:
         return ""
 
 
+# ── 免登录 token 的载体：浏览器 Cookie（原来是 URL query params） ────────
+# [kanban_auth_cookie_migration_plan.md] 之前把签名 token 塞进
+# `?auth=` URL 里，会随着浏览器历史记录、反向代理/服务器访问日志、
+# Referer 头、用户手动复制分享链接等途径泄露出去——这些都是"URL 会被
+# 记录/转发"这个载体本身决定的，跟 token 签名算法是否安全无关。改用
+# Cookie 之后 token 不再出现在地址栏里，上述几条泄露途径自然消失。
+#
+# 用 `extra-streamlit-components` 的 `CookieManager` 读写 Cookie
+# （Streamlit 本身没有原生 Cookie API）。注意这不是 HttpOnly Cookie——
+# 这个组件是靠注入一小段 JS 操作 `document.cookie` 实现的，页面自身的
+# JS 依然能读到它，所以并不能防"页面被注入恶意 JS（XSS）后窃取 Cookie"
+# 这类攻击；它解决的是"token 出现在 URL 里"这一类泄露面，属于纵深防御
+# 里的一层改进，不是万能药。真正要做到 JS 也读不到，需要走反向代理签发
+# HttpOnly Cookie 的方案（见 kanban_auth_cookie_migration_plan.md 里
+# 记录的"方案 B"，评估后判断改造量对个人项目不划算，未采用）。
+AUTH_COOKIE_NAME = "mini_agent_kanban_auth"
+
+
+def _get_cookie_manager():
+    """整个脚本一次 rerun 期间只应该有一个 `CookieManager` 实例——它在
+    `__init__` 里会调一次 `getAll` 组件、读到当前浏览器的全部 Cookie
+    快照存在 `self.cookies` 里，之后 `.get()` 只是读这个内存快照，并不会
+    再发起新的组件调用。如果在同一次 rerun 里到处 `stx.CookieManager()`
+    各 new 一个，每个实例会拿着各自独立的快照，`.set()`/`.delete()`
+    对其中一个实例做的修改，另一个实例的快照根本看不到——所以必须由
+    `main()` 在最外层建一次，存进 `st.session_state`，本模块内其余地方
+    (`render_login_gate`、退出登录按钮、账户管理里的"删除自己"分支)
+    一律从这里取，不重复实例化。
+
+    每次 rerun 开头 `main()` 都会重新赋值一次（不是"只建一次然后一直
+    复用旧对象"），这样才能拿到这次 rerun 时浏览器实际携带的最新 Cookie，
+    而不是上一次 rerun 时的陈旧快照。
+    """
+    mgr = st.session_state.get("_cookie_manager")
+    if mgr is None:
+        raise RuntimeError(
+            "Cookie manager 尚未初始化——这个函数只能在 `main()` 已经为 "
+            "`--require-login` 模式创建过 CookieManager 之后调用。"
+        )
+    return mgr
+
+
+def _cookie_get_auth() -> str:
+    """读出免登录 token；等价于原来的 `st.query_params.get('auth')`。"""
+    try:
+        return _get_cookie_manager().get(AUTH_COOKIE_NAME) or ""
+    except Exception:
+        return ""
+
+
+def _cookie_set_auth(token: str, exp_ts: float) -> None:
+    """把签好的免登录 token 写进 Cookie，过期时间和 `SessionStore` 里
+    登记的这条会话的 `expires_at` 保持一致（同一个 `exp_ts`），避免
+    Cookie 比会话记录活得更久/更短造成的行为不一致。
+
+    `same_site="lax"`：允许"从书签/外部链接直接打开看板"这类顶层
+    跳转带上 Cookie（`strict` 在部分浏览器上会让这种场景意外掉登录态），
+    同时仍然挡住第三方站点用 `<img>`/`<iframe>` 之类子请求携带这个
+    Cookie 发起跨站请求，安全性够用。没有显式传 `secure`——看板既可能
+    跑在纯局域网 HTTP 环境，也可能在 HTTPS 反向代理后面，强制
+    `secure=True` 会导致前一种场景下 Cookie 直接写不进去；如果你的部署
+    是走 HTTPS，建议自行加固为 `secure=True`。
+    """
+    from datetime import timezone
+    _get_cookie_manager().set(
+        AUTH_COOKIE_NAME,
+        token,
+        key="mini_agent_kanban_cookie_set",
+        expires_at=datetime.fromtimestamp(exp_ts, tz=timezone.utc),
+        same_site="lax",
+    )
+
+
+def _cookie_clear_auth() -> None:
+    """清掉免登录 token 对应的 Cookie；等价于原来的
+    `update_query_params(auth=None)`。`CookieManager.delete()` 在
+    Cookie 本来就不存在时会因为它内部 `del self.cookies[cookie]` 抛
+    `KeyError`，这里吞掉——"清除一个本来就没有的 token"不应该报错。"""
+    mgr = _get_cookie_manager()
+    try:
+        if mgr.get(AUTH_COOKIE_NAME):
+            mgr.delete(AUTH_COOKIE_NAME, key="mini_agent_kanban_cookie_delete")
+    except KeyError:
+        pass
+
+
 def render_login_gate(cli_args) -> bool:
     """登录门禁。返回 True 表示已通过验证，调用方可以继续往下渲染看板；
     返回 False 表示这里已经把登录表单/提示画完了，调用方应直接 return，
@@ -585,17 +671,19 @@ def render_login_gate(cli_args) -> bool:
         st.session_state.authenticated = False
         st.session_state.pop("username", None)
         st.session_state.pop("session_id", None)
-        update_query_params(auth=None)
+        _cookie_clear_auth()
         st.warning("⚠️ 当前会话已失效（可能已被撤销或过期），请重新登录。")
 
     secret = get_or_create_secret(secret_file)
 
-    # 优先尝试用 URL 里的免登录 token 自动恢复登录态，这样刷新页面 /
+    # 优先尝试用 Cookie 里的免登录 token 自动恢复登录态，这样刷新页面 /
     # 重新打开浏览器标签不会强制要求重新输入密码（12 小时内有效，除非
-    # 中途被撤销）。
-    qp_token = st.query_params.get("auth")
-    if qp_token:
-        result = verify_token(qp_token, secret)
+    # 中途被撤销）。[kanban_auth_cookie_migration_plan.md] 原来是从
+    # `st.query_params.get("auth")` 读，现在改成从 Cookie 读，避免 token
+    # 出现在 URL 里。
+    cookie_token = _cookie_get_auth()
+    if cookie_token:
+        result = verify_token(cookie_token, secret)
         if result:
             username, sid = result
             if session_store.is_valid(sid, username):
@@ -604,9 +692,9 @@ def render_login_gate(cli_args) -> bool:
                 st.session_state.username = username
                 st.session_state.session_id = sid
                 return True
-        # 签名过期/篡改，或者签名合法但对应会话已被撤销：都清掉 URL 里的
-        # token，避免带着一个永远失效的 token 反复刷新却看不出原因。
-        update_query_params(auth=None)
+        # 签名过期/篡改，或者签名合法但对应会话已被撤销：都清掉 Cookie 里
+        # 的 token，避免带着一个永远失效的 token 反复刷新却看不出原因。
+        _cookie_clear_auth()
 
     st.markdown("## 🔐 mini-agent 看板登录")
 
@@ -635,10 +723,14 @@ def render_login_gate(cli_args) -> bool:
             st.session_state.authenticated = True
             st.session_state.username = username
             st.session_state.session_id = sid
-            # [P1 一致性修复] 同"绑定会话"按钮踩过的坑：query_params 写入
-            # 后不再手动 st.rerun()，交给它自带的自动重跑生效，避免两次
-            # 重跑竞态导致 URL 里的 auth token 闪现又消失。
-            update_query_params(auth=make_token(username, sid, exp, secret))
+            # [kanban_auth_cookie_migration_plan.md] 原来写 URL
+            # query_params 时，踩过"写入后又手动 st.rerun() 导致两次重跑
+            # 竞态"的坑；改成写 Cookie 之后不存在这个问题——`.set()` 不会
+            # 触发自动 rerun，这里维持登录成功后由 Streamlit 表单提交本身
+            # 触发的重跑即可，下一次重跑 `_cookie_get_auth()` 就能读到刚
+            # 写入的值（`CookieManager.set()` 会同步更新它自己的内存快照，
+            # 不需要等浏览器真正落盘那一轮 round trip）。
+            _cookie_set_auth(make_token(username, sid, exp, secret), exp)
         else:
             tracker.record_failure(username, client_id)
             left = max(tracker.max_attempts - _current_fail_count(tracker, username, client_id), 0)
@@ -819,7 +911,13 @@ def render_account_mgmt_tab(cli_args) -> None:
                         st.session_state.authenticated = False
                         st.session_state.pop("username", None)
                         st.session_state.pop("session_id", None)
-                        update_query_params(auth=None)
+                        # [kanban_auth_cookie_migration_plan.md] 清 Cookie
+                        # 不像原来写 query_params 那样会自动触发一次
+                        # rerun，这里要手动补一个，不然页面会带着"已经
+                        # authenticated=False 但本次渲染还没走到登录门禁"
+                        # 的中间状态继续往下画，直到下次交互才刷新。
+                        _cookie_clear_auth()
+                        st.rerun()
                     else:
                         st.rerun()
                 except LastAdminError as exc:
@@ -12412,24 +12510,46 @@ def main():
     apply_deep_link_query_params()
 
     if cli_args.require_login:
+        # [kanban_auth_cookie_migration_plan.md] 免登录 token 现在存在
+        # 浏览器 Cookie 里（原来存在 URL query params 里，会随浏览器历史
+        # 记录/访问日志/Referer 泄露）。`CookieManager` 需要
+        # `extra-streamlit-components` 这个包，只在开启 `--require-login`
+        # 时才需要，所以懒加载，没装的话给出明确提示而不是让人看一个
+        # 陌生的 ModuleNotFoundError。
+        try:
+            import extra_streamlit_components as stx
+        except ImportError:
+            st.error(
+                "❌ 启用了 `--require-login`，但没有安装 `extra-streamlit-components`"
+                "（用于把免登录 token 存进浏览器 Cookie）。请先执行：\n\n"
+                "```\npip install extra-streamlit-components\n```"
+            )
+            return
+        # 每次 rerun 开头都重新创建一次（不是只创建一次然后全程复用旧
+        # 对象），拿到的才是这次 rerun 时浏览器实际携带的最新 Cookie
+        # 快照——原因见 `_get_cookie_manager()` 的说明。
+        st.session_state["_cookie_manager"] = stx.CookieManager(key="mini_agent_kanban_cookie_mgr")
+
         if not render_login_gate(cli_args):
             return  # 登录表单已经渲染完，未通过验证前不能往下渲染任何看板内容
         with st.sidebar:
             st.caption(f"👤 已登录：{st.session_state.get('username', '')}")
             if st.button("🚪 退出登录"):
                 # [kanban_session_management_plan.md] 不再只是清本地
-                # session_state / URL——同时把这个会话从 SessionStore 里
-                # 撤销掉，不然如果这条带 token 的链接之前被复制/泄露出去，
-                # "退出登录"之后那份泄露出去的链接其实仍然能用（token 签名
-                # 本身要到 12 小时后才自然过期）。
+                # session_state / Cookie——同时把这个会话从 SessionStore 里
+                # 撤销掉，不然如果这个 token 之前被复制/泄露出去，
+                # "退出登录"之后那份泄露出去的 token 其实仍然能用（token
+                # 签名本身要到 12 小时后才自然过期）。
                 from auth import SessionStore
                 _users_file, _secret_file, _attempts_file, sessions_file = _auth_paths(cli_args)
                 SessionStore(sessions_file).revoke(st.session_state.get("session_id", ""))
                 st.session_state.authenticated = False
                 st.session_state.pop("username", None)
                 st.session_state.pop("session_id", None)
-                # [P1 一致性修复] 同上，写 query_params 后不再手动 st.rerun()。
-                update_query_params(auth=None)
+                # 清 Cookie 不像原来写 query_params 那样会自动触发一次
+                # rerun，这里手动补一个，让登录页立刻显示出来。
+                _cookie_clear_auth()
+                st.rerun()
             st.divider()
 
     client = render_sidebar()

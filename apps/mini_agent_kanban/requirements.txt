@@ -9,3 +9,8 @@ requests>=2.31
 # 可选：成长顾问 tab 的拖拽式看板视图（未安装时自动回退到列表 + 按钮，
 # 见 apps/mini_agent_kanban/app.py::_sortable_available）
 streamlit-sortables>=0.3.0
+# 仅 --require-login 模式需要：把免登录 token 存进浏览器 Cookie
+# （原来存 URL query params，会随浏览器历史记录/访问日志/Referer 泄露，
+# 见 kanban_auth_cookie_migration_plan.md）。未开启 --require-login 时
+# 不会导入这个包，可以不装。
+extra-streamlit-components>=0.1.60
