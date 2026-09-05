@@ -2640,49 +2640,101 @@ def _sessions_future_started_key(page: int) -> str:
     return f"_sessions_list_future_started_p{page}"
 
 
+def _sessions_cache_version() -> int:
+    return st.session_state.get("_sessions_cache_version", 0)
+
+
+def _sessions_cache_key(page: int) -> str:
+    # 版本号编进 key 里：`_invalidate_sessions_list_cache()` 只需要把
+    # 版本号 +1，所有页码的旧缓存 key 就自然"过期"（不会再被读到），
+    # 不用挨个 pop 每一页的 key。
+    return f"_sessions_list_cache_v{_sessions_cache_version()}_p{page}"
+
+
+def _sessions_cache_ts_key(page: int) -> str:
+    return f"_sessions_list_cache_ts_v{_sessions_cache_version()}_p{page}"
+
+
+def _invalidate_sessions_list_cache() -> None:
+    """新建/删除/pin/unpin 等会改变会话列表内容的操作之后调用，让下一次
+    渲染重新去后端拉一份新数据，而不是继续展示已经过期的缓存。"""
+    st.session_state["_sessions_cache_version"] = _sessions_cache_version() + 1
+
+
+_SESSIONS_CACHE_TTL = 8.0  # 秒；超过这个时间即视为"过期"，触发一次后台刷新
+
+
 def _fetch_sessions_list_async(client: AgentClient, page: int, page_size: int) -> Optional[dict]:
-    """会话列表的非阻塞拉取。
+    """会话列表的非阻塞拉取（带缓存，避免吞掉列表里按钮的点击）。
 
-    背景：`client.sessions()` 底层是同步的 `requests.get(timeout=6)`，
-    daemon 一旦响应慢（没开 session 持久化、GC 停顿、并发请求排队……）
-    Streamlit 这次脚本执行就会硬生生卡满 6 秒甚至直接读超时报错，
-    整个「会话管理」tab 在这期间没法交互。
+    背景 1：`client.sessions()` 底层是同步的 `requests.get()`，daemon 一旦
+    响应慢（没开 session 持久化、GC 停顿、并发请求排队……）Streamlit 这次
+    脚本执行就会硬生生卡住甚至直接读超时报错，整个「会话管理」tab 在这
+    期间没法交互——所以底层请求通过 `AgentClient.sessions_async()` 扔进
+    后台线程池，立刻拿到一个 Future。
 
-    这里改成：请求通过 `AgentClient.sessions_async()` 扔进后台线程池，
-    立刻拿到一个 Future 存进 `st.session_state`（按页码区分，翻页不会
-    互相覆盖）。当前这次渲染只做一次几乎零耗时的 `future.done()` 判断：
-      - 没完成：展示"加载中"提示，`time.sleep` 一小段（不占用网络 IO，
-        真正的 HTTP 请求仍在后台线程继续跑）后 `st.rerun()`，下次
-        渲染再检查一次——用户可以随时点其它按钮/切 tab 打断这个轮询，
-        不会被卡死；
-      - 完成了：取出结果（可能是正常数据，也可能是 `_error`），清掉
-        Future，交给调用方正常渲染或展示"刷新重试"。
+    背景 2（这版重写要修的 bug）：第一版实现里，只要当前没有"正在进行中
+    的 Future"，就会在每次脚本重跑时无条件重新发起一次异步请求，然后
+    "没完成就 `st.rerun()` 提前 return"——问题是，这个函数是在渲染会话
+    列表（含每个 session 的"恢复/绑定/pin/删除"按钮）**之前**调用的：
+    只要那次重跑恰好赶上一个新请求还没返回（几乎总是如此，因为上一次
+    成功后 Future 早被消费掉了），函数就会在按钮所在的 `for` 循环**执行
+    之前**直接 return None 并中断脚本——这意味着"点击了会话列表里任何一
+    个按钮（比如"📌 本页面绑定到此会话"）"触发的这次重跑，根本没有走到
+    判断按钮是否被点击的那行代码，点击的效果就这样被悄悄吞掉了，表现就
+    是"点了按钮但完全没反应"。
 
-    返回 None 表示"还在加载，本次不用往下渲染"（`st.rerun()` 会直接
-    中断脚本，实际上也走不到 return None 之后）。
+    修法：把上一次成功拉到的数据缓存进 `st.session_state`（按页码 +
+    缓存版本号区分）。只要有缓存，不管有没有正在后台刷新的新请求，
+    都**优先直接返回缓存**——这样按钮所在的渲染代码在任何一次重跑里都
+    会正常执行到，点击不会被吞。新数据在后台线程完成后，会在缓存过期
+    （`_SESSIONS_CACHE_TTL` 秒）触发的下一轮刷新里自然替换掉旧缓存，
+    不需要用户感知。只有"这一页从来没成功加载过"时，才会展示 loading
+    提示并阻塞式轮询（此时反正也没有按钮可点，不存在吞点击的问题）。
     """
     fkey = _sessions_future_key(page)
     started_key = _sessions_future_started_key(page)
+    cache_key = _sessions_cache_key(page)
+    cache_ts_key = _sessions_cache_ts_key(page)
 
+    cached = st.session_state.get(cache_key)
+    cache_age = time.time() - st.session_state.get(cache_ts_key, 0)
     fut = st.session_state.get(fkey)
-    if fut is None:
+
+    # 没有缓存，或缓存已经过期太久：需要一个新请求。
+    if fut is None and (cached is None or cache_age > _SESSIONS_CACHE_TTL):
         fut = client.sessions_async(limit=page_size, offset=page * page_size)
         st.session_state[fkey] = fut
         st.session_state[started_key] = time.time()
 
-    if not fut.done():
-        elapsed = time.time() - st.session_state.get(started_key, time.time())
-        st.info(f"⏳ 会话列表加载中…（已等待 {elapsed:.1f}s，页面未卡死，可切换其它 tab）")
-        time.sleep(0.4)
-        st.rerun()
-        return None
+    if fut is not None and fut.done():
+        st.session_state.pop(fkey, None)
+        st.session_state.pop(started_key, None)
+        try:
+            result = fut.result() or {}
+        except Exception as e:
+            result = {"_error": str(e)}
+        if "_error" not in result:
+            st.session_state[cache_key] = result
+            st.session_state[cache_ts_key] = time.time()
+            return result
+        # 请求失败：如果手头还有旧缓存，宁可继续展示旧数据而不是打断
+        # 用户正在做的操作（按钮依然可点），错误只在完全没有历史数据、
+        # 也没有可展示内容时才交给调用方处理（展示"刷新重试"）。
+        return cached if cached is not None else result
 
-    st.session_state.pop(fkey, None)
-    st.session_state.pop(started_key, None)
-    try:
-        return fut.result() or {}
-    except Exception as e:
-        return {"_error": str(e)}
+    if cached is not None:
+        # 有缓存可用：不管新请求是否还在后台跑，都直接用缓存渲染，
+        # 保证本次渲染一定会执行到会话列表和按钮，不吞点击。
+        return cached
+
+    # 完全没有任何缓存（这一页第一次加载）：这时候还没有按钮可点，
+    # 阻塞式轮询没有"吞点击"的风险，正常展示 loading 即可。
+    elapsed = time.time() - st.session_state.get(started_key, time.time())
+    st.info(f"⏳ 会话列表加载中…（已等待 {elapsed:.1f}s，页面未卡死，可切换其它 tab）")
+    time.sleep(0.4)
+    st.rerun()
+    return None
 
 
 def render_sessions_tab(client: AgentClient):
@@ -2695,6 +2747,7 @@ def render_sessions_tab(client: AgentClient):
             res = client.new_session()
             if res and "_error" not in res:
                 st.success("已创建新会话")
+                _invalidate_sessions_list_cache()
                 new_sid = res.get("session_id")
                 if new_sid:
                     # 顺手把本页面绑定到刚创建的新会话，免得用户创建后还要
@@ -2727,9 +2780,10 @@ def render_sessions_tab(client: AgentClient):
     if "_error" in data:
         st.info(f"会话列表不可用：{data['_error']}（可能未开启 session 持久化，或后端响应超时）")
         if st.button("🔄 刷新重试", key=f"sessions_list_retry_{page}", width='stretch'):
-            # 清掉本页的旧 Future，下次渲染会重新提交一次异步请求。
+            # 清掉本页的旧 Future 以及缓存，下次渲染会重新提交一次异步请求。
             st.session_state.pop(_sessions_future_key(page), None)
             st.session_state.pop(_sessions_future_started_key(page), None)
+            _invalidate_sessions_list_cache()
             st.rerun()
         return
 
@@ -2762,6 +2816,7 @@ def render_sessions_tab(client: AgentClient):
                 res = client.resume_session(sid)
                 _reset_events_cache("")
                 st.session_state.pop(_chat_load_limit_key(""), None)
+                _invalidate_sessions_list_cache()
                 st.success("已切换") if res and "_error" not in res else st.error(res.get("_error", "失败"))
                 st.rerun()
             if cc2.button("📌 本页面绑定到此会话", key=f"bind_{sid}",
@@ -2785,11 +2840,13 @@ def render_sessions_tab(client: AgentClient):
                 res = client.unpin_session(sid) if is_protected else client.pin_session(sid)
                 if res and "_error" not in res:
                     st.success("已取消保护" if is_protected else "已加入清理保护")
+                    _invalidate_sessions_list_cache()
                 else:
                     st.error((res or {}).get("_error", "操作失败"))
                 st.rerun()
             if cc5.button("🗑️ 删除", key=f"del_{sid}"):
                 client.delete_session(sid)
+                _invalidate_sessions_list_cache()
                 st.rerun()
 
     pc1, pc2, pc3 = st.columns([1, 2, 1])
