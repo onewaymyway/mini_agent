@@ -12,30 +12,25 @@
 #   {{previous_profile_block}} — [next_doc/memory_backfill_and_profile_update_plan.md
 #                            方向二] 完整的"上一版画像 + 更新指引"文本块，
 #                            由 profile.py 按是否增量更新拼好（可能为空串）。
-#   {{goal_tree_block}}   — [next_doc/profile_staleness_and_goal_tree_gap_plan.md
-#                            方向二] 当前活跃目标树的轻量快照（可能为空串），
-#                            由 profile.py::generate() 每次生成时重新拉取，
-#                            不是"上一版画像"的一部分。
-#   {{watchlist_block}}   — [响应用户反馈：画像信息来源不够全] 用户在
-#                            watchlist.yaml 里显式配置要关注的话题/关键词
-#                            （可能为空串），跟 goal_tree_block 同一个定位：
-#                            当前状态快照，每次重新拉取。
-#   {{preferences_block}} — [响应用户反馈：画像信息来源不够全] 用户通过
-#                            /profile 等入口显式设置的偏好（可能为空串），
-#                            是既定事实，不需要模型从会话证据里再验证。
+#   {{context_blocks}}    — [next_doc/profile_context_sources_completeness_plan.md
+#                            方向 E] 所有"背景信息快照"合并成的一段文本
+#                            （可能为空串）。由 profile.py::_collect_profile_
+#                            context_blocks() 统一收集，每次生成时重新拉取，
+#                            不是"上一版画像"的一部分。目前包含（具体语义
+#                            见 prompts/system/profile_summarizer.md 里对
+#                            各类背景信息的说明，不需要在这里逐条列出，
+#                            避免两处文档各说各话）：
+#                              - 活跃 + 最近完成的目标树快照
+#                              - 用户在 watchlist.yaml 显式配置的关注话题
+#                              - 用户通过 /profile 等入口显式设置的偏好
+#                              - growth_advisor 规则扫描检测到的关注主题
+#                              - research/growth 两个 wiki 命名空间最近
+#                                更新的条目标题
+#                            新增信息源时只需要在 profile.py 的
+#                            `_PROFILE_CONTEXT_PROVIDERS` 里注册一个函数，
+#                            不需要再改这个模板。
 
-#   {{growth_focus_block}} — [next_doc/profile_context_sources_completeness_plan.md
-#                            方向 A] growth_advisor 规则扫描持续检测到的
-#                            用户关注主题（可能为空串），权重弱于用户
-#                            显式声明的偏好/watchlist，属于"辅助佐证"级别
-#                            的信号。
-
-#   {{wiki_block}}         — [next_doc/profile_context_sources_completeness_plan.md
-#                            方向 C] research/growth 两个 wiki 命名空间下
-#                            最近更新的条目标题（可能为空串），零成本版本，
-#                            只有标题+更新时间，不含正文。
-
-{{previous_profile_block}}{{goal_tree_block}}{{watchlist_block}}{{preferences_block}}{{growth_focus_block}}{{wiki_block}}Session summaries:
+{{previous_profile_block}}{{context_blocks}}Session summaries:
 {{memory_text}}
 
 Respond with only the JSON object described in the system prompt.

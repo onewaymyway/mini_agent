@@ -48,7 +48,7 @@ import json
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from mini_agent.llm.base import LLMClient
@@ -174,6 +174,132 @@ class UserProfile:
     def is_new(self) -> bool:
         """是否为尚未生成过画像的新用户。"""
         return not self.derived
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# [next_doc/profile_context_sources_completeness_plan.md 方向 E]
+# 画像生成的"背景信息块"统一注册机制。
+#
+# 背景：`UserProfileManager.generate()` 此前对每一个新增信息源都手写一段
+# 几乎一样的"try: 拉数据 ... except: 空串 ... 拼进对应的 xxx_block 变量
+# ... 传给 pm.render() 的一个具名参数"样板代码——从 goal_tree_block 开始，
+# 陆续加到 watchlist_block/preferences_block/growth_focus_block/
+# wiki_block 共 5 份，重复到明显影响可维护性（新增一个信息源要同时改
+# generate() 内部逻辑 + prompt 模板的具名变量列表两处）。这里统一抽成
+# "provider 函数列表 + 一次性收集"，新增信息源只需要在下面注册一个
+# `(paths, profile) -> str` 的函数，不需要再碰 generate() 主体逻辑，
+# 也不需要再给 prompt 模板加新的具名变量——全部背景块合并成一个
+# {{context_blocks}} 传入。
+#
+# 统一签名为 `(paths, profile) -> str`：
+#   - 大多数 provider 只需要 paths（goal_tree/watchlist/wiki 都是读取
+#     paths 指向的文件/目录），忽略 profile 参数即可；
+#   - preferences/growth_focus 两个 provider 需要读取已经 load() 出来的
+#     profile 对象（`profile.preferences` / `profile.derived`），避免
+#     再重新 load 一次。
+# 每个 provider 内部各自 try/except 兜底为空串——一个信息源的异常不该
+# 影响其它信息源，也不该影响画像生成主流程；`_collect_profile_context_
+# blocks()` 外层再兜一层，双重保险。
+# ─────────────────────────────────────────────────────────────────────────
+
+def _profile_context_goal_tree(paths: "AgentPaths", profile: "UserProfile") -> str:
+    """活跃 + 最近完成的目标树快照（方向二 + 方向 B）。"""
+    try:
+        from mini_agent.perception.goal_tree_report import build_goal_tree_profile_snapshot
+        return build_goal_tree_profile_snapshot(paths)
+    except Exception:
+        return ""
+
+
+def _profile_context_watchlist(paths: "AgentPaths", profile: "UserProfile") -> str:
+    """用户在 watchlist.yaml 里显式配置要关注的话题。"""
+    try:
+        from mini_agent.external_input.watchlist import build_watchlist_profile_snapshot
+        return build_watchlist_profile_snapshot(paths)
+    except Exception:
+        return ""
+
+
+def _profile_context_preferences(paths: "AgentPaths", profile: "UserProfile") -> str:
+    """`profile.preferences` 是用户通过 `set_preference()`（CLI `/profile
+    set` 或看板"✏️ 我的偏好设置"）显式设置的偏好——客观事实，不是需要
+    LLM 从会话记忆里"推断"出来的东西，作为独立的"既定事实"区块传入，
+    明确告诉模型这是不需要被会话证据推翻的 ground truth。"""
+    if not profile.preferences:
+        return ""
+    lines = [
+        "The user has explicitly set these preferences (ground truth — "
+        "do not question or contradict them based on session evidence, "
+        "just reflect them naturally where relevant):"
+    ]
+    for k, v in profile.preferences.items():
+        lines.append(f"- {k}: {v}")
+    return "\n".join(lines)
+
+
+def _profile_context_growth_focus(paths: "AgentPaths", profile: "UserProfile") -> str:
+    """growth_advisor 通过规则扫描（`growth_signal_scan()`）持续把"agent
+    认为用户在关注什么"写进 `profile.derived["growth_focus_areas"]`
+    （{topic: [entry_id,...]}）。按命中记忆条目数降序取前几个主题名，
+    只取主题名不展开命中的 entry_id 列表——那是诊断细节，跟"这个主题
+    算不算用户的关注点"这层画像语义无关。（方向 A）"""
+    try:
+        focus_hits = (profile.derived or {}).get("growth_focus_areas") or {}
+        if not isinstance(focus_hits, dict) or not focus_hits:
+            return ""
+        ranked_topics = sorted(
+            focus_hits.items(), key=lambda kv: len(kv[1] or []), reverse=True
+        )[:8]
+        topic_names = [topic for topic, _hit_ids in ranked_topics if topic]
+        if not topic_names:
+            return ""
+        return (
+            "Topics the agent has independently detected the user engaging "
+            "with recently (derived from signal-scanning session memory, not "
+            "from the user explicitly stating them — treat as a weaker, "
+            "corroborating signal rather than ground truth):\n"
+            + "\n".join(f"- {t}" for t in topic_names)
+        )
+    except Exception:
+        return ""
+
+
+def _profile_context_wiki(paths: "AgentPaths", profile: "UserProfile") -> str:
+    """wiki 里 research/growth 两个命名空间最近更新的条目标题（方向 C，
+    第一步：零成本版本，只取标题+更新时间）。"""
+    try:
+        from mini_agent.wiki.stats import build_wiki_recent_updates_snapshot
+        return build_wiki_recent_updates_snapshot(paths)
+    except Exception:
+        return ""
+
+
+# 注册表：新增信息源时，在这里加一行即可，不需要再碰 generate() 主体。
+_PROFILE_CONTEXT_PROVIDERS: list[Callable[["AgentPaths", "UserProfile"], str]] = [
+    _profile_context_goal_tree,
+    _profile_context_watchlist,
+    _profile_context_preferences,
+    _profile_context_growth_focus,
+    _profile_context_wiki,
+]
+
+
+def _collect_profile_context_blocks(paths: "AgentPaths", profile: "UserProfile") -> str:
+    """依次调用所有已注册的 provider，把非空结果拼成一段文本，整体作为
+    跟 memory_text 并列的独立输入（不是"上一版画像"的一部分，而是每次
+    生成时都重新拉取的当前状态快照）。任一 provider 异常不影响其它
+    provider，也不影响画像生成主流程；全部为空时返回空串（模板里对应
+    的 {{context_blocks}} 位置就是空白，不会留下多余的空行标题）。
+    """
+    blocks = []
+    for provider in _PROFILE_CONTEXT_PROVIDERS:
+        try:
+            snippet = provider(paths, profile)
+        except Exception:
+            snippet = ""
+        if snippet:
+            blocks.append(snippet)
+    return ("\n\n".join(blocks) + "\n\n") if blocks else ""
 
 
 class UserProfileManager:
@@ -382,104 +508,17 @@ class UserProfileManager:
             lines.append("")  # 与下面的 Session summaries 之间留一个空行
             previous_profile_text = "\n".join(lines) + "\n\n"
 
-        # [next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向二]
-        # 目标树背景作为跟 memory_text 并列的独立输入，不混进增量更新
-        # 的"上一版画像"文本块——语义上这不是"上一版画像"的一部分，而是
-        # 每次生成时都重新拉取的当前状态快照。零成本、不引入 LLM，任一
-        # 环节异常已经在 build_goal_tree_profile_snapshot() 内部兜底为
-        # 空串，这里不需要再包一层 try/except。
-        goal_tree_block = ""
-        try:
-            from mini_agent.perception.goal_tree_report import build_goal_tree_profile_snapshot
-            goal_tree_snapshot = build_goal_tree_profile_snapshot(self._paths)
-            if goal_tree_snapshot:
-                goal_tree_block = goal_tree_snapshot + "\n\n"
-        except Exception:
-            goal_tree_block = ""
-
-        # [响应用户反馈：画像信息来源不够全] watchlist.yaml 是用户显式
-        # 配置的"我要关注这些话题"，跟目标树快照同一个定位——当前状态
-        # 快照，不是"上一版画像"的一部分，每次生成都重新拉取。同样零
-        # 成本、不引入 LLM，异常已在 build_watchlist_profile_snapshot()
-        # 内部兜底为空串。
-        watchlist_block = ""
-        try:
-            from mini_agent.external_input.watchlist import build_watchlist_profile_snapshot
-            watchlist_snapshot = build_watchlist_profile_snapshot(self._paths)
-            if watchlist_snapshot:
-                watchlist_block = watchlist_snapshot + "\n\n"
-        except Exception:
-            watchlist_block = ""
-
-        # [响应用户反馈：画像信息来源不够全] `profile.preferences` 是用户
-        # 通过 `set_preference()` 显式设置的偏好——这是客观事实，不是需要
-        # LLM 从会话记忆里"推断"出来的东西，之前 generate() 完全没有把它
-        # 喂给 LLM，等于这部分权威信息被闲置。这里作为独立的"既定事实"
-        # 区块传入，明确告诉模型这是不需要被会话证据推翻的 ground truth，
-        # 只需要在写 summary 时自然地把它体现出来，不需要重新验证。
-        preferences_block = ""
-        if profile.preferences:
-            pref_lines = [
-                "The user has explicitly set these preferences (ground truth — "
-                "do not question or contradict them based on session evidence, "
-                "just reflect them naturally where relevant):"
-            ]
-            for k, v in profile.preferences.items():
-                pref_lines.append(f"- {k}: {v}")
-            preferences_block = "\n".join(pref_lines) + "\n\n"
-
-        # [next_doc/profile_context_sources_completeness_plan.md 方向 A]
-        # growth_advisor 通过规则扫描（`growth_signal_scan()`）持续把
-        # "agent 认为用户在关注什么"写进 `profile.derived["growth_focus_areas"]`
-        # （{topic: [entry_id,...]}），此前这份数据只在看板"关键词列表"
-        # 单独展示，从未反馈进画像生成——两边各说各话，summary 里完全
-        # 看不出 agent 自己已经跟踪到的关注领域。这里直接读取本函数已经
-        # load() 出来的 `profile` 对象（不需要 import growth_advisor 模块，
-        # 天然不会有循环依赖问题），按命中记忆条目数降序取前几个主题名，
-        # 只取主题名不展开命中的 entry_id 列表——那是诊断细节，跟"这个
-        # 主题算不算用户的关注点"这层画像语义无关。
-        growth_focus_block = ""
-        try:
-            focus_hits = prev_derived.get("growth_focus_areas") or {}
-            if isinstance(focus_hits, dict) and focus_hits:
-                ranked_topics = sorted(
-                    focus_hits.items(), key=lambda kv: len(kv[1] or []), reverse=True
-                )[:8]
-                topic_names = [topic for topic, _hit_ids in ranked_topics if topic]
-                if topic_names:
-                    growth_focus_block = (
-                        "Topics the agent has independently detected the user engaging "
-                        "with recently (derived from signal-scanning session memory, not "
-                        "from the user explicitly stating them — treat as a weaker, "
-                        "corroborating signal rather than ground truth):\n"
-                        + "\n".join(f"- {t}" for t in topic_names)
-                        + "\n\n"
-                    )
-        except Exception:
-            growth_focus_block = ""
-
-        # [next_doc/profile_context_sources_completeness_plan.md 方向 C]
-        # wiki 里 research/growth 两个命名空间的"最近更新"标题快照——
-        # 跟目标树/watchlist 同一个定位：当前状态快照，每次重新拉取，
-        # 零成本、不引入 LLM，异常已在函数内部兜底为空串。
-        wiki_block = ""
-        try:
-            from mini_agent.wiki.stats import build_wiki_recent_updates_snapshot
-            wiki_snapshot = build_wiki_recent_updates_snapshot(self._paths)
-            if wiki_snapshot:
-                wiki_block = wiki_snapshot + "\n\n"
-        except Exception:
-            wiki_block = ""
+        # [next_doc/profile_context_sources_completeness_plan.md 方向 E]
+        # 5 段几乎一样的"try: 拉数据 ... except: 空串 ... 拼进具名变量"
+        # 样板代码统一收敛成一次调用——新增信息源只需要在模块级的
+        # `_PROFILE_CONTEXT_PROVIDERS` 里注册一个函数，不需要再改这里。
+        context_blocks = _collect_profile_context_blocks(self._paths, profile)
 
         prompt = pm.render(
             "user/profile_update_request",
             memory_text=memory_text,
             previous_profile_block=previous_profile_text,
-            goal_tree_block=goal_tree_block,
-            watchlist_block=watchlist_block,
-            preferences_block=preferences_block,
-            growth_focus_block=growth_focus_block,
-            wiki_block=wiki_block,
+            context_blocks=context_blocks,
         )
 
         resp = llm_client.chat_with_retry(

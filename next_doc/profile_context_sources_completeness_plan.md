@@ -1,8 +1,7 @@
 # 用户画像"信息来源不够全"改进方案
 
-- **版本**: v3——方向 **A/B/C/D 均已实施**（方向 D 含 CLI + 看板双入口，
-  第五期已收尾），详见文末"实施记录"一节；只剩方向 E（架构性重构，
-  纯重构不改变行为）按原计划留待后续需要时再做。
+- **版本**: v4——方向 **A/B/C/D/E 全部已实施**（D 含 CLI + 看板双入口，
+  E 为纯重构，不改变模型侧行为），详见文末"实施记录"一节。
 - **前置文档**:
   - `next_doc/profile_staleness_and_goal_tree_gap_plan.md`（已实施：
     画像刷新时间兜底 + 目标树接入画像，本文档是它的延续，处理"目标树
@@ -158,50 +157,47 @@ agent 自身知识沉淀的命名空间（避免稀释）。按 `updated`（缺�
 **已知限制（第五期已解决，见下）**：这只打通了 CLI 侧的写入入口；看板
 （Streamlit `apps/mini_agent_kanban`）此前没有对应的可视化编辑区。
 
-### 方向 E（架构性，未实施，暂不需要）：统一的 ProfileContextCollector
+### 方向 E（架构性）：统一的 ProfileContextCollector ——已实施
 
-`generate()` 内部目前有 5 段几乎一样的"try: from xxx import build_xxx_
+`generate()` 内部原本有 5 段几乎一样的"try: from xxx import build_xxx_
 snapshot ... except: 空串"样板代码（`goal_tree_block` / `watchlist_
 block` / `preferences_block` / `growth_focus_block` / `wiki_block`）。
-如果后续还会持续增加信息源，可以抽象成统一的注册机制（见下方概念
-示意），新增信息源只需要写一个符合签名的函数并注册，不需要改
-`generate()` 主体逻辑，也不需要每次都改 prompt 模板的变量列表（可以
-统一渲染成一个 `{{context_blocks}}` 变量）：
 
-```python
-# 概念示意，非最终实现
-PROFILE_CONTEXT_PROVIDERS: list[Callable[[AgentPaths], str]] = [
-    build_goal_tree_profile_snapshot,
-    build_watchlist_profile_snapshot,
-    build_wiki_recent_updates_snapshot,
-    # growth_focus_block 依赖已 load() 的 profile 对象，签名跟其它几个
-    # 不完全一致，注册前需要先统一签名（比如都改成接收 (paths, profile)）
-]
+**实现方式**：在 `profile.py` 里新增 5 个模块级 provider 函数
+（`_profile_context_goal_tree` / `_profile_context_watchlist` /
+`_profile_context_preferences` / `_profile_context_growth_focus` /
+`_profile_context_wiki`），统一签名 `(paths, profile) -> str`——不需要
+数据的参数直接忽略；`_PROFILE_CONTEXT_PROVIDERS` 注册表按顺序收录
+这 5 个函数；`_collect_profile_context_blocks(paths, profile)` 依次
+调用、拼接非空结果，每个 provider 内部各自 try/except 兜底，外层再
+兜一层双重保险。`generate()` 主体现在只有一行
+`context_blocks = _collect_profile_context_blocks(self._paths, profile)`，
+prompt 模板对应改成单个 `{{context_blocks}}` 变量（原来 4 个具名变量
+`goal_tree_block`/`watchlist_block`/`preferences_block`/
+`growth_focus_block`/`wiki_block` 合并为一个）。
 
-def _collect_context_blocks(paths, profile) -> str:
-    blocks = []
-    for provider in PROFILE_CONTEXT_PROVIDERS:
-        try:
-            snippet = provider(paths, profile)
-            if snippet:
-                blocks.append(snippet)
-        except Exception:
-            continue
-    return ("\n\n".join(blocks) + "\n\n") if blocks else ""
-```
+**为什么现在可以做**：当初"本次判断不做"的顾虑是"签名不统一（`growth_
+focus_block` 需要 `profile` 对象，其它几个只需要 `paths`）、强行统一
+会丢失针对性上下文"——实际操作后发现这个顾虑被高估了：让所有 provider
+统一接收 `(paths, profile)`，不需要 `profile` 的函数直接在参数列表里
+忽略掉即可，Python 不要求用到所有形参，并不需要"丢失"任何针对性上下文。
+且方向 A/C 已经把 5 个信息源全部落地，"等后续再新增第 6/7 个"的触发
+条件已经不需要再等——五段样板本身已经足够重复到值得抽象。
 
-**本次判断不做**：5 段样板代码目前还在可读、可维护的范围内，每段的
-异常兜底、日志、注释都不完全相同，强行统一签名会丢失一些针对性的
-上下文（比如 `growth_focus_block` 需要 `profile` 对象、其它几个只需要
-`paths`）。等后续再新增第 6/7 个信息源、样板重复到明显影响可维护性时
-再做这次重构，避免为了还不存在的扩展性提前设计。
+**纯重构，不改变模型侧行为**：`_collect_profile_context_blocks()` 拼接
+顺序与原来 5 段手写代码的拼接顺序完全一致（goal_tree → watchlist →
+preferences → growth_focus → wiki），每个 provider 函数体内部逻辑
+原样迁移，未修改任何文本内容/格式；`prompts/system/profile_
+summarizer.md` 里对各类背景信息的语义说明不依赖具体变量名，不需要
+改动。
 
 ---
 
 ## 优先级（实施时的实际顺序）
 
-按文档 v1 版本给出的优先级依次实施：D → B → A → C（E 按计划暂不做）。
-实际实施顺序与建议顺序一致，未发现需要调整优先级的新信息。
+按文档 v1 版本给出的优先级依次实施：D → B → A → C → D 收尾（看板可视化）
+→ E。实际实施顺序与建议顺序一致，E 从"按计划暂不做"改为实施是因为
+操作后发现当初的顾虑（签名不统一）被高估了，详见方向 E 小节说明。
 
 ---
 
@@ -262,5 +258,20 @@ def _collect_context_blocks(paths, profile) -> str:
     画像"摆在同一处，方便对照"agent 猜的"和"我自己说的"。
 
 至此方向 D 的"已知限制"已解决，A/B/C/D 四个方向全部端到端完成
-（后端信息源接入 + 数据写入入口 + 看板可视化），只剩方向 E（架构性
-重构）按原计划留待后续需要时再做。
+（后端信息源接入 + 数据写入入口 + 看板可视化）。
+
+- **第六期**（方向 E：统一 ProfileContextCollector 重构）：
+  - `profile.py` 新增 5 个模块级 provider 函数 + `_PROFILE_CONTEXT_
+    PROVIDERS` 注册表 + `_collect_profile_context_blocks()`，替换掉
+    `generate()` 内部原有的 5 段手写 try/except 样板代码。
+  - `prompts/user/profile_update_request.md` 的具名变量从
+    `goal_tree_block`/`watchlist_block`/`preferences_block`/
+    `growth_focus_block`/`wiki_block` 五个合并为一个
+    `{{context_blocks}}`；`prompts/system/profile_summarizer.md` 无需
+    改动（语义说明不依赖具体变量名）。
+  - 纯重构，拼接顺序和每个信息源的文本内容与重构前完全一致，不改变
+    模型侧看到的 prompt 内容。
+  - 新增信息源的成本从"改 `generate()` 主体 + 改 prompt 模板变量列表"
+    降到"在 `_PROFILE_CONTEXT_PROVIDERS` 里加一行注册"。
+
+至此本文档识别的全部改进方向（A/B/C/D/E）均已实施完毕。
