@@ -428,6 +428,49 @@ class UserProfileManager:
                 pref_lines.append(f"- {k}: {v}")
             preferences_block = "\n".join(pref_lines) + "\n\n"
 
+        # [next_doc/profile_context_sources_completeness_plan.md 方向 A]
+        # growth_advisor 通过规则扫描（`growth_signal_scan()`）持续把
+        # "agent 认为用户在关注什么"写进 `profile.derived["growth_focus_areas"]`
+        # （{topic: [entry_id,...]}），此前这份数据只在看板"关键词列表"
+        # 单独展示，从未反馈进画像生成——两边各说各话，summary 里完全
+        # 看不出 agent 自己已经跟踪到的关注领域。这里直接读取本函数已经
+        # load() 出来的 `profile` 对象（不需要 import growth_advisor 模块，
+        # 天然不会有循环依赖问题），按命中记忆条目数降序取前几个主题名，
+        # 只取主题名不展开命中的 entry_id 列表——那是诊断细节，跟"这个
+        # 主题算不算用户的关注点"这层画像语义无关。
+        growth_focus_block = ""
+        try:
+            focus_hits = prev_derived.get("growth_focus_areas") or {}
+            if isinstance(focus_hits, dict) and focus_hits:
+                ranked_topics = sorted(
+                    focus_hits.items(), key=lambda kv: len(kv[1] or []), reverse=True
+                )[:8]
+                topic_names = [topic for topic, _hit_ids in ranked_topics if topic]
+                if topic_names:
+                    growth_focus_block = (
+                        "Topics the agent has independently detected the user engaging "
+                        "with recently (derived from signal-scanning session memory, not "
+                        "from the user explicitly stating them — treat as a weaker, "
+                        "corroborating signal rather than ground truth):\n"
+                        + "\n".join(f"- {t}" for t in topic_names)
+                        + "\n\n"
+                    )
+        except Exception:
+            growth_focus_block = ""
+
+        # [next_doc/profile_context_sources_completeness_plan.md 方向 C]
+        # wiki 里 research/growth 两个命名空间的"最近更新"标题快照——
+        # 跟目标树/watchlist 同一个定位：当前状态快照，每次重新拉取，
+        # 零成本、不引入 LLM，异常已在函数内部兜底为空串。
+        wiki_block = ""
+        try:
+            from mini_agent.wiki.stats import build_wiki_recent_updates_snapshot
+            wiki_snapshot = build_wiki_recent_updates_snapshot(self._paths)
+            if wiki_snapshot:
+                wiki_block = wiki_snapshot + "\n\n"
+        except Exception:
+            wiki_block = ""
+
         prompt = pm.render(
             "user/profile_update_request",
             memory_text=memory_text,
@@ -435,6 +478,8 @@ class UserProfileManager:
             goal_tree_block=goal_tree_block,
             watchlist_block=watchlist_block,
             preferences_block=preferences_block,
+            growth_focus_block=growth_focus_block,
+            wiki_block=wiki_block,
         )
 
         resp = llm_client.chat_with_retry(

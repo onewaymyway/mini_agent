@@ -162,4 +162,67 @@ def compute_stats(paths: AgentPaths) -> WikiStats:
     return stats
 
 
-__all__ = ["WikiStats", "compute_stats", "ExtractionStats", "compute_extraction_stats"]
+__all__ = [
+    "WikiStats", "compute_stats", "ExtractionStats", "compute_extraction_stats",
+    "build_wiki_recent_updates_snapshot",
+]
+
+
+def build_wiki_recent_updates_snapshot(paths: AgentPaths, *, max_items: int = 8) -> str:
+    """[next_doc/profile_context_sources_completeness_plan.md 方向 C，
+    第一步：零 LLM 成本版本] 为 `UserProfileManager.generate()` 准备一份
+    "最近更新的长期调研/学习类 wiki 条目"轻量快照。
+
+    只扫描 `wiki_research_dir`（`research_topic` 执行规范对应的持续调研
+    正文，如用户反馈里举例的 `research/agent_and_ai`）和
+    `wiki_growth_dir`（成长顾问学习素材，数据结构与推进逻辑相同，见
+    `AgentPaths.wiki_research_dir` 文档字符串）这两个命名空间——它们是
+    "用户主导的长期任务持续产出"的直接体现，跟画像"summary"里想表达的
+    "用户在做什么、做到什么程度"高度相关；不扫描整个 wiki（entities/
+    decisions/experiences 等其它命名空间是 agent 自身的知识沉淀，跟
+    "用户是谁"这层画像信息关系不大，扫了也只会稀释真正有用的部分）。
+
+    只取标题（页面 id）+ 更新时间，不读取正文——正文摘要如果需要，
+    应该是第二步（评估是否要对 wiki 正文做单独摘要），不在这个零成本
+    版本的范围内。任一环节异常直接返回空串，与其它 profile snapshot
+    函数（`build_goal_tree_profile_snapshot` / `build_watchlist_profile_
+    snapshot`）保持一致的降级风格。
+    """
+    try:
+        pages = discover_pages(paths)
+    except Exception:
+        return ""
+    if not pages:
+        return ""
+
+    try:
+        research_dir = paths.wiki_research_dir.resolve()
+        growth_dir = paths.wiki_growth_dir.resolve()
+    except Exception:
+        return ""
+
+    relevant_pages = []
+    for page_path in pages:
+        try:
+            resolved = page_path.resolve()
+            if research_dir not in resolved.parents and growth_dir not in resolved.parents:
+                continue
+            relevant_pages.append(parse_page(resolved))
+        except Exception:
+            continue
+
+    if not relevant_pages:
+        return ""
+
+    relevant_pages.sort(key=lambda pg: pg.updated or pg.created or "", reverse=True)
+
+    lines = ["Recently updated long-running research/learning wiki entries "
+             "(most recently updated first):"]
+    for pg in relevant_pages[:max_items]:
+        title = pg.id or pg.path.stem
+        when = pg.updated or pg.created
+        lines.append(f"- {title}" + (f" (last updated: {when})" if when else ""))
+
+    if len(lines) <= 1:
+        return ""
+    return "\n".join(lines)

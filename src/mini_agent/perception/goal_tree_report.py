@@ -263,7 +263,9 @@ def build_goal_tree_report(
     return report
 
 
-def build_goal_tree_profile_snapshot(paths: "AgentPaths", *, max_active_goals: int = 8) -> str:
+def build_goal_tree_profile_snapshot(
+    paths: "AgentPaths", *, max_active_goals: int = 8, max_completed_goals: int = 5
+) -> str:
     """[next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向二]
     为 `UserProfileManager.generate()` 准备一份"当前活跃目标 + 最近
     进展"的轻量文本摘要，作为跟 `memory_text` 并列的独立输入。
@@ -273,7 +275,11 @@ def build_goal_tree_profile_snapshot(paths: "AgentPaths", *, max_active_goals: i
     画像有意义的信息：
       - 活跃 Goal 节点的标题（`node.is_goal and node.is_active`）；
       - 每个活跃 Goal 最近一条产出摘要（复用 `recent_outputs_digest`，
-        跟树级报告口径一致，不重新实现一遍"读 manifest"逻辑）。
+        跟树级报告口径一致，不重新实现一遍"读 manifest"逻辑）；
+      - [next_doc/profile_context_sources_completeness_plan.md 方向 B]
+        最近完成的若干个目标标题（按完成时间倒序）——画像此前只看
+        "活跃"目标，读起来像"正在做什么的快照"，完全没有"已经做成了
+        什么"的历史纵深，这里补上这一段。
 
     零成本、不引入 LLM、任一环节异常直接返回空串——这是"背景信息"，
     不应该因为目标树模块的问题反过来影响画像生成主流程。返回空串时，
@@ -300,16 +306,44 @@ def build_goal_tree_profile_snapshot(paths: "AgentPaths", *, max_active_goals: i
     }
 
     lines = ["Active long-running goals the user is pursuing:"]
-    if not active_titles and not report.recent_outputs_digest:
-        return ""
-    for ref in report.by_status.get("active", [])[:max_active_goals]:
-        title = ref.get("title") or ref.get("id")
-        digest = digest_by_id.get(ref.get("id"))
-        if digest and digest.get("task_summary"):
-            lines.append(f"- {title}: recent progress — {digest['task_summary']}")
-        else:
-            lines.append(f"- {title}")
+    has_active = bool(active_titles or report.recent_outputs_digest)
+    if has_active:
+        for ref in report.by_status.get("active", [])[:max_active_goals]:
+            title = ref.get("title") or ref.get("id")
+            digest = digest_by_id.get(ref.get("id"))
+            if digest and digest.get("task_summary"):
+                lines.append(f"- {title}: recent progress — {digest['task_summary']}")
+            else:
+                lines.append(f"- {title}")
+    else:
+        lines = []
 
-    if len(lines) <= 1:
+    # ── 最近完成的目标：by_status 里的 ref 只有 id/title，没有完成时间，
+    # 回源到 backlog 节点取 status_history 里最近一次转为 "completed"
+    # 的时间戳做排序；status_history 缺失（旧数据）时退化用
+    # last_touched_at 兜底，实在没有就排到最后（时间戳 0）。──
+    completed_refs = report.by_status.get("completed", [])
+    if completed_refs:
+        def _completed_at(ref: dict) -> float:
+            node = backlog.get(ref.get("id"))
+            if node is None:
+                return 0.0
+            for entry in reversed(node.status_history or []):
+                if entry.get("status") == "completed":
+                    return entry.get("at") or 0.0
+            return getattr(node, "last_touched_at", None) or 0.0
+
+        completed_sorted = sorted(completed_refs, key=_completed_at, reverse=True)
+        completed_lines = [
+            f"- {ref.get('title') or ref.get('id')}"
+            for ref in completed_sorted[:max_completed_goals]
+        ]
+        if completed_lines:
+            if lines:
+                lines.append("")
+            lines.append("Recently completed goals (most recent first):")
+            lines.extend(completed_lines)
+
+    if not lines:
         return ""
     return "\n".join(lines)

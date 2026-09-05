@@ -3164,7 +3164,7 @@ _COMMANDS: list[tuple[str, str, list]] = [
         "sessions", "from-session", "stats", "history", "diff",
     ]),
     ("/memory",      "Generate/refresh session memory now",          []),
-    ("/profile",     "Refresh user profile now",                     []),
+    ("/profile",     "Refresh user profile now",                     ["rebuild", "scan", "set", "unset", "show"]),
     ("/stats",       "Show session statistics",                      []),
     ("/verbose",     "Toggle verbose tool output",                   []),
     ("/raw-output",  "Toggle raw model output (incl. <tool_use>)",   []),

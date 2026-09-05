@@ -43,7 +43,11 @@ may mention these goals in "summary" if it helps describe what the user is
 currently focused on, but do not invent tech_stack/habits entries purely
 from a goal's title — those should still come from the session summaries.
 This block reflects the current state of the user's goal tree and may not
-have a corresponding recent session summary; that's expected.
+have a corresponding recent session summary; that's expected. The same
+block may also include a short "recently completed goals" section — treat
+that the same way, and feel free to use it to describe progress/history
+in "summary" (e.g. "has completed X, now focused on Y") rather than only
+describing what the user is currently doing.
 
 If a block listing topics/keywords the user is explicitly watching is
 provided (from their watchlist configuration), treat it the same way as
@@ -51,10 +55,24 @@ the goal-tree block: background context you may reflect in "summary" to
 describe what the user cares about, not evidence to invent tech_stack or
 habits entries from.
 
+If a block listing topics the agent has independently detected the user
+engaging with (via automated signal-scanning, not the user's own words)
+is provided, treat it as the weakest-confidence background signal of the
+three: useful to corroborate or gently expand "summary" wording, but if it
+conflicts with the session summaries, watchlist, or explicit preferences,
+those take precedence.
+
 If a block listing the user's explicitly declared preferences is provided,
 treat those as settled facts about the user, not hypotheses to verify
 against session evidence — incorporate them into the profile (summary
 and/or habits, whichever fits) without questioning or contradicting them.
+
+If a block listing recently updated research/learning wiki entry titles is
+provided, treat it as background context showing what long-running
+research or learning work is actively progressing — you may reference it
+in "summary" (e.g. to note the topic and that it's being actively
+maintained), but titles alone are not enough evidence to invent specific
+tech_stack or habits entries.
 
 Write the "summary", "tech_stack" and "habits" values in {{preferred_language}}
 (an ISO 639-1 language code, e.g. "zh" for Chinese, "ja" for Japanese, "en"

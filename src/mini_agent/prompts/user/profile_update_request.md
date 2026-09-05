@@ -24,7 +24,18 @@
 #                            /profile 等入口显式设置的偏好（可能为空串），
 #                            是既定事实，不需要模型从会话证据里再验证。
 
-{{previous_profile_block}}{{goal_tree_block}}{{watchlist_block}}{{preferences_block}}Session summaries:
+#   {{growth_focus_block}} — [next_doc/profile_context_sources_completeness_plan.md
+#                            方向 A] growth_advisor 规则扫描持续检测到的
+#                            用户关注主题（可能为空串），权重弱于用户
+#                            显式声明的偏好/watchlist，属于"辅助佐证"级别
+#                            的信号。
+
+#   {{wiki_block}}         — [next_doc/profile_context_sources_completeness_plan.md
+#                            方向 C] research/growth 两个 wiki 命名空间下
+#                            最近更新的条目标题（可能为空串），零成本版本，
+#                            只有标题+更新时间，不含正文。
+
+{{previous_profile_block}}{{goal_tree_block}}{{watchlist_block}}{{preferences_block}}{{growth_focus_block}}{{wiki_block}}Session summaries:
 {{memory_text}}
 
 Respond with only the JSON object described in the system prompt.

@@ -376,6 +376,57 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         from mini_agent.cli.commands.memory_cmd import handle_memory_cmd
         handle_memory_cmd(parts[1:], agent)
 
+    elif name == "profile" and len(parts) >= 2 and parts[1] == "set":
+        # [next_doc/profile_context_sources_completeness_plan.md 方向 D]
+        # 补上 `profile.preferences` 一直缺失的写入入口——此前
+        # `UserProfileManager.set_preference()` 有实现但代码库里没有任何
+        # 调用方，等于一个只能靠手改 JSON 文件才能用的死功能。这里用法
+        # 参照最朴素的 "/xxx set <key> <value...>" 惯例：key 只取第一个
+        # 词，剩下的原样拼回去当 value（允许 value 本身带空格）。
+        if len(parts) < 4:
+            print("Usage: /profile set <key> <value...>")
+        elif not agent._profile_mgr:
+            print("[profile] 长期记忆/画像功能未启用（memory_backend 未配置）")
+        else:
+            key = parts[2]
+            value = " ".join(parts[3:])
+            agent._profile_mgr.set_preference(key, value)
+            print(f"[profile] 已设置偏好 {key} = {value!r}（下次画像刷新时会作为既定事实提供给模型）")
+
+    elif name == "profile" and len(parts) >= 2 and parts[1] == "unset":
+        if len(parts) < 3:
+            print("Usage: /profile unset <key>")
+        elif not agent._profile_mgr:
+            print("[profile] 长期记忆/画像功能未启用（memory_backend 未配置）")
+        else:
+            key = parts[2]
+            profile = agent._profile_mgr.load()
+            if key in profile.preferences:
+                del profile.preferences[key]
+                agent._profile_mgr.save()
+                print(f"[profile] 已删除偏好 {key}")
+            else:
+                print(f"[profile] 未找到偏好 {key}")
+
+    elif name == "profile" and len(parts) >= 2 and parts[1] in ("show", "get"):
+        # 不带 key 时展示全部偏好；带 key 时只显示这一条——跟 `/profile`
+        # （无参数，刷新画像）区分开，这两个子命令只读不触发任何刷新。
+        if not agent._profile_mgr:
+            print("[profile] 长期记忆/画像功能未启用（memory_backend 未配置）")
+        else:
+            profile = agent._profile_mgr.load()
+            if len(parts) >= 3:
+                key = parts[2]
+                if key in profile.preferences:
+                    print(f"{key} = {profile.preferences[key]!r}")
+                else:
+                    print(f"[profile] 未找到偏好 {key}")
+            elif not profile.preferences:
+                print("[profile] 尚未设置任何偏好，使用 /profile set <key> <value> 设置")
+            else:
+                for k, v in profile.preferences.items():
+                    print(f"  {k} = {v!r}")
+
     elif name == "profile" and len(parts) >= 2 and parts[1] == "rebuild":
         import threading
         threading.Thread(
