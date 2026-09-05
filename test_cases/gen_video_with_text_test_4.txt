@@ -1,0 +1,9 @@
+根据以下描述生成音频参考视频：
+
+以 <Audio 1> 的节奏和环境氛围作为参考，生成电影感夜间驾驶画面
+
+参考音频：test_cases/inputs/reference_audio.mp3
+
+模式：reference，时长5秒
+
+保存到 test_result/video_from_skill/night_driving.mp4

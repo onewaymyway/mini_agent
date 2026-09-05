@@ -1,0 +1,10 @@
+根据以下要求生成首尾帧过渡视频：
+
+首帧图片：test_cases/inputs/keyframe_first.png
+尾帧图片：test_cases/inputs/keyframe_last.png
+
+描述：人物从首帧姿态自然转身走向窗边，镜头缓慢推进并平滑过渡到尾帧
+
+模式：keyframe，时长5秒
+
+保存到 test_result/video_from_skill/keyframe_transition.mp4

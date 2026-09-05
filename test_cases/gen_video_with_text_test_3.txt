@@ -1,0 +1,10 @@
+根据以下要求生成图片参考视频
+
+prompt文件在：
+test_cases/inputs/gen_video_prompt.txt
+
+参考图片：test_cases/inputs/character_ref.png
+
+模式：reference，时长5秒，画幅16:9
+
+保存到 test_result/video_from_skill/character_run.mp4
