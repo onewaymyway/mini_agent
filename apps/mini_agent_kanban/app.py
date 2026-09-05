@@ -1077,13 +1077,31 @@ def render_sidebar():
     # 条里），这样 idx 永远能对上真实绑定，不会被列表内容的波动误伤。
     if cur_sid and cur_sid not in sess_options:
         sess_options.append(cur_sid)
+    desired_label = cur_sid or "(全局默认)"
+    # [BUGFIX / 关键] Streamlit 的 selectbox 一旦带 `key` 渲染过一次，
+    # 它在 `st.session_state[key]` 里记住的值，从第二次渲染起会一直
+    # "赢过"这里传的 `index` 参数——`index` 只在这个 key 第一次出现时
+    # 生效。这意味着：如果 session_id 是被**其它入口**（"会话管理"tab
+    # 的"📌 本页面绑定到此会话"按钮、新建会话自动绑定等）从外部改掉的，
+    # 这个下拉框自己并不知道，它 session_state 里存的还是绑定前的旧值；
+    # 下一次 rerun（哪怕只是切了个别的 tab）重新跑到这里时，`choice`
+    # 会拿到这个"没跟上"的旧值，而不是刚绑定的新值——于是下面 1086 行
+    # 判断"choice 和 cur_sid 不一致"成立，反而把这次外部绑定当成"用户
+    # 把下拉框选回了旧值"，倒过来调用 set_active_session_id 把新绑定
+    # 冲掉、清空成全局默认。这正是"点了绑定按钮/切个 tab，绑定就跟没绑
+    # 一样"的根因，比之前两轮修的问题更底层。
+    # 修法：在渲染 selectbox 之前，主动把它自己的持久状态同步成外部的
+    # 真实值（cur_sid 对应的 label），这样它就不会带着过期状态进来跟
+    # 外部的绑定动作打架。
+    if st.session_state.get("session_switcher_select") != desired_label:
+        st.session_state["session_switcher_select"] = desired_label
     idx = sess_options.index(cur_sid) if cur_sid in sess_options else 0
     choice = st.sidebar.selectbox(
         "绑定到 session", sess_options, index=idx, key="session_switcher_select",
         help="决定这个标签页跟哪个 session 对话。不同标签页可以各选不同的 "
              "session，实现同时进行多个互不干扰的对话；选「(全局默认)」保持旧行为。",
     )
-    if choice != (cur_sid or "(全局默认)"):
+    if choice != desired_label:
         # [体验改进] 绑定的目标是"跟这个 session 对话"，绑完之后应该直接
         # 就能在「💬 对话」tab 看到对应的对话内容，不用绑完还要自己手动
         # 再点一下"对话"tab——这里顺手把 _active_tab 切过去。
