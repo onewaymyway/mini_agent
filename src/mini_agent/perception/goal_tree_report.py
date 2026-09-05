@@ -261,3 +261,55 @@ def build_goal_tree_report(
 
     report.generated_at = time.time()
     return report
+
+
+def build_goal_tree_profile_snapshot(paths: "AgentPaths", *, max_active_goals: int = 8) -> str:
+    """[next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向二]
+    为 `UserProfileManager.generate()` 准备一份"当前活跃目标 + 最近
+    进展"的轻量文本摘要，作为跟 `memory_text` 并列的独立输入。
+
+    刻意不复用整份 `GoalTreeReport.to_dict()`（字段太多、面向诊断/看板
+    场景），只挑"用户主导的长期目标叫什么、最近有没有进展"这一层对
+    画像有意义的信息：
+      - 活跃 Goal 节点的标题（`node.is_goal and node.is_active`）；
+      - 每个活跃 Goal 最近一条产出摘要（复用 `recent_outputs_digest`，
+        跟树级报告口径一致，不重新实现一遍"读 manifest"逻辑）。
+
+    零成本、不引入 LLM、任一环节异常直接返回空串——这是"背景信息"，
+    不应该因为目标树模块的问题反过来影响画像生成主流程。返回空串时，
+    调用方（`profile.py::generate()`）视为"没有目标树背景可用"，不在
+    prompt 里出现对应区块。
+    """
+    try:
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+
+        backlog = load_goal_backlog(paths)
+        report = build_goal_tree_report(paths, backlog, root_id=None)
+    except Exception:
+        return ""
+
+    if not report.found or report.node_count == 0:
+        return ""
+
+    active_titles = [
+        ref["title"] for ref in report.by_status.get("active", [])
+    ][:max_active_goals]
+
+    digest_by_id = {
+        d["id"]: d for d in (report.recent_outputs_digest or [])
+    }
+
+    lines = ["Active long-running goals the user is pursuing:"]
+    if not active_titles and not report.recent_outputs_digest:
+        return ""
+    for ref in report.by_status.get("active", [])[:max_active_goals]:
+        title = ref.get("title") or ref.get("id")
+        digest = digest_by_id.get(ref.get("id"))
+        if digest and digest.get("task_summary"):
+            lines.append(f"- {title}: recent progress — {digest['task_summary']}")
+        else:
+            lines.append(f"- {title}")
+
+    if len(lines) <= 1:
+        return ""
+    return "\n".join(lines)

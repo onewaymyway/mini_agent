@@ -1,7 +1,7 @@
 # 用户画像"更新滞后 + 目标树信息缺失"改进方案
 
-- **版本**: v1——**第一期（方向一 A/B/C + 方向三）已实施**，详见文末
-  "实施记录"一节；第二期（方向二：目标树接入画像）尚未实施。
+- **版本**: v1——**第一期（方向一 A/B/C + 方向三）、第二期（方向二：
+  目标树接入画像）均已实施**，详见文末"实施记录"一节。
 - **前置文档**:
   - `next_doc/memory_backfill_and_profile_update_plan.md`（M1/M2 已完成——
     存量 session 回填；M3 已完成——cron 成功运行回填记忆，见下方"现状核实"）
@@ -164,7 +164,7 @@ if user_profile.get("updated_at"):
 
 ---
 
-## 分期建议
+## 分期建议（均已实施，见下方"实施记录"）
 
 1. **第一期（方向一 A+B+C，方向三）**：解决"更新滞后"这个可用性问题，
    改动集中在 `profile.py` / `agent/profile.py` / `cron_job_executor.py`
@@ -256,3 +256,58 @@ if user_profile.get("updated_at"):
   没有破坏现有逻辑，但"降级记忆的语义是否应该参与成长信号计算"是一个
   产品判断，留待观察实际效果后再决定要不要在 growth_advisor 里显式
   排除 `cron_incomplete` tag）。
+
+## 实施记录（第二期：方向二——目标树接入画像）
+
+- **接口确认**：`perception/goal_tree_report.py::build_goal_tree_report()`
+  已经是一个零成本、不引入 LLM、任一子数据源异常都能优雅降级的"轻量
+  聚合报告"接口（`root_id=None` 时聚合全局森林），完全满足方向二设计
+  时提出的"轻量摘要读取接口"要求，不需要新建一整套接口，只需要在它
+  之上加一层"挑画像用得上的字段、格式化成文本"的薄封装。
+- `src/mini_agent/perception/goal_tree_report.py`：新增
+  `build_goal_tree_profile_snapshot(paths, max_active_goals=8)`——加载
+  `GoalBacklog`（用 `load_goal_backlog()`，会从磁盘读取持久化数据；
+  直接 `GoalBacklog(paths)` 不调用 `.load()` 拿到的是空壳，踩过这个坑，
+  已在测试里覆盖），调用 `build_goal_tree_report(root_id=None)`，只挑
+  "状态为 active 的 Goal 标题 + 最近一条产出摘要"格式化成几行文本；
+  空森林/任一环节异常都返回空串，不影响调用方主流程。
+- `src/mini_agent/profile.py`：`generate()` 在渲染 prompt 前调用
+  `build_goal_tree_profile_snapshot(self._paths)`，结果作为独立的
+  `goal_tree_block` 变量传给模板，跟"上一版画像"文本块（`previous_profile_block`）
+  并列但不混在一起——目标树快照是"每次都重新拉取的当前状态"，不是
+  "上一版画像"的一部分。异常兜底为空串，不引入新的失败点。
+- `src/mini_agent/prompts/user/profile_update_request.md`：新增
+  `{{goal_tree_block}}` 变量，紧跟在 `{{previous_profile_block}}` 之后、
+  `Session summaries:` 之前。
+- `src/mini_agent/prompts/system/profile_summarizer.md`：新增一段
+  指引，明确告诉模型"目标树背景信息可以用来丰富 summary，但不能单独
+  凭一个目标标题就编造 tech_stack/habits 条目"——避免目标树信息喧宾
+  夺主，稀释 tech_stack/habits 原本"必须有 memory 证据支撑"的约束。
+- **设计取舍**：目标树摘要不落成 `derived` 里的独立 key（如
+  `derived.active_goals_snapshot`），只作为 prompt 输入影响
+  `summary` 的措辞——目标树本身已经有自己的持久化和看板展示
+  （`GoalTreeReport`/树级报告页面），画像这里只是"引用参考"，避免
+  出现两份可能不同步的目标状态数据。
+
+### 验证
+
+新增 `tests/test_goal_tree_report.py::TestBuildGoalTreeProfileSnapshot`
+（4 个用例：空森林返回空串 / 活跃目标标题正确出现 / draft 状态目标被
+排除 / `max_active_goals` 生效截断）。连同第一期的全部测试，累计
+133 个用例全部通过：`test_profile.py`、`test_goal_tree_report.py`、
+`test_memory_backfill.py`、`test_cron_job_workspace_and_executor.py`、
+`test_cron_job_executor_step_detail.py`、`test_cron_scheduler_priority.py`、
+`test_flat_nested_config_compat.py`、`test_growth_diagnostics_and_lang_fix.py`。
+
+### 遗留/待观察（第二期）
+
+- 目前只在生成画像时（`generate()` 被调用那一刻）拉取目标树快照，
+  快照本身不缓存、不落盘——如果后续发现 `GoalBacklog(paths).load()`
+  在目标节点很多时有明显的 IO/解析开销，可以考虑跟
+  `should_refresh()` 的触发频率对齐做一层缓存，本期数据量下未观察到
+  这个问题，暂不引入额外复杂度。
+- prompt 里只给了模型"活跃目标标题 + 最近一条产出摘要"，没有给目标的
+  长期方向分类、优先级等更细的字段——如果后续发现画像里对目标的描述
+  过于笼统，可以再从 `GoalTreeReport` 里挑更多字段加进
+  `build_goal_tree_profile_snapshot()`，接口本身已经预留了扩展空间
+  （`max_active_goals` 参数、独立的文本拼接逻辑）。

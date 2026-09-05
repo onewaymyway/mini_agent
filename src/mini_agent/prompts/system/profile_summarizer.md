@@ -37,6 +37,14 @@ starting point:
 If no previous profile is provided, build a fresh profile from the session
 summaries alone.
 
+If a block listing the user's active long-running goals is provided in the
+user message, treat it as background context, not as session evidence: you
+may mention these goals in "summary" if it helps describe what the user is
+currently focused on, but do not invent tech_stack/habits entries purely
+from a goal's title — those should still come from the session summaries.
+This block reflects the current state of the user's goal tree and may not
+have a corresponding recent session summary; that's expected.
+
 Write the "summary", "tech_stack" and "habits" values in {{preferred_language}}
 (an ISO 639-1 language code, e.g. "zh" for Chinese, "ja" for Japanese, "en"
 for English). This has already been detected from the user's own messages —

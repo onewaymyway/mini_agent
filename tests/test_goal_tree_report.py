@@ -107,5 +107,46 @@ class TestBuildGoalTreeReport(unittest.TestCase):
         json.dumps(report.to_dict())  # 不应抛异常
 
 
+class TestBuildGoalTreeProfileSnapshot(unittest.TestCase):
+    """[next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向二]
+    为画像生成准备的轻量目标树快照。"""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.paths = AgentPaths(Path(self._tmpdir.name))
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_empty_forest_returns_empty_string(self):
+        self.assertEqual(gtr.build_goal_tree_profile_snapshot(self.paths), "")
+
+    def test_active_goal_titles_included(self):
+        gb = load_goal_backlog(self.paths)
+        gb.add_goal("Agent/AI 领域永久监控", source="user")
+        gb.add_goal("A股热点股票与潜力行业抓取分析", source="user")
+
+        snapshot = gtr.build_goal_tree_profile_snapshot(self.paths)
+        self.assertIn("Agent/AI 领域永久监控", snapshot)
+        self.assertIn("A股热点股票与潜力行业抓取分析", snapshot)
+
+    def test_draft_goal_excluded(self):
+        gb = load_goal_backlog(self.paths)
+        gb.add_goal("Active Goal", source="user", status="active")
+        gb.add_goal("Draft Goal", source="user", status="draft")
+
+        snapshot = gtr.build_goal_tree_profile_snapshot(self.paths)
+        self.assertIn("Active Goal", snapshot)
+        self.assertNotIn("Draft Goal", snapshot)
+
+    def test_max_active_goals_limits_output(self):
+        gb = load_goal_backlog(self.paths)
+        for i in range(12):
+            gb.add_goal(f"Goal {i}", source="user")
+
+        snapshot = gtr.build_goal_tree_profile_snapshot(self.paths, max_active_goals=3)
+        self.assertEqual(snapshot.count("\n- "), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

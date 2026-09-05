@@ -382,10 +382,26 @@ class UserProfileManager:
             lines.append("")  # 与下面的 Session summaries 之间留一个空行
             previous_profile_text = "\n".join(lines) + "\n\n"
 
+        # [next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向二]
+        # 目标树背景作为跟 memory_text 并列的独立输入，不混进增量更新
+        # 的"上一版画像"文本块——语义上这不是"上一版画像"的一部分，而是
+        # 每次生成时都重新拉取的当前状态快照。零成本、不引入 LLM，任一
+        # 环节异常已经在 build_goal_tree_profile_snapshot() 内部兜底为
+        # 空串，这里不需要再包一层 try/except。
+        goal_tree_block = ""
+        try:
+            from mini_agent.perception.goal_tree_report import build_goal_tree_profile_snapshot
+            goal_tree_snapshot = build_goal_tree_profile_snapshot(self._paths)
+            if goal_tree_snapshot:
+                goal_tree_block = goal_tree_snapshot + "\n\n"
+        except Exception:
+            goal_tree_block = ""
+
         prompt = pm.render(
             "user/profile_update_request",
             memory_text=memory_text,
             previous_profile_block=previous_profile_text,
+            goal_tree_block=goal_tree_block,
         )
 
         resp = llm_client.chat_with_retry(
