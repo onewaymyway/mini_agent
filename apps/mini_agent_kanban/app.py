@@ -2610,7 +2610,10 @@ def _render_sessions_change_banner_fragment(client: AgentClient) -> None:
 
 
 def _render_sessions_change_banner_body(client: AgentClient) -> None:
-    data = client.sessions(limit=50) or {}
+    # 这是个 5s 一次的后台轻量轮询，不值得为它拖长等待——超时给短一点
+    # （4s），单次没赶上就跳过，等下一个 5s 周期自然会再试，不会像之前
+    # 那样用默认 6s 超时把整个 5s 轮询节奏都拖乱。
+    data = client.sessions(limit=50, timeout=4) or {}
     if "_error" in data:
         return
     current_ids = tuple(sorted(s.get("id", "") for s in data.get("sessions", [])))
@@ -2627,6 +2630,59 @@ def _render_sessions_change_banner_body(client: AgentClient) -> None:
         if bc2.button("🔄 刷新列表", key="sessions_refresh_banner", width='stretch'):
             st.session_state["_sessions_baseline_ids"] = current_ids
             st.rerun()
+
+
+def _sessions_future_key(page: int) -> str:
+    return f"_sessions_list_future_p{page}"
+
+
+def _sessions_future_started_key(page: int) -> str:
+    return f"_sessions_list_future_started_p{page}"
+
+
+def _fetch_sessions_list_async(client: AgentClient, page: int, page_size: int) -> Optional[dict]:
+    """会话列表的非阻塞拉取。
+
+    背景：`client.sessions()` 底层是同步的 `requests.get(timeout=6)`，
+    daemon 一旦响应慢（没开 session 持久化、GC 停顿、并发请求排队……）
+    Streamlit 这次脚本执行就会硬生生卡满 6 秒甚至直接读超时报错，
+    整个「会话管理」tab 在这期间没法交互。
+
+    这里改成：请求通过 `AgentClient.sessions_async()` 扔进后台线程池，
+    立刻拿到一个 Future 存进 `st.session_state`（按页码区分，翻页不会
+    互相覆盖）。当前这次渲染只做一次几乎零耗时的 `future.done()` 判断：
+      - 没完成：展示"加载中"提示，`time.sleep` 一小段（不占用网络 IO，
+        真正的 HTTP 请求仍在后台线程继续跑）后 `st.rerun()`，下次
+        渲染再检查一次——用户可以随时点其它按钮/切 tab 打断这个轮询，
+        不会被卡死；
+      - 完成了：取出结果（可能是正常数据，也可能是 `_error`），清掉
+        Future，交给调用方正常渲染或展示"刷新重试"。
+
+    返回 None 表示"还在加载，本次不用往下渲染"（`st.rerun()` 会直接
+    中断脚本，实际上也走不到 return None 之后）。
+    """
+    fkey = _sessions_future_key(page)
+    started_key = _sessions_future_started_key(page)
+
+    fut = st.session_state.get(fkey)
+    if fut is None:
+        fut = client.sessions_async(limit=page_size, offset=page * page_size)
+        st.session_state[fkey] = fut
+        st.session_state[started_key] = time.time()
+
+    if not fut.done():
+        elapsed = time.time() - st.session_state.get(started_key, time.time())
+        st.info(f"⏳ 会话列表加载中…（已等待 {elapsed:.1f}s，页面未卡死，可切换其它 tab）")
+        time.sleep(0.4)
+        st.rerun()
+        return None
+
+    st.session_state.pop(fkey, None)
+    st.session_state.pop(started_key, None)
+    try:
+        return fut.result() or {}
+    except Exception as e:
+        return {"_error": str(e)}
 
 
 def render_sessions_tab(client: AgentClient):
@@ -2663,9 +2719,18 @@ def render_sessions_tab(client: AgentClient):
     # 里，翻页只重新拉当前这一页，不再一次性拉 200 条塞满页面。
     page_size = 50
     page = st.session_state.get("sessions_page", 0)
-    data = client.sessions(limit=page_size, offset=page * page_size) or {}
+    data = _fetch_sessions_list_async(client, page, page_size)
+    if data is None:
+        # 仍在后台加载中，_fetch_sessions_list_async 内部已经处理了
+        # 展示 + 轮询重跑，这里直接结束本次渲染。
+        return
     if "_error" in data:
-        st.info(f"会话列表不可用：{data['_error']}（可能未开启 session 持久化）")
+        st.info(f"会话列表不可用：{data['_error']}（可能未开启 session 持久化，或后端响应超时）")
+        if st.button("🔄 刷新重试", key=f"sessions_list_retry_{page}", width='stretch'):
+            # 清掉本页的旧 Future，下次渲染会重新提交一次异步请求。
+            st.session_state.pop(_sessions_future_key(page), None)
+            st.session_state.pop(_sessions_future_started_key(page), None)
+            st.rerun()
         return
 
     sessions = data.get("sessions", [])

@@ -4,7 +4,53 @@ AgentClient —— 对 mini-agent HTTP API 的轻量封装。
 """
 from __future__ import annotations
 
+import concurrent.futures
+
 import requests
+from requests.adapters import HTTPAdapter
+
+try:
+    from urllib3.util.retry import Retry
+except ImportError:  # pragma: no cover - 极老版本 requests 内置 vendored urllib3
+    from requests.packages.urllib3.util.retry import Retry
+
+
+def _build_http_session() -> requests.Session:
+    """带自动重试 + 连接复用的共享 Session。
+
+    之前每次 `_get`/`_post` 都用裸 `requests.get(...)`：既没有连接池复用
+    （每次都重新三次握手，本地 daemon 场景下这本身就是超时的一个诱因），
+    读超时（ReadTimeout）也完全不重试，daemon 只要有一次响应慢/GC 停顿，
+    看板就直接报错。这里换成带 `Retry` 的 `HTTPAdapter`：对幂等的 GET
+    请求，连接失败 / 读超时 / 502/503/504 都会在本地自动重试几次
+    （带指数退避），只有真的连续失败才会把 `_error` 抛回给 UI 层。
+    """
+    session = requests.Session()
+    retry = Retry(
+        total=2,
+        connect=2,
+        read=2,
+        backoff_factor=0.4,
+        status_forcelist=(502, 503, 504),
+        allowed_methods=frozenset(["GET"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=16, pool_maxsize=16)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+# 模块级单例：所有 AgentClient 实例共用同一个连接池 + 同一个后台线程池。
+_HTTP = _build_http_session()
+# 供"异步"版本方法（*_async）使用：把实际的阻塞 HTTP 调用丢到后台线程，
+# 调用方立刻拿到一个 concurrent.futures.Future，不必在当前这次 Streamlit
+# 脚本执行里干等 6 秒的 socket 读超时——配合 UI 层的轮询（见
+# app.py 的 `_fetch_sessions_list_async`），可以做到"慢请求不卡死整页，
+# 用户可以继续切 tab / 点其它按钮，数据到了自动刷新出来"。
+_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="agent-client-async"
+)
 
 
 class AgentClient:
@@ -18,12 +64,18 @@ class AgentClient:
 
     def _get(self, path, params=None, timeout=6):
         try:
-            r = requests.get(self._url(path), headers=self.headers, params=params, timeout=timeout)
+            r = _HTTP.get(self._url(path), headers=self.headers, params=params, timeout=timeout)
             if r.status_code == 200:
                 return r.json()
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
         except Exception as e:
             return {"_error": str(e)}
+
+    def submit_async(self, fn, *args, **kwargs) -> "concurrent.futures.Future":
+        """把任意一个（通常是阻塞的）client 方法调用提交到共享后台线程池，
+        立刻返回 Future。调用方式：`client.submit_async(client.sessions, limit=50)`。
+        """
+        return _EXECUTOR.submit(fn, *args, **kwargs)
 
     def _get_bytes(self, path, params=None, timeout=30):
         """带鉴权 header 取原始字节（下载用）。由看板后端（Streamlit 进程）
@@ -32,7 +84,7 @@ class AgentClient:
         Authorization header」这两个问题，参见 artifact_file_bytes /
         fs_download_bytes 的调用方。"""
         try:
-            r = requests.get(self._url(path), headers=self.headers, params=params, timeout=timeout)
+            r = _HTTP.get(self._url(path), headers=self.headers, params=params, timeout=timeout)
             if r.status_code == 200:
                 filename = None
                 cd = r.headers.get("Content-Disposition", "")
@@ -49,8 +101,8 @@ class AgentClient:
 
     def _post(self, path, json_body=None, params=None, timeout=15):
         try:
-            r = requests.post(self._url(path), headers=self.headers, json=json_body,
-                               params=params, timeout=timeout)
+            r = _HTTP.post(self._url(path), headers=self.headers, json=json_body,
+                            params=params, timeout=timeout)
             if r.status_code == 200:
                 return r.json()
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
@@ -59,7 +111,7 @@ class AgentClient:
 
     def _patch(self, path, json_body=None, timeout=10):
         try:
-            r = requests.patch(self._url(path), headers=self.headers, json=json_body, timeout=timeout)
+            r = _HTTP.patch(self._url(path), headers=self.headers, json=json_body, timeout=timeout)
             if r.status_code == 200:
                 return r.json()
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
@@ -68,7 +120,7 @@ class AgentClient:
 
     def _put(self, path, json_body=None, timeout=10):
         try:
-            r = requests.put(self._url(path), headers=self.headers, json=json_body, timeout=timeout)
+            r = _HTTP.put(self._url(path), headers=self.headers, json=json_body, timeout=timeout)
             if r.status_code == 200:
                 return r.json()
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
@@ -90,8 +142,8 @@ class AgentClient:
 
     def _delete(self, path, params=None, json_body=None, timeout=8):
         try:
-            r = requests.delete(self._url(path), headers=self.headers, params=params,
-                                 json=json_body, timeout=timeout)
+            r = _HTTP.delete(self._url(path), headers=self.headers, params=params,
+                              json=json_body, timeout=timeout)
             if r.status_code == 200:
                 return r.json()
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
@@ -101,7 +153,7 @@ class AgentClient:
     # ── 健康 / 状态 ────────────────────────────────────────────────────
     def health(self) -> bool:
         try:
-            return requests.get(self._url("/health"), headers=self.headers, timeout=3).status_code == 200
+            return _HTTP.get(self._url("/health"), headers=self.headers, timeout=3).status_code == 200
         except Exception:
             return False
 
@@ -246,9 +298,25 @@ class AgentClient:
         return self._post(f"/interactions/{req_id}", body)
 
     # ── 会话管理 ──────────────────────────────────────────────────────
-    def sessions(self, limit: int = 50, offset: int = 0):
+    def sessions(self, limit: int = 50, offset: int = 0, timeout: int = 6):
         # [看板分页改进] offset 配合 limit 做标准分页，默认 0 与旧行为一致。
-        return self._get("/sessions", params={"limit": limit, "offset": offset})
+        # timeout 开放出来，方便调用方按场景调节（比如后台低频轮询用更
+        # 短的超时，避免 daemon 偶尔慢一次就把 5s 一次的轮询节奏也拖垮）。
+        return self._get("/sessions", params={"limit": limit, "offset": offset}, timeout=timeout)
+
+    def sessions_async(self, limit: int = 50, offset: int = 0, timeout: int = 8):
+        """`sessions()` 的非阻塞版本：提交到后台线程池后立刻返回一个
+        `concurrent.futures.Future`，不会让当前这次 Streamlit 脚本执行
+        卡在 `requests` 的 socket 读等待上。
+
+        调用方（见 app.py 的 `_fetch_sessions_list_async`）把这个 Future
+        存进 `st.session_state`，之后每次 rerun 只需要做一次几乎零开销
+        的 `future.done()` 判断：没完成就展示"加载中"并短间隔重跑页面
+        （此时真正的 HTTP 请求仍在后台线程里继续跑，不受影响，重跑本身
+        不会重新发起新请求）；完成了就取出结果正常渲染，或者在失败时
+        交给页面上的"刷新重试"按钮清掉旧 Future、重新提交一次。
+        """
+        return _EXECUTOR.submit(self.sessions, limit, offset, timeout)
 
     def session_detail(self, session_id: str):
         return self._get(f"/sessions/{session_id}")
