@@ -200,3 +200,4 @@ external_projects/stock_watch/reports/
 .agent/health_check_result.json
 .agent/external_input/relevance_threshold_state.json
 .agent/hybrid_exec/agent_sessions/
+.agent/capability_state.json
