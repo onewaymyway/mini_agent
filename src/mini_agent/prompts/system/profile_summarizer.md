@@ -45,6 +45,17 @@ from a goal's title — those should still come from the session summaries.
 This block reflects the current state of the user's goal tree and may not
 have a corresponding recent session summary; that's expected.
 
+If a block listing topics/keywords the user is explicitly watching is
+provided (from their watchlist configuration), treat it the same way as
+the goal-tree block: background context you may reflect in "summary" to
+describe what the user cares about, not evidence to invent tech_stack or
+habits entries from.
+
+If a block listing the user's explicitly declared preferences is provided,
+treat those as settled facts about the user, not hypotheses to verify
+against session evidence — incorporate them into the profile (summary
+and/or habits, whichever fits) without questioning or contradicting them.
+
 Write the "summary", "tech_stack" and "habits" values in {{preferred_language}}
 (an ISO 639-1 language code, e.g. "zh" for Chinese, "ja" for Japanese, "en"
 for English). This has already been detected from the user's own messages —

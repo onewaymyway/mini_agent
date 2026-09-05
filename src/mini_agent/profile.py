@@ -397,11 +397,44 @@ class UserProfileManager:
         except Exception:
             goal_tree_block = ""
 
+        # [响应用户反馈：画像信息来源不够全] watchlist.yaml 是用户显式
+        # 配置的"我要关注这些话题"，跟目标树快照同一个定位——当前状态
+        # 快照，不是"上一版画像"的一部分，每次生成都重新拉取。同样零
+        # 成本、不引入 LLM，异常已在 build_watchlist_profile_snapshot()
+        # 内部兜底为空串。
+        watchlist_block = ""
+        try:
+            from mini_agent.external_input.watchlist import build_watchlist_profile_snapshot
+            watchlist_snapshot = build_watchlist_profile_snapshot(self._paths)
+            if watchlist_snapshot:
+                watchlist_block = watchlist_snapshot + "\n\n"
+        except Exception:
+            watchlist_block = ""
+
+        # [响应用户反馈：画像信息来源不够全] `profile.preferences` 是用户
+        # 通过 `set_preference()` 显式设置的偏好——这是客观事实，不是需要
+        # LLM 从会话记忆里"推断"出来的东西，之前 generate() 完全没有把它
+        # 喂给 LLM，等于这部分权威信息被闲置。这里作为独立的"既定事实"
+        # 区块传入，明确告诉模型这是不需要被会话证据推翻的 ground truth，
+        # 只需要在写 summary 时自然地把它体现出来，不需要重新验证。
+        preferences_block = ""
+        if profile.preferences:
+            pref_lines = [
+                "The user has explicitly set these preferences (ground truth — "
+                "do not question or contradict them based on session evidence, "
+                "just reflect them naturally where relevant):"
+            ]
+            for k, v in profile.preferences.items():
+                pref_lines.append(f"- {k}: {v}")
+            preferences_block = "\n".join(pref_lines) + "\n\n"
+
         prompt = pm.render(
             "user/profile_update_request",
             memory_text=memory_text,
             previous_profile_block=previous_profile_text,
             goal_tree_block=goal_tree_block,
+            watchlist_block=watchlist_block,
+            preferences_block=preferences_block,
         )
 
         resp = llm_client.chat_with_retry(

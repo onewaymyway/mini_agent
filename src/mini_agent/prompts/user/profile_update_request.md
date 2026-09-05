@@ -16,8 +16,15 @@
 #                            方向二] 当前活跃目标树的轻量快照（可能为空串），
 #                            由 profile.py::generate() 每次生成时重新拉取，
 #                            不是"上一版画像"的一部分。
+#   {{watchlist_block}}   — [响应用户反馈：画像信息来源不够全] 用户在
+#                            watchlist.yaml 里显式配置要关注的话题/关键词
+#                            （可能为空串），跟 goal_tree_block 同一个定位：
+#                            当前状态快照，每次重新拉取。
+#   {{preferences_block}} — [响应用户反馈：画像信息来源不够全] 用户通过
+#                            /profile 等入口显式设置的偏好（可能为空串），
+#                            是既定事实，不需要模型从会话证据里再验证。
 
-{{previous_profile_block}}{{goal_tree_block}}Session summaries:
+{{previous_profile_block}}{{goal_tree_block}}{{watchlist_block}}{{preferences_block}}Session summaries:
 {{memory_text}}
 
 Respond with only the JSON object described in the system prompt.

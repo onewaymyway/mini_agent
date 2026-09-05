@@ -116,6 +116,39 @@ def load_watchlist_config(paths: "AgentPaths") -> list[WatchlistItem]:
     return items
 
 
+def build_watchlist_profile_snapshot(paths: "AgentPaths", *, max_items: int = 10) -> str:
+    """[response to user feedback: 画像信息来源不够全] 为
+    `UserProfileManager.generate()` 准备一份"用户主动配置要关注的
+    话题/关键词"快照，跟 `build_goal_tree_profile_snapshot()` 同一个
+    定位——零成本、不引入 LLM、任一环节异常直接返回空串。
+
+    背景：`watchlist.yaml` 是用户显式配置的"我要关注这些话题"（见
+    `WatchlistMatcher`），这是比"从历史会话摘要里反推用户关心什么"更
+    直接、更权威的信号，但画像生成此前完全没有用到这份数据——用户的
+    真实关注点如果还没在某次对话里被提起过，画像就永远看不到。这里
+    只取已启用（`enabled=True`）条目的 id + 关键词，不展开匹配命中的
+    具体内容（那是 pending_hits.jsonl 的职责，跟"用户是谁/关心什么"
+    这层画像信息无关，也避免把大量新闻类文本喂进 profile 生成的 prompt）。
+    """
+    try:
+        items = load_watchlist_config(paths)
+    except Exception:
+        return ""
+
+    enabled = [it for it in items if it.enabled]
+    if not enabled:
+        return ""
+
+    lines = ["Topics/keywords the user has explicitly configured to watch (from watchlist.yaml):"]
+    for it in enabled[:max_items]:
+        kw = "、".join(it.keywords) if it.keywords else it.id
+        lines.append(f"- [{it.id}] {kw}")
+
+    if len(lines) <= 1:
+        return ""
+    return "\n".join(lines)
+
+
 def _normalize_title_key(title: str) -> str:
     try:
         from mini_agent.evolution.objective_outcome_tracker import normalize_title_key
