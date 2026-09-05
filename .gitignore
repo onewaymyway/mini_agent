@@ -197,3 +197,4 @@ external_projects/stock_watch/reports/
 .agent/kanban_session_secret
 .agent/kanban_users.json
 .agent/kanban_sessions.json
+.agent/health_check_result.json
