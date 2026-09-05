@@ -136,6 +136,19 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
      `profile.derived["growth_evidence_timestamps"]`。
 3. 命中 `excluded_topics` 黑名单的方向直接跳过；`max_pending_
    candidates`（默认 10）限制 pending 候选总量，避免无限堆积。
+4. **命中已有 Goal 标题的方向直接跳过，不生成候选**
+   （`goal_topic_dedup_enabled`，默认开启，零 LLM 成本；对应
+   `next_doc/growth_advisor_goal_cron_dedup_plan.md`）：如果某个话题
+   归一化后跟一个仍在 `active`/`paused` 的 Goal 标题相同，说明用户已经
+   把这个方向立项在处理了（不管是不是挂了 cron 周期推进），成长顾问
+   不再重复"发现"一次。`completed`/`abandoned`/`cancelled`/`failed`
+   等终态的 Goal 不参与这层过滤——方向做完之后重新被关注是合理的。
+   本轮如果发生了抑制，会落一条记录到
+   `growth_goal_dedup_suppressions.jsonl`，`/growth scan` 输出末尾和
+   诊断面板的 `goal_dedup.last_cycle_suppressed_count` 都能看到计数。
+   这层规则式过滤独立于 `duplicate_direction_llm_check_enabled`
+   （5.x 节里的 LLM 语义判重）：前者是零成本的字面精确匹配，后者是
+   可选打开的"字面不同、语义相同"兜底，两者可以分别配置、互不影响。
 
 ### 2.2 调研报告生成（Top-N，含"探索位"）
 
@@ -387,6 +400,7 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 | `goal_alignment_enabled` | `true` | （演进日志 §2.9 节）兴趣方向 ⇄ 目标 对齐分析总开关，纯规则式关键词匹配，零 LLM 成本 |
 | `goal_alignment_stalled_days` | `21` | （演进日志 §2.9 节）已关联 Goal 的方向，`active` 状态下超过这么多天没被 touch 就判定为"停滞"，独立于 `followup_review_days` |
 | `goal_alignment_llm_enabled` | `false` | （演进日志 §2.9 节）对齐分析是否额外做一次 LLM 语义匹配，找出关键词匹配漏掉的"字面不同、实质同一件事"配对；结果只出现在建议列表，不自动写入关联关系 |
+| `goal_topic_dedup_enabled` | `true` | （`growth_advisor_goal_cron_dedup_plan.md`）候选生成时，话题命中一个仍在 `active`/`paused` 的 Goal 标题就直接跳过，不生成候选；零 LLM 成本的规则式过滤，独立于 `duplicate_direction_llm_check_enabled`（那是可选的 LLM 语义判重），两者可分别开关 |
 | `feedback_pattern_llm_enabled` | `false` | （`growth_advisor_ideal_advisor_gap_and_roadmap_plan.md` 方向 2 第二步）诊断面板"反馈模式"区块是否额外调一次 LLM，把规则式统计出来的忽略原因/类别分布归纳成一两句自然语言（`llm_insight`）；只在规则式统计样本已达标时才触发，结果只是展示，不影响任何排序/加权 |
 | `report_two_stage_enabled` | `false` | （演进日志 §2.10 节）报告生成先让 LLM 提炼 3-4 个具体问题再逐一回答，替代固定的四段式结构；多一次 LLM 调用，默认关闭 |
 | `report_dismiss_reason_adaptive_enabled` | `true` | （演进日志 §2.10 节）报告曾被标"内容太笼统"时，下次生成追加针对性提醒；不产生额外 LLM 调用，默认开启 |
@@ -418,7 +432,8 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 不会被自动清除，需要的话手动删除 `.agent/growth_backlog.jsonl` /
 `.agent/growth_reports.jsonl` / `.agent/growth_reports.archive.jsonl` /
 `.agent/growth_feedback_ledger.jsonl` / `.agent/growth_topic_trend.jsonl`
-/ `.agent/wiki/growth/` 目录。
+/ `.agent/growth_goal_dedup_suppressions.jsonl` / `.agent/wiki/growth/`
+目录。
 
 `excluded_topics` 现在可以直接在看板「⚙️ 配置」tab 的"🌱 成长顾问"分类
 里编辑（一行一个主题关键词），不需要再手改 `agent_config.json`；配置
@@ -440,6 +455,9 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 - `.agent/growth_feedback_ledger.jsonl` — 采纳/忽略/回访反馈流水
 - `.agent/growth_topic_trend.jsonl` — 按主题的证据数/置信度历史快照
   （P4-6，超过 60 天的旧快照会被降采样压缩）
+- `.agent/growth_goal_dedup_suppressions.jsonl` — 候选生成阶段因命中
+  已有 Goal 标题被抑制的话题快照（`growth_advisor_goal_cron_dedup_
+  plan.md`，只在本轮确实发生抑制时才追加一行，同样按天降采样压缩）
 - `.agent/growth_health_trend.jsonl` — 全局健康度快照（v4 N1，每天
   一条，同样有降采样机制）
 - `.agent/growth_advisor_state.json` — 推送节流状态 + 首次触达提示

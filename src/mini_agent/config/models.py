@@ -2230,6 +2230,17 @@ class GrowthAdvisorConfig:
     # 写入任何持久化的关联关系。
     goal_alignment_llm_enabled: bool = False
 
+    # ── 候选生成：Goal 标题去重（growth_advisor_goal_cron_dedup_plan.md）──
+    # `growth_candidate_derive()` 生成候选前，先用零成本的关键词精确匹配
+    # （`normalize_title_key`，跟阶段 A 关键词匹配同一口径）检查这个话题
+    # 是否已经命中一个仍在 active/paused 的 Goal 标题——命中则直接跳过，
+    # 不生成候选（既有的"已经是 Goal 的方向就不用成长顾问再提醒"诉求）。
+    # 默认开启：这是零 LLM 成本的规则式过滤，跟 `goal_alignment_enabled`
+    # 同款默认值语义一致。关闭后 `growth_candidate_derive()` 完全跳过这层
+    # 过滤，退化为改动前的行为（`duplicate_direction_llm_check_enabled`
+    # 控制的语义判重不受影响，两个开关相互独立、可分别配置）。
+    goal_topic_dedup_enabled: bool = True
+
     # ── 反馈模式统计展示第二步（growth_advisor_ideal_advisor_gap_and_
     # roadmap_plan.md 方向 2 第二步）────────────────────────────────────
     # 第一步（`growth_feedback_pattern_summary()` 的规则式分组统计）默认

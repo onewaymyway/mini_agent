@@ -181,6 +181,15 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
         n_cand = len(result.get("new_candidates", []))
         n_rep = len(result.get("reports", []))
         R.print_info(f"本轮扫描完成：新增/更新候选 {n_cand} 条，生成调研报告 {n_rep} 份。")
+        # [growth_advisor_goal_cron_dedup_plan.md 第 5 节] 命中已有 Goal
+        # 标题而被抑制的话题，列出前几个作为示例，避免话题多时刷屏。
+        suppressed = result.get("suppressed_goal_topics") or []
+        if suppressed:
+            preview_limit = 5
+            preview = "、".join(suppressed[:preview_limit])
+            if len(suppressed) > preview_limit:
+                preview += f" 等 {len(suppressed)} 个"
+            R.print_info(f"本轮有 {len(suppressed)} 个话题因为已经是你正在处理的目标（{preview}），未生成新候选。")
         return
 
     if sub == "list" or sub == "":

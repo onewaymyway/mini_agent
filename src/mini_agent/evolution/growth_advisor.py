@@ -2083,6 +2083,7 @@ def _llm_augment_topics(
 
 def growth_candidate_derive(
     paths, cfg, profile, *, goal_backlog=None, llm_helper: Optional[Callable[[str], str]] = None,
+    suppressed_goal_topics_out: Optional[list] = None,
 ) -> list[GrowthCandidate]:
     """消费 `profile.derived["growth_focus_areas"]`（由 growth_signal_scan
     产出），对证据数达标、未命中 excluded_topics 的主题生成/合并候选到
@@ -2104,6 +2105,16 @@ def growth_candidate_derive(
     关闭或未传入时这一步整体跳过，只保留原有的精确标题去重，行为与
     改动前完全一致。同时会用 `goal_backlog.active_goals()` 的标题作为
     "已存在方向"的补充来源（拿不到 `goal_backlog` 时为空列表）。
+
+    [growth_advisor_goal_cron_dedup_plan.md] `cfg.goal_topic_dedup_
+    enabled`（默认 `True`）控制一层独立于上面 LLM 判重的规则式过滤：
+    话题归一化后命中一个仍在 active/paused 的 Goal 标题时直接跳过，
+    不生成候选（覆盖 signal_scan 和 pursuit_spinoff 两条来源）。
+    `suppressed_goal_topics_out`：可选，传入一个列表时，本轮被这层
+    过滤跳过的话题标题会被 `extend` 进去，供调用方（如
+    `run_daily_cycle()`）不必重新读盘就能拿到明细；不传时不影响函数
+    行为，只是调用方拿不到这份明细（仍然可以从落盘的
+    `growth_goal_dedup_suppressions.jsonl` 读到）。
     """
     focus_areas: dict[str, list[str]] = dict(
         (getattr(profile, "derived", {}) or {}).get("growth_focus_areas", {})
@@ -2132,6 +2143,20 @@ def growth_candidate_derive(
             log_exception(exc, where="mini_agent.growth_advisor.growth_candidate_derive_goal_titles")
             active_goal_titles = []
 
+    # [growth_advisor_goal_cron_dedup_plan.md 第 3 节] 规则式 Goal 标题
+    # 去重：默认开启、零 LLM 成本，独立于上面 `duplicate_direction_llm_
+    # check_enabled` 控制的语义判重。命中的话题在下面主循环里直接跳过，
+    # 不进 `add_or_merge`——覆盖 signal_scan 和 pursuit_spinoff 两条来源
+    # （spinoff 话题已经在上面并入了 `focus_areas`，走同一层过滤）。
+    goal_topic_keys: dict = {}
+    if getattr(cfg, "goal_topic_dedup_enabled", True) and goal_backlog is not None:
+        try:
+            goal_topic_keys = _active_goal_topic_keys(goal_backlog)
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.growth_advisor.growth_candidate_derive_goal_dedup")
+            goal_topic_keys = {}
+
     excluded = {t.strip().lower() for t in getattr(cfg, "excluded_topics", []) or []}
     backlog = GrowthBacklog(paths)
     backlog.expire_stale()
@@ -2153,15 +2178,21 @@ def growth_candidate_derive(
     )
 
     produced: list[GrowthCandidate] = []
+    suppressed_goal_topics: list[str] = []
     # 按证据数从多到少处理，保证 max_pending 限额下优先生成信号更强的候选
     for topic, refs in sorted(focus_areas.items(), key=lambda kv: -len(kv[1])):
         if topic.strip().lower() in excluded:
+            continue
+        key = normalize_title_key(topic)
+        if key in goal_topic_keys:
+            # 这个方向已经是一个仍在处理中的 Goal，成长顾问不需要再生成
+            # 候选提醒——见 growth_advisor_goal_cron_dedup_plan.md 第 0 节。
+            suppressed_goal_topics.append(topic)
             continue
         if topic in spinoff_origins:
             rationale = f"你正在推进的另一个方向里，「{topic}」这个问题反复被提到但一直没有展开，可能是值得单独投入的方向。"
         else:
             rationale = f"最近记忆里与「{topic}」相关的内容出现了 {len(set(refs))} 次，可能是值得投入的方向。"
-        key = normalize_title_key(topic)
         topic_multiplier = _feedback_multiplier(dismiss_counts.get(key, 0))
         category_multiplier = _category_feedback_multiplier(
             category_dismiss_counts.get(_category_of(topic, profile), 0)
@@ -2196,6 +2227,14 @@ def growth_candidate_derive(
     # 一次、读一次全量文件"的成本，跟这个函数本身已经是"整轮 cron 只跑
     # 一次"的调用频率一致，不会引入额外的高频 IO。
     compact_topic_trend_storage(paths)
+    if suppressed_goal_topics:
+        try:
+            _record_goal_dedup_suppression(paths, suppressed_goal_topics)
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.growth_advisor.growth_candidate_derive_suppression_record")
+        if suppressed_goal_topics_out is not None:
+            suppressed_goal_topics_out.extend(suppressed_goal_topics)
     return produced
 
 
@@ -3374,6 +3413,112 @@ def _load_goal_backlog_safely(paths):
         return GoalBacklog(paths)
     except Exception:
         return None
+
+
+# 视为"仍在处理中"的 Goal 状态——active 是正常推进，paused 是主动
+# 暂停但用户仍然认领着这个方向，两者都不该被成长顾问重新"发现"一次。
+# completed/abandoned/cancelled/failed 等终态则不再压制，见
+# `_active_goal_topic_keys()` 文档字符串。
+_GOAL_DEDUP_LIVE_STATUSES = frozenset({"active", "paused"})
+
+
+def _active_goal_topic_keys(goal_backlog) -> dict:
+    """[growth_advisor_goal_cron_dedup_plan.md 第 2 节] 遍历
+    `goal_backlog` 里全部 `level=="goal"` 且状态仍"在处理中"
+    （见 `_GOAL_DEDUP_LIVE_STATUSES`）的节点，返回
+    `{normalize_title_key(goal.title): goal}`。
+
+    供 `goal_growth_alignment()`（阶段 A 对齐分析）和
+    `growth_candidate_derive()`（候选生成去重）共用同一套匹配口径，
+    避免两处各写一份关键词匹配逻辑、行为逐渐分叉。
+
+    - `goal_backlog` 为 `None`，或 `all_nodes()` 调用异常 → 返回空
+      dict，调用方据此完全跳过 Goal 相关的过滤/匹配，等价于拿不到
+      goal_backlog 时的原有退化行为。
+    - 已经 `completed`/`abandoned`/`cancelled`/`failed` 的 Goal 不
+      纳入——这个方向已经不算"正在处理"，成长顾问重新发现它是合理的
+      （比如用户可能想重新评估要不要继续深入）。
+    - 同一个 `normalize_title_key` 命中多个 Goal 时保留先遍历到的
+      一个（`setdefault`）——这里只用于"存在与否"的判断，取哪个
+      具体 Goal 不影响过滤/匹配结果本身。
+    """
+    if goal_backlog is None:
+        return {}
+    try:
+        goals = [n for n in goal_backlog.all_nodes() if n.level == "goal"]
+    except Exception:
+        return {}
+    result: dict = {}
+    for g in goals:
+        if getattr(g, "status", None) not in _GOAL_DEDUP_LIVE_STATUSES:
+            continue
+        title = getattr(g, "title", None)
+        if not title:
+            continue
+        result.setdefault(normalize_title_key(title), g)
+    return result
+
+
+# ────────── [growth_advisor_goal_cron_dedup_plan.md 第 5 节] 候选生成阶段
+# Goal 去重的抑制计数落盘 ──────────
+# growth_goal_dedup_suppressions.jsonl 是纯只追加文件，跟
+# growth_topic_trend.jsonl 等同款文件一样按天降采样压缩，避免无限增长。
+
+_GOAL_DEDUP_SUPPRESSION_RAW_WINDOW_DAYS = 60
+_GOAL_DEDUP_SUPPRESSION_TOPICS_PREVIEW_LIMIT = 20
+
+
+def _compact_goal_dedup_suppression_rows(rows: list[dict], *, now: Optional[float] = None) -> list[dict]:
+    """纯函数：对抑制记录做按天降采样，返回压缩后的新列表（不做任何
+    IO）。跟 `_compact_health_trend_rows()` 是同一套模式——同一天只保留
+    最新一条，`topics` 明细只在近窗口内保留完整列表，超出窗口的旧记录
+    只留 `count` 汇总（明细价值随时间迅速下降，压缩时直接丢弃，只保留
+    足以画走势图的数字）。"""
+    now = now if now is not None else time.time()
+    cutoff = now - _GOAL_DEDUP_SUPPRESSION_RAW_WINDOW_DAYS * 86400
+    recent = [r for r in rows if r.get("recorded_at", 0) >= cutoff]
+    old = [r for r in rows if r.get("recorded_at", 0) < cutoff]
+    if not old:
+        return rows
+    buckets: dict[int, dict] = {}
+    for r in old:
+        ts = r.get("recorded_at", 0)
+        day_bucket = int(ts // 86400)
+        existing = buckets.get(day_bucket)
+        if existing is None or ts > existing.get("recorded_at", 0):
+            buckets[day_bucket] = {"recorded_at": ts, "count": r.get("count", 0)}
+    out = list(buckets.values()) + recent
+    out.sort(key=lambda r: r.get("recorded_at", 0))
+    return out
+
+
+def compact_goal_dedup_suppression_storage(paths, *, now: Optional[float] = None) -> int:
+    """对落盘的 growth_goal_dedup_suppressions.jsonl 做一次降采样压缩，
+    返回被压缩掉的行数（0 表示无可压缩的旧数据）。幂等操作，调用契约与
+    `compact_topic_trend_storage()` 一致。"""
+    rows = _read_jsonl(paths.growth_goal_dedup_suppressions_path)
+    if not rows:
+        return 0
+    compacted = _compact_goal_dedup_suppression_rows(rows, now=now)
+    removed = len(rows) - len(compacted)
+    if removed > 0:
+        _write_jsonl(paths.growth_goal_dedup_suppressions_path, compacted)
+    return removed
+
+
+def _record_goal_dedup_suppression(paths, suppressed_topics: list[str]) -> None:
+    """`growth_candidate_derive()` 本轮如果因为命中 Goal 标题抑制了候选
+    生成，追加一条快照。只在 `suppressed_topics` 非空时被调用（调用方
+    负责判断），避免空轮也追加一行无信息量的记录。`topics` 明细做个数量
+    上限，超出的话题只体现在 `count` 里，不在 `topics` 列表里全量列出
+    ——诊断面板/CLI 提示行本身也只需要展示前几个作为示例。"""
+    row = {
+        "recorded_at": time.time(),
+        "count": len(suppressed_topics),
+        "topics": suppressed_topics[:_GOAL_DEDUP_SUPPRESSION_TOPICS_PREVIEW_LIMIT],
+    }
+    _append_jsonl(paths.growth_goal_dedup_suppressions_path, row)
+    compact_goal_dedup_suppression_storage(paths)
 
 
 def goal_growth_alignment(
@@ -5593,7 +5738,14 @@ def run_daily_cycle(
     # [方向 3] goal_backlog 拿不到（非 daemon 上下文等）时安全退化为 None，
     # growth_candidate_derive 内部行为等价于改动前（只用 memory 信号）。
     goal_backlog = _load_goal_backlog_safely(paths)
-    new_candidates = growth_candidate_derive(paths, cfg, profile, goal_backlog=goal_backlog, llm_helper=llm_helper)
+    # [growth_advisor_goal_cron_dedup_plan.md] 顺带拿到本轮因命中 Goal
+    # 标题被抑制的话题明细，供下面写进返回结果，CLI/`/growth scan` 据此
+    # 展示一行提示，不需要调用方重新读盘。
+    suppressed_goal_topics: list = []
+    new_candidates = growth_candidate_derive(
+        paths, cfg, profile, goal_backlog=goal_backlog, llm_helper=llm_helper,
+        suppressed_goal_topics_out=suppressed_goal_topics,
+    )
 
     # [P5-3] 除了看板上"手动添加/确认"两个触发点，cron 每日流程本身也会
     # 让主题"转正"（`_update_keyword_learning_streaks` 的自动确认路径），
@@ -5715,6 +5867,11 @@ def run_daily_cycle(
         "reports": [r.report_id for r in reports],
         "notification": notification,
         "cron_active_search": cron_active_search,
+        # [growth_advisor_goal_cron_dedup_plan.md 第 5 节] 本轮因命中
+        # 仍在处理中的 Goal 标题而被抑制、没有生成候选的话题列表——空
+        # 列表表示本轮没有发生抑制（不代表功能关闭，关闭状态看
+        # cfg.goal_topic_dedup_enabled）。
+        "suppressed_goal_topics": suppressed_goal_topics,
     }
 
 
@@ -6668,6 +6825,10 @@ def diagnostics_snapshot(
         # `goal_alignment_enabled=False` 关闭时，两个字段整体为 `None`，
         # 不影响诊断面板其余部分。
         "goal_alignment": _goal_alignment_diagnostics_summary(paths, cfg, profile),
+        # [growth_advisor_goal_cron_dedup_plan.md 第 5 节] 候选生成阶段
+        # 因命中 Goal 标题被抑制的话题数——只读最近一次落盘的快照，明细
+        # 走 `/growth scan` 输出末尾的提示行，不在诊断面板里全量列出。
+        "goal_dedup": _goal_dedup_diagnostics_summary(paths),
         # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2]
         # 反馈模式统计——纯展示，不参与任何排序/置信度计算，见函数
         # docstring 里的取舍说明。任何异常都不该拖垮整个诊断面板，失败
@@ -6758,3 +6919,19 @@ def _goal_alignment_diagnostics_summary(paths, cfg, profile) -> dict[str, Any]:
         "unmatched_interests_count": len(alignment.get("unmatched_interests", [])),
         "stalled_linked_goals_count": stalled_count,
     }
+
+
+def _goal_dedup_diagnostics_summary(paths) -> dict[str, Any]:
+    """[growth_advisor_goal_cron_dedup_plan.md 第 5 节] 只读最近一条
+    `growth_goal_dedup_suppressions.jsonl` 快照，回答"最近一轮候选生成
+    因为命中 Goal 标题抑制了几个话题"。文件不存在/为空/读取异常 →
+    `last_cycle_suppressed_count=None`，不影响诊断面板其余部分——跟
+    `_goal_alignment_diagnostics_summary()` 同款"缺省不报错"惯例。"""
+    try:
+        rows = _read_jsonl(paths.growth_goal_dedup_suppressions_path)
+    except Exception:
+        return {"last_cycle_suppressed_count": None}
+    if not rows:
+        return {"last_cycle_suppressed_count": None}
+    last = max(rows, key=lambda r: r.get("recorded_at", 0))
+    return {"last_cycle_suppressed_count": last.get("count")}

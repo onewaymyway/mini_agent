@@ -67,37 +67,30 @@
 
 ## 2. 共享 helper：`_active_goal_topic_keys()`
 
-新增模块级函数：
+新增模块级函数 `_active_goal_topic_keys(goal_backlog) -> dict`（实现见
+第 7 节"实施记录"）：
 
-```python
-def _active_goal_topic_keys(goal_backlog) -> dict[str, "GoalNode"]:
-    """遍历 goal_backlog 里所有 level=="goal" 且 status=="active" 的
-    节点，返回 {normalize_title_key(goal.title): goal} 的映射。
+- 遍历 `goal_backlog.all_nodes()` 里 `level=="goal"` 且状态仍"在处理
+  中"（`status in {"active", "paused"}`，常量 `_GOAL_DEDUP_LIVE_
+  STATUSES`）的节点，返回 `{normalize_title_key(goal.title): goal}`。
+- `goal_backlog` 为 `None`，或 `all_nodes()` 调用异常 → 返回空 dict，
+  调用方据此完全跳过 Goal 相关的过滤，等价于拿不到 goal_backlog 时
+  的原有退化行为。
+- `completed`/`abandoned`/`cancelled`/`failed` 等终态的 Goal 不纳
+  入——方向做完之后成长顾问重新发现它是合理的。
+- 同一 `normalize_title_key` 命中多个 Goal 时保留先遍历到的一个
+  （`setdefault`），只用于"存在与否"的布尔判断。
 
-    - `goal_backlog` 为 None，或 `all_nodes()` 调用异常 → 返回空 dict，
-      调用方据此完全跳过 Goal 去重（等价于当前"拿不到 goal_backlog
-      就不去重"的行为，向后兼容）。
-    - 只看 `status == "active"` 的 Goal——已经 `completed`/`abandoned`/
-      `cancelled`/`failed` 的 Goal 不再是"正在处理"，不应该继续压制
-      对应话题的候选生成（比如一个方向做完了，用户可能想重新审视
-      "接下来还要不要继续深入"，这时候成长顾问重新发现这个话题反而
-      是合理的）。`paused` 视为仍然"正在处理但暂停"，同样纳入抑制
-      （区别于 completed/abandoned 等终态）。
-    - 同一 `normalize_title_key` 命中多个 Goal 时保留先遍历到的一个，
-      跟现有 `goal_by_key.setdefault(...)` 的"先到先得"惯例一致——
-      这里只是拿来做"存在与否"的布尔判断，取哪个 Goal 不影响过滤
-      结果本身。
-    """
-```
-
-`goal_growth_alignment()` 里现有的等价内联逻辑（第 3412-3421 行,
-`goal_keys_by_id` / `goal_by_key` 的构造）改为直接调用这个共享 helper，
-行为完全不变（原逻辑本来就是遍历全部 `level=="goal"` 节点不筛
-`status`——这里顺带对齐一下，阶段 A 的"未匹配兴趣"展示本身不受
-`status` 筛选影响太大，因为 `goal_by_key` 只在"能不能找到对应 Goal"
-时使用；改成只看 active 反而更准确地反映"这个方向现在是否仍在被
-Goal 追踪"，是本方案顺带修的一个小的一致性问题，不是本方案的核心
-改动，出现测试差异时以两处调用点行为对齐为准）。
+**实施记录（与最初设计的差异）**：最初设想 `goal_growth_alignment()`
+（阶段 A 对齐分析）也切换成调用这个共享 helper，图省事统一两处逻辑。
+实施时发现 `goal_growth_alignment()` 现有实现对全部状态的 Goal 都参与
+匹配（不筛 `status`），如果改成只用 active/paused，会改变"兴趣命中一
+个已 completed 的 Goal"这类边界情况的返回结果（从"匹配到、不停滞"
+变成"未匹配兴趣"），属于会影响既有行为的改动，且没有对应测试先行
+覆盖这个边界。为了让本次改动保持纯增量、不碰阶段 A 已有的对外行为，
+**`goal_growth_alignment()` 保持不变**，只有 `growth_candidate_
+derive()`（候选生成去重，本方案的核心诉求）接入新 helper。两处
+"要不要统一底层匹配逻辑"的重构留给后续单独评估，不在本方案范围内。
 
 ## 3. `growth_candidate_derive()` 改动
 
@@ -196,30 +189,50 @@ def _record_goal_dedup_suppression(paths, suppressed_topics: list[str]) -> None:
 - 新增只追加文件 `growth_goal_dedup_suppressions.jsonl`（结构见第 5
   节），走既有降采样压缩机制，不会无限增长。
 
-## 7. 实施顺序
+## 7. 实施顺序与状态
 
-1. 抽取 `_active_goal_topic_keys()`，`goal_growth_alignment()` 切换过去
-   调用，跑通现有测试（`test_growth_advisor_goal_cron_integration.py`）
-   确认行为等价。
-2. `growth_candidate_derive()` 接入过滤逻辑 + `goal_topic_dedup_enabled`
-   开关，补测试：
-   - 有一个 active Goal 标题和某个 focus_area 话题归一化后相同 → 不
-     生成候选。
-   - 同上但 Goal 状态是 `completed`/`abandoned` → 正常生成候选。
-   - `goal_topic_dedup_enabled=False` → 即使标题相同也正常生成（退回
-     旧行为）。
-   - spinoff 挖出的话题命中 Goal 标题 → 同样被过滤，不进
-     `add_or_merge`。
-   - 不传 `goal_backlog`（旧调用点）→ 完全不受影响。
-3. 诊断字段 + `/growth scan` 提示行 + `growth_goal_dedup_suppressions.jsonl`
-   落盘/压缩，补测试。
-4. 更新 `docs/growth-advisor-guide.md`，在既有"候选生成"小节里补充
-   "已是 Goal 的方向默认不再重复生成候选"的说明，并说明
-   `goal_topic_dedup_enabled` 开关位置。
+1. ✅ 新增 `_active_goal_topic_keys()`（不改动 `goal_growth_
+   alignment()`，理由见第 2 节"实施记录"）。
+2. ✅ `growth_candidate_derive()` 接入过滤逻辑 + `goal_topic_dedup_
+   enabled` 开关（默认 `True`），新增可选出参
+   `suppressed_goal_topics_out` 供调用方直接拿到本轮抑制明细，不用
+   重新读盘。测试见 `tests/test_growth_advisor_goal_topic_dedup.py`：
+   - active Goal 命中 → 不生成候选；
+   - completed/abandoned Goal 命中 → 正常生成候选；
+   - `goal_topic_dedup_enabled=False` → 退回旧行为；
+   - 不传 `goal_backlog` → 完全不受影响；
+   - spinoff 话题命中同样被过滤（走同一个 `focus_areas` 合并后的
+     循环，天然覆盖，未单独起一条测试路径）；
+   - 抑制发生时落盘 + `diagnostics_snapshot()`/`_goal_dedup_
+     diagnostics_summary()` 能读到计数；
+   - 没有发生抑制时不写文件。
+   全部 7 个用例 + 现有 472 个 growth 相关测试跑通，无回归。
+3. ✅ 诊断字段 `goal_dedup.last_cycle_suppressed_count` + `/growth
+   scan` 输出末尾提示行（列出前 5 个话题，超出用"等 N 个"收尾）+
+   `growth_goal_dedup_suppressions.jsonl` 落盘/按天降采样压缩
+   （`compact_goal_dedup_suppression_storage()`）。`run_daily_cycle()`
+   返回值新增 `suppressed_goal_topics` 字段（非 breaking，纯新增
+   key）。
+4. ✅ 更新 `docs/growth-advisor-guide.md`：2.1 节候选生成流程补充第 4
+   点、5 节配置表新增 `goal_topic_dedup_enabled` 一行、6 节数据存放
+   位置新增新文件说明，并同步"重置需删除的文件"清单。
 
-每一步独立可跑测试、独立提交，第 1 步是纯重构（不改变外部行为），
-第 2 步是本方案的核心修复，第 3、4 步是可观测性和文档，不阻塞前两步
-上线。
+改动文件清单：
+- `src/mini_agent/config/models.py`（新增配置字段）
+- `src/mini_agent/storage/paths.py`（新增 `growth_goal_dedup_
+  suppressions_path` 属性）
+- `src/mini_agent/evolution/growth_advisor.py`（核心逻辑：
+  `_active_goal_topic_keys()` / `_compact_goal_dedup_suppression_
+  rows()` / `compact_goal_dedup_suppression_storage()` /
+  `_record_goal_dedup_suppression()` / `_goal_dedup_diagnostics_
+  summary()`，以及 `growth_candidate_derive()` / `run_daily_cycle()`
+  / `diagnostics_snapshot()` 的改动）
+- `src/mini_agent/cli/commands/growth_cmd.py`（`/growth scan` 提示行）
+- `tests/test_growth_advisor_goal_topic_dedup.py`（新增测试文件）
+- `docs/growth-advisor-guide.md`（用户可见文档同步）
+- `next_doc/growth_advisor_goal_cron_dedup_plan.md`（本文档）
+
+非目标部分（cron 执行日志反向生成候选等）仍然按原计划不在本轮范围。
 
 ## 8. 与现有设计哲学的一致性检查
 

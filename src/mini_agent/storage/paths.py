@@ -483,6 +483,17 @@ class AgentPaths:
         return self.workdir_dir / "growth_pursuit_saturation_trend.jsonl"
 
     @property
+    def growth_goal_dedup_suppressions_path(self) -> Path:
+        """<project_root>/.agent/growth_goal_dedup_suppressions.jsonl —
+        [growth_advisor_goal_cron_dedup_plan.md 第 5 节] `growth_candidate_
+        derive()` 每轮如果因为话题命中仍在处理中的 Goal 标题而抑制了候选
+        生成，追加一条快照（每行一条 JSON：recorded_at/count/topics），
+        供诊断面板/`/growth scan` 展示"本轮抑制了多少个话题"。只在本轮确
+        实发生抑制时才追加（空轮不写），跟 `growth_topic_trend_path` 等
+        同款只追加文件一样走按天降采样压缩，不会无限增长。"""
+        return self.workdir_dir / "growth_goal_dedup_suppressions.jsonl"
+
+    @property
     def llm_call_stats_path(self) -> Path:
         """<project_root>/.agent/llm_call_stats.jsonl — [kanban_perception_gaps_
         improvement_plan.md 方向 B.2] 轻量 LLM 调用计数，跟 `llm/debug_logger.py`
