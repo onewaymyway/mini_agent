@@ -275,3 +275,58 @@ summarizer.md` 里对各类背景信息的语义说明不依赖具体变量名�
     降到"在 `_PROFILE_CONTEXT_PROVIDERS` 里加一行注册"。
 
 至此本文档识别的全部改进方向（A/B/C/D/E）均已实施完毕。
+
+- **第七期**（补测试 + 修复方向 C 的一个隐藏 bug）：
+  - **发现的问题**：`wiki/stats.py::build_wiki_recent_updates_snapshot()`
+    （方向 C）内部通过 `discover_pages()`（`wiki/indexer.py`）取候选
+    页面列表，再过滤出落在 `wiki_research_dir`/`wiki_growth_dir` 下的
+    条目。但 `discover_pages()` 本身只 glob entities/decisions/
+    processes/experiences/topics 五个命名空间的目录，从未包含
+    research/growth——也就是说，`pages` 列表里根本不可能出现
+    research/growth 下的文件，过滤逻辑永远拿到空集合。这个函数自
+    第四期"已实施"以来，在真实使用中实际上**从未真正产出过内容**，
+    只是因为异常兜底返回空串、不影响主流程，所以没有报错暴露出来，
+    直到本期为它补单测时才发现。
+  - **修复方式**：`build_wiki_recent_updates_snapshot()` 不再复用
+    `discover_pages()` 的结果，改为直接对 `wiki_research_dir` /
+    `wiki_growth_dir` 各自 `glob("*.md")`，其余逻辑（`parse_page()` +
+    按 `updated`/`created` 倒序 + 取前 `max_items` 条）不变。
+    `discover_pages()` 本身不改动——它服务于通用 wiki 索引场景，
+    本来就不该扫描 research/growth 这两个独立命名空间，这一点在
+    第四期文档里也已经说明过（"不扫描 entities/decisions/experiences
+    等其它命名空间是 agent 自身的知识沉淀"，反过来同样成立）。
+  - **新增测试**：
+    - `tests/test_profile_context_providers.py`（新建）：覆盖
+      watchlist snapshot（空配置/enabled 过滤/max_items）、wiki
+      snapshot（空 wiki/research 与 growth 条目均可见——回归验证本期
+      修复/其它命名空间被排除/按更新时间排序/max_items）、
+      `_profile_context_preferences` / `_profile_context_growth_focus`
+      两个 provider 的边界情况、`_collect_profile_context_blocks()`
+      的整体拼接（全空/单信源/`set_preference()` 到 provider 的端到端
+      链路）。
+    - `tests/test_goal_tree_report.py`：补充"最近完成的目标"小节
+      （方向 B）的测试——包含性、按完成时间排序、
+      `max_completed_goals` 截断、无完成目标时不出现小节标题。
+    - `tests/test_cli_profile_preference_commands.py`（新建）：覆盖
+      `/profile set|unset|show`（含 `get` 别名）在正常/边界（缺参数、
+      key 不存在、`_profile_mgr` 未启用）情况下的行为。
+    - `tests/test_api_user_profile_preferences_routes.py`（新建）：
+      覆盖三个 REST 端点（GET 读取、POST 新增/覆盖/空 key 400、POST
+      delete 存在/不存在两种情况），以及"API 写入后 CLI 侧
+      `UserProfileManager` 能看到同一份数据"这一共享存储断言。
+  - **回归验证**：`test_profile.py` / `test_watchlist_matcher.py` /
+    `test_extraction_stats.py` / `test_monthly_trend_retrospective.py`
+    等既有测试全部保持通过，本期改动未影响其它调用
+    `discover_pages()` / `wiki/stats.py` 其它函数的既有行为。
+  - **文档同步**：`docs/user-profile-guide.md` 新增 §5.4"背景信息
+    来源（context_blocks）"完整说明 5 个 provider 的来源与语义；新增
+    §7.3"写入入口"说明 CLI（`/profile set|unset|show`）/ API（`/v1/
+    user_profile/preferences` 三个端点）/ 看板可视化三条写入路径；
+    原 §9.3（曾写作"未来可以加的手动编辑功能"）改写为准确反映现状的
+    "更多背景信息来源接入"，避免文档描述已经实现的功能为"未来扩展
+    方向"。`docs/commands-and-tools-reference.md` 的 `/profile` 命令表
+    行补充 `rebuild`/`scan`/`set`/`unset`/`show` 五个子命令的说明。
+
+至此，本文档识别的全部改进方向不仅"已实施"，其中方向 C 也已通过补
+测试的方式验证了实际生效（而不只是代码存在），并修复了此前一直
+潜伏、未被任何测试捕捉到的一个静默失效问题。

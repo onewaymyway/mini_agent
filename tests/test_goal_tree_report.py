@@ -147,6 +147,54 @@ class TestBuildGoalTreeProfileSnapshot(unittest.TestCase):
         snapshot = gtr.build_goal_tree_profile_snapshot(self.paths, max_active_goals=3)
         self.assertEqual(snapshot.count("\n- "), 3)
 
+    def test_recently_completed_goals_included(self):
+        """[next_doc/profile_context_sources_completeness_plan.md 方向 B]
+        已完成的目标应该出现在独立的 "Recently completed goals" 小节，
+        且不与活跃目标混在一起。"""
+        gb = load_goal_backlog(self.paths)
+        active = gb.add_goal("正在做的事", source="user")
+        done = gb.add_goal("已经做完的事", source="user")
+        gb.set_status(done.id, "completed")
+
+        snapshot = gtr.build_goal_tree_profile_snapshot(self.paths)
+        self.assertIn("正在做的事", snapshot)
+        self.assertIn("Recently completed goals", snapshot)
+        self.assertIn("已经做完的事", snapshot)
+        # 活跃目标标题排在 "Active long-running goals" 标题之后、
+        # completed 小节标题之前。
+        self.assertLess(
+            snapshot.index("正在做的事"), snapshot.index("Recently completed goals")
+        )
+
+    def test_completed_goals_sorted_most_recent_first(self):
+        gb = load_goal_backlog(self.paths)
+        first = gb.add_goal("先完成的", source="user")
+        gb.set_status(first.id, "completed")
+        second = gb.add_goal("后完成的", source="user")
+        gb.set_status(second.id, "completed")
+
+        snapshot = gtr.build_goal_tree_profile_snapshot(self.paths)
+        self.assertLess(snapshot.index("后完成的"), snapshot.index("先完成的"))
+
+    def test_max_completed_goals_limits_output(self):
+        gb = load_goal_backlog(self.paths)
+        for i in range(8):
+            node = gb.add_goal(f"Done {i}", source="user")
+            gb.set_status(node.id, "completed")
+
+        snapshot = gtr.build_goal_tree_profile_snapshot(
+            self.paths, max_completed_goals=2
+        )
+        completed_section = snapshot.split("Recently completed goals")[1]
+        self.assertEqual(completed_section.count("\n- "), 2)
+
+    def test_no_completed_goals_no_section_header(self):
+        gb = load_goal_backlog(self.paths)
+        gb.add_goal("Active Only", source="user")
+
+        snapshot = gtr.build_goal_tree_profile_snapshot(self.paths)
+        self.assertNotIn("Recently completed goals", snapshot)
+
 
 if __name__ == "__main__":
     unittest.main()

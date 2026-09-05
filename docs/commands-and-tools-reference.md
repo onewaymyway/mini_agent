@@ -173,6 +173,11 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/prompts` | 列出所有 PromptManager 管理的 prompt 文件 |
 | `/memory` | 立即在后台生成/刷新 session 摘要 + 写入长期记忆 + 刷新用户画像（跳过轮次间隔门槛），需 `--memory` 启用；详见 [记忆管理指南](memory-management-guide.md) |
 | `/profile` | 立即在后台刷新用户画像（跳过刷新间隔），需在 `agent_config.json` 中设置 `profile_enabled: true`（无对应 CLI flag）；详见 [用户画像系统指南](user-profile-guide.md) |
+| `/profile rebuild` | 强制全量重建画像（不参考上一版，退化为"只取最近 N 条记忆重新生成"） |
+| `/profile scan` | 触发一次历史记忆回填扫描（见 [用户画像系统指南](user-profile-guide.md) 相关小节） |
+| `/profile set <key> <value...>` | 显式设置一条用户偏好（`profile.preferences`，作为既定事实提供给画像生成，不需要会话证据验证）；value 允许包含空格 |
+| `/profile unset <key>` | 删除一条已设置的偏好 |
+| `/profile show [key]` | 只读查看已设置的偏好（不带 key 列出全部，带 key 只看这一条）；`show`/`get` 本身不触发任何刷新 |
 | `/decision_profile [update]` | 查看/更新**决策画像**（`UserProfile` 的自动学习之外，另一套从历史技术决策归纳出的价值取向模式）；命名上与上一行的 `/profile` 刻意区分，两者互不相关；详见 [决策画像指南](decision-profile-guide.md) |
 | `/agent_value_profile [update]` | 查看/更新 **Agent 自身价值观**（观察对象是 agent 自己的历史选择行为，不是用户）；详见 [self-awareness-identity-guide.md](self-awareness-identity-guide.md) |
 | `/self_narrative [update\|history]` | 查看/更新/查看历史 **自我叙事**（综合已落盘的自我认知数据生成第一人称叙事，追加式存档）；详见 [self-awareness-identity-guide.md](self-awareness-identity-guide.md) |

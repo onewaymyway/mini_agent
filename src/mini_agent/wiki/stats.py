@@ -188,26 +188,33 @@ def build_wiki_recent_updates_snapshot(paths: AgentPaths, *, max_items: int = 8)
     函数（`build_goal_tree_profile_snapshot` / `build_watchlist_profile_
     snapshot`）保持一致的降级风格。
     """
+    # 注意：`discover_pages()` 只扫描 entities/decisions/processes/
+    # experiences/topics 五个命名空间（见 wiki/indexer.py），本来就不
+    # 包含 research/growth——这两个目录是独立的"用户主导长期任务"命名
+    # 空间，不挂在通用 wiki 索引下（避免跟 entities 等 agent 自身知识
+    # 沉淀混在一起）。因此这里不能复用 discover_pages() 的结果，需要
+    # 直接对 wiki_research_dir / wiki_growth_dir 各自 glob。
     try:
-        pages = discover_pages(paths)
+        research_dir = paths.wiki_research_dir
+        growth_dir = paths.wiki_growth_dir
     except Exception:
-        return ""
-    if not pages:
         return ""
 
-    try:
-        research_dir = paths.wiki_research_dir.resolve()
-        growth_dir = paths.wiki_growth_dir.resolve()
-    except Exception:
+    page_paths: list = []
+    for d in (research_dir, growth_dir):
+        try:
+            if d.exists():
+                page_paths.extend(sorted(d.glob("*.md")))
+        except Exception:
+            continue
+
+    if not page_paths:
         return ""
 
     relevant_pages = []
-    for page_path in pages:
+    for page_path in page_paths:
         try:
-            resolved = page_path.resolve()
-            if research_dir not in resolved.parents and growth_dir not in resolved.parents:
-                continue
-            relevant_pages.append(parse_page(resolved))
+            relevant_pages.append(parse_page(page_path))
         except Exception:
             continue
 

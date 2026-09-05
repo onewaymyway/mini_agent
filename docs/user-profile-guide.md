@@ -38,6 +38,13 @@
 │              MemoryStore (memory_store.py)              │
 │  - 提供长期记忆条目（summary + tags）                   │
 └───────────────────────┬─────────────────────────────────┘
+                        │ 并列输入（见 §5.5 背景信息来源）
+                        ▼
+┌─────────────────────────────────────────────────────────┐
+│   _PROFILE_CONTEXT_PROVIDERS（profile.py 模块级注册表）  │
+│  goal_tree / watchlist / preferences / growth_focus /   │
+│  wiki 五个 provider，统一签名 (paths, profile) -> str    │
+└───────────────────────┬─────────────────────────────────┘
                         │ 注入
                         ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -187,7 +194,32 @@ Recent session summaries:
 {{memory_text}}
 ```
 
-### 5.4 画像注入 System Prompt
+### 5.4 背景信息来源（`context_blocks`）
+
+[next_doc/profile_context_sources_completeness_plan.md] `generate()` 除了
+长期记忆摘要，还会在每次生成时重新拉取以下 5 类"背景信息"，一并作为独立
+输入传给 LLM（不是"上一版画像"的一部分，而是当前状态快照）：
+
+| Provider | 来源 | 说明 |
+|---|---|---|
+| `_profile_context_goal_tree` | `perception/goal_tree_report.py::build_goal_tree_profile_snapshot()` | 活跃目标标题 + 最近进展摘要，以及**最近完成**的若干个目标（按完成时间倒序，默认最多 8 个活跃 + 5 个已完成） |
+| `_profile_context_watchlist` | `external_input/watchlist.py::build_watchlist_profile_snapshot()` | `watchlist.yaml` 里用户显式配置要关注的话题/关键词（只取已启用条目的 id + keywords，默认最多 10 条） |
+| `_profile_context_preferences` | `profile.preferences`（即 §7 的用户显式偏好） | 作为"既定事实"传入，明确告诉模型不需要用会话证据验证或质疑 |
+| `_profile_context_growth_focus` | `profile.derived["growth_focus_areas"]`（growth_advisor 通过规则扫描持续积累） | agent 自己检测到的用户关注领域，按命中记忆条目数降序取前 8 个主题名；prompt 里标注为"较弱的佐证信号"，与用户显式声明冲突时以其它信号为准 |
+| `_profile_context_wiki` | `wiki/stats.py::build_wiki_recent_updates_snapshot()` | `wiki/research/`（持续调研）与 `wiki/growth/`（成长顾问学习素材）两个命名空间最近更新的条目标题（默认最多 8 条，只取标题+更新时间，不读正文） |
+
+这 5 个 provider 统一注册在 `profile.py` 模块级的 `_PROFILE_CONTEXT_
+PROVIDERS` 列表里，由 `_collect_profile_context_blocks(paths, profile)`
+依次调用、拼接非空结果，整体通过单个 `{{context_blocks}}` 变量传给
+`prompts/user/profile_update_request.md`。每个 provider 内部各自
+`try/except` 兜底为空串——任一信息源异常都不影响其它信息源，也不影响
+画像生成主流程。
+
+新增一个信息源，只需要在 `_PROFILE_CONTEXT_PROVIDERS` 里注册一个
+`(paths, profile) -> str` 的函数，不需要再改 `generate()` 主体逻辑，也
+不需要给 prompt 模板加新的具名变量。
+
+### 5.5 画像注入 System Prompt
 
 当存在用户画像时，`prompts/system/user_profile.md` 会被注入到 system prompt：
 
@@ -279,6 +311,42 @@ profile_mgr.set_preference("preferred_model", "claude-opus-4-5")
 profile_mgr.set_display_name("Alice")
 ```
 
+### 7.3 写入入口
+
+[next_doc/profile_context_sources_completeness_plan.md 方向 D] 早期
+`set_preference()` 只有方法实现、没有任何调用方，等于一个只能靠手改
+JSON 文件才能用的功能。现在有两条端到端的写入入口，二者读写同一份
+`profile.preferences` 数据，互相可见：
+
+**a) CLI（`cli/repl.py` slash 命令）**
+
+```
+/profile set <key> <value...>   # 新增/覆盖一条；value 允许包含空格
+/profile unset <key>            # 删除一条
+/profile show [key]             # 只读查看（不带 key 列出全部）；
+                                 # 不同于无参数的 `/profile`（触发刷新），
+                                 # show/get 本身不触发任何刷新
+```
+
+**b) HTTP API（`api/routes.py`，供看板调用）**
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/v1/user_profile/preferences` | 读取全部偏好，返回 `{"preferences": {...}}` |
+| POST | `/v1/user_profile/preferences` | 新增/覆盖一条，body `{"key", "value"}` |
+| POST | `/v1/user_profile/preferences/delete` | 删除一条，body `{"key"}` |
+
+删除端点用 `POST + body` 而不是 `DELETE /preferences/{key}` 路径参数——
+偏好的 key 是用户自由输入的文本，可能包含 `/` 等 URL 路径分隔符，放
+路径参数里容易在编解码环节出问题。
+
+**c) 看板可视化**
+
+Streamlit 看板（`apps/mini_agent_kanban`）"🌱 成长顾问"tab 的"Agent 对
+你的了解"区块下方有一个"✏️ 我的偏好设置"可折叠编辑区：列出已有偏好
+（每条带删除按钮）+ 一个新增/更新表单，跟"agent 从记忆里推断出的画像"
+摆在同一处，方便对照"agent 猜的"和"我自己说的"。
+
 ---
 
 ## 8. 代码结构
@@ -343,15 +411,13 @@ derived = {
 
 只需修改 `profile_summarizer.md` 的 prompt 即可让 LLM 生成额外字段。
 
-### 9.3 手动编辑画像
+### 9.3 更多背景信息来源接入
 
-可以添加命令行工具允许用户手动编辑画像：
-
-```bash
-/ profile edit          # 手动编辑画像
-/ profile reset         # 重置画像（强制重新生成）
-/ profile show          # 显示当前画像
-```
+`_PROFILE_CONTEXT_PROVIDERS` 注册表让新增信息源的成本降到"写一个
+`(paths, profile) -> str` 函数 + 注册一行"，不需要再碰 `generate()`
+主体或 prompt 模板变量列表（见 §5.4）。decision_profile（看板"配置"
+页可见的另一套 profile，见 [决策画像指南](decision-profile-guide.md)）
+目前仍是完全独立的机制，是否要打通留待后续单独评估。
 
 ---
 
@@ -392,7 +458,10 @@ profile_mgr.save()
 - [记忆管理指南](memory-management-guide.md) — 长期记忆系统的设计与使用
 - [配置指南](config-guide.md) — 完整配置说明
 - [系统架构总览](system-overview.md) — Agent 整体架构
+- [决策画像指南](decision-profile-guide.md) — 另一套独立的"决策/价值取向"画像机制，与本文档的用户画像互不相关
+- [命令与工具参考](commands-and-tools-reference.md) — `/profile` 全部子命令列表
 
 ---
 
-*最后更新：2026-06（新增用户画像系统）*
+*最后更新：2026-09（新增背景信息来源 context_blocks 与 preferences 写入入口，见
+next_doc/profile_context_sources_completeness_plan.md）*
