@@ -427,7 +427,20 @@ def apply_deep_link_query_params():
         st.session_state["_active_tab"] = "artifacts_preview"
     if session_id:
         st.session_state.artifacts_session_filter = session_id
-        st.session_state["_active_tab"] = "artifacts_preview"
+        # [BUGFIX / 关键] 这里原来是无条件地把 `_active_tab` 强制设成
+        # "artifacts_preview"——问题是 `session_id` 一旦被"绑定到 session"
+        # 功能写进 URL，就会一直留在 URL 里（这正是绑定要的效果）。而
+        # `apply_deep_link_query_params()` 在 `main()` 里每次 rerun 都会
+        # 跑一遍，跑在 `render_tab_nav()` 之前——于是变成"只要绑定过
+        # session，往后不管点哪个 tab 按钮，下一次 rerun 一开始就被这里
+        # 强行拽回「产出预览」tab"，绑定/切 tab 全部失效，包括"绑定后自动
+        # 跳到💬对话"那个改动也会被这里覆盖掉。
+        # 只有当这个 session_id **不是**看板自己（绑定下拉框/绑定按钮/新建
+        # 会话）刚写入的，才当成"外部分享的深链接"来强制跳 tab；否则说明
+        # 这是看板内部动作，跳不跳 tab 交给那些动作自己决定（比如跳
+        # "💬 对话"），这里不再横插一杠子。
+        if session_id != st.session_state.get("_internally_bound_session_id"):
+            st.session_state["_active_tab"] = "artifacts_preview"
 
 
 def update_query_params(**kv) -> None:
@@ -465,7 +478,15 @@ def get_active_session_id() -> str:
 
 def set_active_session_id(session_id: str) -> None:
     """把这个标签页绑定到指定 session（写入 URL，不写 session_state，理由同上）。
-    传空字符串 / None 表示解绑，退回全局默认 session。"""
+    传空字符串 / None 表示解绑，退回全局默认 session。
+
+    [BUGFIX] 顺手记一下"这次是看板自己发起的绑定动作"（存进
+    `_internally_bound_session_id`），供 `apply_deep_link_query_params()`
+    区分"这是外部分享链接打开的深链接"还是"用户在看板里点了绑定按钮"——
+    见那边的注释，这是"绑定后一直卡在某个 tab、切哪个 tab 都跳不出去"
+    这个 bug 的关键修复点。
+    """
+    st.session_state["_internally_bound_session_id"] = session_id
     update_query_params(session_id=session_id)
 
 
