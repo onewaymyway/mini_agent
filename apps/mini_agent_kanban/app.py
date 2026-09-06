@@ -5265,13 +5265,22 @@ def _render_goal_tree_node_body(
         with title_col:
             st.markdown(title_markdown, unsafe_allow_html=True)
         with detail_col:
-            if st.button("📄", key=f"_gt_detail_btn_{node_id}", help="查看节点详情"):
+            # [bug fix：点击时有时候能命中、有时候点不中]
+            # 这个列宽只有整体的 6%，`st.button` 默认按内容自适应渲染宽度，
+            # 视觉上的按钮框经常会比这个窄列本身还宽、往外溢出——但真正
+            # 能触发 onClick 的判定区域是跟着列的实际宽度走的，只有列内
+            # 那一小块是有效点击区，溢出的部分点上去没有反应。加
+            # `use_container_width=True` 后按钮会被强制拉伸到跟列宽完全
+            # 一致，可视区域=可点击区域，不再有"点偏了没反应"的问题。
+            if st.button("📄", key=f"_gt_detail_btn_{node_id}", help="查看节点详情",
+                         use_container_width=True):
                 _gt_debug_log(f"click 📄 detail button, node_id={node_id!r} (has-children branch)")
                 st.session_state.pop("_goal_wiki_view_target", None)
                 st.session_state["_goal_tree_detail_target"] = node_id
                 st.rerun()
         with wiki_col:
-            if st.button("📖", key=f"_gt_wiki_btn_{node_id}", help="查看产出 Wiki 页"):
+            if st.button("📖", key=f"_gt_wiki_btn_{node_id}", help="查看产出 Wiki 页",
+                         use_container_width=True):
                 _gt_debug_log(f"click 📖 wiki button, node_id={node_id!r} (has-children branch)")
                 st.session_state.pop("_goal_tree_detail_target", None)
                 st.session_state["_goal_wiki_view_target"] = node_id
@@ -5281,13 +5290,15 @@ def _render_goal_tree_node_body(
         with title_col:
             st.markdown(title_markdown, unsafe_allow_html=True)
         with detail_col:
-            if st.button("📄", key=f"_gt_detail_btn_{node_id}", help="查看节点详情"):
+            if st.button("📄", key=f"_gt_detail_btn_{node_id}", help="查看节点详情",
+                         use_container_width=True):
                 _gt_debug_log(f"click 📄 detail button, node_id={node_id!r} (leaf branch)")
                 st.session_state.pop("_goal_wiki_view_target", None)
                 st.session_state["_goal_tree_detail_target"] = node_id
                 st.rerun()
         with wiki_col:
-            if st.button("📖", key=f"_gt_wiki_btn_{node_id}", help="查看产出 Wiki 页"):
+            if st.button("📖", key=f"_gt_wiki_btn_{node_id}", help="查看产出 Wiki 页",
+                         use_container_width=True):
                 _gt_debug_log(f"click 📖 wiki button, node_id={node_id!r} (leaf branch)")
                 st.session_state.pop("_goal_tree_detail_target", None)
                 st.session_state["_goal_wiki_view_target"] = node_id
