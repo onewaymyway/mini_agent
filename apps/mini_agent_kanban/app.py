@@ -5632,9 +5632,9 @@ def _render_goal_wiki_content_panel(client: AgentClient, node_id: str) -> None:
         st.rerun()
 
     wiki_path = f".agent/daemon_run_outputs/goals_wiki/{node_id}/index.md"
-    resp, done = _async_fetch_or_retry(
-        client, f"gt_wiki_read:{node_id}", lambda: client.fs_read(wiki_path),
-        loading_label="Wiki 页加载中",
+    resp, done = _dialog_sync_fetch(
+        f"gt_wiki_read:{node_id}", lambda: client.fs_read(wiki_path),
+        loading_label="Wiki 页加载中…",
     )
     if not done:
         return
@@ -5649,6 +5649,36 @@ def _render_goal_wiki_content_panel(client: AgentClient, node_id: str) -> None:
         st.markdown(content)
     else:
         st.info("该节点尚未生成 Wiki 页，可在「📖 产出 Wiki」折叠区点「重建 Wiki」生成。")
+
+
+def _dialog_sync_fetch(key: str, fetch_fn, *, loading_label: str = "加载中…") -> tuple:
+    """[bug fix：弹窗点击后"卡一下就什么都不显示，需要刷新页面"]
+    根因：`_async_fetch_or_retry` 轮询时调用的是不带 `scope` 参数的
+    `st.rerun()`——`st.rerun()` 的默认 `scope` 是 `"app"`（全量重跑），
+    而 `st.dialog` 的正文其实是包在一个 `st.fragment` 里执行的；在
+    fragment 内部触发一次 `scope="app"` 的 rerun，会把**整个看板脚本**
+    重新跑一遍，而不是只重跑弹窗这个 fragment。目标树页顶部
+    `_render_goal_tree_view()` 里 `client.goal_tree()` /
+    `client.goal_tree_next_steps()` 这两个调用是同步阻塞的，且树形结构
+    本身还要整体递归重新渲染一遍——弹窗每等待一次（0.4s 一个轮询节拍）
+    就要连带把这些全部重跑一次，树稍大/网络稍慢就会表现成"点击后卡住"，
+    如果中途某一次全量重跑因为网络抖动或超时报错，脚本运行直接中断，
+    弹窗随之消失，只能手动刷新页面重新开始。
+
+    弹窗正文本来就只需要拿"这一个节点"的详情/Wiki 页，数据量和延迟都
+    远小于整棵树，没有必要走"提交到线程池 + 轮询"这套本来是为了避免
+    阻塞整个页面才设计的机制——弹窗（fragment）本身的阻塞不会连累树的
+    其余部分，直接同步调用 + `st.spinner()` 反而更简单也更可靠：不再
+    有"每一步都要不要重新拉一次整棵树"这个隐藏代价，失败了原地展示
+    "🔄 重试"按钮，点击只重跑弹窗自己（`st.dialog` 内部交互默认就是
+    fragment 级别的局部重跑，不受这里影响）。
+    """
+    try:
+        with st.spinner(loading_label):
+            result = fetch_fn()
+        return result, True
+    except Exception as e:
+        return {"_error": str(e)}, True
 
 
 def _show_goal_node_detail_dialog(client: AgentClient, goal_id: str) -> None:
@@ -5680,9 +5710,9 @@ def _render_goal_node_detail_panel(client: AgentClient, goal_id: str) -> None:
         st.session_state.pop("_goal_tree_detail_target", None)
         st.rerun()
 
-    resp, done = _async_fetch_or_retry(
-        client, f"gt_node_page:{goal_id}", lambda: client.goal_node_page(goal_id),
-        loading_label="节点详情加载中",
+    resp, done = _dialog_sync_fetch(
+        f"gt_node_page:{goal_id}", lambda: client.goal_node_page(goal_id),
+        loading_label="节点详情加载中…",
     )
     if not done:
         return
@@ -5790,24 +5820,20 @@ def _render_goal_tree_view(client: AgentClient) -> None:
     # `_goal_tree_detail_target` 后在这里统一消费，直接弹出对应节点的
     # 详情面板，而不用要求用户先在树里手动找到这个节点。
     #
-    # [bug fix] 这里必须用 `get()` 而不是 `pop()`：详情面板正文走
-    # `_async_fetch_or_retry`，数据没能在当前这一轮脚本运行内立刻返回时
-    # 会自己触发 `st.rerun()`，指望下一轮继续把结果读出来——如果用
-    # `pop()`，标记在第一轮就被拿走了，下一轮 `if detail_target` 判断为
-    # 假，弹窗还没来得及加载完内容就被跳过关闭，用户几乎永远看不到内容
-    # （必现，不是偶发）。改成 `get()` 后标记会一直保留到用户显式关闭
-    # （见 `_render_goal_node_detail_panel` 里的"✖️ 关闭"按钮），多轮
-    # rerun 都能持续重新打开同一个弹窗，直到异步数据真正加载完成。
+    # 用 `get()` 而不是 `pop()`：标记要一直留着，直到用户在弹窗里点
+    # "✖️ 关闭"显式清掉（见 `_render_goal_node_detail_panel`）——弹窗
+    # 正文现在走 `_dialog_sync_fetch()` 同步获取（不再是"提交线程池+
+    # 轮询"），但获取失败时会展示"🔄 重试"按钮，重试按钮本身触发一次
+    # `st.rerun()`；如果标记在第一轮就被 `pop()` 掉，下一轮
+    # `if detail_target` 就判断为假，弹窗直接被跳过关闭，用户点"重试"
+    # 也没有用。
     detail_target = st.session_state.get("_goal_tree_detail_target")
     if detail_target:
         _show_goal_node_detail_dialog(client, detail_target)
 
-    # [bug fix，见 `_render_goal_wiki_panel` 顶部说明] Wiki 弹窗按跟
-    # 节点详情弹窗完全相同的方式在这里统一消费——同样用 `get()` 而不是
-    # `pop()`：弹窗正文走 `_async_fetch_or_retry`，数据没能在当前这一轮
-    # 脚本运行内立刻返回时会自己触发 `st.rerun()`，指望下一轮继续把
-    # 结果读出来，`pop()` 会导致标记在第一轮就被拿走，弹窗还没加载完
-    # 内容就被跳过关闭。
+    # Wiki 弹窗按跟节点详情弹窗完全相同的方式在这里统一消费，原因同上：
+    # 用 `get()` 保留标记直到用户显式点"✖️ 关闭"，避免"🔄 重试"按钮的
+    # rerun 把还没关闭的弹窗提前跳过。
     wiki_target = st.session_state.get("_goal_wiki_view_target")
     if wiki_target:
         _show_goal_wiki_dialog(client, wiki_target)
