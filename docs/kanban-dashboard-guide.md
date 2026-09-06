@@ -157,6 +157,7 @@ streamlit run app.py
 | 🛡️ 受保护文件 | `protected_files.txt` 清单查看/增删声明、手动备份快照、按快照恢复（见下方专节） |
 | ⚙️ 配置 | 运行时配置字段编辑 |
 | 🔧 诊断 | `/diagnostics` 原始信息，便于排障 |
+| 🐢 慢请求 | 看板/API 卡死问题排查：耗时超过阈值（默认5秒，可调）的 HTTP 请求列表，分"看板→API 客户端"与"API 服务端"两个子视图，服务端子视图额外标记疑似卡住未正常结束的请求（见下方专节） |
 | 🧪 混合执行 | 混合执行模式相关面板 |
 | 👤 账户管理 | 仅 `--require-login` 模式出现：修改自己的密码、管理自己的登录会话（"退出所有其他会话"，应对免登录 token 泄露场景，所有登录用户可见）；账户列表 + 新增/重置密码/切换管理员/删除、所有用户的会话列表与撤销（仅管理员可见），见 `apps/mini_agent_kanban/README.md`"登录鉴权"节 |
 
@@ -954,6 +955,27 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 `restore` 7 个方法；`_delete()` 新增 `json_body` 参数支持（DELETE
 请求带 body，删除声明需要在 body 里传具体路径）。
 
+### 🐢 慢请求 Tab
+
+看板经常"卡死"，这个 Tab（`kanban_slow_http_request_monitoring_plan.md`）
+用来定位是哪一次 HTTP 请求慢。顶部一个"耗时阈值（秒）"输入框，默认 `5`，
+两个子视图共用同一个阈值：
+
+- **看板 → API（客户端）**：看板自己发出的请求（`client.py` 里
+  `_get/_post/_patch/_put/_delete/_get_bytes` 六个统一入口都会计时），
+  读的是本进程内存环形缓冲区（最近 500 条，重启即丢）。跨重启的历史
+  记录见本地日志文件 `~/.agent/logs/kanban_client_http.jsonl`（10MB 轮转
+  × 5 份，跟服务端日志同目录，但是完全独立的两份文件）。提供"清空内存
+  记录"按钮（只清内存，不影响日志文件）。
+- **API 服务端**：读的是 `~/.agent/logs/http_access.jsonl`——由服务端
+  `HttpAccessLogMiddleware` 一直在记录（这个 Tab 只是新增了查询/展示
+  入口，不改变记录逻辑本身），支持"全部/仅当天"范围。除了普通慢请求
+  列表，还会优先高亮显示"有开始记录但没等到结束"的疑似卡住请求（这类
+  记录对排查"卡死"本身价值最高），以及按 path 聚合的分布表。
+
+详见 [日志保存机制指南](./logging-mechanisms-guide.md) 第十节，两份日志
+文件的记录格式、字段含义都写在那边。
+
 ## `AgentClient` 封装的 API 端点
 
 `apps/mini_agent_kanban/client.py` 中的 `AgentClient` 封装了看板所需的全部 HTTP 调用，
@@ -964,6 +986,9 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `health()` | `GET /health` | 健康检查 |
 | `status(session_id=)` | `GET /v1/status` | Agent 运行状态（含 `model`/`session_dir`/`activity`/`activity_detail`） |
 | `diagnostics()` | `GET /v1/diagnostics` | 诊断信息 |
+| `client_http_call_records(threshold_sec=)` | 无网络请求，读进程内存 | 看板自身发出请求中超过阈值的记录 |
+| `clear_client_http_call_records()` | 无网络请求，清内存 | 清空看板客户端请求内存记录 |
+| `http_access_log_slow(threshold_sec=, scope=)` | `GET /v1/self/http_access_log/slow` | 服务端慢请求列表 + 疑似卡住请求 |
 | `chat(session_id=)` / `interrupt(session_id=)` | `POST /v1/chat`、`/v1/interrupt` | 发消息 / 中断 |
 | `history(session_id=, limit=100, before_seq=)` / `clear_history(session_id=)` | `/v1/history` | 对话历史读取（默认只取最新一页，`before_seq` 翻页取更早的）与清空 |
 | `events(session_id=)` | `GET /v1/events` | 拉取事件流 |

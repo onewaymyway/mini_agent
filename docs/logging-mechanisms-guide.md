@@ -15,6 +15,8 @@
 | 机制 | 落盘位置 | 作用域 | 默认开关 |
 |---|---|---|---|
 | 全局错误日志 | `~/.agent/logs/error.jsonl` | 全局，跨项目 | 常开 |
+| HTTP 访问日志（服务端） | `~/.agent/logs/http_access.jsonl` | 全局，跨项目 | 常开（`HttpConfig.access_log_enabled`） |
+| 看板客户端请求日志 | `~/.agent/logs/kanban_client_http.jsonl` | 全局，看板进程级 | 常开 |
 | LLM 调试日志 | `<project>/.agent/sessions/<sid>/llm_debug.jsonl` | session 级 | 关闭（需 `--debug-llm` 或配置开启） |
 | Generative-Capability 调试日志 | `~/.agent/logs/capability_debug.jsonl` | 全局，跨项目 | 关闭（需 `agent_config.json` 的 `debug.capability_enabled` 或环境变量 `CAPABILITY_DEBUG`） |
 | Daemon 控制台日志 | `<project>/.agent/daemon.log` | 项目级，daemon 进程 | daemon 后台模式常开 |
@@ -278,13 +280,53 @@ global_error_logging()` 早就给 root logger 加过 handler 了，所以就算�
 
 ---
 
-## 十、路径速查表
+## 十、HTTP 访问日志与看板慢请求监控（`api/http_log.py`，`kanban_slow_http_request_monitoring_plan.md`）
+
+看板经常"卡死"，排查时需要知道具体是哪一次 HTTP 请求慢/卡住。这块拆成
+服务端、客户端两份独立日志：
+
+**服务端：`~/.agent/logs/http_access.jsonl`**
+
+由 `HttpAccessLogMiddleware`（`api/http_log.py`）记录，每个请求落两行——
+`request_start` 和 `request_end`（含 `duration_ms`）。两行制的意义是：如果
+进程在处理某个请求期间被杀掉/彻底卡死到无法恢复，日志里最后一条孤零零的
+`request_start`（没有对应的 `request_end`）本身就能直接指向"卡在哪个请求
+上"，不需要靠耗时数字反推。中间件内部有一个固定阈值 `_SLOW_THRESHOLD_MS
+= 3000` 只用于打 `slow` 标记方便 `grep`，跟下面"读"接口的阈值是两回事。
+开关：`HttpConfig.access_log_enabled`（默认开）；路径：`HttpConfig.
+access_log_path`（默认与 `error.jsonl` 同目录）。
+
+查询函数 `http_access_log_query(threshold_ms, scope, limit)` 按耗时阈值
+过滤出慢请求，并用 `(pid, thread, method, path, query)` 近似配对识别出
+"有 `request_start` 但没等到对应 `request_end`"的记录，标记为
+`possibly_hung`。对应端点 `GET /v1/self/http_access_log/slow`（owner
+only）。
+
+**看板客户端：`~/.agent/logs/kanban_client_http.jsonl`**
+
+`apps/mini_agent_kanban/client.py` 里所有请求统一走的
+`_get/_post/_patch/_put/_delete/_get_bytes` 六个入口都会计时，记录写两
+份：进程内存环形缓冲区（`deque(maxlen=500)`，供 Tab 实时展示，重启即丢）
++ 本地 JSONL 文件（跨重启保留，10MB 轮转 × 5 份，与服务端日志同目录）。
+参数里疑似敏感的字段（`token`/`password`/`secret`/`authorization`）会被
+脱敏成 `***` 再落盘。
+
+**看板 Tab**：`🐢 慢请求`（`render_slow_requests_tab()`），阈值默认 5
+秒、可调，分"看板 → API（客户端）"/"API 服务端"两个子视图，服务端子视图
+会优先高亮显示疑似卡住的请求。详见
+[Kanban 看板使用指南](./kanban-dashboard-guide.md) 对应小节。
+
+---
+
+## 十一、路径速查表
 
 按"全局 vs 项目级 vs session/task 级"重新汇总一遍，方便按作用域查找：
 
 **全局（`~/.agent/` 或 `$MINI_AGENT_HOME`）**
 ```
 ~/.agent/logs/error.jsonl              # 全局错误日志（本文档第二节）
+~/.agent/logs/http_access.jsonl        # HTTP 访问日志，服务端（本文档第十节）
+~/.agent/logs/kanban_client_http.jsonl # 看板客户端请求日志（本文档第十节）
 ~/.agent/logs/capability_debug.jsonl   # Generative-Capability 调试日志（本文档第四节）
 ~/.agent/activity_log.jsonl            # W3 全局活动流水
 ~/.agent/persona_usage.jsonl           # Persona 使用审计
@@ -321,6 +363,7 @@ events.jsonl  # task 事件流
 ## 相关文档
 
 - [观察性系统指南（Stage 6）](./observability-guide.md) — `traces.jsonl` 追踪、`/diagnostics` 端点、异常检测细节
+- [Kanban 看板使用指南](./kanban-dashboard-guide.md) — `🐢 慢请求` Tab 对 `http_access.jsonl`/`kanban_client_http.jsonl` 的可视化查询
 - [用户行为感知系统指南](./behavior-perception-guide.md) — 行为事件采集范围与隐私边界
 - [图书馆式知识索引指南](./library-index-guide.md) — `knowledge_timeline.jsonl` 的读写细节
 - [Stage 9 自主运行时指南](./self-evolution-stage9-guide.md) — `activity_digest.jsonl` 的生成时机
@@ -333,3 +376,8 @@ events.jsonl  # task 事件流
 `debug.capability_enabled` 控制，覆盖 `capability_call` 全链路 + 各
 generative-capability skill 的 `impl/*.py` 自行调用；原第四~九节顺延为
 第五~十节）*
+*更新：2026-09（新增第十节「HTTP 访问日志与看板慢请求监控」——服务端
+`http_access.jsonl`（已有的 `HttpAccessLogMiddleware` 首次补上查询能力/
+文档）+ 看板客户端新增的 `kanban_client_http.jsonl`，配套看板
+`🐢 慢请求` Tab，见 `next_doc/kanban_slow_http_request_monitoring_plan.md`；
+原第十节「路径速查表」顺延为第十一节）*
