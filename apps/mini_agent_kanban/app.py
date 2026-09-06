@@ -5466,7 +5466,14 @@ _GT_DEBUG_LOGGER: "logging.Logger | None" = None
 # 这串水印是不是这次改动对应的最新版本，不是的话说明进程根本没重启，
 # 后面所有排查都是在排查一份"已经不存在"的旧代码。
 _GT_DEBUG_BUILD_MARK = "goal_tree_dialog_debug_build_2026-09-06_v3"
-print(f"[goal_tree_dialog_debug] app.py loaded, build={_GT_DEBUG_BUILD_MARK}", flush=True)
+
+# [调试开关] 默认关闭——这一整套排查代码（日志、rerun 调用栈拦截、面板）
+# 只在用户于「🛠️ 弹窗排查面板」里勾选「启用调试日志」之后才会真正生效，
+# 避免每次全量 rerun 都往终端/日志文件里打印大量排查信息。
+_GT_DEBUG_ENABLED = bool(st.session_state.get("_gt_debug_enabled", False))
+
+if _GT_DEBUG_ENABLED:
+    print(f"[goal_tree_dialog_debug] app.py loaded, build={_GT_DEBUG_BUILD_MARK}", flush=True)
 
 
 def _gt_debug_log(msg: str) -> None:
@@ -5481,6 +5488,8 @@ def _gt_debug_log(msg: str) -> None:
     看日志断在哪一行没往下走，就能定位到底是"按钮没触发 rerun"还是
     "弹窗函数没被调用"还是"请求本身卡住不返回"还是"拿到结果但渲染
     时抛了异常"。等定位到真正原因后，这些日志调用可以整体删掉。"""
+    if not st.session_state.get("_gt_debug_enabled", False):
+        return
     global _GT_DEBUG_LOGGER
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
     print(f"[goal_tree_dialog_debug] {line}", flush=True)
@@ -5532,6 +5541,10 @@ if not getattr(st, "_gt_debug_rerun_patched", False):
     _original_st_rerun = st.rerun
 
     def _gt_debug_traced_rerun(*args, **kwargs):
+        # 调试开关关闭时，只透明转发到原始 st.rerun()，不打任何日志、
+        # 不抓调用栈——保持“默认关闭时行为等价于没打过补丁”。
+        if not st.session_state.get("_gt_debug_enabled", False):
+            return _original_st_rerun(*args, **kwargs)
         stack = traceback.extract_stack()[:-1]  # 去掉这个包装函数自己这一帧
         frames = stack[-10:]  # 只留最近 10 层，太深了看不过来
         frame_text = "".join(traceback.format_list(frames))
@@ -5546,9 +5559,10 @@ if not getattr(st, "_gt_debug_rerun_patched", False):
     st.rerun = _gt_debug_traced_rerun
     st._gt_debug_rerun_patched = True
 
-_gt_debug_rerun_count = st.session_state.get("_gt_debug_rerun_count", 0) + 1
-st.session_state["_gt_debug_rerun_count"] = _gt_debug_rerun_count
-_gt_debug_log(f"===== full script run #{_gt_debug_rerun_count} (build={_GT_DEBUG_BUILD_MARK}) =====")
+if _GT_DEBUG_ENABLED:
+    _gt_debug_rerun_count = st.session_state.get("_gt_debug_rerun_count", 0) + 1
+    st.session_state["_gt_debug_rerun_count"] = _gt_debug_rerun_count
+    _gt_debug_log(f"===== full script run #{_gt_debug_rerun_count} (build={_GT_DEBUG_BUILD_MARK}) =====")
 
 
 def _async_fetch_or_retry(
@@ -6083,38 +6097,47 @@ def _render_goal_tree_view(client: AgentClient) -> None:
     # 日志文件最后 40 行——复现问题后展开这里，把截图/文本发出来即可
     # 定位到底断在哪一步。定位到真正原因、确认修复生效后，这个面板和
     # 上面 `_gt_debug_log()` 的调用可以整体删掉。
-    with st.expander("🛠️ 弹窗排查面板（临时）", expanded=False):
-        st.warning(
-            f"当前运行代码版本水印：`{_GT_DEBUG_BUILD_MARK}`\n\n"
-            "如果这串水印跟你拿到的这份 app.py 里 `_GT_DEBUG_BUILD_MARK` 的值对不上，"
-            "或者你根本没在这里看到过这个警告框，说明**浏览器里连着的 Streamlit 进程"
-            "还是旧代码**——文件替换了但进程没有真正重启/重新加载，后面所有排查都是"
-            "对着一份已经不存在的旧代码在看。请先确认：\n"
-            "1. 磁盘上是不是只有这一份 `apps/mini_agent_kanban/app.py`（有没有被安装到"
-            "别的 site-packages 路径、或者用 Docker/别的目录跑的是另一份拷贝）；\n"
-            "2. 完全停掉现在跑着的 `streamlit run ...` 进程，重新执行一次启动命令"
-            "（不是刷新浏览器标签页，是要杀掉并重开服务端进程）。"
-        )
-        st.caption(
-            f"当前是第 `{st.session_state.get('_gt_debug_rerun_count', '?')}` 次全量脚本重跑　"
-            f"`_goal_tree_detail_target` = `{st.session_state.get('_goal_tree_detail_target')!r}`　"
-            f"`_goal_wiki_view_target` = `{st.session_state.get('_goal_wiki_view_target')!r}`"
-        )
-        if st.button("🔄 刷新日志", key="_gt_debug_refresh_log"):
-            st.rerun()
-        try:
-            import os
-            home_override = os.environ.get("MINI_AGENT_HOME")
-            base = Path(home_override) if home_override else (Path.home() / ".agent")
-            log_path = base / "logs" / "kanban_goal_tree_debug.log"
-            if log_path.exists():
-                lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                st.code("\n".join(lines[-40:]) or "（日志文件为空）", language="text")
-                st.caption(f"完整日志文件：`{log_path}`")
-            else:
-                st.caption("日志文件还不存在——点一次 📄/📖 按钮后再回来看。")
-        except Exception as e:
-            st.caption(f"读取日志文件失败：{e}")
+    #
+    # 开关本身常驻显示（不放进 expander 里）——默认关闭，此时既不打印/
+    # 写日志，也不渲染下面这个排查面板；只有勾选之后面板才会出现。
+    st.checkbox(
+        "🛠️ 启用目标树调试（📄📖▶ 点击日志、st.rerun() 调用栈、排查面板）",
+        key="_gt_debug_enabled",
+        help="默认关闭。勾选后才会打印/写调试日志，并在下方显示排查面板；取消勾选立即恢复零开销状态，无需重启进程。",
+    )
+    if st.session_state.get("_gt_debug_enabled", False):
+        with st.expander("🛠️ 弹窗排查面板（临时）", expanded=False):
+            st.warning(
+                f"当前运行代码版本水印：`{_GT_DEBUG_BUILD_MARK}`\n\n"
+                "如果这串水印跟你拿到的这份 app.py 里 `_GT_DEBUG_BUILD_MARK` 的值对不上，"
+                "或者你根本没在这里看到过这个警告框，说明**浏览器里连着的 Streamlit 进程"
+                "还是旧代码**——文件替换了但进程没有真正重启/重新加载，后面所有排查都是"
+                "对着一份已经不存在的旧代码在看。请先确认：\n"
+                "1. 磁盘上是不是只有这一份 `apps/mini_agent_kanban/app.py`（有没有被安装到"
+                "别的 site-packages 路径、或者用 Docker/别的目录跑的是另一份拷贝）；\n"
+                "2. 完全停掉现在跑着的 `streamlit run ...` 进程，重新执行一次启动命令"
+                "（不是刷新浏览器标签页，是要杀掉并重开服务端进程）。"
+            )
+            st.caption(
+                f"当前是第 `{st.session_state.get('_gt_debug_rerun_count', '?')}` 次全量脚本重跑　"
+                f"`_goal_tree_detail_target` = `{st.session_state.get('_goal_tree_detail_target')!r}`　"
+                f"`_goal_wiki_view_target` = `{st.session_state.get('_goal_wiki_view_target')!r}`"
+            )
+            if st.button("🔄 刷新日志", key="_gt_debug_refresh_log"):
+                st.rerun()
+            try:
+                import os
+                home_override = os.environ.get("MINI_AGENT_HOME")
+                base = Path(home_override) if home_override else (Path.home() / ".agent")
+                log_path = base / "logs" / "kanban_goal_tree_debug.log"
+                if log_path.exists():
+                    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    st.code("\n".join(lines[-40:]) or "（日志文件为空）", language="text")
+                    st.caption(f"完整日志文件：`{log_path}`")
+                else:
+                    st.caption("日志文件还不存在——点一次 📄/📖 按钮后再回来看。")
+            except Exception as e:
+                st.caption(f"读取日志文件失败：{e}")
 
     # [goal_tree_kanban_integration_plan.md Stage 6] 树级汇总报告/产出
     # Wiki 折叠区，挂在树形结构渲染之前，root_id 用当前树的根节点。
