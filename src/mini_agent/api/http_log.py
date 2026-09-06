@@ -176,3 +176,156 @@ class HttpAccessLogMiddleware(BaseHTTPMiddleware):
             if error_text:
                 record["error"] = error_text
             _write_record(self._logger, record)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 慢请求查询（kanban_slow_http_request_monitoring_plan.md）
+#
+# 中间件本身只负责"写"（上面的 HttpAccessLogMiddleware），阈值固定为
+# `_SLOW_THRESHOLD_MS` 只用于打 `slow` 标记方便 grep。这里新增一个"读"
+# 的查询函数，供看板"🐢 慢请求"Tab 调用：阈值由调用方传入，跟中间件写
+# 日志时用的固定阈值是两回事，互不影响。
+#
+# 写法对齐 `mini_agent.errors.error_log_stats()`：逐行读 JSONL，解析失败
+# 的行跳过，不影响其余行。
+# ═══════════════════════════════════════════════════════════════════════
+def http_access_log_query(
+    threshold_ms: float = 5000.0,
+    scope: str = "all",
+    limit: int = 200,
+) -> dict:
+    """查询 HTTP 访问日志中的慢请求 + 疑似卡住未正常结束的请求。
+
+    Args:
+        threshold_ms: 耗时阈值（毫秒），>= 此值的 request_end 记录视为慢请求。
+        scope: "all" 全部记录；"today" 仅统计本地时区当天的记录。
+        limit: 慢请求列表最多返回多少条（按 duration_ms 降序）。
+
+    Returns:
+        {
+          "total_requests": 扫描到的 request_end 总数（scope 过滤后）,
+          "slow_count": 其中耗时 >= threshold_ms 的数量,
+          "slow_requests": [ {..request_end 记录.., } , ... ]  按耗时降序，最多 limit 条,
+          "possibly_hung": [ {..request_start 记录.., "waited_seconds": ...} ]
+              有 request_start 但扫到文件末尾都没等到对应 request_end 的记录，
+              按等待时长降序；这类记录对排查"卡死"本身价值最高。
+          "by_path": [{"name": path, "count": n, "max_duration_ms": m}, ...]
+              慢请求按 path 聚合，按 count 降序，
+          "threshold_ms": threshold_ms,
+          "scope": scope,
+          "log_path": 日志文件路径字符串,
+          "log_exists": 日志文件是否存在,
+        }
+    """
+    import datetime as _dt
+    from collections import Counter
+
+    log_path = resolve_log_path()
+    result: dict = {
+        "total_requests": 0,
+        "slow_count": 0,
+        "slow_requests": [],
+        "possibly_hung": [],
+        "by_path": [],
+        "threshold_ms": threshold_ms,
+        "scope": scope,
+        "log_path": str(log_path),
+        "log_exists": log_path.exists(),
+    }
+    if not log_path.exists():
+        return result
+
+    today = _dt.date.today().isoformat()
+
+    def _in_scope(ts_str: str) -> bool:
+        if scope != "today":
+            return True
+        try:
+            date = _dt.datetime.fromisoformat(ts_str.replace("Z", "+00:00")).date().isoformat()
+        except Exception:
+            return False
+        return date == today
+
+    # 用 (pid, thread) 近似配对同一线程上"最近一次未匹配的 request_start"。
+    # 同一 pid+thread 在同一时刻通常只处理一个请求（uvicorn 的每个 worker
+    # 线程/协程串行处理），用这个近似配对足够定位"哪个请求卡住了"，不追求
+    # 100% 精确的请求级关联（多路复用协程理论上可能有极小概率错配，但不
+    # 影响排查方向）。
+    pending_starts: dict[tuple, dict] = {}
+    total_requests = 0
+    slow_candidates: list[dict] = []
+    by_path_count: Counter = Counter()
+    by_path_max: dict[str, float] = {}
+
+    try:
+        with log_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    continue
+
+                ts_str = record.get("ts", "")
+                if not _in_scope(ts_str):
+                    continue
+
+                key = (record.get("pid"), record.get("thread"),
+                       record.get("method"), record.get("path"), record.get("query"))
+
+                if record.get("type") == "request_start":
+                    pending_starts[key] = record
+                    continue
+
+                if record.get("type") != "request_end":
+                    continue
+
+                total_requests += 1
+                pending_starts.pop(key, None)
+
+                duration_ms = record.get("duration_ms")
+                if duration_ms is None or duration_ms < threshold_ms:
+                    continue
+
+                slow_candidates.append(record)
+                path = record.get("path", "")
+                by_path_count[path] += 1
+                by_path_max[path] = max(by_path_max.get(path, 0.0), duration_ms)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+
+        log_exception(_mini_agent_exc, where="mini_agent.api.http_log.http_access_log_query")
+
+    slow_candidates.sort(key=lambda r: r.get("duration_ms", 0), reverse=True)
+    result["total_requests"] = total_requests
+    result["slow_count"] = len(slow_candidates)
+    result["slow_requests"] = slow_candidates[:limit]
+    result["by_path"] = [
+        {"name": path, "count": count, "max_duration_ms": by_path_max.get(path, 0.0)}
+        for path, count in by_path_count.most_common(50)
+    ]
+
+    # 剩下没被 pop 掉的 request_start，就是"到文件末尾都没等到对应
+    # request_end"的——疑似仍在处理中，或进程在处理途中被杀/崩溃。
+    now_monotonic_hint = time.time()
+    hung = []
+    for record in pending_starts.values():
+        waited_seconds = None
+        try:
+            ts_str = record.get("ts", "")
+            started_at = _dt.datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            # `iso_local()` 产出的字符串带时区偏移，`.timestamp()` 会正确
+            # 转换成 UTC epoch，可以直接跟 `time.time()`（同为 UTC epoch）
+            # 相减，不受本地时区影响。
+            waited_seconds = round(now_monotonic_hint - started_at.timestamp(), 1)
+        except Exception:
+            waited_seconds = None
+        item = dict(record)
+        item["waited_seconds"] = waited_seconds
+        hung.append(item)
+    hung.sort(key=lambda r: r.get("waited_seconds") or 0, reverse=True)
+    result["possibly_hung"] = hung
+
+    return result

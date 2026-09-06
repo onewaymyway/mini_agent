@@ -5,6 +5,14 @@ AgentClient —— 对 mini-agent HTTP API 的轻量封装。
 from __future__ import annotations
 
 import concurrent.futures
+import json
+import logging
+import logging.handlers
+import os
+import threading
+import time
+from collections import deque
+from pathlib import Path
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -53,6 +61,126 @@ _EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 )
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# 慢请求监控（kanban_slow_http_request_monitoring_plan.md）
+#
+# 看板经常"卡死"，但排查时缺一份"看板自己发出的哪个 HTTP 请求耗时多久"
+# 的记录。这里在 `_get/_post/_patch/_put/_delete/_get_bytes` 六个统一
+# 入口外面包一层计时，结果存两份：
+#   1. 进程内存环形缓冲区（`_CALL_RECORDS`）：供"🐢 慢请求"Tab 实时读取，
+#      重启即丢，够用于"当前这次运行期间"的排查。
+#   2. 本地 JSONL 日志文件（与全局错误日志同级目录）：即使 Streamlit
+#      进程被卡死后强制杀掉重启，历史记录仍然可以从文件里翻出来，能看到
+#      "卡死前最后几个请求发往哪里"。
+# 两份记录互不依赖：内存缓冲区被清空不影响文件，文件写失败也不影响内存
+# 缓冲区继续工作（各自 try/except 兜底）。
+# ═══════════════════════════════════════════════════════════════════════
+_CALL_RECORDS: deque = deque(maxlen=500)
+_CALL_RECORDS_LOCK = threading.Lock()
+
+_CLIENT_LOG_MAX_BYTES = 10 * 1024 * 1024  # 10MB，与服务端 http_log.py 保持一致
+_CLIENT_LOG_BACKUP_COUNT = 5
+_CLIENT_LOGGER: "logging.Logger | None" = None
+_CLIENT_LOGGER_LOCK = threading.Lock()
+
+
+def _client_http_log_path() -> Path:
+    """本地日志文件路径：与服务端全局日志同目录（~/.agent/logs/），
+    默认不受服务端 HttpConfig.access_log_path 配置影响——这是看板进程
+    自己的客户端请求记录，跟服务端记录的是完全不同的两件事。
+    """
+    home_override = os.environ.get("MINI_AGENT_HOME")
+    base = Path(home_override) if home_override else (Path.home() / ".agent")
+    return base / "logs" / "kanban_client_http.jsonl"
+
+
+def _get_client_logger() -> "logging.Logger | None":
+    global _CLIENT_LOGGER
+    if _CLIENT_LOGGER is not None:
+        return _CLIENT_LOGGER
+    with _CLIENT_LOGGER_LOCK:
+        if _CLIENT_LOGGER is not None:
+            return _CLIENT_LOGGER
+        try:
+            log_path = _client_http_log_path()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            logger = logging.getLogger("mini_agent_kanban._client_http_log")
+            logger.setLevel(logging.DEBUG)
+            logger.propagate = False
+            if not logger.handlers:
+                handler = logging.handlers.RotatingFileHandler(
+                    log_path, maxBytes=_CLIENT_LOG_MAX_BYTES,
+                    backupCount=_CLIENT_LOG_BACKUP_COUNT, encoding="utf-8",
+                )
+                handler.setFormatter(logging.Formatter("%(message)s"))
+                logger.addHandler(handler)
+            _CLIENT_LOGGER = logger
+        except Exception:
+            # 日志本身失败绝不能影响正常请求处理，静默放弃即可（内存缓冲区
+            # 那份记录不受影响，仍然能在 Tab 里看到）。
+            return None
+        return _CLIENT_LOGGER
+
+
+def _sanitize_params(params) -> dict:
+    """params 摘要：去掉可能带敏感信息的字段（目前只有 Authorization 走
+    header，不在 params 里，但以防万一有人以后往 params 塞 token 之类的
+    字段，这里统一按 key 名过滤一遍）。"""
+    if not isinstance(params, dict):
+        return {}
+    redacted = {}
+    for k, v in params.items():
+        if any(s in str(k).lower() for s in ("token", "password", "secret", "authorization")):
+            redacted[k] = "***"
+        else:
+            redacted[k] = v
+    return redacted
+
+
+def _record_http_call(method: str, path: str, params, duration_ms: float,
+                       status_code: "int | None" = None, error: "str | None" = None) -> None:
+    """记录一次看板→API 的 HTTP 调用。任何异常都吞掉，绝不影响调用方。"""
+    try:
+        record = {
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "method": method,
+            "path": path,
+            "params": _sanitize_params(params),
+            "duration_ms": round(duration_ms, 1),
+            "ok": status_code is not None and 200 <= status_code < 300,
+            "status_code": status_code,
+            "error": error,
+        }
+    except Exception:
+        return
+
+    with _CALL_RECORDS_LOCK:
+        _CALL_RECORDS.append(record)
+
+    logger = _get_client_logger()
+    if logger is not None:
+        try:
+            logger.info(json.dumps(record, ensure_ascii=False))
+        except Exception:
+            pass
+
+
+def get_client_http_call_records(threshold_ms: float = 5000.0) -> list:
+    """从内存环形缓冲区里过滤出耗时 >= threshold_ms 的记录，按时间倒序。
+    纯本地操作，不发起任何网络请求。"""
+    with _CALL_RECORDS_LOCK:
+        snapshot = list(_CALL_RECORDS)
+    filtered = [r for r in snapshot if r.get("duration_ms", 0) >= threshold_ms]
+    filtered.reverse()
+    return filtered
+
+
+def clear_client_http_call_records() -> None:
+    """清空内存环形缓冲区（不影响本地日志文件）。"""
+    with _CALL_RECORDS_LOCK:
+        _CALL_RECORDS.clear()
+
+
 class AgentClient:
     def __init__(self, base_url: str, token: str = ""):
         self.base = base_url.rstrip("/")
@@ -63,12 +191,17 @@ class AgentClient:
         return f"{self.base}{path}"
 
     def _get(self, path, params=None, timeout=6):
+        start = time.monotonic()
         try:
             r = _HTTP.get(self._url(path), headers=self.headers, params=params, timeout=timeout)
+            _record_http_call("GET", path, params, (time.monotonic() - start) * 1000,
+                               status_code=r.status_code)
             if r.status_code == 200:
                 return r.json()
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
         except Exception as e:
+            _record_http_call("GET", path, params, (time.monotonic() - start) * 1000,
+                               error=str(e))
             return {"_error": str(e)}
 
     def submit_async(self, fn, *args, **kwargs) -> "concurrent.futures.Future":
@@ -83,8 +216,11 @@ class AgentClient:
         「下载链接 host 跟不上用户实际访问地址」和「浏览器直连不带
         Authorization header」这两个问题，参见 artifact_file_bytes /
         fs_download_bytes 的调用方。"""
+        start = time.monotonic()
         try:
             r = _HTTP.get(self._url(path), headers=self.headers, params=params, timeout=timeout)
+            _record_http_call("GET", path, params, (time.monotonic() - start) * 1000,
+                               status_code=r.status_code)
             if r.status_code == 200:
                 filename = None
                 cd = r.headers.get("Content-Disposition", "")
@@ -97,34 +233,51 @@ class AgentClient:
                 }
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
         except Exception as e:
+            _record_http_call("GET", path, params, (time.monotonic() - start) * 1000,
+                               error=str(e))
             return {"_error": str(e)}
 
     def _post(self, path, json_body=None, params=None, timeout=15):
+        start = time.monotonic()
         try:
             r = _HTTP.post(self._url(path), headers=self.headers, json=json_body,
                             params=params, timeout=timeout)
+            _record_http_call("POST", path, params, (time.monotonic() - start) * 1000,
+                               status_code=r.status_code)
             if r.status_code == 200:
                 return r.json()
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
         except Exception as e:
+            _record_http_call("POST", path, params, (time.monotonic() - start) * 1000,
+                               error=str(e))
             return {"_error": str(e)}
 
     def _patch(self, path, json_body=None, timeout=10):
+        start = time.monotonic()
         try:
             r = _HTTP.patch(self._url(path), headers=self.headers, json=json_body, timeout=timeout)
+            _record_http_call("PATCH", path, None, (time.monotonic() - start) * 1000,
+                               status_code=r.status_code)
             if r.status_code == 200:
                 return r.json()
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
         except Exception as e:
+            _record_http_call("PATCH", path, None, (time.monotonic() - start) * 1000,
+                               error=str(e))
             return {"_error": str(e)}
 
     def _put(self, path, json_body=None, timeout=10):
+        start = time.monotonic()
         try:
             r = _HTTP.put(self._url(path), headers=self.headers, json=json_body, timeout=timeout)
+            _record_http_call("PUT", path, None, (time.monotonic() - start) * 1000,
+                               status_code=r.status_code)
             if r.status_code == 200:
                 return r.json()
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
         except Exception as e:
+            _record_http_call("PUT", path, None, (time.monotonic() - start) * 1000,
+                               error=str(e))
             return {"_error": str(e)}
 
     # ── 通用异步任务轮询（kanban_async_job_mechanism_plan.md）─────────────
@@ -141,13 +294,18 @@ class AgentClient:
         return self._get("/async_jobs/latest/by_key", params={"key": key}, timeout=8)
 
     def _delete(self, path, params=None, json_body=None, timeout=8):
+        start = time.monotonic()
         try:
             r = _HTTP.delete(self._url(path), headers=self.headers, params=params,
                               json=json_body, timeout=timeout)
+            _record_http_call("DELETE", path, params, (time.monotonic() - start) * 1000,
+                               status_code=r.status_code)
             if r.status_code == 200:
                 return r.json()
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
         except Exception as e:
+            _record_http_call("DELETE", path, params, (time.monotonic() - start) * 1000,
+                               error=str(e))
             return {"_error": str(e)}
 
     # ── 健康 / 状态 ────────────────────────────────────────────────────
@@ -168,6 +326,32 @@ class AgentClient:
 
     def diagnostics(self):
         return self._get("/diagnostics")
+
+    def client_http_call_records(self, threshold_sec: float = 5.0) -> list:
+        """看板自身发出的 HTTP 请求中，耗时超过阈值的记录（本地内存，不
+        发起网络请求）。scope 仅限"当前这次进程运行期间"，重启即丢；
+        跨重启的历史记录见本地日志文件
+        `~/.agent/logs/kanban_client_http.jsonl`。"""
+        return get_client_http_call_records(threshold_ms=threshold_sec * 1000.0)
+
+    def clear_client_http_call_records(self) -> None:
+        clear_client_http_call_records()
+
+    def http_access_log_slow(self, threshold_sec: float = 5.0, scope: str = "all",
+                              limit: int = 200):
+        """API 服务端 HTTP 访问日志（~/.agent/logs/http_access.jsonl）中，
+        耗时超过阈值的请求列表 + 疑似卡住未正常结束的请求。
+
+        threshold_sec: 阈值，单位秒。
+        scope: "all" 全部 / "today" 仅当天。
+        limit: 慢请求列表最多返回多少条（按耗时降序）。
+        """
+        params = {
+            "threshold_ms": threshold_sec * 1000.0,
+            "scope": scope,
+            "limit": limit,
+        }
+        return self._get("/self/http_access_log/slow", params=params)
 
     def error_log_stats(self, scope: str = "all", exclude_tool_executor: bool = False):
         """全局错误日志（~/.agent/logs/error.jsonl）错误类型分布统计。

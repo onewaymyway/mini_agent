@@ -11566,6 +11566,144 @@ def render_config_tab(client: AgentClient):
 # ═══════════════════════════════════════════════════════════════════════
 # Tab 6: 诊断
 # ═══════════════════════════════════════════════════════════════════════
+def render_slow_requests_tab(client: AgentClient):
+    """🐢 慢请求监控（kanban_slow_http_request_monitoring_plan.md）。
+
+    看板经常"卡死"，这个 Tab 用来定位是哪一次 HTTP 请求慢：
+    - "看板 → API（客户端）"：看板自己发出的请求，读的是本进程内存
+      环形缓冲区，重启即丢；历史记录见本地日志文件
+      `~/.agent/logs/kanban_client_http.jsonl`。
+    - "API 服务端"：调用后端查询接口，读的是
+      `~/.agent/logs/http_access.jsonl`（服务端中间件一直在记录，这里
+      只是新增了查询入口），额外能看到"疑似卡住未正常结束"的请求。
+    两个子视图共用同一个耗时阈值，默认 5 秒，可修改。
+    """
+    st.markdown("#### 🐢 慢请求监控")
+    st.caption("用于排查看板/API 卡死问题：列出耗时超过阈值的 HTTP 请求。")
+
+    threshold_sec = st.number_input(
+        "耗时阈值（秒）", min_value=0.1, max_value=300.0,
+        value=float(st.session_state.get("slow_req_threshold_sec", 5.0)),
+        step=0.5, key="slow_req_threshold_sec",
+        help="超过这个耗时的请求会被列出来，两个子视图共用这个阈值。",
+    )
+
+    tab_client, tab_server = st.tabs(["看板 → API（客户端）", "API 服务端"])
+
+    with tab_client:
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("🔄 刷新", key="slow_req_client_refresh"):
+                st.rerun()
+        with c2:
+            if st.button("🗑️ 清空内存记录", key="slow_req_client_clear"):
+                client.clear_client_http_call_records()
+                st.rerun()
+
+        records = client.client_http_call_records(threshold_sec=threshold_sec)
+        st.caption(
+            f"当前进程内存里共记录最近 500 条请求，其中 {len(records)} 条超过 "
+            f"{threshold_sec:g} 秒。历史记录见本地日志文件 "
+            "`~/.agent/logs/kanban_client_http.jsonl`。"
+        )
+        if records:
+            st.dataframe(
+                [
+                    {
+                        "时间": r.get("ts", ""),
+                        "方法": r.get("method", ""),
+                        "路径": r.get("path", ""),
+                        "参数": json.dumps(r.get("params") or {}, ensure_ascii=False)[:200],
+                        "耗时(ms)": r.get("duration_ms", 0),
+                        "结果": ("✅" if r.get("ok") else "❌") +
+                                (f" HTTP {r['status_code']}" if r.get("status_code") else "") +
+                                (f" {r['error']}" if r.get("error") else ""),
+                    }
+                    for r in records
+                ],
+                width='stretch', hide_index=True,
+            )
+        else:
+            st.info("暂无超过阈值的记录（当前进程运行期间）。")
+
+    with tab_server:
+        scope_label = st.radio(
+            "统计范围", ["全部", "仅当天"], horizontal=True, key="slow_req_server_scope"
+        )
+        scope = "today" if scope_label == "仅当天" else "all"
+
+        if st.button("🔄 刷新", key="slow_req_server_refresh"):
+            st.rerun()
+
+        result = client.http_access_log_slow(threshold_sec=threshold_sec, scope=scope) or {}
+        if result.get("_error"):
+            st.error(f"获取服务端慢请求列表失败：{result['_error']}")
+        elif not result.get("log_exists"):
+            st.info("服务端访问日志文件尚不存在，说明目前还没有记录到任何请求。")
+        else:
+            hung = result.get("possibly_hung") or []
+            if hung:
+                st.error(f"⚠️ 发现 {len(hung)} 条疑似卡住/未正常结束的请求（有开始记录但没等到结束）：")
+                st.dataframe(
+                    [
+                        {
+                            "开始时间": r.get("ts", ""),
+                            "方法": r.get("method", ""),
+                            "路径": r.get("path", ""),
+                            "客户端IP": r.get("client_ip", ""),
+                            "已等待(秒)": r.get("waited_seconds"),
+                        }
+                        for r in hung
+                    ],
+                    width='stretch', hide_index=True,
+                )
+                st.markdown("---")
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("范围内总请求数", result.get("total_requests", 0))
+            c2.metric(f"慢请求数（≥{threshold_sec:g}秒）", result.get("slow_count", 0))
+            c3.metric("疑似卡住", len(hung))
+
+            slow_requests = result.get("slow_requests") or []
+            if slow_requests:
+                st.markdown("##### 慢请求列表（按耗时降序）")
+                st.dataframe(
+                    [
+                        {
+                            "时间": r.get("ts_str") or r.get("ts", ""),
+                            "方法": r.get("method", ""),
+                            "路径": r.get("path", ""),
+                            "客户端IP": r.get("client_ip", ""),
+                            "耗时(ms)": r.get("duration_ms", 0),
+                            "状态码": r.get("status_code"),
+                            "错误": r.get("error", ""),
+                        }
+                        for r in slow_requests
+                    ],
+                    width='stretch', hide_index=True,
+                )
+
+                by_path = result.get("by_path") or []
+                if by_path:
+                    st.markdown("##### 按路径聚合")
+                    st.dataframe(
+                        [
+                            {"路径": r["name"], "慢请求次数": r["count"],
+                             "最大耗时(ms)": r["max_duration_ms"]}
+                            for r in by_path
+                        ],
+                        width='stretch', hide_index=True,
+                    )
+            else:
+                st.info("当前范围内没有超过阈值的慢请求。")
+
+            with st.expander("原始结果 JSON"):
+                st.json(result, expanded=False)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Tab 6: 诊断
+# ═══════════════════════════════════════════════════════════════════════
 def render_diagnostics_tab(client: AgentClient):
     st.markdown("#### 🔧 诊断信息")
     diag = client.diagnostics() or {}
@@ -13203,6 +13341,7 @@ _BASE_TAB_DEFS = [
     ("protected_files", "🛡️ 受保护文件", lambda client: render_protected_files_tab(client)),
     ("config", "⚙️ 配置", lambda client: render_config_tab(client)),
     ("diagnostics", "🔧 诊断", lambda client: render_diagnostics_tab(client)),
+    ("slow_requests", "🐢 慢请求", lambda client: render_slow_requests_tab(client)),
     ("hybrid_exec", "🧪 混合执行", lambda client: render_hybrid_exec_tab(client)),
     ("error_log", "📛 错误日志", lambda client: render_error_log_tab(client)),
 ]

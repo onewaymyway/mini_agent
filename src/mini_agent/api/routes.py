@@ -5052,6 +5052,31 @@ async def get_error_log_stats(
     return error_log_stats(scope=scope, exclude_tool_executor=exclude_tool_executor)
 
 
+@router.get("/self/http_access_log/slow")
+async def get_http_access_log_slow(
+    request: Request,
+    threshold_ms: float = Query(5000.0, description="耗时阈值（毫秒），>= 此值视为慢请求"),
+    scope: str = Query("all", description="all=全部记录；today=仅当天"),
+    limit: int = Query(200, description="慢请求列表最多返回多少条（按耗时降序）"),
+):
+    """API 服务端 HTTP 访问日志（~/.agent/logs/http_access.jsonl）中的慢
+    请求列表 + 疑似卡住未正常结束的请求。
+
+    供看板"🐢 慢请求"Tab 使用（kanban_slow_http_request_monitoring_plan.md）。
+    日志文件是进程级全局的（不区分 project_root/session），所以这里不走
+    `_bridge(request)`，直接调用 `mini_agent.api.http_log.http_access_log_query()`，
+    只做登录态校验，跟 `/self/error_log_stats` 的处理方式一致。
+    """
+    _require_owner(request)
+
+    if scope not in ("all", "today"):
+        raise HTTPException(status_code=400, detail="scope 仅支持 all / today")
+
+    from mini_agent.api.http_log import http_access_log_query
+
+    return http_access_log_query(threshold_ms=threshold_ms, scope=scope, limit=limit)
+
+
 # ── 产出物 Artifacts ──────────────────────────────────────────────────────────
 # 供「产出物看板」使用：与 /fs/* 不同，这里不是遍历目录，而是消费 Agent/工具
 # 主动登记的 manifest（storage/artifacts.py），语义化地展示"这次任务产出了什么"。
