@@ -96,6 +96,30 @@ preferences = {
 }
 ```
 
+### 3.4 用户侧证据分级扩展（`values`/`risk_preference`/`constraints`）
+
+[next_doc/personal_ai_alignment_upgrade_plan.md 阶段一] `derived` 除了
+§3.2 的 `tech_stack`/`habits` 外，还有三个带**证据来源分级**的命名空间，
+不经过 §5 的 `generate()` 归纳流程，单独维护：
+
+```python
+derived["values"] = [
+    {"text": "我倾向于让 AI 自主推进", "source": "ai_inference",
+     "confidence": 0.8, "last_confirmed_at": 1700000000.0,
+     "evidence_refs": ["category_a", "category_b"]},
+]
+derived["risk_preference"] = [...]   # 同一结构
+derived["constraints"] = [
+    {"text": "不要自动发消息", "source": "user_stated",
+     "confidence": 1.0, "last_confirmed_at": 1700000000.0},
+]
+```
+
+`source` 取值 `user_stated`（用户明确说的）/ `ai_observation`（直接观察
+到的行为）/ `ai_inference`（AI 推测），三者严格不混用；`ai_inference`
+记录展示时必须带角标区分，且不作为其它子系统的直接前提证据。详见
+[Personal Model / State / Context Pack / Daily Digest 指南](personal-model-context-pack-guide.md) §1。
+
 ---
 
 ## 4. 存储路径
@@ -459,9 +483,10 @@ profile_mgr.save()
 - [配置指南](config-guide.md) — 完整配置说明
 - [系统架构总览](system-overview.md) — Agent 整体架构
 - [决策画像指南](decision-profile-guide.md) — 另一套独立的"决策/价值取向"画像机制，与本文档的用户画像互不相关
+- [用户侧 Personal Model / State / Context Pack / Daily Digest 指南](personal-model-context-pack-guide.md) — 在 `derived` 命名空间下新增的 `values`/`risk_preference`/`constraints` 三个证据分级字段（§1），以及在此基础上的处境快照/结构化上下文/每日简报
 - [命令与工具参考](commands-and-tools-reference.md) — `/profile` 全部子命令列表
 
 ---
 
-*最后更新：2026-09（新增背景信息来源 context_blocks 与 preferences 写入入口，见
-next_doc/profile_context_sources_completeness_plan.md）*
+*最后更新：2026-09（新增 §3.4 用户侧证据分级扩展 values/risk_preference/
+constraints，见 next_doc/personal_ai_alignment_upgrade_plan.md 阶段一）*

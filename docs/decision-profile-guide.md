@@ -6,6 +6,13 @@
 归纳见 [self-awareness-identity-guide.md](self-awareness-identity-guide.md)
 第 1 节（`agent_value_profile_builder.py`），三层结构与矛盾处理策略完全同构。
 
+> ⚠️ 还有第三条同样归纳"用户价值取向"的独立线：
+> [Personal Model / State / Context Pack / Daily Digest 指南](personal-model-context-pack-guide.md)
+> §1 描述的 `profile.py::UserProfile.derived["values"/"risk_preference"]`
+> （证据源是建议采纳/拒绝账本，结果落在 `profile.json`）。两者证据源、
+> 存储位置、下游消费方均不同，目前各自独立运行、互不感知，是否打通
+> 留待后续单独评估，见该指南 §1.4 的详细说明。
+
 ## 是什么
 
 在已有的单条决策记录（`history/decision_extraction.py` + `wiki/decision_writer.py`

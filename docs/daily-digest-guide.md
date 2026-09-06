@@ -2,6 +2,14 @@
 
 对应设计文档：`next_doc/proactive-recommendation-and-digital-persona-design.md` 第 4.1 节（阶段一）。
 
+> ⚠️ 命名消歧：还存在**另一个**独立机制同样叫"Daily Digest"——
+> `perception/daily_digest.py::daily_digest()`，端点
+> `GET /v1/self/daily_digest`，是
+> `next_doc/personal_ai_alignment_upgrade_plan.md` 阶段四的产出，语义是
+> "今天最重要的事/AI已完成/需要你决定/风险"四段式**简报**，而不是本文档
+> 描述的行为时间分布+Goal 进展**回顾**。两者互不依赖、互不替代，详见
+> [Personal Model / State / Context Pack / Daily Digest 指南](personal-model-context-pack-guide.md) §4。
+
 ## 是什么
 
 把三条原本割裂的数据线合并成一份用户能一眼看懂的日报：

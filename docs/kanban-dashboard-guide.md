@@ -718,6 +718,14 @@ Tab 最末是**🪞 自我画像 / 能力地图**区块（`GET /v1/self/portrait
 这个 tab 会补上跳转即操作的能力；当前阶段刻意只做只读聚合，降低改动
 风险。
 
+> `GET /v1/self/personal_state`（用户当前处境快照）与 `GET
+> /v1/self/daily_digest`（今天最重要的事/AI已完成/需要你决定/风险四段式
+> 简报，见 [Personal Model / State / Context Pack / Daily Digest 指南](personal-model-context-pack-guide.md) §2、§4）
+> 目前也只在 API 层暴露，本 tab 尚未渲染——如需展示，按上面同样的"只读
+> 聚合、无操作按钮"模式扩展即可。注意后者与本文档其它地方可能出现的
+> "每日融合日报"（`/digest daily`，见 [daily-digest-guide.md](daily-digest-guide.md)）
+> 是两个不同的机制，命名巧合，不要混用端点。
+
 ### 🎓 能力学习 Tab
 
 对应 `next_doc/persona_capability_learning_design.md` §7 三个区域，数据来自

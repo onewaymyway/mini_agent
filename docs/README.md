@@ -47,6 +47,7 @@ Lesson → Skill 提案安全网、巩固循环、效果回填、各阶段（Sta
 | [self-evolution-consolidation-guide.md](self-evolution-consolidation-guide.md) | 巩固循环（`sys:consolidation`） |
 | [self-evolution-outcome-tracking-guide.md](self-evolution-outcome-tracking-guide.md) | 效果回填/追踪 |
 | [self-awareness-identity-guide.md](self-awareness-identity-guide.md) | Agent 自身价值观 / 自我叙事 / 自我模型漂移检测 / 子 Agent 经历回写 / 谱系视图 |
+| [personal-model-context-pack-guide.md](personal-model-context-pack-guide.md) | 用户侧对称机制：Personal Model 证据分级 / 处境快照 / Context Pack / 每日简报（与上一篇共享同一套证据治理范式） |
 
 ## daemon-*（常驻守护进程，4 篇）
 
@@ -94,6 +95,10 @@ Lesson → Skill 提案安全网、巩固循环、效果回填、各阶段（Sta
 - **内置 cron job 清单**：[cron-jobs-reference.md](cron-jobs-reference.md)（权威完整版）
   ←→ [commands-and-tools-reference.md](commands-and-tools-reference.md)（简化版）
   ←→ [self-evolution-stage9-guide.md](self-evolution-stage9-guide.md)（简化版）
+- **"Daily Digest"命名冲突**：[daily-digest-guide.md](daily-digest-guide.md)（回顾型，`/digest daily`）
+  与 [personal-model-context-pack-guide.md](personal-model-context-pack-guide.md) §4（简报型，`GET /v1/self/daily_digest`）
+  是两个完全独立的机制，仅因命名巧合容易混淆，两篇文档互相有消歧提示，
+  新增相关内容时注意别改错文档。
 
 ## 其他导航
 
