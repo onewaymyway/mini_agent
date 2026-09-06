@@ -201,3 +201,4 @@ external_projects/stock_watch/reports/
 .agent/external_input/relevance_threshold_state.json
 .agent/hybrid_exec/agent_sessions/
 .agent/capability_state.json
+.claude/skills/wiki-auto-maintenance/
