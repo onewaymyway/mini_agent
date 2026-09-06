@@ -5268,7 +5268,7 @@ def _render_goal_tree_node_body(
     # 不再嵌套在任何父级/祖先节点的 columns 里——不管 depth 多大，嵌套
     # 层数恒为 1。缩进靠最前面这一列固定宽度的占位列实现（宽度按 depth
     # 微调，封顶避免深层节点把标题挤没）。
-    indent_frac = min(0.28, depth * 0.045)
+    indent_frac = max(0.02, min(0.28, depth * 0.045))
     if children:
         indent_col, toggle_col, title_col, detail_col, wiki_col = st.columns(
             [indent_frac, 0.06, 0.82 - indent_frac, 0.06, 0.06]
