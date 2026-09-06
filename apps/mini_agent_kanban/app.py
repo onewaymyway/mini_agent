@@ -5435,6 +5435,19 @@ def _render_goal_tree_node_body(
 
 _GT_DEBUG_LOGGER: "logging.Logger | None" = None
 
+# [排查用] 版本水印——用来确认浏览器里跑的到底是不是这份改过的代码。
+# Streamlit 是常驻进程：只把新 app.py 文件放到磁盘上不会自动生效，
+# 必须让运行中的进程真正重新加载/重启（`streamlit run` 默认开了文件
+# 监听会自动 rerun，但如果是用 supervisor/docker/systemd 之类方式部署、
+# 或者磁盘上其实还有另一份 app.py 被优先加载，替换文件也可能根本没有
+# 换到正在跑的那一份）。这个值在模块被导入时打一次 print（进程刚启动/
+# 重新加载时能在终端看到），同时下面 `🛠️ 弹窗排查面板` 里也会展示这个
+# 值——如果点了 📄/📖 之后连一条 `_gt_debug_log` 都没出现，先来这里核对
+# 这串水印是不是这次改动对应的最新版本，不是的话说明进程根本没重启，
+# 后面所有排查都是在排查一份"已经不存在"的旧代码。
+_GT_DEBUG_BUILD_MARK = "goal_tree_dialog_debug_build_2026-09-06_v2"
+print(f"[goal_tree_dialog_debug] app.py loaded, build={_GT_DEBUG_BUILD_MARK}", flush=True)
+
 
 def _gt_debug_log(msg: str) -> None:
     """[目标树弹窗排查用] 点击 📄/📖 之后"卡一下又什么都没有，得刷新
@@ -5934,6 +5947,17 @@ def _render_goal_tree_view(client: AgentClient) -> None:
     # 定位到底断在哪一步。定位到真正原因、确认修复生效后，这个面板和
     # 上面 `_gt_debug_log()` 的调用可以整体删掉。
     with st.expander("🛠️ 弹窗排查面板（临时）", expanded=False):
+        st.warning(
+            f"当前运行代码版本水印：`{_GT_DEBUG_BUILD_MARK}`\n\n"
+            "如果这串水印跟你拿到的这份 app.py 里 `_GT_DEBUG_BUILD_MARK` 的值对不上，"
+            "或者你根本没在这里看到过这个警告框，说明**浏览器里连着的 Streamlit 进程"
+            "还是旧代码**——文件替换了但进程没有真正重启/重新加载，后面所有排查都是"
+            "对着一份已经不存在的旧代码在看。请先确认：\n"
+            "1. 磁盘上是不是只有这一份 `apps/mini_agent_kanban/app.py`（有没有被安装到"
+            "别的 site-packages 路径、或者用 Docker/别的目录跑的是另一份拷贝）；\n"
+            "2. 完全停掉现在跑着的 `streamlit run ...` 进程，重新执行一次启动命令"
+            "（不是刷新浏览器标签页，是要杀掉并重开服务端进程）。"
+        )
         st.caption(
             f"`_goal_tree_detail_target` = `{st.session_state.get('_goal_tree_detail_target')!r}`　"
             f"`_goal_wiki_view_target` = `{st.session_state.get('_goal_wiki_view_target')!r}`"
