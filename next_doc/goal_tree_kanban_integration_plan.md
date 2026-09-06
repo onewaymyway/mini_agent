@@ -2,6 +2,14 @@
 
 - **状态**：**已实施**（§4 五步全部完成；批量处理/关联反馈到具体待办项
   等 §6 开放问题仍未做，见文末）。
+  - **修复**：实际使用时树节点数稍多就会在 `📊 全局报告`折叠区报
+    `ReadTimeoutError`（`goal_tree_report`/`goal_node_page`/
+    `build_goal_wiki` 沿用了 `_get`/`_post` 默认的 6s/15s 超时，但这
+    三个端点分别要遍历整棵子树逐节点读磁盘状态、单节点聚合顺带重写
+    `output/README.md`、批量写入一批 Wiki 文件，比普通只读接口慢）。
+    `client.py` 里三个方法已分别调宽到 20s/15s/30s，跟仓库里其它已知
+    较慢的端点（如 `sync_evolution_proposal_merge` 的 30s）用同一套
+    做法。
   - `apps/mini_agent_kanban/client.py`：新增 `goal_tree_report()` /
     `goal_node_page()` / `build_goal_wiki()`，`add_goal_feedback()` 补
     可选 `about` 参数（不传时行为不变）。

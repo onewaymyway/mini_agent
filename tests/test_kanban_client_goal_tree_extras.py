@@ -34,6 +34,9 @@ def test_goal_tree_report_without_root_id_sends_no_params(monkeypatch):
     assert result == {"tree_report": {}}
     _, kwargs = mock_get.call_args
     assert kwargs["params"] is None
+    # 树级汇总遍历整棵子树，默认 6s 超时在节点数较多时容易 ReadTimeout，
+    # 用更宽松的超时（见 client.py 里 goal_tree_report 的说明）。
+    assert kwargs["timeout"] == 20
     assert mock_get.call_args[0][0].endswith("/goals/tree_report")
 
 
@@ -57,6 +60,7 @@ def test_goal_node_page_hits_expected_path(monkeypatch):
 
     assert result == {"page": {"goal_id": "g1"}}
     assert mock_get.call_args[0][0].endswith("/goals/g1/page")
+    assert mock_get.call_args[1]["timeout"] == 15
 
 
 def test_build_goal_wiki_uses_post_and_query_param_not_body(monkeypatch):
@@ -71,6 +75,7 @@ def test_build_goal_wiki_uses_post_and_query_param_not_body(monkeypatch):
     assert kwargs["params"] == {"root_id": "g1"}
     # root_id 走 query 参数，不应该被塞进 JSON body。
     assert kwargs["json"] is None
+    assert kwargs["timeout"] == 30
 
 
 def test_build_goal_wiki_without_root_id_sends_no_params(monkeypatch):

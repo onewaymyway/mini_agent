@@ -807,21 +807,24 @@ class AgentClient:
     def goal_tree_report(self, root_id: str | None = None):
         """GET /v1/goals/tree_report?root_id=... — 树级汇总报告：按状态/
         阶段分组、健康告警、四类待处理事项 + 未处理反馈、产出速览。
-        省略 root_id 汇总全局森林。"""
+        省略 root_id 汇总全局森林。遍历整棵（子）树、逐节点读取阶段/
+        产出等磁盘状态，节点数较多时比普通只读接口慢，用比默认
+        `timeout=6` 更宽松的 20s，避免树稍大就报 ReadTimeout。"""
         params = {"root_id": root_id} if root_id else None
-        return self._get("/goals/tree_report", params=params)
+        return self._get("/goals/tree_report", params=params, timeout=20)
 
     def goal_node_page(self, goal_id: str):
         """GET /v1/goals/{goal_id}/page — 节点详情页：面包屑/进度/产出
-        扫描/子节点导航/待处理事项/反馈历史一次性拼出来。"""
-        return self._get(f"/goals/{goal_id}/page")
+        扫描/子节点导航/待处理事项/反馈历史一次性拼出来。单节点聚合但
+        会顺带重写 output/README.md，用 15s 超时。"""
+        return self._get(f"/goals/{goal_id}/page", timeout=15)
 
     def build_goal_wiki(self, root_id: str | None = None):
         """POST /v1/goals/wiki/build?root_id=... — 手动触发一次目标产出
         Wiki 落盘生成（root_id 为 query 参数，不是 body）。省略 root_id
-        时遍历全局森林并刷新根索引。"""
+        时遍历全局森林并刷新根索引。批量写盘，用 30s 超时。"""
         params = {"root_id": root_id} if root_id else None
-        return self._post("/goals/wiki/build", params=params)
+        return self._post("/goals/wiki/build", params=params, timeout=30)
 
     # ── 看板：Goal 执行规范草稿生成/反馈迭代/确认/查看（goal_execution_spec_
     # generation_plan.md §6.1/§6.3/§6.4）────────────────────────────────────
