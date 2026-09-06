@@ -15,6 +15,8 @@
 #                              （未设置验证命令/功能关闭时为空字符串）
 #   {{referenced_decisions_block}} [系统关联性断点改进方案 F1]
 #                              相关历史决策检索结果块（无命中/功能关闭时为空字符串）
+#   {{context_pack_block}}    [personal_ai_alignment_upgrade_plan.md 阶段三 §4.3]
+#                              结构化 Context Pack 文本块（功能关闭/组装为空时为空字符串）
 
 请核查 AI 助手是否已经达成以下目标。这是第 {{round_no}} 轮核查。
 
@@ -30,5 +32,6 @@
 {{prior_checklist_block}}
 {{verification_result_block}}
 {{referenced_decisions_block}}
+{{context_pack_block}}
 
 请严格按照你的核查原则和输出格式进行判定。

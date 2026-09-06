@@ -821,6 +821,230 @@ class ContextBuilder:
         return "\n".join(lines)
 
 
+# ── Context Pack 组装器（次经 personal_ai_alignment_upgrade_plan.md 阶段三 §4.3）──
+#
+# 与上面 ContextBuilder（system prompt 检索式拼接）是两条并行的路径，互不替代：
+# ContextBuilder 解决"每轮该往 system prompt 里塞什么"，本函数解决"某个具体
+# 判断点（当前试点 goal_mode 的 GoalJudge）该拿到一份字段固定、可审计的结构化
+# 快照"。现有 wiki 检索片段作为 Relevant Decisions/Relevant Experience 的数据
+# 来源之一填入本结构，而不是被取代（方案 §4.3 明确要求）。
+
+MAX_EXPERIENCE_HITS = 3
+MAX_EVIDENCE_ITEMS = 5
+_EXPERIENCE_SUMMARY_CHARS = 150
+
+
+def _find_relevant_experience(paths, query: str, *, k: int = MAX_EXPERIENCE_HITS) -> list[dict]:
+    """检索 wiki `experiences/` 目录下相关的经验页（只读，规则粗筛，不调用
+    LLM），与 `wiki/decision_consumption.py::find_relevant_decisions()` 是
+    同一手法在不同 wiki 命名空间上的复用，不新增检索算法。目录不存在/零
+    命中时返回空列表，调用方应视为"暂无相关经验"，不是异常。"""
+    if not query or paths is None:
+        return []
+    try:
+        if not paths.wiki_experiences_dir.exists():
+            return []
+        from mini_agent.wiki.search import wiki_shelf_search
+
+        result = wiki_shelf_search(paths, query, k=k)
+    except Exception:
+        return []
+
+    out: list[dict] = []
+    for page in getattr(result, "pages", []):
+        page_id = getattr(page, "id", "") or ""
+        page_path = str(getattr(page, "path", "") or "")
+        if "experience" not in page_id and "/experiences/" not in page_path:
+            continue
+        title = getattr(page, "title", "") or page_id
+        body = getattr(page, "summary", "") or getattr(page, "content", "") or ""
+        summary = body.strip().replace("\n", " ")[:_EXPERIENCE_SUMMARY_CHARS]
+        out.append({"page_id": page_id, "title": title, "summary": summary})
+        if len(out) >= k:
+            break
+    return out
+
+
+def _collect_world_context(paths) -> list[dict]:
+    """世界上下文：读已经落盘、`source_kind` 属于外部知识类别的 wiki 页面
+    （复用 `evolution/external_trend_capability_link.py::_load_external_knowledge_pages`
+    的既有扫描逻辑，不新造一套）。当前没有专门的外部知识信号源时返回空
+    列表——方案 §4.3 原文允许"若无归零，不强求"。"""
+    try:
+        from mini_agent.evolution.external_trend_capability_link import (
+            _load_external_knowledge_pages,
+        )
+
+        pages = _load_external_knowledge_pages(paths)
+    except Exception:
+        return []
+    out = []
+    for page in pages[:3]:
+        title = getattr(page, "title", "") or getattr(page, "id", "")
+        summary = (getattr(page, "summary", "") or "").strip().replace("\n", " ")[:_EXPERIENCE_SUMMARY_CHARS]
+        out.append({"title": title, "summary": summary})
+    return out
+
+
+def _collect_current_evidence(paths) -> dict:
+    """当前证据：4.1 中 `source in (user_stated, ai_observation)` 的记录直接
+    列出；`ai_inference` 记录单独归入 `inferred` 并在渲染时标注"推测，非
+    事实"，绝不与前两者混在一起呈现（方案核心理念第 3 条）。"""
+    factual: list[str] = []
+    inferred: list[str] = []
+    try:
+        from mini_agent.profile import UserProfileManager
+
+        profile = UserProfileManager(paths).load()
+        for dim in ("values", "risk_preference", "constraints"):
+            for item in (profile.derived.get(dim) or [])[:MAX_EVIDENCE_ITEMS]:
+                text = item.get("text", "")
+                if not text:
+                    continue
+                source = item.get("source", "ai_inference")
+                if source in ("user_stated", "ai_observation"):
+                    factual.append(f"[{dim}/{source}] {text}")
+                else:
+                    inferred.append(f"[{dim}] {text}")
+    except Exception:
+        pass
+    return {"factual": factual[:MAX_EVIDENCE_ITEMS], "inferred": inferred[:MAX_EVIDENCE_ITEMS]}
+
+
+class ContextPack:
+    """字段固定的结构化上下文包（方案 §4.3），供具体判断点（当前试点
+    goal_mode 的 GoalJudge）消费。`to_prompt_block()` 渲染成方案原文给出的
+    七段式文本块；任一字段为空时对应小节整体省略，不留空标题。"""
+
+    def __init__(
+        self,
+        *,
+        goal_summary: str = "",
+        current_state_summary: str = "",
+        relevant_decisions: Optional[list] = None,
+        relevant_experience: Optional[list[dict]] = None,
+        world_context: Optional[list[dict]] = None,
+        evidence: Optional[dict] = None,
+        risk_summary: str = "",
+    ) -> None:
+        self.goal_summary = goal_summary
+        self.current_state_summary = current_state_summary
+        self.relevant_decisions = relevant_decisions or []
+        self.relevant_experience = relevant_experience or []
+        self.world_context = world_context or []
+        self.evidence = evidence or {"factual": [], "inferred": []}
+        self.risk_summary = risk_summary
+
+    def to_prompt_block(self) -> str:
+        sections: list[str] = []
+        if self.goal_summary:
+            sections.append(f"Goal: {self.goal_summary}")
+        if self.current_state_summary:
+            sections.append(f"Current State: {self.current_state_summary}")
+        if self.relevant_decisions:
+            lines = "\n".join(
+                d.to_prompt_line() if hasattr(d, "to_prompt_line") else f"- {d}"
+                for d in self.relevant_decisions
+            )
+            sections.append(f"Relevant Decisions:\n{lines}")
+        if self.relevant_experience:
+            lines = "\n".join(
+                f"- [{e.get('page_id', '')}] {e.get('title', '')}：{e.get('summary', '')}"
+                for e in self.relevant_experience
+            )
+            sections.append(f"Relevant Experience:\n{lines}")
+        if self.world_context:
+            lines = "\n".join(
+                f"- {w.get('title', '')}：{w.get('summary', '')}" for w in self.world_context
+            )
+            sections.append(f"World Context:\n{lines}")
+        factual = self.evidence.get("factual") or []
+        inferred = self.evidence.get("inferred") or []
+        if factual or inferred:
+            lines = list(factual)
+            if inferred:
+                lines.append("以下为 AI 推测，非用户明确事实，仅供参考：")
+                lines.extend(inferred)
+            sections.append("Current Evidence:\n" + "\n".join(f"- {l}" for l in lines))
+        if self.risk_summary:
+            sections.append(f"Risk: {self.risk_summary}")
+        return "\n\n".join(sections)
+
+
+def _render_risk_summary(snapshot: dict) -> str:
+    progress = snapshot.get("progress", {}) if snapshot else {}
+    alerts = progress.get("goals_with_health_alert", [])
+    pending = snapshot.get("pending_initiatives", {}) if snapshot else {}
+    parts = []
+    if alerts:
+        parts.append(f"{len(alerts)} 个目标存在未处理的健康告警")
+    stuck_ratio = progress.get("stuck_ratio", 0.0)
+    if stuck_ratio:
+        parts.append(f"近期卡住比例 {stuck_ratio:.0%}")
+    urgent = pending.get("urgent_count", 0)
+    if urgent:
+        parts.append(f"{urgent} 条主动建议置信度偏低、需要用户确认")
+    return "；".join(parts)
+
+
+def build_context_pack(paths, goal_text: str, query: str = "") -> ContextPack:
+    """组装一份字段固定的 Context Pack（方案 §4.3）。
+
+    只读组装，不修改任何既有状态：
+      - Current State 取自阶段二 `personal_state_snapshot()`；
+      - Relevant Decisions 复用阶段一之前已有的
+        `wiki/decision_consumption.py::find_relevant_decisions()`；
+      - Relevant Experience / World Context 是本阶段新增的只读检索，命中
+        为空时对应字段留空，不强求；
+      - Current Evidence 取自阶段一的 `UserProfile.derived`，`ai_inference`
+        记录与 `user_stated`/`ai_observation` 严格分列。
+
+    `paths` 为 None 时返回一个只有 `goal_summary` 的最小 ContextPack，不
+    抛出异常——与仓库里其它只读聚合模块（`personal_state_snapshot`/
+    `fairness_diagnostics`）同一容错风格。
+    """
+    query = query or goal_text
+    if paths is None:
+        return ContextPack(goal_summary=goal_text)
+
+    current_state_summary = ""
+    risk_summary = ""
+    try:
+        from mini_agent.perception.personal_state_snapshot import personal_state_snapshot
+
+        snapshot = personal_state_snapshot(paths)
+        active = snapshot.get("active_goals", [])
+        if active:
+            titles = "、".join(g.get("title", "") for g in active[:5] if g.get("title"))
+            current_state_summary = f"当前活跃目标 {len(active)} 个：{titles}"
+        risk_summary = _render_risk_summary(snapshot)
+    except Exception:
+        pass
+
+    relevant_decisions = []
+    try:
+        from mini_agent.wiki.decision_consumption import find_relevant_decisions
+
+        decision_query = find_relevant_decisions(paths, query)
+        relevant_decisions = decision_query.decisions
+    except Exception:
+        pass
+
+    relevant_experience = _find_relevant_experience(paths, query)
+    world_context = _collect_world_context(paths)
+    evidence = _collect_current_evidence(paths)
+
+    return ContextPack(
+        goal_summary=goal_text,
+        current_state_summary=current_state_summary,
+        relevant_decisions=relevant_decisions,
+        relevant_experience=relevant_experience,
+        world_context=world_context,
+        evidence=evidence,
+        risk_summary=risk_summary,
+    )
+
+
 def _last_user_msg(history: list[dict]) -> str:
     """从历史中提取最近一条真实用户输入文本。
 

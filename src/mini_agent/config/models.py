@@ -855,6 +855,15 @@ class GoalModeConfig:
     # 见 role_agents/goal_judge.py::run_goal_judge）。默认 False，
     # 行为与改动前完全一致。
     decision_consumption_enabled: bool = False
+    # [next_doc/personal_ai_alignment_upgrade_plan.md 阶段三 §4.3] True 时
+    # GoalJudgeAgent 核查前会额外拼装一份结构化 Context Pack（Current
+    # State/Relevant Experience/World Context/Current Evidence/Risk）注入
+    # prompt，见 context_builder.py::build_context_pack()。与
+    # decision_consumption_enabled 是两个独立开关（Context Pack 内部会
+    # 复用 find_relevant_decisions，但不要求 decision_consumption_enabled
+    # 同时打开）。默认 False，行为与改动前完全一致——方案要求先小范围
+    # 试点验证无回归，再评估是否扩大接入范围。
+    context_pack_enabled: bool = False
     # 仅当 judge_tools_enabled=True 时生效的白名单（工具名 / 工具组名均可）
     judge_allowed_tools: list = field(default_factory=lambda: ["bash", "read_file", "grep", "glob"])
     judge_allowed_tool_groups: list = field(default_factory=list)

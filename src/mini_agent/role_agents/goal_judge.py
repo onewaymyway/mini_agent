@@ -38,6 +38,7 @@ def build_goal_judge_prompt(
     prior_checklist_lines: str = "",
     verification_result: Optional[dict] = None,
     referenced_decisions_block: str = "",
+    context_pack_block: str = "",
 ) -> str:
     """构建 GoalJudge 的核查 prompt（模板见 prompts/user/goal_judge_request.md）。
 
@@ -45,6 +46,14 @@ def build_goal_judge_prompt(
     `wiki/decision_consumption.py::find_relevant_decisions()` 检索得到的
     相关历史决策文本块（`DecisionConsumptionQuery.to_prompt_block()`），
     空字符串（默认）等价于该功能关闭或未命中，行为与改动前完全一致。
+
+    context_pack_block：[personal_ai_alignment_upgrade_plan.md 阶段三 §4.3]
+    由调用方通过 `context_builder.py::build_context_pack()` 组装得到的
+    结构化上下文包文本块（`ContextPack.to_prompt_block()`），空字符串
+    （默认）等价于 `cfg.goal_mode.context_pack_enabled` 关闭，行为与
+    改动前完全一致。与 `referenced_decisions_block` 是两个独立的注入
+    位置——Context Pack 内部可能也含有相关决策内容，两者并非互斥，只是
+    信息组织粒度不同（一个是原始检索结果，一个是结构化摘要）。
 
     prior_checklist_lines：[改造项三] 上一轮各条验收标准通过情况的文本行
     （由调用方基于 GoalState.criteria_status 拼装），空字符串时不生成
@@ -91,6 +100,9 @@ def build_goal_judge_prompt(
         verification_result_block=verification_result_block,
         referenced_decisions_block=(
             ("\n" + referenced_decisions_block) if referenced_decisions_block else ""
+        ),
+        context_pack_block=(
+            ("\n" + context_pack_block) if context_pack_block else ""
         ),
     )
 
@@ -215,6 +227,17 @@ def run_goal_judge(
 
             log_exception(_mini_agent_exc, where="mini_agent.role_agents.goal_judge.run_goal_judge")
 
+    context_pack_block = ""
+    if paths is not None and bool(getattr(goal_cfg_block, "context_pack_enabled", False)):
+        try:
+            from mini_agent.context_builder import build_context_pack
+
+            context_pack_block = build_context_pack(paths, goal_spec.goal_text).to_prompt_block()
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+
+            log_exception(_mini_agent_exc, where="mini_agent.role_agents.goal_judge.run_goal_judge")
+
     prompt = build_goal_judge_prompt(
         goal_spec=goal_spec,
         agent_output=agent_output,
@@ -223,6 +246,7 @@ def run_goal_judge(
         prior_checklist_lines=prior_checklist_lines,
         verification_result=verification_result,
         referenced_decisions_block=referenced_decisions_block,
+        context_pack_block=context_pack_block,
     )
 
     result = run_judge_turn(
