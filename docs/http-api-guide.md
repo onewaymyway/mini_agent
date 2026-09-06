@@ -876,9 +876,15 @@ GET  /v1/goals/next_steps?node_id=...     查询"焦点行动建议"（可选按
 ```
 
 `GET /v1/goals/{node_id}/research` 返回
-`{"pending_candidates": [GrowthCandidate, ...], "last_triggered_at": float | null}`——
+`{"pending_candidates": [GrowthCandidate, ...], "items": [...], "last_triggered_at": float | null}`——
 `pending_candidates` 是 `GrowthBacklog` 里 `origin=="focus_research"` 且证据
 引用命中该节点（`evidence_refs` 含 `goal_tree:<node_id>`）的 pending 候选，
+保留字段、向后兼容；`items`
+（`goal_tree_research_report_visibility_plan.md` 阶段五新增）是该节点
+**全部**调研历史（不限 pending，含 accepted/dismissed/expired），每条
+`{"candidate_id", "title", "status", "created_at", "rationale", "report_id",
+"report_summary", "report_slug"}`，`report_id` 非空表示已经生成过报告
+（正文用 `GET /v1/growth/reports/{report_id}` 读取），按触发时间倒序；
 `last_triggered_at` 为 `null` 表示从未针对该节点触发过调研。节点不存在时
 返回 404。
 
@@ -887,7 +893,12 @@ GET  /v1/goals/next_steps?node_id=...     查询"焦点行动建议"（可选按
 `{"candidate": GrowthCandidate | null, "skip_reason": str | null}`——
 `candidate` 为 `null` 时 `skip_reason` 给出未生成新候选的原因（节奏治理
 拦截时给出明确剩余等待天数，其余情况——字面去重命中/冷却期/pending 已满
-——统一给出简要说明）。跟 CLI `/agent goals research <id> [--force]` 是
+——统一给出简要说明）。`candidate` 非空且此前没有报告时会立即生成一份
+（`goal_tree_research_report_visibility_plan.md` 阶段五——不用等用户在
+「🌱 成长顾问」tab 手动采纳才第一次看到报告），落盘到该节点专属目录
+`.agent/daemon_run_outputs/goals/<node_id>/research/`（不是全局的
+`.agent/wiki/growth/`），生成失败只影响 `candidate.report_id` 是否为空，
+不影响候选本身是否生成成功。跟 CLI `/agent goals research <id> [--force]` 是
 同一条路径（`FocusResearchTrigger.trigger()`），产出的候选走
 `GrowthBacklog`，不是 `/v1/goals/{node_id}/candidates/*`（那套是目标树
 自己的分解候选，两套候选队列分开）。

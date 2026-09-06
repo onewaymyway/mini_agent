@@ -128,5 +128,111 @@ class TestFindNewlyFocusedNodes(unittest.TestCase):
         self.assertEqual(newly, [])
 
 
+class TestTriggerGeneratesReportImmediately(unittest.TestCase):
+    """[goal_tree_research_report_visibility_plan.md] trigger() 默认应该
+    在候选没有报告时立即生成一份，报告落在该节点自己的产出目录下
+    （不是全局的 `wiki/growth/`），并且 `list_research_items_for_node()`
+    能查到这条记录（含报告摘要）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.paths = AgentPaths(Path(self._tmp.name))
+        self.backlog = GoalBacklog(self.paths)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_trigger_attaches_report_id_and_writes_under_node_output_dir(self):
+        from mini_agent.evolution.output_workspace import goal_output_base_dir
+
+        goal = self.backlog.add_goal("学习 Rust 异步编程", priority=3)
+        trigger = FocusResearchTrigger(self.paths, self.backlog)
+
+        candidate = trigger.trigger(goal.id)
+
+        self.assertIsNotNone(candidate)
+        self.assertIsNotNone(candidate.report_id)
+
+        pending = GrowthBacklog(self.paths).pending()
+        self.assertEqual(pending[0].report_id, candidate.report_id)
+
+        from mini_agent.evolution.growth_advisor import get_report_by_id
+        report = get_report_by_id(self.paths, candidate.report_id)
+        self.assertIsNotNone(report)
+        body_path = Path(report.body_path)
+        self.assertTrue(body_path.exists())
+        expected_dir = goal_output_base_dir(self.paths, goal.id) / "research"
+        self.assertEqual(body_path.parent, expected_dir)
+        # 不应该落到全局的 wiki/growth/ 目录。
+        self.assertNotEqual(body_path.parent, self.paths.wiki_growth_dir)
+
+    def test_trigger_generate_report_false_skips_report(self):
+        goal = self.backlog.add_goal("学习 Rust 异步编程", priority=3)
+        trigger = FocusResearchTrigger(self.paths, self.backlog)
+
+        candidate = trigger.trigger(goal.id, generate_report=False)
+
+        self.assertIsNotNone(candidate)
+        self.assertIsNone(candidate.report_id)
+
+    def test_re_trigger_does_not_regenerate_existing_report(self):
+        goal = self.backlog.add_goal("学习 Rust 异步编程", priority=3)
+        trigger = FocusResearchTrigger(self.paths, self.backlog)
+
+        first = trigger.trigger(goal.id)
+        first_report_id = first.report_id
+
+        second = trigger.trigger(goal.id, force=True)
+        # 命中 add_or_merge 的合并逻辑，report_id 应该保持不变，不会
+        # 因为再次触发就重新生成一份新报告。
+        self.assertEqual(second.report_id, first_report_id)
+
+
+class TestListResearchItemsForNode(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.paths = AgentPaths(Path(self._tmp.name))
+        self.backlog = GoalBacklog(self.paths)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_lists_candidate_with_report_summary(self):
+        from mini_agent.evolution.focus_research_trigger import list_research_items_for_node
+
+        goal = self.backlog.add_goal("学习 Rust 异步编程", priority=3)
+        trigger = FocusResearchTrigger(self.paths, self.backlog)
+        candidate = trigger.trigger(goal.id)
+
+        items = list_research_items_for_node(self.paths, goal.id)
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["candidate_id"], candidate.candidate_id)
+        self.assertEqual(items[0]["status"], "pending")
+        self.assertIsNotNone(items[0]["report_id"])
+        self.assertIsNotNone(items[0]["report_summary"])
+
+    def test_includes_accepted_candidates_not_only_pending(self):
+        from mini_agent.evolution.focus_research_trigger import list_research_items_for_node
+
+        goal = self.backlog.add_goal("学习 Rust 异步编程", priority=3)
+        trigger = FocusResearchTrigger(self.paths, self.backlog)
+        candidate = trigger.trigger(goal.id)
+
+        gb = GrowthBacklog(self.paths)
+        gb.set_status(candidate.candidate_id, "accepted")
+
+        items = list_research_items_for_node(self.paths, goal.id)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["status"], "accepted")
+
+    def test_empty_for_node_without_research_history(self):
+        from mini_agent.evolution.focus_research_trigger import list_research_items_for_node
+
+        goal = self.backlog.add_goal("从没调研过的目标", priority=3)
+        items = list_research_items_for_node(self.paths, goal.id)
+        self.assertEqual(items, [])
+
+
 if __name__ == "__main__":
     unittest.main()

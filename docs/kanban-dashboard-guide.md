@@ -313,13 +313,20 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
     `POST /v1/goals/{id}/focus_pin`、`POST /v1/goals/{id}/reparent`，
     详见 [HTTP API 指南](http-api-guide.md)。
   - **📄 相关调研 / 💡 建议**（`next_doc/goal_tree_research_and_action_
-    recommendation_plan.md` §4.5/阶段四）：每个节点的\"⚙️ 管理\"折叠区
-    底部新增\"📄 相关调研\"子区块——展示该节点当前待处理的调研候选（标题+
-    生成理由）、最近一次触发调研的时间，以及一个\"🔍 立即调研\"按钮
-    （对应 `POST /v1/goals/{id}/research/trigger`，`force=true`，手动
-    跳过节奏治理）。产出的候选走成长顾问既有的 `GrowthBacklog` 队列，
-    要采纳/忽略请到\"🌱 成长顾问\"tab 或用 `/agent growth accept|dismiss`
-    处理，本区块只做展示和手动触发，不重复一套候选处理 UI。
+    recommendation_plan.md` §4.5/阶段四；报告部分见
+    `goal_tree_research_report_visibility_plan.md` 阶段五）：每个节点的
+    \"⚙️ 管理\"折叠区底部新增\"📄 相关调研\"子区块——展示该节点**全部**
+    调研历史（不限待处理，含已采纳/已忽略，各自带状态徽标）、最近一次
+    触发调研的时间，以及一个\"🔍 立即调研\"按钮（对应 `POST /v1/goals/
+    {id}/research/trigger`，`force=true`，手动跳过节奏治理）。触发成功
+    且候选此前没有报告时会立即生成一份（零成本规则模板），有报告的条目
+    旁边有一个\"📄 查看报告\"展开按钮，能直接在这里读正文，不用切到
+    \"🌱 成长顾问\"tab 才第一次看到内容；报告文件保存在该节点自己的产出
+    目录下（`.agent/daemon_run_outputs/goals/<node_id>/research/`），
+    不再和其它方向的报告混在同一个全局 `wiki/growth/` 目录里，方便
+    按节点查找。候选的采纳/忽略仍然走成长顾问既有的 `GrowthBacklog`
+    队列，要处理请到\"🌱 成长顾问\"tab 或用 `/agent growth accept|
+    dismiss`，本区块只做展示和手动触发，不重复一套候选处理 UI。
     节点标题旁如果出现\"💡\"图标，表示该节点有未处理的\"焦点行动建议\"
     （`focus_next_step` 候选，来自 `next_action_advisor`，需要先在
     `agent_config.json` 里显式开启 `digest_advisor.next_action_focus_

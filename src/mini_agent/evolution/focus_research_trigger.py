@@ -80,6 +80,19 @@ def _min_interval_for(node: "GoalNode") -> float:
     )
 
 
+def _default_report_dir_for_node(paths: "AgentPaths", node_id: str) -> Path:
+    """[goal_tree_research_report_visibility_plan.md] 焦点驱动调研报告的
+    落盘目录：复用已有的 `output_workspace.goal_output_base_dir()` 目录
+    约定（`<outputs_root>/goals/<node_id>/`），不新增一套目录规则——不管
+    `node_id` 对应的是结构节点（domain/stage）还是叶子 Goal，这个函数
+    本身只是拼路径，不要求该节点已经被 `ObjectiveExecutor` 真正执行过。
+    报告统一放进该目录下的 `research/` 子目录，跟同一节点将来可能有的
+    执行产出（`cycle_0001/` 等）分开，一眼能区分"调研阶段留下的东西"和
+    "真正执行任务留下的东西"。"""
+    from mini_agent.evolution.output_workspace import goal_output_base_dir
+    return goal_output_base_dir(paths, node_id) / "research"
+
+
 class FocusResearchTrigger:
     def __init__(self, paths: "AgentPaths", backlog: "GoalBacklog") -> None:
         self._paths = paths
@@ -188,6 +201,7 @@ class FocusResearchTrigger:
         cfg=None,
         llm_helper: Optional[Callable[[str], str]] = None,
         force: bool = False,
+        generate_report: bool = True,
     ) -> Optional["GrowthCandidate"]:
         """针对 `node_id` 触发一次调研候选生成，返回新建/命中合并的
         `GrowthCandidate`；节点不存在、节奏治理跳过、或 `add_or_merge()`
@@ -204,6 +218,20 @@ class FocusResearchTrigger:
         `llm_helper` 只在 `add_or_merge()` 内部用于"语义判重"这一步，是
         可选的轻量调用，不传时退化为纯字面去重——跟设计文档 §4.4
         "LLM 调用轻量化、可关闭"原则一致，不是本方法的必需依赖。
+
+        `generate_report`：[goal_tree_research_report_visibility_plan.md]
+        默认 `True`——候选生成/合并成功后，如果这条候选身上还没有报告
+        （`report_id` 为空，绝大多数情况：这是全新候选，或者合并到的
+        既有候选此前从没被处理/接受过），立即用零成本的规则模板生成
+        一份并挂上去，不再像改动前那样要等到用户在「🌱 成长」tab 手动
+        采纳（触发 `auto_pursue_candidate()`）才第一次看到报告——"点了
+        立即调研却看不到任何调研产出"是这次改动要解决的具体问题。传
+        `False` 可以跳过这一步（比如未来某个调用方想自己控制生成时机），
+        不传时保持这个新默认行为。报告落盘目录见
+        `_default_report_dir_for_node()`——挂在该节点自己的产出目录下，
+        不再进全局平铺的 `wiki/growth/`。生成失败（比如磁盘异常）只记
+        日志、不影响候选本身的生成结果——候选已经生成成功就是成功，报告
+        随时可以后续补生成。
         """
         node = self._backlog.get(node_id)
         if node is None:
@@ -231,7 +259,7 @@ class FocusResearchTrigger:
         existing_goal_titles = [g.title for g in self._backlog.active_goals()]
 
         backlog = GrowthBacklog(self._paths)
-        return backlog.add_or_merge(
+        candidate = backlog.add_or_merge(
             title=node.title,
             rationale=self._build_rationale(node),
             evidence_refs=[f"{FOCUS_EVIDENCE_REF_PREFIX}:{node.id}"],
@@ -242,6 +270,20 @@ class FocusResearchTrigger:
             llm_helper=llm_helper,
             existing_goal_titles=existing_goal_titles,
         )
+
+        if generate_report and candidate is not None and not candidate.report_id:
+            try:
+                from mini_agent.evolution.growth_advisor import generate_growth_report
+                report = generate_growth_report(
+                    self._paths, candidate, llm_helper=llm_helper,
+                    report_dir=_default_report_dir_for_node(self._paths, node.id),
+                )
+                candidate.report_id = report.report_id
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where="mini_agent.evolution.focus_research_trigger.trigger.generate_report")
+
+        return candidate
 
 
 def find_newly_focused_nodes(
@@ -272,6 +314,50 @@ def list_pending_research_candidates(
     ref = f"{FOCUS_EVIDENCE_REF_PREFIX}:{node_id}"
     gb = GrowthBacklog(paths)
     return [c for c in gb.pending() if c.origin == "focus_research" and ref in c.evidence_refs]
+
+
+def list_research_items_for_node(paths: "AgentPaths", node_id: str) -> list[dict]:
+    """[goal_tree_research_report_visibility_plan.md] 只读查询：给定
+    `node_id`，返回该节点关联的**全部**（不限 pending，含 accepted/
+    dismissed/expired）焦点驱动调研候选，每条都带上已生成报告的摘要
+    信息（没有报告时对应字段为 `None`）。
+
+    跟 `list_pending_research_candidates()` 的区别：那个函数只服务
+    \"还没处理、需要用户决定 accept/dismiss\"这一个场景（节奏治理/去重
+    判断都基于 pending 候选）；这个函数服务\"这个节点历史上到底做过哪些
+    调研、报告都在哪\"这个更宽的可视化场景——候选被采纳之后仍然是这个
+    节点调研历史的一部分，不应该从列表里消失。
+
+    返回的每个 dict：
+        {
+            "candidate_id", "title", "status", "created_at", "rationale",
+            "report_id": 有报告时非 None,
+            "report_summary": 有报告时是报告摘要（`GrowthReport.summary`），
+            "report_slug": 有报告时是文件名 slug（不含扩展名）,
+        }
+    按 `created_at` 倒序排列（最近触发的排在最前面）。
+    """
+    from mini_agent.evolution.growth_advisor import GrowthBacklog, get_report_by_id
+
+    ref = f"{FOCUS_EVIDENCE_REF_PREFIX}:{node_id}"
+    gb = GrowthBacklog(paths)
+    items: list[dict] = []
+    for c in gb.load_all():
+        if c.origin != "focus_research" or ref not in c.evidence_refs:
+            continue
+        report = get_report_by_id(paths, c.report_id) if c.report_id else None
+        items.append({
+            "candidate_id": c.candidate_id,
+            "title": c.title,
+            "status": c.status,
+            "created_at": c.created_at,
+            "rationale": c.rationale,
+            "report_id": c.report_id,
+            "report_summary": report.summary if report else None,
+            "report_slug": report.slug if report else None,
+        })
+    items.sort(key=lambda d: d["created_at"], reverse=True)
+    return items
 
 
 @dataclass
@@ -334,6 +420,7 @@ __all__ = [
     "FocusResearchTrigger",
     "find_newly_focused_nodes",
     "list_pending_research_candidates",
+    "list_research_items_for_node",
     "run_focus_research_scan_cycle",
     "FocusResearchScanSummary",
     "MIN_INTERVAL_SECONDS_STRUCTURAL",

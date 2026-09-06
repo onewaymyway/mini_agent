@@ -2442,8 +2442,22 @@ def generate_growth_report(
     cfg=None,
     web_search_fn=None,
     quality_auto_upgraded: bool = False,
+    report_dir=None,
 ) -> GrowthReport:
     """为一个候选生成调研报告并落盘。
+
+    `report_dir`：[goal_tree_research_report_visibility_plan.md] 可选，
+    传入时报告正文写到 `<report_dir>/<slug>.md`，而不是默认的全局
+    `paths.wiki_growth_dir`——供"焦点驱动调研"（`FocusResearchTrigger`）
+    把报告存进触发它的那个目标树节点自己的产出目录（`goals/<node_id>/
+    research/`），不再和其它候选的报告混在同一个全局平铺目录里，方便
+    按节点查找/管理。不传时行为与改动前完全一致（其余所有现有调用方
+    ——`run_daily_cycle()`/`auto_pursue_candidate()`/`refresh_candidate_
+    report()` 等——都不传这个参数，继续写全局目录）。索引落盘的元数据
+    （`growth_reports.jsonl`）不受影响，仍然是同一份全局索引，只有正文
+    文件本身的物理位置变化，`GrowthReport.body_path` 记录实际路径，
+    `list_reports()`/`get_report_by_id()` 按 `body_path` 读取，天然兼容
+    两种目录。
 
     P1 默认走规则模板（保证零 LLM 成本也能跑通闭环）；如果调用方传入
     `llm_helper`（例如 cron job 触发时由 Agent 自己的 LLM 会话承担），
@@ -2648,7 +2662,7 @@ def generate_growth_report(
         note = "> 这个方向之前的报告被反馈过内容太笼统，这一份自动换成了更详细的生成方式。\n\n"
         body = note + body
 
-    report_path = paths.growth_report_path(slug)
+    report_path = paths.growth_report_path(slug) if report_dir is None else (Path(report_dir) / f"{slug}.md")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(body, encoding="utf-8")
 

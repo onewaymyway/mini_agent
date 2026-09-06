@@ -5098,16 +5098,31 @@ def _render_goal_tree_candidates(client: AgentClient, node_id: str, candidates: 
 
 
 def _render_goal_tree_research_section(client: AgentClient, node_id: str) -> None:
-    """[goal_tree_research_and_action_recommendation_plan.md §4.5/阶段四]
-    "📄 相关调研"子区块：展示该节点待处理的调研候选 + 最近触发时间 +
-    "🔍 立即调研"手动触发按钮，挂在每个节点的"⚙️ 管理"折叠区内，跟
-    `growth_pursuit` 现有"📄 素材"按钮的展示克制原则一致——有内容才占
-    视线，没有就只留一行淡淡的状态说明。"""
+    """[goal_tree_research_and_action_recommendation_plan.md §4.5/阶段四；
+    goal_tree_research_report_visibility_plan.md] "📄 相关调研"子区块：
+    展示该节点全部调研历史（不限 pending，含已采纳/已忽略）+ 每条自带的
+    报告查看入口 + 最近触发时间 + "🔍 立即调研"手动触发按钮，挂在每个
+    节点的"⚙️ 管理"折叠区内，跟 `growth_pursuit` 现有"📄 素材"按钮的
+    展示克制原则一致——有内容才占视线，没有就只留一行淡淡的状态说明。
+
+    改动前这里只列 pending 候选、且从不展示报告（因为触发调研当时只
+    生成候选、不生成报告，报告要等用户在「🌱 成长」tab 手动采纳才第一次
+    出现）——用户反馈"点了立即调研却在这里看不到生成的调研报告"，两处
+    一起解决：后端 `FocusResearchTrigger.trigger()` 现在会立即生成报告
+    （见该函数文档），这里则改成读 `items`（全部历史 + 报告摘要）而不是
+    只读 `pending_candidates`，并给每条历史加一个"📄 查看报告"展开按钮。
+    """
     resp = client.goal_tree_research(node_id) or {}
     if isinstance(resp, dict) and resp.get("_error"):
         st.caption(f"调研信息获取失败：{resp['_error']}")
         return
-    candidates = resp.get("pending_candidates") or []
+    items = resp.get("items")
+    if items is None:
+        # 兼容旧后端（还没升级、只返回 pending_candidates 时）的兜底。
+        items = [
+            {**c, "report_id": c.get("report_id"), "report_summary": None}
+            for c in (resp.get("pending_candidates") or [])
+        ]
     last_triggered_at = resp.get("last_triggered_at")
     st.caption("📄 相关调研")
     if last_triggered_at:
@@ -5116,18 +5131,56 @@ def _render_goal_tree_research_section(client: AgentClient, node_id: str) -> Non
         st.caption(f"上次触发调研：{ts_str}")
     else:
         st.caption("尚未触发过针对该节点的调研。")
-    for cand in candidates:
+
+    _GT_RESEARCH_STATUS_LABEL = {
+        "pending": "⏳ 待处理", "accepted": "✅ 已采纳",
+        "dismissed": "🚫 已忽略", "expired": "⌛ 已过期",
+    }
+    for item in items:
+        cid = item.get("candidate_id", "")
         with st.container(border=True):
-            st.markdown(f"*🔎 {cand.get('title', '')}*")
-            if cand.get("rationale"):
-                st.caption(cand["rationale"])
-            st.caption(f"用 /agent growth accept {cand.get('candidate_id', '')} 采纳，或在「🌱 成长」tab 处理。")
+            status_label = _GT_RESEARCH_STATUS_LABEL.get(item.get("status"), item.get("status", ""))
+            st.markdown(f"*🔎 {item.get('title', '')}*　`{status_label}`")
+            if item.get("rationale"):
+                st.caption(item["rationale"])
+            report_id = item.get("report_id")
+            if report_id:
+                toggle_key = f"_gt_research_report_shown_{cid}"
+                is_shown = st.session_state.get(toggle_key, False)
+                if st.button(
+                    "收起报告" if is_shown else "📄 查看报告",
+                    key=f"_gt_research_report_btn_{cid}",
+                ):
+                    st.session_state[toggle_key] = not is_shown
+                    st.rerun()
+                if is_shown:
+                    rep = client.growth_report(report_id)
+                    if isinstance(rep, dict) and not rep.get("_error"):
+                        st.markdown(rep.get("body", "（报告正文为空）"))
+                    else:
+                        st.error((rep or {}).get("_error", "读取报告失败"))
+            else:
+                st.caption(
+                    "该条候选还没有报告（可能是较早版本触发的，或生成时出错）——"
+                    f"用 /agent growth accept {cid} 采纳，或在「🌱 成长」tab 处理。",
+                )
+    if items:
+        st.caption(
+            "报告文件保存在该节点自己的产出目录下"
+            f"（`.agent/daemon_run_outputs/goals/{node_id}/research/`），"
+            "不再和其它方向的报告混在同一个全局目录里。",
+        )
+
     if st.button("🔍 立即调研", key=f"_gt_research_trigger_{node_id}"):
         res = client.trigger_goal_tree_research(node_id, force=True)
         if isinstance(res, dict) and res.get("_error"):
             st.error(f"触发失败：{res['_error']}")
         elif isinstance(res, dict) and res.get("candidate"):
-            st.success(f"已生成/更新调研候选：{res['candidate'].get('title', '')}")
+            cand = res["candidate"]
+            if cand.get("report_id"):
+                st.success(f"已生成/更新调研候选并生成报告：{cand.get('title', '')}")
+            else:
+                st.success(f"已生成/更新调研候选：{cand.get('title', '')}（报告生成失败，可稍后重试）")
             st.rerun()
         else:
             reason = (res or {}).get("skip_reason") or "本次没有生成新候选"

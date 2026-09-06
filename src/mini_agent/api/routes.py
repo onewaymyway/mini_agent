@@ -5587,7 +5587,9 @@ async def get_goal_tree_research(node_id: str, request: Request):
     只读查询该节点关联的调研信息：待处理的 `focus_research` 候选列表
     （`GrowthBacklog` 里 `origin=="focus_research"` 且证据引用命中该
     节点的 pending 候选）+ 最近一次触发调研的时间戳（`0` 表示从未
-    触发过）。供看板\"📄 相关调研\"入口使用。
+    触发过）+（`items`，goal_tree_research_report_visibility_plan.md
+    新增）该节点全部调研历史（不限 pending）及各自的报告摘要信息。
+    供看板"📄 相关调研"入口使用。
     """
     backlog = _goal_backlog_only(request)
     node = backlog.get(node_id)
@@ -5597,11 +5599,17 @@ async def get_goal_tree_research(node_id: str, request: Request):
     try:
         from mini_agent.evolution.focus_research_trigger import (
             FocusResearchTrigger, list_pending_research_candidates,
+            list_research_items_for_node,
         )
         candidates = list_pending_research_candidates(paths, node_id)
         trigger = FocusResearchTrigger(paths, backlog)
         return {
             "pending_candidates": [c.to_dict() for c in candidates],
+            # [goal_tree_research_report_visibility_plan.md] 该节点全部
+            # 调研历史（不限 pending），每条带上已生成报告的摘要信息，
+            # 供看板"📄 相关调研"列出报告查看入口。`pending_candidates`
+            # 字段保留，向后兼容旧前端/CLI。
+            "items": list_research_items_for_node(paths, node_id),
             "last_triggered_at": trigger.last_triggered_at(node_id) or None,
         }
     except Exception as e:
@@ -5616,6 +5624,12 @@ async def trigger_goal_tree_research(node_id: str, request: Request):
     `/agent goals research <id> [--force]` 是同一条路径
     （`FocusResearchTrigger.trigger()`），供看板\"🔍 立即调研\"按钮使用。
     Body: {"force": bool?}（跳过节奏治理）。
+
+    [goal_tree_research_report_visibility_plan.md] 触发成功且候选此前
+    没有报告时，会立即用零成本规则模板生成一份并挂上（`candidate.
+    report_id` 非空），不用等到用户在「🌱 成长」tab 手动采纳才第一次
+    看到报告；报告落盘到该节点自己的产出目录（`goals/<node_id>/
+    research/`），不是全局平铺的 `wiki/growth/`。
 
     返回 `{"candidate": null, "skip_reason": "..."}` 表示本次没有生成
     新候选（节奏治理拦截/字面去重命中/冷却期/pending 已满，`skip_reason`
