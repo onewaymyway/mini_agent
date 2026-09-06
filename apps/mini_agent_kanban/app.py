@@ -5555,26 +5555,29 @@ def _render_goal_tree_report_panel(client: AgentClient, root_id: str | None = No
 
 def _render_goal_wiki_panel(client: AgentClient, root_id: str | None = None) -> None:
     """[goal_tree_kanban_integration_plan.md Stage 6 §3.4] "📖 产出 Wiki"
-    折叠区：复用树形结构本身作为导航（不新增导航逻辑），点某个节点的
-    "📖" 按钮时通过 `fs_read` 读取 `goals_wiki/<id>/index.md` 静态文件
-    渲染；顶部"🔄 重建 Wiki"按钮触发批量落盘生成。
+    折叠区：复用树形结构本身作为导航（不新增导航逻辑），顶部"🔄 重建
+    Wiki"按钮触发批量落盘生成。
 
     重建按钮走独立的"点击才提交"异步流程（跟 `_async_fetch_or_retry`
     "只要没有 Future 就自动提交"的语义不同——批量重建是有副作用的写
-    操作，不应该在每次渲染时自动发起，只能由用户点击触发）；wiki 页面
-    内容的读取（`fs_read`）复用 `_async_fetch_or_retry`，同样不阻塞
-    主线程，失败时给"🔄 重试"按钮。
+    操作，不应该在每次渲染时自动发起，只能由用户点击触发）。
 
-    [bug fix] 折叠区默认 `expanded=False`，且这个值原来是写死的常量，
-    跟"是否设置了 `view_target`"完全无关——点击树节点旁的「📖」后内容
-    其实已经正常渲染出来了，只是被折叠在这个默认收起的区块里，视觉上
-    跟"什么都没有"没有区别。改成 `expanded=bool(view_target)`：一旦有
-    待展示的节点就自动展开，不需要用户再手动点开去找。
+    [bug fix：点击树节点旁的「📖」/「📄」后"看上去什么都没显示"]
+    之前某个节点的 Wiki 正文是渲染在**这个默认收起的折叠区里**，而这个
+    折叠区固定挂在目标树最上方；树很长时，用户在树的中间/底部点了
+    "📖"，内容其实已经渲染出来了，但只出现在页面最上方、当前视口之外，
+    看上去跟"点了没反应"没有区别（`expanded=bool(view_target)` 这个
+    局部修复只能解决折叠区没展开的问题，解决不了"跟点击位置离得太远，
+    肉眼看不到"）。现在改成跟节点详情（`_show_goal_node_detail_dialog`）
+    同样的 `st.dialog` 弹窗方案：不管在树的哪个位置点击，弹窗都会在
+    屏幕中央弹出，不依赖滚动位置。正文/关闭逻辑挪到
+    `_render_goal_wiki_content_panel()`，由 `_show_goal_wiki_dialog()`
+    包一层 `st.dialog` 调用；`_render_goal_tree_view()` 顶部按跟
+    `_goal_tree_detail_target` 相同的方式消费 `_goal_wiki_view_target`。
     """
-    view_target = st.session_state.get("_goal_wiki_view_target")
-    with st.expander("📖 产出 Wiki", expanded=bool(view_target)):
-        st.caption("浏览方式：在下方目标树里点击节点旁的「📖」查看该节点的 Wiki 页（静态快照，"
-                    "可能不是最新——需要 tidy 阶段自动刷新或手动重建）。")
+    with st.expander("📖 产出 Wiki", expanded=False):
+        st.caption("浏览方式：在下方目标树里点击节点旁的「📖」，会弹窗显示该节点的 Wiki 页"
+                    "（静态快照，可能不是最新——需要 tidy 阶段自动刷新或手动重建）。")
 
         build_fut_key = f"_gt_wiki_build_fut::{root_id or ''}"
         if st.button("🔄 重建 Wiki", key="_gt_wiki_rebuild_btn"):
@@ -5601,29 +5604,51 @@ def _render_goal_wiki_panel(client: AgentClient, root_id: str | None = None) -> 
                 time.sleep(0.4)
                 st.rerun()
 
-        if view_target:
-            if st.button("✖️ 关闭当前 Wiki 页", key=f"_gt_wiki_close_{view_target}"):
-                st.session_state.pop("_goal_wiki_view_target", None)
-                st.rerun()
-            wiki_path = f".agent/daemon_run_outputs/goals_wiki/{view_target}/index.md"
-            resp, done = _async_fetch_or_retry(
-                client, f"gt_wiki_read:{view_target}", lambda: client.fs_read(wiki_path),
-                loading_label="Wiki 页加载中",
-            )
-            if not done:
-                return
-            if not isinstance(resp, dict) or resp.get("_error"):
-                err = resp.get("_error") if isinstance(resp, dict) else "未知错误"
-                st.warning(f"Wiki 页读取失败：{err}")
-                if st.button("🔄 重试", key=f"_gt_wiki_read_retry_{view_target}"):
-                    st.rerun()
-                return
-            content = resp.get("content")
-            if content:
-                st.markdown("---")
-                st.markdown(content)
-            else:
-                st.info("该节点尚未生成 Wiki 页，点击上方「重建 Wiki」生成。")
+
+def _show_goal_wiki_dialog(client: AgentClient, node_id: str) -> None:
+    """[bug fix，见 `_render_goal_wiki_panel` 顶部说明] 点击树节点旁的
+    "📖" 时弹出的 Wiki 正文弹窗——写法跟 `_show_goal_node_detail_dialog`
+    保持一致：每次点击时动态定义 `@st.dialog`，保证不管点击发生在树的
+    哪个位置，弹窗都在屏幕中央弹出，不依赖当前滚动位置/折叠区展开状态。
+    """
+
+    @st.dialog("📖 产出 Wiki 页", width="large")
+    def _dialog():
+        _render_goal_wiki_content_panel(client, node_id)
+
+    _dialog()
+
+
+def _render_goal_wiki_content_panel(client: AgentClient, node_id: str) -> None:
+    """Wiki 弹窗正文：读取 `goals_wiki/<id>/index.md` 静态文件并渲染。
+
+    顶部"✖️ 关闭"按钮显式清空 `_goal_wiki_view_target`——原因跟
+    `_render_goal_node_detail_panel` 里一样：`st.dialog` 右上角自带的
+    关闭图标只是隐藏弹窗本身，不会清掉驱动它显示的 session_state 标记，
+    不清掉的话之后任何按钮触发的 rerun 都会把这个弹窗重新弹出来。
+    """
+    if st.button("✖️ 关闭", key=f"_gt_wiki_close_{node_id}"):
+        st.session_state.pop("_goal_wiki_view_target", None)
+        st.rerun()
+
+    wiki_path = f".agent/daemon_run_outputs/goals_wiki/{node_id}/index.md"
+    resp, done = _async_fetch_or_retry(
+        client, f"gt_wiki_read:{node_id}", lambda: client.fs_read(wiki_path),
+        loading_label="Wiki 页加载中",
+    )
+    if not done:
+        return
+    if not isinstance(resp, dict) or resp.get("_error"):
+        err = resp.get("_error") if isinstance(resp, dict) else "未知错误"
+        st.warning(f"Wiki 页读取失败：{err}")
+        if st.button("🔄 重试", key=f"_gt_wiki_read_retry_{node_id}"):
+            st.rerun()
+        return
+    content = resp.get("content")
+    if content:
+        st.markdown(content)
+    else:
+        st.info("该节点尚未生成 Wiki 页，可在「📖 产出 Wiki」折叠区点「重建 Wiki」生成。")
 
 
 def _show_goal_node_detail_dialog(client: AgentClient, goal_id: str) -> None:
@@ -5776,6 +5801,16 @@ def _render_goal_tree_view(client: AgentClient) -> None:
     detail_target = st.session_state.get("_goal_tree_detail_target")
     if detail_target:
         _show_goal_node_detail_dialog(client, detail_target)
+
+    # [bug fix，见 `_render_goal_wiki_panel` 顶部说明] Wiki 弹窗按跟
+    # 节点详情弹窗完全相同的方式在这里统一消费——同样用 `get()` 而不是
+    # `pop()`：弹窗正文走 `_async_fetch_or_retry`，数据没能在当前这一轮
+    # 脚本运行内立刻返回时会自己触发 `st.rerun()`，指望下一轮继续把
+    # 结果读出来，`pop()` 会导致标记在第一轮就被拿走，弹窗还没加载完
+    # 内容就被跳过关闭。
+    wiki_target = st.session_state.get("_goal_wiki_view_target")
+    if wiki_target:
+        _show_goal_wiki_dialog(client, wiki_target)
 
     id_to_title: dict = {}
     _goal_tree_flatten_titles(tree, id_to_title)
