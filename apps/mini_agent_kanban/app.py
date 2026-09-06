@@ -5564,8 +5564,15 @@ def _render_goal_wiki_panel(client: AgentClient, root_id: str | None = None) -> 
     操作，不应该在每次渲染时自动发起，只能由用户点击触发）；wiki 页面
     内容的读取（`fs_read`）复用 `_async_fetch_or_retry`，同样不阻塞
     主线程，失败时给"🔄 重试"按钮。
+
+    [bug fix] 折叠区默认 `expanded=False`，且这个值原来是写死的常量，
+    跟"是否设置了 `view_target`"完全无关——点击树节点旁的「📖」后内容
+    其实已经正常渲染出来了，只是被折叠在这个默认收起的区块里，视觉上
+    跟"什么都没有"没有区别。改成 `expanded=bool(view_target)`：一旦有
+    待展示的节点就自动展开，不需要用户再手动点开去找。
     """
-    with st.expander("📖 产出 Wiki", expanded=False):
+    view_target = st.session_state.get("_goal_wiki_view_target")
+    with st.expander("📖 产出 Wiki", expanded=bool(view_target)):
         st.caption("浏览方式：在下方目标树里点击节点旁的「📖」查看该节点的 Wiki 页（静态快照，"
                     "可能不是最新——需要 tidy 阶段自动刷新或手动重建）。")
 
@@ -5594,8 +5601,10 @@ def _render_goal_wiki_panel(client: AgentClient, root_id: str | None = None) -> 
                 time.sleep(0.4)
                 st.rerun()
 
-        view_target = st.session_state.get("_goal_wiki_view_target")
         if view_target:
+            if st.button("✖️ 关闭当前 Wiki 页", key=f"_gt_wiki_close_{view_target}"):
+                st.session_state.pop("_goal_wiki_view_target", None)
+                st.rerun()
             wiki_path = f".agent/daemon_run_outputs/goals_wiki/{view_target}/index.md"
             resp, done = _async_fetch_or_retry(
                 client, f"gt_wiki_read:{view_target}", lambda: client.fs_read(wiki_path),
@@ -5635,7 +5644,17 @@ def _render_goal_node_detail_panel(client: AgentClient, goal_id: str) -> None:
     """节点详情面板正文：面包屑/进度/产出/子节点导航/待处理项/反馈历史 +
     反馈输入框。数据来自 `GET /goals/{id}/page`（`GoalNodePage`），首版
     只做"笼统反馈"（不关联具体待办项，见前置文档 Stage 6 §5 开放问题）。
+
+    顶部"✖️ 关闭"按钮显式清空 `_goal_tree_detail_target`——`st.dialog`
+    右上角自带的关闭图标只是隐藏弹窗本身，不会清掉驱动它显示的
+    session_state 标记；不清掉的话，标记会一直留着，之后任何其它按钮
+    触发的 rerun 都会把这个弹窗重新弹出来，必须靠用户自己点这个按钮
+    才能真正结束"查看详情"这个状态。
     """
+    if st.button("✖️ 关闭", key=f"_gt_detail_close_{goal_id}"):
+        st.session_state.pop("_goal_tree_detail_target", None)
+        st.rerun()
+
     resp, done = _async_fetch_or_retry(
         client, f"gt_node_page:{goal_id}", lambda: client.goal_node_page(goal_id),
         loading_label="节点详情加载中",
@@ -5745,7 +5764,16 @@ def _render_goal_tree_view(client: AgentClient) -> None:
     # 点击某条待办的"跳转到详情"——把目标 goal_id 写进
     # `_goal_tree_detail_target` 后在这里统一消费，直接弹出对应节点的
     # 详情面板，而不用要求用户先在树里手动找到这个节点。
-    detail_target = st.session_state.pop("_goal_tree_detail_target", None)
+    #
+    # [bug fix] 这里必须用 `get()` 而不是 `pop()`：详情面板正文走
+    # `_async_fetch_or_retry`，数据没能在当前这一轮脚本运行内立刻返回时
+    # 会自己触发 `st.rerun()`，指望下一轮继续把结果读出来——如果用
+    # `pop()`，标记在第一轮就被拿走了，下一轮 `if detail_target` 判断为
+    # 假，弹窗还没来得及加载完内容就被跳过关闭，用户几乎永远看不到内容
+    # （必现，不是偶发）。改成 `get()` 后标记会一直保留到用户显式关闭
+    # （见 `_render_goal_node_detail_panel` 里的"✖️ 关闭"按钮），多轮
+    # rerun 都能持续重新打开同一个弹窗，直到异步数据真正加载完成。
+    detail_target = st.session_state.get("_goal_tree_detail_target")
     if detail_target:
         _show_goal_node_detail_dialog(client, detail_target)
 
