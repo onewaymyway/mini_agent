@@ -165,25 +165,19 @@ def _llm_summarize_value_patterns(
 
 def _apply_contradiction(existing: list[AgentValuePattern], new_raw: list[dict], now_str: str) -> list[AgentValuePattern]:
     """与 decision_profile_builder._apply_contradiction 完全一致的合并策略：
-    同一模式证据增加则强化置信度，矛盾/不同模式只新增，不覆盖旧模式。"""
-    by_pattern = {p.pattern: p for p in existing}
-    for item in new_raw:
-        pat, refs = item["pattern"], item["evidence_refs"]
-        if pat in by_pattern:
-            node = by_pattern[pat]
-            merged_refs = sorted(set(node.evidence_refs) | set(refs))
-            gained = len(merged_refs) - len(node.evidence_refs)
-            node.evidence_refs = merged_refs
-            if gained > 0:
-                node.confidence = min(1.0, node.confidence + 0.1 * gained)
-                node.last_reinforced = now_str
-        else:
-            conf = min(0.6, 0.15 * len(refs))
-            by_pattern[pat] = AgentValuePattern(
-                pattern=pat, evidence_refs=refs, confidence=conf,
-                first_observed=now_str, last_reinforced=now_str,
-            )
-    return list(by_pattern.values())
+    同一模式证据增加则强化置信度，矛盾/不同模式只新增，不覆盖旧模式。
+
+    [next_doc/personal_ai_alignment_upgrade_plan.md 阶段一] 实际合并算法已
+    抽取为 `evolution/evidence_pattern.merge_evidence_patterns()`，供用户侧
+    `user_signal_profile_builder.py` 复用同一套逻辑；本函数只做
+    `AgentValuePattern` dataclass 与通用 dict 形状之间的转换，对外行为/
+    返回类型保持不变。"""
+    from mini_agent.evolution.evidence_pattern import merge_evidence_patterns
+
+    merged_dicts = merge_evidence_patterns(
+        [p.to_dict() for p in existing], new_raw, now_label=now_str,
+    )
+    return [AgentValuePattern.from_dict(d) for d in merged_dicts]
 
 
 def generate_agent_value_profile(

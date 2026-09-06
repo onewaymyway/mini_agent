@@ -129,6 +129,113 @@ def _merge_text_items(
     return merged
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# [next_doc/personal_ai_alignment_upgrade_plan.md 阶段一] 用户侧证据分级
+# 扩展：`derived["values"]` / `derived["risk_preference"]` /
+# `derived["constraints"]` 三个新命名空间，复用 `tech_stack`/`habits` 的
+# "text + last_confirmed_at" 结构范式，额外新增 `source`/`confidence`
+# 两个字段。这三个 key 不在 `PROFILE_GENERATED_KEYS` 内，`generate()`
+# 不会触碰、也不会清空它们——由 `evolution/user_signal_profile_builder.py`
+# （values/risk_preference，AI 归纳）与本模块的
+# `UserProfileManager.add_constraint()`（constraints，用户显式声明）
+# 各自独立维护，与 growth_advisor 写 `growth_focus_areas` 是同一套
+# "各自维护、互不侵入"约定。
+#
+# `source` 取值：
+#   - "user_stated"：用户话里明确说的。
+#   - "ai_observation"：从行为直接观察到、无需推测（如"用户拒绝了 N 次
+#     自动发送消息的建议"这类计数事实本身）。
+#   - "ai_inference"：AI 基于观察推测出的模式。三者中只有这一类在展示时
+#     必须带角标区分，且不能被其余子系统当作既定事实直接使用（只能作为
+#     参考），避免推测链式放大为"AI 自己认定的用户事实"。
+# ─────────────────────────────────────────────────────────────────────────
+
+USER_SIGNAL_KEYS = ("values", "risk_preference", "constraints")
+
+EVIDENCE_SOURCE_USER_STATED = "user_stated"
+EVIDENCE_SOURCE_AI_OBSERVATION = "ai_observation"
+EVIDENCE_SOURCE_AI_INFERENCE = "ai_inference"
+_VALID_EVIDENCE_SOURCES = frozenset(
+    {EVIDENCE_SOURCE_USER_STATED, EVIDENCE_SOURCE_AI_OBSERVATION, EVIDENCE_SOURCE_AI_INFERENCE}
+)
+
+
+def _migrate_evidence_items(raw: list, *, fallback_ts: float) -> list[dict]:
+    """与 `_migrate_text_items` 同构，额外整理 `source`/`confidence`/
+    `evidence_refs` 三个字段：
+      - `source` 缺失或非法值一律回退为 `ai_inference`——三者中最谨慎的
+        默认值，不能因为脏数据/迁移丢字段就让某条记录被误当成用户原话
+        或直接观察。
+      - `confidence` 缺失/非法回退为 0.0（未知强度，不臆造）。
+      - `evidence_refs` 缺失/非法回退为空列表（纯用户显式声明的
+        constraints 天然没有 evidence_refs，这是正常情况，不是脏数据）。
+    """
+    out: list[dict] = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+        try:
+            ts = float(item.get("last_confirmed_at", fallback_ts))
+        except (TypeError, ValueError):
+            ts = fallback_ts
+        source = item.get("source")
+        if source not in _VALID_EVIDENCE_SOURCES:
+            source = EVIDENCE_SOURCE_AI_INFERENCE
+        try:
+            confidence = float(item.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+        refs = item.get("evidence_refs")
+        refs = [str(r) for r in refs] if isinstance(refs, list) else []
+        out.append({
+            "text": text,
+            "last_confirmed_at": ts,
+            "source": source,
+            "confidence": confidence,
+            "evidence_refs": refs,
+        })
+    return out
+
+
+def upsert_user_stated_item(items: list[dict], text: str, *, now: float) -> list[dict]:
+    """[阶段一 constraints] 用户显式声明的证据条目 upsert：已存在
+    （按 `_normalize_text_key` 归一化匹配）则只刷新 `last_confirmed_at`，
+    不存在则新增，`source` 固定为 `user_stated`、`confidence` 固定为
+    1.0——用户自己说的话不需要也不应该有"置信度打折"的概念。"""
+    text = (text or "").strip()
+    if not text:
+        return items
+    key = _normalize_text_key(text)
+    out = list(items or [])
+    for it in out:
+        if _normalize_text_key(it.get("text", "")) == key:
+            it["last_confirmed_at"] = now
+            it["source"] = EVIDENCE_SOURCE_USER_STATED
+            it["confidence"] = 1.0
+            return out
+    out.append({
+        "text": text,
+        "last_confirmed_at": now,
+        "source": EVIDENCE_SOURCE_USER_STATED,
+        "confidence": 1.0,
+        "evidence_refs": [],
+    })
+    return out
+
+
+def remove_user_stated_item(items: list[dict], text: str) -> tuple[list[dict], bool]:
+    """按归一化文本匹配移除一条记录，返回 (新列表, 是否命中)。"""
+    key = _normalize_text_key(text or "")
+    if not key:
+        return list(items or []), False
+    out = [it for it in (items or []) if _normalize_text_key(it.get("text", "")) != key]
+    return out, len(out) != len(items or [])
+
+
 def stale_items(items: list[dict], *, now: float, stale_after_days: int) -> list[str]:
     """挑出"距今超过 stale_after_days 天没有被再次印证"的条目文本，
     供 prompt 渲染时单独标注提醒 LLM 重新评估（见
@@ -168,6 +275,11 @@ class UserProfile:
                 raw = profile.derived.get(field_name)
                 if raw:
                     profile.derived[field_name] = _migrate_text_items(raw, fallback_ts=now)
+            # [next_doc/personal_ai_alignment_upgrade_plan.md 阶段一]
+            for field_name in USER_SIGNAL_KEYS:
+                raw = profile.derived.get(field_name)
+                if raw:
+                    profile.derived[field_name] = _migrate_evidence_items(raw, fallback_ts=now)
         return profile
 
     @property
@@ -361,6 +473,34 @@ class UserProfileManager:
         profile = self.load()
         profile.display_name = name
         self.save()
+
+    # ── 用户侧证据分级扩展（constraints，用户显式声明）───────────────────────
+    # [next_doc/personal_ai_alignment_upgrade_plan.md 阶段一] `values`/
+    # `risk_preference` 由 `evolution/user_signal_profile_builder.py`
+    # （AI 归纳，source=ai_inference）维护，不在本类提供写入口；这里只
+    # 负责 `constraints`——这一维度按方案定义必须是"用户明确说过的"，
+    # 不应该、也不需要走 LLM 归纳，直接由调用方（CLI/API）在用户明确
+    # 表达约束时调用本方法落盘。
+
+    def add_constraint(self, text: str) -> UserProfile:
+        profile = self.load()
+        now = time.time()
+        items = profile.derived.get("constraints") or []
+        profile.derived["constraints"] = upsert_user_stated_item(items, text, now=now)
+        self.save()
+        return profile
+
+    def remove_constraint(self, text: str) -> bool:
+        profile = self.load()
+        items = profile.derived.get("constraints") or []
+        new_items, hit = remove_user_stated_item(items, text)
+        if hit:
+            profile.derived["constraints"] = new_items
+            self.save()
+        return hit
+
+    def list_constraints(self) -> list[dict]:
+        return list(self.load().derived.get("constraints") or [])
 
     # ── 自动画像生成 ──────────────────────────────────────────────────────
 

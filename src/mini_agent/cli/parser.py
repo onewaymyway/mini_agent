@@ -123,6 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
               /decision_profile update    Re-summarize the decision profile now (requires LLM helper)
               /agent_value_profile        Show the agent's own value profile (wiki/agent_value_profile.md)
               /agent_value_profile update Re-summarize the agent's own value profile now (requires LLM helper)
+              /user_signal_profile        Show the user's values/risk_preference/constraints (Personal Model)
+              /user_signal_profile update Re-summarize the user's values/risk_preference now (requires LLM helper)
+              /user_signal_profile constraint add <text>    Record an explicit user constraint
+              /user_signal_profile constraint remove <text> Remove a recorded constraint
+              /user_signal_profile constraint list          List recorded constraints
               /self_narrative             Show the latest self-narrative entry
               /self_narrative history     Show recent self-narrative log entries (append-only)
               /self_narrative update      Generate a new self-narrative entry now (requires LLM helper)

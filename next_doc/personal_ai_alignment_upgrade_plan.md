@@ -1,5 +1,9 @@
 # Personal AI 架构对齐升级方案（用户侧 Personal Model / State / Context Pack / 证据治理）
 
+> 实施状态：**阶段一已完成**（见
+> `next_doc/personal_ai_alignment_upgrade_stage1_implementation_record.md`）。
+> 阶段二/三/四尚未开始。
+
 > 前置阅读：
 > - 外部参考文档《Personal AI 到底应该如何实现？——从个人知识空间到自主行动系统的
 >   完整架构》（用户上传，未入库，核心论断见本文档 §1）

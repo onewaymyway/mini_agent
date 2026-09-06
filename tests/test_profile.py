@@ -202,6 +202,75 @@ class _Cfg:
         self.profile_force_refresh_after_days = force_refresh_after_days
 
 
+class TestUserStatedConstraints(unittest.TestCase):
+    """[next_doc/personal_ai_alignment_upgrade_plan.md 阶段一] constraints
+    是用户显式声明的证据条目，走 add_constraint/remove_constraint/
+    list_constraints，不经过 LLM，source 固定为 user_stated、confidence
+    固定为 1.0。"""
+
+    def test_add_constraint_creates_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = UserProfileManager(_make_paths(tmp))
+            manager.add_constraint("不要自动发消息")
+            items = manager.list_constraints()
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["text"], "不要自动发消息")
+            self.assertEqual(items[0]["source"], "user_stated")
+            self.assertEqual(items[0]["confidence"], 1.0)
+
+    def test_add_same_constraint_twice_upserts_not_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = UserProfileManager(_make_paths(tmp))
+            manager.add_constraint("不要自动发消息")
+            first_ts = manager.list_constraints()[0]["last_confirmed_at"]
+            manager.add_constraint("  不要自动发消息  ")  # 归一化后应视为同一条
+            items = manager.list_constraints()
+            self.assertEqual(len(items), 1)
+            self.assertGreaterEqual(items[0]["last_confirmed_at"], first_ts)
+
+    def test_remove_constraint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = UserProfileManager(_make_paths(tmp))
+            manager.add_constraint("不要自动发消息")
+            self.assertTrue(manager.remove_constraint("不要自动发消息"))
+            self.assertEqual(manager.list_constraints(), [])
+
+    def test_remove_nonexistent_constraint_returns_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = UserProfileManager(_make_paths(tmp))
+            self.assertFalse(manager.remove_constraint("不存在的约束"))
+
+    def test_generate_does_not_touch_constraints(self):
+        """generate() 只负责 PROFILE_GENERATED_KEYS 里的字段，不应触碰/
+        清空 constraints——与 growth_focus_areas 遵守同一约定。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            manager = UserProfileManager(paths)
+            manager.add_constraint("不要自动发消息")
+
+            llm = _FakeLLMClient({"summary": "s", "tech_stack": [], "habits": []})
+            entries = [_FakeEntry(f"e{i}", created_at=i) for i in range(5)]
+            manager.generate(llm, entries, max_entries_for_profile=5)
+
+            items = manager.list_constraints()
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["text"], "不要自动发消息")
+
+    def test_migrate_evidence_items_defaults_unknown_source_to_ai_inference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            manager = UserProfileManager(paths)
+            profile = manager.load()
+            profile.derived["values"] = [{"text": "旧数据没有 source 字段"}]
+            manager.save()
+
+            manager2 = UserProfileManager(paths)
+            reloaded = manager2.load().derived["values"]
+            self.assertEqual(reloaded[0]["source"], "ai_inference")
+            self.assertEqual(reloaded[0]["confidence"], 0.0)
+            self.assertEqual(reloaded[0]["evidence_refs"], [])
+
+
 class TestShouldRefreshTimeFallback(unittest.TestCase):
     """[next_doc/profile_staleness_and_goal_tree_gap_plan.md 方向一 A]
     验证新增的时间兜底：增量不够门槛时，距上次刷新超过

@@ -46,6 +46,7 @@ from mini_agent.cli.commands import (
     handle_growth_cmd,
     handle_capability_cmd,)
 from mini_agent.cli.commands.agent_value_profile_cmd import handle_agent_value_profile_cmd
+from mini_agent.cli.commands.user_signal_profile_cmd import handle_user_signal_profile_cmd
 from mini_agent.cli.commands.self_narrative_cmd import handle_self_narrative_cmd
 
 
@@ -551,6 +552,12 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         # 命令：/decision_profile 归纳用户决策画像，这里归纳 agent 自己的
         # 历史选择行为。
         handle_agent_value_profile_cmd(parts[1:], agent)
+
+    elif name == "user_signal_profile":
+        # [next_doc/personal_ai_alignment_upgrade_plan.md 阶段一] 姊妹命令：
+        # /agent_value_profile 归纳 agent 自己的历史选择行为，这里归纳/
+        # 记录用户侧 Personal Model（values/risk_preference/constraints）。
+        handle_user_signal_profile_cmd(parts[1:], agent)
 
     elif name == "self_narrative":
         # [next_doc/self_awareness_identity_evolution_plan.md §2.2] 综合
