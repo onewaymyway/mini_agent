@@ -30,6 +30,11 @@ from typing import Callable, Optional
 
 import streamlit as st
 import streamlit.components.v1 as components
+try:
+    from streamlit.errors import StreamlitInvalidLayoutContextError
+except ImportError:  # 极老版本 streamlit 没有这个异常类，退化成永远走 app 全量 rerun
+    class StreamlitInvalidLayoutContextError(Exception):
+        pass
 
 from client import AgentClient
 from async_job_ui import start_async_job, run_async_job
@@ -5620,7 +5625,20 @@ def _async_fetch_or_retry(
     elapsed = time.time() - st.session_state.get(started_key, time.time())
     st.info(f"⏳ {loading_label}…（已等待 {elapsed:.1f}s，页面未卡死，可切换其它 tab）")
     time.sleep(0.4)
-    st.rerun()
+    # [bug fix：报告轮询会拖累树上按钮点击，见
+    # `_render_goal_tree_report_panel` 顶部说明] 这里现在总是先尝试
+    # `scope="fragment"`——如果调用方是从 `@st.fragment` 包裹的函数里、
+    # 且这次是一次真正的"fragment 局部重跑"触发的（不是刚打开时的那次
+    # 全量重跑）调的，重跑会被限制在那个 fragment 内部，不会带着整个
+    # 页面（含目标树其余按钮）一起重跑。如果调用方根本不在 fragment
+    # 里，或者虽然在 fragment 里但这正好是"第一次进入该 fragment"那次
+    # （本身还在全量重跑过程中，Streamlit 明确不允许在这种情况下用
+    # `scope="fragment"`，会抛 `StreamlitInvalidLayoutContextError`），
+    # 就落回默认的全量 `st.rerun()`，行为等价于改动前。
+    try:
+        st.rerun(scope="fragment")
+    except StreamlitInvalidLayoutContextError:
+        st.rerun()
     return None, False
 
 
@@ -5630,76 +5648,136 @@ def _render_goal_tree_report_panel(client: AgentClient, root_id: str | None = No
     统计/待办清单/健康告警/产出速览摆出来。纯展示，不新增任何判定逻辑；
     待办项的"跳转到详情"通过写 `_goal_tree_detail_target` 到
     session_state + `st.rerun()` 实现（见 `_render_goal_tree_view` 里的
-    消费逻辑）。"""
+    消费逻辑）。
+
+    [bug fix：📄/📖/▶ 按钮"有时候点得中有时候点不中"的真正根因]
+    这个折叠区默认是收起的（`expanded=False`），但 `st.expander(...)`
+    收起状态下内部代码照样会执行——只是视觉上用 CSS 隐藏，Python 那边
+    每次全量重跑都会原样跑一遍。之前这里是"没有 Future 就自动
+    submit_async + 没 done 就 sleep(0.4)+全量 st.rerun() 轮询"——也就是
+    说，哪怕用户根本没点开这个折叠区，只要 `client.goal_tree_report()`
+    比较慢（树稍大很常见），页面就会在背景里**自己不停触发全量
+    rerun**，跟用户点没点树上的按钮完全无关。用户点 📄/📖/▶ 的时候，
+    点击事件和这个背景轮询触发的下一轮全量 rerun 很容易撞到一起——
+    Streamlit 前端在新一轮 rerun 开始重新渲染时，上一轮里还没来得及
+    被服务端处理完的点击有可能就丢了，表现出来正是"这次点没反应，
+    换个时机点又行了"，跟树本身的按钮实现没有关系。用抓 `st.rerun()`
+    调用栈的办法实锤定位到了：确实是这里的轮询在触发。
+
+    改法：①不再自动拉取——只有用户点了"📊 生成/刷新报告"按钮才开始
+    请求（存一个 `_gt_report_requested` 标记），折叠区收起时不会有任何
+    背景轮询；②即使点了，实际的"提交+轮询"也包进 `@st.fragment` 里
+    单独执行——`st.fragment` 内部默认的局部 rerun 只会重跑这个 fragment
+    自己，不会像之前那样把整个页面（包括树的其余部分）都跟着全量重跑，
+    从根上切断"报告轮询"和"树上按钮点击"之间的相互干扰。
+    """
     with st.expander("📊 全局报告", expanded=False):
-        report_key = f"gt_report:{root_id or ''}"
-        resp, done = _async_fetch_or_retry(
-            client, report_key, lambda: client.goal_tree_report(root_id),
-            loading_label="报告生成中",
-        )
-        if not done:
-            return
-        if not isinstance(resp, dict) or resp.get("_error"):
-            err = resp.get("_error") if isinstance(resp, dict) else "未知错误"
-            st.warning(f"报告获取失败：{err}")
-            if st.button("🔄 重试", key=f"_gt_report_retry_{root_id or 'root'}"):
+        requested_key = f"_gt_report_requested::{root_id or ''}"
+        requested = st.session_state.get(requested_key, False)
+        cols = st.columns([1, 1])
+        with cols[0]:
+            if st.button("📊 生成/刷新报告", key=f"_gt_report_request_btn_{root_id or 'root'}"):
+                st.session_state[requested_key] = True
                 st.rerun()
+        if not requested:
+            st.caption("点上面的按钮才会开始生成（避免折叠区收起时也在背景里一直轮询、"
+                        "拖慢/干扰页面其它交互）。")
             return
-        report = resp.get("tree_report") or {}
 
-        def _jump_button(item: dict, label_prefix: str = "→") -> None:
-            gid = item.get("id")
-            title = item.get("title", "")
-            btn_key = f"_gt_report_jump_{gid}_{item.get('candidate_id') or item.get('proposal_id') or item.get('at') or ''}"
-            if st.button(f"{label_prefix} {title}", key=btn_key):
-                st.session_state["_goal_tree_detail_target"] = gid
-                st.rerun()
+        _render_goal_tree_report_fragment(client, root_id)
 
-        by_status = report.get("by_status") or {}
-        st.caption(f"共 {report.get('node_count', 0)} 个节点")
-        if by_status:
-            cols = st.columns(min(len(by_status), 6) or 1)
-            for i, (status, items) in enumerate(by_status.items()):
-                with cols[i % len(cols)]:
-                    st.metric(status, len(items))
 
-        pending_groups = [
-            ("🪄 待处理分解候选", report.get("pending_decompose_candidates") or []),
-            ("📌 待确认焦点", report.get("pending_focus_confirmation") or []),
-            ("🎛️ 待处理调优草案", report.get("pending_tuning_proposals") or []),
-            ("📋 待确认执行规范", report.get("pending_execution_specs") or []),
-            ("💬 未处理反馈", report.get("pending_feedback") or []),
-        ]
-        any_pending = any(items for _, items in pending_groups)
-        if any_pending:
-            st.markdown("**待办清单**")
-            for label, items in pending_groups:
-                if not items:
-                    continue
-                st.caption(f"{label}（{len(items)}）")
-                for item in items:
-                    _jump_button(item)
-        else:
-            st.caption("暂无待办事项。")
+@st.fragment
+def _render_goal_tree_report_fragment(client: AgentClient, root_id: str | None = None) -> None:
+    """[见 `_render_goal_tree_report_panel` 顶部说明] 报告展示逻辑。
 
-        stuck = report.get("stuck_or_alerted") or []
-        cron_bad = report.get("cron_unhealthy") or []
-        if stuck or cron_bad:
-            st.markdown("**健康告警**")
-            for item in stuck:
-                st.warning(f"⚠️ {item.get('title', '')}：{item.get('message', '')}")
-            for item in cron_bad:
-                st.warning(f"⚠️ {item.get('title', '')}：cron 连续跳过 {item.get('consecutive_skip_count', '?')} 次")
+    [进一步简化：不再用"提交线程池+轮询"] `scope="fragment"` 的
+    `st.rerun()` 只有在真正处于"fragment 局部重跑"这个执行阶段才允许
+    调用——而轮询的第一次调用发生在按钮点击触发的那次**全量**重跑
+    过程中（fragment 还是第一次被进入），这时候用 `scope="fragment"`
+    会直接报 `StreamlitInvalidLayoutContextError`，只能退回全量
+    `st.rerun()`；退回之后下一轮又是一次新的全量重跑，等于永远也
+    "进不了"真正的 fragment 局部重跑状态，白白多包一层 `st.fragment`
+    却没有实际效果，还额外多了一层需要理解的 scope 细节，容易再出错。
 
-        digest = report.get("recent_outputs_digest") or []
-        if digest:
-            st.markdown("**产出速览**")
-            for item in digest:
-                st.caption(f"`{item.get('title', '')}`：{item.get('task_summary', '')}")
+    既然这里已经是`@st.fragment`包起来的、由用户主动点按钮触发的一次性
+    加载（不是需要持续刷新的实时数据），干脆不用轮询：直接同步调用 +
+    `st.spinner()`，跟节点详情/Wiki 弹窗用的 `_dialog_sync_fetch()`
+    是同一个思路——最简单也最不容易出 scope 相关的错。就算
+    `client.goal_tree_report()` 本身要跑几秒，也只会阻塞这一个
+    fragment（本来就是用户刚点了按钮、正等着看结果），不会影响到
+    fragment 之外目标树其余部分的按钮交互。
+    """
+    resp, _ = _dialog_sync_fetch(
+        f"gt_report:{root_id or ''}", lambda: client.goal_tree_report(root_id),
+        loading_label="报告生成中…",
+    )
+    if not isinstance(resp, dict) or resp.get("_error"):
+        err = resp.get("_error") if isinstance(resp, dict) else "未知错误"
+        st.warning(f"报告获取失败：{err}")
+        if st.button("🔄 重试", key=f"_gt_report_retry_{root_id or 'root'}"):
+            st.rerun()
+        return
+    report = resp.get("tree_report") or {}
 
-        llm_summary = report.get("llm_summary")
-        if llm_summary:
-            st.info(llm_summary)
+    def _jump_button(item: dict, label_prefix: str = "→") -> None:
+        gid = item.get("id")
+        title = item.get("title", "")
+        btn_key = f"_gt_report_jump_{gid}_{item.get('candidate_id') or item.get('proposal_id') or item.get('at') or ''}"
+        if st.button(f"{label_prefix} {title}", key=btn_key):
+            st.session_state["_goal_tree_detail_target"] = gid
+            # [bug fix] 这个按钮在 fragment 里，默认 rerun 只会局部重跑
+            # fragment 自己——但"打开节点详情弹窗"是要影响 fragment 之外
+            # 的页面（`_render_goal_tree_view` 顶层消费
+            # `_goal_tree_detail_target` 才会弹窗），所以这里必须显式指定
+            # `scope="app"`，不能用默认 rerun。
+            st.rerun(scope="app")
+
+    by_status = report.get("by_status") or {}
+    st.caption(f"共 {report.get('node_count', 0)} 个节点")
+    if by_status:
+        cols = st.columns(min(len(by_status), 6) or 1)
+        for i, (status, items) in enumerate(by_status.items()):
+            with cols[i % len(cols)]:
+                st.metric(status, len(items))
+
+    pending_groups = [
+        ("🪄 待处理分解候选", report.get("pending_decompose_candidates") or []),
+        ("📌 待确认焦点", report.get("pending_focus_confirmation") or []),
+        ("🎛️ 待处理调优草案", report.get("pending_tuning_proposals") or []),
+        ("📋 待确认执行规范", report.get("pending_execution_specs") or []),
+        ("💬 未处理反馈", report.get("pending_feedback") or []),
+    ]
+    any_pending = any(items for _, items in pending_groups)
+    if any_pending:
+        st.markdown("**待办清单**")
+        for label, items in pending_groups:
+            if not items:
+                continue
+            st.caption(f"{label}（{len(items)}）")
+            for item in items:
+                _jump_button(item)
+    else:
+        st.caption("暂无待办事项。")
+
+    stuck = report.get("stuck_or_alerted") or []
+    cron_bad = report.get("cron_unhealthy") or []
+    if stuck or cron_bad:
+        st.markdown("**健康告警**")
+        for item in stuck:
+            st.warning(f"⚠️ {item.get('title', '')}：{item.get('message', '')}")
+        for item in cron_bad:
+            st.warning(f"⚠️ {item.get('title', '')}：cron 连续跳过 {item.get('consecutive_skip_count', '?')} 次")
+
+    digest = report.get("recent_outputs_digest") or []
+    if digest:
+        st.markdown("**产出速览**")
+        for item in digest:
+            st.caption(f"`{item.get('title', '')}`：{item.get('task_summary', '')}")
+
+    llm_summary = report.get("llm_summary")
+    if llm_summary:
+        st.info(llm_summary)
 
 
 def _render_goal_wiki_panel(client: AgentClient, root_id: str | None = None) -> None:
