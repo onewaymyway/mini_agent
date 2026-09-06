@@ -1,4 +1,4 @@
-"""perception/daily_digest.py — 每日简报只读聚合视图
+"""perception/priority_briefing.py — 优先级简报只读聚合视图
 （next_doc/personal_ai_alignment_upgrade_plan.md 阶段四 §4.4）。
 
 方案原文的四段式结构：
@@ -17,7 +17,7 @@
 `execution_phase`/`goal_stuck_stats` 等更底层的数据源——避免同一份
 "进度偏差"判断在两个只读聚合层里各自维护一份、口径逐渐分叉。
 
-与 `initiative_inbox_snapshot()` 的关系：Daily Digest 的"需要你决定"
+与 `initiative_inbox_snapshot()` 的关系：优先级简报（Priority Briefing）的"需要你决定"
 不是"候选收件箱"的替代——收件箱是给用户逐条处理建议用的完整列表，
 本模块只挑其中"置信度较低、需要用户确认"的一小部分做简报式摘要
 （`urgent_confidence_threshold`，与 `personal_state_snapshot.py`
@@ -39,7 +39,7 @@ DEFAULT_RECENT_COMPLETED_LIMIT = 5
 DEFAULT_URGENT_CONFIDENCE_THRESHOLD = 0.4
 
 
-def _empty_digest() -> dict[str, Any]:
+def _empty_briefing() -> dict[str, Any]:
     return {
         "generated_at": time.time(),
         "top_priorities": [],
@@ -144,19 +144,19 @@ def _collect_risks(snapshot: dict) -> list[dict]:
     return risks
 
 
-def daily_digest(
+def priority_briefing(
     paths,
     *,
     top_n: int = DEFAULT_TOP_N,
     recent_completed_limit: int = DEFAULT_RECENT_COMPLETED_LIMIT,
     urgent_confidence_threshold: float = DEFAULT_URGENT_CONFIDENCE_THRESHOLD,
 ) -> dict[str, Any]:
-    """合成每日简报（方案 §4.4）。纯只读聚合，不提供写操作，不落盘、不
+    """合成优先级简报（方案 §4.4）。纯只读聚合，不提供写操作，不落盘、不
     追加历史——每次调用都是从源数据重新计算的结果。`paths` 为 None 或
     任一子聚合异常都不向上抛出异常，各自退化为空列表。
     """
     if paths is None:
-        return _empty_digest()
+        return _empty_briefing()
 
     try:
         from mini_agent.perception.personal_state_snapshot import personal_state_snapshot

@@ -13,7 +13,7 @@ agent 自己倾向于做出什么样的选择、如何把散落的自我认知�
 
 > 用户侧的对称机制（Personal Model：用户是谁/看重什么/边界在哪，以及在此
 > 基础上的处境快照/结构化上下文/每日简报）见
-> [Personal Model / State / Context Pack / Daily Digest 指南](personal-model-context-pack-guide.md)，
+> [Personal Model / State / Context Pack / Priority Briefing 指南](personal-model-context-pack-guide.md)，
 > 与本文档共享同一套证据治理范式（`evolution/evidence_pattern.py`），服务
 > 对象不同。
 

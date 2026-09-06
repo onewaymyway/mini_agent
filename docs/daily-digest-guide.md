@@ -2,13 +2,14 @@
 
 对应设计文档：`next_doc/proactive-recommendation-and-digital-persona-design.md` 第 4.1 节（阶段一）。
 
-> ⚠️ 命名消歧：还存在**另一个**独立机制同样叫"Daily Digest"——
-> `perception/daily_digest.py::daily_digest()`，端点
-> `GET /v1/self/daily_digest`，是
-> `next_doc/personal_ai_alignment_upgrade_plan.md` 阶段四的产出，语义是
-> "今天最重要的事/AI已完成/需要你决定/风险"四段式**简报**，而不是本文档
-> 描述的行为时间分布+Goal 进展**回顾**。两者互不依赖、互不替代，详见
-> [Personal Model / State / Context Pack / Daily Digest 指南](personal-model-context-pack-guide.md) §4。
+> ℹ️ 曾经存在命名冲突：`next_doc/personal_ai_alignment_upgrade_plan.md`
+> 阶段四原计划产出也叫"Daily Digest"，与本文档描述的功能撞名。为避免
+> 混淆，该阶段的产出已更名为 **Priority Briefing**（
+> `perception/priority_briefing.py::priority_briefing()`，端点
+> `GET /v1/self/priority_briefing`），语义是"今天最重要的事/AI已完成/
+> 需要你决定/风险"四段式简报，与本文档描述的行为时间分布+Goal 进展
+> **回顾**是两个独立机制，详见
+> [Personal Model / State / Context Pack / Priority Briefing 指南](personal-model-context-pack-guide.md) §4。
 
 ## 是什么
 

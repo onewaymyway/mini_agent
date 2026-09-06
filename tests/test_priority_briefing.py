@@ -1,4 +1,4 @@
-"""tests/test_daily_digest.py — Daily Digest 只读聚合视图专属单测。
+"""tests/test_priority_briefing.py — 优先级简报只读聚合视图专属单测。
 
 对应 next_doc/personal_ai_alignment_upgrade_plan.md 阶段四 §4.4。
 
@@ -19,7 +19,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mini_agent.perception.daily_digest import daily_digest, _empty_digest
+from mini_agent.perception.priority_briefing import priority_briefing, _empty_briefing
 from mini_agent.storage.paths import AgentPaths
 
 
@@ -27,9 +27,9 @@ def _make_paths(tmp: str) -> AgentPaths:
     return AgentPaths(project_root=Path(tmp))
 
 
-class TestDailyDigest(unittest.TestCase):
+class TestPriorityBriefing(unittest.TestCase):
     def test_paths_none_returns_empty(self):
-        digest = daily_digest(None)
+        digest = priority_briefing(None)
         self.assertEqual(digest["top_priorities"], [])
         self.assertEqual(digest["ai_completed"], [])
         self.assertEqual(digest["needs_your_decision"], [])
@@ -38,7 +38,7 @@ class TestDailyDigest(unittest.TestCase):
     def test_empty_project_returns_empty_sections(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _make_paths(tmp)
-            digest = daily_digest(paths)
+            digest = priority_briefing(paths)
             self.assertEqual(digest["top_priorities"], [])
             self.assertEqual(digest["ai_completed"], [])
             self.assertEqual(digest["needs_your_decision"], [])
@@ -53,7 +53,7 @@ class TestDailyDigest(unittest.TestCase):
             backlog.add_goal(title="低优先级目标", priority=1)
             backlog.add_goal(title="高优先级目标", priority=9)
 
-            digest = daily_digest(paths, top_n=5)
+            digest = priority_briefing(paths, top_n=5)
             titles = [g["title"] for g in digest["top_priorities"]]
             self.assertEqual(titles[0], "高优先级目标")
             self.assertIn("低优先级目标", titles)
@@ -67,7 +67,7 @@ class TestDailyDigest(unittest.TestCase):
             node = backlog.add_goal(title="已完成的目标", priority=5)
             backlog.set_status(node.id, "completed")
 
-            digest = daily_digest(paths)
+            digest = priority_briefing(paths)
             titles = [g["title"] for g in digest["ai_completed"]]
             self.assertIn("已完成的目标", titles)
             # 已完成的目标不应出现在"今天最重要的事"里
@@ -90,7 +90,7 @@ class TestDailyDigest(unittest.TestCase):
             original = inbox_mod.initiative_inbox_snapshot
             inbox_mod.initiative_inbox_snapshot = fake_snapshot
             try:
-                digest = daily_digest(paths)
+                digest = priority_briefing(paths)
             finally:
                 inbox_mod.initiative_inbox_snapshot = original
 
@@ -102,7 +102,7 @@ class TestDailyDigest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _make_paths(tmp)
 
-            import mini_agent.perception.daily_digest as digest_mod
+            import mini_agent.perception.priority_briefing as digest_mod
 
             def fake_state_snapshot(paths):
                 return {
@@ -121,7 +121,7 @@ class TestDailyDigest(unittest.TestCase):
             original = pss_mod.personal_state_snapshot
             pss_mod.personal_state_snapshot = fake_state_snapshot
             try:
-                digest = digest_mod.daily_digest(paths)
+                digest = digest_mod.priority_briefing(paths)
             finally:
                 pss_mod.personal_state_snapshot = original
 
@@ -130,7 +130,7 @@ class TestDailyDigest(unittest.TestCase):
             self.assertIn("stuck_ratio", kinds)
 
     def test_empty_digest_helper_shape(self):
-        d = _empty_digest()
+        d = _empty_briefing()
         self.assertEqual(set(d.keys()), {"generated_at", "top_priorities", "ai_completed", "needs_your_decision", "risks"})
 
 

@@ -1,12 +1,12 @@
 # Personal AI 架构对齐升级 —— 阶段四实施记录
 
 > 对应方案：`next_doc/personal_ai_alignment_upgrade_plan.md` §4.4 / §6
-> 阶段四（Daily Digest，最后一个阶段）。至此方案 §6 划分的四个阶段全部
+> 阶段四（Priority Briefing，原方案称 Daily Digest，最后一个阶段）。至此方案 §6 划分的四个阶段全部
 > 完成。
 
 ## 1. 做了什么
 
-新增 `src/mini_agent/perception/daily_digest.py::daily_digest(paths)`，
+新增 `src/mini_agent/perception/priority_briefing.py::priority_briefing(paths)`，
 纯只读聚合视图，合成方案 §4.4 定义的四段式简报：
 
 ```
@@ -34,7 +34,7 @@ AI 已完成：<近期成功执行的 Goal / 建议采纳记录>
 4. **风险** —— 直接取 `personal_state_snapshot()` 的 `progress` 字段
    （健康告警列表 + 卡住比例），只做展示形态转换，不重新计算。
 
-`daily_digest()` 本身**不落盘、不追加历史**——与阶段二的
+`priority_briefing()` 本身**不落盘、不追加历史**——与阶段二的
 `personal_state_snapshot()` 同一"State 而非 Memory"风格，每次调用都是
 从源数据实时重新计算的结果；四段各自 try/except，任一子聚合异常不影响
 其它子聚合，最终兜底 `_empty_digest()`。不提供任何写操作（接受/拒绝/
@@ -43,7 +43,7 @@ AI 已完成：<近期成功执行的 Goal / 建议采纳记录>
 
 ### API 路由
 
-新增 `GET /v1/self/daily_digest`（`src/mini_agent/api/routes.py`），与
+新增 `GET /v1/self/priority_briefing`（`src/mini_agent/api/routes.py`），与
 `/self/personal_state`、`/self/initiative_inbox` 完全同构：解析 `paths`
 → 调用聚合函数 → 异常兜底为空结构。载体沿用方案原文"具体载体留到实现
 阶段评估"的开放选项——本阶段先落地只读聚合 + API，作为 Kanban 新 tab
@@ -54,7 +54,7 @@ AI 已完成：<近期成功执行的 Goal / 建议采纳记录>
 
 - 纯展示合成，不重复采集：四段数据全部来自阶段二快照 + 已有的
   `initiative_inbox_snapshot()` + `goal_backlog.py` 已落盘状态，符合
-  方案 §2"不新建推送/展示框架，Daily Digest 直接消费已有数据，只做
+  方案 §2"不新建推送/展示框架，Priority Briefing 直接消费已有数据，只做
   合成，不重复采集"的既定原则。
 - 依赖前三阶段但改动面最集中在展示层：本阶段没有修改任何既有模块的
   行为，只新增一个纯读函数 + 一个只读路由，验证了方案 §5"4.4 放最后
@@ -94,9 +94,9 @@ AI 已完成：<近期成功执行的 Goal / 建议采纳记录>
 ## 4. 改动文件清单
 
 ```
-src/mini_agent/perception/daily_digest.py                     新增
-src/mini_agent/api/routes.py                                   修改（新增 GET /v1/self/daily_digest + 路由列表注释）
-tests/test_daily_digest.py                                     新增
+src/mini_agent/perception/priority_briefing.py                 新增
+src/mini_agent/api/routes.py                                   修改（新增 GET /v1/self/priority_briefing + 路由列表注释）
+tests/test_priority_briefing.py                                新增
 next_doc/personal_ai_alignment_upgrade_plan.md                 修改（标注四个阶段全部完成）
 next_doc/personal_ai_alignment_upgrade_stage4_implementation_record.md  新增（本文档）
 ```
@@ -104,18 +104,18 @@ next_doc/personal_ai_alignment_upgrade_stage4_implementation_record.md  新增�
 ## 5. 测试情况
 
 ```
-tests/test_daily_digest.py  — 7 项（新增，含 paths=None/空项目兜底、
+tests/test_priority_briefing.py  — 7 项（新增，含 paths=None/空项目兜底、
                                 Top N 优先级排序、已完成 Goal 列表、
                                 低置信度候选筛选排序、风险信号转述、
                                 _empty_digest 结构校验用例）
 ```
 
-本地执行 `python -m pytest tests/test_daily_digest.py
+本地执行 `python -m pytest tests/test_priority_briefing.py
 tests/test_context_pack.py tests/test_personal_state_snapshot.py
 tests/test_decision_consumption.py tests/test_profile.py
 tests/test_user_signal_profile_builder.py
 tests/test_agent_value_profile_builder.py` 共 59 项全部通过。`GET
-/self/daily_digest` 路由未编写 HTTP 层测试——与同构的
+/self/priority_briefing` 路由未编写 HTTP 层测试——与同构的
 `/self/personal_state`/`/self/fairness_diagnostics`/
 `/self/initiative_inbox` 三个既有路由的测试覆盖现状一致（仓库里也没有
 为它们编写路由级测试），仅通过语法检查 + 函数级单测覆盖聚合逻辑本身。
@@ -131,7 +131,7 @@ tests/test_agent_value_profile_builder.py` 共 59 项全部通过。`GET
   `personal_ai_alignment_upgrade_stage2_implementation_record.md`
 - 阶段三（Context Pack 组装器，试点接入）—— 见
   `personal_ai_alignment_upgrade_stage3_implementation_record.md`
-- 阶段四（Daily Digest，本文档）
+- 阶段四（Priority Briefing，本文档）
 
 四个阶段共同的已知限制模式（值得在后续巡检中统一关注）：
 本方案多处"如实记录"了"数据源本身尚未积累/尚未细化"导致的功能性空缺
@@ -139,5 +139,28 @@ tests/test_agent_value_profile_builder.py` 共 59 项全部通过。`GET
 还原标题、约束没有 active/inactive 中间态等）——这些不是本方案实现
 阶段的缺陷，而是上游数据源（`experience_writer.py`/`world_writer.py`/
 `suggestion_feedback_ledger.py`）本身的成熟度问题，如果后续要让 Context
-Pack/Daily Digest 的信息量更丰富，应该优先去补齐这些上游数据源，而不是
+Pack/Priority Briefing 的信息量更丰富，应该优先去补齐这些上游数据源，而不是
 在聚合层用近似值掩盖。
+
+## 7. 命名变更说明（撞名修复）
+
+方案设计时（`personal_ai_alignment_upgrade_plan.md` §4.4/§6）把本阶段
+产出叫 "Daily Digest"，但落地时发现仓库里已经存在另一个独立、无关的
+"每日融合日报"功能（`evolution/daily_digest.py`，`/digest daily` 命令，
+端点 `GET /v1/digest/daily`，文档见 `docs/daily-digest-guide.md`）——
+两者概念不同（一个是回顾型日报，一个是简报聚合视图）但名字撞了，容易让
+后来者误以为是同一个东西或误改错文件。
+
+为避免这个问题，本次实际交付时把命名改为 **Priority Briefing**：
+
+| | 设计时命名（`plan.md` 原文） | 实际交付命名 |
+|---|---|---|
+| 模块 | `perception/daily_digest.py` | `perception/priority_briefing.py` |
+| 函数 | `daily_digest(paths)` | `priority_briefing(paths)` |
+| 兜底函数 | `_empty_digest()` | `_empty_briefing()` |
+| API 端点 | `GET /v1/self/daily_digest` | `GET /v1/self/priority_briefing` |
+| 单测文件 | `tests/test_daily_digest.py` | `tests/test_priority_briefing.py` |
+
+四段式内容结构、数据来源、已知限制均未变化，只是标识符改名，`plan.md`
+正文本身保留原始设计措辞（记录设计意图的历史真实性），改动只体现在
+本记录、`docs/` 相关指南与代码本身。

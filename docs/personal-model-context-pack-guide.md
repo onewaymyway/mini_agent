@@ -1,4 +1,4 @@
-# 用户侧 Personal Model / State / Context Pack / Daily Digest 指南
+# 用户侧 Personal Model / State / Context Pack / Priority Briefing 指南
 
 > 对应设计文档：`next_doc/personal_ai_alignment_upgrade_plan.md`（阶段一～
 > 四实施记录见同目录 `personal_ai_alignment_upgrade_stage{1,2,3,4}_
@@ -26,7 +26,7 @@ Personal Model。
 | 一 | 用户是谁、看重什么、边界在哪 | `UserProfile.derived` 新增 `values`/`risk_preference`/`constraints`，带 `source`/`confidence` 分级 |
 | 二 | 用户现在什么处境 | `personal_state_snapshot()` 只读物化快照 |
 | 三 | 该把什么喂给模型判断 | `build_context_pack()` 结构化 Context Pack，试点接入 GoalJudge |
-| 四 | 该把什么呈现给用户看 | `daily_digest()` 四段式简报 |
+| 四 | 该把什么呈现给用户看 | `priority_briefing()` 四段式优先级简报 |
 
 ## 1. 阶段一：Personal Model 证据分级扩展
 
@@ -190,23 +190,25 @@ goal_judge.py::run_goal_judge()` 在开关打开且调用方传入 `paths` 时�
 - 没有做"接入前后判断质量对比"的量化评估，真实效果需要在打开开关后
   观察一段时间。
 
-## 4. 阶段四：Daily Digest（每日简报）
+## 4. 阶段四：Priority Briefing（优先级简报）
 
-> ⚠️ **命名消歧，务必先读**：仓库里已经存在一个**完全不同**的"每日
-> 融合日报"功能，见 [daily-digest-guide.md](daily-digest-guide.md)
+> ⚠️ **命名消歧说明**：仓库里已经存在一个名字很像的**完全不同**功能——
+> "每日融合日报"，见 [daily-digest-guide.md](daily-digest-guide.md)
 > （`/digest daily` 命令，产出 `.agent/daily_reports/*.md`，端点
-> `GET /v1/digest/daily`）——那是行为时间分布 + Goal 当日进展的**回顾型**
-> 日报，明确不生成任何建议。本节描述的是**另一个**独立机制：
-> `perception/daily_digest.py::daily_digest()`，端点
-> `GET /v1/self/daily_digest`，是本方案（`personal_ai_alignment_upgrade_
-> plan.md`）阶段四的产出，语义更接近"简报聚合视图"而非"回顾报告"。
-> 两者**互不依赖、互不替代**，命名巧合导致容易混淆，如实记录、暂不合并
-> ——合并前需要先确认两份"日报"概念是否真的应该是同一个东西，贸然合并
-> 可能丢失"回顾 vs 简报"这个刻意的语义区分。
+> `GET /v1/digest/daily`），是行为时间分布 + Goal 当日进展的**回顾型**
+> 日报，明确不生成任何建议。本节描述的是**另一个**独立机制——
+> `perception/priority_briefing.py::priority_briefing()`，端点
+> `GET /v1/self/priority_briefing`，是本方案（`personal_ai_alignment_
+> upgrade_plan.md`）阶段四的产出，语义是"简报聚合视图"而非"回顾报告"。
+> 为避免和上面那个已有功能撞名，本方案的产出**没有采用"Daily Digest"
+> 这个名字**，改叫 Priority Briefing——四段内容里"今天最重要的事"其实
+> 就是"当前优先级排序"，改名后语义反而更贴切。两者**互不依赖、互不
+> 替代**，是否要合并留待后续单独评估。
 
 ### 4.1 是什么
 
-新增 `perception/daily_digest.py::daily_digest(paths)`，合成四段式简报：
+新增 `perception/priority_briefing.py::priority_briefing(paths)`，合成
+四段式简报：
 
 ```
 今天最重要的事：<阶段二快照里 Top N 活跃 Goal>
@@ -229,9 +231,10 @@ AI 已完成：<goal_backlog 中最近完成的 Goal>
 
 ### 4.3 API
 
-`GET /v1/self/daily_digest`（`api/routes.py`），与 `/self/personal_state`
-完全同构。前端呈现载体（Kanban 新 tab / 首页改造）尚未落地，留待有实际
-UI 改动需求时再评估，目前只提供聚合函数 + API。
+`GET /v1/self/priority_briefing`（`api/routes.py`），与
+`/self/personal_state` 完全同构。前端呈现载体（Kanban 新 tab / 首页
+改造）尚未落地，留待有实际 UI 改动需求时再评估，目前只提供聚合函数 +
+API。
 
 ### 4.4 已知限制
 
@@ -259,13 +262,13 @@ UI 改动需求时再评估，目前只提供聚合函数 + API。
 | Method | Path | 阶段 | 说明 |
 |---|---|---|---|
 | GET | `/v1/self/personal_state` | 二 | 用户当前处境物化快照 |
-| GET | `/v1/self/daily_digest` | 四 | 每日简报（今天最重要的事/AI已完成/需要你决定/风险） |
+| GET | `/v1/self/priority_briefing` | 四 | 优先级简报（今天最重要的事/AI已完成/需要你决定/风险） |
 
 两者均为 owner-only、只读、失败兜底为空结构，与仓库内 `/self/
 fairness_diagnostics`、`/self/initiative_inbox` 同一约定，未编写 HTTP
 层测试（与后两者现状一致），聚合逻辑本身由函数级单测覆盖：
 `tests/test_personal_state_snapshot.py`（阶段二）、
-`tests/test_context_pack.py`（阶段三）、`tests/test_daily_digest.py`
+`tests/test_context_pack.py`（阶段三）、`tests/test_priority_briefing.py`
 （阶段四）。
 
 ## 7. 与其它已有机制的关系一览
@@ -277,7 +280,8 @@ fairness_diagnostics`、`/self/initiative_inbox` 同一约定，未编写 HTTP
   —— 另一条独立的用户价值取向归纳线，证据源、存储位置、消费方均与
   阶段一不同，详见 §1.4。
 - **每日融合日报**（[daily-digest-guide.md](daily-digest-guide.md)）
-  —— 命名相似但完全独立的回顾型日报，详见 §4 开头的消歧说明。
+  —— 命名容易联想到本方案阶段四，但完全独立的回顾型日报；本方案的
+  阶段四产出为避免撞名特意改叫 Priority Briefing，详见 §4 开头的说明。
 - **主动性候选收件箱**（`initiative_inbox.py`，见
   [growth-advisor-guide.md](growth-advisor-guide.md)）—— 阶段二/四均
   直接消费其聚合结果，不重复实现候选收集。
@@ -287,5 +291,6 @@ fairness_diagnostics`、`/self/initiative_inbox` 同一约定，未编写 HTTP
 
 ---
 
-*最后更新：2026-09（新增阶段一～四，见
+*最后更新：2026-09（阶段四产出由 `daily_digest` 更名为 `priority_briefing`，
+避免与仓库既有的"每日融合日报"撞名，见
 next_doc/personal_ai_alignment_upgrade_plan.md）*

@@ -5,6 +5,12 @@
 > `next_doc/personal_ai_alignment_upgrade_stage2_implementation_record.md`、
 > `next_doc/personal_ai_alignment_upgrade_stage3_implementation_record.md`、
 > `next_doc/personal_ai_alignment_upgrade_stage4_implementation_record.md`）。
+> **命名变更**：本方案原计划把阶段四产出叫 "Daily Digest"（下文 §4.4/§6
+> 仍保留设计时的原始措辞），但落地时发现与仓库既有的另一个"每日融合
+> 日报"功能撞名（见 `docs/daily-digest-guide.md`），实际交付的函数/端点
+> 已改名为 `priority_briefing()` / `GET /v1/self/priority_briefing`，
+> 详见 `personal_ai_alignment_upgrade_stage4_implementation_record.md`
+> 与 `docs/personal-model-context-pack-guide.md` §4。
 
 > 前置阅读：
 > - 外部参考文档《Personal AI 到底应该如何实现？——从个人知识空间到自主行动系统的

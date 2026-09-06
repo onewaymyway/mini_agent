@@ -95,10 +95,13 @@ Lesson → Skill 提案安全网、巩固循环、效果回填、各阶段（Sta
 - **内置 cron job 清单**：[cron-jobs-reference.md](cron-jobs-reference.md)（权威完整版）
   ←→ [commands-and-tools-reference.md](commands-and-tools-reference.md)（简化版）
   ←→ [self-evolution-stage9-guide.md](self-evolution-stage9-guide.md)（简化版）
-- **"Daily Digest"命名冲突**：[daily-digest-guide.md](daily-digest-guide.md)（回顾型，`/digest daily`）
-  与 [personal-model-context-pack-guide.md](personal-model-context-pack-guide.md) §4（简报型，`GET /v1/self/daily_digest`）
-  是两个完全独立的机制，仅因命名巧合容易混淆，两篇文档互相有消歧提示，
-  新增相关内容时注意别改错文档。
+- **"Daily Digest"曾经的命名冲突**：`personal_ai_alignment_upgrade_plan.md`
+  阶段四原计划也叫"Daily Digest"，与 [daily-digest-guide.md](daily-digest-guide.md)
+  描述的回顾型日报撞名，后已更名为 Priority Briefing（`GET
+  /v1/self/priority_briefing`，见
+  [personal-model-context-pack-guide.md](personal-model-context-pack-guide.md) §4），
+  不再冲突，此处仅存档说明，避免有人在旧记录里看到"daily_digest"以为
+  两者是同一个东西。
 
 ## 其他导航
 

@@ -118,7 +118,7 @@ derived["constraints"] = [
 `source` 取值 `user_stated`（用户明确说的）/ `ai_observation`（直接观察
 到的行为）/ `ai_inference`（AI 推测），三者严格不混用；`ai_inference`
 记录展示时必须带角标区分，且不作为其它子系统的直接前提证据。详见
-[Personal Model / State / Context Pack / Daily Digest 指南](personal-model-context-pack-guide.md) §1。
+[Personal Model / State / Context Pack / Priority Briefing 指南](personal-model-context-pack-guide.md) §1。
 
 ---
 
@@ -483,7 +483,7 @@ profile_mgr.save()
 - [配置指南](config-guide.md) — 完整配置说明
 - [系统架构总览](system-overview.md) — Agent 整体架构
 - [决策画像指南](decision-profile-guide.md) — 另一套独立的"决策/价值取向"画像机制，与本文档的用户画像互不相关
-- [用户侧 Personal Model / State / Context Pack / Daily Digest 指南](personal-model-context-pack-guide.md) — 在 `derived` 命名空间下新增的 `values`/`risk_preference`/`constraints` 三个证据分级字段（§1），以及在此基础上的处境快照/结构化上下文/每日简报
+- [用户侧 Personal Model / State / Context Pack / Priority Briefing 指南](personal-model-context-pack-guide.md) — 在 `derived` 命名空间下新增的 `values`/`risk_preference`/`constraints` 三个证据分级字段（§1），以及在此基础上的处境快照/结构化上下文/每日简报
 - [命令与工具参考](commands-and-tools-reference.md) — `/profile` 全部子命令列表
 
 ---

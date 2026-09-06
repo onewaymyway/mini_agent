@@ -150,8 +150,8 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/self/personal_state   [personal_ai_alignment_upgrade_
                                        plan.md 阶段二] 用户当前处境物化
                                        快照（只读聚合，不落盘不追加历史）
-    GET    /v1/self/daily_digest     [personal_ai_alignment_upgrade_
-                                       plan.md 阶段四] 每日简报（今天最
+    GET    /v1/self/priority_briefing [personal_ai_alignment_upgrade_
+                                       plan.md 阶段四] 优先级简报（今天最
                                        重要的事/AI已完成/需要你决定/风险）
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
     POST   /v1/goals                 新增 Goal
@@ -1422,14 +1422,19 @@ async def get_self_personal_state(request: Request):
         return _empty_snapshot()
 
 
-@router.get("/self/daily_digest")
-async def get_self_daily_digest(request: Request):
-    """GET /v1/self/daily_digest — 每日简报只读聚合视图：今天最重要的事
-    / AI 已完成 / 需要你决定 / 风险，四段式合成展示（不提供写操作）。
-    消费阶段二 `personal_state_snapshot()` + 已有的
+@router.get("/self/priority_briefing")
+async def get_self_priority_briefing(request: Request):
+    """GET /v1/self/priority_briefing — 优先级简报只读聚合视图：今天最
+    重要的事 / AI 已完成 / 需要你决定 / 风险，四段式合成展示（不提供写
+    操作）。消费阶段二 `personal_state_snapshot()` + 已有的
     `initiative_inbox_snapshot()` + `goal_backlog.py` 已落盘的 Goal 状态，
     不新增采集点，不落盘、不追加历史（见
-    `perception/daily_digest.py` 模块 docstring）。
+    `perception/priority_briefing.py` 模块 docstring）。
+
+    命名注意：与 `evolution/daily_digest.py`（回顾型"每日融合日报"，
+    见 `GET /v1/digest/daily`）是两个完全独立的机制，本端点刻意不叫
+    `daily_digest` 以避免同名混淆，见
+    `docs/personal-model-context-pack-guide.md` §4。
     """
     http_server = getattr(request.app.state, "http_server", None)
     if http_server is None:
@@ -1437,7 +1442,7 @@ async def get_self_daily_digest(request: Request):
     _require_owner(request)
 
     try:
-        from mini_agent.perception.daily_digest import daily_digest
+        from mini_agent.perception.priority_briefing import priority_briefing
 
         self_agent = http_server.bridge.agent
         cfg = getattr(self_agent, "cfg", None) if self_agent else None
@@ -1448,12 +1453,12 @@ async def get_self_daily_digest(request: Request):
             from mini_agent.storage.paths import AgentPaths
             paths = AgentPaths(cfg.project_root)
 
-        return daily_digest(paths)
+        return priority_briefing(paths)
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_daily_digest')
-        from mini_agent.perception.daily_digest import _empty_digest
-        return _empty_digest()
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_priority_briefing')
+        from mini_agent.perception.priority_briefing import _empty_briefing
+        return _empty_briefing()
 
 
 # ── LLM 调用计数（方向 B.2）─────────────────────────────────────────────────
