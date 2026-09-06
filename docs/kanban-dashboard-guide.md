@@ -346,6 +346,47 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
     "▶️ 全部收起"两个按钮，一键操作整棵树。这是纯前端展示偏好（存在
     `st.session_state`），不落盘、不影响其他人看到的树结构，刷新浏览器
     标签页/切到其它 tab 再切回来仍保留，关闭标签页后重置。
+  - **📊 全局报告 / 📖 产出 Wiki / 📄 节点详情 / 反馈闭环**
+    （`next_doc/goal_tree_visibility_wiki_and_report_plan.md` Stage
+    1-4 / `next_doc/goal_tree_kanban_integration_plan.md` Stage 6）：
+    "🌳 目标树"子页顶部新增两个默认收起的折叠区——
+    - **📊 全局报告**：调用 `GET /v1/goals/tree_report?root_id=...`
+      （`root_id` 取当前树形视图的根），展示节点总数按状态分组的统计
+      （`st.metric` 横排）、五类全局待办清单（待处理分解候选/待确认
+      焦点/待处理调优草案/待确认执行规范/未处理反馈，每条都可点击
+      "→ 标题"直接跳转到对应节点的详情弹窗）、健康告警（卡住的节点/
+      cron 连续跳过异常）、产出速览。这是"整棵树现在有哪些事等我处理"
+      的一次性汇总，不用逐节点点开看。
+    - **📖 产出 Wiki**：顶部"🔄 重建 Wiki"按钮调用
+      `POST /v1/goals/wiki/build?root_id=...` 批量重新生成
+      `.agent/daemon_run_outputs/goals_wiki/<id>/index.md` 静态文件；
+      浏览方式复用下方目标树本身的结构作为导航——点某个节点标题旁的
+      "📖"按钮，通过已有的 `/fs/read` 只读接口读取对应 Wiki 页
+      Markdown 原文并渲染展示，不额外维护一套独立的 wiki 浏览器。
+      Wiki 页是"上一次落盘的静态快照"，节点详情弹窗是"实时聚合的当前
+      状态"，两者内容通常一致，差异只在于 wiki 页可能要等 tidy 阶段
+      自动刷新或手动重建才会跟最新状态同步。
+    - **📄 节点详情**：每个节点标题旁新增一个"📄"按钮，点击弹出
+      `st.dialog` 详情面板（调用 `GET /v1/goals/{id}/page`），展示
+      面包屑、进度（执行阶段/最近执行摘要/最近进展文本）、产出（复用
+      已有的产出目录清单渲染）、子节点导航（点击可直接切换到该子节点
+      的详情，无需关闭弹窗重新在树里找）、反馈历史（`✅`/`⏳` 标记
+      是否已处理）以及一个提交反馈的输入框（调用
+      `POST /v1/goals/{id}/feedback`）。首版反馈输入只做"笼统反馈"，
+      暂不支持在弹窗里选择关联到某条具体待办项。
+    - **反馈闭环状态展示**：反馈条目新增 `status`（`pending`/
+      `addressed`）与可选 `about`（关联的候选/调优草案 id），写反馈时
+      可选传 `about` 把它挂靠到某个具体待办项，对应待办被
+      accept/reject/confirm/apply 后自动标记为 `addressed`；节点详情
+      弹窗与全局报告的"未处理反馈"分组里都能看到这个状态，而不是写进去
+      就没有下文。
+    - 对应 REST 端点：`GET /v1/goals/tree_report`、
+      `GET /v1/goals/{id}/page`、`POST /v1/goals/wiki/build`，
+      `POST /v1/goals/{id}/feedback` body 新增可选 `about` 字段，详见
+      [HTTP API 指南](http-api-guide.md)。CLI 对应命令：`goals report
+      [root_id]`、`goals show <id>`、`goals wiki build [root_id]`、
+      `goals feedback <id> <text> [--about candidate:<cid> |
+      proposal:<pid>]`。
 - **📈 完成率趋势**（`GET /v1/objectives/completion_trend`，
   `next_doc/kanban_perception_gaps_improvement_plan.md` 方向 D.1）：折叠
   区块，展开才拉取。展示每日完成/失败 Objective 数的折线图，以及最近

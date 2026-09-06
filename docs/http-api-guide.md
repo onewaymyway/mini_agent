@@ -899,6 +899,75 @@ GET  /v1/goals/next_steps?node_id=...     查询"焦点行动建议"（可选按
 `next_action_focus_next_step_enabled` 配置或还没生成过一轮推荐时自然返回
 空列表，不是错误。
 
+### /v1/goals/tree_report、/v1/goals/{goal_id}/page、/v1/goals/wiki/build
+— 目标树可视化 / 汇总报告 / 产出 Wiki
+（`goal_tree_visibility_wiki_and_report_plan.md` Stage 1-4）
+
+```
+GET  /v1/goals/tree_report?root_id=...    树级汇总报告（省略 root_id 汇总全局森林）
+GET  /v1/goals/{goal_id}/page             节点详情页（面包屑/进度/产出/子节点/待办/反馈）
+POST /v1/goals/wiki/build?root_id=...     批量生成目标产出 Wiki 静态文件（省略 root_id 遍历全局森林）
+```
+
+三个端点都是**纯只读聚合**（`wiki/build` 例外——它会向磁盘写入一批
+Markdown 文件，但不修改 `GoalBacklog` 状态本身），复用 `cycle_
+diagnostics`/`output_workspace`/`execution_phase` 等已有的只读读取
+函数做分组聚合，不新增判定逻辑。`root_id` 指定但对应节点不存在时三者
+均返回 404。
+
+`GET /v1/goals/tree_report` 返回 `{"tree_report": GoalTreeReport}`：
+
+```json
+{
+  "tree_report": {
+    "root_id": null,
+    "node_count": 12,
+    "by_status": {"active": [{"id": "...", "title": "..."}], "done": [...]},
+    "by_phase": {"explore": [...], "converge": [...]},
+    "stuck_or_alerted": [{"id": "...", "title": "...", "message": "..."}],
+    "cron_unhealthy": [{"id": "...", "title": "...", "consecutive_skip_count": 3}],
+    "pending_decompose_candidates": [{"id": "...", "title": "...", "candidate_id": "...", "parent_id": "...", "parent_title": "..."}],
+    "pending_focus_confirmation": [{"id": "...", "title": "..."}],
+    "pending_tuning_proposals": [{"id": "...", "title": "...", "proposal_id": "..."}],
+    "pending_execution_specs": [{"id": "...", "title": "..."}],
+    "pending_feedback": [{"id": "...", "title": "...", "text": "...", "about": null, "at": 1234567890.0}],
+    "recent_outputs_digest": [{"id": "...", "title": "...", "task_summary": "..."}],
+    "generated_at": 1234567890.0
+  }
+}
+```
+
+各 `pending_*`/`stuck_or_alerted`/`cron_unhealthy`/`recent_outputs_
+digest` 列表条目都通过 `{"id": node.id, "title": node.title, ...}` 展开，
+`id` 字段就是该条目所属节点的 goal_id（没有单独的 `goal_id` key），
+供前端"点击待办跳转到对应节点"时直接使用。
+
+`GET /v1/goals/{goal_id}/page` 返回 `{"page": GoalNodePage}`，字段含
+`path_from_root`（面包屑，根→当前的 `{"id","title"}` 链）、
+`execution_phase_mode`/`recent_cycle_summaries`/`progress_notes_tail`
+（复用 `cycle_diagnostics`）、`output_structure`/`output_readme_text`
+（复用 `output_workspace.scan_output_structure()`/
+`render_output_readme()`）、`children`（`[{"id","title","status",
+"level"}]`，不递归展开孙节点）、`pending_items`（该节点自己的待处理项，
+跟树级报告共用 `collect_pending_items_for_node()`）、`feedback_history`
+（`[{"text","at","status","about"?}]`）。`goal_id` 不存在返回 404。
+
+`POST /v1/goals/wiki/build` 把节点详情页同一份聚合逻辑机械渲染成
+Markdown，写入 `<outputs_root>/goals_wiki/<goal_id>/index.md`（子节点用
+相对链接串成可点击浏览的静态目录），返回 `{"root_id", "rendered_goal_
+ids": [...], "rendered_count": int}`。省略 `root_id` 时额外刷新全局
+入口 `goals_wiki/index.md`。正常情况下 tidy 阶段收敛时会自动刷新单个
+节点的 wiki 页（不递归整棵子树），这个端点用于手动批量重建整棵树，对应
+CLI `/agent goals wiki build [root_id]`。
+
+`POST /v1/goals/{goal_id}/feedback` Body 除已有的 `text` 外，新增可选
+`about`（`"candidate:<candidate_id>"` 或 `"proposal:<proposal_id>"`），
+把这条反馈关联到某个具体待办项，对应待办被 accept/reject/confirm/apply
+后自动标记为 `addressed`（不加 `about` 保持原有"笼统贴在 Goal 上"的
+行为，向后兼容）。
+
+
+
 ### /v1/goals/{goal_id}/execution_spec — Goal 执行规范 REST API
 
 把一个（可能是周期性执行的）Goal 具体化成结构化执行规范：每一轮该产出

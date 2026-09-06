@@ -160,18 +160,28 @@ progress_notes）区分开。
 
 CLI：
 ```
-/agent goals feedback <goal_id_or_objective_id> <text>
+/agent goals feedback <goal_id_or_objective_id> <text> [--about candidate:<cid>|proposal:<pid>]
 /cron feedback <job_id> <text>
 ```
 
 REST：
 ```
-POST /v1/goals/{goal_id}/feedback   Body: {"text": str}
+POST /v1/goals/{goal_id}/feedback   Body: {"text": str, "about"?: str}
 POST /v1/cron/jobs/{job_id}/feedback   Body: {"text": str}
 ```
 
 kanban：Goal 详情卡片、Cron job 卡片各有一个「💬 提意见」折叠面板，可以看历史记录、
-提交新意见。
+提交新意见；「🌳 目标树」子页的节点详情弹窗（`goal_tree_kanban_integration_plan.md`
+Stage 6）也有独立的反馈输入框，见 [看板仪表盘指南](kanban-dashboard-guide.md)。
+
+`about` 是可选参数（`goal_tree_visibility_wiki_and_report_plan.md` Stage
+4 新增），格式为 `"candidate:<candidate_id>"` 或 `"proposal:<proposal_id>"`，
+把这条反馈关联到某个具体的分解候选/调优草案；对应待办被
+accept/reject/confirm/apply 处理后，这条反馈会自动从 `pending` 变成
+`addressed`，在 `/agent goals show <id>`、`/agent goals report`
+（详见 [HTTP API 指南](http-api-guide.md)）以及看板节点详情弹窗里都能
+看到这个状态，不需要用户手动关闭。不传 `about` 时保持原有"笼统贴在
+Goal/CronJob 上"的行为，向后兼容。
 
 ### 写入位置与联动
 

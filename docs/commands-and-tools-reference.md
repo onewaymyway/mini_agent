@@ -469,7 +469,10 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/agent goals abandon <id>` | 标记 Goal/Objective 放弃 |
 | `/agent goals pause <id>` | 暂停 Goal/Objective |
 | `/agent goals progress <id> <notes>` | 更新进展备注 |
-| `/agent goals feedback <id> <text>` | 持久化提意见，永久合入该节点的说明（区别于一次性的 step 补充说明）；详见 [Goal 与 Cron 绑定指南 §7](goal-cron-binding-guide.md#7-用户意见反馈持久化区别于一次性inject_guidance) |
+| `/agent goals feedback <id> <text> [--about candidate:<cid>\|proposal:<pid>]` | 持久化提意见，永久合入该节点的说明（区别于一次性的 step 补充说明）；`--about` 可选，把这条反馈关联到某个具体待办项，对应待办被 accept/reject/confirm/apply 处理后自动标记为 addressed；详见 [Goal 与 Cron 绑定指南 §7](goal-cron-binding-guide.md#7-用户意见反馈持久化区别于一次性inject_guidance) |
+| `/agent goals report [root_id]` | 只读打印树级汇总报告：按状态/执行阶段分组、健康告警、四类待处理事项（分解候选/焦点确认/调优草案/执行规范）+ 未处理反馈、产出速览；省略 `root_id` 汇总全局森林；详见 [HTTP API 指南](http-api-guide.md) |
+| `/agent goals show <id>` | 只读打印单个节点的详情页：面包屑、进度、产出目录扫描、子节点导航、待处理事项、反馈历史；详见 [HTTP API 指南](http-api-guide.md) |
+| `/agent goals wiki build [root_id]` | 手动批量生成目标产出 Wiki 静态文件（`.agent/daemon_run_outputs/goals_wiki/<id>/index.md`），省略 `root_id` 遍历全局森林并刷新根索引；正常情况下 tidy 阶段收敛时会自动刷新单个节点，这个命令用于手动补触发/批量重建 |
 | `/agent goals recur <id> <schedule> [task_template]` | 声明为周期性：绑定一个 cron job，到期时自动为该 Goal 派生并启动一轮新 Objective；详见 [Goal 与 Cron 绑定指南](goal-cron-binding-guide.md) |
 | `/agent goals unrecur <id>` | 停止周期性推进（disable 绑定的 cron job，不删除 Goal/job） |
 | `/agent goals status` | 显示 AutonomousLoop tick 状态（档位/上次 tick/tick 次数） |
