@@ -5195,24 +5195,34 @@ def _render_goal_tree_node(
 ) -> None:
     """[goal_tree_system_plan.md §4.4] 递归渲染树形结构。
 
-    真正的层级缩进：每往下一层用 `st.columns([1, 9])` 包一层，只把内容
-    放进右边那列——这是 Streamlit 里唯一能让"⚙️ 管理"折叠区/按钮这些
-    控件本身（不只是标题文字）跟着缩进的办法（markdown 里的 `&nbsp;`
-    只能缩进它自己那一行文字，管理折叠区仍然贴在最左边，看上去不像
-    树，是用户反馈的原始问题）。固定比例逐层复合，深度越大缩进量越小
-    （约 10%/层），避免叶子层级（objective，depth 可达 4）被挤到几乎
-    看不见内容的地步。
+    [bug fix：📄/📖 甚至 ▶/▼ 展开箭头"有时候点得中有时候点不中"]
+    之前的缩进方案是"每往下一层用 `st.columns([1, 9])` 包一层，只把
+    内容放进右边那列"——这个包裹是跟着递归叠加的：depth=1 的节点被包了
+    1 层，它的子节点（depth=2）在 depth=1 的 content_col 内部又调用一次
+    `st.columns([1,9])`，变成嵌套 2 层，以此类推；树最深 4 层
+    （ultimate→domain→stage→objective），再加上标题行自己那一次
+    `st.columns(...)`（放 ▶/▼、标题、📄、📖），最深的节点点击行实际上
+    嵌套了 5 层 `st.columns`。Streamlit 对深层嵌套 columns 的点击事件
+    定位存在已知的不稳定问题——每次任意按钮触发 `st.rerun()` 全量重跑
+    后，前端重新 diff/挂载这一整套嵌套 DOM 时，偶尔会把点击事件跟错位、
+    对应到旧一轮渲染留下的元素上，导致"看着点在按钮上，实际没有触发
+    对应节点的回调"。这跟你反馈的"不是所有按钮都不行，是同一个按钮
+    有时候行有时候不行"完全吻合——真正嵌套 columns 的稳定性问题，本来
+    就是概率性的，不是每次必现。
+
+    改法：不再按深度递归叠加 `st.columns`，缩进量改成传给
+    `_render_goal_tree_node_body` 的一个参数，由它在**自己那一次、不
+    嵌套任何父级 columns** 的按钮行 `st.columns(...)` 里加一列固定宽度
+    的"缩进占位列"来实现——不管树有多深，按钮行永远只有这一层
+    `st.columns`，彻底不再嵌套。缩进量因此没法再对"⚙️ 管理"折叠区/
+    子节点递归内容本身生效（那些退化成不再跟着深度整体右移，跟旧版
+    比是观感上的取舍），但按钮点击的可靠性优先于这层缩进的视觉效果——
+    改成用标题文字前面的全角空格（`　`）做视觉缩进提示，不产生任何
+    额外的 columns 嵌套。
     """
-    if depth > 0:
-        _spacer, content_col = st.columns([1, 9])
-        with content_col:
-            _render_goal_tree_node_body(
-                client, tree_node, id_to_title, depth, next_step_node_ids, is_focus,
-            )
-    else:
-        _render_goal_tree_node_body(
-            client, tree_node, id_to_title, depth, next_step_node_ids, is_focus,
-        )
+    _render_goal_tree_node_body(
+        client, tree_node, id_to_title, depth, next_step_node_ids, is_focus,
+    )
 
 
 def _render_goal_tree_node_body(
@@ -5237,25 +5247,40 @@ def _render_goal_tree_node_body(
     # 节点] 改成直接在该节点自己的标题行末尾加"⭐"，跟"💡"同样是"贴在
     # 当事节点自己身上"的标记方式，不再需要额外一行说明文字。
     focus_badge = " ⭐" if is_focus else ""
+    # [bug fix，见 `_render_goal_tree_node` 顶部说明] 缩进不再靠嵌套
+    # `st.columns` 实现，改成标题文字前面加全角空格（`　`，跟普通空格
+    # 不同，不会被 HTML/Markdown 折叠掉）——每层 2 个字符，纯文本效果，
+    # 不引入任何新的 columns 嵌套。
+    indent_prefix = "　" * (depth * 2)
+    title_markdown = (
+        indent_prefix
+        + f"{icon} **{node.get('title', '（无标题）')}** &nbsp;`{status_label}`"
+        + f"{focus_badge}{next_step_badge}"
+    )
     # [goal_tree_collapse_plan.md] 只有"有子节点"的节点才需要折叠箭头，
     # 叶子节点（没有子节点的 objective）不显示，避免视觉噪音；箭头状态
-    # 存在 `_gt_collapsed_ids` 里，跟节点标题行同一层缩进（复用外层
-    # `_render_goal_tree_node()` 已经做好的 `st.columns` 缩进包裹，这里
-    # 只需要在缩进列内部再横向切一刀放按钮，不影响缩进本身）。
+    # 存在 `_gt_collapsed_ids` 里。
     children = tree_node.get("children") or []
     collapsed_ids = st.session_state.setdefault("_gt_collapsed_ids", set())
     is_collapsed = bool(children) and node_id in collapsed_ids
-    title_markdown = (
-        f"{icon} **{node.get('title', '（无标题）')}** &nbsp;`{status_label}`"
-        f"{focus_badge}{next_step_badge}"
-    )
+    # [bug fix，见 `_render_goal_tree_node` 顶部说明] 按钮行的
+    # `st.columns(...)` 是这个节点渲染过程中唯一的一次 columns 调用，
+    # 不再嵌套在任何父级/祖先节点的 columns 里——不管 depth 多大，嵌套
+    # 层数恒为 1。缩进靠最前面这一列固定宽度的占位列实现（宽度按 depth
+    # 微调，封顶避免深层节点把标题挤没）。
+    indent_frac = min(0.28, depth * 0.045)
     if children:
-        toggle_col, title_col, detail_col, wiki_col = st.columns([0.06, 0.82, 0.06, 0.06])
+        indent_col, toggle_col, title_col, detail_col, wiki_col = st.columns(
+            [indent_frac, 0.06, 0.82 - indent_frac, 0.06, 0.06]
+        )
+        with indent_col:
+            st.empty()
         with toggle_col:
             if st.button(
                 "▶" if is_collapsed else "▼",
                 key=f"_gt_toggle_{node_id}",
                 help="收起/展开子节点",
+                use_container_width=True,
             ):
                 if is_collapsed:
                     collapsed_ids.discard(node_id)
@@ -5286,7 +5311,11 @@ def _render_goal_tree_node_body(
                 st.session_state["_goal_wiki_view_target"] = node_id
                 st.rerun()
     else:
-        title_col, detail_col, wiki_col = st.columns([0.88, 0.06, 0.06])
+        indent_col, title_col, detail_col, wiki_col = st.columns(
+            [indent_frac, 0.88 - indent_frac, 0.06, 0.06]
+        )
+        with indent_col:
+            st.empty()
         with title_col:
             st.markdown(title_markdown, unsafe_allow_html=True)
         with detail_col:
@@ -5304,7 +5333,7 @@ def _render_goal_tree_node_body(
                 st.session_state["_goal_wiki_view_target"] = node_id
                 st.rerun()
 
-    with st.expander("⚙️ 管理", expanded=False):
+    with st.expander(indent_prefix + "⚙️ 管理", expanded=False):
         st.caption(f"id: `{node_id}`　level: `{level}`")
         if node.get("description"):
             st.caption(node["description"])
