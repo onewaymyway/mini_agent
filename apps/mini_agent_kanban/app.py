@@ -20,7 +20,9 @@ Mini-Agent 看板 (Kanban Dashboard)
 """
 import html
 import json
+import logging
 import time
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -5264,10 +5266,14 @@ def _render_goal_tree_node_body(
             st.markdown(title_markdown, unsafe_allow_html=True)
         with detail_col:
             if st.button("📄", key=f"_gt_detail_btn_{node_id}", help="查看节点详情"):
+                _gt_debug_log(f"click 📄 detail button, node_id={node_id!r} (has-children branch)")
+                st.session_state.pop("_goal_wiki_view_target", None)
                 st.session_state["_goal_tree_detail_target"] = node_id
                 st.rerun()
         with wiki_col:
             if st.button("📖", key=f"_gt_wiki_btn_{node_id}", help="查看产出 Wiki 页"):
+                _gt_debug_log(f"click 📖 wiki button, node_id={node_id!r} (has-children branch)")
+                st.session_state.pop("_goal_tree_detail_target", None)
                 st.session_state["_goal_wiki_view_target"] = node_id
                 st.rerun()
     else:
@@ -5276,10 +5282,14 @@ def _render_goal_tree_node_body(
             st.markdown(title_markdown, unsafe_allow_html=True)
         with detail_col:
             if st.button("📄", key=f"_gt_detail_btn_{node_id}", help="查看节点详情"):
+                _gt_debug_log(f"click 📄 detail button, node_id={node_id!r} (leaf branch)")
+                st.session_state.pop("_goal_wiki_view_target", None)
                 st.session_state["_goal_tree_detail_target"] = node_id
                 st.rerun()
         with wiki_col:
             if st.button("📖", key=f"_gt_wiki_btn_{node_id}", help="查看产出 Wiki 页"):
+                _gt_debug_log(f"click 📖 wiki button, node_id={node_id!r} (leaf branch)")
+                st.session_state.pop("_goal_tree_detail_target", None)
                 st.session_state["_goal_wiki_view_target"] = node_id
                 st.rerun()
 
@@ -5421,6 +5431,47 @@ def _render_goal_tree_node_body(
                 client, child, id_to_title, depth=depth + 1,
                 next_step_node_ids=next_step_node_ids, is_focus=(c_id in focus_ids),
             )
+
+
+_GT_DEBUG_LOGGER: "logging.Logger | None" = None
+
+
+def _gt_debug_log(msg: str) -> None:
+    """[目标树弹窗排查用] 点击 📄/📖 之后"卡一下又什么都没有，得刷新
+    页面"——之前两轮修复（改成弹窗、去掉轮询式全量重跑）都是根据代码
+    静态推断出的假设，用户反馈改完还是复现，说明真正的触发路径还没
+    抓到。这里加一条独立的调试日志线：在"按钮点击→写 session_state→
+    rerun"和"弹窗函数被调用→发起请求→拿到结果/报错"这条链路的每一环
+    都打一行日志，同时写到 `~/.agent/logs/kanban_goal_tree_debug.log`
+    （文件持久化，即使 Streamlit 进程被卡死强杀也能翻出最后几行）和
+    进程 stdout（跑 `streamlit run` 的终端能直接看到）。下次复现时，
+    看日志断在哪一行没往下走，就能定位到底是"按钮没触发 rerun"还是
+    "弹窗函数没被调用"还是"请求本身卡住不返回"还是"拿到结果但渲染
+    时抛了异常"。等定位到真正原因后，这些日志调用可以整体删掉。"""
+    global _GT_DEBUG_LOGGER
+    line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+    print(f"[goal_tree_dialog_debug] {line}", flush=True)
+    if _GT_DEBUG_LOGGER is None:
+        try:
+            import os
+            home_override = os.environ.get("MINI_AGENT_HOME")
+            base = Path(home_override) if home_override else (Path.home() / ".agent")
+            log_path = base / "logs" / "kanban_goal_tree_debug.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            logger = logging.getLogger("mini_agent_kanban._goal_tree_debug")
+            logger.setLevel(logging.DEBUG)
+            logger.propagate = False
+            if not logger.handlers:
+                handler = logging.FileHandler(log_path, encoding="utf-8")
+                handler.setFormatter(logging.Formatter("%(message)s"))
+                logger.addHandler(handler)
+            _GT_DEBUG_LOGGER = logger
+        except Exception:
+            _GT_DEBUG_LOGGER = logging.getLogger("_gt_debug_noop")
+    try:
+        _GT_DEBUG_LOGGER.info(line)
+    except Exception:
+        pass
 
 
 def _async_fetch_or_retry(
@@ -5606,17 +5657,34 @@ def _render_goal_wiki_panel(client: AgentClient, root_id: str | None = None) -> 
 
 
 def _show_goal_wiki_dialog(client: AgentClient, node_id: str) -> None:
-    """[bug fix，见 `_render_goal_wiki_panel` 顶部说明] 点击树节点旁的
+    """[bug fix，见 `_render_goal_wiki_panel` 顶部说明 + 见
+    `_show_goal_node_detail_dialog` 里更完整的解释] 点击树节点旁的
     "📖" 时弹出的 Wiki 正文弹窗——写法跟 `_show_goal_node_detail_dialog`
-    保持一致：每次点击时动态定义 `@st.dialog`，保证不管点击发生在树的
-    哪个位置，弹窗都在屏幕中央弹出，不依赖当前滚动位置/折叠区展开状态。
+    保持一致：`on_dismiss` 回调清理陈旧标记，try/except 兜底把任何
+    异常显式展示出来并写调试日志，而不是让脚本静默中断。
     """
 
-    @st.dialog("📖 产出 Wiki 页", width="large")
-    def _dialog():
-        _render_goal_wiki_content_panel(client, node_id)
+    def _on_dismiss() -> None:
+        _gt_debug_log(f"wiki dialog dismissed (X/Esc/点击外部), node_id={node_id!r}")
+        st.session_state.pop("_goal_wiki_view_target", None)
 
-    _dialog()
+    @st.dialog("📖 产出 Wiki 页", width="large", on_dismiss=_on_dismiss)
+    def _dialog():
+        _gt_debug_log(f"wiki dialog function entered, node_id={node_id!r}")
+        try:
+            _render_goal_wiki_content_panel(client, node_id)
+        except Exception as e:
+            _gt_debug_log(f"wiki dialog EXCEPTION: {e!r}\n{traceback.format_exc()}")
+            st.error("加载 Wiki 页时出错（详情如下，请把这段截图/复制反馈）：")
+            st.exception(e)
+
+    try:
+        _dialog()
+    except Exception as e:
+        _gt_debug_log(f"_show_goal_wiki_dialog call itself raised: {e!r}\n{traceback.format_exc()}")
+        st.session_state.pop("_goal_tree_detail_target", None)
+        st.session_state.pop("_goal_wiki_view_target", None)
+        st.error(f"打开 Wiki 弹窗失败：{e}（已清空弹窗状态，请重新点击）")
 
 
 def _render_goal_wiki_content_panel(client: AgentClient, node_id: str) -> None:
@@ -5675,9 +5743,16 @@ def _dialog_sync_fetch(key: str, fetch_fn, *, loading_label: str = "加载中…
     """
     try:
         with st.spinner(loading_label):
+            _gt_debug_log(f"_dialog_sync_fetch start key={key!r}")
             result = fetch_fn()
+            _gt_debug_log(
+                f"_dialog_sync_fetch done key={key!r} "
+                f"result_type={type(result).__name__} "
+                f"has_error={isinstance(result, dict) and bool(result.get('_error'))}"
+            )
         return result, True
     except Exception as e:
+        _gt_debug_log(f"_dialog_sync_fetch EXCEPTION key={key!r}: {e!r}\n{traceback.format_exc()}")
         return {"_error": str(e)}, True
 
 
@@ -5686,13 +5761,56 @@ def _show_goal_node_detail_dialog(client: AgentClient, goal_id: str) -> None:
     弹窗——每次点击时动态定义 `@st.dialog`，跟既有
     `_show_goal_detail_dialog` 同一种写法。标题不再依赖预先同步拉取
     `goal_node_page`（那样等于在弹窗外又发一次阻塞请求）——固定用
-    "📄 节点详情"，具体标题/面包屑放在弹窗正文异步加载完成后展示。"""
+    "📄 节点详情"，具体标题/面包屑放在弹窗正文异步加载完成后展示。
 
-    @st.dialog("📄 节点详情", width="large")
+    [bug fix：反复"卡一下又消失，得刷新页面"的另一个真实成因]
+    `st.dialog` 默认 `dismissible=True`——用户点右上角"✕"、点弹窗外部
+    区域、或按 Esc 都能关掉弹窗，但这些关闭方式默认（`on_dismiss=
+    "ignore"`）**不会**触发 rerun，也就不会执行到我们自己的"✖️ 关闭"
+    按钮里那行 `st.session_state.pop(...)`——`_goal_tree_detail_target`
+    这个标记会原封不动地留在 session_state 里。下次不管点哪个节点的
+    📄/📖，只要这个陈旧标记还在，重新打开的弹窗要么被这个我们没预料到
+    的旧值"劫持"，要么如果同时还留着另一个未清理的标记
+    （`_goal_wiki_view_target`），这一轮脚本运行里 detail 和 wiki 两个
+    `@st.dialog` 会同时被调用——而 Streamlit 明确规定"同一次脚本运行只
+    能有一个弹窗"，两个都调用会直接抛
+    `StreamlitInvalidLayoutContextError` 中断整个脚本，表现出来就是
+    "点击后卡一下、什么都不显示，只能刷新页面"，且不依赖具体点的是
+    哪一个按钮，很吻合用户反馈的现象。
+
+    这里改成 `on_dismiss=` 传一个回调，不管用户用哪种方式关闭弹窗都会
+    清掉 `_goal_tree_detail_target`；点击树节点旁按钮打开新弹窗时也
+    改成先清空另一个标记（见 `_render_goal_tree_node_body` 的改动），
+    双重保险避免两个标记同时存在。额外包一层 try/except：任何没预料到
+    的异常也会通过 `st.exception()` 直接显示在弹窗里、同时写进
+    `_gt_debug_log`，而不是让脚本静默中断、只留给用户一个"卡住"的
+    观感。
+    """
+
+    def _on_dismiss() -> None:
+        _gt_debug_log(f"detail dialog dismissed (X/Esc/点击外部), goal_id={goal_id!r}")
+        st.session_state.pop("_goal_tree_detail_target", None)
+
+    @st.dialog("📄 节点详情", width="large", on_dismiss=_on_dismiss)
     def _dialog():
-        _render_goal_node_detail_panel(client, goal_id)
+        _gt_debug_log(f"detail dialog function entered, goal_id={goal_id!r}")
+        try:
+            _render_goal_node_detail_panel(client, goal_id)
+        except Exception as e:
+            _gt_debug_log(f"detail dialog EXCEPTION: {e!r}\n{traceback.format_exc()}")
+            st.error("加载节点详情时出错（详情如下，请把这段截图/复制反馈）：")
+            st.exception(e)
 
-    _dialog()
+    try:
+        _dialog()
+    except Exception as e:
+        # 这里额外兜一层：`_assert_no_nested_dialogs` /
+        # "只能有一个弹窗" 这类校验异常发生在 `_dialog()` 调用本身
+        # （弹窗还没打开），不在弹窗正文里，上面那层 try/except 接不住。
+        _gt_debug_log(f"_show_goal_node_detail_dialog call itself raised: {e!r}\n{traceback.format_exc()}")
+        st.session_state.pop("_goal_tree_detail_target", None)
+        st.session_state.pop("_goal_wiki_view_target", None)
+        st.error(f"打开节点详情弹窗失败：{e}（已清空弹窗状态，请重新点击）")
 
 
 def _render_goal_node_detail_panel(client: AgentClient, goal_id: str) -> None:
@@ -5810,6 +5928,32 @@ def _render_goal_tree_view(client: AgentClient) -> None:
 
     root_node_id = (tree.get("node") or {}).get("id")
 
+    # [排查用] 弹窗点击排查专用小面板：不需要开终端翻日志文件，直接在
+    # 页面上就能看到 session_state 里两个弹窗标记的当前值，以及调试
+    # 日志文件最后 40 行——复现问题后展开这里，把截图/文本发出来即可
+    # 定位到底断在哪一步。定位到真正原因、确认修复生效后，这个面板和
+    # 上面 `_gt_debug_log()` 的调用可以整体删掉。
+    with st.expander("🛠️ 弹窗排查面板（临时）", expanded=False):
+        st.caption(
+            f"`_goal_tree_detail_target` = `{st.session_state.get('_goal_tree_detail_target')!r}`　"
+            f"`_goal_wiki_view_target` = `{st.session_state.get('_goal_wiki_view_target')!r}`"
+        )
+        if st.button("🔄 刷新日志", key="_gt_debug_refresh_log"):
+            st.rerun()
+        try:
+            import os
+            home_override = os.environ.get("MINI_AGENT_HOME")
+            base = Path(home_override) if home_override else (Path.home() / ".agent")
+            log_path = base / "logs" / "kanban_goal_tree_debug.log"
+            if log_path.exists():
+                lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                st.code("\n".join(lines[-40:]) or "（日志文件为空）", language="text")
+                st.caption(f"完整日志文件：`{log_path}`")
+            else:
+                st.caption("日志文件还不存在——点一次 📄/📖 按钮后再回来看。")
+        except Exception as e:
+            st.caption(f"读取日志文件失败：{e}")
+
     # [goal_tree_kanban_integration_plan.md Stage 6] 树级汇总报告/产出
     # Wiki 折叠区，挂在树形结构渲染之前，root_id 用当前树的根节点。
     _render_goal_tree_report_panel(client, root_id=root_node_id)
@@ -5828,13 +5972,17 @@ def _render_goal_tree_view(client: AgentClient) -> None:
     # `if detail_target` 就判断为假，弹窗直接被跳过关闭，用户点"重试"
     # 也没有用。
     detail_target = st.session_state.get("_goal_tree_detail_target")
+    wiki_target = st.session_state.get("_goal_wiki_view_target")
+    if detail_target or wiki_target:
+        _gt_debug_log(
+            f"consume flags: detail_target={detail_target!r} wiki_target={wiki_target!r}"
+        )
     if detail_target:
         _show_goal_node_detail_dialog(client, detail_target)
 
     # Wiki 弹窗按跟节点详情弹窗完全相同的方式在这里统一消费，原因同上：
     # 用 `get()` 保留标记直到用户显式点"✖️ 关闭"，避免"🔄 重试"按钮的
     # rerun 把还没关闭的弹窗提前跳过。
-    wiki_target = st.session_state.get("_goal_wiki_view_target")
     if wiki_target:
         _show_goal_wiki_dialog(client, wiki_target)
 
