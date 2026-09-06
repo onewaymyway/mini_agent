@@ -387,6 +387,12 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
       [root_id]`、`goals show <id>`、`goals wiki build [root_id]`、
       `goals feedback <id> <text> [--about candidate:<cid> |
       proposal:<pid>]`。
+    - **加载方式**：📊 全局报告 / 📄 节点详情 / 📖 产出 Wiki 的静态页读取
+      均为**非阻塞异步加载**（提交到后台线程池轮询，不卡住整个页面，
+      加载期间可以正常切 tab/点其它按钮），失败时展示"🔄 重试"按钮，
+      点击后才会发起下一次请求（不自动重试刷屏）；「🔄 重建 Wiki」是
+      有副作用的写操作，同样走异步流程但只在用户点击时才提交，不会
+      每次页面重跑意外重复触发批量重建。
 - **📈 完成率趋势**（`GET /v1/objectives/completion_trend`，
   `next_doc/kanban_perception_gaps_improvement_plan.md` 方向 D.1）：折叠
   区块，展开才拉取。展示每日完成/失败 Objective 数的折线图，以及最近

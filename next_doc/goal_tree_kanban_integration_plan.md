@@ -2,14 +2,24 @@
 
 - **状态**：**已实施**（§4 五步全部完成；批量处理/关联反馈到具体待办项
   等 §6 开放问题仍未做，见文末）。
-  - **修复**：实际使用时树节点数稍多就会在 `📊 全局报告`折叠区报
-    `ReadTimeoutError`（`goal_tree_report`/`goal_node_page`/
-    `build_goal_wiki` 沿用了 `_get`/`_post` 默认的 6s/15s 超时，但这
-    三个端点分别要遍历整棵子树逐节点读磁盘状态、单节点聚合顺带重写
-    `output/README.md`、批量写入一批 Wiki 文件，比普通只读接口慢）。
-    `client.py` 里三个方法已分别调宽到 20s/15s/30s，跟仓库里其它已知
-    较慢的端点（如 `sync_evolution_proposal_merge` 的 30s）用同一套
-    做法。
+  - **修复 1（超时调宽）**：`goal_tree_report`/`goal_node_page`/
+    `build_goal_wiki` 沿用 `_get`/`_post` 默认的 6s/15s 超时，但这三个
+    端点分别要遍历整棵子树逐节点读磁盘状态、单节点聚合顺带重写
+    `output/README.md`、批量写入一批 Wiki 文件，比普通只读接口慢。
+    `client.py` 里三个方法已分别调宽到 20s/15s/30s。
+  - **修复 2（改成异步 + 失败重试）**：光调宽超时只是让阻塞时间变长，
+    请求仍然会让整个 Streamlit 脚本卡住、树够大时依然可能超时。改成
+    跟看板"会话列表"同一套"提交到共享线程池 + 轮询"模式（新增
+    `_async_fetch_or_retry()` 辅助函数，复用 `client.submit_async()`
+    把阻塞的 HTTP 调用丢进后台线程）：请求发起后主线程不阻塞，用户
+    可以正常切 tab/点其它按钮；轮询期间展示"⏳ 加载中…（已等待 Ns）"，
+    失败时不自动重试，展示"🔄 重试"按钮，用户点击后才发起下一次请求。
+    覆盖范围：📊 全局报告（`goal_tree_report`）、📄 节点详情
+    （`goal_node_page`）、📖 产出 Wiki 的静态页读取（`fs_read`）三处
+    走 `_async_fetch_or_retry()`；「🔄 重建 Wiki」按钮
+    （`build_goal_wiki`，有副作用的写操作）走独立的"点击才提交"异步
+    流程（不能像前三者一样"没有 Future 就自动提交"，否则会话一多就
+    意外重复触发批量重建）。
   - `apps/mini_agent_kanban/client.py`：新增 `goal_tree_report()` /
     `goal_node_page()` / `build_goal_wiki()`，`add_goal_feedback()` 补
     可选 `about` 参数（不传时行为不变）。

@@ -5370,6 +5370,58 @@ def _render_goal_tree_node_body(
             )
 
 
+def _async_fetch_or_retry(
+    client: AgentClient, key: str, submit_fn, *, loading_label: str = "加载中…",
+) -> tuple:
+    """[异步化改造：📊 全局报告/📄 节点详情/📖 产出 Wiki 曾经用同步
+    `client.goal_tree_report()` 等阻塞调用，树/子树稍大就在默认超时内
+    读不完，报 `ReadTimeoutError`，且期间整个 Streamlit 脚本卡死无法
+    交互。改成跟 `_fetch_sessions_list_async()` 同一套"提交到共享线程池
+    + 轮询"模式（`client.submit_async()`），请求在后台线程跑，主线程
+    不阻塞，用户可以正常切 tab/点其它按钮；轮询用 `st.rerun()` +
+    `time.sleep()` 短间隔驱动。
+
+    跟会话列表那个版本的关键区别：这里**不做缓存**——报告/详情页/Wiki
+    构建都是"用户主动展开折叠区/点开详情才请求一次"的低频交互，不像
+    会话列表那样每次页面重跑都要展示，不需要"缓存优先、后台静默刷新"
+    这层复杂度。失败时也**不自动重试**（不清空 Future 自动重新提交），
+    只把错误原样返回给调用方，由调用方展示"🔄 重试"按钮，用户点击后
+    才会发起下一次请求——避免网络/后端本身有问题时无限刷屏重试。
+
+    返回 `(result, done)`：
+    - `done=False` 时 `result` 为 `None`，调用方应展示 loading 提示，
+      不渲染其余内容（本函数已经调用过 `st.rerun()`，之后的代码这次
+      渲染不会执行）。
+    - `done=True` 时 `result` 是 `submit_fn()` 的返回值（成功）或
+      `{"_error": str}`（失败——请求异常，或 `AgentClient` 自身按惯例
+      返回的 `_error` 字段），调用方按需处理成功/失败两种情况；无论
+      成功失败，Future 都已从 `session_state` 里清掉，下一次调用本
+      函数（比如用户点了重试按钮后的下一次渲染）会重新提交一次请求。
+    """
+    fut_key = f"_af_fut::{key}"
+    started_key = f"_af_started::{key}"
+    fut = st.session_state.get(fut_key)
+    if fut is None:
+        fut = client.submit_async(submit_fn)
+        st.session_state[fut_key] = fut
+        st.session_state[started_key] = time.time()
+
+    if fut.done():
+        st.session_state.pop(fut_key, None)
+        st.session_state.pop(started_key, None)
+        try:
+            result = fut.result()
+        except Exception as e:
+            result = {"_error": str(e)}
+        return result, True
+
+    elapsed = time.time() - st.session_state.get(started_key, time.time())
+    st.info(f"⏳ {loading_label}…（已等待 {elapsed:.1f}s，页面未卡死，可切换其它 tab）")
+    time.sleep(0.4)
+    st.rerun()
+    return None, False
+
+
 def _render_goal_tree_report_panel(client: AgentClient, root_id: str | None = None) -> None:
     """[goal_tree_kanban_integration_plan.md Stage 6 §3.2] "📊 全局报告"
     折叠区：调用 `GET /goals/tree_report`，把 `GoalTreeReport` 里的分组
@@ -5378,9 +5430,18 @@ def _render_goal_tree_report_panel(client: AgentClient, root_id: str | None = No
     session_state + `st.rerun()` 实现（见 `_render_goal_tree_view` 里的
     消费逻辑）。"""
     with st.expander("📊 全局报告", expanded=False):
-        resp = client.goal_tree_report(root_id) or {}
-        if "_error" in resp:
-            st.warning(f"报告获取失败：{resp['_error']}")
+        report_key = f"gt_report:{root_id or ''}"
+        resp, done = _async_fetch_or_retry(
+            client, report_key, lambda: client.goal_tree_report(root_id),
+            loading_label="报告生成中",
+        )
+        if not done:
+            return
+        if not isinstance(resp, dict) or resp.get("_error"):
+            err = resp.get("_error") if isinstance(resp, dict) else "未知错误"
+            st.warning(f"报告获取失败：{err}")
+            if st.button("🔄 重试", key=f"_gt_report_retry_{root_id or 'root'}"):
+                st.rerun()
             return
         report = resp.get("tree_report") or {}
 
@@ -5443,22 +5504,59 @@ def _render_goal_wiki_panel(client: AgentClient, root_id: str | None = None) -> 
     """[goal_tree_kanban_integration_plan.md Stage 6 §3.4] "📖 产出 Wiki"
     折叠区：复用树形结构本身作为导航（不新增导航逻辑），点某个节点的
     "📖" 按钮时通过 `fs_read` 读取 `goals_wiki/<id>/index.md` 静态文件
-    渲染；顶部"🔄 重建 Wiki"按钮触发批量落盘生成。"""
+    渲染；顶部"🔄 重建 Wiki"按钮触发批量落盘生成。
+
+    重建按钮走独立的"点击才提交"异步流程（跟 `_async_fetch_or_retry`
+    "只要没有 Future 就自动提交"的语义不同——批量重建是有副作用的写
+    操作，不应该在每次渲染时自动发起，只能由用户点击触发）；wiki 页面
+    内容的读取（`fs_read`）复用 `_async_fetch_or_retry`，同样不阻塞
+    主线程，失败时给"🔄 重试"按钮。
+    """
     with st.expander("📖 产出 Wiki", expanded=False):
         st.caption("浏览方式：在下方目标树里点击节点旁的「📖」查看该节点的 Wiki 页（静态快照，"
                     "可能不是最新——需要 tidy 阶段自动刷新或手动重建）。")
+
+        build_fut_key = f"_gt_wiki_build_fut::{root_id or ''}"
         if st.button("🔄 重建 Wiki", key="_gt_wiki_rebuild_btn"):
-            res = client.build_goal_wiki(root_id)
-            if isinstance(res, dict) and res.get("_error"):
-                st.error(f"重建失败：{res['_error']}")
+            st.session_state[build_fut_key] = client.submit_async(client.build_goal_wiki, root_id)
+            st.rerun()
+
+        build_fut = st.session_state.get(build_fut_key)
+        if build_fut is not None:
+            if build_fut.done():
+                st.session_state.pop(build_fut_key, None)
+                try:
+                    res = build_fut.result()
+                except Exception as e:
+                    res = {"_error": str(e)}
+                if isinstance(res, dict) and res.get("_error"):
+                    st.error(f"重建失败：{res['_error']}")
+                    if st.button("🔄 重试", key=f"_gt_wiki_build_retry_{root_id or 'root'}"):
+                        st.session_state[build_fut_key] = client.submit_async(client.build_goal_wiki, root_id)
+                        st.rerun()
+                else:
+                    st.success(f"已刷新 {res.get('rendered_count', 0)} 个节点")
             else:
-                st.success(f"已刷新 {res.get('rendered_count', 0)} 个节点")
+                st.info("⏳ Wiki 构建中…（页面未卡死，可切换其它 tab）")
+                time.sleep(0.4)
+                st.rerun()
 
         view_target = st.session_state.get("_goal_wiki_view_target")
         if view_target:
             wiki_path = f".agent/daemon_run_outputs/goals_wiki/{view_target}/index.md"
-            resp = client.fs_read(wiki_path)
-            content = (resp or {}).get("content") if isinstance(resp, dict) else None
+            resp, done = _async_fetch_or_retry(
+                client, f"gt_wiki_read:{view_target}", lambda: client.fs_read(wiki_path),
+                loading_label="Wiki 页加载中",
+            )
+            if not done:
+                return
+            if not isinstance(resp, dict) or resp.get("_error"):
+                err = resp.get("_error") if isinstance(resp, dict) else "未知错误"
+                st.warning(f"Wiki 页读取失败：{err}")
+                if st.button("🔄 重试", key=f"_gt_wiki_read_retry_{view_target}"):
+                    st.rerun()
+                return
+            content = resp.get("content")
             if content:
                 st.markdown("---")
                 st.markdown(content)
@@ -5468,27 +5566,34 @@ def _render_goal_wiki_panel(client: AgentClient, root_id: str | None = None) -> 
 
 def _show_goal_node_detail_dialog(client: AgentClient, goal_id: str) -> None:
     """[goal_tree_kanban_integration_plan.md Stage 6 §3.3] 节点详情
-    弹窗——每次点击时动态定义 `@st.dialog`，标题按当前节点标题生成，
-    跟既有 `_show_goal_detail_dialog` 同一种写法。"""
-    page_resp = client.goal_node_page(goal_id) or {}
-    page = (page_resp.get("page") or {}) if not page_resp.get("_error") else {}
-    title = f"📄 {page.get('title') or goal_id}"
+    弹窗——每次点击时动态定义 `@st.dialog`，跟既有
+    `_show_goal_detail_dialog` 同一种写法。标题不再依赖预先同步拉取
+    `goal_node_page`（那样等于在弹窗外又发一次阻塞请求）——固定用
+    "📄 节点详情"，具体标题/面包屑放在弹窗正文异步加载完成后展示。"""
 
-    @st.dialog(title, width="large")
+    @st.dialog("📄 节点详情", width="large")
     def _dialog():
-        _render_goal_node_detail_panel(client, goal_id, page_resp)
+        _render_goal_node_detail_panel(client, goal_id)
 
     _dialog()
 
 
-def _render_goal_node_detail_panel(client: AgentClient, goal_id: str, page_resp: dict | None = None) -> None:
+def _render_goal_node_detail_panel(client: AgentClient, goal_id: str) -> None:
     """节点详情面板正文：面包屑/进度/产出/子节点导航/待处理项/反馈历史 +
     反馈输入框。数据来自 `GET /goals/{id}/page`（`GoalNodePage`），首版
     只做"笼统反馈"（不关联具体待办项，见前置文档 Stage 6 §5 开放问题）。
     """
-    resp = page_resp if page_resp is not None else (client.goal_node_page(goal_id) or {})
-    if resp.get("_error"):
-        st.warning(f"详情获取失败：{resp['_error']}")
+    resp, done = _async_fetch_or_retry(
+        client, f"gt_node_page:{goal_id}", lambda: client.goal_node_page(goal_id),
+        loading_label="节点详情加载中",
+    )
+    if not done:
+        return
+    if not isinstance(resp, dict) or resp.get("_error"):
+        err = resp.get("_error") if isinstance(resp, dict) else "未知错误"
+        st.warning(f"详情获取失败：{err}")
+        if st.button("🔄 重试", key=f"_gt_detail_retry_{goal_id}"):
+            st.rerun()
         return
     page = resp.get("page") or {}
     if not page or page.get("found") is False:
