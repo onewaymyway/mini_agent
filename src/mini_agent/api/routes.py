@@ -147,6 +147,12 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/self/initiative_inbox [initiative_systems_unification_
                                        plan.md 阶段一] 三条主动性管线候选
                                        统一收件箱（只读聚合，不新增存储）
+    GET    /v1/self/personal_state   [personal_ai_alignment_upgrade_
+                                       plan.md 阶段二] 用户当前处境物化
+                                       快照（只读聚合，不落盘不追加历史）
+    GET    /v1/self/daily_digest     [personal_ai_alignment_upgrade_
+                                       plan.md 阶段四] 每日简报（今天最
+                                       重要的事/AI已完成/需要你决定/风险）
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
     POST   /v1/goals                 新增 Goal
     PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级/标题/描述
@@ -1414,6 +1420,40 @@ async def get_self_personal_state(request: Request):
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_personal_state')
         from mini_agent.perception.personal_state_snapshot import _empty_snapshot
         return _empty_snapshot()
+
+
+@router.get("/self/daily_digest")
+async def get_self_daily_digest(request: Request):
+    """GET /v1/self/daily_digest — 每日简报只读聚合视图：今天最重要的事
+    / AI 已完成 / 需要你决定 / 风险，四段式合成展示（不提供写操作）。
+    消费阶段二 `personal_state_snapshot()` + 已有的
+    `initiative_inbox_snapshot()` + `goal_backlog.py` 已落盘的 Goal 状态，
+    不新增采集点，不落盘、不追加历史（见
+    `perception/daily_digest.py` 模块 docstring）。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    try:
+        from mini_agent.perception.daily_digest import daily_digest
+
+        self_agent = http_server.bridge.agent
+        cfg = getattr(self_agent, "cfg", None) if self_agent else None
+
+        al = http_server.autonomous_loop
+        paths = getattr(al, "_paths", None) if al is not None else None
+        if paths is None and cfg is not None and getattr(cfg, "project_root", None) is not None:
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(cfg.project_root)
+
+        return daily_digest(paths)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_daily_digest')
+        from mini_agent.perception.daily_digest import _empty_digest
+        return _empty_digest()
 
 
 # ── LLM 调用计数（方向 B.2）─────────────────────────────────────────────────
