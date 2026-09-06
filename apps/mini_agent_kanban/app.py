@@ -5282,6 +5282,7 @@ def _render_goal_tree_node_body(
                 help="收起/展开子节点",
                 use_container_width=True,
             ):
+                _gt_debug_log(f"click ▶/▼ toggle button, node_id={node_id!r}")
                 if is_collapsed:
                     collapsed_ids.discard(node_id)
                 else:
