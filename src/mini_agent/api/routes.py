@@ -1382,6 +1382,40 @@ async def get_self_initiative_inbox(
         return {"generated_at": time.time(), "total": 0, "counts_by_domain": {}, "items": []}
 
 
+# ── Personal State Snapshot（personal_ai_alignment_upgrade_plan.md 阶段二）──
+@router.get("/self/personal_state")
+async def get_self_personal_state(request: Request):
+    """GET /v1/self/personal_state — 用户当前处境的只读物化快照：当前
+    活跃 Goal、进度偏差信号、待处理主动建议数量、Personal Model 中的
+    active 约束摘要。不落盘、不追加历史，每次调用都是从源数据重新计算
+    的结果（"State 而非 Memory"，见
+    `perception/personal_state_snapshot.py` 模块 docstring）。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    try:
+        from mini_agent.perception.personal_state_snapshot import personal_state_snapshot
+
+        self_agent = http_server.bridge.agent
+        cfg = getattr(self_agent, "cfg", None) if self_agent else None
+
+        al = http_server.autonomous_loop
+        paths = getattr(al, "_paths", None) if al is not None else None
+        if paths is None and cfg is not None and getattr(cfg, "project_root", None) is not None:
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(cfg.project_root)
+
+        return personal_state_snapshot(paths)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_personal_state')
+        from mini_agent.perception.personal_state_snapshot import _empty_snapshot
+        return _empty_snapshot()
+
+
 # ── LLM 调用计数（方向 B.2）─────────────────────────────────────────────────
 @router.get("/self/llm_call_stats")
 async def get_self_llm_call_stats(request: Request, days: int = Query(7, ge=1, le=90)):
