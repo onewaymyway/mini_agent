@@ -5486,7 +5486,7 @@ _GT_DEBUG_LOGGER: "logging.Logger | None" = None
 # 值——如果点了 📄/📖 之后连一条 `_gt_debug_log` 都没出现，先来这里核对
 # 这串水印是不是这次改动对应的最新版本，不是的话说明进程根本没重启，
 # 后面所有排查都是在排查一份"已经不存在"的旧代码。
-_GT_DEBUG_BUILD_MARK = "goal_tree_dialog_debug_build_2026-09-06_v2"
+_GT_DEBUG_BUILD_MARK = "goal_tree_dialog_debug_build_2026-09-06_v3"
 print(f"[goal_tree_dialog_debug] app.py loaded, build={_GT_DEBUG_BUILD_MARK}", flush=True)
 
 
@@ -5526,6 +5526,50 @@ def _gt_debug_log(msg: str) -> None:
         _GT_DEBUG_LOGGER.info(line)
     except Exception:
         pass
+
+
+# [排查用：加计数 + 拦截 st.rerun() 定位真正的触发点] 之前的日志只能
+# 证明"确实发生了一次全量 rerun"（`app.py loaded` 这行 print——注意
+# Streamlit 每次 rerun 都会把整个脚本从头到尾重新跑一遍，这行 print
+# 只要有任意一次全量 rerun 就会出现，不能证明是 📄/📖/▶ 这几个按钮的
+# 回调真的执行了），但反馈回来的情况是：点了好几次，`app.py loaded`
+# 每次都出现，可 `click 📄`/`click 📖`/`click ▶/▼` 这三条按钮自己打的
+# 日志一条都没出现——说明这些 rerun 根本不是这一行代码里的按钮触发的，
+# 需要直接从源头上抓到底是谁调用了 `st.rerun()`。
+#
+# 用户建议：①加个计数，方便对齐次数；②想办法拦截 rerun 本身找到调用
+# 位置。这里两个一起做：给每次全量 rerun 编号（存 session_state，因为
+# 模块级的普通变量每次 rerun 都会被重新执行成初始值，存不住），同时
+# 直接 monkeypatch `st.rerun`——不管是这份代码里哪一行、还是它 import
+# 的其它模块（比如某个 `st.fragment(run_every=...)` 内部）调用的
+# `st.rerun()`，都会先经过这个包装函数，把调用点的完整调用栈打出来再
+# 真正执行原始的 `st.rerun()`。`st._gt_debug_rerun_patched` 这个标记
+# 防止重复包装——`streamlit` 包本身是进程级别只 import 一次、多次
+# rerun 之间不会重新执行 `import streamlit as st`，所以只需要在第一次
+# 遇到时打一次补丁，之后每次全量脚本重跑都会复用这个已经打好补丁的
+# `st.rerun`。定位到真正原因后，这段以及上面用来触发它的
+# `_original_st_rerun` 都可以整体删掉。
+if not getattr(st, "_gt_debug_rerun_patched", False):
+    _original_st_rerun = st.rerun
+
+    def _gt_debug_traced_rerun(*args, **kwargs):
+        stack = traceback.extract_stack()[:-1]  # 去掉这个包装函数自己这一帧
+        frames = stack[-10:]  # 只留最近 10 层，太深了看不过来
+        frame_text = "".join(traceback.format_list(frames))
+        scope = kwargs.get("scope", "app" if not args else args[0])
+        _gt_debug_log(
+            f"### st.rerun() CALLED — scope={scope!r} args={args!r} kwargs={kwargs!r} ###\n"
+            f"{frame_text}"
+            f"### st.rerun() call site end ###"
+        )
+        return _original_st_rerun(*args, **kwargs)
+
+    st.rerun = _gt_debug_traced_rerun
+    st._gt_debug_rerun_patched = True
+
+_gt_debug_rerun_count = st.session_state.get("_gt_debug_rerun_count", 0) + 1
+st.session_state["_gt_debug_rerun_count"] = _gt_debug_rerun_count
+_gt_debug_log(f"===== full script run #{_gt_debug_rerun_count} (build={_GT_DEBUG_BUILD_MARK}) =====")
 
 
 def _async_fetch_or_retry(
@@ -6000,6 +6044,7 @@ def _render_goal_tree_view(client: AgentClient) -> None:
             "（不是刷新浏览器标签页，是要杀掉并重开服务端进程）。"
         )
         st.caption(
+            f"当前是第 `{st.session_state.get('_gt_debug_rerun_count', '?')}` 次全量脚本重跑　"
             f"`_goal_tree_detail_target` = `{st.session_state.get('_goal_tree_detail_target')!r}`　"
             f"`_goal_wiki_view_target` = `{st.session_state.get('_goal_wiki_view_target')!r}`"
         )
