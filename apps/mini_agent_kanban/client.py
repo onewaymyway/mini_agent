@@ -787,9 +787,41 @@ class AgentClient:
         实际迁移由下一次真正触发时的 agent 完成。"""
         return self._post(f"/goals/{goal_id}/migrate_legacy")
 
-    def add_goal_feedback(self, goal_id: str, text: str):
-        """[goal_cron_feedback_and_output_policy_plan.md 3.5/3.6] 持久化提意见。"""
-        return self._post(f"/goals/{goal_id}/feedback", {"text": text})
+    def add_goal_feedback(self, goal_id: str, text: str, about: str | None = None):
+        """[goal_cron_feedback_and_output_policy_plan.md 3.5/3.6] 持久化提意见。
+
+        [goal_tree_kanban_integration_plan.md Stage 6] 补上可选 `about`
+        参数——不传时行为与之前完全一致（body 里不出现该 key），传入
+        `"candidate:<cid>"` / `"proposal:<pid>"` 可把这条反馈关联到某个
+        具体待办项，对应待办被 accept/reject/confirm/apply 后自动标记为
+        addressed（见 `goal_tree_visibility_wiki_and_report_plan.md`
+        Stage 4）。"""
+        body = {"text": text}
+        if about:
+            body["about"] = about
+        return self._post(f"/goals/{goal_id}/feedback", body)
+
+    # ── 看板：目标树可视化/汇总报告/产出 Wiki（goal_tree_visibility_wiki_
+    # and_report_plan.md Stage 1-4 / goal_tree_kanban_integration_plan.md
+    # Stage 6）───────────────────────────────────────────────────────────
+    def goal_tree_report(self, root_id: str | None = None):
+        """GET /v1/goals/tree_report?root_id=... — 树级汇总报告：按状态/
+        阶段分组、健康告警、四类待处理事项 + 未处理反馈、产出速览。
+        省略 root_id 汇总全局森林。"""
+        params = {"root_id": root_id} if root_id else None
+        return self._get("/goals/tree_report", params=params)
+
+    def goal_node_page(self, goal_id: str):
+        """GET /v1/goals/{goal_id}/page — 节点详情页：面包屑/进度/产出
+        扫描/子节点导航/待处理事项/反馈历史一次性拼出来。"""
+        return self._get(f"/goals/{goal_id}/page")
+
+    def build_goal_wiki(self, root_id: str | None = None):
+        """POST /v1/goals/wiki/build?root_id=... — 手动触发一次目标产出
+        Wiki 落盘生成（root_id 为 query 参数，不是 body）。省略 root_id
+        时遍历全局森林并刷新根索引。"""
+        params = {"root_id": root_id} if root_id else None
+        return self._post("/goals/wiki/build", params=params)
 
     # ── 看板：Goal 执行规范草稿生成/反馈迭代/确认/查看（goal_execution_spec_
     # generation_plan.md §6.1/§6.3/§6.4）────────────────────────────────────

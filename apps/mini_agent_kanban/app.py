@@ -5195,7 +5195,7 @@ def _render_goal_tree_node_body(
         f"{focus_badge}{next_step_badge}"
     )
     if children:
-        toggle_col, title_col = st.columns([0.06, 0.94])
+        toggle_col, title_col, detail_col, wiki_col = st.columns([0.06, 0.82, 0.06, 0.06])
         with toggle_col:
             if st.button(
                 "▶" if is_collapsed else "▼",
@@ -5209,8 +5209,26 @@ def _render_goal_tree_node_body(
                 st.rerun()
         with title_col:
             st.markdown(title_markdown, unsafe_allow_html=True)
+        with detail_col:
+            if st.button("📄", key=f"_gt_detail_btn_{node_id}", help="查看节点详情"):
+                st.session_state["_goal_tree_detail_target"] = node_id
+                st.rerun()
+        with wiki_col:
+            if st.button("📖", key=f"_gt_wiki_btn_{node_id}", help="查看产出 Wiki 页"):
+                st.session_state["_goal_wiki_view_target"] = node_id
+                st.rerun()
     else:
-        st.markdown(title_markdown, unsafe_allow_html=True)
+        title_col, detail_col, wiki_col = st.columns([0.88, 0.06, 0.06])
+        with title_col:
+            st.markdown(title_markdown, unsafe_allow_html=True)
+        with detail_col:
+            if st.button("📄", key=f"_gt_detail_btn_{node_id}", help="查看节点详情"):
+                st.session_state["_goal_tree_detail_target"] = node_id
+                st.rerun()
+        with wiki_col:
+            if st.button("📖", key=f"_gt_wiki_btn_{node_id}", help="查看产出 Wiki 页"):
+                st.session_state["_goal_wiki_view_target"] = node_id
+                st.rerun()
 
     with st.expander("⚙️ 管理", expanded=False):
         st.caption(f"id: `{node_id}`　level: `{level}`")
@@ -5352,6 +5370,189 @@ def _render_goal_tree_node_body(
             )
 
 
+def _render_goal_tree_report_panel(client: AgentClient, root_id: str | None = None) -> None:
+    """[goal_tree_kanban_integration_plan.md Stage 6 §3.2] "📊 全局报告"
+    折叠区：调用 `GET /goals/tree_report`，把 `GoalTreeReport` 里的分组
+    统计/待办清单/健康告警/产出速览摆出来。纯展示，不新增任何判定逻辑；
+    待办项的"跳转到详情"通过写 `_goal_tree_detail_target` 到
+    session_state + `st.rerun()` 实现（见 `_render_goal_tree_view` 里的
+    消费逻辑）。"""
+    with st.expander("📊 全局报告", expanded=False):
+        resp = client.goal_tree_report(root_id) or {}
+        if "_error" in resp:
+            st.warning(f"报告获取失败：{resp['_error']}")
+            return
+        report = resp.get("tree_report") or {}
+
+        def _jump_button(item: dict, label_prefix: str = "→") -> None:
+            gid = item.get("id")
+            title = item.get("title", "")
+            btn_key = f"_gt_report_jump_{gid}_{item.get('candidate_id') or item.get('proposal_id') or item.get('at') or ''}"
+            if st.button(f"{label_prefix} {title}", key=btn_key):
+                st.session_state["_goal_tree_detail_target"] = gid
+                st.rerun()
+
+        by_status = report.get("by_status") or {}
+        st.caption(f"共 {report.get('node_count', 0)} 个节点")
+        if by_status:
+            cols = st.columns(min(len(by_status), 6) or 1)
+            for i, (status, items) in enumerate(by_status.items()):
+                with cols[i % len(cols)]:
+                    st.metric(status, len(items))
+
+        pending_groups = [
+            ("🪄 待处理分解候选", report.get("pending_decompose_candidates") or []),
+            ("📌 待确认焦点", report.get("pending_focus_confirmation") or []),
+            ("🎛️ 待处理调优草案", report.get("pending_tuning_proposals") or []),
+            ("📋 待确认执行规范", report.get("pending_execution_specs") or []),
+            ("💬 未处理反馈", report.get("pending_feedback") or []),
+        ]
+        any_pending = any(items for _, items in pending_groups)
+        if any_pending:
+            st.markdown("**待办清单**")
+            for label, items in pending_groups:
+                if not items:
+                    continue
+                st.caption(f"{label}（{len(items)}）")
+                for item in items:
+                    _jump_button(item)
+        else:
+            st.caption("暂无待办事项。")
+
+        stuck = report.get("stuck_or_alerted") or []
+        cron_bad = report.get("cron_unhealthy") or []
+        if stuck or cron_bad:
+            st.markdown("**健康告警**")
+            for item in stuck:
+                st.warning(f"⚠️ {item.get('title', '')}：{item.get('message', '')}")
+            for item in cron_bad:
+                st.warning(f"⚠️ {item.get('title', '')}：cron 连续跳过 {item.get('consecutive_skip_count', '?')} 次")
+
+        digest = report.get("recent_outputs_digest") or []
+        if digest:
+            st.markdown("**产出速览**")
+            for item in digest:
+                st.caption(f"`{item.get('title', '')}`：{item.get('task_summary', '')}")
+
+        llm_summary = report.get("llm_summary")
+        if llm_summary:
+            st.info(llm_summary)
+
+
+def _render_goal_wiki_panel(client: AgentClient, root_id: str | None = None) -> None:
+    """[goal_tree_kanban_integration_plan.md Stage 6 §3.4] "📖 产出 Wiki"
+    折叠区：复用树形结构本身作为导航（不新增导航逻辑），点某个节点的
+    "📖" 按钮时通过 `fs_read` 读取 `goals_wiki/<id>/index.md` 静态文件
+    渲染；顶部"🔄 重建 Wiki"按钮触发批量落盘生成。"""
+    with st.expander("📖 产出 Wiki", expanded=False):
+        st.caption("浏览方式：在下方目标树里点击节点旁的「📖」查看该节点的 Wiki 页（静态快照，"
+                    "可能不是最新——需要 tidy 阶段自动刷新或手动重建）。")
+        if st.button("🔄 重建 Wiki", key="_gt_wiki_rebuild_btn"):
+            res = client.build_goal_wiki(root_id)
+            if isinstance(res, dict) and res.get("_error"):
+                st.error(f"重建失败：{res['_error']}")
+            else:
+                st.success(f"已刷新 {res.get('rendered_count', 0)} 个节点")
+
+        view_target = st.session_state.get("_goal_wiki_view_target")
+        if view_target:
+            wiki_path = f".agent/daemon_run_outputs/goals_wiki/{view_target}/index.md"
+            resp = client.fs_read(wiki_path)
+            content = (resp or {}).get("content") if isinstance(resp, dict) else None
+            if content:
+                st.markdown("---")
+                st.markdown(content)
+            else:
+                st.info("该节点尚未生成 Wiki 页，点击上方「重建 Wiki」生成。")
+
+
+def _show_goal_node_detail_dialog(client: AgentClient, goal_id: str) -> None:
+    """[goal_tree_kanban_integration_plan.md Stage 6 §3.3] 节点详情
+    弹窗——每次点击时动态定义 `@st.dialog`，标题按当前节点标题生成，
+    跟既有 `_show_goal_detail_dialog` 同一种写法。"""
+    page_resp = client.goal_node_page(goal_id) or {}
+    page = (page_resp.get("page") or {}) if not page_resp.get("_error") else {}
+    title = f"📄 {page.get('title') or goal_id}"
+
+    @st.dialog(title, width="large")
+    def _dialog():
+        _render_goal_node_detail_panel(client, goal_id, page_resp)
+
+    _dialog()
+
+
+def _render_goal_node_detail_panel(client: AgentClient, goal_id: str, page_resp: dict | None = None) -> None:
+    """节点详情面板正文：面包屑/进度/产出/子节点导航/待处理项/反馈历史 +
+    反馈输入框。数据来自 `GET /goals/{id}/page`（`GoalNodePage`），首版
+    只做"笼统反馈"（不关联具体待办项，见前置文档 Stage 6 §5 开放问题）。
+    """
+    resp = page_resp if page_resp is not None else (client.goal_node_page(goal_id) or {})
+    if resp.get("_error"):
+        st.warning(f"详情获取失败：{resp['_error']}")
+        return
+    page = resp.get("page") or {}
+    if not page or page.get("found") is False:
+        st.info(page.get("error") or "该节点不存在。")
+        return
+
+    breadcrumb = " > ".join(item.get("title", "") for item in (page.get("path_from_root") or []))
+    if breadcrumb:
+        st.caption(breadcrumb)
+    st.caption(f"状态：`{page.get('status', '')}`　执行阶段：`{page.get('execution_phase_mode', '')}`")
+
+    notes_tail = page.get("progress_notes_tail")
+    if notes_tail:
+        with st.expander("📈 最近进展", expanded=True):
+            st.text(notes_tail)
+    summaries = page.get("recent_cycle_summaries") or []
+    if summaries:
+        with st.expander(f"🔁 最近执行摘要（{len(summaries)}）", expanded=False):
+            for s in summaries:
+                st.caption(f"{s.get('at', '')}：{s.get('summary', s)}" if isinstance(s, dict) else str(s))
+
+    readme_text = page.get("output_readme_text")
+    if readme_text:
+        with st.expander("📂 产出", expanded=False):
+            st.markdown(readme_text)
+    _render_goal_output_manifests(client, goal_id, key_prefix="_gt_detail_")
+
+    children = page.get("children") or []
+    if children:
+        st.markdown("**子节点**")
+        for child in children:
+            c_id = child.get("id")
+            if st.button(
+                f"查看 {child.get('title', '')}（{child.get('status', '')}）",
+                key=f"_gt_detail_child_{goal_id}_{c_id}",
+            ):
+                st.session_state["_goal_tree_detail_target"] = c_id
+                st.rerun()
+
+    feedback_history = page.get("feedback_history") or []
+    st.markdown("**反馈历史**")
+    if feedback_history:
+        for fb in feedback_history:
+            status = fb.get("status", "pending")
+            icon = "✅" if status == "addressed" else "⏳"
+            about = f"（关联：{fb.get('about')}）" if fb.get("about") else ""
+            st.caption(f"{icon} `{fb.get('at', '')}` {fb.get('text', '')}{about}")
+    else:
+        st.caption("暂无反馈。")
+
+    fb_key = f"_gt_detail_fb_{goal_id}"
+    fb_text = st.text_area("提交反馈", key=f"{fb_key}_text", height=60)
+    if st.button("提交", key=f"{fb_key}_submit"):
+        if not fb_text.strip():
+            st.error("反馈内容不能为空")
+        else:
+            res = client.add_goal_feedback(goal_id, fb_text.strip())
+            if isinstance(res, dict) and res.get("_error"):
+                st.error(f"提交失败：{res['_error']}")
+            else:
+                st.toast("✅ 反馈已提交", icon="✅")
+                st.rerun()
+
+
 def _render_goal_tree_view(client: AgentClient) -> None:
     """[goal_tree_system_plan.md §4.4/阶段四] Streamlit"🌳 目标树"子页：
     从根节点开始的完整层级 + 候选采纳/忽略 + 手动管理（新建/编辑/pin），
@@ -5374,6 +5575,21 @@ def _render_goal_tree_view(client: AgentClient) -> None:
                 else:
                     st.rerun()
         return
+
+    root_node_id = (tree.get("node") or {}).get("id")
+
+    # [goal_tree_kanban_integration_plan.md Stage 6] 树级汇总报告/产出
+    # Wiki 折叠区，挂在树形结构渲染之前，root_id 用当前树的根节点。
+    _render_goal_tree_report_panel(client, root_id=root_node_id)
+    _render_goal_wiki_panel(client, root_id=root_node_id)
+
+    # [goal_tree_kanban_integration_plan.md Stage 6 §3.5] 全局报告里
+    # 点击某条待办的"跳转到详情"——把目标 goal_id 写进
+    # `_goal_tree_detail_target` 后在这里统一消费，直接弹出对应节点的
+    # 详情面板，而不用要求用户先在树里手动找到这个节点。
+    detail_target = st.session_state.pop("_goal_tree_detail_target", None)
+    if detail_target:
+        _show_goal_node_detail_dialog(client, detail_target)
 
     id_to_title: dict = {}
     _goal_tree_flatten_titles(tree, id_to_title)

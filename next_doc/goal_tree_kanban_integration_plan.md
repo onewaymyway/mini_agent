@@ -1,6 +1,31 @@
 # 目标树看板集成方案（Stage 6：树级报告 / 节点详情 / Wiki 浏览 / 反馈闭环接入看板）
 
-- **状态**：设计中，未实施。
+- **状态**：**已实施**（§4 五步全部完成；批量处理/关联反馈到具体待办项
+  等 §6 开放问题仍未做，见文末）。
+  - `apps/mini_agent_kanban/client.py`：新增 `goal_tree_report()` /
+    `goal_node_page()` / `build_goal_wiki()`，`add_goal_feedback()` 补
+    可选 `about` 参数（不传时行为不变）。
+  - `apps/mini_agent_kanban/app.py`：新增 `_render_goal_tree_report_panel()`
+    （📊 全局报告折叠区）、`_render_goal_wiki_panel()`（📖 产出 Wiki 折叠区，
+    复用 `fs_read` 读取 `goals_wiki/<id>/index.md`）、
+    `_show_goal_node_detail_dialog()` / `_render_goal_node_detail_panel()`
+    （📄 节点详情弹窗，`st.dialog` 写法对齐既有 `_show_goal_detail_dialog`）；
+    `_render_goal_tree_node_body()` 每个节点标题旁加「📄」「📖」两个按钮；
+    `_render_goal_tree_view()` 顶部消费 `_goal_tree_detail_target`
+    session_state 实现"点击待办跳转到对应节点详情"。
+  - 回归：`tests/test_kanban_client_goal_tree_extras.py`（7 个用例），
+    覆盖 `client.py` 四个方法的请求路径/参数，重点验证 `root_id`/`about`
+    省略时不出现在请求里（向后兼容）。
+  - `st.dialog` 版本依赖：核实 `apps/mini_agent_kanban/requirements.txt`
+    已锁定 `streamlit>=1.39`（高于 `st.dialog` 所需的 1.31+），且
+    `app.py` 里已有 `_show_goal_detail_dialog` 等既有用法，本次直接
+    复用同一写法，无需改动依赖版本或降级为 `st.expander`（§6 开放问题
+    "`st.dialog` 的版本依赖"已排除）。
+  - 待办条目 `goal_id` 字段：核实 `goal_tree_report.py` 里每个
+    `pending_*` 列表条目都通过 `{**ref, ...}` 展开了 `ref = {"id":
+    node.id, "title": node.title}`，字段名是 `id` 而非 `goal_id`，跳转
+    交互直接用 `item["id"]`（§6 开放问题"待办条目是否携带 goal_id
+    字段"已排除，无需改动后端）。
 - **前置文档**：`next_doc/goal_tree_visibility_wiki_and_report_plan.md`
   （本文档是它 §6 开放问题"看板集成延后"的落地方案，Stage 编号紧接
   该文档的 Stage 1-4，记为 **Stage 6**——避免跟该文档自己的 Stage 5
@@ -249,15 +274,9 @@ if st.button(f"→ {item['title']}", key=f"jump_{item['id']}"):
 
 ## 6. 开放问题
 
-- **`st.dialog` 的版本依赖**：需要实施前确认当前 `requirements.txt`
-  锁定的 Streamlit 版本是否支持；如果看板已经在别处用过 `st.dialog`
-  可以直接对齐写法，否则要么升级最低版本要求，要么改用同位置展开的
-  `st.expander` 作为详情面板的呈现方式（牺牲"弹窗"体验，换取不动
-  依赖版本）。
-- **待办条目是否携带 `goal_id` 字段**：§3.5 的跳转交互依赖这一点，
-  需要实施时先读一遍 `goal_tree_report.py` 里几个 `pending_*` 列表的
-  组装代码确认，如果缺失，是本方案里唯一可能需要回头改一行后端代码
-  的地方（补充字段，不改变现有语义）。
+- ~~**`st.dialog` 的版本依赖**~~：已核实排除，见文首实施记录。
+- ~~**待办条目是否携带 `goal_id` 字段**~~：已核实排除（字段名是
+  `id`），见文首实施记录。
 - **反馈"关联到具体待办项"的下拉选择未纳入 Stage 6 首个版本**：
   §3.3 第 5 点提到，首版详情面板的反馈输入只做"笼统反馈"（不传
   `about`），因为要在 UI 上把"当前节点有哪些未处理待办项"列出来让

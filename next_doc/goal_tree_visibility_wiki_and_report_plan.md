@@ -364,13 +364,11 @@ class GoalTreeReport:
 
 ## 6. 开放问题
 
-- **看板集成延后到 Stage 1+2+3+4 一起做**：§3.1 设想的"📊 全局报告"折叠区、
-  节点"详情面板"、wiki 静态文件预览、反馈状态标记都没有随各自 Stage 一起
-  做（`apps/mini_agent_kanban/app.py` 单文件 8000+ 行，改动面比后端聚合
-  函数本身大得多，且没有独立回归覆盖），CLI/REST 已经可用（`goals
-  report`/`goals show`/`goals wiki build`/`goals feedback --about` +
-  对应 REST 端点）。四者都要改同一处"目标树子页"，合并到一次看板改造里
-  做，避免分次改互相冲突。
+- **看板集成**：✅ 已实施，落地方案见
+  `next_doc/goal_tree_kanban_integration_plan.md`（Stage 6）——"📊 全局
+  报告"折叠区、节点"📄 详情"弹窗、"📖 产出 Wiki"浏览、反馈状态展示均已
+  接入 `apps/mini_agent_kanban/app.py` 的"🌳 目标树"子页；"关联反馈到
+  具体待办项"的下拉选择留给该文档设想的 Stage 7，未纳入本次范围。
 
 - **Stage 3 的落盘量级**：树很大时 `goals_wiki/` 目录文件数会随节点数
   线性增长，是否需要限制深度或提供"只生成当前 focus 子树"的窄化选项，
