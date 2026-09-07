@@ -5194,6 +5194,61 @@ def _render_goal_tree_research_section(client: AgentClient, node_id: str) -> Non
             st.info(reason)
 
 
+# [层级越深、按钮/标题的"列宽"越来越窄] `_render_goal_tree_node()` 每往下一层
+# 都会用 `st.columns([1, 9])` 包一层缩进，只把内容放进右边 9 份那列。这意味着
+# 深度为 depth 的节点，其"按钮行"所在容器的实际可用宽度相对于最外层，已经
+# 衰减为 `0.9 ** depth`（10 层就只剩不到 35%）。
+#
+# `▶/▼`/`📄`/`📖` 这几个图标按钮本身没有加 `use_container_width=True`，用的是
+# Streamlit 按钮"内容自适应"的自然尺寸——这解决了"按钮被列宽撑满/压扁"的
+# 问题，但按钮所在列（`st.columns([...])` 里对应的那一份）如果本身的**像素
+# 宽度**小于按钮的自然尺寸，浏览器仍然会把这一列压得比按钮还窄，视觉上按钮
+# 之间的间距、按钮与标题的对齐都会跟着变形（本质上还是"列宽 -> 按钮观感"
+# 这条链路没有彻底切断，只是从"整体缩放"变成了"列窄导致换行/挤压"）。
+#
+# 这里用 `_gt_button_col_weights()` 按 depth 动态放大按钮列在当次
+# `st.columns([...])` 调用里所占的**比例权重**，抵消掉外层缩进带来的宽度
+# 衰减，使得按钮列的**绝对像素宽度**在任意深度下都跟顶层（depth=0）保持一致；
+# 多出来的权重全部从标题列身上"扣"，标题本来就是需要随缩进逐层变窄的内容，
+# 这样改不会引入新的观感问题。
+def _gt_button_col_weights(depth: int, has_toggle: bool) -> list[float]:
+    """按当前节点的嵌套深度，计算"按钮行" `st.columns([...])` 应该传入的权重，
+    保证 `▶/▼`/`📄`/`📖` 这几个图标按钮在任意深度下的绝对像素宽度一致。
+
+    背景：`_render_goal_tree_node()` 每往下一层都会用 `st.columns([1, 9])`
+    包一层缩进，只把内容放进右边 9 份那列，所以深度为 `depth` 的节点，其
+    "按钮行"所在容器的实际可用宽度相对于最外层已衰减为 `0.9 ** depth`。
+    如果按钮列在这里仍然用固定比例（如 0.06），换算成绝对像素宽度就会
+    跟着这个衰减因子一起越缩越小。
+
+    做法：把按钮列（`toggle`/`detail`/`wiki`）的权重整体乘以补偿系数
+    `scale = (10/9) ** depth`（即 `0.9 ** depth` 的倒数），抵消掉外层缩进
+    带来的宽度衰减；标题列的权重保持不变——多出来的比例全部从标题列身上
+    "扣"，因为标题本身就是需要随缩进逐层变窄的内容，缩窄不影响可用性
+    （文字会自动换行），而按钮必须保持可点击的一致大小。
+
+    Args:
+        depth: 当前节点的嵌套深度（根节点为 0）。
+        has_toggle: 该节点是否有子节点、需要渲染"▶/▼"折叠按钮（决定返回
+            3 个权重还是 4 个权重，跟调用侧 `st.columns([...])` 的列数对应）。
+
+    Returns:
+        - `has_toggle=True`：`[toggle_w, title_w, detail_w, wiki_w]`
+        - `has_toggle=False`：`[title_w, detail_w, wiki_w]`（没有折叠箭头列）
+    """
+    # 顶层（depth=0）时的基准比例：跟改动前保持完全一致，保证 depth=0 的
+    # 观感不受这次改动影响。
+    _BASE_BUTTON = 0.06
+    _BASE_TITLE_WITH_TOGGLE = 0.82
+    _BASE_TITLE_LEAF = 0.88
+
+    scale = (10.0 / 9.0) ** max(depth, 0)
+    button_w = _BASE_BUTTON * scale
+    if has_toggle:
+        return [button_w, _BASE_TITLE_WITH_TOGGLE, button_w, button_w]
+    return [_BASE_TITLE_LEAF, button_w, button_w]
+
+
 def _render_goal_tree_node(
     client: AgentClient, tree_node: dict, id_to_title: dict, depth: int = 0,
     next_step_node_ids: set | None = None, is_focus: bool = False,
@@ -5273,7 +5328,10 @@ def _render_goal_tree_node_body(
     # 列宽（会随深度嵌套逐层收窄）一起缩放，保证任意深度下按钮大小一致
     # （见 `_render_goal_tree_node` 顶部说明）。
     if children:
-        toggle_col, title_col, detail_col, wiki_col = st.columns([0.06, 0.82, 0.06, 0.06])
+        _toggle_w, _title_w, _detail_w, _wiki_w = _gt_button_col_weights(depth, has_toggle=True)
+        toggle_col, title_col, detail_col, wiki_col = st.columns(
+            [_toggle_w, _title_w, _detail_w, _wiki_w]
+        )
         with toggle_col:
             if st.button(
                 "▶" if is_collapsed else "▼",
@@ -5301,7 +5359,8 @@ def _render_goal_tree_node_body(
                 st.session_state["_goal_wiki_view_target"] = node_id
                 st.rerun()
     else:
-        title_col, detail_col, wiki_col = st.columns([0.88, 0.06, 0.06])
+        _title_w, _detail_w, _wiki_w = _gt_button_col_weights(depth, has_toggle=False)
+        title_col, detail_col, wiki_col = st.columns([_title_w, _detail_w, _wiki_w])
         with title_col:
             st.markdown(title_markdown, unsafe_allow_html=True)
         with detail_col:
