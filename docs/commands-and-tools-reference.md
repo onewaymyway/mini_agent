@@ -230,6 +230,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `skill-generator` | 创建符合 mini_agent 规范的新 SKILL.md 技能文件 |
 | `iching_oracle` | 易经智慧顾问，提供人生决策指导 |
 | `comic-4panel` | 四格漫画全流程生成：主题构思 → 分镜脚本 → 一次性生成完整漫画图；详见 [四格漫画生成指南](comic-4panel-guide.md) |
+| `mv-generator` | MV（歌词同步视频）全流程生成：ASR识别 → 歌词对齐 → 场景规划 → 定妆图/分场景视频生成 → 拼接烧字幕；详见 [MV生成指南](mv-generator-guide.md) |
 | `git-context` | 分析当前工作目录 Git 仓库状态（commit 历史、变更文件、分支、diff） |
 | `python-expert` | Python 编码最佳实践助手 |
 | `reminder-generator` | 从当前对话提取可复用经验并生成 reminder 文件；详见 [Reminder 系统指南](reminder-system-guide.md) |

@@ -260,11 +260,12 @@ system prompt 构建顺序：
 | `skill-generator` | 创建新 SKILL.md 技能文件 |
 | `iching_oracle` | 易经智慧顾问 |
 | `comic-4panel` | 四格漫画全流程生成（主题构思→分镜脚本→一次性生成完整漫画图） |
+| `mv-generator` | MV（歌词同步视频）全流程生成（ASR识别→歌词对齐→场景规划→素材/视频生成→拼接烧字幕） |
 | `git-context` | 分析当前工作目录 Git 仓库状态 |
 | `python-expert` | Python 编码最佳实践助手 |
 | `reminder-generator` | 从对话提取可复用经验，生成 reminder 文件 |
 
-图片相关技能详见 [图片技能使用指南](image-skills-guide.md)，四格漫画详见 [四格漫画生成指南](comic-4panel-guide.md)。
+图片相关技能详见 [图片技能使用指南](image-skills-guide.md)，四格漫画详见 [四格漫画生成指南](comic-4panel-guide.md)，MV生成详见 [MV生成指南](mv-generator-guide.md)。
 
 ### 3.10 并发编排（orchestrator/）
 
