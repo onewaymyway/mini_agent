@@ -1,0 +1,9 @@
+根据以下描述生成图片，用于测试 gen_image_with_text skill 新增的档位式 size + ratio 参数（Agnes Image 2.5 Flash）：
+
+一座悬崖上的巨大奇幻港口城市，数百艘小船停靠在层叠的石桥之间，窗户透出温暖灯光，远处群山连绵，多云的日落天空，电影级奇幻写实风格，广角构图，丰富的建筑细节，高视觉密度
+
+要求：
+- 使用档位式 size：2K
+- 宽高比 ratio：16:9（用于验证输出尺寸应为 2624x1472）
+
+保存到 test_result/image_from_skill_2/fantasy_harbor_2k_16x9.png

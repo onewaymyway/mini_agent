@@ -1,0 +1,9 @@
+根据以下描述生成图片，用于测试 gen_image_with_text skill 的 base64 输出格式（--format b64_json）：
+
+一只戴着宇航头盔的橘猫漂浮在太空舱内，舷窗外是地球，柔和的舱内灯光，写实渲染
+
+要求：
+- --format 使用 b64_json（不要用默认的 url）
+- 生成后仍需保存到本地文件（确认 b64_json 分支下 save_path 也能正确落盘）
+
+保存到 test_result/image_from_skill_2/cat_astronaut_b64.png

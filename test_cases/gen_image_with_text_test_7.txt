@@ -1,0 +1,10 @@
+根据以下要求生成图片，用于测试 gen_image_with_text skill 的 prompt_file 输入方式与档位式 size + ratio 组合使用：
+
+prompt 文件在：
+test_cases/inputs/gen_image_prompt.txt
+
+要求：
+- 使用 --prompt-file 读取 prompt，不要把文件内容复制粘贴成命令行参数
+- size 使用 3K，ratio 使用 21:9（用于验证超宽画幅输出）
+
+保存到 test_result/image_from_skill_2/gen_image_prompt_3k_21x9.png

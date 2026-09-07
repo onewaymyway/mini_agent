@@ -1,0 +1,17 @@
+根据以下要求做多图合成，用于测试 gen_image_with_text skill 新增的多图合成能力（image 参数支持传入图片列表）：
+
+参考图 1（主要角色）：test_cases/inputs/character-1.png
+参考图 2（产品参考）：test_cases/inputs/character-2.png
+
+如果上述参考图片不存在，请先各自用 gen_image_with_text 生成一张再用于合成：
+- 参考图 1：一位银发精灵战士，身穿轻甲，站姿，白色背景，全身像，high quality character art
+- 参考图 2：一把发光的符文长剑，悬浮，白色背景，high quality item art
+
+合成描述：
+将第一张图作为主要角色，第二张图作为其手持的武器参考，生成一张电影级奇幻战斗海报，角色单手持剑摆出战斗姿势，保留角色身份特征，使用戏剧性侧光和干净的构图
+
+要求：
+- 通过重复传 --image-path（或 edit_image 的 image_url 传列表）把两张参考图一起传给同一次请求，不要分两次单独编辑
+- size 使用 2K，ratio 使用 3:4
+
+保存到 test_result/image_from_skill_2/fantasy_battle_poster.png

@@ -1,0 +1,14 @@
+根据以下要求编辑图片，用于测试 gen_image_with_text skill 的图生图 + ratio 参数组合（Agnes Image 2.5 Flash 对构图保留做了专门优化）：
+
+输入图片：test_cases/inputs/keyframe_first.png
+如果该图片不存在，请先用 gen_image_with_text 生成一张再编辑：
+一条白天的城市街道，晴天，行人和商铺，写实摄影风格
+
+编辑要求：
+将白天街道场景改为电影级赛博朋克夜景，添加霓虹招牌和湿滑路面倒影，同时保留原始街道布局、相机角度和主要建筑形状
+
+要求：
+- size 使用 2K，ratio 使用 16:9
+- 结果需要体现"构图保留"——跟输入图相比，建筑轮廓、镜头角度应该基本一致，只有风格/光照/天气变化
+
+保存到 test_result/image_from_skill_2/cyberpunk_street_night.png
