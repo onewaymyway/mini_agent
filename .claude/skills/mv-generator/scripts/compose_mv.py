@@ -24,6 +24,11 @@ import tempfile
 from pathlib import Path
 from typing import List
 
+
+def _win_cmd(args: List[str]) -> str:
+    """Windows 下生成正确的命令行字符串，处理反斜杠转义。"""
+    return subprocess.list2cmdline(args)
+
 # 复用 align_lyrics.py 里的 to_srt()，避免重复实现 SRT 时间码格式化逻辑
 sys.path.insert(0, str(Path(__file__).parent))
 from align_lyrics import to_srt  # noqa: E402
@@ -94,15 +99,53 @@ def concat_clips(clips: List[Path], target_size: str, target_fps: int, workdir: 
 
 def burn_subtitles(video_path: Path, srt_path: Path, workdir: Path,
                     font_size: int = 28, font_name: str = "Microsoft YaHei") -> Path:
-    """把 .srt 字幕烧录进画面（hardsub）。"""
+    """把歌词字幕烧录进画面（hardsub）。
+
+    使用 drawtext 滤镜按时间戳逐条添加字幕，避免 subtitles filter
+    在 Windows 下对路径冒号的解析问题。
+    """
+    import re
+    # 解析SRT文件内容提取时间戳和字幕文本
+    srt_text = srt_path.read_text(encoding="utf-8")
+    # SRT格式: 序号\nHH:MM:SS,mmm --> HH:MM:SS,mmm\n文本
+    pattern = r'(\d+)\s+(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})\s*\n([\s\S]*?)(?=\n\s*\d+\s*\n|\Z)'
+    matches = re.findall(pattern, srt_text, re.MULTILINE)
+    lines = []
+    def time_to_sec(t):
+        h,m,s_ms = t.split(':')
+        s,ms = s_ms.split(',')
+        return int(h)*3600 + int(m)*60 + int(s) + int(ms)/1000
+    for _, start_str, end_str, text in matches:
+        lines.append({
+            "text": text.strip().replace('\n', ' '),
+            "start": time_to_sec(start_str),
+            "end": time_to_sec(end_str)
+        })
+
     out_path = workdir / "with_subtitles.mp4"
-    # subtitles filter 在 Windows 上对路径中的冒号/反斜杠比较敏感，统一转成
-    # posix 风格并对冒号转义，避免 filtergraph 解析错误
-    srt_arg = srt_path.as_posix().replace(":", "\\:")
-    style = f"FontName={font_name},FontSize={font_size},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=40"
+
+    # Windows 字体文件路径（优先微软雅黑，备选黑体）
+    font_paths = [
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/simsun.ttc",
+    ]
+    fontfile = next((p for p in font_paths if Path(p).exists()), font_paths[0])
+
+    # 构建 drawtext 表达式列表，每条字幕一条
+    drawtext_parts = []
+    for line in lines:
+        text = line.get("text", "").replace("'", "\\'")
+        start = float(line.get("start", 0))
+        end = float(line.get("end", 0))
+        expr = f"enable:'between(t,{start},{end})'"
+        drawtext_parts.append(f"{{text='{text}':fontfile='{fontfile}':fontsize={font_size}:fontcolor=white:x=(w-text_w)/2:y=h-80:{expr}}}")
+
+    vf_expr = ",".join(drawtext_parts)
+
     _run([
         "ffmpeg", "-y", "-i", str(video_path),
-        "-vf", f"subtitles='{srt_arg}':force_style='{style}'",
+        "-vf", f"drawtext={vf_expr}",
         "-c:v", "libx264", "-preset", "fast", "-crf", "18",
         str(out_path),
     ])
