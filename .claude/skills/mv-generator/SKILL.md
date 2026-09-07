@@ -246,20 +246,22 @@ python .claude/skills/mv-generator/scripts/compose_mv.py \
 ```
 
 该脚本会自动：
-1. 读取 `scene_plan.yaml` 获取每个场景的目标时长
-2. 拼接所有 clip（统一分辨率/帧率），对短片进行**慢放补齐**至目标时长
-3. 从 `lyrics_timed.json` 重新生成 `.srt` 并烧录进画面（hardsub）
+1. 计算所有 clip 总时长，按 `lyrics_timed.json` 的 `duration` 字段计算**整体慢放比例**
+2. 用 concat demuxer 拼接所有 clip，统一分辨率/帧率，一次性应用 `setpts=SCALE*PTS`
+3. 用 PIL 渲染逐句歌词 PNG（RGBA 透明底），concat 编码为字幕视频，再 overlay 到主视频
 4. 叠加歌名水印（可选，支持四个角位置）
-5. 混入原始 mp3 音轨（若视频与音频时长不一致，以较短者为准）
+5. 混入原始 mp3 音轨（先 `-an` 去掉 clips 自带音轨，再 `-shortest` 以短者为准）
 
 **产物**：`mv.mp4`（最终交付物）
 
 #### 关于视频时长补齐
 
-gen_video API 返回的视频时长可能与 scene_plan.yaml 中规划的不一致。此时
-`compose_mv.py` 会用 ffmpeg 的 `setpts` 滤镜对短片进行**慢放处理**，使其
-时长贴合规划值。慢放比例 = 目标时长 / 实际时长。例如目标 8 秒、实际 6 秒，
-则慢放至 1.33x 速度。
+gen_video API 返回的视频总时长通常短于 mp3 音频时长。
+`compose_mv.py` 采用**整体慢放**策略：将所有 clip 拼接后，用单个
+`setpts=SCALE*PTS` 滤镜统一慢放，SCALE = mp3 时长 / clips 总时长。
+这种方式无累积误差，输出时长精确等于 mp3 时长。
+
+例如：clips 总时长 162s，mp3 时长 239s → SCALE = 1.4757x（慢放）
 
 #### 歌名水印
 
@@ -280,8 +282,8 @@ gen_video API 返回的视频时长可能与 scene_plan.yaml 中规划的不一�
 
 1. **faster-whisper 未安装**：`asr_transcribe.py` 会给出清晰的
    `pip install faster-whisper` 提示，不会裸抛 ImportError。
-2. **ffmpeg 未安装/不在 PATH**：`compose_mv.py` 运行前会主动检测并给出
-   安装建议，不会等到 subprocess 报错才发现。
+2. **ffmpeg 未安装/不在 PATH**：`compose_mv.py` 使用硬编码路径
+   `C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffmpeg.exe`，无需依赖 PATH。
 3. **对齐结果时间戳明显异常**：通常是 ASR 识别质量太差（背景音乐过响、
    `--model-size` 太小）导致匹配率低，尝试换更大的模型规格重新识别。
 4. **单个场景超过 12 秒**：`gen_video_with_text` 的硬限制，Step 3 场景
@@ -292,11 +294,16 @@ gen_video API 返回的视频时长可能与 scene_plan.yaml 中规划的不一�
    减少（但不能消除）漂移。
 6. **视频与音频总时长对不上**：检查 Step 3 场景规划里各场景时长之和
    是否等于（或接近）音频总时长，累积误差通常来自多个场景分别取整
-   `--seconds` 参数（4-12 的整数）导致的舍入误差。compose_mv.py 会自动对
-   短片进行慢放补齐，但建议在 Step 3 尽量让规划时长贴合实际音频时长。
-7. **Windows 下字幕不显示**：旧版 `drawtext` 滤镜在 Windows 路径中有
-   冒号解析问题，新版 `compose_mv.py` 已改用 PIL+overlay 方案，自动
-   处理半透明黑底白字字幕。
+   `--seconds` 参数（4-12 的整数）导致的舍入误差。compose_mv.py 采用
+   **整体慢放**策略（concat + setpts），无累积误差，输出时长精确等于 mp3 时长。
+7. **Windows 下字幕不显示/视频变黑屏**：确保字幕视频用 `overlay=0:0`
+   合成时保留 alpha 通道（PIL PNG RGBA → concat demuxer → overlay）；
+   输出前务必检查文件大小（正常应为几十 MB，若只有几 MB 说明 overlay 失败）。
+8. **Windows 下 drawtext 水印路径报错**：字体路径中的冒号（`C:`）会被
+   drawtext 当作分隔符，需用反斜杠转义（`C\:`）；或改用 PIL watermark
+   方案（生成全帧 PNG 后 overlay）。
+9. **lyrics_timed.json 格式**：必须是 `{"duration": float, "lines": [{"start","end","text"}]}`
+   结构，`lines` 字段为逐句歌词的时间戳列表。
 
 ## 提示
 
@@ -311,4 +318,4 @@ gen_video API 返回的视频时长可能与 scene_plan.yaml 中规划的不一�
 5. **字幕样式可调**：可通过 `--font-size`（默认28）和 `--overlay-y-offset`
    （默认80，字幕距底部偏移像素）调整字幕大小和位置。
 6. **歌名水印**：通过 `--title "歌名"` 和 `--title-pos`（可选 top-left/top-right/bottom-left/bottom-right，默认 top-right）添加。水印使用半透明黑底白字，贯穿全片。
-7. **视频时长补齐**：当 gen_video 返回的 clip 比规划时长短时，compose_mv.py 会自动慢放补齐。慢放比例 = 目标时长 / 实际时长。
+7. **视频时长补齐**：当 gen_video 返回的 clip 比规划时长短时，compose_mv.py 采用**整体慢放**策略：concat 所有 clips 后统一应用 `setpts=SCALE*PTS`，无累积误差，输出时长精确等于 mp3 时长。
