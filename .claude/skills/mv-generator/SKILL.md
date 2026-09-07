@@ -267,6 +267,9 @@ python .claude/skills/mv-generator/scripts/compose_mv.py \
 6. **视频与音频总时长对不上**：检查 Step 3 场景规划里各场景时长之和
    是否等于（或接近）音频总时长，累积误差通常来自多个场景分别取整
    `--seconds` 参数（4-12 的整数）导致的舍入误差。
+7. **Windows 下字幕不显示**：旧版 `drawtext` 滤镜在 Windows 路径中有
+   冒号解析问题，新版 `compose_mv.py` 已改用 PIL+overlay 方案，自动
+   处理半透明黑底白字字幕。
 
 ## 提示
 
@@ -278,3 +281,5 @@ python .claude/skills/mv-generator/scripts/compose_mv.py \
    下来准确率不理想，可以尝试 `--model-size medium` 或更大。
 4. **Windows 环境**：ffmpeg 安装后需要新开终端窗口让 PATH 生效；
    环境变量设置用 `$env:AGNES_API_KEY="..."`。
+5. **字幕样式可调**：可通过 `--font-size`（默认28）和 `--overlay-y-offset`
+   （默认80，字幕距底部偏移像素）调整字幕大小和位置。
