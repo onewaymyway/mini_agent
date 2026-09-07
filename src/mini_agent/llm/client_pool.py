@@ -676,7 +676,7 @@ _PROVIDER_ENV_MAP: dict[str, str] = {
 
 def inject_env_from_providers(providers_cfg: dict) -> None:
     """
-    从已解析的 providers.json 数据中，将 api_key / api_keys[0] 自动注入为
+    从已解析的 providers.json 数据中，将 api_key / api_keys 自动注入为
     对应的标准环境变量（如 AGNES_API_KEY、NVIDIA_API_KEY）。
 
     **只注入当前进程环境中尚不存在的变量**，不覆盖用户已手动设置的值。
@@ -687,32 +687,47 @@ def inject_env_from_providers(providers_cfg: dict) -> None:
     这样，各 provider 实现在初始化时读取 ``os.environ.get("AGNES_API_KEY")``
     等标准变量，就能找到 providers.json 里配置的 key，无需额外传参。
 
+    若某个 provider 配置了多个 ``api_keys``，除了单数形式的环境变量（取
+    第一个 key，供只认单 key 的代码路径兼容）外，还会额外注入复数形式的
+    环境变量（如 ``AGNES_API_KEYS``，逗号分隔全部 key）。目前主要给
+    `.claude/skills/` 下的 gen_image_with_text / gen_video_with_text /
+    ask_image 三个 skill 用——它们是独立子进程，读不到 providers.json 时
+    (比如工作目录不在项目内)，会退回读这个环境变量，从而也能用上多 key
+    限流自动切换。只有一个 key 时不会注入复数形式变量，行为与之前一致。
+
     Args:
         providers_cfg: ``_load_providers_config()`` 的返回值（可能是 ``{}``）。
     """
     import os
 
-    def _first_key(entry: dict) -> str:
-        """从条目中提取第一个有效 api_key 字符串。"""
-        k = entry.get("api_key", "")
-        if k and not k.startswith("sk-"):
-            # 非占位符（providers.json.example 里的 "sk-ant-key-1-..." 仍然是字符串，
-            # 此处不做过滤，由调用方保证 providers.json 中填写的是真实 key）
-            pass
-        if k:
-            return k
-        keys = entry.get("api_keys", [])
-        return keys[0] if keys else ""
+    def _all_keys(entry: dict) -> list[str]:
+        """从条目中提取全部有效 api_key（去重保序），api_key 字段优先排第一。"""
+        result: list[str] = []
+        single = entry.get("api_key", "")
+        if single:
+            result.append(single)
+        for k in entry.get("api_keys", []) or []:
+            if k and k not in result:
+                result.append(k)
+        return result
 
-    def _inject(provider_name: str, key_value: str) -> None:
-        """若 key_value 非空且对应环境变量未设置，则注入。"""
-        if not key_value:
+    def _inject(provider_name: str, keys: list[str]) -> None:
+        """若 keys 非空，注入单数环境变量（第一个 key）；
+        若有多个 key，再额外注入复数环境变量（逗号分隔全部 key）。
+        两者都遵循"只注入尚未设置的变量"规则。"""
+        if not keys:
             return
         env_var = _PROVIDER_ENV_MAP.get(provider_name.lower())
         if not env_var:
             return
+
         if not os.environ.get(env_var):
-            os.environ[env_var] = key_value
+            os.environ[env_var] = keys[0]
+
+        if len(keys) > 1:
+            keys_env_var = f"{env_var}S"
+            if not os.environ.get(keys_env_var):
+                os.environ[keys_env_var] = ",".join(keys)
 
     if not providers_cfg:
         return
@@ -721,9 +736,9 @@ def inject_env_from_providers(providers_cfg: dict) -> None:
     for entry in providers_cfg.get("llm_fallback_chain", []):
         provider = entry.get("provider", "")
         if provider:
-            _inject(provider, _first_key(entry))
+            _inject(provider, _all_keys(entry))
 
     # 2. 遍历 providers 块
     for provider_name, settings in providers_cfg.get("providers", {}).items():
         if isinstance(settings, dict):
-            _inject(provider_name, _first_key(settings))
+            _inject(provider_name, _all_keys(settings))
