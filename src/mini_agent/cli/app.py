@@ -183,8 +183,8 @@ def _main_inner() -> None:
     parser = build_parser()
     args   = parser.parse_args()
 
-    # ── simple-mode：尽早设置，确保启动阶段的所有输出（包括下面 print("cfg:", cfg)
-    # 以及 R.print_info 等）都遵循该模式。CLI 参数优先于 MINI_AGENT_SIMPLE_MODE
+    # ── simple-mode：尽早设置，确保启动阶段的所有输出（R.print_info 等）
+    # 都遵循该模式。CLI 参数优先于 MINI_AGENT_SIMPLE_MODE
     # 环境变量（Terminal 构造时已经读取过环境变量作为默认值，这里只在用户
     # 显式传了 --simple-mode 时才覆盖，不传则保留 Terminal 自己的默认判断）。
     if getattr(args, "simple_mode", None):
@@ -292,8 +292,6 @@ def _main_inner() -> None:
     # "raw_output": true 也要生效。
     if cfg.raw_output and not _term.is_raw_output():
         _term.set_raw_output(True)
-
-    print("cfg:",cfg)
 
     if not cfg.api_key:
         # 使用最直接的方式输出错误

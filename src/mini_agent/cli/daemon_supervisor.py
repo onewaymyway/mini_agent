@@ -300,6 +300,21 @@ def run_supervisor(
             # 每轮重新打开日志文件，避免同一个文件句柄跨多次重启后
             # 追加写入错乱（子进程崩溃后原 fd 可能已经处于异常状态）。
             log_file = open(log_path, "a", encoding="utf-8", errors="replace")
+            # [FIX] 日志文件本身是按 utf-8 打开的，但子进程自己的
+            # sys.stdout/sys.stderr 是它自己进程内新建的 TextIOWrapper，
+            # 编码由子进程的系统 locale 决定，不会继承父进程这边打开
+            # 文件时用的 encoding="utf-8"——在中文 Windows 上默认是 GBK。
+            # 项目里大量 print() 调用了 emoji/箭头等非 GBK 字符（⚠️/▶/📄
+            # 之类），一旦子进程尝试打印这些字符就会在写 stdout 时抛
+            # UnicodeEncodeError 直接崩溃退出，而且只在 --detach（有真实
+            # 重定向、locale 生效）时复现，前台/交互式终端下不一定会撞见。
+            # 显式给子进程设置 PYTHONIOENCODING/PYTHONUTF8，强制它自己的
+            # stdout/stderr 也用 UTF-8（带 errors=replace 兜底），跟这里
+            # 打开日志文件用的编码保持一致，避免这一整类"emoji 打印在
+            # Windows 上把 daemon 干崩"的问题。
+            child_env = dict(os.environ)
+            child_env["PYTHONIOENCODING"] = "utf-8:replace"
+            child_env["PYTHONUTF8"] = "1"
             try:
                 if sys.platform == "win32":
                     DETACHED_PROCESS = 0x00000008
@@ -309,6 +324,7 @@ def run_supervisor(
                         "stdout": log_file,
                         "stderr": log_file,
                         "creationflags": DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                        "env": child_env,
                     }
                 else:
                     kwargs = {
@@ -317,6 +333,7 @@ def run_supervisor(
                         "stderr": log_file,
                         "close_fds": True,
                         "start_new_session": True,
+                        "env": child_env,
                     }
                 proc = subprocess.Popen(child_argv, **kwargs)
             finally:
@@ -463,6 +480,16 @@ def run_foreground_supervisor(
     attempt = 0
     final_returncode = 0
 
+    # [FIX] 同 `run_supervisor()` 后台分支：项目里大量 print() 用了
+    # emoji/箭头等字符，前台场景虽然子进程继承的是真实控制台（编码取决于
+    # 当前控制台代码页，用户可以自己 chcp 65001），但不同 Windows 环境/
+    # 终端下这个代码页不一定总是 UTF-8——统一注入 PYTHONIOENCODING/
+    # PYTHONUTF8，让子进程自己的 stdout/stderr 编码不再依赖外部代码页，
+    # 与后台 detach 分支保持一致的行为。
+    child_env = dict(os.environ)
+    child_env["PYTHONIOENCODING"] = "utf-8:replace"
+    child_env["PYTHONUTF8"] = "1"
+
     try:
         while True:
             if sys.platform == "win32":
@@ -470,14 +497,14 @@ def run_foreground_supervisor(
                 # 让子进程能接收独立的 CTRL_C_EVENT 转发。
                 CREATE_NEW_PROCESS_GROUP = 0x00000200
                 proc = subprocess.Popen(
-                    child_argv, creationflags=CREATE_NEW_PROCESS_GROUP
+                    child_argv, creationflags=CREATE_NEW_PROCESS_GROUP, env=child_env,
                 )
             else:
                 # 不设置 start_new_session：子进程与 supervisor 留在同一个
                 # 前台进程组，终端本身发出的 Ctrl-C（SIGINT）会同时送达
                 # 两者；下面仍然显式转发一次作为兜底（比如子进程因为某些
                 # 原因不在同一进程组时）。
-                proc = subprocess.Popen(child_argv)
+                proc = subprocess.Popen(child_argv, env=child_env)
 
             started_at = time.time()
             child_pid = proc.pid
