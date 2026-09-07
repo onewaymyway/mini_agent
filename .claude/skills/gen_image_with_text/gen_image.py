@@ -1,4 +1,4 @@
-"""Image generation skill using Agnes Image API.
+"""Image generation skill using the Agnes Image API (Agnes Image 2.5 Flash).
 
 Usage:
     /gen_image_with_text "A beautiful sunset beach scene"
@@ -8,7 +8,7 @@ Usage:
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Union
 
 
 from agnes_tools import AgnesImageClient
@@ -18,6 +18,7 @@ def gen_image(
     prompt: Optional[str] = None,
     prompt_file: Optional[str] = None,
     size: str = "1024x1024",
+    ratio: Optional[str] = None,
     save_path: Optional[str] = None,
     response_format: str = "url",
 ) -> dict:
@@ -26,7 +27,10 @@ def gen_image(
     Args:
         prompt: Text description of the image to generate. Either this or prompt_file must be provided.
         prompt_file: Path to a file containing the prompt text. Mutually exclusive with prompt.
-        size: Image size, default "1024x1024". Supports "1024x1024", "1024x768", "768x1024"
+        size: Image size, default "1024x1024". Also accepts the tiered values
+            "1K"/"2K"/"3K"/"4K" (recommended, pair with `ratio`).
+        ratio: Aspect ratio to pair with a tiered `size` (e.g. "16:9"). One of
+            "1:1", "3:4", "4:3", "16:9", "9:16", "2:3", "3:2", "21:9".
         save_path: Optional path to save the generated image
         response_format: Response format, "url" or "b64_json"
 
@@ -71,6 +75,7 @@ def gen_image(
     result = client.text_to_image(
         prompt=prompt,
         size=size,
+        ratio=ratio,
         response_format=response_format,
         save_path=save_path,
     )
@@ -96,19 +101,23 @@ def gen_image(
 
 
 def edit_image(
-    image_path: str,
+    image_path: Union[str, List[str]],
     prompt: str,
     size: str = "1024x1024",
+    ratio: Optional[str] = None,
     save_path: Optional[str] = None,
     response_format: str = "url",
 ) -> dict:
-    """Edit an existing image based on text description.
+    """Edit an existing image, or compose multiple reference images, based on
+    a text description.
 
     Args:
-        image_path: Path to the image to edit (local file or URL)
-        prompt: Text description of how to modify the image
-        size: Image size, default "1024x1024"
-        save_path: Optional path to save the edited image
+        image_path: Path/URL to the image to edit (local file or URL), or a
+            list of paths/URLs for multi-image composition workflows.
+        prompt: Text description of how to modify/combine the image(s)
+        size: Image size, default "1024x1024" (also accepts "1K"/"2K"/"3K"/"4K")
+        ratio: Aspect ratio to pair with a tiered `size` (e.g. "16:9")
+        save_path: Optional path to save the edited/composed image
         response_format: Response format, "url" or "b64_json"
 
     Returns:
@@ -127,6 +136,7 @@ def edit_image(
         image=image_path,
         prompt=prompt,
         size=size,
+        ratio=ratio,
         response_format=response_format,
         save_path=save_path,
     )
@@ -157,7 +167,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Generate images using Agnes AI")
     parser.add_argument(
-        "mode", choices=["gen", "edit"], help="Mode: gen (text-to-image) or edit (image editing)"
+        "mode", choices=["gen", "edit"], help="Mode: gen (text-to-image) or edit (image editing / multi-image composition)"
     )
     parser.add_argument(
         "prompt", nargs="?", help="Text description of the image (mutually exclusive with --prompt-file)",
@@ -167,9 +177,22 @@ def main():
         dest="prompt_file",
         help="Path to a file containing the prompt text (mutually exclusive with prompt argument)",
     )
-    parser.add_argument("--size", default="1024x1024", help="Image size (default: 1024x1024)")
+    parser.add_argument(
+        "--size", default="1024x1024",
+        help="Image size (default: 1024x1024). Also accepts tiered values 1K/2K/3K/4K (pair with --ratio).",
+    )
+    parser.add_argument(
+        "--ratio", default=None,
+        help="Aspect ratio to pair with a tiered --size, e.g. 16:9. "
+             "One of 1:1, 3:4, 4:3, 16:9, 9:16, 2:3, 3:2, 21:9.",
+    )
     parser.add_argument("--save-path", help="Path to save the image")
-    parser.add_argument("--image-path", help="Path to input image (for edit mode)")
+    parser.add_argument(
+        "--image-path", dest="image_path", action="append",
+        help="Path to input image (for edit mode). Repeat this flag to pass "
+             "multiple reference images for multi-image composition, "
+             "e.g. --image-path a.png --image-path b.png",
+    )
     parser.add_argument(
         "--format", dest="response_format", default="url", choices=["url", "b64_json"]
     )
@@ -181,17 +204,22 @@ def main():
             prompt=args.prompt,
             prompt_file=args.prompt_file,
             size=args.size,
+            ratio=args.ratio,
             save_path=args.save_path,
             response_format=args.response_format,
         )
     else:
         if not args.image_path:
-            print("Error: --image-path is required for edit mode")
+            print("Error: --image-path is required for edit mode (repeat it for multi-image composition)")
             sys.exit(1)
+        # argparse action="append" 收集成 list；单张图就传字符串，多张
+        # 图（多图合成）原样传 list 给 edit_image -> AgnesImageClient。
+        image_arg = args.image_path[0] if len(args.image_path) == 1 else args.image_path
         result = edit_image(
-            image_path=args.image_path,
+            image_path=image_arg,
             prompt=args.prompt,
             size=args.size,
+            ratio=args.ratio,
             save_path=args.save_path,
             response_format=args.response_format,
         )
