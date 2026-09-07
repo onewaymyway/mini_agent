@@ -201,7 +201,10 @@ AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
 
 ### Step 5: 分场景视频生成
 
-对 `scene_plan.yaml` 里的每个 scene，调用 `gen_video_with_text`：
+**重要：必须串行生成，不可并行。** 逐个场景调用 `gen_video_with_text`，
+等待上一个场景完成后再生成下一个，避免 API 并发超限。
+
+对 `scene_plan.yaml` 里的每个 scene，按顺序执行：
 
 ```bash
 AGNES_API_KEY="..." python .claude/skills/gen_video_with_text/gen_video.py \
