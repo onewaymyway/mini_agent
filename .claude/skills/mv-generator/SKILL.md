@@ -22,7 +22,6 @@ ASR 粗识别 → 歌词对齐校正 → 场景规划(需用户确认) → 定�
 
 **依赖脚本**（本 skill 目录下）：
 - `scripts/asr_transcribe.py`：本地语音识别（faster-whisper）
-- `scripts/align_lyrics.py`：歌词对齐校正
 - `scripts/compose_mv.py`：ffmpeg 最终合成
 
 **外部依赖**：
@@ -88,24 +87,44 @@ python .claude/skills/mv-generator/scripts/asr_transcribe.py \
 
 **产物**：`asr_raw.json`（强制落盘）
 
-### Step 2: 歌词对齐校正
+### Step 2: 歌词对齐校正（LLM直接处理）
 
-先把用户提供的歌词文本保存为 `<output_dir>/lyrics.txt`（逐行一句，
-去掉用户输入里可能带的行号/装饰符号），再执行：
+**不要使用对齐脚本**，而是让Agent直接使用LLM能力进行歌词对齐。ASR结果
+往往有很多错别字，脚本很难处理，但LLM可以通过分析相近读音、语义上下文
+来准确对齐。
 
-```bash
-python .claude/skills/mv-generator/scripts/align_lyrics.py \
-  <output_dir>/asr_raw.json <output_dir>/lyrics.txt \
-  --save-path <output_dir>/lyrics_timed.json \
-  --save-srt <output_dir>/lyrics.srt
-```
+**执行步骤**：
 
-- 对齐完成后，抽查几行时间戳是否合理（例如是否单调递增、是否覆盖了
-  音频的合理时长范围），如果发现明显异常（比如某几句时间戳挤在一起），
-  在 `lyrics.srt` 里标注给用户看，让用户判断是否需要重新识别（比如换
-  更大的 `--model-size`）。
+1. 先把用户提供的歌词文本保存为 `<output_dir>/lyrics.txt`（逐行一句，
+   去掉用户输入里可能带的行号/装饰符号）
+
+2. 读取 `asr_raw.json` 和 `lyrics.txt`，由Agent直接进行分析对齐：
+   - 读取ASR结果（包含时间戳和识别文字）
+   - 读取标准歌词文本
+   - **分析每句ASR识别结果与标准歌词的对应关系**，考虑：
+     * 同音字/近音字的映射（如"爱"→"碍"、"在"→"再"）
+     * 漏字/多字的修正
+     * 断句位置的调整
+   - 生成带时间戳的歌词对齐结果
+
+3. 将对齐结果保存为 `lyrics_timed.json`（格式见下方）
+
+4. 根据 `lyrics_timed.json` 生成 `lyrics.srt` 供人工核对
+
+**Agent需输出的中间内容**（展示给用户）：
+- 说明对齐逻辑（如何处理了ASR错别字）
+- 显示关键几行的时间戳对齐结果供确认
+- 如有明显的匹配困难或歧义，向用户说明
 
 **产物**：`lyrics_timed.json`、`lyrics.srt`（强制落盘）
+
+**`lyrics_timed.json` 格式示例**：
+```json
+[
+  {"line": 0, "text": "歌词第一句", "start": 0.0, "end": 8.2},
+  {"line": 1, "text": "歌词第二句", "start": 8.2, "end": 14.5}
+]
+```
 
 ### Step 3: 场景规划（创造性步骤，需要 Agent 判断）
 
