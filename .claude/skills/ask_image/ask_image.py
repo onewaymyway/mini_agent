@@ -37,21 +37,22 @@ def main():
         print(f"错误：图片文件不存在：{image_path}")
         sys.exit(1)
 
-    # 检查 AGNES_API_KEY
-    if not os.getenv("AGNES_API_KEY"):
-        print("错误：缺少 AGNES_API_KEY 环境变量")
-        print("请运行：export AGNES_API_KEY=your_api_key")
-        sys.exit(1)
-
-
     try:
         from vision_tools import AgnesVisionClient
+        from agnes_key_pool import build_key_pool
     except ImportError:
-        print("错误：找不到 vision_tools.py，请确保它在当前工作目录")
+        print("错误：找不到 vision_tools.py / agnes_key_pool.py，请确保它们在当前工作目录")
+        sys.exit(1)
+
+    # 检查 Agnes API key（AGNES_API_KEY / AGNES_API_KEYS / providers.json 任一即可）
+    key_pool = build_key_pool(os.path.dirname(os.path.abspath(__file__)))
+    if not key_pool:
+        print("错误：未找到可用的 Agnes API key")
+        print("请设置 AGNES_API_KEY（或 AGNES_API_KEYS，逗号分隔多个 key），或在 providers.json 中配置")
         sys.exit(1)
 
     # 创建客户端并发起请求
-    client = AgnesVisionClient()
+    client = AgnesVisionClient(key_pool=key_pool)
 
     print(f"\n[图片] {image_path}")
     print(f"[问题] {prompt}")

@@ -13,6 +13,7 @@ from typing import Optional, List
 
 
 from agnes_tools import AgnesVideoClient
+from agnes_key_pool import build_key_pool
 
 
 def gen_video(
@@ -103,14 +104,15 @@ def gen_video(
                 "error": "audios length must not exceed 3 for agnes-video-2.5-flash.",
             }
 
-    api_key = os.environ.get("AGNES_API_KEY")
-    if not api_key:
+    key_pool = build_key_pool(os.path.dirname(__file__))
+    if not key_pool:
         return {
             "success": False,
-            "error": "AGNES_API_KEY environment variable not set. Please set it before generating videos.",
+            "error": "No Agnes API key found. Set AGNES_API_KEY / AGNES_API_KEYS, "
+                     "or configure providers.json before generating videos.",
         }
 
-    client = AgnesVideoClient(api_key=api_key)
+    client = AgnesVideoClient(key_pool=key_pool)
 
     result = client.generate_video(
         prompt=prompt,

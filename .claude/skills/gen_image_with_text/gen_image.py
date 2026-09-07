@@ -12,6 +12,7 @@ from typing import List, Optional, Union
 
 
 from agnes_tools import AgnesImageClient
+from agnes_key_pool import build_key_pool
 
 
 def gen_image(
@@ -63,14 +64,15 @@ def gen_image(
                 "error": f"Prompt file is empty: {prompt_file}",
             }
 
-    api_key = os.environ.get("AGNES_API_KEY")
-    if not api_key:
+    key_pool = build_key_pool(os.path.dirname(__file__))
+    if not key_pool:
         return {
             "success": False,
-            "error": "AGNES_API_KEY environment variable not set. Please set it before generating images.",
+            "error": "No Agnes API key found. Set AGNES_API_KEY / AGNES_API_KEYS, "
+                     "or configure providers.json before generating images.",
         }
 
-    client = AgnesImageClient(api_key=api_key)
+    client = AgnesImageClient(key_pool=key_pool)
 
     result = client.text_to_image(
         prompt=prompt,
@@ -123,14 +125,15 @@ def edit_image(
     Returns:
         dict with success status and image_url or error
     """
-    api_key = os.environ.get("AGNES_API_KEY")
-    if not api_key:
+    key_pool = build_key_pool(os.path.dirname(__file__))
+    if not key_pool:
         return {
             "success": False,
-            "error": "AGNES_API_KEY environment variable not set. Please set it before generating images.",
+            "error": "No Agnes API key found. Set AGNES_API_KEY / AGNES_API_KEYS, "
+                     "or configure providers.json before generating images.",
         }
 
-    client = AgnesImageClient(api_key=api_key)
+    client = AgnesImageClient(key_pool=key_pool)
 
     result = client.image_to_image(
         image=image_path,

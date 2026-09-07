@@ -10,6 +10,8 @@ from typing import Generator
 
 import requests
 
+from agnes_key_pool import AgnesKeyPool, build_key_pool, is_rate_limit_error
+
 
 class AgnesVisionClient:
     """
@@ -33,17 +35,32 @@ class AgnesVisionClient:
         timeout: int = 300,
         max_retries: int = 10,
         retry_delay: float = 5.0,
+        api_key: str | None = None,
+        key_pool: AgnesKeyPool | None = None,
     ):
+        """
+        Args:
+            api_key: 单个 API key（向后兼容，不带自动切换）。
+            key_pool: 多 key 池；若提供，遇到限流会自动切换 key，
+                优先级高于 api_key。若两者都不传，会自动尝试从
+                AGNES_API_KEYS / providers.json / AGNES_API_KEY 构建。
+        """
         self.model = model
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
 
-        self.api_key = os.getenv("AGNES_API_KEY")
+        self.key_pool = key_pool or (None if api_key else build_key_pool(os.path.dirname(__file__)))
+
+        if self.key_pool:
+            self.api_key = self.key_pool.acquire()
+        else:
+            self.api_key = api_key or os.getenv("AGNES_API_KEY")
 
         if not self.api_key:
             raise ValueError(
-                "Environment variable AGNES_API_KEY not found"
+                "No Agnes API key found. Set AGNES_API_KEY / AGNES_API_KEYS, "
+                "or configure providers.json."
             )
 
     @staticmethod
@@ -122,15 +139,19 @@ class AgnesVisionClient:
         payload: dict,
     ) -> Generator[str, None, None]:
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Accept": "text/event-stream",
-            "Content-Type": "application/json",
-        }
-
         last_error = None
+        retry = 0  # 计入 max_retries 的次数（换 key 不计入）
 
-        for retry in range(self.max_retries):
+        while retry < self.max_retries:
+
+            if self.key_pool:
+                self.api_key = self.key_pool.acquire()
+
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "text/event-stream",
+                "Content-Type": "application/json",
+            }
 
             try:
 
@@ -143,7 +164,16 @@ class AgnesVisionClient:
                     verify=False
                 ) as response:
 
+                    if self.key_pool and is_rate_limit_error(response.status_code):
+                        next_key = self.key_pool.report_rate_limit(self.api_key)
+                        if next_key:
+                            self.api_key = next_key
+                            continue  # 换 key 立即重试，不计入 retry
+
                     response.raise_for_status()
+
+                    if self.key_pool:
+                        self.key_pool.report_success(self.api_key)
 
                     for line in response.iter_lines():
 
@@ -178,17 +208,26 @@ class AgnesVisionClient:
                     return
 
             except Exception as e:
+                status_code = getattr(getattr(e, "response", None), "status_code", None)
+
+                if self.key_pool and is_rate_limit_error(status_code, str(e)):
+                    next_key = self.key_pool.report_rate_limit(self.api_key)
+                    if next_key:
+                        self.api_key = next_key
+                        continue  # 换 key 立即重试，不计入 retry
+
                 import traceback
                 traceback.print_exc()
 
                 last_error = e
+                retry += 1
 
-                if retry < self.max_retries - 1:
+                if retry < self.max_retries:
 
-                    wait_time = self.retry_delay * (2**retry)
+                    wait_time = self.retry_delay * (2 ** (retry - 1))
 
                     print(
-                        f"\nRetry {retry + 1}/{self.max_retries}"
+                        f"\nRetry {retry}/{self.max_retries}"
                         f" after {wait_time:.1f}s..."
                     )
 
@@ -196,6 +235,9 @@ class AgnesVisionClient:
 
                 else:
                     raise last_error
+
+        if last_error:
+            raise last_error
 
     def stream_chat(
         self,

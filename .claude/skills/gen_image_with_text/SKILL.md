@@ -21,6 +21,19 @@ export AGNES_API_KEY="your-api-key"  # Linux/Mac
 $env:AGNES_API_KEY="your-api-key"   # Windows PowerShell
 ```
 
+## 多 Key 自动切换（限流保护）
+
+如果你在 `providers.json` 的 `providers.agnes.api_keys`（或 `llm_fallback_chain` 里
+`provider: "agnes"` 的条目）配置了多个 key，本 skill 会自动读取全部 key，
+遇到限流（HTTP 429 等）时自动切换到下一把可用 key 重试，无需手动干预。
+也可以直接用环境变量 `AGNES_API_KEYS`（逗号分隔多个 key）代替 `AGNES_API_KEY`：
+
+```bash
+export AGNES_API_KEYS="sk-key-1,sk-key-2,sk-key-3"
+```
+
+只配置了一个 key（或只有 `AGNES_API_KEY`）时行为和之前完全一样。
+
 ## 功能
 
 - **text-to-image（文生图）**：根据文字描述生成图片

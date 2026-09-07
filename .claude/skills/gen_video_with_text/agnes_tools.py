@@ -6,6 +6,8 @@ from typing import Optional, List
 
 import requests
 
+from agnes_key_pool import AgnesKeyPool, is_rate_limit_error
+
 
 class AgnesVideoClient:
     BASE_URL = "https://apihub.agnes-ai.com/v1"
@@ -14,12 +16,23 @@ class AgnesVideoClient:
 
     def __init__(
         self,
-        api_key: str,
+        api_key: Optional[str] = None,
+        key_pool: Optional[AgnesKeyPool] = None,
         timeout: int = 1800,
         max_retries: int = 3,
         verify_ssl: bool = False,
     ):
-        self.api_key = api_key
+        """
+        Args:
+            api_key: 单个 API key（向后兼容，不带自动切换）。
+            key_pool: 多 key 池；若提供，遇到限流会自动切换 key，
+                优先级高于 api_key（会覆盖初始 self.api_key）。
+        """
+        if not api_key and not key_pool:
+            raise ValueError("Either 'api_key' or 'key_pool' must be provided")
+
+        self.key_pool = key_pool
+        self.api_key = key_pool.acquire() if key_pool else api_key
         self.timeout = timeout
         self.max_retries = max_retries
         self.verify_ssl = verify_ssl
@@ -40,9 +53,14 @@ class AgnesVideoClient:
     # retry request
     # =========================
     def _post(self, url: str, payload: dict) -> dict:
+        """带重试的 POST，限流自动切换 key（详见 _get 上的说明，逻辑一致）。"""
         last_err = None
+        attempt = 0
 
-        for i in range(self.max_retries):
+        while attempt < self.max_retries:
+            if self.key_pool:
+                self.api_key = self.key_pool.acquire()
+
             try:
                 resp = self.session.post(
                     url,
@@ -57,14 +75,26 @@ class AgnesVideoClient:
                         "status_code": resp.status_code,
                         "error": resp.text,
                     }
-                    time.sleep(1.5 * (i + 1))
+
+                    if self.key_pool and is_rate_limit_error(resp.status_code, resp.text):
+                        next_key = self.key_pool.report_rate_limit(self.api_key)
+                        if next_key:
+                            self.api_key = next_key
+                            continue  # 换 key 立即重试，不计入 attempt
+
+                    attempt += 1
+                    time.sleep(1.5 * attempt)
                     continue
+
+                if self.key_pool:
+                    self.key_pool.report_success(self.api_key)
 
                 return resp.json()
 
             except Exception as e:
                 last_err = str(e)
-                time.sleep(1.5 * (i + 1))
+                attempt += 1
+                time.sleep(1.5 * attempt)
 
         return {
             "success": False,
@@ -72,9 +102,16 @@ class AgnesVideoClient:
         }
 
     def _get(self, url: str, params: dict) -> dict:
+        """带重试的 GET（任务轮询也可能被限流），限流自动切换 key：
+        遇到 429 / 限流关键字时，若 key_pool 里还有可用 key，立即换 key
+        重试且不计入 max_retries；非限流错误走原有 sleep-and-retry。"""
         last_err = None
+        attempt = 0
 
-        for i in range(self.max_retries):
+        while attempt < self.max_retries:
+            if self.key_pool:
+                self.api_key = self.key_pool.acquire()
+
             try:
                 resp = self.session.get(
                     url,
@@ -89,14 +126,26 @@ class AgnesVideoClient:
                         "status_code": resp.status_code,
                         "error": resp.text,
                     }
-                    time.sleep(1.5 * (i + 1))
+
+                    if self.key_pool and is_rate_limit_error(resp.status_code, resp.text):
+                        next_key = self.key_pool.report_rate_limit(self.api_key)
+                        if next_key:
+                            self.api_key = next_key
+                            continue  # 换 key 立即重试，不计入 attempt
+
+                    attempt += 1
+                    time.sleep(1.5 * attempt)
                     continue
+
+                if self.key_pool:
+                    self.key_pool.report_success(self.api_key)
 
                 return resp.json()
 
             except Exception as e:
                 last_err = str(e)
-                time.sleep(1.5 * (i + 1))
+                attempt += 1
+                time.sleep(1.5 * attempt)
 
         return {
             "success": False,

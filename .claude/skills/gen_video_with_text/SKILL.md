@@ -21,6 +21,20 @@ $env:AGNES_API_KEY="your-api-key"            # Windows PowerShell
 python .claude/skills/gen_video_with_text/gen_video.py text "雨后的未来城市街道，霓虹灯倒映在地面，一辆银色跑车缓慢驶过，电影级运镜" --save-path output.mp4
 ```
 
+## 多 Key 自动切换（限流保护）
+
+如果你在 `providers.json` 的 `providers.agnes.api_keys`（或 `llm_fallback_chain` 里
+`provider: "agnes"` 的条目）配置了多个 key，本 skill 会自动读取全部 key，
+遇到限流（HTTP 429 等）时自动切换到下一把可用 key 重试（创建任务和轮询任务
+状态都会自动切换），无需手动干预。也可以直接用环境变量 `AGNES_API_KEYS`
+（逗号分隔多个 key）代替 `AGNES_API_KEY`：
+
+```bash
+export AGNES_API_KEYS="sk-key-1,sk-key-2,sk-key-3"
+```
+
+只配置了一个 key（或只有 `AGNES_API_KEY`）时行为和之前完全一样。
+
 ## 三种生成模式
 
 | `mode` | 用途 | 必需参数 | 说明 |
