@@ -5211,9 +5211,16 @@ def _render_goal_tree_node(
     原因是"📊 全局报告"折叠区在背景里的轮询式全量重跑跟按钮点击抢
     时机（见 `_render_goal_tree_report_panel`），根子上跟这里嵌套
     columns 的层数无关。既然真正的病根已经修掉，就把这里的整体缩进
-    换回来——管理折叠区/子节点重新跟着深度整体右移。按钮行本身仍然保留
-    `use_container_width=True`（见 `_render_goal_tree_node_body`），
-    避免窄列本身导致的点击热区跟视觉不一致的问题。
+    [层级越深、图标按钮越来越小] 缩进用的是每一层都嵌套一次
+    `st.columns([1, 9])`——列宽是相对当前父容器的比例，嵌套 N 层后，
+    最内层内容列的实际可用宽度是 `0.9**N` 倍地衰减（10 层就只剩不到
+    35%）。之前 `▶/▼`/`📄`/`📖` 这几个图标按钮都开着
+    `use_container_width=True`，会把按钮撑满这个已经被压缩过的列宽，
+    层级越深，按钮跟着列宽一起越缩越小。这几个按钮本身只需要放一个
+    emoji，不需要撑满列宽，去掉 `use_container_width=True` 后用的是
+    Streamlit 按钮的自然（内容自适应）尺寸，不受父列宽度影响，不管
+    嵌套多少层缩进都保持同样大小；只有标题这类需要占满剩余空间的内容
+    还是用列宽本身。
     """
     if depth > 0:
         _spacer, content_col = st.columns([1, 9])
@@ -5261,8 +5268,10 @@ def _render_goal_tree_node_body(
     is_collapsed = bool(children) and node_id in collapsed_ids
     # 缩进已经由 `_render_goal_tree_node()` 外层的 `st.columns([1, 9])`
     # 整体处理，这里的按钮行不用再额外加缩进占位列，只需要按钮/标题
-    # 本身这一次 columns；`use_container_width=True` 让按钮的可视区域=
-    # 可点击区域，避免窄列下点击热区跟视觉不一致。
+    # 本身这一次 columns；`▶/▼`/`📄`/`📖` 这几个图标按钮不加
+    # `use_container_width=True`，用 Streamlit 按钮的自然尺寸，不随
+    # 列宽（会随深度嵌套逐层收窄）一起缩放，保证任意深度下按钮大小一致
+    # （见 `_render_goal_tree_node` 顶部说明）。
     if children:
         toggle_col, title_col, detail_col, wiki_col = st.columns([0.06, 0.82, 0.06, 0.06])
         with toggle_col:
@@ -5270,7 +5279,6 @@ def _render_goal_tree_node_body(
                 "▶" if is_collapsed else "▼",
                 key=f"_gt_toggle_{node_id}",
                 help="收起/展开子节点",
-                use_container_width=True,
             ):
                 _gt_debug_log(f"click ▶/▼ toggle button, node_id={node_id!r}")
                 if is_collapsed:
@@ -5281,15 +5289,13 @@ def _render_goal_tree_node_body(
         with title_col:
             st.markdown(title_markdown, unsafe_allow_html=True)
         with detail_col:
-            if st.button("📄", key=f"_gt_detail_btn_{node_id}", help="查看节点详情",
-                         use_container_width=True):
+            if st.button("📄", key=f"_gt_detail_btn_{node_id}", help="查看节点详情"):
                 _gt_debug_log(f"click 📄 detail button, node_id={node_id!r} (has-children branch)")
                 st.session_state.pop("_goal_wiki_view_target", None)
                 st.session_state["_goal_tree_detail_target"] = node_id
                 st.rerun()
         with wiki_col:
-            if st.button("📖", key=f"_gt_wiki_btn_{node_id}", help="查看产出 Wiki 页",
-                         use_container_width=True):
+            if st.button("📖", key=f"_gt_wiki_btn_{node_id}", help="查看产出 Wiki 页"):
                 _gt_debug_log(f"click 📖 wiki button, node_id={node_id!r} (has-children branch)")
                 st.session_state.pop("_goal_tree_detail_target", None)
                 st.session_state["_goal_wiki_view_target"] = node_id
@@ -5299,15 +5305,13 @@ def _render_goal_tree_node_body(
         with title_col:
             st.markdown(title_markdown, unsafe_allow_html=True)
         with detail_col:
-            if st.button("📄", key=f"_gt_detail_btn_{node_id}", help="查看节点详情",
-                         use_container_width=True):
+            if st.button("📄", key=f"_gt_detail_btn_{node_id}", help="查看节点详情"):
                 _gt_debug_log(f"click 📄 detail button, node_id={node_id!r} (leaf branch)")
                 st.session_state.pop("_goal_wiki_view_target", None)
                 st.session_state["_goal_tree_detail_target"] = node_id
                 st.rerun()
         with wiki_col:
-            if st.button("📖", key=f"_gt_wiki_btn_{node_id}", help="查看产出 Wiki 页",
-                         use_container_width=True):
+            if st.button("📖", key=f"_gt_wiki_btn_{node_id}", help="查看产出 Wiki 页"):
                 _gt_debug_log(f"click 📖 wiki button, node_id={node_id!r} (leaf branch)")
                 st.session_state.pop("_goal_tree_detail_target", None)
                 st.session_state["_goal_wiki_view_target"] = node_id
@@ -5872,9 +5876,48 @@ def _render_goal_wiki_content_panel(client: AgentClient, node_id: str) -> None:
         return
     if not isinstance(resp, dict) or resp.get("_error"):
         err = resp.get("_error") if isinstance(resp, dict) else "未知错误"
-        st.warning(f"Wiki 页读取失败：{err}")
-        if st.button("🔄 重试", key=f"_gt_wiki_read_retry_{node_id}"):
-            st.rerun()
+        # [bug fix：已完成的节点点「📖」也报 404] Wiki 的 index.md 只在
+        # 用户手动点过「📖 产出 Wiki」折叠区里的「🔄 重建 Wiki」（或本节点
+        # 这个「立即生成」按钮）之后才会落盘——节点是否"已完成"跟这份
+        # 静态文件存不存在完全无关，是两回事：任何还没被生成过 Wiki 的
+        # 节点，不管完成与否，点「📖」第一次都会命中这里的 404。之前的
+        # 代码不区分"文件不存在（正常，需要先生成）"和"真正的读取错误"
+        # （网络断了/权限问题等），一律走"读取失败 + 重试"这条分支——但
+        # 重试还是读同一个不存在的文件，只会一直失败，看起来像是
+        # "这个节点的 Wiki 坏了"。现在把"文件不存在"单独识别出来，给一个
+        # 「🔧 立即生成」按钮直接调用生成接口（`root_id=node_id`，只重建
+        # 这一个节点的子树，不用去跑全局重建），生成完立即重新读取。
+        is_not_found = "does not exist" in str(err) or "404" in str(err)
+        if is_not_found:
+            st.info("该节点尚未生成 Wiki 页（跟节点是否已完成无关——Wiki 是静态快照，"
+                     "需要先手动生成一次才有文件）。")
+            build_fut_key = f"_gt_wiki_build_single_fut::{node_id}"
+            build_fut = st.session_state.get(build_fut_key)
+            if build_fut is None:
+                if st.button("🔧 立即生成 Wiki", key=f"_gt_wiki_build_single_{node_id}"):
+                    st.session_state[build_fut_key] = client.submit_async(client.build_goal_wiki, node_id)
+                    st.rerun()
+            elif build_fut.done():
+                st.session_state.pop(build_fut_key, None)
+                try:
+                    res = build_fut.result()
+                except Exception as e:
+                    res = {"_error": str(e)}
+                if isinstance(res, dict) and res.get("_error"):
+                    st.error(f"生成失败：{res['_error']}")
+                    if st.button("🔄 重试生成", key=f"_gt_wiki_build_single_retry_{node_id}"):
+                        st.session_state[build_fut_key] = client.submit_async(client.build_goal_wiki, node_id)
+                        st.rerun()
+                else:
+                    st.rerun()
+            else:
+                st.info("⏳ 生成中…（页面未卡死，可切换其它 tab）")
+                time.sleep(0.4)
+                st.rerun()
+        else:
+            st.warning(f"Wiki 页读取失败：{err}")
+            if st.button("🔄 重试", key=f"_gt_wiki_read_retry_{node_id}"):
+                st.rerun()
         return
     content = resp.get("content")
     if content:
