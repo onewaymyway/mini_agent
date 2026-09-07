@@ -202,3 +202,6 @@ external_projects/stock_watch/reports/
 .agent/hybrid_exec/agent_sessions/
 .agent/capability_state.json
 .claude/skills/wiki-auto-maintenance/
+test_cases/inputs/character-1.png
+test_cases/inputs/character-2.png
+test_cases/inputs/keyframe_first.png
