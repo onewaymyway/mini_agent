@@ -135,8 +135,12 @@ python .claude/skills/mv-generator/scripts/asr_transcribe.py \
    有没有叙事线索（比如"回忆—现实—展望"的结构）。
 2. 把歌词行分组成"场景段落"：
    - 每个场景段落对应一个或多个连续歌词行
-   - **每个场景段落的时长（对应歌词行的 end - start）必须 ≤ 12 秒**
-     （`gen_video_with_text` 单 clip 硬限制），超过 12 秒的段落要再拆分
+   - **每个场景段落的时长（对应歌词行的 end - start）必须 ≥ 4 秒且 ≤ 12 秒**
+     （`gen_video_with_text` 单 clip 硬限制），超过 12 秒的段落要再拆分，
+     不足 4 秒的段落建议合并到相邻场景
+   - 全曲所有场景时长之和应等于（或接近）音频总时长，避免最终视频过短或过长
+   - 若某首歌有多段重复的歌词（如副歌重复），对应的视频片段可以复用同一
+     个 clip，节省 `gen_video` API 调用次数
    - 情绪/画面内容有明显转折的地方，即使歌词行时长很短，也可以单独
      成一个场景段落，让画面切换贴合歌词节奏
 3. 识别出全曲中会反复出现的角色/场景（比如"主唱形象""某个固定场景"），
@@ -220,6 +224,9 @@ AGNES_API_KEY="..." python .claude/skills/gen_video_with_text/gen_video.py \
   截图作为下一段的 `first_frame`。
 - 每生成完一个 clip 立即检查文件是否存在且时长基本符合预期，失败要
   重试或报告给用户，不要静默跳过导致最终拼接时缺片段。
+- 如果某个 clip 的实际时长短于 scene_plan.yaml 中规划的时长，这是正常现象
+  （gen_video API 无法精确控制时长）。后续在 Step 6 拼接时会对短片慢放
+  补齐到目标时长。
 - 文件命名必须保证按播放顺序可排序（`scene_01.mp4`、`scene_02.mp4` ...），
   `compose_mv.py` 是按文件名排序拼接的。
 
@@ -231,16 +238,35 @@ AGNES_API_KEY="..." python .claude/skills/gen_video_with_text/gen_video.py \
 python .claude/skills/mv-generator/scripts/compose_mv.py \
   --clips-dir <output_dir>/clips \
   --lyrics-timed <output_dir>/lyrics_timed.json \
+  --scene-plan <output_dir>/scene_plan.yaml \
   --audio <mp3路径> \
-  --output <output_dir>/mv.mp4
+  --output <output_dir>/mv.mp4 \
+  --title "歌名" \
+  --title-pos top-right
 ```
 
-该脚本会自动：拼接所有 clip（统一分辨率/帧率）→ 从 `lyrics_timed.json`
-重新生成 `.srt` 并烧录进画面（hardsub）→ 混入原始 mp3 音轨（若视频与
-音频时长不一致，以较短者为准，这是已知的兜底行为，正常情况下 Step 3
-的场景时长规划应该已经让视频总时长贴合音频时长）。
+该脚本会自动：
+1. 读取 `scene_plan.yaml` 获取每个场景的目标时长
+2. 拼接所有 clip（统一分辨率/帧率），对短片进行**慢放补齐**至目标时长
+3. 从 `lyrics_timed.json` 重新生成 `.srt` 并烧录进画面（hardsub）
+4. 叠加歌名水印（可选，支持四个角位置）
+5. 混入原始 mp3 音轨（若视频与音频时长不一致，以较短者为准）
 
 **产物**：`mv.mp4`（最终交付物）
+
+#### 关于视频时长补齐
+
+gen_video API 返回的视频时长可能与 scene_plan.yaml 中规划的不一致。此时
+`compose_mv.py` 会用 ffmpeg 的 `setpts` 滤镜对短片进行**慢放处理**，使其
+时长贴合规划值。慢放比例 = 目标时长 / 实际时长。例如目标 8 秒、实际 6 秒，
+则慢放至 1.33x 速度。
+
+#### 歌名水印
+
+- `--title`：歌名文本，如 `"进化再论"`
+- `--title-pos`：水印位置，可选 `top-left`、`top-right`（默认）、`bottom-left`、`bottom-right`
+- 水印使用半透明背景，避免遮挡画面内容
+- 水印会叠加在所有场景上，贯穿全片
 
 ### Step 7: 校验交付
 
@@ -266,7 +292,8 @@ python .claude/skills/mv-generator/scripts/compose_mv.py \
    减少（但不能消除）漂移。
 6. **视频与音频总时长对不上**：检查 Step 3 场景规划里各场景时长之和
    是否等于（或接近）音频总时长，累积误差通常来自多个场景分别取整
-   `--seconds` 参数（4-12 的整数）导致的舍入误差。
+   `--seconds` 参数（4-12 的整数）导致的舍入误差。compose_mv.py 会自动对
+   短片进行慢放补齐，但建议在 Step 3 尽量让规划时长贴合实际音频时长。
 7. **Windows 下字幕不显示**：旧版 `drawtext` 滤镜在 Windows 路径中有
    冒号解析问题，新版 `compose_mv.py` 已改用 PIL+overlay 方案，自动
    处理半透明黑底白字字幕。
@@ -283,3 +310,5 @@ python .claude/skills/mv-generator/scripts/compose_mv.py \
    环境变量设置用 `$env:AGNES_API_KEY="..."`。
 5. **字幕样式可调**：可通过 `--font-size`（默认28）和 `--overlay-y-offset`
    （默认80，字幕距底部偏移像素）调整字幕大小和位置。
+6. **歌名水印**：通过 `--title "歌名"` 和 `--title-pos`（可选 top-left/top-right/bottom-left/bottom-right，默认 top-right）添加。水印使用半透明黑底白字，贯穿全片。
+7. **视频时长补齐**：当 gen_video 返回的 clip 比规划时长短时，compose_mv.py 会自动慢放补齐。慢放比例 = 目标时长 / 实际时长。
