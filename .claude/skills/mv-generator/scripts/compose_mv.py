@@ -121,7 +121,7 @@ def main():
                 FFMPEG, "-y",
                 "-i", str(clip),
                 "-vf", f"fps={args.target_fps},setpts={scale}*PTS",
-                "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
                 "-an",
                 str(out_path),
             ])
@@ -142,7 +142,7 @@ def main():
         FFMPEG, "-y",
         "-f", "concat", "-safe", "0", "-i", str(list_file),
         "-vf", f"scale={args.target_size}:force_original_aspect_ratio=decrease,pad={args.target_size}:(ow-iw)/2:(oh-ih)/2,fps={args.target_fps}",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
         "-an",
         str(joined),
     ])
@@ -214,14 +214,15 @@ def main():
         str(subs_video),
     ])
 
-    # overlay 字幕
+    # overlay 字幕：直接用 PNG 帧序列叠加到主视频（避免二次编码损失）
     video_with_subs = workdir / "video_with_subs.mp4"
+    png_pattern = (subs_dir / "%05d.png").as_posix()
     _run([
         FFMPEG, "-y",
         "-i", str(joined),
-        "-i", str(subs_video),
+        "-i", png_pattern,
         "-filter_complex", "[0:v][1:v]overlay=0:0[out]", "-map", "[out]",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-c:v", "libx264", "-preset", "slow", "-crf", "14",
         "-an",
         str(video_with_subs),
     ])
