@@ -78,6 +78,13 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
     _env = os.environ.copy()
     _env.setdefault("PYTHONUTF8", "1")
     _env.setdefault("PYTHONIOENCODING", "utf-8")
+    # [SYS-BASH-STREAM-BUFFERING-FIX] 子进程的 stdout 一旦被 subprocess.PIPE
+    # 接管（不是 tty），Python 会自动从行缓冲切换成块缓冲（通常 4KB/8KB 才
+    # flush 一次），导致 bash 工具的"流式输出"看起来像是根本没有实时打印——
+    # 其实不是读取端的问题，是被调用的 python 子进程自己攒够一批才往管道里
+    # 写。PYTHONUNBUFFERED=1 强制 Python 子进程的 stdout/stderr 都用无缓冲
+    # I/O，配合 -u 效果一致但不需要调用方记得每次都加 -u 参数。
+    _env.setdefault("PYTHONUNBUFFERED", "1")
 
     # timeout < 0 => 不设超时（None 传给 communicate/不启动看门狗定时器）。
     _effective_timeout: Optional[int] = None if (timeout is None or timeout < 0) else timeout

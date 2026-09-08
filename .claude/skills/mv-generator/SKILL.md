@@ -321,6 +321,15 @@ python .claude/skills/mv-generator/scripts/generate_scene_videos.py \
 不会被 bash 工具的看门狗提前终止。 Step 1 的 `asr_transcribe.py`
 （大文件 + cpu 模式）如果实测经常超过 300 秒，同样建议用 `timeout=-1`。
 
+**关于实时进度输出**：`generate_scene_videos.py` 内部已经把 stdout/stderr
+强制设为行缓冲（每打印一行立刻 flush），bash 工具也会给子进程注入
+`PYTHONUNBUFFERED=1`，两层保障下终端应能实时看到"正在生成场景 XX"
+这类进度打印。如果仍然发现长时间没有任何输出（只看到 urllib3 的
+`InsecureRequestWarning` 之类 warning，看不到脚本自己的 print），大概率
+是卡在某个场景的视频生成/轮询上（本身就要等几分钟），而不是输出没有
+被实时打印——可以对照脚本打印的"[第N轮 i/j] 正在生成场景 xxx"确认当前
+卡在哪个场景，而不是怀疑是流式输出坏了。
+
 **脚本行为说明**：
 1. 依次读取 `scene_plan.yaml` 里的每个 scene，根据 `video_mode` 字段
    自动选择 `reference`/`keyframe`/`text` 模式调用生成接口，`reference`

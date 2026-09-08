@@ -37,6 +37,18 @@ except ImportError:
     print("缺少 pyyaml 依赖，请先执行: pip install pyyaml", file=sys.stderr)
     sys.exit(2)
 
+# [SYS-STREAM-FLUSH-FIX] 本脚本经常被 mini_agent 的 bash 工具当子进程调用，
+# stdout 一旦被 subprocess.PIPE 接管就不再是 tty，Python 默认会切换成块
+# 缓冲（几 KB 才 flush 一次），导致下面这些"实时进度"print 在父进程那边
+# 看起来像是卡住了、半天不出。这里显式把 stdout/stderr 都设成行缓冲，
+# 每打印一行就立刻 flush，不依赖调用方是否设置了 PYTHONUNBUFFERED
+# 环境变量（双重保险）。reconfigure 是 Python 3.7+ 才有，加 try 兼容更老版本。
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 
 MIN_SEC = 4
 MAX_SEC = 12
