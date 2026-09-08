@@ -27,7 +27,10 @@ from . import tool  # noqa
     name="bash",
     description=(
         "Execute a shell command in the project environment. "
-        "Returns stdout + stderr. Timeout: 30s by default. "
+        "Returns stdout + stderr. Timeout: 300s by default. "
+        "Pass timeout=-1 to disable the timeout entirely (wait indefinitely) — "
+        "useful for long-running commands like video generation that routinely "
+        "take longer than 300s. "
         "Working directory is the project root unless overridden."
     ),
     schema={
@@ -39,7 +42,13 @@ from . import tool  # noqa
             },
             "timeout": {
                 "type": "integer",
-                "description": "Timeout in seconds (default 30)",
+                "description": (
+                    "Timeout in seconds (default 300). Pass -1 to disable the "
+                    "timeout and let the command run indefinitely until it "
+                    "finishes on its own — use this for long-running commands "
+                    "(e.g. batch video generation) that are expected to take "
+                    "longer than 300s."
+                ),
             },
             "workdir": {
                 "type": "string",
@@ -51,7 +60,13 @@ from . import tool  # noqa
     requires_approval=True,
 )
 def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str:
-    """Execute a shell command and return combined stdout/stderr."""
+    """Execute a shell command and return combined stdout/stderr.
+
+    timeout=-1（或任何负数）表示不设超时，命令会一直运行到自己结束为止，
+    不会被看门狗/communicate 超时机制强制杀掉。默认仍是 300 秒，只有
+    显式传 -1 才会关闭超时保护，调用方需要自行确保命令终归会结束
+    （不是死循环/卡在交互式输入上）。
+    """
     import os
     cwd = Path(workdir).expanduser() if workdir else Path.cwd()
 
@@ -64,8 +79,11 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
     _env.setdefault("PYTHONUTF8", "1")
     _env.setdefault("PYTHONIOENCODING", "utf-8")
 
+    # timeout < 0 => 不设超时（None 传给 communicate/不启动看门狗定时器）。
+    _effective_timeout: Optional[int] = None if (timeout is None or timeout < 0) else timeout
+
     if _BASH_STREAM_OUTPUT_ENABLED:
-        return _bash_stream(command, timeout=timeout, cwd=cwd, env=_env)
+        return _bash_stream(command, timeout=_effective_timeout, cwd=cwd, env=_env)
 
     # [SYS-BASH-HANG-FIX] 两个已知会导致"永久卡死、timeout 形同虚设"的坑：
     # 1) 不给 stdin 会继承父进程的 stdin；一旦命令触发交互式提示
@@ -135,7 +153,9 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
                     pass
 
     try:
-        stdout_b, stderr_b = proc.communicate(timeout=timeout)
+        # _effective_timeout 为 None 时，communicate() 会一直阻塞到进程
+        # 自己结束为止，不会抛 TimeoutExpired（即"不设超时"）。
+        stdout_b, stderr_b = proc.communicate(timeout=_effective_timeout)
     except subprocess.TimeoutExpired:
         _kill_process_tree()
         # 进程组已被强制杀掉，这里的 communicate() 只是回收管道里
@@ -188,7 +208,7 @@ def _bash_decode(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def _bash_stream(command: str, *, timeout: int, cwd: Path, env: dict) -> str:
+def _bash_stream(command: str, *, timeout: Optional[int], cwd: Path, env: dict) -> str:
     """bash() 的流式实现：逐行读取子进程输出，边读边打印到终端；
 
     超时时不再像旧版那样直接丢弃已产生的输出、只返回一句
@@ -200,6 +220,10 @@ def _bash_stream(command: str, *, timeout: int, cwd: Path, env: dict) -> str:
     "每读到一行就检查一次时间"——后者对"命令长时间不产生任何输出"（比如
     纯 `sleep N`）完全无效，因为 readline() 会一直阻塞到有数据或进程退出
     才返回，循环体内的时间检查根本没有机会被执行到。
+
+    timeout=None 表示不设超时：不启动看门狗线程，命令会一直跑到自己
+    结束为止（对应 bash() 里 timeout=-1 的情形，用于视频生成等routinely
+    超过默认 300s 的长任务）。
     """
     import mini_agent.ui.renderer as R
     import threading
@@ -275,9 +299,11 @@ def _bash_stream(command: str, *, timeout: int, cwd: Path, env: dict) -> str:
                     log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._bash_stream._kill_on_timeout')
                     pass
 
-    watchdog = threading.Timer(timeout, _kill_on_timeout)
-    watchdog.daemon = True
-    watchdog.start()
+    watchdog: Optional[threading.Timer] = None
+    if timeout is not None:
+        watchdog = threading.Timer(timeout, _kill_on_timeout)
+        watchdog.daemon = True
+        watchdog.start()
 
     chunks: list[bytes] = []
     try:
@@ -292,7 +318,8 @@ def _bash_stream(command: str, *, timeout: int, cwd: Path, env: dict) -> str:
                 pass  # 终端打印失败不应影响命令本身的执行/结果收集
         proc.wait()
     finally:
-        watchdog.cancel()
+        if watchdog is not None:
+            watchdog.cancel()
         # 进程被 kill 后，管道里可能还残留一点没读完的缓冲内容，补读一次。
         if proc.stdout is not None:
             try:

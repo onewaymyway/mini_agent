@@ -311,6 +311,16 @@ python .claude/skills/mv-generator/scripts/generate_scene_videos.py \
 （需要先设置好 `AGNES_API_KEY` 或 `AGNES_API_KEYS` 环境变量，或在
 `providers.json` 里配置好 agnes 的 `api_keys`，脚本会自动加载。）
 
+**⚠️ 调用 bash 工具执行上面这条命令时，`timeout` 参数必须传 `-1`
+（不限时），不要用默认的 300 秒。** 一首歌通常有 15-25 个场景，每个
+场景视频生成（含排队+轮询+下载）常常就要几分钟，加上失败重试、多轮
+补跑，整个批量生成过程动辄超过半小时，300 秒的默认超时会在脚本还在
+正常工作时就把它强制杀掉，导致已经成功的场景也可能因为进程被杀而
+来不及汇总/白跑。`timeout=-1` 表示不设超时上限，命令会一直运行到
+`generate_scene_videos.py` 自己跑完（成功或判定为持续性失败）为止，
+不会被 bash 工具的看门狗提前终止。 Step 1 的 `asr_transcribe.py`
+（大文件 + cpu 模式）如果实测经常超过 300 秒，同样建议用 `timeout=-1`。
+
 **脚本行为说明**：
 1. 依次读取 `scene_plan.yaml` 里的每个 scene，根据 `video_mode` 字段
    自动选择 `reference`/`keyframe`/`text` 模式调用生成接口，`reference`
