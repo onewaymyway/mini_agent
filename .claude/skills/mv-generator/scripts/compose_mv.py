@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""MV 最终合成脚本：拼接分场景视频片段 + 烧录歌词字幕 + 混入原始音轨。
+"""MV 最终合成脚本（新版）。
 
-已验证修复（2026-09-08）：
-1. 硬编码 ffmpeg/ffprobe 路径，避免 PATH 问题
-2. 整体慢放 concat + setpts，而非逐 clip 慢放（效率更高，无累积误差）
-3. 直接读 lyrics_timed.json 的 lines 字段，无需生成中间 .srt 文件
-4. 正确替换音轨：先 -an 去掉 clips 自带音轨，再混入 mp3
-5. drawtext font 路径冒号转义（C:/ → C\:)解决 Windows 解析问题
+核心逻辑：
+1. 按 scene_plan.yaml 规划时长，每个 scene 独立缩放
+   - clip 比规划短时 → 慢放
+   - clip 比规划长时 → 快放
+2. 字幕按 lyrics_timed.json 绝对时间显示（与 mp3 同步）
+3. 音频使用原始 mp3
 
-用法（命令行）：
-    python compose_mv.py \\
-        --clips-dir clips \\
-        --lyrics-timed lyrics_timed.json \\
-        --audio song.mp3 \\
-        --output mv.mp4 \\
-        --title "歌名" \\
-        --title-pos top-right
+用法：
+    python compose_mv.py \
+        --clips-dir clips \
+        --scene-plan scene_plan.yaml \
+        --lyrics-timed lyrics_timed.json \
+        --audio song.mp3 \
+        --output mv.mp4 \
+        --title "歌名"
 """
 
 import argparse
@@ -32,14 +32,12 @@ try:
 except ImportError:
     HAS_YAML = False
 
-# ── 硬编码路径（避免 PATH 问题）──────────────────────────────────────
 FFMPEG = r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffmpeg.exe"
 FFPROBE = r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffprobe.exe"
 FONT_PATH = r"C:\Windows\Fonts\msyh.ttc"
 
 
 def _run(cmd):
-    """执行命令，失败时抛出详细错误。"""
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"命令失败:\n{' '.join(cmd)}\nstderr:\n{result.stderr[-3000:]}")
@@ -47,7 +45,6 @@ def _run(cmd):
 
 
 def get_dur(path):
-    """用 ffprobe 获取视频/音频时长（秒）。"""
     r = subprocess.run(
         [FFPROBE, "-v", "quiet", "-print_format", "json",
          "-show_format", str(path)],
@@ -56,83 +53,125 @@ def get_dur(path):
     return float(json.loads(r.stdout)["format"]["duration"])
 
 
+def parse_scene_plan(plan_path):
+    """解析 scene_plan.yaml，返回 scene 列表（含规划时长）。"""
+    with open(plan_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    scenes = []
+    for s in data.get("scenes", []):
+        scene_id = s["id"]
+        start = s["start"]
+        end = s["end"]
+        target_dur = end - start
+        # 找到对应 clip 文件（支持 scene_XX.mp4 或 scene_XXa.mp4 等）
+        clips_dir = Path(args.clips_dir)
+        candidates = sorted([
+            p for p in clips_dir.iterdir()
+            if p.suffix.lower() == ".mp4" and p.name.startswith(scene_id.replace("_", "_"))
+        ], key=lambda p: p.name)
+        # 简单匹配：scene_01 -> scene_01*, scene_07a -> scene_07a*
+        matched = []
+        for p in clips_dir.glob(scene_id + "*.mp4"):
+            matched.append(p)
+        matched.sort(key=lambda p: p.name)
+        scenes.append({
+            "id": scene_id,
+            "start": start,
+            "end": end,
+            "target_dur": target_dur,
+            "clips": matched,
+            "lyric_lines": s.get("lyric_lines", []),
+        })
+    return scenes
+
+
 def main():
-    parser = argparse.ArgumentParser(description="MV 最终合成（修复版）")
-    parser.add_argument("--clips-dir", required=True,
-                        help="分场景视频片段目录（按文件名排序拼接）")
-    parser.add_argument("--lyrics-timed", required=True,
-                        help="lyrics_timed.json 路径（含 duration 和 lines 字段）")
-    parser.add_argument("--audio", required=True, help="原始 mp3 音频路径")
-    parser.add_argument("--output", required=True, help="最终 MV 输出路径")
+    global args
+    parser = argparse.ArgumentParser(description="MV 最终合成（新版：逐场景独立缩放）")
+    parser.add_argument("--clips-dir", required=True)
+    parser.add_argument("--scene-plan", required=True, help="scene_plan.yaml 路径")
+    parser.add_argument("--lyrics-timed", required=True, help="lyrics_timed.json 路径")
+    parser.add_argument("--audio", required=True)
+    parser.add_argument("--output", required=True)
     parser.add_argument("--target-size", default="1280:720")
     parser.add_argument("--target-fps", type=int, default=24)
     parser.add_argument("--font-size", type=int, default=28)
     parser.add_argument("--overlay-y-offset", type=int, default=80)
-    parser.add_argument("--title", default=None, help="歌名水印文本")
+    parser.add_argument("--title", default=None)
     parser.add_argument("--title-pos", default="top-right",
-                        choices=["top-left","top-right","bottom-left","bottom-right"])
+                        choices=["top-left", "top-right", "bottom-left", "bottom-right"])
     args = parser.parse_args()
 
-    clips_dir = Path(args.clips_dir)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     workdir = Path(tempfile.mkdtemp(prefix="mv_compose_"))
     print(f"Work dir: {workdir}")
 
-    # ── 1. 收集 clips ──────────────────────────────────────────────
-    clip_files = sorted(
-        [p for p in clips_dir.iterdir() if p.suffix.lower() == ".mp4"],
-        key=lambda p: p.name
-    )
-    print(f"Found {len(clip_files)} clips")
-    if not clip_files:
-        raise RuntimeError("No clips found")
+    # ── 1. 解析 scene_plan ─────────────────────────────────────────
+    scenes = parse_scene_plan(args.scene_plan)
+    print(f"Loaded {len(scenes)} scenes from scene_plan.yaml")
+    for s in scenes:
+        print(f"  {s['id']}: {s['start']:.1f}s - {s['end']:.1f}s (target={s['target_dur']:.1f}s), "
+              f"clips={[c.name for c in s['clips']]}")
 
-    # ── 2. 计算慢放比例 ────────────────────────────────────────────
-    lyrics_data = json.load(open(args.lyrics_timed, "r", encoding="utf-8"))
-    lines = lyrics_data.get("lines", lyrics_data)
-    target_duration = lyrics_data.get("duration", 239.04)
-    total_clip_dur = sum(get_dur(c) for c in clip_files)
-    scale_factor = target_duration / total_clip_dur
-    print(f"Clips: {total_clip_dur:.1f}s -> Target: {target_duration:.1f}s "
-          f"(scale={scale_factor:.4f}x slow)")
-    if total_clip_dur <= 0:
-        raise RuntimeError("Clip duration is zero")
+    # ── 2. 逐场景独立缩放 ──────────────────────────────────────────
+    scaled_dir = workdir / "scaled"
+    scaled_dir.mkdir()
+    total_scaled_dur = 0.0
 
-    # ── 3. 构建 concat 文件列表 ────────────────────────────────────
-    list_file = workdir / "clips.txt"
+    for scene in scenes:
+        for i, clip in enumerate(scene["clips"]):
+            clip_dur = get_dur(clip)
+            # 平分给该 scene 的每个 clip
+            per_clip_target = scene["target_dur"] / len(scene["clips"])
+            scale = per_clip_target / clip_dur
+            out_name = f"{scene['id']}_c{i+1:02d}.mp4"
+            out_path = scaled_dir / out_name
+            _run([
+                FFMPEG, "-y",
+                "-i", str(clip),
+                "-vf", f"fps={args.target_fps},setpts={scale}*PTS",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-an",
+                str(out_path),
+            ])
+            scaled_dur = get_dur(out_path)
+            total_scaled_dur += scaled_dur
+            print(f"  {clip.name} ({clip_dur:.2f}s) -> {out_name} ({scaled_dur:.2f}s, scale={scale:.3f}x)")
+
+    print(f"Total scaled duration: {total_scaled_dur:.1f}s")
+
+    # ── 3. 拼接所有缩放后的 clip ───────────────────────────────────
+    list_file = workdir / "concat_list.txt"
     with open(list_file, "w", encoding="utf-8") as f:
-        for clip in clip_files:
-            f.write(f"file '{clip.as_posix()}'\n")
+        for p in sorted(scaled_dir.glob("*.mp4"), key=lambda x: x.name):
+            f.write(f"file '{p.as_posix()}'\n")
 
-    # ── 4. 拼接 clips（统一分辨率/帧率 + 整体慢放）─────────────────
-    # 关键：所有 clip 一起过 concat + setpts，避免逐 clip 重编码的累积误差
     joined = workdir / "joined.mp4"
     _run([
         FFMPEG, "-y",
         "-f", "concat", "-safe", "0", "-i", str(list_file),
-        "-vf", (
-            f"scale={args.target_size}:force_original_aspect_ratio=decrease,"
-            f"pad={args.target_size}:(ow-iw)/2:(oh-ih)/2,"
-            f"fps={args.target_fps},"
-            f"setpts={scale_factor}*PTS"
-        ),
+        "-vf", f"scale={args.target_size}:force_original_aspect_ratio=decrease,pad={args.target_size}:(ow-iw)/2:(oh-ih)/2,fps={args.target_fps}",
         "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-        "-an",   # 不保留任何 clips 自带音轨
+        "-an",
         str(joined),
     ])
     joined_dur = get_dur(joined)
     print(f"Joined: {joined_dur:.1f}s")
 
-    # ── 5. 生成字幕 PNG 帧（PIL RGBA）─────────────────────────────
+    # ── 4. 生成字幕（按 lyrics_timed.json 绝对时间）────────────────
     from PIL import Image, ImageDraw, ImageFont
     W, H = [int(x) for x in args.target_size.split(":")]
     font = ImageFont.truetype(FONT_PATH, args.font_size)
     subs_dir = workdir / "subs"
     subs_dir.mkdir(exist_ok=True)
 
-    prev_end = 0.0
+    lyrics_data = json.load(open(args.lyrics_timed, "r", encoding="utf-8"))
+    lines = lyrics_data.get("lines", [])
+    print(f"Generating {len(lines)} subtitle frames from lyrics_timed.json")
+
     seg_info = []
+    prev_end = 0.0
     for i, item in enumerate(lines):
         text = item.get("text", "")
         start = max(item["start"], prev_end + 0.1)
@@ -157,74 +196,58 @@ def main():
         img.save(png_path, "PNG")
         seg_info.append({"file": f"{i:04d}.png", "start": start, "end": end, "dur": dur})
 
-    print(f"Generated {len(seg_info)} subtitle frames")
+    # concat 字幕 PNG 为视频
+    sub_list = workdir / "subs_list.txt"
+    with open(sub_list, "w", encoding="utf-8") as f:
+        for seg in seg_info:
+            f.write(f"file '{(subs_dir / seg['file']).as_posix()}'\n")
+            f.write(f"duration {seg['dur']}\n")
 
-    # ── 6. 编码字幕视频（PNG 格式保留 alpha）───────────────────────
-    cat_lines = []
-    for si in seg_info:
-        cat_lines.append(f"file '{(subs_dir / si['file']).as_posix()}'")
-        cat_lines.append(f"duration {si['dur']:.3f}")
-    cat_path = workdir / "subs_concat.txt"
-    cat_path.write_text("\n".join(cat_lines), encoding="utf-8")
-
-    sub_vid = workdir / "subs_video.mp4"
+    subs_video = workdir / "subs_video.mp4"
     _run([
-        FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", str(cat_path),
-        "-vf", "fps=24",
-        "-c:v", "png",   # PNG 编码器保留 RGBA alpha 通道
-        str(sub_vid),
+        FFMPEG, "-y",
+        "-f", "concat", "-safe", "0", "-i", str(sub_list),
+        "-pix_fmt", "rgba",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "0",
+        str(subs_video),
     ])
 
-    # ── 7. Overlay 字幕到视频 ──────────────────────────────────────
-    video_with_subs = workdir / "with_subs.mp4"
+    # overlay 字幕
+    video_with_subs = workdir / "video_with_subs.mp4"
     _run([
         FFMPEG, "-y",
         "-i", str(joined),
-        "-i", str(sub_vid),
-        "-filter_complex", "[0:v][1:v]overlay=0:0[outv]",
-        "-map", "[outv]",
+        "-i", str(subs_video),
+        "-filter_complex", "[0:v][1:v]overlay=0:0[out]", "-map", "[out]",
         "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-        "-pix_fmt", "yuv420p",   # 兼容播放器
-        "-an",                    # 仍然不要音频
+        "-an",
         str(video_with_subs),
     ])
 
-    # ── 8. 叠加歌名水印（drawtext）─────────────────────────────────
+    # ── 5. 添加歌名水印 ────────────────────────────────────────────
     if args.title:
-        print(f'Title watermark: "{args.title}" at {args.title_pos}')
-        video_with_title = workdir / "with_title.mp4"
-        pos_map = {
-            "top-left": "10:10",
-            "top-right": "W-w-10:10",
-            "bottom-left": "10:H-h-10",
-            "bottom-right": "W-w-10:H-h-10",
-        }
-        pos_x, pos_y = pos_map[args.title_pos].split(":")
-        # Windows 路径中冒号被 drawtext 当作分隔符，需用反斜杠转义
-        # C:/Windows/... → C\:/Windows/...（每个 / 变 \\，每个 : 变 \\:）
         font_escaped = FONT_PATH.replace("/", "\\").replace(":", "\\:")
-        filter_str = (
-            f"drawtext=text='{args.title}':fontsize={args.font_size}"
-            f":fontfile='{font_escaped}':x={pos_x}:y={pos_y}"
-            f":box=1:boxcolor=black@0.5:boxborderw=5"
-        )
+        pos_map = {
+            "top-left":     {"x": "10",    "y": "10"},
+            "top-right":    {"x": "W-tw-10", "y": "10"},
+            "bottom-left":  {"x": "10",    "y": "H-th-10"},
+            "bottom-right": {"x": "W-tw-10", "y": "H-th-10"},
+        }
+        pos = pos_map[args.title_pos]
         _run([
             FFMPEG, "-y",
             "-i", str(video_with_subs),
-            "-vf", filter_str,
-            "-c:a", "copy",   # 拷贝现有音轨（此时仍无音轨，无害）
-            str(video_with_title),
+            "-vf", f"drawtext=text='{args.title}':fontsize={args.font_size}:fontfile='{font_escaped}':x={pos['x']}:y={pos['y']}:box=1:boxcolor=black@0.5:boxborderw=5",
+            "-c:a", "copy",
+            str(video_with_subs),  # overwrite
         ])
-        final_video = video_with_title
-    else:
-        final_video = video_with_subs
+        print(f"Title watermark: '{args.title}' at {args.title_pos}")
 
-    # ── 9. 混入原始 mp3 音轨 ───────────────────────────────────────
-    # -an 确保不保留中间文件的音轨，-shortest 以较短者为准
+    # ── 6. 混入原始 mp3 音轨 ──────────────────────────────────────
     print(f"Mixing audio: {args.audio}")
     _run([
         FFMPEG, "-y",
-        "-i", str(final_video),
+        "-i", str(video_with_subs),
         "-i", args.audio,
         "-c:v", "copy",
         "-c:a", "aac", "-b:a", "192k",
@@ -232,13 +255,11 @@ def main():
         str(output),
     ])
 
-    # ── 10. 验证 & 清理 ────────────────────────────────────────────
     final_dur = get_dur(output)
     final_size_mb = output.stat().st_size // 1024 // 1024
     print(f"\nFinal MV: {output}")
-    print(f"  Duration: {final_dur:.1f}s (target: {target_duration:.1f}s)")
+    print(f"  Duration: {final_dur:.1f}s")
     print(f"  Size: {final_size_mb}MB")
-
     shutil.rmtree(workdir, ignore_errors=True)
     print("Cleaned up temp dir")
 
