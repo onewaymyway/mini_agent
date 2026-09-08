@@ -26,6 +26,9 @@ ASR 粗识别 → 歌词对齐校正 → 场景规划(需用户确认) → 定�
   （旧版 `align_lyrics.py`/`align_lyrics_llm.py` 已不推荐使用，保留仅为兼容）
 - `scripts/check_scene_plan.py`：校验 `scene_plan.yaml`（单场景时长范围、
   时间轴连续性、是否覆盖音频总时长），Step 3 写完必须跑，不通过不能进入 Step 4
+- `scripts/check_assets.py`：校验 Step 4 生成的定妆图是否都已落盘（路径
+  已回填、文件存在且非空、场景引用无悬空），Step 4 做完必须跑，不通过
+  不能进入 Step 5
 - `scripts/generate_scene_videos.py`：批量生成分场景视频，Step 5 用它代替
   逐个手动调用 `gen_video_with_text`，内置 key 池自动切换 + 失败重试 + 断点续跑
 - `scripts/compose_mv.py`：ffmpeg 最终合成（逐 scene 独立缩放 + PIL 字幕/水印）
@@ -266,6 +269,30 @@ AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
 
 **产物**：`assets/*.png`（强制落盘），并同步更新 `scene_plan.yaml`
 
+**全部定妆图生成完并回填 `asset_path` 后，进入 Step 5 之前必须先跑校验
+脚本**，确认真的都生成成功了（避免某张图生成失败/超时但 Agent 没注意到，
+或者忘记回填 `asset_path`，直到 Step 5 调用视频生成时才因为参考图缺失
+而报错）：
+
+```bash
+python .claude/skills/mv-generator/scripts/check_assets.py \
+  <output_dir>/scene_plan.yaml \
+  --output-dir <output_dir>
+```
+
+该脚本会检查：
+1. **`recurring_assets` 每一项是否都已回填 `asset_path`**——生成完图片
+   却忘记回填字段是常见疏漏，会直接报出具体是哪个 asset id。
+2. **`asset_path` 指向的文件是否真实存在且非空**——生成失败但留下了
+   空文件/占位文件的情况也会被抓出来，不会被误判为"已完成"。
+3. **所有 scene 的 `uses_assets` 引用是否都能在 `recurring_assets` 里
+   找到对应项**——引用了没规划过的 id 或拼写错误，会连同具体 scene id
+   一起报出来，而不是等 Step 5 生成时才发现参考图缺失。
+
+脚本退出码非 0 时，**不允许进入 Step 5**，需要按 errors 列表逐条处理
+（回到 Step 4 补生成缺失/为空的定妆图，或修正 `scene_plan.yaml` 里的
+`asset_path`/`uses_assets` 引用），改完重新运行本脚本，直到通过为止。
+
 ### Step 5: 分场景视频生成
 
 **改为用脚本批量生成，不再由 Agent 逐个手动调用命令。** 这样可以让
@@ -422,6 +449,12 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
    错误（Step 4 忘记回填或路径拼写错误）、或所有 key 都被限流/额度耗尽。
    修正 `scene_plan.yaml` 或环境变量后，直接重新运行同一条命令即可
    （已成功的场景会被跳过，只补齐缺失的）。
+4c. **Step 4 定妆图生成后没检查就直接进入 Step 5**：用 `check_assets.py`
+   在 Step 4 结束后强制检查一遍，常见疏漏是图片生成失败但 Agent 没注意
+   （留下空文件）、或生成成功但忘记回填 `scene_plan.yaml` 里的
+   `asset_path`——这两种情况不检查的话，Step 5 批量生成时对应场景会因为
+   参考图缺失/无效而失败，且不容易第一时间定位到根因是"定妆图没生成好"
+   而不是视频生成本身的问题。
 5. **人物形象在不同 clip 间有明显差异**：这是 `reference` 模式的已知
    限制（非同一 seed 级别的像素一致），已在方案确认阶段与用户对齐过
    预期；可以尝试让同一角色的所有场景都引用完全相同的定妆图文件，
