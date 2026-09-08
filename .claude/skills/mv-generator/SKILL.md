@@ -35,9 +35,12 @@ Step 0 由用户选择一次，选择结果写入 `<output_dir>/mv_config.json`�
 - `scripts/align_lyrics_forced.py`：歌词对齐**方案 A（优先）**，CTC 强制
   对齐，标准歌词文本已知，只需要对齐时间，不做自由识别，精度和鲁棒性
   都优于方案 B，尤其是有重复段落的歌
-- `scripts/align_lyrics_v2.py`：歌词对齐**方案 B（兜底）**，归一化精确
-  匹配 + 覆盖率报告（旧版 `align_lyrics.py`/`align_lyrics_llm.py` 已不
-  推荐使用，保留仅为兼容）
+- `scripts/align_lyrics_v3.py`：歌词对齐**方案 B（兜底）**，当方案 A
+  因为环境限制装不上/跑不通时用这个。归一化精确匹配 + 覆盖率报告 + 拼音
+  模糊匹配（装了 `pypinyin` 才启用，能救回同音字/近音字 ASR 错误导致的
+  整句不匹配；没装会自动退化成和 `align_lyrics_v2.py` 完全一样的行为，
+  不会报错）。`align_lyrics_v2.py`/`align_lyrics.py`/`align_lyrics_llm.py`
+  均已不推荐使用，保留仅为兼容
 - `scripts/check_scene_plan.py`：校验 `scene_plan.yaml`（单场景时长范围、
   时间轴连续性、是否覆盖音频总时长），Step 3 写完必须跑，不通过不能进入 Step 4
 - `scripts/check_assets.py`：校验 Step 4 生成的定妆图是否都已落盘（路径
@@ -54,7 +57,10 @@ Step 0 由用户选择一次，选择结果写入 `<output_dir>/mv_config.json`�
   `pip install demucs --break-system-packages`，首次运行需联网下载模型权重）
 - `ctc-forced-aligner`（Python 包，Step 2 方案 A 强制对齐用，推荐但非
   强制；`pip install ctc-forced-aligner --break-system-packages`，首次
-  运行需联网从 huggingface.co 下载模型，网络不通时自动退回方案 B）
+  运行需联网从 huggingface.co 下载模型，网络不通/装不上时自动退回方案 B）
+- `pypinyin`（Python 包，Step 2 方案 B 的拼音模糊匹配用，纯 Python 无
+  重依赖，安装几乎不会失败；`pip install pypinyin --break-system-packages`，
+  没装也不影响方案 B 跑通，只是退化成没有拼音兜底的效果）
 - `ffmpeg`（系统命令，未安装时先提示用户按 `docs/mv-generator-guide.md`
   里的说明安装；Windows 推荐 `winget install ffmpeg`）
 - `AGNES_API_KEY` 环境变量（`gen_image_with_text`/`gen_video_with_text` 都需要）
@@ -97,12 +103,14 @@ mv_output/歌曲名_20260907/
    `gen_video_with_text` 都依赖它），未设置则提示用户设置后再继续。
 2. 检查 `faster-whisper` 是否已安装（可以直接尝试 `python -c "import faster_whisper"`），
    未安装则提示用户 `pip install faster-whisper` 并等待确认后再继续。
-3. 检查 `demucs` 和 `ctc-forced-aligner` 是否已安装（`python -c "import demucs"` /
-   `python -c "import ctc_forced_aligner"`）。这两个是 Step 1/2 推荐方案
-   （人声分离 + 强制对齐）用到的，没装不阻塞流程——提示用户
-   `pip install demucs ctc-forced-aligner --break-system-packages`，
-   用户暂时不装或环境没法联网下载模型也没关系，跳过后自动退回旧方案
-   （原始 mp3 直接 ASR + 模糊匹配对齐），效果会打折扣但流程能跑通。
+3. 检查 `demucs`、`ctc-forced-aligner`、`pypinyin` 是否已安装
+   （`python -c "import demucs"` / `python -c "import ctc_forced_aligner"` /
+   `python -c "import pypinyin"`）。前两个是 Step 1/2 方案 A（人声分离 +
+   强制对齐）用到的，没装不阻塞流程；`pypinyin` 是方案 B 的拼音模糊匹配
+   用的，纯 Python 小包，基本不会装失败，**即使方案 A 两个重依赖都装不
+   上，也建议至少装上这个**。提示用户
+   `pip install demucs ctc-forced-aligner pypinyin --break-system-packages`
+   一次性尝试，装不上的部分不影响能装上的部分生效，各自独立降级。
 4. 检查 `ffmpeg` 是否在 PATH 中（`ffmpeg -version`），不可用则提示用户
    按 `docs/mv-generator-guide.md` 安装，Step 6 之前必须解决，前面几步
    不依赖 ffmpeg 可以先做。
@@ -259,19 +267,27 @@ python .claude/skills/mv-generator/scripts/align_lyrics_forced.py \
 - 跑完看 stderr：如果有对齐置信度偏低的行会被列出来，Agent 按方案 B
   里"只复核低置信度行"的方式处理（见下方第二步）。
 
-**方案 B（兜底）：ASR + 模糊匹配 `align_lyrics_v2.py`**
+**方案 B（兜底）：ASR + 模糊匹配 `align_lyrics_v3.py`**
 
-当强制对齐因为网络/依赖问题跑不通，或者对齐完之后发现某些行明显对不上
-（比如实际演唱里插入了歌词文件里没写的重复段落），退回到这个方案：
+当强制对齐因为网络/依赖问题跑不通（比如 `ctc-forced-aligner` 装不上、
+huggingface.co 连不上），或者对齐完之后发现某些行明显对不上（比如实际
+演唱里插入了歌词文件里没写的重复段落），退回到这个方案：
+
+**强烈建议先装上 `pypinyin`**（纯 Python 小包，无 C 扩展/无需联网下载
+模型，安装几乎不会失败，即使 `ctc-forced-aligner`/`demucs` 都装不上的
+环境通常也能装上）：
+```bash
+pip install pypinyin --break-system-packages
+```
 
 ```bash
-python .claude/skills/mv-generator/scripts/align_lyrics_v2.py \
+python .claude/skills/mv-generator/scripts/align_lyrics_v3.py \
   <output_dir>/asr_raw.json <output_dir>/lyrics.txt \
   --save-path <output_dir>/lyrics_timed.json \
   --save-srt <output_dir>/lyrics.srt
 ```
 
-`align_lyrics_v2.py` 相比更早版本 `align_lyrics.py` 的关键改进：
+`align_lyrics_v3.py` 相比更早版本的关键改进：
 - **匹配前先归一化**：忽略大小写，并把繁体字统一转成简体再比较
   （faster-whisper 中文识别经常输出繁体，歌词文本通常是简体，"總"
   和"总"这种字之前会被判定为不匹配，导致大量本该精确匹配的字符退化
@@ -285,6 +301,14 @@ python .claude/skills/mv-generator/scripts/align_lyrics_v2.py \
   覆盖率 < 34% 的行，脚本会自动再尝试"整句级别"模糊匹配兜底（拿该行
   跟附近 ASR segment 整体做相似度比较），仍然拿不到可信结果的行会在
   stderr 里列出来，供下一步人工/Agent 复核。
+- **拼音模糊匹配（v3 新增，需要 `pypinyin`）**：上面这条"整句级别模糊
+  匹配"原本只比较汉字，中文 ASR 出错很大一部分是同音字/近音字替换
+  （比如把"科技的窍门"识别成"可惜的窗门"），字形上完全不匹配但读音
+  一样，纯汉字比较会直接判定"整句不相似"退化成插值。v3 额外把这一行
+  和候选 ASR 片段都转成拼音序列再比一次相似度，取汉字/拼音两者的较大
+  值，同音字错误也能命中，明显减少退化成插值的行数。未装 `pypinyin`
+  时自动跳过这一条，行为等价于 `align_lyrics_v2.py`，不会报错，可以
+  放心直接切到 `align_lyrics_v3.py`，不需要先判断装没装拼音库。
 - **单调窗口约束**：引入时间游标 `cursor_time`，确保对齐结果在时间上
   单调不减，避免重复段落导致的张冠李戴问题（但本质是在缓解症状，效果
   上限不如方案 A，能用方案 A 就优先用方案 A）。
@@ -661,11 +685,11 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
    `pip install faster-whisper` 提示，不会裸抛 ImportError。
 2. **ffmpeg 未安装/不在 PATH**：`compose_mv.py` 使用硬编码路径
    `C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffmpeg.exe`，无需依赖 PATH。
-3. **对齐结果时间戳明显异常/两边字数对不上（走的是方案 B `align_lyrics_v2.py`）**：
+3. **对齐结果时间戳明显异常/两边字数对不上（走的是方案 B `align_lyrics_v3.py`）**：
    先确认没有跳过归一化步骤（不要直接用更早期的 `align_lyrics.py`，
    后者没有简繁/大小写归一化，中文 ASR 输出繁体时会导致大量本该精确
    匹配的字符被判定为不匹配，从而错误地退化成整段线性插值）。跑完
-   `align_lyrics_v2.py` 后看 stderr 的覆盖率报告：如果**大面积**行都
+   `align_lyrics_v3.py` 后看 stderr 的覆盖率报告：如果**大面积**行都
    覆盖率很低，通常是 ASR 识别质量太差（背景音乐过响、`--model-size`
    太小、没做人声分离）导致的真实幻听（比如把"科技的窍门"识别成
    "可惜的窗门"），这种情况脚本兜底也救不回来——**优先考虑换成方案 A
@@ -676,7 +700,7 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
 3b. **强制对齐 `align_lyrics_forced.py` 报错下载模型失败**：说明当前
    网络访问不到 `huggingface.co`。按脚本报错提示处理（加白名单 / 换网络
    环境预下载模型再拷贝过来 / `--model-path` 指定已有模型文件）；如果
-   短时间内无法解决，直接退回方案 B `align_lyrics_v2.py` 继续流程，不要
+   短时间内无法解决，直接退回方案 B `align_lyrics_v3.py` 继续流程，不要
    在这里卡住整个任务。
 3c. **强制对齐报错"字符数对不上"**：说明 `lyrics.txt` 里有 uroman 音译
    处理不了的字符（生僻字、emoji、罗马数字、特殊符号等），把这些字符
@@ -739,9 +763,11 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
    / `--font-size` / `--overlay-y-offset`）都从这个文件取值，不要在
    某一步单独跟用户确认或改用别的比例，保持全程一致。
 0b. **对齐效果不理想时的排查顺序**：先看有没有做 Step 1 人声分离
-   （最大单项改进）→ 再看 Step 2 有没有用方案 A 强制对齐（比方案 B
-   ASR+模糊匹配上限更高，尤其是重复段落多的歌）→ 最后才是调
-   `align_lyrics_v2.py` 的 `--min-anchor`/`--window-seconds` 等参数
+   （最大单项改进，不依赖任何重依赖，Demucs 装不上就先解决这个）→
+   再看 Step 2 能不能用方案 A 强制对齐（比方案 B 上限更高，尤其是重复
+   段落多的歌）→ 方案 A 装不上/跑不通时，至少确保方案 B 装了
+   `pypinyin`（几乎不会装失败，同音字场景能明显提高覆盖率）→ 最后才是
+   调 `align_lyrics_v3.py` 的 `--min-anchor`/`--window-seconds` 等参数
    （这些参数只能优化"模糊匹配怎么退化"，救不了识别质量本身差的问题）。
 1. **成本预期**：一首 3-4 分钟的歌通常会拆成 15-25 个场景，对应
    15-25 次 `gen_video` 调用，请提前让用户知晓耗时和调用量。
