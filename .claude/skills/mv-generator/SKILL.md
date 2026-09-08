@@ -321,6 +321,21 @@ python .claude/skills/mv-generator/scripts/generate_scene_videos.py \
 不会被 bash 工具的看门狗提前终止。 Step 1 的 `asr_transcribe.py`
 （大文件 + cpu 模式）如果实测经常超过 300 秒，同样建议用 `timeout=-1`。
 
+**调用示例（system-prompt 模式工具调用格式，直接照抄，只替换 `<output_dir>`）**：
+
+```
+<tool_use>
+{"name": "bash", "input": {"command": "python .claude/skills/mv-generator/scripts/generate_scene_videos.py <output_dir>/scene_plan.yaml --output-dir <output_dir> --aspect-ratio 16:9", "timeout": -1}}
+</tool_use>
+```
+
+（这是 `llm/system_tool_call.py` 里定义的 `<tool_use>{"name":..,"input":..}</tool_use>`
+协议；若走的是原生 function-calling 的 provider，则等价于对 `bash` 工具传入
+`{"command": "...", "timeout": -1}` 这个 `input`/`tool_input`。）不要省略
+`timeout: -1` 这一项，也不要照搬其他 skill 里"timeout 用默认值就行"的
+写法——本步骤是本 skill 里唯一必须显式传 `-1` 的调用，其余步骤
+（`asr_transcribe.py` 如果实测经常超过 300 秒除外）沿用默认 300 秒即可。
+
 **关于实时进度输出**：`generate_scene_videos.py` 内部已经把 stdout/stderr
 强制设为行缓冲（每打印一行立刻 flush），bash 工具也会给子进程注入
 `PYTHONUNBUFFERED=1`，两层保障下终端应能实时看到"正在生成场景 XX"
