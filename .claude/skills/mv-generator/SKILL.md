@@ -25,6 +25,7 @@ ASR 粗识别 → 歌词对齐校正 → 场景规划(需用户确认) → 定�
 - `scripts/align_lyrics_v2.py`：歌词对齐第一步，归一化精确匹配 + 覆盖率报告
   （旧版 `align_lyrics.py`/`align_lyrics_llm.py` 已不推荐使用，保留仅为兼容）
 - `scripts/compose_mv.py`：ffmpeg 最终合成（逐 scene 独立缩放 + PIL 字幕/水印）
+- `scripts/fix_lyrics.py`：修复歌词时间戳空隙（前一条end=后一条start）
 
 **外部依赖**：
 - `faster-whisper`（Python 包，未安装时先提示用户 `pip install faster-whisper`）
@@ -118,6 +119,8 @@ skill 之前"字数对不上"问题的根因修复）：
   覆盖率 < 34% 的行，脚本会自动再尝试"整句级别"模糊匹配兜底（拿该行
   跟附近 ASR segment 整体做相似度比较），仍然拿不到可信结果的行会在
   stderr 里列出来，供下一步人工/Agent 复核。
+- **单调窗口约束**：引入时间游标 `cursor_time`，确保对齐结果在时间上
+  单调不减，避免重复段落导致的张冠李戴问题。
 
 **第二步：Agent 只复核脚本报告里覆盖率低的行**
 
@@ -143,10 +146,13 @@ skill 之前"字数对不上"问题的根因修复）：
 
 **`lyrics_timed.json` 格式示例**：
 ```json
-[
-  {"line": 0, "text": "歌词第一句", "start": 0.0, "end": 8.2},
-  {"line": 1, "text": "歌词第二句", "start": 8.2, "end": 14.5}
-]
+{
+  "duration": 239.04,
+  "lines": [
+    {"line": 0, "text": "歌词第一句", "start": 0.0, "end": 8.2},
+    {"line": 1, "text": "歌词第二句", "start": 8.2, "end": 14.5}
+  ]
+}
 ```
 
 ### Step 3: 场景规划（创造性步骤，需要 Agent 判断）
@@ -269,66 +275,60 @@ python .claude/skills/mv-generator/scripts/compose_mv.py \
 ```
 
 该脚本会自动：
-1. **逐 scene 独立缩放**（不是整体慢放）：按 `scene_plan.yaml` 里每个
+1. **修复歌词时间戳空隙**：将前一条歌词的 end 设置为后一条的 start，
+   最后一条的 end 设置为 mp3 音频时长，确保字幕连续显示无闪烁。
+2. **逐场景独立缩放**（不是整体慢放）：按 `scene_plan.yaml` 里每个
    scene 的规划时长（`end - start`）与该 scene 实际 clip 时长的比例，
    各自计算 `setpts=SCALE*PTS`。clip 比规划短则慢放，比规划长则快放。
    这样每个画面片段出现的时间点严格贴合 `scene_plan.yaml` 的规划，
    不会因为整体拉伸导致画面节奏和歌词/场景规划错位。
-2. 用 concat demuxer 拼接所有已各自缩放好的 clip（此时长度已等于
-   `scene_plan.yaml` 里各 scene 时长之和）。
-3. 字幕严格按 `lyrics_timed.json`（如 `lyrics_timed_v2.json`）里的
-   **绝对时间**显示，这个时间是和 mp3 对齐好的时间，**不受 clip 缩放
-   影响、也不按 scene 时间段来对齐**——because 歌词的同步基准是音频，
-   不是画面。按"歌词分句"渲染 PNG（每句一张图，句间空隙也是一张
-   空白图），用 concat demuxer 的逐图 `duration` 控制显示时长，
-   相同文本复用同一张图，避免逐帧渲染。
-4. 歌名水印用 PIL 渲染成透明 PNG（不用 `drawtext`，见下方"中文水印
-   显示异常"排查项），和字幕图一起在同一次 `filter_complex` 里
-   `overlay` 完成，不再是独立的一次编码。
-5. 混入原始 mp3 音轨（先 `-an` 去掉 clips 自带音轨，再 `-shortest` 以短者为准）。
+3. **按歌词分句渲染字幕 PNG**：每句歌词（含句间空白）只渲染一张 PNG，
+   相同文本复用同一张图。一首歌几十句歌词只渲染几十张 PNG，大幅提速。
+4. **PIL 渲染歌名水印**：不应用 drawtext 滤镜（Windows 下字体路径冒号
+   解析易出错），改用 PIL 加载字体渲染成透明 PNG，再用 overlay 叠加。
+5. **字幕+水印合并 overlay**：同一次 `filter_complex` 完成，避免多次
+   编码导致的质量损失。
+6. **混入原始 mp3 音轨**：先 `-an` 去掉 clips 自带音轨，再 `-shortest`
+   以短者为准。
 
 **产物**：`mv.mp4`（最终交付物）
+
+#### 关于视频质量的关键要点
+
+**严重警告**：overlay 步骤极易导致视频质量崩溃（比特率从 6Mbps 降至 19kbps）。
+原因和解决方案：
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| 视频质量暴跌 | overlay 步骤未指定 `-b:v`，ffmpeg 使用极低默认值 | compose_mv.py 已修复，使用 `-preset slow -crf 14` |
+| 字幕断续闪烁 | 歌词时间戳有空隙 | 脚本自动修复：前一条end=后一条start |
+| 歌名显示方框 | drawtext 字体路径冒号解析错误 | 改用 PIL 渲染 PNG 水印 |
+
+**验证方法**：合成完成后用 ffprobe 检查视频比特率，正常应为 2-6 Mbps：
+```bash
+ffprobe -v quiet -print_format json -show_streams mv.mp4 | jq '.streams[0].bit_rate'
+```
+
+如果比特率 < 100 kbps，说明 overlay 失败，需检查 compose_mv.py 的版本。
 
 #### 关于视频节奏对齐（逐 scene 独立缩放，不做整体慢放）
 
 早期版本用"整体慢放"（拼接后统一 `setpts=SCALE*PTS`）：这种做法虽然
 能保证总时长精确等于 mp3 时长，但会把每个 scene 的实际出现时刻和
 `scene_plan.yaml` 里规划的时刻拉开（比如规划里 8s 处该切到 scene_02，
-整体慢放后实际可能变成 11s 才切换），画面节奏和场景规划、歌词情绪点
-对不上。现在的做法是**逐 scene 独立缩放**：每个 scene 按自己的
+整体慢放后实际可能变成 11s 才切换），画面节奏和场景规划、歌词情绪点对不上。现在的做法是**逐 scene 独立缩放**：每个 scene 按自己的
 `target_dur`（scene_plan.yaml 里的 `end - start`）单独计算 SCALE，
 clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然和规划一致。
 唯一的前提是 Step 3 场景规划阶段要保证所有 scene 时长之和等于（或
 接近）音频总时长——如果规划阶段本身有明显偏差，逐 scene 缩放也无法
 凭空修正总时长的系统性误差，Step 7 校验交付时要重点核对这一点。
 
-#### 关于合成速度
-
-早期版本对字幕采用"逐帧渲染 PNG"（3-4 分钟视频、24fps 下就是几千张
-图 + 几千行 concat 列表），并且多编码了一份从未被实际使用的中间字幕
-视频，是合成阶段慢的主要原因。现在改为**按歌词分句渲染**：一首歌几十
-句歌词只渲染几十张 PNG（相同文本复用同一张），用 concat demuxer 每张
-图各自的 `duration` 控制显示时长；字幕叠加和歌名水印叠加合并进同一次
-`filter_complex`。如果合成仍然慢，优先检查：
-- `--preset-scale`（默认 `veryfast`，逐 clip 缩放阶段）和
-  `--preset-final`（默认 `medium`，最终叠加输出阶段）是否被改成了
-  `slow`/`veryslow`——追求速度可以先用 `ultrafast`/`veryfast` 出预览版，
-  确认无误后再用更高质量 preset 重新跑最终成片。
-- clip 数量是否远超歌词行数规划（Step 3 场景规划超发，比如把 12s
-  硬限制的场景又拆得过碎），每多一个 clip 就多一次独立编码。
-
-#### 歌名水印
-
-- `--title`：歌名文本，如 `"进化再论"`
-- `--title-pos`：水印位置，可选 `top-left`、`top-right`（默认）、`bottom-left`、`bottom-right`
-- 水印使用半透明背景，避免遮挡画面内容
-- 水印会叠加在所有场景上，贯穿全片
-
 ### Step 7: 校验交付
 
 - 用 `ffprobe`（随 ffmpeg 一起安装）检查 `mv.mp4` 的总时长，和原始
   mp3 时长做对比，差异明显（比如超过 2 秒）要向用户说明原因（通常是
   Step 3 场景时长规划有累积误差）。
+- 检查视频比特率是否正常（应 > 1 Mbps），否则说明 overlay 失败。
 - 向用户展示最终产物路径，简要说明场景数量、总时长、是否有已知的
   人物一致性漂移片段需要用户留意。
 
@@ -380,6 +380,9 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
    结构，`lines` 字段为逐句歌词的时间戳列表；`compose_mv.py` 每次运行
    会读取该文件并按 mp3 时长重写空隙/末行 `end`，字幕显示的时间基准
    始终是这个文件里的绝对时间，与画面 clip 的缩放无关。
+10. **视频质量崩溃（比特率从 6Mbps 降至 19kbps）**：overlay 步骤未正确
+    指定编码参数导致。确保使用最新的 `compose_mv.py`（已修复为
+    `-preset slow -crf 14`），并用 ffprobe 验证输出视频的比特率。
 
 ## 提示
 
@@ -396,3 +399,5 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
 6. **歌名水印**：通过 `--title "歌名"` 和 `--title-pos`（可选 top-left/top-right/bottom-left/bottom-right，默认 top-right）添加。水印用 PIL 渲染成半透明黑底白字的 PNG 再 overlay，不用 drawtext，不存在中文方框问题。
 7. **视频节奏对齐**：当 gen_video 返回的 clip 比规划时长短/长时，compose_mv.py 对每个 scene **独立**计算 `setpts=SCALE*PTS`（而不是整体统一慢放），保证每个 scene 出现的时刻严格贴合 `scene_plan.yaml` 的规划；总时长是否精确等于 mp3 时长取决于 Step 3 场景规划本身的时长之和是否对齐音频总时长。
 8. **合成速度**：字幕按歌词分句渲染 PNG（而不是逐帧渲染），字幕/水印合并成一次 `filter_complex`；可通过 `--preset-scale`/`--preset-final` 调整 ffmpeg 编码速度与质量的取舍，先用 `veryfast`/`ultrafast` 出预览版是推荐做法。
+9. **视频质量保障**：overlay 步骤必须使用高 CRF 低质量（`-crf 14` 或更低），否则视频比特率会暴跌。合成完成后务必用 ffprobe 检查输出视频的比特率，正常应为 2-6 Mbps。
+10. **歌词空隙修复**：compose_mv.py 会自动修复歌词时间戳的空隙（前一条end=后一条start），但如果原始对齐结果错误过大，建议先手动检查 `lyrics_timed.json`。
