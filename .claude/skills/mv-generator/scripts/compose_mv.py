@@ -227,26 +227,62 @@ def main():
         str(video_with_subs),
     ])
 
-    # ── 5. 添加歌名水印 ────────────────────────────────────────────
+    # ── 5. 添加歌名水印（PIL 方式，避免 drawtext 路径问题） ──
     if args.title:
-        font_escaped = FONT_PATH.replace("/", "\\").replace(":", "\\:")
-        pos_map = {
-            "top-left":     {"x": "10",    "y": "10"},
-            "top-right":    {"x": "W-tw-10", "y": "10"},
-            "bottom-left":  {"x": "10",    "y": "H-th-10"},
-            "bottom-right": {"x": "W-tw-10", "y": "H-th-10"},
-        }
-        pos = pos_map[args.title_pos]
+        from PIL import Image, ImageDraw, ImageFont
+        W, H = [int(x) for x in args.target_size.split(":")]
+        wm_font = ImageFont.truetype(FONT_PATH, args.font_size)
+        
+        # 提取主视频帧，叠加水印，重新编码
+        wm_input = video_with_subs
         watermarked = workdir / "watermarked.mp4"
+        
+        # 用 ffmpeg 提取帧序列
+        extract_cmd = [
+            FFMPEG, "-y",
+            "-i", str(wm_input),
+            "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2",
+            "-q:v", "2",
+            str(workdir / "frames\%05d.jpg")
+        ]
+        _run(extract_cmd)
+        
+        # PIL 添加水印并保存
+        wm_dir = workdir / "wm_output_frames"
+        wm_dir.mkdir()
+        frame_files = sorted((workdir / "frames").glob("*.jpg"))
+        print(f"Processing {len(frame_files)} frames for watermark...")
+        
+        for idx, frame_file in enumerate(frame_files):
+            img = Image.open(frame_file).convert("RGB")
+            draw = ImageDraw.Draw(img)
+            text = args.title
+            bbox = draw.textbbox((0, 0), text, font=wm_font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            x = W - tw - 10
+            y = 10
+            draw.rectangle([x-5, y-5, x+tw+5, y+th+5], fill=(0, 0, 0, 150))
+            draw.text((x, y), text, font=wm_font, fill=(255, 255, 255))
+            img.save(wm_dir / frame_file.name, quality=95)
+            if (idx + 1) % 500 == 0:
+                print(f"  Watermarked {idx+1}/{len(frame_files)} frames...")
+        
+        # 重新编码带水印的视频
+        wm_list = workdir / "wm_list.txt"
+        with open(wm_list, "w") as f:
+            for p in sorted(wm_dir.glob("*.jpg")):
+                f.write(f"file '{p.as_posix()}'\n")
+                f.write(f"duration {1.0/args.target_fps}\n")
+        
         _run([
             FFMPEG, "-y",
-            "-i", str(video_with_subs),
-            "-vf", f"drawtext=text='{args.title}':fontsize={args.font_size}:fontfile='{font_escaped}':x={pos['x']}:y={pos['y']}:box=1:boxcolor=black@0.5:boxborderw=5",
-            "-c:a", "copy",
+            "-f", "concat", "-safe", "0", "-i", str(wm_list),
+            "-r", str(args.target_fps),
+            "-c:v", "libx264", "-preset", "slow", "-crf", "14",
             str(watermarked),
         ])
         video_with_subs = watermarked
-        print(f"Title watermark: '{args.title}' at {args.title_pos}")
+        print(f"Title watermark added: '{args.title}' at top-right")
 
     # ── 6. 混入原始 mp3 音轨 ──────────────────────────────────────
     print(f"Mixing audio: {args.audio}")
