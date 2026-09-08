@@ -98,7 +98,28 @@ def main():
     workdir = Path(tempfile.mkdtemp(prefix="mv_compose_"))
     print(f"Work dir: {workdir}")
 
-    # ── 1. 解析 scene_plan ─────────────────────────────────────────
+    # ── 0.5. 修复歌词时间戳（去除空隙）─────────────────────────────
+    lyrics_data = json.load(open(args.lyrics_timed, "r", encoding="utf-8"))
+    lines = lyrics_data.get("lines", [])
+    
+    # 获取 mp3 时长
+    audio_dur = get_dur(Path(args.audio))
+    
+    # 去除空隙：每条歌词的 end = 下一条的 start
+    for i in range(len(lines) - 1):
+        lines[i]["end"] = lines[i+1]["start"]
+    
+    # 最后一行的 end = mp3 时长
+    lines[-1]["end"] = audio_dur
+    lyrics_data["duration"] = audio_dur
+    
+    print(f"Lyrics fixed: {len(lines)} lines, total duration: {audio_dur:.2f}s")
+    # 保存修复后的歌词（覆盖原文件，方便后续使用）
+    with open(args.lyrics_timed, "w", encoding="utf-8") as f:
+        json.dump(lyrics_data, f, ensure_ascii=False, indent=2)
+    print(f"  (Overwrote {args.lyrics_timed})")
+
+    # ── 1. 解析 scene plan ─────────────────────────────────────────
     scenes = parse_scene_plan(args.scene_plan, args.clips_dir)
     print(f"Loaded {len(scenes)} scenes from scene_plan.yaml")
     for s in scenes:
@@ -227,57 +248,18 @@ def main():
         str(video_with_subs),
     ])
 
-    # ── 5. 添加歌名水印（PIL 方式，避免 drawtext 路径问题） ──
+    # ── 5. 添加歌名水印（drawtext 滤镜，注意路径转义） ──
     if args.title:
-        from PIL import Image, ImageDraw, ImageFont
-        W, H = [int(x) for x in args.target_size.split(":")]
-        wm_font = ImageFont.truetype(FONT_PATH, args.font_size)
+        # Windows 路径中冒号需要转义为 \:
+        font_win = FONT_PATH.replace("/", "\\").replace(":", "\\:")
+        # 双反斜杠在 ffmpeg filter 中需要四个反斜杠
+        font_escaped = font_win.replace("\\", "\\\\")
         
-        # 提取主视频帧，叠加水印，重新编码
-        wm_input = video_with_subs
         watermarked = workdir / "watermarked.mp4"
-        
-        # 用 ffmpeg 提取帧序列
-        extract_cmd = [
-            FFMPEG, "-y",
-            "-i", str(wm_input),
-            "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2",
-            "-q:v", "2",
-            str(workdir / "frames\%05d.jpg")
-        ]
-        _run(extract_cmd)
-        
-        # PIL 添加水印并保存
-        wm_dir = workdir / "wm_output_frames"
-        wm_dir.mkdir()
-        frame_files = sorted((workdir / "frames").glob("*.jpg"))
-        print(f"Processing {len(frame_files)} frames for watermark...")
-        
-        for idx, frame_file in enumerate(frame_files):
-            img = Image.open(frame_file).convert("RGB")
-            draw = ImageDraw.Draw(img)
-            text = args.title
-            bbox = draw.textbbox((0, 0), text, font=wm_font)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            x = W - tw - 10
-            y = 10
-            draw.rectangle([x-5, y-5, x+tw+5, y+th+5], fill=(0, 0, 0, 150))
-            draw.text((x, y), text, font=wm_font, fill=(255, 255, 255))
-            img.save(wm_dir / frame_file.name, quality=95)
-            if (idx + 1) % 500 == 0:
-                print(f"  Watermarked {idx+1}/{len(frame_files)} frames...")
-        
-        # 重新编码带水印的视频
-        wm_list = workdir / "wm_list.txt"
-        with open(wm_list, "w") as f:
-            for p in sorted(wm_dir.glob("*.jpg")):
-                f.write(f"file '{p.as_posix()}'\n")
-                f.write(f"duration {1.0/args.target_fps}\n")
-        
         _run([
             FFMPEG, "-y",
-            "-f", "concat", "-safe", "0", "-i", str(wm_list),
-            "-r", str(args.target_fps),
+            "-i", str(video_with_subs),
+            "-vf", f"drawtext=text='{args.title}':fontsize={args.font_size}:fontfile='{font_escaped}':x=W-tw-10:y=10:box=1:boxcolor=black@0.5:boxborderw=5",
             "-c:v", "libx264", "-preset", "slow", "-crf", "14",
             str(watermarked),
         ])
