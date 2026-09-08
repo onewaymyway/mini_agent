@@ -22,7 +22,9 @@ ASR 粗识别 → 歌词对齐校正 → 场景规划(需用户确认) → 定�
 
 **依赖脚本**（本 skill 目录下）：
 - `scripts/asr_transcribe.py`：本地语音识别（faster-whisper）
-- `scripts/compose_mv.py`：ffmpeg 最终合成
+- `scripts/align_lyrics_v2.py`：歌词对齐第一步，归一化精确匹配 + 覆盖率报告
+  （旧版 `align_lyrics.py`/`align_lyrics_llm.py` 已不推荐使用，保留仅为兼容）
+- `scripts/compose_mv.py`：ffmpeg 最终合成（逐 scene 独立缩放 + PIL 字幕/水印）
 
 **外部依赖**：
 - `faster-whisper`（Python 包，未安装时先提示用户 `pip install faster-whisper`）
@@ -87,33 +89,54 @@ python .claude/skills/mv-generator/scripts/asr_transcribe.py \
 
 **产物**：`asr_raw.json`（强制落盘）
 
-### Step 2: 歌词对齐校正（LLM直接处理）
+### Step 2: 歌词对齐校正（脚本精确锚点 + Agent 语义兜底，混合方案）
 
-**不要使用对齐脚本**，而是让Agent直接使用LLM能力进行歌词对齐。ASR结果
-往往有很多错别字，脚本很难处理，但LLM可以通过分析相近读音、语义上下文
-来准确对齐。
+**不要单纯依赖字数对齐，也不要让 LLM 从零对齐整首歌**（成本高、容易在
+歌词有重复段落——如副歌重复——时张冠李戴）。正确做法是两步混合：
 
-**执行步骤**：
+**第一步：跑脚本拿到"精确匹配锚点 + 覆盖率报告"**
 
-1. 先把用户提供的歌词文本保存为 `<output_dir>/lyrics.txt`（逐行一句，
-   去掉用户输入里可能带的行号/装饰符号）
+```bash
+python .claude/skills/mv-generator/scripts/align_lyrics_v2.py \
+  <output_dir>/asr_raw.json <output_dir>/lyrics.txt \
+  --save-path <output_dir>/lyrics_timed.json \
+  --save-srt <output_dir>/lyrics.srt
+```
 
-2. 读取 `asr_raw.json` 和 `lyrics.txt`，由Agent直接进行分析对齐：
-   - 读取ASR结果（包含时间戳和识别文字）
-   - 读取标准歌词文本
-   - **分析每句ASR识别结果与标准歌词的对应关系**，考虑：
-     * 同音字/近音字的映射（如"爱"→"碍"、"在"→"再"）
-     * 漏字/多字的修正
-     * 断句位置的调整
-   - 生成带时间戳的歌词对齐结果
+`align_lyrics_v2.py` 相比旧版 `align_lyrics.py` 的关键改进（这就是本
+skill 之前"字数对不上"问题的根因修复）：
+- **匹配前先归一化**：忽略大小写，并把繁体字统一转成简体再比较
+  （faster-whisper 中文识别经常输出繁体，歌词文本通常是简体，"總"
+  和"总"这种字之前会被判定为不匹配，导致大量本该精确匹配的字符退化
+  成粗略插值）。若环境装了 `opencc-python-reimplemented`，简繁转换会
+  更准更全，脚本会自动使用；没装则退化用内置的高频字对照表。
+- **精确匹配优先，其余部分再插值**：先在归一化后的字符序列上找连续
+  匹配块（长度 >= `--min-anchor`，默认 2，避免"的"/"了"这类高频单字
+  造成噪声锚点）作为高置信度锚点，锚点之间的空隙才做线性插值，而不是
+  整句/整段粗暴按字数分摊。
+- **逐行覆盖率**：每行输出 `anchor_coverage`（0~1，锚点字符占比）。
+  覆盖率 < 34% 的行，脚本会自动再尝试"整句级别"模糊匹配兜底（拿该行
+  跟附近 ASR segment 整体做相似度比较），仍然拿不到可信结果的行会在
+  stderr 里列出来，供下一步人工/Agent 复核。
 
-3. 将对齐结果保存为 `lyrics_timed.json`（格式见下方）
+**第二步：Agent 只复核脚本报告里覆盖率低的行**
 
-4. 根据 `lyrics_timed.json` 生成 `lyrics.srt` 供人工核对
+1. 查看脚本 stderr 输出的低覆盖率行清单（通常是背景音乐过响、ASR
+   整段幻听导致的片段，比如把"科技的窍门"识别成"可惜的窗门"这种
+   语义/字面都对不上的情况，脚本自身无法可靠处理）。
+2. 对这些行，Agent 结合上下文（前后已对齐好的行的时间戳区间、该行在
+   ASR 原始 segments 里同一时间窗口的内容）用语义/读音相似性判断合理
+   的时间区间，直接修改 `lyrics_timed.json` 里对应行的 `start`/`end`。
+   **只改这些被标记的行，不要重新处理整首歌**——其余行已经是精确锚点
+   或高覆盖率插值结果，可信度高，重新跑一遍 LLM 全量对齐反而可能把
+   已经对的行改错（尤其是歌词有重复段落时）。
+3. 修改后重新生成 `lyrics.srt`（或让 Agent 直接按新的 `lyrics_timed.json`
+   内容手写覆盖）。
 
 **Agent需输出的中间内容**（展示给用户）：
-- 说明对齐逻辑（如何处理了ASR错别字）
-- 显示关键几行的时间戳对齐结果供确认
+- 脚本报出的锚点覆盖率整体情况（比如"38 行里 32 行覆盖率 > 70%，6 行
+  需要人工复核"）
+- 被复核过的行，展示复核前后的时间戳对比
 - 如有明显的匹配困难或歧义，向用户说明
 
 **产物**：`lyrics_timed.json`、`lyrics.srt`（强制落盘）
@@ -246,40 +269,53 @@ python .claude/skills/mv-generator/scripts/compose_mv.py \
 ```
 
 该脚本会自动：
-1. **自动修复歌词时间戳**：去除歌词间的空隙（每条歌词的 end = 下一条的 start），最后一行的 end = mp3 时长
-2. 按 scene_plan.yaml 规划时长，每个 scene 独立缩放（clip 比规划短时慢放，长时快放）
-3. 用 concat demuxer 拼接所有缩放后的 clip
-4. 用 PIL 渲染逐帧字幕 PNG（5722帧 @ 24fps），直接 overlay 到主视频（避免二次编码质量损失）
-5. 叠加歌名水印（可选，支持四个角位置）
-6. 混入原始 mp3 音轨（先 `-an` 去掉 clips 自带音轨，再 `-shortest` 以短者为准）
+1. **逐 scene 独立缩放**（不是整体慢放）：按 `scene_plan.yaml` 里每个
+   scene 的规划时长（`end - start`）与该 scene 实际 clip 时长的比例，
+   各自计算 `setpts=SCALE*PTS`。clip 比规划短则慢放，比规划长则快放。
+   这样每个画面片段出现的时间点严格贴合 `scene_plan.yaml` 的规划，
+   不会因为整体拉伸导致画面节奏和歌词/场景规划错位。
+2. 用 concat demuxer 拼接所有已各自缩放好的 clip（此时长度已等于
+   `scene_plan.yaml` 里各 scene 时长之和）。
+3. 字幕严格按 `lyrics_timed.json`（如 `lyrics_timed_v2.json`）里的
+   **绝对时间**显示，这个时间是和 mp3 对齐好的时间，**不受 clip 缩放
+   影响、也不按 scene 时间段来对齐**——because 歌词的同步基准是音频，
+   不是画面。按"歌词分句"渲染 PNG（每句一张图，句间空隙也是一张
+   空白图），用 concat demuxer 的逐图 `duration` 控制显示时长，
+   相同文本复用同一张图，避免逐帧渲染。
+4. 歌名水印用 PIL 渲染成透明 PNG（不用 `drawtext`，见下方"中文水印
+   显示异常"排查项），和字幕图一起在同一次 `filter_complex` 里
+   `overlay` 完成，不再是独立的一次编码。
+5. 混入原始 mp3 音轨（先 `-an` 去掉 clips 自带音轨，再 `-shortest` 以短者为准）。
 
 **产物**：`mv.mp4`（最终交付物）
 
-#### 关于视频时长补齐
+#### 关于视频节奏对齐（逐 scene 独立缩放，不做整体慢放）
 
-gen_video API 返回的视频总时长通常短于 mp3 音频时长。
-`compose_mv.py` 采用**逐场景独立缩放**策略：每个 scene 内的 clip 按
-`目标时长/clip数/实际时长` 计算 scale，用 `setpts=SCALE*PTS` 单独处理。
-拼接后总时长可能略短于 mp3，脚本在 overlay 后不做全局慢放。
+早期版本用"整体慢放"（拼接后统一 `setpts=SCALE*PTS`）：这种做法虽然
+能保证总时长精确等于 mp3 时长，但会把每个 scene 的实际出现时刻和
+`scene_plan.yaml` 里规划的时刻拉开（比如规划里 8s 处该切到 scene_02，
+整体慢放后实际可能变成 11s 才切换），画面节奏和场景规划、歌词情绪点
+对不上。现在的做法是**逐 scene 独立缩放**：每个 scene 按自己的
+`target_dur`（scene_plan.yaml 里的 `end - start`）单独计算 SCALE，
+clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然和规划一致。
+唯一的前提是 Step 3 场景规划阶段要保证所有 scene 时长之和等于（或
+接近）音频总时长——如果规划阶段本身有明显偏差，逐 scene 缩放也无法
+凭空修正总时长的系统性误差，Step 7 校验交付时要重点核对这一点。
 
-#### 关于歌词时间戳修复
+#### 关于合成速度
 
-`compose_mv.py` 在 Step 6 开始时会**自动修复**歌词时间戳：
-- 每条歌词的 `end` 设为下一条的 `start`（去除空隙）
-- 最后一行的 `end` 设为 mp3 总时长
-- 修复后直接覆盖 `--lyrics-timed` 指定的文件
-
-#### 关于字幕渲染
-
-字幕使用 **5722 帧**（238s × 24fps），逐帧渲染 PNG 再 overlay 到主视频。
-这比逐句渲染更流畅，但耗时较长（约 2-3 分钟）。如需加速可降 fps 到 15。
-
-#### 关于视频质量
-
-overlay 步骤是关键质量瓶颈：
-- 源 clip 通常 6Mbps，最终输出目标 4-6Mbps
-- 使用 `-crf 14` + `-preset slow` 确保高质量编码
-- 如果输出小于 10MB，检查 bitrate 是否正常
+早期版本对字幕采用"逐帧渲染 PNG"（3-4 分钟视频、24fps 下就是几千张
+图 + 几千行 concat 列表），并且多编码了一份从未被实际使用的中间字幕
+视频，是合成阶段慢的主要原因。现在改为**按歌词分句渲染**：一首歌几十
+句歌词只渲染几十张 PNG（相同文本复用同一张），用 concat demuxer 每张
+图各自的 `duration` 控制显示时长；字幕叠加和歌名水印叠加合并进同一次
+`filter_complex`。如果合成仍然慢，优先检查：
+- `--preset-scale`（默认 `veryfast`，逐 clip 缩放阶段）和
+  `--preset-final`（默认 `medium`，最终叠加输出阶段）是否被改成了
+  `slow`/`veryslow`——追求速度可以先用 `ultrafast`/`veryfast` 出预览版，
+  确认无误后再用更高质量 preset 重新跑最终成片。
+- clip 数量是否远超歌词行数规划（Step 3 场景规划超发，比如把 12s
+  硬限制的场景又拆得过碎），每多一个 clip 就多一次独立编码。
 
 #### 歌名水印
 
@@ -302,8 +338,17 @@ overlay 步骤是关键质量瓶颈：
    `pip install faster-whisper` 提示，不会裸抛 ImportError。
 2. **ffmpeg 未安装/不在 PATH**：`compose_mv.py` 使用硬编码路径
    `C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffmpeg.exe`，无需依赖 PATH。
-3. **对齐结果时间戳明显异常**：通常是 ASR 识别质量太差（背景音乐过响、
-   `--model-size` 太小）导致匹配率低，尝试换更大的模型规格重新识别。
+3. **对齐结果时间戳明显异常/两边字数对不上**：先确认没有跳过 Step 2
+   第一步的 `align_lyrics_v2.py`（不要直接用旧的 `align_lyrics.py`，
+   后者没有简繁/大小写归一化，中文 ASR 输出繁体时会导致大量本该精确
+   匹配的字符被判定为不匹配，从而错误地退化成整段线性插值）。跑完
+   `align_lyrics_v2.py` 后看 stderr 的覆盖率报告：如果**大面积**行都
+   覆盖率很低，通常是 ASR 识别质量太差（背景音乐过响、`--model-size`
+   太小）导致的真实幻听（比如把"科技的窍门"识别成"可惜的窗门"），
+   这种情况脚本兜底也救不回来，需要换更大的模型规格重新识别，或者
+   直接交给 Agent 按 Step 2 第二步的方法人工复核那几行；如果只是
+   **零星几行**覆盖率低，直接走 Step 2 第二步的人工复核流程即可，
+   不需要重新识别整首歌。
 4. **单个场景超过 12 秒**：`gen_video_with_text` 的硬限制，Step 3 场景
    规划阶段必须显式拆分，不要留到 Step 5 调用失败才发现。
 5. **人物形象在不同 clip 间有明显差异**：这是 `reference` 模式的已知
@@ -311,20 +356,30 @@ overlay 步骤是关键质量瓶颈：
    预期；可以尝试让同一角色的所有场景都引用完全相同的定妆图文件，
    减少（但不能消除）漂移。
 6. **视频与音频总时长对不上**：检查 Step 3 场景规划里各场景时长之和
-   是否等于（或接近）音频总时长，累积误差通常来自多个场景分别取整
-   `--seconds` 参数（4-12 的整数）导致的舍入误差。compose_mv.py 采用
-   **整体慢放**策略（concat + setpts），无累积误差，输出时长精确等于 mp3 时长。
-7. **歌词时间戳有空隙**：如果 `lyrics_timed.json` 里两条歌词之间有较大
-   空白（如前一条 end=4s，后一条 start=7s），字幕会"消失"几秒。
-   `compose_mv.py` 会自动修复：每条歌词的 end = 下一条的 start。
-8. **Windows 下字幕不显示/视频变黑屏**：确保字幕视频用 `overlay=0:0`
-   合成时保留 alpha 通道（PIL PNG RGBA → concat demuxer → overlay）；
-   输出前务必检查文件大小（正常应为几十 MB，若只有几 MB 说明 overlay 失败）。
-8. **Windows 下 drawtext 水印路径报错**：字体路径中的冒号（`C:`）会被
-   drawtext 当作分隔符，需用反斜杠转义（`C\:`）；或改用 PIL watermark
-   方案（生成全帧 PNG 后 overlay）。
+   是否等于（或接近）音频总时长。compose_mv.py 现在采用**逐 scene 独立
+   缩放**（不是整体慢放），每个 scene 严格按自己的规划时长缩放，不存在
+   多个场景取整 `--seconds` 导致的舍入误差累积问题；如果最终总时长
+   仍然和 mp3 明显不符，说明是 Step 3 场景规划阶段本身时长之和就没对
+   齐音频总时长，需要回到 Step 3 修正 `scene_plan.yaml`，而不是指望
+   合成脚本兜底。
+7. **Windows 下字幕不显示/视频变黑屏**：确保字幕 PNG 是 RGBA（PIL 生成）
+   且通过 concat demuxer 直接喂给 `filter_complex` 的 `overlay`（不要
+   再中间编码成 libx264 视频——libx264 不支持 alpha 通道，会把透明背景
+   变成黑底，这也是之前"多编码一份从未使用的中间字幕视频"遗留的坑）。
+   输出前检查文件大小（正常应为几十 MB，若只有几 MB 说明 overlay 失败）。
+8. **歌名/字幕中文显示为方框（tofu）**：这是 `drawtext` 滤镜的已知坑
+   ——Windows 下字体文件路径带盘符冒号（`C:`），drawtext 的滤镜参数
+   解析器会把冒号当分隔符，转义稍有差错 ffmpeg 就会静默回退到内置的
+   无 CJK 字形字体，中文全部显示成方框。**compose_mv.py 已经不再用
+   drawtext 做歌名水印**，改成和歌词字幕一样用 PIL 渲染成透明 PNG 再
+   `overlay`，从根源上避免这个问题；如果还遇到方框，先确认
+   `FONT_PATH`（默认 `C:\Windows\Fonts\msyh.ttc`）在目标机器上确实存在
+   且是支持中文的字体，必要时换成 `simhei.ttf`/`msyhbd.ttc` 等其他
+   中文字体路径。
 9. **lyrics_timed.json 格式**：必须是 `{"duration": float, "lines": [{"start","end","text"}]}`
-   结构，`lines` 字段为逐句歌词的时间戳列表。
+   结构，`lines` 字段为逐句歌词的时间戳列表；`compose_mv.py` 每次运行
+   会读取该文件并按 mp3 时长重写空隙/末行 `end`，字幕显示的时间基准
+   始终是这个文件里的绝对时间，与画面 clip 的缩放无关。
 
 ## 提示
 
@@ -338,5 +393,6 @@ overlay 步骤是关键质量瓶颈：
    环境变量设置用 `$env:AGNES_API_KEY="..."`。
 5. **字幕样式可调**：可通过 `--font-size`（默认28）和 `--overlay-y-offset`
    （默认80，字幕距底部偏移像素）调整字幕大小和位置。
-6. **歌名水印**：通过 `--title "歌名"` 和 `--title-pos`（可选 top-left/top-right/bottom-left/bottom-right，默认 top-right）添加。水印使用半透明黑底白字，贯穿全片。
-7. **视频时长补齐**：当 gen_video 返回的 clip 比规划时长短时，compose_mv.py 采用**整体慢放**策略：concat 所有 clips 后统一应用 `setpts=SCALE*PTS`，无累积误差，输出时长精确等于 mp3 时长。
+6. **歌名水印**：通过 `--title "歌名"` 和 `--title-pos`（可选 top-left/top-right/bottom-left/bottom-right，默认 top-right）添加。水印用 PIL 渲染成半透明黑底白字的 PNG 再 overlay，不用 drawtext，不存在中文方框问题。
+7. **视频节奏对齐**：当 gen_video 返回的 clip 比规划时长短/长时，compose_mv.py 对每个 scene **独立**计算 `setpts=SCALE*PTS`（而不是整体统一慢放），保证每个 scene 出现的时刻严格贴合 `scene_plan.yaml` 的规划；总时长是否精确等于 mp3 时长取决于 Step 3 场景规划本身的时长之和是否对齐音频总时长。
+8. **合成速度**：字幕按歌词分句渲染 PNG（而不是逐帧渲染），字幕/水印合并成一次 `filter_complex`；可通过 `--preset-scale`/`--preset-final` 调整 ffmpeg 编码速度与质量的取舍，先用 `veryfast`/`ultrafast` 出预览版是推荐做法。
