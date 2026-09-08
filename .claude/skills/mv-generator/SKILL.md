@@ -246,22 +246,40 @@ python .claude/skills/mv-generator/scripts/compose_mv.py \
 ```
 
 该脚本会自动：
-1. 计算所有 clip 总时长，按 `lyrics_timed.json` 的 `duration` 字段计算**整体慢放比例**
-2. 用 concat demuxer 拼接所有 clip，统一分辨率/帧率，一次性应用 `setpts=SCALE*PTS`
-3. 用 PIL 渲染逐句歌词 PNG（RGBA 透明底），concat 编码为字幕视频，再 overlay 到主视频
-4. 叠加歌名水印（可选，支持四个角位置）
-5. 混入原始 mp3 音轨（先 `-an` 去掉 clips 自带音轨，再 `-shortest` 以短者为准）
+1. **自动修复歌词时间戳**：去除歌词间的空隙（每条歌词的 end = 下一条的 start），最后一行的 end = mp3 时长
+2. 按 scene_plan.yaml 规划时长，每个 scene 独立缩放（clip 比规划短时慢放，长时快放）
+3. 用 concat demuxer 拼接所有缩放后的 clip
+4. 用 PIL 渲染逐帧字幕 PNG（5722帧 @ 24fps），直接 overlay 到主视频（避免二次编码质量损失）
+5. 叠加歌名水印（可选，支持四个角位置）
+6. 混入原始 mp3 音轨（先 `-an` 去掉 clips 自带音轨，再 `-shortest` 以短者为准）
 
 **产物**：`mv.mp4`（最终交付物）
 
 #### 关于视频时长补齐
 
 gen_video API 返回的视频总时长通常短于 mp3 音频时长。
-`compose_mv.py` 采用**整体慢放**策略：将所有 clip 拼接后，用单个
-`setpts=SCALE*PTS` 滤镜统一慢放，SCALE = mp3 时长 / clips 总时长。
-这种方式无累积误差，输出时长精确等于 mp3 时长。
+`compose_mv.py` 采用**逐场景独立缩放**策略：每个 scene 内的 clip 按
+`目标时长/clip数/实际时长` 计算 scale，用 `setpts=SCALE*PTS` 单独处理。
+拼接后总时长可能略短于 mp3，脚本在 overlay 后不做全局慢放。
 
-例如：clips 总时长 162s，mp3 时长 239s → SCALE = 1.4757x（慢放）
+#### 关于歌词时间戳修复
+
+`compose_mv.py` 在 Step 6 开始时会**自动修复**歌词时间戳：
+- 每条歌词的 `end` 设为下一条的 `start`（去除空隙）
+- 最后一行的 `end` 设为 mp3 总时长
+- 修复后直接覆盖 `--lyrics-timed` 指定的文件
+
+#### 关于字幕渲染
+
+字幕使用 **5722 帧**（238s × 24fps），逐帧渲染 PNG 再 overlay 到主视频。
+这比逐句渲染更流畅，但耗时较长（约 2-3 分钟）。如需加速可降 fps 到 15。
+
+#### 关于视频质量
+
+overlay 步骤是关键质量瓶颈：
+- 源 clip 通常 6Mbps，最终输出目标 4-6Mbps
+- 使用 `-crf 14` + `-preset slow` 确保高质量编码
+- 如果输出小于 10MB，检查 bitrate 是否正常
 
 #### 歌名水印
 
@@ -296,7 +314,10 @@ gen_video API 返回的视频总时长通常短于 mp3 音频时长。
    是否等于（或接近）音频总时长，累积误差通常来自多个场景分别取整
    `--seconds` 参数（4-12 的整数）导致的舍入误差。compose_mv.py 采用
    **整体慢放**策略（concat + setpts），无累积误差，输出时长精确等于 mp3 时长。
-7. **Windows 下字幕不显示/视频变黑屏**：确保字幕视频用 `overlay=0:0`
+7. **歌词时间戳有空隙**：如果 `lyrics_timed.json` 里两条歌词之间有较大
+   空白（如前一条 end=4s，后一条 start=7s），字幕会"消失"几秒。
+   `compose_mv.py` 会自动修复：每条歌词的 end = 下一条的 start。
+8. **Windows 下字幕不显示/视频变黑屏**：确保字幕视频用 `overlay=0:0`
    合成时保留 alpha 通道（PIL PNG RGBA → concat demuxer → overlay）；
    输出前务必检查文件大小（正常应为几十 MB，若只有几 MB 说明 overlay 失败）。
 8. **Windows 下 drawtext 水印路径报错**：字体路径中的冒号（`C:`）会被
