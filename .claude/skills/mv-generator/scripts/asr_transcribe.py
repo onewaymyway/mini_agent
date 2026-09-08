@@ -45,17 +45,25 @@ def transcribe(
     device: str = "cpu",
     compute_type: str = "int8",
     word_timestamps: bool = True,
+    initial_prompt: Optional[str] = None,
 ) -> dict:
     """对音频做语音识别，返回段级 + 词级时间戳。
 
     Args:
         audio_path: 音频文件路径（mp3/wav 等 ffmpeg 支持的格式）。
         model_size: faster-whisper 模型规格，如 tiny/base/small/medium/large-v3。
-            越大越准但越慢，歌曲背景音乐较吵时建议至少 small。
+            越大越准但越慢，歌曲背景音乐较吵时建议至少 small；如果之后不打算
+            换用强制对齐方案、还是要靠这一步的识别质量兜底，建议至少用
+            medium（唱歌场景对声学模型要求比说话场景高，small 经常不够）。
         language: 语言代码，中文歌曲传 "zh"；传 None 让模型自动检测。
         device: "cpu" 或 "cuda"（有 GPU 时可显著加速）。
         compute_type: 量化精度，cpu 场景推荐 "int8"（更快更省内存）。
         word_timestamps: 是否输出词级时间戳（对齐阶段更精细，建议保持 True）。
+        initial_prompt: 可选，传入标准歌词全文（或前面几句）作为解码提示，
+            Whisper 会倾向于生成"读音接近提示文本"的结果，能明显提高识别
+            文字和标准歌词的吻合度，是几乎零成本的识别质量改进（注意：这
+            只是"偏置"识别结果，不是强制对齐，仍然可能识别错；真正想要
+            工业级精度还是应该走 align_lyrics_forced.py 的强制对齐方案）。
 
     Returns:
         dict，结构：
@@ -83,6 +91,7 @@ def transcribe(
         language=language,
         word_timestamps=word_timestamps,
         vad_filter=True,  # 过滤纯伴奏/静音段，减少幻听文本
+        initial_prompt=initial_prompt,
     )
 
     segments = []
@@ -117,10 +126,25 @@ def main():
     parser.add_argument("--language", default="zh", help="语言代码，默认 zh；传 auto 让模型自动检测")
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="运行设备，默认 cpu")
     parser.add_argument("--compute-type", default="int8", help="量化精度，默认 int8")
+    parser.add_argument("--lyrics-hint-file", default=None,
+                         help="可选，标准歌词文本文件路径；会取其前 --lyrics-hint-chars 个字符"
+                              "作为 Whisper 的 initial_prompt 解码提示，提高识别文字和标准歌词的吻合度")
+    parser.add_argument("--lyrics-hint-chars", type=int, default=200,
+                         help="喂给 initial_prompt 的歌词字符数上限，默认 200"
+                              "（Whisper 的 prompt 上下文窗口有限，传太长没有额外收益）")
     parser.add_argument("--save-path", default=None, help="识别结果保存路径（JSON）")
     args = parser.parse_args()
 
     language = None if args.language == "auto" else args.language
+
+    initial_prompt = None
+    if args.lyrics_hint_file:
+        hint_path = Path(args.lyrics_hint_file)
+        if not hint_path.exists():
+            print(f"警告: --lyrics-hint-file 指定的文件不存在: {hint_path}，将不使用 initial_prompt", file=sys.stderr)
+        else:
+            raw = hint_path.read_text(encoding="utf-8")
+            initial_prompt = raw.replace("\n", "").replace("\r", "")[: args.lyrics_hint_chars]
 
     try:
         result = transcribe(
@@ -129,6 +153,7 @@ def main():
             language=language,
             device=args.device,
             compute_type=args.compute_type,
+            initial_prompt=initial_prompt,
         )
     except (RuntimeError, FileNotFoundError) as exc:
         print(f"识别失败: {exc}", file=sys.stderr)

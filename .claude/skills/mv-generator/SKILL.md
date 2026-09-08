@@ -12,9 +12,9 @@ triggers: MV生成, 生成MV, 歌词视频, 歌词同步, mv video, lyric video,
 内容贴合歌词语义的 MV。整体流程：
 
 ```
-方向选择(横屏/竖屏，写入配置) → ASR 粗识别 → 歌词对齐校正
-→ 场景规划(需用户确认) → 定妆图生成 → 分场景视频生成
-→ 拼接+烧字幕+混音 → 最终 mv.mp4
+方向选择(横屏/竖屏，写入配置) → 人声分离 → ASR 粗识别
+→ 歌词对齐校正(强制对齐优先/ASR+模糊匹配兜底) → 场景规划(需用户确认)
+→ 定妆图生成 → 分场景视频生成 → 拼接+烧字幕+混音 → 最终 mv.mp4
 ```
 
 **支持横屏（16:9，默认）和竖屏（9:16，短视频/竖版）两种模式**，在
@@ -28,9 +28,16 @@ Step 0 由用户选择一次，选择结果写入 `<output_dir>/mv_config.json`�
 - `gen_video_with_text`（必须，生成分场景视频片段）
 
 **依赖脚本**（本 skill 目录下）：
-- `scripts/asr_transcribe.py`：本地语音识别（faster-whisper）
-- `scripts/align_lyrics_v2.py`：歌词对齐第一步，归一化精确匹配 + 覆盖率报告
-  （旧版 `align_lyrics.py`/`align_lyrics_llm.py` 已不推荐使用，保留仅为兼容）
+- `scripts/separate_vocals.py`：Step 1 用 Demucs 分离人声/伴奏，提升
+  后续识别与对齐精度（推荐，跑不了可跳过退化用原始 mp3）
+- `scripts/asr_transcribe.py`：本地语音识别（faster-whisper），支持
+  `--lyrics-hint-file` 用标准歌词做解码提示
+- `scripts/align_lyrics_forced.py`：歌词对齐**方案 A（优先）**，CTC 强制
+  对齐，标准歌词文本已知，只需要对齐时间，不做自由识别，精度和鲁棒性
+  都优于方案 B，尤其是有重复段落的歌
+- `scripts/align_lyrics_v2.py`：歌词对齐**方案 B（兜底）**，归一化精确
+  匹配 + 覆盖率报告（旧版 `align_lyrics.py`/`align_lyrics_llm.py` 已不
+  推荐使用，保留仅为兼容）
 - `scripts/check_scene_plan.py`：校验 `scene_plan.yaml`（单场景时长范围、
   时间轴连续性、是否覆盖音频总时长），Step 3 写完必须跑，不通过不能进入 Step 4
 - `scripts/check_assets.py`：校验 Step 4 生成的定妆图是否都已落盘（路径
@@ -43,6 +50,11 @@ Step 0 由用户选择一次，选择结果写入 `<output_dir>/mv_config.json`�
 
 **外部依赖**：
 - `faster-whisper`（Python 包，未安装时先提示用户 `pip install faster-whisper`）
+- `demucs`（Python 包，Step 1 人声分离用，推荐但非强制；
+  `pip install demucs --break-system-packages`，首次运行需联网下载模型权重）
+- `ctc-forced-aligner`（Python 包，Step 2 方案 A 强制对齐用，推荐但非
+  强制；`pip install ctc-forced-aligner --break-system-packages`，首次
+  运行需联网从 huggingface.co 下载模型，网络不通时自动退回方案 B）
 - `ffmpeg`（系统命令，未安装时先提示用户按 `docs/mv-generator-guide.md`
   里的说明安装；Windows 推荐 `winget install ffmpeg`）
 - `AGNES_API_KEY` 环境变量（`gen_image_with_text`/`gen_video_with_text` 都需要）
@@ -61,6 +73,10 @@ Step 0 由用户选择一次，选择结果写入 `<output_dir>/mv_config.json`�
 ```
 mv_output/歌曲名_20260907/
 ├── mv_config.json         # Step 0 产物：横屏/竖屏等全局配置，最先写入
+├── vocals/                # Step 1 产物：人声分离结果
+│   └── htdemucs/<歌名>/
+│       ├── vocals.wav     # 纯人声，Step 1 ASR、Step 2 强制对齐都用它
+│       └── no_vocals.wav  # 纯伴奏，暂时用不上
 ├── asr_raw.json          # Step 1 产物
 ├── lyrics_timed.json     # Step 2 产物
 ├── lyrics.srt            # Step 2 产物（供人工核对，最终合成时会重新生成）
@@ -81,10 +97,16 @@ mv_output/歌曲名_20260907/
    `gen_video_with_text` 都依赖它），未设置则提示用户设置后再继续。
 2. 检查 `faster-whisper` 是否已安装（可以直接尝试 `python -c "import faster_whisper"`），
    未安装则提示用户 `pip install faster-whisper` 并等待确认后再继续。
-3. 检查 `ffmpeg` 是否在 PATH 中（`ffmpeg -version`），不可用则提示用户
+3. 检查 `demucs` 和 `ctc-forced-aligner` 是否已安装（`python -c "import demucs"` /
+   `python -c "import ctc_forced_aligner"`）。这两个是 Step 1/2 推荐方案
+   （人声分离 + 强制对齐）用到的，没装不阻塞流程——提示用户
+   `pip install demucs ctc-forced-aligner --break-system-packages`，
+   用户暂时不装或环境没法联网下载模型也没关系，跳过后自动退回旧方案
+   （原始 mp3 直接 ASR + 模糊匹配对齐），效果会打折扣但流程能跑通。
+4. 检查 `ffmpeg` 是否在 PATH 中（`ffmpeg -version`），不可用则提示用户
    按 `docs/mv-generator-guide.md` 安装，Step 6 之前必须解决，前面几步
    不依赖 ffmpeg 可以先做。
-4. 确认输入：mp3 文件路径是否存在、歌词文本是否已提供（逐行纯文本，
+5. 确认输入：mp3 文件路径是否存在、歌词文本是否已提供（逐行纯文本，
    与音频中演唱顺序一致）。歌词行数、音频时长会影响后续场景数量的
    预估，可以先做一个粗略播报，让用户对成本（15–25 次视频生成调用）
    有心理预期。
@@ -93,7 +115,7 @@ mv_output/歌曲名_20260907/
 
 ### Step 0: 视频方向选择（横屏 / 竖屏，最先做，只做一次）
 
-**这是整个流程里第一个要做的事**，必须在 Step 1（ASR）之前完成，且
+**这是整个流程里第一个要做的事**，必须在 Step 1（人声分离+ASR）之前完成，且
 在同一个 `output_dir` 内只做一次——后续所有涉及"生成视频/图片尺寸"的
 步骤都依赖这一步写入的配置文件，不允许中途改变，也不允许某个步骤
 自己临时决定用别的比例。
@@ -169,26 +191,78 @@ mv_output/歌曲名_20260907/
 的 prompt 里显式加一句方向提示，比如竖屏加
 `"vertical 9:16 framing, subject centered, medium close-up"`。
 
-### Step 1: ASR 粗识别
+### Step 1: 人声分离 + ASR 粗识别
+
+**先做人声分离，这是提升对齐效果收益最大的一步，不要跳过**：歌曲里的
+背景音乐/和声/混响是 ASR 识别和后续对齐效果差的主要干扰源，Whisper 和
+强制对齐模型的声学模型都是在接近纯人声/纯语音的数据上训练的，直接喂
+带伴奏的原始 mp3 效果会明显打折扣。
+
+```bash
+python .claude/skills/mv-generator/scripts/separate_vocals.py \
+  <mp3路径> --output-dir <output_dir>
+```
+
+产物是 `<output_dir>/vocals/htdemucs/<歌名>/vocals.wav`（纯人声，后续
+步骤都用这个文件，不要再用原始 mp3）和 `no_vocals.wav`（纯伴奏，暂时用
+不上）。首次运行需要联网下载 Demucs 模型权重，见脚本内注释里的排错说明；
+如果当前环境确实无法联网下载，可以跳过这一步直接用原始 mp3 继续（对齐
+效果会打折扣，但流程仍然能跑通）。
+
+**ASR 粗识别**（即使后面走强制对齐方案，这一步的产物也建议保留，用于
+Step 2 里对强制对齐结果做交叉验证，以及低置信度行的人工复核参考）：
 
 ```bash
 python .claude/skills/mv-generator/scripts/asr_transcribe.py \
-  <mp3路径> --model-size small --language zh \
+  <output_dir>/vocals/htdemucs/<歌名>/vocals.wav \
+  --model-size medium --language zh \
+  --lyrics-hint-file <output_dir>/lyrics.txt \
   --save-path <output_dir>/asr_raw.json
 ```
 
-- 中文歌曲背景音乐较吵时，识别准确率可能一般，这是预期内的，因为
-  下一步会用标准歌词校正文字，本步骤主要提供"大致的时间戳锚点"。
+- **输入用人声轨，不用原始 mp3**（对应上一步产物）。
+- `--model-size` 建议至少 `medium`：唱歌场景对声学模型要求比说话场景
+  高，`small` 经常不够；`--lyrics-hint-file` 把标准歌词喂给 Whisper 做
+  解码提示（`initial_prompt`），能明显提高识别文字和标准歌词的吻合度，
+  是几乎零成本的改进，不要漏传。
 - 若识别耗时较长（大文件 + cpu 模式），提前告知用户预计耗时。
 
-**产物**：`asr_raw.json`（强制落盘）
+**产物**：`vocals/htdemucs/<歌名>/vocals.wav`、`asr_raw.json`（强制落盘）
 
-### Step 2: 歌词对齐校正（脚本精确锚点 + Agent 语义兜底，混合方案）
+### Step 2: 歌词对齐校正（强制对齐优先，ASR+模糊匹配兜底）
 
-**不要单纯依赖字数对齐，也不要让 LLM 从零对齐整首歌**（成本高、容易在
-歌词有重复段落——如副歌重复——时张冠李戴）。正确做法是两步混合：
+**这一步决定整个 MV 字幕/画面切换的时间精度，是最容易出效果问题的环节。**
+本 skill 提供两种对齐方案，按下面的顺序尝试：
 
-**第一步：跑脚本拿到"精确匹配锚点 + 覆盖率报告"**
+**方案 A（优先）：强制对齐 `align_lyrics_forced.py`**
+
+标准歌词文本是已知且保证正确的，不需要"猜"文本内容，只需要知道"这段
+已知文本什么时候被唱到"——这是强制对齐（force alignment）模型的标准
+任务，比"先自由识别、再模糊匹配"精度更高，也**不会出现重复段落（副歌/
+主歌重复）被错误对齐到"另一次重复"的时间点**这种量级的错误（强制对齐
+严格按给定文本顺序单调推进，架构上就不存在这个问题）。
+
+```bash
+python .claude/skills/mv-generator/scripts/align_lyrics_forced.py \
+  <output_dir>/vocals/htdemucs/<歌名>/vocals.wav \
+  <output_dir>/lyrics.txt \
+  --save-path <output_dir>/lyrics_timed.json \
+  --save-srt <output_dir>/lyrics.srt
+```
+
+- 依赖 `pip install ctc-forced-aligner --break-system-packages`。
+- **首次运行需要联网从 huggingface.co 下载模型**（几十到上百 MB）。如果
+  当前网络白名单没有这个域名，脚本会给出明确报错，此时按报错提示：
+  联系环境管理员放开域名，或在有网络的机器上预下载模型文件后拷贝过来
+  （具体路径见脚本内注释），也可以用 `--model-path` 指定已有模型文件。
+  **如果网络条件不允许跑通这一步，直接跳到方案 B**，不要在这里卡住。
+- 跑完看 stderr：如果有对齐置信度偏低的行会被列出来，Agent 按方案 B
+  里"只复核低置信度行"的方式处理（见下方第二步）。
+
+**方案 B（兜底）：ASR + 模糊匹配 `align_lyrics_v2.py`**
+
+当强制对齐因为网络/依赖问题跑不通，或者对齐完之后发现某些行明显对不上
+（比如实际演唱里插入了歌词文件里没写的重复段落），退回到这个方案：
 
 ```bash
 python .claude/skills/mv-generator/scripts/align_lyrics_v2.py \
@@ -197,8 +271,7 @@ python .claude/skills/mv-generator/scripts/align_lyrics_v2.py \
   --save-srt <output_dir>/lyrics.srt
 ```
 
-`align_lyrics_v2.py` 相比旧版 `align_lyrics.py` 的关键改进（这就是本
-skill 之前"字数对不上"问题的根因修复）：
+`align_lyrics_v2.py` 相比更早版本 `align_lyrics.py` 的关键改进：
 - **匹配前先归一化**：忽略大小写，并把繁体字统一转成简体再比较
   （faster-whisper 中文识别经常输出繁体，歌词文本通常是简体，"總"
   和"总"这种字之前会被判定为不匹配，导致大量本该精确匹配的字符退化
@@ -213,37 +286,42 @@ skill 之前"字数对不上"问题的根因修复）：
   跟附近 ASR segment 整体做相似度比较），仍然拿不到可信结果的行会在
   stderr 里列出来，供下一步人工/Agent 复核。
 - **单调窗口约束**：引入时间游标 `cursor_time`，确保对齐结果在时间上
-  单调不减，避免重复段落导致的张冠李戴问题。
+  单调不减，避免重复段落导致的张冠李戴问题（但本质是在缓解症状，效果
+  上限不如方案 A，能用方案 A 就优先用方案 A）。
 
-**第二步：Agent 只复核脚本报告里覆盖率低的行**
+**第二步（两个方案通用）：Agent 只复核脚本报告里置信度低的行**
 
-1. 查看脚本 stderr 输出的低覆盖率行清单（通常是背景音乐过响、ASR
-   整段幻听导致的片段，比如把"科技的窍门"识别成"可惜的窗门"这种
-   语义/字面都对不上的情况，脚本自身无法可靠处理）。
+1. 查看脚本 stderr 输出的低置信度/低覆盖率行清单。
 2. 对这些行，Agent 结合上下文（前后已对齐好的行的时间戳区间、该行在
-   ASR 原始 segments 里同一时间窗口的内容）用语义/读音相似性判断合理
-   的时间区间，直接修改 `lyrics_timed.json` 里对应行的 `start`/`end`。
-   **只改这些被标记的行，不要重新处理整首歌**——其余行已经是精确锚点
-   或高覆盖率插值结果，可信度高，重新跑一遍 LLM 全量对齐反而可能把
-   已经对的行改错（尤其是歌词有重复段落时）。
+   `asr_raw.json` 原始 segments 里同一时间窗口的内容）用语义/读音相似性
+   判断合理的时间区间，直接修改 `lyrics_timed.json` 里对应行的
+   `start`/`end`。**只改这些被标记的行，不要重新处理整首歌**——其余行
+   已经是高置信度结果，重新跑一遍 LLM 全量对齐反而可能把已经对的行改错
+   （尤其是歌词有重复段落时）。
 3. 修改后重新生成 `lyrics.srt`（或让 Agent 直接按新的 `lyrics_timed.json`
    内容手写覆盖）。
 
 **Agent需输出的中间内容**（展示给用户）：
-- 脚本报出的锚点覆盖率整体情况（比如"38 行里 32 行覆盖率 > 70%，6 行
-  需要人工复核"）
+- 用的是方案 A 还是方案 B，为什么（比如"强制对齐模型下载失败，已退回
+  ASR+模糊匹配方案"）
+- 整体置信度情况（比如"38 行里 32 行高置信度，6 行需要人工复核"）
 - 被复核过的行，展示复核前后的时间戳对比
-- 如有明显的匹配困难或歧义，向用户说明
+- 如有明显的匹配困难或歧义（比如疑似 lyrics.txt 漏写了某段重复歌词），
+  向用户说明
 
 **产物**：`lyrics_timed.json`、`lyrics.srt`（强制落盘）
 
-**`lyrics_timed.json` 格式示例**：
+**`lyrics_timed.json` 格式示例**（两个对齐脚本产物格式一致，下游步骤
+不需要关心具体是哪个方案产出的）：
 ```json
 {
+  "audio_path": "<output_dir>/vocals/htdemucs/歌名/vocals.wav",
   "duration": 239.04,
   "lines": [
-    {"line": 0, "text": "歌词第一句", "start": 0.0, "end": 8.2},
-    {"line": 1, "text": "歌词第二句", "start": 8.2, "end": 14.5}
+    {"index": 0, "text": "歌词第一句", "start": 0.0, "end": 8.2,
+     "anchor_coverage": 1.0, "method": "forced-align(score=-0.85)"},
+    {"index": 1, "text": "歌词第二句", "start": 8.2, "end": 14.5,
+     "anchor_coverage": 1.0, "method": "forced-align(score=-0.62)"}
   ]
 }
 ```
@@ -583,17 +661,27 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
    `pip install faster-whisper` 提示，不会裸抛 ImportError。
 2. **ffmpeg 未安装/不在 PATH**：`compose_mv.py` 使用硬编码路径
    `C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffmpeg.exe`，无需依赖 PATH。
-3. **对齐结果时间戳明显异常/两边字数对不上**：先确认没有跳过 Step 2
-   第一步的 `align_lyrics_v2.py`（不要直接用旧的 `align_lyrics.py`，
+3. **对齐结果时间戳明显异常/两边字数对不上（走的是方案 B `align_lyrics_v2.py`）**：
+   先确认没有跳过归一化步骤（不要直接用更早期的 `align_lyrics.py`，
    后者没有简繁/大小写归一化，中文 ASR 输出繁体时会导致大量本该精确
    匹配的字符被判定为不匹配，从而错误地退化成整段线性插值）。跑完
    `align_lyrics_v2.py` 后看 stderr 的覆盖率报告：如果**大面积**行都
    覆盖率很低，通常是 ASR 识别质量太差（背景音乐过响、`--model-size`
-   太小）导致的真实幻听（比如把"科技的窍门"识别成"可惜的窗门"），
-   这种情况脚本兜底也救不回来，需要换更大的模型规格重新识别，或者
-   直接交给 Agent 按 Step 2 第二步的方法人工复核那几行；如果只是
-   **零星几行**覆盖率低，直接走 Step 2 第二步的人工复核流程即可，
-   不需要重新识别整首歌。
+   太小、没做人声分离）导致的真实幻听（比如把"科技的窍门"识别成
+   "可惜的窗门"），这种情况脚本兜底也救不回来——**优先考虑换成方案 A
+   强制对齐**（从根本上不依赖 ASR 识别质量），退而求其次是先补做 Step 1
+   的人声分离/换更大的 `--model-size` 重新识别；如果只是**零星几行**
+   覆盖率低，直接走 Step 2 第二步的人工复核流程即可，不需要重新识别
+   整首歌。
+3b. **强制对齐 `align_lyrics_forced.py` 报错下载模型失败**：说明当前
+   网络访问不到 `huggingface.co`。按脚本报错提示处理（加白名单 / 换网络
+   环境预下载模型再拷贝过来 / `--model-path` 指定已有模型文件）；如果
+   短时间内无法解决，直接退回方案 B `align_lyrics_v2.py` 继续流程，不要
+   在这里卡住整个任务。
+3c. **强制对齐报错"字符数对不上"**：说明 `lyrics.txt` 里有 uroman 音译
+   处理不了的字符（生僻字、emoji、罗马数字、特殊符号等），把这些字符
+   替换成常见汉字/标点后重跑；如果歌词里确实需要保留这些字符，退回
+   方案 B。
 4. **单个场景超过 12 秒/不足 4 秒/时间轴有缺口**：`gen_video_with_text`
    的硬限制是每个 clip 4-12 秒；`check_scene_plan.py` 会在 Step 3 阶段
    就把这些问题连同具体场景 id 一起报出来，必须改到校验通过再进入
@@ -650,6 +738,11 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
    Step 5（分场景视频 `--aspect-ratio`）、Step 6（合成 `--target-size`
    / `--font-size` / `--overlay-y-offset`）都从这个文件取值，不要在
    某一步单独跟用户确认或改用别的比例，保持全程一致。
+0b. **对齐效果不理想时的排查顺序**：先看有没有做 Step 1 人声分离
+   （最大单项改进）→ 再看 Step 2 有没有用方案 A 强制对齐（比方案 B
+   ASR+模糊匹配上限更高，尤其是重复段落多的歌）→ 最后才是调
+   `align_lyrics_v2.py` 的 `--min-anchor`/`--window-seconds` 等参数
+   （这些参数只能优化"模糊匹配怎么退化"，救不了识别质量本身差的问题）。
 1. **成本预期**：一首 3-4 分钟的歌通常会拆成 15-25 个场景，对应
    15-25 次 `gen_video` 调用，请提前让用户知晓耗时和调用量。
 2. **Prompt 语言**：与 `gen_image_with_text`/`gen_video_with_text` 一致，
