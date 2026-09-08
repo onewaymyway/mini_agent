@@ -206,3 +206,4 @@ test_cases/inputs/character-1.png
 test_cases/inputs/character-2.png
 test_cases/inputs/keyframe_first.png
 .agent/daemon.log
+.agent/external_projects.json
