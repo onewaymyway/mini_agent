@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import mimetypes
 import time
 from pathlib import Path
 from typing import Optional, List
@@ -38,6 +40,53 @@ class AgnesVideoClient:
         self.verify_ssl = verify_ssl
 
         self.session = requests.Session()
+
+    # =========================
+    # file utils
+    # =========================
+    @staticmethod
+    def _is_local_path(value: str) -> bool:
+        """判断一个字符串是不是本地文件路径（而不是 http(s) URL 或已经是
+        data: URI）。Agnes 接口的 images/first_frame/last_frame 只接受
+        公网 http(s) URL 或 base64 data URI，不支持本地路径，这里统一
+        识别后转换，避免出现
+        'media must be a public http(s) URL or base64 data' 报错。"""
+        if not value:
+            return False
+        lowered = value.lower()
+        if lowered.startswith("http://") or lowered.startswith("https://"):
+            return False
+        if lowered.startswith("data:"):
+            return False
+        return True
+
+    @staticmethod
+    def file_to_data_uri(image_path: str) -> str:
+        mime_type = mimetypes.guess_type(image_path)[0] or "image/png"
+
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+
+        encoded = base64.b64encode(image_bytes).decode()
+
+        return f"data:{mime_type};base64,{encoded}"
+
+    @classmethod
+    def _normalize_media(cls, value: Optional[str]) -> Optional[str]:
+        """把单个 first_frame/last_frame 值中的本地路径转换成 data URI；
+        http(s) URL 或已经是 data URI 的值原样返回。"""
+        if not value:
+            return value
+        if cls._is_local_path(value):
+            return cls.file_to_data_uri(value)
+        return value
+
+    @classmethod
+    def _normalize_media_list(cls, values: Optional[List[str]]) -> Optional[List[str]]:
+        """对 images 等列表参数逐个做本地路径 -> data URI 转换。"""
+        if not values:
+            return values
+        return [cls._normalize_media(v) for v in values]
 
     # =========================
     # headers
@@ -183,6 +232,13 @@ class AgnesVideoClient:
         seed: Optional[int] = None,
     ) -> dict:
         """Create a video generation task. Returns the raw task creation response."""
+
+        # images / first_frame / last_frame 只接受 http(s) URL 或 base64
+        # data URI，本地文件路径会被 API 直接 400（见 SKILL 报障记录），
+        # 这里统一做一次自动转换，调用方传本地路径也能正常工作。
+        first_frame = self._normalize_media(first_frame)
+        last_frame = self._normalize_media(last_frame)
+        images = self._normalize_media_list(images)
 
         payload = {
             "model": self.MODEL,

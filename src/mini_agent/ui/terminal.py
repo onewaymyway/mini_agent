@@ -2571,21 +2571,41 @@ class Terminal:
             # ── 焦点日志增量投递 ──────────────────────────────────────
             # 若有焦点 task，把新增日志行投入队列，由 render_thread 打印，
             # 不与状态栏重绘竞争（同一渲染线程串行处理）。
+            #
+            # [SYS-FOCUS-AUTOCLEAR] 焦点模式下 print() 会整体静默主输出
+            # （见 Terminal.print），这在"焦点 task 已经跑完/被取消/
+            # 甚至 TaskManager 里已经找不到这个 id"时会变成一个没有
+            # 任何提示的陷阱：用户只要曾经按错过一次方向键进入焦点，
+            # 之后所有主输出（包括 bash 工具的实时流式打印）都会永久
+            # 无声消失，直到用户自己想起来按 ESC / 敲 /tasks unfocus——
+            # 而大多数人根本不知道有这个功能，只会觉得"程序坏了、不
+            # 打印东西了"。这里改为主动兜底：一旦发现焦点指向的 task
+            # 已经不存在，或者已经进入终态（DONE/FAILED/CANCELLED），
+            # 立即自动退出焦点、恢复主输出，而不是让它无限期悬空。
             focus_id = self._task_focus
             if focus_id:
                 try:
                     from mini_agent.tools.orchestration import get_task_manager
+                    from mini_agent.orchestrator.task import TaskStatus
                     mgr = get_task_manager()
-                    if mgr:
-                        rec = mgr.get(focus_id)
-                        if rec:
-                            with self._focus_lock:
-                                offset = self._focus_log_offset
-                                new_lines = list(rec.log_lines[offset:])
-                                if new_lines:
-                                    self._focus_log_offset = offset + len(new_lines)
+                    rec = mgr.get(focus_id) if mgr else None
+                    if rec is None or rec.status in (
+                        TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED,
+                    ):
+                        with self._focus_lock:
+                            old = self._task_focus
+                            self._task_focus = None
+                            self._focus_log_offset = 0
+                        if old is not None:
+                            self._q.put(_Msg("_focus_change", (old, None)))
+                    else:
+                        with self._focus_lock:
+                            offset = self._focus_log_offset
+                            new_lines = list(rec.log_lines[offset:])
                             if new_lines:
-                                self._q.put(_Msg("_focus_lines", new_lines))
+                                self._focus_log_offset = offset + len(new_lines)
+                        if new_lines:
+                            self._q.put(_Msg("_focus_lines", new_lines))
                 except Exception as _mini_agent_exc:
                     from mini_agent.errors import log_exception
                     log_exception(_mini_agent_exc, where='mini_agent.ui.terminal')
