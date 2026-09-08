@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""MV 最终合成脚本（新版）。
+"""MV 最终合成脚本（逐场景独立缩放版）。
 
 核心逻辑：
 1. 按 scene_plan.yaml 规划时长，每个 scene 独立缩放
-   - clip 比规划短时 → 慢放
-   - clip 比规划长时 → 快放
+   - clip 比规划短时 -> 慢放
+   - clip 比规划长时 -> 快放
 2. 字幕按 lyrics_timed.json 绝对时间显示（与 mp3 同步）
 3. 音频使用原始 mp3
 
@@ -53,8 +53,8 @@ def get_dur(path):
     return float(json.loads(r.stdout)["format"]["duration"])
 
 
-def parse_scene_plan(plan_path):
-    """解析 scene_plan.yaml，返回 scene 列表（含规划时长）。"""
+def parse_scene_plan(plan_path, clips_dir):
+    """解析 scene_plan.yaml，返回 scene 列表（含规划时长和匹配到的 clips）。"""
     with open(plan_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     scenes = []
@@ -63,17 +63,9 @@ def parse_scene_plan(plan_path):
         start = s["start"]
         end = s["end"]
         target_dur = end - start
-        # 找到对应 clip 文件（支持 scene_XX.mp4 或 scene_XXa.mp4 等）
-        clips_dir = Path(args.clips_dir)
-        candidates = sorted([
-            p for p in clips_dir.iterdir()
-            if p.suffix.lower() == ".mp4" and p.name.startswith(scene_id.replace("_", "_"))
-        ], key=lambda p: p.name)
-        # 简单匹配：scene_01 -> scene_01*, scene_07a -> scene_07a*
-        matched = []
-        for p in clips_dir.glob(scene_id + "*.mp4"):
-            matched.append(p)
-        matched.sort(key=lambda p: p.name)
+        # 匹配该 scene 的所有 clips（如 scene_01, scene_07a, scene_07b）
+        matched = sorted(list(Path(clips_dir).glob(scene_id + "*.mp4")),
+                        key=lambda p: p.name)
         scenes.append({
             "id": scene_id,
             "start": start,
@@ -86,11 +78,10 @@ def parse_scene_plan(plan_path):
 
 
 def main():
-    global args
-    parser = argparse.ArgumentParser(description="MV 最终合成（新版：逐场景独立缩放）")
+    parser = argparse.ArgumentParser(description="MV 最终合成（逐场景独立缩放）")
     parser.add_argument("--clips-dir", required=True)
-    parser.add_argument("--scene-plan", required=True, help="scene_plan.yaml 路径")
-    parser.add_argument("--lyrics-timed", required=True, help="lyrics_timed.json 路径")
+    parser.add_argument("--scene-plan", required=True)
+    parser.add_argument("--lyrics-timed", required=True)
     parser.add_argument("--audio", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--target-size", default="1280:720")
@@ -108,10 +99,10 @@ def main():
     print(f"Work dir: {workdir}")
 
     # ── 1. 解析 scene_plan ─────────────────────────────────────────
-    scenes = parse_scene_plan(args.scene_plan)
+    scenes = parse_scene_plan(args.scene_plan, args.clips_dir)
     print(f"Loaded {len(scenes)} scenes from scene_plan.yaml")
     for s in scenes:
-        print(f"  {s['id']}: {s['start']:.1f}s - {s['end']:.1f}s (target={s['target_dur']:.1f}s), "
+        print(f"  {s['id']}: {s['start']:.1f}s-{s['end']:.1f}s (target={s['target_dur']:.1f}s), "
               f"clips={[c.name for c in s['clips']]}")
 
     # ── 2. 逐场景独立缩放 ──────────────────────────────────────────
@@ -122,7 +113,6 @@ def main():
     for scene in scenes:
         for i, clip in enumerate(scene["clips"]):
             clip_dur = get_dur(clip)
-            # 平分给该 scene 的每个 clip
             per_clip_target = scene["target_dur"] / len(scene["clips"])
             scale = per_clip_target / clip_dur
             out_name = f"{scene['id']}_c{i+1:02d}.mp4"
@@ -131,7 +121,7 @@ def main():
                 FFMPEG, "-y",
                 "-i", str(clip),
                 "-vf", f"fps={args.target_fps},setpts={scale}*PTS",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-c:v", "libx264", "-preset", "medium", "-crf", "20",
                 "-an",
                 str(out_path),
             ])
@@ -152,14 +142,14 @@ def main():
         FFMPEG, "-y",
         "-f", "concat", "-safe", "0", "-i", str(list_file),
         "-vf", f"scale={args.target_size}:force_original_aspect_ratio=decrease,pad={args.target_size}:(ow-iw)/2:(oh-ih)/2,fps={args.target_fps}",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
         "-an",
         str(joined),
     ])
     joined_dur = get_dur(joined)
     print(f"Joined: {joined_dur:.1f}s")
 
-    # ── 4. 生成字幕（按 lyrics_timed.json 绝对时间）────────────────
+    # ── 4. 生成字幕（按 lyrics_timed.json 绝对时间，逐帧渲染）────────
     from PIL import Image, ImageDraw, ImageFont
     W, H = [int(x) for x in args.target_size.split(":")]
     font = ImageFont.truetype(FONT_PATH, args.font_size)
@@ -168,47 +158,59 @@ def main():
 
     lyrics_data = json.load(open(args.lyrics_timed, "r", encoding="utf-8"))
     lines = lyrics_data.get("lines", [])
-    print(f"Generating {len(lines)} subtitle frames from lyrics_timed.json")
+    total_frames = int(joined_dur * args.target_fps)
+    print(f"Generating {total_frames} subtitle frames ({len(lines)} lyric lines)")
 
-    seg_info = []
-    prev_end = 0.0
+    # 计算每行歌词的显示时长（对齐到帧）
+    frame_dur = 1.0 / args.target_fps
     for i, item in enumerate(lines):
-        text = item.get("text", "")
-        start = max(item["start"], prev_end + 0.1)
-        end = max(item["end"], start + 1.0)
-        prev_end = end
-        dur = end - start
+        item["start_frame"] = int(item["start"] / frame_dur)
+        item["end_frame"] = int(item["end"] / frame_dur)
+
+    # 逐帧渲染
+    rendered = 0
+    for frame_idx in range(total_frames):
+        t = frame_idx * frame_dur
+        # 找到当前时间对应的歌词行
+        active_text = ""
+        for item in lines:
+            if item["start_frame"] <= frame_idx < item["end_frame"]:
+                active_text = item.get("text", "")
+                break
 
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        if hasattr(draw, "textlength"):
-            tw = draw.textlength(text, font=font)
-        else:
-            tw = sum(font.getlength(c) for c in text)
-        bw = 12
-        bg_w = int(tw) + bw * 2
-        bg_h = args.font_size + 16
-        y = H - args.overlay_y_offset - bg_h
-        x = (W - bg_w) // 2
-        draw.rectangle([x, y, x + bg_w, y + bg_h], fill=(0, 0, 0, 180))
-        draw.text((x + bw, y + 6), text, font=font, fill=(255, 255, 255, 255))
-        png_path = subs_dir / f"{i:04d}.png"
+        if active_text:
+            if hasattr(draw, "textlength"):
+                tw = draw.textlength(active_text, font=font)
+            else:
+                tw = sum(font.getlength(c) for c in active_text)
+            bw = 12
+            bg_w = int(tw) + bw * 2
+            bg_h = args.font_size + 16
+            y = H - args.overlay_y_offset - bg_h
+            x = (W - bg_w) // 2
+            draw.rectangle([x, y, x + bg_w, y + bg_h], fill=(0, 0, 0, 180))
+            draw.text((x + bw, y + 6), active_text, font=font, fill=(255, 255, 255, 255))
+        png_path = subs_dir / f"{frame_idx:05d}.png"
         img.save(png_path, "PNG")
-        seg_info.append({"file": f"{i:04d}.png", "start": start, "end": end, "dur": dur})
+        rendered += 1
+        if rendered % 500 == 0:
+            print(f"  Rendered {rendered}/{total_frames} frames...")
 
     # concat 字幕 PNG 为视频
     sub_list = workdir / "subs_list.txt"
     with open(sub_list, "w", encoding="utf-8") as f:
-        for seg in seg_info:
-            f.write(f"file '{(subs_dir / seg['file']).as_posix()}'\n")
-            f.write(f"duration {seg['dur']}\n")
+        for idx in range(total_frames):
+            f.write(f"file '{(subs_dir / f'{idx:05d}.png').as_posix()}'\n")
+            f.write(f"duration {frame_dur}\n")
 
     subs_video = workdir / "subs_video.mp4"
     _run([
         FFMPEG, "-y",
         "-f", "concat", "-safe", "0", "-i", str(sub_list),
-        "-pix_fmt", "rgba",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "0",
+        "-pix_fmt", "rgba", "-r", str(args.target_fps),
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
         str(subs_video),
     ])
 
@@ -219,7 +221,7 @@ def main():
         "-i", str(joined),
         "-i", str(subs_video),
         "-filter_complex", "[0:v][1:v]overlay=0:0[out]", "-map", "[out]",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
         "-an",
         str(video_with_subs),
     ])
@@ -234,13 +236,15 @@ def main():
             "bottom-right": {"x": "W-tw-10", "y": "H-th-10"},
         }
         pos = pos_map[args.title_pos]
+        watermarked = workdir / "watermarked.mp4"
         _run([
             FFMPEG, "-y",
             "-i", str(video_with_subs),
             "-vf", f"drawtext=text='{args.title}':fontsize={args.font_size}:fontfile='{font_escaped}':x={pos['x']}:y={pos['y']}:box=1:boxcolor=black@0.5:boxborderw=5",
             "-c:a", "copy",
-            str(video_with_subs),  # overwrite
+            str(watermarked),
         ])
+        video_with_subs = watermarked
         print(f"Title watermark: '{args.title}' at {args.title_pos}")
 
     # ── 6. 混入原始 mp3 音轨 ──────────────────────────────────────
