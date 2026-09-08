@@ -115,6 +115,50 @@ def build_client(skill_dir: Path):
     return AgnesVideoClient(key_pool=key_pool)
 
 
+def format_error(error) -> str:
+    """把 client.generate_video() 返回的 error 字段格式化成更易读的一行。
+
+    常见形状：
+      1. {"status_code": 400, "error": '{"code":"invalid_request","message":"..."}'}
+         —— HTTP 层错误，"error" 内层还是一段 JSON 字符串（Agnes 接口的
+         错误响应体），直接打印外层 dict 会把 message 淹没在转义字符里，
+         这里尝试再解析一层，把 code/message 拎出来。
+      2. {"video_id": ..., "error": {...查询任务返回的 query_result...}}
+         —— 任务被判定为 failed 时的错误，通常里面会带更详细的 status/
+         错误描述字段，原样转成紧凑 JSON 打印即可，方便定位。
+      3. 字符串（如网络异常 str(e)）—— 原样返回。
+    """
+    if error is None:
+        return "unknown error"
+    if isinstance(error, str):
+        return error
+    if isinstance(error, dict):
+        inner = error.get("error")
+        if isinstance(inner, str):
+            try:
+                parsed = json.loads(inner)
+            except (json.JSONDecodeError, TypeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                code = parsed.get("code")
+                message = parsed.get("message") or parsed.get("msg")
+                status_code = error.get("status_code")
+                parts = []
+                if status_code is not None:
+                    parts.append(f"status_code={status_code}")
+                if code:
+                    parts.append(f"code={code}")
+                if message:
+                    parts.append(f"message={message}")
+                if parts:
+                    return " ".join(parts)
+        try:
+            return json.dumps(error, ensure_ascii=False)
+        except TypeError:
+            return str(error)
+    return str(error)
+
+
 def generate_one_scene(client, scene: dict, assets_by_id: dict, output_dir: Path,
                         aspect_ratio: str, clips_dir: Path) -> dict:
     scene_id = scene["id"]
@@ -152,11 +196,12 @@ def generate_one_scene(client, scene: dict, assets_by_id: dict, output_dir: Path
         if result.get("success"):
             print(f"    ✅ {scene_id} 生成成功 -> {save_path}")
             return result
-        print(f"    ⚠️ {scene_id} 第 {attempt} 次失败: {result.get('error')}")
+        print(f"    ⚠️ {scene_id} 第 {attempt} 次失败: {format_error(result.get('error'))}")
         if attempt < MAX_RETRIES_PER_SCENE:
             time.sleep(2.0 * attempt)
 
-    print(f"    ❌ {scene_id} 重试 {MAX_RETRIES_PER_SCENE} 次仍失败，先跳过，继续下一个场景")
+    print(f"    ❌ {scene_id} 重试 {MAX_RETRIES_PER_SCENE} 次仍失败，"
+          f"最后一次错误: {format_error((last_result or {}).get('error'))}，先跳过，继续下一个场景")
     return last_result or {"success": False, "error": "unknown"}
 
 
@@ -195,6 +240,7 @@ def main():
     total = len(scenes)
     succeeded: set = set()
     failed_permanently: set = set()
+    last_errors: dict = {}  # scene_id -> 格式化后的最后一次错误信息，供最终汇总展示
 
     for sc in scenes:
         save_path = clips_dir / f"{sc['id']}.mp4"
@@ -225,7 +271,10 @@ def main():
             result = generate_one_scene(client, sc, assets_by_id, output_dir, args.aspect_ratio, clips_dir)
             if result.get("success"):
                 succeeded.add(scene_id)
+                last_errors.pop(scene_id, None)
                 round_had_success = True
+            else:
+                last_errors[scene_id] = format_error(result.get("error"))
             # 本轮内失败的场景暂不标记为永久失败，留到下一轮从头再试；
             # 只有当"整轮完全没有任何新增成功"时才判定为需要人工介入。
 
@@ -234,20 +283,30 @@ def main():
             for sid in still_missing:
                 failed_permanently.add(sid)
             print(f"\n本轮（第 {round_no} 轮）没有任何场景新增成功，判定剩余 "
-                  f"{len(still_missing)} 个场景为持续性失败，停止自动重试：{still_missing}", file=sys.stderr)
+                  f"{len(still_missing)} 个场景为持续性失败，停止自动重试。", file=sys.stderr)
+            for sid in still_missing:
+                print(f"  - {sid}: {last_errors.get(sid, 'unknown error')}", file=sys.stderr)
             break
 
     print("\n===== 生成结束汇总 =====")
     print(f"成功: {len(succeeded)}/{total}")
     missing = [sc["id"] for sc in scenes if sc["id"] not in succeeded]
     if missing:
-        print(f"失败/未生成: {len(missing)} 个 -> {missing}", file=sys.stderr)
-        print(json.dumps({"success": False, "succeeded": sorted(succeeded), "failed": missing},
-                          ensure_ascii=False, indent=2))
+        print(f"失败/未生成: {len(missing)} 个", file=sys.stderr)
+        for sid in missing:
+            print(f"  - {sid}: {last_errors.get(sid, 'unknown error')}", file=sys.stderr)
+        print(json.dumps(
+            {
+                "success": False,
+                "succeeded": sorted(succeeded),
+                "failed": missing,
+                "errors": {sid: last_errors.get(sid, "unknown error") for sid in missing},
+            },
+            ensure_ascii=False, indent=2))
         sys.exit(1)
     else:
         print("✅ 全部场景视频生成完成。")
-        print(json.dumps({"success": True, "succeeded": sorted(succeeded), "failed": []},
+        print(json.dumps({"success": True, "succeeded": sorted(succeeded), "failed": [], "errors": {}},
                           ensure_ascii=False, indent=2))
         sys.exit(0)
 
