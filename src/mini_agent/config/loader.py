@@ -904,6 +904,8 @@ def load_config(
         project_root=root,
         skills_dir=skills_dir,
         prompts_dir=prompts_dir,
+        # [next_doc/output_projects_root_and_git_isolation_plan.md]
+        output_projects_root=(_f("output_projects_root", None) or "./output_projects"),
         verbose=_verbose,
         sandbox=_sandbox,
         simple_mode=_simple_mode,

@@ -2799,6 +2799,12 @@ class AppConfig:
     skills_dir: Optional[Path] = None
     prompts_dir: Optional[Path] = None
 
+    # [next_doc/output_projects_root_and_git_isolation_plan.md] 调研/产出类
+    # 项目（有独立文件结构、可能需要自己的 git 管理）统一新建到这个根目录下，
+    # 不落进主项目 src/、不受主项目 git 管理。相对路径相对 project_root 解析；
+    # 也支持绝对路径。见 evolution/output_projects_root.py。
+    output_projects_root: str = "./output_projects"
+
     # ── 运行行为 ───────────────────────────────────────────────────────────────
     verbose: bool = False
     sandbox: bool = False

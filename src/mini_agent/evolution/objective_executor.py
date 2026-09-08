@@ -1826,7 +1826,7 @@ class ObjectiveExecutor:
             policy_ctx = ""
             try:
                 from mini_agent.evolution.output_path_policy import load_policy
-                policy_text = load_policy(self._paths)
+                policy_text = load_policy(self._paths, cfg=self._cfg)
                 if policy_text:
                     policy_ctx = f"\n\n[产出路径规范]\n{policy_text}"
             except Exception as _mini_agent_exc:
