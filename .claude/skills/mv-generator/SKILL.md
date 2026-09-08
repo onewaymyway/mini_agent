@@ -12,9 +12,16 @@ triggers: MV生成, 生成MV, 歌词视频, 歌词同步, mv video, lyric video,
 内容贴合歌词语义的 MV。整体流程：
 
 ```
-ASR 粗识别 → 歌词对齐校正 → 场景规划(需用户确认) → 定妆图生成
-→ 分场景视频生成 → 拼接+烧字幕+混音 → 最终 mv.mp4
+方向选择(横屏/竖屏，写入配置) → ASR 粗识别 → 歌词对齐校正
+→ 场景规划(需用户确认) → 定妆图生成 → 分场景视频生成
+→ 拼接+烧字幕+混音 → 最终 mv.mp4
 ```
+
+**支持横屏（16:9，默认）和竖屏（9:16，短视频/竖版）两种模式**，在
+Step 0 由用户选择一次，选择结果写入 `<output_dir>/mv_config.json`，
+后续所有步骤（定妆图生成、分场景视频生成、最终合成）都必须读取这个
+配置文件，按对应模式传参，不能各步骤各自硬编码 `16:9`。详见下方
+「Step 0：视频方向选择」和「不同方向模式的参数对照表」。
 
 **依赖 skill**：
 - `gen_image_with_text`（必须，生成角色/场景定妆图）
@@ -53,6 +60,7 @@ ASR 粗识别 → 歌词对齐校正 → 场景规划(需用户确认) → 定�
 
 ```
 mv_output/歌曲名_20260907/
+├── mv_config.json         # Step 0 产物：横屏/竖屏等全局配置，最先写入
 ├── asr_raw.json          # Step 1 产物
 ├── lyrics_timed.json     # Step 2 产物
 ├── lyrics.srt            # Step 2 产物（供人工核对，最终合成时会重新生成）
@@ -82,6 +90,84 @@ mv_output/歌曲名_20260907/
    有心理预期。
 
 ## 流程规范
+
+### Step 0: 视频方向选择（横屏 / 竖屏，最先做，只做一次）
+
+**这是整个流程里第一个要做的事**，必须在 Step 1（ASR）之前完成，且
+在同一个 `output_dir` 内只做一次——后续所有涉及"生成视频/图片尺寸"的
+步骤都依赖这一步写入的配置文件，不允许中途改变，也不允许某个步骤
+自己临时决定用别的比例。
+
+1. **向用户询问**（一次性问清楚，不要拆成多轮）：视频是要横屏
+   （16:9，适合 YouTube/传统 MV）还是竖屏（9:16，适合抖音/快手/
+   视频号/Shorts/Reels 等竖版短视频场景）。**用户不回答或没有明确
+   偏好时，默认横屏（16:9）**，直接采用默认值继续，不要为此阻塞流程。
+2. **选定后立即写入配置文件** `<output_dir>/mv_config.json`（先
+   `mkdir -p <output_dir>`），内容示例：
+
+   横屏（默认）：
+   ```json
+   {
+     "orientation": "landscape",
+     "aspect_ratio": "16:9",
+     "gen_video_aspect_ratio": "16:9",
+     "gen_video_size": "720P",
+     "image_ratio": "16:9",
+     "compose_target_size": "1280:720",
+     "compose_font_size": 28,
+     "compose_overlay_y_offset": 80
+   }
+   ```
+
+   竖屏：
+   ```json
+   {
+     "orientation": "portrait",
+     "aspect_ratio": "9:16",
+     "gen_video_aspect_ratio": "9:16",
+     "gen_video_size": "720P",
+     "image_ratio": "9:16",
+     "compose_target_size": "720:1280",
+     "compose_font_size": 22,
+     "compose_overlay_y_offset": 140
+   }
+   ```
+
+   可以直接用 `create_file`/`str_replace` 写这个 JSON 文件，不需要
+   额外脚本；字段含义见下方「不同方向模式的参数对照表」。
+
+3. **写完必须回显给用户确认一次**（"已选择横屏/竖屏，配置已保存到
+   `mv_config.json`，后续所有分场景视频、定妆图、最终合成都会按这个
+   比例生成"），避免用户后知后觉发现方向选错但已经生成了一堆素材。
+4. **后续每个用到 `--aspect-ratio` / `--ratio` / `--target-size` 等
+   与画幅相关参数的步骤（Step 4、Step 5、Step 6），执行前都必须先
+   读取 `mv_config.json`，把对应字段的值代入命令**，不能照抄 SKILL.md
+   里示例命令中写死的 `16:9`/`1280:720`——示例命令里的具体数值只是
+   给横屏模式打的比方，遇到竖屏配置要相应替换成 `9:16`/`720:1280`。
+5. 若用户中途要求"改成竖屏"/"改成横屏"，视为对已有配置的修改：
+   更新 `mv_config.json` 里的字段，并提醒用户——**已经生成的 `assets/`
+   定妆图和 `clips/` 视频片段是按旧方向生成的尺寸，不会自动适配新
+   方向，必须重新生成**（Step 4、Step 5 需要重新跑）。
+
+#### 不同方向模式的参数对照表
+
+| 配置字段 | 横屏 `landscape`（默认） | 竖屏 `portrait` | 用在哪一步 / 对应命令参数 |
+|---|---|---|---|
+| `orientation` | `landscape` | `portrait` | 仅供人读，标识当前模式 |
+| `aspect_ratio` / `gen_video_aspect_ratio` | `16:9` | `9:16` | Step 5 `generate_scene_videos.py --aspect-ratio <值>`；实际输出像素约 `1280x704`（横）/ `720x1280`（竖），由 `gen_video_with_text` 服务端决定 |
+| `gen_video_size` | `720P` | `720P` | Step 5，`gen_video_with_text` 当前只支持 `720P`，横竖屏都一样，不随方向变化 |
+| `image_ratio` | `16:9` | `9:16` | Step 4 `gen_image.py gen ... --ratio <值>`（配合 `--size 2K` 等档位使用） |
+| `compose_target_size` | `1280:720` | `720:1280` | Step 6 `compose_mv.py --target-size <值>`（注意是英文冒号分隔的 `W:H`，不是 `WxH`） |
+| `compose_font_size` | `28` | `22` | Step 6 `compose_mv.py --font-size <值>`，竖屏画布更窄，字号建议调小，避免长句歌词溢出画面 |
+| `compose_overlay_y_offset` | `80` | `140` | Step 6 `compose_mv.py --overlay-y-offset <值>`，竖屏画面更高，字幕距底部的留白建议加大，避免和短视频 App 自带的点赞/评论按钮区域重叠 |
+
+**Step 3 场景规划也要感知方向**（不需要改脚本，是 Agent 写 prompt 时
+的注意事项）：竖屏画面更窄更高，构图和横屏不同——写 `prompt_en` 时，
+横屏可以用大远景/宽幅构图（wide shot），竖屏建议更多用人像构图/
+中近景（medium shot / close-up、vertical framing、centered subject），
+避免大远景在竖屏画布里主体过小、两侧留白过多。可以在 `scene_plan.yaml`
+的 prompt 里显式加一句方向提示，比如竖屏加
+`"vertical 9:16 framing, subject centered, medium close-up"`。
 
 ### Step 1: ASR 粗识别
 
@@ -259,9 +345,14 @@ Step 4**，这是本流程里唯一的强制确认点（仿 comic-4panel 在关�
 
 ```bash
 AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
-  gen "<description_en>" --size 2K --ratio 16:9 \
+  gen "<description_en>" --size 2K --ratio <mv_config.json 里的 image_ratio> \
   --save-path <output_dir>/assets/<asset_id>.png
 ```
+
+**`--ratio` 必须取自 Step 0 写入的 `mv_config.json` 里的 `image_ratio`
+字段**（横屏为 `16:9`，竖屏为 `9:16`），不要照抄示例里的 `16:9` 就
+不管方向配置了；定妆图的画幅要和最终视频画幅一致，否则 `reference`
+模式生成视频时容易出现主体裁切/构图不协调。
 
 - 复杂场景（比如需要固定角色出现在不同环境里）可以用 `edit` 多图合成，
   参考 `gen_image_with_text` 的 SKILL.md。
@@ -305,8 +396,15 @@ rate limit 自动切换到下一把可用 key（复用 `gen_video_with_text` 自
 python .claude/skills/mv-generator/scripts/generate_scene_videos.py \
   <output_dir>/scene_plan.yaml \
   --output-dir <output_dir> \
-  --aspect-ratio 16:9
+  --aspect-ratio <mv_config.json 里的 gen_video_aspect_ratio>
 ```
+
+**`--aspect-ratio` 必须取自 `mv_config.json` 的 `gen_video_aspect_ratio`
+字段**（横屏 `16:9`，竖屏 `9:16`），不要沿用脚本自身 `--aspect-ratio`
+参数的默认值 `16:9`——那只是脚本在没有传参时的兜底默认，本 skill 里
+永远要显式传值，来源是 Step 0 的配置，不是脚本默认值。`--size`（即
+`gen_video_size`）横竖屏都固定传 `720P`，这是 `gen_video_with_text`
+服务当前唯一支持的档位，不随方向变化。
 
 （需要先设置好 `AGNES_API_KEY` 或 `AGNES_API_KEYS` 环境变量，或在
 `providers.json` 里配置好 agnes 的 `api_keys`，脚本会自动加载。）
@@ -325,7 +423,7 @@ python .claude/skills/mv-generator/scripts/generate_scene_videos.py \
 
 ```
 <tool_use>
-{"name": "bash", "input": {"command": "python .claude/skills/mv-generator/scripts/generate_scene_videos.py <output_dir>/scene_plan.yaml --output-dir <output_dir> --aspect-ratio 16:9", "timeout": -1}}
+{"name": "bash", "input": {"command": "python .claude/skills/mv-generator/scripts/generate_scene_videos.py <output_dir>/scene_plan.yaml --output-dir <output_dir> --aspect-ratio <gen_video_aspect_ratio，读取自mv_config.json，横屏16:9/竖屏9:16>", "timeout": -1}}
 </tool_use>
 ```
 
@@ -395,8 +493,19 @@ python .claude/skills/mv-generator/scripts/compose_mv.py \
   --audio <mp3路径> \
   --output <output_dir>/mv.mp4 \
   --title "歌名" \
-  --title-pos top-right
+  --title-pos top-right \
+  --target-size <mv_config.json 里的 compose_target_size> \
+  --font-size <mv_config.json 里的 compose_font_size> \
+  --overlay-y-offset <mv_config.json 里的 compose_overlay_y_offset>
 ```
+
+**`--target-size`/`--font-size`/`--overlay-y-offset` 三个都必须取自
+`mv_config.json`**（横屏依次为 `1280:720`/`28`/`80`，竖屏依次为
+`720:1280`/`22`/`140`），不要沿用 `compose_mv.py` 参数自身的默认值
+（`--target-size` 默认 `1280:720`，只对应横屏；竖屏必须显式传
+`720:1280`，否则最终视频会被强行 pad/裁剪成横屏画布，画面主体两侧
+出现大片黑边）。`--target-size` 格式是英文冒号分隔的 `宽:高`（例如
+`720:1280`），不要写成 `720x1280` 或反过来写成 `1280:720` 当竖屏用。
 
 该脚本会自动：
 1. **修复歌词时间戳空隙**：将前一条歌词的 end 设置为后一条的 start，
@@ -453,11 +562,23 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
   mp3 时长做对比，差异明显（比如超过 2 秒）要向用户说明原因（通常是
   Step 3 场景时长规划有累积误差）。
 - 检查视频比特率是否正常（应 > 1 Mbps），否则说明 overlay 失败。
+- **检查最终视频的宽高是否和 `mv_config.json` 里的 `compose_target_size`
+  一致**（`ffprobe -v quiet -print_format json -show_streams mv.mp4 |
+  jq '.streams[0].width, .streams[0].height'`）：横屏应为 `1280x720`，
+  竖屏应为 `720x1280`。如果对不上，说明 Step 6 合成时 `--target-size`
+  没有正确读取配置文件（很可能是照抄了示例命令里的横屏默认值）。
 - 向用户展示最终产物路径，简要说明场景数量、总时长、是否有已知的
   人物一致性漂移片段需要用户留意。
 
 ## 常见错误与故障排除
 
+0. **忘记做 Step 0 方向选择，或某一步没读配置就照抄示例命令**：
+   本 skill 所有示例命令里出现的 `16:9`/`1280:720`/`28`/`80` 都是
+   "横屏模式下的示例值"，不是可以无脑照抄的固定参数。每次执行
+   Step 4/5/6 前，先 `cat <output_dir>/mv_config.json` 确认当前方向
+   和对应字段值，再把命令里的占位符替换成配置里的真实值。如果
+   `output_dir` 里还没有 `mv_config.json`，说明 Step 0 被跳过了，
+   必须先补做 Step 0（询问用户方向、写入配置）再继续。
 1. **faster-whisper 未安装**：`asr_transcribe.py` 会给出清晰的
    `pip install faster-whisper` 提示，不会裸抛 ImportError。
 2. **ffmpeg 未安装/不在 PATH**：`compose_mv.py` 使用硬编码路径
@@ -524,6 +645,11 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
 
 ## 提示
 
+0. **横屏/竖屏只在 Step 0 选一次，全程复用**：选择结果落在
+   `<output_dir>/mv_config.json`，Step 4（定妆图 `--ratio`）、
+   Step 5（分场景视频 `--aspect-ratio`）、Step 6（合成 `--target-size`
+   / `--font-size` / `--overlay-y-offset`）都从这个文件取值，不要在
+   某一步单独跟用户确认或改用别的比例，保持全程一致。
 1. **成本预期**：一首 3-4 分钟的歌通常会拆成 15-25 个场景，对应
    15-25 次 `gen_video` 调用，请提前让用户知晓耗时和调用量。
 2. **Prompt 语言**：与 `gen_image_with_text`/`gen_video_with_text` 一致，
