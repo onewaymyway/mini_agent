@@ -12,8 +12,11 @@ import unittest
 from pathlib import Path
 
 from mini_agent.evolution.output_projects_root import (
+    PROJECT_INFO_FILENAME,
+    _INTRO_EXCERPT_MAX_CHARS,
     ensure_output_projects_root,
     ensure_root,
+    list_projects,
     maybe_append_gitignore,
     resolve_root,
 )
@@ -127,6 +130,61 @@ class EnsureOutputProjectsRootTests(unittest.TestCase):
             out = ensure_output_projects_root(cfg)
             self.assertTrue(out.is_dir())
             self.assertTrue((root / ".gitignore").exists())
+
+
+class ListProjectsTests(unittest.TestCase):
+    def test_empty_when_root_does_not_exist(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg = _FakeConfig(root)
+            self.assertEqual(list_projects(cfg), [])
+
+    def test_lists_subdirectories_with_intro_info(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg = _FakeConfig(root)
+            out_root = ensure_root(cfg)
+            proj_a = out_root / "proj_a"
+            proj_a.mkdir()
+            (proj_a / PROJECT_INFO_FILENAME).write_text("这是项目 A 的介绍", encoding="utf-8")
+            proj_b = out_root / "proj_b"
+            proj_b.mkdir()
+            # proj_b 没有介绍文件
+
+            projects = list_projects(cfg)
+            names = {p["name"] for p in projects}
+            self.assertEqual(names, {"proj_a", "proj_b"})
+
+            by_name = {p["name"]: p for p in projects}
+            self.assertTrue(by_name["proj_a"]["has_intro"])
+            self.assertEqual(by_name["proj_a"]["intro_excerpt"], "这是项目 A 的介绍")
+            self.assertFalse(by_name["proj_a"]["intro_truncated"])
+            self.assertFalse(by_name["proj_b"]["has_intro"])
+            self.assertEqual(by_name["proj_b"]["intro_excerpt"], "")
+
+    def test_ignores_non_directory_entries(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg = _FakeConfig(root)
+            out_root = ensure_root(cfg)
+            (out_root / "stray_file.txt").write_text("x", encoding="utf-8")
+            projects = list_projects(cfg)
+            self.assertEqual(projects, [])
+
+    def test_intro_excerpt_truncated_when_too_long(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg = _FakeConfig(root)
+            out_root = ensure_root(cfg)
+            proj = out_root / "proj_long"
+            proj.mkdir()
+            long_text = "字" * (_INTRO_EXCERPT_MAX_CHARS + 500)
+            (proj / PROJECT_INFO_FILENAME).write_text(long_text, encoding="utf-8")
+
+            projects = list_projects(cfg)
+            self.assertEqual(len(projects), 1)
+            self.assertTrue(projects[0]["intro_truncated"])
+            self.assertEqual(len(projects[0]["intro_excerpt"]), _INTRO_EXCERPT_MAX_CHARS)
 
 
 if __name__ == "__main__":

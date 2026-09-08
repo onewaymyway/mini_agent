@@ -1333,6 +1333,13 @@ class AgentClient:
         """已注册外部项目的聚合状态（健康 + 最近5条执行记录）。"""
         return self._get("/self/external_projects")
 
+    # ── 看板：调研/产出类项目一览（output_projects_intro_and_kanban_plan.md）──
+    def output_projects(self):
+        """列出 `output_projects_root` 下的调研/产出类项目（一级子目录）
+        及各自 `PROJECT_INFO.md` 介绍信息摘要。返回
+        `{"root": "<绝对路径>", "projects": [...]}`。"""
+        return self._get("/output_projects")
+
     def register_external_project(self, path: str, name: str = "", validate: bool = True):
         """注册一个新的外部项目。`name` 留空时后端用路径最后一段目录名。"""
         body = {"path": path, "validate": validate}

@@ -130,3 +130,85 @@ def ensure_output_projects_root(cfg_or_project_root) -> Path:
     root = ensure_root(cfg_or_project_root)
     maybe_append_gitignore(cfg_or_project_root)
     return root
+
+
+# ── 项目介绍信息文件（output_projects_intro_and_kanban_plan.md）───────────────
+# 每个产出项目目录下约定放一份固定文件名的介绍信息，供人/看板快速了解
+# "这是个什么项目"，不用逐个打开翻源码。文件名固定，方便代码/prompt 双向
+# 约定；内容格式不强制（纯文本/Markdown 均可），看板只做"有就展示、没有
+# 就提示缺失"，不做格式校验。
+PROJECT_INFO_FILENAME = "PROJECT_INFO.md"
+
+# 看板列表页展示的介绍摘要最大字符数，避免一份很长的介绍信息把列表撑爆。
+_INTRO_EXCERPT_MAX_CHARS = 2000
+
+
+def project_info_path(project_dir: Path) -> Path:
+    """给定某个产出项目的目录，返回其介绍信息文件应在的路径（不保证存在）。"""
+    return Path(project_dir) / PROJECT_INFO_FILENAME
+
+
+def list_projects(cfg_or_project_root) -> list[dict]:
+    """扫描 `output_projects_root` 下的一级子目录，返回每个项目的概要信息。
+
+    每个子目录视为一个"产出项目"（不递归更深层级），返回字段：
+      - name           — 目录名（项目名）
+      - path           — 绝对路径（字符串）
+      - has_intro      — 是否存在 `PROJECT_INFO.md`
+      - intro_excerpt  — 介绍文件内容（截断到 `_INTRO_EXCERPT_MAX_CHARS`
+                         字符，超出则末尾追加省略标记）；不存在则为空字符串
+      - intro_truncated — 介绍内容是否被截断
+      - modified_at    — 目录本身的 mtime（epoch 秒），用于列表排序/展示
+                         "最近更新"
+
+    根目录不存在时返回空列表（不是异常——首次使用、还没产出过任何项目
+    是正常状态）。跳过非目录条目（理论上不应该有，但兜底）。读取单个
+    子目录/介绍文件失败不影响其余条目，异常项目会被跳过并静默忽略
+    （扫描类只读功能，单条目失败不该拖垮整个列表）。
+    """
+    root = resolve_root(cfg_or_project_root)
+    if not root.is_dir():
+        return []
+
+    results: list[dict] = []
+    try:
+        entries = sorted(root.iterdir(), key=lambda p: p.name)
+    except OSError:
+        return []
+
+    for entry in entries:
+        try:
+            if not entry.is_dir():
+                continue
+            info_path = project_info_path(entry)
+            has_intro = info_path.is_file()
+            intro_excerpt = ""
+            intro_truncated = False
+            if has_intro:
+                try:
+                    raw = info_path.read_text(encoding="utf-8")
+                except OSError:
+                    raw = ""
+                if len(raw) > _INTRO_EXCERPT_MAX_CHARS:
+                    intro_excerpt = raw[:_INTRO_EXCERPT_MAX_CHARS]
+                    intro_truncated = True
+                else:
+                    intro_excerpt = raw
+            try:
+                modified_at = entry.stat().st_mtime
+            except OSError:
+                modified_at = None
+            results.append(
+                {
+                    "name": entry.name,
+                    "path": str(entry.resolve()),
+                    "has_intro": has_intro,
+                    "intro_excerpt": intro_excerpt,
+                    "intro_truncated": intro_truncated,
+                    "modified_at": modified_at,
+                }
+            )
+        except Exception:
+            continue
+
+    return results

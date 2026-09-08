@@ -90,6 +90,11 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/external_projects/register  [external_projects_kanban_
                                        integration_plan.md 阶段1] 注册新的
                                        外部项目
+    GET    /v1/output_projects       [next_doc/output_projects_intro_and_
+                                       kanban_plan.md] 列出 output_projects_
+                                       root 下的调研/产出类项目（一级子
+                                       目录）及各自 PROJECT_INFO.md 介绍
+                                       信息摘要，供看板"产出项目"tab 展示
     PATCH  /v1/external_projects/{name}/enabled       [external_projects_
                                        cron_dispatch_plan.md] 切换项目粒度
                                        的 daemon 自动调度开关，联动对齐
@@ -829,6 +834,43 @@ async def get_self_external_projects(request: Request):
             where="mini_agent.api.routes.get_self_external_projects",
         )
         return {"projects": []}
+
+
+# ── 调研/产出类项目根目录一览（next_doc/output_projects_intro_and_kanban_plan.md）──
+# 背景：output_projects_root_and_git_isolation_plan.md 已经给"调研/产出类
+# 项目"提供了统一的落脚根目录（`output_projects_root`，默认
+# `./output_projects`），但用户/看板此前完全没有一个入口能看到"这个根目录
+# 下到底已经攒了哪些项目、每个项目是干什么的"——只能自己去文件系统里翻。
+# 这里只加只读扫描端点，不做注册/生命周期管理（这类目录本身就是"建了就是
+# 建了、不需要注册"的轻量产出，跟 external_projects 的重量级注册机制是
+# 两个不同定位，见 output_projects_root_and_git_isolation_plan.md §6）。
+@router.get("/output_projects")
+async def get_output_projects(request: Request):
+    """GET /v1/output_projects — 列出 `output_projects_root` 下的一级子
+    目录（每个视为一个产出项目），附带每个项目的 `PROJECT_INFO.md` 介绍
+    信息摘要（存在则截断展示，不存在则 `has_intro=False`）。
+
+    返回 `{"root": "<绝对路径>", "projects": [...]}`；根目录尚不存在
+    （还没产出过任何项目）时 `projects` 为空列表，不是异常。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    try:
+        from mini_agent.evolution.output_projects_root import list_projects, resolve_root
+
+        self_agent = http_server.bridge.agent
+        cfg = getattr(self_agent, "cfg", None) if self_agent else None
+        if cfg is None:
+            return {"root": "", "projects": []}
+        root = resolve_root(cfg)
+        return {"root": str(root), "projects": list_projects(cfg)}
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where="mini_agent.api.routes.get_output_projects")
+        return {"root": "", "projects": []}
 
 
 # ── 外部项目管理接入看板（external_projects_kanban_integration_plan.md 阶段1）──

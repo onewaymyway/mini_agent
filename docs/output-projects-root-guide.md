@@ -90,14 +90,49 @@ agent 在执行任务（交互式对话、一次性 goal、周期性 goal、cron
 "以下为自动追加的新规则（日期）"的注释），已编辑过的 1~5 条规则内容
 不受影响。
 
+## 7. 项目介绍信息文件 + 看板浏览
+
+每个产出项目目录根下约定放一份固定文件名的介绍信息：
+
+```
+<output_projects_root>/<项目名>/PROJECT_INFO.md
+```
+
+- `output_path_policy.md` 第7条规则要求：按第6条新建产出项目时必须
+  创建这份文件，简要说明项目是做什么的、包含哪些主要文件/如何运行；
+  项目有实质性更新时应顺手更新。
+- 文件名固定为 `PROJECT_INFO.md`（`evolution/output_projects_root.py::
+  PROJECT_INFO_FILENAME`），内容格式不强制（纯文本/Markdown 均可）。
+
+Streamlit 看板（`apps/mini_agent_kanban/`）新增「🗺️ 产出项目」tab，只读
+展示 `output_projects_root` 下的一级子目录列表（按最近修改时间排序）及
+each 项目的 `PROJECT_INFO.md` 摘要（超长自动截断展示，未提供该文件的
+项目会有明显提示）。数据来自后端只读端点：
+
+```
+GET /v1/output_projects
+→ {"root": "<绝对路径>", "projects": [
+    {"name": ..., "path": ..., "has_intro": bool,
+     "intro_excerpt": "...", "intro_truncated": bool,
+     "modified_at": <epoch 秒或 null>},
+    ...
+  ]}
+```
+
+这是纯只读浏览功能，不提供注册/删除/生命周期管理——跟「🗂️ 外部项目」
+tab 管理的重量级注册项目是两个不同定位（见 §3 归属范围）。
+
 ## 6. 涉及的代码
 
 | 模块 | 作用 |
 |---|---|
 | `src/mini_agent/config/models.py` | `AppConfig.output_projects_root` 字段 |
 | `src/mini_agent/config/loader.py` | 从 `agent_config.json` 读取该字段 |
-| `src/mini_agent/evolution/output_projects_root.py` | `resolve_root`/`ensure_root`/`maybe_append_gitignore`/`ensure_output_projects_root` |
-| `src/mini_agent/evolution/output_path_policy.py` | 第6条规则 + `{{output_projects_root}}` 占位符渲染 + 老文件追加式迁移；`load_policy()` 内部顺带调用 `ensure_output_projects_root()` |
+| `src/mini_agent/evolution/output_projects_root.py` | `resolve_root`/`ensure_root`/`maybe_append_gitignore`/`ensure_output_projects_root`/`list_projects`/`PROJECT_INFO_FILENAME` |
+| `src/mini_agent/evolution/output_path_policy.py` | 第6/7条规则 + `{{output_projects_root}}` 占位符渲染 + 老文件追加式迁移；`load_policy()` 内部顺带调用 `ensure_output_projects_root()` |
+| `src/mini_agent/api/routes.py` | `GET /v1/output_projects` 只读端点 |
+| `apps/mini_agent_kanban/client.py` | `AgentClient.output_projects()` |
+| `apps/mini_agent_kanban/app.py` | 「🗺️ 产出项目」tab（`render_output_projects_tab`） |
 
 `load_policy(paths, cfg=None)` 新增可选 `cfg` 参数：传入 `AppConfig` 时
 用其中的 `output_projects_root` 字段渲染占位符；不传时退回直接读取

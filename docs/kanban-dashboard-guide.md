@@ -150,6 +150,7 @@ streamlit run app.py
 | 🎓 能力学习 | 能力学习 / 人设养成 Track 管理（新建/暂停/恢复/删除）、大纲覆盖状态与学习台账、异步问答队列（提交/忽略回答、历史问答），见下方专节 |
 | 🧬 进化提案 | Skill 提案列表、git worktree diff、批准/拒绝 |
 | 🗂️ 外部项目 | 外部项目（`mini-agent projects`）管理接入看板：注册项目、健康状态总览、手动触发 entrypoint、改进积压 backlog 查看/新增、周期性 review 任务模板预览（见下方专节） |
+| 🗺️ 产出项目 | 只读展示 `output_projects_root` 下的调研/产出类项目列表及各自 `PROJECT_INFO.md` 介绍信息（见下方专节） |
 | ⏰ Cron 任务 | Cron Job 列表（含 priority）、启用/禁用、手动触发、新建、删除（非 sys: job） |
 | 🗓️ 全局日程 | cron job 到期时间线 / 周期性 Goal 下次触发 / 仲裁状态变化时间线，三类合并展示（见下方专节） |
 | 🔌 外部输入 | 外部输入网关配置与最近事件 |
@@ -878,6 +879,28 @@ cron job 后等待其按 cadence 自动触发。
 
 对应的 `AgentClient` 方法见下方"`AgentClient` 封装的 API 端点"一节。
 
+### 🗺️ 产出项目 Tab
+
+对应 `next_doc/output_projects_intro_and_kanban_plan.md`，与上面的
+「🗂️ 外部项目」是完全不同的定位：外部项目是**注册制**的重量级机制
+（`project.yaml` 契约、daemon 调度、health 状态），本 Tab 展示的是
+`output_projects_root_and_git_isolation_plan.md` 里"建了就是建了、
+不需要注册"的轻量产出目录——agent 执行任务过程中临时搭建的调研/产出类
+项目（爬虫脚本、分析产出、示例代码库等），统一放在 `output_projects_
+root`（默认 `./output_projects`）下，不进主项目 `src/`、不受主项目
+git 管理。
+
+本 Tab 是纯只读浏览：
+
+- 列出 `output_projects_root` 下的一级子目录，按最近修改时间倒序排列。
+- 每个项目卡片展示路径、最近修改时间，以及该项目目录下
+  `PROJECT_INFO.md` 介绍信息文件的内容（可展开查看，内容较长时自动
+  截断）。这份文件按 `output_path_policy.md` 第7条规则由 agent 新建
+  项目时创建，说明项目是做什么的、如何使用。
+- 没有创建 `PROJECT_INFO.md` 的项目会用明显的警示提示，方便发现"漏建
+  介绍文件"的旧产出或不规范产出。
+- 不提供新建/删除/注册操作按钮——纯浏览用途。
+
 ### ⏰ Cron 任务 Tab
 
 Cron Job 列表、启用/禁用、手动触发、新建，`priority` 字段的展示与编辑
@@ -1037,6 +1060,7 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `append_external_project_backlog(name, summary, evidence_ref=)` | `POST /v1/external_projects/{name}/backlog` | 新增一条待办，`source` 由后端固定写死为 `user_feedback` |
 | `external_project_review(name)` | `GET /v1/external_projects/{name}/review` | 生成该项目的 review 任务模板预览（不实际发起 review） |
 | `external_project_kanban_data(name)` | `GET /v1/external_projects/{name}/kanban_data` | 通用看板视图的结构化数据；未声明 `dashboard.kanban_view` 或数据文件尚未产出时返回 `available: false` |
+| `output_projects()` | `GET /v1/output_projects` | `output_projects_root` 下调研/产出类项目一级子目录列表 + 各自 `PROJECT_INFO.md` 介绍摘要（只读），"🗺️ 产出项目"Tab 数据来源 |
 | `sentinel_summary(cron_failure_threshold=2)` | `GET /v1/sentinel/summary` | 哨兵聚合面板：cron 连续失败 + Objective 重试热点 + wiki 隔离区积压 + LLM 故障转移状态 + 近 7 天仲裁降级/阻塞占比一次性拉取（只读，方向 A） |
 | `concurrency_status()` | `GET /v1/self/concurrency` | SubAgent/LLM 请求这两个底层信号量的并发状态快照（只读，高级用法） |
 | `set_concurrency(max_tasks=, max_llm_calls=)` | `POST /v1/self/concurrency` | 运行时热改最大并发 SubAgent 数 / 最大并发 LLM 调用数，立即生效、不写回配置文件 |

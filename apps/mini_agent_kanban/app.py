@@ -10611,7 +10611,63 @@ _EXTERNAL_PROJECT_BACKLOG_STATUS_LABEL = {
 }
 
 
-def render_external_projects_tab(client: AgentClient):
+def render_output_projects_tab(client: AgentClient):
+    """[next_doc/output_projects_intro_and_kanban_plan.md] 展示
+    `output_projects_root`（调研/产出类项目统一落脚目录，见
+    `output_projects_root_and_git_isolation_plan.md`）下已有哪些项目，
+    以及每个项目的 `PROJECT_INFO.md` 介绍信息。只读展示，不提供
+    新建/删除/注册——这类目录本身就是"建了就是建了、不需要注册"的轻量
+    产出，跟「🗂️ 外部项目」tab 管理的重量级注册项目是两个不同定位。
+    """
+    st.markdown("#### 🗺️ 产出项目")
+    st.caption(
+        "agent 执行任务时临时搭建的调研/产出类项目（爬虫脚本、分析产出、"
+        "示例代码库等）统一放在 `output_projects_root` 下，不进主项目 "
+        "`src/`、不受主项目 git 管理。这里只读展示已有哪些项目及其介绍信息。"
+    )
+
+    if st.button("🔄 刷新", key="output_projects_refresh"):
+        st.rerun()
+
+    resp = client.output_projects()
+    if resp and "_error" in resp:
+        st.error(f"获取产出项目列表失败：{resp['_error']}")
+        return
+
+    root = (resp or {}).get("root") or ""
+    if root:
+        st.caption(f"根目录：`{root}`")
+
+    projects = (resp or {}).get("projects") or []
+    if not projects:
+        st.info("`output_projects_root` 下暂时还没有任何产出项目。")
+        return
+
+    # 最近更新的排在前面，方便一眼看到最新产出。
+    projects = sorted(projects, key=lambda p: p.get("modified_at") or 0, reverse=True)
+
+    for proj in projects:
+        name = proj.get("name", "")
+        with st.container(border=True):
+            top1, top2 = st.columns([3, 1])
+            top1.markdown(f"**{name}**")
+            modified_at = proj.get("modified_at")
+            if modified_at:
+                top2.caption(
+                    time.strftime("%Y-%m-%d %H:%M", time.localtime(modified_at))
+                )
+            st.caption(f"路径：{proj.get('path', '')}")
+
+            if proj.get("has_intro"):
+                with st.expander("📄 项目介绍（PROJECT_INFO.md）", expanded=False):
+                    st.markdown(proj.get("intro_excerpt") or "")
+                    if proj.get("intro_truncated"):
+                        st.caption("（内容较长，已截断展示，完整内容请查看文件本身）")
+            else:
+                st.warning("⚠️ 该项目还没有 `PROJECT_INFO.md` 介绍信息文件。")
+
+
+
     """[external_projects_kanban_integration_plan.md 第一期] 把此前只有
     `mini-agent projects ...` 命令行能访问的外部项目管理能力接入看板：
     项目总览 + 健康徽标、手动触发 entrypoint、改进积压查看/新增、
@@ -13829,6 +13885,7 @@ _BASE_TAB_DEFS = [
     ("capability", "🎓 能力学习", lambda client: render_capability_tab(client)),
     ("evolution", "🧬 进化提案", lambda client: render_evolution_proposals_tab(client)),
     ("external_projects", "🗂️ 外部项目", lambda client: render_external_projects_tab(client)),
+    ("output_projects", "🗺️ 产出项目", lambda client: render_output_projects_tab(client)),
     ("wiki", "📚 wiki 知识库", lambda client: render_wiki_tab(client)),
     ("cron_jobs", "⏰ Cron 任务", lambda client: render_cron_jobs_tab(client)),
     ("global_schedule", "🗓️ 全局日程", lambda client: render_global_schedule_tab(client)),

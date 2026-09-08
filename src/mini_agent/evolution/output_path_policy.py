@@ -46,6 +46,11 @@ DEFAULT_POLICY = """# 产出路径规范
    （已经有专门产出机制覆盖的场景——周期性 Goal/CronJob 的
    `.agent/daemon_run_outputs/`、已注册的 external_projects——以那些
    机制已有的规则为准，不受本条影响。）
+7. 按第6条新建产出项目时，必须在该项目目录根下创建一份
+   `PROJECT_INFO.md` 介绍信息文件，简要说明这个项目是做什么的、包含
+   哪些主要文件/如何运行。这份文件供人和看板快速了解项目内容，不需要
+   很长，几句话讲清楚"是什么、干什么用"即可；后续对该项目有实质性更新
+   时，也请顺手更新这份文件。
 
 如果任务描述中明确要求修改 `src/`、`tests/` 或指定了其他路径，以任务描述的
 明确说明为准，本规范不覆盖显式指令。
@@ -66,6 +71,19 @@ _RULE_6_TEXT = """6. 调研类、产出类项目（有独立文件结构，可�
    （已经有专门产出机制覆盖的场景——周期性 Goal/CronJob 的
    `.agent/daemon_run_outputs/`、已注册的 external_projects——以那些
    机制已有的规则为准，不受本条影响。）
+"""
+
+# [next_doc/output_projects_intro_and_kanban_plan.md] 第7条规则：产出项目
+# 介绍信息文件（PROJECT_INFO.md）的迁移标记，与 _RULE_6_MARKER 同一套
+# "特征字符串检测→缺失则追加"机制，独立判定、独立追加，互不影响
+# （老用户可能已经手动加过第6条但还没有第7条，反之同理）。
+_RULE_7_MARKER = "PROJECT_INFO.md"
+
+_RULE_7_TEXT = """7. 按第6条新建产出项目时，必须在该项目目录根下创建一份
+   `PROJECT_INFO.md` 介绍信息文件，简要说明这个项目是做什么的、包含
+   哪些主要文件/如何运行。这份文件供人和看板快速了解项目内容，不需要
+   很长，几句话讲清楚"是什么、干什么用"即可；后续对该项目有实质性更新
+   时，也请顺手更新这份文件。
 """
 
 
@@ -110,6 +128,7 @@ def ensure_policy_file(paths: "AgentPaths") -> Path:
         path.write_text(DEFAULT_POLICY, encoding="utf-8")
     else:
         _append_rule_if_missing(path, _RULE_6_MARKER, _RULE_6_TEXT)
+        _append_rule_if_missing(path, _RULE_7_MARKER, _RULE_7_TEXT)
     return path
 
 
