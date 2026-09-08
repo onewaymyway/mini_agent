@@ -15,3 +15,4 @@ openai==2.14.0
 
 # mv-generator skill 可选依赖（本地语音识别，仅需要生成MV时按需安装）
 # pip install faster-whisper
+# pip install opencc
