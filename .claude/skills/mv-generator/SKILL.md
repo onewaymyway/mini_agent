@@ -24,6 +24,10 @@ ASR 粗识别 → 歌词对齐校正 → 场景规划(需用户确认) → 定�
 - `scripts/asr_transcribe.py`：本地语音识别（faster-whisper）
 - `scripts/align_lyrics_v2.py`：歌词对齐第一步，归一化精确匹配 + 覆盖率报告
   （旧版 `align_lyrics.py`/`align_lyrics_llm.py` 已不推荐使用，保留仅为兼容）
+- `scripts/check_scene_plan.py`：校验 `scene_plan.yaml`（单场景时长范围、
+  时间轴连续性、是否覆盖音频总时长），Step 3 写完必须跑，不通过不能进入 Step 4
+- `scripts/generate_scene_videos.py`：批量生成分场景视频，Step 5 用它代替
+  逐个手动调用 `gen_video_with_text`，内置 key 池自动切换 + 失败重试 + 断点续跑
 - `scripts/compose_mv.py`：ffmpeg 最终合成（逐 scene 独立缩放 + PIL 字幕/水印）
 - `scripts/fix_lyrics.py`：修复歌词时间戳空隙（前一条end=后一条start）
 
@@ -210,10 +214,40 @@ scenes:
     split_note: "原歌词行跨度 9.8s，超过 12s 上限，已拆成 scene_02a/scene_02b"
 ```
 
-**必须做的事**：Step 3 完成后立即写入 `scene_plan.yaml`，然后展示给
-用户确认（可以摘要展示场景数量、总时长核对、关键角色定妆图规划），
-**等用户确认或提出修改意见后再进入 Step 4**，这是本流程里唯一的强制
-确认点（仿 comic-4panel 在关键节点向用户确认的做法）。
+**必须做的事**：Step 3 完成后立即写入 `scene_plan.yaml`。
+
+**写完之后、展示给用户确认之前，必须先跑校验脚本**（这是本次改进新增
+的强制检查，避免场景时长超出 `gen_video_with_text` 的硬限制、或场景
+规划没覆盖完整首歌，等到 Step 5 调用失败或 Step 7 才发现问题）：
+
+```bash
+python .claude/skills/mv-generator/scripts/check_scene_plan.py \
+  <output_dir>/scene_plan.yaml \
+  --audio <mp3路径>
+```
+
+该脚本会检查：
+1. **每个场景时长必须在 4-12 秒范围内**——不在范围内会报出具体是哪个
+   场景、当前时长、需要拆分还是合并/延长。
+2. **场景时间轴连续无缺口无重叠**——从 0 秒开始、场景之间首尾相接、
+   最后一个场景结束点覆盖到音频总时长，任何缝隙/重叠都会连同具体的
+   场景 id 和秒数一起报出来。
+3. **场景总时长是否覆盖 mp3 实际时长**（脚本用 `ffprobe` 读取 `--audio`
+   指定的 mp3 得到真实时长，不依赖 `song_meta.duration` 是否手填准确）——
+   不够长（缺尾）或超出太多都会报错并给出具体缺口/超出的秒数。
+
+脚本退出码非 0（或输出 `"ok": false`）时：
+- **不允许直接进入用户确认环节**，必须先根据 errors 列表逐条修改
+  `scene_plan.yaml`（拆分超长场景、合并过短场景、补齐时间轴缺口、
+  调整场景边界让总时长对齐音频等），改完后**重新运行本脚本**，
+  如此循环直到 `"ok": true` 为止。
+- 修改场景边界/拆分场景时注意同步更新 `lyric_lines`、`prompt_en`
+  等关联字段，不要只改 `start`/`end` 数字。
+
+只有校验脚本通过之后，才展示给用户确认（可以摘要展示场景数量、总
+时长核对、关键角色定妆图规划），**等用户确认或提出修改意见后再进入
+Step 4**，这是本流程里唯一的强制确认点（仿 comic-4panel 在关键节点
+向用户确认的做法）。
 
 ### Step 4: 定妆图生成
 
@@ -234,29 +268,58 @@ AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
 
 ### Step 5: 分场景视频生成
 
-**重要：必须串行生成，不可并行。** 逐个场景调用 `gen_video_with_text`，
-等待上一个场景完成后再生成下一个，避免 API 并发超限。
-
-对 `scene_plan.yaml` 里的每个 scene，按顺序执行：
+**改为用脚本批量生成，不再由 Agent 逐个手动调用命令。** 这样可以让
+生成过程更稳定：脚本内部串行执行（不并行，避免 API 并发超限）、遇到
+rate limit 自动切换到下一把可用 key（复用 `gen_video_with_text` 自带
+的 `agnes_key_pool.py`，key 池的冷却状态在整个批量过程中持续保留）、
+单场景失败自动重试。
 
 ```bash
-AGNES_API_KEY="..." python .claude/skills/gen_video_with_text/gen_video.py \
-  reference "<prompt_en>" \
-  --images <output_dir>/assets/<asset_id>.png \
-  --seconds "<该场景时长，取整到4-12之间>" \
-  --aspect-ratio 16:9 \
-  --save-path <output_dir>/clips/<scene_id>.mp4
+python .claude/skills/mv-generator/scripts/generate_scene_videos.py \
+  <output_dir>/scene_plan.yaml \
+  --output-dir <output_dir> \
+  --aspect-ratio 16:9
 ```
 
-- 场景之间如果需要更平滑的转场（比如上一场景结尾画面要自然过渡到
-  下一场景开头），可以改用 `keyframe` 模式，把上一段生成结果的末帧
-  截图作为下一段的 `first_frame`。
-- 每生成完一个 clip 立即检查文件是否存在且时长基本符合预期，失败要
-  重试或报告给用户，不要静默跳过导致最终拼接时缺片段。
+（需要先设置好 `AGNES_API_KEY` 或 `AGNES_API_KEYS` 环境变量，或在
+`providers.json` 里配置好 agnes 的 `api_keys`，脚本会自动加载。）
+
+**脚本行为说明**：
+1. 依次读取 `scene_plan.yaml` 里的每个 scene，根据 `video_mode` 字段
+   自动选择 `reference`/`keyframe`/`text` 模式调用生成接口，`reference`
+   模式会自动把 `uses_assets` 对应的定妆图路径（`recurring_assets` 里
+   回填的 `asset_path`）传进去；`seconds` 自动取 `end - start` 并夹到
+   4-12 秒范围内（Step 3 的校验已保证这个范围本身没问题）。
+2. **每开始生成一个场景前会打印进度和该场景的关键信息**（第几轮/第几个、
+   scene id、lyric_lines、start/end、使用的定妆图、prompt），方便观察
+   当前在生成什么、卡在哪一步。
+3. **单个场景失败会自动重试最多 3 次**（每次重试间隔递增），3 次都失败
+   就先跳过，继续生成下一个场景，不阻塞整体进度。
+4. **一轮跑完所有场景后，如果还有未成功的场景，会自动从头再跑一轮**，
+   只处理"尚未生成成功"的场景，如此循环，直到全部场景都生成成功；
+   如果某一轮完全没有任何新增成功（说明剩下的大概率是持续性问题，
+   比如 prompt 违规、参数错误、账号额度耗尽而非临时限流），脚本会
+   停止自动重试并汇报剩余失败的 scene id 列表，交给 Agent/用户判断。
+5. **限流自动切换 key**：这一层复用 `gen_video_with_text` 已有的
+   `AgnesKeyPool`（HTTP 429 或响应文本命中限流关键字时触发），本脚本
+   只是把这个能力从"单次调用"扩展到"整个批量生成过程复用同一个 key
+   池实例"，冷却状态更准确，不会因为每个场景单独起进程而丢失。
+6. **支持断点续跑**：已存在且非空的 `clips/<scene_id>.mp4` 默认直接
+   跳过（不重复生成），中断后重新运行本脚本即可从未完成的场景继续；
+   如果需要强制全部重新生成，加 `--force`。
+7. 脚本结束时会打印成功/失败汇总，并以退出码区分（0=全部成功，
+   1=仍有场景失败）。若退出码为 1，Agent 需要检查失败的 scene（常见
+   原因：prompt 含违禁词、定妆图路径错误、账号额度耗尽），修正后
+   重新运行本脚本（断点续跑，只会处理仍缺失的场景）。
+8. 场景之间如果需要更平滑的转场（比如上一场景结尾画面要自然过渡到
+   下一场景开头），可以在 `scene_plan.yaml` 里把该 scene 的 `video_mode`
+   设为 `keyframe` 并填好 `first_frame`/`last_frame` 字段（`first_frame`
+   可以用上一段生成结果的末帧截图），脚本会按字段自动处理。
 - 如果某个 clip 的实际时长短于 scene_plan.yaml 中规划的时长，这是正常现象
   （gen_video API 无法精确控制时长）。后续在 Step 6 拼接时会对短片慢放
   补齐到目标时长。
-- 文件命名必须保证按播放顺序可排序（`scene_01.mp4`、`scene_02.mp4` ...），
+- 文件命名与 scene id 一致（`scene_01.mp4`、`scene_02.mp4` ...），
+  务必保证 `scene_plan.yaml` 里的 scene id 本身按播放顺序可排序，
   `compose_mv.py` 是按文件名排序拼接的。
 
 **产物**：`clips/scene_XX.mp4`（每个都强制落盘）
@@ -349,8 +412,16 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
    直接交给 Agent 按 Step 2 第二步的方法人工复核那几行；如果只是
    **零星几行**覆盖率低，直接走 Step 2 第二步的人工复核流程即可，
    不需要重新识别整首歌。
-4. **单个场景超过 12 秒**：`gen_video_with_text` 的硬限制，Step 3 场景
-   规划阶段必须显式拆分，不要留到 Step 5 调用失败才发现。
+4. **单个场景超过 12 秒/不足 4 秒/时间轴有缺口**：`gen_video_with_text`
+   的硬限制是每个 clip 4-12 秒；`check_scene_plan.py` 会在 Step 3 阶段
+   就把这些问题连同具体场景 id 一起报出来，必须改到校验通过再进入
+   Step 4，不要留到 Step 5 调用失败或最终成片缺画面才发现。
+4b. **`generate_scene_videos.py` 跑完仍有场景失败**：先看脚本汇总打印
+   的失败 scene id 列表和 `--output-dir` 下 `clips/` 里缺的文件，常见
+   原因是 prompt 触发内容审核、`recurring_assets` 里 `asset_path` 路径
+   错误（Step 4 忘记回填或路径拼写错误）、或所有 key 都被限流/额度耗尽。
+   修正 `scene_plan.yaml` 或环境变量后，直接重新运行同一条命令即可
+   （已成功的场景会被跳过，只补齐缺失的）。
 5. **人物形象在不同 clip 间有明显差异**：这是 `reference` 模式的已知
    限制（非同一 seed 级别的像素一致），已在方案确认阶段与用户对齐过
    预期；可以尝试让同一角色的所有场景都引用完全相同的定妆图文件，
