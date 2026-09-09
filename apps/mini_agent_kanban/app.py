@@ -10667,7 +10667,7 @@ def render_output_projects_tab(client: AgentClient):
                 st.warning("⚠️ 该项目还没有 `PROJECT_INFO.md` 介绍信息文件。")
 
 
-
+def render_external_projects_tab(client: AgentClient):
     """[external_projects_kanban_integration_plan.md 第一期] 把此前只有
     `mini-agent projects ...` 命令行能访问的外部项目管理能力接入看板：
     项目总览 + 健康徽标、手动触发 entrypoint、改进积压查看/新增、
