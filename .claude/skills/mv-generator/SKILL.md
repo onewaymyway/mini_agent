@@ -14,8 +14,13 @@ triggers: MV生成, 生成MV, 歌词视频, 歌词同步, mv video, lyric video,
 ```
 方向选择(横屏/竖屏，写入配置) → 人声分离 → ASR 粗识别
 → 歌词对齐校正(强制对齐优先/ASR+模糊匹配兜底) → 场景规划(需用户确认)
-→ 定妆图生成 → 分场景视频生成 → 拼接+烧字幕+混音 → 最终 mv.mp4
+→ 定妆图生成(含封面图) → 分场景视频生成 → 拼接+封面+烧字幕+混音 → 最终 mv.mp4
 ```
+
+**封面效果**：默认会额外生成一张"浓缩全曲氛围"的封面图（`assets/cover.png`），
+并在最终合成时把它做成一段轻微推近的短片，用来**替换**（不是插入）第一个
+场景的前几秒画面，让 MV 一开场就有"封面感"，同时不改变视频总时长、不影响
+后续任何场景的时间轴对齐。用户不需要就可以跳过，见下方 Step 0。
 
 **支持横屏（16:9，默认）和竖屏（9:16，短视频/竖版）两种模式**，在
 Step 0 由用户选择一次，选择结果写入 `<output_dir>/mv_config.json`，
@@ -48,7 +53,8 @@ Step 0 由用户选择一次，选择结果写入 `<output_dir>/mv_config.json`�
   不能进入 Step 5
 - `scripts/generate_scene_videos.py`：批量生成分场景视频，Step 5 用它代替
   逐个手动调用 `gen_video_with_text`，内置 key 池自动切换 + 失败重试 + 断点续跑
-- `scripts/compose_mv.py`：ffmpeg 最终合成（逐 scene 独立缩放 + PIL 字幕/水印）
+- `scripts/compose_mv.py`：ffmpeg 最终合成（逐 scene 独立缩放 + PIL 字幕/水印 +
+  可选封面片段拼接，见下方「封面（Cover）效果」）
 - `scripts/fix_lyrics.py`：修复歌词时间戳空隙（前一条end=后一条start）
 
 **外部依赖**：
@@ -64,6 +70,49 @@ Step 0 由用户选择一次，选择结果写入 `<output_dir>/mv_config.json`�
 - `ffmpeg`（系统命令，未安装时先提示用户按 `docs/mv-generator-guide.md`
   里的说明安装；Windows 推荐 `winget install ffmpeg`）
 - `AGNES_API_KEY` 环境变量（`gen_image_with_text`/`gen_video_with_text` 都需要）
+
+## 🐍 Python 环境规范：统一使用 conda 的 `mv_env`
+
+**本 skill 涉及的所有 Python 脚本（`separate_vocals.py`/`asr_transcribe.py`/
+`align_lyrics_forced.py`/`align_lyrics_v3.py`/`check_scene_plan.py`/
+`check_assets.py`/`generate_scene_videos.py`/`compose_mv.py` 等）默认统一
+运行在一个专用的 conda 环境 `mv_env` 里，不要直接装进系统 Python 或其他
+项目共用的环境**（Demucs/ctc-forced-aligner 等依赖体积大、版本要求特殊，
+容易和其他项目的依赖冲突）。`compose_mv.py` 里硬编码的 ffmpeg 兜底路径
+也是 `...\.conda\envs\mv_env\Library\bin\ffmpeg.exe`，与这个约定一致。
+
+**进入 Step 1 之前，先检查并准备好这个环境**：
+
+1. 检查 `mv_env` 是否已存在：`conda env list`，看输出里有没有 `mv_env`。
+2. **没有则新建**（Python 版本建议 3.10/3.11，与 faster-whisper/demucs/
+   ctc-forced-aligner 的兼容性较好）：
+   ```bash
+   conda create -n mv_env python=3.10 -y
+   ```
+3. **有就直接在现有环境上补装缺的包**，不要重建、不要用 `--force`
+   之类会破坏已有环境的操作——`mv_env` 大概率是之前跑过本 skill 留下的，
+   重建会丢失已经装好的大体积依赖（尤其是联网下载过的模型权重缓存）：
+   ```bash
+   conda run -n mv_env pip install faster-whisper pyyaml pillow imageio-ffmpeg --break-system-packages
+   conda run -n mv_env pip install demucs ctc-forced-aligner pypinyin --break-system-packages
+   ```
+   （后一条是推荐但非强制的依赖，装不上不阻塞流程，见上方「外部依赖」
+   说明；两条都用 `conda run -n mv_env pip install ...` 而不是先手动
+   `conda activate` 再 `pip install`，避免在非交互式脚本执行环境里
+   `activate` 不生效导致包装进了错误的环境。）
+4. **本 skill 下所有 `python .claude/skills/mv-generator/scripts/xxx.py ...`
+   命令，都要用 `mv_env` 里的 Python 执行**，即在 SKILL.md 后续各 Step
+   给出的命令前加 `conda run -n mv_env`，例如：
+   ```bash
+   conda run -n mv_env python .claude/skills/mv-generator/scripts/separate_vocals.py \
+     <mp3路径> --output-dir <output_dir>
+   ```
+   下文各 Step 为了阅读简洁，示例命令里省略了这个前缀，实际执行时都要
+   补上（除非用户明确说明要用系统默认 Python 环境）。
+5. 如果 `conda` 命令本身不可用（未安装 Anaconda/Miniconda），提示用户
+   安装后再继续，或征询用户是否接受直接用系统 Python 环境（此时按上面
+   「外部依赖」里的普通 `pip install ... --break-system-packages` 方式
+   安装，不再涉及 `conda run`）。
 
 ## ⚠️ 产物文件强制保存规范（最高优先级，与 comic-4panel 一致）
 
@@ -87,9 +136,10 @@ mv_output/歌曲名_20260907/
 ├── lyrics_timed.json     # Step 2 产物
 ├── lyrics.srt            # Step 2 产物（供人工核对，最终合成时会重新生成）
 ├── scene_plan.yaml        # Step 3 产物
-├── assets/                # Step 4 产物：角色/场景定妆图
+├── assets/                # Step 4 产物：角色/场景定妆图 + 封面图
 │   ├── character_A.png
-│   └── scene_park.png
+│   ├── scene_park.png
+│   └── cover.png          # 封面图（默认生成，见「封面（Cover）效果」）
 ├── clips/                 # Step 5 产物：分场景视频片段（文件名需可排序）
 │   ├── scene_01.mp4
 │   ├── scene_02.mp4
@@ -99,6 +149,8 @@ mv_output/歌曲名_20260907/
 
 ## 前置环境检查（进入 Step 1 之前先做）
 
+0. 按上方「Python 环境规范：统一使用 conda 的 `mv_env`」检查/创建好
+   `mv_env` 环境，后续本节的安装检查都在这个环境里做。
 1. 检查 `AGNES_API_KEY` 环境变量是否已设置（`gen_image_with_text`/
    `gen_video_with_text` 都依赖它），未设置则提示用户设置后再继续。
 2. 检查 `faster-whisper` 是否已安装（可以直接尝试 `python -c "import faster_whisper"`），
@@ -128,10 +180,15 @@ mv_output/歌曲名_20260907/
 步骤都依赖这一步写入的配置文件，不允许中途改变，也不允许某个步骤
 自己临时决定用别的比例。
 
-1. **向用户询问**（一次性问清楚，不要拆成多轮）：视频是要横屏
-   （16:9，适合 YouTube/传统 MV）还是竖屏（9:16，适合抖音/快手/
-   视频号/Shorts/Reels 等竖版短视频场景）。**用户不回答或没有明确
-   偏好时，默认横屏（16:9）**，直接采用默认值继续，不要为此阻塞流程。
+1. **向用户询问**（一次性问清楚，不要拆成多轮）：
+   - 视频是要横屏（16:9，适合 YouTube/传统 MV）还是竖屏（9:16，适合
+     抖音/快手/视频号/Shorts/Reels 等竖版短视频场景）。**用户不回答或
+     没有明确偏好时，默认横屏（16:9）**，直接采用默认值继续，不要为此
+     阻塞流程。
+   - **是否需要"封面效果"**（MV 开头几秒替换成一张浓缩全曲氛围的封面图，
+     效果类似专辑封面/短视频封面）。**用户不回答或没有明确偏好时，默认
+     开启**（`cover_enabled: true`），因为这项改动对最终观感提升明显、
+     成本只是多一次定妆图生成调用；用户明确说不需要时才关闭。
 2. **选定后立即写入配置文件** `<output_dir>/mv_config.json`（先
    `mkdir -p <output_dir>`），内容示例：
 
@@ -145,7 +202,9 @@ mv_output/歌曲名_20260907/
      "image_ratio": "16:9",
      "compose_target_size": "1280:720",
      "compose_font_size": 28,
-     "compose_overlay_y_offset": 80
+     "compose_overlay_y_offset": 80,
+     "cover_enabled": true,
+     "cover_duration_sec": 3.0
    }
    ```
 
@@ -159,9 +218,17 @@ mv_output/歌曲名_20260907/
      "image_ratio": "9:16",
      "compose_target_size": "720:1280",
      "compose_font_size": 22,
-     "compose_overlay_y_offset": 140
+     "compose_overlay_y_offset": 140,
+     "cover_enabled": true,
+     "cover_duration_sec": 3.0
    }
    ```
+
+   `cover_enabled`/`cover_duration_sec` 是本次新增字段：`cover_enabled`
+   为 `false` 时，Step 4 跳过封面图生成、Step 6 不传 `--cover-image`，
+   其余流程完全不受影响；`cover_duration_sec` 是期望的封面展示时长，
+   实际生效值会在 Step 6 被 clamp 到第一个场景规划时长的 50% 以内
+   （clamp 逻辑见「封面（Cover）效果」一节）。
 
    可以直接用 `create_file`/`str_replace` 写这个 JSON 文件，不需要
    额外脚本；字段含义见下方「不同方向模式的参数对照表」。
@@ -413,6 +480,15 @@ recurring_assets:
     description_en: "Female singer, long black hair, white dress, melancholic mood"
     asset_path: assets/character_A.png   # Step 4 生成后回填
 
+# 封面（cover_enabled 为 true 时才需要规划，见 Step 0 mv_config.json）
+# 不是复用某个具体场景的定妆图，而是单独构图，浓缩全曲氛围，
+# 构图上要给"歌名文字"留白（主体偏一侧，避免叠字盖住关键内容）
+cover:
+  description_zh: "封面：雨夜霓虹街头，主唱背影，大片天空留白用于叠歌名"
+  description_en: "Album-cover style composition: female singer from behind on a rainy neon street at night, wide negative space at top for title text overlay, moody cinematic lighting"
+  asset_path: assets/cover.png     # Step 4 生成后回填
+  duration_sec: 3.0                # 封面展示时长，实际生效值会被 clamp（见 Step 6）
+
 scenes:
   - id: scene_01
     lyric_lines: [0, 1]          # 对应 lyrics_timed.json 里的行号
@@ -514,7 +590,30 @@ AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
   参考 `gen_image_with_text` 的 SKILL.md。
 - 生成后立即回填 `scene_plan.yaml` 里对应 `asset_path` 字段。
 
-**产物**：`assets/*.png`（强制落盘），并同步更新 `scene_plan.yaml`
+**封面图生成**（`mv_config.json` 里 `cover_enabled` 为 `true` 时，紧接着
+上面的定妆图生成一起做，不是单独一轮）：
+
+```bash
+AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
+  gen "<scene_plan.yaml 里 cover.description_en>" --size 2K \
+  --ratio <mv_config.json 里的 image_ratio> \
+  --save-path <output_dir>/assets/cover.png
+```
+
+- `--ratio` 同样取自 `mv_config.json` 的 `image_ratio`，与定妆图、最终
+  视频画幅保持一致。
+- 封面不是随便挑一张定妆图当封面用，而是**单独按 `scene_plan.yaml` 里
+  `cover.description_en` 生成一张新图**，构图要求和普通场景定妆图不同：
+  突出"浓缩全曲氛围/情绪基调"，且要给歌名文字留白（主体人物/焦点偏
+  画面一侧或下方，画面上方或另一侧留出干净背景），因为最终合成时会在
+  封面片段上叠加大号歌名文字（复用 `compose_mv.py` 里歌名水印的 PIL
+  渲染逻辑，但字号/位置更像"封面标题"而不是角标水印，细节见 Step 6）。
+- 生成后立即回填 `scene_plan.yaml` 里 `cover.asset_path` 字段。
+- 若 `cover_enabled` 为 `false`，跳过这一步，`scene_plan.yaml` 也不需要
+  `cover` 字段（或保留字段但不生成图片，Step 6 不传 `--cover-image`）。
+
+**产物**：`assets/*.png` + `assets/cover.png`（强制落盘），并同步更新
+`scene_plan.yaml`
 
 **全部定妆图生成完并回填 `asset_path` 后，进入 Step 5 之前必须先跑校验
 脚本**，确认真的都生成成功了（避免某张图生成失败/超时但 Agent 没注意到，
@@ -535,6 +634,9 @@ python .claude/skills/mv-generator/scripts/check_assets.py \
 3. **所有 scene 的 `uses_assets` 引用是否都能在 `recurring_assets` 里
    找到对应项**——引用了没规划过的 id 或拼写错误，会连同具体 scene id
    一起报出来，而不是等 Step 5 生成时才发现参考图缺失。
+4. **`cover.asset_path` 是否已回填、文件是否存在且非空**（`scene_plan.yaml`
+   里有 `cover` 字段时才检查；`cover_enabled` 为 `false`、`scene_plan.yaml`
+   本来就没写 `cover` 字段时会给一条 warning 而不是 error，不阻塞流程）。
 
 脚本退出码非 0 时，**不允许进入 Step 5**，需要按 errors 列表逐条处理
 （回到 Step 4 补生成缺失/为空的定妆图，或修正 `scene_plan.yaml` 里的
@@ -652,8 +754,14 @@ python .claude/skills/mv-generator/scripts/compose_mv.py \
   --title-pos top-right \
   --target-size <mv_config.json 里的 compose_target_size> \
   --font-size <mv_config.json 里的 compose_font_size> \
-  --overlay-y-offset <mv_config.json 里的 compose_overlay_y_offset>
+  --overlay-y-offset <mv_config.json 里的 compose_overlay_y_offset> \
+  --cover-image <output_dir>/assets/cover.png \
+  --cover-duration <mv_config.json 里的 cover_duration_sec>
 ```
+
+**`--cover-image`/`--cover-duration` 只在 `mv_config.json` 的
+`cover_enabled` 为 `true` 时传**；为 `false` 时这两个参数整体不传，
+`compose_mv.py` 会按普通流程合成，不做任何封面相关处理。
 
 **`--target-size`/`--font-size`/`--overlay-y-offset` 三个都必须取自
 `mv_config.json`**（横屏依次为 `1280:720`/`28`/`80`，竖屏依次为
@@ -711,6 +819,34 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
 唯一的前提是 Step 3 场景规划阶段要保证所有 scene 时长之和等于（或
 接近）音频总时长——如果规划阶段本身有明显偏差，逐 scene 缩放也无法
 凭空修正总时长的系统性误差，Step 7 校验交付时要重点核对这一点。
+
+#### 封面（Cover）效果
+
+**做法是"替换/挤压"，不是"插入"**：如果简单在开头插入一段封面片段，
+视频总时长会变长，破坏「逐 scene 独立缩放 + 总时长贴合音频」这个不变量，
+后面所有场景的绝对时间点、字幕时间戳都得跟着平移，改动面大也容易出 bug。
+所以 `compose_mv.py` 的实现是：把第一个场景（按 `start` 排序后的
+`scenes[0]`）缩放后 clip 的**前 N 秒**，用封面短片替换掉，N 秒之后无缝
+接回该场景原本的画面内容——`trim 前N秒(封面) + trim 剩余部分(scene_01)`
+拼接成一个新的、时长跟原来完全一样的片段，顶替原来的第一个 clip 参与
+后续 concat。这样：
+- 不影响总时长、不影响任何后续场景的时间轴/字幕对齐；
+- 如果这首歌本来就有纯音乐前奏（第一句歌词不是从 0 秒开始唱），封面
+  时长会自然落在这段"本来也没具体画面要求"的空当里，效果最自然；
+- 如果没有前奏（一上来就唱），就是从第一个场景时长里"借"这几秒，
+  效果会打折扣但不会出错；
+- `--cover-duration` 会被 clamp 到第一个场景规划时长的 50% 以内（同时
+  也不会超过该 clip 的实际时长），避免极短场景被封面完全吃光——
+  `check_scene_plan.py` 在 Step 3 阶段已经做过同样的比例校验，正常
+  情况下 Step 6 这里不会再触发 clamp，只是留一道兜底。
+
+封面短片本身不是死板静帧：`compose_mv.py` 用 `ffmpeg -loop 1 -i cover.png`
+配合轻微 `zoompan` 缓慢推近，模拟"呼吸感"，而不是硬切一张纯静图。
+
+如果想让封面片段上叠加大号歌名文字（比单纯的"下一步字幕"更像正式的
+"封面标题"），可以在 Step 4 生成 `cover.png` 时就直接把歌名画在图里
+（让 `gen_image_with_text` 的 prompt 里包含歌名文字排版要求），这样不
+依赖 `compose_mv.py` 额外的水印叠加逻辑，效果也更可控。
 
 ### Step 7: 校验交付
 
@@ -808,6 +944,16 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
 10. **视频质量崩溃（比特率从 6Mbps 降至 19kbps）**：overlay 步骤未正确
     指定编码参数导致。确保使用最新的 `compose_mv.py`（已修复为
     `-preset slow -crf 14`），并用 ffprobe 验证输出视频的比特率。
+11. **封面没生效/开头看不出封面效果**：先确认 `mv_config.json` 里
+    `cover_enabled` 是否为 `true`；再确认 Step 6 命令是否真的传了
+    `--cover-image`（很容易在照抄命令时漏传，尤其是从别的、没开启
+    封面的 output_dir 复制命令过来时）；再确认 `assets/cover.png`
+    是否存在且非空（`check_assets.py` 应该已经拦截过，但如果是手动
+    跳过校验直接跑 Step 6，这里可能是根因）；最后确认第一个场景本身
+    的规划时长（`scene_plan.yaml` 里 `scenes[0]` 的 `end - start`）
+    是否 >= 6 秒左右——如果第一个场景本身很短（接近 4 秒下限），
+    `--cover-duration` 会被 clamp 到很小的值（不到 2 秒），效果不明显，
+    属于预期行为，不是 bug。
 
 ## 提示
 
@@ -838,3 +984,12 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
 8. **合成速度**：字幕按歌词分句渲染 PNG（而不是逐帧渲染），字幕/水印合并成一次 `filter_complex`；可通过 `--preset-scale`/`--preset-final` 调整 ffmpeg 编码速度与质量的取舍，先用 `veryfast`/`ultrafast` 出预览版是推荐做法。
 9. **视频质量保障**：overlay 步骤必须使用高 CRF 低质量（`-crf 14` 或更低），否则视频比特率会暴跌。合成完成后务必用 ffprobe 检查输出视频的比特率，正常应为 2-6 Mbps。
 10. **歌词空隙修复**：compose_mv.py 会自动修复歌词时间戳的空隙（前一条end=后一条start），但如果原始对齐结果错误过大，建议先手动检查 `lyrics_timed.json`。
+11. **Python 环境统一用 `mv_env`**：本 skill 所有 Python 脚本默认跑在
+    conda 的 `mv_env` 环境里（没有就新建，有就在原有基础上补装依赖，
+    不要重建），详见前面「Python 环境规范」一节；实际执行命令时记得
+    在示例命令前加 `conda run -n mv_env`。
+12. **封面效果默认开启**：Step 0 默认 `cover_enabled: true`，做法是
+    "替换第一个场景前几秒"而不是"插入新片段"，不影响总时长；用户不需要
+    封面效果时，Step 0 就要问清楚并把 `cover_enabled` 设为 `false`，
+    这样 Step 4 会跳过封面图生成、Step 6 不传 `--cover-image`，其余流程
+    完全不受影响。

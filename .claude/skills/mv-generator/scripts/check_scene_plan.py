@@ -211,6 +211,43 @@ def check(plan: dict, audio_duration: Optional[float]) -> dict:
                 ),
             })
 
+    # --- 4. 封面（cover）时长合理性 ---
+    # cover 不是新插入的片段，而是"挤压/替换"排在时间轴最前面的场景的
+    # 前 N 秒（compose_mv.py 的实现），所以这里必须保证 cover.duration_sec
+    # 不超过第一个场景时长的一半，否则该场景剩余可用内容会被挤压得过短，
+    # 甚至出现负值这种彻底不合法的情况。
+    cover = plan.get("cover")
+    if isinstance(cover, dict):
+        cover_dur = cover.get("duration_sec")
+        if cover_dur is None:
+            warnings.append({
+                "type": "cover_duration_missing",
+                "message": "scene_plan.yaml 里定义了 cover 但未填写 duration_sec，compose_mv.py 侧会用 --cover-duration 命令行参数的默认值，建议在这里显式填写以便提前校验",
+            })
+        elif parsed_scenes:
+            first_scene = parsed_scenes[0]
+            max_allowed = round(first_scene["duration"] * 0.5, 3)
+            if float(cover_dur) <= 0:
+                errors.append({
+                    "type": "cover_duration_invalid",
+                    "message": f"cover.duration_sec={cover_dur} 不合法，必须 > 0",
+                })
+            elif float(cover_dur) > max_allowed:
+                errors.append({
+                    "type": "cover_duration_too_long",
+                    "first_scene_id": first_scene["id"],
+                    "first_scene_duration": first_scene["duration"],
+                    "cover_duration": cover_dur,
+                    "max_allowed": max_allowed,
+                    "message": (
+                        f"cover.duration_sec={cover_dur}s 超过第一个场景 "
+                        f"{first_scene['id']}（时长 {first_scene['duration']}s）的 50%（{max_allowed}s）。"
+                        f"封面是用'挤压/替换'第一个场景的前 N 秒实现的（不改变总时长），"
+                        f"过长会让第一个场景剩余可用画面过短，请调小 duration_sec，"
+                        f"或者如果这首歌开头有较长纯音乐前奏，考虑把第一个场景本身规划得更长一些"
+                    ),
+                })
+
     ok = len(errors) == 0
     return {
         "ok": ok,

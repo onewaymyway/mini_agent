@@ -126,11 +126,50 @@ def check(plan: dict, output_dir: Optional[Path], plan_dir: Path) -> dict:
                 })
     errors.extend(dangling_refs)
 
+    # 校验封面图（cover）是否已生成落盘。cover 是独立于 recurring_assets 的
+    # 顶层字段（单张图，不是一个列表），Step 4 里连同定妆图一起生成。
+    cover = plan.get("cover")
+    cover_ready = None
+    if isinstance(cover, dict):
+        cover_path_str = cover.get("asset_path")
+        if not cover_path_str:
+            errors.append({
+                "type": "missing_cover_asset_path",
+                "message": "scene_plan.yaml 中定义了 cover 但尚未回填 asset_path 字段（Step 4 生成封面图后应立即回填）",
+            })
+            cover_ready = False
+        else:
+            resolved = resolve_path(cover_path_str, output_dir, plan_dir)
+            if not resolved.exists():
+                errors.append({
+                    "type": "cover_file_not_found",
+                    "asset_path": cover_path_str,
+                    "resolved_path": str(resolved),
+                    "message": f"cover.asset_path={cover_path_str} 指向的文件不存在（解析后路径: {resolved}），需要重新执行 Step 4 生成封面图",
+                })
+                cover_ready = False
+            elif resolved.stat().st_size == 0:
+                errors.append({
+                    "type": "cover_file_empty",
+                    "asset_path": cover_path_str,
+                    "resolved_path": str(resolved),
+                    "message": f"cover 对应文件存在但大小为 0（大概率是生成失败但留下了空文件），需要重新生成",
+                })
+                cover_ready = False
+            else:
+                cover_ready = True
+    else:
+        warnings.append({
+            "type": "no_cover",
+            "message": "scene_plan.yaml 中没有 cover 字段，若这首歌不需要封面效果可忽略此提示",
+        })
+
     ok = len(errors) == 0
     return {
         "ok": ok,
         "recurring_assets_count": len(recurring_assets),
         "ready_count": len(recurring_assets) - len(missing_path_field) - len(missing_file) - len(empty_file),
+        "cover_ready": cover_ready,
         "errors": errors,
         "warnings": warnings,
     }
