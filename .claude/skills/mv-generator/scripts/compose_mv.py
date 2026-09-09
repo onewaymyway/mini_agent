@@ -60,7 +60,11 @@ try:
     import imageio_ffmpeg
     _IMGIO_FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
     _FFMPEG_CANDIDATES.insert(0, _IMGIO_FFMPEG)
-    _FFPROBE_CANDIDATES.insert(0, _IMGIO_FFMPEG.replace("ffmpeg.exe", "ffprobe.exe"))
+    # imageio_ffmpeg returns a named binary like ffmpeg-win-x86_64-v7.1.exe
+    # so replace 'ffmpeg' with 'ffprobe' in the basename, not just '.exe'
+    _imgio_dir = Path(_IMGIO_FFMPEG).parent
+    _imgio_name = Path(_IMGIO_FFMPEG).name.replace('ffmpeg', 'ffprobe')
+    _FFPROBE_CANDIDATES.insert(0, str(_imgio_dir / _imgio_name))
 except ImportError:
     pass
 FONT_PATH = r"C:\Windows\Fonts\msyh.ttc"
@@ -85,12 +89,23 @@ def _run(cmd):
 
 
 def get_dur(path):
-    r = subprocess.run(
-        [FFPROBE, "-v", "quiet", "-print_format", "json",
-         "-show_format", str(path)],
-        capture_output=True, text=True
-    )
-    return float(json.loads(r.stdout)["format"]["duration"])
+    # 优先使用 ffprobe，若不存在则用 ffmpeg 解析 stderr 获取时长
+    probe_cmd = [FFPROBE, "-v", "quiet", "-print_format", "json",
+                 "-show_format", str(path)]
+    r = subprocess.run(probe_cmd, capture_output=True, text=True)
+    if r.returncode == 0 and r.stdout.strip():
+        return float(json.loads(r.stdout)["format"]["duration"])
+    # fallback: 使用 ffmpeg 获取时长
+    r2 = subprocess.run([FFMPEG, "-i", str(path)], capture_output=True, text=True)
+    for line in r2.stderr.split('\n'):
+        if 'Duration' in line:
+            # 格式: Duration: 00:04:06.14, start: ..., bitrate: ...
+            import re
+            m = re.search(r'Duration: (\d+):(\d+):(\d+)\.(\d+)', line)
+            if m:
+                h, m2, s, ms = m.groups()
+                return int(h)*3600 + int(m2)*60 + int(s) + int(ms)/100
+    raise RuntimeError("无法获取音频时长")
 
 
 def parse_scene_plan(plan_path, clips_dir):
