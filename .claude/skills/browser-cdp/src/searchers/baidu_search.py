@@ -23,10 +23,15 @@ class BaiduSearcher(BaseSearcher):
     """百度搜索器 - 真实 CDP 实现"""
     
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+        # 过滤掉 CLI 专用参数（如 headless），只传 SearcherConfig 支持的字段
+        from dataclasses import fields as dc_fields
+        valid_keys = {f.name for f in dc_fields(SearcherConfig)}
+        config_kwargs = {k: v for k, v in kwargs.items() if k in valid_keys}
+        config = SearcherConfig(**config_kwargs)
+        super().__init__(config=config)
         self.base_url = "https://www.baidu.com"
         self.search_url_template = "https://www.baidu.com/s?wd={query}"
-        self._port = kwargs.get('port', 9333)
+        self._port = config.port
         self._tab_id = None
     
     @property
