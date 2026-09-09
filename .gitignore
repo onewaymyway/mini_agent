@@ -209,3 +209,4 @@ test_cases/inputs/keyframe_first.png
 .agent/external_projects.json
 
 output_projects/
+output/
