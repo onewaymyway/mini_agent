@@ -312,46 +312,55 @@ python .claude/skills/mv-generator/scripts/asr_transcribe.py \
    - ASR segments 的时间是否连续无大的断层或倒序？
    - 是否覆盖了整首歌曲（首尾是否有明显空白未被识别）？
 3. **如果效果太差（歌词内容完全对不上、大部分 segment 为空、时间轴严重错乱等）**：
-   - 先尝试换用更大的模型重新生成：`--model-size large-v3`（`large-v3` 是 whisper 中文识别最强模型，速度较慢但准确率显著提升；CPU 上跑大文件约 5~15 分钟）。
-   - 如果 `large-v3` 依然差，尝试 `--model-size medium` 但加上更长的 initial prompt（把完整歌词作为 prompt 而不是只取前 200 字）：调整 `--lyrics-hint-chars` 为 2000 或直接修改脚本传完整歌词字符串。
+   - **第一步：先用 `--model-size medium` 配合完整歌词作为 initial prompt**：调整 `--lyrics-hint-chars` 为 2000（默认只取前 200 字），把完整歌词喂给 Whisper 做解码提示，对中文歌曲识别率提升显著；命令示例：
+     ```bash
+     python .claude/skills/mv-generator/scripts/asr_transcribe.py \
+       <vocals.wav> --model-size medium --language zh \
+       --lyrics-hint-file <lyrics.txt> --lyrics-hint-chars 2000 \
+       --save-path <output_dir>/asr_raw.json
+     ```
+   - **如果 medium 仍不理想：依次尝试所有小尺寸模型（tiny/base/small/medium），用效果最好的那个**。记录每次结果，对比 ASR 文本覆盖率和时间轴质量后选择最优配置。
    - 每次重新生成后都要再次做上述质检，直到结果可用。
+   - **注意：`large-v3` 模型体积过大，本地 CPU 环境通常无法运行，不要使用。**
 4. 只有确认 ASR 结果可用后，才能进入 Step 2。
 
-### Step 2: 歌词对齐校正（强制对齐优先，ASR+模糊匹配兜底）
+### Step 2: 歌词对齐校正（ASR+模糊匹配方案 B 为主）
 
-**这一步决定整个 MV 字幕/画面切换的时间精度，是最容易出效果问题的环节。**
-本 skill 提供两种对齐方案，按下面的顺序尝试：
+**必须使用 `align_lyrics_v3.py`**，不要用 `align_lyrics_forced.py` 或已废弃的 `align_lyrics_v2.py`。
 
-**方案 A（优先）：强制对齐 `align_lyrics_forced.py`**
-
-标准歌词文本是已知且保证正确的，不需要"猜"文本内容，只需要知道"这段
-已知文本什么时候被唱到"——这是强制对齐（force alignment）模型的标准
-任务，比"先自由识别、再模糊匹配"精度更高，也**不会出现重复段落（副歌/
-主歌重复）被错误对齐到"另一次重复"的时间点**这种量级的错误（强制对齐
-严格按给定文本顺序单调推进，架构上就不存在这个问题）。
+`align_lyrics_v3.py` 是当前推荐的对齐脚本，相比旧版本有重大改进（见下方说明）。强制对齐方案 A（`align_lyrics_forced.py`）依赖 `ctc-forced-aligner` 和 huggingface.co 模型下载，在当前环境中经常因网络/依赖问题失败，不作为首选。
 
 ```bash
-python .claude/skills/mv-generator/scripts/align_lyrics_forced.py \
-  <output_dir>/vocals/htdemucs/<歌名>/vocals.wav \
-  <output_dir>/lyrics.txt \
+python .claude/skills/mv-generator/scripts/align_lyrics_v3.py \
+  <output_dir>/asr_raw.json <output_dir>/lyrics.txt \
   --save-path <output_dir>/lyrics_timed.json \
   --save-srt <output_dir>/lyrics.srt
 ```
 
-- 依赖 `pip install ctc-forced-aligner --break-system-packages`。
-- **首次运行需要联网从 huggingface.co 下载模型**（几十到上百 MB）。如果
-  当前网络白名单没有这个域名，脚本会给出明确报错，此时按报错提示：
-  联系环境管理员放开域名，或在有网络的机器上预下载模型文件后拷贝过来
-  （具体路径见脚本内注释），也可以用 `--model-path` 指定已有模型文件。
-  **如果网络条件不允许跑通这一步，直接跳到方案 B**，不要在这里卡住。
-- 跑完看 stderr：如果有对齐置信度偏低的行会被列出来，Agent 按方案 B
-  里"只复核低置信度行"的方式处理（见下方第二步）。
+**重要：每次修改或重新生成 `lyrics_timed.json` 后，必须立即重新生成 `scene_plan.yaml`**。原因：场景规划直接基于歌词的时间戳区间（`start`/`end`），时间轴一旦变化，场景划分的时长和边界都会改变，沿用旧的 `scene_plan.yaml` 会导致画面切换与歌词不同步。这个重跑规则适用于所有情况，包括但不限于：
+- ASR 重新识别后时间戳变化
+- 手动修正了某行的 start/end
+- 从方案 A 切换到方案 B（或反过来）
+- 任何导致 `lyrics_timed.json` 内容更新的场景
 
-**方案 B（兜底）：ASR + 模糊匹配 `align_lyrics_v3.py`**
+**这一步决定整个 MV 字幕/画面切换的时间精度，是最容易出效果问题的环节。**
 
-当强制对齐因为网络/依赖问题跑不通（比如 `ctc-forced-aligner` 装不上、
-huggingface.co 连不上），或者对齐完之后发现某些行明显对不上（比如实际
-演唱里插入了歌词文件里没写的重复段落），退回到这个方案：
+**必须使用 `align_lyrics_v3.py`（方案 B）**作为首选对齐脚本。该脚本在当前环境中可靠运行，而强制对齐方案 A（`align_lyrics_forced.py`）依赖 huggingface.co 模型下载，经常因网络问题失败。
+
+```bash
+python .claude/skills/mv-generator/scripts/align_lyrics_v3.py \
+  <output_dir>/asr_raw.json <output_dir>/lyrics.txt \
+  --save-path <output_dir>/lyrics_timed.json \
+  --save-srt <output_dir>/lyrics.srt
+```
+
+**重要：每次修改或重新生成 `lyrics_timed.json` 后，必须立即重新生成 `scene_plan.yaml`**。原因：场景规划直接基于歌词的时间戳区间（`start`/`end`），时间轴一旦变化，场景划分的时长和边界都会改变，沿用旧的 `scene_plan.yaml` 会导致画面切换与歌词不同步。这个重跑规则适用于所有情况，包括但不限于：
+- ASR 重新识别后时间戳变化
+- 手动修正了某行的 start/end
+- 从方案 A 切换到方案 B（或反过来）
+- 任何导致 `lyrics_timed.json` 内容更新的场景
+
+> 注：`align_lyrics_forced.py`（方案 A）保留为备选，仅在用户明确需要且环境允许时尝试。
 
 **强烈建议先装上 `pypinyin`**（纯 Python 小包，无 C 扩展/无需联网下载
 模型，安装几乎不会失败，即使 `ctc-forced-aligner`/`demucs` 都装不上的
