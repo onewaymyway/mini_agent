@@ -23,6 +23,8 @@ from typing import Optional
 
 import requests
 
+from mini_agent.utils import win_subprocess
+
 try:
     from .cdp_client import CDPSession, list_tabs, is_debug_port_alive
 except ImportError:
@@ -71,9 +73,11 @@ def _find_chrome_binary() -> Optional[str]:
             if os.path.exists(path):
                 return path
         # 尝试从 PATH 查找
+        # [黑窗口修复] 该 entrypoint 会被 daemon cron 周期性触发，跑在
+        # 无控制台的子进程里，用 win_subprocess 避免每次都弹一下黑框。
         for path in ["chrome.exe", "msedge.exe"]:
             try:
-                result = subprocess.run(["where", path], capture_output=True, text=True)
+                result = win_subprocess.run(["where", path], capture_output=True, text=True)
                 if result.returncode == 0:
                     return result.stdout.strip().split("\n")[0]
             except Exception:
@@ -90,7 +94,7 @@ def _find_chrome_binary() -> Optional[str]:
         candidates = ["google-chrome", "google-chrome-stable", "chromium-browser", "microsoft-edge"]
         for cmd in candidates:
             try:
-                result = subprocess.run(["which", cmd], capture_output=True, text=True)
+                result = win_subprocess.run(["which", cmd], capture_output=True, text=True)
                 if result.returncode == 0:
                     return result.stdout.strip()
             except Exception:
