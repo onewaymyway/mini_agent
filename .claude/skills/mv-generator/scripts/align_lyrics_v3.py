@@ -32,6 +32,37 @@ segment 都转成拼音序列（`pypinyin.lazy_pinyin`），再算一次
 用法：
     python align_lyrics_v3.py asr_raw.json lyrics.txt --save-path lyrics_timed.json --save-srt lyrics.srt
 
+## 本次优化（在拼音模糊匹配基础上继续加固）
+
+1. **自动忽略歌词首行的歌名**：很多 `lyrics.txt` 习惯性地把歌名写在
+   第一行（后面才是真正要唱的 `[Intro]`/正文），这一行从不会被唱出来，
+   拿去跟 ASR 比对只会制造一条错误的低置信度行、甚至污染后面的单调
+   游标。默认行为是：整份歌词里**第一条非空、且本身不是段落标记的
+   行**会被当成歌名自动跳过，不参与对齐、也不出现在输出结果里。如果
+   歌词文件本来就没有歌名（第一行直接就是 `[Intro]` 或正文），脚本不会
+   误删任何一行——判定逻辑只在"第一行不是段落标记"时才生效。极少数
+   歌词第一行本来就是要唱的正文（没有歌名）的情况下，可以加
+   `--no-skip-title` 关掉这个行为。
+2. **段落标记识别更宽松**：不仅认 `[Intro]`/`[Verse 1]` 这种半角方括号，
+   也认 `【副歌】`/`（间奏）`/`(Bridge):` 等中英文括号 + 可选尾部冒号的
+   写法，统一在对齐前过滤掉，不会被当成一句要对齐的歌词。
+3. **窗口模糊匹配阶段加入"字数对齐"约束**：v2/v3 之前的窗口匹配只看
+   相似度 ratio 最高的候选，容易选中"文字很像但长度差很多"的错误
+   片段（比如把一句 10 个字的歌词匹配到 ASR 里一个只有 3 个字的碎片
+   segment 上）。现在额外算一个**长度惩罚系数**：候选片段的有效字数
+   和歌词行字数差得越多，最终得分惩罚越重；差得在 30% 以内基本不惩罚。
+   "有效字数"优先按中文字符数计，如果歌词是中文但 ASR 识别失败输出
+   了英文/拼音（这种情况下双方"字数"单位根本不是一回事，按字符数硬比
+   没有意义），会自动识别这种"中文行 vs 非中文候选"的情况并大幅放宽
+   长度惩罚，避免因为单位不可比而错误地否决掉本来正确的候选。
+4. **匹配优先级更明确**：窗口匹配时，汉字相似度和拼音相似度不再简单
+   取较大值，而是分级："汉字也能对上"的候选（汉字相似度达到较高阈值）
+   优先选中；汉字对不上但拼音明显更相似（同音字/近音字替换）的候选
+   次优先；两者都很弱时才会退化成最后一档的"插值兜底猜测"。这样保证
+   了"中文也都能匹配上的"优先于"只有读音能对上的"，读音能对上的又
+   优先于纯插值瞎猜。输出的 `method` 字段里会标注具体命中的是
+   `hanzi`/`pinyin` 哪一档，方便复核。
+
 ---
 
 以下是 v2 的原始说明（对齐算法主体思路不变，只是给窗口匹配加了拼音通道）：
@@ -97,10 +128,11 @@ segment 都转成拼音序列（`pypinyin.lazy_pinyin`），再算一次
 import argparse
 import difflib
 import json
+import re
 import sys
 import unicodedata
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # ── 拼音（可选依赖，装不上就退化成只用汉字相似度，不报错）────────────
 try:
@@ -211,26 +243,130 @@ def _flatten_asr_chars(asr_result: dict) -> List[dict]:
     return chars
 
 
-def _load_standard_lines(lyrics_text: str) -> List[str]:
-    lines = [ln.strip() for ln in lyrics_text.splitlines()]
-    return [ln for ln in lines if ln and not (ln.startswith("[") and ln.endswith("]"))]
+# 段落标记：半角/全角方括号、圆括号、中文书名号风格括号都认，允许
+# 尾部有个冒号（比如 "[Verse 1]:"），内容长度限制在 40 字符内，避免
+# 把正常带括号的歌词句子（比如 "(我爱你)这句话"）误判成段落标记——
+# 正常歌词括号后通常还跟着别的文字，段落标记则是整行只有括号本身。
+_SECTION_TAG_RE = re.compile(r"^[\[\(【（][^\]\)】）]{0,40}[\]\)】）]:?\s*$")
+
+
+def _is_section_tag(line: str) -> bool:
+    return bool(_SECTION_TAG_RE.match(line))
+
+
+def _load_standard_lines(lyrics_text: str, skip_title: bool = True) -> List[str]:
+    """解析出真正需要参与对齐的歌词行。
+
+    - 空行直接丢弃。
+    - 形如 `[Intro]`/`[Verse 1]`/`【副歌】`/`(Bridge):` 的段落标记行丢弃，
+      这些从来不会被唱出来，拿去跟 ASR 比对只会产生错误锚点。
+    - 默认额外丢弃"第一条非空且本身不是段落标记的行"，因为很多
+      `lyrics.txt` 习惯把歌名写在第一行。只有当第一行本身就是段落标记
+      （说明歌词本来就没写歌名，直接从 `[Intro]` 开始）时才不生效，
+      避免误删真正的第一句歌词。`skip_title=False` 可以整体关闭这个
+      行为。
+    """
+    raw_lines = [ln.strip() for ln in lyrics_text.splitlines()]
+    non_blank = [ln for ln in raw_lines if ln]
+    if not non_blank:
+        return []
+
+    start_idx = 0
+    if skip_title and not _is_section_tag(non_blank[0]):
+        start_idx = 1  # 首行是歌名，跳过
+
+    return [ln for ln in non_blank[start_idx:] if not _is_section_tag(ln)]
+
+
+# ── 字数对齐辅助：判断"有效字数"，中文按汉字数，非中文按字符数 ────────
+
+def _is_cjk_char(ch: str) -> bool:
+    cp = ord(ch)
+    return (
+        0x4E00 <= cp <= 0x9FFF or  # CJK统一表意文字
+        0x3400 <= cp <= 0x4DBF or  # 扩展A
+        0xF900 <= cp <= 0xFAFF     # 兼容表意文字
+    )
+
+
+def _effective_length(text: str) -> Tuple[int, bool]:
+    """返回 (有效字数, 是否以中文字符为主)。
+
+    中文行按汉字数计（更贴近"字数"的直觉，且不受夹杂的英文单词、数字
+    干扰）；如果一段文本里几乎没有中文字符（比如 ASR 把中文识别成了
+    英文/拼音），则退化成按字符总数计，并标记为"非中文为主"，供调用方
+    识别"中文行 vs 非中文候选"这种单位不可比的特殊情况。
+    """
+    cjk_count = sum(1 for ch in text if _is_cjk_char(ch))
+    if cjk_count > 0:
+        return cjk_count, True
+    return len(text), False
+
+
+def _length_penalty(norm_line: str, candidate: str) -> float:
+    """字数对齐惩罚系数，范围 (0, 1]，1 表示字数完全不惩罚。
+
+    - 双方都是中文（或都不是中文）时：按有效字数比值算惩罚，差距在
+      30% 以内不惩罚，差距越大惩罚越重，最低封顶到 0.35（不会直接
+      判死刑，因为相似度本身已经包含了大量信息，长度只是辅助信号）。
+    - 歌词行是中文、但候选片段几乎不含中文字符（典型场景：ASR 把这句
+      中文识别失败、输出了一堆英文/拼音）：双方"字数"根本不是同一个
+      计量单位，硬比字数没有意义，这里只给一个很轻的固定折扣，不做
+      比例惩罚，避免把本来该选中的候选错误地压低。
+    """
+    line_len, line_is_cjk = _effective_length(norm_line)
+    cand_len, cand_is_cjk = _effective_length(candidate)
+
+    if line_len == 0 or cand_len == 0:
+        return 0.5
+
+    if line_is_cjk and not cand_is_cjk:
+        # 中文行对上了非中文候选（ASR 识别失败退化成英文/拼音等）：
+        # 单位不可比，只做轻微固定折扣，不按比例惩罚。
+        return 0.85
+
+    ratio = min(line_len, cand_len) / max(line_len, cand_len)
+    if ratio >= 0.7:
+        return 1.0
+    # 从 ratio=0.7 处的 1.0 线性衰减到 ratio=0 处的 0.35
+    return 0.35 + 0.65 * (ratio / 0.7)
+
+
+# 汉字相似度达到这个阈值就认为"中文也对上了"，优先采信，不再看拼音档。
+_HANZI_GOOD_THRESHOLD = 0.55
+# 拼音档命中时打的折扣：同样是候选，"读音对上但字对不上"的可信度天然
+# 低于"字也对上"，给个折扣，避免拼音层面偶然的高相似度盖过更靠谱的
+# 汉字候选（两者会在不同 span 上分别比较，折扣后再统一取最大值）。
+_PINYIN_DISCOUNT = 0.92
 
 
 def _best_window_match(norm_line: str, segments: List[dict], seg_norm: List[str],
                         start_idx: int, end_time: float, max_span: int = 3,
                         pinyin_line: str = "", seg_pinyin: Optional[List[str]] = None):
     """在 segments[start_idx:] 中、start_time <= end_time 的范围内，
-    找与 norm_line 相似度最高的连续 segment 拼接（跨 1~max_span 个 segment）。
+    找与 norm_line 最匹配的连续 segment 拼接（跨 1~max_span 个 segment）。
 
-    相似度取"汉字层面相似度"和"拼音层面相似度"两者的较大值（v3 新增）：
-    ASR 常见的同音字/近音字替换错误在汉字层面完全不匹配，但拼音层面
-    通常还是高度相似的，这样能显著减少"整句都对不上、只能插值"的情况。
-    若未安装 pypinyin（`pinyin_line`/`seg_pinyin` 为空），等价于只用
-    汉字相似度，行为和 v2 完全一致。
+    匹配优先级分三档（本次优化明确化）：
+    1. **汉字也对上**：汉字层面相似度达到 `_HANZI_GOOD_THRESHOLD`，
+       直接按汉字相似度打分，这一档最可信。
+    2. **拼音能对上**：汉字对不上（同音字/近音字替换导致），但拼音层面
+       相似度更高——这类候选打个折扣（`_PINYIN_DISCOUNT`）后再参与
+       比较，比"汉字也对上"的候选低一档，但仍然明显优于瞎猜插值。
+    3. 两档都拿不到足够高的分，调用方会用 `window_match_threshold`
+       过滤掉，最终退化成插值兜底（"最后猜测其他的匹配"）。
 
-    返回 (best_ratio, (seg_i, seg_j)) 或 (0.0, None)。
+    另外引入**字数对齐**：候选片段的有效字数和歌词行字数差得越多，
+    最终得分会被 `_length_penalty` 按比例打折——避免"文字很像但明显
+    长度对不上"的碎片被误选中；如果歌词是中文而候选是 ASR 识别失败
+    输出的非中文文本，两边字数单位不可比，会自动放宽这个惩罚（见
+    `_length_penalty` 里的说明）。
+
+    若未安装 pypinyin（`pinyin_line`/`seg_pinyin` 为空），拼音档不生效，
+    行为退化为只用"汉字相似度 * 长度惩罚"。
+
+    返回 (best_score, (seg_i, seg_j), match_kind) 或 (0.0, None, None)。
     """
-    best_ratio, best_span = 0.0, None
+    best_score, best_span, best_kind = 0.0, None, None
     i = start_idx
     n = len(segments)
     while i < n and segments[i]["start"] <= end_time:
@@ -245,22 +381,37 @@ def _best_window_match(norm_line: str, segments: List[dict], seg_norm: List[str]
                 py_concat = (py_concat + " " + seg_pinyin[j]).strip()
             if not concat:
                 continue
-            ratio = difflib.SequenceMatcher(a=norm_line, b=concat, autojunk=False).ratio()
+
+            length_penalty = _length_penalty(norm_line, concat)
+            hanzi_ratio = difflib.SequenceMatcher(a=norm_line, b=concat, autojunk=False).ratio()
+
+            pinyin_ratio = 0.0
             if pinyin_line and py_concat:
-                py_ratio = difflib.SequenceMatcher(a=pinyin_line, b=py_concat, autojunk=False).ratio()
-                ratio = max(ratio, py_ratio)
-            if ratio > best_ratio:
-                best_ratio, best_span = ratio, (i, j)
+                pinyin_ratio = difflib.SequenceMatcher(
+                    a=pinyin_line, b=py_concat, autojunk=False).ratio()
+
+            if hanzi_ratio >= _HANZI_GOOD_THRESHOLD or hanzi_ratio >= pinyin_ratio:
+                score, kind = hanzi_ratio * length_penalty, "hanzi"
+            else:
+                score, kind = pinyin_ratio * _PINYIN_DISCOUNT * length_penalty, "pinyin"
+
+            if score > best_score:
+                best_score, best_span, best_kind = score, (i, j), kind
         i += 1
-    return best_ratio, best_span
+    return best_score, best_span, best_kind
 
 
 def align(asr_result: dict, lyrics_text: str, line_gap: float = 0.15,
           min_anchor: int = 2, window_seconds: float = 45.0,
           anchor_coverage_threshold: float = 0.4,
-          window_match_threshold: float = 0.28) -> dict:
-    """对齐标准歌词与 ASR 时间戳（锚点优先 + 单调窗口约束兜底）。"""
-    standard_lines = _load_standard_lines(lyrics_text)
+          window_match_threshold: float = 0.28,
+          skip_title: bool = True) -> dict:
+    """对齐标准歌词与 ASR 时间戳（锚点优先 + 单调窗口约束兜底）。
+
+    `skip_title=True`（默认）时会自动丢弃歌词首行的歌名和所有段落标记
+    行（`[Intro]`/`[Verse 1]`/`【副歌】` 等），见 `_load_standard_lines`。
+    """
+    standard_lines = _load_standard_lines(lyrics_text, skip_title=skip_title)
     if not standard_lines:
         raise ValueError("标准歌词为空，无法对齐")
 
@@ -339,24 +490,24 @@ def align(asr_result: dict, lyrics_text: str, line_gap: float = 0.15,
         elif segments:
             norm_line = normalize_text(rl["text"])
             pinyin_line = to_pinyin(rl["text"]) if _PINYIN_AVAILABLE else ""
-            ratio, span = _best_window_match(
+            ratio, span, kind = _best_window_match(
                 norm_line, segments, seg_norm, search_from_idx,
                 end_time=cursor_time + window_seconds,
                 pinyin_line=pinyin_line, seg_pinyin=seg_pinyin,
             )
             if (ratio < window_match_threshold) or span is None:
                 # 窗口内没找到，再放宽一次窗口（应对个别行时长规划偏差较大的情况）
-                ratio2, span2 = _best_window_match(
+                ratio2, span2, kind2 = _best_window_match(
                     norm_line, segments, seg_norm, search_from_idx,
                     end_time=cursor_time + window_seconds * 3,
                     pinyin_line=pinyin_line, seg_pinyin=seg_pinyin,
                 )
                 if ratio2 > ratio:
-                    ratio, span = ratio2, span2
+                    ratio, span, kind = ratio2, span2, kind2
             if span is not None and ratio >= window_match_threshold:
                 i, j = span
                 start, end = segments[i]["start"], segments[j]["end"]
-                method = f"window-match(ratio={ratio:.2f})"
+                method = f"window-match(kind={kind},score={ratio:.2f})"
                 search_from_idx = i  # 允许下一行与本行有轻微重叠（同一 segment 覆盖多句的情况）
             else:
                 start = cursor_time + line_gap
@@ -434,6 +585,10 @@ def main():
                         help="窗口匹配兜底时，向前搜索 ASR segment 的时间窗口大小（秒），默认45")
     parser.add_argument("--anchor-coverage-threshold", type=float, default=0.4,
                         help="锚点覆盖率低于此值时不采信锚点，改用窗口匹配，默认0.4")
+    parser.add_argument("--no-skip-title", dest="skip_title", action="store_false",
+                        help="默认会自动跳过歌词首行的歌名，加此参数关闭该行为"
+                             "（歌词第一行本来就是要唱的正文时使用）")
+    parser.set_defaults(skip_title=True)
     parser.add_argument("--save-path", default=None)
     parser.add_argument("--save-srt", default=None)
     args = parser.parse_args()
@@ -455,6 +610,7 @@ def main():
             asr_result, lyrics_text, line_gap=args.line_gap, min_anchor=args.min_anchor,
             window_seconds=args.window_seconds,
             anchor_coverage_threshold=args.anchor_coverage_threshold,
+            skip_title=args.skip_title,
         )
     except (ValueError, RuntimeError) as exc:
         print(f"对齐失败: {exc}", file=sys.stderr)
