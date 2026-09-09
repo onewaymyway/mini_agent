@@ -373,6 +373,7 @@ def init_state():
         "fs_path": ".",
         "artifacts_session_filter": "",
         "artifacts_open_id": None,
+        "artifacts_page": 0,
         # workflow机制改进计划（P7）二、Streamlit "🔄 工作流" Tab
         "wf_active_run_id": None,
         "wf_history_open_id": None,
@@ -7396,6 +7397,30 @@ def _render_artifact_file(client: AgentClient, manifest_id: str, session_id: str
     st.caption(f"大小: {f.get('size', '?')} bytes")
 
 
+def _render_artifact_item(client: AgentClient, item: dict, open_id: Optional[str] = None):
+    mid = item.get("manifest_id")
+    sid = item.get("session_id")
+    title = item.get("title", "未命名产出")
+    types_str = " ".join(ARTIFACT_TYPE_ICON.get(t, "📦") for t in item.get("types", []))
+    header = f"{types_str} {title} · session={sid} · {item.get('created_at','')[:19]} · {item.get('file_count',0)} 个文件"
+    expanded = (mid == open_id)
+    with st.expander(header, expanded=expanded):
+        share_link = f"?manifest_id={mid}"
+        st.caption(f"🔗 分享链接参数: `{share_link}`（拼到看板 URL 后即可直达）")
+        detail = client.get_artifact(mid, session_id=sid) or {}
+        if "_error" in detail:
+            st.error(detail["_error"])
+            return
+        if detail.get("description"):
+            st.markdown(f"> {detail['description']}")
+        for idx, f in enumerate(detail.get("files", [])):
+            _render_artifact_file(client, mid, sid, idx, f)
+            st.divider()
+
+
+ARTIFACTS_PAGE_SIZE = 20
+
+
 def render_artifacts_preview_tab(client: AgentClient):
     st.markdown("#### 🖼️ 产出预览")
     st.caption("按任务/会话登记的产出物（文档、图片等命令行不便展示的内容）。"
@@ -7403,42 +7428,72 @@ def render_artifacts_preview_tab(client: AgentClient):
 
     c1, c2 = st.columns([3, 1])
     session_filter = c1.text_input("按 Session ID 过滤（留空=全部）", st.session_state.artifacts_session_filter)
+    if session_filter != st.session_state.artifacts_session_filter:
+        # 筛选条件变了，翻回第一页，避免停在一个可能不存在的页码上
+        st.session_state.artifacts_page = 0
     st.session_state.artifacts_session_filter = session_filter
     if c2.button("🔄 刷新列表"):
         st.rerun()
 
-    resp = client.list_artifacts(session_id=session_filter or None, limit=100)
+    # 若 URL 深链接指定了 manifest_id，单独拉取详情展示在最上方，
+    # 不占用下面按页码翻的列表——深链接目标不一定落在当前页上，
+    # 与其去反查它在第几页，不如直接单独渲染一份。
+    open_id = st.session_state.artifacts_open_id
+    if open_id:
+        detail_probe = client.get_artifact(open_id, session_id=session_filter or None) or {}
+        if "_error" not in detail_probe:
+            st.markdown("**🔗 直达的产出物**")
+            _render_artifact_item(
+                client,
+                {
+                    "manifest_id": open_id,
+                    "session_id": detail_probe.get("session_id") or session_filter,
+                    "title": detail_probe.get("title", "未命名产出"),
+                    "types": sorted({f.get("type") for f in detail_probe.get("files", [])}),
+                    "created_at": detail_probe.get("created_at", ""),
+                    "file_count": len(detail_probe.get("files", [])),
+                },
+                open_id=open_id,
+            )
+            st.divider()
+
+    page = st.session_state.artifacts_page
+    offset = page * ARTIFACTS_PAGE_SIZE
+    # 多取 1 条来判断"是否还有下一页"，展示时只用前 PAGE_SIZE 条，
+    # 避免后端 /v1/artifacts 目前不返回 total 计数导致算不出总页数。
+    resp = client.list_artifacts(session_id=session_filter or None, limit=ARTIFACTS_PAGE_SIZE + 1, offset=offset)
     if not resp or "_error" in (resp or {}):
         st.warning((resp or {}).get("_error", "暂无产出物数据"))
         return
 
     items = resp.get("items", [])
     if not items:
-        st.info("暂无产出物记录。任务完成后可通过 record_artifact() 登记产出。")
+        if page > 0:
+            st.info("这一页没有数据了，已翻到末尾。")
+            if st.button("⬅️ 回到上一页", key="artifacts_page_back_empty"):
+                st.session_state.artifacts_page = max(0, page - 1)
+                st.rerun()
+        else:
+            st.info("暂无产出物记录。任务完成后可通过 record_artifact() 登记产出。")
         return
 
-    # 若 URL 深链接指定了 manifest_id，优先展开该项
-    open_id = st.session_state.artifacts_open_id
+    has_next = len(items) > ARTIFACTS_PAGE_SIZE
+    items = items[:ARTIFACTS_PAGE_SIZE]
 
     for item in items:
-        mid = item.get("manifest_id")
-        sid = item.get("session_id")
-        title = item.get("title", "未命名产出")
-        types_str = " ".join(ARTIFACT_TYPE_ICON.get(t, "📦") for t in item.get("types", []))
-        header = f"{types_str} {title} · session={sid} · {item.get('created_at','')[:19]} · {item.get('file_count',0)} 个文件"
-        expanded = (mid == open_id)
-        with st.expander(header, expanded=expanded):
-            share_link = f"?manifest_id={mid}"
-            st.caption(f"🔗 分享链接参数: `{share_link}`（拼到看板 URL 后即可直达）")
-            detail = client.get_artifact(mid, session_id=sid) or {}
-            if "_error" in detail:
-                st.error(detail["_error"])
-                continue
-            if detail.get("description"):
-                st.markdown(f"> {detail['description']}")
-            for idx, f in enumerate(detail.get("files", [])):
-                _render_artifact_file(client, mid, sid, idx, f)
-                st.divider()
+        _render_artifact_item(client, item, open_id=open_id)
+
+    pc1, pc2, pc3 = st.columns([1, 2, 1])
+    with pc1:
+        if st.button("⬅️ 上一页", key="artifacts_page_prev", disabled=(page == 0)):
+            st.session_state.artifacts_page = max(0, page - 1)
+            st.rerun()
+    with pc2:
+        st.markdown(f"<div style='text-align:center'>第 {page + 1} 页</div>", unsafe_allow_html=True)
+    with pc3:
+        if st.button("下一页 ➡️", key="artifacts_page_next", disabled=(not has_next)):
+            st.session_state.artifacts_page = page + 1
+            st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════
