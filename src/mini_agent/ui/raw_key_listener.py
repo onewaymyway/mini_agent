@@ -131,7 +131,34 @@ class _BaseKeyReader(ABC):
             if t.get_task_focus() is not None:
                 t.set_task_focus(None)
         elif action == "sigint":
+            # [Ctrl+C 即时反馈] 主线程可能正阻塞在同步网络 I/O（等待 LLM
+            # 下一个 token）或子进程调用里，尤其在 Windows 上阻塞式
+            # socket/管道读取不会被信号打断，KeyboardInterrupt 要等这次
+            # 阻塞调用返回才会真正抛出，中间可能有明显延迟。
+            # 这里的按键检测本身跑在独立的监听线程、不受主线程阻塞影响，
+            # 所以先立即给用户一个"已收到"的提示，避免用户以为没生效而
+            # 反复猛按 Ctrl+C；t.print() 只是把消息入队，由渲染线程异步
+            # 消费，线程安全，不会被主线程阻塞拖慢。
+            _BaseKeyReader._notify_sigint_received(t)
             os.kill(os.getpid(), signal.SIGINT)
+
+    _last_sigint_notice_ts: float = 0.0
+    _sigint_notice_lock = threading.Lock()
+
+    @staticmethod
+    def _notify_sigint_received(t) -> None:
+        """打印\"已收到 Ctrl+C\"提示，做轻量节流避免用户连续猛按时刷屏。"""
+        import time as _time
+        now = _time.monotonic()
+        with _BaseKeyReader._sigint_notice_lock:
+            if now - _BaseKeyReader._last_sigint_notice_ts < 1.0:
+                return
+            _BaseKeyReader._last_sigint_notice_ts = now
+        try:
+            t.print("[yellow]⚠ 已收到 Ctrl+C，正在尝试中断当前操作，请稍候…[/yellow]")
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.ui.raw_key_listener._BaseKeyReader._notify_sigint_received')
 
 
 # ── Unix 实现 ─────────────────────────────────────────────────────────────────
