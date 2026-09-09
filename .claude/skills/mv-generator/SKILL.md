@@ -304,6 +304,19 @@ python .claude/skills/mv-generator/scripts/asr_transcribe.py \
 
 **产物**：`vocals/htdemucs/<歌名>/vocals.wav`、`asr_raw.json`（强制落盘）
 
+**ASR 结果必须立即质检**（不可跳过，直接进 Step 2 会被对齐脚本严重破坏）：
+
+1. 读 `asr_raw.json`，逐段检查 ASR segments 的 `text` 和 `start/end`。
+2. 将 ASR 文本与 `lyrics.txt`（或用户提供的歌词文件）做粗略对比：
+   - 歌词内容是否大致能对应上（相同/近音字即可，不要求逐字一致）？
+   - ASR segments 的时间是否连续无大的断层或倒序？
+   - 是否覆盖了整首歌曲（首尾是否有明显空白未被识别）？
+3. **如果效果太差（歌词内容完全对不上、大部分 segment 为空、时间轴严重错乱等）**：
+   - 先尝试换用更大的模型重新生成：`--model-size large-v3`（`large-v3` 是 whisper 中文识别最强模型，速度较慢但准确率显著提升；CPU 上跑大文件约 5~15 分钟）。
+   - 如果 `large-v3` 依然差，尝试 `--model-size medium` 但加上更长的 initial prompt（把完整歌词作为 prompt 而不是只取前 200 字）：调整 `--lyrics-hint-chars` 为 2000 或直接修改脚本传完整歌词字符串。
+   - 每次重新生成后都要再次做上述质检，直到结果可用。
+4. 只有确认 ASR 结果可用后，才能进入 Step 2。
+
 ### Step 2: 歌词对齐校正（强制对齐优先，ASR+模糊匹配兜底）
 
 **这一步决定整个 MV 字幕/画面切换的时间精度，是最容易出效果问题的环节。**
