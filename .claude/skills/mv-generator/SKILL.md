@@ -93,18 +93,18 @@ Step 0 由用户选择一次，选择结果写入 `<output_dir>/mv_config.json`�
    之类会破坏已有环境的操作——`mv_env` 大概率是之前跑过本 skill 留下的，
    重建会丢失已经装好的大体积依赖（尤其是联网下载过的模型权重缓存）：
    ```bash
-   conda run -n mv_env pip install faster-whisper pyyaml pillow imageio-ffmpeg --break-system-packages
-   conda run -n mv_env pip install demucs ctc-forced-aligner pypinyin --break-system-packages
+   conda run --no-capture-output -n mv_env pip install faster-whisper pyyaml pillow imageio-ffmpeg --break-system-packages
+   conda run --no-capture-output -n mv_env pip install demucs ctc-forced-aligner pypinyin --break-system-packages
    ```
    （后一条是推荐但非强制的依赖，装不上不阻塞流程，见上方「外部依赖」
-   说明；两条都用 `conda run -n mv_env pip install ...` 而不是先手动
+   说明；两条都用 `conda run --no-capture-output -n mv_env pip install ...` 而不是先手动
    `conda activate` 再 `pip install`，避免在非交互式脚本执行环境里
    `activate` 不生效导致包装进了错误的环境。）
 4. **本 skill 下所有 `python .claude/skills/mv-generator/scripts/xxx.py ...`
    命令，都要用 `mv_env` 里的 Python 执行**，即在 SKILL.md 后续各 Step
-   给出的命令前加 `conda run -n mv_env`，例如：
+   给出的命令前加 `conda run --no-capture-output -n mv_env`，例如：
    ```bash
-   conda run -n mv_env python .claude/skills/mv-generator/scripts/separate_vocals.py \
+   conda run --no-capture-output -n mv_env python .claude/skills/mv-generator/scripts/separate_vocals.py \
      <mp3路径> --output-dir <output_dir>
    ```
    下文各 Step 为了阅读简洁，示例命令里省略了这个前缀，实际执行时都要
@@ -1009,7 +1009,7 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
 11. **Python 环境统一用 `mv_env`**：本 skill 所有 Python 脚本默认跑在
     conda 的 `mv_env` 环境里（没有就新建，有就在原有基础上补装依赖，
     不要重建），详见前面「Python 环境规范」一节；实际执行命令时记得
-    在示例命令前加 `conda run -n mv_env`。
+    在示例命令前加 `conda run --no-capture-output -n mv_env`。
 12. **封面效果默认开启**：Step 0 默认 `cover_enabled: true`，做法是
     "替换第一个场景前几秒"而不是"插入新片段"，不影响总时长；用户不需要
     封面效果时，Step 0 就要问清楚并把 `cover_enabled` 设为 `false`，
