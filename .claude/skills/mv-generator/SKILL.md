@@ -488,6 +488,19 @@ python .claude/skills/mv-generator/scripts/align_lyrics_v3.py \
    （但要向用户说明：这只能减少、不能完全消除漂移，这是已知限制）。
 4. 为每个场景段落写画面描述 prompt（建议英文，效果更好），描述要包含：
    镜头/构图、场景环境、人物动作与情绪、光线氛围，并注明引用哪个定妆图。
+5. **正确设置每个场景的 `video_mode`（reference / keyframe / text），不要
+   默认全部填 `reference`**——这是三种模式各自的硬性前提，Agnes 接口不满足
+   前提会直接 400 报错：
+   - `video_mode: reference` 仅当该场景 `uses_assets` 非空、且引用的定妆图
+     在 `recurring_assets` 里已有（或将有）`asset_path` 时才能用。
+   - `video_mode: keyframe` 仅当该场景规划了 `first_frame` 和/或
+     `last_frame` 时才能用。
+   - **没有定妆图可引用的场景（比如开场空镜、纯环境过渡镜头、一次性出现
+     不需要保持形象一致的镜头）必须用 `video_mode: text`**，不要为了"看起来
+     统一"就填成 reference——那样会因为没有 images/audios/videos 而必然
+     400 失败。
+   Step 3 写完 `scene_plan.yaml` 后，下面的校验脚本会检查这一点并报错，
+   但最好写的时候就按上述规则一次填对。
 
 产出格式示例（`scene_plan.yaml`）：
 
@@ -728,7 +741,12 @@ python .claude/skills/mv-generator/scripts/generate_scene_videos.py \
    自动选择 `reference`/`keyframe`/`text` 模式调用生成接口，`reference`
    模式会自动把 `uses_assets` 对应的定妆图路径（`recurring_assets` 里
    回填的 `asset_path`）传进去；`seconds` 自动取 `end - start` 并夹到
-   4-12 秒范围内（Step 3 的校验已保证这个范围本身没问题）。
+   4-12 秒范围内（Step 3 的校验已保证这个范围本身没问题）。**兜底**：
+   如果某个场景标了 `video_mode: reference` 却没有可用的定妆图（
+   `uses_assets` 为空或对应素材缺 `asset_path`），或标了 `keyframe` 却没
+   `first_frame`/`last_frame`，脚本会打印提示并自动降级为 `text` 模式
+   生成，而不是重试 3 次同样必然 400 的调用——但这只是兜底，Step 3 的
+   `check_scene_plan.py` 应该已经在规划阶段拦下这类问题。
 2. **每开始生成一个场景前会打印进度和该场景的关键信息**（第几轮/第几个、
    scene id、lyric_lines、start/end、使用的定妆图、prompt），方便观察
    当前在生成什么、卡在哪一步。

@@ -12,6 +12,10 @@
   3. 场景覆盖的总时长是否等于（或接近）mp3 的实际时长——不够长/超出太多
      都会报错，音频时长优先从 --audio（用 ffprobe 读取）或 --audio-duration
      获取，缺省时退回 scene_plan.yaml 里的 song_meta.duration 字段。
+  4. video_mode 与实际可用素材是否匹配：video_mode=reference 的场景必须有
+     uses_assets 命中 recurring_assets 且带 asset_path；video_mode=keyframe
+     的场景必须有 first_frame 或 last_frame。否则调用 gen_video_with_text
+     时会直接 400（reference/keyframe mode 缺少对应素材）。
 
 退出码：
   0 = 全部通过
@@ -245,6 +249,44 @@ def check(plan: dict, audio_duration: Optional[float]) -> dict:
                         f"封面是用'挤压/替换'第一个场景的前 N 秒实现的（不改变总时长），"
                         f"过长会让第一个场景剩余可用画面过短，请调小 duration_sec，"
                         f"或者如果这首歌开头有较长纯音乐前奏，考虑把第一个场景本身规划得更长一些"
+                    ),
+                })
+
+    # --- 5. video_mode 与实际可用素材是否匹配 ---
+    # Agnes 接口：mode=reference 时 images/audios/videos 三者必须至少有一项
+    # 非空，否则直接 400 invalid_request；mode=keyframe 至少需要 first_frame
+    # 或 last_frame 之一。这里在规划阶段就拦下来，避免 Step 5 批量生成时
+    # 才发现某个场景（比如没有定妆图的开场空镜/过渡镜头）被错误规划成
+    # reference/keyframe 却没有可用素材。
+    assets_by_id = {a.get("id"): a for a in (plan.get("recurring_assets") or []) if a.get("id")}
+    for sc in scenes:
+        sid = sc.get("id", "<missing id>")
+        video_mode = sc.get("video_mode", "reference")
+        if video_mode == "reference":
+            uses_assets = sc.get("uses_assets") or []
+            resolved = [aid for aid in uses_assets
+                        if assets_by_id.get(aid, {}).get("asset_path")]
+            if not resolved:
+                errors.append({
+                    "type": "reference_mode_without_assets",
+                    "scene_id": sid,
+                    "message": (
+                        f"场景 {sid} 的 video_mode=reference，但 uses_assets 为空，"
+                        f"或引用的定妆图在 recurring_assets 中缺少 asset_path，"
+                        f"没有可用的参考图片。Agnes 接口 mode=reference 要求 "
+                        f"images/audios/videos 至少一项非空，否则会 400 报错。"
+                        f"该场景没有对应定妆图（比如开场空镜/过渡镜头），"
+                        f"应把 video_mode 改成 text，或者补充一个定妆图并加入 uses_assets"
+                    ),
+                })
+        elif video_mode == "keyframe":
+            if not sc.get("first_frame") and not sc.get("last_frame"):
+                errors.append({
+                    "type": "keyframe_mode_without_frames",
+                    "scene_id": sid,
+                    "message": (
+                        f"场景 {sid} 的 video_mode=keyframe，但既没有 first_frame 也没有 "
+                        f"last_frame，应把 video_mode 改成 text，或补充首/尾帧图片"
                     ),
                 })
 

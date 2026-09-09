@@ -178,13 +178,30 @@ def generate_one_scene(client, scene: dict, assets_by_id: dict, output_dir: Path
 
     if video_mode == "reference":
         images = resolve_asset_paths(scene, assets_by_id, output_dir)
+        # [FALLBACK] reference 模式要求 images/audios/videos 至少有一项非空
+        # （Agnes 接口：mode=reference 但三者都为空会直接 400 invalid_request）。
+        # scene_plan.yaml 里如果某个场景没有 uses_assets（比如开场空镜、
+        # 没有定妆图可引用的过渡镜头），却仍被规划成 video_mode: reference，
+        # 就会命中这个 400。这里做兜底：没有可用参考素材时自动降级为
+        # text 模式，而不是重试 3 次同样必然失败的调用再放弃整个场景。
         if images:
             kwargs["images"] = images
+        else:
+            print(f"    [提示] {scene_id} video_mode=reference 但没有可用的参考图片"
+                  f"（uses_assets 为空，或引用的定妆图在 recurring_assets 中缺少 "
+                  f"asset_path），自动降级为 mode=text 生成")
+            video_mode = "text"
+            kwargs["mode"] = "text"
     elif video_mode == "keyframe":
         if scene.get("first_frame"):
             kwargs["first_frame"] = scene["first_frame"]
         if scene.get("last_frame"):
             kwargs["last_frame"] = scene["last_frame"]
+        if "first_frame" not in kwargs and "last_frame" not in kwargs:
+            print(f"    [提示] {scene_id} video_mode=keyframe 但既没有 first_frame 也没有 "
+                  f"last_frame，自动降级为 mode=text 生成")
+            video_mode = "text"
+            kwargs["mode"] = "text"
     # video_mode == "text" 不需要额外图片参数
 
     last_result = None
