@@ -236,8 +236,11 @@ def _tool_summary(tool_name: str, inp: dict) -> str:
         # 误吐出 list），此处降级返回空摘要，而不是让整个渲染流程崩溃。
         return ""
     if tool_name == "bash":
-        cmd = inp.get("command", "")
-        return cmd[:80] + ("…" if len(cmd) > 80 else "")
+        # bash 命令不做截断：用户需要能看到完整命令（比如带引号、包含空格
+        # 的文件路径），截断成 "conda run ... separate_vocals.p…" 这种半截
+        # 命令不但没用，反而容易误导用户以为命令本身就是这样写的。这里显示
+        # 逻辑交给终端自己换行（多行展示），不在渲染层里砍掉内容。
+        return inp.get("command", "")
     if tool_name in ("read_file", "write_file", "create_file", "delete_file", "patch_file"):
         return inp.get("path", inp.get("file_path", ""))
     if tool_name == "list_dir":
