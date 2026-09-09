@@ -20,6 +20,7 @@ evolution/cron_scheduler.py — Daemon 模式定时任务调度器
   sys:daily_digest           — 每日融合日报（行为+目标+提交）      cron:0 22 * * *
   sys:next_action_digest     — 主动推荐排序（停滞目标/注意力错配/[C3]活跃度上升，默认关闭）interval:10800
   sys:decision_profile_update — 决策画像归纳（默认关闭，见改进计划）interval:604800
+  sys:profile_refresh       — 用户画像强制刷新（跳过增量门槛）    cron:0 8,20 * * *
   sys:growth_advisor_daily        — 成长顾问候选扫描+调研报告（默认开启）cron:30 22 * * *
   sys:growth_monthly_retrospective — 成长顾问月度复盘 + [C4]全部 Goal 概览（默认开启） interval:2592000
   sys:capability_learning_cycle    — 能力学习/人设养成循环（默认开启，见下方说明）interval:21600
@@ -308,6 +309,25 @@ _BUILTIN_JOBS: list[dict] = [
         "description": "对停滞目标/注意力错配候选排序生成推荐（每 3 小时，候选为空则不生成）",
         "task_template": "[推荐] 执行一次 /next refresh，重新计算候选并排序，如果没有候选则跳过",
         "tags": ["advisor", "goals"],
+        "enabled": True,
+    },
+    {
+        # 用户画像刷新目前挂在"会话结束时顺带检查"这条路径上
+        # （agent/profile.py::_maybe_refresh_profile()），而 should_refresh()
+        # 的增量门槛（默认攒够 3 条新记忆）在交互不频繁时可能好几天都跨不过，
+        # 14 天的强制兜底又太松，导致看板"Agent 对你的了解"区块的
+        # updated_at 经常停在好几天前。这里单独起一个 cron job，直接
+        # 执行 `/profile`（force=True、增量更新、不丢弃已有画像，语义
+        # 同 agent/profile.py::_maybe_refresh_profile 里 force=True 分支），
+        # 跳过 should_refresh 的间隔判断，保证画像至少每天刷新两次；
+        # 没有新记忆时 `/profile` 内部也会读到"暂无可用于生成画像的长期
+        # 记忆"直接跳过，不会空转浪费 LLM 调用。
+        "id": "sys:profile_refresh",
+        "name": "用户画像刷新",
+        "schedule": "cron:0 8,20 * * *",
+        "description": "强制刷新用户画像（跳过增量门槛，每天 08:00/20:00 各一次）",
+        "task_template": "[画像] 执行一次 /profile，强制刷新用户画像（增量更新，不重建）",
+        "tags": ["profile", "maintenance"],
         "enabled": True,
     },
     {
