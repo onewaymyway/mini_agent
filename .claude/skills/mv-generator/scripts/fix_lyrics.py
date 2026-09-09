@@ -19,7 +19,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-FFPROBE = r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffprobe.exe"
+try:
+    import imageio_ffmpeg
+    FFPROBE = imageio_ffmpeg.get_ffmpeg_exe().replace("ffmpeg.exe", "ffprobe.exe")
+except ImportError:
+    FFPROBE = r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffprobe.exe"
 
 
 def get_audio_duration(audio_path):

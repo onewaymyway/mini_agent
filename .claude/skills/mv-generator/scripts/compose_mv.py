@@ -47,11 +47,22 @@ except ImportError:
     HAS_YAML = False
 
 _FFMPEG_CANDIDATES = [
-    r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffmpeg.exe", "ffmpeg",
+    r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffmpeg.exe",
+    r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+    r"C:\ffmpeg\bin\ffmpeg.exe",
 ]
 _FFPROBE_CANDIDATES = [
-    r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffprobe.exe", "ffprobe",
+    r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffprobe.exe",
+    r"C:\Program Files\ffmpeg\bin\ffprobe.exe",
+    r"C:\ffmpeg\bin\ffprobe.exe",
 ]
+try:
+    import imageio_ffmpeg
+    _IMGIO_FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
+    _FFMPEG_CANDIDATES.insert(0, _IMGIO_FFMPEG)
+    _FFPROBE_CANDIDATES.insert(0, _IMGIO_FFMPEG.replace("ffmpeg.exe", "ffprobe.exe"))
+except ImportError:
+    pass
 FONT_PATH = r"C:\Windows\Fonts\msyh.ttc"
 
 

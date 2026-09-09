@@ -53,12 +53,20 @@ GAP_TOLERANCE = 0.5  # 秒，允许的场景间缝隙/重叠容差
 TOTAL_TOLERANCE = 2.0  # 秒，允许的总时长与音频时长差异容差
 
 
+# 尝试使用 imageio_ffmpeg 内置的 ffprobe
+try:
+    import imageio_ffmpeg
+    _IMGIO_FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
+    _FFPROBE_PATH = _IMGIO_FFMPEG.replace("ffmpeg.exe", "ffprobe.exe")
+except ImportError:
+    _FFPROBE_PATH = "ffprobe"
+
 def probe_audio_duration(audio_path: str) -> Optional[float]:
     """用 ffprobe 读取 mp3 实际时长，失败返回 None（不阻断校验，只是少一项检查）。"""
     try:
         out = subprocess.run(
             [
-                "ffprobe",
+                _FFPROBE_PATH,
                 "-v", "quiet",
                 "-print_format", "json",
                 "-show_format",
