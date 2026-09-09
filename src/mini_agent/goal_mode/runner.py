@@ -486,6 +486,7 @@ class GoalRunner:
             return None
 
         import subprocess
+        from mini_agent.utils import win_subprocess
 
         timeout = getattr(self._gm_cfg, "auto_verify_timeout", 120)
         tail_lines = getattr(self._gm_cfg, "auto_verify_output_tail_lines", 40)
@@ -512,7 +513,7 @@ class GoalRunner:
                 _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             else:
                 _popen_kwargs["start_new_session"] = True
-            result = subprocess.run(command, **_popen_kwargs)
+            result = win_subprocess.run(command, **_popen_kwargs)
             return {
                 "command": command,
                 "returncode": result.returncode,

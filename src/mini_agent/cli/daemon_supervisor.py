@@ -496,7 +496,8 @@ def run_foreground_supervisor(
                 # CREATE_NEW_PROCESS_GROUP：与旧版 Windows 前台分支一致，
                 # 让子进程能接收独立的 CTRL_C_EVENT 转发。
                 CREATE_NEW_PROCESS_GROUP = 0x00000200
-                proc = subprocess.Popen(
+                from mini_agent.utils import win_subprocess
+                proc = win_subprocess.Popen(
                     child_argv, creationflags=CREATE_NEW_PROCESS_GROUP, env=child_env,
                 )
             else:

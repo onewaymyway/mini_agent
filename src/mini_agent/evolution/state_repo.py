@@ -24,6 +24,7 @@ evolution/state_repo.py — StateRepo：自我修改的唯一写入入口（Stag
 from __future__ import annotations
 
 import subprocess
+from mini_agent.utils import win_subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -187,7 +188,7 @@ class StateRepo:
                 _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             else:
                 _popen_kwargs["start_new_session"] = True
-            proc = subprocess.run(**_popen_kwargs)
+            proc = win_subprocess.run(**_popen_kwargs)
         except FileNotFoundError as e:
             raise StateRepoError(f"git executable not found: {e}") from e
         except subprocess.TimeoutExpired as e:

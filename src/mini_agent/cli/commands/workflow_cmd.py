@@ -309,7 +309,8 @@ def _spawn_detached_run(cfg, base_argv: list[str], wf_session_id: str) -> Path:
         kwargs = {}
         if hasattr(__import__("os"), "setsid"):
             kwargs["start_new_session"] = True  # POSIX：脱离父进程组，父进程退出不影响子进程
-        subprocess.Popen(
+        from mini_agent.utils import win_subprocess
+        win_subprocess.Popen(
             argv,
             stdout=log_f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             cwd=str(cfg.project_root),

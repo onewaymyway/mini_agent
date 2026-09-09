@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from mini_agent.utils import win_subprocess
+
 
 # 需要读取的依赖文件映射：文件名 → 友好标签
 _MANIFEST_FILES = {
@@ -247,11 +249,11 @@ class ProjectScanner:
     @staticmethod
     def _git_info(root: Path) -> tuple[str, bool]:
         try:
-            branch = subprocess.check_output(
+            branch = win_subprocess.check_output(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                 cwd=root, stderr=subprocess.DEVNULL, timeout=3
             ).decode().strip()
-            dirty_output = subprocess.check_output(
+            dirty_output = win_subprocess.check_output(
                 ["git", "status", "--porcelain"],
                 cwd=root, stderr=subprocess.DEVNULL, timeout=3
             ).decode().strip()

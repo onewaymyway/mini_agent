@@ -9,6 +9,7 @@ import fnmatch
 import os
 import re
 import subprocess
+from mini_agent.utils import win_subprocess
 import tempfile
 import textwrap
 import time
@@ -122,7 +123,7 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
         return data.decode("utf-8", errors="replace")
 
     try:
-        proc = subprocess.Popen(
+        proc = win_subprocess.Popen(
             command,
             shell=True,
             cwd=cwd,
@@ -141,7 +142,7 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
     def _kill_process_tree():
         if _is_windows:
             try:
-                subprocess.run(
+                win_subprocess.run(
                     ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                     capture_output=True,
                 )
@@ -257,7 +258,7 @@ def _bash_stream(command: str, *, timeout: Optional[int], cwd: Path, env: dict) 
         _popen_kwargs["start_new_session"] = True
 
     try:
-        proc = subprocess.Popen(
+        proc = win_subprocess.Popen(
             command,
             shell=True,
             cwd=cwd,
@@ -280,7 +281,7 @@ def _bash_stream(command: str, *, timeout: Optional[int], cwd: Path, env: dict) 
         timed_out_flag.set()
         if _is_windows:
             try:
-                subprocess.run(
+                win_subprocess.run(
                     ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                     capture_output=True,
                 )

@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from mini_agent.utils import win_subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Optional
@@ -240,7 +241,7 @@ def _try_run_ruff(root: Path, py_changes: dict) -> Optional[ValidationResult]:
                 _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             else:
                 _popen_kwargs["start_new_session"] = True
-            proc = subprocess.run(**_popen_kwargs)
+            proc = win_subprocess.run(**_popen_kwargs)
         if proc.returncode != 0:
             return ValidationResult.failure(f"T2 lint 失败（ruff）：\n{proc.stdout or proc.stderr}")
         return ValidationResult.success()
@@ -279,7 +280,7 @@ def validate_t2_existing_tests(root: Path, changes: ChangeSet) -> ValidationResu
             _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             _popen_kwargs["start_new_session"] = True
-        proc = subprocess.run(**_popen_kwargs)
+        proc = win_subprocess.run(**_popen_kwargs)
     except FileNotFoundError:
         return ValidationResult.success()  # pytest 不可用，视为不适用，不阻塞流水线
     except subprocess.TimeoutExpired:

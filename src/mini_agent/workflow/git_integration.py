@@ -25,11 +25,13 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from mini_agent.utils import win_subprocess
+
 
 def is_git_repo(project_root: Path) -> bool:
     """轻量探测 project_root 是否在一个 git 工作区内。"""
     try:
-        result = subprocess.run(
+        result = win_subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
             cwd=str(project_root), capture_output=True, text=True, timeout=5,
         )
@@ -71,7 +73,7 @@ def git_log_for_workflow(project_root: Path, name: str, limit: int = 20) -> str:
         return "当前项目不是 git 仓库，无法查看历史。"
     paths = _relative_workflow_paths(project_root, name)
     try:
-        result = subprocess.run(
+        result = win_subprocess.run(
             ["git", "log", f"-{limit}", "--oneline", "--", *paths],
             cwd=str(project_root), capture_output=True, text=True, timeout=10,
         )
@@ -94,7 +96,7 @@ def git_diff_for_workflow(project_root: Path, name: str) -> str:
         return "当前项目不是 git 仓库，无法查看 diff。"
     paths = _relative_workflow_paths(project_root, name)
     try:
-        result = subprocess.run(
+        result = win_subprocess.run(
             ["git", "diff", "--", *paths],
             cwd=str(project_root), capture_output=True, text=True, timeout=10,
         )
@@ -118,7 +120,7 @@ def _load_yaml_from_ref(project_root: Path, ref: str, rel_path: str) -> Optional
     """`git show <ref>:<rel_path>` 读某个引用下的文件内容并解析为 dict，
     读不到/解析失败返回 None（当作"这个版本没有这个文件"处理）。"""
     try:
-        result = subprocess.run(
+        result = win_subprocess.run(
             ["git", "show", f"{ref}:{rel_path}"],
             cwd=str(project_root), capture_output=True, text=True, timeout=10,
         )

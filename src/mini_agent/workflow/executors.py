@@ -36,6 +36,7 @@ import json
 import os
 import re
 import subprocess
+from mini_agent.utils import win_subprocess
 import sys
 import tempfile
 import time
@@ -386,7 +387,7 @@ class ScriptStepExecutor(StepExecutor):
             _cmd = f'sh "{_tmp_script_path}"'
 
         try:
-            proc = subprocess.run(_cmd, **_popen_kwargs)
+            proc = win_subprocess.run(_cmd, **_popen_kwargs)
         finally:
             if _tmp_script_path is not None:
                 try:
@@ -574,7 +575,7 @@ class PythonStepExecutor(StepExecutor):
             else:
                 _popen_kwargs["start_new_session"] = True
 
-            proc = subprocess.Popen(
+            proc = win_subprocess.Popen(
                 [sys.executable, "-m", "mini_agent.workflow.py_step_runner", str(req_path)],
                 **_popen_kwargs,
             )
@@ -582,7 +583,7 @@ class PythonStepExecutor(StepExecutor):
             def _kill_proc_tree(p: "subprocess.Popen") -> None:
                 try:
                     if _is_windows:
-                        subprocess.run(
+                        win_subprocess.run(
                             ["taskkill", "/F", "/T", "/PID", str(p.pid)],
                             capture_output=True, timeout=10,
                         )

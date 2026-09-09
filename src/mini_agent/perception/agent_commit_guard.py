@@ -56,6 +56,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
 
+from mini_agent.utils import win_subprocess
+
 CONFIG_FILENAME = "agent_commit_guard_config.json"
 LEDGER_FILENAME = "agent_commits.jsonl"          # <project_root>/.agent/agent_commits.jsonl
 SENTINEL_FILENAME = ".commit_guard_pending_scan"  # <project_root>/.agent/.commit_guard_pending_scan
@@ -276,7 +278,7 @@ def is_git_undo_command(command: str) -> bool:
 
 def _run_git(project_root: Path, args: list, timeout: float = 5.0) -> Optional[str]:
     try:
-        out = subprocess.check_output(
+        out = win_subprocess.check_output(
             ["git", "-C", str(project_root)] + args,
             text=True, stderr=subprocess.DEVNULL, timeout=timeout,
         )
@@ -292,7 +294,7 @@ def _current_head(project_root: Path) -> Optional[str]:
 def _is_ancestor(project_root: Path, commit_hash: str, ref: str = "HEAD") -> Optional[bool]:
     """None = 无法判断（不是 git 仓库/命令失败），不应据此判定为撤销。"""
     try:
-        subprocess.run(
+        win_subprocess.run(
             ["git", "-C", str(project_root), "merge-base", "--is-ancestor", commit_hash, ref],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5.0,
         )

@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from mini_agent.utils import win_subprocess
 import sys
 import tempfile
 import time
@@ -138,7 +139,7 @@ class ScriptRunner:
 
             start_ts = time.monotonic()
             try:
-                proc = subprocess.run(
+                proc = win_subprocess.run(
                     [sys.executable, "-m", "mini_agent.workflow.py_step_runner", str(req_path)],
                     cwd=str(project_root),
                     env=child_env,

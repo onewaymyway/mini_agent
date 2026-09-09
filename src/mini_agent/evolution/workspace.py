@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from mini_agent.utils import win_subprocess
 import sys
 import time
 import venv
@@ -208,7 +209,7 @@ class EvolutionWorkspace:
                     _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
                 else:
                     _popen_kwargs["start_new_session"] = True
-                subprocess.run(**_popen_kwargs)
+                win_subprocess.run(**_popen_kwargs)
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.workspace.EvolutionWorkspace.ensure_venv')
@@ -264,7 +265,7 @@ class EvolutionWorkspace:
                 _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             else:
                 _popen_kwargs["start_new_session"] = True
-            proc = subprocess.run(**_popen_kwargs)
+            proc = win_subprocess.run(**_popen_kwargs)
         except subprocess.TimeoutExpired as e:
             return SmokeBootResult(
                 ok=False, duration_seconds=time.time() - start,

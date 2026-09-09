@@ -14,6 +14,7 @@ external_projects/status.py — 健康检查 + 账本聚合视图
 from __future__ import annotations
 
 import subprocess
+from mini_agent.utils import win_subprocess
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -81,7 +82,7 @@ def probe_health(manifest: ProjectManifest, *, use_cache: bool = True) -> Option
             return cached[1]
 
     try:
-        proc = subprocess.run(
+        proc = win_subprocess.run(
             manifest.health_check.cmd,
             shell=True,
             cwd=str(manifest.source_dir) if manifest.source_dir else None,

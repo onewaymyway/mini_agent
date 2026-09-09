@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import subprocess
+from mini_agent.utils import win_subprocess
 import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -160,7 +161,7 @@ def _run_entrypoint(
     error_summary: Optional[str] = None
     detail: Optional[str] = None
     try:
-        proc = subprocess.run(
+        proc = win_subprocess.run(
             cmd,
             shell=True,
             cwd=str(cwd) if cwd else None,

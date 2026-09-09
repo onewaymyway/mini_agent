@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+from mini_agent.utils import win_subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -91,7 +92,7 @@ def run_hook(spec: HookSpec, payload: dict[str, Any]) -> HookResult:
             _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             _popen_kwargs["start_new_session"] = True
-        proc = subprocess.run(**_popen_kwargs)
+        proc = win_subprocess.run(**_popen_kwargs)
     except subprocess.TimeoutExpired:
         return HookResult(decision="allow", error=f"hook timed out after {spec.timeout}s: {spec.command}")
     except Exception as e:
