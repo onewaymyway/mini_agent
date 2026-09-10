@@ -115,15 +115,46 @@ def get_dur(path):
 
 
 def parse_scene_plan(plan_path, clips_dir):
-    """解析 scene_plan.yaml，返回 scene 列表（含规划时长和匹配到的 clips）。"""
+    """解析 scene_plan.yaml，返回 scene 列表（含规划时长和匹配到的 clips）。
+
+    [GAP-FIX] 新增"衔接时长"（`fill_dur`）计算：如果 scene_plan.yaml 里
+    前一个场景的 `end` 和后一个场景的 `start` 之间存在空隙（比如
+    scene_02 的 end=9.7、scene_03 的 start=10.5，中间空出 0.8s），
+    直接按各自 `end-start` 独立缩放再拼接会导致后面所有场景的实际出现
+    时刻都比 scene_plan.yaml 规划的时刻晚（空隙会累积），字幕/画面节奏
+    从这个空隙往后就全部错位了。
+
+    修复方式：每个场景（除最后一个）的"衔接目标时长"不再是自己的
+    `end-start`，而是"到下一个场景 start 为止"的时长
+    （`scenes[i+1].start - scenes[i].start`）——如果两个场景之间确实有
+    空隙，这个值会比 `end-start` 更长，缩放时会自动多慢放一点，用这个
+    场景的画面"顶"满空隙，画面上不会出现黑场/静止，同时保证下一个
+    场景严格从它 `start` 对应的绝对时刻开始出现，不再因为空隙累积漂移。
+    如果两个场景首尾正好衔接（或本身有重叠，理论上 `check_scene_plan.py`
+    应该已经拦掉），则 `fill_dur` 退化成 `target_dur`，行为和之前完全
+    一样。最后一个场景没有"下一个"可以对齐，`fill_dur` 就是自己的
+    `end-start`。
+    """
     with open(plan_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
+    raw_scenes = sorted(data.get("scenes", []), key=lambda s: s["start"])
     scenes = []
-    for s in data.get("scenes", []):
+    for idx, s in enumerate(raw_scenes):
         scene_id = s["id"]
         start = s["start"]
         end = s["end"]
         target_dur = end - start
+
+        fill_dur = target_dur
+        gap = 0.0
+        if idx < len(raw_scenes) - 1:
+            next_start = raw_scenes[idx + 1]["start"]
+            gap = next_start - end
+            if gap > 0:
+                # 有空隙：把这个场景"顶"到下一个场景的 start，而不是只顶到自己的 end。
+                fill_dur = next_start - start
+            # gap <= 0（首尾正好衔接，或轻微重叠）：fill_dur 保持 target_dur 不变。
+
         matched = sorted(list(Path(clips_dir).glob(scene_id + "*.mp4")),
                         key=lambda p: p.name)
         scenes.append({
@@ -131,6 +162,8 @@ def parse_scene_plan(plan_path, clips_dir):
             "start": start,
             "end": end,
             "target_dur": target_dur,
+            "fill_dur": fill_dur,
+            "gap_to_next": gap,
             "clips": matched,
             "lyric_lines": s.get("lyric_lines", []),
         })
@@ -403,8 +436,12 @@ def main():
     scenes = parse_scene_plan(args.scene_plan, args.clips_dir)
     print(f"Loaded {len(scenes)} scenes from scene_plan.yaml")
     for s in scenes:
+        gap_note = ""
+        if s["gap_to_next"] > 0.01:
+            gap_note = (f"，与下一场景间有 {s['gap_to_next']:.2f}s 空隙，"
+                        f"将慢放延长到 fill={s['fill_dur']:.1f}s 顶满")
         print(f"  {s['id']}: {s['start']:.1f}s-{s['end']:.1f}s (target={s['target_dur']:.1f}s), "
-              f"clips={[c.name for c in s['clips']]}")
+              f"clips={[c.name for c in s['clips']]}{gap_note}")
 
     # [CLIP-CHECK-FIX] 合成前先确认所有场景都有 clip，缺了默认直接拒绝合成，
     # 而不是像之前那样只打个警告就跳过继续拼——那样会静默产出一支画面缺失、
@@ -437,7 +474,12 @@ def main():
             continue
         for i, clip in enumerate(scene["clips"]):
             clip_dur = get_dur(clip)
-            per_clip_target = scene["target_dur"] / len(scene["clips"])
+            # [GAP-FIX] 用 fill_dur（顶到下一场景 start 的时长）代替
+            # target_dur（自己的 end-start）来算缩放比例，这样如果
+            # scene_plan.yaml 里这个场景和下一个场景之间有空隙，会自动
+            # 多慢放一点把空隙填满，下一场景才能严格从它 start 对应的
+            # 绝对时刻开始，不会因为空隙累积导致越往后越错位。
+            per_clip_target = scene["fill_dur"] / len(scene["clips"])
             scale = per_clip_target / clip_dur
             out_name = f"{scene['id']}_c{i+1:02d}.mp4"
             out_path = scaled_dir / out_name
