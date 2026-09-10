@@ -632,6 +632,7 @@ recurring_assets:
 # 保持全曲统一的 art_style；构图上要给"歌名文字"留白（主体偏下方或
 # 一侧，画面上方留出干净背景，避免叠字盖住关键内容——最终合成时会在
 # 封面片段上叠加大字号歌名，见 Step 6）
+# 注意，生成封面图片的时候，不要在封面上生成任何类似标题的文字，标题应该后期在合成最终视频的时候添加
 cover:
   description_zh: "封面：勇者持剑与恶龙对峙的剪影，身后是化作暴君王座的巨龙尸骸，画面上方留白用于叠歌名，浓缩全曲'英雄变暴君、权力轮回'的核心主题"
   description_en: "A lone warrior silhouette facing a colossal dragon, the dragon's skeletal remains fused into a throne in the background hinting at the hero-becomes-tyrant cycle, wide clean negative space at the top third of the frame for title text overlay, epic cinematic digital painting, dramatic chiaroscuro lighting, desaturated cold color grading, painterly fantasy film-still aesthetic"
