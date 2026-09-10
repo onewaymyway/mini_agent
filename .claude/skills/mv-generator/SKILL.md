@@ -55,7 +55,8 @@ Step 0 由用户选择一次，选择结果写入 `<output_dir>/mv_config.json`�
   不会报错）。`align_lyrics_v2.py`/`align_lyrics.py`/`align_lyrics_llm.py`
   均已不推荐使用，保留仅为兼容
 - `scripts/check_scene_plan.py`：校验 `scene_plan.yaml`（单场景时长范围、
-  时间轴连续性、是否覆盖音频总时长），Step 3 写完必须跑，不通过不能进入 Step 4
+  时间轴连续性——重叠一律报错，缝隙则按能否被 `compose_mv.py` 自动慢放
+  填补分为 warning/error、是否覆盖音频总时长），Step 3 写完必须跑，不通过不能进入 Step 4
 - `scripts/check_assets.py`：校验 Step 4 生成的定妆图是否都已落盘（路径
   已回填、文件存在且非空、场景引用无悬空），Step 4 做完必须跑，不通过
   不能进入 Step 5

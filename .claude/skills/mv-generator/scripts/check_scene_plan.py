@@ -6,9 +6,15 @@
 校验项：
   1. 每个 scene 的时长（end - start）必须在 [4, 12] 秒范围内
      （gen_video_with_text 单 clip 硬限制）。
-  2. 所有 scene 按 start 排序后必须首尾相接、无重叠、无缺口（覆盖整首歌），
-     即 scene[0].start ≈ 0，scene[i].end ≈ scene[i+1].start，
-     scene[-1].end ≈ 音频总时长。
+  2. 所有 scene 按 start 排序后检查首尾衔接情况：
+     - scene[0].start ≈ 0，scene[-1].end ≈ 音频总时长（见第 3 项）；
+     - 重叠（前一个 end 晚于后一个 start）一律报错，需要调整边界；
+     - 缝隙（前一个 end 早于后一个 start）：compose_mv.py 现在能自动把
+       前一个场景慢放延长来填补缝隙，所以缝隙在"合理范围"内（不超过
+       该场景自身时长的 50%，且不超过 3 秒，两者取更严格的一个）只报
+       warning，告知会被自动填补，不需要改 scene_plan.yaml；超出这个
+       范围才报 error，因为慢放拉伸太多画面会明显不自然，需要 Agent
+       调整场景边界或补充新场景。
   3. 场景覆盖的总时长是否等于（或接近）mp3 的实际时长——不够长/超出太多
      都会报错，音频时长优先从 --audio（用 ffprobe 读取）或 --audio-duration
      获取，缺省时退回 scene_plan.yaml 里的 song_meta.duration 字段。
@@ -53,7 +59,20 @@ except ImportError:
 
 MIN_SEC = 4.0
 MAX_SEC = 12.0
-GAP_TOLERANCE = 0.5  # 秒，允许的场景间缝隙/重叠容差
+GAP_TOLERANCE = 0.5  # 秒，视为"完全衔接"的容差，小于这个值不报告
+# [GAP-FIX] compose_mv.py 现在能自动把前一场景慢放延长来填补和下一场景
+# 之间的空隙（不再要求 scene_plan.yaml 本身逐帧衔接），所以这里不再对
+# 任何超过 GAP_TOLERANCE 的空隙都一刀切报错——只有空隙大到"慢放填补会
+# 明显不自然"时才继续当错误处理，要求 Agent 回去调整 scene_plan.yaml；
+# 空隙在可接受范围内则降级为 warning，只是告知会被自动慢放填补。
+# 判定"可接受"用两个上限取更严格的一个：
+#   1. 相对上限：空隙不超过该场景自身规划时长的 50%（避免慢放到肉眼
+#      能察觉的拖影/卡顿感）；
+#   2. 绝对上限：空隙不超过 3 秒（即使场景本身很长，填补太长的静默
+#      空隙观感也会很奇怪，且 gen_video 单 clip 最长 12 秒，被慢放拉伸
+#      太多会明显失真）。
+AUTO_FILL_GAP_RATIO = 0.5
+AUTO_FILL_GAP_ABS_MAX = 3.0
 TOTAL_TOLERANCE = 2.0  # 秒，允许的总时长与音频时长差异容差
 
 
@@ -148,15 +167,45 @@ def check(plan: dict, audio_duration: Optional[float]) -> dict:
         nxt = parsed_scenes[i + 1]
         gap = round(nxt["start"] - cur["end"], 3)
         if gap > GAP_TOLERANCE:
-            errors.append({
-                "type": "timeline_gap",
-                "between": [cur["id"], nxt["id"]],
-                "gap_seconds": gap,
-                "message": (
-                    f"场景 {cur['id']}(end={cur['end']}s) 与 {nxt['id']}(start={nxt['start']}s) "
-                    f"之间有 {gap}s 的空隙没有场景覆盖，这段音频将没有画面"
-                ),
-            })
+            # [GAP-FIX] compose_mv.py 会自动把 cur 场景慢放延长到顶满这个
+            # 空隙（fill_dur = nxt.start - cur.start），所以先算出"如果
+            # 自动填补，这个场景相当于要在原时长基础上多慢放多少比例"，
+            # 用来判断是当 warning（会被自动处理）还是当 error（太夸张，
+            # 建议回去调整 scene_plan.yaml）。
+            allowed_gap = min(cur["duration"] * AUTO_FILL_GAP_RATIO, AUTO_FILL_GAP_ABS_MAX)
+            fill_dur = cur["duration"] + gap
+            extra_ratio = round(gap / cur["duration"], 3) if cur["duration"] else None
+            if gap <= allowed_gap:
+                warnings.append({
+                    "type": "timeline_gap_auto_fillable",
+                    "between": [cur["id"], nxt["id"]],
+                    "gap_seconds": gap,
+                    "fill_dur": round(fill_dur, 3),
+                    "extra_slowdown_ratio": extra_ratio,
+                    "message": (
+                        f"场景 {cur['id']}(end={cur['end']}s) 与 {nxt['id']}(start={nxt['start']}s) "
+                        f"之间有 {gap}s 空隙，在可自动填补范围内（阈值 {round(allowed_gap, 3)}s）——"
+                        f"compose_mv.py 合成时会自动把 {cur['id']} 多慢放一点（延长到 {round(fill_dur, 3)}s，"
+                        f"约多拉伸 {round(extra_ratio * 100, 1) if extra_ratio is not None else '?'}%）来顶满这段空隙，"
+                        f"{nxt['id']} 仍会严格从 {nxt['start']}s 开始，不需要手动修改 scene_plan.yaml"
+                    ),
+                })
+            else:
+                errors.append({
+                    "type": "timeline_gap",
+                    "between": [cur["id"], nxt["id"]],
+                    "gap_seconds": gap,
+                    "auto_fill_threshold": round(allowed_gap, 3),
+                    "message": (
+                        f"场景 {cur['id']}(end={cur['end']}s) 与 {nxt['id']}(start={nxt['start']}s) "
+                        f"之间有 {gap}s 的空隙，超出可自动填补的阈值（{round(allowed_gap, 3)}s，"
+                        f"取该场景时长的 {int(AUTO_FILL_GAP_RATIO * 100)}% 和 {AUTO_FILL_GAP_ABS_MAX}s 中较小值）——"
+                        f"compose_mv.py 虽然会尝试慢放 {cur['id']} 来填补，但拉伸幅度太大会导致画面"
+                        f"明显不自然（慢动作拖影/卡顿感），需要在 scene_plan.yaml 里调整："
+                        f"缩短这段空隙（延长 {cur['id']} 的 end 或提前 {nxt['id']} 的 start），"
+                        f"或者在中间插入一个新场景覆盖这段音频"
+                    ),
+                })
         elif gap < -GAP_TOLERANCE:
             errors.append({
                 "type": "timeline_overlap",
