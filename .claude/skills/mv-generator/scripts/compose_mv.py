@@ -114,10 +114,10 @@ def get_dur(path):
     raise RuntimeError("无法获取音频时长")
 
 
-def parse_scene_plan(plan_path, clips_dir):
+def parse_scene_plan(plan_path, clips_dir, audio_dur=None):
     """解析 scene_plan.yaml，返回 scene 列表（含规划时长和匹配到的 clips）。
 
-    [GAP-FIX] 新增"衔接时长"（`fill_dur`）计算：如果 scene_plan.yaml 里
+    [GAP-FIX] "衔接时长"（`fill_dur`）计算：如果 scene_plan.yaml 里
     前一个场景的 `end` 和后一个场景的 `start` 之间存在空隙（比如
     scene_02 的 end=9.7、scene_03 的 start=10.5，中间空出 0.8s），
     直接按各自 `end-start` 独立缩放再拼接会导致后面所有场景的实际出现
@@ -132,8 +132,31 @@ def parse_scene_plan(plan_path, clips_dir):
     场景严格从它 `start` 对应的绝对时刻开始出现，不再因为空隙累积漂移。
     如果两个场景首尾正好衔接（或本身有重叠，理论上 `check_scene_plan.py`
     应该已经拦掉），则 `fill_dur` 退化成 `target_dur`，行为和之前完全
-    一样。最后一个场景没有"下一个"可以对齐，`fill_dur` 就是自己的
-    `end-start`。
+    一样。
+
+    [SYNC-FIX] 之前版本只处理"场景之间"的空隙，两端两个空隙完全没管：
+      1. 开头空隙：如果 scene[0].start > 0（比如 0.5s），拼出来的视频从
+         t=0 就直接是 scene[0] 的内容，但 mp3 在 t=0 就已经开始播放，
+         相当于全片从一开始就比音频快了 `scene[0].start` 秒，后面所有
+         场景全部提前，且这个偏移量永远无法被"场景间空隙填补"逻辑发现
+         （它只看相邻场景之间，不看"最前面"）。
+      2. 结尾空隙：最后一个场景只顶到自己的 `end`，如果 `end` 和真实
+         mp3 时长（`audio_dur`）之间有差距（scene_plan.yaml 规划的总时长
+         和 mp3 实际时长对不上——这正是"合成出来 320s，配置里却有 337s"
+         这类问题的根源之一），这段差距此前完全没人处理，直接导致成片
+         总时长和音频总时长不一致。
+    修复方式：当调用方传入 `audio_dur`（mp3 实际时长，由 ffprobe 读取，
+    是"对齐"的唯一权威来源）时，把每个场景的"覆盖窗口"改成：
+      - 第一个场景：`window_start = 0`（而不是它自己的 `start`），
+        用来强制慢放吃掉开头空隙；
+      - 最后一个场景：`window_end = audio_dur`（而不是它自己的 `end`），
+        用来强制慢放/快放吃掉结尾空隙或收掉结尾超长。
+    这里不做任何"空隙/超长是否在合理范围内"的阈值判断——不管差距是
+    0.1s 还是 10s，一律无条件用缩放去顶满/收紧，因为目标是画面必须和
+    音频对齐，而不是画面缩放幅度必须好看（缩放幅度是否夸张应该在
+    `check_scene_plan.py` 阶段提醒 Agent 去优化 scene_plan.yaml，
+    不应该在合成阶段打折扣、留下没对齐的成片）。若未传入 `audio_dur`
+    （比如脚本被单独调用做调试），退回旧行为，仅处理场景间空隙。
     """
     with open(plan_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
@@ -145,15 +168,27 @@ def parse_scene_plan(plan_path, clips_dir):
         end = s["end"]
         target_dur = end - start
 
-        fill_dur = target_dur
-        gap = 0.0
+        # 窗口起点：第一个场景强制从 0 开始（吃掉开头空隙），其余场景
+        # 仍从自己的 start 开始。
+        window_start = 0.0 if (idx == 0 and audio_dur is not None) else start
+
+        # 窗口终点：非最后场景顶到下一个场景的 start；最后一个场景在有
+        # audio_dur 时强制顶到音频真实结尾，没有 audio_dur 时退回自己的 end。
         if idx < len(raw_scenes) - 1:
-            next_start = raw_scenes[idx + 1]["start"]
-            gap = next_start - end
-            if gap > 0:
-                # 有空隙：把这个场景"顶"到下一个场景的 start，而不是只顶到自己的 end。
-                fill_dur = next_start - start
-            # gap <= 0（首尾正好衔接，或轻微重叠）：fill_dur 保持 target_dur 不变。
+            window_end = raw_scenes[idx + 1]["start"]
+        elif audio_dur is not None:
+            window_end = audio_dur
+        else:
+            window_end = end
+
+        fill_dur = window_end - window_start
+        # 极端保护：万一 audio_dur 比 window_start 还小（scene_plan 规划的
+        # 总时长离谱地超出音频长度），避免 fill_dur <= 0 导致除零/负缩放，
+        # 退化成一个很小的正数，后面 Step 3.5 的整体强制对齐还会再兜底一次。
+        if fill_dur <= 0:
+            fill_dur = max(target_dur, 0.1)
+        gap = window_end - end  # 与"下一个场景/音频结尾"之间原本的空隙（可能为负=超长）
+        lead_gap = start - window_start  # 开头额外吃掉的空隙（仅首场景非零）
 
         matched = sorted(list(Path(clips_dir).glob(scene_id + "*.mp4")),
                         key=lambda p: p.name)
@@ -164,6 +199,7 @@ def parse_scene_plan(plan_path, clips_dir):
             "target_dur": target_dur,
             "fill_dur": fill_dur,
             "gap_to_next": gap,
+            "lead_gap": lead_gap,
             "clips": matched,
             "lyric_lines": s.get("lyric_lines", []),
         })
@@ -299,8 +335,9 @@ def apply_cover(scaled_dir, first_scene, cover_image, cover_duration, target_siz
         return 0.0
 
     clip_dur = get_dur(target_clip)
-    # clamp：不超过场景规划时长的 50%，也不能吃光整个 clip 的实际时长
-    max_allowed = min(first_scene["target_dur"] * 0.5, clip_dur - 0.2)
+    # clamp：不超过场景实际覆盖窗口（fill_dur，可能因为吃掉了开头空隙而
+    # 比 target_dur 更长）的 50%，也不能吃光整个 clip 的实际时长
+    max_allowed = min(first_scene["fill_dur"] * 0.5, clip_dur - 0.2)
     cover_dur = max(0.0, min(cover_duration, max_allowed))
     if cover_dur <= 0.3:
         print(f"  [警告] 封面可用时长过短（clamp 后仅 {cover_dur:.2f}s），跳过封面处理", file=sys.stderr)
@@ -433,21 +470,43 @@ def main():
     print(f"  (Overwrote {args.lyrics_timed})")
 
     # ── 1. 解析 scene plan ─────────────────────────────────────────
-    scenes = parse_scene_plan(args.scene_plan, args.clips_dir)
-    print(f"Loaded {len(scenes)} scenes from scene_plan.yaml")
+    # 把 Step 0.5 已经探测到的 audio_dur 传进去：第一个场景强制从 0 开始、
+    # 最后一个场景强制顶到 audio_dur，不管开头/结尾空隙或超长有多大，
+    # 都无条件用缩放吃掉——这里不设任何"是否在合理范围内"的阈值。
+    scenes = parse_scene_plan(args.scene_plan, args.clips_dir, audio_dur=audio_dur)
+    plan_total = max(s["end"] for s in scenes)
+    print(f"Loaded {len(scenes)} scenes from scene_plan.yaml "
+          f"(plan_total_end={plan_total:.2f}s, audio_dur={audio_dur:.2f}s, "
+          f"diff={plan_total - audio_dur:+.2f}s)")
     for s in scenes:
-        gap_note = ""
+        notes = []
+        if s.get("lead_gap", 0) > 0.01:
+            notes.append(f"开头空隙 {s['lead_gap']:.2f}s 将被强制慢放吃掉")
         if s["gap_to_next"] > 0.01:
-            gap_note = (f"，与下一场景间有 {s['gap_to_next']:.2f}s 空隙，"
-                        f"将慢放延长到 fill={s['fill_dur']:.1f}s 顶满")
-        print(f"  {s['id']}: {s['start']:.1f}s-{s['end']:.1f}s (target={s['target_dur']:.1f}s), "
-              f"clips={[c.name for c in s['clips']]}{gap_note}")
+            notes.append(f"与下一场景/音频结尾间有 {s['gap_to_next']:.2f}s 空隙，"
+                         f"将强制慢放延长到 fill={s['fill_dur']:.2f}s 顶满")
+        elif s["gap_to_next"] < -0.01:
+            notes.append(f"比下一场景/音频结尾超出 {-s['gap_to_next']:.2f}s，"
+                         f"将强制快放压缩到 fill={s['fill_dur']:.2f}s")
+        gap_note = "，" + "；".join(notes) if notes else ""
+        print(f"  {s['id']}: {s['start']:.1f}s-{s['end']:.1f}s (target={s['target_dur']:.1f}s, "
+              f"fill={s['fill_dur']:.2f}s), clips={[c.name for c in s['clips']]}{gap_note}")
 
     # [CLIP-CHECK-FIX] 合成前先确认所有场景都有 clip，缺了默认直接拒绝合成，
-    # 而不是像之前那样只打个警告就跳过继续拼——那样会静默产出一支画面缺失、
-    # 时长和歌词对不上的成片，且很容易被漏看。正确流程是先跑
-    # check_clips.py（或本脚本这里的检查）发现问题，回 Step 5 补生成缺失
-    # 场景，再重新进入 Step 6，而不是这里放行。
+    # 而不是静默产出一支画面缺失、时长和歌词对不上的成片，且很容易被漏看。
+    # 正确流程是先跑 check_clips.py（或本脚本这里的检查）发现问题，回
+    # Step 5 补生成缺失场景，再重新进入 Step 6，而不是这里放行。
+    #
+    # [DUR-FIX] 旧版即使加了 --allow-missing-clips 放行，也只是在下面的
+    # 缩放循环里把缺 clip 的场景整个 `continue` 跳过——这个场景对应的
+    # `fill_dur`（可能有好几秒）就直接从成片时间轴上消失了，而歌词字幕
+    # 依然是按 scene_plan.yaml 的绝对时间显示、mp3 也是完整长度，于是
+    # 从这个缺失场景开始，后面所有画面都会比音频提前 `fill_dur` 秒，
+    # 这正是"配置里 337s、合成出来只有 320s"这类问题最常见的成因。
+    # 新版即使放行，也不再允许"消失"：缺 clip 的场景会强制借用最近的
+    # 相邻场景（优先用前面最近一个成功场景，找不到再往后找）的画面，
+    # 强制慢放拉伸到这个场景应占的 fill_dur，保证时间轴上没有任何一个
+    # 场景会贡献 0 秒——画面可能会重复，但总时长和音频对齐这条底线不破。
     missing_scenes = [s["id"] for s in scenes if not s["clips"]]
     if missing_scenes and not args.allow_missing_clips:
         print(
@@ -458,29 +517,66 @@ def main():
         print(
             "请先重新运行 generate_scene_videos.py 补齐这些场景（断点续跑，"
             "已成功的场景会自动跳过），用 check_clips.py 校验通过后再重新执行本命令。"
-            "如果确实要在缺失的情况下强行合成，显式加 --allow-missing-clips。",
+            "如果确实要在缺失的情况下强行合成（缺失场景会借用相邻场景画面强制"
+            "慢放填补，总时长仍会和音频严格对齐，但画面会有重复），"
+            "显式加 --allow-missing-clips。",
             file=sys.stderr,
         )
         sys.exit(1)
+    if missing_scenes:  # 走到这里说明 --allow-missing-clips 显式开启了
+        print(
+            f"  [警告] {len(missing_scenes)} 个场景缺少 clip 文件，将借用相邻场景画面"
+            f"强制慢放填补（总时长仍严格对齐音频）：{', '.join(missing_scenes)}",
+            file=sys.stderr,
+        )
 
     # ── 2. 逐场景独立缩放（画面节奏严格按 scene_plan.yaml）──────────
     scaled_dir = workdir / "scaled"
     scaled_dir.mkdir()
     total_scaled_dur = 0.0
 
+    # [DUR-FIX] 时间轴上"最近一个成功匹配到 clip 的场景"的 clips 列表，
+    # 按场景播放顺序滚动更新。缺 clip 的场景会借用它强制慢放填补，
+    # 保证任何场景都不会在拼接结果里贡献 0 秒（0 秒 = 时间轴凭空少一截 =
+    # 后面所有画面相对音频提前，这是总时长对不上的头号成因）。
+    last_available_clips = None
+
     for scene in scenes:
-        if not scene["clips"]:
-            print(f"  [警告] {scene['id']} 没有匹配到任何 clip 文件，已跳过", file=sys.stderr)
-            continue
-        for i, clip in enumerate(scene["clips"]):
+        clips_to_use = scene["clips"]
+        borrowed_from = None
+        if not clips_to_use:
+            if last_available_clips is not None:
+                clips_to_use = last_available_clips
+                borrowed_from = "previous"
+            else:
+                # 时间轴上最前面几个场景就缺 clip，还没有"前面"可借，
+                # 往后找最近一个有 clip 的场景先借用（宁可画面重复/顺序
+                # 稍微不完美，也不能让这段时间轴直接消失）。
+                for later in scenes:
+                    if later["clips"]:
+                        clips_to_use = later["clips"]
+                        borrowed_from = "next"
+                        break
+        if not clips_to_use:
+            raise RuntimeError(
+                f"所有场景都没有匹配到任何 clip 文件（clips-dir={args.clips_dir}），"
+                "无法合成，请先运行 generate_scene_videos.py 生成素材"
+            )
+        if borrowed_from:
+            print(f"  [强制填补] {scene['id']} 没有匹配到 clip，借用"
+                  f"{'前一个' if borrowed_from == 'previous' else '后面最近一个'}"
+                  f"场景的画面（{[c.name for c in clips_to_use]}）强制慢放拉伸到"
+                  f" fill={scene['fill_dur']:.2f}s（不设缩放阈值上限）", file=sys.stderr)
+
+        for i, clip in enumerate(clips_to_use):
             clip_dur = get_dur(clip)
-            # [GAP-FIX] 用 fill_dur（顶到下一场景 start 的时长）代替
-            # target_dur（自己的 end-start）来算缩放比例，这样如果
-            # scene_plan.yaml 里这个场景和下一个场景之间有空隙，会自动
-            # 多慢放一点把空隙填满，下一场景才能严格从它 start 对应的
-            # 绝对时刻开始，不会因为空隙累积导致越往后越错位。
-            per_clip_target = scene["fill_dur"] / len(scene["clips"])
-            scale = per_clip_target / clip_dur
+            # [GAP-FIX][SYNC-FIX] fill_dur 已经把开头/场景间/结尾的空隙、
+            # 超长全部折算进去（见 parse_scene_plan），这里直接按
+            # fill_dur/clip_dur 算缩放比例——不做任何"缩放幅度是否合理"
+            # 的截断/夹紧：需要慢放几十倍也照做，唯一目标是让每个场景
+            # 严格贡献 fill_dur 秒时长，视频总长才能和 mp3 严格对齐。
+            per_clip_target = scene["fill_dur"] / len(clips_to_use)
+            scale = per_clip_target / clip_dur  # 无阈值：无论多慢/多快都强制执行
             out_name = f"{scene['id']}_c{i+1:02d}.mp4"
             out_path = scaled_dir / out_name
             _run([
@@ -497,7 +593,10 @@ def main():
             total_scaled_dur += scaled_dur
             print(f"  {clip.name} ({clip_dur:.2f}s) -> {out_name} ({scaled_dur:.2f}s, scale={scale:.3f}x)")
 
-    print(f"Total scaled duration: {total_scaled_dur:.1f}s")
+        if scene["clips"]:
+            last_available_clips = scene["clips"]
+
+    print(f"Total scaled duration: {total_scaled_dur:.1f}s (target: {audio_dur:.1f}s)")
 
     # ── 2.5. 封面（若提供 --cover-image）：挤压/替换第一个场景的前 N 秒 ──
     actual_cover_dur = 0.0  # clamp 后实际生效的封面时长，0 表示没有封面/封面被跳过
@@ -526,7 +625,40 @@ def main():
         str(joined),
     ])
     joined_dur = get_dur(joined)
-    print(f"Joined: {joined_dur:.1f}s")
+    print(f"Joined: {joined_dur:.1f}s (audio: {audio_dur:.1f}s)")
+
+    # ── 3.5 强制整体对齐音频总时长（不设阈值，兜底所有残留误差）──────
+    # 上面每个 scene 已经按 fill_dur 独立缩放，理论上 joined_dur 应该
+    # 已经等于 audio_dur。但仍可能有残留误差来源：
+    #   - x264 编码只能落在整数帧上，`setpts` 缩放后的目标时长会被
+    #     取整到最近一帧，几十个 scene 累积下来可能有零点几秒漂移；
+    #   - scene_plan.yaml 本身的场景时间总和和 mp3 实际时长有出入
+    #     （即便 Step 1 已经用 audio_dur 顶住了首尾两端，中间某些
+    #     场景边界写错导致算出来的 fill_dur 总和仍然对不上）；
+    #   - clip 缺失走了"借用相邻场景"分支等特殊情况。
+    # 这里不设"误差小于多少才处理"的阈值（ALIGN_EPS 只是避免对浮点噪声
+    # 做一次没有意义的重编码，不是"容忍范围"）——只要还有残留误差，就强制
+    # 对整段已拼接视频做一次全局 setpts 缩放，精确拉伸/压缩到 audio_dur，
+    # 确保音画时长严格一致，不会出现"视频先结束还在放音乐"或"音乐播完
+    # 视频还没放完"的错位。
+    ALIGN_EPS = 0.02
+    if abs(joined_dur - audio_dur) > ALIGN_EPS:
+        align_scale = audio_dur / joined_dur
+        print(f"  [强制对齐] joined={joined_dur:.3f}s 与音频 {audio_dur:.3f}s 不一致"
+              f"（差 {joined_dur - audio_dur:+.3f}s），强制整体 setpts={align_scale:.5f} "
+              f"对齐到音频时长（不考虑缩放阈值）")
+        aligned = workdir / "joined_aligned.mp4"
+        _run([
+            FFMPEG, "-y",
+            "-i", str(joined),
+            "-vf", f"setpts={align_scale}*PTS,fps={args.target_fps}",
+            "-c:v", "libx264", "-preset", args.preset_scale, "-crf", "20",
+            "-an",
+            str(aligned),
+        ])
+        joined = aligned
+        joined_dur = get_dur(joined)
+        print(f"  Aligned joined duration: {joined_dur:.3f}s (target {audio_dur:.3f}s)")
 
     # ── 4. 按歌词分句渲染字幕 PNG（每句一张图，而非每帧一张）────────
     from PIL import ImageFont
@@ -624,6 +756,12 @@ def main():
     _run(cmd)
 
     # ── 7. 混入原始 mp3 音轨 ──────────────────────────────────────
+    # [SYNC-FIX] 不再用 `-shortest`：`-shortest` 只是"谁短就截断到谁"，
+    # 如果上面 Step 3.5 的强制对齐仍有极小残留误差（比如零点几帧），
+    # `-shortest` 会在视频比音频略短时悄悄把音频也截短——这不是"对齐"，
+    # 是在掩盖问题。改成显式 `-t audio_dur`：音频本来就是权威时长，
+    # 视频经过 Step 3.5 强制对齐后应该已经和它基本一致，这里只是最后
+    # 兜底裁掉任何超出音频时长的极小尾巴，绝不允许音频被反向截断。
     print(f"Mixing audio: {args.audio}")
     _run([
         FFMPEG, "-y",
@@ -631,7 +769,7 @@ def main():
         "-i", args.audio,
         "-c:v", "copy",
         "-c:a", "aac", "-b:a", "192k",
-        "-shortest",
+        "-t", f"{audio_dur:.3f}",
         str(output),
     ])
 

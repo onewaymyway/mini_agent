@@ -8,16 +8,19 @@
      （gen_video_with_text 单 clip 硬限制）。
   2. 所有 scene 按 start 排序后检查首尾衔接情况：
      - scene[0].start ≈ 0，scene[-1].end ≈ 音频总时长（见第 3 项）；
-     - 重叠（前一个 end 晚于后一个 start）一律报错，需要调整边界；
-     - 缝隙（前一个 end 早于后一个 start）：compose_mv.py 现在能自动把
-       前一个场景慢放延长来填补缝隙，所以缝隙在"合理范围"内（不超过
-       该场景自身时长的 50%，且不超过 3 秒，两者取更严格的一个）只报
-       warning，告知会被自动填补，不需要改 scene_plan.yaml；超出这个
-       范围才报 error，因为慢放拉伸太多画面会明显不自然，需要 Agent
-       调整场景边界或补充新场景。
-  3. 场景覆盖的总时长是否等于（或接近）mp3 的实际时长——不够长/超出太多
-     都会报错，音频时长优先从 --audio（用 ffprobe 读取）或 --audio-duration
-     获取，缺省时退回 scene_plan.yaml 里的 song_meta.duration 字段。
+     - 重叠（前一个 end 晚于后一个 start）一律报错，需要调整边界——重叠
+       是真实的素材冲突，没法靠慢放/快放解决；
+     - 缝隙（前一个 end 早于后一个 start）：compose_mv.py 现在**无条件**
+       把前一个场景强制慢放延长来填补缝隙，不设任何"幅度是否合理"的
+       阈值，所以任何缝隙都只报 warning（幅度较大时会额外提示画面质量
+       风险），不再报 error、不会阻断合成，不需要为了通过校验去改
+       scene_plan.yaml。
+  3. 场景覆盖的总时长是否等于（或接近）mp3 的实际时长——由于
+     compose_mv.py 现在会把最后一个场景强制顶到/收到 audio_dur、并在
+     合成末尾再做一次整体强制对齐兜底，总时长偏差同样只报 warning，
+     不阻断合成。音频时长优先从 --audio（用 ffprobe 读取）或
+     --audio-duration 获取，缺省时退回 scene_plan.yaml 里的
+     song_meta.duration 字段。
   4. video_mode 与实际可用素材是否匹配：video_mode=reference 的场景必须有
      uses_assets 命中 recurring_assets 且带 asset_path；video_mode=keyframe
      的场景必须有 first_frame 或 last_frame。否则调用 gen_video_with_text
@@ -60,20 +63,20 @@ except ImportError:
 MIN_SEC = 4.0
 MAX_SEC = 12.0
 GAP_TOLERANCE = 0.5  # 秒，视为"完全衔接"的容差，小于这个值不报告
-# [GAP-FIX] compose_mv.py 现在能自动把前一场景慢放延长来填补和下一场景
-# 之间的空隙（不再要求 scene_plan.yaml 本身逐帧衔接），所以这里不再对
-# 任何超过 GAP_TOLERANCE 的空隙都一刀切报错——只有空隙大到"慢放填补会
-# 明显不自然"时才继续当错误处理，要求 Agent 回去调整 scene_plan.yaml；
-# 空隙在可接受范围内则降级为 warning，只是告知会被自动慢放填补。
-# 判定"可接受"用两个上限取更严格的一个：
-#   1. 相对上限：空隙不超过该场景自身规划时长的 50%（避免慢放到肉眼
-#      能察觉的拖影/卡顿感）；
-#   2. 绝对上限：空隙不超过 3 秒（即使场景本身很长，填补太长的静默
-#      空隙观感也会很奇怪，且 gen_video 单 clip 最长 12 秒，被慢放拉伸
-#      太多会明显失真）。
+# [GAP-FIX][SYNC-FIX] compose_mv.py 现在对"空隙/超长是否在合理范围内"
+# 不设任何阈值——不管是场景之间的空隙、开头空隙、结尾空隙/超长，还是
+# scene_plan.yaml 规划总时长和 mp3 实际时长对不上，一律无条件用
+# setpts 强制慢放/快放顶满或收紧（Step 6 场景独立缩放 + 一道"整体强制
+# 对齐 audio_dur"的兜底），所以本脚本这里不会再因为空隙/总时长偏差
+# 而把校验判成"fatal error 阻断继续"——那样会让 Agent 误以为必须先
+# 手改 scene_plan.yaml 才能合成，但实际上 compose_mv.py 已经能兜底对齐。
+# 这两个常量仅用于当空隙/偏差超出下面给出的参考线时，额外打一条更醒目
+# 的 warning 提示 Agent："这里可以合成、时长一定会对齐，但缩放幅度较大，
+# 画面可能出现明显的慢动作拖影/卡顿感，建议优化 scene_plan.yaml 以获得
+# 更好的画面质量"——纯建议性质，不影响退出码。
 AUTO_FILL_GAP_RATIO = 0.5
 AUTO_FILL_GAP_ABS_MAX = 3.0
-TOTAL_TOLERANCE = 2.0  # 秒，允许的总时长与音频时长差异容差
+TOTAL_TOLERANCE = 2.0  # 秒，超过这个差值只是额外提示画面质量风险，不再报错阻断
 
 
 # 尝试使用 imageio_ffmpeg 内置的 ffprobe
@@ -167,45 +170,36 @@ def check(plan: dict, audio_duration: Optional[float]) -> dict:
         nxt = parsed_scenes[i + 1]
         gap = round(nxt["start"] - cur["end"], 3)
         if gap > GAP_TOLERANCE:
-            # [GAP-FIX] compose_mv.py 会自动把 cur 场景慢放延长到顶满这个
-            # 空隙（fill_dur = nxt.start - cur.start），所以先算出"如果
-            # 自动填补，这个场景相当于要在原时长基础上多慢放多少比例"，
-            # 用来判断是当 warning（会被自动处理）还是当 error（太夸张，
-            # 建议回去调整 scene_plan.yaml）。
+            # [GAP-FIX][SYNC-FIX] compose_mv.py 现在无条件把 cur 场景强制
+            # 慢放延长到顶满这个空隙（fill_dur = nxt.start - cur.start），
+            # 不设"拉伸幅度太大就报错阻断"的阈值，所以这里统一降级为
+            # warning——用 AUTO_FILL_GAP_RATIO/ABS_MAX 仅仅是为了区分提示
+            # 语气：幅度较大时额外提醒可能有肉眼可见的慢动作拖影，供 Agent
+            # 决定要不要顺手优化 scene_plan.yaml，但从不阻断合成流程。
             allowed_gap = min(cur["duration"] * AUTO_FILL_GAP_RATIO, AUTO_FILL_GAP_ABS_MAX)
             fill_dur = cur["duration"] + gap
             extra_ratio = round(gap / cur["duration"], 3) if cur["duration"] else None
-            if gap <= allowed_gap:
-                warnings.append({
-                    "type": "timeline_gap_auto_fillable",
-                    "between": [cur["id"], nxt["id"]],
-                    "gap_seconds": gap,
-                    "fill_dur": round(fill_dur, 3),
-                    "extra_slowdown_ratio": extra_ratio,
-                    "message": (
-                        f"场景 {cur['id']}(end={cur['end']}s) 与 {nxt['id']}(start={nxt['start']}s) "
-                        f"之间有 {gap}s 空隙，在可自动填补范围内（阈值 {round(allowed_gap, 3)}s）——"
-                        f"compose_mv.py 合成时会自动把 {cur['id']} 多慢放一点（延长到 {round(fill_dur, 3)}s，"
-                        f"约多拉伸 {round(extra_ratio * 100, 1) if extra_ratio is not None else '?'}%）来顶满这段空隙，"
-                        f"{nxt['id']} 仍会严格从 {nxt['start']}s 开始，不需要手动修改 scene_plan.yaml"
-                    ),
-                })
-            else:
-                errors.append({
-                    "type": "timeline_gap",
-                    "between": [cur["id"], nxt["id"]],
-                    "gap_seconds": gap,
-                    "auto_fill_threshold": round(allowed_gap, 3),
-                    "message": (
-                        f"场景 {cur['id']}(end={cur['end']}s) 与 {nxt['id']}(start={nxt['start']}s) "
-                        f"之间有 {gap}s 的空隙，超出可自动填补的阈值（{round(allowed_gap, 3)}s，"
-                        f"取该场景时长的 {int(AUTO_FILL_GAP_RATIO * 100)}% 和 {AUTO_FILL_GAP_ABS_MAX}s 中较小值）——"
-                        f"compose_mv.py 虽然会尝试慢放 {cur['id']} 来填补，但拉伸幅度太大会导致画面"
-                        f"明显不自然（慢动作拖影/卡顿感），需要在 scene_plan.yaml 里调整："
-                        f"缩短这段空隙（延长 {cur['id']} 的 end 或提前 {nxt['id']} 的 start），"
-                        f"或者在中间插入一个新场景覆盖这段音频"
-                    ),
-                })
+            large_stretch = gap > allowed_gap
+            warnings.append({
+                "type": "timeline_gap_auto_fillable",
+                "between": [cur["id"], nxt["id"]],
+                "gap_seconds": gap,
+                "fill_dur": round(fill_dur, 3),
+                "extra_slowdown_ratio": extra_ratio,
+                "large_stretch": large_stretch,
+                "message": (
+                    f"场景 {cur['id']}(end={cur['end']}s) 与 {nxt['id']}(start={nxt['start']}s) "
+                    f"之间有 {gap}s 空隙——compose_mv.py 合成时会无条件把 {cur['id']} 强制慢放"
+                    f"（延长到 {round(fill_dur, 3)}s，约多拉伸 "
+                    f"{round(extra_ratio * 100, 1) if extra_ratio is not None else '?'}%）来顶满这段空隙，"
+                    f"{nxt['id']} 仍会严格从 {nxt['start']}s 开始，时长一定会对齐，不需要手动修改 "
+                    "scene_plan.yaml"
+                    + ("；不过拉伸幅度明显偏大（超过参考线 "
+                       f"{round(allowed_gap, 3)}s），画面可能出现肉眼可见的慢动作拖影/卡顿感，"
+                       f"如果不满意可以考虑缩短这段空隙或插入新场景来改善画面质量（非必须）"
+                       if large_stretch else ""),
+                ),
+            })
         elif gap < -GAP_TOLERANCE:
             errors.append({
                 "type": "timeline_overlap",
@@ -229,8 +223,14 @@ def check(plan: dict, audio_duration: Optional[float]) -> dict:
         plan_total_end = parsed_scenes[-1]["end"]
         if reference_duration is not None:
             diff = round(plan_total_end - float(reference_duration), 3)
+            # [SYNC-FIX] compose_mv.py 现在会把最后一个场景强制顶到/收到
+            # 真实 audio_dur（parse_scene_plan 的 window_end 逻辑），加上
+            # Step 3.5 的整体强制对齐兜底，所以场景规划总时长和音频时长
+            # 不一致不再是必须先改 yaml 才能合成的 fatal error，降级为
+            # warning：仍然提示偏差，供 Agent 判断是否要顺手优化规划，
+            # 但不阻断合成——合成出来的总时长一定会等于音频时长。
             if diff < -TOTAL_TOLERANCE:
-                errors.append({
+                warnings.append({
                     "type": "total_duration_too_short",
                     "plan_end": plan_total_end,
                     "audio_duration": reference_duration,
@@ -238,20 +238,24 @@ def check(plan: dict, audio_duration: Optional[float]) -> dict:
                     "message": (
                         f"scene_plan.yaml 里最后一个场景结束于 {plan_total_end}s，"
                         f"但音频总时长为 {reference_duration}s，"
-                        f"缺少 {round(-diff, 3)}s 的场景没有规划到，"
-                        f"需要在末尾补充场景或延长最后几个场景"
+                        f"有 {round(-diff, 3)}s 没有场景覆盖——compose_mv.py 合成时会自动把"
+                        "最后一个场景强制慢放顶满到音频结尾，总时长一定会对齐，"
+                        "但拉伸幅度较大时画面可能有明显慢动作感，"
+                        "如果不满意可以考虑在末尾补充场景或延长最后几个场景（非必须）"
                     ),
                 })
             elif diff > TOTAL_TOLERANCE:
-                errors.append({
+                warnings.append({
                     "type": "total_duration_too_long",
                     "plan_end": plan_total_end,
                     "audio_duration": reference_duration,
                     "excess_seconds": round(diff, 3),
                     "message": (
                         f"scene_plan.yaml 里最后一个场景结束于 {plan_total_end}s，"
-                        f"超出音频总时长 {reference_duration}s 达 {round(diff, 3)}s，"
-                        f"需要裁剪掉多余的场景规划"
+                        f"超出音频总时长 {reference_duration}s 达 {round(diff, 3)}s——"
+                        "compose_mv.py 合成时会自动把最后一个场景强制快放压缩到音频结尾，"
+                        "总时长一定会对齐，但压缩幅度较大时画面切换会明显变快，"
+                        "如果不满意可以考虑裁剪掉多余的场景规划（非必须）"
                     ),
                 })
         else:
