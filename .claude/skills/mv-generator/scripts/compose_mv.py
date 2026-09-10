@@ -364,6 +364,13 @@ def main():
     parser.add_argument("--cover-title-y-ratio", type=float, default=0.14,
                         help="封面大字号标题纵向位置，画面高度的比例（从顶部算），默认0.14，"
                              "对应 Step 3 里要求封面构图\"上方留白给标题\"的规划原则")
+    parser.add_argument("--allow-missing-clips", action="store_true",
+                        help="[默认关闭] 允许在有场景缺少 clip 文件时仍然继续合成"
+                             "（缺失场景会被跳过，成片会少画面/总时长对不上）。"
+                             "正常流程不应该用到这个参数——Step 6 之前应先用"
+                             "check_clips.py 校验通过，缺失场景应该回到 Step 5 补生成，"
+                             "而不是靠这个参数绕过检查。仅用于用户明确知情并接受"
+                             "成片不完整的特殊场景")
     args = parser.parse_args()
 
     if not HAS_YAML:
@@ -398,6 +405,26 @@ def main():
     for s in scenes:
         print(f"  {s['id']}: {s['start']:.1f}s-{s['end']:.1f}s (target={s['target_dur']:.1f}s), "
               f"clips={[c.name for c in s['clips']]}")
+
+    # [CLIP-CHECK-FIX] 合成前先确认所有场景都有 clip，缺了默认直接拒绝合成，
+    # 而不是像之前那样只打个警告就跳过继续拼——那样会静默产出一支画面缺失、
+    # 时长和歌词对不上的成片，且很容易被漏看。正确流程是先跑
+    # check_clips.py（或本脚本这里的检查）发现问题，回 Step 5 补生成缺失
+    # 场景，再重新进入 Step 6，而不是这里放行。
+    missing_scenes = [s["id"] for s in scenes if not s["clips"]]
+    if missing_scenes and not args.allow_missing_clips:
+        print(
+            f"\n❌ 有 {len(missing_scenes)} 个场景缺少 clip 文件，"
+            f"拒绝继续合成（成片会画面缺失/总时长对不上）：{', '.join(missing_scenes)}",
+            file=sys.stderr,
+        )
+        print(
+            "请先重新运行 generate_scene_videos.py 补齐这些场景（断点续跑，"
+            "已成功的场景会自动跳过），用 check_clips.py 校验通过后再重新执行本命令。"
+            "如果确实要在缺失的情况下强行合成，显式加 --allow-missing-clips。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # ── 2. 逐场景独立缩放（画面节奏严格按 scene_plan.yaml）──────────
     scaled_dir = workdir / "scaled"

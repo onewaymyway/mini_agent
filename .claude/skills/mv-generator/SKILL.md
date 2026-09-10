@@ -61,8 +61,15 @@ Step 0 由用户选择一次，选择结果写入 `<output_dir>/mv_config.json`�
   不能进入 Step 5
 - `scripts/generate_scene_videos.py`：批量生成分场景视频，Step 5 用它代替
   逐个手动调用 `gen_video_with_text`，内置 key 池自动切换 + 失败重试 + 断点续跑
+- `scripts/check_clips.py`：校验 `scene_plan.yaml` 里的每个场景是否都已
+  生成对应的 `clips/<scene_id>*.mp4` 文件（且非空），Step 5 做完必须跑，
+  不通过不能进入 Step 6——不通过就回到 Step 5 重新运行
+  `generate_scene_videos.py` 补齐缺失场景（断点续跑，已成功的场景会
+  自动跳过）
 - `scripts/compose_mv.py`：ffmpeg 最终合成（逐 scene 独立缩放 + PIL 字幕/水印 +
-  可选封面片段拼接，见下方「封面（Cover）效果」）
+  可选封面片段拼接，见下方「封面（Cover）效果」）。**Step 6 前该脚本会
+  自己再确认一遍所有场景是否都有 clip**，缺了默认直接拒绝合成（不会
+  静默产出画面缺失的成片），除非显式传 `--allow-missing-clips`
 - `scripts/fix_lyrics.py`：修复歌词时间戳空隙（前一条end=后一条start）
 
 **外部依赖**：
@@ -936,7 +943,41 @@ python .claude/skills/mv-generator/scripts/generate_scene_videos.py \
 
 **产物**：`clips/scene_XX.mp4`（每个都强制落盘）
 
+**⚠️ Step 5 做完，进入 Step 6 之前，必须先跑 `check_clips.py` 确认所有
+场景视频片段都已生成，不通过不能进入 Step 6**（与 Step 3 之后必须跑
+`check_scene_plan.py`、Step 4 之后必须跑 `check_assets.py` 是同一套
+"每步做完先校验再进下一步"的规范，不要因为 `generate_scene_videos.py`
+自己已经有重试/断点续跑逻辑就跳过这一步——脚本以退出码 1 结束、或者
+被用户手动中断时，仍然可能有场景没生成成功）：
+
+```bash
+python .claude/skills/mv-generator/scripts/check_clips.py \
+  <output_dir>/scene_plan.yaml \
+  --clips-dir <output_dir>/clips \
+  --output-dir <output_dir>
+```
+
+- **通过（退出码 0）**：所有场景都有非空的 `clips/<scene_id>*.mp4`
+  （如果 `mv_config.json` 里 `cover_enabled: true`，还会一并确认
+  `assets/cover.png` 已就绪），可以进入 Step 6。
+- **不通过（退出码 1）**：stdout 会打印结构化的问题清单
+  （`missing_scene_ids`/`empty_scene_ids` 等），说明还有场景没生成好。
+  **不要跳过检查直接进入 Step 6**，也不要靠 `compose_mv.py` 的
+  `--allow-missing-clips` 绕过——正确做法是回到上面的
+  `generate_scene_videos.py` 命令**原样重新运行一次**（不需要加
+  `--force`，已成功的场景会自动跳过，只补生成缺失/空文件的场景），
+  跑完再重新执行本检查，如此循环直到通过为止，再进入 Step 6。
+- 如果反复补生成后仍有场景卡在同一批 id 上一直失败，参考下方「常见
+  错误与故障排除」4b 条排查具体原因（prompt 违规、定妆图路径错误、
+  key 额度耗尽等），而不是无限重试同一个必然失败的场景。
+
 ### Step 6: 最终合成
+
+**进入本步骤前必须已经通过上面 Step 5 末尾的 `check_clips.py` 校验**——
+`compose_mv.py` 自己也会在合成前再确认一遍所有场景是否都有 clip，缺了
+默认会直接报错退出（而不是像早期版本那样只打警告、跳过缺失场景继续
+拼接，产出一支画面缺失、时长和歌词错位的成片），所以正常流程下这里
+不会有意外，只是双保险。
 
 ```bash
 python .claude/skills/mv-generator/scripts/compose_mv.py \
@@ -1113,11 +1154,19 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
    就把这些问题连同具体场景 id 一起报出来，必须改到校验通过再进入
    Step 4，不要留到 Step 5 调用失败或最终成片缺画面才发现。
 4b. **`generate_scene_videos.py` 跑完仍有场景失败**：先看脚本汇总打印
-   的失败 scene id 列表和 `--output-dir` 下 `clips/` 里缺的文件，常见
-   原因是 prompt 触发内容审核、`recurring_assets` 里 `asset_path` 路径
-   错误（Step 4 忘记回填或路径拼写错误）、或所有 key 都被限流/额度耗尽。
-   修正 `scene_plan.yaml` 或环境变量后，直接重新运行同一条命令即可
-   （已成功的场景会被跳过，只补齐缺失的）。
+   的失败 scene id 列表和 `--output-dir` 下 `clips/` 里缺的文件（或直接
+   跑 `check_clips.py` 拿结构化的缺失列表），常见原因是 prompt 触发内容
+   审核、`recurring_assets` 里 `asset_path` 路径错误（Step 4 忘记回填或
+   路径拼写错误）、或所有 key 都被限流/额度耗尽。修正 `scene_plan.yaml`
+   或环境变量后，直接重新运行同一条命令即可（已成功的场景会被跳过，
+   只补齐缺失的），跑完再用 `check_clips.py` 确认通过后才进入 Step 6。
+4b2. **`compose_mv.py` 报错拒绝合成（提示"有 N 个场景缺少 clip 文件"）**：
+   这是 Step 6 开头新增的保护检查，说明 Step 5 末尾的 `check_clips.py`
+   校验被跳过了，或者两者之间 `clips/` 目录又被改动过。**不要**用
+   `--allow-missing-clips` 绕过来"先出一版看看"——那样成片会缺画面、
+   总时长和歌词对不上，且这个问题在肉眼看成片之前很难发现。正确做法
+   是回到 Step 5 补生成报错里列出的场景 id，`check_clips.py` 通过后再
+   重新执行 Step 6 的合成命令。
 4c. **Step 4 定妆图生成后没检查就直接进入 Step 5**：用 `check_assets.py`
    在 Step 4 结束后强制检查一遍，常见疏漏是图片生成失败但 Agent 没注意
    （留下空文件）、或生成成功但忘记回填 `scene_plan.yaml` 里的
