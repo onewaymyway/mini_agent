@@ -205,6 +205,49 @@ def _render_title_png(title, W, H, font, pos, path):
     img.save(path, "PNG")
 
 
+def _render_cover_title_png(title, W, H, font_path, font_size, y_ratio, path):
+    """封面专用的大字号歌名渲染，和 `_render_title_png` 的小号角标水印是
+    两套完全独立的样式：
+
+    - 字号大得多（默认取画面高度的 1/7~1/8，而不是字幕字号），突出
+      "封面标题"的视觉重量，而不是一个不起眼的角标。
+    - 不用半透明黑底矩形（那种小方块贴在大字号标题上很像临时占位、
+      不像正式封面），改用白字 + 黑色描边（`stroke_width`/`stroke_fill`），
+      不管封面图局部是亮是暗，文字都能保持清晰可读，视觉上更接近正式
+      MV/专辑封面的标题排版。
+    - 默认位置在画面上方偏上（`y_ratio` 默认 0.14，即从顶部 14% 处
+      开始），呼应 Step 3 里要求封面构图"给歌名文字留白"的规划原则——
+      封面构图规划时应把人物/主体安排在下方或一侧，上方留出干净背景，
+      这样大字号标题叠上去不会压住画面主体。
+    - 标题过长时按字符数等比缩小字号（保底不小于原字号的 55%），避免
+      长歌名溢出画面两侧被裁切。
+    """
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    size = font_size
+    max_w = int(W * 0.88)
+    while size > int(font_size * 0.55):
+        font = ImageFont.truetype(font_path, size)
+        tw = draw.textlength(title, font=font) if hasattr(draw, "textlength") \
+            else sum(font.getlength(c) for c in title)
+        if tw <= max_w:
+            break
+        size -= max(1, size // 20)
+    else:
+        font = ImageFont.truetype(font_path, size)
+        tw = draw.textlength(title, font=font) if hasattr(draw, "textlength") \
+            else sum(font.getlength(c) for c in title)
+
+    stroke_w = max(2, size // 16)
+    x = (W - int(tw)) // 2
+    y = int(H * y_ratio)
+    draw.text((x, y), title, font=font, fill=(255, 255, 255, 255),
+              stroke_width=stroke_w, stroke_fill=(0, 0, 0, 255))
+    img.save(path, "PNG")
+
+
 def apply_cover(scaled_dir, first_scene, cover_image, cover_duration, target_size,
                  target_fps, preset_scale):
     """把封面图做成一小段"呼吸感"短片，替换掉 first_scene 的第一个 clip 的
@@ -310,6 +353,17 @@ def main():
                              "做成'MV 前几秒是封面'的效果，不改变视频总时长")
     parser.add_argument("--cover-duration", type=float, default=3.0,
                         help="封面展示时长（秒），会被 clamp 到第一个场景规划时长的 50%% 以内")
+    parser.add_argument("--cover-title", default=None,
+                        help="封面片段上叠加的大字号歌名文字，默认沿用 --title 的值，"
+                             "一般不需要单独指定。只在封面片段实际生效的时长内显示，"
+                             "和 --title 的小号角标水印是独立的两套叠加（角标水印会在"
+                             "封面时长结束后才出现，避免和大字号标题同框打架）")
+    parser.add_argument("--cover-title-font-size", type=int, default=None,
+                        help="封面大字号标题的字号，默认按画面高度自动计算（约 H/7），"
+                             "明显大于字幕/角标水印的 --font-size")
+    parser.add_argument("--cover-title-y-ratio", type=float, default=0.14,
+                        help="封面大字号标题纵向位置，画面高度的比例（从顶部算），默认0.14，"
+                             "对应 Step 3 里要求封面构图\"上方留白给标题\"的规划原则")
     args = parser.parse_args()
 
     if not HAS_YAML:
@@ -377,12 +431,13 @@ def main():
     print(f"Total scaled duration: {total_scaled_dur:.1f}s")
 
     # ── 2.5. 封面（若提供 --cover-image）：挤压/替换第一个场景的前 N 秒 ──
+    actual_cover_dur = 0.0  # clamp 后实际生效的封面时长，0 表示没有封面/封面被跳过
     if args.cover_image:
         if not Path(args.cover_image).exists():
             print(f"  [警告] --cover-image 指定的文件不存在: {args.cover_image}，跳过封面处理", file=sys.stderr)
         else:
             first_scene = min(scenes, key=lambda s: s["start"])
-            apply_cover(
+            actual_cover_dur = apply_cover(
                 scaled_dir, first_scene, args.cover_image, args.cover_duration,
                 args.target_size, args.target_fps, args.preset_scale,
             )
@@ -432,17 +487,56 @@ def main():
         f.write(f"file '{text_to_png[cues[-1]['text']].as_posix()}'\n")
     print(f"  {len(text_to_png)} unique PNGs written (dedup by text)")
 
-    # ── 5. 歌名水印也渲染成 PNG（不用 drawtext，避免 Windows 路径转义问题）──
+    # ── 5. 歌名水印 / 封面大字号标题都渲染成 PNG（不用 drawtext，避免
+    #      Windows 路径转义问题），两者是独立的两套叠加：
+    #      - 小号角标水印（--title）：全片持续显示，但如果这次合成用了
+    #        封面（actual_cover_dur > 0），会用 `enable` 表达式让它只在
+    #        封面时长结束后才出现，避免和封面上的大字号标题同框打架、
+    #        看起来像两个标题叠在一起。
+    #      - 封面大字号标题（--cover-title，默认沿用 --title）：只在
+    #        `[0, actual_cover_dur)` 这段封面时长内显示，字号明显更大、
+    #        位置更居中/上方，视觉上是"封面标题"而不是"角标水印"。
     title_input_args = []
-    filter_chain = "[0:v][1:v]overlay=0:0:shortest=1[v1]"
-    map_out = "[v1]"
+    filter_parts = ["[0:v][1:v]overlay=0:0:shortest=1[v1]"]
+    cur_label = "v1"
+    next_input_idx = 2
+
     if args.title:
         title_png = workdir / "title.png"
         _render_title_png(args.title, W, H, font, args.title_pos, title_png)
-        title_input_args = ["-loop", "1", "-i", str(title_png)]
-        filter_chain += ";[v1][2:v]overlay=0:0:shortest=1[v2]"
-        map_out = "[v2]"
-        print(f"Title watermark PNG rendered: '{args.title}' at {args.title_pos}")
+        title_input_args.append(["-loop", "1", "-i", str(title_png)])
+        enable_expr = f":enable='gte(t,{actual_cover_dur:.3f})'" if actual_cover_dur > 0 else ""
+        out_label = f"v{next_input_idx}"
+        filter_parts.append(
+            f"[{cur_label}][{next_input_idx}:v]overlay=0:0:shortest=1{enable_expr}[{out_label}]")
+        cur_label = out_label
+        next_input_idx += 1
+        print(f"Title watermark PNG rendered: '{args.title}' at {args.title_pos}"
+              + (f" (从封面结束后 {actual_cover_dur:.2f}s 开始显示)" if actual_cover_dur > 0 else ""))
+
+    if actual_cover_dur > 0:
+        cover_title_text = args.cover_title or args.title
+        if cover_title_text:
+            cover_title_png = workdir / "cover_title.png"
+            cover_font_size = args.cover_title_font_size or max(40, H // 7)
+            _render_cover_title_png(
+                cover_title_text, W, H, FONT_PATH, cover_font_size,
+                args.cover_title_y_ratio, cover_title_png,
+            )
+            title_input_args.append(["-loop", "1", "-i", str(cover_title_png)])
+            out_label = f"v{next_input_idx}"
+            filter_parts.append(
+                f"[{cur_label}][{next_input_idx}:v]overlay=0:0:"
+                f"enable='lt(t,{actual_cover_dur:.3f})'[{out_label}]")
+            cur_label = out_label
+            next_input_idx += 1
+            print(f"Cover title PNG rendered: '{cover_title_text}' "
+                  f"(font_size={cover_font_size}, 仅在前 {actual_cover_dur:.2f}s 封面时长内显示)")
+
+    # 展开成 ffmpeg -i 参数列表（保持添加顺序 = 输入流顺序）
+    title_input_args = [arg for group in title_input_args for arg in group]
+    filter_chain = ";".join(filter_parts)
+    map_out = f"[{cur_label}]"
 
     # ── 6. 一次性完成：字幕叠加 + 歌名水印叠加（合并成单次 filter_complex）──
     video_with_overlays = workdir / "video_with_overlays.mp4"

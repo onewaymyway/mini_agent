@@ -490,6 +490,26 @@ python .claude/skills/mv-generator/scripts/align_lyrics_v3.py \
 
 1. 通读 `lyrics_timed.json` 里的全部歌词，理解整首歌的主题、情绪基调、
    有没有叙事线索（比如"回忆—现实—展望"的结构）。
+
+   **在写任何一个场景的 prompt 之前，先确定一个全曲统一的"整体美术
+   风格" —— 这是本次改进新增的强制前置步骤**：结合歌词的题材/体裁
+   （史诗叙事、爱情抒情、说唱、民谣、电子……）、情绪基调、叙事的
+   时代/地域背景（古代/现代/科幻/奇幻等），提炼出一套贯穿全曲的视觉
+   风格描述，包含至少：
+   - **画风/媒介**（如 cinematic realistic film still / 2D 手绘动画 /
+     水墨风 / 赛博朋克数字绘画 / 复古胶片摄影感……）
+   - **色调基调**（如冷色调忧郁 / 暖色调怀旧 / 高对比暗黑史诗……）
+   - **光线氛围**（如逆光剪影 / 柔和自然光 / 霓虹夜景……）
+
+   把这套风格写成一段简短的英文描述（`song_meta.art_style`，见下方
+   产出格式示例），**后续所有场景的 `prompt_en`、`recurring_assets`
+   的 `description_en`、以及 `cover.description_en` 都必须在描述末尾
+   附上或融入这段风格描述**，确保整首 MV 画风统一，不会出现"这个
+   场景是写实摄影感、那个场景又变成卡通渲染"这种前后不一致。比如
+   《勇者与恶龙》这种带史诗叙事和权力寓言色彩的歌词，`art_style`
+   适合定为偏史诗奇幻的电影感数字绘画风格；如果是轻快民谣，则更适合
+   温暖手绘插画风格——具体风格由 Agent 结合歌词内容自行判断，不要
+   不假思索地套用示例里的风格。
 2. 把歌词行分组成"场景段落"：
    - 每个场景段落对应一个或多个连续歌词行
    - **每个场景段落的时长（对应歌词行的 end - start）必须 ≥ 4 秒且 ≤ 12 秒**
@@ -526,19 +546,26 @@ python .claude/skills/mv-generator/scripts/align_lyrics_v3.py \
 song_meta:
   duration: 210.5
   total_scenes: 18
+  # 全曲统一美术风格（本次改进新增，必填）：所有 recurring_assets /
+  # scenes / cover 的 description_en / prompt_en 都应融入这段风格描述，
+  # 保证整首 MV 画风统一。由 Agent 结合歌词题材/情绪判断，不要照抄。
+  art_style: "epic cinematic digital painting, dramatic chiaroscuro lighting, desaturated cold color grading, painterly fantasy film-still aesthetic"
 
 recurring_assets:
   - id: character_A
     description_zh: "主唱形象：黑色长发，白色连衣裙，忧郁气质"
-    description_en: "Female singer, long black hair, white dress, melancholic mood"
+    description_en: "Female singer, long black hair, white dress, melancholic mood, epic cinematic digital painting, dramatic chiaroscuro lighting, desaturated cold color grading, painterly fantasy film-still aesthetic"
     asset_path: assets/character_A.png   # Step 4 生成后回填
 
 # 封面（cover_enabled 为 true 时才需要规划，见 Step 0 mv_config.json）
-# 不是复用某个具体场景的定妆图，而是单独构图，浓缩全曲氛围，
-# 构图上要给"歌名文字"留白（主体偏一侧，避免叠字盖住关键内容）
+# 不是复用某个具体场景的定妆图，也不是抽象地"渲染个氛围"，而是要能让
+# 只看一眼封面就大致读出这首歌在讲什么（核心意象/矛盾/情绪转折），同时
+# 保持全曲统一的 art_style；构图上要给"歌名文字"留白（主体偏下方或
+# 一侧，画面上方留出干净背景，避免叠字盖住关键内容——最终合成时会在
+# 封面片段上叠加大字号歌名，见 Step 6）
 cover:
-  description_zh: "封面：雨夜霓虹街头，主唱背影，大片天空留白用于叠歌名"
-  description_en: "Album-cover style composition: female singer from behind on a rainy neon street at night, wide negative space at top for title text overlay, moody cinematic lighting"
+  description_zh: "封面：勇者持剑与恶龙对峙的剪影，身后是化作暴君王座的巨龙尸骸，画面上方留白用于叠歌名，浓缩全曲'英雄变暴君、权力轮回'的核心主题"
+  description_en: "A lone warrior silhouette facing a colossal dragon, the dragon's skeletal remains fused into a throne in the background hinting at the hero-becomes-tyrant cycle, wide clean negative space at the top third of the frame for title text overlay, epic cinematic digital painting, dramatic chiaroscuro lighting, desaturated cold color grading, painterly fantasy film-still aesthetic"
   asset_path: assets/cover.png     # Step 4 生成后回填
   duration_sec: 3.0                # 封面展示时长，实际生效值会被 clamp（见 Step 6）
 
@@ -548,7 +575,7 @@ scenes:
     start: 0.0
     end: 8.2
     uses_assets: [character_A]
-    prompt_en: "Female singer standing alone on a rainy street at night, neon lights reflecting on wet pavement, cinematic wide shot, melancholic atmosphere"
+    prompt_en: "Female singer standing alone on a rainy street at night, neon lights reflecting on wet pavement, cinematic wide shot, melancholic atmosphere, epic cinematic digital painting, dramatic chiaroscuro lighting, desaturated cold color grading, painterly fantasy film-still aesthetic"
     video_mode: reference         # reference / keyframe / text
   - id: scene_02
     lyric_lines: [2]
@@ -657,10 +684,21 @@ AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
   视频画幅保持一致。
 - 封面不是随便挑一张定妆图当封面用，而是**单独按 `scene_plan.yaml` 里
   `cover.description_en` 生成一张新图**，构图要求和普通场景定妆图不同：
-  突出"浓缩全曲氛围/情绪基调"，且要给歌名文字留白（主体人物/焦点偏
-  画面一侧或下方，画面上方或另一侧留出干净背景），因为最终合成时会在
-  封面片段上叠加大号歌名文字（复用 `compose_mv.py` 里歌名水印的 PIL
-  渲染逻辑，但字号/位置更像"封面标题"而不是角标水印，细节见 Step 6）。
+  - **要有表现力、能代表整首歌的内容**：不是抽象地画个"忧郁氛围"了事，
+    而是要把 Step 3 里提炼出的核心意象/矛盾/情绪转折具象化到画面里——
+    比如叙事型歌词可以画关键转折的那个瞬间或象征性场景，抒情类歌词
+    可以画最能代表情绪基调的核心意象，让人只看封面就能大致猜到这首
+    歌在讲什么，而不是一张随便哪首同类型歌都能用的通用氛围图。
+  - **画风必须和 `song_meta.art_style` 保持一致**（见 Step 3），
+    `description_en` 末尾附上 `art_style` 描述，不要单独另起一套风格。
+  - **构图要给歌名文字留白**：主体人物/焦点偏画面下方或一侧，画面
+    上方（默认叠字位置，见下方 `--cover-title-y-ratio`）留出干净、
+    不杂乱的背景区域，避免大字号歌名压在人脸、复杂细节或高对比区域上
+    导致文字难以辨认。
+  - 因为最终合成时会在封面片段上叠加**大字号歌名标题**（不是角标
+    水印，字号明显更大、白字黑描边、居中偏上，细节见 Step 6 的
+    `--cover-title` 相关参数），构图时要预留出足够的干净空间给它，
+    不需要再把歌名文字直接画进图里（那样反而不可控、容易乱码/变形）。
 - 生成后立即回填 `scene_plan.yaml` 里 `cover.asset_path` 字段。
 - 若 `cover_enabled` 为 `false`，跳过这一步，`scene_plan.yaml` 也不需要
   `cover` 字段（或保留字段但不生成图片，Step 6 不传 `--cover-image`）。
@@ -821,6 +859,21 @@ python .claude/skills/mv-generator/scripts/compose_mv.py \
 `cover_enabled` 为 `true` 时传**；为 `false` 时这两个参数整体不传，
 `compose_mv.py` 会按普通流程合成，不做任何封面相关处理。
 
+**封面片段会自动叠加大字号歌名标题**（本次改进新增，`--cover-image`
+生效时默认自动开启，不需要额外加参数）：`compose_mv.py` 只要收到
+`--cover-image` 且 `--title` 非空，就会在封面那几秒里额外叠加一份
+**明显更大字号、白字黑描边、居中偏上**的标题渲染，和贯穿全片的小号
+角标水印是两套独立的叠加——角标水印会自动延迟到封面时长结束后才
+出现，两者不会同框打架。默认行为通常不需要调参，如果想细调：
+- `--cover-title "<自定义标题文字>"`：默认沿用 `--title`，一般不需要
+  单独传，仅当想让封面标题和贯穿全片的角标水印文字不同时才用。
+- `--cover-title-font-size <整数>`：默认按画面高度自动算（约 H/7），
+  明显大于字幕/角标水印的 `--font-size`。
+- `--cover-title-y-ratio <0~1 小数>`：标题纵向位置，画面高度的比例
+  （默认 0.14，即从顶部 14% 处开始），需要和 Step 3/4 里规划、生成
+  `cover.png` 时预留的留白位置对应——如果封面构图的留白不在画面上方
+  而是在下方，这里要相应调整。
+
 **`--target-size`/`--font-size`/`--overlay-y-offset` 三个都必须取自
 `mv_config.json`**（横屏依次为 `1280:720`/`28`/`80`，竖屏依次为
 `720:1280`/`22`/`140`），不要沿用 `compose_mv.py` 参数自身的默认值
@@ -901,10 +954,12 @@ clip 短了慢放、长了快放，拼接后每个 scene 的起止时刻天然�
 封面短片本身不是死板静帧：`compose_mv.py` 用 `ffmpeg -loop 1 -i cover.png`
 配合轻微 `zoompan` 缓慢推近，模拟"呼吸感"，而不是硬切一张纯静图。
 
-如果想让封面片段上叠加大号歌名文字（比单纯的"下一步字幕"更像正式的
-"封面标题"），可以在 Step 4 生成 `cover.png` 时就直接把歌名画在图里
-（让 `gen_image_with_text` 的 prompt 里包含歌名文字排版要求），这样不
-依赖 `compose_mv.py` 额外的水印叠加逻辑，效果也更可控。
+封面片段上的大号歌名文字**默认由 `compose_mv.py` 自动叠加**（见上方
+`--cover-title*` 参数说明），不需要在 Step 4 生成 `cover.png` 时就把
+歌名文字画进图里——让图片生成模型直接画中文文字排版经常出现变形/
+乱码/字重不一致，不如生成阶段只管构图和留白、合成阶段用 PIL 精确
+渲染标题文字来得可控。Step 4 只需确保封面构图按要求给标题留出干净的
+背景区域即可（见 Step 4 说明）。
 
 ### Step 7: 校验交付
 
