@@ -11,6 +11,10 @@
   3. 所有 scene 的 `uses_assets` 里引用的 asset id 是否都能在
      `recurring_assets` 里找到对应项（引用了一个根本没规划过的 id，
      或者拼写错误，会在这里被发现，而不是等到 Step 5 生成时才报错）。
+  4. `recurring_assets` 里若有 `face_reference_id` 字段（Step 0.5 用户
+     提供了人脸参考照片时才会有），会检查这个 id 是否真的在
+     `mv_config.json` 的 `face_references` 里登记过（需要传 `--output-dir`
+     才能定位到 `mv_config.json`，不传则跳过这项检查，不当作错误）。
 
 退出码：
   0 = 全部通过，可以进入 Step 5
@@ -59,12 +63,33 @@ def resolve_path(asset_path: str, output_dir: Optional[Path], plan_dir: Path) ->
     return base / p
 
 
+def load_face_reference_ids(output_dir: Optional[Path]) -> Optional[set]:
+    """从 mv_config.json 读取 face_references 里已登记的 id 集合。
+
+    返回 None 表示"没找到 mv_config.json，跳过这项校验"（不当作错误，
+    因为 --output-dir 是可选参数，某些调用场景可能压根没传）；返回空
+    集合表示"找到了配置文件，但里面没有登记任何人脸参考"。
+    """
+    if output_dir is None:
+        return None
+    config_path = output_dir / "mv_config.json"
+    if not config_path.exists():
+        return None
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    refs = config.get("face_references") or []
+    return {r.get("id") for r in refs if isinstance(r, dict) and r.get("id")}
+
+
 def check(plan: dict, output_dir: Optional[Path], plan_dir: Path) -> dict:
     errors = []
     warnings = []
 
     recurring_assets = plan.get("recurring_assets") or []
     scenes = plan.get("scenes") or []
+    face_reference_ids = load_face_reference_ids(output_dir)
 
     if not recurring_assets:
         warnings.append({
@@ -76,10 +101,22 @@ def check(plan: dict, output_dir: Optional[Path], plan_dir: Path) -> dict:
     missing_path_field = []
     missing_file = []
     empty_file = []
+    dangling_face_refs = []
 
     for asset in recurring_assets:
         aid = asset.get("id", "<missing id>")
         asset_ids.add(aid)
+
+        face_ref_id = asset.get("face_reference_id")
+        if face_ref_id and face_reference_ids is not None and face_ref_id not in face_reference_ids:
+            dangling_face_refs.append({
+                "type": "dangling_face_reference",
+                "asset_id": aid,
+                "face_reference_id": face_ref_id,
+                "message": f"定妆图 {aid} 绑定了 face_reference_id={face_ref_id}，"
+                           f"但 mv_config.json 的 face_references 里没有这个 id"
+                           f"（可能是 Step 0.5 没写全，或 id 拼写不一致）",
+            })
 
         asset_path_str = asset.get("asset_path")
         if not asset_path_str:
@@ -111,6 +148,7 @@ def check(plan: dict, output_dir: Optional[Path], plan_dir: Path) -> dict:
     errors.extend(missing_path_field)
     errors.extend(missing_file)
     errors.extend(empty_file)
+    errors.extend(dangling_face_refs)
 
     # 校验 scene 侧的引用是否都能在 recurring_assets 里找到
     dangling_refs = []

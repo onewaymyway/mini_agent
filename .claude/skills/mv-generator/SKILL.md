@@ -1,6 +1,6 @@
 ---
 name: mv-generator
-description: 输入一首歌的 mp3 音频 + 歌词文本，生成歌词同步显示、画面贴合歌词内容的 MV 视频。当用户说"生成MV"、"做一个歌词视频"、"给这首歌配个视频"、"歌词同步视频"时使用。
+description: 输入一首歌的 mp3 音频 + 歌词文本，生成歌词同步显示、画面贴合歌词内容的 MV 视频。可选：额外提供一张人物照片，把照片里的人脸用作 MV 主角形象。当用户说"生成MV"、"做一个歌词视频"、"给这首歌配个视频"、"歌词同步视频"时使用。
 triggers: MV生成, 生成MV, 歌词视频, 歌词同步, mv video, lyric video, 音乐视频
 ---
 
@@ -12,10 +12,18 @@ triggers: MV生成, 生成MV, 歌词视频, 歌词同步, mv video, lyric video,
 内容贴合歌词语义的 MV。整体流程：
 
 ```
-方向选择(横屏/竖屏，写入配置) → 人声分离 → ASR 粗识别
+方向选择(横屏/竖屏，写入配置) → [可选]主角人脸参考照片
+→ 人声分离 → ASR 粗识别
 → 歌词对齐校正(强制对齐优先/ASR+模糊匹配兜底) → 场景规划(需用户确认)
 → 定妆图生成(含封面图) → 分场景视频生成 → 拼接+封面+烧字幕+混音 → 最终 mv.mp4
 ```
+
+**支持提供参考人脸照片（可选）**：用户可以额外提供一张人物照片（比如
+"这是主角的照片，用这张脸"），把照片里的人脸用作 MV 主角的长相，后续
+该角色相关的所有定妆图/分场景素材都会以这张照片为参考、尽量保持人脸
+一致；**不提供完全没问题，跳过即可，不影响其余流程**。这个选项会在
+Step 0 之后主动向用户提示一次（也支持用户在最初的请求里就直接带上
+照片，不需要等提示），详见下方「Step 0.5：主角人脸参考照片（可选）」。
 
 **封面效果**：默认会额外生成一张"浓缩全曲氛围"的封面图（`assets/cover.png`），
 并在最终合成时把它做成一段轻微推近的短片，用来**替换**（不是插入）第一个
@@ -170,6 +178,9 @@ mv_output/歌曲名_20260907/
    与音频中演唱顺序一致）。歌词行数、音频时长会影响后续场景数量的
    预估，可以先做一个粗略播报，让用户对成本（15–25 次视频生成调用）
    有心理预期。
+6. **检查用户是否已经在请求里附带了人物照片**（比如"用这张脸当主角"、
+   或单纯附了一张人像图但没多说）。带了就记下路径，留到 Step 0.5
+   处理，不需要在这里就问；没带也不用主动追问，Step 0.5 会统一问一次。
 
 ## 流程规范
 
@@ -265,6 +276,51 @@ mv_output/歌曲名_20260907/
 避免大远景在竖屏画布里主体过小、两侧留白过多。可以在 `scene_plan.yaml`
 的 prompt 里显式加一句方向提示，比如竖屏加
 `"vertical 9:16 framing, subject centered, medium close-up"`。
+
+### Step 0.5: 主角人脸参考照片（可选）
+
+**紧接 Step 0 之后、Step 1 之前做**，只做一次；如果用户在最初请求里
+已经直接带了照片并说明"用这张脸"，可以跳过下面第 1 步的主动询问，
+直接从第 2 步开始处理。
+
+1. **主动问用户一次**（不阻塞太久，用户明确不需要就跳过）：是否要
+   提供一张人物照片，把照片里的人脸用作 MV 主角的长相？如果提供，
+   后续生成主角相关的定妆图/场景素材时都会以这张照片为参考，尽量让
+   主角的脸和照片保持一致。用户没有回应或明确不需要时，直接按"不提供"
+   处理，不阻塞流程——这是完全可选的功能。
+2. **用户提供照片后**：
+   - 把照片原样拷贝保存到 `<output_dir>/references/face_1.<原始扩展名>`
+     （多张就 `face_2`、`face_3` 依次编号；不要重新压缩/裁剪/加滤镜，
+     保留原图质量，后续生成时需要尽可能多的面部细节）。
+   - 写入/更新 `<output_dir>/mv_config.json`，新增 `face_references` 字段：
+     ```json
+     {
+       "face_references": [
+         {
+           "id": "face_ref_1",
+           "path": "references/face_1.jpg",
+           "note": "用户提供，用作主角人脸参考"
+         }
+       ]
+     }
+     ```
+     没有提供照片时，`face_references` 省略或设为 `[]`，后续所有步骤
+     按"没有人脸参考"的默认路径走，完全不受影响。
+   - **提醒用户一句注意事项**：人脸参考是通过图生图/多图合成的方式
+     让生成结果"参考"这张照片的长相，不是像素级换脸，最终定妆图和
+     照片会有一定差异（尤其风格化程度较高的画风，比如水墨/像素风，
+     人脸细节保留程度本身就有限）；如果用户对人脸相似度要求很高，
+     建议先看 Step 4 生成的第一版定妆图效果，不满意可以重新生成或
+     调整 prompt 里的相似度描述。
+   - **隐私提醒**：只在用户明确同意、且照片是用户自己上传/授权使用的
+     人物照片时才使用这项功能；不要主动建议用户上传"别人的照片"或
+     未经同意的第三方肖像。
+3. Step 3 规划 `recurring_assets` 时，需要判断歌词里的"主角"角色是否
+   对应这张参考照片（通常是唯一或最主要反复出现的人物角色），并在该
+   角色的 `recurring_assets` 条目里回填 `face_reference_id` 字段，
+   绑定到 `mv_config.json` 里对应的 `face_references[i].id`（详见
+   Step 3 「产出格式」示例）。Step 4 生成该角色定妆图时会读取这个
+   绑定，改用图生图模式而不是纯文生图，具体命令见 Step 4。
 
 ### Step 1: 人声分离 + ASR 粗识别
 
@@ -524,6 +580,15 @@ python .claude/skills/mv-generator/scripts/align_lyrics_v3.py \
    为它们规划"定妆图"，后续所有相关场景片段都以该定妆图作为
    `gen_video_with_text` 的 reference 输入，尽量减少人物形象漂移
    （但要向用户说明：这只能减少、不能完全消除漂移，这是已知限制）。
+   - **若 Step 0.5 收集了人脸参考照片**（`mv_config.json` 里
+     `face_references` 非空）：判断歌词/MV 里哪个反复出现的角色是
+     "主角"（通常是唯一或最主要的那个人物形象），把对应
+     `recurring_assets` 条目的 `face_reference_id` 设为那张参考照片
+     的 id。**一首歌通常只有一个主角需要绑定人脸**；如果规划了多个
+     人物角色、但用户只提供了一张人脸照片，只绑定其中最主要的那个，
+     其余角色按普通文生图流程规划，不要把同一张人脸参考硬套到所有
+     角色上。如果 `face_references` 为空（用户没提供），所有角色都不
+     需要 `face_reference_id` 字段，跳过这一条即可。
 4. 为每个场景段落写画面描述 prompt（建议英文，效果更好），描述要包含：
    镜头/构图、场景环境、人物动作与情绪、光线氛围，并注明引用哪个定妆图。
 5. **正确设置每个场景的 `video_mode`（reference / keyframe / text），不要
@@ -556,6 +621,10 @@ recurring_assets:
     description_zh: "主唱形象：黑色长发，白色连衣裙，忧郁气质"
     description_en: "Female singer, long black hair, white dress, melancholic mood, epic cinematic digital painting, dramatic chiaroscuro lighting, desaturated cold color grading, painterly fantasy film-still aesthetic"
     asset_path: assets/character_A.png   # Step 4 生成后回填
+    # 仅当 Step 0.5 用户提供了人脸参考照片、且这个角色就是要绑定的
+    # 主角时才需要这个字段；取值是 mv_config.json 里 face_references
+    # 对应条目的 id。没有提供参考照片时不需要这个字段。
+    face_reference_id: face_ref_1
 
 # 封面（cover_enabled 为 true 时才需要规划，见 Step 0 mv_config.json）
 # 不是复用某个具体场景的定妆图，也不是抽象地"渲染个氛围"，而是要能让
@@ -660,6 +729,35 @@ AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
   gen "<description_en>" --size 2K --ratio <mv_config.json 里的 image_ratio> \
   --save-path <output_dir>/assets/<asset_id>.png
 ```
+
+**若该角色在 `recurring_assets` 里有 `face_reference_id` 字段**（Step 0.5
+用户提供了人脸参考照片、Step 3 绑定给了这个角色），**改用 `edit` 模式**，
+把参考照片作为输入图，而不是纯文生图：
+
+```bash
+AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
+  edit "Use the face/facial identity of the person in the reference photo. Generate a full character turnaround portrait based on this face: <description_en>. Keep the facial features, face shape and identity consistent with the reference photo; everything else (hair style/color, clothing, pose, background) follows the character description." \
+  --image-path <output_dir>/<mv_config.json 里 face_references 对应条目的 path> \
+  --size 2K --ratio <mv_config.json 里的 image_ratio> \
+  --save-path <output_dir>/assets/<asset_id>.png
+```
+
+关于人脸参考的几点说明：
+- 这是**图生图/多图合成**能力，靠 prompt 引导模型参考输入图里的人脸，
+  不是专门的换脸/人脸迁移模型，相似度会因画风而异——越写实的
+  `art_style` 相似度通常越高，越风格化（水墨、像素风、厚涂插画等）
+  人脸细节保留程度天然越有限，这是模型能力边界，不是脚本 bug。
+- 生成后**务必让用户看一眼这张定妆图**，确认相似度是否满足预期；不
+  满意可以调整 prompt（比如更明确地描述参考照片里的五官特征：脸型、
+  眼睛、眉毛等）重新生成，或者接受"神似但不是像素级还原"的效果。
+- **人脸一致性的传递方式和场景一致性一样，靠的是"复用同一张已生成的
+  定妆图"，不是每个场景都重新读取原始照片**：这张按人脸参考生成出来
+  的定妆图，就是后续 Step 5 所有引用该角色的场景做 `reference` 视频
+  生成时使用的参考图；不需要（也不应该）在每个场景视频生成时都单独
+  再传一次原始人脸照片。
+- 如果 `edit` 生成效果不理想（比如模型拒绝识别照片、生成的脸和参考
+  差异很大），可以retry 1-2 次；仍不理想则如实告知用户当前技术水平
+  下人脸相似度有限，改回普通文生图流程也是可以接受的兜底方案。
 
 **`--ratio` 必须取自 Step 0 写入的 `mv_config.json` 里的 `image_ratio`
 字段**（横屏为 `16:9`，竖屏为 `9:16`），不要照抄示例里的 `16:9` 就
