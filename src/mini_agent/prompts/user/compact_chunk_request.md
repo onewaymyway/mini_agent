@@ -6,6 +6,13 @@
 This is chunk {{ chunk_index }} of {{ total_chunks }} from a conversation that needs to be compressed.
 Please summarize this chunk into a dense, structured reference. Include:
 
+**Environment & session anchors mentioned in this chunk** — this field is required even if the
+answer is "none in this chunk". List, verbatim, any working directory / project root, output or
+input directory, absolute file path, or pinned environment (conda env, binary path, API key
+confirmed set) that appears in this chunk — even if it was already established in an earlier chunk
+and is only being reused here. Chunk summaries are merged independently later, so do not assume a
+later merge step can "go back" and find this — write it down explicitly every time it appears.
+
 **User requests in this chunk** — exact phrasing or close paraphrase of what the user asked.
 
 **Tool calls & outcomes** — for each tool call:

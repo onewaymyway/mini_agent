@@ -17,6 +17,7 @@ history/compact_audit.py — 压缩质量事后自检
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
@@ -130,3 +131,118 @@ def audit_compact_quality(
         from mini_agent.errors import log_exception
         log_exception(e, where='mini_agent.history.compact_audit.audit_compact_quality')
         return CompactAuditResult(raw_response=f"[audit failed, treated as no_issue: {e}]")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 路径锚点守卫（零 LLM 成本，所有 compact 触发原因都跑，包括高频的
+# token_threshold / turn_count 等）——用于弥补上面 `audit_compact_quality`
+# 只对 deep compact 生效、且需要一次额外 LLM 调用的缺口。
+#
+# 背景：工作目录/输出目录这类"环境锚点"一旦只在对话早期出现过一次、后面
+# 从未重复提及，普通的 LLM 摘要很容易因为"看起来不像本轮进展"而不把它当
+# 重点写进摘要——尤其是 token_threshold 这种高频触发，为了控制成本被排除在
+# 昂贵的 LLM 质量审计之外，导致这类遗漏完全没有兜底。
+#
+# 这里用纯正则做一次廉价的"路径字符串是否还在摘要里"比对，不调用 LLM，
+# 因此可以在**每一次** compact（无论哪种触发原因）之后都跑一遍。
+# ════════════════════════════════════════════════════════════════════════════════
+
+# Windows 绝对路径（C:\...）、POSIX 绝对路径（/home/... 等，要求至少两段避免
+# 把 "a/b" 这种误判成路径）、以及常见的"相对输出目录"写法（output/xxx、
+# ./xxx、../xxx）。刻意不匹配过短或过于通用的片段（如单独的 "/"）。
+_PATH_LIKE_RE = re.compile(
+    r"(?:[A-Za-z]:\\[^\s\"'`]+)"          # Windows: C:\Users\...
+    r"|(?:/(?:[^\s\"'`/]+/){1,}[^\s\"'`/]*)"  # POSIX: /a/b/... (>=2 段)
+    r"|(?:\.{1,2}/[^\s\"'`]+)"            # ./xxx or ../xxx
+)
+
+# 只在候选路径的"上下文"里出现这些关键词时才认为是真正的环境锚点（而不是
+# 随口提到的某个不相关路径），降低误报。中英文都覆盖。
+_ANCHOR_CONTEXT_RE = re.compile(
+    r"(工作目录|项目目录|项目根目录|输出目录|输出到|保存到|存到|存放到|"
+    r"working directory|working dir|project root|output dir|output directory|"
+    r"save (?:it |them |results? )?to|--output|--save-path|--save-dir)",
+    re.IGNORECASE,
+)
+
+_MIN_PATH_LEN = 4          # 太短的匹配大概率是噪声（比如 "./a"）
+_MAX_ANCHORS_CHECKED = 12  # 只检查前 N 个候选，避免超长历史拖慢/误报过多
+
+
+def _extract_path_anchors(text: str) -> list:
+    """从一段文本里挑出"看起来像路径、且上下文像是在声明工作目录/输出目录"
+    的候选字符串。返回去重后的列表，保持首次出现的顺序（越早出现的通常越
+    是任务级别的根锚点，优先级更高）。
+    """
+    if not text:
+        return []
+    anchors: list = []
+    seen = set()
+    for m in _PATH_LIKE_RE.finditer(text):
+        path = m.group(0).rstrip(").,;:，。；：")
+        if len(path) < _MIN_PATH_LEN or path in seen:
+            continue
+        window = text[max(0, m.start() - 25): m.end() + 10]
+        if not _ANCHOR_CONTEXT_RE.search(window):
+            continue
+        seen.add(path)
+        anchors.append(path)
+        if len(anchors) >= _MAX_ANCHORS_CHECKED:
+            break
+    return anchors
+
+
+def check_path_anchors_preserved(
+    pre_compact_history: list, summary_text: str,
+) -> Optional[str]:
+    """
+    零 LLM 成本的确定性检查：压缩前历史里出现过的"工作目录/输出目录"类路径，
+    是否原样出现在压缩后的摘要文本里。
+
+    设计上刻意保守（宁可漏报，不可误报）：
+      - 只在路径字符串附近有明确的"工作目录/输出目录/save to"等关键词时才
+        当作候选锚点，避免把任意文件路径都当成"必须保留"。
+      - 要求在摘要里**逐字符串**命中；摘要里换了种表达方式（比如把绝对路径
+        换成了模糊描述）会被判定为"缺失"，这是有意为之——本来就是要防止
+        这种退化。
+
+    返回值：
+      - None：没发现任何候选锚点，或所有候选锚点都在摘要里找到了（不代表
+        绝对没问题，只是这一层廉价检查没发现问题）。
+      - 非空字符串：发现至少一个候选锚点在摘要里找不到，返回值是可以直接
+        追加进 compact_supplement 的提示文本，包含具体缺失的路径列表。
+
+    任何异常都静默返回 None，不能影响 compact 主流程。
+    """
+    try:
+        if not summary_text or not pre_compact_history:
+            return None
+
+        anchors: list = []
+        seen = set()
+        for msg in pre_compact_history:
+            text = _extract_text(msg)
+            if not text:
+                continue
+            for a in _extract_path_anchors(text):
+                if a not in seen:
+                    seen.add(a)
+                    anchors.append(a)
+
+        if not anchors:
+            return None
+
+        missing = [a for a in anchors if a not in summary_text]
+        if not missing:
+            return None
+
+        lines = "\n".join(f"  - {a}" for a in missing)
+        return (
+            "[path-anchor-guard] 压缩前的对话中出现过以下工作目录/输出目录相关的路径，"
+            "但没有在压缩后的摘要里原样找到，可能是关键的环境上下文被遗漏了，"
+            "请在继续任务前和用户确认这些路径是否仍然有效：\n" + lines
+        )
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.history.compact_audit.check_path_anchors_preserved')
+        return None

@@ -173,6 +173,44 @@ class CompactionMixin:
         else:
             _run_audit()
 
+    def _maybe_guard_path_anchors(
+        self, pre_compact_history: list, summary_text: str,
+    ) -> None:
+        """
+        [compact 路径丢失修复] 零 LLM 成本的确定性守卫：无论本次 compact 是
+        哪种触发原因（包括 token_threshold 这类被 `_maybe_audit_compact_quality`
+        白名单排除在外的高频触发），都检查压缩前历史里出现过的工作目录/输出
+        目录路径是否原样保留在了摘要里；发现遗漏时追加一条 compact_supplement
+        条目把具体路径补回去，让下一轮 agent 能看到并向用户确认。
+
+        与 `_maybe_audit_compact_quality`（LLM 审计，只对 deep compact 生效）
+        是互补关系：这里管"路径这一类具体、可用字符串匹配验证的信息"，
+        不需要模型判断、几乎零延迟，所以可以对所有 compact 都生效；LLM 审计
+        管更泛化的"决定性信息是否遗漏"，成本更高，只在非高频触发时才值得跑。
+
+        任何异常都静默吞掉，不能影响 compact 主流程。
+        """
+        try:
+            if not summary_text or not pre_compact_history:
+                return
+            from mini_agent.history.compact_audit import check_path_anchors_preserved
+            hint = check_path_anchors_preserved(pre_compact_history, summary_text)
+            if not hint:
+                return
+            from mini_agent.history.entry import make_compact_supplement
+            supplement = make_compact_supplement(hint)
+            _hist = getattr(self, "_hist", None)
+            self._history.append(supplement)
+            if _hist is not None:
+                _hist._raw.append(supplement)
+            R.print_warning(
+                "[compact] path-anchor-guard 检测到可能遗漏的工作目录/输出目录路径，"
+                "已补一条提示到历史中，请留意。"
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.compaction.CompactionMixin._maybe_guard_path_anchors')
+
     def _apply_compact_audit_issue(self, trigger_reason: Optional[str], result) -> None:
         """
         [compact_mechanism_improvement_plan P2-A] 审计发现遗漏信息后的落地：
@@ -392,6 +430,10 @@ class CompactionMixin:
             R.print_info("[compact] History is empty, nothing to compact.")
             return ""
 
+        # 路径锚点守卫需要压缩前的原始历史做对比；无论走正常路径还是 chunked
+        # 路径，历史都会在下面被清空/重建，必须在这里先拍快照。
+        _pre_history_snapshot = list(self._history)
+
         from mini_agent.prompts import pm as _pm
         compact_prompt = _pm.get_compact_prompt()
         compact_prompt += self._build_notepad_compact_hint()
@@ -449,6 +491,12 @@ class CompactionMixin:
         if not result:
             R.print_warning("[compact] Got empty summary, aborting.")
             return ""
+
+        # 路径锚点守卫：零 LLM 成本，覆盖所有 compact_with_skills 调用方
+        # （手动 /compact、compact_history 工具、auto-compact、goal_mode 卡住
+        # 恢复），不依赖 trigger_reason 白名单——只要压缩前历史里出现过带
+        # 明确上下文的工作目录/输出目录路径，压缩后摘要里就必须原样保留。
+        self._maybe_guard_path_anchors(_pre_history_snapshot, result)
 
         # ── [compact_mechanism_improvement_plan P0-B] 剥离决策候选 JSON 块 ──────
         # 只在正常路径（run_turn，追加了 DECISION_EXTRACTION_APPEND_BLOCK 指令）
@@ -846,6 +894,9 @@ class CompactionMixin:
             self._maybe_audit_compact_quality(
                 trigger_reason, _pre_compact_history_snapshot, summary_text,
             )
+            # 注：路径锚点守卫（_maybe_guard_path_anchors）已经在
+            # compact_with_skills() 内部无条件执行一次（覆盖所有调用方，
+            # 包括这里的 auto-compact），这里不需要重复调用。
         else:
             # ── 旧路径：委托给 HistoryManager.auto_compress 的可插拔策略 ──
             from mini_agent.history.compression import create_strategy
