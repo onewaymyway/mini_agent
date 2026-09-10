@@ -20,7 +20,13 @@ class AgnesVideoClient:
         self,
         api_key: Optional[str] = None,
         key_pool: Optional[AgnesKeyPool] = None,
-        timeout: int = 1800,
+        # [TIMEOUT-FIX] 原来默认 1800s（30 分钟），但这个 timeout 实际只用在
+        # create_video() 这个"创建任务"请求上——该接口本身应该很快返回，真正
+        # 耗时的生成过程在 generate_video() 的轮询阶段异步完成，不受这个值影响。
+        # 30 分钟的 read timeout 意味着一旦网络/服务端卡住不响应，配合
+        # max_retries=3 最坏要等 90 分钟且中途无输出，才会报错。改成 120s，
+        # 配合上面新加的重试日志，能更快暴露问题；如需要更长可显式传入。
+        timeout: int = 120,
         max_retries: int = 3,
         verify_ssl: bool = False,
     ):
@@ -111,11 +117,15 @@ class AgnesVideoClient:
                 self.api_key = self.key_pool.acquire()
 
             try:
+                # [TIMEOUT-FIX] 用 (connect_timeout, read_timeout) 元组代替单一数字，
+                # 避免"连不上"这种应该很快失败的情况也要等满 self.timeout（默认 30 分钟）。
+                # connect 阶段给 15s 足够；read 阶段仍保留 self.timeout，
+                # 因为创建任务接口本身应该很快返回，真正耗时的生成过程是异步轮询的。
                 resp = self.session.post(
                     url,
                     headers=self.headers,
                     json=payload,
-                    timeout=self.timeout,
+                    timeout=(15, self.timeout),
                     verify=self.verify_ssl,
                 )
 
@@ -132,6 +142,10 @@ class AgnesVideoClient:
                             continue  # 换 key 立即重试，不计入 attempt
 
                     attempt += 1
+                    # [LOG-FIX] 之前这里重试/异常完全没有输出，外部看起来像卡死。
+                    print(f"    [POST 失败] status_code={resp.status_code}，"
+                          f"第 {attempt}/{self.max_retries} 次重试，"
+                          f"{1.5 * attempt:.1f}s 后重试: {resp.text[:200]}")
                     time.sleep(1.5 * attempt)
                     continue
 
@@ -143,6 +157,9 @@ class AgnesVideoClient:
             except Exception as e:
                 last_err = str(e)
                 attempt += 1
+                # [LOG-FIX] 网络异常（超时/连接失败等）原来是静默重试，加上日志方便判断是否是超时问题。
+                print(f"    [POST 异常] {e}，第 {attempt}/{self.max_retries} 次重试，"
+                      f"{1.5 * attempt:.1f}s 后重试")
                 time.sleep(1.5 * attempt)
 
         return {
@@ -162,11 +179,12 @@ class AgnesVideoClient:
                 self.api_key = self.key_pool.acquire()
 
             try:
+                # [TIMEOUT-FIX] 同样拆分 connect/read timeout，connect 阶段 10s 即可判定失败。
                 resp = self.session.get(
                     url,
                     headers=self.headers,
                     params=params,
-                    timeout=60,
+                    timeout=(10, 60),
                     verify=self.verify_ssl,
                 )
 
@@ -183,6 +201,11 @@ class AgnesVideoClient:
                             continue  # 换 key 立即重试，不计入 attempt
 
                     attempt += 1
+                    # [LOG-FIX] 轮询请求失败原来完全静默，加日志便于判断是查询接口的问题
+                    # 还是生成任务本身卡住了。
+                    print(f"    [GET 失败] status_code={resp.status_code}，"
+                          f"第 {attempt}/{self.max_retries} 次重试，"
+                          f"{1.5 * attempt:.1f}s 后重试: {resp.text[:200]}")
                     time.sleep(1.5 * attempt)
                     continue
 
@@ -194,6 +217,8 @@ class AgnesVideoClient:
             except Exception as e:
                 last_err = str(e)
                 attempt += 1
+                print(f"    [GET 异常] {e}，第 {attempt}/{self.max_retries} 次重试，"
+                      f"{1.5 * attempt:.1f}s 后重试")
                 time.sleep(1.5 * attempt)
 
         return {
@@ -207,7 +232,8 @@ class AgnesVideoClient:
     def _save_video_from_url(self, url: str, save_path: str):
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
 
-        r = requests.get(url, timeout=120, verify=False, stream=True)
+        # [TIMEOUT-FIX] connect 10s / 单次 read 120s，避免下载环节连不上也要等满 120s。
+        r = requests.get(url, timeout=(10, 120), verify=False, stream=True)
         r.raise_for_status()
 
         with open(save_path, "wb") as f:
@@ -323,12 +349,22 @@ class AgnesVideoClient:
 
         elapsed = 0.0
         last_query_result = None
+        poll_count = 0
+        # [LOG-FIX] 轮询阶段原来完全没有输出，视频生成通常要几分钟，
+        # 期间脚本其实在正常工作，但外部看起来像卡死。这里每隔约 30 秒
+        # （poll_interval * HEARTBEAT_EVERY）打印一次心跳，带上当前状态。
+        HEARTBEAT_EVERY = max(1, int(30 / poll_interval)) if poll_interval > 0 else 15
 
         while elapsed < max_wait_seconds:
             query_result = self.query_video(video_id)
             last_query_result = query_result
+            poll_count += 1
 
             status = query_result.get("status")
+
+            if poll_count % HEARTBEAT_EVERY == 0 and status not in ("completed", "failed"):
+                print(f"    ...视频生成中，video_id={video_id}，"
+                      f"已等待 {int(elapsed)}s/{max_wait_seconds}s，status={status}")
 
             if status == "completed":
                 video_url = self._extract_video_url(query_result)
