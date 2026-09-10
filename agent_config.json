@@ -3,6 +3,9 @@
   "system_tool_call": true,
   "claude_md_file": "Agent.md",
   "verbose": true,
+  "perception": {
+    "token_estimate_enabled": true
+  },
   "memory_enabled": true,
   "memory": {
     "per_turn_retrieval_enabled": false,
