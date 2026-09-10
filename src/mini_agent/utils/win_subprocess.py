@@ -24,14 +24,16 @@ tools/builtin.py 的 bash 工具等），每次调用都会各自弹一下，所
 有问题（比如某个特殊子进程确实需要看得见控制台、或者需要换一种隐藏
 窗口的方式），就得挨个文件去改。
 
-本模块把"隐藏窗口"这个决定封装成三个跟标准库同名、参数完全透传的函数：
-`run` / `Popen` / `check_output`。项目里所有需要起子进程的地方，一律：
+本模块把"隐藏窗口"这个决定封装成几个跟标准库/asyncio 同名、参数完全透传的
+函数：`run` / `Popen` / `check_output` / `create_subprocess_exec`。项目里
+所有需要起子进程的地方，一律：
 
     from mini_agent.utils import win_subprocess
 
-    win_subprocess.run(...)           # 而不是 subprocess.run(...)
-    win_subprocess.Popen(...)         # 而不是 subprocess.Popen(...)
-    win_subprocess.check_output(...)  # 而不是 subprocess.check_output(...)
+    win_subprocess.run(...)                      # 而不是 subprocess.run(...)
+    win_subprocess.Popen(...)                    # 而不是 subprocess.Popen(...)
+    win_subprocess.check_output(...)             # 而不是 subprocess.check_output(...)
+    await win_subprocess.create_subprocess_exec(...)  # 而不是 asyncio.create_subprocess_exec(...)
 
 调用方原有的 `creationflags`（比如 `subprocess.CREATE_NEW_PROCESS_GROUP`
 这种跟"是否弹窗"无关、用于进程组管理的 flag）照常传，本模块只是在
@@ -44,6 +46,7 @@ Windows 上把 `CREATE_NO_WINDOW` OR 进去，不会覆盖调用方自己传的 
 
 from __future__ import annotations
 
+import asyncio as _asyncio
 import subprocess as _subprocess
 import sys
 from typing import Any
@@ -78,3 +81,13 @@ def Popen(*args: Any, **kwargs: Any):  # noqa: N802 (与 subprocess.Popen 保持
 def check_output(*args: Any, **kwargs: Any):
     """等价于 ``subprocess.check_output``，Windows 上自动不弹控制台窗口。"""
     return _subprocess.check_output(*args, **_with_no_window(kwargs))
+
+
+async def create_subprocess_exec(*args: Any, **kwargs: Any):
+    """等价于 ``asyncio.create_subprocess_exec``，Windows 上自动不弹控制台窗口。
+
+    用于长驻的外部引擎子进程（sing-box / xray 这类通过 asyncio 拉起、
+    异步 wait/terminate 的场景）；一次性/同步的子进程请用上面的
+    ``run`` / ``Popen`` / ``check_output``。
+    """
+    return await _asyncio.create_subprocess_exec(*args, **_with_no_window(kwargs))

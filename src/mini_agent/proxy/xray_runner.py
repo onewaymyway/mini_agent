@@ -17,6 +17,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..utils import win_subprocess
 from .subscription import ProxyNode
 
 
@@ -184,7 +185,7 @@ async def start_local_proxy(node: ProxyNode, local_port: int | None = None) -> R
     config_path = Path(path_str)
     config_path.write_text(json.dumps(config), encoding="utf-8")
 
-    process = await asyncio.create_subprocess_exec(
+    process = await win_subprocess.create_subprocess_exec(
         binary,
         "run",
         "-c",

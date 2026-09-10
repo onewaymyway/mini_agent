@@ -30,6 +30,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..utils import win_subprocess
 from .subscription import ProxyNode
 from .xray_runner import find_free_port
 
@@ -245,7 +246,7 @@ async def start_local_proxy_singbox(node: ProxyNode, local_port: int | None = No
     config_path = Path(path_str)
     config_path.write_text(json.dumps(config), encoding="utf-8")
 
-    process = await asyncio.create_subprocess_exec(
+    process = await win_subprocess.create_subprocess_exec(
         binary, "run", "-c", str(config_path),
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
     )
