@@ -1,148 +1,131 @@
 #!/usr/bin/env python3
-"""歌词对齐校正脚本 v3（在 v2 基础上加拼音模糊匹配，兜底"ASR+diff"方案的
-进一步改进；不需要 ctc-forced-aligner/torch/onnxruntime 这类重依赖，只需要
-纯 Python 小包 pypinyin，安装成功率接近 100%，适合 align_lyrics_forced.py
-因为环境限制装不上/跑不通时使用）。
+"""歌词对齐校正脚本 v3（拼音模糊匹配 + 单调窗口约束 + 挂起队列区间插值）。
 
-## 相对 v2 新增的改进：拼音层面的模糊匹配
-
-v2 的窗口兜底匹配（`_best_window_match`）比较的是**归一化后的汉字**是否
-相同。问题是中文 ASR 出错很大一部分是**同音字/近音字替换**（比如把
-"科技的窍门"识别成"可惜的窗门"、把"再见"识别成"在见"），这类错误在
-字形上完全不匹配，但读音是一样或很接近的——精确比汉字的话直接判定
-"整句都不相似"，只能靠插值，而插值不含任何真实演唱节奏信息。
-
-v3 给窗口匹配额外加了一条"拼音相似度"通道：把这一行歌词和候选 ASR
-segment 都转成拼音序列（`pypinyin.lazy_pinyin`），再算一次
-`difflib.SequenceMatcher` 相似度，跟"汉字相似度"取较大值。同音字/
-近音字替换导致的整句识别错误，在拼音层面基本还是高度相似的，能明显
-提高窗口匹配命中率，减少退化成"纯插值"的行数。
-
-**只在窗口匹配（整句级）加拼音通道，字符级精确锚点阶段不改**：字符级
-锚点是单字符比较，中文单音节同音字极多（"的/地/得/低/滴/敌"等等都读
-"de"），如果在锚点阶段也用拼音比较，会引入大量虚假的单字锚点，反而
-可能让对齐结果变差。整句级别的拼音序列所需要连续匹配的音节数多得多，
-误判概率低得多，所以只在这一层加拼音通道，风险可控。
-
-依赖：仅需 `pypinyin`（纯 Python，无 C 扩展/无需网络下载模型，安装几乎
-不会失败）：
-    pip install pypinyin --break-system-packages
-未安装时会自动退化为只用汉字相似度（等价于 v2 的行为），不会报错。
+不需要 ctc-forced-aligner/torch/onnxruntime 这类重依赖，只需要纯 Python
+小包 pypinyin（可选），安装成功率接近 100%，适合 align_lyrics_forced.py
+因为环境限制装不上/跑不通时使用。
 
 用法：
     python align_lyrics_v3.py asr_raw.json lyrics.txt --save-path lyrics_timed.json --save-srt lyrics.srt
 
-## 本次优化（在拼音模糊匹配基础上继续加固）
+依赖：仅标准库；若安装了 `pypinyin`（拼音模糊匹配）和/或
+`opencc-python-reimplemented`（简繁转换），效果更好，未安装时自动退化，
+不会报错。
 
-1. **自动忽略歌词首行的歌名**：很多 `lyrics.txt` 习惯性地把歌名写在
-   第一行（后面才是真正要唱的 `[Intro]`/正文），这一行从不会被唱出来，
-   拿去跟 ASR 比对只会制造一条错误的低置信度行、甚至污染后面的单调
-   游标。默认行为是：整份歌词里**第一条非空、且本身不是段落标记的
-   行**会被当成歌名自动跳过，不参与对齐、也不出现在输出结果里。如果
-   歌词文件本来就没有歌名（第一行直接就是 `[Intro]` 或正文），脚本不会
-   误删任何一行——判定逻辑只在"第一行不是段落标记"时才生效。极少数
-   歌词第一行本来就是要唱的正文（没有歌名）的情况下，可以加
-   `--no-skip-title` 关掉这个行为。
-2. **段落标记识别更宽松**：不仅认 `[Intro]`/`[Verse 1]` 这种半角方括号，
-   也认 `【副歌】`/`（间奏）`/`(Bridge):` 等中英文括号 + 可选尾部冒号的
-   写法，统一在对齐前过滤掉，不会被当成一句要对齐的歌词。
-3. **窗口模糊匹配阶段加入"字数对齐"约束**：v2/v3 之前的窗口匹配只看
-   相似度 ratio 最高的候选，容易选中"文字很像但长度差很多"的错误
-   片段（比如把一句 10 个字的歌词匹配到 ASR 里一个只有 3 个字的碎片
-   segment 上）。现在额外算一个**长度惩罚系数**：候选片段的有效字数
-   和歌词行字数差得越多，最终得分惩罚越重；差得在 30% 以内基本不惩罚。
-   "有效字数"优先按中文字符数计，如果歌词是中文但 ASR 识别失败输出
-   了英文/拼音（这种情况下双方"字数"单位根本不是一回事，按字符数硬比
-   没有意义），会自动识别这种"中文行 vs 非中文候选"的情况并大幅放宽
-   长度惩罚，避免因为单位不可比而错误地否决掉本来正确的候选。
-4. **匹配优先级更明确**：窗口匹配时，汉字相似度和拼音相似度不再简单
-   取较大值，而是分级："汉字也能对上"的候选（汉字相似度达到较高阈值）
-   优先选中；汉字对不上但拼音明显更相似（同音字/近音字替换）的候选
-   次优先；两者都很弱时才会退化成最后一档的"插值兜底猜测"。这样保证
-   了"中文也都能匹配上的"优先于"只有读音能对上的"，读音能对上的又
-   优先于纯插值瞎猜。输出的 `method` 字段里会标注具体命中的是
-   `hanzi`/`pinyin` 哪一档，方便复核。
-5. **修复了一个用真实歌曲数据实测才暴露出来的严重故障：一行没有对应
-   ASR 文本的歌词（纯语气词/和声/间奏，比如 "oh yo yo yo yo yo"），
-   会把后面几十行全部拖成插值，时间戳完全脱离真实演唱进度**。
-   根因有两层：
-   - 就近窗口（默认 45 秒）内找不到像样的匹配时，脚本会把搜索范围
-     放宽到 3 倍窗口（135 秒）再试一次。如果这一行本来就没有真实
-     对应文本，放宽窗口后很容易随便捞到一个"矮子里拔将军"的弱匹配，
-     一旦采信，时间游标会被带着凭空跳出几十上百秒，连带把 ASR 搜索
-     指针也跳过中间一大段——后面本该能对上的若干行，字符级锚点因为
-     "起始时间早于游标"被判定不可信而放弃，窗口搜索也因为搜索指针已
-     跳过而找不到，只能一路退化成插值。现在放宽窗口后找到的候选必须
-     明显比就近窗口内的候选更可信（更高的 `wide_match_threshold`
-     单独把关），达不到就宁可让这一行退化成插值（只占用很小的时间
-     片，不会带偏游标），也不采信有风险的远距离匹配。
-   - 纯拼音串（尤其是十几个音节以上的长句）用 `difflib` 比较相似度，
-     存在"内容完全不相关的两句中文歌词，拼音也能偶然凑出还不错的
-     相似度"的噪声（实测复现：两句毫不相关的歌词汉字相似度只有
-     0.05，拼音相似度却能到 0.51）。现在拼音档只在"候选片段本身不是
-     中文"（ASR 识别失败退化成英文/拼音）或者"汉字相似度没有低到
-     离谱"这两种情况下才生效，排除掉这种偶然性噪声。
+## 本次优化（v3.1）：修复"一行没匹配上就带偏整首歌"的级联故障
 
----
+### 故障复现（用真实歌曲《勇者与恶龙》数据实测发现）
 
-以下是 v2 的原始说明（对齐算法主体思路不变，只是给窗口匹配加了拼音通道）：
+这首歌第 0 个 ASR segment（0~38s，覆盖 Verse1 全部 8 行）的最后一个
+"word" 是识别失败输出的占位乱码字符（`�`），但它的时间戳跨度长达
+8 秒多（29.76s~38.02s）——也就是说，Verse2 开头两行歌词（"时间流逝，
+勇者变成了国王……" / "曾经的誓言，早已被权力吞噬……"）对应的这段真实
+演唱音频，ASR 完全没有识别出任何文字，属于**这两行歌词在 ASR 结果里
+彻底找不到对应文本**的情况（和纯语气词"la la la"性质一样，只是原因
+不同：一个是真的没唱词，一个是 ASR 识别失败）。
 
-歌词对齐校正脚本 v2（精确匹配优先 + 归一化 + 单调窗口约束）。
+旧版本（v2/v3 之前的迭代）处理"这一行完全没对应文本"的策略是**逐行
+决策、立即定案**：当前行在窗口内找不到强匹配，就放宽窗口（3倍）再找
+一次，只要分数过了一个不算高的阈值（`window_match_threshold=0.28`，
+拼音档还打 9 折）就立刻采信、游标立刻跳过去。于是"时间流逝……"这行
+被一个仅 0.39 分的拼音模糊匹配错误地"就近拉郎配"到了本该属于后面第
+14 行歌词的 ASR segment（57.0~60.4s）上——这个匹配本身是**这一轮里
+分数最高的候选**，但它本不该被采信，因为它明显是"矮子里拔将军"：
+真正正确的答案是"这行没有对应文本，应该插值"。
 
-相比最初版本，这一版修复了一个用真实歌曲数据实测才暴露出来的严重问题：
-**重复段落（副歌/主歌重复）会导致时间戳错误地"跳"到另一次重复的位置**。
+一旦这个错误判断被采信，后果是灾难性的：游标 `cursor_time` 和 ASR
+搜索指针 `search_from_idx` 被强行推到了 57s 附近，中间 24s~57s 这一
+大段本该属于第 9~13 行歌词的真实 ASR segment 全部被跳过——不仅这一行
+本身对错了，后面十几行全部被拖成级联插值，从此彻底脱离真实演唱进度。
 
-## 问题复现
+### 根因
 
-以《进化再论》为例，歌词第 17 行"科技的篇章，是进化史上最美的灿烂。"
-（第一段副歌最后一句）真实演唱在 ~50-54s；第 18 行"从蒸汽机的轰鸣，到
-电灯的明亮，"（第一段 Verse4 第一句）真实演唱紧接着在 ~54.7s。但最初
-版本把第 18 行错误对齐到了 ~156s——那其实是**第二遍重复**演唱这句歌词
-的时间点。
+问题不是"阈值定得不够高"（阈值再高也总会有边界情况），而是**决策
+时机太早**：逐行、立即、不可撤销地决定"要不要采信当前找到的最佳候选"，
+一旦某一行确实没有对应文本，算法却被强迫在"矮子里拔将军"和"这行没
+词"之间选一个——旧版本因为没有"这行没词，先放着"这个选项，只能矮子
+里拔将军，一步错步步错。
 
-## 根因
+### 修复：挂起队列（pending queue）+ 区间插值
 
-最初版本对"整句锚点覆盖率过低"的行，会退化成"整句级别模糊匹配"：拿
-这一行歌词跟**全曲所有** ASR segment 做相似度比较，取全局相似度最高的
-一个。问题是歌词包含重复段落（同一句词会在歌里唱两遍），"全局最相似"
-不等于"时间上最合理"——如果第二次演唱那句歌词恰好被 ASR 识别得更准
-（相似度更高），就会被错误地选中，产生大幅度跳变，并且这个错误会像
-多米诺骨牌一样带歪后面所有行的对齐。字符级精确匹配阶段的
-`difflib.SequenceMatcher` 虽然本身保证选出的锚点在两个序列里都是单调
-递增的，但当标准歌词本身有大段重复文本时，它选出的"全局最长公共子
-序列"完全可能把标准歌词第二次出现的字符匹配到 ASR 里第一次出现的时间
-上（反之亦然），同样会产生错位。
+核心思路改成**"不确定就先放着，等后面找到确定的锚点再回头统一处理"**：
 
-## 修复：单调游标 + 局部窗口搜索
+1. 逐行尝试找"高置信度"锚点（字符级精确锚点覆盖率达标；或窗口模糊
+   匹配汉字/拼音相似度达到**分别设定、拼音档更严格**的确认阈值
+   `hanzi_confirm_threshold` / `pinyin_confirm_threshold`）。
+2. 找到高置信度锚点：视为"确定点"。如果这个确定点之前有挂起
+   （pending）、还没决定时间戳的行，此时才把这一整段挂起的行，按
+   **各行文本字数比例**，在"上一个确定点结束时间"到"这个确定点开始
+   时间"之间做区间插值分配——不再是逐行退化成"游标+0.15s"的伪时间戳，
+   而是合理地把这段真实存在的音频时长（不管是没唱到、还是唱了但
+   ASR 没识别出来）按字数比例分给这几行，插值结果仍然落在正确的时间
+   区间内，不会把后面行的搜索带偏。
+3. 找不到高置信度锚点：这一行进入挂起队列，**不移动游标、不移动
+   ASR 搜索指针**，直接处理下一行——把"是否要退化成插值"的决定权
+   交给未来，而不是当场用一个勉强及格的弱匹配去赌。
+4. 处理完所有行后，如果挂起队列里还有行没被"回收"（比如歌曲结尾的
+   人声渐弱段、连续几行语气词一直到曲终），用最后一个确定点到音频
+   总时长（`asr_result['duration']`，没有则用最后一个 segment 的
+   结束时间）之间的区间做同样的比例插值。
 
-核心思路很简单：**歌词是按时间顺序唱的，所以对齐结果也必须是时间上
-单调不减的**。v2 引入一个随着行号推进单调前移的时间游标 `cursor_time`：
-- 优先使用字符级锚点结果，但**只有当锚点覆盖率足够高、且锚点起始时间
-  不早于游标（允许极小的回退容差）时才采信**——覆盖率低或者违反单调
-  性的锚点，说明很可能是重复文本导致的误匹配，直接放弃，改用下面的
-  窗口匹配。
-- 窗口匹配：只在 `[cursor_time, cursor_time + window_seconds]`
-  （默认 45 秒，找不到会再翻倍找一次）范围内的 ASR segment 里找
-  和这一行歌词整体相似度最高的一段（可以跨 1-3 个 segment 拼接），
-  而不是在全曲范围内找。这样即使歌词有重复段落，也只会匹配到"这一次"
-  唱到的那个时间点，不会跳到未来或过去的重复处。
-- 每处理完一行，游标前移到该行结束时间，下一行的搜索永远从游标开始，
-  绝不回头。
+这样"一行没有对应文本"造成的影响，最坏情况下也只是**这一行本身**
+（以及紧挨着它、同样没有对应文本的相邻行）的时间戳是插值猜测的，
+不会传染给后面任何本来能对上的行——游标和搜索指针只在真正找到高
+置信度锚点时才前进，绝不会被一个勉强及格的弱匹配带偏。
 
-**已知局限（数据层面，非算法能修复的问题）**：如果实际演唱中出现了
-"标准歌词文本里没有对应文字"的重复（比如audio 实际把 Verse5 也完整
-重复唱了一遍，但用户提供的 `lyrics.txt` 只写了一遍 Verse5），单调窗口
-搜索能保证不出现离谱跳变，但那一段重复演唱期间不会有任何标准歌词行能
-命中它，相邻行的时间戳会被拉长/挤压来"跨过"这段无对应文本的音频。
-遇到大范围行的 `method` 标注为 `interpolated`（且持续好几行）时，
-应提示用户核对 `lyrics.txt` 是否漏掉了某段重复歌词。
+### 配套调整：拼音档确认阈值单独收紧
 
-用法：
-    python align_lyrics_v3.py asr_raw.json lyrics.txt --save-path lyrics_timed.json --save-srt lyrics.srt
+`_best_window_match` 现在会分别返回"汉字最佳候选"和"拼音最佳候选"
+（不再合并成单一分数），调用方按候选类型使用不同阈值判断是否够格
+"确认"：
+- 汉字候选：`hanzi_confirm_threshold`（默认 0.5）。
+- 拼音候选：`pinyin_confirm_threshold`（默认 0.6，明显高于汉字档）。
+  之所以要更高，是因为纯拼音串用 `difflib` 比较相似度天然存在噪声——
+  实测这份数据里，好几个错误的拼音匹配分数都落在 0.35~0.49 这个
+  区间，如果沿用旧版的 0.28 门槛（拼音打 9 折后约等于 0.26 就能过），
+  这些错误匹配全部会被误判成"确认"，重新引发级联故障；拉到 0.6 之后
+  这些噪声匹配基本都会被挡在门外，只有真正"同音字/近音字整句替换"
+  这种高置信度的拼音相似情形才能通过。
+- 就近窗口内两档都够不到确认阈值时，会再放宽窗口（默认 3 倍）用更
+  严格的 `*_confirm_threshold_wide` 门槛试一次；还是够不到就老老实实
+  进挂起队列，等后面的确定点来插值兜底，不再"矮子里拔将军"。
 
-依赖：仅标准库；若安装了 `opencc-python-reimplemented`
-（`pip install opencc-python-reimplemented`），简繁转换会更准确全面，
-未安装时退化使用脚本内置的高频字对照表（覆盖常见歌词用字，但不完整）。
+以下是历史版本的说明（对齐算法主体思路不变，仅第二阶段的决策方式
+从"逐行立即定案"改成了"挂起队列 + 区间插值"，其余部分——归一化、
+简繁转换、拼音模糊匹配、字数对齐惩罚、段落标记/歌名过滤——都延续
+下来）：
+
+## v2：单调游标 + 局部窗口搜索
+
+歌词是按时间顺序唱的，所以对齐结果也必须是时间上单调不减的。引入
+一个随着行号推进单调前移的时间游标 `cursor_time`：优先使用字符级
+锚点结果，但只有当锚点覆盖率足够高、且锚点起始时间不早于游标时才
+采信；否则改用窗口匹配——只在 `[cursor_time, cursor_time + window]`
+范围内的 ASR segment 里找相似度最高的一段，不在全曲范围内找，这样
+即使歌词有重复段落，也只会匹配到"这一次"唱到的时间点。
+
+## 拼音模糊匹配（应对同音字/近音字类 ASR 错误）
+
+中文 ASR 出错很大一部分是同音字/近音字替换（比如把"再见"识别成
+"在见"），这类错误在字形上完全不匹配、但读音一样或很接近。窗口匹配
+阶段把歌词行和候选 ASR segment 都转成拼音序列
+（`pypinyin.lazy_pinyin`），再算一次 `difflib.SequenceMatcher`
+相似度，作为汉字相似度之外的第二条命中通道。只在整句级窗口匹配加
+这条通道，字符级精确锚点阶段不改——单音节同音字太多（"的/地/得"
+都读 "de"），字符级加拼音会引入大量虚假锚点。
+
+## 字数对齐惩罚
+
+窗口匹配候选的"有效字数"（中文按汉字数、非中文按字符数）和歌词行
+字数差得越多，最终得分惩罚越重，避免"文字很像但长度差很多"的碎片
+被误选中；歌词是中文但候选是 ASR 识别失败退化输出的英文/拼音这种
+单位不可比的情况，会自动放宽惩罚。
+
+## 歌名 / 段落标记自动过滤
+
+默认跳过歌词首行的歌名（第一条非空、且本身不是段落标记的行）；
+`[Intro]`/`[Verse 1]`/`【副歌】`/`(Bridge):` 等半角/全角括号段落标记
+统一识别并过滤，不参与对齐。
 """
 
 import argparse
@@ -152,7 +135,7 @@ import re
 import sys
 import unicodedata
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # ── 拼音（可选依赖，装不上就退化成只用汉字相似度，不报错）────────────
 try:
@@ -203,7 +186,7 @@ except Exception:
         "梯": "梯", "並": "并", "麼": "么", "個": "个", "們": "们", "來": "来",
         "後": "后", "時": "时", "間": "间", "與": "与", "當": "当", "還": "还",
         "說": "说", "認": "认", "識": "识", "應": "应", "對": "对", "體": "体",
-        "頭": "头", "見": "见", "長": "长", "樣": "样", "軟": "软", "們": "们",
+        "頭": "头", "見": "见", "長": "长", "樣": "样", "軟": "软",
     }
 
     def _t2s(ch: str) -> str:
@@ -219,8 +202,15 @@ def normalize_char(ch: str) -> str:
     return ch
 
 
+# ASR 常见的识别失败占位/替换字符，不携带任何文本信息，不应参与匹配，
+# 也不该被当成有意义的字符时间点。
+_GARBAGE_CHARS = {"\ufffd", "�"}
+
+
 def _is_ignorable(ch: str) -> bool:
     if ch.strip() == "":
+        return True
+    if ch in _GARBAGE_CHARS:
         return True
     if unicodedata.category(ch).startswith("P"):
         return True
@@ -234,6 +224,13 @@ def normalize_text(text: str) -> str:
 # ── ASR 展开成逐字符时间戳 ────────────────────────────────────────────
 
 def _flatten_asr_chars(asr_result: dict) -> List[dict]:
+    """把 ASR segments 展开成逐字符时间戳列表。
+
+    识别失败产生的占位乱码字符（`�`）会被跳过——这类字符不仅本身没有
+    文本信息、无法参与匹配，它的时间跨度往往异常巨大（实测复现过一个
+    占位字符独占 8 秒多的真实演唱时间），如果不过滤，虽然不会被直接
+    匹配上（不影响锚点正确性），但留着没有任何用处，干脆滤掉更干净。
+    """
     chars = []
     for seg_idx, seg in enumerate(asr_result.get("segments", [])):
         words = seg.get("words") or []
@@ -352,63 +349,39 @@ def _length_penalty(norm_line: str, candidate: str) -> float:
     return 0.35 + 0.65 * (ratio / 0.7)
 
 
-# 汉字相似度达到这个阈值就认为"中文也对上了"，优先采信，不再看拼音档。
-_HANZI_GOOD_THRESHOLD = 0.55
-# 拼音档命中时打的折扣：同样是候选，"读音对上但字对不上"的可信度天然
-# 低于"字也对上"，给个折扣，避免拼音层面偶然的高相似度盖过更靠谱的
-# 汉字候选（两者会在不同 span 上分别比较，折扣后再统一取最大值）。
-_PINYIN_DISCOUNT = 0.92
 # 拼音档生效的汉字相似度下限：只有当候选片段本身是中文、且和歌词行的
-# 汉字相似度不算太离谱（>= 此值）时，才信任拼音层面的相似度。
-#
-# 起因：纯拼音串（尤其是十几个音节以上的长句）用 difflib 比较，天然
-# 存在"风马牛不相及的两句话拼音也能凑出还不错的相似度"的噪声——比如
-# "大数据比你妈还懂你，杀熟杀得悄无声息" 和"他们拿他慢慢来的鬼话，
-# 复杂的问题不代表无法被拿下" 这两句内容毫不相关的歌词，汉字相似度
-# 只有 0.05（几乎没有共同字），拼音相似度却能到 0.51——如果不加约束，
-# 这类"偶然拼音相似"的错误候选会盖过真正正确、但汉字只是部分对上的
-# 候选（同音字替换场景下汉字相似度通常不会低到 0.05 这种程度，还是会
-# 保留相当一部分正确字），造成大幅跳变的错误对齐。
-#
-# 只有当候选片段是"非中文"（典型场景：ASR 把这句中文识别失败，输出
-# 了英文/拼音字母）时才不做这个下限检查——这种情况下两边字符集完全
-# 不同，汉字相似度天然就是 0，不能拿来当"是否可信"的判据，此时应该
-# 完全依赖拼音通道（这正是"ASR 识别失败退化成英文"这类特殊情况需要
-# 拼音兜底的场景，不应该被这个下限误伤）。
+# 汉字相似度不算太离谱（>= 此值）时，才信任拼音层面的相似度。见文件
+# 头部说明："大数据比你妈还懂你" vs "他们拿他慢慢来的鬼话" 这种毫不
+# 相关的两句歌词，汉字相似度只有 0.05，拼音相似度却能到 0.51——如果
+# 候选片段是中文，必须先过这道汉字相似度下限，才允许信任拼音分数。
 _PINYIN_HANZI_FLOOR = 0.15
 
 
 def _best_window_match(norm_line: str, segments: List[dict], seg_norm: List[str],
                         start_idx: int, end_time: float, max_span: int = 3,
-                        pinyin_line: str = "", seg_pinyin: Optional[List[str]] = None):
+                        pinyin_line: str = "", seg_pinyin: Optional[List[str]] = None
+                        ) -> Dict[str, Tuple[float, Optional[Tuple[int, int]]]]:
     """在 segments[start_idx:] 中、start_time <= end_time 的范围内，
     找与 norm_line 最匹配的连续 segment 拼接（跨 1~max_span 个 segment）。
 
-    匹配优先级分三档（本次优化明确化）：
-    1. **汉字也对上**：汉字层面相似度达到 `_HANZI_GOOD_THRESHOLD`，
-       直接按汉字相似度打分，这一档最可信。
-    2. **拼音能对上**：汉字对不上（同音字/近音字替换导致），但拼音层面
-       相似度更高——这类候选打个折扣（`_PINYIN_DISCOUNT`）后再参与
-       比较，比"汉字也对上"的候选低一档，但仍然明显优于瞎猜插值。
-       只有候选片段本身是非中文（ASR 识别失败退化成英文/拼音），或者
-       汉字相似度至少不算太离谱（`_PINYIN_HANZI_FLOOR`）时才信任这一档，
-       避免"风马牛不相及的中文，拼音偶然凑相似"这种噪声（见
-       `_PINYIN_HANZI_FLOOR` 的说明）。
-    3. 两档都拿不到足够高的分，调用方会用 `window_match_threshold`
-       过滤掉，最终退化成插值兜底（"最后猜测其他的匹配"）。
+    **与旧版本的关键区别**：不再把"汉字最佳候选"和"拼音最佳候选"合并
+    成一个分数就返回，而是分别独立返回两档里各自的最佳候选，交给调用
+    方按不同的"确认阈值"分别判断是否够格采信——拼音档天然比汉字档
+    噪声更大（见 `_PINYIN_HANZI_FLOOR` 说明），如果合并成一个分数，
+    调用方就没法对两档区别对待，容易被拼音层面偶然凑出的相似度带偏。
 
-    另外引入**字数对齐**：候选片段的有效字数和歌词行字数差得越多，
-    最终得分会被 `_length_penalty` 按比例打折——避免"文字很像但明显
-    长度对不上"的碎片被误选中；如果歌词是中文而候选是 ASR 识别失败
-    输出的非中文文本，两边字数单位不可比，会自动放宽这个惩罚（见
-    `_length_penalty` 里的说明）。
+    引入了**字数对齐**：候选片段的有效字数和歌词行字数差得越多，最终
+    得分会被 `_length_penalty` 按比例打折——避免"文字很像但明显长度
+    对不上"的碎片被误选中；如果歌词是中文而候选是 ASR 识别失败输出的
+    非中文文本，两边字数单位不可比，会自动放宽这个惩罚。
 
-    若未安装 pypinyin（`pinyin_line`/`seg_pinyin` 为空），拼音档不生效，
-    行为退化为只用"汉字相似度 * 长度惩罚"。
+    若未安装 pypinyin（`pinyin_line`/`seg_pinyin` 为空），拼音档始终
+    是 (0.0, None)，调用方自然会跳过它，等价于只用汉字相似度。
 
-    返回 (best_score, (seg_i, seg_j), match_kind) 或 (0.0, None, None)。
+    返回 {"hanzi": (score, (seg_i, seg_j) | None), "pinyin": (score, span | None)}。
     """
-    best_score, best_span, best_kind = 0.0, None, None
+    best_hanzi = (0.0, None)
+    best_pinyin = (0.0, None)
     i = start_idx
     n = len(segments)
     while i < n and segments[i]["start"] <= end_time:
@@ -426,49 +399,121 @@ def _best_window_match(norm_line: str, segments: List[dict], seg_norm: List[str]
 
             length_penalty = _length_penalty(norm_line, concat)
             hanzi_ratio = difflib.SequenceMatcher(a=norm_line, b=concat, autojunk=False).ratio()
+            hanzi_score = hanzi_ratio * length_penalty
+            if hanzi_score > best_hanzi[0]:
+                best_hanzi = (hanzi_score, (i, j))
 
-            pinyin_ratio = 0.0
             if pinyin_line and py_concat:
                 _, cand_is_cjk = _effective_length(concat)
                 if (not cand_is_cjk) or hanzi_ratio >= _PINYIN_HANZI_FLOOR:
                     pinyin_ratio = difflib.SequenceMatcher(
                         a=pinyin_line, b=py_concat, autojunk=False).ratio()
+                    pinyin_score = pinyin_ratio * length_penalty
+                    if pinyin_score > best_pinyin[0]:
+                        best_pinyin = (pinyin_score, (i, j))
                 # 候选是中文但汉字相似度低于下限：两句大概率毫不相关，
-                # 拼音层面的相似度就算数值不低也当噪声丢弃，pinyin_ratio
-                # 保持 0，不参与后面的打分。
-
-            if hanzi_ratio >= _HANZI_GOOD_THRESHOLD or hanzi_ratio >= pinyin_ratio:
-                score, kind = hanzi_ratio * length_penalty, "hanzi"
-            else:
-                score, kind = pinyin_ratio * _PINYIN_DISCOUNT * length_penalty, "pinyin"
-
-            if score > best_score:
-                best_score, best_span, best_kind = score, (i, j), kind
+                # 拼音层面的相似度就算数值不低也当噪声丢弃，不参与打分。
         i += 1
-    return best_score, best_span, best_kind
+    return {"hanzi": best_hanzi, "pinyin": best_pinyin}
+
+
+def _find_confirmed_window_match(
+    norm_line: str, segments: List[dict], seg_norm: List[str],
+    search_from_idx: int, cursor_time: float, window_seconds: float,
+    pinyin_line: str, seg_pinyin: Optional[List[str]],
+    hanzi_confirm_threshold: float, pinyin_confirm_threshold: float,
+    hanzi_confirm_threshold_wide: float, pinyin_confirm_threshold_wide: float,
+) -> Optional[Tuple[Tuple[int, int], str, float]]:
+    """就近窗口 → （不够格再）放宽窗口，两档都要用各自的"确认阈值"
+    单独把关；两次都够不到就返回 None（调用方应把这一行放进挂起队列，
+    不要采信一个"矮子里拔将军"的弱匹配——弱匹配一旦被采信，游标和
+    搜索指针会被带偏，后面一长串本该能对上的行会被连带拖成插值，
+    详见文件头部"故障复现"说明）。
+
+    返回 (span, kind, score) 或 None。
+    """
+    for widen, hanzi_th, pinyin_th in (
+        (1.0, hanzi_confirm_threshold, pinyin_confirm_threshold),
+        (3.0, hanzi_confirm_threshold_wide, pinyin_confirm_threshold_wide),
+    ):
+        cand = _best_window_match(
+            norm_line, segments, seg_norm, search_from_idx,
+            end_time=cursor_time + window_seconds * widen,
+            pinyin_line=pinyin_line, seg_pinyin=seg_pinyin,
+        )
+        hanzi_score, hanzi_span = cand["hanzi"]
+        pinyin_score, pinyin_span = cand["pinyin"]
+        if hanzi_span is not None and hanzi_score >= hanzi_th:
+            return hanzi_span, "hanzi", hanzi_score
+        if pinyin_span is not None and pinyin_score >= pinyin_th:
+            return pinyin_span, "pinyin", pinyin_score
+    return None
+
+
+def _interpolate_block(pending: List[dict], block_start: float, block_end: float,
+                        line_gap: float) -> None:
+    """把挂起队列里的若干行，按各自文本字数比例，均分插值到
+    `[block_start, block_end]` 这个真实存在的时间区间内。
+
+    这是相对旧版"逐行退化成 cursor+line_gap"的核心改进：旧版每插值
+    一行就立即让游标前移一点点（相当于假设这一行只占极短时间），
+    完全不管这一行和下一个确定锚点之间实际上还有多长的真实音频
+    时长；新版知道"下一个确定点在哪"，所以能把这段真实存在的时长
+    合理地分给挂起的这几行（字数越多分到的时长越长），插值结果落在
+    正确的时间区间内，不会制造出脱离实际演唱进度的时间戳。
+
+    直接原地修改 `pending` 里每个 dict 的 `start`/`end` 字段。
+    """
+    n = len(pending)
+    if n == 0:
+        return
+    if block_end <= block_start:
+        block_end = block_start + 0.3 * n
+    avail = max(block_end - block_start - line_gap * n, 0.3 * n)
+    lengths = [max(len(p["text"]), 1) for p in pending]
+    total = sum(lengths)
+    t = block_start
+    for p, ln in zip(pending, lengths):
+        dur = avail * (ln / total) if total else avail / n
+        dur = max(dur, 0.3)
+        p["start"] = t
+        p["end"] = t + dur
+        p["method"] = "interpolated(pending-block)"
+        t = p["end"] + line_gap
 
 
 def align(asr_result: dict, lyrics_text: str, line_gap: float = 0.15,
           min_anchor: int = 2, window_seconds: float = 45.0,
           anchor_coverage_threshold: float = 0.4,
-          window_match_threshold: float = 0.28,
-          wide_match_threshold: float = 0.45,
+          hanzi_confirm_threshold: float = 0.5,
+          pinyin_confirm_threshold: float = 0.6,
+          hanzi_confirm_threshold_wide: float = 0.62,
+          pinyin_confirm_threshold_wide: float = 0.72,
           skip_title: bool = True) -> dict:
-    """对齐标准歌词与 ASR 时间戳（锚点优先 + 单调窗口约束兜底）。
+    """对齐标准歌词与 ASR 时间戳（锚点优先 + 单调窗口约束 + 挂起队列区间插值）。
 
     `skip_title=True`（默认）时会自动丢弃歌词首行的歌名和所有段落标记
     行（`[Intro]`/`[Verse 1]`/`【副歌】` 等），见 `_load_standard_lines`。
 
-    `wide_match_threshold` 见下面阶段二里"放宽窗口搜索"的说明：这类
-    远距离命中必须明显更可信（默认门槛比 `window_match_threshold` 高
-    很多）才会被采信，否则宁可退化成插值，也不要冒险接受一个可能是
-    误判的远距离匹配——一次误判会让时间游标凭空跳出一大截，连带把
-    后面一长串本该能对上的行也拖成插值（有真实故障复现过，见下方
-    阶段二注释）。
+    核心流程：
+    1. 字符级归一化精确匹配，得到每行的锚点覆盖率。
+    2. 逐行判定："锚点覆盖率够高" 或 "窗口模糊匹配（汉字/拼音分别用
+       不同阈值）够格" 才算"确认"；确认了才会真正推进时间游标和 ASR
+       搜索指针。够不到确认阈值的行，不再像旧版那样矮子里拔将军地
+       立即采信一个弱匹配，而是放进挂起队列，交给后面找到的下一个
+       确认点来统一做区间插值（`_interpolate_block`）——避免一次
+       误判带偏游标、级联拖垮后面一长串本该能对上的行。详见文件头部
+       "故障复现"/"修复"说明。
+    3. 处理完所有行后，挂起队列里剩下的（比如结尾渐弱的语气词/和声）
+       用最后一个确认点到音频总时长之间的区间统一插值。
     """
     standard_lines = _load_standard_lines(lyrics_text, skip_title=skip_title)
     if not standard_lines:
         raise ValueError("标准歌词为空，无法对齐")
+
+    if not _PINYIN_AVAILABLE:
+        print("[align_lyrics_v3] 未安装 pypinyin，拼音模糊匹配已禁用，仅使用汉字相似度"
+              "（pip install pypinyin --break-system-packages 可开启）", file=sys.stderr)
 
     standard_chars, standard_norm, line_char_ranges = [], [], []
     for idx, line in enumerate(standard_lines):
@@ -515,105 +560,101 @@ def align(asr_result: dict, lyrics_text: str, line_gap: float = 0.15,
             "coverage": coverage,
         })
 
-    # ── 阶段二：单调游标 + 局部窗口匹配 ──────────────────────────────
+    # ── 阶段二：单调游标 + 窗口匹配（分级确认）+ 挂起队列区间插值 ──────
     segments = asr_result.get("segments", [])
     seg_norm = [normalize_text(s.get("text", "")) for s in segments]
     seg_pinyin = [to_pinyin(s.get("text", "")) for s in segments] if _PINYIN_AVAILABLE else None
-    if not _PINYIN_AVAILABLE:
-        print("[align_lyrics_v3] 未安装 pypinyin，拼音模糊匹配已禁用，退化为 v2 行为"
-              "（pip install pypinyin --break-system-packages 可开启）", file=sys.stderr)
 
-    result_lines = []
+    duration = asr_result.get("duration")
+    last_seg_end = segments[-1]["end"] if segments else 0.0
+    audio_end = duration if duration else last_seg_end
+
+    result_lines: List[Optional[dict]] = [None] * len(raw_lines)
     cursor_time = 0.0
     search_from_idx = 0
     SLACK = 1.0  # 允许锚点起始时间比游标早最多这么多秒（容忍轻微误差）
+    pending: List[dict] = []  # 挂起、尚未确定时间戳的行（result_lines 里对应位置的 dict）
 
-    for rl in raw_lines:
-        method = None
-        start = end = None
+    def _advance_search_idx():
+        nonlocal search_from_idx
+        while search_from_idx < len(segments) - 1 and segments[search_from_idx]["end"] < cursor_time:
+            search_from_idx += 1
+
+    for pos, rl in enumerate(raw_lines):
+        stub = {
+            "index": rl["index"],
+            "text": rl["text"],
+            "anchor_coverage": round(rl["coverage"], 2),
+        }
+        result_lines[pos] = stub
 
         use_anchor = (
             rl["anchor_start"] is not None
             and rl["coverage"] >= anchor_coverage_threshold
             and rl["anchor_start"] >= cursor_time - SLACK
         )
+        confirmed_span = None
         if use_anchor:
             start, end = rl["anchor_start"], rl["anchor_end"]
             if end is None or end <= start:
                 end = start + 0.5
             method = f"anchor(coverage={rl['coverage']:.2f})"
+            confirmed = True
         elif segments:
             norm_line = normalize_text(rl["text"])
             pinyin_line = to_pinyin(rl["text"]) if _PINYIN_AVAILABLE else ""
-            ratio, span, kind = _best_window_match(
-                norm_line, segments, seg_norm, search_from_idx,
-                end_time=cursor_time + window_seconds,
-                pinyin_line=pinyin_line, seg_pinyin=seg_pinyin,
+            found = _find_confirmed_window_match(
+                norm_line, segments, seg_norm, search_from_idx, cursor_time,
+                window_seconds, pinyin_line, seg_pinyin,
+                hanzi_confirm_threshold, pinyin_confirm_threshold,
+                hanzi_confirm_threshold_wide, pinyin_confirm_threshold_wide,
             )
-            used_wide_search = False
-            if (ratio < window_match_threshold) or span is None:
-                # 窗口内没找到，再放宽一次窗口（应对个别行时长规划偏差较大的情况）。
-                #
-                # **这里是曾经导致"整首歌大面积退化成插值"的真实故障点**：
-                # 放宽窗口意味着搜索范围从 `window_seconds` 直接扩到
-                # `window_seconds * 3`（默认 135 秒），如果某一行歌词
-                # 在 ASR 里根本没有对应文本（比如纯语气词 "oh yo yo yo
-                # yo yo"、和声、乐器间奏），窗口内搜索理应找不到什么，
-                # 这时如果放宽窗口后随便找到一个"矮子里拔将军"的弱匹配
-                # 就采信，游标会被带着凭空跳出去几十上百秒——不仅这一行
-                # 本身对错了，更严重的是：`search_from_idx` 会跟着游标
-                # 一起跳过中间这一大段本该属于后面若干行的真实 ASR
-                # segment，导致后面一连串行的字符级锚点全部因为"起始
-                # 时间早于游标"被判定为不可信而放弃，窗口搜索也因为
-                # `search_from_idx` 已经跳过而找不到，最终整段歌词
-                # 退化成插值、时间戳完全脱离真实演唱进度（实测数据复现
-                # 过：一行语气词没匹配上，直接拖垮了后面几十行）。
-                #
-                # 所以放宽窗口找到的候选必须明显比"就近窗口内随便一个
-                # 弱匹配"更可信，用比 `window_match_threshold` 高不少的
-                # `wide_match_threshold` 单独把关；达不到这个门槛，宁可
-                # 让这一行退化成插值（只占用很小的时间片，不会带偏游标
-                # 和搜索指针），也不要冒险接受一个可能是误判的远距离匹配。
-                ratio2, span2, kind2 = _best_window_match(
-                    norm_line, segments, seg_norm, search_from_idx,
-                    end_time=cursor_time + window_seconds * 3,
-                    pinyin_line=pinyin_line, seg_pinyin=seg_pinyin,
-                )
-                if ratio2 > ratio:
-                    ratio, span, kind = ratio2, span2, kind2
-                    used_wide_search = True
-            effective_threshold = max(window_match_threshold, wide_match_threshold) \
-                if used_wide_search else window_match_threshold
-            if span is not None and ratio >= effective_threshold:
+            if found is not None:
+                span, kind, score = found
                 i, j = span
                 start, end = segments[i]["start"], segments[j]["end"]
-                method = f"window-match(kind={kind},score={ratio:.2f}{',wide' if used_wide_search else ''})"
-                search_from_idx = i  # 允许下一行与本行有轻微重叠（同一 segment 覆盖多句的情况）
+                method = f"window-match(kind={kind},score={score:.2f})"
+                confirmed = True
+                confirmed_span = span
             else:
-                start = cursor_time + line_gap
-                end = start + 1.0
-                method = "interpolated(no-window-match)"
+                confirmed = False
         else:
-            start = cursor_time + line_gap
-            end = start + 1.0
-            method = "interpolated(no-segments)"
+            confirmed = False
+
+        if not confirmed:
+            # 不确定：先挂起，不动游标、不动搜索指针，交给后面的确定点
+            # 回头统一插值（见 `_interpolate_block`）。
+            pending.append(stub)
+            continue
+
+        # 找到确定点：先把挂起队列里积压的行，用 [cursor_time, start]
+        # 这段真实存在的时间区间做区间插值。
+        if pending:
+            _interpolate_block(pending, cursor_time, start, line_gap)
+            pending = []
 
         if start < cursor_time:
             start = cursor_time
         if end <= start:
             end = start + 0.5
 
-        result_lines.append({
-            "index": rl["index"],
-            "text": rl["text"],
-            "start": round(start, 3),
-            "end": round(end, 3),
-            "anchor_coverage": round(rl["coverage"], 2),
-            "method": method,
-        })
+        stub["start"] = start
+        stub["end"] = end
+        stub["method"] = method
+
         cursor_time = end
-        while search_from_idx < len(segments) - 1 and segments[search_from_idx]["end"] < cursor_time:
-            search_from_idx += 1
+        if confirmed_span is not None:
+            search_from_idx = confirmed_span[0]  # 允许下一行与本行有轻微重叠
+        _advance_search_idx()
+
+    # 曲终仍未被回收的挂起行（比如结尾渐弱的语气词/和声）：用最后一个
+    # 确定点到音频总时长之间的区间统一插值。
+    if pending:
+        _interpolate_block(pending, cursor_time, max(audio_end, cursor_time), line_gap)
+
+    for l in result_lines:
+        l["start"] = round(l["start"], 3)
+        l["end"] = round(l["end"], 3)
 
     # ── 最终保险：单调递增 + 最小间隔（正常情况下阶段二已保证，这里兜底）──
     for i in range(1, len(result_lines)):
@@ -628,8 +669,9 @@ def align(asr_result: dict, lyrics_text: str, line_gap: float = 0.15,
         for l in result_lines if l["anchor_coverage"] < 0.34
     ]
     if low_conf_lines:
-        print(f"[align_lyrics_v3] {len(low_conf_lines)} 行锚点覆盖率 <34%，已用窗口匹配/插值兜底，"
-              f"请人工核对（若连续多行都是 interpolated，可能是 lyrics.txt 漏写了某段重复歌词）：",
+        print(f"[align_lyrics_v3] {len(low_conf_lines)} 行锚点覆盖率 <34%，已用窗口匹配/区间插值兜底，"
+              f"请人工核对（若连续多行都是 interpolated，可能是这段音频 ASR 没识别出文本，"
+              f"或 lyrics.txt 漏写了某段重复歌词）：",
               file=sys.stderr)
         for idx, text, cov, method in low_conf_lines:
             print(f"  行{idx}: 覆盖率={cov:.0%} method={method}  文本={text}", file=sys.stderr)
@@ -656,7 +698,7 @@ def to_srt(lyrics_timed: dict) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="用标准歌词校正 ASR 时间戳 v3（归一化精确匹配 + 单调窗口约束 + 拼音模糊匹配）")
+    parser = argparse.ArgumentParser(description="用标准歌词校正 ASR 时间戳 v3（归一化精确匹配 + 单调窗口约束 + 拼音模糊匹配 + 挂起队列区间插值）")
     parser.add_argument("asr_json")
     parser.add_argument("lyrics_txt")
     parser.add_argument("--line-gap", type=float, default=0.15)
@@ -665,11 +707,16 @@ def main():
                         help="窗口匹配兜底时，向前搜索 ASR segment 的时间窗口大小（秒），默认45")
     parser.add_argument("--anchor-coverage-threshold", type=float, default=0.4,
                         help="锚点覆盖率低于此值时不采信锚点，改用窗口匹配，默认0.4")
-    parser.add_argument("--wide-match-threshold", type=float, default=0.45,
-                        help="就近窗口(--window-seconds)内找不到匹配时会放宽到3倍窗口"
-                             "再找一次，这个门槛就是给\"放宽后\"的候选把关的，"
-                             "必须明显更可信才采信，避免远距离误判带偏时间游标"
-                             "（导致后面一长串行被拖成插值），默认0.45")
+    parser.add_argument("--hanzi-confirm-threshold", type=float, default=0.5,
+                        help="窗口模糊匹配中，汉字相似度达到此值才算\"确认\"，默认0.5")
+    parser.add_argument("--pinyin-confirm-threshold", type=float, default=0.6,
+                        help="窗口模糊匹配中，拼音相似度达到此值才算\"确认\"（明显高于汉字档，"
+                             "因为纯拼音串比较天然噪声更大），默认0.6")
+    parser.add_argument("--hanzi-confirm-threshold-wide", type=float, default=0.62,
+                        help="就近窗口内两档都不够格确认时，会放宽到3倍窗口再试一次，"
+                             "这是放宽后汉字档的确认门槛（比就近窗口更严格），默认0.62")
+    parser.add_argument("--pinyin-confirm-threshold-wide", type=float, default=0.72,
+                        help="放宽窗口后拼音档的确认门槛，默认0.72")
     parser.add_argument("--no-skip-title", dest="skip_title", action="store_false",
                         help="默认会自动跳过歌词首行的歌名，加此参数关闭该行为"
                              "（歌词第一行本来就是要唱的正文时使用）")
@@ -695,7 +742,10 @@ def main():
             asr_result, lyrics_text, line_gap=args.line_gap, min_anchor=args.min_anchor,
             window_seconds=args.window_seconds,
             anchor_coverage_threshold=args.anchor_coverage_threshold,
-            wide_match_threshold=args.wide_match_threshold,
+            hanzi_confirm_threshold=args.hanzi_confirm_threshold,
+            pinyin_confirm_threshold=args.pinyin_confirm_threshold,
+            hanzi_confirm_threshold_wide=args.hanzi_confirm_threshold_wide,
+            pinyin_confirm_threshold_wide=args.pinyin_confirm_threshold_wide,
             skip_title=args.skip_title,
         )
     except (ValueError, RuntimeError) as exc:
