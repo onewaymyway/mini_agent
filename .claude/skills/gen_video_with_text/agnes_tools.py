@@ -230,16 +230,42 @@ class AgnesVideoClient:
     # utils: save video
     # =========================
     def _save_video_from_url(self, url: str, save_path: str):
+        """下载生成好的视频。[EXC-FIX] 原来只 try 一次，网络抖动/握手超时
+        （比如 TimeoutError/ReadTimeoutError）会直接把异常抛给调用方，
+        而 generate_video() 之前没有包住这一步，异常会一路冒到最外层
+        main()，把整个批量生成脚本直接干掉——哪怕视频本身已经生成成功、
+        前面几十个场景也都跑完了，也会因为最后下载这一步偶发超时而
+        全部丢失、不再有任何汇总输出。这里改成和 _post/_get 一样的
+        "重试 + 打日志"模式，下载失败不再是致命的。"""
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
 
-        # [TIMEOUT-FIX] connect 10s / 单次 read 120s，避免下载环节连不上也要等满 120s。
-        r = requests.get(url, timeout=(10, 120), verify=False, stream=True)
-        r.raise_for_status()
+        last_err = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                # connect 10s / 单次 read 120s，避免下载环节连不上也要等满 120s。
+                r = requests.get(url, timeout=(10, 120), verify=False, stream=True)
+                r.raise_for_status()
 
-        with open(save_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    f.write(chunk)
+                with open(save_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+                return
+            except Exception as e:
+                last_err = e
+                print(f"    [下载失败] {e}，第 {attempt}/{self.max_retries} 次重试，"
+                      f"{1.5 * attempt:.1f}s 后重试")
+                # 清理下载到一半的残缺文件，避免留下看起来"存在但损坏"的产物。
+                try:
+                    p = Path(save_path)
+                    if p.exists():
+                        p.unlink()
+                except Exception:
+                    pass
+                if attempt < self.max_retries:
+                    time.sleep(1.5 * attempt)
+
+        raise RuntimeError(f"下载视频失败（重试 {self.max_retries} 次后仍失败）: {last_err}") from last_err
 
     # =========================
     # low-level API: create task
@@ -370,7 +396,21 @@ class AgnesVideoClient:
                 video_url = self._extract_video_url(query_result)
 
                 if save_path and video_url:
-                    self._save_video_from_url(video_url, save_path)
+                    # [EXC-FIX] 下载环节即使内部已经重试过仍可能最终失败
+                    # （见 _save_video_from_url），这里再包一层，确保"生成
+                    # 任务本身已经 completed，只是下载失败"这种情况也走
+                    # 正常的 {"success": False, "error": ...} 返回路径，
+                    # 而不是直接抛异常炸穿 generate_scene_videos.py 的
+                    # 重试循环、干掉整个批量任务。
+                    try:
+                        self._save_video_from_url(video_url, save_path)
+                    except Exception as e:
+                        return {
+                            "success": False,
+                            "video_id": video_id,
+                            "error": f"任务已生成完成，但下载视频失败: {e}",
+                            "raw": query_result,
+                        }
 
                 return {
                     "success": True,

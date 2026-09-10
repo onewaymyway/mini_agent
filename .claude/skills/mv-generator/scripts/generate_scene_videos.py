@@ -208,7 +208,16 @@ def generate_one_scene(client, scene: dict, assets_by_id: dict, output_dir: Path
     for attempt in range(1, MAX_RETRIES_PER_SCENE + 1):
         print(f"    -> 第 {attempt}/{MAX_RETRIES_PER_SCENE} 次尝试 "
               f"(mode={video_mode}, seconds={seconds}s)...")
-        result = client.generate_video(**kwargs)
+        # [EXC-FIX] agnes_tools.py 内部已经把已知的网络异常都转换成
+        # {"success": False, "error": ...} 返回，但这里再兜底包一层
+        # try/except：万一未来改动引入了新的未捕获异常路径（或者依赖库
+        # 版本升级后抛出了新的异常类型），也不能让单个场景的一次偶发
+        # 异常直接把整个批量生成进程炸掉、丢失前面所有已成功场景的
+        # 进度——按"这次尝试失败"处理，交给下面的重试/跳过逻辑就好。
+        try:
+            result = client.generate_video(**kwargs)
+        except Exception as e:
+            result = {"success": False, "error": f"调用 generate_video 时发生未预期的异常: {e}"}
         last_result = result
         if result.get("success"):
             print(f"    ✅ {scene_id} 生成成功 -> {save_path}")
@@ -285,7 +294,15 @@ def main():
                   f"uses_assets={sc.get('uses_assets')}")
             print(f"    prompt: {sc.get('prompt_en') or sc.get('prompt')}")
 
-            result = generate_one_scene(client, sc, assets_by_id, output_dir, args.aspect_ratio, clips_dir)
+            # [EXC-FIX] 最外层再兜一次底：generate_one_scene 内部已经把已知
+            # 异常都转换成失败结果了，这里只防未预料到的异常（比如
+            # asset 路径解析、kwargs 构造阶段出问题），确保单个场景炸了
+            # 也不会让整批任务连带丢失已完成场景的汇总输出。
+            try:
+                result = generate_one_scene(client, sc, assets_by_id, output_dir, args.aspect_ratio, clips_dir)
+            except Exception as e:
+                print(f"    ❌ {scene_id} 发生未预期的异常，视为本轮失败，继续下一个场景: {e}", file=sys.stderr)
+                result = {"success": False, "error": f"未预期的异常: {e}"}
             if result.get("success"):
                 succeeded.add(scene_id)
                 last_errors.pop(scene_id, None)
