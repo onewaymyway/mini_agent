@@ -925,6 +925,7 @@ def load_config(
         agent_name=_agent_name,
         system_message_format=_sys_msg_fmt,
         notepad_enabled=_fb("notepad_enabled", None, True),
+        auto_capture_user_requirement_enabled=_fb("auto_capture_user_requirement_enabled", None, True),
         # [compact_mechanism_improvement_plan P2-B]
         recall_history_enabled=_fb("recall_history_enabled", None, False),
         recall_history_mode=_f("recall_history_mode", None) or "keyword",

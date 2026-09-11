@@ -211,6 +211,33 @@ enabled 三个 provider（与 `tools/evolution.py::set_project_root_provider`、
 
 ---
 
+## 7.5 自动捕获（LLM 判断，`next_doc/user_requirement_notepad_capture_plan.md`）
+
+记事本更新此前完全依赖 agent 自己在对话中主动调用 `notepad_add`——一旦 agent 当轮没
+意识到用户某句话是关键要求，这条信息就只活在会话历史里，compact 之后可能丢失/走样，
+导致后续工作方向偏离用户原始意图。为此增加一个不依赖 agent 自觉性的兜底：
+
+- **触发时机**：每次**真人**输入（CLI REPL 主循环、HTTP API 且 `initiator=="user"`）之后、
+  `agent.run_turn()` 之前，**同步**调用一次判断，不影响其它任何内部/程序化的 `run_turn()`
+  调用（goal_mode、workflow、judge、sub_agent、compaction 自身发起的调用等一律跳过）；
+- **判断方式**：用 `agent.llm_helper.ask(...)`（复用现有 `LLMHelper`，走当前
+  provider/model + 现有重试/fallback 链）单轮判断"这条输入是否包含必须记住的要求/约束/
+  目标/偏好/明确指令"，输出结构化 JSON；
+- **隔离性**：自动捕获的条目统一打 `tag="auto_requirement"`，判断 LLM 只看得到、只能
+  新增/更新这个 tag 下的条目，不会触碰 agent 手动记的其它条目；**不支持删除**，宁可
+  冗余也不丢信息；
+- **与超阈值提示的关系**：`auto_requirement` 条目照常计入 `_build_notepad_compact_hint()`
+  的总字数统计（该函数本来就是对全部条目求和，无需改动），超阈值后同样会提示 agent 用
+  `notepad_summarize` 瘦身，与手动条目一视同仁；
+- **终端提示**：确实更新了记事本时，用 `ui/renderer.py` 的 `print_info` 打印一行
+  （如 `📝 记事本已自动新增（捕获用户要求，id=xxx）：...`）；判断为不需要更新，或任何
+  环节出错，都完全静默（异常仍按惯例记录到 `errors.log_exception`，不打扰用户）；
+- **开关**：`config/models.py::AppConfig.auto_capture_user_requirement_enabled`，
+  **默认 `True`**；`notepad_enabled=False` 时该功能自动一并关闭。可在 `agent_config.json`
+  里显式设为 `false` 关闭。
+
+---
+
 ## 8. 相关代码位置
 
 | 文件 | 内容 |
@@ -224,6 +251,9 @@ enabled 三个 provider（与 `tools/evolution.py::set_project_root_provider`、
 | `storage/paths.py::AgentPaths.session_notepad()` | `notepad.json` 的路径定义 |
 | `config/models.py::AppConfig.notepad_enabled` | 功能总开关字段（默认 `True`） |
 | `config/loader.py` | `notepad_enabled=_fb("notepad_enabled", None, True)` — JSON 配置加载 |
+| `history/user_requirement_capture.py` | 真人输入后的自动捕获判断 + 落盘 + 终端提示 |
+| `config/models.py::AppConfig.auto_capture_user_requirement_enabled` | 自动捕获开关（默认 `True`） |
+| `cli/repl.py` / `api/server.py` | 真人输入入口埋点，调用 `maybe_capture_user_requirement()` |
 | `cli/commands/notepad.py` | `/notepad` 命令实现 |
 | `cli/app.py` | `import mini_agent.tools.notepad` 触发工具注册（side-effect import） |
 | `ui/terminal.py::_COMMANDS` | `/notepad` 命令行自动补全 + 子命令提示（`show`/`clear`/`remove`） |

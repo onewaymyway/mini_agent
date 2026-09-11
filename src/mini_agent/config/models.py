@@ -2855,6 +2855,12 @@ class AppConfig:
     # 全局 registry 中，与 workdir_knowledge_enabled 等开关的既有取舍一致）。
     notepad_enabled: bool = True
 
+    # [next_doc/user_requirement_notepad_capture_plan.md] 每次真人输入后，是否
+    # 用 LLM 同步判断"是否需要把这条输入的关键要求补记到记事本"。属于
+    # notepad_enabled 的兜底子功能，独立开关、默认开启；关闭后完全 no-op
+    # （不调用 LLM，不影响正常 run_turn 流程和已有的 agent 自主 notepad_add）。
+    auto_capture_user_requirement_enabled: bool = True
+
     # [受保护文件清单] protected_files_manifest_and_delete_guard_plan.md 阶段 1。
     # system prompt 注入"当前生效的受保护文件清单"提醒总开关。默认开启——
     # 纯信息展示，不改变任何执行逻辑，风险最低。关闭后不再扫描/注入该提醒块，

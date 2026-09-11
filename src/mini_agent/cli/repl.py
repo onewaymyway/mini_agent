@@ -205,6 +205,9 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
             continue
 
         try:
+            from mini_agent.history.user_requirement_capture import maybe_capture_user_requirement
+            maybe_capture_user_requirement(agent, user_input)
+
             from mini_agent.ui.raw_key_listener import get_listener as _get_key_listener
             _key_listener = _get_key_listener()
             _key_listener.start()

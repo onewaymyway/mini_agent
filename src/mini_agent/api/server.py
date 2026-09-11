@@ -582,6 +582,12 @@ class AgentRunner(threading.Thread):
                             f"about to acquire _local_term_write_lock for run_turn "
                             f"turn_id={turn_id!r} session={getattr(bridge.agent, 'session_id', None)!r}",
                         )
+                    if cmd.initiator == "user":
+                        from mini_agent.history.user_requirement_capture import (
+                            maybe_capture_user_requirement,
+                        )
+                        maybe_capture_user_requirement(bridge.agent, cmd.message)
+
                     with _local_term_write_lock:
                         if _term_diag._enabled:
                             _term_diag.log("server_turn", f"lock acquired, calling run_turn turn_id={turn_id!r}")
