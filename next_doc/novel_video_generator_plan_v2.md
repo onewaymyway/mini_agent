@@ -196,7 +196,7 @@ macro_scenes:
 - [x] Skill 1：`novel-entity-extractor`（从 v1 `novel-scene-planner` 中拆出抽取部分，支持长篇分块+增量合并+单点补抽取；SKILL.md + `scripts/check_entities.py` + README.md；已测试：id重复/字段缺失报错、修复后通过 两类用例均验证正确）
 - [x] Skill 2：`novel-macro-scene-planner`（新增；SKILL.md + `scripts/check_macro_scenes.py` + README.md；已测试：引用不存在地点id报错/修复后通过、覆盖率检查 均验证正确）
 - [x] Skill 3：`novel-scene-detail-planner`（新增，含引用回补循环 + 对话子串校验；SKILL.md + `scripts/check_scene_detail.py` + README.md；已测试：素材缺失报错→修复后通过、臆造对话子串匹配报错 三类用例均验证正确）
-- [ ] Skill 4：`novel-asset-generator` v2（在 v1 基础上扩展按需触发 + 角色差异化配音 + content_blocks 拼接）— 待实施
+- [x] Skill 4：`novel-asset-generator` v2（在 v1 基础上扩展按需触发 + 角色差异化配音 + content_blocks 拼接；新增 `scripts/voice_mapping.py` + `scripts/synthesize_scene_audio.py` + `scripts/check_assets_and_audio_v2.py`，v1 脚本保留仅供历史参考；已测试：voice_mapping 关键词映射、check_assets_and_audio_v2 缺配音文件报错→修复后通过）
 - [ ] Skill 5：`novel-scene-video-generator` v2（在 v1 基础上新增大场景内合成层）— 待实施
 - [ ] Skill 6：`novel-video-composer` v2（输入改为大场景视频 + 转场选项）— 待实施
 - [ ] 各 skill 目录 README 同步更新
