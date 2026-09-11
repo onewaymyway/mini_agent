@@ -1,5 +1,11 @@
-# 小说转视频：拆分为 4 个独立 skill 的方案
+# 小说转视频：拆分为 4 个独立 skill 的方案（v1，已被 v2 取代）
 
+> **状态：v1 已实现并测试通过，但已被 [novel_video_generator_plan_v2.md](novel_video_generator_plan_v2.md)
+> 取代。** v2 引入长篇支持、大场景/小场景三层结构、角色差异化配音、
+> 大场景间转场选项，后续实施以 v2 为准。本文档保留作为历史参考
+> （`mv-generator` 复用手法、"步步落盘+步步校验"规范的原始说明仍然
+> 适用，v2 不再重复）。
+>
 > 聚焦范围：新增 4 个 `.claude/skills/` 目录——`novel-scene-planner`（场景拆分+
 > 角色提取）、`novel-asset-generator`（角色/场景素材+旁白配音）、
 > `novel-scene-video-generator`（单场景视频生成）、`novel-video-composer`
