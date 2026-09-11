@@ -158,6 +158,32 @@ def format_error(error) -> str:
     return str(error)
 
 
+_RATE_LIMIT_KEYWORDS = ("rate limit", "rate_limit", "too many requests",
+                         "quota exceeded", "quota_exceeded")
+# 明确是"重试也无法解决"的错误类型：请求参数错误 / 鉴权失败 / 资源不存在 /
+# 内容被拒绝。这些状态码在非限流场景下重试没有意义（同样的错误请求，
+# 结果一定还是同样的错误），要立即放弃、把结构化错误交给 Agent 去修配置，
+# 而不是陪着 agnes_tools.py 内部的重试再多耗一轮。
+_NON_RETRYABLE_STATUS = {400, 401, 403, 404, 422}
+
+
+def is_non_retryable_error(error) -> bool:
+    """判断这次失败是否属于"换 key/重试都没用，必须先改配置"的一类。"""
+    if not isinstance(error, dict):
+        return False
+    status_code = error.get("status_code")
+    text = error.get("error") or ""
+    if isinstance(text, (dict, list)):
+        try:
+            text = json.dumps(text, ensure_ascii=False)
+        except TypeError:
+            text = str(text)
+    lowered = str(text).lower()
+    if any(kw in lowered for kw in _RATE_LIMIT_KEYWORDS):
+        return False  # 限流交给 agnes_tools.py 自己换 key 处理，这里不介入
+    return status_code in _NON_RETRYABLE_STATUS
+
+
 def generate_one_scene(client, scene: dict, char_by_id: dict, loc_by_id: dict,
                         output_dir: Path, aspect_ratio: str, clips_dir: Path) -> dict:
     scene_id = scene["id"]
@@ -206,7 +232,18 @@ def generate_one_scene(client, scene: dict, char_by_id: dict, loc_by_id: dict,
         if result.get("success"):
             print(f"    ✅ {scene_id} 生成成功 -> {save_path}")
             return result
-        print(f"    ⚠️ {scene_id} 第 {attempt} 次失败: {format_error(result.get('error'))}")
+
+        err = result.get("error")
+        print(f"    ⚠️ {scene_id} 第 {attempt} 次失败: {format_error(err)}")
+
+        if is_non_retryable_error(err):
+            # [FAST-FAIL] 参数/鉴权/内容类错误，重试同一个请求不会有不同结果，
+            # 立即停止本场景的重试，把结构化错误打印出来交给 Agent 去修配置
+            # （比如 video_mode 填错），不要再空耗剩余 attempt 次数。
+            print(f"    ❌ {scene_id} 判定为不可重试错误（参数/鉴权/内容问题），"
+                  f"立即放弃重试，先跳过，继续下一个场景。错误详情: {format_error(err)}")
+            return last_result
+
         if attempt < MAX_RETRIES_PER_SCENE:
             time.sleep(2.0 * attempt)
 
