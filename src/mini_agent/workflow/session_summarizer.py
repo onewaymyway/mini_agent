@@ -296,6 +296,9 @@ def summarize_session_for_workflow(history_entries: list[dict], cfg: "AppConfig"
     gen_cfg.max_turns = 1
     gen_cfg.stream = False
     gen_cfg.system_extra = pm.render("system/session_to_workflow_summary")
+    # [BUGFIX / turn_judge 隔离] session→workflow 总结用的临时 Agent，不该
+    # 受全局 turn_judge 配置影响。
+    gen_cfg.turn_judge.enabled = False
 
     guard = PermissionGuard(
         auto_approve=True,

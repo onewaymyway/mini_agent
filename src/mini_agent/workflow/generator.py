@@ -105,6 +105,10 @@ class WorkflowGenerator:
         gen_cfg.max_turns = 3
         gen_cfg.stream = False
         gen_cfg.system_extra = GENERATOR_SYSTEM
+        # [BUGFIX / turn_judge 隔离] 这是"根据自然语言描述生成 workflow YAML"
+        # 的内部一次性 Agent，不是交互用的主 Agent，不该受全局 turn_judge
+        # 配置影响。
+        gen_cfg.turn_judge.enabled = False
 
         guard = PermissionGuard(
             auto_approve=True,
@@ -154,6 +158,9 @@ class WorkflowGenerator:
         gen_cfg.max_turns = 3
         gen_cfg.stream = False
         gen_cfg.system_extra = GENERATOR_SYSTEM
+        # [BUGFIX / turn_judge 隔离] 同 generate()：内部一次性 Agent，不受
+        # 全局 turn_judge 配置影响。
+        gen_cfg.turn_judge.enabled = False
 
         guard = PermissionGuard(
             auto_approve=True,

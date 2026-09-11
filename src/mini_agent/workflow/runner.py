@@ -1736,6 +1736,10 @@ class WorkflowRunner:
         step_cfg.api_key = self._cfg.api_key
         step_cfg.max_turns = self._effective_step_field(step, "max_turns", 10)
         step_cfg.stream = False
+        # [BUGFIX / turn_judge 隔离] workflow 的每个 step 各自起一个独立 Agent
+        # 自动执行，不是交互用的主 Agent；不关掉的话，全局 turn_judge.enabled
+        # =True 时每个 step 都会各自跑一遍 TurnJudge 自动接管循环。
+        step_cfg.turn_judge.enabled = False
         eff_timeout = self._effective_step_field(step, "timeout", None)
         if eff_timeout:
             step_cfg.request_timeout = eff_timeout

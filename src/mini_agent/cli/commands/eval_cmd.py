@@ -190,6 +190,11 @@ def _make_default_agent_factory(max_turns: Optional[int] = None):
         cfg.retry.delay = 1.0
         if max_turns is not None:
             cfg.max_turns = max_turns
+        # [BUGFIX / turn_judge 隔离] eval 跑的是自动化批量评测 Agent，不是
+        # 交互用的主 Agent；turn_judge 是"帮真人省心地自动接管"的机制，评测
+        # 场景下不需要、也不该让它介入（会打乱评测的确定性输出）。显式关闭，
+        # 不依赖用户是否在全局配置里打开了 turn_judge。
+        cfg.turn_judge.enabled = False
 
         skill_dirs = [ctx.skills_dir] if ctx.skills_dir else []
         skill_loader = SkillLoader(skill_dirs) if skill_dirs else None

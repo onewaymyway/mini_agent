@@ -85,6 +85,10 @@ def build_minimal_agent(
     step_cfg.api_key = api_key
     step_cfg.max_turns = max_turns
     step_cfg.stream = False
+    # [BUGFIX / turn_judge 隔离] 这是 workflow skill_agent/python_step 里起的
+    # "一次性最小 Agent"，不是交互用的主 Agent，不该被全局 turn_judge 配置
+    # 影响——否则每个 workflow step 都会各自跑一遍 TurnJudge 自动接管循环。
+    step_cfg.turn_judge.enabled = False
     if timeout:
         step_cfg.request_timeout = timeout
     if session_dir:
