@@ -22,6 +22,89 @@ from typing import Optional
 from . import tool  # noqa
 
 
+# ── bash: 活跃子进程注册表（供 Ctrl+C 立即中断使用） ────────────────────────────
+#
+# [SYS-BASH-SIGINT-FIX] 非 daemon 模式下按 Ctrl+C 无法停止正在执行的 bash 命令，
+# 根因有三层，缺一不可：
+#   1) 子进程被 CREATE_NEW_PROCESS_GROUP / start_new_session 放进了独立进程组
+#      （这是为了让 timeout 能一锅端整棵进程树），副作用是 Windows 上子进程
+#      不再接收控制台 Ctrl+C 事件——按键本身根本传不到子进程。
+#   2) 主线程即使收到 SIGINT/KeyboardInterrupt，代码里也从没在 bash 执行路径上
+#      写过 except KeyboardInterrupt，中断只会一路网上传播、子进程被孤儿化后
+#      继续在后台跑，不会被杀。
+#   3) Windows 上 proc.communicate()/readline() 是同步阻塞的 ReadFile 调用，
+#      不像 POSIX read() 那样会被信号打断成 EINTR；主线程可能压根没有机会
+#      检查中断标志，只能等子进程自己产生输出/退出。
+#
+# 解决思路：不依赖"主线程能否及时感知中断"，而是让本身永不阻塞的按键监听线程
+# （raw_key_listener.py）在检测到 Ctrl+C 的瞬间，直接把当前正在跑的 bash 子
+# 进程树杀掉。这里维护一个模块级"活跃子进程"注册表，bash()/_bash_stream() 开
+# 始执行时注册、结束时移除；kill_active_bash_processes() 供按键监听线程调用。
+# 同时 bash()/_bash_stream() 自己也补上 except KeyboardInterrupt 兜底，防止
+# 主线程碰巧感知到中断时异常裸奔到上层、不清理子进程。
+import threading as _threading
+
+_active_bash_lock = _threading.Lock()
+_active_bash_procs: "set" = set()
+
+
+def _register_active_proc(proc) -> None:
+    with _active_bash_lock:
+        _active_bash_procs.add(proc)
+
+
+def _unregister_active_proc(proc) -> None:
+    with _active_bash_lock:
+        _active_bash_procs.discard(proc)
+
+
+def _force_kill_proc(proc) -> None:
+    """强杀单个子进程（及其整棵进程树）。Windows 用 taskkill /T /F，
+    Unix 用 os.killpg 对整个进程组下 SIGKILL；任何一步失败都退化成
+    proc.kill() 兜底，保证至少杀掉最外层进程。"""
+    import platform
+    import signal as _signal
+
+    if platform.system() == "Windows":
+        try:
+            win_subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+            )
+            return
+        except Exception:
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+            return
+        except Exception:
+            pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
+def kill_active_bash_processes() -> int:
+    """杀掉当前所有正在执行的 bash 子进程（树）。
+
+    设计为可以从任意线程安全调用——尤其是 raw_key_listener 里那个独立的
+    按键监听线程：它检测 Ctrl+C 时永远不会被主线程的阻塞 I/O 卡住，因此
+    能做到"按下就杀"，不必等主线程自己感知到 KeyboardInterrupt。
+
+    返回被杀掉的进程数量（主要用于日志/调试，调用方通常忽略）。
+    """
+    with _active_bash_lock:
+        procs = list(_active_bash_procs)
+    killed = 0
+    for proc in procs:
+        if proc.poll() is None:  # 仍在运行
+            _force_kill_proc(proc)
+            killed += 1
+    return killed
+
+
 # ── bash ──────────────────────────────────────────────────────────────────────
 
 @tool(
@@ -140,48 +223,48 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
         return f"[error: {e}]"
 
     def _kill_process_tree():
-        if _is_windows:
-            try:
-                win_subprocess.run(
-                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                    capture_output=True,
-                )
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-        else:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+        _force_kill_proc(proc)
 
+    # [SYS-BASH-SIGINT-FIX] 注册到活跃子进程表，供 Ctrl+C 按键监听线程
+    # 随时"直杀"；无论下面走哪条 return 路径，finally 里都会反注册。
+    _register_active_proc(proc)
     try:
-        # _effective_timeout 为 None 时，communicate() 会一直阻塞到进程
-        # 自己结束为止，不会抛 TimeoutExpired（即"不设超时"）。
-        stdout_b, stderr_b = proc.communicate(timeout=_effective_timeout)
-    except subprocess.TimeoutExpired:
-        _kill_process_tree()
-        # 进程组已被强制杀掉，这里的 communicate() 只是回收管道里
-        # 已经产生的残留输出，不会再无限期阻塞。
         try:
-            stdout_b, stderr_b = proc.communicate(timeout=5)
-        except Exception:
-            stdout_b, stderr_b = b"", b""
-        combined = (decode(stdout_b) + decode(stderr_b)).rstrip()
-        note = f"[timeout after {timeout}s — partial output above, process killed]"
-        return (combined + "\n" + note) if combined else note
-    except Exception as e:
-        from mini_agent.errors import log_exception
-        log_exception(e, where='mini_agent.tools.builtin.bash')
-        import traceback
-        traceback.print_exc()
-        _kill_process_tree()
-        return f"[error: {e}]"
+            # _effective_timeout 为 None 时，communicate() 会一直阻塞到进程
+            # 自己结束为止，不会抛 TimeoutExpired（即"不设超时"）。
+            stdout_b, stderr_b = proc.communicate(timeout=_effective_timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_tree()
+            # 进程组已被强制杀掉，这里的 communicate() 只是回收管道里
+            # 已经产生的残留输出，不会再无限期阻塞。
+            try:
+                stdout_b, stderr_b = proc.communicate(timeout=5)
+            except Exception:
+                stdout_b, stderr_b = b"", b""
+            combined = (decode(stdout_b) + decode(stderr_b)).rstrip()
+            note = f"[timeout after {timeout}s — partial output above, process killed]"
+            return (combined + "\n" + note) if combined else note
+        except KeyboardInterrupt:
+            # [SYS-BASH-SIGINT-FIX] 兜底：万一主线程真的感知到了中断（没
+            # 依赖按键监听线程的直杀），也要杀掉子进程树并把已产生的
+            # 部分输出带回去，而不是让异常裸奔到上层、留下孤儿进程。
+            _kill_process_tree()
+            try:
+                stdout_b, stderr_b = proc.communicate(timeout=5)
+            except Exception:
+                stdout_b, stderr_b = b"", b""
+            combined = (decode(stdout_b) + decode(stderr_b)).rstrip()
+            note = "[interrupted by user (Ctrl+C) — partial output above, process killed]"
+            return (combined + "\n" + note) if combined else note
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.tools.builtin.bash')
+            import traceback
+            traceback.print_exc()
+            _kill_process_tree()
+            return f"[error: {e}]"
+    finally:
+        _unregister_active_proc(proc)
 
     combined = (decode(stdout_b) + decode(stderr_b)).rstrip()
     if proc.returncode != 0:
@@ -313,6 +396,12 @@ def _bash_stream(command: str, *, timeout: Optional[int], cwd: Path, env: dict) 
         watchdog.daemon = True
         watchdog.start()
 
+    # [SYS-BASH-SIGINT-FIX] 注册到活跃子进程表，供 Ctrl+C 按键监听线程
+    # 随时"直杀"——即使主线程正卡在下面的 readline() 里完全无法感知
+    # 中断信号（Windows 上尤其如此），也能从另一个线程把它杀掉。
+    _register_active_proc(proc)
+
+    interrupted_flag = False
     chunks: list[bytes] = []
     try:
         assert proc.stdout is not None
@@ -325,7 +414,14 @@ def _bash_stream(command: str, *, timeout: Optional[int], cwd: Path, env: dict) 
                 log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._bash_stream')
                 pass  # 终端打印失败不应影响命令本身的执行/结果收集
         proc.wait()
+    except KeyboardInterrupt:
+        # [SYS-BASH-SIGINT-FIX] 兜底：万一主线程真的感知到了中断（没
+        # 依赖按键监听线程的直杀），也要杀掉子进程树，而不是让异常
+        # 裸奔到上层、留下孤儿进程继续跑。
+        interrupted_flag = True
+        _force_kill_proc(proc)
     finally:
+        _unregister_active_proc(proc)
         if watchdog is not None:
             watchdog.cancel()
         # 进程被 kill 后，管道里可能还残留一点没读完的缓冲内容，补读一次。
@@ -346,6 +442,10 @@ def _bash_stream(command: str, *, timeout: Optional[int], cwd: Path, env: dict) 
                 pass
 
     combined = _bash_decode(b"".join(chunks)).rstrip()
+
+    if interrupted_flag:
+        note = "[interrupted by user (Ctrl+C) — partial output above, process killed]"
+        return (combined + "\n" + note) if combined else note
 
     if timed_out_flag.is_set():
         # 关键行为：超时不丢弃已产生的部分输出，同时明确告知调用方"没跑完"。

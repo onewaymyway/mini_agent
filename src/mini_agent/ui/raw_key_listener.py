@@ -140,6 +140,21 @@ class _BaseKeyReader(ABC):
             # 反复猛按 Ctrl+C；t.print() 只是把消息入队，由渲染线程异步
             # 消费，线程安全，不会被主线程阻塞拖慢。
             _BaseKeyReader._notify_sigint_received(t)
+            # [SYS-BASH-SIGINT-FIX] 非 daemon 模式下 Ctrl+C 杀不掉正在跑的
+            # bash 命令，根因之一就是：bash 子进程被特意放进了独立进程组
+            # （用于配合 timeout 一锅端），Windows 上因此收不到控制台的
+            # Ctrl+C；而主线程若正阻塞在 proc.communicate()/readline() 这类
+            # 同步 Win32 管道读取上，又完全没有机会检查中断标志，
+            # KeyboardInterrupt 可能永远等不到被抛出的那一刻。
+            # 这里的按键监听线程本身永远不会被那次阻塞调用卡住，所以直接
+            # 由它主动把当前活跃的 bash 子进程树杀掉，不依赖主线程是否/
+            # 何时感知到信号，才能做到"按下就停"。
+            try:
+                from mini_agent.tools.builtin import kill_active_bash_processes
+                kill_active_bash_processes()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ui.raw_key_listener._dispatch.sigint')
             os.kill(os.getpid(), signal.SIGINT)
 
     _last_sigint_notice_ts: float = 0.0
