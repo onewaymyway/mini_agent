@@ -149,7 +149,18 @@ def spawn_judge_agent(
         # 项目结构上，导致真正该产出的文本内容没有机会生成。
         registry = get_default_registry().empty()
 
-    return Agent(cfg=judge_cfg, guard=guard, registry=registry, is_subagent=True)
+    # [BUGFIX / 工具隔离] tools_enabled=False 时，registry 已经是 empty()，
+    # 但此前 Agent.__init__ 仍会无条件挂上 run_slash_command / proxy_* /
+    # MCP / introspection(agent_status 等) 工具，导致 TurnJudge/GoalJudge
+    # 这类声称"零工具、纯文本判定"的内部 Agent 实际上并非零工具。这里把
+    # tools_enabled 同步传给 extra_tools_enabled，tools_enabled=False 时这些
+    # 工具也一并跳过注册，真正做到零工具。tools_enabled=True 的场景（如
+    # judge_tools_enabled 开启的 GoalJudge）行为不变，仍然拿到完整的
+    # 辅助工具集。
+    return Agent(
+        cfg=judge_cfg, guard=guard, registry=registry, is_subagent=True,
+        extra_tools_enabled=tools_enabled,
+    )
 
 
 def run_judge_turn(

@@ -347,14 +347,20 @@ class SessionLifecycleMixin:
         # 让 agent 具备实时感知并动态调整自身状态的能力。
         # 必须在所有其他组件（history / tool_executor / skill 等）初始化完毕后注册，
         # 以确保采集器可访问完整的 agent 内部对象。
-        try:
-            from mini_agent.tools.introspection import register_introspection_tools
-            register_introspection_tools(self.registry, self)
-        except Exception as _e:
-            from mini_agent.errors import log_exception
-            log_exception(_e, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._init_components')
-            import warnings
-            warnings.warn(f"[Introspection] 自省工具注册失败，已跳过: {_e}")
+        # [BUGFIX / 工具隔离] 与 core.py 中 run_slash_command / proxy_* / MCP
+        # 的处理保持一致：extra_tools_enabled=False（如 judge_factory 构造的
+        # TurnJudge/GoalJudge 等"零工具"内部 Agent）时跳过 introspection 工具
+        # 注册，避免 agent_status/agent_inspect/agent_patch/agent_policy 这几个
+        # 工具泄漏到本该没有任何执行能力的内部判官/子 Agent 身上。
+        if getattr(self, "_extra_tools_enabled", True):
+            try:
+                from mini_agent.tools.introspection import register_introspection_tools
+                register_introspection_tools(self.registry, self)
+            except Exception as _e:
+                from mini_agent.errors import log_exception
+                log_exception(_e, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._init_components')
+                import warnings
+                warnings.warn(f"[Introspection] 自省工具注册失败，已跳过: {_e}")
 
     # ── Session 管理 ──────────────────────────────────────────────────────────────
 

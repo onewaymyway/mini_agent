@@ -96,8 +96,24 @@ class Agent(
         tool_cache: Optional[ToolResultCache] = None,
         is_subagent: bool = False,
         agent_profile_loader: Optional["AgentProfileLoader"] = None,
+        extra_tools_enabled: bool = True,
     ) -> None:
         self.cfg = cfg
+        # [BUGFIX / 工具隔离] 此前 run_slash_command / proxy_* / MCP /
+        # introspection(agent_status 等) 工具在 __init__ 里是无条件注册到
+        # self.registry 的，完全不看调用方传入的 registry 是不是刻意构造的
+        # 空 registry（如 judge_factory.spawn_judge_agent 在
+        # tools_enabled=False 时传入的 get_default_registry().empty()）。
+        # 结果是任何声称"零工具"的内部判官/子 Agent（TurnJudge/GoalJudge 等）
+        # 实际上都会带着这几个工具"泄漏"出去——它们会被模型看到、尝试调用，
+        # 但因为不在真正生效的注册表语义里（调用方本意是零工具），实际执行时
+        # 又和调用方预期的能力边界对不上，导致这类内部 Agent 明明设计上不该
+        # 有任何执行能力，却会去尝试调用 proxy_status/agent_inspect 等工具，
+        # 制造出"看起来在正常工作但其实什么都做不了"的困惑局面。
+        # extra_tools_enabled=False 时，下面四处注册（run_slash_command /
+        # proxy_* / MCP / introspection）全部跳过，只保留调用方显式通过
+        # registry 参数传入的工具，真正做到"零工具就是零工具"。
+        self._extra_tools_enabled = extra_tools_enabled
         # [workflow_directory_mode_design.md 阶段3] 若调用方（目前是
         # WorkflowRunner）传入了 workflow 本地的 agent profile loader，
         # 生效期间 spawn_named_agent / list_agent_profiles 通过
@@ -322,8 +338,9 @@ class Agent(
         # `tools/skill_manager.py` 里 `skill_list`/`skill_activate`/
         # `compact_history` 等工具的既有处理方式（同样是 `override=True`
         # 无条件重新注册）保持一致，不是这个代码库里第一次采用这个模式。
-        from mini_agent.tools.slash_command import register_slash_command_tool
-        register_slash_command_tool(self.registry, self)
+        if self._extra_tools_enabled:
+            from mini_agent.tools.slash_command import register_slash_command_tool
+            register_slash_command_tool(self.registry, self)
 
         if self.skill_loader:
             # [Phase E / 3.3] 注册"当前激活 skill 列表"provider，供 spawn_agent /
@@ -351,14 +368,15 @@ class Agent(
         # 在 CLI（scripts/proxy_ctl.py）或 REPL（/proxy）里手动操作。开关默认全部关闭，
         # 工具本身不会替用户打开；agent 调用 proxy_integration_set 时必须说明 reason，
         # 便于事后审计（见 tools/proxy_manager.py 顶部注释）。
-        from mini_agent.tools.proxy_manager import register_proxy_tools
-        from mini_agent.storage.paths import AgentPaths as _AgentPaths
-        # 注意：self.registry 可能是跨 Agent 实例共享的全局默认 registry
-        # （get_default_registry()）。/goal 等模式会在同一进程内创建多个 Agent
-        # 实例，若不加判断会导致 proxy_status 等工具重复注册并抛出
-        # "already registered" 的 ValueError。这里做幂等判断，跳过重复注册。
-        if "proxy_status" not in self.registry.names:
-            register_proxy_tools(self.registry, _AgentPaths(cfg.project_root))
+        if self._extra_tools_enabled:
+            from mini_agent.tools.proxy_manager import register_proxy_tools
+            from mini_agent.storage.paths import AgentPaths as _AgentPaths
+            # 注意：self.registry 可能是跨 Agent 实例共享的全局默认 registry
+            # （get_default_registry()）。/goal 等模式会在同一进程内创建多个 Agent
+            # 实例，若不加判断会导致 proxy_status 等工具重复注册并抛出
+            # "already registered" 的 ValueError。这里做幂等判断，跳过重复注册。
+            if "proxy_status" not in self.registry.names:
+                register_proxy_tools(self.registry, _AgentPaths(cfg.project_root))
 
         # [SYS-HOT-RELOAD] 热重载监视器：自动感知 skills/ 和 .agent/agents/ 目录变化
         from mini_agent.perception.hot_reload import HotReloader
@@ -529,7 +547,7 @@ class Agent(
         # 将其工具动态注册进 ToolRegistry（group="mcp:{server_name}"）。
         # 单个 server 连接失败不阻断启动，仅打印警告。
         self._mcp_manager = None
-        if cfg.mcp.enabled:
+        if cfg.mcp.enabled and self._extra_tools_enabled:
             from mini_agent.mcp import MCPManager
             self._mcp_manager = MCPManager(cfg.mcp, global_auto_approve=cfg.auto_approve)
             self._mcp_manager.register_all(self.registry)
