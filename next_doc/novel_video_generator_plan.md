@@ -272,9 +272,12 @@ Skill 3（与 `mv-generator` "步步校验通过才能进下一步"规范一致�
 
 ## 实施状态
 
-- [ ] Skill 1：`novel-scene-planner`（SKILL.md + `check_narration_draft.py`）
-- [ ] Skill 2：`novel-asset-generator`（SKILL.md + TTS 封装脚本 +
-      `check_assets_and_audio.py`）
+- [x] Skill 1：`novel-scene-planner`（SKILL.md + `check_narration_draft.py`，已测试：通过/引用不存在id报错/篇幅超区间报错 三类用例均验证正确）
+- [x] Skill 2：`novel-asset-generator`（SKILL.md + `scripts/tts_engine.py`
+      + `scripts/synthesize_narration.py` + `scripts/check_assets_and_audio.py`；
+      已测试：edge-tts 网络路径验证了失败时的错误处理与信息透传、
+      --segment-id 定向重跑、失败时保留旧记录不丢数据、缺角色/地点素材
+      报错、补全后校验通过，等用例）
 - [ ] Skill 3：`novel-scene-video-generator`（SKILL.md +
       `generate_scene_videos.py` 改造 + `check_clips.py`）
 - [ ] Skill 4：`novel-video-composer`（SKILL.md + `compose_novel_video.py`）
