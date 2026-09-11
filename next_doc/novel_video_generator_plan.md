@@ -285,5 +285,15 @@ Skill 3（与 `mv-generator` "步步校验通过才能进下一步"规范一致�
       单元测试clamp_seconds/resolve_asset_paths/自动降级text/空prompt
       报错，端到端跑通stub gen_video_with_text全量生成+定向重跑+断点
       续跑+status回写+check_clips报错与通过）
-- [ ] Skill 4：`novel-video-composer`（SKILL.md + `compose_novel_video.py`）
+- [x] Skill 4：`novel-video-composer`（SKILL.md + `scripts/compose_novel_video.py`，
+      改造自 mv-generator 的 compose_mv.py：拼接旁白音轨（filter_complex concat，
+      不用 concat demuxer 避免不同 wav 参数不一致）替代 mv 的"原始 mp3"，
+      去掉 mv 的 fill_dur/空隙填补逻辑（novel 场景首尾相接，无需处理），
+      保留整体误差兜底对齐；字幕改为按 scene.text 逐场景渲染（同文本去重，
+      超宽自动换行），而非 mv 的逐句歌词队列；保留封面挤压/替换效果，
+      去掉 mv 特有的歌名水印；末尾内置校验交付（ffprobe 总时长/比特率/
+      分辨率校验，JSON 结构化输出）；已用合成 ffmpeg testsrc 素材做端到端
+      冒烟测试验证：正常全量合成、`--allow-missing-clips` 借用相邻场景
+      填补、默认缺 clip 时拒绝合成 三类用例均验证正确，输出时长/分辨率/
+      封面效果符合预期)
 - [ ] 文档：各 skill 目录下 README/依赖说明
