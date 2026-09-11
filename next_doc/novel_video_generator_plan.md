@@ -278,7 +278,12 @@ Skill 3（与 `mv-generator` "步步校验通过才能进下一步"规范一致�
       已测试：edge-tts 网络路径验证了失败时的错误处理与信息透传、
       --segment-id 定向重跑、失败时保留旧记录不丢数据、缺角色/地点素材
       报错、补全后校验通过，等用例）
-- [ ] Skill 3：`novel-scene-video-generator`（SKILL.md +
-      `generate_scene_videos.py` 改造 + `check_clips.py`）
+- [x] Skill 3：`novel-scene-video-generator`（SKILL.md +
+      `scripts/generate_scene_videos.py`[改造自mv-generator，字段改用
+      duration_sec/uses_characters+uses_locations，新增--scene-id定向
+      重跑，生成后回写status] + `scripts/check_clips.py`；已测试：
+      单元测试clamp_seconds/resolve_asset_paths/自动降级text/空prompt
+      报错，端到端跑通stub gen_video_with_text全量生成+定向重跑+断点
+      续跑+status回写+check_clips报错与通过）
 - [ ] Skill 4：`novel-video-composer`（SKILL.md + `compose_novel_video.py`）
 - [ ] 文档：各 skill 目录下 README/依赖说明
