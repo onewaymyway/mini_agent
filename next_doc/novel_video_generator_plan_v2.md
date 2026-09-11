@@ -193,7 +193,7 @@ macro_scenes:
 
 ## 8. 实施状态
 
-- [ ] Skill 1：`novel-entity-extractor`（从 v1 `novel-scene-planner` 中拆出抽取部分，支持长篇分块+增量合并+单点补抽取）— 待实施
+- [x] Skill 1：`novel-entity-extractor`（从 v1 `novel-scene-planner` 中拆出抽取部分，支持长篇分块+增量合并+单点补抽取；SKILL.md + `scripts/check_entities.py` + README.md；已测试：id重复/字段缺失报错、修复后通过 两类用例均验证正确）
 - [ ] Skill 2：`novel-macro-scene-planner`（新增）— 待实施
 - [ ] Skill 3：`novel-scene-detail-planner`（新增，含引用回补循环 + 对话子串校验）— 待实施
 - [ ] Skill 4：`novel-asset-generator` v2（在 v1 基础上扩展按需触发 + 角色差异化配音 + content_blocks 拼接）— 待实施
