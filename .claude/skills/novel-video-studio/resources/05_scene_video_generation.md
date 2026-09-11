@@ -1,0 +1,114 @@
+# 阶段5：小场景视频生成 + 大场景内合成
+
+**依赖 skill**：`gen_video_with_text`（必须）。
+**依赖脚本**：
+- `generate_scene_videos_v2.py`：遍历 `macro_scene_*/scene_detail.yaml`，
+  按 `--macro-id`/`--micro-id` 双重过滤批量/定向生成 `micro_scene` clip，
+  逐大场景独立计轮次重试，完成后回写各 `micro_scene` 的 `status`；
+- `compose_macro_scene.py`：单大场景内把 `content_blocks` 对应的旁白/
+  对话 wav 按序拼接、micro clip 按 `duration_sec` 独立缩放拼接、渲染
+  字幕（对话用「」包裹），合成 `macro_scene_XX.mp4`，成功后回写
+  `macro_scenes.yaml` 对应大场景 `status=done`，校验不通过则不回写；
+- `check_clips_v2.py`：校验 `micro_scene` clip 完整性 + 已合成大场景
+  视频时长一致性。
+
+## 前置：Agent 手写 `prompt_en`/`video_mode`
+
+阶段3产出的 `scene_detail.yaml` 里**没有** `prompt_en` 字段（阶段3只
+负责内容/引用规划，不负责画面 prompt）。跑生成脚本之前，需要为每个
+`micro_scene` 结合 `visual_hint` + `novel_project.json.art_style` + 引用
+到的角色/地点 `description_en` 手写 `prompt_en`（英文），并按需设置
+`video_mode`（`reference`/`keyframe`/`text`：有可用参考图时优先
+`reference`，无参考图时用 `text`），直接写回对应 `scene_detail.yaml`
+的 `micro_scenes[*]` 条目。**脚本不代为生成 prompt**——`prompt_en` 为
+空时会直接把该小场景标记为失败并给出明确错误，不会用空 prompt 调用
+视频接口。
+
+## Step 1：批量生成小场景视频
+
+```bash
+python .claude/skills/novel-video-studio/scripts/generate_scene_videos_v2.py \
+  <output_dir> --aspect-ratio <novel_project.json 里的 aspect_ratio>
+```
+
+⚠️ **调用 bash 工具执行本命令时，`timeout` 参数必须传 `-1`**：单场景
+视频生成常常要几分钟，一次批量生成动辄超过默认超时。
+
+- 不传 `--macro-id`/`--micro-id` 时处理全部大场景下的全部小场景；
+  `--macro-id macro_01 macro_03` 只处理指定大场景；`--micro-id micro_02`
+  进一步只处理指定小场景（两者可组合）；
+- 已存在且非空的 `clips/<micro_id>.mp4` 默认跳过（断点续跑），`--force`
+  强制全部重新生成；
+- 单场景失败自动重试 3 次，一轮跑完仍有未成功场景自动从头再跑一轮
+  （每个大场景独立计轮次），直到全部成功或判定为持续性失败（连续一轮
+  没有新增成功即停止，把剩余失败场景连同错误信息汇报出来，交给 Agent
+  判断——常见原因见 `error_handling.md`）；
+- 每个小场景处理完，把对应 `scene_detail.yaml` 里该 `micro_scene` 的
+  `status` 回写为 `done`/`failed`。
+
+## Step 2：定向重跑（按需）
+
+```bash
+python .claude/skills/novel-video-studio/scripts/generate_scene_videos_v2.py \
+  <output_dir> --macro-id macro_01 --micro-id micro_03 --force
+```
+
+补齐失败场景不需要 `--force`；对某个小场景的画面不满意想重新生成才
+需要 `--force`（或用 `invalidate.py --macro-id macro_01 --micro-id
+micro_03 --level video` 先清理再直接重跑，两种方式等价，前者更轻量）。
+
+## Step 3：校验小场景 clip
+
+```bash
+python .claude/skills/novel-video-studio/scripts/check_clips_v2.py <output_dir>
+```
+
+- 校验每个 `micro_scene` 是否都有非空 `clips/<id>.mp4`，`status` 字段
+  与磁盘状态是否一致；
+- 若某个大场景已经合成过 `macro_scene_XX.mp4`，顺带校验其时长是否约
+  等于该大场景所有 `micro_scene.duration_sec` 之和；
+- 不通过 → 回 Step 2 用 `--micro-id` 补齐，重新跑校验直到通过。
+
+## Step 4：大场景内合成
+
+小场景 clip 全部就绪（Step 3 通过）后，逐个大场景跑：
+
+```bash
+python .claude/skills/novel-video-studio/scripts/compose_macro_scene.py \
+  <output_dir> macro_01
+```
+
+- 把该大场景全部 `micro_scene` clip 按顺序硬切拼接，配音（每个
+  `micro_scene` 的 `content_blocks` 对应若干段旁白/对话 wav，按顺序
+  首尾相接）混入，按每个 `micro_scene` 拼出的字幕文案（旁白原样、
+  对话用「」包裹）渲染字幕；
+- 非 Windows 环境需要 `--font-path <本地中文字体路径>`（如 Linux 上的
+  `/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc`）；
+- 缺 clip 时默认拒绝合成，`--allow-missing-clips` 才允许借用相邻小
+  场景画面强制拉伸填补（仅用于明确知情的场景）；
+- 合成并校验通过后，自动把 `macro_scenes.yaml` 里该大场景的 `status`
+  从 `planned` 回写为 `done`；**校验不通过则不回写**，保持 `planned`，
+  避免下游误以为已完成；
+- 产物：`macro_scene_XX/macro_scene_XX.mp4`。
+
+对每个 `status: planned` 的大场景重复 Step 1-4，直到 `macro_scenes.yaml`
+里所有大场景都变成 `status: done`，再进入阶段6。可以随时用
+`check_project_state.py` 查看还有哪些大场景没到 `done`。
+
+**向用户展示**：每个大场景的小场景生成成功/失败数量、大场景合成结果
+（时长/分辨率）、持续性失败场景的可能原因。
+
+## 常见问题
+
+1. **某个场景反复重试仍失败**：先看脚本汇报的最后一次错误信息，按
+   `error_handling.md` 判断是限流/参数/资源缺失哪一类，对症处理后用
+   `--macro-id --micro-id` 定向重跑，不需要动其它已成功的场景；
+2. **`video_mode: reference` 但提示"没有可用的参考图片"**：说明对应
+   角色/地点条目缺少 `asset_path`，脚本会自动降级为 `text` 模式继续
+   生成（不会整体失败），但画面一致性会打折扣，建议回阶段4补生成缺失
+   定妆图，再用 `--force` 重新生成这个场景；
+3. **`compose_macro_scene.py` 报错"缺少配音"**：说明阶段4的配音脚本
+   还没跑完该大场景，回去补跑（可用 `--macro-id` 只跑这一个大场景）；
+4. **`timeout` 忘记传 `-1` 导致命令被提前杀掉**：已成功的场景不会丢失
+   （断点续跑机制），直接重新执行同一条命令（记得加 `timeout: -1`）
+   即可从中断处继续。
