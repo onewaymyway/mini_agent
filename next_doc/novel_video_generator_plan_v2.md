@@ -197,10 +197,60 @@ macro_scenes:
 - [x] Skill 2：`novel-macro-scene-planner`（新增；SKILL.md + `scripts/check_macro_scenes.py` + README.md；已测试：引用不存在地点id报错/修复后通过、覆盖率检查 均验证正确）
 - [x] Skill 3：`novel-scene-detail-planner`（新增，含引用回补循环 + 对话子串校验；SKILL.md + `scripts/check_scene_detail.py` + README.md；已测试：素材缺失报错→修复后通过、臆造对话子串匹配报错 三类用例均验证正确）
 - [x] Skill 4：`novel-asset-generator` v2（在 v1 基础上扩展按需触发 + 角色差异化配音 + content_blocks 拼接；新增 `scripts/voice_mapping.py` + `scripts/synthesize_scene_audio.py` + `scripts/check_assets_and_audio_v2.py`，v1 脚本保留仅供历史参考；已测试：voice_mapping 关键词映射、check_assets_and_audio_v2 缺配音文件报错→修复后通过）
-- [ ] Skill 5：`novel-scene-video-generator` v2（在 v1 基础上新增大场景内合成层）— 待实施
-- [ ] Skill 6：`novel-video-composer` v2（输入改为大场景视频 + 转场选项）— 待实施
-- [ ] 各 skill 目录 README 同步更新
-- [ ] 测试用例（`test_cases/`）更新为覆盖长篇/多大场景/多角色对话配音场景
+- [x] Skill 5：`novel-scene-video-generator` v2（在 v1 基础上新增大场景内合成层；
+      新增 `scripts/generate_scene_videos_v2.py`[遍历 macro_scene_*/scene_detail.yaml，
+      按 --macro-id/--micro-id 双重过滤批量/定向生成 micro_scene clip，逐大场景
+      独立计轮次重试，完成后回写各 micro_scene 的 status] + `scripts/compose_macro_scene.py`
+      [新增：单大场景内把 content_blocks 对应的旁白/对话 wav 按序拼接、micro clip
+      按 duration_sec 独立缩放拼接、按 micro_scene 拼出的字幕文案（对话用「」包裹）
+      渲染字幕，合成 macro_scene_XX.mp4，成功后回写 macro_scenes.yaml 对应大场景
+      status=done，校验不通过则不回写] + `scripts/check_clips_v2.py`[校验 micro_scene
+      clip 完整性 + 已合成大场景视频时长一致性]；v1 脚本保留仅供历史参考；
+      已测试：用合成 ffmpeg testsrc 素材端到端验证 compose_macro_scene 正常合成
+      /status 回写/check_clips_v2 通过、cut 模式总时长校验、fade 模式转场时长
+      校验、--allow-missing-macro-scenes 跳过逻辑，共 13 项断言全部通过。
+      另需在 SKILL.md 中新增一步「Agent 手写 prompt_en/video_mode」——
+      novel-scene-detail-planner 产出的 scene_detail.yaml 不含画面 prompt 字段，
+      需要 Agent 在跑生成脚本前结合 visual_hint+art_style 手写好，脚本本身遇到
+      空 prompt_en 会直接报错，不代为生成）
+- [x] Skill 6：`novel-video-composer` v2（输入改为大场景视频 + 转场选项；新增
+      `scripts/compose_final_video_v2.py`：统一规格（分辨率/帧率/采样率）后按
+      transition_mode 拼接所有 status=done 的 macro_scene_XX.mp4——cut 直接拼接，
+      fade 在每两个大场景间插入可配置时长的黑场淡入淡出（前一个大场景尾部淡出、
+      后一个头部淡入），总时长按预期增加 (大场景数-1)×transition_duration；封面
+      效果沿用 v1（挤压/替换首个大场景视频前几秒，音轨保留不受影响）；末尾内置
+      ffprobe 时长/比特率/分辨率校验；v1 脚本保留仅供历史参考；已测试：cut/fade
+      两种转场时长校验、封面应用、--allow-missing-macro-scenes 跳过未就绪大场景
+      均验证正确，与 Skill5 共用同一份冒烟测试脚本全部通过）
+- [x] 各 skill 目录 README 同步更新（`novel-scene-video-generator`/
+      `novel-video-composer` 的 `SKILL.md`/`README.md` 均已改为"v2 当前使用 /
+      v1 已归档仅供参考"的结构，与 `novel-asset-generator` 的既有写法一致）
+- [x] 测试用例（`test_cases/`）新增 `novel_video_v2_composer_smoke_test.py`：
+      不需要 `AGNES_API_KEY` 的离线冒烟测试，覆盖 v2 Skill5（大场景内合成+
+      校验）与 Skill6（cut/fade 转场、封面、缺失大场景跳过）共 13 项断言，
+      本地全部跑通。**尚未覆盖**：Skill1-4（实体抽取/大场景切分/详细规划/
+      多角色配音）的长篇端到端真实流程测试，需要真实 LLM 推理 + `AGNES_API_KEY`，
+      留待后续按 `novel_video_generator_testing_guide.md` 的思路补一份 v2 专用
+      测试指南（含长篇/多大场景/多角色对话配音场景）时一并覆盖。
+
+## 9. 实施状态小结
+
+六个 skill（`novel-entity-extractor` / `novel-macro-scene-planner` /
+`novel-scene-detail-planner` / `novel-asset-generator` /
+`novel-scene-video-generator` / `novel-video-composer`）已全部实现，
+"小说转视频 v2"整条流程（全局实体抽取→大场景切分→单大场景详细规划→
+素材+差异化配音→小场景视频生成+大场景内合成→最终合成+转场）端到端
+可用，脚本层面的合成/拼接/转场逻辑已通过离线冒烟测试验证。
+
+后续如需扩展，建议按优先级：
+1. 补一份覆盖长篇小说、多大场景、多角色对话配音的 v2 专用端到端测试
+   指南（真实调用 `AGNES_API_KEY`/CosyVoice/edge-tts），类似 v1 的
+   `novel_video_generator_testing_guide.md`；
+2. `voice_mapping.py` 的音色映射精细化（目前只按性别+年龄段两个维度，
+   见 `novel-asset-generator` SKILL.md「已知限制」）；
+3. BGM 接入（ACE-Step，显存要求较高，独立评估）；
+4. 角色人脸参考照片复用入口（CosyVoice 零样本克隆理论上可做到"每个
+   角色独一无二"的音色，目前未实现参考音频采集入口）。
 
 > 本文档记录整体方案与目录/文件契约；具体实施每完成一个 skill，会在此
 > 状态表打勾，并同步更新对应 skill 目录下的 `SKILL.md`/`README.md`。

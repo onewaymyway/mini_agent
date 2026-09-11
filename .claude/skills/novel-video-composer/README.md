@@ -1,8 +1,38 @@
 # novel-video-composer
 
-"小说转视频"四段流程的第四步（最终合成）：拼接旁白音轨、逐场景独立
-缩放对齐、烧字幕、可选叠加封面，合成最终 `video.mp4`。详细流程规范见
-`SKILL.md`，整体架构/文件契约见 `next_doc/novel_video_generator_plan.md`。
+"小说转视频"流程的最后一步（最终合成）。**新项目请使用 v2**
+（`compose_final_video_v2.py`）；v1（`compose_novel_video.py`）保留
+仅供历史参考。详细流程规范见 `SKILL.md`，整体架构/文件契约见
+`next_doc/novel_video_generator_plan_v2.md`（v1 见
+`novel_video_generator_plan.md`）。
+
+## v2（六段流程，当前使用）
+
+输入：所有 `status: done` 的 `macro_scene_XX/macro_scene_XX.mp4`
+（`novel-scene-video-generator` 的 `compose_macro_scene.py` 产出）+
+`macro_scenes.yaml` + `novel_project.json`。
+
+```bash
+python .claude/skills/novel-video-composer/scripts/compose_final_video_v2.py <output_dir>
+```
+
+常用可选参数：`--output`、`--transition-mode cut|fade`（不传读取
+`novel_project.json.transition_mode`，默认 `cut`）、
+`--transition-duration`（fade 模式下每次转场的黑场时长，默认读取
+`novel_project.json.transition_duration_sec`，未配置则 0.5 秒）、
+`--cover-duration`/`--no-cover`（同 v1）、
+`--allow-missing-macro-scenes`（默认关闭）。
+
+`fade` 模式会在每两个大场景之间插入一段黑场淡入淡出，总时长 =
+各大场景时长之和 + `(大场景数-1) × transition_duration`；`cut` 模式
+总时长就是各大场景时长之和。目标分辨率仍自动从 `aspect_ratio` 推导。
+
+---
+
+## v1（四段流程，已归档）
+
+拼接旁白音轨、逐场景独立缩放对齐、烧字幕、可选叠加封面，合成最终
+`video.mp4`。
 
 ## 依赖
 
