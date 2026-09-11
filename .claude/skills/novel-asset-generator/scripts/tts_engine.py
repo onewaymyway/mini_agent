@@ -41,6 +41,8 @@ class TTSError(Exception):
 
 
 def _ffprobe_duration(path: Path) -> float:
+    """读 wav/mp3 真实时长。优先 ffprobe，不可用时用 Python wave 模块 fallback。"""
+    # 先试 ffprobe
     try:
         out = subprocess.run(
             [
@@ -51,8 +53,15 @@ def _ffprobe_duration(path: Path) -> float:
         )
         data = json.loads(out.stdout)
         return float(data["format"]["duration"])
+    except Exception:
+        pass  # ffprobe 不可用，走 wave fallback
+    # fallback：wave 模块只支持 PCM wav，不支持 mp3/压缩 wav
+    try:
+        import wave as _wave
+        with _wave.open(str(path), "rb") as wf:
+            return wf.getnframes() / float(wf.getframerate())
     except Exception as e:
-        raise TTSError(f"ffprobe 读取音频时长失败（{path}）：{e}")
+        raise TTSError(f"无法读取音频时长（{path}）：{e}")
 
 
 def _try_cosyvoice(text: str, out_path: Path, voice: Optional[str], model_dir: str) -> None:
