@@ -8,7 +8,7 @@ from typing import List, Optional, Union
 
 import requests
 
-from agnes_key_pool import AgnesKeyPool, is_rate_limit_error
+from agnes_key_pool import AgnesKeyPool, is_rate_limit_error, is_non_retryable_error
 
 # 支持的档位式 size 与 ratio（Agnes Image 2.5 Flash 文档）。仍然兼容
 # "1024x768" 这类历史精确尺寸写法，但不受原生支持的精确尺寸可能会被
@@ -101,6 +101,14 @@ class AgnesImageClient:
                         if next_key:
                             self.api_key = next_key
                             continue  # 换 key 立即重试，不计入 attempt
+
+                    if is_non_retryable_error(resp.status_code, resp.text):
+                        # [FAST-FAIL] 参数错误/鉴权失败/内容被拒绝等：换 key、
+                        # 重试都不会改变结果，立即停止重试并原样返回，交给
+                        # 调用方打印结构化错误、终止脚本，让 Agent 去修配置。
+                        print(f"    [POST 不可重试错误] status_code={resp.status_code}，"
+                              f"判定为参数/鉴权/内容类错误，立即停止重试: {resp.text[:200]}")
+                        return {"success": False, "error": last_err, "non_retryable": True}
 
                     attempt += 1
                     time.sleep(1.5 * attempt)

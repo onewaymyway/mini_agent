@@ -33,62 +33,66 @@ skill 自带，本 skill 不重复实现），行为规律一致，按下面的�
 
 ### 2. 非限流类（400 参数错误 / 鉴权失败 / 其它 4xx）
 
-这类错误换 key 也无法解决，同一个请求重试多少次结果都一样。
-`generate_scene_videos_v2.py` 对每个场景外层最多尝试
-`MAX_RETRIES_PER_SCENE`（3）次，但内置了**快速失败判断**
-（`is_non_retryable_error`）：一旦某次失败的 `status_code` 落在
-`{400, 401, 403, 404, 422}` 且不是限流关键字，**立即停止对这个场景的
-剩余重试**，打印明确提示后直接放弃这一条、继续处理批次里的其它场景，
-不会白白再耗剩余的 attempt 次数。（注：调用方 `gen_video_with_text`/
-`gen_image_with_text` 自身的 `agnes_tools.py._post` 内部仍会先重试几次
-才把结果返回给本脚本——这一层不是本 skill 的代码，本 skill 只保证在
-拿到明确的非限流失败结果后不再在外层瞎重试，不做二次浪费。）典型
-日志：
+这类错误换 key 也无法解决，同一个请求重试多少次结果都一样，处理方式是
+**两层都做了快速失败**：
+
+- 底层 `gen_video_with_text`/`gen_image_with_text` 的 `agnes_tools.py`
+  在 `_post`/`_get` 里一旦判定失败是非限流的 `400/401/403/404/422`，
+  立即返回 `{"success": False, "error": ..., "non_retryable": True}`，
+  不再消耗 `max_retries`（这两个 skill 是共享依赖，这个改动对所有调用
+  方生效，不止本 skill）；
+- 本 skill 的 `generate_scene_videos_v2.py` 收到 `non_retryable: True`
+  后，**立即终止整个脚本**（`sys.exit(1)`），打印结构化 JSON 错误
+  （含出错的 `macro_scene`/`scene_id`、错误详情、已经成功的场景清单、
+  `action_required` 提示），不会继续处理其它场景——这类错误意味着
+  配置本身有问题，带着错误继续跑完其它场景没有意义，也可能掩盖问题；
+  已经成功生成的场景在退出前会先落盘 `status: done`，不受影响，下次
+  重跑同一条命令会自动跳过。
+
+典型日志：
 
 ```
-[POST 失败] status_code=400，第 3/3 次重试，4.5s 后重试: {"code":"invalid_request",
-"message":"invalid mode (request id: ...)","data":{"param":"mode"}}
-```
+[POST 不可重试错误] status_code=400，判定为参数/鉴权/内容类错误，立即停止重试:
+{"code":"invalid_request","message":"invalid mode (request id: ...)","data":{"param":"mode"}}
 
-批量脚本（`generate_scene_videos_v2.py`/`synthesize_scene_audio.py`）
-最终会在 stdout 打印类似结构：
-
-```json
-{"success": false, "succeeded": [...], "failed": ["micro_07"],
- "errors": {"micro_07": "status_code=400: invalid mode (request id: ...)"}}
+[FAST-FAIL] macro_scene_02/micro_05 遇到不可重试错误，立即终止整个脚本，不再处理其它场景。
+错误详情: status_code=400: invalid mode (request id: ...)
+{
+  "success": false,
+  "fatal": true,
+  "scene_id": "micro_05",
+  "macro_scene": "macro_scene_02",
+  "error": "status_code=400: invalid mode (request id: ...)",
+  "already_succeeded": ["micro_01", "micro_02", "micro_03", "micro_04"],
+  "action_required": "请检查 macro_scene_02/scene_detail.yaml 里 micro_05 的配置（常见如 video_mode/prompt_en 等字段），修正后用 --macro-id macro_02 --micro-id micro_05 重新运行本脚本，不需要重跑已成功的场景。"
+}
 ```
 
 **处理流程**：
-1. 读错误信息里的 `data.param` / `message`，定位是哪个字段传错了——
-   上面的例子是 `mode` 参数无效，通常对应 `scene_detail.yaml` 里该
-   `micro_scene` 的 `video_mode` 字段填了脚本不认识的值（比如手误写
-   成拼写错误，或者用了当前 API 版本不支持的模式）；
-2. 只修正 `errors` 里列出的那几个条目对应的配置字段（不要动其它已
-   成功的条目）；
-3. 用 `--macro-id --micro-id`（视频/配音脚本都支持）定向重跑**只有
-   这几个失败的条目**，不要整体重跑一遍批次；
+1. 读打印出的结构化 JSON 里的 `error`/`action_required`，定位是哪个
+   `macro_id`/`scene_id`、哪个字段传错了——上面的例子是 `mode` 参数
+   无效，通常对应 `scene_detail.yaml` 里该 `micro_scene` 的
+   `video_mode` 字段填了脚本不认识的值；
+2. 只修正这一个条目对应的配置字段（不要动其它已成功的条目）；
+3. 用 `--macro-id --micro-id` 定向重新运行同一条命令，**只重跑刚才
+   失败的这一个场景**，已成功的场景会因为 clip 文件已存在被自动跳过；
 4. 重跑后仍失败，把完整错误信息展示给用户，说明"这不是限流问题，是
    参数/内容问题，需要人工确认怎么改"，不要反复用相同的错误配置无脑
-   重试。
+   重试，也不要绕过错误直接放弃这个场景。
 
-**绝不允许**：看到失败就假设是限流然后干等重试；或者反过来看到失败
-就直接跳过该条目不处理导致最终产物有缺口——批量脚本本身允许"部分
-失败、继续处理其它"，但**收尾时必须回到失败清单逐条修复**，不能带着
-`failed` 非空的状态进入下一阶段。
+**绝不允许**：看到非限流错误就当作限流去等待重试；或者忽略
+`[FAST-FAIL]` 提示，直接重新整体跑一遍希望"这次能过"——参数错误不会
+因为重跑就自己变好，必须先改配置，改完只重跑那一个失败条目。
 
-## 已知局限（如实说明，不夸大修复范围）
+## 已知局限（如实说明）
 
-`generate_scene_videos_v2.py` 的快速失败判断只作用于**本脚本自己的外层
-重试循环**——它调用的 `gen_video_with_text`/`gen_image_with_text` 底层
-`agnes_tools.py._post` 是这两个独立 skill 自带的通用 HTTP 客户端，内部
-对所有非限流失败也会先按同一把 key 重试几次才把最终结果返回上来，这一层
-不属于本 skill 的代码，本次没有改动（改了会影响其它使用这两个 skill的
-场景）。也就是说：单次调用内部仍可能有几次"重试注定失败"的 HTTP 请求，
-但本 skill 保证**外层不会在拿到明确的非限流失败结果后继续瞎重试**，
-把浪费限制在这一层之内。如果这一点仍然造成明显的时间/额度浪费，需要
-到 `gen_video_with_text`/`gen_image_with_text` 各自的 `agnes_tools.py`
-里同样加上"非限流错误不重试"的判断（改动会影响这两个 skill 的所有
-调用方，建议单独评估后再改）。
+- `agnes_tools.py` 的快速失败判断按状态码 `400/401/403/404/422` 归类，
+  如果 API 未来返回其它状态码承载同类"参数/内容"错误，脚本仍会把它当
+  可重试错误走完 `max_retries` 才放弃——归类规则可能需要随 API 实际
+  返回的状态码演进；
+- `synthesize_scene_audio.py`（TTS 配音）走的是 CosyVoice/edge-tts 本地
+  引擎，不经过 Agnes API，本次改动不涉及配音这一步的错误处理，TTS 失败
+  仍按原有的降级/报错逻辑处理。
 
 ## 常见非限流错误对照
 

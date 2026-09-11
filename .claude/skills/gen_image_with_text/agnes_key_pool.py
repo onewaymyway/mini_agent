@@ -46,6 +46,25 @@ def is_rate_limit_error(status_code: Optional[int], text: str = "") -> bool:
     return any(kw in lowered for kw in _RATE_LIMIT_KEYWORDS)
 
 
+# 明确"重试没有意义，必须先由 Agent 修好配置再重跑"的一类错误：请求参数
+# 错误 / 鉴权失败 / 资源不存在 / 内容被拒绝。这些状态码在非限流场景下，
+# 同一个请求重试多少次结果都一样（比如 mode 参数写错了，不会因为多试几次
+# 就变成合法值），必须立即停止重试，把结构化错误交回调用方处理，而不是
+# 陪着走满 max_retries。
+_NON_RETRYABLE_STATUS_CODES = (400, 401, 403, 404, 422)
+
+
+def is_non_retryable_error(status_code: Optional[int], text: str = "") -> bool:
+    """判断一次请求失败是否属于"重试无意义，需要先修配置"的错误。
+
+    注意：先排除限流错误（限流也可能带 429 之外的状态码文案，但限流本身
+    应该走换 key 重试，不应该被这里误判为不可重试）。
+    """
+    if is_rate_limit_error(status_code, text):
+        return False
+    return status_code in _NON_RETRYABLE_STATUS_CODES
+
+
 def _find_providers_json(start: Path) -> Optional[Path]:
     """从 start 目录开始向上查找 providers.json（最多向上找 8 层）。"""
     current = start.resolve()

@@ -236,12 +236,14 @@ def generate_one_scene(client, scene: dict, char_by_id: dict, loc_by_id: dict,
         err = result.get("error")
         print(f"    ⚠️ {scene_id} 第 {attempt} 次失败: {format_error(err)}")
 
-        if is_non_retryable_error(err):
-            # [FAST-FAIL] 参数/鉴权/内容类错误，重试同一个请求不会有不同结果，
-            # 立即停止本场景的重试，把结构化错误打印出来交给 Agent 去修配置
-            # （比如 video_mode 填错），不要再空耗剩余 attempt 次数。
-            print(f"    ❌ {scene_id} 判定为不可重试错误（参数/鉴权/内容问题），"
-                  f"立即放弃重试，先跳过，继续下一个场景。错误详情: {format_error(err)}")
+        if is_non_retryable_error(err) or (isinstance(result, dict) and result.get("non_retryable")):
+            # [FAST-FAIL] 参数/鉴权/内容类错误：换 key、重试都不会改变结果。
+            # 不再继续本场景的重试，也不再处理其它场景——整个脚本立即终止，
+            # 把结构化错误交给 Agent，Agent 需要去修 scene_detail.yaml 里
+            # 这个 micro_scene 的相关字段（比如 video_mode/prompt_en），
+            # 改完后只需针对这一个 scene_id 用 --macro-id --micro-id 重跑，
+            # 不需要、也不应该让脚本带着这个错误继续跑完其它场景。
+            last_result["non_retryable"] = True
             return last_result
 
         if attempt < MAX_RETRIES_PER_SCENE:
@@ -363,6 +365,38 @@ def main():
                     succeeded.add(scene_id)
                     last_errors.pop(scene_id, None)
                     round_had_success = True
+                elif result.get("non_retryable"):
+                    # [FAST-FAIL] 立即终止整个脚本，不再处理任何其它场景/大场景。
+                    # 已经成功生成的场景不受影响（文件已落盘），本次运行剩余的
+                    # 场景需要在 Agent 修好配置后重新跑本命令继续处理。
+                    err_detail = format_error(result.get("error"))
+                    # 退出前先把本大场景目前已经成功的场景状态落盘，避免这次
+                    # 运行期间已生成的 clip 因为提前退出而没有被记录到
+                    # scene_detail.yaml 里（下次断点续跑判断要用到 status）。
+                    for sc2 in all_scenes:
+                        if sc2["id"] not in target_ids:
+                            continue
+                        if sc2["id"] in succeeded:
+                            sc2["status"] = "done"
+                    _dump_yaml(detail_file, {"macro_id": plan.get("macro_id"), "micro_scenes": all_scenes})
+                    print(f"\n[FAST-FAIL] {macro_dir_name}/{scene_id} 遇到不可重试错误，"
+                          f"立即终止整个脚本，不再处理其它场景。", file=sys.stderr)
+                    print(f"错误详情: {err_detail}", file=sys.stderr)
+                    print(json.dumps({
+                        "success": False,
+                        "fatal": True,
+                        "scene_id": scene_id,
+                        "macro_scene": macro_dir_name,
+                        "error": err_detail,
+                        "already_succeeded": sorted(succeeded_all | succeeded),
+                        "action_required": (
+                            f"请检查 {macro_dir_name}/scene_detail.yaml 里 {scene_id} 的配置"
+                            f"（常见如 video_mode/prompt_en 等字段），修正后用 "
+                            f"--macro-id <本大场景id> --micro-id {scene_id} 重新运行本脚本，"
+                            f"不需要重跑已成功的场景。"
+                        ),
+                    }, ensure_ascii=False, indent=2))
+                    sys.exit(1)
                 else:
                     last_errors[scene_id] = format_error(result.get("error"))
 
