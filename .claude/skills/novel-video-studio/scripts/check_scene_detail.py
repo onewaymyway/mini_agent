@@ -12,7 +12,11 @@ raw_text 用于对话真实性校验），以及
   2. 每个 dialogue block 的 speaker 是否在该 micro_scene 的
      uses_characters 列表里。
   3. 每个 dialogue.text（去除空白/标点后）是否能在该大场景 raw_text
-     （同样去除空白/标点后）里找到子串匹配——找不到判定"疑似臆造对话"。
+     （同样去除空白/标点后）里找到子串匹配——找不到判定"疑似臆造对话"；
+     进一步地，若原文里能提取出引号片段，dialogue.text 还必须落在某个
+     引号片段内部（不能是"引号内容+引号外动作/转述"整句糅合），并且不
+     能包含"一边...一边"/"苦笑"/"脸色"/"告诉"等动作神态类提示词——
+     这些内容应该拆到 narration block 或体现在 visual_hint 里。
   4. 每个 micro_scene 至少有一个 content_blocks，且不能全是空文本。
   5. micro_scene 的 id 在整个项目范围内（扫描所有 macro_scene_*/
      scene_detail.yaml）不重复。
@@ -41,9 +45,41 @@ except ImportError:
 
 _STRIP_RE = re.compile(r"[\s，。！？、；：“”‘’\"'.,!?;:()（）\-—…]")
 
+# 中文小说里常见的引号配对，用来从 raw_text 里抠出"真正是角色说出口的话"
+# 的范围。dialogue.text 必须落在某一个引号片段内部，而不能只是在 raw_text
+# 里随便找到子串——否则"沈婉一边擦着桌子一边说，江湖上都传你死在关外了"
+# 这种夹杂了动作描写/叙事转述的整句也会被判定为通过（子串匹配天然满足），
+# 但这不是真正的对话文案。
+_QUOTE_PAIRS = [("“", "”"), ("「", "」"), ("『", "』"), ('"', '"')]
+
+# 常见的"转述/动作归因"提示词：真正的台词摘录不应该包含这些描述说话人
+# 动作/神情/语气的词，出现即说明这一块很可能把叙事内容也当成对话摘了进来。
+_NARRATION_LEAK_HINTS = (
+    "一边", "一边说", "说道", "笑着说", "苦笑", "摇头", "点头", "脸色",
+    "看着", "望着", "转身", "叹了口气", "叹息", "告诉", "问道", "答道",
+    "皱眉", "冷笑", "沉默", "顿了顿",
+)
+
 
 def _normalize(text: str) -> str:
     return _STRIP_RE.sub("", text or "")
+
+
+def _extract_quoted_spans(raw_text: str) -> list[str]:
+    """从原文里抠出所有引号包裹的片段（归一化后），用于校验对话是否只
+    摘录了引号内的话语。找不到任何引号时返回空列表，调用方需要区分对待
+    （不能强行要求，只能退化成告警）。"""
+    spans: list[str] = []
+    for left, right in _QUOTE_PAIRS:
+        if left == right:
+            # 直引号 " 无法用左右区分，退化为按对切分
+            parts = raw_text.split(left)
+            for i in range(1, len(parts), 2):
+                spans.append(parts[i])
+        else:
+            pattern = re.compile(re.escape(left) + r"([^" + re.escape(left + right) + r"]*)" + re.escape(right))
+            spans.extend(m.group(1) for m in pattern.finditer(raw_text))
+    return [s for s in (_normalize(s) for s in spans) if s]
 
 
 def _load_json(path: Path) -> dict:
@@ -77,7 +113,9 @@ def check(output_dir: Path, macro_id: str) -> dict:
         errors.append(f"macro_scenes.yaml 里找不到 id={macro_id} 的大场景")
         return {"ok": False, "errors": errors, "warnings": warnings, "summary": {}}
 
-    raw_text_normalized = _normalize(macro_record.get("raw_text") or "")
+    raw_text = macro_record.get("raw_text") or ""
+    raw_text_normalized = _normalize(raw_text)
+    quoted_spans = _extract_quoted_spans(raw_text)
 
     scene_dir = output_dir / _macro_scene_dir_name(macro_id)
     detail_data = _load_yaml(scene_dir / "scene_detail.yaml")
@@ -132,6 +170,28 @@ def check(output_dir: Path, macro_id: str) -> dict:
                         f"小场景 {mid} 第{i+1}个 dialogue block 的台词疑似臆造（在大场景 "
                         f"{macro_id} 原文里找不到对应子串）：{text!r}"
                     )
+                elif text:
+                    norm_text = _normalize(text)
+                    if quoted_spans:
+                        # 原文里能抠出引号片段，就必须严格校验：dialogue.text
+                        # 只能是某一段引号内容的子串（或恰好等于它），不能是
+                        # "引号内容+引号外的动作/转述"拼在一起的整句。
+                        if not any(norm_text in span or span in norm_text for span in quoted_spans):
+                            errors.append(
+                                f"小场景 {mid} 第{i+1}个 dialogue block 的文本不在原文任何"
+                                f"引号片段内，疑似把动作描写/叙事转述也当成了台词——dialogue "
+                                f"只应保留角色说的话本身，动作/神态描写请拆到独立的 narration "
+                                f"block（如果原文一句引号被动作打断成两段，应该拆成两个 "
+                                f"dialogue block，中间插一个 narration block）：{text!r}"
+                            )
+                    hit_hints = [kw for kw in _NARRATION_LEAK_HINTS if kw in text]
+                    if hit_hints:
+                        errors.append(
+                            f"小场景 {mid} 第{i+1}个 dialogue block 的文本包含疑似动作/神态"
+                            f"描写用词 {hit_hints}，dialogue 里不应该出现这类内容，请把动作/"
+                            f"神态描写移到旁白（narration）或直接体现在 visual_hint 里，"
+                            f"dialogue.text 只保留角色说的话：{text!r}"
+                        )
             elif btype == "narration":
                 if block.get("speaker") not in (None, "null"):
                     warnings.append(f"小场景 {mid} 第{i+1}个 narration block 的 speaker 应为 null")
