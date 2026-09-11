@@ -212,6 +212,14 @@ class RoleJudgeMixin:
         if tj_cfg is None or not tj_cfg.enabled or self._is_subagent:
             return
 
+        # [BUGFIX / TurnJudge 误触发] compact_with_skills() 为生成摘要会递归
+        # 调用 self.run_turn(compact_prompt)，这次内部调用结束时 assistant_output
+        # 就是摘要文本本身——它不代表主 Agent 真正的一轮任务已经结束，只是内部
+        # 压缩机制的副产物。跳过这次判定，避免"一压缩就触发 TurnJudge"，真正做到
+        # "只有主 Agent 一轮真正结束才触发 TurnJudge"。
+        if getattr(self, "_generating_compact_summary", False):
+            return
+
         if self._turn_judge_auto_count >= tj_cfg.max_auto_rounds:
             R.print_info(
                 f"[TurnJudge] 已连续自动接管 {self._turn_judge_auto_count} 次，"

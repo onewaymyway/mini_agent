@@ -114,6 +114,17 @@ class Agent(
         # proxy_* / MCP / introspection）全部跳过，只保留调用方显式通过
         # registry 参数传入的工具，真正做到"零工具就是零工具"。
         self._extra_tools_enabled = extra_tools_enabled
+
+        # [BUGFIX / TurnJudge 误触发] compact_with_skills() 为了拿到高质量摘要，
+        # 会直接递归调用 self.run_turn(compact_prompt) 走一遍完整的 run_turn
+        # 流程（见 compaction.py compact_with_skills()）。但 run_turn() 结尾
+        # 无条件会调用一次 _maybe_run_turn_judge()——这导致"生成 compact 摘要"
+        # 这个纯内部动作，被当成一次真实的对话轮次结束，摘要文本一出来就被
+        # TurnJudge 判定一次，而这次判定跟真实任务是否需要用户输入完全无关。
+        # 用这个标记让 compact_with_skills() 在递归调用期间显式标出"这是内部
+        # 摘要生成调用"，_maybe_run_turn_judge() 检测到后直接跳过，真正做到
+        # "只有主 Agent 一轮真正结束时才触发 TurnJudge"。
+        self._generating_compact_summary: bool = False
         # [workflow_directory_mode_design.md 阶段3] 若调用方（目前是
         # WorkflowRunner）传入了 workflow 本地的 agent profile loader，
         # 生效期间 spawn_named_agent / list_agent_profiles 通过

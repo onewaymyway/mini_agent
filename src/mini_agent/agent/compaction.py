@@ -465,6 +465,12 @@ class CompactionMixin:
             R.print_info("[compact] Generating summary…")
             result = ""
             used_chunked = False
+            # [BUGFIX / TurnJudge 误触发] 标记"接下来这次 run_turn() 是内部摘要
+            # 生成调用"，让 _maybe_run_turn_judge() 跳过对这次内部调用的判定
+            # （摘要文本不是真实的任务结束信号）。用 try/finally 确保异常路径
+            # 下也一定会复位，不会把标记永久留在 True。
+            _prev_generating_summary = self._generating_compact_summary
+            self._generating_compact_summary = True
             try:
                 result = self.run_turn(compact_prompt)
             except Exception as e:
@@ -487,6 +493,11 @@ class CompactionMixin:
                 else:
                     R.print_error(f"[compact] Summary generation failed: {e}")
                     return ""
+            finally:
+                # 无论 run_turn 正常返回还是走了上面任何一条异常分支
+                # （含 return ""），都要把标记复位——finally 在 except 里的
+                # return 之前也会执行，不会漏掉。
+                self._generating_compact_summary = _prev_generating_summary
 
         if not result:
             R.print_warning("[compact] Got empty summary, aborting.")
