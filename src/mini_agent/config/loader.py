@@ -985,7 +985,7 @@ def load_config(
         llm_fallback_on=_llm_fallback_on,
     )
 
-    print("cfg:",cfg)
+    # print("cfg:",cfg)
 
     # [next_doc/errors_tool_executor_log_toggle_plan.md] 把
     # `save_tool_executor_error_logs` 同步到 errors.py 的进程级开关——
