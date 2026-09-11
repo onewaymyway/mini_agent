@@ -117,9 +117,11 @@ ffmpeg 计算，场景数多、clip 分辨率高时耗时可能超过默认超�
    建议回 `novel-scene-planner`/`novel-asset-generator` 阶段把过长的
    旁白文案拆得更短（同时也有利于把 `duration_sec` 控制在
    `gen_video_with_text` 的 4–12 秒范围内）。
-3. **中文字体渲染异常（方框/乱码）**：检查 `FONT_PATH` 常量指向的
-   字体文件是否存在、是否支持中文字形；非 Windows 环境需要把
-   `FONT_PATH` 改成本地实际可用的中文字体路径。
+3. **中文字体渲染异常（方框/乱码）**：检查默认字体路径（`FONT_PATH`
+   常量，Windows 下为 `C:\Windows\Fonts\msyh.ttc`）指向的文件是否存在、
+   是否支持中文字形；非 Windows 环境不需要改源码，直接加
+   `--font-path <本地字体路径>` 覆盖即可（例如 Linux 上的
+   `/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc`）。
 4. **封面没有生效**：确认 `<output_dir>/assets/cover.png` 是否存在
    （`novel-asset-generator` 里封面是可选产物，没生成属于正常情况，
    脚本会打印提示后正常跳过，不算错误）；确认没有误加 `--no-cover`。

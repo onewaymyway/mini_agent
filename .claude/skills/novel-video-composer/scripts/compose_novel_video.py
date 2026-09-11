@@ -83,15 +83,21 @@ ASPECT_TO_SIZE = {
 }
 
 
-def _resolve_bin(candidates):
+def _resolve_bin(candidates, path_name):
     for c in candidates:
         if Path(c).exists():
             return c
+    # 本地 Windows 专用候选路径都不存在时，退回系统 PATH（Linux/macOS
+    # 测试环境常见：没装 imageio_ffmpeg，但 ffmpeg/ffprobe 本身在 PATH
+    # 里，比如通过 apt/brew 装的）。
+    found = shutil.which(path_name)
+    if found:
+        return found
     return candidates[-1]
 
 
-FFMPEG = _resolve_bin(_FFMPEG_CANDIDATES)
-FFPROBE = _resolve_bin(_FFPROBE_CANDIDATES)
+FFMPEG = _resolve_bin(_FFMPEG_CANDIDATES, "ffmpeg")
+FFPROBE = _resolve_bin(_FFPROBE_CANDIDATES, "ffprobe")
 
 
 def _run(cmd):
@@ -287,7 +293,16 @@ def main():
                          help="[默认关闭] 允许缺 clip 的场景借用相邻场景画面强制拉伸填补，"
                               "正常流程应先用 check_clips.py 校验通过、补齐缺失场景，"
                               "不应依赖本参数绕过检查")
+    parser.add_argument("--font-path", default=None,
+                         help="中文字幕字体文件路径，默认使用脚本内置的 FONT_PATH 常量"
+                              "（Windows: C:\\Windows\\Fonts\\msyh.ttc）。非 Windows 环境"
+                              "（如 CI/测试）请显式传本地实际可用的中文字体路径，例如"
+                              "Linux 上的 Noto Sans CJK/文泉驿字体")
     args = parser.parse_args()
+
+    global FONT_PATH
+    if args.font_path:
+        FONT_PATH = args.font_path
 
     if not HAS_YAML:
         print("缺少 pyyaml，请先 pip install pyyaml", file=sys.stderr)

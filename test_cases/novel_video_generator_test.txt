@@ -1,0 +1,27 @@
+帮我把下面这篇小说做成解说视频：
+
+（小说文本见 test_cases/inputs/novel_video_sample_novel.txt，标题
+《青石客栈的一夜》，约 700 字的武侠短篇）
+
+要求：
+1. 目标视频时长：60 秒左右（篇幅短，方便快速跑通全流程测试，不需要按
+   默认的 3 分钟）；
+2. 横屏 16:9；
+3. 旁白配音用默认方案就行（本地 CosyVoice 优先，装不上自动降级到
+   edge-tts，不需要我额外确认）；
+4. 本版不需要 BGM；
+5. 项目输出目录固定用 test_result/novel_video/qingshi_inn_test/，方便
+   我复查产物（对应 novel-scene-planner 里 output_dir 的约定）；
+6. 依次跑完 novel-scene-planner → novel-asset-generator →
+   novel-scene-video-generator → novel-video-composer 四个 skill，每
+   一步都要跑对应的校验脚本，通过了再进入下一步，不要跳过校验；
+7. 全部跑完后，把 4 个 skill 各自的产物路径、关键校验结果（比如场景
+   数量、总时长、是否有降级到 edge-tts、是否有场景失败重试）汇总告诉
+   我，最后展示 video.mp4 的路径。
+
+如果角色/地点抽取、场景切分的结果和你的理解有出入，可以先给我看
+`characters.json`/`locations.json`/`narration_script.yaml` 的内容，
+我确认没问题后再继续往下跑，不需要每一步都问我。
+
+参考预期结果和逐项校验方法见：
+`test_cases/novel_video_generator_testing_guide.md`

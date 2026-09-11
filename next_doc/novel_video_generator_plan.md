@@ -301,9 +301,31 @@ Skill 3（与 `mv-generator` "步步校验通过才能进下一步"规范一致�
       与相邻 skill 的交接条件，内容与各自 `SKILL.md` 保持一致，供快速
       查阅不需要每次通读完整 SKILL.md）
 
+- [x] 测试用例：`test_cases/` 下新增小说转视频专项测试（示例小说输入
+      + 完整测试 prompt + 分 Stage 预期产物/校验命令的测试指南 +
+      不需要 API Key 的 novel-video-composer 离线冒烟测试脚本，已本地
+      跑通全部 9 项断言）
+
 ## 实施状态小结
 
 4 个 skill 已全部实现并测试完成，"小说转视频"整条流程（场景拆分→
 素材+配音→分场景视频→最终合成）端到端可用。后续如需扩展（BGM 接入、
 整本小说自动分卷、角色人脸参考照片），在「5. 待明确的实施细节」和各
 skill「已知限制」章节基础上单独立项，不影响现有 4 个 skill 的稳定性。
+
+## 6. 测试用例
+
+`test_cases/` 目录下新增以下文件，供用户/开发者验证本方案：
+
+| 文件 | 用途 |
+|---|---|
+| `test_cases/inputs/novel_video_sample_novel.txt` | 约 700 字的武侠短篇测试小说，含 2 个主要角色 + 1 个反复出现的地点，专门为快速跑通全流程设计（目标时长压到 60 秒） |
+| `test_cases/novel_video_generator_test.txt` | 可直接发给 Agent 触发完整四段流程的用户测试 prompt |
+| `test_cases/novel_video_generator_testing_guide.md` | 分 Stage 的预期产物清单 + 校验命令 + 通过标准 + 常见问题排查索引 |
+| `test_cases/novel_video_composer_smoke_test.py` | 不需要 `AGNES_API_KEY` 的 `novel-video-composer` 离线冒烟测试（用 ffmpeg 合成假素材），只验证本地环境（ffmpeg/Pillow/字体）和合成脚本本身是否正常，不能替代端到端真实测试 |
+
+为配合离线冒烟测试的跨平台可用性，`compose_novel_video.py` 新增
+`--font-path` 参数（显式指定中文字体路径，不再强制依赖脚本内置的
+Windows 字体路径），并在 `ffmpeg`/`ffprobe` 探测逻辑中新增系统 `PATH`
+兜底（`shutil.which`），非 Windows 环境不再需要额外装
+`imageio_ffmpeg` 才能跑通。

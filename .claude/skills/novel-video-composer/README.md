@@ -14,11 +14,12 @@ pip install imageio-ffmpeg   # 可选：自动探测 ffmpeg/ffprobe 路径
 ```
 
 **外部依赖**：
-- `ffmpeg`/`ffprobe`（系统命令，同 `mv-generator`）；
-- 能正常渲染中文的字体。脚本内置路径为 Windows 的
-  `C:\Windows\Fonts\msyh.ttc`（与 `mv-generator/compose_mv.py` 一致），
-  非 Windows 环境需要修改 `scripts/compose_novel_video.py` 里的
-  `FONT_PATH` 常量。
+- `ffmpeg`/`ffprobe`（系统命令；探测逻辑优先系统 `PATH`，其次
+  `imageio_ffmpeg`，最后回退 Windows 专用路径，`mv-generator` 同款）；
+- 能正常渲染中文的字体。默认路径为 Windows 的
+  `C:\Windows\Fonts\msyh.ttc`，非 Windows 环境用 `--font-path` 参数
+  指定本地实际可用的中文字体路径即可，不需要改源码（例如 Linux 上的
+  `/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc`）。
 
 ## 输入 / 输出
 
