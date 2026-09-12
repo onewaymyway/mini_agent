@@ -30,6 +30,7 @@
 - `src/mini_agent/tools/skill_manager.py` — 技能管理工具
 - `src/mini_agent/tools/plan.py` — 规划工具
 - `src/mini_agent/tools/notepad.py` — 记事本工具（`notepad_add`/`update`/`remove`/`list`/`summarize`），常驻 system prompt、不受 compact 影响，详见 [记事本机制说明](docs/notepad-guide.md)
+- `src/mini_agent/tools/env_facts.py` — 环境事实库工具（`record_env_fact`/`get_env_fact`），机器级、按 name 去重覆盖、不常驻 system prompt（按需查询），落盘 `~/.agent/env_facts.json`
 - `src/mini_agent/tools/user_input.py` — 用户输入工具
 - `src/mini_agent/mcp/` — MCP（Model Context Protocol）支持
 - `src/mini_agent/skills/` — 技能发现和加载
@@ -189,6 +190,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `notepad.py` — 记事本工具：`notepad_add`/`notepad_update`/`notepad_remove`/`notepad_list`/`notepad_summarize`，session 级持久化到 `notepad.json`，内容常驻 system prompt 固定位置（`prompts/system/notepad.md`），不受 history compact 影响。总开关 `cfg.notepad_enabled`（默认 `True`），provider 用 `threading.local()` 存储（与 evolution.py/workdir_knowledge.py 同款写法，避免多 Agent 并发串扰）
 - `user_input.py` — 用户输入工具
 - `workdir_knowledge.py` — Workdir 知识层工具（Stage 4 + 检索侧补全）：`add_open_thread`/`update_work_thread`/`update_knowledge`/`search_knowledge`，thread-local provider 机制与 `orchestration.py` 同构
+- `env_facts.py` — 环境事实库工具：`record_env_fact(name, fact)`/`get_env_fact(query="")`。解决"同一台机器上反复探索同一个环境问题（如某工具真实安装路径）"的问题：不做任何输出文本的正则触发（不同 OS/语言/重定向下命令的失败信号太不稳定，判断权交给模型自己），完全靠两个工具的 description 引导模型在探索出结论后主动记录、在需要确认时先查询。落盘 `AgentPaths.global_env_facts`（`~/.agent/env_facts.json`），按归一化 name（小写、去 `.exe`/`.sh` 等后缀）为 key 去重覆盖，不常驻 system prompt，纯按需查询。CLI 入口注册见 `cli/app.py`（`import mini_agent.tools.env_facts`）
 
 ### MCP 支持 (`src/mini_agent/mcp/`)
 
@@ -360,7 +362,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 ### 存储层 (`src/mini_agent/storage/`)
 
 - `__init__.py` — 公开接口导出
-- `paths.py` — 路径管理（`AgentPaths`，含 `session_plan_snapshot(sid)`/`task_manifest(sid, tid)`（Stage 0.2）、`workdir_project_meta()`/`workdir_timeline()`/`workdir_work_index()`/`workdir_open_threads()`/`workdir_knowledge_md()`/`workdir_knowledge_index()`（Stage 4，W2）、`global_self_profile()`/`global_projects_index()`/`global_cross_project_index()`/`global_activity_log()`（Stage 5，W3）等路径方法）
+- `paths.py` — 路径管理（`AgentPaths`，含 `session_plan_snapshot(sid)`/`task_manifest(sid, tid)`（Stage 0.2）、`workdir_project_meta()`/`workdir_timeline()`/`workdir_work_index()`/`workdir_open_threads()`/`workdir_knowledge_md()`/`workdir_knowledge_index()`（Stage 4，W2）、`global_self_profile()`/`global_projects_index()`/`global_cross_project_index()`/`global_activity_log()`（Stage 5，W3）、`global_env_facts()`（环境事实库，`tools/env_facts.py` 使用）等路径方法）
 
 ### 环境信息采集 (`src/mini_agent/env_info/`)
 

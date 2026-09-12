@@ -44,6 +44,7 @@ Global（用户级）                  ~/.agent/
 ├── projects_index.json                        # 已知项目注册表（5.2）
 ├── cross_project_index.json                   # 跨项目规律模式（5.3）
 ├── activity_log.jsonl                         # 全局活动日志 + session_metrics（5.4/6.3）
+├── env_facts.json                             # 环境事实库（工具真实路径等，按 name 去重覆盖）
 └── skills/                                    # 全局技能库（可选）
     └── <skill-name>/SKILL.md
 
@@ -131,6 +132,7 @@ paths.global_self_profile()        # ~/.agent/self_profile.json
 paths.global_projects_index()      # ~/.agent/projects_index.json
 paths.global_cross_project_index() # ~/.agent/cross_project_index.json
 paths.global_activity_log()        # ~/.agent/activity_log.jsonl
+paths.global_env_facts()           # ~/.agent/env_facts.json（环境事实库）
 
 # Session 级（Stage 6 新增）
 paths.session_traces(sid)          # <root>/.agent/sessions/<sid>/traces.jsonl
@@ -579,6 +581,27 @@ atomic_write_json(path, data, flock=True)
 
 `activity_log.jsonl` 是**仅追加**的流水账，不做截断，长期使用后体积会持续增长。建议定期归档或按年/月分割。
 
+### 4.6.1 环境事实库
+
+| 文件 | 路径方法 | 写入时机 |
+|------|---------|---------|
+| `env_facts.json` | `global_env_facts()` | 模型主动调用 `record_env_fact(name, fact)` 时（`tools/env_facts.py`）|
+
+用于沉淀"这台机器"级别、值得复用的环境探索结论（例如某个命令行工具的
+真实安装路径、正确调用方式、确认未安装等），解决同一台机器上反复探索
+同一个环境问题的问题。设计上刻意保持简单：
+
+- **不做自动检测/触发**：不对 bash 输出做正则匹配去判断"是不是没找到"
+  ——不同 OS/语言/重定向下命令的失败信号差异太大、不可靠，判断权完全
+  交给模型自己看真实输出来决定要不要记录。
+- **不常驻 system prompt**：与 `notepad.json`（W1）不同，这里的内容不
+  会自动注入每轮上下文，需要模型主动调用 `get_env_fact(query="")` 按需
+  查询，避免占用固定 token 预算。
+- **按 name 去重覆盖**：内部结构是 `{"facts": {"<归一化name>": {"fact":
+  "...", "updated_at": "..."}}}`，同名（大小写、`.exe`/`.sh` 等后缀会被
+  归一化）调用 `record_env_fact` 会覆盖旧记录，不会无限追加。
+- **跨项目、跨 session 共享**：落在 Global 层，不属于任何一个 workdir。
+
 ### 4.7 时序追踪（Stage 6）
 
 > 详见 [观察性系统指南](observability-guide.md)
@@ -634,6 +657,7 @@ atomic_write_json(path, data, flock=True)
 | W3 Global 知识层 | `rm ~/.agent/self_profile.json ~/.agent/projects_index.json` | 丢失自我画像和项目注册表，不影响记忆与技能；巩固循环 晋升候选需重新积累 |
 | 巩固循环 节奏记录 | `rm .agent/consolidation_rhythm.json` | 重置所有提案冷却期，巩固循环 下次运行将重新对所有候选提案 |
 | 全局活动日志 | `rm ~/.agent/activity_log.jsonl` | 清空异常检测基线，需重新积累 10+ 条 session_metrics 记录后才能恢复异常检测能力 |
+| 环境事实库 | `rm ~/.agent/env_facts.json` | 丢失已记录的环境探索结论（如工具真实路径），下次遇到同类问题需要重新探索 |
 | 所有项目数据 | `rm -rf .agent/` | 完全重置，相当于全新项目；不影响 `~/.agent/` 全局数据 |
 
 ---

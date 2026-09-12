@@ -34,6 +34,7 @@ storage/paths.py — 统一路径管理
     paths.global_projects_index      # ~/.agent/projects_index.json
     paths.global_cross_project_index # ~/.agent/cross_project_index.json
     paths.global_activity_log        # ~/.agent/activity_log.jsonl
+    paths.global_env_facts           # ~/.agent/env_facts.json（环境事实库）
 
     # Session 级（需要 session_id）
     paths.session_dir(sid)        # .agent/sessions/<sid>/
@@ -127,6 +128,17 @@ class AgentPaths:
     def global_activity_log(self) -> Path:
         """~/.agent/activity_log.jsonl — 全局活动时序流水（5.3）"""
         return self.global_dir / "activity_log.jsonl"
+
+    @property
+    def global_env_facts(self) -> Path:
+        """~/.agent/env_facts.json — 环境事实库（跨项目、跨 session 复用）。
+
+        存放 agent 探索环境时发现的、值得记住的结论（例如某个工具的真实
+        安装路径、正确调用方式等），按主体名（如工具名）为 key 去重覆盖，
+        供 tools/env_facts.py 的 record_env_fact/get_env_fact 读写。
+        与 global_memory 的区别：这里只存"环境相关的客观事实"，不常驻
+        system prompt，需要 agent 主动调用 get_env_fact 按需查询。"""
+        return self.global_dir / "env_facts.json"
 
     # ── 全局错误日志 ───────────────────────────────────────────────────────
     # 与 session/task 级日志不同：错误日志与"当前在哪个项目/session"无关，

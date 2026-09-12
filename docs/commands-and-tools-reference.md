@@ -813,6 +813,27 @@ mini-agent self status
 
 详见 [记事本机制说明](notepad-guide.md)。
 
+### 环境事实库（env_facts.py）
+
+| 工具 | 需要审批 | 参数 | 说明 |
+|------|----------|------|------|
+| `record_env_fact` | ❌ | `name`, `fact` | 记录/更新一条环境事实（如工具真实安装路径），按归一化 `name` 去重覆盖 |
+| `get_env_fact` | ❌ | `query`（可选） | 按关键词模糊查询之前记录的环境事实；不传则返回全部 |
+
+解决同一台机器上反复探索同一个环境问题（比如"ffmpeg 到底装在哪"每次都要重新
+`which`/`where` 一遍）的问题。落盘 `~/.agent/env_facts.json`（`AgentPaths.global_env_facts`），
+跨项目、跨 session 共享。设计上刻意保持简单：
+
+- **不做自动检测**：不对 `bash` 的输出做正则匹配判断"是不是没找到"——不同
+  OS/语言/重定向下命令的失败信号差异极大、不可靠（例如 Windows 中文系统的
+  `where` 提示、`2>&1 | head` 把信息截断、`cmd || echo xxx` 把退出码洗成 0），
+  判断权完全交给模型自己看真实输出决定要不要记录，机制上只靠两个工具的
+  description 引导。
+- **不常驻 system prompt**：与记事本不同，这里的内容不会自动注入每轮上下文，
+  需要模型主动调用 `get_env_fact` 按需查询。
+
+详见 [存储设计 §4.6.1](storage-design.md#461-环境事实库)。
+
 ### 决策/历史检索（`tools/builtin.py`、`tools/recall_history.py`）
 
 | 工具 | 说明 |
