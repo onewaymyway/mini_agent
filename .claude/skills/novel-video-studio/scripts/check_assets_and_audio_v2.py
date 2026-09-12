@@ -89,7 +89,7 @@ def check(output_dir: Path, min_sec: float, max_sec: float) -> dict:
                     continue
                 btype = block.get("type", "narration")
                 prefix = "narration_seg" if btype == "narration" else f"dialogue_{block.get('speaker', 'unknown')}"
-                audio_path = audio_dir / f"{prefix}_{mid}_{i:02d}.wav"
+                audio_path = audio_dir / f"{prefix}_{mid}_{i:02d}.mp3"
                 if not audio_path.exists() or audio_path.stat().st_size == 0:
                     errors.append(f"小场景 {mid} 第{i}块（{btype}）缺少配音文件：{audio_path}")
 

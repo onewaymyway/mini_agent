@@ -25,7 +25,7 @@ EDGE_TTS_VOICE_TABLE = {
     "male_middle_aged": "zh-CN-YunjianNeural",
     "male_old": "zh-CN-YunyangNeural",
     "female_young": "zh-CN-XiaoxiaoNeural",
-    "female_middle_aged": "zh-CN-XiaomoNeural",
+    "female_middle_aged": "zh-CN-XiaoxiaoNeural",
     "female_old": "zh-CN-XiaoqiuNeural",
     "child": "zh-CN-XiaoyiNeural",
 }

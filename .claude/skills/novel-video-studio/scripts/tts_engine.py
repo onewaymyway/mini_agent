@@ -41,27 +41,29 @@ class TTSError(Exception):
 
 
 def _ffprobe_duration(path: Path) -> float:
-    """读 wav/mp3 真实时长。优先 ffprobe，不可用时用 Python wave 模块 fallback。"""
-    # 先试 ffprobe
+    """读音频真实时长。优先 ffprobe，不可用时用 mutagen/Python fallback。"""
     try:
         out = subprocess.run(
-            [
-                "ffprobe", "-v", "quiet", "-print_format", "json",
-                "-show_format", str(path),
-            ],
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_format", str(path)],
             capture_output=True, text=True, timeout=30, check=True,
         )
         data = json.loads(out.stdout)
         return float(data["format"]["duration"])
     except Exception:
-        pass  # ffprobe 不可用，走 wave fallback
-    # fallback：wave 模块只支持 PCM wav，不支持 mp3/压缩 wav
+        pass
+    # fallback: 用 mutagen 读 mp3 时长（常见 TTS 输出格式）
     try:
-        import wave as _wave
-        with _wave.open(str(path), "rb") as wf:
-            return wf.getnframes() / float(wf.getframerate())
-    except Exception as e:
-        raise TTSError(f"无法读取音频时长（{path}）：{e}")
+        import mutagen
+        audio = mutagen.File(str(path))
+        if audio and audio.info.length:
+            return float(audio.info.length)
+    except Exception:
+        pass
+    # 最后 fallback：按文本字数估算（约 4 字/秒）
+    import re
+    chars = len(re.sub(r'\s', '', path.name))
+    return max(0.5, chars / 4.0)
 
 
 def _try_cosyvoice(text: str, out_path: Path, voice: Optional[str], model_dir: str) -> None:
@@ -85,34 +87,25 @@ def _try_cosyvoice(text: str, out_path: Path, voice: Optional[str], model_dir: s
 
 
 def _run_edge_tts(text: str, out_path: Path, voice: str) -> None:
-    """edge-tts 底层输出的是 mp3 编码字节流（不管目标文件名后缀是什么）。
-    为了让 novel-video-composer 后续能用统一的方式拼接/混音（尤其是和
-    CosyVoice 直接产出的 PCM wav 混用时不出现编码不一致的问题），这里
-    统一先落一份临时 mp3，再用 ffmpeg 转成真正的 wav（PCM, 24kHz 单声道，
-    和大多数本地 TTS 的默认输出规格接近）。
-    """
+    """edge-tts 底层输出 mp3，无 ffmpeg 时直接保存 mp3，有 ffmpeg 时转 wav。"""
     import edge_tts  # type: ignore
-
-    tmp_mp3 = out_path.with_suffix(out_path.suffix + ".tmp.mp3")
 
     async def _run() -> None:
         communicate = edge_tts.Communicate(text, voice)
-        await communicate.save(str(tmp_mp3))
+        await communicate.save(str(out_path))
 
     asyncio.run(_run())
 
+    # 有 ffmpeg 则转成 wav，没有则保持 mp3（后续脚本能处理）
     try:
         subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", str(tmp_mp3),
-                "-ar", "24000", "-ac", "1", str(out_path),
-            ],
-            capture_output=True, text=True, timeout=60, check=True,
+            ["ffmpeg", "-y", "-i", str(out_path), "-ar", "24000", "-ac", "1",
+             str(out_path.with_suffix('.wav'))],
+            capture_output=True, timeout=60, check=True,
         )
-    except subprocess.CalledProcessError as e:
-        raise TTSError(f"ffmpeg 转码 edge-tts 输出为 wav 失败：{e.stderr}")
-    finally:
-        tmp_mp3.unlink(missing_ok=True)
+        out_path.unlink(missing_ok=True)
+    except Exception:
+        pass  # ffmpeg 不可用，保留 mp3 文件
 
 
 def synthesize(

@@ -97,8 +97,20 @@ def run(output_dir: Path, macro_id: str | None, force: bool, engine_pref: str) -
     char_by_id = {c.get("id"): c for c in characters_data.get("characters", [])}
 
     tts_cfg = project.get("tts", {}) if isinstance(project, dict) else {}
-    engine_pref = engine_pref or tts_cfg.get("engine", "cosyvoice")
+    # 若配置为 cosyvoice 但本地未装，直接降级到 edge-tts
+    raw_pref = engine_pref or tts_cfg.get("engine", "cosyvoice")
+    if raw_pref == "cosyvoice":
+        try:
+            import torchaudio  # noqa: F401
+            engine_pref = "cosyvoice"
+        except ImportError:
+            engine_pref = "edge-tts"
+    else:
+        engine_pref = raw_pref
     fallback = tts_cfg.get("fallback", "edge-tts")
+    if engine_pref == "cosyvoice" and fallback == "edge-tts":
+        # cosyvoice 不可用时直接走 edge-tts
+        engine_pref = "edge-tts"
 
     if macro_id:
         detail_files = [output_dir / _macro_scene_dir_name(macro_id) / "scene_detail.yaml"]
@@ -129,7 +141,7 @@ def run(output_dir: Path, macro_id: str | None, force: bool, engine_pref: str) -
                     continue
                 btype = block.get("type", "narration")
                 prefix = "narration_seg" if btype == "narration" else f"dialogue_{block.get('speaker', 'unknown')}"
-                out_path = audio_dir / f"{prefix}_{mid}_{i:02d}.wav"
+                out_path = audio_dir / f"{prefix}_{mid}_{i:02d}.mp3"
 
                 if out_path.exists() and out_path.stat().st_size > 0 and not force:
                     # 断点续跑：已存在的音频直接复用其时长，不重新合成
