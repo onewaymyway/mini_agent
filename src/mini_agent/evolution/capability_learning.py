@@ -873,6 +873,7 @@ def _mark_topic_covered(
 
 def find_reusable_answered_question(
     new_question_text: str,
+    new_topic_name: str,
     track: "CapabilityTrack",
     question_store: "CapabilityQuestionStore",
     llm_helper: Optional[Callable[[str], str]] = None,
@@ -887,6 +888,14 @@ def find_reusable_answered_question(
     是被换了个说法反复问同一个问题。字符串/关键词相似度（本文件里
     `_topic_name_similarity()` 用的字符 2-gram Jaccard）对这类"字面不像、
     语义一样"的情况基本无效，所以这里用 LLM 做语义判断。
+
+    [persona_draft_quality_followup_plan.md] `new_topic_name` 是新增参数：
+    只把"问题文本像不像"喂给 LLM 判断，容易被两次都套进同一句通用兜底
+    模板（"关于「X」，能告诉我更多你的具体偏好/背景吗？"）的提问误导成
+    "同一件事"——哪怕 X 本身（比如"数据采集" vs "底部启动信号识别"）在
+    分析流程里是完全不同的环节。现在连同每条历史问题所属的维度名称一起
+    交给 LLM，并显式要求"维度代表分析流程里不同环节时不算同一件事"，
+    给判断一个比问题措辞更可靠的锚点。
 
     只在"这个 Track 下确实存在已回答问题"时才调用 LLM（早退），避免空
     Track / 冷启动场景产生无意义的 LLM 调用。`llm_helper` 为 `None`
@@ -908,16 +917,25 @@ def find_reusable_answered_question(
     if not answered:
         return None
 
+    topic_name_by_id = {t.topic_id: t.name for t in track.outline}
     numbered = "\n".join(
-        f"{i}. 问题：{q.question}\n   已有答案：{q.answer}"
+        f"{i}. 所属维度：「{topic_name_by_id.get(q.topic_id, '未知维度')}」\n"
+        f"   问题：{q.question}\n   已有答案：{q.answer}"
         for i, q in enumerate(answered)
     )
     prompt = (
         f"下面是关于「{track.title}」这个能力学习方向，系统之前已经问过\n"
-        f"用户、并且已经拿到答案的历史问题列表：\n\n{numbered}\n\n"
-        f"现在系统准备问用户一个新问题：\n「{new_question_text}」\n\n"
+        f"用户、并且已经拿到答案的历史问题列表（每条都标注了所属维度）：\n\n"
+        f"{numbered}\n\n"
+        f"现在系统准备为「{new_topic_name}」这个维度问用户一个新问题：\n"
+        f"「{new_question_text}」\n\n"
         "请判断这个新问题是否与上面某一条历史问题在语义上是同一件事"
         "（即历史答案已经足够回答这个新问题，不需要再问用户一遍）。"
+        "特别注意：只要两个维度代表的是同一分析流程/工作里不同的环节或"
+        "步骤（比如「数据采集」和「信号识别」、「数据源」和「价值评估」"
+        "这类，虽然都跟同一个大方向有关，但做的事情不同），就不算同一件"
+        "事，即使提问的措辞看起来相似——除非维度名称本身就是同一件事的"
+        "另一种说法（比如「说话习惯」和「口头禅」）。"
         "只在你有把握时才判定为\"是同一件事\"，宁可漏判（正常提问），"
         "也不要误判（导致该问的没问）。\n\n"
         "如果是同一件事，请只输出上面列表里对应的那个序号数字（比如 0 或 "
@@ -1885,6 +1903,10 @@ def run_capability_learning_cycle(
 
         # 挑选本轮推进的子主题（§14.1-a：miss_observed 台账优先级信号；
         # §12.1-a：capability_map 领域置信度优先级信号，见 _topic_capability_confidence）
+        # 复用命中时（见下方 question_reused 分支）要把被复用维度的名称
+        # 拼进新答案里做透明标注，这里按 track 建一份 topic_id -> name
+        # 映射，避免在循环内部重复遍历 track.outline。
+        topic_name_by_id = {t.topic_id: t.name for t in track.outline}
         miss_counts = _topic_miss_counts(ledger_store, track.track_id)
         capability_confidence = _topic_capability_confidence(track, paths)
         pending = question_store.pending_count(track.track_id)
@@ -1933,9 +1955,32 @@ def run_capability_learning_cycle(
                 # 不再重复打扰用户；不生成新的 pending 问题，直接把子主题
                 # 标记为 covered。
                 reused = find_reusable_answered_question(
-                    question_text, track, question_store, llm_helper=llm_helper,
+                    question_text, topic.name, track, question_store, llm_helper=llm_helper,
                 )
                 if reused is not None:
+                    # [persona_draft_quality_followup_plan.md] 之前这里只
+                    # 调用 _mark_topic_covered()，从不为这个 topic_id 落一
+                    # 条真正的 answered CapabilityQuestion——后果是两头都
+                    # 不一致：`persona_draft_completeness()` 只认
+                    # CapabilityQuestion，会永远把这个维度算作"缺失"；
+                    # 而 `scan_outline_gaps()` 只认 `coverage_state`，又
+                    # 会因为已经是 "covered" 而永远不再把它选回来追问——
+                    # 这个维度就卡在"看板说缺、又永远不会再问"的死角，
+                    # `draft_persona_markdown()` 只能对着空的 answers_by_
+                    # topic 显示"暂无信息"，草稿完成度提示却不会消失。
+                    # 现在改成真正落一条 answered 记录（答案前缀显式标注
+                    # 复用来源，草稿里能看到，不是静默套用），这样两处
+                    # 状态才能对上，草稿里也不会出现"看起来答了、其实是
+                    # 系统自己拼的"这种不透明内容。
+                    reused_answer = (
+                        f"（复用自「{topic_name_by_id.get(reused.topic_id, reused.topic_id)}」"
+                        f"维度的回答，如不适用请手动重新回答）{reused.answer}"
+                    )
+                    new_q = question_store.raise_question(
+                        track_id=track.track_id, topic_id=topic.topic_id,
+                        question=question_text,
+                    )
+                    question_store.answer(new_q.question_id, reused_answer)
                     _mark_topic_covered(track_store, track, topic.topic_id)
                     ledger_store.append(CapabilityLedgerEntry(
                         track_id=track.track_id,
@@ -2929,14 +2974,20 @@ _PERSONA_SYNTHESIS_INSTRUCTIONS = """你在帮用户把关于一个虚构角色�
 信息，尚待用户回答相关问题"）。
 
 你的任务：
-1. 把每个维度下的若干条零散回答，改写/合并成一段通顺、有具体语气的角色
-   设定文字——可以调整语序、合并同类项、补充"这个角色会怎么说话"这类
-   文风示范，但绝对不能加入 raw_material 里没有出现过的具体事实（不能
-   编造新的经历、数字、人名、地名等）。标注"暂无信息"的维度原样保留这句
-   提示，不要编造内容填充。
-2. 给这个角色的整体语气总结一个不超过 20 个字的短语（例如"沉稳、简练、
-   偶尔调侃"这种风格），作为 tone 字段。
-3. 保留原有的标题层级结构（# 标题 / ## 维度名），不要新增/删除/改名
+1. 先根据全部素材，给这个角色的整体语气总结一个不超过 20 个字的短语
+   （例如"沉稳、简练、偶尔调侃"这种风格），作为 tone 字段——**后面写
+   正文时要真正贯彻这个语气**，不是写完正文才顺带补一个标签。
+2. 在"角色总体描述"这段里加一两句这个角色会怎么呈现自己、怎么跟人
+   交流的引导性文字（用 tone 定的语气写），让读者一开始就能感觉到"这
+   是个什么样的角色"，而不是直接进正文条目。
+3. 把每个维度下的若干条零散回答，改写/合并成一段通顺、贴合 tone 的角色
+   设定文字——可以调整语序、合并同类项，但**只能使用这个维度自己底下
+   出现过的回答**，绝对不能把其它维度的内容搬过来当作这个维度的答案，
+   也不能加入 raw_material 里完全没出现过的具体事实（不能编造新的经历、
+   数字、人名、地名等）。标注"暂无信息"的维度原样保留这句提示，不要
+   编造内容填充——这一条是硬性要求，宁可这个维度看起来单薄，也不要用
+   编造或者从别的维度挪用内容的方式把它填满。
+4. 保留原有的标题层级结构（# 标题 / ## 维度名），不要新增/删除/改名
    维度。
 
 只输出一个 JSON 对象，不要 Markdown 代码块，不要任何解释文字，格式：
@@ -3002,6 +3053,33 @@ def synthesize_persona_draft_with_llm(
     return {"tone": tone, "body": body.strip()}
 
 
+def _split_persona_body_sections(body_text: str) -> tuple[str, dict[str, str]]:
+    """把 "# 标题\\n\\n描述\\n\\n## 维度1\\n\\n内容\\n\\n## 维度2\\n\\n内容"
+    这种结构的正文，拆成 (二级标题之前的部分, {维度名: 维度内容})。
+
+    [persona_draft_quality_followup_plan.md] 给 `draft_persona_markdown()`
+    的"缺信息维度强制保留占位文案"这一步用：不能信任 LLM 一定会遵守
+    "暂无信息的维度原样保留"这条 prompt 指令——本地小模型/网络抖动时
+    观察到过它会把别的维度内容顺手挪过来填充，看起来"答得挺完整"，
+    实际是编的。所以润色结果不直接整体替换正文，而是按维度拆开，
+    真正没有用户回答的维度在这里也拆出来（哪怕 LLM 给的内容不是占位
+    文案），调用方再强制盖回占位文案，从工程上而不是靠指令遵从来保证
+    "没有回答的维度绝不会显示看起来像回答的内容"。
+
+    找不到任何 "## " 二级标题时，整段都算 preamble，sections 为空字典
+    （比如 LLM 输出完全没有维度结构，调用方会整体回退用规则版）。"""
+    import re
+
+    parts = re.split(r"(?m)^##\s+(.+?)\s*$", body_text)
+    preamble = parts[0].rstrip()
+    sections: dict[str, str] = {}
+    for i in range(1, len(parts), 2):
+        name = parts[i].strip()
+        content = parts[i + 1].strip() if i + 1 < len(parts) else ""
+        sections[name] = content
+    return preamble, sections
+
+
 def draft_persona_markdown(
     track: "CapabilityTrack", questions: list["CapabilityQuestion"],
     llm_helper: Optional[Callable[[str], str]] = None,
@@ -3063,8 +3141,29 @@ def draft_persona_markdown(
         synthesized = synthesize_persona_draft_with_llm(track, rule_based_body, llm_helper)
         if synthesized:
             tone = synthesized["tone"]
-            body_text = synthesized["body"].rstrip() + "\n"
             llm_used = True
+            # [persona_draft_quality_followup_plan.md] 不直接把 LLM 返回的
+            # `body` 整段当成最终正文——按维度拆开后重新拼装，缺信息的
+            # 维度强制盖回规则版占位文案（`_split_persona_body_sections()`
+            # 文档字符串里说明了为什么不能只靠 prompt 指令遵从来保证这
+            # 一点）；有真实回答的维度优先用 LLM 润色版，LLM 输出漏掉某个
+            # 维度时退回规则版那条维度的内容，不会整段丢失。
+            llm_preamble, llm_sections = _split_persona_body_sections(
+                synthesized["body"].rstrip() + "\n"
+            )
+            rule_preamble, rule_sections = _split_persona_body_sections(rule_based_body)
+            reassembled_lines: list[str] = [llm_preamble or rule_preamble, ""]
+            for topic in track.outline:
+                reassembled_lines.append(f"## {topic.name}")
+                reassembled_lines.append("")
+                if topic.name in missing_dims:
+                    reassembled_lines.append("（暂无信息，尚待用户回答相关问题）")
+                else:
+                    reassembled_lines.append(
+                        llm_sections.get(topic.name) or rule_sections.get(topic.name, "")
+                    )
+                reassembled_lines.append("")
+            body_text = "\n".join(reassembled_lines).rstrip() + "\n"
 
     synthesis_note = (
         "本次草稿已经过 LLM 润色，请核对是否有信息被误改/遗漏后再发布。"
