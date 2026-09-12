@@ -85,6 +85,17 @@ PROMPT_HEADER = (
 # 保留下划线别名，兼容模块内部既有引用
 _PROMPT_HEADER = PROMPT_HEADER
 
+
+# [tool_use 示例/引用标记] 这里的 <tool_use> 模板故意不加
+# system_tool_call.TOOL_USE_EXAMPLE_MARKER：这段文字是以 user 身份注入回
+# 主 Agent 上下文的格式纠错提示（而不是某个 Agent 自己的输出），要求主
+# Agent 下一轮真的发起一次这样的调用——它本身不会被 parse_tool_calls()
+# 处理（该函数只解析模型自己的响应文本，不解析注入的 user 消息）。只有当
+# 某个 Agent 在自己的输出里"引用/复述"这段模板时才需要带标记，那属于
+# 引用方（如 TurnJudge / GoalJudge）自己组织文字时的责任，已在
+# prompts/system/turn_judge.md、prompts/system/goal_judge.md 里对它们提出
+# 要求，不需要（也不应该）改这里——这里的模板本来就是给主 Agent 当作
+# 待执行的真实格式使用的。
 _PROMPT_FOOTER = (
     "\nPlease resend a complete, correctly formatted tool call now:\n\n"
     "<tool_use>\n"

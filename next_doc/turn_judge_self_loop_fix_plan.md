@@ -171,3 +171,123 @@ def _postprocess(self, response, original_tools):
 - 回归验证：正常挂了工具的主 Agent 会话，确认 `<tool_use>` 提取行为无
   变化（修复 2 的判断条件是"本次请求 tools 是否为空"，主 Agent 场景下
   `tools` 非空，行为不变）。
+
+---
+
+## 6. 补充修复：`tools` 非空场景下的引用/示例误判（2024 后续）
+
+### 6.1 背景
+
+用户提出两个问题：
+
+1. 修复 2 是否对"会用工具的判官"（如 `judge_tools_enabled=True` 时的
+   `GoalJudge`）还起作用，需不需要额外加一个"是否是判官类"的角色参数来
+   区分是否要做 `<tool_use>` 格式检测？
+2. `<tool_use>` 格式检测本身能不能优化，从根子上减少这类误识别？
+
+### 6.2 问题 1 的结论：不需要加角色参数，现状已经是正确的
+
+修复 2 的判据是 `_base_mixin.py::_postprocess()` 里"本次请求实际传给 LLM
+的 `tools` 列表是否为空"（`parse_tool_use=bool(original_tools)`），而不是
+按 Agent/角色类型打静态标签。这个粒度天然覆盖了"判官也可能挂工具"的情况：
+
+- `TurnJudge` / `EvaluatorAgent` / `CoachAgent`：固定 `tools_enabled=False`，
+  `tools` 恒为空 → 跳过检测，解决的正是本文档第 1～3 节的问题。
+- `GoalJudge`：`tools_enabled = bool(cfg.goal_mode.judge_tools_enabled)`，
+  一旦用户把这个开关打开，`judge_factory.py` 会给它挂真实只读工具白名单，
+  此时它发起请求 `tools` 非空 → 检测**照常生效**，该判官自己发起的真实
+  工具调用、以及它自己产生的格式错误依旧会被正常捕获。
+
+如果改成按"角色类型"关闭检测（比如加一个 `is_judge` 参数），反而会有退化
+风险：`GoalJudge` 一旦打开 `judge_tools_enabled`，如果检测是按角色类型
+关掉的，它自己发起的格式错误工具调用也会检测不出来——这是新的隐患。现状
+"看本次请求 tools 是否为空"的实现是跟随实际配置自动走的，不需要为每个新
+增判官角色单独维护一份"要不要检测"的名单，更鲁棒，**这一部分不用改**。
+
+### 6.3 问题 2：残留的误判场景与修复方案
+
+修复 2 管不到的场景：只要 `tools` 非空（`judge_tools_enabled=True` 的
+`GoalJudge`、或任何正常挂了工具的主 Agent），它在输出里"引用/复述"一段
+示例性质或问题片段的 `<tool_use>...</tool_use>` 文本时，仍会被
+`parse_tool_calls()` 当成一次真实调用去解析。
+
+评估过的方案：
+
+- **按工具名白名单过滤（已否决）**：思路是"解析出的 `name` 不在已知工具
+  列表里就丢弃"。但判官引用的示例经常就是复述一段引用了**真实、已注册**
+  工具名的问题文本（比如原样复述主 Agent 那段没闭合的、引用了
+  `bash`/`write_file` 的半成品），白名单挡不住这种情况，故放弃。
+- **用 ``` 代码块围栏包裹示例（已否决）**：`prompts/reminders/
+  format_issue_*.md` 里的示例本来就已经用 ``` 包裹了，但 `_TOOL_USE_RE`
+  从不区分是否在代码块内，围栏挡不住已经观察到的误判；而且围栏是模型日常
+  组织回答就会用的通用格式，容易被模型无意间也套在真实调用外面，导致真实
+  调用被连带跳过，故放弃。
+- **固定中文标记句 + 就近窗口检测（采用）**：见下。
+
+#### 落地方案
+
+1. `llm/system_tool_call.py` 新增常量：
+
+   ```python
+   TOOL_USE_EXAMPLE_MARKER = "【以下为工具格式示例并非实际工具调用】"
+   _EXAMPLE_MARKER_WINDOW = 300
+   ```
+
+   `parse_tool_calls()` 对 `_TOOL_USE_RE` / `_TOOL_CALL_LEGACY_RE` 的每个
+   匹配，往前回溯一个窗口（匹配起点前最多 300 字符，且不跨越"上一个
+   `<tool_use>`/```` ```tool_call ```` 匹配的结束位置"，避免窗口穿透到更早、
+   不相关的一次真实调用之后）。窗口内出现 `TOOL_USE_EXAMPLE_MARKER` 即整体
+   跳过这次匹配——不解析、不计入 `tool_calls`、不产生任何警告。没有标记的
+   匹配，解析逻辑完全不变。
+
+2. 在所有会生成"举例/引用"类 `<tool_use>` 文本的地方，前面加上这行标记：
+
+   - `prompts/reminders/format_issue_*.md` 中带示例块的 8 个文件（
+     `tag_role_confusion` / `tool_call_alias_tag` / `orphan_close_tag` /
+     `bare_name_after_tag` / `invalid_json_in_tool_use` /
+     `tool_result_used_as_request` / `legacy_fence_unclosed` /
+     `unclosed_tool_use`；`write_file_truncated` 本身没有 `<tool_use>`
+     示例块，不需要改）。
+   - `prompts/system/turn_judge.md`、`prompts/system/goal_judge.md`：
+     在核查原则里加一条，要求判官引用/复述问题片段或自己现写修复模板时，
+     必须先原样输出这一行标记再给出示例内容。
+   - `perception/format_correction_detector.py::_PROMPT_FOOTER`
+     **故意不加**标记：这段文字是以 `user` 身份注入回主 Agent 上下文、
+     要求它下一轮真的发起一次这样的调用的格式纠错提示，本身不会被
+     `parse_tool_calls()` 处理（该函数只解析模型自己的响应文本，不解析
+     注入的 user 消息）；只有当某个 Agent 在自己的输出里引用/复述这段
+     模板时才需要带标记，那是引用方自己的责任，已经在上面 turn_judge /
+     goal_judge 的提示词里覆盖。
+
+3. 标记文案是唯一权威定义在 `TOOL_USE_EXAMPLE_MARKER`；reminder 加载器
+   （`reminders/loader.py`）不走 `{{var}}` 模板渲染，所以 prompts 里是
+   分别硬编码同一句中文字符串，不是共享变量。为防止后续改动漂移，新增
+   了一条测试（`tests/test_system_tool_call_and_debug.py::
+   TestToolUseExampleMarkerSyncedWithPrompts`）逐个校验这些提示词文件是否
+   包含与常量逐字一致的文案。
+
+4. `tool_call_protocol.md`（教模型"你应该怎么发起真实调用"的系统提示级
+   示例）**不用改**：它活在 system prompt 里，从来不会被
+   `parse_tool_calls()` 处理，不存在被误伤的问题；也不需要给真实调用加
+   标记——协议文档里已通过判官提示词的措辞明确"这个标记只用于引用/示例
+   场景，发起真实调用时不能带这一行"。
+
+### 6.4 影响范围与兼容性
+
+- 只在匹配前的窗口内出现标记时才改变行为（跳过该次匹配）；没有标记的
+  `<tool_use>` 块解析逻辑与改动前完全一致，不影响任何正常工具调用。
+- 不依赖判官角色类型，`tools` 是否为空的判据（修复 2）与标记机制（本节）
+  是两层独立、互补的防护：前者管"零工具判官的整轮输出"，后者管"tools 非空
+  时引用/复述示例文本的具体某一段"。
+- 新增测试：`TestToolUseExampleMarker`（标记跳过、窗口边界、标记不影响
+  后续真实调用）、`TestToolUseExampleMarkerSyncedWithPrompts`（提示词文案
+  与常量一致性）。
+
+### 6.5 验证方式
+
+- 单测：`pytest tests/test_system_tool_call_and_debug.py -k
+  ToolUseExampleMarker`。
+- 人工复现：让 `GoalJudge` 在 `judge_tools_enabled=True` 下核查一次带有
+  未闭合 `<tool_use>` 的主 Agent 输出，观察它在 `feedback` 里按提示词要求
+  带上标记后引用示例，确认该轮不会被错误地当成 `GoalJudge` 自己发起的
+  工具调用、不再触发"没有产出有效结果"式的重试。

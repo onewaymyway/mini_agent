@@ -63,6 +63,55 @@ _THINK_RE = re.compile(
 )
 
 
+# ── tool_use 示例/引用标记 ────────────────────────────────────────────────────
+#
+# [turn_judge_self_loop_fix_plan.md §2 修复 2 补充] 修复 2（tools 为空时跳过
+# <tool_use> 提取）只解决了"零工具判官（TurnJudge 等）自己的输出被误判"这一
+# 类场景；但只要某个 Agent/判官本次请求 tools 非空（比如 judge_tools_enabled
+# 开启后的 GoalJudge、或任何正常挂了工具的主 Agent），它在输出里"引用/复述"
+# 别处文本（如另一段没闭合的 <tool_use>、或格式纠错模板里的示例）时，同样会
+# 被这里的正则误判成"自己发起的一次工具调用"。
+#
+# 这里不采用"按工具名白名单过滤"的方案：引用的示例经常就是复述一段引用了
+# *真实、已注册*工具名的问题文本（比如原样复述主 Agent 那段没闭合的、引用了
+# bash/write_file 的半成品），白名单挡不住这种情况。
+#
+# 改用一个专门的固定中文标记句子：约定所有"举例/引用性质"的 <tool_use> 文本，
+# 前面必须紧跟这一行标记（见 prompts/reminders/format_issue_*.md 以及
+# prompts/system/turn_judge.md 等对判官类角色的提示词）。解析时只要在某个
+# <tool_use> 匹配前的一小段窗口内看到这个标记，就整体跳过该匹配——不计入
+# tool_calls，也不再对它跑 JSON 解析、不产生任何警告。
+#
+# 之所以选一句专门的中文标记而不是用 ``` 代码块围栏：
+#   1）reminder 模板里的示例本来就已经用 ``` 包裹了，但现有正则从不区分是否
+#      在代码块内，围栏挡不住已经观察到的误判案例；
+#   2）围栏是模型日常组织回答就会用的通用格式，容易被模型无意间也套在真实
+#      调用外面，导致真实调用被连带跳过；这句专门的标记语义单一，只在"举例
+#      /引用"场景下才会出现，信号更干净。
+#
+# 注意：这个常量是本机制的唯一权威定义。prompts/reminders/*.md 与
+# prompts/system/{turn_judge,goal_judge,evaluator}.md 等提示词文件里出现的
+# 同一句中文文案，必须与这里逐字保持一致——两边目前是分别硬编码（reminder
+# 加载器不走 {{var}} 模板渲染），改动其中一处务必同步改另一处，否则标记会
+# 失效（详见 tests/test_system_tool_call_and_debug.py 里对该常量取值的校验）。
+TOOL_USE_EXAMPLE_MARKER = "【以下为工具格式示例并非实际工具调用】"
+
+# 标记只在匹配起点之前的这段窗口内查找；同时不跨越"上一个 <tool_use>/
+# ```tool_call 匹配的结束位置"，避免窗口过大，把更早、不相关的一次真实调用
+# 后面的说明文字误当成当前这次匹配的标记。
+_EXAMPLE_MARKER_WINDOW = 300
+
+
+def _is_marked_as_example(text: str, match_start: int, window_start: int) -> bool:
+    """
+    判断 text 中位于 [window_start, match_start) 的这段文本里是否出现了
+    TOOL_USE_EXAMPLE_MARKER——出现即视为"举例/引用"，调用方应跳过这次匹配。
+    """
+    if match_start <= window_start:
+        return False
+    return TOOL_USE_EXAMPLE_MARKER in text[window_start:match_start]
+
+
 # ── 工具列表渲染 ──────────────────────────────────────────────────────────────
 
 def render_tool_list(tools: list[ToolSchema]) -> str:
@@ -86,18 +135,34 @@ def parse_tool_calls(text: str) -> list[ToolCall]:
     """
     从模型输出文本中提取所有 <tool_use> 块（及兼容旧格式的 ```tool_call 块）。
     解析为 ToolCall 列表。容错：JSON 无效时跳过，缺 id 时自动生成。
+
+    [tool_use 示例/引用标记] 匹配前被 TOOL_USE_EXAMPLE_MARKER 标记的
+    <tool_use> 块视为"举例/引用"而非真实调用，整体跳过（不解析、不计入
+    结果、不产生任何警告）。见 TOOL_USE_EXAMPLE_MARKER 定义处的说明。
     """
     calls: list[ToolCall] = []
 
     # 主格式：<tool_use>
+    prev_end = 0
     for m in _TOOL_USE_RE.finditer(text):
+        window_start = max(0, m.start() - _EXAMPLE_MARKER_WINDOW, prev_end)
+        is_example = _is_marked_as_example(text, m.start(), window_start)
+        prev_end = m.end()
+        if is_example:
+            continue
         tc = _parse_single_call(m.group(1).strip())
         if tc:
             calls.append(tc)
 
     # 兼容旧格式（```tool_call）
     if not calls:
+        prev_end = 0
         for m in _TOOL_CALL_LEGACY_RE.finditer(text):
+            window_start = max(0, m.start() - _EXAMPLE_MARKER_WINDOW, prev_end)
+            is_example = _is_marked_as_example(text, m.start(), window_start)
+            prev_end = m.end()
+            if is_example:
+                continue
             tc = _parse_single_call(m.group(1).strip())
             if tc:
                 calls.append(tc)

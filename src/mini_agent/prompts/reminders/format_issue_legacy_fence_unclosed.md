@@ -13,6 +13,8 @@ enabled: true
 
 请改用当前支持的标准格式重新发送一次：
 
+【以下为工具格式示例并非实际工具调用】
+
 ```
 <tool_use>
 {"name": "<tool_name>", "input": {<参数 JSON 对象>}}

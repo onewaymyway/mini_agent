@@ -11,6 +11,8 @@ enabled: true
 
 检测到用了 `<tool_call>` 或 `<tool_invoke>` 等非标准标签变体，而不是 `<tool_use>`。系统只能识别 `<tool_use>`，请用正确的标签名重新发送一次：
 
+【以下为工具格式示例并非实际工具调用】
+
 ```
 <tool_use>
 {"name": "<tool_name>", "input": {<参数 JSON 对象>}}

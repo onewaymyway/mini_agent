@@ -13,6 +13,8 @@ enabled: true
 
 请重新发送一次完整、格式正确的工具调用：
 
+【以下为工具格式示例并非实际工具调用】
+
 ```
 <tool_use>
 {"name": "<tool_name>", "input": {<参数 JSON 对象>}}

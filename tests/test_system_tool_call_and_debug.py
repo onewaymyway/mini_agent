@@ -26,6 +26,7 @@ from mini_agent.llm.base import LLMConfig, LLMResponse, LLMUsage, ToolCall, Tool
 from mini_agent.llm.system_tool_call import (
     render_tool_list, parse_tool_calls, strip_tool_use_blocks,
     render_tool_results, postprocess_response, extract_thinking_blocks,
+    TOOL_USE_EXAMPLE_MARKER,
 )
 from mini_agent.llm.debug_logger import DebugConfig, LLMDebugLogger, init_debug_logger, get_debug_logger
 
@@ -170,6 +171,96 @@ class TestParseToolCalls(unittest.TestCase):
         text = f"<tool_use>\n{json.dumps(obj)}\n</tool_use>"
         calls = parse_tool_calls(text)
         self.assertEqual(calls[0].input["command"], "echo")
+
+
+class TestToolUseExampleMarker(unittest.TestCase):
+    """
+    测试 TOOL_USE_EXAMPLE_MARKER 标记：被标记的 <tool_use> 块应被
+    parse_tool_calls() 整体跳过（不解析、不计入结果、不产生警告），
+    未被标记的块行为不变。见 next_doc/turn_judge_self_loop_fix_plan.md
+    "修复 2 补充" 一节。
+    """
+
+    def _wrap_new(self, name: str, input_: dict) -> str:
+        return f"<tool_use>\n{json.dumps({'name': name, 'input': input_})}\n</tool_use>"
+
+    def test_marked_example_is_skipped(self):
+        text = (
+            "引用一下之前的问题片段作为示例：\n\n"
+            f"{TOOL_USE_EXAMPLE_MARKER}\n\n"
+            + self._wrap_new("bash", {"command": "ls"})
+        )
+        calls = parse_tool_calls(text)
+        self.assertEqual(calls, [])
+
+    def test_marked_example_with_valid_real_tool_name_still_skipped(self):
+        """
+        即使被引用的示例里 name 是一个真实存在的工具名（复述主 Agent 那段
+        问题文本时很常见），只要前面带了标记，也不应被当成真实调用——
+        这正是弃用"按工具名白名单过滤"方案的原因。
+        """
+        text = TOOL_USE_EXAMPLE_MARKER + "\n\n" + self._wrap_new("write_file", {"path": "/tmp/x"})
+        calls = parse_tool_calls(text)
+        self.assertEqual(calls, [])
+
+    def test_unmarked_call_after_marked_example_still_detected(self):
+        """标记只影响它前面窗口内紧邻的那一次匹配，不影响后续真实调用。"""
+        text = (
+            f"{TOOL_USE_EXAMPLE_MARKER}\n\n"
+            + self._wrap_new("bash", {"command": "example"})
+            + "\n\n现在我真正发起调用：\n\n"
+            + self._wrap_new("read_file", {"path": "/tmp/real"})
+        )
+        calls = parse_tool_calls(text)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].name, "read_file")
+
+    def test_marker_far_outside_window_does_not_suppress(self):
+        """标记距离匹配太远（超出窗口）不应生效，避免误伤后续无关的真实调用。"""
+        filler = "x" * 400  # 超过 _EXAMPLE_MARKER_WINDOW（300）
+        text = TOOL_USE_EXAMPLE_MARKER + "\n\n" + filler + "\n\n" + self._wrap_new("bash", {"command": "ls"})
+        calls = parse_tool_calls(text)
+        self.assertEqual(len(calls), 1)
+
+    def test_no_marker_behaves_as_before(self):
+        text = self._wrap_new("bash", {"command": "ls"})
+        calls = parse_tool_calls(text)
+        self.assertEqual(len(calls), 1)
+
+
+class TestToolUseExampleMarkerSyncedWithPrompts(unittest.TestCase):
+    """
+    TOOL_USE_EXAMPLE_MARKER 在 reminder / 判官 system prompt 里是分别硬编码的
+    同一句中文文案（reminder 加载器不走 {{var}} 模板渲染，见
+    system_tool_call.py 里该常量定义处的说明）。这里做一次文本层面的一致性
+    校验，防止以后改了其中一处、漏改另一处导致标记失效却没有任何测试报错。
+    """
+
+    _PROMPT_FILES = [
+        "reminders/format_issue_tag_role_confusion.md",
+        "reminders/format_issue_tool_call_alias_tag.md",
+        "reminders/format_issue_orphan_close_tag.md",
+        "reminders/format_issue_bare_name_after_tag.md",
+        "reminders/format_issue_invalid_json_in_tool_use.md",
+        "reminders/format_issue_tool_result_used_as_request.md",
+        "reminders/format_issue_legacy_fence_unclosed.md",
+        "reminders/format_issue_unclosed_tool_use.md",
+        "system/turn_judge.md",
+        "system/goal_judge.md",
+    ]
+
+    def test_marker_present_in_all_expected_prompt_files(self):
+        prompts_root = PROJECT_ROOT / "src" / "mini_agent" / "prompts"
+        missing = []
+        for rel in self._PROMPT_FILES:
+            path = prompts_root / rel
+            content = path.read_text(encoding="utf-8")
+            if TOOL_USE_EXAMPLE_MARKER not in content:
+                missing.append(rel)
+        self.assertEqual(
+            missing, [],
+            f"以下提示词文件缺少与 TOOL_USE_EXAMPLE_MARKER 一致的标记文案: {missing}",
+        )
 
 
 class TestStripToolUseBlocks(unittest.TestCase):

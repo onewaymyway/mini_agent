@@ -13,6 +13,8 @@ enabled: true
 
 正确格式：函数名必须是 JSON 对象里的 `"name"` 字段，标签必须是 `<tool_use>`，开标签这一行不要有任何其它内容。请重新发送一次：
 
+【以下为工具格式示例并非实际工具调用】
+
 ```
 <tool_use>
 {"name": "<tool_name>", "input": {<参数 JSON 对象>}}
