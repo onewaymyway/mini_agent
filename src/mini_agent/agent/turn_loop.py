@@ -231,8 +231,14 @@ class TurnLoopMixin:
         while True:
             if loop_count >= _turns_budget:
                 if _max_turns_policy in ("continue", "compact_continue") and loop_count < _max_turns_hard_limit:
+                    # [SYS-TURN-JUDGE-LOGGING] 带上 agent_name 前缀：判官类
+                    # 内部 Agent（TurnJudge/GoalJudge/evaluator/coach 等）
+                    # 都会把 display_name 写进 cfg.agent_name，撞到这里时能
+                    # 一眼看出是主会话还是某个判官/子 Agent 自己的私有会话
+                    # 撞的预算，不用再靠猜测终端输出的层级关系。
+                    _agent_label = getattr(self.cfg, "agent_name", None) or "main"
                     if _max_turns_policy == "compact_continue":
-                        R.print_warning(f"[max-turns] hit {_turns_budget}, policy=compact_continue, compacting then continuing.")
+                        R.print_warning(f"[max-turns][{_agent_label}] hit {_turns_budget}, policy=compact_continue, compacting then continuing.")
                         try:
                             self._cached_system = None
                             self.compact_with_skills()
@@ -247,7 +253,7 @@ class TurnLoopMixin:
                             log_exception(_mini_agent_exc, where='mini_agent.agent.turn_loop.TurnLoopMixin._agentic_loop')
                             R.print_warning(f"[max-turns] auto-compact failed: {_mini_agent_exc}")
                     else:
-                        R.print_warning(f"[max-turns] hit {_turns_budget}, policy=continue, auto-continuing (hard limit {_max_turns_hard_limit}).")
+                        R.print_warning(f"[max-turns][{_agent_label}] hit {_turns_budget}, policy=continue, auto-continuing (hard limit {_max_turns_hard_limit}).")
                     self._hist.append_user("继续")
                     _turns_budget = min(_turns_budget + self.cfg.max_turns, _max_turns_hard_limit)
                 else:

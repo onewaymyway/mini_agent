@@ -136,6 +136,7 @@ run_turn() 内部：
 | `auto_continue_with_note_enabled` | `false` | 见下方"分级响应"一节：低置信度 `AUTO_CONTINUE` 时记执行摘要而不强行升级为 `NEED_USER` |
 | `auto_continue_confidence_threshold` | `0.6` | 上一项的置信度阈值，低于此值才触发 |
 | `conflict_resolution_enabled` | `false` | 见下方"判官冲突记录"一节：检测到与 Evaluator 判定矛盾时是否收紧为 `NEED_USER` |
+| `judge_max_turns` | `6` | TurnJudge **自己**单次核查内部允许跑的 LLM 调用轮次上限（与外层 `max_auto_rounds` 是两回事）。之前硬编码为 `2`，2 轮的余量偏紧张，一次网络抖动或一次需要纠正格式的输出就可能被迫在拿到干净判定前提前收尾；现在改为可配置，默认提高到 `6`。与 [Goal 模式](goal-mode-guide.md) 的 `GoalModeConfig.judge_max_turns` 是同一思路的先例 |
 
 子 Agent（sub-agent / role agent 内部跑的 Agent 实例）永远不会触发 TurnJudge，
 避免嵌套判定。
@@ -152,6 +153,39 @@ run_turn() 内部：
 > （`GoalSpecBuilder` 曾经也在这个名单里，2026-07 起改为直接调用
 > `LLMHelper.ask()`，压根不再构造 Agent 实例，自然也就不存在
 > "递归触发 TurnJudge"这个问题了，见 [Goal 模式指南](goal-mode-guide.md#goaljudge目标达成判定)。）
+
+> **实现细节 / 已修复的坑（第二类）：判官不该继承主 Agent 的 max_turns
+> 续命策略、也不该被自己引用的 `<tool_use>` 示例误伤。** 早期版本里，
+> `judge_factory.py::spawn_judge_agent()` 只显式设置了内部判官 Agent 的
+> `max_turns`，`max_turns_on_limit`（`stop`/`continue`/`compact_continue`）
+> 和 `max_turns_hard_limit` 会被 `load_config()` 原样从项目全局配置继承。
+> 如果项目配的是 `compact_continue`，判官只要在预算内没拿到"干净的最终
+> 文本"，就会对**自己**这个一次性问答的私有会话做 compact + 自我注入
+> "继续"，形成外层调用方完全感知不到的嵌套死循环（表现为终端反复打印
+> `[max-turns] hit N, policy=compact_continue` 和判官自己的判定文本，
+> 长时间不把控制权交还调用方）。而"判官在预算内拿不到最终文本"往往是因为
+> 另一个独立的坑：`postprocess_response()` 会对所有响应无差别提取
+> `<tool_use>` 块，TurnJudge 这类零工具的纯文本判官经常需要在 `feedback`
+> 里引用/复述主 Agent 输出的问题片段（比如举例说明一段没闭合的
+> `<tool_use>` 该怎么修），这些引用文本本身不是判官自己发起的工具调用，
+> 却会被同一正则误判为"格式错误的工具调用"，导致这一轮被当成无效输出、
+> 被迫重试。现在已修复：
+> 1. `spawn_judge_agent()` 显式把判官 Agent 的 `max_turns_on_limit` 强制
+>    设为 `"stop"`、`max_turns_hard_limit` 设为等于 `max_turns`——判官
+>    撞到预算就直接停，交回 `run_judge_turn()` 按既有的保守兜底处理
+>    （通常是 `NEED_USER`），不再有自我续命的机会。
+> 2. `postprocess_response()` 新增 `parse_tool_use` 参数，`_base_mixin.py`
+>    根据本次请求实际的 `tools` 列表是否为空来决定是否跳过 `<tool_use>`
+>    提取——零工具的 Agent（`tools_enabled=False`）从此不会再被自己
+>    引用的示例文本误伤。
+> 3. 进入/退出 TurnJudge 判官子会话时打印带层级标记的日志
+>    （`┌─ [TurnJudge] 进入判官子会话...` / `└─ [TurnJudge] 退出判官子
+>    会话，status=...`），`[max-turns] hit N, ...` 也加上了触发方的
+>    `agent_name` 前缀（如 `[max-turns][🧭 TurnJudge] hit N, ...`），
+>    排查时能直接区分是主会话还是某个判官/子 Agent 自己私有会话撞的
+>    预算，不需要再靠猜测终端输出的层级关系。
+>
+> 详见 [`next_doc/turn_judge_self_loop_fix_plan.md`](../next_doc/turn_judge_self_loop_fix_plan.md)。
 
 > **判官接线统一（阶段六）现状：** GoalJudge 和 TurnJudge 都已改为经由
 > [`RoleAgentDispatcher`](role-agents-guide.md#内建判官如何接入-dispatcher goal_review--turn_end_review)
@@ -174,6 +208,7 @@ run_turn() 内部：
 
 ```
 ℹ  [TurnJudge] 正在核查本轮是否需要真人介入…（第 1/3 次自动核查）
+ℹ  ┌─ [TurnJudge] 进入判官子会话（第 1/3 次核查）
 
 [🧭 轮次核查 · turn_judge]
 
@@ -184,6 +219,7 @@ bash 工具但格式有误，工具没有被执行，回复戛然而止，不是
 
 轮次状态：🤖 自动接管，代替用户继续推进
 
+ℹ  └─ [TurnJudge] 退出判官子会话，status=AUTO_CONTINUE
 ℹ  [TurnJudge] 判定为 AUTO_CONTINUE，自动代替用户输入继续推进（第 1 次）。
 
 You ❯ [TurnJudge 自动接管] 检测到技术性问题（而非任务真正完成），以下是系统

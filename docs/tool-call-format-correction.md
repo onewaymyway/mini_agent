@@ -308,3 +308,51 @@ turn_loop.py: response.has_tool_calls == False
 - 集成测试：`format_issue_enabled=False` 时自动退回 `format_correction_detector`
   内置默认文案，检测和自动 `continue` 续跑逻辑不受影响。
 
+## 补充修复：零工具判官 Agent 被 `<tool_use>` 正则误伤，进而在 TurnJudge 内部自我死循环（2026-09）
+
+### 具体 bug
+
+`postprocess_response()` 对所有 provider 响应无差别执行 `parse_tool_calls()`，
+不区分这次请求本身有没有挂载任何工具。[TurnJudge](turn-judge-guide.md) /
+GoalJudge 这类纯文本判官类 Agent（`tools_enabled=False`，请求时 `tools` 为
+空列表）经常需要在判定文本里**引用/复述**主 Agent 输出的问题片段——比如
+要给出"可以直接复制粘贴的修复模板"，模板本身就是字面的
+`<tool_use>{...}</tool_use>` 文本。这类引用文本不是判官自己发起的工具
+调用，却会被 `parse_tool_calls()` 命中、解析成不合法的工具调用 JSON
+（触发 `Invalid tool call JSON` / `missing 'name' field` 警告），这一轮就
+被判定为"没有产出有效结果"，`_agentic_loop()` 不会 `break`，继续下一轮——
+新一轮大概率又要引用同样的示例，又被误判，如此循环。
+
+叠加另一个独立问题——`judge_factory.py::spawn_judge_agent()` 此前只设置
+判官 Agent 的 `max_turns`，`max_turns_on_limit`/`max_turns_hard_limit`
+被 `load_config()` 从项目全局配置原样继承（通常是主 Agent 配的
+`compact_continue` + 很大的 hard limit）——判官在预算内反复拿不到"干净的
+最终文本"后，会对**自己**这个一次性问答的私有会话做 compact + 自我注入
+"继续"，形成外层调用方完全感知不到的嵌套死循环：终端表现为持续打印
+`hit N, policy=compact_continue` 和判官自己的判定文本，长时间不把控制权
+交还调用方；即使判官第一次就已经给出了完全正确的判定，也因为
+`feedback` 里带了引用性质的 `<tool_use>` 标签而被判定为"非最终态"，没有
+机会被 `return` 出去。
+
+### 修复
+
+1. `postprocess_response()` 新增 `parse_tool_use: bool = True` 参数，为
+   `False` 时跳过 `parse_tool_calls()` 提取，只做 `<think>` 等标签清理。
+2. `_base_mixin.py::_postprocess()` 按本次请求实际的 `tools` 列表是否为空
+   决定是否传 `parse_tool_use=False`——零工具的 Agent（`tools_enabled=False`）
+   从此不会再被自己引用的示例文本误伤；只要请求挂了任意工具，行为与
+   改动前完全一致。
+3. `judge_factory.py::spawn_judge_agent()` 显式把内部判官 Agent 的
+   `max_turns_on_limit` 强制设为 `"stop"`、`max_turns_hard_limit` 设为
+   等于 `max_turns`——判官撞到预算就直接停，交回 `run_judge_turn()` 走
+   既有的保守兜底（通常是 `NEED_USER`），不再对自己的私有会话续命。
+4. `turn_judge.py::run_turn_judge()` 进入/退出判官子会话时打印带层级
+   标记的日志；`turn_loop.py` 里 `[max-turns] hit N, ...` 日志加上触发方
+   `agent_name` 前缀，排查时能直接区分是主会话还是某个判官/子 Agent 自己
+   私有会话撞的预算。
+5. `TurnJudgeConfig` 新增 `judge_max_turns`（默认 `6`，此前硬编码 `2`），
+   给判官自己的核查循环留出更充裕的余量。
+
+详见方案文档
+[`next_doc/turn_judge_self_loop_fix_plan.md`](../next_doc/turn_judge_self_loop_fix_plan.md)
+和 [TurnJudge 指南](turn-judge-guide.md#启用方式)。

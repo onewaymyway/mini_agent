@@ -376,6 +376,16 @@ cfg.role_agent.allow / cfg.role_agent.block
 统一收敛在 `role_agents/judge_factory.py` 里，对外暴露两个函数：
 
 - `spawn_judge_agent(...)`：按统一规则构造一个受限的内部 `Agent` 实例。
+  除 `max_turns` 外，还会显式把这个内部 Agent 的 `max_turns_on_limit`
+  强制设为 `"stop"`、`max_turns_hard_limit` 设为等于 `max_turns`——判官类
+  Agent 只是一次性问答，撞到预算就该直接停、把结果（或空结果）交回
+  `run_judge_turn()` 走既有的保守兜底，不应该像主 Agent 那样在
+  `max_turns_on_limit="continue"/"compact_continue"` 时对自己的私有会话
+  做续命重试。这两个字段此前会被 `load_config()` 从项目全局配置原样
+  继承，曾经导致判官在自己的输出被误判为"非最终态"时对自己的会话反复
+  compact + 自我续跑，形成外层调用方感知不到的嵌套死循环，详见
+  [TurnJudge 指南](turn-judge-guide.md#启用方式)和
+  [`next_doc/turn_judge_self_loop_fix_plan.md`](../next_doc/turn_judge_self_loop_fix_plan.md)。
 - `run_judge_turn(agent, prompt, *, failure_role_label, profile_name=None)`：
   跑一轮判官 Agent，返回类型化的 `JudgeResult(ok, raw_output, error)`，
   异常在这里统一兜底，不会向上抛出。若传入 `profile_name`，运行结束后

@@ -276,11 +276,18 @@ class ProviderMixin:
         """
         通用响应后处理：
           - 从文本中提取 <tool_use> 块 → tool_calls
+            （仅当 original_tools 非空时才做这一步：original_tools 为空
+            意味着本次请求根本没有挂载任何工具——通常是 TurnJudge /
+            GoalJudge 等纯文本判官类 Agent——它们的输出里出现 <tool_use>
+            字样大概率是在"引用/复述"别处的问题文本，不是自己真的发起了
+            工具调用，不应该被当成格式错误的工具调用而判定为无效输出。
+            见 system_tool_call.py::postprocess_response 的 parse_tool_use
+            参数说明）
           - 从文本中提取 <think>/<thinking>/<reasoning> → reasoning
           - 清理 text（移除已提取的块）
         对所有 provider 都执行，不依赖 provider 类型。
         """
-        return postprocess_response(response)
+        return postprocess_response(response, parse_tool_use=bool(original_tools))
 
     def _apply_system_format(
         self, system: str, messages: list[dict]

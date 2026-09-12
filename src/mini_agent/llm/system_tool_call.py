@@ -262,13 +262,25 @@ def extract_thinking_blocks(text: str) -> tuple[str, str]:
 
 # ── 通用后处理 ────────────────────────────────────────────────────────────────
 
-def postprocess_response(response: LLMResponse) -> LLMResponse:
+def postprocess_response(response: LLMResponse, parse_tool_use: bool = True) -> LLMResponse:
     """
     对任意 LLMResponse 执行后处理：
-    1. 提取 <tool_use> 块 → tool_calls
+    1. 提取 <tool_use> 块 → tool_calls（parse_tool_use=False 时跳过本步）
     2. 提取 <think> 等标签 → reasoning（与已有 reasoning 合并）
     3. 清理 text
     4. 有 tool_call → stop_reason 改为 "tool_use"
+
+    parse_tool_use：
+        [BUGFIX / 零工具 Agent 被 <tool_use> 正则误伤] 此前这里对所有
+        provider 响应无差别执行 <tool_use> 提取，不管这个 Agent 本次请求
+        是否真的挂了工具。TurnJudge / GoalJudge 等纯文本判官类 Agent
+        （tools_enabled=False，本次请求 tools 为空列表）经常需要在判定
+        文本里"引用/复述"主 Agent 输出的问题片段（比如举例说明一段没
+        闭合的 <tool_use> 该怎么修），这些引用文本本身并不是它们发起的
+        工具调用，却会被同一个正则误判成"格式错误的工具调用"，导致这一轮
+        被当成无效输出，被迫重试甚至陷入死循环。调用方在本次请求的
+        tools 列表为空时应传入 parse_tool_use=False，跳过提取，只做
+        <think> 等标签清理；只要挂了任意工具，行为与此前完全一致。
     """
     text=response.text
     if not text:
@@ -293,8 +305,8 @@ def postprocess_response(response: LLMResponse) -> LLMResponse:
     else:
         combined_reasoning = existing
 
-    # 步骤 2：提取 tool_use 块
-    tool_calls_from_text = parse_tool_calls(text)
+    # 步骤 2：提取 tool_use 块（parse_tool_use=False 时跳过，见函数 docstring）
+    tool_calls_from_text = parse_tool_calls(text) if parse_tool_use else []
     final_tool_calls = response.tool_calls if response.tool_calls else tool_calls_from_text
 
     if tool_calls_from_text:

@@ -121,6 +121,19 @@ def spawn_judge_agent(
     judge_cfg.llm_fallback_chain = []
 
     judge_cfg.max_turns = max_turns
+    # [BUGFIX / TurnJudge 自我死循环] 此前这里只设置了 max_turns，
+    # max_turns_on_limit / max_turns_hard_limit 会被 load_config() 从项目
+    # 全局配置里原样继承（通常是主 Agent 配的 "compact_continue" + 很大的
+    # hard limit）。判官类内部 Agent 只是一次性问答，不应该套用主 Agent
+    # 那套"撞预算就 compact 自己再继续"的续命机制——一旦判官自己的输出因为
+    # 格式问题被判定为"非最终态"，套用 compact_continue 会导致判官对自己
+    # 的私有 session 反复 compact + 自我注入"继续"，形成外层调用方完全
+    # 感知不到的嵌套死循环（表现为终端一直卡在 "hit N, policy=
+    # compact_continue" 和判官自己的输出里出不来）。这里显式强制判官类
+    # Agent 撞到预算后直接停，交回 run_judge_turn() 按既有的保守兜底处理
+    # （通常是 NEED_USER），不做自我续命。
+    judge_cfg.max_turns_on_limit = "stop"
+    judge_cfg.max_turns_hard_limit = max_turns
     judge_cfg.stream = False
     judge_cfg.system_extra = (
         profile.system_prompt if (profile and profile.system_prompt.strip()) else system_prompt

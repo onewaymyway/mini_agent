@@ -79,7 +79,19 @@ def run_turn_judge(
     # [Phase 3 重构] 样板逻辑收敛到 judge_factory.spawn_judge_agent /
     # run_judge_turn。函数签名和返回值保持完全不变。
     from mini_agent.role_agents.judge_factory import spawn_judge_agent, run_judge_turn
+    import mini_agent.ui.renderer as R
     tj_cfg_block = getattr(base_cfg, "turn_judge", None)
+
+    # [SYS-TURN-JUDGE-LOGGING] 进入/退出判官子会话的明显提示：便于和主
+    # Agent 自己的 [max-turns]/compact 日志区分开——排查"是不是卡在
+    # TurnJudge 内部出不来"时，这两行日志能直接确认判官子会话是否正常
+    # 结束、以及结束时的判定结果，而不需要靠猜测中间那些 "🧭 TurnJudge ❯"
+    # 打印到底是不是同一次调用内部的中间轮次。
+    R.print_info(
+        f"┌─ [TurnJudge] 进入判官子会话（第 {auto_round_no}/{max_auto_rounds} 次核查）"
+    )
+
+    _judge_max_turns = getattr(tj_cfg_block, "judge_max_turns", 6) if tj_cfg_block else 6
 
     judge_agent = spawn_judge_agent(
         profile=profile,
@@ -105,7 +117,10 @@ def run_turn_judge(
                 if getattr(tj_cfg_block, "auto_continue_with_note_enabled", False) else ""
             ),
         ),
-        max_turns=2,
+        # [BUGFIX/需求变更] 此前硬编码为 2，改为读 turn_judge.judge_max_turns
+        # 配置项（默认 6），见 config/models.py::TurnJudgeConfig.judge_max_turns
+        # 的注释。
+        max_turns=_judge_max_turns,
         tools_enabled=False,   # 纯文本判定，不挂载任何工具（最小权限、最低延迟）
         parent_session_id=parent_session_id,
         parent_session_dir=parent_session_dir,
@@ -125,10 +140,14 @@ def run_turn_judge(
     )
 
     if result.ok:
+        from mini_agent.role_agents.feedback import extract_turn_status
+        _exit_status = extract_turn_status(result.raw_output) or "(解析失败)"
+        R.print_info(f"└─ [TurnJudge] 退出判官子会话，status={_exit_status}")
         return result.raw_output
     # 判定失败时保守返回 NEED_USER，绝不能让异常被当成 AUTO_CONTINUE。
     # 兜底文本本身也是合法 JSON，保持与正常输出一致的可解析契约。
     import json as _json
+    R.print_info(f"└─ [TurnJudge] 退出判官子会话，status=NEED_USER（运行失败兜底）")
     return _json.dumps({
         "status": "NEED_USER",
         "feedback": f"[TurnJudgeAgent 运行失败: {result.error}]，保守判定为需要用户输入。",

@@ -1302,6 +1302,16 @@ class TurnJudgeConfig:
     auto_continue_with_note_enabled: bool = False
     auto_continue_confidence_threshold: float = 0.6
 
+    # [BUGFIX/需求变更] TurnJudge 单次核查内部允许跑的最大轮次（LLM 调用
+    # 循环上限，与外层 max_auto_rounds 是两回事）。此前硬编码在
+    # judge_factory 调用点（turn_judge.py::run_turn_judge）为 2——TurnJudge
+    # 不挂工具，理论上一轮 LLM 调用就该给出最终 JSON 判定，但 2 轮的余量
+    # 太紧张：一次网络抖动、一次模型输出里恰好带了需要纠正的格式片段，就
+    # 可能被迫在拿到干净结果前提前收尾。与 GoalModeConfig.judge_max_turns
+    # 的先例一致（那边之前硬编码 2/6 也吃过"轮次不够收敛"的亏），这里改成
+    # 读配置项，默认提高到 6，不再硬编码。
+    judge_max_turns: int = 6
+
     # ── [next_doc/autonomous_execution_stability_and_self_learning_integration_plan.md
     # 方案 E 阶段 4] 冲突消解：目前唯一接入的具体场景是"同轮 Evaluator 修订到
     # 最后一轮仍未通过，但 TurnJudge 判定 AUTO_CONTINUE"。开启后，检测到这个
