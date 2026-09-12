@@ -1884,7 +1884,10 @@ class AgentClient:
 
     # ── §10.3 persona 型 Track：人设草稿生成/预览/发布 ──────────────────
     def draft_capability_persona(self, track_id: str):
-        """生成/刷新人设草稿并落盘，返回 {"draft": str, "completeness": dict}。"""
+        """提交"生成/刷新人设草稿"异步任务，立即返回 {"job_id", "key"}
+        （涉及 LLM 调用，改走 async_jobs 机制，见 capability_routes.py
+        对应端点文档字符串）。调用方应配合 async_job_ui.py 的
+        `start_async_job()`/`run_async_job()` 轮询，不要当同步接口用。"""
         return self._post(f"/capability/tracks/{track_id}/persona/draft")
 
     def get_capability_persona_draft(self, track_id: str):

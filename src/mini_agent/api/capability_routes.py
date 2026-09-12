@@ -375,11 +375,27 @@ def update_persona_wiki_scopes(request: Request, persona_name: str, body: SetPer
 # 同一套底层实现的两层接线，行为应保持一致。
 
 
+def _async_jobs(request: Request):
+    """跟 `api/routes.py`/`persona_candidate_routes.py` 同款薄封装，独立
+    复制一份而不是互相 import，理由同文件顶部注释：避免几千行大文件之间
+    的循环 import 风险。"""
+    return request.app.state.async_jobs
+
+
 @capability_router.post("/tracks/{track_id}/persona/draft")
 def draft_persona(request: Request, track_id: str):
-    """生成/刷新 persona 型 Track 的人设草稿并落盘，返回草稿全文 +
-    完成度摘要。knowledge 型 Track 调用返回 400（这是 target_type
-    的语义错误，不是"没找到"，用 400 而不是 404 更准确）。"""
+    """生成/刷新 persona 型 Track 的人设草稿并落盘。knowledge 型 Track
+    调用返回 400（这是 target_type 的语义错误，不是"没找到"，用 400
+    而不是 404 更准确）。
+
+    这一步要调用 LLM（`draft_persona_markdown`），耗时不可控——本地小
+    模型或者网络抖动时容易超过看板前端 HTTP 客户端的固定读超时（之前是
+    同步执行，曾在 streamlit 上观察到 `Read timed out.`）。改成跟
+    `execution_spec/generate`、`persona_candidates/scan` 一样走
+    `async_jobs` 机制：这个端点立即返回 `{"job_id", "key"}`，前端改用
+    `run_async_job()` 轮询 `GET /v1/async_jobs/{job_id}` 直到
+    status 变成 "done"/"error"，`result` 就是原来这个端点直接返回的
+    `{"track_id", "draft", "completeness"}`。"""
     from mini_agent.evolution.capability_learning import (
         draft_persona_markdown,
         persona_draft_completeness,
@@ -394,12 +410,21 @@ def draft_persona(request: Request, track_id: str):
     if track.target_type != "persona":
         raise HTTPException(status_code=400, detail="track is not target_type=persona")
 
+    # 校验（track 是否存在/是否 persona 型）保留在同步路径里立即报错，
+    # 只有真正要调用 LLM 的部分丢进后台任务——这样参数错误时前端能立刻
+    # 拿到 404/400，不用先等一轮轮询才发现。
     questions = CapabilityQuestionStore(paths).list_questions(track_id=track_id)
     llm_helper = _get_llm_helper(request)
-    markdown_text = draft_persona_markdown(track, questions, llm_helper=llm_helper)
-    save_persona_draft(paths, track_id, markdown_text)
-    completeness = persona_draft_completeness(track, questions)
-    return {"track_id": track_id, "draft": markdown_text, "completeness": completeness}
+
+    def _do_draft() -> dict:
+        markdown_text = draft_persona_markdown(track, questions, llm_helper=llm_helper)
+        save_persona_draft(paths, track_id, markdown_text)
+        completeness = persona_draft_completeness(track, questions)
+        return {"track_id": track_id, "draft": markdown_text, "completeness": completeness}
+
+    key = f"capability_persona_draft:{track_id}"
+    job_id = _async_jobs(request).start(_do_draft, key=key, meta={"track_id": track_id})
+    return {"job_id": job_id, "key": key}
 
 
 @capability_router.get("/tracks/{track_id}/persona/draft")

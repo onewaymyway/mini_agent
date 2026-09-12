@@ -9678,16 +9678,28 @@ def render_capability_tab(client: "AgentClient"):
                     else:
                         st.caption("✅ 各维度均已有用户回答的信息。")
 
+                # [Read timed out 修复] 生成草稿要调用 LLM，耗时不可控，
+                # 后端已经改成 async_jobs 异步任务（立即返回 job_id，不再
+                # 同步跑完 LLM 才响应）——这里配合改成"提交 + 轮询"两步，
+                # 复用 execution_spec 草稿生成同一套 async_job_ui 封装，
+                # 不再直接同步调用 client.draft_capability_persona() 等
+                # HTTP 响应（旧写法在本地模型较慢时会命中前端 HTTP 客户端
+                # 的固定读超时，报 "Read timed out."）。
+                draft_job_key = f"capability_persona_draft:{track['track_id']}"
                 draft_cols = st.columns(2)
                 with draft_cols[0]:
                     if st.button("📝 生成/刷新草稿", key=f"cap_persona_draft_{track['track_id']}"):
-                        resp = client.draft_capability_persona(track["track_id"])
-                        if isinstance(resp, dict) and resp.get("_error"):
-                            st.error(f"生成草稿失败：{resp['_error']}")
-                        else:
-                            st.session_state[f"cap_persona_draft_text_{track['track_id']}"] = resp.get("draft", "")
-                            st.session_state[f"cap_persona_draft_completeness_{track['track_id']}"] = resp.get("completeness", {})
+                        if start_async_job(client, draft_job_key,
+                                            lambda: client.draft_capability_persona(track["track_id"])):
                             st.rerun()
+                draft_job_result = run_async_job(client, draft_job_key, label="正在生成/刷新人设草稿")
+                if draft_job_result is not None:
+                    if isinstance(draft_job_result, dict) and draft_job_result.get("_error"):
+                        st.error(f"生成草稿失败：{draft_job_result['_error']}")
+                    else:
+                        st.session_state[f"cap_persona_draft_text_{track['track_id']}"] = draft_job_result.get("draft", "")
+                        st.session_state[f"cap_persona_draft_completeness_{track['track_id']}"] = draft_job_result.get("completeness", {})
+                        st.rerun()
                 with draft_cols[1]:
                     publish_confirm_key = f"cap_persona_publish_confirm_{track['track_id']}"
                     incomplete = bool(completeness and (completeness.get("missing_topic_names") or []))
