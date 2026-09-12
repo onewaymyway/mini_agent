@@ -27,6 +27,22 @@ Generative-Capability 引擎的蒸馏器（阶段三）。
     要么全部一起更新成功，要么全部不落盘，避免"脚本能跑但检索不到"或
     "检索能到但脚本已被清理"的不一致状态（方案文档第 8 节安全边界 5）。
 
+同域名重复 member 标记（见
+next_doc/browser_site_scraper_domain_dedup_and_matching_fix_plan.md 阶段 B）:
+  - `_atomic_persist()` 落盘一个真正全新的 member（即调用方传入的
+    `existing_entry is None`，不是针对既有 id 的重新探索）时，会用
+    `CapabilityEngine._extract_domain_pattern_core` 把这次新推断出的
+    `match.domain_pattern` 与其余处于 active 状态（trusted/probation/
+    degraded）的 sibling member 做一次归一化比较；一旦发现某个 sibling
+    的 domain_pattern 覆盖同一个域名，就在这次新落盘的 index 摘要与
+    meta.json 里都记一笔 `possible_duplicate_of`，并打一条
+    `distill_new_member_overlaps_existing_domain` 调试日志。
+  - 这里刻意只标记、不阻断落盘、也不自动拿新脚本覆盖/合并旧 member——
+    同一个域名下完全可能存在多种合法的独立抓取意图（比如同一站点的
+    搜索页 vs 详情页），"域名重叠"不能被直接当成"一定是重复"；是否真的
+    需要合并交给 `health_patrol.py` 的巡检 + 人工审查（或显式调用
+    `run_patrol(..., merge_duplicates=True)`）决定。
+
 trust_trace_data 一致性兜底（阶段六，回应阶段五"已知遗留"第 1 条）:
   - 蒸馏脚本重放动作序列后，默认只从"重放出的最后一步工具输出"里取 data
     （见 SCRIPT_TEMPLATE），这对"提取/产出"类工具（如 browser_extract_content/
@@ -1162,7 +1178,7 @@ def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, reques
         (m for m in index.get("members", []) if m.get("member_id") == member_id), None
     )
     members_list = [m for m in index.get("members", []) if m.get("member_id") != member_id]
-    members_list.append({
+    new_summary = {
         "member_id": member_id,
         **_resolve_index_summary(
             existing_entry=existing_entry, request=request, is_reexplore=is_reexplore,
@@ -1170,16 +1186,79 @@ def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, reques
             skill_name=capability.get("name", skill_dir.name), member_id=member_id,
             llm_helper=llm_helper,
         ),
-    })
+    }
+
+    duplicate_of: list[str] = []
+    if existing_entry is None:
+        # 真正意义上的"全新 member"（不是针对既有 id 的重新探索）才需要
+        # 检查同域名重叠——见文件头"同域名重复 member 标记"一节。
+        duplicate_of = _find_active_domain_overlaps(
+            new_domain_pattern=(new_summary.get("match") or {}).get("domain_pattern"),
+            sibling_members=members_list,
+            registry=registry,
+        )
+        if duplicate_of:
+            new_summary["possible_duplicate_of"] = duplicate_of
+            from .capability_debug import capability_debug_log
+            capability_debug_log(
+                "distill_new_member_overlaps_existing_domain",
+                {
+                    "skill_name": capability.get("name", skill_dir.name),
+                    "new_member_id": member_id,
+                    "domain_pattern": (new_summary.get("match") or {}).get("domain_pattern"),
+                    "overlaps_with": duplicate_of,
+                },
+                where="distiller._atomic_persist",
+            )
+
+    members_list.append(new_summary)
     index["members"] = members_list
     index_tmp = index_path.with_suffix(".json.tmp")
     index_tmp.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if duplicate_of:
+        meta["possible_duplicate_of"] = duplicate_of
+        meta_tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 全部写完临时文件后再统一原子替换，尽量缩小"部分文件已提交、部分未提交"的窗口。
     script_tmp.replace(script_path)
     meta_tmp.replace(meta_path)
     registry_tmp.replace(registry_path)
     index_tmp.replace(index_path)
+
+
+def _find_active_domain_overlaps(
+    *, new_domain_pattern: Optional[str], sibling_members: list[dict], registry: dict,
+) -> list[str]:
+    """[next_doc/browser_site_scraper_domain_dedup_and_matching_fix_plan.md
+    阶段 B] 在 `_index.json` 里其余处于 active 状态
+    （trusted/probation/degraded）的 sibling member 中，找出
+    `match.domain_pattern` 与本次新 member 指向同一个域名的那些，仅返回
+    member_id 列表供调用方标记，不做任何写操作/合并——是否真的需要合并
+    交给 `health_patrol.py`。"""
+    if not new_domain_pattern:
+        return []
+    from .capability_engine import CapabilityEngine
+
+    new_core = CapabilityEngine._extract_domain_pattern_core(new_domain_pattern)
+    if new_core is None:
+        return []
+
+    overlaps: list[str] = []
+    for sibling in sibling_members:
+        sibling_id = sibling.get("member_id")
+        if not sibling_id:
+            continue
+        status = registry.get("members", {}).get(sibling_id, {}).get("status")
+        if status not in {"trusted", "probation", "degraded"}:
+            continue
+        sibling_pattern = (sibling.get("match") or {}).get("domain_pattern")
+        if not sibling_pattern:
+            continue
+        sibling_core = CapabilityEngine._extract_domain_pattern_core(sibling_pattern)
+        if sibling_core is not None and sibling_core == new_core:
+            overlaps.append(sibling_id)
+    return overlaps
 
 
 def _build_playbook_markdown(trace: ExploreTrace, request: dict, skill_name: str, member_id: str) -> str:

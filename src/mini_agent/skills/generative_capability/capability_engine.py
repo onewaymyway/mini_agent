@@ -40,6 +40,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
 
 try:
     import yaml  # PyYAML
@@ -284,12 +285,67 @@ class CapabilityEngine:
 
     @staticmethod
     def _domain_match(pattern: str, value: str) -> bool:
-        # 支持简单通配符 *.example.com
+        """
+        [next_doc/browser_site_scraper_domain_dedup_and_matching_fix_plan.md
+        阶段 A] 原实现把 `*.example.com` 之类通配符整段转成正则
+        (`.*\\.example\\.com.*`)，隐含要求"example.com 前面必须出现一个
+        字面的点"——这对带子域名的 URL（`www.example.com`）没问题，但对
+        裸域名（`https://example.com/...`，如 arxiv 论文页）永远匹配不上，
+        是 browser-site-scraper 里同一个站点被反复判定为"未命中"、进而
+        反复触发探索、堆出一串同域名重复 member 的直接原因。
+
+        修复思路：识别出"纯域名"模式（`*.example.com` / `*.example.com*`，
+        掐头去尾后不再包含通配符或路径分隔符），改用 URL host 的 label
+        后缀比较——`host == example.com` 或 `host` 以 `.example.com`
+        结尾——语义上就是"这个域名本身，或它的任意子域名"，天然同时覆盖
+        裸域名与子域名，且不会像子串匹配那样被 `notexample.com`、
+        `example.com.evil.com` 这类拼接域名误伤。模式本身带路径片段
+        （如 `*.baidu.com/s*`）不适合按纯域名语义特殊处理，退回原有的
+        整串通配符正则逻辑，baidu/zhihu 现有行为不受影响。
+        """
+        core = CapabilityEngine._extract_domain_pattern_core(pattern)
+        if core is not None:
+            host = CapabilityEngine._extract_host(value)
+            if host:
+                return host == core or host.endswith("." + core)
+            # value 不是可解析出 host 的 URL（比如根本不是 URL 字符串）时，
+            # 不能凭空判负，退回旧的整串通配符逻辑兜底。
+
         regex = "^" + re.escape(pattern).replace(r"\*", ".*") + "$"
         try:
             return bool(re.search(regex, value))
         except re.error:
             return pattern in value
+
+    @staticmethod
+    def _extract_domain_pattern_core(pattern: str) -> Optional[str]:
+        """识别形如 `*.example.com` / `*.example.com*` 的"纯域名"模式，
+        返回核心域名 `example.com`；模式里还夹着路径/额外通配符（如
+        `*.baidu.com/s*`）时返回 None，交给调用方回退到整串通配符逻辑。
+        """
+        core = pattern
+        if core.startswith("*."):
+            core = core[2:]
+        elif core.startswith("*"):
+            return None
+        if core.endswith("*"):
+            core = core[:-1]
+        if not core or "*" in core or "/" in core:
+            return None
+        return core
+
+    @staticmethod
+    def _extract_host(value: str) -> str:
+        """从一个 URL（或裸 host:port 字符串）里解析出 host，忽略端口/
+        userinfo/path。刻意不对无法解析的输入抛异常，取不到就返回空
+        字符串，交给调用方决定兜底策略。"""
+        try:
+            parsed = urlparse(value if "://" in value else "//" + value)
+            host = parsed.netloc or parsed.path
+        except Exception:  # noqa: BLE001
+            return ""
+        host = host.split("@")[-1].split(":")[0].split("/")[0].strip().lower()
+        return host
 
     @staticmethod
     def _keyword_match(keywords: list[str] | str, value: str) -> bool:

@@ -659,5 +659,109 @@ class TestCapabilityEngineAllowTiers(unittest.TestCase):
         self.assertIn("主动跳过", result.error)
 
 
+class TestDomainPatternMatchFix(unittest.TestCase):
+    """对应 next_doc/browser_site_scraper_domain_dedup_and_matching_fix_plan.md
+    阶段 A：`_domain_match` 从"整串通配符转正则"改为"纯域名模式走 host
+    语义比较"。覆盖真实触发过重复 member 的裸域名场景、不应引入的拼接
+    域名误判场景，以及含路径模式（baidu 现网配置）行为不回归三类断言。
+    """
+
+    def test_bare_domain_now_matches(self):
+        from mini_agent.skills.generative_capability.capability_engine import CapabilityEngine
+
+        # 修复前这里返回 False，是 arxiv 类站点反复被判"未命中"、反复
+        # 触发探索、堆出一串重复 member 的直接原因。
+        self.assertTrue(
+            CapabilityEngine._domain_match("*.arxiv.org*", "https://arxiv.org/abs/2509.26354")
+        )
+
+    def test_subdomain_still_matches(self):
+        from mini_agent.skills.generative_capability.capability_engine import CapabilityEngine
+
+        self.assertTrue(
+            CapabilityEngine._domain_match("*.arxiv.org*", "https://www.arxiv.org/abs/x")
+        )
+        self.assertTrue(
+            CapabilityEngine._domain_match("*.arxiv.org*", "https://export.arxiv.org/abs/x")
+        )
+
+    def test_concatenated_domain_not_falsely_matched(self):
+        from mini_agent.skills.generative_capability.capability_engine import CapabilityEngine
+
+        # 放宽裸域名匹配时不能引入新的误判：notarxiv.org / arxiv.org.evil.com
+        # 都不是 arxiv.org 本身或其子域名。
+        self.assertFalse(
+            CapabilityEngine._domain_match("*.arxiv.org*", "https://notarxiv.org/x")
+        )
+        self.assertFalse(
+            CapabilityEngine._domain_match("*.arxiv.org*", "https://arxiv.org.evil.com/x")
+        )
+
+    def test_path_scoped_pattern_unaffected(self):
+        from mini_agent.skills.generative_capability.capability_engine import CapabilityEngine
+
+        # baidu 现网配置带路径片段，不适合按纯域名语义特殊处理，
+        # 应回退到原有整串通配符逻辑，行为保持不变。
+        self.assertTrue(
+            CapabilityEngine._domain_match("*.baidu.com/s*", "https://www.baidu.com/s?wd=x")
+        )
+        self.assertFalse(
+            CapabilityEngine._domain_match("*.baidu.com/s*", "https://www.baidu.com/map?x")
+        )
+
+
+class TestNewMemberDomainOverlapFlagging(unittest.TestCase):
+    """对应上述方案文档阶段 B：新建 member 时如果域名与既有 active member
+    重叠，落盘的 index 摘要应带上 `possible_duplicate_of`，且不阻断落盘。
+    """
+
+    def setUp(self):
+        self.tmp_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp_dir, ignore_errors=True)
+        self.skill_dir = self.tmp_dir / "browser-site-scraper"
+        (self.skill_dir / "members" / "arxiv").mkdir(parents=True)
+        (self.skill_dir / "_index.json").write_text(json.dumps({
+            "members": [{
+                "member_id": "arxiv",
+                "description": "existing arxiv member",
+                "match": {"domain_pattern": "*.arxiv.org*", "keyword": ["arxiv"]},
+            }],
+        }), encoding="utf-8")
+        (self.skill_dir / "registry.json").write_text(json.dumps({
+            "members": {"arxiv": {"status": "trusted", "success_count": 5}},
+        }), encoding="utf-8")
+
+    def test_new_member_same_domain_gets_flagged(self):
+        from mini_agent.skills.generative_capability import distiller
+
+        overlaps = distiller._find_active_domain_overlaps(
+            new_domain_pattern="*.arxiv.org*",
+            sibling_members=json.loads((self.skill_dir / "_index.json").read_text())["members"],
+            registry=json.loads((self.skill_dir / "registry.json").read_text()),
+        )
+        self.assertEqual(overlaps, ["arxiv"])
+
+    def test_new_member_different_domain_not_flagged(self):
+        from mini_agent.skills.generative_capability import distiller
+
+        overlaps = distiller._find_active_domain_overlaps(
+            new_domain_pattern="*.zhihu.com*",
+            sibling_members=json.loads((self.skill_dir / "_index.json").read_text())["members"],
+            registry=json.loads((self.skill_dir / "registry.json").read_text()),
+        )
+        self.assertEqual(overlaps, [])
+
+    def test_dead_sibling_not_flagged(self):
+        from mini_agent.skills.generative_capability import distiller
+
+        registry = {"members": {"arxiv": {"status": "dead", "success_count": 0}}}
+        overlaps = distiller._find_active_domain_overlaps(
+            new_domain_pattern="*.arxiv.org*",
+            sibling_members=json.loads((self.skill_dir / "_index.json").read_text())["members"],
+            registry=registry,
+        )
+        self.assertEqual(overlaps, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,24 @@ Generative-Capability 引擎的定期健康巡检（阶段四，低频后台任�
   `status_changed_at`（由 `capability_engine.py`/`distiller.py` 在状态流转
   时写入的精确时间戳），只有存量数据缺这个字段时才退化为原来的近似算法，
   回应阶段四"已知遗留"中"`_dead_since()` 近似值可能偏早"的问题。
+
+同域名重复 member 巡检（见
+next_doc/browser_site_scraper_domain_dedup_and_matching_fix_plan.md 阶段 C）:
+  - 背景：一级域名匹配存在系统性偏差（已在 `capability_engine.py::
+    _domain_match` 修复）或 keyword 兜底过窄时，`explore()` 会把"这个域名
+    已经有人处理了，只是这次没匹配上"误判成"全新能力"，不断新建同域名的
+    重复 member（真实案例见上述方案文档 0 节）。`distiller.py` 已经在新建
+    member 时做了标记（`possible_duplicate_of`），但那只是"发生时留痕"，
+    真正需要一个独立于单次探索、随时可以重新扫描现状的巡检项。
+  - `run_patrol()` 新增 `duplicate_domain_pattern` 一类 finding：按
+    `CapabilityEngine._extract_domain_pattern_core` 把所有 active member
+    的 `match.domain_pattern` 归一化分组，组内数量 > 1 就报告，不管这些
+    member 是不是通过 `possible_duplicate_of` 标记出来的（兼容巡检
+    `distiller.py` 修复之前就已经存量存在的重复）。
+  - 新增可选参数 `merge_duplicates`（与既有 `apply_cleanup` 同样"默认只
+    报告、显式传参才真正写入"的风格）：为真时才会真正把每组重复合并成
+    一个 canonical member，其余的状态改为 `dead`（不删除脚本文件，物理
+    删除仍然只交给既有 `apply_cleanup` 长期保留期机制）。
 """
 
 from __future__ import annotations
@@ -49,7 +67,7 @@ class PatrolFinding:
     member_id: str
     kind: str      # "stale" | "dead_expired" | "index_without_registry" |
                     # "registry_without_index" | "member_dir_without_registry" |
-                    # "registry_without_member_dir"
+                    # "registry_without_member_dir" | "duplicate_domain_pattern"
     detail: str
 
 
@@ -60,6 +78,7 @@ class PatrolReport:
     findings: list[PatrolFinding] = field(default_factory=list)
     fixed_inconsistencies: list[str] = field(default_factory=list)
     cleaned_members: list[str] = field(default_factory=list)
+    merged_members: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -68,6 +87,7 @@ class PatrolReport:
             "findings": [f.__dict__ for f in self.findings],
             "fixed_inconsistencies": self.fixed_inconsistencies,
             "cleaned_members": self.cleaned_members,
+            "merged_members": self.merged_members,
         }
 
 
@@ -75,6 +95,7 @@ def run_patrol(
     skill_dir: str | Path,
     fix_inconsistencies: bool = False,
     apply_cleanup: bool = False,
+    merge_duplicates: bool = False,
     now: Optional[float] = None,
     project_root: Optional[str | Path] = None,
 ) -> PatrolReport:
@@ -127,6 +148,18 @@ def run_patrol(
 
     if fix_inconsistencies:
         _fix_inconsistencies(report, registry, index, registry_path, index_path, registry_ids, index_ids)
+
+    # ---------------- 同域名重复 member 检查 ---------------- #
+    _find_duplicate_domain_groups(report, registry, index)
+    if merge_duplicates:
+        groups = _group_active_members_by_domain(registry, index)
+        for core, member_ids in groups.items():
+            if len(member_ids) < 2:
+                continue
+            _merge_duplicate_group(skill_dir, core, member_ids, registry, index, report)
+        if report.merged_members:
+            _save_json(registry_path, registry)
+            _save_json(index_path, index)
 
     # ---------------- 长期未调用 / dead 过期检查 ---------------- #
     for mid, entry in list(registry.get("members", {}).items()):
@@ -200,6 +233,100 @@ def _fix_inconsistencies(report: PatrolReport, registry: dict, index: dict,
 
     if changed:
         _save_json(index_path, index)
+
+
+def _group_active_members_by_domain(registry: dict, index: dict) -> dict[str, list[str]]:
+    """按 `CapabilityEngine._extract_domain_pattern_core` 归一化后的域名，
+    对所有 active（trusted/probation/degraded）member 分组，只统计声明了
+    "纯域名"形态 `match.domain_pattern` 的 member（带路径片段的模式，如
+    `*.baidu.com/s*`，返回 None，不参与这里的分组——同域名不同路径通常是
+    合法的独立能力，不应被当作重复候选）。"""
+    from .capability_engine import CapabilityEngine
+
+    groups: dict[str, list[str]] = {}
+    for entry in index.get("members", []):
+        member_id = entry.get("member_id")
+        if not member_id:
+            continue
+        status = registry.get("members", {}).get(member_id, {}).get("status")
+        if status not in {"trusted", "probation", "degraded"}:
+            continue
+        pattern = (entry.get("match") or {}).get("domain_pattern")
+        if not pattern:
+            continue
+        core = CapabilityEngine._extract_domain_pattern_core(pattern)
+        if core is None:
+            continue
+        groups.setdefault(core, []).append(member_id)
+    return groups
+
+
+def _find_duplicate_domain_groups(report: PatrolReport, registry: dict, index: dict) -> None:
+    groups = _group_active_members_by_domain(registry, index)
+    for core, member_ids in sorted(groups.items()):
+        if len(member_ids) < 2:
+            continue
+        for member_id in sorted(member_ids):
+            report.findings.append(PatrolFinding(
+                member_id=member_id, kind="duplicate_domain_pattern",
+                detail=(
+                    f"域名 `{core}` 下存在 {len(member_ids)} 个 active member，疑似重复: "
+                    f"{sorted(member_ids)}；建议人工审查是否可以合并，或显式调用 "
+                    "run_patrol(..., merge_duplicates=True) 自动合并（不会删除脚本文件）"
+                ),
+            ))
+
+
+def _merge_duplicate_group(
+    skill_dir: Path, core: str, member_ids: list[str], registry: dict, index: dict,
+    report: PatrolReport,
+) -> None:
+    """把同一域名下的一组重复 member 合并成一个 canonical member：
+    - canonical 优先选 `success_count` 最高的一个，并列时取字典序最小的
+      member_id（保证多次运行结果确定，不依赖字典遍历顺序这类偶然因素）；
+    - canonical 的 `match.keyword` 并集补入其余 member 的 keyword（去重、
+      保序，与 `distiller._merge_match_rule` 同样的并集语义）；
+    - 其余 member 的 registry 状态改为 `dead` 并写 `status_changed_at`，
+      从 `_index.json` 移除检索摘要——不删除 `members/` 目录下的脚本文件，
+      物理删除仍然只交给既有的 `apply_cleanup` 长期保留期机制处理。
+    """
+    members_registry = registry.get("members", {})
+
+    def _success_count(mid: str) -> int:
+        return int(members_registry.get(mid, {}).get("success_count", 0) or 0)
+
+    canonical_id = sorted(member_ids, key=lambda mid: (-_success_count(mid), mid))[0]
+    retired_ids = [mid for mid in member_ids if mid != canonical_id]
+    if not retired_ids:
+        return
+
+    index_by_id = {m.get("member_id"): m for m in index.get("members", [])}
+    canonical_entry = index_by_id.get(canonical_id)
+    if canonical_entry is None:
+        return
+
+    merged_keywords = list((canonical_entry.get("match") or {}).get("keyword") or [])
+    for retired_id in retired_ids:
+        retired_entry = index_by_id.get(retired_id) or {}
+        merged_keywords.extend((retired_entry.get("match") or {}).get("keyword") or [])
+    merged_keywords = list(dict.fromkeys(merged_keywords))[:8]  # 去重保序，避免无限增长
+    if merged_keywords:
+        canonical_entry.setdefault("match", {})["keyword"] = merged_keywords
+
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    for retired_id in retired_ids:
+        entry = members_registry.get(retired_id)
+        if entry is not None:
+            entry["status"] = "dead"
+            entry["status_changed_at"] = now_str
+            entry["dead_reason"] = f"health_patrol 合并同域名(`{core}`)重复 member，并入 {canonical_id}"
+        report.merged_members.append(retired_id)
+
+    index["members"] = [m for m in index.get("members", []) if m.get("member_id") not in retired_ids]
+    report.fixed_inconsistencies.append(
+        f"域名 `{core}` 下的重复 member {sorted(retired_ids)} 已合并入 `{canonical_id}`"
+        f"（keyword 已并集补入 canonical，脚本文件未删除）"
+    )
 
 
 def _cleanup_member(
@@ -308,11 +435,15 @@ if __name__ == "__main__":
                          help="以 registry.json 为准修复 index/registry/members 目录间的不一致")
     parser.add_argument("--apply-cleanup", action="store_true",
                          help="真正清理超过保留期的 dead member（默认只报告建议清理，不删除）")
+    parser.add_argument("--merge-duplicates", action="store_true",
+                         help="真正合并同域名下的重复 member（默认只报告，不合并；"
+                              "合并只改状态/检索摘要，不删除脚本文件）")
     args = parser.parse_args()
 
     result = run_patrol(
         args.skill_dir,
         fix_inconsistencies=args.fix_inconsistencies,
         apply_cleanup=args.apply_cleanup,
+        merge_duplicates=args.merge_duplicates,
     )
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))

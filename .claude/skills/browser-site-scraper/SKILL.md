@@ -84,6 +84,30 @@ guide.md`"已知限制"一节）。
     了针对性的提取 JS（不经过通用的 `browser_extract_content`），所以不受
     这条限制影响，但同样适用上一条"0 条结果视为失败"的处理。
 
+## 已知限制（续）：同域名重复 member（已修复根因，历史存量需手动清理一次）
+
+- 背景与完整分析见
+  `next_doc/browser_site_scraper_domain_dedup_and_matching_fix_plan.md`：
+  同一个域名（典型如 arxiv.org 这种没有 `www.` 子域名前缀的裸域名站点）
+  曾经会被反复判定为"未命中"，进而反复触发探索、堆出一串
+  `match.domain_pattern` 相同、只有 `keyword`/`description` 有细微差异的
+  重复 member（如 `arxiv_13` ~ `arxiv_20`）。
+- 根因是引擎 `capability_engine.py::_domain_match` 对裸域名的通配符匹配
+  有 bug，已经修复（改为基于 URL host 的语义比较）；同时 `distiller.py`
+  新建 member 落盘时会检测同域名重叠并标记 `possible_duplicate_of`，
+  `health_patrol.py` 新增 `duplicate_domain_pattern` 巡检项，日常巡检就能
+  发现这类重复，不用等人工偶然翻 `_index.json`。
+- **如果你的环境里已经积累了这类历史重复**（比如本 SKILL.md 描述场景下
+  真实出现过的 arxiv 系列 member），运行一次：
+  ```
+  python -m mini_agent.skills.generative_capability.health_patrol \
+    .claude/skills/browser-site-scraper --merge-duplicates
+  ```
+  会把每组重复合并成一个 canonical member（`success_count` 最高者，
+  keyword 并集补入），其余标记为 `dead` 并从检索摘要移除——**不会删除
+  `members/` 目录下的脚本文件**，可审计、可回滚；不加 `--merge-duplicates`
+  时默认只报告，不改动任何文件。
+
 ## 调试（阶段十六 / 阶段十八）
 
 - 实际抓取失败时，`browser-core` 的失败返回会尽力附带 `debug` 字段
