@@ -210,3 +210,4 @@ test_cases/inputs/keyframe_first.png
 
 output_projects/
 output/
+.agent/capability_persona_drafts/
