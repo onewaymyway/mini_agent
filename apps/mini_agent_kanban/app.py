@@ -9438,9 +9438,14 @@ def render_capability_tab(client: "AgentClient"):
         status = track.get("status", "active")
         status_badge = {"active": "🟢 进行中", "paused": "⏸️ 已暂停", "archived": "📦 已归档"}.get(status, status)
         type_badge = "🧑‍🎓 人设" if track.get("target_type") == "persona" else "📚 知识"
+        # persona 型 Track 默认展开：草稿预览（§10.3）就在这个 expander 里面，
+        # 折叠状态下用户看不到任何草稿相关内容（连"生成/刷新草稿"按钮都在
+        # 折叠区里），是"看板上看不到草稿内容"反馈的直接原因；knowledge 型
+        # Track 数量通常更多、更依赖折叠节省页面空间，保持默认折叠不变。
         with st.expander(
             f"{type_badge} {track.get('title', '(未命名)')} — {status_badge} — "
             f"覆盖 {covered}/{total or '?'}",
+            expanded=(track.get("target_type") == "persona"),
         ):
             st.caption(track.get("persona_desc", ""))
             st.caption(f"wiki_tag: `{track.get('wiki_tag', '')}`　track_id: `{track.get('track_id', '')}`")
