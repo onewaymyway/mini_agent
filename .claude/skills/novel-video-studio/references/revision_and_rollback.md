@@ -63,11 +63,11 @@ python .claude/skills/novel-video-studio/scripts/invalidate.py \
 
 ## Step 3：从被清空的那一层重新往后走
 
-- `--level macro` → 回 `resources/03_scene_detail_planning.md` 重新
+- `--level macro` → 回 `references/03_scene_detail_planning.md` 重新
   规划该大场景，然后正常走完阶段4/5；
-- `--level detail`/`assets` → 直接进入 `resources/04_assets_and_audio.md`，
+- `--level detail`/`assets` → 直接进入 `references/04_assets_and_audio.md`，
   用 `--macro-id` 只重新配音该大场景，再走阶段5；
-- `--level video` → 直接进入 `resources/05_scene_video_generation.md`，
+- `--level video` → 直接进入 `references/05_scene_video_generation.md`，
   用 `--macro-id --micro-id` 只重新生成对应小场景视频，再重新跑
   `compose_macro_scene.py` 合成该大场景；
 - `--global-entity` → 先确认新的定妆图/配音已生成（阶段4），受影响的

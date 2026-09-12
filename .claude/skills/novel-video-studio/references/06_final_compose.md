@@ -76,5 +76,5 @@ python .claude/skills/novel-video-studio/scripts/compose_final_video_v2.py \
 
 `video.mp4` 交付后，如果用户又提出修改意见（哪怕只是想调个别镜头/
 台词），不要直接在 `video.mp4` 上做局部编辑，按
-`resources/revision_and_rollback.md` 的流程回退到对应阶段重新生成，
+`references/revision_and_rollback.md` 的流程回退到对应阶段重新生成，
 再重新走一次阶段6合成全新的 `video.mp4`。

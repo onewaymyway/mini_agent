@@ -1,7 +1,40 @@
 ---
 name: novel-video-studio
-description: 把一篇小说自动转换成一支配旁白/角色对话配音的成片视频。一体化流程：全局角色地点抽取（含声音设定）→大场景切分→单大场景详细规划（旁白/对话拆分）→素材与差异化配音生成→小场景视频生成与大场景内合成→最终拼接转场。每个阶段的具体操作步骤放在 resources/ 下，进入某阶段前按需加载对应文件，完成后可从上下文中卸载。支持断点续跑、失败重试与 API Key 自动切换、以及用户对已生成内容提反馈后的定向回退重跑。当用户说"把这本小说做成视频"、"小说转视频"、"生成小说解说视频"时使用本 skill。
+description: 把一篇小说自动转换成一支配旁白/角色对话配音的成片视频。一体化流程：全局角色地点抽取（含声音设定）→大场景切分→单大场景详细规划（旁白/对话拆分）→素材与差异化配音生成→小场景视频生成与大场景内合成→最终拼接转场。每个阶段的具体操作步骤放在 references/ 下，进入某阶段前按需加载对应文件，完成后可从上下文中卸载。支持断点续跑、失败重试与 API Key 自动切换、以及用户对已生成内容提反馈后的定向回退重跑。当用户说"把这本小说做成视频"、"小说转视频"、"生成小说解说视频"时使用本 skill。
 triggers: 小说转视频, 小说做视频, 小说解说视频, novel to video, 角色配音视频, 小说视频生成
+resources:
+  - id: entity-extraction
+    path: references/01_entity_extraction.md
+    description: 阶段1——全局角色/地点抽取（含 voice_profile 声音设定），也覆盖阶段3触发的单点补抽取模式
+    triggers: 角色抽取, 人物抽取, 地点抽取, voice_profile, 补抽取, 新角色, 新地点
+  - id: macro-scene-split
+    path: references/02_macro_scene_split.md
+    description: 阶段2——按剧情/时间/地点把全文切分为大场景（macro_scene）
+    triggers: 大场景切分, 场景切分, macro_scene
+  - id: scene-detail-planning
+    path: references/03_scene_detail_planning.md
+    description: 阶段3——单个大场景详细规划：拆小场景（micro_scene）、旁白/对话拆分、content_blocks 写法、check_scene_detail.py 校验规则与自查清单
+    triggers: 小场景, micro_scene, 对话拆分, 旁白拆分, content_blocks, dialogue, narration, check_scene_detail
+  - id: assets-and-audio
+    path: references/04_assets_and_audio.md
+    description: 阶段4——角色/地点定妆图生成 + 按角色差异化配音（TTS）
+    triggers: 定妆图, 配音, tts, voice_profile, asset_path, 差异化配音
+  - id: scene-video-generation
+    path: references/05_scene_video_generation.md
+    description: 阶段5——小场景视频生成（generate_scene_videos_v2.py）与大场景内合成（compose_macro_scene.py）
+    triggers: 视频生成, 小场景视频, 大场景合成, clips, gen_video_with_text
+  - id: final-compose
+    path: references/06_final_compose.md
+    description: 阶段6——所有大场景 done 后的最终拼接转场，产出 video.mp4
+    triggers: 最终合成, 最终拼接, 转场, video.mp4, 成片
+  - id: error-handling
+    path: references/error_handling.md
+    description: 调用 gen_image_with_text / gen_video_with_text / 配音脚本时的 API 失败处理规范（限流自动切 key 重试 vs 参数类错误定向重跑）
+    triggers: api报错, 限流, 调用失败, 生成失败, key切换, 重试
+  - id: revision-and-rollback
+    path: references/revision_and_rollback.md
+    description: 用户对已生成内容（台词/形象/画面）提反馈要求修改时，联动清空下游产物并从对应层级重新往后走的规则；invalidate.py 用法
+    triggers: 改台词, 换形象, 重新生成, 修改内容, 回退, invalidate, 用户反馈
 ---
 
 # 小说转视频一体化 Skill (Novel Video Studio)
@@ -16,24 +49,17 @@ triggers: 小说转视频, 小说做视频, 小说解说视频, novel to video, 
    联动重跑、API 报错怎么处理。
 
 **每个阶段具体"这一步要做什么、跑哪个脚本、参数怎么传"的操作细节，
-放在 `resources/` 目录下对应文件里，进入该阶段时才读，读完执行完这
-一阶段就可以把这份细节从上下文里放下**（不需要的时候不用一直带着，
-下次要用再读一次即可，文件不会变）：
+登记在上面 frontmatter 的 `resources` 里，对应 `references/` 目录下的
+文件，用 `skill_resource_load(skill_name="novel-video-studio",
+resource_id=..., reason=...)` 按需加载，读完执行完这一阶段就可以把这
+份细节从上下文里卸载**（不需要的时候不用一直带着，下次要用再加载一次
+即可，文件不会变）。八份子资源分别对应六个阶段 + 两条贯穿性规范
+（`error-handling`、`revision-and-rollback`），加载时机见各自
+`description`；也可以用 `skill_resource_list` 查看当前完整清单。
 
-| 阶段 | 说明 | 何时加载 |
-|---|---|---|
-| `resources/01_entity_extraction.md` | 全局角色/地点抽取 | 开始阶段 1，或阶段 3 触发单点补抽取时 |
-| `resources/02_macro_scene_split.md` | 大场景切分 | 阶段 1 完成后，进入阶段 2 时 |
-| `resources/03_scene_detail_planning.md` | 单大场景详细规划（小场景+对话拆分） | 处理某个 `status: pending` 的大场景时 |
-| `resources/04_assets_and_audio.md` | 定妆图 + 差异化配音 | 大场景规划完（`status: planned`）后 |
-| `resources/05_scene_video_generation.md` | 小场景视频生成 + 大场景内合成 | 配音回填 `duration_sec` 后 |
-| `resources/06_final_compose.md` | 最终拼接与转场 | 所有大场景 `status: done` 后 |
-| `resources/error_handling.md` | API 失败/限流/参数错误的处理规范 | 任何一次调用 `gen_image_with_text`/`gen_video_with_text`/配音脚本报错时 |
-| `resources/revision_and_rollback.md` | 用户反馈修改内容后的联动重跑规则 | 用户对已生成内容提出修改意见时 |
-
-不要在还没进入某个阶段之前就把该阶段的 resource 文件通读一遍——这样
-会造成上下文浪费；也不要凭记忆猜测某阶段的脚本参数，进入该阶段前先
-读对应文件。
+不要在还没进入某个阶段之前就把该阶段的子资源通读一遍——这样会造成
+上下文浪费；也不要凭记忆猜测某阶段的脚本参数，进入该阶段前先加载
+对应文件。
 
 配套脚本统一放在 `scripts/`（不分子目录，直接按文件名调用）：
 
@@ -100,9 +126,10 @@ novel_output/小说名_20260911/
 python .claude/skills/novel-video-studio/scripts/check_project_state.py <output_dir>
 ```
 
-输出里的 `overall_stage`/`next_actions`/`warnings` 直接告诉你该读哪个
-`resources/*.md`、该处理哪些大场景，`warnings` 里如果出现"状态和磁盘
-不一致"，先处理这个再继续往下走（通常是上次执行中途被打断导致的）。
+输出里的 `overall_stage`/`next_actions`/`warnings` 直接告诉你该加载哪个
+子资源（对照上面 frontmatter `resources` 里的 `id`）、该处理哪些大
+场景，`warnings` 里如果出现"状态和磁盘不一致"，先处理这个再继续往下走
+（通常是上次执行中途被打断导致的）。
 
 ## 2. 通用规则（贯穿所有阶段）
 
@@ -119,10 +146,11 @@ python .claude/skills/novel-video-studio/scripts/check_project_state.py <output_
 阶段3（详细规划）在处理某个大场景时，如果发现引用了阶段1没抽取到的
 角色/地点，**不是报错终止**，而是：
 
-1. 加载 `resources/01_entity_extraction.md` 的"单点补抽取"模式，只处理
-   当前这段原文，把新角色/地点并入 `global/characters.json`/
-   `locations.json`；
-2. 加载 `resources/04_assets_and_audio.md`，只给这几个新增实体生成定妆图；
+1. 加载子资源 `entity-extraction`（`references/01_entity_extraction.md`）
+   的"单点补抽取"模式，只处理当前这段原文，把新角色/地点并入
+   `global/characters.json`/`locations.json`；
+2. 加载子资源 `assets-and-audio`（`references/04_assets_and_audio.md`），
+   只给这几个新增实体生成定妆图；
 3. 回到阶段3继续规划，重新校验。
 
 这个回补循环必须在阶段3内部闭环完成，不能把"引用了不存在的资源"这种
@@ -145,8 +173,9 @@ python .claude/skills/novel-video-studio/scripts/check_project_state.py <output_
 
 跑到 `synthesize_scene_audio.py`（配音）、`generate_scene_videos_v2.py`
 （视频生成）、或直接调用 `gen_image_with_text`（定妆图）这几步时，
-不可避免会遇到 API 报错（限流/参数错误/网络问题）。处理规范见
-`resources/error_handling.md`，核心原则一句话说完：**限流类错误脚本会
+不可避免会遇到 API 报错（限流/参数错误/网络问题）。处理规范见子资源
+`error-handling`（`references/error_handling.md`），核心原则一句话
+说完：**限流类错误脚本会
 自动切换 key 重试，不需要人工介入；非限流的参数类错误脚本重试几次后
 会打印结构化错误直接放弃该条目并继续处理其它条目，需要 Agent 读懂错误
 信息、去修对应的配置字段，然后只对失败的条目定向重跑，不要整体重跑，
@@ -155,7 +184,8 @@ python .claude/skills/novel-video-studio/scripts/check_project_state.py <output_
 ### 2.5 用户反馈要求修改内容
 
 用户看了中间产物或成片后要求"这句台词改一下"/"这个角色形象换一个"/
-"这段画面重新生成"，处理规范见 `resources/revision_and_rollback.md`。
+"这段画面重新生成"，处理规范见子资源 `revision-and-rollback`
+（`references/revision_and_rollback.md`）。
 核心原则一句话说完：**先改源头内容，再跑 `invalidate.py` 联动清空所有
 依赖它的下游产物和状态，然后从被清空的那一层重新往后走，不允许只改
 源头文件却不清理下游——那样下游文件会和新内容对不上（比如台词改了但
@@ -164,7 +194,7 @@ python .claude/skills/novel-video-studio/scripts/check_project_state.py <output_
 ## 3. 项目启动
 
 新项目从"进入阶段1"开始，向用户确认目标时长/横竖屏后立即写
-`novel_project.json`（细节见 `resources/01_entity_extraction.md`
-Step 0），随后按上面的阶段顺序推进。用户如果已有跑了一半的项目目录，
+`novel_project.json`（细节见子资源 `entity-extraction`，
+`references/01_entity_extraction.md` Step 0），随后按上面的阶段顺序推进。用户如果已有跑了一半的项目目录，
 先跑 `check_project_state.py` 定位断点，从 `next_actions` 指向的阶段
 继续，不要重新从头开始。

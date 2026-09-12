@@ -70,14 +70,14 @@ def main() -> None:
         "characters_missing_voice_profile": [c["id"] for c in characters if not c.get("voice_profile")],
     }
     if not result["stages"]["1_entities"]["done"]:
-        result["next_actions"].append("进入 resources/01_entity_extraction.md：抽取角色/地点")
+        result["next_actions"].append("进入 references/01_entity_extraction.md：抽取角色/地点")
 
     macro_yaml = _load_yaml(out_dir / "macro_scenes.yaml") or {}
     macro_list = macro_yaml.get("macro_scenes", []) or []
     result["stages"]["2_macro_scenes"] = {"done": bool(macro_list), "count": len(macro_list)}
     if not macro_list:
         if result["stages"]["1_entities"]["done"]:
-            result["next_actions"].append("进入 resources/02_macro_scene_split.md：切分大场景")
+            result["next_actions"].append("进入 references/02_macro_scene_split.md：切分大场景")
     else:
         wanted = set(args.macro_id) if args.macro_id else None
         for m in macro_list:
@@ -135,19 +135,19 @@ def main() -> None:
 
     if pending_macro and result["stages"]["2_macro_scenes"]["done"]:
         result["next_actions"].append(
-            f"进入 resources/03_scene_detail_planning.md：还有 {len(pending_macro)} "
+            f"进入 references/03_scene_detail_planning.md：还有 {len(pending_macro)} "
             f"个大场景待详细规划：{[m['id'] for m in pending_macro]}")
     if planned_macro:
         result["next_actions"].append(
-            f"进入 resources/04_assets_and_audio.md + 05_scene_video_generation.md："
+            f"进入 references/04_assets_and_audio.md + 05_scene_video_generation.md："
             f"{len(planned_macro)} 个大场景已规划待配音/生成视频：{[m['id'] for m in planned_macro]}")
 
     final_video = out_dir / "video.mp4"
     result["stages"]["6_final_compose"] = {"done": final_video.exists()}
     if macro_list and not pending_macro and not planned_macro and done_macro and not final_video.exists():
-        result["next_actions"].append("进入 resources/06_final_compose.md：所有大场景已 done，可以最终合成")
+        result["next_actions"].append("进入 references/06_final_compose.md：所有大场景已 done，可以最终合成")
     if final_video.exists():
-        result["next_actions"].append("项目已产出 video.mp4；如需修改内容请走 resources/revision_and_rollback.md")
+        result["next_actions"].append("项目已产出 video.mp4；如需修改内容请走 references/revision_and_rollback.md")
 
     if macro_list:
         if len(done_macro) == len(macro_list) and final_video.exists():

@@ -6,7 +6,7 @@
 `novel-scene-video-generator` / `novel-video-composer`）。
 
 - 主流程说明、阶段契约、通用规则见 `SKILL.md`；
-- 每个阶段的具体操作步骤在 `resources/*.md`，按需加载；
+- 每个阶段的具体操作步骤在 `references/*.md`，按需加载；
 - 所有可执行脚本在 `scripts/`（不分子目录）；
 - `scripts/check_project_state.py`：随时查看项目进度/断点；
 - `scripts/invalidate.py`：用户要求修改内容后，联动清理下游产物+回退状态。

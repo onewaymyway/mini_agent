@@ -5,7 +5,7 @@
 "这段画面重新生成"）时，Agent 先手动编辑对应的源文件（scene_detail.yaml /
 characters.json / macro_scenes.yaml 等），改完**必须**跑本脚本，把所有
 依赖这份内容的下游产物标记为失效（重置 status、删除过期文件），再按
-resources/revision_and_rollback.md 里的传播规则重新走对应阶段的脚本，
+references/revision_and_rollback.md 里的传播规则重新走对应阶段的脚本，
 不允许手改完源文件后跳过本脚本直接认为"改完了"——那样下游文件和新内容
 会不一致（比如台词已经改了，但视频里烧的字幕、配音音频还是旧的）。
 
@@ -206,7 +206,7 @@ def main() -> None:
         "affected_macro_scenes": affected_macros,
         "removed_files": removed,
         "warnings": warnings,
-        "next_step": "对受影响的大场景，从对应 level 往后重新走 resources/ 里的阶段脚本；"
+        "next_step": "对受影响的大场景，从对应 level 往后重新走 references/ 里的阶段脚本；"
                      "完成后可跑 check_project_state.py 确认状态恢复一致。",
     }, ensure_ascii=False, indent=2))
 
