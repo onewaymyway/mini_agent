@@ -98,12 +98,20 @@ def list_persona_candidates(request: Request, status: Optional[str] = None):
 
 
 @persona_candidate_router.post("/scan")
-def scan_candidates(request: Request):
+async def scan_candidates(request: Request):
     """POST /v1/capability/persona_candidates/scan — 触发一次扫描；因为
     要调用 LLM（提炼 + 逐条判重），走异步任务返回 `{"job_id", "key"}`，
     前端用 `run_async_job()` 轮询（同 `growth_scan`，见方案 §5）。
     `PersonaCandidateConfig.enabled=False`（默认）时直接返回空结果，不
-    发起任何 LLM 调用。"""
+    发起任何 LLM 调用。
+
+    定义成 `async def` 而不是 `def`：`AsyncJobRegistry.start()` 内部用
+    `asyncio.create_task()` 把后台任务挂到当前事件循环上，这要求调用点
+    本身就跑在事件循环线程里——普通 `def` 路由会被 FastAPI 丢进线程池
+    执行，线程里没有 running event loop，`create_task()` 会直接抛
+    `RuntimeError`，表现为提交请求就返回 HTTP 500（而不是任务本身失败）。
+    [capability_routes.py::draft_persona 曾踩过同一个坑，那次的修复记录
+    见该函数文档字符串]"""
     _require_owner(request)
     paths = _get_paths(request)
     cfg = _get_persona_candidate_cfg(request)
