@@ -12,11 +12,16 @@ raw_text 用于对话真实性校验），以及
   2. 每个 dialogue block 的 speaker 是否在该 micro_scene 的
      uses_characters 列表里。
   3. 每个 dialogue.text（去除空白/标点后）是否能在该大场景 raw_text
-     （同样去除空白/标点后）里找到子串匹配——找不到判定"疑似臆造对话"；
-     进一步地，若原文里能提取出引号片段，dialogue.text 还必须落在某个
-     引号片段内部（不能是"引号内容+引号外动作/转述"整句糅合），并且不
-     能包含"一边...一边"/"苦笑"/"脸色"/"告诉"等动作神态类提示词——
-     这些内容应该拆到 narration block 或体现在 visual_hint 里。
+     （同样去除空白/标点后）里找到子串匹配——找不到判定"疑似臆造对话"，
+     这是硬性 error；进一步地，若原文里能提取出引号片段，dialogue.text
+     还必须落在某个引号片段内部（不能是"引号内容+引号外动作/转述"整句
+     糅合），这也是硬性 error。是否包含"一边"/"苦笑"/"脸色"/"告诉"等
+     动作神态类提示词，只作为 warning 提示——命中不代表一定错（这些字
+     完全可能就是角色台词本身的一部分，比如"爸爸想告诉你一件事"），
+     需要 Agent 结合上下文自行判断是否要挪到 narration，不再是阻断性
+     错误（详见 NARRATION_LEAK_HINTS 常量注释）。
+     另外，若原文里直引号 `"` 数量为奇数，说明引号提取用的全局奇偶配对
+     可能已经错位，脚本会额外给出一条 warning 提示人工复核对话边界。
   4. 每个 micro_scene 至少有一个 content_blocks，且不能全是空文本。
   5. micro_scene 的 id 在整个项目范围内（扫描所有 macro_scene_*/
      scene_detail.yaml）不重复。
@@ -52,8 +57,15 @@ _STRIP_RE = re.compile(r"[\s，。！？、；：“”‘’\"'.,!?;:()（）\-
 # 但这不是真正的对话文案。
 _QUOTE_PAIRS = [("“", "”"), ("「", "」"), ("『", "』"), ('"', '"')]
 
-# 常见的"转述/动作归因"提示词：真正的台词摘录不应该包含这些描述说话人
-# 动作/神情/语气的词，出现即说明这一块很可能把叙事内容也当成对话摘了进来。
+# 常见的"转述/动作归因"提示词：真正的台词摘录里如果混入了描述说话人
+# 动作/神情/语气的词，*有可能*说明这一块把叙事内容也当成对话摘了进来。
+#
+# 注意：这只是一份不完备的启发式线索，不能当作可靠的判定依据——这些字
+# 完全可能就是角色台词本身要说的内容（例如"爸爸想告诉你一件事""我一直
+# 沉默是有原因的"），而不是描述说话人动作的叙事句。之前的版本把命中这
+# 里的词当成 error 直接拦截，实测会把这类正常台词误判掉（见项目内测试
+# 记录），因此改为只在 check() 里作为 warning 输出，交给 Agent 结合
+# 上下文判断是否真的需要拆到 narration，不再阻断校验通过。
 _NARRATION_LEAK_HINTS = (
     "一边", "一边说", "说道", "笑着说", "苦笑", "摇头", "点头", "脸色",
     "看着", "望着", "转身", "叹了口气", "叹息", "告诉", "问道", "答道",
@@ -116,6 +128,22 @@ def check(output_dir: Path, macro_id: str) -> dict:
     raw_text = macro_record.get("raw_text") or ""
     raw_text_normalized = _normalize(raw_text)
     quoted_spans = _extract_quoted_spans(raw_text)
+
+    # 直引号 " 的提取方式是对全文做一次全局奇偶配对切分（左右引号是同一
+    # 个字符，没法像 “”「」『』那样按左右区分）。这意味着只要原文里出现
+    # 任何一个"多余的"或不成对的 "（引用书名/术语/嵌套引用等），从那个
+    # 字符往后所有引号片段的奇偶归属都会错位，进而导致后面所有台词被
+    # 误判为"不在引号内"。数量为奇数是这种错位的明确信号，提前给出
+    # warning 提醒人工复核，而不是让错位静默发生、只在下游报出一堆看不
+    # 出根因的"疑似臆造对话"。
+    straight_quote_count = raw_text.count('"')
+    if straight_quote_count % 2 != 0:
+        warnings.append(
+            f"大场景 {macro_id} 原文里直引号 \" 的数量为奇数（{straight_quote_count}个），"
+            f"引号片段提取用的是全局奇偶配对，数量为奇数说明配对大概率已经错位，"
+            f"后续基于 quoted_spans 的校验结果可能不准确，请人工确认原文对话边界"
+            f"（是否存在引用术语/书名等非对话用途的单个直引号）后再解读下面的校验结果"
+        )
 
     scene_dir = output_dir / _macro_scene_dir_name(macro_id)
     detail_data = _load_yaml(scene_dir / "scene_detail.yaml")
@@ -186,11 +214,12 @@ def check(output_dir: Path, macro_id: str) -> dict:
                             )
                     hit_hints = [kw for kw in _NARRATION_LEAK_HINTS if kw in text]
                     if hit_hints:
-                        errors.append(
+                        warnings.append(
                             f"小场景 {mid} 第{i+1}个 dialogue block 的文本包含疑似动作/神态"
-                            f"描写用词 {hit_hints}，dialogue 里不应该出现这类内容，请把动作/"
-                            f"神态描写移到旁白（narration）或直接体现在 visual_hint 里，"
-                            f"dialogue.text 只保留角色说的话：{text!r}"
+                            f"描写用词 {hit_hints}，*可能*把动作/神态描写也摘进了台词——但也"
+                            f"可能这些字本来就是角色要说的话本身（例如\"爸爸想告诉你一件事\"），"
+                            f"请人工/Agent 结合上下文判断：如果确实是叙事者对说话动作的描述，"
+                            f"挪到独立的 narration block；如果就是台词内容，无需修改：{text!r}"
                         )
             elif btype == "narration":
                 if block.get("speaker") not in (None, "null"):
