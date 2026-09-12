@@ -395,7 +395,8 @@ def draft_persona(request: Request, track_id: str):
         raise HTTPException(status_code=400, detail="track is not target_type=persona")
 
     questions = CapabilityQuestionStore(paths).list_questions(track_id=track_id)
-    markdown_text = draft_persona_markdown(track, questions)
+    llm_helper = _get_llm_helper(request)
+    markdown_text = draft_persona_markdown(track, questions, llm_helper=llm_helper)
     save_persona_draft(paths, track_id, markdown_text)
     completeness = persona_draft_completeness(track, questions)
     return {"track_id": track_id, "draft": markdown_text, "completeness": completeness}

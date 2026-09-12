@@ -267,8 +267,18 @@ def render_persona_prompt(persona: PersonaProfile) -> str:
 
     安全边界声明始终追加在最后，且不受任何 persona 字段/正文内容影响，
     确保它是 system prompt 中"最后生效的指令"。
+
+    `tone` 字段（见 `next_doc/roleplay_persona_design.md` §3）设计上是
+    "供 persona-generator 参考/展示"，正文本身应该已经用写作方式"演出"
+    了这个语气；这里额外把它作为一行显式提示词追加进正文之前
+    （见 next_doc/persona_draft_llm_quality_improvement_plan.md 阶段 D），
+    是低成本的锦上添花——哪怕正文已经体现了该语气，再显式提示一遍也
+    只会让模型更稳定地贯彻，不会有负面影响；`tone` 为空（老的手写人设
+    文件没填）时不追加这一行，行为与改动前完全一致。
     """
     header = f"## 当前角色扮演设定：{persona.display_name}\n"
+    if persona.tone:
+        header += f"语气/说话风格：{persona.tone}\n"
     body = (header + "\n" + persona.body).strip()
     if persona.allowed_tools:
         body += (

@@ -385,7 +385,8 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
 
         if persona_sub == "draft":
             questions = CapabilityQuestionStore(paths).list_questions(track_id=track_id)
-            md = draft_persona_markdown(track, questions)
+            llm_helper = _get_llm_helper(agent)
+            md = draft_persona_markdown(track, questions, llm_helper=llm_helper)
             save_persona_draft(paths, track_id, md)
             completeness = persona_draft_completeness(track, questions)
             missing_note = (

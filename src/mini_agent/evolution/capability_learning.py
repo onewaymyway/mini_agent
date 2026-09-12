@@ -417,7 +417,7 @@ class CapabilityTrackStore:
         track_id = f"cap_{uuid.uuid4().hex[:12]}"
         names = list(outline_names or [])
         if not names and llm_helper is not None:
-            names = draft_outline_with_llm(title, persona_desc, llm_helper)
+            names = draft_outline_with_llm(title, persona_desc, llm_helper, target_type=target_type)
         outline = [
             OutlineTopic(topic_id=f"topic_{uuid.uuid4().hex[:8]}", name=n)
             for n in names
@@ -1375,6 +1375,7 @@ DRAFT_OUTLINE_MAX_TOPICS = 8
 
 def draft_outline_with_llm(
     title: str, persona_desc: str, llm_helper: Callable[[str], str],
+    target_type: str = "knowledge",
 ) -> list[str]:
     """用 `llm_helper(prompt) -> str` 起草一份初始大纲子主题名称列表。
 
@@ -1386,15 +1387,34 @@ def draft_outline_with_llm(
     大纲。不做重试/多轮修正：这是"起草辅助"而不是"必须成功的关键路径"，
     起草失败用户在看板手动加子主题的成本很低，没有必要为了让它更"智能"
     引入额外的不确定性（多轮重试可能让同一次创建操作的延迟变得不可预期）。
+
+    `target_type`：[next_doc/persona_draft_llm_quality_improvement_plan.md
+    阶段 A] `target_type="persona"` 时切换成"人设塑造维度"的 prompt，不再
+    用"知识点递进"这套措辞——此前两种 Track 类型共用同一份 knowledge 向
+    prompt，是 persona 型 Track 从起草大纲这一步就跑偏、后续问答/草稿
+    质量连带变差的根因之一。`target_type` 未识别的值一律按 `"knowledge"`
+    处理，保持向后兼容（不传这个参数的既有调用方行为不变）。
     """
-    prompt = (
-        f"我想持续学习/养成一个能力方向，标题是「{title}」，"
-        f"具体描述：{persona_desc}\n\n"
-        f"请帮我列出 {DRAFT_OUTLINE_MIN_TOPICS}-{DRAFT_OUTLINE_MAX_TOPICS} 个"
-        "循序渐进的子主题，覆盖从基础到进阶的关键知识点或能力维度。"
-        "每行一个子主题名称（4-12 个汉字左右，不用编号、不用标点、不用"
-        "多余解释），不要输出标题之外的任何内容。"
-    )
+    if target_type == "persona":
+        prompt = (
+            f"我想为一个角色人设持续收集设定信息，角色标题是「{title}」，"
+            f"大致描述：{persona_desc}\n\n"
+            f"请帮我列出 {DRAFT_OUTLINE_MIN_TOPICS}-{DRAFT_OUTLINE_MAX_TOPICS} 个"
+            "塑造这个角色人设需要了解的维度，比如性格特征、说话习惯/口头禅、"
+            "背景经历、价值观与行为准则、人际关系或立场态度等（不必照抄这些"
+            "例子，按这个角色的实际情况选合适的维度）。"
+            "每行一个维度名称（4-12 个汉字左右，不用编号、不用标点、不用"
+            "多余解释），不要输出标题之外的任何内容。"
+        )
+    else:
+        prompt = (
+            f"我想持续学习/养成一个能力方向，标题是「{title}」，"
+            f"具体描述：{persona_desc}\n\n"
+            f"请帮我列出 {DRAFT_OUTLINE_MIN_TOPICS}-{DRAFT_OUTLINE_MAX_TOPICS} 个"
+            "循序渐进的子主题，覆盖从基础到进阶的关键知识点或能力维度。"
+            "每行一个子主题名称（4-12 个汉字左右，不用编号、不用标点、不用"
+            "多余解释），不要输出标题之外的任何内容。"
+        )
     try:
         raw = llm_helper(prompt)
     except Exception:
@@ -1644,6 +1664,37 @@ WikiWriterFn = Callable[[OutlineTopic, CapabilityTrack, list[dict]], list[str]]
 接线时应换成真正调用 wiki/writer.py + wiki/dedup.py 的实现。"""
 
 
+def generate_persona_topic_question(
+    topic_name: str, persona_desc: str, llm_helper: Optional[Callable[[str], str]],
+) -> Optional[str]:
+    """[next_doc/persona_draft_llm_quality_improvement_plan.md 阶段 B]
+    针对 persona 型 Track 的某个维度，用 LLM 生成一个更容易问出**具体
+    细节**（而不是泛泛的"偏好/背景"）的追问问题。跟 `draft_outline_with_
+    llm()`/`revise_outline_with_llm()` 同款克制：`llm_helper` 为空、调用
+    异常、返回空文本/明显不合理（过长）都返回 `None`，调用方退回既有的
+    通用问题模板，不影响现有行为。"""
+    if llm_helper is None:
+        return None
+    prompt = (
+        f"我在给一个角色人设收集设定信息，角色大致描述：{persona_desc}\n\n"
+        f"现在需要针对「{topic_name}」这个维度向用户提一个问题，帮用户"
+        "回忆/想清楚这个角色在这个维度上的**具体细节**（比如这个角色遇到"
+        "某种情境会怎么说话、怎么反应，而不是笼统的\"偏好是什么\"）。"
+        "只输出这一个问题本身，一句话，不要解释、不要输出问题之外的任何"
+        "内容。"
+    )
+    try:
+        raw = llm_helper(prompt)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    question = raw.strip().splitlines()[0].strip() if raw.strip() else ""
+    if not question or len(question) > 60:
+        return None
+    return question
+
+
 def run_capability_learning_cycle(
     paths: AgentPaths,
     retriever: Optional[RetrieverFn] = None,
@@ -1732,7 +1783,9 @@ def run_capability_learning_cycle(
             and not track.outline
             and (time.time() - track.created_at) >= empty_outline_auto_draft_after_hours * 3600
         ):
-            drafted_names = draft_outline_with_llm(track.title, track.persona_desc, llm_helper)
+            drafted_names = draft_outline_with_llm(
+                track.title, track.persona_desc, llm_helper, target_type=track.target_type,
+            )
             if drafted_names:
                 updated_track = track_store.update(
                     track.track_id,
@@ -1860,10 +1913,20 @@ def run_capability_learning_cycle(
             if needs_user_context(topic, track):
                 if pending >= max_pending_questions:
                     continue
-                question_text = (
-                    f"关于「{topic.name}」，能告诉我更多你的具体偏好/背景吗？"
-                    f"这会影响后续推进的方向。"
-                )
+                question_text = None
+                if track.target_type == "persona":
+                    # [next_doc/persona_draft_llm_quality_improvement_plan.md
+                    # 阶段 B] persona 型 Track 优先用 LLM 生成更容易问出
+                    # 具体细节的问题；没有 llm_helper/生成失败时退回下面
+                    # 的通用模板，行为与改动前一致。
+                    question_text = generate_persona_topic_question(
+                        topic.name, track.persona_desc, llm_helper,
+                    )
+                if question_text is None:
+                    question_text = (
+                        f"关于「{topic.name}」，能告诉我更多你的具体偏好/背景吗？"
+                        f"这会影响后续推进的方向。"
+                    )
                 # [capability_learning_duplicate_question_dedup_plan.md
                 # 根因二] 真正提问之前，先看这个 Track 下有没有语义上问的
                 # 是同一件事、且已经回答过的历史问题——命中就直接复用答案，
@@ -2848,8 +2911,100 @@ def persona_draft_completeness(
     }
 
 
+_PERSONA_SYNTHESIS_INSTRUCTIONS = """你在帮用户把关于一个虚构角色人设的零散问答材料，整理成一份正式的角色
+扮演设定文档正文。
+
+背景：这份文档最终会被系统渲染成角色扮演的 system prompt，格式类似：
+    # <角色标题>
+
+    <角色总体描述>
+
+    ## <维度1>
+    ...
+    ## <维度2>
+    ...
+
+你会收到 raw_material（当前的素材，已经按维度整理成 markdown 小节，
+每条 "- xxx" 是用户对该维度给出的一条原始回答，某些维度会标注"暂无
+信息，尚待用户回答相关问题"）。
+
+你的任务：
+1. 把每个维度下的若干条零散回答，改写/合并成一段通顺、有具体语气的角色
+   设定文字——可以调整语序、合并同类项、补充"这个角色会怎么说话"这类
+   文风示范，但绝对不能加入 raw_material 里没有出现过的具体事实（不能
+   编造新的经历、数字、人名、地名等）。标注"暂无信息"的维度原样保留这句
+   提示，不要编造内容填充。
+2. 给这个角色的整体语气总结一个不超过 20 个字的短语（例如"沉稳、简练、
+   偶尔调侃"这种风格），作为 tone 字段。
+3. 保留原有的标题层级结构（# 标题 / ## 维度名），不要新增/删除/改名
+   维度。
+
+只输出一个 JSON 对象，不要 Markdown 代码块，不要任何解释文字，格式：
+{"tone": "...", "body": "..."}
+"""
+
+
+def synthesize_persona_draft_with_llm(
+    track: "CapabilityTrack", raw_body_material: str,
+    llm_helper: Optional[Callable[[str], str]],
+) -> Optional[dict]:
+    """[next_doc/persona_draft_llm_quality_improvement_plan.md 阶段 C]
+    把规则拼接版的人设草稿正文（`raw_body_material`，即 `draft_persona_
+    markdown()` 原本会直接落盘的那部分文本）交给 LLM 润色成更有语气、
+    读起来像一份角色设定说明书的版本，并让 LLM 顺带给出一个 `tone`
+    建议——呼应 `next_doc/roleplay_persona_design.md` 里"tone 供 persona-
+    generator 参考"的设计意图：本函数就是那个"generator"，让它真正参考
+    自己产出的 tone 去写正文。
+
+    只能重组/润色 `raw_body_material` 里已经出现过的信息，不能编造新
+    事实——这个约束写在 prompt 里，不做事后事实核查（做不到，安全网仍是
+    发布前用户审阅）。跟 `draft_outline_with_llm()`/`revise_outline_with_
+    llm()` 同款克制：`llm_helper` 为空、调用异常、返回不是合法 JSON、
+    `body` 字段为空，一律返回 `None`，调用方退回规则版正文，不让这一步
+    的失败影响草稿生成的关键路径。
+
+    不在这里做"缺失维度提示"/"真人模仿安全检测"——这两项统一由调用方
+    （`draft_persona_markdown()`）基于规则版材料计算，避免两个来源各算
+    一遍、后续要同步改两处。"""
+    if llm_helper is None:
+        return None
+    prompt = (
+        f"角色标题：{track.title}\n"
+        f"角色描述：{track.persona_desc}\n\n"
+        f"raw_material:\n{raw_body_material}\n\n"
+        f"{_PERSONA_SYNTHESIS_INSTRUCTIONS}"
+    )
+    try:
+        raw = llm_helper(prompt)
+    except Exception:
+        return None
+    if not raw or not raw.strip():
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.lstrip("`")
+        if text.lower().startswith("json"):
+            text = text[4:]
+        text = text.strip().rstrip("`").strip()
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    body = parsed.get("body")
+    if not isinstance(body, str) or not body.strip():
+        return None
+    tone = parsed.get("tone")
+    tone = tone.strip() if isinstance(tone, str) else ""
+    if len(tone) > 20:
+        tone = tone[:20]
+    return {"tone": tone, "body": body.strip()}
+
+
 def draft_persona_markdown(
     track: "CapabilityTrack", questions: list["CapabilityQuestion"],
+    llm_helper: Optional[Callable[[str], str]] = None,
 ) -> str:
     """把 persona 型 Track 目前收集到的信息（大纲子主题 + 已回答问题的
     答案）合成一版人设草稿，渲染成与手写 `.agent/personas/*.md` 完全
@@ -2864,9 +3019,17 @@ def draft_persona_markdown(
     工具权限类字段不能由自动合成随意放宽，必须用户显式确认；
     `wiki_scopes` 走既有的 §11.4 看板绑定流程，不在草稿合成这一步猜测）。
 
-    这个函数是纯字符串拼接，不做任何文件写入——落盘由调用方决定（草稿
-    目录 vs 正式 personas 目录，见 `save_persona_draft()` /
-    `publish_persona_draft()`），方便离线单测、不依赖文件系统状态。"""
+    `llm_helper`：[next_doc/persona_draft_llm_quality_improvement_plan.md
+    阶段 C] 不传（默认）时行为与改动前完全一致——纯规则拼接，`tone` 留空。
+    传入且 `synthesize_persona_draft_with_llm()` 成功时，用 LLM 润色过的
+    正文替换规则版正文、`tone` 用 LLM 给出的建议；缺失维度提示/真人模仿
+    安全提示仍然基于规则版材料计算，不受 LLM 输出影响；正文顶部的注释里
+    会标注这次草稿是否经过 LLM 润色，方便用户判断要不要多花心思核对。
+
+    这个函数是纯字符串拼接 + 一次可选的 LLM 调用，不做任何文件写入——
+    落盘由调用方决定（草稿目录 vs 正式 personas 目录，见
+    `save_persona_draft()` / `publish_persona_draft()`），方便离线单测、
+    不依赖文件系统状态。"""
     from datetime import datetime, timezone
 
     answers_by_topic: dict[str, list[str]] = {}
@@ -2878,12 +3041,43 @@ def draft_persona_markdown(
     slug = _slugify_persona_name(track.title)
     desc = track.persona_desc.replace("\n", " ").strip()
 
+    body_lines: list[str] = [f"# {track.title}", "", track.persona_desc.strip(), ""]
+    missing_dims: list[str] = []
+    for topic in track.outline:
+        answers = answers_by_topic.get(topic.topic_id, [])
+        body_lines.append(f"## {topic.name}")
+        body_lines.append("")
+        if answers:
+            for a in answers:
+                body_lines.append(f"- {a}")
+        else:
+            body_lines.append("（暂无信息，尚待用户回答相关问题）")
+            missing_dims.append(topic.name)
+        body_lines.append("")
+    rule_based_body = "\n".join(body_lines).rstrip() + "\n"
+
+    tone = ""
+    body_text = rule_based_body
+    llm_used = False
+    if llm_helper is not None:
+        synthesized = synthesize_persona_draft_with_llm(track, rule_based_body, llm_helper)
+        if synthesized:
+            tone = synthesized["tone"]
+            body_text = synthesized["body"].rstrip() + "\n"
+            llm_used = True
+
+    synthesis_note = (
+        "本次草稿已经过 LLM 润色，请核对是否有信息被误改/遗漏后再发布。"
+        if llm_used else
+        "本次草稿为规则拼接，未经 LLM 润色（可能是未接入 LLM 或本次调用失败）。"
+    )
+
     lines: list[str] = [
         "---",
         f"name: {slug}",
         f"display_name: {track.title}",
         f"description: {desc}",
-        "tone: ",
+        f"tone: {tone}",
         "break_character_policy: soft",
         "allowed_tools: ",
         "wiki_scopes: ",
@@ -2891,26 +3085,12 @@ def draft_persona_markdown(
         "",
         f"<!-- 本文件由 Capability Learning 人设草稿合成于 "
         f"{datetime.now(timezone.utc).isoformat()}，尚未发布，"
-        f"请人工检查/编辑后再通过 publish_persona_draft() 发布。 -->",
+        f"请人工检查/编辑后再通过 publish_persona_draft() 发布。"
+        f"{synthesis_note} -->",
         "",
-        f"# {track.title}",
-        "",
-        track.persona_desc.strip(),
+        body_text.rstrip(),
         "",
     ]
-
-    missing_dims: list[str] = []
-    for topic in track.outline:
-        answers = answers_by_topic.get(topic.topic_id, [])
-        lines.append(f"## {topic.name}")
-        lines.append("")
-        if answers:
-            for a in answers:
-                lines.append(f"- {a}")
-        else:
-            lines.append("（暂无信息，尚待用户回答相关问题）")
-            missing_dims.append(topic.name)
-        lines.append("")
 
     warning = detect_real_person_reference(track.persona_desc)
     if warning:
