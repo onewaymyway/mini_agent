@@ -383,7 +383,7 @@ def _async_jobs(request: Request):
 
 
 @capability_router.post("/tracks/{track_id}/persona/draft")
-def draft_persona(request: Request, track_id: str):
+async def draft_persona(request: Request, track_id: str):
     """生成/刷新 persona 型 Track 的人设草稿并落盘。knowledge 型 Track
     调用返回 400（这是 target_type 的语义错误，不是"没找到"，用 400
     而不是 404 更准确）。
@@ -395,7 +395,15 @@ def draft_persona(request: Request, track_id: str):
     `async_jobs` 机制：这个端点立即返回 `{"job_id", "key"}`，前端改用
     `run_async_job()` 轮询 `GET /v1/async_jobs/{job_id}` 直到
     status 变成 "done"/"error"，`result` 就是原来这个端点直接返回的
-    `{"track_id", "draft", "completeness"}`。"""
+    `{"track_id", "draft", "completeness"}`。
+
+    定义成 `async def` 而不是 `def`：`AsyncJobRegistry.start()` 内部用
+    `asyncio.create_task()` 把后台任务挂到当前事件循环上，这要求调用点
+    本身就跑在事件循环线程里——普通 `def` 路由会被 FastAPI 丢进线程池
+    执行，线程里没有 running event loop，`create_task()` 会直接抛
+    `RuntimeError`，表现为提交请求就返回 HTTP 500（而不是任务本身失败）。
+    这也是 routes.py 里所有已改造的 async_jobs 端点都用 `async def` 的
+    原因，这里保持一致。"""
     from mini_agent.evolution.capability_learning import (
         draft_persona_markdown,
         persona_draft_completeness,
