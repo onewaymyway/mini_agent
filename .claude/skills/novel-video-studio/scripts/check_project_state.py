@@ -5,6 +5,11 @@
 哪一步、下一步该跑什么、有没有大场景卡住"，跑这个脚本就够了，不用手动
 翻 macro_scenes.yaml + 各 scene_detail.yaml + 磁盘文件。
 
+[跨 session 续接] 输出里的 `progress_log_tail` 会附带 `PROGRESS.md`
+（见 SKILL.md §3.3）最后几条记录——这部分不是从状态文件推导出来的，是
+之前 session 主动记下来的决策/坑/用户要求，跟本脚本算出的机械状态一起
+看，才是新 session 接手项目时该有的完整背景。
+
 同时是"回退重跑"的判断依据：结合 invalidate.py 的输出使用——
 invalidate.py 改完状态后，再跑一次本脚本确认清单符合预期。
 
@@ -45,11 +50,39 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="小说转视频项目状态总览")
     ap.add_argument("output_dir")
     ap.add_argument("--macro-id", nargs="*", help="只看指定大场景（不传看全部）")
+    ap.add_argument("--progress-tail", type=int, default=5,
+                     help="附带打印 PROGRESS.md 最后几条记录（0 = 全部打印），默认 5")
     args = ap.parse_args()
 
     out_dir = Path(args.output_dir)
     result = {"ok": True, "output_dir": str(out_dir), "stages": {}, "macro_scenes": [],
               "next_actions": [], "warnings": []}
+
+    # [跨 session 续接] PROGRESS.md 是追加型日志，装的是 macro_scenes.yaml/
+    # scene_detail.yaml 这些状态字段覆盖不到的信息（用户要求、已知坑、
+    # 还没落到结构化文件里的决定）。新 session 接手项目时，光看机械状态
+    # 容易重复上次已经被否掉的做法，这里顺带把最后几条打印出来，不用
+    # 再单独一次文件读取。找不到文件不算错误（老项目/刚起步的项目可能
+    # 还没有这个文件），只在 warnings 里提示一下，不影响其它字段。
+    progress_path = out_dir / "PROGRESS.md"
+    if progress_path.exists():
+        try:
+            text = progress_path.read_text(encoding="utf-8")
+            # 按行首 "## " 时间戳标记切分成条目（而不是简单取最后 N 行，
+            # 避免把一条多行记录从中间切断）。
+            import re as _re
+            blocks = _re.split(r"(?m)^(?=## )", text)
+            entries = [b.strip() for b in blocks if b.strip()]
+            tail = entries[-args.progress_tail:] if args.progress_tail > 0 else entries
+            result["progress_log_tail"] = tail
+        except Exception as e:
+            result["warnings"].append(f"PROGRESS.md 读取失败：{e}")
+    else:
+        result["progress_log_tail"] = []
+        result["warnings"].append(
+            "没有找到 PROGRESS.md——新 session 接手项目前建议先确认是不是"
+            "第一次跑这个项目；如果项目其实跑过好几个 session 却没有这个"
+            "文件，说明之前没按 §3.3 记录，只能靠对话记忆/用户复述补齐背景。")
 
     project = _load_json(out_dir / "novel_project.json")
     if project is None:

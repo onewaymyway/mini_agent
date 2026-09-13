@@ -106,6 +106,7 @@ resource_id=..., reason=...)` 按需加载，读完执行完这一阶段就可�
 ```
 novel_output/小说名_20260911/
 ├── novel_project.json          # 全局配置（时长/画风/TTS方案/转场模式）
+├── PROGRESS.md                 # 跨 session 记忆日志（决策/坑/用户要求），见 §3.3
 ├── global/
 │   ├── characters.json         # 角色库，含 voice_profile、asset_path
 │   ├── locations.json          # 地点库，含 asset_path
@@ -193,6 +194,10 @@ null，未实现)。
 
 **视频 clip 命名**（阶段5写入 `macro_scene_XX/clips/`）：
 `<micro_id>.mp4`（如 `micro_01.mp4`，不带 `micro_scene_` 前缀）。
+
+**`PROGRESS.md`**：不是结构化数据文件，是追加型 Markdown 日志，专门
+装状态字段覆盖不到的跨 session 信息（决策/坑/用户要求），格式和写入
+规则见 §3.3，新建/新 session 接手项目时都要处理它。
 
 状态字段是阶段推进和"该不该回退"的唯一依据：
 - `macro_scenes.yaml` 每条大场景：`pending`（未详细规划）→`planned`
@@ -301,10 +306,79 @@ python .claude/skills/novel-video-studio/scripts/check_project_state.py <output_
 源头文件却不清理下游——那样下游文件会和新内容对不上（比如台词改了但
 字幕、配音还是旧的）**。
 
-## 3. 项目启动
+## 3. 项目启动与跨 session 续接
+
+### 3.1 新项目
 
 新项目从"进入阶段1"开始，向用户确认目标时长/横竖屏后立即写
 `novel_project.json`（细节见子资源 `entity-extraction`，
-`references/01_entity_extraction.md` Step 0），随后按上面的阶段顺序推进。用户如果已有跑了一半的项目目录，
-先跑 `check_project_state.py` 定位断点，从 `next_actions` 指向的阶段
-继续，不要重新从头开始。
+`references/01_entity_extraction.md` Step 0），随后按上面的阶段顺序
+推进。同时在 `<output_dir>/PROGRESS.md` 写入第一条记录（格式见 §3.3），
+作为这个项目的跨 session 记忆起点。
+
+### 3.2 新 session 接手已有项目——标准接手流程
+
+任何一次新 session 里被要求"继续之前那个小说转视频项目"/"接着做"，
+**不要凭对话上文的印象直接接着写产物**（新 session 很可能完全没有
+上文，或者上文只是一段被压缩过的摘要，细节不可靠），而是固定按下面
+四步重新建立事实基础，再决定下一步做什么：
+
+1. **定位项目目录**。用户明确给了 `output_dir` 就直接用；没给的话，
+   扫描 `novel_output/*/novel_project.json`，按目录 mtime 倒序列出候选
+   项目（`source_title` + 路径），只有一个的话直接确认后使用，有多个
+   且用户没指明是哪本小说时，报清单让用户选一个，不要猜。
+2. **跑 `check_project_state.py`**，拿到 `overall_stage`/`next_actions`/
+   `warnings`/每个大场景的 `status` 和 `micro_scenes` 明细——这是关于
+   "磁盘上实际完成到哪"的唯一权威事实来源，比对话记忆和上次的口头总结
+   都可靠。
+3. **读 `<output_dir>/PROGRESS.md`**（如果存在，通常存在，见 §3.3），
+   补上 `check_project_state.py` 覆盖不到的"为什么"这一层：上次中断
+   前用户提过的定制要求、已知会反复出问题的坑（比如某个 TTS 引擎对某
+   类文本容易超时/失败）、上次做到一半时定下来但还没落到任何结构化
+   文件里的决定。**这一步不能跳过**——`check_project_state.py` 只反映
+   机械状态（哪些文件存在、字段是否回填），反映不了"用户上次说这版
+   人设不满意但还没来得及改"这类还停留在对话里的信息，跳过这步很容易
+   在新 session 里重复上次已经被否掉的做法。
+4. **处理完 `warnings` 里的状态/磁盘不一致后，才从 `next_actions`
+   指向的阶段/大场景继续**，不要在明知不一致的情况下继续往下堆产物
+   （常见于上次执行中途被打断：比如某个大场景 `scene_detail.yaml` 已经
+   写完但校验没跑完，`macro_scenes.yaml` 里状态还停在 `pending`）。
+
+以上四步本身很轻量（一次目录扫描 + 一次脚本调用 + 一次小文件读取），
+每次接手都固定跑一遍，比"信任上一个 session 留下的摘要"更可靠，也不
+需要用户重新讲一遍项目背景（`novel_project.json` 里已经有的时长/画风
+/横竖屏等配置，直接读，不要再问用户一遍）。
+
+### 3.3 `PROGRESS.md`：弥补状态文件覆盖不到的跨 session 记忆
+
+`macro_scenes.yaml`/`scene_detail.yaml` 等状态字段解决的是"做到哪一步
+了"，但解决不了"这一步是怎么做的决定、踩过什么坑、用户提过什么还没
+落地的要求"——这些信息只存在于当时那次对话里，session 一断就丢失，
+下一个 session 只能重新试错。`PROGRESS.md` 是专门装这类信息的**追加型
+纯文本日志**，落在 `<output_dir>/PROGRESS.md`，格式：
+
+```markdown
+## 2026-09-13 14:20
+- 完成 macro_01 全流程（配音+视频+合成），用户确认通过，无需修改。
+- 用户要求：全书人物对话语气偏克制，旁白可以更煽情一些——后续大场景
+  规划台词/旁白基调按这个来，不用每次都问。
+- 已知坑：edge-tts 对超过 40 字的单段文本经常 300s 超时，配音时长的
+  content_blocks 尽量控制在 40 字以内，超过的提前在阶段3多拆一刀。
+- 下一步：从 macro_02 开始阶段3详细规划。
+```
+
+**写入规则**：
+- 每完成一个大场景的端到端循环（§2.3）、或遇到一次需要记住的持续性
+  问题、或用户给出一条会影响后续大场景处理方式的要求时，**追加**一段
+  （不要改写/删除历史记录，这是日志不是状态文件）；
+- 只记"下一个 session 需要知道、但不会体现在其它结构化文件里"的信息
+  ——已经在 `macro_scenes.yaml`/`scene_detail.yaml` 里能看到的机械状态
+  不用重复记（比如"macro_01 已完成"这种 `check_project_state.py` 一
+  眼能看到的，除非附带了额外的、脚本看不出来的上下文才值得记，如上面
+  例子里"用户确认通过，无需修改"这句就是脚本状态之外的信息）；
+- 每条前面带时间戳（`date` 命令或当前对话的实际日期），方便按时间线
+  回看；文件变长后不需要主动精简/归档，追加成本远低于误删有用信息的
+  风险，真的长到影响阅读时再考虑摘要归并最早的若干条。
+
+`check_project_state.py` 现在会顺带把 `PROGRESS.md` 最后几条打印出来
+（见脚本说明），接手项目时两者一起看，不需要分别手动读一遍。
