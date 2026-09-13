@@ -21,8 +21,8 @@ resources:
     triggers: 定妆图, 配音, tts, voice_profile, asset_path, 差异化配音
   - id: scene-video-generation
     path: references/05_scene_video_generation.md
-    description: 阶段5——手写 prompt_en/video_mode + 角色/场景一致性校验(check_character_consistency.py) + 小场景视频生成(generate_scene_videos_v2.py)与大场景内合成(compose_macro_scene.py)
-    triggers: 视频生成, 小场景视频, 大场景合成, clips, gen_video_with_text, 一致性, 角色不一致, 场景不一致, visual_anchor_en
+    description: 阶段5——手写 prompt_en/video_mode + 角色/场景一致性双重校验（脚本 check_character_consistency.py 关键词兜底 + Agent 语义人工复核，二者都要过）+ 小场景视频生成(generate_scene_videos_v2.py)与大场景内合成(compose_macro_scene.py)
+    triggers: 视频生成, 小场景视频, 大场景合成, clips, gen_video_with_text, 一致性, 角色不一致, 场景不一致, visual_anchor_en, 语义复核, 人工复核
   - id: final-compose
     path: references/06_final_compose.md
     description: 阶段6——所有大场景 done 后的最终拼接转场，产出 video.mp4
@@ -233,6 +233,14 @@ python .claude/skills/novel-video-studio/scripts/check_project_state.py <output_
 也不允许把状态字段推进（比如 `pending`→`planned`）。不通过时回到本阶段
 内部修正，重新写文件、重新校验，直到通过。这是保证整条流水线不带着
 "看似完成实则有缺陷"的产物往下传的唯一手段。
+
+**特别地，`check_character_consistency.py`（阶段5角色/场景一致性）
+这类涉及"画面语义是否和素材档案一致"的校验，脚本本身只能做关键词级别
+的启发式检测，退出码 0 只是必要条件，不是充分条件**——脚本查不出同义词
+替换后语义已经变了、角色写反、在场人物对不上原文这类问题。这类校验
+必须是"脚本兜底 + Agent 逐条语义复核"两层都做完才算通过，不能只跑脚本
+看 exit code 就往下走，具体复核清单见子资源 `scene-video-generation`
+Step 0.5。
 
 ### 2.2 阶段间的"回补"是正常流程，不是异常
 
