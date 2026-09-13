@@ -2452,6 +2452,48 @@ class Terminal:
 
     _suppress_stream: bool = False
     _pending_stream: str = ""
+    _visible_recent_stream: str = ""
+
+    # 判断"即将出现的 <tool_use> 是否是被标记为示例/引用"时，向前回看的
+    # 窗口长度（字符数）。与 system_tool_call._EXAMPLE_MARKER_WINDOW 保持
+    # 同一量级即可，这里不要求逐字相同——只是"够看到标记那一行"的宽松上限。
+    _MARKER_LOOKBACK_WINDOW = 300
+
+    def _note_visible_stream(self, chunk: str) -> None:
+        """记录最近"确实透传给屏幕"的可见文本尾部，供标记回看使用。
+
+        只保留末尾一小段（_MARKER_LOOKBACK_WINDOW），避免整段对话历史
+        无限增长占用内存——判断"标记是否出现在当前 <tool_use> 之前"只
+        需要一个有限窗口。
+        """
+        if not chunk:
+            return
+        combined = self._visible_recent_stream + chunk
+        self._visible_recent_stream = combined[-self._MARKER_LOOKBACK_WINDOW:]
+
+    def _is_example_marked_stream(self, preceding_text: str) -> bool:
+        """判断"即将命中的 <tool_use>"前面是否出现过 TOOL_USE_EXAMPLE_MARKER。
+
+        preceding_text 是"本次尚未透传、位于同一 token 缓冲区内、且在
+        <tool_use> 之前"的那一段文本；再拼上此前已经透传过屏幕的最近
+        尾部（_visible_recent_stream），一起在窗口内查找标记。
+
+        [终端显示层一致性修复] 此前 _filter_token 只单纯匹配字面量
+        "<tool_use>"/"</tool_use>"，完全不检查前面有没有
+        system_tool_call.TOOL_USE_EXAMPLE_MARKER——判官类 Agent
+        （TurnJudge/GoalJudge 等）按提示词要求正确加了这个标记来引用/
+        复述一段 <tool_use> 示例时，纠错重试链路（parse_tool_calls /
+        detect_format_issue）能正确豁免、不会误判成真实调用，但这段
+        示例内容在终端里仍会被当成"要抑制的工具调用块"整段吞掉不显示，
+        导致用户看到的说明文字后面莫名其妙地断掉了。这里补上同一个
+        标记的检测，命中时不再对这次 <tool_use> 做抑制，原样透传，
+        与纠错逻辑保持一致的语义。
+        """
+        if not preceding_text and not self._visible_recent_stream:
+            return False
+        from mini_agent.llm.system_tool_call import TOOL_USE_EXAMPLE_MARKER
+        window = (self._visible_recent_stream + preceding_text)[-self._MARKER_LOOKBACK_WINDOW:]
+        return TOOL_USE_EXAMPLE_MARKER in window
 
     def _filter_token(self, token: str) -> str:
         """
@@ -2478,6 +2520,12 @@ class Terminal:
         10 个字符存入 _pending_stream（suppress 分支不需要把前面的内容
         输出，因为那本就是要被抑制的工具调用块内容；非 suppress 分支则
         把前面的内容正常输出，只缓冲最后 10 个字符）。
+
+        [终端显示层一致性修复] 命中 <tool_use> 时，若其前面（含跨 token
+        累积的最近可见文本）出现过 TOOL_USE_EXAMPLE_MARKER，视为"举例/
+        引用"而非真实工具调用：不进入抑制状态，原样把这个 "<tool_use>"
+        及其之后内容当普通文本透传（后续的 "</tool_use>" 也会因为不在
+        抑制状态里，自然作为普通文本一起透传，不需要额外处理）。
         """
         if self._raw_output:
             return token
@@ -2508,18 +2556,28 @@ class Terminal:
                     else:
                         self._pending_stream = visible
                     i = len(text)
-                elif start > i:
-                    result.append(text[i:start])
-                    self._suppress_stream = True
-                    i = start + len("<tool_use>")
                 else:
+                    preceding = text[i:start]
+                    if self._is_example_marked_stream(preceding):
+                        # 标记为示例/引用：不抑制，把 "<tool_use>" 本身也
+                        # 当普通文本透传，继续从标签之后正常扫描。
+                        if start > i:
+                            result.append(preceding)
+                        result.append("<tool_use>")
+                        i = start + len("<tool_use>")
+                        continue
+                    if start > i:
+                        result.append(preceding)
                     self._suppress_stream = True
                     i = start + len("<tool_use>")
-        return "".join(result)
+        out = "".join(result)
+        self._note_visible_stream(out)
+        return out
 
     def _stream_filter_reset(self) -> None:
         self._suppress_stream = False
         self._pending_stream = ""
+        self._visible_recent_stream = ""
 
     # ── 刷新循环（refresh_thread）────────────────────────────────────────
 

@@ -694,6 +694,102 @@ class TestStreamTokenFilterToolUseTagBoundary(unittest.TestCase):
         self.assertNotIn("tool_use", clean)
 
 
+class TestStreamTokenFilterExampleMarkerPassthrough(unittest.TestCase):
+    """
+    回归测试：_filter_token() 应尊重 TOOL_USE_EXAMPLE_MARKER 标记，
+    对"被标记为举例/引用"的 <tool_use> 块不做抑制，原样透传显示。
+
+    背景：TurnJudge/GoalJudge 等按提示词要求，在自己的输出里引用/复述
+    一段 <tool_use> 格式示例前，会先原样写上
+    system_tool_call.TOOL_USE_EXAMPLE_MARKER 这句标记。纠错重试链路
+    （parse_tool_calls / detect_format_issue）已经能正确识别这个标记、
+    不会误判成真实/写坏的工具调用；但此前的终端流式显示过滤器完全不
+    检查这个标记，只要看到 "<tool_use>" 字面量就整段抑制不显示，导致
+    这段本该给用户看的说明性示例文字被吞掉、显示不完整。
+    """
+
+    def setUp(self):
+        self.term = Terminal(status_refresh_hz=4)
+        self.term._console = MagicMock()
+
+    def tearDown(self):
+        self.term.stop()
+
+    def _flush(self, output: list[str]) -> str:
+        if self.term._pending_stream:
+            output.append(self.term._pending_stream)
+        return "".join(output)
+
+    def test_marked_example_in_single_token_is_shown(self):
+        """标记与示例块出现在同一个 token 内时，应原样透传，不被抑制。"""
+        from mini_agent.llm.system_tool_call import TOOL_USE_EXAMPLE_MARKER
+
+        out = []
+        out.append(self.term._filter_token(
+            "正确格式应该是：\n\n"
+            f"{TOOL_USE_EXAMPLE_MARKER}\n"
+            "<tool_use>\n{\"name\": \"bash\", \"input\": {\"command\": \"ls\"}}\n</tool_use>\n\n"
+            "请照此重新输出。"
+        ))
+        final = self._flush(out)
+
+        self.assertIn(TOOL_USE_EXAMPLE_MARKER, final)
+        self.assertIn("<tool_use>", final)
+        self.assertIn("</tool_use>", final)
+        self.assertIn("bash", final)
+        self.assertIn("请照此重新输出", final)
+        self.assertFalse(self.term._suppress_stream)
+
+    def test_marked_example_split_across_tokens_is_shown(self):
+        """标记出现在前一个 token、<tool_use> 出现在后一个 token，仍应识别。"""
+        from mini_agent.llm.system_tool_call import TOOL_USE_EXAMPLE_MARKER
+
+        out = []
+        out.append(self.term._filter_token(f"举例说明：\n{TOOL_USE_EXAMPLE_MARKER}\n"))
+        out.append(self.term._filter_token(
+            "<tool_use>\n{\"name\": \"bash\"}\n</tool_use>\n后续文字。"
+        ))
+        final = self._flush(out)
+
+        self.assertIn(TOOL_USE_EXAMPLE_MARKER, final)
+        self.assertIn("<tool_use>", final)
+        self.assertIn("后续文字", final)
+        self.assertFalse(self.term._suppress_stream)
+
+    def test_unmarked_tool_use_is_still_suppressed(self):
+        """没有标记的 <tool_use> 仍应按原逻辑被抑制——不能因为这次修复
+        导致真实工具调用块意外泄漏到终端显示。"""
+        out = []
+        out.append(self.term._filter_token(
+            "前缀文字<tool_use>\n{\"name\": \"bash\", \"input\": {}}\n</tool_use>后缀文字"
+        ))
+        final = self._flush(out)
+
+        self.assertIn("前缀文字", final)
+        self.assertIn("后缀文字", final)
+        self.assertNotIn("tool_use", final)
+        self.assertNotIn("bash", final)
+        self.assertFalse(self.term._suppress_stream)
+
+    def test_marker_outside_lookback_window_does_not_leak_real_call(self):
+        """标记如果出现在很久之前（超出回看窗口），不应影响之后一次
+        毫不相关的真实工具调用被正常抑制。"""
+        from mini_agent.llm.system_tool_call import TOOL_USE_EXAMPLE_MARKER
+
+        out = []
+        out.append(self.term._filter_token(f"{TOOL_USE_EXAMPLE_MARKER}\n"))
+        # 插入一大段与标记无关的正文，把标记挤出回看窗口
+        out.append(self.term._filter_token("正文" * 200))
+        out.append(self.term._filter_token(
+            "<tool_use>\n{\"name\": \"bash\", \"input\": {}}\n</tool_use>结尾"
+        ))
+        final = self._flush(out)
+
+        self.assertNotIn("tool_use", final)
+        self.assertNotIn("bash", final)
+        self.assertIn("结尾", final)
+
+
 class TestSimpleModeNeverShowsStatusbarOrErases(unittest.TestCase):
     """
     回归测试：simple-mode 下完全不显示状态栏，且任何情况下都不使用
