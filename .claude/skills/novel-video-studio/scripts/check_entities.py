@@ -13,11 +13,18 @@
   3. 每个地点是否都有非空 description_zh / description_en / visual_anchor_en。
   4. （警告级，不阻断）角色 names 列表之间是否存在明显重叠/高度相似的
      字符串，提示可能有同名角色未合并成一个 id。
+  5. 角色/地点的 `appearance_variants`（可选字段，只有登记了外观变体
+     才会非空）：每条记录的 `variant_id`/`trigger_zh`/`visual_override_en`
+     是否非空，`variant_id` 在同一实体内部是否重复。本脚本只检查这些
+     字段"存在"，不检查 `applies_scope` 指向的 macro_id/micro_id 是否
+     真实存在——那些 id 此时可能还没被阶段2/3 创建，交给阶段3
+     `check_scene_detail.py` 在实际引用时校验（见该文档校验项8）。
 
-`visual_anchor_en`/`age_range`/`gender` 是阶段5
-`check_character_consistency.py` 做角色/场景一致性校验的前提字段，本
-脚本只保证它们"存在"，不保证它们和 description_zh/en 里的描述互相
-印证（那部分依赖 Agent 在 01_entity_extraction.md Step 2.5 自查）。
+`visual_anchor_en`/`age_range`/`gender` 是阶段5 Agent 逐条语义核查
+（角色/地点/情节一致性，结论写入 `consistency_report.yaml`，见
+`05_scene_video_generation.md`）能否有依据可查的前提字段，本脚本只
+保证它们"存在"，不保证它们和 description_zh/en 里的描述互相印证
+（那部分依赖 Agent 在 01_entity_extraction.md Step 2.5 自查）。
 
 设计上不对文件做任何自动修复——本脚本只负责"发现问题"，"如何改"（补充
 voice_profile、合并重复角色等）必须由 Agent 结合小说语义决定。
@@ -110,6 +117,27 @@ def check(output_dir: Path) -> dict:
                     f"角色 {ca.get('id')} 与 {cb.get('id')} 的 names 有重叠，"
                     f"可能是同一角色未合并，请人工核对"
                 )
+
+    # 5. appearance_variants 字段完整性（可选字段，非空时才检查）
+    for entity_kind, entities in (("角色", characters), ("地点", locations)):
+        for e in entities:
+            eid = e.get("id", "<无id>")
+            variants = e.get("appearance_variants") or []
+            seen_variant_ids: set[str] = set()
+            for v in variants:
+                vid = (v.get("variant_id") or "").strip()
+                if not vid:
+                    errors.append(f"{entity_kind} {eid} 的 appearance_variants 存在一条缺少 variant_id 的记录")
+                elif vid in seen_variant_ids:
+                    errors.append(f"{entity_kind} {eid} 的 appearance_variants 存在重复的 variant_id：{vid}")
+                else:
+                    seen_variant_ids.add(vid)
+                for field in ("trigger_zh", "visual_override_en"):
+                    if not (v.get(field) or "").strip():
+                        errors.append(
+                            f"{entity_kind} {eid} 的外观变体 {vid or '<无id>'} 缺少非空字段 {field}"
+                            f"（{field} 是判断这个变体该不该生效/供阶段5核查的必需依据）"
+                        )
 
     return {
         "ok": not errors,

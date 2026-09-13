@@ -9,12 +9,19 @@
   对话 wav 按序拼接、micro clip 按 `duration_sec` 独立缩放拼接、渲染
   字幕（对话用「」包裹），合成 `macro_scene_XX.mp4`，成功后回写
   `macro_scenes.yaml` 对应大场景 `status=done`，校验不通过则不回写；
-- `check_character_consistency.py`：**手写完 `prompt_en` 之后、跑生成
-  脚本之前**校验每条 `prompt_en` 是否与引用的角色/地点档案
-  (`visual_anchor_en`/`age_range`/`gender`) 一致，防止画面里的角色
-  长相/穿着、场景外观跟阶段1抽取出的素材对不上；
+- `check_consistency_report.py`：**不做任何语义判断**，只机械校验
+  Agent 在 Step 0 产出的 `consistency_report.yaml` 是否覆盖了本次要
+  生成的全部小场景、是否全部标记为 `pass`、有没有在核查通过之后
+  `prompt_en` 又被改动过（过期检测）——见下面 Step 0/Step 0.5；
 - `check_clips_v2.py`：校验 `micro_scene` clip 完整性 + 已合成大场景
   视频时长一致性。
+
+**本阶段不再用脚本做"画面是否和角色档案/情节一致"这件事本身**：这类
+判断需要理解语义（同义改写有没有改变原意、画面是不是这段情节该有的
+样子），关键词匹配既会漏检也会误报，之前版本的 `check_character_consistency.py`
+就属于这类不可靠的机械检测。现在改成**完全由 Agent 逐条核查、核查
+结论写成结构化报告**，脚本只负责"报告有没有认真写、有没有过期"这个
+机械把关，语义判断的正确性完全落在 Agent 身上，不能依赖脚本兜底。
 
 ## 前置：Agent 手写 `prompt_en`/`video_mode`
 
@@ -39,7 +46,15 @@
 组织一遍外观描述——同一个角色在十个大场景里出现十次，如果每次都重新
 描述"一个年轻人"，视频生成模型没有任何跨场景记忆，十次画出来的人可能
 完全是十张不同的脸/十套不同的穿着，这正是"角色/场景前后不一致"问题的
-根源。正确做法示例：
+根源。
+
+**如果这个 micro_scene 在 `character_variant_overrides`/
+`location_variant_overrides` 里指定了外观变体**（见
+`03_scene_detail_planning.md` Step 4.5），改成摘抄该变体的
+`visual_override_en`，而不是默认的 `visual_anchor_en`——变体本身就是
+"这段时间内的默认外观换成了什么"，不是额外叠加在默认锚点之上。
+
+正确做法示例：
 
 ```
 visual_anchor_en（char_01）：a young Chinese man in his twenties, lean
@@ -58,76 +73,128 @@ entrance, weathered wooden signboard, warm light spilling from inside.
 ```
 
 镜头特写等确实只需要体现局部特征（比如只拍手部动作）的场景，可以只
-摘抄 `visual_anchor_en` 里与本镜头相关的那部分，不强求整句照搬，但
-不能整句都不提、凭空另写一套外观。
+摘抄 `visual_anchor_en`（或生效变体的 `visual_override_en`）里与本镜头
+相关的那部分，不强求整句照搬，但不能整句都不提、凭空另写一套外观。
 
-## Step 0：脚本校验（写完 `prompt_en` 之后立刻跑）
+## Step 0：Agent 逐条语义核查 + 写核查报告（写完 `prompt_en` 之后，强制
+## 执行，产出结构化报告文件，不可用脚本代替）
 
-```bash
-python .claude/skills/novel-video-studio/scripts/check_character_consistency.py \
-  <output_dir> --macro-id macro_01
+对本大场景**每一条即将拿去生成的 `prompt_en`**，Agent 必须**把下面几
+份材料放在一起同时对照阅读**后再下结论——不是分开单独看，尤其"这条
+prompt_en 是否符合情节"和"是否符合角色/地点外观设定"必须放在同一次
+比对里一起看（同一处画面矛盾经常同时暴露在这两个维度上，比如某条
+prompt_en 把地点和人物外观都换掉了，分开看容易顾此失彼）：
+
+- 本 `micro_scene` 的 `visual_hint` + 全部 `content_blocks[*].text`
+  （旁白/对话原文——情节真相的唯一来源）；
+- 本 `micro_scene` 引用到的每个角色的 `visual_anchor_en`/`age_range`/
+  `gender`（若命中 `character_variant_overrides`，改用对应变体的
+  `visual_override_en`）；
+- 本 `micro_scene` 引用到的每个地点的 `visual_anchor_en`（若命中
+  `location_variant_overrides`，改用对应变体）；
+- 同一大场景内**此前已核查通过**、引用了同一角色/地点（且用的是同一
+  默认锚点或同一变体）的其它 `prompt_en`（横向对比用，防止漂移）。
+
+对每条 `prompt_en` 过下面四项核查，**四项都要单独下结论**（不能只看
+整体印象）：
+
+1. **角色/地点外观一致性**：`prompt_en` 里对角色/地点外观的描述，是否
+   在语义上与上面对照的锚点（或生效变体）一致——重点看同义改写有没有
+   悄悄改变原意（比如把 `"worn grey robe"` 改写成了 `"pristine silk
+   robe"`，词都换了但语义相反）、有没有新增一个和锚点冲突、但锚点本身
+   没提到因而无法机械检测的细节（比如锚点没写发型长度，这条却写了和
+   其它场景明显不同的发型）；
+2. **情节内容一致性**：`prompt_en` 描述的地点/天气/时间/人物状态/正在
+   发生的动作，是否与 `visual_hint`+`content_blocks` 交代的一致，
+   在场人物有没有漏画/多画、台词或动作有没有被归错给别的角色——**这是
+   本次新增的核查维度，专门用来抓"和角色档案本身不矛盾，但和这一段
+   情节矛盾"的问题**。典型反例：`content_blocks` 写的是"雪地里站着一个
+   穿白大衣的女人"，`prompt_en` 却写成了"走廊里，一个穿深色连帽衫的
+   女人"——地点、天气、服装全部被换掉了，如果只对照角色档案（档案里
+   `visual_anchor_en` 本身没规定她必须穿白大衣），这类错误完全查不出，
+   必须对照这条情节原文才能发现；
+3. **跨场景/大场景内横向一致**：与上面收集到的"此前已核查通过的同
+   角色/地点/变体的 prompt_en"逐条对比，没有产生新的外观漂移；如果
+   拿不准，把两条 prompt_en 并排贴出来比较，不要凭印象判断；
+4. **变体使用正确性**（如果本场景引用了角色/地点且存在
+   `appearance_variants`）：该用变体的地方确实用了，不该用变体的地方
+   没有误延续上一场景的变体外观。
+
+**任一项不通过**：回到上面"前置"步骤直接改 `prompt_en`，改完这一条要
+**重新过一遍全部四项**（不能只重新看被改的那一项——改动可能带来新的
+问题），直到四项都确认通过。
+
+核查通过后，把结论写入
+`<output_dir>/macro_scene_<id后缀>/consistency_report.yaml`（**每次
+新增/修改 `prompt_en` 后都要同步更新这个文件，不能只在脑子里记得
+"核查过了"**）：
+
+```yaml
+macro_id: macro_01
+checked_at: "2026-09-14 10:30"   # date 命令或当前对话实际时间
+entries:
+  - micro_id: micro_06
+    prompt_en_hash: "sha1:xxxxxxxxxxxx"   # 见下方"哈希怎么算"
+    status: pass                          # pass | fail
+    checks:
+      character_appearance: pass
+      location_appearance: pass
+      cross_scene_drift: pass
+      content_alignment: pass
+    notes: "对照 char_01 变体 var_01（雪夜白大衣）与 content_blocks
+      原文'雪地里站着一个穿白大衣的女人'核对，地点/服装/天气均一致；
+      与本大场景内 micro_04 的 prompt_en 横向对比外观描述一致。"
 ```
 
-- **errors 非空 → 必须回上面"前置"步骤修正 `prompt_en`，重新跑校验，
-  直到 errors 清空才能进入 Step 0.5**：常见 error 是角色 `visual_anchor_en`
-  /`age_range`/`gender` 缺失（回阶段1补），或 `prompt_en` 里出现了与
-  角色锁定年龄/性别明显矛盾的描述（比如把老年配角的台词场景写成了
-  年轻人）；
-- warnings（`prompt_en` 里没有出现某个角色/地点 `visual_anchor_en` 的
-  任何核心特征词）不阻断，但要带进 Step 0.5 一起看，不能因为脚本没
-  报 error 就当作已经检查完毕；
-- **这一步的退出码是"必要不充分条件"，不是"通过=可以生成"**：本脚本
-  只做关键词级别的启发式检测，能查出"完全没提角色/地点""明显互斥的
-  年龄性别关键词"这类粗暴错误，但查不出"用了同义词但其实没矛盾"、
-  "两个角色的外观描述被写反但双方关键词各自合法"、"角色数量/在场
-  人物跟原文对不上"、"服装道具细节和锚点冲突但锚点没提到这个细节"
-  这几类需要理解语义才能发现的问题。**errors 清空只代表可以进入
-  Step 0.5，不代表一致性已经检查完，禁止脚本一过就直接跳到 Step 1。**
+- `prompt_en_hash`：对当前这条 `prompt_en` **原文**（一个字符都不能改）
+  算 `sha1`，取十六进制前12位并加 `sha1:` 前缀，即
+  `"sha1:" + hashlib.sha1(prompt_en.encode("utf-8")).hexdigest()[:12]`
+  （与 `check_consistency_report.py` 内部算法完全一致，可以直接执行
+  这段等价代码得到结果）。这是防止"核查通过之后又顺手改了几个字但
+  报告没更新"的过期检测依据，必须如实填算出来的值，不能随便写；
+- `status`：四项子检查任一项不是 `pass`，整体就不能写 `pass`；
+- `notes`：**必须写清楚实际对照了哪些依据**（引用了哪个变体/哪条原文
+  /和哪条 prompt_en 做的横向对比），不能写"已核查""没问题"这类空话——
+  这是留痕，也是防止走过场的最低要求；
+- 同一大场景内每处理完一批 `prompt_en` 就追加/更新对应的 `entries`
+  条目（`micro_id` 已存在则覆盖该条），不需要一次性写完整个大场景才
+  落盘一次。
 
-## Step 0.5：Agent 语义一致性人工复核（脚本之外，强制执行，不可跳过）
+## Step 0.5：跑报告校验脚本（机械把关，不做语义判断，替代不了 Step 0）
 
-Step 0 的脚本是关键词兜底，**不能替代 Agent 自己逐条核对**。写完/改完
-一批 `prompt_en` 且 Step 0 errors 清空后，在调用 `generate_scene_videos_v2.py`
-之前，Agent 必须对这个大场景里**每一条即将拿去生成的 `prompt_en`**
-逐条过一遍下面的复核清单，而不是只看脚本 exit code：
+```bash
+python .claude/skills/novel-video-studio/scripts/check_consistency_report.py \
+  <output_dir> macro_01
+```
 
-1. **逐字对照 `visual_anchor_en`**：这条 `prompt_en` 里对该角色/地点的
-   外观描述，是否在语义上（不要求字面重复）与档案里的 `visual_anchor_en`
-   一致？重点看脚本查不出的地方——同义改写是否改变了原意（比如把
-   `\"worn grey robe\"` 改写成了 `\"pristine silk robe\"`，关键词都合法，
-   语义却相反）、有没有新增一个和锚点冲突但锚点本身没提到、脚本自然
-   也检测不到的细节（比如锚点没写发型长度，这一条却写了和其它场景
-   明显不同的发型）；
-2. **核对在场人物是否与原文/`content_blocks` 一致**：这个小场景
-   `uses_characters` 列出的角色是否都出现在了 `prompt_en` 里、有没有
-   漏画应该在场的角色、有没有多画出不该出现在这个镜头里的角色，或者
-   把台词/动作的归属写给了错误的角色（脚本不检查"画面里到底画了几个
-   人、分别是谁"，只检查关键词是否互斥）；
-3. **跨场景横向对比同一角色/地点**：如果这个角色/地点在之前的大场景
-   已经生成过，回看之前那一条（或那一批）`prompt_en`，确认这一条延续
-   的是同一套外观/环境细节，没有因为写作时凭这一镜头的感觉重新发挥
-   而产生漂移；如果拿不准，直接把之前的 `prompt_en` 和这一条并排放在
-   一起比较，而不是凭印象判断；
-4. **确认没有互相写反**：同一大场景里如果有多个角色/地点，检查有没有
-   把 A 角色的锚点特征写进了 B 角色的 `prompt_en`（脚本只按角色 id 分别
-   检查各自命中率，两边关键词各自合法时脚本查不出写反）。
+本脚本**不理解画面/情节语义**，只做三件纯机械的事：
 
-**复核方式**：这不是走流程式地"看一眼确认没问题"，而是要求 Agent 真的
-把 `prompt_en` 原文和 `visual_anchor_en`/`age_range`/`gender`/
-`description_zh` 摆在一起对比阅读后再下结论；发现问题就回上面"前置"
-步骤直接改 `prompt_en`，改完重新跑一次 Step 0 脚本（脚本仍要过，且这次
-修改不能引入新的关键词冲突），再重新过一遍本清单，直到确认无误。
+1. 本次要生成的每个已写 `prompt_en` 的 `micro_scene`，是否都能在
+   `consistency_report.yaml` 里找到对应条目——漏查的场景直接报错，
+   不允许被生成脚本悄悄放过；
+2. 每条记录的 `status` 和四项子检查是否都是 `pass`——只要有一项不是
+   `pass` 就报错，不允许"大部分通过就先生成"；
+3. **过期检测**：报告里记录的 `prompt_en_hash` 是否与 `scene_detail.yaml`
+   里**当前** `prompt_en` 文本的哈希一致——不一致说明核查通过之后
+   `prompt_en` 又被改动过，报告已经不能代表当前这版内容，视为未核查。
 
-复核过程不需要写额外报告文件，但如果发现了脚本没查出来、靠人工比对才
-发现的问题，属于"已知会反复出问题的坑"，按 SKILL.md §3.3 追加一条到
-`PROGRESS.md`（比如"char_03 和 char_05 的服装描述容易在 prompt_en 里
-写混，后续场景写完要额外交叉核对一遍"），避免后面大场景重复踩坑。
+**errors 非空 → 必须回 Step 0 重新核查（不是回去随便改改报告文件让它
+"看起来"通过）**，修正/补全对应条目后重新跑本脚本，直到 exit code 为
+0 才能进入 Step 1。**退出码是这一步唯一的判断依据**——`check_project_state.py`
+等其它脚本、以及 Agent 自己的记忆都不能替代这次校验，防止"上次核查过
+了应该没问题"这类基于记忆的误判。
 
-只有这两步（脚本 errors 清空 + Agent 语义复核清单过完确认无误）都完成，
-才能进入 Step 1 调用视频生成接口——**脚本通过但没做语义复核就直接生成，
-或者语义复核发现问题却没有回去改 `prompt_en` 就直接生成，都是不允许
-的**，这正是"角色/场景和抽取出的素材不一致"这个问题最终流入成片的
-两个常见漏洞。
+只有 Step 0（Agent 四项核查全部通过并写好报告）+ Step 0.5（脚本确认
+报告完整、全部 pass、未过期）都完成，才能进入 Step 1 调用视频生成
+接口——**跳过写报告直接生成、报告写了但没让脚本过就直接生成、或者
+脚本过了但报告本身是应付了事写的，都是不允许的**，这正是"角色/场景
+和抽取出的素材不一致""生成画面和小说内容不一致"这两个问题最终流入
+成片的常见漏洞。
+
+发现脚本查不出、靠 Agent 人工比对才发现的问题，属于"已知会反复出问题
+的坑"，按 SKILL.md §3.3 追加一条到 `PROGRESS.md`（比如"char_03 和
+char_05 的服装描述容易在 prompt_en 里写混，后续场景写完要额外交叉
+核对一遍"），避免后面大场景重复踩坑。
 
 
 ## Step 1：批量生成小场景视频
@@ -292,4 +359,9 @@ python .claude/skills/novel-video-studio/scripts/compose_macro_scene.py \
    还没跑完该大场景，回去补跑（可用 `--macro-id` 只跑这一个大场景）；
 4. **`timeout` 忘记传 `-1` 导致命令被提前杀掉**：已成功的场景不会丢失
    （断点续跑机制），直接重新执行同一条命令（记得加 `timeout: -1`）
-   即可从中断处继续。
+   即可从中断处继续；
+5. **`check_consistency_report.py` 报"报告已过期"**：说明 Step 0 核查
+   通过、写完报告之后，`prompt_en` 又被改动过（比如核查通过后又顺手
+   调整了几个字的措辞）——不是脚本误报，按 Step 0 对这条 `prompt_en`
+   重新走一遍四项核查，用改动后的文本重新算 `prompt_en_hash` 并覆盖
+   报告里对应条目，不能直接把旧的 hash 抄过去糊弄过去。

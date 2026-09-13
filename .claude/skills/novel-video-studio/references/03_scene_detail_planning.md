@@ -131,6 +131,53 @@ micro_scenes:
     status: pending           # 阶段5处理完回写 done/failed
 ```
 
+**`visual_hint` 必须包含这个 micro_scene 的关键画面元素**（地点/时间/
+天气/人物状态/正在发生的动作），不能写得过于笼统（反例："她在说话"；
+正例：见上面示例）——`visual_hint` 不只是给阶段5写 `prompt_en` 的参考，
+也是阶段5 Agent 语义核查时用来判断"`prompt_en` 是不是真的在画这段情节"
+的核心依据之一（见 `05_scene_video_generation.md` Step 0）；写得空泛，
+阶段5核查时就没有足够的原文依据可以对照，容易放过"画面和情节文不对题"
+这类问题（这正是本 skill 曾经出现过的真实案例：`content_blocks` 写的是
+"雪地里穿白大衣的女人"，`prompt_en` 却写成了"走廊里穿深色连帽衫"，
+`visual_hint` 如果只写"看到一个女人"，这种整段场景被换掉的问题就很
+难在核查时被发现）。
+
+### Step 4.5：外观变体检测（原文交代了角色/地点外观变化时）
+
+处理本大场景 `raw_text` 时，同步留意是否有**持续性、有原文依据**的
+角色/地点外观变化（换装、变装、季节/天气跳跃、地点陈设变化等，判断
+标准见 `01_entity_extraction.md` Step 2.6）。如果有：
+
+1. 检查对应角色/地点的 `global/characters.json`/`locations.json` 里
+   `appearance_variants` 是否已经有匹配的变体——有则直接复用其
+   `variant_id`；没有则按 Step 2.6 的格式新增一条，`trigger_zh` 引用
+   本大场景的原文依据，`applies_scope` 至少包含当前 `macro_id`（如果
+   变化只在个别镜头生效，写具体 `micro_id` 更精确），立即覆盖写回
+   `characters.json`/`locations.json`；
+2. 把涉及的 `micro_scene` 标上 `character_variant_overrides`/
+   `location_variant_overrides`：
+
+```yaml
+  - id: micro_23
+    macro_id: macro_05
+    uses_characters: [char_01]
+    character_variant_overrides: {char_01: var_01}   # 本场景 char_01 使用变体 var_01，不用默认 visual_anchor_en
+    ...
+```
+
+不需要变体的 micro_scene **不要**写这两个字段（或留空 `{}`），默认就是
+使用主 `visual_anchor_en`，这是绝大多数场景的正常状态。
+
+这一步做错的两种典型情况，写的时候要注意：
+- **该登记而没登记**：原文明确写了角色换装，但 Step 3 写 `content_blocks`
+  时只当成普通旁白处理，没有触发这一步——后果是阶段5核查时会发现
+  `prompt_en` 和原文/情节对不上，却没有变体可用，只能返工回这一步；
+- **登记了但范围没圈对**：`applies_scope` 只写了变化发生的那一个
+  `macro_id`，但这套外观其实会延续到后面几个大场景（比如整个婚礼
+  流程横跨了 macro_05-macro_07），导致后面场景又变回了默认锚点——
+  写 `applies_scope` 时结合原文交代的时间跨度想清楚这套外观到底该
+  持续到哪里，不是只覆盖当前正在处理的这一个大场景就够。
+
 ## Step 5：引用完整性校验与回补循环
 
 检查每条 `uses_characters`/`uses_locations`（以及每条 `dialogue.speaker`）
@@ -146,7 +193,9 @@ micro_scenes:
   不需要重新调用阶段1。
 
 这个回补循环**必须在本阶段内部闭环完成**，不能把"引用了不存在的资源"
-遗留到阶段4/5才发现。
+遗留到阶段4/5才发现。外观变体（Step 4.5）的回补方式与此类似（也是
+只处理当前大场景涉及的角色/地点，不需要重新跑全文抽取），但触发条件
+不同：不是"引用不存在"，而是"引用存在但外观和当前默认锚点对不上"。
 
 ## Step 6：写入产物前的自查清单（Agent 语义自查，脚本不做这件事）
 
@@ -255,6 +304,18 @@ python .claude/skills/novel-video-studio/scripts/check_scene_detail.py \
    不超限，估算超限的场景绝大多数情况下阶段4也会超限，按 Step 6.5/
    Step 7 的处理方式尽早拆分。
 
+**errors（新增，外观变体引用完整性）：**
+
+9. `character_variant_overrides`/`location_variant_overrides`（Step 4.5）
+   引用的 `variant_id` 是否真实存在于对应角色/地点的 `appearance_variants`
+   里，当前 `macro_id`/`micro_id` 是否落在该变体的 `applies_scope` 内。
+
+**warnings（新增）：**
+
+10. `visual_hint` 过短，或与本 micro_scene `content_blocks` 原文没有
+    任何字面重叠——提示可能写得过于笼统，或者写串了场景，详见 Step 4
+    的说明。这只是字数/字面重叠的弱启发式，不是语义判断。
+
 退出码非 0（即 errors 非空）时不允许把状态标记为 `planned`，也不允许
 交付给下游；errors 为空、只有 warnings 时允许通过，但 warnings 不能
 直接无视——按 Step 7 的处理方式过一遍。
@@ -287,7 +348,16 @@ python .claude/skills/novel-video-studio/scripts/check_scene_detail.py \
 - 粗估时长按固定语速（4.5字/秒）纯按字数换算，不考虑标点停顿、感叹词/
   拟声词的实际朗读时长、TTS 引擎本身语速设置差异，只能作为方向性提示
   （"明显过多/过少"），不能替代阶段4真实配音后的硬校验，估算通过不
-  代表真实配音一定不超限，估算超限也有极小概率真实配音其实没超限。
+  代表真实配音一定不超限，估算超限也有极小概率真实配音其实没超限；
+- Step 4.5 的"外观变体检测"依赖 Agent 在读原文时主动留意有没有持续性
+  外观变化，脚本无法从 `raw_text` 里自动识别"这段是不是在写换装"——
+  漏检的后果是阶段5核查时才发现 `prompt_en` 和原文对不上、没有变体
+  可用，需要回来补登记，不算致命但会增加一轮返工；
+- `visual_hint` 与 `content_blocks` 的字面重叠检查只是 2-gram 级别的
+  松散判断，不代表语义相关，写得很短但确实相关的 `visual_hint` 可能
+  被误判为"没有重叠"（warning 不阻断，人工看一眼即可排除误报），反之
+  凑巧共享几个常见字也可能让真正写串的场景漏检，仍需 Step 4 强调的
+  人工把关。
 
 ## 下一步
 

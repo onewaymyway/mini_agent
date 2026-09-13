@@ -5,24 +5,24 @@ triggers: 小说转视频, 小说做视频, 小说解说视频, novel to video, 
 resources:
   - id: entity-extraction
     path: references/01_entity_extraction.md
-    description: 阶段1——全局角色/地点抽取（含 voice_profile 声音设定 + visual_anchor_en 锁定视觉锚点，供阶段5一致性校验使用），也覆盖阶段3触发的单点补抽取模式
-    triggers: 角色抽取, 人物抽取, 地点抽取, voice_profile, 补抽取, 新角色, 新地点, visual_anchor_en, 一致性, 角色设定
+    description: 阶段1——全局角色/地点抽取（含 voice_profile 声音设定 + visual_anchor_en 锁定视觉锚点 + appearance_variants 外观变体登记，供阶段5一致性核查使用），也覆盖阶段3触发的单点补抽取模式
+    triggers: 角色抽取, 人物抽取, 地点抽取, voice_profile, 补抽取, 新角色, 新地点, visual_anchor_en, 一致性, 角色设定, appearance_variants, 外观变体, 换装, 变装
   - id: macro-scene-split
     path: references/02_macro_scene_split.md
     description: 阶段2——按剧情/时间/地点把全文切分为大场景（macro_scene）
     triggers: 大场景切分, 场景切分, macro_scene
   - id: scene-detail-planning
     path: references/03_scene_detail_planning.md
-    description: 阶段3——单个大场景详细规划：拆小场景（micro_scene，需按视频生成接口4-12秒硬限规划时长+粗估时长自查）、旁白/对话拆分、content_blocks 写法、check_scene_detail.py 校验规则与自查清单
-    triggers: 小场景, micro_scene, 对话拆分, 旁白拆分, content_blocks, dialogue, narration, check_scene_detail, 时长, 4-12秒
+    description: 阶段3——单个大场景详细规划：拆小场景（micro_scene，需按视频生成接口4-12秒硬限规划时长+粗估时长自查）、旁白/对话拆分、content_blocks 写法、外观变体检测与 character_variant_overrides/location_variant_overrides 标注、visual_hint 撰写要求、check_scene_detail.py 校验规则与自查清单
+    triggers: 小场景, micro_scene, 对话拆分, 旁白拆分, content_blocks, dialogue, narration, check_scene_detail, 时长, 4-12秒, visual_hint, 外观变体, character_variant_overrides
   - id: assets-and-audio
     path: references/04_assets_and_audio.md
     description: 阶段4——角色/地点定妆图生成 + 按角色差异化配音（TTS）
     triggers: 定妆图, 配音, tts, voice_profile, asset_path, 差异化配音
   - id: scene-video-generation
     path: references/05_scene_video_generation.md
-    description: 阶段5——手写 prompt_en/video_mode + 角色/场景一致性双重校验（脚本 check_character_consistency.py 关键词兜底 + Agent 语义人工复核，二者都要过）+ 小场景视频生成(generate_scene_videos_v2.py，timeout必须传-1)与大场景内合成(compose_macro_scene.py，逐场景慢放/快放对齐规划时长)
-    triggers: 视频生成, 小场景视频, 大场景合成, clips, gen_video_with_text, 一致性, 角色不一致, 场景不一致, visual_anchor_en, 语义复核, 人工复核, timeout, 慢放, 快放, 时长不一致
+    description: 阶段5——手写 prompt_en/video_mode + 角色/场景/情节一致性核查（完全由 Agent 逐条语义核查、对照角色档案+变体+visual_hint/content_blocks 情节原文，核查结论写入 consistency_report.yaml，脚本 check_consistency_report.py 只做机械把关：覆盖完整性+全部pass+未过期，不做语义判断）+ 小场景视频生成(generate_scene_videos_v2.py，timeout必须传-1)与大场景内合成(compose_macro_scene.py，逐场景慢放/快放对齐规划时长)
+    triggers: 视频生成, 小场景视频, 大场景合成, clips, gen_video_with_text, 一致性, 角色不一致, 场景不一致, visual_anchor_en, 语义核查, 人工复核, timeout, 慢放, 快放, 时长不一致, consistency_report, 核查报告, 情节不一致
   - id: final-compose
     path: references/06_final_compose.md
     description: 阶段6——所有大场景 done 后的最终拼接转场，产出 video.mp4
@@ -72,7 +72,7 @@ resource_id=..., reason=...)` 按需加载，读完执行完这一阶段就可�
 │                                  # 阶段4配音（synthesize_scene_audio.py 是入口）
 ├── check_assets_and_audio_v2.py  # 阶段4校验
 ├── generate_scene_videos_v2.py   # 阶段5生成小场景视频
-├── check_character_consistency.py # 阶段5前置：prompt_en 与角色/地点档案一致性校验
+├── check_consistency_report.py   # 阶段5前置：机械校验 Agent 写的 consistency_report.yaml（覆盖完整性/全部pass/未过期），不做语义判断
 ├── compose_macro_scene.py        # 阶段5大场景内合成
 ├── check_clips_v2.py             # 阶段5校验
 ├── compose_final_video_v2.py     # 阶段6最终合成
@@ -117,6 +117,7 @@ novel_output/小说名_20260911/
 │   ├── scene_detail.yaml       # 本大场景的小场景规划
 │   ├── audio/                  # narration_seg_<mid>_<i>.wav / dialogue_<charid>_<mid>_<i>.wav
 │   ├── clips/                  # <micro_id>.mp4，如 micro_01.mp4（不是 micro_scene_01.mp4）
+│   ├── consistency_report.yaml # 阶段5 Step 0 Agent 语义核查结论（角色/地点/情节一致性），Step 0.5 校验其完整/全pass/未过期后才能生成视频
 │   └── macro_scene_01.mp4      # 本大场景合成结果
 ├── macro_scene_02/ ...
 └── video.mp4                   # 最终产物
@@ -157,13 +158,22 @@ novel_output/小说名_20260911/
 的一句话英文短语，阶段5每条 `prompt_en` 引用它保证角色外观跨场景不
 漂移)、`voice_profile` (string)、`first_appear` (string)、`relations`
 (string[]，如 `"char_02:挚友"`)、`asset_path` (string \| null，阶段4
-回填)、`face_reference_id` (预留字段，恒 null，未实现)。
+回填)、`face_reference_id` (预留字段，恒 null，未实现)、
+`appearance_variants` (object[]，可选，默认空数组，只有原文明确交代
+持续性外观变化——换装/变装/季节变化/受伤等——才登记，见
+`01_entity_extraction.md` Step 2.6；单条结构：`variant_id`
+(`var_NN`)、`label_zh`、`trigger_zh` (原文依据，必填)、
+`visual_override_en` (在不可变核心特征基础上覆盖服装/发型部分的完整
+英文描述)、`applies_scope` (string[]，生效的 `macro_id`/`micro_id`
+列表)、`asset_path` (string \| null，可选，按需生成))。
 
 **`global/locations.json`** 单条 `locations[]` 元素：`id` (`loc_NN`)、
 `name`、`location_type` (string，如 `"inn"`/`"forest"`)、`era_setting`
 (string)、`description_zh`/`description_en`、`visual_anchor_en`
 (string，同角色的锁定视觉锚点，建筑/环境类型+光照氛围+一两个标志性
-视觉细节)、`asset_path` (string \| null，阶段4回填)。
+视觉细节)、`asset_path` (string \| null，阶段4回填)、
+`appearance_variants` (object[]，可选，结构同角色，用于登记同一地点
+持续性的环境变化——昼夜/天气/陈设等）。
 
 **`macro_scenes.yaml`** 单条 `macro_scenes[]` 元素：`id` (`macro_NN`)、
 `title`、`source_span`、`raw_text` (原文逐字，不可改写)、`summary`、
@@ -180,12 +190,23 @@ novel_output/小说名_20260911/
 | `id` | string | 阶段3 | `micro_NN`，全项目范围唯一 |
 | `macro_id` | string | 阶段3 | 所属大场景 id |
 | `uses_characters` / `uses_locations` | string[] | 阶段3 | 引用的全局库 id |
-| `visual_hint` | string | 阶段3 | 画面提示（中文，供阶段5写 prompt_en 参考） |
+| `visual_hint` | string | 阶段3 | 画面提示（中文，供阶段5写 prompt_en 参考 + 阶段5 Agent 核查 prompt_en 是否符合情节的依据，需覆盖关键画面元素，不能空泛） |
+| `character_variant_overrides` / `location_variant_overrides` | object \| 不写 | 阶段3（可选） | `{实体id: variant_id}`，只有该场景应使用某个已登记的 `appearance_variants` 变体时才写，不写则用默认 `visual_anchor_en`，见 03 文档 Step 4.5 |
 | `content_blocks` | object[] | 阶段3 | 见下方 `content_block` 结构 |
 | `duration_sec` | number \| null | 阶段4回填 | 4-12 秒范围内，阶段3阶段写入时恒为 `null` |
-| `prompt_en` | string | 阶段5（Agent 手写） | 阶段3不产出，脚本不代为生成，为空视频生成会直接失败；必须嵌入引用到的角色/地点 `visual_anchor_en`，见 05 文档"一致性铁律" |
+| `prompt_en` | string | 阶段5（Agent 手写） | 阶段3不产出，脚本不代为生成，为空视频生成会直接失败；必须嵌入引用到的角色/地点 `visual_anchor_en`（或生效变体的 `visual_override_en`），见 05 文档"一致性铁律" |
 | `video_mode` | string | 阶段5（Agent 手写） | `"reference"` \| `"keyframe"` \| `"text"`，不设置时脚本按 `"text"` 处理 |
 | `status` | string | 阶段5回写 | `"pending"` → `"done"` \| `"failed"` |
+
+**`macro_scene_XX/consistency_report.yaml`**（阶段5 Step 0 由 Agent
+写入，`check_consistency_report.py` 只读不写）：`macro_id`、
+`checked_at`、`entries[]`，单条元素：`micro_id`、`prompt_en_hash`
+(对当前 `prompt_en` 原文算的 `sha1` 前12位，加 `sha1:` 前缀，用于
+过期检测)、`status` (`"pass"` \| `"fail"`)、`checks` (object，固定
+四个键 `character_appearance`/`location_appearance`/
+`cross_scene_drift`/`content_alignment`，各自取值 `"pass"` \|
+`"fail"`)、`notes` (string，简要记录实际对照了哪些依据，不能是空话)。
+详细写法和四项核查维度的定义见 05 文档 Step 0。
 
 `content_block` 结构（`content_blocks[]` 单个元素）：`type`
 (`"narration"` \| `"dialogue"`)、`text` (string，`dialogue` 必须原文
@@ -234,13 +255,15 @@ python .claude/skills/novel-video-studio/scripts/check_project_state.py <output_
 内部修正，重新写文件、重新校验，直到通过。这是保证整条流水线不带着
 "看似完成实则有缺陷"的产物往下传的唯一手段。
 
-**特别地，`check_character_consistency.py`（阶段5角色/场景一致性）
-这类涉及"画面语义是否和素材档案一致"的校验，脚本本身只能做关键词级别
-的启发式检测，退出码 0 只是必要条件，不是充分条件**——脚本查不出同义词
-替换后语义已经变了、角色写反、在场人物对不上原文这类问题。这类校验
-必须是"脚本兜底 + Agent 逐条语义复核"两层都做完才算通过，不能只跑脚本
-看 exit code 就往下走，具体复核清单见子资源 `scene-video-generation`
-Step 0.5。
+**特别地，阶段5"画面语义是否和角色/地点档案、和情节原文一致"这类判断
+不能靠脚本做**——同义词替换后语义已经变了、角色外观写反、在场人物对不
+上原文这类问题机械关键词匹配既会漏检也会误报。这一类校验**完全由
+Agent 逐条语义核查完成，核查结论写入结构化的 `consistency_report.yaml`
+报告文件；`check_consistency_report.py` 只做机械把关**（报告是否覆盖
+了本次全部场景、是否全部标记 pass、有没有在核查通过后 prompt_en 又被
+改动过而报告没更新的"过期"情况），**不做任何语义判断，也不能替代
+Agent 的核查**。四项核查维度、报告怎么写、脚本怎么把关，具体见子资源
+`scene-video-generation` Step 0/Step 0.5。
 
 ### 2.2 阶段间的"回补"是正常流程，不是异常
 

@@ -46,6 +46,17 @@ raw_text 用于对话真实性校验），以及
      是留到阶段4才处理。这只是启发式提示、不是硬性 error——最终是否
      真的超限以阶段4真实 TTS 时长为准，字数估算本身对标点/停顿/语气词
      不敏感，会有偏差。
+  8. 【外观变体引用合法性，error】`character_variant_overrides`/
+     `location_variant_overrides`（可选字段，只有原文明确交代角色/地点
+     外观变化时才会出现）里引用的 variant_id 是否真实存在于对应实体的
+     `appearance_variants` 里、当前 macro_id 是否落在该变体声明的
+     `applies_scope` 内。这是纯粹的引用完整性校验（字段存不存在、id
+     对不对），不涉及"这个变体用得是否合理"这类语义判断——那部分留给
+     阶段5 Agent 语义核查。
+  9. 【visual_hint 质量，warning】visual_hint 过短，或者和本小场景
+     content_blocks 原文没有任何字面重叠，提示阶段5核查 prompt_en 时
+     可能缺乏足够的情节依据可以对照。这也只是字数/字面重叠的弱启发式，
+     不代表 visual_hint 真的写得不好或者一定有问题。
 
 设计上不对文件做任何自动修复。
 
@@ -124,6 +135,17 @@ def _estimate_duration_sec(content_blocks: list[dict]) -> float:
 
 def _normalize(text: str) -> str:
     return _STRIP_RE.sub("", text or "")
+
+
+def _extract_content_keywords(visual_hint: str) -> list[str]:
+    """从 visual_hint 里抠出若干"二字滑动窗口"片段，用于和 content_blocks
+    原文做非常松散的字面重叠检查（不是语义匹配，只是弱信号，命中阈值故意
+    放得很低——2-gram 重叠即可）：visual_hint 本来就是自由改写的中文提示，
+    用完整分句去匹配原文极易因为措辞不同而误报，这里改用比字面重叠更宽松
+    的 2-gram，只要 visual_hint 和原文共享任意一个二字片段就不报警，只有
+    完全没有任何二字重叠（基本等于写串了场景/主体完全不搭边）才提示。"""
+    cleaned = _normalize(visual_hint)
+    return [cleaned[i:i + 2] for i in range(len(cleaned) - 1)] if len(cleaned) >= 2 else []
 
 
 def _extract_quoted_spans(raw_text: str) -> list[str]:
@@ -259,6 +281,87 @@ def check(output_dir: Path, macro_id: str) -> dict:
                 errors.append(f"小场景 {mid} 引用了不存在的地点 id：{lid}")
             elif not (l.get("asset_path") or "").strip():
                 errors.append(f"小场景 {mid} 引用的地点 {lid} 还没有 asset_path（需先补生成素材）")
+
+        # 1.5 外观变体（appearance_variants）引用合法性：character_variant_overrides/
+        # location_variant_overrides 是可选字段，只有原文明确交代了角色/地点外观
+        # 变化（换装/变装/受伤/环境变化等）时才会出现。一旦出现，variant_id 必须
+        # 真实存在于对应实体的 appearance_variants 里，且当前 macro_id 必须落在
+        # 该 variant 声明的 applies_scope 范围内——否则要么是笔误，要么是变体的
+        # 生效范围标错了，都必须在阶段3内部改正，不能带着错误引用进入阶段5
+        # （阶段5的 Agent 语义核查会直接按这里的 override 去找对应 variant 的
+        # 视觉描述，引用错了会导致核查失去依据）。
+        char_overrides = ms.get("character_variant_overrides") or {}
+        for cid, variant_id in char_overrides.items():
+            c = char_by_id.get(cid)
+            if c is None:
+                errors.append(f"小场景 {mid} 的 character_variant_overrides 引用了不存在的角色 id：{cid}")
+                continue
+            if cid not in uses_characters:
+                errors.append(f"小场景 {mid} 的 character_variant_overrides 里的角色 {cid} 不在该小场景的 uses_characters 里")
+            variants = {v.get("variant_id"): v for v in (c.get("appearance_variants") or [])}
+            v = variants.get(variant_id)
+            if v is None:
+                errors.append(
+                    f"小场景 {mid} 把角色 {cid} 指定为外观变体 {variant_id!r}，"
+                    f"但该角色的 appearance_variants 里不存在这个 variant_id，需回阶段1"
+                    f"补登记该变体，或修正这里的 variant_id 拼写"
+                )
+            else:
+                scope = v.get("applies_scope") or []
+                if scope and macro_id not in scope and mid not in scope:
+                    errors.append(
+                        f"小场景 {mid} 使用了角色 {cid} 的变体 {variant_id!r}，"
+                        f"但该变体的 applies_scope={scope} 不包含当前大场景 {macro_id} "
+                        f"也不包含 {mid} 本身，需要把 {macro_id}（或 {mid}）加入该变体的"
+                        f"生效范围，或确认是不是用错了 variant_id"
+                    )
+        loc_overrides = ms.get("location_variant_overrides") or {}
+        for lid, variant_id in loc_overrides.items():
+            l = loc_by_id.get(lid)
+            if l is None:
+                errors.append(f"小场景 {mid} 的 location_variant_overrides 引用了不存在的地点 id：{lid}")
+                continue
+            if lid not in uses_locations:
+                errors.append(f"小场景 {mid} 的 location_variant_overrides 里的地点 {lid} 不在该小场景的 uses_locations 里")
+            variants = {v.get("variant_id"): v for v in (l.get("appearance_variants") or [])}
+            v = variants.get(variant_id)
+            if v is None:
+                errors.append(
+                    f"小场景 {mid} 把地点 {lid} 指定为外观变体 {variant_id!r}，"
+                    f"但该地点的 appearance_variants 里不存在这个 variant_id，需回阶段1"
+                    f"补登记该变体，或修正这里的 variant_id 拼写"
+                )
+            else:
+                scope = v.get("applies_scope") or []
+                if scope and macro_id not in scope and mid not in scope:
+                    errors.append(
+                        f"小场景 {mid} 使用了地点 {lid} 的变体 {variant_id!r}，"
+                        f"但该变体的 applies_scope={scope} 不包含当前大场景 {macro_id} "
+                        f"也不包含 {mid} 本身，需要把 {macro_id}（或 {mid}）加入该变体的"
+                        f"生效范围，或确认是不是用错了 variant_id"
+                    )
+
+        # 1.6 visual_hint 质量（warning）：阶段5的 Agent 语义核查要靠 visual_hint
+        # 对照 prompt_en 是否偏离情节，如果 visual_hint 写得过于简略/空泛（比如
+        # 只有寥寥几个字，或者完全没有提到 content_blocks 里出现的具体名词/地点/
+        # 动作），阶段5就没有足够依据去核对"画面是不是这段情节该有的样子"——这是
+        # 本次新增的检查项，目的是把"核查依据是否充分"这件事尽量提前到阶段3拦下，
+        # 而不是等阶段5核查时才发现无从对照。这只是弱启发式，不做语义判断，只看
+        # 字数和是否与 content_blocks 文本有任何字面重叠。
+        visual_hint = (ms.get("visual_hint") or "").strip()
+        content_text = "".join((b.get("text") or "") for b in (ms.get("content_blocks") or []))
+        if len(visual_hint) < 6:
+            warnings.append(
+                f"小场景 {mid} 的 visual_hint 过短（{len(visual_hint)!r} 字），阶段5 Agent 核查"
+                f"prompt_en 是否符合情节时需要靠 visual_hint 提供画面依据，过短的提示信息量"
+                f"不足，建议补充地点/时间/人物状态/动作等具体画面元素"
+            )
+        elif content_text and not any(seg in content_text for seg in _extract_content_keywords(visual_hint)):
+            warnings.append(
+                f"小场景 {mid} 的 visual_hint（{visual_hint!r}）看起来没有和该小场景 "
+                f"content_blocks 的原文有任何字面重叠，确认是不是写串了场景，或者只是"
+                f"改写程度较大（改写本身不是问题，只是提醒交叉确认一下）"
+            )
 
         content_blocks = ms.get("content_blocks", []) or []
         if not content_blocks:

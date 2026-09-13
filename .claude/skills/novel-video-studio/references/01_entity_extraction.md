@@ -93,7 +93,8 @@
    "short black hair, wearing a worn grey robe, faint scar on left cheek",
  "voice_profile": "青年男声，清朗略带江湖气",
  "first_appear": "第1章 第2段", "relations": ["char_02:挚友"],
- "asset_path": null, "face_reference_id": null}
+ "asset_path": null, "face_reference_id": null,
+ "appearance_variants": []}
 ```
 
 `locations.json` 条目字段：
@@ -103,12 +104,79 @@
  "description_zh": "...", "description_en": "...(含 art_style)",
  "visual_anchor_en": "a rustic wooden inn at night, dim lantern light, "
    "stone-paved entrance, weathered wooden signboard",
- "asset_path": null}
+ "asset_path": null,
+ "appearance_variants": []}
 ```
 
 地点的 `visual_anchor_en` 同样要具体到画面元素级别：建筑类型/材质、
 典型光照氛围、一两个一眼能认出"就是这个地方"的标志性视觉细节，不要写
 "环境优美""古色古香"这类无法直接转化成画面的描述。
+
+### Step 2.6：外观变体（`appearance_variants`）——只在原文明确交代外观
+### 变化时才登记，不要滥用
+
+`visual_anchor_en` 假设的是"这个角色/地点无论出现在哪个场景外观都不变"，
+但小说里经常有原文明确写出的外观变化：换装、变装、季节更替、受伤后
+包扎绷带、地点昼夜/天气/装饰变化等。这类变化如果不登记，会出现两种
+坏结果：要么阶段5硬套着原锚点写 prompt_en，画面和原文明确交代的外观
+对不上；要么每次都各写各的，同一次变化期间的多个小场景外观互相也对
+不上（这也是"同一大场景内场景/角色前后不一致"的常见来源之一）。
+
+**什么时候要登记一条 `appearance_variants`**（缺一不可）：
+1. 原文有明确文字依据（换装描写、时间/季节跳跃、场景陈设变化等），
+   不是"这一镜头感觉应该换个造型"这种主观判断；
+2. 这个变化会在**不止一个** micro_scene 里持续存在（如果只是单个镜头
+   一次性的细节，比如"她低头看了看自己沾了泥的裙摆"，直接写进那一条
+   `prompt_en` 即可，不需要登记变体——登记变体是为了让"这段时间内的
+   多个镜头保持同一套新外观"，不是给每个镜头的临时细节建档）。
+
+不满足以上任一条时，不要新建变体，按 Step 2 的默认 `visual_anchor_en`
+处理即可——变体机制是为了解决"持续性、有原文依据的外观变化"，滥用会
+让 `appearance_variants` 膨胀成"每个场景一条"，反而失去锚点该有的
+约束力。
+
+登记方式：在对应角色/地点条目的 `appearance_variants` 数组追加一条：
+
+```json
+{"variant_id": "var_01",
+ "label_zh": "婚礼当日红色婚服",
+ "trigger_zh": "第7章：'她换上了那件绣金红裙，鬓边簪了一支金步摇'",
+ "visual_override_en": "a young Chinese woman in her twenties, same "
+   "build and face as before, now wearing a red embroidered wedding "
+   "gown with gold trim, hair pinned up with a golden hairpin",
+ "applies_scope": ["macro_05", "macro_06"],
+ "asset_path": null}
+```
+
+字段说明：
+- `variant_id`：`var_NN`，在该角色/地点内部唯一（不要求全局唯一）；
+- `label_zh`：一句话中文标签，方便人工快速识别这是哪个变体；
+- `trigger_zh`：**必填**，引用原文依据（章节+摘录或转述），阶段5/
+  阶段3回补时用来判断"这个变体现在该不该生效"，也是防止滥用变体的
+  留痕；
+- `visual_override_en`：完整的、可以直接整句替换 `visual_anchor_en`
+  使用的英文描述——**要在不可变的核心特征（脸型/体型/发色/显著特征）
+  基础上，只替换服装/发型等确实变化的部分**，不是重新写一套完全不
+  相关的描述，保证"这是同一个人，只是换了身衣服"而不是"变成了另一
+  个人"；
+- `applies_scope`：这个变体生效的范围，写 `macro_id` 列表（该大场景
+  内该变体默认全程生效）或具体 `micro_id`（只在个别镜头生效，更精确）；
+  阶段3/阶段5会校验当前场景是否落在这个范围内，不在范围内不允许使用
+  这个变体（见 `check_scene_detail.py` 校验项8）；
+  超出这个范围后默认自动回落到主 `visual_anchor_en`，不需要显式声明
+  "变体结束"；
+- `asset_path`：可选，只有这个变体的外观差异较大、会在多个大场景反复
+  用到、值得单独生成一张定妆图（用于阶段5 `video_mode: reference`）
+  时才生成，见 `04_assets_and_audio.md`；多数情况下靠 `prompt_en`
+  文本里的 `visual_override_en` 覆盖即可，不必每个变体都出图。
+
+变体的登记时机：可以在阶段1全文抽取时就发现并登记（如果通读时已经
+看到换装剧情），更常见的是阶段3处理到具体大场景时才发现"这段原文里
+角色的外观和当前锚点对不上"，此时按模式B的方式，只更新这一个角色的
+`appearance_variants`（不需要重新跑全文抽取），登记完立即覆盖写回
+`characters.json`/`locations.json`，再回阶段3把这条 micro_scene 的
+`character_variant_overrides`/`location_variant_overrides` 填上对应
+`variant_id`（字段说明见 `03_scene_detail_planning.md`）。
 
 ### Step 2.5：一致性字段自查（跑 Step 3 校验之前）
 
@@ -151,9 +219,15 @@ python .claude/skills/novel-video-studio/scripts/check_entities.py <output_dir>
 `child`/`teen`/`youth`/`middle_aged`/`elderly` 之一；每个地点
 `description_zh`/`description_en`/`visual_anchor_en` 非空；同名未合并
 的启发式提示（仅警告不阻断）。退出码非 0 时不允许交付下游——
-`visual_anchor_en`/`age_range`/`gender` 是阶段5一致性校验
-（`check_character_consistency.py`）能否生效的前提，这里不把关，
-下游的一致性检查就无从查起。
+`visual_anchor_en`/`age_range`/`gender` 是阶段5 Agent 语义一致性核查
+（见 `05_scene_video_generation.md`）能否有依据可查的前提，这里不把关，
+下游的核查就无从查起。
+
+**`appearance_variants` 不是本脚本的校验范围**（它是可选字段，本脚本
+只检查非空数组内每条记录的字段是否完整：`variant_id`/`trigger_zh`/
+`visual_override_en` 非空，`variant_id` 在同一实体内不重复；`variant_id`
+被哪些 `micro_scene` 实际引用、引用范围是否越界，属于阶段3
+`check_scene_detail.py` 的校验范围，见该文档校验项8）。
 
 **向用户展示**：识别出的角色/地点清单（数量+简要身份+声音设定一句话）、
 校验通过结果。
@@ -167,5 +241,15 @@ python .claude/skills/novel-video-studio/scripts/check_entities.py <output_dir>
   `visual_anchor_en` 里写的年龄描述和 `age_range` 分组是否对得上）只能
   靠 Step 2.5 人工自查，`check_entities.py` 只检查字段非空，不做跨字段
   语义校验；`age_range` 只有五档粗粒度分组，无法表达"看起来比实际年龄
-  年轻"这类细节，下游一致性校验（阶段5）也只按这五档粗粒度冲突检测，
-  查不出更细微的年龄描述偏差。
+  年轻"这类细节，下游一致性核查（阶段5，全部由 Agent 语义核查完成，见
+  `05_scene_video_generation.md`）也依赖这五档粗粒度分组，查不出更细微
+  的年龄描述偏差；
+- `appearance_variants` 的 `trigger_zh` 是否真的对应原文、`visual_override_en`
+  是否真的只改了服装/发型而没有意外改变角色的核心特征，都依赖 Agent
+  自己写的时候把关，脚本只检查字段"非空"，不做语义层面的"这条变体
+  写得对不对"的判断；变体之间 `applies_scope` 是否有意外重叠/空隙
+  （比如两个变体同时声明覆盖同一个 macro_id）也不在脚本校验范围，出现
+  这种情况时以 `scene_detail.yaml` 里 micro_scene 实际填的
+  `character_variant_overrides` 为准，脚本会校验那个引用本身是否合法
+  （见阶段3 `check_scene_detail.py` 校验项8），但不检测变体定义之间
+  是否互相矛盾。

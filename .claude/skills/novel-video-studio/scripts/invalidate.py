@@ -32,6 +32,20 @@ references/revision_and_rollback.md 里的传播规则重新走对应阶段的�
 （`video.mp4`）由脚本自动判断：只要有任何大场景被拉低于 done，就会顺带
 删除已存在的 `video.mp4`（避免用户误把旧成片当最终结果），并在
 stdout 里明确提示。
+
+`macro_scene_XX/consistency_report.yaml`（阶段5 Agent 语义核查报告，
+见 05_scene_video_generation.md）的联动规则：
+- `level=macro`：整个报告文件直接删除；
+- `level=detail`：目标 micro_scene 的核查条目直接删除（这个级别可能
+  牵动 content_blocks/visual_hint/uses_characters 本身，即使这一刻
+  `prompt_en` 文本还没跟着改，旧核查结论也已经不可信，不能靠 hash
+  校验兜底）；
+- `level=assets`/`video`：不动核查报告，内容没变，`prompt_en` 真的被
+  改动的话由 `check_consistency_report.py` 的 hash 过期检测自然拦下；
+- `--global-entity`：该实体的 `visual_anchor_en`/变体本身就是改动
+  来源，即使引用它的 `prompt_en` 文本没变，核查结论依据的锚点已经
+  变了，所以会额外删除所有引用该实体的 micro_scene 的核查条目（不止
+  assets 级别本身清理的音频/clip）。
 """
 
 from __future__ import annotations
@@ -80,6 +94,30 @@ def _rm(path: Path, removed: list) -> None:
         removed.append(str(path))
 
 
+def _strip_consistency_report_entries(macro_dir: Path, micro_ids, removed: list, warnings: list) -> None:
+    """把 consistency_report.yaml 里指定 micro_id 的核查条目整条删掉（不是
+    仅仅让它"过期"）。用于 detail 级别以上的失效：这类改动可能牵动
+    content_blocks/visual_hint/uses_characters 本身，即使 Agent 一时没有
+    改动 prompt_en 文本（hash 因此不变），旧的核查结论也已经不能代表新
+    内容——直接删掉条目，逼 check_consistency_report.py 报"缺少核查条目"，
+    强制阶段5重新走一遍 Step 0，而不是依赖 hash 校验（hash 只能查出
+    "prompt_en 文本变了"，查不出"prompt_en 没变但它所属的场景定义变了"
+    这种情况）。"""
+    report_path = macro_dir / "consistency_report.yaml"
+    report = _load_yaml(report_path)
+    if not report:
+        return
+    entries = report.get("entries", []) or []
+    kept = [e for e in entries if e.get("micro_id") not in micro_ids]
+    if len(kept) != len(entries):
+        report["entries"] = kept
+        _dump_yaml(report_path, report)
+        warnings.append(
+            f"{report_path} 中 {len(entries) - len(kept)} 条核查记录已失效并被删除，"
+            f"对应 micro_scene 需要在阶段5重新走一遍 Step 0 语义核查"
+        )
+
+
 def invalidate_macro(out_dir: Path, macro_id: str, level: str, micro_ids, removed: list, warnings: list):
     suffix = macro_id.replace("macro_", "")
     macro_dir = out_dir / f"macro_scene_{suffix}"
@@ -98,6 +136,7 @@ def invalidate_macro(out_dir: Path, macro_id: str, level: str, micro_ids, remove
         macro_entry["status"] = "pending"
         if detail_path.exists():
             _rm(detail_path, removed)
+        _rm(macro_dir / "consistency_report.yaml", removed)
         for pattern in ["audio/*.wav", "clips/*.mp4", f"macro_scene_{suffix}.mp4"]:
             for p in macro_dir.glob(pattern):
                 _rm(p, removed)
@@ -129,6 +168,14 @@ def invalidate_macro(out_dir: Path, macro_id: str, level: str, micro_ids, remove
 
     _dump_yaml(detail_path, detail)
 
+    # detail 级别可能牵动 content_blocks/visual_hint/uses_characters 本身，
+    # 即使 prompt_en 文本这一刻还没改，旧的核查条目也已经不可信——直接
+    # 删掉，逼阶段5重新核查。assets/video 级别不改内容，只要 Agent 没动
+    # prompt_en 文本，旧核查结论仍然成立，留给 check_consistency_report.py
+    # 的 hash 校验去把关就够了，不在这里强制清空。
+    if level == "detail":
+        _strip_consistency_report_entries(macro_dir, target_ids, removed, warnings)
+
     # 该大场景已经不再是"全部 micro 就绪"，大场景状态和已合成视频要跟着回退
     macro_entry["status"] = "planned" if level != "macro" else "pending"
     _rm(macro_dir / f"macro_scene_{suffix}.mp4", removed)
@@ -157,6 +204,20 @@ def invalidate_global_entity(out_dir: Path, entity_id: str, removed: list, warni
         if entity_id in (m.get("uses_characters", []) + m.get("uses_locations", [])):
             invalidate_macro(out_dir, m["id"], "assets", None, removed, warnings)
             affected.append(m["id"])
+            # invalidate_macro 在 assets 级别不会清空核查报告（内容没变，
+            # 只是素材要重生成），但这里角色/地点的 visual_anchor_en 本身
+            # 就是改动来源（比如外形描述改了），核查结论依据的锚点已经
+            # 变了，即使 prompt_en 文本原封不动也必须重新核查——按引用
+            # 关系单独删掉这些 micro_scene 的核查条目。
+            suffix = m["id"].replace("macro_", "")
+            macro_dir = out_dir / f"macro_scene_{suffix}"
+            detail = _load_yaml(macro_dir / "scene_detail.yaml") or {}
+            affected_micro_ids = {
+                ms.get("id") for ms in detail.get("micro_scenes", []) or []
+                if entity_id in (ms.get("uses_characters", []) or []) + (ms.get("uses_locations", []) or [])
+            }
+            if affected_micro_ids:
+                _strip_consistency_report_entries(macro_dir, affected_micro_ids, removed, warnings)
     if not affected:
         warnings.append(f"{entity_id} 没有被任何 macro_scene 引用（或全局库/大场景引用列表未记录该 id）")
     return affected
