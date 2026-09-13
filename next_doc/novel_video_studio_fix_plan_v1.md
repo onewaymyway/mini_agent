@@ -53,7 +53,15 @@ return max(0.5, chars / 4.0)
    带 `duration_estimated: True` 标记，调用方把这个信息汇总打印出来，不
    让估算值和真实值混在一起看不出区别。
 
-- [ ] 未开始
+- [x] 已完成：`scripts/tts_engine.py` —— 删除按文件名字数估算的
+  fallback；`_ffprobe_duration()` 两级都失败时改为直接抛 `TTSError`；
+  新增 `_estimate_duration_by_text()`（按**文本**真实字数估算）；
+  `synthesize()` 新增 `allow_estimated_duration: bool = False` 参数，
+  显式打开时才允许退回估算，返回结果带 `duration_estimated` 标记；
+  CLI 新增 `--allow-estimated-duration` 开关。`scripts/
+  synthesize_scene_audio.py` 透传该参数并在 `engine_usage` 汇总旁新增
+  `estimated_duration_block_count`，逐 block 日志里对估算值加显式标注。
+  `references/04_assets_and_audio.md` 已补充说明。
 
 ---
 
@@ -90,7 +98,12 @@ id+1，或者在原 id 后加 `b`）。这本身不会让现有脚本报错（`i
    因为 `_b` 后缀本身是允许的合法用法，只有"顺序不连续"这个信号本身不能
    100% 判定为错误，需要 Agent 结合上下文确认。
 
-- [ ] 未开始
+- [x] 已完成：`references/revision_and_rollback.md` Step 1 新增硬规则
+  （原地编辑、禁止删除+追加到末尾，`<原id>b` 拆分必须紧邻原条目）。
+  `scripts/check_scene_detail.py` 新增 `_extract_id_number()` +
+  `_check_order_vs_id_number()`，比较 `micro_scenes` 列表顺序与 id
+  数字顺序，数字顺序发生"回退"时给出具体错位位置的 warning（非
+  error），已本地构造 fixture 验证能正确触发。
 
 ---
 
@@ -117,7 +130,13 @@ error: unrecognized arguments: --macro-id macro_01
    时提示"当前环境 ffprobe 不可用，duration_sec 的真实性无法通过时长本身
    验证，建议先修好 ffprobe 再信任已有数据"。
 
-- [ ] 未开始
+- [x] 已完成：`scripts/check_assets_and_audio_v2.py` 新增 `--macro-id`
+  （`nargs="*"`，参数风格对齐 `check_clips_v2.py`）；新增独立的时长
+  合理性 warning（按 4.5字/秒粗估理论时长，比值超出 0.4~2.5 区间报
+  warning，附具体数字）；新增 `_ffprobe_available()` 环境自检 warning。
+  已本地构造 fixture 验证 `--macro-id` 过滤、比值告警、不存在的
+  `--macro-id` 报错均按预期工作。`references/04_assets_and_audio.md`
+  已同步更新 Step 3 说明。
 
 ---
 
@@ -173,7 +192,16 @@ error: unrecognized arguments: --macro-id macro_01
    打印停止超过一个超时周期（见上面配置的 timeout 值）仍没有新行，才
    应该判断为真正卡死，去检查网络/CosyVoice 环境。
 
-- [ ] 未开始
+- [x] 已完成：`scripts/tts_engine.py::_run_edge_tts()` 用
+  `asyncio.wait_for` 包裹网络请求（默认 45s，可配置），超时抛
+  `TTSError`；`_try_cosyvoice()` 改用
+  `ThreadPoolExecutor().submit(...).result(timeout=...)`（默认 60s，
+  可配置）。`scripts/synthesize_scene_audio.py::run()` 补齐逐
+  content_block / 逐 micro_scene / 总耗时汇总的过程打印，全部走
+  `print(..., file=sys.stderr, flush=True)`；CLI 新增
+  `--edge-tts-timeout`/`--cosyvoice-timeout`。`references/
+  04_assets_and_audio.md` 与 `references/error_handling.md` 均已补充
+  "长时间无输出但仍在正常运行"的判断说明。
 
 ---
 

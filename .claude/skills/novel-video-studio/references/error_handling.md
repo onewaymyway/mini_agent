@@ -84,15 +84,42 @@ skill 自带，本 skill 不重复实现），行为规律一致，按下面的�
 `[FAST-FAIL]` 提示，直接重新整体跑一遍希望"这次能过"——参数错误不会
 因为重跑就自己变好，必须先改配置，改完只重跑那一个失败条目。
 
+## 三、TTS 配音（阶段4）：会长时间无输出但仍在正常运行
+
+`synthesize_scene_audio.py`（TTS 配音）走的是 CosyVoice/edge-tts 本地
+引擎，不经过 Agnes API，不适用上面两类基于 HTTP 状态码的分类，但有自己
+的一套超时 + 过程输出机制（见
+`next_doc/novel_video_studio_fix_plan_v1.md` 问题4）：
+
+- `tts_engine.py` 的 edge-tts 在线请求、CosyVoice 本地推理都带了超时
+  保护（默认 45s / 60s，`synthesize_scene_audio.py` 可通过
+  `--edge-tts-timeout`/`--cosyvoice-timeout` 调整），超时会被记入该
+  block 的失败原因（CosyVoice 超时会先尝试降级到 edge-tts），不会让
+  整个脚本无限期挂起；
+- `synthesize_scene_audio.py::run()` 会逐 block 打印进度到 stderr
+  （`[macro_XX][micro_XX][block i/n] 引擎=... 用时=... 时长=...`），
+  这是本 skill 里**少数正常情况下就会持续输出中间日志的步骤**——一个
+  大场景多个 micro_scene、每个 2-3 个 content_block，edge-tts 网络慢
+  一点跑几分钟很正常，日志会随之持续打印；
+- **判断是否真的卡死**：只要日志还在持续更新（哪怕间隔较长），就是
+  正常运行中；如果打印停止超过一个超时周期（配置的 timeout 值）仍没有
+  新行，才应该判断为真正卡死，去检查网络（edge-tts）或本地
+  GPU/模型环境（CosyVoice）。**不要**看到命令暂时没输出就直接判定为
+  挂死并中断——先看有没有超过上面这个时间窗口。
+
 ## 已知局限（如实说明）
 
 - `agnes_tools.py` 的快速失败判断按状态码 `400/401/403/404/422` 归类，
   如果 API 未来返回其它状态码承载同类"参数/内容"错误，脚本仍会把它当
   可重试错误走完 `max_retries` 才放弃——归类规则可能需要随 API 实际
   返回的状态码演进；
-- `synthesize_scene_audio.py`（TTS 配音）走的是 CosyVoice/edge-tts 本地
-  引擎，不经过 Agnes API，本次改动不涉及配音这一步的错误处理，TTS 失败
-  仍按原有的降级/报错逻辑处理。
+- CosyVoice 推理超时依赖线程池 `result(timeout=...)`，Python 线程无法
+  被强制中断，超时只是不再等待结果、判定为失败走降级/报错，底层线程
+  可能仍在后台跑一段时间，不是真正杀掉进程；
+- `tts_engine.py` 的时长读取默认要求 `ffprobe`/`mutagen` 至少一个可用，
+  都失败时默认直接报错（不产出假数据），只有显式加
+  `--allow-estimated-duration` 才会退回按文本字数估算，且会在结果里
+  标记 `duration_estimated: true`。
 
 ## 常见非限流错误对照
 

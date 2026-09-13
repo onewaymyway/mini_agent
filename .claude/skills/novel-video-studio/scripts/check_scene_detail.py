@@ -25,7 +25,17 @@ raw_text 用于对话真实性校验），以及
   4. 每个 micro_scene 至少有一个 content_blocks，且不能全是空文本。
   5. micro_scene 的 id 在整个项目范围内（扫描所有 macro_scene_*/
      scene_detail.yaml）不重复。
-  6. 【粗估时长自查，warning】视频生成接口（gen_video_with_text）硬性
+  6. 【列表顺序 vs id 数字顺序，warning】`micro_scenes` 列表的书写顺序
+     就是真实叙事顺序，正常情况下应该和 id 里的数字大小顺序一致（比如
+     `micro_02, micro_03, micro_04b, micro_05, ...`，`b` 后缀是允许的
+     合法拆分场景写法）。如果某次修订用"删除旧条目 + 把新内容当成全新
+     场景追加到列表末尾"的方式改了已有 micro_scene，会导致列表顺序与
+     id 数字顺序脱节（id 本身既不连续也不按列表顺序递增）——这不是
+     100% 能判定为错误的信号（比如项目历史上确实按这个顺序分配过 id），
+     只作为 warning 提示"疑似修订时使用了删除+追加到末尾的方式，请确认
+     列表顺序仍是叙事顺序"，交给 Agent/人工结合上下文确认，见
+     `references/revision_and_rollback.md` 的硬规则。
+  7. 【粗估时长自查，warning】视频生成接口（gen_video_with_text）硬性
      要求每个 clip 4-12 秒，阶段4配音后会用真实音频时长做硬校验
      （check_assets_and_audio_v2.py），但那已经是配完音之后——如果规划
      阶段本身文本量明显过多/过少，等配完音才发现超限，回退成本更高。
@@ -51,6 +61,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 try:
     import yaml
@@ -142,6 +153,45 @@ def _load_yaml(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
+_ID_NUMBER_RE = re.compile(r"(\d+)")
+
+
+def _extract_id_number(mid: str) -> Optional[int]:
+    """从形如 `micro_13`/`micro_35b` 的 id 里提取数字部分（`b` 等后缀
+    忽略），提取不到时返回 None（调用方需要跳过这类无法比较的 id）。"""
+    m = _ID_NUMBER_RE.search(mid or "")
+    return int(m.group(1)) if m else None
+
+
+def _check_order_vs_id_number(micro_scenes: list[dict]) -> list[str]:
+    """比较 `micro_scenes` 列表的书写顺序（=叙事顺序）与 id 数字大小
+    顺序是否一致。用"运行时最大值"而不是严格递增来判断，允许 id 本身
+    有跳号（比如 01/03/05），只在数字顺序发生"回退"时报出具体是哪几条
+    错位——这通常是"删除旧条目+追加到末尾"修订手法留下的痕迹。这只是
+    warning，不是 error，因为 `_b` 后缀本身是合法用法，顺序异常需要
+    结合上下文确认（见 revision_and_rollback.md）。"""
+    warnings: list[str] = []
+    running_max: Optional[int] = None
+    running_max_mid: Optional[str] = None
+    for pos, ms in enumerate(micro_scenes):
+        mid = ms.get("id", "<无id>")
+        num = _extract_id_number(mid)
+        if num is None:
+            continue
+        if running_max is not None and num < running_max:
+            warnings.append(
+                f"micro_scenes 列表第{pos + 1}位的 id={mid}（数字部分={num}）比"
+                f"列表中此前出现过的最大编号 {running_max_mid}（数字部分={running_max}）"
+                f"更小，列表顺序与 id 数字顺序不一致，疑似修订时使用了"
+                f"删除旧条目+追加到列表末尾的方式，请确认列表顺序仍是叙事顺序"
+                f"（合法的 `<原id>b` 拆分写法应紧邻原条目之后，不应出现在这里）"
+            )
+        else:
+            running_max = num
+            running_max_mid = mid
+    return warnings
+
+
 def _macro_scene_dir_name(macro_id: str) -> str:
     if macro_id.startswith("macro_"):
         return f"macro_scene_{macro_id[len('macro_'):]}"
@@ -184,6 +234,9 @@ def check(output_dir: Path, macro_id: str) -> dict:
     micro_scenes = detail_data.get("micro_scenes", []) if isinstance(detail_data, dict) else []
     if not micro_scenes:
         errors.append(f"{scene_dir}/scene_detail.yaml 不存在或没有任何 micro_scenes")
+
+    # 6. 列表顺序 vs id 数字顺序（warning）
+    warnings.extend(_check_order_vs_id_number(micro_scenes))
 
     characters_data = _load_json(output_dir / "global" / "characters.json")
     locations_data = _load_json(output_dir / "global" / "locations.json")
@@ -264,7 +317,7 @@ def check(output_dir: Path, macro_id: str) -> dict:
         if not has_non_empty:
             errors.append(f"小场景 {mid} 的所有 content_blocks 文本均为空")
 
-        # 6. 粗估时长自查（warning，不阻断）：文本量明显过多/过少时提前
+        # 7. 粗估时长自查（warning，不阻断）：文本量明显过多/过少时提前
         # 提示，避免留到阶段4真实配音后才发现超出 4-12 秒硬限。
         if has_non_empty:
             est_dur = _estimate_duration_sec(content_blocks)

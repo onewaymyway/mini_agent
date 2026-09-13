@@ -2,7 +2,7 @@
 content_blocks 配音）的产物。
 
 用法：
-    python check_assets_and_audio_v2.py <output_dir>
+    python check_assets_and_audio_v2.py <output_dir> [--macro-id macro_01 ...]
 
 检查：
   1. 所有在 macro_scene_*/scene_detail.yaml 里被引用的角色/地点，在
@@ -15,6 +15,18 @@ content_blocks 配音）的产物。
   3. 每个 micro_scene 的 duration_sec 是否已回填（非 null）且落在
      4–12 秒范围内——超出范围说明该小场景需要回
      novel-scene-detail-planner 拆分/合并 content_blocks，重新配音。
+  4. 【时长合理性自查，warning，不依赖问题1是否已修好】用 03 文档同款的
+     粗估语速（4.5字/秒）算出每个 micro_scene 全部 content_blocks 的理论
+     时长，与实际 duration_sec 做比值，比值明显偏离（实际不足理论值40%
+     或超过理论值250%）时报 warning，附带具体数字——这类偏离通常意味着
+     `duration_sec` 是假数据/串号，即使数值本身落在 4-12 秒硬范围内、
+     不会被 3 拦下，也值得人工核实。
+  5. 【环境自检，warning】探测 `ffprobe` 是否能正常调用，探测不到时提示
+     `duration_sec` 的真实性无法通过时长本身验证，建议先修好 ffprobe。
+
+`--macro-id`（可传多个，不传则查全部，参数风格对齐 check_clips_v2.py）
+支持只校验某一个/几个大场景，方便在 SKILL.md §2.3 的逐场景循环中定向
+校验当前正在处理的大场景，不必等所有大场景都配完音才能跑校验。
 
 退出码：
   0 = 全部通过
@@ -25,6 +37,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -33,6 +47,14 @@ try:
 except ImportError:
     print(json.dumps({"ok": False, "errors": ["缺少 pyyaml 依赖，请先 pip install pyyaml"]}, ensure_ascii=False, indent=2))
     sys.exit(1)
+
+# 与 check_scene_detail.py 的粗估语速保持一致，用于问题4的"时长合理性"
+# 自查——这里的估算目的和 check_scene_detail.py 不同：check_scene_detail.py
+# 是规划阶段的提前预警，这里是配完音之后的兜底复核，独立发现"时长和文本
+# 长度对不上"这种此前会被静默接受的数据异常（不依赖问题1本身是否已修好）。
+_ROUGH_CHARS_PER_SEC = 4.5
+_REASONABLE_RATIO_LOW = 0.4   # 实际值低于理论值 40% 时报 warning
+_REASONABLE_RATIO_HIGH = 2.5  # 实际值高于理论值 250% 时报 warning
 
 
 def _load_json(path: Path) -> dict:
@@ -49,18 +71,50 @@ def _load_yaml(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def check(output_dir: Path, min_sec: float, max_sec: float) -> dict:
+def _macro_dir_name(macro_id: str) -> str:
+    if macro_id.startswith("macro_"):
+        return f"macro_scene_{macro_id[len('macro_'):]}"
+    return f"macro_scene_{macro_id}"
+
+
+def _ffprobe_available() -> bool:
+    if shutil.which("ffprobe") is None:
+        return False
+    try:
+        subprocess.run(
+            ["ffprobe", "-version"], capture_output=True, timeout=10, check=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def check(output_dir: Path, min_sec: float, max_sec: float, macro_ids: list | None = None) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
+
+    if not _ffprobe_available():
+        warnings.append(
+            "当前环境 ffprobe 不可用，duration_sec 的真实性无法通过时长本身验证，"
+            "建议先修好 ffprobe 再信任已有数据（另见下面的时长合理性 warning，"
+            "可作为 ffprobe 不可用时的部分兜底，但不能完全替代）"
+        )
 
     characters_data = _load_json(output_dir / "global" / "characters.json")
     locations_data = _load_json(output_dir / "global" / "locations.json")
     char_by_id = {c.get("id"): c for c in characters_data.get("characters", [])}
     loc_by_id = {l.get("id"): l for l in locations_data.get("locations", [])}
 
-    detail_files = sorted(output_dir.glob("macro_scene_*/scene_detail.yaml"))
-    if not detail_files:
-        errors.append("没有找到任何 macro_scene_*/scene_detail.yaml，检查是否已跑完 novel-scene-detail-planner")
+    if macro_ids:
+        detail_files = [output_dir / _macro_dir_name(m) / "scene_detail.yaml" for m in macro_ids]
+        missing = [str(f) for f in detail_files if not f.exists()]
+        for f in missing:
+            errors.append(f"{f} 不存在")
+        detail_files = [f for f in detail_files if f.exists()]
+    else:
+        detail_files = sorted(output_dir.glob("macro_scene_*/scene_detail.yaml"))
+        if not detail_files:
+            errors.append("没有找到任何 macro_scene_*/scene_detail.yaml，检查是否已跑完 novel-scene-detail-planner")
 
     total_micro_scenes = 0
     total_duration = 0.0
@@ -104,6 +158,21 @@ def check(output_dir: Path, min_sec: float, max_sec: float) -> dict:
                 elif duration_sec > max_sec:
                     errors.append(f"小场景 {mid} 时长 {duration_sec}s 超过上限 {max_sec}s，需要拆分 content_blocks 重新配音")
 
+                # 4. 时长合理性自查：与文本量粗估的理论时长做比值，明显偏离
+                # 时报 warning，独立发现"时长和文本对不上"这类数据异常，
+                # 不依赖问题1（tts_engine.py 时长估算 bug）是否已经修好。
+                total_chars = sum(len((b.get("text") or "").strip()) for b in content_blocks)
+                if total_chars > 0:
+                    theoretical_sec = total_chars / _ROUGH_CHARS_PER_SEC
+                    ratio = duration_sec / theoretical_sec if theoretical_sec > 0 else None
+                    if ratio is not None and (ratio < _REASONABLE_RATIO_LOW or ratio > _REASONABLE_RATIO_HIGH):
+                        warnings.append(
+                            f"小场景 {mid} 实际 duration_sec={duration_sec}s，按文本共{total_chars}字、"
+                            f"粗估语速{_ROUGH_CHARS_PER_SEC}字/秒算出的理论时长约{theoretical_sec:.1f}s，"
+                            f"比值={ratio:.2f}（合理区间约{_REASONABLE_RATIO_LOW}~{_REASONABLE_RATIO_HIGH}），"
+                            f"这条时长和文本长度明显对不上，大概率是假数据或串号，建议人工核实/重新配音"
+                        )
+
     return {
         "ok": not errors,
         "errors": errors,
@@ -121,9 +190,10 @@ def main() -> None:
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--min-sec", type=float, default=4.0)
     parser.add_argument("--max-sec", type=float, default=12.0)
+    parser.add_argument("--macro-id", nargs="*", default=None, help="只校验指定的大场景，不传则校验全部")
     args = parser.parse_args()
 
-    result = check(args.output_dir, args.min_sec, args.max_sec)
+    result = check(args.output_dir, args.min_sec, args.max_sec, args.macro_id)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     sys.exit(0 if result["ok"] else 1)
 

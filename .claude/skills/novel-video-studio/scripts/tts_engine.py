@@ -23,7 +23,9 @@ CosyVoice 的具体 Python API 因版本而异（本模块参考的是社区广�
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -35,13 +37,47 @@ DEFAULT_EDGE_TTS_VOICE = "zh-CN-XiaoxiaoNeural"
 # 可通过环境变量 COSYVOICE_MODEL_DIR 覆盖。
 DEFAULT_COSYVOICE_MODEL_DIR = "pretrained_models/CosyVoice-300M"
 
+# edge-tts 在线请求 / CosyVoice 本地推理的默认超时（秒），可通过
+# synthesize() 的参数覆盖。见 next_doc/novel_video_studio_fix_plan_v1.md
+# 问题4：这两处调用此前完全没有超时保护，网络不通/模型很慢时会无限期
+# 挂起，且外部无法区分"卡死"和"正常运行中"。
+DEFAULT_EDGE_TTS_TIMEOUT_SEC = 45.0
+DEFAULT_COSYVOICE_TIMEOUT_SEC = 60.0
+
+# 按文本真实字数估算时长的粗略语速（字/秒），仅在显式打开
+# allow_estimated_duration 时使用，且只用于"未合成前无法拿到真实文件"
+# 或者"ffprobe/mutagen 都读不出时长"的兜底场景。
+_ESTIMATE_CHARS_PER_SEC = 4.0
+
 
 class TTSError(Exception):
     pass
 
 
+def _estimate_duration_by_text(text: str) -> float:
+    """按**文本真实字数**（不是文件名）粗略估算时长，约
+    `_ESTIMATE_CHARS_PER_SEC` 字/秒。只应在 `allow_estimated_duration=True`
+    且 ffprobe/mutagen 都失败时调用，返回值必须让调用方标记
+    `duration_estimated: True`，不能和真实测得的时长混在一起看不出区别。
+    """
+    chars = len(re.sub(r"\s", "", text or ""))
+    return max(0.5, chars / _ESTIMATE_CHARS_PER_SEC)
+
+
 def _ffprobe_duration(path: Path) -> float:
-    """读音频真实时长。优先 ffprobe，不可用时用 mutagen/Python fallback。"""
+    """读音频**真实**时长。优先 ffprobe，不可用时用 mutagen。
+
+    [BUGFIX，见 next_doc/novel_video_studio_fix_plan_v1.md 问题1] 此前
+    这里在 ffprobe/mutagen 都失败时，还有第三级"fallback"按 `path.name`
+    （音频文件名字符串，形如 `narration_seg_micro_16_00.wav`）估算时长——
+    这是一次传参错误（应该传真正要合成的文本，却传了文件名），不是"简陋
+    但方向对"的近似，而且这个 fallback 不报任何错，产出的假数据会被当成
+    真实数据一路写进 `scene_detail.yaml` 并通过下游所有校验。现在两级都
+    失败时直接抛 `TTSError`，交给调用方按"该 block 配音/读取时长失败"
+    处理（会体现在 errors 里，不会被静默接受）。如果确实需要在读不到真实
+    时长时退回估算，调用方应显式使用 `synthesize()` 的
+    `allow_estimated_duration=True`，并按**文本**（而不是文件名）估算。
+    """
     try:
         out = subprocess.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json",
@@ -60,33 +96,65 @@ def _ffprobe_duration(path: Path) -> float:
             return float(audio.info.length)
     except Exception:
         pass
-    # 最后 fallback：按文本字数估算（约 4 字/秒）
-    import re
-    chars = len(re.sub(r'\s', '', path.name))
-    return max(0.5, chars / 4.0)
+    raise TTSError(
+        f"无法读取 {path} 的真实音频时长（ffprobe 和 mutagen 都失败），"
+        f"当前环境的 ffprobe 可能不可用，请先检查/修复 ffprobe，或者显式传入 "
+        f"allow_estimated_duration=True 接受按文本字数估算的近似值"
+    )
 
 
-def _try_cosyvoice(text: str, out_path: Path, voice: Optional[str], model_dir: str) -> None:
-    """尝试用本地 CosyVoice 合成。失败（任何异常）都交给调用方降级处理。"""
-    import torchaudio  # noqa: F401  -- 提前触发 ImportError，若没装直接降级
-    from cosyvoice.cli.cosyvoice import CosyVoice  # type: ignore
+def _try_cosyvoice(
+    text: str,
+    out_path: Path,
+    voice: Optional[str],
+    model_dir: str,
+    timeout_sec: float = DEFAULT_COSYVOICE_TIMEOUT_SEC,
+) -> None:
+    """尝试用本地 CosyVoice 合成。失败（任何异常，包括超时）都交给调用方
+    降级处理。
 
-    model = CosyVoice(model_dir)
-    spk_id = voice or (model.list_avaliable_spks()[0] if hasattr(model, "list_avaliable_spks") else "中文女")
+    CosyVoice 推理是同步阻塞调用，`asyncio.wait_for` 不适用；用
+    `ThreadPoolExecutor` 包一层来做超时控制（跨平台，不依赖 Unix-only 的
+    `signal.alarm`）。注意 Python 线程无法被强制中断，超时只是不再等待
+    结果、把调用判定为失败并走降级，底层线程可能仍在后台跑一段时间，这
+    是一个已知的权衡（见 references/04_assets_and_audio.md 说明）。
+    """
 
-    results = list(model.inference_sft(text, spk_id))
-    if not results:
-        raise TTSError("CosyVoice inference_sft 未返回任何音频片段")
+    def _do_inference() -> None:
+        import torchaudio  # noqa: F401  -- 提前触发 ImportError，若没装直接降级
+        from cosyvoice.cli.cosyvoice import CosyVoice  # type: ignore
 
-    import torch  # noqa: WPS433
-    speech = torch.cat([r["tts_speech"] for r in results], dim=1)
-    sample_rate = getattr(model, "sample_rate", 22050)
+        model = CosyVoice(model_dir)
+        spk_id = voice or (model.list_avaliable_spks()[0] if hasattr(model, "list_avaliable_spks") else "中文女")
 
-    import torchaudio as ta  # noqa: WPS433
-    ta.save(str(out_path), speech, sample_rate)
+        results = list(model.inference_sft(text, spk_id))
+        if not results:
+            raise TTSError("CosyVoice inference_sft 未返回任何音频片段")
+
+        import torch  # noqa: WPS433
+        speech = torch.cat([r["tts_speech"] for r in results], dim=1)
+        sample_rate = getattr(model, "sample_rate", 22050)
+
+        import torchaudio as ta  # noqa: WPS433
+        ta.save(str(out_path), speech, sample_rate)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_do_inference)
+        try:
+            future.result(timeout=timeout_sec)
+        except concurrent.futures.TimeoutError as e:
+            raise TTSError(
+                f"CosyVoice 本地推理超时（>{timeout_sec}s），模型文件可能较大或跑在"
+                f"CPU 上较慢，可通过 cosyvoice_timeout_sec 调整超时阈值"
+            ) from e
 
 
-def _run_edge_tts(text: str, out_path: Path, voice: str) -> None:
+def _run_edge_tts(
+    text: str,
+    out_path: Path,
+    voice: str,
+    timeout_sec: float = DEFAULT_EDGE_TTS_TIMEOUT_SEC,
+) -> None:
     """edge-tts 底层输出 mp3，统一转成 `out_path`（调用方约定的 .wav 路径）。
 
     [BUGFIX] 此前这里在成功转码后把结果存到 `out_path.with_suffix('.wav')`、
@@ -101,6 +169,12 @@ def _run_edge_tts(text: str, out_path: Path, voice: str) -> None:
     再用 ffmpeg 转码到调用方传入的 `out_path` 本身，不再依赖
     `out_path.with_suffix()` 推导落盘路径，`out_path` 传什么后缀就落到
     什么路径，不会跑偏。
+
+    [BUGFIX，见 next_doc/novel_video_studio_fix_plan_v1.md 问题4] 此前
+    `edge_tts.Communicate(...).save(...)` 这次在线网络请求全程没有设置
+    任何超时——网络不通/被墙/DNS解析慢/服务端无响应时会无限期挂起，且
+    没有任何机制能打断它。现在用 `asyncio.wait_for` 包一层，超时后抛
+    `TTSError`，交给调用方按"该 block 配音失败"处理。
     """
     import edge_tts  # type: ignore
     import shutil
@@ -111,7 +185,13 @@ def _run_edge_tts(text: str, out_path: Path, voice: str) -> None:
         communicate = edge_tts.Communicate(text, voice)
         await communicate.save(str(tmp_mp3))
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(asyncio.wait_for(_run(), timeout=timeout_sec))
+    except asyncio.TimeoutError as e:
+        raise TTSError(
+            f"edge-tts 在线请求超时（>{timeout_sec}s），可能是网络不通/被墙/"
+            f"DNS解析慢/服务端无响应，可通过 edge_tts_timeout_sec 调整超时阈值"
+        ) from e
 
     try:
         subprocess.run(
@@ -136,13 +216,28 @@ def synthesize(
     fallback: str = "edge-tts",
     voice: Optional[str] = None,
     cosyvoice_model_dir: str = DEFAULT_COSYVOICE_MODEL_DIR,
+    edge_tts_timeout_sec: float = DEFAULT_EDGE_TTS_TIMEOUT_SEC,
+    cosyvoice_timeout_sec: float = DEFAULT_COSYVOICE_TIMEOUT_SEC,
+    allow_estimated_duration: bool = False,
 ) -> dict:
-    """合成一段旁白音频，返回 {"engine_used": ..., "duration_sec": ..., "path": ...}。
+    """合成一段旁白音频，返回
+    {"engine_used": ..., "duration_sec": ..., "duration_estimated": ..., "path": ...}。
 
-    engine_pref="cosyvoice" 时先尝试本地 CosyVoice，任何异常都自动降级到
-    `fallback`（默认 edge-tts）。engine_pref="edge-tts" 时直接走 edge-tts，
-    不尝试 CosyVoice（用于用户/环境已知没有 CosyVoice 的情况，省去无谓的
-    尝试和报错噪音）。
+    engine_pref="cosyvoice" 时先尝试本地 CosyVoice，任何异常（含超时）都
+    自动降级到 `fallback`（默认 edge-tts）。engine_pref="edge-tts" 时直接
+    走 edge-tts，不尝试 CosyVoice（用于用户/环境已知没有 CosyVoice 的情况，
+    省去无谓的尝试和报错噪音）。
+
+    `edge_tts_timeout_sec`/`cosyvoice_timeout_sec` 控制两条合成路径各自
+    的超时阈值，超时会被当成该引擎失败处理（cosyvoice 超时走 edge-tts
+    降级，edge-tts 超时直接抛 TTSError）。
+
+    `allow_estimated_duration`（默认 False）：合成成功后仍读不出真实时长
+    （ffprobe/mutagen 都失败）时，是否允许退回"按**文本**真实字数"估算
+    （不是按文件名，见 `_ffprobe_duration` 的说明）。默认关闭，读不到真实
+    时长直接抛 TTSError，避免假数据被静默当成真实数据使用；显式打开时，
+    返回结果里的 `duration_estimated` 会标记为 True，调用方必须把这个
+    信息汇总展示给用户，不能和真实测得的时长混在一起看不出区别。
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     engine_used = None
@@ -150,7 +245,7 @@ def synthesize(
 
     if engine_pref == "cosyvoice":
         try:
-            _try_cosyvoice(text, out_path, voice, cosyvoice_model_dir)
+            _try_cosyvoice(text, out_path, voice, cosyvoice_model_dir, timeout_sec=cosyvoice_timeout_sec)
             engine_used = "cosyvoice"
         except Exception as e:  # noqa: BLE001 -- 任何失败都归为"不可用"，走降级
             cosyvoice_error = str(e)
@@ -162,18 +257,27 @@ def synthesize(
                 f"{fallback!r} 暂不支持（当前只实现了 edge-tts 兜底）"
             )
         try:
-            _run_edge_tts(text, out_path, voice or DEFAULT_EDGE_TTS_VOICE)
+            _run_edge_tts(text, out_path, voice or DEFAULT_EDGE_TTS_VOICE, timeout_sec=edge_tts_timeout_sec)
             engine_used = "edge-tts"
         except Exception as e:  # noqa: BLE001
             raise TTSError(
                 f"CosyVoice 不可用（{cosyvoice_error}），edge-tts 兜底也失败：{e}"
             ) from e
 
-    duration_sec = _ffprobe_duration(out_path)
+    duration_estimated = False
+    try:
+        duration_sec = _ffprobe_duration(out_path)
+    except TTSError:
+        if not allow_estimated_duration:
+            raise
+        duration_sec = _estimate_duration_by_text(text)
+        duration_estimated = True
+
     return {
         "engine_used": engine_used,
         "cosyvoice_error": cosyvoice_error,
         "duration_sec": duration_sec,
+        "duration_estimated": duration_estimated,
         "path": str(out_path),
     }
 
@@ -187,8 +291,19 @@ if __name__ == "__main__":
     parser.add_argument("out_path", type=Path)
     parser.add_argument("--engine", default="cosyvoice", choices=["cosyvoice", "edge-tts"])
     parser.add_argument("--voice", default=None)
+    parser.add_argument("--edge-tts-timeout", type=float, default=DEFAULT_EDGE_TTS_TIMEOUT_SEC)
+    parser.add_argument("--cosyvoice-timeout", type=float, default=DEFAULT_COSYVOICE_TIMEOUT_SEC)
+    parser.add_argument(
+        "--allow-estimated-duration", action="store_true",
+        help="真实时长读取失败时，允许退回按文本字数估算（默认关闭，直接报错）",
+    )
     args = parser.parse_args()
 
-    result = synthesize(args.text, args.out_path, engine_pref=args.engine, voice=args.voice)
+    result = synthesize(
+        args.text, args.out_path, engine_pref=args.engine, voice=args.voice,
+        edge_tts_timeout_sec=args.edge_tts_timeout,
+        cosyvoice_timeout_sec=args.cosyvoice_timeout,
+        allow_estimated_duration=args.allow_estimated_duration,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     sys.exit(0)

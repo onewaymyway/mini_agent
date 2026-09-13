@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -35,8 +36,20 @@ except ImportError:
     print(json.dumps({"ok": False, "errors": ["缺少 pyyaml 依赖，请先 pip install pyyaml"]}, ensure_ascii=False, indent=2))
     sys.exit(1)
 
-from tts_engine import TTSError, synthesize
+from tts_engine import (
+    DEFAULT_COSYVOICE_TIMEOUT_SEC,
+    DEFAULT_EDGE_TTS_TIMEOUT_SEC,
+    TTSError,
+    synthesize,
+)
 from voice_mapping import resolve_cosyvoice_speaker, resolve_edge_tts_voice
+
+
+def _log(msg: str) -> None:
+    """过程日志统一走 stderr 并显式 flush，保证被外部工具捕获/重定向时也
+    能实时看到，不会攒在缓冲区里最后一次性冒出来（见
+    next_doc/novel_video_studio_fix_plan_v1.md 问题4）。"""
+    print(msg, file=sys.stderr, flush=True)
 
 
 def _load_json(path: Path) -> dict:
@@ -91,7 +104,16 @@ def _voice_for_block(
     return resolve_edge_tts_voice(profile), label
 
 
-def run(output_dir: Path, macro_id: str | None, force: bool, engine_pref: str) -> dict:
+def run(
+    output_dir: Path,
+    macro_id: str | None,
+    force: bool,
+    engine_pref: str,
+    *,
+    allow_estimated_duration: bool = False,
+    edge_tts_timeout_sec: float = DEFAULT_EDGE_TTS_TIMEOUT_SEC,
+    cosyvoice_timeout_sec: float = DEFAULT_COSYVOICE_TIMEOUT_SEC,
+) -> dict:
     project = _load_json(output_dir / "novel_project.json")
     characters_data = _load_json(output_dir / "global" / "characters.json")
     char_by_id = {c.get("id"): c for c in characters_data.get("characters", [])}
@@ -118,8 +140,10 @@ def run(output_dir: Path, macro_id: str | None, force: bool, engine_pref: str) -
         detail_files = sorted(output_dir.glob("macro_scene_*/scene_detail.yaml"))
 
     engine_usage: dict[str, int] = {}
+    estimated_count = 0
     errors: list[str] = []
     processed_micro_scenes = 0
+    run_started = time.monotonic()
 
     for detail_file in detail_files:
         if not detail_file.exists():
@@ -128,12 +152,16 @@ def run(output_dir: Path, macro_id: str | None, force: bool, engine_pref: str) -
         data = _load_yaml(detail_file)
         micro_scenes = data.get("micro_scenes", []) if isinstance(data, dict) else []
         audio_dir = detail_file.parent / "audio"
+        macro_label = detail_file.parent.name
+
+        _log(f"[{macro_label}] 开始配音，共 {len(micro_scenes)} 个 micro_scene")
 
         for ms in micro_scenes:
             mid = ms.get("id", "unknown")
             content_blocks = ms.get("content_blocks", []) or []
             total_duration = 0.0
             block_failed = False
+            n_blocks = len(content_blocks)
 
             for i, block in enumerate(content_blocks):
                 text = (block.get("text") or "").strip()
@@ -148,35 +176,68 @@ def run(output_dir: Path, macro_id: str | None, force: bool, engine_pref: str) -
                     try:
                         from tts_engine import _ffprobe_duration  # 内部工具函数复用
                         total_duration += _ffprobe_duration(out_path)
+                        _log(
+                            f"[{macro_label}][{mid}][block {i}/{n_blocks}] "
+                            f"复用已存在音频 时长={total_duration:.2f}s（累计）"
+                        )
                     except Exception as e:  # noqa: BLE001
                         errors.append(f"小场景 {mid} 第{i}块已存在音频但读取时长失败：{e}")
                         block_failed = True
+                        _log(f"[{macro_label}][{mid}][block {i}/{n_blocks}] 已存在音频但读取时长失败：{e}")
                     continue
 
                 voice, label = _voice_for_block(block, char_by_id, engine_pref)
+                block_started = time.monotonic()
                 try:
                     result = synthesize(
                         text, out_path,
                         engine_pref=engine_pref, fallback=fallback, voice=voice,
+                        edge_tts_timeout_sec=edge_tts_timeout_sec,
+                        cosyvoice_timeout_sec=cosyvoice_timeout_sec,
+                        allow_estimated_duration=allow_estimated_duration,
                     )
                 except TTSError as e:
                     errors.append(f"小场景 {mid} 第{i}块（{label}）配音失败：{e}")
                     block_failed = True
+                    _log(
+                        f"[{macro_label}][{mid}][block {i}/{n_blocks}][{label}] "
+                        f"配音失败 用时={time.monotonic() - block_started:.1f}s 原因={e}"
+                    )
                     continue
 
+                elapsed = time.monotonic() - block_started
                 engine_usage[result["engine_used"]] = engine_usage.get(result["engine_used"], 0) + 1
                 total_duration += result["duration_sec"]
+                if result.get("duration_estimated"):
+                    estimated_count += 1
+                estimated_tag = "（时长为估算值，非真实测得）" if result.get("duration_estimated") else ""
+                _log(
+                    f"[{macro_label}][{mid}][block {i}/{n_blocks}][{label}] "
+                    f"引擎={result['engine_used']} 用时={elapsed:.1f}s "
+                    f"时长={result['duration_sec']:.2f}s{estimated_tag}"
+                )
 
             if not block_failed:
                 ms["duration_sec"] = round(total_duration, 2)
                 processed_micro_scenes += 1
+                _log(f"[{macro_label}][{mid}] 完成，duration_sec={ms['duration_sec']}")
+            else:
+                _log(f"[{macro_label}][{mid}] 存在失败的 content_block，本小场景 duration_sec 不回填")
 
         _write_yaml(detail_file, data)
+
+    total_elapsed = time.monotonic() - run_started
+    _log(
+        f"[汇总] 处理完成，用时={total_elapsed:.1f}s，成功 micro_scene={processed_micro_scenes}，"
+        f"engine_usage={engine_usage}，估算时长（非真实测得）的 block 数={estimated_count}，"
+        f"失败数={len(errors)}"
+    )
 
     return {
         "ok": not errors,
         "errors": errors,
         "engine_usage": engine_usage,
+        "estimated_duration_block_count": estimated_count,
         "processed_micro_scenes": processed_micro_scenes,
     }
 
@@ -187,9 +248,27 @@ def main() -> None:
     parser.add_argument("--macro-id", default=None, help="只处理指定大场景，不传则处理全部 macro_scene_*")
     parser.add_argument("--force", action="store_true", help="强制重新生成已存在的音频")
     parser.add_argument("--engine", default=None, choices=["cosyvoice", "edge-tts"], help="覆盖 novel_project.json 里的 tts.engine")
+    parser.add_argument(
+        "--allow-estimated-duration", action="store_true",
+        help="真实时长读取失败（ffprobe/mutagen 都不可用）时，允许退回按文本字数估算，"
+             "默认关闭（直接报错，不产出假数据），见 tts_engine.synthesize() 说明",
+    )
+    parser.add_argument(
+        "--edge-tts-timeout", type=float, default=DEFAULT_EDGE_TTS_TIMEOUT_SEC,
+        help=f"edge-tts 在线请求超时秒数（默认 {DEFAULT_EDGE_TTS_TIMEOUT_SEC}）",
+    )
+    parser.add_argument(
+        "--cosyvoice-timeout", type=float, default=DEFAULT_COSYVOICE_TIMEOUT_SEC,
+        help=f"CosyVoice 本地推理超时秒数（默认 {DEFAULT_COSYVOICE_TIMEOUT_SEC}）",
+    )
     args = parser.parse_args()
 
-    result = run(args.output_dir, args.macro_id, args.force, args.engine)
+    result = run(
+        args.output_dir, args.macro_id, args.force, args.engine,
+        allow_estimated_duration=args.allow_estimated_duration,
+        edge_tts_timeout_sec=args.edge_tts_timeout,
+        cosyvoice_timeout_sec=args.cosyvoice_timeout,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     sys.exit(0 if result["ok"] else 1)
 
