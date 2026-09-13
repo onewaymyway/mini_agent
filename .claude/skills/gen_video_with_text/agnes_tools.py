@@ -356,7 +356,7 @@ class AgnesVideoClient:
         audios: Optional[List[str]] = None,
         seed: Optional[int] = None,
         save_path: Optional[str] = None,
-        poll_interval: float = 2.0,
+        poll_interval: float = 5.0,
         max_wait_seconds: int = 1800,
     ) -> dict:
         """Create a video task and poll until completed/failed, optionally saving the result."""
