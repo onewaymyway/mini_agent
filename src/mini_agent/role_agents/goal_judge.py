@@ -249,10 +249,37 @@ def run_goal_judge(
         context_pack_block=context_pack_block,
     )
 
-    result = run_judge_turn(
-        judge_agent, prompt, failure_role_label="GoalJudgeAgent",
-        profile_name=profile.name if profile else "goal_judge",
-    )
+    from mini_agent.role_agents.verdict import parse_judge_verdict
+    import mini_agent.ui.renderer as R
+    _valid_statuses = ["DONE", "CONTINUE", "NEED_COMPACT"]
+    _parse_retry_count = max(0, int(getattr(goal_cfg_block, "judge_parse_retry_count", 2) or 0))
+
+    result = None
+    for _attempt in range(1, _parse_retry_count + 2):  # 首次尝试 + judge_parse_retry_count 次重试
+        result = run_judge_turn(
+            judge_agent, prompt, failure_role_label="GoalJudgeAgent",
+            profile_name=profile.name if profile else "goal_judge",
+        )
+        if not result.ok or not (result.raw_output and result.raw_output.strip()):
+            # 运行异常 / 空输出走既有的下方兜底路径，不属于"解析失败可重试"
+            # 的范畴（重跑同一个已经耗尽 max_turns 或抛异常的子会话意义不大）。
+            break
+
+        verdict = parse_judge_verdict(result.raw_output, valid_statuses=_valid_statuses, fallback_status="")
+        if verdict.parse_ok:
+            break
+
+        if _attempt <= _parse_retry_count:
+            R.print_warning(
+                f"[GoalJudge] 第 {_attempt} 次输出解析失败（JSON 解析与兜底正则均未命中 "
+                f"status 字段），原始输出前 200 字：{result.raw_output[:200]!r}，正在重新生成"
+                f"（还剩 {_parse_retry_count - _attempt} 次重试机会）…"
+            )
+        else:
+            R.print_warning(
+                f"[GoalJudge] 连续 {_parse_retry_count + 1} 次输出均解析失败，"
+                "放弃重试，保守判定为 CONTINUE。"
+            )
 
     if result.ok and result.raw_output and result.raw_output.strip():
         if decision_query is not None and decision_query.has_hits and paths is not None:
