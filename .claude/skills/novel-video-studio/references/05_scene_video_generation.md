@@ -138,7 +138,29 @@ python .claude/skills/novel-video-studio/scripts/generate_scene_videos_v2.py \
 ```
 
 ⚠️ **调用 bash 工具执行本命令时，`timeout` 参数必须传 `-1`**：单场景
-视频生成常常要几分钟，一次批量生成动辄超过默认超时。
+视频生成常常要几分钟，一次批量生成动辄超过默认超时（默认 300 秒会在
+脚本还在正常工作时就把它强制杀掉，导致已经成功的场景也可能因为进程
+被杀而来不及汇总；已成功的 clip 不会丢失，断点续跑机制会在下次重跑
+时自动跳过，但仍然会打断当前这一轮的进度汇总，应当避免）。
+
+**调用示例（system-prompt 模式工具调用格式，直接照抄，只替换
+`<output_dir>` 和 `<aspect_ratio>`）**：
+
+```
+<tool_use>
+{"name": "bash", "input": {"command": "python .claude/skills/novel-video-studio/scripts/generate_scene_videos_v2.py <output_dir> --macro-id macro_01 --aspect-ratio <aspect_ratio>", "timeout": -1}}
+</tool_use>
+```
+
+（这是 `llm/system_tool_call.py` 里定义的
+`<tool_use>{"name":..,"input":..}</tool_use>` 协议；若走的是原生
+function-calling 的 provider，则等价于对 `bash` 工具传入
+`{"command": "...", "timeout": -1}` 这个 `input`/`tool_input`，参考
+`mv-generator` skill Step 5 里的同款写法。）不要省略 `timeout: -1`
+这一项，也不要照搬"timeout 用默认值就行"的写法——本 skill 里
+`generate_scene_videos_v2.py`（本步骤）和 `compose_macro_scene.py`/
+`compose_final_video_v2.py`（见 Step 4、`06_final_compose.md`）都建议
+传 `-1`，其余不涉及批量视频生成/本地渲染的步骤沿用默认超时即可。
 
 - **按 SKILL.md §2.3 的逐场景循环，默认必须带 `--macro-id` 只处理当前
   刚配完音的这一个大场景**——不要跑完一个大场景的阶段4就去跑下一个
@@ -156,6 +178,22 @@ python .claude/skills/novel-video-studio/scripts/generate_scene_videos_v2.py \
   判断——常见原因见 `error_handling.md`）；
 - 每个小场景处理完，把对应 `scene_detail.yaml` 里该 `micro_scene` 的
   `status` 回写为 `done`/`failed`。
+
+**关于生成出的 clip 实际时长与规划时长不一致**：`gen_video_with_text`
+接口虽然接受 `seconds` 参数（本脚本已按 `duration_sec` clamp 到
+4-12 秒范围传入），但**无法精确控制生成结果的实际时长**——同一个
+`seconds=8` 的请求，生成出来的 clip 实际可能是 7.6 秒或 8.3 秒，这是
+接口本身的已知限制，**属于正常现象，不需要在这一步做任何特殊处理**、
+也不需要因为时长对不上就判定生成失败或要求重新生成。真正解决"实际
+时长和规划的 `duration_sec` 对不上"这个问题的地方是下面 Step 4 的
+`compose_macro_scene.py`：它会对每个 `micro_scene` 独立做慢放/快放
+（`setpts` 缩放）把实际 clip 精确对齐到规划的 `duration_sec`，做法和
+`mv-generator` skill 的 `compose_mv.py` 完全一致（参见该 skill
+SKILL.md「关于视频节奏对齐」一节）。这个前提是阶段4回填的
+`duration_sec` 本身要落在合理范围内（对应 `04_assets_and_audio.md`
+的时长超限处理规则，以及 `03_scene_detail_planning.md` 新增的粗估
+时长自查）——如果规划阶段本身时长设计就有问题，缩放只能救"生成结果
+和规划不一致"，救不了"规划本身就不合理"。
 
 ## Step 2：定向重跑（按需）
 
@@ -189,7 +227,25 @@ python .claude/skills/novel-video-studio/scripts/compose_macro_scene.py \
   <output_dir> macro_01
 ```
 
-- 把该大场景全部 `micro_scene` clip 按顺序硬切拼接，配音（每个
+⚠️ 大场景内 `micro_scene` 数量较多、分辨率较高时，本地 ffmpeg 逐场景
+缩放+拼接的耗时可能超过默认超时，**调用 bash 工具执行本命令时建议
+`timeout` 同样传 `-1`**（或至少 `600`）：
+
+```
+<tool_use>
+{"name": "bash", "input": {"command": "python .claude/skills/novel-video-studio/scripts/compose_macro_scene.py <output_dir> macro_01", "timeout": -1}}
+</tool_use>
+```
+
+- **逐 `micro_scene` 独立缩放对齐规划时长**（不是整体拉伸）：脚本内部
+  按每个 `micro_scene` 的 `duration_sec`（规划时长）与该 clip 实际生成
+  时长的比例，各自计算 `setpts=SCALE*PTS`——clip 比规划短就慢放、比
+  规划长就快放，让每个小场景在大场景内出现的时刻严格贴合规划，不会
+  因为整体拉伸导致后面小场景的画面/字幕/配音错位。这一步就是承接
+  上面 Step 1 提到的"生成结果时长与规划不一致属正常现象"，具体做法
+  与 `mv-generator` skill 的 `compose_mv.py` 一致；
+- 把该大场景全部 `micro_scene` clip（已按上面缩放对齐）按顺序硬切
+  拼接，配音（每个
   `micro_scene` 的 `content_blocks` 对应若干段旁白/对话 wav，按顺序
   首尾相接）混入，按每个 `micro_scene` 拼出的字幕文案（旁白原样、
   对话用「」包裹）渲染字幕；

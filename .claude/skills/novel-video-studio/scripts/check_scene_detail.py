@@ -25,6 +25,17 @@ raw_text 用于对话真实性校验），以及
   4. 每个 micro_scene 至少有一个 content_blocks，且不能全是空文本。
   5. micro_scene 的 id 在整个项目范围内（扫描所有 macro_scene_*/
      scene_detail.yaml）不重复。
+  6. 【粗估时长自查，warning】视频生成接口（gen_video_with_text）硬性
+     要求每个 clip 4-12 秒，阶段4配音后会用真实音频时长做硬校验
+     （check_assets_and_audio_v2.py），但那已经是配完音之后——如果规划
+     阶段本身文本量明显过多/过少，等配完音才发现超限，回退成本更高。
+     这里按中文口播语速（默认约 4.5 字/秒，粗略估算，不代表真实配音
+     时长）估算每个 micro_scene 全部 content_blocks 文本总字数对应的
+     秒数，明显超出 4-12 秒范围（留了一定余量，避免语速估算误差导致
+     误报）时给出 warning，提示在阶段3内部就重新拆分/合并小场景，而不
+     是留到阶段4才处理。这只是启发式提示、不是硬性 error——最终是否
+     真的超限以阶段4真实 TTS 时长为准，字数估算本身对标点/停顿/语气词
+     不敏感，会有偏差。
 
 设计上不对文件做任何自动修复。
 
@@ -71,6 +82,29 @@ _NARRATION_LEAK_HINTS = (
     "看着", "望着", "转身", "叹了口气", "叹息", "告诉", "问道", "答道",
     "皱眉", "冷笑", "沉默", "顿了顿",
 )
+
+# 中文口播粗估语速（字/秒）。这是一个非常粗糙的经验值，仅用于阶段3
+# 阶段规划完成后的"提前预警"，不代表真实 TTS 配音时长——真实时长受
+# 标点停顿、语气词拉长、TTS 引擎本身语速设置等因素影响，只能等阶段4
+# 真实配音后才能确定。粗估的目的只是尽早拦下"明显文本量过多/过少"
+# 的小场景，减少配完音才发现超限、回退重拆的成本。
+_ROUGH_CHARS_PER_SEC = 4.5
+
+# 视频生成接口的硬性时长范围（clip 秒数），与 generate_scene_videos_v2.py
+# 里的 MIN_SEC/MAX_SEC 保持一致。粗估检查在这个范围两端各留一点余量
+# 才报 warning（而不是贴着边界就报），避免语速估算的正常波动被误报。
+_MIN_SEC = 4
+_MAX_SEC = 12
+_ROUGH_ESTIMATE_MARGIN = 0.25  # 25% 余量
+
+
+def _estimate_duration_sec(content_blocks: list[dict]) -> float:
+    """按粗略语速估算一个 micro_scene 全部 content_blocks 文本对应的
+    口播秒数，仅用于阶段3的提前预警，不代表真实配音时长。"""
+    total_chars = sum(len((b.get("text") or "").strip()) for b in content_blocks)
+    if total_chars <= 0:
+        return 0.0
+    return total_chars / _ROUGH_CHARS_PER_SEC
 
 
 def _normalize(text: str) -> str:
@@ -229,6 +263,27 @@ def check(output_dir: Path, macro_id: str) -> dict:
 
         if not has_non_empty:
             errors.append(f"小场景 {mid} 的所有 content_blocks 文本均为空")
+
+        # 6. 粗估时长自查（warning，不阻断）：文本量明显过多/过少时提前
+        # 提示，避免留到阶段4真实配音后才发现超出 4-12 秒硬限。
+        if has_non_empty:
+            est_dur = _estimate_duration_sec(content_blocks)
+            lower_bound = _MIN_SEC * (1 - _ROUGH_ESTIMATE_MARGIN)
+            upper_bound = _MAX_SEC * (1 + _ROUGH_ESTIMATE_MARGIN)
+            if est_dur > upper_bound:
+                warnings.append(
+                    f"小场景 {mid} 按粗估语速（约{_ROUGH_CHARS_PER_SEC}字/秒）估算口播时长约"
+                    f"{est_dur:.1f}秒，明显超过视频生成接口 {_MAX_SEC} 秒的硬上限，"
+                    f"配完音大概率会超限——建议现在就把这个小场景的 content_blocks "
+                    f"拆成两个 micro_scene（分别给新 id），不要等阶段4配完音才回来拆"
+                )
+            elif est_dur < lower_bound:
+                warnings.append(
+                    f"小场景 {mid} 按粗估语速（约{_ROUGH_CHARS_PER_SEC}字/秒）估算口播时长约"
+                    f"{est_dur:.1f}秒，明显低于视频生成接口 {_MIN_SEC} 秒的硬下限，"
+                    f"配完音大概率不足——建议现在就考虑把这个小场景的内容并入相邻小场景，"
+                    f"不要等阶段4配完音才发现时长不够"
+                )
 
     # 5. 全局 micro_scene id 唯一性
     all_ids: list[str] = []

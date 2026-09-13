@@ -47,6 +47,26 @@ python .claude/skills/novel-video-studio/scripts/compose_final_video_v2.py \
 或 `-1`）**：大场景数多、分辨率高时统一规格+拼接的本地 ffmpeg 计算
 耗时可能超过默认超时。
 
+**调用示例（system-prompt 模式工具调用格式，直接照抄，只替换
+`<output_dir>`）**：
+
+```
+<tool_use>
+{"name": "bash", "input": {"command": "python .claude/skills/novel-video-studio/scripts/compose_final_video_v2.py <output_dir>", "timeout": -1}}
+</tool_use>
+```
+
+**关于时长对齐**：本步骤只是把各大场景已经合成好的
+`macro_scene_XX.mp4` 硬切/淡入淡出拼接起来，**不做任何慢放/快放**——
+真正解决"单个 clip 实际生成时长与规划不一致"的缩放动作已经在阶段5
+`compose_macro_scene.py` 里逐 `micro_scene` 完成（见
+`05_scene_video_generation.md` Step 4），到本步骤时每个大场景视频的
+时长应该已经等于其内部所有 `micro_scene.duration_sec` 之和。如果这里
+校验出总时长对不上，说明问题出在阶段5（某个大场景合成时缩放/拼接有
+误差），要回阶段5用 `check_clips_v2.py` 排查，而不是尝试在本步骤加
+整体缩放去补偿——那样会让本步骤新引入的时间轴误差和阶段5已经处理过
+的误差混在一起，问题定位会更难。
+
 ## Step 2：交付确认
 
 校验 JSON 里 `"ok": true` 且 `errors` 为空 → 向用户展示最终产物路径、

@@ -13,16 +13,16 @@ resources:
     triggers: 大场景切分, 场景切分, macro_scene
   - id: scene-detail-planning
     path: references/03_scene_detail_planning.md
-    description: 阶段3——单个大场景详细规划：拆小场景（micro_scene）、旁白/对话拆分、content_blocks 写法、check_scene_detail.py 校验规则与自查清单
-    triggers: 小场景, micro_scene, 对话拆分, 旁白拆分, content_blocks, dialogue, narration, check_scene_detail
+    description: 阶段3——单个大场景详细规划：拆小场景（micro_scene，需按视频生成接口4-12秒硬限规划时长+粗估时长自查）、旁白/对话拆分、content_blocks 写法、check_scene_detail.py 校验规则与自查清单
+    triggers: 小场景, micro_scene, 对话拆分, 旁白拆分, content_blocks, dialogue, narration, check_scene_detail, 时长, 4-12秒
   - id: assets-and-audio
     path: references/04_assets_and_audio.md
     description: 阶段4——角色/地点定妆图生成 + 按角色差异化配音（TTS）
     triggers: 定妆图, 配音, tts, voice_profile, asset_path, 差异化配音
   - id: scene-video-generation
     path: references/05_scene_video_generation.md
-    description: 阶段5——手写 prompt_en/video_mode + 角色/场景一致性双重校验（脚本 check_character_consistency.py 关键词兜底 + Agent 语义人工复核，二者都要过）+ 小场景视频生成(generate_scene_videos_v2.py)与大场景内合成(compose_macro_scene.py)
-    triggers: 视频生成, 小场景视频, 大场景合成, clips, gen_video_with_text, 一致性, 角色不一致, 场景不一致, visual_anchor_en, 语义复核, 人工复核
+    description: 阶段5——手写 prompt_en/video_mode + 角色/场景一致性双重校验（脚本 check_character_consistency.py 关键词兜底 + Agent 语义人工复核，二者都要过）+ 小场景视频生成(generate_scene_videos_v2.py，timeout必须传-1)与大场景内合成(compose_macro_scene.py，逐场景慢放/快放对齐规划时长)
+    triggers: 视频生成, 小场景视频, 大场景合成, clips, gen_video_with_text, 一致性, 角色不一致, 场景不一致, visual_anchor_en, 语义复核, 人工复核, timeout, 慢放, 快放, 时长不一致
   - id: final-compose
     path: references/06_final_compose.md
     description: 阶段6——所有大场景 done 后的最终拼接转场，产出 video.mp4
