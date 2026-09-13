@@ -291,3 +291,110 @@ def _postprocess(self, response, original_tools):
   未闭合 `<tool_use>` 的主 Agent 输出，观察它在 `feedback` 里按提示词要求
   带上标记后引用示例，确认该轮不会被错误地当成 `GoalJudge` 自己发起的
   工具调用、不再触发"没有产出有效结果"式的重试。
+
+## 7. 补充修复：判官结构化输出应优先于 `<tool_use>` 格式启发式检测
+
+### 7.1 背景（真实复现案例）
+
+第 6 节的标记机制上线后，仍观察到一次真实的 TurnJudge 判定被误伤：
+
+- TurnJudge 本轮实际输出是完全合法的 JSON：
+  `{"status": "AUTO_CONTINUE", "feedback": "...（引用了主 Agent 上一轮
+  没写完的 <tool_use>...</tool_use**s**> —— 闭合标签多打了个 s）..."}`。
+- `feedback` 里引用问题片段前也正确带上了 `TOOL_USE_EXAMPLE_MARKER`。
+- 但终端最终打印的却是 `is_valid_final_result()` 替换后的占位文本
+  `[系统提示：本轮未获得有效回复……已作废……]`，随后
+  `parse_judge_verdict()` 连续 3 次找不到 `status` 字段、判定"解析失败"，
+  最终保守 fallback 到 `NEED_USER`，把一次本来完全正确的 `AUTO_CONTINUE`
+  判定生生浪费掉。
+
+### 7.2 根因
+
+`llm/system_tool_call.py::strip_example_marked_spans()`（第 6 节的标记
+豁免实现）只能剥离**能被 `_TOOL_USE_RE` 匹配成完整闭合对**的
+`<tool_use>...</tool_use>` 片段。而判官恰恰最需要引用"闭合标签本身写错了"
+的例子（`</tool_uses>` 而非 `</tool_use>`）——这类例子根本匹配不上"完整
+闭合"的正则，`strip_example_marked_spans()` 对它完全不生效，标记形同虚设。
+
+`agent/turn_loop.py` 里对 `final_text` 的最后一道健全性校验
+（`is_valid_final_result()`）没被豁免掉，于是命中
+`format_correction_detector.py::_detect_unclosed_or_duplicated_open_tag`
+（开标签数 > 闭标签数），把判官这一轮完全健全、可被
+`parse_judge_verdict()` 正常解析的 JSON 输出，误判成"畸形/半成品"整体
+作废替换。
+
+本质上是**优先级排反了**：`detect_format_issue()` 是一套"看不出显式结构时
+的兜底启发式规则"，而"这段输出到底能不能被下游解析成一个可用的结构化
+判定结果"（即 `role_agents/verdict.py::parse_judge_verdict()` 会不会成功）
+才是判断判官类输出是否健全的第一信号，理应优先于启发式规则生效，而不是
+反过来被启发式规则先一步否决掉。
+
+### 7.3 修复方案
+
+在 `perception/format_correction_detector.py` 新增
+`looks_like_structured_judge_output(text) -> bool`：
+
+```python
+_STATUS_FIELD_RE = re.compile(r'"status"\s*:\s*"?\s*[A-Za-z_][A-Za-z0-9_]*\s*"?')
+
+def looks_like_structured_judge_output(text: str) -> bool:
+    if not text or not isinstance(text, str):
+        return False
+    try:
+        import json_repair
+        parsed = json_repair.loads(text)
+        if isinstance(parsed, dict) and "status" in parsed:
+            return True
+    except Exception:
+        pass
+    return bool(_STATUS_FIELD_RE.search(text))
+```
+
+判断依据刻意与 `role_agents/verdict.py::parse_judge_verdict()` 实际使用的
+容错级别保持一致（`json_repair` 优先，解析不出完整 dict 时再用同一套
+宽松正则兜底抠 `"status": "XXX"` 片段——对应 `verdict.py::
+_loose_extract_status` 的兜底路径），避免这里的健全性检查比下游解析器
+更严格，出现"下游本来能救回来的结果，却在这里先被判死"的新不一致。
+
+刻意**不检查 status 的具体取值是否在某个判官类型的白名单里**
+（`NEED_USER`/`AUTO_CONTINUE`/`NEED_COMPACT` 是 TurnJudge 的私有约定，
+`DONE`/`CONTINUE`/`NEED_COMPACT` 是 GoalJudge 的私有约定）——这一层只
+负责"文本是否已经携带一段可用的结构化判定结果"这个通用信号，值本身
+合不合法留给 `parse_judge_verdict()` 自己的白名单校验去把关，两层职责
+不重叠。这样任何接入 `parse_judge_verdict()` 的判官类型（现有的
+TurnJudge/GoalJudge，以及未来的自定义判官）都统一自动受益，不需要为
+每个判官角色单独打补丁。
+
+调用点改动，`is_valid_final_result()` 与 `agent/reminders_correction.py::
+_detect_format_issue()` 两处保持一致的优先级顺序：
+
+1. `looks_like_structured_judge_output()` 命中 → 直接判定健全 /
+   直接返回 `None`（无格式问题），完全跳过 `detect_format_issue()`。
+2. 否则文本包含 `TOOL_USE_EXAMPLE_MARKER` → 整体豁免（不再要求标记
+   覆盖的片段内部标签闭合完整，取代原来依赖
+   `strip_example_marked_spans()` 精确抠除片段的做法）。
+3. 以上都不满足才退回原有的 `detect_format_issue()` 启发式检测（真正
+   没有标记、也不是结构化判官输出的畸形文本，仍然会被正确拦截）。
+
+### 7.4 影响范围与兼容性
+
+- 只新增一条更高优先级的豁免判断，不改动 `detect_format_issue()` 本身
+  任何一条规则；没有触发新豁免条件的输入，行为与改动前完全一致。
+- `looks_like_structured_judge_output()` 是通用工具函数，不绑定具体判官
+  角色，GoalJudge、evaluator/coach（若未来接入 `parse_judge_verdict`）
+  都自动受益。
+- 两个调用点（`is_valid_final_result` / `_detect_format_issue`）保持同步，
+  延续第 6 节确立的"两处必须一致"的既有约束。
+- 新增依赖：无（`json_repair` 本来就是 `role_agents/verdict.py` 的既有
+  依赖，`format_correction_detector.py` 只是在函数内部按需 `import`）。
+
+### 7.5 验证方式
+
+- 单测：`tests/test_judge_structured_output_priority.py`，覆盖：
+  - `looks_like_structured_judge_output()` 对完整 JSON / 不同判官
+    status 白名单 / 截断但片段完整 / 无 status 字段 / 空文本的判断；
+  - `is_valid_final_result()` 对本节真实复现案例（TurnJudge/GoalJudge
+    风格、`</tool_uses>` 畸形闭合标签）、单独 marker 豁免、真正畸形
+    输出（回归保护）、正常文本、空文本的判断。
+- 回归：`tests/test_format_correction_detector.py`、
+  `tests/test_daemon_autonomous_state_recovery.py` 全部保持通过。

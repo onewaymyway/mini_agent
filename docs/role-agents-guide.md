@@ -456,3 +456,19 @@ cfg.role_agent.allow / cfg.role_agent.block
   `turn_judge` 这类需要状态机驱动外层循环的判官才调用
   `parse_judge_verdict`；`evaluator`/`coach` 只是把原始文本转成反馈注入
   历史，不需要状态机，继续用原来的纯文本 `SCORE: x/10` 输出即可，不受影响。
+
+> **实现细节 / 已修复的坑：结构化判定结果应优先于 `<tool_use>` 格式启发式
+> 检测。** `agent/turn_loop.py` 在返回 `final_text` 前会跑一道健全性校验
+> （`perception/format_correction_detector.py::is_valid_final_result`），
+> 检测文本里是否残留"看起来没写完的 `<tool_use>` 块"。判官在 `feedback`
+> 里按提示词要求引用一段主 Agent 写坏、根本不闭合的 `<tool_use>` 示例时
+> （见 [TurnJudge 指南](turn-judge-guide.md) 里的"已修复的坑（第三类）"），
+> 这道启发式校验此前会误判判官自己完全合法的 JSON 输出为畸形并整体替换，
+> 导致 `parse_judge_verdict` 找不到 `status` 字段而白白重试。现已修复为
+> "能否被解析成结构化判定结果"优先于该启发式规则：新增
+> `format_correction_detector.py::looks_like_structured_judge_output()`，
+> 判断依据与 `parse_judge_verdict` 本身使用的容错级别一致（`json_repair`
+> 优先，宽松正则兜底抠 `"status": "XXX"` 片段），且不关心具体 status 取值
+> 属于哪个判官的白名单——`goal_judge`/`turn_judge`，以及未来任何接入
+> `parse_judge_verdict` 的自定义判官都自动受益。详见
+> [`next_doc/turn_judge_self_loop_fix_plan.md` §7](../next_doc/turn_judge_self_loop_fix_plan.md#7-补充修复判官结构化输出应优先于-tool_use-格式启发式检测)。

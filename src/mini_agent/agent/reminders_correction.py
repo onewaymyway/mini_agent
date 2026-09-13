@@ -411,15 +411,27 @@ class RemindersCorrectionMixin:
         format_correction_detector 自带的内置默认文案）。
         """
         from mini_agent.perception.format_correction_detector import (
-            detect_format_issue, PROMPT_HEADER,
+            detect_format_issue, looks_like_structured_judge_output, PROMPT_HEADER,
         )
-        # [turn_judge_self_loop_fix_plan.md §2 补丁2] 先把标记为"举例/引用"
-        # 的 <tool_use> 片段挖掉，再跑格式纠错检测——否则 TurnJudge/GoalJudge
-        # 等按提示词要求正确加了 TOOL_USE_EXAMPLE_MARKER 的引用文本，仍会被
-        # 这里的规则误判成"自己的一次写坏的工具调用"，触发不必要的重试。
-        from mini_agent.llm.system_tool_call import strip_example_marked_spans
-        detect_text = strip_example_marked_spans(assistant_text)
-        issue = detect_format_issue(detect_text)
+        # [优先级修正，与 format_correction_detector.is_valid_final_result
+        # 保持一致，两处调用点必须同步] 两条更高优先级的豁免，命中任一直接
+        # 跳过启发式检测：
+        #   1. looks_like_structured_judge_output——文本已经携带一段可用的
+        #      判官类结构化输出（与 parse_judge_verdict 同一套容错级别：
+        #      json_repair 优先，正则兜底命中 "status": "AUTO_CONTINUE" 这类
+        #      片段也算），不区分具体属于哪个判官类型的状态白名单。字符串
+        #      字段里出现的 <tool_use> 字样只是被转义的引用内容，不构成
+        #      真实调用尝试。
+        #   2. 输出中包含 TOOL_USE_EXAMPLE_MARKER——作者已明确声明这是
+        #      引用/举例，不需要再要求被标记的片段本身闭合完整。
+        # 不再依赖 strip_example_marked_spans 的"必须匹配成完整闭合对"
+        # 才能豁免——那个前提对"故意举例一段写坏的 tool_use"天然不成立。
+        from mini_agent.llm.system_tool_call import TOOL_USE_EXAMPLE_MARKER
+        if looks_like_structured_judge_output(assistant_text):
+            return None
+        if TOOL_USE_EXAMPLE_MARKER in assistant_text:
+            return None
+        issue = detect_format_issue(assistant_text)
         if issue is None:
             return None
         if getattr(self, "_reminder_mgr", None) is not None:

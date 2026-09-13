@@ -523,6 +523,51 @@ def detect_format_issue(text: str) -> Optional[FormatIssue]:
     return None
 
 
+# ── 判官类结构化输出识别（跨 TurnJudge/GoalJudge/自定义判官通用）──────────────
+#
+# [turn_judge_self_loop_fix_plan.md 追加修复] 只用"整段文本能被严格
+# json.loads 解析"判断是否为判官输出还不够：role_agents/verdict.py::
+# parse_judge_verdict 自己在 json_repair 也解析不出完整 dict 时，还有最后
+#一道"宽松正则抠 status 字段"的兜底（_loose_extract_status）——只要那道
+# 兜底能命中（比如输出被截断到 JSON 结构不完整，但 "status": "AUTO_CONTINUE"
+# 这段片段还完整），下游就会把这一轮当作有效判定处理。如果这里的健全性检查
+# 比下游的解析器更严格，就会出现"下游本来能救回来的结果，却在这里先被判
+# 成畸形而整体替换成占位文本"的新的不一致。
+#
+# 因此这里改用和 parse_judge_verdict 同一套容错级别的判断：
+#   1. json_repair（而不是严格的 json.loads）能解析出一个带 status 字段的
+#      dict——json_repair 正是 parse_judge_verdict 实际使用的解析器；
+#   2. 即使 1 失败，仍尝试用同样宽松的正则抠一次 "status": "XXX" 键值对。
+#
+# 刻意不关心 status 的具体取值是否在某个判官类型的白名单里（NEED_USER /
+# AUTO_CONTINUE / NEED_COMPACT 是 TurnJudge 的私有约定，GoalJudge、以及未来
+# 任何自定义判官都可能有自己的一套取值）——这一层只负责"文本是否已经携带
+# 一段可用的结构化判定结果"这个通用信号，具体取值合不合法留给
+# parse_judge_verdict 自己的白名单校验去把关，两层职责不重叠。
+_STATUS_FIELD_RE = _re.compile(r'"status"\s*:\s*"?\s*[A-Za-z_][A-Za-z0-9_]*\s*"?')
+
+
+def looks_like_structured_judge_output(text: str) -> bool:
+    """判断文本是否已经携带一段"可用的判官类结构化输出"（status/feedback JSON），
+    不关心 status 的具体取值属于哪个判官类型的白名单。
+
+    见本节顶部注释：判断标准与 role_agents.verdict.parse_judge_verdict 的
+    实际容错级别保持一致（json_repair 优先，宽松正则兜底），避免这里的
+    健全性检查比下游解析器更严格，出现"下游能救回来、这里却先判死"的
+    新不一致。
+    """
+    if not text or not isinstance(text, str):
+        return False
+    try:
+        import json_repair
+        parsed = json_repair.loads(text)
+        if isinstance(parsed, dict) and "status" in parsed:
+            return True
+    except Exception:
+        pass
+    return bool(_STATUS_FIELD_RE.search(text))
+
+
 # ── [daemon_autonomous_state_recovery_plan.md 阶段一] 最终结果健全性校验 ─────
 #
 # 背景：_agentic_loop() 有两条路径可能把"畸形/半成品"的 response.text 当作
@@ -545,18 +590,48 @@ def is_valid_final_result(text: str) -> bool:
     刻意保持保守（宁可漏检也不误判）：只要 detect_format_issue() 命中任一
     已注册规则，就判定为不健全；规则本身的克制原则见模块顶部说明。
 
-    [turn_judge_self_loop_fix_plan.md §2 补丁2 同步] 和
-    agent/reminders_correction.py::_detect_format_issue 一样，先把被
-    TOOL_USE_EXAMPLE_MARKER 标记为"举例/引用"的 <tool_use> 片段挖掉，再跑
-    规则检测——否则一段本身完全健全、只是在解释性文字里带标记引用了别处
-    问题片段的最终结果（比如自主任务链路里某一步的结果文本刚好复述了
-    上一步失败时的报错），会被误判为"仍带有未解析的工具调用痕迹"而被
-    拒绝，这属于同一个误判根因，两处调用点必须保持一致的豁免逻辑。
+    优先级修正（turn_judge 自我误判 bug 复盘）：
+    此前的豁免逻辑（strip_example_marked_spans）依赖"被 marker 标记的
+    <tool_use> 片段必须能匹配成完整闭合的一对"才能被挖掉——但 marker 机制
+    恰恰是为了让判官类 Agent 能安全地"引用一段格式写坏、根本不闭合的
+    tool_use 示例"（例如 TurnJudge 复述主 Agent 上一轮那段没写完的调用）。
+    这种情况下引用的例子天生匹配不上"完整闭合"的正则，标记形同虚设，
+    命中 unclosed_tool_use 规则，把判官本身完全健全的最终 JSON 输出
+    误判成"畸形/半成品"整体作废（导致下游 parse_judge_verdict 找不到
+    status 字段，陷入无意义的重试）。
+
+    这里改成两条更高优先级的判断，任一命中就直接判定为健全，完全跳过
+    detect_format_issue 的启发式检测：
+
+    1. 文本已经携带一段可用的判官类结构化输出（`looks_like_structured_judge_output`，
+       与 parse_judge_verdict 同一套容错级别：json_repair 优先，正则兜底）。
+       对判官类输出而言，"能不能被下游解析出结构化结果"才是判断这段文本
+       是否健全的最高优先级信号——只要能解析出来，其中任何字符串字段里
+       出现的 <tool_use> 字样都只可能是被转义包在字符串内部的引用内容，
+       不构成"未解析成功的工具调用残留"，不应该再被工具调用格式的启发式
+       规则否决。这条判断不绑定 TurnJudge 一种判官，GoalJudge、evaluator/
+       coach 之外任何未来接入 parse_judge_verdict 的自定义判官都会自动受益。
+    2. 文本中包含 TOOL_USE_EXAMPLE_MARKER——只要出现这个标记，就说明
+       作者（判官类 Agent）明确声明"接下来这段 tool_use/tool_result 痕迹
+       是引用/举例，不是我自己发起的调用"，直接整体豁免，不需要再纠结
+       标记覆盖的具体范围有多大、内部标签是否闭合。
+
+    只有以上两条都不满足时，才退回原有的 detect_format_issue 启发式检测。
     """
     if not text or not text.strip():
         return False
-    from mini_agent.llm.system_tool_call import strip_example_marked_spans
-    return detect_format_issue(strip_example_marked_spans(text)) is None
+
+    if looks_like_structured_judge_output(text):
+        return True
+
+    from mini_agent.llm.system_tool_call import TOOL_USE_EXAMPLE_MARKER
+    if TOOL_USE_EXAMPLE_MARKER in text:
+        return True
+
+    return detect_format_issue(text) is None
 
 
-__all__ = ["FormatIssue", "detect_format_issue", "is_valid_final_result", "PROMPT_HEADER"]
+__all__ = [
+    "FormatIssue", "detect_format_issue", "is_valid_final_result",
+    "looks_like_structured_judge_output", "PROMPT_HEADER",
+]

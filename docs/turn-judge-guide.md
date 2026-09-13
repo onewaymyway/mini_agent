@@ -187,6 +187,42 @@ run_turn() 内部：
 >
 > 详见 [`next_doc/turn_judge_self_loop_fix_plan.md`](../next_doc/turn_judge_self_loop_fix_plan.md)。
 
+> **实现细节 / 已修复的坑（第三类）：判官引用一段"格式写坏、根本不闭合"的
+> `<tool_use>` 示例时，健全性校验的优先级搞反了。** 第二类坑修复后，
+> TurnJudge/GoalJudge 在 `feedback` 里引用问题片段时会按提示词要求加上
+> `TOOL_USE_EXAMPLE_MARKER`（`【以下为工具格式示例并非实际工具调用】`）
+> 声明"这是举例，不是我自己的调用"。但当年的豁免实现
+> （`strip_example_marked_spans()`）依赖"被标记的 `<tool_use>` 片段必须
+> 能匹配成完整闭合的一对"才能被挖掉——而判官最需要引用的恰恰是**闭合标签
+> 本身写错了**的例子（比如把 `</tool_use>` 多打成 `</tool_use**s**>`）。
+> 这种例子天生匹配不上"完整闭合"的正则，标记形同虚设：`agent/turn_loop.py`
+> 里 `is_valid_final_result()` 最后一道健全性校验仍会命中
+> `unclosed_tool_use` 规则，把判官本身完全合法、可解析的 JSON 判定结果
+> 整体替换成占位文本，导致下游 `parse_judge_verdict()` 找不到 `status`
+> 字段，触发若干次无意义的"输出解析失败，正在重新生成"重试，最终保守
+> fallback 到 `NEED_USER`。
+>
+> 根本问题是优先级排反了：一段输出**能不能被下游解析成结构化判定结果**，
+> 应该比"文本里是否有看起来没写完的 `<tool_use>` 痕迹"这条启发式规则优先
+> 级更高——只要能解析出来，字符串字段里出现的标签只是被转义的引用内容。
+> 现在 `perception/format_correction_detector.py` 新增
+> `looks_like_structured_judge_output()`，判断依据与
+> `role_agents/verdict.py::parse_judge_verdict()` 实际使用的容错级别保持
+> 一致（`json_repair` 优先，解析不出完整 dict 时再用同一套宽松正则抠
+> `"status": "XXX"` 片段兜底），并且**不关心具体 status 取值属于哪个判官
+> 类型的白名单**——TurnJudge（`NEED_USER`/`AUTO_CONTINUE`/`NEED_COMPACT`）、
+> GoalJudge（`DONE`/`CONTINUE`/`NEED_COMPACT`）、以及未来任何接入
+> `parse_judge_verdict` 的自定义判官都自动受益，不需要逐个角色打补丁。
+> `is_valid_final_result()` 和 `agent/reminders_correction.py::
+> _detect_format_issue()` 两处调用点的判断顺序统一改成：
+> 1. `looks_like_structured_judge_output()` 命中 → 直接判定健全；
+> 2. 否则 `TOOL_USE_EXAMPLE_MARKER` 出现在文本中 → 整体豁免（不再要求
+>    标记覆盖的片段内部标签闭合完整）；
+> 3. 以上都不满足才退回原有的 `detect_format_issue()` 启发式检测。
+>
+> 详见 [`next_doc/turn_judge_self_loop_fix_plan.md` §7](../next_doc/turn_judge_self_loop_fix_plan.md#7-补充修复判官结构化输出应优先于-tool_use-格式启发式检测)，
+> 单测见 `tests/test_judge_structured_output_priority.py`。
+
 > **判官接线统一（阶段六）现状：** GoalJudge 和 TurnJudge 都已改为经由
 > [`RoleAgentDispatcher`](role-agents-guide.md#内建判官如何接入-dispatcher goal_review--turn_end_review)
 > 统一注册与查询：`role_agent.block: ["goal_judge"]`/`["turn_judge"]`
