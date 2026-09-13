@@ -12,7 +12,10 @@ ffmpeg/ffprobe/中文字幕字体的查找统一改用 common.py 的自动探测
 （`resolve_ffmpeg()`/`resolve_ffprobe()`/`resolve_font_path()`），
 详见 next_doc/novel_video_studio_fix_plan_v2.md 问题1。缺 clip 的
 小场景不再允许"借用相邻画面强制拉伸"糊弄过去（问题2），始终报错
-终止，回阶段5补齐。
+终止，回阶段5补齐。每个小场景的画面/字幕时长改为对齐该场景自己的
+真实配音时长（而不是规划阶段量化到 4~12s 区间的预估 duration_sec），
+修复"配音先出来、画面和字幕慢一拍才跟上"且随场景数越往后越明显的
+问题（详见 next_doc/novel_video_studio_fix_plan_v3.md 问题1）。
 
 改造自 novel-video-composer 的 v1 `compose_mv.py`/`compose_novel_video.py`
 同款拼接/缩放/字幕手法，缩小到"单大场景"粒度，核心差异：
@@ -288,7 +291,18 @@ def main():
     audio_dur = get_dur(narration_wav)
     print(f"[{macro_id}] Narration/dialogue concatenated: {len(scenes)} segments, total {audio_dur:.2f}s")
 
-    # ── 2. 逐小场景独立缩放到 duration_sec ────────────────────────────
+    # 每个小场景真实的配音时长（而不是规划阶段量化到 4~12s 区间的
+    # duration_sec 预估值）。下面缩放画面、渲染字幕都以这个为准——
+    # 这是修复"配音先出来、画面和字幕才慢一拍跟上"这个问题的关键：
+    # 此前画面是按 duration_sec（规划预估）缩放的，只有*全片总时长*
+    # 最后会和配音总时长做一次整体对齐（align_scale），但每个小场景
+    # *内部*的画面/字幕和它自己的真实配音之间完全没有单独对齐过，
+    # 逐场景的时长误差会不断累积、越往后错位越明显。改成每个小场景
+    # 各自对齐自己的真实配音时长后，误差不再累积，align_scale 只
+    # 用来兜底极小的浮点/帧率量化误差（应当非常接近 1.0）。
+    scene_audio_dur = {s["id"]: get_dur(per_scene_audio[s["id"]]) for s in scenes}
+
+    # ── 2. 逐小场景独立缩放到该场景真实的配音时长 ──────────────────────
     scaled_dir = workdir / "scaled"
     scaled_dir.mkdir()
     for s in scenes:
@@ -301,7 +315,7 @@ def main():
             raise RuntimeError(f"小场景 {s['id']} 没有 clip 文件，无法合成")
 
         clip_dur = get_dur(clip)
-        target_dur = max(s["duration_sec"], 0.1)
+        target_dur = max(scene_audio_dur[s["id"]], 0.1)
         scale = target_dur / clip_dur
         out_path = scaled_dir / f"{s['id']}.mp4"
         _run([
@@ -329,9 +343,13 @@ def main():
     align_scale = 1.0
     ALIGN_EPS = 0.02
     if abs(joined_dur - audio_dur) > ALIGN_EPS:
+        # 逐场景已经各自对齐了真实配音时长（见上面 scene_audio_dur），
+        # 走到这里通常只剩编码/帧率量化带来的极小误差；如果差值明显
+        # 偏大，多半说明某个小场景的 clip 缩放出了别的问题，值得回头
+        # 检查，而不是心安理得地指望这次整体拉伸能兜住。
         align_scale = audio_dur / joined_dur
-        print(f"  [强制对齐] joined={joined_dur:.3f}s 与配音 {audio_dur:.3f}s 不一致"
-              f"（差 {joined_dur - audio_dur:+.3f}s），强制整体 setpts={align_scale:.5f} 对齐")
+        print(f"  [兜底对齐] joined={joined_dur:.3f}s 与配音 {audio_dur:.3f}s 仍有差异"
+              f"（差 {joined_dur - audio_dur:+.3f}s），整体 setpts={align_scale:.5f} 兜底微调")
         aligned = workdir / "joined_aligned.mp4"
         _run([FFMPEG, "-y", "-i", str(joined),
               "-vf", f"setpts={align_scale}*PTS,fps={args.target_fps}",
@@ -355,7 +373,7 @@ def main():
                 png_path = subs_dir / f"cue_{len(text_to_png):04d}.png"
                 _render_text_png(text, W, H, font, args.font_size, args.overlay_y_offset, png_path)
                 text_to_png[text] = png_path
-            dur = round(s["duration_sec"] * align_scale, 6)
+            dur = round(scene_audio_dur[s["id"]] * align_scale, 6)
             f.write(f"file '{text_to_png[text].as_posix()}'\n")
             f.write(f"duration {dur}\n")
         last_text = scenes[-1]["text"] or ""

@@ -336,16 +336,14 @@ def check(output_dir: Path, macro_id: str) -> dict:
                     f"不要等阶段4配完音才发现时长不够"
                 )
 
-    # 5. 全局 micro_scene id 唯一性
-    all_ids: list[str] = []
-    for detail_file in sorted(output_dir.glob("macro_scene_*/scene_detail.yaml")):
-        data = _load_yaml(detail_file)
-        for ms in (data.get("micro_scenes", []) if isinstance(data, dict) else []):
-            if ms.get("id"):
-                all_ids.append(ms["id"])
-    dup_ids = {i for i in all_ids if all_ids.count(i) > 1}
-    if dup_ids:
-        errors.append(f"micro_scene id 在项目范围内存在重复：{sorted(dup_ids)}")
+    # 5. micro_scene id 在当前大场景内唯一（不同大场景之间允许同名）
+    seen_ids: set[str] = set()
+    for ms in micro_scenes:
+        mid = ms.get("id")
+        if mid and mid in seen_ids:
+            errors.append(f"大场景 {macro_id} 内存在重复的 micro_scene id：{mid}")
+        if mid:
+            seen_ids.add(mid)
 
     return {
         "ok": not errors,
