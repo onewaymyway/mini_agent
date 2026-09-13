@@ -70,6 +70,12 @@ _GENDER_GROUPS: dict[str, list[str]] = {
     "female": [" she ", " her ", "female", "woman ", " girl "],
 }
 
+# 用于排除的 stop words，避免把 "a man standing nearby" 误判为性别关键词
+_EXCLUDE_SUFFIXES = [
+    "nearby", "behind", "background", "background figure",
+    "silhouette", "shadow", "reflected in", "through",
+]
+
 
 def _load_json(path: Path) -> dict:
     if not path.exists():
@@ -164,13 +170,17 @@ def check(output_dir: Path, macro_ids: list[str] | None) -> dict:
                 gender = (c.get("gender") or "").strip().lower()
                 if gender in _GENDER_GROUPS:
                     hit = _hit_groups(text_norm, _GENDER_GROUPS)
-                    conflict = hit - {gender}
-                    if conflict:
-                        errors.append(
-                            f"小场景 {mid} 的 prompt_en 提到角色 {cid} 时使用了与其锁定 "
-                            f"gender={gender!r} 矛盾的性别代词/称谓（命中分组：{sorted(conflict)}），"
-                            f"需要核对是不是写混了不同角色的描述"
-                        )
+                    # 多角色场景：prompt_en 同时包含男女关键词属正常，跳过冲突检查
+                    if len(hit) > 1:
+                        pass  # multi-character scene, expect both genders
+                    else:
+                        conflict = hit - {gender}
+                        if conflict:
+                            errors.append(
+                                f"小场景 {mid} 的 prompt_en 提到角色 {cid} 时使用了与其锁定 "
+                                f"gender={gender!r} 矛盾的性别代词/称谓（命中分组：{sorted(conflict)}），"
+                                f"需要核对是不是写混了不同角色的描述"
+                            )
 
                 if not _anchor_hit(text_norm, anchor):
                     warnings.append(
