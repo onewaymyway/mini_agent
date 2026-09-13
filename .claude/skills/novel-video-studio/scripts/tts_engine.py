@@ -87,25 +87,45 @@ def _try_cosyvoice(text: str, out_path: Path, voice: Optional[str], model_dir: s
 
 
 def _run_edge_tts(text: str, out_path: Path, voice: str) -> None:
-    """edge-tts 底层输出 mp3，无 ffmpeg 时直接保存 mp3，有 ffmpeg 时转 wav。"""
+    """edge-tts 底层输出 mp3，统一转成 `out_path`（调用方约定的 .wav 路径）。
+
+    [BUGFIX] 此前这里在成功转码后把结果存到 `out_path.with_suffix('.wav')`、
+    再删除调用方传入的 `out_path` 本身——调用方（synthesize_scene_audio.py）
+    传入的 `out_path` 就已经是 `.wav` 后缀，`with_suffix('.wav')` 在这种情况
+    下是同一个路径没问题，但一旦调用方传入非 `.wav` 后缀（历史上曾是
+    `.mp3`），最终真正落盘的文件名会和调用方以为的路径对不上——调用方自己
+    的存在性检查、以及下游 `compose_macro_scene.py` 按固定 `.wav` 路径去读
+    配音文件，都会在这种偏移下找不到文件（`check_assets_and_audio_v2.py`
+    检查通过、`compose_macro_scene.py` 却报"缺少配音"，同一份文件两处校验
+    结果不一致）。现在改成：先把 edge-tts 原始 mp3 输出写到一个临时文件，
+    再用 ffmpeg 转码到调用方传入的 `out_path` 本身，不再依赖
+    `out_path.with_suffix()` 推导落盘路径，`out_path` 传什么后缀就落到
+    什么路径，不会跑偏。
+    """
     import edge_tts  # type: ignore
+    import shutil
+
+    tmp_mp3 = out_path.with_suffix(out_path.suffix + ".rawmp3.tmp")
 
     async def _run() -> None:
         communicate = edge_tts.Communicate(text, voice)
-        await communicate.save(str(out_path))
+        await communicate.save(str(tmp_mp3))
 
     asyncio.run(_run())
 
-    # 有 ffmpeg 则转成 wav，没有则保持 mp3（后续脚本能处理）
     try:
         subprocess.run(
-            ["ffmpeg", "-y", "-i", str(out_path), "-ar", "24000", "-ac", "1",
-             str(out_path.with_suffix('.wav'))],
+            ["ffmpeg", "-y", "-i", str(tmp_mp3), "-ar", "24000", "-ac", "1",
+             str(out_path)],
             capture_output=True, timeout=60, check=True,
         )
-        out_path.unlink(missing_ok=True)
+        tmp_mp3.unlink(missing_ok=True)
     except Exception:
-        pass  # ffmpeg 不可用，保留 mp3 文件
+        # ffmpeg 不可用/转码失败：直接把原始 mp3 数据落到 out_path 这个约定
+        # 路径上（内容仍是 mp3 编码，扩展名可能对不上，但至少调用方按固定
+        # 路径能找到文件；ffmpeg 是本 skill 阶段4的硬依赖，正常环境不会走到
+        # 这个分支，见 references/04_assets_and_audio.md 的依赖说明）。
+        shutil.move(str(tmp_mp3), str(out_path))
 
 
 def synthesize(

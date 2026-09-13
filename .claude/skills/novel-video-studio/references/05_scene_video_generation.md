@@ -28,14 +28,19 @@
 
 ```bash
 python .claude/skills/novel-video-studio/scripts/generate_scene_videos_v2.py \
-  <output_dir> --aspect-ratio <novel_project.json 里的 aspect_ratio>
+  <output_dir> --macro-id macro_01 --aspect-ratio <novel_project.json 里的 aspect_ratio>
 ```
 
 ⚠️ **调用 bash 工具执行本命令时，`timeout` 参数必须传 `-1`**：单场景
 视频生成常常要几分钟，一次批量生成动辄超过默认超时。
 
-- 不传 `--macro-id`/`--micro-id` 时处理全部大场景下的全部小场景；
-  `--macro-id macro_01 macro_03` 只处理指定大场景；`--micro-id micro_02`
+- **按 SKILL.md §2.3 的逐场景循环，默认必须带 `--macro-id` 只处理当前
+  刚配完音的这一个大场景**——不要跑完一个大场景的阶段4就去跑下一个
+  大场景的阶段4，而是紧接着用这一步把当前大场景的视频也生成、合成
+  完，让用户看到这一个大场景的完整成片后再开始下一个大场景。不传
+  `--macro-id`/`--micro-id` 会处理全部大场景下的全部小场景，只在用户
+  明确要求"全部重新生成一遍"时才这么用；`--macro-id macro_01 macro_03`
+  可以指定多个（正常循环里只会传当前这一个）；`--micro-id micro_02`
   进一步只处理指定小场景（两者可组合）；
 - 已存在且非空的 `clips/<micro_id>.mp4` 默认跳过（断点续跑），`--force`
   强制全部重新生成；
@@ -91,12 +96,17 @@ python .claude/skills/novel-video-studio/scripts/compose_macro_scene.py \
   避免下游误以为已完成；
 - 产物：`macro_scene_XX/macro_scene_XX.mp4`。
 
-对每个 `status: planned` 的大场景重复 Step 1-4，直到 `macro_scenes.yaml`
-里所有大场景都变成 `status: done`，再进入阶段6。可以随时用
-`check_project_state.py` 查看还有哪些大场景没到 `done`。
+当前大场景 Step 1-4 跑完、`status` 变成 `done` 后，**先向用户展示这个
+大场景的结果并停下来等确认**（见下），确认没问题（或反馈处理完）之后
+才回到阶段3开始下一个大场景的规划——不要在用户还没看过这个大场景之前
+就接着跑下一个大场景的阶段3/4。全部大场景都变成 `status: done` 后，
+再进入阶段6。可以随时用 `check_project_state.py` 查看还有哪些大场景
+没到 `done`。
 
-**向用户展示**：每个大场景的小场景生成成功/失败数量、大场景合成结果
-（时长/分辨率）、持续性失败场景的可能原因。
+**向用户展示**（每个大场景合成完都要做一次，不要攒到最后一起汇报）：
+这个大场景的小场景生成成功/失败数量、合成结果（时长/分辨率/文件
+路径，方便用户直接打开看）、持续性失败场景的可能原因；如果方便，
+可以提示用户这是第几个/共几个大场景，接下来准备开始哪一个。
 
 ## 常见问题
 

@@ -26,9 +26,16 @@ novel_output/小说名_20260911/
         └── dialogue_<角色id>_<micro_id>_<block序号>.wav
 ```
 
-本阶段支持**按需触发**：不要求全量重跑，可以只给新增的角色/地点补
-生成素材（配合阶段3的引用回补循环），也可以用 `--macro-id` 只给某个
-大场景配音。
+**本阶段默认按单个大场景触发，不要不带 `--macro-id` 跑全量**：跟着
+SKILL.md §2.3 的循环，处理完某个大场景的阶段3规划后，配音只给这一个
+大场景配（`--macro-id macro_XX`），配完直接进入阶段5生成这个大场景的
+视频，而不是先把所有大场景的配音都配完再统一进入阶段5——用户要能在
+看到第一个大场景成片的同时，其它大场景还没开始配音，这是正常状态，
+不是"漏跑了"。
+
+唯一例外是 Step 1 的定妆图：按 `asset_path` 是否已生成去重，处理某个
+大场景时顺带给这个场景新出现的角色/地点生成一次即可，天然不需要、也
+不应该攒到所有大场景一起生成。
 
 ## Step 1：角色/地点定妆图生成（按需）
 
@@ -51,22 +58,24 @@ AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
 封面图（可选）逻辑同角色定妆图，落到 `global/assets/cover.png`，供
 阶段6可选叠加。
 
-## Step 2：按 content_blocks 批量配音
+## Step 2：按 content_blocks 给当前大场景配音
 
 ```bash
 python .claude/skills/novel-video-studio/scripts/synthesize_scene_audio.py \
-  <output_dir>
+  <output_dir> --macro-id macro_01
 ```
 
-- 遍历所有 `macro_scene_*/scene_detail.yaml`，对每个 `micro_scene` 的
-  每个非空 `content_blocks[*].text` 分别配音：
+- **默认带 `--macro-id` 只处理当前正在跑循环的这一个大场景**，不带
+  `--macro-id` 会遍历全部 `macro_scene_*/scene_detail.yaml`——只有在
+  用户明确要求"把所有场景的配音一起重新配一遍"这类全局操作时才这么用；
+  正常按 SKILL.md §2.3 的逐场景循环推进时，永远只处理当前这一个大场景；
+- 对该大场景下每个 `micro_scene` 的每个非空 `content_blocks[*].text`
+  分别配音：
   - `narration` → 项目默认音色（`novel_project.json.tts.voice`）；
   - `dialogue` → 读取 `speaker` 对应角色的 `voice_profile`，用
     `voice_mapping.py` 解析出具体音色，不同角色自动配不同声音；
 - 已存在且非空的音频默认跳过（断点续跑，读取真实时长参与求和），需要
-  强制重新生成全部时加 `--force`；
-- 只想处理某一个大场景时加 `--macro-id macro_01`（配合阶段3的回补
-  循环，只重新配新增/修改过的部分，不需要全量重跑）；
+  强制重新生成该场景全部音频时加 `--force`；
 - 同一个 `micro_scene` 内全部 `content_blocks` 配音完成后，脚本自动
   把真实时长**求和**（多段音频首尾相接，不叠加），回填该 `micro_scene`
   的 `duration_sec`，覆盖写回 `scene_detail.yaml`；
@@ -89,9 +98,13 @@ python .claude/skills/novel-video-studio/scripts/check_assets_and_audio_v2.py \
 
 检查：角色/地点定妆图完整性（所有被引用的都有 `asset_path`）、每个
 `content_block` 是否都有对应音频文件、每个 `micro_scene.duration_sec`
-是否已回填且落在 4-12 秒范围内。**退出码非 0 不允许交付阶段5**，按
-报错逐条修复（补生成缺失定妆图、回 Step 2 用 `--macro-id`/`--force`
-定向重跑），重新跑校验直到通过。
+是否已回填且落在 4-12 秒范围内。这个脚本本身不接受 `--macro-id`，但
+它只扫描磁盘上**已经存在**的 `macro_scene_*/scene_detail.yaml`——按
+§2.3 的逐场景循环，还没跑到阶段3的大场景根本不会有这个文件，所以校验
+结果天然只覆盖"已经规划到当前进度"的场景，不会因为后面的大场景还没
+配音就报错。**退出码非 0 不允许交付阶段5**，按报错逐条修复（补生成
+缺失定妆图、回 Step 2 用 `--macro-id`/`--force` 定向重跑），重新跑
+校验直到通过。
 
 **向用户展示**：定妆图生成结果（本次新生成多少角色/地点，是否有失败
 需要重试）、配音引擎使用情况（`engine_usage` 汇总）、校验通过结果 +

@@ -86,13 +86,20 @@ resource_id=..., reason=...)` 按需加载，读完执行完这一阶段就可�
 ## 1. 整体流程与产物契约
 
 ```
-阶段1 novel-entity-extractor（角色/地点抽取，含 voice_profile）
-  → 阶段2 大场景切分（macro_scene，按剧情/时间地点切）
-  → 阶段3 单大场景详细规划（micro_scene，旁白/对话拆分，逐场景处理）
-  → 阶段4 素材+差异化配音（按需触发，逐场景/逐实体可增量）
-  → 阶段5 小场景视频生成 + 大场景内合成
-  → 阶段6 最终拼接转场
+阶段1 novel-entity-extractor（角色/地点抽取，含 voice_profile，全文一次性）
+  → 阶段2 大场景切分（macro_scene，按剧情/时间地点切，全文一次性）
+  → 对每个大场景 macro_scene_XX 依次循环：
+        阶段3 详细规划(该场景) → 阶段4 素材(按需补)+配音(该场景)
+        → 阶段5 小场景视频生成+大场景内合成(该场景) → 向用户展示、等确认
+  → 全部大场景 done 后，阶段6 最终拼接转场
 ```
+
+**关键点：阶段3-5 是"以单个大场景为循环体"跑的，不是"全部大场景先
+过完阶段3、再全部过阶段4、再全部过阶段5"的批处理流水线**——用户需要
+每做完一个大场景就能看到、检查这个场景的成片，而不是等到最后一刻才看
+到第一份可检查的结果。角色/地点定妆图（阶段4的一部分）例外：它按
+`asset_path` 是否已生成去重，天然是"用到哪个角色就顺带生成一次，后面
+场景复用"，不需要、也不应该攒到所有场景一起生成。详见 §2.3。
 
 目录结构：
 
@@ -106,12 +113,86 @@ novel_output/小说名_20260911/
 ├── macro_scenes.yaml           # 大场景清单，status: pending→planned→done
 ├── macro_scene_01/
 │   ├── scene_detail.yaml       # 本大场景的小场景规划
-│   ├── audio/                  # narration_seg_*.wav / dialogue_<char>_*.wav
-│   ├── clips/                  # micro_scene_*.mp4
+│   ├── audio/                  # narration_seg_<mid>_<i>.wav / dialogue_<charid>_<mid>_<i>.wav
+│   ├── clips/                  # <micro_id>.mp4，如 micro_01.mp4（不是 micro_scene_01.mp4）
 │   └── macro_scene_01.mp4      # 本大场景合成结果
 ├── macro_scene_02/ ...
 └── video.mp4                   # 最终产物
 ```
+
+### 1.1 各产物文件字段格式速查
+
+下面把贯穿全流程、会被多个阶段读写的几份文件的**完整字段列表**集中列
+一遍（各阶段 reference 里也有，但分散在各自文件里；这里是跨阶段的
+权威速查表，字段类型/取值范围以这里为准，若某阶段文档描述与这里不一致
+以这里为准并视为待修文档的 bug）。**新建/修改这些文件时，只写下面列出
+的字段，不要自造字段名或改变已有字段的类型**，这是保持多阶段脚本之间
+数据契约稳定的基础。
+
+**`novel_project.json`**（阶段1创建，全程只读，除非用户明确要求改
+项目级配置）：
+
+| 字段 | 类型 | 取值/说明 |
+|---|---|---|
+| `source_title` | string | 小说标题 |
+| `target_duration_sec` | number | 目标总时长（秒） |
+| `art_style` | string | 全书统一美术风格英文描述，阶段1 Step1 填 |
+| `tts.engine` | string | `"cosyvoice"` \| `"edge-tts"` |
+| `tts.fallback` | string | 目前只实现 `"edge-tts"` |
+| `tts.voice` | string \| null | 旁白默认音色，null 时脚本按引擎默认值 |
+| `bgm_enabled` | bool | 目前恒为 `false`（本版不接 BGM） |
+| `transition_mode` | string | `"cut"` \| `"fade"` |
+| `transition_duration_sec` | number | `fade` 模式下的转场时长 |
+| `orientation` | string | `"landscape"` \| `"portrait"` |
+| `aspect_ratio` | string | 如 `"16:9"`/`"9:16"` |
+
+**`global/characters.json`** 单条 `characters[]` 元素：`id`
+(`char_NN`)、`names` (string[])、`description_zh`/`description_en`
+(string)、`voice_profile` (string)、`first_appear` (string)、
+`relations` (string[]，如 `"char_02:挚友"`)、`asset_path`
+(string \| null，阶段4回填)、`face_reference_id` (预留字段，恒
+null，未实现)。
+
+**`global/locations.json`** 单条 `locations[]` 元素：`id` (`loc_NN`)、
+`name`、`description_zh`/`description_en`、`asset_path`
+(string \| null，阶段4回填)。
+
+**`macro_scenes.yaml`** 单条 `macro_scenes[]` 元素：`id` (`macro_NN`)、
+`title`、`source_span`、`raw_text` (原文逐字，不可改写)、`summary`、
+`estimated_duration_sec` (number)、`char_count` (number)、
+`uses_characters`/`uses_locations` (id 数组)、`status`
+(`"pending"` → `"planned"` → `"done"`，阶段3/5分别推进)。
+
+**`macro_scene_XX/scene_detail.yaml`** 单条 `micro_scenes[]` 元素，
+字段随阶段推进逐步补齐（同一份文件，不同阶段各自负责自己那部分字段，
+不要覆盖其它阶段已写的字段）：
+
+| 字段 | 类型 | 由哪个阶段写入 | 取值/说明 |
+|---|---|---|---|
+| `id` | string | 阶段3 | `micro_NN`，全项目范围唯一 |
+| `macro_id` | string | 阶段3 | 所属大场景 id |
+| `uses_characters` / `uses_locations` | string[] | 阶段3 | 引用的全局库 id |
+| `visual_hint` | string | 阶段3 | 画面提示（中文，供阶段5写 prompt_en 参考） |
+| `content_blocks` | object[] | 阶段3 | 见下方 `content_block` 结构 |
+| `duration_sec` | number \| null | 阶段4回填 | 4-12 秒范围内，阶段3阶段写入时恒为 `null` |
+| `prompt_en` | string | 阶段5（Agent 手写） | 阶段3不产出，脚本不代为生成，为空视频生成会直接失败 |
+| `video_mode` | string | 阶段5（Agent 手写） | `"reference"` \| `"keyframe"` \| `"text"`，不设置时脚本按 `"text"` 处理 |
+| `status` | string | 阶段5回写 | `"pending"` → `"done"` \| `"failed"` |
+
+`content_block` 结构（`content_blocks[]` 单个元素）：`type`
+(`"narration"` \| `"dialogue"`)、`text` (string，`dialogue` 必须原文
+逐字摘录不可改写)、`speaker` (`narration` 恒 `null`，`dialogue` 必须是
+`uses_characters` 里的角色 id)。
+
+**音频文件命名**（阶段4写入 `macro_scene_XX/audio/`，统一 `.wav`
+后缀）：`narration_seg_<micro_id>_<block序号两位数>.wav`（如
+`narration_seg_micro_01_00.wav`）、
+`dialogue_<角色id>_<micro_id>_<block序号两位数>.wav`（如
+`dialogue_char_02_micro_01_01.wav`）；`<block序号>` 是该 `micro_scene`
+的 `content_blocks` 列表下标，`%02d` 补零。
+
+**视频 clip 命名**（阶段5写入 `macro_scene_XX/clips/`）：
+`<micro_id>.mp4`（如 `micro_01.mp4`，不带 `micro_scene_` 前缀）。
 
 状态字段是阶段推进和"该不该回退"的唯一依据：
 - `macro_scenes.yaml` 每条大场景：`pending`（未详细规划）→`planned`
@@ -161,13 +242,42 @@ python .claude/skills/novel-video-studio/scripts/check_project_state.py <output_
 **判断"该往前回退几步"的通用原则**：定位到"是哪个阶段的产物不满足
 下游契约"，就回到那个阶段修正，而不是在下游阶段里硬编码补丁绕过去。
 
-### 2.3 长篇/多大场景：逐个处理，不要求一次性通关
+### 2.3 长篇/多大场景：必须逐个大场景端到端跑完，不要跨大场景批量处理
 
-阶段3-5 都是"以大场景为单位"处理的：`macro_scenes.yaml` 里有几个大场景
-就要走几轮阶段3-5（阶段4/5支持 `--macro-id` 只处理指定大场景）。不需要
-把所有大场景都推到同一阶段才继续，允许有的大场景已经 `done`、有的还
-`pending`，用 `check_project_state.py` 随时查看整体进度。这样任何一个
-大场景中途失败、需要重新调整，都不影响其它已完成的大场景。
+`macro_scenes.yaml` 有几个大场景，阶段3-5 就要跑几轮，且**以"单个大
+场景"为最小闭环单位**：对某个 `macro_scene_XX`，依次做完
+
+```
+阶段3详细规划(该场景) → 阶段4配音(该场景, --macro-id macro_XX)
+→ 阶段5小场景视频+大场景内合成(该场景, --macro-id macro_XX)
+→ 该场景 status=done → 向用户展示这个大场景的结果，等待反馈/确认
+```
+
+才能开始下一个大场景的阶段3。**禁止的反模式**：把全部大场景先一起跑完
+阶段3（或阶段4的批量配音，不带 `--macro-id`），攒够所有大场景的配音后
+再统一进入阶段5——这样用户要等到最后才能看到第一份可检查的成片，一旦
+早期大场景的规划/人设/配音方向有问题，返工成本是按全部大场景计算的，
+而不是一个大场景。
+
+例外（这些确实是全局一次性资源，跟"逐场景处理"不矛盾）：
+- 阶段1的角色/地点抽取——全文通读一次抽出全局角色地点表，不能只看
+  单个大场景（会漏掉后面场景才出现的角色）；
+- 阶段2的大场景切分——同样需要看全文划分边界；
+- 阶段4 Step 1 的角色/地点定妆图——按 `asset_path` 是否已生成去重，
+  同一角色贯穿多个大场景只需生成一次，天然应该在处理第一个用到该角色
+  的大场景时顺带生成，之后其它大场景直接复用，不用重复生成。
+
+阶段4 Step 2（配音）、阶段5（视频生成+合成）**默认都要带
+`--macro-id macro_XX` 只处理当前这一个大场景**，不要在还没看到当前
+大场景成片之前就去动下一个大场景。每跑完一个大场景的 Step 4 合成并
+校验通过、`status=done` 后，把这个大场景的产物（时长、配音引擎使用
+情况、任何持续性失败场景）汇报给用户，用户确认没问题或提完修改意见
+处理完后，再开始下一个大场景的阶段3。
+
+用 `check_project_state.py` 随时查看整体进度（哪些大场景 `done`、哪个
+正在处理）。这样任何一个大场景中途失败、需要重新调整，都不影响其它
+已完成的大场景，也不会出现"配了十个场景的音，视频一个都还没生成，
+用户完全看不到进展"的情况。
 
 ### 2.4 API 调用失败
 

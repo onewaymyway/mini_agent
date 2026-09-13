@@ -141,7 +141,7 @@ def run(output_dir: Path, macro_id: str | None, force: bool, engine_pref: str) -
                     continue
                 btype = block.get("type", "narration")
                 prefix = "narration_seg" if btype == "narration" else f"dialogue_{block.get('speaker', 'unknown')}"
-                out_path = audio_dir / f"{prefix}_{mid}_{i:02d}.mp3"
+                out_path = audio_dir / f"{prefix}_{mid}_{i:02d}.wav"
 
                 if out_path.exists() and out_path.stat().st_size > 0 and not force:
                     # 断点续跑：已存在的音频直接复用其时长，不重新合成

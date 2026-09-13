@@ -9,7 +9,8 @@ content_blocks 配音）的产物。
      global/characters.json / global/locations.json 里是否都已有非空
      asset_path。
   2. 每个 micro_scene 的每个非空 content_block 是否都有对应的音频文件
-     （narration_seg_<mid>_<i>.wav 或 dialogue_<speaker>_<mid>_<i>.wav），
+     （narration_seg_<mid>_<i>.wav 或 dialogue_<speaker>_<mid>_<i>.wav，
+     统一 .wav 后缀，与 compose_macro_scene.py 的读取约定一致），
      文件存在且非空。
   3. 每个 micro_scene 的 duration_sec 是否已回填（非 null）且落在
      4–12 秒范围内——超出范围说明该小场景需要回
@@ -89,7 +90,7 @@ def check(output_dir: Path, min_sec: float, max_sec: float) -> dict:
                     continue
                 btype = block.get("type", "narration")
                 prefix = "narration_seg" if btype == "narration" else f"dialogue_{block.get('speaker', 'unknown')}"
-                audio_path = audio_dir / f"{prefix}_{mid}_{i:02d}.mp3"
+                audio_path = audio_dir / f"{prefix}_{mid}_{i:02d}.wav"
                 if not audio_path.exists() or audio_path.stat().st_size == 0:
                     errors.append(f"小场景 {mid} 第{i}块（{btype}）缺少配音文件：{audio_path}")
 
