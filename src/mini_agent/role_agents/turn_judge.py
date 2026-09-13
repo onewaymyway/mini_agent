@@ -134,21 +134,53 @@ def run_turn_judge(
         hit_max_turns=hit_max_turns,
     )
 
-    result = run_judge_turn(
-        judge_agent, prompt, failure_role_label="TurnJudgeAgent",
-        profile_name=profile.name if profile else "turn_judge",
-    )
-
-    if result.ok:
-        from mini_agent.role_agents.feedback import extract_turn_status
-        _exit_status = extract_turn_status(result.raw_output) or "(解析失败)"
-        R.print_info(f"└─ [TurnJudge] 退出判官子会话，status={_exit_status}")
-        return result.raw_output
-    # 判定失败时保守返回 NEED_USER，绝不能让异常被当成 AUTO_CONTINUE。
-    # 兜底文本本身也是合法 JSON，保持与正常输出一致的可解析契约。
+    from mini_agent.role_agents.verdict import parse_judge_verdict
     import json as _json
-    R.print_info(f"└─ [TurnJudge] 退出判官子会话，status=NEED_USER（运行失败兜底）")
+
+    _valid_statuses = ["NEED_USER", "AUTO_CONTINUE", "NEED_COMPACT"]
+    _parse_retry_count = max(0, int(getattr(tj_cfg_block, "parse_retry_count", 2) or 0))
+
+    last_raw = ""
+    for _attempt in range(1, _parse_retry_count + 2):  # 首次尝试 + parse_retry_count 次重试
+        result = run_judge_turn(
+            judge_agent, prompt, failure_role_label="TurnJudgeAgent",
+            profile_name=profile.name if profile else "turn_judge",
+        )
+
+        if not result.ok:
+            # 运行本身抛异常（网络/超时等），不是"输出格式解析不了"，重跑同一个
+            # 子会话意义不大，直接走既有的保守兜底，不占用 parse_retry_count。
+            R.print_info(f"└─ [TurnJudge] 退出判官子会话，status=NEED_USER（运行失败兜底）")
+            return _json.dumps({
+                "status": "NEED_USER",
+                "feedback": f"[TurnJudgeAgent 运行失败: {result.error}]，保守判定为需要用户输入。",
+            }, ensure_ascii=False)
+
+        last_raw = result.raw_output
+        verdict = parse_judge_verdict(result.raw_output, valid_statuses=_valid_statuses, fallback_status="")
+        if verdict.parse_ok:
+            _retry_note = f"（第 {_attempt} 次尝试成功）" if _attempt > 1 else ""
+            R.print_info(f"└─ [TurnJudge] 退出判官子会话，status={verdict.status}{_retry_note}")
+            return result.raw_output
+
+        if _attempt <= _parse_retry_count:
+            R.print_warning(
+                f"[TurnJudge] 第 {_attempt} 次输出解析失败（JSON 解析与兜底正则均未命中 "
+                f"status 字段），原始输出前 200 字：{result.raw_output[:200]!r}，正在重新生成"
+                f"（还剩 {_parse_retry_count - _attempt} 次重试机会）…"
+            )
+
+    # 连续多次都解析失败，才最终保守判定 NEED_USER，绝不能让解析失败被当成
+    # AUTO_CONTINUE。兜底文本本身也是合法 JSON，保持与正常输出一致的可解析契约。
+    R.print_warning(
+        f"[TurnJudge] 连续 {_parse_retry_count + 1} 次输出均解析失败，"
+        "放弃重试，保守判定为 NEED_USER，交还真人用户输入。"
+    )
+    R.print_info(f"└─ [TurnJudge] 退出判官子会话，status=NEED_USER（连续解析失败兜底）")
     return _json.dumps({
         "status": "NEED_USER",
-        "feedback": f"[TurnJudgeAgent 运行失败: {result.error}]，保守判定为需要用户输入。",
+        "feedback": (
+            f"[TurnJudgeAgent 连续 {_parse_retry_count + 1} 次输出解析失败]，保守判定为需要用户输入。"
+            f" 最后一次原始输出前 500 字：{last_raw[:500]}"
+        ),
     }, ensure_ascii=False)

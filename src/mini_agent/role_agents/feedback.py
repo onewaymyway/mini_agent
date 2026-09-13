@@ -98,6 +98,10 @@ def extract_goal_status(text: str) -> Optional[str]:
     if verdict.parse_ok:
         return verdict.status
 
+    # `parse_judge_verdict` 已经内置了「JSON 完全解析失败时用宽松正则找
+    # "status": "X" 键值对」的兜底（见 verdict.py::_loose_extract_status），
+    # 这里的旧版纯文本 "GOAL_STATUS: X" 正则只是给尚未切换到 JSON 输出格式
+    # 的历史遗留场景留的最后一道保险，实际命中率基本为 0。
     m = _GOAL_STATUS_RE.search(text)
     if not m:
         return None
@@ -126,6 +130,8 @@ def extract_turn_status(text: str) -> Optional[str]:
     if verdict.parse_ok:
         return verdict.status
 
+    # 同 extract_goal_status：真正对「新 JSON 格式」生效的宽松兜底已经内置
+    # 在 parse_judge_verdict 里了，这里只是给旧纯文本格式留的最后一道保险。
     m = _TURN_STATUS_RE.search(text)
     if not m:
         return None

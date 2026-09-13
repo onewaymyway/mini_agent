@@ -26,10 +26,32 @@ status 不在允许列表里）一律返回 `parse_ok=False` + 调用方传入�
 
 from __future__ import annotations
 
+import re as _re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import json_repair
+
+
+def _loose_extract_status(
+    text: str, *, valid_statuses: list[str], status_key: str = "status",
+) -> Optional[str]:
+    """当 json_repair 也解析失败时的最后一道兜底：直接用正则从原始文本里
+    找形如 `"status": "AUTO_CONTINUE"` 的键值对（允许值两侧引号缺失/多余
+    空白），而不是像旧版那样去匹配已经废弃的纯文本 `TURN_STATUS: X` 格式。
+
+    这只在 json_repair.loads 整体失败（比如输出被截断到 JSON 结构都不完整）
+    时才会被调用——只要 json_repair 能拿到一个 dict，就应该走它，不应该被
+    这里的宽松正则抢先命中。
+    """
+    choices = "|".join(_re.escape(s) for s in valid_statuses)
+    pattern = _re.compile(
+        rf'"{_re.escape(status_key)}"\s*:\s*"?\s*({choices})\s*"?', _re.IGNORECASE,
+    )
+    m = pattern.search(text)
+    if not m:
+        return None
+    return m.group(1).upper()
 
 
 @dataclass
@@ -76,15 +98,27 @@ def parse_judge_verdict(
         result = None
 
     if not isinstance(result, dict):
+        # json_repair 彻底解析不出 dict（通常是输出在 JSON 结构闭合前就被截断）。
+        # 最后再用宽松正则试一次「新 JSON 格式」的 status 字段——这是解析失败
+        # 时唯一的救援机会，找不到才真正判 parse_ok=False。
+        loose_status = _loose_extract_status(raw, valid_statuses=valid_statuses, status_key=status_key)
+        if loose_status is not None:
+            return JudgeVerdict(status=loose_status, feedback="", parse_ok=True, raw=raw, extra={"loose_fallback": True})
         return JudgeVerdict(status=fallback_status, feedback="", parse_ok=False, raw=raw)
 
     status_val = result.get(status_key)
     if not isinstance(status_val, str) or not status_val.strip():
+        loose_status = _loose_extract_status(raw, valid_statuses=valid_statuses, status_key=status_key)
+        if loose_status is not None:
+            return JudgeVerdict(status=loose_status, feedback="", parse_ok=True, raw=raw, extra={"loose_fallback": True})
         return JudgeVerdict(status=fallback_status, feedback="", parse_ok=False, raw=raw)
 
     status_norm = status_val.strip().upper()
     valid_upper = {s.upper() for s in valid_statuses}
     if status_norm not in valid_upper:
+        loose_status = _loose_extract_status(raw, valid_statuses=valid_statuses, status_key=status_key)
+        if loose_status is not None:
+            return JudgeVerdict(status=loose_status, feedback="", parse_ok=True, raw=raw, extra={"loose_fallback": True})
         return JudgeVerdict(status=fallback_status, feedback="", parse_ok=False, raw=raw)
 
     feedback_val = result.get(feedback_key, "")
