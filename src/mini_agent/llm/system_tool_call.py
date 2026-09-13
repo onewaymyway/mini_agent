@@ -170,6 +170,60 @@ def parse_tool_calls(text: str) -> list[ToolCall]:
     return calls
 
 
+# [turn_judge_self_loop_fix_plan.md §2 补丁2] 标记豁免的窗口判断逻辑此前只
+# 接入了 parse_tool_calls()（决定"算不算一次真实工具调用"），没有接入
+# perception.format_correction_detector（决定"算不算一次写坏的工具调用，
+# 需不需要打回去让模型重写"）——导致零工具判官类 Agent（TurnJudge/GoalJudge
+# 等）即使按提示词要求，在引用/复述一段 <tool_use> 示例前正确加上了
+# TOOL_USE_EXAMPLE_MARKER 标记，quote 出来的 <tool_use>...</tool_use>（或
+# 旧版 ```tool_call 围栏）仍会被 format_correction_detector 的正则规则误判
+# 成"这个 Agent 自己想调用工具但格式写坏了"，从而被强行注入纠错提示、拖入
+# 多一轮重试，把这一轮真正有效的最终输出（如 TurnJudge 判定的 JSON 结果）
+# 顶替掉。本函数把"标记豁免"逻辑抽成公共入口，任何后续需要判断"这段
+# tool_use/tool_call 痕迹是不是被标记为示例"的调用方（不只是 parse_tool_calls）
+# 都应该先用这个函数把标记覆盖的片段整体挖掉，再对剩余文本跑自己的检测，
+# 保证两处的"标记豁免"判定标准完全一致，不需要各自维护一份窗口逻辑。
+def strip_example_marked_spans(text: str) -> str:
+    """移除文本中所有被 TOOL_USE_EXAMPLE_MARKER 标记为"举例/引用"的
+    <tool_use>/```tool_call 片段（含标记行本身），返回剩余文本。
+
+    返回值只应被"判断是否存在真实/写坏的工具调用尝试"的检测逻辑使用
+    （如 format_correction_detector），不应被当作展示给用户的最终文本
+    （标记行和示例内容都会被整体挖掉，可能导致文本不再连贯）。
+    """
+    if not text or TOOL_USE_EXAMPLE_MARKER not in text:
+        return text
+
+    spans_to_drop: list[tuple[int, int]] = []
+    for pattern in (_TOOL_USE_RE, _TOOL_CALL_LEGACY_RE):
+        prev_end = 0
+        for m in pattern.finditer(text):
+            window_start = max(0, m.start() - _EXAMPLE_MARKER_WINDOW, prev_end)
+            if _is_marked_as_example(text, m.start(), window_start):
+                marker_pos = text.rfind(TOOL_USE_EXAMPLE_MARKER, window_start, m.start())
+                spans_to_drop.append((marker_pos, m.end()))
+            prev_end = m.end()
+
+    if not spans_to_drop:
+        return text
+
+    spans_to_drop.sort()
+    merged: list[list[int]] = []
+    for start, end in spans_to_drop:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    out: list[str] = []
+    cursor = 0
+    for start, end in merged:
+        out.append(text[cursor:start])
+        cursor = end
+    out.append(text[cursor:])
+    return "".join(out)
+
+
 def _parse_single_call(raw_json: str) -> Optional[ToolCall]:
     """解析单个 JSON 片段为 ToolCall。"""
     data=None

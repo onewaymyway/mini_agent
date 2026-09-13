@@ -20,6 +20,16 @@ When you need to call a tool, output it using EXACTLY this format — no other f
 4. Do **not** mix tool calls and final answers in the same response.
 5. After receiving a tool result, continue reasoning and either call another tool or write your final answer.
 6. Never fabricate tool results — always wait for the actual output.
+7. If you ever need to **quote or reference** a `<tool_use>`/`<tool_result>`
+   block for explanatory purposes only (e.g. showing the user what a broken
+   tool call looked like, or writing out a template as an example) rather
+   than actually invoking it, you **must** put this exact line, verbatim, on
+   its own line immediately before the quoted/example block:
+   `【以下为工具格式示例并非实际工具调用】`
+   Without this marker, a downstream format checker cannot tell your
+   explanatory quote apart from a real (if broken) tool call attempt of your
+   own, and may wrongly force you to redo this turn as if you had tried and
+   failed to call a tool.
 
 ### Examples
 

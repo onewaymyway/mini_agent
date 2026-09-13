@@ -502,8 +502,23 @@ class TurnLoopMixin:
                 # 模型输出里是否有"看起来想调用工具但格式损坏"的痕迹
                 # （标签未闭合、标签角色混淆、JSON 损坏等）。命中则不直接
                 # break——以 user 角色注入纠错提示，让模型重新输出一次。
+                # [SYS-FORMAT-CORRECTION / turn_judge_self_loop_fix_plan.md §2
+                # 补丁1] 本次请求根本没有挂任何工具（如 TurnJudge/GoalJudge
+                # 这类 tools_enabled=False 的纯文本判官）时，模型结构上不可能
+                # 真的"想调用工具但格式写坏了"——registry 为空，模型即使想调
+                # 用也没有工具 schema 可用。这种 Agent 输出里出现的 <tool_use>
+                # /<tool_result> 字样，只可能是按提示词要求"引用/复述"别处的
+                # 问题文本（如 TurnJudge 描述主 Agent 那段没闭合的工具调用），
+                # 不应该被当成"这个 Agent 自己的一次写坏的工具调用尝试"反复
+                # 打回去重写——那样只会把这一轮本已完整、有效的最终输出（比如
+                # TurnJudge 判完的 JSON 结果）顶替成下一轮的新输出，白白消耗
+                # 判官自己本就很紧张的 max_turns 预算，甚至导致这一轮真正有效
+                # 的结果彻底丢失（见该问题的复现记录）。因此格式纠错检测只在
+                # 这个 Agent 本次请求确实挂了至少一个工具时才有意义。
+                _has_any_tools = bool(getattr(self, "registry", None) and self.registry.names)
                 if (
-                    self.cfg.format_correction.enabled
+                    _has_any_tools
+                    and self.cfg.format_correction.enabled
                     and format_correction_retries < self.cfg.format_correction.max_retries_per_turn
                 ):
                     issue = self._detect_format_issue(response.text)

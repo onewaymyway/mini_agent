@@ -413,7 +413,13 @@ class RemindersCorrectionMixin:
         from mini_agent.perception.format_correction_detector import (
             detect_format_issue, PROMPT_HEADER,
         )
-        issue = detect_format_issue(assistant_text)
+        # [turn_judge_self_loop_fix_plan.md §2 补丁2] 先把标记为"举例/引用"
+        # 的 <tool_use> 片段挖掉，再跑格式纠错检测——否则 TurnJudge/GoalJudge
+        # 等按提示词要求正确加了 TOOL_USE_EXAMPLE_MARKER 的引用文本，仍会被
+        # 这里的规则误判成"自己的一次写坏的工具调用"，触发不必要的重试。
+        from mini_agent.llm.system_tool_call import strip_example_marked_spans
+        detect_text = strip_example_marked_spans(assistant_text)
+        issue = detect_format_issue(detect_text)
         if issue is None:
             return None
         if getattr(self, "_reminder_mgr", None) is not None:
