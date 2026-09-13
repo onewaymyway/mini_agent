@@ -132,14 +132,55 @@ class AgnesImageClient:
     # =========================
     # utils: save image
     # =========================
-    def _save_image_from_url(self, url: str, save_path: str):
+    def _save_image_from_url(self, url: str, save_path: str, max_retries: int = 3):
+        """下载生成结果并保存到本地。
+
+        下载失败（尤其是系统残留的坏代理环境变量导致 SSL 握手阶段就
+        FileNotFoundError 这类连接层异常）不应该让整个生成流程崩溃成
+        裸 traceback——图片其实已经生成成功，只是没保存下来，丢掉这个
+        URL 会逼用户重新生成一次。这里改成：重试几次，仍然带代理失败
+        就再额外尝试一次显式绕过代理直连，全部失败后抛出一个信息明确
+        的异常（带上原始 URL），交给上层 `text_to_image`/`image_to_image`
+        捕获并转成结构化返回，而不是让异常裸奔到 CLI 顶层。
+        """
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
 
-        r = requests.get(url, timeout=60, verify=False)
-        r.raise_for_status()
+        last_err: Optional[Exception] = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                r = requests.get(url, timeout=60, verify=False)
+                r.raise_for_status()
+                with open(save_path, "wb") as f:
+                    f.write(r.content)
+                return
+            except requests.exceptions.RequestException as e:
+                last_err = e
+                print(f"    [下载图片失败，第 {attempt}/{max_retries} 次] {e}")
+                if attempt < max_retries:
+                    time.sleep(1.5 * attempt)
 
-        with open(save_path, "wb") as f:
-            f.write(r.content)
+        # 常规重试都失败了，很可能是代理配置问题（FileNotFoundError 出现
+        # 在 SSL 握手阶段、且发生在 _prepare_proxy 里，是典型的"代理软件
+        # 已关闭但环境变量还在"的表现）——额外尝试一次显式绕过代理直连，
+        # 作为最后的兜底，成功了就不再往上抛异常。
+        try:
+            r = requests.get(url, timeout=60, verify=False, proxies={"http": None, "https": None})
+            r.raise_for_status()
+            with open(save_path, "wb") as f:
+                f.write(r.content)
+            print("    [下载图片] 常规请求多次失败，绕过系统代理直连后成功，"
+                  "建议检查本机 HTTP_PROXY/HTTPS_PROXY 环境变量是否指向了"
+                  "一个已经关闭的代理")
+            return
+        except requests.exceptions.RequestException as e:
+            last_err = e
+
+        raise RuntimeError(
+            f"图片已生成成功但下载保存失败（重试 {max_retries} 次 + 绕过代理直连均失败）：{last_err}\n"
+            f"图片地址仍然有效，可手动下载：{url}\n"
+            "如果是本机代理软件已关闭但 HTTP_PROXY/HTTPS_PROXY 环境变量还残留，"
+            "清掉这两个环境变量后重试即可。"
+        )
 
     def _save_image_from_base64(self, b64: str, save_path: str):
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
@@ -216,7 +257,14 @@ class AgnesImageClient:
             url = data["url"]
 
             if save_path:
-                self._save_image_from_url(url, save_path)
+                try:
+                    self._save_image_from_url(url, save_path)
+                except RuntimeError as e:
+                    # 生成本身是成功的（result 里已经有合法的 url/task_id），
+                    # 只是本地保存失败——不要连生成结果一起丢掉，把保存错误
+                    # 附加在结果里返回，让调用方（gen_image()/edit_image()）
+                    # 决定要不要视为整体失败，同时保留 url 方便手动下载。
+                    result["save_error"] = str(e)
 
             return result
 
@@ -282,7 +330,10 @@ class AgnesImageClient:
             url = data["url"]
 
             if save_path:
-                self._save_image_from_url(url, save_path)
+                try:
+                    self._save_image_from_url(url, save_path)
+                except RuntimeError as e:
+                    result["save_error"] = str(e)
 
             return result
 

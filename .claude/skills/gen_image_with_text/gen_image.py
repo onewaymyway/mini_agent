@@ -88,6 +88,7 @@ def gen_image(
                 "success": True,
                 "image_url": result["data"][0]["url"],
                 "save_path": save_path,
+                "save_error": result.get("save_error"),
             }
         elif response_format == "b64_json":
             return {
@@ -150,6 +151,7 @@ def edit_image(
                 "success": True,
                 "image_url": result["data"][0]["url"],
                 "save_path": save_path,
+                "save_error": result.get("save_error"),
             }
         elif response_format == "b64_json":
             return {
@@ -233,6 +235,12 @@ def main():
             print(f"Image URL: {result['image_url']}")
         if result.get("image_b64"):
             print(f"Base64 length: {len(result['image_b64'])}")
+        if result.get("save_error"):
+            # 生成成功但本地保存失败：不当作整体失败退出（图确实生成好
+            # 了），但要用非零退出码提醒调用方"文件其实不在磁盘上"，
+            # 避免下游脚本误以为 save_path 已经落地。
+            print(f"Warning: image generated but failed to save locally: {result['save_error']}")
+            sys.exit(3)
         if result.get("save_path"):
             print(f"Saved to: {result['save_path']}")
     else:
