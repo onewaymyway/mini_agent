@@ -6,7 +6,13 @@
 
 用法：
     python compose_macro_scene.py <output_dir> <macro_id> \
-        [--font-path <字体路径>] [--allow-missing-clips]
+        [--font-path <字体路径>]
+
+ffmpeg/ffprobe/中文字幕字体的查找统一改用 common.py 的自动探测
+（`resolve_ffmpeg()`/`resolve_ffprobe()`/`resolve_font_path()`），
+详见 next_doc/novel_video_studio_fix_plan_v2.md 问题1。缺 clip 的
+小场景不再允许"借用相邻画面强制拉伸"糊弄过去（问题2），始终报错
+终止，回阶段5补齐。
 
 改造自 novel-video-composer 的 v1 `compose_mv.py`/`compose_novel_video.py`
 同款拼接/缩放/字幕手法，缩小到"单大场景"粒度，核心差异：
@@ -39,45 +45,21 @@ try:
 except ImportError:
     HAS_YAML = False
 
-_FFMPEG_CANDIDATES = [
-    r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffmpeg.exe",
-    r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-    r"C:\ffmpeg\bin\ffmpeg.exe",
-]
-_FFPROBE_CANDIDATES = [
-    r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffprobe.exe",
-    r"C:\Program Files\ffmpeg\bin\ffprobe.exe",
-    r"C:\ffmpeg\bin\ffprobe.exe",
-]
-try:
-    import imageio_ffmpeg
-    _IMGIO_FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
-    _FFMPEG_CANDIDATES.insert(0, _IMGIO_FFMPEG)
-    _imgio_dir = Path(_IMGIO_FFMPEG).parent
-    _imgio_name = Path(_IMGIO_FFMPEG).name.replace("ffmpeg", "ffprobe")
-    _FFPROBE_CANDIDATES.insert(0, str(_imgio_dir / _imgio_name))
-except ImportError:
-    pass
-FONT_PATH = r"C:\Windows\Fonts\msyh.ttc"
+from common import macro_scene_dir_name, resolve_ffmpeg, resolve_ffprobe, resolve_font_path
+
+# ffmpeg/ffprobe/字体路径改由 common.py 自动探测（问题1），不再在这里
+# 硬编码任何 Windows 专属路径。FONT_PATH 在 main() 里根据 --font-path
+# 解析后赋值；FFMPEG/FFPROBE 在 main() 里解析，找不到时直接明确报错
+# 终止，不再静默 fallback 成一条不存在的路径。
+FONT_PATH = None
 
 ASPECT_TO_SIZE = {
     "16:9": "1280:720",
     "9:16": "720:1280",
 }
 
-
-def _resolve_bin(candidates, path_name):
-    for c in candidates:
-        if Path(c).exists():
-            return c
-    found = shutil.which(path_name)
-    if found:
-        return found
-    return candidates[-1]
-
-
-FFMPEG = _resolve_bin(_FFMPEG_CANDIDATES, "ffmpeg")
-FFPROBE = _resolve_bin(_FFPROBE_CANDIDATES, "ffprobe")
+FFMPEG = None
+FFPROBE = None
 
 
 def _run(cmd):
@@ -125,12 +107,6 @@ def resolve_target_size(aspect_ratio: str) -> str:
         return f"{w}:{base_h}"
     except Exception:
         return "1280:720"
-
-
-def _macro_dir_name(macro_id: str) -> str:
-    if macro_id.startswith("macro_"):
-        return f"macro_scene_{macro_id[len('macro_'):]}"
-    return f"macro_scene_{macro_id}"
 
 
 def block_audio_path(audio_dir: Path, micro_id: str, block: dict, idx: int) -> Path:
@@ -230,24 +206,28 @@ def main():
     parser.add_argument("--overlay-y-offset", type=int, default=80)
     parser.add_argument("--preset-scale", default="veryfast")
     parser.add_argument("--preset-final", default="medium")
-    parser.add_argument("--allow-missing-clips", action="store_true",
-                         help="[默认关闭] 允许缺 clip 的小场景借用相邻小场景画面强制拉伸填补，"
-                              "正常流程应先用 check_clips_v2.py 校验通过、补齐缺失场景")
     parser.add_argument("--font-path", default=None,
-                         help="中文字幕字体文件路径，非 Windows 环境需要显式指定")
+                         help="中文字幕字体文件路径，不传则依次尝试 NOVEL_FONT_PATH "
+                              "环境变量、跨平台常见字体候选路径，都找不到时报错")
     args = parser.parse_args()
-
-    global FONT_PATH
-    if args.font_path:
-        FONT_PATH = args.font_path
 
     if not HAS_YAML:
         print("缺少 pyyaml，请先 pip install pyyaml", file=sys.stderr)
         sys.exit(1)
 
+    global FONT_PATH, FFMPEG, FFPROBE
+    try:
+        FONT_PATH = resolve_font_path(args.font_path)
+        FFMPEG = resolve_ffmpeg()
+        FFPROBE = resolve_ffprobe()
+    except RuntimeError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(2)
+    print(f"[env] font={FONT_PATH} ffmpeg={FFMPEG} ffprobe={FFPROBE}")
+
     output_dir: Path = args.output_dir
     macro_id = args.macro_id
-    macro_dir = output_dir / _macro_dir_name(macro_id)
+    macro_dir = output_dir / macro_scene_dir_name(macro_id)
     if not macro_dir.exists():
         print(f"找不到大场景工作目录: {macro_dir}", file=sys.stderr)
         sys.exit(2)
@@ -265,7 +245,7 @@ def main():
         s["id"] for s in scenes
         if not s["block_audios"] or any(p is None for p in s["block_audios"])
     ]
-    if missing_clip_ids and not args.allow_missing_clips:
+    if missing_clip_ids:
         print(f"❌ 缺少 clip 文件的小场景（共 {len(missing_clip_ids)} 个）：{missing_clip_ids}", file=sys.stderr)
         print("请先运行 generate_scene_videos_v2.py 补齐（--micro-id 定向重跑），"
               "用 check_clips_v2.py 校验通过后再执行本命令。", file=sys.stderr)
@@ -311,23 +291,14 @@ def main():
     # ── 2. 逐小场景独立缩放到 duration_sec ────────────────────────────
     scaled_dir = workdir / "scaled"
     scaled_dir.mkdir()
-    last_available_clip = None
     for s in scenes:
         clip = s["clip"]
-        borrowed = False
         if clip is None:
-            clip = last_available_clip
-            borrowed = True
-            if clip is None:
-                for later in scenes:
-                    if later["clip"] is not None:
-                        clip = later["clip"]
-                        break
-        if clip is None:
-            raise RuntimeError("所有小场景都没有匹配到任何 clip 文件，无法合成")
-        if borrowed:
-            print(f"  [强制填补] {s['id']} 没有 clip，借用 {clip.name} 强制拉伸到 "
-                  f"{s['duration_sec']:.2f}s", file=sys.stderr)
+            # 理论上不会走到这里：上面已经对 missing_clip_ids 做了硬报错
+            # 终止。保留这个校验只是防御性兜底，不再允许借用相邻小场景
+            # 画面强制拉伸填补（问题2：这类"借用"会让画面和实际内容/
+            # 配音完全对不上，且不易被发现）。
+            raise RuntimeError(f"小场景 {s['id']} 没有 clip 文件，无法合成")
 
         clip_dur = get_dur(clip)
         target_dur = max(s["duration_sec"], 0.1)
@@ -343,8 +314,6 @@ def main():
             "-an",
             str(out_path),
         ])
-        if not borrowed:
-            last_available_clip = clip
 
     # ── 3. 拼接所有缩放后的 clip ───────────────────────────────────────
     list_file = workdir / "concat_list.txt"

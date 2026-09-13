@@ -42,17 +42,20 @@ import subprocess
 import sys
 from pathlib import Path
 
+from common import macro_scene_dir_name, ROUGH_CHARS_PER_SEC
+
 try:
     import yaml
 except ImportError:
     print(json.dumps({"ok": False, "errors": ["缺少 pyyaml 依赖，请先 pip install pyyaml"]}, ensure_ascii=False, indent=2))
     sys.exit(1)
 
-# 与 check_scene_detail.py 的粗估语速保持一致，用于问题4的"时长合理性"
-# 自查——这里的估算目的和 check_scene_detail.py 不同：check_scene_detail.py
-# 是规划阶段的提前预警，这里是配完音之后的兜底复核，独立发现"时长和文本
-# 长度对不上"这种此前会被静默接受的数据异常（不依赖问题1本身是否已修好）。
-_ROUGH_CHARS_PER_SEC = 4.5
+# 与 check_scene_detail.py 的粗估语速保持一致（统一定义在 common.py 的
+# ROUGH_CHARS_PER_SEC），用于问题4的"时长合理性"自查——这里的估算目的和
+# check_scene_detail.py 不同：check_scene_detail.py 是规划阶段的提前
+# 预警，这里是配完音之后的兜底复核，独立发现"时长和文本长度对不上"这种
+# 此前会被静默接受的数据异常（不依赖问题1本身是否已修好）。
+_ROUGH_CHARS_PER_SEC = ROUGH_CHARS_PER_SEC
 _REASONABLE_RATIO_LOW = 0.4   # 实际值低于理论值 40% 时报 warning
 _REASONABLE_RATIO_HIGH = 2.5  # 实际值高于理论值 250% 时报 warning
 
@@ -69,12 +72,6 @@ def _load_yaml(path: Path) -> dict:
         return {}
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
-
-
-def _macro_dir_name(macro_id: str) -> str:
-    if macro_id.startswith("macro_"):
-        return f"macro_scene_{macro_id[len('macro_'):]}"
-    return f"macro_scene_{macro_id}"
 
 
 def _ffprobe_available() -> bool:
@@ -106,7 +103,7 @@ def check(output_dir: Path, min_sec: float, max_sec: float, macro_ids: list | No
     loc_by_id = {l.get("id"): l for l in locations_data.get("locations", [])}
 
     if macro_ids:
-        detail_files = [output_dir / _macro_dir_name(m) / "scene_detail.yaml" for m in macro_ids]
+        detail_files = [output_dir / macro_scene_dir_name(m) / "scene_detail.yaml" for m in macro_ids]
         missing = [str(f) for f in detail_files if not f.exists()]
         for f in missing:
             errors.append(f"{f} 不存在")

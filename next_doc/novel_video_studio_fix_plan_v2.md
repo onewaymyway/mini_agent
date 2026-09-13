@@ -9,6 +9,9 @@
 只落地"确认要改"的三个问题；"确认不改"的两个问题也记录在案，避免以后
 重复排查、重复纠结。
 
+> **状态**：三个问题（问题1/问题2/问题3）均已改完，详见各自 checkbox
+> 下方记录的改动文件清单。
+
 ---
 
 ## 问题1（P0）：`compose_macro_scene.py` 硬编码了 Windows 专属路径，换机器/换系统必炸
@@ -96,7 +99,18 @@ FONT_PATH = r"C:\Windows\Fonts\msyh.ttc"
   没有行数上限保护——**保持现状，暂不改**。记录在案，如果后续真的
   出现字幕溢出问题再单独排查。
 
-- [ ] 未开始
+- [x] 已完成。改动文件：
+  - `scripts/common.py`（新增 `resolve_ffmpeg()`/`resolve_ffprobe()`/
+    `resolve_font_path()`，按方案描述的优先级实现：CLI 参数/环境变量 >
+    `imageio_ffmpeg` > conda 环境自动探测（当前激活环境优先，其次是
+    名字含 `novel`/`mv`/`video` 的环境，再次是其它环境）>
+    `shutil.which()`；都找不到时抛出带具体原因的 `RuntimeError`）；
+  - `scripts/compose_macro_scene.py`（删除硬编码的 Windows 专属
+    `_FFMPEG_CANDIDATES`/`_FFPROBE_CANDIDATES`/`FONT_PATH`，改为在
+    `main()` 里调用 `common.py` 的三个 `resolve_*()` 函数，找不到时
+    报错退出 `exit(2)`，不再静默 fallback）；
+  - `references/05_scene_video_generation.md`（改写"非 Windows 环境
+    需要 `--font-path`"这句描述，说明新的自动探测优先级和兜底行为）。
 
 ---
 
@@ -135,7 +149,17 @@ FONT_PATH = r"C:\Windows\Fonts\msyh.ttc"
    `compose_macro_scene.py` 里的处理方式会保持一致（都是硬报错，没有
    例外开关），不再有一个能跳过一个不能跳过的不一致状态。
 
-- [ ] 未开始
+- [x] 已完成。改动文件：
+  - `scripts/compose_macro_scene.py`（移除 `--allow-missing-clips`
+    CLI 参数；移除"借用 `last_available_clip` / 向后找一个能用的
+    clip 强制拉伸"整段逻辑；`missing_clip_ids` 非空时始终报错终止，
+    不再有 `and not args.allow_missing_clips` 的例外分支；缩放循环里
+    `clip is None` 时改为直接 `raise RuntimeError(...)` 兜底，正常
+    流程不会走到这里，因为上面已经硬报错终止）；
+  - `references/05_scene_video_generation.md`（删除"缺 clip 时默认
+    拒绝合成，`--allow-missing-clips` 才允许借用相邻小场景画面强制
+    拉伸填补"这句描述，改写为"缺 clip 时始终报错终止，回阶段5用
+    `generate_scene_videos_v2.py` 补齐"）。
 
 ---
 
@@ -196,6 +220,33 @@ FONT_PATH = r"C:\Windows\Fonts\msyh.ttc"
    确认行为和改动前完全一致（尤其是被替换掉的 `_macro_dir_name` 系列
    函数在个别脚本里可能有细微的既有差异，合并前需要逐一比对确认真的
    是同一份逻辑，不能想当然）。
+
+- [x] 已完成。改动文件：
+  - `scripts/common.py`（新增，收敛 `macro_scene_dir_name()` 统一
+    函数、`MIN_SEC`/`MAX_SEC`/`ROUGH_CHARS_PER_SEC` 统一常量，以及
+    问题1的三个 `resolve_*()` 自动探测函数；`--macro-id` 两种风格
+    并存的已知不一致记录在模块 docstring 里，本次不强行统一）；
+  - `scripts/check_assets_and_audio_v2.py`（删除本地 `_macro_dir_name`
+    定义，改为 `from common import macro_scene_dir_name`；
+    `_ROUGH_CHARS_PER_SEC` 改为从 `common.ROUGH_CHARS_PER_SEC` 赋值，
+    不再本地硬编码 `4.5`）；
+  - `scripts/check_clips_v2.py`（删除本地 `_macro_dir_name` 定义，
+    改为 `from common import macro_scene_dir_name`）；
+  - `scripts/check_scene_detail.py`（删除本地 `_macro_scene_dir_name`
+    定义，改为 `from common import macro_scene_dir_name`；
+    `_ROUGH_CHARS_PER_SEC`/`_MIN_SEC`/`_MAX_SEC` 改为从 `common.py`
+    对应常量赋值，不再本地硬编码）；
+  - `scripts/synthesize_scene_audio.py`（删除本地
+    `_macro_scene_dir_name` 定义，改为
+    `from common import macro_scene_dir_name`）；
+  - `scripts/generate_scene_videos_v2.py`（删除本地
+    `MIN_SEC = 4`/`MAX_SEC = 12` 定义，改为
+    `from common import MIN_SEC, MAX_SEC`）；
+  - `scripts/compose_macro_scene.py`（`_macro_dir_name` 定义已删除，
+    改为 `from common import macro_scene_dir_name`；ffmpeg/ffprobe/
+    字体自动探测部分见问题1的改动记录）。
+  - 每个改动文件均执行 `python -m py_compile` 及 `--help` 冒烟通过，
+    确认改动前后行为一致（纯重构，未改变任何脚本的输入输出行为）。
 
 ### 评审结论：暂不改的相关问题
 - `narration_wav`/`joined` 视频对齐时用 `setpts=scale*PTS` 整体拉伸，

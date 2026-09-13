@@ -43,6 +43,7 @@ from tts_engine import (
     synthesize,
 )
 from voice_mapping import resolve_cosyvoice_speaker, resolve_edge_tts_voice
+from common import macro_scene_dir_name
 
 
 def _log(msg: str) -> None:
@@ -70,12 +71,6 @@ def _write_yaml(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
-
-
-def _macro_scene_dir_name(macro_id: str) -> str:
-    if macro_id.startswith("macro_"):
-        return f"macro_scene_{macro_id[len('macro_'):]}"
-    return f"macro_scene_{macro_id}"
 
 
 def _voice_for_block(
@@ -135,7 +130,7 @@ def run(
         engine_pref = "edge-tts"
 
     if macro_id:
-        detail_files = [output_dir / _macro_scene_dir_name(macro_id) / "scene_detail.yaml"]
+        detail_files = [output_dir / macro_scene_dir_name(macro_id) / "scene_detail.yaml"]
     else:
         detail_files = sorted(output_dir.glob("macro_scene_*/scene_detail.yaml"))
 

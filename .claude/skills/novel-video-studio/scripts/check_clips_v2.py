@@ -28,6 +28,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from common import macro_scene_dir_name
+
 try:
     import yaml
 except ImportError:
@@ -56,18 +58,12 @@ def _ffprobe_duration(path: Path) -> float | None:
     return None
 
 
-def _macro_dir_name(macro_id: str) -> str:
-    if macro_id.startswith("macro_"):
-        return f"macro_scene_{macro_id[len('macro_'):]}"
-    return f"macro_scene_{macro_id}"
-
-
 def check(output_dir: Path, macro_ids: list | None) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
 
     if macro_ids:
-        detail_files = [output_dir / _macro_dir_name(m) / "scene_detail.yaml" for m in macro_ids]
+        detail_files = [output_dir / macro_scene_dir_name(m) / "scene_detail.yaml" for m in macro_ids]
     else:
         detail_files = sorted(output_dir.glob("macro_scene_*/scene_detail.yaml"))
 

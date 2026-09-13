@@ -249,10 +249,19 @@ python .claude/skills/novel-video-studio/scripts/compose_macro_scene.py \
   `micro_scene` 的 `content_blocks` 对应若干段旁白/对话 wav，按顺序
   首尾相接）混入，按每个 `micro_scene` 拼出的字幕文案（旁白原样、
   对话用「」包裹）渲染字幕；
-- 非 Windows 环境需要 `--font-path <本地中文字体路径>`（如 Linux 上的
-  `/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc`）；
-- 缺 clip 时默认拒绝合成，`--allow-missing-clips` 才允许借用相邻小
-  场景画面强制拉伸填补（仅用于明确知情的场景）；
+- 字体/ffmpeg/ffprobe 路径自动探测（无需手填）：优先级依次是
+  `--font-path`/`NOVEL_FONT_PATH`（`NOVEL_FFMPEG_PATH`/
+  `NOVEL_FFPROBE_PATH`）显式指定 > `imageio_ffmpeg`（仅 ffmpeg/ffprobe）
+  > conda 环境自动探测（当前激活环境优先，其次是名字含
+  `novel`/`mv`/`video` 的环境） > 跨平台常见路径/系统 PATH；多数
+  Linux 环境如果装了常见中文字体（Noto CJK / 文泉驿）能自动找到，
+  `--font-path`/`NOVEL_FONT_PATH` 只是自动探测失败时的兜底手段，不再
+  是非 Windows 环境的必填项；都找不到时脚本会明确报错并列出已尝试
+  过的查找方式，不会静默使用一个不存在的路径；
+- 缺 clip 时始终报错终止，不再有"借用相邻小场景画面强制拉伸填补"这
+  个口子——clip 缺失是真实问题，请先回阶段5用
+  `generate_scene_videos_v2.py`（`--macro-id --micro-id` 定向重跑）
+  补齐，用 `check_clips_v2.py` 校验通过后再执行本命令；
 - 合成并校验通过后，自动把 `macro_scenes.yaml` 里该大场景的 `status`
   从 `planned` 回写为 `done`；**校验不通过则不回写**，保持 `planned`，
   避免下游误以为已完成；

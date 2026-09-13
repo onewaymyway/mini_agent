@@ -45,8 +45,8 @@ try:
 except Exception:
     pass
 
-MIN_SEC = 4
-MAX_SEC = 12
+from common import MIN_SEC, MAX_SEC
+
 MAX_RETRIES_PER_SCENE = 3
 MAX_OUTER_ROUNDS = 10
 

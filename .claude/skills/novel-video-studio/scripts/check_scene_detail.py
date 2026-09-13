@@ -63,6 +63,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from common import macro_scene_dir_name, MIN_SEC, MAX_SEC, ROUGH_CHARS_PER_SEC
+
 try:
     import yaml
 except ImportError:
@@ -98,14 +100,16 @@ _NARRATION_LEAK_HINTS = (
 # 阶段规划完成后的"提前预警"，不代表真实 TTS 配音时长——真实时长受
 # 标点停顿、语气词拉长、TTS 引擎本身语速设置等因素影响，只能等阶段4
 # 真实配音后才能确定。粗估的目的只是尽早拦下"明显文本量过多/过少"
-# 的小场景，减少配完音才发现超限、回退重拆的成本。
-_ROUGH_CHARS_PER_SEC = 4.5
+# 的小场景，减少配完音才发现超限、回退重拆的成本。统一定义在
+# common.py 的 ROUGH_CHARS_PER_SEC。
+_ROUGH_CHARS_PER_SEC = ROUGH_CHARS_PER_SEC
 
 # 视频生成接口的硬性时长范围（clip 秒数），与 generate_scene_videos_v2.py
-# 里的 MIN_SEC/MAX_SEC 保持一致。粗估检查在这个范围两端各留一点余量
-# 才报 warning（而不是贴着边界就报），避免语速估算的正常波动被误报。
-_MIN_SEC = 4
-_MAX_SEC = 12
+# 保持一致（统一定义在 common.py 的 MIN_SEC/MAX_SEC）。粗估检查在这个
+# 范围两端各留一点余量才报 warning（而不是贴着边界就报），避免语速
+# 估算的正常波动被误报。
+_MIN_SEC = MIN_SEC
+_MAX_SEC = MAX_SEC
 _ROUGH_ESTIMATE_MARGIN = 0.25  # 25% 余量
 
 
@@ -192,12 +196,6 @@ def _check_order_vs_id_number(micro_scenes: list[dict]) -> list[str]:
     return warnings
 
 
-def _macro_scene_dir_name(macro_id: str) -> str:
-    if macro_id.startswith("macro_"):
-        return f"macro_scene_{macro_id[len('macro_'):]}"
-    return f"macro_scene_{macro_id}"
-
-
 def check(output_dir: Path, macro_id: str) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
@@ -229,7 +227,7 @@ def check(output_dir: Path, macro_id: str) -> dict:
             f"（是否存在引用术语/书名等非对话用途的单个直引号）后再解读下面的校验结果"
         )
 
-    scene_dir = output_dir / _macro_scene_dir_name(macro_id)
+    scene_dir = output_dir / macro_scene_dir_name(macro_id)
     detail_data = _load_yaml(scene_dir / "scene_detail.yaml")
     micro_scenes = detail_data.get("micro_scenes", []) if isinstance(detail_data, dict) else []
     if not micro_scenes:
