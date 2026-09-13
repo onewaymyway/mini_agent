@@ -544,10 +544,19 @@ def is_valid_final_result(text: str) -> bool:
 
     刻意保持保守（宁可漏检也不误判）：只要 detect_format_issue() 命中任一
     已注册规则，就判定为不健全；规则本身的克制原则见模块顶部说明。
+
+    [turn_judge_self_loop_fix_plan.md §2 补丁2 同步] 和
+    agent/reminders_correction.py::_detect_format_issue 一样，先把被
+    TOOL_USE_EXAMPLE_MARKER 标记为"举例/引用"的 <tool_use> 片段挖掉，再跑
+    规则检测——否则一段本身完全健全、只是在解释性文字里带标记引用了别处
+    问题片段的最终结果（比如自主任务链路里某一步的结果文本刚好复述了
+    上一步失败时的报错），会被误判为"仍带有未解析的工具调用痕迹"而被
+    拒绝，这属于同一个误判根因，两处调用点必须保持一致的豁免逻辑。
     """
     if not text or not text.strip():
         return False
-    return detect_format_issue(text) is None
+    from mini_agent.llm.system_tool_call import strip_example_marked_spans
+    return detect_format_issue(strip_example_marked_spans(text)) is None
 
 
 __all__ = ["FormatIssue", "detect_format_issue", "is_valid_final_result", "PROMPT_HEADER"]
