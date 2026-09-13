@@ -9,6 +9,10 @@
   对话 wav 按序拼接、micro clip 按 `duration_sec` 独立缩放拼接、渲染
   字幕（对话用「」包裹），合成 `macro_scene_XX.mp4`，成功后回写
   `macro_scenes.yaml` 对应大场景 `status=done`，校验不通过则不回写；
+- `check_character_consistency.py`：**手写完 `prompt_en` 之后、跑生成
+  脚本之前**校验每条 `prompt_en` 是否与引用的角色/地点档案
+  (`visual_anchor_en`/`age_range`/`gender`) 一致，防止画面里的角色
+  长相/穿着、场景外观跟阶段1抽取出的素材对不上；
 - `check_clips_v2.py`：校验 `micro_scene` clip 完整性 + 已合成大场景
   视频时长一致性。
 
@@ -23,6 +27,61 @@
 的 `micro_scenes[*]` 条目。**脚本不代为生成 prompt**——`prompt_en` 为
 空时会直接把该小场景标记为失败并给出明确错误，不会用空 prompt 调用
 视频接口。
+
+### 一致性铁律：`prompt_en` 里角色/地点的外观必须锚定到档案，不能现场
+### 重新描述
+
+每个 `micro_scene` 的 `uses_characters`/`uses_locations` 都已经在
+`global/characters.json`/`locations.json` 里有对应的 `visual_anchor_en`
+（阶段1锁定的核心外观特征，见 `01_entity_extraction.md`）。写
+`prompt_en` 时，**把引用到的每个角色/地点的 `visual_anchor_en` 原文
+摘抄或轻度改写后嵌入这条 prompt**，而不是凭这一个镜头的画面感觉重新
+组织一遍外观描述——同一个角色在十个大场景里出现十次，如果每次都重新
+描述"一个年轻人"，视频生成模型没有任何跨场景记忆，十次画出来的人可能
+完全是十张不同的脸/十套不同的穿着，这正是"角色/场景前后不一致"问题的
+根源。正确做法示例：
+
+```
+visual_anchor_en（char_01）：a young Chinese man in his twenties, lean
+  build, short black hair, wearing a worn grey robe, faint scar on
+  left cheek
+visual_anchor_en（loc_01）：a rustic wooden inn at night, dim lantern
+  light, stone-paved entrance, weathered wooden signboard
+
+写出的 prompt_en（结合本镜头的 visual_hint："客栈门口，夜晚，林然推门
+而入，暖光从门内透出"）：
+"A young Chinese man in his twenties, lean build, short black hair,
+wearing a worn grey robe, faint scar on left cheek, pushes open the
+door of a rustic wooden inn at night, dim lantern light, stone-paved
+entrance, weathered wooden signboard, warm light spilling from inside.
+<art_style 风格描述>"
+```
+
+镜头特写等确实只需要体现局部特征（比如只拍手部动作）的场景，可以只
+摘抄 `visual_anchor_en` 里与本镜头相关的那部分，不强求整句照搬，但
+不能整句都不提、凭空另写一套外观。
+
+## Step 0：一致性校验（写完 `prompt_en` 之后立刻跑）
+
+```bash
+python .claude/skills/novel-video-studio/scripts/check_character_consistency.py \
+  <output_dir> --macro-id macro_01
+```
+
+- **errors 非空 → 必须回上面"前置"步骤修正 `prompt_en`，重新跑校验，
+  直到 errors 清空才能进入 Step 1**：常见 error 是角色 `visual_anchor_en`
+  /`age_range`/`gender` 缺失（回阶段1补），或 `prompt_en` 里出现了与
+  角色锁定年龄/性别明显矛盾的描述（比如把老年配角的台词场景写成了
+  年轻人）；
+- warnings（`prompt_en` 里没有出现某个角色/地点 `visual_anchor_en` 的
+  任何核心特征词）允许通过，但要按上面"一致性铁律"的思路看一眼是不是
+  真的遗漏了外观描述（特写镜头这类确实不需要体现全部特征的场景可以
+  放行，不用为了消除 warning 硬凑一句无关的外观描述）；
+- 本脚本只做关键词级别的启发式检测，查不出"用了同义词但其实没矛盾"
+  这类情况，也查不出两个角色的外观描述被写反但双方关键词都各自合法
+  的情况——最终一致性还是要靠 Agent 写 `prompt_en` 时认真对照
+  `visual_anchor_en`，这个脚本只是兜底复核，不是唯一保障。
+
 
 ## Step 1：批量生成小场景视频
 

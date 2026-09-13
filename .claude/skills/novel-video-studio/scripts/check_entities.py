@@ -7,10 +7,17 @@
 检查：
 
   1. characters.json / locations.json 里的 id 是否有重复。
-  2. 每个角色是否都有非空 voice_profile / description_zh / description_en。
-  3. 每个地点是否都有非空 description_zh / description_en。
+  2. 每个角色是否都有非空 voice_profile / description_zh / description_en /
+     visual_anchor_en / age_range / gender / nationality_or_ethnicity，
+     且 age_range 取值属于 child/teen/youth/middle_aged/elderly 五档之一。
+  3. 每个地点是否都有非空 description_zh / description_en / visual_anchor_en。
   4. （警告级，不阻断）角色 names 列表之间是否存在明显重叠/高度相似的
      字符串，提示可能有同名角色未合并成一个 id。
+
+`visual_anchor_en`/`age_range`/`gender` 是阶段5
+`check_character_consistency.py` 做角色/场景一致性校验的前提字段，本
+脚本只保证它们"存在"，不保证它们和 description_zh/en 里的描述互相
+印证（那部分依赖 Agent 在 01_entity_extraction.md Step 2.5 自查）。
 
 设计上不对文件做任何自动修复——本脚本只负责"发现问题"，"如何改"（补充
 voice_profile、合并重复角色等）必须由 Agent 结合小说语义决定。
@@ -39,6 +46,9 @@ def _names_overlap(names_a: list[str], names_b: list[str]) -> bool:
     set_a = {n.strip() for n in names_a if n and n.strip()}
     set_b = {n.strip() for n in names_b if n and n.strip()}
     return bool(set_a & set_b)
+
+
+_VALID_AGE_RANGES = {"child", "teen", "youth", "middle_aged", "elderly"}
 
 
 def check(output_dir: Path) -> dict:
@@ -70,16 +80,23 @@ def check(output_dir: Path) -> dict:
     # 2. 角色字段完整性
     for c in characters:
         cid = c.get("id", "<无id>")
-        for field in ("voice_profile", "description_zh", "description_en"):
+        for field in ("voice_profile", "description_zh", "description_en",
+                      "visual_anchor_en", "age_range", "gender", "nationality_or_ethnicity"):
             if not (c.get(field) or "").strip():
                 errors.append(f"角色 {cid} 缺少非空字段：{field}")
+        age_range = (c.get("age_range") or "").strip()
+        if age_range and age_range not in _VALID_AGE_RANGES:
+            errors.append(
+                f"角色 {cid} 的 age_range={age_range!r} 不是合法取值，"
+                f"必须是 {sorted(_VALID_AGE_RANGES)} 之一"
+            )
         if not c.get("names"):
             errors.append(f"角色 {cid} 的 names 列表为空")
 
     # 3. 地点字段完整性
     for l in locations:
         lid = l.get("id", "<无id>")
-        for field in ("description_zh", "description_en"):
+        for field in ("description_zh", "description_en", "visual_anchor_en"):
             if not (l.get(field) or "").strip():
                 errors.append(f"地点 {lid} 缺少非空字段：{field}")
         if not (l.get("name") or "").strip():

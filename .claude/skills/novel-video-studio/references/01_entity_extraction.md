@@ -44,9 +44,26 @@
    （同名/别名归并到同一 id；新出现的才新建 id，命名 `char_NN`/
    `loc_NN` 按当前库里最大编号递增，不要从头重新编号，避免下游已引用
    的 id 失效）；
-3. 每个角色新增/更新时判断/补充 `voice_profile`（音色描述：性别/年龄段
-   /音色特点，如"青年女声，清亮活泼"，结合年龄性格身份推断，没有足够
-   信息时给一个合理默认描述而不是留空）；
+3. 每个角色新增/更新时判断/补充下面这组**结构化视觉/声音属性**（结合
+   原文描写 + 年龄性格身份合理推断，没有足够信息时给一个合理默认值而
+   不是留空——留空会导致下游一致性校验直接拦截，见 Step 3.5）：
+   - `age_range`：`child`/`teen`/`youth`/`middle_aged`/`elderly` 五选一，
+     选一个跟原文年龄描述最贴近的粗粒度分组（哪怕原文没写具体岁数，也
+     要结合身份关系给一个合理分组，比如"少年侠客"→`youth`）；
+   - `gender`：`male`/`female`（原文明确是其它情况时如实填，不强行套）；
+   - `nationality_or_ethnicity`：国籍/种族背景，没有明确设定时可以按
+     小说的时代/地域背景给一个合理默认（如古代背景小说默认"Chinese"）；
+   - `voice_profile`：音色描述（性别/年龄段/音色特点，如"青年女声，清亮
+     活泼"），下游阶段4用它映射 TTS 音色；
+   - `visual_anchor_en`：**锁定视觉锚点**，一句话英文短语，浓缩这个角色
+     "无论出现在哪个场景都不能变"的核心外观特征——年龄段+性别+体型+
+     发型发色+标志性穿着/配饰+显著特征（疤痕/眼镜等），例如：
+     `"a young Chinese man in his twenties, lean build, short black hair,
+     wearing a worn grey robe, faint scar on left cheek"`。
+     这句话会被阶段5的每一条 `prompt_en` 引用/复用，是保证同一角色在
+     不同大场景画面里不跑偏的关键字段，**必须具体到能直接塞进画面
+     prompt 里使用的程度，不能写成"外貌普通""气质出众"这类无法转化为
+     画面元素的空泛描述**。
 4. **立即把合并后的完整 `characters.json`/`locations.json` 覆盖写回
    磁盘**（不是追加），保证任何时刻磁盘都是最新完整状态，中途中断不
    丢已处理部分。
@@ -57,7 +74,11 @@
 `characters.json` 条目字段：
 ```json
 {"id": "char_01", "names": ["林然", "小林"],
+ "age_range": "youth", "gender": "male",
+ "nationality_or_ethnicity": "Chinese",
  "description_zh": "...", "description_en": "...(含 art_style)",
+ "visual_anchor_en": "a young Chinese man in his twenties, lean build, "
+   "short black hair, wearing a worn grey robe, faint scar on left cheek",
  "voice_profile": "青年男声，清朗略带江湖气",
  "first_appear": "第1章 第2段", "relations": ["char_02:挚友"],
  "asset_path": null, "face_reference_id": null}
@@ -66,9 +87,26 @@
 `locations.json` 条目字段：
 ```json
 {"id": "loc_01", "name": "青石客栈",
+ "location_type": "inn", "era_setting": "ancient China",
  "description_zh": "...", "description_en": "...(含 art_style)",
+ "visual_anchor_en": "a rustic wooden inn at night, dim lantern light, "
+   "stone-paved entrance, weathered wooden signboard",
  "asset_path": null}
 ```
+
+地点的 `visual_anchor_en` 同样要具体到画面元素级别：建筑类型/材质、
+典型光照氛围、一两个一眼能认出"就是这个地方"的标志性视觉细节，不要写
+"环境优美""古色古香"这类无法直接转化成画面的描述。
+
+### Step 2.5：一致性字段自查（跑 Step 3 校验之前）
+
+对每个新写/更新的角色/地点过一遍：`visual_anchor_en` 是否具体到能直接
+被阶段5摘抄进 `prompt_en` 里（反例：`"看起来很有气场"`；正例：见上面
+示例）；`age_range`/`gender` 是否跟 `description_zh`/`description_en`
+里的年龄性别描述一致，不要出现"描述里写着中年人，`age_range` 却填
+`youth`"这种同一份档案内部自相矛盾的情况——这类矛盾脚本本身检测不出来
+（脚本只检查字段是否非空，不比对字段之间是否互相印证），需要 Agent
+自己核对。
 
 ### Step 3：校验
 
@@ -76,8 +114,9 @@
 python .claude/skills/novel-video-studio/scripts/check_entities.py <output_dir>
 ```
 
-不通过（重复 id、角色缺 `voice_profile`）→ 回 Step 2 修复对应条目，
-重新跑校验，直到通过才能进入阶段2。
+不通过（重复 id、角色缺 `voice_profile`/`visual_anchor_en`/`age_range`/
+`gender` 等必填字段）→ 回 Step 2 修复对应条目，重新跑校验，直到通过才
+能进入阶段2。
 
 ## 模式 B：单点补抽取（供阶段3回调）
 
@@ -95,8 +134,14 @@ python .claude/skills/novel-video-studio/scripts/check_entities.py <output_dir>
 ## 校验脚本说明 `check_entities.py`
 
 检查：id 无重复；每个角色 `voice_profile`/`description_zh`/
-`description_en` 非空；每个地点 `description_zh`/`description_en` 非空；
-同名未合并的启发式提示（仅警告不阻断）。退出码非 0 时不允许交付下游。
+`description_en`/`visual_anchor_en`/`age_range`/`gender`/
+`nationality_or_ethnicity` 非空，`age_range` 取值必须是
+`child`/`teen`/`youth`/`middle_aged`/`elderly` 之一；每个地点
+`description_zh`/`description_en`/`visual_anchor_en` 非空；同名未合并
+的启发式提示（仅警告不阻断）。退出码非 0 时不允许交付下游——
+`visual_anchor_en`/`age_range`/`gender` 是阶段5一致性校验
+（`check_character_consistency.py`）能否生效的前提，这里不把关，
+下游的一致性检查就无从查起。
 
 **向用户展示**：识别出的角色/地点清单（数量+简要身份+声音设定一句话）、
 校验通过结果。
@@ -105,4 +150,10 @@ python .claude/skills/novel-video-studio/scripts/check_entities.py <output_dir>
 
 - 分块大小是经验值，超长章节实体密度很高时仍可能需要进一步细分；
 - `voice_profile` 只是文字描述，具体映射到 TTS 音色由阶段4负责；
-- 人脸参考照片机制未实现，`face_reference_id` 先占位。
+- 人脸参考照片机制未实现，`face_reference_id` 先占位；
+- `visual_anchor_en`/`age_range`/`gender` 之间是否互相印证（比如
+  `visual_anchor_en` 里写的年龄描述和 `age_range` 分组是否对得上）只能
+  靠 Step 2.5 人工自查，`check_entities.py` 只检查字段非空，不做跨字段
+  语义校验；`age_range` 只有五档粗粒度分组，无法表达"看起来比实际年龄
+  年轻"这类细节，下游一致性校验（阶段5）也只按这五档粗粒度冲突检测，
+  查不出更细微的年龄描述偏差。

@@ -1,12 +1,12 @@
 ---
 name: novel-video-studio
-description: 把一篇小说自动转换成一支配旁白/角色对话配音的成片视频。一体化流程：全局角色地点抽取（含声音设定）→大场景切分→单大场景详细规划（旁白/对话拆分）→素材与差异化配音生成→小场景视频生成与大场景内合成→最终拼接转场。每个阶段的具体操作步骤放在 references/ 下，进入某阶段前按需加载对应文件，完成后可从上下文中卸载。支持断点续跑、失败重试与 API Key 自动切换、以及用户对已生成内容提反馈后的定向回退重跑。当用户说"把这本小说做成视频"、"小说转视频"、"生成小说解说视频"时使用本 skill。
+description: 把一篇小说自动转换成一支配旁白/角色对话配音的成片视频。一体化流程：全局角色地点抽取（含声音设定与锁定视觉锚点）→大场景切分→单大场景详细规划（旁白/对话拆分）→素材与差异化配音生成→角色/场景一致性校验+小场景视频生成与大场景内合成→最终拼接转场。每个阶段的具体操作步骤放在 references/ 下，进入某阶段前按需加载对应文件，完成后可从上下文中卸载。支持断点续跑、失败重试与 API Key 自动切换、跨 session 续接、以及用户对已生成内容提反馈后的定向回退重跑。当用户说"把这本小说做成视频"、"小说转视频"、"生成小说解说视频"时使用本 skill。
 triggers: 小说转视频, 小说做视频, 小说解说视频, novel to video, 角色配音视频, 小说视频生成
 resources:
   - id: entity-extraction
     path: references/01_entity_extraction.md
-    description: 阶段1——全局角色/地点抽取（含 voice_profile 声音设定），也覆盖阶段3触发的单点补抽取模式
-    triggers: 角色抽取, 人物抽取, 地点抽取, voice_profile, 补抽取, 新角色, 新地点
+    description: 阶段1——全局角色/地点抽取（含 voice_profile 声音设定 + visual_anchor_en 锁定视觉锚点，供阶段5一致性校验使用），也覆盖阶段3触发的单点补抽取模式
+    triggers: 角色抽取, 人物抽取, 地点抽取, voice_profile, 补抽取, 新角色, 新地点, visual_anchor_en, 一致性, 角色设定
   - id: macro-scene-split
     path: references/02_macro_scene_split.md
     description: 阶段2——按剧情/时间/地点把全文切分为大场景（macro_scene）
@@ -21,8 +21,8 @@ resources:
     triggers: 定妆图, 配音, tts, voice_profile, asset_path, 差异化配音
   - id: scene-video-generation
     path: references/05_scene_video_generation.md
-    description: 阶段5——小场景视频生成（generate_scene_videos_v2.py）与大场景内合成（compose_macro_scene.py）
-    triggers: 视频生成, 小场景视频, 大场景合成, clips, gen_video_with_text
+    description: 阶段5——手写 prompt_en/video_mode + 角色/场景一致性校验(check_character_consistency.py) + 小场景视频生成(generate_scene_videos_v2.py)与大场景内合成(compose_macro_scene.py)
+    triggers: 视频生成, 小场景视频, 大场景合成, clips, gen_video_with_text, 一致性, 角色不一致, 场景不一致, visual_anchor_en
   - id: final-compose
     path: references/06_final_compose.md
     description: 阶段6——所有大场景 done 后的最终拼接转场，产出 video.mp4
@@ -72,6 +72,7 @@ resource_id=..., reason=...)` 按需加载，读完执行完这一阶段就可�
 │                                  # 阶段4配音（synthesize_scene_audio.py 是入口）
 ├── check_assets_and_audio_v2.py  # 阶段4校验
 ├── generate_scene_videos_v2.py   # 阶段5生成小场景视频
+├── check_character_consistency.py # 阶段5前置：prompt_en 与角色/地点档案一致性校验
 ├── compose_macro_scene.py        # 阶段5大场景内合成
 ├── check_clips_v2.py             # 阶段5校验
 ├── compose_final_video_v2.py     # 阶段6最终合成
@@ -148,15 +149,21 @@ novel_output/小说名_20260911/
 | `aspect_ratio` | string | 如 `"16:9"`/`"9:16"` |
 
 **`global/characters.json`** 单条 `characters[]` 元素：`id`
-(`char_NN`)、`names` (string[])、`description_zh`/`description_en`
-(string)、`voice_profile` (string)、`first_appear` (string)、
-`relations` (string[]，如 `"char_02:挚友"`)、`asset_path`
-(string \| null，阶段4回填)、`face_reference_id` (预留字段，恒
-null，未实现)。
+(`char_NN`)、`names` (string[])、`age_range` (`"child"`\|`"teen"`\|
+`"youth"`\|`"middle_aged"`\|`"elderly"`)、`gender` (`"male"`\|
+`"female"`)、`nationality_or_ethnicity` (string)、
+`description_zh`/`description_en` (string)、`visual_anchor_en`
+(string，锁定视觉锚点：年龄段+性别+体型+发型发色+标志性穿着/显著特征
+的一句话英文短语，阶段5每条 `prompt_en` 引用它保证角色外观跨场景不
+漂移)、`voice_profile` (string)、`first_appear` (string)、`relations`
+(string[]，如 `"char_02:挚友"`)、`asset_path` (string \| null，阶段4
+回填)、`face_reference_id` (预留字段，恒 null，未实现)。
 
 **`global/locations.json`** 单条 `locations[]` 元素：`id` (`loc_NN`)、
-`name`、`description_zh`/`description_en`、`asset_path`
-(string \| null，阶段4回填)。
+`name`、`location_type` (string，如 `"inn"`/`"forest"`)、`era_setting`
+(string)、`description_zh`/`description_en`、`visual_anchor_en`
+(string，同角色的锁定视觉锚点，建筑/环境类型+光照氛围+一两个标志性
+视觉细节)、`asset_path` (string \| null，阶段4回填)。
 
 **`macro_scenes.yaml`** 单条 `macro_scenes[]` 元素：`id` (`macro_NN`)、
 `title`、`source_span`、`raw_text` (原文逐字，不可改写)、`summary`、
@@ -176,7 +183,7 @@ null，未实现)。
 | `visual_hint` | string | 阶段3 | 画面提示（中文，供阶段5写 prompt_en 参考） |
 | `content_blocks` | object[] | 阶段3 | 见下方 `content_block` 结构 |
 | `duration_sec` | number \| null | 阶段4回填 | 4-12 秒范围内，阶段3阶段写入时恒为 `null` |
-| `prompt_en` | string | 阶段5（Agent 手写） | 阶段3不产出，脚本不代为生成，为空视频生成会直接失败 |
+| `prompt_en` | string | 阶段5（Agent 手写） | 阶段3不产出，脚本不代为生成，为空视频生成会直接失败；必须嵌入引用到的角色/地点 `visual_anchor_en`，见 05 文档"一致性铁律" |
 | `video_mode` | string | 阶段5（Agent 手写） | `"reference"` \| `"keyframe"` \| `"text"`，不设置时脚本按 `"text"` 处理 |
 | `status` | string | 阶段5回写 | `"pending"` → `"done"` \| `"failed"` |
 
