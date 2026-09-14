@@ -18,6 +18,19 @@ duration_sec。
     的真实时长相加，回填该 micro_scene 的 duration_sec（多段音频按顺序
     首尾相接播放，不叠加，所以直接求和）。
 
+**`duration_sec` 只能来自实际测得的音频时长，不允许使用任何估算值**：
+本脚本调用 `tts_engine.synthesize()` 时不传 `allow_estimated_duration`
+（即固定使用其默认值 `False`），也没有提供任何命令行开关去打开它——
+`ffprobe`/`mutagen` 都读不出真实时长时直接判该 content_block 配音失败
+（体现在 errors 里，该 micro_scene 的 `duration_sec` 不回填），而不是
+退回按文本字数估算后悄悄写进 `scene_detail.yaml`。`duration_sec` 会被
+`check_scene_detail.py`/`check_assets_and_audio_v2.py`/
+`compose_macro_scene.py` 一路当作事实使用（决定视频生成的目标秒数、
+决定该不该慢放/快放、决定最终成片时长是否达标），一旦掺入估算值，
+下游没有任何机制能区分"这是真实测得的"还是"这是估的"，错误会一路
+传导到最终成片，所以这里坚持"要么读到真实时长，要么直接报错让人
+介入"，不做任何折中。
+
 不处理定妆图生成（那部分仍由 Agent 直接调用 gen_image_with_text 完成，
 见 SKILL.md Step 1）。
 """
@@ -105,7 +118,6 @@ def run(
     force: bool,
     engine_pref: str,
     *,
-    allow_estimated_duration: bool = False,
     edge_tts_timeout_sec: float = DEFAULT_EDGE_TTS_TIMEOUT_SEC,
     cosyvoice_timeout_sec: float = DEFAULT_COSYVOICE_TIMEOUT_SEC,
 ) -> dict:
@@ -135,7 +147,6 @@ def run(
         detail_files = sorted(output_dir.glob("macro_scene_*/scene_detail.yaml"))
 
     engine_usage: dict[str, int] = {}
-    estimated_count = 0
     errors: list[str] = []
     processed_micro_scenes = 0
     run_started = time.monotonic()
@@ -189,7 +200,11 @@ def run(
                         engine_pref=engine_pref, fallback=fallback, voice=voice,
                         edge_tts_timeout_sec=edge_tts_timeout_sec,
                         cosyvoice_timeout_sec=cosyvoice_timeout_sec,
-                        allow_estimated_duration=allow_estimated_duration,
+                        # 不传 allow_estimated_duration：固定使用 synthesize()
+                        # 的默认值 False，本脚本不提供任何打开估算值的入口，
+                        # ffprobe/mutagen 都读不出真实时长时直接算这个
+                        # content_block 配音失败，绝不用文本字数估算的
+                        # 近似值顶替 duration_sec。
                     )
                 except TTSError as e:
                     errors.append(f"小场景 {mid} 第{i}块（{label}）配音失败：{e}")
@@ -203,13 +218,10 @@ def run(
                 elapsed = time.monotonic() - block_started
                 engine_usage[result["engine_used"]] = engine_usage.get(result["engine_used"], 0) + 1
                 total_duration += result["duration_sec"]
-                if result.get("duration_estimated"):
-                    estimated_count += 1
-                estimated_tag = "（时长为估算值，非真实测得）" if result.get("duration_estimated") else ""
                 _log(
                     f"[{macro_label}][{mid}][block {i}/{n_blocks}][{label}] "
                     f"引擎={result['engine_used']} 用时={elapsed:.1f}s "
-                    f"时长={result['duration_sec']:.2f}s{estimated_tag}"
+                    f"时长={result['duration_sec']:.2f}s（实测）"
                 )
 
             if not block_failed:
@@ -224,15 +236,13 @@ def run(
     total_elapsed = time.monotonic() - run_started
     _log(
         f"[汇总] 处理完成，用时={total_elapsed:.1f}s，成功 micro_scene={processed_micro_scenes}，"
-        f"engine_usage={engine_usage}，估算时长（非真实测得）的 block 数={estimated_count}，"
-        f"失败数={len(errors)}"
+        f"engine_usage={engine_usage}，失败数={len(errors)}"
     )
 
     return {
         "ok": not errors,
         "errors": errors,
         "engine_usage": engine_usage,
-        "estimated_duration_block_count": estimated_count,
         "processed_micro_scenes": processed_micro_scenes,
     }
 
@@ -243,11 +253,6 @@ def main() -> None:
     parser.add_argument("--macro-id", default=None, help="只处理指定大场景，不传则处理全部 macro_scene_*")
     parser.add_argument("--force", action="store_true", help="强制重新生成已存在的音频")
     parser.add_argument("--engine", default=None, choices=["cosyvoice", "edge-tts"], help="覆盖 novel_project.json 里的 tts.engine")
-    parser.add_argument(
-        "--allow-estimated-duration", action="store_true",
-        help="真实时长读取失败（ffprobe/mutagen 都不可用）时，允许退回按文本字数估算，"
-             "默认关闭（直接报错，不产出假数据），见 tts_engine.synthesize() 说明",
-    )
     parser.add_argument(
         "--edge-tts-timeout", type=float, default=DEFAULT_EDGE_TTS_TIMEOUT_SEC,
         help=f"edge-tts 在线请求超时秒数（默认 {DEFAULT_EDGE_TTS_TIMEOUT_SEC}）",
@@ -260,7 +265,6 @@ def main() -> None:
 
     result = run(
         args.output_dir, args.macro_id, args.force, args.engine,
-        allow_estimated_duration=args.allow_estimated_duration,
         edge_tts_timeout_sec=args.edge_tts_timeout,
         cosyvoice_timeout_sec=args.cosyvoice_timeout,
     )

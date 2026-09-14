@@ -82,16 +82,19 @@ python .claude/skills/novel-video-studio/scripts/synthesize_scene_audio.py \
 - 终端会打印 `engine_usage`（多少段用了 `cosyvoice`，多少段降级到了
   `edge-tts`），一次性看清降级情况。
 
-**时长真实性**：`duration_sec` 一律来自 `ffprobe`/`mutagen` 读出的
-**真实**音频时长；两者都失败时脚本默认直接报错（该 block 记入
-`errors`），不会再产出假数据静默写入 `scene_detail.yaml`（历史上这里
-有过"按文件名字数估算"的 bug，已修复，见
-`next_doc/novel_video_studio_fix_plan_v1.md` 问题1）。如果确实需要在
-`ffprobe`/`mutagen` 都不可用的环境下先跑通流程，可显式加
-`--allow-estimated-duration`，退回按**文本真实字数**（约4字/秒）估算，
-返回结果里对应 block 会标记 `duration_estimated: true`，终端也会打印
-提示——这是一个默认关闭的兜底开关，估算值和真实值不能混用，用完之后
-应该尽快修好 `ffprobe`，用 `--force` 重新生成拿到真实时长。
+**时长真实性（硬性要求，不可绕过）**：`duration_sec` 一律来自
+`ffprobe`/`mutagen` 读出的**真实**音频时长；两者都失败时脚本直接报错
+（该 block 记入 `errors`，对应 `micro_scene` 的 `duration_sec` 不回填），
+**不提供任何命令行开关退回按文本字数估算**——历史上这里出过"按文件名
+字数估算"的 bug（已修复，见 `next_doc/novel_video_studio_fix_plan_v1.md`
+问题1），之后一度保留过一个默认关闭的 `--allow-estimated-duration`
+兜底开关允许在 `ffprobe`/`mutagen` 都不可用时先用估算值跑通流程，现已
+彻底移除——`duration_sec` 会被后续所有环节（视频生成目标秒数、慢放/
+快放判定、最终成片时长达标校验）当作既定事实使用，一旦允许估算值混进
+来，下游没有办法分辨"这是真的"还是"这是猜的"，宁可在这一步直接报错
+让人修好 `ffprobe`，也不允许把这类不确定性带进下游。`ffprobe`/`mutagen`
+都不可用时，先解决环境问题（安装/修复 `ffmpeg`）再用 `--force` 重新
+生成，没有其它绕过方式。
 
 **过程输出与超时**：配音涉及 edge-tts 在线请求（或 CosyVoice 本地推理），
 是本 skill 里少数会耗时较久的步骤。脚本会逐 block 打印进度到 stderr

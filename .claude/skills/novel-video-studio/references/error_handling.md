@@ -116,10 +116,11 @@ skill 自带，本 skill 不重复实现），行为规律一致，按下面的�
 - CosyVoice 推理超时依赖线程池 `result(timeout=...)`，Python 线程无法
   被强制中断，超时只是不再等待结果、判定为失败走降级/报错，底层线程
   可能仍在后台跑一段时间，不是真正杀掉进程；
-- `tts_engine.py` 的时长读取默认要求 `ffprobe`/`mutagen` 至少一个可用，
-  都失败时默认直接报错（不产出假数据），只有显式加
-  `--allow-estimated-duration` 才会退回按文本字数估算，且会在结果里
-  标记 `duration_estimated: true`。
+- `tts_engine.py` 的时长读取要求 `ffprobe`/`mutagen` 至少一个可用，
+  都失败时直接报错（不产出假数据）；`synthesize_scene_audio.py`
+  （阶段4实际调用的入口）**不提供任何退回估算值的命令行开关**，
+  `ffprobe`/`mutagen` 都不可用时唯一的解决方式是修好环境后
+  `--force` 重跑，不存在"先用估算值凑合"这条路径。
 
 ## 常见非限流错误对照
 
