@@ -94,9 +94,11 @@ def _ffprobe_duration(path: Path) -> float:
     `synthesize()` 的 `allow_estimated_duration=True`，并按**文本**
     （而不是文件名）估算。
     """
+    import os
+    _ffprobe_cmd = os.environ.get("NOVEL_FFPROBE_PATH") or "ffprobe"
     try:
         out = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
+            [_ffprobe_cmd, "-v", "quiet", "-print_format", "json",
              "-show_format", str(path)],
             capture_output=True, text=True, timeout=30, check=True,
         )
