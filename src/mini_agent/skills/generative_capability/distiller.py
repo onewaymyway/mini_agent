@@ -28,20 +28,45 @@ Generative-Capability 引擎的蒸馏器（阶段三）。
     "检索能到但脚本已被清理"的不一致状态（方案文档第 8 节安全边界 5）。
 
 同域名重复 member 标记（见
-next_doc/browser_site_scraper_domain_dedup_and_matching_fix_plan.md 阶段 B）:
-  - `_atomic_persist()` 落盘一个真正全新的 member（即调用方传入的
-    `existing_entry is None`，不是针对既有 id 的重新探索）时，会用
+next_doc/browser_site_scraper_domain_dedup_and_matching_fix_plan.md 阶段 B，
+以及本次修复见 next_doc/browser_site_scraper_domain_dedup_and_matching_fix_
+plan.md 阶段 C 的补充记录）:
+  - `_atomic_persist()`（脚本档：script_source/llm_synthesized/trace_replay）
+    与 `_persist_playbook_member()`（playbook 兜底档）落盘一个真正全新的
+    member（即调用方传入的 `existing_entry is None`，不是针对既有 id 的
+    重新探索）时，都会调用共用函数 `_apply_domain_dedup()`：用
     `CapabilityEngine._extract_domain_pattern_core` 把这次新推断出的
     `match.domain_pattern` 与其余处于 active 状态（trusted/probation/
     degraded）的 sibling member 做一次归一化比较；一旦发现某个 sibling
     的 domain_pattern 覆盖同一个域名，就在这次新落盘的 index 摘要与
     meta.json 里都记一笔 `possible_duplicate_of`，并打一条
     `distill_new_member_overlaps_existing_domain` 调试日志。
+  - [本次修复] 此前 `_persist_playbook_member()` 是完全独立实现的一份
+    "与 `_atomic_persist()` 对称"的代码，却遗漏了调用这一步——导致所有
+    经 playbook 兜底产出的 member 既不会被标记为潜在重复，也从未作为
+    sibling 被后来者比对（真实故障案例：大量描述几乎相同的 playbook 档
+    member 反复堆积在 `_index.json` 里、彼此互不知晓）。现在两条持久化
+    路径共享同一份 `_apply_domain_dedup()`，不再各自维护一份重复逻辑。
   - 这里刻意只标记、不阻断落盘、也不自动拿新脚本覆盖/合并旧 member——
     同一个域名下完全可能存在多种合法的独立抓取意图（比如同一站点的
     搜索页 vs 详情页），"域名重叠"不能被直接当成"一定是重复"；是否真的
     需要合并交给 `health_patrol.py` 的巡检 + 人工审查（或显式调用
     `run_patrol(..., merge_duplicates=True)`）决定。
+
+registry.json/_index.json 并发写入保护（本次修复新增）:
+  - `_atomic_persist()`/`_persist_playbook_member()` 都是"读取整份
+    registry.json/_index.json → 内存合并 → 写临时文件 → 原子 replace"，
+    单次 replace 是原子的，但"读-改-写"组合不是。并发的 distill() 调用
+    （例如同一个未命中请求被多个子agent/重试并发探索）会导致后写入者
+    用自己内存里的旧快照整体覆盖，把中间发生的其他写入静默冲掉——真实
+    故障案例中 24 个 member 全部进了 `_index.json`，`registry.json`
+    最终却只剩最后写入的 1 条。
+  - 现在两个函数在"读 registry/index → 改 → 写回 → replace"这整段临界区
+    上都持有 `_SkillDirLock(skill_dir)`（基于 `Path.mkdir(exist_ok=False)`
+    的原子性实现的进程间互斥锁，不引入额外第三方依赖），把同一个 skill
+    目录下的并发 distill() 串行化。锁粒度选在 skill_dir 一级而非更细粒度，
+    因为 meta.json/registry.json/_index.json 三者的更新在语义上本来就要
+    保持一致。
 
 trust_trace_data 一致性兜底（阶段六，回应阶段五"已知遗留"第 1 条）:
   - 蒸馏脚本重放动作序列后，默认只从"重放出的最后一步工具输出"里取 data
@@ -1103,6 +1128,107 @@ def _check_script_plausibility(
     return True, f"规则预检可疑，但 LLM 复核判定为合理（如输出恰好稳定）：{reason}"
 
 
+class _SkillDirLock:
+    """[本次新增，回应 registry.json/_index.json 并发丢更新问题]
+
+    `_atomic_persist()`/`_persist_playbook_member()` 各自都是"读取整份
+    registry.json/_index.json → 在内存里合并新 member → 写临时文件 →
+    原子 replace"，单次 replace 是原子的，但"读-改-写"这个组合不是。当
+    同一个 capability 下发生并发探索（例如同一个未命中请求被多个子agent/
+    重试并发处理）时，多个进程/协程会各自读到同一份旧快照、各自往里加
+    一条 member、再各自写回——后写入者会用自己内存里的旧快照整体覆盖
+    registry.json，把中间被别人加进去、自己快照里没有的 member 全部
+    静默冲掉（真实故障案例：24 个 chartrow_* member 全部进了
+    `_index.json`，但 `registry.json` 最终只剩最后写入的 1 条）。
+
+    这里用最朴素的"原子 mkdir 作为互斥锁"方案，不引入额外第三方依赖
+    （`Path.mkdir(exist_ok=False)` 在 POSIX 和 Windows 上都是原子操作），
+    把同一个 skill 目录下 `_atomic_persist`/`_persist_playbook_member`
+    的"读-改-写"临界区串行化。锁粒度选在 skill_dir 一级（而不是更细的
+    per-file），因为 meta.json/registry.json/_index.json 三个文件的更新
+    在语义上本来就要保持一致，细粒度加锁反而容易引入"锁了 registry 但
+    没锁 index"这种新的竞态窗口。
+    """
+
+    def __init__(self, skill_dir: Path, *, timeout: float = 30.0,
+                 poll_interval: float = 0.05, stale_after: float = 60.0) -> None:
+        self._lock_dir = skill_dir / ".distill.lock"
+        self._timeout = timeout
+        self._poll_interval = poll_interval
+        self._stale_after = stale_after
+
+    def __enter__(self) -> "_SkillDirLock":
+        deadline = time.time() + self._timeout
+        while True:
+            try:
+                self._lock_dir.mkdir(parents=True, exist_ok=False)
+                return self
+            except FileExistsError:
+                # 锁已被别的进程/协程持有：检查是否是"陈旧锁"（持锁方异常
+                # 退出、没走到 __exit__ 清理），陈旧锁直接强制回收，避免
+                # 一次崩溃就永久卡死后续所有 distill()。
+                try:
+                    age = time.time() - self._lock_dir.stat().st_mtime
+                    if age > self._stale_after:
+                        self._lock_dir.rmdir()
+                        continue
+                except OSError:
+                    pass
+                if time.time() >= deadline:
+                    raise TimeoutError(
+                        f"等待 skill 目录锁超时（可能存在陈旧锁未被回收）: {self._lock_dir}"
+                    )
+                time.sleep(self._poll_interval)
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            self._lock_dir.rmdir()
+        except OSError:
+            pass
+        return False
+
+
+def _apply_domain_dedup(*, new_summary: dict, existing_entry: Optional[dict],
+                         members_list: list[dict], registry: dict,
+                         skill_name: str, member_id: str) -> list[str]:
+    """[本次新增] 同域名重复检测的唯一共用入口。
+
+    此前这段逻辑只写在 `_atomic_persist()`（脚本档：script_source/
+    llm_synthesized/trace_replay）里，`_persist_playbook_member()`
+    （playbook 档，三档脚本蒸馏全部失败后的兜底路径）是完全独立实现的
+    "对称"函数，却漏了调用这一步——导致所有经 playbook 兜底产出的
+    member 既不会被标记为潜在重复，也从未作为 sibling 被后来者比对
+    （真实故障案例中的 `chartrow`/`chartrow_2`/`chartrow_6` 等 playbook
+    档 member 就是这样"隐形"的）。现在两条持久化路径都必须调用这个函数，
+    不再各自维护一份重复逻辑，避免"两条对称路径、一条漏写"再次发生。
+
+    只有真正全新的 member（`existing_entry is None`，不是针对既有 id 的
+    重新探索）才需要检查；返回 member_id 列表供调用方标记，不做任何
+    写操作/合并——是否真的需要合并交给 `health_patrol.py`。
+    """
+    if existing_entry is not None:
+        return []
+    duplicate_of = _find_active_domain_overlaps(
+        new_domain_pattern=(new_summary.get("match") or {}).get("domain_pattern"),
+        sibling_members=members_list,
+        registry=registry,
+    )
+    if duplicate_of:
+        new_summary["possible_duplicate_of"] = duplicate_of
+        from .capability_debug import capability_debug_log
+        capability_debug_log(
+            "distill_new_member_overlaps_existing_domain",
+            {
+                "skill_name": skill_name,
+                "new_member_id": member_id,
+                "domain_pattern": (new_summary.get("match") or {}).get("domain_pattern"),
+                "overlaps_with": duplicate_of,
+            },
+            where="distiller._apply_domain_dedup",
+        )
+    return duplicate_of
+
+
 def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, request: dict,
                      capability: dict, intent_schema: dict, is_reexplore: bool,
                      used_trace_data_fallback: bool = False,
@@ -1139,92 +1265,85 @@ def _atomic_persist(*, skill_dir: Path, member_id: str, script_code: str, reques
     meta_tmp = meta_path.with_suffix(".json.tmp")
     meta_tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    registry_path = skill_dir / "registry.json"
-    registry = _load_json(registry_path, {"members": {}})
-    registry_entry = {
-        "status": "probation",
-        "status_changed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "intent_schema": intent_schema,
-        "success_count": 0,
-        "fail_count": 0,
-        "consecutive_failures": 0,
-        "last_success": None,
-        "last_failure": None,
-    }
-    # [本次新增，阶段 C] trace-replay 兜底路径产出的脚本结构性脆弱（只会
-    # 顺序重放动作序列，遇到探索时的探测性弯路/环境差异容易在真实调用时
-    # 才炸），不应该和 script_source/llm_synthesized 产出的 member 享有
-    # 同样快的"转正"速度。这里写一个 member 级别的 probation 门槛覆盖值，
-    # 由 `capability_engine.py::_apply_lifecycle()` 优先读取；不覆盖
-    # `lifecycle.degrade_failure_threshold`（降级速度不变，脆弱脚本该多快
-    # 掉出 trusted 不受影响，只是变得更难升上去）。领域可以在
-    # capability.yaml -> lifecycle.trace_replay_probation_success_threshold
-    # 显式声明具体门槛；未声明时默认取"领域默认门槛的两倍"，作为一个不需要
-    # 额外配置就生效的合理保守值。
-    if distill_source_kind == "trace_replay":
-        lifecycle_cfg = capability.get("lifecycle", {})
-        default_threshold = lifecycle_cfg.get("probation_success_threshold", 3)
-        override = lifecycle_cfg.get(
-            "trace_replay_probation_success_threshold", default_threshold * 2
-        )
-        registry_entry["probation_success_threshold_override"] = override
-    registry["members"][member_id] = registry_entry
-    registry_tmp = registry_path.with_suffix(".json.tmp")
-    registry_tmp.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    index_path = skill_dir / "_index.json"
-    index = _load_json(index_path, {"members": []})
-    existing_entry = next(
-        (m for m in index.get("members", []) if m.get("member_id") == member_id), None
-    )
-    members_list = [m for m in index.get("members", []) if m.get("member_id") != member_id]
-    new_summary = {
-        "member_id": member_id,
-        **_resolve_index_summary(
-            existing_entry=existing_entry, request=request, is_reexplore=is_reexplore,
-            content_preview=script_code, distill_source_kind=distill_source_kind,
-            skill_name=capability.get("name", skill_dir.name), member_id=member_id,
-            llm_helper=llm_helper,
-        ),
-    }
-
-    duplicate_of: list[str] = []
-    if existing_entry is None:
-        # 真正意义上的"全新 member"（不是针对既有 id 的重新探索）才需要
-        # 检查同域名重叠——见文件头"同域名重复 member 标记"一节。
-        duplicate_of = _find_active_domain_overlaps(
-            new_domain_pattern=(new_summary.get("match") or {}).get("domain_pattern"),
-            sibling_members=members_list,
-            registry=registry,
-        )
-        if duplicate_of:
-            new_summary["possible_duplicate_of"] = duplicate_of
-            from .capability_debug import capability_debug_log
-            capability_debug_log(
-                "distill_new_member_overlaps_existing_domain",
-                {
-                    "skill_name": capability.get("name", skill_dir.name),
-                    "new_member_id": member_id,
-                    "domain_pattern": (new_summary.get("match") or {}).get("domain_pattern"),
-                    "overlaps_with": duplicate_of,
-                },
-                where="distiller._atomic_persist",
+    # [本次修复，回应 registry.json/_index.json 并发丢更新问题] 从这里开始
+    # 是"读取 registry.json/_index.json 整份内容 → 内存合并 → 写回"的临界
+    # 区，必须持有同一把 skill 目录级别的锁，串行化并发的 distill() 调用，
+    # 否则后写入者会用自己内存里的旧快照整体覆盖，把并发的其他写入静默
+    # 冲掉（真实故障案例：24 个 member 全部进了 `_index.json`，`registry.json`
+    # 最终却只剩最后写入的 1 条）。
+    with _SkillDirLock(skill_dir):
+        registry_path = skill_dir / "registry.json"
+        registry = _load_json(registry_path, {"members": {}})
+        registry_entry = {
+            "status": "probation",
+            "status_changed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "intent_schema": intent_schema,
+            "success_count": 0,
+            "fail_count": 0,
+            "consecutive_failures": 0,
+            "last_success": None,
+            "last_failure": None,
+        }
+        # [本次新增，阶段 C] trace-replay 兜底路径产出的脚本结构性脆弱（只会
+        # 顺序重放动作序列，遇到探索时的探测性弯路/环境差异容易在真实调用时
+        # 才炸），不应该和 script_source/llm_synthesized 产出的 member 享有
+        # 同样快的"转正"速度。这里写一个 member 级别的 probation 门槛覆盖值，
+        # 由 `capability_engine.py::_apply_lifecycle()` 优先读取；不覆盖
+        # `lifecycle.degrade_failure_threshold`（降级速度不变，脆弱脚本该多快
+        # 掉出 trusted 不受影响，只是变得更难升上去）。领域可以在
+        # capability.yaml -> lifecycle.trace_replay_probation_success_threshold
+        # 显式声明具体门槛；未声明时默认取"领域默认门槛的两倍"，作为一个不需要
+        # 额外配置就生效的合理保守值。
+        if distill_source_kind == "trace_replay":
+            lifecycle_cfg = capability.get("lifecycle", {})
+            default_threshold = lifecycle_cfg.get("probation_success_threshold", 3)
+            override = lifecycle_cfg.get(
+                "trace_replay_probation_success_threshold", default_threshold * 2
             )
+            registry_entry["probation_success_threshold_override"] = override
+        registry["members"][member_id] = registry_entry
+        registry_tmp = registry_path.with_suffix(".json.tmp")
+        registry_tmp.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    members_list.append(new_summary)
-    index["members"] = members_list
-    index_tmp = index_path.with_suffix(".json.tmp")
-    index_tmp.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+        index_path = skill_dir / "_index.json"
+        index = _load_json(index_path, {"members": []})
+        existing_entry = next(
+            (m for m in index.get("members", []) if m.get("member_id") == member_id), None
+        )
+        members_list = [m for m in index.get("members", []) if m.get("member_id") != member_id]
+        new_summary = {
+            "member_id": member_id,
+            **_resolve_index_summary(
+                existing_entry=existing_entry, request=request, is_reexplore=is_reexplore,
+                content_preview=script_code, distill_source_kind=distill_source_kind,
+                skill_name=capability.get("name", skill_dir.name), member_id=member_id,
+                llm_helper=llm_helper,
+            ),
+        }
 
-    if duplicate_of:
-        meta["possible_duplicate_of"] = duplicate_of
-        meta_tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        # [本次修复] 同域名重复检测改为调用共用函数 `_apply_domain_dedup`，
+        # 与 `_persist_playbook_member()` 共享同一份逻辑——见该函数 docstring
+        # 说明此前"两条对称路径、一条漏写"的问题。
+        duplicate_of = _apply_domain_dedup(
+            new_summary=new_summary, existing_entry=existing_entry,
+            members_list=members_list, registry=registry,
+            skill_name=capability.get("name", skill_dir.name), member_id=member_id,
+        )
 
-    # 全部写完临时文件后再统一原子替换，尽量缩小"部分文件已提交、部分未提交"的窗口。
-    script_tmp.replace(script_path)
-    meta_tmp.replace(meta_path)
-    registry_tmp.replace(registry_path)
-    index_tmp.replace(index_path)
+        members_list.append(new_summary)
+        index["members"] = members_list
+        index_tmp = index_path.with_suffix(".json.tmp")
+        index_tmp.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        if duplicate_of:
+            meta["possible_duplicate_of"] = duplicate_of
+            meta_tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # 全部写完临时文件后再统一原子替换，尽量缩小"部分文件已提交、部分未提交"的窗口。
+        script_tmp.replace(script_path)
+        meta_tmp.replace(meta_path)
+        registry_tmp.replace(registry_path)
+        index_tmp.replace(index_path)
 
 
 def _find_active_domain_overlaps(
@@ -1316,7 +1435,7 @@ def _build_playbook_markdown(trace: ExploreTrace, request: dict, skill_name: str
 def _persist_playbook_member(*, skill_dir: Path, member_id: str, request: dict,
                               capability: dict, intent_schema: dict, is_reexplore: bool,
                               llm_helper: Any = None, playbook_markdown: str = "") -> None:
-    """[本次新增] 与 `_atomic_persist()` 对称，但只登记 member 的检索元信息
+    """与 `_atomic_persist()` 对称，但只登记 member 的检索元信息
     （meta.json + registry.json + _index.json），不写 `script.py`——playbook
     正文由调用方通过 `playbook_repo.save_new_version()` 单独落盘（复用
     `hybrid_exec.playbook_repository.PlaybookRepository` 的既有实现，不在
@@ -1325,6 +1444,12 @@ def _persist_playbook_member(*, skill_dir: Path, member_id: str, request: dict,
     member "脚本加载失败"，随后 `call()` 会走到 `_try_skill()`，用同一个
     member_id 去 playbook_repo 里找 active playbook——这正是本函数存在的
     目的：让 resolve() 今后能检索到这个 member，实际执行交给 SKILL 档。
+
+    [本次修复] 与 `_atomic_persist()` 共享同一份同域名重复检测
+    （`_apply_domain_dedup()`）和同一把并发写入锁（`_SkillDirLock`）——
+    此前这两点都被遗漏，是"两条对称路径、一条漏写"问题的来源，详见文件
+    头"同域名重复 member 标记"与"registry.json/_index.json 并发写入保护"
+    两节说明。
     """
     members_dir = skill_dir / "members"
     member_dir = members_dir / member_id
@@ -1350,55 +1475,76 @@ def _persist_playbook_member(*, skill_dir: Path, member_id: str, request: dict,
             "target": request.get("target", {}),
         },
     }
-    meta_tmp = meta_path.with_suffix(".json.tmp")
-    meta_tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    # [本次修复，回应 registry.json/_index.json 并发丢更新问题 + playbook 档
+    # 遗漏去重检查两个问题] 与 `_atomic_persist()` 一样，"读取 registry.json/
+    # _index.json 整份内容 → 内存合并 → 写回"必须持有同一把 skill 目录级别
+    # 的锁（`_atomic_persist`/`_persist_playbook_member` 共用同一把锁，
+    # 因为二者都可能并发写同一个 skill 目录），并且必须调用与
+    # `_atomic_persist()` 相同的 `_apply_domain_dedup()`——此前这里完全没有
+    # 做同域名重复检测，导致所有经 playbook 兜底产出的 member 既不会被标记
+    # 为潜在重复，也从未作为 sibling 被后来者比对。
+    with _SkillDirLock(skill_dir):
+        meta_tmp = meta_path.with_suffix(".json.tmp")
+        meta_tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    registry_path = skill_dir / "registry.json"
-    registry = _load_json(registry_path, {"members": {}})
-    registry["members"][member_id] = {
-        "status": "probation",
-        "status_changed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "intent_schema": intent_schema,
-        "success_count": 0,
-        "fail_count": 0,
-        "consecutive_failures": 0,
-        "last_success": None,
-        "last_failure": None,
-        # 与 script 档区分：execute() 天然会因缺少 script.py 而失败，
-        # 该状态字段只是让人工/事后审计能一眼看出"这是一个只有 playbook
-        # 可用的 member"，不参与任何现有状态机判断逻辑。
-        "execution_tier": "skill_only",
-    }
-    registry_tmp = registry_path.with_suffix(".json.tmp")
-    registry_tmp.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+        registry_path = skill_dir / "registry.json"
+        registry = _load_json(registry_path, {"members": {}})
+        registry["members"][member_id] = {
+            "status": "probation",
+            "status_changed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "intent_schema": intent_schema,
+            "success_count": 0,
+            "fail_count": 0,
+            "consecutive_failures": 0,
+            "last_success": None,
+            "last_failure": None,
+            # 与 script 档区分：execute() 天然会因缺少 script.py 而失败，
+            # 该状态字段只是让人工/事后审计能一眼看出"这是一个只有 playbook
+            # 可用的 member"，不参与任何现有状态机判断逻辑。
+            "execution_tier": "skill_only",
+        }
+        registry_tmp = registry_path.with_suffix(".json.tmp")
+        registry_tmp.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    index_path = skill_dir / "_index.json"
-    index = _load_json(index_path, {"members": []})
-    existing_entry = next(
-        (m for m in index.get("members", []) if m.get("member_id") == member_id), None
-    )
-    members_list = [m for m in index.get("members", []) if m.get("member_id") != member_id]
-    members_list.append({
-        "member_id": member_id,
-        **(
-            _resolve_index_summary(
-                existing_entry=existing_entry, request=request, is_reexplore=is_reexplore,
-                content_preview=playbook_markdown, distill_source_kind="playbook",
-                skill_name=capability.get("name", skill_dir.name), member_id=member_id,
-                llm_helper=llm_helper,
-            ) if existing_entry else {
-                "description": f"探索自动生成(playbook): {request.get('text', '')[:60]}",
-                "match": _merge_match_rule(existing_entry, request, is_reexplore),
-            }
-        ),
-    })
-    index["members"] = members_list
-    index_tmp = index_path.with_suffix(".json.tmp")
-    index_tmp.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+        index_path = skill_dir / "_index.json"
+        index = _load_json(index_path, {"members": []})
+        existing_entry = next(
+            (m for m in index.get("members", []) if m.get("member_id") == member_id), None
+        )
+        members_list = [m for m in index.get("members", []) if m.get("member_id") != member_id]
+        new_summary = {
+            "member_id": member_id,
+            **(
+                _resolve_index_summary(
+                    existing_entry=existing_entry, request=request, is_reexplore=is_reexplore,
+                    content_preview=playbook_markdown, distill_source_kind="playbook",
+                    skill_name=capability.get("name", skill_dir.name), member_id=member_id,
+                    llm_helper=llm_helper,
+                ) if existing_entry else {
+                    "description": f"探索自动生成(playbook): {request.get('text', '')[:60]}",
+                    "match": _merge_match_rule(existing_entry, request, is_reexplore),
+                }
+            ),
+        }
 
-    meta_tmp.replace(meta_path)
-    registry_tmp.replace(registry_path)
-    index_tmp.replace(index_path)
+        duplicate_of = _apply_domain_dedup(
+            new_summary=new_summary, existing_entry=existing_entry,
+            members_list=members_list, registry=registry,
+            skill_name=capability.get("name", skill_dir.name), member_id=member_id,
+        )
+
+        members_list.append(new_summary)
+        index["members"] = members_list
+        index_tmp = index_path.with_suffix(".json.tmp")
+        index_tmp.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        if duplicate_of:
+            meta["possible_duplicate_of"] = duplicate_of
+            meta_tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        meta_tmp.replace(meta_path)
+        registry_tmp.replace(registry_path)
+        index_tmp.replace(index_path)
 
 
 def _distill_to_playbook(*, trace: ExploreTrace, request: dict, skill_name: str, member_id: str,

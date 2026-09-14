@@ -309,3 +309,97 @@ pattern` finding 列出的分组符合预期，再加上该开关真正执行合
   刻意的（同域名不同路径通常是合法的独立能力），但也意味着如果未来
   真的出现"同一路径前缀下的重复 member"（如反复探索出多个
   `*.baidu.com/s*`），本次改动不会自动发现，需要另外扩展匹配粒度。
+
+## 5. 阶段 C：真实故障排查与补充修复（本次新增）
+
+### 5.1 故障现象
+
+用户提供了真实生产环境下 `browser-site-scraper` 的 `_index.json`/
+`registry.json` 快照：`_index.json` 里 `chartrow`~`chartrow_25` 共
+24 个 member（对同一个域名 `chartrow.com` 反复探索产生），但绝大多数
+彼此没有 `possible_duplicate_of` 标记；同时 `registry.json` 里
+chartrow 家族最终只剩 `chartrow_2` 一条记录，其余 23 条全部消失。
+
+### 5.2 根因排查
+
+排查定位到两个独立但会相互放大的问题：
+
+1. **`_persist_playbook_member()` 从未调用去重检查**。阶段 B 的
+   `_find_active_domain_overlaps()` 调用只写在 `_atomic_persist()`
+   （script_source/llm_synthesized/trace_replay 三条脚本档路径）里；
+   `_persist_playbook_member()`（三档脚本蒸馏全部失败后的 playbook
+   兜底档）是完全独立实现的一份"与 `_atomic_persist()` 对称"的代码，
+   却漏写了这一步——所有经 playbook 产出的 member（真实数据里
+   `chartrow`/`chartrow_2`/`chartrow_6`/`chartrow_10`/`chartrow_14` 等，
+   描述都带 `(playbook)` 后缀）既不会被标记为潜在重复，也从未作为
+   sibling 被后续新 member 比对到。
+
+2. **`registry.json`/`_index.json` 的"读-改-写"没有加锁，并发场景下
+   丢更新**。`_atomic_persist`/`_persist_playbook_member` 都是"读取
+   整份 JSON → 内存合并 → 写临时文件 → 原子 replace"，单次 replace
+   是原子的，但整段组合不是。当同一个未命中请求被并发探索多次时
+   （真实数据里能看到大量 member_id 不同但 description 完全相同的
+   "抓取VNQ REIT ETF年度总回报率数据"），多个调用会读到同一份旧快照、
+   各自在内存里加一条 member 再整体写回——后写入者会用自己的旧快照
+   覆盖 `registry.json`，把中间被别的调用加进去、自己快照里没有的
+   member 全部静默冲掉。`_index.json` 因为是"按 member_id 过滤旧列表
+   再 append 自己这一条"，个别调用漏写别人新增的 entry 的影响没有
+   `registry.json`"整个 dict 被替换"那么剧烈，所以表现为
+   `_index.json` 条目基本齐全、`registry.json` 却大量丢失——这也解释
+   了为什么部分较早的 member（如 `chartrow_9`/`chartrow_10`/
+   `chartrow_12`~`chartrow_15`）能短暂出现在别的 member 的
+   `possible_duplicate_of` 里（说明它们在被比对的那一刻 registry 里
+   确实存在过、状态也是 active），但最终快照里却又不在了。
+
+两个问题会相互放大：即使先补上第 1 点，只要第 2 点的竞态还在，高并发
+场景下 registry.json 依然会持续丢数据，导致"能查到 _index.json 摘要，
+但 registry 状态机认为这个 member 不存在"的僵尸态；而第 2 点的竞态
+一旦发生，也会进一步破坏第 1 点去重检查本该依赖的"active sibling"
+判断（sibling 的 registry 记录被冲掉后，去重函数看不到它，自然也就
+标记不出重叠）。
+
+### 5.3 修复方案与改动文件
+
+- `src/mini_agent/skills/generative_capability/distiller.py`
+  - 新增 `_apply_domain_dedup()`：把原来只在 `_atomic_persist()` 里的
+    去重逻辑抽成两条持久化路径共用的唯一入口，`_atomic_persist()`/
+    `_persist_playbook_member()` 都改为调用它，不再各自维护一份重复
+    逻辑（避免"两条对称路径、一条漏写"再次发生）。
+  - 新增 `_SkillDirLock`：基于 `Path.mkdir(parents=True,
+    exist_ok=False)` 的原子性实现的进程间互斥锁（不引入
+    `filelock`/`fcntl` 等额外依赖，POSIX/Windows 通用），带陈旧锁
+    自动回收（持锁方异常退出未清理时，超过 `stale_after` 秒后下一个
+    等待者会强制回收，避免一次崩溃永久卡死后续所有 `distill()`）。
+  - `_atomic_persist()`/`_persist_playbook_member()` 把"读取
+    registry.json/_index.json → 内存合并 → 写临时文件 → 原子 replace"
+    这整段临界区都纳入同一把 `_SkillDirLock(skill_dir)`（两个函数用
+    同一把锁，因为二者可能并发写同一个 skill 目录），串行化同一个
+    capability 下的并发 `distill()` 调用。
+  - 文件头两段说明（"同域名重复 member 标记"、新增的
+    "registry.json/_index.json 并发写入保护"）已同步更新，记录本次
+    问题的成因与修复方式。
+- `.claude/skills/skill-generator/references/generative-capability-skill.md`
+  - 补充说明：generative-capability skill 的落盘由平台内置代码统一
+    通过 `_SkillDirLock` 串行化、去重检查在两条持久化路径间共用，
+    skill 维护者不需要（也不应该）在自己的 skill 目录里重新实现任何
+    并发控制或去重逻辑。
+
+### 5.4 验证情况
+
+用一段并发脚本模拟"同一域名下、脚本档与 playbook 档交替、共 30 次
+并发 `distill()` 调用"，修复前会稳定复现"`_index.json` 齐全但
+`registry.json` 丢条目"的现象；修复后：
+
+- `registry.json`/`_index.json` 的 member 数量始终与实际调用次数一致
+  （30/30，无丢失）。
+- playbook 档 member 与脚本档 member 一样能被正确标记
+  `possible_duplicate_of`（此前 playbook 档恒为 0 条被标记，修复后
+  同批次里除最先落盘的一条外全部被标记）。
+
+### 5.5 本次未做的事
+
+- 未对用户已有的历史数据做自动修复——用户反馈数据已人工还原，本次
+  只修代码，不接触任何现存的 `registry.json`/`_index.json`/`meta.json`。
+- 未引入 `filelock` 等第三方依赖，`_SkillDirLock` 是自实现的最小方案；
+  如果后续需要更细粒度或跨机器的锁（比如分布式部署、多机共享同一份
+  skill 目录），需要单独评估换成基于数据库/分布式锁服务的方案。

@@ -252,9 +252,21 @@ def run(input: dict) -> dict:
 ## 引擎内部行为不需要你关心的部分（了解即可，不需要照着实现）
 
 三档执行机制（script→skill→explore）、SKILL 档（人类可读 playbook 兜底）、
-自动升级蒸馏为脚本、生命周期状态机、检索两级过滤、raw_result 落盘化等，
-全部是平台内置代码的行为，你只需要按上面的字段声明配置，不需要（也不应该）
-在 skill 目录里重新实现任何调度逻辑。完整设计文档：
+自动升级蒸馏为脚本、生命周期状态机、检索两级过滤、raw_result 落盘化、
+**同域名/同 sibling 的重复 member 检测（`possible_duplicate_of` 标记）、
+以及 `registry.json`/`_index.json`/`meta.json` 落盘时的并发写入互斥
+（`distiller.py::_SkillDirLock`）**，全部是平台内置代码的行为，你只需要
+按上面的字段声明配置，不需要（也不应该）在 skill 目录里重新实现任何
+调度逻辑、去重逻辑或加锁逻辑——这两点（去重、加锁）此前分别踩过坑：
+`_persist_playbook_member()`（playbook 兜底档落盘路径）一度是与脚本档
+`_atomic_persist()` 独立实现的"对称"代码，遗漏了去重检查的调用；
+`registry.json`/`_index.json` 的"读-改-写"也一度没有加锁，高并发探索
+同一个未命中请求时会互相覆盖丢数据。两个问题都已在引擎侧统一修复
+（去重逻辑收敛为 `_apply_domain_dedup()` 单一入口，两条持久化路径共用；
+落盘临界区统一持有 `_SkillDirLock(skill_dir)`），完整记录见
+`next_doc/browser_site_scraper_domain_dedup_and_matching_fix_plan.md`
+第 5 节——这里提及只是为了说明"引擎侧已经处理好了，你写新领域时不用
+再操心并发/去重"，不是要你去改这部分代码。完整设计文档：
 
 - 整体机制设计：`next_doc/generative-capability-skill-plan.md`
 - 三档机制（script→skill→explore）：

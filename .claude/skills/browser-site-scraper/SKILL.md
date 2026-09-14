@@ -97,6 +97,19 @@ guide.md`"已知限制"一节）。
   新建 member 落盘时会检测同域名重叠并标记 `possible_duplicate_of`，
   `health_patrol.py` 新增 `duplicate_domain_pattern` 巡检项，日常巡检就能
   发现这类重复，不用等人工偶然翻 `_index.json`。
+- **[阶段 C 补充修复]** 上面这条去重检测最初只接在脚本档
+  `_atomic_persist()` 上，playbook 兜底档 `_persist_playbook_member()`
+  是独立实现的对称代码，遗漏了这一步——导致所有经 playbook 产出的
+  member（`_index.json` 里 description 带 `(playbook)` 后缀的那些）
+  完全不参与去重判断。同时 `registry.json`/`_index.json` 的落盘原本没
+  有并发写入保护，同一个未命中请求被并发探索多次时会互相覆盖、丢失
+  member 记录（真实案例：`_index.json` 里 24 个 chartrow 系列 member，
+  `registry.json` 最终却只剩 1 条）。这两点已在
+  `distiller.py::_apply_domain_dedup()`（两条持久化路径共用同一份去重
+  逻辑）与 `distiller.py::_SkillDirLock`（串行化同一 skill 目录下的并发
+  落盘）里修复，完整记录见
+  `next_doc/browser_site_scraper_domain_dedup_and_matching_fix_plan.md`
+  第 5 节。
 - **如果你的环境里已经积累了这类历史重复**（比如本 SKILL.md 描述场景下
   真实出现过的 arxiv 系列 member），运行一次：
   ```
