@@ -135,7 +135,7 @@
   "compact_cooldown_turns": 3,
   "compact_require_confirmation": false,
   "compact_max_message_chars": 10000,
-  "model_context_window": 120000,
+  "model_context_window": 240000,
   "digest_advisor": {
     "daily_digest_enabled": true,
     "daily_digest_startup_print_enabled": true,
