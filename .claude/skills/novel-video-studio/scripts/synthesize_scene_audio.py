@@ -20,16 +20,23 @@ duration_sec。
 
 **`duration_sec` 只能来自实际测得的音频时长，不允许使用任何估算值**：
 本脚本调用 `tts_engine.synthesize()` 时不传 `allow_estimated_duration`
-（即固定使用其默认值 `False`），也没有提供任何命令行开关去打开它——
-`ffprobe`/`mutagen` 都读不出真实时长时直接判该 content_block 配音失败
-（体现在 errors 里，该 micro_scene 的 `duration_sec` 不回填），而不是
-退回按文本字数估算后悄悄写进 `scene_detail.yaml`。`duration_sec` 会被
-`check_scene_detail.py`/`check_assets_and_audio_v2.py`/
-`compose_macro_scene.py` 一路当作事实使用（决定视频生成的目标秒数、
-决定该不该慢放/快放、决定最终成片时长是否达标），一旦掺入估算值，
-下游没有任何机制能区分"这是真实测得的"还是"这是估的"，错误会一路
-传导到最终成片，所以这里坚持"要么读到真实时长，要么直接报错让人
-介入"，不做任何折中。
+（即固定使用其默认值 `False`），也没有提供任何命令行开关去打开它。
+
+**读不出真实时长时（`DurationReadError`），本脚本立即整体终止，不会把
+这一个 block 标记失败后继续处理别的场景**：这类失败（`ffprobe`/
+`mutagen` 都不可用）几乎总是环境问题，不是某一条文本偶发出错——环境
+坏了，后面几十上百个 block 大概率会遇到一模一样的失败，硬跑完只会
+浪费时间（包括白白消耗掉那些能正常合成、只是读不出时长的 TTS 调用
+次数），还会让人误以为是很多个独立小问题。终止时会在 stdout 打印
+清楚的 `error`/`action_required`，说明是哪个文件、哪个环节读取失败，
+交给 Agent 先去修好环境（检查/安装 `ffmpeg`、或确认 `mutagen` 可用）
+再重新跑（用 `--force` 重新生成断点续跑跳过的那些片段）。
+
+其它类型的配音失败（`TTSError`，比如内容审核拦截、网络超时、单条
+CosyVoice 推理失败）仍按原来的方式处理：只把这一个 block 记入
+`errors`、其余场景继续跑完，因为这类失败通常是单条文本/单次请求的
+偶发问题，不代表环境本身坏了，没有理由为了一条失败的台词中断整批
+已经在正常进行的配音工作。
 
 不处理定妆图生成（那部分仍由 Agent 直接调用 gen_image_with_text 完成，
 见 SKILL.md Step 1）。
@@ -52,6 +59,7 @@ except ImportError:
 from tts_engine import (
     DEFAULT_COSYVOICE_TIMEOUT_SEC,
     DEFAULT_EDGE_TTS_TIMEOUT_SEC,
+    DurationReadError,
     TTSError,
     synthesize,
 )
@@ -112,6 +120,17 @@ def _voice_for_block(
     return resolve_edge_tts_voice(profile), label
 
 
+class _FatalDurationStop(Exception):
+    """内部信号类，不代表某个 block 失败，代表"环境本身读不出真实时长，
+    应该立即整体终止脚本"。在 `run()` 的最外层统一捕获并转成结构化结果，
+    不让它冒泡成未处理异常的 traceback（那样 Agent 看到的是一堆 Python
+    调用栈，不如这里直接给出的 `error`/`action_required` 清楚）。"""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
 def run(
     output_dir: Path,
     macro_id: str | None,
@@ -151,87 +170,123 @@ def run(
     processed_micro_scenes = 0
     run_started = time.monotonic()
 
-    for detail_file in detail_files:
-        if not detail_file.exists():
-            errors.append(f"{detail_file} 不存在")
-            continue
-        data = _load_yaml(detail_file)
-        micro_scenes = data.get("micro_scenes", []) if isinstance(data, dict) else []
-        audio_dir = detail_file.parent / "audio"
-        macro_label = detail_file.parent.name
+    try:
+        for detail_file in detail_files:
+            if not detail_file.exists():
+                errors.append(f"{detail_file} 不存在")
+                continue
+            data = _load_yaml(detail_file)
+            micro_scenes = data.get("micro_scenes", []) if isinstance(data, dict) else []
+            audio_dir = detail_file.parent / "audio"
+            macro_label = detail_file.parent.name
 
-        _log(f"[{macro_label}] 开始配音，共 {len(micro_scenes)} 个 micro_scene")
+            _log(f"[{macro_label}] 开始配音，共 {len(micro_scenes)} 个 micro_scene")
 
-        for ms in micro_scenes:
-            mid = ms.get("id", "unknown")
-            content_blocks = ms.get("content_blocks", []) or []
-            total_duration = 0.0
-            block_failed = False
-            n_blocks = len(content_blocks)
+            for ms in micro_scenes:
+                mid = ms.get("id", "unknown")
+                content_blocks = ms.get("content_blocks", []) or []
+                total_duration = 0.0
+                block_failed = False
+                n_blocks = len(content_blocks)
 
-            for i, block in enumerate(content_blocks):
-                text = (block.get("text") or "").strip()
-                if not text:
-                    continue
-                btype = block.get("type", "narration")
-                prefix = "narration_seg" if btype == "narration" else f"dialogue_{block.get('speaker', 'unknown')}"
-                out_path = audio_dir / f"{prefix}_{mid}_{i:02d}.wav"
+                for i, block in enumerate(content_blocks):
+                    text = (block.get("text") or "").strip()
+                    if not text:
+                        continue
+                    btype = block.get("type", "narration")
+                    prefix = "narration_seg" if btype == "narration" else f"dialogue_{block.get('speaker', 'unknown')}"
+                    out_path = audio_dir / f"{prefix}_{mid}_{i:02d}.wav"
 
-                if out_path.exists() and out_path.stat().st_size > 0 and not force:
-                    # 断点续跑：已存在的音频直接复用其时长，不重新合成
+                    if out_path.exists() and out_path.stat().st_size > 0 and not force:
+                        # 断点续跑：已存在的音频直接复用其时长，不重新合成
+                        try:
+                            from tts_engine import _ffprobe_duration  # 内部工具函数复用
+                            total_duration += _ffprobe_duration(out_path)
+                            _log(
+                                f"[{macro_label}][{mid}][block {i}/{n_blocks}] "
+                                f"复用已存在音频 时长={total_duration:.2f}s（累计）"
+                            )
+                        except DurationReadError as e:
+                            raise _FatalDurationStop(
+                                f"读取已存在音频 {out_path} 的真实时长失败：{e}"
+                            ) from e
+                        except Exception as e:  # noqa: BLE001 -- 非"读不出时长"类的意外错误，按单 block 失败处理
+                            errors.append(f"小场景 {mid} 第{i}块已存在音频但读取失败：{e}")
+                            block_failed = True
+                            _log(f"[{macro_label}][{mid}][block {i}/{n_blocks}] 已存在音频但读取失败：{e}")
+                        continue
+
+                    voice, label = _voice_for_block(block, char_by_id, engine_pref)
+                    block_started = time.monotonic()
                     try:
-                        from tts_engine import _ffprobe_duration  # 内部工具函数复用
-                        total_duration += _ffprobe_duration(out_path)
-                        _log(
-                            f"[{macro_label}][{mid}][block {i}/{n_blocks}] "
-                            f"复用已存在音频 时长={total_duration:.2f}s（累计）"
+                        result = synthesize(
+                            text, out_path,
+                            engine_pref=engine_pref, fallback=fallback, voice=voice,
+                            edge_tts_timeout_sec=edge_tts_timeout_sec,
+                            cosyvoice_timeout_sec=cosyvoice_timeout_sec,
+                            # 不传 allow_estimated_duration：固定使用 synthesize()
+                            # 的默认值 False，本脚本不提供任何打开估算值的入口。
                         )
-                    except Exception as e:  # noqa: BLE001
-                        errors.append(f"小场景 {mid} 第{i}块已存在音频但读取时长失败：{e}")
+                    except DurationReadError as e:
+                        # 合成本身已经成功落盘（音频文件是好的），只是读不出
+                        # 真实时长——这是环境问题，不是这一条文本的问题，直接
+                        # 整体终止，不再继续处理后面的 block/micro_scene。
+                        raise _FatalDurationStop(
+                            f"小场景 {mid} 第{i}块（{label}）音频已合成到 {out_path}，"
+                            f"但读取真实时长失败：{e}"
+                        ) from e
+                    except TTSError as e:
+                        errors.append(f"小场景 {mid} 第{i}块（{label}）配音失败：{e}")
                         block_failed = True
-                        _log(f"[{macro_label}][{mid}][block {i}/{n_blocks}] 已存在音频但读取时长失败：{e}")
-                    continue
+                        _log(
+                            f"[{macro_label}][{mid}][block {i}/{n_blocks}][{label}] "
+                            f"配音失败 用时={time.monotonic() - block_started:.1f}s 原因={e}"
+                        )
+                        continue
 
-                voice, label = _voice_for_block(block, char_by_id, engine_pref)
-                block_started = time.monotonic()
-                try:
-                    result = synthesize(
-                        text, out_path,
-                        engine_pref=engine_pref, fallback=fallback, voice=voice,
-                        edge_tts_timeout_sec=edge_tts_timeout_sec,
-                        cosyvoice_timeout_sec=cosyvoice_timeout_sec,
-                        # 不传 allow_estimated_duration：固定使用 synthesize()
-                        # 的默认值 False，本脚本不提供任何打开估算值的入口，
-                        # ffprobe/mutagen 都读不出真实时长时直接算这个
-                        # content_block 配音失败，绝不用文本字数估算的
-                        # 近似值顶替 duration_sec。
-                    )
-                except TTSError as e:
-                    errors.append(f"小场景 {mid} 第{i}块（{label}）配音失败：{e}")
-                    block_failed = True
+                    elapsed = time.monotonic() - block_started
+                    engine_usage[result["engine_used"]] = engine_usage.get(result["engine_used"], 0) + 1
+                    total_duration += result["duration_sec"]
                     _log(
                         f"[{macro_label}][{mid}][block {i}/{n_blocks}][{label}] "
-                        f"配音失败 用时={time.monotonic() - block_started:.1f}s 原因={e}"
+                        f"引擎={result['engine_used']} 用时={elapsed:.1f}s "
+                        f"时长={result['duration_sec']:.2f}s（实测）"
                     )
-                    continue
 
-                elapsed = time.monotonic() - block_started
-                engine_usage[result["engine_used"]] = engine_usage.get(result["engine_used"], 0) + 1
-                total_duration += result["duration_sec"]
-                _log(
-                    f"[{macro_label}][{mid}][block {i}/{n_blocks}][{label}] "
-                    f"引擎={result['engine_used']} 用时={elapsed:.1f}s "
-                    f"时长={result['duration_sec']:.2f}s（实测）"
-                )
+                if not block_failed:
+                    ms["duration_sec"] = round(total_duration, 2)
+                    processed_micro_scenes += 1
+                    _log(f"[{macro_label}][{mid}] 完成，duration_sec={ms['duration_sec']}")
+                else:
+                    _log(f"[{macro_label}][{mid}] 存在失败的 content_block，本小场景 duration_sec 不回填")
 
-            if not block_failed:
-                ms["duration_sec"] = round(total_duration, 2)
-                processed_micro_scenes += 1
-                _log(f"[{macro_label}][{mid}] 完成，duration_sec={ms['duration_sec']}")
-            else:
-                _log(f"[{macro_label}][{mid}] 存在失败的 content_block，本小场景 duration_sec 不回填")
-
-        _write_yaml(detail_file, data)
+            _write_yaml(detail_file, data)
+    except _FatalDurationStop as e:
+        _log(f"[致命错误，脚本终止] {e.message}")
+        try:
+            # 把这次运行中已经成功拿到真实时长的部分先落盘，不要因为
+            # 后面环境坏了，连这次运行里已经做对的部分也一起丢掉——
+            # 下次修好环境重跑时，断点续跑能从这里继续，而不是从头来过。
+            _write_yaml(detail_file, data)
+        except Exception:  # noqa: BLE001 -- 落盘失败不能掩盖真正的致命原因，忽略即可
+            pass
+        return {
+            "ok": False,
+            "fatal": True,
+            "error": e.message,
+            "action_required": (
+                "读不出真实音频时长通常是环境问题（ffprobe/ffmpeg 未安装或"
+                "不可执行、mutagen 未装），已立即终止，不再继续处理后面的场景。"
+                "请先检查/修复本地 ffmpeg（确保命令行能跑通 `ffprobe -version`），"
+                "或确认 `pip install mutagen` 已装好，任选其一能正常读出任意 "
+                "wav 文件的时长后，再重新执行本命令；已成功生成的音频会因为"
+                "断点续跑机制被跳过，不需要 --force 也不会被重复消耗合成次数，"
+                "只有真正没有产出真实时长的片段会被重新处理。"
+            ),
+            "errors": errors,
+            "engine_usage": engine_usage,
+            "processed_micro_scenes": processed_micro_scenes,
+        }
 
     total_elapsed = time.monotonic() - run_started
     _log(
@@ -241,6 +296,7 @@ def run(
 
     return {
         "ok": not errors,
+        "fatal": False,
         "errors": errors,
         "engine_usage": engine_usage,
         "processed_micro_scenes": processed_micro_scenes,

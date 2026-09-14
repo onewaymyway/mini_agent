@@ -54,6 +54,19 @@ class TTSError(Exception):
     pass
 
 
+class DurationReadError(TTSError):
+    """专指"合成/文件都拿到了，但读不出真实时长（ffprobe 和 mutagen 都
+    失败）"这一类错误——通常意味着当前环境本身有问题（`ffprobe`/
+    `ffmpeg` 未安装或不可执行、`mutagen` 未装），不是某一条文本/某一次
+    网络请求的偶发失败：接下来处理的每一个 block 大概率会遇到同样的
+    问题。调用方（`synthesize_scene_audio.py`）据此和"这条文本合成失败"
+    这类可能只是单条偶发问题的 `TTSError` 区分开，遇到这个类型直接整体
+    终止脚本、把环境问题报给人处理，而不是把每个 block 各记一条错误、
+    继续硬跑完剩下几十上百个 block（既没有意义，也会让人误以为是很多
+    个独立小问题而不是一个环境配置问题）。
+    """
+
+
 def _estimate_duration_by_text(text: str) -> float:
     """按**文本真实字数**（不是文件名）粗略估算时长，约
     `_ESTIMATE_CHARS_PER_SEC` 字/秒。只应在 `allow_estimated_duration=True`
@@ -73,10 +86,13 @@ def _ffprobe_duration(path: Path) -> float:
     这是一次传参错误（应该传真正要合成的文本，却传了文件名），不是"简陋
     但方向对"的近似，而且这个 fallback 不报任何错，产出的假数据会被当成
     真实数据一路写进 `scene_detail.yaml` 并通过下游所有校验。现在两级都
-    失败时直接抛 `TTSError`，交给调用方按"该 block 配音/读取时长失败"
-    处理（会体现在 errors 里，不会被静默接受）。如果确实需要在读不到真实
-    时长时退回估算，调用方应显式使用 `synthesize()` 的
-    `allow_estimated_duration=True`，并按**文本**（而不是文件名）估算。
+    失败时抛 `DurationReadError`（`TTSError` 的子类），调用方
+    `synthesize_scene_audio.py` 会把这类错误当成环境问题**立即整体终止
+    脚本**并说明原因，不会静默接受、也不会继续硬跑完剩下的场景。如果
+    确实需要在读不到真实时长时退回估算（不推荐，仅用于临时验证流程本身
+    跑不跑得通，不能用于产出正式交付内容），调用方应显式使用
+    `synthesize()` 的 `allow_estimated_duration=True`，并按**文本**
+    （而不是文件名）估算。
     """
     try:
         out = subprocess.run(
@@ -96,10 +112,10 @@ def _ffprobe_duration(path: Path) -> float:
             return float(audio.info.length)
     except Exception:
         pass
-    raise TTSError(
+    raise DurationReadError(
         f"无法读取 {path} 的真实音频时长（ffprobe 和 mutagen 都失败），"
-        f"当前环境的 ffprobe 可能不可用，请先检查/修复 ffprobe，或者显式传入 "
-        f"allow_estimated_duration=True 接受按文本字数估算的近似值"
+        f"当前环境的 ffprobe 可能不可用，请先检查/修复 ffprobe（或安装/修复 "
+        f"mutagen 作为备选），确认修好后再重新运行，不建议退回估算值"
     )
 
 
