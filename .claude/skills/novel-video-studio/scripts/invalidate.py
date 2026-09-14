@@ -55,6 +55,8 @@ import json
 import sys
 from pathlib import Path
 
+from common import macro_scene_dir_name
+
 try:
     import yaml
 except ImportError:
@@ -119,8 +121,8 @@ def _strip_consistency_report_entries(macro_dir: Path, micro_ids, removed: list,
 
 
 def invalidate_macro(out_dir: Path, macro_id: str, level: str, micro_ids, removed: list, warnings: list):
-    suffix = macro_id.replace("macro_", "")
-    macro_dir = out_dir / f"macro_scene_{suffix}"
+    macro_dir_name = macro_scene_dir_name(macro_id)
+    macro_dir = out_dir / macro_dir_name
     detail_path = macro_dir / "scene_detail.yaml"
     detail = _load_yaml(detail_path)
 
@@ -137,7 +139,7 @@ def invalidate_macro(out_dir: Path, macro_id: str, level: str, micro_ids, remove
         if detail_path.exists():
             _rm(detail_path, removed)
         _rm(macro_dir / "consistency_report.yaml", removed)
-        for pattern in ["audio/*.wav", "clips/*.mp4", f"macro_scene_{suffix}.mp4"]:
+        for pattern in ["audio/*.wav", "clips/*.mp4", f"{macro_dir_name}.mp4"]:
             for p in macro_dir.glob(pattern):
                 _rm(p, removed)
         _dump_yaml(macro_yaml_path, macro_yaml)
@@ -178,7 +180,7 @@ def invalidate_macro(out_dir: Path, macro_id: str, level: str, micro_ids, remove
 
     # 该大场景已经不再是"全部 micro 就绪"，大场景状态和已合成视频要跟着回退
     macro_entry["status"] = "planned" if level != "macro" else "pending"
-    _rm(macro_dir / f"macro_scene_{suffix}.mp4", removed)
+    _rm(macro_dir / f"{macro_dir_name}.mp4", removed)
     _dump_yaml(macro_yaml_path, macro_yaml)
 
 
@@ -209,8 +211,7 @@ def invalidate_global_entity(out_dir: Path, entity_id: str, removed: list, warni
             # 就是改动来源（比如外形描述改了），核查结论依据的锚点已经
             # 变了，即使 prompt_en 文本原封不动也必须重新核查——按引用
             # 关系单独删掉这些 micro_scene 的核查条目。
-            suffix = m["id"].replace("macro_", "")
-            macro_dir = out_dir / f"macro_scene_{suffix}"
+            macro_dir = out_dir / macro_scene_dir_name(m["id"])
             detail = _load_yaml(macro_dir / "scene_detail.yaml") or {}
             affected_micro_ids = {
                 ms.get("id") for ms in detail.get("micro_scenes", []) or []

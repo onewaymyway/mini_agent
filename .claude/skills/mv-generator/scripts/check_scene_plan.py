@@ -79,20 +79,29 @@ AUTO_FILL_GAP_ABS_MAX = 3.0
 TOTAL_TOLERANCE = 2.0  # 秒，超过这个差值只是额外提示画面质量风险，不再报错阻断
 
 
-# 尝试使用 imageio_ffmpeg 内置的 ffprobe
-try:
-    import imageio_ffmpeg
-    _IMGIO_FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
-    _FFPROBE_PATH = _IMGIO_FFMPEG.replace("ffmpeg.exe", "ffprobe.exe")
-except ImportError:
-    _FFPROBE_PATH = "ffprobe"
+from common import resolve_ffprobe
+
+# [BUGFIX] 此前这里是 `_IMGIO_FFMPEG.replace("ffmpeg.exe", "ffprobe.exe")`——
+# imageio_ffmpeg 在非 Windows 平台返回的文件名形如
+# `ffmpeg-linux-x86_64-v7.0.2`（没有 `.exe` 后缀），这个 `.replace()`
+# 在非 Windows 上根本不会命中，会把 `_FFPROBE_PATH` 错误地设成 ffmpeg
+# 自己的路径，拿它去跑 ffprobe 的参数会直接失败；探测不到时也只是裸
+# fallback 成字符串 `"ffprobe"`（依赖系统 PATH），不读任何环境变量。
+# 现在改用 `common.resolve_ffprobe()`（环境变量 MV_FFPROBE_PATH >
+# imageio_ffmpeg 正确猜测 > conda 环境自动探测 > 系统 PATH），探测失败时
+# 这里仍然只是让 `probe_audio_duration()` 返回 None（不阻断校验，只是
+# 少一项检查），行为和此前一致，只是换了更完整、更正确的探测逻辑。
 
 def probe_audio_duration(audio_path: str) -> Optional[float]:
     """用 ffprobe 读取 mp3 实际时长，失败返回 None（不阻断校验，只是少一项检查）。"""
     try:
+        ffprobe_path = resolve_ffprobe()
+    except RuntimeError:
+        return None
+    try:
         out = subprocess.run(
             [
-                _FFPROBE_PATH,
+                ffprobe_path,
                 "-v", "quiet",
                 "-print_format", "json",
                 "-show_format",

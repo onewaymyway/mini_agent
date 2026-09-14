@@ -52,42 +52,28 @@ try:
 except ImportError:
     HAS_YAML = False
 
-_FFMPEG_CANDIDATES = [
-    r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffmpeg.exe",
-    r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-    r"C:\ffmpeg\bin\ffmpeg.exe",
-]
-_FFPROBE_CANDIDATES = [
-    r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffprobe.exe",
-    r"C:\Program Files\ffmpeg\bin\ffprobe.exe",
-    r"C:\ffmpeg\bin\ffprobe.exe",
-]
-try:
-    import imageio_ffmpeg
-    _IMGIO_FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
-    _FFMPEG_CANDIDATES.insert(0, _IMGIO_FFMPEG)
-    # imageio_ffmpeg returns a named binary like ffmpeg-win-x86_64-v7.1.exe
-    # so replace 'ffmpeg' with 'ffprobe' in the basename, not just '.exe'
-    _imgio_dir = Path(_IMGIO_FFMPEG).parent
-    _imgio_name = Path(_IMGIO_FFMPEG).name.replace('ffmpeg', 'ffprobe')
-    _FFPROBE_CANDIDATES.insert(0, str(_imgio_dir / _imgio_name))
-except ImportError:
-    pass
-FONT_PATH = r"C:\Windows\Fonts\msyh.ttc"
+from common import resolve_ffmpeg, resolve_ffprobe, resolve_font_path
 
-
-def _resolve_bin(candidates):
-    for c in candidates:
-        if Path(c).exists():
-            return c
-    return candidates[-1]
-
-
-FFMPEG = _resolve_bin(_FFMPEG_CANDIDATES)
-FFPROBE = _resolve_bin(_FFPROBE_CANDIDATES)
+# ffmpeg/ffprobe/字体查找统一改用 common.py 的自动探测，不再在这里硬编码
+# 任何本机专属路径。
+#
+# [BUGFIX] 此前这里硬编码 `_FFMPEG_CANDIDATES`/`_FFPROBE_CANDIDATES`，
+# 第一项是某台开发机的具体用户名路径（`C:\Users\onewa\...`），完全不读
+# 任何环境变量；`_resolve_bin()` 找不到候选路径时连 `shutil.which()`
+# 兜底都没有，直接返回 `candidates[-1]`（同样是一条基本不存在的路径），
+# 换一台电脑基本必错，且错误要到后面某次 `subprocess.run` 才会暴露，
+# 报的是语焉不详的"文件不存在"。`FONT_PATH` 同样是硬编码的 Windows
+# 专属字体路径，非 Windows 环境必错、也没有任何参数可覆盖。
+# 现在 FFMPEG/FFPROBE/FONT_PATH 改为在 `main()` 里用 `resolve_ffmpeg()`/
+# `resolve_ffprobe()`/`resolve_font_path()` 解析，找不到时在启动时就
+# 明确报错退出，不再允许用一条不存在的路径继续往下跑。
+FFMPEG = None
+FFPROBE = None
+FONT_PATH = None
 
 
 def _run(cmd):
+
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"命令失败:\n{' '.join(cmd)}\nstderr:\n{result.stderr[-3000:]}")
@@ -441,11 +427,25 @@ def main():
                              "check_clips.py 校验通过，缺失场景应该回到 Step 5 补生成，"
                              "而不是靠这个参数绕过检查。仅用于用户明确知情并接受"
                              "成片不完整的特殊场景")
+    parser.add_argument("--font-path", default=None,
+                        help="字幕/歌名水印用的中文字体文件路径。不传则按 "
+                             "MV_FONT_PATH 环境变量 > 跨平台常见字体候选路径的顺序"
+                             "自动探测，都找不到会在启动时明确报错")
     args = parser.parse_args()
 
     if not HAS_YAML:
         print("缺少 pyyaml，请先 pip install pyyaml", file=sys.stderr)
         sys.exit(1)
+
+    global FFMPEG, FFPROBE, FONT_PATH
+    try:
+        FFMPEG = resolve_ffmpeg()
+        FFPROBE = resolve_ffprobe()
+        FONT_PATH = resolve_font_path(args.font_path)
+    except RuntimeError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(2)
+    print(f"[env] ffmpeg={FFMPEG} ffprobe={FFPROBE} font={FONT_PATH}", file=sys.stderr)
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

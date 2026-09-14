@@ -31,6 +31,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from common import resolve_ffprobe
+
 DEFAULT_EDGE_TTS_VOICE = "zh-CN-XiaoxiaoNeural"
 
 # CosyVoice 预训练模型目录：约定放在 novel_tts_env 里已下载好的位置，
@@ -93,50 +95,38 @@ def _ffprobe_duration(path: Path) -> float:
     跑不跑得通，不能用于产出正式交付内容），调用方应显式使用
     `synthesize()` 的 `allow_estimated_duration=True`，并按**文本**
     （而不是文件名）估算。
+
+    [一致性修复] 此前这里只有一行 `os.environ.get("NOVEL_FFPROBE_PATH")
+    or "ffprobe"`，能读到环境变量，但没有 `common.resolve_ffprobe()` 的
+    imageio_ffmpeg 猜测路径/conda 环境自动探测这两级兜底，和本 skill 其它
+    脚本（`compose_macro_scene.py`/`compose_final_video_v2.py`/
+    `check_assets_and_audio_v2.py`）用的不是同一套逻辑，容易出现"同一台
+    机器上，一个脚本能找到 ffprobe、另一个找不到"的不一致。现在统一改用
+    `common.resolve_ffprobe()`——这里只是拿它当"探测"用，找不到时不重新
+    抛错，直接往下走 mutagen 兜底（或者最终的 `DurationReadError`），
+    行为和此前一致，只是换了更完整的探测逻辑。
     """
-    import os
-    _ffprobe_cmd = os.environ.get("NOVEL_FFPROBE_PATH") or "ffprobe"
-    # 尝试 1：系统 PATH 中的 ffprobe
     try:
-        out = subprocess.run(
-            [_ffprobe_cmd, "-v", "quiet", "-print_format", "json",
-             "-show_format", str(path)],
-            capture_output=True, text=True, timeout=30, check=True,
-        )
-        data = json.loads(out.stdout)
-        return float(data["format"]["duration"])
-    except Exception:
-        pass
-    # 尝试 2：imageio_ffmpeg 内置的 ffprobe（解决系统未安装 ffmpeg 的问题）
-    # 注意：imageio_ffmpeg 的 ffmpeg 二进制在某些平台不支持 -show_format
-    # 仅当系统 ffprobe 失败时才尝试，且必须捕获异常
-    try:
-        from imageio_ffmpeg import get_ffmpeg_exe
-        _exe = get_ffmpeg_exe()
-        out = subprocess.run(
-            [_exe, "-v", "quiet", "-print_format", "json",
-             "-show_format", str(path)],
-            capture_output=True, text=True, timeout=30,
-        )
-        if out.returncode == 0 and out.stdout:
+        _ffprobe_cmd = resolve_ffprobe()
+    except RuntimeError:
+        _ffprobe_cmd = None
+
+    if _ffprobe_cmd:
+        try:
+            out = subprocess.run(
+                [_ffprobe_cmd, "-v", "quiet", "-print_format", "json",
+                 "-show_format", str(path)],
+                capture_output=True, text=True, timeout=30, check=True,
+            )
             data = json.loads(out.stdout)
             return float(data["format"]["duration"])
-    except Exception:
-        pass
-    # 尝试 3：用 mutagen 读 mp3/wav 时长（常见 TTS 输出格式）
-    # 已知：imageio_ffmpeg 的 ffmpeg 不支持 -show_format，mutagen 作为可靠备选
-    # 注意：TTS 实际输出 MP3 数据但扩展名可能是 .wav，mutagen.File() 对此识别不可靠
+        except Exception:
+            pass
+    # fallback: 用 mutagen 读 mp3 时长（常见 TTS 输出格式）
     try:
-        from mutagen.mp3 import MP3
-        audio = MP3(str(path))
-        if hasattr(audio.info, 'length') and audio.info.length:
-            return float(audio.info.length)
-    except Exception:
-        pass
-    try:
-        from mutagen.wave import WAVE
-        audio = WAVE(str(path))
-        if hasattr(audio.info, 'length') and audio.info.length:
+        import mutagen
+        audio = mutagen.File(str(path))
+        if audio and audio.info.length:
             return float(audio.info.length)
     except Exception:
         pass
@@ -249,16 +239,7 @@ def _run_edge_tts(
         # 路径上（内容仍是 mp3 编码，扩展名可能对不上，但至少调用方按固定
         # 路径能找到文件；ffmpeg 是本 skill 阶段4的硬依赖，正常环境不会走到
         # 这个分支，见 references/04_assets_and_audio.md 的依赖说明）。
-        # 注意：如果原扩展名是 .wav 但实际是 mp3 数据，改名为 .mp3 以便
-        # ffprobe/mutagen 能正确读取。
-        if out_path.suffix.lower() == ".wav":
-            out_path_mp3 = out_path.with_suffix(".mp3")
-            shutil.move(str(tmp_mp3), str(out_path_mp3))
-            # 更新 out_path 为 mp3 版本，让 _ffprobe_duration 能正确读取
-            import os
-            os.replace(str(out_path_mp3), str(out_path))
-        else:
-            shutil.move(str(tmp_mp3), str(out_path))
+        shutil.move(str(tmp_mp3), str(out_path))
 
 
 def synthesize(

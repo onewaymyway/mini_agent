@@ -39,44 +39,30 @@ try:
 except ImportError:
     HAS_YAML = False
 
-_FFMPEG_CANDIDATES = [
-    r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffmpeg.exe",
-    r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-    r"C:\ffmpeg\bin\ffmpeg.exe",
-]
-_FFPROBE_CANDIDATES = [
-    r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffprobe.exe",
-    r"C:\Program Files\ffmpeg\bin\ffprobe.exe",
-    r"C:\ffmpeg\bin\ffprobe.exe",
-]
-try:
-    import imageio_ffmpeg
-    _IMGIO_FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
-    _FFMPEG_CANDIDATES.insert(0, _IMGIO_FFMPEG)
-    _imgio_dir = Path(_IMGIO_FFMPEG).parent
-    _imgio_name = Path(_IMGIO_FFMPEG).name.replace("ffmpeg", "ffprobe")
-    _FFPROBE_CANDIDATES.insert(0, str(_imgio_dir / _imgio_name))
-except ImportError:
-    pass
+from common import macro_scene_dir_name, resolve_ffmpeg, resolve_ffprobe
+
+# ffmpeg/ffprobe 查找统一改用 common.py 的自动探测（`resolve_ffmpeg()`/
+# `resolve_ffprobe()`），不再在这里硬编码任何 Windows 专属路径。
+#
+# [BUGFIX] 此前这里自己维护一份 `_FFMPEG_CANDIDATES`/`_FFPROBE_CANDIDATES`
+# 硬编码列表，第一项是某台开发机上的具体用户名路径
+# （`C:\Users\onewa\.conda\envs\mv_env\...`），完全不读
+# `NOVEL_FFMPEG_PATH`/`NOVEL_FFPROBE_PATH` 环境变量，也没有 conda 环境
+# 自动探测；且 `_resolve_bin()` 找不到时会静默 fallback 成
+# `candidates[-1]`（同样是一条写死、大概率不存在的路径），而不是明确报错——
+# 换一台电脑（或者同一台电脑但用户名不叫 onewa）大概率直接在后面某次
+# `subprocess.run` 时报出一个语焉不详的"文件不存在"，而不是在启动时就
+# 说清楚"找不到 ffmpeg，已尝试以下方式"。现在改为与 `compose_macro_scene.py`
+# 相同的模式：FFMPEG/FFPROBE 在 `main()` 里用 `resolve_ffmpeg()`/
+# `resolve_ffprobe()` 解析，找不到时直接在启动时报清楚原因并退出，不再
+# 硬编码任何本机专属路径，也不允许静默用一条不存在的路径往下跑。
+FFMPEG = None
+FFPROBE = None
 
 ASPECT_TO_SIZE = {
     "16:9": "1280:720",
     "9:16": "720:1280",
 }
-
-
-def _resolve_bin(candidates, path_name):
-    for c in candidates:
-        if Path(c).exists():
-            return c
-    found = shutil.which(path_name)
-    if found:
-        return found
-    return candidates[-1]
-
-
-FFMPEG = _resolve_bin(_FFMPEG_CANDIDATES, "ffmpeg")
-FFPROBE = _resolve_bin(_FFPROBE_CANDIDATES, "ffprobe")
 
 
 def _run(cmd):
@@ -129,9 +115,8 @@ def load_macro_scenes(output_dir: Path):
     scenes = []
     for m in raw:
         mid = m["id"]
-        suffix = mid[len("macro_"):] if mid.startswith("macro_") else mid
-        macro_dir = output_dir / f"macro_scene_{suffix}"
-        video_path = macro_dir / f"macro_scene_{suffix}.mp4"
+        macro_dir = output_dir / macro_scene_dir_name(mid)
+        video_path = macro_dir / f"{macro_scene_dir_name(mid)}.mp4"
         scenes.append({
             "id": mid,
             "title": m.get("title"),
@@ -262,6 +247,15 @@ def main():
     if not HAS_YAML:
         print("缺少 pyyaml，请先 pip install pyyaml", file=sys.stderr)
         sys.exit(1)
+
+    global FFMPEG, FFPROBE
+    try:
+        FFMPEG = resolve_ffmpeg()
+        FFPROBE = resolve_ffprobe()
+    except RuntimeError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(2)
+    print(f"[env] ffmpeg={FFMPEG} ffprobe={FFPROBE}", file=sys.stderr)
 
     output_dir: Path = args.output_dir
     project = _load_json(output_dir / "novel_project.json")

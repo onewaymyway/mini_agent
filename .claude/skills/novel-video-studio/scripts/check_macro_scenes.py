@@ -9,7 +9,9 @@ global/locations.json，检查：
   1. 每条大场景的 char_count 是否 <= --max-chars（默认 1000）。
   2. 每条大场景的 estimated_duration_sec 是否 <= --max-duration-sec（默认 120）。
   3. char_count 是否与 len(raw_text) 一致（防止字段和实际内容不同步）。
-  4. estimated_duration_sec 是否与 char_count / --chars-per-sec 大致一致
+  4. estimated_duration_sec 是否与 char_count / --chars-per-sec（默认取
+     common.ROUGH_CHARS_PER_SEC，与 check_scene_detail.py/
+     check_assets_and_audio_v2.py 用的是同一个常量）大致一致
      （容忍误差，防止估算公式算错）。
   5. uses_characters / uses_locations 引用的 id 是否都能在全局角色/地点库
      里找到。
@@ -30,6 +32,8 @@ import argparse
 import json
 import sys
 from pathlib import Path
+
+from common import ROUGH_CHARS_PER_SEC
 
 try:
     import yaml
@@ -71,15 +75,8 @@ def check(
     if not scenes:
         errors.append("macro_scenes.yaml 不存在或没有任何 macro_scenes")
 
-    # Handle both list and dict formats for characters and locations
-    if isinstance(characters_data, list):
-        char_id_set = {c.get("id") for c in characters_data}
-    else:
-        char_id_set = {c.get("id") for c in characters_data.get("characters", [])}
-    if isinstance(locations_data, list):
-        loc_id_set = {l.get("id") for l in locations_data}
-    else:
-        loc_id_set = {l.get("id") for l in locations_data.get("locations", [])}
+    char_id_set = {c.get("id") for c in characters_data.get("characters", [])}
+    loc_id_set = {l.get("id") for l in locations_data.get("locations", [])}
 
     # id 重复检查
     scene_ids = [s.get("id") for s in scenes]
@@ -176,7 +173,13 @@ def main() -> None:
     parser.add_argument("--novel-text-file", type=Path, default=None, help="原文文件路径，传了会额外做覆盖率检查")
     parser.add_argument("--max-chars", type=int, default=1000)
     parser.add_argument("--max-duration-sec", type=float, default=120.0)
-    parser.add_argument("--chars-per-sec", type=float, default=4.5)
+    parser.add_argument(
+        "--chars-per-sec", type=float, default=ROUGH_CHARS_PER_SEC,
+        help=f"粗估语速（字/秒），默认与 common.ROUGH_CHARS_PER_SEC 一致"
+             f"（当前 {ROUGH_CHARS_PER_SEC}，和 check_scene_detail.py/"
+             f"check_assets_and_audio_v2.py 用的是同一个常量，不再各自硬编码"
+             f"一份可能会不同步的拷贝）",
+    )
     parser.add_argument("--coverage-tolerance", type=float, default=0.15)
     args = parser.parse_args()
 

@@ -19,17 +19,25 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    import imageio_ffmpeg
-    FFPROBE = imageio_ffmpeg.get_ffmpeg_exe().replace("ffmpeg.exe", "ffprobe.exe")
-except ImportError:
-    FFPROBE = r"C:\Users\onewa\.conda\envs\mv_env\Library\bin\ffprobe.exe"
+from common import resolve_ffprobe
+
+# [BUGFIX] 此前这里是
+# `imageio_ffmpeg.get_ffmpeg_exe().replace("ffmpeg.exe", "ffprobe.exe")`——
+# 非 Windows 平台 imageio_ffmpeg 返回的文件名没有 `.exe` 后缀，这个
+# `.replace()` 根本不会命中，`FFPROBE` 会被错误地设成 ffmpeg 自己的
+# 路径；探测失败（比如没装 imageio_ffmpeg）时的 fallback 更是直接写死
+# 了某台开发机的用户名路径 `C:\Users\onewa\...`。现在改用
+# `common.resolve_ffprobe()`（环境变量 MV_FFPROBE_PATH > imageio_ffmpeg
+# 正确猜测 > conda 环境自动探测 > 系统 PATH），找不到时在
+# `get_audio_duration()` 实际被调用时才明确报错，而不是在导入模块时就
+# 用一条不存在的路径埋下隐患。
 
 
 def get_audio_duration(audio_path):
     """获取音频文件时长（秒）。"""
+    ffprobe = resolve_ffprobe()  # 找不到时抛 RuntimeError，附带详细探测过程
     r = subprocess.run(
-        [FFPROBE, "-v", "quiet", "-print_format", "json",
+        [ffprobe, "-v", "quiet", "-print_format", "json",
          "-show_format", audio_path],
         capture_output=True, text=True
     )

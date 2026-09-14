@@ -25,6 +25,8 @@ import json
 import sys
 from pathlib import Path
 
+from common import macro_scene_dir_name
+
 try:
     import yaml
 except ImportError:
@@ -117,8 +119,8 @@ def main() -> None:
             mid = m.get("id")
             if wanted and mid not in wanted:
                 continue
-            suffix = mid.replace("macro_", "") if mid else "?"
-            macro_dir = out_dir / f"macro_scene_{suffix}"
+            macro_dir_name = macro_scene_dir_name(mid) if mid else "macro_scene_?"
+            macro_dir = out_dir / macro_dir_name
             detail = _load_yaml(macro_dir / "scene_detail.yaml")
             micro_scenes = (detail or {}).get("micro_scenes", []) or []
 
@@ -139,7 +141,7 @@ def main() -> None:
                     "duration_sec": ms.get("duration_sec"),
                 })
 
-            macro_mp4 = macro_dir / f"macro_scene_{suffix}.mp4"
+            macro_mp4 = macro_dir / f"{macro_dir_name}.mp4"
             entry = {
                 "id": mid,
                 "status": m.get("status", "pending"),
