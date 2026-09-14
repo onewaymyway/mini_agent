@@ -384,11 +384,19 @@ class CompactionMixin:
         threshold = getattr(self.cfg.compress, "compact_precheck_threshold", 0.85)
         limit = int(model_ctx * threshold)
 
+        # [路径可观测性] 无论走哪条路径，都把预估数字打出来——此前只在超限
+        # （选择 chunked）时才打印，未超限（选择单次直出）时完全没有日志，
+        # 导致事后没法确认某次 compact 到底走的是哪条路径、当时数字多接近
+        # 临界值。这里改成两条分支都打印，且明确报告"本次选择的路径"。
+        chosen = "chunked" if total_est > limit else "single_shot"
+        R.print_info(
+            f"[compact] Pre-check: est_tokens={total_est:,} (history={history_tokens:,}, "
+            f"prompt={prompt_tokens:,}, output_reserve={output_reserve:,}) vs "
+            f"limit={limit:,} (ctx={model_ctx:,}, threshold={threshold:.0%}) "
+            f"— chosen path: {chosen}"
+        )
+
         if total_est > limit:
-            R.print_info(
-                f"[compact] Pre-check: est_tokens={total_est:,} > limit={limit:,} "
-                f"(ctx={model_ctx:,}, threshold={threshold:.0%}) — will use chunked compact"
-            )
             return True
 
         return False
@@ -448,10 +456,6 @@ class CompactionMixin:
 
         # ── 主动预估：compact 前先算 token，超限直接走分批路径 ────────────────
         if self._should_use_chunked_compact(compact_prompt):
-            R.print_warning(
-                "[compact] Pre-check: history + compact prompt exceeds context limit — "
-                "using chunked compact directly."
-            )
             try:
                 result = self._compact_chunked()
                 used_chunked = True
@@ -459,36 +463,24 @@ class CompactionMixin:
                 from mini_agent.errors import log_exception
                 log_exception(ce, where='mini_agent.agent.compaction.CompactionMixin.compact_with_skills')
                 R.print_error(f"[compact] Chunked compact failed: {ce}")
+                self._last_compact_path = "chunked (failed)"
                 return ""
         else:
-            # ── 尝试正常路径：run_turn ───────────────────────────────────────────
-            R.print_info("[compact] Generating summary…")
+            # ── 单次直出路径：专用 summarizer 调用（不经过 run_turn） ──────────
+            # [structural fix] 原来这里用 self.run_turn(compact_prompt)，即完整
+            # agent persona + 全量工具 + agentic tool-calling loop 处理这次摘要
+            # 请求。实测发现：历史越长，模型越容易在这种"仍然是普通对话轮"的
+            # 设定下延续自己刚才的对话语气/格式，而不是切到 compact_history.md
+            # 要求的结构化文档模式（近因效应 + 没有身份切换信号）。短历史下
+            # 这个问题不明显，但没有理由让"是否严格按模板输出"依赖历史长度。
+            # 现在统一改用与 _compact_chunked() 一致的调用方式：专用
+            # system/compact_summary_persona 人设 + tools=[]，不经过 agentic loop，
+            # 从结构上去掉"模型以自己身份继续聊天"的可能性。
+            R.print_info("[compact] Generating summary (single-shot, summarizer persona)…")
             result = ""
             used_chunked = False
-            # [BUGFIX / TurnJudge 误触发] 标记"接下来这次 run_turn() 是内部摘要
-            # 生成调用"，让 _maybe_run_turn_judge() 跳过对这次内部调用的判定
-            # （摘要文本不是真实的任务结束信号）。用 try/finally 确保异常路径
-            # 下也一定会复位，不会把标记永久留在 True。
-            _prev_generating_summary = self._generating_compact_summary
-            self._generating_compact_summary = True
             try:
-                result = self.run_turn(compact_prompt)
-                # [compact_result_validity_guard_plan.md P0] run_turn() 命中
-                # "畸形/半成品输出"时不会抛异常——它会把 final_text 替换成一段
-                # 固定的哨兵占位文本（"[系统提示：本轮未获得有效回复…]"）并原样
-                # return，只置位 self._last_turn_result_invalid 供调用方自行
-                # 判断。之前这里没有检查这个标志位，哨兵文本非空就被当成真实
-                # 摘要写进了历史，导致一次解析失败就永久丢失原始上下文。
-                # 现在：判定为无效结果时，视同本次摘要生成失败，退化到
-                # chunked compact 路径重新生成一次（不复用这段脏文本）。
-                if not self.last_turn_result_valid():
-                    R.print_warning(
-                        "[compact] Summary generation returned an invalid/malformed "
-                        "result (not a real error, but not usable either) — "
-                        "retrying via chunked compact…"
-                    )
-                    result = self._compact_chunked()
-                    used_chunked = True
+                result = self._compact_single_shot(compact_prompt)
             except Exception as e:
                 from mini_agent.errors import log_exception
                 log_exception(e, where='mini_agent.agent.compaction.CompactionMixin.compact_with_skills')
@@ -505,15 +497,17 @@ class CompactionMixin:
                         from mini_agent.errors import log_exception
                         log_exception(ce, where='mini_agent.agent.compaction.CompactionMixin.compact_with_skills')
                         R.print_error(f"[compact] Chunked compact failed: {ce}")
+                        self._last_compact_path = "chunked (failed)"
                         return ""
                 else:
                     R.print_error(f"[compact] Summary generation failed: {e}")
+                    self._last_compact_path = "single_shot (failed)"
                     return ""
-            finally:
-                # 无论 run_turn 正常返回还是走了上面任何一条异常分支
-                # （含 return ""），都要把标记复位——finally 在 except 里的
-                # return 之前也会执行，不会漏掉。
-                self._generating_compact_summary = _prev_generating_summary
+
+        # [路径可观测性] 记录这次 compact 实际走的路径，供
+        # _auto_compress_history_impl() 的完成日志和 /debug 读取，不用再靠
+        # 猜测或翻源码才知道某次 compact 到底是单次直出还是分批合并。
+        self._last_compact_path = "chunked" if used_chunked else "single_shot"
 
         if not result:
             R.print_warning("[compact] Got empty summary, aborting.")
@@ -554,7 +548,8 @@ class CompactionMixin:
         strategy = "compact_chunked" if used_chunked else "compact_with_skills"
 
         # chunked 路径已在 _compact_chunked 内完成历史替换，
-        # 正常路径需要在这里做替换（run_turn 追加了摘要轮次，需清理并重建）
+        # 单次直出路径（_compact_single_shot 不触碰 self._history）需要在这里
+        # 统一清空并重建。
         if not used_chunked:
             if _hist is not None:
                 _hist._raw.append_compact_event(
@@ -587,6 +582,51 @@ class CompactionMixin:
 
         R.print_success("[compact] History compacted with skill context re-attached.")
         return result
+
+    def _compact_single_shot(self, compact_prompt: str) -> str:
+        """
+        [structural fix] 单次直出路径的专用摘要调用：与 _compact_chunked() 每个
+        chunk 内部的调用方式一致——用 system/compact_summary_persona 专用人设、
+        tools=[]、直接 self._llm.chat_with_retry()，不经过 run_turn()/agentic
+        loop，也就不会带着完整 agent 人设和全量工具去处理这次摘要请求。
+
+        与 run_turn(compact_prompt) 的旧实现相比：
+          - 不会被 TurnJudge / 格式纠错重试 / 哨兵占位文本这些正常对话轮才有
+            的机制影响（这些机制服务于"真实任务轮"，不适用于内部摘要生成）。
+          - system prompt 明确告诉模型"你现在的任务是生成摘要文档"，不再是
+            "你是 mini-agent，可以使用以下工具帮用户做事"，减少模型在长历史
+            末尾延续对话语气、忽略格式要求的倾向。
+
+        失败时抛出异常，由调用方 compact_with_skills() 按原有逻辑捕获并决定
+        是否降级到 _compact_chunked()（例如命中 LLMContextWindowError）。
+        """
+        from mini_agent.history.entry import to_llm_messages
+        from mini_agent.history.compression import (
+            cap_oversized_messages, DEFAULT_MAX_MESSAGE_CHARS_FOR_COMPACT,
+        )
+        from mini_agent.llm.system_tool_call import convert_tool_use_to_text
+        from mini_agent.prompts import pm as _pm
+
+        # [注意] 不复用 system/compress_summarizer.md——那份 prompt 是给另一个
+        # 用途（要求输出单个 JSON 对象）用的，跟这里 user 消息（compact_prompt，
+        # 要求输出 markdown 分节文档）矛盾。用专门写的 compact_summary_persona。
+        system_prompt = _pm.render("system/compact_summary_persona")
+        max_chars = getattr(
+            self.cfg.compress, "max_message_chars_for_compact",
+            DEFAULT_MAX_MESSAGE_CHARS_FOR_COMPACT,
+        )
+        safe_history = convert_tool_use_to_text(to_llm_messages(self._history))
+        llm_messages = cap_oversized_messages(safe_history, max_chars) + [
+            {"role": "user", "content": compact_prompt}
+        ]
+
+        resp = self._llm.chat_with_retry(
+            messages=llm_messages,
+            system=system_prompt,
+            tools=[],
+            max_retries=3,
+        )
+        return resp.text.strip()
 
     def _compact_chunked(self) -> str:
         """
@@ -668,7 +708,17 @@ class CompactionMixin:
         # ── 3. 对每个 chunk 独立生成摘要 ─────────────────────────────────────
         from mini_agent.prompts import pm as _pm
         chunk_summaries: list[str] = []
-        system_prompt = _pm.render("system/compress_summarizer")
+        # [prompt 冲突修复] 原来这里用 system/compress_summarizer.md——那份
+        # prompt 其实是给另一个功能（LLMSummaryStrategy.compress，要求输出
+        # 单个 JSON 对象）用的，跟下面实际发送的 user prompt
+        # （compact_chunk_request.md / compact_merge_request.md，要求输出
+        # markdown 分节文本）互相矛盾：system 说"只能回 JSON"，user 说"按这些
+        # markdown 小节写"。实践中大概率是靠"user 消息更具体、更靠后"盖过了
+        # system 才没出明显问题，但这是两条互相打架的指令，不应该继续留着。
+        # 现在统一换成 _compact_single_shot() 同款的 compact_summary_persona：
+        # 一份干净的、只服务于"生成结构化 markdown 摘要文档"这件事的人设，
+        # 不涉及 JSON、不带 agent 人设/工具说明，chunk 摘要和最终合并共用同一份。
+        system_prompt = _pm.render("system/compact_summary_persona")
 
         for idx, chunk in enumerate(chunks):
             chunk_num = idx + 1
@@ -980,14 +1030,19 @@ class CompactionMixin:
         self._turns_since_last_compact = 0
 
         # ── 打印本次 auto-compact 的结果（无论走哪条路径，不做截断）───────────
+        # [路径可观测性] compact_with_skills() 路径才会设置 _last_compact_path
+        # （旧的 HistoryManager.auto_compress 可插拔策略路径不经过它，此时为
+        # None，按"该策略自身名字"展示，不误报成 single_shot/chunked）。
+        _path_used = getattr(self, "_last_compact_path", None)
+        _path_label = f"，路径: {_path_used}" if _path_used else ""
         if summary_text:
             R.print_success(
-                f"[compact] Auto-compact 完成（触发原因: {strategy_name}，"
+                f"[compact] Auto-compact 完成（触发原因: {strategy_name}{_path_label}，"
                 f"{before_count} → {after_count} 条消息）。摘要：\n{summary_text}"
             )
         else:
             R.print_success(
-                f"[compact] Auto-compact 完成（触发原因: {strategy_name}），"
+                f"[compact] Auto-compact 完成（触发原因: {strategy_name}{_path_label}），"
                 f"{before_count} → {after_count} 条消息。"
             )
 

@@ -125,6 +125,11 @@ class Agent(
         # 摘要生成调用"，_maybe_run_turn_judge() 检测到后直接跳过，真正做到
         # "只有主 Agent 一轮真正结束时才触发 TurnJudge"。
         self._generating_compact_summary: bool = False
+        # [路径可观测性] 最近一次 compact_with_skills() 实际走的路径：
+        # "single_shot" / "chunked" / 对应的 "(failed)" 变体，初始为 None
+        # （尚未执行过 compact）。供 _auto_compress_history_impl() 的完成日志
+        # 和外部排查读取，不用再靠猜测或翻源码确认某次 compact 走的是哪条路径。
+        self._last_compact_path: Optional[str] = None
         # [workflow_directory_mode_design.md 阶段3] 若调用方（目前是
         # WorkflowRunner）传入了 workflow 本地的 agent profile loader，
         # 生效期间 spawn_named_agent / list_agent_profiles 通过
