@@ -141,19 +141,24 @@ def _render_text_png(text, W, H, font, font_size, overlay_y_offset, path):
     if text:
         draw = ImageDraw.Draw(img)
         max_w = int(W * 0.9)
+        # textlength 不支持含换行符的文本，先按 \n 切分再逐行处理
+        text_lines = text.split("\n")
         lines = []
-        cur = ""
-        for ch in text:
-            trial = cur + ch
-            tw = draw.textlength(trial, font=font) if hasattr(draw, "textlength") \
-                else sum(font.getlength(c) for c in trial)
-            if tw > max_w and cur:
+        for raw_line in text_lines:
+            if not raw_line:
+                continue
+            cur = ""
+            for ch in raw_line:
+                trial = cur + ch
+                tw = draw.textlength(trial, font=font) if hasattr(draw, "textlength") \
+                    else sum(font.getlength(c) for c in trial)
+                if tw > max_w and cur:
+                    lines.append(cur)
+                    cur = ch
+                else:
+                    cur = trial
+            if cur:
                 lines.append(cur)
-                cur = ch
-            else:
-                cur = trial
-        if cur:
-            lines.append(cur)
 
         line_h = font_size + 10
         block_h = line_h * len(lines) + 12
