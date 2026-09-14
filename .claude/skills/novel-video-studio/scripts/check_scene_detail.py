@@ -57,6 +57,15 @@ raw_text 用于对话真实性校验），以及
      content_blocks 原文没有任何字面重叠，提示阶段5核查 prompt_en 时
      可能缺乏足够的情节依据可以对照。这也只是字数/字面重叠的弱启发式，
      不代表 visual_hint 真的写得不好或者一定有问题。
+  10. 【地点粒度自查，warning】同一个地点 id 被本大场景内多个
+      micro_scene 引用时，如果这些 micro_scene 的 visual_hint 之间完全
+      没有任何字面（2-gram）重叠，提示这个地点条目*可能*同时覆盖了视觉
+      差异很大的多个子空间（比如同一栋房子的室外雪景 vs 室内客厅），
+      建议评估是否需要在 `global/locations.json` 里拆分成独立的子地点
+      条目（各自登记独立的 `visual_anchor_en`/定妆图），而不是让一个
+      锚点覆盖不了的地点条目被反复用在完全不同的画面上。这只是字面
+      重叠的弱启发式，不代表一定需要拆分——最终是否拆分、怎么拆，交给
+      Agent 结合原文判断，本项只负责\"提醒去看一眼\"。
 
 设计上不对文件做任何自动修复。
 
@@ -218,6 +227,49 @@ def _check_order_vs_id_number(micro_scenes: list[dict]) -> list[str]:
     return warnings
 
 
+def _check_location_granularity_hint(micro_scenes: list[dict]) -> list[str]:
+    """弱启发式：同一地点 id 在本大场景内被多个 micro_scene 引用时，若
+    这些 micro_scene 的 visual_hint 彼此之间完全没有任何 2-gram 字面
+    重叠，提示这个地点条目可能覆盖了视觉差异很大的多个子空间，建议
+    评估是否需要拆分。只看字面重叠，不做任何语义判断，命中也不代表
+    一定需要拆分（比如原本就是同一空间但改写角度差异很大），只是提醒
+    人工/Agent 去看一眼，最终判断交给 Agent 结合原文语境。"""
+    warnings: list[str] = []
+    loc_to_hints: dict[str, list[tuple[str, set]]] = {}
+    for ms in micro_scenes:
+        mid = ms.get("id", "<无id>")
+        hint = (ms.get("visual_hint") or "").strip()
+        grams = set(_extract_content_keywords(hint))
+        if not grams:
+            continue
+        for lid in (ms.get("uses_locations") or []):
+            loc_to_hints.setdefault(lid, []).append((mid, grams))
+
+    for lid, items in loc_to_hints.items():
+        if len(items) < 2:
+            continue
+        no_overlap_pairs = []
+        for i in range(len(items)):
+            for j in range(i + 1, len(items)):
+                mid_a, grams_a = items[i]
+                mid_b, grams_b = items[j]
+                if not (grams_a & grams_b):
+                    no_overlap_pairs.append((mid_a, mid_b))
+        if no_overlap_pairs:
+            example = no_overlap_pairs[0]
+            warnings.append(
+                f"地点 {lid} 被 {len(items)} 个 micro_scene 引用，其中至少一对"
+                f"（{example[0]} 与 {example[1]}）的 visual_hint 完全没有任何字面"
+                f"重叠，这个地点条目*可能*同时覆盖了视觉差异很大的多个子空间"
+                f"（比如同一栋建筑的室外/室内、不同房间），建议评估是否需要在"
+                f"global/locations.json 里把 {lid} 拆分成独立的子地点条目，各自"
+                f"登记 visual_anchor_en 和定妆图，而不是让一条锚点覆盖不了的地点"
+                f"反复用在完全不同的画面上（不拆分也可能是正常的，比如确实是同一"
+                f"空间只是改写角度差异大，需要人工/Agent 结合原文判断）"
+            )
+    return warnings
+
+
 def check(output_dir: Path, macro_id: str) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
@@ -257,6 +309,9 @@ def check(output_dir: Path, macro_id: str) -> dict:
 
     # 6. 列表顺序 vs id 数字顺序（warning）
     warnings.extend(_check_order_vs_id_number(micro_scenes))
+
+    # 10. 地点粒度自查（warning）
+    warnings.extend(_check_location_granularity_hint(micro_scenes))
 
     characters_data = _load_json(output_dir / "global" / "characters.json")
     locations_data = _load_json(output_dir / "global" / "locations.json")

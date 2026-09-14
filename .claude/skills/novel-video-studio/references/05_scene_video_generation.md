@@ -141,9 +141,19 @@ entries:
       location_appearance: pass
       cross_scene_drift: pass
       content_alignment: pass
-    notes: "对照 char_01 变体 var_01（雪夜白大衣）与 content_blocks
-      原文'雪地里站着一个穿白大衣的女人'核对，地点/服装/天气均一致；
-      与本大场景内 micro_04 的 prompt_en 横向对比外观描述一致。"
+    anchor_source:
+      char_01: visual_anchor_en
+      char_02: var_01
+    anchor_coverage_judgement: "char_01 对照默认 visual_anchor_en：
+      grey wool cardigan/tired eyes/blanket 三处特征均已体现，无同义
+      改写导致语义反转；char_02 对照变体 var_01（地下室冰冷全息态）：
+      pale blue glowing eyes/translucent shimmer 均已体现，'warm gentle
+      smile' 这类默认态特征本条正确地没有出现，符合变体应替换默认外观
+      而非叠加的原则。实际会传入的参考图：character_char_01.png、
+      character_char_02_var_01.png。"
+    notes: "对照 char_01 默认锚点与 char_02 变体 var_01 核对，地点/
+      服装/天气均一致；与本大场景内 micro_04 的 prompt_en 横向对比
+      外观描述一致。"
 ```
 
 - `prompt_en_hash`：对当前这条 `prompt_en` **原文**（一个字符都不能改）
@@ -153,9 +163,32 @@ entries:
   这段等价代码得到结果）。这是防止"核查通过之后又顺手改了几个字但
   报告没更新"的过期检测依据，必须如实填算出来的值，不能随便写；
 - `status`：四项子检查任一项不是 `pass`，整体就不能写 `pass`；
-- `notes`：**必须写清楚实际对照了哪些依据**（引用了哪个变体/哪条原文
-  /和哪条 prompt_en 做的横向对比），不能写"已核查""没问题"这类空话——
-  这是留痕，也是防止走过场的最低要求；
+- `anchor_source`（**新增字段**）：这条 `prompt_en` 里引用到的每个
+  角色/地点，实际对照的是哪一个锚点——顶层 `visual_anchor_en`，还是
+  某个 `variant_id` 的 `visual_override_en`。取值直接写
+  `visual_anchor_en` 或对应的 `variant_id`（如 `var_01`），逐个角色/
+  地点列出。这个字段本身不是新的判断，只是把"核查项1核对的到底是
+  哪份材料"显式记录下来，避免"核对过了"但对照错了锚点（比如该用
+  变体的地方漏用了默认锚点）这类问题被 `notes` 的自然语言描述模糊
+  带过；
+- `anchor_coverage_judgement`（**新增字段**）：Agent 用自然语言写清楚
+  这条 `prompt_en` 有没有把 `anchor_source` 指向的那份锚点材料里的
+  关键外观特征体现出来——**这是一次完整的语义判断，不是关键词匹配**，
+  要点出：锚点原文里哪些特征在 `prompt_en` 里体现了、哪些被省略（省略
+  是否合理，比如特写镜头只需局部特征）、有没有出现"关键词还在但语义
+  已经被同义改写反转"的情况（例如把 `"worn grey robe"` 改写成了
+  `"pristine silk robe"`）；如果本条用了变体，还要写清楚变体应该
+  替换掉的默认态特征是不是正确地没有出现（变体是"替换"不是"叠加"）；
+  末尾注明这条镜头实际会传给视频生成接口的参考图文件名（对照
+  `resolve_asset_paths()` 实际会解析出的路径），让报告的可追溯性从
+  "文字锚点级别"落到"实际会用的参考图文件级别"。不能写"已核查""特征
+  一致"这类空话——判断依据必须具体到锚点原文的哪几处特征，和 `notes`
+  字段"必须写清楚实际对照了哪些依据"的要求一致，只是把"锚点覆盖"这一
+  件事从笼统的 `notes` 里单独拆出来，强制写明细，防止被一句话带过；
+- `notes`：除了上面拆出去的锚点覆盖细节，继续按现有要求写清楚情节
+  内容比对（第2项核查）、跨场景横向对比（第3项核查）实际对照了哪些
+  依据，不能写"已核查""没问题"这类空话——这是留痕，也是防止走过场的
+  最低要求；
 - 同一大场景内每处理完一批 `prompt_en` 就追加/更新对应的 `entries`
   条目（`micro_id` 已存在则覆盖该条），不需要一次性写完整个大场景才
   落盘一次。
@@ -176,7 +209,15 @@ python .claude/skills/novel-video-studio/scripts/check_consistency_report.py \
    `pass` 就报错，不允许"大部分通过就先生成"；
 3. **过期检测**：报告里记录的 `prompt_en_hash` 是否与 `scene_detail.yaml`
    里**当前** `prompt_en` 文本的哈希一致——不一致说明核查通过之后
-   `prompt_en` 又被改动过，报告已经不能代表当前这版内容，视为未核查。
+   `prompt_en` 又被改动过，报告已经不能代表当前这版内容，视为未核查；
+4. **`anchor_source`/`anchor_coverage_judgement` 字段完整性**（error）：
+   两个字段是否都非空，`anchor_source` 是否覆盖了该 `micro_scene` 全部
+   `uses_characters`/`uses_locations`——缺失说明这条锚点覆盖判断没有做
+   或没写全，必须打回 Step 0 补齐。本脚本**只检查字段是否存在、是否
+   覆盖了应该覆盖的角色/地点 id**，不判断 `anchor_coverage_judgement`
+   里写的内容是否属实——这依然是纯语义判断，只能靠 Agent 自己认真写，
+   脚本没有能力、也不负责验证这一点（字数过短的弱提示归入下面第5点的
+   warning，和 `notes` 的处理方式一致）。
 
 **errors 非空 → 必须回 Step 0 重新核查（不是回去随便改改报告文件让它
 "看起来"通过）**，修正/补全对应条目后重新跑本脚本，直到 exit code 为

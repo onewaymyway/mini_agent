@@ -6,7 +6,9 @@
 流程：先定位根因、写清楚修复方案，评审通过后再改代码，改完在本文件底部
 勾掉 checkbox 并注明改动文件。
 
-> **状态**：规划中，尚未开始改代码。
+> **状态**：问题1、2、3均已改完，详见各自 checkbox 下方记录的改动文件
+> 清单。三处改动均已用构造的最小测试项目 + 用户提供的真实
+> `scene_detail.yaml` 手工验证过行为符合预期（见下方"验证记录"）。
 
 ## 背景与结论先行
 
@@ -60,18 +62,29 @@
 2. 已存在但粒度过粗的历史地点条目，允许在后续大场景规划中按同样规则
    **追加拆分**（新增 `loc_01_living` 等，原 `loc_01` 保留作为外观条目，
    不删除、不改变已引用它的旧 `micro_scene`，避免引用失效）。
-3. `check_entities.py` 新增一条 warning（非阻断）：某个地点条目被
-   `uses_locations` 引用的 `micro_scene` 数量较多、且这些 `micro_scene`
-   的 `visual_hint` 之间用词差异很大（比如同时出现"屋外/雪地"和"沙发/
-   客厅"这类明显不同空间的关键词）时，提示"这个地点条目可能覆盖了多个
-   子空间，建议评估是否需要拆分"——**这是唯一允许保留的机械提示**，
+3. 新增一条 warning（非阻断）：某个地点 id 被同一大场景内多个
+   `micro_scene` 引用、且这些 `micro_scene` 的 `visual_hint` 彼此完全
+   没有任何字面（2-gram）重叠时，提示"这个地点条目可能覆盖了多个子
+   空间，建议评估是否需要拆分"——**这是唯一允许保留的机械提示**，
    定位是"提醒 Agent 去看一眼"，不做最终判断，也不阻断流程，最终是否
-   拆分、拆得对不对，仍由 Agent 结合原文判断。
+   拆分、拆得对不对，仍由 Agent 结合原文判断。**实现时放在
+   `check_scene_detail.py`（阶段3）而不是 `check_entities.py`（阶段1）**：
+   这条提示需要对比同一地点被引用的各个 `micro_scene.visual_hint`，
+   而 `visual_hint` 是阶段3 `scene_detail.yaml` 里的字段，阶段1跑
+   `check_entities.py` 时这个文件还不存在，没有数据可比对。
 4. 阶段4定妆图生成（`04_assets_and_audio.md` Step1）逻辑不用改，本来就是
    按"扫描所有 `asset_path` 为空的地点条目"生成，拆分出的新地点条目会
    自然被扫描到并生成各自的定妆图。
 
-- [ ] 待实现
+- [x] 已完成。改动文件：
+  - `references/01_entity_extraction.md`（新增 Step 2.55"地点粒度"规则，
+    含判断标准、拆分做法、与 `appearance_variants` 的边界区分）；
+  - `scripts/check_scene_detail.py`（新增
+    `_check_location_granularity_hint()`，在 `check()` 里对每个大场景
+    调用，新增校验项10；docstring 补充说明）。用用户提供的真实
+    `scene_detail.yaml` 验证：正确报出 `loc_01` 被14个 micro_scene 引用、
+    `micro_01`（雪夜外观）与 `micro_02`（客厅室内）无字面重叠，提示可能
+    需要拆分——与用户反馈的实际问题吻合。
 
 ---
 
@@ -119,7 +132,23 @@
    缺失时报错（而不仅仅检查顶层条目的 `asset_path`），确保变体定妆图
    缺失这件事在阶段4就被拦下，不会拖到阶段5生成视频时才发现。
 
-- [ ] 待实现
+- [x] 已完成。改动文件：
+  - `references/04_assets_and_audio.md`（Step1 新增变体定妆图生成说明：
+    按需扫描 `character_variant_overrides`/`location_variant_overrides`
+    实际引用到的变体，用 `visual_override_en` 生成图并回填变体自己的
+    `asset_path`；产物路径清单同步更新）；
+  - `scripts/generate_scene_videos_v2.py`（`resolve_asset_paths()` 改为
+    读取该 micro_scene 的变体 override，新增 `_find_variant()`/
+    `_resolve_entry_asset_path()`：命中变体且已有变体图 → 用变体图；
+    命中变体但变体图为空 → 打印 warning 并退回默认图；未命中变体 →
+    行为不变）；
+  - `scripts/check_assets_and_audio_v2.py`（新增 `_variant_asset_path()`
+    辅助函数 + 校验逻辑：`character_variant_overrides`/
+    `location_variant_overrides` 引用到的变体若缺少 `asset_path`，报
+    error 而不是放行；docstring 同步更新）。
+  已用构造的最小数据手工验证三种路径（无 override / 命中变体但变体图
+  为空 / 命中变体且变体图已生成）均按预期返回参考图路径并在该 warning
+  的路径上打印提示。
 
 ---
 
@@ -181,14 +210,30 @@
    `common.py`（如果需要新增共享的报告 schema 校验函数），**不涉及**
    任何新的关键词匹配/相似度计算逻辑。
 
-- [ ] 待实现
+- [x] 已完成。改动文件：
+  - `references/05_scene_video_generation.md`（`consistency_report.yaml`
+    示例新增 `anchor_source`/`anchor_coverage_judgement` 字段及详细写法
+    要求，含变体场景要点出实际会用的参考图文件名；Step 0.5 说明新增
+    第4项字段完整性校验）；
+  - `scripts/check_consistency_report.py`（新增字段完整性校验：
+    `anchor_source` 必须覆盖该 micro_scene 全部 `uses_characters`/
+    `uses_locations`，`anchor_coverage_judgement` 必须非空，过短给
+    warning；docstring 重新编号为5项机械检查）。未新增任何关键词匹配/
+    相似度计算——判断内容是否属实完全留给 Agent，脚本只校验字段存不
+    存在、覆不覆盖齐全。
+  已用构造的最小测试项目验证：报告缺字段时正确拦截（分别验证
+  `anchor_source` 缺角色、`anchor_coverage_judgement` 缺失两种情况），
+  补全后正确放行（exit code 0）。
+
+- [ ] 尚未验证：Agent 在真实项目里按新字段要求写报告时，
+  `anchor_coverage_judgement` 的实际内容质量（脚本管不到，需要人工抽查）
 
 ---
 
 ## 影响范围确认
 
 - 问题1、问题2 涉及 `01_entity_extraction.md`、`04_assets_and_audio.md`、
-  `check_entities.py`、`check_assets_and_audio_v2.py`、
+  `check_scene_detail.py`、`check_assets_and_audio_v2.py`、
   `generate_scene_videos_v2.py`；不改变现有 `micro_scene` 的字段结构
   （`character_variant_overrides`/`location_variant_overrides` 字段已
   存在，只是补上"真正被消费"这一环），不会让已经跑到一半的项目产生

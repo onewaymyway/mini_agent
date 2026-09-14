@@ -17,8 +17,8 @@ ffmpeg/ffprobe、`AGNES_API_KEY`（定妆图）。API 失败处理见
 ```
 novel_output/小说名_20260911/
 ├── global/
-│   ├── characters.json / locations.json   # 本阶段回填 asset_path
-│   └── assets/character_*.png / location_*.png
+│   ├── characters.json / locations.json   # 本阶段回填 asset_path（含 appearance_variants[].asset_path）
+│   └── assets/character_*.png / location_*.png（含变体图 character_<id>_<variant_id>.png）
 └── macro_scene_XX/
     ├── scene_detail.yaml   # 本阶段回填每个 micro_scene 的 duration_sec
     └── audio/
@@ -57,6 +57,29 @@ AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
 
 封面图（可选）逻辑同角色定妆图，落到 `global/assets/cover.png`，供
 阶段6可选叠加。
+
+**外观变体（`appearance_variants`）定妆图同样要生成，不能只生成顶层
+条目的图**：扫描每个角色/地点条目的 `appearance_variants[]`，找出
+`asset_path` 仍为空、且**已经被阶段3某个大场景的 `character_variant_
+overrides`/`location_variant_overrides` 实际引用到**的变体（不需要
+提前把全部理论上可能存在的变体都生成一遍，按需生成即可，逻辑与顶层
+条目"处理到哪个大场景就顺带生成这个场景新出现的实体"一致），用该
+变体的 `visual_override_en` 生成一张定妆图：
+
+```bash
+AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
+  gen "<visual_override_en>" --size 2K --ratio <aspect_ratio> \
+  --save-path <output_dir>/global/assets/character_<id>_<variant_id>.png
+```
+
+地点变体同理落到 `global/assets/location_<id>_<variant_id>.png`。生成后
+**回填到该变体自己的 `asset_path` 字段**（不是顶层条目的
+`asset_path`——顶层条目的 `asset_path` 永远对应默认外观）。变体定妆图
+缺失时，`generate_scene_videos_v2.py` 会在该镜头 reference 模式下打印
+warning 并退回使用顶层条目默认外观的定妆图（不会报错中断，但一致性会
+打折），`check_assets_and_audio_v2.py` 会把"引用到的变体缺少 asset_path"
+作为硬性 error 拦下，进不了阶段5，所以正常流程里不应该依赖这个退化行为，
+发现报错就应该回这里补生成变体定妆图。
 
 ## Step 2：按 content_blocks 给当前大场景配音
 

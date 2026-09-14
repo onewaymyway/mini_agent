@@ -94,21 +94,65 @@ def clamp_seconds(duration_sec) -> str:
     return str(dur)
 
 
+def _find_variant(entity: dict, variant_id: str) -> Optional[dict]:
+    for v in (entity.get("appearance_variants") or []):
+        if v.get("variant_id") == variant_id:
+            return v
+    return None
+
+
+def _resolve_entry_asset_path(scene_id: str, entity_kind: str, eid: str, entry: dict,
+                               variant_id: Optional[str]) -> Optional[str]:
+    """解析单个角色/地点在本 micro_scene 应该实际使用的定妆图路径（字符串，
+    尚未拼接 output_dir）。若该 micro_scene 通过 character_variant_overrides/
+    location_variant_overrides 指定了变体，优先使用该变体自己的 asset_path；
+    变体存在但还没生成定妆图时，打印明确 warning 并退回该实体默认的
+    asset_path（不是直接跳过——退回默认图仍然好过完全没有参考图，只是
+    一致性会打折，需要用户看到 warning 后回阶段4补生成变体定妆图）。"""
+    if not entry:
+        print(f"  [警告] 小场景 {scene_id} 引用的{entity_kind} {eid} 在 global 库里不存在，跳过该引用图", file=sys.stderr)
+        return None
+
+    if variant_id:
+        variant = _find_variant(entry, variant_id)
+        if variant is None:
+            # 变体引用本身是否合法由 check_scene_detail.py 负责校验，
+            # 这里假定可能出现脏数据，兜底按默认外观处理，不让脚本崩溃。
+            print(f"  [警告] 小场景 {scene_id} 指定{entity_kind} {eid} 使用变体 {variant_id!r}，"
+                  f"但该变体在 global 库里不存在，退回使用默认外观定妆图", file=sys.stderr)
+        else:
+            variant_asset = (variant.get("asset_path") or "").strip()
+            if variant_asset:
+                return variant_asset
+            print(f"  [警告] 小场景 {scene_id} 指定{entity_kind} {eid} 使用变体 {variant_id!r}，"
+                  f"但该变体尚未生成定妆图（asset_path 为空），本次仍使用{entity_kind}默认外观的"
+                  f"定妆图，画面一致性会打折——建议先用该变体的 visual_override_en 生成一张定妆图，"
+                  f"回填到该变体的 asset_path 后用 --force 重新生成这个镜头", file=sys.stderr)
+
+    default_asset = (entry.get("asset_path") or "").strip()
+    if not default_asset:
+        print(f"  [警告] 小场景 {scene_id} 引用的{entity_kind} {eid} 缺少 asset_path，跳过该引用图", file=sys.stderr)
+        return None
+    return default_asset
+
+
 def resolve_asset_paths(scene: dict, char_by_id: dict, loc_by_id: dict, output_dir: Path) -> list:
     paths = []
+    char_overrides = scene.get("character_variant_overrides") or {}
+    loc_overrides = scene.get("location_variant_overrides") or {}
+    scene_id = scene.get("id")
+
     for cid in (scene.get("uses_characters") or []):
-        entry = char_by_id.get(cid)
-        if not entry or not entry.get("asset_path"):
-            print(f"  [警告] 小场景 {scene.get('id')} 引用的角色 {cid} 缺少 asset_path，跳过该引用图", file=sys.stderr)
+        asset = _resolve_entry_asset_path(scene_id, "角色", cid, char_by_id.get(cid), char_overrides.get(cid))
+        if not asset:
             continue
-        p = Path(entry["asset_path"])
+        p = Path(asset)
         paths.append(str(p if p.is_absolute() else output_dir / p))
     for lid in (scene.get("uses_locations") or []):
-        entry = loc_by_id.get(lid)
-        if not entry or not entry.get("asset_path"):
-            print(f"  [警告] 小场景 {scene.get('id')} 引用的地点 {lid} 缺少 asset_path，跳过该引用图", file=sys.stderr)
+        asset = _resolve_entry_asset_path(scene_id, "地点", lid, loc_by_id.get(lid), loc_overrides.get(lid))
+        if not asset:
             continue
-        p = Path(entry["asset_path"])
+        p = Path(asset)
         paths.append(str(p if p.is_absolute() else output_dir / p))
     return paths
 

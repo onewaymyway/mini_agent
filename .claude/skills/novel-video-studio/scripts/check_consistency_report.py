@@ -20,11 +20,16 @@ prompt_en 是否一致）。
      （核查时那一刻 prompt_en 文本的哈希）是否与 `scene_detail.yaml`
      里**当前**的 `prompt_en` 文本哈希一致——不一致说明 prompt_en 在
      核查通过之后又被改动过（比如核查后又手动调整了一下措辞），报告
-     已经不能代表当前这版 prompt_en 的核查结论，必须视为未核查，重新
-     走阶段5 Step 0；
-  4.（warning）`notes` 字段过短（默认阈值 15 个字符）——这不是机械
-     能判断"核查是否走过场"的可靠信号，只作为弱提示，不阻断，避免逼着
-     Agent 为了凑字数写废话。
+     已经不能代表当前这版内容，必须视为未核查，重新走阶段5 Step 0；
+  4.（error）**锚点覆盖字段完整性**：`anchor_source`/
+     `anchor_coverage_judgement` 两个字段是否都非空，`anchor_source`
+     的 key 是否覆盖了该 micro_scene 全部 `uses_characters`/
+     `uses_locations`——本脚本只检查字段"存不存在、覆不覆盖该覆盖的
+     角色/地点 id"，不判断 `anchor_coverage_judgement` 里写的内容是否
+     属实（这依然是纯语义判断，只能靠 Agent 自己认真写）；
+  5.（warning）`notes`/`anchor_coverage_judgement` 字段过短（默认阈值
+     15 个字符）——这不是机械能判断"核查是否走过场"的可靠信号，只作为
+     弱提示，不阻断，避免逼着 Agent 为了凑字数写废话。
 
 本脚本自身不读小说原文、不比对任何视觉/语义信息，纯粹是"报告有没有
 认真填、填的是不是当前这版 prompt_en"的机械校验，是阶段5流程里
@@ -174,6 +179,38 @@ def check(output_dir: Path, macro_id: str, micro_ids: list[str] | None) -> dict:
                 f"micro_scene {mid} 的核查报告 notes 过短（{len(notes)} 字符），"
                 f"notes 应当简要记录本条实际对照了哪些依据（角色/地点锚点、情节原文、"
                 f"横向对比的哪几条 prompt_en），过短可能意味着核查走了过场，建议补充"
+            )
+
+        # 4. 锚点覆盖字段完整性（error）：anchor_source 必须覆盖本条引用的
+        # 全部角色/地点 id，anchor_coverage_judgement 必须非空。本脚本只
+        # 检查字段是否存在、是否覆盖齐全，不判断内容是否属实——那部分是
+        # Agent 的语义判断职责，脚本没有能力代为验证。
+        uses_characters = ms.get("uses_characters") or []
+        uses_locations = ms.get("uses_locations") or []
+        anchor_source = entry.get("anchor_source") or {}
+        if not isinstance(anchor_source, dict):
+            errors.append(f"micro_scene {mid} 的 anchor_source 必须是一个字典（角色/地点 id -> 锚点来源）")
+            anchor_source = {}
+        missing_anchor_ids = [eid for eid in (uses_characters + uses_locations) if eid not in anchor_source]
+        if missing_anchor_ids:
+            errors.append(
+                f"micro_scene {mid} 的 anchor_source 没有覆盖以下引用到的角色/地点 id："
+                f"{missing_anchor_ids}——每个被引用的角色/地点都必须写明这条 prompt_en "
+                f"实际对照的是它的 visual_anchor_en 还是某个 variant_id，回阶段5 Step 0 补全"
+            )
+
+        judgement = (entry.get("anchor_coverage_judgement") or "").strip()
+        if not judgement:
+            errors.append(
+                f"micro_scene {mid} 缺少 anchor_coverage_judgement（Agent 需要用自然语言写清楚"
+                f"这条 prompt_en 有没有把 anchor_source 指向的锚点关键特征体现出来，有没有出现"
+                f"同义改写导致语义反转的情况），必须先在阶段5 Step 0 完成这项语义判断并写入报告"
+            )
+        elif len(judgement) < _NOTES_MIN_LEN:
+            warnings.append(
+                f"micro_scene {mid} 的 anchor_coverage_judgement 过短（{len(judgement)} 字符），"
+                f"应当具体点出锚点原文里哪些特征体现了/省略了/有无语义冲突，过短可能意味着"
+                f"核查走了过场，建议补充"
             )
 
     return {

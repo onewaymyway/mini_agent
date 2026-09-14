@@ -7,7 +7,12 @@ content_blocks 配音）的产物。
 检查：
   1. 所有在 macro_scene_*/scene_detail.yaml 里被引用的角色/地点，在
      global/characters.json / global/locations.json 里是否都已有非空
-     asset_path。
+     asset_path。若某个 micro_scene 通过 character_variant_overrides/
+     location_variant_overrides 指定使用了某个外观变体，还会额外检查
+     该变体自己的 asset_path 是否已生成（而不只是检查顶层条目的
+     asset_path）——变体定妆图缺失会导致该镜头 reference 模式实际用的
+     还是默认外观的参考图，画面与变体描述脱节，属于本项硬性 error，不
+     是等阶段5生成视频时才发现。
   2. 每个 micro_scene 的每个非空 content_block 是否都有对应的音频文件
      （narration_seg_<mid>_<i>.wav 或 dialogue_<speaker>_<mid>_<i>.wav，
      统一 .wav 后缀，与 compose_macro_scene.py 的读取约定一致），
@@ -86,6 +91,17 @@ def _ffprobe_available() -> bool:
         return False
 
 
+def _variant_asset_path(entity: dict, variant_id: str) -> str | None:
+    """从实体（角色/地点）的 appearance_variants 里找到指定 variant_id，
+    返回其 asset_path（找不到该 variant 或字段为空时返回 None，调用方
+    区分对待——找不到 variant 本身是 check_scene_detail.py 已经拦过的
+    引用完整性问题，这里假定引用合法，只关心 asset_path 是否已生成）。"""
+    for v in (entity.get("appearance_variants") or []):
+        if v.get("variant_id") == variant_id:
+            return (v.get("asset_path") or "").strip() or None
+    return None
+
+
 def check(output_dir: Path, min_sec: float, max_sec: float, macro_ids: list | None = None) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
@@ -133,6 +149,35 @@ def check(output_dir: Path, min_sec: float, max_sec: float, macro_ids: list | No
                 l = loc_by_id.get(lid)
                 if l is None or not (l.get("asset_path") or "").strip():
                     errors.append(f"小场景 {mid} 引用的地点 {lid} 缺少 asset_path")
+
+            # 外观变体定妆图完整性：character_variant_overrides/
+            # location_variant_overrides 指定用了某个变体时，该变体自己
+            # 的 asset_path 也必须已生成，否则 reference 模式实际会退回
+            # 默认外观图，画面与变体描述（比如换装/受伤/地下室化身）脱节。
+            char_overrides = ms.get("character_variant_overrides") or {}
+            for cid, variant_id in char_overrides.items():
+                c = char_by_id.get(cid)
+                if c is None:
+                    continue  # 引用是否合法由 check_scene_detail.py 负责，这里只管 asset_path
+                if _variant_asset_path(c, variant_id) is None:
+                    errors.append(
+                        f"小场景 {mid} 指定角色 {cid} 使用外观变体 {variant_id!r}，"
+                        f"但该变体缺少 asset_path（尚未生成变体定妆图），需先用该变体的 "
+                        f"visual_override_en 生成一张定妆图并回填到该变体的 asset_path，"
+                        f"否则这个镜头 reference 模式实际会退回使用角色默认外观的参考图"
+                    )
+            loc_overrides = ms.get("location_variant_overrides") or {}
+            for lid, variant_id in loc_overrides.items():
+                l = loc_by_id.get(lid)
+                if l is None:
+                    continue
+                if _variant_asset_path(l, variant_id) is None:
+                    errors.append(
+                        f"小场景 {mid} 指定地点 {lid} 使用外观变体 {variant_id!r}，"
+                        f"但该变体缺少 asset_path（尚未生成变体定妆图），需先用该变体的 "
+                        f"visual_override_en 生成一张定妆图并回填到该变体的 asset_path，"
+                        f"否则这个镜头 reference 模式实际会退回使用地点默认外观的参考图"
+                    )
 
             content_blocks = ms.get("content_blocks", []) or []
             for i, block in enumerate(content_blocks):
