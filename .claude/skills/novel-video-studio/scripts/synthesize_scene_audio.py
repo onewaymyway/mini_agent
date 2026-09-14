@@ -36,7 +36,30 @@ duration_sec。
 CosyVoice 推理失败）仍按原来的方式处理：只把这一个 block 记入
 `errors`、其余场景继续跑完，因为这类失败通常是单条文本/单次请求的
 偶发问题，不代表环境本身坏了，没有理由为了一条失败的台词中断整批
-已经在正常进行的配音工作。
+已经在正常进行的配音工作。**这类失败会先自动重试**（默认最多
+`DEFAULT_MAX_RETRIES`=3 次，每次重试之间做简单的线性退避
+`DEFAULT_RETRY_BACKOFF_SEC`=2s、4s...，可用 `--max-retries`/
+`--retry-backoff-sec` 调整），因为这类失败里有相当一部分（网络抖动、
+服务端偶发限流/超时）重试一次就能过，不需要每次都要人工介入重跑整条
+命令；重试次数用尽仍失败，才最终记入这一个 block 失败。
+
+**失败原因会打印完整细节，不只是一句 `str(exception)`**：每次重试
+失败都会把这次尝试的完整 traceback（`traceback.format_exc()`，包含
+`tts_engine.py` 里 `raise ... from e` 保留下来的原始异常链——比如
+CosyVoice 本地推理的原始报错、edge-tts 网络请求的原始异常、或者服务端
+返回的错误信息，只要底层异常对象里带了这些信息就都在链上）通过 `_log`
+实时打印到 stderr，多次重试之间不会互相覆盖看不清哪次失败在哪；最终
+放弃这个 block 后，会把最后一次尝试的完整 traceback 一并写进返回结果的
+`failed_blocks` 字段（而不只是 `errors` 里那一行摘要），方便不方便看
+stderr 完整历史时也能从最终 JSON 结果里拿到足够定位问题的信息。
+
+断点续跑：已经存在且非空的音频文件默认直接复用（读取真实时长回填），
+不重新合成，`--force` 才会重新生成全部已存在的音频。这意味着重跑一次
+失败很多的命令时，之前已经成功生成的音频不会被重复消耗合成配额，只有
+真正失败/缺失的那些会被处理——**这条逻辑本来就有（见下方
+`out_path.exists()` 判断），本次修改没有改变它，只是把它和新增的重试
+机制放在一起说明**：重试解决的是"单次请求失败"，断点续跑解决的是"上次
+命令整体中断/部分失败后重跑不用从头来"，两者分工不同、配合使用。
 
 不处理定妆图生成（那部分仍由 Agent 直接调用 gen_image_with_text 完成，
 见 SKILL.md Step 1）。
@@ -48,6 +71,7 @@ import argparse
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
 
 try:
@@ -65,6 +89,9 @@ from tts_engine import (
 )
 from voice_mapping import resolve_cosyvoice_speaker, resolve_edge_tts_voice
 from common import macro_scene_dir_name
+
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_BACKOFF_SEC = 2.0
 
 
 def _log(msg: str) -> None:
@@ -139,6 +166,8 @@ def run(
     *,
     edge_tts_timeout_sec: float = DEFAULT_EDGE_TTS_TIMEOUT_SEC,
     cosyvoice_timeout_sec: float = DEFAULT_COSYVOICE_TIMEOUT_SEC,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    retry_backoff_sec: float = DEFAULT_RETRY_BACKOFF_SEC,
 ) -> dict:
     project = _load_json(output_dir / "novel_project.json")
     characters_data = _load_json(output_dir / "global" / "characters.json")
@@ -167,6 +196,7 @@ def run(
 
     engine_usage: dict[str, int] = {}
     errors: list[str] = []
+    failed_blocks: list[dict] = []
     processed_micro_scenes = 0
     run_started = time.monotonic()
 
@@ -211,36 +241,79 @@ def run(
                                 f"读取已存在音频 {out_path} 的真实时长失败：{e}"
                             ) from e
                         except Exception as e:  # noqa: BLE001 -- 非"读不出时长"类的意外错误，按单 block 失败处理
+                            tb = traceback.format_exc()
                             errors.append(f"小场景 {mid} 第{i}块已存在音频但读取失败：{e}")
+                            failed_blocks.append({
+                                "macro": macro_label,
+                                "micro_id": mid,
+                                "block_index": i,
+                                "label": "existing_audio_read",
+                                "attempts": 1,
+                                "error": str(e),
+                                "traceback": tb,
+                            })
                             block_failed = True
-                            _log(f"[{macro_label}][{mid}][block {i}/{n_blocks}] 已存在音频但读取失败：{e}")
+                            _log(f"[{macro_label}][{mid}][block {i}/{n_blocks}] 已存在音频但读取失败：{e}\n{tb}")
                         continue
 
                     voice, label = _voice_for_block(block, char_by_id, engine_pref)
                     block_started = time.monotonic()
-                    try:
-                        result = synthesize(
-                            text, out_path,
-                            engine_pref=engine_pref, fallback=fallback, voice=voice,
-                            edge_tts_timeout_sec=edge_tts_timeout_sec,
-                            cosyvoice_timeout_sec=cosyvoice_timeout_sec,
-                            # 不传 allow_estimated_duration：固定使用 synthesize()
-                            # 的默认值 False，本脚本不提供任何打开估算值的入口。
+                    result = None
+                    last_error: str | None = None
+                    last_tb: str | None = None
+                    attempts_used = 0
+
+                    for attempt in range(1, max_retries + 1):
+                        attempts_used = attempt
+                        try:
+                            result = synthesize(
+                                text, out_path,
+                                engine_pref=engine_pref, fallback=fallback, voice=voice,
+                                edge_tts_timeout_sec=edge_tts_timeout_sec,
+                                cosyvoice_timeout_sec=cosyvoice_timeout_sec,
+                                # 不传 allow_estimated_duration：固定使用 synthesize()
+                                # 的默认值 False，本脚本不提供任何打开估算值的入口。
+                            )
+                            break
+                        except DurationReadError as e:
+                            # 合成本身已经成功落盘（音频文件是好的），只是读不出
+                            # 真实时长——这是环境问题，不是这一条文本的问题，不
+                            # 走重试（重试大概率会遇到一模一样的环境问题，纯粹
+                            # 浪费合成次数），直接整体终止。
+                            raise _FatalDurationStop(
+                                f"小场景 {mid} 第{i}块（{label}）音频已合成到 {out_path}，"
+                                f"但读取真实时长失败：{e}"
+                            ) from e
+                        except TTSError as e:
+                            last_error = str(e)
+                            last_tb = traceback.format_exc()
+                            _log(
+                                f"[{macro_label}][{mid}][block {i}/{n_blocks}][{label}] "
+                                f"第{attempt}/{max_retries}次尝试失败 原因={last_error}\n{last_tb}"
+                            )
+                            if attempt < max_retries:
+                                time.sleep(retry_backoff_sec * attempt)
+                            continue
+
+                    if result is None:
+                        errors.append(
+                            f"小场景 {mid} 第{i}块（{label}）配音失败"
+                            f"（已重试{attempts_used}/{max_retries}次）：{last_error}"
                         )
-                    except DurationReadError as e:
-                        # 合成本身已经成功落盘（音频文件是好的），只是读不出
-                        # 真实时长——这是环境问题，不是这一条文本的问题，直接
-                        # 整体终止，不再继续处理后面的 block/micro_scene。
-                        raise _FatalDurationStop(
-                            f"小场景 {mid} 第{i}块（{label}）音频已合成到 {out_path}，"
-                            f"但读取真实时长失败：{e}"
-                        ) from e
-                    except TTSError as e:
-                        errors.append(f"小场景 {mid} 第{i}块（{label}）配音失败：{e}")
+                        failed_blocks.append({
+                            "macro": macro_label,
+                            "micro_id": mid,
+                            "block_index": i,
+                            "label": label,
+                            "attempts": attempts_used,
+                            "error": last_error,
+                            "traceback": last_tb,
+                        })
                         block_failed = True
                         _log(
                             f"[{macro_label}][{mid}][block {i}/{n_blocks}][{label}] "
-                            f"配音失败 用时={time.monotonic() - block_started:.1f}s 原因={e}"
+                            f"最终失败（已重试{attempts_used}/{max_retries}次），用时="
+                            f"{time.monotonic() - block_started:.1f}s"
                         )
                         continue
 
@@ -284,6 +357,7 @@ def run(
                 "只有真正没有产出真实时长的片段会被重新处理。"
             ),
             "errors": errors,
+            "failed_blocks": failed_blocks,
             "engine_usage": engine_usage,
             "processed_micro_scenes": processed_micro_scenes,
         }
@@ -298,6 +372,7 @@ def run(
         "ok": not errors,
         "fatal": False,
         "errors": errors,
+        "failed_blocks": failed_blocks,
         "engine_usage": engine_usage,
         "processed_micro_scenes": processed_micro_scenes,
     }
@@ -317,12 +392,24 @@ def main() -> None:
         "--cosyvoice-timeout", type=float, default=DEFAULT_COSYVOICE_TIMEOUT_SEC,
         help=f"CosyVoice 本地推理超时秒数（默认 {DEFAULT_COSYVOICE_TIMEOUT_SEC}）",
     )
+    parser.add_argument(
+        "--max-retries", type=int, default=DEFAULT_MAX_RETRIES,
+        help=f"单个 content_block 配音失败后的最大重试次数（默认 {DEFAULT_MAX_RETRIES}，"
+             f"不含首次尝试之外的重试次数即为该值，比如默认值3代表最多尝试3次）",
+    )
+    parser.add_argument(
+        "--retry-backoff-sec", type=float, default=DEFAULT_RETRY_BACKOFF_SEC,
+        help=f"重试之间的等待秒数，按尝试次数线性递增（默认 {DEFAULT_RETRY_BACKOFF_SEC}，"
+             f"即第1次重试前等这个值，第2次重试前等它的2倍，以此类推）",
+    )
     args = parser.parse_args()
 
     result = run(
         args.output_dir, args.macro_id, args.force, args.engine,
         edge_tts_timeout_sec=args.edge_tts_timeout,
         cosyvoice_timeout_sec=args.cosyvoice_timeout,
+        max_retries=args.max_retries,
+        retry_backoff_sec=args.retry_backoff_sec,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     sys.exit(0 if result["ok"] else 1)
