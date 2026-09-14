@@ -71,8 +71,15 @@ def check(
     if not scenes:
         errors.append("macro_scenes.yaml 不存在或没有任何 macro_scenes")
 
-    char_id_set = {c.get("id") for c in characters_data.get("characters", [])}
-    loc_id_set = {l.get("id") for l in locations_data.get("locations", [])}
+    # Handle both list and dict formats for characters and locations
+    if isinstance(characters_data, list):
+        char_id_set = {c.get("id") for c in characters_data}
+    else:
+        char_id_set = {c.get("id") for c in characters_data.get("characters", [])}
+    if isinstance(locations_data, list):
+        loc_id_set = {l.get("id") for l in locations_data}
+    else:
+        loc_id_set = {l.get("id") for l in locations_data.get("locations", [])}
 
     # id 重复检查
     scene_ids = [s.get("id") for s in scenes]

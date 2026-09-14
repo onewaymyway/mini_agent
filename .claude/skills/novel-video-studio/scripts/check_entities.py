@@ -71,8 +71,15 @@ def check(output_dir: Path) -> dict:
     if not locations_data:
         warnings.append("global/locations.json 不存在或为空（若小说没有反复出现的地点，属正常情况）")
 
-    characters = characters_data.get("characters", [])
-    locations = locations_data.get("locations", [])
+    # Handle both list and dict formats
+    if isinstance(characters_data, list):
+        characters = characters_data
+    else:
+        characters = characters_data.get("characters", [])
+    if isinstance(locations_data, list):
+        locations = locations_data
+    else:
+        locations = locations_data.get("locations", [])
 
     # 1. id 重复检查
     char_ids = [c.get("id") for c in characters]
