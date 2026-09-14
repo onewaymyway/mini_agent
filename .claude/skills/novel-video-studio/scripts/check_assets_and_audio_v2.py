@@ -26,8 +26,11 @@ content_blocks 配音）的产物。
      或超过理论值250%）时报 warning，附带具体数字——这类偏离通常意味着
      `duration_sec` 是假数据/串号，即使数值本身落在 4-12 秒硬范围内、
      不会被 3 拦下，也值得人工核实。
-  5. 【环境自检，warning】探测 `ffprobe` 是否能正常调用，探测不到时提示
-     `duration_sec` 的真实性无法通过时长本身验证，建议先修好 ffprobe。
+  5. 【环境自检，warning】探测 `ffprobe` 是否能正常调用（复用
+     `common.py::resolve_ffprobe()`，认 `NOVEL_FFPROBE_PATH` 环境变量/
+     imageio_ffmpeg/conda 环境自动探测，不是只查系统 PATH），探测不到时
+     提示 `duration_sec` 的真实性无法通过时长本身验证，建议先修好
+     ffprobe，并在 warning 里附上具体尝试过哪些查找方式。
 
 `--macro-id`（可传多个，不传则查全部，参数风格对齐 check_clips_v2.py）
 支持只校验某一个/几个大场景，方便在 SKILL.md §2.3 的逐场景循环中定向
@@ -42,12 +45,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
-from common import macro_scene_dir_name, ROUGH_CHARS_PER_SEC
+from common import macro_scene_dir_name, ROUGH_CHARS_PER_SEC, resolve_ffprobe
 
 try:
     import yaml
@@ -79,16 +80,28 @@ def _load_yaml(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def _ffprobe_available() -> bool:
-    if shutil.which("ffprobe") is None:
-        return False
+def _ffprobe_available() -> tuple[bool, str | None]:
+    """探测 ffprobe 是否可用。复用 common.py 的 `resolve_ffprobe()`——它
+    按 环境变量 NOVEL_FFPROBE_PATH > imageio_ffmpeg > conda 环境自动探测
+    > 系统 PATH 的优先级查找，和 `compose_macro_scene.py`/
+    `compose_final_video_v2.py`/`tts_engine.py` 等脚本用的是同一套逻辑。
+
+    此前这里是自己重新实现了一遍、只查系统 PATH（`shutil.which("ffprobe")`），
+    没读 `NOVEL_FFPROBE_PATH` 环境变量，也不认 imageio_ffmpeg/conda 环境
+    里装的 ffprobe——如果 ffprobe 实际是通过这几种方式之一装的、只是不在
+    系统 PATH 里，这里会误报"不可用"，即使其它脚本（比如实际配音时用到
+    的 `tts_engine.py`）明明用同一个环境变量就能找到。现在统一改用
+    `common.resolve_ffprobe()`，找不到时把它抛出的详细"已尝试哪些方式"
+    原因带回去，让 warning 里能看到具体是哪几种查找方式都没命中，而不是
+    一句"不可用"。
+
+    返回 (是否可用, 找不到时的详细原因或 None)。
+    """
     try:
-        subprocess.run(
-            ["ffprobe", "-version"], capture_output=True, timeout=10, check=True,
-        )
-        return True
-    except Exception:
-        return False
+        resolve_ffprobe()
+        return True, None
+    except RuntimeError as e:
+        return False, str(e)
 
 
 def _variant_asset_path(entity: dict, variant_id: str) -> str | None:
@@ -106,11 +119,13 @@ def check(output_dir: Path, min_sec: float, max_sec: float, macro_ids: list | No
     errors: list[str] = []
     warnings: list[str] = []
 
-    if not _ffprobe_available():
+    ffprobe_ok, ffprobe_reason = _ffprobe_available()
+    if not ffprobe_ok:
         warnings.append(
             "当前环境 ffprobe 不可用，duration_sec 的真实性无法通过时长本身验证，"
             "建议先修好 ffprobe 再信任已有数据（另见下面的时长合理性 warning，"
-            "可作为 ffprobe 不可用时的部分兜底，但不能完全替代）"
+            "可作为 ffprobe 不可用时的部分兜底，但不能完全替代）。"
+            f"具体探测过程：{ffprobe_reason}"
         )
 
     characters_data = _load_json(output_dir / "global" / "characters.json")
