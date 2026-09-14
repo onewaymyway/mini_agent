@@ -27,15 +27,30 @@ prompt_en 是否一致）。
      `uses_locations`——本脚本只检查字段"存不存在、覆不覆盖该覆盖的
      角色/地点 id"，不判断 `anchor_coverage_judgement` 里写的内容是否
      属实（这依然是纯语义判断，只能靠 Agent 自己认真写）；
-  5.（warning）`notes`/`anchor_coverage_judgement` 字段过短（默认阈值
-     15 个字符）——这不是机械能判断"核查是否走过场"的可靠信号，只作为
-     弱提示，不阻断，避免逼着 Agent 为了凑字数写废话。
+  5.（error）**情节比对证据完整性 + 可核实性**：`content_alignment_evidence`
+     必须是至少 2 条"原文摘句 ↔ prompt_en 对应片段"的列表，且每条
+     `content_block_quote` **必须能在该 micro_scene 的 content_blocks
+     原文里原样找到**（允许忽略首尾空白，不允许转述/改写/张冠李戴）。
+     这一步本脚本不判断"摘句是否真的支持 content_alignment 的结论"
+     （那依然是语义判断），但"摘句是不是真的出自这段原文"是可以机械
+     核实的字符串包含关系，摘不出真实存在于原文里的句子，本身就足以
+     证明这一项没有认真核对过；
+  6.（error）**跨条目雷同检测**：同一次校验范围内，如果两个不同
+     `micro_id` 的 `prompt_en` 完全相同、或 `anchor_coverage_judgement`/
+     `content_alignment_evidence` 摘句高度相似（`difflib` 序列相似度
+     超阈值，或摘句逐字重复），会被判定为疑似复制粘贴走过场并报错——
+     不同 `micro_scene` 对应的情节本来就不同，核查文本理应有实质差异；
+     这同样是文本层面的机械比对，不涉及理解画面/情节语义；
+  7.（warning）`notes` 字段过短（默认阈值 15 个字符）——这不是机械能
+     判断"核查是否走过场"的可靠信号，只作为弱提示，不阻断，避免逼着
+     Agent 为了凑字数写废话。
 
-本脚本自身不读小说原文、不比对任何视觉/语义信息，纯粹是"报告有没有
-认真填、填的是不是当前这版 prompt_en"的机械校验，是阶段5流程里
-"必须验证核查报告通过才能进入生成"这条硬闸门的实现方式，语义判断的
-准确性完全依赖 Agent 在阶段5 Step 0 是否认真核对，本脚本查不出、也
-不负责查"报告写的 pass 是不是名副其实"。
+本脚本自身不读小说原文的情节含义、不比对任何视觉/语义信息，能做的
+始终是"文本层面能机械核实的部分"（字段是否填、摘句是否真实存在于
+原文、多条记录之间是否异常雷同），语义判断本身（摘出来的证据是否真的
+支持这条 prompt_en 符合情节、角色外观改写有没有暗中反转语义）依然
+完全依赖 Agent 在阶段5 Step 0 是否认真核对，本脚本查不出、也不负责
+查"报告写的 pass 是不是名副其实"。
 
 用法：
     python check_consistency_report.py <output_dir> <macro_id> [--micro-id ...]
@@ -51,6 +66,7 @@ import argparse
 import hashlib
 import json
 import sys
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from common import macro_scene_dir_name
@@ -70,6 +86,35 @@ REQUIRED_SUB_CHECKS = (
 )
 
 _NOTES_MIN_LEN = 15
+
+# content_alignment_evidence 至少要有几条"原文摘句 ↔ prompt_en 片段"
+# 成对引用——数量本身不能证明核查是真的做了，但连最少数量都凑不够，
+# 基本可以确定这一项没有认真做。
+_MIN_EVIDENCE_ITEMS = 2
+
+# 跨条目雷同检测阈值：不同 micro_scene 的 anchor_coverage_judgement 若
+# 序列相似度达到这个比例以上，判定为疑似复制粘贴（正常情况下不同情节
+# 写出来的核查文本不会这么像）。
+_JUDGEMENT_SIMILARITY_THRESHOLD = 0.85
+
+
+def _content_blocks_text(ms: dict) -> str:
+    """拼接一个 micro_scene 的全部 content_blocks 原文，用于核实
+    content_alignment_evidence 里的摘句是否真实存在于原文里。"""
+    blocks = ms.get("content_blocks") or []
+    parts = []
+    for b in blocks:
+        if isinstance(b, dict):
+            text = b.get("text")
+            if text:
+                parts.append(str(text))
+    return "\n".join(parts)
+
+
+def _normalize_for_match(s: str) -> str:
+    """去掉摘句两端空白/常见引号，用于宽松一点的包含关系判断，但不做
+    任何语义层面的归一化（不去停用词、不做同义替换）。"""
+    return (s or "").strip().strip("\"'“”‘’")
 
 
 def _load_yaml(path: Path) -> dict:
@@ -212,6 +257,85 @@ def check(output_dir: Path, macro_id: str, micro_ids: list[str] | None) -> dict:
                 f"应当具体点出锚点原文里哪些特征体现了/省略了/有无语义冲突，过短可能意味着"
                 f"核查走了过场，建议补充"
             )
+
+        # 5. content_alignment_evidence（error）：至少 _MIN_EVIDENCE_ITEMS
+        # 条"原文摘句 ↔ prompt_en 对应片段"，且每条摘句必须能在这个
+        # micro_scene 的 content_blocks 原文里原样找到——这是唯一能机械
+        # 核实的部分（摘句是否真实存在于原文），不代表脚本判断了这条
+        # 证据是否真的支持 content_alignment 的结论。
+        evidence = entry.get("content_alignment_evidence")
+        source_text = _content_blocks_text(ms)
+        entry_quotes: list[str] = []
+        if not isinstance(evidence, list) or len(evidence) < _MIN_EVIDENCE_ITEMS:
+            errors.append(
+                f"micro_scene {mid} 的 content_alignment_evidence 缺失或少于 "
+                f"{_MIN_EVIDENCE_ITEMS} 条——必须逐条列出'content_blocks 原文摘句 ↔ "
+                f"prompt_en 对应片段'的成对引用，回阶段5 Step 0 补全，不能只写\"符合\""
+            )
+        else:
+            for idx, item in enumerate(evidence):
+                if not isinstance(item, dict):
+                    errors.append(f"micro_scene {mid} 的 content_alignment_evidence 第 {idx+1} 条不是字典结构")
+                    continue
+                quote = (item.get("content_block_quote") or "").strip()
+                span = (item.get("prompt_en_span") or "").strip()
+                if not quote or not span:
+                    errors.append(
+                        f"micro_scene {mid} 的 content_alignment_evidence 第 {idx+1} 条缺少 "
+                        f"content_block_quote 或 prompt_en_span，两者都必须非空"
+                    )
+                    continue
+                if _normalize_for_match(quote) not in source_text:
+                    errors.append(
+                        f"micro_scene {mid} 的 content_alignment_evidence 第 {idx+1} 条摘句"
+                        f"（{quote!r}）在这个 micro_scene 的 content_blocks 原文里找不到——"
+                        f"摘句必须是这段情节原文里的真实内容，不能转述、改写，也不能是别的"
+                        f"micro_scene 的原文，回阶段5 Step 0 重新核对"
+                    )
+                    continue
+                entry_quotes.append(_normalize_for_match(quote))
+        ms["_evidence_quotes"] = entry_quotes  # 供下面跨条目雷同检测使用
+
+    # 6. 跨条目雷同检测（error）：不同 micro_scene 情节本来就不同，若
+    # prompt_en / anchor_coverage_judgement / 情节摘句 在多条记录之间
+    # 高度雷同，基本可以判定是复制粘贴走过场，而不是真的分别核对过。
+    for i in range(len(in_scope)):
+        for j in range(i + 1, len(in_scope)):
+            ms_a, ms_b = in_scope[i], in_scope[j]
+            mid_a, mid_b = ms_a.get("id"), ms_b.get("id")
+            entry_a, entry_b = entry_by_id.get(mid_a), entry_by_id.get(mid_b)
+            if not entry_a or not entry_b:
+                continue
+
+            prompt_a = (ms_a.get("prompt_en") or "").strip()
+            prompt_b = (ms_b.get("prompt_en") or "").strip()
+            if prompt_a and prompt_b and prompt_a == prompt_b:
+                errors.append(
+                    f"micro_scene {mid_a} 和 {mid_b} 的 prompt_en 完全相同，但两者是不同的"
+                    f"micro_scene——如果情节确实不同却写了同一条 prompt_en，说明没有逐条撰写，"
+                    f"回阶段5前置步骤分别重写"
+                )
+
+            judge_a = (entry_a.get("anchor_coverage_judgement") or "").strip()
+            judge_b = (entry_b.get("anchor_coverage_judgement") or "").strip()
+            if judge_a and judge_b:
+                ratio = SequenceMatcher(None, judge_a, judge_b).ratio()
+                if ratio >= _JUDGEMENT_SIMILARITY_THRESHOLD:
+                    errors.append(
+                        f"micro_scene {mid_a} 和 {mid_b} 的 anchor_coverage_judgement 高度雷同"
+                        f"（相似度 {ratio:.2f}），疑似复制粘贴、未针对各自的锚点/情节分别核查，"
+                        f"回阶段5 Step 0 重新对照各自的 content_blocks 分别撰写"
+                    )
+
+            quotes_a = set(ms_a.get("_evidence_quotes") or [])
+            quotes_b = set(ms_b.get("_evidence_quotes") or [])
+            shared = quotes_a & quotes_b
+            if shared:
+                errors.append(
+                    f"micro_scene {mid_a} 和 {mid_b} 的 content_alignment_evidence 摘句重复："
+                    f"{sorted(shared)!r}——不同 micro_scene 的情节原文不同，共用同一句摘句"
+                    f"基本可以确定至少有一条是记混了场景或复制粘贴，回阶段5 Step 0 核对"
+                )
 
     return {
         "ok": not errors,
