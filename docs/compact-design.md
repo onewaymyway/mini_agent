@@ -129,6 +129,18 @@ compact_with_skills()
           → 用最终摘要替换历史 + 重附 skill 块
 ```
 
+**结果有效性校验（`next_doc/compact_result_validity_guard_plan.md`）：**
+正常路径拿到 `run_turn(compact_prompt)` 的返回值后，不能只看"是否非空"。
+`run_turn()` 内部的 `result_sanity_check`（见 `docs/…` 自主任务/daemon
+恢复相关文档）在判定本轮输出畸形（未闭合 `<tool_use>` 残留、格式纠错
+重试用尽等）时，会把返回值**替换**成一段非空的固定哨兵占位文本
+（`"[系统提示：本轮未获得有效回复…]"`）而不抛异常，只置位
+`self._last_turn_result_invalid`。因此 `compact_with_skills()` 在拿到
+`run_turn()` 的结果后，会先用 `self.last_turn_result_valid()`
+（`agent/turn_loop.py::TurnLoopMixin`）确认结果有效，无效时自动退化到
+`_compact_chunked()` 重新生成一次摘要（不复用哨兵文本），两条路径都
+失败则放弃本次压缩、保留原始历史不动，不会用损坏的摘要覆盖历史。
+
 ### Skill 重附前的自动卸载（垃圾回收）
 
 无论走正常路径还是超限路径，`compact_with_skills()` 在拿到摘要之后、重附 skill
@@ -424,6 +436,20 @@ agent 自己运行中无法主动检索找回。新增只读、免审批工具
 意义：给更激进的压缩策略兜底——反正删掉的东西找得回来，压缩策略可以更敢于
 "压狠一点"，把"怕删错"这个心理负担从压缩阶段转移到"按需找回"阶段。
 
+## compact 结果有效性校验（`next_doc/compact_result_validity_guard_plan.md`）
+
+修复一个真实故障：正常路径 `run_turn(compact_prompt)` 命中内部
+`result_sanity_check`（畸形/半成品输出判定）时不会抛异常，而是返回一段
+非空的固定哨兵占位文本并置位 `self._last_turn_result_invalid`。旧代码
+只判断"结果是否非空"，于是把这段哨兵文本当真实摘要写入历史，原始历史
+被永久替换/丢失。
+
+修复后：`compact_with_skills()` 在拿到 `run_turn()` 结果后用
+`self.last_turn_result_valid()` 显式校验，无效时退化到 `_compact_chunked()`
+重新生成一次摘要；两条路径都失败则放弃本次压缩、原始历史保持不动
+（不会用损坏内容覆盖）。详见本节上方"路径 B"小节与
+`compact_result_validity_guard_plan.md`。
+
 开关：`recall_history_enabled` / `recall_history_mode`（AppConfig 顶层字段，默认 `false` / `"keyword"`；`"embedding"` 档预留未实现）。
 
 配套还提供了 `/recall <query>` / `/recall --max N <query>` slash 命令
@@ -501,6 +527,7 @@ agent 自己运行中无法主动检索找回。新增只读、免审批工具
 | `prompts/user/compact_history.md` | 正常路径 compact prompt |
 | `prompts/user/compact_chunk_request.md` | 分批路径 chunk prompt |
 | `prompts/user/compact_merge_request.md` | 分批路径合并 prompt |
+| `agent/turn_loop.py::TurnLoopMixin.last_turn_result_valid()` | 统一查询"最近一次 `run_turn()` 结果是否有效"（`compact_result_validity_guard_plan.md`） |
 | `agent/compaction.py::_build_notepad_compact_hint()` | 记事本超阈值时追加的 compact 提示语 |
 | `tools/notepad.py` | 记事本数据结构与工具实现 |
 

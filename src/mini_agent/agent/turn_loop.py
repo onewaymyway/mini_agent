@@ -660,6 +660,24 @@ class TurnLoopMixin:
 
         return final_text
 
+    # [compact_result_validity_guard_plan.md] 统一的结果有效性查询入口。
+    # 之前 `_last_turn_result_invalid` 这个内部标志位由三处调用方各自独立
+    # `getattr(agent, "_last_turn_result_invalid", False)` 读取
+    # （objective_agent_bridge.py ×2、api/server.py ×1），语义分散且容易在
+    # 新增调用方（如 compaction.py）时被遗漏——本次 compact 误把哨兵占位文本
+    # 当真实摘要落盘正是因为漏了这一检查。统一收口到这一个方法，新调用方
+    # 直接用 `self.last_turn_result_valid()`，不用记住具体是哪个私有属性。
+    def last_turn_result_valid(self) -> bool:
+        """
+        判断最近一次 run_turn() 的返回文本是否是有效结果。
+
+        `_last_turn_result_invalid` 在 `_agentic_loop()` 开头无条件重置为
+        False，只有本轮真正命中"畸形/半成品输出"（未闭合 tool_use 残留、
+        格式纠错重试用尽等）才会在 result_sanity_check 里被置 True——因此
+        该标志天然是"最近一次 run_turn 调用"的结果，不会被跨轮次污染。
+        """
+        return not getattr(self, "_last_turn_result_invalid", False)
+
     # ── LLM 调用 ───────────────────────────────────────────────────────────────
 
     def _append_assistant_response(self, response: LLMResponse) -> None:

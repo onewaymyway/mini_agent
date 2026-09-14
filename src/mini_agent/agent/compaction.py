@@ -473,6 +473,22 @@ class CompactionMixin:
             self._generating_compact_summary = True
             try:
                 result = self.run_turn(compact_prompt)
+                # [compact_result_validity_guard_plan.md P0] run_turn() 命中
+                # "畸形/半成品输出"时不会抛异常——它会把 final_text 替换成一段
+                # 固定的哨兵占位文本（"[系统提示：本轮未获得有效回复…]"）并原样
+                # return，只置位 self._last_turn_result_invalid 供调用方自行
+                # 判断。之前这里没有检查这个标志位，哨兵文本非空就被当成真实
+                # 摘要写进了历史，导致一次解析失败就永久丢失原始上下文。
+                # 现在：判定为无效结果时，视同本次摘要生成失败，退化到
+                # chunked compact 路径重新生成一次（不复用这段脏文本）。
+                if not self.last_turn_result_valid():
+                    R.print_warning(
+                        "[compact] Summary generation returned an invalid/malformed "
+                        "result (not a real error, but not usable either) — "
+                        "retrying via chunked compact…"
+                    )
+                    result = self._compact_chunked()
+                    used_chunked = True
             except Exception as e:
                 from mini_agent.errors import log_exception
                 log_exception(e, where='mini_agent.agent.compaction.CompactionMixin.compact_with_skills')
