@@ -143,6 +143,25 @@ keys = pm.list_fragments("cli_messages")
 > 以及**记事本**（`system/notepad.md`，见 [记事本机制说明](notepad-guide.md)）——记事本内容
 > 每轮都会重新读取最新状态并注入固定位置，因此天然不受 history compact 影响。
 
+> **[本次新增] `workspace_hygiene.md` 里的 `temp_dir`/`output_dir`/
+> `workspace_health_notes` 三个变量**（完整背景见
+> `next_doc/workspace_output_governance_plan.md`）：
+> - `temp_dir`/`output_dir` 现在**保证不为空**——有 `session_id` 时取
+>   `.agent/sessions/<session_id>/{temp,output}`；没有 `session_id`
+>   （比如 `SubAgent` 的一次性/后台子任务）时取
+>   `.agent/adhoc/<key>/{temp,output}`（`AgentPaths.ensure_adhoc_working_dirs()`）。
+>   [历史修复] 此前没有 `session_id` 时这两个变量会留空，
+>   `prompts/manager.py` 收到空字符串后会回退成字面量 `"./temp"`/
+>   `"./output"`，导致模型在项目根目录建出不受 `.agent/` 管辖的游离目录，
+>   现已改为不再有这条"回退到相对路径"的分支。
+> - `workspace_health_notes`：`storage/created_dirs_registry.py` 在每次
+>   session 绑定（`agent/lifecycle.py::_bind_session_extras`）时做的一次
+>   轻量健康检查——如果发现某个 agent 之前建过、且曾经有内容的非规范
+>   目录（比如历史遗留的 `./temp`）现在整个消失了，会生成一条提醒，
+>   告诉 agent"这大概率是用户因为目录建错位置而手动删除，不要在原地
+>   重建"，拼进 `workspace_hygiene.md` 顶部。每条提醒只推送一次，不会
+>   每轮重复。
+
 ---
 
 ## 5. Fragment 文件格式

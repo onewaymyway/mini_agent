@@ -89,6 +89,7 @@ def build_system_prompt(
     skill_context: str = "",
     user_profile: str = "",
     session_id: Optional[str] = None,
+    workspace_health_notes: Optional[list[str]] = None,
 ) -> str:
     from datetime import datetime
     from mini_agent.prompts import pm
@@ -113,18 +114,33 @@ def build_system_prompt(
     # Session 级 temp/output 目录（用户未指定目标目录时的默认落地位置）。
     # 目录本身已在 session 初始化时（agent/lifecycle.py::_bind_session_extras）
     # 创建好，这里只负责推导绝对路径字符串注入 system prompt，不重复建目录。
+    #
+    # [本次修复] 此前 session_id 为空时（`orchestrator/sub_agent.py` 里
+    # "session_id 可能为 None" 的一次性/后台子任务、`agent/turn_loop.py`
+    # 的极端兜底分支）这两个变量会保持空字符串，`prompts/manager.py` 收到
+    # 空字符串后会回退成字面量 "./temp"/"./output"，模型据此在项目根目录
+    # 建出了不受 `.agent/` 管辖的游离目录——这是真实环境里出现过的问题。
+    # 现在没有 session_id 时不再留空，改为落到
+    # `.agent/adhoc/<key>/{temp,output}/`（同样在 `.agent/` 管辖范围内，
+    # 只是不挂在具体某个 session 目录下），并登记进
+    # `storage/created_dirs_registry.py` 的健康检查表，方便万一这个兜底
+    # 目录本身也被判定为不合适时能被追踪到。
     temp_dir_str = ""
     output_dir_str = ""
-    if session_id:
-        try:
-            from mini_agent.storage.paths import AgentPaths
-            paths = AgentPaths(cfg.project_root)
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        paths = AgentPaths(cfg.project_root)
+        if session_id:
             temp_dir_str = str(paths.session_temp_dir(session_id))
             output_dir_str = str(paths.session_output_dir(session_id))
-        except Exception as _mini_agent_exc:
-            from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where='mini_agent.config.prompt_builder')
-            pass
+        else:
+            temp_dir, output_dir = paths.ensure_adhoc_working_dirs("unbound")
+            temp_dir_str = str(temp_dir)
+            output_dir_str = str(output_dir)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.config.prompt_builder')
+        pass
 
     return pm.build_system_prompt(
         claude_md_content=cfg.claude_md_content,
@@ -138,4 +154,5 @@ def build_system_prompt(
         env_info=env_info_block,
         temp_dir=temp_dir_str,
         output_dir=output_dir_str,
+        workspace_health_notes=workspace_health_notes,
     )

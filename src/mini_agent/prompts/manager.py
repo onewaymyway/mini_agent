@@ -200,17 +200,26 @@ class PromptManager:
         env_info: str = "",
         temp_dir: str = "",
         output_dir: str = "",
+        workspace_health_notes: Optional[list[str]] = None,
     ) -> str:
         """
         Assemble the complete system prompt from individual fragments.
         This is the single authoritative place where system prompts are composed.
 
         Args:
-            temp_dir: 本 session 的临时文件目录（绝对路径），用户未指定目标
-                目录时的默认落地位置。为空时回退为通用占位说明 "./temp/"
-                （例如尚未绑定 session 的极早期阶段）。
-            output_dir: 本 session 的输出目录（绝对路径），存放明确作为最终
-                交付物的文件。为空时回退为 "./output/"。
+            temp_dir: 本 session（或无 session 绑定场景下的 adhoc 兜底工作区，
+                见 storage/paths.py::AgentPaths.ensure_adhoc_working_dirs）的
+                临时文件目录绝对路径。调用方（config/prompt_builder.py）
+                现在保证这个参数不为空——[本次修复] 此前为空时会在这里回退
+                成字面量 "./temp"，是项目根目录下出现游离 ./temp 目录的根因
+                之一；调用方缺失时的兜底逻辑已经上移到
+                `AgentPaths.ensure_adhoc_working_dirs()`，这里不再提供任何
+                指向项目根的相对路径回退，只做防御性提示。
+            output_dir: 同上，本 session/adhoc 的输出目录绝对路径。
+            workspace_health_notes: [本次新增] 工作目录规范性健康检查提醒
+                （见 storage/created_dirs_registry.py），比如"之前创建的某个
+                非规范目录整个消失了，大概率是用户手动删除，不要在原路径
+                重建"。为空/None 时不渲染这一段。
         """
         parts: list[str] = []
 
@@ -219,10 +228,23 @@ class PromptManager:
 
         # 1b. Workspace hygiene & graceful operation standards
         try:
+            notes_block = ""
+            if workspace_health_notes:
+                notes_block = "\n" + "\n".join(f"> {n}" for n in workspace_health_notes) + "\n"
             parts.append(self.render(
                 "system/workspace_hygiene",
-                temp_dir=temp_dir or "./temp",
-                output_dir=output_dir or "./output",
+                # [本次修复] 不再回退到字面量 "./temp"/"./output"——调用方
+                # 现在始终会提供一个真实的 .agent/ 下绝对路径（session 级或
+                # adhoc 级）。万一某个尚未更新的老调用方仍然传空字符串，
+                # 这里给出的是一句明确提示而不是一个可执行的相对路径，
+                # 避免模型把提示文字误当成路径直接拿去 mkdir。
+                temp_dir=temp_dir or "(⚠️ 未获取到本次任务的 Temp dir，"
+                                      "请先确认工作目录再写临时文件，"
+                                      "不要自己创建 ./temp)",
+                output_dir=output_dir or "(⚠️ 未获取到本次任务的 Output dir，"
+                                          "请先确认工作目录再写产出文件，"
+                                          "不要自己创建 ./output)",
+                workspace_health_notes=notes_block,
             ))
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception

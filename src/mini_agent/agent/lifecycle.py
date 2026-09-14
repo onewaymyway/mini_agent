@@ -173,6 +173,10 @@ class SessionLifecycleMixin:
             # 记事本：每轮读取当前 session 的记事本渲染文本（NotepadStore 内部按
             # session_id 缓存，重复实例化 AgentPaths 无实际 IO 开销）。
             notepad_getter=lambda: self._get_notepad_render_text(),
+            # [本次新增] 工作目录规范性健康检查提醒：_bind_session_extras()
+            # 每次 session 初始化/切换都会刷新 self._workspace_health_notes，
+            # 这里懒取即可，不需要在构造 ContextBuilder 时就有值。
+            workspace_health_notes_getter=lambda: getattr(self, "_workspace_health_notes", []),
             # session 级 temp/output 目录说明：每轮读取当前 session id
             # （resume/new session 后自动切换到新目录，无需重建 ContextBuilder）
             session_id_getter=lambda: self._session.id if self._session else None,
@@ -702,6 +706,21 @@ class SessionLifecycleMixin:
             log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._bind_session_extras')
             self._session_temp_dir = None
             self._session_output_dir = None
+
+        # [本次新增] 工作目录规范性健康检查：扫描历史上出现过问题的"游离
+        # 目录"（比如项目根目录下的 ./temp、./output——见
+        # next_doc/workspace_output_governance_plan.md），如果发现某个之前
+        # 有内容的目录整个消失了，大概率是用户因为它建错位置而手动删除，
+        # 生成一条提醒放进 `self._workspace_health_notes`，供
+        # `config/prompt_builder.py` 拼进 system prompt 提醒 agent 不要
+        # 在原路径重建。只在这里做检测和提醒，不做任何自动删除/自动迁移。
+        try:
+            from mini_agent.storage.created_dirs_registry import check_workspace_directory_health
+            self._workspace_health_notes = check_workspace_directory_health(self.cfg.project_root)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._bind_session_extras')
+            self._workspace_health_notes = []
 
         # raw history 路径绑定：调用独立方法（确保 _hist 已初始化后再绑定）
         self._bind_raw_path()

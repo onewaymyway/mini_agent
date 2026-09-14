@@ -56,6 +56,10 @@ class ContextBuilder:
                                          # 计划 P4：wiki_search 转正为主检索路径时，LLM 精排需要一个
                                          # llm_call；懒取（而不是构造时固定住），因为 client_pool 的
                                          # current_client 可能在 session 期间切换模型
+        workspace_health_notes_getter=None,  # Callable[[], list[str]]  [本次新增] 工作目录规范性
+                                         # 健康检查提醒（见 storage/created_dirs_registry.py）：
+                                         # session 绑定时探测到"曾经有内容的非规范目录整个消失"
+                                         # 等情况，生成的一次性提醒文本，拼进 workspace_hygiene 段。
     ) -> None:
         self.cfg = cfg
         self.skill_loader = skill_loader
@@ -76,6 +80,8 @@ class ContextBuilder:
         # 懒取器，None（未传，或调用时返回 None）时 refresh_turn_context() 会
         # 自动跳过 wiki_search 的 LLM 精排环节，退化为既有 shelf_search 路径。
         self._llm_call_getter = llm_call_getter
+        # [本次新增] 工作目录规范性健康检查提醒的懒取器，见上方参数说明
+        self._workspace_health_notes_getter = workspace_health_notes_getter
 
         # ── Turn 级缓存 ──────────────────────────────────────────────────────
         # 每次 run_turn 开始时由 refresh_turn_context() 填充，
@@ -386,9 +392,12 @@ class ContextBuilder:
         from mini_agent.config import build_system_prompt
         user_profile = self._profile_text_getter() if self._profile_text_getter else ""
         session_id = self._session_id_getter() if self._session_id_getter else None
+        workspace_health_notes = (
+            self._workspace_health_notes_getter() if self._workspace_health_notes_getter else None
+        )
         base = build_system_prompt(
             cfg, active, skill_context=skill_ctx, user_profile=user_profile,
-            session_id=session_id,
+            session_id=session_id, workspace_health_notes=workspace_health_notes,
         )
 
         # ── 角色扮演（Persona）注入 ──────────────────────────────────────────

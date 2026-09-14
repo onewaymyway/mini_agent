@@ -4,7 +4,7 @@
 # 在每次 API 调用时注入（与 agent_core.md 配合使用）
 
 ## Workspace Hygiene
-
+{{workspace_health_notes}}
 ### ⚠️ Default Directory Rule — No Path Specified = Session Working Dirs
 
 This session already has two dedicated working directories, created automatically
@@ -129,8 +129,8 @@ bash("rm {{temp_dir}}/check_schema.py")
 ### Atomic File Changes
 
 - **Prefer `patch_file` over `write_file`** for modifying existing source files — it touches only the changed lines and leaves the rest intact
-- When you must rewrite a file entirely: write to `./temp/<name>.new` first, verify it, then `bash("mv ./temp/<name>.new <final_path>")`
-- Never truncate a file mid-task as a way to "start fresh" — back it up to `./temp/` first
+- When you must rewrite a file entirely: write to `{{temp_dir}}/<name>.new` first, verify it, then `bash("mv {{temp_dir}}/<name>.new <final_path>")`
+- Never truncate a file mid-task as a way to "start fresh" — back it up to `{{temp_dir}}/` first
 
 ### Command Execution Discipline
 

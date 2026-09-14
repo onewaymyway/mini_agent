@@ -54,10 +54,16 @@ storage/paths.py — 统一路径管理
     # Global 级
     paths.global_memory           # ~/.agent/memory.jsonl
     paths.global_dir              # ~/.agent/
+
+    # 无 session 绑定时的兜底工作目录（本次新增，见
+    # next_doc/workspace_output_governance_plan.md）
+    paths.ensure_adhoc_working_dirs("unbound")  # .agent/adhoc/unbound/{temp,output}/
+    paths.created_dirs_registry_path            # .agent/created_dirs_registry.json
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -1274,6 +1280,58 @@ class AgentPaths:
         temp_dir.mkdir(parents=True, exist_ok=True)
         output_dir.mkdir(parents=True, exist_ok=True)
         return temp_dir, output_dir
+
+    # ── 无 session 绑定时的兜底工作目录（本次新增） ─────────────────────────
+    # 背景：`config/prompt_builder.py::build_system_prompt()` 在
+    # `session_id` 为空时（比如 `orchestrator/sub_agent.py` 里"session_id
+    # 可能为 None"的一次性/后台子任务、`agent/turn_loop.py` 的极端兜底分支），
+    # 此前会把 temp_dir/output_dir 留空，导致 `prompts/manager.py` 里
+    # `temp_dir or "./temp"` 的兜底值被渲染进 system prompt——这是一个字面量
+    # 相对路径，指向项目根目录而不是 `.agent/` 下的规范位置，模型据此建的
+    # `./temp`、`./output` 就是没有被规范约束的产出目录。
+    #
+    # 现在的做法：没有 session_id 时不再留空，而是落到
+    # `.agent/adhoc/<key>/{temp,output}/` 下——同样在 `.agent/` 管辖范围内，
+    # 只是不挂在具体某个 session 目录下。`key` 默认为 "unbound"，
+    # 调用方（比如某个具体 SubAgent 任务）也可以传入自己的稳定标识，
+    # 让同一个无 session 的任务反复调用时落到同一个目录，而不是每次生成
+    # 新目录、越堆越多。
+
+    def adhoc_dir(self, key: str = "unbound") -> Path:
+        """<project_root>/.agent/adhoc/<key>/ —— 无 session 绑定时的兜底工作区根目录。"""
+        safe_key = re.sub(r"[^A-Za-z0-9_.-]", "_", key) or "unbound"
+        return self.workdir_dir / "adhoc" / safe_key
+
+    def adhoc_temp_dir(self, key: str = "unbound") -> Path:
+        return self.adhoc_dir(key) / "temp"
+
+    def adhoc_output_dir(self, key: str = "unbound") -> Path:
+        return self.adhoc_dir(key) / "output"
+
+    def ensure_adhoc_working_dirs(self, key: str = "unbound") -> tuple[Path, Path]:
+        """确保无 session 绑定场景下的兜底 temp/output 目录存在，返回
+        (temp_dir, output_dir)。用法与 `ensure_session_working_dirs` 对称，
+        区别只是根路径落在 `.agent/adhoc/<key>/` 而不是某个具体 session 下。
+        """
+        temp_dir = self.adhoc_temp_dir(key)
+        output_dir = self.adhoc_output_dir(key)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return temp_dir, output_dir
+
+    # ── agent 自建目录健康检查登记表（本次新增） ────────────────────────────
+    # 见 `storage/created_dirs_registry.py`：用于记录 agent 自己创建过、但
+    # 又不属于 session/adhoc 这类规范位置的目录（典型场景：历史 bug 导致
+    # 模型自己在项目根目录 `mkdir -p ./temp`），并在这些目录"曾经有内容、
+    # 现在整个消失"时识别出"大概率是用户手动删除了，原因可能是这些内容本来
+    # 就建在了错误的位置"，从而提醒 agent 下次不要再往同一个（很可能不规范
+    # 的）路径写，改用规范目录。
+
+    @property
+    def created_dirs_registry_path(self) -> Path:
+        """<project_root>/.agent/created_dirs_registry.json —— 见
+        `storage/created_dirs_registry.py`。"""
+        return self.workdir_dir / "created_dirs_registry.json"
 
     # ── 产出物 Manifest（Artifacts）────────────────────────────────────────
     # 用于「产出物看板」：命令行不便展示的文档/图片类产出，统一以 JSON 清单
