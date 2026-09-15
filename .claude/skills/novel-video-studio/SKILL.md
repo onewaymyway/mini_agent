@@ -1,19 +1,23 @@
 ---
 name: novel-video-studio
-description: 把一篇小说自动转换成一支配旁白/角色对话配音的成片视频。一体化流程：全局角色地点抽取（含声音设定与锁定视觉锚点）→大场景切分→单大场景详细规划（旁白/对话拆分）→素材与差异化配音生成→角色/场景一致性校验+小场景视频生成与大场景内合成→最终拼接转场。每个阶段的具体操作步骤放在 references/ 下，进入某阶段前按需加载对应文件，完成后可从上下文中卸载。支持断点续跑、失败重试与 API Key 自动切换、跨 session 续接、以及用户对已生成内容提反馈后的定向回退重跑。当用户说"把这本小说做成视频"、"小说转视频"、"生成小说解说视频"时使用本 skill。
+description: 把一篇小说自动转换成一支配旁白/角色对话配音的成片视频。一体化流程：小说→剧本转换+剧本校验（自然语言剧本，明确区分旁白/对话与说话人，先核实忠实于原文再往下走）→全局角色地点抽取（含声音设定与锁定视觉锚点）→大场景切分（弹性时长，默认≤120秒，剧情连续性强时可放宽到≤240秒）→单大场景详细规划（旁白/对话按剧本行直接映射）→素材与差异化配音生成→角色/场景一致性校验+小场景视频生成与大场景内合成→最终拼接转场。每个阶段的具体操作步骤放在 references/ 下，进入某阶段前按需加载对应文件，完成后可从上下文中卸载。支持断点续跑、失败重试与 API Key 自动切换、跨 session 续接、以及用户对已生成内容提反馈后的定向回退重跑。当用户说"把这本小说做成视频"、"小说转视频"、"生成小说解说视频"时使用本 skill。
 triggers: 小说转视频, 小说做视频, 小说解说视频, novel to video, 角色配音视频, 小说视频生成
 resources:
+  - id: script-conversion
+    path: references/00_script_conversion.md
+    description: 阶段0——小说→剧本转换（自然语言剧本，`旁白：...`/`角色名：台词` 结构化格式，从源头分离旁白/对话/说话人）+ 阶段0.5剧本校验（Agent 逐场次核对剧情覆盖/对话覆盖/说话人归属/无臆造，核查结论写入 script_review.yaml，check_script.py 只做机械把关），是后续所有阶段的输入源
+    triggers: 剧本转换, 剧本化, script.md, 剧本校验, script_review, 场次, 旁白, 对话行, 说话人归属, 剧情覆盖, 无臆造
   - id: entity-extraction
     path: references/01_entity_extraction.md
-    description: 阶段1——全局角色/地点抽取（含 voice_profile 声音设定 + visual_anchor_en 锁定视觉锚点 + appearance_variants 外观变体登记，供阶段5一致性核查使用），也覆盖阶段3触发的单点补抽取模式
+    description: 阶段1——全局角色/地点抽取（含 voice_profile 声音设定 + visual_anchor_en 锁定视觉锚点 + appearance_variants 外观变体登记，供阶段5一致性核查使用），也覆盖阶段3触发的单点补抽取模式；输入源是阶段0产出的 script.md，不是小说原文
     triggers: 角色抽取, 人物抽取, 地点抽取, voice_profile, 补抽取, 新角色, 新地点, visual_anchor_en, 一致性, 角色设定, appearance_variants, 外观变体, 换装, 变装
   - id: macro-scene-split
     path: references/02_macro_scene_split.md
-    description: 阶段2——按剧情/时间/地点把全文切分为大场景（macro_scene）
-    triggers: 大场景切分, 场景切分, macro_scene
+    description: 阶段2——以剧本场次为基本单位归并/细分为大场景（macro_scene），时长约束弹性化（默认建议≤120秒，剧情连续性强可放宽到≤240秒硬上限）
+    triggers: 大场景切分, 场景切分, macro_scene, 弹性时长, 120秒, 240秒
   - id: scene-detail-planning
     path: references/03_scene_detail_planning.md
-    description: 阶段3——单个大场景详细规划：拆小场景（micro_scene，需按视频生成接口4-12秒硬限规划时长+粗估时长自查）、旁白/对话拆分、content_blocks 写法、外观变体检测与 character_variant_overrides/location_variant_overrides 标注、visual_hint 撰写要求、check_scene_detail.py 校验规则与自查清单
+    description: 阶段3——单个大场景详细规划：拆小场景（micro_scene，需按视频生成接口4-12秒硬限规划时长+粗估时长自查）、旁白/对话按剧本行直接映射为 content_blocks（不再需要现场抠引号/识别动作描写混入）、外观变体检测与 character_variant_overrides/location_variant_overrides 标注、visual_hint 撰写要求、check_scene_detail.py 校验规则与自查清单
     triggers: 小场景, micro_scene, 对话拆分, 旁白拆分, content_blocks, dialogue, narration, check_scene_detail, 时长, 4-12秒, visual_hint, 外观变体, character_variant_overrides
   - id: assets-and-audio
     path: references/04_assets_and_audio.md
@@ -53,9 +57,10 @@ resources:
 文件，用 `skill_resource_load(skill_name="novel-video-studio",
 resource_id=..., reason=...)` 按需加载，读完执行完这一阶段就可以把这
 份细节从上下文里卸载**（不需要的时候不用一直带着，下次要用再加载一次
-即可，文件不会变）。八份子资源分别对应六个阶段 + 两条贯穿性规范
-（`error-handling`、`revision-and-rollback`），加载时机见各自
-`description`；也可以用 `skill_resource_list` 查看当前完整清单。
+即可，文件不会变）。九份子资源分别对应七个阶段（阶段0——小说→剧本转换
++ 剧本校验；阶段1-6同原有流程）+ 两条贯穿性规范（`error-handling`、
+`revision-and-rollback`），加载时机见各自 `description`；也可以用
+`skill_resource_list` 查看当前完整清单。
 
 不要在还没进入某个阶段之前就把该阶段的子资源通读一遍——这样会造成
 上下文浪费；也不要凭记忆猜测某阶段的脚本参数，进入该阶段前先加载
@@ -65,8 +70,9 @@ resource_id=..., reason=...)` 按需加载，读完执行完这一阶段就可�
 
 ```
 .claude/skills/novel-video-studio/scripts/
+├── check_script.py               # 阶段0.5校验（剧本核查报告的机械把关）
 ├── check_entities.py             # 阶段1校验
-├── check_macro_scenes.py         # 阶段2校验
+├── check_macro_scenes.py         # 阶段2校验（时长弹性化：默认≤120秒建议值，≤240秒硬上限）
 ├── check_scene_detail.py         # 阶段3校验
 ├── voice_mapping.py / tts_engine.py / synthesize_scene_audio.py
 │                                  # 阶段4配音（synthesize_scene_audio.py 是入口）
@@ -87,13 +93,23 @@ resource_id=..., reason=...)` 按需加载，读完执行完这一阶段就可�
 ## 1. 整体流程与产物契约
 
 ```
-阶段1 novel-entity-extractor（角色/地点抽取，含 voice_profile，全文一次性）
-  → 阶段2 大场景切分（macro_scene，按剧情/时间地点切，全文一次性）
+阶段0 小说→剧本转换（script.md，全文一次性）
+  → 阶段0.5 剧本校验（script_review.yaml，Agent逐场次核对剧情/对话/说话人/无臆造）
+  → 阶段1 novel-entity-extractor（角色/地点抽取，含 voice_profile，基于 script.md 全文一次性）
+  → 阶段2 大场景切分（macro_scene，以剧本场次为单位归并/细分，全文一次性，弹性时长）
   → 对每个大场景 macro_scene_XX 依次循环：
         阶段3 详细规划(该场景) → 阶段4 素材(按需补)+配音(该场景)
         → 阶段5 小场景视频生成+大场景内合成(该场景) → 向用户展示、等确认
   → 全部大场景 done 后，阶段6 最终拼接转场
 ```
+
+**关键变化（相对旧版）**：阶段1-3 现在读的都是阶段0产出的结构化剧本
+`script.md`，不再直接碰小说原文——原文里"叙事视角混杂对话、引号嵌套
+动作描写"的非结构化特性是过去大场景/小场景切分反复出问题的根因，剧本
+化把"区分旁白/对话/说话人"这件事一次性提前做对，下游阶段3不再需要
+现场抠引号、识别动作描写混入。同时大场景时长约束从硬性 ≤120秒改为
+弹性建议值（剧情连续性强时允许放宽到 ≤240秒），避免为了凑时长机械
+切断连续戏剧张力。详见 `next_doc/novel_video_studio_fix_plan_v5.md`。
 
 **关键点：阶段3-5 是"以单个大场景为循环体"跑的，不是"全部大场景先
 过完阶段3、再全部过阶段4、再全部过阶段5"的批处理流水线**——用户需要
@@ -108,6 +124,8 @@ resource_id=..., reason=...)` 按需加载，读完执行完这一阶段就可�
 novel_output/小说名_20260911/
 ├── novel_project.json          # 全局配置（时长/画风/TTS方案/转场模式）
 ├── PROGRESS.md                 # 跨 session 记忆日志（决策/坑/用户要求），见 §3.3
+├── script.md                   # 阶段0产出的剧本（旁白/对话/说话人结构化），阶段1-3的输入源
+├── script_review.yaml          # 阶段0.5 Agent 剧本核查结论（剧情覆盖/对话覆盖/说话人归属/无臆造）
 ├── global/
 │   ├── characters.json         # 角色库，含 voice_profile、asset_path
 │   ├── locations.json          # 地点库，含 asset_path
@@ -175,11 +193,31 @@ novel_output/小说名_20260911/
 `appearance_variants` (object[]，可选，结构同角色，用于登记同一地点
 持续性的环境变化——昼夜/天气/陈设等）。
 
+**`script.md`**（阶段0产出，Markdown 自然语言剧本，全程只读，除非用户
+明确要求改剧本内容并联动回退下游）：按 `### 场次 N｜地点·时间（内景/
+外景）` 分段，段内是若干行 `旁白：...` 或 `角色名：台词`，格式规范见
+`00_script_conversion.md`。
+
+**`script_review.yaml`**（阶段0.5由 Agent 写入，`check_script.py`
+只读不写）：`checked_at`、`source_text_file`、`script_file`、
+`script_content_hash` (对 `script.md` 全文算的 `sha1` 前12位，加
+`sha1:` 前缀，用于过期检测)、`entries[]`，单条元素：`scene_no`
+(number，对应 `script.md` 的场次编号)、`status` (`"pass"` \|
+`"fail"`)、`checks` (object，固定四个键 `plot_coverage`/
+`dialogue_coverage`/`speaker_attribution`/`no_fabrication`，各自取值
+`"pass"` \| `"fail"`)、`notes` (string，简要记录实际对照了原文哪些
+段落/对话，不能是空话)。
+
 **`macro_scenes.yaml`** 单条 `macro_scenes[]` 元素：`id` (`macro_NN`)、
-`title`、`source_span`、`raw_text` (原文逐字，不可改写)、`summary`、
+`title`、`source_span` (对应 `script.md` 的场次编号，如 `"场次1"` 或
+合并多场次 `"场次1-2"`)、`raw_text` (**`script.md` 对应场次的剧本原文
+逐字复制，不可改写**——不是小说原文)、`summary`、
 `estimated_duration_sec` (number)、`char_count` (number)、
 `uses_characters`/`uses_locations` (id 数组)、`status`
-(`"pending"` → `"planned"` → `"done"`，阶段3/5分别推进)。
+(`"pending"` → `"planned"` → `"done"`，阶段3/5分别推进)。时长约束是
+**弹性**的：默认建议 `estimated_duration_sec` ≤120秒，剧情连续性强时
+允许放宽到 ≤240秒硬上限（超过240秒才是 `check_macro_scenes.py` 的
+error，120-240秒之间只是 warning）。
 
 **`macro_scene_XX/scene_detail.yaml`** 单条 `micro_scenes[]` 元素，
 字段随阶段推进逐步补齐（同一份文件，不同阶段各自负责自己那部分字段，
@@ -303,9 +341,11 @@ Agent 的核查**。四项核查维度、报告怎么写、脚本怎么把关，
 而不是一个大场景。
 
 例外（这些确实是全局一次性资源，跟"逐场景处理"不矛盾）：
-- 阶段1的角色/地点抽取——全文通读一次抽出全局角色地点表，不能只看
-  单个大场景（会漏掉后面场景才出现的角色）；
-- 阶段2的大场景切分——同样需要看全文划分边界；
+- 阶段0的小说→剧本转换 + 阶段0.5剧本校验——全文一次性转换、一次性
+  核查，不能只处理部分内容（场次之间的剧情连贯性需要通盘把握）；
+- 阶段1的角色/地点抽取——基于 `script.md` 全文通读一次抽出全局角色
+  地点表，不能只看单个大场景（会漏掉后面场景才出现的角色）；
+- 阶段2的大场景切分——同样需要看剧本全文划分边界；
 - 阶段4 Step 1 的角色/地点定妆图——按 `asset_path` 是否已生成去重，
   同一角色贯穿多个大场景只需生成一次，天然应该在处理第一个用到该角色
   的大场景时顺带生成，之后其它大场景直接复用，不用重复生成。
@@ -348,11 +388,13 @@ Agent 的核查**。四项核查维度、报告怎么写、脚本怎么把关，
 
 ### 3.1 新项目
 
-新项目从"进入阶段1"开始，向用户确认目标时长/横竖屏后立即写
+新项目从"进入阶段0"开始，向用户确认目标时长/横竖屏后立即写
 `novel_project.json`（细节见子资源 `entity-extraction`，
-`references/01_entity_extraction.md` Step 0），随后按上面的阶段顺序
-推进。同时在 `<output_dir>/PROGRESS.md` 写入第一条记录（格式见 §3.3），
-作为这个项目的跨 session 记忆起点。
+`references/01_entity_extraction.md` Step 0），随后先做小说→剧本转换 +
+剧本校验（子资源 `script-conversion`，`references/00_script_conversion.md`），
+`script.md` 校验通过后才进入阶段1，再按上面的阶段顺序推进。同时在
+`<output_dir>/PROGRESS.md` 写入第一条记录（格式见 §3.3），作为这个
+项目的跨 session 记忆起点。
 
 ### 3.2 新 session 接手已有项目——标准接手流程
 

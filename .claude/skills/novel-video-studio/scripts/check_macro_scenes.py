@@ -6,8 +6,14 @@
 依次读取 <output_dir> 下的 macro_scenes.yaml / global/characters.json /
 global/locations.json，检查：
 
-  1. 每条大场景的 char_count 是否 <= --max-chars（默认 1000）。
-  2. 每条大场景的 estimated_duration_sec 是否 <= --max-duration-sec（默认 120）。
+  1. 每条大场景的 estimated_duration_sec 是否超过弹性上限：
+     - 超过 --soft-max-duration-sec（默认 120 秒，建议时长）只报 warning，
+       不阻断——剧情连续性强、拆分会破坏戏剧节奏时允许保留；
+     - 超过 --hard-max-duration-sec（默认 240 秒，硬上限）才报 error，
+       必须回阶段2继续细分。
+     char_count 同理按弹性比例（soft-max-chars / hard-max-chars）检查，
+     仅作为辅助参考，时长才是主要判据。
+  2.（已合并进上一条，不再单独硬性卡字数）
   3. char_count 是否与 len(raw_text) 一致（防止字段和实际内容不同步）。
   4. estimated_duration_sec 是否与 char_count / --chars-per-sec（默认取
      common.ROUGH_CHARS_PER_SEC，与 check_scene_detail.py/
@@ -59,8 +65,10 @@ def _load_yaml(path: Path) -> dict:
 def check(
     output_dir: Path,
     novel_text_file: Path | None,
-    max_chars: int,
-    max_duration_sec: float,
+    soft_max_chars: int,
+    hard_max_chars: int,
+    soft_max_duration_sec: float,
+    hard_max_duration_sec: float,
     chars_per_sec: float,
     coverage_tolerance: float,
 ) -> dict:
@@ -97,11 +105,13 @@ def check(
 
         total_raw_chars += len(raw_text)
 
-        # 1. 字数硬约束
+        # 1. 字数弹性约束（仅作为时长的辅助参考，不单独作为硬性判据）
         if char_count is None:
             errors.append(f"大场景 {sid} 缺少 char_count 字段")
-        elif char_count > max_chars:
-            errors.append(f"大场景 {sid} 字数 {char_count} 超过硬约束 {max_chars} 字，需要继续细分")
+        elif char_count > hard_max_chars:
+            errors.append(f"大场景 {sid} 字数 {char_count} 超过硬上限 {hard_max_chars} 字，需要继续细分")
+        elif char_count > soft_max_chars:
+            warnings.append(f"大场景 {sid} 字数 {char_count} 超过建议值 {soft_max_chars} 字，请判断是否值得为保持剧情连续性而保留")
 
         # 3. char_count 与实际 raw_text 长度一致性
         if char_count is not None and char_count != len(raw_text):
@@ -110,12 +120,18 @@ def check(
                 f"{len(raw_text)} 不一致"
             )
 
-        # 2. 时长硬约束
+        # 2. 时长弹性约束：默认建议 ≤120s（超出仅 warning，剧情连续性强可保留），
+        #    硬上限 240s（超出才 error，必须回阶段2继续细分）
         if estimated_sec is None:
             errors.append(f"大场景 {sid} 缺少 estimated_duration_sec 字段")
-        elif estimated_sec > max_duration_sec:
+        elif estimated_sec > hard_max_duration_sec:
             errors.append(
-                f"大场景 {sid} 预估时长 {estimated_sec} 秒超过硬约束 {max_duration_sec} 秒，需要继续细分"
+                f"大场景 {sid} 预估时长 {estimated_sec} 秒超过硬上限 {hard_max_duration_sec} 秒，需要继续细分"
+            )
+        elif estimated_sec > soft_max_duration_sec:
+            warnings.append(
+                f"大场景 {sid} 预估时长 {estimated_sec} 秒超过建议值 {soft_max_duration_sec} 秒，"
+                f"如果是为了保持剧情连续性/戏剧张力可以保留，否则建议回阶段2继续细分"
             )
 
         # 4. 估算公式一致性（容忍 ±10% 或 ±2 秒，取较宽松者）
@@ -171,8 +187,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--novel-text-file", type=Path, default=None, help="原文文件路径，传了会额外做覆盖率检查")
-    parser.add_argument("--max-chars", type=int, default=1000)
-    parser.add_argument("--max-duration-sec", type=float, default=120.0)
+    parser.add_argument("--soft-max-chars", type=int, default=1000, help="字数建议上限，超过只 warning")
+    parser.add_argument("--hard-max-chars", type=int, default=2000, help="字数硬上限，超过才 error")
+    parser.add_argument("--soft-max-duration-sec", type=float, default=120.0, help="时长建议上限，超过只 warning")
+    parser.add_argument("--hard-max-duration-sec", type=float, default=240.0, help="时长硬上限，超过才 error")
     parser.add_argument(
         "--chars-per-sec", type=float, default=ROUGH_CHARS_PER_SEC,
         help=f"粗估语速（字/秒），默认与 common.ROUGH_CHARS_PER_SEC 一致"
@@ -186,8 +204,10 @@ def main() -> None:
     result = check(
         args.output_dir,
         args.novel_text_file,
-        args.max_chars,
-        args.max_duration_sec,
+        args.soft_max_chars,
+        args.hard_max_chars,
+        args.soft_max_duration_sec,
+        args.hard_max_duration_sec,
         args.chars_per_sec,
         args.coverage_tolerance,
     )

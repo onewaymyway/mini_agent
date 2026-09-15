@@ -13,15 +13,18 @@ raw_text 用于对话真实性校验），以及
      uses_characters 列表里。
   3. 每个 dialogue.text（去除空白/标点后）是否能在该大场景 raw_text
      （同样去除空白/标点后）里找到子串匹配——找不到判定"疑似臆造对话"，
-     这是硬性 error；进一步地，若原文里能提取出引号片段，dialogue.text
-     还必须落在某个引号片段内部（不能是"引号内容+引号外动作/转述"整句
-     糅合），这也是硬性 error。是否包含"一边"/"苦笑"/"脸色"/"告诉"等
-     动作神态类提示词，只作为 warning 提示——命中不代表一定错（这些字
-     完全可能就是角色台词本身的一部分，比如"爸爸想告诉你一件事"），
-     需要 Agent 结合上下文自行判断是否要挪到 narration，不再是阻断性
-     错误（详见 NARRATION_LEAK_HINTS 常量注释）。
-     另外，若原文里直引号 `"` 数量为奇数，说明引号提取用的全局奇偶配对
-     可能已经错位，脚本会额外给出一条 warning 提示人工复核对话边界。
+     这是硬性 error；进一步地，**raw_text 正常应该是阶段0剧本化产出的
+     script.md 片段（`角色名：台词` / `旁白：...` 结构化格式）**，脚本
+     优先按这个格式逐行提取"非旁白行"的台词内容，dialogue.text 必须
+     落在某一条台词行内部——因为剧本格式下动作/神态描写已经在阶段0转换
+     时被分离进了旁白行，这一步基本不会再出现"引号内容+动作描写糅合"
+     的情况。若 raw_text 检测不到任何一行符合"标签：内容"格式（说明
+     还是没经过剧本化的小说原文），才退化到旧版引号配对提取逻辑做兼容。
+     是否包含"一边"/"苦笑"/"脸色"/"告诉"等动作神态类提示词，只作为
+     warning 提示——命中不代表一定错（这些字完全可能就是角色台词本身的
+     一部分，比如"爸爸想告诉你一件事"），需要 Agent 结合上下文自行判断
+     是否要挪到 narration，不再是阻断性错误（详见 NARRATION_LEAK_HINTS
+     常量注释）。
   4. 每个 micro_scene 至少有一个 content_blocks，且不能全是空文本。
   5. micro_scene 的 id 在整个项目范围内（扫描所有 macro_scene_*/
      scene_detail.yaml）不重复。
@@ -160,7 +163,10 @@ def _extract_content_keywords(visual_hint: str) -> list[str]:
 def _extract_quoted_spans(raw_text: str) -> list[str]:
     """从原文里抠出所有引号包裹的片段（归一化后），用于校验对话是否只
     摘录了引号内的话语。找不到任何引号时返回空列表，调用方需要区分对待
-    （不能强行要求，只能退化成告警）。"""
+    （不能强行要求，只能退化成告警）。**这是兼容旧版（raw_text 仍是小说
+    原文而非剧本）的兜底逻辑**——阶段0引入剧本化流程之后，raw_text 正常
+    情况下应该是 script.md 里的剧本片段，优先使用下面的
+    `_extract_script_dialogue_spans`。"""
     spans: list[str] = []
     for left, right in _QUOTE_PAIRS:
         if left == right:
@@ -172,6 +178,34 @@ def _extract_quoted_spans(raw_text: str) -> list[str]:
             pattern = re.compile(re.escape(left) + r"([^" + re.escape(left + right) + r"]*)" + re.escape(right))
             spans.extend(m.group(1) for m in pattern.finditer(raw_text))
     return [s for s in (_normalize(s) for s in spans) if s]
+
+
+# 剧本格式里对话行固定写作 `角色名：台词`（半角/全角冒号均可），旁白行
+# 固定以 `旁白` 开头（`旁白：...`）。用一个简单的行首标签正则即可可靠
+# 区分"这一行是谁说的台词"还是"这一行是旁白"，不再需要像小说原文那样
+# 靠引号配对去猜——这是阶段0剧本化改造要解决的核心问题之一。
+_SCRIPT_LINE_RE = re.compile(r"^\s*([^\s：:]{1,20})[：:]\s*(.+?)\s*$")
+_NARRATION_LABELS = ("旁白",)
+
+
+def _extract_script_dialogue_spans(raw_text: str) -> list[str]:
+    """从剧本格式的 raw_text（`macro_scenes.yaml` 里存的是 script.md 对应
+    场次片段）里按行提取"角色名：台词"这一格式中的台词部分（归一化后），
+    旁白行（`旁白：...`）不计入。返回空列表说明 raw_text 不是剧本格式
+    （没有任何一行匹配 `标签：内容`），调用方此时应退化到
+    `_extract_quoted_spans` 走兼容分支。"""
+    spans: list[str] = []
+    for line in (raw_text or "").splitlines():
+        m = _SCRIPT_LINE_RE.match(line)
+        if not m:
+            continue
+        label, content = m.group(1), m.group(2)
+        if label in _NARRATION_LABELS:
+            continue
+        norm = _normalize(content)
+        if norm:
+            spans.append(norm)
+    return spans
 
 
 def _load_json(path: Path) -> dict:
@@ -283,23 +317,34 @@ def check(output_dir: Path, macro_id: str) -> dict:
 
     raw_text = macro_record.get("raw_text") or ""
     raw_text_normalized = _normalize(raw_text)
-    quoted_spans = _extract_quoted_spans(raw_text)
 
-    # 直引号 " 的提取方式是对全文做一次全局奇偶配对切分（左右引号是同一
-    # 个字符，没法像 “”「」『』那样按左右区分）。这意味着只要原文里出现
-    # 任何一个"多余的"或不成对的 "（引用书名/术语/嵌套引用等），从那个
-    # 字符往后所有引号片段的奇偶归属都会错位，进而导致后面所有台词被
-    # 误判为"不在引号内"。数量为奇数是这种错位的明确信号，提前给出
-    # warning 提醒人工复核，而不是让错位静默发生、只在下游报出一堆看不
-    # 出根因的"疑似臆造对话"。
-    straight_quote_count = raw_text.count('"')
-    if straight_quote_count % 2 != 0:
-        warnings.append(
-            f"大场景 {macro_id} 原文里直引号 \" 的数量为奇数（{straight_quote_count}个），"
-            f"引号片段提取用的是全局奇偶配对，数量为奇数说明配对大概率已经错位，"
-            f"后续基于 quoted_spans 的校验结果可能不准确，请人工确认原文对话边界"
-            f"（是否存在引用术语/书名等非对话用途的单个直引号）后再解读下面的校验结果"
-        )
+    # 优先按剧本格式（`角色名：台词` / `旁白：...`）提取对话片段——阶段0
+    # 剧本化改造之后，raw_text 正常应该是这种结构化格式。只有检测不到任何
+    # 一行符合"标签：内容"格式时，才退化到旧版的引号配对提取（兼容
+    # raw_text 仍是未经剧本化的小说原文的情况）。
+    script_dialogue_spans = _extract_script_dialogue_spans(raw_text)
+    if script_dialogue_spans:
+        quoted_spans = script_dialogue_spans
+    else:
+        quoted_spans = _extract_quoted_spans(raw_text)
+        # 直引号 " 的提取方式是对全文做一次全局奇偶配对切分（左右引号是同
+        # 一个字符，没法像 “”「」『』那样按左右区分）。这意味着只要原文里
+        # 出现任何一个"多余的"或不成对的 "（引用书名/术语/嵌套引用等），
+        # 从那个字符往后所有引号片段的奇偶归属都会错位，进而导致后面所有
+        # 台词被误判为"不在引号内"。数量为奇数是这种错位的明确信号，提前
+        # 给出 warning 提醒人工复核。**这个兼容分支只在 raw_text 不是剧本
+        # 格式时才会触发**；正常的剧本化流程下 raw_text 应该总能提取出
+        # script_dialogue_spans，不会走到这里。
+        straight_quote_count = raw_text.count('"')
+        if straight_quote_count % 2 != 0:
+            warnings.append(
+                f"大场景 {macro_id} 的 raw_text 未检测到剧本格式（`角色名：台词`），"
+                f"退化为旧版引号配对提取；且原文里直引号 \" 的数量为奇数"
+                f"（{straight_quote_count}个），引号片段提取用的是全局奇偶配对，"
+                f"数量为奇数说明配对大概率已经错位，后续基于 quoted_spans 的校验"
+                f"结果可能不准确，请确认 raw_text 是否应该来自阶段0的 script.md"
+                f"（剧本化流程下不应出现这个兼容分支）"
+            )
 
     scene_dir = output_dir / macro_scene_dir_name(macro_id)
     detail_data = _load_yaml(scene_dir / "scene_detail.yaml")
@@ -444,16 +489,17 @@ def check(output_dir: Path, macro_id: str) -> dict:
                 elif text:
                     norm_text = _normalize(text)
                     if quoted_spans:
-                        # 原文里能抠出引号片段，就必须严格校验：dialogue.text
-                        # 只能是某一段引号内容的子串（或恰好等于它），不能是
-                        # "引号内容+引号外的动作/转述"拼在一起的整句。
+                        # 剧本格式下 quoted_spans 是 script.md 里"角色名：台词"
+                        # 行提取出的台词内容；旧版兼容分支下是引号片段。两种
+                        # 情况下都要求 dialogue.text 必须落在某一条 span 内部
+                        # （或反之），不能是"台词+动作/转述"拼在一起的整句。
                         if not any(norm_text in span or span in norm_text for span in quoted_spans):
                             errors.append(
-                                f"小场景 {mid} 第{i+1}个 dialogue block 的文本不在原文任何"
-                                f"引号片段内，疑似把动作描写/叙事转述也当成了台词——dialogue "
-                                f"只应保留角色说的话本身，动作/神态描写请拆到独立的 narration "
-                                f"block（如果原文一句引号被动作打断成两段，应该拆成两个 "
-                                f"dialogue block，中间插一个 narration block）：{text!r}"
+                                f"小场景 {mid} 第{i+1}个 dialogue block 的文本在剧本原文的任何"
+                                f"一行对话（`角色名：台词`）里都找不到匹配，疑似把旁白/动作描写"
+                                f"也当成了台词，或者台词内容被改写——dialogue 只应逐字摘录剧本里"
+                                f"对应角色说的话本身，动作/神态描写请拆到独立的 narration block："
+                                f"{text!r}"
                             )
                     hit_hints = [kw for kw in _NARRATION_LEAK_HINTS if kw in text]
                     if hit_hints:
