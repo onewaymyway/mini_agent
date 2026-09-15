@@ -108,7 +108,7 @@ def _resolve_entry_asset_path(scene_id: str, entity_kind: str, eid: str, entry: 
     location_variant_overrides 指定了变体，优先使用该变体自己的 asset_path；
     变体存在但还没生成定妆图时，打印明确 warning 并退回该实体默认的
     asset_path（不是直接跳过——退回默认图仍然好过完全没有参考图，只是
-    一致性会打折，需要用户看到 warning 后回阶段4补生成变体定妆图）。"""
+    一致性会打折，需要用户看到 warning 后回阶段6补生成变体定妆图）。"""
     if not entry:
         print(f"  [警告] 小场景 {scene_id} 引用的{entity_kind} {eid} 在 global 库里不存在，跳过该引用图", file=sys.stderr)
         return None
@@ -168,7 +168,7 @@ def find_missing_assets(scenes: list, char_by_id: dict, loc_by_id: dict) -> list
     识的例外，不应该被本检查拦下；除此之外（包括 `reference`/`keyframe`/
     未设置留空）一律要求引用到的角色/地点必须已有 `asset_path`，因为跨
     大场景保持角色/地点外观一致，是本 skill 存在的核心价值，不能因为
-    Agent 图省事没跑阶段4就被绕过。
+    Agent 图省事没跑阶段6就被绕过。
 
     返回值：[(scene_id, entity_kind, entity_id), ...]，为空说明资产齐备。
     """
@@ -304,7 +304,7 @@ def generate_one_scene(client, scene: dict, char_by_id: dict, loc_by_id: dict,
                 "error": f"{scene_id} 的 video_mode=reference 但引用的角色/地点没有可用的定妆图"
                          f"（uses_characters={scene.get('uses_characters')}, "
                          f"uses_locations={scene.get('uses_locations')}）。这不应该发生——正常流程下"
-                         f"应该在阶段4 Step1 生成好定妆图、Step3 校验通过后才会跑到这里。请先回阶段4"
+                         f"应该在阶段6 Step1 生成好定妆图、Step3 校验通过后才会跑到这里。请先回阶段6"
                          f"补生成缺失的定妆图；如果这段场景确实不需要参考图，请在 scene_detail.yaml 里"
                          f"把这个 micro_scene 的 video_mode 显式改成 \"text\"，不要依赖自动降级。",
             }
@@ -393,7 +393,7 @@ def main():
     # 生成——不能让部分大场景先偷跑，图省事的后果应该在动手之前就暴露，
     # 而不是等生成了一半发现某个场景缺图。**这个检查没有任何绕过开关**：
     # 跨大场景保持角色/地点外观一致是本 skill 存在的核心价值，前置条件
-    # 不满足就必须先回阶段4解决，不允许用命令行参数跳过。
+    # 不满足就必须先回阶段6解决，不允许用命令行参数跳过。
     micro_id_filter_precheck = set(args.micro_id) if args.micro_id else None
     target_scenes_for_check: list = []
     for detail_file in detail_files:
@@ -416,8 +416,8 @@ def main():
             "action_required": (
                 "以下小场景引用的角色/地点还没有生成定妆图，跨大场景的角色/场景一致性无法保证，"
                 "本次运行已整体终止、没有生成任何 clip。这是硬性前置条件，没有绕过开关：请先回"
-                "阶段4 Step1（references/04_assets_and_audio.md）为缺失的角色/地点生成定妆图并"
-                "回填 asset_path，跑通阶段4 Step3 check_assets_and_audio_v2.py 之后再重新执行"
+                "阶段6 Step1（references/05_assets_and_audio.md）为缺失的角色/地点生成定妆图并"
+                "回填 asset_path，跑通阶段6 Step3 check_assets_and_audio_v2.py 之后再重新执行"
                 "本脚本；如果确实有某些场景不需要参考图（不追求跨场景一致性），请在对应"
                 "scene_detail.yaml 的 micro_scene 里把 video_mode 显式设为 \"text\"（这是唯一"
                 "合法的例外路径，仍然需要 Agent 逐条主动确认，不是命令行参数就能跳过的）。"

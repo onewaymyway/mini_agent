@@ -96,23 +96,40 @@ def main() -> None:
 
     characters = (_load_json(out_dir / "global" / "characters.json") or {}).get("characters", [])
     locations = (_load_json(out_dir / "global" / "locations.json") or {}).get("locations", [])
-    result["stages"]["1_entities"] = {
+    characters_missing_asset = [c["id"] for c in characters if not c.get("asset_path")]
+    locations_missing_asset = [l["id"] for l in locations if not l.get("asset_path")]
+    result["stages"]["2_entities"] = {
         "done": bool(characters or locations),
         "character_count": len(characters),
         "location_count": len(locations),
-        "characters_missing_asset": [c["id"] for c in characters if not c.get("asset_path")],
-        "locations_missing_asset": [l["id"] for l in locations if not l.get("asset_path")],
+        "characters_missing_asset": characters_missing_asset,
+        "locations_missing_asset": locations_missing_asset,
         "characters_missing_voice_profile": [c["id"] for c in characters if not c.get("voice_profile")],
     }
-    if not result["stages"]["1_entities"]["done"]:
+    if not result["stages"]["2_entities"]["done"]:
         result["next_actions"].append("进入 references/01_entity_extraction.md：抽取角色/地点")
+
+    # 阶段3：全局角色/地点定妆图集中生成。角色/地点主表已经抽取出来后，
+    # 必须先把主表里每一条的 asset_path 都补齐，才允许进入阶段4（大场景
+    # 切分）——这是本 skill 新增的硬性检查点，不能跳过。
+    assets_complete = result["stages"]["2_entities"]["done"] and not characters_missing_asset and not locations_missing_asset
+    result["stages"]["3_global_assets"] = {
+        "done": assets_complete,
+        "characters_missing_asset": characters_missing_asset,
+        "locations_missing_asset": locations_missing_asset,
+    }
+    if result["stages"]["2_entities"]["done"] and not assets_complete:
+        result["next_actions"].append(
+            "进入 references/02_global_assets.md：全局角色/地点定妆图还没生成完，"
+            f"缺角色 {characters_missing_asset or '无'}、缺地点 {locations_missing_asset or '无'}，"
+            "全部生成并校验通过之前不允许进入大场景切分")
 
     macro_yaml = _load_yaml(out_dir / "macro_scenes.yaml") or {}
     macro_list = macro_yaml.get("macro_scenes", []) or []
-    result["stages"]["2_macro_scenes"] = {"done": bool(macro_list), "count": len(macro_list)}
+    result["stages"]["4_macro_scenes"] = {"done": bool(macro_list), "count": len(macro_list)}
     if not macro_list:
-        if result["stages"]["1_entities"]["done"]:
-            result["next_actions"].append("进入 references/02_macro_scene_split.md：切分大场景")
+        if assets_complete:
+            result["next_actions"].append("进入 references/03_macro_scene_split.md：切分大场景")
     else:
         wanted = set(args.macro_id) if args.macro_id else None
         for m in macro_list:
@@ -158,29 +175,29 @@ def main() -> None:
             if m.get("status") == "done" and not macro_mp4.exists():
                 result["warnings"].append(
                     f"{mid} 标记为 done，但 {macro_mp4} 不存在，磁盘/状态不一致，"
-                    f"建议跑 invalidate.py 重置后重新走 05/06 阶段")
+                    f"建议跑 invalidate.py 重置后重新走 06/07 阶段")
             if m.get("status") == "pending" and detail is not None:
                 result["warnings"].append(
                     f"{mid} 已有 scene_detail.yaml 但 macro_scenes.yaml 状态仍是 pending，"
-                    f"可能上次中断在校验通过前，检查后手动改成 planned 或重新走 03 阶段校验")
+                    f"可能上次中断在校验通过前，检查后手动改成 planned 或重新走 05 阶段校验")
 
     done_macro = [m for m in result["macro_scenes"] if m.get("status") == "done"]
     planned_macro = [m for m in result["macro_scenes"] if m.get("status") == "planned"]
     pending_macro = [m for m in result["macro_scenes"] if m.get("status") == "pending"]
 
-    if pending_macro and result["stages"]["2_macro_scenes"]["done"]:
+    if pending_macro and result["stages"]["4_macro_scenes"]["done"]:
         result["next_actions"].append(
-            f"进入 references/03_scene_detail_planning.md：还有 {len(pending_macro)} "
+            f"进入 references/04_scene_detail_planning.md：还有 {len(pending_macro)} "
             f"个大场景待详细规划：{[m['id'] for m in pending_macro]}")
     if planned_macro:
         result["next_actions"].append(
-            f"进入 references/04_assets_and_audio.md + 05_scene_video_generation.md："
+            f"进入 references/05_assets_and_audio.md + 06_scene_video_generation.md："
             f"{len(planned_macro)} 个大场景已规划待配音/生成视频：{[m['id'] for m in planned_macro]}")
 
     final_video = out_dir / "video.mp4"
-    result["stages"]["6_final_compose"] = {"done": final_video.exists()}
+    result["stages"]["8_final_compose"] = {"done": final_video.exists()}
     if macro_list and not pending_macro and not planned_macro and done_macro and not final_video.exists():
-        result["next_actions"].append("进入 references/06_final_compose.md：所有大场景已 done，可以最终合成")
+        result["next_actions"].append("进入 references/07_final_compose.md：所有大场景已 done，可以最终合成")
     if final_video.exists():
         result["next_actions"].append("项目已产出 video.mp4；如需修改内容请走 references/revision_and_rollback.md")
 
@@ -193,7 +210,7 @@ def main() -> None:
             result["overall_stage"] = "in_progress"
         else:
             result["overall_stage"] = "macro_scenes_planned"
-    elif result["stages"]["1_entities"]["done"]:
+    elif result["stages"]["2_entities"]["done"]:
         result["overall_stage"] = "entities_extracted"
     else:
         result["overall_stage"] = "initialized"

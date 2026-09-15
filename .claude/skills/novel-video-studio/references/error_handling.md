@@ -1,8 +1,9 @@
 # API 错误处理规范（定妆图 / TTS / 视频生成通用）
 
 本 skill 里会产生外部 API 调用的三处：`gen_image_with_text`（定妆图，
-阶段4）、TTS 引擎（配音，阶段4）、`gen_video_with_text`（视频生成，
-阶段5）。三者共享同一套底层重试/切换逻辑（`agnes_key_pool.py` +
+阶段3的全局批量生成 + 阶段6的按需补生成）、TTS 引擎（配音，阶段6）、
+`gen_video_with_text`（视频生成，阶段7）。三者共享同一套底层重试/
+切换逻辑（`agnes_key_pool.py` +
 各自的 `agnes_tools.py`，属于 `gen_image_with_text`/`gen_video_with_text`
 skill 自带，本 skill 不重复实现），行为规律一致，按下面的方式解读和
 处理即可，**不需要另外手写重试逻辑**。
@@ -84,7 +85,7 @@ skill 自带，本 skill 不重复实现），行为规律一致，按下面的�
 `[FAST-FAIL]` 提示，直接重新整体跑一遍希望"这次能过"——参数错误不会
 因为重跑就自己变好，必须先改配置，改完只重跑那一个失败条目。
 
-## 三、TTS 配音（阶段4）：会长时间无输出但仍在正常运行
+## 三、TTS 配音（阶段6）：会长时间无输出但仍在正常运行
 
 `synthesize_scene_audio.py`（TTS 配音）走的是 CosyVoice/edge-tts 本地
 引擎，不经过 Agnes API，不适用上面两类基于 HTTP 状态码的分类，但有自己
@@ -118,7 +119,7 @@ skill 自带，本 skill 不重复实现），行为规律一致，按下面的�
   可能仍在后台跑一段时间，不是真正杀掉进程；
 - `tts_engine.py` 的时长读取要求 `ffprobe`/`mutagen` 至少一个可用，
   都失败时抛 `DurationReadError`；`synthesize_scene_audio.py`
-  （阶段4实际调用的入口）遇到这个异常会**立即整体终止脚本**（不是
+  （阶段6实际调用的入口）遇到这个异常会**立即整体终止脚本**（不是
   只记一条 error 继续跑），因为这类失败通常是环境本身坏了，不是单条
   文本的偶发问题——终止时打印 `"fatal": true` + `action_required`
   指引修复环境，这次运行里已成功的部分会先落盘不丢失。**不提供任何
@@ -132,7 +133,7 @@ skill 自带，本 skill 不重复实现），行为规律一致，按下面的�
 | 现象 | 常见原因 | 处理 |
 |---|---|---|
 | `invalid mode` / `invalid_request` + `param: mode` | `video_mode` 填了不支持的值 | 检查 `scene_detail.yaml` 该条目的 `video_mode`，改成 `reference`/`keyframe`/`text` 之一 |
-| 提示"没有可用的参考图片"后自动降级 | `video_mode: reference` 但对应角色/地点 `asset_path` 为空 | 回阶段4补生成定妆图，再 `--force` 重跑该条目 |
+| 提示"没有可用的参考图片"后自动降级 | `video_mode: reference` 但对应角色/地点 `asset_path` 为空 | 回阶段6补生成定妆图，再 `--force` 重跑该条目 |
 | 鉴权失败 / 401 | `AGNES_API_KEY`/`AGNES_API_KEYS` 未设置或已过期 | 提示用户检查环境变量/`providers.json` 配置，不属于脚本能自动修复的问题 |
 | prompt 触发内容审核类报错 | `prompt_en` 里有敏感措辞 | 改写该条目的 `prompt_en`，避免露骨/暴力等措辞，再定向重跑 |
 | 网络超时/连接失败 | 本地网络问题或对端服务抖动 | 脚本本身有重试；持续失败可稍后再整体重跑一次失败清单 |

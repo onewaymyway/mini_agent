@@ -12,7 +12,7 @@ content_blocks 配音）的产物。
      该变体自己的 asset_path 是否已生成（而不只是检查顶层条目的
      asset_path）——变体定妆图缺失会导致该镜头 reference 模式实际用的
      还是默认外观的参考图，画面与变体描述脱节，属于本项硬性 error，不
-     是等阶段5生成视频时才发现。
+     是等阶段7生成视频时才发现。
   2. 每个 micro_scene 的每个非空 content_block 是否都有对应的音频文件
      （narration_seg_<mid>_<i>.wav 或 dialogue_<speaker>_<mid>_<i>.wav，
      统一 .wav 后缀，与 compose_macro_scene.py 的读取约定一致），
@@ -20,7 +20,7 @@ content_blocks 配音）的产物。
   3. 每个 micro_scene 的 duration_sec 是否已回填（非 null）且落在
      4–12 秒范围内——超出范围说明该小场景需要回
      novel-scene-detail-planner 拆分/合并 content_blocks，重新配音。
-  4. 【时长合理性自查，warning，不依赖问题1是否已修好】用 03 文档同款的
+  4. 【时长合理性自查，warning，不依赖问题1是否已修好】用 04 文档同款的
      粗估语速（4.5字/秒）算出每个 micro_scene 全部 content_blocks 的理论
      时长，与实际 duration_sec 做比值，比值明显偏离（实际不足理论值40%
      或超过理论值250%）时报 warning，附带具体数字——这类偏离通常意味着

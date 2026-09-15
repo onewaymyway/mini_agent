@@ -12,7 +12,7 @@ ffmpeg/ffprobe/中文字幕字体的查找统一改用 common.py 的自动探测
 （`resolve_ffmpeg()`/`resolve_ffprobe()`/`resolve_font_path()`），
 详见 next_doc/novel_video_studio_fix_plan_v2.md 问题1。缺 clip 的
 小场景不再允许"借用相邻画面强制拉伸"糊弄过去（问题2），始终报错
-终止，回阶段5补齐。每个小场景的画面/字幕时长改为对齐该场景自己的
+终止，回阶段7补齐。每个小场景的画面/字幕时长改为对齐该场景自己的
 真实配音时长（而不是规划阶段量化到 4~12s 区间的预估 duration_sec），
 修复"配音先出来、画面和字幕慢一拍才跟上"且随场景数越往后越明显的
 问题（详见 next_doc/novel_video_studio_fix_plan_v3.md 问题1）。

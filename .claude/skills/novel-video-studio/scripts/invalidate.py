@@ -33,8 +33,8 @@ references/revision_and_rollback.md 里的传播规则重新走对应阶段的�
 删除已存在的 `video.mp4`（避免用户误把旧成片当最终结果），并在
 stdout 里明确提示。
 
-`macro_scene_XX/consistency_report.yaml`（阶段5 Agent 语义核查报告，
-见 05_scene_video_generation.md）的联动规则：
+`macro_scene_XX/consistency_report.yaml`（阶段7 Agent 语义核查报告，
+见 06_scene_video_generation.md）的联动规则：
 - `level=macro`：整个报告文件直接删除；
 - `level=detail`：目标 micro_scene 的核查条目直接删除（这个级别可能
   牵动 content_blocks/visual_hint/uses_characters 本身，即使这一刻
@@ -102,7 +102,7 @@ def _strip_consistency_report_entries(macro_dir: Path, micro_ids, removed: list,
     content_blocks/visual_hint/uses_characters 本身，即使 Agent 一时没有
     改动 prompt_en 文本（hash 因此不变），旧的核查结论也已经不能代表新
     内容——直接删掉条目，逼 check_consistency_report.py 报"缺少核查条目"，
-    强制阶段5重新走一遍 Step 0，而不是依赖 hash 校验（hash 只能查出
+    强制阶段7重新走一遍 Step 0，而不是依赖 hash 校验（hash 只能查出
     "prompt_en 文本变了"，查不出"prompt_en 没变但它所属的场景定义变了"
     这种情况）。"""
     report_path = macro_dir / "consistency_report.yaml"
@@ -116,7 +116,7 @@ def _strip_consistency_report_entries(macro_dir: Path, micro_ids, removed: list,
         _dump_yaml(report_path, report)
         warnings.append(
             f"{report_path} 中 {len(entries) - len(kept)} 条核查记录已失效并被删除，"
-            f"对应 micro_scene 需要在阶段5重新走一遍 Step 0 语义核查"
+            f"对应 micro_scene 需要在阶段7重新走一遍 Step 0 语义核查"
         )
 
 
@@ -172,7 +172,7 @@ def invalidate_macro(out_dir: Path, macro_id: str, level: str, micro_ids, remove
 
     # detail 级别可能牵动 content_blocks/visual_hint/uses_characters 本身，
     # 即使 prompt_en 文本这一刻还没改，旧的核查条目也已经不可信——直接
-    # 删掉，逼阶段5重新核查。assets/video 级别不改内容，只要 Agent 没动
+    # 删掉，逼阶段7重新核查。assets/video 级别不改内容，只要 Agent 没动
     # prompt_en 文本，旧核查结论仍然成立，留给 check_consistency_report.py
     # 的 hash 校验去把关就够了，不在这里强制清空。
     if level == "detail":

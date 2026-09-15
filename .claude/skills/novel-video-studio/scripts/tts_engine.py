@@ -151,7 +151,7 @@ def _try_cosyvoice(
     `ThreadPoolExecutor` 包一层来做超时控制（跨平台，不依赖 Unix-only 的
     `signal.alarm`）。注意 Python 线程无法被强制中断，超时只是不再等待
     结果、把调用判定为失败并走降级，底层线程可能仍在后台跑一段时间，这
-    是一个已知的权衡（见 references/04_assets_and_audio.md 说明）。
+    是一个已知的权衡（见 references/05_assets_and_audio.md 说明）。
     """
 
     def _do_inference() -> None:
@@ -237,8 +237,8 @@ def _run_edge_tts(
     except Exception:
         # ffmpeg 不可用/转码失败：直接把原始 mp3 数据落到 out_path 这个约定
         # 路径上（内容仍是 mp3 编码，扩展名可能对不上，但至少调用方按固定
-        # 路径能找到文件；ffmpeg 是本 skill 阶段4的硬依赖，正常环境不会走到
-        # 这个分支，见 references/04_assets_and_audio.md 的依赖说明）。
+        # 路径能找到文件；ffmpeg 是本 skill 阶段6的硬依赖，正常环境不会走到
+        # 这个分支，见 references/05_assets_and_audio.md 的依赖说明）。
         shutil.move(str(tmp_mp3), str(out_path))
 
 

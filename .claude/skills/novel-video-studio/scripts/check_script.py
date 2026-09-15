@@ -25,7 +25,7 @@ notes 是不是真的认真核对过原文）依然完全依赖 Agent 在 Step 3
   5.（warning）entry.notes 过短（默认阈值15字符），提示核查可能走了
      过场，不阻断；
   6.（可选，传 --novel-text-file 时）剧本总字数与小说原文总字数的比例
-     是否在合理范围内（默认 ±30%，比阶段2的原文覆盖率检查更宽松，因为
+     是否在合理范围内（默认 ±30%，比阶段4的原文覆盖率检查更宽松，因为
      旁白允许适度转述改写）。
 
 设计上不对文件做任何自动修复。
@@ -64,7 +64,7 @@ _SCENE_HEADING_RE = re.compile(r"^###\s*场次\s*(\d+)\s*｜", re.MULTILINE)
 
 
 def script_content_hash(script_text: str) -> str:
-    """与阶段5 consistency_report 的哈希方式保持一致：对整份 script.md
+    """与阶段7 consistency_report 的哈希方式保持一致：对整份 script.md
     原文（不做任何清洗/归一化）取 sha1，取前12位十六进制并加前缀，用于
     判断核查通过之后剧本内容是否又被改动过。"""
     return "sha1:" + hashlib.sha1(script_text.encode("utf-8")).hexdigest()[:12]
@@ -107,7 +107,7 @@ def check(output_dir: Path, novel_text_file: Path | None, coverage_tolerance: fl
     review_data = _load_yaml(review_path)
     if not review_data:
         errors.append(
-            f"{review_path} 不存在或为空——阶段0.5 的 Agent 语义核查还没做，"
+            f"{review_path} 不存在或为空——阶段1 的 Agent 语义核查还没做，"
             f"必须先逐场次核查并写出报告，才能进入本脚本机械校验"
         )
         return {
@@ -122,7 +122,7 @@ def check(output_dir: Path, novel_text_file: Path | None, coverage_tolerance: fl
         errors.append(
             f"script_review.yaml 已过期：记录的 script_content_hash={recorded_hash!r} 与当前 "
             f"script.md 内容的哈希 {expected_hash!r} 不一致，说明核查通过之后剧本又被改动过，"
-            f"报告不再代表当前内容，必须重新走一遍阶段0.5 Step 3 核查并覆盖 script_review.yaml"
+            f"报告不再代表当前内容，必须重新走一遍阶段1 Step 3 核查并覆盖 script_review.yaml"
         )
 
     entries = review_data.get("entries", []) if isinstance(review_data, dict) else []
@@ -133,7 +133,7 @@ def check(output_dir: Path, novel_text_file: Path | None, coverage_tolerance: fl
     if missing_scenes:
         errors.append(
             f"script_review.yaml 缺少以下场次的核查条目：{sorted(missing_scenes)}，"
-            f"必须先在阶段0.5 Step 3 逐场次核查并写入报告"
+            f"必须先在阶段1 Step 3 逐场次核查并写入报告"
         )
 
     for scene_no, entry in entry_by_no.items():
@@ -141,7 +141,7 @@ def check(output_dir: Path, novel_text_file: Path | None, coverage_tolerance: fl
         if overall_status != "pass":
             errors.append(
                 f"场次 {scene_no} 的核查报告 status={overall_status or '<空>'!r}，未标记为 pass，"
-                f"不允许进入阶段1——回阶段0 Step 1 修正剧本内容直到四项子检查都通过，再更新报告"
+                f"不允许进入阶段2——回阶段0 Step 1 修正剧本内容直到四项子检查都通过，再更新报告"
             )
 
         checks = entry.get("checks") or {}
@@ -152,7 +152,7 @@ def check(output_dir: Path, novel_text_file: Path | None, coverage_tolerance: fl
         if missing_or_failed:
             errors.append(
                 f"场次 {scene_no} 的核查报告缺少或未通过以下子检查：{missing_or_failed}"
-                f"（应各自为 'pass'），回阶段0.5 Step 3 逐项核查补全"
+                f"（应各自为 'pass'），回阶段1 Step 3 逐项核查补全"
             )
 
         notes = (entry.get("notes") or "").strip()

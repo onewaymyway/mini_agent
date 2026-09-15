@@ -1,8 +1,8 @@
-# 阶段1：全局角色/地点抽取
+# 阶段2：全局角色/地点抽取
 
 **依赖**：无外部 API，纯 Agent 推理 + 文件读写。
 **校验脚本**：`scripts/check_entities.py`。
-**输入源**：**阶段0产出并通过阶段0.5校验的 `script.md`（剧本），不是
+**输入源**：**阶段0产出并通过阶段1校验的 `script.md`（剧本），不是
 小说原文**——下文提到的"原文""全文"均指剧本内容；剧本里角色名已经在
 `角色名：台词` 行里显式标出，抽取角色时可以直接参考这些标签，一致性
 比直接读小说原文更好。
@@ -29,7 +29,7 @@
 ```
 
 `transition_mode` 先按默认值 `cut` 写入，用户明确要转场效果时改成
-`fade`（也可以留到阶段6再问）。
+`fade`（也可以留到阶段8再问）。
 
 ### Step 1：确定全书统一美术风格
 
@@ -58,13 +58,13 @@
    - `nationality_or_ethnicity`：国籍/种族背景，没有明确设定时可以按
      小说的时代/地域背景给一个合理默认（如古代背景小说默认"Chinese"）；
    - `voice_profile`：音色描述（性别/年龄段/音色特点，如"青年女声，清亮
-     活泼"），下游阶段4用它映射 TTS 音色；
+     活泼"），下游阶段6用它映射 TTS 音色；
    - `visual_anchor_en`：**锁定视觉锚点**，一句话英文短语，浓缩这个角色
      "无论出现在哪个场景都不能变"的核心外观特征——年龄段+性别+体型+
      发型发色+标志性穿着/配饰+显著特征（疤痕/眼镜等），例如：
      `"a young Chinese man in his twenties, lean build, short black hair,
      wearing a worn grey robe, faint scar on left cheek"`。
-     这句话会被阶段5的每一条 `prompt_en` 引用/复用，是保证同一角色在
+     这句话会被阶段7的每一条 `prompt_en` 引用/复用，是保证同一角色在
      不同大场景画面里不跑偏的关键字段，**必须具体到能直接塞进画面
      prompt 里使用的程度，不能写成"外貌普通""气质出众"这类无法转化为
      画面元素的空泛描述**。写这句话时逐项过一遍下面几类特征，原文有
@@ -145,7 +145,7 @@ Step 2.6）处理即可，不需要拆成独立地点条目——**地点拆分�
 `micro_scene` 不需要动，后续新规划到具体子空间的 `micro_scene` 直接
 引用新拆出来的地点 id。
 
-`check_scene_detail.py` 会在阶段3对每个大场景做一次弱启发式提示（同一
+`check_scene_detail.py` 会在阶段5对每个大场景做一次弱启发式提示（同一
 地点 id 被多个 micro_scene 引用、且这些 micro_scene 的 `visual_hint`
 彼此完全没有字面重叠时报 warning）——这只是"提醒去看一眼"，不是判断
 依据本身，最终是否需要拆分、拆得对不对，要回到这里的判断标准结合原文
@@ -157,7 +157,7 @@ Step 2.6）处理即可，不需要拆成独立地点条目——**地点拆分�
 `visual_anchor_en` 假设的是"这个角色/地点无论出现在哪个场景外观都不变"，
 但小说里经常有原文明确写出的外观变化：换装、变装、季节更替、受伤后
 包扎绷带、地点昼夜/天气/装饰变化等。这类变化如果不登记，会出现两种
-坏结果：要么阶段5硬套着原锚点写 prompt_en，画面和原文明确交代的外观
+坏结果：要么阶段7硬套着原锚点写 prompt_en，画面和原文明确交代的外观
 对不上；要么每次都各写各的，同一次变化期间的多个小场景外观互相也对
 不上（这也是"同一大场景内场景/角色前后不一致"的常见来源之一）。
 
@@ -190,8 +190,8 @@ Step 2.6）处理即可，不需要拆成独立地点条目——**地点拆分�
 字段说明：
 - `variant_id`：`var_NN`，在该角色/地点内部唯一（不要求全局唯一）；
 - `label_zh`：一句话中文标签，方便人工快速识别这是哪个变体；
-- `trigger_zh`：**必填**，引用原文依据（章节+摘录或转述），阶段5/
-  阶段3回补时用来判断"这个变体现在该不该生效"，也是防止滥用变体的
+- `trigger_zh`：**必填**，引用原文依据（章节+摘录或转述），阶段7/
+  阶段5回补时用来判断"这个变体现在该不该生效"，也是防止滥用变体的
   留痕；
 - `visual_override_en`：完整的、可以直接整句替换 `visual_anchor_en`
   使用的英文描述——**要在不可变的核心特征（脸型/体型/发色/显著特征）
@@ -200,27 +200,27 @@ Step 2.6）处理即可，不需要拆成独立地点条目——**地点拆分�
   个人"；
 - `applies_scope`：这个变体生效的范围，写 `macro_id` 列表（该大场景
   内该变体默认全程生效）或具体 `micro_id`（只在个别镜头生效，更精确）；
-  阶段3/阶段5会校验当前场景是否落在这个范围内，不在范围内不允许使用
+  阶段5/阶段7会校验当前场景是否落在这个范围内，不在范围内不允许使用
   这个变体（见 `check_scene_detail.py` 校验项8）；
   超出这个范围后默认自动回落到主 `visual_anchor_en`，不需要显式声明
   "变体结束"；
 - `asset_path`：可选，只有这个变体的外观差异较大、会在多个大场景反复
-  用到、值得单独生成一张定妆图（用于阶段5 `video_mode: reference`）
-  时才生成，见 `04_assets_and_audio.md`；多数情况下靠 `prompt_en`
+  用到、值得单独生成一张定妆图（用于阶段7 `video_mode: reference`）
+  时才生成，见 `05_assets_and_audio.md`；多数情况下靠 `prompt_en`
   文本里的 `visual_override_en` 覆盖即可，不必每个变体都出图。
 
-变体的登记时机：可以在阶段1全文抽取时就发现并登记（如果通读时已经
-看到换装剧情），更常见的是阶段3处理到具体大场景时才发现"这段原文里
+变体的登记时机：可以在阶段2全文抽取时就发现并登记（如果通读时已经
+看到换装剧情），更常见的是阶段5处理到具体大场景时才发现"这段原文里
 角色的外观和当前锚点对不上"，此时按模式B的方式，只更新这一个角色的
 `appearance_variants`（不需要重新跑全文抽取），登记完立即覆盖写回
-`characters.json`/`locations.json`，再回阶段3把这条 micro_scene 的
+`characters.json`/`locations.json`，再回阶段5把这条 micro_scene 的
 `character_variant_overrides`/`location_variant_overrides` 填上对应
-`variant_id`（字段说明见 `03_scene_detail_planning.md`）。
+`variant_id`（字段说明见 `04_scene_detail_planning.md`）。
 
 ### Step 2.5：一致性字段自查（跑 Step 3 校验之前）
 
 对每个新写/更新的角色/地点过一遍：`visual_anchor_en` 是否具体到能直接
-被阶段5摘抄进 `prompt_en` 里（反例：`"看起来很有气场"`；正例：见上面
+被阶段7摘抄进 `prompt_en` 里（反例：`"看起来很有气场"`；正例：见上面
 示例）；`age_range`/`gender` 是否跟 `description_zh`/`description_en`
 里的年龄性别描述一致，不要出现"描述里写着中年人，`age_range` 却填
 `youth`"这种同一份档案内部自相矛盾的情况——这类矛盾脚本本身检测不出来
@@ -235,18 +235,18 @@ python .claude/skills/novel-video-studio/scripts/check_entities.py <output_dir>
 
 不通过（重复 id、角色缺 `voice_profile`/`visual_anchor_en`/`age_range`/
 `gender` 等必填字段）→ 回 Step 2 修复对应条目，重新跑校验，直到通过才
-能进入阶段2。
+能进入阶段3（全局角色/地点定妆图生成，`references/02_global_assets.md`）。
 
-## 模式 B：单点补抽取（供阶段3回调）
+## 模式 B：单点补抽取（供阶段5回调）
 
-阶段3规划某个大场景时，若发现引用了全局库里不存在的角色/地点：
+阶段5规划某个大场景时，若发现引用了全局库里不存在的角色/地点：
 
 - 输入：**只给该大场景的 `raw_text` 片段**（不是全文），提示"这段文字
   提到了但全局库没有的角色/地点是什么"；
 - 流程：只对这一小段文本做与 Step 2 相同的抽取+合并+写回逻辑（合并
   对象仍是完整的全局库文件，只是本次处理范围缩小到一个片段）；
 - 完成后同样跑 `check_entities.py`，通过后把新增角色/地点 id 返回给
-  调用方，供其触发阶段4补生成对应素材。
+  调用方，供其触发阶段6补生成对应素材。
 
 不需要重新跑全文，只处理指定片段，长篇小说增量维护成本可控。
 
@@ -258,14 +258,14 @@ python .claude/skills/novel-video-studio/scripts/check_entities.py <output_dir>
 `child`/`teen`/`youth`/`middle_aged`/`elderly` 之一；每个地点
 `description_zh`/`description_en`/`visual_anchor_en` 非空；同名未合并
 的启发式提示（仅警告不阻断）。退出码非 0 时不允许交付下游——
-`visual_anchor_en`/`age_range`/`gender` 是阶段5 Agent 语义一致性核查
-（见 `05_scene_video_generation.md`）能否有依据可查的前提，这里不把关，
+`visual_anchor_en`/`age_range`/`gender` 是阶段7 Agent 语义一致性核查
+（见 `06_scene_video_generation.md`）能否有依据可查的前提，这里不把关，
 下游的核查就无从查起。
 
 **`appearance_variants` 不是本脚本的校验范围**（它是可选字段，本脚本
 只检查非空数组内每条记录的字段是否完整：`variant_id`/`trigger_zh`/
 `visual_override_en` 非空，`variant_id` 在同一实体内不重复；`variant_id`
-被哪些 `micro_scene` 实际引用、引用范围是否越界，属于阶段3
+被哪些 `micro_scene` 实际引用、引用范围是否越界，属于阶段5
 `check_scene_detail.py` 的校验范围，见该文档校验项8）。
 
 **向用户展示**：识别出的角色/地点清单（数量+简要身份+声音设定一句话）、
@@ -274,14 +274,14 @@ python .claude/skills/novel-video-studio/scripts/check_entities.py <output_dir>
 ## 已知限制
 
 - 分块大小是经验值，超长章节实体密度很高时仍可能需要进一步细分；
-- `voice_profile` 只是文字描述，具体映射到 TTS 音色由阶段4负责；
+- `voice_profile` 只是文字描述，具体映射到 TTS 音色由阶段6负责；
 - 人脸参考照片机制未实现，`face_reference_id` 先占位；
 - `visual_anchor_en`/`age_range`/`gender` 之间是否互相印证（比如
   `visual_anchor_en` 里写的年龄描述和 `age_range` 分组是否对得上）只能
   靠 Step 2.5 人工自查，`check_entities.py` 只检查字段非空，不做跨字段
   语义校验；`age_range` 只有五档粗粒度分组，无法表达"看起来比实际年龄
-  年轻"这类细节，下游一致性核查（阶段5，全部由 Agent 语义核查完成，见
-  `05_scene_video_generation.md`）也依赖这五档粗粒度分组，查不出更细微
+  年轻"这类细节，下游一致性核查（阶段7，全部由 Agent 语义核查完成，见
+  `06_scene_video_generation.md`）也依赖这五档粗粒度分组，查不出更细微
   的年龄描述偏差；
 - `appearance_variants` 的 `trigger_zh` 是否真的对应原文、`visual_override_en`
   是否真的只改了服装/发型而没有意外改变角色的核心特征，都依赖 Agent
@@ -290,5 +290,5 @@ python .claude/skills/novel-video-studio/scripts/check_entities.py <output_dir>
   （比如两个变体同时声明覆盖同一个 macro_id）也不在脚本校验范围，出现
   这种情况时以 `scene_detail.yaml` 里 micro_scene 实际填的
   `character_variant_overrides` 为准，脚本会校验那个引用本身是否合法
-  （见阶段3 `check_scene_detail.py` 校验项8），但不检测变体定义之间
+  （见阶段5 `check_scene_detail.py` 校验项8），但不检测变体定义之间
   是否互相矛盾。

@@ -10,7 +10,7 @@ global/locations.json，检查：
      - 超过 --soft-max-duration-sec（默认 120 秒，建议时长）只报 warning，
        不阻断——剧情连续性强、拆分会破坏戏剧节奏时允许保留；
      - 超过 --hard-max-duration-sec（默认 240 秒，硬上限）才报 error，
-       必须回阶段2继续细分。
+       必须回阶段4继续细分。
      char_count 同理按弹性比例（soft-max-chars / hard-max-chars）检查，
      仅作为辅助参考，时长才是主要判据。
   2.（已合并进上一条，不再单独硬性卡字数）
@@ -121,7 +121,7 @@ def check(
             )
 
         # 2. 时长弹性约束：默认建议 ≤120s（超出仅 warning，剧情连续性强可保留），
-        #    硬上限 240s（超出才 error，必须回阶段2继续细分）
+        #    硬上限 240s（超出才 error，必须回阶段4继续细分）
         if estimated_sec is None:
             errors.append(f"大场景 {sid} 缺少 estimated_duration_sec 字段")
         elif estimated_sec > hard_max_duration_sec:
@@ -131,7 +131,7 @@ def check(
         elif estimated_sec > soft_max_duration_sec:
             warnings.append(
                 f"大场景 {sid} 预估时长 {estimated_sec} 秒超过建议值 {soft_max_duration_sec} 秒，"
-                f"如果是为了保持剧情连续性/戏剧张力可以保留，否则建议回阶段2继续细分"
+                f"如果是为了保持剧情连续性/戏剧张力可以保留，否则建议回阶段4继续细分"
             )
 
         # 4. 估算公式一致性（容忍 ±10% 或 ±2 秒，取较宽松者）

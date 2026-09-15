@@ -78,19 +78,20 @@ python .claude/skills/novel-video-studio/scripts/invalidate.py \
 
 ## Step 3：从被清空的那一层重新往后走
 
-- `--level macro` → 回 `references/03_scene_detail_planning.md` 重新
-  规划该大场景，然后正常走完阶段4/5；
-- `--level detail`/`assets` → 直接进入 `references/04_assets_and_audio.md`，
-  用 `--macro-id` 只重新配音该大场景，再走阶段5；
-- `--level video` → 直接进入 `references/05_scene_video_generation.md`，
+- `--level macro` → 回 `references/04_scene_detail_planning.md` 重新
+  规划该大场景，然后正常走完阶段6/7；
+- `--level detail`/`assets` → 直接进入 `references/05_assets_and_audio.md`，
+  用 `--macro-id` 只重新配音该大场景，再走阶段7；
+- `--level video` → 直接进入 `references/06_scene_video_generation.md`，
   用 `--macro-id --micro-id` 只重新生成对应小场景视频，再重新跑
   `compose_macro_scene.py` 合成该大场景；
-- `--global-entity` → 先确认新的定妆图/配音已生成（阶段4），受影响的
-  每个大场景都按 `assets` 级别走完阶段4/5。
+- `--global-entity` → 先确认新的定妆图/配音已生成（阶段6，或全新
+  角色/地点属于阶段3范围），受影响的每个大场景都按 `assets` 级别
+  走完阶段6/7。
 
 全部处理完后，跑一次 `check_project_state.py` 确认：受影响的大场景
 `status` 已经重新变回 `done`，其它未受影响的大场景状态没有被误改。
-最后**必须重新跑一次阶段6**（`compose_final_video_v2.py`）产出新的
+最后**必须重新跑一次阶段8**（`compose_final_video_v2.py`）产出新的
 `video.mp4`——旧的已经在 Step 2 被删除，不会有人误用旧成片。
 
 ## 一个例子
@@ -104,9 +105,9 @@ python .claude/skills/novel-video-studio/scripts/invalidate.py \
 2. 跑 `invalidate.py <output_dir> --macro-id macro_02 --level detail`；
 3. 跑 `check_scene_detail.py <output_dir> macro_02` 确认改过的对话
    通过子串校验；
-4. 跑阶段4的 `synthesize_scene_audio.py --macro-id macro_02` 重新配音；
-5. 跑阶段5的 `generate_scene_videos_v2.py --macro-id macro_02` +
+4. 跑阶段6的 `synthesize_scene_audio.py --macro-id macro_02` 重新配音；
+5. 跑阶段7的 `generate_scene_videos_v2.py --macro-id macro_02` +
    `compose_macro_scene.py macro_02` 重新生成视频+合成；
-6. 跑阶段6的 `compose_final_video_v2.py` 产出新的 `video.mp4`。
+6. 跑阶段8的 `compose_final_video_v2.py` 产出新的 `video.mp4`。
 
 不需要动其它任何大场景。

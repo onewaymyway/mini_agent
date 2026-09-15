@@ -6,7 +6,7 @@ prompt_en 是否一致）。
 背景：角色/地点外观一致性、跨场景漂移、prompt_en 与情节内容是否对得上
 这几类判断本质上需要语义理解，机械关键词匹配既会漏检（同义词改写后
 语义变了查不出）也会误报（合法台词/合法措辞被词表命中），所以本 skill
-不再用脚本做这件事本身——语义核查完全由 Agent 在阶段5 Step 0 完成，
+不再用脚本做这件事本身——语义核查完全由 Agent 在阶段7 Step 0 完成，
 核查结论写入结构化的 `consistency_report.yaml`。
 
 本脚本只做纯机械的"把关"，不参与、也没有能力参与任何语义判断：
@@ -15,12 +15,12 @@ prompt_en 是否一致）。
   2.（error）每条 report 记录的 4 项子检查（character_appearance /
      location_appearance / cross_scene_drift / content_alignment）
      以及总体 `status` 是否都是 `"pass"`——只要有一项不是 pass 就必须
-     打回阶段5重新核查，不允许"大部分通过就先生成"；
+     打回阶段7重新核查，不允许"大部分通过就先生成"；
   3.（error）**过期检测**：report 条目里记录的 `prompt_en_hash`
      （核查时那一刻 prompt_en 文本的哈希）是否与 `scene_detail.yaml`
      里**当前**的 `prompt_en` 文本哈希一致——不一致说明 prompt_en 在
      核查通过之后又被改动过（比如核查后又手动调整了一下措辞），报告
-     已经不能代表当前这版内容，必须视为未核查，重新走阶段5 Step 0；
+     已经不能代表当前这版内容，必须视为未核查，重新走阶段7 Step 0；
   4.（error）**锚点覆盖字段完整性**：`anchor_source`/
      `anchor_coverage_judgement` 两个字段是否都非空，`anchor_source`
      的 key 是否覆盖了该 micro_scene 全部 `uses_characters`/
@@ -49,7 +49,7 @@ prompt_en 是否一致）。
 始终是"文本层面能机械核实的部分"（字段是否填、摘句是否真实存在于
 原文、多条记录之间是否异常雷同），语义判断本身（摘出来的证据是否真的
 支持这条 prompt_en 符合情节、角色外观改写有没有暗中反转语义）依然
-完全依赖 Agent 在阶段5 Step 0 是否认真核对，本脚本查不出、也不负责
+完全依赖 Agent 在阶段7 Step 0 是否认真核对，本脚本查不出、也不负责
 查"报告写的 pass 是不是名副其实"。
 
 用法：
@@ -126,7 +126,7 @@ def _load_yaml(path: Path) -> dict:
 
 def prompt_hash(prompt_en: str) -> str:
     """核查报告里用来判定"是否还是核查时那版 prompt_en"的哈希，
-    与阶段5文档里 Agent 手工计算/记录的方式保持一致：对 prompt_en 原文
+    与阶段7文档里 Agent 手工计算/记录的方式保持一致：对 prompt_en 原文
     （不做任何清洗/归一化，改一个字符都要能检测出来）取 sha1，取前
     12 位十六进制并加前缀，足够避免误判为相同，又不会太长难以誊抄。
     """
@@ -165,7 +165,7 @@ def check(output_dir: Path, macro_id: str, micro_ids: list[str] | None) -> dict:
 
     if not report_data:
         errors.append(
-            f"{report_path} 不存在或为空——阶段5 Step 0 的 Agent 语义核查还没做，"
+            f"{report_path} 不存在或为空——阶段7 Step 0 的 Agent 语义核查还没做，"
             f"必须先逐条核查并写出报告，才能进入 Step 0.5 本脚本校验"
         )
         return {"ok": False, "errors": errors, "warnings": warnings, "summary": {"macro_id": macro_id}}
@@ -184,7 +184,7 @@ def check(output_dir: Path, macro_id: str, micro_ids: list[str] | None) -> dict:
         if entry is None:
             errors.append(
                 f"micro_scene {mid} 已写 prompt_en 但 consistency_report.yaml 里找不到对应"
-                f"核查条目，必须先在阶段5 Step 0 对这条做 Agent 语义核查并写入报告"
+                f"核查条目，必须先在阶段7 Step 0 对这条做 Agent 语义核查并写入报告"
             )
             continue
 
@@ -203,7 +203,7 @@ def check(output_dir: Path, macro_id: str, micro_ids: list[str] | None) -> dict:
         if overall_status != "pass":
             errors.append(
                 f"micro_scene {mid} 的核查报告 status={overall_status or '<空>'!r}，未标记为 "
-                f"pass，不允许进入视频生成——回阶段5 Step 0 修正 prompt_en 直到四项子检查"
+                f"pass，不允许进入视频生成——回阶段7 Step 0 修正 prompt_en 直到四项子检查"
                 f"都通过，再更新报告"
             )
 
@@ -215,7 +215,7 @@ def check(output_dir: Path, macro_id: str, micro_ids: list[str] | None) -> dict:
         if missing_or_failed:
             errors.append(
                 f"micro_scene {mid} 的核查报告缺少或未通过以下子检查："
-                f"{missing_or_failed}（应各自为 'pass'），回阶段5 Step 0 逐项核查补全"
+                f"{missing_or_failed}（应各自为 'pass'），回阶段7 Step 0 逐项核查补全"
             )
 
         notes = (entry.get("notes") or "").strip()
@@ -241,7 +241,7 @@ def check(output_dir: Path, macro_id: str, micro_ids: list[str] | None) -> dict:
             errors.append(
                 f"micro_scene {mid} 的 anchor_source 没有覆盖以下引用到的角色/地点 id："
                 f"{missing_anchor_ids}——每个被引用的角色/地点都必须写明这条 prompt_en "
-                f"实际对照的是它的 visual_anchor_en 还是某个 variant_id，回阶段5 Step 0 补全"
+                f"实际对照的是它的 visual_anchor_en 还是某个 variant_id，回阶段7 Step 0 补全"
             )
 
         judgement = (entry.get("anchor_coverage_judgement") or "").strip()
@@ -249,7 +249,7 @@ def check(output_dir: Path, macro_id: str, micro_ids: list[str] | None) -> dict:
             errors.append(
                 f"micro_scene {mid} 缺少 anchor_coverage_judgement（Agent 需要用自然语言写清楚"
                 f"这条 prompt_en 有没有把 anchor_source 指向的锚点关键特征体现出来，有没有出现"
-                f"同义改写导致语义反转的情况），必须先在阶段5 Step 0 完成这项语义判断并写入报告"
+                f"同义改写导致语义反转的情况），必须先在阶段7 Step 0 完成这项语义判断并写入报告"
             )
         elif len(judgement) < _NOTES_MIN_LEN:
             warnings.append(
@@ -270,7 +270,7 @@ def check(output_dir: Path, macro_id: str, micro_ids: list[str] | None) -> dict:
             errors.append(
                 f"micro_scene {mid} 的 content_alignment_evidence 缺失或少于 "
                 f"{_MIN_EVIDENCE_ITEMS} 条——必须逐条列出'content_blocks 原文摘句 ↔ "
-                f"prompt_en 对应片段'的成对引用，回阶段5 Step 0 补全，不能只写\"符合\""
+                f"prompt_en 对应片段'的成对引用，回阶段7 Step 0 补全，不能只写\"符合\""
             )
         else:
             for idx, item in enumerate(evidence):
@@ -290,7 +290,7 @@ def check(output_dir: Path, macro_id: str, micro_ids: list[str] | None) -> dict:
                         f"micro_scene {mid} 的 content_alignment_evidence 第 {idx+1} 条摘句"
                         f"（{quote!r}）在这个 micro_scene 的 content_blocks 原文里找不到——"
                         f"摘句必须是这段情节原文里的真实内容，不能转述、改写，也不能是别的"
-                        f"micro_scene 的原文，回阶段5 Step 0 重新核对"
+                        f"micro_scene 的原文，回阶段7 Step 0 重新核对"
                     )
                     continue
                 entry_quotes.append(_normalize_for_match(quote))
@@ -313,7 +313,7 @@ def check(output_dir: Path, macro_id: str, micro_ids: list[str] | None) -> dict:
                 errors.append(
                     f"micro_scene {mid_a} 和 {mid_b} 的 prompt_en 完全相同，但两者是不同的"
                     f"micro_scene——如果情节确实不同却写了同一条 prompt_en，说明没有逐条撰写，"
-                    f"回阶段5前置步骤分别重写"
+                    f"回阶段7前置步骤分别重写"
                 )
 
             judge_a = (entry_a.get("anchor_coverage_judgement") or "").strip()
@@ -324,7 +324,7 @@ def check(output_dir: Path, macro_id: str, micro_ids: list[str] | None) -> dict:
                     errors.append(
                         f"micro_scene {mid_a} 和 {mid_b} 的 anchor_coverage_judgement 高度雷同"
                         f"（相似度 {ratio:.2f}），疑似复制粘贴、未针对各自的锚点/情节分别核查，"
-                        f"回阶段5 Step 0 重新对照各自的 content_blocks 分别撰写"
+                        f"回阶段7 Step 0 重新对照各自的 content_blocks 分别撰写"
                     )
 
             quotes_a = set(ms_a.get("_evidence_quotes") or [])
@@ -334,7 +334,7 @@ def check(output_dir: Path, macro_id: str, micro_ids: list[str] | None) -> dict:
                 errors.append(
                     f"micro_scene {mid_a} 和 {mid_b} 的 content_alignment_evidence 摘句重复："
                     f"{sorted(shared)!r}——不同 micro_scene 的情节原文不同，共用同一句摘句"
-                    f"基本可以确定至少有一条是记混了场景或复制粘贴，回阶段5 Step 0 核对"
+                    f"基本可以确定至少有一条是记混了场景或复制粘贴，回阶段7 Step 0 核对"
                 )
 
     return {

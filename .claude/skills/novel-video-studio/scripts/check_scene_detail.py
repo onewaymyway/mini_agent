@@ -39,15 +39,15 @@ raw_text 用于对话真实性校验），以及
      列表顺序仍是叙事顺序"，交给 Agent/人工结合上下文确认，见
      `references/revision_and_rollback.md` 的硬规则。
   7. 【粗估时长自查，warning】视频生成接口（gen_video_with_text）硬性
-     要求每个 clip 4-12 秒，阶段4配音后会用真实音频时长做硬校验
+     要求每个 clip 4-12 秒，阶段6配音后会用真实音频时长做硬校验
      （check_assets_and_audio_v2.py），但那已经是配完音之后——如果规划
      阶段本身文本量明显过多/过少，等配完音才发现超限，回退成本更高。
      这里按中文口播语速（默认约 4.5 字/秒，粗略估算，不代表真实配音
      时长）估算每个 micro_scene 全部 content_blocks 文本总字数对应的
      秒数，明显超出 4-12 秒范围（留了一定余量，避免语速估算误差导致
-     误报）时给出 warning，提示在阶段3内部就重新拆分/合并小场景，而不
-     是留到阶段4才处理。这只是启发式提示、不是硬性 error——最终是否
-     真的超限以阶段4真实 TTS 时长为准，字数估算本身对标点/停顿/语气词
+     误报）时给出 warning，提示在阶段5内部就重新拆分/合并小场景，而不
+     是留到阶段6才处理。这只是启发式提示、不是硬性 error——最终是否
+     真的超限以阶段6真实 TTS 时长为准，字数估算本身对标点/停顿/语气词
      不敏感，会有偏差。
   8. 【外观变体引用合法性，error】`character_variant_overrides`/
      `location_variant_overrides`（可选字段，只有原文明确交代角色/地点
@@ -55,9 +55,9 @@ raw_text 用于对话真实性校验），以及
      `appearance_variants` 里、当前 macro_id 是否落在该变体声明的
      `applies_scope` 内。这是纯粹的引用完整性校验（字段存不存在、id
      对不对），不涉及"这个变体用得是否合理"这类语义判断——那部分留给
-     阶段5 Agent 语义核查。
+     阶段7 Agent 语义核查。
   9. 【visual_hint 质量，warning】visual_hint 过短，或者和本小场景
-     content_blocks 原文没有任何字面重叠，提示阶段5核查 prompt_en 时
+     content_blocks 原文没有任何字面重叠，提示阶段7核查 prompt_en 时
      可能缺乏足够的情节依据可以对照。这也只是字数/字面重叠的弱启发式，
      不代表 visual_hint 真的写得不好或者一定有问题。
   10. 【地点粒度自查，warning】同一个地点 id 被本大场景内多个
@@ -119,9 +119,9 @@ _NARRATION_LEAK_HINTS = (
     "皱眉", "冷笑", "沉默", "顿了顿",
 )
 
-# 中文口播粗估语速（字/秒）。这是一个非常粗糙的经验值，仅用于阶段3
+# 中文口播粗估语速（字/秒）。这是一个非常粗糙的经验值，仅用于阶段5
 # 阶段规划完成后的"提前预警"，不代表真实 TTS 配音时长——真实时长受
-# 标点停顿、语气词拉长、TTS 引擎本身语速设置等因素影响，只能等阶段4
+# 标点停顿、语气词拉长、TTS 引擎本身语速设置等因素影响，只能等阶段6
 # 真实配音后才能确定。粗估的目的只是尽早拦下"明显文本量过多/过少"
 # 的小场景，减少配完音才发现超限、回退重拆的成本。统一定义在
 # common.py 的 ROUGH_CHARS_PER_SEC。
@@ -138,7 +138,7 @@ _ROUGH_ESTIMATE_MARGIN = 0.25  # 25% 余量
 
 def _estimate_duration_sec(content_blocks: list[dict]) -> float:
     """按粗略语速估算一个 micro_scene 全部 content_blocks 文本对应的
-    口播秒数，仅用于阶段3的提前预警，不代表真实配音时长。"""
+    口播秒数，仅用于阶段5的提前预警，不代表真实配音时长。"""
     total_chars = sum(len((b.get("text") or "").strip()) for b in content_blocks)
     if total_chars <= 0:
         return 0.0
@@ -387,8 +387,8 @@ def check(output_dir: Path, macro_id: str) -> dict:
         # 变化（换装/变装/受伤/环境变化等）时才会出现。一旦出现，variant_id 必须
         # 真实存在于对应实体的 appearance_variants 里，且当前 macro_id 必须落在
         # 该 variant 声明的 applies_scope 范围内——否则要么是笔误，要么是变体的
-        # 生效范围标错了，都必须在阶段3内部改正，不能带着错误引用进入阶段5
-        # （阶段5的 Agent 语义核查会直接按这里的 override 去找对应 variant 的
+        # 生效范围标错了，都必须在阶段5内部改正，不能带着错误引用进入阶段7
+        # （阶段7的 Agent 语义核查会直接按这里的 override 去找对应 variant 的
         # 视觉描述，引用错了会导致核查失去依据）。
         char_overrides = ms.get("character_variant_overrides") or {}
         for cid, variant_id in char_overrides.items():
@@ -403,7 +403,7 @@ def check(output_dir: Path, macro_id: str) -> dict:
             if v is None:
                 errors.append(
                     f"小场景 {mid} 把角色 {cid} 指定为外观变体 {variant_id!r}，"
-                    f"但该角色的 appearance_variants 里不存在这个 variant_id，需回阶段1"
+                    f"但该角色的 appearance_variants 里不存在这个 variant_id，需回阶段2"
                     f"补登记该变体，或修正这里的 variant_id 拼写"
                 )
             else:
@@ -428,7 +428,7 @@ def check(output_dir: Path, macro_id: str) -> dict:
             if v is None:
                 errors.append(
                     f"小场景 {mid} 把地点 {lid} 指定为外观变体 {variant_id!r}，"
-                    f"但该地点的 appearance_variants 里不存在这个 variant_id，需回阶段1"
+                    f"但该地点的 appearance_variants 里不存在这个 variant_id，需回阶段2"
                     f"补登记该变体，或修正这里的 variant_id 拼写"
                 )
             else:
@@ -441,18 +441,18 @@ def check(output_dir: Path, macro_id: str) -> dict:
                         f"生效范围，或确认是不是用错了 variant_id"
                     )
 
-        # 1.6 visual_hint 质量（warning）：阶段5的 Agent 语义核查要靠 visual_hint
+        # 1.6 visual_hint 质量（warning）：阶段7的 Agent 语义核查要靠 visual_hint
         # 对照 prompt_en 是否偏离情节，如果 visual_hint 写得过于简略/空泛（比如
         # 只有寥寥几个字，或者完全没有提到 content_blocks 里出现的具体名词/地点/
-        # 动作），阶段5就没有足够依据去核对"画面是不是这段情节该有的样子"——这是
-        # 本次新增的检查项，目的是把"核查依据是否充分"这件事尽量提前到阶段3拦下，
-        # 而不是等阶段5核查时才发现无从对照。这只是弱启发式，不做语义判断，只看
+        # 动作），阶段7就没有足够依据去核对"画面是不是这段情节该有的样子"——这是
+        # 本次新增的检查项，目的是把"核查依据是否充分"这件事尽量提前到阶段5拦下，
+        # 而不是等阶段7核查时才发现无从对照。这只是弱启发式，不做语义判断，只看
         # 字数和是否与 content_blocks 文本有任何字面重叠。
         visual_hint = (ms.get("visual_hint") or "").strip()
         content_text = "".join((b.get("text") or "") for b in (ms.get("content_blocks") or []))
         if len(visual_hint) < 6:
             warnings.append(
-                f"小场景 {mid} 的 visual_hint 过短（{len(visual_hint)!r} 字），阶段5 Agent 核查"
+                f"小场景 {mid} 的 visual_hint 过短（{len(visual_hint)!r} 字），阶段7 Agent 核查"
                 f"prompt_en 是否符合情节时需要靠 visual_hint 提供画面依据，过短的提示信息量"
                 f"不足，建议补充地点/时间/人物状态/动作等具体画面元素"
             )
@@ -520,7 +520,7 @@ def check(output_dir: Path, macro_id: str) -> dict:
             errors.append(f"小场景 {mid} 的所有 content_blocks 文本均为空")
 
         # 7. 粗估时长自查（warning，不阻断）：文本量明显过多/过少时提前
-        # 提示，避免留到阶段4真实配音后才发现超出 4-12 秒硬限。
+        # 提示，避免留到阶段6真实配音后才发现超出 4-12 秒硬限。
         if has_non_empty:
             est_dur = _estimate_duration_sec(content_blocks)
             lower_bound = _MIN_SEC * (1 - _ROUGH_ESTIMATE_MARGIN)
@@ -530,14 +530,14 @@ def check(output_dir: Path, macro_id: str) -> dict:
                     f"小场景 {mid} 按粗估语速（约{_ROUGH_CHARS_PER_SEC}字/秒）估算口播时长约"
                     f"{est_dur:.1f}秒，明显超过视频生成接口 {_MAX_SEC} 秒的硬上限，"
                     f"配完音大概率会超限——建议现在就把这个小场景的 content_blocks "
-                    f"拆成两个 micro_scene（分别给新 id），不要等阶段4配完音才回来拆"
+                    f"拆成两个 micro_scene（分别给新 id），不要等阶段6配完音才回来拆"
                 )
             elif est_dur < lower_bound:
                 warnings.append(
                     f"小场景 {mid} 按粗估语速（约{_ROUGH_CHARS_PER_SEC}字/秒）估算口播时长约"
                     f"{est_dur:.1f}秒，明显低于视频生成接口 {_MIN_SEC} 秒的硬下限，"
                     f"配完音大概率不足——建议现在就考虑把这个小场景的内容并入相邻小场景，"
-                    f"不要等阶段4配完音才发现时长不够"
+                    f"不要等阶段6配完音才发现时长不够"
                 )
 
     # 5. micro_scene id 在当前大场景内唯一（不同大场景之间允许同名）

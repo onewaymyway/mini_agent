@@ -25,7 +25,7 @@
   提供任何命令行参数绕过**；只有 Agent 逐条主动把某个 `micro_scene` 的
   `video_mode` 显式设为 `"text"` 才代表放弃一致性、不受此检查约束。
   详见
-  `references/04_assets_and_audio.md`、`references/05_scene_video_generation.md`。
+  `references/05_assets_and_audio.md`、`references/06_scene_video_generation.md`。
 - **新增阶段0"小说→剧本转换"+阶段0.5"剧本校验"，下游全部基于剧本
   而非小说原文**：解决过去大场景/小场景切分反复出现"不合适"的根因——
   在小说原文（非结构化，引号嵌套动作描写）上现场识别旁白/对话/说话人
@@ -48,16 +48,41 @@
   `appearance_variants`，`scene_detail.yaml` 的 `micro_scene` 新增可选
   字段 `character_variant_overrides`/`location_variant_overrides`
   标注某场景生效哪个变体。详见 `references/01_entity_extraction.md`
-  Step 2.6、`references/03_scene_detail_planning.md` Step 4.5。
-- **阶段5一致性校验改为完全 Agent 驱动 + 结构化报告把关**：原
+  Step 2.6、`references/04_scene_detail_planning.md` Step 4.5。
+- **阶段7一致性校验改为完全 Agent 驱动 + 结构化报告把关**：原
   `scripts/check_character_consistency.py`（关键词级别的语义校验，
   既会漏检同义词改写也会误报合法用词）已删除，替换为
   `scripts/check_consistency_report.py`——不做任何语义判断，只机械
-  校验 Agent 在阶段5 Step 0 写出的 `macro_scene_XX/consistency_report.yaml`
+  校验 Agent 在阶段7 Step 0 写出的 `macro_scene_XX/consistency_report.yaml`
   是否覆盖全部待生成场景、是否全部 `pass`、有没有在核查通过后
   `prompt_en` 又被改动却未更新报告（过期检测）。四项语义核查维度
   （角色外观一致性、地点外观一致性、大场景内横向漂移、**prompt_en
   与 visual_hint/content_blocks 情节内容是否一致**，且核查时角色/
   地点档案信息与情节原文要放在一起同时对照，不能分开单独看）完全由
-  Agent 完成，详见 `references/05_scene_video_generation.md` Step 0/
+  Agent 完成，详见 `references/06_scene_video_generation.md` Step 0/
   Step 0.5。
+- **新增阶段3"全局角色/地点定妆图集中生成与校验"，从"素材+配音"阶段
+  拆出来独立成一个阶段，插在阶段2（角色/地点抽取）和原阶段2（大场景
+  切分，现为阶段4）之间**：根因是原设计里定妆图生成按 `asset_path`
+  是否已生成去重、"用到哪个大场景就顺带生成"，对阶段2抽取出的角色/
+  地点主表来说太晚发现问题——曾出现"大场景A已经要生成视频了，才发现
+  角色B从没生成过定妆图"这类本可以提前一次性发现的阻塞，也没有一个
+  统一检查点确认"全书角色/地点是不是都已经有定妆图"。现在阶段2产出
+  完整主表后，先进入阶段3把全部角色/地点的定妆图集中生成，逐条核对
+  `asset_path` 全部非空且文件存在后才允许进入阶段4；阶段5详细规划
+  过程中回补出的新角色/地点、以及按需生成的外观变体定妆图，仍保留
+  "用到哪个场景才生成"的按需逻辑，放在（原阶段4、现为）阶段6处理。
+  详见 `references/02_global_assets.md`、`references/05_assets_and_audio.md`。
+- **阶段编号整体重排，去掉非整数编号"阶段0.5"**：原先的"阶段0.5剧本
+  校验"现在是正式的**阶段1**，原阶段1-6依次顺延为阶段2-8（角色/地点
+  抽取=2，大场景切分=4，详细规划=5，素材补全+配音=6，视频生成+合成=7，
+  最终拼接=8），中间插入的全局定妆图生成占用阶段3。`references/` 下
+  的文件名同步重命名（`01_entity_extraction.md` 不变，原
+  `02_macro_scene_split.md`→`03_macro_scene_split.md`，原
+  `03_scene_detail_planning.md`→`04_scene_detail_planning.md`，原
+  `04_assets_and_audio.md`→`05_assets_and_audio.md`，原
+  `05_scene_video_generation.md`→`06_scene_video_generation.md`，原
+  `06_final_compose.md`→`07_final_compose.md`，新增
+  `02_global_assets.md`），`SKILL.md` frontmatter 的 `resources` 列表
+  与全部 `references/*.md`、`scripts/check_script.py` 里的提示文案
+  已同步更新。
