@@ -373,10 +373,6 @@ def main():
     parser.add_argument("--micro-id", nargs="*", default=None, help="只处理指定的小场景 id，不传则处理筛选范围内全部")
     parser.add_argument("--aspect-ratio", default="16:9", help="视频宽高比，默认 16:9（应取自 novel_project.json）")
     parser.add_argument("--force", action="store_true", help="忽略已存在的 clip 文件，全部重新生成")
-    parser.add_argument("--allow-missing-assets", action="store_true",
-                         help="跳过生成前的角色/地点定妆图完整性硬性检查，允许在资产缺失时仍然开始生成"
-                              "（会导致这些场景实际按 text 模式生成，丧失跨场景一致性）。仅用于用户明确"
-                              "要求快速预览、不追求一致性的场景，正常流程不要使用这个开关。")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -395,38 +391,39 @@ def main():
     # 大场景，应用 --macro-id/--micro-id 过滤后）先聚合起来统一检查一遍
     # 角色/地点定妆图是否齐备，缺失就在这里直接拒绝启动、一个 clip 都不
     # 生成——不能让部分大场景先偷跑，图省事的后果应该在动手之前就暴露，
-    # 而不是等生成了一半发现某个场景缺图。
-    if not args.allow_missing_assets:
-        micro_id_filter_precheck = set(args.micro_id) if args.micro_id else None
-        target_scenes_for_check: list = []
-        for detail_file in detail_files:
-            plan = _load_yaml(detail_file)
-            for sc in (plan.get("micro_scenes") or []):
-                if micro_id_filter_precheck is None or sc.get("id") in micro_id_filter_precheck:
-                    target_scenes_for_check.append(sc)
+    # 而不是等生成了一半发现某个场景缺图。**这个检查没有任何绕过开关**：
+    # 跨大场景保持角色/地点外观一致是本 skill 存在的核心价值，前置条件
+    # 不满足就必须先回阶段4解决，不允许用命令行参数跳过。
+    micro_id_filter_precheck = set(args.micro_id) if args.micro_id else None
+    target_scenes_for_check: list = []
+    for detail_file in detail_files:
+        plan = _load_yaml(detail_file)
+        for sc in (plan.get("micro_scenes") or []):
+            if micro_id_filter_precheck is None or sc.get("id") in micro_id_filter_precheck:
+                target_scenes_for_check.append(sc)
 
-        missing = find_missing_assets(target_scenes_for_check, char_by_id, loc_by_id)
-        if missing:
-            missing_summary = [
-                {"scene_id": sid, "entity_kind": kind, "entity_id": eid}
-                for sid, kind, eid in missing
-            ]
-            print(json.dumps({
-                "success": False,
-                "fatal": True,
-                "reason": "missing_global_assets",
-                "missing": missing_summary,
-                "action_required": (
-                    "以下小场景引用的角色/地点还没有生成定妆图，跨大场景的角色/场景一致性无法保证，"
-                    "本次运行已整体终止、没有生成任何 clip。请先回阶段4 Step1（"
-                    "references/04_assets_and_audio.md）为缺失的角色/地点生成定妆图并回填 asset_path，"
-                    "跑通阶段4 Step3 check_assets_and_audio_v2.py 之后再重新执行本脚本；如果确实有某些"
-                    "场景不需要参考图（不追求跨场景一致性），请在对应 scene_detail.yaml 的 micro_scene 里"
-                    "把 video_mode 显式设为 \"text\"，而不是依赖这里的检查被跳过。仅用于快速预览等特殊场景"
-                    "才应该加 --allow-missing-assets 绕过本检查。"
-                ),
-            }, ensure_ascii=False, indent=2), file=sys.stderr)
-            sys.exit(2)
+    missing = find_missing_assets(target_scenes_for_check, char_by_id, loc_by_id)
+    if missing:
+        missing_summary = [
+            {"scene_id": sid, "entity_kind": kind, "entity_id": eid}
+            for sid, kind, eid in missing
+        ]
+        print(json.dumps({
+            "success": False,
+            "fatal": True,
+            "reason": "missing_global_assets",
+            "missing": missing_summary,
+            "action_required": (
+                "以下小场景引用的角色/地点还没有生成定妆图，跨大场景的角色/场景一致性无法保证，"
+                "本次运行已整体终止、没有生成任何 clip。这是硬性前置条件，没有绕过开关：请先回"
+                "阶段4 Step1（references/04_assets_and_audio.md）为缺失的角色/地点生成定妆图并"
+                "回填 asset_path，跑通阶段4 Step3 check_assets_and_audio_v2.py 之后再重新执行"
+                "本脚本；如果确实有某些场景不需要参考图（不追求跨场景一致性），请在对应"
+                "scene_detail.yaml 的 micro_scene 里把 video_mode 显式设为 \"text\"（这是唯一"
+                "合法的例外路径，仍然需要 Agent 逐条主动确认，不是命令行参数就能跳过的）。"
+            ),
+        }, ensure_ascii=False, indent=2), file=sys.stderr)
+        sys.exit(2)
 
     script_dir = Path(__file__).parent
     skill_dir = find_gen_video_skill_dir(script_dir)

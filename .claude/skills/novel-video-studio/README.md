@@ -21,9 +21,10 @@
   只打印提示后静默降级为 `text` 继续跑，两层都在纵容跳过阶段4。现在：
   `video_mode` 默认改为 `reference`；`generate_scene_videos_v2.py` 在
   生成任何 clip 之前，先对本次目标 `micro_scene` 做硬性前置检查，角色/
-  地点定妆图缺失直接整体拒绝启动（exit 2，不生成任何 clip），只有显式
-  设置 `video_mode: text` 才代表主动放弃一致性、不受此检查约束；需要
-  临时跳过时才用新增的 `--allow-missing-assets` 显式开关。详见
+  地点定妆图缺失直接整体拒绝启动（exit 2，不生成任何 clip），且**不
+  提供任何命令行参数绕过**；只有 Agent 逐条主动把某个 `micro_scene` 的
+  `video_mode` 显式设为 `"text"` 才代表放弃一致性、不受此检查约束。
+  详见
   `references/04_assets_and_audio.md`、`references/05_scene_video_generation.md`。
 - **新增阶段0"小说→剧本转换"+阶段0.5"剧本校验"，下游全部基于剧本
   而非小说原文**：解决过去大场景/小场景切分反复出现"不合适"的根因——

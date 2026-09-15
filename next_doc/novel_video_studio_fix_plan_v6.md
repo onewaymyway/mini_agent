@@ -45,8 +45,9 @@ videos_v2.py` 就已经开始生成大场景的小场景视频片段。
 4. `generate_one_scene()` 里 `reference` 模式找不到图时的静默降级行为
    改为硬错误（`non_retryable: True`）——双保险，防止运行中途角色库被
    改动导致漏检；
-5. 新增 `--allow-missing-assets` 显式开关，仅用于用户明确要求跳过一致
-   性、快速预览等特殊场景，正常流程不使用。
+5. **不提供任何绕过开关**：前置条件不满足就必须整体终止，输出结构化
+   提示信息交给 Agent 去解决（回阶段4补生成，或逐条把确认不需要一致性
+   的场景显式设为 `video_mode: text`），没有命令行参数可以整体跳过。
 
 ## 验证
 
@@ -55,5 +56,5 @@ videos_v2.py` 就已经开始生成大场景的小场景视频片段。
   正确列出涉及的 `micro_scene`/角色，未生成任何 clip；
 - 补齐 `asset_path` 后 → 正常通过前置检查（后续因沙盒无 API key 在别处
   失败，属预期）；
-- 加 `--allow-missing-assets` → 正确跳过检查；
-- 显式设置 `video_mode: text` → 不受该检查约束，正确放行。
+- 显式设置 `video_mode: text` → 不受该检查约束，正确放行；
+- 确认命令行不再暴露任何绕过开关（`--allow-missing-assets` 已移除）。
