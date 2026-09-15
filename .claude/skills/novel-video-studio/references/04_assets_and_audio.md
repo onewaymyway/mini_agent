@@ -9,6 +9,14 @@
 - `check_assets_and_audio_v2.py`：校验素材+配音是否就绪，必须跑，不
   通过不能进入阶段5。
 
+**本阶段 Step1（定妆图生成）是强制前置条件，不是可选优化项**：阶段5
+`generate_scene_videos_v2.py` 现在会在生成任何 clip 之前硬性检查角色/
+地点是否已有定妆图，缺失直接拒绝启动（见
+`references/05_scene_video_generation.md`）。这意味着**任何大场景在
+进入阶段5之前，其引用到的角色/地点必须已经在本阶段 Step1 生成过定妆图**
+——不能跳过这一步、也不能指望阶段5"自动兜底"，跨大场景保持角色/地点
+外观一致是本 skill 存在的核心价值，不允许被图省事绕过。
+
 **外部依赖**：CosyVoice（可选，配 `novel_tts_env`）、edge-tts（兜底）、
 ffmpeg/ffprobe、`AGNES_API_KEY`（定妆图）。API 失败处理见
 `error_handling.md`。

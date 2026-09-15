@@ -25,8 +25,8 @@ resources:
     triggers: 定妆图, 配音, tts, voice_profile, asset_path, 差异化配音
   - id: scene-video-generation
     path: references/05_scene_video_generation.md
-    description: 阶段5——手写 prompt_en/video_mode + 角色/场景/情节一致性核查（完全由 Agent 逐条语义核查、对照角色档案+变体+visual_hint/content_blocks 情节原文，核查结论写入 consistency_report.yaml，脚本 check_consistency_report.py 只做机械把关：覆盖完整性+全部pass+未过期，不做语义判断）+ 小场景视频生成(generate_scene_videos_v2.py，timeout必须传-1)与大场景内合成(compose_macro_scene.py，逐场景慢放/快放对齐规划时长)
-    triggers: 视频生成, 小场景视频, 大场景合成, clips, gen_video_with_text, 一致性, 角色不一致, 场景不一致, visual_anchor_en, 语义核查, 人工复核, timeout, 慢放, 快放, 时长不一致, consistency_report, 核查报告, 情节不一致
+    description: 阶段5——手写 prompt_en/video_mode（默认 reference，缺定妆图时生成前硬性拦截，不再静默降级为 text） + 角色/场景/情节一致性核查（完全由 Agent 逐条语义核查、对照角色档案+变体+visual_hint/content_blocks 情节原文，核查结论写入 consistency_report.yaml，脚本 check_consistency_report.py 只做机械把关：覆盖完整性+全部pass+未过期，不做语义判断）+ 小场景视频生成(generate_scene_videos_v2.py，timeout必须传-1)与大场景内合成(compose_macro_scene.py，逐场景慢放/快放对齐规划时长)
+    triggers: 视频生成, 小场景视频, 大场景合成, clips, gen_video_with_text, 一致性, 角色不一致, 场景不一致, visual_anchor_en, 语义核查, 人工复核, timeout, 慢放, 快放, 时长不一致, consistency_report, 核查报告, 情节不一致, 定妆图缺失, allow-missing-assets, 生成前检查
   - id: final-compose
     path: references/06_final_compose.md
     description: 阶段6——所有大场景 done 后的最终拼接转场，产出 video.mp4

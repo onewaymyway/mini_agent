@@ -157,6 +157,41 @@ def resolve_asset_paths(scene: dict, char_by_id: dict, loc_by_id: dict, output_d
     return paths
 
 
+def find_missing_assets(scenes: list, char_by_id: dict, loc_by_id: dict) -> list:
+    """对即将处理的 micro_scene 做**生成前**的硬性资产完整性检查（角色/地点
+    定妆图是否已存在），不涉及 variant 细节（变体缺失已经在
+    `_resolve_entry_asset_path` 里做了 warning+退回默认图的兜底，这里只管
+    最基础的"这个角色/地点压根就还没生成过默认定妆图"这种情况）。
+
+    只检查 `video_mode` 不是显式 `"text"` 的场景——`video_mode: text` 是
+    Agent/用户主动声明"这段不需要参考图，不追求跨场景一致性"，属于有意
+    识的例外，不应该被本检查拦下；除此之外（包括 `reference`/`keyframe`/
+    未设置留空）一律要求引用到的角色/地点必须已有 `asset_path`，因为跨
+    大场景保持角色/地点外观一致，是本 skill 存在的核心价值，不能因为
+    Agent 图省事没跑阶段4就被绕过。
+
+    返回值：[(scene_id, entity_kind, entity_id), ...]，为空说明资产齐备。
+    """
+    missing: list[tuple[str, str, str]] = []
+    for sc in scenes:
+        if (sc.get("video_mode") or "").strip().lower() == "text":
+            continue
+        scene_id = sc.get("id")
+        for cid in (sc.get("uses_characters") or []):
+            entry = char_by_id.get(cid)
+            if entry is None:
+                missing.append((scene_id, "角色", f"{cid}（global/characters.json 里不存在）"))
+            elif not (entry.get("asset_path") or "").strip():
+                missing.append((scene_id, "角色", cid))
+        for lid in (sc.get("uses_locations") or []):
+            entry = loc_by_id.get(lid)
+            if entry is None:
+                missing.append((scene_id, "地点", f"{lid}（global/locations.json 里不存在）"))
+            elif not (entry.get("asset_path") or "").strip():
+                missing.append((scene_id, "地点", lid))
+    return missing
+
+
 def build_client(skill_dir: Path):
     sys.path.insert(0, str(skill_dir))
     from agnes_key_pool import build_key_pool  # type: ignore
@@ -233,7 +268,11 @@ def generate_one_scene(client, scene: dict, char_by_id: dict, loc_by_id: dict,
     scene_id = scene["id"]
     save_path = str(clips_dir / f"{scene_id}.mp4")
     seconds = clamp_seconds(scene.get("duration_sec"))
-    video_mode = scene.get("video_mode") or "text"
+    # 默认 video_mode 是 "reference"（而不是旧版的 "text"）：跨大场景保持
+    # 角色/地点外观一致是本 skill 的核心价值，未显式设置时应该默认尝试用
+    # 参考图，而不是默认放弃一致性。只有 Agent/用户显式写 "text" 才代表
+    # 主动选择不需要参考图。
+    video_mode = scene.get("video_mode") or "reference"
     prompt = scene.get("prompt_en") or ""
 
     if not prompt:
@@ -252,9 +291,23 @@ def generate_one_scene(client, scene: dict, char_by_id: dict, loc_by_id: dict,
         if images:
             kwargs["images"] = images
         else:
-            print(f"    [提示] {scene_id} video_mode=reference 但没有可用的参考图片，自动降级为 mode=text 生成")
-            video_mode = "text"
-            kwargs["mode"] = "text"
+            # 正常流程下 main() 的硬性前置检查（find_missing_assets）应该
+            # 已经在生成任何 clip 之前就拦下了这种情况——走到这里说明前置
+            # 检查漏掉了（比如运行中途 characters.json 被改动），属于不应
+            # 该发生的数据不一致，不能再像旧版那样静默降级为 text 模式悄悄
+            # 跑完（那样会导致这段视频没有参考图却"看起来正常生成成功"，
+            # 跨场景角色/地点一致性被悄悄放弃）。这里改成直接判定为不可
+            # 重试的失败，交给 Agent 处理，而不是继续用错误的模式生成。
+            return {
+                "success": False,
+                "non_retryable": True,
+                "error": f"{scene_id} 的 video_mode=reference 但引用的角色/地点没有可用的定妆图"
+                         f"（uses_characters={scene.get('uses_characters')}, "
+                         f"uses_locations={scene.get('uses_locations')}）。这不应该发生——正常流程下"
+                         f"应该在阶段4 Step1 生成好定妆图、Step3 校验通过后才会跑到这里。请先回阶段4"
+                         f"补生成缺失的定妆图；如果这段场景确实不需要参考图，请在 scene_detail.yaml 里"
+                         f"把这个 micro_scene 的 video_mode 显式改成 \"text\"，不要依赖自动降级。",
+            }
     elif video_mode == "keyframe":
         if scene.get("first_frame"):
             kwargs["first_frame"] = scene["first_frame"]
@@ -320,6 +373,10 @@ def main():
     parser.add_argument("--micro-id", nargs="*", default=None, help="只处理指定的小场景 id，不传则处理筛选范围内全部")
     parser.add_argument("--aspect-ratio", default="16:9", help="视频宽高比，默认 16:9（应取自 novel_project.json）")
     parser.add_argument("--force", action="store_true", help="忽略已存在的 clip 文件，全部重新生成")
+    parser.add_argument("--allow-missing-assets", action="store_true",
+                         help="跳过生成前的角色/地点定妆图完整性硬性检查，允许在资产缺失时仍然开始生成"
+                              "（会导致这些场景实际按 text 模式生成，丧失跨场景一致性）。仅用于用户明确"
+                              "要求快速预览、不追求一致性的场景，正常流程不要使用这个开关。")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -333,6 +390,43 @@ def main():
     locations = _load_json(output_dir / "global" / "locations.json").get("locations", [])
     char_by_id = {c["id"]: c for c in characters if c.get("id")}
     loc_by_id = {l["id"]: l for l in locations if l.get("id")}
+
+    # 生成前硬性前置检查：把本次实际会处理的全部 micro_scene（跨所有目标
+    # 大场景，应用 --macro-id/--micro-id 过滤后）先聚合起来统一检查一遍
+    # 角色/地点定妆图是否齐备，缺失就在这里直接拒绝启动、一个 clip 都不
+    # 生成——不能让部分大场景先偷跑，图省事的后果应该在动手之前就暴露，
+    # 而不是等生成了一半发现某个场景缺图。
+    if not args.allow_missing_assets:
+        micro_id_filter_precheck = set(args.micro_id) if args.micro_id else None
+        target_scenes_for_check: list = []
+        for detail_file in detail_files:
+            plan = _load_yaml(detail_file)
+            for sc in (plan.get("micro_scenes") or []):
+                if micro_id_filter_precheck is None or sc.get("id") in micro_id_filter_precheck:
+                    target_scenes_for_check.append(sc)
+
+        missing = find_missing_assets(target_scenes_for_check, char_by_id, loc_by_id)
+        if missing:
+            missing_summary = [
+                {"scene_id": sid, "entity_kind": kind, "entity_id": eid}
+                for sid, kind, eid in missing
+            ]
+            print(json.dumps({
+                "success": False,
+                "fatal": True,
+                "reason": "missing_global_assets",
+                "missing": missing_summary,
+                "action_required": (
+                    "以下小场景引用的角色/地点还没有生成定妆图，跨大场景的角色/场景一致性无法保证，"
+                    "本次运行已整体终止、没有生成任何 clip。请先回阶段4 Step1（"
+                    "references/04_assets_and_audio.md）为缺失的角色/地点生成定妆图并回填 asset_path，"
+                    "跑通阶段4 Step3 check_assets_and_audio_v2.py 之后再重新执行本脚本；如果确实有某些"
+                    "场景不需要参考图（不追求跨场景一致性），请在对应 scene_detail.yaml 的 micro_scene 里"
+                    "把 video_mode 显式设为 \"text\"，而不是依赖这里的检查被跳过。仅用于快速预览等特殊场景"
+                    "才应该加 --allow-missing-assets 绕过本检查。"
+                ),
+            }, ensure_ascii=False, indent=2), file=sys.stderr)
+            sys.exit(2)
 
     script_dir = Path(__file__).parent
     skill_dir = find_gen_video_skill_dir(script_dir)
