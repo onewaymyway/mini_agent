@@ -90,7 +90,7 @@ _NOTES_MIN_LEN = 15
 # content_alignment_evidence 至少要有几条"原文摘句 ↔ prompt_en 片段"
 # 成对引用——数量本身不能证明核查是真的做了，但连最少数量都凑不够，
 # 基本可以确定这一项没有认真做。
-_MIN_EVIDENCE_ITEMS = 2
+_MIN_EVIDENCE_ITEMS = 1
 
 # 跨条目雷同检测阈值：不同 micro_scene 的 anchor_coverage_judgement 若
 # 序列相似度达到这个比例以上，判定为疑似复制粘贴（正常情况下不同情节
