@@ -205,6 +205,9 @@ def run_goal_judge(
                     if stuck_attribution_enabled else ""
                 )
             ),
+            tool_protocol_reference=pm.fragment(
+                "judge_tool_protocol_reference", "TOOL_PROTOCOL_REFERENCE"
+            ),
         ),
         max_turns=int(getattr(goal_cfg_block, "judge_max_turns", 40)),
         tools_enabled=tools_enabled,

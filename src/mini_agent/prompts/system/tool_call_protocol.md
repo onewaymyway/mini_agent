@@ -3,6 +3,11 @@
 # 变量: {{ tool_list }}  — 每个工具的 JSON 描述块
 #
 # 所有 provider 统一使用此协议，工具调用通过 system prompt 传递。
+#
+# [维护提醒] prompts/fragments/judge_tool_protocol_reference.md 里有一份
+# 面向 TurnJudge/GoalJudge 的精简摘录（去掉了工具列表部分），供判官判断
+# "停止是否因为 tool_use 格式写坏了"时对照。修改下面的格式规则（STRICT 部分）
+# 时，记得同步检查那份摘录是否需要跟着更新。
 
 ## Tool Call Format (STRICT)
 

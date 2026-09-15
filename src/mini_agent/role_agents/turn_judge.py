@@ -116,6 +116,9 @@ def run_turn_judge(
                 pm.fragment("turn_judge", "CONFIDENCE_INSTRUCTIONS")
                 if getattr(tj_cfg_block, "auto_continue_with_note_enabled", False) else ""
             ),
+            tool_protocol_reference=pm.fragment(
+                "judge_tool_protocol_reference", "TOOL_PROTOCOL_REFERENCE"
+            ),
         ),
         # [BUGFIX/需求变更] 此前硬编码为 2，改为读 turn_judge.judge_max_turns
         # 配置项（默认 6），见 config/models.py::TurnJudgeConfig.judge_max_turns
