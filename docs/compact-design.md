@@ -116,30 +116,69 @@ mini_agent 对话历史会随时间增长，最终超出模型上下文窗口限
 ```
 compact_with_skills()
     │
-    ├─ 正常路径（历史未超限）
-    │     run_turn(compact_prompt)
+    ├─ 单次直出路径（历史未超限，_should_use_chunked_compact() 预估未超阈值）
+    │     _compact_single_shot(compact_prompt)
+    │     → 专用 system/compact_summary_persona 人设 + tools=[]
+    │     → 直接调用 _llm.chat_with_retry（不经过 run_turn()/agentic loop）
     │     → LLM 在完整历史上看到所有上下文，生成高质量摘要
     │     → 用摘要替换历史 + 重附 skill 块
     │
-    └─ 超限路径（LLMContextWindowError）── 自动切换
+    └─ 超限路径（预估超限 / LLMContextWindowError）── 自动切换
           _compact_chunked()
           → 把历史按 turn 边界分批
-          → 每批独立调用 _llm.chat_with_retry（绕开 run_turn）
+          → 每批独立调用 _llm.chat_with_retry（同一份 compact_summary_persona）
           → 多批摘要合并为最终摘要
           → 用最终摘要替换历史 + 重附 skill 块
 ```
 
-**结果有效性校验（`next_doc/compact_result_validity_guard_plan.md`）：**
-正常路径拿到 `run_turn(compact_prompt)` 的返回值后，不能只看"是否非空"。
-`run_turn()` 内部的 `result_sanity_check`（见 `docs/…` 自主任务/daemon
-恢复相关文档）在判定本轮输出畸形（未闭合 `<tool_use>` 残留、格式纠错
-重试用尽等）时，会把返回值**替换**成一段非空的固定哨兵占位文本
-（`"[系统提示：本轮未获得有效回复…]"`）而不抛异常，只置位
-`self._last_turn_result_invalid`。因此 `compact_with_skills()` 在拿到
-`run_turn()` 的结果后，会先用 `self.last_turn_result_valid()`
-（`agent/turn_loop.py::TurnLoopMixin`）确认结果有效，无效时自动退化到
-`_compact_chunked()` 重新生成一次摘要（不复用哨兵文本），两条路径都
-失败则放弃本次压缩、保留原始历史不动，不会用损坏的摘要覆盖历史。
+> **[2026-09 structural fix] 单次直出路径不再经过 `run_turn()`**：早期实现里
+> 单次直出路径直接 `self.run_turn(compact_prompt)`，即带着完整 agent 人设、
+> 全量工具、agentic tool-calling loop 去处理这次摘要请求——本质上和处理一次
+> 真实对话轮没有区别。实测发现：历史越长，模型越容易在这种"仍然是普通对话轮"
+> 的设定下延续自己刚才的对话语气/格式（近因效应），而不是切换到
+> `compact_history.md` 要求的结构化文档模式，因为 system prompt 没有给出任何
+> "身份切换"信号。短历史下这个问题不明显（模型有充分注意力遵循一条清晰的
+> 格式指令），但没有理由让"是否严格按模板输出摘要"依赖历史长度。
+>
+> 现在单次直出路径改为 `_compact_single_shot()`：与 `_compact_chunked()` 每个
+> chunk 内部的调用方式一致——`self._llm.chat_with_retry()`，专用
+> `system/compact_summary_persona.md` 人设（"你现在的唯一任务是把这段对话
+> 摘要成一份结构化文档，不是在跟用户对话，不要延续对话语气"），`tools=[]`，
+> 完全不进入 agentic loop。副作用：单次直出这次调用不再有工具访问权限，
+> `_build_notepad_compact_hint()` 的措辞已同步调整为"在摘要文档里记一笔提醒"
+> 而不是"直接调用 notepad_summarize"（否则会指挥模型调用一个它这次根本拿不到
+> 的工具）。
+>
+> **同一次修复还顺带解决了一个既存的 prompt 冲突**：`_compact_chunked()`
+> 原来复用的 `system/compress_summarizer.md`，其实是另一个功能
+> （`LLMSummaryStrategy.compress`，要求模型只回复单个 JSON 对象）的 system
+> prompt，跟 `_compact_chunked()` 实际发送的 user prompt
+> （`compact_chunk_request.md` / `compact_merge_request.md`，要求输出 markdown
+> 分节文本）直接矛盾——system 说"只能回 JSON"，user 说"按这些 markdown 小节
+> 写"。两条路径现在统一改用 `system/compact_summary_persona.md`，`compress_summarizer.md`
+> 只保留给它本来的用途（`history/compression.py::LLMSummaryStrategy`）。
+
+**结果有效性校验：**
+`_compact_single_shot()` 不经过 `run_turn()`，也就不会触发 `run_turn()` 内部
+`result_sanity_check` 的"哨兵占位文本"机制（见下方"compact 结果有效性校验"
+一节的历史背景）——该风险随这次重构一并消失，不需要再额外校验。`_compact_single_shot()`
+唯一需要处理的失败模式是 LLM 调用本身抛异常（尤其是 token 预估漏报导致的
+`LLMContextWindowError`）：`compact_with_skills()` 捕获到该异常后会自动退化到
+`_compact_chunked()` 重新生成一次摘要；两条路径都失败则放弃本次压缩、保留
+原始历史不动，不会用损坏的摘要覆盖历史。
+
+### 路径可观测性（2026-09 新增）
+
+`_should_use_chunked_compact()` 现在无论选择哪条路径都会打印一行预检日志：
+
+```
+ℹ [compact] Pre-check: est_tokens=200,211 (history=191,319, prompt=712, output_reserve=8,192) vs limit=204,000 (ctx=240,000, threshold=85%) — chosen path: single_shot
+```
+
+`Agent._last_compact_path` 记录最近一次 compact 实际走的路径
+（`"single_shot"` / `"chunked"` / 对应的 `"(failed)"` 变体），`_auto_compress_history_impl()`
+的完成日志（`[compact] Auto-compact 完成...`）也会带上这个字段。事后排查某次
+compact 到底走的哪条路径、当时预估数字距离切换阈值有多近，不用再翻源码或靠猜。
 
 ### Skill 重附前的自动卸载（垃圾回收）
 
@@ -166,22 +205,30 @@ skill 名字传给 `build_compact_context(exclude_names=...)`，排除在本轮�
 记事本（`tools/notepad.py`，见 [记事本机制说明](notepad-guide.md)）本身**不参与**
 compact 的输入/输出流程——它常驻 system prompt，不需要被"摘要进"compact 结果里。
 
-但 `compact_with_skills()` 在走**正常路径**（`run_turn(compact_prompt)`）时，会检查当前
+但 `compact_with_skills()` 无论走哪条路径，都会检查当前
 记事本总字数：若超过 `CompactionMixin.NOTEPAD_COMPACT_HINT_THRESHOLD`（默认 20000 字符），
-会在 `compact_prompt` 末尾追加一段提示，建议模型在生成完对话摘要后，调用
-`notepad_summarize` 合并冗余/过时的记事本条目。这只是**建议性提示**，不会自动截断或删除
-任何记事本内容——是否总结、总结成什么样，仍由模型在该轮工具调用中自行决定。
+会在 `compact_prompt` 末尾追加一段提示。**[2026-09 更新]** 两条路径现在都用
+`tools=[]`（`_compact_single_shot()` / `_compact_chunked()` 均不经过
+`run_turn()`/agentic loop），生成摘要这次调用本身没有工具可用，所以提示措辞
+已从"调用 `notepad_summarize`"改成"在摘要的 Pending/Next Steps 里记一笔提醒"——
+下一轮真正处理任务、有工具访问权限时，模型能看到这条提醒并自行调用
+`notepad_summarize`。是否总结、总结成什么样，仍由模型自行决定，不会自动截断
+或删除任何记事本内容。
 
-**超限路径（`_compact_chunked`）不追加该提示**：该路径直接调用 `_llm.chat_with_retry`，
-绕开 `run_turn`，模型在这个调用里无法执行工具调用，所以提示放了也没有意义。
+> 注：`_compact_chunked()` 走的是自己独立的 `compact_chunk_request.md` /
+> `compact_merge_request.md` prompt，不直接复用这里的 `compact_prompt` 字符串，
+> 但 `_build_notepad_compact_hint()` 的"无工具访问"结论对它同样成立。
 
 ## 分批摘要（Chunked Compact）详解
 
 ### 为什么需要分批
 
-当 `run_turn(compact_prompt)` 触发 `LLMContextWindowError` 时，说明当前历史本身
-已超过模型上下文窗口。此时不能再用 `run_turn`（它需要把完整历史发给模型），
-必须绕开它，把历史切小后分批处理。
+当预检估算（`_should_use_chunked_compact()`）判断 `history + system + compact
+prompt` 的 token 量将超过模型上下文窗口的 `compact_precheck_threshold`（默认
+85%）时，说明当前历史本身已经（或即将）超过模型上下文窗口，不能再用一次性
+调用（它需要把完整历史发给模型），必须绕开它，把历史切小后分批处理。同样的
+逻辑也适用于预检漏报、`_compact_single_shot()` 实际调用时才命中
+`LLMContextWindowError` 的兜底场景。
 
 ### 算法步骤
 
@@ -217,11 +264,12 @@ compact 的输入/输出流程——它常驻 system prompt，不需要被"摘�
 
 | Prompt | 路径 | 用途 |
 |---|---|---|
-| `compact_history` | `prompts/user/compact_history.md` | 正常路径：发给 run_turn 的 compact 指令 |
+| `compact_history` | `prompts/user/compact_history.md` | 单次直出路径：发给 `_compact_single_shot()` 的 compact 指令 |
 | `compact_chunk_request` | `prompts/user/compact_chunk_request.md` | 分批路径：每 chunk 的摘要指令 |
 | `compact_merge_request` | `prompts/user/compact_merge_request.md` | 分批路径：多 chunk 合并摘要指令 |
 | `compress_summary_request` | `prompts/user/compress_summary_request.md` | `LLMSummaryStrategy` 使用 |
-| `compress_summarizer` (system) | `prompts/system/compress_summarizer.md` | 分批路径和 `LLMSummaryStrategy` 的 system prompt |
+| `compact_summary_persona` (system) | `prompts/system/compact_summary_persona.md` | **[2026-09 新增]** 单次直出路径和分批路径共用的 system prompt——专用于"生成结构化 markdown 摘要文档"，不涉及 JSON、不带 agent 人设/工具说明 |
+| `compress_summarizer` (system) | `prompts/system/compress_summarizer.md` | 仅 `LLMSummaryStrategy`（`history/compression.py`）使用（要求输出单个 JSON 对象）；**不再**被 compact 的两条路径复用——曾经复用过，但它的"只回 JSON"要求跟 compact 的 markdown 分节输出要求矛盾，2026-09 已拆开 |
 
 ## 摘要内容设计
 
@@ -436,19 +484,28 @@ agent 自己运行中无法主动检索找回。新增只读、免审批工具
 意义：给更激进的压缩策略兜底——反正删掉的东西找得回来，压缩策略可以更敢于
 "压狠一点"，把"怕删错"这个心理负担从压缩阶段转移到"按需找回"阶段。
 
-## compact 结果有效性校验（`next_doc/compact_result_validity_guard_plan.md`）
+## compact 结果有效性校验（历史背景，`next_doc/compact_result_validity_guard_plan.md`）
 
-修复一个真实故障：正常路径 `run_turn(compact_prompt)` 命中内部
-`result_sanity_check`（畸形/半成品输出判定）时不会抛异常，而是返回一段
-非空的固定哨兵占位文本并置位 `self._last_turn_result_invalid`。旧代码
+修复过一个真实故障：早期实现里单次直出路径是 `run_turn(compact_prompt)`，
+命中内部 `result_sanity_check`（畸形/半成品输出判定）时不会抛异常，而是返回
+一段非空的固定哨兵占位文本并置位 `self._last_turn_result_invalid`。旧代码
 只判断"结果是否非空"，于是把这段哨兵文本当真实摘要写入历史，原始历史
-被永久替换/丢失。
+被永久替换/丢失。当时的修复：`compact_with_skills()` 在拿到 `run_turn()`
+结果后用 `self.last_turn_result_valid()` 显式校验，无效时退化到
+`_compact_chunked()` 重新生成一次摘要。
 
-修复后：`compact_with_skills()` 在拿到 `run_turn()` 结果后用
-`self.last_turn_result_valid()` 显式校验，无效时退化到 `_compact_chunked()`
-重新生成一次摘要；两条路径都失败则放弃本次压缩、原始历史保持不动
-（不会用损坏内容覆盖）。详见本节上方"路径 B"小节与
-`compact_result_validity_guard_plan.md`。
+**[2026-09 更新] 这个风险类别本身已经随结构性重构消失**：单次直出路径改为
+`_compact_single_shot()`（`self._llm.chat_with_retry()`，不经过 `run_turn()`/
+agentic loop）之后，`result_sanity_check` 那套"哨兵占位文本"机制根本不会被
+触发——它是 agentic loop 里格式纠错重试机制的一部分，`chat_with_retry()`
+这种单次纯文本调用不会走到那条代码路径。`last_turn_result_valid()` 因此不再
+被 `compact_with_skills()` 使用（仍保留给 `api/server.py`、
+`evolution/objective_agent_bridge.py` 等其它直接调用 `run_turn()` 的场景）。
+
+现在 `_compact_single_shot()` 唯一需要处理的失败模式是 LLM 调用本身抛异常
+（尤其是 `LLMContextWindowError`，token 预检漏报时的兜底）：详见本文档上方
+"路径 B"小节的"结果有效性校验"段落。两条路径都失败则放弃本次压缩、原始
+历史保持不动（不会用损坏内容覆盖）。
 
 开关：`recall_history_enabled` / `recall_history_mode`（AppConfig 顶层字段，默认 `false` / `"keyword"`；`"embedding"` 档预留未实现）。
 
@@ -510,12 +567,15 @@ agent 自己运行中无法主动检索找回。新增只读、免审批工具
 | 文件 | 内容 |
 |---|---|
 | `agent.py::compact_with_skills()` | 主入口，路径选择，skill 重附，session 保存 |
+| `agent/compaction.py::_compact_single_shot()` | **[2026-09 新增]** 单次直出路径核心实现：`_llm.chat_with_retry()` + `compact_summary_persona` 人设，不经过 `run_turn()` |
 | `agent.py::_compact_chunked()` | 分批摘要核心实现 |
 | `agent.py::_maybe_run_compact()` | 触发器命中后的统一入口，处理确认开关 |
-| `agent/compaction.py::_auto_compress_history()` | 默认直接复用 `compact_with_skills()`；轻量策略时委托给 `HistoryManager.auto_compress()`；压缩完成后打印完整摘要；P2-A 审计钩子挂在此处 |
+| `agent/compaction.py::_auto_compress_history()` | 默认直接复用 `compact_with_skills()`；轻量策略时委托给 `HistoryManager.auto_compress()`；压缩完成后打印完整摘要（含 `_last_compact_path`）；P2-A 审计钩子挂在此处 |
 | `agent.py::_agentic_loop()` | 组合触发器检查点 + `LLMContextWindowError` 捕获（触发路径 B） |
+| `agent/compaction.py::_should_use_chunked_compact()` | 路径选择预检：估算 token，两条分支都打印 `chosen path` 日志（**[2026-09 新增]**，此前只有选中 chunked 才打印） |
+| `agent.py::_last_compact_path` | **[2026-09 新增]** 记录最近一次 compact 实际走的路径（`single_shot` / `chunked` / 对应 `(failed)` 变体），初始化见 `agent/core.py` |
 | `history/triggers.py` | `CompactTrigger` / `CompositeTrigger` 及内置触发器实现；`SafePointGate`（P1-A）；`intensity_hint()`（P1-B） |
-| `history/compression.py` | `CompressionStrategy` 及内置策略类（`turn_aligned`/`sliding_window`/`llm_summary`/`selective`） |
+| `history/compression.py` | `CompressionStrategy` 及内置策略类（`turn_aligned`/`sliding_window`/`llm_summary`/`selective`）；`LLMSummaryStrategy` 仍使用 `compress_summarizer` system prompt |
 | `history/compact_audit.py` | `audit_compact_quality()`（P2-A 压缩质量事后自检） |
 | `history_manager.py::auto_compress()` | 委托给 `CompressionStrategy` 执行压缩的统一入口 |
 | `agent/compaction.py::_extract_and_queue_decisions_from_compact_result()` | P0-B 决策候选提取与入队 |
@@ -524,11 +584,12 @@ agent 自己运行中无法主动检索找回。新增只读、免审批工具
 | `tools/recall_history.py` | P2-B `recall_from_raw_history` 只读工具 |
 | `cli/commands/recall.py` | P2-B `/recall` slash 命令（手动 CLI 入口，同一套底层实现） |
 | `tools/builtin.py`（`recall_decisions`） | P0-B 沉淀决策的检索工具（与 P2-B 分工：一个查决策，一个查原始片段） |
-| `prompts/user/compact_history.md` | 正常路径 compact prompt |
+| `prompts/user/compact_history.md` | 单次直出路径 compact prompt |
 | `prompts/user/compact_chunk_request.md` | 分批路径 chunk prompt |
 | `prompts/user/compact_merge_request.md` | 分批路径合并 prompt |
-| `agent/turn_loop.py::TurnLoopMixin.last_turn_result_valid()` | 统一查询"最近一次 `run_turn()` 结果是否有效"（`compact_result_validity_guard_plan.md`） |
-| `agent/compaction.py::_build_notepad_compact_hint()` | 记事本超阈值时追加的 compact 提示语 |
+| `prompts/system/compact_summary_persona.md` | **[2026-09 新增]** 单次直出路径与分批路径共用的 system prompt |
+| `agent/turn_loop.py::TurnLoopMixin.last_turn_result_valid()` | 统一查询"最近一次 `run_turn()` 结果是否有效"；compact 的两条路径均不再依赖它（不经过 `run_turn()`），仍服务于其它直接调用 `run_turn()` 的场景（`api/server.py` 等） |
+| `agent/compaction.py::_build_notepad_compact_hint()` | 记事本超阈值时追加的 compact 提示语；**[2026-09 更新]** 措辞已从"调用工具"改为"在摘要里记一笔"，因为两条 compact 路径现在都是 `tools=[]` |
 | `tools/notepad.py` | 记事本数据结构与工具实现 |
 
 ---

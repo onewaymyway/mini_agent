@@ -46,8 +46,15 @@ class CompactionMixin:
     def _build_notepad_compact_hint(self) -> str:
         """
         若当前记事本总字数超过阈值，返回一段追加到 compact prompt 末尾的提示文本，
-        建议模型调用 notepad_summarize 合并冗余/过时条目；否则返回空字符串。
-        失败时静默返回空字符串，不影响 compact 主流程。
+        建议模型在摘要的 Pending/Next Steps 里记一笔"记事本需要整理"；否则返回空
+        字符串。失败时静默返回空字符串，不影响 compact 主流程。
+
+        [structural fix 联动] 这段提示原来是让模型"调用 notepad_summarize 工具"。
+        自单次直出路径改为 _compact_single_shot()（tools=[]，不经过 agentic
+        loop）后，生成摘要这次调用本身已经没有工具可用——原措辞会指挥模型去调用
+        一个它这次根本拿不到的工具，属于无法执行的指令。现在改成"在摘要文档里
+        记一笔提醒"，下一轮真正处理任务、有工具的时候，模型能看到这条提醒并
+        自行调用 notepad_summarize。
         """
         try:
             from mini_agent.tools.notepad import get_current_notepad
@@ -62,9 +69,11 @@ class CompactionMixin:
                 f"Note: your notepad currently holds {total} characters across "
                 f"{len(store.entries)} entries, above the "
                 f"{self.NOTEPAD_COMPACT_HINT_THRESHOLD}-character guideline. "
-                "After finishing the summary above, consider calling `notepad_summarize` "
-                "to merge redundant or outdated notepad entries into more condensed ones. "
-                "Do not delete anything still relevant to the ongoing task."
+                "You do not have tool access in this summarization call, so add a "
+                "line under \"Pending / Next Steps\" reminding the next turn to call "
+                "`notepad_summarize` to merge redundant or outdated notepad entries "
+                "into more condensed ones. Do not suggest deleting anything still "
+                "relevant to the ongoing task."
             )
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
@@ -417,12 +426,13 @@ class CompactionMixin:
           5. goal_mode/runner.py::_do_compact()（卡住恢复触发的 compact）
 
         实现路径（自动选择）：
-          - 正常路径：历史未超限时，通过 run_turn() 发送 compact prompt，
-            让 LLM 在完整历史上下文中生成高质量摘要。
-          - 分批路径（chunked compact）：历史已超限，run_turn() 本身无法执行时，
+          - 单次直出路径：历史未超限时，直接用 _compact_single_shot() 调用
+            _llm.chat_with_retry()（专用 summarizer 人设 + tools=[]），
+            让 LLM 在完整历史上生成高质量摘要，不经过 run_turn()/agentic loop。
+          - 分批路径（chunked compact）：历史已超限，单次直出预估会超出上下文，
             把历史按 turn 边界切成多个小批，每批独立调用 LLM 生成摘要，
-            最后合并成一个统一摘要替换历史。此路径完全绕开 run_turn()，
-            直接使用 _llm.chat_with_retry。
+            最后合并成一个统一摘要替换历史。同样使用 _llm.chat_with_retry，
+            不经过 run_turn()。
 
         Args:
             goal_hint: [compact_mechanism_improvement_plan P0-A] 可选，调用方

@@ -2,6 +2,15 @@
 
 状态：**已完成**（2026-09-14）
 
+> **[2026-09 后续更新]** 本文档修复的是"单次直出路径 = `run_turn(compact_prompt)`"
+> 架构下的一个具体故障（哨兵占位文本被当真摘要写入历史）。此后单次直出路径已
+> 结构性重构为 `_compact_single_shot()`（`_llm.chat_with_retry()`，不经过
+> `run_turn()`/agentic loop，详见 `docs/compact-design.md` "路径 B"一节），
+> `run_turn()` 特有的 `result_sanity_check` 哨兵机制不会再被这条路径触发，本文档
+> 描述的故障场景已不适用。保留本文档作为该问题的历史记录和根因分析参考；
+> `last_turn_result_valid()` 本身仍然存在，服务于其它仍直接调用 `run_turn()`
+> 的场景（`api/server.py`、`evolution/objective_agent_bridge.py`）。
+
 ## 背景 / 用户报告的问题
 
 用户报告：一次视频生成任务超时后触发 auto-compact，compact 完成后
