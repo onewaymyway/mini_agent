@@ -41,6 +41,7 @@ def _empty_snapshot() -> dict[str, Any]:
         "user_paused_objectives": [],
         "fairness_paused_objectives": [],
         "goals_missing_objective": [],
+        "orphaned_active_goals": [],
         "has_blocking_issue": False,
     }
 
@@ -108,6 +109,40 @@ def scheduling_diagnostics_snapshot(
         pass
 
     try:
+        if goal_backlog is not None:
+            # [核心根因排查] `add_goal()`（CLI `/agent goals add`、看板"新建
+            # 目标"表单走的都是这条legacy路径）创建的 Goal 不会被挂到
+            # "ultimate"根节点下面——它是一套独立于"🌳 目标树"层级体系
+            # （ultimate/domain/stage/goal/objective，通过 add_node()/
+            # decompose 建立）之外的扁平列表，只能被 active_goals() 这类
+            # 全量扫描到，`get_tree()` 从 ultimate 出发按 children_ids
+            # 遍历永远碰不到它。这类 Goal 明明 active、也在被
+            # AutonomousLoop 正常调度推进，但在"🌳 目标树"视图里彻底不可见
+            # ——表现出来就是"目标树里全是暂停/已完成的旧节点，看不到任何
+            # 进行中的"，而实际的进行中目标其实在"📋 列表/看板视图"里。
+            reachable: set = set()
+            tree = goal_backlog.get_tree(None)
+            if tree is not None:
+                def _walk(t: dict) -> None:
+                    n = t.get("node")
+                    if n is not None:
+                        reachable.add(n.id)
+                    for c in t.get("children") or []:
+                        _walk(c)
+                _walk(tree)
+
+            orphaned = [
+                n for n in goal_backlog.all_nodes()
+                if n.is_active and n.is_goal and n.id not in reachable
+            ]
+            snapshot["orphaned_active_goals"] = [
+                {"id": g.id, "title": g.title, "priority": g.priority}
+                for g in sorted(orphaned, key=lambda n: n.priority, reverse=True)
+            ]
+    except Exception:
+        pass
+
+    try:
         if objective_executor is not None:
             user_paused_ids = objective_executor.user_paused_objective_ids()
             fairness_paused_ids = objective_executor.fairness_paused_objective_ids()
@@ -133,6 +168,7 @@ def scheduling_diagnostics_snapshot(
     snapshot["has_blocking_issue"] = bool(
         snapshot["scheduling_paused"]
         or snapshot["user_paused_objectives"]
+        or snapshot["orphaned_active_goals"]
         or (snapshot["active_goal_count"] == 0 and snapshot["active_objective_count"] == 0)
     )
     return snapshot

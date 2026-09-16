@@ -6362,6 +6362,18 @@ def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
             "active，但下面还没有进行中的子任务。"
         )
 
+    orphaned = resp.get("orphaned_active_goals") or []
+    if orphaned:
+        lines.append(
+            f"🟢 **{len(orphaned)} 个进行中的目标不在「🌳 目标树」里**：它们是通过"
+            "「新建目标」/`add_goal` 这条旧路径创建的扁平 Goal，跟「🌳 目标树」"
+            "（ultimate/domain/stage 那套层级体系，靠 `add_node`/拆解建立）"
+            "是两份不同的数据结构——这些目标本身是 active、也在被正常调度推进，"
+            "只是没有挂到全局根节点下面，所以 `get_tree()` 遍历不到它们，"
+            "在「📋 列表/看板视图」里能看到，但「🌳 目标树」里看不到。"
+            "这正是你看到\"目标树里全是暂停/已完成\"的根本原因。"
+        )
+
     if not resp.get("scheduling_paused") and resp.get("active_goal_count", 0) == 0 \
             and resp.get("active_objective_count", 0) == 0:
         lines.append("当前确实没有任何 active 状态的 Goal / Objective——需要新建目标，或把已有目标重新置为 active。")
@@ -6370,6 +6382,41 @@ def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
         st.warning("目标树里当前没有（或很少）进行中的目标，可能原因如下：")
         for line in lines:
             st.markdown(f"- {line}")
+
+        if orphaned:
+            st.caption(
+                "👇 想让这些目标也出现在「🌳 目标树」里，需要手动把它们挂到树里"
+                "某个已有节点下面（层级顺序必须合法，比如挂到某个 stage 节点下）："
+            )
+            tree_resp = client.goal_tree() or {}
+            tree = tree_resp.get("tree")
+            id_to_title: dict = {}
+            if tree is not None:
+                _goal_tree_flatten_titles(tree, id_to_title)
+            if not id_to_title:
+                st.caption("目标树里还没有任何节点，需要先创建一个根节点/层级结构才能挂载。")
+            else:
+                for g in orphaned:
+                    gid = g.get("id")
+                    title = g.get("title", gid)
+                    labels = [f"{t}（{pid}）" for pid, t in id_to_title.items()]
+                    ids = list(id_to_title.keys())
+                    cols = st.columns([3, 4, 2])
+                    with cols[0]:
+                        st.markdown(f"`{title}`")
+                    with cols[1]:
+                        chosen_label = st.selectbox(
+                            "挂到", labels, key=f"_sched_diag_reparent_sel_{gid}", label_visibility="collapsed",
+                        )
+                    with cols[2]:
+                        if st.button("🔗 挂载", key=f"_sched_diag_reparent_btn_{gid}"):
+                            chosen_id = ids[labels.index(chosen_label)]
+                            res = client.reparent_goal_tree_node(gid, chosen_id)
+                            if isinstance(res, dict) and res.get("_error"):
+                                st.error(f"挂载失败：{res['_error']}")
+                            else:
+                                st.success("已挂载，刷新后可在目标树里看到")
+                                st.rerun()
 
         if missing:
             st.caption("👇 点击直接对某个目标发起一次拆解（会调用 LLM，需要几秒到几十秒）：")
