@@ -419,6 +419,14 @@ class AutonomousLoop:
 
         self._ensure_goal_objectives()
 
+        # [响应用户反馈：目标树/待办全部完成后，应该有机制主动推荐下一步
+        # 目标，而不是永远停在原地] 见 _maybe_propose_goals_on_exhaustion()
+        # 文档字符串——只在 backlog 真正清空时触发，写成 status="draft"
+        # 而不是 "active"，不违反本方法开头"maintenance 档位不凭空产生新
+        # 意图"的边界。
+        self._maybe_propose_goals_on_exhaustion()
+
+
         # [goal_cron_binding_plan.md Track C/D] 回收周期性 Goal 本轮已终态的
         # 子 Objective：cycle_count += 1 + progress_notes 追加一行摘要。放在
         # maintenance 档位（而不是 passive）是刻意的——见
@@ -801,6 +809,91 @@ class AutonomousLoop:
                     "title": obj.title,
                     "summary": f"自动为目标「{goal.title}」创建执行子目标：{obj.title}",
                 })
+
+    def _maybe_propose_goals_on_exhaustion(self) -> None:
+        """[maintenance 档位专属兜底] `_tick_maintenance()` 顶部明确写着
+        "不 derive 新 Goal……不会凭空产生新意图"——这是 maintenance 跟
+        autonomous 档位之间刻意设的边界，本方法不打算突破它。
+
+        但用户反馈的场景是合理的：如果 GoalBacklog 彻底清空（没有任何
+        active Goal、也没有任何 active Objective），agent 在 maintenance
+        档位下会永远原地不动，直到用户想起来自己手动加一个新目标——没有
+        任何主动性。"提一条候选、写成 status='draft' 挂起来等用户显式
+        `/agent goals accept <id>` 才会变成 active"跟"不凭空产生新意图"
+        并不矛盾：draft 状态不会被 `active_goals()`/调度器碰到，在用户
+        点头之前什么实际动作都不会发生，跟 autonomous 档位 `commit_goals()`
+        直接写 "active"、立刻进入调度是两回事——是"建议"而不是"行动"。
+
+        复用 `SoftGoalDeriver` 的三路信号（低置信度能力/停滞工作线/高频
+        教训），但只处理 `other_candidates`（workthread/lesson 类，没有
+        ExplorationSandbox 验证也相对安全）；capability 类候选默认需要
+        探索实验验证才敢写 Goal，这是 autonomous 档位的专属能力，
+        maintenance 档位这里跳过，不代为验证。
+
+        节奏控制复用 `SoftGoalDeriver.should_derive()`（同一个
+        DERIVE_INTERVAL_SECONDS 冷却窗口，避免跟 autonomous 档位的
+        derive 抢同一份节奏状态文件产生混乱调用）+ 独立统计当前待确认的
+        draft 数量（不占用 autonomous 档位统计"active agent_derived"的
+        MAX_PENDING_DERIVED 名额，两者是两个池子，互不影响彼此的上限）。
+        """
+        try:
+            if self._goal_backlog.active_goals() or self._goal_backlog.active_objectives():
+                return  # backlog 没清空，不需要主动建议
+
+            from mini_agent.evolution.soft_goal_deriver import (
+                SoftGoalDeriver, MAX_NEW_GOALS, MAX_PENDING_DERIVED,
+            )
+            deriver = SoftGoalDeriver(self._paths, self._cfg)
+            if not deriver.should_derive():
+                return
+
+            _cap_candidates, other_candidates = deriver.derive_candidates(self._goal_backlog)
+            if not other_candidates:
+                return
+
+            existing_drafts = [
+                g for g in self._goal_backlog.all_nodes()
+                if g.source == "agent_derived" and g.status == "draft"
+            ]
+            slots = MAX_PENDING_DERIVED - len(existing_drafts)
+            if slots <= 0:
+                return
+
+            created = []
+            for c in other_candidates[:min(MAX_NEW_GOALS, slots)]:
+                goal = self._goal_backlog.add_goal(
+                    title=c.title,
+                    description=c.description,
+                    source="agent_derived",
+                    priority=c.priority,
+                    tags=["needs_review", "awaiting_confirmation"],
+                    status="draft",
+                    source_initiator="autonomous_loop",
+                )
+                created.append(goal)
+
+            if created:
+                deriver._record_derive()
+                self._goal_backlog.save()
+                for goal in created:
+                    self._record_digest({
+                        "type": "soft_goal_proposed",
+                        "goal_id": goal.id,
+                        "title": goal.title,
+                        "summary": (
+                            f"目标/子任务已全部完成，Agent 建议下一个目标（待确认）："
+                            f"{goal.title} — 可通过「/agent goals accept {goal.id}」"
+                            "采纳，或「/agent goals reject」忽略"
+                        ),
+                    })
+        except ImportError:
+            pass
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(
+                _mini_agent_exc,
+                where='mini_agent.evolution.autonomous_loop.AutonomousLoop._maybe_propose_goals_on_exhaustion',
+            )
 
     def _tick_autonomous(self) -> None:
         """

@@ -36,12 +36,17 @@ def _empty_snapshot() -> dict[str, Any]:
         "scheduling_paused_reason": "",
         "scheduling_paused_at": 0.0,
         "autonomous_loop_running": None,
+        "autonomous_loop_last_tick_at": 0.0,
+        "autonomous_loop_tick_count": 0,
         "active_goal_count": 0,
         "active_objective_count": 0,
         "user_paused_objectives": [],
         "fairness_paused_objectives": [],
         "goals_missing_objective": [],
         "orphaned_active_goals": [],
+        "pending_goal_proposals": [],
+        "tree_expansion_candidates": [],
+        "tree_pending_decompose_candidates": [],
         "has_blocking_issue": False,
     }
 
@@ -54,7 +59,10 @@ def scheduling_diagnostics_snapshot(
 ) -> dict[str, Any]:
     """聚合"为什么目标树里看不到进行中目标"的诊断信息。
 
-    - `goal_backlog`：用于读 active 计数 + `goals_missing_objective()`。
+    - `goal_backlog`：用于读 active 计数 + `goals_missing_objective()` +
+      `agent_derived` 的 draft 候选（backlog 耗尽后由
+      `AutonomousLoop._maybe_propose_goals_on_exhaustion()` 生成，等待
+      用户 `/agent goals accept` 确认）。
     - `objective_executor`：用于区分 `paused_by_user` / `paused_for_fairness`。
     - `paths`：用于读全局 `scheduling_paused` 开关。
     - `autonomous_loop`：可选，用于附带 tick 是否在运行（best-effort，
@@ -77,11 +85,26 @@ def scheduling_diagnostics_snapshot(
 
     try:
         if autonomous_loop is not None:
-            snapshot["autonomous_loop_running"] = bool(
-                getattr(autonomous_loop, "is_running", lambda: None)()
-                if callable(getattr(autonomous_loop, "is_running", None))
-                else getattr(autonomous_loop, "_running", None)
-            )
+            # [bugfix] 之前这里探测 `is_running()`/`_running`，但
+            # `AutonomousLoop` 根本没有这两个成员——`getattr(..., None)`
+            # 拿到的默认值必然是 falsy，导致这个字段无论循环是否真的在跑
+            # 都固定返回 False，是诊断代码自己的 bug，不代表循环真的没
+            # 在跑。真正可用的信号是 `get_digest_status()` 里的
+            # `last_tick_at`/`tick_interval_seconds`——用"最近一次 tick
+            # 距今是否明显超过一个正常 tick 间隔"来判断循环是否还在正常
+            # 心跳，而不是去猜一个不存在的属性名。
+            digest = autonomous_loop.get_digest_status()
+            last_tick_at = float(digest.get("last_tick_at") or 0.0)
+            tick_interval = float(digest.get("tick_interval_seconds") or 0.0)
+            snapshot["autonomous_loop_last_tick_at"] = last_tick_at
+            snapshot["autonomous_loop_tick_count"] = int(digest.get("tick_count") or 0)
+            if last_tick_at <= 0:
+                # 从未 tick 过：daemon 刚起来、或者这个 AutonomousLoop 实例
+                # 压根没被真正启动（跟进程本身是否存活是两回事）。
+                snapshot["autonomous_loop_running"] = False
+            else:
+                stale_after = max(tick_interval * 3, 300.0)
+                snapshot["autonomous_loop_running"] = (time.time() - last_tick_at) < stale_after
     except Exception:
         pass
 
@@ -139,6 +162,75 @@ def scheduling_diagnostics_snapshot(
                 {"id": g.id, "title": g.title, "priority": g.priority}
                 for g in sorted(orphaned, key=lambda n: n.priority, reverse=True)
             ]
+
+            # [响应用户反馈] backlog 全部完成后，AutonomousLoop 在
+            # maintenance 档位会写一批 status="draft" 的 agent_derived
+            # Goal 作为"待确认的下一步建议"（见 _maybe_propose_goals_on_
+            # exhaustion() 文档）。这些节点 is_active 为 False，不会出现
+            # 在 active_goal_count 里，单独列出来才不会被面板忽略。
+            proposals = [
+                n for n in goal_backlog.all_nodes()
+                if n.is_goal and n.status == "draft" and n.source == "agent_derived"
+            ]
+            snapshot["pending_goal_proposals"] = [
+                {"id": g.id, "title": g.title, "description": g.description}
+                for g in proposals
+            ]
+
+            # [响应用户反馈：想要的是"目标树该怎么继续扩展"，不是扁平的新
+            # Goal] 目标树本来就有一整套阶段二/三写好、也已经在 daemon
+            # 启动时接了 cron 的自动分解机制——`find_stale_nodes_for_scan()`
+            # + `find_parent_needing_decompose_after_completion()` +
+            # `sys:goal_tree_decompose_scan`（每 24 小时跑一次）。问题不是
+            # "没有机制"，是这套机制有两道等待闸门：① 停滞判定要求节点
+            # 超过 14 天没被 touch 过才算"该扩展了"；② 还要等下一次 cron
+            # 巡检（最多 24 小时）才会真的触发。用户在看板上想立刻看到
+            # "接下来能往哪扩展"，等不起这两道闸门。
+            #
+            # 这里复用同一套已经测试过的检测函数，把 `stale_days` 传 0
+            # （不再要求 14 天，只看"活着但没有非终态子节点"这个结构性条件
+            # 本身），并且把"完成态联动"的回看窗口从 25 小时放宽到
+            # "不限"（直接扫全部 completed 节点），得到的就是"目标树里此刻
+            # 结构性地卡住、值得继续往下拆的节点全集"——面板据此可以给一个
+            # "立即生成扩展建议"按钮，直接调用同一个 `GoalTreeDecomposer.
+            # decompose()`（仍然是"生成候选，等用户 accept/reject"的安全
+            # 语义，不会绕过确认直接产生新的 active 节点）。
+            from mini_agent.perception.goal_tree_decomposer import (
+                find_stale_nodes_for_scan,
+                find_parent_needing_decompose_after_completion,
+            )
+
+            stale_now = find_stale_nodes_for_scan(goal_backlog, stale_days=0)
+            stale_ids = {n.id for n in stale_now if n.id in reachable}
+
+            completed_in_tree = [
+                n for n in goal_backlog.all_nodes()
+                if n.id in reachable and n.status == "completed" and n.level != "objective"
+            ]
+            linked_ids: set = set()
+            for cn in completed_in_tree:
+                parent = find_parent_needing_decompose_after_completion(goal_backlog, cn.id)
+                if parent is not None and parent.id in reachable:
+                    linked_ids.add(parent.id)
+
+            expandable_ids = stale_ids | linked_ids
+            expandable_nodes = [n for n in goal_backlog.all_nodes() if n.id in expandable_ids]
+            snapshot["tree_expansion_candidates"] = [
+                {
+                    "id": n.id,
+                    "title": n.title,
+                    "level": n.level,
+                    "status": n.status,
+                    "reason": "stale" if n.id in stale_ids else "completion_linked",
+                }
+                for n in sorted(expandable_nodes, key=lambda n: n.priority, reverse=True)
+            ]
+
+            snapshot["tree_pending_decompose_candidates"] = [
+                {"id": n.id, "title": n.title, "candidate_count": len(n.decompose_candidates)}
+                for n in goal_backlog.all_nodes()
+                if n.id in reachable and n.decompose_candidates
+            ]
     except Exception:
         pass
 
@@ -169,6 +261,8 @@ def scheduling_diagnostics_snapshot(
         snapshot["scheduling_paused"]
         or snapshot["user_paused_objectives"]
         or snapshot["orphaned_active_goals"]
+        or snapshot["tree_expansion_candidates"]
+        or snapshot["tree_pending_decompose_candidates"]
         or (snapshot["active_goal_count"] == 0 and snapshot["active_objective_count"] == 0)
     )
     return snapshot

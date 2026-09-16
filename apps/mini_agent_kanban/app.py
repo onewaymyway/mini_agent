@@ -6374,6 +6374,33 @@ def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
             "这正是你看到\"目标树里全是暂停/已完成\"的根本原因。"
         )
 
+    proposals = resp.get("pending_goal_proposals") or []
+    if proposals:
+        lines.append(
+            f"💡 **Agent 生成了 {len(proposals)} 条待确认的新目标建议**：backlog 已经"
+            "全部完成，这是「maintenance 档位不会凭空产生新意图」边界下的折中方案——"
+            "只生成 `status=draft` 的候选挂起来，不会自动变成 active，需要你确认后"
+            "才会被调度执行。"
+        )
+
+    tree_expandable = resp.get("tree_expansion_candidates") or []
+    tree_pending = resp.get("tree_pending_decompose_candidates") or []
+    if tree_expandable:
+        lines.append(
+            f"🌳 **{len(tree_expandable)} 个目标树节点结构性地\"没有下文\"了**：这些节点"
+            "自己是 active/paused，或者它的子节点刚全部 completed，但它自己没有任何"
+            "还在进行中的子节点——正常情况下会由每 24 小时跑一次的"
+            "`sys:goal_tree_decompose_scan` 巡检自动分解，但巡检默认要求停滞满 14 天"
+            "才触发，等不及的话可以在下面直接手动立即生成一次扩展建议。"
+        )
+    if tree_pending:
+        total_c = sum(t.get("candidate_count", 0) for t in tree_pending)
+        lines.append(
+            f"🪄 **已经有 {total_c} 条分解候选在等你确认**，分布在 {len(tree_pending)} 个"
+            "节点上——去「🌳 目标树」视图对应节点里 accept/reject 即可，这些就是"
+            "目标树继续往下扩展的具体方案。"
+        )
+
     if not resp.get("scheduling_paused") and resp.get("active_goal_count", 0) == 0 \
             and resp.get("active_objective_count", 0) == 0:
         lines.append("当前确实没有任何 active 状态的 Goal / Objective——需要新建目标，或把已有目标重新置为 active。")
@@ -6382,6 +6409,11 @@ def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
         st.warning("目标树里当前没有（或很少）进行中的目标，可能原因如下：")
         for line in lines:
             st.markdown(f"- {line}")
+        tick_count = resp.get("autonomous_loop_tick_count")
+        last_tick_at = resp.get("autonomous_loop_last_tick_at")
+        if tick_count is not None:
+            ago = f"{int(time.time() - last_tick_at)}s 前" if last_tick_at else "从未"
+            st.caption(f"（自主循环心跳：累计 tick {tick_count} 次，最近一次 {ago}）")
 
         if orphaned:
             st.caption(
@@ -6417,6 +6449,57 @@ def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
                             else:
                                 st.success("已挂载，刷新后可在目标树里看到")
                                 st.rerun()
+
+        if proposals:
+            st.caption("👇 待确认的新目标建议（backlog 清空后 Agent 自动生成）：")
+            for p in proposals:
+                pid = p.get("id")
+                title = p.get("title", pid)
+                desc = p.get("description") or ""
+                cols = st.columns([5, 2, 2])
+                with cols[0]:
+                    st.markdown(f"**{title}**")
+                    if desc:
+                        st.caption(desc)
+                with cols[1]:
+                    if st.button("✅ 采纳", key=f"_sched_diag_accept_btn_{pid}"):
+                        res = client.update_goal(pid, status="active", priority=50)
+                        if isinstance(res, dict) and res.get("_error"):
+                            st.error(f"采纳失败：{res['_error']}")
+                        else:
+                            st.success("已采纳，进入正常调度")
+                            st.rerun()
+                with cols[2]:
+                    if st.button("🗑️ 忽略", key=f"_sched_diag_reject_btn_{pid}"):
+                        res = client.update_goal(pid, status="abandoned")
+                        if isinstance(res, dict) and res.get("_error"):
+                            st.error(f"操作失败：{res['_error']}")
+                        else:
+                            st.rerun()
+
+        if tree_expandable:
+            st.caption("👇 目标树里这些节点没有下文了，点击立即生成扩展建议（跳过 14 天停滞等待，直接调用 LLM）：")
+            for n in tree_expandable:
+                nid = n.get("id")
+                title = n.get("title", nid)
+                level = n.get("level", "")
+                status = n.get("status", "")
+                cols = st.columns([5, 2])
+                with cols[0]:
+                    st.markdown(f"`{title}`（{level} / {status}）")
+                with cols[1]:
+                    async_key = f"sched_diag_tree_expand:{nid}"
+                    if st.button("🌳 生成扩展建议", key=f"_sched_diag_tree_expand_btn_{nid}"):
+                        if start_async_job(client, async_key, lambda nid=nid: client.decompose_goal_node(nid, force=True)):
+                            st.rerun()
+                    result = run_async_job(client, async_key, label="正在生成扩展建议")
+                    if result is not None:
+                        if "_error" in result:
+                            st.error(f"生成失败：{result['_error']}")
+                        else:
+                            c = len(result.get("candidates") or [])
+                            st.success(f"生成了 {c} 条候选，去「🌳 目标树」节点详情里确认" if c else "本次没有生成新候选")
+                            st.rerun()
 
         if missing:
             st.caption("👇 点击直接对某个目标发起一次拆解（会调用 LLM，需要几秒到几十秒）：")
