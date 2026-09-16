@@ -6314,7 +6314,20 @@ def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
     没有问题时不渲染任何东西，不占视线。
     """
     resp = client.goals_scheduling_diagnostics() or {}
-    if "_error" in resp or not resp.get("has_blocking_issue"):
+    if "_error" in resp:
+        # 之前这里静默 return，导致"新加的路由后端进程没重启" 这种最常见的
+        # 接入问题完全没有任何提示，看起来就像"功能压根没生效"。改成带一条
+        # 可折叠的错误提示：一次 API 请求，不会明显干扰正常使用。
+        with st.expander("⚠️ 目标调度诊断面板加载失败（点开看原因）", expanded=False):
+            st.caption(
+                f"请求 `/v1/goals/scheduling_diagnostics` 失败：{resp['_error']}\n\n"
+                "最常见原因：后端 API 进程（跑 `mini_agent.api.server` 的那个进程，"
+                "跟 Streamlit 是两个独立进程）还没有重启，新加的路由没有真正生效——"
+                "只重启/刷新了 Streamlit 页面是不够的，需要把后端 API 进程也完全"
+                "停掉重新启动一次。"
+            )
+        return
+    if not resp.get("has_blocking_issue"):
         return
 
     lines: list[str] = []
