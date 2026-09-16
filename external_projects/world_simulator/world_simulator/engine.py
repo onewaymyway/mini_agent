@@ -311,6 +311,24 @@ def set_pilot_config(
     return manifest
 
 
+def delete_simulation(data_dir: Path, sim_id: str) -> None:
+    """彻底删除一个模拟实例（`data/<sim_id>/` 整个目录，含所有分支）。
+
+    对应方案第 5 节页面 5「存档管理」的"删除实例"操作。这是一个不可逆
+    操作——不做软删除/回收站，理由：模拟实例本身就是"存档"语义（分叉/
+    回滚已经覆盖了"不想要这条时间线了"的场景，见 `branch_manager.py`），
+    真正点了"删除"通常是想彻底清掉一个不再需要的实例，加一层回收站会
+    让"删除"这个操作本身语义变得含糊；调用方（`app.py`）在 UI 层要求
+    二次确认来弥补"不可逆"的风险。
+    """
+    store = SimStore.for_root(data_dir, sim_id)
+    if not store.exists():
+        raise SimNotFoundError(f"模拟实例不存在：{sim_id}")
+    import shutil
+
+    shutil.rmtree(store.sim_dir)
+
+
 def get_simulation(data_dir: Path, sim_id: str) -> tuple[SimManifest, SimState, list]:
     """返回 (manifest, current_state, history)，供 CLI/看板展示。"""
     store = SimStore.for_root(data_dir, sim_id)

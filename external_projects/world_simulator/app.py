@@ -7,13 +7,17 @@
 看板风——主题取"夜航日志"：深靛蓝底 + 温暖灯笼金点缀，时间线用竖排
 "章节卡片"呈现，分支选项渲染成可点击的选择卡片而不是下拉框。
 
-页面（阶段二实现 1-3，阶段三新增 4：对比视图 + 分支管理；5/6 见方案
-第 5 节，留待后续阶段）：
+页面（阶段二实现 1-3，阶段三新增 4：对比视图 + 分支管理，阶段七新增
+5/6，对应方案第 5 节全部 6 个页面已落地）：
   1. 模拟列表
   2. 创建向导（意图 → 草稿 → 编辑/确认 → 创建）
   3. 实例详情/推进面板（时间线 + 推进下一步 + 候选分支卡片 + 分支管理）
   4. 对比视图（选两条时间线并排对比，可以是同一实例的不同分支，也可以
      是两个独立实例）
+  5. 存档管理（全部实例总览 + 删除实例，二次确认，不可逆）
+  6. 游戏化视图（同一份 state_history 按"章节"重新渲染成可翻页的故事
+     回顾 + 成就徽章，纯展示层，不引入新的数据结构，见
+     `world_simulator/achievements.py`）
 
 启动方式：
     cd external_projects/world_simulator
@@ -38,11 +42,13 @@ import _common  # noqa: F401  — 触发 sys.path 设置，未使用其它内容
 from world_simulator import branch_manager as bm
 from world_simulator.autopilot import AutopilotDisabledError, run_autopilot_step
 from world_simulator.config import DATA_DIR, ensure_dirs
+from world_simulator.achievements import achievement_progress, compute_achievements
 from world_simulator.engine import (
     SimAlreadyEndedError,
     SimEngineError,
     SimPausedError,
     advance,
+    delete_simulation,
     get_simulation,
     list_simulations,
     materialize_simulation,
@@ -51,6 +57,7 @@ from world_simulator.engine import (
 )
 from world_simulator.spec_generator import ScenarioDraft, ScenarioGenerationError, generate_scenario
 from world_simulator.state_model import ChoiceOption
+from world_simulator.store import SimNotFoundError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("world_simulator.app")
@@ -158,6 +165,30 @@ div[data-testid="stButton"] > button {
 div[data-testid="stButton"] > button:hover {
     border-color: var(--ws-accent);
     color: var(--ws-accent);
+}
+
+.ws-badge {
+    display: inline-block;
+    width: 100%;
+    border: 1px solid var(--ws-border);
+    border-radius: 10px;
+    padding: 0.7rem 0.9rem;
+    margin-bottom: 0.6rem;
+    box-sizing: border-box;
+}
+.ws-badge-unlocked {
+    background: var(--ws-accent-soft);
+    border-color: var(--ws-accent);
+}
+.ws-badge-locked { opacity: 0.45; }
+.ws-badge-title { font-weight: 600; }
+.ws-badge-desc { color: var(--ws-text-muted); font-size: 0.82rem; }
+
+.ws-danger-zone {
+    border: 1px solid var(--ws-danger);
+    border-radius: 10px;
+    padding: 0.9rem 1.1rem;
+    margin-top: 0.6rem;
 }
 </style>
 """
@@ -370,6 +401,10 @@ def page_detail() -> None:
             unsafe_allow_html=True,
         )
     with top_r:
+        if st.button("📖 游戏化视图"):
+            st.session_state["view"] = "game"
+            st.session_state.pop("game_chapter_idx", None)
+            st.rerun()
         if st.button("← 返回列表"):
             st.session_state["view"] = "list"
             st.rerun()
@@ -644,6 +679,166 @@ def page_compare() -> None:
 
 
 # ─────────────────────────────────────────────────────────────
+# 页面：存档管理（阶段七）
+# ─────────────────────────────────────────────────────────────
+
+
+def page_archive() -> None:
+    st.markdown("## 存档管理", unsafe_allow_html=True)
+    st.markdown(
+        '<span class="ws-muted">全部模拟实例总览。「删除实例」不可逆——'
+        "如果只是不想要某条时间线的后续走向，去实例详情页的「分支」区块"
+        "从历史节点分叉即可，原时间线不会被销毁；真正确定不再需要一个"
+        "实例时才用这里的删除。</span>",
+        unsafe_allow_html=True,
+    )
+
+    manifests = list_simulations(DATA_DIR)
+    if not manifests:
+        st.info("还没有任何模拟实例。")
+        return
+
+    for m in manifests:
+        try:
+            branches = bm.list_branches(DATA_DIR, m.sim_id)
+        except Exception:  # noqa: BLE001
+            branches = ["main"]
+
+        st.markdown(
+            f"""<div class="ws-card">
+                <div class="ws-card-title">{m.title}</div>
+                <div class="ws-muted">{_pill(m.status)}
+                    {m.sim_id} · 模板：{m.template} · 第 {m.current_step} 步 ·
+                    {len(branches)} 条分支 · 创建于 {m.created_at}
+                </div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        c1, c2, c3 = st.columns([1, 1, 3])
+        with c1:
+            if st.button("打开", key=f"arch_open_{m.sim_id}"):
+                st.session_state["view"] = "detail"
+                st.session_state["sim_id"] = m.sim_id
+                st.rerun()
+        with c2:
+            confirm_key = f"arch_confirm_{m.sim_id}"
+            with st.popover("🗑 删除"):
+                st.markdown(
+                    f'<div class="ws-danger-zone"><b>删除「{m.title}」？</b>'
+                    "<div class=\"ws-muted\">此操作不可逆，会连同全部分支/"
+                    "历史一起删除。</div></div>",
+                    unsafe_allow_html=True,
+                )
+                confirmed = st.checkbox("我确认要删除这个实例", key=confirm_key)
+                if st.button("确认删除", key=f"arch_delete_{m.sim_id}", disabled=not confirmed):
+                    try:
+                        delete_simulation(DATA_DIR, m.sim_id)
+                    except SimNotFoundError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success(f"已删除「{m.title}」。")
+                        st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────
+# 页面：游戏化视图（阶段七）
+# ─────────────────────────────────────────────────────────────
+
+
+def page_game() -> None:
+    sim_id = st.session_state.get("sim_id")
+    if not sim_id:
+        st.info("请先从「模拟列表」打开一个实例，再切到游戏化视图。")
+        if st.button("← 返回列表"):
+            st.session_state["view"] = "list"
+            st.rerun()
+        return
+
+    try:
+        manifest, current, history = get_simulation(DATA_DIR, sim_id)
+    except SimEngineError as exc:
+        st.error(f"加载模拟实例失败：{exc}")
+        return
+
+    top_l, top_r = st.columns([4, 1])
+    with top_l:
+        st.markdown(f"## 📖 {manifest.title}", unsafe_allow_html=True)
+        st.markdown(
+            f'<span class="ws-muted">{_pill(manifest.status)}分支：{manifest.branch} · '
+            f"已写到第 {manifest.current_step} 章</span>",
+            unsafe_allow_html=True,
+        )
+    with top_r:
+        if st.button("回到推进面板"):
+            st.session_state["view"] = "detail"
+            st.rerun()
+
+    achievements = compute_achievements(manifest, history)
+    progress = achievement_progress(achievements)
+
+    st.markdown("#### 🏅 成就")
+    st.progress(progress["ratio"], text=f"{progress['unlocked_count']}/{progress['total_count']} 已解锁")
+    badge_cols = st.columns(3)
+    for i, a in enumerate(achievements):
+        with badge_cols[i % 3]:
+            cls = "ws-badge-unlocked" if a.unlocked else "ws-badge-locked"
+            icon = "🏆" if a.unlocked else "🔒"
+            st.markdown(
+                f'<div class="ws-badge {cls}"><div class="ws-badge-title">{icon} {a.label}</div>'
+                f'<div class="ws-badge-desc">{a.description}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("#### 📚 章节回顾")
+    st.markdown(
+        '<span class="ws-muted">按时间正序，把这条时间线当一本正在写的书翻一遍。'
+        "想继续写下去，回到「推进面板」即可。</span>",
+        unsafe_allow_html=True,
+    )
+    if not history:
+        st.info("这段故事还没有开始。")
+        return
+
+    chapter_labels = [f"第 {s.step} 章" for s in history]
+    idx = st.session_state.setdefault("game_chapter_idx", len(history) - 1)
+    idx = max(0, min(idx, len(history) - 1))
+
+    nav_prev, nav_pos, nav_next = st.columns([1, 3, 1])
+    with nav_prev:
+        if st.button("◀ 上一章", disabled=idx <= 0):
+            idx -= 1
+    with nav_pos:
+        idx = st.select_slider("跳到章节", options=list(range(len(history))), value=idx,
+                                format_func=lambda i: chapter_labels[i])
+    with nav_next:
+        if st.button("下一章 ▶", disabled=idx >= len(history) - 1):
+            idx += 1
+    st.session_state["game_chapter_idx"] = idx
+
+    s = history[idx]
+    chosen_note = ""
+    if s.chosen_option_id:
+        who = "代理" if s.chosen_by == "autopilot" else "你"
+        chosen_note = f'<div class="ws-chapter-choice">→ {who} 选择了「{s.chosen_option_id}」</div>'
+        if s.chosen_by == "autopilot" and s.chosen_reason:
+            chosen_note += f'<div class="ws-chapter-choice">　理由：{s.chosen_reason}</div>'
+    major_tag = " · ⚡命运转折点" if s.major_decision else ""
+
+    st.markdown(
+        f"""<div class="ws-card" style="min-height: 220px;">
+            <div class="ws-chapter-step">第 {s.step} 章{major_tag}</div>
+            <div class="ws-chapter-summary" style="font-size:1.15rem;">{s.summary}</div>
+            <div class="ws-chapter-narrative">{s.narrative or '（这一章还没有更多叙事文本。）'}</div>
+            {chosen_note}
+        </div>""",
+        unsafe_allow_html=True,
+    )
+    if s.vars:
+        with st.expander("这一章的关键变量"):
+            st.json(s.vars)
+
+
+# ─────────────────────────────────────────────────────────────
 # 入口
 # ─────────────────────────────────────────────────────────────
 
@@ -667,6 +862,9 @@ def main() -> None:
         if st.button("⚖ 对比视图", use_container_width=True):
             st.session_state["view"] = "compare"
             st.rerun()
+        if st.button("🗄 存档管理", use_container_width=True):
+            st.session_state["view"] = "archive"
+            st.rerun()
 
     view = st.session_state["view"]
     if view == "create":
@@ -675,6 +873,10 @@ def main() -> None:
         page_detail()
     elif view == "compare":
         page_compare()
+    elif view == "archive":
+        page_archive()
+    elif view == "game":
+        page_game()
     else:
         page_list()
 
