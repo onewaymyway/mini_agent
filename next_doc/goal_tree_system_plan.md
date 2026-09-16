@@ -12,6 +12,12 @@
 > （看板树形 UI，现阶段焦点）已完成，见
 > `next_doc/goal_tree_system_phase4_implementation_record.md`——至此本文档
 > 五、分阶段实施规划的四个阶段全部完成。
+>
+> **后续补丁**（不改动以上四个阶段的结论，独立追加）：2026-09 根据用户
+> 反馈排查"目标树全是暂停/已完成节点、看不到进行中目标"，新增了一套
+> 只读诊断面板 + 两个小修复/调整（`AutonomousLoop` 心跳探测 bug、
+> `STALE_DAYS_DEFAULT` 14→2），见
+> `next_doc/goal_tree_scheduling_diagnostics_implementation_record.md`。
 
 ## 一、背景
 

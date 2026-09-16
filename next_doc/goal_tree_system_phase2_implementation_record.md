@@ -65,7 +65,9 @@
 - **触发时机 3（手动触发）**：完整实现，`decompose()` 可以被任何调用方
   直接调用，CLI `/agent goals decompose <id>` 是这条路径。
 - **触发时机 1（停滞巡检）**：只实现了**检测函数**
-  `find_stale_nodes_for_scan(backlog, stale_days=14)`——纯规则、只读、
+  `find_stale_nodes_for_scan(backlog, stale_days=14)`（2026-09 用户反馈后
+  已把默认值从 14 改成 2，见 `goal_tree_scheduling_diagnostics_
+  implementation_record.md`；本节保留原始实现记录，不追溯改写）——纯规则、只读、
   不加锁（同 `goals_missing_objective()` 的取舍：调用方紧接着要对命中
   节点逐个跑可能较慢的 LLM 调用，不该在锁内做）。**没有**接入
   cron，即"每 24 小时自动跑一次"这部分留给阶段三——阶段三会新增

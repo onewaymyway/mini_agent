@@ -114,7 +114,9 @@
      过度设计，还会占用主 Agent 的 `InputQueue` 轮次预算。
 
 `run_decompose_scan_cycle(paths, backlog, *, llm_helper=None, stale_days=14,
-completion_lookback_seconds=90000)` 逐节点调用 `decomposer.decompose(node.id,
+completion_lookback_seconds=90000)`（2026-09 起 `stale_days` 默认值随
+`STALE_DAYS_DEFAULT` 改成 2，见 `goal_tree_scheduling_diagnostics_
+implementation_record.md`；本节保留原始记录）逐节点调用 `decomposer.decompose(node.id,
 llm_helper=llm_helper)`，**不传 `force=True`**——巡检场景应该尊重
 `should_decompose()` 的节奏治理（间隔/已有未处理候选），不该绕过；已经在
 测试里验证"停滞命中但节点已有未处理候选时本函数不会重复生成"。返回
