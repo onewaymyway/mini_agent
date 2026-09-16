@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import secrets
 import string
@@ -75,6 +76,15 @@ def fork_branch(
     `switch=True`（默认）时把 `manifest.branch` 切到新分支，对应"回滚
     重新选之后继续在新分支上推进"这个最常见的用法；`switch=False` 用于
     "只是想留一份存档/用于对比，不打算立刻切过去推进"的场景。
+
+    分叉出来的新分支，最后一个节点（第 `from_step` 步）的
+    `chosen_option_id`/`chosen_by`/`chosen_reason` 会被清空，即使原
+    分支上这个节点已经记录过"选了什么"——道理很简单：新分支存在的意义
+    就是"这个节点之后要重新决定"，如果还留着旧分支的选择记录，会让人
+    以为"回滚了但其实什么都没变"，`from_step=0`（回到最开始）时这个
+    问题最明显：不清空的话，新分支的起点看起来"已经做过一次选择"，
+    没法真正重新开始。`options` 本身（候选方向列表）不受影响，原样
+    带过来供重新选择。
     """
     store = SimStore.for_root(data_dir, sim_id)
     manifest = store.load_manifest()
@@ -85,6 +95,12 @@ def fork_branch(
     cutoff = [s for s in source_history if s.step <= from_step]
     if not cutoff:
         raise BranchError(f"分支 {source_branch!r} 没有 step <= {from_step} 的历史节点")
+
+    # 清空最后一个节点的"已选择"记录（见上方 docstring）；`replace()`
+    # 产出一个新对象，不会连带改到 `source_history`/原分支磁盘上的数据。
+    cutoff = cutoff[:-1] + [
+        dataclasses.replace(cutoff[-1], chosen_option_id=None, chosen_by=None, chosen_reason=None)
+    ]
 
     new_branch = branch_id or _new_branch_id()
     if new_branch == "main":

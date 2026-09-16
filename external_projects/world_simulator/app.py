@@ -963,21 +963,42 @@ def page_detail() -> None:
 
     with st.expander("从历史节点开一条新分支（回滚重新选）"):
         max_step = history[-1].step if history else 0
-        fork_step = st.number_input(
-            "从第几步开始分叉（该步之后的历史不会带入新分支）",
-            min_value=0, max_value=max_step, value=max_step, step=1, key="fork_step",
+        st.markdown(
+            '<span class="ws-muted">分叉出来的新分支，选中那一步会重新变成"还没做过选择"的'
+            "状态（候选方向原样保留），可以直接在上面「推进下一步」里重新选——不会是"
+            "\"看起来回滚了，其实还是当时选的那个\"。第 0 步就是最开始创建时的初始状态。"
+            "</span>",
+            unsafe_allow_html=True,
         )
-        if st.button("创建分支并切换过去"):
-            try:
-                new_branch = bm.fork_branch(
-                    DATA_DIR, sim_id, from_step=int(fork_step),
-                    source_branch=manifest.branch, switch=True,
-                )
-            except bm.BranchError as exc:
-                st.error(str(exc))
-            else:
-                st.success(f"已创建分支 {new_branch} 并切换为当前分支。")
-                st.rerun()
+        restart_col, fork_col = st.columns([1, 2])
+        with restart_col:
+            if st.button("🔄 直接从最开始重新开始", key="fork_restart_from_zero"):
+                try:
+                    new_branch = bm.fork_branch(
+                        DATA_DIR, sim_id, from_step=0,
+                        source_branch=manifest.branch, switch=True,
+                    )
+                except bm.BranchError as exc:
+                    st.error(str(exc))
+                else:
+                    st.success(f"已回到最开始，新分支 {new_branch} 可以重新选了。")
+                    st.rerun()
+        with fork_col:
+            fork_step = st.number_input(
+                "或者选一个具体的步数（0 = 最开始）",
+                min_value=0, max_value=max_step, value=max_step, step=1, key="fork_step",
+            )
+            if st.button("从这一步创建分支并切换过去"):
+                try:
+                    new_branch = bm.fork_branch(
+                        DATA_DIR, sim_id, from_step=int(fork_step),
+                        source_branch=manifest.branch, switch=True,
+                    )
+                except bm.BranchError as exc:
+                    st.error(str(exc))
+                else:
+                    st.success(f"已创建分支 {new_branch} 并切换为当前分支。")
+                    st.rerun()
 
     # 连续自动推进：这一步跑完、页面正常渲染完（当前状态卡片、时间线都
     # 已经是刚推进完的最新数据）之后，再触发下一次 rerun 去跑下一步。
