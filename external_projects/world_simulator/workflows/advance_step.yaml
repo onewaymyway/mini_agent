@@ -1,0 +1,39 @@
+name: advance_step
+description: >-
+  单步推进：当前 state + 本次选择 → next_state + 叙事 + 候选分支
+  （world_simulator_external_project_plan.md 2.3 节 / 第 6 节）。由
+  `world_simulator/engine.py::advance()` 触发，同样会在触发前把
+  `step` 步骤的 `skill_name` 按 `template` 输入动态改写为
+  `<template>-template`，理由同 `generate_scenario.yaml`。
+
+  阶段四（自动挡）会在 `decision_context` 输入里多喂一份"代理决策者
+  画像"（`autopilot.principles`/`risk_preference` 等），本 workflow
+  定义本身不需要为此改变结构——`decision_context` 为空字符串时就是
+  阶段一的手动挡场景（引擎只给候选项，不代为选择）。
+version: "1.0"
+steps:
+  - id: step
+    name: 推进一步
+    type: skill_agent
+    skill_name: life-sim-template   # 运行时会被 engine.py 按 template 覆盖
+    result_file: next_state.json
+    result_file_required_keys:
+      - next_summary
+      - narrative
+      - next_vars
+      - options
+    prompt: |
+      当前模拟标题：{title}
+      当前状态摘要：{current_summary}
+      当前状态详细变量（JSON）：{current_vars_json}
+      当前时间步：{current_step}
+
+      本步用户/代理选择的选项：{chosen_option_json}
+      （如果为空对象 {{}}，表示未指定选择，请你依据当前状态给出最合理
+      的默认走向，不要等待用户输入）
+
+      {decision_context}
+
+      请按你所属 skill 的规范，给出这一步推进后的新状态、发生了什么的
+      叙事文本，以及供下一步选择的候选分支选项（2-4 个，若情节明显
+      没有分支可以给空数组）。

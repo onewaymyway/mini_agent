@@ -1,0 +1,67 @@
+# project.yaml — world_simulator 与 daemon 之间唯一的契约
+#
+# 完整字段参考见同一 skill 目录下 reference/project_yaml_schema.md
+# （对齐 src/mini_agent/external_projects/manifest.py 的实际校验规则）。
+# 本文件由 external-project-manager skill 的 scaffold.py 生成，占位
+# entrypoint（main）需要你按实际业务改名/拆分/补充，字段结构保持合法。
+
+name: world_simulator
+
+entrypoints:
+  create_simulation:
+    cmd: "python entrypoints/create_simulation.py"
+    # schedule: "cron: 0 9 * * 1-5"  # 按需取消注释
+    timeout_sec: 300
+  advance_simulation:
+    cmd: "python entrypoints/advance_simulation.py"
+    # schedule: "cron: 0 9 * * 1-5"  # 按需取消注释
+    timeout_sec: 300
+  list_simulations:
+    cmd: "python entrypoints/list_simulations.py"
+    # schedule: "cron: 0 9 * * 1-5"  # 按需取消注释
+    timeout_sec: 300
+  health:
+    cmd: "python entrypoints/health.py"
+    # schedule: "cron: 0 9 * * 1-5"  # 按需取消注释
+    timeout_sec: 300
+health_check:
+  cmd: "python entrypoints/health.py"
+
+resources:
+  # 这个项目的 entrypoint 会访问哪些外部域名，先列出已知的，后续按需
+  # 补充；留空数组表示暂不做域名白名单限制。
+  allowed_domains: []
+  max_concurrency: 1
+
+# 周期性"改进 review session"——见 stock_watch_continuous_improvement_plan.md
+# 阶段4。cadence 目前只支持描述性字符串（daemon 侧真正的定时接线视该
+# 文档实施进度而定），enabled=false 时 `mini-agent projects review` 只会
+# 提示"未开启"，不影响其它命令。
+review:
+  cadence: weekly
+  enabled: false
+
+# 可选：如果这个项目的核心数据有"状态流转"语义（比如候选池条目在几个
+# 状态之间迁移），参考 stock_watch/project.yaml 的 dashboard.kanban_view
+# 块和 stock_watch_pool_state_tracking_and_kanban_plan.md 补充这部分；
+# 如果只是"跑批产出报告"，删掉整个 dashboard 块即可，看板会退化成通用
+# 的账本/日志视图。
+# dashboard:
+#   kanban_view:
+#     data_file: "data/xxx_latest.json"
+#     id_field: "id"
+#     title_field: "name"
+#     state_field: "state"
+#     states:
+#       - value: "state_a"
+#         label: "状态 A"
+#     metric_fields:
+#       - field: "some_number"
+#         label: "展示名"
+#         format: "number"
+#     detail_list_field: "reasons"
+#     change_state:
+#       entrypoint: "change_state"
+#       id_param: "id"
+#       state_param: "state"
+#       note_param: "note"

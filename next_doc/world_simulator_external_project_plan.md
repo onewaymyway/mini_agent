@@ -1,7 +1,15 @@
 # 万物模拟器（world_simulator）—— 外部项目方案
 
-> **状态**：方案已确认（命名/首个模板/自动挡设计/UI技术栈见第 8 节），
-> 待实现。
+> **状态**：方案已确认（命名/首个模板/自动挡设计/UI技术栈见第 8 节）。
+> **阶段一（脚手架 + 核心闭环）已完成**——`external_projects/
+> world_simulator/` 已生成脚手架并实现 `state_model`/`store`/`engine`/
+> `spec_generator` 最小闭环、`generate_scenario`/`advance_step` 两个
+> workflow、`life-sim-template` skill（首个模板：人生模拟）、四个
+> headless entrypoint（`create_simulation`/`advance_simulation`/
+> `list_simulations`/`health`），单元测试见
+> `external_projects/world_simulator/tests/`，详细交付范围/已知限制见
+> `external_projects/world_simulator/PROJECT.md`。
+> 阶段二起（独立看板/分支对比/自动挡/调度/多模板扩展）待实现，见第 7 节。
 > **定位**：一个独立的「外部项目」（`external_projects/world_simulator`），
 > 遵循 `next_doc/external_projects_workspace_plan.md` 确立的四条原则
 > （引擎与宿主解耦 / 可独立运行是硬约束 / 声明式注册+被动账本 / daemon
@@ -282,7 +290,7 @@ stock_watch（信息密集的数据看板风）区分开，走更有"游戏感"�
 
 ## 7. 分阶段实施计划
 
-- **阶段一（脚手架 + 核心闭环）**：用
+- **阶段一（脚手架 + 核心闭环，已完成）**：用
   `external-project-manager` skill 的 scaffold 脚本生成骨架
   → 实现 `state_model`/`store`/`engine` 最小闭环
   → 实现 `spec_generator`（先服务"人生模拟"一个模板）

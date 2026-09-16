@@ -1,0 +1,26 @@
+name: generate_scenario
+description: >-
+  意图 → 模拟提案草稿（world_simulator_external_project_plan.md 2.3 节 /
+  阶段一）。由 `world_simulator/spec_generator.py` 触发，触发前会把
+  `draft` 步骤的 `skill_name` 按 `template` 输入动态改写为
+  `<template>-template`（对应 skills/ 下的场景模板 skill），这样
+  新增一种模拟类型只需要新增一个 skill，不需要新增 workflow 文件——
+  见方案 2.4 节"新增模拟类型=新增一个 skill，引擎本身不用改"。
+version: "1.0"
+steps:
+  - id: draft
+    name: 生成模拟提案草稿
+    type: skill_agent
+    skill_name: life-sim-template   # 运行时会被 spec_generator.py 按 template 覆盖，这里只是缺省占位
+    result_file: scenario.json
+    result_file_required_keys:
+      - title
+      - summary
+      - vars
+      - options
+    prompt: |
+      用户的一句话模拟意图：
+      {intent}
+
+      请按你所属 skill 的规范，把这句意图展开成一份可以直接作为模拟
+      初始状态使用的提案草稿。
