@@ -269,12 +269,23 @@ def page_list() -> None:
 # ─────────────────────────────────────────────────────────────
 
 
+def _new_custom_option_id(existing: List[ChoiceOption]) -> str:
+    """给用户手动添加的候选方向生成一个不与现有 id 冲突的 id。"""
+    import uuid
+
+    existing_ids = {o.id for o in existing}
+    while True:
+        candidate = f"custom_{uuid.uuid4().hex[:6]}"
+        if candidate not in existing_ids:
+            return candidate
+
+
 def page_create() -> None:
     st.markdown("## 创建向导", unsafe_allow_html=True)
     st.markdown(
         '<span class="ws-muted">用一句话描述你想模拟的处境，引擎会先给出一份'
-        "提案草稿（初始状态 + 关键变量 + 可能方向），你可以编辑后再确认创建——"
-        "不需要从零填表单。</span>",
+        "提案草稿（初始状态 + 关键变量 + 可能方向），你可以编辑、补充意见让它"
+        "重新生成，或者直接选定一个方向后再确认创建——不需要从零填表单。</span>",
         unsafe_allow_html=True,
     )
 
@@ -308,6 +319,9 @@ def page_create() -> None:
                     draft = generate_scenario(cfg, PROJECT_ROOT, template=template, intent=intent)
                     st.session_state["draft"] = draft
                     st.session_state["draft_template"] = template
+                    # 新一轮从零生成，之前的候选方向选择/意见输入都失效。
+                    for key in ("create_chosen_option_id", "create_feedback"):
+                        st.session_state.pop(key, None)
                 except ScenarioGenerationError as exc:
                     st.error(f"生成草稿失败：{exc}")
                 except ImportError as exc:
@@ -324,15 +338,120 @@ def page_create() -> None:
         "关键变量（JSON）", value=json.dumps(draft.vars, ensure_ascii=False, indent=2), height=160
     )
 
+    # ── 初始候选方向：可编辑文案、可删除、可手动新增，并且真的可以选 ──
     st.markdown("**初始候选方向**")
-    for opt in draft.options:
-        st.markdown(
-            f'<div class="ws-card"><div class="ws-card-title">{opt.label}</div>'
-            f'<div class="ws-muted">{opt.description}</div></div>',
-            unsafe_allow_html=True,
-        )
+    st.markdown(
+        '<span class="ws-muted">这些是模拟正式开始后，第一次推进时可以选的方向；'
+        "可以直接编辑文案，删掉不想要的，或者在下面手动加一个自己想要的方向。"
+        "选中某一项后，创建时可以选择「按此方向直接推进第一步」。</span>",
+        unsafe_allow_html=True,
+    )
 
-    if st.button("确认创建", type="primary"):
+    chosen_option_id = st.session_state.get("create_chosen_option_id")
+    remaining_options: List[ChoiceOption] = []
+    remove_id: Optional[str] = None
+    for opt in draft.options:
+        with st.container():
+            st.markdown(f'<div class="ws-card">', unsafe_allow_html=True)
+            row = st.columns([5, 5, 2, 2])
+            with row[0]:
+                new_label = st.text_input(
+                    "方向名称", value=opt.label, key=f"opt_label_{opt.id}", label_visibility="collapsed",
+                )
+            with row[1]:
+                new_desc = st.text_input(
+                    "方向说明", value=opt.description, key=f"opt_desc_{opt.id}", label_visibility="collapsed",
+                )
+            with row[2]:
+                is_chosen = st.checkbox(
+                    "选定", value=(chosen_option_id == opt.id), key=f"opt_pick_{opt.id}",
+                )
+            with row[3]:
+                if st.button("✕ 移除", key=f"opt_remove_{opt.id}"):
+                    remove_id = opt.id
+            st.markdown("</div>", unsafe_allow_html=True)
+            remaining_options.append(ChoiceOption(id=opt.id, label=new_label, description=new_desc))
+            if is_chosen:
+                chosen_option_id = opt.id
+            elif chosen_option_id == opt.id:
+                chosen_option_id = None
+
+    if remove_id is not None:
+        remaining_options = [o for o in remaining_options if o.id != remove_id]
+        if chosen_option_id == remove_id:
+            chosen_option_id = None
+
+    draft.options = remaining_options
+    st.session_state["create_chosen_option_id"] = chosen_option_id
+
+    with st.expander("+ 手动添加一个候选方向"):
+        add_cols = st.columns([5, 5, 2])
+        with add_cols[0]:
+            manual_label = st.text_input("方向名称", key="manual_opt_label", label_visibility="collapsed", placeholder="方向名称")
+        with add_cols[1]:
+            manual_desc = st.text_input("方向说明", key="manual_opt_desc", label_visibility="collapsed", placeholder="方向说明（可选）")
+        with add_cols[2]:
+            if st.button("添加", key="manual_opt_add"):
+                if not manual_label.strip():
+                    st.warning("请先填写方向名称。")
+                else:
+                    new_id = _new_custom_option_id(draft.options)
+                    draft.options.append(ChoiceOption(id=new_id, label=manual_label.strip(), description=manual_desc.strip()))
+                    st.session_state["draft"] = draft
+                    st.rerun()
+
+    # ── 根据意见重新生成草稿 ──
+    with st.expander("对草稿不满意？输入意见让它重新生成"):
+        feedback = st.text_area(
+            "补充意见",
+            value=st.session_state.get("create_feedback", ""),
+            placeholder="例：把候选方向里的「继续读研」去掉，换成一个「先工作两年再看」的方向；"
+            "初始存款调低一些",
+            height=80,
+            key="create_feedback_input",
+        )
+        if st.button("根据意见重新生成草稿"):
+            if not feedback.strip():
+                st.warning("请先输入具体意见，否则和「重新生成提案草稿」没有区别。")
+            else:
+                st.session_state["create_feedback"] = feedback
+                with st.spinner("正在根据意见修改草稿..."):
+                    try:
+                        cfg = _load_cfg()
+                        revised = generate_scenario(
+                            cfg, PROJECT_ROOT,
+                            template=st.session_state.get("draft_template", template),
+                            intent=st.session_state.get("create_intent", intent),
+                            feedback=feedback,
+                            previous_draft=draft,
+                        )
+                        st.session_state["draft"] = revised
+                        st.session_state.pop("create_chosen_option_id", None)
+                    except ScenarioGenerationError as exc:
+                        st.error(f"根据意见修改草稿失败：{exc}")
+                    except ImportError as exc:
+                        st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+                    else:
+                        st.rerun()
+
+    st.markdown("---")
+    confirm_cols = st.columns([1, 1])
+    with confirm_cols[0]:
+        confirm_only_clicked = st.button("确认创建（方向留到之后再选）", use_container_width=True)
+    with confirm_cols[1]:
+        advance_after_create = st.button(
+            "确认创建并按选定方向直接推进第一步",
+            type="primary",
+            use_container_width=True,
+            disabled=chosen_option_id is None,
+        )
+        if chosen_option_id is None:
+            st.markdown(
+                '<span class="ws-muted">先在上面勾选一个方向的「选定」，才能用这个按钮。</span>',
+                unsafe_allow_html=True,
+            )
+
+    if confirm_only_clicked or advance_after_create:
         edited_vars = _safe_json_loads(edited_vars_text, None)
         if edited_vars is None:
             st.error("关键变量不是合法 JSON，请修正后再确认创建。")
@@ -346,10 +465,26 @@ def page_create() -> None:
                 vars=edited_vars,
                 options=draft.options,
             )
-            for key in ("draft", "draft_template", "create_intent"):
+            sim_id = manifest.sim_id
+            if advance_after_create and chosen_option_id is not None:
+                with st.spinner("正在按选定方向推进第一步..."):
+                    try:
+                        cfg = _load_cfg()
+                        advance(
+                            cfg, PROJECT_ROOT, DATA_DIR, sim_id,
+                            choice_option_id=chosen_option_id, chosen_by="user",
+                        )
+                    except (SimEngineError, ScenarioGenerationError) as exc:
+                        st.error(f"实例已创建（{sim_id}），但按选定方向推进第一步失败：{exc}")
+                    except ImportError as exc:
+                        st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+            for key in (
+                "draft", "draft_template", "create_intent", "create_chosen_option_id",
+                "create_feedback",
+            ):
                 st.session_state.pop(key, None)
             st.session_state["view"] = "detail"
-            st.session_state["sim_id"] = manifest.sim_id
+            st.session_state["sim_id"] = sim_id
             st.rerun()
 
 

@@ -89,7 +89,11 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
     )
 
     assert draft_step.skill_name == "life-sim-template"
-    assert captured["inputs"] == {"intent": "模拟一个刚毕业的人生"}
+    assert captured["inputs"] == {
+        "intent": "模拟一个刚毕业的人生",
+        "feedback": "",
+        "previous_draft_json": "",
+    }
     assert draft.title == "毕业生的选择"
     assert draft.vars["age"] == 22
     assert draft.options[0].id == "a"

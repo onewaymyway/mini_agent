@@ -85,7 +85,15 @@ def _load_and_bind_skill(workspace_root: Path, workflow_name: str, template: str
     return wf, skill_name
 
 
-def generate_scenario(cfg, workspace_root: Path, *, template: str, intent: str) -> ScenarioDraft:
+def generate_scenario(
+    cfg,
+    workspace_root: Path,
+    *,
+    template: str,
+    intent: str,
+    feedback: str = "",
+    previous_draft: "ScenarioDraft | None" = None,
+) -> ScenarioDraft:
     """触发一次 `generate_scenario` workflow，返回结构化的提案草稿。
 
     Args:
@@ -94,6 +102,13 @@ def generate_scenario(cfg, workspace_root: Path, *, template: str, intent: str) 
             目录 `<root>/workflows`、`<root>/skills` 从这里派生）。
         template: 场景模板名（如 `life_sim`），决定挂载哪个 skill。
         intent: 用户的一句话模拟意图。
+        feedback: 用户对上一份草稿的补充意见（可选）；非空时表示这是
+            一次"根据意见修改"的重新生成，而不是从零生成——
+            `previous_draft` 应同时给出，供 skill 在原草稿基础上按
+            意见调整，而不是完全无视原草稿重新编一份。
+        previous_draft: 上一份草稿（`feedback` 非空时使用），用于把
+            "改什么"锚定在"从什么改"上，避免每次修改意见都产出一份
+            跟上次毫无关系的新草稿。
     """
     from mini_agent.workflow.runner import WorkflowRunner
 
@@ -101,8 +116,27 @@ def generate_scenario(cfg, workspace_root: Path, *, template: str, intent: str) 
         Path(workspace_root), "generate_scenario", template, "draft"
     )
 
+    previous_draft_json = ""
+    if previous_draft is not None:
+        previous_draft_json = json.dumps(
+            {
+                "title": previous_draft.title,
+                "summary": previous_draft.summary,
+                "vars": previous_draft.vars,
+                "options": [o.to_dict() for o in previous_draft.options],
+            },
+            ensure_ascii=False,
+        )
+
     runner = WorkflowRunner(cfg)
-    result = runner.run(wf, {"intent": intent})
+    result = runner.run(
+        wf,
+        {
+            "intent": intent,
+            "feedback": feedback or "",
+            "previous_draft_json": previous_draft_json,
+        },
+    )
 
     if result.status != "done":
         failed = [

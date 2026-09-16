@@ -34,7 +34,12 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
 
 ## 作为 `generate_scenario` 挂载时（result_file: scenario.json）
 
-输入：`{intent}`（用户一句话意图）。
+输入：`{intent}`（用户一句话意图）、`{previous_draft_json}`（此前一轮
+草稿，可能为空字符串）、`{feedback}`（用户对上一份草稿的补充意见，可能
+为空字符串）。`feedback` 非空表示这是一次"根据意见修改"请求：以
+`previous_draft_json` 为基础按意见调整，未提及的部分（包括未被要求
+改动的 `options` 条目，尽量连 `id` 一起）保持不变；`feedback` 为空则
+忽略 `previous_draft_json`，按 `intent` 从零生成。
 
 输出（合法 JSON，顶层字段）：
 
