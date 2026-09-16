@@ -866,6 +866,43 @@ async_jobs 异步任务模式：立即返回 `{"job_id", "key"}`，轮询
 `GET /v1/goals/tree` 从全局根节点出发的遍历不会再看到它）。校验失败
 返回 400，`node_id` 不存在返回 404。
 
+### /v1/goals/scheduling_diagnostics — "看不到进行中目标"排查快照
+
+```
+GET  /v1/goals/scheduling_diagnostics    只读诊断快照，不修改任何状态
+```
+
+看板"🌳 目标树"经常出现"全部显示暂停/已完成，没有任何进行中"的困惑；
+`active` 是节点状态里唯一等价于"进行中"的状态（没有单独的
+`in_progress`），出现这种展示通常对应下面几类根因之一，本接口把它们
+汇总成一份快照：
+
+- `scheduling_paused`：全局调度开关是否处于暂停（看板"停止调度"按钮），
+  为真时 `AutonomousLoop` 整体不再 tick。
+- `user_paused_objectives` / `fairness_paused_objectives`：分别是被
+  用户显式暂停（需要手动 `resume_user_pause()` 恢复）、和因资源公平性
+  临时让出（会自动 `resume_fairness()`）的 Objective 列表——这两类
+  展示上容易混淆，接口层面已经拆开。
+- `goals_missing_objective`：Goal 本身 active，但底下没有任何 active
+  Objective 子节点，即"还能继续拆解但还没人拆"的候选。
+- `orphaned_active_goals`：通过旧的"新建目标"/`add_goal` 路径创建、
+  没有挂到目标树（`ultimate/domain/stage/goal/objective` 层级体系）
+  下的扁平 Goal——它们本身在正常调度执行，只是 `GET /v1/goals/tree`
+  的遍历看不到，需要通过 `POST /v1/goals/{id}/reparent` 手动挂载。
+- `pending_goal_proposals`：backlog 耗尽后 Agent 自动生成的待确认新
+  目标候选（`status=draft`）。
+- `tree_expansion_candidates` / `tree_pending_decompose_candidates`：
+  目标树里结构性"没有下文"的节点、以及已经生成但还没确认的分解候选。
+- `active_goal_count` / `active_objective_count`：全局 active 计数。
+- `has_blocking_issue`：以上任一非空、或两个计数同时为 0 时为真——只有
+  这个字段为真时才值得展开细看，为假表示调度和状态本身都正常。
+
+任何异常都返回全空结构（`has_blocking_issue=False`）而不是抛异常，
+风格与 `/v1/self/fairness_diagnostics` 一致。看板"📌 目标看板"Tab
+顶部对应一个默认收起的"🔍 问题分析"按钮——不点击不会请求这个接口，
+点击后才展开显示诊断结果（含针对每类根因的具体操作入口：挂载孤儿
+Goal、采纳/忽略候选、立即拆解/生成扩展建议），再点一次收起。
+
 ### /v1/goals/{node_id}/research、/v1/goals/next_steps — 目标树 × 自主调研
 （goal_tree_research_and_action_recommendation_plan.md §4.6 阶段四）
 

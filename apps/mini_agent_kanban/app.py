@@ -6310,9 +6310,26 @@ def _render_goal_tree_view(client: AgentClient) -> None:
 def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
     """目标树"看不到进行中目标"排查提示条：区分全局调度开关 / 用户手动
     暂停（需显式恢复）/ 公平性暂停（会自动恢复）/ 可继续拆解深入的
-    Goal 四类根因。只读快照接口很轻（不涉及 LLM 调用），直接同步调用，
-    没有问题时不渲染任何东西，不占视线。
+    Goal 四类根因。
+
+    默认收起——只渲染一个不起眼的"🔍 问题分析"按钮，不主动请求诊断接口；
+    只有用户显式点了这个按钮，才会真正调用 `/v1/goals/scheduling_diagnostics`
+    拉取数据并展开分析结果。避免了以前"每次打开看板都自动跑一次诊断"的
+    问题——多数时候用户根本不关心这个，静默请求纯属浪费。收起状态下再点
+    一次按钮可以重新收起（不会重复请求，除非再展开）。
     """
+    if not st.session_state.get("_sched_diag_expanded", False):
+        if st.button("🔍 问题分析：目标树里没有进行中的目标？", key="_sched_diag_open_btn"):
+            st.session_state["_sched_diag_expanded"] = True
+            st.rerun()
+        return
+
+    _collapse_col, _ = st.columns([1, 6])
+    with _collapse_col:
+        if st.button("🔼 收起分析", key="_sched_diag_close_btn"):
+            st.session_state["_sched_diag_expanded"] = False
+            st.rerun()
+
     resp = client.goals_scheduling_diagnostics() or {}
     if "_error" in resp:
         # 之前这里静默 return，导致"新加的路由后端进程没重启" 这种最常见的
@@ -6328,6 +6345,7 @@ def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
             )
         return
     if not resp.get("has_blocking_issue"):
+        st.success("没有检测到明显问题：调度、Goal/Objective 状态看起来都正常。")
         return
 
     lines: list[str] = []

@@ -285,6 +285,20 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
 
 对接 Stage 9 自主 daemon 的 `GoalBacklog` 与 `CronScheduler`：
 
+- **🔍 问题分析**（排查"看不到进行中目标"，
+  `next_doc/goal_tree_scheduling_diagnostics_implementation_record.md`）：
+  Tab 最顶部一个默认收起的按钮，点击后才会调用
+  `GET /v1/goals/scheduling_diagnostics` 拉取只读诊断快照并展开——之前
+  是每次打开看板都自动请求一次，多数时候用户并不关心，改成显式点击才
+  分析。展开后区分四类常见根因：全局调度暂停、Objective 被用户手动
+  暂停（需显式恢复）VS 因公平调度临时让出（会自动恢复）、Goal 有 active
+  状态但底下没有 active 子任务（可继续拆解）、以及"进行中的扁平 Goal
+  不在目标树里"（通过旧的"新建目标"路径创建，未挂到 `ultimate/domain/
+  stage/goal/objective` 层级下），每一类都带对应的操作入口（挂载到
+  目标树、采纳/忽略候选、立即拆解/生成扩展建议）。没有检测到问题时
+  提示"没有检测到明显问题"；接口本身请求失败时会额外提示多半是后端
+  API 进程没有重启。再点一次"🔼 收起分析"可以收起，收起后不会继续
+  占用视线，也不会再自动发请求。
 - **🌳 目标树子页**（`next_doc/goal_tree_system_plan.md` 阶段四）：Tab
   顶部有一个"📋 列表/看板视图" / "🌳 目标树"视图切换单选框（默认列表/看板
   视图，不影响原有使用习惯）。切到"🌳 目标树"后：
