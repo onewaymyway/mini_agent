@@ -6,8 +6,8 @@
 
 `macro_scenes.yaml`（所有 `status: done` 的记录）+ 对应
 `macro_scene_XX/macro_scene_XX.mp4` + `novel_project.json`
-（`aspect_ratio`/`transition_mode`/`transition_duration_sec`）+ 可选
-`global/assets/cover.png`。
+（`aspect_ratio`/`transition_mode`/`transition_duration_sec`/`cover`）
++ 若 `cover.enabled == true`，还有 `global/assets/cover.png`。
 
 ## 前置检查
 
@@ -31,17 +31,23 @@ python .claude/skills/novel-video-studio/scripts/compose_final_video_v2.py \
     `--transition-duration`（不传读 `transition_duration_sec`，默认
     0.5 秒），会增加总时长：总时长 = 各大场景时长之和 +
     `(大场景数-1) × transition_duration`；
-- 若 `global/assets/cover.png` 存在，默认自动叠加封面效果（挤压/替换
-  第一个大场景视频前几秒，不改变总时长）；不需要时加 `--no-cover`；
-  封面时长用 `--cover-duration`（默认 3 秒，clamp 到第一个大场景视频
-  时长的 50% 以内）；
+- **仅当** `novel_project.json.cover.enabled == true` **且**
+  `global/assets/cover.png` 存在时，才在最前面**新增一段独立的封面
+  片段**（不是替换第一个大场景的画面）——拼接顺序是
+  `[封面片段] + 大场景1 + 大场景2 + ...`，**总时长会增加**封面片段
+  的时长，音轨用静音（不借用第一个大场景的对白/旁白音轨，避免封面
+  画面撞上台词声音）；临时不需要封面效果可以加 `--no-cover`（覆盖
+  `cover.enabled`，只影响这一次调用）；封面时长优先读
+  `novel_project.json.cover.duration_sec`，`--cover-duration` 可
+  覆盖（默认 3 秒，**不再** clamp 到大场景时长的比例——新逻辑下封面
+  片段和大场景时长无耦合关系）；
 - 合成前会先统一每个大场景视频的分辨率/帧率/采样率，避免不同批次生成
   的大场景视频参数不一致导致拼接失败；
 - 本版不接 BGM（`bgm_enabled` 恒为 `false`）；
 - 末尾**自动校验交付**：`ffprobe` 检查总时长（应约等于"各大场景时长
-  之和 [+转场时长]"，差异 > 2 秒记为错误）、比特率（< 1 Mbps 记为
-  警告）、分辨率是否与 `aspect_ratio` 推导出的目标一致，结果以结构化
-  JSON 打印到 stdout，退出码非 0 说明未通过。
+  之和 [+转场时长] [+封面时长，若启用]"，差异 > 2 秒记为错误）、
+  比特率（< 1 Mbps 记为警告）、分辨率是否与 `aspect_ratio` 推导出的
+  目标一致，结果以结构化 JSON 打印到 stdout，退出码非 0 说明未通过。
 
 ⚠️ **调用 bash 工具执行本命令时，建议 `timeout` 传较大值（如 `600`
 或 `-1`）**：大场景数多、分辨率高时统一规格+拼接的本地 ffmpeg 计算
@@ -89,8 +95,15 @@ python .claude/skills/novel-video-studio/scripts/compose_final_video_v2.py \
 2. **`fade` 模式下总时长比预期略有出入**：ffmpeg 帧对齐会带来零点几秒
    误差，校验容差是 2 秒，属正常范围；差异明显超过转场时长整数倍时，
    回阶段7排查；
-3. **封面没有生效**：确认 `global/assets/cover.png` 是否存在，确认
-   没有误加 `--no-cover`。
+3. **封面没有生效**：确认 `novel_project.json.cover.enabled` 是否为
+   `true`、`global/assets/cover.png` 是否存在，确认没有误加
+   `--no-cover`；
+4. **总时长比预期多了几秒**：先看是不是启用了封面——封面片段现在是
+   "新增"而不是"替换"，总时长必然会比"各大场景时长之和"多出封面
+   时长，这是预期行为，不是 bug；
+5. **只想加封面，不想动已经做完的成片其它部分**：不需要重跑本阶段
+   之前的任何流程，见 `references/revision_and_rollback.md`
+   §事后补建封面。
 
 ## 完成之后
 

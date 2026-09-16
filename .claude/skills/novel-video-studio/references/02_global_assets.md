@@ -2,9 +2,11 @@
 
 **依赖 skill**：`gen_image_with_text`（必须）。
 **外部依赖**：`AGNES_API_KEY`。API 失败处理见 `error_handling.md`。
-**产物**：`global/assets/character_*.png` / `location_*.png`（+ 可选
-`cover.png`），并回填 `global/characters.json` / `global/locations.json`
-里对应的 `asset_path` 字段。
+**产物**：`global/assets/character_*.png` / `location_*.png`（+ 若
+`novel_project.json.cover.enabled == true`，还有
+`global/assets/cover_bg.png` 和叠好标题文字的
+`global/assets/cover.png`），并回填 `global/characters.json` /
+`global/locations.json` 里对应的 `asset_path` 字段。
 
 ## 为什么要单独成一个阶段
 
@@ -44,8 +46,60 @@ AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
 `global/assets/location_<id>.png`，`description_en` 同样优先用
 `visual_anchor_en`，生成后回填 `asset_path`。
 
-封面图（可选）逻辑相同，落到 `global/assets/cover.png`，供阶段8可选
-叠加，不影响本阶段"完成"判定。
+## Step 2.5：片头封面生成（仅 `cover.enabled == true` 时执行）
+
+**前置条件**：Step 1/Step 2 全部完成（需要完整的角色/地点
+`visual_anchor_en` 清单）。不影响本阶段"完成"判定的硬性检查（Step 3
+的"全部生成完成"只看角色/地点两份表，不包含封面）——封面失败或
+跳过都不阻塞进入阶段4。
+
+封面分两步产出，**故意拆成两个独立文件**：`cover_bg.png`（AI生成的
+纯背景画面，不含文字）+ `cover.png`（本地叠加标题文字后的成品）。
+好处是以后只想换标题文字/布局时，不需要重新调用生图 API，只跑下面
+Step B 就够了。
+
+### Step A：生成剧情向背景图 `cover_bg.png`
+
+这一步**不是**简单复用某个角色/地点的定妆图逻辑——封面要体现的是
+"整本书讲了个什么故事"，不是某一帧画面：
+
+1. 通读 `script.md`（此时已经结构化，比原文好读），提炼全书的整体
+   基调、核心冲突、以及**一个最能代表全书的视觉意象**（例如：主角
+   的剪影 + 核心地点、或主角 + 贯穿全书的关键道具/矛盾焦点），
+   **不要**逐场景堆砌元素，也不要选某个具体情节场景的画面去代表
+   全书；
+2. 结合 `novel_project.json.art_style`（全书统一美术风格）和涉及到
+   的角色 `visual_anchor_en`（保证封面上的人物长相和后面各场景一致，
+   不会看起来像另一个人），写成一句英文 prompt；
+3. **显式加入** `no text, no letters, no typography, no watermark`
+   一类约束——文生图模型画中文字几乎必错，宁可完全不让它画字，标题
+   全部交给 Step B 后期叠加；
+4. 调用：
+   ```bash
+   AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
+     gen "<剧情向英文prompt>, no text, no letters, no typography" \
+     --size 2K --ratio <novel_project.json 里的 aspect_ratio> \
+     --save-path <output_dir>/global/assets/cover_bg.png
+   ```
+5. API 失败按 `error_handling.md` 常规重试规则处理；这一步失败**不
+   拦截**进入阶段4——如实告知用户"封面背景图生成失败，稍后可用同一份
+   `references/revision_and_rollback.md` §事后补建封面 流程单独重试"，
+   继续往下走主流程即可。
+
+### Step B：叠加标题文字，产出 `cover.png`
+
+```bash
+python .claude/skills/novel-video-studio/scripts/render_cover_title.py \
+  <output_dir>/global/assets/cover_bg.png \
+  <output_dir>/global/assets/cover.png \
+  --title "<novel_project.json.cover.title_text 或 source_title>" \
+  --layout <novel_project.json.cover.layout，默认 center>
+```
+
+脚本用本地 PIL 画字（不调用任何外部 API，免费且是秒级操作），自动
+处理换行/字号/描边，三种 `layout`（`center`/`bottom_bar`/
+`top_classic`）效果说明见 `references/01_entity_extraction.md` Step 0。
+失败（通常是字体探测失败）按脚本打印的报错信息处理，不影响阶段4。
 
 ## Step 3：校验——全部生成完成才能继续
 
@@ -85,4 +139,12 @@ AGNES_API_KEY="..." python .claude/skills/gen_image_with_text/gen_image.py \
 
 ## 下一步
 
-全部角色/地点定妆图生成并校验通过后，进入阶段4（大场景切分）。
+全部角色/地点定妆图生成并校验通过后，进入阶段4（大场景切分）——
+封面（`cover_bg.png`/`cover.png`）是否生成成功不阻塞这一步。
+
+## 事后补建封面
+
+项目已经跑完全部阶段、`video.mp4` 已存在之后，用户才决定要加封面
+（或者想换标题文字/换背景图），**不需要**回到这里重跑一遍整个阶段3，
+走独立的轻量流程即可，见
+`references/revision_and_rollback.md` §事后补建封面。

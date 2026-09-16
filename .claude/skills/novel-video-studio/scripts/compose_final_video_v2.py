@@ -11,7 +11,11 @@
     做完）；
   - 新增 `transition_mode`：`cut`（默认，硬切，行为等价于 v1）/ `fade`
     （每两个大场景之间插入一段可配置时长的黑场淡入淡出，会增加总时长）；
-  - 封面效果沿用 v1：挤压/替换第一个大场景视频的前几秒，不改变总时长；
+  - 封面效果（v7 改造，见 `next_doc/novel_video_studio_fix_plan_v7.md`）：
+    不再是 v1/v6 的"挤压/替换第一个大场景视频前几秒、不改变总时长"，
+    改为在最前面**新增**一段独立封面片段（静音轨），会增加总时长；
+    仅当 `novel_project.json.cover.enabled == true` 时触发，新功能
+    默认关闭；
   - 仍不接 BGM（`bgm_enabled` 恒 false，理由同 v1/v2 方案）。
 
 用法：
@@ -179,50 +183,37 @@ def apply_fade(src: Path, dst: Path, fade_in: bool, fade_out: bool, fade_dur: fl
     ])
 
 
-def apply_cover(video_path: Path, cover_image: Path, cover_duration: float,
-                 target_size: str, target_fps: int, preset_scale: str, workdir: Path) -> float:
-    clip_dur = get_dur(video_path)
-    max_allowed = min(clip_dur * 0.5, clip_dur - 0.2)
-    cover_dur = max(0.0, min(cover_duration, max_allowed))
-    if cover_dur <= 0.3:
-        print(f"  [警告] 封面可用时长过短（clamp 后仅 {cover_dur:.2f}s），跳过封面处理", file=sys.stderr)
-        return 0.0
-
+def build_intro_clip(cover_image: Path, cover_duration: float, target_size: str,
+                      target_fps: int, preset_scale: str, workdir: Path) -> Path:
+    """构造一段独立的封面片段（画面用封面图做缓慢缩放的 ken-burns 效果，
+    音轨用静音），产出的文件之后会被**前置拼接**在第一个大场景视频前面
+    ——这是新增片段，不是像 v6 及更早版本那样"替换第一个大场景视频的
+    前几秒"，所以总时长会相应增加，不再对 cover_duration 做"clamp 到
+    大场景时长比例以内"的限制，直接用调用方传入的时长。"""
+    cover_dur = max(0.3, cover_duration)
     W, H = [int(x) for x in target_size.split(":")]
     frame_count = max(1, int(round(cover_dur * target_fps)))
 
-    cover_seg = workdir / "cover_seg.mp4"
-    remainder = workdir / "cover_remainder.mp4"
-    replaced = workdir / "cover_replaced.mp4"
-
+    intro = workdir / "cover_intro.mp4"
     vf = (
         f"scale={W*2}:{H*2}:force_original_aspect_ratio=increase,"
         f"crop={W*2}:{H*2},"
         f"zoompan=z='min(zoom+0.0008,1.15)':d={frame_count}:s={W}x{H}:fps={target_fps},"
         f"format=yuv420p"
     )
-    _run([FFMPEG, "-y", "-loop", "1", "-i", str(cover_image), "-vf", vf,
-          "-t", f"{cover_dur:.3f}", "-c:v", "libx264", "-preset", preset_scale, "-crf", "20",
-          "-an", str(cover_seg)])
-    _run([FFMPEG, "-y", "-ss", f"{cover_dur:.3f}", "-i", str(video_path),
-          "-c:v", "libx264", "-preset", preset_scale, "-crf", "20", "-an", str(remainder)])
-    concat_list = workdir / "cover_concat.txt"
-    with open(concat_list, "w", encoding="utf-8") as f:
-        f.write(f"file '{cover_seg.as_posix()}'\n")
-        f.write(f"file '{remainder.as_posix()}'\n")
-    _run([FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
-          "-c:v", "libx264", "-preset", preset_scale, "-crf", "20", "-an", str(replaced)])
-
-    # 视频轨换成带封面版本，但原视频的音轨（对话/旁白）要保留、且和新
-    # 视频轨对齐（封面只替换画面，不改变整体时长，也不打断音频）
-    final = workdir / "cover_applied.mp4"
-    _run([FFMPEG, "-y", "-i", str(replaced), "-i", str(video_path),
-          "-map", "0:v:0", "-map", "1:a:0",
-          "-c:v", "copy", "-c:a", "copy",
-          "-shortest", str(final)])
-    shutil.move(str(final), str(video_path))
-    print(f"  Cover applied: {cover_image} ({cover_dur:.2f}s), total unchanged: {clip_dur:.2f}s")
-    return cover_dur
+    _run([
+        FFMPEG, "-y",
+        "-loop", "1", "-i", str(cover_image),
+        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+        "-vf", vf,
+        "-t", f"{cover_dur:.3f}",
+        "-c:v", "libx264", "-preset", preset_scale, "-crf", "20",
+        "-c:a", "aac", "-b:a", "192k",
+        "-shortest",
+        str(intro),
+    ])
+    print(f"  Cover intro built: {cover_image} ({cover_dur:.2f}s), total will increase by this amount")
+    return intro
 
 
 def main():
@@ -236,8 +227,11 @@ def main():
                               "novel_project.json.transition_duration_sec，默认 0.5")
     parser.add_argument("--target-fps", type=int, default=24)
     parser.add_argument("--preset-scale", default="veryfast")
-    parser.add_argument("--cover-duration", type=float, default=3.0)
-    parser.add_argument("--no-cover", action="store_true")
+    parser.add_argument("--cover-duration", type=float, default=None,
+                         help="封面片段时长（秒），不传则读取 "
+                              "novel_project.json.cover.duration_sec，默认 3.0")
+    parser.add_argument("--no-cover", action="store_true",
+                         help="临时关闭封面效果（即使 novel_project.json.cover.enabled 为 true）")
     parser.add_argument("--allow-missing-macro-scenes", action="store_true",
                          help="[默认关闭] 允许跳过还没有合成出 macro_scene_XX.mp4 的大场景，"
                               "正常流程应确保所有 status:done 的大场景都已生成视频")
@@ -306,13 +300,25 @@ def main():
     macro_dur_sum = sum(macro_durations)
     print(f"Normalized {len(normalized_paths)} macro videos, total {macro_dur_sum:.2f}s")
 
-    # ── 2. 封面：作用在第一个大场景视频前几秒 ────────────────────────
+    # ── 2. 封面：新增一段独立片段，前置拼接在第一个大场景之前 ─────────
+    # 触发条件是 novel_project.json.cover.enabled == true（新功能默认
+    # 关闭，缺省字段视为未开启）且 cover.png 存在；--no-cover 可临时
+    # 覆盖关闭。这段片段是"新增"，不是像更早版本那样"替换第一个大场景
+    # 开头几秒"，所以后面总时长的预期计算要把它加进去。
+    cover_cfg = project.get("cover", {}) or {}
+    cover_enabled = bool(cover_cfg.get("enabled", False)) and not args.no_cover
     cover_image = output_dir / "global" / "assets" / "cover.png"
-    if cover_image.exists() and not args.no_cover:
-        apply_cover(normalized_paths[0], cover_image, args.cover_duration,
-                    target_size, args.target_fps, args.preset_scale, workdir)
-    elif not cover_image.exists():
-        print("  未找到 global/assets/cover.png，跳过封面效果", file=sys.stderr)
+    cover_dur = 0.0
+    intro_clip = None
+    if cover_enabled and not cover_image.exists():
+        print("  [警告] novel_project.json.cover.enabled=true 但未找到 "
+              "global/assets/cover.png，跳过封面效果（见 "
+              "references/revision_and_rollback.md §事后补建封面 补生成）", file=sys.stderr)
+    elif cover_enabled:
+        cover_dur = args.cover_duration if args.cover_duration is not None \
+            else float(cover_cfg.get("duration_sec", 3.0))
+        intro_clip = build_intro_clip(cover_image, cover_dur, target_size,
+                                       args.target_fps, args.preset_scale, workdir)
 
     # ── 3. 拼接（cut 直接拼，fade 插入黑场转场 + 首尾淡入淡出） ────────
     segments = []
@@ -330,6 +336,11 @@ def main():
     else:
         segments = normalized_paths
 
+    if intro_clip is not None:
+        # 封面片段前置拼接，不参与 fade 转场逻辑（转场只发生在大场景
+        # 之间），直接拼在最前面。
+        segments = [intro_clip] + segments
+
     list_file = workdir / "concat_list.txt"
     with open(list_file, "w", encoding="utf-8") as f:
         for s in segments:
@@ -341,6 +352,8 @@ def main():
     expected_dur = macro_dur_sum
     if transition_mode == "fade" and len(normalized_paths) > 1:
         expected_dur += transition_dur * (len(normalized_paths) - 1)
+    if intro_clip is not None:
+        expected_dur += cover_dur
 
     report = validate_output(output, target_size, expected_dur)
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -359,7 +372,7 @@ def validate_output(output: Path, target_size: str, expected_dur: float) -> dict
     final_dur = get_dur(output)
     if abs(final_dur - expected_dur) > 2.0:
         errors.append(f"总时长 {final_dur:.1f}s 与预期 {expected_dur:.1f}s（各大场景时长之和"
-                      f"[+转场时长]）相差过大")
+                      f"[+转场时长][+封面时长，若启用]）相差过大")
 
     probe_cmd = [FFPROBE, "-v", "quiet", "-print_format", "json", "-show_streams", str(output)]
     r = subprocess.run(probe_cmd, capture_output=True, text=True)

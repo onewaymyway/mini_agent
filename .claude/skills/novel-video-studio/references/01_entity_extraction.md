@@ -11,8 +11,9 @@
 
 ### Step 0：项目初始化
 
-向用户确认：目标视频时长（默认 3 分钟）、横竖屏（默认横屏 16:9）。
-立即写入 `<output_dir>/novel_project.json`：
+向用户确认：目标视频时长（默认 3 分钟）、横竖屏（默认横屏 16:9）、
+**是否需要片头封面**（默认不需要）。立即写入
+`<output_dir>/novel_project.json`：
 
 ```json
 {
@@ -24,12 +25,39 @@
   "transition_mode": "cut",
   "transition_duration_sec": 0.5,
   "orientation": "landscape",
-  "aspect_ratio": "16:9"
+  "aspect_ratio": "16:9",
+  "cover": {
+    "enabled": false,
+    "title_text": null,
+    "duration_sec": 3.0,
+    "layout": "center"
+  }
 }
 ```
 
 `transition_mode` 先按默认值 `cut` 写入，用户明确要转场效果时改成
 `fade`（也可以留到阶段8再问）。
+
+`cover` 是**新功能，默认关闭**（`enabled: false`），不主动多问、用户
+没提就跳过、不阻塞项目初始化。用户明确要片头封面时才置
+`enabled: true`，并顺带确认：
+- `title_text`：封面上要显示的标题文字，留空（`null`）则用
+  `source_title`；小说全名太长时可以让用户给一个更适合画面展示的
+  短标题；
+- `duration_sec`：封面时长，默认 3 秒；
+- `layout`：标题文字的排布方式，三选一，默认 `center`（居中大字+
+  半透明蒙层，通用海报风格）：
+  - `center`：标题居中偏上1/3处，适合不确定选哪个的通用场景；
+  - `bottom_bar`：底部半透明色块条，标题放条内，适合背景画面本身
+    很饱满、不想被大字遮挡主体时；
+  - `top_classic`：标题放画面上方1/6处、无蒙层但字体描边，适合
+    背景图上方留白充足的构图。
+  三种效果具体怎么生成，见子资源 `global-assets`
+  （`references/02_global_assets.md`）里的封面生成 Step 和
+  `scripts/render_cover_title.py`。
+
+不开启封面完全不影响后续任何阶段——`cover` 字段缺省即视为
+`{"enabled": false}`，是这次改动对老项目的唯一兼容性承诺。
 
 ### Step 1：确定全书统一美术风格
 

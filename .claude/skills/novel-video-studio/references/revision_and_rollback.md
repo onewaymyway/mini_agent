@@ -16,6 +16,7 @@
 | "配音音色不对"、"这段配音语气不满意，文案没问题" | `--level assets` | 只清音频+视频 clip，保留 scene_detail 文案 |
 | "画面不满意，配音没问题，重新生成一下这个镜头" | `--level video` | 只清视频 clip（和依赖它的大场景合成结果），音频保留 |
 | "这个角色的形象/声音设定要改" | 用 `--global-entity <角色id>`，不用 `--macro-id` | 联动回退所有引用该角色的大场景（assets 级） |
+| "想加个片头封面"、"封面标题文字/布局要改"、"封面背景图要换" | 不走本表，不需要 `invalidate.py` | 封面只影响阶段8最终拼接，不影响任何大场景内部产物，见文末 §事后补建封面 |
 
 ## Step 1：修改源头内容
 
@@ -111,3 +112,55 @@ python .claude/skills/novel-video-studio/scripts/invalidate.py \
 6. 跑阶段8的 `compose_final_video_v2.py` 产出新的 `video.mp4`。
 
 不需要动其它任何大场景。
+
+## 事后补建封面
+
+封面（`global/assets/cover_bg.png`/`cover.png`）是阶段8最终拼接时
+**新增在最前面**的一段独立片段，不改变、不依赖任何大场景内部的
+文案/配音/画面产物。所以下面三类反馈**都不走上面 Step 0 的表、不需要
+跑 `invalidate.py`**，哪怕这时 `video.mp4` 已经生成完毕：
+
+1. **项目当初没开封面，现在想加**（最常见的场景，包括
+   `video.mp4` 已经交付之后才提出）；
+2. **封面已经生成过，只是想换标题文字/换布局**；
+3. **封面已经生成过，想换一张背景图**（标题文字不变或跟着换）。
+
+统一走这一套轻量流程：
+
+```
+1. 检查/更新 novel_project.json.cover：
+   - 之前没有 cover 字段，或 enabled=false → 向用户确认
+     title_text/duration_sec/layout（默认 title_text=null 用
+     source_title，layout=center），写入 enabled=true；
+   - 只改标题文字/布局 → 直接改对应字段，enabled 保持 true；
+   - 只换背景图，标题不变 → cover 字段不用改。
+
+2. 按需生成/更新素材（跳过不需要重新生成的那一步）：
+   - global/assets/cover_bg.png 不存在，或用户要求换背景图
+     → 走 references/02_global_assets.md Step A 重新生成
+       cover_bg.png（这一步会调用生图 API，其它素材/大场景完全
+       不受影响，characters.json/locations.json/script.md 都还在，
+       随时可以补跑）；
+   - global/assets/cover.png 不存在，或 cover_bg.png 刚被重新生成，
+     或 title_text/layout 有变化
+     → 跑 references/02_global_assets.md Step B
+       （scripts/render_cover_title.py），本地操作，秒级完成，
+       不调用任何外部 API；
+   - 只改标题文字/布局、cover_bg.png 没变 → 只需要跑上面这个 Step B，
+     不需要碰 Step A。
+
+3. 直接重跑阶段8：
+   python .claude/skills/novel-video-studio/scripts/compose_final_video_v2.py \
+     <output_dir>
+   macro_scenes.yaml 里各大场景仍是 done、macro_scene_XX.mp4 都还在
+   磁盘上，脚本本身就是"读现成大场景视频 + 当前封面配置 → 重新合成"，
+   天然支持覆盖重跑，不需要、也不应该对任何大场景状态做 invalidate。
+
+4. 覆盖旧 video.mp4 前提醒用户一句：如果想保留旧版本对比，生成前
+   先把当前 video.mp4 另存一份；否则直接覆盖生成新版本，新总时长
+   应约等于"旧总时长 + 封面时长"（如果是新增封面）或与旧总时长一致
+   （如果只是换标题/背景图，封面时长不变）。
+```
+
+这条路径不清空任何 `macro_scene_XX` 的状态，`check_project_state.py`
+里各大场景 `status` 全程保持 `done` 不受影响。

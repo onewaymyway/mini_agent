@@ -13,8 +13,8 @@ resources:
     triggers: 角色抽取, 人物抽取, 地点抽取, voice_profile, 补抽取, 新角色, 新地点, visual_anchor_en, 一致性, 角色设定, appearance_variants, 外观变体, 换装, 变装
   - id: global-assets
     path: references/02_global_assets.md
-    description: 阶段3——全局角色/地点定妆图集中生成与校验：对阶段2抽取出的角色/地点主表逐条调用 gen_image_with_text 生成定妆图并回填 asset_path，逐条核对"全部生成完成"后才允许进入阶段4；不是可选优化项，是硬性检查点
-    triggers: 定妆图, 全局定妆图, 角色定妆图, 地点定妆图, cover.png, asset_path, gen_image_with_text, 主表, 视觉锚点
+    description: 阶段3——全局角色/地点定妆图集中生成与校验：对阶段2抽取出的角色/地点主表逐条调用 gen_image_with_text 生成定妆图并回填 asset_path，逐条核对"全部生成完成"后才允许进入阶段4（硬性检查点）；同时包含可选的 Step 2.5 片头封面生成（cover.enabled 时才执行，剧情向背景图 cover_bg.png + render_cover_title.py 叠加标题文字产出 cover.png，不阻塞阶段4）
+    triggers: 定妆图, 全局定妆图, 角色定妆图, 地点定妆图, asset_path, gen_image_with_text, 主表, 视觉锚点, 封面, cover.png, cover_bg.png, 片头, 封面标题, 剧情向封面
   - id: macro-scene-split
     path: references/03_macro_scene_split.md
     description: 阶段4——以剧本场次为基本单位归并/细分为大场景（macro_scene），时长约束弹性化（默认建议≤120秒，剧情连续性强可放宽到≤240秒硬上限）
@@ -33,16 +33,16 @@ resources:
     triggers: 视频生成, 小场景视频, 大场景合成, clips, gen_video_with_text, 一致性, 角色不一致, 场景不一致, visual_anchor_en, 语义核查, 人工复核, timeout, 慢放, 快放, 时长不一致, consistency_report, 核查报告, 情节不一致, 定妆图缺失, 生成前检查
   - id: final-compose
     path: references/07_final_compose.md
-    description: 阶段8——所有大场景 done 后的最终拼接转场，产出 video.mp4
-    triggers: 最终合成, 最终拼接, 转场, video.mp4, 成片
+    description: 阶段8——所有大场景 done 后的最终拼接转场，产出 video.mp4；若 novel_project.json.cover.enabled 为 true，最前面新增一段独立封面片段（增加总时长，不是替换第一个大场景画面）
+    triggers: 最终合成, 最终拼接, 转场, video.mp4, 成片, 封面, cover, 片头, 片头封面
   - id: error-handling
     path: references/error_handling.md
     description: 调用 gen_image_with_text / gen_video_with_text / 配音脚本时的 API 失败处理规范（限流自动切 key 重试 vs 参数类错误定向重跑）
     triggers: api报错, 限流, 调用失败, 生成失败, key切换, 重试
   - id: revision-and-rollback
     path: references/revision_and_rollback.md
-    description: 用户对已生成内容（台词/形象/画面）提反馈要求修改时，联动清空下游产物并从对应层级重新往后走的规则；invalidate.py 用法
-    triggers: 改台词, 换形象, 重新生成, 修改内容, 回退, invalidate, 用户反馈
+    description: 用户对已生成内容（台词/形象/画面）提反馈要求修改时，联动清空下游产物并从对应层级重新往后走的规则；invalidate.py 用法；另含独立于该链路的"事后补建封面"轻量流程（成片已完成后才要求加封面/换标题/换封面图，不触发任何大场景 invalidate）
+    triggers: 改台词, 换形象, 重新生成, 修改内容, 回退, invalidate, 用户反馈, 事后加封面, 补建封面, 换标题
 ---
 
 # 小说转视频一体化 Skill (Novel Video Studio)
@@ -88,7 +88,8 @@ resource_id=..., reason=...)` 按需加载，读完执行完这一阶段就可�
 ├── check_consistency_report.py   # 阶段7前置：机械校验 Agent 写的 consistency_report.yaml（覆盖完整性/全部pass/未过期），不做语义判断
 ├── compose_macro_scene.py        # 阶段7大场景内合成
 ├── check_clips_v2.py             # 阶段7校验
-├── compose_final_video_v2.py     # 阶段8最终合成
+├── render_cover_title.py         # 阶段3 Step B（可选）：给 cover_bg.png 叠加标题文字产出 cover.png，本地 PIL 操作，不调用外部 API
+├── compose_final_video_v2.py     # 阶段8最终合成（若 cover.enabled，最前面新增独立封面片段，增加总时长）
 ├── check_project_state.py        # 通用：查看项目当前进度到哪一步、下一步做什么
 └── invalidate.py                 # 通用：用户改内容后，联动清理下游产物+回退状态
 ```
@@ -153,7 +154,9 @@ novel_output/小说名_20260911/
 ├── global/
 │   ├── characters.json         # 角色库，含 voice_profile、asset_path
 │   ├── locations.json          # 地点库，含 asset_path
-│   └── assets/                 # character_*.png / location_*.png / cover.png
+│   └── assets/                 # character_*.png / location_*.png
+│                                #   / cover_bg.png（可选，剧情向背景图，不含文字）
+│                                #   / cover.png（可选，叠加标题文字后的成品，见 §1.1 cover.*）
 ├── macro_scenes.yaml           # 大场景清单，status: pending→planned→done
 ├── macro_scene_01/
 │   ├── scene_detail.yaml       # 本大场景的小场景规划
@@ -190,6 +193,10 @@ novel_output/小说名_20260911/
 | `transition_duration_sec` | number | `fade` 模式下的转场时长 |
 | `orientation` | string | `"landscape"` \| `"portrait"` |
 | `aspect_ratio` | string | 如 `"16:9"`/`"9:16"` |
+| `cover.enabled` | bool | 片头封面开关，**默认 `false`**（新功能，缺省即关闭），阶段2 Step0 询问 |
+| `cover.title_text` | string \| null | 封面标题文字，`null` 时用 `source_title` |
+| `cover.duration_sec` | number | 封面片段时长（秒），默认 `3.0` |
+| `cover.layout` | string | `"center"`（默认，居中大字+蒙层）\| `"bottom_bar"`（底部色块条）\| `"top_classic"`（上方留白+描边字） |
 
 **`global/characters.json`** 单条 `characters[]` 元素：`id`
 (`char_NN`)、`names` (string[])、`age_range` (`"child"`\|`"teen"`\|

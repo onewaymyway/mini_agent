@@ -124,6 +124,26 @@ def main() -> None:
             f"缺角色 {characters_missing_asset or '无'}、缺地点 {locations_missing_asset or '无'}，"
             "全部生成并校验通过之前不允许进入大场景切分")
 
+    # 封面（v7 新增，默认关闭）：只有 cover.enabled=true 才检查，避免
+    # 给没开这个功能的项目输出无意义的状态。
+    cover_cfg = (project.get("cover") or {})
+    cover_enabled = bool(cover_cfg.get("enabled", False))
+    cover_bg_path = out_dir / "global" / "assets" / "cover_bg.png"
+    cover_path = out_dir / "global" / "assets" / "cover.png"
+    result["stages"]["cover"] = {
+        "enabled": cover_enabled,
+        "cover_bg_exists": cover_bg_path.exists(),
+        "cover_exists": cover_path.exists(),
+    }
+    if cover_enabled and not cover_bg_path.exists():
+        result["warnings"].append(
+            "novel_project.json.cover.enabled=true 但 global/assets/cover_bg.png "
+            "尚未生成，可在阶段3或 references/revision_and_rollback.md §事后补建封面 里补生成")
+    elif cover_enabled and cover_bg_path.exists() and not cover_path.exists():
+        result["warnings"].append(
+            "global/assets/cover_bg.png 已生成但 cover.png（叠字后成品）缺失，"
+            "跑 scripts/render_cover_title.py 补生成")
+
     macro_yaml = _load_yaml(out_dir / "macro_scenes.yaml") or {}
     macro_list = macro_yaml.get("macro_scenes", []) or []
     result["stages"]["4_macro_scenes"] = {"done": bool(macro_list), "count": len(macro_list)}
