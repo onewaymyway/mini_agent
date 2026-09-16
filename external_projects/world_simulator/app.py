@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import html as html_stdlib
 import json
 import logging
 import sys
@@ -200,6 +201,43 @@ def _pill(status: str) -> str:
         status, "ws-pill-paused"
     )
     return f'<span class="ws-pill {cls}">{label}</span>'
+
+
+def _html_text(value: str) -> str:
+    """把一段自由文本（标题/摘要/叙事/理由，可能来自 LLM 生成，可能带
+    真实换行）安全地嵌进内联 HTML 片段里。
+
+    两个目的：
+    1. 转义 `<`/`>`/`&` 等特殊字符，避免文本里恰好出现类似标签的内容时
+       被当成真的 HTML 解析、破坏卡片布局。
+    2. 把真实换行替换成 `<br>`——这是时间线卡片曾经渲染错乱（`</div>`
+       原样露出来）的根因：一段多行 `f\"\"\"<div>...</div>\"\"\"` 里如果某个
+       占位符插入的文本自身带空行/换行，markdown 解析器会把这个"空行"
+       当成当前 HTML 块的结束，导致后面缩进的收尾标签被当成普通缩进
+       代码块渲染，而不是继续当 HTML 解析。统一在插值前把换行转成
+       `<br>`（不再是"真换行"），从源头上避免这个问题，而不是每处
+       手动小心翼翼控制字符串里能不能有换行。
+    """
+    return html_stdlib.escape(value).replace("\n", "<br>")
+
+
+def _choice_label(options, option_id: Optional[str]) -> str:
+    """把候选选项 id 转成人类可读的 label 用于展示。
+
+    `chosen_option_id` 记的是 id 不是文案（见 `state_model.SimState`
+    docstring），展示时如果直接把 id 秀出来（如 `custom_2ca5f0`），
+    对用户没有任何意义；这里从"做出选择的那个状态自己的候选列表"
+    （`options` 参数）里查一次 label。理论上 `chosen_option_id` 总能在
+    对应状态自己的 `options` 里找到（引擎落盘前已校验过，见
+    `engine.py::advance()`），但展示层不应该假设数据一定完美——查不到
+    时退回显示原始 id，而不是抛错或显示空白。
+    """
+    if not option_id:
+        return ""
+    for opt in options or []:
+        if opt.id == option_id:
+            return opt.label or option_id
+    return option_id
 
 
 @st.cache_resource(show_spinner=False)
@@ -544,19 +582,25 @@ def _render_timeline(history: List) -> None:
         chosen_note = ""
         if state.chosen_option_id:
             who = "代理" if state.chosen_by == "autopilot" else "你"
-            chosen_note = f'<div class="ws-chapter-choice">→ {who} 选择了「{state.chosen_option_id}」</div>'
+            label = _choice_label(state.options, state.chosen_option_id)
+            chosen_note = f'<div class="ws-chapter-choice">→ {who} 选择了「{_html_text(label)}」</div>'
         if state.chosen_by == "autopilot" and state.chosen_reason:
-            chosen_note += f'<div class="ws-chapter-choice">　理由：{state.chosen_reason}</div>'
-        narrative = f'<div class="ws-chapter-narrative">{state.narrative}</div>' if state.narrative else ""
-        st.markdown(
-            f"""<div class="ws-chapter">
-                <div class="ws-chapter-step">第 {state.step} 步</div>
-                <div class="ws-chapter-summary">{state.summary}</div>
-                {narrative}
-                {chosen_note}
-            </div>""",
-            unsafe_allow_html=True,
+            chosen_note += f'<div class="ws-chapter-choice">　理由：{_html_text(state.chosen_reason)}</div>'
+        narrative = (
+            f'<div class="ws-chapter-narrative">{_html_text(state.narrative)}</div>'
+            if state.narrative else ""
         )
+        # 拼成单行（不在字符串里放真实换行）：见 `_html_text` 的说明，
+        # 多行 f-string + 缩进曾经导致 markdown 把收尾标签当成缩进代码
+        # 块渲染，拼单行从根上避免这个问题。
+        html = (
+            '<div class="ws-chapter">'
+            f'<div class="ws-chapter-step">第 {state.step} 步</div>'
+            f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
+            f"{narrative}{chosen_note}"
+            "</div>"
+        )
+        st.markdown(html, unsafe_allow_html=True)
 
 
 def page_detail() -> None:
@@ -594,8 +638,8 @@ def page_detail() -> None:
 
     st.markdown("#### 当前状态")
     st.markdown(
-        f'<div class="ws-card"><div class="ws-card-title">{current.summary}</div>'
-        + (f'<div class="ws-muted">{current.narrative}</div>' if current.narrative else "")
+        f'<div class="ws-card"><div class="ws-card-title">{_html_text(current.summary)}</div>'
+        + (f'<div class="ws-muted">{_html_text(current.narrative)}</div>' if current.narrative else "")
         + "</div>",
         unsafe_allow_html=True,
     )
@@ -1002,20 +1046,22 @@ def page_game() -> None:
     chosen_note = ""
     if s.chosen_option_id:
         who = "代理" if s.chosen_by == "autopilot" else "你"
-        chosen_note = f'<div class="ws-chapter-choice">→ {who} 选择了「{s.chosen_option_id}」</div>'
+        label = _choice_label(s.options, s.chosen_option_id)
+        chosen_note = f'<div class="ws-chapter-choice">→ {who} 选择了「{_html_text(label)}」</div>'
         if s.chosen_by == "autopilot" and s.chosen_reason:
-            chosen_note += f'<div class="ws-chapter-choice">　理由：{s.chosen_reason}</div>'
+            chosen_note += f'<div class="ws-chapter-choice">　理由：{_html_text(s.chosen_reason)}</div>'
     major_tag = " · ⚡命运转折点" if s.major_decision else ""
+    narrative_text = _html_text(s.narrative) if s.narrative else "（这一章还没有更多叙事文本。）"
 
-    st.markdown(
-        f"""<div class="ws-card" style="min-height: 220px;">
-            <div class="ws-chapter-step">第 {s.step} 章{major_tag}</div>
-            <div class="ws-chapter-summary" style="font-size:1.15rem;">{s.summary}</div>
-            <div class="ws-chapter-narrative">{s.narrative or '（这一章还没有更多叙事文本。）'}</div>
-            {chosen_note}
-        </div>""",
-        unsafe_allow_html=True,
+    html = (
+        '<div class="ws-card" style="min-height: 220px;">'
+        f'<div class="ws-chapter-step">第 {s.step} 章{major_tag}</div>'
+        f'<div class="ws-chapter-summary" style="font-size:1.15rem;">{_html_text(s.summary)}</div>'
+        f'<div class="ws-chapter-narrative">{narrative_text}</div>'
+        f"{chosen_note}"
+        "</div>"
     )
+    st.markdown(html, unsafe_allow_html=True)
     if s.vars:
         with st.expander("这一章的关键变量"):
             st.json(s.vars)
