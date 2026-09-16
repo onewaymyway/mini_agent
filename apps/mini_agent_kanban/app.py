@@ -6307,8 +6307,84 @@ def _render_goal_tree_view(client: AgentClient) -> None:
     _render_goal_tree_node(client, tree, id_to_title, depth=0, next_step_node_ids=next_step_node_ids)
 
 
+def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
+    """目标树"看不到进行中目标"排查提示条：区分全局调度开关 / 用户手动
+    暂停（需显式恢复）/ 公平性暂停（会自动恢复）/ 可继续拆解深入的
+    Goal 四类根因。只读快照接口很轻（不涉及 LLM 调用），直接同步调用，
+    没有问题时不渲染任何东西，不占视线。
+    """
+    resp = client.goals_scheduling_diagnostics() or {}
+    if "_error" in resp or not resp.get("has_blocking_issue"):
+        return
+
+    lines: list[str] = []
+
+    if resp.get("scheduling_paused"):
+        reason = resp.get("scheduling_paused_reason") or ""
+        lines.append(
+            f"🔴 **全局调度已暂停**：自主循环整体不再 tick，所有目标都不会被推进"
+            + (f"（原因：{reason}）" if reason else "")
+            + "。需要去「全局调度」页手动恢复。"
+        )
+
+    user_paused = resp.get("user_paused_objectives") or []
+    if user_paused:
+        titles = "、".join(o.get("title", o.get("id", "")) for o in user_paused)
+        lines.append(
+            f"🟠 **{len(user_paused)} 个执行被用户手动暂停**（{titles}）：这类暂停"
+            "不会自动恢复，需要在对应目标详情里显式点「继续」。"
+        )
+
+    fairness_paused = resp.get("fairness_paused_objectives") or []
+    if fairness_paused:
+        lines.append(
+            f"🔵 {len(fairness_paused)} 个执行因公平调度临时让出资源：这类会被"
+            "调度器自动恢复，无需人工干预。"
+        )
+
+    missing = resp.get("goals_missing_objective") or []
+    if missing:
+        lines.append(
+            f"🟣 **{len(missing)} 个目标可以继续深入拆解**：这些 Goal 处于 "
+            "active，但下面还没有进行中的子任务。"
+        )
+
+    if not resp.get("scheduling_paused") and resp.get("active_goal_count", 0) == 0 \
+            and resp.get("active_objective_count", 0) == 0:
+        lines.append("当前确实没有任何 active 状态的 Goal / Objective——需要新建目标，或把已有目标重新置为 active。")
+
+    with st.container(border=True):
+        st.warning("目标树里当前没有（或很少）进行中的目标，可能原因如下：")
+        for line in lines:
+            st.markdown(f"- {line}")
+
+        if missing:
+            st.caption("👇 点击直接对某个目标发起一次拆解（会调用 LLM，需要几秒到几十秒）：")
+            for g in missing:
+                gid = g.get("id")
+                title = g.get("title", gid)
+                cols = st.columns([5, 2])
+                with cols[0]:
+                    st.markdown(f"`{title}`")
+                with cols[1]:
+                    async_key = f"sched_diag_decompose:{gid}"
+                    if st.button("🪄 立即拆解", key=f"_sched_diag_decompose_btn_{gid}"):
+                        if start_async_job(client, async_key, lambda gid=gid: client.decompose_goal_node(gid, force=True)):
+                            st.rerun()
+                    result = run_async_job(client, async_key, label="正在生成分解候选")
+                    if result is not None:
+                        if "_error" in result:
+                            st.error(f"拆解失败：{result['_error']}")
+                        else:
+                            n = len(result.get("candidates") or [])
+                            st.success(f"生成了 {n} 条候选" if n else "本次没有生成新候选")
+                            st.rerun()
+
+
 def render_kanban_tab(client: AgentClient):
     st.markdown("#### 📌 目标看板 (Goal Backlog)")
+
+    _render_goal_scheduling_diagnostics_panel(client)
 
     _goal_view_mode = st.radio(
         "视图", ["📋 列表/看板视图", "🌳 目标树"], horizontal=True, key="_goal_view_mode_radio",

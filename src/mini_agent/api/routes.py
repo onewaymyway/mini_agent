@@ -168,6 +168,9 @@ api/routes.py — FastAPI 路由定义
     DELETE /v1/goals                 [看板"一键删除所有目标"] 对全部
                                        level=goal 节点逐个执行上面同一套
                                        级联删除
+    GET    /v1/goals/scheduling_diagnostics  [目标树调度诊断] 全局调度开关 +
+                                     user_paused/fairness_paused Objective 区分 +
+                                     可继续拆解深入的 Goal 列表，纯只读
     GET    /v1/goals/tree            [goal_tree_system_plan.md §4.5/阶段四]
                                        目标树完整子树（含候选/焦点）
     POST   /v1/goals/nodes           [同上] 通用节点创建入口（任意层级）
@@ -1386,6 +1389,51 @@ async def get_self_fairness_diagnostics(request: Request):
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_fairness_diagnostics')
         from mini_agent.perception.fairness_diagnostics import _empty_snapshot
+        return _empty_snapshot()
+
+
+# ── 目标树调度诊断（回答"为什么全是暂停/已完成、没有进行中的目标"）────────
+@router.get("/goals/scheduling_diagnostics")
+async def get_goals_scheduling_diagnostics(request: Request):
+    """GET /v1/goals/scheduling_diagnostics — 目标树"看不到进行中目标"时的
+    只读排查快照：全局调度开关状态、区分 user_paused / fairness_paused 的
+    Objective 列表、以及"active 但没有 active Objective 子节点"的可继续
+    深入拆解的 Goal 列表。纯观测，不修改任何状态。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    try:
+        from mini_agent.perception.scheduling_diagnostics import scheduling_diagnostics_snapshot
+
+        self_agent = http_server.bridge.agent
+        cfg = getattr(self_agent, "cfg", None) if self_agent else None
+
+        al = http_server.autonomous_loop
+        paths = getattr(al, "_paths", None) if al is not None else None
+        if paths is None and cfg is not None and getattr(cfg, "project_root", None) is not None:
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(cfg.project_root)
+
+        goal_backlog = None
+        if paths is not None:
+            try:
+                from mini_agent.perception.goal_backlog import load_goal_backlog
+                goal_backlog = load_goal_backlog(paths)
+            except Exception:
+                goal_backlog = None
+
+        objective_executor = getattr(al, "_objective_executor", None) if al is not None else None
+        if objective_executor is None:
+            objective_executor = getattr(http_server.bridge, "_objective_executor", None)
+
+        return scheduling_diagnostics_snapshot(goal_backlog, objective_executor, paths, autonomous_loop=al)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_goals_scheduling_diagnostics')
+        from mini_agent.perception.scheduling_diagnostics import _empty_snapshot
         return _empty_snapshot()
 
 

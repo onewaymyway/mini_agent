@@ -750,6 +750,13 @@ class AgentClient:
         时间片抢占暂停的 execution 列表。"""
         return self._get("/self/fairness_diagnostics")
 
+    def goals_scheduling_diagnostics(self):
+        """目标树"看不到进行中目标"排查快照：全局调度开关状态、区分
+        user_paused（需手动恢复）/ fairness_paused（自动恢复）的 Objective
+        列表、以及 active 但没有 active 子任务、可以继续拆解深入的 Goal
+        列表。纯只读，供"🌳 目标树"tab 顶部展示排查提示。"""
+        return self._get("/goals/scheduling_diagnostics")
+
     def initiative_inbox(self, domains: list = None, limit: int = 100):
         """[initiative_systems_unification_plan.md 阶段一] 三条主动性
         管线（成长顾问/能力学习/soft_goal_deriver）候选的统一只读收件箱。
