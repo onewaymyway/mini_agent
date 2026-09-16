@@ -84,6 +84,31 @@ run app.py`启动）：
 只是多喂了一段角色设定——这个取舍在方案第 4.1 节就已经定好，阶段四
 只是把它接了起来。
 
+阶段五（batch_advance 调度 + 注册可见性，已完成）交付：
+
+1. `project.yaml` 的 `batch_advance_daily`（`cron: 0 6 * * *`，阶段四
+   已加入）经 `mini-agent projects register external_projects/
+   world_simulator` 注册验证：`mini-agent projects status
+   world_simulator` 能正确列出全部 5 个 entrypoint（含
+   `batch_advance_daily` 及其 cron 声明）、`health: healthy`（走
+   `health_check.cmd`）。
+2. 验证了方案要求的两条路径都通：
+   - **不依赖 daemon 也能单独跑**：`python entrypoints/health.py`、
+     `python entrypoints/list_simulations.py` 等在没有任何注册表记录
+     的情况下直接执行成功（阶段一起就是这样，阶段五只是正式复核）。
+   - **daemon 在场时能看到健康状态**：注册后 `mini-agent projects
+     status` 能看到实时健康状态与账本（`last_run`），符合
+     `external_projects_workspace_plan.md` 的既有约定。
+3. 新注册的项目 `enabled` 默认为 `False`（opt-in，daemon 侧既有约定），
+   即"注册"本身不会让 `batch_advance_daily` 立刻开始按 cron 自动跑——
+   需要用户在看板上或 `mini-agent projects enable world_simulator`
+   显式打开，才会真正参与 daemon 的定时调度；验证完毕后已
+   `unregister`，不在这个开发环境里留下自动调度的痕迹。
+
+阶段五本身不新增业务代码——它验证的是"这个外部项目符合
+`external_projects_workspace_plan.md` 的接入契约"这件事，`project.yaml`
+在阶段四就已经写对了。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：
@@ -200,3 +225,10 @@ world_simulator/
   覆盖代选记录、拒绝编造 id、未开启报错、重大决策暂停、批量跳过手动挡
   实例、单实例失败不中断整批），累计 22 个测试全部通过。多模板扩展、
   存档管理/游戏化视图尚未实现，见上方"已知限制"与主方案文档第 7 节。
+- 2026-09-16：完成阶段五（batch_advance 调度 + 注册可见性）：用真实
+  CLI（`mini-agent projects register/status/unregister`）验证了本项目
+  的 `project.yaml` 符合 daemon 接入契约——注册后 `status` 能看到全部
+  entrypoint（含 `batch_advance_daily` 的 cron 声明）与健康状态；不
+  注册时 CLI/entrypoint 也能独立正常运行。没有新增业务代码，验证完毕
+  已 unregister。多模板扩展、存档管理/游戏化视图尚未实现，见上方"已知
+  限制"与主方案文档第 7 节。
