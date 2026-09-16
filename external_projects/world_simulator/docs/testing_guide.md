@@ -26,7 +26,7 @@ python -m pytest tests/ -v
 
 ### 预期结果
 
-- 全部 31 个用例（6 个测试文件）应该全部通过（`31 passed`）。
+- 全部 38 个用例（7 个测试文件）应该全部通过（`38 passed`）。
 - **前提**：需要能 `import mini_agent`（本项目在 mini_agent 仓库内跑
   测试时天然满足；如果单独把本项目搬到别的环境、还没装完整
   mini_agent 依赖（比如 `fastapi`），依赖 `mini_agent.workflow` 的
@@ -39,10 +39,11 @@ python -m pytest tests/ -v
   ```bash
   python -m pytest tests/test_state_and_store.py \
                     tests/test_branch_manager.py \
-                    tests/test_delete_and_achievements.py -v
+                    tests/test_delete_and_achievements.py \
+                    tests/test_config_llm_inheritance.py -v
   ```
 
-  预期：`18 passed`。
+  预期：`25 passed`。
 
 ### 各测试文件覆盖什么、怎么算通过
 
@@ -51,6 +52,7 @@ python -m pytest tests/ -v
 | `test_state_and_store.py` | 否 | `SimState`/`SimManifest` 的序列化/反序列化往返；`SimStore` 落盘/读取当前状态与历史；读取不存在的实例报错 | 4 个用例全绿 |
 | `test_branch_manager.py` | 否 | 分叉不销毁原时间线；不切换分叉（`switch=False`）；从非法 step 分叉报错；切换分支；切换到不存在的分支报错；跨实例对比时间线 | 7 个用例全绿 |
 | `test_delete_and_achievements.py` | 否 | 删除实例后目录消失、不影响其它实例；删除不存在的实例报错；4 组成就解锁场景（初始状态无解锁/推进 1 步解锁"启程"/推进 10 步解锁到"长篇在望"/命中重大决策+自动挡+已结束同时解锁对应徽章） | 7 个用例全绿 |
+| `test_config_llm_inheritance.py` | 否 | `world_simulator/config.py` 的"原地布局自动探测主项目根 + 设置 `MINI_AGENT_MAIN_PROJECT_ROOT`"逻辑：能识别 `src/mini_agent`/`agent_config.json` 两种信号、非该布局时不误判、已有环境变量时不覆盖 | 7 个用例全绿 |
 | `test_spec_and_engine.py` | 是 | 意图→提案草稿的 skill 绑定与解析（打桩 LLM）；创建+推进的端到端闭环；`set_pilot_config`；`materialize_simulation` 不触发 LLM 调用；推进时传入未知选项 id 会被拒绝 | 5 个用例全绿 |
 | `test_autopilot.py` | 是 | 自动挡代选记录、拒绝 LLM 编造的选项 id、未开启自动挡报错、重大决策触发暂停、批量推进跳过手动挡实例、单实例失败不中断整批 | 6 个用例全绿 |
 | `test_multi_template.py` | 是 | 新模板（`group_evolution`）能正确绑定到对应 skill、端到端创建+推进跑通，验证"新增模板不改引擎代码" | 2 个用例全绿 |
@@ -122,11 +124,45 @@ streamlit run app.py --server.port 8502
 
 如果你只有几分钟时间，建议至少做到：
 
-1. 第一部分的三个"无额外依赖"测试文件全绿（`18 passed`）——确认
-   存储/分支/删除/成就这些不依赖 LLM 的核心逻辑没问题。
+1. 第一部分的四个"无额外依赖"测试文件全绿（`25 passed`）——确认
+   存储/分支/删除/成就/LLM 配置继承这些不依赖 LLM 的核心逻辑没问题。
 2. 路径 A 的步骤 1-4 走一遍——确认真实 LLM 环境下"创建→推进"这条
    最核心的链路能跑通、产出内容合理。
 3. 路径 B 打开看板确认页面能正常加载（无报错堆栈），且步骤 2 创建的
    实例能在列表里看到、能打开详情页。
 
 三条都过，说明这个项目在你的环境里是可用的。
+
+---
+
+## 常见报错排查
+
+### `generate_scenario workflow 执行未成功……Anthropic requires an API key`
+
+说明"LLM 调用本身能发起"，卡在最后一步"找不到可用的 API key"。按顺序
+排查：
+
+1. **主项目本身配好 LLM 了吗？** 去 mini_agent 主仓库根目录确认
+   `providers.json`（或 `agent_config.json` 里的 `llm_fallback_chain`）
+   配了 key，或者启动看板/CLI 的这个终端会话里导出了对应环境变量（如
+   `ANTHROPIC_API_KEY`）。如果主项目自己都没配，这一步会一直失败，
+   属于预期行为——先在主项目层面配好。
+2. **本项目找得到主项目吗？** `world_simulator/config.py::
+   load_llm_cfg()` 会依次尝试：环境变量 `MINI_AGENT_MAIN_PROJECT_ROOT`
+   → 已注册到 daemon 的记录 → "原地布局自动探测"（本项目仍挂在某个
+   mini_agent 主仓库的 `external_projects/` 下时自动生效，不需要手动
+   配置）。如果本项目已经被搬到独立路径、也没注册过，以上都找不到，
+   需要显式 `export MINI_AGENT_MAIN_PROJECT_ROOT=<主项目路径>` 或先
+   `mini-agent projects register <本项目路径>` 一下。
+3. **验证方法**：`python -c "from world_simulator.config import
+   load_llm_cfg; load_llm_cfg()"` 能正常返回（不报
+   `ModuleNotFoundError: mini_agent`）就说明"能找到主项目"这一步没
+   问题，报错会具体停在哪一步（找不到 mini_agent 包 / 加载配置失败 /
+   真正发起 LLM 调用时缺 key）。
+
+### `ModuleNotFoundError: No module named 'mini_agent'`
+
+本项目所在的 Python 环境没有安装 mini_agent 框架本身（或缺它的某个
+依赖，比如 `fastapi`）。这与"LLM 配置继承"是两个独立问题——需要先让
+`import mini_agent` 本身能成功（通常是 `pip install -e .` 装好主项目
+及其依赖），再回头看上面那条排查 API key 的问题。

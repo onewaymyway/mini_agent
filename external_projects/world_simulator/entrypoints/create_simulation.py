@@ -31,18 +31,17 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    try:
-        from mini_agent.config import load_config
-    except ImportError as exc:
-        logger.error("未检测到 mini_agent 框架，无法调用推演引擎：%s", exc)
-        _common.set_run_detail(f"mini_agent 未安装: {exc}")
-        return 1
-
+    from world_simulator.config import load_llm_cfg
     from world_simulator.engine import SimEngineError, create_simulation
     from world_simulator.spec_generator import ScenarioGenerationError
 
     ensure_dirs()
-    cfg = load_config(project_root=PROJECT_ROOT)
+    try:
+        cfg = load_llm_cfg()
+    except ImportError as exc:
+        logger.error("未检测到 mini_agent 框架，无法调用推演引擎：%s", exc)
+        _common.set_run_detail(f"mini_agent 未安装: {exc}")
+        return 1
 
     try:
         manifest = create_simulation(

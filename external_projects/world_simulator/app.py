@@ -205,10 +205,12 @@ def _pill(status: str) -> str:
 @st.cache_resource(show_spinner=False)
 def _load_cfg():
     """加载一次 mini_agent AppConfig 并缓存——LLM 调用配置不会在一次
-    `streamlit run` 生命周期内变化，重复加载没有意义。"""
-    from mini_agent.config import load_config
+    `streamlit run` 生命周期内变化，重复加载没有意义。统一走
+    `world_simulator.config.load_llm_cfg()`，确保本项目未注册进 daemon
+    时也能自动继承主项目的 LLM 配置，见该函数注释。"""
+    from world_simulator.config import load_llm_cfg
 
-    return load_config(project_root=PROJECT_ROOT)
+    return load_llm_cfg()
 
 
 def _safe_json_loads(text: str, fallback: Any) -> Any:

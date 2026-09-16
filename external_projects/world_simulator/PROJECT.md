@@ -176,6 +176,16 @@ skill 内容"这两处，没有渗透进核心引擎。
 - `mini_agent.utils.atomic_write`：状态快照/历史落盘复用现成的原子
   写工具；未装 mini_agent 时 `world_simulator/store.py` 会降级为普通
   文件写（换取"可独立运行"这条硬约束，见 2.6 节）。
+- `mini_agent.config.load_config()`（经由 `world_simulator/config.py::
+  load_llm_cfg()` 统一入口调用）：provider/api_key/重试/fallback
+  chain 全部由宿主实现，本项目不重新写一套配置/调用逻辑；
+  `load_llm_cfg()` 只多做一步"原地布局自动探测"（本项目仍挂在某个
+  mini_agent 主仓库的 `external_projects/` 下、且未注册/未显式设置
+  `MINI_AGENT_MAIN_PROJECT_ROOT` 时，自动把该环境变量设置好），目的是
+  让本地开发/未注册进 daemon 时也能直接继承主项目已经配好的
+  `agent_config.json`/`providers.json`，不需要为本项目单独再配一份，
+  详见 `docs/overview.md`"依赖与配置"一节与
+  `docs/testing_guide.md`"常见报错排查"一节。
 
 `requirements.txt` 目前为空——阶段一未引入任何本项目私有的第三方
 依赖，所有依赖都来自 mini_agent 主库。
@@ -325,3 +335,16 @@ world_simulator/
   验证功能正常——自动化单元测试怎么跑、端到端手动验证按"输入什么→
   预期结果→怎么算通过"逐条列出（`docs/testing_guide.md`）。不改动
   任何业务代码。
+- 2026-09-16：修复"未注册进 daemon 时无法继承主项目 LLM 配置"的问题
+  （报错表现为 `generate_scenario workflow 执行未成功……Anthropic
+  requires an API key`）：新增 `world_simulator/config.py::
+  load_llm_cfg()`/`ensure_main_project_root_env()`/
+  `_detect_in_place_main_project_root()`，本项目所有 LLM 调用路径
+  （`app.py::_load_cfg()`、三个 entrypoint）统一改走这一个入口——
+  仍然完全复用 `mini_agent.config.load_config()` 的既有 provider/
+  api_key/重试逻辑，不新写一套；只是在调用它之前，补上"本项目原地
+  挂在某个 mini_agent 主仓库的 `external_projects/` 下时，自动设置
+  `MINI_AGENT_MAIN_PROJECT_ROOT` 环境变量"这一步，让它不需要注册表
+  记录或手动 `export` 也能找到主项目配置，环境变量/注册表仍然优先级
+  更高（不会被覆盖）。新增单测 `tests/test_config_llm_inheritance.py`
+  （7 个用例），累计 38 个测试全部通过。

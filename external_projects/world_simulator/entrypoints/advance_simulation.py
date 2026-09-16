@@ -35,17 +35,16 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.all_autopilot:
+        from world_simulator.autopilot import run_batch_autopilot
+        from world_simulator.config import load_llm_cfg
+
+        ensure_dirs()
         try:
-            from mini_agent.config import load_config
+            cfg = load_llm_cfg()
         except ImportError as exc:
             logger.error("未检测到 mini_agent 框架，无法调用推演引擎：%s", exc)
             _common.set_run_detail(f"mini_agent 未安装: {exc}")
             return 1
-
-        from world_simulator.autopilot import run_batch_autopilot
-
-        ensure_dirs()
-        cfg = load_config(project_root=PROJECT_ROOT)
         results = run_batch_autopilot(cfg, PROJECT_ROOT, DATA_DIR, steps=args.steps)
 
         if not results:
@@ -72,17 +71,16 @@ def main() -> int:
         logger.error("用法: python entrypoints/advance_simulation.py <sim_id> [--choice <option_id>]")
         return 2
 
+    from world_simulator.config import load_llm_cfg
+    from world_simulator.engine import SimEngineError, advance
+
+    ensure_dirs()
     try:
-        from mini_agent.config import load_config
+        cfg = load_llm_cfg()
     except ImportError as exc:
         logger.error("未检测到 mini_agent 框架，无法调用推演引擎：%s", exc)
         _common.set_run_detail(f"mini_agent 未安装: {exc}")
         return 1
-
-    from world_simulator.engine import SimEngineError, advance
-
-    ensure_dirs()
-    cfg = load_config(project_root=PROJECT_ROOT)
 
     try:
         next_state = advance(

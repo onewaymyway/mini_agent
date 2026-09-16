@@ -92,9 +92,21 @@ python entrypoints/health.py
 ### 依赖与配置
 
 - 需要 mini_agent 框架已安装且能加载到 LLM 配置（`create_simulation`/
-  `advance_simulation` 内部通过 `mini_agent.config.load_config()` 拿
-  `cfg`，本项目自己没有 `agent_config.json`/`providers.json` 时会回退
-  继承宿主/注册时记录的 `main_project_root` 的配置）。
+  `advance_simulation` 内部通过 `world_simulator.config.load_llm_cfg()`
+  拿 `cfg`，这个函数只做两件事：① 如果本项目还原地挂在某个 mini_agent
+  主仓库的 `external_projects/` 下、且当前进程还没有
+  `MINI_AGENT_MAIN_PROJECT_ROOT` 环境变量，自动把它设置好；② 调用宿主
+  `mini_agent.config.load_config()`——真正的 provider/api_key/重试/
+  fallback chain 全部由宿主实现，本项目不重新写一套。也就是说：只要
+  主项目本身配好了 `agent_config.json`/`providers.json`（或者导出了
+  `ANTHROPIC_API_KEY` 之类的环境变量），本项目**不需要再单独配置一份**
+  就能直接用；如果本项目已经被注册进 daemon 或独立搬到了别的路径，
+  也可以用注册表/显式设置 `MINI_AGENT_MAIN_PROJECT_ROOT` 达到同样效果，
+  两者优先级都高于"原地布局自动探测"。
+- 如果看到 `generate_scenario workflow 执行未成功……Anthropic requires
+  an API key` 这类报错，说明"配置能不能被找到"这一步已经没问题，问题
+  出在"主项目本身也没配 key"——去主项目根目录配好 `providers.json`
+  （或者导出对应 provider 的环境变量）即可，不需要改本项目任何代码。
 - `health.py` 不依赖 LLM/网络，只验证存储层可读，因此哪怕没配好 LLM，
   这个 entrypoint 也应该能跑通——用它来判断"环境本身有没有搭对"。
 - 没有装 mini_agent 框架时，看板/CLI 里任何需要调用 LLM 的操作（创建、
