@@ -69,6 +69,14 @@ class SimState:
     chosen_by: Optional[str] = None
     chosen_reason: Optional[str] = None
     major_decision: bool = False
+    time_label: str = ""
+    """这个状态对应"模拟内经过了多长时间"的人类可读描述（比如
+    `起点`/`3 个月后`/`第 2 年`），由 skill 按 `manifest.settings`
+    里的时间粒度设置给出，engine 本身不解析/计算，原样存取、原样
+    展示——粒度是"1 步 = 1 年"还是"1 步 = 1 周"完全由 skill 按提示
+    决定，engine 不假设任何具体单位。留空表示 skill 没给（旧数据/
+    旧 skill 版本），展示层按"未知时间跨度"处理，不强行补一个假值。
+    """
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -92,6 +100,7 @@ class SimState:
             chosen_by=data.get("chosen_by"),
             chosen_reason=data.get("chosen_reason"),
             major_decision=bool(data.get("major_decision", False)),
+            time_label=str(data.get("time_label", "") or ""),
         )
 
 
@@ -116,6 +125,17 @@ class SimManifest:
     autopilot: Dict[str, Any] = field(default_factory=dict)
     current_step: int = 0
     branch: str = "main"
+    settings: Dict[str, Any] = field(default_factory=dict)
+    """模拟级别的可配置项，自由 JSON，引擎不关心具体字段含义（同
+    `SimState.vars` 的设计取舍），当前约定使用两个字段（见
+    `spec_generator.py::resolve_hints()`）：
+    - `options_count`：整数，每一步希望给出的候选方向数量（生成初始
+      状态和每一步推进都用同一个值），用户在创建向导里设置，未设置时
+      沿用 skill 里写的默认建议。
+    - `time_granularity`：字符串，"每一步代表多长的模拟内时间"，比如
+      `"1 个月"`/`"1 年"`/`"5 年"`/`"自动（由情节决定）"`；不是引擎
+      解析的结构化值，只是原样喂给 skill 的一句话提示。
+    """
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -134,4 +154,5 @@ class SimManifest:
             autopilot=dict(data.get("autopilot") or {}),
             current_step=int(data.get("current_step", 0)),
             branch=str(data.get("branch", "main")),
+            settings=dict(data.get("settings") or {}),
         )

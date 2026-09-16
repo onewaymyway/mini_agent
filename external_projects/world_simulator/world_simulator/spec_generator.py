@@ -20,6 +20,38 @@ class ScenarioGenerationError(RuntimeError):
     pass
 
 
+DEFAULT_OPTIONS_COUNT = 4
+DEFAULT_TIME_GRANULARITY = (
+    "自动——由你根据模拟对象的性质自行判断每一步合理的时间跨度"
+    "（不必固定假设\u201c一步 = 一年\u201d，比如模拟一场谈判可能一步只是几分钟，"
+    "模拟一个文明可能一步是几十年）"
+)
+
+
+def resolve_hints(settings: "Dict[str, Any] | None" = None) -> Dict[str, str]:
+    """把 `manifest.settings`（或创建向导里还没落盘成 manifest 时的临时
+    设置字典）转成喂给 workflow prompt 的两条提示字符串。
+
+    单独抽成一个函数，是因为 `generate_scenario()`（创建阶段，这时候
+    还没有 manifest）和 `engine.advance()`（推进阶段，从
+    `manifest.settings` 读）两处都要用同一套"没设置就用什么默认值"的
+    规则——不想两处各写一份，以后要改默认值/校验逻辑就得同步改两处、
+    容易漏改一处。
+    """
+    settings = settings or {}
+    raw_count = settings.get("options_count")
+    try:
+        options_count = int(raw_count)
+    except (TypeError, ValueError):
+        options_count = DEFAULT_OPTIONS_COUNT
+    options_count = max(1, min(options_count, 8))
+    time_granularity = str(settings.get("time_granularity") or "").strip() or DEFAULT_TIME_GRANULARITY
+    return {
+        "option_count_hint": f"{options_count} 个左右",
+        "time_granularity_hint": time_granularity,
+    }
+
+
 @dataclass
 class ScenarioDraft:
     """一份模拟提案草稿（对应 `generate_scenario.yaml` 的 result_file）。"""
@@ -28,6 +60,7 @@ class ScenarioDraft:
     summary: str
     vars: Dict[str, Any]
     options: List[ChoiceOption]
+    time_label: str = ""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScenarioDraft":
@@ -36,6 +69,7 @@ class ScenarioDraft:
             summary=str(data.get("summary", "")),
             vars=dict(data.get("vars") or {}),
             options=[ChoiceOption.from_dict(o) for o in (data.get("options") or [])],
+            time_label=str(data.get("time_label", "") or ""),
         )
 
 
@@ -93,6 +127,7 @@ def generate_scenario(
     intent: str,
     feedback: str = "",
     previous_draft: "ScenarioDraft | None" = None,
+    settings: "Dict[str, Any] | None" = None,
 ) -> ScenarioDraft:
     """触发一次 `generate_scenario` workflow，返回结构化的提案草稿。
 
@@ -109,6 +144,10 @@ def generate_scenario(
         previous_draft: 上一份草稿（`feedback` 非空时使用），用于把
             "改什么"锚定在"从什么改"上，避免每次修改意见都产出一份
             跟上次毫无关系的新草稿。
+        settings: 创建向导里用户设置的 `options_count`/`time_granularity`
+            （还没有 sim_id/manifest 时的临时字典，落盘后会原样存进
+            `SimManifest.settings`，供之后每一步 `advance()` 沿用同一套
+            配置）；为 None 时按 `resolve_hints()` 的默认值处理。
     """
     from mini_agent.workflow.runner import WorkflowRunner
 
@@ -135,6 +174,7 @@ def generate_scenario(
             "intent": intent,
             "feedback": feedback or "",
             "previous_draft_json": previous_draft_json,
+            **resolve_hints(settings),
         },
     )
 

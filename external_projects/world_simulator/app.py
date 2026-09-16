@@ -56,8 +56,14 @@ from world_simulator.engine import (
     materialize_simulation,
     set_pilot_config,
     set_status,
+    update_settings,
 )
-from world_simulator.spec_generator import ScenarioDraft, ScenarioGenerationError, generate_scenario
+from world_simulator.spec_generator import (
+    ScenarioDraft,
+    ScenarioGenerationError,
+    generate_scenario,
+    resolve_hints,
+)
 from world_simulator.state_model import ChoiceOption
 from world_simulator.store import SimNotFoundError
 
@@ -339,6 +345,35 @@ def page_create() -> None:
         format_func=lambda t: {"life_sim": "人生模拟", "group_evolution": "群体演化"}.get(t, t),
     )
 
+    setting_cols = st.columns([1, 1])
+    with setting_cols[0]:
+        options_count = st.number_input(
+            "每一步候选方向数量", min_value=2, max_value=8,
+            value=int(st.session_state.get("create_options_count", 4)), step=1,
+        )
+    with setting_cols[1]:
+        granularity_presets = ["自动（由情节决定）", "1 天", "1 周", "1 个月", "1 个季度", "1 年", "5 年", "10 年", "自定义…"]
+        preset_default = st.session_state.get("create_granularity_preset", "自动（由情节决定）")
+        granularity_preset = st.selectbox(
+            "时间粒度（每一步大致代表多长时间）", options=granularity_presets,
+            index=granularity_presets.index(preset_default) if preset_default in granularity_presets else 0,
+        )
+        if granularity_preset == "自定义…":
+            time_granularity = st.text_input(
+                "自定义时间粒度", value=st.session_state.get("create_granularity_custom", ""),
+                placeholder="例：3 个月 / 一场谈判的一轮 / 半局比赛",
+            )
+        elif granularity_preset == "自动（由情节决定）":
+            time_granularity = ""
+        else:
+            time_granularity = granularity_preset
+    st.markdown(
+        '<span class="ws-muted">这两项会一起存进这个模拟实例的设置里，后面每一步推进'
+        "都沿用；创建之后也可以在详情页里改（下一步开始生效，不影响已经推进过的历史）。"
+        "</span>",
+        unsafe_allow_html=True,
+    )
+
     gen_col, back_col = st.columns([1, 1])
     with gen_col:
         gen_clicked = st.button("生成提案草稿", type="primary", use_container_width=True)
@@ -352,10 +387,18 @@ def page_create() -> None:
             st.warning("请先输入一句话模拟意图。")
         else:
             st.session_state["create_intent"] = intent
+            st.session_state["create_options_count"] = int(options_count)
+            st.session_state["create_granularity_preset"] = granularity_preset
+            if granularity_preset == "自定义…":
+                st.session_state["create_granularity_custom"] = time_granularity
+            settings = {"options_count": int(options_count), "time_granularity": time_granularity}
+            st.session_state["create_settings"] = settings
             with st.spinner("正在生成提案草稿..."):
                 try:
                     cfg = _load_cfg()
-                    draft = generate_scenario(cfg, PROJECT_ROOT, template=template, intent=intent)
+                    draft = generate_scenario(
+                        cfg, PROJECT_ROOT, template=template, intent=intent, settings=settings,
+                    )
                     st.session_state["draft"] = draft
                     st.session_state["draft_template"] = template
                     # 新一轮从零生成，之前的候选方向选择/意见输入都失效。
@@ -468,6 +511,7 @@ def page_create() -> None:
                         f"明显不同、彼此也不重复的新候选方向，追加到 options 数组末尾。"
                     ),
                     previous_draft=draft,
+                    settings=st.session_state.get("create_settings"),
                 )
             except ScenarioGenerationError as exc:
                 st.error(f"生成更多候选方向失败：{exc}")
@@ -509,6 +553,7 @@ def page_create() -> None:
                             intent=st.session_state.get("create_intent", intent),
                             feedback=feedback,
                             previous_draft=draft,
+                            settings=st.session_state.get("create_settings"),
                         )
                         st.session_state["draft"] = revised
                         st.session_state.pop("create_chosen_option_id", None)
@@ -549,6 +594,8 @@ def page_create() -> None:
                 summary=edited_summary,
                 vars=edited_vars,
                 options=draft.options,
+                settings=st.session_state.get("create_settings"),
+                time_label=draft.time_label,
             )
             sim_id = manifest.sim_id
             if advance_after_create and chosen_option_id is not None:
@@ -565,7 +612,8 @@ def page_create() -> None:
                         st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
             for key in (
                 "draft", "draft_template", "create_intent", "create_chosen_option_id",
-                "create_feedback",
+                "create_feedback", "create_settings", "create_options_count",
+                "create_granularity_preset", "create_granularity_custom",
             ):
                 st.session_state.pop(key, None)
             st.session_state["view"] = "detail"
@@ -594,9 +642,10 @@ def _render_timeline(history: List) -> None:
         # 拼成单行（不在字符串里放真实换行）：见 `_html_text` 的说明，
         # 多行 f-string + 缩进曾经导致 markdown 把收尾标签当成缩进代码
         # 块渲染，拼单行从根上避免这个问题。
+        step_time_suffix = f" · {_html_text(state.time_label)}" if state.time_label else ""
         html = (
             '<div class="ws-chapter">'
-            f'<div class="ws-chapter-step">第 {state.step} 步</div>'
+            f'<div class="ws-chapter-step">第 {state.step} 步{step_time_suffix}</div>'
             f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
             f"{narrative}{chosen_note}"
             "</div>"
@@ -689,7 +738,8 @@ def page_detail() -> None:
             st.session_state["view"] = "list"
             st.rerun()
 
-    st.markdown("#### 当前状态")
+    step_time_suffix = f" · {_html_text(current.time_label)}" if current.time_label else ""
+    st.markdown(f"#### 当前状态（第 {current.step} 步{step_time_suffix}）", unsafe_allow_html=True)
     st.markdown(
         f'<div class="ws-card"><div class="ws-card-title">{_html_text(current.summary)}</div>'
         + (f'<div class="ws-muted">{_html_text(current.narrative)}</div>' if current.narrative else "")
@@ -699,6 +749,38 @@ def page_detail() -> None:
     if current.vars:
         with st.expander("关键变量"):
             st.json(current.vars)
+
+    with st.expander("⚙️ 模拟设置（候选方向数量 / 时间粒度）"):
+        cur_settings = manifest.settings or {}
+        st.markdown(
+            '<span class="ws-muted">改了之后从下一步推进开始生效，不会改写已经产生的历史。'
+            "</span>",
+            unsafe_allow_html=True,
+        )
+        set_cols = st.columns([1, 2, 1])
+        with set_cols[0]:
+            new_options_count = st.number_input(
+                "每一步候选方向数量", min_value=2, max_value=8,
+                value=int(cur_settings.get("options_count", 4) or 4), step=1,
+                key="settings_options_count",
+            )
+        with set_cols[1]:
+            new_time_granularity = st.text_input(
+                "时间粒度（留空 = 自动，由情节决定）",
+                value=str(cur_settings.get("time_granularity") or ""),
+                placeholder="例：1 个月 / 1 年 / 5 年 / 一场谈判的一轮",
+                key="settings_time_granularity",
+            )
+        with set_cols[2]:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("保存设置", key="settings_save"):
+                update_settings(
+                    DATA_DIR, sim_id,
+                    options_count=int(new_options_count),
+                    time_granularity=new_time_granularity,
+                )
+                st.success("设置已更新，下一步推进开始生效。")
+                st.rerun()
 
     # ── 控制条：暂停/恢复/结束 ──
     ctrl1, ctrl2, ctrl3 = st.columns(3)
@@ -1142,11 +1224,12 @@ def page_game() -> None:
         if s.chosen_by == "autopilot" and s.chosen_reason:
             chosen_note += f'<div class="ws-chapter-choice">　理由：{_html_text(s.chosen_reason)}</div>'
     major_tag = " · ⚡命运转折点" if s.major_decision else ""
+    step_time_suffix = f" · {_html_text(s.time_label)}" if s.time_label else ""
     narrative_text = _html_text(s.narrative) if s.narrative else "（这一章还没有更多叙事文本。）"
 
     html = (
         '<div class="ws-card" style="min-height: 220px;">'
-        f'<div class="ws-chapter-step">第 {s.step} 章{major_tag}</div>'
+        f'<div class="ws-chapter-step">第 {s.step} 章{step_time_suffix}{major_tag}</div>'
         f'<div class="ws-chapter-summary" style="font-size:1.15rem;">{_html_text(s.summary)}</div>'
         f'<div class="ws-chapter-narrative">{narrative_text}</div>'
         f"{chosen_note}"

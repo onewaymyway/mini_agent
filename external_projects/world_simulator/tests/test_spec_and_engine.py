@@ -93,6 +93,8 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
         "intent": "模拟一个刚毕业的人生",
         "feedback": "",
         "previous_draft_json": "",
+        "option_count_hint": "4 个左右",
+        "time_granularity_hint": spec_mod.DEFAULT_TIME_GRANULARITY,
     }
     assert draft.title == "毕业生的选择"
     assert draft.vars["age"] == 22

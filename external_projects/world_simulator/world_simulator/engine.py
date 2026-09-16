@@ -19,7 +19,7 @@ import string
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from world_simulator.spec_generator import ScenarioGenerationError, generate_scenario
+from world_simulator.spec_generator import ScenarioGenerationError, generate_scenario, resolve_hints
 from world_simulator.state_model import ChoiceOption, SimManifest, SimState
 from world_simulator.store import SimNotFoundError, SimStore, list_sim_ids, now_iso
 
@@ -56,6 +56,8 @@ def materialize_simulation(
     summary: str,
     vars: Dict[str, Any],
     options,
+    settings: Optional[Dict[str, Any]] = None,
+    time_label: str = "",
 ) -> SimManifest:
     """把一份（已生成、可能已被用户编辑过的）提案草稿落盘为一个新实例的
     step 0 初始状态，返回 manifest。
@@ -63,9 +65,16 @@ def materialize_simulation(
     从 `create_simulation()` 拆出来，供 `app.py` 创建向导使用：向导需要
     先展示 `spec_generator.generate_scenario()` 的草稿、允许用户编辑
     字段，再落盘——如果落盘逻辑仍然嵌在 `create_simulation()` 内部
-    （一次调用同时"生成+落盘"），向导就无法在两者之间插入编辑步骤。
+    (一次调用同时"生成+落盘"），向导就无法在两者之间插入编辑步骤。
     `create_simulation()` 本身改为"生成 + 直接落盘"两步的组合，签名
     对 CLI/entrypoint 调用方保持不变。
+
+    Args:
+        settings: 用户在创建向导里设置的 `options_count`/
+            `time_granularity`（见 `SimManifest.settings` docstring），
+            原样存进 manifest，之后每一步 `advance()` 都会读它。
+        time_label: 初始状态对应的"模拟内时间"人类可读描述（比如
+            `起点`），留空时默认为 `起点`。
     """
     options_list = [
         o if isinstance(o, ChoiceOption) else ChoiceOption.from_dict(o) for o in (options or [])
@@ -85,8 +94,12 @@ def materialize_simulation(
         autopilot={},
         current_step=0,
         branch="main",
+        settings=dict(settings or {}),
     )
-    state0 = SimState(step=0, summary=summary, narrative="", vars=dict(vars or {}), options=options_list)
+    state0 = SimState(
+        step=0, summary=summary, narrative="", vars=dict(vars or {}), options=options_list,
+        time_label=time_label or "起点",
+    )
     store.save_manifest(manifest)
     store.append_state(state0, branch="main")
     return manifest
@@ -99,6 +112,7 @@ def create_simulation(
     *,
     template: str,
     intent: str,
+    settings: Optional[Dict[str, Any]] = None,
 ) -> SimManifest:
     """意图 → 提案草稿 → 落盘为 step 0 的初始状态 → 返回 manifest。
 
@@ -108,7 +122,7 @@ def create_simulation(
     确认环节，走 `spec_generator.generate_scenario()` +
     `materialize_simulation()` 两步，见 `app.py`。
     """
-    draft = generate_scenario(cfg, workspace_root, template=template, intent=intent)
+    draft = generate_scenario(cfg, workspace_root, template=template, intent=intent, settings=settings)
     return materialize_simulation(
         data_dir,
         template=template,
@@ -117,6 +131,8 @@ def create_simulation(
         summary=draft.summary,
         vars=draft.vars,
         options=draft.options,
+        settings=settings,
+        time_label=draft.time_label,
     )
 
 
@@ -190,6 +206,7 @@ def advance(
         "current_summary": current.summary,
         "current_vars_json": json.dumps(current.vars, ensure_ascii=False),
         "current_step": str(current.step),
+        "current_time_label": current.time_label or "",
         "chosen_option_json": json.dumps(
             chosen_option.to_dict() if chosen_option else {}, ensure_ascii=False
         ),
@@ -197,6 +214,7 @@ def advance(
             [o.to_dict() for o in current.options], ensure_ascii=False
         ),
         "decision_context": decision_context,
+        **resolve_hints(manifest.settings),
     }
 
     runner = WorkflowRunner(cfg)
@@ -270,6 +288,7 @@ def advance(
         vars=dict(data.get("next_vars") or {}),
         options=[ChoiceOption.from_dict(o) for o in (data.get("options") or [])],
         major_decision=bool(data.get("major_decision", False)),
+        time_label=str(data.get("time_label", "") or ""),
     )
     store.append_state(next_state, branch=branch)
 
@@ -307,6 +326,22 @@ def set_pilot_config(
     manifest = store.load_manifest()
     manifest.pilot_mode = pilot_mode
     manifest.autopilot = dict(autopilot or {})
+    store.save_manifest(manifest)
+    return manifest
+
+
+def update_settings(data_dir: Path, sim_id: str, **updates: Any) -> SimManifest:
+    """更新实例的 `settings`（`options_count`/`time_granularity`），
+    只合并传入的字段，不清空其它已有设置。
+
+    对应"创建时选的候选方向数量/时间粒度，之后模拟过程中还想改"的场景
+    （比如模拟推进到后期想从"1 年一步"切到"1 个月一步"看得更细）；
+    改了之后从下一次 `advance()` 调用开始生效——`advance()` 每次都
+    重新从磁盘读 `manifest.settings`，不需要额外的"生效"逻辑。
+    """
+    store = SimStore.for_root(data_dir, sim_id)
+    manifest = store.load_manifest()
+    manifest.settings = {**manifest.settings, **updates}
     store.save_manifest(manifest)
     return manifest
 
