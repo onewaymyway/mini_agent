@@ -710,17 +710,63 @@ def page_detail() -> None:
             st.rerun()
 
     if is_autopilot and manifest.status == "active":
-        if st.button("▶ 手动触发自动挡推进一步（用于测试代理决策）"):
-            with st.spinner("代理正在决策并推进..."):
-                try:
-                    cfg = _load_cfg()
-                    run_autopilot_step(cfg, PROJECT_ROOT, DATA_DIR, sim_id)
-                except (SimEngineError, AutopilotDisabledError) as exc:
-                    st.error(f"自动挡推进失败：{exc}")
-                except ImportError as exc:
-                    st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
-                else:
-                    st.rerun()
+        st.markdown(
+            '<span class="ws-muted">自动挡配置好之后，代理会自己在候选方向里选一个继续'
+            "推进；点「连续自动推进」会在这一次操作里连续跑完设定的步数，不用每步都点一下——"
+            "如果 review_mode 配置成「重大决策时暂停」，遇到重大决策会自动停下来等你确认，"
+            "不会一直跑到步数用完。</span>",
+            unsafe_allow_html=True,
+        )
+        auto_cols = st.columns([2, 3, 3])
+        with auto_cols[0]:
+            auto_steps = st.number_input(
+                "连续推进步数", min_value=1, max_value=50, value=5, step=1,
+                key="autopilot_run_steps", label_visibility="collapsed",
+            )
+        with auto_cols[1]:
+            run_clicked = st.button("▶▶ 连续自动推进", key="autopilot_run_continuous", type="primary")
+        with auto_cols[2]:
+            single_clicked = st.button("▶ 只推进一步（测试代理决策）", key="autopilot_run_single")
+
+        if run_clicked or single_clicked:
+            target_steps = 1 if single_clicked else int(auto_steps)
+            try:
+                cfg = _load_cfg()
+            except ImportError as exc:
+                st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+            else:
+                progress_text = st.empty()
+                progress_bar = st.progress(0.0)
+                done = 0
+                stop_reason: Optional[str] = None
+                for i in range(target_steps):
+                    # 每一步都重新读一次最新状态：万一上一步已经把实例暂停/
+                    # 结束了（比如触发了 pause_on_major_decision），这一步
+                    # 就不该再硬推——这也是"连续推进"和简单地循环调用
+                    # `run_autopilot_step()` N 次的关键区别。
+                    latest_manifest, _c, _h = get_simulation(DATA_DIR, sim_id)
+                    if latest_manifest.status != "active":
+                        stop_reason = "已暂停" if latest_manifest.status == "paused" else "已结束"
+                        break
+                    progress_text.markdown(f"正在推进第 {i + 1}/{target_steps} 步...")
+                    try:
+                        next_state = run_autopilot_step(cfg, PROJECT_ROOT, DATA_DIR, sim_id)
+                    except (SimEngineError, AutopilotDisabledError) as exc:
+                        st.error(f"第 {i + 1} 步推进失败，已停止后续推进：{exc}")
+                        stop_reason = "出错"
+                        break
+                    done += 1
+                    progress_bar.progress(done / target_steps)
+                    review_mode = (latest_manifest.autopilot or {}).get("review_mode", "silent")
+                    if review_mode == "pause_on_major_decision" and next_state.major_decision:
+                        stop_reason = "遇到重大决策，已按配置暂停"
+                        break
+                progress_text.empty()
+                progress_bar.empty()
+                if done and stop_reason != "出错":
+                    note = f"（{stop_reason}）" if stop_reason else ""
+                    st.success(f"已连续推进 {done} 步{note}。")
+                st.rerun()
 
     # ── 推进面板 ──
     st.markdown("#### 推进下一步")
