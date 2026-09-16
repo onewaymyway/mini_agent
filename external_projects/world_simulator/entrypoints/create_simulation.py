@@ -4,8 +4,10 @@
 用法：
     python entrypoints/create_simulation.py "<一句话模拟意图>" [--template life_sim]
 
-阶段一只支持 `life_sim` 模板（人生模拟），`--template` 参数已预留，
-对应方案阶段六"新增模拟类型 = 新增一个 skill"的扩展点。
+支持的场景模板：`life_sim`（人生模拟，默认）、`group_evolution`
+（群体演化）；新增模板只需要在 `skills/` 下按 `<template 下划线转
+连字符>-template` 的命名约定新增一个 skill 目录（见 `engine.py::
+_skill_name_for_template()`），不需要改这份 entrypoint 或引擎代码。
 """
 
 from __future__ import annotations
@@ -23,7 +25,10 @@ logger = logging.getLogger("world_simulator.create_simulation")
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("intent", help="一句话模拟意图描述")
-    parser.add_argument("--template", default="life_sim", help="场景模板名，默认 life_sim")
+    parser.add_argument(
+        "--template", default="life_sim",
+        help="场景模板名，默认 life_sim（人生模拟），也支持 group_evolution（群体演化）",
+    )
     args = parser.parse_args()
 
     try:

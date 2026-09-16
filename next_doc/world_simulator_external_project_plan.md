@@ -12,11 +12,11 @@
 > **阶段二（独立看板 MVP）已完成**——`app.py`（Streamlit，"夜航日志"
 > 主题）实现了模拟列表/创建向导/实例详情+推进面板三个页面，`engine.py`
 > 新增 `materialize_simulation()` 支撑"生成草稿→编辑→确认创建"链路。
-> **阶段五（batch_advance 调度 + 注册可见性）已完成**——用真实
-> `mini-agent projects register/status` 验证了 `project.yaml` 符合
-> daemon 接入契约（entrypoint/cron/健康检查均可见），且不依赖 daemon
-> 也能独立运行；本阶段未新增业务代码，只是正式复核契约。
-> 阶段六起（多模板扩展、存档管理/游戏化视图）待实现，详情见第 7 节与
+> **阶段六（多模板扩展）已完成**——新增第二个场景模板
+> `group-evolution-template`（群体演化），验证了"新增模拟类型=新增一个
+> skill，引擎本身不用改"这条设计假设成立（`engine.py`/
+> `spec_generator.py`/workflow 定义零改动）。
+> 阶段七（游戏化视图深化，可选）尚未实现，详情见第 7 节与
 > `external_projects/world_simulator/PROJECT.md`。
 > **定位**：一个独立的「外部项目」（`external_projects/world_simulator`），
 > 遵循 `next_doc/external_projects_workspace_plan.md` 确立的四条原则
@@ -314,7 +314,7 @@ stock_watch（信息密集的数据看板风）区分开，走更有"游戏感"�
 - **阶段五（batch_advance 调度 + 注册可见性，已完成）**：补 `project.yaml`
   的 `batch_advance_daily`，注册进 daemon 注册表，验证"不依赖 daemon
   也能单独跑，daemon 在场时能看到健康状态"两条路径都通。
-- **阶段六（多模板扩展）**：群体演化、事件推演等模板以 skill 形式
+- **阶段六（多模板扩展，已完成）**：群体演化、事件推演等模板以 skill 形式
   陆续补充，验证"新增模拟类型不改引擎代码"这条设计假设是否成立。
 - **阶段七（游戏化视图深化，可选）**：视前几阶段效果决定是否做更强的
   游戏感包装（成就感反馈、章节回顾页等）。

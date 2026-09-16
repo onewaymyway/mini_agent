@@ -251,7 +251,10 @@ def page_create() -> None:
         placeholder="例：模拟一个刚从计算机专业毕业、在读研和工作之间犹豫的年轻人的人生",
         height=90,
     )
-    template = st.selectbox("场景模板", options=["life_sim"], format_func=lambda t: "人生模拟" if t == "life_sim" else t)
+    template = st.selectbox(
+        "场景模板", options=["life_sim", "group_evolution"],
+        format_func=lambda t: {"life_sim": "人生模拟", "group_evolution": "群体演化"}.get(t, t),
+    )
 
     gen_col, back_col = st.columns([1, 1])
     with gen_col:

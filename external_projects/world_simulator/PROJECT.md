@@ -109,6 +109,25 @@ run app.py`启动）：
 `external_projects_workspace_plan.md` 的接入契约"这件事，`project.yaml`
 在阶段四就已经写对了。
 
+阶段六（多模板扩展，已完成）交付：
+
+1. 新增 `skills/group-evolution-template/SKILL.md`（第二个场景模板：
+   群体演化——公司/社群/文明等群体整体的结构性发展，区别于
+   `life-sim-template` 的"单个人的人生轨迹"）。
+2. **零引擎代码改动**：`engine.py`/`spec_generator.py`/两个 workflow
+   yaml 一行都没改，`_skill_name_for_template()` 的既有命名约定
+   （`<template 下划线转连字符>-template`）直接就能把
+   `template="group_evolution"` 解析到新 skill；
+   `tests/test_multi_template.py`（2 个用例）专门断言这一点，验证了
+   方案 2.4 节"新增模拟类型=新增一个 skill，引擎本身不用改"这条设计
+   假设成立。
+3. `app.py` 创建向导的模板下拉框、`create_simulation.py --template`
+   帮助文本同步补充第二个选项。
+
+新模板落地过程中唯一"改"的地方，是 UI 层的下拉框选项和 CLI 帮助文本
+——这恰好印证了这条假设：扩展成本被完全限制在"UI 暴露入口"和"新增
+skill 内容"这两处，没有渗透进核心引擎。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：
@@ -232,3 +251,10 @@ world_simulator/
   注册时 CLI/entrypoint 也能独立正常运行。没有新增业务代码，验证完毕
   已 unregister。多模板扩展、存档管理/游戏化视图尚未实现，见上方"已知
   限制"与主方案文档第 7 节。
+- 2026-09-16：完成阶段六（多模板扩展）：新增第二个场景模板
+  `skills/group-evolution-template/SKILL.md`（群体演化），`engine.py`/
+  `spec_generator.py`/workflow yaml 零改动；新增
+  `tests/test_multi_template.py`（2 个用例）验证"新增模拟类型不改引擎
+  代码"这条设计假设成立；`app.py`/`create_simulation.py --template`
+  同步暴露新选项。累计 24 个测试全部通过。存档管理/游戏化视图（阶段
+  七，可选）尚未实现，见上方"已知限制"与主方案文档第 7 节。
