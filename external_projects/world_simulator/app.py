@@ -619,6 +619,53 @@ def page_detail() -> None:
             st.rerun()
         return
 
+    # ── 自动挡"连续推进"的续跑逻辑 ──
+    #
+    # 按钮点击时不在一次脚本执行里用 for 循环跑完所有步数——那样页面
+    # 只会在全部步数跑完后才刷新一次，中间过程用户什么都看不到。这里
+    # 改成"每次 rerun 只推进一步，推进完把 manifest/current/history 换成
+    # 最新的，正常走完这一次页面渲染（当前状态卡片、时间线都会用新
+    # 数据），再在函数末尾触发下一次 rerun"——每一步之间都有一次完整
+    # 的页面刷新，效果上就是"自动连续推进、每步都能看到"，而不是等到
+    # 最后一步才刷新。
+    schedule_next_autostep = False
+    auto_run = st.session_state.get("autopilot_run")
+    if auto_run and auto_run.get("sim_id") == sim_id and auto_run.get("remaining", 0) > 0:
+        if manifest.status != "active":
+            st.session_state.pop("autopilot_run", None)
+            st.info("模拟状态已变化（暂停/结束），自动连续推进已停止。")
+        else:
+            try:
+                cfg = _load_cfg()
+            except ImportError as exc:
+                st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+                st.session_state.pop("autopilot_run", None)
+            else:
+                try:
+                    with st.spinner(
+                        f"代理正在决策并推进第 {auto_run['done'] + 1}/{auto_run['target']} 步..."
+                    ):
+                        next_state = run_autopilot_step(cfg, PROJECT_ROOT, DATA_DIR, sim_id)
+                except (SimEngineError, AutopilotDisabledError) as exc:
+                    st.error(f"自动挡推进失败，已停止连续推进：{exc}")
+                    st.session_state.pop("autopilot_run", None)
+                else:
+                    auto_run["done"] += 1
+                    auto_run["remaining"] -= 1
+                    # 重新加载最新状态，让这一次渲染（当前状态卡片、时间线）
+                    # 反映刚刚推进完的这一步，而不是这一步开始前的旧数据。
+                    manifest, current, history = get_simulation(DATA_DIR, sim_id)
+                    review_mode = (manifest.autopilot or {}).get("review_mode", "silent")
+                    if review_mode == "pause_on_major_decision" and next_state.major_decision:
+                        st.session_state.pop("autopilot_run", None)
+                        st.success(f"已连续推进 {auto_run['done']} 步（遇到重大决策，已按配置暂停）。")
+                    elif auto_run["remaining"] <= 0:
+                        st.session_state.pop("autopilot_run", None)
+                        st.success(f"已连续推进 {auto_run['done']} 步。")
+                    else:
+                        st.session_state["autopilot_run"] = auto_run
+                        schedule_next_autostep = True
+
     top_l, top_r = st.columns([4, 1])
     with top_l:
         st.markdown(f"## {manifest.title}", unsafe_allow_html=True)
@@ -710,62 +757,41 @@ def page_detail() -> None:
             st.rerun()
 
     if is_autopilot and manifest.status == "active":
-        st.markdown(
-            '<span class="ws-muted">自动挡配置好之后，代理会自己在候选方向里选一个继续'
-            "推进；点「连续自动推进」会在这一次操作里连续跑完设定的步数，不用每步都点一下——"
-            "如果 review_mode 配置成「重大决策时暂停」，遇到重大决策会自动停下来等你确认，"
-            "不会一直跑到步数用完。</span>",
-            unsafe_allow_html=True,
-        )
-        auto_cols = st.columns([2, 3, 3])
-        with auto_cols[0]:
-            auto_steps = st.number_input(
-                "连续推进步数", min_value=1, max_value=50, value=5, step=1,
-                key="autopilot_run_steps", label_visibility="collapsed",
+        active_run = st.session_state.get("autopilot_run")
+        is_running = bool(active_run and active_run.get("sim_id") == sim_id)
+        if is_running:
+            st.markdown(
+                f'<span class="ws-muted">正在自动连续推进：已完成 {active_run["done"]}/'
+                f'{active_run["target"]} 步，即将继续……</span>',
+                unsafe_allow_html=True,
             )
-        with auto_cols[1]:
-            run_clicked = st.button("▶▶ 连续自动推进", key="autopilot_run_continuous", type="primary")
-        with auto_cols[2]:
-            single_clicked = st.button("▶ 只推进一步（测试代理决策）", key="autopilot_run_single")
+            if st.button("⏹ 停止连续推进", key="autopilot_run_cancel"):
+                st.session_state.pop("autopilot_run", None)
+                st.rerun()
+        else:
+            st.markdown(
+                '<span class="ws-muted">自动挡配置好之后，代理会自己在候选方向里选一个继续'
+                "推进；点「连续自动推进」之后每完成一步都会刷新一次页面（当前状态卡片、时间线"
+                "跟着更新），不用等全部步数跑完才看到结果——如果 review_mode 配置成「重大决策时"
+                "暂停」，遇到重大决策会自动停下来等你确认，不会一直跑到步数用完。</span>",
+                unsafe_allow_html=True,
+            )
+            auto_cols = st.columns([2, 3, 3])
+            with auto_cols[0]:
+                auto_steps = st.number_input(
+                    "连续推进步数", min_value=1, max_value=50, value=5, step=1,
+                    key="autopilot_run_steps", label_visibility="collapsed",
+                )
+            with auto_cols[1]:
+                run_clicked = st.button("▶▶ 连续自动推进", key="autopilot_run_continuous", type="primary")
+            with auto_cols[2]:
+                single_clicked = st.button("▶ 只推进一步（测试代理决策）", key="autopilot_run_single")
 
-        if run_clicked or single_clicked:
-            target_steps = 1 if single_clicked else int(auto_steps)
-            try:
-                cfg = _load_cfg()
-            except ImportError as exc:
-                st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
-            else:
-                progress_text = st.empty()
-                progress_bar = st.progress(0.0)
-                done = 0
-                stop_reason: Optional[str] = None
-                for i in range(target_steps):
-                    # 每一步都重新读一次最新状态：万一上一步已经把实例暂停/
-                    # 结束了（比如触发了 pause_on_major_decision），这一步
-                    # 就不该再硬推——这也是"连续推进"和简单地循环调用
-                    # `run_autopilot_step()` N 次的关键区别。
-                    latest_manifest, _c, _h = get_simulation(DATA_DIR, sim_id)
-                    if latest_manifest.status != "active":
-                        stop_reason = "已暂停" if latest_manifest.status == "paused" else "已结束"
-                        break
-                    progress_text.markdown(f"正在推进第 {i + 1}/{target_steps} 步...")
-                    try:
-                        next_state = run_autopilot_step(cfg, PROJECT_ROOT, DATA_DIR, sim_id)
-                    except (SimEngineError, AutopilotDisabledError) as exc:
-                        st.error(f"第 {i + 1} 步推进失败，已停止后续推进：{exc}")
-                        stop_reason = "出错"
-                        break
-                    done += 1
-                    progress_bar.progress(done / target_steps)
-                    review_mode = (latest_manifest.autopilot or {}).get("review_mode", "silent")
-                    if review_mode == "pause_on_major_decision" and next_state.major_decision:
-                        stop_reason = "遇到重大决策，已按配置暂停"
-                        break
-                progress_text.empty()
-                progress_bar.empty()
-                if done and stop_reason != "出错":
-                    note = f"（{stop_reason}）" if stop_reason else ""
-                    st.success(f"已连续推进 {done} 步{note}。")
+            if run_clicked or single_clicked:
+                target_steps = 1 if single_clicked else int(auto_steps)
+                st.session_state["autopilot_run"] = {
+                    "sim_id": sim_id, "remaining": target_steps, "target": target_steps, "done": 0,
+                }
                 st.rerun()
 
     # ── 推进面板 ──
@@ -864,6 +890,13 @@ def page_detail() -> None:
             else:
                 st.success(f"已创建分支 {new_branch} 并切换为当前分支。")
                 st.rerun()
+
+    # 连续自动推进：这一步跑完、页面正常渲染完（当前状态卡片、时间线都
+    # 已经是刚推进完的最新数据）之后，再触发下一次 rerun 去跑下一步——
+    # 放在函数最后而不是跑完当步立刻 rerun，是为了让这一步的结果先被
+    # 用户看到，而不是跳过渲染直接静默跳到下一步。
+    if schedule_next_autostep:
+        st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────
