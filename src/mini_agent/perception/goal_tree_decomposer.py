@@ -50,7 +50,12 @@ if TYPE_CHECKING:
 # 没有被 touch 过，才认为它"停滞"了。跟 `compute_aging_boost()` 里
 # `stale_days` 同一套口径的量级（见方案文档 §4.2 触发时机 1），阶段三接入
 # 真正的 cron 巡检时可以按实际观察到的触发频率再调整。
-STALE_DAYS_DEFAULT = 14
+#
+# [2026-09 用户反馈调整] 原来是 14 天，用户实际使用中觉得太长——树里的
+# 目标全部完成/暂停之后要等 14 天才会被巡检命中，体感上就是"目标树完全
+# 没有自主推进"。改成 2 天：足够跟"节点刚被创建、正常推进中"区分开（不
+# 会把刚建好还没来得及推进的节点也判定成停滞），又不会让用户等太久。
+STALE_DAYS_DEFAULT = 2
 
 # 同一节点两次分解建议之间的最小触发间隔，避免同一停滞节点被反复打扰。
 MIN_DECOMPOSE_INTERVAL_SECONDS = 3 * 86400
@@ -560,7 +565,7 @@ def ensure_goal_tree_decompose_scan_job(
         name="目标树停滞巡检与自动分解",
         schedule="interval:86400",
         description=(
-            "扫描目标树上停滞（无 active 子节点且超过 14 天未 touch）的"
+            "扫描目标树上停滞（无 active 子节点且超过 2 天未 touch）的"
             "非叶子节点，以及最近因子节点全部完成而失去 active 子节点的"
             "节点，各自触发一次 GoalTreeDecomposer 分解建议（受节奏治理"
             "限制，不会重复打扰）；未配置可用 llm_helper 时静默跳过，不"
