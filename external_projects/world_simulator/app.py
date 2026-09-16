@@ -7,10 +7,13 @@
 看板风——主题取"夜航日志"：深靛蓝底 + 温暖灯笼金点缀，时间线用竖排
 "章节卡片"呈现，分支选项渲染成可点击的选择卡片而不是下拉框。
 
-页面（阶段二实现 1-3；4/5/6 见方案第 5 节，留待后续阶段）：
+页面（阶段二实现 1-3，阶段三新增 4：对比视图 + 分支管理；5/6 见方案
+第 5 节，留待后续阶段）：
   1. 模拟列表
   2. 创建向导（意图 → 草稿 → 编辑/确认 → 创建）
-  3. 实例详情/推进面板（时间线 + 推进下一步 + 候选分支卡片）
+  3. 实例详情/推进面板（时间线 + 推进下一步 + 候选分支卡片 + 分支管理）
+  4. 对比视图（选两条时间线并排对比，可以是同一实例的不同分支，也可以
+     是两个独立实例）
 
 启动方式：
     cd external_projects/world_simulator
@@ -32,6 +35,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "entrypoints"))
 
 import _common  # noqa: F401  — 触发 sys.path 设置，未使用其它内容
+from world_simulator import branch_manager as bm
 from world_simulator.config import DATA_DIR, ensure_dirs
 from world_simulator.engine import (
     SimAlreadyEndedError,
@@ -431,6 +435,147 @@ def page_detail() -> None:
     st.markdown("#### 时间线")
     _render_timeline(list(reversed(history)))
 
+    # ── 分支管理 ──
+    st.markdown("#### 分支")
+    try:
+        branches = bm.list_branches(DATA_DIR, sim_id)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"读取分支列表失败：{exc}")
+        branches = ["main"]
+
+    st.markdown(
+        '<span class="ws-muted">当前活跃分支：<b>' + manifest.branch + "</b>"
+        "。每条分支都是一条独立时间线，互不覆盖——「回滚重新选」的做法是"
+        "从某个历史节点开一条新分支，原时间线原样保留，可以在下方「对比"
+        "视图」里并排查看。</span>",
+        unsafe_allow_html=True,
+    )
+
+    for b in branches:
+        cols = st.columns([2, 1, 1])
+        with cols[0]:
+            marker = " ← 当前" if b == manifest.branch else ""
+            st.markdown(f'<span class="ws-muted">{b}{marker}</span>', unsafe_allow_html=True)
+        with cols[1]:
+            if b != manifest.branch and st.button("切换到这条", key=f"switch_{b}"):
+                try:
+                    bm.switch_branch(DATA_DIR, sim_id, b)
+                except bm.BranchError as exc:
+                    st.error(str(exc))
+                else:
+                    st.rerun()
+        with cols[2]:
+            if st.button("加入对比", key=f"cmp_add_{b}"):
+                selection = st.session_state.setdefault("compare_selection", [])
+                pair = (sim_id, b)
+                if pair not in selection:
+                    selection.append(pair)
+                st.session_state["view"] = "compare"
+                st.rerun()
+
+    with st.expander("从历史节点开一条新分支（回滚重新选）"):
+        max_step = history[-1].step if history else 0
+        fork_step = st.number_input(
+            "从第几步开始分叉（该步之后的历史不会带入新分支）",
+            min_value=0, max_value=max_step, value=max_step, step=1, key="fork_step",
+        )
+        if st.button("创建分支并切换过去"):
+            try:
+                new_branch = bm.fork_branch(
+                    DATA_DIR, sim_id, from_step=int(fork_step),
+                    source_branch=manifest.branch, switch=True,
+                )
+            except bm.BranchError as exc:
+                st.error(str(exc))
+            else:
+                st.success(f"已创建分支 {new_branch} 并切换为当前分支。")
+                st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────
+# 页面：对比视图
+# ─────────────────────────────────────────────────────────────
+
+
+def page_compare() -> None:
+    st.markdown("## 对比视图", unsafe_allow_html=True)
+    st.markdown(
+        '<span class="ws-muted">并排对比两条时间线——可以是同一实例的不同'
+        "分支（决策推演分析），也可以是两个独立实例。</span>",
+        unsafe_allow_html=True,
+    )
+
+    all_manifests = list_simulations(DATA_DIR)
+    if len(all_manifests) < 1:
+        st.info("还没有可对比的模拟实例，先去创建一个。")
+        return
+
+    sim_options = {m.sim_id: m.title for m in all_manifests}
+    selection: List[Any] = st.session_state.setdefault("compare_selection", [])
+
+    st.markdown("#### 选择两条时间线")
+    col_a, col_b = st.columns(2)
+    picks = []
+    for i, col in enumerate((col_a, col_b)):
+        with col:
+            default_sim = selection[i][0] if i < len(selection) else list(sim_options)[0]
+            sim_choice = st.selectbox(
+                f"实例 {i + 1}", options=list(sim_options), format_func=lambda k: sim_options[k],
+                index=list(sim_options).index(default_sim) if default_sim in sim_options else 0,
+                key=f"cmp_sim_{i}",
+            )
+            try:
+                branch_options = bm.list_branches(DATA_DIR, sim_choice)
+            except Exception:  # noqa: BLE001
+                branch_options = ["main"]
+            default_branch = (
+                selection[i][1] if i < len(selection) and selection[i][0] == sim_choice else "main"
+            )
+            branch_choice = st.selectbox(
+                f"分支 {i + 1}", options=branch_options,
+                index=branch_options.index(default_branch) if default_branch in branch_options else 0,
+                key=f"cmp_branch_{i}",
+            )
+            picks.append((sim_choice, branch_choice))
+
+    if st.button("← 返回列表"):
+        st.session_state["view"] = "list"
+        st.rerun()
+
+    if picks[0] == picks[1]:
+        st.warning("请选择两条不同的时间线（实例+分支组合需不同）。")
+        return
+
+    result = bm.compare_timelines(DATA_DIR, picks)
+    line_a, line_b = result["lines"]
+
+    st.markdown("#### 并排时间线")
+    col_a, col_b = st.columns(2)
+    for col, line in ((col_a, line_a), (col_b, line_b)):
+        with col:
+            st.markdown(
+                f'<div class="ws-card"><div class="ws-card-title">{line["manifest"].title}</div>'
+                f'<div class="ws-muted">{line["sim_id"]} · 分支 {line["branch"]}</div></div>',
+                unsafe_allow_html=True,
+            )
+            _render_timeline(list(reversed(line["history"])))
+
+    st.markdown("#### 关键变量对比（按 step 对齐）")
+    max_len = max(len(line_a["history"]), len(line_b["history"]))
+    rows = []
+    for i in range(max_len):
+        row: Dict[str, Any] = {"step": i}
+        if i < len(line_a["history"]):
+            row[f"A · {line_a['sim_id']}/{line_a['branch']}"] = json.dumps(
+                line_a["history"][i].vars, ensure_ascii=False
+            )
+        if i < len(line_b["history"]):
+            row[f"B · {line_b['sim_id']}/{line_b['branch']}"] = json.dumps(
+                line_b["history"][i].vars, ensure_ascii=False
+            )
+        rows.append(row)
+    st.table(rows)
+
 
 # ─────────────────────────────────────────────────────────────
 # 入口
@@ -453,12 +598,17 @@ def main() -> None:
         if st.button("＋ 新建模拟", use_container_width=True):
             st.session_state["view"] = "create"
             st.rerun()
+        if st.button("⚖ 对比视图", use_container_width=True):
+            st.session_state["view"] = "compare"
+            st.rerun()
 
     view = st.session_state["view"]
     if view == "create":
         page_create()
     elif view == "detail":
         page_detail()
+    elif view == "compare":
+        page_compare()
     else:
         page_list()
 

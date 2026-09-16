@@ -12,7 +12,10 @@
 > **阶段二（独立看板 MVP）已完成**——`app.py`（Streamlit，"夜航日志"
 > 主题）实现了模拟列表/创建向导/实例详情+推进面板三个页面，`engine.py`
 > 新增 `materialize_simulation()` 支撑"生成草稿→编辑→确认创建"链路。
-> 阶段三起（分支/对比、自动挡、调度、多模板扩展、游戏化视图）待实现，
+> **阶段三（分支/对比）已完成**——`branch_manager.py` 实现分叉/切换/
+> 跨实例对比（"回滚重新选"= 开新分支，不覆写原时间线），`app.py`
+> 新增分支管理区块与独立对比视图页面。
+> 阶段四起（自动挡、调度、多模板扩展、存档管理/游戏化视图）待实现，
 > 详情见第 7 节与 `external_projects/world_simulator/PROJECT.md`。
 > **定位**：一个独立的「外部项目」（`external_projects/world_simulator`），
 > 遵循 `next_doc/external_projects_workspace_plan.md` 确立的四条原则
@@ -302,7 +305,7 @@ stock_watch（信息密集的数据看板风）区分开，走更有"游戏感"�
   跑通，不做 UI。
 - **阶段二（独立看板 MVP，已完成）**：`app.py` 实现模拟列表+创建向导+详情推进
   面板，能替代阶段一的 CLI 验证方式。
-- **阶段三（分支/对比）**：`branch_manager` + 对比视图，服务决策推演
+- **阶段三（分支/对比，已完成）**：`branch_manager` + 对比视图，服务决策推演
   场景。
 - **阶段四（自动挡 / 代理执行）**：`manifest.json.pilot_mode` +
   `autopilot` 配置结构、`advance_step` workflow 接入"代为决策"输入、

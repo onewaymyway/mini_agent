@@ -42,6 +42,21 @@ run app.py`启动）：
 对比视图（页面 4）、存档管理（页面 5）、游戏化视图（页面 6）留给阶段
 三及之后实现。
 
+阶段三（分支/对比，已完成）交付：
+
+1. `world_simulator/branch_manager.py`：`list_branches`（枚举实例下已
+   存在的分支）、`fork_branch`（在某个历史节点开一条新分支，原时间线
+   原样保留，不销毁重写；默认切换到新分支，也支持 `switch=False` 仅
+   留档）、`switch_branch`（切换"当前活跃分支"）、`compare_timelines`
+   （取齐若干条时间线的数据，可以跨实例）。
+2. `app.py` 新增：详情页"分支"区块（分支列表、切换、从任意历史节点
+   分叉、加入对比）；独立的"对比视图"页面（选两条时间线并排展示时间线
+   + 按 step 对齐的关键变量表格）。
+
+"回滚重新选"在本项目里被设计成"在历史节点开一条新分支"而不是原地
+覆写——这个取舍从阶段一 `state_history.jsonl` 只追加不删除的落盘方式
+就已经确定，阶段三只是把它暴露成一个正式的分支管理接口。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：
@@ -124,3 +139,12 @@ world_simulator/
   插入用户编辑/确认环节）。`streamlit run app.py --server.headless
   true` 本地冒烟测试通过（HTTP 200，无异常日志）。分支/对比、自动挡、
   调度尚未实现，见上方"已知限制"与主方案文档第 7 节。
+- 2026-09-16：完成阶段三（分支/对比）：新增
+  `world_simulator/branch_manager.py`（`list_branches`/`fork_branch`/
+  `switch_branch`/`compare_timelines`）及对应单测
+  `tests/test_branch_manager.py`（7 个用例）；`app.py` 新增详情页
+  "分支"区块与独立的"对比视图"页面。手工验证：`materialize_simulation`
+  创建实例 → `fork_branch` 分叉 → `compare_timelines` 取数，原分支历史
+  不受影响；`streamlit run app.py` 冒烟测试通过。自动挡、调度、多模板
+  扩展、存档管理/游戏化视图尚未实现，见上方"已知限制"与主方案文档第 7
+  节。
