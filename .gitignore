@@ -213,3 +213,6 @@ output/
 .agent/capability_persona_drafts/
 .agent/affordance_weights.json
 .agent/consolidation_rhythm.json
+.agent/capability_map.jsonl
+.agent/created_dirs_registry.json
+.agent/decision_profile_state.json
