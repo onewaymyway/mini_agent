@@ -215,6 +215,27 @@ def test_create_and_advance_simulation_end_to_end(tmp_path, monkeypatch):
     assert updated_manifest.current_step == 1
 
 
+def test_materialize_simulation_skips_llm_call(tmp_path):
+    """`app.py` 创建向导用的路径：草稿已经在内存里（可能被用户编辑过），
+    直接落盘，不应该再触发任何 workflow/LLM 调用。"""
+    data_dir = tmp_path / "data"
+    manifest = engine_mod.materialize_simulation(
+        data_dir,
+        template="life_sim",
+        intent="用户编辑后的意图",
+        title="编辑后的标题",
+        summary="编辑后的摘要",
+        vars={"age": 30},
+        options=[{"id": "x", "label": "选项X", "description": "d"}],
+    )
+    assert manifest.title == "编辑后的标题"
+
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    state0 = store.load_current_state()
+    assert state0.summary == "编辑后的摘要"
+    assert state0.options[0].id == "x"
+
+
 def test_advance_rejects_unknown_option(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     store = SimStore.for_root(data_dir, "life_sim_x")

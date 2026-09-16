@@ -47,6 +47,51 @@ def _skill_name_for_template(template: str) -> str:
     return f"{template.replace('_', '-')}-template"
 
 
+def materialize_simulation(
+    data_dir: Path,
+    *,
+    template: str,
+    intent: str,
+    title: str,
+    summary: str,
+    vars: Dict[str, Any],
+    options,
+) -> SimManifest:
+    """把一份（已生成、可能已被用户编辑过的）提案草稿落盘为一个新实例的
+    step 0 初始状态，返回 manifest。
+
+    从 `create_simulation()` 拆出来，供 `app.py` 创建向导使用：向导需要
+    先展示 `spec_generator.generate_scenario()` 的草稿、允许用户编辑
+    字段，再落盘——如果落盘逻辑仍然嵌在 `create_simulation()` 内部
+    （一次调用同时"生成+落盘"），向导就无法在两者之间插入编辑步骤。
+    `create_simulation()` 本身改为"生成 + 直接落盘"两步的组合，签名
+    对 CLI/entrypoint 调用方保持不变。
+    """
+    options_list = [
+        o if isinstance(o, ChoiceOption) else ChoiceOption.from_dict(o) for o in (options or [])
+    ]
+    sim_id = _new_sim_id(template)
+    store = SimStore.for_root(data_dir, sim_id)
+    ts = now_iso()
+    manifest = SimManifest(
+        sim_id=sim_id,
+        template=template,
+        intent=intent,
+        title=title,
+        created_at=ts,
+        updated_at=ts,
+        status="active",
+        pilot_mode="manual",
+        autopilot={},
+        current_step=0,
+        branch="main",
+    )
+    state0 = SimState(step=0, summary=summary, narrative="", vars=dict(vars or {}), options=options_list)
+    store.save_manifest(manifest)
+    store.append_state(state0, branch="main")
+    return manifest
+
+
 def create_simulation(
     cfg,
     workspace_root: Path,
@@ -58,38 +103,21 @@ def create_simulation(
     """意图 → 提案草稿 → 落盘为 step 0 的初始状态 → 返回 manifest。
 
     对应方案"一句话意图→生成提案→确认→推进→查看历史"链路里的前两步；
-    阶段一没有独立的 UI 做"确认"这一步，草稿生成即视为确认（阶段二
-    `app.py` 实现创建向导后，会在这一步之前插入用户编辑/确认环节，
-    不需要改这里的函数签名）。
+    这是 CLI/entrypoint 场景使用的"一步到位"版本（草稿生成即视为
+    确认）。独立看板的创建向导需要在"生成"和"落盘"之间插入用户编辑/
+    确认环节，走 `spec_generator.generate_scenario()` +
+    `materialize_simulation()` 两步，见 `app.py`。
     """
     draft = generate_scenario(cfg, workspace_root, template=template, intent=intent)
-
-    sim_id = _new_sim_id(template)
-    store = SimStore.for_root(data_dir, sim_id)
-    ts = now_iso()
-    manifest = SimManifest(
-        sim_id=sim_id,
+    return materialize_simulation(
+        data_dir,
         template=template,
         intent=intent,
         title=draft.title or intent,
-        created_at=ts,
-        updated_at=ts,
-        status="active",
-        pilot_mode="manual",
-        autopilot={},
-        current_step=0,
-        branch="main",
-    )
-    state0 = SimState(
-        step=0,
         summary=draft.summary,
-        narrative="",
         vars=draft.vars,
         options=draft.options,
     )
-    store.save_manifest(manifest)
-    store.append_state(state0, branch="main")
-    return manifest
 
 
 def advance(

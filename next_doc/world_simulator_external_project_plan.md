@@ -9,7 +9,11 @@
 > `list_simulations`/`health`），单元测试见
 > `external_projects/world_simulator/tests/`，详细交付范围/已知限制见
 > `external_projects/world_simulator/PROJECT.md`。
-> 阶段二起（独立看板/分支对比/自动挡/调度/多模板扩展）待实现，见第 7 节。
+> **阶段二（独立看板 MVP）已完成**——`app.py`（Streamlit，"夜航日志"
+> 主题）实现了模拟列表/创建向导/实例详情+推进面板三个页面，`engine.py`
+> 新增 `materialize_simulation()` 支撑"生成草稿→编辑→确认创建"链路。
+> 阶段三起（分支/对比、自动挡、调度、多模板扩展、游戏化视图）待实现，
+> 详情见第 7 节与 `external_projects/world_simulator/PROJECT.md`。
 > **定位**：一个独立的「外部项目」（`external_projects/world_simulator`），
 > 遵循 `next_doc/external_projects_workspace_plan.md` 确立的四条原则
 > （引擎与宿主解耦 / 可独立运行是硬约束 / 声明式注册+被动账本 / daemon
@@ -296,7 +300,7 @@ stock_watch（信息密集的数据看板风）区分开，走更有"游戏感"�
   → 实现 `spec_generator`（先服务"人生模拟"一个模板）
   → CLI/entrypoint 级别验证："一句话意图→生成提案→确认→推进3步→查看历史"
   跑通，不做 UI。
-- **阶段二（独立看板 MVP）**：`app.py` 实现模拟列表+创建向导+详情推进
+- **阶段二（独立看板 MVP，已完成）**：`app.py` 实现模拟列表+创建向导+详情推进
   面板，能替代阶段一的 CLI 验证方式。
 - **阶段三（分支/对比）**：`branch_manager` + 对比视图，服务决策推演
   场景。

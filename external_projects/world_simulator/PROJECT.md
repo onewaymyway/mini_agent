@@ -23,8 +23,24 @@
 
 阶段一只落地"人生模拟"（`life_sim`）一个模板，`--template` 参数已
 预留但暂不接受其它取值；分支/对比（阶段三）、自动挡（阶段四）、
-`batch_advance_daily` 调度（阶段五）、独立看板 `app.py`（阶段二）尚未
-实现，见下方"变更记录"与主文档第 7 节的阶段划分。
+`batch_advance_daily` 调度（阶段五）尚未实现，见下方"变更记录"与主
+文档第 7 节的阶段划分。
+
+阶段二（独立看板 MVP，已完成）交付 `app.py`（Streamlit，`streamlit
+run app.py`启动）：
+
+1. **模拟列表**：实例卡片（标题/状态/当前步数/推进模式），支持打开
+   详情、新建入口。
+2. **创建向导**：意图 → 调用 `spec_generator.generate_scenario()` →
+   展示可编辑草稿（标题/摘要/变量 JSON/初始候选方向）→
+   `engine.materialize_simulation()` 落盘。
+3. **实例详情/推进面板**：当前状态 + 变量、时间线（"章节卡片"倒序
+   展示）、候选分支渲染成可点击选择卡片、暂停/恢复/标记结束。
+
+视觉主题"夜航日志"（深靛蓝底 + 灯笼金点缀），与 stock_watch 的数据
+看板风区分开，见方案第 5 节 + `frontend-design` skill 的设计取向指南。
+对比视图（页面 4）、存档管理（页面 5）、游戏化视图（页面 6）留给阶段
+三及之后实现。
 
 ## 数据源与依赖策略
 
@@ -101,6 +117,10 @@ world_simulator/
   模板）、四个 entrypoint（`create_simulation`/`advance_simulation`/
   `list_simulations`/`health`）、单元测试（`tests/test_state_and_
   store.py`、`tests/test_spec_and_engine.py`）。"意图→提案→确认→推进→
-  查看历史"主链路在 CLI 层面可跑通（确认环节暂由草稿生成结果直接代替，
-  阶段二看板落地后再插入真正的用户确认步骤）。UI、分支/对比、自动挡、
+  查看历史"主链路在 CLI 层面可跑通。
+- 2026-09-16：完成阶段二（独立看板 MVP）：新增 `app.py`（Streamlit，
+  "夜航日志"主题）+ `world_simulator/engine.py::materialize_simulation()`
+  （从 `create_simulation()` 拆出"落盘"这一步，供创建向导在生成草稿后
+  插入用户编辑/确认环节）。`streamlit run app.py --server.headless
+  true` 本地冒烟测试通过（HTTP 200，无异常日志）。分支/对比、自动挡、
   调度尚未实现，见上方"已知限制"与主方案文档第 7 节。
