@@ -4,6 +4,11 @@
 > 项目标准结构：完全自包含、可独立于 mini_agent daemon 运行。可以整体
 > 移动到任意路径、放进独立 git 仓库，只要在 daemon 侧重新
 > `mini-agent projects register <新路径>` 一下即可继续被"大管家"看见。
+>
+> **面向使用者的说明文档在 [`docs/`](./docs/README.md)**：项目是什么/
+> 怎么用见 `docs/overview.md`，如何测试/验证功能正常见
+> `docs/testing_guide.md`。本文件（`PROJECT.md`）偏工程/设计视角，
+> 记录目标、已知限制和分阶段交付历史，两者不重复。
 
 ## 目标
 
@@ -224,6 +229,7 @@ skill 内容"这两处，没有渗透进核心引擎。
 world_simulator/
 ├── project.yaml            # daemon 与本项目之间的契约
 ├── PROJECT.md               # 本文件
+├── docs/                      # 面向使用者的说明文档（见文件头链接）
 ├── requirements.txt          # 独立依赖环境
 ├── entrypoints/              # headless 单次执行入口
 ├── world_simulator/         # 业务代码（含 achievements.py：游戏化
@@ -313,3 +319,9 @@ world_simulator/
   全部通过。至此方案第 5 节规划的全部 6 个页面（模拟列表/创建向导/
   实例详情/对比视图/存档管理/游戏化视图）均已落地，方案第 7 节分阶段
   实施计划全部完成。
+- 2026-09-16：新增 `docs/` 目录（`README.md`/`overview.md`/
+  `testing_guide.md`），补齐面向使用者的说明文档：项目是什么、核心
+  概念、目录结构、两种启动方式（`docs/overview.md`），以及如何测试/
+  验证功能正常——自动化单元测试怎么跑、端到端手动验证按"输入什么→
+  预期结果→怎么算通过"逐条列出（`docs/testing_guide.md`）。不改动
+  任何业务代码。
