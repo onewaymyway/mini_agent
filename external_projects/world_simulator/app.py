@@ -400,6 +400,52 @@ def page_create() -> None:
                     st.session_state["draft"] = draft
                     st.rerun()
 
+    more_cols = st.columns([3, 5, 4])
+    with more_cols[0]:
+        more_count = st.number_input(
+            "新增数量", min_value=1, max_value=5, value=2, step=1,
+            key="more_opt_count", label_visibility="collapsed",
+        )
+    with more_cols[1]:
+        generate_more_clicked = st.button("🤖 让引擎再想几个方向", key="generate_more_options")
+    with more_cols[2]:
+        st.markdown(
+            '<span class="ws-muted">保留现有方向不变，只在后面补充新的候选方向。</span>',
+            unsafe_allow_html=True,
+        )
+
+    if generate_more_clicked:
+        with st.spinner("正在生成更多候选方向..."):
+            try:
+                cfg = _load_cfg()
+                existing_ids = {o.id for o in draft.options}
+                revised = generate_scenario(
+                    cfg, PROJECT_ROOT,
+                    template=st.session_state.get("draft_template", template),
+                    intent=st.session_state.get("create_intent", intent),
+                    feedback=(
+                        f"不要删除、修改或替换任何一个已有的候选方向，保持它们的 id/文案"
+                        f"原样不变；只在已有方向的基础上，额外再新增 {int(more_count)} 个方向"
+                        f"明显不同、彼此也不重复的新候选方向，追加到 options 数组末尾。"
+                    ),
+                    previous_draft=draft,
+                )
+            except ScenarioGenerationError as exc:
+                st.error(f"生成更多候选方向失败：{exc}")
+            except ImportError as exc:
+                st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+            else:
+                # 即使 skill 没完全遵守"不要改已有项"的要求，这里也只取真正
+                # 新增的部分（id 不在原有列表里的），已有方向和用户在上面做的
+                # 编辑/删除/手动新增一律保留，不被这次调用覆盖掉。
+                new_ones = [o for o in revised.options if o.id not in existing_ids]
+                if not new_ones:
+                    st.warning("引擎这次没有给出新的候选方向，换一种说法或稍后再试试。")
+                else:
+                    draft.options = draft.options + new_ones
+                    st.session_state["draft"] = draft
+                    st.rerun()
+
     # ── 根据意见重新生成草稿 ──
     with st.expander("对草稿不满意？输入意见让它重新生成"):
         feedback = st.text_area(
