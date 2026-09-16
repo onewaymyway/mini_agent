@@ -11,4 +11,4 @@ reports/*
 !reports/.gitkeep
 external_projects/
 .agent/workflow_sessions
-.agent/events.jsonl
+.agent/
