@@ -12,11 +12,14 @@
 > **阶段二（独立看板 MVP）已完成**——`app.py`（Streamlit，"夜航日志"
 > 主题）实现了模拟列表/创建向导/实例详情+推进面板三个页面，`engine.py`
 > 新增 `materialize_simulation()` 支撑"生成草稿→编辑→确认创建"链路。
-> **阶段三（分支/对比）已完成**——`branch_manager.py` 实现分叉/切换/
-> 跨实例对比（"回滚重新选"= 开新分支，不覆写原时间线），`app.py`
-> 新增分支管理区块与独立对比视图页面。
-> 阶段四起（自动挡、调度、多模板扩展、存档管理/游戏化视图）待实现，
-> 详情见第 7 节与 `external_projects/world_simulator/PROJECT.md`。
+> **阶段四（自动挡/代理执行）已完成**——`autopilot.py` 实现"决策者
+> 画像"拼装 + 单步/批量代理推进，`engine.advance()` 支持自动挡代选并
+> 校验 LLM 回填的选项 id，`review_mode: pause_on_major_decision` 会在
+> 重大决策后自动暂停；`batch_advance_daily` 入口与 cron 声明已接入
+> `project.yaml`，`app.py` 新增自动挡配置区块。
+> 阶段五起（调度真正接线取决于宿主 daemon、多模板扩展、存档管理/
+> 游戏化视图）待实现，详情见第 7 节与
+> `external_projects/world_simulator/PROJECT.md`。
 > **定位**：一个独立的「外部项目」（`external_projects/world_simulator`），
 > 遵循 `next_doc/external_projects_workspace_plan.md` 确立的四条原则
 > （引擎与宿主解耦 / 可独立运行是硬约束 / 声明式注册+被动账本 / daemon
@@ -307,7 +310,7 @@ stock_watch（信息密集的数据看板风）区分开，走更有"游戏感"�
   面板，能替代阶段一的 CLI 验证方式。
 - **阶段三（分支/对比，已完成）**：`branch_manager` + 对比视图，服务决策推演
   场景。
-- **阶段四（自动挡 / 代理执行）**：`manifest.json.pilot_mode` +
+- **阶段四（自动挡 / 代理执行，已完成）**：`manifest.json.pilot_mode` +
   `autopilot` 配置结构、`advance_step` workflow 接入"代为决策"输入、
   `review_mode` 的暂停逻辑、看板上的代理配置表单+代选记录展示。
 - **阶段五（batch_advance 调度 + 注册可见性）**：补 `project.yaml`

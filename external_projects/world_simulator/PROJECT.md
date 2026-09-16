@@ -57,6 +57,33 @@ run app.py`启动）：
 覆写——这个取舍从阶段一 `state_history.jsonl` 只追加不删除的落盘方式
 就已经确定，阶段三只是把它暴露成一个正式的分支管理接口。
 
+阶段四（自动挡/代理执行，已完成）交付：
+
+1. `world_simulator/autopilot.py`：`_build_decision_context()` 把
+   `manifest.autopilot`（`principles`/`risk_preference`）渲染成自然
+   语言"决策者画像"；`run_autopilot_step()` 让单个实例的代理推进一步
+   （`review_mode=pause_on_major_decision` 且这一步被判定为重大决策时
+   自动把实例状态设为 `paused`）；`run_batch_autopilot()` 批量推进所有
+   "开启自动挡且进行中"的实例，单实例失败不中断整批。
+2. `engine.py::advance()` 扩展：新增 `current_options_json` 输入（把
+   当前候选分支喂给 skill），自动挡场景下从 `advance_step` 结果里读回
+   `chosen_option_id`/`chosen_reason` 并校验其确实在候选列表里（拒绝
+   LLM 编造的 id）；`SimState` 新增 `major_decision` 字段。新增
+   `set_pilot_config()` 供看板更新 `pilot_mode`/`autopilot`。
+3. `advance_step.yaml` + `life-sim-template` SKILL.md 补充"自动挡代选"
+   规则（decision_context 非空且未显式指定选择时，skill 需要从候选里
+   自己选一个并给理由）。
+4. `entrypoints/advance_simulation.py --all-autopilot --steps N` 落地
+   （原来是"阶段四实现前先报错"的占位），`project.yaml` 补上
+   `batch_advance_daily`（`cron: 0 6 * * *`）。
+5. `app.py` 详情页新增"推进模式"区块：查看/配置自动挡（原则、风险
+   偏好、review_mode）、手动触发一次代理推进（用于测试）；时间线里
+   自动挡选择的步骤会带上"理由"展示。
+
+代理决策不是新的推理组件，复用的仍是 `advance_step` 这一次 LLM 调用，
+只是多喂了一段角色设定——这个取舍在方案第 4.1 节就已经定好，阶段四
+只是把它接了起来。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：
@@ -92,6 +119,19 @@ run app.py`启动）：
 - **`--template` 目前只有 `life_sim` 一个合法取值**：传其它值会在
   `generate_scenario`/`advance_step` workflow 触发时因找不到对应
   skill（`<template>-template`）而报错，属于预期行为，不是 bug。
+- **`review_mode: notify_each_step` 目前只是配置项，没有接实际的通知
+  渠道**：`autopilot.py` 只实现了 `silent`（不额外处理）和
+  `pause_on_major_decision`（暂停）两种取值的真实行为；选
+  `notify_each_step` 目前效果等同于 `silent`，后续需要时再接入具体的
+  通知方式（比如看板内的提醒列表/`daemon` 的通知渠道）。
+- **`batch_advance_daily` 的 cron 调度是否真正被执行取决于宿主 daemon
+  环境**：`project.yaml` 里声明了 `schedule: "cron: 0 6 * * *"`，但
+  这只是声明，本项目自身不负责起定时任务；本地/独立跑 `app.py`/CLI
+  时不会自动触发，需要手动跑 `python entrypoints/advance_simulation.py
+  --all-autopilot --steps 1` 或依赖 mini_agent daemon 的调度接线。
+- **`autopilot.principles` 不做内容校验**：原样拼进 prompt，恶意或
+  荒谬的原则设定不会被拦截，只会体现在推演结果的荒谬程度上——阶段四
+  范围内认为这是用户自己配置自己实例的合理边界，不引入额外审核。
 
 ## 目录结构
 
@@ -148,3 +188,15 @@ world_simulator/
   不受影响；`streamlit run app.py` 冒烟测试通过。自动挡、调度、多模板
   扩展、存档管理/游戏化视图尚未实现，见上方"已知限制"与主方案文档第 7
   节。
+- 2026-09-16：完成阶段四（自动挡/代理执行）：新增
+  `world_simulator/autopilot.py`（`run_autopilot_step`/
+  `run_batch_autopilot`/`_build_decision_context`）；`engine.py`
+  扩展 `advance()` 支持自动挡代选（读回并校验 `chosen_option_id`/
+  `chosen_reason`）、新增 `set_pilot_config()`；`SimState` 新增
+  `major_decision` 字段；`advance_step.yaml`/`life-sim-template`
+  SKILL.md 补充自动挡选择规则；`advance_simulation.py --all-autopilot`
+  落地，`project.yaml` 补上 `batch_advance_daily`；`app.py` 新增
+  "推进模式"配置区块。新增单测 `tests/test_autopilot.py`（6 个用例，
+  覆盖代选记录、拒绝编造 id、未开启报错、重大决策暂停、批量跳过手动挡
+  实例、单实例失败不中断整批），累计 22 个测试全部通过。多模板扩展、
+  存档管理/游戏化视图尚未实现，见上方"已知限制"与主方案文档第 7 节。

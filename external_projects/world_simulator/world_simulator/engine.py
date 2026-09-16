@@ -137,9 +137,14 @@ def advance(
             `options` 里的一个）；为 None 时表示"不指定，让引擎给出
             默认走向"（对应当前状态 `options` 为空数组的情况，也允许
             非空时仍不指定——由 skill 判断怎么给默认值）。
-        decision_context: 阶段四自动挡使用，非空表示这是一次代理代选，
-            会作为额外约束拼进 prompt；阶段一固定传空字符串。
-        chosen_by: 记入当前状态 `chosen_by` 字段，"user" 或 "autopilot"。
+        decision_context: 阶段四自动挡使用，非空表示这是一次代理代选：
+            `choice_option_id` 应该为 None，engine 会把当前候选列表喂给
+            skill，由 skill 自己选一个并在结果里回填 `chosen_option_id`/
+            `chosen_reason`（engine 校验后落盘，不直接信任 LLM）。
+        chosen_by: 当 `choice_option_id` 非 None（手动挡）时，记入当前
+            状态 `chosen_by` 字段的值，通常是 `"user"`；自动挡代选场景
+            这个值会被引擎内部推导出的 `"autopilot"` 覆盖，调用方不需要
+            自己判断。
     """
     store = SimStore.for_root(data_dir, sim_id)
     manifest = store.load_manifest()
@@ -188,6 +193,9 @@ def advance(
         "chosen_option_json": json.dumps(
             chosen_option.to_dict() if chosen_option else {}, ensure_ascii=False
         ),
+        "current_options_json": json.dumps(
+            [o.to_dict() for o in current.options], ensure_ascii=False
+        ),
         "decision_context": decision_context,
     }
 
@@ -211,13 +219,38 @@ def advance(
 
     data: Dict[str, Any] = json.loads(Path(step_result.result_file).read_text(encoding="utf-8"))
 
+    # 确定这一步"实际生效的选择"：
+    #   1) 调用方显式传了 choice_option_id（手动挡，`chosen_option` 已在
+    #      上面校验过） → 直接用它。
+    #   2) 调用方没传，但 decision_context 非空（自动挡代选） → skill
+    #      应该在 result 里回填 chosen_option_id/chosen_reason（见
+    #      advance_step.yaml / life-sim-template SKILL.md 的"选择逻辑"），
+    #      这里读回来并校验它确实是候选列表里的合法 id——LLM 偶尔会编造
+    #      不存在的 id，不能直接信任，否则会把脏数据写进历史。
+    #   3) 都没有 → 这一步没有"选择"这回事（比如当前状态本来就没有候选
+    #      分支），不记录。
+    effective_chosen_by = chosen_by
+    effective_chosen_reason: Optional[str] = None
+    if chosen_option is None and decision_context:
+        auto_choice_id = data.get("chosen_option_id")
+        if auto_choice_id:
+            chosen_option = next((o for o in current.options if o.id == auto_choice_id), None)
+            if chosen_option is None:
+                raise SimEngineError(
+                    f"自动挡代选返回的 chosen_option_id={auto_choice_id!r} 不在候选列表中"
+                    f"（当前候选：{[o.id for o in current.options]}），已中止本次推进"
+                )
+            effective_chosen_by = "autopilot"
+            effective_chosen_reason = data.get("chosen_reason") or None
+
     # 把这一步的选择记回*当前*状态节点（见 state_model.SimState docstring），
     # 再落盘一份修正后的当前节点——历史里对应 step 的条目需要同步更新，
     # 因此这里重写整份历史里最后一条（append_state 每次整体重写 jsonl，
     # 直接在内存里改最后一条再整体落盘即可，不需要额外的"更新历史"方法）。
     if chosen_option is not None:
         current.chosen_option_id = chosen_option.id
-        current.chosen_by = chosen_by
+        current.chosen_by = effective_chosen_by
+        current.chosen_reason = effective_chosen_reason
         history = store.load_history(branch)
         if history and history[-1].step == current.step:
             history[-1] = current
@@ -236,6 +269,7 @@ def advance(
         narrative=str(data.get("narrative", "")),
         vars=dict(data.get("next_vars") or {}),
         options=[ChoiceOption.from_dict(o) for o in (data.get("options") or [])],
+        major_decision=bool(data.get("major_decision", False)),
     )
     store.append_state(next_state, branch=branch)
 
@@ -252,6 +286,27 @@ def set_status(data_dir: Path, sim_id: str, status: str) -> SimManifest:
     store = SimStore.for_root(data_dir, sim_id)
     manifest = store.load_manifest()
     manifest.status = status
+    store.save_manifest(manifest)
+    return manifest
+
+
+def set_pilot_config(
+    data_dir: Path, sim_id: str, *, pilot_mode: str, autopilot: Optional[Dict[str, Any]] = None
+) -> SimManifest:
+    """更新实例的推进模式（手动挡/自动挡）与自动挡配置。
+
+    对应方案 4.1 节的 `manifest.json.pilot_mode`/`autopilot` 字段，供
+    `app.py` 的自动挡配置表单调用；不校验 `autopilot` 字段内部结构
+    （`principles`/`risk_preference`/`review_mode`），非法值会在真正
+    调用 `advance_step` workflow 时体现为"skill 读不懂这段画像"而不是
+    这里报错——阶段四范围内暂不引入额外的 schema 校验。
+    """
+    if pilot_mode not in ("manual", "autopilot"):
+        raise SimEngineError(f"非法推进模式：{pilot_mode}")
+    store = SimStore.for_root(data_dir, sim_id)
+    manifest = store.load_manifest()
+    manifest.pilot_mode = pilot_mode
+    manifest.autopilot = dict(autopilot or {})
     store.save_manifest(manifest)
     return manifest
 

@@ -5,10 +5,10 @@
     python entrypoints/advance_simulation.py <sim_id> [--choice <option_id>]
     python entrypoints/advance_simulation.py --all-autopilot --steps 1   # 供 batch_advance_daily 调度（阶段四实现前为占位，见下）
 
-阶段一只实现"指定单个 sim_id 手动推进"这一条路径；`--all-autopilot`
-对应方案 `project.yaml` 里预留的 `batch_advance_daily` 调度入口
-（第 4 节），阶段四（自动挡）落地代理决策逻辑前，这里先给出明确的
-"尚未实现"提示，不是静默什么都不做。
+阶段一实现"指定单个 sim_id 手动推进"；`--all-autopilot` 对应方案
+`project.yaml` 里的 `batch_advance_daily` 调度入口（第 4 节），阶段四
+（自动挡）已实现，只推进"开启了自动挡且处于进行中"的实例——手动挡
+实例不受影响，见 `world_simulator/autopilot.py`。
 """
 
 from __future__ import annotations
@@ -35,13 +35,38 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.all_autopilot:
-        logger.error(
-            "--all-autopilot 对应的自动挡批量推进是阶段四（自动挡/代理执行）"
-            "的范围，阶段一尚未实现，见 next_doc/world_simulator_external_"
-            "project_plan.md 第 7 节"
+        try:
+            from mini_agent.config import load_config
+        except ImportError as exc:
+            logger.error("未检测到 mini_agent 框架，无法调用推演引擎：%s", exc)
+            _common.set_run_detail(f"mini_agent 未安装: {exc}")
+            return 1
+
+        from world_simulator.autopilot import run_batch_autopilot
+
+        ensure_dirs()
+        cfg = load_config(project_root=PROJECT_ROOT)
+        results = run_batch_autopilot(cfg, PROJECT_ROOT, DATA_DIR, steps=args.steps)
+
+        if not results:
+            logger.info("没有已开启自动挡且处于进行中的实例，本次跳过。")
+            print("（没有需要推进的自动挡实例）")
+            return 0
+
+        n_ok = sum(1 for r in results if r.ok)
+        n_failed = sum(1 for r in results if not r.ok)
+        n_paused = sum(1 for r in results if r.paused_for_review)
+        for r in results:
+            if r.ok:
+                note = "（触发暂停等待确认）" if r.paused_for_review else ""
+                print(f"{r.sim_id}: ok, next_step={r.next_step}{note}")
+            else:
+                print(f"{r.sim_id}: FAILED, {r.error}")
+        logger.info(
+            "自动挡批量推进完成：成功 %s，失败 %s，触发暂停 %s", n_ok, n_failed, n_paused
         )
-        _common.set_run_detail("--all-autopilot 尚未实现（阶段四范围）")
-        return 2
+        _common.set_run_detail(f"成功 {n_ok}，失败 {n_failed}，触发暂停 {n_paused}")
+        return 1 if n_failed and not n_ok else 0
 
     if not args.sim_id:
         logger.error("用法: python entrypoints/advance_simulation.py <sim_id> [--choice <option_id>]")

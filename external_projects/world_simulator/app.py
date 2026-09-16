@@ -36,6 +36,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "entrypoints"))
 
 import _common  # noqa: F401  — 触发 sys.path 设置，未使用其它内容
 from world_simulator import branch_manager as bm
+from world_simulator.autopilot import AutopilotDisabledError, run_autopilot_step
 from world_simulator.config import DATA_DIR, ensure_dirs
 from world_simulator.engine import (
     SimAlreadyEndedError,
@@ -45,6 +46,7 @@ from world_simulator.engine import (
     get_simulation,
     list_simulations,
     materialize_simulation,
+    set_pilot_config,
     set_status,
 )
 from world_simulator.spec_generator import ScenarioDraft, ScenarioGenerationError, generate_scenario
@@ -326,6 +328,8 @@ def _render_timeline(history: List) -> None:
         if state.chosen_option_id:
             who = "代理" if state.chosen_by == "autopilot" else "你"
             chosen_note = f'<div class="ws-chapter-choice">→ {who} 选择了「{state.chosen_option_id}」</div>'
+        if state.chosen_by == "autopilot" and state.chosen_reason:
+            chosen_note += f'<div class="ws-chapter-choice">　理由：{state.chosen_reason}</div>'
         narrative = f'<div class="ws-chapter-narrative">{state.narrative}</div>' if state.narrative else ""
         st.markdown(
             f"""<div class="ws-chapter">
@@ -393,6 +397,65 @@ def page_detail() -> None:
         if manifest.status != "ended" and st.button("标记为已结束", use_container_width=True):
             set_status(DATA_DIR, sim_id, "ended")
             st.rerun()
+
+    # ── 自动挡配置 ──
+    st.markdown("#### 推进模式")
+    is_autopilot = manifest.pilot_mode == "autopilot"
+    mode_label = "自动挡（代理代选）" if is_autopilot else "手动挡（你来选）"
+    st.markdown(f'<span class="ws-muted">当前：{mode_label}</span>', unsafe_allow_html=True)
+
+    with st.expander("配置自动挡", expanded=False):
+        ap_cfg = manifest.autopilot or {}
+        enabled = st.checkbox("开启自动挡", value=is_autopilot and bool(ap_cfg.get("enabled")))
+        principles_text = st.text_area(
+            "原则/偏好（每行一条）",
+            value="\n".join(ap_cfg.get("principles") or []),
+            height=90,
+            help="会原样拼进推进 prompt，作为代理做选择时的约束条件",
+        )
+        risk_preference = st.selectbox(
+            "风险偏好", options=["conservative", "balanced", "aggressive"],
+            index=["conservative", "balanced", "aggressive"].index(
+                ap_cfg.get("risk_preference", "balanced")
+            ),
+            format_func=lambda v: {"conservative": "保守", "balanced": "均衡", "aggressive": "进取"}[v],
+        )
+        review_mode = st.selectbox(
+            "review_mode", options=["silent", "notify_each_step", "pause_on_major_decision"],
+            index=["silent", "notify_each_step", "pause_on_major_decision"].index(
+                ap_cfg.get("review_mode", "silent")
+            ),
+            format_func=lambda v: {
+                "silent": "静默托管",
+                "notify_each_step": "每步通知",
+                "pause_on_major_decision": "重大决策时暂停",
+            }[v],
+        )
+        if st.button("保存自动挡配置"):
+            set_pilot_config(
+                DATA_DIR, sim_id,
+                pilot_mode="autopilot" if enabled else "manual",
+                autopilot={
+                    "enabled": enabled,
+                    "principles": [p.strip() for p in principles_text.splitlines() if p.strip()],
+                    "risk_preference": risk_preference,
+                    "review_mode": review_mode,
+                },
+            )
+            st.rerun()
+
+    if is_autopilot and manifest.status == "active":
+        if st.button("▶ 手动触发自动挡推进一步（用于测试代理决策）"):
+            with st.spinner("代理正在决策并推进..."):
+                try:
+                    cfg = _load_cfg()
+                    run_autopilot_step(cfg, PROJECT_ROOT, DATA_DIR, sim_id)
+                except (SimEngineError, AutopilotDisabledError) as exc:
+                    st.error(f"自动挡推进失败：{exc}")
+                except ImportError as exc:
+                    st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+                else:
+                    st.rerun()
 
     # ── 推进面板 ──
     st.markdown("#### 推进下一步")

@@ -215,6 +215,28 @@ def test_create_and_advance_simulation_end_to_end(tmp_path, monkeypatch):
     assert updated_manifest.current_step == 1
 
 
+def test_set_pilot_config_updates_manifest(tmp_path):
+    data_dir = tmp_path / "data"
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s", vars={}, options=[],
+    )
+    assert manifest.pilot_mode == "manual"
+
+    updated = engine_mod.set_pilot_config(
+        data_dir, manifest.sim_id,
+        pilot_mode="autopilot",
+        autopilot={"enabled": True, "principles": ["稳"], "risk_preference": "conservative",
+                   "review_mode": "silent"},
+    )
+    assert updated.pilot_mode == "autopilot"
+    assert updated.autopilot["enabled"] is True
+
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    reloaded = store.load_manifest()
+    assert reloaded.pilot_mode == "autopilot"
+    assert reloaded.autopilot["risk_preference"] == "conservative"
+
+
 def test_materialize_simulation_skips_llm_call(tmp_path):
     """`app.py` 创建向导用的路径：草稿已经在内存里（可能被用户编辑过），
     直接落盘，不应该再触发任何 workflow/LLM 调用。"""

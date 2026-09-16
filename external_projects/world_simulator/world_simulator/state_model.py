@@ -53,6 +53,11 @@ class SimState:
       选择理由（自动挡代选时由 LLM 给出）。记在被选择所在的那个状态节点
       上（而不是下一个状态上），这样"某一步为什么会走到下一状态"的
       依据始终和该步的候选项摆在一起，便于时间线回放。
+    - `major_decision`：这一步推进产生*本状态*是否被 skill 判定为
+      "人生重大转折点"（阶段四自动挡的 `review_mode:
+      pause_on_major_decision` 用它决定要不要暂停自动推进，见
+      `engine.py`/`autopilot.py`）；阶段一手动挡场景恒为 False，不影响
+      任何行为。
     """
 
     step: int
@@ -63,6 +68,7 @@ class SimState:
     chosen_option_id: Optional[str] = None
     chosen_by: Optional[str] = None
     chosen_reason: Optional[str] = None
+    major_decision: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -85,6 +91,7 @@ class SimState:
             chosen_option_id=data.get("chosen_option_id"),
             chosen_by=data.get("chosen_by"),
             chosen_reason=data.get("chosen_reason"),
+            major_decision=bool(data.get("major_decision", False)),
         )
 
 
