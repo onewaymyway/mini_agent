@@ -6408,7 +6408,7 @@ def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
             f"🌳 **{len(tree_expandable)} 个目标树节点结构性地\"没有下文\"了**：这些节点"
             "自己是 active/paused，或者它的子节点刚全部 completed，但它自己没有任何"
             "还在进行中的子节点——正常情况下会由每 24 小时跑一次的"
-            "`sys:goal_tree_decompose_scan` 巡检自动分解，但巡检默认要求停滞满 14 天"
+            "`sys:goal_tree_decompose_scan` 巡检自动分解，但巡检默认要求停滞满 2 天"
             "才触发，等不及的话可以在下面直接手动立即生成一次扩展建议。"
         )
     if tree_pending:
@@ -6496,7 +6496,7 @@ def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
                             st.rerun()
 
         if tree_expandable:
-            st.caption("👇 目标树里这些节点没有下文了，点击立即生成扩展建议（跳过 14 天停滞等待，直接调用 LLM）：")
+            st.caption("👇 目标树里这些节点没有下文了，点击立即生成扩展建议（跳过 2 天停滞等待，直接调用 LLM）：")
             for n in tree_expandable:
                 nid = n.get("id")
                 title = n.get("title", nid)
