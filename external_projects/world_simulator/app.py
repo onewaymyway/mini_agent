@@ -30,6 +30,7 @@ import html as html_stdlib
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -665,6 +666,11 @@ def page_detail() -> None:
                     else:
                         st.session_state["autopilot_run"] = auto_run
                         schedule_next_autostep = True
+                        st.info(
+                            f"✅ 已完成第 {auto_run['done']}/{auto_run['target']} 步"
+                            "（下面的当前状态、时间线已经是最新的），"
+                            "页面会在片刻后自动继续下一步……"
+                        )
 
     top_l, top_r = st.columns([4, 1])
     with top_l:
@@ -892,10 +898,16 @@ def page_detail() -> None:
                 st.rerun()
 
     # 连续自动推进：这一步跑完、页面正常渲染完（当前状态卡片、时间线都
-    # 已经是刚推进完的最新数据）之后，再触发下一次 rerun 去跑下一步——
-    # 放在函数最后而不是跑完当步立刻 rerun，是为了让这一步的结果先被
-    # 用户看到，而不是跳过渲染直接静默跳到下一步。
+    # 已经是刚推进完的最新数据）之后，再触发下一次 rerun 去跑下一步。
+    #
+    # 这里特意先 `time.sleep()` 停顿一下再 `st.rerun()`，不是可有可无的
+    # 装饰——如果渲染完立刻 rerun，两次 rerun 之间"完整渲染、没有被遮罩
+    # 变灰"的这一帧存在时间极短（远小于一次网络往返/浏览器重绘的时间），
+    # 用户实际观感就是"一直卡在旋转指示器上，正文一直是灰的"，看不到
+    # 任何数据更新——这正是之前反馈的问题。停顿几秒钟，让浏览器有机会
+    # 真正把这一步的最新结果绘出来、用户看得到，再进入下一步。
     if schedule_next_autostep:
+        time.sleep(2.5)
         st.rerun()
 
 
