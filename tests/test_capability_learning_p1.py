@@ -825,3 +825,144 @@ def test_capability_cmd_selects_agent_wiki_writer_by_mode(monkeypatch):
         cl.make_agent_wiki_writer(cfg, None)
 
     assert called["mode"] == "agent"
+
+
+# ── next_doc/persona_research_first_and_role_fit_improvement_plan.md ──────
+
+
+def test_classify_persona_kind_no_llm_defaults_none():
+    from mini_agent.evolution.capability_learning import classify_persona_kind
+
+    assert classify_persona_kind("某个角色", None) is None
+
+
+def test_classify_persona_kind_parses_operational():
+    from mini_agent.evolution.capability_learning import classify_persona_kind
+
+    assert classify_persona_kind("自动化任务可靠性工程师", lambda p: "operational") == "operational"
+
+
+def test_classify_persona_kind_parses_roleplay():
+    from mini_agent.evolution.capability_learning import classify_persona_kind
+
+    assert classify_persona_kind("傲娇猫娘", lambda p: "roleplay") == "roleplay"
+
+
+def test_classify_persona_kind_unrecognized_output_returns_none():
+    from mini_agent.evolution.capability_learning import classify_persona_kind
+
+    assert classify_persona_kind("某个角色", lambda p: "不确定") is None
+
+
+def test_classify_persona_kind_exception_returns_none():
+    from mini_agent.evolution.capability_learning import classify_persona_kind
+
+    def boom(_p):
+        raise RuntimeError("boom")
+
+    assert classify_persona_kind("某个角色", boom) is None
+
+
+def test_draft_outline_with_llm_operational_uses_role_dimensions():
+    from mini_agent.evolution.capability_learning import draft_outline_with_llm
+
+    def fake_llm(_prompt):
+        return "职责边界\n决策原则\n升级触发条件\n沟通规范"
+
+    names = draft_outline_with_llm(
+        "自动化任务可靠性工程师", "负责 cron 任务失败处理",
+        fake_llm, target_type="persona", persona_kind="operational",
+    )
+    assert names == ["职责边界", "决策原则", "升级触发条件", "沟通规范"]
+
+
+def test_draft_outline_with_llm_persona_none_kind_matches_prior_behavior():
+    from mini_agent.evolution.capability_learning import draft_outline_with_llm
+
+    seen_prompt = {}
+
+    def fake_llm(prompt):
+        seen_prompt["value"] = prompt
+        return "性格特征\n说话习惯\n背景经历"
+
+    names = draft_outline_with_llm(
+        "傲娇猫娘", "一只傲娇猫娘", fake_llm, target_type="persona",
+    )
+    assert names == ["性格特征", "说话习惯", "背景经历"]
+    assert "口头禅" in seen_prompt["value"]
+
+
+def test_draft_persona_topic_answer_no_llm_returns_none():
+    from mini_agent.evolution.capability_learning import draft_persona_topic_answer
+
+    assert draft_persona_topic_answer("职责边界", "desc", None, None) is None
+
+
+def test_draft_persona_topic_answer_question_like_output_rejected():
+    from mini_agent.evolution.capability_learning import draft_persona_topic_answer
+
+    assert draft_persona_topic_answer(
+        "职责边界", "desc", None, lambda p: "你觉得应该怎么处理？",
+    ) is None
+
+
+def test_draft_persona_topic_answer_too_long_rejected():
+    from mini_agent.evolution.capability_learning import (
+        DRAFT_PERSONA_TOPIC_ANSWER_MAX_LEN, draft_persona_topic_answer,
+    )
+
+    too_long = "很" * (DRAFT_PERSONA_TOPIC_ANSWER_MAX_LEN + 1)
+    assert draft_persona_topic_answer("职责边界", "desc", None, lambda p: too_long) is None
+
+
+def test_draft_persona_topic_answer_operational_success():
+    from mini_agent.evolution.capability_learning import draft_persona_topic_answer
+
+    answer = draft_persona_topic_answer(
+        "升级触发条件", "自动化任务可靠性工程师", None,
+        lambda p: "连续 3 次重试失败后立即上报值班工程师，同步已知的错误摘要和影响范围。",
+        persona_kind="operational",
+    )
+    assert answer is not None
+    assert "值班工程师" in answer
+
+
+def test_cycle_persona_operational_research_first_no_question(paths):
+    store = CapabilityTrackStore(paths)
+    track = store.create(
+        title="自动化任务可靠性工程师", persona_desc="负责 cron 任务失败处理",
+        target_type="persona", outline_names=["升级触发条件"],
+    )
+    # 手动补上 persona_kind——create() 本身没传 llm_helper 时判定不到，
+    # 这里模拟"已判定为 operational"的既有 Track。
+    store.update(track.track_id, persona_kind="operational")
+
+    def fake_llm(_prompt):
+        return "连续 3 次重试失败后立即上报值班工程师，并同步错误摘要。"
+
+    summary = run_capability_learning_cycle(paths, llm_helper=fake_llm)
+    assert summary["persona_topics_researched"] == 1
+    assert summary["questions_raised"] == 0
+
+    questions = CapabilityQuestionStore(paths).list_questions(track_id=track.track_id)
+    assert len(questions) == 1
+    assert questions[0].status == "answered"
+    assert "系统调研生成" in questions[0].answer
+
+    ledger = CapabilityLedgerStore(paths).list_for_track(track.track_id)
+    assert any(e.action == "persona_researched" for e in ledger)
+
+
+def test_cycle_persona_research_fails_falls_back_to_question(paths):
+    store = CapabilityTrackStore(paths)
+    track = store.create(
+        title="老李投顾人设", persona_desc="资深投资顾问",
+        target_type="persona", outline_names=["说话风格"],
+    )
+
+    def fake_llm(_prompt):
+        return "这是一个问句，行不行？"  # 以问号结尾，被判定为跑题
+
+    summary = run_capability_learning_cycle(paths, llm_helper=fake_llm)
+    assert summary["persona_topics_researched"] == 0
+    assert summary["questions_raised"] == 1

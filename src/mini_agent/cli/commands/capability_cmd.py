@@ -41,6 +41,14 @@ cron_scheduler.py SYSTEM_JOBS 里对应条目的说明）。
                                    — 清理超过 TTL 未回答的问题，标记为
                                      expired（§3.3），供
                                      sys:capability_question_sweep 引用
+  /capability questions --dismiss-all-pending [track_id] [--all-types]
+                                   — [next_doc/persona_research_first_and_
+                                     role_fit_improvement_plan.md §3.5]
+                                     批量忽略 pending 问题（标记为
+                                     dismissed，不删除记录）。默认只清
+                                     persona 型 Track 的问题；加
+                                     --all-types 连 knowledge 型一起清；
+                                     可传 track_id 精确到单个 Track
   /capability answer <question_id> <answer text>
                                    — 提交一条问题的回答（下一轮 cycle 会消费）
   /capability suggestions [track_id]
@@ -321,6 +329,36 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
             store = CapabilityQuestionStore(paths)
             n = store.sweep_expired()
             R.print_info(f"已清理 {n} 条超期未回答的问题（标记为 expired）。")
+            return
+        # [next_doc/persona_research_first_and_role_fit_improvement_plan.md
+        # §3.5] 批量忽略 pending 问题，用于"调研优先"改动上线后一次性清理
+        # 按旧逻辑（persona 型无条件问用户）生成的存量问题——不是长期
+        # 功能，用完即弃也可以，做成子命令方便复查/审计。默认只清 persona
+        # 型 Track 的问题（knowledge 型不受这轮改动影响，不需要清），加
+        # --all-types 才连 knowledge 型一起清；可选 track_id 精确到单个
+        # Track，不传则清所有符合条件的 Track。只调用现有 dismiss()
+        # 逐条标记，不新增底层存储能力，也不会删除任何记录。
+        if "--dismiss-all-pending" in args:
+            track_id_filter = next(
+                (a for a in args[1:] if not a.startswith("--")), None,
+            )
+            all_types = "--all-types" in args
+            q_store = CapabilityQuestionStore(paths)
+            track_store_ = CapabilityTrackStore(paths)
+            persona_track_ids = {
+                t.track_id for t in track_store_.list_tracks()
+                if t.target_type == "persona"
+            }
+            pending = q_store.list_questions(status="pending", track_id=track_id_filter)
+            n = 0
+            for q in pending:
+                if not all_types and q.track_id not in persona_track_ids:
+                    continue
+                if q_store.dismiss(q.question_id):
+                    n += 1
+            scope = "全部类型" if all_types else "persona 型"
+            R.print_info(f"已忽略 {n} 条待回答问题（范围：{scope} Track"
+                         f"{f'，track_id={track_id_filter}' if track_id_filter else ''}）。")
             return
         track_id = args[1] if len(args) > 1 else None
         store = CapabilityQuestionStore(paths)

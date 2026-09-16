@@ -209,6 +209,16 @@ class CapabilityTrack:
     # 建议。默认 False（向后兼容：旧 Track 数据没有这个字段时视为未触发）。
     outline_milestone_notified: bool = False
 
+    # [next_doc/persona_research_first_and_role_fit_improvement_plan.md §3.1]
+    # 仅对 target_type="persona" 的 Track 有意义："roleplay"（虚构角色，
+    # 用于聊天/陪伴/故事扮演）或 "operational"（功能性/操作性 agent 身份，
+    # 承担具体职能、需要专业判断准则，比如"自动化任务可靠性工程师"）。
+    # 创建时用 classify_persona_kind() 判定一次并落盘，之后不再重复判定
+    # （避免因为某次 LLM 输出异常导致角色定位在多轮循环里来回摇摆）。
+    # None = 未判定/旧数据，所有消费该字段的下游函数在 None 时一律按
+    # "roleplay" 处理，等同改动前的行为，完全向后兼容。
+    persona_kind: Optional[str] = None
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["outline"] = [t.to_dict() for t in self.outline]
@@ -228,6 +238,7 @@ class CapabilityTrack:
             created_at=d.get("created_at", time.time()),
             updated_at=d.get("updated_at", time.time()),
             cadence=d.get("cadence", "interval:21600"),
+            persona_kind=d.get("persona_kind"),
             last_advanced_at=d.get("last_advanced_at"),
             outline_research_suggestion_last_at=d.get("outline_research_suggestion_last_at"),
             outline_milestone_notified=d.get("outline_milestone_notified", False),
@@ -240,7 +251,11 @@ class CapabilityLedgerEntry:
     topic_id: str
     action: str                                  # researched / question_raised /
                                                    # question_answered / question_reused /
-                                                   # skipped / miss_observed（§14.1-a）
+                                                   # skipped / miss_observed（§14.1-a）/
+                                                   # persona_researched（persona 型"调研
+                                                   # 优先"自动生成答案，见 next_doc/
+                                                   # persona_research_first_and_role_fit_
+                                                   # improvement_plan.md §3.4）
     summary: str
     cycle_ts: float = field(default_factory=time.time)
     wiki_page_ids: list[str] = field(default_factory=list)
@@ -413,11 +428,27 @@ class CapabilityTrackStore:
         用 `draft_outline_with_llm()` 起草一份初始大纲（P2，opt-in，见该
         函数文档字符串）；outline_names 为空且没有 `llm_helper` 时退化为
         空大纲，由调用方（看板 / 后续手动补充）再补充子主题——三种入参
-        组合都兼容，不强制要求任何一种。"""
+        组合都兼容，不强制要求任何一种。
+
+        [next_doc/persona_research_first_and_role_fit_improvement_plan.md
+        §3.1] `target_type="persona"` 时，额外用 `classify_persona_kind()`
+        判定一次 `persona_kind`（"roleplay"/"operational"）并落盘到
+        `CapabilityTrack.persona_kind`——只在创建时判定一次，之后不再
+        重复调用，避免角色定位在多轮循环里反复摇摆。判定结果同时用于
+        起草初始大纲（`draft_outline_with_llm()` 按 `persona_kind` 分流
+        维度模板）。`target_type="knowledge"` 时 `persona_kind` 恒为
+        `None`，不需要这层判定。"""
         track_id = f"cap_{uuid.uuid4().hex[:12]}"
+        persona_kind = (
+            classify_persona_kind(persona_desc, llm_helper)
+            if target_type == "persona" else None
+        )
         names = list(outline_names or [])
         if not names and llm_helper is not None:
-            names = draft_outline_with_llm(title, persona_desc, llm_helper, target_type=target_type)
+            names = draft_outline_with_llm(
+                title, persona_desc, llm_helper,
+                target_type=target_type, persona_kind=persona_kind,
+            )
         outline = [
             OutlineTopic(topic_id=f"topic_{uuid.uuid4().hex[:8]}", name=n)
             for n in names
@@ -431,6 +462,7 @@ class CapabilityTrackStore:
             persona_desc=persona_desc,
             outline=outline,
             target_type=target_type,
+            persona_kind=persona_kind,
             wiki_tag=wiki_tag,
         )
         tracks = self._load_all()
@@ -1394,6 +1426,7 @@ DRAFT_OUTLINE_MAX_TOPICS = 8
 def draft_outline_with_llm(
     title: str, persona_desc: str, llm_helper: Callable[[str], str],
     target_type: str = "knowledge",
+    persona_kind: Optional[str] = None,
 ) -> list[str]:
     """用 `llm_helper(prompt) -> str` 起草一份初始大纲子主题名称列表。
 
@@ -1412,8 +1445,29 @@ def draft_outline_with_llm(
     prompt，是 persona 型 Track 从起草大纲这一步就跑偏、后续问答/草稿
     质量连带变差的根因之一。`target_type` 未识别的值一律按 `"knowledge"`
     处理，保持向后兼容（不传这个参数的既有调用方行为不变）。
+
+    `persona_kind`：[next_doc/persona_research_first_and_role_fit_
+    improvement_plan.md §3.2] 仅在 `target_type="persona"` 时生效，
+    区分"roleplay"（虚构角色）与"operational"（功能性/操作性 agent
+    身份，比如"自动化任务可靠性工程师"）——两者需要的维度完全不同，
+    "口头禅""背景经历"这类虚构角色维度对一个运维/职能类身份没有意义，
+    这类身份真正需要的是"职责边界/决策原则/升级触发条件"这类。
+    `persona_kind` 为 `None`/`"roleplay"`/未识别值时，行为与改动前
+    完全一致（`"roleplay"` 措辞）。
     """
-    if target_type == "persona":
+    if target_type == "persona" and persona_kind == "operational":
+        prompt = (
+            f"我想为一个功能性/操作性的 agent 身份持续收集设定信息，"
+            f"这个身份标题是「{title}」，大致描述：{persona_desc}\n\n"
+            f"请帮我列出 {DRAFT_OUTLINE_MIN_TOPICS}-{DRAFT_OUTLINE_MAX_TOPICS} 个"
+            "刻画这个身份需要明确的维度，比如职责边界、决策原则、升级/"
+            "上报的触发条件、对外沟通的语气与信息密度、风险容忍度与止损线、"
+            "可调用的工具与协作对象等（不必照抄这些例子，按这个身份的实际"
+            "职能选合适的维度）。"
+            "每行一个维度名称（4-12 个汉字左右，不用编号、不用标点、不用"
+            "多余解释），不要输出标题之外的任何内容。"
+        )
+    elif target_type == "persona":
         prompt = (
             f"我想为一个角色人设持续收集设定信息，角色标题是「{title}」，"
             f"大致描述：{persona_desc}\n\n"
@@ -1682,25 +1736,85 @@ WikiWriterFn = Callable[[OutlineTopic, CapabilityTrack, list[dict]], list[str]]
 接线时应换成真正调用 wiki/writer.py + wiki/dedup.py 的实现。"""
 
 
+def classify_persona_kind(
+    persona_desc: str, llm_helper: Optional[Callable[[str], str]],
+) -> Optional[str]:
+    """[next_doc/persona_research_first_and_role_fit_improvement_plan.md
+    §3.1] 只在 `CapabilityTrackStore.create()` 里、`target_type="persona"`
+    时调用一次，判定这个 Track 更接近"roleplay"（用于聊天/陪伴/故事
+    扮演的虚构角色）还是"operational"（承担具体职能、会被绑定到某类
+    任务或某个 agent 身份上、需要专业判断准则的功能性角色，比如
+    "自动化任务可靠性工程师"）。
+
+    跟 `draft_outline_with_llm()` 同款克制：`llm_helper` 为空、调用异常、
+    返回内容无法识别，一律返回 `None`——`None` 在所有消费该字段的下游
+    函数里都按 `"roleplay"` 处理，等同于这个判定从未发生过、行为与
+    改动前完全一致。只在创建时调用一次并落盘到 `CapabilityTrack.
+    persona_kind`，不在后续每轮循环里重复判定，避免角色定位因为某次
+    LLM 输出抖动而在多轮循环之间来回摇摆。"""
+    if llm_helper is None:
+        return None
+    prompt = (
+        f"角色/身份描述：{persona_desc}\n\n"
+        "这更接近一个用于聊天、陪伴或故事扮演的虚构角色，还是一个承担"
+        "具体职能、会被绑定到某类任务或某个 agent 身份上、需要专业判断"
+        "准则的功能性角色（比如客服、审核、运维值班这类）？"
+        "只回答 roleplay 或 operational 其中一个词，不要输出任何其它内容。"
+    )
+    try:
+        raw = llm_helper(prompt)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    answer = raw.strip().splitlines()[0].strip().lower() if raw.strip() else ""
+    if "operational" in answer:
+        return "operational"
+    if "roleplay" in answer:
+        return "roleplay"
+    return None
+
+
 def generate_persona_topic_question(
     topic_name: str, persona_desc: str, llm_helper: Optional[Callable[[str], str]],
+    persona_kind: Optional[str] = None,
 ) -> Optional[str]:
     """[next_doc/persona_draft_llm_quality_improvement_plan.md 阶段 B]
     针对 persona 型 Track 的某个维度，用 LLM 生成一个更容易问出**具体
     细节**（而不是泛泛的"偏好/背景"）的追问问题。跟 `draft_outline_with_
     llm()`/`revise_outline_with_llm()` 同款克制：`llm_helper` 为空、调用
     异常、返回空文本/明显不合理（过长）都返回 `None`，调用方退回既有的
-    通用问题模板，不影响现有行为。"""
+    通用问题模板，不影响现有行为。
+
+    `persona_kind`：[next_doc/persona_research_first_and_role_fit_
+    improvement_plan.md §3.2] 这条函数目前只在
+    `run_capability_learning_cycle()` 里"调研生成也给不出内容"的兜底
+    分支才会被调用（见 §3.4），measures 上大概率已经不是"业界惯例能
+    回答"的维度了，但仍然按 `persona_kind` 调整措辞，避免退回提问时
+    又用回不搭的"这个角色会怎么说话"这套虚构角色框架去问一个操作性
+    身份。`persona_kind` 为 `None`/`"roleplay"`/未识别值时，行为与
+    改动前完全一致。"""
     if llm_helper is None:
         return None
-    prompt = (
-        f"我在给一个角色人设收集设定信息，角色大致描述：{persona_desc}\n\n"
-        f"现在需要针对「{topic_name}」这个维度向用户提一个问题，帮用户"
-        "回忆/想清楚这个角色在这个维度上的**具体细节**（比如这个角色遇到"
-        "某种情境会怎么说话、怎么反应，而不是笼统的\"偏好是什么\"）。"
-        "只输出这一个问题本身，一句话，不要解释、不要输出问题之外的任何"
-        "内容。"
-    )
+    if persona_kind == "operational":
+        prompt = (
+            f"我在给一个功能性/操作性的 agent 身份收集设定信息，身份"
+            f"大致描述：{persona_desc}\n\n"
+            f"现在需要针对「{topic_name}」这个维度向用户提一个问题，帮用户"
+            "明确这个身份在这个维度上的**具体处理原则**（比如遇到某类"
+            "具体场景该怎么判断、怎么处理，而不是笼统的\"偏好是什么\"）。"
+            "只输出这一个问题本身，一句话，不要解释、不要输出问题之外的"
+            "任何内容。"
+        )
+    else:
+        prompt = (
+            f"我在给一个角色人设收集设定信息，角色大致描述：{persona_desc}\n\n"
+            f"现在需要针对「{topic_name}」这个维度向用户提一个问题，帮用户"
+            "回忆/想清楚这个角色在这个维度上的**具体细节**（比如这个角色遇到"
+            "某种情境会怎么说话、怎么反应，而不是笼统的\"偏好是什么\"）。"
+            "只输出这一个问题本身，一句话，不要解释、不要输出问题之外的任何"
+            "内容。"
+        )
     try:
         raw = llm_helper(prompt)
     except Exception:
@@ -1711,6 +1825,71 @@ def generate_persona_topic_question(
     if not question or len(question) > 60:
         return None
     return question
+
+
+DRAFT_PERSONA_TOPIC_ANSWER_MAX_LEN = 200
+
+
+def draft_persona_topic_answer(
+    topic_name: str,
+    persona_desc: str,
+    retriever: Optional["RetrieverFn"],
+    llm_helper: Optional[Callable[[str], str]],
+    persona_kind: Optional[str] = None,
+) -> Optional[str]:
+    """[next_doc/persona_research_first_and_role_fit_improvement_plan.md
+    §3.3] "调研优先"路径：针对一个 persona 维度，先尝试基于行业惯例/
+    最佳实践给出一段**具体、可直接采用**的草稿内容（陈述句，不是问句），
+    而不是直接向用户提问。这是 `needs_user_context()` 判定为需要用户
+    输入之后，`run_capability_learning_cycle()` 真正落地"能调研解决的
+    事情不该问用户"这条原则的地方（`needs_user_context()` 本身这一轮
+    不改，见设计文档 §2.4）。
+
+    P1 起不接入真实检索：`retriever` 目前签名是`(OutlineTopic,
+    CapabilityTrack) -> list[dict]`，跟这里"只有维度名字符串、还没有
+    完整 Track 对象"的调用形态不匹配，接入真实检索留给后续版本按需
+    扩展调用形态，本函数当前只用 `llm_helper` 自身的知识给出惯例性
+    回答（`retriever` 参数先保留占位，传入也不会被使用，避免调用方
+    以后接线时还要改函数签名）。
+
+    跟其它 LLM 辅助函数同款克制：`llm_helper` 为空、调用异常、返回
+    空文本，或者返回内容明显跑题（以问号结尾，说明 LLM 又把它当成了
+    一个追问问题而不是给出陈述性答案；或者超过长度上限，说明内容
+    啰嗦到不适合直接当一条维度答案使用），一律返回 `None`——调用方
+    应退回现有的"生成问题"分支，行为与改动前完全一致。"""
+    if llm_helper is None:
+        return None
+    if persona_kind == "operational":
+        prompt = (
+            f"身份/角色描述：{persona_desc}\n\n"
+            f"针对「{topic_name}」这个维度，结合这类角色（判断具体是"
+            "哪一类专业/职能角色，比如 SRE、客服、审核等）通常遵循的"
+            "行业惯例或最佳实践，给出一段可直接采用的具体处理原则"
+            "（不超过 100 字，陈述句，不要反问、不要输出维度名/标题/"
+            "解释性文字，只输出这段内容本身）。"
+        )
+    else:
+        prompt = (
+            f"角色描述：{persona_desc}\n\n"
+            f"针对「{topic_name}」这个维度，结合同类虚构角色常见的塑造"
+            "惯例，给出一段具体、可直接采用的设定内容（不超过 100 字，"
+            "陈述句，不要反问、不要输出维度名/标题/解释性文字，只输出"
+            "这段内容本身）。"
+        )
+    try:
+        raw = llm_helper(prompt)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    answer = raw.strip()
+    if not answer:
+        return None
+    if answer.endswith(("？", "?")):
+        return None
+    if len(answer) > DRAFT_PERSONA_TOPIC_ANSWER_MAX_LEN:
+        return None
+    return answer
 
 
 def run_capability_learning_cycle(
@@ -1780,7 +1959,12 @@ def run_capability_learning_cycle(
                "questions_consumed": 0, "topics_skipped": 0, "topics_reused": 0,
                "outline_suggestions_generated": 0, "topics_research_empty": 0,
                "topics_research_thin": 0, "questions_reused": 0,
-               "outline_auto_drafted": 0, "outline_auto_draft_skipped": 0}
+               "outline_auto_drafted": 0, "outline_auto_draft_skipped": 0,
+               # [next_doc/persona_research_first_and_role_fit_improvement_plan.md
+               # §3.4] persona 型 Track 走"调研优先"路径、自动生成维度
+               # 答案（未打扰用户）的次数，与 knowledge 型的 wiki 检索
+               # 统计（"topics_researched"）区分开，避免语义混淆。
+               "persona_topics_researched": 0}
 
     active_tracks = sorted(
         track_store.list_tracks(status="active"),
@@ -1803,6 +1987,7 @@ def run_capability_learning_cycle(
         ):
             drafted_names = draft_outline_with_llm(
                 track.title, track.persona_desc, llm_helper, target_type=track.target_type,
+                persona_kind=track.persona_kind,
             )
             if drafted_names:
                 updated_track = track_store.update(
@@ -1933,6 +2118,45 @@ def run_capability_learning_cycle(
                 break
 
             if needs_user_context(topic, track):
+                # [next_doc/persona_research_first_and_role_fit_improvement_plan.md
+                # §3.4]"调研优先"：`needs_user_context()` 判定为需要用户
+                # 输入，不代表一定要直接打扰用户——大部分 persona 维度
+                # 业界都有成熟惯例/最佳实践可以参考，先尝试调研生成一份
+                # 具体草稿；调研成功就直接落一条 answered 记录，不占用
+                # `max_pending_questions` 配额，也不生成 pending 问题。
+                # 只有调研失败（无 llm_helper / 调用异常 / 输出被判定
+                # 跑题）才退回下面"生成问题"的既有分支。这一步不改动
+                # `needs_user_context()` 本身的判定逻辑（本轮方案明确
+                # 保留现状），只是把"判定为真"之后的唯一出路从"必须
+                # 提问"改成"先调研，调研不行再提问"。
+                if track.target_type == "persona":
+                    research_answer = draft_persona_topic_answer(
+                        topic.name, track.persona_desc, retriever, llm_helper,
+                        persona_kind=track.persona_kind,
+                    )
+                    if research_answer is not None:
+                        researched_answer = (
+                            "（系统调研生成，非用户确认，如需修改可在看板编辑）"
+                            f"{research_answer}"
+                        )
+                        new_q = question_store.raise_question(
+                            track_id=track.track_id, topic_id=topic.topic_id,
+                            question=f"关于「{topic.name}」的调研草稿（系统自动生成，未询问用户）",
+                        )
+                        question_store.answer(new_q.question_id, researched_answer)
+                        _mark_topic_covered(track_store, track, topic.topic_id)
+                        ledger_store.append(CapabilityLedgerEntry(
+                            track_id=track.track_id,
+                            topic_id=topic.topic_id,
+                            action="persona_researched",
+                            summary=f"「{topic.name}」基于行业惯例/最佳实践自动生成草稿"
+                                    f"「{research_answer}」，未询问用户",
+                        ))
+                        summary["persona_topics_researched"] += 1
+                        track_advanced = True
+                        if global_budget_remaining is not None:
+                            global_budget_remaining -= 1
+                        continue
                 if pending >= max_pending_questions:
                     continue
                 question_text = None
@@ -1940,9 +2164,12 @@ def run_capability_learning_cycle(
                     # [next_doc/persona_draft_llm_quality_improvement_plan.md
                     # 阶段 B] persona 型 Track 优先用 LLM 生成更容易问出
                     # 具体细节的问题；没有 llm_helper/生成失败时退回下面
-                    # 的通用模板，行为与改动前一致。
+                    # 的通用模板，行为与改动前一致。走到这里说明上面的
+                    # 调研分支已经失败（否则已经 continue 了），仍按
+                    # `persona_kind` 调整措辞（见函数文档字符串）。
                     question_text = generate_persona_topic_question(
                         topic.name, track.persona_desc, llm_helper,
+                        persona_kind=track.persona_kind,
                     )
                 if question_text is None:
                     question_text = (
@@ -2994,6 +3221,52 @@ _PERSONA_SYNTHESIS_INSTRUCTIONS = """你在帮用户把关于一个虚构角色�
 {"tone": "...", "body": "..."}
 """
 
+# [next_doc/persona_research_first_and_role_fit_improvement_plan.md §3.2]
+# `persona_kind="operational"` 时用这份措辞替换上面的"虚构角色扮演"
+# 框架——功能性/操作性 agent 身份（比如"自动化任务可靠性工程师"）不需要
+# "演出一种人格"，需要的是一份清晰、可执行的行为准则文档；沿用"虚构
+# 角色人设"这套语言会引导 LLM 混入"性格测验"式的内容（口头禅、背景
+# 经历等），跟这类身份的实际用途不符。
+_PERSONA_SYNTHESIS_INSTRUCTIONS_OPERATIONAL = """你在帮用户把关于一个功能性/操作性 agent 身份的零散问答材料，整理成一份
+正式的身份行为准则文档正文。
+
+背景：这份文档最终会决定这个 agent 身份在真实任务场景里的判断和表达
+方式，会被渲染成 system prompt，格式类似：
+    # <身份标题>
+
+    <身份总体描述>
+
+    ## <维度1>
+    ...
+    ## <维度2>
+    ...
+
+你会收到 raw_material（当前的素材，已经按维度整理成 markdown 小节，
+每条 "- xxx" 是该维度下的一条原始回答/调研内容，某些维度会标注"暂无
+信息，尚待用户回答相关问题"）。
+
+你的任务：
+1. 先根据全部素材，给这个身份的整体沟通风格总结一个不超过 20 个字的
+   短语（例如"简练、直给关键信息、不绕弯子"这种风格，不要用"温柔""
+   俏皮"这类适合虚构角色而不适合专业身份的形容词），作为 tone 字段——
+   **后面写正文时要真正贯彻这个风格**。
+2. 在"身份总体描述"这段里加一两句这个身份的职能定位和沟通风格的引导性
+   文字，让读者一开始就能明确"这个身份负责什么、怎么表达"，而不是直接
+   进正文条目。
+3. 把每个维度下的若干条零散回答/调研内容，改写/合并成一段清晰、可执行
+   的行为准则文字——可以调整语序、合并同类项，但**只能使用这个维度自己
+   底下出现过的内容**，绝对不能把其它维度的内容搬过来当作这个维度的
+   答案，也不能加入 raw_material 里完全没出现过的具体事实（不能编造
+   新的经历、数字、人名、地名等）。标注"暂无信息"的维度原样保留这句
+   提示，不要编造内容填充——这一条是硬性要求，宁可这个维度看起来单薄，
+   也不要用编造或者从别的维度挪用内容的方式把它填满。
+4. 保留原有的标题层级结构（# 标题 / ## 维度名），不要新增/删除/改名
+   维度。
+
+只输出一个 JSON 对象，不要 Markdown 代码块，不要任何解释文字，格式：
+{"tone": "...", "body": "..."}
+"""
+
 
 def synthesize_persona_draft_with_llm(
     track: "CapabilityTrack", raw_body_material: str,
@@ -3016,14 +3289,25 @@ def synthesize_persona_draft_with_llm(
 
     不在这里做"缺失维度提示"/"真人模仿安全检测"——这两项统一由调用方
     （`draft_persona_markdown()`）基于规则版材料计算，避免两个来源各算
-    一遍、后续要同步改两处。"""
+    一遍、后续要同步改两处。
+
+    [next_doc/persona_research_first_and_role_fit_improvement_plan.md
+    §3.2] `track.persona_kind == "operational"` 时改用
+    `_PERSONA_SYNTHESIS_INSTRUCTIONS_OPERATIONAL`（去掉"虚构角色扮演"
+    框架，改成"行为准则文档"框架）；`None`/`"roleplay"`/未识别值时
+    行为与改动前完全一致。"""
     if llm_helper is None:
         return None
+    instructions = (
+        _PERSONA_SYNTHESIS_INSTRUCTIONS_OPERATIONAL
+        if track.persona_kind == "operational"
+        else _PERSONA_SYNTHESIS_INSTRUCTIONS
+    )
     prompt = (
         f"角色标题：{track.title}\n"
         f"角色描述：{track.persona_desc}\n\n"
         f"raw_material:\n{raw_body_material}\n\n"
-        f"{_PERSONA_SYNTHESIS_INSTRUCTIONS}"
+        f"{instructions}"
     )
     try:
         raw = llm_helper(prompt)

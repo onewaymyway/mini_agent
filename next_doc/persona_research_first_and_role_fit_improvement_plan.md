@@ -1,5 +1,7 @@
 # Capability Learning 人设学习"研究优先 + 角色贴合度"改进方案
 
+- **状态**：已实施（见 §7 实施记录）。
+
 对应背景：`next_doc/persona_capability_learning_design.md`（§10 persona 型
 Track 原始方案）、`next_doc/persona_draft_llm_quality_improvement_plan.md`
 （上一轮"草稿质量"改进，已解决"大纲分场景/追问文案/LLM 润色/tone"四点）、
@@ -293,3 +295,54 @@ if needs_user_context(topic, track):
 - 批量 dismiss 是不可逆操作（保留记录、只改状态，不删除数据），执行
   前需要确认目标环境（生产/测试）范围正确，建议先加 `--track` 支持
   按 Track 精确清理，不必一次性清全量。
+
+## 7. 实施记录
+
+改动落地在 `src/mini_agent/evolution/capability_learning.py` 与
+`src/mini_agent/cli/commands/capability_cmd.py`，按 §3 方案逐项对应：
+
+1. `CapabilityTrack` 新增 `persona_kind: Optional[str] = None` 字段
+   （`to_dict`/`from_dict` 均已接线，旧数据缺省 `None`，向后兼容）。
+2. 新增 `classify_persona_kind(persona_desc, llm_helper)`；
+   `CapabilityTrackStore.create()` 在 `target_type="persona"` 时调用一次
+   并落盘，同时把结果传给 `draft_outline_with_llm()`。
+3. `draft_outline_with_llm()` 新增 `persona_kind` 形参，
+   `persona_kind="operational"` 时启用新的"职责边界/决策原则/升级触发
+   条件/……"维度模板；`None`/`"roleplay"` 时行为不变。
+   `run_capability_learning_cycle()` 里"空大纲自动补写"分支同步传入
+   `track.persona_kind`。
+4. 新增 `draft_persona_topic_answer()`（调研优先路径），
+   `run_capability_learning_cycle()` 在 `needs_user_context()` 判定为
+   `True` 后先尝试这条路径：成功则落一条 `status="answered"` 的
+   `CapabilityQuestion`（答案前缀"（系统调研生成，非用户确认，如需修改
+   可在看板编辑）"），台账 `action="persona_researched"`，计入新增的
+   `summary["persona_topics_researched"]`，不占用 `max_pending_questions`
+   配额；失败则退回原有"生成问题"分支（`generate_persona_topic_question()`
+   同步接入 `persona_kind` 形参调整措辞）。**`needs_user_context()` 本身
+   未改动**，符合"关键判据本轮先不改"的约定。
+5. `_PERSONA_SYNTHESIS_INSTRUCTIONS_OPERATIONAL`（新增常量）+
+   `synthesize_persona_draft_with_llm()` 按 `track.persona_kind` 选择
+   对应的合成指令，`operational` 时去掉"虚构角色扮演"框架，改为"行为
+   准则文档"框架。
+6. `CapabilityLedgerEntry.action` 枚举补充 `persona_researched` 说明。
+7. CLI 新增 `/capability questions --dismiss-all-pending [track_id]
+   [--all-types]`，默认只清 persona 型 Track 的 pending 问题，
+   `--all-types` 可扩大到 knowledge 型，`track_id` 可选精确到单个
+   Track；只调用既有 `dismiss()` 逐条标记，不删除记录、不新增底层
+   存储能力。
+8. 新增/补充单测于 `tests/test_capability_learning_p1.py`：
+   `classify_persona_kind`（无 LLM/正常解析/无法识别/异常四种情况）、
+   `draft_outline_with_llm` 的 `operational` 分流、
+   `draft_persona_topic_answer`（无 LLM/跑题判定/超长判定/正常生成）、
+   `run_capability_learning_cycle()` 调研优先分支端到端（含调研失败
+   退回提问的回归用例）。改动后完整跑通
+   `tests/test_capability_learning_p1.py`（50 项，含本次新增 13 项）、
+   `tests/test_capability_cmd.py`、`tests/test_capability_notification_v021.py`、
+   `tests/test_capability_learning_empty_retrieval_fix.py`，均通过，无
+   回归。
+
+**本轮未做（按 §3.6 / 用户确认延后处理）**：
+- 看板"系统调研生成"来源角标（体验优化，非功能性必需，答案本身已有
+  文字前缀标注来源，不影响可审计性）。
+- 存量 pending 问题的批量 dismiss 需在实际运行环境执行（本次交付的
+  代码包不含运行时状态文件），命令见上面第 7 点。

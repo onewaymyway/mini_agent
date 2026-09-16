@@ -1,6 +1,21 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
-- **版本**：v0.26（用户发现某个 Track 空大纲导致 cron 一直"成功"但实际
+- **版本**：v0.27（用户反馈 persona 型 Track 的"待回答问题"里出现大量
+  本可以靠调研/行业惯例回答、不该问用户的问题，且生成的人设草稿读起来
+  不像正常的功能性 agent 人设。**根因**：① `needs_user_context()` 是
+  P1 占位实现，persona 型 Track 的每个维度无条件判定为"必须问用户"，
+  从不尝试调研；② `target_type="persona"` 把"虚构角色扮演"和"功能性/
+  操作性 agent 身份"（比如"自动化任务可靠性工程师"）两类场景压缩成
+  同一套 prompt（维度模板/追问措辞/草稿合成措辞），后者被前者的"性格
+  特征/口头禅/背景经历"这套框架带偏。**改动**：新增 `persona_kind`
+  （"roleplay"/"operational"，创建时判定一次）区分两类场景，各自的
+  大纲维度/追问/草稿合成 prompt 分流；新增"调研优先"路径
+  `draft_persona_topic_answer()`——`needs_user_context()` 判定为需要
+  用户输入后先尝试基于行业惯例生成具体答案，失败才退回提问（判定逻辑
+  本身这一轮不改）；CLI 新增批量忽略 pending 问题的入口，供上线后
+  一次性清理存量问题。详见
+  `next_doc/persona_research_first_and_role_fit_improvement_plan.md`。）
+- **上一版本**：v0.26（用户发现某个 Track 空大纲导致 cron 一直"成功"但实际
   空转（根因分析见 v0.25 版本记录之后的排查会话），据此改进两处：
   ① 大纲修订从"整体替换"改成"基于旧大纲的 diff"——新增
   `revise_outline_with_llm()`（只输出 ADD/RENAME/REMOVE 变更，不落盘，
