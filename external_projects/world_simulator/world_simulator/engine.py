@@ -373,6 +373,7 @@ def advance(
     custom_option: Optional[Dict[str, str]] = None,
     decision_context: str = "",
     chosen_by: str = "user",
+    allow_custom_options: bool = False,
 ) -> SimState:
     """推进模拟实例一步。
 
@@ -403,6 +404,15 @@ def advance(
             时，记入当前状态 `chosen_by` 字段的值，通常是 `"user"`；
             自动挡代选场景这个值会被引擎内部推导出的 `"autopilot"`
             覆盖，调用方不需要自己判断。
+        allow_custom_options: 仅自动挡代选场景使用，对应
+            `manifest.autopilot.get("allow_custom_options")`。LLM 并不总是
+            严格遵守"跳出候选列表要用 custom_option_label 字段"的约定——
+            它经常直接在 `chosen_option_id` 里编一个不存在于候选列表的新
+            id。当这个开关为 True 时，如果 `chosen_option_id` 不在候选
+            列表里，不再直接报错中止，而是把它当成一个自定义选项收下
+            （标签优先取 `custom_option_label`，没有的话退化成用这个
+            编造的 id 本身当标签）；为 False 时维持原来的严格校验，
+            直接报错中止，避免把脏数据静默写进历史。
     """
     store = SimStore.for_root(data_dir, sim_id)
     manifest = store.load_manifest()
@@ -508,12 +518,33 @@ def advance(
         if auto_choice_id:
             chosen_option = next((o for o in current.options if o.id == auto_choice_id), None)
             if chosen_option is None:
-                raise SimEngineError(
-                    f"自动挡代选返回的 chosen_option_id={auto_choice_id!r} 不在候选列表中"
-                    f"（当前候选：{[o.id for o in current.options]}），已中止本次推进"
+                if not allow_custom_options:
+                    raise SimEngineError(
+                        f"自动挡代选返回的 chosen_option_id={auto_choice_id!r} 不在候选列表中"
+                        f"（当前候选：{[o.id for o in current.options]}），已中止本次推进"
+                    )
+                # allow_custom_options=True 时，不再把"id 编造得不存在"
+                # 当成硬错误：LLM 经常并不遵守"跳出列表要改用
+                # custom_option_label 字段"的约定，而是直接把编出来的新
+                # 方向塞进 chosen_option_id——既然已经明确允许代理跳出候选
+                # 列表，就该把这种情况也当作一次合法的自定义选项收下，而
+                # 不是中止推进。标签优先用 custom_option_label（如果 LLM
+                # 恰好两个字段都填了），否则退化为用这个编造的 id 本身
+                # 当标签（好过什么都没有）。
+                fallback_label = auto_custom_label or auto_choice_id
+                chosen_option = ChoiceOption(
+                    id=f"custom_{secrets.token_hex(4)}",
+                    label=fallback_label,
+                    description=str(data.get("custom_option_description") or ""),
                 )
-            effective_chosen_by = "autopilot"
-            effective_chosen_reason = data.get("chosen_reason") or None
+                effective_chosen_by = "autopilot"
+                effective_chosen_reason = (
+                    data.get("chosen_reason")
+                    or f"候选列表之外的自定义选项（原始 chosen_option_id={auto_choice_id!r}）"
+                )
+            else:
+                effective_chosen_by = "autopilot"
+                effective_chosen_reason = data.get("chosen_reason") or None
         elif auto_custom_label:
             # 代理判断候选列表里没有足够合理的选项，跳出列表提出了一个
             # 新方向（只有 `decision_context` 明确允许时 skill 才会这么
@@ -676,6 +707,24 @@ def update_settings(data_dir: Path, sim_id: str, **updates: Any) -> SimManifest:
     store = SimStore.for_root(data_dir, sim_id)
     manifest = store.load_manifest()
     manifest.settings = {**manifest.settings, **updates}
+    store.save_manifest(manifest)
+    return manifest
+
+
+def rename_simulation(data_dir: Path, sim_id: str, new_title: str) -> SimManifest:
+    """修改一个模拟实例的标题（`manifest.title`）。
+
+    纯展示层的重命名，不涉及历史/分支数据，也不影响 `intent`（创建时的
+    原始一句话意图，作为"这个实例最初想模拟什么"的留档，重命名不应该
+    连带改掉）——只改 `title` 这一个字段，同 `update_settings()` 的
+    "只合并/只改传入字段"取舍一致。
+    """
+    title = new_title.strip()
+    if not title:
+        raise SimEngineError("标题不能为空")
+    store = SimStore.for_root(data_dir, sim_id)
+    manifest = store.load_manifest()
+    manifest.title = title
     store.save_manifest(manifest)
     return manifest
 

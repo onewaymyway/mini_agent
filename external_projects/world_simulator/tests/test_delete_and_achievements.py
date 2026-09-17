@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 
 from world_simulator.achievements import achievement_progress, compute_achievements
-from world_simulator.engine import delete_simulation
+from world_simulator.engine import SimEngineError, delete_simulation, rename_simulation
 from world_simulator.state_model import ChoiceOption, SimManifest, SimState
 from world_simulator.store import SimNotFoundError, SimStore, list_sim_ids, now_iso
 
@@ -63,6 +63,39 @@ def test_delete_simulation_does_not_affect_siblings(tmp_path: Path):
 
     remaining = list_sim_ids(tmp_path)
     assert remaining == ["sim_b"]
+
+
+# ── rename_simulation ────────────────────────────────────────────────
+
+
+def test_rename_simulation_updates_title(tmp_path: Path):
+    _make_sim(tmp_path, "sim_a", 1)
+
+    manifest = rename_simulation(tmp_path, "sim_a", "新标题")
+
+    assert manifest.title == "新标题"
+    reloaded = SimStore.for_root(tmp_path, "sim_a").load_manifest()
+    assert reloaded.title == "新标题"
+
+
+def test_rename_simulation_strips_whitespace(tmp_path: Path):
+    _make_sim(tmp_path, "sim_a", 1)
+
+    manifest = rename_simulation(tmp_path, "sim_a", "  带空格的标题  ")
+
+    assert manifest.title == "带空格的标题"
+
+
+def test_rename_simulation_rejects_empty_title(tmp_path: Path):
+    _make_sim(tmp_path, "sim_a", 1)
+
+    with pytest.raises(SimEngineError):
+        rename_simulation(tmp_path, "sim_a", "   ")
+
+
+def test_rename_simulation_not_found_raises(tmp_path: Path):
+    with pytest.raises(SimNotFoundError):
+        rename_simulation(tmp_path, "does_not_exist", "新标题")
 
 
 # ── achievements ─────────────────────────────────────────────────────

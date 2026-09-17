@@ -151,6 +151,36 @@ def test_autopilot_rejects_hallucinated_option_id(tmp_path, monkeypatch):
         ap_mod.run_autopilot_step(object(), tmp_path, data_dir, "sim1")
 
 
+def test_autopilot_accepts_hallucinated_option_id_when_allow_custom_options(tmp_path, monkeypatch):
+    """allow_custom_options=True 时，LLM 把编造的新方向塞进
+    `chosen_option_id`（而不是按约定用 `custom_option_label`）不应该
+    再中止推进——应该被当成一次合法的自定义选项收下。"""
+    data_dir = tmp_path / "data"
+    _make_sim_with_options(
+        data_dir, "sim1", pilot_mode="autopilot",
+        autopilot={"enabled": True, "review_mode": "silent", "allow_custom_options": True},
+    )
+    capture: dict = {}
+    _patch_advance_step_workflow(
+        monkeypatch, tmp_path,
+        {
+            "next_summary": "x", "narrative": "x", "next_vars": {}, "options": [],
+            "chosen_option_id": "clone_decision_layer_start",
+            "chosen_reason": "r",
+        },
+        capture,
+    )
+
+    next_state = ap_mod.run_autopilot_step(object(), tmp_path, data_dir, "sim1")
+    assert next_state.step == 1
+
+    history = SimStore.for_root(data_dir, "sim1").load_history()
+    assert history[0].chosen_by == "autopilot"
+    assert history[0].chosen_option_id is not None
+    assert history[0].chosen_option_id.startswith("custom_")
+    assert history[0].chosen_reason == "r"
+
+
 def test_autopilot_disabled_raises(tmp_path):
     data_dir = tmp_path / "data"
     _make_sim_with_options(data_dir, "sim1", pilot_mode="manual")

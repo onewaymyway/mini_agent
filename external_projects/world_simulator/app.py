@@ -57,6 +57,7 @@ from world_simulator.engine import (
     get_simulation,
     list_simulations,
     materialize_simulation,
+    rename_simulation,
     set_pilot_config,
     set_status,
     update_settings,
@@ -562,23 +563,70 @@ def page_list() -> None:
         return
 
     for m in manifests:
+        try:
+            branch_count = len(bm.list_branches(DATA_DIR, m.sim_id))
+        except Exception:  # noqa: BLE001
+            # 分支数据本身不影响列表页其它信息的展示，读取失败（比如
+            # 某个分支目录损坏）不应该让整个列表页挂掉，退化成"至少有
+            # main 这一条"。
+            branch_count = 1
+
         with st.container():
             st.markdown(
                 f"""<div class="ws-card">
                     <div class="ws-card-title">{m.title}</div>
                     <div class="ws-muted">{_pill(m.status)}
                         模板：{m.template} · 第 {m.current_step} 步 ·
-                        推进模式：{"自动挡" if m.pilot_mode == "autopilot" else "手动挡"}
+                        推进模式：{"自动挡" if m.pilot_mode == "autopilot" else "手动挡"} ·
+                        {branch_count} 条分支 · 创建于 {m.created_at}
                     </div>
                 </div>""",
                 unsafe_allow_html=True,
             )
-            c1, c2 = st.columns([1, 5])
+            c1, c2, c3 = st.columns([1, 1, 1])
             with c1:
-                if st.button("打开", key=f"open_{m.sim_id}"):
+                if st.button("打开", key=f"open_{m.sim_id}", use_container_width=True):
                     st.session_state["view"] = "detail"
                     st.session_state["sim_id"] = m.sim_id
                     st.rerun()
+            with c2:
+                with st.popover("✏️ 改标题", use_container_width=True):
+                    new_title = st.text_input(
+                        "新标题", value=m.title, key=f"rename_input_{m.sim_id}",
+                    )
+                    if st.button("保存", key=f"rename_save_{m.sim_id}"):
+                        try:
+                            rename_simulation(DATA_DIR, m.sim_id, new_title)
+                        except SimEngineError as exc:
+                            st.error(str(exc))
+                        except SimNotFoundError as exc:
+                            st.error(str(exc))
+                        else:
+                            st.rerun()
+            with c3:
+                with st.popover("🗑 删除", use_container_width=True):
+                    st.markdown(
+                        f'<div class="ws-danger-zone"><b>删除「{m.title}」？</b>'
+                        "<div class=\"ws-muted\">此操作不可逆，会连同全部分支/"
+                        "历史一起删除。如果只是不想要某条时间线的后续走向，"
+                        "去实例详情页的「分支」区块从历史节点分叉即可，原"
+                        "时间线不会被销毁；真正确定不再需要一个实例时才用"
+                        "这里的删除。</div></div>",
+                        unsafe_allow_html=True,
+                    )
+                    confirmed = st.checkbox(
+                        "我确认要删除这个实例", key=f"list_confirm_{m.sim_id}",
+                    )
+                    if st.button(
+                        "确认删除", key=f"list_delete_{m.sim_id}", disabled=not confirmed,
+                    ):
+                        try:
+                            delete_simulation(DATA_DIR, m.sim_id)
+                        except SimNotFoundError as exc:
+                            st.error(str(exc))
+                        else:
+                            st.success(f"已删除「{m.title}」。")
+                            st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────

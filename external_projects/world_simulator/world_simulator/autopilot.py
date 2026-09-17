@@ -99,9 +99,11 @@ def run_autopilot_step(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -
         raise AutopilotDisabledError(f"实例 {sim_id} 未开启自动挡，无法调用自动挡推进")
 
     decision_context = _build_decision_context(manifest)
+    allow_custom_options = bool((manifest.autopilot or {}).get("allow_custom_options"))
     next_state = advance(
         cfg, workspace_root, data_dir, sim_id,
         choice_option_id=None, decision_context=decision_context, chosen_by="autopilot",
+        allow_custom_options=allow_custom_options,
     )
 
     review_mode = (manifest.autopilot or {}).get("review_mode", "silent")
