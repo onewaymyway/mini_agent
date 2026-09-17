@@ -754,3 +754,67 @@ def test_advance_parses_key_drivers_from_llm_output(tmp_path, monkeypatch):
         cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
     )
     assert next_state.key_drivers == ["市场需求超预期", "现金储备见底被迫收缩"]
+
+
+def test_advance_parses_causal_links_from_llm_output(tmp_path, monkeypatch):
+    """阶段十五（4.7 节）：`advance_step` 输出里的可选 `causal_links`
+    应该原样解析进 `next_state.causal_links`；未给出时应为空列表；
+    非字典项应该被跳过。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2",
+                    "narrative": "n",
+                    "next_vars": {},
+                    "options": [],
+                    "key_drivers": ["现金储备见底"],
+                    "causal_links": [
+                        {
+                            "driver": "现金储备见底",
+                            "affected_fields": ["cash", "stage"],
+                            "effect": "被迫从「自由职业」转为「求稳定工作」",
+                        },
+                        "不是字典，应该被跳过",
+                    ],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.causal_links == [
+        {
+            "driver": "现金储备见底",
+            "affected_fields": ["cash", "stage"],
+            "effect": "被迫从「自由职业」转为「求稳定工作」",
+        }
+    ]

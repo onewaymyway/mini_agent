@@ -173,3 +173,5 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
   这类字段就不用输出。
 - `key_drivers`：数组（可选），字符串列表，1~3 条短语概括这一步变化
   的关键驱动因素，格式与用途与 `life-sim-template` 完全一致。
+- `causal_links`：数组（可选），格式与用途与 `life-sim-template` 完全
+  一致，是 `key_drivers` 的进阶信息，不需要每一步都给。

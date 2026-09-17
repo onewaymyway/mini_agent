@@ -151,6 +151,27 @@ class SimState:
     默认空列表：skill 没给出、旧数据、`state0`（初始状态一般没有"这一
     步的驱动因素"这个概念）都可以为空，不影响任何已有行为。
     """
+    causal_links: List[Dict[str, Any]] = field(default_factory=list)
+    """产生*本状态*这一步，skill 可选给出的"划重点 + 具体影响"结构化
+    摘要（阶段十五，`next_doc/world_simulator_universal_world_model_
+    upgrade_plan.md` 4.7 节，Evidence Chain 进阶），是 `key_drivers`
+    的可选进阶信息，把短语和"具体受影响的字段"、"具体的影响后果"关联
+    起来。
+
+    每一项形如 `{"driver": "现金储备见底", "affected_fields": ["cash",
+    "stage"], "effect": "被迫从「自由职业」转为「求稳定工作」"}`：
+    `driver` 通常对应 `key_drivers` 里的某一条短语（不强制一一对应，
+    展示层按原样匹配即可）、`affected_fields` 是 `vars` 里受影响的
+    字段名列表（自由文本，不要求是可执行的读写路径，`engine.py` 不
+    对这里的字段名做任何解析/校验）、`effect` 是一句话说明具体后果。
+
+    仍然是自由文本 + 字段名列表，不是可执行的因果图（完整的可点击
+    因果调试器/图结构投入产出比依然偏低，见演进计划第 6 节）。
+    `key_drivers` 与 `causal_links` 可以同时输出，也可以只输出
+    `key_drivers`——`causal_links` 是给"想深入看一步"的用户的可选
+    进阶信息，不强制每次都给。默认空列表：skill 没给出、旧数据都
+    可以为空，不影响任何已有行为，向后兼容。
+    """
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -181,6 +202,9 @@ class SimState:
             resource_violations=list(data.get("resource_violations") or []),
             uncertain_fields=list(data.get("uncertain_fields") or []),
             key_drivers=[str(x) for x in (data.get("key_drivers") or [])],
+            causal_links=[
+                dict(x) for x in (data.get("causal_links") or []) if isinstance(x, dict)
+            ],
         )
 
 

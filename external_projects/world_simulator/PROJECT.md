@@ -362,6 +362,30 @@ scenario` 阶段 skill 仍只输出纯字符串建议值，结构化写法目前
 用户在"高级"折叠区手动声明，skill 端是否要主动建议可排序字段留给
 后续按使用反馈决定）。
 
+阶段十五（Evidence Chain 进阶：结构化因果链，已完成，见演进计划
+4.7 节）交付：
+
+1. `state_model.SimState.causal_links`：新增字段，字典列表（默认
+   空），每项 `{"driver": ..., "affected_fields": [...], "effect":
+   ...}`，是 `key_drivers` 的可选进阶信息，二者可以同时输出也可以
+   只输出前者，不要求一一对应。
+2. `workflows/advance_step.yaml` 与两个模板 `SKILL.md` 都补充了
+   `causal_links` 的可选输出说明；`engine.py::advance()` 从输出里
+   解析并跳过非字典项，落到 `next_state.causal_links`。
+3. `app.py`：`_key_drivers_html()` 升级为按 `driver` 文本匹配
+   `causal_links`，有对应说明的标签用原生 `<details>/<summary>`
+   渲染成可点击展开（展开显示"受影响字段"/"具体后果"），没有对应
+   说明时退化为阶段十三的纯标签展示，新增配套 CSS（`ws-key-driver-
+   details` 等）。
+4. `tests/test_state_and_store.py`/`tests/test_spec_and_engine.py`
+   各新增一个用例（序列化往返含非字典项过滤、从 LLM 输出解析到
+   `next_state`）。
+
+**范围说明**：仍然是自由文本 + 字段名列表，不是可执行的因果图/完整
+可点击因果调试器（演进计划第 6 节已说明投入产出比偏低的原因）；
+`causal_links` 完全可选，不给这个字段时行为与阶段十三完全一致，
+向后兼容。未接入真实 LLM 手动验证。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：

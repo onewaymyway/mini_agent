@@ -69,6 +69,39 @@ def test_state_roundtrip_preserves_key_drivers():
     assert legacy_restored.key_drivers == []
 
 
+def test_state_roundtrip_preserves_causal_links():
+    """阶段十五（4.7 节）：`causal_links` 应该原样经过 to_dict/from_dict
+    往返，旧数据（没有这个字段）也应该正常落回空列表；非字典项应该被
+    跳过而不是报错中断。"""
+    state = SimState(
+        step=3, summary="s",
+        key_drivers=["现金储备见底"],
+        causal_links=[
+            {
+                "driver": "现金储备见底",
+                "affected_fields": ["cash", "stage"],
+                "effect": "被迫从「自由职业」转为「求稳定工作」",
+            }
+        ],
+    )
+    restored = SimState.from_dict(state.to_dict())
+    assert restored.causal_links == [
+        {
+            "driver": "现金储备见底",
+            "affected_fields": ["cash", "stage"],
+            "effect": "被迫从「自由职业」转为「求稳定工作」",
+        }
+    ]
+
+    legacy_restored = SimState.from_dict({"step": 0, "summary": "旧数据"})
+    assert legacy_restored.causal_links == []
+
+    mixed_restored = SimState.from_dict(
+        {"step": 0, "summary": "s", "causal_links": ["不是字典", {"driver": "x"}]}
+    )
+    assert mixed_restored.causal_links == [{"driver": "x"}]
+
+
 def test_manifest_roundtrip():
     ts = now_iso()
     m = SimManifest(

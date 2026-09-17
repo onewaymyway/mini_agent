@@ -210,6 +210,26 @@ section[data-testid="stSidebar"] {
     border: 1px solid var(--ws-border);
     color: var(--ws-violet, var(--ws-text-muted));
 }
+.ws-key-driver-details {
+    display: inline-block;
+    margin: 0.1rem 0.3rem 0.1rem 0;
+    vertical-align: top;
+}
+.ws-key-driver-details > summary.ws-key-driver-tag {
+    margin: 0;
+    cursor: pointer;
+    list-style: none;
+}
+.ws-key-driver-details > summary.ws-key-driver-tag::-webkit-details-marker {
+    display: none;
+}
+.ws-key-driver-detail-body {
+    margin: 0.25rem 0 0.15rem 0.2rem;
+    padding: 0.35rem 0.6rem;
+    border-left: 2px solid var(--ws-border);
+    font-size: 0.78rem;
+    color: var(--ws-text-muted);
+}
 
 div[data-testid="stButton"] > button {
     border-radius: 8px;
@@ -351,18 +371,47 @@ def _uncertain_fields_html(state) -> str:
 
 
 def _key_drivers_html(state) -> str:
-    """渲染这一步的"划重点"关键驱动因素标签（阶段十三，4.5 节，可能
-    为空）。放在叙事文本之前，让用户不用逐字读完 `narrative` 就能先
-    扫一眼这一步的关键信息。"""
+    """渲染这一步的"划重点"关键驱动因素标签（阶段十三，4.5 节；阶段
+    十五，4.7 节新增可展开详情，可能为空）。放在叙事文本之前，让用户
+    不用逐字读完 `narrative` 就能先扫一眼这一步的关键信息。
+
+    如果这一条短语在 `causal_links` 里有对应的结构化说明（按 `driver`
+    文本匹配），用原生 `<details>/<summary>` 渲染成可点击展开的标签，
+    展开后显示"受影响字段"和"具体后果"；没有对应说明时退化为阶段
+    十三的纯标签展示，不强制升级 UI 复杂度（向后兼容）。
+    """
     drivers = getattr(state, "key_drivers", None) or []
     if not drivers:
         return ""
-    tags = "".join(
-        f'<span class="ws-key-driver-tag">🔑 {_html_text(str(d))}</span>' for d in drivers if str(d).strip()
-    )
+    links = getattr(state, "causal_links", None) or []
+    link_by_driver: Dict[str, Dict[str, Any]] = {}
+    for link in links:
+        if isinstance(link, dict) and str(link.get("driver", "")).strip():
+            link_by_driver[str(link["driver"]).strip()] = link
+
+    tags = []
+    for d in drivers:
+        label = str(d).strip()
+        if not label:
+            continue
+        link = link_by_driver.get(label)
+        if link:
+            affected = link.get("affected_fields") or []
+            affected_text = "、".join(_html_text(str(f)) for f in affected) or "（未说明）"
+            effect_text = _html_text(str(link.get("effect", "")).strip()) or "（未说明）"
+            tags.append(
+                '<details class="ws-key-driver-details">'
+                f'<summary class="ws-key-driver-tag">🔑 {_html_text(label)}</summary>'
+                f'<div class="ws-key-driver-detail-body">'
+                f'<div><b>受影响字段：</b>{affected_text}</div>'
+                f'<div><b>具体后果：</b>{effect_text}</div>'
+                '</div></details>'
+            )
+        else:
+            tags.append(f'<span class="ws-key-driver-tag">🔑 {_html_text(label)}</span>')
     if not tags:
         return ""
-    return f'<div class="ws-key-drivers">{tags}</div>'
+    return f'<div class="ws-key-drivers">{"".join(tags)}</div>'
 
 
 def _choice_label(options, option_id: Optional[str]) -> str:

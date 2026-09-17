@@ -446,6 +446,9 @@ def advance(
         resource_violations=resource_violations,
         uncertain_fields=list(data.get("uncertain_fields") or []),
         key_drivers=[str(x) for x in (data.get("key_drivers") or [])],
+        causal_links=[
+            dict(x) for x in (data.get("causal_links") or []) if isinstance(x, dict)
+        ],
     )
     store.append_state(next_state, branch=branch)
 
