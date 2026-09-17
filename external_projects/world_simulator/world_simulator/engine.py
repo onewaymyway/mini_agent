@@ -58,6 +58,7 @@ def materialize_simulation(
     options,
     settings: Optional[Dict[str, Any]] = None,
     time_label: str = "",
+    time_granularity: str = "",
 ) -> SimManifest:
     """把一份（已生成、可能已被用户编辑过的）提案草稿落盘为一个新实例的
     step 0 初始状态，返回 manifest。
@@ -71,10 +72,14 @@ def materialize_simulation(
 
     Args:
         settings: 用户在创建向导里设置的 `options_count`/
-            `time_granularity`（见 `SimManifest.settings` docstring），
-            原样存进 manifest，之后每一步 `advance()` 都会读它。
+            `time_granularity_mode` 等（见 `SimManifest.settings`
+            docstring），原样存进 manifest，之后每一步 `advance()`
+            都会读它。
         time_label: 初始状态对应的"模拟内时间"人类可读描述（比如
             `起点`），留空时默认为 `起点`。
+        time_granularity: 这次模拟的起始基准粒度（`auto`/`guided`
+            模式下由 skill 给出，`fixed` 模式下留空即可——展示层/
+            后续推进都会 fallback 到 `settings.time_granularity`）。
     """
     options_list = [
         o if isinstance(o, ChoiceOption) else ChoiceOption.from_dict(o) for o in (options or [])
@@ -99,6 +104,7 @@ def materialize_simulation(
     state0 = SimState(
         step=0, summary=summary, narrative="", vars=dict(vars or {}), options=options_list,
         time_label=time_label or "起点",
+        time_granularity=time_granularity,
     )
     store.save_manifest(manifest)
     store.append_state(state0, branch="main")
@@ -134,6 +140,7 @@ def create_simulation(
         options=draft.options,
         settings=settings,
         time_label=draft.time_label,
+        time_granularity=draft.time_granularity,
     )
 
 
@@ -232,6 +239,7 @@ def advance(
         "current_vars_json": json.dumps(current.vars, ensure_ascii=False),
         "current_step": str(current.step),
         "current_time_label": current.time_label or "",
+        "current_time_granularity": current.time_granularity or "无（这是第一步推进，还没有\"上一步\"可参考，请按情境自行判断一个合适的起始粒度）",
         "chosen_option_json": json.dumps(
             chosen_option.to_dict() if chosen_option else {}, ensure_ascii=False
         ),
@@ -319,6 +327,18 @@ def advance(
             [s.to_dict() for s in history],
         )
 
+    # 时间粒度：默认延续"上一步实际用的粒度"（`current.time_granularity`），
+    # 只有 skill 明确给出不同的 `next_time_granularity` 时才算"切换"——
+    # `granularity_changed` 由 engine 自己比较算出，不直接信任 skill 是否
+    # 老实报告，避免"值其实没变但 skill 瞎标了 changed"这种不一致。
+    prev_granularity = current.time_granularity or ""
+    raw_next_granularity = str(data.get("next_time_granularity", "") or "").strip()
+    next_granularity = raw_next_granularity or prev_granularity
+    granularity_changed = bool(prev_granularity) and bool(raw_next_granularity) and raw_next_granularity != prev_granularity
+    granularity_reason = str(data.get("granularity_reason") or "").strip() or None
+    if not granularity_changed:
+        granularity_reason = None
+
     next_state = SimState(
         step=current.step + 1,
         summary=str(data.get("next_summary", "")),
@@ -327,6 +347,9 @@ def advance(
         options=[ChoiceOption.from_dict(o) for o in (data.get("options") or [])],
         major_decision=bool(data.get("major_decision", False)),
         time_label=str(data.get("time_label", "") or ""),
+        time_granularity=next_granularity,
+        granularity_changed=granularity_changed,
+        granularity_reason=granularity_reason,
     )
     store.append_state(next_state, branch=branch)
 

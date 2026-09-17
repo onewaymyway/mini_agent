@@ -94,7 +94,7 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
         "feedback": "",
         "previous_draft_json": "",
         "option_count_hint": "4 个左右",
-        "time_granularity_hint": spec_mod.DEFAULT_TIME_GRANULARITY,
+        "time_granularity_hint": spec_mod.DEFAULT_TIME_GRANULARITY + spec_mod._GRANULARITY_CONTINUITY_NOTE_CREATE,
     }
     assert draft.title == "毕业生的选择"
     assert draft.vars["age"] == 22
@@ -219,6 +219,180 @@ def test_create_and_advance_simulation_end_to_end(tmp_path, monkeypatch):
 
     updated_manifest = store.load_manifest()
     assert updated_manifest.current_step == 1
+
+
+def test_advance_defaults_to_previous_granularity_when_omitted(tmp_path, monkeypatch):
+    """skill 没给 next_time_granularity 时，应该原样延续上一步的粒度，
+    且不应被标记为"变化了"。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={"age": 22}, options=[], time_granularity="1 年",
+    )
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    assert store.load_current_state().time_granularity == "1 年"
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            assert inputs["current_time_granularity"] == "1 年"
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {"next_summary": "s2", "narrative": "n", "next_vars": {"age": 23}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.time_granularity == "1 年"
+    assert next_state.granularity_changed is False
+    assert next_state.granularity_reason is None
+
+
+def test_advance_records_granularity_switch_and_reason(tmp_path, monkeypatch):
+    """skill 给出不同粒度时，应该记录 changed=True 和切换理由。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[], time_granularity="1 年",
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "进入谈判", "narrative": "n", "next_vars": {},
+                    "options": [], "next_time_granularity": "一轮",
+                    "granularity_reason": "进入关键谈判，改为按轮次推进",
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.time_granularity == "一轮"
+    assert next_state.granularity_changed is True
+    assert next_state.granularity_reason == "进入关键谈判，改为按轮次推进"
+
+
+def test_advance_ignores_reason_when_granularity_unchanged(tmp_path, monkeypatch):
+    """即使 skill 多嘴给了 granularity_reason，只要值和上一步一样，
+    engine 也不应该把它当成"变化"落盘（避免脏理由污染时间线展示）。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[], time_granularity="1 年",
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2", "narrative": "n", "next_vars": {},
+                    "options": [], "next_time_granularity": "1 年",
+                    "granularity_reason": "其实没变但多嘴写了理由",
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.granularity_changed is False
+    assert next_state.granularity_reason is None
+
+
+def test_materialize_simulation_stores_initial_time_granularity(tmp_path):
+    manifest = engine_mod.materialize_simulation(
+        tmp_path / "data", template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[], time_granularity="1 个季度",
+    )
+    store = SimStore.for_root(tmp_path / "data", manifest.sim_id)
+    assert store.load_current_state().time_granularity == "1 个季度"
+
+
+def test_resolve_hints_fixed_mode_uses_configured_value():
+    hints = spec_mod.resolve_hints({"time_granularity_mode": "fixed", "time_granularity": "1 个月"})
+    assert "固定模式" in hints["time_granularity_hint"]
+    assert "1 个月" in hints["time_granularity_hint"]
+
+
+def test_resolve_hints_guided_mode_includes_user_guide_text():
+    hints = spec_mod.resolve_hints(
+        {"time_granularity_mode": "guided", "time_granularity_guide": "日常按季度，谈判时按轮次"},
+        stage="advance",
+    )
+    assert "引导模式" in hints["time_granularity_hint"]
+    assert "日常按季度，谈判时按轮次" in hints["time_granularity_hint"]
+    assert "{current_time_granularity}" in hints["time_granularity_hint"]  # advance 场景保留延续性说明
+
+
+def test_resolve_hints_create_stage_has_no_dangling_placeholder():
+    hints = spec_mod.resolve_hints({}, stage="create")
+    assert "{current_time_granularity}" not in hints["time_granularity_hint"]
 
 
 def test_set_pilot_config_updates_manifest(tmp_path):

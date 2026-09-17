@@ -163,6 +163,15 @@ section[data-testid="stSidebar"] {
     font-size: 0.82rem;
     color: var(--ws-violet);
 }
+.ws-chapter-granularity {
+    margin-top: 0.2rem;
+    font-size: 0.78rem;
+    color: var(--ws-text-muted);
+}
+.ws-chapter-granularity-changed {
+    color: var(--ws-accent);
+    font-weight: 600;
+}
 
 div[data-testid="stButton"] > button {
     border-radius: 8px;
@@ -226,6 +235,27 @@ def _html_text(value: str) -> str:
        手动小心翼翼控制字符串里能不能有换行。
     """
     return html_stdlib.escape(value).replace("\n", "<br>")
+
+
+def _granularity_note_html(state) -> str:
+    """渲染时间线节点时，把这一步的粒度信息拼成一段 HTML（可能为空）。
+
+    - 有粒度值时显示"本步粒度：X"。
+    - `granularity_changed` 为真时额外加一个高亮标记 + 切换理由，让
+      用户一眼看出"这里节奏变了、为什么变"（对应粒度自动切换功能里
+      "可解释"的那部分设计）。
+    """
+    granularity = getattr(state, "time_granularity", "") or ""
+    if not granularity:
+        return ""
+    if getattr(state, "granularity_changed", False):
+        reason = getattr(state, "granularity_reason", None) or ""
+        reason_html = f"：{_html_text(reason)}" if reason else ""
+        return (
+            f'<div class="ws-chapter-granularity ws-chapter-granularity-changed">'
+            f"⏱ 本步粒度切换为「{_html_text(granularity)}」{reason_html}</div>"
+        )
+    return f'<div class="ws-chapter-granularity">本步粒度：{_html_text(granularity)}</div>'
 
 
 def _choice_label(options, option_id: Optional[str]) -> str:
@@ -352,10 +382,25 @@ def page_create() -> None:
             value=int(st.session_state.get("create_options_count", 4)), step=1,
         )
     with setting_cols[1]:
-        granularity_presets = ["自动（由情节决定）", "1 天", "1 周", "1 个月", "1 个季度", "1 年", "5 年", "10 年", "自定义…"]
-        preset_default = st.session_state.get("create_granularity_preset", "自动（由情节决定）")
+        _MODE_LABELS = {
+            "auto": "自动（推荐——AI 按情境自行判断，同一次模拟允许切换）",
+            "guided": "引导（给一个偏好/基准，AI 仍自行判断）",
+            "fixed": "固定（每一步都用同一个粒度，不会切换）",
+        }
+        mode_default = st.session_state.get("create_granularity_mode", "auto")
+        time_granularity_mode = st.selectbox(
+            "时间粒度模式", options=list(_MODE_LABELS),
+            index=list(_MODE_LABELS).index(mode_default) if mode_default in _MODE_LABELS else 0,
+            format_func=lambda m: _MODE_LABELS[m],
+        )
+
+    time_granularity = ""
+    time_granularity_guide = ""
+    if time_granularity_mode == "fixed":
+        granularity_presets = ["1 天", "1 周", "1 个月", "1 个季度", "1 年", "5 年", "10 年", "自定义…"]
+        preset_default = st.session_state.get("create_granularity_preset", "1 年")
         granularity_preset = st.selectbox(
-            "时间粒度（每一步大致代表多长时间）", options=granularity_presets,
+            "固定粒度（每一步都严格按这个跨度推进）", options=granularity_presets,
             index=granularity_presets.index(preset_default) if preset_default in granularity_presets else 0,
         )
         if granularity_preset == "自定义…":
@@ -363,12 +408,28 @@ def page_create() -> None:
                 "自定义时间粒度", value=st.session_state.get("create_granularity_custom", ""),
                 placeholder="例：3 个月 / 一场谈判的一轮 / 半局比赛",
             )
-        elif granularity_preset == "自动（由情节决定）":
-            time_granularity = ""
         else:
             time_granularity = granularity_preset
+        st.session_state["create_granularity_preset"] = granularity_preset
+    elif time_granularity_mode == "guided":
+        time_granularity_guide = st.text_area(
+            "节奏偏好/基准（不是精确值，AI 仍会自行判断，只是参考这个方向）",
+            value=st.session_state.get("create_granularity_guide", ""),
+            placeholder="例：日常按季度推进，遇到谈判/冲突等关键场景可以细到按轮次或周",
+            height=70,
+        )
+        st.markdown(
+            '<span class="ws-muted">留空等同于「自动」模式。</span>', unsafe_allow_html=True,
+        )
+    else:  # auto
+        st.markdown(
+            '<span class="ws-muted">AI 会按情境自行选择每一步的时间跨度，比如日常按年推进，'
+            "遇到谈判/危机等密集情境时可能临时切到按轮次/周推进，事后再切回来——不需要"
+            "预先指定，时间线上会标出每次切换的原因。</span>",
+            unsafe_allow_html=True,
+        )
     st.markdown(
-        '<span class="ws-muted">这两项会一起存进这个模拟实例的设置里，后面每一步推进'
+        '<span class="ws-muted">这些设置会一起存进这个模拟实例的设置里，后面每一步推进'
         "都沿用；创建之后也可以在详情页里改（下一步开始生效，不影响已经推进过的历史）。"
         "</span>",
         unsafe_allow_html=True,
@@ -388,10 +449,17 @@ def page_create() -> None:
         else:
             st.session_state["create_intent"] = intent
             st.session_state["create_options_count"] = int(options_count)
-            st.session_state["create_granularity_preset"] = granularity_preset
-            if granularity_preset == "自定义…":
+            st.session_state["create_granularity_mode"] = time_granularity_mode
+            if time_granularity_mode == "fixed":
                 st.session_state["create_granularity_custom"] = time_granularity
-            settings = {"options_count": int(options_count), "time_granularity": time_granularity}
+            elif time_granularity_mode == "guided":
+                st.session_state["create_granularity_guide"] = time_granularity_guide
+            settings = {
+                "options_count": int(options_count),
+                "time_granularity_mode": time_granularity_mode,
+                "time_granularity": time_granularity,
+                "time_granularity_guide": time_granularity_guide,
+            }
             st.session_state["create_settings"] = settings
             with st.spinner("正在生成提案草稿..."):
                 try:
@@ -596,6 +664,7 @@ def page_create() -> None:
                 options=draft.options,
                 settings=st.session_state.get("create_settings"),
                 time_label=draft.time_label,
+                time_granularity=draft.time_granularity,
             )
             sim_id = manifest.sim_id
             if advance_after_create and chosen_option_id is not None:
@@ -657,11 +726,12 @@ def _render_timeline(
         # 多行 f-string + 缩进曾经导致 markdown 把收尾标签当成缩进代码
         # 块渲染，拼单行从根上避免这个问题。
         step_time_suffix = f" · {_html_text(state.time_label)}" if state.time_label else ""
+        granularity_note = _granularity_note_html(state)
         html = (
             '<div class="ws-chapter">'
             f'<div class="ws-chapter-step">第 {state.step} 步{step_time_suffix}</div>'
             f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
-            f"{narrative}{chosen_note}"
+            f"{granularity_note}{narrative}{chosen_note}"
             "</div>"
         )
         st.markdown(html, unsafe_allow_html=True)
@@ -775,6 +845,7 @@ def page_detail() -> None:
     st.markdown(f"#### 当前状态（第 {current.step} 步{step_time_suffix}）", unsafe_allow_html=True)
     st.markdown(
         f'<div class="ws-card"><div class="ws-card-title">{_html_text(current.summary)}</div>'
+        + _granularity_note_html(current)
         + (f'<div class="ws-muted">{_html_text(current.narrative)}</div>' if current.narrative else "")
         + "</div>",
         unsafe_allow_html=True,
@@ -790,30 +861,56 @@ def page_detail() -> None:
             "</span>",
             unsafe_allow_html=True,
         )
-        set_cols = st.columns([1, 2, 1])
-        with set_cols[0]:
-            new_options_count = st.number_input(
-                "每一步候选方向数量", min_value=2, max_value=8,
-                value=int(cur_settings.get("options_count", 4) or 4), step=1,
-                key="settings_options_count",
-            )
-        with set_cols[1]:
+        new_options_count = st.number_input(
+            "每一步候选方向数量", min_value=2, max_value=8,
+            value=int(cur_settings.get("options_count", 4) or 4), step=1,
+            key="settings_options_count",
+        )
+        _MODE_LABELS_SETTINGS = {
+            "auto": "自动（AI 按情境自行判断，同一次模拟允许切换）",
+            "guided": "引导（给一个偏好/基准，AI 仍自行判断）",
+            "fixed": "固定（每一步都用同一个粒度，不会切换）",
+        }
+        cur_mode = str(cur_settings.get("time_granularity_mode") or "auto")
+        if cur_mode not in _MODE_LABELS_SETTINGS:
+            cur_mode = "auto"
+        new_mode = st.selectbox(
+            "时间粒度模式", options=list(_MODE_LABELS_SETTINGS),
+            index=list(_MODE_LABELS_SETTINGS).index(cur_mode),
+            format_func=lambda m: _MODE_LABELS_SETTINGS[m],
+            key="settings_granularity_mode",
+        )
+        new_time_granularity = str(cur_settings.get("time_granularity") or "")
+        new_time_granularity_guide = str(cur_settings.get("time_granularity_guide") or "")
+        if new_mode == "fixed":
             new_time_granularity = st.text_input(
-                "时间粒度（留空 = 自动，由情节决定）",
-                value=str(cur_settings.get("time_granularity") or ""),
-                placeholder="例：1 个月 / 1 年 / 5 年 / 一场谈判的一轮",
+                "固定粒度（每一步都严格按这个跨度推进）",
+                value=new_time_granularity, placeholder="例：1 个月 / 1 年 / 一场谈判的一轮",
                 key="settings_time_granularity",
             )
-        with set_cols[2]:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("保存设置", key="settings_save"):
-                update_settings(
-                    DATA_DIR, sim_id,
-                    options_count=int(new_options_count),
-                    time_granularity=new_time_granularity,
-                )
-                st.success("设置已更新，下一步推进开始生效。")
-                st.rerun()
+        elif new_mode == "guided":
+            new_time_granularity_guide = st.text_area(
+                "节奏偏好/基准（不是精确值，AI 仍会自行判断）",
+                value=new_time_granularity_guide,
+                placeholder="例：日常按季度推进，遇到谈判/冲突等关键场景可以细到按轮次或周",
+                height=70, key="settings_time_granularity_guide",
+            )
+        else:
+            st.markdown(
+                '<span class="ws-muted">AI 会按情境自行选择每一步的时间跨度，时间线上会标出'
+                "每次切换的原因。</span>",
+                unsafe_allow_html=True,
+            )
+        if st.button("保存设置", key="settings_save"):
+            update_settings(
+                DATA_DIR, sim_id,
+                options_count=int(new_options_count),
+                time_granularity_mode=new_mode,
+                time_granularity=new_time_granularity,
+                time_granularity_guide=new_time_granularity_guide,
+            )
+            st.success("设置已更新，下一步推进开始生效。")
+            st.rerun()
 
     # ── 控制条：暂停/恢复/结束 ──
     ctrl1, ctrl2, ctrl3 = st.columns(3)
@@ -1484,12 +1581,14 @@ def page_game() -> None:
             chosen_note += f'<div class="ws-chapter-choice">　理由：{_html_text(s.chosen_reason)}</div>'
     major_tag = " · ⚡命运转折点" if s.major_decision else ""
     step_time_suffix = f" · {_html_text(s.time_label)}" if s.time_label else ""
+    granularity_note = _granularity_note_html(s)
     narrative_text = _html_text(s.narrative) if s.narrative else "（这一章还没有更多叙事文本。）"
 
     html = (
         '<div class="ws-card" style="min-height: 220px;">'
         f'<div class="ws-chapter-step">第 {s.step} 章{step_time_suffix}{major_tag}</div>'
         f'<div class="ws-chapter-summary" style="font-size:1.15rem;">{_html_text(s.summary)}</div>'
+        f"{granularity_note}"
         f'<div class="ws-chapter-narrative">{narrative_text}</div>'
         f"{chosen_note}"
         "</div>"

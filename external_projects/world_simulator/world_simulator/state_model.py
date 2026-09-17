@@ -77,6 +77,35 @@ class SimState:
     决定，engine 不假设任何具体单位。留空表示 skill 没给（旧数据/
     旧 skill 版本），展示层按"未知时间跨度"处理，不强行补一个假值。
     """
+    time_granularity: str = ""
+    """产生*本状态*这一步实际使用的时间粒度（比如 `1 个月`/`1 年`/
+    `一轮谈判`），与 `time_label`（累计的时间点，如"第 3 年"）是两个
+    不同维度：`time_label` 回答"现在是什么时候"，这个字段回答"刚才
+    这一步跨越了多长/什么性质的时间"。
+
+    存在的意义：`settings.time_granularity_mode == "auto"/"guided"`
+    时，粒度不再是全实例固定的一个值，同一次模拟里可能"日常年度推进，
+    遇到谈判时切到按轮次推进"——如果不单独记录每一步实际用的粒度，
+    时间线上就没法直观看出"这里节奏变了"，也没法把"上一步用的粒度"
+    喂给下一步作为延续性参考（见 `engine.py::advance()`）。
+
+    `state0`（初始状态）由 `spec_generator` 给出的是这次模拟的*起始
+    基准粒度*；之后每一步 `advance()` 默认延续上一步的值，除非 skill
+    判断需要切换并给出新值（见 `granularity_changed`/`granularity_reason`）。
+    留空表示 skill 没给（旧数据/旧 skill 版本/`fixed` 模式下始终不变），
+    展示层按"未知/沿用设置"处理。
+    """
+    granularity_changed: bool = False
+    """这一步用的 `time_granularity` 是否与上一步不同——由 engine 在
+    落盘时对比算出（不依赖 skill 自报，避免不一致），仅用于时间线
+    展示时高亮"这里切换了节奏"，不影响任何推进逻辑。`state0` 恒为
+    False（没有"上一步"可比较）。
+    """
+    granularity_reason: Optional[str] = None
+    """`granularity_changed` 为 True 时，skill 给出的切换理由（一两句
+    话，比如"进入谈判环节，改为按轮次推进"）；未变化或旧数据没有则为
+    None——只有变化时才要求这个字段，减少无意义的输出负担。
+    """
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -101,6 +130,9 @@ class SimState:
             chosen_reason=data.get("chosen_reason"),
             major_decision=bool(data.get("major_decision", False)),
             time_label=str(data.get("time_label", "") or ""),
+            time_granularity=str(data.get("time_granularity", "") or ""),
+            granularity_changed=bool(data.get("granularity_changed", False)),
+            granularity_reason=data.get("granularity_reason"),
         )
 
 
@@ -127,14 +159,26 @@ class SimManifest:
     branch: str = "main"
     settings: Dict[str, Any] = field(default_factory=dict)
     """模拟级别的可配置项，自由 JSON，引擎不关心具体字段含义（同
-    `SimState.vars` 的设计取舍），当前约定使用两个字段（见
+    `SimState.vars` 的设计取舍），当前约定使用以下字段（见
     `spec_generator.py::resolve_hints()`）：
     - `options_count`：整数，每一步希望给出的候选方向数量（生成初始
       状态和每一步推进都用同一个值），用户在创建向导里设置，未设置时
       沿用 skill 里写的默认建议。
-    - `time_granularity`：字符串，"每一步代表多长的模拟内时间"，比如
-      `"1 个月"`/`"1 年"`/`"5 年"`/`"自动（由情节决定）"`；不是引擎
-      解析的结构化值，只是原样喂给 skill 的一句话提示。
+    - `time_granularity_mode`：字符串，`"fixed"` | `"auto"` | `"guided"`，
+      决定"每一步的时间粒度怎么定"：
+        - `fixed`：全实例固定用 `time_granularity` 这一个值（原有行为）。
+        - `auto`（未设置时的默认值）：完全交给 skill 按情境自行判断，
+          允许同一次模拟里出现多种粒度（比如日常按年推进，进入谈判时
+          切到按轮次推进），每一步实际用的粒度记在
+          `SimState.time_granularity` 上。
+        - `guided`：介于两者之间，`time_granularity_guide` 给一段
+          "偏好/基准"引导语（不是精确值），skill 仍自主判断但会参考
+          这个偏好。
+    - `time_granularity`：字符串，`fixed` 模式下每一步固定使用的粒度，
+      比如 `"1 个月"`/`"1 年"`；其余模式下不使用这个字段。
+    - `time_granularity_guide`：字符串，`guided` 模式下的偏好引导语，
+      比如"日常按季度推进，遇到谈判/冲突等关键场景可以细到按轮次"；
+      不是引擎解析的结构化值，只是原样喂给 skill 的一句话提示。
     """
 
     def to_dict(self) -> Dict[str, Any]:

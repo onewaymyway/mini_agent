@@ -27,16 +27,50 @@ DEFAULT_TIME_GRANULARITY = (
     "模拟一个文明可能一步是几十年）"
 )
 
+_GRANULARITY_CONTINUITY_NOTE_ADVANCE = (
+    "\n默认延续上一步用过的粒度（见 `{current_time_granularity}`），除非"
+    "情境明显需要改变（比如从平稳时期进入密集博弈/谈判/危机，或者反过来"
+    "从紧张情境恢复平稳）——不要没有情节依据就在粒度之间来回跳。请在输出里"
+    "给出这一步实际使用的粒度 `next_time_granularity`；如果这个值和上一步"
+    "不同，额外给一两句话的 `granularity_reason` 说明为什么现在要切换节奏，"
+    "没变化则不需要这个字段。"
+)
+_GRANULARITY_CONTINUITY_NOTE_CREATE = (
+    "\n这是初始状态，你给出的粒度会作为本次模拟的起始基准（输出字段"
+    "`time_granularity`），之后每一步默认延续这个基准，只在情境明显需要"
+    "时才会切换——请选一个能代表这次模拟\"日常节奏\"的粒度，不用考虑中途"
+    "临时的特殊情境。"
+)
+_VALID_GRANULARITY_MODES = ("fixed", "auto", "guided")
 
-def resolve_hints(settings: "Dict[str, Any] | None" = None) -> Dict[str, str]:
+
+def resolve_hints(settings: "Dict[str, Any] | None" = None, *, stage: str = "advance") -> Dict[str, str]:
     """把 `manifest.settings`（或创建向导里还没落盘成 manifest 时的临时
-    设置字典）转成喂给 workflow prompt 的两条提示字符串。
+    设置字典）转成喂给 workflow prompt 的提示字符串。
 
     单独抽成一个函数，是因为 `generate_scenario()`（创建阶段，这时候
     还没有 manifest）和 `engine.advance()`（推进阶段，从
     `manifest.settings` 读）两处都要用同一套"没设置就用什么默认值"的
     规则——不想两处各写一份，以后要改默认值/校验逻辑就得同步改两处、
     容易漏改一处。
+
+    Args:
+        stage: `"create"`（`generate_scenario` 场景，还没有"上一步"）
+            或 `"advance"`（默认，`engine.advance()` 场景，有
+            `{current_time_granularity}` 可以参考）——两种场景下
+            "自动"/"引导"模式的提示文案略有不同（`create` 讲的是"建立
+            基准"，`advance` 讲的是"延续上一步、变化需说明理由"），
+            避免 `generate_scenario.yaml` 的 prompt 里出现一句引用了
+            不存在的 `{current_time_granularity}` 占位符的说明文字。
+
+    `time_granularity_hint` 的内容按 `time_granularity_mode` 分三种：
+    - `fixed`：明确要求"每一步都严格按这个值推进"，行为与阶段一/二
+      完全一致（一次模拟从头到尾只有一种粒度）。
+    - `auto`（未设置时的默认值）：交给 skill 按情境自行判断，同一次
+      模拟允许出现多种粒度，附带"延续上一步、变化需给理由"的约束，
+      避免毫无依据地来回跳。
+    - `guided`：在 `auto` 的自由裁量基础上，多附一句用户给的偏好/基准
+      引导语，不是精确值，skill 仍自主判断。
     """
     settings = settings or {}
     raw_count = settings.get("options_count")
@@ -45,10 +79,33 @@ def resolve_hints(settings: "Dict[str, Any] | None" = None) -> Dict[str, str]:
     except (TypeError, ValueError):
         options_count = DEFAULT_OPTIONS_COUNT
     options_count = max(1, min(options_count, 8))
-    time_granularity = str(settings.get("time_granularity") or "").strip() or DEFAULT_TIME_GRANULARITY
+
+    mode = str(settings.get("time_granularity_mode") or "").strip()
+    if mode not in _VALID_GRANULARITY_MODES:
+        mode = "auto"
+
+    continuity_note = (
+        _GRANULARITY_CONTINUITY_NOTE_CREATE if stage == "create" else _GRANULARITY_CONTINUITY_NOTE_ADVANCE
+    )
+
+    if mode == "fixed":
+        fixed_value = str(settings.get("time_granularity") or "").strip() or DEFAULT_TIME_GRANULARITY
+        time_granularity_hint = f"固定模式——每一步都必须严格按这个粒度推进：{fixed_value}"
+    elif mode == "guided":
+        guide = str(settings.get("time_granularity_guide") or "").strip()
+        if guide:
+            time_granularity_hint = (
+                f"引导模式——用户给出的偏好/基准（不是精确值，仍需你自行判断）："
+                f"{guide}{continuity_note}"
+            )
+        else:
+            time_granularity_hint = f"{DEFAULT_TIME_GRANULARITY}{continuity_note}"
+    else:  # auto
+        time_granularity_hint = f"{DEFAULT_TIME_GRANULARITY}{continuity_note}"
+
     return {
         "option_count_hint": f"{options_count} 个左右",
-        "time_granularity_hint": time_granularity,
+        "time_granularity_hint": time_granularity_hint,
     }
 
 
@@ -61,6 +118,11 @@ class ScenarioDraft:
     vars: Dict[str, Any]
     options: List[ChoiceOption]
     time_label: str = ""
+    time_granularity: str = ""
+    """这次模拟的起始基准粒度（`settings.time_granularity_mode` 为
+    `auto`/`guided` 时才有意义），落盘为 `state0.time_granularity`，
+    之后每一步 `advance()` 默认延续这个基准，见
+    `state_model.SimState.time_granularity` 的说明。"""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScenarioDraft":
@@ -70,6 +132,7 @@ class ScenarioDraft:
             vars=dict(data.get("vars") or {}),
             options=[ChoiceOption.from_dict(o) for o in (data.get("options") or [])],
             time_label=str(data.get("time_label", "") or ""),
+            time_granularity=str(data.get("time_granularity", "") or ""),
         )
 
 
@@ -174,7 +237,7 @@ def generate_scenario(
             "intent": intent,
             "feedback": feedback or "",
             "previous_draft_json": previous_draft_json,
-            **resolve_hints(settings),
+            **resolve_hints(settings, stage="create"),
         },
     )
 
