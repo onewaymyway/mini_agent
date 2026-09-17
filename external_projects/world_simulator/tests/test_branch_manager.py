@@ -194,3 +194,52 @@ def test_delete_branch_missing_raises(tmp_path):
     _make_sim(data_dir, "sim1", 1)
     with pytest.raises(bm.BranchError):
         bm.delete_branch(data_dir, "sim1", "does_not_exist")
+
+
+def test_fork_branch_inherits_independent_pilot_config(tmp_path):
+    data_dir = tmp_path / "data"
+    store = _make_sim(data_dir, "sim1", 2)
+    store.save_pilot_config("main", "autopilot", {"risk_preference": "aggressive"})
+
+    new_branch = bm.fork_branch(data_dir, "sim1", from_step=1, switch=False)
+
+    # 新分支继承了创建时刻 main 的配置……
+    new_cfg = store.load_pilot_config(new_branch)
+    assert new_cfg["pilot_mode"] == "autopilot"
+    assert new_cfg["autopilot"] == {"risk_preference": "aggressive"}
+
+    # ……但落盘成独立一份：改新分支的配置不影响 main。
+    store.save_pilot_config(new_branch, "manual", {})
+    assert store.load_pilot_config(new_branch) == {"pilot_mode": "manual", "autopilot": {}}
+    main_cfg = store.load_pilot_config("main")
+    assert main_cfg["pilot_mode"] == "autopilot"
+    assert main_cfg["autopilot"] == {"risk_preference": "aggressive"}
+
+
+def test_fork_branch_switch_mirrors_pilot_config_into_manifest(tmp_path):
+    data_dir = tmp_path / "data"
+    store = _make_sim(data_dir, "sim1", 2)
+    store.save_pilot_config("main", "autopilot", {"review_mode": "silent"})
+
+    new_branch = bm.fork_branch(data_dir, "sim1", from_step=1, switch=True)
+
+    manifest = store.load_manifest()
+    assert manifest.branch == new_branch
+    assert manifest.pilot_mode == "autopilot"
+    assert manifest.autopilot == {"review_mode": "silent"}
+
+
+def test_switch_branch_mirrors_target_pilot_config(tmp_path):
+    data_dir = tmp_path / "data"
+    store = _make_sim(data_dir, "sim1", 2)
+    store.save_pilot_config("main", "manual", {})
+    new_branch = bm.fork_branch(data_dir, "sim1", from_step=1, switch=False)
+    store.save_pilot_config(new_branch, "autopilot", {"principles": "谨慎"})
+
+    manifest = bm.switch_branch(data_dir, "sim1", new_branch)
+    assert manifest.pilot_mode == "autopilot"
+    assert manifest.autopilot == {"principles": "谨慎"}
+
+    manifest2 = bm.switch_branch(data_dir, "sim1", "main")
+    assert manifest2.pilot_mode == "manual"
+    assert manifest2.autopilot == {}

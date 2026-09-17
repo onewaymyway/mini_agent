@@ -94,3 +94,45 @@ def test_load_manifest_missing_raises(tmp_path):
 
     with pytest.raises(SimNotFoundError):
         store.load_manifest()
+
+
+def test_pilot_config_defaults_when_no_file(tmp_path):
+    store = SimStore.for_root(tmp_path / "data", "sim1")
+    assert store.load_pilot_config("main") == {"pilot_mode": "manual", "autopilot": {}}
+    assert store.load_pilot_config("br_xyz") == {"pilot_mode": "manual", "autopilot": {}}
+
+
+def test_pilot_config_save_and_load_roundtrip(tmp_path):
+    store = SimStore.for_root(tmp_path / "data", "sim1")
+    store.save_pilot_config("main", "autopilot", {"risk_preference": "保守"})
+    assert store.load_pilot_config("main") == {
+        "pilot_mode": "autopilot",
+        "autopilot": {"risk_preference": "保守"},
+    }
+
+
+def test_pilot_config_falls_back_to_manifest_for_legacy_main(tmp_path):
+    """旧数据：main 分支没有独立的 pilot_config.json，退回读 manifest 顶层字段。"""
+    data_dir = tmp_path / "data"
+    store = SimStore.for_root(data_dir, "sim1")
+    ts = now_iso()
+    store.save_manifest(
+        SimManifest(
+            sim_id="sim1", template="life_sim", intent="i", title="t",
+            created_at=ts, updated_at=ts,
+            pilot_mode="autopilot", autopilot={"review_mode": "silent"},
+        )
+    )
+    assert store.load_pilot_config("main") == {
+        "pilot_mode": "autopilot",
+        "autopilot": {"review_mode": "silent"},
+    }
+
+
+def test_delete_branch_dir_removes_pilot_config_too(tmp_path):
+    data_dir = tmp_path / "data"
+    store = SimStore.for_root(data_dir, "sim1")
+    store.save_pilot_config("br_abc", "autopilot", {})
+    assert store.pilot_config_path("br_abc").exists()
+    store.delete_branch_dir("br_abc")
+    assert not store.pilot_config_path("br_abc").exists()

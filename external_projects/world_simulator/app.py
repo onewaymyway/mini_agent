@@ -669,8 +669,9 @@ def _render_timeline(
             fork_col, _spacer = st.columns([1, 5])
             with fork_col:
                 if st.button(
-                    "🌿 在此创建分支",
+                    "创建分支",
                     key=f"fork_here_{sim_id}_{source_branch}_{state.step}",
+                    type="primary",
                     help="从这一步之后开一条新分支，原时间线原样保留，可以在新分支上重新选。",
                 ):
                     try:
@@ -834,7 +835,12 @@ def page_detail() -> None:
     st.markdown("#### 推进模式")
     is_autopilot = manifest.pilot_mode == "autopilot"
     mode_label = "自动挡（代理代选）" if is_autopilot else "手动挡（你来选）"
-    st.markdown(f'<span class="ws-muted">当前：{mode_label}</span>', unsafe_allow_html=True)
+    st.markdown(
+        f'<span class="ws-muted">当前分支「{manifest.branch}」：{mode_label}'
+        "，每条分支的推进模式/自动挡画像各自独立，互不影响；新分支创建时"
+        "会继承来源分支当时的配置，之后可以各自单独调整。</span>",
+        unsafe_allow_html=True,
+    )
 
     with st.expander("配置自动挡", expanded=False):
         ap_cfg = manifest.autopilot or {}

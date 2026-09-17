@@ -102,6 +102,7 @@ def materialize_simulation(
     )
     store.save_manifest(manifest)
     store.append_state(state0, branch="main")
+    store.save_pilot_config("main", manifest.pilot_mode, manifest.autopilot)
     return manifest
 
 
@@ -312,20 +313,30 @@ def set_status(data_dir: Path, sim_id: str, status: str) -> SimManifest:
 def set_pilot_config(
     data_dir: Path, sim_id: str, *, pilot_mode: str, autopilot: Optional[Dict[str, Any]] = None
 ) -> SimManifest:
-    """更新实例的推进模式（手动挡/自动挡）与自动挡配置。
+    """更新**当前活跃分支**的推进模式（手动挡/自动挡）与自动挡配置。
 
-    对应方案 4.1 节的 `manifest.json.pilot_mode`/`autopilot` 字段，供
-    `app.py` 的自动挡配置表单调用；不校验 `autopilot` 字段内部结构
-    （`principles`/`risk_preference`/`review_mode`），非法值会在真正
-    调用 `advance_step` workflow 时体现为"skill 读不懂这段画像"而不是
-    这里报错——阶段四范围内暂不引入额外的 schema 校验。
+    每条分支有自己独立的一份自动挡配置（`SimStore.pilot_config_path`），
+    互不影响：在分支 A 上调整"风险偏好"不会波及分支 B。这里只更新
+    `manifest.branch` 指向的这一条分支的配置文件；`manifest.pilot_mode`/
+    `manifest.autopilot` 这两个顶层字段仍然同步写一份作为"当前活跃分支
+    配置"的镜像——`autopilot.py`、看板列表等既有代码读的就是这两个
+    顶层字段，镜像它们可以在不改动那些读取逻辑的前提下，让"配置已经
+    是按分支存储"这件事对它们透明。分支切换/分叉时（`branch_manager`）
+    也会同步刷新这份镜像，保证它始终等于"当前活跃分支自己的配置"。
+
+    不校验 `autopilot` 字段内部结构（`principles`/`risk_preference`/
+    `review_mode`），非法值会在真正调用 `advance_step` workflow 时体现
+    为"skill 读不懂这段画像"而不是这里报错——阶段四范围内暂不引入
+    额外的 schema 校验。
     """
     if pilot_mode not in ("manual", "autopilot"):
         raise SimEngineError(f"非法推进模式：{pilot_mode}")
     store = SimStore.for_root(data_dir, sim_id)
     manifest = store.load_manifest()
+    autopilot_cfg = dict(autopilot or {})
+    store.save_pilot_config(manifest.branch, pilot_mode, autopilot_cfg)
     manifest.pilot_mode = pilot_mode
-    manifest.autopilot = dict(autopilot or {})
+    manifest.autopilot = autopilot_cfg
     store.save_manifest(manifest)
     return manifest
 

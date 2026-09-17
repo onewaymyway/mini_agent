@@ -27,7 +27,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from world_simulator.state_model import SimManifest, SimState
 
@@ -86,6 +86,9 @@ class SimStore:
     def state_history_path(self, branch: str = "main") -> Path:
         return self.branch_dir(branch) / "state_history.jsonl"
 
+    def pilot_config_path(self, branch: str = "main") -> Path:
+        return self.branch_dir(branch) / "pilot_config.json"
+
     # ── manifest ─────────────────────────────────────────────────────
 
     def exists(self) -> bool:
@@ -139,6 +142,53 @@ class SimStore:
             [s.to_dict() for s in history],
         )
         atomic_write_json(self.state_current_path(branch), state.to_dict())
+
+    # ── 自动挡配置（按分支独立存储）──────────────────────────────────
+
+    def load_pilot_config(self, branch: str = "main") -> Dict[str, Any]:
+        """读取某条分支自己的推进模式/自动挡配置。
+
+        每条分支的 `pilot_config.json` 落在各自的分支目录下（`main` 就是
+        `sim_dir/pilot_config.json`），与 `state_current.json`/
+        `state_history.jsonl` 同级——分支既然已经是"独立目录"，配置跟着
+        放在一起最自然，也顺带保证"删分支目录"（`delete_branch_dir`）
+        天然把该分支的自动挡配置一并删掉，不需要额外清理。
+
+        兼容旧数据：早期版本把 `pilot_mode`/`autopilot` 直接存在
+        `manifest.json` 顶层（全实例共用一份，不区分分支）。`main`
+        分支如果还没有独立的 `pilot_config.json`，就退回读 manifest
+        顶层字段，读到什么用什么；其余分支（后引入功能之后才可能
+        存在）没有独立文件时直接给默认值，不存在"退回 manifest"这一说，
+        因为它们创建时（`branch_manager.fork_branch`）就必然会写好自己
+        的 `pilot_config.json`。
+        """
+        path = self.pilot_config_path(branch)
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return {
+                "pilot_mode": str(data.get("pilot_mode", "manual")),
+                "autopilot": dict(data.get("autopilot") or {}),
+            }
+        if branch == "main":
+            try:
+                manifest = self.load_manifest()
+            except SimNotFoundError:
+                pass
+            else:
+                return {
+                    "pilot_mode": manifest.pilot_mode,
+                    "autopilot": dict(manifest.autopilot or {}),
+                }
+        return {"pilot_mode": "manual", "autopilot": {}}
+
+    def save_pilot_config(
+        self, branch: str, pilot_mode: str, autopilot: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """把某条分支自己的推进模式/自动挡配置写盘，只影响这一条分支。"""
+        atomic_write_json(
+            self.pilot_config_path(branch),
+            {"pilot_mode": pilot_mode, "autopilot": dict(autopilot or {})},
+        )
 
     def delete_branch_dir(self, branch: str) -> None:
         """删除某条分支在磁盘上的目录（`branches/<branch>/`）。

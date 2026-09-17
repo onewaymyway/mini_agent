@@ -120,16 +120,40 @@ def fork_branch(
 
     atomic_write_json(store.state_current_path(new_branch), cutoff[-1].to_dict())
 
+    # 自动挡配置：新分支继承 source_branch 当前那一份，但落盘成自己
+    # 独立的一份文件（`save_pilot_config` 整份重写，不是引用/链接）——
+    # 之后不管哪条分支上再调整自动挡设置，都只会改到自己这一份，两条
+    # 分支各自用不同的自动挡画像跑模拟互不干扰，这正是"分支管理"要
+    # 支持的用法：同一个起点分岔出去，一条手动挡、一条自动挡（甚至
+    # 自动挡画像都不同）。
+    pilot_cfg = store.load_pilot_config(source_branch)
+    store.save_pilot_config(new_branch, pilot_cfg["pilot_mode"], pilot_cfg["autopilot"])
+
     if switch:
         manifest.branch = new_branch
         manifest.current_step = cutoff[-1].step
+        # 镜像新分支自己的自动挡配置到 manifest 顶层字段，道理同
+        # `switch_branch`/`engine.set_pilot_config` 的注释：既有代码
+        # 读的是 manifest.pilot_mode/manifest.autopilot，切过去之后
+        # 这两个字段要立刻反映"新分支自己的配置"，而不是继续显示切换
+        # 前那条分支的配置。
+        manifest.pilot_mode = pilot_cfg["pilot_mode"]
+        manifest.autopilot = dict(pilot_cfg["autopilot"])
         store.save_manifest(manifest)
 
     return new_branch
 
 
 def switch_branch(data_dir: Path, sim_id: str, branch_id: str) -> SimManifest:
-    """把实例的"当前活跃分支"切到 `branch_id`（必须已存在）。"""
+    """把实例的"当前活跃分支"切到 `branch_id`（必须已存在）。
+
+    连带把 `manifest.pilot_mode`/`manifest.autopilot` 刷新成 `branch_id`
+    自己的自动挡配置——每条分支的自动挡设置是独立存储的（见
+    `SimStore.load_pilot_config`），切换分支时如果不刷新这两个镜像
+    字段，`autopilot.py`/看板会继续显示、继续使用切换前那条分支的
+    配置，等于"切了分支但自动挡画像没跟着切"，不符合"每个分支一份
+    独立配置"的预期。
+    """
     if branch_id not in list_branches(data_dir, sim_id):
         raise BranchError(f"分支不存在：{branch_id}")
     store = SimStore.for_root(data_dir, sim_id)
@@ -137,8 +161,11 @@ def switch_branch(data_dir: Path, sim_id: str, branch_id: str) -> SimManifest:
     current = store.load_current_state(branch_id)
     if current is None:
         raise BranchError(f"分支 {branch_id!r} 缺少当前状态，数据可能已损坏")
+    pilot_cfg = store.load_pilot_config(branch_id)
     manifest.branch = branch_id
     manifest.current_step = current.step
+    manifest.pilot_mode = pilot_cfg["pilot_mode"]
+    manifest.autopilot = pilot_cfg["autopilot"]
     store.save_manifest(manifest)
     return manifest
 
