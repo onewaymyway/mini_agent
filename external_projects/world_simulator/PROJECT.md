@@ -163,6 +163,64 @@ skill 内容"这两处，没有渗透进核心引擎。
 如果在这里也能推进，就需要同步维护两处选择卡片的状态与交互逻辑，
 收益（少点一次「回到推进面板」）远小于维护两套交互入口的复杂度。
 
+阶段八（回填：分支信息增强/自定义选项/多策略对比实验 + 自动时间
+粒度，已完成，未在本文件正式编号前即已落地）交付：
+
+1. `branch_manager.list_branches_detailed()`：在原有 `list_branches`
+   基础上补齐创建时间/来源分支/当前进度等信息，供「分支」区块展示更
+   丰富的列表，而不只是分支名。
+2. `engine.advance()` 新增 `custom_option` 参数：用户/自动挡可以跳出
+   当前候选列表、提出一个不在 `options` 里的新方向（手动挡/自动挡
+   两条路径共用同一套落盘逻辑，`chosen_by` 区分来源），对应方案里
+   "系统给的候选终究只是建议"这条设计取向。
+3. `autopilot.run_comparison_experiment()`：给定 N 个命名策略 profile，
+   各自独立跑一次相同步数，返回可比较的结果列表——"多方案横向对比"
+   的第一版，比较对象是**不同的**决策原则/风险偏好，不是同一方案的
+   分布（这个缺口正是本文档 4.2 节要补的）。
+4. `state_model.SimManifest.settings.time_granularity_mode`
+   （`fixed`/`auto`/`guided`）+ `SimState.time_granularity`/
+   `granularity_changed`/`granularity_reason`：把"每一步的时间跨度"
+   从"全实例固定一个值"升级为"默认延续上一步、情境需要时可以切换，
+   切换需要给理由"，`engine.advance()` 负责比较前后粒度算出
+   `granularity_changed`（不直接信任 skill 自报），时间线在切换处
+   高亮展示。
+
+这两轮迭代完成之后、`next_doc/
+world_simulator_universal_world_model_upgrade_plan.md`（简称"演进
+计划"）启动之前，`PROJECT.md` 一直没有为它们分配正式阶段编号——本条
+目就是那次编号回填，不代表这两轮功能是本次才新增的。
+
+阶段九（资源类字段代码层校验，已完成，见演进计划 4.1 节）交付：
+
+1. `state_model.SimManifest.settings.resource_fields`：可选字段，
+   声明 `vars` 里哪些字段是"资源类数值字段"（如 `cash`，或
+   `resources.amount` 这种一层嵌套路径），每项可以只给字段名（下限
+   默认 0）或 `{"field": ..., "min": ...}` 自定义下限；留空（默认）
+   表示不做任何校验，行为与引入这个功能之前完全一致。
+   `SimState.resource_violations`：新增字段，记录某一步落盘时被纠正
+   过的越界项（`{field, llm_value, clamped_value}`），默认空列表。
+2. `engine.py` 新增 `_normalize_resource_fields()`/`_get_nested()`/
+   `_set_nested()`/`_apply_resource_guard()`：`advance()` 落盘
+   `next_vars` 前对声明的每个字段做一次下限检查——**不拒绝这次
+   推进**，只是把越界值原地夹到下限，越界详情记入
+   `resource_violations`，保持"系统纠正了一处不合理数值"的透明可见，
+   而不是静默篡改或让整次推进失败。
+3. `spec_generator.ScenarioDraft.resource_fields`：`generate_scenario`
+   阶段 skill 可选输出的建议值（`generate_scenario.yaml` 提示词 +
+   两个 `SKILL.md` 都已补充这段可选输出的说明），创建向导展示为一个
+   可编辑的逗号分隔字段列表，不强制每次都填。
+4. `app.py`：创建向导新增"资源类字段"编辑框（草稿阶段）；实例详情页
+   "模拟设置"区块新增同款编辑框（随时增删，下一步推进开始生效）；
+   时间线卡片（含独立时间线视图与游戏化章节视图）新增
+   `resource_violations` 非空时的高亮提示行，展示字段名 + 原始值 +
+   纠正后的值。
+5. `tests/test_spec_and_engine.py` 新增两个用例：字段越界时被正确夹到
+   下限并记录、字段在范围内时不产生任何记录。
+
+范围严格克制在"数值下限"这一种最简单的校验（演进计划 4.1 节"范围
+克制"一节已说明原因）：不引入通用规则引擎，不做资源之间的转移/生产
+关系建模，`resource_fields` 未声明时的行为与阶段九之前完全一致。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：

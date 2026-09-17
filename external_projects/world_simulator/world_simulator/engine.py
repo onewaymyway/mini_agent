@@ -47,6 +47,83 @@ def _skill_name_for_template(template: str) -> str:
     return f"{template.replace('_', '-')}-template"
 
 
+def _normalize_resource_fields(raw: Any) -> list:
+    """把 `manifest.settings.resource_fields` 归一化成
+    `[{"field": str, "min": float}, ...]` 的形式。
+
+    支持两种输入写法（见 `state_model.SimManifest.settings` 的字段
+    说明）：纯字段名字符串（下限默认 0）、或
+    `{"field": ..., "min": ...}` 字典（`min` 缺省也是 0）。非法/无法
+    解析的项直接跳过，不抛错——这是一个"锦上添花"的校验功能，配置写
+    错了不应该让整个推进流程失败。
+    """
+    fields: list = []
+    for item in raw or []:
+        if isinstance(item, str):
+            name = item.strip()
+            if name:
+                fields.append({"field": name, "min": 0})
+        elif isinstance(item, dict):
+            name = str(item.get("field") or "").strip()
+            if not name:
+                continue
+            try:
+                min_value = float(item.get("min", 0) or 0)
+            except (TypeError, ValueError):
+                min_value = 0
+            fields.append({"field": name, "min": min_value})
+    return fields
+
+
+def _get_nested(data: Dict[str, Any], path: str) -> Any:
+    """按 `.` 分隔的路径读取（最多支持一层嵌套，见 `resource_fields`
+    格式说明），路径不存在时返回 `None`。"""
+    parts = path.split(".", 1)
+    if len(parts) == 1:
+        return data.get(parts[0])
+    outer = data.get(parts[0])
+    if not isinstance(outer, dict):
+        return None
+    return outer.get(parts[1])
+
+
+def _set_nested(data: Dict[str, Any], path: str, value: Any) -> None:
+    """按 `.` 分隔的路径写入（最多支持一层嵌套），路径中间层不存在时
+    静默放弃（说明这个字段这一步 LLM 根本没给出来，没有可以校正的
+    数值——不强行造一个结构出来）。"""
+    parts = path.split(".", 1)
+    if len(parts) == 1:
+        data[parts[0]] = value
+        return
+    outer = data.get(parts[0])
+    if isinstance(outer, dict):
+        outer[parts[1]] = value
+
+
+def _apply_resource_guard(vars_dict: Dict[str, Any], resource_fields_raw: Any) -> list:
+    """对 `vars_dict` 就地做资源类字段下限校验（阶段九，4.1 节）。
+
+    低于下限的字段被原地夹到下限，返回本次发现并纠正的越界项列表
+    （`SimState.resource_violations` 要落盘的内容）；未声明
+    `resource_fields`、字段不存在、或字段值不是数字（比如 LLM 把资源
+    字段错写成字符串）时都跳过，不报错——这一步只做"数值下限"这一种
+    最简单的校验，其它情况留给未来按需扩展。
+    """
+    violations: list = []
+    for spec in _normalize_resource_fields(resource_fields_raw):
+        path = spec["field"]
+        min_value = spec["min"]
+        current = _get_nested(vars_dict, path)
+        if not isinstance(current, (int, float)) or isinstance(current, bool):
+            continue
+        if current < min_value:
+            _set_nested(vars_dict, path, min_value)
+            violations.append(
+                {"field": path, "llm_value": current, "clamped_value": min_value}
+            )
+    return violations
+
+
 def materialize_simulation(
     data_dir: Path,
     *,
@@ -339,17 +416,27 @@ def advance(
     if not granularity_changed:
         granularity_reason = None
 
+    # 资源类字段代码层校验（阶段九，4.1 节）：LLM 给的 next_vars 可能
+    # 把某个声明为"资源类"的字段算出负数（花的钱超过账上现金这种最
+    # 基础的错误）——不拒绝这次推进，就地把越界字段夹到下限，越界详情
+    # 记入 next_state.resource_violations 供时间线展示，保持透明。
+    next_vars = dict(data.get("next_vars") or {})
+    resource_violations = _apply_resource_guard(
+        next_vars, manifest.settings.get("resource_fields")
+    )
+
     next_state = SimState(
         step=current.step + 1,
         summary=str(data.get("next_summary", "")),
         narrative=str(data.get("narrative", "")),
-        vars=dict(data.get("next_vars") or {}),
+        vars=next_vars,
         options=[ChoiceOption.from_dict(o) for o in (data.get("options") or [])],
         major_decision=bool(data.get("major_decision", False)),
         time_label=str(data.get("time_label", "") or ""),
         time_granularity=next_granularity,
         granularity_changed=granularity_changed,
         granularity_reason=granularity_reason,
+        resource_violations=resource_violations,
     )
     store.append_state(next_state, branch=branch)
 

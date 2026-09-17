@@ -172,6 +172,12 @@ section[data-testid="stSidebar"] {
     color: var(--ws-accent);
     font-weight: 600;
 }
+.ws-chapter-resource-violation {
+    margin-top: 0.2rem;
+    font-size: 0.78rem;
+    color: var(--ws-danger, #e0665a);
+    font-weight: 600;
+}
 
 div[data-testid="stButton"] > button {
     border-radius: 8px;
@@ -256,6 +262,28 @@ def _granularity_note_html(state) -> str:
             f"⏱ 本步粒度切换为「{_html_text(granularity)}」{reason_html}</div>"
         )
     return f'<div class="ws-chapter-granularity">本步粒度：{_html_text(granularity)}</div>'
+
+
+def _resource_violations_html(state) -> str:
+    """渲染这一步资源类字段被系统纠正的提示（阶段九，4.1 节，可能为空）。
+
+    每条越界项单独一行，展示字段名 + LLM 原始值 + 被纠正后的值——
+    保持透明，让用户知道"系统改过一处数值"而不是静默篡改。
+    """
+    violations = getattr(state, "resource_violations", None) or []
+    if not violations:
+        return ""
+    lines = []
+    for v in violations:
+        field = _html_text(str(v.get("field", "")))
+        llm_value = v.get("llm_value")
+        clamped_value = v.get("clamped_value")
+        lines.append(
+            f'<div class="ws-chapter-resource-violation">⚠ 「{field}」原始值 '
+            f"{_html_text(str(llm_value))} 不合理，已自动纠正为 "
+            f"{_html_text(str(clamped_value))}</div>"
+        )
+    return "".join(lines)
 
 
 def _choice_label(options, option_id: Optional[str]) -> str:
@@ -488,6 +516,25 @@ def page_create() -> None:
         "关键变量（JSON）", value=json.dumps(draft.vars, ensure_ascii=False, indent=2), height=160
     )
 
+    # ── 资源类字段（阶段九，4.1 节）：声明后引擎会在每步推进时自动把
+    # 这些字段夹到下限，不需要每次都填，留空则不做任何校验 ──
+    resource_fields_default = ", ".join(
+        (f.get("field", "") if isinstance(f, dict) else str(f))
+        for f in (getattr(draft, "resource_fields", None) or [])
+    )
+    resource_fields_text = st.text_input(
+        "资源类字段（逗号分隔，可选——引擎会自动校验这些字段不低于 0，比如「资金/储蓄」）",
+        value=st.session_state.get("create_resource_fields", resource_fields_default),
+        placeholder="例：resources.cash, resources.energy",
+    )
+    st.markdown(
+        '<span class="ws-muted">这里填的是 `vars` 里的字段路径（嵌套字段用 `.` 连接，'
+        "比如 `resources.cash`）。之后每一步推进，如果 AI 把这个字段算成负数，"
+        "系统会自动纠正为 0 并在时间线上高亮提示，不影响推进本身。留空表示不做校验。"
+        "</span>",
+        unsafe_allow_html=True,
+    )
+
     # ── 初始候选方向：可编辑文案、可删除、可手动新增，并且真的可以选 ──
     st.markdown("**初始候选方向**")
     st.markdown(
@@ -654,6 +701,11 @@ def page_create() -> None:
         if edited_vars is None:
             st.error("关键变量不是合法 JSON，请修正后再确认创建。")
         else:
+            resource_fields = [
+                f.strip() for f in resource_fields_text.split(",") if f.strip()
+            ]
+            create_settings = dict(st.session_state.get("create_settings") or {})
+            create_settings["resource_fields"] = resource_fields
             manifest = materialize_simulation(
                 DATA_DIR,
                 template=st.session_state.get("draft_template", template),
@@ -662,7 +714,7 @@ def page_create() -> None:
                 summary=edited_summary,
                 vars=edited_vars,
                 options=draft.options,
-                settings=st.session_state.get("create_settings"),
+                settings=create_settings,
                 time_label=draft.time_label,
                 time_granularity=draft.time_granularity,
             )
@@ -682,7 +734,7 @@ def page_create() -> None:
             for key in (
                 "draft", "draft_template", "create_intent", "create_chosen_option_id",
                 "create_feedback", "create_settings", "create_options_count",
-                "create_granularity_preset", "create_granularity_custom",
+                "create_granularity_preset", "create_granularity_custom", "create_resource_fields",
             ):
                 st.session_state.pop(key, None)
             st.session_state["view"] = "detail"
@@ -727,11 +779,12 @@ def _render_timeline(
         # 块渲染，拼单行从根上避免这个问题。
         step_time_suffix = f" · {_html_text(state.time_label)}" if state.time_label else ""
         granularity_note = _granularity_note_html(state)
+        resource_note = _resource_violations_html(state)
         html = (
             '<div class="ws-chapter">'
             f'<div class="ws-chapter-step">第 {state.step} 步{step_time_suffix}</div>'
             f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
-            f"{granularity_note}{narrative}{chosen_note}"
+            f"{granularity_note}{resource_note}{narrative}{chosen_note}"
             "</div>"
         )
         st.markdown(html, unsafe_allow_html=True)
@@ -901,6 +954,17 @@ def page_detail() -> None:
                 "每次切换的原因。</span>",
                 unsafe_allow_html=True,
             )
+        cur_resource_fields = cur_settings.get("resource_fields") or []
+        cur_resource_fields_text = ", ".join(
+            (f.get("field", "") if isinstance(f, dict) else str(f))
+            for f in cur_resource_fields
+        )
+        new_resource_fields_text = st.text_input(
+            "资源类字段（逗号分隔，可选——低于 0 会被自动纠正为 0）",
+            value=cur_resource_fields_text,
+            placeholder="例：resources.cash, resources.energy",
+            key="settings_resource_fields",
+        )
         if st.button("保存设置", key="settings_save"):
             update_settings(
                 DATA_DIR, sim_id,
@@ -908,6 +972,9 @@ def page_detail() -> None:
                 time_granularity_mode=new_mode,
                 time_granularity=new_time_granularity,
                 time_granularity_guide=new_time_granularity_guide,
+                resource_fields=[
+                    f.strip() for f in new_resource_fields_text.split(",") if f.strip()
+                ],
             )
             st.success("设置已更新，下一步推进开始生效。")
             st.rerun()
@@ -1582,13 +1649,14 @@ def page_game() -> None:
     major_tag = " · ⚡命运转折点" if s.major_decision else ""
     step_time_suffix = f" · {_html_text(s.time_label)}" if s.time_label else ""
     granularity_note = _granularity_note_html(s)
+    resource_note = _resource_violations_html(s)
     narrative_text = _html_text(s.narrative) if s.narrative else "（这一章还没有更多叙事文本。）"
 
     html = (
         '<div class="ws-card" style="min-height: 220px;">'
         f'<div class="ws-chapter-step">第 {s.step} 章{step_time_suffix}{major_tag}</div>'
         f'<div class="ws-chapter-summary" style="font-size:1.15rem;">{_html_text(s.summary)}</div>'
-        f"{granularity_note}"
+        f"{granularity_note}{resource_note}"
         f'<div class="ws-chapter-narrative">{narrative_text}</div>'
         f"{chosen_note}"
         "</div>"

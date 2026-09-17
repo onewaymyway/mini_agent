@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -123,6 +123,13 @@ class ScenarioDraft:
     `auto`/`guided` 时才有意义），落盘为 `state0.time_granularity`，
     之后每一步 `advance()` 默认延续这个基准，见
     `state_model.SimState.time_granularity` 的说明。"""
+    resource_fields: List[Any] = field(default_factory=list)
+    """skill 在生成初始 `vars` 时给出的"哪些字段是资源类数值字段"建议
+    （阶段九，见 `state_model.SimManifest.settings` 里 `resource_fields`
+    的格式说明），可选输出，留空表示 skill 认为这次模拟没有需要做下限
+    校验的资源字段。创建向导里会把这个建议展示给用户、允许编辑，最终
+    编辑结果随 `settings.resource_fields` 一起存进 manifest，这个字段
+    本身只是"草稿阶段的建议值"，不直接落盘。"""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScenarioDraft":
@@ -133,6 +140,7 @@ class ScenarioDraft:
             options=[ChoiceOption.from_dict(o) for o in (data.get("options") or [])],
             time_label=str(data.get("time_label", "") or ""),
             time_granularity=str(data.get("time_granularity", "") or ""),
+            resource_fields=list(data.get("resource_fields") or []),
         )
 
 

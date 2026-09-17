@@ -1,6 +1,7 @@
 # world_simulator 向"通用世界模型/实验引擎"演进计划
 
-> **状态**：方案讨论稿，尚未开始实施。
+> **状态**：阶段九（4.1 节，资源类字段代码层校验）已完成，见
+> `PROJECT.md` 阶段九交付记录；阶段十、十一（4.2/4.3 节）尚未开始。
 > **前置文档**：`next_doc/world_simulator_external_project_plan.md`（原始方案，
 > 阶段一~七已完成，见该文档状态栏）；用户提供的外部参考
 > 《万物模拟器到底如何构建？——从世界模型到通用模拟引擎的完整方案》
@@ -68,7 +69,7 @@
 | Branch Engine / Fork / Version（第二十、三十一节） | `branch_manager.py`：fork/switch/delete/compare，`list_branches_detailed()` 带创建时间/来源/进度 | 部分覆盖：有 fork/compare，无 merge，无 skill/prompt 版本记录 |
 | Experiment Engine 雏形（第二十二节） | `autopilot.run_comparison_experiment()`：N 个命名策略各跑一次 | 弱覆盖：是"多方案横向对比"，不是"同方案分布分析"（本文档 4.2 节要补） |
 | Action（第八节） | `custom_option`/`chosen_option`：用户/自动挡可以选择或新增选项 | 弱覆盖：Action 存在，但没有代码层的合法性/资源校验（本文档 4.1 节要补） |
-| Resource / Rule（第七、十节） | 完全没有：`vars` 是自由 JSON，无资源约束、无规则引擎 | 未覆盖（本文档 4.1 节要补最小子集） |
+| Resource / Rule（第七、十节） | `settings.resource_fields` + `engine._apply_resource_guard()`：数值下限校验，越界记入 `SimState.resource_violations` | 部分覆盖（阶段九已完成）：只做了"下限"这一种约束，无转移/生产关系建模、无通用规则引擎（本文档 4.1 节） |
 | Uncertainty / Confidence（第二十八节） | 完全没有：所有变量一视同仁展示 | 未覆盖（本文档 4.3 节要补） |
 | Problem Compiler（第十四、十五节） | `generate_scenario` 一步到位生成初始状态，没有显式目标/约束/不确定性提炼 | 未覆盖（本文档 4.4 节，列为阶段十，本次先设计不实施） |
 | Belief 与 State 分离（第五节） | 全局 `vars`，无多主体私有信念 | 未覆盖，暂不做（见第 6 节） |
@@ -76,7 +77,7 @@
 
 ## 4. 改进方案
 
-### 4.1（P0）资源类字段的代码层校验——"LLM 负责推理，代码负责约束"往前一步
+### 4.1（P0，已完成，见阶段九）资源类字段的代码层校验——"LLM 负责推理，代码负责约束"往前一步
 
 **问题**：`engine.advance()` 把 LLM 返回的 `next_vars` 整体替换落盘，
 不做任何校验。无论是 `custom_option`（用户/自动挡跳出候选列表提出的
@@ -121,6 +122,17 @@
 连续推进到 LLM 给出负现金的那一步，`next_state.vars.cash` 落盘为
 `0`（不是负数），`resource_violations` 里能看到原始负值，时间线上
 能看到高亮提示。
+
+**实施记录**：已按上述方案实现（阶段九）。`engine.py::advance()` 新增
+`_apply_resource_guard()`（含嵌套路径读写辅助函数），在落盘 `next_vars`
+前对 `manifest.settings.resource_fields` 声明的字段做下限检查并原地
+夹值，越界项记入新增的 `SimState.resource_violations`；
+`spec_generator.ScenarioDraft` 新增同名字段承接 skill 的建议值；
+`generate_scenario.yaml` 与两个 `SKILL.md` 补充了可选输出说明；
+`app.py` 在创建向导与实例详情"模拟设置"区块都提供了逗号分隔的编辑框，
+时间线卡片（含游戏化章节视图）新增越界提示的高亮渲染。验收标准已通过
+`tests/test_spec_and_engine.py` 两个新增用例覆盖（一次真实越界、一次
+未越界的对照），未接入真实 LLM 手动验证。
 
 ### 4.2（P0）对比实验升级：从"多方案横向对比"到"同方案分布分析"
 
@@ -230,7 +242,7 @@ LLM 主观推断）现在展示上一视同仁，用户没法分辨该信哪个�
 - **阶段八**（回填，非本次工作）：把"分支信息增强 + 自定义选项 +
   多策略对比实验""自动时间粒度"两轮已落地但未编号的迭代补记到
   `PROJECT.md`。
-- **阶段九**：本文档 4.1 节，资源类字段代码层校验。
+- **阶段九**（已完成）：本文档 4.1 节，资源类字段代码层校验。
 - **阶段十**：本文档 4.2 节，对比实验升级为重复采样 + 统计聚合
   （敏感性分析作为阶段十的延伸任务，视精力决定是否在同一阶段完成）。
 - **阶段十一**：本文档 4.3 节，关键变量可信度标注。

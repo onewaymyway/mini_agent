@@ -462,3 +462,106 @@ def test_advance_rejects_unknown_option(tmp_path, monkeypatch):
             cfg=object(), workspace_root=tmp_path, data_dir=data_dir,
             sim_id="life_sim_x", choice_option_id="not_exist",
         )
+
+
+def test_advance_clamps_negative_resource_field_and_records_violation(tmp_path, monkeypatch):
+    """阶段九（4.1 节）：`resource_fields` 声明的字段被 LLM 算成负数时，
+    应该被夹到下限（默认 0），且推进本身不被拒绝，越界详情记入
+    `next_state.resource_violations`。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={"cash": 1000}, options=[],
+        settings={"resource_fields": ["cash"]},
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "破产了",
+                    "narrative": "花超了",
+                    "next_vars": {"cash": -500},
+                    "options": [],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+
+    assert next_state.vars["cash"] == 0
+    assert next_state.resource_violations == [
+        {"field": "cash", "llm_value": -500, "clamped_value": 0}
+    ]
+
+    # 落盘的历史里也应该带上这份记录（不是只存在于返回值里）。
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    history = store.load_history()
+    assert history[-1].resource_violations == next_state.resource_violations
+
+
+def test_advance_ignores_resource_fields_when_value_within_bounds(tmp_path, monkeypatch):
+    """字段值没有越界时，不应该产生任何 `resource_violations` 记录。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={"cash": 1000}, options=[],
+        settings={"resource_fields": ["cash"]},
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {"next_summary": "s2", "narrative": "n", "next_vars": {"cash": 800}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.vars["cash"] == 800
+    assert next_state.resource_violations == []

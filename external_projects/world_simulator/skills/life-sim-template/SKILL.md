@@ -95,6 +95,12 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
   基准粒度（比如"1 年"/"1 个月"）——只需要给一个能代表"日常节奏"
   的值，不用考虑中途可能出现的特殊情境，那部分由 `advance_step` 逐步
   判断是否需要切换。
+- `resource_fields`：数组（可选），`vars` 里属于"资源类数值"的字段
+  声明（比如现金存款这类"不应该低于某个下限、后续会被消耗/增减"的
+  数值），每项是字段名字符串（如 `"resources.cash"`，默认下限 0）或
+  `{"field": "resources.cash", "min": 0}`。之后每一步 `advance_step`
+  推进时，引擎会自动检查这些字段有没有被算成负数（不用你在
+  `advance_step` 阶段自己操心这件事）。没有这类字段就不用输出。
 
 ## 作为 `advance_step` 挂载时（result_file: next_state.json）
 

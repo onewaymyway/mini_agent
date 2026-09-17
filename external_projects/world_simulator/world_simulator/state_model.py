@@ -106,6 +106,22 @@ class SimState:
     话，比如"进入谈判环节，改为按轮次推进"）；未变化或旧数据没有则为
     None——只有变化时才要求这个字段，减少无意义的输出负担。
     """
+    resource_violations: List[Dict[str, Any]] = field(default_factory=list)
+    """产生*本状态*这一步，`engine.py::advance()` 对
+    `manifest.settings.resource_fields` 里声明的资源类字段做下限校验时
+    发现并纠正的越界项（阶段九，`next_doc/
+    world_simulator_universal_world_model_upgrade_plan.md` 4.1 节）。
+
+    每一项形如 `{"field": "cash", "llm_value": -500, "clamped_value": 0}`：
+    `field` 是字段路径（支持一层嵌套，如 `resources.amount`），
+    `llm_value` 是 skill 原始给出的值，`clamped_value` 是被夹到下限后
+    实际落盘到 `vars` 里的值。**不代表这一步推进被拒绝**——engine 只是
+    把越界的数值纠正到下限（默认 0），推进本身照常发生，这里只是留痕，
+    供时间线展示"系统纠正了一处不合理的数值"，保持透明而不是静默篡改。
+
+    默认空列表：`resource_fields` 未声明、这一步没有产生任何越界值时都是
+    空列表，不影响旧数据/其它模板的行为（向后兼容）。
+    """
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -133,6 +149,7 @@ class SimState:
             time_granularity=str(data.get("time_granularity", "") or ""),
             granularity_changed=bool(data.get("granularity_changed", False)),
             granularity_reason=data.get("granularity_reason"),
+            resource_violations=list(data.get("resource_violations") or []),
         )
 
 
@@ -179,6 +196,19 @@ class SimManifest:
     - `time_granularity_guide`：字符串，`guided` 模式下的偏好引导语，
       比如"日常按季度推进，遇到谈判/冲突等关键场景可以细到按轮次"；
       不是引擎解析的结构化值，只是原样喂给 skill 的一句话提示。
+    - `resource_fields`：列表，声明 `vars` 里哪些字段是"资源类数值
+      字段"（阶段九，`next_doc/
+      world_simulator_universal_world_model_upgrade_plan.md` 4.1 节）。
+      每一项要么是一个字段名字符串（如 `"cash"`，下限默认 0），要么是
+      `{"field": "resources.amount", "min": 0}` 这种带自定义下限的字典
+      （字段名支持一层嵌套路径，用 `.` 分隔）。`engine.advance()` 每次
+      落盘 `next_vars` 前会对这里声明的每个字段做下限检查：低于下限时
+      夹到下限并记入 `SimState.resource_violations`，**不拒绝这次
+      推进**。留空（默认）表示不做任何校验，行为与未引入这个功能之前
+      完全一致，向后兼容。由 `generate_scenario` 阶段的 skill 在生成
+      初始 `vars` 时给出建议值（见 `spec_generator.ScenarioDraft.
+      resource_fields`），用户在创建向导里可以看到并编辑，也可以在
+      详情页的"模拟设置"里随时增删。
     """
 
     def to_dict(self) -> Dict[str, Any]:
