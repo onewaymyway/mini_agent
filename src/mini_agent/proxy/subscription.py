@@ -132,12 +132,125 @@ def parse_node_uri(uri: str) -> ProxyNode | None:
     return None
 
 
+def _json_to_proxy_node(item: dict) -> ProxyNode | None:
+    """将 Stormsia / Proxio-io 等平台的 JSON 节点对象转换为 ProxyNode。
+
+    支持的协议: vless, trojan, ss, vmess (嵌套 config 字段)。
+    字段名按各平台常见 schema 兼容。
+    """
+    try:
+        proto = item.get("type") or item.get("protocol") or ""
+        proto = str(proto).lower().strip()
+        if proto not in ("vless", "trojan", "ss", "vmess"):
+            return None
+
+        server = item.get("server") or item.get("add") or ""
+        port_raw = item.get("server_port") or item.get("port") or 0
+        try:
+            port = int(port_raw)
+        except (TypeError, ValueError):
+            return None
+        if not server or not port:
+            return None
+
+        name = item.get("tag") or item.get("ps") or item.get("name") or server
+
+        params: dict[str, Any] = {}
+        for k, v in item.items():
+            if k not in ("type", "protocol", "server", "server_port", "port",
+                          "tag", "ps", "name", "add"):
+                params[k] = v
+
+        if proto == "vless":
+            uuid = item.get("uuid", "")
+            sni = item.get("tls", {}).get("server_name") if isinstance(item.get("tls"), dict) else item.get("sni", "")
+            pbk = item.get("tls", {}).get("public_key") if isinstance(item.get("tls"), dict) else item.get("pbk", "")
+            sid = item.get("tls", {}).get("short_id") if isinstance(item.get("tls"), dict) else item.get("sid", "")
+            fp = item.get("tls", {}).get("fp", "") if isinstance(item.get("tls"), dict) else item.get("fp", "")
+            flow = item.get("flow", "")
+            sni_val = item.get("sni") or sni
+            pbk_val = item.get("pbk") or pbk
+            sid_val = item.get("sid") or sid
+            fp_val = item.get("fp") or fp
+            if sni_val: params["sni"] = sni_val
+            if pbk_val: params["pbk"] = pbk_val
+            if sid_val: params["sid"] = sid_val
+            if fp_val: params["fp"] = fp_val
+            if flow: params["flow"] = flow
+            params["uuid"] = uuid
+        elif proto == "trojan":
+            password = item.get("password", "")
+            sni = item.get("sni", "")
+            fp = item.get("fp", "")
+            params["password"] = password
+            if sni: params["sni"] = sni
+            if fp: params["fp"] = fp
+        elif proto == "ss":
+            method = item.get("method", "")
+            password = item.get("password", "")
+            params["method"] = method
+            params["password"] = password
+        elif proto == "vmess":
+            config = item.get("config") or item
+            params.update(config)
+
+        return ProxyNode(
+            protocol=proto,
+            name=str(name),
+            server=str(server),
+            port=port,
+            raw=json.dumps(item, ensure_ascii=False),
+            params=params,
+        )
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription._json_to_proxy_node')
+        return None
+
+
+def parse_json_subscription(data: list | dict) -> list[ProxyNode]:
+    """解析 JSON 格式的代理列表(Stormsia / Proxio-io 等平台)。"""
+    if isinstance(data, dict):
+        # 有些平台用 {"data": [...]} 或 {"results": [...]}
+        for key in ("data", "results", "proxies", "nodes", "items"):
+            val = data.get(key)
+            if isinstance(val, list):
+                data = val
+                break
+        else:
+            return []
+    if not isinstance(data, list):
+        return []
+    nodes: list[ProxyNode] = []
+    for item in data:
+        if isinstance(item, dict):
+            node = _json_to_proxy_node(item)
+            if node:
+                nodes.append(node)
+    return nodes
+
+
 def parse_subscription_text(text: str) -> list[ProxyNode]:
-    """subscription 内容可能整体是 base64,也可能是明文,每行一个节点链接。"""
+    """subscription 内容可能整体是 base64,也可能是明文,每行一个节点链接;
+    也支持 JSON 数组格式(Stormsia / Proxio-io 等平台)。"""
     text = text.strip()
     if not text:
         return []
-    # 先尝试判断是不是"整体 base64"(不含协议头,且能 decode 出协议头)
+
+    # 先尝试 JSON 格式检测
+    stripped = text.lstrip()
+    if stripped.startswith("[") or stripped.startswith("{"):
+        try:
+            parsed_json = json.loads(stripped)
+            nodes = parse_json_subscription(parsed_json)
+            if nodes:
+                return nodes
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription.parse_subscription_text')
+            pass
+
+    # 再尝试判断是不是"整体 base64"(不含协议头,且能 decode 出协议头)
     if not any(p in text for p in _PARSERS):
         try:
             decoded = _b64_decode(text)
@@ -145,7 +258,7 @@ def parse_subscription_text(text: str) -> list[ProxyNode]:
                 text = decoded
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription')
+            log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription.parse_subscription_text')
             pass
 
     nodes: list[ProxyNode] = []
