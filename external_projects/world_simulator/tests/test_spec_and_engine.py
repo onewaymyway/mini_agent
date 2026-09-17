@@ -64,6 +64,23 @@ def test_scenario_draft_from_dict_parses_uncertain_fields():
     assert draft_without.uncertain_fields == []
 
 
+def test_scenario_draft_from_dict_parses_objectives():
+    """阶段十二（4.4 节）：`ScenarioDraft.from_dict` 应该原样解析可选的
+    `objectives` 字段，缺省时为空列表。"""
+    draft = spec_mod.ScenarioDraft.from_dict(
+        {
+            "title": "t", "summary": "s", "vars": {}, "options": [],
+            "objectives": ["资产净值", "工作满意度"],
+        }
+    )
+    assert draft.objectives == ["资产净值", "工作满意度"]
+
+    draft_without = spec_mod.ScenarioDraft.from_dict(
+        {"title": "t", "summary": "s", "vars": {}, "options": []}
+    )
+    assert draft_without.objectives == []
+
+
 def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
     draft_step = _FakeStep("draft")
     fake_wf = _FakeWorkflow([draft_step])
@@ -657,3 +674,18 @@ def test_advance_parses_uncertain_fields_from_llm_output(tmp_path, monkeypatch):
     assert next_state.uncertain_fields == [
         {"field": "startup_success_rate", "confidence": "medium", "note": "行业均值外推"}
     ]
+
+
+def test_materialize_simulation_stores_objectives_in_settings(tmp_path):
+    """阶段十二（4.4 节，Problem Compiler 雏形）：创建向导确认的
+    `settings.objectives` 应该原样落到 `manifest.settings`，纯记录用途，
+    不影响任何推进/校验逻辑。"""
+    data_dir = tmp_path / "data"
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+        settings={"objectives": ["资产净值", "工作满意度"]},
+    )
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    reloaded = store.load_manifest()
+    assert reloaded.settings.get("objectives") == ["资产净值", "工作满意度"]

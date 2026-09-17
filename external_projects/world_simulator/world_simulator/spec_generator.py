@@ -137,6 +137,17 @@ class ScenarioDraft:
     这个字段会直接落盘到 `state0.uncertain_fields`（不像
     `resource_fields` 那样需要先经过用户编辑再存进 `settings`——置信度
     标注是"描述性"的，不是需要用户确认的配置项）。"""
+    objectives: List[str] = field(default_factory=list)
+    """skill 在生成初始状态时给出的"这次模拟主要关心的指标"建议
+    （阶段十二，`next_doc/world_simulator_universal_world_model_upgrade_
+    plan.md` 4.4 节 Problem Compiler 雏形），比如
+    `["资产净值", "工作满意度", "健康水平"]`。用途与 `resource_fields`
+    一致：创建向导展示建议值、允许用户编辑，最终结果存进
+    `settings.objectives`（见 `state_model.SimManifest.settings`），这个
+    字段本身只是"草稿阶段的建议值"，不直接落盘。存下来之后，「对比
+    实验」页面的关注字段默认会带出这里声明的指标（不用每次都重新输入
+    要看哪个字段），但不会自动做任何排序/推荐——是否"更好"仍由用户
+    自己判断，本次不引入自动排序逻辑。"""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScenarioDraft":
@@ -149,6 +160,7 @@ class ScenarioDraft:
             time_granularity=str(data.get("time_granularity", "") or ""),
             resource_fields=list(data.get("resource_fields") or []),
             uncertain_fields=list(data.get("uncertain_fields") or []),
+            objectives=[str(o) for o in (data.get("objectives") or [])],
         )
 
 

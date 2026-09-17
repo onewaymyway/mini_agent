@@ -586,6 +586,22 @@ def page_create() -> None:
         unsafe_allow_html=True,
     )
 
+    # ── 关注指标（阶段十二，4.4 节 Problem Compiler 雏形）：纯记录用途，
+    # 不触发任何自动排序/推荐，只是给「对比实验」页面的关注字段提供
+    # 默认值参考，留空不影响任何行为 ──
+    objectives_default = ", ".join(getattr(draft, "objectives", None) or [])
+    objectives_text = st.text_input(
+        "关注指标（逗号分隔，可选——只是记录这次模拟主要想看什么，"
+        "不要求是精确字段名）",
+        value=st.session_state.get("create_objectives", objectives_default),
+        placeholder="例：资产净值, 工作满意度, 健康水平",
+    )
+    st.markdown(
+        '<span class="ws-muted">记下来之后，「对比实验」页面的关注字段会默认带出这里的内容'
+        "（可以再改），不会自动判断哪个结果更好——排序/判断仍然由你自己来。</span>",
+        unsafe_allow_html=True,
+    )
+
     # ── 初始候选方向：可编辑文案、可删除、可手动新增，并且真的可以选 ──
     st.markdown("**初始候选方向**")
     st.markdown(
@@ -755,8 +771,10 @@ def page_create() -> None:
             resource_fields = [
                 f.strip() for f in resource_fields_text.split(",") if f.strip()
             ]
+            objectives = [o.strip() for o in objectives_text.split(",") if o.strip()]
             create_settings = dict(st.session_state.get("create_settings") or {})
             create_settings["resource_fields"] = resource_fields
+            create_settings["objectives"] = objectives
             manifest = materialize_simulation(
                 DATA_DIR,
                 template=st.session_state.get("draft_template", template),
@@ -786,6 +804,7 @@ def page_create() -> None:
                 "draft", "draft_template", "create_intent", "create_chosen_option_id",
                 "create_feedback", "create_settings", "create_options_count",
                 "create_granularity_preset", "create_granularity_custom", "create_resource_fields",
+                "create_objectives",
             ):
                 st.session_state.pop(key, None)
             st.session_state["view"] = "detail"
@@ -1019,6 +1038,14 @@ def page_detail() -> None:
             placeholder="例：resources.cash, resources.energy",
             key="settings_resource_fields",
         )
+        cur_objectives = cur_settings.get("objectives") or []
+        cur_objectives_text = ", ".join(str(o) for o in cur_objectives)
+        new_objectives_text = st.text_input(
+            "关注指标（逗号分隔，可选——纯记录用途，供「对比实验」页面默认关注字段参考）",
+            value=cur_objectives_text,
+            placeholder="例：资产净值, 工作满意度, 健康水平",
+            key="settings_objectives",
+        )
         if st.button("保存设置", key="settings_save"):
             update_settings(
                 DATA_DIR, sim_id,
@@ -1029,6 +1056,7 @@ def page_detail() -> None:
                 resource_fields=[
                     f.strip() for f in new_resource_fields_text.split(",") if f.strip()
                 ],
+                objectives=[o.strip() for o in new_objectives_text.split(",") if o.strip()],
             )
             st.success("设置已更新，下一步推进开始生效。")
             st.rerun()
@@ -1522,8 +1550,17 @@ def page_experiment() -> None:
         with rep_cols[1]:
             n_repeats = st.number_input("重复次数", min_value=2, max_value=20, value=5, step=1, key="exp_n_repeats")
 
+        focus_fields_default = ""
+        try:
+            _exp_manifest, _exp_current, _ = get_simulation(DATA_DIR, sim_id)
+            focus_fields_default = ", ".join(
+                str(o) for o in (_exp_manifest.settings.get("objectives") or [])
+            )
+        except Exception:  # noqa: BLE001 — 拿不到就用空默认值，不影响主流程
+            pass
         focus_fields_text = st.text_input(
             "关注哪些变量字段做统计摘要（逗号分隔，比如 resources.cash）",
+            value=st.session_state.get("exp_focus_fields", focus_fields_default),
             key="exp_focus_fields",
             placeholder="例：age, resources.cash",
         )

@@ -95,6 +95,9 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
   确定事实的数值），每项是 `{"field": ..., "confidence":
   "high"|"medium"|"low", "note": "一句话说明"}`，格式与
   `life-sim-template` 完全一致。没有这类字段就不用输出。
+- `objectives`：数组（可选），字符串列表，这次模拟"主要关心的指标"
+  （比如群体的"总人口""资源储备""凝聚力"），格式与用途与
+  `life-sim-template` 完全一致。没有明确指标就不用输出。
 
 ## 作为 `advance_step` 挂载时（result_file: next_state.json）
 

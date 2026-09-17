@@ -228,6 +228,19 @@ class SimManifest:
       初始 `vars` 时给出建议值（见 `spec_generator.ScenarioDraft.
       resource_fields`），用户在创建向导里可以看到并编辑，也可以在
       详情页的"模拟设置"里随时增删。
+    - `objectives`：列表，声明这次模拟"主要关心的指标"（阶段十二，
+      `next_doc/world_simulator_universal_world_model_upgrade_plan.md`
+      4.4 节 Problem Compiler 雏形），每项是一个字段名/指标描述的字符串
+      （如 `"资产净值"`，不要求是 `vars` 里的精确字段路径，允许是一句话
+      描述——不同模板的 `vars` 结构差异较大，这里只是"给人看、给「对比
+      实验」页面的关注字段做默认值参考"的辅助信息，不是引擎会解析执行
+      的结构化路径）。由 `generate_scenario` 阶段的 skill 给出建议值
+      （见 `spec_generator.ScenarioDraft.objectives`），用户在创建向导
+      里可以看到并编辑，也可以在详情页"模拟设置"里随时增删。留空
+      （默认）表示没有声明，不影响任何已有行为——引擎本身不会因为声明
+      或不声明这个字段而改变任何推进/校验逻辑，纯粹是"记录这次模拟想
+      优化什么"，为未来的自动排序/推荐功能打地基（本次不实现自动
+      排序，仅记录 + 在对比实验页面提供默认值参考）。
     """
 
     def to_dict(self) -> Dict[str, Any]:

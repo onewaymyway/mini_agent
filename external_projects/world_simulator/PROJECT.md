@@ -287,6 +287,31 @@ UI：`run_repeated_experiment()` 的 `profile` 参数本身就可以在调用方
 做置信度评估，不引入精确概率数值，`uncertain_fields` 未输出时行为与
 引入这个功能之前完全一致。
 
+阶段十二（Problem Compiler 雏形，已完成，见演进计划 4.4 节；范围较
+原方案草案收窄）交付：
+
+1. `spec_generator.ScenarioDraft.objectives`：`generate_scenario` 阶段
+   skill 可选输出的建议值（字符串列表，如 `["资产净值", "工作满意度"]`，
+   不要求是 `vars` 里的精确字段路径）；`generate_scenario.yaml` 提示词
+   + 两个 `SKILL.md` 都已补充这段可选输出的说明。
+2. `state_model.SimManifest.settings.objectives`：新增设置项，用途与
+   `resource_fields` 一致——创建向导展示建议值、允许编辑，最终结果
+   落进 `manifest.settings`，实例详情页"模拟设置"区块可随时增删；
+   引擎本身不因这个字段的声明与否改变任何推进/校验逻辑，纯粹是记录。
+3. `app.py`：创建向导新增"关注指标"编辑框（草稿阶段）；实例详情页
+   "模拟设置"区块新增同款编辑框；「对比实验」页面的"关注哪些变量字段
+   做统计摘要"输入框会用 `manifest.settings.objectives` 作为默认值
+   （仍可修改），把 4.2 节的统计聚合能力和这里的"关注指标"声明串起来。
+4. `tests/test_spec_and_engine.py` 新增两个用例：`ScenarioDraft.
+   objectives` 解析、`materialize_simulation()` 落盘到
+   `manifest.settings.objectives`。
+
+**范围说明**：原方案草案（4.4 节"方案草案"一段）设想的"自动判断哪个
+结果算更好"/自动排序**本次未实现**——只做"记录 + UI 默认值参考"这一层
+最小闭环，`objectives` 声明之后是否要触发自动排序/推荐留给收集到真实
+使用反馈后再决定，避免在没有验证过"用户真的想要系统替他判断好坏"这个
+假设之前就把判断权交给系统。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：
