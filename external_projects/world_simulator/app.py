@@ -31,6 +31,7 @@ import json
 import logging
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -290,6 +291,26 @@ def _pill(status: str) -> str:
         status, "ws-pill-paused"
     )
     return f'<span class="ws-pill {cls}">{label}</span>'
+
+
+def _format_local_time(iso_str: Optional[str]) -> str:
+    """把 `store.now_iso()` 落盘的带时区偏移的 ISO 字符串（比如
+    `2026-09-17T14:03:01+08:00`）渲染成人读的本地时间，供页面上所有
+    "创建于 ..." 展示复用。
+
+    `now_iso()` 存的本来就是"服务器当地时区"的时间（`datetime.now(utc)
+    .astimezone()`），这里只是把 `T` 分隔符、时区偏移这些机器格式换成
+    `YYYY-MM-DD HH:MM:SS` 的人类可读形式——不做任何时区换算，展示的还是
+    落盘时记录的那个本地时刻。解析失败（数据损坏/字段缺失/历史脏数据）
+    时原样返回，不让一条格式化失败的时间字符串搞挂整个页面。
+    """
+    if not iso_str:
+        return "未知"
+    try:
+        dt = datetime.fromisoformat(iso_str)
+    except ValueError:
+        return iso_str
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _html_text(value: str) -> str:
@@ -580,7 +601,7 @@ def page_list() -> None:
                     <div class="ws-muted">{_pill(m.status)}
                         模板：{m.template} · 第 {m.current_step} 步 ·
                         推进模式：{"自动挡" if m.pilot_mode == "autopilot" else "手动挡"} ·
-                        {branch_count} 条分支 · 创建于 {m.created_at}
+                        {branch_count} 条分支 · 创建于 {_format_local_time(m.created_at)}
                     </div>
                 </div>""",
                 unsafe_allow_html=True,
@@ -1711,7 +1732,7 @@ def page_detail() -> None:
                 pilot_note = "手动挡"
             st.markdown(
                 f'<div><b>{b}</b>{marker}</div>'
-                f'<div class="ws-muted">创建于 {info.get("created_at", "未知")}{origin}</div>'
+                f'<div class="ws-muted">创建于 {_format_local_time(info.get("created_at"))}{origin}</div>'
                 f'<div class="ws-muted">{progress} · {pilot_note}</div>',
                 unsafe_allow_html=True,
             )
@@ -2186,7 +2207,7 @@ def page_archive() -> None:
                 <div class="ws-card-title">{m.title}</div>
                 <div class="ws-muted">{_pill(m.status)}
                     {m.sim_id} · 模板：{m.template} · 第 {m.current_step} 步 ·
-                    {len(branches)} 条分支 · 创建于 {m.created_at}
+                    {len(branches)} 条分支 · 创建于 {_format_local_time(m.created_at)}
                 </div>
             </div>""",
             unsafe_allow_html=True,
