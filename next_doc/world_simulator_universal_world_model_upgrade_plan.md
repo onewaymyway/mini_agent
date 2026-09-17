@@ -1,8 +1,9 @@
 # world_simulator 向"通用世界模型/实验引擎"演进计划
 
 > **状态**：阶段九（4.1 节，资源类字段代码层校验）、阶段十（4.2 节，
-> 对比实验升级为重复采样 + 结果聚合）已完成，见 `PROJECT.md` 对应
-> 交付记录；阶段十一（4.3 节）尚未开始。
+> 对比实验升级为重复采样 + 结果聚合）、阶段十一（4.3 节，关键变量
+> 可信度标注）均已完成，见 `PROJECT.md` 对应交付记录；阶段十二及以后
+> （4.4/4.5 节）尚未开始。
 > **前置文档**：`next_doc/world_simulator_external_project_plan.md`（原始方案，
 > 阶段一~七已完成，见该文档状态栏）；用户提供的外部参考
 > 《万物模拟器到底如何构建？——从世界模型到通用模拟引擎的完整方案》
@@ -71,7 +72,7 @@
 | Experiment Engine 雏形（第二十二节） | `autopilot.run_comparison_experiment()`（多方案横向对比）+ `run_repeated_experiment()`（同方案重复采样）+ `analysis.aggregate_field_stats()`（统计聚合） | 阶段十已完成：横向对比 + 分布分析都有了，敏感性分析是 `run_repeated_experiment()` 的直接复用（未单独包装） |
 | Action（第八节） | `custom_option`/`chosen_option`：用户/自动挡可以选择或新增选项 | 弱覆盖：Action 存在，但没有代码层的合法性/资源校验（本文档 4.1 节要补） |
 | Resource / Rule（第七、十节） | `settings.resource_fields` + `engine._apply_resource_guard()`：数值下限校验，越界记入 `SimState.resource_violations` | 部分覆盖（阶段九已完成）：只做了"下限"这一种约束，无转移/生产关系建模、无通用规则引擎（本文档 4.1 节） |
-| Uncertainty / Confidence（第二十八节） | 完全没有：所有变量一视同仁展示 | 未覆盖（本文档 4.3 节要补） |
+| Uncertainty / Confidence（第二十八节） | `SimState.uncertain_fields`（阶段十一）：`generate_scenario`/`advance_step` 可选输出，`confidence` 限定高/中/低三档 | 阶段十一已完成：按需标注估计值型字段，不做全量精确概率 |
 | Problem Compiler（第十四、十五节） | `generate_scenario` 一步到位生成初始状态，没有显式目标/约束/不确定性提炼 | 未覆盖（本文档 4.4 节，列为阶段十，本次先设计不实施） |
 | Belief 与 State 分离（第五节） | 全局 `vars`，无多主体私有信念 | 未覆盖，暂不做（见第 6 节） |
 | Evidence Chain / Debug Trace（第二十九、三十节） | `narrative` 是自由文本，无结构化因果链 | 未覆盖，本次只做最小版（4.5 节，可选） |
@@ -186,7 +187,7 @@
 `tests/test_autopilot.py::test_run_repeated_experiment_forks_n_branches_with_same_profile`
 + `tests/test_analysis.py`（6 个用例）覆盖，未接入真实 LLM 手动验证。
 
-### 4.3（P1）关键变量的可信度标注
+### 4.3（P1，已完成，见阶段十一）关键变量的可信度标注
 
 **问题**：`vars` 里"年龄=23"（基本确定）和"创业成功率=18%"（本质是
 LLM 主观推断）现在展示上一视同仁，用户没法分辨该信哪个。
@@ -212,6 +213,21 @@ LLM 主观推断）现在展示上一视同仁，用户没法分辨该信哪个�
 **验收标准**：一个"是否创业"的模拟里，`startup_success_rate` 这类
 字段能在 UI 上看到"低置信度"标注和一句话说明，而 `age` 这类确定性
 字段不受影响、不会被过度标注。
+
+**实施记录**：已按上述方案实现（阶段十一）。`state_model.SimState`
+新增 `uncertain_fields`（列表，每项 `{field, confidence, note}`，
+`confidence` 限定 `high`/`medium`/`low` 三档）；
+`spec_generator.ScenarioDraft` 新增同名字段承接 skill 的建议值；
+`generate_scenario.yaml`/`advance_step.yaml` 与两个模板 `SKILL.md`
+都补充了可选输出说明；`engine.py` 的 `materialize_simulation()`/
+`create_simulation()`/`advance()` 三处都已打通传递与解析，`advance()`
+从 `advance_step` 输出里按需解析进 `next_state.uncertain_fields`；
+`app.py` 新增 `_uncertain_fields_html()`，在实例详情页与游戏化视图
+"关键变量"展开区、`st.json` 原始展示之上新增置信度徽章 + 一句话说明的
+列表渲染。验收标准已通过 `tests/test_state_and_store.py`/
+`tests/test_spec_and_engine.py` 新增的四个用例覆盖（序列化往返、
+落盘到 `state0`、从 LLM 输出解析到 `next_state`），未接入真实 LLM
+手动验证。
 
 ### 4.4（P2，本次只设计不实施）Problem Compiler 雏形：显式目标/约束/关键不确定性
 
@@ -259,11 +275,11 @@ LLM 主观推断）现在展示上一视同仁，用户没法分辨该信哪个�
 - **阶段十**（已完成）：本文档 4.2 节，对比实验升级为重复采样 + 统计聚合
   （敏感性分析作为阶段十的延伸任务，已按"直接复用重复采样"的方式
   说明，未单独实现新机制/新 UI，见实施记录）。
-- **阶段十一**：本文档 4.3 节，关键变量可信度标注。
+- **阶段十一**（已完成）：本文档 4.3 节，关键变量可信度标注。
 - **阶段十二及以后**：4.4（Problem Compiler 雏形）、4.5（因果摘要，
   可选）——启动前先评估阶段九~十一的实际使用反馈。
 
-九、十、十一三个阶段彼此独立，不强制按顺序做，但建议按这个顺序，
+九、十、十一三个阶段彼此独立，不强制按顺序做，实际按这个顺序完成，
 因为九是十、十一的地基（资源校验做完，统计摘要和可信度标注展示才
 有更可靠的数据可用）。
 

@@ -259,6 +259,34 @@ UI：`run_repeated_experiment()` 的 `profile` 参数本身就可以在调用方
 幅度；如果之后发现这个用法足够高频，值得专门包一层向导 UI，再单独
 排期，不在阶段十范围内强行加一层还没有真实用例验证过的封装。
 
+阶段十一（关键变量可信度标注，已完成，见演进计划 4.3 节）交付：
+
+1. `state_model.SimState.uncertain_fields`：新增字段，列表，每项
+   `{"field": ..., "confidence": "high"|"medium"|"low", "note": "..."}`，
+   由 skill 在 `generate_scenario`/`advance_step` 两个阶段按需可选
+   输出，标注"本质是主观估计、置信度不高"的字段（比如"创业成功率"），
+   不要求覆盖全量字段；默认空列表，不影响旧数据/未标注字段。
+2. `spec_generator.ScenarioDraft.uncertain_fields`：承接
+   `generate_scenario` 阶段 skill 的输出，直接落到 `state0`（不像
+   `resource_fields` 那样需要先经过创建向导的编辑确认——置信度标注是
+   描述性的，不是需要用户配置的项）。`engine.py` 的
+   `materialize_simulation()`/`create_simulation()`/`advance()` 三处
+   都已打通传递与解析。
+3. `workflows/generate_scenario.yaml`、`workflows/advance_step.yaml`
+   与两个模板 `SKILL.md` 都补充了 `uncertain_fields` 的可选输出说明
+   （`confidence` 只分三档，明确要求不要给出精确概率制造"伪精确"）。
+4. `app.py`：新增 `_uncertain_fields_html()`，在实例详情页与游戏化
+   视图的"关键变量"展开区里、`st.json` 原始展示之上，新增置信度徽章
+   + 一句话说明的列表渲染，不改动 `st.json` 本身的展示方式。
+5. `tests/test_state_and_store.py`/`tests/test_spec_and_engine.py`
+   新增四个用例，覆盖 `SimState`/`ScenarioDraft` 的序列化往返、
+   `materialize_simulation()` 落盘到 `state0`、`advance()` 从 LLM
+   输出解析到 `next_state` 这几条链路，未接入真实 LLM 手动验证。
+
+范围严格克制在"按需可选标注"（演进计划 4.3 节已说明）：不对全量字段
+做置信度评估，不引入精确概率数值，`uncertain_fields` 未输出时行为与
+引入这个功能之前完全一致。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：

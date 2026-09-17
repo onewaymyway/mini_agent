@@ -136,6 +136,7 @@ def materialize_simulation(
     settings: Optional[Dict[str, Any]] = None,
     time_label: str = "",
     time_granularity: str = "",
+    uncertain_fields: Optional[list] = None,
 ) -> SimManifest:
     """把一份（已生成、可能已被用户编辑过的）提案草稿落盘为一个新实例的
     step 0 初始状态，返回 manifest。
@@ -157,6 +158,10 @@ def materialize_simulation(
         time_granularity: 这次模拟的起始基准粒度（`auto`/`guided`
             模式下由 skill 给出，`fixed` 模式下留空即可——展示层/
             后续推进都会 fallback 到 `settings.time_granularity`）。
+        uncertain_fields: 初始状态里 skill 主动标注的"本质是主观估计、
+            置信度不高"的字段（阶段十一，见
+            `state_model.SimState.uncertain_fields` 的格式说明），
+            留空表示没有需要标注的字段。
     """
     options_list = [
         o if isinstance(o, ChoiceOption) else ChoiceOption.from_dict(o) for o in (options or [])
@@ -182,6 +187,7 @@ def materialize_simulation(
         step=0, summary=summary, narrative="", vars=dict(vars or {}), options=options_list,
         time_label=time_label or "起点",
         time_granularity=time_granularity,
+        uncertain_fields=list(uncertain_fields or []),
     )
     store.save_manifest(manifest)
     store.append_state(state0, branch="main")
@@ -218,6 +224,7 @@ def create_simulation(
         settings=settings,
         time_label=draft.time_label,
         time_granularity=draft.time_granularity,
+        uncertain_fields=draft.uncertain_fields,
     )
 
 
@@ -437,6 +444,7 @@ def advance(
         granularity_changed=granularity_changed,
         granularity_reason=granularity_reason,
         resource_violations=resource_violations,
+        uncertain_fields=list(data.get("uncertain_fields") or []),
     )
     store.append_state(next_state, branch=branch)
 

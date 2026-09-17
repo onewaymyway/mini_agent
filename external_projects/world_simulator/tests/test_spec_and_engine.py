@@ -43,6 +43,27 @@ def _write_result_file(tmp_path: Path, name: str, payload: dict) -> str:
     return str(p)
 
 
+def test_scenario_draft_from_dict_parses_uncertain_fields():
+    """阶段十一（4.3 节）：`ScenarioDraft.from_dict` 应该原样解析可选的
+    `uncertain_fields` 字段，缺省时为空列表。"""
+    draft = spec_mod.ScenarioDraft.from_dict(
+        {
+            "title": "t", "summary": "s", "vars": {"rate": 0.2}, "options": [],
+            "uncertain_fields": [
+                {"field": "rate", "confidence": "low", "note": "主观估计"}
+            ],
+        }
+    )
+    assert draft.uncertain_fields == [
+        {"field": "rate", "confidence": "low", "note": "主观估计"}
+    ]
+
+    draft_without = spec_mod.ScenarioDraft.from_dict(
+        {"title": "t", "summary": "s", "vars": {}, "options": []}
+    )
+    assert draft_without.uncertain_fields == []
+
+
 def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
     draft_step = _FakeStep("draft")
     fake_wf = _FakeWorkflow([draft_step])
@@ -565,3 +586,74 @@ def test_advance_ignores_resource_fields_when_value_within_bounds(tmp_path, monk
     )
     assert next_state.vars["cash"] == 800
     assert next_state.resource_violations == []
+
+
+def test_materialize_simulation_stores_uncertain_fields_on_state0(tmp_path):
+    """阶段十一（4.3 节）：`generate_scenario` 阶段给出的
+    `uncertain_fields` 建议应该原样落到 `state0.uncertain_fields`。"""
+    data_dir = tmp_path / "data"
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={"startup_success_rate": 0.18}, options=[],
+        uncertain_fields=[
+            {"field": "startup_success_rate", "confidence": "low", "note": "主观估计"}
+        ],
+    )
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    state0 = store.load_current_state("main")
+    assert state0.uncertain_fields == [
+        {"field": "startup_success_rate", "confidence": "low", "note": "主观估计"}
+    ]
+
+
+def test_advance_parses_uncertain_fields_from_llm_output(tmp_path, monkeypatch):
+    """阶段十一（4.3 节）：`advance_step` 输出里的可选 `uncertain_fields`
+    应该原样解析进 `next_state.uncertain_fields`；未给出时应为空列表。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2",
+                    "narrative": "n",
+                    "next_vars": {"startup_success_rate": 0.32},
+                    "options": [],
+                    "uncertain_fields": [
+                        {"field": "startup_success_rate", "confidence": "medium", "note": "行业均值外推"}
+                    ],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.uncertain_fields == [
+        {"field": "startup_success_rate", "confidence": "medium", "note": "行业均值外推"}
+    ]

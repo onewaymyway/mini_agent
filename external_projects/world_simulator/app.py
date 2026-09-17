@@ -181,6 +181,22 @@ section[data-testid="stSidebar"] {
     color: var(--ws-danger, #e0665a);
     font-weight: 600;
 }
+.ws-uncertain-field {
+    margin: 0.15rem 0;
+    font-size: 0.82rem;
+    color: var(--ws-text-muted);
+}
+.ws-uncertain-badge {
+    display: inline-block;
+    padding: 0.05rem 0.4rem;
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    margin-right: 0.4rem;
+}
+.ws-uncertain-badge-low { background: rgba(224, 102, 90, 0.15); color: var(--ws-danger, #e0665a); }
+.ws-uncertain-badge-medium { background: rgba(224, 180, 90, 0.18); color: #b8860b; }
+.ws-uncertain-badge-high { background: rgba(90, 160, 224, 0.15); color: #4a7fb5; }
 
 div[data-testid="stButton"] > button {
     border-radius: 8px;
@@ -285,6 +301,38 @@ def _resource_violations_html(state) -> str:
             f'<div class="ws-chapter-resource-violation">⚠ 「{field}」原始值 '
             f"{_html_text(str(llm_value))} 不合理，已自动纠正为 "
             f"{_html_text(str(clamped_value))}</div>"
+        )
+    return "".join(lines)
+
+
+_CONFIDENCE_LABELS = {"low": "低置信度", "medium": "中置信度", "high": "高置信度"}
+
+
+def _uncertain_fields_html(state) -> str:
+    """渲染这一步被标注为"主观估计、置信度不高"的字段列表（阶段十一，
+    4.3 节，可能为空）。
+
+    每条一行：字段名 + 置信度徽章 + 可选说明——只在这里展示"哪些数值
+    该打个问号"，不在"关键变量"原始 JSON 展示区做任何改动，避免破坏
+    `st.json` 的默认渲染方式。
+    """
+    items = getattr(state, "uncertain_fields", None) or []
+    if not items:
+        return ""
+    lines = []
+    for item in items:
+        field_name = _html_text(str(item.get("field", "")))
+        if not field_name:
+            continue
+        confidence = str(item.get("confidence", "") or "").strip().lower()
+        badge_label = _CONFIDENCE_LABELS.get(confidence, confidence or "未知置信度")
+        badge_class = confidence if confidence in _CONFIDENCE_LABELS else "medium"
+        note = str(item.get("note", "") or "").strip()
+        note_html = f"：{_html_text(note)}" if note else ""
+        lines.append(
+            f'<div class="ws-uncertain-field">'
+            f'<span class="ws-uncertain-badge ws-uncertain-badge-{badge_class}">{badge_label}</span>'
+            f"「{field_name}」{note_html}</div>"
         )
     return "".join(lines)
 
@@ -908,6 +956,9 @@ def page_detail() -> None:
     )
     if current.vars:
         with st.expander("关键变量"):
+            uncertain_html = _uncertain_fields_html(current)
+            if uncertain_html:
+                st.markdown(uncertain_html, unsafe_allow_html=True)
             st.json(current.vars)
 
     with st.expander("⚙️ 模拟设置（候选方向数量 / 时间粒度）"):
@@ -1769,6 +1820,9 @@ def page_game() -> None:
     st.markdown(html, unsafe_allow_html=True)
     if s.vars:
         with st.expander("这一章的关键变量"):
+            uncertain_html = _uncertain_fields_html(s)
+            if uncertain_html:
+                st.markdown(uncertain_html, unsafe_allow_html=True)
             st.json(s.vars)
 
 

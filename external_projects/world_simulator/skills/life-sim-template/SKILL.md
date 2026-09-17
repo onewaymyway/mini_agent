@@ -101,6 +101,13 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
   `{"field": "resources.cash", "min": 0}`。之后每一步 `advance_step`
   推进时，引擎会自动检查这些字段有没有被算成负数（不用你在
   `advance_step` 阶段自己操心这件事）。没有这类字段就不用输出。
+- `uncertain_fields`：数组（可选），`vars` 里属于"你自己主观估计出来、
+  置信度不高"的字段声明（比如"创业成功率"这类本质是推断而非确定事实
+  的数值——`age` 这类确定性字段不要放进来），每项是
+  `{"field": "startup_success_rate", "confidence": "low", "note": "一句话
+  说明为什么置信度低"}`。`confidence` 只能是 `high`/`medium`/`low`
+  三档之一，不要给出精确概率造成"伪精确"的印象；`note` 可以省略但建议
+  给一句话。没有这类字段就不用输出。
 
 ## 作为 `advance_step` 挂载时（result_file: next_state.json）
 
@@ -183,3 +190,7 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
   pause_on_major_decision` 用它判断是否需要暂停等用户确认，见
   `world_simulator/autopilot.py`；手动挡场景可以照常产出这个字段，
   引擎不会因为它是 true 而改变手动挡的任何行为。
+- `uncertain_fields`：数组（可选），这一步 `next_vars` 里属于"你自己
+  主观估计出来、置信度不高"的字段声明，格式同 `generate_scenario`
+  阶段（见上）。只标注这一步真正新增/变化的估计值型字段即可，不需要
+  每一步都重复列出从未变化的旧标注；没有这类字段就不用输出。

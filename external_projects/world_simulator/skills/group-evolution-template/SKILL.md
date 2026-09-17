@@ -90,6 +90,11 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
   每项是字段名字符串（默认下限 0）或 `{"field": ..., "min": ...}`。
   之后每一步 `advance_step` 推进时引擎会自动检查这些字段有没有被
   算成负数。没有这类字段就不用输出。
+- `uncertain_fields`：数组（可选），`vars` 里属于"你自己主观估计出来、
+  置信度不高"的字段声明（比如群体的"凝聚力指数"这类本质是推断而非
+  确定事实的数值），每项是 `{"field": ..., "confidence":
+  "high"|"medium"|"low", "note": "一句话说明"}`，格式与
+  `life-sim-template` 完全一致。没有这类字段就不用输出。
 
 ## 作为 `advance_step` 挂载时（result_file: next_state.json）
 
@@ -159,3 +164,7 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
   设为 true——自动挡的 `review_mode: pause_on_major_decision` 用它
   判断是否需要暂停等用户确认，逻辑与 `life-sim-template` 完全一致，
   引擎侧（`engine.py`/`autopilot.py`）不需要为这个模板做任何改动。
+- `uncertain_fields`：数组（可选），这一步 `next_vars` 里属于"你自己
+  主观估计出来、置信度不高"的字段声明，格式同 `generate_scenario`
+  阶段（见上）。只标注这一步真正新增/变化的估计值型字段即可，没有
+  这类字段就不用输出。

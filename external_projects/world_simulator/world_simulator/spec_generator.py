@@ -130,6 +130,13 @@ class ScenarioDraft:
     校验的资源字段。创建向导里会把这个建议展示给用户、允许编辑，最终
     编辑结果随 `settings.resource_fields` 一起存进 manifest，这个字段
     本身只是"草稿阶段的建议值"，不直接落盘。"""
+    uncertain_fields: List[Dict[str, Any]] = field(default_factory=list)
+    """skill 在生成初始 `vars` 时主动标注的"本质是主观估计、置信度不高"
+    的字段（阶段十一，见 `state_model.SimState.uncertain_fields` 的格式
+    说明），可选输出，留空表示 skill 认为初始状态没有需要标注的估计值。
+    这个字段会直接落盘到 `state0.uncertain_fields`（不像
+    `resource_fields` 那样需要先经过用户编辑再存进 `settings`——置信度
+    标注是"描述性"的，不是需要用户确认的配置项）。"""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScenarioDraft":
@@ -141,6 +148,7 @@ class ScenarioDraft:
             time_label=str(data.get("time_label", "") or ""),
             time_granularity=str(data.get("time_granularity", "") or ""),
             resource_fields=list(data.get("resource_fields") or []),
+            uncertain_fields=list(data.get("uncertain_fields") or []),
         )
 
 

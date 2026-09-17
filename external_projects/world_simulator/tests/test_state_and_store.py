@@ -34,6 +34,27 @@ def test_state_roundtrip():
     assert restored.chosen_option_id == "a"
 
 
+def test_state_roundtrip_preserves_uncertain_fields():
+    """阶段十一（4.3 节）：`uncertain_fields` 应该原样经过
+    to_dict/from_dict 往返，旧数据（没有这个字段）也应该正常落回空
+    列表，不影响加载。"""
+    state = SimState(
+        step=2,
+        summary="s",
+        vars={"startup_success_rate": 0.18},
+        uncertain_fields=[
+            {"field": "startup_success_rate", "confidence": "low", "note": "主观估计"}
+        ],
+    )
+    restored = SimState.from_dict(state.to_dict())
+    assert restored.uncertain_fields == [
+        {"field": "startup_success_rate", "confidence": "low", "note": "主观估计"}
+    ]
+
+    legacy_restored = SimState.from_dict({"step": 0, "summary": "旧数据"})
+    assert legacy_restored.uncertain_fields == []
+
+
 def test_manifest_roundtrip():
     ts = now_iso()
     m = SimManifest(

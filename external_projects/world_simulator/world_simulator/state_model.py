@@ -122,6 +122,24 @@ class SimState:
     默认空列表：`resource_fields` 未声明、这一步没有产生任何越界值时都是
     空列表，不影响旧数据/其它模板的行为（向后兼容）。
     """
+    uncertain_fields: List[Dict[str, str]] = field(default_factory=list)
+    """产生*本状态*这一步，skill 主动标注的"本质是主观估计、置信度不高"
+    的字段（阶段十一，`next_doc/
+    world_simulator_universal_world_model_upgrade_plan.md` 4.3 节）。
+
+    每一项形如 `{"field": "startup_success_rate", "confidence": "low",
+    "note": "基于同类创业项目的粗略经验判断"}`：`field` 是 `vars` 里的
+    字段路径（不强制嵌套格式，展示层按原样匹配/展示，不像
+    `resource_violations` 那样要求可执行的读写路径），`confidence` 只分
+    `high`/`medium`/`low` 三档（不追求精确概率，避免"伪精确"本身重演），
+    `note` 是一句话说明（可选，可以为空字符串）。
+
+    不是对全量字段做标注——只有 skill 主动认为"这个字段本质是主观推断、
+    用户不该无条件相信"时才会出现在这里，比如"创业成功率"这类数字；
+    `age` 这类确定性字段不受影响，也不会被过度标注。默认空列表：skill
+    没给出、旧数据、`generate_scenario`/`advance_step` 都可以为空——
+    不影响任何已有行为，向后兼容。
+    """
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -150,6 +168,7 @@ class SimState:
             granularity_changed=bool(data.get("granularity_changed", False)),
             granularity_reason=data.get("granularity_reason"),
             resource_violations=list(data.get("resource_violations") or []),
+            uncertain_fields=list(data.get("uncertain_fields") or []),
         )
 
 
