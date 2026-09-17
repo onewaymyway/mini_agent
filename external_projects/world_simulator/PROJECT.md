@@ -517,3 +517,22 @@ world_simulator/
   记录或手动 `export` 也能找到主项目配置，环境变量/注册表仍然优先级
   更高（不会被覆盖）。新增单测 `tests/test_config_llm_inheritance.py`
   （7 个用例），累计 38 个测试全部通过。
+- 2026-09-17：修复"自动挡推进失败：advance_step workflow 执行未成功
+  （skill=life-sim-template）：status=failed；step(failed): Prompt
+  占位符缺失：'"field": ..., "confidence": ...'"这个真实运行时 bug。
+  根因：`workflows/advance_step.yaml`（阶段十一为 `uncertain_fields`
+  新增的可选输出说明）里用省略号 `...` 举例 JSON 结构，写成了
+  `{"field": ..., "confidence": "high"|"medium"|"low", "note":
+  "..."}`；`mini_agent.workflow.runner.WorkflowRunner._resolve_prompt`
+  的占位符正则会把整个大括号内容当成一个占位符，一旦内容里出现
+  "."（省略号本身就是三个"."）就会被当成 `{step_id.field}` 形式去查
+  `step_results`，查不到对应 step 就抛 `KeyError`，最终表现为
+  workflow 执行失败。修复：把举例里的 `...` 换成不含"."的具体占位
+  文本（如 `"字段名"`），`generate_scenario.yaml` 与两个模板
+  `SKILL.md` 里同类写法一并排查修正。新增回归测试
+  `tests/test_workflow_prompt_placeholders.py`：对 `workflows/*.yaml`
+  做静态扫描，任何"大括号内容含'.'但不是合法 `{step_id.field}` 占位符
+  格式"的写法都会被测试捕获，防止同类 bug 再次绕过既有的 mock 化
+  workflow 执行测试悄悄潜入（那些测试打桩了 workflow 执行器本身，
+  根本不会走到真实的 `_resolve_prompt`，无法发现这类问题）。累计
+  82 个测试全部通过。
