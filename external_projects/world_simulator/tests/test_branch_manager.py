@@ -67,6 +67,64 @@ def test_fork_branch_preserves_original_timeline(tmp_path):
     assert set(bm.list_branches(data_dir, "sim1")) == {"main", new_branch}
 
 
+def test_list_branches_detailed_includes_metadata(tmp_path):
+    data_dir = tmp_path / "data"
+    _make_sim(data_dir, "sim1", 4)  # main: step 0..4
+
+    new_branch = bm.fork_branch(
+        data_dir, "sim1", from_step=2, source_branch="main", switch=False,
+    )
+
+    detailed = bm.list_branches_detailed(data_dir, "sim1")
+    by_id = {d["branch"]: d for d in detailed}
+
+    assert set(by_id) == {"main", new_branch}
+
+    # main：创建时间取自 manifest，没有来源分支
+    assert by_id["main"]["is_current"] is True
+    assert by_id["main"]["source_branch"] is None
+    assert by_id["main"]["from_step"] is None
+    assert by_id["main"]["step_count"] == 5
+    assert by_id["main"]["current_step"] == 4
+
+    # 新分支：记录了来源分支/分叉自哪一步，且不是当前活跃分支（switch=False）
+    fork_info = by_id[new_branch]
+    assert fork_info["is_current"] is False
+    assert fork_info["source_branch"] == "main"
+    assert fork_info["from_step"] == 2
+    assert fork_info["step_count"] == 3
+    assert fork_info["current_step"] == 2
+    assert fork_info["created_at"]  # 非空
+
+    # 手动挡默认：pilot_mode 为 manual，不应显示自动挡摘要信息
+    assert fork_info["pilot_mode"] == "manual"
+    assert fork_info["autopilot_enabled"] is False
+
+
+def test_list_branches_detailed_reflects_autopilot_config(tmp_path):
+    data_dir = tmp_path / "data"
+    _make_sim(data_dir, "sim1", 1)
+    store = SimStore.for_root(data_dir, "sim1")
+    store.save_pilot_config(
+        "main", "autopilot",
+        {
+            "enabled": True, "risk_preference": "aggressive",
+            "review_mode": "pause_on_major_decision",
+            "allow_custom_options": True,
+            "principles": ["优先长期收益", "避免过度负债"],
+        },
+    )
+
+    detailed = bm.list_branches_detailed(data_dir, "sim1")
+    main_info = detailed[0]
+    assert main_info["pilot_mode"] == "autopilot"
+    assert main_info["autopilot_enabled"] is True
+    assert main_info["risk_preference"] == "aggressive"
+    assert main_info["review_mode"] == "pause_on_major_decision"
+    assert main_info["allow_custom_options"] is True
+    assert main_info["principles_count"] == 2
+
+
 def test_fork_branch_without_switch(tmp_path):
     data_dir = tmp_path / "data"
     _make_sim(data_dir, "sim1", 3)

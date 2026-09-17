@@ -205,6 +205,132 @@ def test_batch_autopilot_skips_manual_instances(tmp_path, monkeypatch):
     assert results[0].next_step == 1
 
 
+def test_manual_advance_with_custom_option_bypasses_options_list(tmp_path, monkeypatch):
+    """手动挡：用户自己写的选项不需要预先出现在候选列表里。"""
+    data_dir = tmp_path / "data"
+    _make_sim_with_options(data_dir, "sim1", pilot_mode="manual")
+    capture: dict = {}
+    _patch_advance_step_workflow(
+        monkeypatch, tmp_path,
+        {"next_summary": "按自定义方向推进", "narrative": "x", "next_vars": {"age": 21}, "options": []},
+        capture,
+    )
+
+    next_state = engine_mod.advance(
+        object(), tmp_path, data_dir, "sim1",
+        custom_option={"label": "先按兵不动", "description": "观察一个季度再说"},
+        chosen_by="user",
+    )
+
+    assert next_state.step == 1
+    chosen_option_sent = json.loads(capture["inputs"]["chosen_option_json"])
+    assert chosen_option_sent["label"] == "先按兵不动"
+    assert chosen_option_sent["id"].startswith("custom_")
+
+    store = SimStore.for_root(data_dir, "sim1")
+    history = store.load_history()
+    assert history[0].chosen_option_id.startswith("custom_")
+    assert history[0].chosen_by == "user"
+
+
+def test_manual_advance_custom_option_requires_label(tmp_path):
+    data_dir = tmp_path / "data"
+    _make_sim_with_options(data_dir, "sim1", pilot_mode="manual")
+    with pytest.raises(engine_mod.SimEngineError):
+        engine_mod.advance(
+            object(), tmp_path, data_dir, "sim1",
+            custom_option={"label": "  ", "description": "空标题不合法"},
+        )
+
+
+def test_autopilot_custom_option_accepted_when_llm_proposes_it(tmp_path, monkeypatch):
+    """自动挡：画像里没有强制要求 LLM 一定要输出 chosen_option_id，
+    LLM 判断候选列表都不合理时，可以改为输出 custom_option_label/
+    custom_option_description，engine 应当接收并落盘为 autopilot 选择。
+    """
+    data_dir = tmp_path / "data"
+    _make_sim_with_options(
+        data_dir, "sim1", pilot_mode="autopilot",
+        autopilot={"enabled": True, "review_mode": "silent", "allow_custom_options": True},
+    )
+    capture: dict = {}
+    _patch_advance_step_workflow(
+        monkeypatch, tmp_path,
+        {
+            "next_summary": "代理提出了新方向", "narrative": "x", "next_vars": {}, "options": [],
+            "custom_option_label": "先谈判争取更好条件",
+            "custom_option_description": "候选列表里两个选项都太极端",
+            "chosen_reason": "候选列表缺少折中方案",
+        },
+        capture,
+    )
+
+    next_state = ap_mod.run_autopilot_step(object(), tmp_path, data_dir, "sim1")
+
+    assert next_state.step == 1
+    assert "允许你跳出这个列表" in capture["inputs"]["decision_context"]
+
+    store = SimStore.for_root(data_dir, "sim1")
+    history = store.load_history()
+    assert history[0].chosen_option_id.startswith("custom_")
+    assert history[0].chosen_by == "autopilot"
+    assert history[0].chosen_reason == "候选列表缺少折中方案"
+
+
+def test_decision_context_denies_custom_option_by_default(tmp_path):
+    """未开启 allow_custom_options 时，画像文本应明确要求代理只能从
+    候选列表里选，不应该出现"允许跳出"这句话。
+    """
+    manifest = SimManifest(
+        sim_id="sim1", template="life_sim", intent="i", title="t",
+        created_at=now_iso(), updated_at=now_iso(), pilot_mode="autopilot",
+        autopilot={"enabled": True, "review_mode": "silent"},
+    )
+    context = ap_mod._build_decision_context(manifest)
+    assert "不要自己发明列表之外的新选项" in context
+    assert "允许你跳出这个列表" not in context
+
+
+def test_run_comparison_experiment_forks_one_branch_per_profile(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    _make_sim_with_options(data_dir, "sim1", pilot_mode="manual")
+
+    capture: dict = {}
+    _patch_advance_step_workflow(
+        monkeypatch, tmp_path,
+        {
+            "next_summary": "ok", "narrative": "ok", "next_vars": {},
+            "options": [{"id": "safe", "label": "稳妥选项"}, {"id": "risky", "label": "激进选项"}],
+            "chosen_option_id": "safe", "chosen_reason": "r",
+        },
+        capture,
+    )
+
+    profiles = [
+        {"name": "保守派", "risk_preference": "conservative", "review_mode": "silent"},
+        {"name": "进取派", "risk_preference": "aggressive", "review_mode": "silent"},
+    ]
+    results = ap_mod.run_comparison_experiment(
+        object(), tmp_path, data_dir, "sim1",
+        source_branch="main", from_step=0, steps=2, profiles=profiles,
+    )
+
+    assert [r.profile_name for r in results] == ["保守派", "进取派"]
+    assert all(r.steps_done == 2 for r in results)
+    assert all(not r.error for r in results)
+    branch_ids = {r.branch for r in results}
+    assert len(branch_ids) == 2  # 两份画像各自跑在独立分支上
+
+    # 实验结束后，实例的活跃分支应该恢复成实验开始前那一条（main），
+    # 不应该被顺带切换到最后一条策略分支上。
+    store = SimStore.for_root(data_dir, "sim1")
+    manifest = store.load_manifest()
+    assert manifest.branch == "main"
+
+    # main 分支自身的历史不应该被实验分支的推进影响到（各自独立）。
+    assert len(store.load_history("main")) == 1
+
+
 def test_batch_autopilot_continues_after_single_failure(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     _make_sim_with_options(

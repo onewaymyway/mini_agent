@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from world_simulator.state_model import SimManifest, SimState
-from world_simulator.store import SimNotFoundError, SimStore
+from world_simulator.store import SimNotFoundError, SimStore, now_iso
 
 try:
     from mini_agent.utils.atomic_write import atomic_write_jsonl
@@ -58,6 +58,64 @@ def list_branches(data_dir: Path, sim_id: str) -> List[str]:
             if child.is_dir() and (child / "state_current.json").exists():
                 branches.append(child.name)
     return branches
+
+
+def list_branches_detailed(data_dir: Path, sim_id: str) -> List[Dict[str, Any]]:
+    """列出实例已存在的所有分支，附带足够区分彼此的元信息，供看板的
+    「分支」列表展示（`list_branches()` 只返回 id 列表，看着完全一样，
+    用户很难分辨哪条分支是什么时候、为什么、用什么自动挡画像分出来
+    的——这个函数把这些信息一次性取齐）。
+
+    每个元素结构：
+        {
+            "branch": str,                # 分支 id
+            "is_current": bool,           # 是否为当前活跃分支
+            "created_at": str,            # 创建时间（main 用实例创建时间）
+            "source_branch": Optional[str],   # 从哪条分支分叉出来（main 为 None）
+            "from_step": Optional[int],       # 分叉自哪一步（main 为 None）
+            "current_step": Optional[int],    # 该分支当前推进到第几步
+            "step_count": int,                # 该分支历史长度（含初始状态）
+            "pilot_mode": str,                # "manual" | "autopilot"
+            "autopilot_enabled": bool,
+            "risk_preference": str,
+            "review_mode": str,
+            "allow_custom_options": bool,     # 是否允许代理跳出候选列表自选
+            "principles_count": int,          # 自动挡原则/偏好条数
+        }
+    """
+    store = SimStore.for_root(data_dir, sim_id)
+    if not store.exists():
+        raise SimNotFoundError(f"模拟实例不存在：{sim_id}")
+    manifest = store.load_manifest()
+
+    detailed: List[Dict[str, Any]] = []
+    for b in list_branches(data_dir, sim_id):
+        current = store.load_current_state(b)
+        history = store.load_history(b)
+        pilot_cfg = store.load_pilot_config(b)
+        ap = pilot_cfg.get("autopilot") or {}
+        if b == "main":
+            meta: Dict[str, Any] = {"created_at": manifest.created_at, "source_branch": None, "from_step": None}
+        else:
+            meta = store.load_branch_meta(b) or {}
+        detailed.append(
+            {
+                "branch": b,
+                "is_current": b == manifest.branch,
+                "created_at": meta.get("created_at") or "未知",
+                "source_branch": meta.get("source_branch"),
+                "from_step": meta.get("from_step"),
+                "current_step": current.step if current else None,
+                "step_count": len(history),
+                "pilot_mode": pilot_cfg.get("pilot_mode", "manual"),
+                "autopilot_enabled": bool(ap.get("enabled")),
+                "risk_preference": ap.get("risk_preference", "balanced"),
+                "review_mode": ap.get("review_mode", "silent"),
+                "allow_custom_options": bool(ap.get("allow_custom_options")),
+                "principles_count": len(ap.get("principles") or []),
+            }
+        )
+    return detailed
 
 
 def fork_branch(
@@ -128,6 +186,16 @@ def fork_branch(
     # 自动挡画像都不同）。
     pilot_cfg = store.load_pilot_config(source_branch)
     store.save_pilot_config(new_branch, pilot_cfg["pilot_mode"], pilot_cfg["autopilot"])
+
+    # 分支元信息（创建时间/来源分支/分叉自哪一步）：只用于列表展示
+    # （`list_branches_detailed`），不参与任何推进/对比逻辑，所以落盘
+    # 失败也不应该让整个分叉操作失败——这里不做特殊 try/except，
+    # 走到这一步前面的落盘都已经成功，说明存储是可写的，正常情况下
+    # 这一步不会单独失败。
+    store.save_branch_meta(
+        new_branch,
+        {"created_at": now_iso(), "source_branch": source_branch, "from_step": from_step},
+    )
 
     if switch:
         manifest.branch = new_branch

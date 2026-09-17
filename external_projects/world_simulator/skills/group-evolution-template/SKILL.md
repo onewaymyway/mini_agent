@@ -95,12 +95,16 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
 **选择逻辑（按优先级，与 `life-sim-template` 完全一致）：**
 
 1. "本次选择的选项"非空：按这个选项推进，`chosen_option_id`/
-   `chosen_reason` 可以省略。
+   `chosen_reason` 可以省略；这个选项的 `id` 若是 `custom_` 开头，
+   说明是用户自己新增的、不在原候选列表里的选项，处理方式一样。
 2. "本次选择的选项"为空对象但 `decision_context` 非空（自动挡代选）：
    从候选分支选项里挑一个最符合画像的选项，输出 `chosen_option_id`
    （必须是候选列表里真实存在的 id）和 `chosen_reason`（具体说明
    符合了画像里的哪条原则/风险偏好，不要写空话）。候选分支选项为空
-   数组时按第 3 条处理。
+   数组时按第 3 条处理。若 `decision_context` 明确允许"跳出候选列表
+   提出自定义选项"且候选列表确实都不够合理，可改为输出
+   `custom_option_label`/`custom_option_description` + `chosen_reason`，
+   不要同时输出 `chosen_option_id`；未明确允许时不能这样做。
 3. 两者都为空（普通手动挡未指定选择）：依据当前状态给出最合理的默认
    走向，不需要 `chosen_option_id`/`chosen_reason`。
 

@@ -89,6 +89,9 @@ class SimStore:
     def pilot_config_path(self, branch: str = "main") -> Path:
         return self.branch_dir(branch) / "pilot_config.json"
 
+    def branch_meta_path(self, branch: str = "main") -> Path:
+        return self.branch_dir(branch) / "branch_meta.json"
+
     # ── manifest ─────────────────────────────────────────────────────
 
     def exists(self) -> bool:
@@ -189,6 +192,24 @@ class SimStore:
             self.pilot_config_path(branch),
             {"pilot_mode": pilot_mode, "autopilot": dict(autopilot or {})},
         )
+
+    # ── 分支元信息（创建时间、来源分支等，仅用于列表展示）──────────
+
+    def load_branch_meta(self, branch: str = "main") -> Dict[str, Any]:
+        """读取某条分支的元信息（创建时间/来源分支/分叉自哪一步）。
+
+        只用于「分支」列表的展示（见 `branch_manager.list_branches_detailed`），
+        不影响任何推进/分叉逻辑——旧数据/`main` 分支没有这份文件时返回
+        空字典，调用方自行按字段缺省处理（`main` 的创建时间直接用
+        `manifest.created_at`）。
+        """
+        path = self.branch_meta_path(branch)
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def save_branch_meta(self, branch: str, meta: Dict[str, Any]) -> None:
+        atomic_write_json(self.branch_meta_path(branch), dict(meta))
 
     def delete_branch_dir(self, branch: str) -> None:
         """删除某条分支在磁盘上的目录（`branches/<branch>/`）。

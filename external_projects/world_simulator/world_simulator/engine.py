@@ -144,6 +144,7 @@ def advance(
     sim_id: str,
     *,
     choice_option_id: Optional[str] = None,
+    custom_option: Optional[Dict[str, str]] = None,
     decision_context: str = "",
     chosen_by: str = "user",
 ) -> SimState:
@@ -154,14 +155,28 @@ def advance(
             `options` 里的一个）；为 None 时表示"不指定，让引擎给出
             默认走向"（对应当前状态 `options` 为空数组的情况，也允许
             非空时仍不指定——由 skill 判断怎么给默认值）。
+        custom_option: 手动挡下用户自己新增的、**不在**当前候选列表里的
+            选项，形如 `{"label": ..., "description": ...}`——系统给出的
+            候选方向终究只是一种建议，用户经常会想到"更合理的第三个
+            选项"，这个参数就是给这种场景用的：与 `choice_option_id`
+            互斥，同时给出时以 `custom_option` 为准（调用方不应该同时
+            传两个，这里只是不额外报错，取更明确的那个）。engine 会给它
+            生成一个 `custom_` 前缀的临时 id，落盘方式与手动挑中候选列表
+            里的选项完全一样，不需要预先出现在 `current.options` 里。
         decision_context: 阶段四自动挡使用，非空表示这是一次代理代选：
-            `choice_option_id` 应该为 None，engine 会把当前候选列表喂给
-            skill，由 skill 自己选一个并在结果里回填 `chosen_option_id`/
-            `chosen_reason`（engine 校验后落盘，不直接信任 LLM）。
-        chosen_by: 当 `choice_option_id` 非 None（手动挡）时，记入当前
-            状态 `chosen_by` 字段的值，通常是 `"user"`；自动挡代选场景
-            这个值会被引擎内部推导出的 `"autopilot"` 覆盖，调用方不需要
-            自己判断。
+            `choice_option_id`/`custom_option` 都应该为 None，engine 会把
+            当前候选列表喂给 skill，由 skill 自己选一个并在结果里回填
+            `chosen_option_id`/`chosen_reason`（engine 校验后落盘，不
+            直接信任 LLM）；如果 `decision_context` 里明确允许代理跳出
+            候选列表（`autopilot.allow_custom_options`），skill 也可以
+            改为回填 `custom_option_label`/`custom_option_description`，
+            提出一个候选列表之外的新方向，engine 同样会接收并落盘——
+            处理方式与用户手动传 `custom_option` 一致，只是 `chosen_by`
+            记为 `"autopilot"`。
+        chosen_by: 当 `choice_option_id`/`custom_option` 非 None（手动挡）
+            时，记入当前状态 `chosen_by` 字段的值，通常是 `"user"`；
+            自动挡代选场景这个值会被引擎内部推导出的 `"autopilot"`
+            覆盖，调用方不需要自己判断。
     """
     store = SimStore.for_root(data_dir, sim_id)
     manifest = store.load_manifest()
@@ -177,7 +192,16 @@ def advance(
         raise SimEngineError(f"模拟实例缺少当前状态，数据可能已损坏：{sim_id}")
 
     chosen_option: Optional[ChoiceOption] = None
-    if choice_option_id is not None:
+    if custom_option is not None:
+        custom_label = str(custom_option.get("label") or "").strip()
+        if not custom_label:
+            raise SimEngineError("自定义选项至少需要填写标题（label）")
+        chosen_option = ChoiceOption(
+            id=f"custom_{secrets.token_hex(4)}",
+            label=custom_label,
+            description=str(custom_option.get("description") or ""),
+        )
+    elif choice_option_id is not None:
         chosen_option = next((o for o in current.options if o.id == choice_option_id), None)
         if chosen_option is None:
             raise SimEngineError(
@@ -252,6 +276,7 @@ def advance(
     effective_chosen_reason: Optional[str] = None
     if chosen_option is None and decision_context:
         auto_choice_id = data.get("chosen_option_id")
+        auto_custom_label = str(data.get("custom_option_label") or "").strip()
         if auto_choice_id:
             chosen_option = next((o for o in current.options if o.id == auto_choice_id), None)
             if chosen_option is None:
@@ -261,6 +286,18 @@ def advance(
                 )
             effective_chosen_by = "autopilot"
             effective_chosen_reason = data.get("chosen_reason") or None
+        elif auto_custom_label:
+            # 代理判断候选列表里没有足够合理的选项，跳出列表提出了一个
+            # 新方向（只有 `decision_context` 明确允许时 skill 才会这么
+            # 做，见 `autopilot._build_decision_context`）——落盘方式与
+            # 用户手动传 `custom_option` 完全一致，只是标记为 autopilot。
+            chosen_option = ChoiceOption(
+                id=f"custom_{secrets.token_hex(4)}",
+                label=auto_custom_label,
+                description=str(data.get("custom_option_description") or ""),
+            )
+            effective_chosen_by = "autopilot"
+            effective_chosen_reason = data.get("chosen_reason") or "候选列表之外的自定义选项"
 
     # 把这一步的选择记回*当前*状态节点（见 state_model.SimState docstring），
     # 再落盘一份修正后的当前节点——历史里对应 step 的条目需要同步更新，

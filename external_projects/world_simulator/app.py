@@ -42,7 +42,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "entrypoints"))
 
 import _common  # noqa: F401  — 触发 sys.path 设置，未使用其它内容
 from world_simulator import branch_manager as bm
-from world_simulator.autopilot import AutopilotDisabledError, run_autopilot_step
+from world_simulator.autopilot import AutopilotDisabledError, run_autopilot_step, run_comparison_experiment
 from world_simulator.config import DATA_DIR, ensure_dirs
 from world_simulator.achievements import achievement_progress, compute_achievements
 from world_simulator.engine import (
@@ -869,6 +869,13 @@ def page_detail() -> None:
                 "pause_on_major_decision": "重大决策时暂停",
             }[v],
         )
+        allow_custom_options = st.checkbox(
+            "允许代理跳出候选列表，自己提出更合理的选项",
+            value=bool(ap_cfg.get("allow_custom_options")),
+            help="系统给出的候选方向只是系统的建议；开启后，代理如果判断候选列表里"
+                 "没有一个足够合理，可以自己提出一个候选列表之外的新方向，而不是"
+                 "被迫矮子里拔将军。",
+        )
         if st.button("保存自动挡配置"):
             set_pilot_config(
                 DATA_DIR, sim_id,
@@ -878,6 +885,7 @@ def page_detail() -> None:
                     "principles": [p.strip() for p in principles_text.splitlines() if p.strip()],
                     "risk_preference": risk_preference,
                     "review_mode": review_mode,
+                    "allow_custom_options": allow_custom_options,
                 },
             )
             st.rerun()
@@ -943,20 +951,45 @@ def page_detail() -> None:
 
         default_clicked = st.button("按默认走向推进")
 
-        if chosen_id or default_clicked:
-            with st.spinner("正在推进..."):
-                try:
-                    cfg = _load_cfg()
-                    advance(
-                        cfg, PROJECT_ROOT, DATA_DIR, sim_id,
-                        choice_option_id=chosen_id, chosen_by="user",
-                    )
-                except (SimEngineError, SimAlreadyEndedError, SimPausedError) as exc:
-                    st.error(f"推进失败：{exc}")
-                except ImportError as exc:
-                    st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+        custom_clicked = False
+        custom_label = ""
+        custom_desc = ""
+        with st.expander("✏️ 都不满意？自己写一个选项"):
+            st.markdown(
+                '<span class="ws-muted">系统给出的候选方向终究只是建议，想到更合理的走向时，'
+                "直接填在这里，点「应用这个选项」就会按你写的方向推进，不需要先加进候选列表。"
+                "</span>",
+                unsafe_allow_html=True,
+            )
+            custom_label = st.text_input("选项标题", key="custom_option_label", placeholder="例：先按兵不动，观察一个季度再说")
+            custom_desc = st.text_area("选项说明（可选）", key="custom_option_desc", height=70)
+            custom_clicked = st.button("应用这个选项", key="custom_option_apply")
+
+        if chosen_id or default_clicked or custom_clicked:
+            custom_payload = None
+            if custom_clicked:
+                if not (custom_label or "").strip():
+                    st.error("自定义选项至少需要填写标题。")
+                    custom_payload = "__invalid__"
                 else:
-                    st.rerun()
+                    custom_payload = {"label": custom_label.strip(), "description": custom_desc.strip()}
+
+            if custom_payload != "__invalid__":
+                with st.spinner("正在推进..."):
+                    try:
+                        cfg = _load_cfg()
+                        advance(
+                            cfg, PROJECT_ROOT, DATA_DIR, sim_id,
+                            choice_option_id=None if custom_payload else chosen_id,
+                            custom_option=custom_payload if isinstance(custom_payload, dict) else None,
+                            chosen_by="user",
+                        )
+                    except (SimEngineError, SimAlreadyEndedError, SimPausedError) as exc:
+                        st.error(f"推进失败：{exc}")
+                    except ImportError as exc:
+                        st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+                    else:
+                        st.rerun()
 
     st.markdown("#### 时间线")
     _render_timeline(list(reversed(history)), sim_id=sim_id, source_branch=manifest.branch)
@@ -964,10 +997,10 @@ def page_detail() -> None:
     # ── 分支管理 ──
     st.markdown("#### 分支")
     try:
-        branches = bm.list_branches(DATA_DIR, sim_id)
+        branches_detailed = bm.list_branches_detailed(DATA_DIR, sim_id)
     except Exception as exc:  # noqa: BLE001
         st.error(f"读取分支列表失败：{exc}")
-        branches = ["main"]
+        branches_detailed = [{"branch": "main", "is_current": True}]
 
     st.markdown(
         '<span class="ws-muted">当前活跃分支：<b>' + manifest.branch + "</b>"
@@ -977,13 +1010,41 @@ def page_detail() -> None:
         unsafe_allow_html=True,
     )
 
-    for b in branches:
-        cols = st.columns([2, 1, 1, 1])
+    _REVIEW_MODE_LABEL = {
+        "silent": "静默托管", "notify_each_step": "每步通知",
+        "pause_on_major_decision": "重大决策暂停",
+    }
+    _RISK_LABEL = {"conservative": "保守", "balanced": "均衡", "aggressive": "进取"}
+
+    for info in branches_detailed:
+        b = info["branch"]
+        cols = st.columns([3, 1, 1, 1])
         with cols[0]:
-            marker = " ← 当前" if b == manifest.branch else ""
-            st.markdown(f'<span class="ws-muted">{b}{marker}</span>', unsafe_allow_html=True)
+            marker = " ← 当前" if info.get("is_current") else ""
+            origin = (
+                f"，分叉自 {info['source_branch']}/第 {info['from_step']} 步"
+                if info.get("source_branch") else "，实例本体"
+            )
+            progress = (
+                f"进度：第 {info.get('current_step', '?')} 步（历史 {info.get('step_count', '?')} 条）"
+            )
+            if info.get("pilot_mode") == "autopilot" and info.get("autopilot_enabled"):
+                custom_note = "，可跳出候选自选" if info.get("allow_custom_options") else ""
+                pilot_note = (
+                    f"自动挡 · {_RISK_LABEL.get(info.get('risk_preference'), info.get('risk_preference'))} · "
+                    f"{_REVIEW_MODE_LABEL.get(info.get('review_mode'), info.get('review_mode'))}"
+                    f"{custom_note} · {info.get('principles_count', 0)} 条原则"
+                )
+            else:
+                pilot_note = "手动挡"
+            st.markdown(
+                f'<div><b>{b}</b>{marker}</div>'
+                f'<div class="ws-muted">创建于 {info.get("created_at", "未知")}{origin}</div>'
+                f'<div class="ws-muted">{progress} · {pilot_note}</div>',
+                unsafe_allow_html=True,
+            )
         with cols[1]:
-            if b != manifest.branch and st.button("切换到这条", key=f"switch_{b}"):
+            if not info.get("is_current") and st.button("切换到这条", key=f"switch_{b}"):
                 try:
                     bm.switch_branch(DATA_DIR, sim_id, b)
                 except bm.BranchError as exc:
@@ -1004,7 +1065,7 @@ def page_detail() -> None:
             # 一次无意义的点击往返。
             if b == "main":
                 st.markdown('<span class="ws-muted">—</span>', unsafe_allow_html=True)
-            elif b == manifest.branch:
+            elif info.get("is_current"):
                 st.markdown('<span class="ws-muted">先切走才能删</span>', unsafe_allow_html=True)
             else:
                 confirm_key = f"confirm_delete_{b}"
@@ -1158,6 +1219,122 @@ def page_compare() -> None:
             )
         rows.append(row)
     st.table(rows)
+
+
+# ─────────────────────────────────────────────────────────────
+# 页面：对比实验（多策略自动挡批量对比）
+# ─────────────────────────────────────────────────────────────
+
+
+def page_experiment() -> None:
+    st.markdown("## 🧪 对比实验", unsafe_allow_html=True)
+    st.markdown(
+        '<span class="ws-muted">从同一个历史节点分叉出多条分支，每条分支套用一份不同的'
+        "自动挡策略画像，各自独立推进相同步数，跑完之后去「对比视图」并排查看"
+        "「同样的起点，不同策略分别走出了什么结果」——不需要手动一条条分叉、"
+        "一条条配置、一步步点推进。</span>",
+        unsafe_allow_html=True,
+    )
+
+    all_manifests = list_simulations(DATA_DIR)
+    if not all_manifests:
+        st.info("还没有可用的模拟实例，先去创建一个。")
+        return
+
+    sim_options = {m.sim_id: m.title for m in all_manifests}
+    sim_id = st.selectbox(
+        "选择模拟实例", options=list(sim_options), format_func=lambda k: sim_options[k], key="exp_sim",
+    )
+    try:
+        branch_options = bm.list_branches(DATA_DIR, sim_id)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"读取分支列表失败：{exc}")
+        return
+
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        source_branch = st.selectbox("从哪条分支分叉（起点）", options=branch_options, key="exp_source_branch")
+    with col2:
+        history = bm.load_branch_timeline(DATA_DIR, sim_id, source_branch)
+        max_step = history[-1].step if history else 0
+        from_step = st.number_input("分叉自第几步", min_value=0, max_value=max_step, value=max_step, step=1, key="exp_from_step")
+    with col3:
+        steps = st.number_input("每条策略推进步数", min_value=1, max_value=30, value=3, step=1, key="exp_steps")
+
+    st.markdown("#### 策略画像")
+    st.markdown(
+        '<span class="ws-muted">至少配置 2 份策略画像才有对比意义；每份画像独立跑在自己的'
+        "分支上，互不干扰。</span>",
+        unsafe_allow_html=True,
+    )
+    profile_count = st.number_input("策略数量", min_value=2, max_value=6, value=2, step=1, key="exp_profile_count")
+
+    profiles = []
+    profile_cols = st.columns(int(profile_count))
+    for i in range(int(profile_count)):
+        with profile_cols[i]:
+            st.markdown(f"**策略 {i + 1}**")
+            name = st.text_input("名称", value=f"策略{i + 1}", key=f"exp_name_{i}")
+            risk = st.selectbox(
+                "风险偏好", options=["conservative", "balanced", "aggressive"],
+                format_func=lambda v: {"conservative": "保守", "balanced": "均衡", "aggressive": "进取"}[v],
+                key=f"exp_risk_{i}",
+            )
+            review = st.selectbox(
+                "review_mode", options=["silent", "notify_each_step", "pause_on_major_decision"],
+                format_func=lambda v: {
+                    "silent": "静默托管", "notify_each_step": "每步通知",
+                    "pause_on_major_decision": "重大决策暂停",
+                }[v],
+                key=f"exp_review_{i}",
+            )
+            allow_custom = st.checkbox("允许跳出候选自选", key=f"exp_custom_{i}")
+            principles_text = st.text_area("原则/偏好（每行一条）", height=80, key=f"exp_principles_{i}")
+            profiles.append({
+                "name": name,
+                "risk_preference": risk,
+                "review_mode": review,
+                "allow_custom_options": allow_custom,
+                "principles": [p.strip() for p in principles_text.splitlines() if p.strip()],
+            })
+
+    if st.button("▶▶ 运行对比实验", type="primary"):
+        with st.spinner(f"正在为 {len(profiles)} 份策略画像各自推进 {int(steps)} 步……"):
+            try:
+                cfg = _load_cfg()
+                results = run_comparison_experiment(
+                    cfg, PROJECT_ROOT, DATA_DIR, sim_id,
+                    source_branch=source_branch, from_step=int(from_step), steps=int(steps),
+                    profiles=profiles,
+                )
+            except ImportError as exc:
+                st.error(f"未检测到 mini_agent 框架，无法运行实验：{exc}")
+                results = None
+
+        if results:
+            st.session_state["experiment_results"] = {"sim_id": sim_id, "results": results}
+
+    exp_results = st.session_state.get("experiment_results")
+    if exp_results and exp_results.get("sim_id") == sim_id:
+        st.markdown("#### 实验结果")
+        for r in exp_results["results"]:
+            status = "⚠️ 提前结束" if r.ended_early else "✅ 正常跑完"
+            err_note = f"（{r.error}）" if r.error else ""
+            cols = st.columns([3, 1])
+            with cols[0]:
+                st.markdown(
+                    f'<div class="ws-card"><div class="ws-card-title">{r.profile_name}</div>'
+                    f'<div class="ws-muted">分支 {r.branch} · 完成 {r.steps_done} 步 · {status}{err_note}</div></div>',
+                    unsafe_allow_html=True,
+                )
+            with cols[1]:
+                if r.branch != "?" and st.button("加入对比", key=f"exp_cmp_{r.branch}"):
+                    selection = st.session_state.setdefault("compare_selection", [])
+                    pair = (sim_id, r.branch)
+                    if pair not in selection:
+                        selection.append(pair)
+                    st.session_state["view"] = "compare"
+                    st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1347,6 +1524,9 @@ def main() -> None:
         if st.button("⚖ 对比视图", use_container_width=True):
             st.session_state["view"] = "compare"
             st.rerun()
+        if st.button("🧪 对比实验", use_container_width=True):
+            st.session_state["view"] = "experiment"
+            st.rerun()
         if st.button("🗄 存档管理", use_container_width=True):
             st.session_state["view"] = "archive"
             st.rerun()
@@ -1358,6 +1538,8 @@ def main() -> None:
         page_detail()
     elif view == "compare":
         page_compare()
+    elif view == "experiment":
+        page_experiment()
     elif view == "archive":
         page_archive()
     elif view == "game":

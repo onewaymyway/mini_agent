@@ -58,6 +58,17 @@ def _build_decision_context(manifest: SimManifest) -> str:
         lines.extend(f"- {p}" for p in principles)
     else:
         lines.append("用户没有设定额外的原则/偏好，按风险偏好和常理判断即可。")
+
+    if bool(ap.get("allow_custom_options")):
+        lines.append(
+            "系统给出的候选分支选项终究只是建议，如果你确信候选列表里"
+            "没有一个足够合理，允许你跳出这个列表，自己提出一个新的候选"
+            "方向（输出 custom_option_label/custom_option_description，"
+            "而不是 chosen_option_id）——请谨慎使用这个权限，多数情况下"
+            "应该优先从候选列表里选，只有明显没有一个合理选项时才这么做。"
+        )
+    else:
+        lines.append("请从给定的候选分支选项里选择，不要自己发明列表之外的新选项。")
     return "\n".join(lines)
 
 
@@ -151,5 +162,121 @@ def run_batch_autopilot(
                 logger.exception("自动挡推进出现未预期异常：sim_id=%s", sim_id)
                 results.append(AutopilotStepResult(sim_id=sim_id, ok=False, error=str(exc)))
                 break
+
+    return results
+
+
+@dataclass
+class ExperimentBranchResult:
+    """对比实验里，某一条策略画像分支跑完之后的结果摘要。"""
+
+    branch: str
+    profile_name: str
+    steps_done: int
+    ended_early: bool
+    error: Optional[str] = None
+
+
+def run_comparison_experiment(
+    cfg,
+    workspace_root: Path,
+    data_dir: Path,
+    sim_id: str,
+    *,
+    source_branch: str,
+    from_step: int,
+    steps: int,
+    profiles: List[Dict[str, Any]],
+) -> List[ExperimentBranchResult]:
+    """对比实验：从同一个历史节点分叉出多条分支，每条分支套用一份不同
+    的自动挡策略画像，各自独立、依次推进相同步数，跑完之后就可以在
+    「对比视图」里并排查看"同样的起点，不同的策略画像分别走出了什么
+    结果"——这正是"生成多种自动挡策略、依次执行、对比实验"要支持的
+    用法，不需要用户手动一条条分叉、一条条切换、一条条配置自动挡再
+    一步步点推进。
+
+    Args:
+        source_branch / from_step: 从哪条分支的第几步开始分叉（所有
+            策略分支共享同一个起点，这样对比才有意义）。
+        steps: 每条策略分支各自推进的步数（`review_mode:
+            pause_on_major_decision` 触发暂停、或推进出错时会提前
+            结束这一条分支，不影响其它分支继续跑）。
+        profiles: 策略画像列表，每个元素形如
+            `{"name": ..., "principles": [...], "risk_preference": ...,
+              "review_mode": ..., "allow_custom_options": bool}`；
+            `name` 只用于结果展示，不参与决策逻辑本身。
+
+    实现上的取舍：`engine.advance()`/`run_autopilot_step()` 只认
+    "当前活跃分支"（`manifest.branch`），本身不支持"对着一条非活跃
+    分支推进"；这里用分叉时 `switch=True` 依次把活跃分支切到每条策略
+    分支上去跑，跑完全部策略之后再切回实验开始前用户正在看的那条
+    分支——避免"跑了个实验，结果页面莫名其妙停在最后一条策略分支上"
+    这种观感，用户应该主动去「对比视图」/「分支」列表里查看结果。
+    """
+    from world_simulator.branch_manager import BranchError, fork_branch, switch_branch
+    from world_simulator.engine import get_simulation, set_pilot_config
+
+    store_manifest = get_simulation(data_dir, sim_id)[0]
+    original_active_branch = store_manifest.branch
+
+    results: List[ExperimentBranchResult] = []
+    for profile in profiles:
+        name = str(profile.get("name") or "策略")
+        try:
+            new_branch = fork_branch(
+                data_dir, sim_id, from_step=from_step,
+                source_branch=source_branch, switch=True,
+            )
+            set_pilot_config(
+                data_dir, sim_id, pilot_mode="autopilot",
+                autopilot={
+                    "enabled": True,
+                    "principles": list(profile.get("principles") or []),
+                    "risk_preference": profile.get("risk_preference", "balanced"),
+                    "review_mode": profile.get("review_mode", "silent"),
+                    "allow_custom_options": bool(profile.get("allow_custom_options")),
+                },
+            )
+        except (BranchError, SimEngineError) as exc:
+            results.append(
+                ExperimentBranchResult(branch="?", profile_name=name, steps_done=0, ended_early=True, error=str(exc))
+            )
+            continue
+
+        done = 0
+        ended_early = False
+        err: Optional[str] = None
+        for _ in range(max(1, steps)):
+            try:
+                latest_manifest, _c, _h = get_simulation(data_dir, sim_id)
+                if latest_manifest.status != "active":
+                    ended_early = True
+                    break
+                next_state = run_autopilot_step(cfg, workspace_root, data_dir, sim_id)
+                done += 1
+                if next_state.major_decision:
+                    ended_early = True
+                    break
+            except (SimEngineError, SimAlreadyEndedError, SimPausedError, AutopilotDisabledError) as exc:
+                err = str(exc)
+                ended_early = True
+                break
+            except Exception as exc:  # noqa: BLE001 — 单条策略分支异常不该拖垮整个实验
+                logger.exception("对比实验中策略分支推进出现未预期异常：sim_id=%s branch=%s", sim_id, new_branch)
+                err = str(exc)
+                ended_early = True
+                break
+
+        results.append(
+            ExperimentBranchResult(
+                branch=new_branch, profile_name=name, steps_done=done,
+                ended_early=ended_early, error=err,
+            )
+        )
+
+    try:
+        switch_branch(data_dir, sim_id, original_active_branch)
+    except BranchError:
+        pass  # 原分支理论上不会消失，容错兜底即可，不影响实验结果本身
 
     return results
