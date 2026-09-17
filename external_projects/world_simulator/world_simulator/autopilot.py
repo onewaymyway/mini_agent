@@ -175,6 +175,12 @@ class ExperimentBranchResult:
     steps_done: int
     ended_early: bool
     error: Optional[str] = None
+    final_vars: Optional[Dict[str, Any]] = None
+    """这条分支跑完之后当前状态的 `vars`（阶段十新增，供
+    `analysis.aggregate_field_stats()` 做统计聚合用）。分支一步都没跑成
+    （fork 失败等）时为 `None`；否则即使中途因暂停/报错提前结束，也是
+    "跑到哪一步就用哪一步的 vars"，不代表这条分支的模拟已经完整跑完
+    `steps` 步。"""
 
 
 def run_comparison_experiment(
@@ -271,6 +277,7 @@ def run_comparison_experiment(
             ExperimentBranchResult(
                 branch=new_branch, profile_name=name, steps_done=done,
                 ended_early=ended_early, error=err,
+                final_vars=dict(get_simulation(data_dir, sim_id)[1].vars),
             )
         )
 
@@ -279,4 +286,52 @@ def run_comparison_experiment(
     except BranchError:
         pass  # 原分支理论上不会消失，容错兜底即可，不影响实验结果本身
 
+    return results
+
+
+def run_repeated_experiment(
+    cfg,
+    workspace_root: Path,
+    data_dir: Path,
+    sim_id: str,
+    *,
+    source_branch: str,
+    from_step: int,
+    steps: int,
+    profile: Dict[str, Any],
+    n_repeats: int,
+) -> List[ExperimentBranchResult]:
+    """重复采样（Monte Carlo 雏形，阶段十 / 演进计划 4.2.1 节）：给定
+    **同一份**策略画像，从同一个历史节点 fork 出 `n_repeats` 条分支，
+    各自独立推进相同步数——差异只来自 LLM 输出本身的随机性，不像
+    `run_comparison_experiment()` 那样每条分支套用不同的策略。
+
+    跑完之后可以看出"这个策略的产出其实波动很大"还是"很稳定"这类
+    `run_comparison_experiment()`（确定性横向对比）完全看不出来的信息；
+    典型用法是把返回结果里每条分支的 `final_vars` 交给
+    `analysis.aggregate_field_stats()` 算均值/极差/标准差摘要。
+
+    敏感性分析（单变量扰动）是这个函数的直接复用：调用方把"随机性"换成
+    "人为设定的初始 `vars` 差异"——比如对同一个策略跑几次，每次调用前
+    先用不同的 `initial_cash` 重新创建/编辑起点分支——不需要这个函数
+    本身支持额外参数（演进计划 4.2 节"敏感性分析"一段的实现取舍）。
+
+    实现上复用 `run_comparison_experiment()` 的整套"依次 fork→切换→跑
+    steps 步→切回原分支"逻辑，只是把"每条分支一份不同 profile"换成
+    "每条分支都是同一份 profile"，为了不产生两份几乎相同的大函数体，
+    直接委托过去。
+
+    Args:
+        profile: 单份策略画像（格式同 `run_comparison_experiment` 的
+            `profiles` 单个元素），`name` 会被忽略，结果里统一用
+            `profile.get("name") or "重复采样"` 加序号区分各条分支。
+        n_repeats: 重复次数（至少 1）。
+    """
+    base_name = str(profile.get("name") or "重复采样")
+    n = max(1, n_repeats)
+    profiles = [{**profile, "name": f"{base_name} #{i + 1}"} for i in range(n)]
+    results = run_comparison_experiment(
+        cfg, workspace_root, data_dir, sim_id,
+        source_branch=source_branch, from_step=from_step, steps=steps, profiles=profiles,
+    )
     return results

@@ -1,7 +1,8 @@
 # world_simulator 向"通用世界模型/实验引擎"演进计划
 
-> **状态**：阶段九（4.1 节，资源类字段代码层校验）已完成，见
-> `PROJECT.md` 阶段九交付记录；阶段十、十一（4.2/4.3 节）尚未开始。
+> **状态**：阶段九（4.1 节，资源类字段代码层校验）、阶段十（4.2 节，
+> 对比实验升级为重复采样 + 结果聚合）已完成，见 `PROJECT.md` 对应
+> 交付记录；阶段十一（4.3 节）尚未开始。
 > **前置文档**：`next_doc/world_simulator_external_project_plan.md`（原始方案，
 > 阶段一~七已完成，见该文档状态栏）；用户提供的外部参考
 > 《万物模拟器到底如何构建？——从世界模型到通用模拟引擎的完整方案》
@@ -67,7 +68,7 @@
 | --- | --- | --- |
 | Adaptive Time Resolution（第十八节） | `time_granularity_mode: fixed/auto/guided`，`SimState.time_granularity`/`granularity_changed`/`granularity_reason` | 已覆盖，含"延续上一步、变化需给理由"的约束 |
 | Branch Engine / Fork / Version（第二十、三十一节） | `branch_manager.py`：fork/switch/delete/compare，`list_branches_detailed()` 带创建时间/来源/进度 | 部分覆盖：有 fork/compare，无 merge，无 skill/prompt 版本记录 |
-| Experiment Engine 雏形（第二十二节） | `autopilot.run_comparison_experiment()`：N 个命名策略各跑一次 | 弱覆盖：是"多方案横向对比"，不是"同方案分布分析"（本文档 4.2 节要补） |
+| Experiment Engine 雏形（第二十二节） | `autopilot.run_comparison_experiment()`（多方案横向对比）+ `run_repeated_experiment()`（同方案重复采样）+ `analysis.aggregate_field_stats()`（统计聚合） | 阶段十已完成：横向对比 + 分布分析都有了，敏感性分析是 `run_repeated_experiment()` 的直接复用（未单独包装） |
 | Action（第八节） | `custom_option`/`chosen_option`：用户/自动挡可以选择或新增选项 | 弱覆盖：Action 存在，但没有代码层的合法性/资源校验（本文档 4.1 节要补） |
 | Resource / Rule（第七、十节） | `settings.resource_fields` + `engine._apply_resource_guard()`：数值下限校验，越界记入 `SimState.resource_violations` | 部分覆盖（阶段九已完成）：只做了"下限"这一种约束，无转移/生产关系建模、无通用规则引擎（本文档 4.1 节） |
 | Uncertainty / Confidence（第二十八节） | 完全没有：所有变量一视同仁展示 | 未覆盖（本文档 4.3 节要补） |
@@ -134,7 +135,7 @@
 `tests/test_spec_and_engine.py` 两个新增用例覆盖（一次真实越界、一次
 未越界的对照），未接入真实 LLM 手动验证。
 
-### 4.2（P0）对比实验升级：从"多方案横向对比"到"同方案分布分析"
+### 4.2（P0，已完成，见阶段十）对比实验升级：从"多方案横向对比"到"同方案分布分析"
 
 **问题**：现在的 `run_comparison_experiment()` 是 N 个命名策略各跑
 一次，属于确定性对比；参考方案第二十二~二十六节的核心价值是
@@ -172,6 +173,18 @@
 **验收标准**：对同一个策略跑 5 次重复实验，能看到 5 条独立分支
 + 一份"关键变量均值/极差"的统计摘要；结果里能看出"这个策略的产出
 其实波动很大"或者"很稳定"这类此前完全看不出来的信息。
+
+**实施记录**：已按上述方案实现（阶段十）。`autopilot.py` 新增
+`run_repeated_experiment()`（复用 `run_comparison_experiment()` 的分支
+管理逻辑，把"N 份不同 profile"换成"1 份 profile 复制 N 次"）；新增
+`world_simulator/analysis.py::aggregate_field_stats()` 做统计聚合
+（数值型均值/极差/标准差，枚举型分布，纯 `statistics` 标准库实现）；
+`app.py`「对比实验」页面新增"重复模式"开关 + 关注字段输入框 + 统计
+摘要展示。敏感性分析部分按计划直接复用 `run_repeated_experiment()`
+（把随机性换成人为设定的初始值差异），未单独包装成一层新 UI/函数，
+详见 `PROJECT.md` 阶段十"实施记录"一段的说明。验收标准已通过
+`tests/test_autopilot.py::test_run_repeated_experiment_forks_n_branches_with_same_profile`
++ `tests/test_analysis.py`（6 个用例）覆盖，未接入真实 LLM 手动验证。
 
 ### 4.3（P1）关键变量的可信度标注
 
@@ -243,8 +256,9 @@ LLM 主观推断）现在展示上一视同仁，用户没法分辨该信哪个�
   多策略对比实验""自动时间粒度"两轮已落地但未编号的迭代补记到
   `PROJECT.md`。
 - **阶段九**（已完成）：本文档 4.1 节，资源类字段代码层校验。
-- **阶段十**：本文档 4.2 节，对比实验升级为重复采样 + 统计聚合
-  （敏感性分析作为阶段十的延伸任务，视精力决定是否在同一阶段完成）。
+- **阶段十**（已完成）：本文档 4.2 节，对比实验升级为重复采样 + 统计聚合
+  （敏感性分析作为阶段十的延伸任务，已按"直接复用重复采样"的方式
+  说明，未单独实现新机制/新 UI，见实施记录）。
 - **阶段十一**：本文档 4.3 节，关键变量可信度标注。
 - **阶段十二及以后**：4.4（Problem Compiler 雏形）、4.5（因果摘要，
   可选）——启动前先评估阶段九~十一的实际使用反馈。

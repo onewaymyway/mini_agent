@@ -386,3 +386,78 @@ def test_batch_autopilot_continues_after_single_failure(tmp_path, monkeypatch):
     by_id = {r.sim_id: r for r in results}
     assert by_id["auto_bad"].ok is False
     assert by_id["auto_good"].ok is True
+
+
+def test_run_repeated_experiment_forks_n_branches_with_same_profile(tmp_path, monkeypatch):
+    """阶段十（4.2 节）：`run_repeated_experiment()` 应该用**同一份**
+    策略画像 fork 出 n_repeats 条独立分支，每条分支各自推进相同步数，
+    且每条分支的 `final_vars` 都能取到（供后续统计聚合使用）。"""
+    data_dir = tmp_path / "data"
+    _make_sim_with_options(data_dir, "sim1", pilot_mode="manual")
+
+    # 每次调用返回不同的 age，模拟"同一份策略、不同的 LLM 随机结果"。
+    call_count = {"n": 0}
+    step_step = _FakeStep("step")
+
+    class FakeStore:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunner:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            call_count["n"] += 1
+            age = 20 + call_count["n"]
+            result_file = _write_result_file(
+                tmp_path, f"advance_result_{call_count['n']}.json",
+                {
+                    "next_summary": "ok", "narrative": "ok", "next_vars": {"age": age},
+                    "options": [{"id": "safe", "label": "稳妥选项"}, {"id": "risky", "label": "激进选项"}],
+                    "chosen_option_id": "safe", "chosen_reason": "r",
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[
+                    SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)
+                ],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStore)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunner)
+
+    profile = {"risk_preference": "balanced", "review_mode": "silent"}
+    results = ap_mod.run_repeated_experiment(
+        object(), tmp_path, data_dir, "sim1",
+        source_branch="main", from_step=0, steps=1, profile=profile, n_repeats=3,
+    )
+
+    assert len(results) == 3
+    assert [r.profile_name for r in results] == ["重复采样 #1", "重复采样 #2", "重复采样 #3"]
+    assert all(r.steps_done == 1 for r in results)
+    branch_ids = {r.branch for r in results}
+    assert len(branch_ids) == 3
+
+    # 每条分支的 age 应该各不相同（来自各自独立的 LLM 调用结果），
+    # 且都能喂给 analysis.aggregate_field_stats() 算出有意义的统计摘要。
+    ages = sorted(r.final_vars["age"] for r in results)
+    assert ages == [21, 22, 23]
+
+    from world_simulator.analysis import aggregate_field_stats
+
+    stats = aggregate_field_stats([r.final_vars for r in results], ["age"])
+    assert stats[0].kind == "numeric"
+    assert stats[0].count == 3
+    assert stats[0].mean == 22.0
+    assert stats[0].min == 21.0
+    assert stats[0].max == 23.0
+
+    # 实验结束后应该切回实验开始前的活跃分支（main），不留在最后一条
+    # 重复分支上。
+    store = SimStore.for_root(data_dir, "sim1")
+    assert store.load_manifest().branch == "main"

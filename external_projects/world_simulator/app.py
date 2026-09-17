@@ -42,7 +42,10 @@ sys.path.insert(0, str(PROJECT_ROOT / "entrypoints"))
 
 import _common  # noqa: F401  — 触发 sys.path 设置，未使用其它内容
 from world_simulator import branch_manager as bm
-from world_simulator.autopilot import AutopilotDisabledError, run_autopilot_step, run_comparison_experiment
+from world_simulator.autopilot import (
+    AutopilotDisabledError, run_autopilot_step, run_comparison_experiment, run_repeated_experiment,
+)
+from world_simulator.analysis import aggregate_field_stats
 from world_simulator.config import DATA_DIR, ensure_dirs
 from world_simulator.achievements import achievement_progress, compute_achievements
 from world_simulator.engine import (
@@ -1393,10 +1396,11 @@ def page_compare() -> None:
 def page_experiment() -> None:
     st.markdown("## 🧪 对比实验", unsafe_allow_html=True)
     st.markdown(
-        '<span class="ws-muted">从同一个历史节点分叉出多条分支，每条分支套用一份不同的'
-        "自动挡策略画像，各自独立推进相同步数，跑完之后去「对比视图」并排查看"
-        "「同样的起点，不同策略分别走出了什么结果」——不需要手动一条条分叉、"
-        "一条条配置、一步步点推进。</span>",
+        '<span class="ws-muted">从同一个历史节点分叉出多条分支，跑完之后去「对比视图」'
+        "并排查看结果。默认「横向对比模式」：每条分支套用一份不同的自动挡策略画像，"
+        "适合回答「哪个策略更好」；也可以切到「重复模式」：同一份策略画像重复跑 N 次，"
+        "适合回答「这个策略稳不稳定」（阶段十，参考数据的均值/极差/标准差摘要）。"
+        "不需要手动一条条分叉、一条条配置、一步步点推进。</span>",
         unsafe_allow_html=True,
     )
 
@@ -1426,23 +1430,26 @@ def page_experiment() -> None:
         steps = st.number_input("每条策略推进步数", min_value=1, max_value=30, value=3, step=1, key="exp_steps")
 
     st.markdown("#### 策略画像")
-    st.markdown(
-        '<span class="ws-muted">至少配置 2 份策略画像才有对比意义；每份画像独立跑在自己的'
-        "分支上，互不干扰。</span>",
-        unsafe_allow_html=True,
+    repeat_mode = st.checkbox(
+        "🔁 重复模式（1 个策略 × N 次重复，用于看波动/分布，而不是策略之间的横向对比）",
+        key="exp_repeat_mode",
     )
-    profile_count = st.number_input("策略数量", min_value=2, max_value=6, value=2, step=1, key="exp_profile_count")
 
-    profiles = []
-    profile_cols = st.columns(int(profile_count))
-    for i in range(int(profile_count)):
-        with profile_cols[i]:
-            st.markdown(f"**策略 {i + 1}**")
-            name = st.text_input("名称", value=f"策略{i + 1}", key=f"exp_name_{i}")
+    if repeat_mode:
+        st.markdown(
+            '<span class="ws-muted">用**同一份**策略画像重复跑 N 次，差异只来自 LLM 输出'
+            "本身的随机性——适合回答「这个策略的产出稳不稳定」，而不是「哪个策略更好」。"
+            "</span>",
+            unsafe_allow_html=True,
+        )
+        rep_cols = st.columns([3, 1])
+        with rep_cols[0]:
+            st.markdown("**策略画像**")
+            name = st.text_input("名称", value="重复采样", key="exp_rep_name")
             risk = st.selectbox(
                 "风险偏好", options=["conservative", "balanced", "aggressive"],
                 format_func=lambda v: {"conservative": "保守", "balanced": "均衡", "aggressive": "进取"}[v],
-                key=f"exp_risk_{i}",
+                key="exp_rep_risk",
             )
             review = st.selectbox(
                 "review_mode", options=["silent", "notify_each_step", "pause_on_major_decision"],
@@ -1450,37 +1457,135 @@ def page_experiment() -> None:
                     "silent": "静默托管", "notify_each_step": "每步通知",
                     "pause_on_major_decision": "重大决策暂停",
                 }[v],
-                key=f"exp_review_{i}",
+                key="exp_rep_review",
             )
-            allow_custom = st.checkbox("允许跳出候选自选", key=f"exp_custom_{i}")
-            principles_text = st.text_area("原则/偏好（每行一条）", height=80, key=f"exp_principles_{i}")
-            profiles.append({
+            allow_custom = st.checkbox("允许跳出候选自选", key="exp_rep_custom")
+            principles_text = st.text_area("原则/偏好（每行一条）", height=80, key="exp_rep_principles")
+            profile = {
                 "name": name,
                 "risk_preference": risk,
                 "review_mode": review,
                 "allow_custom_options": allow_custom,
                 "principles": [p.strip() for p in principles_text.splitlines() if p.strip()],
-            })
+            }
+        with rep_cols[1]:
+            n_repeats = st.number_input("重复次数", min_value=2, max_value=20, value=5, step=1, key="exp_n_repeats")
 
-    if st.button("▶▶ 运行对比实验", type="primary"):
-        with st.spinner(f"正在为 {len(profiles)} 份策略画像各自推进 {int(steps)} 步……"):
-            try:
-                cfg = _load_cfg()
-                results = run_comparison_experiment(
-                    cfg, PROJECT_ROOT, DATA_DIR, sim_id,
-                    source_branch=source_branch, from_step=int(from_step), steps=int(steps),
-                    profiles=profiles,
+        focus_fields_text = st.text_input(
+            "关注哪些变量字段做统计摘要（逗号分隔，比如 resources.cash）",
+            key="exp_focus_fields",
+            placeholder="例：age, resources.cash",
+        )
+
+        if st.button("▶▶ 运行重复实验", type="primary"):
+            with st.spinner(f"正在用同一份策略画像重复推进 {int(n_repeats)} 次，每次 {int(steps)} 步……"):
+                try:
+                    cfg = _load_cfg()
+                    results = run_repeated_experiment(
+                        cfg, PROJECT_ROOT, DATA_DIR, sim_id,
+                        source_branch=source_branch, from_step=int(from_step), steps=int(steps),
+                        profile=profile, n_repeats=int(n_repeats),
+                    )
+                except ImportError as exc:
+                    st.error(f"未检测到 mini_agent 框架，无法运行实验：{exc}")
+                    results = None
+
+            if results:
+                st.session_state["experiment_results"] = {
+                    "sim_id": sim_id, "results": results, "mode": "repeat",
+                    "focus_fields": [f.strip() for f in focus_fields_text.split(",") if f.strip()],
+                }
+    else:
+        st.markdown(
+            '<span class="ws-muted">至少配置 2 份策略画像才有对比意义；每份画像独立跑在自己的'
+            "分支上，互不干扰。</span>",
+            unsafe_allow_html=True,
+        )
+        profile_count = st.number_input("策略数量", min_value=2, max_value=6, value=2, step=1, key="exp_profile_count")
+
+        profiles = []
+        profile_cols = st.columns(int(profile_count))
+        for i in range(int(profile_count)):
+            with profile_cols[i]:
+                st.markdown(f"**策略 {i + 1}**")
+                name = st.text_input("名称", value=f"策略{i + 1}", key=f"exp_name_{i}")
+                risk = st.selectbox(
+                    "风险偏好", options=["conservative", "balanced", "aggressive"],
+                    format_func=lambda v: {"conservative": "保守", "balanced": "均衡", "aggressive": "进取"}[v],
+                    key=f"exp_risk_{i}",
                 )
-            except ImportError as exc:
-                st.error(f"未检测到 mini_agent 框架，无法运行实验：{exc}")
-                results = None
+                review = st.selectbox(
+                    "review_mode", options=["silent", "notify_each_step", "pause_on_major_decision"],
+                    format_func=lambda v: {
+                        "silent": "静默托管", "notify_each_step": "每步通知",
+                        "pause_on_major_decision": "重大决策暂停",
+                    }[v],
+                    key=f"exp_review_{i}",
+                )
+                allow_custom = st.checkbox("允许跳出候选自选", key=f"exp_custom_{i}")
+                principles_text = st.text_area("原则/偏好（每行一条）", height=80, key=f"exp_principles_{i}")
+                profiles.append({
+                    "name": name,
+                    "risk_preference": risk,
+                    "review_mode": review,
+                    "allow_custom_options": allow_custom,
+                    "principles": [p.strip() for p in principles_text.splitlines() if p.strip()],
+                })
 
-        if results:
-            st.session_state["experiment_results"] = {"sim_id": sim_id, "results": results}
+        if st.button("▶▶ 运行对比实验", type="primary"):
+            with st.spinner(f"正在为 {len(profiles)} 份策略画像各自推进 {int(steps)} 步……"):
+                try:
+                    cfg = _load_cfg()
+                    results = run_comparison_experiment(
+                        cfg, PROJECT_ROOT, DATA_DIR, sim_id,
+                        source_branch=source_branch, from_step=int(from_step), steps=int(steps),
+                        profiles=profiles,
+                    )
+                except ImportError as exc:
+                    st.error(f"未检测到 mini_agent 框架，无法运行实验：{exc}")
+                    results = None
+
+            if results:
+                st.session_state["experiment_results"] = {
+                    "sim_id": sim_id, "results": results, "mode": "compare",
+                }
 
     exp_results = st.session_state.get("experiment_results")
     if exp_results and exp_results.get("sim_id") == sim_id:
         st.markdown("#### 实验结果")
+        if exp_results.get("mode") == "repeat":
+            focus_fields = exp_results.get("focus_fields") or []
+            ok_results = [r for r in exp_results["results"] if r.final_vars is not None]
+            if focus_fields and ok_results:
+                stats = aggregate_field_stats([r.final_vars for r in ok_results], focus_fields)
+                st.markdown("**统计摘要**")
+                for s in stats:
+                    if s.kind == "numeric":
+                        st.markdown(
+                            f'<div class="ws-card"><div class="ws-card-title">{s.field}</div>'
+                            f'<div class="ws-muted">均值 {s.mean:.2f} · 最小 {s.min:.2f} · '
+                            f'最大 {s.max:.2f} · 标准差 {s.stdev:.2f}（{s.count} 个有效样本）</div></div>',
+                            unsafe_allow_html=True,
+                        )
+                    elif s.kind == "categorical":
+                        dist_text = "，".join(f"{k}×{v}" for k, v in s.distribution.items())
+                        st.markdown(
+                            f'<div class="ws-card"><div class="ws-card-title">{s.field}</div>'
+                            f'<div class="ws-muted">分布：{dist_text}（{s.count} 个有效样本）</div></div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            f'<div class="ws-card"><div class="ws-card-title">{s.field}</div>'
+                            f'<div class="ws-muted">没有任何一条分支给出这个字段的值。</div></div>',
+                            unsafe_allow_html=True,
+                        )
+            elif not focus_fields:
+                st.markdown(
+                    '<span class="ws-muted">没有填写要关注的字段，只展示每条分支的完成情况；'
+                    "填写字段路径可以看到均值/极差/标准差摘要。</span>",
+                    unsafe_allow_html=True,
+                )
         for r in exp_results["results"]:
             status = "⚠️ 提前结束" if r.ended_early else "✅ 正常跑完"
             err_note = f"（{r.error}）" if r.error else ""

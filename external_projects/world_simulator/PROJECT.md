@@ -221,6 +221,44 @@ world_simulator_universal_world_model_upgrade_plan.md`（简称"演进
 克制"一节已说明原因）：不引入通用规则引擎，不做资源之间的转移/生产
 关系建模，`resource_fields` 未声明时的行为与阶段九之前完全一致。
 
+阶段十（对比实验升级：重复采样 + 结果聚合，已完成，见演进计划 4.2
+节；敏感性分析部分见下方"实施记录"）交付：
+
+1. `autopilot.py`：`ExperimentBranchResult` 新增 `final_vars` 字段
+   （分支跑完之后当前状态的 `vars`，`run_comparison_experiment()` 里
+   也一并回填，两种实验模式的结果结构保持一致）；新增
+   `run_repeated_experiment()`：给定**同一份**策略画像 + 起点分支 +
+   推进步数 + 重复次数 `n_repeats`，从同一节点 fork 出 `n_repeats`
+   条分支各自独立推进（差异只来自 LLM 输出本身的随机性）——实现上
+   直接把"同一份 profile 复制 n_repeats 次、各自编号"委托给既有的
+   `run_comparison_experiment()`，不重复一套"fork→切换→跑步数→切回"
+   的分支管理逻辑。
+2. `world_simulator/analysis.py`（新文件）：`aggregate_field_stats()`
+   纯函数，输入一组 `vars` + 关注的字段路径列表，按路径分别计算——
+   数值型给均值/最小/最大/标准差（`statistics` 标准库，不引入
+   numpy/pandas），枚举型给值→次数的分布（降序）；字段完全取不到值
+   时返回 `kind="missing"` 的占位结果而不是静默跳过，调用方不用额外
+   判断"是不是被漏算了"。不落盘任何新数据结构，纯计算。
+3. `app.py`「对比实验」页面新增"🔁 重复模式"开关：关闭时是原有的
+   "N 个不同策略各跑一次"；打开时变成"1 个策略 × N 次重复"，额外提供
+   一个"关注字段"输入框，跑完后调用 `aggregate_field_stats()` 展示
+   均值/极差/标准差（或分布）摘要，而不再是简单列出每条分支的完成
+   情况。
+4. 新增 `tests/test_analysis.py`（6 个用例，覆盖数值/枚举/嵌套路径/
+   缺失字段/顺序保持）；`tests/test_autopilot.py` 新增
+   `test_run_repeated_experiment_forks_n_branches_with_same_profile`，
+   验证重复实验确实各自独立、`final_vars` 可以直接喂给
+   `aggregate_field_stats()` 算出有意义的摘要。
+
+**实施记录（敏感性分析部分）**：演进计划 4.2 节把"单变量扰动"列为
+`run_repeated_experiment()` 的直接复用——把"随机性"换成"人为设定的
+初始值差异"，不需要新机制。这次没有另外包一层"敏感性分析"专用函数/
+UI：`run_repeated_experiment()` 的 `profile` 参数本身就可以在调用方
+（未来的看板交互或脚本）那一侧按"同一份策略、不同初始 `vars`"的方式
+反复调用，`aggregate_field_stats()` 同样能拿来对比几组结果的差异
+幅度；如果之后发现这个用法足够高频，值得专门包一层向导 UI，再单独
+排期，不在阶段十范围内强行加一层还没有真实用例验证过的封装。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：
