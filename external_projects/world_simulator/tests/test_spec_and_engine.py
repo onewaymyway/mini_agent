@@ -81,6 +81,22 @@ def test_scenario_draft_from_dict_parses_objectives():
     assert draft_without.objectives == []
 
 
+def test_scenario_draft_from_dict_parses_structured_objectives():
+    """阶段十四（4.6 节）：`objectives` 类型放宽为 `List[Any]`，结构化
+    字典项应该原样保留（不被强制转成字符串），纯字符串项行为不变。"""
+    draft = spec_mod.ScenarioDraft.from_dict(
+        {
+            "title": "t", "summary": "s", "vars": {}, "options": [],
+            "objectives": [
+                "资产净值",
+                {"label": "现金", "field": "cash", "direction": "max"},
+            ],
+        }
+    )
+    assert draft.objectives[0] == "资产净值"
+    assert draft.objectives[1] == {"label": "现金", "field": "cash", "direction": "max"}
+
+
 def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
     draft_step = _FakeStep("draft")
     fake_wf = _FakeWorkflow([draft_step])

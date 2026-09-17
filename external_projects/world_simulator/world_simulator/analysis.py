@@ -1,7 +1,8 @@
 """world_simulator/analysis.py — 结果聚合（阶段十 / 演进计划 4.2.2 节）
+以及目标驱动排序（阶段十四 / 演进计划 4.6 节）
 
 设计依据：`next_doc/world_simulator_universal_world_model_upgrade_plan.md`
-4.2 节。输入一组 `vars`（通常是 `autopilot.run_repeated_experiment()`
+4.2 节、4.6 节。输入一组 `vars`（通常是 `autopilot.run_repeated_experiment()`
 返回的多条分支的 `final_vars`）+ 用户指定要关注的字段路径列表，计算
 这些字段的统计摘要——数值型字段给均值/最小/最大/标准差，枚举型（字符
 串/布尔等不可平均的）字段给众数分布。
@@ -10,6 +11,11 @@
 `statistics` 模块 + 几十行纯 Python 就够，参考 `achievements.py`
 "纯函数计算，无新增持久化结构"的取舍——不带来任何新的依赖、不落盘任何
 新的数据结构，调用方（`app.py`）需要什么时候用什么时候算。
+
+阶段十四新增 `normalize_objectives()`/`rank_by_objectives()`：把
+`manifest.settings.objectives` 里声明了 `field`/`direction` 的条目
+拿来对一组分支按"逐项胜负计数"排序，仍然是纯函数、不做任何加权求和，
+排序结果只是辅助参考，见 4.6 节"方案"第 2 条的取舍说明。
 """
 
 from __future__ import annotations
@@ -123,4 +129,136 @@ def aggregate_field_stats(
                     distribution=distribution,
                 )
             )
+    return results
+
+
+@dataclass
+class Objective:
+    """单条"关注指标"的规范化形式（阶段十四，4.6 节）。
+
+    `objectives` 声明支持两种写法：纯字符串（阶段十二行为，等价于
+    `field=None`，只展示不参与排序）或结构化字典
+    `{"label": ..., "field": ..., "direction": "max"|"min"}`。
+    `normalize_objectives()` 把两种写法统一转成这个 dataclass，供
+    `rank_by_objectives()` 和界面展示统一使用。
+    """
+
+    label: str
+    field: Optional[str] = None
+    direction: str = "max"  # "max" | "min"，缺省 "max"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+def normalize_objectives(objectives: List[Any]) -> List[Objective]:
+    """把 `manifest.settings.objectives`（纯字符串/结构化字典混合列表）
+    规范化成 `Objective` 列表。
+
+    向后兼容：纯字符串项 → `Objective(label=<字符串>, field=None)`，不
+    参与排序，只用于展示（等价于阶段十二的行为）；字典项按
+    `label`/`field`/`direction` 读取，`direction` 只接受 `"max"`/
+    `"min"`，其它值（含缺省）一律当作 `"max"`，不报错中断。
+    """
+    result: List[Objective] = []
+    for item in objectives or []:
+        if isinstance(item, dict):
+            label = str(item.get("label") or item.get("field") or "").strip()
+            field = item.get("field")
+            field = str(field).strip() if field else None
+            direction = item.get("direction") if item.get("direction") in ("max", "min") else "max"
+            if label:
+                result.append(Objective(label=label, field=field or None, direction=direction))
+        else:
+            label = str(item).strip()
+            if label:
+                result.append(Objective(label=label, field=None))
+    return result
+
+
+@dataclass
+class RankedBranch:
+    """`rank_by_objectives()` 返回的单条分支排序结果。"""
+
+    index: int
+    """在传入的 `vars_list`/`labels` 里的原始下标，供调用方对回具体分支。"""
+    label: str
+    """展示用标签（比如分支号），来自调用方传入的 `labels`，缺省用
+    `f"分支 {index + 1}"`。"""
+    values: Dict[str, Any]
+    """这条分支在每个可排序目标字段上的取值（取不到时为 `None`）。"""
+    score: int
+    """逐项胜负计数：这条分支在多少个可排序目标上"不劣于"其它所有
+    分支（严格更优记 1 分、并列不重复加分——用"不劣于其它所有分支的
+    项数"而不是两两比较的胜场数，避免分支数变化时分数量纲不一致）。"""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+def rank_by_objectives(
+    vars_list: List[Dict[str, Any]],
+    objectives: List[Any],
+    labels: Optional[List[str]] = None,
+) -> List[RankedBranch]:
+    """按声明了 `field` 的 `objectives` 对一组分支的终态 `vars` 排序。
+
+    刻意用最朴素的"逐项胜负计数"而不是加权求和（4.6 节方案第 2 条）：
+    给不同指标分配权重本身是一个需要用户输入的主观决定，本次不引入
+    权重配置这层复杂度——对每个可排序目标字段，取这一批分支里的最优值
+    （按 `direction` 决定是最大还是最小），达到这个最优值的分支各记
+    1 分，最终按总分从高到低排序，同分时保持原始顺序（稳定排序）。
+
+    Args:
+        vars_list: 多条分支的 `vars` 字典列表。
+        objectives: `manifest.settings.objectives`（原始格式，内部会先
+            用 `normalize_objectives()` 规范化）。
+        labels: 每条分支的展示标签（比如分支号），长度应与 `vars_list`
+            一致；缺省时用 `f"分支 {i + 1}"`。
+
+    Returns: 只使用声明了 `field` 的目标字段参与打分；如果一个都没有
+        （比如全是纯字符串写法的 `objectives`），返回空列表，调用方
+        据此判断"这次不展示排序区"（4.6 节验收标准）。按 `score` 降序
+        排列，长度等于 `len(vars_list)`。
+    """
+    ranked_objectives = [o for o in normalize_objectives(objectives) if o.field]
+    if not ranked_objectives or not vars_list:
+        return []
+
+    labels = labels or [f"分支 {i + 1}" for i in range(len(vars_list))]
+
+    # 对每个目标字段，先算出这批分支里的"最优值"（数值型才参与打分，
+    # 取不到值/非数值的分支在这一项上不计分，不强行拿字符串比较大小）。
+    field_best: Dict[str, Optional[float]] = {}
+    field_values: Dict[str, List[Optional[float]]] = {}
+    for obj in ranked_objectives:
+        values: List[Optional[float]] = []
+        for v in vars_list:
+            raw = _get_nested(v, obj.field)
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                values.append(float(raw))
+            else:
+                values.append(None)
+        field_values[obj.field] = values
+        numeric = [x for x in values if x is not None]
+        if not numeric:
+            field_best[obj.field] = None
+        else:
+            field_best[obj.field] = max(numeric) if obj.direction == "max" else min(numeric)
+
+    results: List[RankedBranch] = []
+    for i, v in enumerate(vars_list):
+        score = 0
+        branch_values: Dict[str, Any] = {}
+        for obj in ranked_objectives:
+            val = field_values[obj.field][i]
+            branch_values[obj.label] = val
+            best = field_best[obj.field]
+            if val is not None and best is not None and val == best:
+                score += 1
+        results.append(
+            RankedBranch(index=i, label=labels[i], values=branch_values, score=score)
+        )
+
+    results.sort(key=lambda r: r.score, reverse=True)
     return results

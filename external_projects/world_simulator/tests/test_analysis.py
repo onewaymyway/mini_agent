@@ -11,7 +11,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from world_simulator.analysis import aggregate_field_stats
+from world_simulator.analysis import (
+    aggregate_field_stats,
+    normalize_objectives,
+    rank_by_objectives,
+)
 
 
 def test_numeric_field_stats():
@@ -66,3 +70,69 @@ def test_field_paths_order_preserved_and_length_matches():
     stats = aggregate_field_stats(vars_list, ["b", "missing", "a"])
     assert [s.field for s in stats] == ["b", "missing", "a"]
     assert len(stats) == 3
+
+
+def test_normalize_objectives_plain_strings_have_no_field():
+    result = normalize_objectives(["资产净值", "工作满意度"])
+    assert [o.label for o in result] == ["资产净值", "工作满意度"]
+    assert all(o.field is None for o in result)
+
+
+def test_normalize_objectives_structured_dict():
+    result = normalize_objectives(
+        [{"label": "资产净值", "field": "resources.cash", "direction": "max"}]
+    )
+    assert len(result) == 1
+    assert result[0].field == "resources.cash"
+    assert result[0].direction == "max"
+
+
+def test_normalize_objectives_invalid_direction_defaults_to_max():
+    result = normalize_objectives([{"label": "x", "field": "x", "direction": "sideways"}])
+    assert result[0].direction == "max"
+
+
+def test_normalize_objectives_mixed_list():
+    result = normalize_objectives(["纯文本", {"label": "现金", "field": "cash"}])
+    assert len(result) == 2
+    assert result[0].field is None
+    assert result[1].field == "cash"
+
+
+def test_rank_by_objectives_no_field_declared_returns_empty():
+    vars_list = [{"cash": 100}, {"cash": 200}]
+    ranked = rank_by_objectives(vars_list, ["资产净值"])
+    assert ranked == []
+
+
+def test_rank_by_objectives_sorts_by_score_descending():
+    vars_list = [{"cash": 100}, {"cash": 300}, {"cash": 200}]
+    objectives = [{"label": "资产净值", "field": "cash", "direction": "max"}]
+    ranked = rank_by_objectives(vars_list, objectives)
+    assert len(ranked) == 3
+    assert ranked[0].index == 1  # cash=300 最优
+    assert ranked[0].score == 1
+    assert ranked[0].values == {"资产净值": 300.0}
+
+
+def test_rank_by_objectives_min_direction():
+    vars_list = [{"risk": 0.8}, {"risk": 0.2}]
+    objectives = [{"label": "风险", "field": "risk", "direction": "min"}]
+    ranked = rank_by_objectives(vars_list, objectives)
+    assert ranked[0].index == 1  # risk=0.2 最优（越小越好）
+
+
+def test_rank_by_objectives_custom_labels():
+    vars_list = [{"cash": 100}, {"cash": 200}]
+    objectives = [{"label": "现金", "field": "cash"}]
+    ranked = rank_by_objectives(vars_list, objectives, labels=["分支 A", "分支 B"])
+    assert ranked[0].label == "分支 B"
+
+
+def test_rank_by_objectives_missing_value_not_scored():
+    vars_list = [{"cash": 100}, {}]
+    objectives = [{"label": "现金", "field": "cash"}]
+    ranked = rank_by_objectives(vars_list, objectives)
+    by_index = {r.index: r for r in ranked}
+    assert by_index[1].values["现金"] is None
+    assert by_index[1].score == 0

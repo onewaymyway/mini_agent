@@ -45,7 +45,7 @@ from world_simulator import branch_manager as bm
 from world_simulator.autopilot import (
     AutopilotDisabledError, run_autopilot_step, run_comparison_experiment, run_repeated_experiment,
 )
-from world_simulator.analysis import aggregate_field_stats
+from world_simulator.analysis import aggregate_field_stats, rank_by_objectives
 from world_simulator.config import DATA_DIR, ensure_dirs
 from world_simulator.achievements import achievement_progress, compute_achievements
 from world_simulator.engine import (
@@ -617,7 +617,9 @@ def page_create() -> None:
     # ── 关注指标（阶段十二，4.4 节 Problem Compiler 雏形）：纯记录用途，
     # 不触发任何自动排序/推荐，只是给「对比实验」页面的关注字段提供
     # 默认值参考，留空不影响任何行为 ──
-    objectives_default = ", ".join(getattr(draft, "objectives", None) or [])
+    objectives_default = ", ".join(
+        str(o) for o in (getattr(draft, "objectives", None) or []) if not isinstance(o, dict)
+    )
     objectives_text = st.text_input(
         "关注指标（逗号分隔，可选——只是记录这次模拟主要想看什么，"
         "不要求是精确字段名）",
@@ -626,9 +628,26 @@ def page_create() -> None:
     )
     st.markdown(
         '<span class="ws-muted">记下来之后，「对比实验」页面的关注字段会默认带出这里的内容'
-        "（可以再改），不会自动判断哪个结果更好——排序/判断仍然由你自己来。</span>",
+        "（可以再改）。</span>",
         unsafe_allow_html=True,
     )
+    with st.expander("高级：声明可排序字段（阶段十四，可选）"):
+        st.markdown(
+            '<span class="ws-muted">上面填的是纯文字说明，不参与排序。如果想让'
+            "「对比实验」页面按某个具体字段自动排序（仅供参考，不代表最优解），"
+            "在这里用 JSON 数组声明，比如：\n"
+            '`[{"label": "资产净值", "field": "resources.cash", '
+            '"direction": "max"}]`。不填就跳过这一步，行为与阶段十二完全一致。'
+            "</span>",
+            unsafe_allow_html=True,
+        )
+        advanced_objectives_text = st.text_area(
+            "结构化关注指标（JSON 数组，可选）",
+            value=st.session_state.get("create_objectives_advanced", ""),
+            key="create_objectives_advanced_input",
+            height=80,
+            placeholder='[{"label": "资产净值", "field": "resources.cash", "direction": "max"}]',
+        )
 
     # ── 初始候选方向：可编辑文案、可删除、可手动新增，并且真的可以选 ──
     st.markdown("**初始候选方向**")
@@ -793,13 +812,21 @@ def page_create() -> None:
 
     if confirm_only_clicked or advance_after_create:
         edited_vars = _safe_json_loads(edited_vars_text, None)
+        advanced_objectives = _safe_json_loads(advanced_objectives_text, None)
+        advanced_objectives_invalid = bool(advanced_objectives_text.strip()) and not isinstance(
+            advanced_objectives, list
+        )
         if edited_vars is None:
             st.error("关键变量不是合法 JSON，请修正后再确认创建。")
+        elif advanced_objectives_invalid:
+            st.error("结构化关注指标不是合法的 JSON 数组，请修正后再确认创建（或清空这一栏跳过）。")
         else:
             resource_fields = [
                 f.strip() for f in resource_fields_text.split(",") if f.strip()
             ]
             objectives = [o.strip() for o in objectives_text.split(",") if o.strip()]
+            if isinstance(advanced_objectives, list):
+                objectives = objectives + [o for o in advanced_objectives if isinstance(o, dict)]
             create_settings = dict(st.session_state.get("create_settings") or {})
             create_settings["resource_fields"] = resource_fields
             create_settings["objectives"] = objectives
@@ -1068,27 +1095,52 @@ def page_detail() -> None:
             key="settings_resource_fields",
         )
         cur_objectives = cur_settings.get("objectives") or []
-        cur_objectives_text = ", ".join(str(o) for o in cur_objectives)
+        cur_objectives_text = ", ".join(
+            str(o) for o in cur_objectives if not isinstance(o, dict)
+        )
         new_objectives_text = st.text_input(
             "关注指标（逗号分隔，可选——纯记录用途，供「对比实验」页面默认关注字段参考）",
             value=cur_objectives_text,
             placeholder="例：资产净值, 工作满意度, 健康水平",
             key="settings_objectives",
         )
-        if st.button("保存设置", key="settings_save"):
-            update_settings(
-                DATA_DIR, sim_id,
-                options_count=int(new_options_count),
-                time_granularity_mode=new_mode,
-                time_granularity=new_time_granularity,
-                time_granularity_guide=new_time_granularity_guide,
-                resource_fields=[
-                    f.strip() for f in new_resource_fields_text.split(",") if f.strip()
-                ],
-                objectives=[o.strip() for o in new_objectives_text.split(",") if o.strip()],
+        cur_objectives_advanced = [o for o in cur_objectives if isinstance(o, dict)]
+        with st.expander("高级：声明可排序字段（阶段十四，可选）"):
+            st.markdown(
+                '<span class="ws-muted">声明后「对比实验」页面会出现"按关注指标排序"的辅助'
+                "展示区（仅供参考，不代表最优解）。</span>",
+                unsafe_allow_html=True,
             )
-            st.success("设置已更新，下一步推进开始生效。")
-            st.rerun()
+            new_objectives_advanced_text = st.text_area(
+                "结构化关注指标（JSON 数组，可选）",
+                value=json.dumps(cur_objectives_advanced, ensure_ascii=False) if cur_objectives_advanced else "",
+                key="settings_objectives_advanced",
+                height=80,
+                placeholder='[{"label": "资产净值", "field": "resources.cash", "direction": "max"}]',
+            )
+        if st.button("保存设置", key="settings_save"):
+            new_objectives = [o.strip() for o in new_objectives_text.split(",") if o.strip()]
+            new_objectives_advanced = _safe_json_loads(new_objectives_advanced_text, None)
+            if new_objectives_advanced_text.strip() and not isinstance(new_objectives_advanced, list):
+                st.error("结构化关注指标不是合法的 JSON 数组，设置未保存，请修正后重试。")
+            else:
+                if isinstance(new_objectives_advanced, list):
+                    new_objectives = new_objectives + [
+                        o for o in new_objectives_advanced if isinstance(o, dict)
+                    ]
+                update_settings(
+                    DATA_DIR, sim_id,
+                    options_count=int(new_options_count),
+                    time_granularity_mode=new_mode,
+                    time_granularity=new_time_granularity,
+                    time_granularity_guide=new_time_granularity_guide,
+                    resource_fields=[
+                        f.strip() for f in new_resource_fields_text.split(",") if f.strip()
+                    ],
+                    objectives=new_objectives,
+                )
+                st.success("设置已更新，下一步推进开始生效。")
+                st.rerun()
 
     # ── 控制条：暂停/恢复/结束 ──
     ctrl1, ctrl2, ctrl3 = st.columns(3)
@@ -1608,9 +1660,15 @@ def page_experiment() -> None:
                     results = None
 
             if results:
+                try:
+                    _rank_manifest, _, _ = get_simulation(DATA_DIR, sim_id)
+                    _objectives_for_rank = _rank_manifest.settings.get("objectives") or []
+                except Exception:  # noqa: BLE001 — 拿不到就不展示排序区，不影响主流程
+                    _objectives_for_rank = []
                 st.session_state["experiment_results"] = {
                     "sim_id": sim_id, "results": results, "mode": "repeat",
                     "focus_fields": [f.strip() for f in focus_fields_text.split(",") if f.strip()],
+                    "objectives": _objectives_for_rank,
                 }
     else:
         st.markdown(
@@ -1703,6 +1761,35 @@ def page_experiment() -> None:
                     "填写字段路径可以看到均值/极差/标准差摘要。</span>",
                     unsafe_allow_html=True,
                 )
+
+            # ── 按关注指标排序（阶段十四，4.6 节）：只有 objectives 里至少
+            # 一条声明了 field 才会有结果，否则 rank_by_objectives 返回空
+            # 列表，这里不展示任何东西 ──
+            objectives_for_rank = exp_results.get("objectives") or []
+            if ok_results:
+                ranked = rank_by_objectives(
+                    [r.final_vars for r in ok_results],
+                    objectives_for_rank,
+                    labels=[f"分支 {r.branch}" for r in ok_results],
+                )
+                if ranked:
+                    st.markdown("**按关注指标排序**")
+                    st.markdown(
+                        '<span class="ws-muted">仅供参考，不代表系统认定的最优解——'
+                        "最终判断仍然由你自己来。</span>",
+                        unsafe_allow_html=True,
+                    )
+                    for rb in ranked:
+                        values_text = "，".join(
+                            f"{k}={'—' if v is None else round(v, 2)}"
+                            for k, v in rb.values.items()
+                        )
+                        st.markdown(
+                            f'<div class="ws-card"><div class="ws-card-title">'
+                            f'{rb.label} · 胜出 {rb.score} 项</div>'
+                            f'<div class="ws-muted">{values_text}</div></div>',
+                            unsafe_allow_html=True,
+                        )
         for r in exp_results["results"]:
             status = "⚠️ 提前结束" if r.ended_early else "✅ 正常跑完"
             err_note = f"（{r.error}）" if r.error else ""

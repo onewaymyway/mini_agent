@@ -137,7 +137,7 @@ class ScenarioDraft:
     这个字段会直接落盘到 `state0.uncertain_fields`（不像
     `resource_fields` 那样需要先经过用户编辑再存进 `settings`——置信度
     标注是"描述性"的，不是需要用户确认的配置项）。"""
-    objectives: List[str] = field(default_factory=list)
+    objectives: List[Any] = field(default_factory=list)
     """skill 在生成初始状态时给出的"这次模拟主要关心的指标"建议
     （阶段十二，`next_doc/world_simulator_universal_world_model_upgrade_
     plan.md` 4.4 节 Problem Compiler 雏形），比如
@@ -145,9 +145,15 @@ class ScenarioDraft:
     一致：创建向导展示建议值、允许用户编辑，最终结果存进
     `settings.objectives`（见 `state_model.SimManifest.settings`），这个
     字段本身只是"草稿阶段的建议值"，不直接落盘。存下来之后，「对比
-    实验」页面的关注字段默认会带出这里声明的指标（不用每次都重新输入
-    要看哪个字段），但不会自动做任何排序/推荐——是否"更好"仍由用户
-    自己判断，本次不引入自动排序逻辑。"""
+    实验」页面的关注字段默认会带出这里声明的指标。
+
+    阶段十四（4.6 节）起，每一项除了纯字符串（阶段十二行为，只展示不
+    参与排序）还可以是结构化字典
+    `{"label": "资产净值", "field": "resources.cash", "direction": "max"}`
+    ——声明了 `field` 的条目会在「对比实验」页面出现"按关注指标排序"
+    的辅助展示区（见 `world_simulator.analysis.rank_by_objectives()`），
+    但排序结果始终"仅供参考"，不会替用户自动选出最优解。类型放宽为
+    `List[Any]` 就是为了同时兼容这两种写法，不强制转成字符串。"""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScenarioDraft":
@@ -160,7 +166,10 @@ class ScenarioDraft:
             time_granularity=str(data.get("time_granularity", "") or ""),
             resource_fields=list(data.get("resource_fields") or []),
             uncertain_fields=list(data.get("uncertain_fields") or []),
-            objectives=[str(o) for o in (data.get("objectives") or [])],
+            objectives=[
+                (dict(o) if isinstance(o, dict) else str(o))
+                for o in (data.get("objectives") or [])
+            ],
         )
 
 

@@ -332,6 +332,36 @@ UI：`run_repeated_experiment()` 的 `profile` 参数本身就可以在调用方
 world_simulator_universal_world_model_upgrade_plan.md` 4.1~4.5 节
 全部落地。
 
+阶段十四（Problem Compiler 进阶：目标驱动的自动排序，已完成，见演进
+计划 4.6 节）交付：
+
+1. `spec_generator.ScenarioDraft.objectives` 类型从 `List[str]` 放宽
+   为 `List[Any]`：纯字符串写法（阶段十二行为）保持不变，新增支持
+   结构化字典 `{"label": ..., "field": ..., "direction": "max"|"min"}`，
+   `from_dict()` 对字典项原样保留、不强制转字符串。
+2. `world_simulator/analysis.py` 新增 `normalize_objectives()`（把两种
+   写法统一成 `Objective` dataclass）与 `rank_by_objectives()`（对声明
+   了 `field` 的目标按"逐项胜负计数"排序，刻意不做加权求和——见该
+   函数 docstring 的取舍说明；没有任何一条声明 `field` 时返回空列表）。
+3. `app.py`：创建向导"关注指标"编辑框下新增可折叠的"高级：声明可
+   排序字段"小节（JSON 数组输入，纯文本写法完全不受影响）；实例详情
+   页"模拟设置"区块同款折叠区；「对比实验」页面"重复模式"结果区新增
+   "按关注指标排序"展示（表格式列出每条分支的目标字段取值 + 胜出
+   项数，明确标注"仅供参考，不代表系统认定的最优解"），只在
+   `objectives` 里存在声明了 `field` 的条目时才出现。
+4. `tests/test_analysis.py` 新增 8 个用例覆盖
+   `normalize_objectives()`/`rank_by_objectives()`（纯字符串/结构化/
+   混合写法、max/min 方向、缺失值不计分、自定义标签、空结果）；
+   `tests/test_spec_and_engine.py` 新增一个用例覆盖
+   `ScenarioDraft.from_dict()` 对结构化 `objectives` 的解析。
+
+**范围说明**：严格按 4.6 节方案实现，排序用最朴素的"逐项胜负计数"，
+不引入权重配置；纯字符串写法（阶段十二行为）与不声明 `objectives`
+时的行为完全不受影响，向后兼容。未接入真实 LLM 手动验证（`generate_
+scenario` 阶段 skill 仍只输出纯字符串建议值，结构化写法目前只能由
+用户在"高级"折叠区手动声明，skill 端是否要主动建议可排序字段留给
+后续按使用反馈决定）。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：
