@@ -149,6 +149,7 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
         "previous_draft_json": "",
         "option_count_hint": "4 个左右",
         "time_granularity_hint": spec_mod.DEFAULT_TIME_GRANULARITY + spec_mod._GRANULARITY_CONTINUITY_NOTE_CREATE,
+        "multi_entity_mode_hint": spec_mod._MULTI_ENTITY_MODE_HINT_OFF,
     }
     assert draft.title == "毕业生的选择"
     assert draft.vars["age"] == 22
@@ -447,6 +448,21 @@ def test_resolve_hints_guided_mode_includes_user_guide_text():
 def test_resolve_hints_create_stage_has_no_dangling_placeholder():
     hints = spec_mod.resolve_hints({}, stage="create")
     assert "{current_time_granularity}" not in hints["time_granularity_hint"]
+
+
+def test_resolve_hints_multi_entity_mode_off_by_default():
+    """阶段十七（4.9 节）：`multi_entity_mode` 未声明时默认关闭，提示词
+    要明确写清楚"未启用"，不能是含糊的空字符串。"""
+    hints = spec_mod.resolve_hints({})
+    assert "未启用" in hints["multi_entity_mode_hint"]
+
+
+def test_resolve_hints_multi_entity_mode_on_mentions_entities_and_shared_vars():
+    """`multi_entity_mode` 为 True 时，提示词要点出 `entities`/
+    `shared_vars` 这两个约定字段名，skill 才知道具体怎么组织 `vars`。"""
+    hints = spec_mod.resolve_hints({"multi_entity_mode": True})
+    assert "entities" in hints["multi_entity_mode_hint"]
+    assert "shared_vars" in hints["multi_entity_mode_hint"]
 
 
 def test_set_pilot_config_updates_manifest(tmp_path):

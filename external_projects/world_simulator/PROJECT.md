@@ -436,6 +436,74 @@ scenario` 阶段 skill 仍只输出纯字符串建议值，结构化写法目前
 `resource_relations` 未声明时的行为与阶段十六之前完全一致，向后
 兼容。未接入真实 LLM 手动验证。
 
+阶段十七（Belief 与 State 分离 + Entity/Relationship 图结构最小可行
+版本，已完成，见演进计划 4.9 节）交付：
+
+**⚠ 特殊说明：本阶段是在触发条件未满足的情况下提前实施的**。演进
+计划 4.9 节明确把这一节列为"条件触发"项目——要求先出现真实的"多主体
+信息不对称"使用场景才启动，理由是没有真实场景验证时很容易把
+`entities`/`shared_vars` 的字段粒度设计错。用户在没有具体场景的前提
+下明确要求"先把设计草案落地成代码架子"；执行前已提醒过这个风险，并
+建议改为更保守的"只做最小验证性骨架、不碰核心文件"的方案，用户仍
+坚持按 4.9 节方案草案完整实现，故按此执行。这不是对"条件触发"原则
+的推翻，只是这一次的例外，记录在案供以后复盘参考。
+
+1. `state_model.SimManifest.settings.multi_entity_mode`：新增可选
+   布尔字段（默认 `False`）。为 `True` 时，`vars` 顶层按约定组织成
+   `entities: Dict[str, Dict[str, Any]]`（每个主体一个 id，值是这个
+   主体自己的私有信息）+ `shared_vars: Dict[str, Any]`（所有主体共享
+   的公开信息）。**这个约定只存在于文档和消费方（skill/`app.py`）
+   里，`engine.py`/`spec_generator.py` 对 `vars` 的处理逻辑没有任何
+   改动**——`vars` 对引擎而言始终是不透明的自由 JSON，这也是本阶段
+   没有像阶段十六那样新增引擎层校验函数的原因。
+2. 新增第三个场景模板 `skills/negotiation-template/SKILL.md`（服务
+   "多方谈判/博弈"场景），而不是改造现有两个模板——完整定义了
+   `entities`/`shared_vars` 的组织约定、"私有信息不能互相泄露"的
+   硬性规则、`generate_scenario`/`advance_step` 两阶段的完整输出
+   契约。`spec_generator._skill_name_for_template()`/
+   `engine._skill_name_for_template()` 的"模板名下划线转连字符 +
+   `-template` 后缀"约定天然支持新模板，两处都不需要改代码（延续
+   阶段六验证过的设计假设）。
+3. `spec_generator.resolve_hints()` 新增 `multi_entity_mode_hint`：
+   根据 `settings.multi_entity_mode` 生成"已启用/未启用"两种提示
+   文案，开启时明确点出 `entities`/`shared_vars` 两个约定字段名和
+   "私有信息不能泄露"的要求；`generate_scenario.yaml`/
+   `advance_step.yaml` 都新增了 `{multi_entity_mode_hint}` 占位符。
+   `advance_step` 仍然只是一次 LLM 调用（不会为每个主体单独调用一次
+   LLM），只是要求单次输出里区分"谁知道什么"，符合方案草案"仍然一次
+   调用"的设计，避免成倍增加调用成本。
+4. `app.py` 新增 `_render_vars_display()`：`multi_entity_mode` 为真
+   且 `vars.entities` 是非空字典时，按主体分 tab 展示各自的私有信息
+   （+ 一个"共享信息"tab 展示 `shared_vars`）；否则安全退化为原来的
+   `st.json(vars)` 原样展示（包括 `multi_entity_mode` 为真但 `vars`
+   没有按约定给出 `entities` 的情况，比如旧数据或 skill 没遵守约定，
+   不会报错）。详情页"关键变量"区块和游戏化章节视图的"这一章的关键
+   变量"区块都接入了这个函数。创建向导新增"多方谈判（多主体，阶段
+   十七）"模板选项（选中后创建时自动带上 `multi_entity_mode: True`），
+   详情页"模拟设置"区块新增对应的手动勾选开关（供其它模板需要时也能
+   手动开启，或谈判模板需要时手动关闭）。
+5. `tests/test_multi_template.py` 新增端到端用例
+   `test_negotiation_template_binds_correct_skill_and_preserves_
+   entities_structure`：验证 `entities.甲方`（含 `budget`）与
+   `entities.乙方`（含 `walk_away_price`）互不可见（`"乙方" not in
+   vars["entities"]["甲方"]`）、`推进后私有信息仍然互不泄露、
+   `skill_name` 按模板动态推导为 `negotiation-template`；
+   `tests/test_spec_and_engine.py` 新增两个 `resolve_hints` 用例
+   覆盖开关两种文案。累计 101 个测试全部通过。
+
+**范围说明（已知限制，均如实记录，不回避）**：只做了最小化的
+"Entity + 私有信息"结构，**不是**完整的关系图数据库——不单独建模
+`Relationship`，主体之间的关系仍靠 `narrative` 自由文本表达（符合
+演进计划 4.9 节方案草案的范围声明）。**未接入真实 LLM 手动验证，
+也未经过任何真实多主体场景的使用反馈**——`entities`/`shared_vars`
+的字段粒度、UI 分 tab 的展示方式都只是这次实现时的一次性设计判断，
+风险高于本项目此前所有阶段（此前每一阶段都是"先有真实使用反馈或
+明确设计意图，再落地"，这一阶段是例外）。一旦出现真实谈判/竞争场景
+的使用反馈，应该优先按反馈调整现有设计，不应假定现在的实现就是
+最终正确的版本；`multi_entity_mode` 未声明或为 `False` 时，行为与
+引入这个功能之前完全一致，向后兼容，不影响 `life_sim`/
+`group_evolution` 两个既有模板。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：
@@ -659,3 +727,30 @@ world_simulator/
   实现，按演进计划节奏留给收集到真实反馈后再评估；阶段十七~十八
   （Belief/图结构、Hierarchical Agent、Reality Sync）仍是条件触发项
   目，尚未启动。
+- 2026-09-18：完成阶段十七（Belief 与 State 分离 + Entity/
+  Relationship 图结构最小可行版本，见演进计划 4.9 节）。**⚠ 特殊
+  说明**：演进计划把这一节列为"条件触发"项目（要求先出现真实的
+  "多主体信息不对称"场景），本阶段是在触发条件未满足的情况下应用户
+  明确要求提前实施的，执行前已提醒风险并建议更保守的替代方案，用户
+  仍选择完整实现，完整背景见演进计划 4.9 节"实施记录"与本文件对应
+  阶段十七条目，不应被当成"条件触发原则不再适用"的先例。交付内容：
+  新增 `state_model.SimManifest.settings.multi_entity_mode`（默认
+  `False`，为真时 `vars` 顶层按 `entities`/`shared_vars` 结构组织，
+  引擎本身不解析/不校验，`vars` 依旧不透明）；新增第三个场景模板
+  `skills/negotiation-template/SKILL.md`（多方谈判/博弈场景，而不是
+  改造现有两个模板）；`spec_generator.resolve_hints()` 新增
+  `multi_entity_mode_hint`，`generate_scenario.yaml`/
+  `advance_step.yaml` 接入对应占位符；`app.py` 新增
+  `_render_vars_display()`，`multi_entity_mode` 开启且 `vars.
+  entities` 非空时按主体分 tab 展示（含"共享信息"tab），否则安全
+  退化为原样 `st.json` 展示；创建向导新增"多方谈判"模板选项、详情页
+  "模拟设置"新增手动开关。新增端到端测试
+  `test_negotiation_template_binds_correct_skill_and_preserves_
+  entities_structure`（验证私有信息互不泄露）+ 2 个 `resolve_hints`
+  用例，累计 101 个测试全部通过（`cd external_projects/world_
+  simulator && PYTHONPATH=../../src:. python3 -m pytest tests/ -q`）。
+  `Relationship` 完整图结构、Hierarchical Agent、Reality Sync 均仍
+  未实现；**本阶段未接入真实 LLM 手动验证，也未经过真实多主体场景的
+  使用反馈**，`entities`/`shared_vars` 的字段粒度和 UI 展示方式属于
+  一次性设计判断，风险高于此前所有阶段，后续如出现真实使用反馈应
+  优先按反馈调整。

@@ -33,6 +33,7 @@ steps:
       用户设置的候选方向数量：{option_count_hint}
       用户设置的时间粒度模式（决定初始状态要建立一个什么样的基准
       粒度）：{time_granularity_hint}
+      多主体模式设置：{multi_entity_mode_hint}
 
       规则：
       - 若"补充意见"为空，忽略"此前一轮生成的草稿"，按"一句话模拟意图"

@@ -44,6 +44,26 @@ _GRANULARITY_CONTINUITY_NOTE_CREATE = (
 _VALID_GRANULARITY_MODES = ("fixed", "auto", "guided")
 
 
+_MULTI_ENTITY_MODE_HINT_ON = (
+    "已启用多主体模式（阶段十七）——vars 顶层需要按以下约定组织：一个"
+    "entities 对象，键是每个主体的名字，值是这个主体自己的私有信息（比如"
+    "某一方对另一方底线的猜测、只有这一方自己知道的立场，这类信息只能放"
+    "在对应主体自己的私有信息里，不能让其它主体的私有信息包含这些内容）；"
+    "再加一个 shared_vars 对象，放所有主体都公开知道的共享信息（比如当前"
+    "谈判轮次、公开报价）。不要为了省事把所有信息都塞进 shared_vars，也"
+    "不要遗漏某个主体应该有的私有视角。"
+)
+_MULTI_ENTITY_MODE_HINT_OFF = "未启用（单一全局 vars，不需要区分多个主体的私有视角）"
+
+
+def _resolve_multi_entity_hint(settings: "Dict[str, Any] | None") -> str:
+    """把 `settings.multi_entity_mode` 转成喂给 prompt 的一句话提示
+    （阶段十七，4.9 节）。默认关闭，不影响现有两个模板的行为。"""
+    if bool((settings or {}).get("multi_entity_mode")):
+        return _MULTI_ENTITY_MODE_HINT_ON
+    return _MULTI_ENTITY_MODE_HINT_OFF
+
+
 def resolve_hints(settings: "Dict[str, Any] | None" = None, *, stage: str = "advance") -> Dict[str, str]:
     """把 `manifest.settings`（或创建向导里还没落盘成 manifest 时的临时
     设置字典）转成喂给 workflow prompt 的提示字符串。
@@ -106,6 +126,7 @@ def resolve_hints(settings: "Dict[str, Any] | None" = None, *, stage: str = "adv
     return {
         "option_count_hint": f"{options_count} 个左右",
         "time_granularity_hint": time_granularity_hint,
+        "multi_entity_mode_hint": _resolve_multi_entity_hint(settings),
     }
 
 

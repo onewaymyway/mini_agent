@@ -325,6 +325,28 @@ class SimManifest:
       给出建议值（见 `spec_generator.ScenarioDraft.resource_relations`，
       写法同 `resource_fields`），用户在创建向导里可以看到并编辑，也
       可以在详情页"模拟设置"里随时增删。
+    - `multi_entity_mode`：布尔值（默认 `False`），声明这次模拟是否
+      采用"多主体私有信念"结构（阶段十七，`next_doc/
+      world_simulator_universal_world_model_upgrade_plan.md` 4.9 节，
+      Belief 与 State 分离 + Entity/Relationship 图结构的最小可行
+      版本）。为 `True` 时，`vars` 的顶层按约定组织成
+      `entities: Dict[str, Dict[str, Any]]`（每个主体一个 id，值是这个
+      主体自己的私有 `vars`——比如"甲方对乙方底线的猜测"这类信息只出现
+      在甲方自己的私有 `vars` 里）+ `shared_vars: Dict[str, Any]`（所有
+      主体共享的公开信息，比如"当前谈判轮次"）。这是最小化的"Entity +
+      私有 Belief"结构，**不是**完整的关系图数据库——不单独建模
+      `Relationship`，主体之间的关系仍靠 `narrative` 自由文本表达；
+      `advance_step` 仍然只是一次 LLM 调用（不会为每个主体单独调用一次，
+      那样会成倍增加成本、也会割裂"大家在同一场景互动"的上下文），只是
+      要求单次输出里区分"谁知道什么"。引擎本身（`engine.py`）不解析/
+      不校验 `entities`/`shared_vars` 的具体结构，`vars` 对引擎而言
+      始终是不透明的自由 JSON（同 `vars` 的一贯设计），这个约定完全由
+      对应 skill（`skills/negotiation-template/SKILL.md`）和 `app.py`
+      的展示逻辑消费。留空（默认 `False`）表示不启用，行为与引入这个
+      功能之前完全一致，向后兼容——`life_sim`/`group_evolution` 两个
+      既有模板都不需要这个能力，是否要开启完全由用户在创建向导/详情页
+      "模拟设置"里选择（选择「多方谈判」模板时创建向导会自动带上
+      `True`）。
     """
 
     def to_dict(self) -> Dict[str, Any]:

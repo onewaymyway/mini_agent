@@ -196,3 +196,123 @@ def test_group_evolution_template_end_to_end_create_and_advance(tmp_path, monkey
     store = SimStore.for_root(data_dir, manifest.sim_id)
     reloaded_manifest = store.load_manifest()
     assert reloaded_manifest.template == "group_evolution"
+
+
+def test_negotiation_template_binds_correct_skill_and_preserves_entities_structure(tmp_path, monkeypatch):
+    """阶段十七（4.9 节）：`template="negotiation"` 同样只是"新增一个
+    skill"，`spec_generator.py`/`engine.py` 不需要为它改任何一行代码；
+    并且验证 `entities`/`shared_vars` 这种多主体结构在 `vars` 里只是
+    普通的自由 JSON，`materialize_simulation`/`advance` 原样透传，
+    不做任何解析或改写（`vars` 对引擎而言始终不透明）。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    draft_step = _FakeStep("draft")
+
+    class FakeStoreForScenario:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([draft_step])
+
+    class FakeRunnerForScenario:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "scenario_result.json",
+                {
+                    "title": "一场收购谈判",
+                    "summary": "甲方希望收购乙方公司，双方刚开始接触",
+                    "vars": {
+                        "entities": {
+                            "甲方": {"goal": "尽量压低收购价", "budget": 500},
+                            "乙方": {"goal": "尽量抬高估值", "walk_away_price": 300},
+                        },
+                        "shared_vars": {"round": 1, "public_info": "乙方对外宣称估值 800 万"},
+                    },
+                    "options": [
+                        {"id": "low_offer", "label": "先出低价试探", "description": "报 300 万看反应"},
+                        {"id": "fair_offer", "label": "直接给合理报价", "description": "报 450 万"},
+                    ],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[
+                    SimpleNamespace(step_id="draft", status=_FakeStatus("done"), result_file=result_file)
+                ],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForScenario)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForScenario)
+
+    manifest = engine_mod.create_simulation(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir,
+        template="negotiation", intent="模拟一场收购谈判",
+        settings={"multi_entity_mode": True},
+    )
+    assert manifest.template == "negotiation"
+    assert manifest.settings.get("multi_entity_mode") is True
+
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    current = store.load_current_state()
+    # 核心断言：entities/shared_vars 结构原样透传，引擎没有拆解/改写它。
+    assert current.vars["entities"]["甲方"]["budget"] == 500
+    assert current.vars["entities"]["乙方"]["walk_away_price"] == 300
+    assert "乙方" not in current.vars["entities"]["甲方"]  # 私有信息没有互相泄露
+    assert current.vars["shared_vars"]["round"] == 1
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "甲方出了低价，乙方拒绝",
+                    "narrative": "甲方报出 300 万，乙方当场拒绝，要求至少 700 万",
+                    "next_vars": {
+                        "entities": {
+                            "甲方": {
+                                "goal": "尽量压低收购价", "budget": 500,
+                                "assessment_of_others": "乙方态度比预期强硬，可能要加价",
+                            },
+                            "乙方": {"goal": "尽量抬高估值", "walk_away_price": 300},
+                        },
+                        "shared_vars": {"round": 2, "public_info": "乙方拒绝了 300 万的报价"},
+                    },
+                    "options": [],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[
+                    SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)
+                ],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir,
+        sim_id=manifest.sim_id, choice_option_id="low_offer",
+    )
+
+    assert step_step.skill_name == "negotiation-template"
+    # 乙方的真实底线（walk_away_price）没有泄露进甲方的私有信息里。
+    assert "walk_away_price" not in next_state.vars["entities"]["甲方"]
+    assert next_state.vars["entities"]["甲方"]["assessment_of_others"] == "乙方态度比预期强硬，可能要加价"

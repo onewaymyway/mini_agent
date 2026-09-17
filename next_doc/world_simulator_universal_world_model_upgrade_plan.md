@@ -5,12 +5,14 @@
 > 可信度标注）、阶段十二（4.4 节，Problem Compiler 雏形，范围收窄为
 > "记录 + 默认值参考"）、阶段十三（4.5 节，最小版因果摘要）、阶段
 > 十四（4.6 节，Problem Compiler 进阶：目标驱动的自动排序）、阶段
-> 十五（4.7 节，Evidence Chain 进阶：结构化因果链）均已完成，见
-> `PROJECT.md` 对应交付记录。演进计划 4.1~4.7 节至此全部落地。阶段
-> 十六（4.8 节，资源转移关系建模，通用规则引擎最小可行版本）已完成，
-> 见 `PROJECT.md` 对应交付记录。演进计划 4.1~4.8 节至此全部落地。
-> 阶段十七~十八（4.9~4.11 节，含一个不排期项）是对原第 6 节"本次不做
-> 的事"的后续可执行计划，均**尚未实施**，见各节"优先级与依赖"说明。
+> 十五（4.7 节，Evidence Chain 进阶：结构化因果链）、阶段十六（4.8 节，
+> 资源转移关系建模）均已完成，见 `PROJECT.md` 对应交付记录。演进计划
+> 4.1~4.8 节至此全部落地。阶段十七（4.9 节，Belief 与 State 分离 +
+> Entity/Relationship 图结构）**已完成，但属于"未等待触发条件、提前
+> 实施"的特殊情况**，见该节"实施记录"里的完整说明——不是常规的按
+> 需求驱动落地，记录在案供以后复盘。阶段十八（4.11 节）与
+> Hierarchical Agent（4.10 节）仍是条件触发/不排期项目，
+> **尚未实施**，见各节"优先级与依赖"说明。
 > **前置文档**：`next_doc/world_simulator_external_project_plan.md`（原始方案，
 > 阶段一~七已完成，见该文档状态栏）；用户提供的外部参考
 > 《万物模拟器到底如何构建？——从世界模型到通用模拟引擎的完整方案》
@@ -80,13 +82,13 @@
 | Branch Engine / Fork / Version（第二十、三十一节） | `branch_manager.py`：fork/switch/delete/compare，`list_branches_detailed()` 带创建时间/来源/进度 | 部分覆盖：有 fork/compare，无 merge，无 skill/prompt 版本记录 |
 | Experiment Engine 雏形（第二十二节） | `autopilot.run_comparison_experiment()`（多方案横向对比）+ `run_repeated_experiment()`（同方案重复采样）+ `analysis.aggregate_field_stats()`（统计聚合） | 阶段十已完成：横向对比 + 分布分析都有了，敏感性分析是 `run_repeated_experiment()` 的直接复用（未单独包装） |
 | Action（第八节） | `custom_option`/`chosen_option`：用户/自动挡可以选择或新增选项 | 弱覆盖：Action 存在，但没有代码层的合法性/资源校验（本文档 4.1 节要补） |
-| Resource / Rule（第七、十节） | `settings.resource_fields` + `engine._apply_resource_guard()`：数值下限校验，越界记入 `SimState.resource_violations` | 部分覆盖（阶段九已完成）：只做了"下限"这一种约束，转移/生产关系建模与通用规则引擎的最小可行版本见 4.8 节（计划中） |
+| Resource / Rule（第七、十节） | `settings.resource_fields` + `engine._apply_resource_guard()`：数值下限校验；`settings.resource_relations` + `engine._check_resource_relations()`：转移关系一致性检查（阶段十六） | 部分覆盖：下限校验（阶段九）+ 转移关系检查（阶段十六）均已完成，`production`（生产/持续产出）关系仍未实现 |
 | Uncertainty / Confidence（第二十八节） | `SimState.uncertain_fields`（阶段十一）：`generate_scenario`/`advance_step` 可选输出，`confidence` 限定高/中/低三档 | 阶段十一已完成：按需标注估计值型字段，不做全量精确概率 |
-| Problem Compiler（第十四、十五节） | `spec_generator.ScenarioDraft.objectives`/`SimManifest.settings.objectives`（阶段十二） | 阶段十二已完成"记录 + 默认值参考"；自动排序/推荐见 4.6 节（计划中） |
-| Belief 与 State 分离（第五节） | 全局 `vars`，无多主体私有信念 | 未覆盖，条件触发的计划见 4.9 节 |
-| Evidence Chain / Debug Trace（第二十九、三十节） | `SimState.key_drivers`（阶段十三）：`advance_step` 可选输出 1~3 条短语 | 阶段十三已完成最小版"划重点"标签；完整结构化因果链见 4.7 节（计划中） |
-| Entity/Relationship 图结构（第三、六节） | 自由 JSON `vars`，无图结构 | 未覆盖，条件触发的计划见 4.9 节 |
-| 通用规则引擎 DSL（第十节） | 只有 4.1 节"数值下限"这一种硬编码校验 | 未覆盖，最小可行版本（不是完整 DSL）见 4.8 节（计划中） |
+| Problem Compiler（第十四、十五节） | `spec_generator.ScenarioDraft.objectives`/`SimManifest.settings.objectives`（阶段十二）+ 目标驱动自动排序（阶段十四） | 阶段十二、十四均已完成 |
+| Belief 与 State 分离（第五节） | `multi_entity_mode` 开启时 `entities`/`shared_vars` 结构（阶段十七） | 已实现最小可行版本，见 4.9 节；提前实施，未经真实场景验证，见该节"实施记录" |
+| Evidence Chain / Debug Trace（第二十九、三十节） | `SimState.key_drivers`（阶段十三）+ `causal_links` 结构化因果链（阶段十五） | 阶段十三、十五均已完成 |
+| Entity/Relationship 图结构（第三、六节） | `multi_entity_mode` 开启时 `entities` 字典（阶段十七），非完整图结构，`Relationship` 仍靠 `narrative` 自由文本表达 | 已实现最小可行版本，见 4.9 节；提前实施，未经真实场景验证 |
+| 通用规则引擎 DSL（第十节） | `resource_relations` 只做 `transfer` 一种关系类型的事后一致性检查（阶段十六） | 部分覆盖，最小可行版本（不是完整 DSL），`production` 未实现，见 4.8 节"实施记录" |
 | Hierarchical Agent / Dynamic Cognition Router（第十九节） | 无 | 未覆盖，触发条件与设计草案见 4.10 节（不排期） |
 | Reality Sync（第四十二节） | 无 | 未覆盖，轻量版（手动校准输入）计划见 4.11 节（条件触发） |
 
@@ -524,7 +526,7 @@ fields`）；`generate_scenario.yaml` 与两个 `SKILL.md` 补充了可选输出
 大括号示例里。`production`（生产/持续产出）关系类型仍未实现，按
 方案"验证完转移这一种类型再决定"的节奏，留给收集到真实反馈后再评估。
 
-### 4.9（P3，条件触发，阶段十七）Belief 与 State 分离 + Entity/Relationship 图结构
+### 4.9（P3，已完成，阶段十七）Belief 与 State 分离 + Entity/Relationship 图结构
 
 **问题**（两节合并讨论，因为服务同一个场景）：现在 `vars` 是"全局
 唯一真相"，`group_evolution` 模板把群体当一个整体推演，无法表达
@@ -572,6 +574,49 @@ Relationship 图结构本质都是为了支撑"多主体互动"这个用例）�
 
 **优先级与依赖**：P3，条件触发（见上），不分配固定阶段编号的启动
 时间——阶段十七是"触发后要做的事"的编号占位，不代表现在就要排期。
+
+**实施记录**：**这一节在没有真实使用场景验证"触发条件"的情况下被
+提前实施**——这是一次对上面"条件触发"原则的明确偏离，记录在案以便
+以后复盘：用户在没有具体多主体真实场景的前提下，明确要求"先把设计
+草案落地成代码架子"；执行前已经提醒过这样做的风险（可能在没有真实
+场景验证的情况下把 `entities`/`shared_vars` 的字段粒度设计错，真正
+用到时大概率要推翻重做），并建议改为"只做最小验证性骨架、不动核心
+文件"的更保守方案，用户仍选择按方案草案完整实现，故按此执行。
+
+按上述方案草案实现：新增 `SimManifest.settings.multi_entity_mode`
+（默认 `False`，`state_model.py` 补充完整的格式约定文档）；
+`spec_generator.resolve_hints()` 新增 `multi_entity_mode_hint`
+（关闭/开启两种文案，开启时明确点出 `entities`/`shared_vars` 两个
+约定字段名），`generate_scenario.yaml`/`advance_step.yaml` 都新增
+`{multi_entity_mode_hint}` 占位符（未做成独立的"每个 entity 单独调用
+一次 LLM"，符合方案草案里"仍然一次调用"的设计）；新增第三个场景
+模板 `skills/negotiation-template/SKILL.md`（而不是改造现有两个
+模板，符合方案草案里"可能需要一个新模板"的预估），完整定义了
+`entities`/`shared_vars` 的组织约定、私有信息不能互相泄露的规则、
+`generate_scenario`/`advance_step` 两阶段的输出契约；`app.py` 新增
+`_render_vars_display()`，`multi_entity_mode` 为真且 `vars.entities`
+非空时按主体分 tab 展示（+ 一个"共享信息"tab），否则安全退化为原来
+的 `st.json(vars)` 展示；创建向导新增"多方谈判"模板选项（选中后
+自动带上 `multi_entity_mode: True`），详情页"模拟设置"新增对应的
+勾选开关。引擎本身（`engine.py`/`spec_generator.py` 的 `vars` 处理
+逻辑）**未做任何改动**——`entities`/`shared_vars` 结构对引擎而言
+仍然只是不透明的自由 JSON，完全符合"`vars` 不透明"的既有设计，这
+也是本节没有像阶段十六那样在 `engine.py` 里新增校验函数的原因。
+`Relationship` 的独立图结构建模、entity 之间关系的结构化表达仍未
+实现，按方案草案"暂时仍靠 `narrative` 自由文本表达"处理。
+
+验收标准（预估的"双方谈判"用例）已通过 `tests/test_multi_template.py`
+新增的端到端用例覆盖：`entities.甲方` 私有信息（`budget`）与
+`entities.乙方` 私有信息（`walk_away_price`）互不可见（断言
+`"乙方" not in vars["entities"]["甲方"]`、`"walk_away_price" not in
+next_vars["entities"]["甲方"]`），`shared_vars` 与 `skill_name` 绑定
+均按预期原样透传/推导；`tests/test_spec_and_engine.py` 新增两个
+`resolve_hints` 用例覆盖开关两种文案。累计 101 个测试全部通过。
+**未接入真实 LLM 手动验证，也未经过真实多主体场景的使用反馈**——
+这正是"提前实施"带来的已知风险，`entities`/`shared_vars` 的字段
+粒度、UI 分 tab 的展示方式都只是这次实现时的一次性设计判断，一旦
+出现真实谈判/竞争场景的使用反馈，应该优先按反馈调整，不应该假定
+现在的设计就是最终正确的版本。
 
 ### 4.10（不排期，仅记录设计草案）Hierarchical Agent / Dynamic Cognition Router
 
@@ -674,9 +719,10 @@ calibration_notes` 文档）、`spec_generator.py`/`workflows/*.yaml`
 - **阶段十六**（已完成）：本文档 4.8 节，资源转移关系建模——通用规则
   引擎的最小可行版本（只做 `transfer` 一种关系类型，`production` 未
   实现）。
-- **阶段十七**（条件触发，非固定排期）：本文档 4.9 节，Belief 与
-  State 分离 + Entity/Relationship 图结构——触发条件是出现真实的
-  "多主体信息不对称"场景，见该节详细说明。
+- **阶段十七**（已完成，但提前实施）：本文档 4.9 节，Belief 与
+  State 分离 + Entity/Relationship 图结构最小可行版本——触发条件
+  （出现真实的"多主体信息不对称"场景）**在实施时并未满足**，是应
+  用户明确要求提前实施的特殊情况，完整背景见该节"实施记录"。
 - **Hierarchical Agent / Dynamic Cognition Router**（不排期，无
   阶段编号）：本文档 4.10 节，触发条件是出现"数量级明显超过个位数
   的独立决策主体"场景，且验证了阶段十七的方案撑不住，见该节说明。
@@ -697,9 +743,13 @@ calibration_notes` 文档）、`spec_generator.py`/`workflows/*.yaml`
 4.8~4.11 节（阶段十六~十八，含一个不排期项）是对原"本次不做的事"
 清单（资源关系建模、Belief/图结构、Hierarchical Agent、Reality
 Sync）的后续可执行拆解：阶段十六（资源转移关系建模）已完成，验收
-标准见 4.8 节"实施记录"；阶段十七、十八和 Hierarchical Agent 是"条件
-触发"项目——设计草案已经写好，但明确要求出现对应的真实场景才启动，
-避免在没有验证需求的情况下过度设计。
+标准见 4.8 节"实施记录"，是常规的"符合触发条件后实施"；阶段十七
+（Belief/图结构）也已完成，但**是在触发条件未满足的情况下被提前
+实施的**，见 4.9 节"实施记录"里的完整说明与风险提示——这与阶段
+十六的完成方式不同，不应被当成"条件触发原则已经不再适用"的先例。
+Hierarchical Agent 和阶段十八仍是严格意义上的"条件触发"项目——设计
+草案已经写好，但仍然要求出现对应的真实场景才启动，避免在没有验证
+需求的情况下过度设计。
 
 ## 6. 尚未启动项目的汇总（原"本次不做的事"，已拆解为可执行计划）
 
@@ -710,7 +760,7 @@ Sync）的后续可执行拆解：阶段十六（资源转移关系建模）已�
 | 原条目 | 对应计划 | 状态 |
 | --- | --- | --- |
 | 通用规则引擎 DSL（转移/生产关系） | 4.8 节，阶段十六 | 已完成（只做 `transfer` 一种关系类型，`production` 未实现，见 4.8 节"实施记录"） |
-| Belief 与 State 分离 + 完整 Entity/Relationship 图结构 | 4.9 节，阶段十七 | 条件触发（见该节触发条件） |
+| Belief 与 State 分离 + 完整 Entity/Relationship 图结构 | 4.9 节，阶段十七 | 已完成最小可行版本（`Relationship` 完整图结构未实现），但属于提前实施，未经真实场景验证，见该节"实施记录" |
 | Hierarchical Agent / Dynamic Cognition Router | 4.10 节，不排期 | 条件触发（见该节触发条件） |
 | Reality Sync | 4.11 节，阶段十八（轻量版） | 条件触发（见该节触发条件）；完整版（自动数据源接入）仍不在计划内，触发后需另开文档 |
 

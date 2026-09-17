@@ -68,6 +68,7 @@ steps:
       用户设置的候选方向数量：{option_count_hint}
       用户设置的时间粒度模式（决定这一步该用多长/什么性质的时间粒度，
       以及能不能中途切换）：{time_granularity_hint}
+      多主体模式设置：{multi_entity_mode_hint}
 
       请按你所属 skill 的规范，给出这一步推进后的新状态、发生了什么的
       叙事文本、这一步结束时对应的模拟内时间点（`time_label`，人类

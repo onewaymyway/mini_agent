@@ -369,6 +369,41 @@ def _relation_violations_html(state) -> str:
     return "".join(lines)
 
 
+def _render_vars_display(vars_dict, multi_entity_mode: bool) -> None:
+    """展示"关键变量"，多主体模式（阶段十七，4.9 节）下按 entity 分 tab
+    展示各自的私有 `vars` + 一个"共享信息"tab，避免互相泄露；否则退化为
+    原来的 `st.json(vars_dict)` 原样展示（阶段一起就有的行为，不受影响）。
+
+    只有 `manifest.settings.multi_entity_mode` 为真、且 `vars` 里确实
+    有一个非空的 `entities` 字典时才启用分 tab 展示——`multi_entity_mode`
+    为真但 `vars` 里没有按约定给出 `entities` 结构（比如旧数据、或者
+    skill 没有遵守约定）时，安全退化为原样展示，不报错。
+    """
+    entities = vars_dict.get("entities") if isinstance(vars_dict, dict) else None
+    if not (multi_entity_mode and isinstance(entities, dict) and entities):
+        st.json(vars_dict)
+        return
+    shared_vars = vars_dict.get("shared_vars")
+    shared_vars = shared_vars if isinstance(shared_vars, dict) else {}
+    entity_names = list(entities.keys())
+    tab_labels = [f"🧑 {name}" for name in entity_names]
+    if shared_vars:
+        tab_labels.append("🌐 共享信息")
+    tabs = st.tabs(tab_labels)
+    for tab, name in zip(tabs, entity_names):
+        with tab:
+            st.caption(f"「{name}」的私有信息，其它主体看不到这一份。")
+            st.json(entities[name])
+    if shared_vars:
+        with tabs[-1]:
+            st.caption("所有主体共享的公开信息。")
+            st.json(shared_vars)
+    other_keys = {k: v for k, v in vars_dict.items() if k not in ("entities", "shared_vars")}
+    if other_keys:
+        st.caption("其它顶层字段：")
+        st.json(other_keys)
+
+
 _CONFIDENCE_LABELS = {"low": "低置信度", "medium": "中置信度", "high": "高置信度"}
 
 
@@ -558,9 +593,20 @@ def page_create() -> None:
         height=90,
     )
     template = st.selectbox(
-        "场景模板", options=["life_sim", "group_evolution"],
-        format_func=lambda t: {"life_sim": "人生模拟", "group_evolution": "群体演化"}.get(t, t),
+        "场景模板", options=["life_sim", "group_evolution", "negotiation"],
+        format_func=lambda t: {
+            "life_sim": "人生模拟", "group_evolution": "群体演化",
+            "negotiation": "多方谈判（多主体，阶段十七）",
+        }.get(t, t),
     )
+
+    if template == "negotiation":
+        st.markdown(
+            '<span class="ws-muted">「多方谈判」模板会启用多主体模式（阶段十七，4.9 节）：'
+            "`vars` 按「各主体私有信息 + 共享信息」的结构组织，详情页会按主体分 tab 展示，"
+            "互不泄露。</span>",
+            unsafe_allow_html=True,
+        )
 
     setting_cols = st.columns([1, 1])
     with setting_cols[0]:
@@ -646,6 +692,7 @@ def page_create() -> None:
                 "time_granularity_mode": time_granularity_mode,
                 "time_granularity": time_granularity,
                 "time_granularity_guide": time_granularity_guide,
+                "multi_entity_mode": template == "negotiation",
             }
             st.session_state["create_settings"] = settings
             with st.spinner("正在生成提案草稿..."):
@@ -1150,7 +1197,7 @@ def page_detail() -> None:
             uncertain_html = _uncertain_fields_html(current)
             if uncertain_html:
                 st.markdown(uncertain_html, unsafe_allow_html=True)
-            st.json(current.vars)
+            _render_vars_display(current.vars, bool(manifest.settings.get("multi_entity_mode")))
 
     with st.expander("⚙️ 模拟设置（候选方向数量 / 时间粒度）"):
         cur_settings = manifest.settings or {}
@@ -1209,6 +1256,12 @@ def page_detail() -> None:
             value=cur_resource_fields_text,
             placeholder="例：resources.cash, resources.energy",
             key="settings_resource_fields",
+        )
+        cur_multi_entity_mode = bool(cur_settings.get("multi_entity_mode", False))
+        new_multi_entity_mode = st.checkbox(
+            "多主体模式（阶段十七，4.9 节——`vars` 需要按「entities 私有信息 + "
+            "shared_vars 共享信息」的结构组织，详情页才会按主体分 tab 展示）",
+            value=cur_multi_entity_mode, key="settings_multi_entity_mode",
         )
         cur_resource_relations = cur_settings.get("resource_relations") or []
         with st.expander("高级：声明资源转移关系（阶段十六，可选）"):
@@ -1283,6 +1336,7 @@ def page_detail() -> None:
                     ],
                     resource_relations=resource_relations_to_save,
                     objectives=new_objectives,
+                    multi_entity_mode=bool(new_multi_entity_mode),
                 )
                 st.success("设置已更新，下一步推进开始生效。")
                 st.rerun()
@@ -2123,7 +2177,7 @@ def page_game() -> None:
             uncertain_html = _uncertain_fields_html(s)
             if uncertain_html:
                 st.markdown(uncertain_html, unsafe_allow_html=True)
-            st.json(s.vars)
+            _render_vars_display(s.vars, bool(manifest.settings.get("multi_entity_mode")))
 
 
 # ─────────────────────────────────────────────────────────────
