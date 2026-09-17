@@ -151,6 +151,23 @@ class SimState:
     默认空列表：skill 没给出、旧数据、`state0`（初始状态一般没有"这一
     步的驱动因素"这个概念）都可以为空，不影响任何已有行为。
     """
+    relation_violations: List[Dict[str, Any]] = field(default_factory=list)
+    """产生*本状态*这一步，`engine.py::advance()` 对
+    `manifest.settings.resource_relations` 里声明的 `transfer`（转移）
+    关系做一致性检查时发现的不守恒项（阶段十六，`next_doc/
+    world_simulator_universal_world_model_upgrade_plan.md` 4.8 节）。
+
+    每一项形如 `{"from": "cash", "to": "inventory.value",
+    "delta_from": -100, "delta_to": 20}`：`from`/`to` 是声明的字段路径，
+    `delta_from`/`delta_to` 是这一步这两个字段各自的变化量（`next_vars`
+    减去 `current_vars`）。**只是不一致提示，不修改任何数值**——和
+    `resource_violations`（下限校验）不同，转移关系没有"应该是多少"的
+    唯一正确答案，engine 没法像下限那样直接夹值，只能留痕供用户判断
+    "这一步的资源转移不太守恒，可能是 AI 算错了或者有未说明的损耗"。
+
+    默认空列表：`resource_relations` 未声明、这一步没有超出容差时都是
+    空列表，不影响旧数据/其它模板的行为（向后兼容）。
+    """
     causal_links: List[Dict[str, Any]] = field(default_factory=list)
     """产生*本状态*这一步，skill 可选给出的"划重点 + 具体影响"结构化
     摘要（阶段十五，`next_doc/world_simulator_universal_world_model_
@@ -204,6 +221,9 @@ class SimState:
             key_drivers=[str(x) for x in (data.get("key_drivers") or [])],
             causal_links=[
                 dict(x) for x in (data.get("causal_links") or []) if isinstance(x, dict)
+            ],
+            relation_violations=[
+                dict(x) for x in (data.get("relation_violations") or []) if isinstance(x, dict)
             ],
         )
 
@@ -286,6 +306,25 @@ class SimManifest:
       不会因为声明或不声明这个字段而改变任何推进/校验逻辑，纯粹是
       "记录这次模拟想优化什么"；排序结果始终"仅供参考"，不代表系统
       认定的最优解，最终判断权留给用户。
+    - `resource_relations`：列表，声明 `vars` 里资源字段之间的"转移"
+      关系（阶段十六，`next_doc/world_simulator_universal_world_model_
+      upgrade_plan.md` 4.8 节，通用规则引擎的最小可行版本）。每一项
+      形如 `{"type": "transfer", "from": "cash", "to":
+      "inventory.value", "tolerance": 0.1}`：`from`/`to` 是 `vars` 里
+      的字段路径（支持一层嵌套，同 `resource_fields`），`tolerance` 是
+      允许的相对误差比例（默认 0.1，即允许 10% 的"汇率损耗/交易成本"
+      之类的合理偏差，不强制精确守恒）。**只做 `transfer`（转移，两个
+      字段的变化量应大致相反）这一种关系类型**，`production`（生产/
+      持续产出）暂不支持。`engine.advance()` 每次落盘 `next_vars` 前
+      会对这里声明的每条关系做一致性检查：**不拒绝推进、不修改任何
+      数值**（和 `resource_fields` 的下限校验不同，这里没有"应该是
+      多少"的唯一正确答案），不一致时记入
+      `SimState.relation_violations` 供时间线展示"不一致提示"。留空
+      （默认）表示不做任何检查，行为与引入这个功能之前完全一致，向后
+      兼容。由 `generate_scenario` 阶段的 skill 在生成初始 `vars` 时
+      给出建议值（见 `spec_generator.ScenarioDraft.resource_relations`，
+      写法同 `resource_fields`），用户在创建向导里可以看到并编辑，也
+      可以在详情页"模拟设置"里随时增删。
     """
 
     def to_dict(self) -> Dict[str, Any]:

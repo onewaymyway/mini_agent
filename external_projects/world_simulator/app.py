@@ -181,6 +181,12 @@ section[data-testid="stSidebar"] {
     color: var(--ws-danger, #e0665a);
     font-weight: 600;
 }
+.ws-chapter-relation-violation {
+    margin-top: 0.2rem;
+    font-size: 0.78rem;
+    color: #b8860b;
+    font-weight: 600;
+}
 .ws-uncertain-field {
     margin: 0.15rem 0;
     font-size: 0.82rem;
@@ -334,6 +340,31 @@ def _resource_violations_html(state) -> str:
             f'<div class="ws-chapter-resource-violation">⚠ 「{field}」原始值 '
             f"{_html_text(str(llm_value))} 不合理，已自动纠正为 "
             f"{_html_text(str(clamped_value))}</div>"
+        )
+    return "".join(lines)
+
+
+def _relation_violations_html(state) -> str:
+    """渲染这一步资源转移关系"不太守恒"的提示（阶段十六，4.8 节，
+    可能为空）。
+
+    和 `_resource_violations_html()` 不同：这里**没有修改任何数值**，
+    只是提示"可能有问题"，措辞明确用"不一致"而不是"已自动纠正"。
+    """
+    violations = getattr(state, "relation_violations", None) or []
+    if not violations:
+        return ""
+    lines = []
+    for v in violations:
+        from_field = _html_text(str(v.get("from", "")))
+        to_field = _html_text(str(v.get("to", "")))
+        delta_from = v.get("delta_from")
+        delta_to = v.get("delta_to")
+        lines.append(
+            f'<div class="ws-chapter-relation-violation">🔶 「{from_field}」'
+            f"（变化 {_html_text(str(delta_from))}）→「{to_field}」"
+            f"（变化 {_html_text(str(delta_to))}）看起来不太守恒，"
+            "可能是 AI 算错了或者有未说明的损耗</div>"
         )
     return "".join(lines)
 
@@ -663,6 +694,30 @@ def page_create() -> None:
         unsafe_allow_html=True,
     )
 
+    # ── 资源转移关系（阶段十六，4.8 节）：声明后引擎会在每步推进时
+    # 检查两个字段的变化量是否大致相反，不修改任何数值，只做不一致
+    # 提示，留空则不做任何检查 ──
+    with st.expander("高级：声明资源转移关系（阶段十六，可选）"):
+        st.markdown(
+            '<span class="ws-muted">用 JSON 数组声明两个资源字段之间的"转移"关系'
+            "（比如\"花现金买库存\"），引擎会检查变化量是否大致相反（默认允许 10% "
+            "偏差），不一致时只在时间线上提示，不会修改任何数值。例如：\n"
+            '`[{"type": "transfer", "from": "resources.cash", '
+            '"to": "resources.inventory", "tolerance": 0.1}]`。'
+            "不填就跳过这一步。</span>",
+            unsafe_allow_html=True,
+        )
+        resource_relations_default = json.dumps(
+            list(getattr(draft, "resource_relations", None) or []), ensure_ascii=False
+        ) if getattr(draft, "resource_relations", None) else ""
+        resource_relations_text = st.text_area(
+            "资源转移关系（JSON 数组，可选）",
+            value=st.session_state.get("create_resource_relations", resource_relations_default),
+            key="create_resource_relations_input",
+            height=80,
+            placeholder='[{"type": "transfer", "from": "cash", "to": "inventory.value"}]',
+        )
+
     # ── 关注指标（阶段十二，4.4 节 Problem Compiler 雏形）：纯记录用途，
     # 不触发任何自动排序/推荐，只是给「对比实验」页面的关注字段提供
     # 默认值参考，留空不影响任何行为 ──
@@ -865,10 +920,16 @@ def page_create() -> None:
         advanced_objectives_invalid = bool(advanced_objectives_text.strip()) and not isinstance(
             advanced_objectives, list
         )
+        resource_relations_parsed = _safe_json_loads(resource_relations_text, None)
+        resource_relations_invalid = bool(resource_relations_text.strip()) and not isinstance(
+            resource_relations_parsed, list
+        )
         if edited_vars is None:
             st.error("关键变量不是合法 JSON，请修正后再确认创建。")
         elif advanced_objectives_invalid:
             st.error("结构化关注指标不是合法的 JSON 数组，请修正后再确认创建（或清空这一栏跳过）。")
+        elif resource_relations_invalid:
+            st.error("资源转移关系不是合法的 JSON 数组，请修正后再确认创建（或清空这一栏跳过）。")
         else:
             resource_fields = [
                 f.strip() for f in resource_fields_text.split(",") if f.strip()
@@ -876,8 +937,13 @@ def page_create() -> None:
             objectives = [o.strip() for o in objectives_text.split(",") if o.strip()]
             if isinstance(advanced_objectives, list):
                 objectives = objectives + [o for o in advanced_objectives if isinstance(o, dict)]
+            resource_relations = (
+                [r for r in resource_relations_parsed if isinstance(r, dict)]
+                if isinstance(resource_relations_parsed, list) else []
+            )
             create_settings = dict(st.session_state.get("create_settings") or {})
             create_settings["resource_fields"] = resource_fields
+            create_settings["resource_relations"] = resource_relations
             create_settings["objectives"] = objectives
             manifest = materialize_simulation(
                 DATA_DIR,
@@ -908,7 +974,7 @@ def page_create() -> None:
                 "draft", "draft_template", "create_intent", "create_chosen_option_id",
                 "create_feedback", "create_settings", "create_options_count",
                 "create_granularity_preset", "create_granularity_custom", "create_resource_fields",
-                "create_objectives",
+                "create_resource_relations", "create_objectives",
             ):
                 st.session_state.pop(key, None)
             st.session_state["view"] = "detail"
@@ -954,12 +1020,13 @@ def _render_timeline(
         step_time_suffix = f" · {_html_text(state.time_label)}" if state.time_label else ""
         granularity_note = _granularity_note_html(state)
         resource_note = _resource_violations_html(state)
+        relation_note = _relation_violations_html(state)
         key_drivers_note = _key_drivers_html(state)
         html = (
             '<div class="ws-chapter">'
             f'<div class="ws-chapter-step">第 {state.step} 步{step_time_suffix}</div>'
             f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
-            f"{granularity_note}{resource_note}{key_drivers_note}{narrative}{chosen_note}"
+            f"{granularity_note}{resource_note}{relation_note}{key_drivers_note}{narrative}{chosen_note}"
             "</div>"
         )
         st.markdown(html, unsafe_allow_html=True)
@@ -1143,6 +1210,21 @@ def page_detail() -> None:
             placeholder="例：resources.cash, resources.energy",
             key="settings_resource_fields",
         )
+        cur_resource_relations = cur_settings.get("resource_relations") or []
+        with st.expander("高级：声明资源转移关系（阶段十六，可选）"):
+            st.markdown(
+                '<span class="ws-muted">声明两个资源字段之间的"转移"关系后，引擎会在'
+                "每步推进时检查变化量是否大致相反（默认允许 10% 偏差），不一致时只在"
+                "时间线上提示，不修改任何数值。</span>",
+                unsafe_allow_html=True,
+            )
+            new_resource_relations_text = st.text_area(
+                "资源转移关系（JSON 数组，可选）",
+                value=json.dumps(cur_resource_relations, ensure_ascii=False) if cur_resource_relations else "",
+                key="settings_resource_relations",
+                height=80,
+                placeholder='[{"type": "transfer", "from": "cash", "to": "inventory.value"}]',
+            )
         cur_objectives = cur_settings.get("objectives") or []
         cur_objectives_text = ", ".join(
             str(o) for o in cur_objectives if not isinstance(o, dict)
@@ -1170,13 +1252,26 @@ def page_detail() -> None:
         if st.button("保存设置", key="settings_save"):
             new_objectives = [o.strip() for o in new_objectives_text.split(",") if o.strip()]
             new_objectives_advanced = _safe_json_loads(new_objectives_advanced_text, None)
-            if new_objectives_advanced_text.strip() and not isinstance(new_objectives_advanced, list):
+            new_resource_relations = _safe_json_loads(new_resource_relations_text, None)
+            objectives_advanced_invalid = (
+                new_objectives_advanced_text.strip() and not isinstance(new_objectives_advanced, list)
+            )
+            resource_relations_invalid = (
+                new_resource_relations_text.strip() and not isinstance(new_resource_relations, list)
+            )
+            if objectives_advanced_invalid:
                 st.error("结构化关注指标不是合法的 JSON 数组，设置未保存，请修正后重试。")
+            elif resource_relations_invalid:
+                st.error("资源转移关系不是合法的 JSON 数组，设置未保存，请修正后重试。")
             else:
                 if isinstance(new_objectives_advanced, list):
                     new_objectives = new_objectives + [
                         o for o in new_objectives_advanced if isinstance(o, dict)
                     ]
+                resource_relations_to_save = (
+                    [r for r in new_resource_relations if isinstance(r, dict)]
+                    if isinstance(new_resource_relations, list) else []
+                )
                 update_settings(
                     DATA_DIR, sim_id,
                     options_count=int(new_options_count),
@@ -1186,6 +1281,7 @@ def page_detail() -> None:
                     resource_fields=[
                         f.strip() for f in new_resource_fields_text.split(",") if f.strip()
                     ],
+                    resource_relations=resource_relations_to_save,
                     objectives=new_objectives,
                 )
                 st.success("设置已更新，下一步推进开始生效。")
@@ -2008,6 +2104,7 @@ def page_game() -> None:
     step_time_suffix = f" · {_html_text(s.time_label)}" if s.time_label else ""
     granularity_note = _granularity_note_html(s)
     resource_note = _resource_violations_html(s)
+    relation_note = _relation_violations_html(s)
     key_drivers_note = _key_drivers_html(s)
     narrative_text = _html_text(s.narrative) if s.narrative else "（这一章还没有更多叙事文本。）"
 
@@ -2015,7 +2112,7 @@ def page_game() -> None:
         '<div class="ws-card" style="min-height: 220px;">'
         f'<div class="ws-chapter-step">第 {s.step} 章{step_time_suffix}{major_tag}</div>'
         f'<div class="ws-chapter-summary" style="font-size:1.15rem;">{_html_text(s.summary)}</div>'
-        f"{granularity_note}{resource_note}{key_drivers_note}"
+        f"{granularity_note}{resource_note}{relation_note}{key_drivers_note}"
         f'<div class="ws-chapter-narrative">{narrative_text}</div>'
         f"{chosen_note}"
         "</div>"

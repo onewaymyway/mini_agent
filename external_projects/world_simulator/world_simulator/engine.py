@@ -124,6 +124,76 @@ def _apply_resource_guard(vars_dict: Dict[str, Any], resource_fields_raw: Any) -
     return violations
 
 
+def _normalize_resource_relations(raw: Any) -> list:
+    """把 `manifest.settings.resource_relations` 归一化成
+    `[{"from": str, "to": str, "tolerance": float}, ...]` 的形式
+    （阶段十六，4.8 节）。
+
+    只识别 `type == "transfer"`（或没写 `type`，默认按 `transfer`
+    处理）的项，`production` 等其它类型本版本不支持，直接跳过；
+    非法/无法解析的项也直接跳过，不抛错——同 `_normalize_resource_
+    fields()`，配置写错了不应该让整个推进流程失败。
+    """
+    relations: list = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        rel_type = str(item.get("type") or "transfer").strip() or "transfer"
+        if rel_type != "transfer":
+            continue
+        from_field = str(item.get("from") or "").strip()
+        to_field = str(item.get("to") or "").strip()
+        if not from_field or not to_field:
+            continue
+        try:
+            tolerance = float(item.get("tolerance", 0.1) or 0.1)
+        except (TypeError, ValueError):
+            tolerance = 0.1
+        relations.append({"from": from_field, "to": to_field, "tolerance": tolerance})
+    return relations
+
+
+def _check_resource_relations(
+    current_vars: Dict[str, Any], next_vars: Dict[str, Any], resource_relations_raw: Any
+) -> list:
+    """对声明的 `transfer` 关系做一次事后一致性检查（阶段十六，4.8 节）。
+
+    对每条关系计算 `delta_from = next_vars[from] - current_vars[from]`、
+    `delta_to = next_vars[to] - current_vars[to]`，如果两者之和的绝对值
+    超出容差（按两者绝对值的较大者衡量），记为一条不一致。**不修改任何
+    数值、不拒绝推进**——这里没有"应该是多少"的唯一正确答案，只做
+    留痕。任一字段缺失/非数字/变化量都为 0（没有实际发生转移）时跳过，
+    不产生误报。
+    """
+    violations: list = []
+    for spec in _normalize_resource_relations(resource_relations_raw):
+        from_path = spec["from"]
+        to_path = spec["to"]
+        tolerance = spec["tolerance"]
+        cur_from = _get_nested(current_vars, from_path)
+        cur_to = _get_nested(current_vars, to_path)
+        next_from = _get_nested(next_vars, from_path)
+        next_to = _get_nested(next_vars, to_path)
+        values = (cur_from, cur_to, next_from, next_to)
+        if any(not isinstance(v, (int, float)) or isinstance(v, bool) for v in values):
+            continue
+        delta_from = next_from - cur_from
+        delta_to = next_to - cur_to
+        if delta_from == 0 and delta_to == 0:
+            continue
+        allowed = tolerance * max(abs(delta_from), abs(delta_to))
+        if abs(delta_from + delta_to) > allowed:
+            violations.append(
+                {
+                    "from": from_path,
+                    "to": to_path,
+                    "delta_from": delta_from,
+                    "delta_to": delta_to,
+                }
+            )
+    return violations
+
+
 def materialize_simulation(
     data_dir: Path,
     *,
@@ -432,6 +502,14 @@ def advance(
         next_vars, manifest.settings.get("resource_fields")
     )
 
+    # 资源转移关系的一致性检查（阶段十六，4.8 节）：用夹值*之前*的
+    # `current.vars` 对比夹值*之后*的 `next_vars`——夹值本身也是这一步
+    # 真实落盘的变化量的一部分，检查应该看"最终生效的变化"，而不是
+    # LLM 原始给出的、可能已经因为下限校验被修正过的值。
+    relation_violations = _check_resource_relations(
+        current.vars, next_vars, manifest.settings.get("resource_relations")
+    )
+
     next_state = SimState(
         step=current.step + 1,
         summary=str(data.get("next_summary", "")),
@@ -444,6 +522,7 @@ def advance(
         granularity_changed=granularity_changed,
         granularity_reason=granularity_reason,
         resource_violations=resource_violations,
+        relation_violations=relation_violations,
         uncertain_fields=list(data.get("uncertain_fields") or []),
         key_drivers=[str(x) for x in (data.get("key_drivers") or [])],
         causal_links=[

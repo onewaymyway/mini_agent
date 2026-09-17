@@ -137,6 +137,15 @@ class ScenarioDraft:
     这个字段会直接落盘到 `state0.uncertain_fields`（不像
     `resource_fields` 那样需要先经过用户编辑再存进 `settings`——置信度
     标注是"描述性"的，不是需要用户确认的配置项）。"""
+    resource_relations: List[Any] = field(default_factory=list)
+    """skill 在生成初始 `vars` 时给出的"哪些资源字段之间存在转移关系"
+    建议（阶段十六，见 `state_model.SimManifest.settings` 里
+    `resource_relations` 的格式说明），比如
+    `[{"type": "transfer", "from": "cash", "to": "inventory.value"}]`，
+    可选输出，留空表示 skill 认为这次模拟没有需要做转移一致性检查的
+    字段对。用途与 `resource_fields` 一致：创建向导展示建议值、允许
+    用户编辑，最终结果存进 `settings.resource_relations`，这个字段
+    本身只是"草稿阶段的建议值"，不直接落盘。"""
     objectives: List[Any] = field(default_factory=list)
     """skill 在生成初始状态时给出的"这次模拟主要关心的指标"建议
     （阶段十二，`next_doc/world_simulator_universal_world_model_upgrade_
@@ -165,6 +174,7 @@ class ScenarioDraft:
             time_label=str(data.get("time_label", "") or ""),
             time_granularity=str(data.get("time_granularity", "") or ""),
             resource_fields=list(data.get("resource_fields") or []),
+            resource_relations=list(data.get("resource_relations") or []),
             uncertain_fields=list(data.get("uncertain_fields") or []),
             objectives=[
                 (dict(o) if isinstance(o, dict) else str(o))

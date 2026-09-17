@@ -102,6 +102,30 @@ def test_state_roundtrip_preserves_causal_links():
     assert mixed_restored.causal_links == [{"driver": "x"}]
 
 
+def test_state_roundtrip_preserves_relation_violations():
+    """阶段十六（4.8 节）：`relation_violations` 应该原样经过
+    to_dict/from_dict 往返，旧数据（没有这个字段）也应该正常落回空
+    列表；非字典项应该被跳过而不是报错中断。"""
+    state = SimState(
+        step=4, summary="s",
+        relation_violations=[
+            {"from": "cash", "to": "inventory.value", "delta_from": -100, "delta_to": 20}
+        ],
+    )
+    restored = SimState.from_dict(state.to_dict())
+    assert restored.relation_violations == [
+        {"from": "cash", "to": "inventory.value", "delta_from": -100, "delta_to": 20}
+    ]
+
+    legacy_restored = SimState.from_dict({"step": 0, "summary": "旧数据"})
+    assert legacy_restored.relation_violations == []
+
+    mixed_restored = SimState.from_dict(
+        {"step": 0, "summary": "s", "relation_violations": ["不是字典", {"from": "x"}]}
+    )
+    assert mixed_restored.relation_violations == [{"from": "x"}]
+
+
 def test_manifest_roundtrip():
     ts = now_iso()
     m = SimManifest(

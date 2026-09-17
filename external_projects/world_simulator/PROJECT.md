@@ -386,6 +386,56 @@ scenario` 阶段 skill 仍只输出纯字符串建议值，结构化写法目前
 `causal_links` 完全可选，不给这个字段时行为与阶段十三完全一致，
 向后兼容。未接入真实 LLM 手动验证。
 
+阶段十六（资源转移关系建模——通用规则引擎的最小可行版本，已完成，见
+演进计划 4.8 节）交付：
+
+1. `state_model.SimManifest.settings.resource_relations`：可选字段，
+   声明 `vars` 里资源字段之间的"转移"关系，每项
+   `{"type": "transfer", "from": "cash", "to": "inventory.value",
+   "tolerance": 0.1}`（`tolerance` 是允许的相对误差比例，默认 0.1，
+   即允许 10% 的"汇率损耗/交易成本"之类的合理偏差）。**只做
+   `transfer` 这一种关系类型**，`production`（生产/持续产出）暂不
+   支持。`SimState.relation_violations`：新增字段，记录某一步落盘时
+   发现的转移不一致项（`{from, to, delta_from, delta_to}`），默认
+   空列表。
+2. `engine.py` 新增 `_normalize_resource_relations()`/
+   `_check_resource_relations()`：`advance()` 落盘 `next_vars` 前对
+   声明的每条 `transfer` 关系计算两个字段各自的变化量，超出容差记为
+   一条不一致——**不拒绝这次推进、不修改任何数值**（和阶段九的下限
+   校验不同，转移关系没有"应该是多少"的唯一正确答案，没法像下限那样
+   直接夹值），只做留痕，供时间线展示"这一步的资源转移不太守恒"的
+   不一致提示。检查用的是**夹值之后**的 `next_vars`（已经过阶段九
+   下限校验修正）与 `current.vars` 对比，看的是"最终真实落盘的
+   变化"。
+3. `spec_generator.ScenarioDraft.resource_relations`：`generate_
+   scenario` 阶段 skill 可选输出的建议值（`generate_scenario.yaml`
+   提示词 + 两个 `SKILL.md` 都已补充这段可选输出的说明），写法与
+   `resource_fields` 一致。
+4. `app.py`：创建向导与实例详情"模拟设置"区块都新增"高级：声明资源
+   转移关系"折叠区（JSON 数组输入，参考阶段十四"高级：声明可排序
+   字段"的交互模式）；时间线卡片（含独立时间线视图与游戏化章节视图）
+   新增 `relation_violations` 非空时的提示行（新增 CSS
+   `ws-chapter-relation-violation`，措辞明确是"不一致提示"而不是
+   "已自动纠正"，与 `resource_violations` 的提示样式/措辞都做了区分）。
+5. `tests/test_spec_and_engine.py` 新增三个用例（转移超出容差被正确
+   记录、容差内不产生记录、`ScenarioDraft.resource_relations` 解析）；
+   `tests/test_state_and_store.py` 新增一个序列化往返用例（含非字典
+   项过滤）。
+
+**踩坑记录**：`generate_scenario.yaml` 提示词最初的举例用了带"."的
+字段路径（`"inventory.value"`）和小数（`0.1`）拼进大括号示例，被
+`tests/test_workflow_prompt_placeholders.py`（阶段八之后新增的回归
+测试，防止 prompt 里的举例大括号被误判为 `{step_id.field}` 占位符，
+见该文件顶部的事故复盘）判定为潜在风险——改用不含"."的占位字段名
+（`"字段A"`/`"字段B"`）和文字描述（"默认十分之一"）规避，真正的
+数值默认值 0.1 只保留在代码（`_normalize_resource_relations()`）里。
+
+**范围严格克制**在"transfer 一种关系类型 + 事后一致性检查"（演进
+计划 4.8 节已说明原因）：不引入通用规则引擎 DSL，不做 `production`
+（生产/持续产出，需要引入"速率"和"时间粒度换算"，复杂度明显更高），
+`resource_relations` 未声明时的行为与阶段十六之前完全一致，向后
+兼容。未接入真实 LLM 手动验证。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：
@@ -590,3 +640,22 @@ world_simulator/
   workflow 执行测试悄悄潜入（那些测试打桩了 workflow 执行器本身，
   根本不会走到真实的 `_resolve_prompt`，无法发现这类问题）。累计
   82 个测试全部通过。
+- 2026-09-17：完成阶段十六（资源转移关系建模——通用规则引擎的最小
+  可行版本，见演进计划 4.8 节）：新增 `state_model.SimState.
+  relation_violations` / `SimManifest.settings.resource_relations`、
+  `engine.py::_normalize_resource_relations()`/`_check_resource_
+  relations()`（`advance()` 落盘前对声明的 `transfer` 关系做一致性
+  检查，不拒绝推进、不修改数值，只留痕）、`spec_generator.
+  ScenarioDraft.resource_relations`（skill 建议值承接）；
+  `generate_scenario.yaml`、两个模板 `SKILL.md` 补充可选输出说明；
+  `app.py` 创建向导与"模拟设置"区块新增"高级：声明资源转移关系"折叠
+  区，时间线（含游戏化视图）新增不一致提示行。落地过程中发现并规避
+  了一处新的"prompt 举例大括号含'.'"风险（`tests/test_workflow_
+  prompt_placeholders.py` 回归测试按设计捕获到），改用不含"."的占位
+  写法。新增单测 3 个（`tests/test_spec_and_engine.py`）+ 1 个
+  （`tests/test_state_and_store.py`），累计 98 个测试全部通过（`cd
+  external_projects/world_simulator && PYTHONPATH=../../src:. python3
+  -m pytest tests/ -q`）。`production`（生产/持续产出关系）仍未
+  实现，按演进计划节奏留给收集到真实反馈后再评估；阶段十七~十八
+  （Belief/图结构、Hierarchical Agent、Reality Sync）仍是条件触发项
+  目，尚未启动。

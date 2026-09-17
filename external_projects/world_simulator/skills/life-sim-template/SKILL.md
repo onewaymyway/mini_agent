@@ -101,6 +101,14 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
   `{"field": "resources.cash", "min": 0}`。之后每一步 `advance_step`
   推进时，引擎会自动检查这些字段有没有被算成负数（不用你在
   `advance_step` 阶段自己操心这件事）。没有这类字段就不用输出。
+- `resource_relations`：数组（可选），`vars` 里两个资源字段之间明显
+  存在的"转移"关系（比如"花现金买库存"，一个字段减少的量大致等于另
+  一个字段增加的量），每项是 `{"type": "transfer", "from":
+  "resources.cash", "to": "resources.inventory", "tolerance": 0.1}`
+  （`tolerance` 可省略，默认 0.1，即允许 10% 的合理偏差）。之后每一步
+  `advance_step` 推进时，引擎会自动检查这两个字段的变化量是否大致
+  相反（不用你在 `advance_step` 阶段自己操心这件事）。没有这类明显的
+  转移关系就不用输出，不要为了填这个字段而牵强配对字段。
 - `uncertain_fields`：数组（可选），`vars` 里属于"你自己主观估计出来、
   置信度不高"的字段声明（比如"创业成功率"这类本质是推断而非确定事实
   的数值——`age` 这类确定性字段不要放进来），每项是

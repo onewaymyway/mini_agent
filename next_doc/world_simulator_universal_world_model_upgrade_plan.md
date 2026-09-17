@@ -6,8 +6,10 @@
 > "记录 + 默认值参考"）、阶段十三（4.5 节，最小版因果摘要）、阶段
 > 十四（4.6 节，Problem Compiler 进阶：目标驱动的自动排序）、阶段
 > 十五（4.7 节，Evidence Chain 进阶：结构化因果链）均已完成，见
-> `PROJECT.md` 对应交付记录。演进计划 4.1~4.7 节至此全部落地。
-> 阶段十六~十八（4.8~4.11 节，含一个不排期项）是对原第 6 节"本次不做
+> `PROJECT.md` 对应交付记录。演进计划 4.1~4.7 节至此全部落地。阶段
+> 十六（4.8 节，资源转移关系建模，通用规则引擎最小可行版本）已完成，
+> 见 `PROJECT.md` 对应交付记录。演进计划 4.1~4.8 节至此全部落地。
+> 阶段十七~十八（4.9~4.11 节，含一个不排期项）是对原第 6 节"本次不做
 > 的事"的后续可执行计划，均**尚未实施**，见各节"优先级与依赖"说明。
 > **前置文档**：`next_doc/world_simulator_external_project_plan.md`（原始方案，
 > 阶段一~七已完成，见该文档状态栏）；用户提供的外部参考
@@ -436,7 +438,7 @@ from_dict()` 解析结构化 `objectives`）覆盖，未接入真实 LLM 手动
 的真实使用反馈，UI 已就绪，是否要往更完整的因果图方向继续投入留给
 后续决定。
 
-### 4.8（P2，计划中，阶段十六）资源转移/生产关系建模——通用规则引擎的最小可行版本
+### 4.8（P2，已完成，见阶段十六）资源转移/生产关系建模——通用规则引擎的最小可行版本
 
 **问题**：4.1 节只做了"单字段下限"这一种约束，参考方案第七、十节讲的
 "转移"（A 减少的量等于 B 增加的量，比如"花钱买库存"）、"生产"（A
@@ -487,6 +489,40 @@ resource_relations`、`SimState.relation_violations`）、
 一段时间、收集到"用户是否真的在乎资源守恒"的反馈后再启动，如果
 `resource_violations` 本身触发频率很低，说明 LLM 在这方面已经足够
 自觉，这一节的优先级可以下调。
+
+**实施记录**：已按上述方案实现（阶段十六）。`state_model.SimState`
+新增 `relation_violations`（字典列表，默认空，`from_dict()` 跳过非
+字典项不报错中断，格式同 `causal_links` 的容错处理）；
+`state_model.SimManifest.settings` 文档补充 `resource_relations` 的
+格式说明；`engine.py` 新增 `_normalize_resource_relations()`（只识别
+`type == "transfer"`，非法/无法解析的项直接跳过）与
+`_check_resource_relations()`（对每条声明的关系计算
+`delta_from`/`delta_to`，超出容差记为一条不一致，**不修改任何数值、
+不拒绝推进**），`advance()` 里用**夹值之后**的 `next_vars`（不是 LLM
+原始值）与 `current.vars` 对比——检查应该看"最终真实落盘的变化"，
+不是被下限校验修正之前的中间值；`spec_generator.ScenarioDraft` 新增
+`resource_relations` 字段承接 skill 的建议值（写法同 `resource_
+fields`）；`generate_scenario.yaml` 与两个 `SKILL.md` 补充了可选输出
+说明（`advance_step` 阶段不需要 LLM 参与，检查完全在代码层完成，
+`advance_step.yaml` 未改动）；`app.py` 在创建向导与实例详情"模拟
+设置"区块都新增"高级：声明资源转移关系"折叠区（JSON 数组输入，写法
+参考阶段十四的"高级：声明可排序字段"），时间线卡片（含游戏化章节
+视图）新增 `relation_violations` 非空时的提示行（新增 CSS
+`ws-chapter-relation-violation`，措辞明确是"看起来不太守恒"的不一致
+提示，不是"已自动纠正"）。验收标准已通过
+`tests/test_spec_and_engine.py` 新增的三个用例覆盖（一次超出容差的
+真实不一致、一次容差内的对照、`ScenarioDraft.resource_relations`
+解析）与 `tests/test_state_and_store.py` 新增的一个序列化往返用例
+（含非字典项过滤），未接入真实 LLM 手动验证。落地过程中发现一处
+需要规避的坑：`generate_scenario.yaml` 提示词里如果举例用带"."的
+字段路径（如 `"inventory.value"`）或小数（如 `0.1`）拼进大括号
+示例，会被 `tests/test_workflow_prompt_placeholders.py`（阶段八之后
+新增的回归测试，见该文件顶部的事故复盘）判定为潜在的占位符误判
+风险——最终示例改用不含"."的占位字段名（`"字段A"`/`"字段B"`）和
+文字描述（"默认十分之一"）规避，`tolerance` 的默认值 0.1 只在代码
+（`_normalize_resource_relations()`）里出现，不再出现在 prompt 的
+大括号示例里。`production`（生产/持续产出）关系类型仍未实现，按
+方案"验证完转移这一种类型再决定"的节奏，留给收集到真实反馈后再评估。
 
 ### 4.9（P3，条件触发，阶段十七）Belief 与 State 分离 + Entity/Relationship 图结构
 
@@ -635,8 +671,9 @@ calibration_notes` 文档）、`spec_generator.py`/`workflows/*.yaml`
   因果链（`causal_links`，UI 用 `<details>` 可展开标签），仍不是
   完整的可点击因果图。
 
-- **阶段十六**（计划中）：本文档 4.8 节，资源转移/生产关系建模——
-  通用规则引擎最小可行版本（依赖阶段九，建议先收集使用反馈再启动）。
+- **阶段十六**（已完成）：本文档 4.8 节，资源转移关系建模——通用规则
+  引擎的最小可行版本（只做 `transfer` 一种关系类型，`production` 未
+  实现）。
 - **阶段十七**（条件触发，非固定排期）：本文档 4.9 节，Belief 与
   State 分离 + Entity/Relationship 图结构——触发条件是出现真实的
   "多主体信息不对称"场景，见该节详细说明。
@@ -659,10 +696,10 @@ calibration_notes` 文档）、`spec_generator.py`/`workflows/*.yaml`
 
 4.8~4.11 节（阶段十六~十八，含一个不排期项）是对原"本次不做的事"
 清单（资源关系建模、Belief/图结构、Hierarchical Agent、Reality
-Sync）的后续可执行拆解：阶段十六是"已有地基、建议先收集反馈再启动"
-的计划中项目；阶段十七、十八和 Hierarchical Agent 是"条件触发"项目
-——设计草案已经写好，但明确要求出现对应的真实场景才启动，避免在
-没有验证需求的情况下过度设计。
+Sync）的后续可执行拆解：阶段十六（资源转移关系建模）已完成，验收
+标准见 4.8 节"实施记录"；阶段十七、十八和 Hierarchical Agent 是"条件
+触发"项目——设计草案已经写好，但明确要求出现对应的真实场景才启动，
+避免在没有验证需求的情况下过度设计。
 
 ## 6. 尚未启动项目的汇总（原"本次不做的事"，已拆解为可执行计划）
 
@@ -672,7 +709,7 @@ Sync）的后续可执行拆解：阶段十六是"已有地基、建议先收集
 
 | 原条目 | 对应计划 | 状态 |
 | --- | --- | --- |
-| 通用规则引擎 DSL（转移/生产关系） | 4.8 节，阶段十六 | 计划中，建议先收集使用反馈 |
+| 通用规则引擎 DSL（转移/生产关系） | 4.8 节，阶段十六 | 已完成（只做 `transfer` 一种关系类型，`production` 未实现，见 4.8 节"实施记录"） |
 | Belief 与 State 分离 + 完整 Entity/Relationship 图结构 | 4.9 节，阶段十七 | 条件触发（见该节触发条件） |
 | Hierarchical Agent / Dynamic Cognition Router | 4.10 节，不排期 | 条件触发（见该节触发条件） |
 | Reality Sync | 4.11 节，阶段十八（轻量版） | 条件触发（见该节触发条件）；完整版（自动数据源接入）仍不在计划内，触发后需另开文档 |

@@ -621,6 +621,144 @@ def test_advance_ignores_resource_fields_when_value_within_bounds(tmp_path, monk
     assert next_state.resource_violations == []
 
 
+def test_advance_records_relation_violation_when_transfer_not_conserved(tmp_path, monkeypatch):
+    """阶段十六（4.8 节）：声明了 `resource_relations` 的一对字段，如果
+    这一步的变化量明显不守恒（超出默认 10% 容差），应该记入
+    `next_state.relation_violations`，且不修改任何数值、不拒绝推进。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={"cash": 1000, "inventory": {"value": 0}}, options=[],
+        settings={
+            "resource_relations": [
+                {"type": "transfer", "from": "cash", "to": "inventory.value"}
+            ]
+        },
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            # 花了 100 现金，库存只增加了 20——明显超出 10% 容差。
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "买了点库存",
+                    "narrative": "花钱买货",
+                    "next_vars": {"cash": 900, "inventory": {"value": 20}},
+                    "options": [],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+
+    # 不修改任何数值：next_vars 原样落盘。
+    assert next_state.vars["cash"] == 900
+    assert next_state.vars["inventory"]["value"] == 20
+    assert next_state.relation_violations == [
+        {"from": "cash", "to": "inventory.value", "delta_from": -100, "delta_to": 20}
+    ]
+
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    history = store.load_history()
+    assert history[-1].relation_violations == next_state.relation_violations
+
+
+def test_advance_ignores_transfer_within_tolerance(tmp_path, monkeypatch):
+    """变化量在容差范围内（默认 10%）时，不应该产生任何
+    `relation_violations` 记录。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={"cash": 1000, "inventory": {"value": 0}}, options=[],
+        settings={
+            "resource_relations": [
+                {"type": "transfer", "from": "cash", "to": "inventory.value"}
+            ]
+        },
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            # 花了 100 现金，库存增加了 95——5% 偏差，在默认 10% 容差内。
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "买了点库存",
+                    "narrative": "花钱买货，有点交易成本",
+                    "next_vars": {"cash": 900, "inventory": {"value": 95}},
+                    "options": [],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.relation_violations == []
+
+
+def test_scenario_draft_from_dict_parses_resource_relations():
+    """阶段十六（4.8 节）：`ScenarioDraft.resource_relations` 应该原样
+    解析出 skill 给出的建议值列表。"""
+    draft = spec_mod.ScenarioDraft.from_dict(
+        {
+            "title": "t", "summary": "s", "vars": {}, "options": [],
+            "resource_relations": [
+                {"type": "transfer", "from": "cash", "to": "inventory.value", "tolerance": 0.1}
+            ],
+        }
+    )
+    assert draft.resource_relations == [
+        {"type": "transfer", "from": "cash", "to": "inventory.value", "tolerance": 0.1}
+    ]
+
+    empty_draft = spec_mod.ScenarioDraft.from_dict({"title": "t", "summary": "s", "vars": {}, "options": []})
+    assert empty_draft.resource_relations == []
+
+
 def test_materialize_simulation_stores_uncertain_fields_on_state0(tmp_path):
     """阶段十一（4.3 节）：`generate_scenario` 阶段给出的
     `uncertain_fields` 建议应该原样落到 `state0.uncertain_fields`。"""
