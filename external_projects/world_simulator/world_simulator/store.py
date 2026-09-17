@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -138,6 +139,19 @@ class SimStore:
             [s.to_dict() for s in history],
         )
         atomic_write_json(self.state_current_path(branch), state.to_dict())
+
+    def delete_branch_dir(self, branch: str) -> None:
+        """删除某条分支在磁盘上的目录（`branches/<branch>/`）。
+
+        只负责物理删除 `branch_dir(branch)` 这一层目录；不校验
+        `branch != "main"`、不校验"是不是当前活跃分支"——这些业务规则
+        由调用方（`branch_manager.delete_branch`）负责，这里保持纯粹
+        的"删除一个分支目录"语义，方便单测。`main` 分支的 `branch_dir`
+        就是 `sim_dir` 本身，调用方必须自行拦截，否则会删掉整个实例。
+        """
+        path = self.branch_dir(branch)
+        if path.exists():
+            shutil.rmtree(path)
 
 
 def list_sim_ids(data_dir: Path) -> List[str]:

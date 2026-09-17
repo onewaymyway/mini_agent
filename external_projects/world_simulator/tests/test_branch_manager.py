@@ -153,3 +153,44 @@ def test_compare_timelines_cross_sim(tmp_path):
     assert [s.step for s in result["lines"][0]["history"]] == [0, 1, 2]
     assert result["lines"][1]["sim_id"] == "sim2"
     assert [s.step for s in result["lines"][1]["history"]] == [0, 1, 2, 3]
+
+
+def test_delete_branch_removes_it(tmp_path):
+    data_dir = tmp_path / "data"
+    _make_sim(data_dir, "sim1", 3)
+    new_branch = bm.fork_branch(data_dir, "sim1", from_step=1, switch=False)
+    assert new_branch in bm.list_branches(data_dir, "sim1")
+
+    bm.delete_branch(data_dir, "sim1", new_branch)
+
+    assert new_branch not in bm.list_branches(data_dir, "sim1")
+    # main 分支不受影响
+    assert bm.list_branches(data_dir, "sim1") == ["main"]
+
+
+def test_delete_branch_rejects_main(tmp_path):
+    data_dir = tmp_path / "data"
+    _make_sim(data_dir, "sim1", 2)
+    with pytest.raises(bm.BranchError):
+        bm.delete_branch(data_dir, "sim1", "main")
+
+
+def test_delete_branch_rejects_active_branch(tmp_path):
+    data_dir = tmp_path / "data"
+    _make_sim(data_dir, "sim1", 2)
+    new_branch = bm.fork_branch(data_dir, "sim1", from_step=1, switch=True)
+
+    with pytest.raises(bm.BranchError):
+        bm.delete_branch(data_dir, "sim1", new_branch)
+
+    # 切走之后可以正常删除
+    bm.switch_branch(data_dir, "sim1", "main")
+    bm.delete_branch(data_dir, "sim1", new_branch)
+    assert new_branch not in bm.list_branches(data_dir, "sim1")
+
+
+def test_delete_branch_missing_raises(tmp_path):
+    data_dir = tmp_path / "data"
+    _make_sim(data_dir, "sim1", 1)
+    with pytest.raises(bm.BranchError):
+        bm.delete_branch(data_dir, "sim1", "does_not_exist")

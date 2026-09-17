@@ -626,7 +626,21 @@ def page_create() -> None:
 # ─────────────────────────────────────────────────────────────
 
 
-def _render_timeline(history: List) -> None:
+def _render_timeline(
+    history: List,
+    *,
+    sim_id: Optional[str] = None,
+    source_branch: Optional[str] = None,
+) -> None:
+    """渲染时间线。
+
+    `sim_id` + `source_branch` 同时给出时，每条节点下面会带一个「创建
+    分支」按钮——语义是"在这个决策发生之后开一条新分支"，即
+    `fork_branch(from_step=state.step)`：新分支包含到这一步为止的历史，
+    从这一步之后可以重新选。不传这两个参数（比如对比视图里复用这个
+    函数渲染只读时间线）就不显示按钮，避免在不该分支的地方长出按钮。
+    """
+    can_fork = sim_id is not None and source_branch is not None
     for state in history:
         chosen_note = ""
         if state.chosen_option_id:
@@ -651,6 +665,24 @@ def _render_timeline(history: List) -> None:
             "</div>"
         )
         st.markdown(html, unsafe_allow_html=True)
+        if can_fork:
+            fork_col, _spacer = st.columns([1, 5])
+            with fork_col:
+                if st.button(
+                    "🌿 在此创建分支",
+                    key=f"fork_here_{sim_id}_{source_branch}_{state.step}",
+                    help="从这一步之后开一条新分支，原时间线原样保留，可以在新分支上重新选。",
+                ):
+                    try:
+                        new_branch = bm.fork_branch(
+                            DATA_DIR, sim_id, from_step=state.step,
+                            source_branch=source_branch, switch=True,
+                        )
+                    except bm.BranchError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success(f"已在第 {state.step} 步之后创建分支 {new_branch} 并切换为当前分支。")
+                        st.rerun()
 
 
 def page_detail() -> None:
@@ -921,7 +953,7 @@ def page_detail() -> None:
                     st.rerun()
 
     st.markdown("#### 时间线")
-    _render_timeline(list(reversed(history)))
+    _render_timeline(list(reversed(history)), sim_id=sim_id, source_branch=manifest.branch)
 
     # ── 分支管理 ──
     st.markdown("#### 分支")
@@ -940,7 +972,7 @@ def page_detail() -> None:
     )
 
     for b in branches:
-        cols = st.columns([2, 1, 1])
+        cols = st.columns([2, 1, 1, 1])
         with cols[0]:
             marker = " ← 当前" if b == manifest.branch else ""
             st.markdown(f'<span class="ws-muted">{b}{marker}</span>', unsafe_allow_html=True)
@@ -960,6 +992,29 @@ def page_detail() -> None:
                     selection.append(pair)
                 st.session_state["view"] = "compare"
                 st.rerun()
+        with cols[3]:
+            # `main` 不可删（是实例本体），当前活跃分支也不可删（要删得
+            # 先切走）——两种情况都不出按钮，而不是出了按钮再报错，减少
+            # 一次无意义的点击往返。
+            if b == "main":
+                st.markdown('<span class="ws-muted">—</span>', unsafe_allow_html=True)
+            elif b == manifest.branch:
+                st.markdown('<span class="ws-muted">先切走才能删</span>', unsafe_allow_html=True)
+            else:
+                confirm_key = f"confirm_delete_{b}"
+                if st.session_state.get(confirm_key):
+                    if st.button("确认删除？", key=f"delete_confirm_{b}", type="primary"):
+                        try:
+                            bm.delete_branch(DATA_DIR, sim_id, b)
+                        except bm.BranchError as exc:
+                            st.error(str(exc))
+                        finally:
+                            st.session_state.pop(confirm_key, None)
+                        st.rerun()
+                else:
+                    if st.button("🗑 删除", key=f"delete_ask_{b}"):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
 
     with st.expander("从历史节点开一条新分支（回滚重新选）"):
         max_step = history[-1].step if history else 0

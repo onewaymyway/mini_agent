@@ -143,6 +143,29 @@ def switch_branch(data_dir: Path, sim_id: str, branch_id: str) -> SimManifest:
     return manifest
 
 
+def delete_branch(data_dir: Path, sim_id: str, branch_id: str) -> None:
+    """删除一条已存在的分支。
+
+    约束（都是"防止手滑删掉正在用的东西"）：
+    - 不能删除 `main`——`main` 是实例本体的时间线，不是"branches/ 目录
+      下的一条分支"，删了等于删掉整个实例；想清空实例请走实例删除
+      的入口，不归这个函数管。
+    - 不能删除当前活跃分支（`manifest.branch`）——删除前必须先
+      `switch_branch` 切到别的分支，避免删完之后 `manifest.branch`
+      指向一个已经不存在的分支，后续读取直接报错。
+    删除是不可逆的物理删除（`shutil.rmtree`），不做"回收站"式的软删除。
+    """
+    if branch_id == "main":
+        raise BranchError("不能删除 main 分支")
+    store = SimStore.for_root(data_dir, sim_id)
+    manifest = store.load_manifest()
+    if branch_id == manifest.branch:
+        raise BranchError("不能删除当前活跃分支，请先切换到其他分支")
+    if branch_id not in list_branches(data_dir, sim_id):
+        raise BranchError(f"分支不存在：{branch_id}")
+    store.delete_branch_dir(branch_id)
+
+
 def load_branch_timeline(data_dir: Path, sim_id: str, branch: str) -> List[SimState]:
     """读取某条分支的完整历史，供对比视图使用。"""
     store = SimStore.for_root(data_dir, sim_id)
