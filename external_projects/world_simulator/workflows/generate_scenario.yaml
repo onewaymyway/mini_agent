@@ -34,6 +34,10 @@ steps:
       用户设置的时间粒度模式（决定初始状态要建立一个什么样的基准
       粒度）：{time_granularity_hint}
       多主体模式设置：{multi_entity_mode_hint}
+      背景角色设置：{background_entities_hint}
+      用户提供的真实世界参考信息（阶段十八，Reality Sync 轻量版，
+      仅供参考、不要照抄成精确数值，为空说明没有需要参考的真实
+      数据）：{calibration_notes}
 
       规则：
       - 若"补充意见"为空，忽略"此前一轮生成的草稿"，按"一句话模拟意图"

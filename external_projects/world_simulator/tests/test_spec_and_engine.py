@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import world_simulator.engine as engine_mod
 import world_simulator.spec_generator as spec_mod
+from world_simulator.state_model import SimState
 from world_simulator.store import SimStore
 
 
@@ -150,6 +151,8 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
         "option_count_hint": "4 个左右",
         "time_granularity_hint": spec_mod.DEFAULT_TIME_GRANULARITY + spec_mod._GRANULARITY_CONTINUITY_NOTE_CREATE,
         "multi_entity_mode_hint": spec_mod._MULTI_ENTITY_MODE_HINT_OFF,
+        "background_entities_hint": "未启用（所有主体都按正常流程完整推理）",
+        "calibration_notes": "",
     }
     assert draft.title == "毕业生的选择"
     assert draft.vars["age"] == 22
@@ -754,6 +757,256 @@ def test_advance_ignores_transfer_within_tolerance(tmp_path, monkeypatch):
         cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
     )
     assert next_state.relation_violations == []
+
+
+def test_advance_first_step_background_entity_has_no_trend_to_extrapolate(tmp_path, monkeypatch):
+    """阶段十八/4.10 节：Hierarchical Agent 设计草案第一步——第一次
+    推进时没有"上一步"可参考，背景角色的数值应该原样保留这一步
+    （即初始状态）的值，**强制覆盖** LLM 给出的任何值（哪怕 LLM 给了
+    一个明显不同的数）。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="negotiation", intent="i", title="t", summary="s",
+        vars={
+            "entities": {"甲方": {"budget": 500}, "背景NPC": {"mood_score": 50}},
+            "shared_vars": {},
+        },
+        options=[],
+        settings={
+            "multi_entity_mode": True,
+            "hierarchical_agent_mode": True,
+            "background_entities": ["背景NPC"],
+        },
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "谈判继续",
+                    "narrative": "双方各自盘算",
+                    "next_vars": {
+                        "entities": {
+                            "甲方": {"budget": 480},
+                            # LLM 给背景角色编了一个明显不同的值，应该被强制覆盖掉。
+                            "背景NPC": {"mood_score": 999},
+                        },
+                        "shared_vars": {},
+                    },
+                    "options": [],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+
+    # 关键角色（甲方）不受影响，原样采纳 LLM 的输出。
+    assert next_state.vars["entities"]["甲方"]["budget"] == 480
+    # 背景角色被强制覆盖：没有"上一步"，外推量为 0，原样保留这一步的值。
+    assert next_state.vars["entities"]["背景NPC"]["mood_score"] == 50
+    assert next_state.background_entities_applied == ["背景NPC"]
+
+
+def test_advance_background_entity_extrapolates_linear_trend_from_history(tmp_path, monkeypatch):
+    """有真实的"上一步"可参考时，背景角色应该按线性趋势外推，而不是
+    简单冻结在某个值上——手动构造一段有真实变化的历史（mood_score
+    从 50 变到 60），验证下一步被外推成 70（60 + (60-50)），并且
+    仍然强制覆盖 LLM 给出的值。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="negotiation", intent="i", title="t", summary="s",
+        vars={"entities": {"背景NPC": {"mood_score": 50}}, "shared_vars": {}},
+        options=[],
+        settings={
+            "multi_entity_mode": True,
+            "hierarchical_agent_mode": True,
+            "background_entities": ["背景NPC"],
+        },
+    )
+
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    step1_state = SimState(
+        step=1, summary="s1",
+        vars={"entities": {"背景NPC": {"mood_score": 60}}, "shared_vars": {}},
+    )
+    store.append_state(step1_state, branch=manifest.branch)
+    manifest.current_step = 1
+    store.save_manifest(manifest)
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "谈判继续",
+                    "narrative": "双方各自盘算",
+                    "next_vars": {
+                        "entities": {"背景NPC": {"mood_score": -1}},  # 会被强制覆盖，值本身无意义
+                        "shared_vars": {},
+                    },
+                    "options": [],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.vars["entities"]["背景NPC"]["mood_score"] == 70
+    assert next_state.background_entities_applied == ["背景NPC"]
+
+
+def test_advance_without_hierarchical_agent_mode_never_touches_entities(tmp_path, monkeypatch):
+    """`hierarchical_agent_mode` 未声明（默认关闭）时，即使 `settings`
+    里意外留了 `background_entities`，也不应该做任何覆盖——完全向后
+    兼容，不影响 `negotiation` 模板在阶段十七下的既有行为。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="negotiation", intent="i", title="t", summary="s",
+        vars={"entities": {"背景NPC": {"mood_score": 50}}, "shared_vars": {}},
+        options=[],
+        settings={"multi_entity_mode": True, "background_entities": ["背景NPC"]},
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "谈判继续", "narrative": "双方各自盘算",
+                    "next_vars": {"entities": {"背景NPC": {"mood_score": 123}}, "shared_vars": {}},
+                    "options": [],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.vars["entities"]["背景NPC"]["mood_score"] == 123  # 原样采纳，未被覆盖
+    assert next_state.background_entities_applied == []
+
+
+def test_advance_passes_calibration_notes_to_prompt_inputs(tmp_path, monkeypatch):
+    """阶段十八（4.11 节）：`settings.calibration_notes` 应该原样传入
+    `advance_step` 的 prompt 输入，不做任何改写/校验。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s", vars={}, options=[],
+        settings={"calibration_notes": "参考：应届硕士平均起薪一万二到一万八"},
+    )
+
+    step_step = _FakeStep("step")
+    captured = {}
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            captured["inputs"] = inputs
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {"next_summary": "s", "narrative": "n", "next_vars": {}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert captured["inputs"]["calibration_notes"] == "参考：应届硕士平均起薪一万二到一万八"
+
+
+def test_resolve_hints_background_entities_hint_variants():
+    """阶段十八/4.10 节：`background_entities_hint` 应该区分"未启用"/
+    "启用但没列名字"/"启用且列出名字"三种情况，且列出的名字要出现在
+    提示文本里，方便复核 prompt 内容。"""
+    assert "未启用" in spec_mod.resolve_hints({})["background_entities_hint"]
+    assert "等同未启用" in spec_mod.resolve_hints(
+        {"hierarchical_agent_mode": True}
+    )["background_entities_hint"]
+    hint = spec_mod.resolve_hints(
+        {"hierarchical_agent_mode": True, "background_entities": ["乙方", "背景NPC"]}
+    )["background_entities_hint"]
+    assert "乙方" in hint and "背景NPC" in hint
 
 
 def test_scenario_draft_from_dict_parses_resource_relations():

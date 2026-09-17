@@ -64,6 +64,27 @@ def _resolve_multi_entity_hint(settings: "Dict[str, Any] | None") -> str:
     return _MULTI_ENTITY_MODE_HINT_OFF
 
 
+def _resolve_background_entities_hint(settings: "Dict[str, Any] | None") -> str:
+    """把 `settings.hierarchical_agent_mode`/`background_entities` 转成
+    喂给 prompt 的一句话提示（Hierarchical Agent，4.10 节设计草案第
+    一步）。这只是"给 skill 减负"的提示——即使 skill 认真推理了这些
+    背景角色，`engine.py` 落盘前仍然会用规则外推强制覆盖，不采纳 LLM
+    对这些主体给出的值，所以提示词里明确说"给粗略值即可，不用深入
+    推理"，避免浪费推理精度在一个反正不会被采纳的地方。"""
+    settings = settings or {}
+    if not bool(settings.get("hierarchical_agent_mode")):
+        return "未启用（所有主体都按正常流程完整推理）"
+    names = [str(n).strip() for n in (settings.get("background_entities") or []) if str(n).strip()]
+    if not names:
+        return "已声明启用，但没有列出任何背景角色名字，等同未启用"
+    return (
+        "已启用（Hierarchical Agent 设计草案第一步）——以下主体是背景角色，"
+        "不需要深入推理它们的变化，给出粗略延续即可（无论你给什么，系统都会"
+        "用简单规则重新计算它们这一步的数值，不采纳你的推理结果，把推理精力"
+        "留给关键角色）：" + "、".join(names)
+    )
+
+
 def resolve_hints(settings: "Dict[str, Any] | None" = None, *, stage: str = "advance") -> Dict[str, str]:
     """把 `manifest.settings`（或创建向导里还没落盘成 manifest 时的临时
     设置字典）转成喂给 workflow prompt 的提示字符串。
@@ -127,6 +148,7 @@ def resolve_hints(settings: "Dict[str, Any] | None" = None, *, stage: str = "adv
         "option_count_hint": f"{options_count} 个左右",
         "time_granularity_hint": time_granularity_hint,
         "multi_entity_mode_hint": _resolve_multi_entity_hint(settings),
+        "background_entities_hint": _resolve_background_entities_hint(settings),
     }
 
 
@@ -305,6 +327,7 @@ def generate_scenario(
             "intent": intent,
             "feedback": feedback or "",
             "previous_draft_json": previous_draft_json,
+            "calibration_notes": str((settings or {}).get("calibration_notes") or ""),
             **resolve_hints(settings, stage="create"),
         },
     )

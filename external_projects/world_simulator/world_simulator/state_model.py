@@ -168,6 +168,14 @@ class SimState:
     默认空列表：`resource_relations` 未声明、这一步没有超出容差时都是
     空列表，不影响旧数据/其它模板的行为（向后兼容）。
     """
+    background_entities_applied: List[str] = field(default_factory=list)
+    """产生*本状态*这一步，`engine.py::advance()` 按
+    `manifest.settings.background_entities` 声明、用简单线性趋势外推
+    强制覆盖（而不是采纳 LLM 输出）的主体名字列表（Hierarchical
+    Agent，4.10 节设计草案第一步）。默认空列表：`hierarchical_agent_
+    mode`/`background_entities` 未声明、或这一步没有可外推的背景
+    角色时都是空列表，不影响旧数据/其它模板的行为（向后兼容）。
+    """
     causal_links: List[Dict[str, Any]] = field(default_factory=list)
     """产生*本状态*这一步，skill 可选给出的"划重点 + 具体影响"结构化
     摘要（阶段十五，`next_doc/world_simulator_universal_world_model_
@@ -224,6 +232,9 @@ class SimState:
             ],
             relation_violations=[
                 dict(x) for x in (data.get("relation_violations") or []) if isinstance(x, dict)
+            ],
+            background_entities_applied=[
+                str(x) for x in (data.get("background_entities_applied") or [])
             ],
         )
 
@@ -347,6 +358,42 @@ class SimManifest:
       既有模板都不需要这个能力，是否要开启完全由用户在创建向导/详情页
       "模拟设置"里选择（选择「多方谈判」模板时创建向导会自动带上
       `True`）。
+    - `hierarchical_agent_mode`：布尔值（默认 `False`），声明这次
+      模拟是否启用"分层认知调度"的第一步——把 `entities` 拆成"关键
+      角色"（走完整 `advance_step` LLM 推理）和"背景角色"（用简单规则
+      外推，不消耗额外 LLM 推理精度）（Hierarchical Agent / Dynamic
+      Cognition Router，`next_doc/world_simulator_universal_world_
+      model_upgrade_plan.md` 4.10 节设计草案的第一步，**不是**完整
+      的"认知路由器"架构）。只有 `multi_entity_mode` 同时为 `True`
+      且 `vars` 里确实有 `entities` 结构时才有意义，否则是空操作。
+      需要配合 `background_entities` 一起声明才会实际生效。
+    - `background_entities`：字符串数组（默认 `[]`），配合
+      `hierarchical_agent_mode` 使用，列出 `vars.entities` 里应该被
+      当成"背景角色"处理的主体名字（必须与 `entities` 的键完全一致）。
+      `engine.advance()` 落盘前会用**简单线性趋势外推**（取这个主体
+      上一步到这一步的每个数值字段变化量，按相同变化量再推一步；
+      没有上一步可参考、或字段不是数值类型时原样保留这一步的值，
+      不外推非数值字段）**强制覆盖** LLM 在这一步给这些主体的输出，
+      不管 LLM 实际给了什么值——这是"不消耗额外 LLM 推理精度"这句话
+      的真正含义：即使当前实现仍然只发起一次 LLM 调用（没有从
+      prompt 里物理排除背景角色的输入/输出，那需要更复杂的动态
+      prompt 拼装，这里没有做，见 4.10 节"实施记录"里的已知限制），
+      但落盘的数值**必然**来自规则外推，不采纳 LLM 的推理结果，
+      对这些主体而言"LLM 有没有认真推理"不影响最终状态，为将来
+      "把背景角色从 prompt 里物理剔除"的进一步优化留了空间。哪些
+      主体被处理、外推了哪些字段记入
+      `SimState.background_entities_applied` 供时间线展示。留空
+      （默认）表示不启用，行为与引入这个功能之前完全一致，向后兼容。
+    - `calibration_notes`：字符串（默认空字符串），Reality Sync 轻量版
+      （阶段十八，`next_doc/world_simulator_universal_world_model_
+      upgrade_plan.md` 4.11 节）——用户手动填入的"真实世界参考信息"
+      （比如"参考：2024 年国内一线城市应届硕士平均起薪 1.2~1.8 万/
+      月"），原样喂给 `generate_scenario`/`advance_step` 的 prompt，
+      要求 skill "参考但不照抄"这份信息。**不做任何自动数据抓取/
+      更新**——是否采信、怎么融入完全由 LLM 判断，系统只负责原样
+      传递这段文本，不做任何数值层面的强制校准，也不会验证这段文本
+      的真实性。留空（默认）表示不提供任何参考信息，行为与引入这个
+      功能之前完全一致，向后兼容。
     """
 
     def to_dict(self) -> Dict[str, Any]:

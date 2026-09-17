@@ -187,6 +187,12 @@ section[data-testid="stSidebar"] {
     color: #b8860b;
     font-weight: 600;
 }
+.ws-chapter-background-entity-note {
+    margin-top: 0.2rem;
+    font-size: 0.78rem;
+    color: var(--ws-muted, #8a8f98);
+    font-style: italic;
+}
 .ws-uncertain-field {
     margin: 0.15rem 0;
     font-size: 0.82rem;
@@ -367,6 +373,20 @@ def _relation_violations_html(state) -> str:
             "可能是 AI 算错了或者有未说明的损耗</div>"
         )
     return "".join(lines)
+
+
+def _background_entities_html(state) -> str:
+    """渲染这一步被 Hierarchical Agent 规则外推覆盖的背景角色提示
+    （阶段十九，4.10 节设计草案第一步，可能为空）。纯信息性说明，不是
+    "问题"，措辞和颜色都区别于资源相关的两种提示。"""
+    applied = getattr(state, "background_entities_applied", None) or []
+    if not applied:
+        return ""
+    names = "、".join(_html_text(str(n)) for n in applied)
+    return (
+        f'<div class="ws-chapter-background-entity-note">🧩 背景角色（{names}）'
+        "这一步的数值由规则自动外推更新，未使用 AI 推理</div>"
+    )
 
 
 def _render_vars_display(vars_dict, multi_entity_mode: bool) -> None:
@@ -765,6 +785,43 @@ def page_create() -> None:
             placeholder='[{"type": "transfer", "from": "cash", "to": "inventory.value"}]',
         )
 
+    # ── Reality Sync 轻量版（阶段十八，4.11 节）：用户手动填一句真实
+    # 世界参考信息，原样喂给 prompt，系统不做任何自动数据抓取/校准 ──
+    with st.expander("高级：填入真实世界参考信息（阶段十八，可选）"):
+        st.markdown(
+            '<span class="ws-muted">填一句真实世界的参考数据（比如"参考：2024 年'
+            '一线城市应届硕士平均起薪 1.2~1.8 万/月"），会原样传给 AI，'
+            '供推演时"参考但不照抄"，不会做任何自动抓取/强制校准，'
+            "不填就跳过这一步。</span>",
+            unsafe_allow_html=True,
+        )
+        calibration_notes_text = st.text_area(
+            "真实世界参考信息（可选）",
+            value=st.session_state.get("create_calibration_notes", ""),
+            key="create_calibration_notes_input",
+            height=68,
+            placeholder="参考：2024 年一线城市应届硕士平均起薪 1.2~1.8 万/月",
+        )
+
+    # ── Hierarchical Agent 设计草案第一步（阶段十九，4.10 节）：把部分
+    # 主体声明为"背景角色"，engine 用简单规则外推强制覆盖 LLM 输出，
+    # 只有 multi_entity_mode 场景（比如「多方谈判」模板）下才有意义 ──
+    with st.expander("高级：声明背景角色，简化其推理（阶段十九，可选）"):
+        st.markdown(
+            '<span class="ws-muted">只对"多主体模式"（比如「多方谈判」模板）有意义：'
+            "声明的主体名字（需要和 vars.entities 里的主体名字完全一致）会被当成"
+            '"背景角色"——engine 每步用简单线性趋势外推它们的数值，'
+            "**不采纳 AI 对它们的推理结果**，用来把推理精力留给关键角色。"
+            "不填就跳过这一步。</span>",
+            unsafe_allow_html=True,
+        )
+        background_entities_text = st.text_input(
+            "背景角色名字（逗号分隔，可选）",
+            value=st.session_state.get("create_background_entities", ""),
+            key="create_background_entities_input",
+            placeholder="背景NPC, 围观群众",
+        )
+
     # ── 关注指标（阶段十二，4.4 节 Problem Compiler 雏形）：纯记录用途，
     # 不触发任何自动排序/推荐，只是给「对比实验」页面的关注字段提供
     # 默认值参考，留空不影响任何行为 ──
@@ -992,6 +1049,12 @@ def page_create() -> None:
             create_settings["resource_fields"] = resource_fields
             create_settings["resource_relations"] = resource_relations
             create_settings["objectives"] = objectives
+            create_settings["calibration_notes"] = calibration_notes_text.strip()
+            background_entities = [
+                e.strip() for e in background_entities_text.split(",") if e.strip()
+            ]
+            create_settings["hierarchical_agent_mode"] = bool(background_entities)
+            create_settings["background_entities"] = background_entities
             manifest = materialize_simulation(
                 DATA_DIR,
                 template=st.session_state.get("draft_template", template),
@@ -1021,7 +1084,8 @@ def page_create() -> None:
                 "draft", "draft_template", "create_intent", "create_chosen_option_id",
                 "create_feedback", "create_settings", "create_options_count",
                 "create_granularity_preset", "create_granularity_custom", "create_resource_fields",
-                "create_resource_relations", "create_objectives",
+                "create_resource_relations", "create_objectives", "create_calibration_notes",
+                "create_background_entities",
             ):
                 st.session_state.pop(key, None)
             st.session_state["view"] = "detail"
@@ -1068,12 +1132,13 @@ def _render_timeline(
         granularity_note = _granularity_note_html(state)
         resource_note = _resource_violations_html(state)
         relation_note = _relation_violations_html(state)
+        background_note = _background_entities_html(state)
         key_drivers_note = _key_drivers_html(state)
         html = (
             '<div class="ws-chapter">'
             f'<div class="ws-chapter-step">第 {state.step} 步{step_time_suffix}</div>'
             f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
-            f"{granularity_note}{resource_note}{relation_note}{key_drivers_note}{narrative}{chosen_note}"
+            f"{granularity_note}{resource_note}{relation_note}{background_note}{key_drivers_note}{narrative}{chosen_note}"
             "</div>"
         )
         st.markdown(html, unsafe_allow_html=True)
@@ -1278,6 +1343,31 @@ def page_detail() -> None:
                 height=80,
                 placeholder='[{"type": "transfer", "from": "cash", "to": "inventory.value"}]',
             )
+        cur_calibration_notes = str(cur_settings.get("calibration_notes") or "")
+        with st.expander("高级：填入真实世界参考信息（阶段十八，可选）"):
+            st.markdown(
+                '<span class="ws-muted">填一句真实世界的参考数据，会原样传给 AI，'
+                "供推演时参考但不照抄，不会做任何自动抓取/强制校准。</span>",
+                unsafe_allow_html=True,
+            )
+            new_calibration_notes_text = st.text_area(
+                "真实世界参考信息（可选）", value=cur_calibration_notes,
+                key="settings_calibration_notes", height=68,
+                placeholder="参考：2024 年一线城市应届硕士平均起薪 1.2~1.8 万/月",
+            )
+        cur_background_entities = cur_settings.get("background_entities") or []
+        with st.expander("高级：声明背景角色，简化其推理（阶段十九，可选）"):
+            st.markdown(
+                '<span class="ws-muted">只对"多主体模式"有意义：声明的主体名字会被当成'
+                '"背景角色"，engine 每步用简单线性趋势外推它们的数值，'
+                "**不采纳 AI 对它们的推理结果**。</span>",
+                unsafe_allow_html=True,
+            )
+            new_background_entities_text = st.text_input(
+                "背景角色名字（逗号分隔，可选）",
+                value=", ".join(str(e) for e in cur_background_entities),
+                key="settings_background_entities", placeholder="背景NPC, 围观群众",
+            )
         cur_objectives = cur_settings.get("objectives") or []
         cur_objectives_text = ", ".join(
             str(o) for o in cur_objectives if not isinstance(o, dict)
@@ -1325,6 +1415,9 @@ def page_detail() -> None:
                     [r for r in new_resource_relations if isinstance(r, dict)]
                     if isinstance(new_resource_relations, list) else []
                 )
+                new_background_entities = [
+                    e.strip() for e in new_background_entities_text.split(",") if e.strip()
+                ]
                 update_settings(
                     DATA_DIR, sim_id,
                     options_count=int(new_options_count),
@@ -1337,6 +1430,9 @@ def page_detail() -> None:
                     resource_relations=resource_relations_to_save,
                     objectives=new_objectives,
                     multi_entity_mode=bool(new_multi_entity_mode),
+                    calibration_notes=new_calibration_notes_text.strip(),
+                    background_entities=new_background_entities,
+                    hierarchical_agent_mode=bool(new_background_entities),
                 )
                 st.success("设置已更新，下一步推进开始生效。")
                 st.rerun()
@@ -2159,6 +2255,7 @@ def page_game() -> None:
     granularity_note = _granularity_note_html(s)
     resource_note = _resource_violations_html(s)
     relation_note = _relation_violations_html(s)
+    background_note = _background_entities_html(s)
     key_drivers_note = _key_drivers_html(s)
     narrative_text = _html_text(s.narrative) if s.narrative else "（这一章还没有更多叙事文本。）"
 
@@ -2166,7 +2263,7 @@ def page_game() -> None:
         '<div class="ws-card" style="min-height: 220px;">'
         f'<div class="ws-chapter-step">第 {s.step} 章{step_time_suffix}{major_tag}</div>'
         f'<div class="ws-chapter-summary" style="font-size:1.15rem;">{_html_text(s.summary)}</div>'
-        f"{granularity_note}{resource_note}{relation_note}{key_drivers_note}"
+        f"{granularity_note}{resource_note}{relation_note}{background_note}{key_drivers_note}"
         f'<div class="ws-chapter-narrative">{narrative_text}</div>'
         f"{chosen_note}"
         "</div>"

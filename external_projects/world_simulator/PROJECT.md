@@ -504,6 +504,91 @@ scenario` 阶段 skill 仍只输出纯字符串建议值，结构化写法目前
 引入这个功能之前完全一致，向后兼容，不影响 `life_sim`/
 `group_evolution` 两个既有模板。
 
+阶段十八（Reality Sync 轻量版：外部数据手动校准输入，已完成，见演进
+计划 4.11 节）交付：
+
+**⚠ 同样是在触发条件未满足的情况下提前实施**——与阶段十七一起，
+应用户明确要求"把剩下的条件触发项也提前实施成代码"而完成，完整背景
+见演进计划 4.11 节"实施记录"。这是本轮三个"提前实施"项目里改动范围
+最小、风险最低的一个：纯粹的"原样透传一段文本"，没有新增任何数值
+校验/覆盖逻辑。
+
+`state_model.SimManifest.settings.calibration_notes`：新增可选字符串
+字段（默认空字符串），用户手动填入的"真实世界参考信息"；
+`spec_generator.generate_scenario()`/`engine.advance()` 都把这个字段
+原样传入对应 workflow 的 `calibration_notes` prompt 输入
+（`generate_scenario.yaml`/`advance_step.yaml` 新增
+`{calibration_notes}` 占位符，为空时提示语写清楚"没有需要参考的真实
+数据"，不是突兀的空白）；`app.py` 创建向导与详情页"模拟设置"区块都
+新增"填入真实世界参考信息"折叠区。**没有做任何自动数据抓取/更新**，
+是否采信、怎么融入完全由 LLM 判断，与方案原文一致。
+
+`tests/test_spec_and_engine.py` 新增用例
+`test_advance_passes_calibration_notes_to_prompt_inputs`，
+monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_scenario`
+一侧传递逻辑与之完全对称，未单独重复打桩。**未接入真实 LLM 验证"是否
+真的被采信"**——按方案原文说明，这属于 prompt 质量调优范畴，不是这次
+的验收内容。`calibration_notes` 未声明或为空时，行为与引入这个功能
+之前完全一致，向后兼容。
+
+阶段十九（Hierarchical Agent / Dynamic Cognition Router 设计草案
+第一步，已完成，见演进计划 4.10 节）交付：
+
+**⚠ 同样是在触发条件未满足的情况下提前实施**——项目里目前唯一用到
+`multi_entity_mode` 的场景是阶段十七的"多方谈判"，主体数量最多两三
+个，远没到"数量级明显超过个位数、验证了阶段十七的 `entities` 方案
+撑不住"的触发门槛。演进计划里这一节此前是"不排期，无阶段编号"，
+应用户明确要求提前实施后，才补记为正式的阶段编号，完整背景见演进
+计划 4.10 节"实施记录"。这是本轮三个"提前实施"项目里风险最高的一个
+——不仅未经真实场景验证，连"设计草案本身有没有真实价值"都没有验证
+过。
+
+1. `state_model.SimManifest.settings.hierarchical_agent_mode`（默认
+   `False`）+ `background_entities`（背景角色名字列表，需要与
+   `vars.entities` 的键一致，只有 `multi_entity_mode` 同时启用时才
+   有意义）。`SimState.background_entities_applied`：新增字段，记录
+   每一步实际生效外推的主体名字，默认空列表。
+2. `engine.py` 新增 `_apply_background_entity_extrapolation()`：
+   `advance()` 落盘前对声明的每个背景角色，用它"上一步到这一步"每个
+   数值字段的变化量按相同量再外推一步，**强制覆盖** LLM 这一步给这些
+   主体的输出（不管 LLM 实际给了什么值）；没有"上一步"可参考（比如
+   第一次推进）或字段非数值时，外推量按 0 处理，即原样保留当前值。
+   **只实现了"设计草案第一步"（分层本身），没有实现"调度框架"/
+   "认知路由器"**——没有把背景角色从 prompt 输入/输出里物理剔除，
+   `advance_step` 仍然是一次包含全部主体的 LLM 调用，理论上仍会在
+   背景角色身上浪费一点推理 token（只是不采纳其结果），真正的成本
+   节省需要动态拼装 prompt，这次没有做。
+3. `spec_generator.resolve_hints()` 新增 `background_entities_hint`：
+   区分"未启用"/"启用但没列名字"/"启用且列出名字"三种文案，提示
+   skill 这些主体"不用深入推理，反正不会被采纳"，减少不必要的推理
+   消耗（但不改变"仍是一次调用"的事实）；`generate_scenario.yaml`/
+   `advance_step.yaml` 都新增了 `{background_entities_hint}` 占位符。
+4. `app.py` 创建向导与详情页"模拟设置"区块都新增"声明背景角色，
+   简化其推理"折叠区；时间线（含游戏化视图）新增"🧩 背景角色由规则
+   自动外推"的信息性提示（新增 CSS `ws-chapter-background-entity-
+   note`，措辞刻意区别于两种资源相关提示——这不是"问题"，是设计
+   使然）。
+5. `tests/test_spec_and_engine.py` 新增 4 个用例：第一次推进无"上一
+   步"时外推量为 0（强制覆盖 LLM 的编造值）；有真实历史趋势时按线性
+   关系正确外推（手动用 `store.append_state()` 构造跨两步的真实数值
+   变化，绕开"每步都被强制覆盖导致永远冻结在初始值"这个设计本身的
+   已知局限来验证外推逻辑本身是对的）；`hierarchical_agent_mode`
+   关闭时完全不介入（向后兼容）；`resolve_hints` 三种提示文案。累计
+   106 个测试全部通过。
+
+**范围说明（已知限制，均如实记录，不回避）**：只是"分层"的第一步，
+不是完整的"认知路由器"——没有"路由策略"、没有按场景动态决定哪些
+主体该升级成"关键角色"，也没有真正做到"背景角色不消耗 LLM 推理
+成本"。**未经过任何真实的"大量主体"场景验证**，线性趋势外推是否是
+合适的简化模型、`background_entities` 该怎么声明才顺手，都只是这次
+的一次性设计判断。还有一个设计本身的局限（不是实现 bug，值得记录）：
+因为每一步都会把背景角色强制覆盖成"上一步 + 上一步的变化量"，如果
+连续两步的变化量恰好相等（比如初始值从未变化过），这个主体的数值会
+永远冻结在初始值上，不会产生任何新的趋势——这是"用简单规则替代真实
+推理"必然要付出的代价，真实场景里是否可接受，还没有验证过。
+`hierarchical_agent_mode` 未声明或为 `False` 时，行为与引入这个
+功能之前完全一致，不影响其它任何模板/场景。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：
@@ -754,3 +839,27 @@ world_simulator/
   使用反馈**，`entities`/`shared_vars` 的字段粒度和 UI 展示方式属于
   一次性设计判断，风险高于此前所有阶段，后续如出现真实使用反馈应
   优先按反馈调整。
+- 2026-09-18：完成阶段十八（Reality Sync 轻量版，见演进计划 4.11
+  节）与阶段十九（Hierarchical Agent 设计草案第一步，见演进计划
+  4.10 节）。**⚠ 与阶段十七一样，均是在各自触发条件未满足的情况下
+  应用户明确要求提前实施的**，完整背景见演进计划对应节"实施记录"
+  与本文件对应阶段条目，不应被当成"条件触发原则不再适用"的先例。
+  阶段十八交付：`SimManifest.settings.calibration_notes`（原样传入
+  `generate_scenario`/`advance_step` 的 prompt，不做任何自动数据
+  抓取/强制校准），`app.py` 创建向导/详情页新增对应文本框。阶段
+  十九交付：`SimManifest.settings.hierarchical_agent_mode`/
+  `background_entities`、`SimState.background_entities_applied`，
+  `engine._apply_background_entity_extrapolation()`（对声明的背景
+  角色用线性趋势外推**强制覆盖** LLM 输出，不采纳其推理结果），
+  `spec_generator.resolve_hints()` 新增 `background_entities_hint`，
+  `app.py` 新增对应折叠区与时间线信息提示。新增测试 5 个（4 个
+  engine 级 + 1 个 resolve_hints 变体），累计 106 个测试全部通过
+  （`cd external_projects/world_simulator && PYTHONPATH=../../src:.
+  python3 -m pytest tests/ -q`）。阶段十九**只做了"分层"第一步，
+  没有做"调度框架"**，且存在一个设计本身的已知局限：背景角色的数值
+  在连续两步变化量相等时会永远冻结在初始值上，不会产生新趋势——这是
+  "用简单规则替代真实推理"必然的代价，真实场景是否可接受尚未验证。
+  三个"提前实施"项目（阶段十七/十八/十九）合计已经把演进计划 4.9~
+  4.11 节全部落地，至此演进计划 4.1~4.11 节全部完成；但这三节的
+  完成方式与阶段九~十六不同（未经真实需求驱动），风险明显更高，
+  后续应该优先根据真实使用反馈调整而不是假定现有设计已经正确。
