@@ -689,3 +689,52 @@ def test_materialize_simulation_stores_objectives_in_settings(tmp_path):
     store = SimStore.for_root(data_dir, manifest.sim_id)
     reloaded = store.load_manifest()
     assert reloaded.settings.get("objectives") == ["资产净值", "工作满意度"]
+
+
+def test_advance_parses_key_drivers_from_llm_output(tmp_path, monkeypatch):
+    """阶段十三（4.5 节）：`advance_step` 输出里的可选 `key_drivers`
+    应该原样解析进 `next_state.key_drivers`；未给出时应为空列表。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2",
+                    "narrative": "n",
+                    "next_vars": {},
+                    "options": [],
+                    "key_drivers": ["市场需求超预期", "现金储备见底被迫收缩"],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.key_drivers == ["市场需求超预期", "现金储备见底被迫收缩"]

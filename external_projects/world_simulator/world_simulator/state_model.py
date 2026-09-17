@@ -140,6 +140,17 @@ class SimState:
     没给出、旧数据、`generate_scenario`/`advance_step` 都可以为空——
     不影响任何已有行为，向后兼容。
     """
+    key_drivers: List[str] = field(default_factory=list)
+    """产生*本状态*这一步，skill 可选给出的"划重点"短语列表（阶段
+    十三，`next_doc/world_simulator_universal_world_model_upgrade_plan.md`
+    4.5 节，最小版因果摘要），比如 `["市场需求超预期", "现金储备见底
+    被迫收缩"]`。1~3 条短语，不是完整的可点击因果调试器（那个投入
+    产出比在现阶段太低，见演进计划第 6 节"本次不做的事"），只是给
+    `narrative` 补一个比逐字读叙事更快抓住关键信息的结构化摘要。
+
+    默认空列表：skill 没给出、旧数据、`state0`（初始状态一般没有"这一
+    步的驱动因素"这个概念）都可以为空，不影响任何已有行为。
+    """
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -169,6 +180,7 @@ class SimState:
             granularity_reason=data.get("granularity_reason"),
             resource_violations=list(data.get("resource_violations") or []),
             uncertain_fields=list(data.get("uncertain_fields") or []),
+            key_drivers=[str(x) for x in (data.get("key_drivers") or [])],
         )
 
 

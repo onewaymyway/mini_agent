@@ -312,6 +312,26 @@ UI：`run_repeated_experiment()` 的 `profile` 参数本身就可以在调用方
 使用反馈后再决定，避免在没有验证过"用户真的想要系统替他判断好坏"这个
 假设之前就把判断权交给系统。
 
+阶段十三（最小版因果摘要，已完成，见演进计划 4.5 节）交付：
+
+1. `state_model.SimState.key_drivers`：新增字段，字符串列表（默认
+   空），由 `advance_step` 阶段 skill 按需可选给出，1~3 条短语概括
+   这一步变化的关键驱动因素（不是完整的可点击因果调试器）。
+2. `workflows/advance_step.yaml` 与两个模板 `SKILL.md` 都补充了
+   "1~3 条短语、变化平淡就不用输出、不要凑数"的可选输出说明；
+   `engine.py::advance()` 从输出里解析 `key_drivers` 落到
+   `next_state`。
+3. `app.py`：新增 `_key_drivers_html()`，在时间线卡片（含独立时间线
+   视图与游戏化章节视图）叙事文本之前，以"🔑 短语"标签样式展示。
+4. `tests/test_state_and_store.py`/`tests/test_spec_and_engine.py`
+   新增两个用例（序列化往返、从 LLM 输出解析到 `next_state`）。
+
+这一节收益本身不确定（取决于用户是否真觉得"叙事读不过来"），实现
+范围严格限制在"划重点标签"，不做结构化因果链/可点击调试器（演进
+计划第 6 节已说明原因）；至此 `next_doc/
+world_simulator_universal_world_model_upgrade_plan.md` 4.1~4.5 节
+全部落地。
+
 ## 数据源与依赖策略
 
 不依赖任何外部数据源，核心依赖是 mini_agent 框架自身的能力：

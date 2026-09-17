@@ -197,6 +197,19 @@ section[data-testid="stSidebar"] {
 .ws-uncertain-badge-low { background: rgba(224, 102, 90, 0.15); color: var(--ws-danger, #e0665a); }
 .ws-uncertain-badge-medium { background: rgba(224, 180, 90, 0.18); color: #b8860b; }
 .ws-uncertain-badge-high { background: rgba(90, 160, 224, 0.15); color: #4a7fb5; }
+.ws-key-drivers {
+    margin-top: 0.25rem;
+}
+.ws-key-driver-tag {
+    display: inline-block;
+    padding: 0.08rem 0.5rem;
+    margin: 0.1rem 0.3rem 0.1rem 0;
+    border-radius: 10px;
+    font-size: 0.74rem;
+    background: var(--ws-bg-elevated);
+    border: 1px solid var(--ws-border);
+    color: var(--ws-violet, var(--ws-text-muted));
+}
 
 div[data-testid="stButton"] > button {
     border-radius: 8px;
@@ -335,6 +348,21 @@ def _uncertain_fields_html(state) -> str:
             f"「{field_name}」{note_html}</div>"
         )
     return "".join(lines)
+
+
+def _key_drivers_html(state) -> str:
+    """渲染这一步的"划重点"关键驱动因素标签（阶段十三，4.5 节，可能
+    为空）。放在叙事文本之前，让用户不用逐字读完 `narrative` 就能先
+    扫一眼这一步的关键信息。"""
+    drivers = getattr(state, "key_drivers", None) or []
+    if not drivers:
+        return ""
+    tags = "".join(
+        f'<span class="ws-key-driver-tag">🔑 {_html_text(str(d))}</span>' for d in drivers if str(d).strip()
+    )
+    if not tags:
+        return ""
+    return f'<div class="ws-key-drivers">{tags}</div>'
 
 
 def _choice_label(options, option_id: Optional[str]) -> str:
@@ -850,11 +878,12 @@ def _render_timeline(
         step_time_suffix = f" · {_html_text(state.time_label)}" if state.time_label else ""
         granularity_note = _granularity_note_html(state)
         resource_note = _resource_violations_html(state)
+        key_drivers_note = _key_drivers_html(state)
         html = (
             '<div class="ws-chapter">'
             f'<div class="ws-chapter-step">第 {state.step} 步{step_time_suffix}</div>'
             f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
-            f"{granularity_note}{resource_note}{narrative}{chosen_note}"
+            f"{granularity_note}{resource_note}{key_drivers_note}{narrative}{chosen_note}"
             "</div>"
         )
         st.markdown(html, unsafe_allow_html=True)
@@ -1843,13 +1872,14 @@ def page_game() -> None:
     step_time_suffix = f" · {_html_text(s.time_label)}" if s.time_label else ""
     granularity_note = _granularity_note_html(s)
     resource_note = _resource_violations_html(s)
+    key_drivers_note = _key_drivers_html(s)
     narrative_text = _html_text(s.narrative) if s.narrative else "（这一章还没有更多叙事文本。）"
 
     html = (
         '<div class="ws-card" style="min-height: 220px;">'
         f'<div class="ws-chapter-step">第 {s.step} 章{step_time_suffix}{major_tag}</div>'
         f'<div class="ws-chapter-summary" style="font-size:1.15rem;">{_html_text(s.summary)}</div>'
-        f"{granularity_note}{resource_note}"
+        f"{granularity_note}{resource_note}{key_drivers_note}"
         f'<div class="ws-chapter-narrative">{narrative_text}</div>'
         f"{chosen_note}"
         "</div>"

@@ -55,6 +55,20 @@ def test_state_roundtrip_preserves_uncertain_fields():
     assert legacy_restored.uncertain_fields == []
 
 
+def test_state_roundtrip_preserves_key_drivers():
+    """阶段十三（4.5 节）：`key_drivers` 应该原样经过 to_dict/from_dict
+    往返，旧数据（没有这个字段）也应该正常落回空列表。"""
+    state = SimState(
+        step=3, summary="s",
+        key_drivers=["市场需求超预期", "现金储备见底被迫收缩"],
+    )
+    restored = SimState.from_dict(state.to_dict())
+    assert restored.key_drivers == ["市场需求超预期", "现金储备见底被迫收缩"]
+
+    legacy_restored = SimState.from_dict({"step": 0, "summary": "旧数据"})
+    assert legacy_restored.key_drivers == []
+
+
 def test_manifest_roundtrip():
     ts = now_iso()
     m = SimManifest(
