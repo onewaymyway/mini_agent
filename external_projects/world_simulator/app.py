@@ -244,13 +244,15 @@ section[data-testid="stSidebar"] {
     color: var(--ws-text-muted);
 }
 
-div[data-testid="stButton"] > button {
+div[data-testid="stButton"] > button,
+div[data-testid="stPopover"] button {
     border-radius: 8px;
     border: 1px solid var(--ws-border);
     background: var(--ws-bg-elevated);
     color: var(--ws-text);
 }
-div[data-testid="stButton"] > button:hover {
+div[data-testid="stButton"] > button:hover,
+div[data-testid="stPopover"] button:hover {
     border-color: var(--ws-accent);
     color: var(--ws-accent);
 }
