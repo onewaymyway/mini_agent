@@ -43,6 +43,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "entrypoints"))
 
 import _common  # noqa: F401  — 触发 sys.path 设置，未使用其它内容
 from world_simulator import branch_manager as bm
+from world_simulator import hypothesis as hyp_mod
 from world_simulator.autopilot import (
     AutopilotDisabledError, run_autopilot_step, run_comparison_experiment, run_repeated_experiment,
 )
@@ -70,7 +71,7 @@ from world_simulator.spec_generator import (
     resolve_hints,
 )
 from world_simulator.state_model import ChoiceOption
-from world_simulator.store import SimNotFoundError
+from world_simulator.store import SimNotFoundError, SimStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("world_simulator.app")
@@ -2023,6 +2024,121 @@ def page_compare() -> None:
     if st.button("← 返回列表"):
         st.session_state["view"] = "list"
         st.rerun()
+
+    # ── Hypothesis Engine 轻量入口（阶段二十一，4.15 节）：只针对
+    # "实例 1" 的当前状态给建议——不确定性识别、分叉、稳健性判断都是
+    # 单实例内部的事情，两条时间线的"对比"语义在这里只是复用页面位置，
+    # 不代表这个功能本身是"对比两个实例" ──
+    with st.expander("🔍 让系统建议关键不确定性（阶段二十一，可选）"):
+        hyp_sim_id, hyp_branch = picks[0]
+        st.markdown(
+            f'<span class="ws-muted">针对「实例 1」（{sim_options.get(hyp_sim_id, hyp_sim_id)} · '
+            f"分支 {hyp_branch}）当前状态里被标注为「低置信度估计」的字段给出建议，"
+            "选一个字段分叉出几个假设世界看看结果是否稳健。</span>",
+            unsafe_allow_html=True,
+        )
+        if st.button("分析关键不确定性", key="hyp_suggest_btn"):
+            try:
+                hyp_store = SimStore.for_root(DATA_DIR, hyp_sim_id)
+                hyp_manifest = hyp_store.load_manifest()
+                hyp_current = hyp_store.load_current_state(hyp_branch)
+                if hyp_current is None:
+                    st.error("这条分支还没有可用的当前状态。")
+                else:
+                    st.session_state["hyp_suggestions"] = hyp_mod.suggest_critical_uncertainties(
+                        hyp_manifest, hyp_current
+                    )
+                    st.session_state["hyp_source"] = (hyp_sim_id, hyp_branch, hyp_current.step)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"分析失败：{exc}")
+
+        suggestions = st.session_state.get("hyp_suggestions")
+        if suggestions is not None:
+            if not suggestions:
+                st.info("当前状态没有被标注为「低置信度估计」的字段，暂无建议。")
+            else:
+                st.markdown("**候选关键不确定性**（按是多少条因果链的共同起点排序）：")
+                for s in suggestions:
+                    st.markdown(f"- `{s['field']}`：{s['why']}")
+                field_options = [s["field"] for s in suggestions]
+                chosen_field = st.selectbox("选一个字段分叉假设世界", options=field_options, key="hyp_field")
+                hyp_text = st.text_area(
+                    "假设方向（每行一条，格式「方向标签」或「方向标签: 理由」）",
+                    value="快速下降: 行业价格战加剧\n缓慢下降\n基本不变",
+                    key="hyp_hypotheses_text", height=90,
+                )
+                hyp_steps = st.number_input("每个假设世界推进的步数", min_value=1, max_value=10, value=3, key="hyp_steps")
+                if st.button("运行假设世界", key="hyp_run_btn"):
+                    hypotheses = []
+                    for line in hyp_text.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if ":" in line:
+                            label, why = line.split(":", 1)
+                        elif "：" in line:
+                            label, why = line.split("：", 1)
+                        else:
+                            label, why = line, ""
+                        hypotheses.append({"assumption": label.strip(), "why": why.strip()})
+                    if len(hypotheses) < 2:
+                        st.error("至少需要两条假设方向才有对比意义。")
+                    else:
+                        src_sim_id, src_branch, src_step = st.session_state["hyp_source"]
+                        try:
+                            cfg = _load_cfg()
+                            with st.spinner("正在分叉并推进各个假设世界..."):
+                                results = hyp_mod.run_hypothesis_worlds(
+                                    cfg, PROJECT_ROOT, DATA_DIR, src_sim_id,
+                                    field=chosen_field, hypotheses=hypotheses,
+                                    steps=int(hyp_steps), source_branch=src_branch, from_step=src_step,
+                                )
+                            st.session_state["hyp_results"] = results
+                            st.session_state["hyp_results_sim_id"] = src_sim_id
+                        except ImportError as exc:
+                            st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+                        except Exception as exc:  # noqa: BLE001
+                            st.error(f"运行假设世界失败：{exc}")
+
+        hyp_results = st.session_state.get("hyp_results")
+        if hyp_results:
+            st.markdown("**假设世界运行结果**：")
+            for r in hyp_results:
+                label = str(r.hypothesis.get("assumption") or r.hypothesis.get("label") or "（未命名）")
+                if r.error:
+                    st.markdown(f"- {label} → 分支 `{r.branch}`：❌ {r.error}")
+                else:
+                    st.markdown(f"- {label} → 分支 `{r.branch}`：完成 {r.steps_done} 步")
+            valid_branches = [r.branch for r in hyp_results if r.branch != "?"]
+            if len(valid_branches) >= 2:
+                robust_fields_text = st.text_input(
+                    "要检查稳健性的结果字段（逗号分隔）",
+                    value=str(st.session_state.get("hyp_field", "")),
+                    key="hyp_robust_fields_input",
+                )
+                if st.button("查看稳健性判断", key="hyp_robust_btn"):
+                    fields = [f.strip() for f in robust_fields_text.split(",") if f.strip()]
+                    if not fields:
+                        st.error("至少填一个要检查的字段。")
+                    else:
+                        outcome = hyp_mod.find_robust_outcomes(
+                            DATA_DIR, st.session_state["hyp_results_sim_id"], valid_branches, fields,
+                        )
+                        if outcome["robust_fields"]:
+                            st.success("稳健结果（跨所有假设世界方向/量级基本一致）：" + "、".join(outcome["robust_fields"]))
+                        if outcome["fragile_fields"]:
+                            st.warning("分歧结果（不同假设世界差异明显，验证了对应字段确实关键）：" + "、".join(outcome["fragile_fields"]))
+                        for s in outcome["stats"]:
+                            if s.kind == "numeric":
+                                st.markdown(
+                                    f"- `{s.field}`：均值 {s.mean:.2f}，范围 [{s.min:.2f}, {s.max:.2f}]，"
+                                    f"标准差 {s.stdev:.2f}（{s.count} 个样本）"
+                                )
+                            elif s.kind == "categorical":
+                                dist_text = "、".join(f"{k}×{v}" for k, v in s.distribution.items())
+                                st.markdown(f"- `{s.field}`：取值分布 {dist_text}（{s.count} 个样本）")
+                            else:
+                                st.markdown(f"- `{s.field}`：所有分支都取不到这个字段的值。")
 
     if picks[0] == picks[1]:
         st.warning("请选择两条不同的时间线（实例+分支组合需不同）。")

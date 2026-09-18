@@ -944,3 +944,44 @@ world_simulator/
   四个方向（阶段二十一、二十三、二十四、二十五：Hypothesis Engine、
   Model Regime Detection、Reality Loop 完整版、因果线 UI）尚未
   实施，见该文档第 5 节分期路线图。
+- 2026-09-18：完成阶段二十一（Hypothesis Engine：自动识别关键
+  不确定性并生成多世界，见 `next_doc/world_simulator_toward_
+  universal_simulator_plan.md` 4.15 节）。**提醒同阶段二十/二十二**：
+  本阶段未经真实使用场景验证价值，后续应优先按真实反馈调整。交付
+  内容：新增 `world_simulator/hypothesis.py`——`suggest_critical_
+  uncertainties(manifest, current_state)` 从 `uncertain_fields`
+  里挑出 `confidence == "low"` 的字段，结合 `causal_links.
+  affected_fields` 出现次数给出"是否是多条因果链共同起点"的理由，
+  纯只读、不发起任何 LLM 调用；`run_hypothesis_worlds()` **没有
+  新增任何分叉/推进机制**，完全委托给已有的
+  `autopilot.run_comparison_experiment()`——每个假设就是一份"只有
+  一条 principle"的自动挡策略画像，复用阶段十就在用的"fork→切换→
+  跑 steps 步→切回原分支"整套逻辑；`find_robust_outcomes()` 复用
+  `analysis.aggregate_field_stats()`，套一层简单阈值（数值型：
+  相对标准差 < 0.3；枚举型：众数占比 >= 0.7）区分"稳健结果"和
+  "分歧结果"。**与 4.15 节原始方案的一处偏差**：未采用"把假设锚定
+  写进 `manifest.settings.hypothesis_override`"的方案——`settings`
+  是整个实例共享的，不是按分支隔离的，用它承载"每条假设分支各自
+  不同的锚定"会在分支之间互相污染；改用 `autopilot.py` 已经验证过
+  的"每条分支各自独立一份 `pilot_config.json`"机制，效果等价且
+  复用度更高，符合 4.15 节"涉及文件"一段"优先选后者，减少对已有
+  稳定接口改动"的取舍精神。`find_robust_outcomes()` 的字段参数也
+  从文档原始签名的单个 `field` 放宽为 `fields: List[str]`，一次
+  对比多个下游结果字段，逐个字段单独调用没有额外价值。`app.py`：
+  对比视图页面新增"🔍 让系统建议关键不确定性"折叠区——分析实例 1
+  当前状态、选字段、填假设方向（每行一条）、设置步数、运行、查看
+  稳健性判断，全部在一个折叠区内完成，不单独开新页面。新增
+  `tests/test_hypothesis.py`（9 个用例：建议接口的过滤/计数/边界
+  情况，`run_hypothesis_worlds` 的分叉与跳过逻辑，
+  `find_robust_outcomes` 的数值/枚举/缺失字段判断，以及一个端到端
+  用例验证"假设锚定生效的字段呈现分歧、不受影响的字段呈现稳健"），
+  累计 141 个测试全部通过（命令同阶段二十）。**已知限制**："假设
+  锚定"完全依赖 LLM 理解并遵守 `decision_context` 里的自然语言
+  指令，没有任何代码层面的强制约束——`find_robust_outcomes()` 的
+  意义正在于事后检验"LLM 是否真的遵守了假设"，如果某个假设几乎没
+  影响到该字段的实际走向，`find_robust_outcomes()` 只会诚实地把
+  它判成"分歧不明显"，不会报错也不会二次纠正；分叉出的假设分支
+  永久留在实例的分支列表里（不自动清理），大量试验后需要用户自己
+  去"分支管理"删除不需要的分支。演进计划里剩余三个方向（阶段
+  二十三、二十四、二十五：Model Regime Detection、Reality Loop
+  完整版、因果线 UI）尚未实施，见该文档第 5 节分期路线图。
