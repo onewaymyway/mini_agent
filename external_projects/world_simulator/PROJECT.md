@@ -1135,3 +1135,67 @@ world_simulator/
   排序"，应该改用 `updated_at`（`materialize_simulation()`/
   `advance()` 均会维护这个字段），本次改动按用户原话"按照时间进行
   排序"理解为创建时间，未做这个区分。
+- 2026-09-18（用户新增需求）：因果线去前置条件 + 未来展望视图 +
+  折叠面板/标签页配色修复。对应用户原话"因果线应该默认就有，不应该
+  有什么前置条件，这是模拟的基本机制，基本基础"、"有一个视图，可以
+  看到当前所有的因果线以及对应的未来发展……用户也可以提供修改意见，
+  让系统修改修正这些因果线"、"标签按钮背景是白色的，看不清楚"。
+  交付内容：
+  1. **因果线默认化**：`spec_generator._resolve_causal_lines_hint()`
+     未声明分支不再告诉 skill "不需要输出 line_updates"，改为要求
+     skill 自行判断这次模拟存在哪几条因果线并自行起 id（一般
+     2~4 条）；`engine.advance()` 新增
+     `_auto_register_causal_lines()`，把 `line_updates`/
+     `causal_links.line_id` 里出现的、`manifest.settings.causal_lines`
+     还没登记过的 id 自动补登记（标注 `auto_discovered: True`），
+     不需要用户确认（因果线只是展示/组织维度，风险远低于
+     `structural_change`，不需要走那一套人工确认流程）。三个模板的
+     `SKILL.md`（`life-sim-template`/`negotiation-template`/
+     `group-evolution-template`）同步把"因果线可选、意图不明显就
+     留空"的措辞改成"默认应该给出"。创建向导/设置面板里手填 JSON 的
+     入口保留，但文案改为"手动覆盖/精修"，不再是必需的前置声明。
+  2. **因果线未来展望**：新增 `hypothesis.project_line_futures()`
+     ——延续 `suggest_critical_uncertainties()` 的克制思路，不发起
+     新的 LLM 调用，纯粹从已落盘的 `causal_links`（`driver→effect`）
+     配合 `uncertain_fields.confidence` 做确定性推演，按因果线给出
+     "如果这条因果关系延续，接下来可能的走向"，标注维度
+     （driver）、时间尺度（线的 `time_granularity`）、置信度。
+     `causal_lines_meta` 为空、`line_id` 也没声明过 `label` 时一样
+     能工作（退化为拿 id 当 label），呼应"不应该有前置条件"。
+  3. **因果线 UI 改进**：`app.py` 的`_render_causal_lines_overview()`
+     不再在 `causal_lines_meta` 为空时直接返回，改为同时扫描
+     `history` 里实际出现过的 `line_id`；「📊 因果线总览」「📜 时间线」
+     两个子标签页不再需要先声明因果线才出现，永远展示（未声明/
+     未推进过任何线时给出引导文案）。每条线新增"🔮 未来可能的走向"
+     展示区（调用 `project_line_futures`）和"✏️ 对这条线提修改意见"
+     折叠区——用户填写的意见落到
+     `manifest.settings.causal_lines[i].user_feedback`（通过既有的
+     `update_settings()` 保存），`_resolve_causal_lines_hint()` 会把
+     非空的 `user_feedback` 拼进下一步 `advance_step` 的提示文本，
+     要求 skill "认真纳入考虑"。
+  4. **配色修复**：`THEME_CSS` 新增针对 `div[data-testid="stExpander"]`
+     （收起/展开/悬停各状态）和 `div[data-testid="stTabs"]`
+     （tab-list/单个 tab 按钮/选中态）的显式深色覆盖——此前这两个
+     Streamlit 原生组件的容器背景没有被 `.stApp` 的整体深色背景
+     覆盖到，走的是 Streamlit 默认浅色主题的组件底色，配上本主题的
+     浅色文字（`--ws-text`）就是"白底白字"看不清楚；现在统一固定成
+     主题调色板，不依赖 Streamlit 当前用的是浅色还是深色主题。
+  **已知限制**：`project_line_futures()` 的"未来展望"是基于已有
+  因果链的确定性外推，不是真正的多世界模拟——如果需要更严谨的
+  "多个可能未来"，应该结合已有的 Hypothesis Engine
+  （`suggest_critical_uncertainties`/`run_hypothesis_worlds`）实际
+  分叉出几条世界跑几步，这里只是"总览视图能立刻看到点什么"的轻量
+  版本，本次改动没有把两者打通（比如"未来展望"里点一个维度直接触发
+  `run_hypothesis_worlds`），后续如果验证下来用户确实想要这个联动，
+  可以再单独接入。用户对因果线的"修改意见"目前只是原样拼进
+  prompt 提示文本，不做任何语义解析/结构化校验，LLM 有没有真的照办
+  完全靠它自己的推理质量，`engine.py` 不做任何代码层面的强制。
+  新增/修改测试：`tests/test_spec_and_engine.py` 里
+  `test_resolve_hints_causal_lines_hint_variants`/
+  `test_resolve_hints_causal_lines_hint_ignores_entries_without_id`
+  更新为校验新文案的语义（不再依赖"未声明"这句具体措辞），新增
+  `test_resolve_hints_causal_lines_hint_includes_user_feedback`/
+  `test_advance_auto_registers_undeclared_causal_line_ids`/
+  `test_advance_does_not_duplicate_already_declared_causal_lines`；
+  `tests/test_hypothesis.py` 新增 `project_line_futures` 相关四个
+  测试。累计 162 个测试全部通过（`python3 -m pytest tests/ -q`）。

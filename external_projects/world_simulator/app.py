@@ -333,6 +333,60 @@ div[data-testid="stPopover"] button:hover {
     padding: 0.9rem 1.1rem;
     margin-top: 0.6rem;
 }
+
+/* ── 折叠面板 / 标签页配色修复 ──────────────────────────────
+   Streamlit 的 stExpander / stTabs 原生组件默认走浅色主题的
+   背景色（白/浅灰），这份自定义 CSS 只覆盖了 .stApp 的整体底色，
+   没有覆盖这两个组件自己的容器背景——展开后标题栏和内容区背景
+   仍是浅色，配上本主题的浅色文字（--ws-text）就变成了"白底白字"
+   看不清楚。这里显式把折叠面板/标签页的所有状态（收起/展开/
+   悬停/选中）都固定成主题的深色调色板，不依赖 Streamlit 当前用的
+   是浅色还是深色主题。 */
+div[data-testid="stExpander"] {
+    border: 1px solid var(--ws-border);
+    border-radius: 10px;
+    background: var(--ws-bg-elevated);
+}
+div[data-testid="stExpander"] summary,
+div[data-testid="stExpander"] > details > summary {
+    background: var(--ws-bg-elevated) !important;
+    color: var(--ws-text) !important;
+    border-radius: 10px;
+}
+div[data-testid="stExpander"] summary:hover,
+div[data-testid="stExpander"] summary:focus {
+    background: var(--ws-accent-soft) !important;
+    color: var(--ws-accent) !important;
+}
+div[data-testid="stExpander"] summary svg {
+    fill: var(--ws-text) !important;
+}
+div[data-testid="stExpanderDetails"],
+div[data-testid="stExpander"] div[data-testid="stVerticalBlock"] {
+    background: var(--ws-bg-elevated) !important;
+    color: var(--ws-text) !important;
+}
+
+div[data-testid="stTabs"] div[data-baseweb="tab-list"] {
+    background: transparent;
+    border-bottom: 1px solid var(--ws-border);
+    gap: 0.25rem;
+}
+div[data-testid="stTabs"] button[data-baseweb="tab"] {
+    background: var(--ws-bg-elevated) !important;
+    color: var(--ws-text-muted) !important;
+    border-radius: 8px 8px 0 0;
+}
+div[data-testid="stTabs"] button[data-baseweb="tab"]:hover {
+    color: var(--ws-accent) !important;
+}
+div[data-testid="stTabs"] button[aria-selected="true"] {
+    background: var(--ws-accent-soft) !important;
+    color: var(--ws-accent) !important;
+}
+div[data-testid="stTabs"] div[data-testid="stVerticalBlock"] {
+    color: var(--ws-text);
+}
 </style>
 """
 
@@ -912,14 +966,16 @@ def page_create() -> None:
     # ── 多尺度因果线（阶段二十二，4.13 节）：声明后 skill 会按需在
     # 每一步推进时给出 line_updates（每条线各自的时间点/摘要/是否
     # 推进），不声明则完全沿用单一 time_granularity 的既有行为 ──
-    with st.expander("高级：声明多尺度因果线（阶段二十二，可选）"):
+    with st.expander("高级：手动调整因果线声明（可选，因果线本身默认就有）"):
         st.markdown(
-            '<span class="ws-muted">用 JSON 数组声明这次模拟里存在的几条"因果线"'
-            "（比如技术线按年演化、谈判线按轮次推进），推进时 AI 会按需给出每条线"
-            "各自的进展，时间线上可以按线筛选查看。例如：\n"
+            '<span class="ws-muted">因果线是这次模拟的默认基础机制，不需要在这里手动声明——'
+            "AI 已经按下方草稿自动判断出了几条因果线（如果留空，推进过程中也会"
+            "自动识别并登记，详情页「因果线总览」会实时展示）。这里只是给你一个"
+            "手动覆盖/精修的入口：如果想改用别的线名/节奏，或者强制拆出某条线，"
+            "可以直接编辑下面这个 JSON 数组。例如：\n"
             '`[{"id": "tech", "label": "技术线", "time_granularity": "年"}, '
             '{"id": "negotiation", "label": "谈判线", "time_granularity": "轮"}]`。'
-            "不填就跳过这一步，行为与不声明完全一致。</span>",
+            "留空表示完全交给 AI 自行判断，不是关闭这个功能。</span>",
             unsafe_allow_html=True,
         )
         causal_lines_default = json.dumps(
@@ -1495,8 +1551,12 @@ def _render_timeline(
 def _render_causal_lines_overview(
     history: List,
     causal_lines_meta: List[Dict[str, Any]],
+    *,
+    manifest=None,
+    sim_id: str = "",
 ) -> None:
-    """渲染"因果线总览"视图（阶段二十五，4.17 节，因果线 UI）。
+    """渲染"因果线总览"视图（阶段二十五，4.17 节，因果线 UI；用户后续
+    要求补充"未来展望 + 用户可修改因果线"，见下方新增两段）。
 
     依赖阶段二十二落地的 `SimState.line_updates`/`causal_links.line_id`
     结构：按 `causal_lines_meta` 声明的每条线，把历史上所有
@@ -1509,12 +1569,18 @@ def _render_causal_lines_overview(
     `_render_timeline` 用的 `reversed(history)`），这样时间点序列才是
     从早到晚的顺序，符合"走势"的直觉。
 
+    因果线不应该有前置条件（用户要求）：`causal_lines_meta` 为空时不
+    再直接返回——退化为从 `history` 里扫描 `line_updates`/
+    `causal_links.line_id` 实际出现过的 id，当作"还没有正式 label 的
+    自发因果线"继续展示，只是标注还没有中文名/节奏声明。这一步和
+    `engine._auto_register_causal_lines()` 是同一件事在两处的体现：
+    引擎负责把新 id 登记进 `manifest.settings`，这里负责"就算还没登记
+    上，也不能让用户看不到"。
+
     不做力导向图/桑基图之类的复杂可视化——用最朴素的"多行文字时间轴
     并排"验证"按线看"这个信息组织方式本身是否有用，参考文档第
     五十二~五十三节的"跨因果线连接"/"因果贡献"暂不在本阶段实现。
     """
-    if not causal_lines_meta:
-        return
     label_by_id = {
         str(line.get("id")): str(line.get("label") or line.get("id"))
         for line in causal_lines_meta
@@ -1525,15 +1591,46 @@ def _render_causal_lines_overview(
         for line in causal_lines_meta
         if isinstance(line, dict) and line.get("id")
     }
+    # 退化路径：声明列表里没有的 id，只要在历史里真的出现过，也纳入
+    # 展示（label 退化为 id 本身）。
+    for state in history:
+        for lid in (getattr(state, "line_updates", None) or {}).keys():
+            lid = str(lid).strip()
+            if lid and lid not in label_by_id:
+                label_by_id[lid] = lid
+                granularity_by_id.setdefault(lid, "")
+        for link in (getattr(state, "causal_links", None) or []):
+            if isinstance(link, dict):
+                lid = str(link.get("line_id") or "").strip()
+                if lid and lid not in label_by_id:
+                    label_by_id[lid] = lid
+                    granularity_by_id.setdefault(lid, "")
+
     if not label_by_id:
+        st.markdown(
+            '<span class="ws-muted">因果线是模拟的默认基础机制，不需要提前声明——'
+            "推进下一步之后，AI 判断出的因果线会自动出现在这里。</span>",
+            unsafe_allow_html=True,
+        )
         return
 
     st.markdown(
         '<span class="ws-muted">按因果线聚合展示每条线各自的时间点序列'
         "（比如技术线走到第几年、谈判线走到第几轮），点击展开可以看"
-        "只属于这条线的因果链条目。</span>",
+        "只属于这条线的因果链条目；每条线下方还给出基于已有因果链的"
+        "未来可能走向，供参考并可以直接留下修改意见。</span>",
         unsafe_allow_html=True,
     )
+
+    futures_by_id: Dict[str, List[Dict[str, Any]]] = {}
+    if manifest is not None:
+        try:
+            futures_by_id = {
+                item["line_id"]: item["futures"]
+                for item in hyp_mod.project_line_futures(manifest, history)
+            }
+        except Exception:  # noqa: BLE001 — 展望是辅助信息，算失败不影响总览本身
+            futures_by_id = {}
 
     for line_id, label in label_by_id.items():
         points = []
@@ -1597,6 +1694,71 @@ def _render_causal_lines_overview(
                         f'<div class="ws-chapter-choice">第 {step} 步 · {_html_text(detail)}{_html_text(suffix)}</div>',
                         unsafe_allow_html=True,
                     )
+
+        futures = futures_by_id.get(line_id) or []
+        if futures:
+            st.markdown(
+                f'<div class="ws-muted" style="margin-top:0.3rem;">🔮 「{_html_text(label)}」未来可能的走向'
+                "（基于现有因果链的推演，不是确定预测）：</div>",
+                unsafe_allow_html=True,
+            )
+            for fut in futures:
+                dim = _html_text(str(fut.get("dimension") or ""))
+                scale = _html_text(str(fut.get("time_scale") or ""))
+                desc = _html_text(str(fut.get("description") or ""))
+                conf = str(fut.get("confidence") or "unknown")
+                conf_label = {
+                    "low": "低置信度·分叉可能大", "medium": "中等置信度",
+                    "high": "高置信度", "unknown": "置信度未知",
+                }.get(conf, conf)
+                st.markdown(
+                    '<div class="ws-uncertain-field">'
+                    f'<span class="ws-uncertain-badge ws-uncertain-badge-{conf if conf in ("low", "medium", "high") else "medium"}">'
+                    f"{_html_text(conf_label)}</span>"
+                    f"<b>{dim}</b>（时间尺度：{scale}）— {desc}</div>",
+                    unsafe_allow_html=True,
+                )
+
+        if manifest is not None and sim_id:
+            with st.expander(f"✏️ 对「{label}」这条线提修改意见"):
+                st.markdown(
+                    '<span class="ws-muted">写下你觉得这条线接下来应该怎么发展/'
+                    "哪里推演得不对，下一步推进时会作为明确要求喂给 AI。</span>",
+                    unsafe_allow_html=True,
+                )
+                existing_feedback = ""
+                for line in causal_lines_meta:
+                    if isinstance(line, dict) and str(line.get("id")) == line_id:
+                        existing_feedback = str(line.get("user_feedback") or "")
+                        break
+                feedback_key = f"causal_line_feedback_{sim_id}_{line_id}"
+                new_feedback = st.text_area(
+                    "修改意见", value=existing_feedback, key=feedback_key,
+                    height=70, label_visibility="collapsed",
+                    placeholder="例：谈判线节奏太快了，接下来两步希望更胶着一些",
+                )
+                if st.button("保存意见", key=f"{feedback_key}_save"):
+                    updated_lines = []
+                    found_line = False
+                    for line in causal_lines_meta:
+                        if isinstance(line, dict) and str(line.get("id")) == line_id:
+                            found_line = True
+                            merged = dict(line)
+                            merged["user_feedback"] = new_feedback.strip()
+                            updated_lines.append(merged)
+                        else:
+                            updated_lines.append(line)
+                    if not found_line:
+                        updated_lines.append(
+                            {
+                                "id": line_id, "label": label,
+                                "time_granularity": granularity_by_id.get(line_id, ""),
+                                "user_feedback": new_feedback.strip(),
+                            }
+                        )
+                    update_settings(DATA_DIR, sim_id, causal_lines=updated_lines)
+                    st.success("已保存，下一步推进会把这条意见提示给 AI。")
+                    st.rerun()
 
 
 def page_detail() -> None:
@@ -1780,11 +1942,12 @@ def page_detail() -> None:
                 placeholder='[{"type": "transfer", "from": "cash", "to": "inventory.value"}]',
             )
         cur_causal_lines = cur_settings.get("causal_lines") or []
-        with st.expander("高级：声明多尺度因果线（阶段二十二，可选）"):
+        with st.expander("高级：手动调整因果线声明（可选，因果线本身默认就有）"):
             st.markdown(
-                '<span class="ws-muted">声明这次模拟里存在的几条"因果线"（比如技术线按年'
-                "演化、谈判线按轮次推进），推进时 AI 会按需给出每条线各自的进展。"
-                "</span>",
+                '<span class="ws-muted">因果线是默认基础机制，AI 会自行判断/登记因果线，'
+                "不需要在这里手动声明才会生效——这里只是提供手动覆盖/改名的入口。"
+                "对某条具体因果线的修改意见，建议直接去「因果线总览」标签页对应那条线下面填写，"
+                "会更精准地喂给下一步推进。</span>",
                 unsafe_allow_html=True,
             )
             new_causal_lines_text = st.text_area(
@@ -2102,17 +2265,16 @@ def page_detail() -> None:
             causal_lines_meta=causal_lines_meta, causal_line_filter=causal_line_filter,
         )
 
-    # 阶段二十五（4.17 节，因果线 UI）：只有声明了 `causal_lines` 的
-    # 实例才会多出"因果线总览"子标签页——没有声明因果线的既有实例
-    # 完全退化为原来的"直接展示时间线"，不受影响。
-    if causal_lines_meta:
-        overview_tab, timeline_tab = st.tabs(["📊 因果线总览", "📜 时间线"])
-        with overview_tab:
-            _render_causal_lines_overview(history, causal_lines_meta)
-        with timeline_tab:
-            _render_timeline_subview()
-    else:
-        st.markdown("#### 时间线")
+    # 阶段二十五（4.17 节，因果线 UI）：因果线是模拟的默认基础机制，
+    # 不再要求实例声明过 `causal_lines` 才显示"因果线总览"子标签页——
+    # 即使还没有任何声明/自动登记的线，总览标签页也会展示引导文案，
+    # 推进第一步之后会自动出现内容（见 `_render_causal_lines_overview`）。
+    overview_tab, timeline_tab = st.tabs(["📊 因果线总览", "📜 时间线"])
+    with overview_tab:
+        _render_causal_lines_overview(
+            history, causal_lines_meta, manifest=manifest, sim_id=sim_id,
+        )
+    with timeline_tab:
         _render_timeline_subview()
 
     # ── 分支管理 ──

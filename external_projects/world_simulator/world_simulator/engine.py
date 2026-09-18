@@ -17,7 +17,7 @@ import json
 import secrets
 import string
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from world_simulator import knowledge_base
 from world_simulator.spec_generator import ScenarioGenerationError, generate_scenario, resolve_hints
@@ -449,6 +449,55 @@ def _format_confirmed_structural_changes(raw: Any) -> str:
     return "\n".join(lines)
 
 
+def _auto_register_causal_lines(manifest: "SimManifest", next_state: "SimState") -> None:
+    """把这一步 `line_updates`/`causal_links.line_id` 里出现的、还没在
+    `manifest.settings.causal_lines` 里登记过的线 id，自动补一条最小
+    的声明条目（`label` 先用 id 本身占位，用户可以之后在设置面板里
+    改成更友好的中文名）。就地修改 `manifest.settings`，不落盘——调用方
+    紧接着会统一 `store.save_manifest(manifest)`。
+
+    这是"因果线是默认基础机制，不需要前置声明"这一要求的落地点：
+    `spec_generator._resolve_causal_lines_hint()` 允许 skill 在没有任何
+    声明的情况下自行起 id 输出 `line_updates`，这里负责把这些自发出现
+    的 id 正式记下来，下一步推进时 prompt 里就能看到它们，也能出现在
+    "因果线总览"视图里。
+    """
+    existing_lines = list(manifest.settings.get("causal_lines") or [])
+    existing_ids = {
+        str(line.get("id")) for line in existing_lines
+        if isinstance(line, dict) and str(line.get("id") or "").strip()
+    }
+
+    discovered_ids: List[str] = []
+    for lid in (next_state.line_updates or {}).keys():
+        lid = str(lid).strip()
+        if lid and lid not in existing_ids and lid not in discovered_ids:
+            discovered_ids.append(lid)
+    for link in (next_state.causal_links or []):
+        if not isinstance(link, dict):
+            continue
+        lid = str(link.get("line_id") or "").strip()
+        if lid and lid not in existing_ids and lid not in discovered_ids:
+            discovered_ids.append(lid)
+
+    if not discovered_ids:
+        return
+
+    new_entries = [
+        {
+            "id": lid,
+            "label": lid,
+            "time_granularity": next_state.time_granularity or "",
+            "auto_discovered": True,
+        }
+        for lid in discovered_ids
+    ]
+    manifest.settings = {
+        **manifest.settings,
+        "causal_lines": existing_lines + new_entries,
+    }
+
+
 def advance(
     cfg,
     workspace_root: Path,
@@ -743,6 +792,16 @@ def advance(
         structural_change=_normalize_structural_change(data.get("structural_change")),
     )
     store.append_state(next_state, branch=branch)
+
+    # 因果线不应该有前置条件（用户要求）：`line_updates`/
+    # `causal_links.line_id` 里只要出现了 `manifest.settings.causal_lines`
+    # 还没登记过的新 id，就自动把它登记成一条正式的因果线——不要求用户
+    # 必须先在创建向导/设置面板里手填 JSON 才能让"因果线总览"视图出现
+    # 内容。这是纯粹的\"发现并登记\"，不像 `structural_change` 那样需要
+    # 用户手动"采纳"：因果线本身只是一种展示/组织维度，登记错了也不会
+    # 污染 `vars`/推进逻辑，风险和 `structural_change` 不在同一量级，
+    # 不需要额外的确认环节。
+    _auto_register_causal_lines(manifest, next_state)
 
     # 阶段二十（4.12 节 2.）：把这一步的结构化因果链沉淀进跨模拟知识库。
     # 纯旁路操作，落盘之后才做、失败不影响本次推进（见

@@ -87,30 +87,62 @@ def _resolve_background_entities_hint(settings: "Dict[str, Any] | None") -> str:
 
 def _resolve_causal_lines_hint(settings: "Dict[str, Any] | None") -> str:
     """把 `settings.causal_lines` 转成喂给 prompt 的一句话提示（阶段
-    二十二，4.13 节，多尺度因果线）。未声明时明确告诉 skill 不需要
-    输出 `line_updates`，避免它凭空发明一套线 id；声明了则列出每条线
-    的 id/label/节奏，要求 skill 在 `line_updates` 里用这些 id 作为
-    key（`causal_links` 的可选 `line_id` 字段同理）。"""
+    二十二，4.13 节，多尺度因果线；本提示的默认分支在用户要求下已
+    改为"因果线是模拟的默认基础机制，不需要前置声明"，见
+    `next_doc/world_simulator_toward_universal_simulator_plan.md`
+    之后的补充说明）。
+
+    未声明（用户没有在创建向导/设置面板里手动填因果线 JSON）时，
+    不再告诉 skill "不需要输出 line_updates"——因果线本身不应该有
+    前置条件，改为要求 skill 自己判断这次模拟里存在哪几条节奏可能
+    不同的因果线并自行起 id，`engine.advance()` 会在落盘时把
+    `line_updates`/`causal_links.line_id` 里出现的新 id 自动登记进
+    `manifest.settings.causal_lines`（见 `engine._auto_register_causal_lines`），
+    不需要用户提前手填 JSON 才能看到"因果线总览"视图。
+
+    已声明/已自动登记时，列出每条线的 id/label/节奏（以及用户在
+    详情页对这条线提的修改意见，如果有），要求 skill 在
+    `line_updates` 里用这些 id 作为 key（`causal_links` 的可选
+    `line_id` 字段同理），并允许随时用新 id 开一条新线。
+    """
     lines = [
         line for line in ((settings or {}).get("causal_lines") or [])
         if isinstance(line, dict) and str(line.get("id") or "").strip()
     ]
     if not lines:
-        return "未声明任何因果线（不需要输出 line_updates 字段）"
+        return (
+            "因果线是这次模拟的默认基础机制，不需要用户提前声明——请你自己"
+            "判断这次模拟里存在哪几条相对独立、节奏可能不同的因果线（比如"
+            "技术线按年演化、谈判线按轮次推进、个人线按月推进），一般给出"
+            "2~4 条即可，自行给每条线起一个简短的英文/拼音 id 和一句话中文"
+            "label，在 line_updates 里用这些 id 作为 key 给出这一步有实际"
+            "进展的线（没有进展的线不用出现）；后续每一步请尽量延续使用"
+            "同一批 id，不要每步都换一套新的，除非这一步确实催生了一条全新"
+            "的因果线——那种情况可以直接启用一个新 id，系统会自动记录为新"
+            "增线，不需要额外操作。"
+        )
     parts = []
     for line in lines:
         line_id = str(line["id"]).strip()
         label = str(line.get("label") or line_id).strip()
         granularity = str(line.get("time_granularity") or "").strip()
+        feedback = str(line.get("user_feedback") or "").strip()
         piece = f'{line_id}（{label}'
         if granularity:
             piece += f"，节奏参考：{granularity}"
+        if feedback:
+            piece += f"，用户对这条线的修改意见：{feedback}"
         piece += "）"
         parts.append(piece)
     return (
-        "已声明以下因果线，这一步哪些线有实际进展由你自行判断——有进展的线，"
-        "在 line_updates 里用对应 id 作为 key 给出这条线的进展；没有进展的线"
-        "不需要在 line_updates 里出现，不强制每条线每一步都更新：" + "、".join(parts)
+        "已声明/已自动识别以下因果线，这一步哪些线有实际进展由你自行判断——"
+        "有进展的线，在 line_updates 里用对应 id 作为 key 给出这条线的进展；"
+        "没有进展的线不需要在 line_updates 里出现，不强制每条线每一步都"
+        "更新；如果用户给某条线留了修改意见，请在推演这条线后续走向时认真"
+        "纳入考虑，必要时在 narrative/summary 里说明是如何回应这个意见的："
+        + "、".join(parts)
+        + "。如果这一步确实出现了一条上面都没列出的新因果线，也可以直接用"
+        "一个新 id 输出 line_updates，系统会自动登记为新线。"
     )
 
 

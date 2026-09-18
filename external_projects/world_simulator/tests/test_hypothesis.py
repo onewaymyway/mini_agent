@@ -43,13 +43,14 @@ def _write_result_file(tmp_path: Path, name: str, payload: dict) -> str:
     return str(p)
 
 
-def _make_sim(data_dir: Path, sim_id: str, *, uncertain_fields=None, causal_links=None):
+def _make_sim(data_dir: Path, sim_id: str, *, uncertain_fields=None, causal_links=None, settings=None):
     store = SimStore.for_root(data_dir, sim_id)
     ts = now_iso()
     store.save_manifest(
         SimManifest(
             sim_id=sim_id, template="life_sim", intent="i", title="t",
             created_at=ts, updated_at=ts, pilot_mode="manual",
+            settings=settings or {},
         )
     )
     store.append_state(
@@ -121,6 +122,88 @@ def test_suggest_critical_uncertainties_ignores_entries_without_field(tmp_path):
     manifest = store.load_manifest()
     current = store.load_current_state("main")
     assert hyp_mod.suggest_critical_uncertainties(manifest, current) == []
+
+
+# ── project_line_futures（用户要求："把可能的未来都根据不同的维度
+#    列出来"，因果线不需要前置声明） ─────────────────────────────────
+
+
+def test_project_line_futures_derives_from_recent_causal_links(tmp_path):
+    data_dir = tmp_path / "data"
+    store = _make_sim(
+        data_dir, "sim1",
+        settings={"causal_lines": [{"id": "tech", "label": "技术线", "time_granularity": "年"}]},
+        uncertain_fields=[{"field": "ai_cost_trend", "confidence": "low", "note": "行业波动大"}],
+        causal_links=[
+            {"driver": "AI 成本下降", "affected_fields": ["ai_cost_trend"],
+             "effect": "采用率提高", "line_id": "tech"},
+        ],
+    )
+    manifest = store.load_manifest()
+    history = store.load_history("main")
+
+    results = hyp_mod.project_line_futures(manifest, history)
+    assert len(results) == 1
+    assert results[0]["line_id"] == "tech"
+    assert results[0]["label"] == "技术线"
+    assert results[0]["time_granularity"] == "年"
+    futures = results[0]["futures"]
+    assert len(futures) == 1
+    assert futures[0]["dimension"] == "AI 成本下降"
+    assert "采用率提高" in futures[0]["description"]
+    assert futures[0]["confidence"] == "low"
+
+
+def test_project_line_futures_auto_detects_lines_without_declared_causal_lines(tmp_path):
+    """用户要求：因果线不应该有前置条件——即使
+    `manifest.settings.causal_lines` 完全没声明，只要历史里出现过
+    `line_id`，也应该能推演出对应的"未来"。"""
+    data_dir = tmp_path / "data"
+    store = _make_sim(
+        data_dir, "sim1",
+        causal_links=[
+            {"driver": "谈判破裂风险上升", "affected_fields": ["trust"],
+             "effect": "双方转向强硬立场", "line_id": "negotiation"},
+        ],
+    )
+    manifest = store.load_manifest()
+    assert manifest.settings.get("causal_lines") in (None, [])
+    history = store.load_history("main")
+
+    results = hyp_mod.project_line_futures(manifest, history)
+    assert len(results) == 1
+    assert results[0]["line_id"] == "negotiation"
+    assert results[0]["label"] == "negotiation"  # 没有声明过 label，退化为 id 本身
+    assert "双方转向强硬立场" in results[0]["futures"][0]["description"]
+
+
+def test_project_line_futures_placeholder_when_no_causal_links_yet(tmp_path):
+    """一条已声明但还没有任何 `causal_links` 记录的线，应该给出说明性
+    占位条目，而不是空列表——空列表在 UI 上容易被误读成"没有未来"。"""
+    data_dir = tmp_path / "data"
+    store = _make_sim(
+        data_dir, "sim1",
+        settings={"causal_lines": [{"id": "empty", "label": "空线"}]},
+    )
+    manifest = store.load_manifest()
+    history = store.load_history("main")
+
+    results = hyp_mod.project_line_futures(manifest, history)
+    assert len(results) == 1
+    assert results[0]["line_id"] == "empty"
+    futures = results[0]["futures"]
+    assert len(futures) == 1
+    assert futures[0]["confidence"] == "unknown"
+
+
+def test_project_line_futures_empty_list_when_nothing_to_project(tmp_path):
+    """既没有声明过因果线，历史里也完全没有任何 line_id 痕迹时，返回
+    空列表（不是错误，只是这次模拟还没有任何因果线可供展望）。"""
+    data_dir = tmp_path / "data"
+    store = _make_sim(data_dir, "sim1")
+    manifest = store.load_manifest()
+    history = store.load_history("main")
+    assert hyp_mod.project_line_futures(manifest, history) == []
 
 
 # ── run_hypothesis_worlds ────────────────────────────────────────────

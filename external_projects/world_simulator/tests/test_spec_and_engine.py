@@ -146,7 +146,8 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
     )
 
     assert draft_step.skill_name == "life-sim-template"
-    assert captured["inputs"] == {
+    causal_lines_hint = captured["inputs"]["causal_lines_hint"]
+    assert {k: v for k, v in captured["inputs"].items() if k != "causal_lines_hint"} == {
         "intent": "模拟一个刚毕业的人生",
         "feedback": "",
         "previous_draft_json": "",
@@ -156,8 +157,11 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
         "background_entities_hint": "未启用（所有主体都按正常流程完整推理）",
         "calibration_notes": "",
         "relevant_knowledge_hint": "（暂无相关的已知因果知识）",
-        "causal_lines_hint": "未声明任何因果线（不需要输出 line_updates 字段）",
     }
+    # 因果线是默认基础机制（不需要用户提前声明），这里只校验语义，不
+    # 校验措辞原文，避免和 `test_resolve_hints_causal_lines_hint_variants`
+    # 重复维护同一句文案。
+    assert "默认" in causal_lines_hint and "line_updates" in causal_lines_hint
     assert draft.title == "毕业生的选择"
     assert draft.vars["age"] == 22
     assert draft.options[0].id == "a"
@@ -1048,11 +1052,14 @@ def test_resolve_hints_background_entities_hint_variants():
 
 
 def test_resolve_hints_causal_lines_hint_variants():
-    """阶段二十二（4.13 节）：`causal_lines_hint` 未声明时应该明确说
-    "不需要输出 line_updates"，声明了则应该在提示文本里列出每条线的
-    id/label，方便复核 prompt 内容。"""
-    assert "未声明" in spec_mod.resolve_hints({})["causal_lines_hint"]
-    assert "不需要输出 line_updates" in spec_mod.resolve_hints({})["causal_lines_hint"]
+    """阶段二十二（4.13 节）：因果线是默认基础机制，不需要用户提前
+    声明——`causal_lines_hint` 未声明时应该要求 skill 自行判断并给出
+    因果线（而不是说"不需要输出 line_updates"），声明了则应该在提示
+    文本里列出每条线的 id/label，方便复核 prompt 内容。"""
+    default_hint = spec_mod.resolve_hints({})["causal_lines_hint"]
+    assert "默认" in default_hint
+    assert "不需要" in default_hint and "声明" in default_hint
+    assert "line_updates" in default_hint
 
     hint = spec_mod.resolve_hints(
         {
@@ -1066,10 +1073,24 @@ def test_resolve_hints_causal_lines_hint_variants():
     assert "negotiation" in hint and "谈判线" in hint
 
 
+def test_resolve_hints_causal_lines_hint_includes_user_feedback():
+    """用户在详情页对某条因果线留的修改意见（`user_feedback`），应该
+    出现在 `causal_lines_hint` 里，供 `advance_step` 认真纳入考虑。"""
+    hint = spec_mod.resolve_hints(
+        {
+            "causal_lines": [
+                {"id": "tech", "label": "技术线", "user_feedback": "希望技术线放慢一点"},
+            ]
+        }
+    )["causal_lines_hint"]
+    assert "希望技术线放慢一点" in hint
+
+
 def test_resolve_hints_causal_lines_hint_ignores_entries_without_id():
-    """没有 `id` 的因果线声明不构成一条可引用的线，应该被忽略。"""
+    """没有 `id` 的因果线声明不构成一条可引用的线，应该被忽略，退化为
+    "未声明"（默认自主判断）分支。"""
     hint = spec_mod.resolve_hints({"causal_lines": [{"label": "没有 id"}]})["causal_lines_hint"]
-    assert "未声明" in hint
+    assert "默认" in hint
 
 
 def test_scenario_draft_from_dict_parses_causal_lines():
@@ -1361,6 +1382,127 @@ def test_advance_parses_line_updates_from_llm_output(tmp_path, monkeypatch):
     assert next_state.line_updates == {
         "tech": {"time_label": "第 3 年", "summary": "AI 成本持续下降"},
     }
+
+
+def test_advance_auto_registers_undeclared_causal_line_ids(tmp_path, monkeypatch):
+    """用户要求：因果线是模拟的默认基础机制，不应该有前置条件——即使
+    `manifest.settings.causal_lines` 完全没有声明过，只要 `advance_step`
+    在 `line_updates`/`causal_links.line_id` 里自发用了一个新 id，
+    `advance()` 也应该自动把它登记进 `manifest.settings.causal_lines`，
+    而不是要求用户先手填 JSON 才能让这条线出现。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+    assert manifest.settings.get("causal_lines") in (None, [])
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            # 未声明任何因果线时，提示语应该邀请 skill 自主判断，而不是
+            # 告诉它"不需要输出 line_updates"。
+            assert "默认" in inputs["causal_lines_hint"]
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2", "narrative": "n", "next_vars": {}, "options": [],
+                    "line_updates": {
+                        "career": {"time_label": "第 1 年", "summary": "刚入职"},
+                    },
+                    "causal_links": [
+                        {"driver": "薪资到位", "affected_fields": ["cash"], "effect": "开始攒钱",
+                         "line_id": "finance"},
+                    ],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+
+    reloaded = SimStore.for_root(data_dir, manifest.sim_id).load_manifest()
+    ids = {
+        line["id"] for line in reloaded.settings.get("causal_lines") or [] if isinstance(line, dict)
+    }
+    assert ids == {"career", "finance"}
+    # 自动登记的线标注了 `auto_discovered`，UI/后续逻辑可以据此区分
+    # "用户手填的"和"系统发现的"，不强制要求，但不应该丢失这个信息。
+    auto_flags = {
+        line["id"]: line.get("auto_discovered")
+        for line in reloaded.settings.get("causal_lines") or [] if isinstance(line, dict)
+    }
+    assert auto_flags == {"career": True, "finance": True}
+
+
+def test_advance_does_not_duplicate_already_declared_causal_lines(tmp_path, monkeypatch):
+    """已经声明过的因果线 id 再次出现在 `line_updates`/`causal_links`
+    里时，不应该被重复登记一遍。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+        settings={"causal_lines": [{"id": "tech", "label": "技术线", "time_granularity": "年"}]},
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2", "narrative": "n", "next_vars": {}, "options": [],
+                    "line_updates": {"tech": {"time_label": "第 2 年", "summary": "继续下降"}},
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    reloaded = SimStore.for_root(data_dir, manifest.sim_id).load_manifest()
+    assert reloaded.settings.get("causal_lines") == [
+        {"id": "tech", "label": "技术线", "time_granularity": "年"}
+    ]
 
 
 def test_advance_records_causal_links_into_knowledge_base(tmp_path, monkeypatch):

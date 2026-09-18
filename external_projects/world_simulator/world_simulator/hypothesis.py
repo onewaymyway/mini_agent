@@ -35,6 +35,159 @@ from world_simulator import analysis
 from world_simulator.state_model import SimManifest, SimState
 
 
+def project_line_futures(
+    manifest: SimManifest,
+    history: List[SimState],
+    *,
+    line_id: Optional[str] = None,
+    max_futures_per_line: int = 4,
+) -> List[Dict[str, Any]]:
+    """按因果线给出"可能的未来"候选（用户要求的"因果线总览"配套能力：
+    "把可能的未来都根据不同的维度列出来"）。
+
+    与 `suggest_critical_uncertainties()` 同样的克制思路：不发起新的
+    LLM 调用，纯粹从已经落盘的 `causal_links`/`uncertain_fields`/
+    `line_updates` 里做确定性推演——每条线最近几条 `causal_links`
+    （`driver → effect`）本身就是"这条线正在往哪个方向走"的第一手
+    证据，把它们摘出来当作"如果这条因果关系延续，接下来大概率的走向"，
+    按 `affected_fields` 对应的 `uncertain_fields.confidence` 标注
+    出"这个方向有多大把握"（`low` 表示这是一个真正存在分叉可能的
+    维度，值得结合 Hypothesis Engine 的 `suggest_critical_uncertainties`/
+    `run_hypothesis_worlds` 进一步分叉验证；`medium`/`high`/`unknown`
+    表示相对确定的延续方向）。
+
+    Args:
+        manifest: 当前只用到 `manifest.settings.causal_lines`（线的
+            id/label/time_granularity 声明），行为上等价于直接传
+            `causal_lines_meta`，保留 `manifest` 参数是为了和
+            `suggest_critical_uncertainties()` 的签名风格一致，为后续
+            可能用到 `resource_fields`/`objectives` 留扩展空间。
+        history: 按 step 升序的完整历史（含当前状态），用于回溯最近
+            的因果链和 `uncertain_fields`。
+        line_id: 只算某一条线时传入；为 None 时对
+            `manifest.settings.causal_lines` 里声明的每条线都算一遍
+            （包括 `engine._auto_register_causal_lines()` 自动登记的
+            线——因果线本身不需要用户预先声明，这里同样不应该有
+            前置条件）。声明列表为空、且历史里也没有任何
+            `line_id`/`line_updates` 痕迹时，返回空列表（还没有任何
+            因果线可供展望，不是错误）。
+
+    Returns:
+        每项 `{"line_id", "label", "time_granularity", "futures"}`，
+        `futures` 是若干个 `{"dimension", "time_scale", "description",
+        "confidence"}`——`dimension` 是驱动这个方向的因子（对应某条
+        `causal_links.driver`），`time_scale` 沿用这条线声明的
+        `time_granularity`（未声明则退化为最新状态的全局
+        `time_granularity`），`description` 是"如果这条因果关系延续"
+        的一句话推演，`confidence` 取自匹配到的 `uncertain_fields`
+        （没有匹配到时为 `"unknown"`）。一条线完全没有历史因果链可
+        供推演时，`futures` 是一条说明性的占位条目，不是留空——留空
+        在 UI 上容易被误读成"这条线没有未来"，而不是"数据还不够"。
+    """
+    causal_lines_meta = [
+        line for line in (manifest.settings.get("causal_lines") or [])
+        if isinstance(line, dict) and str(line.get("id") or "").strip()
+    ]
+    meta_by_id = {str(line["id"]).strip(): line for line in causal_lines_meta}
+
+    if line_id:
+        target_ids = [line_id]
+    else:
+        target_ids = list(meta_by_id.keys())
+        if not target_ids:
+            # 声明列表为空（可能是还没来得及自动登记的历史数据），退化为
+            # 从历史里直接扫出现过的 line_id，同样不设前置条件。
+            seen: List[str] = []
+            for state in history:
+                for lid in (getattr(state, "line_updates", None) or {}).keys():
+                    lid = str(lid).strip()
+                    if lid and lid not in seen:
+                        seen.append(lid)
+                for link in (getattr(state, "causal_links", None) or []):
+                    if isinstance(link, dict):
+                        lid = str(link.get("line_id") or "").strip()
+                        if lid and lid not in seen:
+                            seen.append(lid)
+            target_ids = seen
+
+    latest_state = history[-1] if history else None
+    global_granularity = str(getattr(latest_state, "time_granularity", "") or "") if latest_state else ""
+
+    results: List[Dict[str, Any]] = []
+    for lid in target_ids:
+        meta = meta_by_id.get(lid) or {}
+        label = str(meta.get("label") or lid)
+        granularity = str(meta.get("time_granularity") or "").strip() or global_granularity or "未声明"
+
+        recent_links: List[Dict[str, Any]] = []
+        for state in reversed(history):
+            for link in (getattr(state, "causal_links", None) or []):
+                if not isinstance(link, dict):
+                    continue
+                matches = str(link.get("line_id") or "").strip() == lid
+                if matches:
+                    recent_links.append(link)
+            if len(recent_links) >= max_futures_per_line * 2:
+                break
+
+        latest_uncertain = getattr(latest_state, "uncertain_fields", None) or [] if latest_state else []
+
+        futures: List[Dict[str, Any]] = []
+        seen_keys = set()
+        for link in recent_links:
+            driver = str(link.get("driver") or "").strip()
+            effect = str(link.get("effect") or "").strip()
+            if not driver:
+                continue
+            key = (driver, effect)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+
+            affected = [str(f) for f in (link.get("affected_fields") or [])]
+            confidence = "unknown"
+            for uf in latest_uncertain:
+                if isinstance(uf, dict) and str(uf.get("field") or "") in affected:
+                    confidence = str(uf.get("confidence") or "unknown")
+                    break
+
+            description = (
+                f"若「{driver}」延续目前的走势，可能继续推动：{effect}" if effect
+                else f"「{driver}」目前是这条线上的关键变量，走向仍待观察"
+            )
+            futures.append(
+                {
+                    "dimension": driver,
+                    "time_scale": granularity,
+                    "description": description,
+                    "confidence": confidence,
+                }
+            )
+            if len(futures) >= max_futures_per_line:
+                break
+
+        if not futures:
+            futures = [
+                {
+                    "dimension": "（暂无可推演的因果链）",
+                    "time_scale": granularity,
+                    "description": "这条线还没有积累足够的 causal_links 记录，继续推进几步后再回来看。",
+                    "confidence": "unknown",
+                }
+            ]
+
+        results.append(
+            {
+                "line_id": lid,
+                "label": label,
+                "time_granularity": granularity,
+                "futures": futures,
+            }
+        )
+
+    return results
+
+
 def suggest_critical_uncertainties(
     manifest: SimManifest, current_state: SimState
 ) -> List[Dict[str, Any]]:
