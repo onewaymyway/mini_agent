@@ -1032,3 +1032,47 @@ world_simulator/
   依赖"一段对这一点的说明。演进计划里剩余两个方向（阶段二十四、
   二十五：Reality Loop 完整版、因果线 UI）尚未实施，见该文档第 5
   节分期路线图。
+- 2026-09-18：完成阶段二十四（Reality Loop 完整版：模拟与现实的真正
+  反馈闭环，见 `next_doc/world_simulator_toward_universal_simulator_
+  plan.md` 4.16 节）。**提醒同阶段二十~二十三**：本阶段未经真实使用
+  场景验证价值，后续应优先按真实反馈调整。交付内容：新增
+  `world_simulator/reality_check.py`——`RealityCheck` 数据类
+  （`id`/`sim_id`/`branch`/`step`/`predicted_summary`/`predicted_at`/
+  `actual_outcome`/`recorded_at`/`verdict`），落盘到
+  `data/<sim_id>/reality_checks.jsonl`（不按分支拆文件，`branch`
+  字段自己标注归属）；`record_reality_check()` 只做最基础的校验
+  （`actual_outcome` 非空、`verdict` 是 `matched`/`partially_matched`/
+  `diverged` 三选一之一），**不做任何自动语义匹配判定**——`verdict`
+  必须由用户自己选，同 4.16 节"范围克制"一段的要求；`find_for_step()`
+  供 `app.py` 查询某一步已记录的历史反馈；`record_and_apply()` 是
+  "记录 + 反向影响知识库"的组合快捷方式，`verdict == "diverged"` 时
+  才调用知识库更新，`matched`/`partially_matched` 不触发任何知识库
+  写入（避免和 `knowledge_base.record_causal_links()` 的跨模拟重复
+  出现机制形成双重计数，见该函数 docstring）。`knowledge_base.py`
+  新增 `update_confidence_from_reality_check(data_dir, causal_links)`
+  ——复用 `record_causal_links()` 写入时同一套"cause/effect 关键词
+  Jaccard 相似度匹配"逻辑找到对应知识条目，命中则调用已有的
+  `record_contradiction()`（阶段二十当时就为本阶段预留好的接口，见
+  该函数 docstring）把 `contradicted_count` 加一；旁路失败（比如
+  知识库文件损坏）不影响 `record_and_apply()` 里"现实记录本身是否
+  落盘成功"这个更重要的结果。`app.py`：时间线（`_render_timeline`）
+  每一步新增"🔁 记录现实结果"折叠区——展示这一步已有的历史反馈列表、
+  一个 `st.form` 填"后来实际发生了什么" + 三选一 `verdict` 单选、
+  提交后展示"影响了 N 条知识"的反馈；对比视图等只读场景复用
+  `_render_timeline` 时不传 `sim_id`/`source_branch`，不会长出这个
+  入口，同「创建分支」/「采纳为正式结构」按钮的既有取舍（单章"章节
+  回顾"视图本阶段未加，理由见"已知限制"）。新增
+  `tests/test_reality_check.py`（8 个用例：记录/校验/查询、知识库
+  联动的命中与不命中、`matched` 不触发知识库更新的对称性验证、
+  端到端组合场景），累计 154 个测试全部通过（命令同阶段二十）。
+  **已知限制**：延续 4.16 节"范围克制"——不做自动数据抓取，
+  `actual_outcome` 完全靠用户手动回来填写，没有任何提醒/催办机制
+  （比如"这一步过去多久了该去核实一下"），完全依赖用户自己记得回来
+  填；`predicted_at` 字段本阶段始终留空——`SimState` 本身不记录墙钟
+  时间戳（只有模拟内的 `time_label`），没有可用的真实时间可填，展示层
+  应该用 `state.time_label` 代替；"章节回顾"单章视图（`app.py` 里
+  `_render_state`/game 模式那部分）本阶段未加"记录现实结果"入口，
+  只加了时间线视图，理由是"事后回来对照"这个场景更符合"翻看时间线找
+  某一步"的使用路径，游戏模式的单章导航场景优先级更低，后续如有需要
+  可以照搬同一套 `st.form` 逻辑补上。演进计划里剩余一个方向（阶段
+  二十五：因果线 UI）尚未实施，见该文档第 5 节分期路线图。

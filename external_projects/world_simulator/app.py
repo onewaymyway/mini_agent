@@ -44,6 +44,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "entrypoints"))
 import _common  # noqa: F401  — 触发 sys.path 设置，未使用其它内容
 from world_simulator import branch_manager as bm
 from world_simulator import hypothesis as hyp_mod
+from world_simulator import reality_check as rc_mod
 from world_simulator.autopilot import (
     AutopilotDisabledError, run_autopilot_step, run_comparison_experiment, run_repeated_experiment,
 )
@@ -1359,6 +1360,68 @@ def _render_timeline(
                     else:
                         st.success("已采纳，后续推进会把这条新结构当作已知事实提示给系统。")
                         st.rerun()
+        if can_fork:
+            existing_checks = rc_mod.find_for_step(
+                DATA_DIR, sim_id, branch=source_branch, step=state.step
+            )
+            expander_label = (
+                f"🔁 记录现实结果（已记录 {len(existing_checks)} 条）"
+                if existing_checks else "🔁 记录现实结果"
+            )
+            with st.expander(expander_label):
+                # 阶段二十四（4.16 节）：Reality Loop 完整版——事后回来
+                # 对这一步的预测填"后来实际发生了什么"，verdict 由用户
+                # 自己选（不做自动语义判定，见 `reality_check.py`
+                # docstring）；`verdict == diverged` 时会尝试把这一步的
+                # `causal_links` 匹配进知识库，命中的条目
+                # `contradicted_count` 加一。
+                for check in existing_checks:
+                    verdict_label = {
+                        "matched": "✅ 与预测相符",
+                        "partially_matched": "🟡 部分相符",
+                        "diverged": "❌ 与预测不符",
+                    }.get(check.verdict, check.verdict)
+                    st.markdown(
+                        f'<div class="ws-chapter-choice">{verdict_label} · {_html_text(check.actual_outcome)}</div>',
+                        unsafe_allow_html=True,
+                    )
+                with st.form(key=f"reality_check_form_{sim_id}_{source_branch}_{state.step}"):
+                    st.caption(f"这一步当时的预测：{state.summary}")
+                    actual_outcome_input = st.text_area(
+                        "后来实际发生了什么？", key=f"reality_outcome_{sim_id}_{source_branch}_{state.step}",
+                    )
+                    verdict_input = st.radio(
+                        "整体判断",
+                        options=["matched", "partially_matched", "diverged"],
+                        format_func=lambda v: {
+                            "matched": "✅ 与预测相符",
+                            "partially_matched": "🟡 部分相符",
+                            "diverged": "❌ 与预测不符",
+                        }[v],
+                        key=f"reality_verdict_{sim_id}_{source_branch}_{state.step}",
+                        horizontal=True,
+                    )
+                    if st.form_submit_button("记录"):
+                        try:
+                            result = rc_mod.record_and_apply(
+                                DATA_DIR, sim_id,
+                                branch=source_branch, step=state.step,
+                                predicted_summary=state.summary,
+                                actual_outcome=actual_outcome_input,
+                                verdict=verdict_input,
+                                causal_links=getattr(state, "causal_links", None),
+                            )
+                        except rc_mod.RealityCheckError as exc:
+                            st.error(str(exc))
+                        else:
+                            contradicted = result["contradicted_knowledge_ids"]
+                            if contradicted:
+                                st.success(
+                                    f"已记录，并把 {len(contradicted)} 条相关因果知识标记为「被证伪」。"
+                                )
+                            else:
+                                st.success("已记录。")
+                            st.rerun()
         if can_fork:
             fork_col, _spacer = st.columns([1, 5])
             with fork_col:

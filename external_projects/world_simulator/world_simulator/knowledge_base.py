@@ -253,6 +253,48 @@ def record_contradiction(data_dir: Path, item_id: str) -> bool:
     return False
 
 
+def update_confidence_from_reality_check(
+    data_dir: Path, causal_links: List[Dict[str, Any]]
+) -> List[str]:
+    """`reality_check.record_and_apply()` 在 `verdict == "diverged"` 时
+    调用（阶段二十四，4.16 节 3.，"现实反馈 → 修正因果知识库"的最小
+    闭环）：对某一步的 `causal_links`（通常是对应 `SimState.
+    causal_links`，由调用方带入）逐条尝试匹配知识库里已有的条目——
+    匹配方式与 `record_causal_links()` 写入时判断"是否是同一条因果
+    关系"完全一致（cause/effect 关键词 Jaccard 相似度 ≥
+    `_SIMILARITY_THRESHOLD`），命中即调用 `record_contradiction()`
+    把该条目的 `contradicted_count` 加一。
+
+    不做"预测对了就加 `validated_count`"的对称逻辑——那已经由
+    `record_causal_links()` 的跨模拟重复出现机制负责，这里重复加会
+    造成双重计数（见 `reality_check.record_and_apply()` docstring）。
+
+    Returns:
+        本次实际被标记为"证伪"的知识条目 id 列表（可能为空——知识库
+        里本来就没有匹配得上的条目，或者 `causal_links` 本身残缺）。
+    """
+    if not causal_links:
+        return []
+    existing = load_all(data_dir)
+    if not existing:
+        return []
+    contradicted_ids: List[str] = []
+    for link in causal_links:
+        if not isinstance(link, dict):
+            continue
+        cause = str(link.get("driver") or "").strip()
+        effect = str(link.get("effect") or "").strip()
+        if not cause or not effect:
+            continue
+        candidate_keywords = _tokenize(cause) | _tokenize(effect)
+        for candidate in existing:
+            if _jaccard(candidate_keywords, candidate._keyword_set()) >= _SIMILARITY_THRESHOLD:
+                if record_contradiction(data_dir, candidate.id):
+                    contradicted_ids.append(candidate.id)
+                break
+    return contradicted_ids
+
+
 # ── 检索：拼进 prompt 的"已知相关因果知识" ────────────────────────────
 
 
