@@ -92,6 +92,12 @@
 | 通用规则引擎 DSL（第十节） | `resource_relations` 只做 `transfer` 一种关系类型的事后一致性检查（阶段十六） | 部分覆盖，最小可行版本（不是完整 DSL），`production` 未实现，见 4.8 节"实施记录" |
 | Hierarchical Agent / Dynamic Cognition Router（第十九节） | `settings.hierarchical_agent_mode` + `background_entities`（阶段十九），仅"分层"第一步 | 已实现设计草案第一步（非完整调度框架），提前实施、未经真实场景验证，见 4.10 节"实施记录" |
 | Reality Sync（第四十二节） | `settings.calibration_notes`（阶段十八），原样传入 prompt | 已实现轻量版，提前实施，见 4.11 节"实施记录"；完整版（自动数据源接入）仍不在计划内 |
+| Causal Knowledge Base（第十九节） | `world_simulator/knowledge_base.py` + `data/_knowledge/causal_knowledge.jsonl`（阶段二十，见 `world_simulator_toward_universal_simulator_plan.md` 4.12 节） | 已实现最小可行版本：自动写入 + 关键词检索拼入 prompt + `validated_count`/`contradicted_count` 计数；未做完整 `Evidence`/`Valid Range`/`Version` 全字段与知识库管理 UI |
+| Hypothesis Engine / Multiple Worlds（第二十三~二十五节） | `world_simulator/hypothesis.py`：`suggest_critical_uncertainties()`/`run_hypothesis_worlds()`/`find_robust_outcomes()`（阶段二十一，见同上文档 4.15 节） | 已实现最小可行版本：复用 `uncertain_fields`/`causal_links`/`branch_manager` 识别关键不确定性并分叉多世界、找稳健结果；分叉动作仍需用户手动确认，未做`Experiment Design Engine` |
+| 多尺度因果线 / Causal Line（第七节） | `SimManifest.settings.causal_lines` + `SimState.line_updates`/`causal_links.line_id`（阶段二十二，见同上文档 4.13 节） | 已实现最小可行版本：支持多条因果线各自独立记录推进节奏，不引入因果线之间的强制调度/耦合规则引擎 |
+| Model Regime Detection / Emergence（第几节，模型结构在线修正） | `SimState.structural_change` + `apply_structural_change()`（阶段二十三，见同上文档 4.14 节） | 已实现最小可行版本：系统识别新实体/新机制/规则切换并提示，"是否固化"需用户在时间线上手动点"采纳"确认，不做自动写入 `vars` 结构 |
+| Reality Loop 完整版（第四十三、四十七节） | `world_simulator/reality_check.py` + `data/<sim_id>/reality_checks.jsonl`（阶段二十四，见同上文档 4.16 节） | 已实现最小可行版本：手动记录"预测 vs 实际"并反向影响知识库可信度（`verdict == diverged` 触发 `contradicted_count` 递增）；不做自动数据源接入/自动语义匹配判定 |
+| 因果线作为界面核心对象（第五十、五十一节） | `app.py`：`_render_causal_lines_overview()`，实例详情页「📊 因果线总览」标签页（阶段二十五，见同上文档 4.17 节） | 已实现最小可行版本：按线聚合时间点序列 + 展开看该线关联因果链；未做跨因果线连接/因果贡献拆解的正式图可视化（第五十二~五十三节） |
 
 ## 4. 改进方案
 

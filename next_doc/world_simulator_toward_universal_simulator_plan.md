@@ -3,8 +3,9 @@
 > **状态**：阶段二十（4.12 节，Causal Knowledge Base）、阶段二十一
 > （4.15 节，Hypothesis Engine）、阶段二十二（4.13 节，多尺度因果线）、
 > 阶段二十三（4.14 节，Model Regime Detection / Emergence）、阶段
-> 二十四（4.16 节，Reality Loop 完整版）已完成，见 `PROJECT.md`
-> 对应交付记录；其余一个方向（阶段二十五）规划中，尚未开始实施。
+> 二十四（4.16 节，Reality Loop 完整版）、阶段二十五（4.17 节，因果线
+> UI）**已全部完成**，见 `PROJECT.md` 对应交付记录。本文档规划的六个
+> 方向已全部落地。
 > **前置文档**：`next_doc/world_simulator_external_project_plan.md`（原始方案，
 > 阶段一~七）、`next_doc/world_simulator_universal_world_model_upgrade_plan.md`
 > （阶段九~十九，已把"参考方案"里资源约束/不确定性标注/Problem
@@ -470,7 +471,7 @@ Version` 全字段（参考文档第十九节列出的完整 schema）；不做�
 
 ---
 
-### 4.17（P2，阶段二十五）因果线 UI：从状态卡片时间线到因果线总览视图
+### 4.17（P2，阶段二十五，已完成，见 `PROJECT.md` 对应交付记录）因果线 UI：从状态卡片时间线到因果线总览视图
 
 **问题**：现有时间线视图是"按 step 顺序展示每个节点的
 summary/vars/key_drivers"，`key_drivers`/`causal_links` 只是挂在
@@ -533,12 +534,15 @@ summary/vars/key_drivers"，`key_drivers`/`causal_links` 只是挂在
   建议在阶段二十一之后启动。**已完成**，见 `PROJECT.md` 对应交付
   记录。
 - **阶段二十五**：4.17 节，因果线 UI。依赖阶段二十二，必须排在
-  其后。
+  其后。**已完成**，见 `PROJECT.md` 对应交付记录。
 
-六个阶段全部完成后，回过头更新本文档状态栏与
-`PROJECT.md`/`world_simulator_universal_world_model_upgrade_plan.md`
-的"现状覆盖表"，把"因果知识库"“多世界假设”“多尺度因果线”“模型
-在线修正”“现实反馈闭环”“因果线 UI”六行补充进对照表。
+六个方向已全部完成，见各节标注与 `PROJECT.md` 对应交付记录。仍
+待办：回过头更新
+`world_simulator_universal_world_model_upgrade_plan.md` 的"现状覆盖
+表"，把"因果知识库"“多世界假设”“多尺度因果线”“模型在线修正”“现实
+反馈闭环”“因果线 UI”六行补充进对照表（本文档自身状态栏已在文首
+更新，`PROJECT.md` 每个阶段均有独立交付记录，此处仅剩"上游对照表"
+这一项联动更新）。
 
 ## 6. 风险提示
 

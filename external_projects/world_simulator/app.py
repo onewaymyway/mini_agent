@@ -240,6 +240,55 @@ section[data-testid="stSidebar"] {
 .ws-key-driver-details > summary.ws-key-driver-tag::-webkit-details-marker {
     display: none;
 }
+.ws-causal-line-row {
+    border: 1px solid var(--ws-border);
+    border-radius: 10px;
+    padding: 0.6rem 0.8rem;
+    margin-bottom: 0.7rem;
+    background: var(--ws-bg-elevated);
+}
+.ws-causal-line-row-title {
+    font-weight: 600;
+    font-size: 0.92rem;
+    margin-bottom: 0.35rem;
+}
+.ws-causal-line-row-id {
+    color: var(--ws-text-muted);
+    font-weight: 400;
+    font-size: 0.76rem;
+}
+.ws-causal-line-track {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+}
+.ws-causal-line-point {
+    display: inline-flex;
+    flex-direction: column;
+    padding: 0.15rem 0.55rem;
+    margin: 0.1rem 0.35rem 0.1rem 0;
+    border-radius: 10px;
+    font-size: 0.74rem;
+    background: var(--ws-bg-base, transparent);
+    border: 1px solid var(--ws-border);
+    color: var(--ws-text-muted);
+    max-width: 220px;
+}
+.ws-causal-line-point-time {
+    color: var(--ws-accent);
+    font-weight: 600;
+    font-size: 0.7rem;
+}
+.ws-causal-line-point-arrow {
+    color: var(--ws-border);
+    margin: 0 0.1rem;
+    align-self: center;
+}
+.ws-causal-line-empty {
+    color: var(--ws-text-muted);
+    font-size: 0.82rem;
+    font-style: italic;
+}
 .ws-key-driver-detail-body {
     margin: 0.25rem 0 0.15rem 0.2rem;
     padding: 0.35rem 0.6rem;
@@ -1443,6 +1492,113 @@ def _render_timeline(
                         st.rerun()
 
 
+def _render_causal_lines_overview(
+    history: List,
+    causal_lines_meta: List[Dict[str, Any]],
+) -> None:
+    """渲染"因果线总览"视图（阶段二十五，4.17 节，因果线 UI）。
+
+    依赖阶段二十二落地的 `SimState.line_updates`/`causal_links.line_id`
+    结构：按 `causal_lines_meta` 声明的每条线，把历史上所有
+    `line_updates` 里该线的记录（`advanced` 不为 `False` 的）按 step
+    顺序取出来，渲染成一行"该线的时间点序列 + 每个点的一句话摘要"，
+    多条线上下并排展示。点击展开可以看这条线关联的所有
+    `causal_links`（通过 `line_id` 过滤）。
+
+    `history` 需要按 step 升序传入（调用方传原始 `history`，不是
+    `_render_timeline` 用的 `reversed(history)`），这样时间点序列才是
+    从早到晚的顺序，符合"走势"的直觉。
+
+    不做力导向图/桑基图之类的复杂可视化——用最朴素的"多行文字时间轴
+    并排"验证"按线看"这个信息组织方式本身是否有用，参考文档第
+    五十二~五十三节的"跨因果线连接"/"因果贡献"暂不在本阶段实现。
+    """
+    if not causal_lines_meta:
+        return
+    label_by_id = {
+        str(line.get("id")): str(line.get("label") or line.get("id"))
+        for line in causal_lines_meta
+        if isinstance(line, dict) and line.get("id")
+    }
+    granularity_by_id = {
+        str(line.get("id")): str(line.get("time_granularity") or "")
+        for line in causal_lines_meta
+        if isinstance(line, dict) and line.get("id")
+    }
+    if not label_by_id:
+        return
+
+    st.markdown(
+        '<span class="ws-muted">按因果线聚合展示每条线各自的时间点序列'
+        "（比如技术线走到第几年、谈判线走到第几轮），点击展开可以看"
+        "只属于这条线的因果链条目。</span>",
+        unsafe_allow_html=True,
+    )
+
+    for line_id, label in label_by_id.items():
+        points = []
+        for state in history:
+            line_updates = getattr(state, "line_updates", None) or {}
+            update = line_updates.get(line_id)
+            if not isinstance(update, dict) or update.get("advanced") is False:
+                continue
+            time_label = str(update.get("time_label") or "").strip()
+            summary = str(update.get("summary") or "").strip()
+            points.append((state.step, time_label, summary))
+
+        granularity = granularity_by_id.get(line_id, "")
+        granularity_suffix = f"（{granularity}）" if granularity else ""
+        title_html = (
+            '<div class="ws-causal-line-row">'
+            f'<div class="ws-causal-line-row-title">📈 {_html_text(label)}'
+            f'{granularity_suffix} <span class="ws-causal-line-row-id">{_html_text(line_id)}</span></div>'
+        )
+        if not points:
+            title_html += '<div class="ws-causal-line-empty">这条线目前还没有推进记录。</div></div>'
+            st.markdown(title_html, unsafe_allow_html=True)
+            continue
+
+        track_items = []
+        for idx, (step, time_label, summary) in enumerate(points):
+            if idx > 0:
+                track_items.append('<span class="ws-causal-line-point-arrow">→</span>')
+            time_text = time_label or f"第 {step} 步"
+            point_html = (
+                '<span class="ws-causal-line-point">'
+                f'<span class="ws-causal-line-point-time">{_html_text(time_text)}</span>'
+                f"{_html_text(summary)}"
+                "</span>"
+            )
+            track_items.append(point_html)
+        title_html += f'<div class="ws-causal-line-track">{"".join(track_items)}</div></div>'
+        st.markdown(title_html, unsafe_allow_html=True)
+
+        related_links = []
+        for state in history:
+            for link in (getattr(state, "causal_links", None) or []):
+                if isinstance(link, dict) and str(link.get("line_id") or "") == line_id:
+                    related_links.append((state.step, link))
+        with st.expander(f"展开「{label}」关联的因果链（{len(related_links)} 条）"):
+            if not related_links:
+                st.markdown(
+                    '<span class="ws-causal-line-empty">这条线目前还没有关联到具体的因果链条目。'
+                    "（`causal_links` 需要带上 `line_id` 才会出现在这里）</span>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                for step, link in related_links:
+                    driver = str(link.get("driver") or "").strip()
+                    effect = str(link.get("effect") or "").strip()
+                    affected = link.get("affected_fields") or []
+                    affected_text = "、".join(str(x) for x in affected) if affected else ""
+                    detail = " → ".join(x for x in (driver, effect) if x)
+                    suffix = f"（影响：{affected_text}）" if affected_text else ""
+                    st.markdown(
+                        f'<div class="ws-chapter-choice">第 {step} 步 · {_html_text(detail)}{_html_text(suffix)}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+
 def page_detail() -> None:
     sim_id = st.session_state.get("sim_id")
     if not sim_id:
@@ -1919,31 +2075,45 @@ def page_detail() -> None:
                     else:
                         st.rerun()
 
-    st.markdown("#### 时间线")
     causal_lines_meta = manifest.settings.get("causal_lines") or []
-    causal_line_filter = None
+
+    def _render_timeline_subview() -> None:
+        causal_line_filter = None
+        if causal_lines_meta:
+            line_options = ["全部"] + [
+                str(line.get("id")) for line in causal_lines_meta if isinstance(line, dict) and line.get("id")
+            ]
+            line_labels = {"全部": "全部"}
+            line_labels.update(
+                {
+                    str(line.get("id")): f'{line.get("label") or line.get("id")}（{line.get("id")}）'
+                    for line in causal_lines_meta if isinstance(line, dict) and line.get("id")
+                }
+            )
+            picked_line = st.selectbox(
+                "按因果线筛选（阶段二十二，可选）",
+                options=line_options,
+                format_func=lambda x: line_labels.get(x, x),
+                key="timeline_causal_line_filter",
+            )
+            causal_line_filter = None if picked_line == "全部" else picked_line
+        _render_timeline(
+            list(reversed(history)), sim_id=sim_id, source_branch=manifest.branch,
+            causal_lines_meta=causal_lines_meta, causal_line_filter=causal_line_filter,
+        )
+
+    # 阶段二十五（4.17 节，因果线 UI）：只有声明了 `causal_lines` 的
+    # 实例才会多出"因果线总览"子标签页——没有声明因果线的既有实例
+    # 完全退化为原来的"直接展示时间线"，不受影响。
     if causal_lines_meta:
-        line_options = ["全部"] + [
-            str(line.get("id")) for line in causal_lines_meta if isinstance(line, dict) and line.get("id")
-        ]
-        line_labels = {"全部": "全部"}
-        line_labels.update(
-            {
-                str(line.get("id")): f'{line.get("label") or line.get("id")}（{line.get("id")}）'
-                for line in causal_lines_meta if isinstance(line, dict) and line.get("id")
-            }
-        )
-        picked_line = st.selectbox(
-            "按因果线筛选（阶段二十二，可选）",
-            options=line_options,
-            format_func=lambda x: line_labels.get(x, x),
-            key="timeline_causal_line_filter",
-        )
-        causal_line_filter = None if picked_line == "全部" else picked_line
-    _render_timeline(
-        list(reversed(history)), sim_id=sim_id, source_branch=manifest.branch,
-        causal_lines_meta=causal_lines_meta, causal_line_filter=causal_line_filter,
-    )
+        overview_tab, timeline_tab = st.tabs(["📊 因果线总览", "📜 时间线"])
+        with overview_tab:
+            _render_causal_lines_overview(history, causal_lines_meta)
+        with timeline_tab:
+            _render_timeline_subview()
+    else:
+        st.markdown("#### 时间线")
+        _render_timeline_subview()
 
     # ── 分支管理 ──
     st.markdown("#### 分支")
