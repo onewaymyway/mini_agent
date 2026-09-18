@@ -436,6 +436,40 @@ def test_materialize_simulation_stores_initial_time_granularity(tmp_path):
     assert store.load_current_state().time_granularity == "1 个季度"
 
 
+def test_list_simulations_sorted_by_created_at_desc_not_dir_name(tmp_path):
+    """模拟列表页排序应该按创建时间倒序（最新排最前），而不是
+    `sim_id` 的目录名字典序——`sim_id` 形如 `{template}_{随机后缀}`，
+    不包含时间信息，字典序和创建时间顺序完全无关。这里故意让"目录名
+    字典序更靠前"的实例反而是"更晚创建"的，验证排序确实依据
+    `created_at` 而不是目录遍历顺序。"""
+    data_dir = tmp_path / "data"
+    older = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="更早创建的",
+        summary="s", vars={}, options=[],
+    )
+    newer = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="更晚创建的",
+        summary="s", vars={}, options=[],
+    )
+    # 直接改写落盘的 created_at，避免测试依赖真实的墙钟时间间隔
+    # （两次调用之间可能在同一毫秒内完成，`now_iso()` 差异不可靠）。
+    older_store = SimStore.for_root(data_dir, older.sim_id)
+    older_manifest = older_store.load_manifest()
+    older_manifest.created_at = "2020-01-01T00:00:00"
+    older_store.save_manifest(older_manifest)
+
+    newer_store = SimStore.for_root(data_dir, newer.sim_id)
+    newer_manifest = newer_store.load_manifest()
+    newer_manifest.created_at = "2026-01-01T00:00:00"
+    newer_store.save_manifest(newer_manifest)
+
+    # 目录名字典序会把 sim_id 更小的排在前面；这里不对 sim_id 做任何
+    # 假设，只断言按 created_at 的实际先后顺序。
+    manifests = engine_mod.list_simulations(data_dir)
+    ids_in_order = [m.sim_id for m in manifests]
+    assert ids_in_order.index(newer.sim_id) < ids_in_order.index(older.sim_id)
+
+
 def test_resolve_hints_fixed_mode_uses_configured_value():
     hints = spec_mod.resolve_hints({"time_granularity_mode": "fixed", "time_granularity": "1 个月"})
     assert "固定模式" in hints["time_granularity_hint"]

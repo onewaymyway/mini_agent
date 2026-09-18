@@ -937,7 +937,17 @@ def get_simulation(data_dir: Path, sim_id: str) -> tuple[SimManifest, SimState, 
 
 
 def list_simulations(data_dir: Path) -> list:
-    """返回所有实例的 manifest 列表（按创建时间顺序，目录名字典序）。"""
+    """返回所有实例的 manifest 列表，按 `created_at` 倒序（最新的排在
+    最前面）。
+
+    `sim_id` 本身是 `{template}_{随机后缀}`（见 `_new_sim_id()`），不
+    包含时间信息，目录名字典序并不等价于创建时间顺序，因此这里显式
+    按 `created_at`（`now_iso()` 生成的 ISO 8601 字符串，可直接按字符
+    串倒序比较）排序，而不是依赖 `list_sim_ids()` 的目录遍历顺序。
+    `created_at` 缺失或解析异常的历史脏数据（理论上不应该出现，
+    `materialize_simulation()` 落盘时总会写入）统一排到最后，不让
+    异常数据影响其它正常实例的排序，也不让整个列表页因此报错。
+    """
     manifests = []
     for sim_id in list_sim_ids(Path(data_dir)):
         store = SimStore.for_root(data_dir, sim_id)
@@ -945,4 +955,5 @@ def list_simulations(data_dir: Path) -> list:
             manifests.append(store.load_manifest())
         except SimNotFoundError:
             continue
+    manifests.sort(key=lambda m: m.created_at or "", reverse=True)
     return manifests

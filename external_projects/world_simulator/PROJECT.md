@@ -1110,3 +1110,28 @@ world_simulator/
   （`world_simulator/tests` 154 个用例全部通过，命令同阶段二十），
   以及人工过一遍"声明两条因果线 → 推进几步 → 详情页查看总览/展开
   因果链"的手动验收路径（见 4.17 节验收标准）。
+- 2026-09-18：修复模拟列表排序 bug——`engine.list_simulations()`
+  原先直接按 `list_sim_ids()` 的目录遍历顺序返回（`store.py` 里
+  `sorted(data_dir.iterdir())`，即 `sim_id` 字典序），但 `sim_id`
+  形如 `{template}_{6 位随机后缀}`（见 `_new_sim_id()`），不含时间
+  信息，字典序与创建时间顺序完全无关，导致「模拟列表」页面看到的
+  实例顺序是随机的，不是用户直觉预期的"最新的排在最前面"。修复：
+  `list_simulations()` 内部改为按 `created_at`（`now_iso()` 生成的
+  ISO 8601 字符串，可直接字符串倒序比较）显式排序，倒序排列，
+  `created_at` 缺失的异常数据统一排到最后（`key=lambda m:
+  m.created_at or ""`），不影响其它正常实例的排序也不报错。这是
+  `list_simulations()` 唯一的落地位置，因此「模拟列表」页
+  (`page_list()`)、「对比视图」/「存档管理」等所有复用这个函数的
+  下拉框/列表也一并获得"最新排最前"的顺序，不需要在各个调用方
+  分别处理。新增 `tests/test_spec_and_engine.py::
+  test_list_simulations_sorted_by_created_at_desc_not_dir_name`
+  （故意构造"目录名字典序更靠前但创建时间更晚"的场景，验证排序确实
+  依据 `created_at` 而非目录遍历顺序），累计 155 个测试全部通过
+  （命令同前）。**已知限制**：极端情况下两个实例在同一毫秒内创建、
+  `created_at` 完全相同时，两者之间的相对顺序不保证稳定（`sort()`
+  对相同 key 的元素保持原有的目录遍历顺序，不是问题，只是不特别
+  声明这种情况下的确定性行为）；`created_at` 本身仍然是"实例创建
+  时刻"，不是"最近一次推进"的时间，如果后续需要"按最近活跃时间
+  排序"，应该改用 `updated_at`（`materialize_simulation()`/
+  `advance()` 均会维护这个字段），本次改动按用户原话"按照时间进行
+  排序"理解为创建时间，未做这个区分。
