@@ -1,8 +1,9 @@
 # world_simulator 迈向"万能模拟器"理想架构改进计划
 
 > **状态**：阶段二十（4.12 节，Causal Knowledge Base）、阶段二十一
-> （4.15 节，Hypothesis Engine）、阶段二十二（4.13 节，多尺度因果线）
-> 已完成，见 `PROJECT.md` 对应交付记录；其余三个方向（阶段二十三、
+> （4.15 节，Hypothesis Engine）、阶段二十二（4.13 节，多尺度因果线）、
+> 阶段二十三（4.14 节，Model Regime Detection / Emergence）
+> 已完成，见 `PROJECT.md` 对应交付记录；其余两个方向（阶段
 > 二十四、二十五）规划中，尚未开始实施。
 > **前置文档**：`next_doc/world_simulator_external_project_plan.md`（原始方案，
 > 阶段一~七）、`next_doc/world_simulator_universal_world_model_upgrade_plan.md`
@@ -259,7 +260,7 @@ Version` 全字段（参考文档第十九节列出的完整 schema）；不做�
 
 ---
 
-### 4.14（P1，阶段二十三）Model Regime Detection / Emergence：允许模型结构在线修正
+### 4.14（P1，阶段二十三，已完成，见 `PROJECT.md` 对应交付记录）Model Regime Detection / Emergence：允许模型结构在线修正
 
 **问题**：`vars` 的字段结构基本在 `spec_generator.create_simulation()`
 生成初始状态时就固定下来。`multi_entity_mode` 允许多个 entity，但
@@ -527,7 +528,7 @@ summary/vars/key_drivers"，`key_drivers`/`causal_links` 只是挂在
   二十三、二十五的前置依赖。**已完成**，见 `PROJECT.md` 对应交付
   记录。
 - **阶段二十三**：4.14 节，Model Regime Detection / Emergence。
-  依赖阶段二十二。
+  依赖阶段二十二。**已完成**，见 `PROJECT.md` 对应交付记录。
 - **阶段二十四**：4.16 节，Reality Loop 完整版。依赖阶段二十，
   建议在阶段二十一之后启动。
 - **阶段二十五**：4.17 节，因果线 UI。依赖阶段二十二，必须排在

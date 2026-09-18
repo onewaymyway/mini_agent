@@ -241,3 +241,11 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
   给"这一步真的有推进"的线**，没有进展的线不要出现在这个对象里，
   不强制每条声明过的线每一步都更新；`{causal_lines_hint}` 显示"未
   声明任何因果线"时，完全不需要输出这个字段。
+- `structural_change`：对象（可选，阶段二十三，Model Regime
+  Detection / Emergence），只有当这一步出现了原模型没预期、且看起来
+  会稳定存在下去的新结构时才给（新的人物/关系、新的稳定机制、或者
+  整个人生阶段性质的转折），格式 `{"kind": "new_entity" |
+  "new_mechanism" | "regime_shift", "description": "一句话",
+  "proposed_fields": {...}}`，绝大多数步骤不应该有这个字段。系统
+  不会自动采纳，只是展示给用户确认，`{confirmed_structural_changes_hint}`
+  里能看到之前已被确认的项，请把它们当成既有事实。

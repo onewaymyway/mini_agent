@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import world_simulator.engine as engine_mod
@@ -1528,3 +1530,233 @@ def test_generate_scenario_without_data_dir_uses_placeholder_hint(tmp_path, monk
         cfg=object(), workspace_root=workspace_root, template="life_sim", intent="随便什么意图",
     )
     assert captured["inputs"]["relevant_knowledge_hint"] == "（暂无相关的已知因果知识）"
+
+
+def test_advance_parses_structural_change_from_llm_output(tmp_path, monkeypatch):
+    """阶段二十三（4.14 节）：`advance_step` 输出里的可选 `structural_change`
+    应该原样解析进 `next_state.structural_change`，并强制补上
+    `accepted: False`/`accepted_at: None`（不管 skill 有没有给这两个
+    字段，都不应该信任它自己声称"已采纳"）；未给出时应为 `None`。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2", "narrative": "n", "next_vars": {}, "options": [],
+                    "structural_change": {
+                        "kind": "new_entity",
+                        "description": "谈判各方之间形成了稳定的联盟结构",
+                        "proposed_fields": {"alliance": {"members": ["甲", "乙"]}},
+                        "accepted": True,  # skill 自己声称已采纳，engine 不应该信任
+                    },
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.structural_change == {
+        "detected": True,
+        "kind": "new_entity",
+        "description": "谈判各方之间形成了稳定的联盟结构",
+        "proposed_fields": {"alliance": {"members": ["甲", "乙"]}},
+        "accepted": False,
+        "accepted_at": None,
+    }
+
+
+def test_advance_ignores_structural_change_with_unknown_kind_or_empty_description(tmp_path, monkeypatch):
+    """`kind` 不是约定三选一之一、或 `description` 为空时，
+    `_normalize_structural_change` 应该视为"没给"，落盘为 `None`，
+    不留一条内容不完整的提示进历史。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2", "narrative": "n", "next_vars": {}, "options": [],
+                    "structural_change": {"kind": "not_a_real_kind", "description": "x"},
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.structural_change is None
+
+
+def test_apply_structural_change_marks_accepted_and_updates_settings(tmp_path):
+    """阶段二十三：`apply_structural_change()` 应该把目标 step 的
+    `structural_change.accepted` 置为 True、记录 `accepted_at`，并把
+    这条变化追加进 `manifest.settings.confirmed_structural_changes`
+    （不修改任何其它 settings 字段/vars 结构）。"""
+    data_dir = tmp_path / "data"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    current = store.load_current_state(manifest.branch)
+    current.structural_change = {
+        "detected": True,
+        "kind": "new_mechanism",
+        "description": "形成了新的定期复盘机制",
+        "proposed_fields": {"cadence": "每季度"},
+        "accepted": False,
+        "accepted_at": None,
+    }
+    history = store.load_history(manifest.branch)
+    history[-1] = current
+    from mini_agent.utils.atomic_write import atomic_write_jsonl
+    atomic_write_jsonl(store.state_history_path(manifest.branch), [s.to_dict() for s in history])
+
+    updated_manifest = engine_mod.apply_structural_change(
+        data_dir, manifest.sim_id, step=current.step
+    )
+
+    reloaded = store.load_history(manifest.branch)
+    reloaded_state = next(s for s in reloaded if s.step == current.step)
+    assert reloaded_state.structural_change["accepted"] is True
+    assert reloaded_state.structural_change["accepted_at"]
+
+    confirmed = updated_manifest.settings["confirmed_structural_changes"]
+    assert len(confirmed) == 1
+    assert confirmed[0]["kind"] == "new_mechanism"
+    assert confirmed[0]["description"] == "形成了新的定期复盘机制"
+    assert confirmed[0]["step"] == current.step
+
+
+def test_apply_structural_change_rejects_missing_or_already_accepted(tmp_path):
+    """没有 `structural_change` 的 step、或已经采纳过的 step，
+    再次调用 `apply_structural_change()` 应该报错而不是静默覆盖。"""
+    data_dir = tmp_path / "data"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+    with pytest.raises(engine_mod.SimEngineError):
+        engine_mod.apply_structural_change(data_dir, manifest.sim_id, step=0)
+
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    current = store.load_current_state(manifest.branch)
+    current.structural_change = {
+        "detected": True, "kind": "regime_shift", "description": "x",
+        "proposed_fields": {}, "accepted": False, "accepted_at": None,
+    }
+    history = store.load_history(manifest.branch)
+    history[-1] = current
+    from mini_agent.utils.atomic_write import atomic_write_jsonl
+    atomic_write_jsonl(store.state_history_path(manifest.branch), [s.to_dict() for s in history])
+
+    engine_mod.apply_structural_change(data_dir, manifest.sim_id, step=0)
+    with pytest.raises(engine_mod.SimEngineError):
+        engine_mod.apply_structural_change(data_dir, manifest.sim_id, step=0)
+
+
+def test_advance_formats_confirmed_structural_changes_hint_for_prompt(tmp_path, monkeypatch):
+    """阶段二十三：`manifest.settings.confirmed_structural_changes` 里
+    已确认的项，应该被拼进 `advance_step` 的
+    `confirmed_structural_changes_hint` 输入，喂给下一步推进的 prompt。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+        settings={
+            "confirmed_structural_changes": [
+                {"step": 1, "kind": "new_entity", "description": "联盟：甲乙同盟",
+                 "proposed_fields": {}, "accepted_at": "2026-01-01T00:00:00"},
+            ]
+        },
+    )
+
+    step_step = _FakeStep("step")
+    captured = {}
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            captured["inputs"] = inputs
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {"next_summary": "s2", "narrative": "n", "next_vars": {}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert "联盟：甲乙同盟" in captured["inputs"]["confirmed_structural_changes_hint"]
+    assert "[new_entity]" in captured["inputs"]["confirmed_structural_changes_hint"]

@@ -169,3 +169,10 @@ triggers: 多方谈判, 谈判模拟, 博弈模拟, 多主体模拟, 信息不�
   理解具体指的是哪个主体的哪个字段（`uncertain_fields`/
   `key_drivers`/`causal_links` 这几个字段引擎不做路径校验，字段名/
   路径怎么写完全是给用户看的说明性文字，不影响任何校验逻辑）。
+- `structural_change`：对象（可选，阶段二十三，Model Regime
+  Detection / Emergence），格式与用途与 `life-sim-template` 完全一致
+  ——谈判场景下典型的触发时机是"各方之间形成了稳定的联盟结构"
+  （`new_entity`，把联盟本身当成新出现的主体）、"出现了一种此前没有
+  的谈判机制"（`new_mechanism`，比如引入了第三方调解人）、或者"谈判
+  性质发生整体转折"（`regime_shift`，比如从"合作谈判"整体转为"零和
+  对抗"）。绝大多数步骤不应该有这个字段。

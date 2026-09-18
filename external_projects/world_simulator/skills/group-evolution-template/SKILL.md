@@ -186,3 +186,8 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
 - `line_updates`：对象（可选，阶段二十二，多尺度因果线），格式与用途
   与 `life-sim-template` 完全一致——仅当创建阶段声明了 `causal_lines`
   才需要考虑，未声明就不用输出。
+- `structural_change`：对象（可选，阶段二十三，Model Regime
+  Detection / Emergence），格式与用途与 `life-sim-template` 完全一致
+  ——只有出现原模型没预期、会稳定存在下去的新结构（新的稳定子群体、
+  新的群体运作机制、或者整个群体运行逻辑的转折）才给，绝大多数步骤
+  不应该有这个字段。

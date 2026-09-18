@@ -229,6 +229,41 @@ class SimState:
     任何已有行为，向后兼容。
     """
 
+    structural_change: Optional[Dict[str, Any]] = None
+    """产生*本状态*这一步，skill 可选给出的"模型结构性变化"报告
+    （阶段二十三，`next_doc/world_simulator_toward_universal_simulator_
+    plan.md` 4.14 节，Model Regime Detection / Emergence）。
+
+    形如 `{"detected": true, "kind": "new_entity" | "new_mechanism" |
+    "regime_shift", "description": "谈判各方之间形成了稳定的联盟
+    结构", "proposed_fields": {...}, "accepted": false,
+    "accepted_at": null}`：
+
+    - `detected`：是否检测到结构性变化，恒为 `true`（字段存在即代表
+      检测到；`None` 表示这一步没有输出，二者含义相同，只是为了
+      兼容 skill 可能显式给出 `false` 的写法，展示层一律按
+      `structural_change is not None and structural_change.get(
+      "detected", True)` 判断）。
+    - `kind`：`new_entity`（新实体）/`new_mechanism`（新机制）/
+      `regime_shift`（整体运行规则切换）三选一。
+    - `description`：一句话描述这个新结构是什么。
+    - `proposed_fields`：skill 建议固化的具体字段内容（自由 JSON，
+      结构由 `kind` 决定，`engine.py` 不解析其内部结构）。
+    - `accepted`：这条结构性变化是否已被用户在详情页手动"采纳"
+      （见 `engine.py::apply_structural_change()`）。**engine 不会
+      自动把这里的内容写入 `manifest.settings`**——只有用户主动
+      确认后，`apply_structural_change()` 才会修改
+      `manifest.settings` 并把这个字段置为 `True`，这是"先发现
+      展示，不自主决定并改写"的保守设计（见演进计划 4.14 节风险
+      提示）。
+    - `accepted_at`：采纳时间（ISO 字符串），未采纳为 `None`。
+
+    默认 `None`：skill 没给出、旧数据、大多数步骤都是 `None`
+    （只在"出现原模型没有预期的稳定新结构"时才输出，延续
+    `granularity_changed`/`resource_violations` 这类"只在发生时才
+    出现"字段的既有设计取舍），不影响任何已有行为，向后兼容。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
@@ -271,6 +306,11 @@ class SimState:
                 str(k): dict(v) for k, v in (data.get("line_updates") or {}).items()
                 if isinstance(v, dict)
             },
+            structural_change=(
+                dict(data["structural_change"])
+                if isinstance(data.get("structural_change"), dict)
+                else None
+            ),
         )
 
 

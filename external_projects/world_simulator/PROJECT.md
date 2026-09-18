@@ -985,3 +985,50 @@ world_simulator/
   去"分支管理"删除不需要的分支。演进计划里剩余三个方向（阶段
   二十三、二十四、二十五：Model Regime Detection、Reality Loop
   完整版、因果线 UI）尚未实施，见该文档第 5 节分期路线图。
+- 2026-09-18：完成阶段二十三（Model Regime Detection / Emergence：
+  允许模型结构在线修正，见 `next_doc/world_simulator_toward_
+  universal_simulator_plan.md` 4.14 节）。**提醒同阶段二十~二十二**：
+  本阶段未经真实使用场景验证价值，后续应优先按真实反馈调整。交付
+  内容：`state_model.py` 新增 `SimState.structural_change`（可选，
+  默认 `None`）——`{detected, kind, description, proposed_fields,
+  accepted, accepted_at}`，`kind` 限定 `new_entity`/`new_mechanism`/
+  `regime_shift` 三选一；`engine.py` 新增 `_normalize_structural_
+  change()` 在 `advance()` 落盘前校验 skill 原始输出（`kind` 不在
+  三选一之内、或 `description` 为空都视为"没给"，不落一条内容不
+  完整的提示进历史），并**强制**把 `accepted` 重置为 `False`——不
+  信任 skill 自己声称"已采纳"。新增公开函数
+  `apply_structural_change(data_dir, sim_id, *, step, branch=None)`：
+  是 `SimState.structural_change` 与 `manifest.settings` 之间**唯一**
+  的写入通道，只有用户在详情页对某一步的提示点击"采纳"才会调用，
+  效果是把该 step 的 `structural_change.accepted` 置为 `True`、记录
+  `accepted_at`，并把这条变化追加进 `settings.confirmed_structural_
+  changes`（列表）——**不会**尝试自动改写 `vars`/`multi_entity_mode`
+  的具体实体结构，engine 不猜"新实体具体应该长成什么 JSON 形状塞进
+  `vars.entities`"，那仍然交给下一次 `advance_step` 由 LLM 结合
+  "已知这个新实体存在"这条提示自行决定如何在叙事/`vars` 里体现。
+  `advance()` 新增 `confirmed_structural_changes_hint` prompt 输入
+  （`_format_confirmed_structural_changes()` 把已确认项拼成人类可读
+  文本），让"已被采纳的新结构"在后续每一步推进时都能被 LLM 当成
+  既有事实参考。`workflows/advance_step.yaml`、三个模板
+  `skills/*/SKILL.md` 同步新增 `structural_change` 可选输出说明。
+  `app.py`：时间线（`_render_timeline`）与"章节回顾"单章视图都新增
+  `_structural_change_html()` 提示渲染 + "采纳为正式结构"按钮（只在
+  未采纳时出现，点击后调用 `apply_structural_change()` 并
+  `st.rerun()`）；对比视图等只读场景复用 `_render_timeline` 时不传
+  `sim_id`/`source_branch`，不会长出这个按钮，同「创建分支」按钮的
+  既有取舍。新增 4 个单测（`test_advance_parses_structural_change_
+  from_llm_output`、`test_advance_ignores_structural_change_with_
+  unknown_kind_or_empty_description`、
+  `test_apply_structural_change_marks_accepted_and_updates_settings`、
+  `test_apply_structural_change_rejects_missing_or_already_accepted`、
+  `test_advance_formats_confirmed_structural_changes_hint_for_
+  prompt`），累计 146 个测试全部通过（命令同阶段二十）。**已知
+  限制**：延续 4.14 节设计本身的保守取舍——"是否固化"完全依赖用户
+  认真核实"采纳"按钮背后的具体内容，系统不做任何二次校验；已确认
+  的结构变化只是作为文本提示喂给下一步 prompt，不保证 LLM 一定会
+  在 `vars`/叙事里正确体现它；`kind: "new_mechanism"` 报告的新机制
+  目前不会自动关联到具体因果线（`causal_links.line_id`），需要用户
+  或后续步骤自己在 `causal_links` 里补上归属，见 4.14 节"优先级与
+  依赖"一段对这一点的说明。演进计划里剩余两个方向（阶段二十四、
+  二十五：Reality Loop 完整版、因果线 UI）尚未实施，见该文档第 5
+  节分期路线图。

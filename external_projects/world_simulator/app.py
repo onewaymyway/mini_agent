@@ -55,6 +55,7 @@ from world_simulator.engine import (
     SimEngineError,
     SimPausedError,
     advance,
+    apply_structural_change,
     delete_simulation,
     get_simulation,
     list_simulations,
@@ -1242,6 +1243,31 @@ def _line_updates_html(state, causal_lines_meta: Optional[List[Dict[str, Any]]] 
     return f'<div class="ws-key-drivers">{"".join(tags)}</div>'
 
 
+_STRUCTURAL_CHANGE_KIND_LABELS = {
+    "new_entity": "🆕 新实体",
+    "new_mechanism": "⚙️ 新机制",
+    "regime_shift": "🌐 运行规则切换",
+}
+
+
+def _structural_change_html(state) -> str:
+    """渲染这一步的"结构性变化"提示（阶段二十三，4.14 节，Model
+    Regime Detection / Emergence）。只负责展示文字部分——是否已采纳的
+    标记、"采纳"按钮由 `_render_timeline` 在调用这个函数之后另外用
+    `st.button` 渲染（HTML 字符串里不能放 Streamlit 组件）。
+    """
+    change = getattr(state, "structural_change", None)
+    if not isinstance(change, dict) or not change.get("description"):
+        return ""
+    kind_label = _STRUCTURAL_CHANGE_KIND_LABELS.get(
+        str(change.get("kind") or ""), "🆕 结构性变化"
+    )
+    accepted = bool(change.get("accepted"))
+    status = "（已采纳为正式结构）" if accepted else "（待确认，见下方按钮）"
+    text = f"{kind_label}：{change.get('description')}{status}"
+    return f'<div class="ws-key-drivers"><span class="ws-key-driver-tag">{_html_text(text)}</span></div>'
+
+
 def _render_timeline(
     history: List,
     *,
@@ -1302,14 +1328,37 @@ def _render_timeline(
         background_note = _background_entities_html(state)
         key_drivers_note = _key_drivers_html(state)
         line_updates_note = _line_updates_html(state, causal_lines_meta)
+        structural_change_note = _structural_change_html(state)
         html = (
             '<div class="ws-chapter">'
             f'<div class="ws-chapter-step">第 {state.step} 步{step_time_suffix}</div>'
             f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
-            f"{granularity_note}{resource_note}{relation_note}{background_note}{line_updates_note}{key_drivers_note}{narrative}{chosen_note}"
+            f"{granularity_note}{resource_note}{relation_note}{background_note}{line_updates_note}{key_drivers_note}{structural_change_note}{narrative}{chosen_note}"
             "</div>"
         )
         st.markdown(html, unsafe_allow_html=True)
+        change = getattr(state, "structural_change", None)
+        if can_fork and isinstance(change, dict) and change.get("description") and not change.get("accepted"):
+            # 阶段二十三：只有能拿到 sim_id/source_branch（即时间线本身
+            # 处于"可操作"上下文，同「创建分支」按钮的前提）时才渲染
+            # 「采纳」按钮——对比视图等只读场景复用同一个渲染函数时不
+            # 应该出现这个按钮，避免在不该改 settings 的地方长出入口。
+            adopt_col, _spacer2 = st.columns([1, 5])
+            with adopt_col:
+                if st.button(
+                    "采纳为正式结构",
+                    key=f"adopt_structural_change_{sim_id}_{source_branch}_{state.step}",
+                    help="确认后会把这条结构性变化记入模拟设置，后续推进会把它当成已知事实提示给系统；不会自动改写具体变量结构。",
+                ):
+                    try:
+                        apply_structural_change(
+                            DATA_DIR, sim_id, step=state.step, branch=source_branch
+                        )
+                    except SimEngineError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success("已采纳，后续推进会把这条新结构当作已知事实提示给系统。")
+                        st.rerun()
         if can_fork:
             fork_col, _spacer = st.columns([1, 5])
             with fork_col:
@@ -2593,18 +2642,35 @@ def page_game() -> None:
     background_note = _background_entities_html(s)
     key_drivers_note = _key_drivers_html(s)
     line_updates_note = _line_updates_html(s, manifest.settings.get("causal_lines"))
+    structural_change_note = _structural_change_html(s)
     narrative_text = _html_text(s.narrative) if s.narrative else "（这一章还没有更多叙事文本。）"
 
     html = (
         '<div class="ws-card" style="min-height: 220px;">'
         f'<div class="ws-chapter-step">第 {s.step} 章{step_time_suffix}{major_tag}</div>'
         f'<div class="ws-chapter-summary" style="font-size:1.15rem;">{_html_text(s.summary)}</div>'
-        f"{granularity_note}{resource_note}{relation_note}{background_note}{line_updates_note}{key_drivers_note}"
+        f"{granularity_note}{resource_note}{relation_note}{background_note}{line_updates_note}{key_drivers_note}{structural_change_note}"
         f'<div class="ws-chapter-narrative">{narrative_text}</div>'
         f"{chosen_note}"
         "</div>"
     )
     st.markdown(html, unsafe_allow_html=True)
+    change = getattr(s, "structural_change", None)
+    if isinstance(change, dict) and change.get("description") and not change.get("accepted"):
+        if st.button(
+            "采纳为正式结构",
+            key=f"adopt_structural_change_game_{manifest.sim_id}_{manifest.branch}_{s.step}",
+            help="确认后会把这条结构性变化记入模拟设置，后续推进会把它当成已知事实提示给系统；不会自动改写具体变量结构。",
+        ):
+            try:
+                apply_structural_change(
+                    DATA_DIR, manifest.sim_id, step=s.step, branch=manifest.branch
+                )
+            except SimEngineError as exc:
+                st.error(str(exc))
+            else:
+                st.success("已采纳，后续推进会把这条新结构当作已知事实提示给系统。")
+                st.rerun()
     if s.vars:
         with st.expander("这一章的关键变量"):
             uncertain_html = _uncertain_fields_html(s)
