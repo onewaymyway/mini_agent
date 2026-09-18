@@ -107,7 +107,9 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
   格式与用途与 `life-sim-template` 完全一致——因果线是默认基础机制，
   不需要用户提前要求。至少给"群体内部演化"一条线，多数场景还能再拆
   出"外部环境/邻近群体动态"这类背景线，一般给 2~4 条；只有极其简单
-  的场景才可以只给一条。
+  的场景才可以只给一条。**每条线还必须同时给出 `future_tree`**
+  （阶段二十六，格式与 `life-sim-template` 完全一致），2~3 个有实质
+  区分度的未来分支（比如"持续扩张"/"停滞内耗"/"分裂瓦解"）。
 
 ## 作为 `advance_step` 挂载时（result_file: next_state.json）
 
@@ -188,6 +190,9 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
 - `line_updates`：对象（默认应该给出，阶段二十二，多尺度因果线），
   格式与用途与 `life-sim-template` 完全一致——因果线是基础机制，不
   需要提前声明才输出，见 `{causal_lines_hint}`。
+- `tree_updates`：数组（可选，阶段二十六），格式与用途与
+  `life-sim-template` 完全一致，这一步印证/排除某条线的未来分支、
+  或催生新可能性时给出。
 - `structural_change`：对象（可选，阶段二十三，Model Regime
   Detection / Emergence），格式与用途与 `life-sim-template` 完全一致
   ——只有出现原模型没预期、会稳定存在下去的新结构（新的稳定子群体、

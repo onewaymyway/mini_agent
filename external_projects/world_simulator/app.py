@@ -43,6 +43,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "entrypoints"))
 
 import _common  # noqa: F401  — 触发 sys.path 设置，未使用其它内容
 from world_simulator import branch_manager as bm
+from world_simulator import causal_tree
 from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
 from world_simulator.autopilot import (
@@ -968,25 +969,28 @@ def page_create() -> None:
     # 推进），不声明则完全沿用单一 time_granularity 的既有行为 ──
     with st.expander("高级：手动调整因果线声明（可选，因果线本身默认就有）"):
         st.markdown(
-            '<span class="ws-muted">因果线是这次模拟的默认基础机制，不需要在这里手动声明——'
-            "AI 已经按下方草稿自动判断出了几条因果线（如果留空，推进过程中也会"
-            "自动识别并登记，详情页「因果线总览」会实时展示）。这里只是给你一个"
-            "手动覆盖/精修的入口：如果想改用别的线名/节奏，或者强制拆出某条线，"
-            "可以直接编辑下面这个 JSON 数组。例如：\n"
-            '`[{"id": "tech", "label": "技术线", "time_granularity": "年"}, '
-            '{"id": "negotiation", "label": "谈判线", "time_granularity": "轮"}]`。'
-            "留空表示完全交给 AI 自行判断，不是关闭这个功能。</span>",
+            '<span class="ws-muted">创建模拟就会有核心因果线，每条线还自带一棵初始的'
+            "\"未来因果树\"（`future_tree.branches`，几个有区分度的可能发展方向，不是"
+            "只有一条延续路径）——AI 已经按下方草稿给出了建议，就算留空/AI 没给全，"
+            "系统也会用通用模板兜底补全，保证不会出现\"没有因果线\"的情况。这里是"
+            "手动覆盖/精修的入口：可以改线名/节奏，也可以直接编辑每条线的 "
+            "future_tree.branches（每个分支形如 "
+            '{"id": ..., "description": ..., "likelihood": "high"|"medium"|"low"}'
+            "）。留空表示完全交给系统的默认草稿+兜底模板，不是关闭这个功能。</span>",
             unsafe_allow_html=True,
         )
         causal_lines_default = json.dumps(
-            list(getattr(draft, "causal_lines", None) or []), ensure_ascii=False
-        ) if getattr(draft, "causal_lines", None) else ""
+            causal_tree.ensure_future_trees(getattr(draft, "causal_lines", None), as_of_step=0),
+            ensure_ascii=False,
+        )
         causal_lines_text = st.text_area(
-            "因果线声明（JSON 数组，可选）",
+            "因果线声明（含未来因果树，JSON 数组）",
             value=st.session_state.get("create_causal_lines", causal_lines_default),
             key="create_causal_lines_input",
-            height=80,
-            placeholder='[{"id": "tech", "label": "技术线", "time_granularity": "年"}]',
+            height=140,
+            placeholder='[{"id": "tech", "label": "技术线", "time_granularity": "年", '
+            '"future_tree": {"branches": [{"id": "fast", "description": "快速发展", '
+            '"likelihood": "medium"}]}}]',
         )
 
     # ── Reality Sync 轻量版（阶段十八，4.11 节）：用户手动填一句真实
@@ -1374,6 +1378,41 @@ def _structural_change_html(state) -> str:
     return f'<div class="ws-key-drivers"><span class="ws-key-driver-tag">{_html_text(text)}</span></div>'
 
 
+def _tree_updates_html(state, causal_lines_meta: Optional[List[Dict[str, Any]]] = None) -> str:
+    """渲染这一步对因果线"未来树"的修正摘要（阶段二十六，`next_doc/
+    world_simulator_causal_line_future_tree_plan.md`），对应
+    `SimState.tree_updates`。没有任何修正时返回空字符串。"""
+    updates = getattr(state, "tree_updates", None) or []
+    if not updates:
+        return ""
+    label_by_id = {
+        str(line.get("id")): str(line.get("label") or line.get("id"))
+        for line in (causal_lines_meta or [])
+        if isinstance(line, dict) and line.get("id")
+    }
+    parts = []
+    for item in updates:
+        if not isinstance(item, dict):
+            continue
+        line_id = str(item.get("line_id") or "")
+        label = label_by_id.get(line_id, line_id)
+        pieces = []
+        if item.get("confirmed_branch"):
+            pieces.append(f"印证了分支「{item['confirmed_branch']}」")
+        pruned = item.get("pruned_branches") or []
+        if pruned:
+            pieces.append(f"排除了分支「{'、'.join(str(x) for x in pruned)}」")
+        new_ids = item.get("new_branch_ids") or []
+        if new_ids:
+            pieces.append(f"新增了分支「{'、'.join(str(x) for x in new_ids)}」")
+        if pieces:
+            parts.append(f"{label}：{'；'.join(pieces)}")
+    if not parts:
+        return ""
+    text = "🌳 未来树更新 — " + "；".join(parts)
+    return f'<div class="ws-key-drivers"><span class="ws-key-driver-tag">{_html_text(text)}</span></div>'
+
+
 def _render_timeline(
     history: List,
     *,
@@ -1434,12 +1473,13 @@ def _render_timeline(
         background_note = _background_entities_html(state)
         key_drivers_note = _key_drivers_html(state)
         line_updates_note = _line_updates_html(state, causal_lines_meta)
+        tree_updates_note = _tree_updates_html(state, causal_lines_meta)
         structural_change_note = _structural_change_html(state)
         html = (
             '<div class="ws-chapter">'
             f'<div class="ws-chapter-step">第 {state.step} 步{step_time_suffix}</div>'
             f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
-            f"{granularity_note}{resource_note}{relation_note}{background_note}{line_updates_note}{key_drivers_note}{structural_change_note}{narrative}{chosen_note}"
+            f"{granularity_note}{resource_note}{relation_note}{background_note}{line_updates_note}{tree_updates_note}{key_drivers_note}{structural_change_note}{narrative}{chosen_note}"
             "</div>"
         )
         st.markdown(html, unsafe_allow_html=True)
@@ -1617,8 +1657,11 @@ def _render_causal_lines_overview(
     st.markdown(
         '<span class="ws-muted">按因果线聚合展示每条线各自的时间点序列'
         "（比如技术线走到第几年、谈判线走到第几轮），点击展开可以看"
-        "只属于这条线的因果链条目；每条线下方还给出基于已有因果链的"
-        "未来可能走向，供参考并可以直接留下修改意见。</span>",
+        "只属于这条线的因果链条目；每条线下方是这条线的\"未来因果树\"——"
+        "创建模拟时就已经生成，展示从当前节点出发的若干可能分支（不是"
+        "只有一条延续路径），推进过程中会随实际走向自动修正，也可以"
+        "手动标记\"已印证/已排除\"；再下方是可选的历史外推参考，并可以"
+        "直接留下修改意见。</span>",
         unsafe_allow_html=True,
     )
 
@@ -1695,11 +1738,72 @@ def _render_causal_lines_overview(
                         unsafe_allow_html=True,
                     )
 
+        # 阶段二十六（`next_doc/world_simulator_causal_line_future_tree_
+        # plan.md`）：因果树——创建模拟时就已经落盘（见
+        # `causal_tree.ensure_future_trees()`），不要求先推进一步才能
+        # 看到。渲染成缩进列表：●已印证 / ○开放 / ✕已排除，支持用户
+        # 直接点击手动修正，不需要等 skill 输出 `tree_updates`。
+        line_meta_dict = next(
+            (line for line in causal_lines_meta if isinstance(line, dict) and str(line.get("id")) == line_id),
+            None,
+        )
+        future_tree = (line_meta_dict or {}).get("future_tree") if line_meta_dict else None
+        branches = [b for b in (future_tree or {}).get("branches", []) if isinstance(b, dict)] if isinstance(future_tree, dict) else []
+        st.markdown(
+            f'<div class="ws-muted" style="margin-top:0.4rem;">🌳 「{_html_text(label)}」未来因果树'
+            "（从当前节点出发的若干可能分支，不是只有一条路）：</div>",
+            unsafe_allow_html=True,
+        )
+        if not branches:
+            st.markdown(
+                '<span class="ws-causal-line-empty">这条线目前还没有未来树数据（旧实例可能缺失）。</span>',
+                unsafe_allow_html=True,
+            )
+        else:
+            status_icon = {"confirmed": "●", "open": "○", "diverged": "◐", "pruned": "✕"}
+            status_label = {
+                "confirmed": "已印证", "open": "开放", "diverged": "已偏离", "pruned": "已排除",
+            }
+            likelihood_label = {"high": "可能性高", "medium": "可能性中", "low": "可能性低"}
+            for branch in branches:
+                b_id = str(branch.get("id") or "")
+                b_status = str(branch.get("status") or "open")
+                b_desc = str(branch.get("description") or "")
+                b_like = str(branch.get("likelihood") or "medium")
+                icon = status_icon.get(b_status, "○")
+                cols = st.columns([6, 1, 1])
+                with cols[0]:
+                    st.markdown(
+                        f'<div class="ws-chapter-choice">{icon} <b>{_html_text(status_label.get(b_status, b_status))}</b>'
+                        f"（{_html_text(likelihood_label.get(b_like, b_like))}）— {_html_text(b_desc)}</div>",
+                        unsafe_allow_html=True,
+                    )
+                if manifest is not None and sim_id and b_status not in ("confirmed",):
+                    with cols[1]:
+                        if st.button("标为已印证", key=f"tree_confirm_{sim_id}_{line_id}_{b_id}"):
+                            update_settings(
+                                DATA_DIR, sim_id,
+                                causal_lines=causal_tree.set_branch_status(
+                                    causal_lines_meta, line_id, b_id, "confirmed"
+                                ),
+                            )
+                            st.rerun()
+                if manifest is not None and sim_id and b_status not in ("pruned",):
+                    with cols[2]:
+                        if st.button("标为已排除", key=f"tree_prune_{sim_id}_{line_id}_{b_id}"):
+                            update_settings(
+                                DATA_DIR, sim_id,
+                                causal_lines=causal_tree.set_branch_status(
+                                    causal_lines_meta, line_id, b_id, "pruned"
+                                ),
+                            )
+                            st.rerun()
+
         futures = futures_by_id.get(line_id) or []
         if futures:
             st.markdown(
-                f'<div class="ws-muted" style="margin-top:0.3rem;">🔮 「{_html_text(label)}」未来可能的走向'
-                "（基于现有因果链的推演，不是确定预测）：</div>",
+                f'<div class="ws-muted" style="margin-top:0.3rem;">🔮 「{_html_text(label)}」的简单历史外推'
+                "（基于最近因果链的单路径推演，仅作补充参考，完整的分叉可能见上方\"未来因果树\"）：</div>",
                 unsafe_allow_html=True,
             )
             for fut in futures:
@@ -1942,20 +2046,22 @@ def page_detail() -> None:
                 placeholder='[{"type": "transfer", "from": "cash", "to": "inventory.value"}]',
             )
         cur_causal_lines = cur_settings.get("causal_lines") or []
-        with st.expander("高级：手动调整因果线声明（可选，因果线本身默认就有）"):
+        with st.expander("高级：手动调整因果线声明与未来因果树（可选，因果线本身默认就有）"):
             st.markdown(
-                '<span class="ws-muted">因果线是默认基础机制，AI 会自行判断/登记因果线，'
-                "不需要在这里手动声明才会生效——这里只是提供手动覆盖/改名的入口。"
-                "对某条具体因果线的修改意见，建议直接去「因果线总览」标签页对应那条线下面填写，"
-                "会更精准地喂给下一步推进。</span>",
+                '<span class="ws-muted">因果线是默认基础机制，每条线自带的未来因果树'
+                "（`future_tree.branches`）也已经落盘——这里只是提供手动覆盖/改名/直接"
+                "编辑分支的入口。要标记某个分支\"已印证/已排除\"，更推荐去「因果线总览」"
+                "标签页对应那条线下面直接点按钮；对某条线的整体修改意见，也建议在"
+                "「因果线总览」里填写，会更精准地喂给下一步推进。</span>",
                 unsafe_allow_html=True,
             )
             new_causal_lines_text = st.text_area(
-                "因果线声明（JSON 数组，可选）",
+                "因果线声明（含未来因果树，JSON 数组）",
                 value=json.dumps(cur_causal_lines, ensure_ascii=False) if cur_causal_lines else "",
                 key="settings_causal_lines",
-                height=80,
-                placeholder='[{"id": "tech", "label": "技术线", "time_granularity": "年"}]',
+                height=140,
+                placeholder='[{"id": "tech", "label": "技术线", "time_granularity": "年", '
+                '"future_tree": {"branches": [{"id": "fast", "description": "快速发展"}]}}]',
             )
         cur_calibration_notes = str(cur_settings.get("calibration_notes") or "")
         with st.expander("高级：填入真实世界参考信息（阶段十八，可选）"):

@@ -1199,3 +1199,60 @@ world_simulator/
   `test_advance_does_not_duplicate_already_declared_causal_lines`；
   `tests/test_hypothesis.py` 新增 `project_line_futures` 相关四个
   测试。累计 162 个测试全部通过（`python3 -m pytest tests/ -q`）。
+- 2026-09-18（用户新增需求，独立方案见 `next_doc/
+  world_simulator_causal_line_future_tree_plan.md`）：因果线的
+  "未来因果树"。对应用户原话"现在因果线只有已进行的，应该还能显示
+  未来可能发展的不同可能线条的显示……当创建模拟的时候，就应该创建
+  出主要的核心的因果线了，每个因果线都应该有未来的发展因果树。这些
+  因果树，也可以在模拟过程中不断地修正优化"。上一条交付记录的
+  "已知限制"已经预告了这个后续需求。交付内容：
+  1. **新增 `world_simulator/causal_tree.py`**：
+     `ensure_future_trees()`（保证因果线列表非空、每条线都有合法
+     `future_tree`，列表整体为空时兜底生成一条 `main_line`）、
+     `normalize_future_tree()`/`build_default_future_tree()`（校验
+     与通用兜底模板："延续现状/加速好转/遇阻受挫"三个维度）、
+     `auto_register_lines()`（`_auto_register_causal_lines()` 的
+     核心逻辑迁移过来，新登记的线同样带默认未来树）、
+     `apply_tree_updates()`（合并 `advance_step` 可选输出的
+     `tree_updates`：标记分支"已印证/已排除"、追加新分支，只做
+     合并不做判断）、`set_branch_status()`（供用户在 UI 上手动
+     修正分支状态，不需要走"提议→确认"两步，因果线本身的风险
+     量级远低于 `structural_change`）。
+  2. **创建即有核心因果线+未来树**：`engine.materialize_simulation()`
+     落盘前统一调用 `ensure_future_trees()`，不论调用方是独立看板
+     创建向导还是 CLI/entrypoint，行为完全一致——不再要求"先推进
+     一步才看得到因果线"。`spec_generator._resolve_causal_lines_hint()`
+     新增 `stage` 参数，创建阶段（`stage="create"`）明确要求 skill
+     规划 2~4 条核心因果线且每条线给出初始 `future_tree`（2~3 个
+     有实质区分度的分支），推进阶段（`stage="advance"`）列出各线
+     当前的未来分支状态，并说明 `tree_updates` 的可选输出格式。
+  3. **推进中允许修正因果树**：`SimState` 新增 `tree_updates`
+     字段（审计摘要，记录这一步印证/排除/新增了哪些分支 id，不
+     重复存储分支全文）；`engine._apply_tree_updates()` 在
+     `_auto_register_causal_lines()` 之后、`store.append_state()`
+     之前调用，合并结果同时写回 `manifest.settings.causal_lines`
+     和 `next_state.tree_updates`。
+  4. **UI 展示**：`app.py::_render_causal_lines_overview()` 每条线
+     新增"🌳 未来因果树"区块——用缩进列表+状态图标（●已印证/○开放/
+     ◐已偏离/✕已排除）展示各分支，每个分支旁边有"标为已印证/标为
+     已排除"按钮，点击直接调用 `causal_tree.set_branch_status()`
+     写回；原有的`project_line_futures()`单路径历史外推区块保留、
+     重新定位为"🔮 简单历史外推（辅助参考）"；时间线新增
+     `tree_updates` 审计提示（"🌳 未来树更新 — ..."）；创建向导
+     默认展示含 `future_tree` 的因果线 JSON（不再是空文本框）。
+  5. **三个模板的 `SKILL.md`** 同步补充 `future_tree`（创建时）/
+     `tree_updates`（推进时）的输出格式说明。
+  **已知限制**：树的合理性完全依赖 LLM 输出质量，`normalize_
+  future_tree()` 只校验形状（有没有 id/description/合法枚举值），
+  不校验内容是否真的"有实质区分度"；分支状态手动修正没有撤销 UI
+  （审计记录仍在 `tree_updates` 里，理论上可回溯，但没有做撤销
+  入口）；因果线 UI 仍然是纯列表展示，不是图形化树，如果后续需要
+  更直观的可视化需要额外评估引入图形库/Mermaid 的成本；不做分支
+  概率归一化，保持和 `confidence: high/medium/low` 一致的克制
+  风格。新增 `tests/test_causal_tree.py`（7 个单元测试）；更新
+  `tests/test_spec_and_engine.py` 里
+  `test_generate_scenario_binds_skill_and_parses_draft`/
+  `test_advance_auto_registers_undeclared_causal_line_ids`/
+  `test_advance_does_not_duplicate_already_declared_causal_lines`
+  以匹配"创建即有 `main_line`"的新行为。累计 169 个测试全部通过
+  （`python3 -m pytest tests/ -q`）。

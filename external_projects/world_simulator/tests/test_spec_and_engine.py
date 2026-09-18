@@ -160,8 +160,10 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
     }
     # 因果线是默认基础机制（不需要用户提前声明），这里只校验语义，不
     # 校验措辞原文，避免和 `test_resolve_hints_causal_lines_hint_variants`
-    # 重复维护同一句文案。
-    assert "默认" in causal_lines_hint and "line_updates" in causal_lines_hint
+    # 重复维护同一句文案。创建阶段（阶段二十六）要求给出核心因果线+
+    # 未来因果树，措辞与推进阶段（`line_updates`）不同，改为校验
+    # `future_tree`/`causal_lines`。
+    assert "future_tree" in causal_lines_hint and "causal_lines" in causal_lines_hint
     assert draft.title == "毕业生的选择"
     assert draft.vars["age"] == 22
     assert draft.options[0].id == "a"
@@ -1397,7 +1399,12 @@ def test_advance_auto_registers_undeclared_causal_line_ids(tmp_path, monkeypatch
         data_dir, template="life_sim", intent="i", title="t", summary="s",
         vars={}, options=[],
     )
-    assert manifest.settings.get("causal_lines") in (None, [])
+    # 阶段二十六：创建模拟就必须有核心因果线——完全没有声明时兜底生成
+    # 一条"主线"（`main_line`），不再是空列表。
+    initial_ids = {
+        line["id"] for line in manifest.settings.get("causal_lines") or [] if isinstance(line, dict)
+    }
+    assert initial_ids == {"main_line"}
 
     step_step = _FakeStep("step")
 
@@ -1413,9 +1420,9 @@ def test_advance_auto_registers_undeclared_causal_line_ids(tmp_path, monkeypatch
             pass
 
         def run(self, wf, inputs):
-            # 未声明任何因果线时，提示语应该邀请 skill 自主判断，而不是
-            # 告诉它"不需要输出 line_updates"。
-            assert "默认" in inputs["causal_lines_hint"]
+            # 因果线已经在创建时兜底生成了 main_line，推进阶段的提示语
+            # 应该列出已识别的线（而不是"完全没有声明"的默认邀请文案）。
+            assert "main_line" in inputs["causal_lines_hint"]
             result_file = _write_result_file(
                 tmp_path, "advance_result.json",
                 {
@@ -1445,14 +1452,16 @@ def test_advance_auto_registers_undeclared_causal_line_ids(tmp_path, monkeypatch
     ids = {
         line["id"] for line in reloaded.settings.get("causal_lines") or [] if isinstance(line, dict)
     }
-    assert ids == {"career", "finance"}
+    # 兜底生成的 main_line 仍然保留，新自发出现的 career/finance 追加登记。
+    assert ids == {"main_line", "career", "finance"}
     # 自动登记的线标注了 `auto_discovered`，UI/后续逻辑可以据此区分
     # "用户手填的"和"系统发现的"，不强制要求，但不应该丢失这个信息。
     auto_flags = {
         line["id"]: line.get("auto_discovered")
         for line in reloaded.settings.get("causal_lines") or [] if isinstance(line, dict)
     }
-    assert auto_flags == {"career": True, "finance": True}
+    assert auto_flags.get("career") is True
+    assert auto_flags.get("finance") is True
 
 
 def test_advance_does_not_duplicate_already_declared_causal_lines(tmp_path, monkeypatch):
@@ -1500,9 +1509,14 @@ def test_advance_does_not_duplicate_already_declared_causal_lines(tmp_path, monk
         cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
     )
     reloaded = SimStore.for_root(data_dir, manifest.sim_id).load_manifest()
-    assert reloaded.settings.get("causal_lines") == [
-        {"id": "tech", "label": "技术线", "time_granularity": "年"}
-    ]
+    lines = reloaded.settings.get("causal_lines") or []
+    # 不应该重复登记同一个 id——列表里只有一条 "tech"（其余字段会因为
+    # `ensure_future_trees()` 兜底补上 `future_tree`，不再逐字段比对）。
+    assert [line["id"] for line in lines] == ["tech"]
+    tech_line = lines[0]
+    assert tech_line["label"] == "技术线"
+    assert tech_line["time_granularity"] == "年"
+    assert tech_line["future_tree"]["branches"]
 
 
 def test_advance_records_causal_links_into_knowledge_base(tmp_path, monkeypatch):

@@ -264,6 +264,30 @@ class SimState:
     出现"字段的既有设计取舍），不影响任何已有行为，向后兼容。
     """
 
+    tree_updates: List[Dict[str, Any]] = field(default_factory=list)
+    """产生*本状态*这一步，对某条因果线的"未来树"（`manifest.settings.
+    causal_lines[].future_tree`，见 `world_simulator/causal_tree.py`）
+    实际生效的修正摘要（阶段二十六，`next_doc/
+    world_simulator_causal_line_future_tree_plan.md`）。
+
+    每一项形如 `{"line_id": "tech_line", "confirmed_branch":
+    "tech_fast", "pruned_branches": ["tech_slow"], "new_branch_ids":
+    ["tech_pivot"]}`：`confirmed_branch` 是这一步印证的分支 id（可能
+    为空字符串，表示这一步没有印证任何分支）、`pruned_branches` 是
+    这一步被排除的分支 id 列表、`new_branch_ids` 是这一步新长出的
+    分支 id 列表——具体的分支内容（描述/likelihood/status）落在
+    `manifest.settings.causal_lines` 上，这里只留一份"这一步动了
+    哪条线、动了什么"的审计摘要，供时间线展示"这一步修正了未来树"，
+    不重复存储分支全文。
+
+    由 `engine.py::_apply_tree_updates()` 在合并 `advance_step` 可选
+    输出的 `tree_updates` 后生成，engine 本身不做任何判断（哪个分支
+    该确认/排除完全由 skill 输出决定，engine 只负责合并落盘，同
+    `line_updates` 的既有分工）。默认空列表：skill 没给出、这一步
+    没有任何有效的树修正、旧数据都可以为空，不影响任何已有行为，
+    向后兼容。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
@@ -306,6 +330,9 @@ class SimState:
                 str(k): dict(v) for k, v in (data.get("line_updates") or {}).items()
                 if isinstance(v, dict)
             },
+            tree_updates=[
+                dict(x) for x in (data.get("tree_updates") or []) if isinstance(x, dict)
+            ],
             structural_change=(
                 dict(data["structural_change"])
                 if isinstance(data.get("structural_change"), dict)
@@ -486,6 +513,30 @@ class SimManifest:
       随时增删。**不引入因果线之间的调度器**（比如"技术线每 5 步才
       推进一次"这种强制节奏控制）——每一步该更新哪些线完全由 skill
       自行判断，engine 不做任何强约束，只负责落盘 `line_updates`。
+
+      每一项额外支持一个可选字段 `future_tree`（阶段二十六，
+      `next_doc/world_simulator_causal_line_future_tree_plan.md`，
+      因果线的"未来因果树"）：`{"as_of_step": 0, "branches": [
+      {"id": "tech_fast", "description": "AI 成本快速下降",
+      "likelihood": "medium", "status": "open", "children": []}]}`
+      ——`branches` 是这条线从"当前节点"出发的若干可能分支（不是只有
+      一条延续路径），`status` 只分 `open`/`confirmed`/`diverged`/
+      `pruned` 四档，不做概率归一化（同 `confidence: high/medium/
+      low` 一以贯之的克制风格）；`children` 可选，支持多层分叉，但
+      不强制。**这个字段不需要用户/skill 手动保证一定存在**——
+      `materialize_simulation()` 落盘 step 0 之前会统一调用
+      `world_simulator.causal_tree.ensure_future_trees()` 兜底：
+      不管创建向导有没有手填、skill 有没有认真输出，每条因果线落盘
+      时都保证有一棵合法的未来树（没有则用通用兜底模板生成），且
+      因果线列表本身为空时也会兜底生成一条"主线"——这是"创建模拟
+      就应该有核心因果线和未来因果树"这一要求的落地点，不再要求
+      "先推进一步才看得到因果线"。推进过程中 `advance_step` 可选
+      输出 `tree_updates`，由 `engine.py::_apply_tree_updates()`
+      合并进对应线的 `future_tree`（标记某分支"已印证"/"已排除"、
+      或追加一个原树上没有的新分支），合并结果记入
+      `SimState.tree_updates` 供审计；用户也可以在详情页直接点击
+      "标记为已印证/已排除"手动修正（`causal_tree.
+      set_branch_status()`），不需要等 skill 输出。
     """
 
     def to_dict(self) -> Dict[str, Any]:

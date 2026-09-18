@@ -19,7 +19,7 @@ import string
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from world_simulator import knowledge_base
+from world_simulator import causal_tree, knowledge_base
 from world_simulator.spec_generator import ScenarioGenerationError, generate_scenario, resolve_hints
 from world_simulator.state_model import ChoiceOption, SimManifest, SimState
 from world_simulator.store import SimNotFoundError, SimStore, list_sim_ids, now_iso
@@ -353,6 +353,18 @@ def materialize_simulation(
         time_granularity=time_granularity,
         uncertain_fields=list(uncertain_fields or []),
     )
+    # 阶段二十六（`next_doc/world_simulator_causal_line_future_tree_
+    # plan.md`）：创建模拟就必须有核心因果线、且每条线自带一棵初始
+    # 未来因果树——不管调用方（独立看板向导 / CLI 一步到位创建）有没有
+    # 手填、skill 有没有认真输出，这里统一兜底，保证"没推进也能看到
+    # 因果线和它的未来分支"。就地改写刚构造好的 manifest.settings，
+    # 不影响调用方传入的原始字典。
+    manifest.settings = {
+        **manifest.settings,
+        "causal_lines": causal_tree.ensure_future_trees(
+            manifest.settings.get("causal_lines"), as_of_step=0
+        ),
+    }
     store.save_manifest(manifest)
     store.append_state(state0, branch="main")
     store.save_pilot_config("main", manifest.pilot_mode, manifest.autopilot)
@@ -462,40 +474,47 @@ def _auto_register_causal_lines(manifest: "SimManifest", next_state: "SimState")
     的 id 正式记下来，下一步推进时 prompt 里就能看到它们，也能出现在
     "因果线总览"视图里。
     """
-    existing_lines = list(manifest.settings.get("causal_lines") or [])
-    existing_ids = {
-        str(line.get("id")) for line in existing_lines
-        if isinstance(line, dict) and str(line.get("id") or "").strip()
-    }
-
-    discovered_ids: List[str] = []
-    for lid in (next_state.line_updates or {}).keys():
-        lid = str(lid).strip()
-        if lid and lid not in existing_ids and lid not in discovered_ids:
-            discovered_ids.append(lid)
-    for link in (next_state.causal_links or []):
-        if not isinstance(link, dict):
-            continue
-        lid = str(link.get("line_id") or "").strip()
-        if lid and lid not in existing_ids and lid not in discovered_ids:
-            discovered_ids.append(lid)
-
-    if not discovered_ids:
-        return
-
-    new_entries = [
-        {
-            "id": lid,
-            "label": lid,
-            "time_granularity": next_state.time_granularity or "",
-            "auto_discovered": True,
-        }
-        for lid in discovered_ids
+    line_update_ids = [str(lid) for lid in (next_state.line_updates or {}).keys()]
+    causal_link_line_ids = [
+        str(link.get("line_id") or "")
+        for link in (next_state.causal_links or [])
+        if isinstance(link, dict) and str(link.get("line_id") or "").strip()
     ]
     manifest.settings = {
         **manifest.settings,
-        "causal_lines": existing_lines + new_entries,
+        "causal_lines": causal_tree.auto_register_lines(
+            manifest.settings.get("causal_lines"),
+            line_update_ids=line_update_ids,
+            causal_link_line_ids=causal_link_line_ids,
+            as_of_step=next_state.step,
+        ),
     }
+
+
+def _apply_tree_updates(
+    manifest: "SimManifest", next_state: "SimState", data: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """把 `advance_step` 可选输出的 `tree_updates` 合并进对应因果线的
+    `future_tree`（阶段二十六，`next_doc/
+    world_simulator_causal_line_future_tree_plan.md`）。就地改写
+    `manifest.settings`，返回落到 `SimState.tree_updates` 的审计摘要。
+
+    纯粹的合并操作，不做任何判断——"哪个分支该确认/排除/新增"完全
+    由 skill 输出决定，与 `_auto_register_causal_lines()`"发现即登记，
+    不需要用户额外确认"是同一量级的风险（只是调整树的展示状态，不
+    污染 `vars`/推进逻辑），因此不像 `structural_change` 那样需要
+    "先展示，用户手动采纳"。
+    """
+    raw_updates = data.get("tree_updates")
+    if not isinstance(raw_updates, list) or not raw_updates:
+        return []
+    updated_lines, audit = causal_tree.apply_tree_updates(
+        manifest.settings.get("causal_lines"), raw_updates, next_state.step
+    )
+    if not audit:
+        return []
+    manifest.settings = {**manifest.settings, "causal_lines": updated_lines}
+    return audit
 
 
 def advance(
@@ -791,7 +810,6 @@ def advance(
         },
         structural_change=_normalize_structural_change(data.get("structural_change")),
     )
-    store.append_state(next_state, branch=branch)
 
     # 因果线不应该有前置条件（用户要求）：`line_updates`/
     # `causal_links.line_id` 里只要出现了 `manifest.settings.causal_lines`
@@ -800,8 +818,19 @@ def advance(
     # 内容。这是纯粹的\"发现并登记\"，不像 `structural_change` 那样需要
     # 用户手动"采纳"：因果线本身只是一种展示/组织维度，登记错了也不会
     # 污染 `vars`/推进逻辑，风险和 `structural_change` 不在同一量级，
-    # 不需要额外的确认环节。
+    # 不需要额外的确认环节。新登记的线同样会带上兜底的默认未来树（阶段
+    # 二十六），保证"自发出现的线"不会缺未来展望。
     _auto_register_causal_lines(manifest, next_state)
+
+    # 阶段二十六：合并这一步对因果线"未来树"的修正（印证/排除/新增
+    # 分支），必须在 `_auto_register_causal_lines()` 之后调用——新登记
+    # 的线需要先存在于 `manifest.settings.causal_lines` 里，
+    # `tree_updates` 才有对象可以合并。合并结果同时记回 `next_state.
+    # tree_updates`（审计摘要），需要在 `store.append_state()` 之前
+    # 完成，否则历史里就存不到这份摘要。
+    next_state.tree_updates = _apply_tree_updates(manifest, next_state, data)
+
+    store.append_state(next_state, branch=branch)
 
     # 阶段二十（4.12 节 2.）：把这一步的结构化因果链沉淀进跨模拟知识库。
     # 纯旁路操作，落盘之后才做、失败不影响本次推进（见

@@ -85,30 +85,63 @@ def _resolve_background_entities_hint(settings: "Dict[str, Any] | None") -> str:
     )
 
 
-def _resolve_causal_lines_hint(settings: "Dict[str, Any] | None") -> str:
+def _resolve_causal_lines_hint(
+    settings: "Dict[str, Any] | None", *, stage: str = "advance"
+) -> str:
     """把 `settings.causal_lines` 转成喂给 prompt 的一句话提示（阶段
-    二十二，4.13 节，多尺度因果线；本提示的默认分支在用户要求下已
-    改为"因果线是模拟的默认基础机制，不需要前置声明"，见
-    `next_doc/world_simulator_toward_universal_simulator_plan.md`
-    之后的补充说明）。
+    二十二，4.13 节，多尺度因果线；阶段二十六，`next_doc/
+    world_simulator_causal_line_future_tree_plan.md`，因果线的"未来
+    因果树"）。
 
-    未声明（用户没有在创建向导/设置面板里手动填因果线 JSON）时，
-    不再告诉 skill "不需要输出 line_updates"——因果线本身不应该有
-    前置条件，改为要求 skill 自己判断这次模拟里存在哪几条节奏可能
-    不同的因果线并自行起 id，`engine.advance()` 会在落盘时把
-    `line_updates`/`causal_links.line_id` 里出现的新 id 自动登记进
-    `manifest.settings.causal_lines`（见 `engine._auto_register_causal_lines`），
-    不需要用户提前手填 JSON 才能看到"因果线总览"视图。
+    `stage == "create"`（`generate_scenario`，还没有历史）：不再是
+    "可选、留空表示不需要"——明确要求 skill 规划出 2~4 条核心因果线，
+    **且每条线必须同时给出一棵初始的未来因果树（`future_tree`，2~3
+    个有实质区分度的分支，而不是一条延续路径）**。就算 skill 没有
+    认真遵守，`spec_generator.generate_scenario()` 之后仍会用
+    `causal_tree.ensure_future_trees()` 兜底补全，但 prompt 里明确
+    要求，能让第一次生成的树更贴合具体情境，而不是全部退化成兜底的
+    通用模板。
 
-    已声明/已自动登记时，列出每条线的 id/label/节奏（以及用户在
-    详情页对这条线提的修改意见，如果有），要求 skill 在
-    `line_updates` 里用这些 id 作为 key（`causal_links` 的可选
-    `line_id` 字段同理），并允许随时用新 id 开一条新线。
+    `stage == "advance"`（默认）：列出每条线的 id/label/节奏/当前未来
+    分支（以及用户在详情页对这条线提的修改意见，如果有），要求 skill
+    在 `line_updates` 里用这些 id 作为 key 给出实际进展，并且可选给出
+    `tree_updates`——这一步的走向印证/排除了哪个已有分支，或者催生了
+    一个原来树上没有的新分支。因果线本身仍然不要求前置声明——没有任何
+    声明时退化为"自己判断因果线并自行起 id"（`engine.
+    _auto_register_causal_lines`/`causal_tree.auto_register_lines` 会
+    在落盘时自动登记，且同样带上兜底的默认未来树）。
     """
     lines = [
         line for line in ((settings or {}).get("causal_lines") or [])
         if isinstance(line, dict) and str(line.get("id") or "").strip()
     ]
+
+    if stage == "create":
+        base = (
+            "因果线是这次模拟的核心结构，不是可选项——请规划出 2~4 条相对"
+            "独立、节奏可能不同的核心因果线（比如技术线按年演化、谈判线按"
+            "轮次推进、个人线按月推进），自行给每条线起一个简短的英文/"
+            "拼音 id 和一句话中文 label，填进输出的 `causal_lines` 数组。"
+            "**每条线必须同时给出一个初始的未来因果树 `future_tree`**："
+            '形如 {"branches": [{"id": ..., "description": ..., '
+            '"likelihood": "high"|"medium"|"low"}, ...]}，每条线给 2~3 个'
+            "相互之间有实质区分度的未来可能分支（比如\"快速发展\"/\"缓慢"
+            "发展\"/\"遭遇阻力\"这类明显不同的方向，不要写成同义反复或"
+            "换个说法的同一件事），不要求穷尽所有可能，覆盖目前能想到的"
+            "主要分歧点即可。"
+        )
+        if lines:
+            refine_parts = [
+                f'{str(line.get("id"))}（{str(line.get("label") or line.get("id"))}）'
+                for line in lines
+            ]
+            base += (
+                "上一版草稿已经给出以下因果线，如果本次是根据反馈意见修改，"
+                "优先在这些线的基础上调整/补充未来树，而不是重新换一套 id："
+                + "、".join(refine_parts) + "。"
+            )
+        return base
+
     if not lines:
         return (
             "因果线是这次模拟的默认基础机制，不需要用户提前声明——请你自己"
@@ -122,6 +155,7 @@ def _resolve_causal_lines_hint(settings: "Dict[str, Any] | None") -> str:
             "增线，不需要额外操作。"
         )
     parts = []
+    tree_parts = []
     for line in lines:
         line_id = str(line["id"]).strip()
         label = str(line.get("label") or line_id).strip()
@@ -134,7 +168,17 @@ def _resolve_causal_lines_hint(settings: "Dict[str, Any] | None") -> str:
             piece += f"，用户对这条线的修改意见：{feedback}"
         piece += "）"
         parts.append(piece)
-    return (
+
+        future_tree = line.get("future_tree") if isinstance(line.get("future_tree"), dict) else {}
+        branches = [b for b in (future_tree.get("branches") or []) if isinstance(b, dict)]
+        if branches:
+            branch_desc = "；".join(
+                f'{b.get("id")}[{b.get("status", "open")}]：{b.get("description", "")}'
+                for b in branches
+            )
+            tree_parts.append(f"{line_id} 当前未来分支——{branch_desc}")
+
+    hint = (
         "已声明/已自动识别以下因果线，这一步哪些线有实际进展由你自行判断——"
         "有进展的线，在 line_updates 里用对应 id 作为 key 给出这条线的进展；"
         "没有进展的线不需要在 line_updates 里出现，不强制每条线每一步都"
@@ -144,6 +188,20 @@ def _resolve_causal_lines_hint(settings: "Dict[str, Any] | None") -> str:
         + "。如果这一步确实出现了一条上面都没列出的新因果线，也可以直接用"
         "一个新 id 输出 line_updates，系统会自动登记为新线。"
     )
+    if tree_parts:
+        hint += (
+            "\n以下是各条线当前的未来分支（状态标注在方括号里）："
+            + "；".join(tree_parts)
+            + "。如果这一步的实际走向印证/排除了某个分支，或者催生了一个"
+            "上面没有的新可能性，可选输出 `tree_updates`（数组），每项形如 "
+            '{"line_id": ..., "confirmed_branch": "分支id（可选，这一步'
+            '印证了哪个已有分支）", "pruned_branches": ["分支id", ...]'
+            '（可选，明显已经不可能发生的分支）, "new_branches": '
+            '[{"description": ..., "likelihood": "high"|"medium"|"low"}]'
+            '（可选，出现了原来树上没有覆盖的新可能性）}——不强制每一步都'
+            "输出，没有值得更新的树就不用给。"
+        )
+    return hint
 
 
 def resolve_hints(settings: "Dict[str, Any] | None" = None, *, stage: str = "advance") -> Dict[str, str]:
@@ -210,7 +268,7 @@ def resolve_hints(settings: "Dict[str, Any] | None" = None, *, stage: str = "adv
         "time_granularity_hint": time_granularity_hint,
         "multi_entity_mode_hint": _resolve_multi_entity_hint(settings),
         "background_entities_hint": _resolve_background_entities_hint(settings),
-        "causal_lines_hint": _resolve_causal_lines_hint(settings),
+        "causal_lines_hint": _resolve_causal_lines_hint(settings, stage=stage),
     }
 
 

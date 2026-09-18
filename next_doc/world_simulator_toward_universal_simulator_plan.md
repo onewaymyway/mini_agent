@@ -5,7 +5,13 @@
 > 阶段二十三（4.14 节，Model Regime Detection / Emergence）、阶段
 > 二十四（4.16 节，Reality Loop 完整版）、阶段二十五（4.17 节，因果线
 > UI）**已全部完成**，见 `PROJECT.md` 对应交付记录。本文档规划的六个
-> 方向已全部落地。
+> 方向已全部落地。**阶段二十六**（因果线的"未来因果树"，独立方案见
+> `next_doc/world_simulator_causal_line_future_tree_plan.md`）也已
+> 完成——用户指出阶段二十五交付的"未来展望"只是基于历史的单路径
+> 确定性外推、且要求历史已存在才能显示，不符合"创建模拟就该有核心
+> 因果线、每条线自带面向未来的分叉树"的预期，属于阶段二十五
+> 遗留的"已知限制"里明确预告过的后续需求，因此单独立一份方案文档，
+> 不在本文档内展开。
 > **前置文档**：`next_doc/world_simulator_external_project_plan.md`（原始方案，
 > 阶段一~七）、`next_doc/world_simulator_universal_world_model_upgrade_plan.md`
 > （阶段九~十九，已把"参考方案"里资源约束/不确定性标注/Problem
@@ -580,3 +586,6 @@ summary/vars/key_drivers"，`key_drivers`/`causal_links` 只是挂在
   阶段九~十九的完整交付记录，含"参考方案概念对照表"（第 3 节）。
 - `external_projects/world_simulator/PROJECT.md`：已知限制与变更
   记录。
+- `next_doc/world_simulator_causal_line_future_tree_plan.md`：
+  阶段二十六，因果线的"未来因果树"独立方案文档（创建时保证核心
+  因果线+初始未来树、推进中允许修正、树形 UI 展示）。
