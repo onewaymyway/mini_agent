@@ -1,6 +1,8 @@
 # world_simulator 迈向"万能模拟器"理想架构改进计划
 
-> **状态**：规划中，尚未开始实施。
+> **状态**：阶段二十（4.12 节，Causal Knowledge Base）已完成，见
+> `PROJECT.md` 对应交付记录；其余五个方向（阶段二十一~二十五）规划
+> 中，尚未开始实施。
 > **前置文档**：`next_doc/world_simulator_external_project_plan.md`（原始方案，
 > 阶段一~七）、`next_doc/world_simulator_universal_world_model_upgrade_plan.md`
 > （阶段九~十九，已把"参考方案"里资源约束/不确定性标注/Problem
@@ -109,7 +111,7 @@ Reality Feedback → Causal Knowledge Base 的完整闭环）一次性照搬，
 
 ## 4. 改进方案
 
-### 4.12（P0，阶段二十）Causal Knowledge Base：跨模拟复用的因果知识库
+### 4.12（P0，阶段二十，已完成，见 `PROJECT.md` 对应交付记录）Causal Knowledge Base：跨模拟复用的因果知识库
 
 **问题**：`spec_generator.generate_scenario()`/`engine.advance()` 每次
 调用都是"干净上下文"——即使系统之前已经跑过大量"AI 成本下降 →
@@ -515,7 +517,7 @@ summary/vars/key_drivers"，`key_drivers`/`causal_links` 只是挂在
 ## 5. 分期路线图
 
 - **阶段二十**：4.12 节，Causal Knowledge Base。无前置依赖，最先
-  启动。
+  启动。**已完成**，见 `PROJECT.md` 对应交付记录。
 - **阶段二十一**：4.15 节，Hypothesis Engine / 多世界与稳健结果。
   依赖阶段十/十一/十五（均已完成），可以与阶段二十并行。
 - **阶段二十二**：4.13 节，多尺度因果线（Causal Line 结构化）。

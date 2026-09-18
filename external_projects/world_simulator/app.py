@@ -791,6 +791,7 @@ def page_create() -> None:
                     cfg = _load_cfg()
                     draft = generate_scenario(
                         cfg, PROJECT_ROOT, template=template, intent=intent, settings=settings,
+                        data_dir=DATA_DIR,
                     )
                     st.session_state["draft"] = draft
                     st.session_state["draft_template"] = template
@@ -1020,6 +1021,7 @@ def page_create() -> None:
                     ),
                     previous_draft=draft,
                     settings=st.session_state.get("create_settings"),
+                    data_dir=DATA_DIR,
                 )
             except ScenarioGenerationError as exc:
                 st.error(f"生成更多候选方向失败：{exc}")
@@ -1062,6 +1064,7 @@ def page_create() -> None:
                             feedback=feedback,
                             previous_draft=draft,
                             settings=st.session_state.get("create_settings"),
+                            data_dir=DATA_DIR,
                         )
                         st.session_state["draft"] = revised
                         st.session_state.pop("create_chosen_option_id", None)

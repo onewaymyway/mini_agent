@@ -863,3 +863,45 @@ world_simulator/
   4.11 节全部落地，至此演进计划 4.1~4.11 节全部完成；但这三节的
   完成方式与阶段九~十六不同（未经真实需求驱动），风险明显更高，
   后续应该优先根据真实使用反馈调整而不是假定现有设计已经正确。
+- 2026-09-18：完成阶段二十（Causal Knowledge Base：跨模拟复用的
+  因果知识库，见 `next_doc/world_simulator_toward_universal_
+  simulator_plan.md` 4.12 节）。**方针说明：本阶段所属的整份演进
+  计划由用户明确要求跳过"触发条件"直接进入路线图**（与阶段十七~
+  十九"个别提前实施"不同，这次是整份新文档从一开始就不设触发条件，
+  见该文档"方针调整说明"一段），因此不再逐条标注"提前实施"，但同样
+  提醒：本阶段未经真实使用场景验证价值，后续应优先按真实反馈调整。
+  交付内容：新增 `world_simulator/knowledge_base.py`
+  （`KnowledgeItem` 最小字段集：cause/effect/mechanism/confidence/
+  source_sim_id/source_template/created_at/validated_count/
+  contradicted_count；`record_causal_links()` 按关键词 Jaccard
+  相似度合并重复因果关系、避免重复条目；`search()`/
+  `format_for_prompt()`/`suggest_for_prompt()` 三层检索-格式化
+  接口；`record_contradiction()` 为阶段二十四预留，本阶段无调用方）。
+  落盘位置 `data/_knowledge/causal_knowledge.jsonl`，独立于任何
+  `sim_id` 目录，`.gitignore` 已同步排除。`engine.py`：`advance()`
+  落盘 `next_state` 后旁路写入知识库（`_safe_record_causal_links()`
+  吞掉异常，不影响本次推进），构造 `advance_step` prompt 输入时按
+  `manifest.intent + current.summary` 检索知识拼入
+  `relevant_knowledge_hint`（`_safe_suggest_knowledge()` 同样吞掉
+  异常）；`create_simulation()` 把 `data_dir` 转给
+  `generate_scenario()`。`spec_generator.generate_scenario()` 新增
+  可选参数 `data_dir`，为 None 时退化为占位文案，不影响生成本身。
+  两个 workflow prompt 模板新增"系统从以往其它模拟中沉淀的相关已知
+  因果知识"占位符 `{relevant_knowledge_hint}`。`app.py` 三处
+  `generate_scenario()` 调用补上 `data_dir=DATA_DIR`。新增
+  `tests/test_knowledge_base.py`（12 个用例：写入/去重合并/检索
+  排序/格式化/证伪计数/序列化往返/非法置信度兜底）+
+  `test_spec_and_engine.py` 新增 4 个用例（advance 后写入知识库、
+  知识库文件损坏时不影响推进、生成阶段检索命中/未命中两种情形），
+  累计 127 个测试全部通过（`cd external_projects/world_simulator &&
+  PYTHONPATH=../../src:. python3 -m pytest tests/ -q`）。**已知
+  限制**：`causal_knowledge.jsonl` 与 `state_history.jsonl` 一样
+  是"整体重写"落盘（`_save_all()` 每次全量重写），暂不支持并发
+  写入，数据量大了之后需要评估换成真正的追加写；相似度判定用字符级
+  关键词 Jaccard（不引入分词库/语义模型），对"表达方式差异很大但语义
+  相同"的因果关系识别能力有限，属于 4.12 节"范围克制"里明确认可的
+  代价；知识库目前没有任何管理界面（增删改查），第一阶段只验证
+  "自动写入 + 自动检索拼入 prompt"这条最基本的闭环。演进计划里剩余
+  五个方向（阶段二十一~二十五：Hypothesis Engine、多尺度因果线、
+  Model Regime Detection、Reality Loop 完整版、因果线 UI）尚未
+  实施，见该文档第 5 节分期路线图。

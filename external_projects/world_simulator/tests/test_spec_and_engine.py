@@ -153,6 +153,7 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
         "multi_entity_mode_hint": spec_mod._MULTI_ENTITY_MODE_HINT_OFF,
         "background_entities_hint": "未启用（所有主体都按正常流程完整推理）",
         "calibration_notes": "",
+        "relevant_knowledge_hint": "（暂无相关的已知因果知识）",
     }
     assert draft.title == "毕业生的选择"
     assert draft.vars["age"] == 22
@@ -1225,3 +1226,206 @@ def test_advance_parses_causal_links_from_llm_output(tmp_path, monkeypatch):
             "effect": "被迫从「自由职业」转为「求稳定工作」",
         }
     ]
+
+
+def test_advance_records_causal_links_into_knowledge_base(tmp_path, monkeypatch):
+    """阶段二十（4.12 节 2.）：`advance()` 落盘 `next_state` 之后，应该
+    把非空的 `causal_links` 旁路写入跨模拟知识库。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2",
+                    "narrative": "n",
+                    "next_vars": {},
+                    "options": [],
+                    "causal_links": [
+                        {
+                            "driver": "现金储备见底",
+                            "affected_fields": ["cash"],
+                            "effect": "被迫收缩开支",
+                        }
+                    ],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+
+    import world_simulator.knowledge_base as kb_mod
+
+    items = kb_mod.load_all(data_dir)
+    assert len(items) == 1
+    assert items[0].cause == "现金储备见底"
+    assert items[0].source_sim_id == manifest.sim_id
+    assert items[0].source_template == "life_sim"
+
+
+def test_advance_survives_broken_knowledge_base_file(tmp_path, monkeypatch):
+    """知识库写入是旁路操作，即使知识库文件本身已经损坏（比如被手工
+    改坏），也不应该让本次推进失败（4.12 节 2. 的"失败也不抛出"约束）。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+
+    import world_simulator.knowledge_base as kb_mod
+
+    broken_path = kb_mod.knowledge_path(data_dir)
+    broken_path.parent.mkdir(parents=True, exist_ok=True)
+    broken_path.write_text("这不是合法的 jsonl 内容 {{{", encoding="utf-8")
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2", "narrative": "n", "next_vars": {}, "options": [],
+                    "causal_links": [{"driver": "d", "effect": "e"}],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    # 损坏的知识库文件里每一行都会被 load_all 静默跳过（不是合法 JSON），
+    # 所以这里实际验证的是"advance 本身不会因为知识库旁路操作而抛出"。
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.step == 1
+
+
+def test_generate_scenario_passes_knowledge_hint_from_data_dir(tmp_path, monkeypatch):
+    """阶段二十（4.12 节 3.）：给了 `data_dir` 时，`generate_scenario()`
+    应该检索知识库并把结果拼进 `relevant_knowledge_hint` 输入。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    import world_simulator.knowledge_base as kb_mod
+
+    kb_mod.record_causal_links(
+        data_dir, sim_id="sim_prev", template="life_sim",
+        causal_links=[{"driver": "现金储备见底", "effect": "被迫收缩开支"}],
+    )
+
+    draft_step = _FakeStep("draft")
+    captured = {}
+
+    class FakeStore:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([draft_step])
+
+    class FakeRunner:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            captured["inputs"] = inputs
+            result_file = _write_result_file(
+                tmp_path, "scenario_result.json",
+                {"title": "t", "summary": "s", "vars": {}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="draft", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStore)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunner)
+
+    spec_mod.generate_scenario(
+        cfg=object(), workspace_root=workspace_root, template="life_sim",
+        intent="现金储备见底了怎么办", data_dir=data_dir,
+    )
+
+    assert "现金储备见底" in captured["inputs"]["relevant_knowledge_hint"]
+
+
+def test_generate_scenario_without_data_dir_uses_placeholder_hint(tmp_path, monkeypatch):
+    """`data_dir` 为 None（比如某些不关心历史积累的调用场景）时，
+    应该退化为占位文案，不抛出、也不影响其余生成逻辑。"""
+    workspace_root = tmp_path / "ws"
+    draft_step = _FakeStep("draft")
+    captured = {}
+
+    class FakeStore:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([draft_step])
+
+    class FakeRunner:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            captured["inputs"] = inputs
+            result_file = _write_result_file(
+                tmp_path, "scenario_result.json",
+                {"title": "t", "summary": "s", "vars": {}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="draft", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStore)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunner)
+
+    spec_mod.generate_scenario(
+        cfg=object(), workspace_root=workspace_root, template="life_sim", intent="随便什么意图",
+    )
+    assert captured["inputs"]["relevant_knowledge_hint"] == "（暂无相关的已知因果知识）"

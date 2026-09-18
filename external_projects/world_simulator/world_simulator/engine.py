@@ -19,6 +19,7 @@ import string
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from world_simulator import knowledge_base
 from world_simulator.spec_generator import ScenarioGenerationError, generate_scenario, resolve_hints
 from world_simulator.state_model import ChoiceOption, SimManifest, SimState
 from world_simulator.store import SimNotFoundError, SimStore, list_sim_ids, now_iso
@@ -28,6 +29,34 @@ _ID_ALPHABET = string.ascii_lowercase + string.digits
 
 class SimEngineError(RuntimeError):
     pass
+
+
+def _safe_suggest_knowledge(data_dir: Path, query_text: str, *, template: str) -> str:
+    """`knowledge_base.suggest_for_prompt()` 的安全包装（阶段二十，4.12
+    节 3.）：检索是"锦上添花"的旁路信息，任何异常（比如知识库文件被
+    手工改坏）都不应该让 `generate_scenario`/`advance()` 的核心链路
+    失败，退化为"没有可参考的知识"即可，不向上抛出。
+    """
+    try:
+        return knowledge_base.suggest_for_prompt(data_dir, query_text, template=template)
+    except Exception:
+        return "（暂无相关的已知因果知识）"
+
+
+def _safe_record_causal_links(
+    data_dir: Path, *, sim_id: str, template: str, causal_links: list
+) -> None:
+    """`knowledge_base.record_causal_links()` 的安全包装（阶段二十，
+    4.12 节 2.）：写入知识库是这一步推进落盘*之后*的旁路操作，失败
+    不应该让本次推进本身失败（`advance()` 的返回值/落盘结果已经产生），
+    这里吞掉异常，只保留"尽力而为"的语义。
+    """
+    try:
+        knowledge_base.record_causal_links(
+            data_dir, sim_id=sim_id, template=template, causal_links=causal_links
+        )
+    except Exception:
+        pass
 
 
 class SimAlreadyEndedError(SimEngineError):
@@ -347,7 +376,9 @@ def create_simulation(
     确认环节，走 `spec_generator.generate_scenario()` +
     `materialize_simulation()` 两步，见 `app.py`。
     """
-    draft = generate_scenario(cfg, workspace_root, template=template, intent=intent, settings=settings)
+    draft = generate_scenario(
+        cfg, workspace_root, template=template, intent=intent, settings=settings, data_dir=data_dir,
+    )
     return materialize_simulation(
         data_dir,
         template=template,
@@ -477,6 +508,9 @@ def advance(
         ),
         "decision_context": decision_context,
         "calibration_notes": str(manifest.settings.get("calibration_notes") or ""),
+        "relevant_knowledge_hint": _safe_suggest_knowledge(
+            data_dir, f"{manifest.intent} {current.summary}", template=manifest.template
+        ),
         **resolve_hints(manifest.settings),
     }
 
@@ -646,6 +680,16 @@ def advance(
         ],
     )
     store.append_state(next_state, branch=branch)
+
+    # 阶段二十（4.12 节 2.）：把这一步的结构化因果链沉淀进跨模拟知识库。
+    # 纯旁路操作，落盘之后才做、失败不影响本次推进（见
+    # `_safe_record_causal_links` docstring）。
+    _safe_record_causal_links(
+        data_dir,
+        sim_id=sim_id,
+        template=manifest.template,
+        causal_links=next_state.causal_links,
+    )
 
     manifest.current_step = next_state.step
     store.save_manifest(manifest)

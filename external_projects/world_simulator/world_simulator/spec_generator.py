@@ -281,6 +281,7 @@ def generate_scenario(
     feedback: str = "",
     previous_draft: "ScenarioDraft | None" = None,
     settings: "Dict[str, Any] | None" = None,
+    data_dir: "Path | None" = None,
 ) -> ScenarioDraft:
     """触发一次 `generate_scenario` workflow，返回结构化的提案草稿。
 
@@ -301,12 +302,27 @@ def generate_scenario(
             （还没有 sim_id/manifest 时的临时字典，落盘后会原样存进
             `SimManifest.settings`，供之后每一步 `advance()` 沿用同一套
             配置）；为 None 时按 `resolve_hints()` 的默认值处理。
+        data_dir: 跨模拟因果知识库（阶段二十，见 `knowledge_base.py`）
+            所在的数据根目录；为 None 时（比如不关心历史积累的调用
+            场景）跳过知识检索，`relevant_knowledge_hint` 退化为
+            "暂无相关的已知因果知识"，不影响生成本身。
     """
     from mini_agent.workflow.runner import WorkflowRunner
+    from world_simulator import knowledge_base
 
     wf, skill_name = _load_and_bind_skill(
         Path(workspace_root), "generate_scenario", template, "draft"
     )
+
+    if data_dir is not None:
+        try:
+            relevant_knowledge_hint = knowledge_base.suggest_for_prompt(
+                data_dir, f"{intent} {feedback}", template=template
+            )
+        except Exception:
+            relevant_knowledge_hint = "（暂无相关的已知因果知识）"
+    else:
+        relevant_knowledge_hint = "（暂无相关的已知因果知识）"
 
     previous_draft_json = ""
     if previous_draft is not None:
@@ -328,6 +344,7 @@ def generate_scenario(
             "feedback": feedback or "",
             "previous_draft_json": previous_draft_json,
             "calibration_notes": str((settings or {}).get("calibration_notes") or ""),
+            "relevant_knowledge_hint": relevant_knowledge_hint,
             **resolve_hints(settings, stage="create"),
         },
     )
