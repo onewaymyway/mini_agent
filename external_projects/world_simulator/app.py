@@ -857,6 +857,30 @@ def page_create() -> None:
             placeholder='[{"type": "transfer", "from": "cash", "to": "inventory.value"}]',
         )
 
+    # ── 多尺度因果线（阶段二十二，4.13 节）：声明后 skill 会按需在
+    # 每一步推进时给出 line_updates（每条线各自的时间点/摘要/是否
+    # 推进），不声明则完全沿用单一 time_granularity 的既有行为 ──
+    with st.expander("高级：声明多尺度因果线（阶段二十二，可选）"):
+        st.markdown(
+            '<span class="ws-muted">用 JSON 数组声明这次模拟里存在的几条"因果线"'
+            "（比如技术线按年演化、谈判线按轮次推进），推进时 AI 会按需给出每条线"
+            "各自的进展，时间线上可以按线筛选查看。例如：\n"
+            '`[{"id": "tech", "label": "技术线", "time_granularity": "年"}, '
+            '{"id": "negotiation", "label": "谈判线", "time_granularity": "轮"}]`。'
+            "不填就跳过这一步，行为与不声明完全一致。</span>",
+            unsafe_allow_html=True,
+        )
+        causal_lines_default = json.dumps(
+            list(getattr(draft, "causal_lines", None) or []), ensure_ascii=False
+        ) if getattr(draft, "causal_lines", None) else ""
+        causal_lines_text = st.text_area(
+            "因果线声明（JSON 数组，可选）",
+            value=st.session_state.get("create_causal_lines", causal_lines_default),
+            key="create_causal_lines_input",
+            height=80,
+            placeholder='[{"id": "tech", "label": "技术线", "time_granularity": "年"}]',
+        )
+
     # ── Reality Sync 轻量版（阶段十八，4.11 节）：用户手动填一句真实
     # 世界参考信息，原样喂给 prompt，系统不做任何自动数据抓取/校准 ──
     with st.expander("高级：填入真实世界参考信息（阶段十八，可选）"):
@@ -1102,12 +1126,18 @@ def page_create() -> None:
         resource_relations_invalid = bool(resource_relations_text.strip()) and not isinstance(
             resource_relations_parsed, list
         )
+        causal_lines_parsed = _safe_json_loads(causal_lines_text, None)
+        causal_lines_invalid = bool(causal_lines_text.strip()) and not isinstance(
+            causal_lines_parsed, list
+        )
         if edited_vars is None:
             st.error("关键变量不是合法 JSON，请修正后再确认创建。")
         elif advanced_objectives_invalid:
             st.error("结构化关注指标不是合法的 JSON 数组，请修正后再确认创建（或清空这一栏跳过）。")
         elif resource_relations_invalid:
             st.error("资源转移关系不是合法的 JSON 数组，请修正后再确认创建（或清空这一栏跳过）。")
+        elif causal_lines_invalid:
+            st.error("因果线声明不是合法的 JSON 数组，请修正后再确认创建（或清空这一栏跳过）。")
         else:
             resource_fields = [
                 f.strip() for f in resource_fields_text.split(",") if f.strip()
@@ -1119,9 +1149,14 @@ def page_create() -> None:
                 [r for r in resource_relations_parsed if isinstance(r, dict)]
                 if isinstance(resource_relations_parsed, list) else []
             )
+            causal_lines = (
+                [line for line in causal_lines_parsed if isinstance(line, dict)]
+                if isinstance(causal_lines_parsed, list) else []
+            )
             create_settings = dict(st.session_state.get("create_settings") or {})
             create_settings["resource_fields"] = resource_fields
             create_settings["resource_relations"] = resource_relations
+            create_settings["causal_lines"] = causal_lines
             create_settings["objectives"] = objectives
             create_settings["calibration_notes"] = calibration_notes_text.strip()
             background_entities = [
@@ -1159,7 +1194,7 @@ def page_create() -> None:
                 "create_feedback", "create_settings", "create_options_count",
                 "create_granularity_preset", "create_granularity_custom", "create_resource_fields",
                 "create_resource_relations", "create_objectives", "create_calibration_notes",
-                "create_background_entities",
+                "create_background_entities", "create_causal_lines",
             ):
                 st.session_state.pop(key, None)
             st.session_state["view"] = "detail"
@@ -1172,11 +1207,47 @@ def page_create() -> None:
 # ─────────────────────────────────────────────────────────────
 
 
+def _line_updates_html(state, causal_lines_meta: Optional[List[Dict[str, Any]]] = None) -> str:
+    """渲染这一步的\"因果线进展\"标签（阶段二十二，4.13 节，多尺度因果
+    线：Causal Line 成为一等公民）。只展示这一步真的\"有动静\"的线
+    （`advanced` 不为 `False`），每个标签形如\"📈 技术线 · 第 2 年：
+    AI 成本持续下降\"。`causal_lines_meta` 是
+    `manifest.settings.causal_lines`（可能为 None/空），用于把
+    line_id 换成人类可读的 `label`；找不到对应声明时退化为直接展示
+    line_id 本身，不影响展示（向后兼容旧数据/未声明的线）。
+    """
+    line_updates = getattr(state, "line_updates", None) or {}
+    if not line_updates:
+        return ""
+    label_by_id = {
+        str(line.get("id")): str(line.get("label") or line.get("id"))
+        for line in (causal_lines_meta or [])
+        if isinstance(line, dict) and line.get("id")
+    }
+    tags = []
+    for line_id, update in line_updates.items():
+        if not isinstance(update, dict):
+            continue
+        if update.get("advanced") is False:
+            continue
+        label = label_by_id.get(str(line_id), str(line_id))
+        time_label = str(update.get("time_label") or "").strip()
+        summary = str(update.get("summary") or "").strip()
+        detail = " · ".join(x for x in (time_label, summary) if x)
+        text = f"{label}：{detail}" if detail else label
+        tags.append(f'<span class="ws-key-driver-tag">📈 {_html_text(text)}</span>')
+    if not tags:
+        return ""
+    return f'<div class="ws-key-drivers">{"".join(tags)}</div>'
+
+
 def _render_timeline(
     history: List,
     *,
     sim_id: Optional[str] = None,
     source_branch: Optional[str] = None,
+    causal_lines_meta: Optional[List[Dict[str, Any]]] = None,
+    causal_line_filter: Optional[str] = None,
 ) -> None:
     """渲染时间线。
 
@@ -1185,9 +1256,30 @@ def _render_timeline(
     `fork_branch(from_step=state.step)`：新分支包含到这一步为止的历史，
     从这一步之后可以重新选。不传这两个参数（比如对比视图里复用这个
     函数渲染只读时间线）就不显示按钮，避免在不该分支的地方长出按钮。
+
+    `causal_lines_meta`：`manifest.settings.causal_lines`（阶段二十二，
+    4.13 节），用于把 `line_updates`/`causal_links.line_id` 里的
+    line_id 换成人类可读的 label；为 None/空表示这次模拟没有声明
+    因果线，`_line_updates_html` 会退化为直接展示 line_id。
+
+    `causal_line_filter`：非 None 时只渲染"这一步在指定因果线上有
+    动静，或者这一步的 `causal_links` 里有条目关联到这条线"的节点
+    （阶段二十二，"按因果线筛选"视图切换，为阶段二十五的因果线 UI
+    打基础）；为 None（默认）表示不筛选，渲染全部节点，与引入这个
+    功能之前完全一致。
     """
     can_fork = sim_id is not None and source_branch is not None
     for state in history:
+        if causal_line_filter:
+            line_updates = getattr(state, "line_updates", None) or {}
+            causal_links = getattr(state, "causal_links", None) or []
+            matches_update = causal_line_filter in line_updates
+            matches_link = any(
+                isinstance(link, dict) and str(link.get("line_id") or "") == causal_line_filter
+                for link in causal_links
+            )
+            if not (matches_update or matches_link):
+                continue
         chosen_note = ""
         if state.chosen_option_id:
             who = "代理" if state.chosen_by == "autopilot" else "你"
@@ -1208,11 +1300,12 @@ def _render_timeline(
         relation_note = _relation_violations_html(state)
         background_note = _background_entities_html(state)
         key_drivers_note = _key_drivers_html(state)
+        line_updates_note = _line_updates_html(state, causal_lines_meta)
         html = (
             '<div class="ws-chapter">'
             f'<div class="ws-chapter-step">第 {state.step} 步{step_time_suffix}</div>'
             f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
-            f"{granularity_note}{resource_note}{relation_note}{background_note}{key_drivers_note}{narrative}{chosen_note}"
+            f"{granularity_note}{resource_note}{relation_note}{background_note}{line_updates_note}{key_drivers_note}{narrative}{chosen_note}"
             "</div>"
         )
         st.markdown(html, unsafe_allow_html=True)
@@ -1417,6 +1510,21 @@ def page_detail() -> None:
                 height=80,
                 placeholder='[{"type": "transfer", "from": "cash", "to": "inventory.value"}]',
             )
+        cur_causal_lines = cur_settings.get("causal_lines") or []
+        with st.expander("高级：声明多尺度因果线（阶段二十二，可选）"):
+            st.markdown(
+                '<span class="ws-muted">声明这次模拟里存在的几条"因果线"（比如技术线按年'
+                "演化、谈判线按轮次推进），推进时 AI 会按需给出每条线各自的进展。"
+                "</span>",
+                unsafe_allow_html=True,
+            )
+            new_causal_lines_text = st.text_area(
+                "因果线声明（JSON 数组，可选）",
+                value=json.dumps(cur_causal_lines, ensure_ascii=False) if cur_causal_lines else "",
+                key="settings_causal_lines",
+                height=80,
+                placeholder='[{"id": "tech", "label": "技术线", "time_granularity": "年"}]',
+            )
         cur_calibration_notes = str(cur_settings.get("calibration_notes") or "")
         with st.expander("高级：填入真实世界参考信息（阶段十八，可选）"):
             st.markdown(
@@ -1476,10 +1584,16 @@ def page_detail() -> None:
             resource_relations_invalid = (
                 new_resource_relations_text.strip() and not isinstance(new_resource_relations, list)
             )
+            new_causal_lines = _safe_json_loads(new_causal_lines_text, None)
+            causal_lines_invalid = (
+                new_causal_lines_text.strip() and not isinstance(new_causal_lines, list)
+            )
             if objectives_advanced_invalid:
                 st.error("结构化关注指标不是合法的 JSON 数组，设置未保存，请修正后重试。")
             elif resource_relations_invalid:
                 st.error("资源转移关系不是合法的 JSON 数组，设置未保存，请修正后重试。")
+            elif causal_lines_invalid:
+                st.error("因果线声明不是合法的 JSON 数组，设置未保存，请修正后重试。")
             else:
                 if isinstance(new_objectives_advanced, list):
                     new_objectives = new_objectives + [
@@ -1488,6 +1602,10 @@ def page_detail() -> None:
                 resource_relations_to_save = (
                     [r for r in new_resource_relations if isinstance(r, dict)]
                     if isinstance(new_resource_relations, list) else []
+                )
+                causal_lines_to_save = (
+                    [line for line in new_causal_lines if isinstance(line, dict)]
+                    if isinstance(new_causal_lines, list) else []
                 )
                 new_background_entities = [
                     e.strip() for e in new_background_entities_text.split(",") if e.strip()
@@ -1502,6 +1620,7 @@ def page_detail() -> None:
                         f.strip() for f in new_resource_fields_text.split(",") if f.strip()
                     ],
                     resource_relations=resource_relations_to_save,
+                    causal_lines=causal_lines_to_save,
                     objectives=new_objectives,
                     multi_entity_mode=bool(new_multi_entity_mode),
                     calibration_notes=new_calibration_notes_text.strip(),
@@ -1688,7 +1807,30 @@ def page_detail() -> None:
                         st.rerun()
 
     st.markdown("#### 时间线")
-    _render_timeline(list(reversed(history)), sim_id=sim_id, source_branch=manifest.branch)
+    causal_lines_meta = manifest.settings.get("causal_lines") or []
+    causal_line_filter = None
+    if causal_lines_meta:
+        line_options = ["全部"] + [
+            str(line.get("id")) for line in causal_lines_meta if isinstance(line, dict) and line.get("id")
+        ]
+        line_labels = {"全部": "全部"}
+        line_labels.update(
+            {
+                str(line.get("id")): f'{line.get("label") or line.get("id")}（{line.get("id")}）'
+                for line in causal_lines_meta if isinstance(line, dict) and line.get("id")
+            }
+        )
+        picked_line = st.selectbox(
+            "按因果线筛选（阶段二十二，可选）",
+            options=line_options,
+            format_func=lambda x: line_labels.get(x, x),
+            key="timeline_causal_line_filter",
+        )
+        causal_line_filter = None if picked_line == "全部" else picked_line
+    _render_timeline(
+        list(reversed(history)), sim_id=sim_id, source_branch=manifest.branch,
+        causal_lines_meta=causal_lines_meta, causal_line_filter=causal_line_filter,
+    )
 
     # ── 分支管理 ──
     st.markdown("#### 分支")
@@ -1898,7 +2040,10 @@ def page_compare() -> None:
                 f'<div class="ws-muted">{line["sim_id"]} · 分支 {line["branch"]}</div></div>',
                 unsafe_allow_html=True,
             )
-            _render_timeline(list(reversed(line["history"])))
+            _render_timeline(
+                list(reversed(line["history"])),
+                causal_lines_meta=line["manifest"].settings.get("causal_lines"),
+            )
 
     st.markdown("#### 关键变量对比（按 step 对齐）")
     max_len = max(len(line_a["history"]), len(line_b["history"]))
@@ -2331,13 +2476,14 @@ def page_game() -> None:
     relation_note = _relation_violations_html(s)
     background_note = _background_entities_html(s)
     key_drivers_note = _key_drivers_html(s)
+    line_updates_note = _line_updates_html(s, manifest.settings.get("causal_lines"))
     narrative_text = _html_text(s.narrative) if s.narrative else "（这一章还没有更多叙事文本。）"
 
     html = (
         '<div class="ws-card" style="min-height: 220px;">'
         f'<div class="ws-chapter-step">第 {s.step} 章{step_time_suffix}{major_tag}</div>'
         f'<div class="ws-chapter-summary" style="font-size:1.15rem;">{_html_text(s.summary)}</div>'
-        f"{granularity_note}{resource_note}{relation_note}{background_note}{key_drivers_note}"
+        f"{granularity_note}{resource_note}{relation_note}{background_note}{line_updates_note}{key_drivers_note}"
         f'<div class="ws-chapter-narrative">{narrative_text}</div>'
         f"{chosen_note}"
         "</div>"

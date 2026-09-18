@@ -102,6 +102,32 @@ def test_state_roundtrip_preserves_causal_links():
     assert mixed_restored.causal_links == [{"driver": "x"}]
 
 
+def test_state_roundtrip_preserves_line_updates():
+    """阶段二十二（4.13 节）：`line_updates` 应该原样经过
+    to_dict/from_dict 往返，旧数据（没有这个字段）也应该正常落回空
+    字典；非字典 value 应该被跳过而不是报错中断。"""
+    state = SimState(
+        step=3, summary="s",
+        line_updates={
+            "tech": {"time_label": "第 3 年", "summary": "AI 成本持续下降", "advanced": True},
+            "negotiation": {"time_label": "第 2 轮", "summary": "双方各让一步"},
+        },
+    )
+    restored = SimState.from_dict(state.to_dict())
+    assert restored.line_updates == {
+        "tech": {"time_label": "第 3 年", "summary": "AI 成本持续下降", "advanced": True},
+        "negotiation": {"time_label": "第 2 轮", "summary": "双方各让一步"},
+    }
+
+    legacy_restored = SimState.from_dict({"step": 0, "summary": "旧数据"})
+    assert legacy_restored.line_updates == {}
+
+    mixed_restored = SimState.from_dict(
+        {"step": 0, "summary": "s", "line_updates": {"tech": "不是字典", "ok": {"summary": "s"}}}
+    )
+    assert mixed_restored.line_updates == {"ok": {"summary": "s"}}
+
+
 def test_state_roundtrip_preserves_relation_violations():
     """阶段十六（4.8 节）：`relation_violations` 应该原样经过
     to_dict/from_dict 往返，旧数据（没有这个字段）也应该正常落回空

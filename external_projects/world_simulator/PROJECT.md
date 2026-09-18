@@ -905,3 +905,42 @@ world_simulator/
   五个方向（阶段二十一~二十五：Hypothesis Engine、多尺度因果线、
   Model Regime Detection、Reality Loop 完整版、因果线 UI）尚未
   实施，见该文档第 5 节分期路线图。
+- 2026-09-18：完成阶段二十二（Multi-Scale Causal Lines：多尺度因果
+  线，Causal Line 成为一等公民，见 `next_doc/world_simulator_toward_
+  universal_simulator_plan.md` 4.13 节）。**提醒同阶段二十**：本阶段
+  未经真实使用场景验证价值，后续应优先按真实反馈调整。交付内容：
+  `state_model.py` 新增 `SimManifest.settings.causal_lines`（因果线
+  声明：`id`/`label`/`time_granularity`，留空表示不启用，完全向后
+  兼容）和 `SimState.line_updates: Dict[str, Dict[str, Any]]`（key 是
+  线 id，value 含 `time_label`/`summary`/`advanced`）；`causal_links`
+  每项新增可选 `line_id` 字段用于归属到具体线。`spec_generator.py`：
+  `ScenarioDraft` 新增 `causal_lines` 建议值字段；新增
+  `_resolve_causal_lines_hint()`，接入 `resolve_hints()` 输出
+  `causal_lines_hint`（未声明时明确告诉 skill 不需要输出
+  `line_updates`，避免凭空发明线 id）。`engine.py`：`advance()` 解析
+  落盘 `line_updates`（原样落盘，engine 不做任何调度决策——"这一步
+  该更新哪些线"完全由 skill 判断）。两个 workflow yaml 新增
+  `{causal_lines_hint}` 占位符。三个 `skills/*/SKILL.md` 同步补充
+  `causal_lines`（创建阶段建议值）、`line_updates`/`causal_links.
+  line_id`（推进阶段输出）的字段说明。`app.py`：创建向导 + 详情页
+  "模拟设置"新增"声明多尺度因果线"折叠区（JSON 数组编辑，写入
+  `settings.causal_lines`）；新增 `_line_updates_html()` 在主时间线
+  和"游戏化章节"视图里展示每一步"有动静"的因果线标签（id→label 换算
+  用 `causal_lines_meta`，未声明时退化为直接展示 id）；`_render_
+  timeline()` 新增 `causal_line_filter` 参数，详情页新增"按因果线
+  筛选"下拉框（仅当声明了 `causal_lines` 才出现），**不引入因果线
+  之间的调度器**——不强制任何节奏控制，纯展示层过滤，为阶段二十五
+  的完整"因果线 UI"打基础。新增/更新测试：`test_state_and_store.py`
+  新增 `line_updates` 序列化往返用例；`test_spec_and_engine.py` 新增
+  `causal_lines_hint` 变体测试、`ScenarioDraft.causal_lines` 解析
+  测试、`advance()` 解析 `line_updates` 的集成测试，累计 132 个测试
+  全部通过（命令同阶段二十）。**已知限制**：`line_updates` 完全依赖
+  LLM 自觉遵守"用声明过的 id 作为 key"，engine 不做任何校验/纠正
+  （不检查 key 是否在 `causal_lines` 里声明过、不检查是否每条线都
+  被合理更新），行为不一致时只会体现为"时间线上这条线的标签消失/
+  乱码"，不会报错也不会阻塞推进；因果线之间没有任何调度/依赖关系
+  建模（比如"谈判线结束后技术线才能继续"这类跨线时序约束完全没有
+  支持），纯粹是"分开标注、分开展示"的最小可行版本。演进计划里剩余
+  四个方向（阶段二十一、二十三、二十四、二十五：Hypothesis Engine、
+  Model Regime Detection、Reality Loop 完整版、因果线 UI）尚未
+  实施，见该文档第 5 节分期路线图。

@@ -103,6 +103,9 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
 - `objectives`：数组（可选），字符串列表，这次模拟"主要关心的指标"
   （比如群体的"总人口""资源储备""凝聚力"），格式与用途与
   `life-sim-template` 完全一致。没有明确指标就不用输出。
+- `causal_lines`：数组（可选，阶段二十二，多尺度因果线），格式与用途
+  与 `life-sim-template` 完全一致，比如给"群体内部演化"和"外部环境/
+  邻近群体动态"分开跟踪。多数群体演化场景单一节奏就够，留空即可。
 
 ## 作为 `advance_step` 挂载时（result_file: next_state.json）
 
@@ -180,3 +183,6 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
   的关键驱动因素，格式与用途与 `life-sim-template` 完全一致。
 - `causal_links`：数组（可选），格式与用途与 `life-sim-template` 完全
   一致，是 `key_drivers` 的进阶信息，不需要每一步都给。
+- `line_updates`：对象（可选，阶段二十二，多尺度因果线），格式与用途
+  与 `life-sim-template` 完全一致——仅当创建阶段声明了 `causal_lines`
+  才需要考虑，未声明就不用输出。

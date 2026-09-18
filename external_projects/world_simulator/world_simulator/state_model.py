@@ -196,6 +196,37 @@ class SimState:
     `key_drivers`——`causal_links` 是给"想深入看一步"的用户的可选
     进阶信息，不强制每次都给。默认空列表：skill 没给出、旧数据都
     可以为空，不影响任何已有行为，向后兼容。
+
+    每一项额外支持一个可选字段 `line_id`（阶段二十二，4.13 节），把
+    这条因果链关联到 `manifest.settings.causal_lines` 声明的某条
+    具体因果线上，供阶段二十五的"因果线 UI"按线筛选展示。不填表示
+    "未归属到具体线，按旧行为展示"——`causal_lines` 未声明（多数
+    既有实例）时所有 `causal_links` 都没有这个字段，完全向后兼容；
+    `engine.py` 不对这里的 `line_id` 做任何校验（不检查是否真的在
+    `causal_lines` 里声明过），纯粹是展示层的过滤依据。
+    """
+    line_updates: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    """产生*本状态*这一步，skill 按 `manifest.settings.causal_lines`
+    声明自行判断"这一步哪些因果线实际推进了"的记录（阶段二十二，
+    `next_doc/world_simulator_toward_universal_simulator_plan.md`
+    4.13 节，多尺度因果线）。
+
+    key 是 `causal_lines` 里声明的线 `id`，value 形如
+    `{"time_label": "第 3 年", "summary": "AI 成本持续下降",
+    "advanced": true}`：`time_label` 是这条线推进到的时间点（人类
+    可读，和 `SimState.time_label` 是同一个维度但各自独立累计）、
+    `summary` 是这一步这条线上发生了什么的一句话摘要、`advanced`
+    标记这一步这条线是否真的往前走了（`false` 表示这条线这一步
+    按兵不动，比如"经济线"这一步不需要更新——允许 value 里没有这
+    个字段，缺省按 `True` 处理，因为出现在 `line_updates` 里通常就
+    意味着"有动静"）。
+
+    `engine.py` 只负责原样落盘 skill 给出的内容，不做任何调度决策——
+    "这一步该更新哪些线、推进到哪"完全由 skill 自行判断（延续
+    "LLM 负责推理，engine 负责编排"的既有分工，同
+    `background_entities_applied` 的取舍）。默认空字典：
+    `causal_lines` 未声明、skill 没给出、旧数据都可以为空，不影响
+    任何已有行为，向后兼容。
     """
 
     def to_dict(self) -> Dict[str, Any]:
@@ -236,6 +267,10 @@ class SimState:
             background_entities_applied=[
                 str(x) for x in (data.get("background_entities_applied") or [])
             ],
+            line_updates={
+                str(k): dict(v) for k, v in (data.get("line_updates") or {}).items()
+                if isinstance(v, dict)
+            },
         )
 
 
@@ -394,6 +429,23 @@ class SimManifest:
       传递这段文本，不做任何数值层面的强制校准，也不会验证这段文本
       的真实性。留空（默认）表示不提供任何参考信息，行为与引入这个
       功能之前完全一致，向后兼容。
+    - `causal_lines`：列表，声明这次模拟里存在的"因果线"（阶段
+      二十二，`next_doc/world_simulator_toward_universal_simulator_
+      plan.md` 4.13 节，多尺度因果线：Causal Line 成为一等公民）。
+      每一项形如 `{"id": "tech_line", "label": "技术线",
+      "time_granularity": "年"}`：`id` 是这条线的唯一标识（供
+      `SimState.line_updates`/`causal_links.line_id` 引用）、`label`
+      是给用户看的中文名、`time_granularity` 是这条线大致的节奏
+      描述（自由文本，不是引擎解析的结构化值，只是给 skill 的提示，
+      同一条线实际推进时仍然可以按情境灵活给出更具体的 `time_label`）。
+      留空（默认空列表）表示不启用"多因果线"这个视角——这次模拟仍然
+      沿用单一 `time_granularity` 的既有行为，`SimState.line_updates`
+      恒为空字典，完全向后兼容。由 `generate_scenario` 阶段的 skill
+      按需给出建议值（见 `spec_generator.ScenarioDraft.causal_lines`），
+      用户在创建向导里可以看到并编辑，也可以在详情页"模拟设置"里
+      随时增删。**不引入因果线之间的调度器**（比如"技术线每 5 步才
+      推进一次"这种强制节奏控制）——每一步该更新哪些线完全由 skill
+      自行判断，engine 不做任何强约束，只负责落盘 `line_updates`。
     """
 
     def to_dict(self) -> Dict[str, Any]:

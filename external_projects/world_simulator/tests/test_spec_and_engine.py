@@ -154,6 +154,7 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
         "background_entities_hint": "未启用（所有主体都按正常流程完整推理）",
         "calibration_notes": "",
         "relevant_knowledge_hint": "（暂无相关的已知因果知识）",
+        "causal_lines_hint": "未声明任何因果线（不需要输出 line_updates 字段）",
     }
     assert draft.title == "毕业生的选择"
     assert draft.vars["age"] == 22
@@ -1010,6 +1011,50 @@ def test_resolve_hints_background_entities_hint_variants():
     assert "乙方" in hint and "背景NPC" in hint
 
 
+def test_resolve_hints_causal_lines_hint_variants():
+    """阶段二十二（4.13 节）：`causal_lines_hint` 未声明时应该明确说
+    "不需要输出 line_updates"，声明了则应该在提示文本里列出每条线的
+    id/label，方便复核 prompt 内容。"""
+    assert "未声明" in spec_mod.resolve_hints({})["causal_lines_hint"]
+    assert "不需要输出 line_updates" in spec_mod.resolve_hints({})["causal_lines_hint"]
+
+    hint = spec_mod.resolve_hints(
+        {
+            "causal_lines": [
+                {"id": "tech", "label": "技术线", "time_granularity": "年"},
+                {"id": "negotiation", "label": "谈判线"},
+            ]
+        }
+    )["causal_lines_hint"]
+    assert "tech" in hint and "技术线" in hint and "年" in hint
+    assert "negotiation" in hint and "谈判线" in hint
+
+
+def test_resolve_hints_causal_lines_hint_ignores_entries_without_id():
+    """没有 `id` 的因果线声明不构成一条可引用的线，应该被忽略。"""
+    hint = spec_mod.resolve_hints({"causal_lines": [{"label": "没有 id"}]})["causal_lines_hint"]
+    assert "未声明" in hint
+
+
+def test_scenario_draft_from_dict_parses_causal_lines():
+    """阶段二十二（4.13 节）：`ScenarioDraft.causal_lines` 应该原样
+    解析出 skill 给出的建议值列表；非字典项应该被跳过。"""
+    draft = spec_mod.ScenarioDraft.from_dict(
+        {
+            "title": "t", "summary": "s", "vars": {}, "options": [],
+            "causal_lines": [
+                {"id": "tech", "label": "技术线", "time_granularity": "年"}, "不是字典",
+            ],
+        }
+    )
+    assert draft.causal_lines == [{"id": "tech", "label": "技术线", "time_granularity": "年"}]
+
+    draft_empty = spec_mod.ScenarioDraft.from_dict(
+        {"title": "t", "summary": "s", "vars": {}, "options": []}
+    )
+    assert draft_empty.causal_lines == []
+
+
 def test_scenario_draft_from_dict_parses_resource_relations():
     """阶段十六（4.8 节）：`ScenarioDraft.resource_relations` 应该原样
     解析出 skill 给出的建议值列表。"""
@@ -1226,6 +1271,60 @@ def test_advance_parses_causal_links_from_llm_output(tmp_path, monkeypatch):
             "effect": "被迫从「自由职业」转为「求稳定工作」",
         }
     ]
+
+
+def test_advance_parses_line_updates_from_llm_output(tmp_path, monkeypatch):
+    """阶段二十二（4.13 节）：`advance_step` 输出里的可选 `line_updates`
+    应该原样解析进 `next_state.line_updates`；未给出时应为空字典；
+    非字典 value 应该被跳过。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+        settings={"causal_lines": [{"id": "tech", "label": "技术线"}]},
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            assert "tech" in inputs["causal_lines_hint"]
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2", "narrative": "n", "next_vars": {}, "options": [],
+                    "line_updates": {
+                        "tech": {"time_label": "第 3 年", "summary": "AI 成本持续下降"},
+                        "bad": "不是字典，应该被跳过",
+                    },
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.line_updates == {
+        "tech": {"time_label": "第 3 年", "summary": "AI 成本持续下降"},
+    }
 
 
 def test_advance_records_causal_links_into_knowledge_base(tmp_path, monkeypatch):

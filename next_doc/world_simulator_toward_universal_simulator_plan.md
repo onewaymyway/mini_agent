@@ -1,8 +1,9 @@
 # world_simulator 迈向"万能模拟器"理想架构改进计划
 
-> **状态**：阶段二十（4.12 节，Causal Knowledge Base）已完成，见
-> `PROJECT.md` 对应交付记录；其余五个方向（阶段二十一~二十五）规划
-> 中，尚未开始实施。
+> **状态**：阶段二十（4.12 节，Causal Knowledge Base）、阶段二十二
+> （4.13 节，多尺度因果线）已完成，见 `PROJECT.md` 对应交付记录；
+> 其余四个方向（阶段二十一、二十三、二十四、二十五）规划中，尚未
+> 开始实施。
 > **前置文档**：`next_doc/world_simulator_external_project_plan.md`（原始方案，
 > 阶段一~七）、`next_doc/world_simulator_universal_world_model_upgrade_plan.md`
 > （阶段九~十九，已把"参考方案"里资源约束/不确定性标注/Problem
@@ -195,7 +196,7 @@ Version` 全字段（参考文档第十九节列出的完整 schema）；不做�
 
 ---
 
-### 4.13（P1，阶段二十二）多尺度因果线：Causal Line 成为一等公民
+### 4.13（P1，阶段二十二，已完成，见 `PROJECT.md` 对应交付记录）多尺度因果线：Causal Line 成为一等公民
 
 **问题**：`SimState.time_granularity` 是整个模拟状态的单一字段——
 "这一步"要么整体按年推进，要么整体按轮次推进，无法表达"技术线按年
@@ -522,7 +523,8 @@ summary/vars/key_drivers"，`key_drivers`/`causal_links` 只是挂在
   依赖阶段十/十一/十五（均已完成），可以与阶段二十并行。
 - **阶段二十二**：4.13 节，多尺度因果线（Causal Line 结构化）。
   建议在阶段二十之后启动（共享 prompt 模板改动窗口），是阶段
-  二十三、二十五的前置依赖。
+  二十三、二十五的前置依赖。**已完成**，见 `PROJECT.md` 对应交付
+  记录。
 - **阶段二十三**：4.14 节，Model Regime Detection / Emergence。
   依赖阶段二十二。
 - **阶段二十四**：4.16 节，Reality Loop 完整版。依赖阶段二十，

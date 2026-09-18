@@ -85,6 +85,35 @@ def _resolve_background_entities_hint(settings: "Dict[str, Any] | None") -> str:
     )
 
 
+def _resolve_causal_lines_hint(settings: "Dict[str, Any] | None") -> str:
+    """把 `settings.causal_lines` 转成喂给 prompt 的一句话提示（阶段
+    二十二，4.13 节，多尺度因果线）。未声明时明确告诉 skill 不需要
+    输出 `line_updates`，避免它凭空发明一套线 id；声明了则列出每条线
+    的 id/label/节奏，要求 skill 在 `line_updates` 里用这些 id 作为
+    key（`causal_links` 的可选 `line_id` 字段同理）。"""
+    lines = [
+        line for line in ((settings or {}).get("causal_lines") or [])
+        if isinstance(line, dict) and str(line.get("id") or "").strip()
+    ]
+    if not lines:
+        return "未声明任何因果线（不需要输出 line_updates 字段）"
+    parts = []
+    for line in lines:
+        line_id = str(line["id"]).strip()
+        label = str(line.get("label") or line_id).strip()
+        granularity = str(line.get("time_granularity") or "").strip()
+        piece = f'{line_id}（{label}'
+        if granularity:
+            piece += f"，节奏参考：{granularity}"
+        piece += "）"
+        parts.append(piece)
+    return (
+        "已声明以下因果线，这一步哪些线有实际进展由你自行判断——有进展的线，"
+        "在 line_updates 里用对应 id 作为 key 给出这条线的进展；没有进展的线"
+        "不需要在 line_updates 里出现，不强制每条线每一步都更新：" + "、".join(parts)
+    )
+
+
 def resolve_hints(settings: "Dict[str, Any] | None" = None, *, stage: str = "advance") -> Dict[str, str]:
     """把 `manifest.settings`（或创建向导里还没落盘成 manifest 时的临时
     设置字典）转成喂给 workflow prompt 的提示字符串。
@@ -149,6 +178,7 @@ def resolve_hints(settings: "Dict[str, Any] | None" = None, *, stage: str = "adv
         "time_granularity_hint": time_granularity_hint,
         "multi_entity_mode_hint": _resolve_multi_entity_hint(settings),
         "background_entities_hint": _resolve_background_entities_hint(settings),
+        "causal_lines_hint": _resolve_causal_lines_hint(settings),
     }
 
 
@@ -206,6 +236,15 @@ class ScenarioDraft:
     的辅助展示区（见 `world_simulator.analysis.rank_by_objectives()`），
     但排序结果始终"仅供参考"，不会替用户自动选出最优解。类型放宽为
     `List[Any]` 就是为了同时兼容这两种写法，不强制转成字符串。"""
+    causal_lines: List[Any] = field(default_factory=list)
+    """skill 在生成初始状态时给出的"这次模拟是否值得拆成多条因果线"
+    建议（阶段二十二，见 `state_model.SimManifest.settings` 里
+    `causal_lines` 的格式说明），比如
+    `[{"id": "tech", "label": "技术线", "time_granularity": "年"}]`，
+    可选输出，留空表示 skill 认为这次模拟用单一时间线就够了，不需要
+    拆分。用途与 `resource_fields` 一致：创建向导展示建议值、允许用户
+    编辑，最终结果存进 `settings.causal_lines`，这个字段本身只是
+    "草稿阶段的建议值"，不直接落盘。"""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScenarioDraft":
@@ -222,6 +261,9 @@ class ScenarioDraft:
             objectives=[
                 (dict(o) if isinstance(o, dict) else str(o))
                 for o in (data.get("objectives") or [])
+            ],
+            causal_lines=[
+                dict(x) for x in (data.get("causal_lines") or []) if isinstance(x, dict)
             ],
         )
 

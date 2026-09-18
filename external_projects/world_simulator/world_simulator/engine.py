@@ -678,6 +678,10 @@ def advance(
         causal_links=[
             dict(x) for x in (data.get("causal_links") or []) if isinstance(x, dict)
         ],
+        line_updates={
+            str(k): dict(v) for k, v in (data.get("line_updates") or {}).items()
+            if isinstance(v, dict)
+        },
     )
     store.append_state(next_state, branch=branch)
 

@@ -116,6 +116,9 @@ triggers: 多方谈判, 谈判模拟, 博弈模拟, 多主体模拟, 信息不�
 - `uncertain_fields`：数组（可选），格式与另外两个模板完全一致。
 - `objectives`：数组（可选），字符串列表，格式与另外两个模板完全
   一致（比如 `["达成交易的可能性", "己方利益最大化"]`）。
+- `causal_lines`：数组（可选，阶段二十二，多尺度因果线），格式与
+  另外两个模板完全一致，比如把"谈判本身的进展"和"双方各自阵营内部
+  的动态"分开跟踪。多数单次谈判场景单一节奏就够，留空即可。
 
 ## 作为 `advance_step` 挂载时（result_file: next_state.json）
 
@@ -159,9 +162,10 @@ triggers: 多方谈判, 谈判模拟, 博弈模拟, 多主体模拟, 信息不�
   采取的方向）。
 - `major_decision`：布尔值（可选，默认 false），这一步是否是谈判/
   博弈的关键转折点（比如"接近最终摊牌"）。
-- `uncertain_fields`/`key_drivers`/`causal_links`：格式与另外两个
-  模板完全一致，可选。字段路径如果指向某个主体的私有信息，同样按
-  `entities.<名字>.<字段>` 这种点分路径书写，方便用户理解具体指的
-  是哪个主体的哪个字段（`uncertain_fields`/`key_drivers`/
-  `causal_links` 这几个字段引擎不做路径校验，字段名/路径怎么写完全
-  是给用户看的说明性文字，不影响任何校验逻辑）。
+- `uncertain_fields`/`key_drivers`/`causal_links`/`line_updates`：
+  格式与另外两个模板完全一致，可选（`line_updates` 仅当创建阶段
+  声明了 `causal_lines` 才需要考虑）。字段路径如果指向某个主体的私有
+  信息，同样按 `entities.<名字>.<字段>` 这种点分路径书写，方便用户
+  理解具体指的是哪个主体的哪个字段（`uncertain_fields`/
+  `key_drivers`/`causal_links` 这几个字段引擎不做路径校验，字段名/
+  路径怎么写完全是给用户看的说明性文字，不影响任何校验逻辑）。
