@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from world_simulator.agent_preview_scenarios import BUILTIN_SCENARIOS, PreviewScenario
+from world_simulator.agent_step_result import AgentStepOutputError, extract_agent_json_output
 from world_simulator.autopilot import _build_decision_context
 from world_simulator.state_model import SimManifest
 
@@ -93,9 +94,21 @@ def _run_one_scenario(
         step_result = next(
             (sr for sr in result.step_results if sr.step_id == "agent_preview"), None
         )
-        if step_result is None or not step_result.result_file:
-            raise AgentPreviewError("agent_preview 步骤未产出 result_file")
-        data = json.loads(Path(step_result.result_file).read_text(encoding="utf-8"))
+        if step_result is None:
+            raise AgentPreviewError("agent_preview 步骤没有产出结果")
+        # [BUGFIX] `type: agent` 不支持 `result_file`/`result_file_
+        # required_keys` 结果文件契约（只有 `type: script`/`skill_agent`
+        # 实现了这套机制，见 mini_agent/workflow/executors.py），之前这里
+        # 判 `step_result.result_file` 必然是 None，导致每次都报"未产出
+        # result_file"，跟 LLM 实际答得对不对无关。改为直接从
+        # `step_result.output`（Agent 最终回复原文，workflow yaml 已
+        # 要求只回复一个 JSON 对象）解析。
+        try:
+            data = extract_agent_json_output(
+                step_result.output, required_keys=["chosen_option_id", "reason"]
+            )
+        except AgentStepOutputError as exc:
+            raise AgentPreviewError(f"agent_preview 步骤回复无法解析为结构化结果：{exc}") from exc
         chosen_id = str(data.get("chosen_option_id") or "")
         chosen_opt = option_by_id.get(chosen_id)
         return PreviewResult(

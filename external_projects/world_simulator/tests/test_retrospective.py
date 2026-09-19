@@ -28,10 +28,11 @@ class _FakeStatus:
         self.value = value
 
 
-def _write_result_file(tmp_path: Path, name: str, payload: dict) -> str:
-    p = tmp_path / name
-    p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    return str(p)
+def _agent_output(payload: dict) -> str:
+    """[BUGFIX 同步] `type: agent` step 现在靠 `StepResult.output`
+    （Agent 最终回复的纯 JSON 文本）传结果，不再落盘 result_file——见
+    world_simulator/agent_step_result.py 顶部说明。"""
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _make_sim_with_two_steps(data_dir: Path) -> str:
@@ -101,9 +102,7 @@ def test_generate_retrospective_end_to_end_and_appends_history(tmp_path, monkeyp
             history = json.loads(inputs["state_history_json"])
             assert len(history) == 2
             assert history[1]["chosen_option_id"] == "a"
-            result_file = _write_result_file(
-                tmp_path,
-                "retro_result.json",
+            output = _agent_output(
                 {
                     "turning_points": [
                         {"step": 1, "chosen_option": "a", "why": "决定先工作"}
@@ -119,7 +118,7 @@ def test_generate_retrospective_end_to_end_and_appends_history(tmp_path, monkeyp
             return SimpleNamespace(
                 status="done",
                 step_results=[
-                    SimpleNamespace(step_id="retrospective", status=_FakeStatus("done"), result_file=result_file)
+                    SimpleNamespace(step_id="retrospective", status=_FakeStatus("done"), output=output)
                 ],
             )
 
@@ -163,9 +162,7 @@ def test_generate_retrospective_backfills_missing_caveats(tmp_path, monkeypatch)
             pass
 
         def run(self, wf, inputs):
-            result_file = _write_result_file(
-                tmp_path,
-                "retro_result_2.json",
+            output = _agent_output(
                 {
                     "turning_points": [],
                     "what_went_well": [],
@@ -177,7 +174,7 @@ def test_generate_retrospective_backfills_missing_caveats(tmp_path, monkeypatch)
             return SimpleNamespace(
                 status="done",
                 step_results=[
-                    SimpleNamespace(step_id="retrospective", status=_FakeStatus("done"), result_file=result_file)
+                    SimpleNamespace(step_id="retrospective", status=_FakeStatus("done"), output=output)
                 ],
             )
 
@@ -209,9 +206,7 @@ def test_generate_retrospective_multiple_calls_keep_history_not_overwrite(tmp_pa
 
         def run(self, wf, inputs):
             call_count["n"] += 1
-            result_file = _write_result_file(
-                tmp_path,
-                f"retro_result_{call_count['n']}.json",
+            output = _agent_output(
                 {
                     "turning_points": [], "what_went_well": [], "what_to_reflect_on": [],
                     "lessons": [], "caveats": [f"第{call_count['n']}次复盘"],
@@ -220,7 +215,7 @@ def test_generate_retrospective_multiple_calls_keep_history_not_overwrite(tmp_pa
             return SimpleNamespace(
                 status="done",
                 step_results=[
-                    SimpleNamespace(step_id="retrospective", status=_FakeStatus("done"), result_file=result_file)
+                    SimpleNamespace(step_id="retrospective", status=_FakeStatus("done"), output=output)
                 ],
             )
 

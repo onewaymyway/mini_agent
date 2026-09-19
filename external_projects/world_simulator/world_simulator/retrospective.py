@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from world_simulator.agent_step_result import AgentStepOutputError, extract_agent_json_output
+
 try:
     from mini_agent.utils.atomic_write import atomic_write_jsonl
 except ImportError:  # 独立运行、未装 mini_agent 时的降级实现，同 store.py/reality_check.py
@@ -333,10 +335,24 @@ def generate_retrospective(
     step_result = next(
         (sr for sr in result.step_results if sr.step_id == "retrospective"), None
     )
-    if step_result is None or not step_result.result_file:
-        raise RetrospectiveError("retrospective 步骤未产出 result_file，无法解析复盘报告")
-
-    data = json.loads(Path(step_result.result_file).read_text(encoding="utf-8"))
+    if step_result is None:
+        raise RetrospectiveError("retrospective 步骤没有产出结果")
+    # [BUGFIX，同 agent_preview.py] `type: agent` 不支持 `result_file`/
+    # `result_file_required_keys` 结果文件契约（只有 `type: script`/
+    # `skill_agent` 实现了这套机制），之前判 `step_result.result_file`
+    # 必然是 None，每次都报"未产出 result_file"。改为直接从
+    # `step_result.output`（workflow yaml 已要求只回复一个 JSON 对象）
+    # 解析。
+    try:
+        data = extract_agent_json_output(
+            step_result.output,
+            required_keys=[
+                "turning_points", "what_went_well", "what_to_reflect_on",
+                "lessons", "caveats",
+            ],
+        )
+    except AgentStepOutputError as exc:
+        raise RetrospectiveError(f"retrospective 步骤回复无法解析为复盘报告：{exc}") from exc
     report = RetrospectiveReport.from_dict(data)
     if not report.caveats:
         # prompt 已明确要求固定包含一条局限声明，这里做最后一道兜底，

@@ -7,18 +7,18 @@ description: >-
   的通用能力，不依赖具体场景模板（life_sim/negotiation/...）的私有
   规则，不需要像 `generate_scenario`/`advance_step` 那样按 template
   绑定 skill。
+  【重要】`type: agent` 不支持 `result_file`/`result_file_required_keys`
+  "结果文件契约"（同 `agent_preview.yaml` 踩过的坑，见
+  `mini_agent/workflow/executors.py`：这套机制只在 `type: script`/
+  `type: skill_agent` 里实现），之前这里误声明的 `result_file` 字段
+  对 `type: agent` 完全不生效。现在改为要求 Agent 直接把 JSON 作为
+  最终回复的全部内容，由 `world_simulator/agent_step_result.py` 从
+  `StepResult.output` 里解析。
 version: "1.0"
 steps:
   - id: retrospective
     name: 生成模拟复盘报告
     type: agent
-    result_file: retrospective.json
-    result_file_required_keys:
-      - turning_points
-      - what_went_well
-      - what_to_reflect_on
-      - lessons
-      - caveats
     prompt: |
       你正在为一次"世界模拟"生成一份复盘报告。这次模拟的场景类型是
       {template}，用户最初的一句话意图是：
@@ -51,7 +51,12 @@ steps:
 
       **核心要求：只总结已经发生的内容，不要做任何面向未来的新预测**
       （不要说"接下来可能会怎样""建议下一步做 XX"这类前瞻性内容——
-      这是复盘，不是新一轮推演）。请输出以下结构化字段：
+      这是复盘，不是新一轮推演）。
+
+      【输出格式，必须严格遵守】你的最终回复必须**只包含一个 JSON
+      对象**，不要有任何其它文字、解释、markdown 代码块围栏、或工具
+      调用——直接把下面这些字段组成的 JSON 对象作为你这一轮对话的
+      最后回复内容，不要在 JSON 前后加说明文字：
 
       - `turning_points`：关键转折点数组，每项 `{{"step": 数字,
         "chosen_option": "当时选择的方向", "why": "为什么这是个关键
@@ -79,3 +84,6 @@ steps:
         的心理分析，模拟本身也可能和现实有偏差"的说明，可以再补充
         针对这次具体模拟的其它局限（比如"这次模拟没有用过 Reality
         Check，复盘无法评估预测准不准"）。
+
+      不要用 bash/echo 或任何工具来"打印"这个 JSON。你的最后一条回复
+      消息，去掉首尾空白后，必须能被直接当 JSON 解析。

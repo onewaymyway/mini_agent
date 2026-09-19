@@ -25,10 +25,11 @@ class _FakeStatus:
         self.value = value
 
 
-def _write_result_file(tmp_path: Path, name: str, payload: dict) -> str:
-    p = tmp_path / name
-    p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    return str(p)
+def _agent_output(payload: dict) -> str:
+    """[BUGFIX 同步] `type: agent` step 现在靠 `StepResult.output`
+    （Agent 最终回复的纯 JSON 文本）传结果，不再落盘 result_file——见
+    world_simulator/agent_step_result.py 顶部说明。"""
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def test_run_agent_preview_rejects_unknown_scenario_id(tmp_path):
@@ -71,8 +72,7 @@ def test_run_agent_preview_parses_result_and_is_isolated_from_sim_data(tmp_path,
         def run(self, wf, inputs):
             captured_inputs.update(inputs)
             assert "决策者画像" not in inputs["decision_context"] or True  # 只是确认字段存在
-            result_file = _write_result_file(
-                tmp_path, "preview_result.json",
+            output = _agent_output(
                 {
                     "chosen_option_id": "wait_for_fit",
                     "reason": "现金还能撑一阵子，值得多花点时间找到匹配度更高的工作。",
@@ -82,7 +82,7 @@ def test_run_agent_preview_parses_result_and_is_isolated_from_sim_data(tmp_path,
             return SimpleNamespace(
                 status="done",
                 step_results=[
-                    SimpleNamespace(step_id="agent_preview", status=_FakeStatus("done"), result_file=result_file)
+                    SimpleNamespace(step_id="agent_preview", status=_FakeStatus("done"), output=output)
                 ],
             )
 
@@ -128,14 +128,13 @@ def test_run_agent_preview_isolates_failure_per_scenario(tmp_path, monkeypatch):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise RuntimeError("模拟一次 LLM 调用失败")
-            result_file = _write_result_file(
-                tmp_path, f"preview_result_{call_count['n']}.json",
+            output = _agent_output(
                 {"chosen_option_id": "stay", "reason": "维持现状更稳妥。"},
             )
             return SimpleNamespace(
                 status="done",
                 step_results=[
-                    SimpleNamespace(step_id="agent_preview", status=_FakeStatus("done"), result_file=result_file)
+                    SimpleNamespace(step_id="agent_preview", status=_FakeStatus("done"), output=output)
                 ],
             )
 
