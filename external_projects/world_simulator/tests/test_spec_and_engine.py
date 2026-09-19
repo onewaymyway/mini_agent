@@ -1095,6 +1095,42 @@ def test_resolve_hints_causal_lines_hint_ignores_entries_without_id():
     assert "默认" in hint
 
 
+def test_resolve_hints_lines_due_hint_omitted_when_no_cadence_declared():
+    """阶段三十一，4.20 节：`advance_every_n_steps` 未声明（或 <= 1）
+    时不应该出现节奏提示，避免给"每步都可能动"的线增加噪音。"""
+    hint = spec_mod.resolve_hints(
+        {"causal_lines": [{"id": "tech", "label": "技术线"}]},
+        current_step=5,
+    )["causal_lines_hint"]
+    assert "预期这一步" not in hint
+
+
+def test_resolve_hints_lines_due_hint_marks_due_and_quiet_lines():
+    """`advance_every_n_steps=5` 的线，在 `current_step` 是 5 的倍数时
+    应该出现在"预期有动静"里，否则出现在"预期维持不变"里；这只是提示，
+    不应该出现"强制"/"必须"这类约束性措辞。"""
+    settings = {
+        "causal_lines": [
+            {"id": "tech", "label": "技术线", "advance_every_n_steps": 5},
+            {"id": "daily", "label": "日常线"},
+        ]
+    }
+    due_hint = spec_mod.resolve_hints(settings, current_step=10)["causal_lines_hint"]
+    assert "预期这一步有动静" in due_hint and "tech" in due_hint
+    assert "daily" not in due_hint.split("预期这一步有动静")[1].split("；")[0]
+
+    quiet_hint = spec_mod.resolve_hints(settings, current_step=7)["causal_lines_hint"]
+    assert "预期这一步大概率维持不变" in quiet_hint and "tech" in quiet_hint
+
+
+def test_resolve_hints_lines_due_hint_tolerates_invalid_cadence_value():
+    """`advance_every_n_steps` 是非法值（字符串/负数）时应该安全退化为
+    1（不出现在提示里），不应该报错。"""
+    settings = {"causal_lines": [{"id": "tech", "label": "技术线", "advance_every_n_steps": "abc"}]}
+    hint = spec_mod.resolve_hints(settings, current_step=3)["causal_lines_hint"]
+    assert "预期这一步" not in hint
+
+
 def test_scenario_draft_from_dict_parses_causal_lines():
     """阶段二十二（4.13 节）：`ScenarioDraft.causal_lines` 应该原样
     解析出 skill 给出的建议值列表；非字典项应该被跳过。"""
@@ -1332,7 +1368,56 @@ def test_advance_parses_causal_links_from_llm_output(tmp_path, monkeypatch):
     ]
 
 
-def test_advance_parses_line_updates_from_llm_output(tmp_path, monkeypatch):
+def test_advance_lines_due_hint_reflects_next_step_not_current_step(tmp_path, monkeypatch):
+    """阶段三十一，4.20 节：`engine.advance()` 喂给
+    `resolve_hints()` 的 `current_step` 应该是即将产生的*下一个*状态的
+    step（`current.step + 1`），不是当前状态的 step——用一条
+    `advance_every_n_steps=2` 的线验证：`state0.step == 0`，下一步是
+    `step 1`（奇数，不是 2 的倍数），因此这条线应该出现在"预期维持
+    不变"里，而不是"预期有动静"里。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+        settings={"causal_lines": [{"id": "tech", "label": "技术线", "advance_every_n_steps": 2}]},
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            assert "预期这一步大概率维持不变" in inputs["causal_lines_hint"]
+            assert "tech" in inputs["causal_lines_hint"]
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {"next_summary": "s2", "narrative": "n", "next_vars": {}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+
+
+
     """阶段二十二（4.13 节）：`advance_step` 输出里的可选 `line_updates`
     应该原样解析进 `next_state.line_updates`；未给出时应为空字典；
     非字典 value 应该被跳过。"""

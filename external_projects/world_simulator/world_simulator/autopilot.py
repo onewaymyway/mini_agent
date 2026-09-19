@@ -69,6 +69,15 @@ def _build_decision_context(manifest: SimManifest) -> str:
         )
     else:
         lines.append("请从给定的候选分支选项里选择，不要自己发明列表之外的新选项。")
+
+    if bool((manifest.settings or {}).get("observer_mode")):
+        lines.append(
+            "Observer Mode（世界独立演化最小实验，阶段三十一 4.25 节）已开启："
+            "这一步请优先让背景/宏观因果线按自身规律自然演化，除非剧情确实"
+            "不可避免，否则不要产生需要立刻打断、要求用户当下做出\"人生重大"
+            "决策\"的新分支——仍然可以正常记录关键剧情进展，这不是要求"
+            "\"什么都不要发生\"，只是不要为了制造戏剧性而强行制造决策点。"
+        )
     return "\n".join(lines)
 
 

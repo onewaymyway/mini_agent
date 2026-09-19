@@ -1439,3 +1439,69 @@ world_simulator/
   settings` 的字段数量问题和 `engine.py` 文件大小是两个独立的
   复杂度维度，前者的精简涉及数据结构语义、风险等级不同于纯代码
   重组，留待后续单独评估。
+- 2026-09-19：完成阶段三十一（4.20/4.22/4.23/4.24/4.25 五个"待观察
+  反馈"/"暂不建议"方向 + `state_model.py` 字段分组索引，见
+  `next_doc/world_simulator_universal_simulator_gap_analysis_and_
+  roadmap_v2_plan.md` 第 5 节路线图第三批 + 暂不建议部分——按用户
+  明确要求，不再等待真实使用反馈，全部落地为**范围克制的最小可行
+  版本**，完整架构仍按原方案标注的触发条件保留）交付：
+  1. **4.20 多尺度真正并行（最小版：节奏提示，非独立引擎）**：
+     `causal_lines` 每条线新增可选 `advance_every_n_steps`（默认
+     1），`spec_generator._lines_due_this_step_hint()` 据此算出
+     "这一步哪些线预期有动静/维持不变"的提示，拼进 `advance` 阶段
+     的 `causal_lines_hint`——只是提示，`engine.py` 不做任何强制
+     过滤；`resolve_hints()`/`_resolve_causal_lines_hint()` 新增
+     `current_step` 参数（`engine.advance()` 传 `current.step + 1`，
+     即"即将产生的下一个状态"的 step），`app.py` 因果线总览对
+     节奏慢的线在标题上标注"约每 N 步一动"。
+  2. **4.22 反事实矩阵向导**：`hypothesis.build_counterfactual_
+     matrix()`（+ `CounterfactualVariant`），复用
+     `run_hypothesis_worlds()` 已验证的
+     `autopilot.run_comparison_experiment()` 机制，把"单个字段的
+     多个假设方向"扩展成"多个字段各自的多个候选取值"，**只做
+     单变量控制**（每个世界只变一个字段，其它声明字段不额外设定
+     方向，不做多变量交叉的完整析因设计）；`app.py`「对比实验」
+     页面新增"反事实矩阵向导"折叠区，按变化的字段分组展示结果。
+  3. **4.23 顺势/逆势/改变趋势判断**：新增
+     `world_simulator/trend.py::classify_trend()`，基于 4.21 归因
+     结果的启发式分类——`causal_links` 里出现"自己所在线 → 反向
+     影响外部线"的记录判定为"正在改变趋势"（优先判断）；否则若
+     贡献高度集中在外部线，给出"顺势/逆势"判断（**不拆分方向**，
+     因为 `causal_links` 不记录数值变化方向，系统无法自动区分
+     顺势与逆势，交给用户结合因果链明细自行判断）；两种信号都
+     没有则"无法判断"。`app.py` 归因折叠区下方新增"自己是哪条
+     因果线"选择器 + 判断结果展示。
+  4. **4.24 Influence Field/Relationship（最小起步版，明确非完整
+     架构）**：新增 `world_simulator/relationship.py`
+     （`normalize_relationships()`/`summarize_by_subject()`），
+     `settings.relationships` 承载 `{from, to, kind, strength,
+     note}` 的结构化关系列表——**没有**影响半径/传播路径/时间
+     延迟/自动推进逻辑，`engine.advance()` 完全不读取也不消费；
+     `app.py`"模拟设置"新增 JSON 编辑入口。完整的 Influence Field
+     架构仍按原方案"多主体数量明显增多且 entities/shared_vars
+     不足以表达"的触发条件搁置。
+  5. **4.25 世界独立演化 / Observer View（最小起步版，非独立推进
+     循环）**：新增 `settings.observer_mode`（默认 `False`），为
+     `True` 且 `pilot_mode == "autopilot"` 时，
+     `autopilot._build_decision_context()` 追加一段提示，要求这
+     一步优先让背景/宏观因果线自然演化、尽量不产生需要立刻打断的
+     "人生重大决策"新分支——**仍然是** `batch_advance_daily`/
+     自动挡代理发起的同步推进，没有独立的后台推进循环，也不是
+     真正的双视角架构，只是提示（不强制）。`app.py`"模拟设置"
+     新增对应勾选项。
+  6. **`state_model.py` 字段分组索引**（4.18 节末尾遗留的评估项）：
+     在 `SimManifest.settings` docstring 末尾追加一段按主题分组
+     的字段索引（节奏/候选、资源与守恒、目标与归因、多主体、
+     因果线、校准与结构演化、世界独立演化），纯文档层面的可读性
+     改进，不拆分成子对象、不改变任何字段语义或存取路径。
+  **验收**：新增 21 个测试用例（`tests/test_trend.py`、
+  `tests/test_relationship.py`，以及 `test_spec_and_engine.py`/
+  `test_hypothesis.py`/`test_autopilot.py` 里针对上述五点的新增
+  用例），加上原有 198 个用例，全部通过（219 passed）。
+  **已知限制**：4.23 的"顺势/逆势"判断需要用户手动指定"哪条线
+  代表自己"，系统无法自动识别；判断本身是启发式分类，不追求
+  精确，这在原方案里就已经标注为"十个方向里价值相对不确定的
+  一个"。4.24/4.25 的最小版本刻意没有实现任何传播/独立推进逻辑，
+  如果后续真的出现原方案标注的触发条件（多主体数量明显增多、
+  用户明确要求世界在无操作时也能演化），仍需要在此基础上做更
+  大范围的架构改动，不能只靠扩展现有 hint 字段解决。

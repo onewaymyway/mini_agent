@@ -399,3 +399,99 @@ def test_find_robust_outcomes_skips_missing_branches_and_missing_fields(tmp_path
     # 既不算稳健也不算分歧
     assert "missing_field" not in outcome["robust_fields"]
     assert "missing_field" not in outcome["fragile_fields"]
+
+
+# ── build_counterfactual_matrix（阶段三十一，4.22 节，反事实矩阵向导） ──
+
+
+def _patch_advance_step_by_field_value(monkeypatch, tmp_path):
+    """打桩 `advance_step`：直接把 `decision_context` 里"「字段」按
+    「取值」方向发展"这句话解析出来，原样写进对应字段（`vars` 里用
+    字段名做 key，不处理嵌套路径），用于验证
+    `build_counterfactual_matrix()` 确实按声明的字段/取值各自生成了
+    一个独立世界。"""
+    import re
+
+    step_step = _FakeStep("step")
+
+    class FakeStore:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunner:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            decision_context = inputs.get("decision_context", "")
+            m = re.search(r"只让「([^」]+)」按「([^」]+)」方向发展", decision_context)
+            next_vars = {}
+            if m:
+                next_vars[m.group(1)] = m.group(2)
+            result_file = _write_result_file(
+                tmp_path, f"cf_result_{id(inputs)}.json",
+                {
+                    "next_summary": "ok", "narrative": "ok", "next_vars": next_vars,
+                    "options": [{"id": "a", "label": "选项 A"}, {"id": "b", "label": "选项 B"}],
+                    "chosen_option_id": "a", "chosen_reason": "r",
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStore)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunner)
+
+
+def test_build_counterfactual_matrix_generates_one_world_per_field_value(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    _make_sim(data_dir, "sim1")
+    _patch_advance_step_by_field_value(monkeypatch, tmp_path)
+
+    results = hyp_mod.build_counterfactual_matrix(
+        object(), tmp_path, data_dir, "sim1",
+        fields={
+            "ai_cost_trend": ["快速下降", "基本不变"],
+            "market_demand": ["旺盛"],
+        },
+        steps=1,
+    )
+
+    # 单变量控制：2 + 1 = 3 个世界，不是全排列组合（2*1 也恰好是 3，
+    # 换一组数量不等的取值即可和"全排列"区分开）
+    assert len(results) == 3
+    fields_seen = {r.field for r in results}
+    assert fields_seen == {"ai_cost_trend", "market_demand"}
+    values_by_field = {}
+    for r in results:
+        values_by_field.setdefault(r.field, []).append(r.value)
+    assert set(values_by_field["ai_cost_trend"]) == {"快速下降", "基本不变"}
+    assert values_by_field["market_demand"] == ["旺盛"]
+    assert all(not r.error for r in results)
+    assert len({r.branch for r in results}) == 3  # 每个世界各自独立分支
+
+    # 活跃分支应该恢复成运行前那一条
+    store = SimStore.for_root(data_dir, "sim1")
+    assert store.load_manifest().branch == "main"
+
+
+def test_build_counterfactual_matrix_empty_fields_returns_empty_list_without_forking(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    _make_sim(data_dir, "sim1")
+    _patch_advance_step_by_field_value(monkeypatch, tmp_path)
+
+    assert hyp_mod.build_counterfactual_matrix(
+        object(), tmp_path, data_dir, "sim1", fields={}, steps=1,
+    ) == []
+    assert hyp_mod.build_counterfactual_matrix(
+        object(), tmp_path, data_dir, "sim1", fields={"empty_field": []}, steps=1,
+    ) == []
+
+    # 没有产生任何分叉：分支列表应该仍然只有 main
+    store = SimStore.for_root(data_dir, "sim1")
+    assert set(_ for _ in [store.load_manifest().branch]) == {"main"}

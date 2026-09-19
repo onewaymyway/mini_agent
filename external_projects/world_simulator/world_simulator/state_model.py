@@ -532,6 +532,18 @@ class SimManifest:
       推进一次"这种强制节奏控制）——每一步该更新哪些线完全由 skill
       自行判断，engine 不做任何强约束，只负责落盘 `line_updates`。
 
+      每一项还支持一个可选字段 `advance_every_n_steps`（阶段三十一，
+      `next_doc/world_simulator_universal_simulator_gap_analysis_and_
+      roadmap_v2_plan.md` 4.20 节，多尺度因果线的最小可行版本）：
+      整数，默认 1（每步都可能有动静）。**不是强制约束**——只是
+      `spec_generator._resolve_causal_lines_hint()` 据此算出"这一步
+      哪些线预期会有动静、哪些线大概率维持不变"的提示信息喂给
+      skill 参考，skill 仍然可以在任何一步更新任何线（避免"错误
+      估计节奏导致该更新的线被拦住"）；`app.py` 因果线总览对节奏
+      慢的线用更稀疏的视觉密度展示。`engine.py` 不对 `line_updates`
+      做任何按节奏的强制过滤/校验。留空/不填按 1 处理，不影响任何
+      已有行为，向后兼容。
+
       每一项额外支持一个可选字段 `future_tree`（阶段二十六，
       `next_doc/world_simulator_causal_line_future_tree_plan.md`，
       因果线的"未来因果树"）：`{"as_of_step": 0, "branches": [
@@ -555,6 +567,50 @@ class SimManifest:
       `SimState.tree_updates` 供审计；用户也可以在详情页直接点击
       "标记为已印证/已排除"手动修正（`causal_tree.
       set_branch_status()`），不需要等 skill 输出。
+    - `relationships`：列表，声明主体（`vars.entities` 的键，或因果线
+      `id`）之间的关系（阶段三十一，`next_doc/
+      world_simulator_universal_simulator_gap_analysis_and_roadmap_v2_
+      plan.md` 4.24 节**最小起步版**——把关系从纯自由文本升级为一份
+      可独立查看的结构化列表，**不是**参考文档设想的完整 Influence
+      Field/Relationship 图（没有影响半径、传播路径、时间延迟、
+      自动推进逻辑，见 `world_simulator/relationship.py` 模块开头的
+      范围说明）。每一项形如 `{"from": "甲方", "to": "乙方", "kind":
+      "rival", "strength": "high", "note": "对同一块市场份额有直接
+      竞争"}`：`from`/`to` 是主体名字（自由文本，不校验是否真的在
+      `vars.entities` 里存在）、`kind` 取
+      `ally`/`rival`/`dependency`/`authority`/`other` 之一（不认识的
+      值归一化为 `other`）、`strength` 取 `high`/`medium`/`low`
+      （默认 `medium`，延续"不做伪精确"的一贯风格）、`note` 是一句话
+      说明。`world_simulator.relationship.normalize_relationships()`
+      负责清洗/归一化，`app.py` 在"模拟设置"里提供 JSON 编辑入口，
+      不会推进任何传播计算，也不影响 `advance()` 的任何校验逻辑。
+      留空（默认空列表）表示不声明任何关系，行为与引入这个字段之前
+      完全一致，向后兼容。
+    - `observer_mode`：布尔值（默认 `False`），"世界独立演化"的最小
+      实验开关（阶段三十一，4.25 节**最小起步版**，不是参考文档设想
+      的完整 Observer View 双视角架构——没有独立的推进循环，仍然是
+      `batch_advance_daily`/自动挡代理发起的同步推进，只是多喂一段
+      prompt 提示）。为 `True` 时，`autopilot._build_decision_context()`
+      会在自动挡决策画像里追加一段提示，要求这一步优先让背景/宏观
+      因果线自然演化，尽量不产生需要立刻打断、要求用户当下做出
+      "人生重大决策"的新分支（**不强制**——同其它 hint 类字段一样，
+      仍然由 skill 自行判断，不是代码层面的硬约束）。只在
+      `pilot_mode == "autopilot"` 时才有实际效果，手动挡下这个字段
+      是空操作。留空（默认 `False`）表示不启用，行为与引入这个字段
+      之前完全一致，向后兼容。
+
+    **字段分组索引**（阶段三十一，4.18 节末尾遗留的评估项——`settings`
+    字段数量持续增加带来的复杂度负担，这里只做"分组索引"这种低风险
+    的可读性改进，不做拆分成多个子对象之类的破坏性重构）：
+    - 节奏/候选：`options_count`、`time_granularity_mode`、
+      `time_granularity`、`time_granularity_guide`
+    - 资源与守恒：`resource_fields`、`resource_relations`
+    - 目标与归因：`objectives`
+    - 多主体：`multi_entity_mode`、`hierarchical_agent_mode`、
+      `background_entities`、`relationships`
+    - 因果线：`causal_lines`、`suggested_causal_lines`
+    - 校准与结构演化：`calibration_notes`、`confirmed_structural_changes`
+    - 世界独立演化（实验性）：`observer_mode`
     """
 
     def to_dict(self) -> Dict[str, Any]:

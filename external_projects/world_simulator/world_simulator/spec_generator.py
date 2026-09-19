@@ -85,8 +85,53 @@ def _resolve_background_entities_hint(settings: "Dict[str, Any] | None") -> str:
     )
 
 
+def _lines_due_this_step_hint(lines: "List[Dict[str, Any]]", next_step: int) -> str:
+    """把每条线的 `advance_every_n_steps` 换算成"这一步预期哪些线会动、
+    哪些线大概率维持不变"的一句话提示（阶段三十一，`next_doc/
+    world_simulator_universal_simulator_gap_analysis_and_roadmap_v2_
+    plan.md` 4.20 节，多尺度因果线的最小可行版本）。
+
+    只是提示，不是约束：`engine.py` 不会因为这里判断"预期不动"就拒绝
+    或过滤 skill 实际给出的 `line_updates`——刻意避免"错误估计节奏
+    导致该更新的线被拦住"。`advance_every_n_steps` 未声明或 <= 1 的线
+    不出现在提示里（沿用旧行为，避免给"每步都可能动"的线增加无意义
+    的噪音）。`next_step` 是即将产生的这个状态的 step 序号（不是
+    `current.step`，因为这一步描述的是"接下来要走的这一步"）。
+    """
+    due, quiet = [], []
+    for line in lines:
+        raw_n = line.get("advance_every_n_steps")
+        try:
+            n = int(raw_n) if raw_n is not None else 1
+        except (TypeError, ValueError):
+            n = 1
+        n = max(1, n)
+        if n <= 1:
+            continue
+        line_id = str(line.get("id") or "").strip()
+        if not line_id:
+            continue
+        label = str(line.get("label") or line_id).strip()
+        piece = f"{line_id}（{label}，约每 {n} 步一动）"
+        if next_step % n == 0:
+            due.append(piece)
+        else:
+            quiet.append(piece)
+    if not due and not quiet:
+        return ""
+    parts = []
+    if due:
+        parts.append("预期这一步有动静：" + "、".join(due))
+    if quiet:
+        parts.append(
+            "预期这一步大概率维持不变（仅供参考，你仍可按实际情境自行判断"
+            "是否更新）：" + "、".join(quiet)
+        )
+    return "\n" + "；".join(parts) + "。"
+
+
 def _resolve_causal_lines_hint(
-    settings: "Dict[str, Any] | None", *, stage: str = "advance"
+    settings: "Dict[str, Any] | None", *, stage: str = "advance", current_step: int = 0
 ) -> str:
     """把 `settings.causal_lines` 转成喂给 prompt 的一句话提示（阶段
     二十二，4.13 节，多尺度因果线；阶段二十六，`next_doc/
@@ -188,6 +233,9 @@ def _resolve_causal_lines_hint(
         + "。如果这一步确实出现了一条上面都没列出的新因果线，也可以直接用"
         "一个新 id 输出 line_updates，系统会自动登记为新线。"
     )
+    due_hint = _lines_due_this_step_hint(lines, current_step)
+    if due_hint:
+        hint += due_hint
     if tree_parts:
         hint += (
             "\n以下是各条线当前的未来分支（状态标注在方括号里）："
@@ -204,7 +252,9 @@ def _resolve_causal_lines_hint(
     return hint
 
 
-def resolve_hints(settings: "Dict[str, Any] | None" = None, *, stage: str = "advance") -> Dict[str, str]:
+def resolve_hints(
+    settings: "Dict[str, Any] | None" = None, *, stage: str = "advance", current_step: int = 0
+) -> Dict[str, str]:
     """把 `manifest.settings`（或创建向导里还没落盘成 manifest 时的临时
     设置字典）转成喂给 workflow prompt 的提示字符串。
 
@@ -222,6 +272,11 @@ def resolve_hints(settings: "Dict[str, Any] | None" = None, *, stage: str = "adv
             基准"，`advance` 讲的是"延续上一步、变化需说明理由"），
             避免 `generate_scenario.yaml` 的 prompt 里出现一句引用了
             不存在的 `{current_time_granularity}` 占位符的说明文字。
+        current_step: 即将产生的下一个状态的 step 序号（阶段三十一，
+            4.20 节），仅用于 `_lines_due_this_step_hint()` 换算"这一步
+            哪些线预期有动静"；`stage == "create"` 场景没有意义，
+            调用方不传时按 0 处理（不影响任何提示内容，因为
+            `create` 分支本身不消费这个参数）。
 
     `time_granularity_hint` 的内容按 `time_granularity_mode` 分三种：
     - `fixed`：明确要求"每一步都严格按这个值推进"，行为与阶段一/二
@@ -268,7 +323,9 @@ def resolve_hints(settings: "Dict[str, Any] | None" = None, *, stage: str = "adv
         "time_granularity_hint": time_granularity_hint,
         "multi_entity_mode_hint": _resolve_multi_entity_hint(settings),
         "background_entities_hint": _resolve_background_entities_hint(settings),
-        "causal_lines_hint": _resolve_causal_lines_hint(settings, stage=stage),
+        "causal_lines_hint": _resolve_causal_lines_hint(
+            settings, stage=stage, current_step=current_step
+        ),
     }
 
 

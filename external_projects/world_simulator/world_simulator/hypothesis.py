@@ -443,3 +443,126 @@ def find_robust_outcomes(
         # kind == "missing"：既不算稳健也不算分歧，见上方 docstring
 
     return {"stats": stats, "robust_fields": robust_fields, "fragile_fields": fragile_fields}
+
+
+@dataclass
+class CounterfactualVariant:
+    """反事实矩阵里的一个"世界"：只改变了一个字段的一个候选取值，
+    其它声明的字段不额外设定方向（见 `build_counterfactual_matrix()`
+    docstring 的"范围克制"）。"""
+
+    field: str
+    value: str
+    branch: str = "?"
+    steps_done: int = 0
+    ended_early: bool = True
+    error: Optional[str] = None
+    final_vars: Optional[Dict[str, Any]] = None
+
+
+def build_counterfactual_matrix(
+    cfg,
+    workspace_root: Path,
+    data_dir: Path,
+    sim_id: str,
+    *,
+    fields: Dict[str, List[str]],
+    steps: int = 3,
+    source_branch: Optional[str] = None,
+    from_step: Optional[int] = None,
+) -> List[CounterfactualVariant]:
+    """反事实矩阵向导（阶段三十一，`next_doc/
+    world_simulator_universal_simulator_gap_analysis_and_roadmap_v2_
+    plan.md` 4.22 节）——"控制变量法"式的正交反事实世界批量生成，
+    呼应参考文档第十六节"保持个人选择改变经济环境 / 保持经济环境
+    改变个人选择"这类对比。
+
+    **只做单变量控制**（这也是"矩阵"两个字的准确含义所在）：每个
+    生成的"世界"只改变 `fields` 里的一个字段的一个候选取值，同批
+    声明的其它字段**不额外设定方向**（不代码层面强制固定——`vars`
+    对引擎而言始终是不透明的自由 JSON，没有"冻结某个字段"这种机制，
+    这里的"控制"体现在 prompt 明确要求"其它字段按情境自然发展，
+    不要为了配合这个假设而刻意固定或扭曲"，是一种指导而非硬约束）。
+    **不做多变量交叉的完整析因设计**——组合数量会指数级增长，且
+    当前 LLM 推进成本下不现实（同 4.22 节原方案的取舍）。
+
+    实现上完全复用 `run_hypothesis_worlds()` 已经验证过的机制
+    （`autopilot.run_comparison_experiment()`），只是把"单个字段的
+    多个假设方向"扩展成"多个字段各自的多个候选取值"，每个取值单独
+    生成一份只包含一条 principle 的策略画像。
+
+    Args:
+        fields: `{字段路径: [候选取值, ...]}`，比如
+            `{"resources.cash": ["快速增长", "基本持平"],
+            "market.demand": ["旺盛", "低迷"]}`——会生成 4 个世界
+            （2 个字段 × 各 2 个取值），而不是 4 个字段值的全排列
+            组合。字段路径/取值都是自由文本，不做任何代码层面的
+            字段校验（同 `resource_fields` 等路径类设置的一贯设计）。
+        steps: 每个世界各自推进的步数。
+        source_branch/from_step: 所有世界共享的起点，都为 None
+            （默认）时取"当前活跃分支的当前步"。
+
+    Returns:
+        `CounterfactualVariant` 列表，顺序与 `fields` 的遍历顺序 +
+        每个字段内候选取值的顺序一致；`fields` 为空、或所有字段都
+        没有有效候选取值时返回空列表（不发起任何分叉/推进）。跑完后
+        会把活跃分支切回调用前的那一条（同
+        `run_comparison_experiment()`/`run_hypothesis_worlds()` 的
+        取舍）。
+    """
+    from world_simulator.autopilot import run_comparison_experiment
+    from world_simulator.engine import get_simulation
+
+    manifest, current, _history = get_simulation(data_dir, sim_id)
+    resolved_source_branch = source_branch or manifest.branch
+    resolved_from_step = current.step if from_step is None else from_step
+
+    declared_fields = [str(f).strip() for f in fields.keys() if str(f).strip()]
+
+    profiles: List[Dict[str, Any]] = []
+    variant_meta: List[tuple] = []
+    for raw_field, raw_values in fields.items():
+        target_field = str(raw_field).strip()
+        if not target_field:
+            continue
+        other_fields = [f for f in declared_fields if f != target_field]
+        others_note = (
+            "；其余字段（" + "、".join(other_fields) + "）不额外设定方向，"
+            "按情境合理自然发展，不需要为了配合这个假设而刻意固定或扭曲"
+        ) if other_fields else ""
+        for raw_value in raw_values or []:
+            value = str(raw_value).strip()
+            if not value:
+                continue
+            principle = (
+                f"控制变量假设：只让「{target_field}」按「{value}」方向发展"
+                f"{others_note}。之后每一步推进请保持这个假设一致，除非情境"
+                "明显要求调整；这条假设只约束这一个字段的发展方向。"
+            )
+            profiles.append(
+                {
+                    "name": f"{target_field}={value}",
+                    "principles": [principle],
+                    "risk_preference": "balanced",
+                    "review_mode": "silent",
+                    "allow_custom_options": False,
+                }
+            )
+            variant_meta.append((target_field, value))
+
+    if not profiles:
+        return []
+
+    branch_results = run_comparison_experiment(
+        cfg, workspace_root, data_dir, sim_id,
+        source_branch=resolved_source_branch, from_step=resolved_from_step,
+        steps=steps, profiles=profiles,
+    )
+
+    return [
+        CounterfactualVariant(
+            field=f, value=v, branch=r.branch, steps_done=r.steps_done,
+            ended_early=r.ended_early, error=r.error, final_vars=r.final_vars,
+        )
+        for (f, v), r in zip(variant_meta, branch_results)
+    ]

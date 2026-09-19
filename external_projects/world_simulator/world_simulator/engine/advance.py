@@ -155,7 +155,7 @@ def advance(
         "confirmed_structural_changes_hint": _format_confirmed_structural_changes(
             manifest.settings.get("confirmed_structural_changes")
         ),
-        **resolve_hints(manifest.settings),
+        **resolve_hints(manifest.settings, current_step=current.step + 1),
     }
 
     runner = WorkflowRunner(cfg)

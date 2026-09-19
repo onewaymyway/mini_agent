@@ -52,6 +52,8 @@ from world_simulator.autopilot import (
 )
 from world_simulator.analysis import aggregate_field_stats, normalize_objectives, rank_by_objectives
 from world_simulator import attribution as attribution_mod
+from world_simulator import trend as trend_mod
+from world_simulator import relationship as relationship_mod
 from world_simulator.config import DATA_DIR, ensure_dirs
 from world_simulator.achievements import achievement_progress, compute_achievements
 from world_simulator.engine import (
@@ -1672,6 +1674,18 @@ def _render_causal_lines_overview(
         for line in causal_lines_meta
         if isinstance(line, dict) and line.get("id")
     }
+    # 阶段三十一，4.20 节：节奏慢的线（`advance_every_n_steps` > 1）
+    # 在展示上标个"约每 N 步一动"，避免长时间没有变化看起来像"卡住了"。
+    cadence_by_id: Dict[str, int] = {}
+    for line in causal_lines_meta:
+        if not (isinstance(line, dict) and line.get("id")):
+            continue
+        try:
+            n = int(line.get("advance_every_n_steps") or 1)
+        except (TypeError, ValueError):
+            n = 1
+        if n > 1:
+            cadence_by_id[str(line.get("id"))] = n
     # 退化路径：声明列表里没有的 id，只要在历史里真的出现过，也纳入
     # 展示（label 退化为 id 本身）。
     for state in history:
@@ -1728,7 +1742,9 @@ def _render_causal_lines_overview(
             points.append((state.step, time_label, summary))
 
         granularity = granularity_by_id.get(line_id, "")
-        granularity_suffix = f"（{granularity}）" if granularity else ""
+        cadence_n = cadence_by_id.get(line_id)
+        _suffix_parts = [p for p in (granularity, (f"约每 {cadence_n} 步一动" if cadence_n else "")) if p]
+        granularity_suffix = f"（{'，'.join(_suffix_parts)}）" if _suffix_parts else ""
         title_html = (
             '<div class="ws-causal-line-row">'
             f'<div class="ws-causal-line-row-title">📈 {_html_text(label)}'
@@ -2014,6 +2030,10 @@ def _render_attribution_section(history: List, manifest) -> None:
     而不是强行猜一个字段（同 `rank_by_objectives()` 的前置条件），
     纯展示层调用 `attribution.summarize_contributions()`，不发起任何
     新的 LLM 调用。
+
+    归因清单下方额外附带"顺势/逆势/改变趋势"判断（阶段三十一，4.23
+    节，见 `trend.classify_trend()`）——需要用户额外选择"哪条因果线
+    代表自己"，只有实例声明过至少一条 `causal_lines` 时才展示这部分。
     """
     objectives = normalize_objectives((manifest.settings or {}).get("objectives") or [])
     field_objectives = [o for o in objectives if o.field]
@@ -2062,6 +2082,38 @@ def _render_attribution_section(history: List, manifest) -> None:
                 driver = _html_text(str(example.get("driver") or ""))
                 effect = _html_text(str(example.get("effect") or ""))
                 step = example.get("step")
+                step_prefix = f"第 {step} 步 · " if step is not None else ""
+                st.markdown(
+                    f'<div class="ws-muted" style="margin-left:1rem;">'
+                    f"· {step_prefix}{driver}{'　→　' + effect if effect else ''}</div>",
+                    unsafe_allow_html=True,
+                )
+
+        # ── 顺势/逆势/改变趋势判断（阶段三十一，4.23 节）：依赖上面的
+        # 归因结果，需要用户指定"哪条因果线代表自己/所在实体"——系统
+        # 无法自动识别，必须由用户选择，这也是这个判断"启发式、不追求
+        # 精确"定位的直接体现 ──
+        line_ids = [
+            str(line.get("id")) for line in (manifest.settings or {}).get("causal_lines") or []
+            if isinstance(line, dict) and line.get("id")
+        ]
+        if line_ids:
+            st.markdown("---")
+            self_line_id = st.selectbox(
+                "哪条因果线代表\"你/所在实体\"（用于顺势/逆势/改变趋势判断）",
+                options=line_ids, key="trend_self_line_picker",
+            )
+            judgement = trend_mod.classify_trend(history, target_field, self_line_id)
+            st.markdown(f"**顺势/逆势判断**：{_html_text(judgement.verdict_label)}")
+            if judgement.caveat:
+                st.markdown(
+                    f'<span class="ws-muted">{_html_text(judgement.caveat)}</span>',
+                    unsafe_allow_html=True,
+                )
+            for ev in judgement.evidence:
+                driver = _html_text(str(ev.get("driver") or ""))
+                effect = _html_text(str(ev.get("effect") or ""))
+                step = ev.get("step")
                 step_prefix = f"第 {step} 步 · " if step is not None else ""
                 st.markdown(
                     f'<div class="ws-muted" style="margin-left:1rem;">'
@@ -2295,6 +2347,28 @@ def page_detail() -> None:
                 value=", ".join(str(e) for e in cur_background_entities),
                 key="settings_background_entities", placeholder="背景NPC, 围观群众",
             )
+        cur_relationships = cur_settings.get("relationships") or []
+        with st.expander("高级：声明关系（Relationship，阶段三十一最小起步版，可选）"):
+            st.markdown(
+                '<span class="ws-muted">把主体之间的关系从叙事自由文本升级为一份可'
+                "独立查看的结构化列表——**不是**完整的 Influence Field/关系图架构，"
+                "没有影响半径/传播路径/自动推进，只是方便浏览。</span>",
+                unsafe_allow_html=True,
+            )
+            new_relationships_text = st.text_area(
+                "关系声明（JSON 数组，可选）",
+                value=json.dumps(cur_relationships, ensure_ascii=False) if cur_relationships else "",
+                key="settings_relationships", height=80,
+                placeholder='[{"from": "甲方", "to": "乙方", "kind": "rival", '
+                '"strength": "high", "note": "对同一块市场份额有直接竞争"}]',
+            )
+        cur_observer_mode = bool(cur_settings.get("observer_mode", False))
+        new_observer_mode = st.checkbox(
+            "🔭 Observer 模式（世界独立演化最小实验，阶段三十一 4.25 节——仅自动挡下"
+            "生效，提示 AI 优先让背景/宏观因果线自然演化、尽量不产生需要立刻打断的"
+            "重大决策分支，不强制约束）",
+            value=cur_observer_mode, key="settings_observer_mode",
+        )
         cur_objectives = cur_settings.get("objectives") or []
         cur_objectives_text = ", ".join(
             str(o) for o in cur_objectives if not isinstance(o, dict)
@@ -2333,12 +2407,18 @@ def page_detail() -> None:
             causal_lines_invalid = (
                 new_causal_lines_text.strip() and not isinstance(new_causal_lines, list)
             )
+            new_relationships = _safe_json_loads(new_relationships_text, None)
+            relationships_invalid = (
+                new_relationships_text.strip() and not isinstance(new_relationships, list)
+            )
             if objectives_advanced_invalid:
                 st.error("结构化关注指标不是合法的 JSON 数组，设置未保存，请修正后重试。")
             elif resource_relations_invalid:
                 st.error("资源转移关系不是合法的 JSON 数组，设置未保存，请修正后重试。")
             elif causal_lines_invalid:
                 st.error("因果线声明不是合法的 JSON 数组，设置未保存，请修正后重试。")
+            elif relationships_invalid:
+                st.error("关系声明不是合法的 JSON 数组，设置未保存，请修正后重试。")
             else:
                 if isinstance(new_objectives_advanced, list):
                     new_objectives = new_objectives + [
@@ -2351,6 +2431,10 @@ def page_detail() -> None:
                 causal_lines_to_save = (
                     [line for line in new_causal_lines if isinstance(line, dict)]
                     if isinstance(new_causal_lines, list) else []
+                )
+                relationships_to_save = (
+                    relationship_mod.normalize_relationships(new_relationships)
+                    if isinstance(new_relationships, list) else []
                 )
                 new_background_entities = [
                     e.strip() for e in new_background_entities_text.split(",") if e.strip()
@@ -2371,6 +2455,8 @@ def page_detail() -> None:
                     calibration_notes=new_calibration_notes_text.strip(),
                     background_entities=new_background_entities,
                     hierarchical_agent_mode=bool(new_background_entities),
+                    relationships=relationships_to_save,
+                    observer_mode=bool(new_observer_mode),
                 )
                 st.success("设置已更新，下一步推进开始生效。")
                 st.rerun()
@@ -2896,6 +2982,71 @@ def page_compare() -> None:
                                 st.markdown(f"- `{s.field}`：取值分布 {dist_text}（{s.count} 个样本）")
                             else:
                                 st.markdown(f"- `{s.field}`：所有分支都取不到这个字段的值。")
+
+    # ── 反事实矩阵向导（阶段三十一，4.22 节，控制变量法）：只针对
+    # "实例 1" 的当前状态，一次声明多个字段各自的候选取值，批量生成
+    # "每次只变一个字段"的正交世界，不需要用户手动逐个开实验 ──
+    with st.expander("🧪 反事实矩阵向导（控制变量法，阶段三十一，可选）"):
+        cf_sim_id, cf_branch = picks[0]
+        st.markdown(
+            f'<span class="ws-muted">针对「实例 1」（{sim_options.get(cf_sim_id, cf_sim_id)} · '
+            f"分支 {cf_branch}）当前状态，一次声明多个字段各自的候选取值，"
+            "每个取值单独生成一个世界（只变这一个字段，其它声明字段不额外"
+            "设定方向），不做多字段交叉的完整析因设计。</span>",
+            unsafe_allow_html=True,
+        )
+        cf_fields_text = st.text_area(
+            "字段与候选取值（每行一个字段，格式「字段路径: 取值1, 取值2, ...」）",
+            value="resources.cash: 快速增长, 基本持平, 快速下降",
+            key="cf_fields_text", height=90,
+        )
+        cf_steps = st.number_input("每个世界推进的步数", min_value=1, max_value=10, value=3, key="cf_steps")
+        if st.button("运行反事实矩阵", key="cf_run_btn"):
+            fields_config: Dict[str, List[str]] = {}
+            for line in cf_fields_text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if ":" in line:
+                    fpath, values_text = line.split(":", 1)
+                elif "：" in line:
+                    fpath, values_text = line.split("：", 1)
+                else:
+                    continue
+                fpath = fpath.strip()
+                values = [v.strip() for v in values_text.split(",") if v.strip()]
+                if fpath and values:
+                    fields_config[fpath] = values
+            if not fields_config:
+                st.error("至少声明一个「字段: 取值1, 取值2」格式的字段。")
+            else:
+                try:
+                    cfg = _load_cfg()
+                    with st.spinner("正在分叉并推进各个反事实世界..."):
+                        cf_results = hyp_mod.build_counterfactual_matrix(
+                            cfg, PROJECT_ROOT, DATA_DIR, cf_sim_id,
+                            fields=fields_config, steps=int(cf_steps),
+                            source_branch=cf_branch,
+                        )
+                    st.session_state["cf_results"] = cf_results
+                except ImportError as exc:
+                    st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"运行反事实矩阵失败：{exc}")
+
+        cf_results = st.session_state.get("cf_results")
+        if cf_results:
+            st.markdown("**反事实矩阵运行结果**（按变化的字段分组）：")
+            grouped: Dict[str, List[Any]] = {}
+            for r in cf_results:
+                grouped.setdefault(r.field, []).append(r)
+            for field_name, variants in grouped.items():
+                st.markdown(f"「{_html_text(field_name)}」：", unsafe_allow_html=True)
+                for r in variants:
+                    if r.error:
+                        st.markdown(f"　- {r.value} → 分支 `{r.branch}`：❌ {r.error}")
+                    else:
+                        st.markdown(f"　- {r.value} → 分支 `{r.branch}`：完成 {r.steps_done} 步")
 
     if picks[0] == picks[1]:
         st.warning("请选择两条不同的时间线（实例+分支组合需不同）。")

@@ -321,6 +321,35 @@ def test_decision_context_denies_custom_option_by_default(tmp_path):
     assert "允许你跳出这个列表" not in context
 
 
+def test_decision_context_observer_mode_off_by_default(tmp_path):
+    """阶段三十一，4.25 节：`settings.observer_mode` 未声明时，画像
+    文本不应该出现 Observer Mode 的提示。"""
+    manifest = SimManifest(
+        sim_id="sim1", template="life_sim", intent="i", title="t",
+        created_at=now_iso(), updated_at=now_iso(), pilot_mode="autopilot",
+        autopilot={"enabled": True, "review_mode": "silent"},
+    )
+    context = ap_mod._build_decision_context(manifest)
+    assert "Observer Mode" not in context
+
+
+def test_decision_context_observer_mode_on_adds_background_evolution_hint(tmp_path):
+    """`settings.observer_mode = True` 时，画像文本应该追加"优先让
+    背景/宏观因果线自然演化、尽量不产生要求用户当下做重大决策的新
+    分支"这类提示——只是提示，不应该出现"必须"/"禁止"这类硬约束
+    措辞（延续 hint 类字段"不强制"的一贯风格）。"""
+    manifest = SimManifest(
+        sim_id="sim1", template="life_sim", intent="i", title="t",
+        created_at=now_iso(), updated_at=now_iso(), pilot_mode="autopilot",
+        autopilot={"enabled": True, "review_mode": "silent"},
+        settings={"observer_mode": True},
+    )
+    context = ap_mod._build_decision_context(manifest)
+    assert "Observer Mode" in context
+    assert "背景/宏观因果线" in context
+    assert "必须" not in context and "禁止" not in context
+
+
 def test_run_comparison_experiment_forks_one_branch_per_profile(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     _make_sim_with_options(data_dir, "sim1", pilot_mode="manual")
