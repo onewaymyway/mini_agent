@@ -335,7 +335,11 @@ def resolve_hints(
         time_granularity_hint = f"{DEFAULT_TIME_GRANULARITY}{continuity_note}"
 
     return {
-        "option_count_hint": f"{options_count} 个左右",
+        "option_count_hint": (
+            f"最多不超过 {options_count} 个（软上限，用于防止候选列表"
+            f"刷屏，不是目标数量——具体生成几个由这一步是否出现真正的"
+            f"决策分岔点决定，见下方“候选选项生成流程”）"
+        ),
         "belief_fields_hint": _resolve_belief_fields_hint(settings),
         "time_granularity_hint": time_granularity_hint,
         "multi_entity_mode_hint": _resolve_multi_entity_hint(settings),

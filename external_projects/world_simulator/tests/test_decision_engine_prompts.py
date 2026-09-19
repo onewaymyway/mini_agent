@@ -1,0 +1,108 @@
+"""tests/test_decision_engine_prompts.py — 阶段三十三第一批
+（`next_doc/world_simulator_potential_causal_space_and_decision_engine_
+plan.md` 4.1 数量软上限 + 4.5 现实行动语义 + 4.8 文件同步改造）验收测试。
+
+只做静态文案断言：确认软上限措辞、现实行动语义约束、可干预性下沉
+说明、`continue_` 前缀约定已经写入两个 workflow yaml 和三个模板
+SKILL.md，且旧的"按用户设置来，不要自己拍脑袋"式措辞已被替换。不做
+真实 LLM 调用（那需要人工跑真实/接近真实场景核对输出质量，见方案
+第 6 节风险说明），这里只保证"改动确实落地到文件里"这一层。
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+WORLD_SIM_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(WORLD_SIM_ROOT))
+
+WORKFLOWS_DIR = WORLD_SIM_ROOT / "workflows"
+SKILLS_DIR = WORLD_SIM_ROOT / "skills"
+
+ADVANCE_STEP_TEXT = (WORKFLOWS_DIR / "advance_step.yaml").read_text(encoding="utf-8")
+GENERATE_SCENARIO_TEXT = (WORKFLOWS_DIR / "generate_scenario.yaml").read_text(encoding="utf-8")
+
+TEMPLATE_TEXTS = {
+    "life-sim-template": (SKILLS_DIR / "life-sim-template" / "SKILL.md").read_text(encoding="utf-8"),
+    "negotiation-template": (SKILLS_DIR / "negotiation-template" / "SKILL.md").read_text(encoding="utf-8"),
+    "group-evolution-template": (
+        SKILLS_DIR / "group-evolution-template" / "SKILL.md"
+    ).read_text(encoding="utf-8"),
+}
+
+_OLD_PHRASE = "按用户设置来，不要自己拍脑袋"
+_OLD_PHRASE_NEGOTIATION = "候选选项数量按用户设置来"
+
+
+def test_old_fixed_count_phrasing_removed_from_all_templates():
+    """旧的"按设置来，不要自己拍脑袋"（以及谈判模板自己的简化版本）
+    必须被删除——这条指令的方向和"选项应该由情境决定"完全相反。"""
+    for name, text in TEMPLATE_TEXTS.items():
+        assert _OLD_PHRASE not in text, f"{name} 仍残留旧措辞：{_OLD_PHRASE}"
+        assert _OLD_PHRASE_NEGOTIATION not in text, f"{name} 仍残留旧措辞：{_OLD_PHRASE_NEGOTIATION}"
+
+
+def test_option_count_hint_is_soft_cap_not_target():
+    """`spec_generator.resolve_hints()` 生成的 `option_count_hint`
+    文案必须是软上限语义，不能再是"N 个左右"这种目标值措辞。"""
+    from world_simulator import spec_generator as sg
+
+    hint = sg.resolve_hints({}, stage="create")["option_count_hint"]
+    assert "软上限" in hint
+    assert "个左右" not in hint
+    assert "不是目标数量" in hint
+
+
+def test_advance_step_prompt_has_decision_flow_and_soft_cap():
+    assert "候选分支选项的生成流程" in ADVANCE_STEP_TEXT
+    assert "软上限" in ADVANCE_STEP_TEXT
+    assert "不是目标值" in ADVANCE_STEP_TEXT
+    assert "直接给空数组" in ADVANCE_STEP_TEXT
+
+
+def test_advance_step_prompt_has_reality_action_semantics_constraint():
+    assert "不能是抽象的内部指标调节" in ADVANCE_STEP_TEXT
+    assert "模型能力 +0.1" in ADVANCE_STEP_TEXT
+
+
+def test_advance_step_prompt_has_actionability_sinking_guidance():
+    assert "不要把这个" in ADVANCE_STEP_TEXT
+    assert "宏观事件本身包装成一个候选选项" in ADVANCE_STEP_TEXT
+
+
+def test_advance_step_prompt_has_continue_prefix_convention():
+    assert "continue_" in ADVANCE_STEP_TEXT
+    assert "continue_status_quo" in ADVANCE_STEP_TEXT
+
+
+def test_generate_scenario_prompt_has_soft_cap_and_reality_action_semantics():
+    assert "软上限" in GENERATE_SCENARIO_TEXT
+    assert "不能是抽象的内部指标调节" in GENERATE_SCENARIO_TEXT
+
+
+def test_each_template_has_its_own_reality_action_semantics_examples():
+    """三个模板不能抄同一组"职业线"例子——各自要有贴合自己场景的
+    正反例（方案 4.8 节要求）。"""
+    life_sim = TEMPLATE_TEXTS["life-sim-template"]
+    negotiation = TEMPLATE_TEXTS["negotiation-template"]
+    group_evo = TEMPLATE_TEXTS["group-evolution-template"]
+
+    assert "转向 AI 相关岗位" in life_sim
+    assert "提升职业竞争力 20%" in life_sim
+
+    assert "延长交付周期换取价格让步" in negotiation
+    assert "要价提高 10%" in negotiation
+
+    assert "发起集体决议改组治理结构" in group_evo
+    assert "群体凝聚力 +10%" in group_evo
+
+    # 三个模板的现实行动语义反例不应该完全相同（避免复制粘贴同一组例子）
+    assert life_sim != negotiation
+    assert negotiation != group_evo
+
+
+def test_each_template_has_soft_cap_and_continue_prefix_guidance():
+    for name, text in TEMPLATE_TEXTS.items():
+        assert "软上限" in text, f"{name} 缺少软上限措辞"
+        assert "continue_" in text, f"{name} 缺少 continue_ 前缀约定说明"

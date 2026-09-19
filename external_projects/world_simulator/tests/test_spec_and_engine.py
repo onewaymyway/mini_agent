@@ -151,7 +151,11 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
         "intent": "模拟一个刚毕业的人生",
         "feedback": "",
         "previous_draft_json": "",
-        "option_count_hint": "4 个左右",
+        "option_count_hint": (
+            "最多不超过 4 个（软上限，用于防止候选列表刷屏，不是目标"
+            "数量——具体生成几个由这一步是否出现真正的决策分岔点决定，"
+            "见下方“候选选项生成流程”）"
+        ),
         "time_granularity_hint": spec_mod.DEFAULT_TIME_GRANULARITY + spec_mod._GRANULARITY_CONTINUITY_NOTE_CREATE,
         "multi_entity_mode_hint": spec_mod._MULTI_ENTITY_MODE_HINT_OFF,
         "background_entities_hint": "未启用（所有主体都按正常流程完整推理）",

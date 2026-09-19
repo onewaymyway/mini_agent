@@ -977,7 +977,7 @@ def page_create() -> None:
     setting_cols = st.columns([1, 1])
     with setting_cols[0]:
         options_count = st.number_input(
-            "每一步候选方向数量", min_value=2, max_value=8,
+            "候选方向数量上限（软上限，实际数量由情境决定）", min_value=2, max_value=8,
             value=int(st.session_state.get("create_options_count", 4)), step=1,
         )
     with setting_cols[1]:
@@ -2582,7 +2582,7 @@ def page_detail() -> None:
             unsafe_allow_html=True,
         )
         new_options_count = st.number_input(
-            "每一步候选方向数量", min_value=2, max_value=8,
+            "候选方向数量上限（软上限，实际数量由情境决定）", min_value=2, max_value=8,
             value=int(cur_settings.get("options_count", 4) or 4), step=1,
             key="settings_options_count",
         )
