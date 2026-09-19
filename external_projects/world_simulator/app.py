@@ -1478,7 +1478,7 @@ def _render_timeline(
     功能之前完全一致。
     """
     can_fork = sim_id is not None and source_branch is not None
-    for state in history:
+    for _idx, state in enumerate(history):
         if causal_line_filter:
             line_updates = getattr(state, "line_updates", None) or {}
             causal_links = getattr(state, "causal_links", None) or []
@@ -1530,7 +1530,7 @@ def _render_timeline(
             with adopt_col:
                 if st.button(
                     "采纳为正式结构",
-                    key=f"adopt_structural_change_{sim_id}_{source_branch}_{state.step}",
+                    key=f"adopt_structural_change_{sim_id}_{source_branch}_{state.step}_{_idx}",
                     help="确认后会把这条结构性变化记入模拟设置，后续推进会把它当成已知事实提示给系统；不会自动改写具体变量结构。",
                 ):
                     try:
@@ -1567,10 +1567,10 @@ def _render_timeline(
                         f'<div class="ws-chapter-choice">{verdict_label} · {_html_text(check.actual_outcome)}</div>',
                         unsafe_allow_html=True,
                     )
-                with st.form(key=f"reality_check_form_{sim_id}_{source_branch}_{state.step}"):
+                with st.form(key=f"reality_check_form_{sim_id}_{source_branch}_{state.step}_{_idx}"):
                     st.caption(f"这一步当时的预测：{state.summary}")
                     actual_outcome_input = st.text_area(
-                        "后来实际发生了什么？", key=f"reality_outcome_{sim_id}_{source_branch}_{state.step}",
+                        "后来实际发生了什么？", key=f"reality_outcome_{sim_id}_{source_branch}_{state.step}_{_idx}",
                     )
                     verdict_input = st.radio(
                         "整体判断",
@@ -1580,7 +1580,7 @@ def _render_timeline(
                             "partially_matched": "🟡 部分相符",
                             "diverged": "❌ 与预测不符",
                         }[v],
-                        key=f"reality_verdict_{sim_id}_{source_branch}_{state.step}",
+                        key=f"reality_verdict_{sim_id}_{source_branch}_{state.step}_{_idx}",
                         horizontal=True,
                     )
                     if st.form_submit_button("记录"):
@@ -1609,7 +1609,7 @@ def _render_timeline(
             with fork_col:
                 if st.button(
                     "创建分支",
-                    key=f"fork_here_{sim_id}_{source_branch}_{state.step}",
+                    key=f"fork_here_{sim_id}_{source_branch}_{state.step}_{_idx}",
                     type="primary",
                     help="从这一步之后开一条新分支，原时间线原样保留，可以在新分支上重新选。",
                 ):
