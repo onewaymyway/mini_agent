@@ -203,6 +203,32 @@ class TestGoalTreeDecomposerPromptAndParsing(unittest.TestCase):
         self.assertEqual(self.decomposer._parse_candidates("", root), [])
         self.assertEqual(self.decomposer._parse_candidates("   \n  ", root), [])
 
+    def test_parse_candidates_filters_junk_placeholder_titles(self):
+        """[2026-09 用户反馈] 模型有时会把 build_prompt() 指令里"输出空内容
+        即可"这句话直接复述回来当成一行候选，_parse_candidates() 应该把
+        这类占位文字过滤掉，不能当成正常候选落盘。"""
+        root = self.backlog.add_node("ultimate", "根")
+        domain = self.backlog.add_node("domain", "事业", parent_id=root.id)
+        text = (
+            "空内容\n"
+            "输出空内容即可\n"
+            "无候选\n"
+            "拆不出来\n"
+            "新阶段｜真正有效的候选｜stage"
+        )
+        candidates = self.decomposer._parse_candidates(text, domain)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["title"], "新阶段")
+
+    def test_parse_candidates_does_not_over_filter_legit_titles(self):
+        """黑名单不能误伤含"无"字但语义正常的标题。"""
+        root = self.backlog.add_node("ultimate", "根")
+        domain = self.backlog.add_node("domain", "事业", parent_id=root.id)
+        text = "无线网络配置优化｜整理家里的路由器｜stage"
+        candidates = self.decomposer._parse_candidates(text, domain)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["title"], "无线网络配置优化")
+
 
 class TestGoalTreeDecomposerRhythmGovernance(unittest.TestCase):
     def setUp(self):

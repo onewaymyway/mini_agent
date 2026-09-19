@@ -70,6 +70,39 @@ MAX_CANDIDATES_PER_CALL = 5
 _STATE_FILENAME = "goal_tree_decompose_state.json"
 _REJECTED_FILENAME = "goal_tree_decompose_rejected.json"
 
+# [2026-09 用户反馈：候选列表里出现标题是"空内容"/"输出空内容即可"的垃圾
+# 候选] 根因：build_prompt() 第4条指令原文包含"输出空内容即可"这句话，
+# 部分模型在"确实拆不出来"时没有理解成"什么都不要输出"，而是把这句指令
+# 的字面意思复述回来当成一行候选。_parse_candidates() 原本只判断标题
+# 是否为空字符串，对这种"非空但没有实际意义"的占位文本没有防御，于是
+# 被当成正常候选落盘展示。这里补一道黑名单过滤兜底——即使以后 prompt
+# 遣词达不到 100% 杜绝，或模型冒出类似变体，也能在解析阶段拦下来，不用
+# 每次都靠用户手动"忽略"再进 30 天去重名单兜底。跟 build_prompt() 第4条
+# 措辞调整（去掉"输出空内容即可"这句容易被复述的话）配合使用。
+
+# 整行严格等于这些词才算垃圾——这些词太短/太通用，不能用"包含"判断
+# （比如"无"会命中"无线网络配置"这种正常标题，只能整行匹配）。
+_JUNK_TITLE_EXACT = {"无", "none", "n/a", "na", "an", "暂无"}
+
+# 只要标题里包含这些短语就算垃圾——这些是 build_prompt() 指令原文用过的
+# 说明性措辞，足够独特，即使模型把它们混进一整句话里复述回来（例如
+# "输出空内容即可"），也不会误伤正常候选标题。
+_JUNK_TITLE_SUBSTRINGS = (
+    "空内容", "无候选", "无需拆分", "不需要拆分", "拆不出",
+    "无法拆解", "无法拆分", "无子节点",
+)
+
+
+def _is_junk_title(title: str) -> bool:
+    """判断标题是不是"输出空内容即可"这类占位/说明性文字被模型误当成候选
+    标题复述回来的垃圾候选。用去掉空格后的归一化 key 判断，避免因为多了
+    个空格或大小写差异漏判；短词整行匹配、长短语包含匹配，两种规则搭配
+    使用以兼顾召回率和误伤率。"""
+    normalized = _dedupe_title_key(title).replace(" ", "")
+    if normalized in _JUNK_TITLE_EXACT:
+        return True
+    return any(s in normalized for s in _JUNK_TITLE_SUBSTRINGS)
+
 
 def _next_default_level(parent_level: str) -> str:
     """默认子节点 level = 父节点在 `LEVEL_ORDER` 里的下一层，与
@@ -316,7 +349,8 @@ class GoalTreeDecomposer:
 3. 候选要具体到"可以单独作为一件事去推进"，不要重复当前节点标题本身，也不要
    跟已有子节点或被拒绝过的主题重复。
 4. 如果当前节点已经足够具体、拆不出有意义的子节点，只输出一行也可以；如果
-   完全拆不出来，输出空内容即可。
+   完全拆不出来，就什么都不要输出——不要输出"空内容""无候选""拆不出来"
+   这类说明性文字，那样的占位文字会被当成真正的候选标题，是不允许的。
 5. 不要输出候选数量之外的任何说明文字。
 
 只输出候选行，每行一个。"""
@@ -342,6 +376,8 @@ class GoalTreeDecomposer:
             parts = [p.strip() for p in line.replace("|", "｜").split("｜")]
             title = parts[0] if parts else ""
             if not title:
+                continue
+            if _is_junk_title(title):
                 continue
             description = parts[1] if len(parts) > 1 else ""
             level = parts[2] if len(parts) > 2 else ""
