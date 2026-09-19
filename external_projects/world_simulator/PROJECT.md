@@ -1594,3 +1594,44 @@ world_simulator/
   v3_plan.md` 的 4.3/4.5 节状态标注已同步更新，指向这两份新文档。
   **均未实施**，按各自子方案里的分批计划，需要单独排期，且 4.3
   第一批要求真实跑模拟做人工验证，不能仅凭代码实现就判定完成。
+- 2026-09-19（同日追加二）：按子方案分批实施 4.3/4.5 各自的"第一批"
+  （其余批次仍未实施，见各子方案文档的分批计划）：
+  1. **4.3 第一批（`life_sim` 验证批，见 `next_doc/world_simulator_
+     belief_state_separation_plan.md` 第 7 节）**：`state_model.
+     SimState.beliefs`（稀疏字段，只在认知发生变化的那一步才有
+     记录，展示层沿用最近一次记录）；`spec_generator.
+     _resolve_belief_fields_hint()` + `resolve_hints()` 新增
+     `belief_fields_hint`；`advance_step.yaml` prompt 按
+     `belief_fields_hint` 是否非空条件性拼接说明；
+     `engine/advance.py` 解析 `beliefs` 输出；`app.py` 新增
+     `_latest_beliefs()`/`_belief_comparison_html()`，在详情页
+     "关键变量"折叠区渲染"真实 X · 你以为 Y"对比（仅在两者不同时
+     展示），"⚙️ 模拟设置"新增 `belief_fields` 编辑入口。**尚未
+     进行子方案要求的人工验证**（真实跑 3~5 次 `life_sim` 模拟，
+     观察 LLM 是否会为未变化字段乱填、认知偏差是否有意义）——
+     代码层面已具备验证条件，但本轮未实际执行验证，不代表 4.3
+     已经"完成"，只是完成了子方案里的"第一批"代码交付部分。
+  2. **4.5 第一批（情境化条件策略，见 `next_doc/world_simulator_
+     agent_preview_and_adaptive_policy_plan.md` 第 7 节）**：
+     `autopilot._normalize_conditional_policies()`（校验 `if`
+     只能是 4.1 已有的 `risk_level`/`reversibility` 六个枚举值
+     之一，`then` 为空或 `if` 不认识的项静默丢弃）+
+     `_build_decision_context()` 拼接对应自然语言提示；`app.py`
+     "配置自动挡"折叠区新增可增删的条件/倾向行编辑器（下拉框限制
+     `if` 取值，从源头避免出现无法识别的条件），保存进
+     `autopilot.conditional_policies`。**顺带确认了子方案里标注
+     的未知项**：画像（`manifest.autopilot`）的存储作用域是
+     "每条分支各自独立"（`engine/management.py::set_pilot_
+     config()` 文档已写明），不是全局配置，第 3 批"用户反馈反哺
+     画像"如果后续实施，`PolicyFeedbackNote` 应该挂在
+     `sim_id`+`branch` 下，不是全局的。
+  **验收**：新增 8 个测试用例（`test_spec_and_engine.py` 4 个
+  belief 相关 + `test_autopilot.py` 4 个 conditional_policies
+  相关），加上原有 226 个用例（其中 2 个因新增 `belief_fields_
+  hint` 输入项而更新了断言，行为本身未变），全部通过（234
+  passed）。
+  **已知限制**：4.3 第二批（`ScenarioDraft.belief_fields`/初始
+  `beliefs`、创建向导声明入口、推广到其它模板）与 4.5 第二、三批
+  （Agent Preview、用户反馈反哺画像）**均未实施**，按各自子方案
+  的分批计划，需要后续单独排期；4.3 第一批的人工验证也需要在
+  真实使用中另行进行。

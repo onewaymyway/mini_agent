@@ -520,3 +520,56 @@ def test_run_repeated_experiment_forks_n_branches_with_same_profile(tmp_path, mo
     # 重复分支上。
     store = SimStore.for_root(data_dir, "sim1")
     assert store.load_manifest().branch == "main"
+
+
+# ── 4.5 节第一批（情境化条件策略）：conditional_policies ─────────────
+
+
+def test_normalize_conditional_policies_filters_unknown_and_empty():
+    result = ap_mod._normalize_conditional_policies([
+        {"if": "reversible", "then": "倾向选择更有探索性的选项"},
+        {"if": "not_a_real_condition", "then": "这条应该被丢弃"},
+        {"if": "high", "then": ""},
+        {"if": "LOW", "then": "  倾向更谨慎  "},
+        "not_a_dict",
+    ])
+    assert result == [
+        {"if": "reversible", "then": "倾向选择更有探索性的选项"},
+        {"if": "low", "then": "倾向更谨慎"},
+    ]
+
+
+def test_normalize_conditional_policies_handles_non_list_input():
+    assert ap_mod._normalize_conditional_policies(None) == []
+    assert ap_mod._normalize_conditional_policies("not a list") == []
+    assert ap_mod._normalize_conditional_policies({}) == []
+
+
+def test_decision_context_without_conditional_policies_has_no_section(tmp_path):
+    manifest = SimManifest(
+        sim_id="sim1", template="life_sim", intent="i", title="t",
+        created_at=now_iso(), updated_at=now_iso(), pilot_mode="autopilot",
+        autopilot={"enabled": True, "review_mode": "silent"},
+    )
+    context = ap_mod._build_decision_context(manifest)
+    assert "情境化倾向" not in context
+
+
+def test_decision_context_includes_valid_conditional_policies(tmp_path):
+    manifest = SimManifest(
+        sim_id="sim1", template="life_sim", intent="i", title="t",
+        created_at=now_iso(), updated_at=now_iso(), pilot_mode="autopilot",
+        autopilot={
+            "enabled": True, "review_mode": "silent",
+            "conditional_policies": [
+                {"if": "reversible", "then": "倾向选择更有探索性的选项"},
+                {"if": "high", "then": "倾向选择风险更低的选项"},
+                {"if": "garbage", "then": "不应该出现"},
+            ],
+        },
+    )
+    context = ap_mod._build_decision_context(manifest)
+    assert "情境化倾向" in context
+    assert "可逆性为「可逆」" in context and "倾向选择更有探索性的选项" in context
+    assert "风险等级为「高」" in context and "倾向选择风险更低的选项" in context
+    assert "不应该出现" not in context

@@ -33,6 +33,45 @@ class AutopilotDisabledError(RuntimeError):
     pass
 
 
+_CONDITION_IF_VALUES = (
+    "reversible", "hard_to_reverse", "irreversible", "low", "medium", "high",
+)
+_CONDITION_LABELS = {
+    "reversible": "可逆性为「可逆」",
+    "hard_to_reverse": "可逆性为「难以逆转」",
+    "irreversible": "可逆性为「不可逆」",
+    "low": "风险等级为「低」",
+    "medium": "风险等级为「中」",
+    "high": "风险等级为「高」",
+}
+
+
+def _normalize_conditional_policies(raw: Any) -> List[Dict[str, str]]:
+    """校验并归一化 `autopilot.conditional_policies`（4.5 节第一步，
+    情境化条件策略，`next_doc/world_simulator_agent_preview_and_
+    adaptive_policy_plan.md`）。
+
+    每一项形如 `{"if": "reversible", "then": "倾向选择更有探索性的
+    选项"}`；`if` 只识别 4.1 已落地的 `ChoiceOption.reversibility`/
+    `risk_level` 六个枚举取值之一（阶段三十二），**不支持自定义条件
+    表达式**——`if` 不是这六个已知值之一、或 `then` 是空字符串的项
+    会被静默丢弃（不抛异常中断画像渲染，同 `risk_level` 等既有字段
+    "不认识就归一化/丢弃"的一贯处理方式）。
+    """
+    if not isinstance(raw, list):
+        return []
+    result = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        cond = str(item.get("if") or "").strip().lower()
+        then = str(item.get("then") or "").strip()
+        if cond not in _CONDITION_IF_VALUES or not then:
+            continue
+        result.append({"if": cond, "then": then})
+    return result
+
+
 def _build_decision_context(manifest: SimManifest) -> str:
     """把 `manifest.autopilot` 配置渲染成拼进 prompt 的"决策者画像"文本。
 
@@ -58,6 +97,18 @@ def _build_decision_context(manifest: SimManifest) -> str:
         lines.extend(f"- {p}" for p in principles)
     else:
         lines.append("用户没有设定额外的原则/偏好，按风险偏好和常理判断即可。")
+
+    conditional_policies = _normalize_conditional_policies(ap.get("conditional_policies"))
+    if conditional_policies:
+        lines.append(
+            "此外，用户为这个 Agent 声明了以下情境化倾向（4.5 节，"
+            "依据候选选项的 risk_level/reversibility 判断是否适用；如果"
+            "候选选项没有声明相应字段，就不必强行套用）："
+        )
+        lines.extend(
+            f"- 当某个候选选项的{_CONDITION_LABELS.get(p['if'], p['if'])}时，{p['then']}"
+            for p in conditional_policies
+        )
 
     if bool(ap.get("allow_custom_options")):
         lines.append(

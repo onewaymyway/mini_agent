@@ -188,6 +188,24 @@ class SimState:
     默认空列表：skill 没给出、旧数据、`state0`（初始状态一般没有"这一
     步的驱动因素"这个概念）都可以为空，不影响任何已有行为。
     """
+    beliefs: Dict[str, Any] = field(default_factory=dict)
+    """当前角色/Agent 自己认为的估计值（4.3 节，State/Belief 分离子
+    方案，`next_doc/world_simulator_belief_state_separation_plan.md`）：
+    key 是 `manifest.settings.belief_fields` 里声明的字段路径，value
+    是角色当前的估计——可以是单一数值，也可以是 `{"low": 70,
+    "high": 130, "point": 100}` 这种区间估计，格式不强制。
+
+    只对 `belief_fields` 声明过的字段有意义；`vars` 里同名字段永远是
+    "真实值"，不受这里的认知偏差影响——引擎/后续推进用的是 `vars`，
+    这个字段纯粹是叙事和展示层面的"认知快照"，不参与任何计算。
+
+    不要求每一步都重新给出：只有这一步 `advance_step` 认为角色对
+    某个字段的认知发生了变化才会有对应 key，没有变化的字段留空，
+    展示层沿用最近一次有记录的认知值（同 `key_drivers` 这类"稀疏
+    标注"字段的一贯处理方式）。默认空字典：`belief_fields` 未声明、
+    这一步没有认知更新、旧数据都可以为空，不影响任何已有行为，向后
+    兼容。
+    """
     relation_violations: List[Dict[str, Any]] = field(default_factory=list)
     """产生*本状态*这一步，`engine.py::advance()` 对
     `manifest.settings.resource_relations` 里声明的 `transfer`（转移）
@@ -387,6 +405,7 @@ class SimState:
             resource_violations=list(data.get("resource_violations") or []),
             uncertain_fields=list(data.get("uncertain_fields") or []),
             key_drivers=[str(x) for x in (data.get("key_drivers") or [])],
+            beliefs=dict(data.get("beliefs") or {}),
             causal_links=[
                 dict(x) for x in (data.get("causal_links") or []) if isinstance(x, dict)
             ],

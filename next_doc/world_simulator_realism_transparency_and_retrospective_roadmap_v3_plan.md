@@ -202,10 +202,9 @@ UI 上提供"标记为已确认"的按钮，用户自己点）。不追溯覆盖
 
 ### 4.3（P1）单主体模式的最小 State/Belief 分离
 
-> **实施状态：暂缓**（阶段三十二，2026-09-19）。按第 5 节路线图
-> 建议，本轮不与 4.1/4.2/4.4/4.6 一起批量上马。**细化子方案已于
-> 2026-09-19 补充**，见 `next_doc/world_simulator_belief_state_
-> separation_plan.md`，实施前请以该文档为准。
+> **实施状态：第一批（`life_sim` 验证批）代码已完成**（同日追加，
+> 2026-09-19），**尚待人工验证**。细化子方案见 `next_doc/world_
+> simulator_belief_state_separation_plan.md`（含分批计划）。
 
 **现状**：`multi_entity_mode` 已经做了"每个主体私有 `entities`
 vars + 共享 `shared_vars`"的结构，但只用于多方谈判这种明确的
@@ -288,10 +287,9 @@ prompt）、`app.py`（真实值/认知值对比展示）。
 
 ### 4.5（P2）Agent Preview + 情境化条件策略 + 用户反馈反哺画像
 
-> **实施状态：暂缓**（阶段三十二，2026-09-19）。理由同 4.3。
-> **细化子方案已于 2026-09-19 补充**，见 `next_doc/world_simulator_
-> agent_preview_and_adaptive_policy_plan.md`，实施前请以该文档
-> 为准。
+> **实施状态：第一批（情境化条件策略）已完成**（同日追加，
+> 2026-09-19）。第二、三批尚未实施。细化子方案见 `next_doc/world_
+> simulator_agent_preview_and_adaptive_policy_plan.md`。
 
 **现状**：`autopilot.py` 的画像只有自由文本 `principles` +
 `risk_preference` 枚举，纯粹靠拼进 prompt 影响 LLM，没有可验证、

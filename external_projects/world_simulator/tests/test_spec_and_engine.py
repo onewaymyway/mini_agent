@@ -147,7 +147,7 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
 
     assert draft_step.skill_name == "life-sim-template"
     causal_lines_hint = captured["inputs"]["causal_lines_hint"]
-    assert {k: v for k, v in captured["inputs"].items() if k != "causal_lines_hint"} == {
+    assert {k: v for k, v in captured["inputs"].items() if k not in ("causal_lines_hint", "belief_fields_hint")} == {
         "intent": "模拟一个刚毕业的人生",
         "feedback": "",
         "previous_draft_json": "",
@@ -2185,3 +2185,40 @@ def test_advance_formats_confirmed_structural_changes_hint_for_prompt(tmp_path, 
     )
     assert "联盟：甲乙同盟" in captured["inputs"]["confirmed_structural_changes_hint"]
     assert "[new_entity]" in captured["inputs"]["confirmed_structural_changes_hint"]
+
+
+# ── 4.3 节（State/Belief 分离，第一批）：beliefs 字段 ─────────────────
+
+
+def test_sim_state_beliefs_round_trip():
+    from world_simulator.state_model import SimState
+
+    s = SimState(
+        step=1, summary="", narrative="",
+        vars={"market_demand": 100},
+        beliefs={"market_demand": {"low": 70, "high": 130, "point": 90}},
+    )
+    d = s.to_dict()
+    assert d["beliefs"] == {"market_demand": {"low": 70, "high": 130, "point": 90}}
+    reloaded = SimState.from_dict(d)
+    assert reloaded.beliefs == s.beliefs
+
+
+def test_sim_state_beliefs_defaults_to_empty_dict():
+    from world_simulator.state_model import SimState
+
+    s = SimState.from_dict({"step": 0, "summary": "", "narrative": "", "vars": {}})
+    assert s.beliefs == {}
+
+
+def test_resolve_belief_fields_hint_empty_when_not_declared():
+    assert spec_mod._resolve_belief_fields_hint(None) == ""
+    assert spec_mod._resolve_belief_fields_hint({}) == ""
+    assert spec_mod._resolve_belief_fields_hint({"belief_fields": []}) == ""
+
+
+def test_resolve_belief_fields_hint_joins_declared_fields():
+    hint = spec_mod._resolve_belief_fields_hint(
+        {"belief_fields": ["market_demand", "competitor_strength"]}
+    )
+    assert hint == "market_demand、competitor_strength"

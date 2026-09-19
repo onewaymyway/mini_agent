@@ -252,6 +252,22 @@ def _resolve_causal_lines_hint(
     return hint
 
 
+def _resolve_belief_fields_hint(settings: "Dict[str, Any] | None") -> str:
+    """把 `settings.belief_fields` 转成喂给 `advance_step` prompt 的
+    一句话提示（4.3 节，State/Belief 分离子方案，`next_doc/
+    world_simulator_belief_state_separation_plan.md`）。
+
+    未声明 `belief_fields`（默认情况）返回空字符串——`advance_step.
+    yaml` 里这段说明整体是条件性拼接的，不给没启用这个功能的模拟
+    增加任何 prompt 噪音，同 `causal_lines_hint` 等既有条件提示的
+    处理方式。
+    """
+    fields = [str(f).strip() for f in ((settings or {}).get("belief_fields") or []) if str(f).strip()]
+    if not fields:
+        return ""
+    return "、".join(fields)
+
+
 def resolve_hints(
     settings: "Dict[str, Any] | None" = None, *, stage: str = "advance", current_step: int = 0
 ) -> Dict[str, str]:
@@ -320,6 +336,7 @@ def resolve_hints(
 
     return {
         "option_count_hint": f"{options_count} 个左右",
+        "belief_fields_hint": _resolve_belief_fields_hint(settings),
         "time_granularity_hint": time_granularity_hint,
         "multi_entity_mode_hint": _resolve_multi_entity_hint(settings),
         "background_entities_hint": _resolve_background_entities_hint(settings),

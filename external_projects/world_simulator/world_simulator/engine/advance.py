@@ -322,6 +322,7 @@ def advance(
         background_entities_applied=background_entities_applied,
         uncertain_fields=list(data.get("uncertain_fields") or []),
         key_drivers=[str(x) for x in (data.get("key_drivers") or [])],
+        beliefs=dict(data.get("beliefs") or {}) if isinstance(data.get("beliefs"), dict) else {},
         causal_links=[
             dict(x) for x in (data.get("causal_links") or []) if isinstance(x, dict)
         ],

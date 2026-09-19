@@ -1,6 +1,9 @@
 # world_simulator 单主体模式的最小 State/Belief 分离（4.3 细化子方案）
 
-> **状态**：规划中，尚未实施。
+> **状态**：**第一批（`life_sim` 验证批）代码已于 2026-09-19 完成**
+> （见 `PROJECT.md` 对应条目），**尚未进行本文档第 7 节要求的人工
+> 验证**（真实跑几次模拟观察 LLM 效果），因此不代表 4.3 已经完成
+> ——是否推进第二批（推广批）取决于人工验证结果。
 > **上游文档**：`next_doc/world_simulator_realism_transparency_and_
 > retrospective_roadmap_v3_plan.md`（第三轮，阶段三十二）4.3 节——
 > 该节按项目一贯的节制原则，建议"先出细化子方案、在一个模板里小

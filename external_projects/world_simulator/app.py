@@ -568,6 +568,50 @@ def _background_entities_html(state) -> str:
     )
 
 
+def _latest_beliefs(history, up_to_step: int) -> Dict[str, Any]:
+    """在 `history`（按 step 顺序的 `SimState` 列表）里，从
+    `up_to_step` 往前找每个字段最近一次有记录的 `beliefs` 值（4.3
+    节，State/Belief 分离——`beliefs` 是稀疏字段，不是每一步都会给
+    出，展示层需要"沿用最近一次的认知记录"而不是只看当前这一步）。
+    """
+    merged: Dict[str, Any] = {}
+    for s in history:
+        if s.step > up_to_step:
+            break
+        b = getattr(s, "beliefs", None) or {}
+        merged.update(b)
+    return merged
+
+
+def _belief_comparison_html(vars_dict, beliefs: Dict[str, Any], belief_fields: List[str]) -> str:
+    """渲染"真实值 vs 认知值"对比行（4.3 节）。只对同时满足以下条件
+    的字段渲染：字段在 `belief_fields` 里声明过、`beliefs` 里有记录、
+    且认知值与真实值不同（一致时不特别标注，避免变成每次都在的
+    噪音）。未声明/无记录的字段不展示，不用占位值制造伪信息。
+    """
+    if not belief_fields or not beliefs:
+        return ""
+    lines = []
+    for f in belief_fields:
+        if f not in beliefs:
+            continue
+        real = vars_dict.get(f) if isinstance(vars_dict, dict) else None
+        belief_val = beliefs[f]
+        if real is not None and real == belief_val:
+            continue
+        if isinstance(belief_val, dict):
+            belief_text = "、".join(f"{k}: {v}" for k, v in belief_val.items())
+        else:
+            belief_text = str(belief_val)
+        lines.append(
+            f'<div class="ws-uncertain-field">'
+            f'<span class="ws-uncertain-badge ws-uncertain-badge-medium">认知偏差</span>'
+            f"「{_html_text(f)}」真实：{_html_text(str(real))} · 你以为：{_html_text(belief_text)}"
+            f"</div>"
+        )
+    return "".join(lines)
+
+
 def _render_vars_display(vars_dict, multi_entity_mode: bool) -> None:
     """展示"关键变量"，多主体模式（阶段十七，4.9 节）下按 entity 分 tab
     展示各自的私有 `vars` + 一个"共享信息"tab，避免互相泄露；否则退化为
@@ -2345,6 +2389,13 @@ def page_detail() -> None:
             provenance_html = _field_provenance_html(current)
             if provenance_html:
                 st.markdown(provenance_html, unsafe_allow_html=True)
+            belief_html = _belief_comparison_html(
+                current.vars,
+                _latest_beliefs(history, current.step),
+                list(manifest.settings.get("belief_fields") or []),
+            )
+            if belief_html:
+                st.markdown(belief_html, unsafe_allow_html=True)
             _render_vars_display(current.vars, bool(manifest.settings.get("multi_entity_mode")))
 
     _render_attribution_section(history, manifest)
@@ -2507,6 +2558,15 @@ def page_detail() -> None:
             value=cur_resource_fields_text,
             placeholder="例：resources.cash, resources.energy",
             key="settings_resource_fields",
+        )
+        cur_belief_fields = cur_settings.get("belief_fields") or []
+        new_belief_fields_text = st.text_input(
+            "认知偏差声明字段（逗号分隔，可选，4.3 节——声明后角色对这些"
+            "字段的认知可能与真实值不同，展示层会做\"真实 vs 你以为\"对比，"
+            "建议先在单个模拟里小范围试用）",
+            value=", ".join(str(f) for f in cur_belief_fields),
+            placeholder="例：market_demand, competitor_strength",
+            key="settings_belief_fields",
         )
         cur_multi_entity_mode = bool(cur_settings.get("multi_entity_mode", False))
         new_multi_entity_mode = st.checkbox(
@@ -2680,6 +2740,9 @@ def page_detail() -> None:
                     resource_fields=[
                         f.strip() for f in new_resource_fields_text.split(",") if f.strip()
                     ],
+                    belief_fields=[
+                        f.strip() for f in new_belief_fields_text.split(",") if f.strip()
+                    ],
                     resource_relations=resource_relations_to_save,
                     causal_lines=causal_lines_to_save,
                     objectives=new_objectives,
@@ -2755,6 +2818,48 @@ def page_detail() -> None:
                  "没有一个足够合理，可以自己提出一个候选列表之外的新方向，而不是"
                  "被迫矮子里拔将军。",
         )
+        # 阶段三十二后续（4.5 节第一批，情境化条件策略，`next_doc/
+        # world_simulator_agent_preview_and_adaptive_policy_plan.md`）：
+        # `if` 只识别 4.1 已落地的 risk_level/reversibility 六个枚举值，
+        # 不支持自定义条件表达式，所以用下拉框限制输入，从源头避免出现
+        # 无法识别的条件（同 `autopilot._normalize_conditional_
+        # policies()` 的兜底逻辑相呼应，双重保险）。
+        st.markdown("**情境化条件策略（可选）**")
+        st.caption("当某个候选选项满足下面选的条件时，额外给代理一条倾向提示。")
+        cur_conditional_policies = ap_cfg.get("conditional_policies") or []
+        if "autopilot_cp_rows" not in st.session_state:
+            st.session_state["autopilot_cp_rows"] = (
+                [dict(p) for p in cur_conditional_policies] if cur_conditional_policies else [{}]
+            )
+        cp_rows = st.session_state["autopilot_cp_rows"]
+        _CP_IF_OPTIONS = [
+            "reversible", "hard_to_reverse", "irreversible", "low", "medium", "high",
+        ]
+        _CP_IF_LABELS = {
+            "reversible": "可逆性：可逆", "hard_to_reverse": "可逆性：难以逆转",
+            "irreversible": "可逆性：不可逆", "low": "风险等级：低",
+            "medium": "风险等级：中", "high": "风险等级：高",
+        }
+        new_conditional_policies = []
+        for i, row in enumerate(cp_rows):
+            cp_col1, cp_col2 = st.columns([1, 2])
+            with cp_col1:
+                cur_if = row.get("if") if row.get("if") in _CP_IF_OPTIONS else _CP_IF_OPTIONS[0]
+                cp_if = st.selectbox(
+                    "条件", options=_CP_IF_OPTIONS, index=_CP_IF_OPTIONS.index(cur_if),
+                    format_func=lambda v: _CP_IF_LABELS[v], key=f"autopilot_cp_if_{i}",
+                    label_visibility="collapsed",
+                )
+            with cp_col2:
+                cp_then = st.text_input(
+                    "倾向", value=row.get("then", ""), key=f"autopilot_cp_then_{i}",
+                    placeholder="例：倾向选择更有探索性的选项", label_visibility="collapsed",
+                )
+            if cp_then.strip():
+                new_conditional_policies.append({"if": cp_if, "then": cp_then.strip()})
+        if st.button("+ 添加一条情境化条件", key="autopilot_cp_add"):
+            st.session_state["autopilot_cp_rows"].append({})
+            st.rerun()
         if st.button("保存自动挡配置"):
             set_pilot_config(
                 DATA_DIR, sim_id,
@@ -2765,6 +2870,7 @@ def page_detail() -> None:
                     "risk_preference": risk_preference,
                     "review_mode": review_mode,
                     "allow_custom_options": allow_custom_options,
+                    "conditional_policies": new_conditional_policies,
                 },
             )
             st.rerun()
