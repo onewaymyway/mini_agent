@@ -1397,3 +1397,45 @@ world_simulator/
   精炼，用户可以在因果线总览页面用既有的"手动调整因果线声明"入口
   重命名；4.20（多尺度真正并行）/4.22（反事实矩阵向导）/4.23
   （顺势逆势判断）仍在"待观察真实使用反馈"状态，未实施。
+- 2026-09-19：完成阶段三十（工程债务·`engine.py` 拆分，见
+  `next_doc/world_simulator_universal_simulator_gap_analysis_and_
+  roadmap_v2_plan.md` 4.18 节剩余部分——阶段二十八只落地了存储层
+  追加写，`engine.py` 拆分当时评估后决定单独排期，本阶段完成）
+  交付：
+  1. 原来 1143 行的单体 `world_simulator/engine.py` 按职责拆成
+     `world_simulator/engine/` 包，下设 10 个子模块：
+     `errors.py`（`SimEngineError`/`SimAlreadyEndedError`/
+     `SimPausedError`）、`ids.py`（`_new_sim_id`/
+     `_skill_name_for_template`）、`knowledge.py`（知识库安全
+     包装）、`resource_guard.py`（资源字段下限校验 + 转移关系
+     一致性检查）、`background_entities.py`（背景角色线性外推）、
+     `materialize.py`（`materialize_simulation`/
+     `create_simulation`）、`structural_change.py`（结构性变化
+     解析/采纳，含阶段二十九新增的因果线建议
+     `accept_suggested_causal_line`/`reject_suggested_causal_
+     line`）、`causal_lines.py`（因果线自动登记 + 未来树合并）、
+     `advance.py`（核心推进循环 `advance()`）、`management.py`
+     （实例状态/自动挡/设置/重命名/删除/查询）。
+  2. 每个子模块内部函数的实现**逐行保持不变**，只是换了文件
+     位置、把跨职责的调用改成显式 `import`；`world_simulator/
+     engine/__init__.py` 把所有对外公开的函数/异常重新导出，
+     `from world_simulator.engine import advance`（`app.py`/
+     `autopilot.py`/entrypoints 的既有写法）和 `import
+     world_simulator.engine as engine_mod`（测试文件的既有写法）
+     两种导入方式都不需要任何改动继续可用。
+  3. 不改变任何持久化格式，也没有修改任何测试文件——回归测试
+     （拆分前 198 个用例）作为唯一验收标准，全部通过（`cd
+     external_projects/world_simulator && PYTHONPATH=../../src:.
+     python3 -m pytest tests/ -q`）。
+  **已知限制**：`state_model.py`/多个模块的 docstring 里仍然沿用
+  `engine.py::函数名` 这种旧的引用写法（比如"见 `engine.py::
+  advance()`"）——这是纯文档层面的表述惯例，指代的是"engine 模块
+  里的这个函数"，拆分后这些引用依然可以正确定位到
+  `world_simulator/engine/advance.py` 等具体文件，不逐一批量改写
+  （改动量大、且不影响任何行为，风险收益比低于价值）；如果后续
+  哪个子模块被进一步拆分/合并，行内 docstring 到时候顺手更新即可。
+  `state_model.py`本身的分组/精简（4.18 节原方案提到的"是否需要
+  同步精简"）本阶段**未纳入范围**——`SimState`/`SimManifest.
+  settings` 的字段数量问题和 `engine.py` 文件大小是两个独立的
+  复杂度维度，前者的精简涉及数据结构语义、风险等级不同于纯代码
+  重组，留待后续单独评估。
