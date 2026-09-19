@@ -23,16 +23,53 @@ class ChoiceOption:
     id: str
     label: str
     description: str = ""
+    risk_level: Optional[str] = None
+    """这个选项的风险等级（阶段三十二，`next_doc/
+    world_simulator_realism_transparency_and_retrospective_roadmap_v3_
+    plan.md` 4.1 节）：`"low"`/`"medium"`/`"high"` 之一，选填。不认识
+    的取值（skill 输出了拼写错误或其它自由文本）统一归一化为
+    `"medium"`（延续项目"不做伪精确"的一贯风格：宁可退到中间档，也
+    不把无法识别的值原样展示成一个奇怪的标签）。`None` 表示 skill
+    没有声明——展示层按"未声明"处理，不补一个假的默认值。
+    """
+    reversibility: Optional[str] = None
+    """这个选项的可逆性：`"reversible"`（可逆）/`"hard_to_reverse"`
+    （难以逆转）/`"irreversible"`（不可逆）之一，选填，`None` 表示
+    未声明。不做归一化兜底（取值集合比 `risk_level` 更明确，无法
+    识别的值原样保留，交给展示层判断是否已知取值）。
+    """
+    affected_lines: List[str] = field(default_factory=list)
+    """这个选项预计会牵动的因果线 id 列表，引用
+    `manifest.settings.causal_lines` 里声明的 `id`（选填，不做校验，
+    纯粹是给展示层的引用提示，同 `SimState.causal_links[].line_id`
+    的既有取舍）。默认空列表，表示未声明。
+    """
+    key_uncertainty: str = ""
+    """这个选项最大的不确定性是什么（一句话，选填）。空字符串表示
+    未声明。
+    """
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChoiceOption":
+        risk_level = data.get("risk_level")
+        if risk_level is not None:
+            risk_level = str(risk_level).strip().lower()
+            if risk_level not in ("low", "medium", "high"):
+                risk_level = "medium"
+        reversibility = data.get("reversibility")
+        if reversibility is not None:
+            reversibility = str(reversibility).strip().lower() or None
         return cls(
             id=str(data.get("id", "")),
             label=str(data.get("label", "")),
             description=str(data.get("description", "")),
+            risk_level=risk_level,
+            reversibility=reversibility,
+            affected_lines=[str(x) for x in (data.get("affected_lines") or [])],
+            key_uncertainty=str(data.get("key_uncertainty", "") or ""),
         )
 
 
@@ -306,6 +343,21 @@ class SimState:
     向后兼容。
     """
 
+    field_provenance: Dict[str, str] = field(default_factory=dict)
+    """初始状态（`state0`）里每个顶层字段的来源标注（阶段三十二，
+    `next_doc/world_simulator_realism_transparency_and_retrospective_
+    roadmap_v3_plan.md` 4.2 节）：key 是 `vars` 的顶层字段名，value
+    是 `"fact"`（用户在意图描述里明确提到）/`"assumption"`（系统给的
+    合理默认值）/`"inference"`（系统从上下文推断）/`"unknown"`（缺失、
+    先给占位值）之一。
+
+    只在 `generate_scenario` 生成 `state0` 时有意义，`advance_step`
+    产生的后续状态不强制维护（世界持续演化，"最初是不是用户说的"这个
+    标签的价值主要在创建时）；后续步骤的 `SimState` 这个字段一律为空
+    字典。默认空字典：`generate_scenario` 未输出、旧数据都可以为空，
+    展示层按"没有来源标注"处理，不影响任何已有行为，向后兼容。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
@@ -356,6 +408,9 @@ class SimState:
                 if isinstance(data.get("structural_change"), dict)
                 else None
             ),
+            field_provenance={
+                str(k): str(v) for k, v in (data.get("field_provenance") or {}).items()
+            },
         )
 
 

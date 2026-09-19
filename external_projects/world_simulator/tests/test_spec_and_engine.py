@@ -244,7 +244,15 @@ def test_create_and_advance_simulation_end_to_end(tmp_path, monkeypatch):
 
         def run(self, wf, inputs):
             assert inputs["chosen_option_json"] == json.dumps(
-                {"id": "grad_school", "label": "读研", "description": "继续深造"},
+                {
+                    "id": "grad_school",
+                    "label": "读研",
+                    "description": "继续深造",
+                    "risk_level": None,
+                    "reversibility": None,
+                    "affected_lines": [],
+                    "key_uncertainty": "",
+                },
                 ensure_ascii=False,
             )
             result_file = _write_result_file(

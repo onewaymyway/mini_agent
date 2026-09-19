@@ -47,6 +47,7 @@ from world_simulator import causal_graph as cg_mod
 from world_simulator import causal_tree
 from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
+from world_simulator import retrospective as retrospective_mod
 from world_simulator.autopilot import (
     AutopilotDisabledError, run_autopilot_step, run_comparison_experiment, run_repeated_experiment,
 )
@@ -221,6 +222,10 @@ section[data-testid="stSidebar"] {
 .ws-uncertain-badge-low { background: rgba(224, 102, 90, 0.15); color: var(--ws-danger, #e0665a); }
 .ws-uncertain-badge-medium { background: rgba(224, 180, 90, 0.18); color: #b8860b; }
 .ws-uncertain-badge-high { background: rgba(90, 160, 224, 0.15); color: #4a7fb5; }
+.ws-provenance-badge-fact { background: rgba(90, 200, 120, 0.16); color: #2f8f4e; }
+.ws-provenance-badge-assumption { background: rgba(224, 180, 90, 0.18); color: #b8860b; }
+.ws-provenance-badge-inference { background: rgba(90, 160, 224, 0.15); color: #4a7fb5; }
+.ws-provenance-badge-unknown { background: rgba(150, 150, 150, 0.16); color: #777; }
 .ws-key-drivers {
     margin-top: 0.25rem;
 }
@@ -630,6 +635,80 @@ def _uncertain_fields_html(state) -> str:
     return "".join(lines)
 
 
+_PROVENANCE_BADGE_LABELS = {
+    "fact": "你说的",
+    "assumption": "系统假设",
+    "inference": "系统推断",
+    "unknown": "未知，先占位",
+}
+
+
+def _field_provenance_html(state) -> str:
+    """渲染初始状态每个顶层字段的来源标注（阶段三十二，4.2 节）。
+
+    只有 `state0`（`field_provenance` 由 `generate_scenario` 生成）才
+    有内容，其它步骤这个字段恒为空字典，函数直接返回空字符串——不
+    展示任何多余提示，同 `_uncertain_fields_html` 的既有取舍。
+    """
+    items = getattr(state, "field_provenance", None) or {}
+    if not items:
+        return ""
+    lines = []
+    for field_name, source in items.items():
+        field_name = _html_text(str(field_name))
+        if not field_name:
+            continue
+        source = str(source or "").strip().lower()
+        badge_label = _PROVENANCE_BADGE_LABELS.get(source, source or "未标注")
+        badge_class = source if source in _PROVENANCE_BADGE_LABELS else "unknown"
+        lines.append(
+            f'<div class="ws-uncertain-field">'
+            f'<span class="ws-uncertain-badge ws-provenance-badge-{badge_class}">{badge_label}</span>'
+            f"「{field_name}」</div>"
+        )
+    return "".join(lines)
+
+
+_RISK_LEVEL_LABELS = {"low": "低风险", "medium": "中风险", "high": "高风险"}
+_REVERSIBILITY_LABELS = {
+    "reversible": "可逆",
+    "hard_to_reverse": "难以逆转",
+    "irreversible": "不可逆",
+}
+
+
+def _option_meta_html(opt) -> str:
+    """渲染一个 `ChoiceOption` 的结构化维度标签（阶段三十二，4.1 节：
+    风险等级/可逆性/涉及因果线/最大不确定性）。未声明的字段不展示，
+    不用"未知"占位制造伪信息；全部字段都未声明时返回空字符串。
+    """
+    badges = []
+    risk = getattr(opt, "risk_level", None)
+    if risk:
+        badges.append(
+            f'<span class="ws-uncertain-badge ws-uncertain-badge-{risk if risk in _RISK_LEVEL_LABELS else "medium"}">'
+            f'{_RISK_LEVEL_LABELS.get(risk, risk)}</span>'
+        )
+    reversibility = getattr(opt, "reversibility", None)
+    if reversibility:
+        badges.append(
+            f'<span class="ws-uncertain-badge ws-uncertain-badge-medium">'
+            f'{_html_text(_REVERSIBILITY_LABELS.get(reversibility, reversibility))}</span>'
+        )
+    lines_html = ""
+    affected = getattr(opt, "affected_lines", None) or []
+    if affected:
+        lines_html = (
+            f'<div class="ws-muted">涉及因果线：{_html_text("、".join(affected))}</div>'
+        )
+    uncertainty = getattr(opt, "key_uncertainty", "") or ""
+    uncertainty_html = (
+        f'<div class="ws-muted">最大不确定性：{_html_text(uncertainty)}</div>' if uncertainty else ""
+    )
+    badges_html = f'<div>{"".join(badges)}</div>' if badges else ""
+    return badges_html + lines_html + uncertainty_html
+
+
 def _key_drivers_html(state) -> str:
     """渲染这一步的"划重点"关键驱动因素标签（阶段十三，4.5 节；阶段
     十五，4.7 节新增可展开详情，可能为空）。放在叙事文本之前，让用户
@@ -960,6 +1039,22 @@ def page_create() -> None:
     st.markdown("### 提案草稿（可编辑）")
     edited_title = st.text_input("标题", value=draft.title)
     edited_summary = st.text_area("初始状态摘要", value=draft.summary, height=70)
+    if draft.field_provenance:
+        # 阶段三十二（4.2 节）：每个顶层字段的来源标注，帮用户分清
+        # "我说了啥、系统猜了啥"。纯展示，不提供额外的修正入口——
+        # 编辑就用下面已有的"关键变量（JSON）"文本框，改了值之后是否
+        # 需要把标签升级成"已确认"由用户自己判断，不做自动化推断。
+        _PROVENANCE_LABELS = {
+            "fact": "🟢 你说的",
+            "assumption": "🟡 系统假设",
+            "inference": "🔵 系统推断",
+            "unknown": "⚪ 未知，先占位",
+        }
+        tags = " ".join(
+            f"`{field_name}`: {_PROVENANCE_LABELS.get(src, src)}"
+            for field_name, src in draft.field_provenance.items()
+        )
+        st.caption("字段来源标注：" + tags)
     edited_vars_text = st.text_area(
         "关键变量（JSON）", value=json.dumps(draft.vars, ensure_ascii=False, indent=2), height=160
     )
@@ -1330,6 +1425,7 @@ def page_create() -> None:
                 settings=create_settings,
                 time_label=draft.time_label,
                 time_granularity=draft.time_granularity,
+                field_provenance=draft.field_provenance,
             )
             sim_id = manifest.sim_id
             if advance_after_create and chosen_option_id is not None:
@@ -1589,6 +1685,27 @@ def _render_timeline(
                         key=f"reality_verdict_{sim_id}_{source_branch}_{state.step}_{_idx}",
                         horizontal=True,
                     )
+                    # 阶段三十三（4.4 节）：verdict 选"与预测不符"时，
+                    # 额外让用户说明"为什么错"——不做自动语义判定，同
+                    # verdict 一样由用户自己选，帮用户判断该往哪个方向
+                    # 改进（丰富因果线，还是接受"世界本来就有随机性"）。
+                    error_category_input = "none"
+                    error_category_input = st.selectbox(
+                        "如果不符，大致是哪种原因？（仅「不符」时需要）",
+                        options=[
+                            "none", "data_error", "causal_error",
+                            "agent_behavior_error", "random_event", "unknown_variable",
+                        ],
+                        format_func=lambda v: {
+                            "none": "（与预测相符/部分相符，不需要分类）",
+                            "data_error": "状态判断错（对当前情况的理解就有误）",
+                            "causal_error": "因果机制错（忽略了某个约束/机制）",
+                            "agent_behavior_error": "Agent 行为预测错（高估/低估了会怎么选）",
+                            "random_event": "纯随机事件（不是模型的锅）",
+                            "unknown_variable": "模型压根没考虑到的变量",
+                        }[v],
+                        key=f"reality_error_category_{sim_id}_{source_branch}_{state.step}_{_idx}",
+                    )
                     if st.form_submit_button("记录"):
                         try:
                             result = rc_mod.record_and_apply(
@@ -1598,6 +1715,10 @@ def _render_timeline(
                                 actual_outcome=actual_outcome_input,
                                 verdict=verdict_input,
                                 causal_links=getattr(state, "causal_links", None),
+                                error_category=(
+                                    error_category_input if verdict_input == "diverged" else "none"
+                                ),
+                                model_version=str(manifest.settings.get("model_version") or ""),
                             )
                         except rc_mod.RealityCheckError as exc:
                             st.error(str(exc))
@@ -2221,9 +2342,113 @@ def page_detail() -> None:
             uncertain_html = _uncertain_fields_html(current)
             if uncertain_html:
                 st.markdown(uncertain_html, unsafe_allow_html=True)
+            provenance_html = _field_provenance_html(current)
+            if provenance_html:
+                st.markdown(provenance_html, unsafe_allow_html=True)
             _render_vars_display(current.vars, bool(manifest.settings.get("multi_entity_mode")))
 
     _render_attribution_section(history, manifest)
+
+    # 阶段三十三（4.4 节）：按错误分类/模型版本统计——帮用户判断"预测
+    # 有没有变准"、该往哪个方向改进。只在这个分支已经有过至少一条现实
+    # 回填记录时才展示，避免给从没用过 Reality Check 功能的实例增加
+    # 一个空落落的入口。
+    all_checks = [
+        c for c in rc_mod.load_all(DATA_DIR, sim_id) if c.branch == manifest.branch
+    ]
+    if all_checks:
+        with st.expander(f"📊 预测准确性统计（共 {len(all_checks)} 条现实回填记录）"):
+            stats = rc_mod.stats_by_error_category(all_checks)
+            st.markdown(
+                f"共 {stats['total']} 条记录，其中 {stats['diverged_total']} 条与预测不符。"
+            )
+            if stats["by_category"]:
+                _ERROR_CATEGORY_LABELS = {
+                    "data_error": "状态判断错",
+                    "causal_error": "因果机制错",
+                    "agent_behavior_error": "Agent 行为预测错",
+                    "random_event": "纯随机事件",
+                    "unknown_variable": "模型没考虑到的变量",
+                    "uncategorized": "未分类",
+                }
+                st.caption("按错误分类：" + "，".join(
+                    f"{_ERROR_CATEGORY_LABELS.get(k, k)} {v} 次"
+                    for k, v in stats["by_category"].items()
+                ))
+            if len(stats["by_model_version"]) > 1:
+                st.caption("按模型/Skill 版本：" + "，".join(
+                    f"{ver}（{b['total']} 条，{b['diverged']} 条不符）"
+                    for ver, b in stats["by_model_version"].items()
+                ))
+
+    # 阶段三十二（4.6 节，用户本次明确要求）：模拟复盘 / 经验教训总结。
+    # 不自动触发——LLM 调用有成本，且复盘本身应该是用户主动想回顾时
+    # 才做的事，不是每步都算一次。
+    with st.expander("📖 模拟复盘"):
+        st.markdown(
+            '<span class="ws-muted">把这个分支从起点到现在的决策和结果，整理成一份'
+            "结构化的经验教训总结——只总结已经发生的内容，不做新的预测。</span>",
+            unsafe_allow_html=True,
+        )
+        if manifest.status == "ended":
+            st.info("这个实例已经结束，是个复盘的好时机。")
+        existing_retros = retrospective_mod.load_for_branch(DATA_DIR, sim_id, manifest.branch)
+        if st.button("生成复盘报告", key=f"retro_generate_{sim_id}_{manifest.branch}"):
+            with st.spinner("正在整理这一路的决策和结果..."):
+                try:
+                    cfg = _load_cfg()
+                    retrospective_mod.generate_retrospective(
+                        cfg, PROJECT_ROOT, DATA_DIR, sim_id, branch=manifest.branch,
+                    )
+                except retrospective_mod.RetrospectiveError as exc:
+                    st.error(f"生成复盘报告失败：{exc}")
+                except ImportError as exc:
+                    st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+                else:
+                    st.success("复盘报告已生成。")
+                    st.rerun()
+
+        if not existing_retros:
+            st.caption("这个分支还没有生成过复盘报告。")
+        else:
+            for i, record in enumerate(existing_retros):
+                report = record.report
+                title = f"第 {record.up_to_step} 步为止的复盘 · {record.created_at}"
+                with st.expander(title, expanded=(i == 0)):
+                    if report.turning_points:
+                        st.markdown("**关键转折点**")
+                        for tp in report.turning_points:
+                            st.markdown(
+                                f"- 第 {tp.get('step', '?')} 步「{_html_text(str(tp.get('chosen_option', '')))}」"
+                                f"：{_html_text(str(tp.get('why', '')))}",
+                                unsafe_allow_html=True,
+                            )
+                    if report.what_went_well:
+                        st.markdown("**做得好的地方**")
+                        for item in report.what_went_well:
+                            st.markdown(
+                                f"- {_html_text(str(item.get('point', '')))}"
+                                f"（依据：{_html_text(str(item.get('evidence', '')))}）",
+                                unsafe_allow_html=True,
+                            )
+                    if report.what_to_reflect_on:
+                        st.markdown("**值得反思的地方**")
+                        for item in report.what_to_reflect_on:
+                            st.markdown(
+                                f"- {_html_text(str(item.get('point', '')))}"
+                                f"（依据：{_html_text(str(item.get('evidence', '')))}）",
+                                unsafe_allow_html=True,
+                            )
+                    if report.lessons:
+                        st.markdown("**经验教训**")
+                        for item in report.lessons:
+                            st.markdown(
+                                f"- {_html_text(str(item.get('lesson', '')))}"
+                                f"（来自：{_html_text(str(item.get('source', '')))}）",
+                                unsafe_allow_html=True,
+                            )
+                    if report.caveats:
+                        st.caption("；".join(report.caveats))
 
     with st.expander("⚙️ 模拟设置（候选方向数量 / 时间粒度）"):
         cur_settings = manifest.settings or {}
@@ -2379,6 +2604,13 @@ def page_detail() -> None:
             placeholder="例：资产净值, 工作满意度, 健康水平",
             key="settings_objectives",
         )
+        new_model_version_text = st.text_input(
+            "模型/Skill 版本标签（可选，阶段三十三——换了一版 prompt/skill 后自己"
+            "标一下，供「预测准确性统计」按版本分组）",
+            value=str(cur_settings.get("model_version") or ""),
+            placeholder="例：v1 / v2-加强因果线",
+            key="settings_model_version",
+        )
         cur_objectives_advanced = [o for o in cur_objectives if isinstance(o, dict)]
         with st.expander("高级：声明可排序字段（阶段十四，可选）"):
             st.markdown(
@@ -2457,6 +2689,7 @@ def page_detail() -> None:
                     hierarchical_agent_mode=bool(new_background_entities),
                     relationships=relationships_to_save,
                     observer_mode=bool(new_observer_mode),
+                    model_version=new_model_version_text.strip(),
                 )
                 st.success("设置已更新，下一步推进开始生效。")
                 st.rerun()
@@ -2589,7 +2822,9 @@ def page_detail() -> None:
                 with cols[i % len(cols)]:
                     st.markdown(
                         f'<div class="ws-card"><div class="ws-card-title">{opt.label}</div>'
-                        f'<div class="ws-muted">{opt.description}</div></div>',
+                        f'<div class="ws-muted">{opt.description}</div>'
+                        + _option_meta_html(opt)
+                        + "</div>",
                         unsafe_allow_html=True,
                     )
                     if st.button(f"选择「{opt.label}」", key=f"choose_{opt.id}"):

@@ -392,6 +392,15 @@ class ScenarioDraft:
     拆分。用途与 `resource_fields` 一致：创建向导展示建议值、允许用户
     编辑，最终结果存进 `settings.causal_lines`，这个字段本身只是
     "草稿阶段的建议值"，不直接落盘。"""
+    field_provenance: Dict[str, str] = field(default_factory=dict)
+    """skill 在生成初始 `vars` 的同时，对每个顶层字段标注的来源
+    （阶段三十二，4.2 节）：`"fact"`（用户在意图描述里明确提到）/
+    `"assumption"`（合理默认值）/`"inference"`（从上下文推断）/
+    `"unknown"`（缺了，先给占位值）。可选输出，留空表示 skill 没有
+    做这个标注（旧 skill 版本/skill 认为不需要）；直接落盘到
+    `state0.field_provenance`，不像 `resource_fields` 那样需要先经
+    用户编辑再存进 `settings`——来源标注是"描述性"的，同
+    `uncertain_fields` 的既有取舍。"""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScenarioDraft":
@@ -412,6 +421,9 @@ class ScenarioDraft:
             causal_lines=[
                 dict(x) for x in (data.get("causal_lines") or []) if isinstance(x, dict)
             ],
+            field_provenance={
+                str(k): str(v) for k, v in (data.get("field_provenance") or {}).items()
+            },
         )
 
 

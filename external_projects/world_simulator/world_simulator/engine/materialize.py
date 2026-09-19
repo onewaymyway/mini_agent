@@ -30,6 +30,7 @@ def materialize_simulation(
     time_label: str = "",
     time_granularity: str = "",
     uncertain_fields: Optional[list] = None,
+    field_provenance: Optional[Dict[str, str]] = None,
 ) -> SimManifest:
     """把一份（已生成、可能已被用户编辑过的）提案草稿落盘为一个新实例的
     step 0 初始状态，返回 manifest。
@@ -55,6 +56,9 @@ def materialize_simulation(
             置信度不高"的字段（阶段十一，见
             `state_model.SimState.uncertain_fields` 的格式说明），
             留空表示没有需要标注的字段。
+        field_provenance: 初始 `vars` 每个顶层字段的来源标注（阶段
+            三十二，4.2 节，见 `state_model.SimState.field_provenance`
+            的格式说明），留空表示 skill 没有做这个标注。
     """
     options_list = [
         o if isinstance(o, ChoiceOption) else ChoiceOption.from_dict(o) for o in (options or [])
@@ -81,6 +85,7 @@ def materialize_simulation(
         time_label=time_label or "起点",
         time_granularity=time_granularity,
         uncertain_fields=list(uncertain_fields or []),
+        field_provenance={str(k): str(v) for k, v in (field_provenance or {}).items()},
     )
     # 阶段二十六（`next_doc/world_simulator_causal_line_future_tree_
     # plan.md`）：创建模拟就必须有核心因果线、且每条线自带一棵初始
@@ -132,4 +137,5 @@ def create_simulation(
         time_label=draft.time_label,
         time_granularity=draft.time_granularity,
         uncertain_fields=draft.uncertain_fields,
+        field_provenance=draft.field_provenance,
     )

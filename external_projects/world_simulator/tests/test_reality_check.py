@@ -168,3 +168,56 @@ def test_record_and_apply_matched_does_not_touch_knowledge_base(tmp_path):
     assert result["contradicted_knowledge_ids"] == []
     assert kb.load_all(tmp_path)[0].contradicted_count == 0
     assert kb.load_all(tmp_path)[0].validated_count == 0
+
+
+# ── 阶段三十三（4.4 节）：预测错误分类 + 模型版本号 ──────────────────
+
+
+def test_record_reality_check_stores_error_category_and_model_version(tmp_path):
+    item = rc.record_reality_check(
+        tmp_path, "sim_v3", branch="main", step=2,
+        predicted_summary="预计现金流转正", actual_outcome="现金流仍为负",
+        verdict="diverged", error_category="causal_error", model_version="v2",
+    )
+    assert item.error_category == "causal_error"
+    assert item.model_version == "v2"
+
+    reloaded = rc.load_all(tmp_path, "sim_v3")
+    assert len(reloaded) == 1
+    assert reloaded[0].error_category == "causal_error"
+    assert reloaded[0].model_version == "v2"
+
+
+def test_record_reality_check_normalizes_invalid_error_category(tmp_path):
+    item = rc.record_reality_check(
+        tmp_path, "sim_v3b", branch="main", step=1,
+        predicted_summary="s", actual_outcome="o", verdict="diverged",
+        error_category="not_a_real_category",
+    )
+    assert item.error_category == ""
+
+
+def test_stats_by_error_category_groups_diverged_and_versions():
+    items = [
+        rc.RealityCheck(
+            id="1", sim_id="s", branch="main", step=0, predicted_summary="",
+            predicted_at="", actual_outcome="a", verdict="diverged",
+            error_category="causal_error", model_version="v1",
+        ),
+        rc.RealityCheck(
+            id="2", sim_id="s", branch="main", step=1, predicted_summary="",
+            predicted_at="", actual_outcome="a", verdict="diverged",
+            error_category="random_event", model_version="v1",
+        ),
+        rc.RealityCheck(
+            id="3", sim_id="s", branch="main", step=2, predicted_summary="",
+            predicted_at="", actual_outcome="a", verdict="matched",
+            error_category="", model_version="v2",
+        ),
+    ]
+    stats = rc.stats_by_error_category(items)
+    assert stats["total"] == 3
+    assert stats["diverged_total"] == 2
+    assert stats["by_category"] == {"causal_error": 1, "random_event": 1}
+    assert stats["by_model_version"]["v1"] == {"total": 2, "diverged": 2}
+    assert stats["by_model_version"]["v2"] == {"total": 1, "diverged": 0}

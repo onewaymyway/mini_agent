@@ -1505,3 +1505,68 @@ world_simulator/
   如果后续真的出现原方案标注的触发条件（多主体数量明显增多、
   用户明确要求世界在无操作时也能演化），仍需要在此基础上做更
   大范围的架构改动，不能只靠扩展现有 hint 字段解决。
+- 2026-09-19：完成阶段三十二（4.1/4.2/4.4/4.6 四个方向，见
+  `next_doc/world_simulator_realism_transparency_and_retrospective_
+  roadmap_v3_plan.md` 第 5 节路线图第一、二批——4.3/4.5 按原方案
+  建议暂缓，单独出细化子方案后再实施；4.7/4.8 按原方案暂不建议，
+  未纳入本轮）交付：
+  1. **4.1 Action Space 结构化**：`state_model.ChoiceOption` 新增
+     可选字段 `risk_level`（`low`/`medium`/`high`，不认识的值归一化
+     为 `medium`）、`reversibility`（`reversible`/`hard_to_reverse`/
+     `irreversible`）、`affected_lines`（引用的因果线 id 列表）、
+     `key_uncertainty`（一句话最大不确定性）；`generate_scenario.
+     yaml`/`advance_step.yaml` 的 prompt 增加对应说明，不做代码层面
+     强制校验（同 `causal_links` 等既有结构化字段的一贯做法）；
+     `app.py` 选项卡片渲染风险/可逆性徽章、涉及因果线、最大不确定性
+     （未声明的字段不展示，不用"未知"占位）。
+  2. **4.2 Fact/Assumption/Inference/Unknown 分层标注**：
+     `state_model.SimState.field_provenance`（初始状态才有意义，
+     `advance` 产生的后续状态不强制维护）+
+     `spec_generator.ScenarioDraft.field_provenance`，
+     `generate_scenario.yaml` prompt 要求 LLM 对初始 `vars` 的每个
+     顶层字段标注来源；`engine/materialize.py` 的
+     `materialize_simulation()`/`create_simulation()` 透传这个字段；
+     `app.py` 创建向导 + 详情页初始状态展示分别渲染"你说的/系统假设/
+     系统推断/未知，先占位"四色徽章，不新增修正入口（复用已有的
+     "编辑初始 vars"能力）。
+  3. **4.4 预测错误分类 + 模型/Skill 版本号**：`reality_check.
+     RealityCheck` 新增 `error_category`（`data_error`/
+     `causal_error`/`agent_behavior_error`/`random_event`/
+     `unknown_variable`/`none` 六选一，不合法值静默归空）、
+     `model_version`（记录 `settings.model_version` 的快照）；新增
+     `stats_by_error_category()` 按分类/版本做最小汇总统计；
+     `app.py` 回填表单新增错误分类下拉（仅 `verdict == diverged` 时
+     生效）、"⚙️ 模拟设置"新增可编辑的 `model_version` 文本框、详情页
+     新增"📊 预测准确性统计"折叠区（仅在已有回填记录时展示）。
+  4. **4.6 模拟复盘 / 经验教训总结（用户本次明确要求）**：新增
+     `world_simulator/retrospective.py`
+     （`generate_retrospective()`/`RetrospectiveReport`/
+     `RetrospectiveRecord`）+ `workflows/retrospective.yaml`
+     （`type: agent`，不挂载具体模板 skill——复盘是通用能力，不依赖
+     场景私有规则）。素材收集只读取已存在的历史记录（`state_
+     history`/`causal_graph`/按 `objectives` 声明字段算出的归因
+     摘要/顺势逆势判断/`reality_checks`/`settings.
+     counterfactual_summaries`），单项读取失败旁路降级为空，不阻断
+     整份复盘；prompt 明确要求"只总结已发生内容，不做新预测"、
+     每条 `what_to_reflect_on`/`lessons` 必须附具体依据；`caveats`
+     缺失时代码层兜底补一条固定的免责声明。落盘
+     `data/<sim_id>/retrospectives.jsonl`，追加写入、不覆盖历史
+     版本；`app.py` 详情页新增"📖 模拟复盘"折叠区（手动触发按钮 +
+     历史复盘记录列表，`ended` 状态额外提示"是个复盘的好时机"）。
+  **验收**：新增 12 个测试用例（`tests/test_retrospective.py`
+  4 个 + `tests/test_reality_check.py` 新增 3 个），加上原有 219
+  个用例（其中 1 个因 `ChoiceOption` 序列化多出新字段而更新了断言，
+  行为本身未变），全部通过（226 passed）。已在本地补装
+  `mini_agent`（`pip install -e . --no-deps`）+ `fastapi` 依赖后
+  跑过真实 `pytest`，不是仅语法检查。
+  **已知限制**：4.3（单主体最小 State/Belief 分离）与 4.5（Agent
+  Preview + 情境化条件策略）本轮**未实施**——原方案第 5 节路线图
+  就建议这两条"先小范围验证或单独出细化子方案"，不与 4.1/4.2/4.6
+  一起批量上马，本轮按此建议搁置，后续需要单独排期。`retrospective.
+  py` 的"反事实矩阵"素材读取依赖调用方自行在
+  `settings.counterfactual_summaries` 写入摘要——当前代码库里还没有
+  任何模块会自动写这个字段（`hypothesis.build_counterfactual_
+  matrix()` 的结果目前只落在对比实验页面展示，不回写
+  `settings`），这部分素材在现状下恒为空数组，复盘报告暂时无法
+  引用"如果当初选了别的会怎样"的历史对比结果，需要后续单独评估是否
+  要把反事实矩阵结果回写进 `settings` 供复盘引用。

@@ -1,0 +1,81 @@
+name: retrospective
+description: >-
+  模拟复盘 / 经验教训总结（阶段三十二，`next_doc/
+  world_simulator_realism_transparency_and_retrospective_roadmap_v3_
+  plan.md` 4.6 节）。由 `world_simulator/retrospective.py` 触发。
+  用 `type: agent`（不是 `skill_agent`）——复盘是"对已发生内容做总结"
+  的通用能力，不依赖具体场景模板（life_sim/negotiation/...）的私有
+  规则，不需要像 `generate_scenario`/`advance_step` 那样按 template
+  绑定 skill。
+version: "1.0"
+steps:
+  - id: retrospective
+    name: 生成模拟复盘报告
+    type: agent
+    result_file: retrospective.json
+    result_file_required_keys:
+      - turning_points
+      - what_went_well
+      - what_to_reflect_on
+      - lessons
+      - caveats
+    prompt: |
+      你正在为一次"世界模拟"生成一份复盘报告。这次模拟的场景类型是
+      {template}，用户最初的一句话意图是：
+      {intent}
+
+      下面是这个分支从第 0 步到当前（第 {up_to_step} 步）的完整历史
+      记录（JSON 数组，每项包含 step/summary/narrative/chosen_option/
+      causal_links 等字段）：
+      {state_history_json}
+
+      这次模拟声明的因果线关键节点（JSON，可能为空数组）：
+      {causal_graph_json}
+
+      用户关心的目标指标，以及每个指标目前能看出的归因摘要（JSON，
+      可能为空数组，每项包含 objective 名称和 attribution 摘要）：
+      {attribution_json}
+
+      如果用户声明过"哪条线代表自己"，这里是顺势/逆势/改变趋势的
+      判断结果（JSON，可能为 null 表示未声明）：
+      {trend_json}
+
+      这个分支已经记录过的"预测 vs 后来实际发生了什么"回填记录（JSON
+      数组，可能为空——为空说明用户没有用过 Reality Check 功能）：
+      {reality_checks_json}
+
+      过去针对这次模拟跑过的反事实对比分支结果（JSON，可能为空——为
+      空说明没有跑过对比实验；这里只是历史上已经产生的结果，不要求你
+      现在去推演任何新的分支）：
+      {counterfactual_json}
+
+      **核心要求：只总结已经发生的内容，不要做任何面向未来的新预测**
+      （不要说"接下来可能会怎样""建议下一步做 XX"这类前瞻性内容——
+      这是复盘，不是新一轮推演）。请输出以下结构化字段：
+
+      - `turning_points`：关键转折点数组，每项 `{{"step": 数字,
+        "chosen_option": "当时选择的方向", "why": "为什么这是个关键
+        转折点（一句话）"}}`。
+
+      - `what_went_well`：做得好的地方数组，每项 `{{"point": "做得
+        好的地方", "evidence": "依据——引用具体哪个 step/归因结果/
+        因果链"}}`。
+
+      - `what_to_reflect_on`：值得反思的地方数组，每项 `{{"point":
+        "值得反思的地方", "evidence": "依据"}}`。**每一条都必须能在
+        上面给出的历史记录/因果链里找到具体依据，不允许输出没有依据
+        的空泛评价**（比如"你应该更谨慎"这种没有具体所指的话是不合格
+        输出，必须换成"在第 3 步选择了 XX，导致 YY 资源见底"这种有
+        具体记录支撑的说法）。
+
+      - `lessons`：抽象成"下次遇到类似情境可以参考"的经验条目数组，
+        每项 `{{"lesson": "一句话经验", "source": "来自哪个
+        turning_point/what_to_reflect_on"}}`。**不要写成对用户本人
+        的心理/性格评价**，只针对"这个模拟世界里发生的具体决策和
+        结果"。
+
+      - `caveats`：局限声明数组（字符串），必须固定包含一条类似
+        "这是基于这次模拟内部记录的总结，不是对你个人能力或决策方式
+        的心理分析，模拟本身也可能和现实有偏差"的说明，可以再补充
+        针对这次具体模拟的其它局限（比如"这次模拟没有用过 Reality
+        Check，复盘无法评估预测准不准"）。
