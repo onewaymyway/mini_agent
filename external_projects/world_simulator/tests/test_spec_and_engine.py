@@ -2222,3 +2222,83 @@ def test_resolve_belief_fields_hint_joins_declared_fields():
         {"belief_fields": ["market_demand", "competitor_strength"]}
     )
     assert hint == "market_demand、competitor_strength"
+
+
+# ── 4.3 节（State/Belief 分离，第二批，阶段三十四）：ScenarioDraft
+# 的 belief_fields/beliefs + materialize_simulation 落盘 ────────────────
+
+
+def test_scenario_draft_from_dict_parses_belief_fields_and_beliefs():
+    draft = spec_mod.ScenarioDraft.from_dict(
+        {
+            "title": "t", "summary": "s", "vars": {"market_demand": 100}, "options": [],
+            "belief_fields": ["market_demand", " competitor_strength ", "", "  "],
+            "beliefs": {"market_demand": {"low": 70, "high": 130, "point": 90}},
+        }
+    )
+    assert draft.belief_fields == ["market_demand", "competitor_strength"]
+    assert draft.beliefs == {"market_demand": {"low": 70, "high": 130, "point": 90}}
+
+    draft_without = spec_mod.ScenarioDraft.from_dict(
+        {"title": "t", "summary": "s", "vars": {}, "options": []}
+    )
+    assert draft_without.belief_fields == []
+    assert draft_without.beliefs == {}
+
+
+def test_materialize_simulation_stores_initial_beliefs_on_state0(tmp_path):
+    """阶段三十四（4.3 节第二批）：`generate_scenario` 阶段给出的初始
+    `beliefs`（角色一开始就存在的认知偏差）应该原样落到
+    `state0.beliefs`，`vars` 里的真实值不受影响。"""
+    data_dir = tmp_path / "data"
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={"market_demand": 100}, options=[],
+        settings={"belief_fields": ["market_demand"]},
+        beliefs={"market_demand": {"low": 70, "high": 130, "point": 90}},
+    )
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    state0 = store.load_current_state("main")
+    assert state0.vars["market_demand"] == 100
+    assert state0.beliefs == {"market_demand": {"low": 70, "high": 130, "point": 90}}
+
+
+def test_materialize_simulation_defaults_beliefs_to_empty_dict(tmp_path):
+    """未传 `beliefs`（多数模拟场景）时 `state0.beliefs` 应为空字典，
+    不影响任何已有行为（向后兼容）。"""
+    data_dir = tmp_path / "data"
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    state0 = store.load_current_state("main")
+    assert state0.beliefs == {}
+
+
+def test_create_simulation_passes_draft_beliefs_through(tmp_path, monkeypatch):
+    """`create_simulation()`（CLI/entrypoint 一步到位路径）应该把
+    `generate_scenario` 给出的 `draft.beliefs` 原样透传给
+    `materialize_simulation()`，同 `field_provenance`/`uncertain_fields`
+    的既有透传方式。"""
+    data_dir = tmp_path / "data"
+
+    def fake_generate_scenario(cfg, workspace_root, *, template, intent, settings, data_dir):
+        return spec_mod.ScenarioDraft.from_dict(
+            {
+                "title": "t", "summary": "s", "vars": {"market_demand": 100}, "options": [],
+                "belief_fields": ["market_demand"],
+                "beliefs": {"market_demand": 70},
+            }
+        )
+
+    monkeypatch.setattr(
+        "world_simulator.engine.materialize.generate_scenario", fake_generate_scenario
+    )
+    manifest = engine_mod.create_simulation(
+        cfg=object(), workspace_root=tmp_path / "ws", data_dir=data_dir,
+        template="life_sim", intent="i",
+    )
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    state0 = store.load_current_state("main")
+    assert state0.beliefs == {"market_demand": 70}

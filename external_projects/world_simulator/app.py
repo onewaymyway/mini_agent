@@ -1124,6 +1124,28 @@ def page_create() -> None:
         unsafe_allow_html=True,
     )
 
+    # ── 认知偏差声明字段（阶段三十四，4.3 节第二批）：声明后角色对这些
+    # 字段的认知可能与真实值不同，详情页会做"真实 vs 你以为"对比。同
+    # resource_fields 的既有 UI 模式：skill 在草稿里给建议值，这里展示
+    # 出来允许用户编辑，最终结果随创建一起存进 settings.belief_fields。
+    # 也可以留到创建之后再在"⚙️ 模拟设置"里补充声明（事后声明只对
+    # 之后新产生的 step 生效，不回填历史）。 ──
+    belief_fields_default = ", ".join(
+        str(f) for f in (getattr(draft, "belief_fields", None) or [])
+    )
+    belief_fields_text = st.text_input(
+        "认知偏差声明字段（逗号分隔，可选——声明后角色对这些字段的认知"
+        "可能与真实值不同，展示层会做「真实 vs 你以为」对比）",
+        value=st.session_state.get("create_belief_fields", belief_fields_default),
+        placeholder="例：market_demand, competitor_strength",
+    )
+    if getattr(draft, "beliefs", None):
+        st.caption(
+            "AI 给出的初始认知偏差：" + "，".join(
+                f"`{k}` 你以为 {v}" for k, v in draft.beliefs.items()
+            )
+        )
+
     # ── 资源转移关系（阶段十六，4.8 节）：声明后引擎会在每步推进时
     # 检查两个字段的变化量是否大致相反，不修改任何数值，只做不一致
     # 提示，留空则不做任何检查 ──
@@ -1438,6 +1460,9 @@ def page_create() -> None:
             resource_fields = [
                 f.strip() for f in resource_fields_text.split(",") if f.strip()
             ]
+            belief_fields = [
+                f.strip() for f in belief_fields_text.split(",") if f.strip()
+            ]
             objectives = [o.strip() for o in objectives_text.split(",") if o.strip()]
             if isinstance(advanced_objectives, list):
                 objectives = objectives + [o for o in advanced_objectives if isinstance(o, dict)]
@@ -1451,6 +1476,7 @@ def page_create() -> None:
             )
             create_settings = dict(st.session_state.get("create_settings") or {})
             create_settings["resource_fields"] = resource_fields
+            create_settings["belief_fields"] = belief_fields
             create_settings["resource_relations"] = resource_relations
             create_settings["causal_lines"] = causal_lines
             create_settings["objectives"] = objectives
@@ -1472,6 +1498,7 @@ def page_create() -> None:
                 time_label=draft.time_label,
                 time_granularity=draft.time_granularity,
                 field_provenance=draft.field_provenance,
+                beliefs=draft.beliefs,
             )
             sim_id = manifest.sim_id
             if advance_after_create and chosen_option_id is not None:
@@ -1491,7 +1518,7 @@ def page_create() -> None:
                 "create_feedback", "create_settings", "create_options_count",
                 "create_granularity_preset", "create_granularity_custom", "create_resource_fields",
                 "create_resource_relations", "create_objectives", "create_calibration_notes",
-                "create_background_entities", "create_causal_lines",
+                "create_background_entities", "create_causal_lines", "create_belief_fields",
             ):
                 st.session_state.pop(key, None)
             st.session_state["view"] = "detail"

@@ -1693,3 +1693,43 @@ world_simulator/
   模拟验证 LLM 能否稳定输出有意义的认知偏差"这一步，这一步本身
   无法仅靠代码改动替代，本轮未执行，因此第二批按计划继续搁置，
   留待后续有人工验证条件时再排期。
+- 2026-09-19（同日追加五）：**应用户明确要求"不等验证、直接实现"**，
+  跳过 `next_doc/world_simulator_belief_state_separation_plan.md`
+  第 7 节要求的"第一批人工验证通过"这道前置条件，直接实施 4.3
+  第二批（推广批）：
+  1. `spec_generator.ScenarioDraft` 新增可选字段 `belief_fields`
+     （skill 建议的认知偏差字段列表）、`beliefs`（初始认知偏差
+     快照，格式同 `SimState.beliefs`）；`generate_scenario.yaml`
+     新增一段 prompt，说明可选输出这两个字段——**不是**
+     `advance_step` 那种"仅当已声明 belief_fields 才提示"的条件式
+     写法，而是同 `resource_fields`/`uncertain_fields` 一样的"skill
+     主动判断、无条件可选建议"写法（因为创建阶段用户还没有机会
+     预先声明 `belief_fields`）。
+  2. `engine.materialize.materialize_simulation()` 新增 `beliefs`
+     参数，落到 `state0.beliefs`；`create_simulation()`（CLI 一步
+     到位路径）透传 `draft.beliefs`，同 `field_provenance`/
+     `uncertain_fields` 的既有透传方式。
+  3. `app.py` 创建向导新增"认知偏差声明字段"文本框（同
+     `resource_fields` 的既有 UI 模式：草稿建议值展示 + 可编辑，
+     结果存进 `settings.belief_fields`），并展示 skill 给出的初始
+     认知偏差摘要（纯展示，不提供额外编辑入口，同 `field_
+     provenance` 的既有取舍）。
+  4. **未做**"根据第一批验证结果调整不同模板 prompt 措辞"这部分
+     ——因为第一批验证从未执行，没有任何结果可供参考；`belief_
+     fields` 相关 prompt 对所有模板一视同仁，未针对任何具体模板
+     调整或验证过。
+  **验收**：新增 4 个单元测试（`ScenarioDraft.from_dict` 解析
+  `belief_fields`/`beliefs`、`materialize_simulation`/
+  `create_simulation` 落盘与透传），加上原有 248 个用例，全部通过
+  （252 passed）。已用本地 `pytest` 真实跑过。
+  **已知限制（如实记录，非常重要）**：本次实施**完全跳过**了子
+  方案第 7 节要求的人工验证环节——第一批"人工跑 3~5 次 `life_sim`
+  真实模拟观察 LLM 是否会为未变化字段乱填 `beliefs`、认知偏差是否
+  有意义"这一步从未执行；第二批"推广批"是在没有任何验证结果的
+  情况下直接铺开到全部模板的，风险敞口比原计划的"先在 `life_sim`
+  小范围验证"更大。目前只能保证：数据结构定义完整、`ScenarioDraft`
+  解析正确、落盘路径通畅、单元测试全绿——**完全不能保证** LLM 真的
+  会稳定产出有意义的认知偏差，也不能排除"认知值总是约等于真实值"
+  或"为没有认知变化的字段瞎编更新"这两种子方案原文点名的失败模式
+  正在发生。如果后续真实使用中出现这些迹象，应按子方案第 7 节
+  建议的方向直接放弃这个功能，而不是继续投入调 prompt。

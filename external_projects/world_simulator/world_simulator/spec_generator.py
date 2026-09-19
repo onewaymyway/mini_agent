@@ -418,6 +418,25 @@ class ScenarioDraft:
     `state0.field_provenance`，不像 `resource_fields` 那样需要先经
     用户编辑再存进 `settings`——来源标注是"描述性"的，同
     `uncertain_fields` 的既有取舍。"""
+    belief_fields: List[str] = field(default_factory=list)
+    """skill 在生成初始 `vars` 时给出的"哪些字段属于角色认知可能与真实
+    值不同"的建议（阶段三十四，4.3 节第二批，见 `next_doc/world_
+    simulator_belief_state_separation_plan.md` 第 3.1 节
+    `settings.belief_fields` 的格式说明），比如
+    `["market_demand", "competitor_strength"]`，可选输出，留空表示
+    skill 认为这次模拟没有值得标注认知偏差的字段。用途与
+    `resource_fields` 一致：创建向导展示建议值、允许用户编辑，最终
+    结果存进 `settings.belief_fields`，这个字段本身只是"草稿阶段的
+    建议值"，不直接落盘。"""
+    beliefs: Dict[str, Any] = field(default_factory=dict)
+    """skill 在生成初始状态时，对 `belief_fields` 里声明的字段给出的
+    "角色一开始就存在的认知偏差"估计值（阶段三十四，4.3 节第二批），
+    格式同 `state_model.SimState.beliefs`（单一数值或
+    `{"low": ..., "high": ..., "point": ...}` 区间估计）。可选输出，
+    留空表示这次模拟的初始状态没有认知偏差（或 skill 没给）。直接
+    落盘到 `state0.beliefs`，不像 `belief_fields` 那样需要先经用户
+    编辑再存进 `settings`——这是对初始状态的描述性快照，同
+    `field_provenance`/`uncertain_fields` 的既有取舍。"""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScenarioDraft":
@@ -441,6 +460,8 @@ class ScenarioDraft:
             field_provenance={
                 str(k): str(v) for k, v in (data.get("field_provenance") or {}).items()
             },
+            belief_fields=[str(f).strip() for f in (data.get("belief_fields") or []) if str(f).strip()],
+            beliefs=dict(data.get("beliefs") or {}),
         )
 
 

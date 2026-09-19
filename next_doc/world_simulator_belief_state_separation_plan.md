@@ -1,9 +1,18 @@
 # world_simulator 单主体模式的最小 State/Belief 分离（4.3 细化子方案）
 
-> **状态**：**第一批（`life_sim` 验证批）代码已于 2026-09-19 完成**
-> （见 `PROJECT.md` 对应条目），**尚未进行本文档第 7 节要求的人工
-> 验证**（真实跑几次模拟观察 LLM 效果），因此不代表 4.3 已经完成
-> ——是否推进第二批（推广批）取决于人工验证结果。
+> **状态**：**第一批（`life_sim` 验证批）、第二批（推广批）代码均
+> 已于 2026-09-19 完成**（见 `PROJECT.md` 对应条目）。**⚠️ 本文档
+> 第 7 节原本要求"第一批先人工跑 3~5 次真实模拟验证 LLM 效果，通过
+> 后才推进第二批"——第一批的这项人工验证实际上从未执行，第二批是
+> 应用户明确要求"不等验证、直接实现"而跳过这道前置条件推进的，不
+> 代表验证已经通过。也就是说：`belief_fields`/`beliefs` 这套机制
+> 目前只保证了"代码能跑、格式能落盘、有测试覆盖"，完全没有任何证据
+> 表明 LLM 真的能稳定产出有意义的认知偏差——第 9 节"最大风险"里
+> 点出的顾虑原样成立，且因为直接推广到了所有模板，风险敞口比原计划
+> 的"先在 life_sim 小范围验证"更大。如果后续真实使用发现 LLM 总是
+> 让认知值约等于真实值（没有意义的偏差），或者为没有变化的字段瞎
+> 编"认知更新"，应该按本文档第 7 节末尾的建议直接放弃这个方向，而
+> 不是继续投入调 prompt。**
 > **上游文档**：`next_doc/world_simulator_realism_transparency_and_
 > retrospective_roadmap_v3_plan.md`（第三轮，阶段三十二）4.3 节——
 > 该节按项目一贯的节制原则，建议"先出细化子方案、在一个模板里小
@@ -171,6 +180,37 @@ beliefs: Dict[str, Any] = field(default_factory=dict)
      字段里孤立地报数字。
 
 **第二批（推广批，触发条件：第一批验证通过）**：
+
+> **实施状态：代码已于阶段三十五（2026-09-19）完成，⚠️ 未满足本节
+> 原定的触发条件**（"第一批验证通过"——第一批的人工验证根本没有
+> 执行，见本文档顶部状态说明）。按用户明确要求跳过验证直接实施，
+> 具体交付：
+> 1. `ScenarioDraft.belief_fields` + `ScenarioDraft.beliefs`
+>    （`spec_generator.py`），`generate_scenario.yaml` prompt 新增
+>    对应说明（不使用 `advance_step` 那种"仅当已声明才提示"的条件
+>    式写法，而是同 `resource_fields`/`uncertain_fields` 一样的
+>    "无条件可选建议"写法——因为这一步之前用户还没有机会声明
+>    `belief_fields`，只能靠 skill 主动判断这次模拟是否需要这个
+>    功能）。
+> 2. `engine/materialize.py::materialize_simulation()` 新增
+>    `beliefs` 参数，落到 `state0.beliefs`；`create_simulation()`
+>    （CLI 一步到位路径）透传 `draft.beliefs`。
+> 3. `app.py` 创建向导新增"认知偏差声明字段"文本框（同
+>    `resource_fields` 的既有 UI 模式：草稿建议值展示 + 可编辑，
+>    最终结果存进 `settings.belief_fields`），并展示 skill 给出的
+>    初始认知偏差摘要（只读展示，不提供额外编辑入口，同
+>    `field_provenance` 的既有取舍）。
+> 4. **未做**"推广到其它模板"里"根据第一批验证结果调整不同模板的
+>    prompt 措辞"这部分——因为第一批验证没做，没有任何结果可以
+>    参考，`advance_step.yaml`/`generate_scenario.yaml` 里的
+>    `belief_fields` 相关 prompt 对所有模板一视同仁，没有针对任何
+>    具体模板做过调整或验证。
+> 新增 4 个单元测试（`ScenarioDraft` 解析、`materialize_simulation`
+> 落盘、`create_simulation` 透传），全部通过（252 passed）；**没有
+> 也不可能有任何针对本节核心问题——"LLM 能不能稳定输出有意义的
+> 认知偏差"——的验证结果**，这需要真实调用 LLM 才能回答，单元测试
+> 只能证明数据管道本身是通的。
+
 1. `ScenarioDraft.belief_fields` + 初始 `beliefs`（`generate_
    scenario` 阶段）。
 2. 创建向导 UI 支持声明 `belief_fields`（同 `resource_fields`
