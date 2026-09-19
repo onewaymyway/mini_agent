@@ -48,6 +48,7 @@ from world_simulator import causal_tree
 from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
 from world_simulator import retrospective as retrospective_mod
+from world_simulator import agent_preview as agent_preview_mod
 from world_simulator.autopilot import (
     AutopilotDisabledError, run_autopilot_step, run_comparison_experiment, run_repeated_experiment,
 )
@@ -2874,6 +2875,58 @@ def page_detail() -> None:
                 },
             )
             st.rerun()
+
+        # 阶段三十二后续（4.5 节第二批，Agent Preview，`next_doc/
+        # world_simulator_agent_preview_and_adaptive_policy_plan.md`
+        # 4.4 节）：用内置测试情境单独跑一次画像选择，不写入任何正式
+        # 模拟数据，缩短"改画像 → 靠真实跑模拟才能看到效果"的反馈
+        # 周期。每次点击会产生真实的 LLM 调用（4 个内置情境 = 4 次
+        # 独立调用），不自动触发。
+        st.markdown("---")
+        st.caption(
+            f"🔍 预览这个画像的决策倾向（会用 {len(agent_preview_mod.BUILTIN_SCENARIOS)} "
+            "个内置通用测试情境各跑一次，不影响这个实例的正式模拟数据）"
+        )
+        if st.button("运行 Agent Preview", key=f"agent_preview_run_{sim_id}"):
+            preview_profile = {
+                "principles": [p.strip() for p in principles_text.splitlines() if p.strip()],
+                "risk_preference": risk_preference,
+                "conditional_policies": new_conditional_policies,
+            }
+            with st.spinner("正在用测试情境跑一遍这个画像..."):
+                try:
+                    cfg = _load_cfg()
+                    preview_results = agent_preview_mod.run_agent_preview(
+                        cfg, PROJECT_ROOT, preview_profile,
+                    )
+                except agent_preview_mod.AgentPreviewError as exc:
+                    st.error(f"Agent Preview 运行失败：{exc}")
+                except ImportError as exc:
+                    st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+                else:
+                    st.session_state[f"agent_preview_results_{sim_id}"] = preview_results
+
+        preview_results = st.session_state.get(f"agent_preview_results_{sim_id}")
+        if preview_results:
+            for r in preview_results:
+                if r.error:
+                    st.markdown(
+                        f'<div class="ws-card"><div class="ws-card-title">测试情境：{_html_text(r.scenario_title)}</div>'
+                        f'<div class="ws-muted">运行失败：{_html_text(r.error)}</div></div>',
+                        unsafe_allow_html=True,
+                    )
+                    continue
+                policy_line = (
+                    f'<div class="ws-muted">引用的原则：{_html_text(r.referenced_policy)}</div>'
+                    if r.referenced_policy else ""
+                )
+                st.markdown(
+                    f'<div class="ws-card"><div class="ws-card-title">测试情境：{_html_text(r.scenario_title)}</div>'
+                    f'<div class="ws-chapter-choice">选择了：{_html_text(r.chosen_option_label)}</div>'
+                    f'<div class="ws-muted">理由：{_html_text(r.reason)}</div>'
+                    + policy_line + "</div>",
+                    unsafe_allow_html=True,
+                )
 
     if is_autopilot and manifest.status == "active":
         active_run = st.session_state.get("autopilot_run")

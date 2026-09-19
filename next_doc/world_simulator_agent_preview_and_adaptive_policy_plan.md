@@ -1,10 +1,11 @@
 # world_simulator Agent Preview + 情境化条件策略 + 用户反馈反哺画像（4.5 细化子方案）
 
-> **状态**：**第一批（情境化条件策略）已于 2026-09-19 完成**（见
-> `PROJECT.md` 对应条目）。第二批（Agent Preview）、第三批（用户
+> **状态**：**第一批（情境化条件策略）、第二批（Agent Preview）
+> 已于 2026-09-19 完成**（见 `PROJECT.md` 对应条目）。第三批（用户
 > 反馈反哺画像）**尚未实施**。第 5.2 节备注的"画像存储作用域未知"
 > 已在第一批实施中确认：`manifest.autopilot` 按分支独立存储，见
-> `engine/management.py::set_pilot_config()`。
+> `engine/management.py::set_pilot_config()`。第二批**尚未**做
+> 子方案 4.7 节要求的人工验证（真实运行几次 Preview 检查效果）。
 > **上游文档**：`next_doc/world_simulator_realism_transparency_and_
 > retrospective_roadmap_v3_plan.md`（第三轮，阶段三十二）4.5 节——
 > 该节明确写"改动面是本轮里最大的一个，建议单独针对这一节再写一份

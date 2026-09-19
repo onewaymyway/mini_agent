@@ -1635,3 +1635,27 @@ world_simulator/
   （Agent Preview、用户反馈反哺画像）**均未实施**，按各自子方案
   的分批计划，需要后续单独排期；4.3 第一批的人工验证也需要在
   真实使用中另行进行。
+- 2026-09-19（同日追加三）：完成 4.5 第二批（Agent Preview，见
+  `next_doc/world_simulator_agent_preview_and_adaptive_policy_plan.
+  md` 第 4、7 节）：
+  新增 `world_simulator/agent_preview_scenarios.py`（4 个固定内置
+  测试情境：突然失业、创业公司股权邀约、持续但不严重的身体不适、
+  大额消费决策，每个情境的候选选项都带 4.1 的 `risk_level`/
+  `reversibility`，覆盖"可逆/不可逆"" 高/低风险"的组合）+
+  `world_simulator/agent_preview.py`（`run_agent_preview()`，复用
+  `autopilot._build_decision_context()` 渲染画像文本，用一个不落盘
+  的临时 `SimManifest` 传参，不需要画像挂在真实模拟实例上）+
+  `workflows/agent_preview.yaml`（`type: agent`，同
+  `retrospective.yaml` 的模式，不挂载具体模板 skill；prompt 要求
+  LLM 如实说明"是否明确依据某条已声明的原则"，允许说"没有明确
+  依据"）。每个测试情境独立 try/except，单个情境失败不影响其它
+  情境的结果（`PreviewResult.error`）。`app.py`"配置自动挡"折叠区
+  新增"运行 Agent Preview"按钮 + 结果展示，运行前用当前表单里
+  （尚未点保存的）画像内容跑，运行不写入任何 `data/<sim_id>/`
+  下的正式数据，按钮旁提示会产生的调用次数。
+  **验收**：新增 4 个测试用例（`tests/test_agent_preview.py`），
+  加上原有 234 个用例，全部通过（238 passed）。
+  **已知限制**：本轮**未做**子方案 4.7 节要求的人工验证（真实跑
+  几次 Preview，检查测试情境的选项设计是否真的能体现风险/可逆性
+  维度上的选择差异，以及情境化策略——4.5 第一批——是否真的影响了
+  选择）；4.5 第三批（用户反馈反哺画像）仍未实施。

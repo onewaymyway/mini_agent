@@ -287,9 +287,9 @@ prompt）、`app.py`（真实值/认知值对比展示）。
 
 ### 4.5（P2）Agent Preview + 情境化条件策略 + 用户反馈反哺画像
 
-> **实施状态：第一批（情境化条件策略）已完成**（同日追加，
-> 2026-09-19）。第二、三批尚未实施。细化子方案见 `next_doc/world_
-> simulator_agent_preview_and_adaptive_policy_plan.md`。
+> **实施状态：第一、二批（情境化条件策略、Agent Preview）已完成**
+> （同日追加，2026-09-19）。第三批尚未实施。细化子方案见 `next_doc/
+> world_simulator_agent_preview_and_adaptive_policy_plan.md`。
 
 **现状**：`autopilot.py` 的画像只有自由文本 `principles` +
 `risk_preference` 枚举，纯粹靠拼进 prompt 影响 LLM，没有可验证、

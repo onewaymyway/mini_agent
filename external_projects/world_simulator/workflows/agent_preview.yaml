@@ -1,0 +1,41 @@
+name: agent_preview
+description: >-
+  Agent Preview（阶段三十二后续，4.5 节第二批，见 `next_doc/
+  world_simulator_agent_preview_and_adaptive_policy_plan.md`）。由
+  `world_simulator/agent_preview.py` 触发，对一个自动挡画像在一个
+  内置测试情境下单独跑一次选择，不写入任何正式模拟数据。用
+  `type: agent`（同 `retrospective.yaml`），不挂载具体模板 skill——
+  测试情境与场景模板无关。
+version: "1.0"
+steps:
+  - id: agent_preview
+    name: 在测试情境下运行画像做一次选择
+    type: agent
+    result_file: agent_preview_result.json
+    result_file_required_keys:
+      - chosen_option_id
+      - reason
+    prompt: |
+      {decision_context}
+
+      现在请你在下面这个测试情境里，按上面的画像做一次选择（这是一次
+      独立的能力测试，不是正式模拟的一部分，选择不会产生任何实际
+      后果）：
+
+      情境：{scenario_title}
+      {scenario_description}
+
+      候选选项（JSON 数组，每项包含 id/label/description/risk_level/
+      reversibility）：
+      {scenario_options_json}
+
+      请输出：
+      - `chosen_option_id`：你选择的选项 id，必须是上面候选选项之一。
+      - `reason`：一到两句话说明为什么选这个，语气就是这个画像会有的
+        语气。
+      - `referenced_policy`（可选字段）：如果这次选择明显是依据画像
+        声明的某条 `principles` 或 `conditional_policies` 做出的，
+        用一句话说明是哪一条、怎么用上的；如果这次选择更多是综合
+        判断、说不出明确依据某条已声明的原则，就如实输出
+        "综合判断，没有明确依据某条已声明的原则"，不要为了显得"有
+        依据"而牵强附会。
