@@ -1,7 +1,9 @@
 # world_simulator 迈向"万能模拟器"理想架构改进计划（第二轮）
 
-> **状态**：**4.19（因果线耦合结构化）已完成**，见 `PROJECT.md`
-> 阶段二十七交付记录。其余方向仍是规划中，尚未实施，按第 5 节
+> **状态**：**4.19（因果线耦合结构化）已完成**（`PROJECT.md` 阶段
+> 二十七）；**4.18（存储层追加写部分）已完成**（`PROJECT.md` 阶段
+> 二十八，`engine.py` 拆分部分未实施，见该节"范围说明"）。其余
+> 方向仍是规划中，尚未实施，按第 5 节
 > 分期路线图排期。本文档是对 `next_doc/world_simulator_
 > toward_universal_simulator_plan.md`（第一轮，阶段二十~二十五）和
 > `next_doc/world_simulator_causal_line_future_tree_plan.md`（阶段
@@ -113,7 +115,7 @@ Regime Detection 允许结构在线修正、Reality Loop 完整反馈闭环、
 
 ## 4. 改进方案
 
-### 4.18（工程债务，建议优先）`engine.py` 拆分 + 存储层追加写
+### 4.18（工程债务，**存储层追加写部分已完成，见 `PROJECT.md` 阶段二十八；`engine.py` 拆分部分未实施**）`engine.py` 拆分 + 存储层追加写
 
 **现状问题**：`engine.py` 52K，同时承担状态推进、资源校验、因果线
 注册、结构变化解析、背景角色外推等多个职责；`store.py::
@@ -137,6 +139,18 @@ SimStore.append_state` 与 `knowledge_base.py::_save_all()` 都是
 
 **涉及文件**：`world_simulator/engine.py`（拆分）、`store.py`、
 `knowledge_base.py`、全部现有测试（需要保持通过）。
+
+**实施记录（阶段二十八）**：只落地了"存储层追加写"里`state_
+history.jsonl` 这一半——`append_state()` 改成真正的追加写，验收
+标准是"多次追加不再触发 `load_history()` 读回整份历史"，已有
+专门测试覆盖。`causal_knowledge.jsonl` 评估后**刻意保留**整体
+重写：`record_causal_links()`/`record_contradiction()` 会原地
+更新已有条目（合并计数），和 `state_history.jsonl`"只增不改"的
+语义不同，套用纯追加写反而需要额外 compaction 才能生效，见
+`knowledge_base.py::_save_all()` docstring。`engine.py` 拆分
+本阶段**未实施**——52K 单体文件的一次性拆分回归风险明显高于
+存储层改动，且缺少清晰的"拆到什么粒度算完成"验收标准，留给后续
+单独评估/排期。
 
 ---
 
@@ -350,7 +364,8 @@ advance_every_n_steps`）、`spec_generator.py`（hint 生成）、
 
 ```text
 第一批（建议立即可做，风险低）：
-  4.18 工程债务（engine.py 拆分 + 追加写）——尚未实施
+  4.18 工程债务——存储层追加写部分已完成（阶段二十八），
+       engine.py 拆分部分仍未实施，留待后续单独评估
   4.19 因果线耦合结构化——已完成（阶段二十七）
 
 第二批（依赖第一批，价值较明确）：

@@ -130,20 +130,33 @@ class SimStore:
     def append_state(self, state: SimState, branch: str = "main") -> None:
         """把一个新状态追加进历史，并同步为"当前状态"。
 
-        `state_history.jsonl` 用 `atomic_write_jsonl` 整体重写（先读出
-        已有历史、追加新条目、整体落盘），不是真正的"追加写"——阶段一
-        实例数据量小（一次模拟通常几十到几百步），整体重写的开销可以
-        接受，换来"不需要单独处理 jsonl 追加写的原子性"这个简化；如果
-        后续实例历史变得很长，可以在不改变本方法签名的前提下换成真正
-        的追加写（`state_history_path` 打开文件 `a` 模式），调用方不受
-        影响。
+        阶段二十七（4.18 节，`next_doc/world_simulator_universal_
+        simulator_gap_analysis_and_roadmap_v2_plan.md`）之前，这里是
+        "整体重写"实现的追加（先读出已有历史、追加新条目、整体落盘），
+        开销随历史长度线性增长；本阶段改成真正的追加写——`state_
+        history.jsonl` 里每条记录只在生成时写一次、之后永不修改
+        （不像 `causal_knowledge.jsonl` 那样需要原地更新既有条目的
+        计数，见 `knowledge_base.py::_save_all()` docstring 的对比
+        说明），天然适合纯追加，不需要每次都读回全部历史再重写。
+
+        用 `Path.open("a", ...)` 直接追加一行 JSON，不经过
+        `atomic_write_jsonl`（那个函数的语义是"整体重写"，用来做
+        单行追加没有意义）；`state_current.json` 的写入不受影响，
+        仍然用 `atomic_write_json` 整体重写（它本来就只有一条记录，
+        不存在"追加"的概念）。单行追加不是跨平台意义上的原子操作
+        （极端情况下进程在写入中途崩溃可能留下不完整的最后一行），
+        这个取舍和 `state_current.json`/`manifest.json` 一直依赖
+        `atomic_write_json` 而 `state_history.jsonl` 此前"整体重写"
+        时也同样不保证追加过程中途崩溃不出问题一样——本阶段只是把
+        "重写代价从 O(历史长度) 降到 O(1)"，不新增/不解决并发写入
+        风险（`PROJECT.md`"已知限制"里"暂不支持并发推进同一实例"
+        仍然成立，需要加锁的话是另一个独立的改动）。
         """
-        history = self.load_history(branch)
-        history.append(state)
-        atomic_write_jsonl(
-            self.state_history_path(branch),
-            [s.to_dict() for s in history],
-        )
+        path = self.state_history_path(branch)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(state.to_dict(), ensure_ascii=False))
+            f.write("\n")
         atomic_write_json(self.state_current_path(branch), state.to_dict())
 
     # ── 自动挡配置（按分支独立存储）──────────────────────────────────

@@ -720,8 +720,11 @@ def advance(
 
     # 把这一步的选择记回*当前*状态节点（见 state_model.SimState docstring），
     # 再落盘一份修正后的当前节点——历史里对应 step 的条目需要同步更新，
-    # 因此这里重写整份历史里最后一条（append_state 每次整体重写 jsonl，
-    # 直接在内存里改最后一条再整体落盘即可，不需要额外的"更新历史"方法）。
+    # 因此这里重写整份历史里最后一条（阶段二十七之后 `append_state()`
+    # 本身已经是真正的追加写，这里属于"修改已落盘的最后一条"这种例外
+    # 场景，只能读回整份历史、在内存里改最后一条、整体重写，和
+    # `append_state()` 的追加写语义并不冲突——只是这一处需要的是
+    # "更新"而不是"追加"）。
     if chosen_option is not None:
         current.chosen_option_id = chosen_option.id
         current.chosen_by = effective_chosen_by

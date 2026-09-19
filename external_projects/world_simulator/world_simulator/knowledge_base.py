@@ -165,6 +165,18 @@ def load_all(data_dir: Path) -> List[KnowledgeItem]:
 
 
 def _save_all(data_dir: Path, items: List[KnowledgeItem]) -> None:
+    """整体重写落盘（阶段二十七评估后**刻意保留**，不改成追加写——见
+    `next_doc/world_simulator_universal_simulator_gap_analysis_and_
+    roadmap_v2_plan.md` 4.18 节"范围说明"）：`record_causal_links()`
+    每次写入都可能原地更新一条*已有*知识条目（Jaccard 相似度匹配到
+    重复因果关系时合并计数），`record_contradiction()` 同样是原地
+    更新，这和 `state_history.jsonl`（每条记录只在生成时写一次、
+    之后永不修改）的语义完全不同——"可原地更新既有记录"的存储天然
+    需要"读全部→改→整体写回"，纯追加写只适合`只增不改`的数据，
+    勉强套用反而需要额外的 compaction 步骤才能让"更新"生效，得不
+    偿失。数据量大了之后的优化方向应该是"定期压缩历史 jsonl"或换
+    真正支持原地更新的存储（比如 sqlite），而不是简单的追加写。
+    """
     atomic_write_jsonl(knowledge_path(data_dir), [it.to_dict() for it in items])
 
 

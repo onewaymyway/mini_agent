@@ -1297,3 +1297,46 @@ world_simulator/
   维度暂不实现，见方案文档 4.24 节"暂不建议"的说明）；这是后续
   4.20（多尺度真正并行）/4.21（归因/贡献拆解）/4.22（反事实矩阵
   向导）/4.26（开放世界闭环收尾）几个方向的数据基础，尚未实施。
+- 2026-09-19：完成阶段二十八（工程债务·存储层追加写，见
+  `next_doc/world_simulator_universal_simulator_gap_analysis_and_
+  roadmap_v2_plan.md` 4.18 节；范围较原方案草案收窄）交付：
+  1. `store.py::SimStore.append_state()` 从"整体重写"改成真正的
+     追加写——不再 `load_history()` 读回全部历史再 `atomic_write_
+     jsonl()` 整体落盘，改为直接 `path.open("a", ...)` 追加一行
+     JSON；`state_current.json` 的写入方式不变（本来就只有一条
+     记录，没有"追加"的概念）。理由：`state_history.jsonl` 每条
+     记录只在生成时写一次、之后永不修改，天然适合纯追加，重写
+     代价从 O(历史长度) 降到 O(1)。`engine.py` 里两处需要"修改
+     历史里最后一条"的场景（自动挡代选回填 `chosen_option`/
+     `apply_tree_updates`）不受影响——它们本来就是"读回整份历史→
+     内存改最后一条→整体重写"，这属于"更新"而不是"追加"，逻辑
+     不变，只更新了一处过时的代码注释。
+  2. `world_simulator/knowledge_base.py::_save_all()` **评估后
+     刻意保留整体重写**，不改成追加写——`record_causal_links()`/
+     `record_contradiction()` 会原地更新*已有*知识条目（相似度
+     匹配到重复因果关系时合并计数），这种"可原地更新既有记录"的
+     语义和 `state_history.jsonl` 的"只增不改"完全不同，勉强套用
+     纯追加写需要额外的 compaction 才能让"更新"生效，得不偿失；
+     已在 docstring 里记录这个评估结论，避免未来重复纠结这个
+     取舍。
+  3. **`engine.py` 拆分成多个模块**（4.18 节方案原始范围的另一
+     半）**本阶段未实施**——52K 单体文件拆分涉及内部大量交叉引用，
+     一次性拆分的回归风险明显高于存储层这个改动，且没有清晰的
+     "拆到什么粒度算完成"的验收标准；决定先把"存储层追加写"这个
+     范围明确、验收标准清晰（"多次 `append_state()` 不再触发
+     `load_history()`"）的子任务做完，`engine.py` 拆分留给后续
+     单独评估/排期，不在本阶段范围内强行一起做。
+  4. 新增 `tests/test_state_and_store.py::test_append_state_is_
+     true_append_write_not_full_rewrite`：验证多次追加后文件行数
+     与调用次数一致，并通过把 `store.load_history` 替换成"调用即
+     报错"的替身，断言 `append_state()` 确实不再依赖读回整份历史
+     这条路径。累计 181 个测试全部通过（`cd external_projects/
+     world_simulator && PYTHONPATH=../../src:. python3 -m pytest
+     tests/ -q`）。
+  **已知限制**：单行追加不是跨平台意义上的原子操作（极端情况下
+  进程在写入中途崩溃可能留下不完整的最后一行）——`load_history()`
+  在这种情况下会在 `json.loads()` 抛出异常，本阶段未新增对"最后
+  一行不完整"的容错解析（`knowledge_base.py::_load_all()` 已有
+  "单行损坏跳过"的先例，如果这个问题在真实使用中出现，可以照搬
+  同样的容错逻辑）；"暂不支持并发推进同一实例"这条已知限制不受
+  本阶段影响，仍然成立，加锁是另一个独立的改动。

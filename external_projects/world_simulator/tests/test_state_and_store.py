@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -204,6 +205,45 @@ def test_store_save_load_and_history(tmp_path):
     assert [s.step for s in history] == [0, 1]
 
     assert list_sim_ids(data_dir) == ["life_sim_test01"]
+
+
+def test_append_state_is_true_append_write_not_full_rewrite(tmp_path):
+    """阶段二十七（4.18 节）：`append_state()` 应该是真正的追加写——
+    验证方式是往 `state_history.jsonl` 手动塞一行"不是合法 JSON 的
+    垃圾字节"在文件末尾模拟"上次追加中途出问题留下的脏数据"场景
+    不适用（那不是本测试目标），这里只验证正常路径下多次
+    `append_state()` 之后文件行数与调用次数一致、且每次调用不需要
+    先读回整份历史就能正确追加（通过 mock `load_history` 确保它
+    没有被 `append_state` 调用来验证"不再依赖整体重写"这个实现
+    事实）。
+    """
+    data_dir = tmp_path / "data"
+    store = SimStore.for_root(data_dir, "append_write_test")
+
+    store.append_state(SimState(step=0, summary="s0"))
+    store.append_state(SimState(step=1, summary="s1"))
+    store.append_state(SimState(step=2, summary="s2"))
+
+    history_path = store.state_history_path()
+    lines = [l for l in history_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(lines) == 3
+    assert json.loads(lines[0])["step"] == 0
+    assert json.loads(lines[2])["step"] == 2
+
+    # `append_state` 不应该依赖先 `load_history()` 再整体重写：直接
+    # 把 `SimStore.load_history` 换成一个"调用即失败"的替身，确认
+    # `append_state` 仍能成功追加第四条，证明它不经过这条读取路径。
+    def _boom(*_args, **_kwargs):  # pragma: no cover - 只用于断言未被调用
+        raise AssertionError("append_state 不应该调用 load_history()")
+
+    store.load_history = _boom  # type: ignore[method-assign]
+    store.append_state(SimState(step=3, summary="s3"))
+
+    lines_after = [
+        l for l in history_path.read_text(encoding="utf-8").splitlines() if l.strip()
+    ]
+    assert len(lines_after) == 4
+    assert json.loads(lines_after[3])["step"] == 3
 
 
 def test_load_manifest_missing_raises(tmp_path):
