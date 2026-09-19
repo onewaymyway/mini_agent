@@ -106,3 +106,65 @@ def test_each_template_has_soft_cap_and_continue_prefix_guidance():
     for name, text in TEMPLATE_TEXTS.items():
         assert "软上限" in text, f"{name} 缺少软上限措辞"
         assert "continue_" in text, f"{name} 缺少 continue_ 前缀约定说明"
+
+
+# ── 阶段三十三第二批（4.2 Decision Reason/Action Reason + 4.3 紧急度 +
+#    4.6 continue_ 前缀落地到数据结构层）─────────────────────────────
+
+
+def test_advance_step_prompt_has_decision_reason_and_action_reason():
+    assert "decision_reason" in ADVANCE_STEP_TEXT
+    assert "action_reason" in ADVANCE_STEP_TEXT
+    # 两者的区分说明必须出现，避免退化成笼统的单一 trigger_reason
+    assert "为什么现在" in ADVANCE_STEP_TEXT
+    assert "为什么这个具体行动" in ADVANCE_STEP_TEXT
+
+
+def test_advance_step_prompt_has_urgency_and_time_window():
+    assert "urgency" in ADVANCE_STEP_TEXT
+    assert "time_window" in ADVANCE_STEP_TEXT
+    assert "critical" in ADVANCE_STEP_TEXT
+    assert "声明这一档会使模拟自动暂停" in ADVANCE_STEP_TEXT
+
+
+def test_choice_option_supports_action_reason_urgency_time_window():
+    from world_simulator.state_model import ChoiceOption
+
+    opt = ChoiceOption.from_dict({
+        "id": "a", "label": "x", "action_reason": "r",
+        "urgency": "high", "time_window": "数周内",
+    })
+    assert opt.action_reason == "r"
+    assert opt.urgency == "high"
+    assert opt.time_window == "数周内"
+
+
+def test_sim_state_supports_decision_reason():
+    from world_simulator.state_model import SimState
+
+    state = SimState.from_dict({"step": 1, "summary": "s", "decision_reason": "职业转型机会正在形成"})
+    assert state.decision_reason == "职业转型机会正在形成"
+
+
+def test_engine_advance_module_backfills_missing_action_reason():
+    """`engine/advance.py` 应该对非空 options 里缺失 action_reason 的
+    项补一句通用占位文案，避免展示层出现空白（4.2 节兜底规则）。"""
+    source = (WORLD_SIM_ROOT / "world_simulator" / "engine" / "advance.py").read_text(
+        encoding="utf-8"
+    )
+    assert "未说明具体原因，按情境综合判断" in source
+
+
+def test_engine_advance_module_treats_critical_urgency_as_major_decision():
+    source = (WORLD_SIM_ROOT / "world_simulator" / "engine" / "advance.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'o.urgency == "critical"' in source
+    assert "major_decision = True" in source
+
+
+def test_each_template_mentions_action_reason_and_decision_reason():
+    for name, text in TEMPLATE_TEXTS.items():
+        assert "action_reason" in text, f"{name} 缺少 action_reason 说明"
+        assert "decision_reason" in text, f"{name} 缺少 decision_reason 说明"
+

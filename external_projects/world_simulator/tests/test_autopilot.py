@@ -211,6 +211,38 @@ def test_pause_on_major_decision(tmp_path, monkeypatch):
     assert manifest.status == "paused"
 
 
+def test_pause_on_critical_urgency_option_even_without_major_decision_flag(tmp_path, monkeypatch):
+    """阶段三十三第二批（4.3 节）：存在任意一项 `urgency == "critical"`
+    的选项，等同于 `major_decision = True`，即使 skill 没有显式给出
+    `major_decision` 字段也应该触发暂停。"""
+    data_dir = tmp_path / "data"
+    _make_sim_with_options(
+        data_dir, "sim1", pilot_mode="autopilot",
+        autopilot={"enabled": True, "review_mode": "pause_on_major_decision"},
+    )
+    capture: dict = {}
+    _patch_advance_step_workflow(
+        monkeypatch, tmp_path,
+        {
+            "next_summary": "合同即将到期", "narrative": "x", "next_vars": {},
+            "options": [
+                {"id": "renew", "label": "续签", "urgency": "critical", "time_window": "明天前"},
+                {"id": "walk_away", "label": "不续签", "urgency": "low"},
+            ],
+            "chosen_option_id": "risky", "chosen_reason": "r",
+        },
+        capture,
+    )
+
+    ap_mod.run_autopilot_step(object(), tmp_path, data_dir, "sim1")
+
+    store = SimStore.for_root(data_dir, "sim1")
+    manifest = store.load_manifest()
+    assert manifest.status == "paused"
+    history = store.load_history()
+    assert history[-1].major_decision is True
+
+
 def test_batch_autopilot_skips_manual_instances(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     _make_sim_with_options(data_dir, "manual1", pilot_mode="manual")
@@ -539,6 +571,20 @@ def test_normalize_conditional_policies_filters_unknown_and_empty():
     ]
 
 
+def test_normalize_conditional_policies_accepts_urgency_but_not_critical():
+    """阶段三十三第二批（4.3 节）：`urgency_low`/`urgency_medium`/
+    `urgency_high` 是合法的 `if` 取值（加前缀避免与 `risk_level` 的
+    同名 `low`/`medium`/`high` 混淆）；`urgency_critical`（以及裸的
+    `critical`）不在可声明范围内——`critical` 直接触发暂停，不需要
+    "倾向"这种软策略。"""
+    result = ap_mod._normalize_conditional_policies([
+        {"if": "urgency_high", "then": "优先处理，不要拖延"},
+        {"if": "urgency_critical", "then": "不应该出现"},
+        {"if": "critical", "then": "也不应该出现"},
+    ])
+    assert result == [{"if": "urgency_high", "then": "优先处理，不要拖延"}]
+
+
 def test_normalize_conditional_policies_handles_non_list_input():
     assert ap_mod._normalize_conditional_policies(None) == []
     assert ap_mod._normalize_conditional_policies("not a list") == []
@@ -564,6 +610,7 @@ def test_decision_context_includes_valid_conditional_policies(tmp_path):
             "conditional_policies": [
                 {"if": "reversible", "then": "倾向选择更有探索性的选项"},
                 {"if": "high", "then": "倾向选择风险更低的选项"},
+                {"if": "urgency_high", "then": "优先处理，不要拖延"},
                 {"if": "garbage", "then": "不应该出现"},
             ],
         },
@@ -572,4 +619,19 @@ def test_decision_context_includes_valid_conditional_policies(tmp_path):
     assert "情境化倾向" in context
     assert "可逆性为「可逆」" in context and "倾向选择更有探索性的选项" in context
     assert "风险等级为「高」" in context and "倾向选择风险更低的选项" in context
+    assert "紧急程度为「高」" in context and "优先处理，不要拖延" in context
     assert "不应该出现" not in context
+
+
+def test_decision_context_always_mentions_critical_and_high_urgency_handling(tmp_path):
+    """阶段三十三第二批（4.3 节）：无论是否声明 `conditional_policies`，
+    画像文本都应该说明"critical 会自动暂停、high 应优先处理"，让自动挡
+    LLM 不需要自己猜测这两档紧急度会触发什么行为。"""
+    manifest = SimManifest(
+        sim_id="sim1", template="life_sim", intent="i", title="t",
+        created_at=now_iso(), updated_at=now_iso(), pilot_mode="autopilot",
+        autopilot={"enabled": True, "review_mode": "silent"},
+    )
+    context = ap_mod._build_decision_context(manifest)
+    assert "critical" in context.lower() or "紧急" in context
+    assert "暂停" in context

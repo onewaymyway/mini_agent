@@ -180,7 +180,12 @@ triggers: 多方谈判, 谈判模拟, 博弈模拟, 多主体模拟, 信息不�
 - `time_label`/`next_time_granularity`/`granularity_reason`：规则与
   另外两个模板完全一致。
 - `options`：数组，供*下一步*选择的候选分支（用户扮演的那一方可以
-  采取的方向）。
+  采取的方向）；结构、可选字段（`risk_level`/`reversibility`/
+  `action_reason`/`urgency`/`time_window` 等）与另外两个模板一致，
+  见 `advance_step.yaml` prompt 的完整说明——谈判场景下 `urgency`
+  尤其有意义（比如"对方给的报价截止到明天"）。
+- `decision_reason`：字符串（可选，顶层字段），这一批候选方向共享
+  的背景说明，规则与另外两个模板一致。
 - `major_decision`：布尔值（可选，默认 false），这一步是否是谈判/
   博弈的关键转折点（比如"接近最终摊牌"）。
 - `uncertain_fields`/`key_drivers`/`causal_links`/`line_updates`：

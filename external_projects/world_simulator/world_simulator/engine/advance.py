@@ -306,12 +306,20 @@ def advance(
             current.vars, next_vars, previous_vars, background_entities
         )
 
+    # 4.2 节（阶段三十三第二批）：`action_reason` 缺失时不重试整步
+    # （沿用项目一贯"宽松兜底"风格），对非空 `options` 数组里缺失
+    # `action_reason` 的项目补一句通用占位文案，避免展示层出现空白。
+    parsed_options = [ChoiceOption.from_dict(o) for o in (data.get("options") or [])]
+    for opt in parsed_options:
+        if not opt.action_reason:
+            opt.action_reason = "未说明具体原因，按情境综合判断"
+
     next_state = SimState(
         step=current.step + 1,
         summary=str(data.get("next_summary", "")),
         narrative=str(data.get("narrative", "")),
         vars=next_vars,
-        options=[ChoiceOption.from_dict(o) for o in (data.get("options") or [])],
+        options=parsed_options,
         major_decision=bool(data.get("major_decision", False)),
         time_label=str(data.get("time_label", "") or ""),
         time_granularity=next_granularity,
@@ -331,7 +339,16 @@ def advance(
             if isinstance(v, dict)
         },
         structural_change=_normalize_structural_change(data.get("structural_change")),
+        decision_reason=str(data.get("decision_reason", "") or ""),
     )
+
+    # 4.3 节（阶段三十三第二批）：存在任意一项 `urgency == "critical"`
+    # 的选项，按等同于 `major_decision = True` 的方式处理——`critical`
+    # 直接触发暂停等待用户介入，不需要 skill 显式再报一次
+    # `major_decision`（两者语义等价，`major_decision` 本身仍然保留，
+    # 供不使用 `urgency` 字段的旧场景/模板继续工作）。
+    if any(o.urgency == "critical" for o in next_state.options):
+        next_state.major_decision = True
 
     # 因果线不应该有前置条件（用户要求）：`line_updates`/
     # `causal_links.line_id` 里只要出现了 `manifest.settings.causal_lines`

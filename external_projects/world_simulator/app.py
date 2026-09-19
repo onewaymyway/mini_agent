@@ -224,6 +224,11 @@ section[data-testid="stSidebar"] {
 .ws-uncertain-badge-low { background: rgba(224, 102, 90, 0.15); color: var(--ws-danger, #e0665a); }
 .ws-uncertain-badge-medium { background: rgba(224, 180, 90, 0.18); color: #b8860b; }
 .ws-uncertain-badge-high { background: rgba(90, 160, 224, 0.15); color: #4a7fb5; }
+.ws-urgency-badge-low { background: rgba(150, 150, 150, 0.16); color: #777; }
+.ws-urgency-badge-medium { background: rgba(224, 180, 90, 0.18); color: #b8860b; }
+.ws-urgency-badge-high { background: rgba(224, 140, 60, 0.2); color: #c1650c; }
+.ws-urgency-badge-critical { background: rgba(224, 60, 60, 0.22); color: #c0271a; font-weight: 700; }
+.ws-continue-badge { background: rgba(150, 150, 150, 0.16); color: #777; }
 .ws-provenance-badge-fact { background: rgba(90, 200, 120, 0.16); color: #2f8f4e; }
 .ws-provenance-badge-assumption { background: rgba(224, 180, 90, 0.18); color: #b8860b; }
 .ws-provenance-badge-inference { background: rgba(90, 160, 224, 0.15); color: #4a7fb5; }
@@ -716,6 +721,7 @@ def _field_provenance_html(state) -> str:
 
 
 _RISK_LEVEL_LABELS = {"low": "低风险", "medium": "中风险", "high": "高风险"}
+_URGENCY_LABELS = {"low": "紧急度低", "medium": "紧急度中", "high": "紧急度高", "critical": "⚠️紧急度极高"}
 _REVERSIBILITY_LABELS = {
     "reversible": "可逆",
     "hard_to_reverse": "难以逆转",
@@ -725,7 +731,8 @@ _REVERSIBILITY_LABELS = {
 
 def _option_meta_html(opt) -> str:
     """渲染一个 `ChoiceOption` 的结构化维度标签（阶段三十二，4.1 节：
-    风险等级/可逆性/涉及因果线/最大不确定性）。未声明的字段不展示，
+    风险等级/可逆性/涉及因果线/最大不确定性；阶段三十三第二批，4.2/
+    4.3 节新增行动理由/紧急程度/时间窗口）。未声明的字段不展示，
     不用"未知"占位制造伪信息；全部字段都未声明时返回空字符串。
     """
     badges = []
@@ -741,6 +748,14 @@ def _option_meta_html(opt) -> str:
             f'<span class="ws-uncertain-badge ws-uncertain-badge-medium">'
             f'{_html_text(_REVERSIBILITY_LABELS.get(reversibility, reversibility))}</span>'
         )
+    urgency = getattr(opt, "urgency", None)
+    if urgency:
+        badges.append(
+            f'<span class="ws-uncertain-badge ws-urgency-badge-{urgency if urgency in _URGENCY_LABELS else "medium"}">'
+            f'{_URGENCY_LABELS.get(urgency, urgency)}</span>'
+        )
+    if str(getattr(opt, "id", "") or "").startswith("continue_"):
+        badges.append('<span class="ws-uncertain-badge ws-continue-badge">维持现状</span>')
     lines_html = ""
     affected = getattr(opt, "affected_lines", None) or []
     if affected:
@@ -751,8 +766,17 @@ def _option_meta_html(opt) -> str:
     uncertainty_html = (
         f'<div class="ws-muted">最大不确定性：{_html_text(uncertainty)}</div>' if uncertainty else ""
     )
+    time_window = getattr(opt, "time_window", "") or ""
+    time_window_html = (
+        f'<div class="ws-muted">时间窗口：{_html_text(time_window)}</div>' if time_window else ""
+    )
+    action_reason = getattr(opt, "action_reason", "") or ""
+    action_reason_html = (
+        f'<div class="ws-muted">为什么值得考虑：{_html_text(action_reason)}</div>'
+        if action_reason else ""
+    )
     badges_html = f'<div>{"".join(badges)}</div>' if badges else ""
-    return badges_html + lines_html + uncertainty_html
+    return badges_html + lines_html + uncertainty_html + time_window_html + action_reason_html
 
 
 def _key_drivers_html(state) -> str:
@@ -3079,9 +3103,21 @@ def page_detail() -> None:
     else:
         chosen_id: Optional[str] = None
         if current.options:
+            decision_reason = getattr(current, "decision_reason", "") or ""
+            if decision_reason:
+                st.markdown(
+                    f'<div class="ws-muted">📌 为什么现在需要决定：{_html_text(decision_reason)}</div>',
+                    unsafe_allow_html=True,
+                )
             st.markdown('<span class="ws-muted">选一个方向继续，或直接点「按默认走向推进」。</span>', unsafe_allow_html=True)
-            cols = st.columns(min(len(current.options), 3) or 1)
-            for i, opt in enumerate(current.options):
+            # `continue_` 前缀的"维持现状"选项统一排在列表最后展示
+            # （阶段三十三第二批，4.6 节），不改变其它选项的相对顺序。
+            ordered_options = sorted(
+                current.options,
+                key=lambda o: str(getattr(o, "id", "") or "").startswith("continue_"),
+            )
+            cols = st.columns(min(len(ordered_options), 3) or 1)
+            for i, opt in enumerate(ordered_options):
                 with cols[i % len(cols)]:
                     st.markdown(
                         f'<div class="ws-card"><div class="ws-card-title">{opt.label}</div>'

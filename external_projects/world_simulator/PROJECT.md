@@ -1782,3 +1782,69 @@ world_simulator/
   膨胀"和"新约束是否被 LLM 真正遵循"两项风险，仍需要后续人工跑
   真实/接近真实场景核对，本批未执行人工验证，只保证"改动确实落地
   到文件里"这一层。
+- 2026-09-20（同日追加）：**阶段三十三第二批**——完成方案第 5 节
+  第二批：4.2（Decision Reason/Action Reason 拆分）+ 4.3（紧急度
+  独立建模：四档 + 时间窗口 + 与暂停机制联动）+ 4.6（显式的"维持
+  现状/不作为"基准选项语义，落地到数据结构/展示层）：
+  1. `state_model.py`：`ChoiceOption` 新增 `action_reason`（为什么
+     这个具体行动现在值得列入候选，区别于 `description` 说的"选了
+     会怎样"）、`urgency`（`low`/`medium`/`high`/`critical` 四档，
+     归一化规则同 `risk_level`——不认识的取值退化为 `medium`，
+     `None` 表示未声明）、`time_window`（人类可读的时间窗口描述）；
+     `SimState` 新增 `decision_reason`（这一批 `options` 共享的
+     背景原因，回答"为什么现在需要做决定"，区别于每个选项各自的
+     `action_reason`）。均为可选字段，`to_dict`/`from_dict` 完整
+     支持，旧数据缺字段时按"未声明"处理，向后兼容。
+  2. `engine/advance.py`：非空 `options` 数组里缺失 `action_reason`
+     的项自动补一句通用占位文案（"未说明具体原因，按情境综合
+     判断"），避免展示层出现空白；新状态的 `options` 中存在任意
+     一项 `urgency == "critical"`，直接把 `next_state.major_
+     decision` 置为 `True`——复用现有 `pause_on_major_decision`
+     判定路径，不新增独立开关，`major_decision` 字段本身继续保留
+     供不使用 `urgency` 的旧场景/模板正常工作。
+  3. `autopilot.py`：`_CONDITION_IF_VALUES`/`_CONDITION_LABELS` 新增
+     `urgency_low`/`urgency_medium`/`urgency_high`（加前缀避免与
+     `risk_level` 的同名 `low`/`medium`/`high` 混淆；`critical` 不
+     放入条件策略——它直接触发暂停，不需要"倾向"这种软策略）；
+     `_build_decision_context()` 新增一句关于 critical/high 紧急度
+     选项的通用提示（"critical 会自动暂停，你不需要处理；high 请
+     优先处理，不要因犹豫不决而放着不选"），无论是否声明
+     `conditional_policies` 都会输出。
+  4. `workflows/advance_step.yaml`：新增 `decision_reason`/
+     `action_reason`/`urgency`/`time_window` 四个可选输出字段的
+     完整 prompt 说明（含判断依据、四档含义、`critical` 会触发
+     暂停的警示），并明确区分"为什么现在需要做决定"（`decision_
+     reason`，批量共享）与"为什么这个行动值得列入"（`action_
+     reason`，逐项独立）。
+  5. 三个模板 `SKILL.md`：`options`/结果字段清单里同步补充这四个
+     新字段的说明（不重复完整 prompt，指向 `advance_step.yaml`）。
+  6. `app.py`：新增紧急度 badge 样式（`ws-urgency-badge-low/medium/
+     high/critical`，`critical` 用最醒目的红色加粗）和 `continue_`
+     前缀的"维持现状"标签样式；`_option_meta_html()` 渲染紧急度
+     badge、`time_window`、`action_reason`（均为"有值才展示，未声明
+     不伪造"）；推进面板在候选列表上方展示 `decision_reason`（有
+     值才展示），并把 `id` 以 `continue_` 开头的选项统一排到候选
+     列表最后（不改变其它选项的相对顺序，用稳定排序实现）。
+  **验收**：新增/更新测试——`tests/test_state_and_store.py` 新增 2
+  个（`ChoiceOption` 新字段序列化/归一化，含"不认识的取值退化为
+  medium"和"critical 是合法值不会被误归一化"两种情况；`SimState.
+  decision_reason` 往返 + 旧数据兼容）；`tests/test_autopilot.py`
+  新增 3 个（`urgency == "critical"` 选项在没有显式 `major_
+  decision` 字段时也能触发暂停；`urgency_*` 条件策略被正确识别、
+  `urgency_critical`/裸 `critical` 被拒绝；`_build_decision_context`
+  始终包含 critical/high 紧急度的处理提示）；`tests/test_spec_and_
+  engine.py` 更新了一处因 `ChoiceOption` 新增字段而需要同步的
+  `to_dict` 快照断言；`tests/test_decision_engine_prompts.py` 新增
+  7 个（`decision_reason`/`action_reason`/`urgency`/`time_window`
+  的 prompt 文案断言、数据结构支持断言、`engine/advance.py` 兜底
+  逻辑的源码断言、三个模板都提到这两个新字段）。加上原有 261 个
+  用例，全部通过（**273 passed**）。
+  **已知限制**：这一批只做了"字段级扩展 + 最直接的行为联动"（critical
+  暂停、action_reason 兜底、continue_ 展示排序），**没有做**方案
+  4.4/4.13 提到的"辅助校验"（宏观事件下沉的启发式重合检测、跨线
+  级联提示）——这些留给第三批；也没有做任何"引擎侧主动判断紧急度"
+  的逻辑，紧急度仍然完全由 LLM 判断，engine 只做归一化和
+  critical→暂停这一条纯规则触发。方案第 6 节的"新字段被 LLM 敷衍
+  填写"风险（`action_reason`/`decision_reason` 可能沦为"综合判断，
+  没有明确依据"这类低信息量兜底）本批未做任何代码层面的质量校验，
+  只能后续人工观察实际输出。

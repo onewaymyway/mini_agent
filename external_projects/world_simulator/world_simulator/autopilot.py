@@ -35,6 +35,7 @@ class AutopilotDisabledError(RuntimeError):
 
 _CONDITION_IF_VALUES = (
     "reversible", "hard_to_reverse", "irreversible", "low", "medium", "high",
+    "urgency_low", "urgency_medium", "urgency_high",
 )
 _CONDITION_LABELS = {
     "reversible": "可逆性为「可逆」",
@@ -43,6 +44,9 @@ _CONDITION_LABELS = {
     "low": "风险等级为「低」",
     "medium": "风险等级为「中」",
     "high": "风险等级为「高」",
+    "urgency_low": "紧急程度为「低」",
+    "urgency_medium": "紧急程度为「中」",
+    "urgency_high": "紧急程度为「高」",
 }
 
 
@@ -53,10 +57,14 @@ def _normalize_conditional_policies(raw: Any) -> List[Dict[str, str]]:
 
     每一项形如 `{"if": "reversible", "then": "倾向选择更有探索性的
     选项"}`；`if` 只识别 4.1 已落地的 `ChoiceOption.reversibility`/
-    `risk_level` 六个枚举取值之一（阶段三十二），**不支持自定义条件
-    表达式**——`if` 不是这六个已知值之一、或 `then` 是空字符串的项
-    会被静默丢弃（不抛异常中断画像渲染，同 `risk_level` 等既有字段
-    "不认识就归一化/丢弃"的一贯处理方式）。
+    `risk_level` 六个枚举取值，以及 4.3 节（阶段三十三第二批）新增的
+    `urgency` 三个取值（`urgency_low`/`urgency_medium`/
+    `urgency_high`，加前缀避免和 `risk_level` 的 `low`/`medium`/
+    `high` 混淆）——`urgency_critical` 不在可声明范围内，因为
+    `critical` 直接触发暂停等待用户介入，不需要"倾向"这种软策略。
+    **不支持自定义条件表达式**——`if` 不是这九个已知值之一、或
+    `then` 是空字符串的项会被静默丢弃（不抛异常中断画像渲染，同
+    `risk_level` 等既有字段"不认识就归一化/丢弃"的一贯处理方式）。
     """
     if not isinstance(raw, list):
         return []
@@ -102,13 +110,19 @@ def _build_decision_context(manifest: SimManifest) -> str:
     if conditional_policies:
         lines.append(
             "此外，用户为这个 Agent 声明了以下情境化倾向（4.5 节，"
-            "依据候选选项的 risk_level/reversibility 判断是否适用；如果"
-            "候选选项没有声明相应字段，就不必强行套用）："
+            "依据候选选项的 risk_level/reversibility/urgency 判断是否"
+            "适用；如果候选选项没有声明相应字段，就不必强行套用）："
         )
         lines.extend(
             f"- 当某个候选选项的{_CONDITION_LABELS.get(p['if'], p['if'])}时，{p['then']}"
             for p in conditional_policies
         )
+
+    lines.append(
+        "如果候选选项里存在 urgency 为「critical」的项，模拟会自动暂停"
+        "等待用户介入，你不需要处理这种情况；如果存在 urgency 为「high」"
+        "的项，请优先处理，不要因为犹豫不决而放着不选。"
+    )
 
     if bool(ap.get("allow_custom_options")):
         lines.append(

@@ -48,6 +48,31 @@ class ChoiceOption:
     """这个选项最大的不确定性是什么（一句话，选填）。空字符串表示
     未声明。
     """
+    action_reason: str = ""
+    """这个具体行动为什么现在值得列入候选（阶段三十三第二批，
+    `next_doc/world_simulator_potential_causal_space_and_decision_
+    engine_plan.md` 4.2 节，参考文档 Action Reason）：区别于
+    `description`（说"选了会怎样"），这个字段说"为什么现在值得考虑
+    这个方向"（比如"利用已有能力降低转型成本"）。空字符串表示 skill
+    未声明——`engine.py` 在解析非空 `options` 时会给缺失该字段的项
+    补一句通用占位文案（"未说明具体原因，按情境综合判断"），避免
+    展示层出现空白；这里的默认值本身不做这个兜底（`state_model.py`
+    只管数据结构，兜底逻辑属于 `engine.py` 的职责）。
+    """
+    urgency: Optional[str] = None
+    """这个选项的紧急程度（阶段三十三第二批，4.3 节，参考文档
+    Urgency，独立于 `risk_level`）：`"low"`/`"medium"`/`"high"`/
+    `"critical"` 之一，选填。归一化规则同 `risk_level`：不认识的
+    取值统一退化为 `"medium"`；`None` 表示未声明，不伪造默认值。
+    `critical` 会触发暂停等待用户介入（等同于 `major_decision`，
+    见 `engine.py::advance()`），其余三档只影响展示/自动挡的倾向
+    判断，不触发任何强制行为。
+    """
+    time_window: str = ""
+    """紧急程度对应的时间窗口，人类可读的一句话描述（比如"数周内"/
+    "下个季度前"），选填，空字符串表示未声明。只在 `urgency` 非空时
+    才有展示意义，但不强制要求同时填写。
+    """
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -62,6 +87,11 @@ class ChoiceOption:
         reversibility = data.get("reversibility")
         if reversibility is not None:
             reversibility = str(reversibility).strip().lower() or None
+        urgency = data.get("urgency")
+        if urgency is not None:
+            urgency = str(urgency).strip().lower()
+            if urgency not in ("low", "medium", "high", "critical"):
+                urgency = "medium"
         return cls(
             id=str(data.get("id", "")),
             label=str(data.get("label", "")),
@@ -70,6 +100,9 @@ class ChoiceOption:
             reversibility=reversibility,
             affected_lines=[str(x) for x in (data.get("affected_lines") or [])],
             key_uncertainty=str(data.get("key_uncertainty", "") or ""),
+            action_reason=str(data.get("action_reason", "") or ""),
+            urgency=urgency,
+            time_window=str(data.get("time_window", "") or ""),
         )
 
 
@@ -376,6 +409,21 @@ class SimState:
     展示层按"没有来源标注"处理，不影响任何已有行为，向后兼容。
     """
 
+    decision_reason: str = ""
+    """这一批 `options` 作为一个整体出现的原因（阶段三十三第二批，
+    `next_doc/world_simulator_potential_causal_space_and_decision_
+    engine_plan.md` 4.2 节，参考文档 Decision Opportunity 的
+    `Trigger` 精简版）：回答"为什么现在需要做决定"，是这一批选项
+    共享的背景说明，区别于每个 `ChoiceOption.action_reason`（回答
+    "为什么这个具体行动值得列入"）。
+
+    只在存在多个选项、需要说明"为什么现在出现分岔"时才有必要填写；
+    只有一个选项时，"为什么出现"通常已经足够简单，允许留空。
+    `options` 为空数组时这个字段同样没有意义，一般也是空字符串。
+    默认空字符串：skill 没给出、旧数据、`state0`（初始状态一般不
+    需要这个概念）都可以为空，不影响任何已有行为，向后兼容。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
@@ -430,6 +478,7 @@ class SimState:
             field_provenance={
                 str(k): str(v) for k, v in (data.get("field_provenance") or {}).items()
             },
+            decision_reason=str(data.get("decision_reason", "") or ""),
         )
 
 

@@ -35,6 +35,51 @@ def test_state_roundtrip():
     assert restored.chosen_option_id == "a"
 
 
+def test_choice_option_normalizes_urgency_and_preserves_action_reason_time_window():
+    """阶段三十三第二批（4.2/4.3 节）：`action_reason`/`urgency`/
+    `time_window` 应该正确序列化/反序列化；`urgency` 的归一化规则
+    同 `risk_level`——不认识的取值退化为 `medium`，`None` 表示未声明，
+    不伪造默认值。"""
+    opt = ChoiceOption(
+        id="a", label="转型", description="转向 AI 相关岗位",
+        action_reason="利用已有能力降低转型成本",
+        urgency="high", time_window="数周内",
+    )
+    restored = ChoiceOption.from_dict(opt.to_dict())
+    assert restored.action_reason == "利用已有能力降低转型成本"
+    assert restored.urgency == "high"
+    assert restored.time_window == "数周内"
+
+    # 未声明时保持 None/空字符串，不伪造默认值
+    unset = ChoiceOption.from_dict({"id": "b", "label": "维持现状"})
+    assert unset.urgency is None
+    assert unset.action_reason == ""
+    assert unset.time_window == ""
+
+    # 不认识的取值退化为 medium（同 risk_level 的既有归一化规则）
+    weird = ChoiceOption.from_dict({"id": "c", "label": "x", "urgency": "超级紧急"})
+    assert weird.urgency == "medium"
+
+    # critical 是合法取值，不会被归一化掉
+    critical = ChoiceOption.from_dict({"id": "d", "label": "x", "urgency": "critical"})
+    assert critical.urgency == "critical"
+
+
+def test_state_roundtrip_preserves_decision_reason():
+    """阶段三十三第二批（4.2 节）：`SimState.decision_reason` 应该
+    正确序列化/反序列化，旧数据（没有这个字段）落回空字符串。"""
+    state = SimState(
+        step=3, summary="s",
+        options=[ChoiceOption(id="a", label="A"), ChoiceOption(id="b", label="B")],
+        decision_reason="职业转型机会正在形成",
+    )
+    restored = SimState.from_dict(state.to_dict())
+    assert restored.decision_reason == "职业转型机会正在形成"
+
+    legacy_restored = SimState.from_dict({"step": 0, "summary": "旧数据"})
+    assert legacy_restored.decision_reason == ""
+
+
 def test_state_roundtrip_preserves_uncertain_fields():
     """阶段十一（4.3 节）：`uncertain_fields` 应该原样经过
     to_dict/from_dict 往返，旧数据（没有这个字段）也应该正常落回空

@@ -256,6 +256,9 @@ def test_create_and_advance_simulation_end_to_end(tmp_path, monkeypatch):
                     "reversibility": None,
                     "affected_lines": [],
                     "key_uncertainty": "",
+                    "action_reason": "",
+                    "urgency": None,
+                    "time_window": "",
                 },
                 ensure_ascii=False,
             )

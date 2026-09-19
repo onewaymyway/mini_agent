@@ -246,7 +246,16 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
 - `options`：数组，供*下一步*选择的候选分支（结构同上，数量按
   `{option_count_hint}`，情节明显没有分支可以给空数组）；有意义的话，
   候选方向里可以体现"应对大环境变化"这条思路（比如"顺应新趋势转型"
-  vs "坚持原方向"），不用每次都是纯粹的个人选择。
+  vs "坚持原方向"），不用每次都是纯粹的个人选择。每个选项除了
+  `id`/`label`/`description`，可以额外给出 `risk_level`/
+  `reversibility`/`affected_lines`/`key_uncertainty`（阶段三十二）、
+  `action_reason`（阶段三十三第二批 4.2 节，为什么这个方向现在值得
+  列入）、`urgency`/`time_window`（阶段三十三第二批 4.3 节，紧急
+  程度四档 + 时间窗口，独立于 `risk_level`；声明 `urgency: critical`
+  会使模拟自动暂停，谨慎使用）——不确定就不填，不要瞎猜凑数。
+- `decision_reason`：字符串（可选，顶层字段，不是某个选项内部的
+  字段），这一批 `options` 共享的背景说明——"为什么现在需要做这个
+  决定"，只有一个选项或原因足够简单时可以不填。
 - `major_decision`：布尔值（可选，默认 false），当这一步的选择/走向
   明显是人生的重大转折点时设为 true——自动挡的 `review_mode:
   pause_on_major_decision` 用它判断是否需要暂停等用户确认，见
