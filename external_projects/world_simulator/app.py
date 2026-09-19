@@ -388,6 +388,43 @@ div[data-testid="stTabs"] button[aria-selected="true"] {
 div[data-testid="stTabs"] div[data-testid="stVerticalBlock"] {
     color: var(--ws-text);
 }
+
+/* Streamlit 自带的顶部工具栏（含右上角"Deploy"按钮）默认是白底，
+   跟"夜航日志"深色主题不一致，这里统一改成跟主题一致的深色。 */
+header[data-testid="stHeader"] {
+    background: var(--ws-bg) !important;
+    border-bottom: 1px solid var(--ws-border);
+}
+div[data-testid="stDecoration"] {
+    background: var(--ws-bg) !important;
+    background-image: none !important;
+}
+div[data-testid="stToolbar"],
+div[data-testid="stToolbarActions"] {
+    background: transparent !important;
+}
+div[data-testid="stToolbar"] svg,
+div[data-testid="stToolbarActions"] svg,
+div[data-testid="stMainMenu"] svg {
+    fill: var(--ws-text-muted) !important;
+}
+div[data-testid="stToolbar"] button:hover svg,
+div[data-testid="stToolbarActions"] button:hover svg {
+    fill: var(--ws-accent) !important;
+}
+div[data-testid="stAppDeployButton"] button {
+    background: var(--ws-bg-elevated) !important;
+    color: var(--ws-text) !important;
+    border: 1px solid var(--ws-border) !important;
+}
+div[data-testid="stAppDeployButton"] button:hover {
+    background: var(--ws-accent-soft) !important;
+    color: var(--ws-accent) !important;
+    border-color: var(--ws-accent) !important;
+}
+div[data-testid="stAppDeployButton"] button p {
+    color: inherit !important;
+}
 </style>
 """
 
