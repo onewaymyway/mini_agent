@@ -49,6 +49,7 @@ from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
 from world_simulator import retrospective as retrospective_mod
 from world_simulator import agent_preview as agent_preview_mod
+from world_simulator import policy_feedback as policy_feedback_mod
 from world_simulator.autopilot import (
     AutopilotDisabledError, run_autopilot_step, run_comparison_experiment, run_repeated_experiment,
 )
@@ -1776,6 +1777,50 @@ def _render_timeline(
                             else:
                                 st.success("已记录。")
                             st.rerun()
+            # 阶段三十四（4.5 节第三批，用户反馈反哺画像，`next_doc/
+            # world_simulator_agent_preview_and_adaptive_policy_plan.md`
+            # 5.1 节）：只对代理（自动挡）选择的步骤展示——手动挡是用户
+            # 自己选的，没有"反馈代理选择"的意义。子方案原文假设复用
+            # 已有 review_mode 复核入口，但实际代码里并没有现成的"标记
+            # 不符合预期"入口，这里是补上的最小必要入口（见 policy_
+            # feedback.py 模块 docstring 的说明）。
+            if state.chosen_by == "autopilot":
+                existing_feedback = policy_feedback_mod.find_for_step(
+                    DATA_DIR, sim_id, branch=source_branch, step=state.step
+                )
+                fb_label = (
+                    f"🚩 反馈这次代理的选择（已反馈 {len(existing_feedback)} 条）"
+                    if existing_feedback else "🚩 反馈这次代理的选择"
+                )
+                with st.expander(fb_label):
+                    for fb in existing_feedback:
+                        st.markdown(
+                            '<div class="ws-chapter-choice">🚩 已标记「不符合预期」：'
+                            f'{_html_text(fb.user_reason)}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    with st.form(
+                        key=f"policy_feedback_form_{sim_id}_{source_branch}_{state.step}_{_idx}"
+                    ):
+                        st.caption("如果觉得代理这一步的选择不符合预期，可以写一句理由——"
+                                   "不会自动改动自动挡画像，只会在画像编辑页汇总展示，由你自己"
+                                   "决定要不要据此调整。")
+                        reason_input = st.text_area(
+                            "为什么觉得不符合预期？",
+                            key=f"policy_feedback_reason_{sim_id}_{source_branch}_{state.step}_{_idx}",
+                        )
+                        if st.form_submit_button("标记为不符合预期"):
+                            try:
+                                policy_feedback_mod.record_feedback(
+                                    DATA_DIR, sim_id,
+                                    branch=source_branch, step=state.step,
+                                    user_reason=reason_input,
+                                )
+                            except policy_feedback_mod.PolicyFeedbackError as exc:
+                                st.error(str(exc))
+                            else:
+                                st.success("已记录，可以在下面「配置自动挡」的画像编辑区看到汇总。")
+                                st.rerun()
         if can_fork:
             fork_col, _spacer = st.columns([1, 5])
             with fork_col:
@@ -2927,6 +2972,38 @@ def page_detail() -> None:
                     + policy_line + "</div>",
                     unsafe_allow_html=True,
                 )
+
+        # 阶段三十四（4.5 节第三批，用户反馈反哺画像，`next_doc/
+        # world_simulator_agent_preview_and_adaptive_policy_plan.md`
+        # 5.3/5.4 节）：汇总这条分支下尚未确认的「不符合预期」反馈
+        # （时间线上「🚩 反馈这次代理的选择」入口写入的），命中同一
+        # 关键词分组次数够多时额外给一句归纳提示；系统只展示/建议，
+        # 画像的实际取值调整（风险偏好/情境化条件策略）仍然只能由
+        # 用户在上面手动改完点「保存自动挡配置」。
+        branch_feedback = [
+            f for f in policy_feedback_mod.load_all(DATA_DIR, sim_id) if f.branch == manifest.branch
+        ]
+        if branch_feedback:
+            fb_summary = policy_feedback_mod.summarize_feedback(branch_feedback, branch=manifest.branch)
+            unacked = fb_summary["unacknowledged"]
+            st.markdown("---")
+            with st.expander(f"📋 最近的反馈（{len(unacked)} 条未读）", expanded=bool(unacked)):
+                if fb_summary["suggestion"]:
+                    st.info(fb_summary["suggestion"])
+                if not unacked:
+                    st.caption("没有未读反馈。")
+                for fb in unacked:
+                    fb_col1, fb_col2 = st.columns([5, 1])
+                    with fb_col1:
+                        st.markdown(
+                            f'<div class="ws-card"><div class="ws-card-title">第 {fb.step} 步</div>'
+                            f'<div class="ws-muted">{_html_text(fb.user_reason)}</div></div>',
+                            unsafe_allow_html=True,
+                        )
+                    with fb_col2:
+                        if st.button("已阅", key=f"policy_feedback_ack_{fb.id}"):
+                            policy_feedback_mod.acknowledge(DATA_DIR, sim_id, fb.id)
+                            st.rerun()
 
     if is_autopilot and manifest.status == "active":
         active_run = st.session_state.get("autopilot_run")

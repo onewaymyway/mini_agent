@@ -1,11 +1,17 @@
 # world_simulator Agent Preview + 情境化条件策略 + 用户反馈反哺画像（4.5 细化子方案）
 
-> **状态**：**第一批（情境化条件策略）、第二批（Agent Preview）
-> 已于 2026-09-19 完成**（见 `PROJECT.md` 对应条目）。第三批（用户
-> 反馈反哺画像）**尚未实施**。第 5.2 节备注的"画像存储作用域未知"
-> 已在第一批实施中确认：`manifest.autopilot` 按分支独立存储，见
-> `engine/management.py::set_pilot_config()`。第二批**尚未**做
-> 子方案 4.7 节要求的人工验证（真实运行几次 Preview 检查效果）。
+> **状态**：**三批全部已于 2026-09-19 完成代码交付**（见 `PROJECT.md`
+> 对应条目）。第 5.2 节备注的"画像存储作用域未知"已在第一批实施中
+> 确认：`manifest.autopilot` 按分支独立存储，见 `engine/management.
+> py::set_pilot_config()`。第二批**尚未**做子方案 4.7 节要求的人工
+> 验证（真实运行几次 Preview 检查效果）。第三批实施时发现一处与
+> 本文档假设不符：5.1 节原文假设"自动挡运行已有 review_mode（人工
+> 复核）机制，用户可以在复核时标记'不符合预期'并写理由"，但实际
+> 代码里 `review_mode` 只是"重大决策时暂停连续推进"，并没有现成的
+> "标记不符合预期"入口——实施时在时间线的自动挡步骤上补了一个最小
+> 的反馈入口（见 `world_simulator/policy_feedback.py` 模块
+> docstring），仍然遵守"不新增复杂反馈系统、只补最小必要入口"的
+> 精神，未扩大本节范围。
 > **上游文档**：`next_doc/world_simulator_realism_transparency_and_
 > retrospective_roadmap_v3_plan.md`（第三轮，阶段三十二）4.5 节——
 > 该节明确写"改动面是本轮里最大的一个，建议单独针对这一节再写一份
@@ -238,6 +244,16 @@ class PolicyFeedbackNote:
 
 **第三批：用户反馈反哺画像**（依赖 `review_mode` 已有机制，
 与第一、二批相对独立，可以并行或稍晚排期）
+
+> **实施状态：已完成**（阶段三十四，2026-09-19）。实际落地与本节
+> 原方案有一处出入：`PolicyFeedbackNote` 落在独立新模块
+> `world_simulator/policy_feedback.py`（不是 `state_model.py`），
+> 落盘 `data/<sim_id>/policy_feedback.jsonl`（同 `reality_checks.
+> jsonl` 平级模式）；反馈入口不是"复用 `review_mode` 复核流程"
+> （代码里并不存在这样的入口，见本文档顶部状态说明），而是在
+> `app.py` 时间线的自动挡步骤上新增了一个独立的"🚩 反馈这次代理的
+> 选择"折叠区。`autopilot.py` 本身未改动。
+
 - 涉及文件：`state_model.py`（`PolicyFeedbackNote`，需要先确认
   画像/反馈的存储作用域，见 5.2 备注）、`autopilot.py`（`review_
   mode` 复核流程里追加写入反馈记录）、`app.py`（画像编辑页新增

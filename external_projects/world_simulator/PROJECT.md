@@ -1659,3 +1659,37 @@ world_simulator/
   几次 Preview，检查测试情境的选项设计是否真的能体现风险/可逆性
   维度上的选择差异，以及情境化策略——4.5 第一批——是否真的影响了
   选择）；4.5 第三批（用户反馈反哺画像）仍未实施。
+- 2026-09-19（同日追加四）：完成 4.5 第三批（用户反馈反哺画像，见
+  `next_doc/world_simulator_agent_preview_and_adaptive_policy_plan.
+  md` 第 5、7 节）——至此 4.5 三个批次全部完成代码交付；4.3（单主体
+  State/Belief 分离）第二批因仍卡在"第一批需要人工验证"这个前置
+  条件（见该子方案第 7 节），本轮未推进，见下方"已知限制"：
+  新增 `world_simulator/policy_feedback.py`
+  （`PolicyFeedbackNote`/`record_feedback()`/`acknowledge()`/
+  `find_for_step()`/`summarize_feedback()`），落盘
+  `data/<sim_id>/policy_feedback.jsonl`（同 `reality_checks.jsonl`
+  平级模式，追加写入）。**实施时发现一处与子方案假设不符**：子方案
+  5.1 节假设"自动挡运行已有 review_mode（人工复核）机制，用户可以
+  在复核时标记'不符合预期'并写理由"，但实际代码里 `review_mode`
+  只是"重大决策时暂停连续推进"，并没有现成的"标记不符合预期"入口
+  ——因此在 `app.py` 时间线的自动挡步骤（`state.chosen_by ==
+  "autopilot"`）上新增了一个独立的"🚩 反馈这次代理的选择"折叠区
+  （只在这一步写反馈理由，不做"符合预期"的正向记录，同子方案 5.1
+  节只关心"不符合预期"方向的取舍一致）；`autopilot.py` 本身未改动。
+  画像编辑页（"配置自动挡"折叠区）新增"📋 最近的反馈"折叠区，展示
+  当前分支未确认的反馈列表 + 命中关键词分组（"太保守/太谨慎/太
+  犹豫" vs "太冒险/太激进/不计后果"，各自出现 ≥3 次触发一条归纳
+  提示，纯计数统计，不做语义分析）达到阈值时的归纳提示，每条反馈
+  可点"已阅"置 `acknowledged=True`（不删除记录）。全程不改动
+  `risk_preference`/`conditional_policies` 的任何取值——调整与否
+  完全由用户自己在同一页手动操作，符合"系统只展示/建议，画像调整
+  必须由用户手动操作"的透明度红线。
+  **验收**：新增 10 个测试用例（`tests/test_policy_feedback.py`），
+  加上原有 238 个用例，全部通过（248 passed）。已用本地 `pytest`
+  真实跑过（补装 `pytest`/`streamlit` 依赖）。
+  **已知限制**：4.3 第二批（`ScenarioDraft.belief_fields`/初始
+  `beliefs`、创建向导声明入口、推广到其它模板）仍未实施——按子
+  方案第 7 节，需要先完成"第一批需要人工跑 3~5 次 `life_sim` 真实
+  模拟验证 LLM 能否稳定输出有意义的认知偏差"这一步，这一步本身
+  无法仅靠代码改动替代，本轮未执行，因此第二批按计划继续搁置，
+  留待后续有人工验证条件时再排期。

@@ -4,8 +4,11 @@
 > 详见 `PROJECT.md` 对应条目）；4.3/4.5 按本文档第 5 节建议暂缓，
 > 细化子方案已分别补充为 `next_doc/world_simulator_belief_state_
 > separation_plan.md`、`next_doc/world_simulator_agent_preview_
-> and_adaptive_policy_plan.md`，尚未实施；4.7/4.8 按第 4.7/4.8 节
-> 说明暂不建议，未纳入本轮。本文档是在
+> and_adaptive_policy_plan.md`——其中 **4.5 三个批次已于同日陆续
+> 完成代码交付**（阶段三十二后续、三十三、三十四），**4.3 仅完成
+> 第一批（`life_sim` 验证批）代码，尚待人工验证，第二批（推广批）
+> 按子方案要求需等验证通过后才能排期，本轮未推进**；4.7/4.8 按
+> 第 4.7/4.8 节说明暂不建议，未纳入本轮。本文档是在
 > `next_doc/world_simulator_universal_simulator_gap_analysis_and_
 > roadmap_v2_plan.md`（第二轮，阶段二十七~三十一，十个方向已全部
 > 完成）之后，重新对照用户上传的参考文档《万能模拟器到底如何构建？
@@ -287,9 +290,10 @@ prompt）、`app.py`（真实值/认知值对比展示）。
 
 ### 4.5（P2）Agent Preview + 情境化条件策略 + 用户反馈反哺画像
 
-> **实施状态：第一、二批（情境化条件策略、Agent Preview）已完成**
-> （同日追加，2026-09-19）。第三批尚未实施。细化子方案见 `next_doc/
-> world_simulator_agent_preview_and_adaptive_policy_plan.md`。
+> **实施状态：三个批次已全部完成**（情境化条件策略、Agent Preview
+> 于同日追加，第三批"用户反馈反哺画像"于阶段三十四，均 2026-09-19）。
+> 细化子方案见 `next_doc/world_simulator_agent_preview_and_adaptive_
+> policy_plan.md`；第二批 Agent Preview 仍未做子方案要求的人工验证。
 
 **现状**：`autopilot.py` 的画像只有自由文本 `principles` +
 `risk_preference` 枚举，纯粹靠拼进 prompt 影响 LLM，没有可验证、
