@@ -976,6 +976,99 @@ def apply_structural_change(
         }
     )
     manifest.settings = {**manifest.settings, "confirmed_structural_changes": confirmed}
+
+    # 阶段二十九（`next_doc/world_simulator_universal_simulator_gap_
+    # analysis_and_roadmap_v2_plan.md` 4.26 节，开放世界闭环收尾）：
+    # 采纳 `new_mechanism`/`regime_shift` 时，顺带生成一条默认因果线
+    # 草稿放进 `settings.suggested_causal_lines`，供用户在因果线总览
+    # 页面里选择"接受这条建议线"（复用 `causal_lines` 手动覆盖入口，
+    # 见 `app.py::_render_suggested_causal_lines()`）。不自动登记进
+    # `settings.causal_lines`——是否要给这个新结构专门开一条因果线，
+    # 仍然由用户判断，engine 只负责"发现并建议"。`kind == "new_entity"`
+    # 场景不生成建议：新实体更多体现在 `vars.entities` 里，不强制每个
+    # 新实体都对应一条独立因果线。
+    kind = target.structural_change.get("kind", "")
+    if kind in ("new_mechanism", "regime_shift"):
+        description = target.structural_change.get("description", "")
+        suggestion_id = f"suggested_{secrets.token_hex(3)}"
+        label = description[:24] if description else suggestion_id
+        suggested = list(manifest.settings.get("suggested_causal_lines") or [])
+        suggested.append(
+            {
+                "id": suggestion_id,
+                "label": label,
+                "time_granularity": "",
+                "source_kind": kind,
+                "source_description": description,
+                "source_step": step,
+                "future_tree": causal_tree.build_default_future_tree(label, step),
+            }
+        )
+        manifest.settings = {**manifest.settings, "suggested_causal_lines": suggested}
+
+    store.save_manifest(manifest)
+    return manifest
+
+
+def accept_suggested_causal_line(
+    data_dir: Path, sim_id: str, suggestion_id: str
+) -> SimManifest:
+    """把 `apply_structural_change()` 生成的一条因果线建议正式接入
+    `settings.causal_lines`（阶段二十九，4.26 节）。
+
+    这是"建议 → 正式登记"的唯一写入通道——`apply_structural_change()`
+    本身只追加建议、不修改 `causal_lines`，只有用户在因果线总览页面
+    点击"接受这条建议线"、调用这个函数时，才会真正生效。接受后从
+    `suggested_causal_lines` 里移除这条建议（不保留"已接受"状态——
+    一旦进了 `causal_lines`，因果线总览本身就会展示它，不需要在建议
+    列表里重复标注）。拒绝（不接受）不需要调用任何函数，用户可以在
+    UI 上直接忽略这条建议，也提供 `reject_suggested_causal_line()`
+    供用户主动清除。
+
+    Raises:
+        SimEngineError: 找不到这条建议 id。
+    """
+    store = SimStore.for_root(data_dir, sim_id)
+    manifest = store.load_manifest()
+    suggested = list(manifest.settings.get("suggested_causal_lines") or [])
+    match = next(
+        (s for s in suggested if isinstance(s, dict) and str(s.get("id")) == suggestion_id),
+        None,
+    )
+    if match is None:
+        raise SimEngineError(f"找不到 id={suggestion_id!r} 的因果线建议")
+
+    causal_lines = list(manifest.settings.get("causal_lines") or [])
+    causal_lines.append(
+        {
+            "id": match.get("id"),
+            "label": match.get("label"),
+            "time_granularity": match.get("time_granularity", ""),
+            "future_tree": match.get("future_tree"),
+        }
+    )
+    remaining = [s for s in suggested if str(s.get("id")) != suggestion_id]
+    manifest.settings = {
+        **manifest.settings,
+        "causal_lines": causal_lines,
+        "suggested_causal_lines": remaining,
+    }
+    store.save_manifest(manifest)
+    return manifest
+
+
+def reject_suggested_causal_line(
+    data_dir: Path, sim_id: str, suggestion_id: str
+) -> SimManifest:
+    """从 `settings.suggested_causal_lines` 里主动清除一条建议（用户
+    判断"不需要为这个新结构专门开一条因果线"），不影响 `causal_lines`。
+    找不到该 id 时视为已经清除过，静默返回（幂等，避免重复点击报错）。
+    """
+    store = SimStore.for_root(data_dir, sim_id)
+    manifest = store.load_manifest()
+    suggested = list(manifest.settings.get("suggested_causal_lines") or [])
+    remaining = [s for s in suggested if str(s.get("id")) != suggestion_id]
+    manifest.settings = {**manifest.settings, "suggested_causal_lines": remaining}
     store.save_manifest(manifest)
     return manifest
 

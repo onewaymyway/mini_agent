@@ -50,13 +50,15 @@ from world_simulator import reality_check as rc_mod
 from world_simulator.autopilot import (
     AutopilotDisabledError, run_autopilot_step, run_comparison_experiment, run_repeated_experiment,
 )
-from world_simulator.analysis import aggregate_field_stats, rank_by_objectives
+from world_simulator.analysis import aggregate_field_stats, normalize_objectives, rank_by_objectives
+from world_simulator import attribution as attribution_mod
 from world_simulator.config import DATA_DIR, ensure_dirs
 from world_simulator.achievements import achievement_progress, compute_achievements
 from world_simulator.engine import (
     SimAlreadyEndedError,
     SimEngineError,
     SimPausedError,
+    accept_suggested_causal_line,
     advance,
     apply_structural_change,
     delete_simulation,
@@ -64,6 +66,7 @@ from world_simulator.engine import (
     list_simulations,
     materialize_simulation,
     rename_simulation,
+    reject_suggested_causal_line,
     set_pilot_config,
     set_status,
     update_settings,
@@ -1902,7 +1905,59 @@ def _render_causal_lines_overview(
                     st.success("已保存，下一步推进会把这条意见提示给 AI。")
                     st.rerun()
 
+    if manifest is not None and sim_id:
+        _render_suggested_causal_lines(manifest, sim_id)
+
     _render_causal_graph_section(history)
+
+
+def _render_suggested_causal_lines(manifest, sim_id: str) -> None:
+    """渲染"因果线建议"区块（阶段二十九，4.26 节，开放世界闭环收尾）。
+
+    展示 `settings.suggested_causal_lines`（`apply_structural_change()`
+    采纳 `new_mechanism`/`regime_shift` 时自动生成，见 `engine.py`），
+    每条建议提供"接受这条建议线"/"忽略"两个按钮，分别调用
+    `accept_suggested_causal_line()`/`reject_suggested_causal_line()`。
+    没有任何建议时不渲染这个区块（不是空区块占位），避免大多数实例
+    的因果线总览页面被一个常年空着的折叠区打扰。
+    """
+    suggested = manifest.settings.get("suggested_causal_lines") or []
+    suggested = [s for s in suggested if isinstance(s, dict) and s.get("id")]
+    if not suggested:
+        return
+    with st.expander(f"💡 因果线建议（{len(suggested)} 条待处理）", expanded=True):
+        st.markdown(
+            '<span class="ws-muted">系统在这几步发现了新的机制/规则性变化并已被采纳，'
+            "建议为它们各开一条独立因果线继续追踪；接受后会带着默认未来树加入下方"
+            "「因果线总览」，也可以直接忽略。</span>",
+            unsafe_allow_html=True,
+        )
+        for item in suggested:
+            suggestion_id = str(item.get("id"))
+            label = str(item.get("label") or suggestion_id)
+            description = str(item.get("source_description") or "")
+            step = item.get("source_step")
+            step_text = f"第 {step} 步 · " if step is not None else ""
+            cols = st.columns([6, 1, 1])
+            with cols[0]:
+                st.markdown(
+                    f'<div class="ws-chapter-choice">{step_text}{_html_text(description)}'
+                    f"（建议命名：{_html_text(label)}）</div>",
+                    unsafe_allow_html=True,
+                )
+            with cols[1]:
+                if st.button("接受", key=f"accept_suggested_line_{sim_id}_{suggestion_id}"):
+                    try:
+                        accept_suggested_causal_line(DATA_DIR, sim_id, suggestion_id)
+                    except SimEngineError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success(f"已接受，「{label}」现在是一条正式因果线。")
+                        st.rerun()
+            with cols[2]:
+                if st.button("忽略", key=f"reject_suggested_line_{sim_id}_{suggestion_id}"):
+                    reject_suggested_causal_line(DATA_DIR, sim_id, suggestion_id)
+                    st.rerun()
 
 
 def _render_causal_graph_section(history: List) -> None:
@@ -1946,6 +2001,71 @@ def _render_causal_graph_section(history: List) -> None:
                 st.markdown(
                     f'<div class="ws-muted" style="margin-left:1rem;">'
                     f"· {driver}{'　→　' + effect if effect else ''}</div>",
+                    unsafe_allow_html=True,
+                )
+
+
+def _render_attribution_section(history: List, manifest) -> None:
+    """渲染"这个结果是怎么来的"折叠区（阶段二十九，4.21 节，归因/贡献
+    拆解报告）。
+
+    只对 `manifest.settings.objectives` 里声明过 `field` 的目标字段
+    提供归因入口——没有声明可排序字段的实例，这里退化为一句引导文案
+    而不是强行猜一个字段（同 `rank_by_objectives()` 的前置条件），
+    纯展示层调用 `attribution.summarize_contributions()`，不发起任何
+    新的 LLM 调用。
+    """
+    objectives = normalize_objectives((manifest.settings or {}).get("objectives") or [])
+    field_objectives = [o for o in objectives if o.field]
+    with st.expander("🧭 这个结果是怎么来的（归因/贡献拆解，可选）"):
+        if not field_objectives:
+            st.markdown(
+                '<span class="ws-muted">还没有声明可排序的关注字段——在'
+                '"⚙️ 模拟设置"里的"声明可排序字段"填一个 `field`，'
+                "就能在这里看它的贡献来源清单。</span>",
+                unsafe_allow_html=True,
+            )
+            return
+        options = {o.label: o.field for o in field_objectives}
+        picked_label = st.selectbox(
+            "选择一个目标字段", list(options.keys()), key="attribution_target_field_picker",
+        )
+        target_field = options.get(picked_label) or ""
+        report = attribution_mod.summarize_contributions(history, target_field)
+        if not report.sources:
+            st.markdown(
+                '<span class="ws-muted">目前的因果链条目里还没有出现过标注了'
+                f'`affected_fields` 命中 `{_html_text(target_field)}` 的记录，'
+                "继续推进几步，或者让 `causal_links` 输出时带上这个字段名。"
+                "</span>",
+                unsafe_allow_html=True,
+            )
+            return
+        if report.caveat:
+            st.markdown(
+                f'<div class="ws-uncertain-field">'
+                f'<span class="ws-uncertain-badge ws-uncertain-badge-low">提示</span>'
+                f"{_html_text(report.caveat)}</div>",
+                unsafe_allow_html=True,
+            )
+        st.markdown(
+            '<span class="ws-muted">按贡献来源线聚合，"高/中/低相关"只是基于'
+            "出现次数占比的粗略分档，不是精确的统计显著性检验。</span>",
+            unsafe_allow_html=True,
+        )
+        for source in report.sources:
+            st.markdown(
+                f"**{_html_text(source.source_line)}**　"
+                f"{source.level_label}（{source.count} 次相关因果链）",
+            )
+            for example in source.examples:
+                driver = _html_text(str(example.get("driver") or ""))
+                effect = _html_text(str(example.get("effect") or ""))
+                step = example.get("step")
+                step_prefix = f"第 {step} 步 · " if step is not None else ""
+                st.markdown(
+                    f'<div class="ws-muted" style="margin-left:1rem;">'
+                    f"· {step_prefix}{driver}{'　→　' + effect if effect else ''}</div>",
                     unsafe_allow_html=True,
                 )
 
@@ -2050,6 +2170,8 @@ def page_detail() -> None:
             if uncertain_html:
                 st.markdown(uncertain_html, unsafe_allow_html=True)
             _render_vars_display(current.vars, bool(manifest.settings.get("multi_entity_mode")))
+
+    _render_attribution_section(history, manifest)
 
     with st.expander("⚙️ 模拟设置（候选方向数量 / 时间粒度）"):
         cur_settings = manifest.settings or {}

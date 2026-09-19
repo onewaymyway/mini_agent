@@ -1899,6 +1899,148 @@ def test_apply_structural_change_rejects_missing_or_already_accepted(tmp_path):
         engine_mod.apply_structural_change(data_dir, manifest.sim_id, step=0)
 
 
+def test_apply_structural_change_new_mechanism_generates_suggested_causal_line(tmp_path):
+    """阶段二十九（4.26 节，开放世界闭环收尾）：采纳 `new_mechanism`
+    结构性变化后，`settings.suggested_causal_lines` 应该多出一条带
+    默认未来树的建议，`settings.causal_lines` 本身不受影响（建议不
+    自动登记）。"""
+    data_dir = tmp_path / "data"
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    current = store.load_current_state(manifest.branch)
+    current.structural_change = {
+        "detected": True,
+        "kind": "new_mechanism",
+        "description": "形成了新的定期复盘机制",
+        "proposed_fields": {},
+        "accepted": False,
+        "accepted_at": None,
+    }
+    history = store.load_history(manifest.branch)
+    history[-1] = current
+    from mini_agent.utils.atomic_write import atomic_write_jsonl
+    atomic_write_jsonl(store.state_history_path(manifest.branch), [s.to_dict() for s in history])
+
+    before_lines = manifest.settings.get("causal_lines") or []
+    updated_manifest = engine_mod.apply_structural_change(
+        data_dir, manifest.sim_id, step=current.step
+    )
+
+    suggested = updated_manifest.settings.get("suggested_causal_lines") or []
+    assert len(suggested) == 1
+    assert suggested[0]["source_kind"] == "new_mechanism"
+    assert suggested[0]["source_description"] == "形成了新的定期复盘机制"
+    assert suggested[0]["source_step"] == current.step
+    assert suggested[0]["future_tree"]["branches"]
+    assert (updated_manifest.settings.get("causal_lines") or []) == before_lines
+
+
+def test_apply_structural_change_new_entity_does_not_generate_suggestion(tmp_path):
+    """`kind == \"new_entity\"` 不生成因果线建议——新实体更多体现在
+    `vars.entities` 里，不强制每个新实体都对应一条独立因果线。"""
+    data_dir = tmp_path / "data"
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    current = store.load_current_state(manifest.branch)
+    current.structural_change = {
+        "detected": True, "kind": "new_entity", "description": "出现了新的合作伙伴",
+        "proposed_fields": {}, "accepted": False, "accepted_at": None,
+    }
+    history = store.load_history(manifest.branch)
+    history[-1] = current
+    from mini_agent.utils.atomic_write import atomic_write_jsonl
+    atomic_write_jsonl(store.state_history_path(manifest.branch), [s.to_dict() for s in history])
+
+    updated_manifest = engine_mod.apply_structural_change(
+        data_dir, manifest.sim_id, step=current.step
+    )
+    assert not (updated_manifest.settings.get("suggested_causal_lines") or [])
+
+
+def test_accept_suggested_causal_line_moves_it_into_causal_lines(tmp_path):
+    """`accept_suggested_causal_line()` 应该把建议追加进
+    `settings.causal_lines`，并从 `suggested_causal_lines` 里移除。"""
+    data_dir = tmp_path / "data"
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    current = store.load_current_state(manifest.branch)
+    current.structural_change = {
+        "detected": True, "kind": "regime_shift", "description": "行业规则发生了根本转变",
+        "proposed_fields": {}, "accepted": False, "accepted_at": None,
+    }
+    history = store.load_history(manifest.branch)
+    history[-1] = current
+    from mini_agent.utils.atomic_write import atomic_write_jsonl
+    atomic_write_jsonl(store.state_history_path(manifest.branch), [s.to_dict() for s in history])
+
+    updated_manifest = engine_mod.apply_structural_change(
+        data_dir, manifest.sim_id, step=current.step
+    )
+    suggestion_id = updated_manifest.settings["suggested_causal_lines"][0]["id"]
+    before_count = len(updated_manifest.settings.get("causal_lines") or [])
+
+    final_manifest = engine_mod.accept_suggested_causal_line(
+        data_dir, manifest.sim_id, suggestion_id
+    )
+    causal_lines = final_manifest.settings.get("causal_lines") or []
+    assert len(causal_lines) == before_count + 1
+    assert causal_lines[-1]["id"] == suggestion_id
+    assert causal_lines[-1]["future_tree"]["branches"]
+    assert final_manifest.settings.get("suggested_causal_lines") == []
+
+
+def test_accept_suggested_causal_line_raises_for_unknown_id(tmp_path):
+    data_dir = tmp_path / "data"
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+    with pytest.raises(engine_mod.SimEngineError):
+        engine_mod.accept_suggested_causal_line(data_dir, manifest.sim_id, "does_not_exist")
+
+
+def test_reject_suggested_causal_line_removes_it_without_touching_causal_lines(tmp_path):
+    data_dir = tmp_path / "data"
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    current = store.load_current_state(manifest.branch)
+    current.structural_change = {
+        "detected": True, "kind": "new_mechanism", "description": "新的分红机制",
+        "proposed_fields": {}, "accepted": False, "accepted_at": None,
+    }
+    history = store.load_history(manifest.branch)
+    history[-1] = current
+    from mini_agent.utils.atomic_write import atomic_write_jsonl
+    atomic_write_jsonl(store.state_history_path(manifest.branch), [s.to_dict() for s in history])
+
+    updated_manifest = engine_mod.apply_structural_change(
+        data_dir, manifest.sim_id, step=current.step
+    )
+    suggestion_id = updated_manifest.settings["suggested_causal_lines"][0]["id"]
+    before_causal_lines = updated_manifest.settings.get("causal_lines") or []
+
+    final_manifest = engine_mod.reject_suggested_causal_line(
+        data_dir, manifest.sim_id, suggestion_id
+    )
+    assert final_manifest.settings.get("suggested_causal_lines") == []
+    assert (final_manifest.settings.get("causal_lines") or []) == before_causal_lines
+
+    # 幂等：再次拒绝同一个（已经不存在的）id 不应该报错。
+    engine_mod.reject_suggested_causal_line(data_dir, manifest.sim_id, suggestion_id)
+
+
 def test_advance_formats_confirmed_structural_changes_hint_for_prompt(tmp_path, monkeypatch):
     """阶段二十三：`manifest.settings.confirmed_structural_changes` 里
     已确认的项，应该被拼进 `advance_step` 的

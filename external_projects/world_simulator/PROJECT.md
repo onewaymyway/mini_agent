@@ -1340,3 +1340,60 @@ world_simulator/
   "单行损坏跳过"的先例，如果这个问题在真实使用中出现，可以照搬
   同样的容错逻辑）；"暂不支持并发推进同一实例"这条已知限制不受
   本阶段影响，仍然成立，加锁是另一个独立的改动。
+- 2026-09-19：完成阶段二十九（归因/贡献拆解报告 + 开放世界闭环
+  收尾，见 `next_doc/world_simulator_universal_simulator_gap_
+  analysis_and_roadmap_v2_plan.md` 4.21/4.26 节，路线图"第二批"
+  两项）交付：
+  1. **4.21 归因/贡献拆解报告**：新增 `world_simulator/
+     attribution.py::summarize_contributions(history, target_
+     field)` 纯函数——从历史 `causal_links` 里筛出 `affected_
+     fields` 命中目标字段的条目（支持嵌套路径按末段匹配，比如
+     `resources.cash` 命中 `cash`），按来源线（优先
+     `source_line_id`，其次 `line_id`，都没有则 `(未归属)`）分组
+     统计出现次数、`relation_type` 分布、最多 3 条具体因果关系
+     示例；相关程度按出现占比分"高/中/低相关"三档（延续项目
+     "不做伪精确"的一贯风格，不是统计显著性检验）；如果目标字段
+     曾被任意一步的 `uncertain_fields` 标注过，附带"这个结果本身
+     包含较大不确定性，归因仅供参考"的提示。不发起任何新的 LLM
+     调用，不做敏感性量化打分/反事实验证（那是 4.22 节的范畴）。
+     `app.py` 新增 `_render_attribution_section()`：在实例详情页
+     "关键变量"下方新增"🧭 这个结果是怎么来的"折叠区，从
+     `manifest.settings.objectives` 里声明过 `field` 的目标里选一个
+     展示归因清单；没有声明可排序字段时展示引导文案而不是强猜。
+     新增 `tests/test_attribution.py`（12 个用例：空历史/空目标
+     字段/无匹配因果链/按来源线分组/缺失字段兜底为未归属/嵌套
+     路径匹配/忽略非字典条目/示例条数上限/按次数降序排序/
+     `uncertain_fields` 命中附带提示/未命中不附带提示/`to_dict()`
+     结构）。
+  2. **4.26 开放世界闭环收尾**：`engine.py::apply_structural_
+     change()` 采纳 `kind in ("new_mechanism", "regime_shift")`
+     的结构性变化时，顺带用 `causal_tree.build_default_future_
+     tree()` 生成一条默认因果线草稿，追加进新增的
+     `settings.suggested_causal_lines`（**不**自动登记进
+     `settings.causal_lines`——是否要为这个新结构开一条独立因果线
+     仍由用户决定）；`kind == "new_entity"` 不生成建议，新实体更
+     多体现在 `vars.entities` 里，不强制每个新实体都对应一条因果
+     线。新增 `engine.py::accept_suggested_causal_line()`（把建议
+     正式追加进 `causal_lines`，从建议列表移除）/
+     `reject_suggested_causal_line()`（直接从建议列表清除，幂等，
+     重复调用不报错）。`app.py::_render_causal_lines_overview()`
+     新增 `_render_suggested_causal_lines()`：在"因果线总览"页面
+     渲染"💡 因果线建议"折叠区（有待处理建议时才出现，默认展开），
+     每条展示来源 step/描述/建议命名，提供"接受"/"忽略"两个按钮。
+     `tests/test_spec_and_engine.py` 新增 5 个用例（`new_mechanism`
+     生成建议且不改动既有 `causal_lines`/`new_entity` 不生成建议/
+     接受建议后正确迁移进 `causal_lines` 并清空建议/接受未知 id
+     报错/拒绝建议后不影响 `causal_lines` 且拒绝操作本身幂等）。
+     累计 198 个测试全部通过（`cd external_projects/world_
+     simulator && PYTHONPATH=../../src:. python3 -m pytest
+     tests/ -q`，另需 `pip install fastapi --break-system-
+     packages` 满足 `mini_agent.workflow` 的间接依赖，这是既有
+     环境依赖问题，不是本阶段引入的）。
+  **已知限制**：归因清单完全基于已经落盘的 `causal_links` 做
+  统计聚合，`affected_fields` 标注不全或字段名写法不一致（比如
+  同一个字段一次写 `cash` 一次写 `资金`）会导致归因清单遗漏部分
+  因果链，本阶段不做字段名归一化/别名映射；因果线建议的默认命名
+  直接截取 `structural_change.description` 前 24 个字符，可能不够
+  精炼，用户可以在因果线总览页面用既有的"手动调整因果线声明"入口
+  重命名；4.20（多尺度真正并行）/4.22（反事实矩阵向导）/4.23
+  （顺势逆势判断）仍在"待观察真实使用反馈"状态，未实施。

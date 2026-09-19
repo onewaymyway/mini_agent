@@ -2,8 +2,9 @@
 
 > **状态**：**4.19（因果线耦合结构化）已完成**（`PROJECT.md` 阶段
 > 二十七）；**4.18（存储层追加写部分）已完成**（`PROJECT.md` 阶段
-> 二十八，`engine.py` 拆分部分未实施，见该节"范围说明"）。其余
-> 方向仍是规划中，尚未实施，按第 5 节
+> 二十八，`engine.py` 拆分部分未实施，见该节"范围说明"）；**4.21
+> （归因/贡献拆解报告）、4.26（开放世界闭环收尾）已完成**
+> （`PROJECT.md` 阶段二十九）。其余方向仍是规划中，尚未实施，按第 5 节
 > 分期路线图排期。本文档是对 `next_doc/world_simulator_
 > toward_universal_simulator_plan.md`（第一轮，阶段二十~二十五）和
 > `next_doc/world_simulator_causal_line_future_tree_plan.md`（阶段
@@ -219,7 +220,7 @@ advance_every_n_steps`）、`spec_generator.py`（hint 生成）、
 
 ---
 
-### 4.21（P1）归因/贡献拆解报告
+### 4.21（P1，依赖 4.19，**已完成，见 `PROJECT.md` 阶段二十九**）归因/贡献拆解报告
 
 **现状**：只有 `key_drivers` 短语标签和 `aggregate_field_stats()`
 统计摘要，没有面向"这个结果到底是谁造成的"的结构化归因视图。
@@ -245,6 +246,12 @@ advance_every_n_steps`）、`spec_generator.py`（hint 生成）、
 
 **涉及文件**：新增 `attribution.py`、`app.py`；测试参照
 `test_analysis.py` 的风格新增 `test_attribution.py`。
+
+**实施记录（阶段二十九）**：按方案原样落地——`summarize_
+contributions()` 只做统计聚合、不发起新的 LLM 调用，"相关程度"
+按出现次数占比分高/中/低三档；`app.py` 新增的"这个结果是怎么来的"
+折叠区只对 `objectives` 里声明过 `field` 的目标开放，没有声明时
+展示引导文案而不是强猜字段。详见 `PROJECT.md` 阶段二十九。
 
 ---
 
@@ -338,7 +345,7 @@ advance_every_n_steps`）、`spec_generator.py`（hint 生成）、
 
 ---
 
-### 4.26（P2，依赖 4.19）开放世界闭环收尾：新结构自动关联因果线
+### 4.26（P2，依赖 4.19，**已完成，见 `PROJECT.md` 阶段二十九**）开放世界闭环收尾：新结构自动关联因果线
 
 **现状**：`structural_change` 采纳新实体/新机制后（阶段二十三），
 不会自动为其生成对应的因果线和未来树，PROJECT.md 已明确记录这个
@@ -360,6 +367,14 @@ advance_every_n_steps`）、`spec_generator.py`（hint 生成）、
 **涉及文件**：`engine.py::apply_structural_change()`、
 `causal_tree.py`、`app.py`。
 
+**实施记录（阶段二十九）**：按方案原样落地，新增
+`settings.suggested_causal_lines`（建议列表，独立于正式的
+`causal_lines`）承载"采纳新机制/regime_shift 后"的默认因果线草稿；
+新增 `accept_suggested_causal_line()`/`reject_suggested_causal_
+line()` 两个函数分别完成"接受→迁移进 causal_lines"和"忽略→直接
+清除"，`app.py` 因果线总览页面新增对应的"💡 因果线建议"折叠区。
+详见 `PROJECT.md` 阶段二十九。
+
 ## 5. 分期路线图（建议）
 
 ```text
@@ -369,8 +384,8 @@ advance_every_n_steps`）、`spec_generator.py`（hint 生成）、
   4.19 因果线耦合结构化——已完成（阶段二十七）
 
 第二批（依赖第一批，价值较明确）：
-  4.21 归因/贡献拆解报告
-  4.26 开放世界闭环收尾
+  4.21 归因/贡献拆解报告——已完成（阶段二十九）
+  4.26 开放世界闭环收尾——已完成（阶段二十九）
 
 第三批（价值待验证，建议收集反馈后再排期）：
   4.20 多尺度真正并行（先观察因果线总览的真实变化频率分布）
