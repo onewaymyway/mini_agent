@@ -1256,3 +1256,44 @@ world_simulator/
   `test_advance_does_not_duplicate_already_declared_causal_lines`
   以匹配"创建即有 `main_line`"的新行为。累计 169 个测试全部通过
   （`python3 -m pytest tests/ -q`）。
+- 2026-09-19：完成阶段二十七（因果线耦合结构化，见
+  `next_doc/world_simulator_universal_simulator_gap_analysis_and_
+  roadmap_v2_plan.md` 4.19 节）。交付内容：
+  1. `SimState.causal_links` 每项新增两个可选字段（`state_model.py`
+     不需要任何代码改动——`causal_links` 本来就是原样透传的自由
+     `Dict[str, Any]` 列表，只补充了 docstring 说明）：
+     `relation_type`（`"one_way"`/`"two_way"`/`"indirect"`/
+     `"feedback_loop"` 四选一，对应参考文档第九节的四种因果线关系，
+     不给按单向处理）、`source_line_id`（配合既有的 `line_id` 表达
+     "从 A 线影响到 B 线"，不给表示同线内部关系或发起线不明确）。
+  2. 新增 `world_simulator/causal_graph.py`：`build_causal_graph
+     (history)` 纯函数，从历史 `causal_links` 聚合出"线到线"邻接
+     关系视图（`CausalEdge`：source_line/target_line/各
+     `relation_type` 出现次数/最多 3 条示例），按总出现次数降序
+     排列；`relation_type_label()`/`format_edges_for_display()`
+     辅助展示。不落盘任何新数据结构、不做图数据库，调用方需要看
+     的时候现算，延续 `analysis.py`/`achievements.py` 的既有取舍。
+  3. `workflows/advance_step.yaml`、`skills/life-sim-template/
+     SKILL.md` 补充 `relation_type`/`source_line_id` 的可选输出
+     说明（`group-evolution-template`/`negotiation-template` 两个
+     模板原文写的是"格式与用途与 life-sim-template 完全一致"，
+     自动继承新增说明，未单独改动）。
+  4. `app.py` 新增 `_render_causal_graph_section()`：在"因果线
+     总览"视图下方新增"🔗 跨线影响关系"折叠区，展示
+     `build_causal_graph()` 的聚合结果（"发起线 → 落地线：N 次
+     某类型影响" + 最多 3 条具体因果关系示例）；无可聚合记录时
+     展示引导文案而不是空白。
+  5. 新增 `tests/test_causal_graph.py`（11 个用例：空输入/跳过
+     无因果链的步骤/多步骤聚合/字段缺失兜底/未知 `relation_type`
+     兜底/按总数降序排序/示例条数上限/忽略非字典条目/`to_dict()`
+     结构/中文标签转换/文本摘要格式化），累计 180 个测试全部通过
+     （`cd external_projects/world_simulator &&
+     PYTHONPATH=../../src:. python3 -m pytest tests/ -q`）。
+  **已知限制**：`relation_type`/`source_line_id` 完全依赖 LLM
+  输出质量，`causal_graph.py` 不做任何校验/纠正（未知的
+  `relation_type` 静默兜底为单向，不报错也不提示"AI 给了一个不
+  认识的类型"）；聚合视图目前只统计"出现次数"，不做传播强度/
+  时间延迟等定量分析（参考文档第十一节 Influence Field 的完整
+  维度暂不实现，见方案文档 4.24 节"暂不建议"的说明）；这是后续
+  4.20（多尺度真正并行）/4.21（归因/贡献拆解）/4.22（反事实矩阵
+  向导）/4.26（开放世界闭环收尾）几个方向的数据基础，尚未实施。

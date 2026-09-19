@@ -204,6 +204,24 @@ class SimState:
     既有实例）时所有 `causal_links` 都没有这个字段，完全向后兼容；
     `engine.py` 不对这里的 `line_id` 做任何校验（不检查是否真的在
     `causal_lines` 里声明过），纯粹是展示层的过滤依据。
+
+    每一项再额外支持两个可选字段（阶段二十七，`next_doc/
+    world_simulator_universal_simulator_gap_analysis_and_roadmap_v2_
+    plan.md` 4.19 节，因果线耦合结构化）：
+
+    - `relation_type`：`"one_way"`（单向，默认）/`"two_way"`（双向）/
+      `"indirect"`（间接，通过中间因果线传导）/`"feedback_loop"`
+      （反馈循环）之一，对应参考文档第九节的四种因果线关系。不填
+      按 `"one_way"` 处理（展示层兜底，`state_model.py` 本身不做
+      默认值填充，保持"未给出即为未知"的语义）。
+    - `source_line_id`：这条影响关系的"发起线"，和 `line_id`（表示
+      "影响落到哪条线/哪个归属"）配合，才能表达"从 A 线影响到 B
+      线"；不填表示同线内部关系或发起线不明确。
+
+    这两个字段和 `line_id` 一样，完全自由文本、不做任何校验，只是
+    供 `causal_graph.py::build_causal_graph()` 做展示层的聚合统计，
+    不改变 `causal_links` 本身"自由文本 + 字段名列表"的定位（仍然
+    不是可执行的因果图）。
     """
     line_updates: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     """产生*本状态*这一步，skill 按 `manifest.settings.causal_lines`

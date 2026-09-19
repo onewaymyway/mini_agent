@@ -1,6 +1,8 @@
 # world_simulator 迈向"万能模拟器"理想架构改进计划（第二轮）
 
-> **状态**：规划中，尚未实施。本文档是对 `next_doc/world_simulator_
+> **状态**：**4.19（因果线耦合结构化）已完成**，见 `PROJECT.md`
+> 阶段二十七交付记录。其余方向仍是规划中，尚未实施，按第 5 节
+> 分期路线图排期。本文档是对 `next_doc/world_simulator_
 > toward_universal_simulator_plan.md`（第一轮，阶段二十~二十五）和
 > `next_doc/world_simulator_causal_line_future_tree_plan.md`（阶段
 > 二十六）完成之后，重新逐条对照参考文档《万能模拟器：从多层因果
@@ -138,7 +140,7 @@ SimStore.append_state` 与 `knowledge_base.py::_save_all()` 都是
 
 ---
 
-### 4.19（P1）因果线耦合的结构化：从自由文本升级为可查询关系
+### 4.19（P1，**已完成，见 `PROJECT.md` 阶段二十七**）因果线耦合的结构化：从自由文本升级为可查询关系
 
 **现状**：`causal_links` 是 `{driver, affected_fields, effect,
 line_id}` 的自由文本列表，没有区分参考文档第九节的四种关系
@@ -348,8 +350,8 @@ advance_every_n_steps`）、`spec_generator.py`（hint 生成）、
 
 ```text
 第一批（建议立即可做，风险低）：
-  4.18 工程债务（engine.py 拆分 + 追加写）
-  4.19 因果线耦合结构化
+  4.18 工程债务（engine.py 拆分 + 追加写）——尚未实施
+  4.19 因果线耦合结构化——已完成（阶段二十七）
 
 第二批（依赖第一批，价值较明确）：
   4.21 归因/贡献拆解报告

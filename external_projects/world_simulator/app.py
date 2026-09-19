@@ -43,6 +43,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "entrypoints"))
 
 import _common  # noqa: F401  — 触发 sys.path 设置，未使用其它内容
 from world_simulator import branch_manager as bm
+from world_simulator import causal_graph as cg_mod
 from world_simulator import causal_tree
 from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
@@ -1900,6 +1901,53 @@ def _render_causal_lines_overview(
                     update_settings(DATA_DIR, sim_id, causal_lines=updated_lines)
                     st.success("已保存，下一步推进会把这条意见提示给 AI。")
                     st.rerun()
+
+    _render_causal_graph_section(history)
+
+
+def _render_causal_graph_section(history: List) -> None:
+    """渲染"跨线影响关系"区块（阶段二十七，4.19 节，因果线耦合结构化）。
+
+    聚合历史 `causal_links` 里的 `line_id`/`source_line_id`/
+    `relation_type`，展示"哪条线在影响哪条线、是什么类型的影响、
+    出现过几次"，帮用户回答"哪条线真正决定了结果"这类问题，而不是
+    只能逐条翻 `causal_links` 的自由文本。纯展示层、不新增任何持久化
+    结构，见 `causal_graph.py` 模块说明。
+    """
+    edges = cg_mod.build_causal_graph(history)
+    with st.expander("🔗 跨线影响关系（哪条线在影响哪条线）"):
+        if not edges:
+            st.markdown(
+                '<span class="ws-muted">暂无可聚合的跨线影响记录——'
+                "`causal_links` 里还没有出现过 `line_id`，继续推进几步，"
+                "或在因果链输出里带上归属线之后再回来看。</span>",
+                unsafe_allow_html=True,
+            )
+            return
+        st.markdown(
+            '<span class="ws-muted">按「发起线 → 落地线」聚合统计，'
+            "同一条边下方可展开看最多 3 条具体因果关系示例。</span>",
+            unsafe_allow_html=True,
+        )
+        for edge in edges:
+            parts = [
+                f"{count} 次{cg_mod.relation_type_label(rt)}"
+                for rt, count in sorted(
+                    edge.relation_counts.items(), key=lambda kv: -kv[1]
+                )
+            ]
+            st.markdown(
+                f"**{_html_text(edge.source_line)} → {_html_text(edge.target_line)}**"
+                f"　{'，'.join(parts)}",
+            )
+            for example in edge.examples:
+                driver = _html_text(str(example.get("driver") or ""))
+                effect = _html_text(str(example.get("effect") or ""))
+                st.markdown(
+                    f'<div class="ws-muted" style="margin-left:1rem;">'
+                    f"· {driver}{'　→　' + effect if effect else ''}</div>",
+                    unsafe_allow_html=True,
+                )
 
 
 def page_detail() -> None:
