@@ -2,8 +2,10 @@
 
 > **状态**：4.1/4.2/4.4/4.6 已于 2026-09-19 完成实施（阶段三十二，
 > 详见 `PROJECT.md` 对应条目）；4.3/4.5 按本文档第 5 节建议暂缓，
-> 需要单独出细化子方案后再实施；4.7/4.8 按第 4.7/4.8 节说明暂不
-> 建议，未纳入本轮。本文档是在
+> 细化子方案已分别补充为 `next_doc/world_simulator_belief_state_
+> separation_plan.md`、`next_doc/world_simulator_agent_preview_
+> and_adaptive_policy_plan.md`，尚未实施；4.7/4.8 按第 4.7/4.8 节
+> 说明暂不建议，未纳入本轮。本文档是在
 > `next_doc/world_simulator_universal_simulator_gap_analysis_and_
 > roadmap_v2_plan.md`（第二轮，阶段二十七~三十一，十个方向已全部
 > 完成）之后，重新对照用户上传的参考文档《万能模拟器到底如何构建？
@@ -201,8 +203,9 @@ UI 上提供"标记为已确认"的按钮，用户自己点）。不追溯覆盖
 ### 4.3（P1）单主体模式的最小 State/Belief 分离
 
 > **实施状态：暂缓**（阶段三十二，2026-09-19）。按第 5 节路线图
-> 建议，本轮不与 4.1/4.2/4.4/4.6 一起批量上马，需要单独出细化子
-> 方案后再排期实施。
+> 建议，本轮不与 4.1/4.2/4.4/4.6 一起批量上马。**细化子方案已于
+> 2026-09-19 补充**，见 `next_doc/world_simulator_belief_state_
+> separation_plan.md`，实施前请以该文档为准。
 
 **现状**：`multi_entity_mode` 已经做了"每个主体私有 `entities`
 vars + 共享 `shared_vars`"的结构，但只用于多方谈判这种明确的
@@ -286,6 +289,9 @@ prompt）、`app.py`（真实值/认知值对比展示）。
 ### 4.5（P2）Agent Preview + 情境化条件策略 + 用户反馈反哺画像
 
 > **实施状态：暂缓**（阶段三十二，2026-09-19）。理由同 4.3。
+> **细化子方案已于 2026-09-19 补充**，见 `next_doc/world_simulator_
+> agent_preview_and_adaptive_policy_plan.md`，实施前请以该文档
+> 为准。
 
 **现状**：`autopilot.py` 的画像只有自由文本 `principles` +
 `risk_preference` 枚举，纯粹靠拼进 prompt 影响 LLM，没有可验证、

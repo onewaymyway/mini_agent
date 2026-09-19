@@ -1570,3 +1570,27 @@ world_simulator/
   `settings`），这部分素材在现状下恒为空数组，复盘报告暂时无法
   引用"如果当初选了别的会怎样"的历史对比结果，需要后续单独评估是否
   要把反事实矩阵结果回写进 `settings` 供复盘引用。
+- 2026-09-19（同日追加）：针对阶段三十二暂缓的 4.3/4.5 两个方向，
+  按用户要求"在文档补充出子方案"，新增两份细化子方案文档（纯文档，
+  未涉及代码改动）：
+  1. `next_doc/world_simulator_belief_state_separation_plan.md`
+     （4.3 单主体 State/Belief 分离）：给出 `settings.belief_
+     fields`/`SimState.beliefs` 的具体数据结构、`advance_step`
+     prompt 片段、`app.py` 真实值/认知值对比展示方案，并拆成
+     "第一批（仅 life_sim 模板验证）→ 第二批（推广）"两批，明确
+     第一批需要人工跑几次真实模拟验证"LLM 能否稳定输出有意义的
+     认知偏差"，验证不通过则建议直接放弃而非继续调 prompt。
+  2. `next_doc/world_simulator_agent_preview_and_adaptive_policy_
+     plan.md`（4.5 Agent Preview + 情境化条件策略 + 用户反馈反哺
+     画像）：拆成三个独立批次——情境化条件策略（依赖 4.1 的
+     `reversibility`/`risk_level`）、Agent Preview（内置测试情境、
+     独立于正式模拟数据的 LLM 调用）、用户反馈反哺画像（复用
+     `review_mode`，简单关键词统计生成提示，不做 LLM 语义聚类）；
+     明确标注实施前需要先核实 `autopilot.py` 画像当前的存储作用域
+     （单实例 vs 全局），本方案编写时未去核实这一点。
+  两份子方案都重申了"系统只展示/建议、画像调整必须由用户手动操作"
+  的透明度红线，以及父方案已有的范围克制项。父文档
+  `world_simulator_realism_transparency_and_retrospective_roadmap_
+  v3_plan.md` 的 4.3/4.5 节状态标注已同步更新，指向这两份新文档。
+  **均未实施**，按各自子方案里的分批计划，需要单独排期，且 4.3
+  第一批要求真实跑模拟做人工验证，不能仅凭代码实现就判定完成。
