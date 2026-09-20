@@ -2227,39 +2227,72 @@ def _render_causal_lines_overview(
                 "resolved": "已解决", "expired": "已错过", "invalidated": "已失效",
             }
             likelihood_label = {"high": "可能性高", "medium": "可能性中", "low": "可能性低"}
+
+            # 第五轮方案 5.8 节（`next_doc/world_simulator_decision_
+            # engine_round2_gap_analysis_plan.md`，阶段三十四第五批）：
+            # 参考文档"三层未来空间"（潜在/活跃/已发生）在数据层面已经
+            # 被现有六态生命周期覆盖，不新增字段——这里只是展示层按
+            # 生命周期阶段分组，让"已发生历史"这一层在界面上有直接
+            # 对应的可视化位置，不需要用户翻 `history` 自己拼凑。
+            # `expired`/`invalidated` 不属于参考文档三层里的任何一层
+            # （既不是"潜在/活跃"也不是"已发生"，是"已排除"的分支），
+            # 单独成组，不强行并入前两组造成误导。
+            lifecycle_groups = [
+                ("🌱 仍在演化中（潜在 / 活跃）", ("dormant", "emerging", "active")),
+                ("● 已发生（已确认/已解决）", ("resolved",)),
+                ("✕ 已排除（错过窗口/已失效）", ("expired", "invalidated")),
+            ]
+            grouped: Dict[str, List[Dict[str, Any]]] = {name: [] for name, _ in lifecycle_groups}
+            status_to_group = {
+                status: name for name, statuses in lifecycle_groups for status in statuses
+            }
             for branch in branches:
-                b_id = str(branch.get("id") or "")
                 b_status = causal_tree.canonical_status(branch.get("status"))
-                b_desc = str(branch.get("description") or "")
-                b_like = str(branch.get("likelihood") or "medium")
-                icon = status_icon.get(b_status, "○")
-                cols = st.columns([6, 1, 1])
-                with cols[0]:
-                    st.markdown(
-                        f'<div class="ws-chapter-choice">{icon} <b>{_html_text(status_label.get(b_status, b_status))}</b>'
-                        f"（{_html_text(likelihood_label.get(b_like, b_like))}）— {_html_text(b_desc)}</div>",
-                        unsafe_allow_html=True,
-                    )
-                if manifest is not None and sim_id and b_status not in ("resolved",):
-                    with cols[1]:
-                        if st.button("标为已解决", key=f"tree_confirm_{sim_id}_{line_id}_{b_id}"):
-                            update_settings(
-                                DATA_DIR, sim_id,
-                                causal_lines=causal_tree.set_branch_status(
-                                    causal_lines_meta, line_id, b_id, "resolved"
-                                ),
-                            )
-                            st.rerun()
-                if manifest is not None and sim_id and b_status not in ("invalidated",):
-                    with cols[2]:
-                        if st.button("标为已失效", key=f"tree_prune_{sim_id}_{line_id}_{b_id}"):
-                            update_settings(
-                                DATA_DIR, sim_id,
-                                causal_lines=causal_tree.set_branch_status(
-                                    causal_lines_meta, line_id, b_id, "invalidated"
-                                ),
-                            )
-                            st.rerun()
+                group_name = status_to_group.get(b_status, lifecycle_groups[0][0])
+                grouped[group_name].append(branch)
+
+            for group_name, _statuses in lifecycle_groups:
+                group_branches = grouped[group_name]
+                if not group_branches:
+                    continue
+                st.markdown(
+                    f'<div class="ws-muted" style="margin-top:0.3rem;font-size:0.85rem;">{group_name}'
+                    f"（{len(group_branches)}）</div>",
+                    unsafe_allow_html=True,
+                )
+                for branch in group_branches:
+                    b_id = str(branch.get("id") or "")
+                    b_status = causal_tree.canonical_status(branch.get("status"))
+                    b_desc = str(branch.get("description") or "")
+                    b_like = str(branch.get("likelihood") or "medium")
+                    icon = status_icon.get(b_status, "○")
+                    cols = st.columns([6, 1, 1])
+                    with cols[0]:
+                        st.markdown(
+                            f'<div class="ws-chapter-choice">{icon} <b>{_html_text(status_label.get(b_status, b_status))}</b>'
+                            f"（{_html_text(likelihood_label.get(b_like, b_like))}）— {_html_text(b_desc)}</div>",
+                            unsafe_allow_html=True,
+                        )
+                    if manifest is not None and sim_id and b_status not in ("resolved",):
+                        with cols[1]:
+                            if st.button("标为已解决", key=f"tree_confirm_{sim_id}_{line_id}_{b_id}"):
+                                update_settings(
+                                    DATA_DIR, sim_id,
+                                    causal_lines=causal_tree.set_branch_status(
+                                        causal_lines_meta, line_id, b_id, "resolved"
+                                    ),
+                                )
+                                st.rerun()
+                    if manifest is not None and sim_id and b_status not in ("invalidated",):
+                        with cols[2]:
+                            if st.button("标为已失效", key=f"tree_prune_{sim_id}_{line_id}_{b_id}"):
+                                update_settings(
+                                    DATA_DIR, sim_id,
+                                    causal_lines=causal_tree.set_branch_status(
+                                        causal_lines_meta, line_id, b_id, "invalidated"
+                                    ),
+                                )
+                                st.rerun()
 
         futures = futures_by_id.get(line_id) or []
         if futures:
