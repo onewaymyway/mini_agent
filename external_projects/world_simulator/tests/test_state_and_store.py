@@ -100,6 +100,34 @@ def test_state_roundtrip_preserves_option_warnings():
     assert legacy_restored.option_warnings == []
 
 
+def test_state_roundtrip_preserves_decision_opportunity():
+    """阶段三十三第五批（4.10 节）：`decision_opportunity` 应该正确
+    序列化/反序列化，`options` 为空/旧数据缺字段时落回 `None`。"""
+    opportunity = {
+        "trigger_line_ids": ["tech"],
+        "trigger_node_ids": ["fast"],
+        "decision_reason": "关键技术窗口即将关闭",
+        "context_note": "",
+    }
+    state = SimState(
+        step=4,
+        summary="s",
+        options=[ChoiceOption(id="a", label="A")],
+        decision_reason="关键技术窗口即将关闭",
+        decision_opportunity=opportunity,
+    )
+    restored = SimState.from_dict(state.to_dict())
+    assert restored.decision_opportunity == opportunity
+    assert restored.decision_reason == "关键技术窗口即将关闭"
+
+    legacy_restored = SimState.from_dict({"step": 0, "summary": "旧数据"})
+    assert legacy_restored.decision_opportunity is None
+
+    # decision_opportunity 不是 dict 的非法值同样兜底为 None，不报错
+    malformed_restored = SimState.from_dict({"step": 0, "summary": "s", "decision_opportunity": "oops"})
+    assert malformed_restored.decision_opportunity is None
+
+
 def test_state_roundtrip_preserves_uncertain_fields():
     """阶段十一（4.3 节）：`uncertain_fields` 应该原样经过
     to_dict/from_dict 往返，旧数据（没有这个字段）也应该正常落回空

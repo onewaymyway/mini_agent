@@ -1564,6 +1564,115 @@ def test_advance_auto_registers_undeclared_causal_line_ids(tmp_path, monkeypatch
     assert auto_flags.get("finance") is True
 
 
+def test_advance_builds_decision_opportunity_when_options_present(tmp_path, monkeypatch):
+    """阶段三十三第五批（4.10 节）：`options` 非空时，`advance()` 应该
+    把 `line_updates` 的 key、`tree_updates` 审计里的分支 id、
+    `decision_reason` 一起收纳进 `next_state.decision_opportunity`。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+        settings={
+            "causal_lines": [
+                {
+                    "id": "tech",
+                    "label": "技术线",
+                    "future_tree": {"branches": [{"id": "fast", "description": "快速发展"}]},
+                }
+            ]
+        },
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2", "narrative": "n", "next_vars": {},
+                    "options": [{"id": "a", "label": "选项 A", "description": "d"}],
+                    "line_updates": {"tech": {"time_label": "第 1 年", "summary": "加速"}},
+                    "tree_updates": [{"line_id": "tech", "confirmed_branch": "fast"}],
+                    "decision_reason": "技术线出现关键窗口",
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.decision_opportunity == {
+        "trigger_line_ids": ["tech"],
+        "trigger_node_ids": ["fast"],
+        "decision_reason": "技术线出现关键窗口",
+        "context_note": "",
+    }
+    # 顶层 decision_reason 字段与容器里的值保持镜像同步。
+    assert next_state.decision_reason == "技术线出现关键窗口"
+
+
+def test_advance_decision_opportunity_is_none_when_no_options(tmp_path, monkeypatch):
+    """`options` 为空数组时，`decision_opportunity` 应该是 `None`——
+    "这一步没有形成需要特别说明背景的决策机会"。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {"next_summary": "s2", "narrative": "n", "next_vars": {}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.decision_opportunity is None
+
+
 def test_advance_does_not_duplicate_already_declared_causal_lines(tmp_path, monkeypatch):
     """已经声明过的因果线 id 再次出现在 `line_updates`/`causal_links`
     里时，不应该被重复登记一遍。"""

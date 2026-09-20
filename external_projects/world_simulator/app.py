@@ -3144,7 +3144,14 @@ def page_detail() -> None:
     else:
         chosen_id: Optional[str] = None
         if current.options:
-            decision_reason = getattr(current, "decision_reason", "") or ""
+            opportunity = getattr(current, "decision_opportunity", None)
+            decision_reason = ""
+            if isinstance(opportunity, dict):
+                decision_reason = str(opportunity.get("decision_reason") or "").strip()
+            if not decision_reason:
+                # 兼容旧数据（阶段三十三第二批产出、还没有
+                # `decision_opportunity` 容器的历史状态）。
+                decision_reason = getattr(current, "decision_reason", "") or ""
             if decision_reason:
                 st.markdown(
                     f'<div class="ws-muted">📌 为什么现在需要决定：{_html_text(decision_reason)}</div>',

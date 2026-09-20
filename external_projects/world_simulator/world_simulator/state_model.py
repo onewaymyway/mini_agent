@@ -422,6 +422,49 @@ class SimState:
     `options` 为空数组时这个字段同样没有意义，一般也是空字符串。
     默认空字符串：skill 没给出、旧数据、`state0`（初始状态一般不
     需要这个概念）都可以为空，不影响任何已有行为，向后兼容。
+
+    阶段三十三第五批（4.10 节）起，这个值同时被镜像进下面的
+    `decision_opportunity["decision_reason"]`——按方案原文的设想，
+    `decision_opportunity` 才是"唯一存储位置"，这个顶层字段应该被
+    收纳掉；实际选择保留它并做双写而不是硬迁移，是为了不动
+    `app.py`/测试里已有的读取点、也不需要处理"旧数据只有顶层字段、
+    新数据只有容器字段"这种两套形状并存的兼容逻辑——两个字段永远
+    同步，`app.py` 展示层优先读 `decision_opportunity`，读不到再退
+    回这个顶层字段，两者不会出现内容冲突。
+    """
+
+    decision_opportunity: Optional[Dict[str, Any]] = None
+    """这一批 `options` 共享的决策背景容器（阶段三十三第五批，
+    `next_doc/world_simulator_potential_causal_space_and_decision_
+    engine_plan.md` 4.10 节，参考文档 Decision Opportunity 的精简
+    版——"先做摘要级容器，不做完整的独立持久化子系统"：不是一个可以
+    被其它 `SimState` 引用、跨状态追踪"emerging→active→resolved"
+    全过程的实体，只是这一个状态节点的背景说明）。
+
+    形如 `{"trigger_line_ids": [...], "trigger_node_ids": [...],
+    "decision_reason": "...", "context_note": ""}`：
+
+    - `trigger_line_ids`：触发这批选项的因果线 id 列表，直接取自
+      这一步 `line_updates` 的 key（`engine/advance.py` 计算，
+      不需要 skill 额外声明）；
+    - `trigger_node_ids`：触发的具体 KeyNode（`future_tree` 分支）
+      id 列表，"如适用"（4.9 节 6 态生命周期落地后才有意义）——从
+      这一步 `tree_updates` 审计结果里收集"这一步变得 emerging/
+      active，或者被印证/新增"的分支 id，同样是 `engine/advance.py`
+      算好的派生信息，不要求 skill 显式声明；
+    - `decision_reason`：与上面的顶层 `decision_reason` 字段镜像
+      同一个值（本批的实施选择，见上面字段 docstring 的说明）；
+    - `context_note`：一句话背景补充，目前恒为空字符串（没有专门的
+      输出通道产出它，预留字段，值得后续需要时再接上，不提前编造
+      内容）。
+
+    `options` 为空数组时这个字段是 `None`，表示"这一步没有形成需要
+    特别说明背景的决策机会"；`options` 非空时一定是一个 dict（就算
+    `trigger_line_ids`/`trigger_node_ids`/`decision_reason` 都是空，
+    容器本身仍然存在，`app.py` 展示层只按 `decision_reason` 是否
+    非空来决定要不要渲染"为什么现在需要决定"这个小节，不看容器本身
+    是否为 `None`）。默认 `None`：旧数据、`state0`、`options` 为空的
+    状态都可以是 `None`，不影响任何已有行为，向后兼容。
     """
 
     option_warnings: List[Dict[str, str]] = field(default_factory=list)
@@ -502,6 +545,11 @@ class SimState:
                 str(k): str(v) for k, v in (data.get("field_provenance") or {}).items()
             },
             decision_reason=str(data.get("decision_reason", "") or ""),
+            decision_opportunity=(
+                dict(data.get("decision_opportunity"))
+                if isinstance(data.get("decision_opportunity"), dict)
+                else None
+            ),
             option_warnings=[
                 dict(x) for x in (data.get("option_warnings") or []) if isinstance(x, dict)
             ],

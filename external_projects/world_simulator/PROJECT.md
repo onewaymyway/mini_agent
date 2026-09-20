@@ -2005,3 +2005,48 @@ world_simulator/
   显式声明，engine 侧不做任何自动推断规则（这点和 4.4 节紧急度
   判断的取舍一致，见第二批记录）；4.9/4.11 之外，方案第 5 节
   第五批（4.10 DecisionOpportunity 一等公民对象）尚未开始。
+- 2026-09-20（同日再追加）：**阶段三十三第五批**——完成方案第 5 节
+  第五批：4.10（DecisionOpportunity 作为一等公民对象，"摘要级容器"
+  最小可行版本）：
+  1. **`state_model.py`**：`SimState` 新增 `decision_opportunity:
+     Optional[Dict[str, Any]] = None`，形如 `{"trigger_line_ids",
+     "trigger_node_ids", "decision_reason", "context_note"}`；
+     `options` 为空时为 `None`，非空时总是一个 dict（哪怕内部字段
+     都是空）。`to_dict`/`from_dict` 完整支持，非 dict 的非法值
+     兜底为 `None`，不报错。
+  2. **对方案原文的一处偏差（已记录）**：方案要求
+     `decision_reason` 从 `SimState` 顶层"收纳"进
+     `decision_opportunity`，作为唯一存储位置。实际选择保留顶层
+     `decision_reason` 字段并做**双写**（两处值始终保持镜像同步），
+     而不是硬迁移删除顶层字段——这是为了不用同时处理"新数据只有
+     容器字段、旧数据只有顶层字段"两套形状并存的兼容分支，也不用
+     改动所有已经引用 `current.decision_reason` 的既有代码路径。
+     `app.py` 展示层优先读 `decision_opportunity.decision_reason`，
+     读不到（旧数据没有这个容器）再退回顶层字段。
+  3. **`engine/advance.py`** 新增两个私有辅助函数：
+     `_collect_trigger_node_ids()`（从 `_apply_tree_updates()` 的
+     审计结果里收集这一步被印证、被声明为 emerging/active、或新增的
+     分支 id，按出现顺序去重）+ `_build_decision_opportunity()`
+     （组装最终容器，`options` 为空时返回 `None`）。调用点在
+     `next_state.tree_updates = _apply_tree_updates(...)` 之后、
+     `store.append_state()` 之前——`trigger_node_ids` 依赖刚生成的
+     审计数据，顺序不能颠倒。`trigger_line_ids` 直接取自这一步
+     `line_updates` 的 key，不需要 skill 额外声明。
+  4. **`app.py`**："为什么现在需要决定"小节改为优先读
+     `decision_opportunity.decision_reason`，`decision_reason` 为空
+     时不展示（不看容器本身是否为 `None`），符合验收点要求。
+  **验收**：`tests/test_state_and_store.py` 新增 1 个（序列化往返 +
+  `options` 为空/旧数据缺字段/非法值三种兜底为 `None` 的场景）；
+  `tests/test_spec_and_engine.py` 新增 2 个（`options` 非空时端到端
+  验证 `decision_opportunity` 各字段的组装结果，含从 `tree_updates`
+  审计正确收集 `trigger_node_ids`；`options` 为空时确认为 `None`）。
+  加上原有 308 个，全部通过（**311 passed**）。
+  **已知限制**：`context_note` 字段目前恒为空字符串——没有专门的
+  输出通道产出它，是预留字段，不是遗漏；`trigger_node_ids` 的收集
+  逻辑只覆盖 `confirmed_branch`/`status_updates`
+  （emerging/active）/`new_branch_ids` 三类来源，`pruned_branches`
+  （对应 `invalidated`）不计入——"排除了一个分支"本身通常不构成
+  "触发这批选项出现"的理由，这是有意的范围收窄，不是遗漏；4.10
+  仍然是"这一个状态节点的背景说明"，不做跨状态追踪同一个决策机会
+  演变过程的 id 化持久对象，与方案"不做的部分"一致。方案第 5 节
+  第六批（4.7 action_type 组合/条件行动标记）尚未开始。

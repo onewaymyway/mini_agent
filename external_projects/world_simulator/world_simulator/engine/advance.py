@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import secrets
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from world_simulator.engine.background_entities import (
     _apply_background_entity_extrapolation,
@@ -34,6 +34,60 @@ from world_simulator.engine.structural_change import (
 from world_simulator.spec_generator import resolve_causal_graph_hint, resolve_hints
 from world_simulator.state_model import ChoiceOption, SimState
 from world_simulator.store import SimStore
+
+
+def _collect_trigger_node_ids(tree_updates_audit: Any) -> List[str]:
+    """从 `causal_tree.apply_tree_updates()` 的审计结果里收集这一步
+    "变得值得关注"的 KeyNode（`future_tree` 分支）id（4.10 节
+    `trigger_node_ids`，阶段三十三第五批）：这一步被印证的分支
+    （`confirmed_branch`）、被声明为 `emerging`/`active` 的分支
+    （`status_updates`）、以及新长出来的分支（`new_branch_ids`）——
+    这三类都是"这一步因果树上出现了值得放进决策背景里的节点"，直接
+    从已经算好的审计数据派生，不需要 skill 再额外声明一遍。按出现
+    顺序去重，不保证任何排序含义。
+    """
+    node_ids: List[str] = []
+    for entry in tree_updates_audit or []:
+        if not isinstance(entry, dict):
+            continue
+        confirmed = str(entry.get("confirmed_branch") or "").strip()
+        if confirmed:
+            node_ids.append(confirmed)
+        for status_update in entry.get("status_updates") or []:
+            if not isinstance(status_update, dict):
+                continue
+            if status_update.get("status") in ("emerging", "active"):
+                branch_id = str(status_update.get("branch_id") or "").strip()
+                if branch_id:
+                    node_ids.append(branch_id)
+        for new_id in entry.get("new_branch_ids") or []:
+            new_id = str(new_id).strip()
+            if new_id:
+                node_ids.append(new_id)
+    seen: set = set()
+    deduped: List[str] = []
+    for node_id in node_ids:
+        if node_id not in seen:
+            seen.add(node_id)
+            deduped.append(node_id)
+    return deduped
+
+
+def _build_decision_opportunity(next_state: SimState) -> Optional[Dict[str, Any]]:
+    """构造 `SimState.decision_opportunity`（4.10 节，阶段三十三第
+    五批，参考文档 Decision Opportunity 的精简版）。`options` 为空
+    时返回 `None`——"这一步没有形成需要特别说明背景的决策机会"；
+    非空时总是返回一个 dict（哪怕各字段都是空），`app.py` 展示层
+    只按 `decision_reason` 是否非空决定要不要渲染对应小节，不看
+    容器本身是不是 `None`。"""
+    if not next_state.options:
+        return None
+    return {
+        "trigger_line_ids": sorted(next_state.line_updates.keys()) if next_state.line_updates else [],
+        "trigger_node_ids": _collect_trigger_node_ids(next_state.tree_updates),
+        "decision_reason": next_state.decision_reason,
+        "context_note": "",
+    }
 
 
 def advance(
@@ -382,6 +436,12 @@ def advance(
     # tree_updates`（审计摘要），需要在 `store.append_state()` 之前
     # 完成，否则历史里就存不到这份摘要。
     next_state.tree_updates = _apply_tree_updates(manifest, next_state, data)
+
+    # 4.10 节（阶段三十三第五批）：把这一批 options 共享的决策背景
+    # 收纳进一个精简容器（`decision_opportunity`），必须在上面
+    # `_apply_tree_updates()` 之后计算——`trigger_node_ids` 需要读
+    # 刚生成的 `tree_updates` 审计结果。
+    next_state.decision_opportunity = _build_decision_opportunity(next_state)
 
     store.append_state(next_state, branch=branch)
 
