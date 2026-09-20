@@ -23,8 +23,18 @@ Influence Field + Event-Driven 决策引擎 + 反身性（第六轮）
 >   为 `settings.relationship_pending_effects` 待办。新增 14 个
 >   测试用例，全量测试套件 394 个全部通过。仍然只做"更丰富的提示"，
 >   不做自动化数值传播——按方案原文的范围克制要求。
-> - ⏳ 第三批（2.3 节多尺度因果线真正独立推进）、第四批（2.4 节反身性
->   最小诠释）尚未开始，按方案第 3 节的顺序依次推进。
+> - ✅ **第三批（2.3 节，多尺度因果线真正独立推进）已完成**：
+>   `causal_lines[i]` 新增 `local_step`/`owned_vars`，新增
+>   `engine/advance_independent.py::advance_lines()` + `workflows/
+>   line_evolve.yaml`，`settings.independent_line_advance`（默认
+>   `False`）开关与 `advance()` 长期共存、互不影响，`app.py`"因果线
+>   总览"标注独立推进状态、详情页新增"独立推进一步"入口。新增 4 个
+>   测试用例（`tests/test_independent_line_advance.py`），全量测试
+>   套件 398 个全部通过。按方案原文要求，代码已落地但**尚未做"先在
+>   life_sim 模板小范围人工验证 3~5 次"这一步**，实际推广节奏需要
+>   使用者自行按这个建议来，不是代码层面的限制。
+> - ⏳ 第四批（2.4 节反身性最小诠释）尚未开始，价值最不确定、方案
+>   原文明确"可以直接放弃"。
 >
 > **上游文档**：
 > - `next_doc/world_simulator_universal_simulator_gap_analysis_and_
@@ -217,6 +227,13 @@ Field 引擎——项目一贯避免这类"伪装成精确因果计算、实际�
 
 ### 2.3（建议第三批，且要求先小范围验证）多尺度因果线真正独立推进
 
+> **实施状态：✅ 代码已完成**（2026-09-20，`PROJECT.md` 阶段三十六
+> 第三批）。`local_step`/`owned_vars`/`advance_lines()`/
+> `line_evolve.yaml`/`independent_line_advance` 开关均按下面的方案
+> 落地。**尚未完成的是方案原文要求的"先在 life_sim 模板小范围人工
+> 验证 3~5 次"这一步**——这是对真实使用节奏的建议，不是代码能替
+> 你完成的验收项，开启这个开关前请按这条建议自行验证。
+
 **最小版回顾**：`causal_lines[i].advance_every_n_steps` 只是喂给
 LLM 的节奏提示（`_lines_due_this_step_hint()`），不强制；所有线
 仍然共享同一个全局 `step`，一次 `advance_step`/`world_evolve`
@@ -329,7 +346,7 @@ LLM 的节奏提示（`_lines_due_this_step_hint()`），不强制；所有线
   只涉及 prompt 扩展和字段新增，不碰推进循环核心，风险和
   已完成的字段级扩展同一量级。
 
-第三批：2.3 多尺度因果线真正独立推进
+第三批：2.3 多尺度因果线真正独立推进 ✅ 代码已完成（小范围验证待用户执行）
   改动面最大、涉及新的字段归属（owned_vars）设计，按方案要求
   新增独立开关、只在 life_sim 模板先小范围人工验证，确认体验
   和数据一致性都没问题后再推广。

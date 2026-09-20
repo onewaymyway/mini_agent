@@ -61,11 +61,13 @@ from world_simulator import relationship as relationship_mod
 from world_simulator.config import DATA_DIR, ensure_dirs
 from world_simulator.achievements import achievement_progress, compute_achievements
 from world_simulator.engine import (
+    OwnedVarsOverlapError,
     SimAlreadyEndedError,
     SimEngineError,
     SimPausedError,
     accept_suggested_causal_line,
     advance,
+    advance_lines,
     apply_structural_change,
     delete_simulation,
     fast_forward,
@@ -2096,6 +2098,20 @@ def _render_causal_lines_overview(
             n = 1
         if n > 1:
             cadence_by_id[str(line.get("id"))] = n
+    # 阶段三十六第三批（2.3 节）：声明了 `owned_vars` 的线标注\"独立
+    # 推进\"状态和当前 `local_step`，让用户能直观看出\"这条线为什么
+    # 有时候好几步都没动静\"——不是卡住了，是本步没到它的节奏。
+    independent_by_id: Dict[str, str] = {}
+    for line in causal_lines_meta:
+        if not (isinstance(line, dict) and line.get("id")):
+            continue
+        owned = line.get("owned_vars")
+        if isinstance(owned, list) and owned:
+            try:
+                local_step = int(line.get("local_step") or 0)
+            except (TypeError, ValueError):
+                local_step = 0
+            independent_by_id[str(line.get("id"))] = f"独立推进 · 本线第 {local_step} 步"
     # 退化路径：声明列表里没有的 id，只要在历史里真的出现过，也纳入
     # 展示（label 退化为 id 本身）。
     for state in history:
@@ -2157,7 +2173,14 @@ def _render_causal_lines_overview(
 
         granularity = granularity_by_id.get(line_id, "")
         cadence_n = cadence_by_id.get(line_id)
-        _suffix_parts = [p for p in (granularity, (f"约每 {cadence_n} 步一动" if cadence_n else "")) if p]
+        independent_note = independent_by_id.get(line_id, "")
+        _suffix_parts = [
+            p for p in (
+                granularity,
+                (f"约每 {cadence_n} 步一动" if cadence_n else ""),
+                independent_note,
+            ) if p
+        ]
         granularity_suffix = f"（{'，'.join(_suffix_parts)}）" if _suffix_parts else ""
         trend_badge = (
             f' <span class="ws-uncertain-badge">{_html_text(_TREND_LABELS[last_trend])}</span>'
@@ -3543,6 +3566,38 @@ def page_detail() -> None:
                             if item.get("narrative"):
                                 st.markdown(_html_text(item["narrative"]))
                             st.markdown("---")
+
+        # 阶段三十六第三批（2.3 节）：`independent_line_advance` 开启
+        # 且至少有一条线声明了 `owned_vars` 时，额外给一个"独立推进
+        # 一步"入口，调用 `engine.advance_lines()` 而不是上面的
+        # `advance()`——两条路径并列展示，不互相替代，用户自己选用
+        # 哪一条（比如决策点用 `advance()`，纯背景线用这里）。
+        if manifest.settings.get("independent_line_advance") and any(
+            isinstance(line, dict) and isinstance(line.get("owned_vars"), list) and line.get("owned_vars")
+            for line in (manifest.settings.get("causal_lines") or [])
+        ):
+            with st.expander("🧵 独立推进因果线（只推进到点的线，不产出候选选项）"):
+                st.markdown(
+                    '<span class="ws-muted">已开启多尺度因果线独立推进（实验性）。'
+                    "点击后只有本步到点的线会真正发起调用，其它线保持不变；"
+                    "这一步不会产出候选分支，重大决策仍然要用上面的\"推进\"。"
+                    "</span>",
+                    unsafe_allow_html=True,
+                )
+                il_clicked = st.button("独立推进一步", key="independent_advance_button")
+                if il_clicked:
+                    with st.spinner("正在独立推进..."):
+                        try:
+                            cfg = _load_cfg()
+                            advance_lines(cfg, PROJECT_ROOT, DATA_DIR, sim_id)
+                        except OwnedVarsOverlapError as exc:
+                            st.error(f"独立推进失败：{exc}")
+                        except (SimEngineError, SimAlreadyEndedError, SimPausedError) as exc:
+                            st.error(f"独立推进失败：{exc}")
+                        except ImportError as exc:
+                            st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+                        else:
+                            st.rerun()
 
     causal_lines_meta = manifest.settings.get("causal_lines") or []
 

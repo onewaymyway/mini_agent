@@ -839,6 +839,27 @@ class SimManifest:
       `SimState.tree_updates` 供审计；用户也可以在详情页直接点击
       "标记为已印证/已排除"手动修正（`causal_tree.
       set_branch_status()`），不需要等 skill 输出。
+
+      每一项还支持两个可选字段，专供独立推进机制使用（阶段三十六
+      第三批，2.3 节，`next_doc/world_simulator_event_driven_engine_
+      and_full_architecture_plan.md`，多尺度因果线真正独立推进）：
+      - `owned_vars`：字符串数组，声明这条线独占哪些 `vars` 顶层
+        字段。这是 `settings.independent_line_advance` 为 `True` 时
+        这条线才会被 `engine.advance_lines()` 单独发起调用的前提
+        条件——**必须显式声明，引擎不会自动推断哪些字段属于哪条
+        线**，留空表示这条线尚不参与独立推进（哪怕
+        `independent_line_advance` 已开启，这条线也不会被单独调用，
+        字段原样保留，仍然只能靠 `advance()` 的全局调用来更新）。
+        不同线的 `owned_vars` 不能重叠——`advance_lines()` 会在推进
+        前统一校验，重叠时直接拒绝并抛 `OwnedVarsOverlapError`，
+        避免"两条线各自独立发起调用、同时改同一个字段"的数据竞争。
+      - `local_step`：整数，这条线自己的推进计数（从 0 开始），只有
+        这条线真正被 `advance_lines()` 单独推进时才 +1——是"错峰
+        调用"判断"这一步该不该真的为这条线发起调用"的依据
+        （`local_step % advance_every_n_steps == 0`），不同于上面
+        `advance_every_n_steps` 在*未启用*独立推进时只是喂给
+        `advance_step` 的一句节奏提示（不强制、不消费）。留空按 0
+        处理，不影响任何已有行为，向后兼容。
     - `relationships`：列表，声明主体（`vars.entities` 的键，或因果线
       `id`）之间的关系（阶段三十一起步，`next_doc/
       world_simulator_universal_simulator_gap_analysis_and_roadmap_v2_
@@ -923,6 +944,23 @@ class SimManifest:
       向后兼容），用户可以在创建向导/详情页"模拟设置"里开关，下一步
       推进开始生效。
 
+    - `independent_line_advance`：布尔值（默认 `False`），`next_doc/
+      world_simulator_event_driven_engine_and_full_architecture_
+      plan.md` 2.3 节（第三批，多尺度因果线真正独立推进，要求先在
+      `life_sim` 模板小范围人工验证）。为 `True` 且这个实例的
+      `causal_lines` 里至少有一条声明了 `owned_vars` 时，推进入口
+      改为调用 `engine.advance_lines()` 而不是 `engine.advance()`
+      ——两条路径长期共存，互不影响：`advance()` 的实现完全不读取
+      这个字段，`advance_lines()` 只在这个字段为 `True` 时才会被
+      调用方（`app.py`）触发。开启后每一步只有本步到点
+      （`local_step % advance_every_n_steps == 0`）且声明了
+      `owned_vars` 的因果线会真正发起独立 LLM 调用（`workflows/
+      line_evolve.yaml`），其余线的字段原样保留、不产出候选选项
+      ——独立推进目前只负责"世界怎么演化"，决策点判断仍然只在
+      `advance()` 路径下产生。留空（默认 `False`）表示继续用
+      `advance()` 的全局单次调用，行为与引入这个字段之前完全一致，
+      向后兼容。
+
     - `split_creation_calls`：布尔，默认 `False`（第五轮方案 5.5 节，
       `next_doc/world_simulator_decision_engine_round2_gap_analysis_
       plan.md`，阶段三十四第六批）。为 `True` 时，`spec_generator.
@@ -977,7 +1015,8 @@ class SimManifest:
     - 因果线：`causal_lines`、`suggested_causal_lines`、
       `declared_causal_graph`
     - 校准与结构演化：`calibration_notes`、`confirmed_structural_changes`
-    - 世界独立演化（实验性）：`observer_mode`、`autopilot_fast_forward`
+    - 世界独立演化（实验性）：`observer_mode`、`autopilot_fast_forward`、
+      `independent_line_advance`
     """
 
     def to_dict(self) -> Dict[str, Any]:

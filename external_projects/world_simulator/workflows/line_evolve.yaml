@@ -1,0 +1,65 @@
+name: line_evolve
+description: >-
+  多尺度因果线真正独立推进（`next_doc/world_simulator_event_driven_
+  engine_and_full_architecture_plan.md` 2.3 节，第三批）。由
+  `world_simulator/engine/advance_independent.py::advance_lines()`
+  触发，全局 step 推进时只对本步到点（`local_step %
+  advance_every_n_steps == 0`）的因果线各发起一次独立调用——每次
+  调用只关心*这一条线自己*的 `owned_vars` 子集，不感知也不改动其它
+  线独占的字段，也不产出 `options`/候选分支（独立推进目前只负责
+  "世界背后的这条线怎么演化"，不负责决策点判断，决策点仍然由主
+  `advance_step`/`world_evolve` 负责）。触发前同样会把 `line_evolve`
+  步骤的 `skill_name` 按 `template` 输入动态改写为
+  `<template>-template`，复用场景模板既有的叙事风格约定，不需要为
+  独立推进单独维护一套 skill。
+version: "1.0"
+steps:
+  - id: line_evolve
+    name: 独立推进一条因果线
+    type: skill_agent
+    skill_name: life-sim-template   # 运行时会被 engine 按 template 覆盖
+    result_file: line_result.json
+    result_file_required_keys:
+      - summary
+      - next_vars
+    prompt: |
+      这次模拟的标题：{title}
+      当前全局时间步：{global_step}
+      当前整体状态摘要（供你理解大背景，但这一步*只*负责推进下面这
+      一条因果线，不要越权改动其它线的内容）：{current_summary}
+
+      这一次调用只负责推进以下这一条因果线（这条线自己的时间维度，
+      推进节奏可能和全局 step 不同步，也可能和其它因果线完全不同）：
+      - 因果线 id：{line_id}
+      - 因果线 label：{line_label}
+      - 这条线自己的本地推进计数（从 0 开始，每次真正被推进 +1，
+        不等同于全局 step）：{line_local_step}
+
+      这条线独占的变量子集（JSON 对象，key 是这条线声明的
+      `owned_vars` 里的字段名，value 是这些字段当前的值——**这是
+      整个世界状态里只属于这条线的那一部分**，其它因果线独占的字段
+      不会出现在这里，你也不需要关心它们这一步是什么样）：
+      {line_owned_vars_json}
+
+      请只基于这条线自己的字段和它的内在逻辑，推演这条线这一步（它
+      自己节奏下的"一步"）的进展，给出：
+      - `summary`：一句话概括这条线这一步的进展。
+      - `narrative`：这条线这一步发生了什么的叙事文本（可以比
+        `summary` 详细，但只讲这条线自己的故事，不要写其它线或
+        全局层面的事情——那些由负责全局推进的另一次调用处理）。
+      - `next_vars`：一个对象，key 必须是上面"独占的变量子集"里
+        出现过的字段名（不要输出不在这个子集里的字段——那些字段
+        属于别的线或全局共享，这次调用无权修改），value 是这条线
+        这一步之后的新值。没有变化的字段也可以原样带上，或者干脆
+        不输出（不输出等价于保持原值不变）。
+      - `trend`（可选）：`"accelerating"`（加速）/`"steady"`（匀速
+        延续）/`"decelerating"`（放缓，可能即将转折）/`"reversing"`
+        （方向已反转）四选一，回答"这条线自己觉得现在处于什么
+        阶段"——不确定就不填，不要为了填而猜一个。
+
+      再次强调这次调用的边界：**不要输出 `options`**（独立推进的
+      因果线目前不负责产生候选决策分支，即使这条线这一步出现了看起来
+      值得决策的分岔点，也只在 `narrative` 里如实描述这个分岔点本身，
+      不要输出 `options` 字段）；也不要输出/推测任何不在"独占的变量
+      子集"里的字段——即使你能从 `current_summary` 猜到全局其它字段
+      大概是什么，这次调用也不应该改动它们。

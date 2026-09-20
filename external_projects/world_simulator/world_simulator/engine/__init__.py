@@ -25,6 +25,12 @@ step 0 的初始状态；`advance()` = 一次 `advance_step` workflow 调用，
   所有测试/entrypoints）不需要任何改动；
 - 不改变任何持久化格式，回归测试（拆分前 198 个用例）是唯一验收
   标准，见 `PROJECT.md` 阶段三十。
+
+`advance_independent.py`（阶段三十六第三批，`next_doc/world_
+simulator_event_driven_engine_and_full_architecture_plan.md` 2.3
+节）是后续新增的一个独立子模块，不属于上面这次拆分——它是与
+`advance()` 长期共存的另一条推进路径（多尺度因果线真正独立推进），
+不是原 `engine.py` 拆出来的既有逻辑，见该模块自己的 docstring。
 """
 
 from __future__ import annotations
@@ -41,6 +47,10 @@ from world_simulator.engine.materialize import create_simulation, materialize_si
 
 # 核心推进循环
 from world_simulator.engine.advance import FastForwardResult, advance, fast_forward
+
+# 多尺度因果线真正独立推进（第三批，2.3 节）
+from world_simulator.engine.advance_independent import advance_lines
+from world_simulator.engine.errors import OwnedVarsOverlapError
 
 # 结构性变化的解析/采纳 + 因果线建议（阶段二十九，4.26 节）
 from world_simulator.engine.structural_change import (
@@ -64,9 +74,11 @@ __all__ = [
     "SimEngineError",
     "SimAlreadyEndedError",
     "SimPausedError",
+    "OwnedVarsOverlapError",
     "materialize_simulation",
     "create_simulation",
     "advance",
+    "advance_lines",
     "fast_forward",
     "FastForwardResult",
     "apply_structural_change",

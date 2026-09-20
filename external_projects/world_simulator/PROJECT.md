@@ -2661,3 +2661,52 @@ world_simulator/
   真正独立推进，要求先在 `life_sim` 模板小范围人工验证）、第四批
   （2.4 节反身性最小诠释，价值最不确定、可直接放弃）留待后续按
   顺序推进。
+
+- 2026-09-20（同日再追加）：**阶段三十六第三批**——按
+  `next_doc/world_simulator_event_driven_engine_and_full_architecture_
+  plan.md` 2.3 节，落地多尺度因果线真正独立推进（这是四批里改动面
+  最大的一批，按方案要求以独立开关 + 独立入口函数的形式与既有
+  `advance()` 长期共存，完全不改动 `advance()`/`advance_step.yaml`
+  的既有行为）。
+  1. **`state_model.py`**：`causal_lines[i]` 新增两个可选字段——
+     `owned_vars`（字符串数组，声明这条线独占哪些 `vars` 顶层字段，
+     必须显式声明，引擎不自动推断；不同线之间不允许重叠）、
+     `local_step`（整数，这条线自己的推进计数，只有真正被独立推进
+     时才 +1，用于"错峰调用"判断）。新增 `settings.independent_
+     line_advance`（布尔，默认 `False`）字段文档及分组索引。
+  2. **`workflows/line_evolve.yaml`（新增）**：只传入一条线自己
+     `owned_vars` 子集的独立调用模板，明确要求不输出 `options`、
+     不输出声明范围之外的字段。
+  3. **`engine/advance_independent.py`（新增）**：`advance_lines()`
+     ——全局 `step` +1，只对本步到点（`local_step %
+     advance_every_n_steps == 0`）且声明了 `owned_vars` 的线分别
+     发起独立调用；`_validate_owned_vars_no_overlap()` 在推进前
+     统一校验字段归属不重叠，重叠直接抛 `OwnedVarsOverlapError`
+     拒绝这次推进；跨线读取用的是调用前的 `current.vars` 快照，
+     不是同批次内其它线刚算出来的中间结果；没有任何线到点时仍然
+     正常落盘（全局 step 照常 +1），不发起任何 workflow 调用。
+     新增 `engine/errors.py::OwnedVarsOverlapError`。
+  4. **`app.py`**：因果线总览为声明了 `owned_vars` 的线标注"独立
+     推进 · 本线第 N 步"；`independent_line_advance` 开启且存在
+     至少一条声明了 `owned_vars` 的线时，详情页新增"🧵 独立推进
+     因果线"入口，调用 `advance_lines()`，与原有"推进"/"快进"入口
+     并列、不替换。
+  **范围克制（按方案要求，不做的部分）**：不做真正的并行/异步调用
+  （本步内到点的多条线仍按声明顺序依次同步执行）；不允许跨线互相
+  修改对方的 `vars`（跨线影响仍然只通过 `causal_links`/
+  `declared_causal_graph` 以"提示"形式喂给对方，由那条线自己决定
+  要不要体现）；独立推进的线不产出候选决策分支，决策点判断仍然
+  完全由主 `advance()` 路径负责。
+  **验收**：`tests/test_independent_line_advance.py`（新增，4 个
+  用例）覆盖：两条节奏不同的线只有到点的线真正发起调用、`owned_
+  vars` 重叠时在任何调用之前就报错阻止且全局 step 不前进、所有线
+  都不到点时的空推进（step 照常 +1、不发起任何调用）、同批次内
+  两条线到点时互相读到的是调用前的快照而非中间态。加上原有 394
+  个，全部通过（**398 passed**）。
+  **重要提醒（按方案原文，不是代码层面的限制）**：代码已完整落地，
+  但方案原文明确要求"先在 `life_sim` 模板小范围人工验证（3~5 次
+  真实多因果线模拟），确认错峰调用不会让体验割裂，再考虑推广到
+  其它模板"——这一步需要使用者自己实际跑几次来验证，`independent_
+  line_advance` 默认关闭，开启前建议按这个节奏来。
+  **后续节奏**：第四批（2.4 节反身性最小诠释）价值最不确定，方案
+  原文明确"可以直接放弃"，是否继续待后续评估。
