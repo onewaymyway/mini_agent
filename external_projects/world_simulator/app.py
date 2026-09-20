@@ -2011,7 +2011,7 @@ def _render_causal_lines_overview(
         "只属于这条线的因果链条目；每条线下方是这条线的\"未来因果树\"——"
         "创建模拟时就已经生成，展示从当前节点出发的若干可能分支（不是"
         "只有一条延续路径），推进过程中会随实际走向自动修正，也可以"
-        "手动标记\"已印证/已排除\"；再下方是可选的历史外推参考，并可以"
+        "手动标记\"已解决/已失效\"；再下方是可选的历史外推参考，并可以"
         "直接留下修改意见。</span>",
         unsafe_allow_html=True,
     )
@@ -2094,8 +2094,11 @@ def _render_causal_lines_overview(
         # 阶段二十六（`next_doc/world_simulator_causal_line_future_tree_
         # plan.md`）：因果树——创建模拟时就已经落盘（见
         # `causal_tree.ensure_future_trees()`），不要求先推进一步才能
-        # 看到。渲染成缩进列表：●已印证 / ○开放 / ✕已排除，支持用户
-        # 直接点击手动修正，不需要等 skill 输出 `tree_updates`。
+        # 看到。阶段三十三第四批起状态从 3 态扩展为 6 态（4.9 节：
+        # dormant/emerging/active/resolved/expired/invalidated），
+        # 手动按钮只保留"标为已解决/标为已失效"这两个高价值操作，
+        # 其余状态变化（emerging/active）交给 `tree_updates.
+        # status_updates` 由 LLM 判断声明。
         line_meta_dict = next(
             (line for line in causal_lines_meta if isinstance(line, dict) and str(line.get("id")) == line_id),
             None,
@@ -2113,14 +2116,18 @@ def _render_causal_lines_overview(
                 unsafe_allow_html=True,
             )
         else:
-            status_icon = {"confirmed": "●", "open": "○", "diverged": "◐", "pruned": "✕"}
+            status_icon = {
+                "dormant": "○", "emerging": "🌱", "active": "◐",
+                "resolved": "●", "expired": "⌛", "invalidated": "✕",
+            }
             status_label = {
-                "confirmed": "已印证", "open": "开放", "diverged": "已偏离", "pruned": "已排除",
+                "dormant": "潜伏", "emerging": "形成中", "active": "已激活",
+                "resolved": "已解决", "expired": "已错过", "invalidated": "已失效",
             }
             likelihood_label = {"high": "可能性高", "medium": "可能性中", "low": "可能性低"}
             for branch in branches:
                 b_id = str(branch.get("id") or "")
-                b_status = str(branch.get("status") or "open")
+                b_status = causal_tree.canonical_status(branch.get("status"))
                 b_desc = str(branch.get("description") or "")
                 b_like = str(branch.get("likelihood") or "medium")
                 icon = status_icon.get(b_status, "○")
@@ -2131,23 +2138,23 @@ def _render_causal_lines_overview(
                         f"（{_html_text(likelihood_label.get(b_like, b_like))}）— {_html_text(b_desc)}</div>",
                         unsafe_allow_html=True,
                     )
-                if manifest is not None and sim_id and b_status not in ("confirmed",):
+                if manifest is not None and sim_id and b_status not in ("resolved",):
                     with cols[1]:
-                        if st.button("标为已印证", key=f"tree_confirm_{sim_id}_{line_id}_{b_id}"):
+                        if st.button("标为已解决", key=f"tree_confirm_{sim_id}_{line_id}_{b_id}"):
                             update_settings(
                                 DATA_DIR, sim_id,
                                 causal_lines=causal_tree.set_branch_status(
-                                    causal_lines_meta, line_id, b_id, "confirmed"
+                                    causal_lines_meta, line_id, b_id, "resolved"
                                 ),
                             )
                             st.rerun()
-                if manifest is not None and sim_id and b_status not in ("pruned",):
+                if manifest is not None and sim_id and b_status not in ("invalidated",):
                     with cols[2]:
-                        if st.button("标为已排除", key=f"tree_prune_{sim_id}_{line_id}_{b_id}"):
+                        if st.button("标为已失效", key=f"tree_prune_{sim_id}_{line_id}_{b_id}"):
                             update_settings(
                                 DATA_DIR, sim_id,
                                 causal_lines=causal_tree.set_branch_status(
-                                    causal_lines_meta, line_id, b_id, "pruned"
+                                    causal_lines_meta, line_id, b_id, "invalidated"
                                 ),
                             )
                             st.rerun()
@@ -2725,7 +2732,7 @@ def page_detail() -> None:
             st.markdown(
                 '<span class="ws-muted">因果线是默认基础机制，每条线自带的未来因果树'
                 "（`future_tree.branches`）也已经落盘——这里只是提供手动覆盖/改名/直接"
-                "编辑分支的入口。要标记某个分支\"已印证/已排除\"，更推荐去「因果线总览」"
+                "编辑分支的入口。要标记某个分支\"已解决/已失效\"，更推荐去「因果线总览」"
                 "标签页对应那条线下面直接点按钮；对某条线的整体修改意见，也建议在"
                 "「因果线总览」里填写，会更精准地喂给下一步推进。</span>",
                 unsafe_allow_html=True,

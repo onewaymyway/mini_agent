@@ -695,12 +695,16 @@ class SimManifest:
 
       每一项额外支持一个可选字段 `future_tree`（阶段二十六，
       `next_doc/world_simulator_causal_line_future_tree_plan.md`，
-      因果线的"未来因果树"）：`{"as_of_step": 0, "branches": [
-      {"id": "tech_fast", "description": "AI 成本快速下降",
-      "likelihood": "medium", "status": "open", "children": []}]}`
-      ——`branches` 是这条线从"当前节点"出发的若干可能分支（不是只有
-      一条延续路径），`status` 只分 `open`/`confirmed`/`diverged`/
-      `pruned` 四档，不做概率归一化（同 `confidence: high/medium/
+      因果线的"未来因果树"；阶段三十三第四批扩展了 `status` 取值和
+      新增 KeyNode 字段，见 `causal_tree.py` 顶部 docstring）：
+      `{"as_of_step": 0, "branches": [{"id": "tech_fast",
+      "description": "AI 成本快速下降", "likelihood": "medium",
+      "status": "dormant", "children": []}]}`——`branches` 是这条线
+      从"当前节点"出发的若干可能分支（不是只有一条延续路径），
+      `status` 六档生命周期：`dormant`/`emerging`/`active`/
+      `resolved`/`expired`/`invalidated`（旧版 `open`/`confirmed`/
+      `diverged`/`pruned` 仍会被 `causal_tree.canonical_status()`
+      自动映射兼容），不做概率归一化（同 `confidence: high/medium/
       low` 一以贯之的克制风格）；`children` 可选，支持多层分叉，但
       不强制。**这个字段不需要用户/skill 手动保证一定存在**——
       `materialize_simulation()` 落盘 step 0 之前会统一调用

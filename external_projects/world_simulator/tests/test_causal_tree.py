@@ -22,7 +22,7 @@ def test_ensure_future_trees_backfills_empty_list():
     assert result[0]["id"] == "main_line"
     branches = result[0]["future_tree"]["branches"]
     assert len(branches) >= 2
-    assert all(b["status"] == "open" for b in branches)
+    assert all(b["status"] == "dormant" for b in branches)
 
 
 def test_ensure_future_trees_backfills_missing_tree_only():
@@ -89,8 +89,11 @@ def test_apply_tree_updates_confirm_prune_and_new_branch():
     updated_lines, audit = causal_tree.apply_tree_updates(causal_lines, updates, as_of_step=3)
     tree = updated_lines[0]["future_tree"]
     by_id = {b["id"]: b for b in tree["branches"]}
-    assert by_id["fast"]["status"] == "confirmed"
-    assert by_id["slow"]["status"] == "pruned"
+    # 阶段三十三第四批：6 态生命周期下，confirmed_branch 落盘为
+    # resolved，pruned_branches 落盘为 invalidated（旧名 confirmed/
+    # pruned 的新对应，见 causal_tree.py 顶部 docstring）。
+    assert by_id["fast"]["status"] == "resolved"
+    assert by_id["slow"]["status"] == "invalidated"
     assert len(tree["branches"]) == 3
     assert tree["as_of_step"] == 3
     assert len(audit) == 1
@@ -112,6 +115,8 @@ def test_apply_tree_updates_no_effect_returns_empty_audit():
         causal_lines, [{"line_id": "unknown", "confirmed_branch": "fast"}], as_of_step=1
     )
     assert audit == []
+    # 没有命中的这条线完全没被 apply_tree_updates 处理（也没有走
+    # normalize_future_tree），原始的旧状态值原样保留在数据里。
     assert updated_lines[0]["future_tree"]["branches"][0]["status"] == "open"
 
 
@@ -123,7 +128,218 @@ def test_set_branch_status_manual_override():
         }
     ]
     updated = causal_tree.set_branch_status(causal_lines, "tech", "fast", "pruned")
-    assert updated[0]["future_tree"]["branches"][0]["status"] == "pruned"
+    # 阶段三十三第四批：接受旧名 "pruned"，落盘为新 6 态里的
+    # "invalidated"（见 causal_tree._LEGACY_STATUS_MAP）。
+    assert updated[0]["future_tree"]["branches"][0]["status"] == "invalidated"
+    # 也接受新 6 态写法，直接生效
+    updated2 = causal_tree.set_branch_status(updated, "tech", "fast", "emerging")
+    assert updated2[0]["future_tree"]["branches"][0]["status"] == "emerging"
     # 非法状态值不生效
-    unchanged = causal_tree.set_branch_status(updated, "tech", "fast", "not_a_status")
-    assert unchanged[0]["future_tree"]["branches"][0]["status"] == "pruned"
+    unchanged = causal_tree.set_branch_status(updated2, "tech", "fast", "not_a_status")
+    assert unchanged[0]["future_tree"]["branches"][0]["status"] == "emerging"
+
+
+# ── 阶段三十三第四批（4.9 节：KeyNode 6 态生命周期 + 4.11 节：
+#    渐进式展开）────────────────────────────────────────────────────
+
+
+def test_canonical_status_maps_legacy_names():
+    assert causal_tree.canonical_status("open") == "dormant"
+    assert causal_tree.canonical_status("confirmed") == "resolved"
+    assert causal_tree.canonical_status("diverged") == "expired"
+    assert causal_tree.canonical_status("pruned") == "invalidated"
+
+
+def test_canonical_status_passes_through_new_names():
+    for status in ("dormant", "emerging", "active", "resolved", "expired", "invalidated"):
+        assert causal_tree.canonical_status(status) == status
+
+
+def test_canonical_status_falls_back_to_dormant_for_unknown():
+    assert causal_tree.canonical_status("something_weird") == "dormant"
+    assert causal_tree.canonical_status(None) == "dormant"
+
+
+def test_normalize_branch_includes_keynode_fields_with_safe_defaults():
+    tree = causal_tree.normalize_future_tree(
+        {"branches": [{"id": "x", "description": "d"}]}
+    )
+    branch = tree["branches"][0]
+    assert branch["semantic_event"] == ""
+    assert branch["trigger_conditions"] == ""
+    assert branch["prerequisites"] == []
+    assert branch["candidate_actions"] == []
+    assert branch["time_window"] == ""
+    assert branch["urgency"] is None
+    assert branch["expansion_level"] == "compressed"
+    assert branch["sub_branches"] == []
+
+
+def test_normalize_branch_preserves_declared_keynode_fields():
+    tree = causal_tree.normalize_future_tree(
+        {
+            "branches": [
+                {
+                    "id": "x",
+                    "description": "监管突然收紧",
+                    "semantic_event": "监管机构发布新规",
+                    "trigger_conditions": "行业投诉达到阈值",
+                    "prerequisites": ["p1", "p2"],
+                    "candidate_actions": ["提前合规", "游说延后"],
+                    "time_window": "未来 2~3 个季度",
+                    "urgency": "high",
+                }
+            ]
+        }
+    )
+    branch = tree["branches"][0]
+    assert branch["semantic_event"] == "监管机构发布新规"
+    assert branch["trigger_conditions"] == "行业投诉达到阈值"
+    assert branch["prerequisites"] == ["p1", "p2"]
+    assert branch["candidate_actions"] == ["提前合规", "游说延后"]
+    assert branch["time_window"] == "未来 2~3 个季度"
+    assert branch["urgency"] == "high"
+
+
+def test_normalize_branch_rejects_invalid_urgency():
+    tree = causal_tree.normalize_future_tree(
+        {"branches": [{"id": "x", "description": "d", "urgency": "extremely_bad"}]}
+    )
+    assert tree["branches"][0]["urgency"] == "medium"
+
+
+def test_normalize_branch_parses_expanded_sub_branches():
+    tree = causal_tree.normalize_future_tree(
+        {
+            "branches": [
+                {
+                    "id": "x",
+                    "description": "d",
+                    "expansion_level": "expanded",
+                    "sub_branches": [
+                        {"id": "x1", "description": "子分支 1"},
+                        {"id": "x2", "description": "子分支 2"},
+                        {"id": "no_desc"},  # 非法（无描述），应被过滤
+                    ],
+                }
+            ]
+        }
+    )
+    branch = tree["branches"][0]
+    assert branch["expansion_level"] == "expanded"
+    assert [sb["id"] for sb in branch["sub_branches"]] == ["x1", "x2"]
+
+
+def test_apply_tree_updates_status_updates_sets_emerging_and_active():
+    causal_lines = [
+        {
+            "id": "tech",
+            "future_tree": {"branches": [{"id": "a", "description": "d", "status": "dormant"}]},
+        }
+    ]
+    updates = [
+        {
+            "line_id": "tech",
+            "status_updates": [{"branch_id": "a", "status": "emerging"}],
+        }
+    ]
+    updated_lines, audit = causal_tree.apply_tree_updates(causal_lines, updates, as_of_step=2)
+    assert updated_lines[0]["future_tree"]["branches"][0]["status"] == "emerging"
+    assert audit[0]["status_updates"] == [{"branch_id": "a", "status": "emerging"}]
+
+
+def test_apply_tree_updates_status_updates_accepts_legacy_status_name():
+    causal_lines = [
+        {
+            "id": "tech",
+            "future_tree": {"branches": [{"id": "a", "description": "d", "status": "dormant"}]},
+        }
+    ]
+    updates = [{"line_id": "tech", "status_updates": [{"branch_id": "a", "status": "confirmed"}]}]
+    updated_lines, _ = causal_tree.apply_tree_updates(causal_lines, updates, as_of_step=2)
+    assert updated_lines[0]["future_tree"]["branches"][0]["status"] == "resolved"
+
+
+def test_apply_tree_updates_status_updates_ignores_unknown_branch_or_status():
+    causal_lines = [
+        {
+            "id": "tech",
+            "future_tree": {"branches": [{"id": "a", "description": "d", "status": "dormant"}]},
+        }
+    ]
+    updates = [
+        {
+            "line_id": "tech",
+            "status_updates": [
+                {"branch_id": "not_exist", "status": "active"},
+                {"branch_id": "a", "status": "not_a_real_status"},
+            ],
+        }
+    ]
+    updated_lines, audit = causal_tree.apply_tree_updates(causal_lines, updates, as_of_step=2)
+    assert updated_lines[0]["future_tree"]["branches"][0]["status"] == "dormant"
+    assert audit == []
+
+
+def test_apply_tree_updates_expand_branches_sets_expansion_level_and_sub_branches():
+    causal_lines = [
+        {
+            "id": "tech",
+            "future_tree": {"branches": [{"id": "a", "description": "d", "status": "active"}]},
+        }
+    ]
+    updates = [
+        {
+            "line_id": "tech",
+            "expand_branches": [
+                {
+                    "branch_id": "a",
+                    "sub_branches": [
+                        {"description": "更细粒度的子分支 1"},
+                        {"description": "更细粒度的子分支 2"},
+                    ],
+                }
+            ],
+        }
+    ]
+    updated_lines, audit = causal_tree.apply_tree_updates(causal_lines, updates, as_of_step=4)
+    branch = updated_lines[0]["future_tree"]["branches"][0]
+    assert branch["expansion_level"] == "expanded"
+    assert len(branch["sub_branches"]) == 2
+    assert audit[0]["expanded_branch_ids"] == ["a"]
+
+
+def test_apply_tree_updates_expand_branches_without_sub_branches_only_flips_flag():
+    causal_lines = [
+        {
+            "id": "tech",
+            "future_tree": {
+                "branches": [
+                    {
+                        "id": "a",
+                        "description": "d",
+                        "status": "active",
+                        "sub_branches": [{"id": "existing", "description": "既有子分支"}],
+                    }
+                ]
+            },
+        }
+    ]
+    updates = [{"line_id": "tech", "expand_branches": [{"branch_id": "a"}]}]
+    updated_lines, _ = causal_tree.apply_tree_updates(causal_lines, updates, as_of_step=4)
+    branch = updated_lines[0]["future_tree"]["branches"][0]
+    assert branch["expansion_level"] == "expanded"
+    assert [sb["id"] for sb in branch["sub_branches"]] == ["existing"]
+
+
+def test_apply_tree_updates_expand_branches_ignores_unknown_branch():
+    causal_lines = [
+        {
+            "id": "tech",
+            "future_tree": {"branches": [{"id": "a", "description": "d"}]},
+        }
+    ]
+    updates = [{"line_id": "tech", "expand_branches": [{"branch_id": "not_exist"}]}]
+    updated_lines, audit = causal_tree.apply_tree_updates(causal_lines, updates, as_of_step=1)
+    assert audit == []
+    assert updated_lines[0]["future_tree"]["branches"][0].get("expansion_level", "compressed") == "compressed"

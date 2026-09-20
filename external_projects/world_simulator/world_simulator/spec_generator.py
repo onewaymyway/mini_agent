@@ -173,7 +173,10 @@ def _resolve_causal_lines_hint(
             "相互之间有实质区分度的未来可能分支（比如\"快速发展\"/\"缓慢"
             "发展\"/\"遭遇阻力\"这类明显不同的方向，不要写成同义反复或"
             "换个说法的同一件事），不要求穷尽所有可能，覆盖目前能想到的"
-            "主要分歧点即可。"
+            "主要分歧点即可。每个分支还可以选填 `semantic_event`（一句话"
+            "现实语义）、`trigger_conditions`（触发条件）、"
+            "`candidate_actions`（一旦激活通常对应的行动方向）等字段，"
+            "创建阶段留空也完全可以，后续推进时再补充。"
         )
         if lines:
             refine_parts = [
@@ -218,7 +221,7 @@ def _resolve_causal_lines_hint(
         branches = [b for b in (future_tree.get("branches") or []) if isinstance(b, dict)]
         if branches:
             branch_desc = "；".join(
-                f'{b.get("id")}[{b.get("status", "open")}]：{b.get("description", "")}'
+                f'{b.get("id")}[{b.get("status", "dormant")}]：{b.get("description", "")}'
                 for b in branches
             )
             tree_parts.append(f"{line_id} 当前未来分支——{branch_desc}")
@@ -238,16 +241,31 @@ def _resolve_causal_lines_hint(
         hint += due_hint
     if tree_parts:
         hint += (
-            "\n以下是各条线当前的未来分支（状态标注在方括号里）："
+            "\n以下是各条线当前的未来分支（状态标注在方括号里，6 态含义："
+            "dormant 潜伏/emerging 正在形成/active 已激活/resolved 已解决/"
+            "expired 错过窗口/invalidated 因世界变化而失效，阶段三十三第"
+            "四批，4.9 节）："
             + "；".join(tree_parts)
             + "。如果这一步的实际走向印证/排除了某个分支，或者催生了一个"
             "上面没有的新可能性，可选输出 `tree_updates`（数组），每项形如 "
             '{"line_id": ..., "confirmed_branch": "分支id（可选，这一步'
-            '印证了哪个已有分支）", "pruned_branches": ["分支id", ...]'
-            '（可选，明显已经不可能发生的分支）, "new_branches": '
-            '[{"description": ..., "likelihood": "high"|"medium"|"low"}]'
-            '（可选，出现了原来树上没有覆盖的新可能性）}——不强制每一步都'
-            "输出，没有值得更新的树就不用给。"
+            '印证了哪个已有分支，落盘为 resolved）", "pruned_branches": '
+            '["分支id", ...]（可选，明显已经不可能发生的分支，落盘为 '
+            'invalidated）, "status_updates": [{"branch_id": ..., "status": '
+            '"emerging"|"active"|"dormant"|"resolved"|"expired"|'
+            '"invalidated"}]（可选，声明 confirmed_branch/pruned_branches '
+            "覆盖不到的状态变化，尤其是某个分支「正在形成」或「已激活」但"
+            '还谈不上「已解决」）, "new_branches": [{"description": ..., '
+            '"likelihood": "high"|"medium"|"low", "semantic_event": '
+            '"（可选）一句话现实语义", "trigger_conditions": "（可选）触发'
+            '条件", "candidate_actions": ["（可选）一旦激活通常对应的行动'
+            '方向"], "urgency": "low"|"medium"|"high"|"critical"（可选）}]'
+            '（可选，出现了原来树上没有覆盖的新可能性）, "expand_branches": '
+            '[{"branch_id": ..., "sub_branches": [同 new_branches 里单个'
+            "分支的形状]}]（可选，阶段三十三第四批 4.11 节渐进式展开——"
+            "只有当某条线进入决策相关的活跃窗口、需要更细粒度的可能性时"
+            "才展开，不要求每条线都展开）}——不强制每一步都输出，没有值得"
+            "更新的树就不用给。"
         )
     return hint
 

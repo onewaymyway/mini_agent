@@ -1924,3 +1924,84 @@ world_simulator/
   合法状态、不特殊处理"的取舍，不是本批遗漏；4.4/4.13 之外，方案
   第 5 节第四批（4.9 KeyNode 6 态生命周期 + 4.11 渐进式展开）尚未
   开始。
+- 2026-09-20（同日再追加）：**阶段三十三第四批**——完成方案第 5 节
+  第四批：4.9（KeyNode 6 态生命周期）+ 4.11（渐进式展开）。两节都
+  是在阶段二十六已有的 `causal_tree.py`（因果线未来树）基础上扩展
+  形状，不是新开一套并行结构：
+  1. **`causal_tree.py` 状态生命周期从 3 态（旧代码实际是 4 态：
+     `open`/`confirmed`/`diverged`/`pruned`——比方案文本描述的"3 态"
+     多一个 `diverged`，属于方案写作时间早于该状态落地的既存偏差，
+     本批一并纳入迁移而不是忽略）扩展为 6 态：`dormant`（潜伏）→
+     `emerging`（正在形成）→ `active`（已激活）→ `resolved`（已
+     解决）/`expired`（错过窗口）/`invalidated`（因世界变化而
+     失效）。新增 `canonical_status()` 做旧→新的映射：`open→
+     dormant`、`confirmed→resolved`、`pruned→invalidated`；
+     `diverged→expired` 是本批新增的对应关系（语义最接近：两者都是
+     "没有走这个分支，但不是被主动排除"），不属于方案原文，是实施
+     时按语义就近补的映射，PROJECT.md 在此明确记录以便后续核对。
+     `_normalize_branch()`/`set_branch_status()` 都统一经过
+     `canonical_status()`，历史数据不需要批量迁移，读取时自动转换。
+  2. **`causal_tree.py` 分支（KeyNode）新增 4.9 节六个可选字段**：
+     `semantic_event`（一句话现实语义）、`trigger_conditions`
+     （触发条件）、`prerequisites`（前置节点 id 列表）、
+     `candidate_actions`（一旦激活通常对应的行动方向）、
+     `time_window`（复用 4.3 节措辞）、`urgency`（low/medium/high/
+     critical，复用 4.3 节四档，非法值回退 medium）。全部可选，
+     缺省时给空字符串/空列表/`None`，不编造内容。
+  3. **`causal_tree.py` 新增 4.11 节渐进式展开字段**：分支级
+     （不是树级）的 `expansion_level`（`compressed`/`expanded`，
+     默认 `compressed`）+ `sub_branches`（形状同 `branches`，递归
+     用同一个 `_normalize_branch()` 规整，与父层共享 `used_ids`
+     去重集合）。选择做成分支级而不是方案文本字面提到的"顶层"，
+     是因为方案后半段的可操作规格明确是"把某个分支标为 expanded 并
+     给出 sub_branches"，分支级更贴合这个操作粒度，也更符合"具体
+     哪条线的哪个节点值得深挖"这个自然语义——PROJECT.md 同样在此
+     记录这处对原文的取舍调整。
+  4. **`apply_tree_updates()` 新增两个可选的 `tree_updates` 字段**：
+     `status_updates`（数组，`{"branch_id","status"}`，用于声明
+     `confirmed_branch`/`pruned_branches` 覆盖不到的 `emerging`/
+     `active` 等状态，接受新 6 态或旧 4 态写法，统一按
+     `canonical_status()` 落盘，引用不存在的分支或无法识别的状态
+     值直接忽略该项，不报错、不影响其它项）、`expand_branches`
+     （数组，`{"branch_id","sub_branches"}`，把已有分支标记为
+     `expanded` 并可选整体替换其 `sub_branches`；只给 `branch_id`
+     时只切换标记、保留原有子分支）。`confirmed_branch`/
+     `pruned_branches` 两个已有字段行为不变，只是落盘的状态名从
+     `confirmed`/`pruned` 改成新 6 态里的 `resolved`/`invalidated`。
+  5. **`spec_generator._resolve_causal_lines_hint()`**：advance 阶段
+     的分支状态提示同步改成 6 态标注（`[dormant]`/`[emerging]`/...），
+     `tree_updates` 的输出格式说明补充 `status_updates`/
+     `expand_branches` 两个新字段的用法说明，并给 `new_branches`
+     追加可选的 `semantic_event`/`trigger_conditions`/
+     `candidate_actions`/`urgency` 字段说明；create 阶段的初始
+     `future_tree` 要求也补了一句"每个分支还可以选填这些 KeyNode
+     字段，创建阶段留空也可以，后续推进时再补充"。
+  6. **`app.py`**：因果线总览页的状态图标/文案改成 6 态
+     （dormant○/emerging🌱/active◐/resolved●/expired⌛/
+     invalidated✕），手动按钮从"标为已印证/已排除"改名为"标为已
+     解决/已失效"，写入时调用 `set_branch_status()` 走新的
+     `resolved`/`invalidated`；渲染时读取分支状态先过
+     `causal_tree.canonical_status()`，历史实例里还留着旧 4 态
+     原始字符串也能正确显示图标（不要求用户手动迁移数据）。
+     另有两处纯文案提示同步改名。
+  7. **`state_model.py`**：`SimState.line_updates` docstring 里
+     `future_tree` 示例和状态取值说明同步更新为 6 态。
+  **验收**：`tests/test_causal_tree.py` 从 6 个用例扩到 20 个——
+  除了同步修正两个因为状态名迁移而需要更新预期值的既有用例
+  （`test_apply_tree_updates_confirm_prune_and_new_branch`、
+  `test_set_branch_status_manual_override`），新增 `canonical_
+  status()` 的旧→新映射/透传/未知值兜底、KeyNode 六个新字段的
+  默认值与声明值往返、非法 `urgency` 回退、`expansion_level`/
+  `sub_branches` 的规整与递归过滤、`status_updates`（含接受旧状态名
+  写法、忽略未知分支或非法状态值）、`expand_branches`（含带/不带
+  `sub_branches` 两种调用方式、忽略不存在的分支 id）等 14 个用例。
+  加上原有 295 个，全部通过（**308 passed**）。
+  **已知限制/对原文的偏差**（已在上面各条目里就地标注，这里汇总）：
+  `diverged→expired` 的映射关系、`expansion_level`/`sub_branches`
+  放在分支级而不是树级，都是方案文本本身表述不够精确（3 态 vs 实际
+  4 态、"顶层字段" vs 后文"给某个分支标记"自相矛盾）情况下按语义
+  就近做的实施选择，不是简单照抄原文；`dormant→emerging→active` 的
+  推进判断依据仍然完全交给 LLM 在 `tree_updates.status_updates` 里
+  显式声明，engine 侧不做任何自动推断规则（这点和 4.4 节紧急度
+  判断的取舍一致，见第二批记录）；4.9/4.11 之外，方案第 5 节
+  第五批（4.10 DecisionOpportunity 一等公民对象）尚未开始。
