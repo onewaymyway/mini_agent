@@ -755,6 +755,17 @@ def _field_provenance_html(state) -> str:
 
 _RISK_LEVEL_LABELS = {"low": "低风险", "medium": "中风险", "high": "高风险"}
 _URGENCY_LABELS = {"low": "紧急度低", "medium": "紧急度中", "high": "紧急度高", "critical": "⚠️紧急度极高"}
+_TREND_LABELS = {
+    "accelerating": "📈 加速",
+    "steady": "➡️ 匀速延续",
+    "decelerating": "📉 放缓",
+    "reversing": "🔄 已反转",
+}
+"""第五轮方案 5.3 节：`SimState.line_updates[line_id]["trend"]` 四档
+取值 → 展示文案，供 `_render_causal_lines_overview()` 在因果线标题旁
+渲染趋势徽章，样式复用既有 `ws-uncertain-badge` 胶囊底样，未识别的
+取值不展示（`causal_tree.normalize_line_trend()` 已经在落盘前把非法
+值剔除，这里的兜底只是双重保险）。"""
 _REVERSIBILITY_LABELS = {
     "reversible": "可逆",
     "hard_to_reverse": "难以逆转",
@@ -1302,6 +1313,29 @@ def page_create() -> None:
             '"likelihood": "medium"}]}}]',
         )
 
+    # ── 因果图先验声明（第五轮方案 5.4 节）：区别于「因果线总览」里
+    # 能看到的"实际发生过"的历史统计，这里声明的是"这条线一般来说会
+    # 影响那条线"这类不依赖本次模拟历史数据就成立的常识性结构 ──
+    with st.expander("高级：手动调整因果图先验声明（第五轮方案 5.4 节，可选）"):
+        st.markdown(
+            '<span class="ws-muted">AI 已经按下方草稿给出了建议（因果线之间存在明显的、'
+            "创建时就能判断的先验关系时才会给，没有的话留空是正常情况）——两段提示都会"
+            "喂给下一步推进，由 AI 自己判断参考权重，不会强制先验优先于实际发生过的"
+            "历史统计。留空表示没有值得声明的先验关系。</span>",
+            unsafe_allow_html=True,
+        )
+        declared_causal_graph_default = json.dumps(
+            getattr(draft, "declared_causal_graph", None) or [], ensure_ascii=False
+        )
+        declared_causal_graph_text = st.text_area(
+            "因果图先验声明（JSON 数组，可选）",
+            value=st.session_state.get("create_declared_causal_graph", declared_causal_graph_default),
+            key="create_declared_causal_graph_input",
+            height=80,
+            placeholder='[{"from_line_id": "tech", "to_line_id": "industry", '
+            '"note": "技术突破通常先影响行业格局"}]',
+        )
+
     # ── Reality Sync 轻量版（阶段十八，4.11 节）：用户手动填一句真实
     # 世界参考信息，原样喂给 prompt，系统不做任何自动数据抓取/校准 ──
     with st.expander("高级：填入真实世界参考信息（阶段十八，可选）"):
@@ -1551,6 +1585,10 @@ def page_create() -> None:
         causal_lines_invalid = bool(causal_lines_text.strip()) and not isinstance(
             causal_lines_parsed, list
         )
+        declared_causal_graph_parsed = _safe_json_loads(declared_causal_graph_text, None)
+        declared_causal_graph_invalid = bool(declared_causal_graph_text.strip()) and not isinstance(
+            declared_causal_graph_parsed, list
+        )
         if edited_vars is None:
             st.error("关键变量不是合法 JSON，请修正后再确认创建。")
         elif advanced_objectives_invalid:
@@ -1559,6 +1597,8 @@ def page_create() -> None:
             st.error("资源转移关系不是合法的 JSON 数组，请修正后再确认创建（或清空这一栏跳过）。")
         elif causal_lines_invalid:
             st.error("因果线声明不是合法的 JSON 数组，请修正后再确认创建（或清空这一栏跳过）。")
+        elif declared_causal_graph_invalid:
+            st.error("因果图先验声明不是合法的 JSON 数组，请修正后再确认创建（或清空这一栏跳过）。")
         else:
             resource_fields = [
                 f.strip() for f in resource_fields_text.split(",") if f.strip()
@@ -1577,11 +1617,16 @@ def page_create() -> None:
                 [line for line in causal_lines_parsed if isinstance(line, dict)]
                 if isinstance(causal_lines_parsed, list) else []
             )
+            declared_causal_graph = (
+                [item for item in declared_causal_graph_parsed if isinstance(item, dict)]
+                if isinstance(declared_causal_graph_parsed, list) else []
+            )
             create_settings = dict(st.session_state.get("create_settings") or {})
             create_settings["resource_fields"] = resource_fields
             create_settings["belief_fields"] = belief_fields
             create_settings["resource_relations"] = resource_relations
             create_settings["causal_lines"] = causal_lines
+            create_settings["declared_causal_graph"] = declared_causal_graph
             create_settings["objectives"] = objectives
             create_settings["calibration_notes"] = calibration_notes_text.strip()
             background_entities = [
@@ -1622,7 +1667,7 @@ def page_create() -> None:
                 "create_granularity_preset", "create_granularity_custom", "create_resource_fields",
                 "create_resource_relations", "create_objectives", "create_calibration_notes",
                 "create_background_entities", "create_causal_lines", "create_belief_fields",
-                "create_split_decision_calls",
+                "create_split_decision_calls", "create_declared_causal_graph",
             ):
                 st.session_state.pop(key, None)
             st.session_state["view"] = "detail"
@@ -2075,6 +2120,7 @@ def _render_causal_lines_overview(
 
     for line_id, label in label_by_id.items():
         points = []
+        last_trend = None
         for state in history:
             line_updates = getattr(state, "line_updates", None) or {}
             update = line_updates.get(line_id)
@@ -2083,15 +2129,23 @@ def _render_causal_lines_overview(
             time_label = str(update.get("time_label") or "").strip()
             summary = str(update.get("summary") or "").strip()
             points.append((state.step, time_label, summary))
+            trend = str(update.get("trend") or "").strip().lower()
+            if trend in _TREND_LABELS:
+                last_trend = trend
 
         granularity = granularity_by_id.get(line_id, "")
         cadence_n = cadence_by_id.get(line_id)
         _suffix_parts = [p for p in (granularity, (f"约每 {cadence_n} 步一动" if cadence_n else "")) if p]
         granularity_suffix = f"（{'，'.join(_suffix_parts)}）" if _suffix_parts else ""
+        trend_badge = (
+            f' <span class="ws-uncertain-badge">{_html_text(_TREND_LABELS[last_trend])}</span>'
+            if last_trend else ""
+        )
         title_html = (
             '<div class="ws-causal-line-row">'
             f'<div class="ws-causal-line-row-title">📈 {_html_text(label)}'
-            f'{granularity_suffix} <span class="ws-causal-line-row-id">{_html_text(line_id)}</span></div>'
+            f'{granularity_suffix} <span class="ws-causal-line-row-id">{_html_text(line_id)}</span>'
+            f'{trend_badge}</div>'
         )
         if not points:
             title_html += '<div class="ws-causal-line-empty">这条线目前还没有推进记录。</div></div>'
@@ -2799,6 +2853,23 @@ def page_detail() -> None:
                 placeholder='[{"id": "tech", "label": "技术线", "time_granularity": "年", '
                 '"future_tree": {"branches": [{"id": "fast", "description": "快速发展"}]}}]',
             )
+        cur_declared_causal_graph = cur_settings.get("declared_causal_graph") or []
+        with st.expander("高级：手动调整因果图先验声明（第五轮方案 5.4 节，可选）"):
+            st.markdown(
+                '<span class="ws-muted">先验声明的是"这条线一般来说会影响那条线"这类不依赖'
+                "本次模拟历史数据就成立的常识性结构，和「因果线总览」里能看到的\"实际发生过\""
+                "的因果链统计是两回事——两者都会喂给下一步推进，由 AI 自己判断参考权重，不会"
+                "强制哪个优先。不支持系统自动更新，只能在这里手动增删。</span>",
+                unsafe_allow_html=True,
+            )
+            new_declared_causal_graph_text = st.text_area(
+                "因果图先验声明（JSON 数组，可选）",
+                value=json.dumps(cur_declared_causal_graph, ensure_ascii=False) if cur_declared_causal_graph else "",
+                key="settings_declared_causal_graph",
+                height=80,
+                placeholder='[{"from_line_id": "tech", "to_line_id": "industry", '
+                '"note": "技术突破通常先影响行业格局"}]',
+            )
         cur_calibration_notes = str(cur_settings.get("calibration_notes") or "")
         with st.expander("高级：填入真实世界参考信息（阶段十八，可选）"):
             st.markdown(
@@ -2891,6 +2962,10 @@ def page_detail() -> None:
             causal_lines_invalid = (
                 new_causal_lines_text.strip() and not isinstance(new_causal_lines, list)
             )
+            new_declared_causal_graph = _safe_json_loads(new_declared_causal_graph_text, None)
+            declared_causal_graph_invalid = (
+                new_declared_causal_graph_text.strip() and not isinstance(new_declared_causal_graph, list)
+            )
             new_relationships = _safe_json_loads(new_relationships_text, None)
             relationships_invalid = (
                 new_relationships_text.strip() and not isinstance(new_relationships, list)
@@ -2901,6 +2976,8 @@ def page_detail() -> None:
                 st.error("资源转移关系不是合法的 JSON 数组，设置未保存，请修正后重试。")
             elif causal_lines_invalid:
                 st.error("因果线声明不是合法的 JSON 数组，设置未保存，请修正后重试。")
+            elif declared_causal_graph_invalid:
+                st.error("因果图先验声明不是合法的 JSON 数组，设置未保存，请修正后重试。")
             elif relationships_invalid:
                 st.error("关系声明不是合法的 JSON 数组，设置未保存，请修正后重试。")
             else:
@@ -2915,6 +2992,10 @@ def page_detail() -> None:
                 causal_lines_to_save = (
                     [line for line in new_causal_lines if isinstance(line, dict)]
                     if isinstance(new_causal_lines, list) else []
+                )
+                declared_causal_graph_to_save = (
+                    [item for item in new_declared_causal_graph if isinstance(item, dict)]
+                    if isinstance(new_declared_causal_graph, list) else []
                 )
                 relationships_to_save = (
                     relationship_mod.normalize_relationships(new_relationships)
@@ -2937,6 +3018,7 @@ def page_detail() -> None:
                     ],
                     resource_relations=resource_relations_to_save,
                     causal_lines=causal_lines_to_save,
+                    declared_causal_graph=declared_causal_graph_to_save,
                     objectives=new_objectives,
                     multi_entity_mode=bool(new_multi_entity_mode),
                     split_decision_calls=bool(new_split_decision_calls),

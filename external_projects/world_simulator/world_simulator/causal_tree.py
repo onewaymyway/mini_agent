@@ -102,6 +102,27 @@ _ACCEPTED_STATUS_INPUTS = set(_VALID_STATUS) | set(_LEGACY_STATUS_MAP.keys())
 _VALID_LIKELIHOOD = ("high", "medium", "low")
 _VALID_URGENCY = ("low", "medium", "high", "critical")
 _VALID_EXPANSION_LEVEL = ("compressed", "expanded")
+_VALID_TREND: Tuple[str, ...] = ("accelerating", "steady", "decelerating", "reversing")
+
+
+def normalize_line_trend(raw: Any) -> Optional[str]:
+    """归一化 `SimState.line_updates[line_id]["trend"]`（第五轮方案
+    5.3 节，`next_doc/world_simulator_decision_engine_round2_gap_
+    analysis_plan.md`）：这条因果线"自己觉得现在处于什么阶段"，四选一
+    —— `accelerating`（加速）/`steady`（匀速延续）/`decelerating`
+    （放缓，可能即将转折）/`reversing`（方向已反转）。
+
+    合法四值原样透传（已 `strip().lower()`）；`None`/空值/不认识的
+    取值统一返回 `None`——**不同于** `expansion_level` 遇到非法值退化
+    到 `"compressed"` 这种"总有一个默认值"的字段：趋势判断本身要求
+    有实际依据，判断不出来就应该"不出现"，而不是编一个"steady"顶上去
+    制造伪精确，所以这里的归一化策略是"忽略，不报错"，调用方据此把
+    这个键从 `line_updates` 记录里剔除，不留一个 `None` 占位。
+    """
+    if raw is None:
+        return None
+    value = str(raw).strip().lower()
+    return value if value in _VALID_TREND else None
 
 
 def canonical_status(raw: Any) -> str:

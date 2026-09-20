@@ -391,6 +391,19 @@ class SimState:
     `background_entities_applied` 的取舍）。默认空字典：
     `causal_lines` 未声明、skill 没给出、旧数据都可以为空，不影响
     任何已有行为，向后兼容。
+
+    每一项还支持一个可选子字段 `trend`（第五轮方案 5.3 节，`next_doc/
+    world_simulator_decision_engine_round2_gap_analysis_plan.md`，
+    参考文档第八节"因果线自身应维护的当前趋势"）：
+    `"accelerating"`（加速）/`"steady"`（匀速延续）/`"decelerating"`
+    （放缓，可能即将转折）/`"reversing"`（方向已反转）四选一，回答
+    "这条线自己觉得现在处于什么阶段"（自评视角，每步都可以给）——
+    区别于 `world_simulator/trend.py` 的顺势/逆势判断（事后归因视角，
+    依赖历史统计），两者可以互相印证但不合并成一个字段。不确定可以
+    不填；`engine.py::advance()` 用 `causal_tree.normalize_line_
+    trend()` 归一化，非法值/未声明统一从记录里剔除（不伪造一个默认
+    趋势档），不影响这一项其余字段的解析。默认不出现在字典里，向后
+    兼容。
     """
 
     structural_change: Optional[Dict[str, Any]] = None
@@ -868,6 +881,31 @@ class SimManifest:
       向后兼容），用户可以在创建向导/详情页"模拟设置"里开关，下一步
       推进开始生效。
 
+    - `declared_causal_graph`：列表，声明因果线之间"先验的、稳定的
+      结构性认知"（第五轮方案 5.4 节，`next_doc/world_simulator_
+      decision_engine_round2_gap_analysis_plan.md`，参考文档第六节
+      "因果图"——区别于 `causal_graph.build_causal_graph()` 那种只能
+      反映"过去发生过"的历史统计聚合，这里表达的是"这条线一般来说
+      会影响那条线，即使这次模拟还没有历史数据"）。每一项形如
+      `{"from_line_id": "tech", "to_line_id": "industry", "note":
+      "技术突破通常先影响行业格局，再传导到具体企业"}`：`from_
+      line_id`/`to_line_id` 引用 `causal_lines` 里声明的线 `id`
+      （不做是否真的存在的校验，同 `causal_links.line_id` 的既有
+      取舍），`note` 是一句话说明这条先验关系。由 `generate_scenario`
+      阶段的 skill 在因果线之间存在明显的、创建时就能判断的先验关系
+      时可选给出（比如"经济线通常影响行业线"这种在任何具体历史事件
+      发生之前就成立的常识性结构），留空（默认空列表）表示没有值得
+      声明的先验关系，行为与引入这个字段之前完全一致，向后兼容。
+      `spec_generator.resolve_causal_graph_hint()` 会把这里声明的
+      先验关系（标注"先验声明，尚无实际历史印证"）和原有的历史统计
+      聚合部分（标注"以下是本次模拟实际发生过的因果链统计"）一起
+      两段式喂给 `advance_step`/`world_evolve` 的 prompt，由 LLM 自己
+      判断参考权重，不做成"先验优先于统计"或反过来的强制规则。
+      **不支持中途新增/修改边**——这是创建时一次性声明、模拟过程中
+      只读不改的静态先验，不是持久化的、可增删边的完整因果图数据库；
+      如果某条先验关系被实际走向证伪，靠历史统计聚合那部分自然会
+      逐渐反映出更真实的情况，不需要额外的图编辑机制。
+
     **字段分组索引**（阶段三十一，4.18 节末尾遗留的评估项——`settings`
     字段数量持续增加带来的复杂度负担，这里只做"分组索引"这种低风险
     的可读性改进，不做拆分成多个子对象之类的破坏性重构）：
@@ -878,7 +916,8 @@ class SimManifest:
     - 目标与归因：`objectives`
     - 多主体：`multi_entity_mode`、`hierarchical_agent_mode`、
       `background_entities`、`relationships`
-    - 因果线：`causal_lines`、`suggested_causal_lines`
+    - 因果线：`causal_lines`、`suggested_causal_lines`、
+      `declared_causal_graph`
     - 校准与结构演化：`calibration_notes`、`confirmed_structural_changes`
     - 世界独立演化（实验性）：`observer_mode`
     """

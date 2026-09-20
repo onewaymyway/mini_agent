@@ -2334,3 +2334,60 @@ world_simulator/
   字面 JSON 大括号示例（`{"short_term": "...", ...}`）改写成纯
   文字描述，避免被误判为 `{step_id.field}` 占位符。加上原有 352
   个，全部通过（**355 passed**）。
+
+- 2026-09-20（同日再追加）：**阶段三十四第三批**——按第五轮方案第
+  4 节顺序，完成第三批：5.3（`CausalLine` 补充"当前趋势" trend
+  字段）+ 5.4（因果图从"历史统计聚合"升级为"可声明的先验关系"，
+  `next_doc/world_simulator_decision_engine_round2_gap_analysis_
+  plan.md`）。
+  1. **5.3**：`causal_tree.py` 新增 `normalize_line_trend()`——
+     `line_updates[line_id].trend` 四选一（`accelerating`/
+     `steady`/`decelerating`/`reversing`），合法值透传，非法值/
+     未声明统一忽略（不像 `expansion_level` 那样退化到一个默认档，
+     趋势判断本身要求有实际依据，猜不出就不猜）。`engine/advance.py`
+     新增 `_normalize_line_update()`，推进时对每条 `line_updates`
+     记录的 `trend` 子字段做归一化。`spec_generator.
+     _resolve_causal_lines_hint()` 的 `advance` 阶段两个分支
+     （有/无已声明因果线）都补充了 `trend` 字段的 prompt 说明。
+     `app.py`「因果线总览」标题旁新增趋势徽章（取这条线最近一次
+     合法 `trend` 记录，复用 `ws-uncertain-badge` 胶囊底样）。
+  2. **5.4**：`spec_generator.resolve_causal_graph_hint()`（实际
+     位置在 `spec_generator.py`，方案文档里写的 `causal_graph.py`
+     是笔误——该模块只有纯聚合函数 `build_causal_graph()`，反馈进
+     prompt 的 `resolve_causal_graph_hint()` 一直都在
+     `spec_generator.py`）改写为两段式渲染：第一段"先验声明"读取
+     新增的 `manifest.settings.declared_causal_graph`（创建时一次性
+     声明、模拟过程中只读不改的静态先验，不依赖历史数据），第二段
+     "历史统计聚合"是原有逻辑（`build_causal_graph(history)` 聚合
+     实际发生过的 `causal_links`）。两段各自独立缺省，互不影响；
+     `settings.causal_lines` 为空时两段都不展示（未声明因果线，
+     "线到线"关系无从谈起）。`spec_generator.ScenarioDraft` 新增
+     `declared_causal_graph` 字段 + `from_dict` 解析，`_resolve_
+     causal_lines_hint()` 的 `create` 阶段 prompt 新增对应的可选
+     输出说明（因果线之间存在创建时就能判断的先验关系时才给）。
+     `state_model.py::SimManifest.settings` 文档补充字段说明 +
+     字段分组索引更新。`app.py` 创建向导和详情页"模拟设置"都新增
+     "手动调整因果图先验声明"折叠区（JSON 数组编辑，校验规则同
+     `causal_lines` 的既有模式），确保 skill 给出的建议值不会被
+     创建流程悄悄丢弃，也支持推进过程中手动增删（不支持系统自动
+     更新，符合"静态先验，只读不改"的设计）。
+  **刻意不做的部分**：5.3 不做"变化速度"的量化数值（同"不做伪
+  精确"的一贯风格，`trend` 四档分类已经承载了真正有用的定性信息）；
+  5.4 不做"因果图是持久化的、模拟过程中可以增删边"的完整图数据库
+  式实现——`declared_causal_graph` 只支持创建时声明 + 事后在"模拟
+  设置"里手动整体覆盖，不支持系统自动增删边；详见方案 5.3/5.4 节的
+  取舍说明。
+  **验收**：`tests/test_causal_tree.py` 新增 2 个用例（`normalize_
+  line_trend()` 合法值透传/非法值及缺失统一忽略）；`tests/
+  test_spec_and_engine.py` 新增 1 个用例（`advance()` 端到端验证
+  `line_updates.trend` 的归一化，含一条合法值大小写/前后空格清理、
+  一条非法值被剔除）；`tests/test_causal_graph.py` 新增 4 个用例
+  （无声明时两段皆空、先验声明独立于历史数据展示、非法/自环/缺字段
+  的先验条目被过滤、两段同时存在时的顺序与内容）。加上原有 355
+  个，全部通过（**362 passed**）。
+  另外，验证测试环境本身缺 `fastapi`/`json_repair` 两个第三方依赖
+  （历次改动都没有触发过，这次跑全量套件时才发现，与本批改动无关，
+  补装后不影响任何既有行为）。
+  5.5（创建阶段拆分调用）仍按方案 5.5 节"先观察再决定"，不排入
+  固定批次；5.7（质量信号自评模块）、5.8（三层未来空间展示层核查）
+  待续。

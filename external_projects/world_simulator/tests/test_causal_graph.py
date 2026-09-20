@@ -243,3 +243,66 @@ def test_resolve_causal_graph_hint_caps_at_three_edges():
     # 每个 "line_i → target_i" 都出现 2 次、满足阈值，但提示最多只
     # 列出 3 条边，避免 prompt 膨胀。
     assert hint.count("→") == 3
+
+
+# ── 第五轮方案 5.4 节（因果图先验声明 declared_causal_graph）───────
+
+
+def test_resolve_causal_graph_hint_empty_without_declared_causal_graph_or_history():
+    from world_simulator import spec_generator as sg
+
+    settings = {"causal_lines": [{"id": "tech"}, {"id": "industry"}]}
+    # 没有声明 declared_causal_graph、也没有历史数据时，两段式提示
+    # 都不出现，返回空字符串（向后兼容原有行为）。
+    assert sg.resolve_causal_graph_hint(settings, None) == ""
+
+
+def test_resolve_causal_graph_hint_renders_declared_graph_without_history():
+    from world_simulator import spec_generator as sg
+
+    settings = {
+        "causal_lines": [{"id": "tech"}, {"id": "industry"}],
+        "declared_causal_graph": [
+            {"from_line_id": "tech", "to_line_id": "industry", "note": "技术突破通常先影响行业格局"},
+        ],
+    }
+    # 先验声明不依赖历史数据——即使这次模拟还一步都没推进，也应该
+    # 展示先验关系。
+    hint = sg.resolve_causal_graph_hint(settings, None)
+    assert "tech → industry" in hint
+    assert "技术突破通常先影响行业格局" in hint
+    assert "先验声明，尚无实际历史印证" in hint
+    assert "本次模拟实际发生过的因果链统计" not in hint
+
+
+def test_resolve_causal_graph_hint_ignores_malformed_declared_graph_entries():
+    from world_simulator import spec_generator as sg
+
+    settings = {
+        "causal_lines": [{"id": "tech"}],
+        "declared_causal_graph": [
+            {"from_line_id": "tech", "to_line_id": "tech"},  # 同线内部，忽略
+            {"from_line_id": "", "to_line_id": "industry"},  # 缺 from，忽略
+            "不是字典",  # 非法形状，忽略
+        ],
+    }
+    assert sg.resolve_causal_graph_hint(settings, None) == ""
+
+
+def test_resolve_causal_graph_hint_shows_both_sections_when_both_available():
+    from world_simulator import spec_generator as sg
+
+    settings = {
+        "causal_lines": [{"id": "tech"}, {"id": "industry"}],
+        "declared_causal_graph": [
+            {"from_line_id": "tech", "to_line_id": "industry", "note": "常识性先验"},
+        ],
+    }
+    history = [
+        {"causal_links": [{"line_id": "industry", "source_line_id": "tech"}]}
+        for _ in range(2)
+    ]
+    hint = sg.resolve_causal_graph_hint(settings, history)
+    assert "先验声明，尚无实际历史印证" in hint
+    assert "本次模拟实际发生过的因果链统计" in hint
+    assert hint.index("先验声明") < hint.index("实际发生过的因果链统计")

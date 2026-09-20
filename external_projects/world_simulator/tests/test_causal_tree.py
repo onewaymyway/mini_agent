@@ -438,3 +438,18 @@ def test_apply_tree_updates_new_branch_gets_first_seen_step_stamped():
 def test_build_default_future_tree_stamps_first_seen_step():
     tree = causal_tree.build_default_future_tree("主线", as_of_step=3)
     assert all(b["first_seen_step"] == 3 for b in tree["branches"])
+
+
+# ── 第五轮方案 5.3 节（CausalLine trend 字段）─────────────────────
+
+
+def test_normalize_line_trend_passes_through_valid_values():
+    for value in ("accelerating", "steady", "decelerating", "reversing"):
+        assert causal_tree.normalize_line_trend(value) == value
+    assert causal_tree.normalize_line_trend(" Accelerating ") == "accelerating"
+
+
+def test_normalize_line_trend_ignores_unknown_or_missing():
+    assert causal_tree.normalize_line_trend(None) is None
+    assert causal_tree.normalize_line_trend("") is None
+    assert causal_tree.normalize_line_trend("speeding_up") is None

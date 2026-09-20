@@ -215,6 +215,18 @@ def _resolve_causal_lines_hint(
                 "优先在这些线的基础上调整/补充未来树，而不是重新换一套 id："
                 + "、".join(refine_parts) + "。"
             )
+        base += (
+            "如果因果线之间存在明显的、创建时就能判断的先验关系（比如"
+            "\"经济线通常影响行业线\"这种在任何具体历史事件发生之前就成立"
+            "的常识性结构），可以在输出里额外给一个可选字段 "
+            "`declared_causal_graph`：一个数组，每项 "
+            "{\"from_line_id\": ..., \"to_line_id\": ..., \"note\": "
+            "\"一句话说明\"}（第五轮方案 5.4 节），`from_line_id`/"
+            "`to_line_id` 用上面 `causal_lines` 里的 id；没有明显的先验"
+            "关系就不用输出这个字段或给空数组，不要为了填这个字段而"
+            "牵强地编造——这不是要求穷举因果线之间的所有可能关系，只给"
+            "真正在任何具体历史事件发生之前就成立的常识性结构。"
+        )
         return base
 
     if not lines:
@@ -227,7 +239,11 @@ def _resolve_causal_lines_hint(
             "进展的线（没有进展的线不用出现）；后续每一步请尽量延续使用"
             "同一批 id，不要每步都换一套新的，除非这一步确实催生了一条全新"
             "的因果线——那种情况可以直接启用一个新 id，系统会自动记录为新"
-            "增线，不需要额外操作。"
+            "增线，不需要额外操作。每条线的 line_updates 记录还可以选填"
+            '`trend`（第五轮方案 5.3 节）：`"accelerating"`（加速）/'
+            '`"steady"`（匀速延续）/`"decelerating"`（放缓，可能即将转折）/'
+            '`"reversing"`（方向已反转）四选一，回答"这条线自己觉得现在'
+            '处于什么阶段"——不确定就不填，不要为了填而猜一个。'
         )
     parts = []
     tree_parts = []
@@ -261,7 +277,12 @@ def _resolve_causal_lines_hint(
         "纳入考虑，必要时在 narrative/summary 里说明是如何回应这个意见的："
         + "、".join(parts)
         + "。如果这一步确实出现了一条上面都没列出的新因果线，也可以直接用"
-        "一个新 id 输出 line_updates，系统会自动登记为新线。"
+        "一个新 id 输出 line_updates，系统会自动登记为新线。每条线的"
+        'line_updates 记录还可以选填 `trend`（第五轮方案 5.3 节）：'
+        '`"accelerating"`（加速）/`"steady"`（匀速延续）/`"decelerating"`'
+        '（放缓，可能即将转折）/`"reversing"`（方向已反转）四选一，回答'
+        "这条线自己觉得现在处于什么阶段——不确定就不填，不要为了填而猜"
+        "一个；不认识的取值会被系统忽略，不影响这条线其余字段的解析。"
     )
     due_hint = _lines_due_this_step_hint(lines, current_step)
     if due_hint:
@@ -319,61 +340,92 @@ def _resolve_belief_fields_hint(settings: "Dict[str, Any] | None") -> str:
 def resolve_causal_graph_hint(
     settings: "Dict[str, Any] | None", history: "Sequence[Any] | None"
 ) -> str:
-    """把历史 `causal_links` 聚合出的"线到线"邻接关系反过来喂给下一次
-    `advance_step` 的 prompt（阶段三十三第三批，`next_doc/
-    world_simulator_potential_causal_space_and_decision_engine_plan.md`
-    4.13 节，跨线级联的主动计算）。
+    """把因果线之间的"先验声明 + 历史统计"两段式关系提示喂给下一次
+    `advance_step`/`world_evolve` 的 prompt（阶段三十三第三批 4.13
+    节起步，第五轮方案 5.4 节扩展为两段式，`next_doc/world_simulator_
+    decision_engine_round2_gap_analysis_plan.md`）。
 
-    复用已有的 `causal_graph.build_causal_graph(history)`——阶段二十七
-    起它已经能从历史 `causal_links` 聚合出这类邻接关系，此前只在
-    `app.py` 展示层被调用，没有被喂回 prompt；本函数是这个聚合结果
-    第一次被反馈进推进循环本身。
+    **第一段——先验声明**（5.4 节新增）：`settings.declared_causal_
+    graph`（`generate_scenario` 阶段可选产出，见 `state_model.
+    SimManifest.settings` 里的字段文档）是创建模拟时一次性声明、模拟
+    过程中只读不改的静态先验关系，回答"这条线一般来说会影响那条线，
+    即使这次模拟还没有历史数据"，标注为"先验声明，尚无实际历史印证"。
 
-    只保留 `source_line_id` 是当前已声明因果线（`settings.
-    causal_lines`）之一、且不是"同线内部"（`source_line == target_
-    line`）、历史上出现次数达到一定阈值（`total >= 2`，避免单次巧合
-    就被当成"经常连带影响"）的边，取出现次数最高的最多 3 条——这是
-    "用历史统计做提示"的轻量级主动化，不是真正的因果推断引擎（不做
-    贝叶斯网络/结构方程这类真正的因果计算，那超出当前项目"克制、不做
-    伪精确"的一贯取舍，且单次模拟的历史长度也支撑不起这种计算量）。
+    **第二段——历史统计聚合**（原有逻辑，阶段三十三第三批）：复用
+    `causal_graph.build_causal_graph(history)` 从实际发生过的
+    `causal_links` 聚合"线到线"邻接关系，只保留 `source_line_id` 是
+    当前已声明因果线（`settings.causal_lines`）之一、且不是"同线内部"
+    （`source_line == target_line`）、历史上出现次数达到一定阈值
+    （`total >= 2`，避免单次巧合就被当成"经常连带影响"）的边，取出现
+    次数最高的最多 3 条——这是"用历史统计做提示"的轻量级主动化，不是
+    真正的因果推断引擎（不做贝叶斯网络/结构方程这类真正的因果计算）。
+    标注为"以下是本次模拟实际发生过的因果链统计"。
 
-    没有声明任何因果线、历史为空、或者聚合结果里没有满足以上条件的
-    边时，返回空字符串——`advance_step.yaml` 里这句提示是条件性的，
-    为空表示"暂无足够历史数据或没有声明因果线"，不代表出错，调用方
-    不需要额外处理。
+    两段都展示给 LLM，由它自己判断参考权重，不做成"先验优先于统计"
+    或反过来的强制规则；两段各自独立缺省——没有声明先验、或没有
+    满足条件的历史统计边时，对应那一段就不出现，两段都没有时返回
+    空字符串，`advance_step.yaml`/`world_evolve.yaml` 里这句提示是
+    条件性的，为空不代表出错，调用方不需要额外处理。
+
+    没有声明任何因果线（`settings.causal_lines` 为空）时，两段都不
+    展示，直接返回空字符串——没有因果线，"线到线"关系无从谈起。
     """
+    settings = settings or {}
     line_ids = [
         str(line.get("id")).strip()
-        for line in ((settings or {}).get("causal_lines") or [])
+        for line in (settings.get("causal_lines") or [])
         if isinstance(line, dict) and str(line.get("id") or "").strip()
     ]
-    if not line_ids or not history:
+    if not line_ids:
         return ""
 
-    from world_simulator.causal_graph import build_causal_graph, relation_type_label
+    declared_parts = []
+    for item in settings.get("declared_causal_graph") or []:
+        if not isinstance(item, dict):
+            continue
+        from_id = str(item.get("from_line_id") or "").strip()
+        to_id = str(item.get("to_line_id") or "").strip()
+        if not from_id or not to_id or from_id == to_id:
+            continue
+        note = str(item.get("note") or "").strip()
+        piece = f"{from_id} → {to_id}"
+        if note:
+            piece += f"（{note}）"
+        declared_parts.append(piece)
 
-    edges = [
-        edge
-        for edge in build_causal_graph(history)
-        if edge.source_line in line_ids and edge.source_line != edge.target_line and edge.total >= 2
-    ]
-    if not edges:
-        return ""
+    sections = []
+    if declared_parts:
+        sections.append(
+            "以下是创建模拟时声明的先验因果结构（先验声明，尚无实际历史"
+            "印证，仅作为参考权重之一，不代表这次模拟一定会这样发展）："
+            + "；".join(declared_parts) + "。"
+        )
 
-    top_edges = edges[:3]
-    parts = [
-        f"{edge.source_line} → {edge.target_line}"
-        f"（{relation_type_label(max(edge.relation_counts, key=edge.relation_counts.get))}，"
-        f"出现 {edge.total} 次）"
-        for edge in top_edges
-    ]
-    return (
-        "根据以往记录，以下因果线之间历史上经常连带影响："
-        + "；".join(parts)
-        + "。如果这一步对应的源线有实质进展，请考虑是否也需要在 "
-        "line_updates/tree_updates 里体现对下游线的连带影响，不代表这次"
-        "一定会发生，仅作为提示参考。"
-    )
+    if history:
+        from world_simulator.causal_graph import build_causal_graph, relation_type_label
+
+        edges = [
+            edge
+            for edge in build_causal_graph(history)
+            if edge.source_line in line_ids and edge.source_line != edge.target_line and edge.total >= 2
+        ]
+        if edges:
+            top_edges = edges[:3]
+            stat_parts = [
+                f"{edge.source_line} → {edge.target_line}"
+                f"（{relation_type_label(max(edge.relation_counts, key=edge.relation_counts.get))}，"
+                f"出现 {edge.total} 次）"
+                for edge in top_edges
+            ]
+            sections.append(
+                "以下是本次模拟实际发生过的因果链统计："
+                + "；".join(stat_parts)
+                + "。如果这一步对应的源线有实质进展，请考虑是否也需要在 "
+                "line_updates/tree_updates 里体现对下游线的连带影响，不代表这次"
+                "一定会发生，仅作为提示参考。"
+            )
+
+    return "\n".join(sections)
 
 
 def resolve_hints(
@@ -521,6 +573,16 @@ class ScenarioDraft:
     拆分。用途与 `resource_fields` 一致：创建向导展示建议值、允许用户
     编辑，最终结果存进 `settings.causal_lines`，这个字段本身只是
     "草稿阶段的建议值"，不直接落盘。"""
+    declared_causal_graph: List[Any] = field(default_factory=list)
+    """skill 在因果线之间存在明显的、创建时就能判断的先验关系时给出
+    的建议（第五轮方案 5.4 节，见 `state_model.SimManifest.settings`
+    里 `declared_causal_graph` 的格式说明），比如
+    `[{"from_line_id": "tech", "to_line_id": "industry", "note":
+    "技术突破通常先影响行业格局"}]`，可选输出，留空表示 skill 认为
+    没有值得声明的先验因果结构。用途与 `causal_lines` 一致：创建向导
+    展示建议值、允许用户编辑，最终结果存进
+    `settings.declared_causal_graph`，这个字段本身只是"草稿阶段的
+    建议值"，不直接落盘。"""
     field_provenance: Dict[str, str] = field(default_factory=dict)
     """skill 在生成初始 `vars` 的同时，对每个顶层字段标注的来源
     （阶段三十二，4.2 节）：`"fact"`（用户在意图描述里明确提到）/
@@ -568,6 +630,9 @@ class ScenarioDraft:
             ],
             causal_lines=[
                 dict(x) for x in (data.get("causal_lines") or []) if isinstance(x, dict)
+            ],
+            declared_causal_graph=[
+                dict(x) for x in (data.get("declared_causal_graph") or []) if isinstance(x, dict)
             ],
             field_provenance={
                 str(k): str(v) for k, v in (data.get("field_provenance") or {}).items()

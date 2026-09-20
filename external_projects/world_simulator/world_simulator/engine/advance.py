@@ -21,6 +21,7 @@ from world_simulator.engine.background_entities import (
     _apply_background_entity_extrapolation,
     _normalize_background_entities,
 )
+from world_simulator import causal_tree
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _skill_name_for_template
@@ -34,6 +35,22 @@ from world_simulator.engine.structural_change import (
 from world_simulator.spec_generator import resolve_causal_graph_hint, resolve_hints
 from world_simulator.state_model import ChoiceOption, SimState
 from world_simulator.store import SimStore
+
+
+def _normalize_line_update(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """原样落盘 skill 给出的单条 `line_updates` 记录，只对可选子字段
+    `trend`（第五轮方案 5.3 节）做归一化：合法值透传，非法值/未声明
+    时从结果里剔除（不保留一个 `None` 占位，同 `causal_links`/
+    `key_uncertainty` 等既有字段"未给出即不出现"的一贯风格）。其余
+    字段（`time_label`/`summary`/`advanced` 等）不做任何改动。
+    """
+    updated = dict(raw)
+    trend = causal_tree.normalize_line_trend(updated.get("trend"))
+    if trend is not None:
+        updated["trend"] = trend
+    else:
+        updated.pop("trend", None)
+    return updated
 
 
 def _collect_trigger_node_ids(tree_updates_audit: Any) -> List[str]:
@@ -544,7 +561,7 @@ def advance(
             dict(x) for x in (data.get("causal_links") or []) if isinstance(x, dict)
         ],
         line_updates={
-            str(k): dict(v) for k, v in (data.get("line_updates") or {}).items()
+            str(k): _normalize_line_update(v) for k, v in (data.get("line_updates") or {}).items()
             if isinstance(v, dict)
         },
         structural_change=_normalize_structural_change(data.get("structural_change")),

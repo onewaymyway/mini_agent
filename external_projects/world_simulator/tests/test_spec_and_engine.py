@@ -1489,6 +1489,58 @@ def test_advance_lines_due_hint_reflects_next_step_not_current_step(tmp_path, mo
     }
 
 
+def test_advance_normalizes_line_update_trend_field(tmp_path, monkeypatch):
+    """第五轮方案 5.3 节：`advance_step` 输出的 `line_updates[line_id].
+    trend` 合法四值原样透传；非法取值/空字符串被剔除，不影响这条线
+    其余字段（`time_label`/`summary`）的解析。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+        settings={"causal_lines": [{"id": "tech", "label": "技术线"}]},
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2", "narrative": "n", "next_vars": {}, "options": [],
+                    "line_updates": {
+                        "tech": {"time_label": "第 3 年", "summary": "加速下降", "trend": " Accelerating "},
+                        "industry": {"time_label": "第 3 年", "summary": "尚不明朗", "trend": "unsure"},
+                    },
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.line_updates["tech"]["trend"] == "accelerating"
+    assert "trend" not in next_state.line_updates["industry"]
+
+
 def test_advance_auto_registers_undeclared_causal_line_ids(tmp_path, monkeypatch):
     """用户要求：因果线是模拟的默认基础机制，不应该有前置条件——即使
     `manifest.settings.causal_lines` 完全没有声明过，只要 `advance_step`
