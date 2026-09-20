@@ -2465,3 +2465,74 @@ world_simulator/
   至此第五轮方案 8 条改进方向中，5.1~5.4/5.6~5.8 共 7 条全部完成；
   5.5（创建阶段拆分调用）仍按方案本身"先观察再决定"的建议保留
   开关待启用，不视为遗留差距。
+
+- 2026-09-20（同日再追加）：**阶段三十四第六批**——按用户明确要求
+  "把所有开关都打开，然后继续后续的改动"，完成两件事：（1）落地
+  5.5（创建阶段拆分调用，`next_doc/world_simulator_decision_engine_
+  round2_gap_analysis_plan.md`）；（2）把创建向导里的实验性开关
+  默认值改为开启。
+  1. **5.5 落地**：新增 `manifest.settings.split_creation_calls`
+     开关。为 `True` 时，`spec_generator.generate_scenario()` 不再
+     用单次 `generate_scenario.yaml` 调用，而是拆成两次：
+     - `workflows/world_builder.yaml`：只产出"世界状态本身"——
+       `title`/`summary`/`vars`（含多主体模式下的 `vars.entities`）/
+       `time_label`/`time_granularity`，以及与 `vars` 强相关的可选
+       建议字段（`resource_fields`/`resource_relations`/
+       `uncertain_fields`/`field_provenance`/`objectives`/
+       `belief_fields`/`beliefs`）——这些字段本质是"世界状态怎么
+       描述"，划给第一步。
+     - `workflows/causal_space_builder.yaml`：把第一步的
+       `title`/`summary`/`vars` 当既成事实喂进去（`built_title`/
+       `built_summary`/`built_vars_json`），专门产出候选行动
+       `options`、因果线声明 `causal_lines`（含 `future_tree`/
+       KeyNode 字段）、因果线先验关系 `declared_causal_graph`——
+       对应参考文档"Causal Line Generator + 关键节点生成 + 触发
+       条件生成 + 候选行动生成 + 跨因果线关系建立"。
+     字段划分依据 `advance.py` 拆分调用的既有原则："世界状态类
+     字段"归第一步，"因果/决策类字段"归第二步，两者互不重叠，
+     `spec_generator.generate_scenario()` 里两份结果按
+     `{**data_causal, **data_world}` 直接展开合并（同
+     `advance.py::advance()` 的既有合并方式）；`ScenarioDraft.
+     from_dict()` 不需要区分走的是单次调用还是拆分调用。默认
+     `False` 时行为完全不变，仍是原来的单次 `generate_scenario.
+     yaml` 调用。三个模板 `SKILL.md`（`life-sim-template`/
+     `negotiation-template`/`group-evolution-template`）都补充了
+     对应说明段落，同 `split_decision_calls` 既有段落的写法。
+  2. **实验性开关默认开启**：用户要求"把所有开关都打开"——创建
+     向导（`app.py`）里三个原本默认关闭/未提供入口的实验性开关
+     改为创建时默认勾选（用户仍可取消）：
+     - `split_decision_calls`（阶段三十三第八批）：向导里的复选框
+       默认值由 `False` 改为 `True`。
+     - `split_creation_calls`（本批新增）：默认 `True`。
+     - `observer_mode`（阶段三十一 4.25 节）：此前只能在创建*之后*
+       的详情页"模拟设置"里开启，这次向导新增了对应复选框，默认
+       `True`，创建时随其它设置一起存入 `settings`。
+     **刻意不做的部分（取舍说明）**：没有改动这三个开关在引擎侧
+     读取时的兜底默认值（`advance.py::advance()` 的
+     `manifest.settings.get("split_decision_calls")`、
+     `spec_generator.generate_scenario()` 的
+     `(settings or {}).get("split_creation_calls")`、
+     `autopilot.py` 的 `(manifest.settings or {}).get("observer_
+     mode")`——这三处的"键不存在时"兜底值仍然是 `False`/`None`）。
+     原因：这三个开关一旦默认在引擎层面打开，会影响所有*不经过*
+     创建向导构造的 manifest（CLI `create_simulation()` 直接调用、
+     测试里手工构造的 manifest、旧数据），而全量测试套件里有十余
+     个测试文件（`test_spec_and_engine.py`/`test_autopilot.py`/
+     `test_multi_template.py` 等）在构造 `advance()`/
+     `generate_scenario()` 调用时完全没有设置这些开关、只 mock 了
+     单次调用路径的 workflow——如果引擎侧默认值也一起改成 `True`，
+     这些测试会全部按拆分调用路径走而找不到对应的 mock，需要逐一
+     重写，属于"为了一个默认值偏好而制造大量无实质收益的测试改动
+     和真实行为风险"，不划算。改成"创建向导默认勾选"能达到用户
+     实际想要的效果（新建的模拟默认启用这些能力），同时不改变
+     任何已有实例/测试路径的既有行为——两种做法对新建模拟而言
+     最终效果一致，只是"默认值生效的位置"不同（UI 层显式写入
+     `settings` vs 引擎层兜底），后者风险小得多。
+  **验收**：新增 `tests/test_split_creation_calls.py`，2 个用例
+  （`split_creation_calls=True` 时正确调用 `world_builder` →
+  `causal_space_builder` 并按字段归属正确合并结果；未声明该设置时
+  仍只调用单一的 `generate_scenario` workflow，不触碰拆分后的两个
+  新 workflow）；`tests/test_workflow_prompt_placeholders.py` 对
+  两个新 yaml 文件的静态占位符扫描通过（新增的 JSON 示例大括号里
+  不含"."，不会被误判为 `{step_id.field}` 占位符）。加上原有 370
+  个，全部通过（**372 passed**）。

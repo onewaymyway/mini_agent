@@ -23,9 +23,15 @@
 > `PROJECT.md`"阶段三十四第四批"条目。第五批——**5.8（三层未来
 > 空间展示层分组）已完成**（阶段三十四第五批，纯展示层调整，未
 > 新增数据字段，**370 passed** 与第四批一致），详见 `PROJECT.md`
-> "阶段三十四第五批"条目。至此 5.1~5.4/5.6~5.8 共 7 条全部完成；
-> 5.5（创建阶段拆分调用）按方案本身建议"先观察再决定"，不排入
-> 固定批次，保留开关待真实使用中确认是否需要启用。
+> "阶段三十四第五批"条目。第六批——按用户明确要求"把所有开关都
+> 打开"，**5.5（创建阶段拆分调用）已落地**（新增
+> `split_creation_calls` 开关 + `world_builder`/`causal_space_
+> builder` 两个 workflow），并把创建向导里
+> `split_decision_calls`/`split_creation_calls`/`observer_mode`
+> 三个实验性开关的默认值改为开启（**372 passed**），详见
+> `PROJECT.md`"阶段三十四第六批"条目——引擎层的兜底默认值刻意
+> 保持不变（取舍说明见该条目），只改了创建向导的默认勾选状态。
+> 至此第五轮方案 8 条改进方向 **5.1~5.8 全部完成**。
 
 ---
 
@@ -277,6 +283,11 @@ opportunity()`）只有 `trigger_line_ids`/`trigger_node_ids`/
 
 ### 5.5 创建阶段（`generate_scenario`）的单次调用问题
 
+> **状态**：**已实施**（阶段三十四第六批，用户明确要求"把所有
+> 开关都打开，然后继续后续的改动"，不再是"观察后再决定"）。
+> 以下保留原方案设计文字（含最初的取舍考虑），并在末尾补充实际
+> 落地时与原方案的差异点。
+
 **问题**：`advance_step` 已经在阶段三十三第八批支持拆分成
 `world_evolve`+`decision_generate` 两次调用；但 `generate_
 scenario.yaml`（初始化阶段：Profile/World Builder + 因果线 +
@@ -316,6 +327,28 @@ scenario.yaml`（初始化阶段：Profile/World Builder + 因果线 +
   `advance.py` 的分支写法）、三个模板 `SKILL.md`。
 - **验收点（如果确认要做）**：参照 `test_split_decision_calls.py`
   的写法新增 `test_split_creation_calls.py`。
+
+**实际落地时与原方案的差异（阶段三十四第六批）**：
+- 字段划分做了调整：原方案把"关键节点生成/触发条件生成/候选行动
+  生成/跨因果线关系建立"全部塞进第二步，但没提第一步是否也该带
+  `resource_fields`/`uncertain_fields`/`objectives`/
+  `field_provenance`/`belief_fields`/`beliefs` 这些"和 `vars`
+  强相关的可选建议字段"。落地时把这些字段也划给第一步
+  （`world_builder`）——它们本质是"世界状态怎么描述"，和 `vars`
+  是同一个判断过程的一部分，硬塞进"只看 `vars` 结果、看不到生成
+  `vars` 时上下文"的第二步反而更别扭。第二步（`causal_space_
+  builder`）保留 `options`/`causal_lines`/`declared_causal_graph`
+  三类因果/决策字段。
+- 分支逻辑没有落在 `materialize.py::create_simulation()`，而是在
+  `spec_generator.generate_scenario()` 内部——因为
+  `create_simulation()` 本来就只是调用 `generate_scenario()` 拿
+  结果，分支放进 `generate_scenario()` 内部是更小的改动面，
+  `create_simulation()` 完全不需要感知"这次调用是单次还是拆分"。
+- 開关默认值：因为用户本批明确要求"把所有开关都打开"，创建向导
+  里这个开关的默认勾选状态是 `True`（而不是原方案设想的
+  `False`），但 `settings.split_creation_calls` 本身在数据/引擎
+  层面的键不存在时兜底仍是 `False`——两者的区别和取舍说明见
+  `PROJECT.md`"阶段三十四第六批"条目。
 
 ### 5.6 选项去重/合并的引擎侧兜底
 
@@ -449,9 +482,9 @@ expanded` 二值状态，对应参考文档第二十七节"潜在/活跃"两层�
    是先人工核查现有 `app.py` 展示效果，很可能不需要代码改动，
    放在最后是因为它依赖"确认到底需不需要改"这个前置判断，不适合
    一开始就假定需要改代码。
-6. **5.5（创建阶段拆分调用）单独处理**：本条方案本身建议"先观察
-   再决定"，不排入固定批次——具体做法见 5.5 小节，等真实使用中
-   观察到 `generate_scenario` 确实存在质量问题时再启动。
+6. **第六批**：5.5（创建阶段拆分调用）——原方案建议"先观察
+   再决定"，但阶段三十四第六批按用户明确要求提前落地，具体做法
+   及与原方案的差异见 5.5 小节末尾的"实际落地时与原方案的差异"。
 
 ---
 

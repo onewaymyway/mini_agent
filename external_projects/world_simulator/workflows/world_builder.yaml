@@ -1,0 +1,123 @@
+name: world_builder
+description: >-
+  第五轮方案 5.5 节（`next_doc/world_simulator_decision_engine_round2_
+  gap_analysis_plan.md`，阶段三十四第六批）：`generate_scenario` 拆分
+  调用模式（`manifest.settings.split_creation_calls == True`）的第一步。
+  只产出"世界状态本身"相关的字段（`title`/`summary`/`vars`（含多主体
+  模式下的 `entities`）/`time_label`/`time_granularity`/资源与不确定性
+  相关的可选建议字段），不产出候选行动/因果线——那些交给第二步
+  `causal_space_builder`（喂入这一步的输出）专门判断，对应参考文档
+  "Profile/Entity Builder + World State Builder"。
+  由 `world_simulator/spec_generator.py::generate_scenario()` 触发，
+  触发前会把 `world_builder` 步骤的 `skill_name` 按 `template` 输入
+  动态改写为 `<template>-template`，同 `generate_scenario.yaml` 的既有
+  约定。
+version: "1.0"
+steps:
+  - id: world_builder
+    name: 生成初始世界状态
+    type: skill_agent
+    skill_name: life-sim-template   # 运行时会被 spec_generator.py 按 template 覆盖，这里只是缺省占位
+    result_file: world_builder_result.json
+    result_file_required_keys:
+      - title
+      - summary
+      - vars
+    prompt: |
+      用户的一句话模拟意图：
+      {intent}
+
+      此前一轮生成的草稿（JSON，可能为空字符串——为空表示这是第一次
+      生成，不是修改）：
+      {previous_draft_json}
+
+      用户对上一份草稿的补充意见（可能为空字符串——为空表示忽略，不是
+      修改请求）：
+      {feedback}
+
+      用户设置的时间粒度模式（决定初始状态要建立一个什么样的基准
+      粒度）：{time_granularity_hint}
+      多主体模式设置：{multi_entity_mode_hint}
+      背景角色设置：{background_entities_hint}
+      用户提供的真实世界参考信息（阶段十八，Reality Sync 轻量版，
+      仅供参考、不要照抄成精确数值，为空说明没有需要参考的真实
+      数据）：{calibration_notes}
+      系统从以往其它模拟中沉淀的相关已知因果知识（阶段二十，仅供
+      参考，不要照抄，也不代表一定适用于这次模拟——它们是过去某些
+      模拟里出现过的因果模式，置信度信息已在每一条后面标注）：
+      {relevant_knowledge_hint}
+
+      **这一步只需要产出"世界状态本身"，不需要给出候选行动方向、
+      也不需要判断因果线怎么拆分**——那两部分交给下一步专门处理，
+      你这一步给出的 `vars` 会原样喂给下一步作为已知的世界状态基础。
+
+      规则：
+      - 若"补充意见"为空，忽略"此前一轮生成的草稿"，按"一句话模拟意图"
+        从零生成一份新的世界状态。
+      - 若"补充意见"非空，说明这是一次修改请求：以"此前一轮生成的草稿"
+        为基础，只按"补充意见"要求的方向调整，其余未提及的部分尽量
+        保持不变。
+
+      请按你所属 skill 的规范，把最终结果整理成 `title`/`summary`/
+      `vars`（多主体模式下 `vars.entities`）/`time_label`/
+      `time_granularity`，起始时间粒度要符合上面的设置。
+
+      如果 `vars` 里有明显属于"资源类数值"的字段（比如现金、库存、
+      精力值这类"不应该低于某个下限、且后续会被消耗/增减"的数值），
+      可以在输出里额外给一个可选字段 `resource_fields`：一个数组，
+      每项是字段名（如 `"cash"`，默认下限为 0）或
+      `{"field": "cash", "min": 0}`（自定义下限）；没有这类字段就不用
+      输出这个字段或给空数组，不要为了填这个字段而牵强地挑选。
+
+      如果 `vars` 里有两个资源类字段之间存在明显的"转移"关系（比如
+      "花现金买库存"，一个字段减少的量大致等于另一个字段增加的量），
+      可以在输出里额外给一个可选字段 `resource_relations`：一个数组，
+      每项 `{"type": "transfer", "from": "字段A", "to": "字段B",
+      "tolerance": 数值}`（`tolerance` 是允许的相对误差比例，可省略，
+      默认十分之一）；没有这类明显的转移关系就不用输出这个字段或给
+      空数组，不要为了填这个字段而牵强地配对字段。
+
+      如果 `vars` 里有明显属于"你自己主观估计出来、置信度不高"的字段
+      （比如某个成功率/概率类数值，本质是你的推断而不是确定事实），
+      可以在输出里额外给一个可选字段 `uncertain_fields`：一个数组，
+      每项是 `{"field": "startup_success_rate", "confidence": "low",
+      "note": "一句话说明"}`（`confidence` 只能是 `high`/`medium`/`low`
+      三档之一，不要给精确数字造成伪精确的印象）；像年龄这种确定性
+      字段不要放进来，没有需要标注的字段就不用输出这个字段或给空数组。
+
+      如果这次模拟意图里能看出用户"主要关心什么"（比如"财富""自由度""
+      健康""人际关系"这类可以用来判断"结果好不好"的指标），可以在
+      输出里额外给一个可选字段 `objectives`：一个字符串数组，每项是
+      一个指标名（如 `"资产净值"`），不用是 `vars` 里的精确字段名，
+      写清楚意思即可；意图里完全看不出明确关心的指标就不用输出这个
+      字段或给空数组，不要为了填这个字段而牵强地编造。
+
+      生成 `vars` 的同时，可以额外给出一个可选字段 `field_provenance`
+      （阶段三十二，Fact/Assumption/Inference/Unknown 分层标注）：一个
+      对象，key 是 `vars` 的顶层字段名，value 是以下四选一：
+      - `"fact"`：用户在"一句话模拟意图"里明确提到的信息。
+      - `"assumption"`：你给的合理默认值（用户没说，你按常理假设）。
+      - `"inference"`：你从上下文推断出来的（比如"意图里说是应届生"
+        推断出"没有存款"）。
+      - `"unknown"`：这个字段缺乏依据，只是先给一个占位值。
+      目的是让用户一眼看出"我说了啥、系统猜了啥"，`fact` 只能用于用户
+      真正说过的内容，不要为了让草稿看起来更"真实"就把假设标成
+      `fact`。这是一份主观自评，不需要对每个字段都做，顶层字段都可以
+      覆盖到就足够，不需要递归到嵌套字段内部。
+
+      如果这次模拟里有明显"角色只能通过有限信息估计、无法确知真实值"
+      的关键外部变量（比如市场需求、对手实力、他人真实意图这类信息；
+      注意区分上面的 `uncertain_fields`——那是你自己作为叙事者对某个
+      数值没把握，这里说的是"模拟里的角色自己"对一个真实存在的数值
+      有认知偏差），可以在输出里额外给两个可选字段（阶段三十四，
+      State/Belief 分离第二批）：
+      - `belief_fields`：字符串数组，声明 `vars` 里哪些字段属于这种
+        "认知可能与真实值不同"的字段（如
+        `["market_demand", "competitor_strength"]`）。
+      - `beliefs`：一个对象，key 是 `belief_fields` 里声明的字段名，
+        value 是角色现在认为的估计值（可以是单一数字，也可以是包含
+        low/high/point 三个键的区间估计对象），体现"角色一开始就存在
+        的认知偏差"（比如"角色觉得市场需求只有 70，实际上是 100"）；
+        `vars` 里对应字段仍然要填真实值，不受这里的认知偏差影响。
+      没有这种值得标注的认知偏差字段就不用输出这两个字段或给空——多数
+      模拟场景不需要这个功能，不要为了填这两个字段而牵强地编造。

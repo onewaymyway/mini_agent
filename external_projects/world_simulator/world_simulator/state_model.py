@@ -881,6 +881,21 @@ class SimManifest:
       向后兼容），用户可以在创建向导/详情页"模拟设置"里开关，下一步
       推进开始生效。
 
+    - `split_creation_calls`：布尔，默认 `False`（第五轮方案 5.5 节，
+      `next_doc/world_simulator_decision_engine_round2_gap_analysis_
+      plan.md`，阶段三十四第六批）。为 `True` 时，`spec_generator.
+      generate_scenario()` 不再使用单次 `generate_scenario.yaml`
+      调用，而是拆成 `world_builder.yaml`（只产出世界状态：`title`/
+      `summary`/`vars`/时间粒度/资源与不确定性等可选建议字段）+
+      `causal_space_builder.yaml`（把前者的输出作为既成事实喂进去，
+      专门产出 `options`/`causal_lines`/`declared_causal_graph`）两次
+      独立调用，对应参考文档"Profile/World State Builder"与"Causal
+      Line Generator + 候选行动生成"的分工设想，代价是创建这一步的
+      延迟和 token 成本翻倍。默认 `False`（沿用单次调用，向后兼容），
+      用户可以在创建向导里开关；这个设置只影响*创建*这一步，落盘后
+      仍然原样存进 `settings.split_creation_calls`（后续推进阶段的
+      `split_decision_calls` 是完全独立的开关，两者互不影响）。
+
     - `declared_causal_graph`：列表，声明因果线之间"先验的、稳定的
       结构性认知"（第五轮方案 5.4 节，`next_doc/world_simulator_
       decision_engine_round2_gap_analysis_plan.md`，参考文档第六节
@@ -911,7 +926,7 @@ class SimManifest:
     的可读性改进，不做拆分成多个子对象之类的破坏性重构）：
     - 节奏/候选：`options_count`、`time_granularity_mode`、
       `time_granularity`、`time_granularity_guide`、
-      `split_decision_calls`
+      `split_decision_calls`、`split_creation_calls`
     - 资源与守恒：`resource_fields`、`resource_relations`
     - 目标与归因：`objectives`
     - 多主体：`multi_entity_mode`、`hierarchical_agent_mode`、

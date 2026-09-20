@@ -1,0 +1,93 @@
+name: causal_space_builder
+description: >-
+  第五轮方案 5.5 节（`next_doc/world_simulator_decision_engine_round2_
+  gap_analysis_plan.md`，阶段三十四第六批）：`generate_scenario` 拆分
+  调用模式的第二步，把第一步 `world_builder` 已经产出的世界状态喂进来
+  作为既成事实，专门产出候选行动方向（`options`）、因果线声明
+  （`causal_lines`，含 `future_tree`/KeyNode 字段）、因果线之间的先验
+  关系（`declared_causal_graph`）——对应参考文档"Causal Line
+  Generator + 关键节点生成 + 触发条件生成 + 候选行动生成 + 跨因果线
+  关系建立"这几个子步骤。不重新生成/不应该改动 `title`/`summary`/
+  `vars` 等世界状态字段，只在此基础上判断"这个世界里存在哪些值得
+  拆开看的因果线、当前有哪些值得列入的候选方向"。
+  由 `world_simulator/spec_generator.py::generate_scenario()` 触发，
+  触发前会把 `causal_space_builder` 步骤的 `skill_name` 按 `template`
+  输入动态改写为 `<template>-template`，同 `generate_scenario.yaml`
+  的既有约定。
+version: "1.0"
+steps:
+  - id: causal_space_builder
+    name: 生成候选行动与因果线声明
+    type: skill_agent
+    skill_name: life-sim-template   # 运行时会被 spec_generator.py 按 template 覆盖，这里只是缺省占位
+    result_file: causal_space_builder_result.json
+    result_file_required_keys:
+      - options
+    prompt: |
+      用户的一句话模拟意图：
+      {intent}
+
+      上一步已经生成好的世界状态（既成事实，不要重新生成或改动其中的
+      任何字段，只作为判断候选行动/因果线的依据）：
+      - 标题：{built_title}
+      - 摘要：{built_summary}
+      - 关键变量（JSON）：{built_vars_json}
+
+      用户对上一份草稿的补充意见（可能为空字符串——为空表示忽略，不是
+      修改请求）：
+      {feedback}
+
+      用户设置的候选方向数量上限（软上限，实际给几个由初始情境本身
+      是否存在有意义的分岔方向决定，不是必须凑够）：{option_count_hint}
+      因果线设置（阶段二十二，多尺度因果线）：{causal_lines_hint}
+
+      规则：
+      - 若"补充意见"非空且明确要求调整候选方向，以此前一轮的候选方向
+        为基础按意见调整；否则完全基于上面给出的世界状态从零判断这次
+        模拟值得列出哪些候选方向、要不要拆分因果线。
+      - **不要**重新输出 `title`/`summary`/`vars`——这一步的产出只有
+        `options`/`causal_lines`/`declared_causal_graph` 这几类。
+
+      候选方向必须是"现实世界里可以理解、可以执行"的具体行动、路线
+      或决策（比如"换工作""转向推理模型路线""提高利率""进入新市场"），
+      不能是抽象的内部指标调节（比如"提升职业竞争力 20%""增加收入
+      15%""模型能力 +0.1"这种）——内部数值当然会因为方向被选中而
+      变化，但呈现给用户、写进 `label`/`description` 的必须是行动
+      语义，不是数值语义。
+
+      `options` 里每个候选方向除了 `id`/`label`/`description`，可以
+      额外给出以下可选字段（阶段三十二，Action Space 结构化），让用户
+      在选之前就能看出成本/风险/可逆性，而不是选完才靠事后归因倒推：
+      - `risk_level`：`"low"`/`"medium"`/`"high"` 之一，这个方向大致的
+        风险等级。
+      - `reversibility`：`"reversible"`（可逆）/`"hard_to_reverse"`
+        （难以逆转）/`"irreversible"`（不可逆）之一。
+      - `affected_lines`：字符串数组，这个方向预计会牵动哪些因果线的
+        `id`（如果这次模拟声明了因果线）。
+      - `key_uncertainty`：一句话，这个方向最大的不确定性是什么。
+      - `prerequisites`（第五轮方案 5.1 节）：字符串数组，选择这个
+        方向前需要满足的前提条件（比如"手头有 3 个月生活费缓冲"），
+        没有明显前提就不填或给空数组。
+      - `consequences`（第五轮方案 5.1 节）：一个对象，包含
+        `short_term`/`long_term` 两个可选 key，分别是这个方向的
+        短期/中长期后果各一句话；`description` 已经把后果说清楚的
+        话不需要重复，可以只填其中一个 key 或整体不填。
+      不确定就不填，不要为了填满这几个字段而给出没有把握的判断——空着
+      比给一个随意瞎猜的值更诚实。
+
+      如果这次模拟值得拆成多条并行的因果线（而不是单一时间线），可以
+      在输出里额外给一个可选字段 `causal_lines`：一个数组，每项形如
+      `{"id": "tech_line", "label": "技术线", "time_granularity": "年"}`；
+      没有必要拆分就不用输出这个字段或给空数组。每条线还可以带一个
+      可选的 `future_tree` 字段，描述这条线从当前节点出发的若干可能
+      分支（不是只有一条延续路径），具体形状请参考你所属 skill 的
+      因果树规范。
+
+      如果因果线之间存在明显的、创建时就能判断的先验关系（第五轮方案
+      5.4 节，比如"经济线通常影响行业线"这种在任何具体历史事件发生
+      之前就成立的常识性结构），可以额外给一个可选字段
+      `declared_causal_graph`：一个数组，每项形如
+      `{"from_line_id": "tech", "to_line_id": "industry", "note":
+      "一句话说明这条先验关系"}`；没有值得声明的先验关系就不用输出
+      这个字段或给空数组，不要给放之四海而皆准的空话（比如泛泛的
+      "经济线会影响一切"），要结合这次具体的模拟场景给出。

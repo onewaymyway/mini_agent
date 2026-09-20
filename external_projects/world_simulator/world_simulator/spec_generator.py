@@ -726,10 +726,6 @@ def generate_scenario(
     from mini_agent.workflow.runner import WorkflowRunner
     from world_simulator import knowledge_base
 
-    wf, skill_name = _load_and_bind_skill(
-        Path(workspace_root), "generate_scenario", template, "draft"
-    )
-
     if data_dir is not None:
         try:
             relevant_knowledge_hint = knowledge_base.suggest_for_prompt(
@@ -752,33 +748,124 @@ def generate_scenario(
             ensure_ascii=False,
         )
 
-    runner = WorkflowRunner(cfg)
-    result = runner.run(
-        wf,
-        {
-            "intent": intent,
-            "feedback": feedback or "",
-            "previous_draft_json": previous_draft_json,
-            "calibration_notes": str((settings or {}).get("calibration_notes") or ""),
-            "relevant_knowledge_hint": relevant_knowledge_hint,
-            **resolve_hints(settings, stage="create"),
-        },
-    )
+    shared_inputs = {
+        "intent": intent,
+        "feedback": feedback or "",
+        "previous_draft_json": previous_draft_json,
+        "calibration_notes": str((settings or {}).get("calibration_notes") or ""),
+        "relevant_knowledge_hint": relevant_knowledge_hint,
+        **resolve_hints(settings, stage="create"),
+    }
 
-    if result.status != "done":
-        failed = [
-            f"{sr.step_id}({sr.status.value}): {sr.error}"
-            for sr in result.step_results
-            if sr.status.value != "done"
-        ]
-        raise ScenarioGenerationError(
-            f"generate_scenario workflow 执行未成功（skill={skill_name}）："
-            f"status={result.status}；" + "；".join(failed)
+    # 第五轮方案 5.5 节（阶段三十四第六批，`next_doc/world_simulator_
+    # decision_engine_round2_gap_analysis_plan.md`）：默认仍然是原来的
+    # 单次调用（`generate_scenario.yaml`，向后兼容、不增加延迟和 token
+    # 成本）；`settings.split_creation_calls` 为 True 时改为拆成
+    # `world_builder`（只产出世界状态：title/summary/vars/时间粒度/
+    # 资源与不确定性等可选建议字段）+ `causal_space_builder`（把前者
+    # 的输出喂进去，专门产出 options/causal_lines/declared_causal_
+    # graph）两次独立调用，更贴合参考文档"Profile/World State Builder"
+    # 与"Causal Line Generator + 候选行动生成"的分工设想，代价是延迟和
+    # token 成本翻倍——是否启用由用户自行选择，不作为新默认行为。两条
+    # 路径最终都产出同一份 `data: Dict[str, Any]`，下面
+    # `ScenarioDraft.from_dict()` 完全不需要区分走的是哪条路径。
+    if not bool((settings or {}).get("split_creation_calls")):
+        wf, skill_name = _load_and_bind_skill(
+            Path(workspace_root), "generate_scenario", template, "draft"
         )
 
-    draft_step = next((sr for sr in result.step_results if sr.step_id == "draft"), None)
-    if draft_step is None or not draft_step.result_file:
-        raise ScenarioGenerationError("draft 步骤未产出 result_file，无法解析提案草稿")
+        runner = WorkflowRunner(cfg)
+        result = runner.run(wf, shared_inputs)
 
-    data = json.loads(Path(draft_step.result_file).read_text(encoding="utf-8"))
+        if result.status != "done":
+            failed = [
+                f"{sr.step_id}({sr.status.value}): {sr.error}"
+                for sr in result.step_results
+                if sr.status.value != "done"
+            ]
+            raise ScenarioGenerationError(
+                f"generate_scenario workflow 执行未成功（skill={skill_name}）："
+                f"status={result.status}；" + "；".join(failed)
+            )
+
+        draft_step = next((sr for sr in result.step_results if sr.step_id == "draft"), None)
+        if draft_step is None or not draft_step.result_file:
+            raise ScenarioGenerationError("draft 步骤未产出 result_file，无法解析提案草稿")
+
+        data = json.loads(Path(draft_step.result_file).read_text(encoding="utf-8"))
+    else:
+        wf_world, skill_name = _load_and_bind_skill(
+            Path(workspace_root), "world_builder", template, "world_builder"
+        )
+
+        runner = WorkflowRunner(cfg)
+        result_world = runner.run(wf_world, shared_inputs)
+
+        if result_world.status != "done":
+            failed = [
+                f"{sr.step_id}({sr.status.value}): {sr.error}"
+                for sr in result_world.step_results
+                if sr.status.value != "done"
+            ]
+            raise ScenarioGenerationError(
+                f"world_builder workflow 执行未成功（skill={skill_name}）："
+                f"status={result_world.status}；" + "；".join(failed)
+            )
+
+        world_step = next(
+            (sr for sr in result_world.step_results if sr.step_id == "world_builder"), None
+        )
+        if world_step is None or not world_step.result_file:
+            raise ScenarioGenerationError(
+                "world_builder 步骤未产出 result_file，无法解析提案草稿"
+            )
+
+        data_world: Dict[str, Any] = json.loads(
+            Path(world_step.result_file).read_text(encoding="utf-8")
+        )
+
+        wf_causal, skill_name = _load_and_bind_skill(
+            Path(workspace_root), "causal_space_builder", template, "causal_space_builder"
+        )
+
+        # 把 world_builder 已经给出的世界状态作为既成事实喂给
+        # causal_space_builder——它不应该、也不需要重新生成 title/
+        # summary/vars，只专注判断候选行动和因果线。
+        causal_inputs = {
+            **shared_inputs,
+            "built_title": str(data_world.get("title", "")),
+            "built_summary": str(data_world.get("summary", "")),
+            "built_vars_json": json.dumps(data_world.get("vars") or {}, ensure_ascii=False),
+        }
+        result_causal = runner.run(wf_causal, causal_inputs)
+
+        if result_causal.status != "done":
+            failed = [
+                f"{sr.step_id}({sr.status.value}): {sr.error}"
+                for sr in result_causal.step_results
+                if sr.status.value != "done"
+            ]
+            raise ScenarioGenerationError(
+                f"causal_space_builder workflow 执行未成功（skill={skill_name}）："
+                f"status={result_causal.status}；" + "；".join(failed)
+            )
+
+        causal_step = next(
+            (sr for sr in result_causal.step_results if sr.step_id == "causal_space_builder"),
+            None,
+        )
+        if causal_step is None or not causal_step.result_file:
+            raise ScenarioGenerationError(
+                "causal_space_builder 步骤未产出 result_file，无法解析提案草稿"
+            )
+
+        data_causal: Dict[str, Any] = json.loads(
+            Path(causal_step.result_file).read_text(encoding="utf-8")
+        )
+
+        # 两份结果按字段合并：`world_builder` 负责世界状态类字段，
+        # `causal_space_builder` 负责 options/causal_lines/declared_
+        # causal_graph 等因果/决策类字段，两者字段不重叠，直接展开
+        # 合并即可（同 `advance.py` 拆分调用的既有合并方式）。
+        data = {**data_causal, **data_world}
     return ScenarioDraft.from_dict(data)

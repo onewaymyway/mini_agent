@@ -1101,9 +1101,24 @@ def page_create() -> None:
     split_decision_calls = st.checkbox(
         "拆分为「世界演化」+「决策生成」两次调用（阶段三十三第八批，4.12 节"
         "第三步——更贴合「决策引擎独立于世界演化」的设计，但每步推进会翻倍"
-        "延迟和 token 成本，默认关闭；可以在创建后随时在详情页「模拟设置」"
+        "延迟和 token 成本，默认开启；可以在创建后随时在详情页「模拟设置」"
         "里开关，下一步推进开始生效）",
-        value=bool(st.session_state.get("create_split_decision_calls", False)),
+        value=bool(st.session_state.get("create_split_decision_calls", True)),
+    )
+    split_creation_calls = st.checkbox(
+        "创建这一步拆分为「世界构建」+「因果空间构建」两次调用（第五轮方案"
+        "5.5 节，阶段三十四第六批——更贴合参考文档「World State Builder」"
+        "与「Causal Line Generator + 候选行动生成」的分工设想，但创建这一步"
+        "会翻倍延迟和 token 成本，默认开启；只影响这一次创建，不影响之后的"
+        "推进）",
+        value=bool(st.session_state.get("create_split_creation_calls", True)),
+    )
+    observer_mode = st.checkbox(
+        "🔭 Observer 模式（世界独立演化最小实验，阶段三十一 4.25 节——仅自动挡"
+        "下生效，提示 AI 优先让背景/宏观因果线自然演化、尽量不产生需要立刻"
+        "打断的重大决策分支，不强制约束，默认开启；可以在创建后随时在详情页"
+        "「模拟设置」里开关）",
+        value=bool(st.session_state.get("create_observer_mode", True)),
     )
 
     time_granularity = ""
@@ -1163,6 +1178,8 @@ def page_create() -> None:
             st.session_state["create_options_count"] = int(options_count)
             st.session_state["create_granularity_mode"] = time_granularity_mode
             st.session_state["create_split_decision_calls"] = bool(split_decision_calls)
+            st.session_state["create_split_creation_calls"] = bool(split_creation_calls)
+            st.session_state["create_observer_mode"] = bool(observer_mode)
             if time_granularity_mode == "fixed":
                 st.session_state["create_granularity_custom"] = time_granularity
             elif time_granularity_mode == "guided":
@@ -1174,6 +1191,8 @@ def page_create() -> None:
                 "time_granularity_guide": time_granularity_guide,
                 "multi_entity_mode": template == "negotiation",
                 "split_decision_calls": bool(split_decision_calls),
+                "split_creation_calls": bool(split_creation_calls),
+                "observer_mode": bool(observer_mode),
             }
             st.session_state["create_settings"] = settings
             with st.spinner("正在生成提案草稿..."):
@@ -1669,6 +1688,7 @@ def page_create() -> None:
                 "create_resource_relations", "create_objectives", "create_calibration_notes",
                 "create_background_entities", "create_causal_lines", "create_belief_fields",
                 "create_split_decision_calls", "create_declared_causal_graph",
+                "create_split_creation_calls", "create_observer_mode",
             ):
                 st.session_state.pop(key, None)
             st.session_state["view"] = "detail"

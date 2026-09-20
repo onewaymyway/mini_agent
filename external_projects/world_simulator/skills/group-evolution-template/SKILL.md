@@ -29,6 +29,16 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
 "推进一步"这一节的字段规则/正反例仍然完全适用，只是被拆成两次调用
 各自负责一部分。
 
+**关于"创建初始状态"可能被拆成两次调用**（第五轮方案 5.5 节，阶段
+三十四第六批，`manifest.settings.split_creation_calls == True` 时
+生效，默认开启）：这种情况下你会被 `world_builder` 和
+`causal_space_builder` 两个 workflow 分别挂载两次，各自的 prompt
+已经说明了这次调用该输出哪些字段、不该输出哪些（`world_builder`
+只产出世界状态本身，不产出候选行动/因果线；`causal_space_builder`
+把前一次的世界状态当既成事实，只产出 `options`/`causal_lines`/
+`declared_causal_graph`）——下面"生成初始状态"这一节的字段规则/
+正反例仍然完全适用，只是被拆成两次调用各自负责一部分。
+
 ## 通用判断原则
 
 1. **推演群体层面的结构变化，不是某个成员的个人剧情**：`vars` 里的

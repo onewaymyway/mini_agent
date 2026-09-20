@@ -32,6 +32,20 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
 在这份 SKILL.md 里额外区分——`world_evolve`/`decision_generate.yaml`
 的 prompt 已经明确告诉你这次调用该输出哪些字段、不该输出哪些。
 
+**关于"创建初始状态"可能被拆成两次调用**（第五轮方案 5.5 节，阶段
+三十四第六批，`manifest.settings.split_creation_calls == True` 时
+生效，默认开启）：这种情况下你不会被 `generate_scenario` workflow
+挂载，而是被 `world_builder` 和 `causal_space_builder` 两个 workflow
+**分别**挂载两次——`world_builder` 只产出世界状态本身（`title`/
+`summary`/`vars`/时间粒度等），不产出候选行动/因果线；
+`causal_space_builder` 把前一次的世界状态当既成事实，只产出
+`options`/`causal_lines`/`declared_causal_graph`，不重新生成
+`title`/`summary`/`vars`。下面"生成初始状态（generate_scenario）"
+这一节里描述的所有字段规则/正反例仍然完全适用，只是被拆成了两次
+调用各自负责其中一部分字段，不需要在这份 SKILL.md 里额外区分——
+`world_builder`/`causal_space_builder.yaml` 的 prompt 已经明确告诉
+你这次调用该输出哪些字段、不该输出哪些。
+
 ## 通用判断原则
 
 1. **不要越界替用户做决定**：除非上游明确给出"代理决策"的画像/原则
