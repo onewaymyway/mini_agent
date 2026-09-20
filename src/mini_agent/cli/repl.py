@@ -463,12 +463,16 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         # 请用 `/profile scan`（后者用于周期性 cron 挂载，见
         # `sys:profile_refresh_scan`）。
         import threading
-        threading.Thread(
-            target=agent._maybe_refresh_profile,
-            kwargs={"force": True, "rebuild": False},
-            daemon=True,
-            name="mini-agent-profile",
-        ).start()
+        if not agent._profile_mgr:
+            print("[profile] 长期记忆/画像功能未启用（memory_backend 未配置）")
+        else:
+            threading.Thread(
+                target=agent._maybe_refresh_profile,
+                kwargs={"force": True, "rebuild": False},
+                daemon=True,
+                name="mini-agent-profile",
+            ).start()
+            print("[profile] 画像增量刷新已在后台启动（force=True, rebuild=False）")
 
     elif name == "prompts":
         _list_prompts()
