@@ -6,6 +6,18 @@ Influence Field + Event-Driven 决策引擎 + 反身性（第六轮）
 > 方向重新规划成可以真正推进到完整形态的批次，包括之前评估为
 > "暂不建议"的 4.8（完整 Event-Driven 决策点引擎 + 反身性）。
 >
+> **实施进度**（2026-09-20 更新，见 `PROJECT.md` 阶段三十六）：
+> - ✅ **第一批（2.1 节，Event-Driven 决策点引擎 + Observer View
+>   完整版）已完成**：`engine/advance.py::fast_forward()`、`app.py`
+>   "⏩ 快进"入口、`autopilot.py` 的 `settings.autopilot_fast_forward`
+>   开关均已落地，新增 8 个测试用例，全量测试套件 380 个全部通过。
+>   按方案原文建议，先只在自动挡场景观察几天真实运行的摘要质量，
+>   再考虑要不要把手动挡"快进"按钮推广为默认可见入口（已经可用，
+>   只是还没有大量真实使用反馈）。
+> - ⏳ 第二批（2.2 节 Influence Field / Relationship 完整机制）、
+>   第三批（2.3 节多尺度因果线真正独立推进）、第四批（2.4 节反身性
+>   最小诠释）尚未开始，按方案第 3 节的顺序依次推进。
+>
 > **上游文档**：
 > - `next_doc/world_simulator_universal_simulator_gap_analysis_and_
 >   roadmap_v2_plan.md`（第二轮，阶段二十七~三十一）4.20/4.24/4.25
@@ -51,6 +63,14 @@ Influence Field + Event-Driven 决策引擎 + 反身性（第六轮）
 ## 2. 四个方向的完整方案设计
 
 ### 2.1（建议第一批）Event-Driven 决策点引擎 + Observer View 完整版
+
+> **实施状态：✅ 已完成**（2026-09-20，`PROJECT.md` 阶段三十六第一批）。
+> 落地情况与方案原文的对应关系：`fast_forward()` 完全按下面的方案
+> 落地，唯一的补充是新增了 `decision_context`/`chosen_by`/
+> `allow_custom_options` 三个透传参数（方案原文未展开这一点）——
+> 自动挡场景如果不透传这些参数，快进期间遇到候选选项时会退化成
+> "不做选择、由 skill 自行决定默认走向"，丢失用户设置的风险偏好/
+> 原则/情境化策略，因此在实现时补上。
 
 **为什么合并**：v2 4.25 想要的"系统自己判断该不该停下来给用户看"，
 和 v3 4.8 想要的"平时快进、只在关键事件出现时暂停生成决策点"，
@@ -285,7 +305,7 @@ LLM 的节奏提示（`_lines_due_this_step_hint()`），不强制；所有线
 ## 3. 建议实施顺序（依赖关系 + 风险排序，不代表价值排序）
 
 ```text
-第一批：2.1 Event-Driven 决策点引擎 + Observer View 完整版
+第一批：2.1 Event-Driven 决策点引擎 + Observer View 完整版 ✅ 已完成
   复用 major_decision/options 两个已有字段做外层循环封装，
   不改 advance() 内部实现，改动面最小、用户直接受益最大
   （所有模拟都能用上"快进"），建议先做。

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -624,3 +625,197 @@ def advance(
     store.save_manifest(manifest)
 
     return next_state
+
+
+# ─────────────────────────────────────────────────────────────
+# fast_forward() — Event-Driven 决策点引擎 + Observer View 完整版
+#
+# 设计依据：`next_doc/world_simulator_event_driven_engine_and_full_
+# architecture_plan.md` 2.1 节（第一批）。不重新设计推进循环本身，
+# 只是循环调用已有的单步 `advance()`，复用两个早已存在的信号
+# （`SimState.major_decision`/`SimState.options`）判断"这一步要不要
+# 停下来给用户看"——跳过的每一步仍然逐一完整落盘（`advance()` 内部
+# 的 `store.append_state()` 不变），不会产生历史空洞，下游的
+# `attribution.py`/`retrospective.py`/`quality_signals.py` 等统计
+# 功能读到的历史和"没有用快进、一步步手动点"完全一致。
+# ─────────────────────────────────────────────────────────────
+
+
+@dataclass
+class FastForwardResult:
+    """`fast_forward()` 的返回值：一次"快进"调用的完整结果。"""
+
+    sim_id: str
+    branch: str
+    start_step: int
+    """快进开始前的 `step`（即调用前的 `current.step`）。"""
+    final_state: SimState
+    """快进结束时停在的那一步的完整状态（触发停止的那一步，或者
+    达到 `max_steps` 时最后跑完的那一步）。"""
+    steps_run: int
+    """这次快进实际调用了多少次 `advance()`（不含快进前已有的步数）。"""
+    skipped_states: List[SimState] = field(default_factory=list)
+    """被"折叠"展示的中间步骤（不含 `final_state` 本身）——这些步骤
+    在 `SimStore.load_history()` 里和其它步骤一样完整存在，这里只是
+    额外把它们单独列出来，方便调用方渲染"跳过了这些步骤"的摘要，
+    默认折叠、可展开查看每一步的原始 `narrative`/`summary`。"""
+    stop_reason: str = "max_steps"
+    """为什么停在这一步：
+    - `"major_decision"`：`final_state.major_decision` 为真（命中
+      `stop_on_major_decision`）。
+    - `"options"`：`final_state.options` 非空（命中 `stop_on_options`）。
+    - `"max_steps"`：跑满 `max_steps` 步都没有命中上面两个信号。
+    - `"ended"`/`"paused"`：快进过程中模拟实例被标记为已结束/暂停
+      （`advance()` 在下一次循环时会抛出对应异常），已经完成的步骤
+      仍然正常返回，不会丢失。
+    """
+    summary_text: str = ""
+    """"跳过了 N 步"的自然语言摘要，复用 `retrospective.py` 一贯的
+    "读历史、几句话概括"手法——直接拼接每个被跳过步骤已有的
+    `summary` 字段，不额外发起任何新的 LLM 调用（`advance()` 本身
+    每一步都已经生成过 `summary`，这里只是复用，不是重新生成）。"""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "sim_id": self.sim_id,
+            "branch": self.branch,
+            "start_step": self.start_step,
+            "final_step": self.final_state.step,
+            "steps_run": self.steps_run,
+            "skipped_steps": [s.step for s in self.skipped_states],
+            "stop_reason": self.stop_reason,
+            "summary_text": self.summary_text,
+        }
+
+
+def _summarize_skipped_steps(skipped_states: List[SimState]) -> str:
+    """把被跳过的若干步 `summary` 拼成一段"跳过了 N 步"的摘要文本。
+
+    刻意不发起新的 LLM 调用——`advance()` 每一步已经生成过
+    `summary`，这里只是复用既有文本做拼接，延续 `retrospective.py`
+    "只读取已经存在的信息，不在生成摘要时临时发起新的推演"的一贯
+    做法（见 `retrospective._collect_materials()` 的 docstring）。
+    """
+    if not skipped_states:
+        return ""
+    lines = [f"快进跳过了 {len(skipped_states)} 步，概览："]
+    for s in skipped_states:
+        label = s.time_label or f"第 {s.step} 步"
+        summary = (s.summary or "").strip() or "（无摘要）"
+        lines.append(f"- {label}：{summary}")
+    return "\n".join(lines)
+
+
+def fast_forward(
+    cfg,
+    workspace_root: Path,
+    data_dir: Path,
+    sim_id: str,
+    *,
+    max_steps: int = 10,
+    stop_on_major_decision: bool = True,
+    stop_on_options: bool = True,
+    decision_context: str = "",
+    chosen_by: str = "user",
+    allow_custom_options: bool = False,
+) -> FastForwardResult:
+    """"快进"：连续调用已有的单步 `advance()`，直到命中"值得停下来
+    给用户看"的信号，或者达到 `max_steps` 上限。
+
+    这不是一套新的推进机制——每一步内部仍然是完整的一次
+    `advance()` 调用（默认走向，不指定 `choice_option_id`，与详情页
+    "按默认走向推进"按钮完全相同的调用方式），只是外层多包了一层
+    "遇到信号就停、没遇到就继续调用下一步"的循环，`advance()` 内部
+    的 prompt/字段逻辑完全不改动。
+
+    Args:
+        max_steps: 最多快进多少步，达到这个数字仍未命中停止信号时
+            也会停止（避免无限循环把所有 token 预算耗尽在一次快进
+            里）。必须 >= 1。
+        stop_on_major_decision: 为 `True`（默认）时，某一步的
+            `SimState.major_decision` 为真会立即停止快进，停在这
+            一步（这一步不计入 `skipped_states`，作为 `final_state`
+            完整展示）。
+        stop_on_options: 为 `True`（默认）时，某一步的
+            `SimState.options` 非空会立即停止快进，停在这一步。
+            自动挡场景（`autopilot.run_batch_autopilot()`）会传
+            `False`——自动挡的整个意义就是"不需要为每一批候选选项
+            停下来等真人"，是否要暂停完全交给 `stop_on_major_decision`
+            + `review_mode` 判断，与手动挡"快进"默认两个信号都要
+            拦下来给用户看的语义刻意不同。
+        decision_context/chosen_by/allow_custom_options: 透传给内部
+            每一次 `advance()` 调用，与 `advance()` 自身同名参数
+            含义完全一致。手动挡"快进"不需要传（每一步都是"按默认
+            走向推进"，与详情页按钮行为一致）；自动挡场景需要传入
+            `autopilot._build_decision_context(manifest)` 等价的
+            画像文本，否则快进期间遇到候选选项时会退化成"不做选择、
+            由 skill 自行决定默认走向"，不会应用用户设置的风险偏好/
+            原则/情境化策略——这是本函数保留这三个透传参数、而不是
+            只在内部写死"默认走向"调用方式的原因。
+
+    Returns:
+        `FastForwardResult`——即使一步都没能命中停止信号、也没有
+        任何异常，跑满 `max_steps` 后依然会返回（`stop_reason`
+        为 `"max_steps"`），不会出现"快进了但什么都没返回"的情况。
+
+    Raises:
+        ValueError: `max_steps` 小于 1。
+        SimEngineError: 第一次调用 `advance()` 之前，模拟实例已经
+            不存在或没有可读的当前状态（复用 `advance()` 自身的
+            校验，不重复定义新的错误类型）。
+    """
+    if max_steps < 1:
+        raise ValueError(f"max_steps 必须 >= 1，收到：{max_steps}")
+
+    store = SimStore.for_root(data_dir, sim_id)
+    manifest = store.load_manifest()
+    branch = manifest.branch
+    start_state = store.load_current_state(branch)
+    if start_state is None:
+        raise SimEngineError(f"模拟实例缺少当前状态，数据可能已损坏：{sim_id}")
+    start_step = start_state.step
+
+    skipped_states: List[SimState] = []
+    final_state: SimState = start_state
+    stop_reason = "max_steps"
+    steps_run = 0
+
+    for _ in range(max_steps):
+        try:
+            next_state = advance(
+                cfg, workspace_root, data_dir, sim_id,
+                choice_option_id=None,
+                decision_context=decision_context,
+                chosen_by=chosen_by,
+                allow_custom_options=allow_custom_options,
+            )
+        except SimAlreadyEndedError:
+            stop_reason = "ended"
+            break
+        except SimPausedError:
+            stop_reason = "paused"
+            break
+
+        steps_run += 1
+        final_state = next_state
+
+        hit_major = stop_on_major_decision and bool(next_state.major_decision)
+        hit_options = stop_on_options and bool(next_state.options)
+        if hit_major or hit_options:
+            stop_reason = "major_decision" if hit_major else "options"
+            break
+
+        skipped_states.append(next_state)
+
+    summary_text = _summarize_skipped_steps(skipped_states)
+
+    return FastForwardResult(
+        sim_id=sim_id,
+        branch=branch,
+        start_step=start_step,
+        final_state=final_state,
+        steps_run=steps_run,
+        skipped_states=skipped_states,
+        stop_reason=stop_reason,
+        summary_text=summary_text,
+    )

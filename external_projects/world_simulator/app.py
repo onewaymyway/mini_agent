@@ -68,6 +68,7 @@ from world_simulator.engine import (
     advance,
     apply_structural_change,
     delete_simulation,
+    fast_forward,
     get_simulation,
     list_simulations,
     materialize_simulation,
@@ -3476,6 +3477,72 @@ def page_detail() -> None:
                         st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
                     else:
                         st.rerun()
+
+        # ── 快进（Event-Driven 决策点引擎，`next_doc/world_simulator_
+        # event_driven_engine_and_full_architecture_plan.md` 2.1 节
+        # 第一批）：和上面"推进 1 步"并列、不替换，用户设定一个步数
+        # 上限，点击后连续调用默认走向的 advance()，遇到
+        # major_decision 或出现候选 options 就停下来，展示"跳过了
+        # N 步"的摘要；被折叠的每一步可以展开查看原始细节（数据本来
+        # 就完整落盘了，只是 UI 默认折叠）。
+        with st.expander("⏩ 快进（连续推进，遇到重大决策或候选分支自动停下）"):
+            st.markdown(
+                '<span class="ws-muted">适合"这几步大概率没什么值得决定的事"的场景——'
+                "不用一步步手动点，遇到需要你做决定的时刻会自动停下来。"
+                "</span>",
+                unsafe_allow_html=True,
+            )
+            ff_max_steps = st.number_input(
+                "最多快进多少步", min_value=1, max_value=50, value=10, step=1, key="fast_forward_max_steps",
+            )
+            ff_clicked = st.button("开始快进", key="fast_forward_button")
+            if ff_clicked:
+                with st.spinner("正在快进..."):
+                    try:
+                        cfg = _load_cfg()
+                        ff_result = fast_forward(
+                            cfg, PROJECT_ROOT, DATA_DIR, sim_id, max_steps=int(ff_max_steps),
+                        )
+                    except (SimEngineError, SimAlreadyEndedError, SimPausedError) as exc:
+                        st.error(f"快进失败：{exc}")
+                    except ImportError as exc:
+                        st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+                    else:
+                        st.session_state["fast_forward_last_result"] = ff_result.to_dict()
+                        st.session_state["fast_forward_last_skipped"] = [
+                            {"step": s.step, "time_label": s.time_label, "summary": s.summary, "narrative": s.narrative}
+                            for s in ff_result.skipped_states
+                        ]
+                        st.rerun()
+
+            last_ff = st.session_state.get("fast_forward_last_result")
+            if last_ff and last_ff.get("sim_id") == sim_id:
+                _stop_reason_labels = {
+                    "major_decision": "遇到重大决策，已停下等待你确认",
+                    "options": "出现了候选分支，已停下等待你选择",
+                    "max_steps": "已达到本次设定的步数上限",
+                    "ended": "快进过程中模拟已结束",
+                    "paused": "快进过程中模拟已暂停",
+                }
+                stop_label = _stop_reason_labels.get(last_ff.get("stop_reason", ""), last_ff.get("stop_reason", ""))
+                st.markdown(
+                    f'<div class="ws-muted">上次快进：从第 {last_ff.get("start_step")} 步推进到第 '
+                    f'{last_ff.get("final_step")} 步（实际调用 {last_ff.get("steps_run")} 步）。'
+                    f'{stop_label}。</div>',
+                    unsafe_allow_html=True,
+                )
+                if last_ff.get("summary_text"):
+                    st.markdown(f'<div class="ws-muted">{_html_text(last_ff["summary_text"])}</div>', unsafe_allow_html=True)
+                skipped = st.session_state.get("fast_forward_last_skipped") or []
+                if skipped:
+                    with st.expander(f"展开查看被折叠的 {len(skipped)} 步原始细节"):
+                        for item in skipped:
+                            label = item.get("time_label") or f"第 {item.get('step')} 步"
+                            st.markdown(f"**{label}**")
+                            st.markdown(f'<div class="ws-muted">{_html_text(item.get("summary") or "")}</div>', unsafe_allow_html=True)
+                            if item.get("narrative"):
+                                st.markdown(_html_text(item["narrative"]))
+                            st.markdown("---")
 
     causal_lines_meta = manifest.settings.get("causal_lines") or []
 

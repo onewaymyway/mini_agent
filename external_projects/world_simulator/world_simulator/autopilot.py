@@ -21,6 +21,7 @@ from world_simulator.engine import (
     SimEngineError,
     SimPausedError,
     advance,
+    fast_forward,
     list_simulations,
     set_status,
 )
@@ -207,6 +208,56 @@ def run_batch_autopilot(
 
     for manifest in targets:
         sim_id = manifest.sim_id
+
+        # 4.8/2.1 节（Event-Driven 决策点引擎，`next_doc/
+        # world_simulator_event_driven_engine_and_full_architecture_
+        # plan.md`）：`settings.autopilot_fast_forward=True` 时，
+        # 这个实例的自动挡从"固定推进 steps 步、每步都单独判断
+        # review_mode"改为一次 `fast_forward(max_steps=steps)` 调用
+        # ——`observer_mode` 调整 LLM 产出倾向（少生成决策点），
+        # 这个开关调整调度层"要不要为每一步都单独走一遍 review_mode
+        # 判断"，两者可以同时开启、互不冲突。`stop_on_options=False`：
+        # 自动挡的意义就是不需要为候选选项停下来等真人，是否暂停
+        # 完全交给 `stop_on_major_decision` + `review_mode` 判断。
+        if bool((manifest.settings or {}).get("autopilot_fast_forward")):
+            try:
+                decision_context = _build_decision_context(manifest)
+                allow_custom_options = bool((manifest.autopilot or {}).get("allow_custom_options"))
+                ff_result = fast_forward(
+                    cfg, workspace_root, data_dir, sim_id,
+                    max_steps=max(1, steps),
+                    stop_on_major_decision=True,
+                    stop_on_options=False,
+                    decision_context=decision_context,
+                    chosen_by="autopilot",
+                    allow_custom_options=allow_custom_options,
+                )
+            except (SimEngineError, SimAlreadyEndedError, SimPausedError, AutopilotDisabledError) as exc:
+                logger.error("自动挡快进失败：sim_id=%s error=%s", sim_id, exc)
+                results.append(AutopilotStepResult(sim_id=sim_id, ok=False, error=str(exc)))
+                continue
+            except Exception as exc:  # noqa: BLE001 — 批量任务：单实例异常不能拖垮整批
+                logger.exception("自动挡快进出现未预期异常：sim_id=%s", sim_id)
+                results.append(AutopilotStepResult(sim_id=sim_id, ok=False, error=str(exc)))
+                continue
+
+            review_mode = (manifest.autopilot or {}).get("review_mode", "silent")
+            if ff_result.stop_reason == "major_decision" and review_mode == "pause_on_major_decision":
+                logger.info(
+                    "实例 %s 快进过程中第 %s 步被判定为重大决策，按 "
+                    "review_mode=pause_on_major_decision 暂停自动推进",
+                    sim_id, ff_result.final_state.step,
+                )
+                set_status(data_dir, sim_id, "paused")
+
+            results.append(
+                AutopilotStepResult(
+                    sim_id=sim_id, ok=True, next_step=ff_result.final_state.step,
+                    paused_for_review=bool(ff_result.final_state.major_decision),
+                )
+            )
+            continue
+
         for _ in range(max(1, steps)):
             try:
                 # 每一步都重新读一次最新状态：上一步如果因为

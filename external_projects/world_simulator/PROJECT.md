@@ -2536,3 +2536,70 @@ world_simulator/
   两个新 yaml 文件的静态占位符扫描通过（新增的 JSON 示例大括号里
   不含"."，不会被误判为 `{step_id.field}` 占位符）。加上原有 370
   个，全部通过（**372 passed**）。
+
+- 2026-09-20（同日再追加）：**阶段三十六第一批**——按
+  `next_doc/world_simulator_event_driven_engine_and_full_architecture_
+  plan.md` 的建议顺序，落地第一批 2.1 节（Event-Driven 决策点引擎 +
+  Observer View 完整版），四个方向里改动面最小、复用度最高的一批。
+  1. **`engine/advance.py::fast_forward()`**：新增外层循环，连续调用
+     已有的单步 `advance()`（默认走向，`choice_option_id=None`，与
+     详情页"按默认走向推进"按钮同一种调用方式），每步后检查
+     `next_state.major_decision`（`stop_on_major_decision`，默认
+     `True`）或 `bool(next_state.options)`（`stop_on_options`，默认
+     `True`），命中就停止；达到 `max_steps` 都没命中也停止。不改动
+     `advance()` 内部任何 prompt/字段逻辑，跳过的每一步依然逐一完整
+     调用 `store.append_state()` 落盘，不产生历史空洞。返回值
+     `FastForwardResult` 携带 `final_state`/`skipped_states`/
+     `stop_reason`（`major_decision`/`options`/`max_steps`/`ended`/
+     `paused`）/`summary_text`（直接拼接被跳过步骤已有的 `summary`
+     字段，不发起新的 LLM 调用，复用 `retrospective.py`"只读取已经
+     存在的信息"的一贯做法）。新增 `decision_context`/`chosen_by`/
+     `allow_custom_options` 透传参数，供自动挡场景保留风险偏好/原则
+     画像（见下）。
+  2. **`app.py` 新增"⏩ 快进"入口**：详情页推进面板里与"推进 1 步"
+     并列（不替换），用户设定 `max_steps` 上限，点击后展示"跳过了
+     N 步"的摘要 + 停止原因，摘要下方可展开查看每一步原始
+     `summary`/`narrative`（数据本来就完整落盘，只是 UI 默认折叠）
+     ——这就是 v2 4.25 节设想的"双视角"效果的最小成本实现，不需要
+     重新设计存储层或两套视图组件。
+  3. **`autopilot.py::run_batch_autopilot()` 新增
+     `settings.autopilot_fast_forward` 开关**（默认 `False`，manifest
+     级别）：为 `True` 时，该实例的自动挡从"固定推进 `steps` 步、
+     每步单独判断 `review_mode`"改为调用一次
+     `fast_forward(max_steps=steps, stop_on_major_decision=True,
+     stop_on_options=False, decision_context=..., chosen_by=
+     "autopilot", ...)`——`stop_on_options` 固定传 `False`：自动挡的
+     意义就是不需要为候选选项停下来等真人，是否暂停完全交给
+     `stop_on_major_decision` + `review_mode` 判断；`decision_context`
+     透传 `_build_decision_context(manifest)`，保证快进期间遇到候选
+     选项时仍然应用用户设置的风险偏好/原则/情境化策略，不会退化成
+     "不做选择、由 skill 自行决定默认走向"。命中 `major_decision` 且
+     `review_mode == "pause_on_major_decision"` 时按原有语义调用
+     `set_status(paused)`。与 `observer_mode` 互补：`observer_mode`
+     调整 LLM 产出倾向（少生成决策点），`autopilot_fast_forward`
+     调整调度层"要不要为每一批候选选项都单独走一遍暂停判断"，两者
+     可以同时开启。
+  4. **`state_model.py`**：文档化 `settings.autopilot_fast_forward`
+     字段，纳入"世界独立演化（实验性）"分组索引。
+  **范围克制（按方案要求，不做的部分）**：不做真正常驻的后台
+  daemon 进程——`project.yaml` 的 cron/entrypoint 调度模型是"启动-
+  执行-退出"的一次性进程，不是常驻服务，`fast_forward()` 仍然是
+  "被一次调用触发，内部循环快进"，这是在现有调度模型约束下能做到的
+  最接近参考文档设想的形态，方案原文 2.1 节已明确这一取舍。
+  **验收**：新增 `tests/test_fast_forward.py`，8 个用例——命中
+  `major_decision` 立即停止且返回正确的跳过步数/摘要文本；命中非空
+  `options` 停止；达到 `max_steps` 都没命中时停止并生成摘要；
+  `max_steps < 1` 时报 `ValueError`；跳过的每一步都能在
+  `SimStore.load_history()` 里完整读到（验证没有历史空洞）；
+  `autopilot_fast_forward` 默认关闭时 `run_batch_autopilot()` 行为
+  与之前完全一致（逐步调用，不走 `fast_forward`）；开启后改为一次
+  `fast_forward()` 调用，命中 `major_decision` 时按 `review_mode`
+  正确暂停；开启后不会因为出现候选 `options` 就中途停下。加上原有
+  372 个，全部通过（**380 passed**）。
+  **后续节奏（按方案原文第 3 节）**：按建议先只观察
+  `autopilot_fast_forward` 几天真实运行的摘要质量，确认"跳过了 N
+  步"的摘要确实有信息量、不是空话之后，再推广到更多场景；第二批
+  （2.2 节 Influence Field / Relationship 完整机制）、第三批（2.3
+  节多尺度因果线真正独立推进，要求先在 `life_sim` 模板小范围人工
+  验证）、第四批（2.4 节反身性最小诠释，价值最不确定、可直接放弃）
+  留待后续按顺序推进，不在本批一次做完。

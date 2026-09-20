@@ -871,6 +871,23 @@ class SimManifest:
       是空操作。留空（默认 `False`）表示不启用，行为与引入这个字段
       之前完全一致，向后兼容。
 
+    - `autopilot_fast_forward`：布尔值（默认 `False`），`next_doc/
+      world_simulator_event_driven_engine_and_full_architecture_
+      plan.md` 2.1 节（第一批，Event-Driven 决策点引擎 + Observer
+      View 完整版）。只在 `pilot_mode == "autopilot"` 时才有实际
+      效果，手动挡下这个字段是空操作。为 `True` 时，
+      `autopilot.run_batch_autopilot()` 对这个实例不再是"固定推进
+      `steps` 步、每步单独判断 `review_mode`"，而是改为调用一次
+      `engine.fast_forward(max_steps=steps, stop_on_major_decision=
+      True, stop_on_options=False, ...)`——遇到 `major_decision`
+      信号才停（同现有 `review_mode == "pause_on_major_decision"`
+      语义一致），中间被跳过的每一步仍然逐一完整落盘，不会因为
+      "快进"产生历史空洞。与 `observer_mode` 是互补关系：
+      `observer_mode` 调整 LLM 的产出倾向（少生成决策点/`options`），
+      `autopilot_fast_forward` 调整调度层"要不要为每一批候选选项都
+      单独走一遍暂停判断"，两者可以同时开启。留空（默认 `False`）
+      表示不启用，行为与引入这个字段之前完全一致，向后兼容。
+
     - `split_decision_calls`：布尔，默认 `False`（阶段三十三第八批，
       4.12 节第三步）。为 `True` 时，`engine.advance()` 不再使用单次
       `advance_step.yaml` 调用，而是拆成 `world_evolve.yaml`（只产出
@@ -934,7 +951,7 @@ class SimManifest:
     - 因果线：`causal_lines`、`suggested_causal_lines`、
       `declared_causal_graph`
     - 校准与结构演化：`calibration_notes`、`confirmed_structural_changes`
-    - 世界独立演化（实验性）：`observer_mode`
+    - 世界独立演化（实验性）：`observer_mode`、`autopilot_fast_forward`
     """
 
     def to_dict(self) -> Dict[str, Any]:

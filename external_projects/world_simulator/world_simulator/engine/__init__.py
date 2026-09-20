@@ -40,7 +40,7 @@ from world_simulator.engine.errors import (
 from world_simulator.engine.materialize import create_simulation, materialize_simulation
 
 # 核心推进循环
-from world_simulator.engine.advance import advance
+from world_simulator.engine.advance import FastForwardResult, advance, fast_forward
 
 # 结构性变化的解析/采纳 + 因果线建议（阶段二十九，4.26 节）
 from world_simulator.engine.structural_change import (
@@ -67,6 +67,8 @@ __all__ = [
     "materialize_simulation",
     "create_simulation",
     "advance",
+    "fast_forward",
+    "FastForwardResult",
     "apply_structural_change",
     "accept_suggested_causal_line",
     "reject_suggested_causal_line",
