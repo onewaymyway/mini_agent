@@ -24,6 +24,36 @@
           "知乎内容抓取"
         ]
       }
+    },
+    {
+      "member_id": "github",
+      "description": "探索自动生成: 抓取ProxyScrape免费代理列表页面的README内容和数据来源",
+      "match": {
+        "domain_pattern": "*.github.com*",
+        "keyword": [
+          "抓取ProxyScrape免费代理列表页面的README内容"
+        ]
+      }
+    },
+    {
+      "member_id": "cdn",
+      "description": "探索自动生成: 抓取ProxyScrape HTTP代理的JSON数据",
+      "match": {
+        "domain_pattern": "*.cdn.jsdelivr.net*",
+        "keyword": [
+          "抓取ProxyScrape HTTP代理的JSON数据"
+        ]
+      }
+    },
+    {
+      "member_id": "free-proxy-list",
+      "description": "探索自动生成: 抓取free-proxy-list.net的代理列表页面内容",
+      "match": {
+        "domain_pattern": "*.free-proxy-list.net*",
+        "keyword": [
+          "抓取free-proxy-list.net的代理列表页面内容"
+        ]
+      }
     }
   ]
 }

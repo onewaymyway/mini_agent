@@ -41,6 +41,72 @@
       "available_tiers": [
         "script"
       ]
+    },
+    "github": {
+      "status": "probation",
+      "status_changed_at": "2026-09-20 10:46:50",
+      "intent_schema": {
+        "type": "object",
+        "required": [
+          "results"
+        ],
+        "properties": {
+          "results": {
+            "type": "array"
+          }
+        }
+      },
+      "success_count": 2,
+      "fail_count": 1,
+      "consecutive_failures": 0,
+      "last_success": "2026-09-20 10:53:29",
+      "last_failure": "2026-09-20 10:47:02",
+      "available_tiers": [
+        "script"
+      ]
+    },
+    "cdn": {
+      "status": "trusted",
+      "status_changed_at": "2026-09-20 10:49:16",
+      "intent_schema": {
+        "type": "object",
+        "required": [
+          "results"
+        ],
+        "properties": {
+          "results": {
+            "type": "array"
+          }
+        }
+      },
+      "success_count": 4,
+      "fail_count": 0,
+      "consecutive_failures": 0,
+      "last_success": "2026-09-20 10:49:37",
+      "last_failure": null,
+      "available_tiers": [
+        "script"
+      ]
+    },
+    "free-proxy-list": {
+      "status": "probation",
+      "status_changed_at": "2026-09-20 10:53:04",
+      "intent_schema": {
+        "type": "object",
+        "required": [
+          "results"
+        ],
+        "properties": {
+          "results": {
+            "type": "array"
+          }
+        }
+      },
+      "success_count": 0,
+      "fail_count": 0,
+      "consecutive_failures": 0,
+      "last_success": null,
+      "last_failure": null
     }
   }
 }

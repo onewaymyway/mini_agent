@@ -1,0 +1,24 @@
+{
+  "source": "explored",
+  "version": 1,
+  "intent_schema": {
+    "type": "object",
+    "required": [
+      "results"
+    ],
+    "properties": {
+      "results": {
+        "type": "array"
+      }
+    }
+  },
+  "distilled_at": "2026-09-20 10:53:04",
+  "distill_source_kind": "script_source",
+  "distill_used_trace_data_fallback": false,
+  "distilled_from_request": {
+    "text": "抓取free-proxy-list.net的代理列表页面内容",
+    "target": {
+      "url": "https://free-proxy-list.net"
+    }
+  }
+}

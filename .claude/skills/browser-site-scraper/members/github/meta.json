@@ -1,0 +1,24 @@
+{
+  "source": "explored",
+  "version": 1,
+  "intent_schema": {
+    "type": "object",
+    "required": [
+      "results"
+    ],
+    "properties": {
+      "results": {
+        "type": "array"
+      }
+    }
+  },
+  "distilled_at": "2026-09-20 10:46:50",
+  "distill_source_kind": "script_source",
+  "distill_used_trace_data_fallback": false,
+  "distilled_from_request": {
+    "text": "抓取ProxyScrape免费代理列表页面的README内容和数据来源",
+    "target": {
+      "url": "https://github.com/ProxyScrape/free-proxy-list"
+    }
+  }
+}
