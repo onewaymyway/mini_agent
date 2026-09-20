@@ -25,12 +25,13 @@ from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_regis
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _skill_name_for_template
 from world_simulator.engine.knowledge import _safe_record_causal_links, _safe_suggest_knowledge
+from world_simulator.engine.option_heuristics import compute_option_warnings
 from world_simulator.engine.resource_guard import _apply_resource_guard, _check_resource_relations
 from world_simulator.engine.structural_change import (
     _format_confirmed_structural_changes,
     _normalize_structural_change,
 )
-from world_simulator.spec_generator import resolve_hints
+from world_simulator.spec_generator import resolve_causal_graph_hint, resolve_hints
 from world_simulator.state_model import ChoiceOption, SimState
 from world_simulator.store import SimStore
 
@@ -154,6 +155,12 @@ def advance(
         ),
         "confirmed_structural_changes_hint": _format_confirmed_structural_changes(
             manifest.settings.get("confirmed_structural_changes")
+        ),
+        # 阶段三十三第三批（4.13 节）：把历史 `causal_links` 聚合出的
+        # "线到线"邻接关系反过来喂给这一次推进的 prompt——纯只读聚合，
+        # 不影响下面 `chosen_option` 落盘那一段对历史的读写。
+        "causal_graph_hint": resolve_causal_graph_hint(
+            manifest.settings, store.load_history(branch)
         ),
         **resolve_hints(manifest.settings, current_step=current.step + 1),
     }
@@ -349,6 +356,13 @@ def advance(
     # 供不使用 `urgency` 字段的旧场景/模板继续工作）。
     if any(o.urgency == "critical" for o in next_state.options):
         next_state.major_decision = True
+
+    # 4.4/4.5 节辅助校验（阶段三十三第三批）：宏观事件重合/内部指标
+    # 调节语言的启发式检测——弱信号、仅展示、不阻断流程，见
+    # `option_heuristics.py` docstring。
+    next_state.option_warnings = compute_option_warnings(
+        next_state.options, next_state.key_drivers
+    )
 
     # 因果线不应该有前置条件（用户要求）：`line_updates`/
     # `causal_links.line_id` 里只要出现了 `manifest.settings.causal_lines`

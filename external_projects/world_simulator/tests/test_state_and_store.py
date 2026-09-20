@@ -80,6 +80,26 @@ def test_state_roundtrip_preserves_decision_reason():
     assert legacy_restored.decision_reason == ""
 
 
+def test_state_roundtrip_preserves_option_warnings():
+    """阶段三十三第三批（4.4/4.5 节）：`option_warnings` 应该正确
+    序列化/反序列化，旧数据（没有这个字段）落回空列表。"""
+    state = SimState(
+        step=4,
+        summary="s",
+        options=[ChoiceOption(id="a", label="A")],
+        option_warnings=[
+            {"option_id": "a", "kind": "metric_adjustment_pattern", "note": "疑似指标调节"}
+        ],
+    )
+    restored = SimState.from_dict(state.to_dict())
+    assert restored.option_warnings == [
+        {"option_id": "a", "kind": "metric_adjustment_pattern", "note": "疑似指标调节"}
+    ]
+
+    legacy_restored = SimState.from_dict({"step": 0, "summary": "旧数据"})
+    assert legacy_restored.option_warnings == []
+
+
 def test_state_roundtrip_preserves_uncertain_fields():
     """阶段十一（4.3 节）：`uncertain_fields` 应该原样经过
     to_dict/from_dict 往返，旧数据（没有这个字段）也应该正常落回空

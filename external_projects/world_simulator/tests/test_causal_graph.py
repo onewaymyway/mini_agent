@@ -153,3 +153,93 @@ def test_format_edges_for_display_produces_readable_lines():
     edges = cg.build_causal_graph(history)
     lines = cg.format_edges_for_display(edges)
     assert lines == ["tech → industry：1 次单向影响"]
+
+
+# ── 阶段三十三第三批（4.13 节：跨线级联的主动计算）────────────────────
+# `spec_generator.resolve_causal_graph_hint()` 复用 `build_causal_
+# graph()`，把聚合结果反过来喂给 `advance_step` prompt；这里只测试
+# "有/无足够历史数据"两种情况下的输出，不重复测 `build_causal_graph()`
+# 本身的聚合逻辑（上面已经覆盖）。
+
+
+def test_resolve_causal_graph_hint_empty_without_declared_causal_lines():
+    from world_simulator import spec_generator as sg
+
+    history = [
+        {"causal_links": [{"line_id": "industry", "source_line_id": "tech", "relation_type": "one_way"}]}
+        for _ in range(3)
+    ]
+    # settings 里没有声明任何 causal_lines——即便历史数据充足，也不
+    # 应该产生任何提示（没有"当前已声明因果线"这个筛选基准）。
+    assert sg.resolve_causal_graph_hint({}, history) == ""
+    assert sg.resolve_causal_graph_hint(None, history) == ""
+
+
+def test_resolve_causal_graph_hint_empty_without_history():
+    from world_simulator import spec_generator as sg
+
+    settings = {"causal_lines": [{"id": "tech", "label": "技术线"}]}
+    assert sg.resolve_causal_graph_hint(settings, []) == ""
+    assert sg.resolve_causal_graph_hint(settings, None) == ""
+
+
+def test_resolve_causal_graph_hint_empty_below_occurrence_threshold():
+    from world_simulator import spec_generator as sg
+
+    settings = {"causal_lines": [{"id": "tech", "label": "技术线"}]}
+    # 只出现过一次的边不够"经常连带影响"，不产生提示。
+    history = [{"causal_links": [{"line_id": "industry", "source_line_id": "tech"}]}]
+    assert sg.resolve_causal_graph_hint(settings, history) == ""
+
+
+def test_resolve_causal_graph_hint_ignores_self_loop_edges():
+    from world_simulator import spec_generator as sg
+
+    settings = {"causal_lines": [{"id": "tech", "label": "技术线"}]}
+    # 同线内部的因果关系（source == target）不算"跨线级联"，即使出现
+    # 次数达标也不应该被计入提示。
+    history = [
+        {"causal_links": [{"line_id": "tech", "source_line_id": "tech"}]} for _ in range(3)
+    ]
+    assert sg.resolve_causal_graph_hint(settings, history) == ""
+
+
+def test_resolve_causal_graph_hint_reports_frequent_cross_line_edge():
+    from world_simulator import spec_generator as sg
+
+    settings = {"causal_lines": [{"id": "tech", "label": "技术线"}, {"id": "industry", "label": "产业线"}]}
+    history = [
+        {
+            "causal_links": [
+                {"line_id": "industry", "source_line_id": "tech", "relation_type": "one_way"}
+            ]
+        }
+        for _ in range(3)
+    ]
+    hint = sg.resolve_causal_graph_hint(settings, history)
+    assert "tech → industry" in hint
+    assert "出现 3 次" in hint
+    assert "仅作为提示参考" in hint
+
+
+def test_resolve_causal_graph_hint_caps_at_three_edges():
+    from world_simulator import spec_generator as sg
+
+    settings = {
+        "causal_lines": [
+            {"id": f"line_{i}"} for i in range(5)
+        ]
+    }
+    history = [
+        {
+            "causal_links": [
+                {"line_id": f"target_{i}", "source_line_id": f"line_{i}"}
+                for i in range(5)
+            ]
+        }
+        for _ in range(2)
+    ]
+    hint = sg.resolve_causal_graph_hint(settings, history)
+    # 每个 "line_i → target_i" 都出现 2 次、满足阈值，但提示最多只
+    # 列出 3 条边，避免 prompt 膨胀。
+    assert hint.count("→") == 3

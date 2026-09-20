@@ -168,3 +168,58 @@ def test_each_template_mentions_action_reason_and_decision_reason():
         assert "action_reason" in text, f"{name} 缺少 action_reason 说明"
         assert "decision_reason" in text, f"{name} 缺少 decision_reason 说明"
 
+
+# ── 阶段三十三第三批（4.4 可干预性下沉 + 4.13 跨线级联的辅助校验/
+#    主动计算落地）─────────────────────────────────────────────────
+
+
+def test_advance_step_prompt_has_causal_graph_hint_placeholder():
+    assert "causal_graph_hint" in ADVANCE_STEP_TEXT
+    assert "跨因果线级联提示" in ADVANCE_STEP_TEXT
+
+
+def test_resolve_hints_does_not_include_causal_graph_hint():
+    """`causal_graph_hint` 依赖历史数据，`resolve_hints()` 只吃
+    `settings`（`generate_scenario` 创建阶段没有历史）——这个提示是
+    单独在 `engine/advance.py` 里算好、直接塞进 inputs 字典的，不属于
+    `resolve_hints()` 的返回值，这里确认两者没有被误合并。"""
+    from world_simulator import spec_generator as sg
+
+    hints = sg.resolve_hints({}, stage="advance")
+    assert "causal_graph_hint" not in hints
+
+
+def test_engine_advance_module_wires_causal_graph_hint_and_option_warnings():
+    source = (WORLD_SIM_ROOT / "world_simulator" / "engine" / "advance.py").read_text(
+        encoding="utf-8"
+    )
+    assert "resolve_causal_graph_hint" in source
+    assert "causal_graph_hint" in source
+    assert "compute_option_warnings" in source
+    assert "next_state.option_warnings" in source
+
+
+def test_option_heuristics_module_exposes_expected_functions():
+    from world_simulator.engine import option_heuristics as oh
+
+    assert callable(oh.detect_macro_overlap_warnings)
+    assert callable(oh.detect_metric_adjustment_warnings)
+    assert callable(oh.compute_option_warnings)
+
+
+def test_sim_state_supports_option_warnings():
+    from world_simulator.state_model import SimState
+
+    state = SimState.from_dict(
+        {
+            "step": 1,
+            "summary": "s",
+            "option_warnings": [
+                {"option_id": "a", "kind": "metric_adjustment_pattern", "note": "疑似指标调节"}
+            ],
+        }
+    )
+    assert state.option_warnings == [
+        {"option_id": "a", "kind": "metric_adjustment_pattern", "note": "疑似指标调节"}
+    ]
+

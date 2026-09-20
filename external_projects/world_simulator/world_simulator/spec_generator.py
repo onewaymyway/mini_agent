@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence
 
 from world_simulator.state_model import ChoiceOption
 
@@ -266,6 +266,66 @@ def _resolve_belief_fields_hint(settings: "Dict[str, Any] | None") -> str:
     if not fields:
         return ""
     return "、".join(fields)
+
+
+def resolve_causal_graph_hint(
+    settings: "Dict[str, Any] | None", history: "Sequence[Any] | None"
+) -> str:
+    """把历史 `causal_links` 聚合出的"线到线"邻接关系反过来喂给下一次
+    `advance_step` 的 prompt（阶段三十三第三批，`next_doc/
+    world_simulator_potential_causal_space_and_decision_engine_plan.md`
+    4.13 节，跨线级联的主动计算）。
+
+    复用已有的 `causal_graph.build_causal_graph(history)`——阶段二十七
+    起它已经能从历史 `causal_links` 聚合出这类邻接关系，此前只在
+    `app.py` 展示层被调用，没有被喂回 prompt；本函数是这个聚合结果
+    第一次被反馈进推进循环本身。
+
+    只保留 `source_line_id` 是当前已声明因果线（`settings.
+    causal_lines`）之一、且不是"同线内部"（`source_line == target_
+    line`）、历史上出现次数达到一定阈值（`total >= 2`，避免单次巧合
+    就被当成"经常连带影响"）的边，取出现次数最高的最多 3 条——这是
+    "用历史统计做提示"的轻量级主动化，不是真正的因果推断引擎（不做
+    贝叶斯网络/结构方程这类真正的因果计算，那超出当前项目"克制、不做
+    伪精确"的一贯取舍，且单次模拟的历史长度也支撑不起这种计算量）。
+
+    没有声明任何因果线、历史为空、或者聚合结果里没有满足以上条件的
+    边时，返回空字符串——`advance_step.yaml` 里这句提示是条件性的，
+    为空表示"暂无足够历史数据或没有声明因果线"，不代表出错，调用方
+    不需要额外处理。
+    """
+    line_ids = [
+        str(line.get("id")).strip()
+        for line in ((settings or {}).get("causal_lines") or [])
+        if isinstance(line, dict) and str(line.get("id") or "").strip()
+    ]
+    if not line_ids or not history:
+        return ""
+
+    from world_simulator.causal_graph import build_causal_graph, relation_type_label
+
+    edges = [
+        edge
+        for edge in build_causal_graph(history)
+        if edge.source_line in line_ids and edge.source_line != edge.target_line and edge.total >= 2
+    ]
+    if not edges:
+        return ""
+
+    top_edges = edges[:3]
+    parts = [
+        f"{edge.source_line} → {edge.target_line}"
+        f"（{relation_type_label(max(edge.relation_counts, key=edge.relation_counts.get))}，"
+        f"出现 {edge.total} 次）"
+        for edge in top_edges
+    ]
+    return (
+        "根据以往记录，以下因果线之间历史上经常连带影响："
+        + "；".join(parts)
+        + "。如果这一步对应的源线有实质进展，请考虑是否也需要在 "
+        "line_updates/tree_updates 里体现对下游线的连带影响，不代表这次"
+        "一定会发生，仅作为提示参考。"
+    )
 
 
 def resolve_hints(

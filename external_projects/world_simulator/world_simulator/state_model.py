@@ -424,6 +424,29 @@ class SimState:
     需要这个概念）都可以为空，不影响任何已有行为，向后兼容。
     """
 
+    option_warnings: List[Dict[str, str]] = field(default_factory=list)
+    """产生*本状态*这一步，`engine.py::advance()` 对 `options` 做的
+    弱信号辅助校验结果（阶段三十三第三批，`next_doc/
+    world_simulator_potential_causal_space_and_decision_engine_plan.md`
+    4.4/4.5 节各自提到的"辅助校验"）：**只是提示，不阻断流程、不修改
+    任何选项内容**——同 `uncertain_fields`/`relation_violations` 这类
+    "仅展示、供人工抽查"的既有取舍。
+
+    每一项形如 `{"option_id": "opt_a", "kind": "macro_event_overlap",
+    "note": "一句话说明"}`：`option_id` 对应 `options` 里某一项的 id；
+    `kind` 目前有两种取值——`macro_event_overlap`（4.4 节，选项内容
+    与本步 `key_drivers` 高度重合，疑似把宏观事件直接包装成了选项）、
+    `metric_adjustment_pattern`（4.5 节，选项文本疑似"提升/增加/降低
+    + 数字"这类内部指标调节语言，而不是现实行动语义）；`note` 是给
+    人看的一句话说明。
+
+    检测逻辑见 `world_simulator/engine/option_heuristics.py`，纯字符串
+    /正则匹配，不做语义理解，**误报是预期内的**（方案原文明确"这只是
+    辅助人工发现问题的信号，不是强制校验，避免误伤真正合理的选项"）。
+    默认空列表：这一步没有触发任何辅助校验、旧数据都可以为空，不影响
+    任何已有行为，向后兼容。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
@@ -479,6 +502,9 @@ class SimState:
                 str(k): str(v) for k, v in (data.get("field_provenance") or {}).items()
             },
             decision_reason=str(data.get("decision_reason", "") or ""),
+            option_warnings=[
+                dict(x) for x in (data.get("option_warnings") or []) if isinstance(x, dict)
+            ],
         )
 
 

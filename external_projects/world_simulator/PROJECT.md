@@ -1848,3 +1848,79 @@ world_simulator/
   填写"风险（`action_reason`/`decision_reason` 可能沦为"综合判断，
   没有明确依据"这类低信息量兜底）本批未做任何代码层面的质量校验，
   只能后续人工观察实际输出。
+- 2026-09-20（同日追加）：**阶段三十三第三批**——完成方案第 5 节
+  第三批：4.4（可干预性下沉的辅助校验）+ 4.13（跨线级联的主动
+  计算）。4.4/4.5 的**硬性 prompt 约束**（宏观事件不能包装成选项/
+  选项不能是内部指标调节）已经在第一批落地，本批只补上方案里明确
+  写出的"辅助的、弱信号的、不阻断流程"启发式校验，以及 4.13 把
+  历史因果耦合聚合结果反过来喂回推进循环这两件事：
+  1. **新模块 `world_simulator/engine/option_heuristics.py`**：
+     `detect_macro_overlap_warnings()`（4.4 节，选项文本与本步
+     `key_drivers` 关键词高度重合时提示"可能把宏观事件直接包装成了
+     选项"，短于 4 个字的驱动因素不参与检测）、
+     `detect_metric_adjustment_warnings()`（4.5 节，选项文本出现
+     "提升/增加/降低 + 数字/百分比"或裸的 `+0.1` 这类模式时提示
+     "疑似内部指标调节"，数字后紧跟常见量词——年/月/天/周/次/岁/
+     个/元/%——的情况不算命中，避免"减少 1 个月"这类正常时间描述
+     被误伤）、`compute_option_warnings()` 汇总两者。两条规则都是
+     纯字符串/正则匹配，**刻意接受误报**（比如"提高利率 0.25%"这种
+     合理现实行动也会被指标调节规则命中）——这是方案原文明确认可的
+     取舍："只是辅助人工发现问题的信号，不是强制校验，避免误伤真正
+     合理的选项"。
+  2. **`state_model.py`**：`SimState` 新增 `option_warnings`（列表，
+     每项 `{"option_id", "kind", "note"}`），`to_dict`/`from_dict`
+     完整支持，旧数据缺字段时按空列表处理，向后兼容。
+  3. **`engine/advance.py`**：解析出 `next_state`（含 `options`/
+     `key_drivers`）之后，调用 `compute_option_warnings()` 填充
+     `next_state.option_warnings`——纯审计信息，不修改任何选项内容、
+     不影响推进流程本身。
+  4. **`spec_generator.py`** 新增 `resolve_causal_graph_hint(settings,
+     history)`（4.13 节）：复用阶段二十七的 `causal_graph.
+     build_causal_graph()`，只保留 `source_line_id` 属于当前已声明
+     因果线、`source_line != target_line`（排除同线内部关系）、历史
+     出现次数 `total >= 2` 的边，取出现次数最高的最多 3 条，拼成
+     "根据以往记录，`line_A` → `line_B`（关系类型，出现 N 次）……
+     仅作为提示参考"这样一句话；没有声明因果线、历史为空、或没有
+     满足条件的边时返回空字符串。这是聚合结果第一次从纯展示层
+     （`app.py`）被反馈进推进循环本身，仍然是"用历史统计做提示"的
+     轻量级主动化，不做贝叶斯网络/结构方程这类真正的因果推断。
+  5. **`engine/advance.py`**：在构建 `advance_step` workflow 的
+     `inputs` 时新增 `causal_graph_hint` 一项，调用
+     `resolve_causal_graph_hint(manifest.settings,
+     store.load_history(branch))`——单独计算，不并入
+     `resolve_hints()`（后者的 `settings`-only 签名要同时服务没有
+     历史的 `generate_scenario` 创建阶段，不适合再塞一个依赖历史的
+     参数）。
+  6. **`workflows/advance_step.yaml`**：在因果线设置提示后面新增
+     `{causal_graph_hint}` 占位符及说明文字，明确"仅供参考、不代表
+     这一步一定会发生"。
+  7. **`app.py`**：新增 `_option_warnings_html()`（渲染
+     `option_warnings`，措辞用"建议检查"而不是"已经错了"，选项
+     标题按 `option_id` 反查 `options` 列表，找不到则退化展示 id
+     本身）+ 对应 CSS（`ws-chapter-option-warning`，弱化的灰色斜体，
+     和"审计信息、非报错"的既有视觉语言一致），接入时间线渲染和
+     "游戏视图"两处已有的章节卡片拼装逻辑。
+  **验收**：新增 `tests/test_option_heuristics.py`（10 个用例，
+  覆盖两条规则的命中/不命中边界，以及"提高利率 0.25%"这类刻意接受
+  的误报场景）；`tests/test_causal_graph.py` 新增 6 个（`resolve_
+  causal_graph_hint()` 在未声明因果线/无历史/次数不足阈值/同线
+  自环/正常命中/超过 3 条边截断六种情况下的输出）；`tests/
+  test_decision_engine_prompts.py` 新增 5 个（`causal_graph_hint`
+  占位符断言、确认它不在 `resolve_hints()` 返回值里、`engine/
+  advance.py` 源码里两处新逻辑的接线断言、`option_heuristics`
+  模块的函数存在性断言、`SimState.option_warnings` 往返断言）；
+  `tests/test_state_and_store.py` 新增 1 个（`option_warnings`
+  往返 + 旧数据兼容）。加上原有 273 个用例，全部通过
+  （**295 passed**）；`tests/test_workflow_prompt_placeholders.py`
+  回归测试同步跑过，未受影响。
+  **已知限制**：两条辅助校验规则纯粹是字符串/正则匹配，不做语义
+  理解，误报（比如"提高利率 0.25%"）和漏报（比如用更委婉的说法
+  绕开"提升/增加/降低 + 数字"这个模式）都是预期内的，不打算靠加
+  更多正则来"堵漏洞"——这类弱信号规则的边际收益本身就在收窄；
+  `causal_graph_hint` 只统计"发起线属于当前已声明因果线"这一种
+  情况，`target_line` 是 `(未归属)`（`causal_links` 没填
+  `line_id`）的边不会被排除、也不会被特殊过滤，展示上仍会原样
+  拼进提示句子，这属于沿用 `causal_graph.py` 既有的"未归属也是一种
+  合法状态、不特殊处理"的取舍，不是本批遗漏；4.4/4.13 之外，方案
+  第 5 节第四批（4.9 KeyNode 6 态生命周期 + 4.11 渐进式展开）尚未
+  开始。

@@ -202,6 +202,12 @@ section[data-testid="stSidebar"] {
     color: #b8860b;
     font-weight: 600;
 }
+.ws-chapter-option-warning {
+    margin-top: 0.2rem;
+    font-size: 0.78rem;
+    color: var(--ws-muted, #8a8f98);
+    font-style: italic;
+}
 .ws-chapter-background-entity-note {
     margin-top: 0.2rem;
     font-size: 0.78rem;
@@ -557,6 +563,33 @@ def _relation_violations_html(state) -> str:
             f"（变化 {_html_text(str(delta_from))}）→「{to_field}」"
             f"（变化 {_html_text(str(delta_to))}）看起来不太守恒，"
             "可能是 AI 算错了或者有未说明的损耗</div>"
+        )
+    return "".join(lines)
+
+
+def _option_warnings_html(state) -> str:
+    """渲染这一步 `option_heuristics.py` 辅助校验产出的弱信号提示
+    （阶段三十三第三批，4.4/4.5 节，可能为空）。
+
+    和 `_resource_violations_html()`/`_relation_violations_html()`
+    风格一致：只展示、不阻断，措辞明确用"建议检查"而不是"已经错了"，
+    因为这两条检测规则本身就承认会有误报（见 `option_heuristics.py`
+    docstring）。选项标题按 `option_id` 反查，找不到（比如历史数据里
+    选项后来被移除）就退化为直接展示 id 本身。
+    """
+    warnings = getattr(state, "option_warnings", None) or []
+    if not warnings:
+        return ""
+    options = getattr(state, "options", None) or []
+    label_by_id = {opt.id: opt.label for opt in options}
+    lines = []
+    for w in warnings:
+        option_id = str(w.get("option_id", ""))
+        option_label = label_by_id.get(option_id, option_id)
+        note = _html_text(str(w.get("note", "")))
+        lines.append(
+            f'<div class="ws-chapter-option-warning">🔍「{_html_text(option_label)}」'
+            f"：{note}</div>"
         )
     return "".join(lines)
 
@@ -1706,6 +1739,7 @@ def _render_timeline(
         granularity_note = _granularity_note_html(state)
         resource_note = _resource_violations_html(state)
         relation_note = _relation_violations_html(state)
+        option_warnings_note = _option_warnings_html(state)
         background_note = _background_entities_html(state)
         key_drivers_note = _key_drivers_html(state)
         line_updates_note = _line_updates_html(state, causal_lines_meta)
@@ -1715,7 +1749,7 @@ def _render_timeline(
             '<div class="ws-chapter">'
             f'<div class="ws-chapter-step">第 {state.step} 步{step_time_suffix}</div>'
             f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
-            f"{granularity_note}{resource_note}{relation_note}{background_note}{line_updates_note}{tree_updates_note}{key_drivers_note}{structural_change_note}{narrative}{chosen_note}"
+            f"{granularity_note}{resource_note}{relation_note}{option_warnings_note}{background_note}{line_updates_note}{tree_updates_note}{key_drivers_note}{structural_change_note}{narrative}{chosen_note}"
             "</div>"
         )
         st.markdown(html, unsafe_allow_html=True)
@@ -4032,6 +4066,7 @@ def page_game() -> None:
     granularity_note = _granularity_note_html(s)
     resource_note = _resource_violations_html(s)
     relation_note = _relation_violations_html(s)
+    option_warnings_note = _option_warnings_html(s)
     background_note = _background_entities_html(s)
     key_drivers_note = _key_drivers_html(s)
     line_updates_note = _line_updates_html(s, manifest.settings.get("causal_lines"))
@@ -4042,7 +4077,7 @@ def page_game() -> None:
         '<div class="ws-card" style="min-height: 220px;">'
         f'<div class="ws-chapter-step">第 {s.step} 章{step_time_suffix}{major_tag}</div>'
         f'<div class="ws-chapter-summary" style="font-size:1.15rem;">{_html_text(s.summary)}</div>'
-        f"{granularity_note}{resource_note}{relation_note}{background_note}{line_updates_note}{key_drivers_note}{structural_change_note}"
+        f"{granularity_note}{resource_note}{relation_note}{option_warnings_note}{background_note}{line_updates_note}{key_drivers_note}{structural_change_note}"
         f'<div class="ws-chapter-narrative">{narrative_text}</div>'
         f"{chosen_note}"
         "</div>"
