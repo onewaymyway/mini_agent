@@ -50,6 +50,7 @@ from world_simulator import reality_check as rc_mod
 from world_simulator import retrospective as retrospective_mod
 from world_simulator import agent_preview as agent_preview_mod
 from world_simulator import policy_feedback as policy_feedback_mod
+from world_simulator import quality_signals as quality_signals_mod
 from world_simulator.autopilot import (
     AutopilotDisabledError, run_autopilot_step, run_comparison_experiment, run_repeated_experiment,
 )
@@ -2670,6 +2671,60 @@ def page_detail() -> None:
                     f"{ver}（{b['total']} 条，{b['diverged']} 条不符）"
                     for ver, b in stats["by_model_version"].items()
                 ))
+
+    # 第五轮方案 5.7 节（`next_doc/world_simulator_decision_engine_
+    # round2_gap_analysis_plan.md`，阶段三十四第四批）：评估标准的
+    # 轻量自评模块——纯统计代理指标，不是质量评分，默认折叠避免
+    # 信息过载。
+    with st.expander("📐 质量信号（统计代理指标，非评分）"):
+        st.markdown(
+            '<span class="ws-muted">这些是基于已有字段的客观计数统计，'
+            "用来反映决策引擎设计在几个维度上的信息密度——数字高不代表"
+            "这次模拟一定更好，只是反映了某个维度用得多不多；不是给这次"
+            "模拟打分。</span>",
+            unsafe_allow_html=True,
+        )
+        signals = quality_signals_mod.summarize_quality_signals(
+            history, causal_lines=manifest.settings.get("causal_lines")
+        )
+
+        def _pct(ratio: Optional[float]) -> str:
+            return f"{ratio:.0%}" if ratio is not None else "暂无数据"
+
+        exp = signals["explainability"]
+        st.caption(
+            f"可解释性密度：{_pct(exp['ratio'])}"
+            f"（{exp['decision_points']} 个决策点中 {exp['with_reason']} 个"
+            "标注了决策/行动理由）"
+        )
+        cross = signals["cross_line_influence"]
+        st.caption(
+            f"跨线影响密度：{_pct(cross['ratio'])}"
+            f"（{cross['total_causal_links']} 条因果链中 "
+            f"{cross['with_source_line']} 条标注了发起线）"
+        )
+        div = signals["branch_diversity"]
+        st.caption(
+            f"分支差异性：{_pct(div['ratio'])}"
+            f"（{div['decision_points']} 个决策点中 {div['multi_option']} 个"
+            "给出了 2 个以上选项）"
+        )
+        exp_use = signals["expansion_usage"]
+        st.caption(
+            f"渐进展开使用率：{_pct(exp_use['ratio'])}"
+            f"（{exp_use['total_branches']} 个未来树分支中 "
+            f"{exp_use['expanded']} 个已展开）"
+        )
+        unc = signals["uncertainty_coverage"]
+        st.caption(
+            f"不确定性标注覆盖率：{_pct(unc['ratio'])}"
+            f"（{unc['total_steps']} 步中 {unc['with_uncertain_fields']} 步"
+            "标注了不确定字段）"
+        )
+        st.caption(
+            "因果一致性、决策真实性这两条评价标准需要理解语义内容才能"
+            "判断，暂时没有自动化的衡量方式，仍需自行阅读叙事/因果图判断。"
+        )
 
     # 阶段三十二（4.6 节，用户本次明确要求）：模拟复盘 / 经验教训总结。
     # 不自动触发——LLM 调用有成本，且复盘本身应该是用户主动想回顾时

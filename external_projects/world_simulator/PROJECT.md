@@ -2391,3 +2391,41 @@ world_simulator/
   5.5（创建阶段拆分调用）仍按方案 5.5 节"先观察再决定"，不排入
   固定批次；5.7（质量信号自评模块）、5.8（三层未来空间展示层核查）
   待续。
+
+- 2026-09-20（同日再追加）：**阶段三十四第四批**——按第五轮方案第
+  4 节顺序，完成第四批：5.7（评估标准 8 条的轻量自评模块，
+  `next_doc/world_simulator_decision_engine_round2_gap_analysis_
+  plan.md`）。
+  1. 新增 `world_simulator/quality_signals.py`，提供纯函数
+     `summarize_quality_signals(history, causal_lines=None)`，不发起
+     任何新的 LLM 调用，基于已有字段做五项客观计数统计：
+     **可解释性密度**（有 `decision_reason`/`ChoiceOption.
+     action_reason` 的决策点占比）、**跨线影响密度**（`causal_links`
+     里带 `source_line_id` 的条目占比）、**分支差异性**（`options`
+     数量 >= 2 的决策点占比）、**渐进展开使用率**（`future_tree`
+     里 `expansion_level == "expanded"` 的分支占比，新增
+     `_iter_branches()` 递归遍历 `children`/`sub_branches` 两种
+     嵌套形状统计全部层级）、**不确定性标注覆盖率**（`uncertain_
+     fields` 非空的步数占比）。输入既接受 `SimState` 对象也接受
+     形状相同的 dict（`_get()` helper 统一处理，同 `causal_graph.
+     build_causal_graph()` 的既有取舍）；分母为 0 时对应 `ratio` 为
+     `None`（区分"没有发生"和"没有数据"，不伪造成 0）。
+  2. `app.py` 详情页新增"📐 质量信号（统计代理指标，非评分）"折叠区
+     （默认折叠，位置紧跟"预测准确性统计"之后、"模拟复盘"之前），
+     展示上面五项统计数字，`_pct()` helper 把 `None` 渲染成"暂无
+     数据"而不是"0%"；文案明确标注"数字高不代表这次模拟一定更好"、
+     "不是给这次模拟打分"，并说明因果一致性/决策真实性这两条评价
+     标准暂无自动化衡量方式，仍需自行阅读叙事/因果图判断。
+  **刻意不做的部分**：不做因果一致性/决策真实性这两条的自动化
+  统计（本质需要理解语义内容，勉强做关键词匹配的伪指标反而误导
+  用户）；不做打分/排名（比如"这次模拟得 82 分"），只展示原始
+  统计数字；详见方案 5.7 节的取舍说明。
+  **验收**：新增 `tests/test_quality_signals.py`，8 个用例（空
+  `history` 全零/`None` 默认值；可解释性密度同时识别顶层
+  `decision_reason` 和选项级 `action_reason`；分支差异性/跨线影响
+  密度/不确定性覆盖率的已知输入正确性；渐进展开使用率递归穿透
+  `children`+`sub_branches` 两层嵌套的正确计数；无 `causal_lines`
+  时该项为 `None`；同时接受 `SimState` 对象和 dict 两种输入形状）。
+  加上原有 362 个，全部通过（**370 passed**）。
+  5.5（创建阶段拆分调用）仍按"先观察再决定"，不排入固定批次；5.8
+  （三层未来空间展示层核查）待续。
