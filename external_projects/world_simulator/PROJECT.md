@@ -2299,3 +2299,38 @@ world_simulator/
   `test_advance_builds_decision_opportunity_when_options_present`
   的断言（补上三个新字段的默认 `None` 值）。加上原有 339 个（阶段
   三十三第八批之后的基数），全部通过（**352 passed**）。
+
+- 2026-09-20（同日再追加）：**阶段三十四第二批**——按第五轮方案第
+  4 节顺序，完成第二批：5.1（`ChoiceOption` 补前置条件/分层后果
+  字段，`next_doc/world_simulator_decision_engine_round2_gap_
+  analysis_plan.md`）。
+  1. **`state_model.py`**：`ChoiceOption` 新增两个可选字段——
+     `prerequisites`（字符串数组，选择这个方向前需要满足的前提
+     条件，默认空列表）、`consequences`（`{"short_term": "...",
+     "long_term": "..."}`，短期/中长期后果，只认这两个 key，清理
+     后整体为空归一化为 `None`，不留一个空字典）。`from_dict()`
+     同步补上对应的解析/清理逻辑。
+  2. **三个 workflow yaml**（`advance_step.yaml`/`decision_
+     generate.yaml`/`generate_scenario.yaml`）的候选选项字段规则
+     统一补充这两个新字段的说明；三个模板 `SKILL.md`
+     （`life-sim-template`/`negotiation-template`/`group-
+     evolution-template`）同步更新。
+  3. **`app.py`**：`_option_meta_html()` 新增 `prerequisites`/
+     `consequences` 的渲染（字段为空/`None` 时完全不渲染对应
+     小节，不用"未知"占位制造伪信息）。
+  **刻意不做的部分**：不单独区分"前提条件"和"约束"两个字段（合并
+  进 `prerequisites` 表达）；不做 `time_cost`/`resource_cost` 这类
+  量化成本字段（避免退化成 4.5 节明确反对的"内部指标调节"语义，
+  时间/资源成本信息交给自然语言描述承担）——详见方案 5.1 节的取舍
+  说明。
+  **验收**：`tests/test_state_and_store.py` 新增 3 个用例（默认值/
+  往返序列化、`consequences` 只认两个合法 key 且空值归一化为
+  `None`、`prerequisites` 去空白/丢弃空字符串项）；同步修正了
+  `tests/test_spec_and_engine.py::
+  test_create_and_advance_simulation_end_to_end` 里
+  `chosen_option_json` 的断言（补上两个新字段的默认值）；新增
+  `workflows/*.yaml` 里的字段说明文本经
+  `tests/test_workflow_prompt_placeholders.py` 校验后，把最初写的
+  字面 JSON 大括号示例（`{"short_term": "...", ...}`）改写成纯
+  文字描述，避免被误判为 `{step_id.field}` 占位符。加上原有 352
+  个，全部通过（**355 passed**）。

@@ -89,6 +89,54 @@ def test_choice_option_normalizes_action_type():
     assert restored.action_type == "combo"
 
 
+def test_choice_option_prerequisites_and_consequences_default_and_roundtrip():
+    """第五轮方案 5.1 节：`prerequisites` 默认空列表，`consequences`
+    默认 `None`；非默认值能正确序列化/反序列化。"""
+    default = ChoiceOption.from_dict({"id": "a", "label": "x"})
+    assert default.prerequisites == []
+    assert default.consequences is None
+
+    with_fields = ChoiceOption.from_dict(
+        {
+            "id": "b",
+            "label": "x",
+            "prerequisites": ["手头有 3 个月生活费缓冲"],
+            "consequences": {"short_term": "收入下降", "long_term": "长期竞争力提升"},
+        }
+    )
+    assert with_fields.prerequisites == ["手头有 3 个月生活费缓冲"]
+    assert with_fields.consequences == {
+        "short_term": "收入下降",
+        "long_term": "长期竞争力提升",
+    }
+
+    restored = ChoiceOption.from_dict(with_fields.to_dict())
+    assert restored.prerequisites == with_fields.prerequisites
+    assert restored.consequences == with_fields.consequences
+
+
+def test_choice_option_consequences_ignores_unknown_keys_and_blank_values():
+    """`consequences` 只认 `short_term`/`long_term` 两个 key，且空
+    字符串视为未声明（清理后整体为空则归一化为 `None`，不留一个
+    空字典）。"""
+    only_blank = ChoiceOption.from_dict(
+        {"id": "a", "label": "x", "consequences": {"short_term": "", "unknown_key": "x"}}
+    )
+    assert only_blank.consequences is None
+
+    partial = ChoiceOption.from_dict(
+        {"id": "b", "label": "x", "consequences": {"short_term": "收入下降", "unknown_key": "x"}}
+    )
+    assert partial.consequences == {"short_term": "收入下降"}
+
+
+def test_choice_option_prerequisites_strips_and_drops_blank_entries():
+    opt = ChoiceOption.from_dict(
+        {"id": "a", "label": "x", "prerequisites": ["  有缓冲  ", "", "   "]}
+    )
+    assert opt.prerequisites == ["有缓冲"]
+
+
 def test_state_roundtrip_preserves_decision_reason():
     """阶段三十三第二批（4.2 节）：`SimState.decision_reason` 应该
     正确序列化/反序列化，旧数据（没有这个字段）落回空字符串。"""

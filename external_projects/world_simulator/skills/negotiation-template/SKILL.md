@@ -190,7 +190,8 @@ triggers: 多方谈判, 谈判模拟, 博弈模拟, 多主体模拟, 信息不�
   另外两个模板完全一致。
 - `options`：数组，供*下一步*选择的候选分支（用户扮演的那一方可以
   采取的方向）；结构、可选字段（`risk_level`/`reversibility`/
-  `action_reason`/`urgency`/`time_window`/`action_type` 等）与
+  `action_reason`/`urgency`/`time_window`/`action_type`/
+  `prerequisites`/`consequences` 等）与
   另外两个模板一致，见 `advance_step.yaml` prompt 的完整说明——
   谈判场景下 `urgency` 尤其有意义（比如"对方给的报价截止到明天"）。
 - `decision_reason`：字符串（可选，顶层字段），这一批候选方向共享

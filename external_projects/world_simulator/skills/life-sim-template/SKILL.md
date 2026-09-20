@@ -268,7 +268,13 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
   会使模拟自动暂停，谨慎使用）、`action_type`（阶段三十三第六批
   4.7 节，`single`/`combo`/`conditional`，标注这是不是一个组合/
   条件方案，"组合了什么/条件是什么"直接写进 `description` 就行，
-  不用拆成额外字段）——不确定就不填，不要瞎猜凑数。
+  不用拆成额外字段）、`prerequisites`/`consequences`（第五轮方案
+  5.1 节，`next_doc/world_simulator_decision_engine_round2_gap_
+  analysis_plan.md`——`prerequisites` 是字符串数组，选这个方向前
+  需要满足的前提条件；`consequences` 是一个对象，包含
+  `short_term`/`long_term` 两个可选 key，分别是短期/中长期后果各
+  一句话，`description` 已经说清楚就不用重复）——不确定就不填，
+  不要瞎猜凑数。
 - `decision_reason`：字符串（可选，顶层字段，不是某个选项内部的
   字段），这一批 `options` 共享的背景说明——"为什么现在需要做这个
   决定"，只有一个选项或原因足够简单时可以不填。

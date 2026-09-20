@@ -153,6 +153,15 @@ steps:
       `affected_lines`（预计牵动的因果线 id 数组）、`key_uncertainty`
       （一句话最大不确定性）。不确定就不填，不要瞎猜凑数。
 
+      候选分支选项里每一项还可以额外给出两个可选字段（第五轮方案
+      5.1 节，`next_doc/world_simulator_decision_engine_round2_gap_
+      analysis_plan.md`）：`prerequisites`（字符串数组，选择这个
+      方向前需要满足的前提条件，比如"手头有 3 个月生活费缓冲"，没有
+      明显前提就不填或给空数组）、`consequences`（一个对象，包含 `short_term`/`long_term`
+      两个可选 key，分别是短期/中长期后果各一句话；
+      `description` 已经说清楚的话不需要重复，可以只填其中一个 key
+      或整体不填）。不确定就不填，不要瞎猜凑数。
+
       候选分支选项里每一项还可以额外给出 `action_reason`（阶段三十三
       第二批，4.2 节，一句话说明"为什么这个具体行动现在值得列入候选"，
       区别于 `description` 说的"选了会怎样"——例如"职业转型机会正在

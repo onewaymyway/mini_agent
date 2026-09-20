@@ -100,6 +100,29 @@ class ChoiceOption:
     （KeyNode/DecisionOpportunity）更完整的节点生命周期管理落地之后
     再考虑，现在单独垒一个不接轨的临时结构不划算。
     """
+    prerequisites: List[str] = field(default_factory=list)
+    """选择这个方向前需要满足的前提条件（第五轮方案 5.1 节，`next_
+    doc/world_simulator_decision_engine_round2_gap_analysis_plan.md`，
+    参考文档 Action.prerequisites）：一句话短语数组，比如"手头有
+    3 个月生活费缓冲"。默认空列表，表示未声明或没有明显前提，不
+    强制每个选项都填。**刻意不做的部分**：不单独区分"前提条件"和
+    "约束"两个字段——审视下来二者在自然语言层面很难要求 LLM 稳定
+    区分开，容易变成同一句话填两遍，统一用这一个字段表达。
+    """
+    consequences: Optional[Dict[str, str]] = None
+    """这个选项的分层后果（第五轮方案 5.1 节，参考文档 Action.
+    expected_consequences / Decision Opportunity.Consequences）：
+    `{"short_term": "...", "long_term": "..."}`，两个 key 都是可选的
+    （只填其中一个也可以，字典里没出现的 key 视为未声明）。`None`
+    表示这一步判断这个字段对当前选项没有额外信息增量（比如
+    `description` 已经把后果说清楚了），不强制每个选项都填。
+    **刻意不做的部分**：不做 `time_cost`/`resource_cost` 这类量化
+    成本字段——这类字段一旦引入数值，容易退化成 4.5 节明确反对的
+    "内部指标调节"语义（比如"时间成本：3 个月"这种量化在不同模板
+    场景下几乎不可比较），时间/资源成本相关的信息交给
+    `description`/`consequences` 里的自然语言描述承担即可（比如
+    "需要投入几个月时间学习新技能"本身已经包含了时间成本信息）。
+    """
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -115,6 +138,15 @@ class ChoiceOption:
             reversibility = str(reversibility).strip().lower() or None
         urgency = normalize_urgency(data.get("urgency"))
         action_type = normalize_action_type(data.get("action_type"))
+        consequences_raw = data.get("consequences")
+        consequences: Optional[Dict[str, str]] = None
+        if isinstance(consequences_raw, dict):
+            cleaned = {
+                k: str(v).strip()
+                for k, v in consequences_raw.items()
+                if k in ("short_term", "long_term") and str(v or "").strip()
+            }
+            consequences = cleaned or None
         return cls(
             id=str(data.get("id", "")),
             label=str(data.get("label", "")),
@@ -127,6 +159,8 @@ class ChoiceOption:
             urgency=urgency,
             time_window=str(data.get("time_window", "") or ""),
             action_type=action_type,
+            prerequisites=[str(x).strip() for x in (data.get("prerequisites") or []) if str(x).strip()],
+            consequences=consequences,
         )
 
 

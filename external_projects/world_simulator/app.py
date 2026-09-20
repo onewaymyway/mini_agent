@@ -820,8 +820,32 @@ def _option_meta_html(opt) -> str:
         f'<div class="ws-muted">为什么值得考虑：{_html_text(action_reason)}</div>'
         if action_reason else ""
     )
+    # 第五轮方案 5.1 节：`prerequisites`/`consequences`，字段为空/
+    # None 时完全不渲染对应小节，不用"未知"占位制造伪信息。
+    prerequisites = getattr(opt, "prerequisites", None) or []
+    prerequisites_html = (
+        f'<div class="ws-muted">前提条件：{_html_text("、".join(prerequisites))}</div>'
+        if prerequisites else ""
+    )
+    consequences = getattr(opt, "consequences", None) or {}
+    consequences_parts = []
+    if consequences.get("short_term"):
+        consequences_parts.append(f'短期：{_html_text(consequences["short_term"])}')
+    if consequences.get("long_term"):
+        consequences_parts.append(f'长期：{_html_text(consequences["long_term"])}')
+    consequences_html = (
+        f'<div class="ws-muted">{"　".join(consequences_parts)}</div>' if consequences_parts else ""
+    )
     badges_html = f'<div>{"".join(badges)}</div>' if badges else ""
-    return badges_html + lines_html + uncertainty_html + time_window_html + action_reason_html
+    return (
+        badges_html
+        + lines_html
+        + uncertainty_html
+        + time_window_html
+        + action_reason_html
+        + prerequisites_html
+        + consequences_html
+    )
 
 
 def _key_drivers_html(state) -> str:
