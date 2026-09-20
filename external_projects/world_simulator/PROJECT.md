@@ -2050,3 +2050,54 @@ world_simulator/
   仍然是"这一个状态节点的背景说明"，不做跨状态追踪同一个决策机会
   演变过程的 id 化持久对象，与方案"不做的部分"一致。方案第 5 节
   第六批（4.7 action_type 组合/条件行动标记）尚未开始。
+- 2026-09-20（同日再追加）：**阶段三十三第六批**——完成方案第 5 节
+  第六批：4.7（组合行动/条件行动的最小结构化支持），本身独立、不
+  依赖前面任何一批：
+  1. **`state_model.py`**：`ChoiceOption` 新增
+     `action_type: str = "single"`（`single`/`combo`/
+     `conditional` 三选一），归一化规则和 `risk_level` 类似但没有
+     `None` 这个中间态——不认识的取值或缺省一律退化为 `single`，
+     不存在"未声明"这个状态（`action_type` 本身默认就该是
+     `single`）。
+  2. **刻意不做的部分**（严格按方案执行）：没有新增任何"子步骤
+     数组"结构——`combo`/`conditional` 选项"组合了什么/条件是
+     什么"仍然只写在 `description` 自然语言里，`action_type` 只是
+     一个展示层提示标签；选中后 `advance()` 依旧只推进一步，不会
+     跨状态强制执行中间步骤，条件是否触发完全交给下一次
+     `advance_step` 时 LLM 根据 `narrative` 里的既成事实自行判断，
+     engine 侧不做任何特殊记账——工程量意义上比"给选项加个标签"更
+     重的完整步骤序列状态机被有意推迟到 4.9/4.10 落地之后。
+  3. **`workflows/advance_step.yaml`**：新增一段说明，讲清楚
+     `action_type` 三个取值的含义、"组合/条件内容写进
+     description，不要拆成额外字段"这条约束，以及"选中后引擎不会
+     自动执行后续步骤"这条局限。`generate_scenario.yaml`（`state0`
+     创建阶段）未同步添加——沿用 `action_reason`/`urgency`/
+     `time_window` 这几个同样"只在 advance 阶段有意义"的字段的既有
+     取舍，不是遗漏。
+  4. **三个模板 SKILL.md**（`life-sim`/`negotiation`/
+     `group-evolution`）：选项可选字段列表统一补上 `action_type`。
+  5. **`app.py`**：`_option_meta_html()` 新增 `action_type` 徽章
+     （`combo`→"🧩组合方案"、`conditional`→"🔀条件方案"），默认值
+     `single` 不展示徽章（延续"未声明/默认值不展示"的一贯风格）。
+  **验收**：`tests/test_state_and_store.py` 新增 1 个（`action_type`
+  归一化：默认值、合法值透传、大小写不敏感、非法值回退、序列化
+  往返）；`tests/test_decision_engine_prompts.py` 新增 4 个
+  （`advance_step.yaml` 提到 `action_type`/`combo`/`conditional`、
+  说明"只推进一步、不做强制执行"这条局限、三个模板都提到
+  `action_type`、`ChoiceOption` 默认值断言）；另修正
+  `test_create_and_advance_simulation_end_to_end` 里一处因为新增
+  字段导致的 `chosen_option_json` 精确 JSON 断言。加上原有 311
+  个，全部通过（**316 passed**）。
+  **已知限制**：`action_type` 纯粹是展示层提示，不做任何语义校验——
+  一个标了 `combo` 但 `description` 里其实只写了单一动作的选项，
+  代码层面无法识别、也不打算识别（同 4.4/4.5 节辅助校验"弱信号、
+  不做语义理解"的一贯取舍）；方案第 5 节里跨越多个批次的第 4.12
+  条（引擎与 LLM 分工的渐进式重构）本身不排入固定批次，见方案原文
+  第 7 步说明——但方案原文明确建议 4.12 第一步（校验前移到
+  `decision_validation.py`）随第二批一起做、第二步（状态推导建议）
+  随第四批一起做，实际第二批/第四批都没有触碰这两步，这是本轮六批
+  执行下来唯一一处和方案建议的时间点不一致的地方，如实记录在此，
+  不是发现晚了才补记；至此方案第 5 节列出的六个固定批次
+  （4.1+4.5+4.8、4.2+4.3+4.6、4.4+4.13、4.9+4.11、4.10、4.7）全部
+  完成，但 4.12 的三步（含"随批次同步做"的前两步）都还没有开始，
+  不应该被理解成"方案已经全部落地"。

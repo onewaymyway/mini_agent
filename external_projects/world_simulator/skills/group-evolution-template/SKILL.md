@@ -196,8 +196,8 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
   话，候选路线里可以体现"如何应对大环境变化"这条思路（比如"顺应行业
   新趋势转型" vs "守住原有阵地"），不用每次都是纯粹的内部路线分歧。
   每个选项可选字段（`risk_level`/`reversibility`/`action_reason`/
-  `urgency`/`time_window` 等）与另外两个模板一致，见 `advance_step.
-  yaml` prompt 的完整说明。
+  `urgency`/`time_window`/`action_type` 等）与另外两个模板一致，
+  见 `advance_step.yaml` prompt 的完整说明。
 - `decision_reason`：字符串（可选，顶层字段），这一批候选路线共享
   的背景说明，规则与另外两个模板一致。
 - `major_decision`：布尔值（可选，默认 false），当这一步的选择/走向

@@ -259,6 +259,7 @@ def test_create_and_advance_simulation_end_to_end(tmp_path, monkeypatch):
                     "action_reason": "",
                     "urgency": None,
                     "time_window": "",
+                    "action_type": "single",
                 },
                 ensure_ascii=False,
             )

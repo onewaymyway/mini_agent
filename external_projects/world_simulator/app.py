@@ -760,13 +760,19 @@ _REVERSIBILITY_LABELS = {
     "hard_to_reverse": "难以逆转",
     "irreversible": "不可逆",
 }
+_ACTION_TYPE_LABELS = {"combo": "🧩组合方案", "conditional": "🔀条件方案"}
+"""`single`（默认）不展示标签——只有组合/条件这两种非默认取值才
+值得提醒用户"这不是一个单一原子行动"（阶段三十三第六批，4.7 节）。
+"""
 
 
 def _option_meta_html(opt) -> str:
     """渲染一个 `ChoiceOption` 的结构化维度标签（阶段三十二，4.1 节：
     风险等级/可逆性/涉及因果线/最大不确定性；阶段三十三第二批，4.2/
-    4.3 节新增行动理由/紧急程度/时间窗口）。未声明的字段不展示，
-    不用"未知"占位制造伪信息；全部字段都未声明时返回空字符串。
+    4.3 节新增行动理由/紧急程度/时间窗口；阶段三十三第六批，4.7 节
+    新增 `action_type` 组合/条件方案标签，`single` 默认值不展示）。
+    未声明的字段不展示，不用"未知"占位制造伪信息；全部字段都未声明
+    时返回空字符串。
     """
     badges = []
     risk = getattr(opt, "risk_level", None)
@@ -789,6 +795,12 @@ def _option_meta_html(opt) -> str:
         )
     if str(getattr(opt, "id", "") or "").startswith("continue_"):
         badges.append('<span class="ws-uncertain-badge ws-continue-badge">维持现状</span>')
+    action_type = getattr(opt, "action_type", "single") or "single"
+    if action_type in _ACTION_TYPE_LABELS:
+        badges.append(
+            f'<span class="ws-uncertain-badge ws-uncertain-badge-medium">'
+            f'{_ACTION_TYPE_LABELS[action_type]}</span>'
+        )
     lines_html = ""
     affected = getattr(opt, "affected_lines", None) or []
     if affected:

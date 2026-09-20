@@ -65,6 +65,30 @@ def test_choice_option_normalizes_urgency_and_preserves_action_reason_time_windo
     assert critical.urgency == "critical"
 
 
+def test_choice_option_normalizes_action_type():
+    """阶段三十三第六批（4.7 节）：`action_type` 只认
+    `single`/`combo`/`conditional` 三个取值，不认识的取值/缺省都
+    归一化为默认值 `single`（不像 `urgency` 那样用 `None` 表示
+    "未声明"——`action_type` 本身默认就该是 `single`，不存在
+    "未声明"这个中间状态）。"""
+    default = ChoiceOption.from_dict({"id": "a", "label": "x"})
+    assert default.action_type == "single"
+
+    combo = ChoiceOption.from_dict({"id": "b", "label": "x", "action_type": "combo"})
+    assert combo.action_type == "combo"
+
+    conditional = ChoiceOption.from_dict({"id": "c", "label": "x", "action_type": "CONDITIONAL"})
+    assert conditional.action_type == "conditional"
+
+    weird = ChoiceOption.from_dict({"id": "d", "label": "x", "action_type": "multi_step"})
+    assert weird.action_type == "single"
+
+    restored = ChoiceOption.from_dict(
+        ChoiceOption(id="e", label="x", action_type="combo").to_dict()
+    )
+    assert restored.action_type == "combo"
+
+
 def test_state_roundtrip_preserves_decision_reason():
     """阶段三十三第二批（4.2 节）：`SimState.decision_reason` 应该
     正确序列化/反序列化，旧数据（没有这个字段）落回空字符串。"""

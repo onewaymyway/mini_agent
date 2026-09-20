@@ -73,6 +73,27 @@ class ChoiceOption:
     "下个季度前"），选填，空字符串表示未声明。只在 `urgency` 非空时
     才有展示意义，但不强制要求同时填写。
     """
+    action_type: str = "single"
+    """这个选项是不是一个组合/条件行动（阶段三十三第六批，
+    `next_doc/world_simulator_potential_causal_space_and_decision_
+    engine_plan.md` 4.7 节）：`"single"`（单一原子行动，默认）/
+    `"combo"`（一次性打包了多个动作的组合方案）/`"conditional"`
+    （"先做 A，如果……再做 B"这类带条件的方案）之一。归一化规则同
+    `risk_level`：不认识的取值统一退化为 `"single"`。
+
+    **刻意不做的部分**：不新增"子步骤数组"这种结构化的步骤序列——
+    `combo`/`conditional` 类型的选项，其"组合了什么/条件是什么"
+    直接写在 `description` 自然语言里（比如"先花一段时间了解行业
+    信息，如果确认转型信号明确，再启动跳槽准备"），这个字段只是给
+    展示层和自动挡一个"这是多步/条件性方案"的结构化提示，不做进一步
+    拆解，也不会让"选中后自动跨越多个 `advance()` 调用强制执行中间
+    步骤"——选中之后 `advance()` 仍然只推进一步，后续"条件是否触发"
+    完全交给下一次 `advance_step` 调用时 LLM 根据 `narrative` 里
+    记录的既成事实自行判断，引擎不做任何特殊记账。完整的结构化步骤
+    序列（每步独立触发条件、可跨状态追踪执行进度）留给 4.9/4.10
+    （KeyNode/DecisionOpportunity）更完整的节点生命周期管理落地之后
+    再考虑，现在单独垒一个不接轨的临时结构不划算。
+    """
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -92,6 +113,9 @@ class ChoiceOption:
             urgency = str(urgency).strip().lower()
             if urgency not in ("low", "medium", "high", "critical"):
                 urgency = "medium"
+        action_type = str(data.get("action_type") or "single").strip().lower()
+        if action_type not in ("single", "combo", "conditional"):
+            action_type = "single"
         return cls(
             id=str(data.get("id", "")),
             label=str(data.get("label", "")),
@@ -103,6 +127,7 @@ class ChoiceOption:
             action_reason=str(data.get("action_reason", "") or ""),
             urgency=urgency,
             time_window=str(data.get("time_window", "") or ""),
+            action_type=action_type,
         )
 
 

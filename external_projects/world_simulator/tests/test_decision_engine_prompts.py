@@ -223,3 +223,30 @@ def test_sim_state_supports_option_warnings():
         {"option_id": "a", "kind": "metric_adjustment_pattern", "note": "疑似指标调节"}
     ]
 
+
+# ── 阶段三十三第六批（4.7 节：组合/条件行动的最小结构化支持）──────────
+
+
+def test_advance_step_prompt_mentions_action_type():
+    assert "action_type" in ADVANCE_STEP_TEXT
+    assert "combo" in ADVANCE_STEP_TEXT
+    assert "conditional" in ADVANCE_STEP_TEXT
+
+
+def test_advance_step_prompt_explains_no_forced_multi_step_execution():
+    """4.7 节明确"不做步骤序列强制执行"这条简化取舍，prompt 里应该
+    说清楚选中 combo/conditional 选项后引擎不会做任何特殊记账。"""
+    assert "只推进一次" in ADVANCE_STEP_TEXT or "只推进一步" in ADVANCE_STEP_TEXT
+    assert "不会做任何" in ADVANCE_STEP_TEXT or "不做任何特殊记账" in ADVANCE_STEP_TEXT
+
+
+def test_each_template_mentions_action_type():
+    for name, text in TEMPLATE_TEXTS.items():
+        assert "action_type" in text, f"{name} 缺少 action_type 说明"
+
+
+def test_choice_option_action_type_field_exists_with_expected_default():
+    from world_simulator.state_model import ChoiceOption
+
+    assert ChoiceOption(id="a", label="x").action_type == "single"
+
