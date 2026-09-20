@@ -19,6 +19,19 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
 被 `advance_step` workflow 挂载时，你只做"推进一步"这一件事——两者的
 `result_file` 契约不同，见下方两节，不要混淆。
 
+**关于"推进一步"可能被拆成两次调用**（阶段三十三第八批，4.12 节
+第三步，`manifest.settings.split_decision_calls == True` 时生效，
+默认关闭）：这种情况下你不会被 `advance_step` workflow 挂载，而是
+被 `world_evolve` 和 `decision_generate` 两个 workflow **分别**挂载
+两次——两者的 prompt 已经在各自的 yaml 里清楚说明了"这次调用只负责
+什么、不要输出什么"（`world_evolve` 只产出世界状态变化，不产出
+`options`；`decision_generate` 只产出候选选项，`next_vars`/
+`narrative` 等世界状态字段已经由上一次调用决定，不需要你重新生成）。
+下面"推进一步（advance_step）"这一节里描述的所有字段规则/正反例
+仍然完全适用，只是被拆成了两次调用各自负责其中一部分字段，不需要
+在这份 SKILL.md 里额外区分——`world_evolve`/`decision_generate.yaml`
+的 prompt 已经明确告诉你这次调用该输出哪些字段、不该输出哪些。
+
 ## 通用判断原则
 
 1. **不要越界替用户做决定**：除非上游明确给出"代理决策"的画像/原则

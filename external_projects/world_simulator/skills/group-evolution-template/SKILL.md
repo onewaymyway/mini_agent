@@ -20,6 +20,15 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
 事；被 `advance_step` workflow 挂载时，你只做"推进一步"这一件事——
 两者的 `result_file` 契约不同，见下方两节。
 
+**关于"推进一步"可能被拆成两次调用**（阶段三十三第八批，4.12 节
+第三步，`manifest.settings.split_decision_calls == True` 时生效，
+默认关闭）：这种情况下你会被 `world_evolve` 和 `decision_generate`
+两个 workflow 分别挂载两次，各自的 prompt 已经说明了这次调用该
+输出哪些字段、不该输出哪些（`world_evolve` 只产出世界状态变化，
+不产出 `options`；`decision_generate` 只产出候选选项）——下面
+"推进一步"这一节的字段规则/正反例仍然完全适用，只是被拆成两次调用
+各自负责一部分。
+
 ## 通用判断原则
 
 1. **推演群体层面的结构变化，不是某个成员的个人剧情**：`vars` 里的

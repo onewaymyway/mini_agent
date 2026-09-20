@@ -2181,3 +2181,77 @@ world_simulator/
   decision_engine_plan.md`）第 3 节列出的 13 条差距（4.1~4.13）
   全部落地完成，包括之前唯一悬空的 4.12 第一、二步，只剩 4.12
   第三步作为方案原文明确写出的"带触发条件的观察项"继续观察。
+
+- 2026-09-20（同日再追加）：**阶段三十三第八批**——应用户明确要求
+  "不再等待触发条件观察，直接实施"，补做方案（`next_doc/
+  world_simulator_potential_causal_space_and_decision_engine_plan.md`）
+  4.12 节第三步：把 `advance_step.yaml` 一次调用同时产出世界状态
+  变化和候选选项的方式，拆成两个独立的单步 workflow：
+  1. **`workflows/world_evolve.yaml`**：只产出 `next_summary`/
+     `narrative`/`next_vars`/`time_label`/`next_time_granularity`/
+     `granularity_reason`/`uncertain_fields`/`key_drivers`/
+     `causal_links`/`line_updates`/`tree_updates`/`beliefs`/
+     `structural_change`，以及"这一步用户/代理选了哪个选项"的落地
+     逻辑（`chosen_option_id`/`chosen_reason`/`custom_option_label`/
+     `custom_option_description`——这部分逻辑直接决定 `next_vars`/
+     `narrative` 怎么变化，理应留在"世界演化"这一步）；**明确不产出
+     `options`**。
+  2. **`workflows/decision_generate.yaml`**：把 `world_evolve` 的
+     完整输出（`evolved_summary`/`evolved_narrative`/
+     `evolved_vars_json`/`evolved_time_label`/
+     `evolved_time_granularity`/`evolved_key_drivers_json`/
+     `evolved_tree_updates_json`）作为既成事实喂进 prompt，专门负责
+     "这一步是否形成决策机会、生成什么样的候选选项"，只产出
+     `options`/`decision_reason`（选项字段规则——现实行动语义/
+     可干预性下沉/紧急度/action_type 等——与原 `advance_step.yaml`
+     完全一致，原样保留）。
+  3. **`world_simulator/engine/advance.py`**：新增
+     `manifest.settings.split_decision_calls` 开关，默认 `False`
+     （沿用原单次调用 `advance_step.yaml`，完全向后兼容，不改变
+     任何现有行为）；为 `True` 时改为依次调用 `world_evolve` →
+     `decision_generate` 两个 workflow，按字段合并两次结果为同一份
+     `data: Dict[str, Any]`（`{**data_decide, **data_evolve}`，
+     `data_evolve` 放在后面覆盖，保证世界状态字段始终来自负责它的
+     那次调用），合并后完全复用原有"解析 `chosen_option_id`/构造
+     `next_state`/资源校验/因果树合并/`decision_opportunity` 构造"
+     等下游逻辑，不需要区分走的是哪条路径。
+  4. **UI**：`app.py` 创建向导和详情页"模拟设置"面板都新增了对应
+     的勾选开关（默认不勾选），文案明确提示"会翻倍延迟和 token
+     成本"。
+  5. **`SKILL.md`**：三个模板（`life-sim-template`/
+     `negotiation-template`/`group-evolution-template`）都补充了一段
+     说明——拆分模式下会被 `world_evolve`/`decision_generate` 两个
+     workflow 分别挂载两次，各自 prompt 已经写清楚这次调用该输出
+     哪些字段，原"推进一步"章节的字段规则/正反例仍然完全适用，不
+     需要在 SKILL.md 里重复维护两份规则。
+  6. **`state_model.py`**：`SimManifest.settings` 文档补充
+     `split_decision_calls` 字段说明及分组索引。
+  **刻意不做的部分**：不做"根据实测选项质量自动切换单次/拆分调用"
+  这种动态判断——是否承受两次调用的成本完全交给用户自己决定，不做
+  成代码自动侦测"选项质量是否不达预期"后自动切换，那需要一套独立
+  的质量评估机制，属于比这条改动本身更大的新课题；两次调用之间没有
+  做"世界状态字段"之外的额外校验层（比如强制要求 `decision_generate`
+  重新确认 `evolved_vars_json` 与自己理解一致）——`decision_generate`
+  的 prompt 已经明确说"不需要、也不应该重新生成这些字段"，信任这条
+  指令，不额外加代码层面的一致性校验，与项目一贯"宽松兜底"的风格
+  一致。
+  **验收**：新建 `tests/test_split_decision_calls.py`（2 个）：
+  `test_advance_split_mode_calls_world_evolve_then_decision_generate`
+  验证拆分模式下两个 workflow 被正确加载、按序调用、`decision_
+  generate` 确实收到了 `world_evolve` 的输出（`evolved_vars_json`/
+  `evolved_summary`/`evolved_tree_updates_json`）、两次结果正确
+  合并进同一个 `next_state`（世界状态字段来自 `world_evolve`，
+  `options`/`decision_reason` 来自 `decision_generate`，
+  `decision_opportunity` 基于合并后结果正确构造）；
+  `test_advance_default_mode_does_not_touch_split_workflows` 验证
+  未声明 `split_decision_calls`（默认路径）时只加载/调用
+  `advance_step`，完全不触碰 `world_evolve`/`decision_generate`，
+  确认默认行为向后兼容。另外新增两个 workflow yaml 后触发了
+  `tests/test_workflow_prompt_placeholders.py` 的既有回归测试（防止
+  prompt 里举例用的大括号被误判成 `{step_id.field}` 占位符），已
+  按测试要求把 `tree_updates` 示例从字面 JSON 大括号改写成纯文字
+  描述，修正后该测试通过。加上原有 337 个，全部通过（**339
+  passed**）。
+  至此方案（`next_doc/world_simulator_potential_causal_space_and_
+  decision_engine_plan.md`）4.12 节三个子步骤全部完成，第 3 节列出
+  的 13 条差距（4.1~4.13）在方案范围内没有任何遗留项。

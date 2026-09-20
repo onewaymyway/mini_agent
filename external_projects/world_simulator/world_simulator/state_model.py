@@ -824,11 +824,22 @@ class SimManifest:
       是空操作。留空（默认 `False`）表示不启用，行为与引入这个字段
       之前完全一致，向后兼容。
 
+    - `split_decision_calls`：布尔，默认 `False`（阶段三十三第八批，
+      4.12 节第三步）。为 `True` 时，`engine.advance()` 不再使用单次
+      `advance_step.yaml` 调用，而是拆成 `world_evolve.yaml`（只产出
+      世界状态变化）+ `decision_generate.yaml`（专门基于前者的结果
+      判断要不要出现候选选项、给出什么样的选项）两次独立调用——更
+      贴合参考文档"World Engine 与 Decision Engine 分工"的设想，代价
+      是每步推进的延迟和 token 成本翻倍。默认 `False`（沿用单次调用，
+      向后兼容），用户可以在创建向导/详情页"模拟设置"里开关，下一步
+      推进开始生效。
+
     **字段分组索引**（阶段三十一，4.18 节末尾遗留的评估项——`settings`
     字段数量持续增加带来的复杂度负担，这里只做"分组索引"这种低风险
     的可读性改进，不做拆分成多个子对象之类的破坏性重构）：
     - 节奏/候选：`options_count`、`time_granularity_mode`、
-      `time_granularity`、`time_granularity_guide`
+      `time_granularity`、`time_granularity_guide`、
+      `split_decision_calls`
     - 资源与守恒：`resource_fields`、`resource_relations`
     - 目标与归因：`objectives`
     - 多主体：`multi_entity_mode`、`hierarchical_agent_mode`、

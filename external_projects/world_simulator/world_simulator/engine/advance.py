@@ -176,20 +176,10 @@ def advance(
     from mini_agent.workflow.store import WorkflowStore
 
     wf_store = WorkflowStore(Path(workspace_root))
-    wf = wf_store.load("advance_step")
-    if wf is None:
-        raise SimEngineError("找不到 workflow 定义 advance_step")
     skill_name = _skill_name_for_template(manifest.template)
-    found = False
-    for step in wf.steps:
-        if step.id == "step":
-            step.skill_name = skill_name
-            found = True
-            break
-    if not found:
-        raise SimEngineError("advance_step workflow 中找不到 step id=step")
+    runner = WorkflowRunner(cfg)
 
-    inputs = {
+    shared_inputs = {
         "title": manifest.title,
         "current_summary": current.summary,
         "current_vars_json": json.dumps(current.vars, ensure_ascii=False),
@@ -219,25 +209,142 @@ def advance(
         **resolve_hints(manifest.settings, current_step=current.step + 1),
     }
 
-    runner = WorkflowRunner(cfg)
-    result = runner.run(wf, inputs)
+    # 4.12 节第三步（阶段三十三第八批，`next_doc/
+    # world_simulator_potential_causal_space_and_decision_engine_plan.md`）：
+    # 默认仍然是原来的单次调用（`advance_step.yaml`，向后兼容、不增加
+    # 延迟和 token 成本）；`manifest.settings.split_decision_calls` 为
+    # True 时改为拆成 `world_evolve` + `decision_generate` 两次独立调用，
+    # 更贴合参考文档"World Engine 与 Decision Engine 分工"的设想，代价
+    # 是延迟和成本翻倍——是否启用由用户在创建向导/设置面板里自行选择，
+    # 不作为新默认行为（见方案原文 4.12 节第三步"取舍说明"里的成本
+    # 顾虑）。两条路径最终都产出同一份 `data: Dict[str, Any]`，下面
+    # （解析 `chosen_option_id`/构造 `next_state` 等）完全不需要区分
+    # 走的是哪条路径。
+    if not bool(manifest.settings.get("split_decision_calls")):
+        wf = wf_store.load("advance_step")
+        if wf is None:
+            raise SimEngineError("找不到 workflow 定义 advance_step")
+        found = False
+        for step in wf.steps:
+            if step.id == "step":
+                step.skill_name = skill_name
+                found = True
+                break
+        if not found:
+            raise SimEngineError("advance_step workflow 中找不到 step id=step")
 
-    if result.status != "done":
-        failed = [
-            f"{sr.step_id}({sr.status.value}): {sr.error}"
-            for sr in result.step_results
-            if sr.status.value != "done"
-        ]
-        raise SimEngineError(
-            f"advance_step workflow 执行未成功（skill={skill_name}）："
-            f"status={result.status}；" + "；".join(failed)
+        result = runner.run(wf, shared_inputs)
+        if result.status != "done":
+            failed = [
+                f"{sr.step_id}({sr.status.value}): {sr.error}"
+                for sr in result.step_results
+                if sr.status.value != "done"
+            ]
+            raise SimEngineError(
+                f"advance_step workflow 执行未成功（skill={skill_name}）："
+                f"status={result.status}；" + "；".join(failed)
+            )
+
+        step_result = next((sr for sr in result.step_results if sr.step_id == "step"), None)
+        if step_result is None or not step_result.result_file:
+            raise SimEngineError("step 步骤未产出 result_file，无法解析推进结果")
+
+        data: Dict[str, Any] = json.loads(Path(step_result.result_file).read_text(encoding="utf-8"))
+    else:
+        wf_evolve = wf_store.load("world_evolve")
+        if wf_evolve is None:
+            raise SimEngineError("找不到 workflow 定义 world_evolve（拆分调用模式需要）")
+        found = False
+        for step in wf_evolve.steps:
+            if step.id == "world_evolve":
+                step.skill_name = skill_name
+                found = True
+                break
+        if not found:
+            raise SimEngineError("world_evolve workflow 中找不到 step id=world_evolve")
+
+        result_evolve = runner.run(wf_evolve, shared_inputs)
+        if result_evolve.status != "done":
+            failed = [
+                f"{sr.step_id}({sr.status.value}): {sr.error}"
+                for sr in result_evolve.step_results
+                if sr.status.value != "done"
+            ]
+            raise SimEngineError(
+                f"world_evolve workflow 执行未成功（skill={skill_name}）："
+                f"status={result_evolve.status}；" + "；".join(failed)
+            )
+
+        step_result_evolve = next(
+            (sr for sr in result_evolve.step_results if sr.step_id == "world_evolve"), None
+        )
+        if step_result_evolve is None or not step_result_evolve.result_file:
+            raise SimEngineError("world_evolve 步骤未产出 result_file，无法解析推进结果")
+
+        data_evolve: Dict[str, Any] = json.loads(
+            Path(step_result_evolve.result_file).read_text(encoding="utf-8")
         )
 
-    step_result = next((sr for sr in result.step_results if sr.step_id == "step"), None)
-    if step_result is None or not step_result.result_file:
-        raise SimEngineError("step 步骤未产出 result_file，无法解析推进结果")
+        wf_decide = wf_store.load("decision_generate")
+        if wf_decide is None:
+            raise SimEngineError("找不到 workflow 定义 decision_generate（拆分调用模式需要）")
+        found = False
+        for step in wf_decide.steps:
+            if step.id == "decision_generate":
+                step.skill_name = skill_name
+                found = True
+                break
+        if not found:
+            raise SimEngineError("decision_generate workflow 中找不到 step id=decision_generate")
 
-    data: Dict[str, Any] = json.loads(Path(step_result.result_file).read_text(encoding="utf-8"))
+        # 把 world_evolve 已经决定的"世界怎么变化了"作为既成事实喂给
+        # decision_generate——它不应该、也不需要重新生成 next_vars/
+        # narrative 等世界状态字段，只专注判断要不要出现候选选项。
+        decide_inputs = {
+            **shared_inputs,
+            "evolved_summary": str(data_evolve.get("next_summary", "")),
+            "evolved_narrative": str(data_evolve.get("narrative", "")),
+            "evolved_vars_json": json.dumps(data_evolve.get("next_vars") or {}, ensure_ascii=False),
+            "evolved_time_label": str(data_evolve.get("time_label", "") or ""),
+            "evolved_time_granularity": str(
+                data_evolve.get("next_time_granularity", "") or current.time_granularity or ""
+            ),
+            "evolved_key_drivers_json": json.dumps(
+                data_evolve.get("key_drivers") or [], ensure_ascii=False
+            ),
+            "evolved_tree_updates_json": json.dumps(
+                data_evolve.get("tree_updates") or [], ensure_ascii=False
+            ),
+        }
+        result_decide = runner.run(wf_decide, decide_inputs)
+        if result_decide.status != "done":
+            failed = [
+                f"{sr.step_id}({sr.status.value}): {sr.error}"
+                for sr in result_decide.step_results
+                if sr.status.value != "done"
+            ]
+            raise SimEngineError(
+                f"decision_generate workflow 执行未成功（skill={skill_name}）："
+                f"status={result_decide.status}；" + "；".join(failed)
+            )
+
+        step_result_decide = next(
+            (sr for sr in result_decide.step_results if sr.step_id == "decision_generate"), None
+        )
+        if step_result_decide is None or not step_result_decide.result_file:
+            raise SimEngineError("decision_generate 步骤未产出 result_file，无法解析推进结果")
+
+        data_decide: Dict[str, Any] = json.loads(
+            Path(step_result_decide.result_file).read_text(encoding="utf-8")
+        )
+
+        # 两份结果按字段合并：`world_evolve` 负责世界状态类字段，
+        # `decision_generate` 负责 `options`/`decision_reason` 等决策
+        # 类字段，设计上两者的 key 不应重叠；万一 `decision_generate`
+        # 意外也输出了某个世界状态字段（比如手滑重复给了 `next_vars`），
+        # `data_evolve` 放在后面覆盖，保证世界状态字段始终来自负责它的
+        # 那次调用，不会被决策调用意外覆盖。
+        data = {**data_decide, **data_evolve}
 
     # 确定这一步"实际生效的选择"：
     #   1) 调用方显式传了 choice_option_id（手动挡，`chosen_option` 已在

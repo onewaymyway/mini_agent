@@ -24,6 +24,15 @@ triggers: 多方谈判, 谈判模拟, 博弈模拟, 多主体模拟, 信息不�
 被 `advance_step` workflow 挂载时，你只做"推进一步"这一件事——两者的
 `result_file` 契约不同，见下方两节，不要混淆。
 
+**关于"推进一步"可能被拆成两次调用**（阶段三十三第八批，4.12 节
+第三步，`manifest.settings.split_decision_calls == True` 时生效，
+默认关闭）：这种情况下你会被 `world_evolve` 和 `decision_generate`
+两个 workflow 分别挂载两次，各自的 prompt 已经说明了这次调用该
+输出哪些字段、不该输出哪些（`world_evolve` 只产出世界状态变化，
+不产出 `options`；`decision_generate` 只产出候选选项）——下面
+"推进一步"这一节的字段规则/正反例仍然完全适用，只是被拆成两次调用
+各自负责一部分。
+
 ## 核心约定：`entities` + `shared_vars`
 
 这是本模板与另外两个模板最大的区别，务必严格遵守：

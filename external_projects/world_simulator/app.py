@@ -1062,6 +1062,14 @@ def page_create() -> None:
             format_func=lambda m: _MODE_LABELS[m],
         )
 
+    split_decision_calls = st.checkbox(
+        "拆分为「世界演化」+「决策生成」两次调用（阶段三十三第八批，4.12 节"
+        "第三步——更贴合「决策引擎独立于世界演化」的设计，但每步推进会翻倍"
+        "延迟和 token 成本，默认关闭；可以在创建后随时在详情页「模拟设置」"
+        "里开关，下一步推进开始生效）",
+        value=bool(st.session_state.get("create_split_decision_calls", False)),
+    )
+
     time_granularity = ""
     time_granularity_guide = ""
     if time_granularity_mode == "fixed":
@@ -1118,6 +1126,7 @@ def page_create() -> None:
             st.session_state["create_intent"] = intent
             st.session_state["create_options_count"] = int(options_count)
             st.session_state["create_granularity_mode"] = time_granularity_mode
+            st.session_state["create_split_decision_calls"] = bool(split_decision_calls)
             if time_granularity_mode == "fixed":
                 st.session_state["create_granularity_custom"] = time_granularity
             elif time_granularity_mode == "guided":
@@ -1128,6 +1137,7 @@ def page_create() -> None:
                 "time_granularity": time_granularity,
                 "time_granularity_guide": time_granularity_guide,
                 "multi_entity_mode": template == "negotiation",
+                "split_decision_calls": bool(split_decision_calls),
             }
             st.session_state["create_settings"] = settings
             with st.spinner("正在生成提案草稿..."):
@@ -1588,6 +1598,7 @@ def page_create() -> None:
                 "create_granularity_preset", "create_granularity_custom", "create_resource_fields",
                 "create_resource_relations", "create_objectives", "create_calibration_notes",
                 "create_background_entities", "create_causal_lines", "create_belief_fields",
+                "create_split_decision_calls",
             ):
                 st.session_state.pop(key, None)
             st.session_state["view"] = "detail"
@@ -2724,6 +2735,13 @@ def page_detail() -> None:
             "shared_vars 共享信息」的结构组织，详情页才会按主体分 tab 展示）",
             value=cur_multi_entity_mode, key="settings_multi_entity_mode",
         )
+        cur_split_decision_calls = bool(cur_settings.get("split_decision_calls", False))
+        new_split_decision_calls = st.checkbox(
+            "拆分为「世界演化」+「决策生成」两次调用（阶段三十三第八批，4.12 节"
+            "第三步——更贴合「决策引擎独立于世界演化」的设计，但每步推进会翻倍"
+            "延迟和 token 成本）",
+            value=cur_split_decision_calls, key="settings_split_decision_calls",
+        )
         cur_resource_relations = cur_settings.get("resource_relations") or []
         with st.expander("高级：声明资源转移关系（阶段十六，可选）"):
             st.markdown(
@@ -2897,6 +2915,7 @@ def page_detail() -> None:
                     causal_lines=causal_lines_to_save,
                     objectives=new_objectives,
                     multi_entity_mode=bool(new_multi_entity_mode),
+                    split_decision_calls=bool(new_split_decision_calls),
                     calibration_notes=new_calibration_notes_text.strip(),
                     background_entities=new_background_entities,
                     hierarchical_agent_mode=bool(new_background_entities),
