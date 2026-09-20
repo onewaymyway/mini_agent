@@ -18,12 +18,13 @@ bug），只做**收敛**：
   原始值归一化成合法取值"这件事收敛到这个校验层。
 - `compute_option_warnings()`：直接复用 `engine/option_heuristics.
   py`（阶段三十三第三批已经实现的宏观重合/指标调节两条弱信号
-  校验），不重复实现，只是把 `engine/advance.py` 调用的入口从
+  校验，第五轮方案 5.6 节新增的"高度相似选项"检测同样收敛在这里，
+  不重复实现），不重复实现，只是把 `engine/advance.py` 调用的入口从
   `engine.option_heuristics` 改成这里——`engine/option_heuristics.
-  py` 本身连同它的两个具体检测函数保持不变（`tests/test_option_
+  py` 本身连同它的具体检测函数保持不变（`tests/test_option_
   heuristics.py` 仍直接测试它们的细节实现），本模块只是在它上面
-  加一层"决策校验统一入口"的外壳，方便未来（4.12 第二、三步）继续
-  往这里加新规则时，`engine/advance.py` 只需要认识这一个模块。
+  加一层"决策校验统一入口"的外壳，方便未来继续往这里加新规则时，
+  `engine/advance.py` 只需要认识这一个模块。
 
 **刻意不做的部分**：这一步不新增任何"新的校验规则"，也不改变任何
 一条既有规则的判断结果——单纯是"同一批已经存在的逻辑，换一个更

@@ -20,6 +20,7 @@ from world_simulator.engine.option_heuristics import (
     compute_option_warnings,
     detect_macro_overlap_warnings,
     detect_metric_adjustment_warnings,
+    detect_similar_option_warnings,
 )
 from world_simulator.state_model import ChoiceOption
 
@@ -99,3 +100,66 @@ def test_compute_option_warnings_combines_both_checks():
     assert kinds_by_option.get("a") == "macro_event_overlap"
     assert kinds_by_option.get("b") == "metric_adjustment_pattern"
     assert "c" not in kinds_by_option
+
+
+# ---------------------------------------------------------------------------
+# 第五轮方案 5.6 节：detect_similar_option_warnings()
+# ---------------------------------------------------------------------------
+
+
+def test_similar_option_warning_triggered_for_near_duplicate_labels():
+    options = [
+        ChoiceOption(id="a", label="寻找一份新的工作机会", description=""),
+        ChoiceOption(id="b", label="寻找一份新的工作岗位", description=""),
+    ]
+    warnings = detect_similar_option_warnings(options)
+    assert len(warnings) == 1
+    assert warnings[0]["kind"] == "similar_option"
+    assert warnings[0]["option_id"] == "a"
+
+
+def test_similar_option_warning_not_triggered_for_distinct_labels():
+    options = [
+        ChoiceOption(id="a", label="转向推理模型路线", description=""),
+        ChoiceOption(id="b", label="提高现金储备", description=""),
+    ]
+    assert detect_similar_option_warnings(options) == []
+
+
+def test_similar_option_warning_ignores_short_labels():
+    """短于 4 个字的 label 不参与相似度比较——太短几乎必然\"相似\"，
+    没有信息量（同 `_MIN_DRIVER_LEN_FOR_OVERLAP` 的取舍逻辑一致）。"""
+    options = [
+        ChoiceOption(id="a", label="加息", description=""),
+        ChoiceOption(id="b", label="加薪", description=""),
+    ]
+    assert detect_similar_option_warnings(options) == []
+
+
+def test_similar_option_warning_single_option_never_triggers():
+    """只有一个选项时没有\"另一个\"可比较，不应该触发任何警告。"""
+    options = [ChoiceOption(id="a", label="转向推理模型路线", description="")]
+    assert detect_similar_option_warnings(options) == []
+
+
+def test_similar_option_warning_does_not_duplicate_pairs_across_three_options():
+    """三个选项里 a/b 相似、c 不相似——只应该产生一条 a/b 的警告，
+    不应该因为两两组合（a-b/a-c/b-c）而重复计入同一对。"""
+    options = [
+        ChoiceOption(id="a", label="寻找一份新的工作机会", description=""),
+        ChoiceOption(id="b", label="寻找一份新的工作岗位", description=""),
+        ChoiceOption(id="c", label="提高现金储备水平", description=""),
+    ]
+    warnings = detect_similar_option_warnings(options)
+    assert len(warnings) == 1
+    assert warnings[0]["option_id"] == "a"
+
+
+def test_compute_option_warnings_includes_similar_option_check():
+    options = [
+        ChoiceOption(id="a", label="寻找一份新的工作机会", description=""),
+        ChoiceOption(id="b", label="寻找一份新的工作岗位", description=""),
+    ]
+    warnings = compute_option_warnings(options, key_drivers=[])
+    kinds = {w["kind"] for w in warnings}
+    assert "similar_option" in kinds

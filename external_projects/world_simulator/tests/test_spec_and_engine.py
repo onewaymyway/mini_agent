@@ -1626,6 +1626,9 @@ def test_advance_builds_decision_opportunity_when_options_present(tmp_path, monk
         "trigger_node_ids": ["fast"],
         "decision_reason": "技术线出现关键窗口",
         "context_note": "",
+        "max_urgency": None,
+        "max_risk": None,
+        "baseline_option_id": None,
     }
     # 顶层 decision_reason 字段与容器里的值保持镜像同步。
     assert next_state.decision_reason == "技术线出现关键窗口"

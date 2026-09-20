@@ -2255,3 +2255,47 @@ world_simulator/
   至此方案（`next_doc/world_simulator_potential_causal_space_and_
   decision_engine_plan.md`）4.12 节三个子步骤全部完成，第 3 节列出
   的 13 条差距（4.1~4.13）在方案范围内没有任何遗留项。
+
+- 2026-09-20（同日再追加）：**阶段三十四第一批**——按第五轮方案
+  （`next_doc/world_simulator_decision_engine_round2_gap_analysis_
+  plan.md`）建议的实施顺序，完成第一批：5.2（DecisionOpportunity
+  批次级聚合）+ 5.6（选项相似度警告），两条都是纯 Python 聚合/
+  统计逻辑，不涉及任何 prompt/workflow 改动，不新增 LLM 调用。
+  1. **5.2**：`world_simulator/engine/advance.py::
+     _build_decision_opportunity()` 新增三个聚合字段——
+     `max_urgency`/`max_risk`（取这一批 `options` 里已声明
+     `urgency`/`risk_level` 的选项中最高的一档，全部未声明时为
+     `None`；`opportunity_window` 按方案设计不单独存储，因为
+     语义上就是"最紧急那个选项的 `time_window`"，避免同一份信息
+     两处维护）、`baseline_option_id`（第一个 `id` 以 `continue_`
+     开头的选项 id，把既有的 4.6 节命名约定显式暴露成结构化引用）。
+     `app.py` 推进面板在"为什么现在需要决定"旁边新增"整体紧急度"
+     徽章展示（复用既有 `_URGENCY_LABELS`/`ws-urgency-badge-*`
+     样式，`max_urgency` 为空不展示）。
+  2. **5.6**：`world_simulator/engine/option_heuristics.py` 新增
+     `detect_similar_option_warnings()`——同一批候选选项两两比较
+     `label` 的字符 2-gram jaccard 相似度，超过 0.6 阈值时提示
+     "可能过于相似，考虑合并"（纯文本层面的粗略估计，不做语义
+     去重、不自动合并或删除任何选项，延续本模块其它两个检测函数
+     "宁可漏报、不做过度推断"的一贯风格）；短于 4 个字的 label 不
+     参与比较；同一对选项不会因为在三个以上选项的两两组合里重复
+     出现而被记两次警告。已接入 `compute_option_warnings()`（经
+     `decision_validation.py` 转发的既有入口），`engine/advance.py`
+     不需要任何改动即可生效。
+  **刻意不做的部分**：5.2 不做"决策机会本身独立于任何单个选项的
+  urgency/risk"这种语义（详见方案 5.2 节的取舍说明——审视下来
+  和"最紧急选项的 urgency"几乎总是同一个信息，重新让 LLM 单独
+  判断一次容易两个数字互相矛盾）；5.6 不引入 embedding 做语义
+  相似度（避免新依赖和额外调用成本，且方案本身接受"漏报语义相似
+  但用词不同"的选项这个精度取舍）。
+  **验收**：新建 `tests/test_decision_opportunity_aggregation.py`
+  （7 个用例，覆盖三个聚合字段的取值/边界情况——无选项时返回
+  `None`、部分选项未声明 `urgency` 时不参与比较、`baseline_
+  option_id` 有/无 `continue_` 前缀选项时的正确性、既有四个字段
+  不受影响）；`tests/test_option_heuristics.py` 新增 6 个用例
+  覆盖 `detect_similar_option_warnings()`（命中/不命中/短标题
+  忽略/单选项不触发/三选项不重复计入同一对/汇总进
+  `compute_option_warnings()`）；同时更新了既有测试
+  `test_advance_builds_decision_opportunity_when_options_present`
+  的断言（补上三个新字段的默认 `None` 值）。加上原有 339 个（阶段
+  三十三第八批之后的基数），全部通过（**352 passed**）。

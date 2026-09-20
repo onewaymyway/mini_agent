@@ -73,20 +73,61 @@ def _collect_trigger_node_ids(tree_updates_audit: Any) -> List[str]:
     return deduped
 
 
+_URGENCY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+_RISK_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def _max_by_rank(values: List[str], rank: Dict[str, int]) -> Optional[str]:
+    """在已知取值集合的排名表里取"最高档"，忽略排名表里不认识的
+    取值（不应该出现，但防御性地不因为脏数据而报错）；`values` 为
+    空返回 `None`。"""
+    known = [v for v in values if v in rank]
+    if not known:
+        return None
+    return max(known, key=lambda v: rank[v])
+
+
 def _build_decision_opportunity(next_state: SimState) -> Optional[Dict[str, Any]]:
     """构造 `SimState.decision_opportunity`（4.10 节，阶段三十三第
-    五批，参考文档 Decision Opportunity 的精简版）。`options` 为空
-    时返回 `None`——"这一步没有形成需要特别说明背景的决策机会"；
-    非空时总是返回一个 dict（哪怕各字段都是空），`app.py` 展示层
-    只按 `decision_reason` 是否非空决定要不要渲染对应小节，不看
-    容器本身是不是 `None`。"""
+    五批，参考文档 Decision Opportunity 的精简版；`max_urgency`/
+    `max_risk`/`baseline_option_id` 三个字段是第五轮方案 5.2 节新增
+    的批次级聚合，`next_doc/world_simulator_decision_engine_round2_
+    gap_analysis_plan.md`）。`options` 为空时返回 `None`——"这一步
+    没有形成需要特别说明背景的决策机会"；非空时总是返回一个 dict
+    （哪怕各字段都是空/None），`app.py` 展示层只按各字段是否非空
+    决定要不要渲染对应小节，不看容器本身是不是 `None`。
+
+    5.2 节的三个聚合字段都是对 `next_state.options` 已有逐选项
+    字段的**纯计算聚合**，不发起任何新的 LLM 判断、不新增任何
+    LLM 输出字段：
+    - `max_urgency`/`max_risk`：取这一批 `options` 里已声明
+      `urgency`/`risk_level` 的选项中最高的一档；全部未声明时
+      为 `None`。`opportunity_window`（决策机会本身的时间窗口）
+      按方案设计不单独存储——它在语义上就是"最紧急那个选项的
+      `time_window`"，直接从对应选项上读取即可，避免同一份信息
+      在两处维护导致不一致，因此这里只算 `max_urgency` 本身，
+      不重复存一份对应的 `time_window`。
+    - `baseline_option_id`：这一批 `options` 里第一个 `id` 以
+      `continue_` 开头的选项 id（4.6 节"维持现状"约定），没有
+      则为 `None`——只是把已有的命名约定显式暴露成一个结构化
+      引用，不改变 4.6 节本身的产出逻辑。
+    """
     if not next_state.options:
         return None
+    urgencies = [opt.urgency for opt in next_state.options if opt.urgency]
+    risk_levels = [opt.risk_level for opt in next_state.options if opt.risk_level]
+    baseline_option_id = next(
+        (opt.id for opt in next_state.options if str(opt.id or "").startswith("continue_")),
+        None,
+    )
     return {
         "trigger_line_ids": sorted(next_state.line_updates.keys()) if next_state.line_updates else [],
         "trigger_node_ids": _collect_trigger_node_ids(next_state.tree_updates),
         "decision_reason": next_state.decision_reason,
         "context_note": "",
+        "max_urgency": _max_by_rank(urgencies, _URGENCY_RANK),
+        "max_risk": _max_by_rank(risk_levels, _RISK_RANK),
+        "baseline_option_id": baseline_option_id,
     }
 
 

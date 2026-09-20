@@ -3188,6 +3188,19 @@ def page_detail() -> None:
                     f'<div class="ws-muted">📌 为什么现在需要决定：{_html_text(decision_reason)}</div>',
                     unsafe_allow_html=True,
                 )
+            # 第五轮方案 5.2 节：`decision_opportunity.max_urgency` 是
+            # 这一批 options 里最高的紧急档位（纯聚合，不是新的 LLM
+            # 判断），复用既有的紧急度徽章样式展示在决策背景说明旁边。
+            max_urgency = ""
+            if isinstance(opportunity, dict):
+                max_urgency = str(opportunity.get("max_urgency") or "").strip()
+            if max_urgency and max_urgency in _URGENCY_LABELS:
+                st.markdown(
+                    f'<div class="ws-muted">整体紧急度：'
+                    f'<span class="ws-uncertain-badge ws-urgency-badge-{max_urgency}">'
+                    f'{_URGENCY_LABELS.get(max_urgency, max_urgency)}</span></div>',
+                    unsafe_allow_html=True,
+                )
             st.markdown('<span class="ws-muted">选一个方向继续，或直接点「按默认走向推进」。</span>', unsafe_allow_html=True)
             # `continue_` 前缀的"维持现状"选项统一排在列表最后展示
             # （阶段三十三第二批，4.6 节），不改变其它选项的相对顺序。
