@@ -25,7 +25,7 @@ from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_regis
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _skill_name_for_template
 from world_simulator.engine.knowledge import _safe_record_causal_links, _safe_suggest_knowledge
-from world_simulator.engine.option_heuristics import compute_option_warnings
+from world_simulator.decision_validation import compute_option_warnings
 from world_simulator.engine.resource_guard import _apply_resource_guard, _check_resource_relations
 from world_simulator.engine.structural_change import (
     _format_confirmed_structural_changes,

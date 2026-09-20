@@ -2101,3 +2101,83 @@ world_simulator/
   （4.1+4.5+4.8、4.2+4.3+4.6、4.4+4.13、4.9+4.11、4.10、4.7）全部
   完成，但 4.12 的三步（含"随批次同步做"的前两步）都还没有开始，
   不应该被理解成"方案已经全部落地"。
+- 2026-09-20（同日再追加）：**阶段三十三第七批**——补做方案（`next_doc/
+  world_simulator_potential_causal_space_and_decision_engine_plan.md`）
+  4.12 节跨批次的第一、二步（第三步仍是带触发条件的观察项，不在本批
+  范围内）：
+  1. **第一步（校验前移）**：新建 `world_simulator/decision_
+     validation.py`，作为"引擎侧决策校验层"的统一入口：
+     - `normalize_risk_level()`/`normalize_urgency()`/`normalize_
+       action_type()`——把原来散落在 `state_model.py::ChoiceOption.
+       from_dict()` 里的三段内联归一化逻辑原样搬迁过来，`state_
+       model.py` 改为调用这三个函数，行为完全不变（不是重写判断
+       逻辑，纯粹是收敛位置）；
+     - `compute_option_warnings()`——转发给阶段三十三第三批已经
+       实现的 `engine/option_heuristics.py`（宏观事件重合/指标调节
+       语言两条弱信号校验），`engine/advance.py` 的调用方从直接
+       依赖 `engine.option_heuristics` 改为依赖这个新入口；
+       `option_heuristics.py` 本身和它的两个具体检测函数不变，
+       `tests/test_option_heuristics.py` 仍直接测试细节实现。
+     - **循环导入的处理**：`decision_validation.py` 对 `engine.
+       option_heuristics` 的导入放在函数体内部而不是模块顶层——
+       `state_model.py` 在模块顶层导入本模块的归一化函数，如果本
+       模块在顶层导入 `option_heuristics`（它又在顶层导入
+       `state_model.ChoiceOption`），会触发 `state_model →
+       decision_validation → option_heuristics → state_model` 的
+       循环导入，改成函数体内导入后规避。
+  2. **第二步（节点状态推导前移到引擎）**：`causal_tree.py`：
+     - `future_tree.branches` 的每一项新增 `first_seen_step` 字段
+       （分支第一次出现时对应的 step，向后兼容——旧数据没有这个
+       字段时为 `None`，不编造假的起点）；`_normalize_branch()`
+       负责解析/校验这个字段，`build_default_future_tree()`（兜底
+       模板）和 `apply_tree_updates()`（`new_branches`/
+       `expand_branches.sub_branches` 两处"分支真正第一次出现"的
+       地方）负责在创建时把它填成当前 `as_of_step`；
+     - 新增 `suggest_status_transitions(line, current_step, *,
+       stale_multiplier=3)`：纯规则计算——只处理当前状态为
+       `dormant`/`emerging` 的**顶层**分支（`sub_branches` 不
+       递归处理，理由见函数 docstring），阈值 = 该线
+       `advance_every_n_steps`（阶段三十一既有字段，未声明按 1
+       算）× `stale_multiplier`（默认 3 倍，经验值），超过阈值仍
+       停留在 `dormant`/`emerging` 的分支给出"建议 expired"的提示，
+       不直接修改任何分支状态——是否采纳完全由 LLM 判断；
+     - `spec_generator.py` 新增 `_stale_branch_suggestions_hint()`，
+       在 `_resolve_causal_lines_hint()`（`stage="advance"` 分支）
+       里紧跟在既有的 `_lines_due_this_step_hint()`（阶段三十一
+       "预期这一步哪些线会动"提示）之后拼接进 prompt，措辞明确
+       "仅供参考，请结合实际情境自行判断是否采纳，不是强制要求"；
+       没有任何建议时返回空字符串，不给 prompt 增加噪音。
+  3. **刻意不做的部分**（严格按方案原文的取舍）：不做 4.12 第三步
+     （把 `advance_step.yaml` 拆成 `world_evolve`/`decision_
+     generate` 两次调用）——方案原文给出的触发条件是"4.1~4.11 落地
+     后，实测发现一次调用里 LLM 同时兼顾世界演化和决策生成、顾此
+     失彼的问题依然突出"，目前尚未进入这个观察期，继续按方案搁置；
+     不做"引擎直接改写分支状态"——`suggest_status_transitions()`
+     的结果始终只是提示文本，避免"引擎单方面的规则判断和 LLM 叙事
+     对不上"（方案原文 4.12 节第二步原话）；不递归处理
+     `sub_branches`（4.11 节渐进式展开的下一层）——这层结构目前
+     刻意保持"整体替换、不做局部推导"的简单语义。
+  **验收**：`tests/test_decision_validation.py`（新建，11 个）覆盖
+  三个归一化函数的 `None`/合法值/非法值三种输入，以及
+  `compute_option_warnings()` 转发行为、`ChoiceOption.from_dict()`
+  确实在调用新模块；`tests/test_causal_tree.py` 新增 7 个（`suggest_
+  status_transitions()` 的"超过阈值触发"/"未到阈值不触发"/"缺
+  `first_seen_step` 跳过"/"忽略 active 及以下终态"/"未声明
+  `advance_every_n_steps` 按 1 计算"五种情况，以及 `apply_tree_
+  updates()`/`build_default_future_tree()` 正确写入 `first_seen_
+  step` 两个）；`tests/test_decision_engine_prompts.py` 新增 3 个
+  （`_stale_branch_suggestions_hint()` 空/非空两种情况、
+  `_resolve_causal_lines_hint()` 在 `advance` 阶段确实拼接了这条
+  建议）。加上原有 316 个，全部通过（**337 passed**）。
+  **已知限制**：`suggest_status_transitions()` 的"3 倍节奏"阈值是
+  一个经验取值，没有做成可配置项（`manifest.settings` 目前没有为
+  这类内部启发式参数开放配置入口，同项目一贯"先给一个合理默认值，
+  真正需要可配置时再加"的取舍）；旧的因果线数据（阶段三十三第七批
+  之前产生的历史 `future_tree`）里的分支永远拿不到 `first_seen_
+  step`（读取时按 `None` 处理，不做批量回填），所以这条建议对老
+  模拟实例的旧分支永远不会触发，只在这批改动之后新产生的分支上
+  生效——这是"不编造假起点"这条既有原则的直接后果，不是遗漏；
+  至此方案（`next_doc/world_simulator_potential_causal_space_and_
+  decision_engine_plan.md`）第 3 节列出的 13 条差距（4.1~4.13）
+  全部落地完成，包括之前唯一悬空的 4.12 第一、二步，只剩 4.12
+  第三步作为方案原文明确写出的"带触发条件的观察项"继续观察。

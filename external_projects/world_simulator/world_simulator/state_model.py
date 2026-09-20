@@ -15,6 +15,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
+from world_simulator.decision_validation import (
+    normalize_action_type,
+    normalize_risk_level,
+    normalize_urgency,
+)
+
 
 @dataclass
 class ChoiceOption:
@@ -100,22 +106,15 @@ class ChoiceOption:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChoiceOption":
-        risk_level = data.get("risk_level")
-        if risk_level is not None:
-            risk_level = str(risk_level).strip().lower()
-            if risk_level not in ("low", "medium", "high"):
-                risk_level = "medium"
+        # 归一化逻辑收敛到 `world_simulator/decision_validation.py`
+        # （阶段三十三 4.12 节第一步"校验前移"），这里只负责调用，
+        # 具体规则与搬迁前完全一致。
+        risk_level = normalize_risk_level(data.get("risk_level"))
         reversibility = data.get("reversibility")
         if reversibility is not None:
             reversibility = str(reversibility).strip().lower() or None
-        urgency = data.get("urgency")
-        if urgency is not None:
-            urgency = str(urgency).strip().lower()
-            if urgency not in ("low", "medium", "high", "critical"):
-                urgency = "medium"
-        action_type = str(data.get("action_type") or "single").strip().lower()
-        if action_type not in ("single", "combo", "conditional"):
-            action_type = "single"
+        urgency = normalize_urgency(data.get("urgency"))
+        action_type = normalize_action_type(data.get("action_type"))
         return cls(
             id=str(data.get("id", "")),
             label=str(data.get("label", "")),

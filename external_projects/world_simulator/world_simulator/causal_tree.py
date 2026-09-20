@@ -44,7 +44,11 @@ world_simulator_potential_causal_space_and_decision_engine_plan.md`
       "urgency": None,             # low/medium/high/critical，复用 4.3
       # ↓ 以下两个字段是 4.11 节"渐进式展开"的新增部分：
       "expansion_level": "compressed",  # compressed / expanded
-      "sub_branches": []                # expanded 时的下一层子分支，形状同 branches
+      "sub_branches": [],               # expanded 时的下一层子分支，形状同 branches
+      # ↓ 以下一个字段是 4.12 节第二步"节点状态推导前移到引擎"的新增
+      # 部分（阶段三十三 4.12 节，见 `suggest_status_transitions()`）：
+      "first_seen_step": 0        # 这个分支第一次出现时对应的 step，
+                                   # 缺省（旧数据/未声明）为 None
     },
     ...
   ]
@@ -67,6 +71,19 @@ world_simulator_potential_causal_space_and_decision_engine_plan.md`
 两者都表示"没有沿着这个分支走，但不是被主动排除"。历史数据不需要
 批量迁移，读取（`_normalize_branch()`）时统一转换即可，展示层看到
 的永远是新 6 态之一。
+
+**引擎侧状态推导建议（阶段三十三 4.12 节第二步，`next_doc/
+world_simulator_potential_causal_space_and_decision_engine_plan.md`）**：
+`suggest_status_transitions()` 基于 `first_seen_step`（分支第一次
+出现时的 step，本批新增字段）和因果线自身的 `advance_every_n_steps`
+（阶段三十一既有字段），计算"一个 `dormant`/`emerging` 分支如果
+维持这个状态太久（超过这条线的推进节奏若干倍），是不是该建议推进
+到 `expired`（错过窗口）"——这是**纯规则计算，不涉及任何语义
+判断**（是否真的"错过"完全是语义问题，只有 LLM 能判断），所以
+只作为**建议**附加进 `advance_step` 的 prompt 提示里供 LLM 参考
+确认，引擎本身**不会**直接改写任何分支状态。旧数据没有
+`first_seen_step`（值为 `None`）时无法计算"维持了多久"，直接跳过，
+不编造一个假的起点。
 """
 
 from __future__ import annotations
@@ -163,6 +180,17 @@ def _normalize_branch(raw: Any, *, used_ids: set) -> Optional[Dict[str, Any]]:
             if normalized_sub is not None:
                 sub_branches.append(normalized_sub)
 
+    # 4.12 节第二步：`first_seen_step` 未声明（旧数据）或无法解析成
+    # 整数时统一为 `None`——"不知道这个分支第一次出现是什么时候"，
+    # 不编造一个假的起点（调用方 `apply_tree_updates()` 会在这个
+    # 分支确实是"这一步新增"时补上当前 step，见该函数实现）。
+    first_seen_step = raw.get("first_seen_step")
+    if first_seen_step is not None:
+        try:
+            first_seen_step = int(first_seen_step)
+        except (TypeError, ValueError):
+            first_seen_step = None
+
     return {
         "id": branch_id,
         "description": description,
@@ -177,6 +205,7 @@ def _normalize_branch(raw: Any, *, used_ids: set) -> Optional[Dict[str, Any]]:
         "urgency": urgency,
         "expansion_level": expansion_level,
         "sub_branches": sub_branches,
+        "first_seen_step": first_seen_step,
     }
 
 
@@ -222,6 +251,7 @@ def build_default_future_tree(line_label: str, as_of_step: int = 0) -> Dict[str,
             "urgency": None,
             "expansion_level": "compressed",
             "sub_branches": [],
+            "first_seen_step": as_of_step,
         }
         for suffix, desc, likelihood in _DEFAULT_BRANCH_TEMPLATES
     ]
@@ -382,6 +412,10 @@ def apply_tree_updates(
         for raw_branch in update.get("new_branches") or []:
             normalized = _normalize_branch(raw_branch, used_ids=used_ids)
             if normalized is not None:
+                # 4.12 节第二步：这里是分支真正"第一次出现"的地方，
+                # 补上 `first_seen_step`（如果 skill 没有自己声明）。
+                if normalized.get("first_seen_step") is None:
+                    normalized["first_seen_step"] = as_of_step
                 branches.append(normalized)
                 new_branch_ids.append(normalized["id"])
 
@@ -421,6 +455,8 @@ def apply_tree_updates(
                     for raw_sub in raw_subs:
                         normalized_sub = _normalize_branch(raw_sub, used_ids=sub_used_ids)
                         if normalized_sub is not None:
+                            if normalized_sub.get("first_seen_step") is None:
+                                normalized_sub["first_seen_step"] = as_of_step
                             normalized_subs.append(normalized_sub)
                     if normalized_subs:
                         b["sub_branches"] = normalized_subs
@@ -450,6 +486,97 @@ def apply_tree_updates(
         )
 
     return lines, audit
+
+
+_DEFAULT_STALE_MULTIPLIER = 3
+"""一个 `dormant`/`emerging` 分支维持多少倍于所属线 `advance_every_n_
+steps` 的 step 数还没有变化，就建议推进到 `expired`。取 3 倍是一个
+克制的经验值（同项目一贯"宁可少提醒、不乱猜"的风格）：`advance_every_
+n_steps` 本身已经是"这条线大约多久才会有一次实质进展"，3 倍意味着
+"连续错过了两到三次正常的推进节奏还没有动静"，比 1 倍（"这一次没轮到
+就建议过期"）更不容易误报。"""
+
+
+def suggest_status_transitions(
+    line: Dict[str, Any], current_step: int, *, stale_multiplier: int = _DEFAULT_STALE_MULTIPLIER
+) -> List[Dict[str, str]]:
+    """基于纯规则（`first_seen_step` + `advance_every_n_steps`），计算
+    一条因果线上"可能该建议推进到 `expired`"的分支（阶段三十三 4.12
+    节第二步）。
+
+    只处理**当前状态为 `dormant`/`emerging`** 的顶层分支——`active`/
+    `resolved`/`expired`/`invalidated` 已经是终态或已激活，不需要
+    "错过窗口"这个建议；`sub_branches`（4.11 节渐进式展开的下一层）
+    不递归处理，一是这层结构目前刻意保持"整体替换、不做局部推导"的
+    简单语义，二是能进入 `expanded` 状态的分支本身已经是"高优先级/
+    正在推进"的线，短期内不太可能出现"太久没动静"的判断需求。
+
+    `first_seen_step` 为 `None`（旧数据、或规整时无法解析）的分支
+    直接跳过——不知道"从什么时候开始维持这个状态"，就不编造一个假的
+    起点去计算是否"太久"，宁可漏判也不误判。
+
+    返回值是**建议**列表，不修改 `line`/`future_tree` 本身任何内容；
+    调用方（`spec_generator.py`）负责把这些建议转成一句话提示喂给
+    `advance_step` 的 prompt，是否真的采纳、要不要落成
+    `tree_updates.status_updates` 完全由 LLM 判断——engine 侧不直接
+    写状态，避免"引擎单方面的规则判断和 LLM 叙事对不上"（详见方案
+    原文 4.12 节第二步的取舍说明）。
+    """
+    if not isinstance(line, dict):
+        return []
+    tree = line.get("future_tree")
+    if not isinstance(tree, dict):
+        return []
+    branches = tree.get("branches")
+    if not isinstance(branches, list):
+        return []
+
+    raw_n = line.get("advance_every_n_steps")
+    try:
+        cadence = int(raw_n) if raw_n is not None else 1
+    except (TypeError, ValueError):
+        cadence = 1
+    cadence = max(1, cadence)
+    threshold = cadence * max(1, int(stale_multiplier))
+
+    line_id = str(line.get("id") or "").strip()
+    line_label = str(line.get("label") or line_id).strip()
+
+    suggestions: List[Dict[str, str]] = []
+    for branch in branches:
+        if not isinstance(branch, dict):
+            continue
+        status = canonical_status(branch.get("status"))
+        if status not in ("dormant", "emerging"):
+            continue
+        first_seen_step = branch.get("first_seen_step")
+        if first_seen_step is None:
+            continue
+        try:
+            first_seen_step = int(first_seen_step)
+        except (TypeError, ValueError):
+            continue
+        age = current_step - first_seen_step
+        if age < threshold:
+            continue
+        suggestions.append(
+            {
+                "line_id": line_id,
+                "line_label": line_label,
+                "branch_id": str(branch.get("id") or ""),
+                "current_status": status,
+                "suggested_status": "expired",
+                "reason": (
+                    f"该分支自 step {first_seen_step} 起维持「{status}」状态"
+                    f"已 {age} 步（约 {threshold} 步为这条线通常的观察窗口"
+                    f"上限，参考自 advance_every_n_steps={cadence}），如果"
+                    "情境上确实已经错过窗口、不再可能被印证，可以考虑标记为"
+                    "expired；如果只是暂时平静、仍然可能发生，保持现状"
+                    "不需要采纳这条建议"
+                ),
+            }
+        )
+    return suggestions
 
 
 def set_branch_status(

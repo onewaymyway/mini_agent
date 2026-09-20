@@ -343,3 +343,98 @@ def test_apply_tree_updates_expand_branches_ignores_unknown_branch():
     updated_lines, audit = causal_tree.apply_tree_updates(causal_lines, updates, as_of_step=1)
     assert audit == []
     assert updated_lines[0]["future_tree"]["branches"][0].get("expansion_level", "compressed") == "compressed"
+
+
+def test_suggest_status_transitions_flags_stale_dormant_branch():
+    line = {
+        "id": "tech",
+        "label": "技术线",
+        "advance_every_n_steps": 2,
+        "future_tree": {
+            "branches": [
+                {"id": "a", "description": "d", "status": "dormant", "first_seen_step": 0},
+            ]
+        },
+    }
+    # 阈值 = advance_every_n_steps(2) * stale_multiplier(默认 3) = 6
+    suggestions = causal_tree.suggest_status_transitions(line, current_step=6)
+    assert len(suggestions) == 1
+    assert suggestions[0]["line_id"] == "tech"
+    assert suggestions[0]["branch_id"] == "a"
+    assert suggestions[0]["current_status"] == "dormant"
+    assert suggestions[0]["suggested_status"] == "expired"
+
+
+def test_suggest_status_transitions_not_yet_stale_returns_empty():
+    line = {
+        "id": "tech",
+        "advance_every_n_steps": 2,
+        "future_tree": {
+            "branches": [
+                {"id": "a", "description": "d", "status": "dormant", "first_seen_step": 0},
+            ]
+        },
+    }
+    # 只过了 5 步，阈值是 6，还不够
+    assert causal_tree.suggest_status_transitions(line, current_step=5) == []
+
+
+def test_suggest_status_transitions_skips_branches_without_first_seen_step():
+    line = {
+        "id": "tech",
+        "future_tree": {
+            "branches": [
+                {"id": "a", "description": "d", "status": "dormant"},
+            ]
+        },
+    }
+    assert causal_tree.suggest_status_transitions(line, current_step=100) == []
+
+
+def test_suggest_status_transitions_ignores_active_and_terminal_statuses():
+    line = {
+        "id": "tech",
+        "future_tree": {
+            "branches": [
+                {"id": "a", "description": "d", "status": "active", "first_seen_step": 0},
+                {"id": "b", "description": "d", "status": "resolved", "first_seen_step": 0},
+                {"id": "c", "description": "d", "status": "expired", "first_seen_step": 0},
+                {"id": "e", "description": "d", "status": "invalidated", "first_seen_step": 0},
+            ]
+        },
+    }
+    assert causal_tree.suggest_status_transitions(line, current_step=999) == []
+
+
+def test_suggest_status_transitions_defaults_cadence_to_one_when_unset():
+    line = {
+        "id": "tech",
+        "future_tree": {
+            "branches": [
+                {"id": "a", "description": "d", "status": "emerging", "first_seen_step": 0},
+            ]
+        },
+    }
+    # 未声明 advance_every_n_steps 时按 1 计算，阈值 = 1 * 3 = 3
+    assert causal_tree.suggest_status_transitions(line, current_step=2) == []
+    result = causal_tree.suggest_status_transitions(line, current_step=3)
+    assert len(result) == 1 and result[0]["branch_id"] == "a"
+
+
+def test_apply_tree_updates_new_branch_gets_first_seen_step_stamped():
+    causal_lines = [{"id": "tech", "future_tree": {"branches": [{"id": "a", "description": "d"}]}}]
+    updates = [
+        {
+            "line_id": "tech",
+            "new_branches": [{"description": "全新分支"}],
+        }
+    ]
+    updated_lines, _ = causal_tree.apply_tree_updates(causal_lines, updates, as_of_step=5)
+    branches = updated_lines[0]["future_tree"]["branches"]
+    new_branch = [b for b in branches if b["description"] == "全新分支"][0]
+    assert new_branch["first_seen_step"] == 5
+
+
+def test_build_default_future_tree_stamps_first_seen_step():
+    tree = causal_tree.build_default_future_tree("主线", as_of_step=3)
+    assert all(b["first_seen_step"] == 3 for b in tree["branches"])

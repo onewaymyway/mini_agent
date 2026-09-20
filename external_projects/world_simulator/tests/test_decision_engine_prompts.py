@@ -250,3 +250,56 @@ def test_choice_option_action_type_field_exists_with_expected_default():
 
     assert ChoiceOption(id="a", label="x").action_type == "single"
 
+
+
+def test_stale_branch_suggestions_hint_empty_when_no_stale_branches():
+    from world_simulator.spec_generator import _stale_branch_suggestions_hint
+
+    lines = [
+        {
+            "id": "tech",
+            "advance_every_n_steps": 2,
+            "future_tree": {
+                "branches": [{"id": "a", "description": "d", "status": "dormant", "first_seen_step": 5}]
+            },
+        }
+    ]
+    assert _stale_branch_suggestions_hint(lines, current_step=5) == ""
+
+
+def test_stale_branch_suggestions_hint_includes_suggestion_when_stale():
+    from world_simulator.spec_generator import _stale_branch_suggestions_hint
+
+    lines = [
+        {
+            "id": "tech",
+            "advance_every_n_steps": 1,
+            "future_tree": {
+                "branches": [{"id": "a", "description": "d", "status": "dormant", "first_seen_step": 0}]
+            },
+        }
+    ]
+    hint = _stale_branch_suggestions_hint(lines, current_step=3)
+    assert "tech/a" in hint
+    assert "仅供参考" in hint
+
+
+def test_resolve_causal_lines_hint_advance_stage_includes_stale_suggestion():
+    from world_simulator.spec_generator import _resolve_causal_lines_hint
+
+    settings = {
+        "causal_lines": [
+            {
+                "id": "tech",
+                "label": "技术线",
+                "advance_every_n_steps": 1,
+                "future_tree": {
+                    "branches": [
+                        {"id": "a", "description": "d", "status": "dormant", "first_seen_step": 0}
+                    ]
+                },
+            }
+        ]
+    }
+    hint = _resolve_causal_lines_hint(settings, stage="advance", current_step=3)
+    assert "tech/a" in hint

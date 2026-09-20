@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
+from world_simulator.causal_tree import suggest_status_transitions
 from world_simulator.state_model import ChoiceOption
 
 
@@ -130,6 +131,32 @@ def _lines_due_this_step_hint(lines: "List[Dict[str, Any]]", next_step: int) -> 
     return "\n" + "；".join(parts) + "。"
 
 
+def _stale_branch_suggestions_hint(lines: "List[Dict[str, Any]]", current_step: int) -> str:
+    """把 `causal_tree.suggest_status_transitions()` 给出的"建议
+    expired"结果换算成一句 prompt 提示（阶段三十三 4.12 节第二步，
+    `next_doc/world_simulator_potential_causal_space_and_decision_
+    engine_plan.md`）。
+
+    这是纯规则计算出的**建议**，不是引擎已经做出的判断——措辞上
+    明确"是否采纳由你自行判断"，避免 LLM 把这当成必须服从的指令；
+    没有任何建议时返回空字符串，不给 prompt 增加噪音。
+    """
+    parts = []
+    for line in lines:
+        for suggestion in suggest_status_transitions(line, current_step):
+            parts.append(
+                f'{suggestion["line_id"]}/{suggestion["branch_id"]}'
+                f'（{suggestion["reason"]}）'
+            )
+    if not parts:
+        return ""
+    return (
+        "\n以下分支由系统按规则（维持 dormant/emerging 状态过久）自动"
+        "识别为「可能该考虑标记为 expired」，仅供参考，请结合实际情境"
+        "自行判断是否采纳，不是强制要求：" + "；".join(parts) + "。"
+    )
+
+
 def _resolve_causal_lines_hint(
     settings: "Dict[str, Any] | None", *, stage: str = "advance", current_step: int = 0
 ) -> str:
@@ -239,6 +266,9 @@ def _resolve_causal_lines_hint(
     due_hint = _lines_due_this_step_hint(lines, current_step)
     if due_hint:
         hint += due_hint
+    stale_hint = _stale_branch_suggestions_hint(lines, current_step)
+    if stale_hint:
+        hint += stale_hint
     if tree_parts:
         hint += (
             "\n以下是各条线当前的未来分支（状态标注在方括号里，6 态含义："
