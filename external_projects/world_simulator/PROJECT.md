@@ -2603,3 +2603,61 @@ world_simulator/
   节多尺度因果线真正独立推进，要求先在 `life_sim` 模板小范围人工
   验证）、第四批（2.4 节反身性最小诠释，价值最不确定、可直接放弃）
   留待后续按顺序推进，不在本批一次做完。
+
+- 2026-09-20（同日再追加）：**阶段三十六第二批**——按
+  `next_doc/world_simulator_event_driven_engine_and_full_architecture_
+  plan.md` 2.2 节，落地 Influence Field / Relationship 完整机制
+  （在阶段三十一最小起步版结构化列表的基础上扩展，仍然不做任何
+  自动化的数值传播计算，只是把结构化信息转成更丰富的 prompt 提示）。
+  1. **`relationship.py`**：`normalize_relationships()` 新增三个可选
+     字段——`delay_steps`（非负整数，默认 `0` 即时生效，非法/负数
+     归一化为 `0`）、`propagation_path`（字符串数组，间接影响经过的
+     中间实体/因果线 id，非列表归一化为空列表）、`reversible`
+     （`reversible`/`hard_to_reverse`/`irreversible` 三选一，不认识
+     的取值归一化为未声明，不像 `strength` 那样给一个默认档位）。
+     新增 `queue_pending_effect()`/`due_pending_effects()` 一对轻量
+     纯函数：前者把一条被声明为"源头已触发"的延迟关系记一笔
+     "预计第 N 步生效"的待办（按引用去重），后者按 `current_step`
+     筛出已到期的待办，两者都不做文件 IO，落盘由调用方负责。
+  2. **`spec_generator.py`**：新增 `_resolve_relationship_hint()`，
+     把 `settings.relationships` 转成一句话提示（含
+     `delay_steps`/`propagation_path`/`reversible` 的自然语言转换），
+     明确告诉 LLM"这是参考信息，不是要你机械计算数值传播"；到期的
+     `relationship_pending_effects` 会额外追加一句"该体现效果了"的
+     提醒。接入 `resolve_hints()` 输出的 `relationship_hint` key，
+     未声明 `relationships` 时返回空字符串（不给没启用的模拟增加
+     prompt 噪音）。
+  3. **`workflows/advance_step.yaml`/`world_evolve.yaml`**：新增
+     `{relationship_hint}` 占位符，以及可选输出字段
+     `triggered_relationships`（字符串数组，引用被触发的关系
+     `id`/下标）的说明。
+  4. **`engine/advance.py`**：推进落盘前解析 LLM 输出的
+     `triggered_relationships`，逐条调用 `queue_pending_effect()`
+     写入 `manifest.settings.relationship_pending_effects` 并随
+     `manifest` 一并落盘；未输出该字段时不产生这个 key（延续"未声明
+     就不出现"的一贯风格）；引用不存在的关系时静默退化为 `delay_
+     steps=0`（下一步就提醒），不中断推进。
+  5. **`state_model.py`**：更新 `relationships` 字段文档说明三个
+     新字段，新增 `relationship_pending_effects` 字段文档，字段
+     分组索引把 `relationship_pending_effects` 并入"多主体"分组。
+  6. **三个模板 `SKILL.md`**（life-sim/negotiation/group-evolution）：
+     在 `tree_updates` 之后补充 `triggered_relationships` 输出字段的
+     说明，指向共同的格式约定。
+  **范围克制（按方案要求，不做的部分）**：不做自动化的数值传播计算
+  引擎（图遍历、强度衰减公式）——是否触发、触发后具体怎么体现仍
+  完全由 LLM 判断，避免"看起来是精确的因果引擎、实际是规则拍脑袋"
+  的伪确定性，这个范围就是这个方向在本项目里"完整"的合理形态。
+  **验收**：`tests/test_relationship.py` 新增 12 个用例，覆盖
+  `delay_steps`/`propagation_path`/`reversible` 的归一化（含非法值/
+  缺省的安全默认）、`queue_pending_effect()` 按 `id`/下标解析引用并
+  正确计算 `due_step`、找不到引用时退化为零延迟、同一引用同一步
+  去重、`due_pending_effects()` 按步数正确筛选且不修改入参；
+  `tests/test_spec_and_engine.py` 新增 2 个用例，覆盖
+  `triggered_relationships` 正确写入
+  `settings.relationship_pending_effects`，以及未输出该字段时
+  `settings` 里不凭空出现这个 key。加上原有 380 个，全部通过
+  （**394 passed**）。
+  **后续节奏（按方案原文第 3 节）**：第三批（2.3 节多尺度因果线
+  真正独立推进，要求先在 `life_sim` 模板小范围人工验证）、第四批
+  （2.4 节反身性最小诠释，价值最不确定、可直接放弃）留待后续按
+  顺序推进。

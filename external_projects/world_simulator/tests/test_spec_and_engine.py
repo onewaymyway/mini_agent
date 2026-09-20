@@ -161,6 +161,7 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
         "background_entities_hint": "未启用（所有主体都按正常流程完整推理）",
         "calibration_notes": "",
         "relevant_knowledge_hint": "（暂无相关的已知因果知识）",
+        "relationship_hint": "",
     }
     # 因果线是默认基础机制（不需要用户提前声明），这里只校验语义，不
     # 校验措辞原文，避免和 `test_resolve_hints_causal_lines_hint_variants`
@@ -1384,6 +1385,118 @@ def test_advance_parses_causal_links_from_llm_output(tmp_path, monkeypatch):
             "effect": "被迫从「自由职业」转为「求稳定工作」",
         }
     ]
+
+
+def test_advance_records_triggered_relationships_into_pending_effects(tmp_path, monkeypatch):
+    """阶段三十六第二批（2.2 节）：`advance_step` 输出里的可选
+    `triggered_relationships` 应该被 `engine.advance()` 转成
+    `manifest.settings.relationship_pending_effects` 里的一条待办，
+    `due_step` 正确按声明的 `delay_steps` 计算；未给出该字段时不应该
+    产生任何待办，`settings` 里不应该出现这个 key。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+        settings={
+            "relationships": [
+                {"from": "甲方", "to": "乙方", "kind": "rival", "delay_steps": 3},
+            ]
+        },
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2",
+                    "narrative": "n",
+                    "next_vars": {},
+                    "options": [],
+                    "triggered_relationships": ["0"],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.step == 1
+
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    saved_manifest = store.load_manifest()
+    pending = saved_manifest.settings.get("relationship_pending_effects")
+    assert pending == [
+        {"relationship_ref": "0", "triggered_at_step": 1, "due_step": 4}
+    ]
+
+
+def test_advance_without_triggered_relationships_leaves_pending_effects_untouched(tmp_path, monkeypatch):
+    """未输出 `triggered_relationships` 字段（绝大多数步骤）时，不应该
+    在 `settings` 里凭空产生 `relationship_pending_effects` key，延续
+    项目一贯"未声明就不出现"的风格。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+        settings={"relationships": [{"from": "甲方", "to": "乙方", "delay_steps": 3}]},
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {"next_summary": "s2", "narrative": "n", "next_vars": {}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    saved_manifest = store.load_manifest()
+    assert "relationship_pending_effects" not in saved_manifest.settings
 
 
 def test_advance_lines_due_hint_reflects_next_step_not_current_step(tmp_path, monkeypatch):

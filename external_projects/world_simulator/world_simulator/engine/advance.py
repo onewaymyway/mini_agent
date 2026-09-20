@@ -22,7 +22,7 @@ from world_simulator.engine.background_entities import (
     _apply_background_entity_extrapolation,
     _normalize_background_entities,
 )
-from world_simulator import causal_tree
+from world_simulator import causal_tree, relationship
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _skill_name_for_template
@@ -620,6 +620,25 @@ def advance(
         template=manifest.template,
         causal_links=next_state.causal_links,
     )
+
+    # 阶段三十六第二批（2.2 节）：把这一步 skill 声明的
+    # `triggered_relationships` 记入 `settings.relationship_pending_
+    # effects`，供 `_resolve_relationship_hint()` 在到期那一步提醒
+    # skill "该体现效果了"。纯粹的排队记账，不做任何自动化的数值
+    # 传播——是否真的体现、怎么体现仍完全由后续某一步的 skill 自行
+    # 判断。非法/编造的引用会被 `queue_pending_effect()` 静默忽略
+    # （delay_steps 退化为 0，等于下一步就提醒），不中断本次推进。
+    raw_triggered = data.get("triggered_relationships")
+    if isinstance(raw_triggered, list) and raw_triggered:
+        pending = manifest.settings.get("relationship_pending_effects")
+        for ref in raw_triggered:
+            pending = relationship.queue_pending_effect(
+                pending,
+                relationships=manifest.settings.get("relationships"),
+                relationship_ref=str(ref),
+                triggered_at_step=next_state.step,
+            )
+        manifest.settings["relationship_pending_effects"] = pending
 
     manifest.current_step = next_state.step
     store.save_manifest(manifest)

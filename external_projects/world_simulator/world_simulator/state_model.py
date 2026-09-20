@@ -840,24 +840,49 @@ class SimManifest:
       "标记为已印证/已排除"手动修正（`causal_tree.
       set_branch_status()`），不需要等 skill 输出。
     - `relationships`：列表，声明主体（`vars.entities` 的键，或因果线
-      `id`）之间的关系（阶段三十一，`next_doc/
+      `id`）之间的关系（阶段三十一起步，`next_doc/
       world_simulator_universal_simulator_gap_analysis_and_roadmap_v2_
-      plan.md` 4.24 节**最小起步版**——把关系从纯自由文本升级为一份
-      可独立查看的结构化列表，**不是**参考文档设想的完整 Influence
-      Field/Relationship 图（没有影响半径、传播路径、时间延迟、
-      自动推进逻辑，见 `world_simulator/relationship.py` 模块开头的
+      plan.md` 4.24 节；阶段三十六第二批扩展，`next_doc/
+      world_simulator_event_driven_engine_and_full_architecture_
+      plan.md` 2.2 节——把关系从纯自由文本升级为一份结构化列表，喂给
+      `advance_step`/`world_evolve` 的 prompt 做参考，**不是**参考
+      文档设想的、带精确影响半径公式和自动数值传播的完整 Influence
+      Field 引擎，见 `world_simulator/relationship.py` 模块开头的
       范围说明）。每一项形如 `{"from": "甲方", "to": "乙方", "kind":
       "rival", "strength": "high", "note": "对同一块市场份额有直接
-      竞争"}`：`from`/`to` 是主体名字（自由文本，不校验是否真的在
-      `vars.entities` 里存在）、`kind` 取
-      `ally`/`rival`/`dependency`/`authority`/`other` 之一（不认识的
-      值归一化为 `other`）、`strength` 取 `high`/`medium`/`low`
-      （默认 `medium`，延续"不做伪精确"的一贯风格）、`note` 是一句话
-      说明。`world_simulator.relationship.normalize_relationships()`
-      负责清洗/归一化，`app.py` 在"模拟设置"里提供 JSON 编辑入口，
-      不会推进任何传播计算，也不影响 `advance()` 的任何校验逻辑。
-      留空（默认空列表）表示不声明任何关系，行为与引入这个字段之前
-      完全一致，向后兼容。
+      竞争", "delay_steps": 2, "propagation_path": ["中间线id"],
+      "reversible": "hard_to_reverse"}`：`from`/`to` 是主体名字
+      （自由文本，不校验是否真的在 `vars.entities` 里存在）、`kind`
+      取 `ally`/`rival`/`dependency`/`authority`/`other` 之一（不
+      认识的值归一化为 `other`）、`strength` 取 `high`/`medium`/
+      `low`（默认 `medium`，延续"不做伪精确"的一贯风格）、`note` 是
+      一句话说明。第二批新增三个可选字段：`delay_steps`（非负整数，
+      默认 `0` 即时生效，这条关系的影响延迟几步后才体现）、
+      `propagation_path`（字符串数组，间接影响时经过的中间实体/
+      因果线 id，不填表示直接影响）、`reversible`（`reversible`/
+      `hard_to_reverse`/`irreversible` 三选一，不认识的值/不填归一化
+      为未声明）。`world_simulator.relationship.
+      normalize_relationships()` 负责清洗/归一化，
+      `spec_generator._resolve_relationship_hint()` 把归一化结果转成
+      一句话提示喂给 `advance_step`/`world_evolve`（对应 workflow
+      prompt 里的 `{relationship_hint}`），明确告诉 LLM"这是参考
+      信息，不是要你机械计算数值传播"。`app.py` 在"模拟设置"里提供
+      JSON 编辑入口。留空（默认空列表）表示不声明任何关系，行为与
+      引入这个字段之前完全一致，向后兼容。
+
+      配合使用的 `relationship_pending_effects`（列表，`engine.
+      advance()` 自动维护，用户不需要手填）：当 skill 在某一步的
+      `advance_step`/`world_evolve` 输出里给出可选字段
+      `triggered_relationships`（字符串数组，引用上面某条关系的
+      `id` 或它在列表里的下标），且那条关系声明了 `delay_steps > 0`
+      时，`world_simulator.relationship.queue_pending_effect()` 会记
+      一条 `{"relationship_ref": ..., "triggered_at_step": ...,
+      "due_step": ...}` 的待办追加进这个列表；到了 `due_step`，
+      `_resolve_relationship_hint()` 会在提示文本里特别提醒 LLM
+      "这条之前触发的关系该体现效果了"（仅提醒，不强制、不自动改写
+      `vars`）。到期的待办目前不会被自动清除（允许提醒连续出现几步，
+      直到 LLM 真的在情节里体现出来），需要手动清理可以直接编辑
+      "模拟设置"里的这份 JSON。
     - `observer_mode`：布尔值（默认 `False`），"世界独立演化"的最小
       实验开关（阶段三十一，4.25 节**最小起步版**，不是参考文档设想
       的完整 Observer View 双视角架构——没有独立的推进循环，仍然是
@@ -947,7 +972,8 @@ class SimManifest:
     - 资源与守恒：`resource_fields`、`resource_relations`
     - 目标与归因：`objectives`
     - 多主体：`multi_entity_mode`、`hierarchical_agent_mode`、
-      `background_entities`、`relationships`
+      `background_entities`、`relationships`、
+      `relationship_pending_effects`
     - 因果线：`causal_lines`、`suggested_causal_lines`、
       `declared_causal_graph`
     - 校准与结构演化：`calibration_notes`、`confirmed_structural_changes`

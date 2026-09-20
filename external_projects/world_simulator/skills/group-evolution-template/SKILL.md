@@ -239,6 +239,9 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
 - `tree_updates`：数组（可选，阶段二十六），格式与用途与
   `life-sim-template` 完全一致，这一步印证/排除某条线的未来分支、
   或催生新可能性时给出。
+- `triggered_relationships`：数组（可选，阶段三十六第二批），格式
+  与用途与 `life-sim-template` 完全一致——只有 `{relationship_hint}`
+  非空且某条延迟关系的"源头"这一步确实发生了才给出。
 - `structural_change`：对象（可选，阶段二十三，Model Regime
   Detection / Emergence），格式与用途与 `life-sim-template` 完全一致
   ——只有出现原模型没预期、会稳定存在下去的新结构（新的稳定子群体、

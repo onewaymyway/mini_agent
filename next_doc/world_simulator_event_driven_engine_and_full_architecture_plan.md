@@ -14,8 +14,16 @@ Influence Field + Event-Driven 决策引擎 + 反身性（第六轮）
 >   按方案原文建议，先只在自动挡场景观察几天真实运行的摘要质量，
 >   再考虑要不要把手动挡"快进"按钮推广为默认可见入口（已经可用，
 >   只是还没有大量真实使用反馈）。
-> - ⏳ 第二批（2.2 节 Influence Field / Relationship 完整机制）、
->   第三批（2.3 节多尺度因果线真正独立推进）、第四批（2.4 节反身性
+> - ✅ **第二批（2.2 节，Influence Field / Relationship 完整机制）
+>   已完成**：`relationship.py` 新增 `delay_steps`/`propagation_
+>   path`/`reversible` 三个可选字段与 `queue_pending_effect()`/
+>   `due_pending_effects()`，`spec_generator._resolve_relationship_
+>   hint()` 接入 `advance_step`/`world_evolve` 的 `{relationship_
+>   hint}` 提示，`engine/advance.py` 落盘 `triggered_relationships`
+>   为 `settings.relationship_pending_effects` 待办。新增 14 个
+>   测试用例，全量测试套件 394 个全部通过。仍然只做"更丰富的提示"，
+>   不做自动化数值传播——按方案原文的范围克制要求。
+> - ⏳ 第三批（2.3 节多尺度因果线真正独立推进）、第四批（2.4 节反身性
 >   最小诠释）尚未开始，按方案第 3 节的顺序依次推进。
 >
 > **上游文档**：
@@ -145,6 +153,13 @@ autopilot()` 行为与现在完全一致。
 ---
 
 ### 2.2（建议第二批）Influence Field / Relationship 完整机制
+
+> **实施状态：✅ 已完成**（2026-09-20，`PROJECT.md` 阶段三十六第
+> 二批）。落地情况与方案原文的对应关系：`delay_steps`/
+> `propagation_path`/`reversible` 三个字段、`_resolve_relationship_
+> hint()`、`triggered_relationships` 输出字段、
+> `relationship_pending_effects` 待办队列均完全按下面的方案落地，
+> 没有需要补充说明的偏离点。
 
 **最小版回顾**：`world_simulator/relationship.py` 目前只有
 `settings.relationships`（`from`/`to`/`kind`/`strength`/`note`）
@@ -310,7 +325,7 @@ LLM 的节奏提示（`_lines_due_this_step_hint()`），不强制；所有线
   不改 advance() 内部实现，改动面最小、用户直接受益最大
   （所有模拟都能用上"快进"），建议先做。
 
-第二批：2.2 Influence Field / Relationship 完整机制
+第二批：2.2 Influence Field / Relationship 完整机制 ✅ 已完成
   只涉及 prompt 扩展和字段新增，不碰推进循环核心，风险和
   已完成的字段级扩展同一量级。
 

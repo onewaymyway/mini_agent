@@ -219,6 +219,9 @@ triggers: 多方谈判, 谈判模拟, 博弈模拟, 多主体模拟, 信息不�
 - `tree_updates`：数组（可选，阶段二十六，格式与另外两个模板完全
   一致），这一步的走向印证/排除了某条线已有的未来分支、或者催生了
   新可能性时给出，见 `life-sim-template` 对应章节的完整格式说明。
+- `triggered_relationships`：数组（可选，阶段三十六第二批），格式
+  与用途与 `life-sim-template` 完全一致——只有 `{relationship_hint}`
+  非空且某条延迟关系的"源头"这一步确实发生了才给出。
 - `structural_change`：对象（可选，阶段二十三，Model Regime
   Detection / Emergence），格式与用途与 `life-sim-template` 完全一致
   ——谈判场景下典型的触发时机是"各方之间形成了稳定的联盟结构"

@@ -321,6 +321,73 @@ def _resolve_causal_lines_hint(
     return hint
 
 
+def _resolve_relationship_hint(
+    settings: "Dict[str, Any] | None", *, current_step: int = 0
+) -> str:
+    """把 `settings.relationships` 转成喂给 `advance_step`/
+    `world_evolve` prompt 的一句话提示（第二批，`next_doc/
+    world_simulator_event_driven_engine_and_full_architecture_plan.md`
+    2.2 节，Influence Field / Relationship 完整机制）。
+
+    同 `_resolve_causal_lines_hint()` 一贯的风格：只是把结构化信息
+    转成自然语言提示，明确告诉 LLM"这是参考信息，不是要你机械计算
+    数值传播"——不做任何自动化的影响半径/强度衰减计算，真正是否
+    触发、触发后具体怎么体现完全由 LLM 判断。
+
+    未声明 `relationships`（默认情况）返回空字符串，同 `belief_fields_
+    hint` 等既有条件提示一致——不给没启用这个功能的模拟增加任何
+    prompt 噪音。
+    """
+    from world_simulator import relationship as rel_module
+
+    raw = (settings or {}).get("relationships")
+    relationships = rel_module.normalize_relationships(raw)
+    if not relationships:
+        return ""
+
+    parts = []
+    for index, item in enumerate(relationships):
+        piece = (
+            f'{item["from"]}→{item["to"]}（{item["kind_label"]}，'
+            f'强度：{item["strength_label"]}'
+        )
+        if item.get("delay_steps"):
+            piece += f'，延迟 {item["delay_steps"]} 步后才体现'
+        if item.get("propagation_path"):
+            piece += "，经由：" + "→".join(item["propagation_path"])
+        if item.get("reversible_label"):
+            piece += f'，{item["reversible_label"]}'
+        if item.get("note"):
+            piece += f'，备注：{item["note"]}'
+        piece += "）"
+        parts.append(piece)
+
+    pending = (settings or {}).get("relationship_pending_effects")
+    due = rel_module.due_pending_effects(pending, current_step=current_step)
+    due_hint = ""
+    if due:
+        due_refs = "、".join(str(item.get("relationship_ref")) for item in due)
+        due_hint = (
+            f"\n以下关系此前已被声明为\"源头已触发\"，延迟期已到（关系"
+            f"序号：{due_refs}），这一步该考虑是否体现出它们的影响了——"
+            "仅供参考，是否真的体现、以什么方式体现仍由你自行判断，不是"
+            "机械触发。"
+        )
+
+    return (
+        "已声明以下主体关系，仅供你判断情节走向时参考——这是给你的参考"
+        "信息，不是要你机械计算数值传播，是否体现、怎么体现完全由你"
+        "自行判断：" + "；".join(parts) + "。"
+        "如果这一步的情节里，某条关系的\"源头\"确实发生了、并且这条关系"
+        "声明了延迟（delay_steps > 0），可以在输出里额外给一个可选字段"
+        "`triggered_relationships`：一个字符串数组，列出被触发的关系"
+        "序号（上面每条关系前面隐含的序号，从 0 开始，按声明顺序数，"
+        "或者这条关系自带的 `id`，如果有的话）；没有关系被触发，或者"
+        "所有相关关系都是即时生效（未声明 delay_steps），都不需要输出"
+        "这个字段。" + due_hint
+    )
+
+
 def _resolve_belief_fields_hint(settings: "Dict[str, Any] | None") -> str:
     """把 `settings.belief_fields` 转成喂给 `advance_step` prompt 的
     一句话提示（4.3 节，State/Belief 分离子方案，`next_doc/
@@ -506,6 +573,9 @@ def resolve_hints(
         "background_entities_hint": _resolve_background_entities_hint(settings),
         "causal_lines_hint": _resolve_causal_lines_hint(
             settings, stage=stage, current_step=current_step
+        ),
+        "relationship_hint": _resolve_relationship_hint(
+            settings, current_step=current_step
         ),
     }
 

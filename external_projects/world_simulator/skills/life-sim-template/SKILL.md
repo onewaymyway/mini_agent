@@ -344,6 +344,12 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
   "likelihood": "low"}]}`——三个子字段都可选，只给这一步真正发生的
   部分；这一步的走向没有明显印证/排除任何分支、也没有催生新可能性
   时，不需要输出这个字段。
+- `triggered_relationships`：数组（可选，阶段三十六第二批，Influence
+  Field / Relationship 完整机制），字符串数组，只有当 `{relationship_
+  hint}` 非空、且这一步的情节里某条声明了延迟（`delay_steps > 0`）的
+  关系的"源头"确实发生了，才给出被触发的关系引用（`id` 或声明顺序
+  的下标）。绝大多数步骤没有这个字段——`relationship_hint` 为空，或
+  相关关系都是即时生效（未声明延迟）时都不需要输出。
 - `structural_change`：对象（可选，阶段二十三，Model Regime
   Detection / Emergence），只有当这一步出现了原模型没预期、且看起来
   会稳定存在下去的新结构时才给（新的人物/关系、新的稳定机制、或者
