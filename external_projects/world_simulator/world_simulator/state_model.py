@@ -923,6 +923,21 @@ class SimManifest:
       desired_state`），用户在创建向导/详情页"模拟设置"里可编辑。
       留空（默认空字典）表示没有声明，不影响任何已有行为，向后
       兼容。
+      - `per_entity`（第十二轮方案第 2 节，对照参考文档第五十二节
+        "多主体各自的 Desired State 可能互相冲突"）：可选的顶层
+        key，字典，键是主体名字（必须与 `vars.entities` 的键一致，
+        同 `background_entities` 的既有约定），值是同样结构的
+        `{"conditions": [...], "constraints": [...], "assumptions":
+        [...]}`——复用上面三段式结构，不新发明字段。只有
+        `multi_entity_mode == True` 时才有实际意义；`False` 时即使
+        被写入也不出现在任何提示/展示里，不触发新代码路径。不带
+        `per_entity` 的顶层 `conditions`/`constraints`/`assumptions`
+        继续表示"没有细分到具体主体的整体理想状态"，两者可以共存、
+        不互斥。**不做**主体间目标冲突的自动检测/裁决（不判断"谁的
+        理想状态应该优先"）；不要求每个 `entity` 都声明
+        `per_entity`，缺省的主体视为"没有声明理想状态"，不影响推进；
+        **不做**"理想状态随时间自动演化"（同全局 `desired_state`
+        已有的取舍一致）。
     - `resource_relations`：列表，声明 `vars` 里资源字段之间的"转移"
       关系（阶段十六，`next_doc/world_simulator_universal_world_model_
       upgrade_plan.md` 4.8 节，通用规则引擎的最小可行版本）。每一项

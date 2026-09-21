@@ -404,24 +404,16 @@ def _resolve_belief_fields_hint(settings: "Dict[str, Any] | None") -> str:
     return "、".join(fields)
 
 
-def _resolve_desired_state_hint(settings: "Dict[str, Any] | None") -> str:
-    """把 `settings.desired_state` 转成喂给 prompt 的一句话提示（第八轮
-    差距分析第九轮批次一，2.2 节 `Desired State` 结构化）。
-
-    未声明或三个 key（`conditions`/`constraints`/`assumptions`）都为空
-    （默认情况）返回一句话说明"未声明"，不是空字符串——`desired_state_
-    hint` 在 `generate_scenario.yaml`/`advance_step.yaml` 里都是必然
-    出现的一句提示（不像 `belief_fields_hint` 那样整段条件性拼接），
-    保持"未声明"时也有一句明确的话，而不是留一个空行造成困惑。
-    """
-    desired = (settings or {}).get("desired_state")
-    if not isinstance(desired, dict):
-        desired = {}
+def _format_desired_state_triplet(desired: "Dict[str, Any]") -> str:
+    """把一份 `{"conditions": [...], "constraints": [...], "assumptions":
+    [...]}` 三段式结构格式化成一句话，`_resolve_desired_state_hint()`
+    的整体提示和每个主体的 `per_entity` 提示共用这段拼接逻辑，不重复
+    实现两遍。空结构返回空字符串。"""
     conditions = [str(x).strip() for x in (desired.get("conditions") or []) if str(x).strip()]
     constraints = [str(x).strip() for x in (desired.get("constraints") or []) if str(x).strip()]
     assumptions = [str(x).strip() for x in (desired.get("assumptions") or []) if str(x).strip()]
     if not (conditions or constraints or assumptions):
-        return "（未声明——这次模拟没有结构化的理想状态描述，仅供参考，不强制要求）"
+        return ""
     parts = []
     if conditions:
         parts.append(f"理想条件：{'、'.join(conditions)}")
@@ -430,6 +422,55 @@ def _resolve_desired_state_hint(settings: "Dict[str, Any] | None") -> str:
     if assumptions:
         parts.append(f"推演假设：{'、'.join(assumptions)}")
     return "；".join(parts)
+
+
+def _resolve_desired_state_hint(settings: "Dict[str, Any] | None") -> str:
+    """把 `settings.desired_state` 转成喂给 prompt 的一句话提示（第八轮
+    差距分析第九轮批次一，2.2 节 `Desired State` 结构化；第十二轮方案
+    第 2 节扩展支持 `per_entity` 逐主体理想状态）。
+
+    未声明、且没有 `multi_entity_mode == True` 下的 `per_entity`
+    （默认情况）返回一句话说明"未声明"，不是空字符串——`desired_state_
+    hint` 在 `generate_scenario.yaml`/`advance_step.yaml` 里都是必然
+    出现的一句提示（不像 `belief_fields_hint` 那样整段条件性拼接），
+    保持"未声明"时也有一句明确的话，而不是留一个空行造成困惑。
+
+    `per_entity` 只有 `multi_entity_mode == True` 时才会被读取并拼进
+    提示——`False` 时即使 `settings.desired_state.per_entity` 被写入
+    也原样忽略，避免非多主体模板意外触发这段新代码路径（同
+    `background_entities` 等字段"只在对应模式开启时才生效"的一贯
+    取舍）。
+    """
+    desired = (settings or {}).get("desired_state")
+    if not isinstance(desired, dict):
+        desired = {}
+    overall = _format_desired_state_triplet(desired)
+
+    per_entity_lines: List[str] = []
+    if (settings or {}).get("multi_entity_mode") is True:
+        per_entity = desired.get("per_entity")
+        if isinstance(per_entity, dict):
+            for entity_name, entity_desired in per_entity.items():
+                if not isinstance(entity_desired, dict):
+                    continue
+                formatted = _format_desired_state_triplet(entity_desired)
+                if formatted:
+                    per_entity_lines.append(f"「{entity_name}」：{formatted}")
+
+    if not overall and not per_entity_lines:
+        return "（未声明——这次模拟没有结构化的理想状态描述，仅供参考，不强制要求）"
+
+    pieces = []
+    if overall:
+        pieces.append(overall)
+    if per_entity_lines:
+        pieces.append(
+            "各主体各自的理想状态——" + "；".join(per_entity_lines)
+            + "（不同主体的理想状态可能互相冲突，这是正常的、不代表存在"
+              "能同时满足所有人的唯一最优解，候选行动可以体现这种冲突或"
+              "权衡，不需要强行让所有主体都满意）"
+        )
+    return "；".join(pieces)
 
 
 def resolve_causal_graph_hint(

@@ -3332,3 +3332,31 @@ plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增
   **验收**：新增 `tests/test_explore_branches.py`（4 个测试：全部
   成功/部分失败不留半成品分支/候选路线为空报错/`custom_option`
   路线），加上原有的全部通过（**545 passed**）。
+
+- 2026-09-22（同日再追加）：**第十二轮第 2 节**——按 `next_doc/
+  world_simulator_twelfth_round_exploration_and_deferred_directions_
+  plan.md` 第 2 节，多主体各自的 Desired State。
+  1. **`state_model.py`**：`desired_state` docstring 补充新的可选
+     顶层 key `per_entity`（字典，键是主体名字，需与
+     `vars.entities` 一致，值是同样的 conditions/constraints/
+     assumptions 三段式结构）；只有 `multi_entity_mode == True` 时
+     才有意义，纯文档说明，`SimState`/`SimManifest` 不需要改任何
+     `from_dict`/`to_dict` 代码——`desired_state` 本身透传存储。
+  2. **`spec_generator.py`**：`_resolve_desired_state_hint()` 拆出
+     公共的 `_format_desired_state_triplet()` 辅助函数（整体提示和
+     每个主体的提示共用同一段三元组拼接逻辑）；`multi_entity_mode
+     == True` 且声明了 `per_entity` 时，额外逐主体列出各自的理想
+     状态，并附一句"不同主体的理想状态可能互相冲突……候选行动可以
+     体现这种冲突或权衡"；`multi_entity_mode == False` 时
+     `per_entity` 即使被写入也不出现在提示里。
+  3. **`app.py`**："模拟设置"→"高级：理想状态"折叠区：开启多主体
+     模式时额外提示 `per_entity` 用法+示例+已声明的背景主体名字，
+     复用同一个 JSON 编辑框（不新增控件，`update_settings()` 原样
+     透传 `desired_state` 整个字典，不做字段级解析）。
+  **范围克制（按方案要求，不做的部分）**：不做主体间目标冲突的
+  自动检测/裁决算法；不要求每个 entity 都填 `per_entity`；不做
+  "理想状态随时间自动演化"。
+  **验收**：`tests/test_spec_and_engine.py` 新增 3 个测试
+  （`per_entity` 需要 `multi_entity_mode` 才生效、与全局
+  `conditions` 共存、跳过非法条目），加上原有的全部通过
+  （**544 passed**）。

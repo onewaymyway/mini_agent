@@ -3726,6 +3726,26 @@ def page_detail() -> None:
                 "纯粹是记录性字段。</span>",
                 unsafe_allow_html=True,
             )
+            if new_multi_entity_mode:
+                # 第十二轮方案第 2 节：多主体模式下，`per_entity` 是同一个
+                # JSON 对象里的一个额外顶层 key，不需要单独的编辑控件——
+                # 复用上面这个 JSON 编辑框（原样落盘，`update_settings()`
+                # 不做字段级解析），这里只补一句提示 + 已声明的主体名字，
+                # 方便用户照着敲键名，不需要重新记住 `vars.entities` 里
+                # 有哪些主体。
+                known_entities = [
+                    e.strip() for e in new_background_entities_text.split(",") if e.strip()
+                ]
+                entities_note = f"，已声明的背景主体：{', '.join(known_entities)}" if known_entities else ""
+                st.markdown(
+                    '<span class="ws-muted">已开启多主体模式：可以额外加一个 <code>per_entity</code> '
+                    "顶层 key（字典，键是主体名字，需与 <code>vars.entities</code> 的键一致，值是"
+                    "同样的 conditions/constraints/assumptions 三段式结构），声明每个主体各自的"
+                    f"理想状态，可能互相冲突（这是正常的）{entities_note}。例："
+                    '<code>{"per_entity": {"甲方": {"conditions": ["利润最大化"]}, '
+                    '"乙方": {"conditions": ["收入与自由"]}}}</code></span>',
+                    unsafe_allow_html=True,
+                )
             new_desired_state_text = st.text_area(
                 "理想状态（JSON 对象，可选）",
                 value=json.dumps(cur_desired_state, ensure_ascii=False) if cur_desired_state else "",

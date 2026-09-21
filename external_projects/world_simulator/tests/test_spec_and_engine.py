@@ -133,6 +133,66 @@ def test_resolve_hints_desired_state_hint_variants():
     assert "current_technology_available" in hint
 
 
+def test_resolve_hints_desired_state_per_entity_requires_multi_entity_mode():
+    """第十二轮方案第 2 节：`per_entity` 只有 `multi_entity_mode ==
+    True` 时才出现在提示里，`False`（默认）时即使写入也原样忽略。"""
+    settings = {
+        "desired_state": {
+            "per_entity": {
+                "甲方": {"conditions": ["利润最大化"]},
+                "乙方": {"conditions": ["收入与自由"]},
+            }
+        }
+    }
+    hint_without_multi_entity = spec_mod.resolve_hints(settings)["desired_state_hint"]
+    assert "未声明" in hint_without_multi_entity
+    assert "甲方" not in hint_without_multi_entity
+
+    settings["multi_entity_mode"] = True
+    hint_with_multi_entity = spec_mod.resolve_hints(settings)["desired_state_hint"]
+    assert "甲方" in hint_with_multi_entity
+    assert "利润最大化" in hint_with_multi_entity
+    assert "乙方" in hint_with_multi_entity
+    assert "收入与自由" in hint_with_multi_entity
+    assert "可能互相冲突" in hint_with_multi_entity
+
+
+def test_resolve_hints_desired_state_per_entity_coexists_with_overall():
+    """全局 `conditions`/`constraints`/`assumptions`（不带 `per_entity`
+    的部分）与 `per_entity` 可以共存，两段都出现在提示里。"""
+    hint = spec_mod.resolve_hints(
+        {
+            "multi_entity_mode": True,
+            "desired_state": {
+                "conditions": ["整体社会稳定"],
+                "per_entity": {"甲方": {"conditions": ["利润最大化"]}},
+            },
+        }
+    )["desired_state_hint"]
+    assert "整体社会稳定" in hint
+    assert "甲方" in hint
+    assert "利润最大化" in hint
+
+
+def test_resolve_hints_desired_state_per_entity_skips_malformed_entries():
+    """非法条目（值不是字典/内容为空）被跳过，不影响其它合法条目、
+    也不报错。"""
+    hint = spec_mod.resolve_hints(
+        {
+            "multi_entity_mode": True,
+            "desired_state": {
+                "per_entity": {
+                    "甲方": {"conditions": ["利润最大化"]},
+                    "乙方": "不是字典",
+                    "丙方": {},
+                }
+            },
+        }
+    )["desired_state_hint"]
+    assert "甲方" in hint
+    assert "乙方" not in hint
+    assert "丙方" not in hint
+
 
     """阶段十四（4.6 节）：`objectives` 类型放宽为 `List[Any]`，结构化
     字典项应该原样保留（不被强制转成字符串），纯字符串项行为不变。"""

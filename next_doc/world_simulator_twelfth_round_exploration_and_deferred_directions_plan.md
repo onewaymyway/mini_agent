@@ -1,9 +1,8 @@
 # world_simulator 改进计划：探索模式新差距 + 此前搁置方向一并推进
 # （第十二轮）
 
-> **状态**：按第 8 节实施顺序逐阶段推进中。第 1 节（Exploration
-> Mode）已完成，详见该节末尾的实施记录；其余各节仍在规划中，尚未
-> 开始实施。
+> **状态**：按第 8 节实施顺序逐阶段推进中。第 1、2 节已完成，
+> 详见各节末尾的实施记录；其余各节仍在规划中，尚未开始实施。
 
 ## 0. 这份文档是什么
 
@@ -112,7 +111,7 @@ Exploration Mode 应该由系统自动把"路线 A/B/C/D"各自铺成一条分�
 
 ---
 
-## 2. 多主体各自的 Desired State（对应参考文档第五十二节）
+## 2. 多主体各自的 Desired State（对应参考文档第五十二节）【已完成】
 
 **参考文档要求**：当模拟规模扩大后，每个人、每个组织、每个国家
 的 Desired State 都不同，这些目标可能冲突（企业要利润最大化，
@@ -169,6 +168,16 @@ Exploration Mode 应该由系统自动把"路线 A/B/C/D"各自铺成一条分�
 desired_state_hint()` 在 `per_entity` 非空时产出的提示包含每个
 主体的理想状态文本；`multi_entity_mode == False` 时 `per_entity`
 即使被写入也不出现在提示里，向后兼容。
+
+**实施记录（2026-09-22）**：已按上述设计完成实施。
+`state_model.py` docstring 补充 `per_entity` 说明；
+`spec_generator.py::_resolve_desired_state_hint()` 拆出公共的
+`_format_desired_state_triplet()`，`multi_entity_mode == True` 且
+声明 `per_entity` 时逐主体列出理想状态并附"可能互相冲突"提示；
+`app.py`"高级：理想状态"折叠区在多主体模式下补充 `per_entity`
+用法说明（复用同一个 JSON 编辑框，不新增控件）。新增 3 个测试
+（`tests/test_spec_and_engine.py`），加上原有的全部通过
+（544 passed）。详见 `PROJECT.md` 对应条目。
 
 ---
 
