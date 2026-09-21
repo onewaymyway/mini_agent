@@ -58,6 +58,7 @@ from world_simulator.analysis import aggregate_field_stats, normalize_objectives
 from world_simulator import attribution as attribution_mod
 from world_simulator import trend as trend_mod
 from world_simulator import relationship as relationship_mod
+from world_simulator import multi_entity as multi_entity_mod
 from world_simulator import knowledge_base as knowledge_base_mod
 from world_simulator.config import DATA_DIR, ensure_dirs
 from world_simulator.achievements import achievement_progress, compute_achievements
@@ -702,6 +703,62 @@ def _render_vars_display(vars_dict, multi_entity_mode: bool) -> None:
     if other_keys:
         st.caption("其它顶层字段：")
         st.json(other_keys)
+
+
+def _render_entity_relationship_path_tool(vars_dict, manifest) -> None:
+    """"关系路径查询"小工具（第八轮批次五，`next_doc/
+    world_simulator_c_category_precision_upgrade_improvement_plan.md`
+    第 6 节）：下拉选两个实体，展示 `multi_entity.
+    find_relationship_path()` 的结果。
+
+    只在 `multi_entity_mode` 为真、`vars.entities` 是非空字典、且
+    至少能从 `settings.relationships` 构造出一条有效边时才展示——
+    不满足任一条件都静默不渲染任何东西，不是必须弹一句"暂不可用"的
+    强提示（同 `_render_vars_display()` 的一贯"能力未启用就不占地方"
+    风格）。**只是展示给用户看，不反过来影响推进 prompt**——本批次
+    不做"把路径信息自动喂给 advance_step"这一层。
+    """
+    if not bool(manifest.settings.get("multi_entity_mode")):
+        return
+    entities = vars_dict.get("entities") if isinstance(vars_dict, dict) else None
+    if not (isinstance(entities, dict) and entities):
+        return
+
+    graph = multi_entity_mod.build_entity_graph(
+        manifest.settings.get("relationships"), entities
+    )
+    if not graph:
+        return
+
+    entity_names = list(entities.keys())
+    with st.expander("🔗 关系路径查询（两个实体之间隔着几层关系）"):
+        st.markdown(
+            '<span class="ws-muted">只做连通性判断，不代表"影响力大小"——'
+            "`strength`/`reversible` 这些字段不参与路径计算。</span>",
+            unsafe_allow_html=True,
+        )
+        cols = st.columns(2)
+        with cols[0]:
+            start_name = st.selectbox("起点", entity_names, key="entity_path_start")
+        with cols[1]:
+            end_name = st.selectbox(
+                "终点", entity_names,
+                index=min(1, len(entity_names) - 1), key="entity_path_end",
+            )
+        if start_name and end_name:
+            path = multi_entity_mod.find_relationship_path(graph, start_name, end_name)
+            if path is None:
+                st.markdown(
+                    f'<span class="ws-muted">「{_html_text(start_name)}」和'
+                    f"「{_html_text(end_name)}」之间在已声明的关系里没有找到"
+                    "连通路径（或路径太长，超出查询深度）。</span>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    "**关系路径：** " + " → ".join(_html_text(p) for p in path)
+                    + f"（{len(path) - 1} 步）"
+                )
 
 
 _CONFIDENCE_LABELS = {"low": "低置信度", "medium": "中置信度", "high": "高置信度"}
@@ -2904,6 +2961,7 @@ def page_detail() -> None:
             if belief_html:
                 st.markdown(belief_html, unsafe_allow_html=True)
             _render_vars_display(current.vars, bool(manifest.settings.get("multi_entity_mode")))
+            _render_entity_relationship_path_tool(current.vars, manifest)
 
     _render_attribution_section(history, manifest)
 

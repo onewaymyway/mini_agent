@@ -2936,3 +2936,42 @@ world_simulator/
   433 个，全部通过（**438 passed**）。
   **后续节奏（按方案原文第 1 节）**：批次五（较大改动，决策引擎/
   多轮反事实对比整合）、批次六留待之后按顺序推进。
+- 2026-09-21（同日再追加）：**阶段三十七第五批**——按
+  `next_doc/world_simulator_c_category_precision_upgrade_
+  improvement_plan.md` 第 6 节，多主体 Entity/Relationship：从
+  自由文本到结构化连通图。
+  1. **新增 `multi_entity.py`**：`build_entity_graph(relationships_
+     raw, entities) -> Dict[str, List[str]]`——遍历
+     `settings.relationships`（复用 `relationship.normalize_
+     relationships()` 清洗），把 `from`/`to` 都能在 `entities`（
+     `vars.entities` 字典本身或 id 可迭代对象）里找到对应 id 的
+     记录，构造一个**无向**邻接表；匹配不上真实 entity 的记录静默
+     跳过，不阻断不报错；同一对实体间多条关系去重成一条边；自环
+     跳过但节点仍保留。签名和方案原文稍有出入：接收
+     `relationships_raw`/`entities` 两个参数而不是单个 `manifest`
+     ——排查后确认 `entities` 实际存放在 `SimState.vars`（不是
+     `SimManifest`），两参数签名更直接、更容易单测，模块 docstring
+     里说明了这个偏差和原因。`find_relationship_path(graph,
+     start_id, end_id, *, max_depth=3)`——简单 BFS 找最短连通路径，
+     `start_id == end_id` 返回单节点路径，找不到/超出 `max_depth`
+     返回 `None`；不做加权最短路径，`strength`/`reversible` 不参与
+     计算。
+  2. **`app.py`**：新增 `_render_entity_relationship_path_tool()`，
+     在多主体实例详情页"关键变量"展示之后新增一个"🔗 关系路径查询"
+     折叠区——`multi_entity_mode` 未开启、`vars.entities` 为空、或
+     图为空（没有任何关系能匹配上真实 entity）时静默不渲染；否则
+     提供两个下拉框选起点/终点实体，展示 `find_relationship_path()`
+     的结果。**只展示给用户看，不反过来影响推进 prompt**——本批次
+     不做"把路径信息自动喂给 `advance_step`"这一层。
+  **范围克制（按方案要求，不做的部分）**：不做加权最短路径/传递闭包
+  之类更复杂的图分析；不做"路径信息自动接入 prompt"；不引入图数据库
+  或专门的图计算库，标准库 `collections.deque` 就够用。
+  **验收**：新增 `tests/test_multi_entity.py`，15 个测试用例覆盖
+  `build_entity_graph()`（基本无向邻接、跳过未知实体、接受
+  dict/可迭代两种 `entities` 输入、空输入、去重、自环、脏数据
+  跳过）和 `find_relationship_path()`（最短路径、直接相邻、起终点
+  相同、不可达、节点缺失、`max_depth` 生效、多条路径时选更短的）。
+  加上原有 438 个，全部通过（**453 passed**）。
+  **后续节奏（按方案原文第 1 节）**：批次六（Branch Engine merge +
+  skill/prompt 版本记录，建议放最后）是六个批次里最后一个，可以
+  继续推进。

@@ -52,6 +52,13 @@ Branch merge
 >   `valid_range`（精确匹配，复用批次一字段）。`requirements.txt`
 >   新增 `graphviz` 依赖。新增 5 个测试用例（DOT 转换函数单测），
 >   全量测试套件 438 个全部通过。
+> - ✅ **批次五（第 6 节，多主体 Entity/Relationship 结构化连通图）
+>   已完成**：新增 `multi_entity.py`，`build_entity_graph()` 把
+>   `settings.relationships` 里 `from`/`to` 能匹配上真实
+>   `vars.entities` id 的记录构造成无向邻接表，`find_relationship_
+>   path()` 做简单 BFS 最短路径查询；`app.py` 多主体实例详情页新增
+>   "🔗 关系路径查询"折叠区，只展示不影响推进 prompt。新增 15 个
+>   测试用例，全量测试套件 453 个全部通过。
 >
 > **方针延续**：延续项目一贯原则——每一批都是"新增字段/开关 +
 > 旧路径完全保留"，不引入自动化数值计算或语义相似度模型（因果/
