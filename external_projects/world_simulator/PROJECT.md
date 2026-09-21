@@ -2768,3 +2768,36 @@ world_simulator/
   （**408 passed**）。
   **至此**：`world_simulator_event_driven_engine_and_full_architecture_
   plan.md` 规划的四个批次（2.1/2.2/2.3/2.4）全部完成。
+
+- 2026-09-21（同日再追加）：**阶段三十七第一批**——按
+  `next_doc/world_simulator_c_category_precision_upgrade_
+  improvement_plan.md` 第 2 节，落地知识库补 Evidence/Valid Range/
+  Version 字段 + 只读浏览页。
+  1. **`knowledge_base.py`**：`KnowledgeItem` 新增三个可选字段——
+     `evidence`（字符串数组，格式 `"{sim_id}#step{N}"`，去重记录
+     来源）、`valid_range`（自由文本，适用范围说明）、`version`
+     （整数，默认 1，仅 `valid_range` 变为不同的非空取值时才 +1）。
+     `record_causal_links()` 新增可选 `step` 参数：命中已有条目时
+     追加 `evidence`（去重）、`valid_range` 变化时更新并递增
+     `version`；新建条目时按声明的 `valid_range` 初始化、按
+     `step` 初始化 `evidence`。旧数据（没有这三个字段的历史 jsonl
+     行）通过 `from_dict()` 默认值安全兼容。
+  2. **`engine/knowledge.py`/`engine/advance.py`**：
+     `_safe_record_causal_links()` 新增可选 `step` 参数并透传给
+     `record_causal_links()`；`advance()` 调用处传入
+     `next_state.step`。
+  3. **`app.py`**：新增"📚 知识库"只读浏览页（侧边栏新入口，
+     `view == "knowledge"`）——按置信度/印证次数排序展示全部知识
+     条目，展开可看机制/适用范围/来源引用/观察标注（阶段三十六第
+     四批的 `notes` 字段）。**不做**任何编辑/删除入口，延续 4.12
+     节原方案"不做知识库管理 UI"的既有判断，只补"能看见"这一层。
+  **范围克制（按方案要求，不做的部分）**：不引入向量检索/语义
+  相似度模型；`valid_range` 不做结构化约束、不参与任何自动判断，
+  纯展示信息；知识库浏览页不支持手工编辑或删除。
+  **验收**：`tests/test_knowledge_base.py` 新增 6 个用例，覆盖
+  `evidence` 的记录/去重、无 `step` 时不记录、`valid_range` 变化
+  触发版本递增/不变时不递增、旧数据兼容读取、新字段的完整往返。
+  加上原有 408 个，全部通过（**414 passed**）。
+  **后续节奏（按方案原文第 1 节）**：批次二（Resource/Rule 补
+  `production`）、批次三（Hypothesis 半自动实验设计建议）与本批
+  互相独立，可任选顺序继续；批次四/五/六留待后续按顺序推进。

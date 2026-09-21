@@ -58,6 +58,7 @@ from world_simulator.analysis import aggregate_field_stats, normalize_objectives
 from world_simulator import attribution as attribution_mod
 from world_simulator import trend as trend_mod
 from world_simulator import relationship as relationship_mod
+from world_simulator import knowledge_base as knowledge_base_mod
 from world_simulator.config import DATA_DIR, ensure_dirs
 from world_simulator.achievements import achievement_progress, compute_achievements
 from world_simulator.engine import (
@@ -4315,6 +4316,63 @@ def page_experiment() -> None:
 # ─────────────────────────────────────────────────────────────
 
 
+def page_knowledge() -> None:
+    """📚 知识库浏览页（第八轮批次一，`world_simulator_c_category_
+    precision_upgrade_improvement_plan.md` 第 2 节）：跨模拟因果知识库
+    的只读展示——只是补"能看见"这一层，不做任何编辑/删除操作入口，
+    延续 4.12 节原方案"不做知识库管理 UI"的既有判断。
+    """
+    st.markdown("## 📚 知识库", unsafe_allow_html=True)
+    st.markdown(
+        '<span class="ws-muted">跨模拟沉淀下来的因果知识——每条推进产出的'
+        "结构化因果链，如果和已有条目关键词相似就合并计数，否则新增一条。"
+        "这里只做只读浏览，不支持手工编辑或删除。</span>",
+        unsafe_allow_html=True,
+    )
+
+    items = knowledge_base_mod.load_all(DATA_DIR)
+    if not items:
+        st.info("知识库还是空的——推进几个模拟实例、产生结构化因果链之后，这里就会有内容。")
+        return
+
+    sort_key = st.radio(
+        "排序方式", ["按置信度", "按印证次数"], horizontal=True, key="kb_sort"
+    )
+    _confidence_rank = {"confirmed": 3, "supported": 2, "hypothesis": 1, "speculative": 0}
+    if sort_key == "按置信度":
+        items = sorted(
+            items,
+            key=lambda it: (_confidence_rank.get(it.confidence, 0), it.validated_count),
+            reverse=True,
+        )
+    else:
+        items = sorted(items, key=lambda it: it.validated_count, reverse=True)
+
+    st.caption(f"共 {len(items)} 条知识")
+    for item in items:
+        track_record = f"印证 {item.validated_count} 次"
+        if item.contradicted_count:
+            track_record += f" · 证伪 {item.contradicted_count} 次"
+        title = f"{item.cause} → {item.effect}（{item.confidence} · {track_record}）"
+        with st.expander(title):
+            if item.mechanism:
+                st.markdown(f"**机制**：{_html_text(item.mechanism)}", unsafe_allow_html=True)
+            if item.valid_range:
+                st.markdown(
+                    f"**适用范围**：{_html_text(item.valid_range)}", unsafe_allow_html=True
+                )
+            st.caption(
+                f"来源模板：{item.source_template or '未知'} · "
+                f"首次记录：{item.created_at or '未知'} · 版本：v{item.version}"
+            )
+            if item.evidence:
+                st.markdown("**来源引用**：" + "、".join(item.evidence))
+            if item.notes:
+                st.markdown("**观察标注**")
+                for note in item.notes:
+                    st.markdown(f"- {_html_text(note)}", unsafe_allow_html=True)
+
+
 def page_archive() -> None:
     st.markdown("## 存档管理", unsafe_allow_html=True)
     st.markdown(
@@ -4531,6 +4589,9 @@ def main() -> None:
         if st.button("🗄 存档管理", use_container_width=True):
             st.session_state["view"] = "archive"
             st.rerun()
+        if st.button("📚 知识库", use_container_width=True):
+            st.session_state["view"] = "knowledge"
+            st.rerun()
 
     view = st.session_state["view"]
     if view == "create":
@@ -4543,6 +4604,8 @@ def main() -> None:
         page_experiment()
     elif view == "archive":
         page_archive()
+    elif view == "knowledge":
+        page_knowledge()
     elif view == "game":
         page_game()
     else:

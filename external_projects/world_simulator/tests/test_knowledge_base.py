@@ -180,3 +180,90 @@ def test_knowledge_item_round_trips_through_dict():
 def test_knowledge_item_from_dict_rejects_invalid_confidence():
     item = kb.KnowledgeItem.from_dict({"cause": "c", "effect": "e", "confidence": "not-a-real-level"})
     assert item.confidence == "hypothesis"
+
+
+# ── 第八轮批次一：evidence/valid_range/version ──────────────────────
+
+
+def test_record_causal_links_records_evidence_with_step(tmp_path):
+    kb.record_causal_links(
+        tmp_path,
+        sim_id="sim_a",
+        template="life_sim",
+        causal_links=[{"driver": "AI 成本下降", "effect": "采用率提高"}],
+        step=3,
+    )
+    item = kb.load_all(tmp_path)[0]
+    assert item.evidence == ["sim_a#step3"]
+    assert item.version == 1
+    assert item.valid_range == ""
+
+
+def test_record_causal_links_without_step_does_not_record_evidence(tmp_path):
+    kb.record_causal_links(
+        tmp_path, sim_id="sim_a", template="life_sim",
+        causal_links=[{"driver": "AI 成本下降", "effect": "采用率提高"}],
+    )
+    assert kb.load_all(tmp_path)[0].evidence == []
+
+
+def test_record_causal_links_appends_evidence_on_match_without_duplicates(tmp_path):
+    link = {"driver": "AI 成本下降", "effect": "采用率提高"}
+    kb.record_causal_links(tmp_path, sim_id="sim_a", template="life_sim", causal_links=[link], step=1)
+    kb.record_causal_links(tmp_path, sim_id="sim_b", template="life_sim", causal_links=[link], step=2)
+    # 同一来源（同 sim_id + step）重复调用不应该重复记录。
+    kb.record_causal_links(tmp_path, sim_id="sim_a", template="life_sim", causal_links=[link], step=1)
+
+    item = kb.load_all(tmp_path)[0]
+    assert item.validated_count == 2
+    assert sorted(item.evidence) == ["sim_a#step1", "sim_b#step2"]
+
+
+def test_record_causal_links_valid_range_change_bumps_version(tmp_path):
+    kb.record_causal_links(
+        tmp_path, sim_id="sim_a", template="startup",
+        causal_links=[{"driver": "现金见底", "effect": "被迫收缩", "valid_range": "初创期成立"}],
+    )
+    item = kb.load_all(tmp_path)[0]
+    assert item.valid_range == "初创期成立"
+    assert item.version == 1
+
+    kb.record_causal_links(
+        tmp_path, sim_id="sim_b", template="startup",
+        causal_links=[{"driver": "现金见底", "effect": "被迫收缩", "valid_range": "规模化后不成立"}],
+    )
+    item = kb.load_all(tmp_path)[0]
+    assert item.valid_range == "规模化后不成立"
+    assert item.version == 2
+
+    # 相同的 valid_range 再次出现不应该重复递增版本号。
+    kb.record_causal_links(
+        tmp_path, sim_id="sim_c", template="startup",
+        causal_links=[{"driver": "现金见底", "effect": "被迫收缩", "valid_range": "规模化后不成立"}],
+    )
+    assert kb.load_all(tmp_path)[0].version == 2
+
+
+def test_knowledge_item_from_dict_defaults_for_legacy_data_without_new_fields():
+    """旧数据（没有 evidence/valid_range/version 字段的历史 jsonl 行）
+    应该被安全兼容读出，不报错，取合理默认值。"""
+    legacy = {
+        "id": "abc", "cause": "c", "effect": "e", "mechanism": "m",
+        "confidence": "confirmed", "source_sim_id": "s1", "source_template": "life_sim",
+        "created_at": "2026-01-01", "validated_count": 3, "contradicted_count": 1,
+    }
+    item = kb.KnowledgeItem.from_dict(legacy)
+    assert item.evidence == []
+    assert item.valid_range == ""
+    assert item.version == 1
+
+
+def test_knowledge_item_round_trips_with_new_fields():
+    item = kb.KnowledgeItem(
+        id="abc", cause="c", effect="e", mechanism="m", confidence="confirmed",
+        source_sim_id="s1", source_template="life_sim", created_at="2026-01-01",
+        validated_count=3, contradicted_count=1,
+        evidence=["s1#step2"], valid_range="仅在初创期成立", version=2,
+    )
+    restored = kb.KnowledgeItem.from_dict(item.to_dict())
+    assert restored == item

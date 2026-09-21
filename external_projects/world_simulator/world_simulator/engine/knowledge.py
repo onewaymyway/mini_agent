@@ -24,16 +24,19 @@ def _safe_suggest_knowledge(data_dir: Path, query_text: str, *, template: str) -
 
 
 def _safe_record_causal_links(
-    data_dir: Path, *, sim_id: str, template: str, causal_links: list
+    data_dir: Path, *, sim_id: str, template: str, causal_links: list, step: int = None
 ) -> None:
     """`knowledge_base.record_causal_links()` 的安全包装（阶段二十，
     4.12 节 2.）：写入知识库是这一步推进落盘*之后*的旁路操作，失败
     不应该让本次推进本身失败（`advance()` 的返回值/落盘结果已经产生），
     这里吞掉异常，只保留"尽力而为"的语义。
+
+    `step` 为第八轮批次一新增的可选参数，透传给 `record_causal_
+    links()` 用于拼出 `evidence` 来源引用。
     """
     try:
         knowledge_base.record_causal_links(
-            data_dir, sim_id=sim_id, template=template, causal_links=causal_links
+            data_dir, sim_id=sim_id, template=template, causal_links=causal_links, step=step
         )
     except Exception:
         pass

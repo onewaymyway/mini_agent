@@ -623,6 +623,7 @@ def advance(
         sim_id=sim_id,
         template=manifest.template,
         causal_links=next_state.causal_links,
+        step=next_state.step,
     )
 
     # 阶段三十六第二批（2.2 节）：把这一步 skill 声明的

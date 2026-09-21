@@ -110,6 +110,20 @@ class KnowledgeItem:
     不断言因果，也不驱动任何自动化行为。绝大多数知识条目这里都是空
     列表（本节判定为"价值最不确定、可直接放弃"，默认不会产生标注）。
     """
+    evidence: List[str] = field(default_factory=list)
+    """第八轮批次一新增：来源引用列表，格式 `"{sim_id}#step{N}"`。
+    只是给用户点开看的原始出处线索，不做结构化对象、不供引擎解析。
+    `record_causal_links()` 每次写入新条目或匹配到已有条目时，都会
+    追加当前来源（去重，同一来源不重复记录）。"""
+    valid_range: str = ""
+    """第八轮批次一新增：这条因果关系的适用范围说明（自由文本，
+    LLM 可选声明，比如"只在初创期成立，规模化后不成立"）。不做
+    结构化约束、不参与任何自动判断，纯展示信息。"""
+    version: int = 1
+    """第八轮批次一新增：知识条目的内容版本号。只有*内容性*修改
+    （目前只有 `valid_range` 被更新为不同的非空取值这一种情况）才
+    递增；`validated_count`/`contradicted_count`/`evidence`/`notes`
+    的增长不算内容性修改，不触发递增。"""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -124,6 +138,9 @@ class KnowledgeItem:
             "validated_count": self.validated_count,
             "contradicted_count": self.contradicted_count,
             "notes": list(self.notes),
+            "evidence": list(self.evidence),
+            "valid_range": self.valid_range,
+            "version": self.version,
         }
 
     @classmethod
@@ -143,6 +160,9 @@ class KnowledgeItem:
             validated_count=int(data.get("validated_count") or 0),
             contradicted_count=int(data.get("contradicted_count") or 0),
             notes=[str(n) for n in (data.get("notes") or []) if str(n).strip()],
+            evidence=[str(e) for e in (data.get("evidence") or []) if str(e).strip()],
+            valid_range=str(data.get("valid_range") or ""),
+            version=int(data.get("version") or 1),
         )
 
     def _keyword_set(self) -> set:
@@ -197,6 +217,7 @@ def record_causal_links(
     sim_id: str,
     template: str,
     causal_links: List[Dict[str, Any]],
+    step: Optional[int] = None,
 ) -> int:
     """把一次 `advance()` 落盘的 `causal_links` 转成知识条目，追加/合并进
     知识库（4.12 节 2.）。
@@ -205,6 +226,11 @@ def record_causal_links(
     这次调用，任何异常都不应该影响本次推进——这里内部不主动抛出，但
     仍然保留正常的异常传播（不吞掉调用方需要感知的 bug），"失败不影响
     推进"这条约束由调用方负责兜底，职责边界更清楚。
+
+    Args:
+        step: 第八轮批次一新增，可选——这一步的 `SimState.step`，用于
+            拼出 `evidence` 里的来源引用（`"{sim_id}#step{N}"`）。不传
+            时不记录这条 `evidence`（旧调用方/测试不需要跟着改）。
 
     Returns:
         本次新增的知识条目数量（被判定为"已有条目的重复出现"、只做了
@@ -215,6 +241,7 @@ def record_causal_links(
 
     existing = load_all(data_dir)
     added = 0
+    source_ref = f"{sim_id}#step{step}" if step is not None else None
 
     for link in causal_links:
         if not isinstance(link, dict):
@@ -227,6 +254,7 @@ def record_causal_links(
         mechanism = ""
         if isinstance(affected, list) and affected:
             mechanism = "涉及字段：" + "、".join(str(f) for f in affected)
+        valid_range = str(link.get("valid_range") or "").strip()
 
         candidate_keywords = _tokenize(cause) | _tokenize(effect)
         match = None
@@ -237,6 +265,11 @@ def record_causal_links(
 
         if match is not None:
             match.validated_count += 1
+            if source_ref and source_ref not in match.evidence:
+                match.evidence.append(source_ref)
+            if valid_range and valid_range != match.valid_range:
+                match.valid_range = valid_range
+                match.version += 1
             continue
 
         new_item = KnowledgeItem(
@@ -248,6 +281,8 @@ def record_causal_links(
             source_sim_id=sim_id,
             source_template=template,
             created_at=_now_iso(),
+            evidence=[source_ref] if source_ref else [],
+            valid_range=valid_range,
         )
         existing.append(new_item)
         added += 1
