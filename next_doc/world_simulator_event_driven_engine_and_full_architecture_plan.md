@@ -33,8 +33,22 @@ Influence Field + Event-Driven 决策引擎 + 反身性（第六轮）
 >   套件 398 个全部通过。按方案原文要求，代码已落地但**尚未做"先在
 >   life_sim 模板小范围人工验证 3~5 次"这一步**，实际推广节奏需要
 >   使用者自行按这个建议来，不是代码层面的限制。
-> - ⏳ 第四批（2.4 节反身性最小诠释）尚未开始，价值最不确定、方案
->   原文明确"可以直接放弃"。
+> - ✅ **第四批（2.4 节反身性最小诠释）已完成**：新增
+>   `world_simulator/reflexivity.py`——`detect_suggested_direction()`
+>   用关键词从复盘 `lessons`/`what_to_reflect_on` 判断"reduce_risk"/
+>   "increase_risk"/`None`；`evaluate_and_annotate()` 对比复盘前后
+>   用户选择的 `risk_level` 均值，方向一致且样本/幅度足够时，调用
+>   `knowledge_base.annotate_reflexivity_observation()` 给相关知识
+>   条目追加一条 `[stated]` 风格的观察标注。`retrospective.py` 新增
+>   `suggested_direction`/`reflexivity_annotated` 两个字段，
+>   `knowledge_base.py::KnowledgeItem` 新增 `notes` 字段。
+>   `engine/advance.py` 每步推进后调用安全包装
+>   `engine/knowledge.py::_safe_evaluate_reflexivity()`，纯旁路、
+>   失败不影响推进。新增 10 个测试用例
+>   （`tests/test_reflexivity.py`），全量测试套件 408 个全部通过。
+>   按方案原文要求，**不做任何基于这个标注的自动化行为**（不驱动
+>   prompt/策略画像调整），只记录观察到的相关性。至此本文档四批
+>   全部完成。
 >
 > **上游文档**：
 > - `next_doc/world_simulator_universal_simulator_gap_analysis_and_

@@ -26,7 +26,11 @@ from world_simulator import causal_tree, relationship
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _skill_name_for_template
-from world_simulator.engine.knowledge import _safe_record_causal_links, _safe_suggest_knowledge
+from world_simulator.engine.knowledge import (
+    _safe_evaluate_reflexivity,
+    _safe_record_causal_links,
+    _safe_suggest_knowledge,
+)
 from world_simulator.decision_validation import compute_option_warnings
 from world_simulator.engine.resource_guard import _apply_resource_guard, _check_resource_relations
 from world_simulator.engine.structural_change import (
@@ -642,6 +646,13 @@ def advance(
 
     manifest.current_step = next_state.step
     store.save_manifest(manifest)
+
+    # 阶段三十六第四批（2.4 节反身性最小诠释）：检查这个分支是否有
+    # 尚未处理的复盘报告，判断这一步的选择是否让"选择模式与复盘建议
+    # 方向一致"这件事有了足够样本可以下结论。纯旁路观察，不影响本次
+    # 推进已经产生的返回值/落盘结果（见 `_safe_evaluate_reflexivity`
+    # docstring）。
+    _safe_evaluate_reflexivity(data_dir, sim_id, branch=branch)
 
     return next_state
 

@@ -11,7 +11,11 @@ LLM，产出一份"只总结已发生内容、不做新预测"的复盘报告。
 - 只对单个分支生成复盘，不做跨分支/跨实例的"元复盘"。
 - 不自动把 `lessons` 写入 `knowledge_base.py`（复盘产出的是"针对这个
   用户这次具体情境的经验"，和知识库"跨模拟可复用的因果机制"是两类
-  不同性质的知识，混在一起会污染知识库检索质量）。
+  不同性质的知识，混在一起会污染知识库检索质量）。唯一的例外是阶段
+  三十六第四批（2.4 节反身性最小诠释）新增的 `suggested_direction`/
+  `reflexivity_annotated` 字段——这不是把 `lessons` 整体写入知识库，
+  只是给知识库里已有的相关条目追加一条"观察到的相关性"标注，见
+  `reflexivity.py`。
 - 不做定时/自动生成——始终是用户主动点击触发的可选功能。
 - "每条结论必须有具体依据"这条约束只能通过 prompt 引导，不做代码层面
   的自动校验（同 `reality_check.py` 不做自动语义匹配判定的一贯取舍）。
@@ -97,6 +101,16 @@ class RetrospectiveRecord:
     up_to_step: int
     created_at: str
     report: RetrospectiveReport
+    suggested_direction: Optional[str] = None
+    """反身性最小诠释（阶段三十六第四批，4.8/2.4 节）用的可比对"建议
+    方向"摘要：`"reduce_risk"`（复盘建议后续更保守）/ `"increase_risk"`
+    （复盘建议后续更敢冒险）/ `None`（判断不出明确方向）。由
+    `reflexivity.detect_suggested_direction()` 在生成复盘时算出并
+    落盘，供之后比对用户实际选择模式是否与之一致。"""
+    reflexivity_annotated: bool = False
+    """这份复盘是否已经被 `reflexivity.evaluate_and_annotate()` 处理过
+    （不论最终判断是否一致、有没有真的写入标注）——避免同一份复盘在
+    后续每次推进时被反复重新判断。"""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -106,10 +120,15 @@ class RetrospectiveRecord:
             "up_to_step": self.up_to_step,
             "created_at": self.created_at,
             "report": self.report.to_dict(),
+            "suggested_direction": self.suggested_direction,
+            "reflexivity_annotated": self.reflexivity_annotated,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RetrospectiveRecord":
+        direction = data.get("suggested_direction")
+        if direction not in ("reduce_risk", "increase_risk"):
+            direction = None
         return cls(
             id=str(data.get("id") or uuid.uuid4().hex[:12]),
             sim_id=str(data.get("sim_id") or ""),
@@ -117,6 +136,8 @@ class RetrospectiveRecord:
             up_to_step=int(data.get("up_to_step") or 0),
             created_at=str(data.get("created_at") or ""),
             report=RetrospectiveReport.from_dict(data.get("report") or {}),
+            suggested_direction=direction,
+            reflexivity_annotated=bool(data.get("reflexivity_annotated") or False),
         )
 
 
@@ -155,6 +176,29 @@ def _save_append(data_dir: Path, sim_id: str, item: RetrospectiveRecord) -> None
     existing = load_all(data_dir, sim_id)
     existing.append(item)
     atomic_write_jsonl(retrospectives_path(data_dir, sim_id), [it.to_dict() for it in existing])
+
+
+def mark_reflexivity_annotated(data_dir: Path, sim_id: str, record_id: str) -> bool:
+    """把某条复盘记录标记为"反身性检查已处理"（阶段三十六第四批，
+    2.4 节）。整体重写落盘——同 `knowledge_base._save_all()` 的取舍，
+    这是本文件里唯一一处"原地更新既有记录"的操作，其余写入都是纯
+    追加（`_save_append`），量级不大时重写整份文件足够简单可靠。
+
+    Returns:
+        是否找到了对应 id 的记录并完成更新；找不到返回 `False`。
+    """
+    existing = load_all(data_dir, sim_id)
+    found = False
+    for item in existing:
+        if item.id == record_id:
+            item.reflexivity_annotated = True
+            found = True
+            break
+    if found:
+        atomic_write_jsonl(
+            retrospectives_path(data_dir, sim_id), [it.to_dict() for it in existing]
+        )
+    return found
 
 
 # ── 素材收集 ─────────────────────────────────────────────────────────
@@ -362,6 +406,14 @@ def generate_retrospective(
             "模拟本身也可能和现实有偏差。"
         ]
 
+    # 阶段三十六第四批（2.4 节反身性最小诠释）：在落盘时顺带算出一份
+    # 可比对的"建议方向"摘要，供之后 `reflexivity.evaluate_and_
+    # annotate()` 判断用户后续选择模式是否与之一致。延迟导入避免
+    # 循环依赖（`reflexivity.py` 反过来会 import 本模块）。
+    from world_simulator import reflexivity
+
+    suggested_direction = reflexivity.detect_suggested_direction(report)
+
     record = RetrospectiveRecord(
         id=uuid.uuid4().hex[:12],
         sim_id=sim_id,
@@ -369,6 +421,7 @@ def generate_retrospective(
         up_to_step=history[-1].step,
         created_at=_now_iso(),
         report=report,
+        suggested_direction=suggested_direction,
     )
     _save_append(data_dir, sim_id, record)
     return record

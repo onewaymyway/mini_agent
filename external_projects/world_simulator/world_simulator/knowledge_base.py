@@ -104,6 +104,12 @@ class KnowledgeItem:
     created_at: str = ""
     validated_count: int = 0
     contradicted_count: int = 0
+    notes: List[str] = field(default_factory=list)
+    """反身性最小诠释（阶段三十六第四批，4.8/2.4 节）用的观察标注列表——
+    只记录"用户看到相关复盘后表现出的选择倾向变化"这类相关性观察，
+    不断言因果，也不驱动任何自动化行为。绝大多数知识条目这里都是空
+    列表（本节判定为"价值最不确定、可直接放弃"，默认不会产生标注）。
+    """
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -117,6 +123,7 @@ class KnowledgeItem:
             "created_at": self.created_at,
             "validated_count": self.validated_count,
             "contradicted_count": self.contradicted_count,
+            "notes": list(self.notes),
         }
 
     @classmethod
@@ -135,6 +142,7 @@ class KnowledgeItem:
             created_at=str(data.get("created_at") or ""),
             validated_count=int(data.get("validated_count") or 0),
             contradicted_count=int(data.get("contradicted_count") or 0),
+            notes=[str(n) for n in (data.get("notes") or []) if str(n).strip()],
         )
 
     def _keyword_set(self) -> set:
@@ -305,6 +313,43 @@ def update_confidence_from_reality_check(
                     contradicted_ids.append(candidate.id)
                 break
     return contradicted_ids
+
+
+def annotate_reflexivity_observation(
+    data_dir: Path,
+    *,
+    query_text: str,
+    note: str,
+    limit: int = 3,
+) -> List[str]:
+    """反身性最小诠释（阶段三十六第四批，4.8/2.4 节）专用的标注写入
+    入口：不新建知识条目，只在与 `query_text`（通常是触发这次观察的
+    复盘报告的经验教训文本）关键词最相关的若干条**已有**知识条目上，
+    追加一条 `note`（不重复追加同一句话）。
+
+    这只是一条观察记录，不触发任何自动化的画像调整或 prompt 注入——
+    调用方（`reflexivity.py`）应该用安全包装调用本函数，任何异常都
+    不应该影响触发它的那次推进/复盘。
+
+    Returns:
+        实际被追加了这条标注的知识条目 id 列表；关键词检索不到任何
+        相关条目时返回空列表，不勉强附加到不相关的条目上。
+    """
+    matched = search(data_dir, query_text, limit=limit)
+    if not matched:
+        return []
+    existing = load_all(data_dir)
+    by_id = {item.id: item for item in existing}
+    annotated_ids: List[str] = []
+    for candidate in matched:
+        item = by_id.get(candidate.id)
+        if item is None or note in item.notes:
+            continue
+        item.notes.append(note)
+        annotated_ids.append(item.id)
+    if annotated_ids:
+        _save_all(data_dir, existing)
+    return annotated_ids
 
 
 # ── 检索：拼进 prompt 的"已知相关因果知识" ────────────────────────────

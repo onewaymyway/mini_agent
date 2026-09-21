@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from world_simulator import knowledge_base
+from world_simulator import knowledge_base, reflexivity
 
 
 def _safe_suggest_knowledge(data_dir: Path, query_text: str, *, template: str) -> str:
@@ -35,5 +35,17 @@ def _safe_record_causal_links(
         knowledge_base.record_causal_links(
             data_dir, sim_id=sim_id, template=template, causal_links=causal_links
         )
+    except Exception:
+        pass
+
+
+def _safe_evaluate_reflexivity(data_dir: Path, sim_id: str, *, branch: str) -> None:
+    """`reflexivity.evaluate_and_annotate()` 的安全包装（阶段三十六第
+    四批，2.4 节）：反身性检查是这一步推进落盘*之后*的旁路观察，失败
+    不应该让本次推进本身失败，这里吞掉异常，只保留"尽力而为"的语义，
+    同 `_safe_record_causal_links` 的既有约定。
+    """
+    try:
+        reflexivity.evaluate_and_annotate(data_dir, sim_id, branch=branch)
     except Exception:
         pass

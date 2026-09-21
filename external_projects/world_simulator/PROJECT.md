@@ -2710,3 +2710,61 @@ world_simulator/
   line_advance` 默认关闭，开启前建议按这个节奏来。
   **后续节奏**：第四批（2.4 节反身性最小诠释）价值最不确定，方案
   原文明确"可以直接放弃"，是否继续待后续评估。
+
+- 2026-09-21：**阶段三十六第四批（收官）**——按
+  `next_doc/world_simulator_event_driven_engine_and_full_architecture_
+  plan.md` 2.4 节，落地反身性（Reflexivity）最小诠释。方案原文明确
+  这是价值最不确定、"可以直接放弃"的一批，本批按最小范围落地，且
+  严格遵守"不做任何基于标注的自动化行为"的范围克制。
+  1. **`world_simulator/reflexivity.py`（新增）**：
+     - `detect_suggested_direction(report)`：用关键词重叠（同
+       `knowledge_base.py` 一贯"不引入语义模型"的取舍）从复盘报告的
+       `lessons`/`what_to_reflect_on` 文本判断这份复盘是不是在建议
+       "后续更保守"（`reduce_risk`）或"后续更敢冒险"
+       （`increase_risk`）；两类关键词都命中或都不命中时返回
+       `None`，不勉强给结论。
+     - `evaluate_and_annotate(data_dir, sim_id, branch=...)`：找到
+       这个分支最近一份尚未处理过的复盘记录，比较该复盘 `up_to_
+       step` 前后用户选择的 `ChoiceOption.risk_level`
+       （low/medium/high 打分为 1/2/3）均值：`reduce_risk` 且均值
+       明显下降、或 `increase_risk` 且均值明显上升（阈值 0.5，样本
+       不足 2 个时不下结论、也不标记为已处理，留给下次调用），才
+       调用 `knowledge_base.annotate_reflexivity_observation()`
+       追加标注；无论是否一致，只要判断过了（不是因为样本不足），
+       都会把该复盘标记为 `reflexivity_annotated=True`，避免重复
+       判断同一份复盘。
+  2. **`knowledge_base.py`**：`KnowledgeItem` 新增 `notes: List[str]`
+     字段（默认空列表，向后兼容旧数据）；新增
+     `annotate_reflexivity_observation(data_dir, query_text, note,
+     limit=3)`——不新建知识条目，只对关键词检索到的最相关的已有
+     条目追加一条 `note`（同一句话不重复追加），检索不到任何相关
+     条目时返回空列表，不勉强附加到不相关的条目上。
+  3. **`retrospective.py`**：`RetrospectiveRecord` 新增
+     `suggested_direction`（`reduce_risk`/`increase_risk`/`None`，
+     `generate_retrospective()` 落盘时用 `reflexivity.
+     detect_suggested_direction()` 算出）、`reflexivity_annotated`
+     （布尔，默认 `False`）两个字段；新增
+     `mark_reflexivity_annotated()`（整体重写落盘，同
+     `knowledge_base._save_all()` 的取舍——这是本文件里唯一一处
+     "原地更新既有记录"的操作，其余写入仍是纯追加）。
+  4. **`engine/knowledge.py`**：新增安全包装
+     `_safe_evaluate_reflexivity()`，同 `_safe_record_causal_links`
+     的既有约定——旁路操作，异常吞掉不向上抛出。
+  5. **`engine/advance.py`**：`advance()` 落盘 `manifest` 之后调用
+     `_safe_evaluate_reflexivity()`，让"选择模式是否与复盘建议一致"
+     的判断能随着每一步新的选择自然推进（不需要用户额外触发）。
+  **范围克制（按方案要求，不做的部分）**：不做任何基于这个标注的
+  自动化行为——不会因为记录了"用户变保守了"就自动调整后续 prompt
+  的策略画像或建议倾向；不做跨模拟、跨用户的反身性统计；不实现
+  参考文档设想的"预测公开传播、影响现实中大量人的行为"的完整反身
+  性——本地单机单用户工具没有对应的现实场景可以承载这个设想，本批
+  只是"预测是否影响了用户自己后续决策"这个最小映射。
+  **验收**：新增 `tests/test_reflexivity.py`，10 个用例，覆盖关键词
+  方向判断（含"都不命中"/"都命中"两种不给结论的情况）、
+  `annotate_reflexivity_observation()` 的匹配追加/去重/无匹配不写入、
+  `evaluate_and_annotate()` 的样本不足暂不处理、方向一致才追加标注、
+  方向不一致时判断过但不追加、无明确方向时直接标记已处理不追加、
+  已处理过的复盘不会被重复处理。加上原有 398 个，全部通过
+  （**408 passed**）。
+  **至此**：`world_simulator_event_driven_engine_and_full_architecture_
+  plan.md` 规划的四个批次（2.1/2.2/2.3/2.4）全部完成。
