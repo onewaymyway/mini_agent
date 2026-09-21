@@ -836,20 +836,19 @@ _TREND_LABELS = {
     "decelerating": "📉 放缓",
     "reversing": "🔄 已反转",
 }
-"""第五轮方案 5.3 节：`SimState.line_updates[line_id]["trend"]` 四档
-取值 → 展示文案，供 `_render_causal_lines_overview()` 在因果线标题旁
-渲染趋势徽章，样式复用既有 `ws-uncertain-badge` 胶囊底样，未识别的
-取值不展示（`causal_tree.normalize_line_trend()` 已经在落盘前把非法
-值剔除，这里的兜底只是双重保险）。"""
+# 第五轮方案 5.3 节：`SimState.line_updates[line_id]["trend"]` 四档
+# 取值 → 展示文案，供 `_render_causal_lines_overview()` 在因果线标题旁
+# 渲染趋势徽章，样式复用既有 `ws-uncertain-badge` 胶囊底样，未识别的
+# 取值不展示（`causal_tree.normalize_line_trend()` 已经在落盘前把非法
+# 值剔除，这里的兜底只是双重保险）。
 _REVERSIBILITY_LABELS = {
     "reversible": "可逆",
     "hard_to_reverse": "难以逆转",
     "irreversible": "不可逆",
 }
 _ACTION_TYPE_LABELS = {"combo": "🧩组合方案", "conditional": "🔀条件方案"}
-"""`single`（默认）不展示标签——只有组合/条件这两种非默认取值才
-值得提醒用户"这不是一个单一原子行动"（阶段三十三第六批，4.7 节）。
-"""
+# `single`（默认）不展示标签——只有组合/条件这两种非默认取值才
+# 值得提醒用户"这不是一个单一原子行动"（阶段三十三第六批，4.7 节）。
 
 
 def _option_meta_html(opt) -> str:
