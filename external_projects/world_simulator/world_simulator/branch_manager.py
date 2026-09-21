@@ -267,6 +267,107 @@ def load_branch_timeline(data_dir: Path, sim_id: str, branch: str) -> List[SimSt
     return store.load_history(branch)
 
 
+def merge_branch(
+    data_dir: Path, sim_id: str, *, source: str, target: str, from_step: int
+) -> int:
+    """"合并"分支（第八轮批次六，`next_doc/world_simulator_c_category_
+    precision_upgrade_improvement_plan.md` 第 7 节）：把 `target`
+    分支从 `from_step` **之后**的历史，替换成 `source` 分支从
+    `from_step` 之后的历史。
+
+    **退化为"指针切换"，不是真正的字段级三路合并**（原因见上游盘点
+    文档 4.6 节——两条分支的 `vars` 可能已经不可调和地分歧，自动合并
+    大概率产生语义错误的结果）：本质是"以 `source` 为准覆盖 `target`
+    的后续部分"，不是合并两边都有价值的内容。
+
+    **前置条件（硬性，不满足直接拒绝）**：`from_step` 及之前，两条
+    分支的历史必须**完全一致**（逐步比较 `step` 序号和 `to_dict()`
+    内容）——不一致说明两条分支在这之前就已经分歧，"以谁为准"是一个
+    需要人工判断的语义问题，本函数不猜、直接拒绝执行并报错，避免
+    产生一份看起来"合并成功"但实际语义不明的历史。
+
+    Args:
+        source: 提供 `from_step` 之后历史的分支（"以它为准"）。
+        target: 历史被替换的分支（`from_step` 之后的部分会被覆盖，
+            `from_step` 及之前保持不变——反正前置条件已经要求这部分
+            和 `source` 完全一致）。
+        from_step: 两条分支历史一致性的分界点（含），也是合并后
+            "从这一步开始采用 source 的后续内容"的分界点。
+
+    Returns:
+        合并后 `target` 分支历史最后一个状态的 `step` 序号。
+
+    Raises:
+        BranchError: `source`/`target` 相同、任一分支不存在、
+            `from_step` 为负数、任一分支在 `from_step` 之前没有历史、
+            或两条分支在 `from_step` 之前的历史不一致。
+    """
+    if source == target:
+        raise BranchError("source 和 target 不能是同一条分支")
+    if from_step < 0:
+        raise BranchError("from_step 不能是负数")
+
+    existing_branches = list_branches(data_dir, sim_id)
+    if source not in existing_branches:
+        raise BranchError(f"分支不存在：{source}")
+    if target not in existing_branches:
+        raise BranchError(f"分支不存在：{target}")
+
+    store = SimStore.for_root(data_dir, sim_id)
+    source_history = store.load_history(source)
+    target_history = store.load_history(target)
+
+    source_prefix = [s for s in source_history if s.step <= from_step]
+    target_prefix = [s for s in target_history if s.step <= from_step]
+    if not source_prefix or not target_prefix:
+        raise BranchError(
+            f"两条分支都必须有 step <= {from_step} 的历史节点才能合并"
+            f"（source 有 {len(source_prefix)} 条，target 有 {len(target_prefix)} 条）"
+        )
+
+    source_prefix_steps = [s.step for s in source_prefix]
+    target_prefix_steps = [s.step for s in target_prefix]
+    if source_prefix_steps != target_prefix_steps:
+        raise BranchError(
+            f"两条分支在 from_step={from_step} 之前的历史节点步序不一致，"
+            f"无法合并（source: {source_prefix_steps}，target: {target_prefix_steps}）"
+        )
+    for s_state, t_state in zip(source_prefix, target_prefix):
+        if s_state.to_dict() != t_state.to_dict():
+            raise BranchError(
+                f"两条分支在第 {s_state.step} 步的历史内容不一致，无法合并"
+                "（from_step 及之前必须完全一致，可能两条分支已经严重分歧）"
+            )
+
+    source_suffix = [s for s in source_history if s.step > from_step]
+    merged_history = target_prefix + source_suffix
+
+    atomic_write_jsonl(
+        store.state_history_path(target), [s.to_dict() for s in merged_history]
+    )
+
+    try:
+        from mini_agent.utils.atomic_write import atomic_write_json
+    except ImportError:
+        def atomic_write_json(path: Path, data, *, flock: bool = False) -> None:  # type: ignore[misc]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    last_state = merged_history[-1]
+    atomic_write_json(store.state_current_path(target), last_state.to_dict())
+
+    # 如果 target 恰好是当前活跃分支，manifest.current_step 需要跟着
+    # 刷新，否则界面会继续显示合并前的旧步数（同 `switch_branch()`
+    # "切换后镜像字段必须跟着更新"的一贯取舍；`pilot_mode`/`autopilot`
+    # 是每条分支独立存储的配置，合并历史不影响这两个字段，不需要动）。
+    manifest = store.load_manifest()
+    if manifest.branch == target:
+        manifest.current_step = last_state.step
+        store.save_manifest(manifest)
+
+    return last_state.step
+
+
 def compare_timelines(
     data_dir: Path, entries: List[Tuple[str, str]]
 ) -> Dict[str, Any]:

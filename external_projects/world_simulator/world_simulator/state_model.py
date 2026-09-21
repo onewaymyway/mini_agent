@@ -570,6 +570,27 @@ class SimState:
     任何已有行为，向后兼容。
     """
 
+    skill_version: str = ""
+    """产生*本状态*这一步用的是哪个版本的模板 skill（第八轮批次六，
+    `next_doc/world_simulator_c_category_precision_upgrade_
+    improvement_plan.md` 第 7 节，Branch Engine 版本记录的最小可行
+    实现）：`engine.advance()` 落盘前尝试读取对应模板
+    `skills/<skill_name>/SKILL.md` 文件的最后修改时间戳（`os.stat().
+    st_mtime`，格式化成 ISO 字符串写入这里）。
+
+    **不是语义化版本号，只是一个文件时间戳**——同一个 `SKILL.md`
+    文件只要没被修改过，`skill_version` 就不变，足够回答"某次 skill
+    改动之前/之后的预测质量对比"这类粗粒度问题；不引入 git commit
+    hash 等额外基础设施，用户如果想要更精确的版本管理应该用外部 git
+    仓库管理 skill 文件本身，这不是 `world_simulator` 需要重新发明的
+    能力。文件读取失败（比如独立运行环境路径不对、文件被删除）时
+    静默留空，不阻断推进——同 `background_entities_applied` 等字段
+    "算不出来就留空，不因为一个辅助信息的计算失败而让整步推进失败"
+    的一贯风格。`state0`（`generate_scenario` 产出的初始状态，不经过
+    `engine.advance()`）也留空，默认空字符串，不影响任何已有行为，
+    向后兼容。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
@@ -633,6 +654,7 @@ class SimState:
             option_warnings=[
                 dict(x) for x in (data.get("option_warnings") or []) if isinstance(x, dict)
             ],
+            skill_version=str(data.get("skill_version", "") or ""),
         )
 
 

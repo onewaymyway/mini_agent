@@ -301,3 +301,130 @@ def test_switch_branch_mirrors_target_pilot_config(tmp_path):
     manifest2 = bm.switch_branch(data_dir, "sim1", "main")
     assert manifest2.pilot_mode == "manual"
     assert manifest2.autopilot == {}
+
+
+# ---------------------------------------------------------------------------
+# merge_branch()（第八轮批次六，第 7 节）
+# ---------------------------------------------------------------------------
+
+
+def _append_diverging_states(store: SimStore, branch: str, start_step: int, n: int, tag: str) -> None:
+    """给某条分支从 `start_step` 开始追加 `n` 个状态，内容带上 `tag`
+    区分不同分支各自的后续演化（模拟合并前两条分支已经分岔）。"""
+    for i in range(n):
+        step = start_step + i
+        store.append_state(
+            SimState(step=step, summary=f"{tag}-{step}", vars={"age": 22 + step, "tag": tag}),
+            branch=branch,
+        )
+
+
+def test_merge_branch_replaces_target_suffix_with_source_suffix(tmp_path):
+    data_dir = tmp_path / "data"
+    store = _make_sim(data_dir, "sim1", 2)  # main: step 0..2
+    branch_b = bm.fork_branch(data_dir, "sim1", from_step=2, switch=False)
+
+    # main 和 branch_b 各自往后演化出不同的 step 3/4。
+    _append_diverging_states(store, "main", 3, 2, "main")
+    _append_diverging_states(store, branch_b, 3, 2, "b")
+
+    merged_last_step = bm.merge_branch(
+        data_dir, "sim1", source="main", target=branch_b, from_step=2
+    )
+    assert merged_last_step == 4
+
+    merged_history = bm.load_branch_timeline(data_dir, "sim1", branch_b)
+    assert [s.step for s in merged_history] == [0, 1, 2, 3, 4]
+    # step 0..2 保持 branch_b 原有（和 main 一致的）内容不变。
+    assert merged_history[2].summary == "summary-2"
+    # step 3/4 被替换成了 source（main）的内容。
+    assert merged_history[3].summary == "main-3"
+    assert merged_history[4].summary == "main-4"
+
+    # 原 main 分支历史不受影响（merge 只改 target）。
+    main_history = bm.load_branch_timeline(data_dir, "sim1", "main")
+    assert [s.summary for s in main_history if s.step >= 3] == ["main-3", "main-4"]
+
+
+def test_merge_branch_raises_when_history_diverges_before_from_step(tmp_path):
+    data_dir = tmp_path / "data"
+    store = _make_sim(data_dir, "sim1", 2)
+    branch_b = bm.fork_branch(data_dir, "sim1", from_step=2, switch=False)
+    # 人为篡改 branch_b 的 step 1，制造"from_step 之前就已经分歧"。
+    history_b = store.load_history(branch_b)
+    history_b[1] = SimState(step=1, summary="被人为改过的 step 1", vars={"age": 999})
+    from mini_agent.utils.atomic_write import atomic_write_jsonl
+    atomic_write_jsonl(store.state_history_path(branch_b), [s.to_dict() for s in history_b])
+
+    with pytest.raises(bm.BranchError):
+        bm.merge_branch(data_dir, "sim1", source="main", target=branch_b, from_step=2)
+
+    # 拒绝执行时不应该改动 target 的历史。
+    unchanged = bm.load_branch_timeline(data_dir, "sim1", branch_b)
+    assert unchanged[1].summary == "被人为改过的 step 1"
+
+
+def test_merge_branch_raises_when_source_equals_target(tmp_path):
+    data_dir = tmp_path / "data"
+    _make_sim(data_dir, "sim1", 2)
+    with pytest.raises(bm.BranchError):
+        bm.merge_branch(data_dir, "sim1", source="main", target="main", from_step=1)
+
+
+def test_merge_branch_raises_when_branch_missing(tmp_path):
+    data_dir = tmp_path / "data"
+    _make_sim(data_dir, "sim1", 2)
+    with pytest.raises(bm.BranchError):
+        bm.merge_branch(data_dir, "sim1", source="main", target="not_exist", from_step=1)
+    with pytest.raises(bm.BranchError):
+        bm.merge_branch(data_dir, "sim1", source="not_exist", target="main", from_step=1)
+
+
+def test_merge_branch_raises_when_from_step_negative(tmp_path):
+    data_dir = tmp_path / "data"
+    store = _make_sim(data_dir, "sim1", 2)
+    branch_b = bm.fork_branch(data_dir, "sim1", from_step=2, switch=False)
+    with pytest.raises(bm.BranchError):
+        bm.merge_branch(data_dir, "sim1", source="main", target=branch_b, from_step=-1)
+
+
+def test_merge_branch_raises_when_branch_missing_prefix_history(tmp_path):
+    """target 分支的历史根本没有覆盖到 `from_step`（比如只推进到了
+    step 1，但 `from_step=5`）时应该拒绝，而不是静默产出一份"缺了中间
+    一段"的历史。"""
+    data_dir = tmp_path / "data"
+    store = _make_sim(data_dir, "sim1", 1)  # main: step 0..1
+    branch_b = bm.fork_branch(data_dir, "sim1", from_step=1, switch=False)
+    _append_diverging_states(store, "main", 2, 5, "main")  # main: step 0..6
+
+    with pytest.raises(bm.BranchError):
+        bm.merge_branch(data_dir, "sim1", source="main", target=branch_b, from_step=5)
+
+
+def test_merge_branch_updates_manifest_current_step_when_target_is_active(tmp_path):
+    data_dir = tmp_path / "data"
+    store = _make_sim(data_dir, "sim1", 2)
+    # branch_b 是当前活跃分支（switch=True）。
+    branch_b = bm.fork_branch(data_dir, "sim1", from_step=2, switch=True)
+    _append_diverging_states(store, "main", 3, 3, "main")
+    _append_diverging_states(store, branch_b, 3, 1, "b")
+
+    bm.merge_branch(data_dir, "sim1", source="main", target=branch_b, from_step=2)
+
+    manifest = store.load_manifest()
+    assert manifest.branch == branch_b
+    assert manifest.current_step == 5  # main 演化到了 step 5
+
+
+def test_merge_branch_does_not_touch_manifest_when_target_is_inactive(tmp_path):
+    data_dir = tmp_path / "data"
+    store = _make_sim(data_dir, "sim1", 2)
+    branch_b = bm.fork_branch(data_dir, "sim1", from_step=2, switch=False)  # main 仍是活跃分支
+    _append_diverging_states(store, "main", 3, 2, "main")
+    _append_diverging_states(store, branch_b, 3, 1, "b")
+
+    bm.merge_branch(data_dir, "sim1", source="main", target=branch_b, from_step=2)
+
+    manifest = store.load_manifest()
+    assert manifest.branch == "main"
+    assert manifest.current_step != 4  # 不应该被 branch_b 的合并结果影响

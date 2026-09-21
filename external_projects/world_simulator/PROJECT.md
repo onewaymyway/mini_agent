@@ -2975,3 +2975,63 @@ world_simulator/
   **后续节奏（按方案原文第 1 节）**：批次六（Branch Engine merge +
   skill/prompt 版本记录，建议放最后）是六个批次里最后一个，可以
   继续推进。
+- 2026-09-21（同日再追加）：**阶段三十七第六批（收官）**——按
+  `next_doc/world_simulator_c_category_precision_upgrade_
+  improvement_plan.md` 第 7 节，Branch Engine：merge + skill/prompt
+  版本记录。至此六个批次全部完成，`world_simulator` 第八轮升级方案
+  收官。
+  1. **`branch_manager.py`**：新增 `merge_branch(data_dir, sim_id, *,
+     source, target, from_step)`——退化为"指针切换"而不是真正的
+     字段级三路合并（原因见上游盘点文档 4.6 节，两条分支的 `vars`
+     可能已经不可调和地分歧，自动合并大概率产生语义错误的结果）：
+     把 `target` 分支从 `from_step` 之后的历史替换成 `source` 分支
+     从 `from_step` 之后的历史。**硬性前置条件**：`from_step` 及
+     之前两条分支历史必须逐步（`step` 序号 + `to_dict()` 内容）
+     完全一致，否则拒绝执行并抛 `BranchError`，不猜"该听谁的"。
+     `source`/`target` 相同、任一分支不存在、`from_step` 为负数、
+     任一分支缺少 `step <= from_step` 的历史都视为非法输入直接拒绝。
+     合并后如果 `target` 恰好是当前活跃分支，同步刷新
+     `manifest.current_step`（同 `switch_branch()` 的一贯取舍）；
+     `pilot_mode`/`autopilot` 是每条分支独立存储的配置，合并历史
+     不影响，不需要动。
+  2. **`state_model.py`**：`SimState` 新增可选字段 `skill_version`
+     （默认空字符串），docstring 说明"只是文件时间戳，不是语义化
+     版本号"的范围克制，`from_dict()` 同步处理旧数据缺失该字段的
+     兼容。
+  3. **`engine/ids.py`**：新增 `_read_skill_version(workspace_root,
+     template)`——读取对应模板 `skills/<skill_name>/SKILL.md` 的
+     `os.stat().st_mtime`，格式化成 ISO 字符串；文件不存在/读取
+     失败时静默返回空字符串，不抛错、不阻断推进。
+  4. **`engine/advance.py`**：`advance()` 构造 `next_state` 时调用
+     `_read_skill_version()` 填入 `skill_version` 字段。**范围
+     确认**：只接入主 `advance()` 路径，独立推进路径
+     （`advance_independent.py`，走的是 `workflows/line_evolve.yaml`
+     而不是模板 skill 本身）和初始状态构造
+     （`engine/materialize.py`）不在方案原文"涉及文件"范围内，
+     未接入。
+  **范围克制（按方案要求，不做的部分）**：不做真正的字段级合并
+  算法（两边都有价值的内容需要人工判断冲突，不是自动合并能安全
+  处理的问题）；不引入版本控制系统依赖，`skill_version` 只是文件
+  时间戳；本批不新增 `app.py` UI 入口——方案原文这一批"涉及文件"
+  明确只列了 `branch_manager.py`/`engine/advance.py`/
+  `state_model.py` 三个后端文件，UI 留待后续按需接入。
+  **验收**：新增 `tests/test_branch_manager.py` 8 个 `merge_branch()`
+  测试用例（正确替换 target 后缀、`from_step` 之前分歧时正确拒绝、
+  `source`/`target` 相同或缺失/负数时正确拒绝、任一分支缺少前缀
+  历史时正确拒绝、合并后历史连续无空洞、`target` 是/不是活跃分支时
+  `manifest.current_step` 分别正确更新/不受影响）；新增
+  `tests/test_skill_version.py` 7 个测试用例（正确读取真实文件
+  mtime、文件不存在/模板不存在时安全返回空字符串、文件被修改后
+  版本值跟着变、`SimState.skill_version` 序列化往返 + 旧数据兼容、
+  `engine.advance()` 端到端集成用仓库里真实的 `life-sim-template/
+  SKILL.md` 验证读到的时间戳完全一致）。加上原有 453 个，全部通过
+  （**468 passed**）。
+  **风险提示（供人工验收参考）**：方案原文标注本批"改动面最大"，
+  建议在测试环境用几个真实分支实际验证 `merge_branch()` 之后再在
+  生产数据上使用；`merge_branch()` 目前没有 `app.py` UI 入口，
+  仅可通过直接调用模块函数使用（同 CLI/脚本场景），这是本批刻意
+  留白的部分，不是遗漏。
+
+至此，`world_simulator_c_category_precision_upgrade_improvement_
+plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增长到
+468 个，全部通过。

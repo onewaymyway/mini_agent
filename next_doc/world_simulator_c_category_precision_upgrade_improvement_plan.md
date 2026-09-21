@@ -59,6 +59,13 @@ Branch merge
 >   path()` 做简单 BFS 最短路径查询；`app.py` 多主体实例详情页新增
 >   "🔗 关系路径查询"折叠区，只展示不影响推进 prompt。新增 15 个
 >   测试用例，全量测试套件 453 个全部通过。
+> - ✅ **批次六（第 7 节，Branch Engine merge + skill/prompt 版本
+>   记录，收官）已完成**：`branch_manager.py` 新增 `merge_branch()`
+>   ——"指针切换"式合并，硬性要求 `from_step` 之前两条分支历史完全
+>   一致，否则拒绝；`SimState` 新增 `skill_version` 字段，
+>   `engine/ids.py::_read_skill_version()` 读取模板 `SKILL.md` 的
+>   文件时间戳，`engine/advance.py` 落盘时写入。新增 15 个测试用例，
+>   全量测试套件 468 个全部通过。**六个批次全部完成。**
 >
 > **方针延续**：延续项目一贯原则——每一批都是"新增字段/开关 +
 > 旧路径完全保留"，不引入自动化数值计算或语义相似度模型（因果/

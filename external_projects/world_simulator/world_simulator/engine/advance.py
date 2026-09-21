@@ -25,7 +25,7 @@ from world_simulator.engine.background_entities import (
 from world_simulator import causal_tree, relationship
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
-from world_simulator.engine.ids import _skill_name_for_template
+from world_simulator.engine.ids import _read_skill_version, _skill_name_for_template
 from world_simulator.engine.knowledge import (
     _safe_evaluate_reflexivity,
     _safe_record_causal_links,
@@ -571,6 +571,7 @@ def advance(
         },
         structural_change=_normalize_structural_change(data.get("structural_change")),
         decision_reason=str(data.get("decision_reason", "") or ""),
+        skill_version=_read_skill_version(workspace_root, manifest.template),
     )
 
     # 4.3 节（阶段三十三第二批）：存在任意一项 `urgency == "critical"`
