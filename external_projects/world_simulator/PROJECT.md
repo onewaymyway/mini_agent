@@ -2896,3 +2896,43 @@ world_simulator/
   **后续节奏（按方案原文第 1 节）**：批次四（因果线可视化整合）
   依赖批次一的 `evidence` 字段（已具备），建议下一步推进；批次五/
   六留待之后按顺序推进。
+- 2026-09-21（同日再追加）：**阶段三十七第四批**——按
+  `next_doc/world_simulator_c_category_precision_upgrade_
+  improvement_plan.md` 第 5 节，因果线可视化整合（"🕸️ 关系图"
+  图形化子视图）。
+  1. **`app.py`**：`_render_causal_graph_section()`（"🔗 跨线影响
+     关系"折叠区）新增 `st.radio` 切换"📋 列表"（原有文字聚合视图，
+     不变）/"🕸️ 关系图"两种查看方式，不替换原有视图，用户可以随时
+     切回列表。"关系图"用 `st.graphviz_chart()` 渲染
+     `causal_graph.build_causal_graph()` 边集合转换出的 DOT 图——
+     节点是因果线 id，边上标注聚合过的 `relation_type` 次数，和列表
+     视图统计口径完全一致（新增纯函数 `_causal_graph_edges_to_dot()`
+     负责这层转换，正确转义节点名里的双引号/反斜杠，避免生成非法
+     DOT 语法）。图下方新增节点选择下拉框，选中某个节点后调用新增的
+     `_render_causal_graph_node_detail()`：
+     - 如果这个节点是 `settings.objectives` 里注册过的目标字段，
+       展示 `attribution.summarize_contributions()` 的贡献拆解报告
+       （复用已有归因引擎，不发起任何新的 LLM 调用）；
+     - 如果第八轮批次一新增的 `evidence`/`valid_range` 字段已具备，
+       额外展示这个节点参与过的因果关系在知识库里精确匹配到的
+       `evidence`/`valid_range`（按 `cause`/`effect` 精确匹配，
+       不引入模糊/语义相似度匹配，同项目一贯取舍）；
+     - 两层都没匹配到时，退化展示这个节点参与过的因果关系示例
+       （不强行凑一份报告）。
+  2. **`requirements.txt`**：新增 `graphviz>=0.19.0`——
+     `st.graphviz_chart()` 渲染 DOT 字符串需要这个包，不装的话只有
+     "关系图"这一个子视图会报错，其它功能不受影响。
+  **范围克制（按方案要求，不做的部分）**：不引入 NetworkX/D3.js 等
+  重量级图计算库或前端可视化框架，用 Streamlit 内置的
+  `st.graphviz_chart()` 加一个纯字符串拼接函数就完成图形渲染；不做
+  力导向自动布局优化（交给 Graphviz 默认布局）；节点详情的知识库
+  匹配保持精确匹配，不做语义相似度。
+  **验收**：新增 `tests/test_causal_graph_visual.py`，5 个测试用例
+  覆盖 `_causal_graph_edges_to_dot()`：空列表返回空图、节点/边标签
+  正确生成、节点名含双引号反斜杠时正确转义、共享节点去重、特殊占位符
+  `(未归属)` 正常处理。这是这一批唯一自动化测试覆盖的部分——方案
+  原文明确"图是否可读需要人工过一遍"，节点详情展开（贡献拆解/知识库
+  匹配）的正确性依赖真实 Streamlit 会话状态，留给人工走查。加上原有
+  433 个，全部通过（**438 passed**）。
+  **后续节奏（按方案原文第 1 节）**：批次五（较大改动，决策引擎/
+  多轮反事实对比整合）、批次六留待之后按顺序推进。

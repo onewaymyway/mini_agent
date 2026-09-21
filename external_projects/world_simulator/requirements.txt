@@ -1,2 +1,8 @@
 # 本项目独立依赖
 streamlit>=1.32.0
+graphviz>=0.19.0
+# ↑ graphviz：第八轮批次四（`next_doc/world_simulator_c_category_
+# precision_upgrade_improvement_plan.md` 第 5 节）"🕸️ 关系图"子视图
+# 用到 `st.graphviz_chart()`，Streamlit 要求额外安装这个包才能渲染
+# DOT 字符串（不装的话这一个子视图会报错，列表视图/其它功能不受
+# 影响）。

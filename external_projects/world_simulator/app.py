@@ -2419,7 +2419,7 @@ def _render_causal_lines_overview(
     if manifest is not None and sim_id:
         _render_suggested_causal_lines(manifest, sim_id)
 
-    _render_causal_graph_section(history)
+    _render_causal_graph_section(history, manifest=manifest)
 
 
 def _render_suggested_causal_lines(manifest, sim_id: str) -> None:
@@ -2471,8 +2471,63 @@ def _render_suggested_causal_lines(manifest, sim_id: str) -> None:
                     st.rerun()
 
 
-def _render_causal_graph_section(history: List) -> None:
-    """渲染"跨线影响关系"区块（阶段二十七，4.19 节，因果线耦合结构化）。
+def _causal_graph_edges_to_dot(edges: List["cg_mod.CausalEdge"]) -> str:
+    """把 `causal_graph.build_causal_graph()` 的边集合转换成 Graphviz
+    DOT 语法字符串，供 `st.graphviz_chart()` 直接渲染（第八轮批次四，
+    `next_doc/world_simulator_c_category_precision_upgrade_
+    improvement_plan.md` 第 5 节）。
+
+    纯字符串拼接，不依赖 streamlit、不做任何布局计算（交给 Graphviz
+    默认布局），可以脱离 UI 单独单测——这也是这一批"验收点"里唯一
+    要求自动化覆盖的部分，图是否可读需要用真实数据人工过一遍（见
+    方案原文"风险与建议节奏"）。
+
+    节点是 `CausalEdge.source_line`/`target_line`（因果线 id，含
+    `"(未归属)"` 这个特殊值），边上标注这条边聚合过的
+    `relation_counts`（按次数降序，同 `_render_causal_graph_section()`
+    列表视图的文案口径，保持两种视图信息一致）。
+
+    Returns:
+        完整的 DOT 语法字符串；`edges` 为空时返回一个空的
+        `digraph G {}"`，调用方仍然可以直接传给 `st.graphviz_chart()`
+        （会渲染出一张空图，不会报错）。
+    """
+    lines: List[str] = [
+        "digraph G {",
+        "  rankdir=LR;",
+        '  node [shape=box, style="rounded,filled", fillcolor="#eef2ff", '
+        'fontname="sans-serif"];',
+        '  edge [fontname="sans-serif", fontsize=10];',
+    ]
+
+    def _escape(text: str) -> str:
+        return text.replace("\\", "\\\\").replace('"', '\\"')
+
+    nodes = set()
+    for edge in edges:
+        nodes.add(edge.source_line)
+        nodes.add(edge.target_line)
+    for node in sorted(nodes):
+        lines.append(f'  "{_escape(node)}";')
+
+    for edge in edges:
+        label_parts = [
+            f"{count}次{cg_mod.relation_type_label(rt)}"
+            for rt, count in sorted(edge.relation_counts.items(), key=lambda kv: -kv[1])
+        ]
+        label = "，".join(label_parts)
+        lines.append(
+            f'  "{_escape(edge.source_line)}" -> "{_escape(edge.target_line)}" '
+            f'[label="{_escape(label)}"];'
+        )
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _render_causal_graph_section(history: List, *, manifest=None) -> None:
+    """渲染"跨线影响关系"区块（阶段二十七，4.19 节，因果线耦合结构化；
+    第八轮批次四新增"🕸️ 关系图"图形化子视图，见下方）。
 
     聚合历史 `causal_links` 里的 `line_id`/`source_line_id`/
     `relation_type`，展示"哪条线在影响哪条线、是什么类型的影响、
@@ -2490,30 +2545,152 @@ def _render_causal_graph_section(history: List) -> None:
                 unsafe_allow_html=True,
             )
             return
+
+        view_mode = st.radio(
+            "查看方式", ["📋 列表", "🕸️ 关系图"], horizontal=True,
+            key="causal_graph_view_mode",
+        )
+
+        if view_mode == "📋 列表":
+            st.markdown(
+                '<span class="ws-muted">按「发起线 → 落地线」聚合统计，'
+                "同一条边下方可展开看最多 3 条具体因果关系示例。</span>",
+                unsafe_allow_html=True,
+            )
+            for edge in edges:
+                parts = [
+                    f"{count} 次{cg_mod.relation_type_label(rt)}"
+                    for rt, count in sorted(
+                        edge.relation_counts.items(), key=lambda kv: -kv[1]
+                    )
+                ]
+                st.markdown(
+                    f"**{_html_text(edge.source_line)} → {_html_text(edge.target_line)}**"
+                    f"　{'，'.join(parts)}",
+                )
+                for example in edge.examples:
+                    driver = _html_text(str(example.get("driver") or ""))
+                    effect = _html_text(str(example.get("effect") or ""))
+                    st.markdown(
+                        f'<div class="ws-muted" style="margin-left:1rem;">'
+                        f"· {driver}{'　→　' + effect if effect else ''}</div>",
+                        unsafe_allow_html=True,
+                    )
+            return
+
+        # ── 🕸️ 关系图（第八轮批次四）：不引入 NetworkX/D3.js 等重量级
+        # 图计算或前端库，用 st.graphviz_chart() 这个 Streamlit 内置
+        # 能力画一张示意图，不做自动布局优化。──
         st.markdown(
-            '<span class="ws-muted">按「发起线 → 落地线」聚合统计，'
-            "同一条边下方可展开看最多 3 条具体因果关系示例。</span>",
+            '<span class="ws-muted">节点是因果线，边上标注聚合过的影响'
+            "类型次数（和左边「列表」视图统计口径一致）；因果线/因果链"
+            "数量较多时如果一张大图挤在一起看不清，可以先看列表视图。"
+            "</span>",
             unsafe_allow_html=True,
         )
-        for edge in edges:
-            parts = [
-                f"{count} 次{cg_mod.relation_type_label(rt)}"
-                for rt, count in sorted(
-                    edge.relation_counts.items(), key=lambda kv: -kv[1]
-                )
-            ]
-            st.markdown(
-                f"**{_html_text(edge.source_line)} → {_html_text(edge.target_line)}**"
-                f"　{'，'.join(parts)}",
-            )
-            for example in edge.examples:
-                driver = _html_text(str(example.get("driver") or ""))
-                effect = _html_text(str(example.get("effect") or ""))
+        st.graphviz_chart(_causal_graph_edges_to_dot(edges))
+
+        node_options = sorted({e.source_line for e in edges} | {e.target_line for e in edges})
+        picked_node = st.selectbox(
+            "点开一个节点看详情", options=node_options, key="causal_graph_node_picker",
+        )
+        if picked_node:
+            _render_causal_graph_node_detail(picked_node, edges, history, manifest=manifest)
+
+
+def _render_causal_graph_node_detail(
+    node: str, edges: List["cg_mod.CausalEdge"], history: List, *, manifest=None
+) -> None:
+    """展开某个"关系图"节点的详情（第八轮批次四方案第 2 条）：如果这个
+    节点本身是 `settings.objectives` 里注册过的目标字段，展示
+    `attribution.summarize_contributions()` 的贡献拆解报告；再展示这个
+    节点相关的因果关系在知识库（第八轮批次一新增字段）里的
+    `evidence`/`valid_range`（如果知识库里能精确匹配到对应
+    `cause`/`effect`）。**都是可选的锦上添花信息**——没匹配到任何一层
+    时只展示"这个节点参与过的因果关系示例"这个兜底内容，不强行凑一份
+    报告。
+    """
+    shown_anything = False
+
+    if manifest is not None:
+        objectives = normalize_objectives((manifest.settings or {}).get("objectives") or [])
+        matched_objective = next((o for o in objectives if o.field == node), None)
+        if matched_objective is not None:
+            report = attribution_mod.summarize_contributions(history, matched_objective.field)
+            if report.sources:
+                shown_anything = True
+                st.markdown(f"**「{_html_text(node)}」的贡献拆解**（作为已声明的关注字段）：")
+                for src in report.sources:
+                    parts = [
+                        f"{count} 次{cg_mod.relation_type_label(rt)}"
+                        for rt, count in sorted(
+                            src.relation_counts.items(), key=lambda kv: -kv[1]
+                        )
+                    ] if src.relation_counts else []
+                    parts_text = f"（{'，'.join(parts)}）" if parts else ""
+                    st.markdown(
+                        f'<div class="ws-muted" style="margin-left:0.5rem;">'
+                        f"· {_html_text(src.source_line)} — {src.level_label}"
+                        f"（{src.count} 次）{_html_text(parts_text)}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+    # 第八轮批次一（evidence/valid_range）跨模拟视角：只对精确匹配这个
+    # 节点参与过的具体 driver/effect 组合的知识条目展示，不做模糊/
+    # 语义匹配（同项目一贯"不引入语义相似度模型"的取舍）。
+    related_examples = []
+    for edge in edges:
+        if node in (edge.source_line, edge.target_line):
+            related_examples.extend(edge.examples)
+    if related_examples:
+        try:
+            knowledge_items = knowledge_base_mod.load_all(DATA_DIR)
+        except Exception:  # noqa: BLE001 — 知识库读取失败不应阻断关系图本身
+            knowledge_items = []
+        matched_items = []
+        seen_ids = set()
+        for example in related_examples:
+            driver = str(example.get("driver") or "").strip()
+            effect = str(example.get("effect") or "").strip()
+            if not driver and not effect:
+                continue
+            for item in knowledge_items:
+                if item.id in seen_ids:
+                    continue
+                if item.cause == driver and item.effect == effect:
+                    matched_items.append(item)
+                    seen_ids.add(item.id)
+        if matched_items:
+            shown_anything = True
+            st.markdown(f"**「{_html_text(node)}」相关因果关系在知识库里的记录**：")
+            for item in matched_items:
+                extra = []
+                if item.valid_range:
+                    extra.append(f"适用范围：{item.valid_range}")
+                if item.evidence:
+                    extra.append(f"来源：{'、'.join(item.evidence)}")
+                extra_text = f"（{'；'.join(extra)}）" if extra else ""
                 st.markdown(
-                    f'<div class="ws-muted" style="margin-left:1rem;">'
-                    f"· {driver}{'　→　' + effect if effect else ''}</div>",
+                    f'<div class="ws-muted" style="margin-left:0.5rem;">'
+                    f"· {_html_text(item.cause)} → {_html_text(item.effect)}"
+                    f"{_html_text(extra_text)}</div>",
                     unsafe_allow_html=True,
                 )
+
+    if not shown_anything:
+        st.markdown(
+            f'<span class="ws-muted">「{_html_text(node)}」目前没有已声明的关注字段贡献拆解，'
+            "也没有匹配到知识库记录——以下是这个节点参与过的因果关系示例：</span>",
+            unsafe_allow_html=True,
+        )
+        for example in related_examples[:3]:
+            driver = _html_text(str(example.get("driver") or ""))
+            effect = _html_text(str(example.get("effect") or ""))
+            st.markdown(
+                f'<div class="ws-muted" style="margin-left:0.5rem;">'
+                f"· {driver}{'　→　' + effect if effect else ''}</div>",
+                unsafe_allow_html=True,
+            )
 
 
 def _render_attribution_section(history: List, manifest) -> None:
