@@ -3108,3 +3108,36 @@ plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增
   全部通过（**492 passed**）。
   **后续节奏**：批次三（问题图可视化 `depends_on` 连边 + 可选信号
   触发的扫描节奏）依赖本批次的 `depends_on` 字段，待实施。
+
+- 2026-09-21（同日再追加）：**第十轮批次三**——按 `next_doc/
+  world_simulator_tenth_round_problem_discovery_automation_plan.md`
+  第 3 节，问题图可视化（第十轮"必做"部分到此全部完成；"可选加强"
+  的信号触发扫描节奏按方案原文建议暂不做，见下方说明）。
+  1. **`app.py`**：新增"🕸️ 问题关系图"只读折叠区，放在"🔍 扫描潜在
+     问题"折叠区旁边。复用 `_causal_graph_edges_to_dot()`
+     （第八轮批次四）已验证过的实现思路：
+     - `_collect_problem_graph_nodes(history)`：遍历当前分支历史
+       里所有 `problems`，按 `id` 去重、保留最新 `status`；没有
+       `id` 的条目各自独立展示，不参与去重。
+     - `_problem_graph_edges_to_dot(nodes)`：节点列表 → Graphviz
+       DOT 字符串，节点按 `status`（emerging/active/solved/
+       transformed）上色，边由 `depends_on` 生成，**不校验**引用
+       是否真实存在——同 `depends_on` 字段本身"提示而非强制"的
+       取舍一致。
+     - `_render_problem_graph_section(history)`：用
+       `st.graphviz_chart()` 渲染，没有任何结构化问题记录时不
+       渲染图（同因果线关系图的既有取舍）。
+  2. **`tests/test_problem_graph_visual.py`**（新文件）：11 个测试，
+     覆盖节点收集（去重/保序/无 id 不合并/跳过格式不对的条目）和
+     DOT 转换（空图/节点着色/边/长文本截断/未知 status 兜底色/
+     引用不存在的 key 不报错/空 `depends_on` 条目被跳过）。
+  **明确不做的部分（按方案原文建议，不是遗漏）**：可选加强的"信号
+  触发扫描节奏"（`resource_guard.py` 检测到资源跌破下限、或
+  `ChoiceOption.urgency == "critical"` 时额外触发一次扫描）——方案
+  原文建议"先观察批次一固定间隔在实际使用中是否已经够用，避免同时
+  改两个变量导致'扫描到底有没有用'这个问题更难判断清楚"，本轮不做，
+  不是本轮的强制交付物。
+  **验收**：新增 11 个测试，加上原有的全部通过（**503 passed**）。
+  至此第十轮问题清单（`next_doc/world_simulator_tenth_round_
+  problem_discovery_automation_plan.md`）的三个批次全部完成，"信号
+  触发扫描节奏"这一个可选加强项留待后续观察真实使用效果后再决定。

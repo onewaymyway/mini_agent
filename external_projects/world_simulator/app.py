@@ -2697,6 +2697,138 @@ def _causal_graph_edges_to_dot(edges: List["cg_mod.CausalEdge"]) -> str:
     return "\n".join(lines)
 
 
+# ── 第十轮批次三：问题关系图（`depends_on` 连边，纯只读展示）────────
+
+
+_PROBLEM_STATUS_COLORS = {
+    "emerging": "#fef9c3",
+    "active": "#fee2e2",
+    "solved": "#dcfce7",
+    "transformed": "#e0e7ff",
+}
+"""问题 `status` → 节点填充色，仅覆盖 `state_model.py` docstring 里
+列出的四个已知取值；未知/空取值退化为因果线关系图同款的默认色
+`#eef2ff`，同 `_causal_graph_edges_to_dot()` 的既有配色风格一致。"""
+
+
+def _collect_problem_graph_nodes(history: List) -> List[Dict[str, Any]]:
+    """遍历同一分支完整历史里出现过的所有 `problems`，按 `id` 去重、
+    保留最新一次出现时的记录（含最新 `status`）（第十轮批次三，
+    `next_doc/world_simulator_tenth_round_problem_discovery_
+    automation_plan.md` 批次三）。
+
+    `id` 为空字符串（旧数据/skill 没给）的条目**不参与去重**——各自
+    用一个基于 `symptom` 前缀合成的 key 独立展示，避免因为都没有
+    `id` 就被误判成"同一个问题"而互相覆盖；这类节点在图上通常也
+    连不上任何 `depends_on` 边（既没有稳定 `id` 可以被别的问题引用，
+    自己声明的 `depends_on` 也大概率是自由文本而不是真实 `id`），
+    是预期内的孤立节点，同 `depends_on` 字段本身"提示而非强制"、
+    不做引用存在性校验的一贯取舍一致。
+
+    没有 `symptom` 的条目（格式不合法/被跳过）直接忽略，同
+    `suggest_problems()._parse_list()` 的既有容错风格。
+
+    Returns:
+        按首次出现顺序排列的节点列表，每项是原始 `problems` 字典
+        再加一个内部用的 `"_key"` 字段（图渲染/边查找用，不是
+        `problems` 原本的字段，不应该被当成落盘数据处理）。
+    """
+    latest: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for state in history or []:
+        for item in getattr(state, "problems", None) or []:
+            if not isinstance(item, dict):
+                continue
+            symptom = str(item.get("symptom") or "").strip()
+            if not symptom:
+                continue
+            problem_id = str(item.get("id") or "").strip()
+            key = problem_id or f"（未命名）{symptom[:24]}"
+            if key not in latest:
+                order.append(key)
+            latest[key] = {**item, "_key": key}
+    return [latest[k] for k in order]
+
+
+def _problem_graph_edges_to_dot(nodes: List[Dict[str, Any]]) -> str:
+    """把 `_collect_problem_graph_nodes()` 的节点列表转换成 Graphviz
+    DOT 语法字符串，供 `st.graphviz_chart()` 直接渲染——复用
+    `_causal_graph_edges_to_dot()` 已经验证过的实现思路（第八轮批次
+    四），纯字符串拼接，不依赖 streamlit、不做任何布局计算，可以脱离
+    UI 单独单测。
+
+    节点标签是问题的 `symptom`（截断到 24 字符 + 省略号，避免长句
+    撑爆图形布局），按 `status` 上色（见 `_PROBLEM_STATUS_COLORS`）；
+    边由每个节点的 `depends_on` 数组生成，方向是"这个问题 → 它依赖的
+    问题"，**不校验** `depends_on` 引用的 key 是否真的存在于当前节点
+    集合里——引用一个不存在的 key 时 Graphviz 会把它当成一个新的
+    孤立节点画出来，不会报错，这是刻意的（同 `depends_on` 字段本身
+    "提示而非强制"的取舍一致，不在展示层补一道节点存在性校验）。
+
+    Returns:
+        完整的 DOT 语法字符串；`nodes` 为空时返回一个空的
+        `digraph G {}`。
+    """
+    lines: List[str] = [
+        "digraph G {",
+        "  rankdir=LR;",
+        '  node [shape=box, style="rounded,filled", fontname="sans-serif"];',
+        '  edge [fontname="sans-serif", fontsize=10, label="依赖"];',
+    ]
+
+    def _escape(text: str) -> str:
+        return text.replace("\\", "\\\\").replace('"', '\\"')
+
+    for node in nodes:
+        key = str(node.get("_key") or "")
+        symptom = str(node.get("symptom") or key)
+        label = symptom if len(symptom) <= 24 else symptom[:24] + "…"
+        status = str(node.get("status") or "").strip()
+        if status:
+            label += f"\\n[{status}]"
+        color = _PROBLEM_STATUS_COLORS.get(status, "#eef2ff")
+        lines.append(
+            f'  "{_escape(key)}" [label="{_escape(label)}", fillcolor="{color}"];'
+        )
+
+    for node in nodes:
+        key = str(node.get("_key") or "")
+        for dep in node.get("depends_on") or []:
+            dep_key = str(dep).strip()
+            if not dep_key:
+                continue
+            lines.append(f'  "{_escape(key)}" -> "{_escape(dep_key)}";')
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _render_problem_graph_section(history: List) -> None:
+    """渲染"🕸️ 问题关系图"只读折叠区（第十轮批次三）：把当前分支
+    历史里出现过的所有 `problems` 按 `depends_on` 连成一张图，节点上
+    按 `status` 着色。纯展示层，不新增任何持久化结构、不影响任何
+    推进逻辑，写法/位置仿照 `_render_causal_graph_section()`。
+    """
+    nodes = _collect_problem_graph_nodes(history)
+    with st.expander("🕸️ 问题关系图（第十轮批次三，按 depends_on 连边，可选）"):
+        if not nodes:
+            st.markdown(
+                '<span class="ws-muted">当前分支历史里还没有出现过任何结构化问题记录'
+                "——继续推进，或在上面「扫描潜在问题」里确认关注几条建议、等下一次推进"
+                "把它们体现进 `problems` 后再回来看。</span>",
+                unsafe_allow_html=True,
+            )
+            return
+        st.markdown(
+            '<span class="ws-muted">节点是同一分支历史里出现过的问题（按 `id` 去重、'
+            "展示最新状态，颜色对应 emerging/active/solved/transformed）；箭头表示"
+            "「这个问题依赖箭头指向的问题先解决」（`depends_on`，纯声明式，不保证"
+            "引用的问题一定存在于图里）。</span>",
+            unsafe_allow_html=True,
+        )
+        st.graphviz_chart(_problem_graph_edges_to_dot(nodes))
+
+
 def _render_causal_graph_section(history: List, *, manifest=None) -> None:
     """渲染"跨线影响关系"区块（阶段二十七，4.19 节，因果线耦合结构化；
     第八轮批次四新增"🕸️ 关系图"图形化子视图，见下方）。
@@ -3682,6 +3814,12 @@ def page_detail() -> None:
                             DATA_DIR, sim_id, suggestion_id
                         )
                         st.rerun()
+
+    # 第十轮批次三：问题关系图，放在「扫描潜在问题」折叠区旁边——
+    # 依赖批次二的 depends_on 字段，展示的是"已经落盘的 problems"，
+    # 不是"建议阶段还没被采纳的候选"，所以是独立的折叠区而不是嵌套
+    # 在上面那个折叠区内部。
+    _render_problem_graph_section(history)
 
     # ── 控制条：暂停/恢复/结束 ──
     ctrl1, ctrl2, ctrl3 = st.columns(3)
