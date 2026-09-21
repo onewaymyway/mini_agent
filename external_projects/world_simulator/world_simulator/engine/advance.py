@@ -37,7 +37,10 @@ from world_simulator.engine.structural_change import (
     _format_confirmed_structural_changes,
     _normalize_structural_change,
 )
-from world_simulator.problem_discovery import _format_confirmed_problem_suggestions
+from world_simulator.problem_discovery import (
+    _format_confirmed_problem_suggestions,
+    _safe_auto_scan_problems,
+)
 from world_simulator.spec_generator import resolve_causal_graph_hint, resolve_hints
 from world_simulator.state_model import ChoiceOption, SimState
 from world_simulator.store import SimStore
@@ -655,6 +658,23 @@ def advance(
                 triggered_at_step=next_state.step,
             )
         manifest.settings["relationship_pending_effects"] = pending
+
+    # 第十轮批次一（`next_doc/world_simulator_tenth_round_problem_
+    # discovery_automation_plan.md` 3 节）：Problem Discovery 自动
+    # 扫描——按 `settings.problem_discovery_auto_scan_interval` 周期
+    # 触发，不再要求用户记得去点"扫描潜在问题"按钮；手动挡/自动挡都会
+    # 经过这里，`effective_chosen_by == "autopilot"` 是判断"这一步是
+    # 不是自动挡代选"的既有信号，自动挡下没有人来点"确认关注"，扫描
+    # 结果会额外自动写入 confirmed_problem_suggestions（见
+    # `_safe_auto_scan_problems` docstring）。必须放在下面这次统一的
+    # `store.save_manifest(manifest)` 之前——它只修改内存里的
+    # `manifest.settings`，复用这一次落盘，不单独多一次 IO；任何异常
+    # 都被内部吞掉，不影响本次推进已经产生的返回值。
+    _safe_auto_scan_problems(
+        cfg, workspace_root, store, manifest,
+        branch=branch, next_state=next_state,
+        auto_confirm=(effective_chosen_by == "autopilot"),
+    )
 
     manifest.current_step = next_state.step
     store.save_manifest(manifest)

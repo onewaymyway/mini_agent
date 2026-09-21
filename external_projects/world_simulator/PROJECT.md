@@ -3035,3 +3035,44 @@ world_simulator/
 至此，`world_simulator_c_category_precision_upgrade_improvement_
 plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增长到
 468 个，全部通过。
+
+- 2026-09-21（同日再追加）：**第十轮批次一**——按 `next_doc/
+  world_simulator_tenth_round_problem_discovery_automation_plan.md`
+  第 3 节，Problem Discovery Engine 从"手动挡"到"引擎自动运行"：
+  扫描潜在问题不再要求用户记得去点按钮，手动挡/自动挡都能按周期
+  自动触发。
+  1. **`problem_discovery.py`**：新增 `_safe_auto_scan_problems()`——
+     按 `manifest.settings["problem_discovery_auto_scan_interval"]`
+     （整数，默认 0=关闭，向后兼容）周期触发一次 `suggest_
+     problems()`，结果写入 `settings["last_auto_problem_scan"]`
+     （`{"step", "source": [sim_id, branch], "suggestions",
+     "scanned_at"}`）；自动挡场景（`auto_confirm=True`）额外自动
+     把建议写入 `settings["confirmed_problem_suggestions"]`（自动挡
+     下没有人来点"确认关注"，这一步等价于代理替用户做了这个操作）。
+     任何异常吞掉，不影响本次推进——写法同 `engine/knowledge.py`
+     里 `_safe_record_causal_links`/`_safe_evaluate_reflexivity` 的
+     既有"安全包装"约定。
+  2. **`engine/advance.py`**：`advance()` 末尾、`store.save_
+     manifest(manifest)` 之前调用 `_safe_auto_scan_problems()`，
+     用既有信号 `effective_chosen_by == "autopilot"` 区分手动挡/
+     自动挡——**不需要改动 `autopilot.py`**，手动挡和自动挡都经过
+     `advance()` 这一个入口，这是本批相比方案原文设想更省改动面的
+     实现方式（原方案设想在 `autopilot.py` 里单独再接一次，实地
+     实现时发现不需要）。
+  3. **`app.py`**：\"⚙️ 模拟设置\"新增\"问题自动扫描间隔\"数字输入框
+     （0=关闭）；\"🔍 扫描潜在问题\"折叠区在本次会话还没手动点过按钮
+     时，自动展示上一次自动扫描的结果（不重新发起 LLM 调用），手动
+     按钮保留，两者不是替换关系。
+  **范围克制（按方案要求，不做的部分）**：不做"每一步都自动扫描"
+  的默认行为（`interval` 默认仍是 0）；不做"根据剧情复杂度动态调整
+  扫描频率"的智能节奏（留给批次三讨论）；自动扫描结果仍然只是下一次
+  `advance_step` prompt 里的一句 hint，不直接改写任何已落盘的
+  `SimState.problems`，"建议而非强制"这条项目底线没有被突破。
+  **验收**：新增 5 个 `_safe_auto_scan_problems()` 单元测试（覆盖
+  `interval=0`/未到间隔时不触发、手动挡只记录不自动确认、自动挡
+  自动确认、内部异常被吞掉），加上此前已有的全部用例，全量测试套件
+  跑通，全部通过（**488 passed**）。
+  **后续节奏**：批次二（Problem 结构化字段 `depends_on`/
+  `root_causes`/`candidate_solutions`）待实施，依赖批次一但可以
+  并行开发；批次三（问题图可视化 + 可选信号触发）待批次二落地后
+  再排期。

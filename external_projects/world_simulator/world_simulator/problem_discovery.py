@@ -278,3 +278,106 @@ def withdraw_confirmed_problem_suggestion(
     manifest.settings = {**manifest.settings, "confirmed_problem_suggestions": remaining}
     store.save_manifest(manifest)
     return manifest
+
+
+# ── 第十轮批次一：自动触发（不再要求用户记得去点"扫描潜在问题"按钮）──
+
+
+def _safe_auto_scan_problems(
+    cfg,
+    workspace_root: Path,
+    store,
+    manifest: "SimManifest",
+    *,
+    branch: str,
+    next_state,
+    auto_confirm: bool,
+) -> None:
+    """`suggest_problems()` 的自动触发安全包装（第十轮批次一，
+    `next_doc/world_simulator_tenth_round_problem_discovery_
+    automation_plan.md` 3 节）。
+
+    只在 `manifest.settings["problem_discovery_auto_scan_interval"]`
+    （整数，默认 0=关闭）大于 0、且 `next_state.step` 是该间隔的整数倍
+    时才发起一次扫描调用；未设置/为 0 时立即返回，不产生任何额外的
+    LLM 调用——同项目一贯"新增开关默认不改变已有行为"的惯例，手动挡/
+    自动挡都会经过这里（`engine.advance.advance()` 是两者共同的唯一
+    落点），不需要在 `autopilot.py` 里重复一份触发逻辑。
+
+    扫描结果写入 `manifest.settings["last_auto_problem_scan"]`
+    （`{"step", "source": [sim_id, branch], "suggestions", "scanned_
+    at"}`）；这里只**修改**调用方传入的 `manifest` 对象，不自己落盘
+    ——`advance()` 本来就会在本次推进末尾统一调用一次
+    `store.save_manifest(manifest)`，这里不需要、也不应该再额外触发
+    一次 IO。
+
+    `auto_confirm=True`（自动挡场景，由调用方按 `effective_chosen_by
+    == "autopilot"` 判断，不需要 `autopilot.py` 显式传参）时，扫描出
+    的建议会**额外**自动写入 `settings["confirmed_problem_
+    suggestions"]`——自动挡下没有人来点"确认关注"按钮，这一步等价于
+    代理替用户做了这个操作；`auto_confirm=False`（手动挡）时只写
+    `last_auto_problem_scan`，等用户在看板上自己点"确认关注"，同现有
+    手动扫描的既有流程完全一致。**无论哪种情况，这一步产出的都只是
+    下一次 `advance_step` prompt 里的一句 hint**——真正体现进哪一步
+    的 `problems` 输出，仍然完全由那一次的 LLM 自行判断，不会被这里
+    强制写入，没有突破模块 docstring"范围克制"一节"建议而非强制"的
+    底线。
+
+    这是一次推进*落盘之后*的旁路操作（同 `engine.knowledge.
+    _safe_record_causal_links`/`_safe_evaluate_reflexivity` 的既有
+    约定），任何异常（workflow 未配置、LLM 调用失败、解析失败等）都
+    不应该让本次推进本身失败，这里吞掉异常，只保留"尽力而为"的语义
+    ——扫描失败时 `last_auto_problem_scan` 保持上一次的值不变，下次
+    到达间隔时会自然重试。
+    """
+    try:
+        interval = int(manifest.settings.get("problem_discovery_auto_scan_interval") or 0)
+    except (TypeError, ValueError):
+        interval = 0
+    if interval <= 0 or next_state.step % interval != 0:
+        return
+
+    try:
+        from world_simulator.store import now_iso
+
+        history = store.load_history(branch)
+        suggestions = suggest_problems(
+            cfg,
+            workspace_root,
+            next_state.vars,
+            manifest.settings.get("desired_state"),
+            history,
+        )
+    except Exception:
+        return
+
+    manifest.settings["last_auto_problem_scan"] = {
+        "step": next_state.step,
+        "source": [str(manifest.sim_id), branch],
+        "suggestions": suggestions,
+        "scanned_at": now_iso(),
+    }
+
+    if not auto_confirm:
+        return
+
+    confirmed = list(manifest.settings.get("confirmed_problem_suggestions") or [])
+    for category in _CATEGORIES:
+        for item in suggestions.get(category) or []:
+            symptom = str(item.get("symptom") or "").strip()
+            if not symptom:
+                continue
+            confirmed.append(
+                {
+                    "id": f"confirmed_problem_{secrets.token_hex(3)}",
+                    "category": category,
+                    "symptom": symptom,
+                    "blocked_goal": str(item.get("blocked_goal") or "").strip(),
+                    "missing_capabilities": [
+                        str(m) for m in (item.get("missing_capabilities") or []) if str(m).strip()
+                    ],
+                    "confirmed_at": now_iso(),
+                    "auto_confirmed": True,
+                }
+            )
+    manifest.settings["confirmed_problem_suggestions"] = confirmed

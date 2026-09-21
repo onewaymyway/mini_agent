@@ -1,7 +1,9 @@
 # world_simulator 改进计划：Problem Discovery Engine 从"手动扫描"
 到"引擎自动运行" + 问题空间结构化（第十轮）
 
-> **状态**：待实施，尚未开始。本文档合并两个来源的问题：
+> **状态**：批次一（自动触发机制）已实施完成，详见本文档"实施记录"
+> 一节及 `PROJECT.md` 对应变更记录；批次二（Problem 结构化字段）、
+> 批次三（问题图可视化 + 可选信号触发）待实施。本文档合并两个来源的问题：
 > （1）用户直接指出的设计缺陷——"扫描潜在问题"目前需要人工在看板上
 > 点按钮，但这本该是模拟引擎在推进过程中自己做的事；
 > （2）`next_doc/world_simulator_ninth_round_theory_gap_analysis_
@@ -241,6 +243,42 @@ id` 现有取舍一致）。
 批次三（问题图 + 可选信号触发）—— 第三优先，图可视化部分改动小
   可以紧跟批次二做；信号触发部分建议观察批次一实际使用效果后再决定。
 ```
+
+---
+
+## 4.1 实施记录：批次一（自动触发机制）已完成
+
+**完成时间**：2026-09-21。**范围**：与本文档第 3 节"批次一"设计
+基本一致，一处实现细节与设计时的设想不同，记录如下：
+
+- **实际实现比原方案设想更省改动面**：原方案设想"手动挡在
+  `engine/advance.py::advance()` 里接一次，自动挡在
+  `autopilot.py::run_autopilot_step()`/`run_batch_autopilot()`
+  里再接一次"。实地实现时发现，`autopilot.py` 的两个入口最终都会
+  调用 `engine.advance.advance()`（`chosen_by="autopilot"`），而
+  `advance()` 内部本来就有 `effective_chosen_by` 这个变量记录"这一步
+  实际生效的选择是不是自动挡代选"——直接复用这个既有信号就能在
+  `advance()` 一处判断"该不该自动确认"，不需要在 `autopilot.py` 里
+  重复一份触发逻辑，**`autopilot.py` 本次未改动**。
+- 新增函数放在 `problem_discovery.py`（`_safe_auto_scan_problems()`），
+  没有像 `engine/knowledge.py` 里其它 `_safe_*` 包装那样单独拆
+  文件——因为它需要直接调用同模块的 `suggest_problems()`，放在一起
+  更符合内聚性，风格上仍然遵循 `_safe_record_causal_links`/
+  `_safe_evaluate_reflexivity`"吞异常、不影响主流程"的既有约定。
+- `app.py` 的"🔍 扫描潜在问题"折叠区改为：本次会话还没手动点过按钮时，
+  优先展示 `settings.last_auto_problem_scan`（如果匹配当前
+  `sim_id`/`branch`）里的结果，不重新发起 LLM 调用；手动按钮完全
+  保留，用户随时可以点它立即重新扫描一次。
+
+**未变化的部分（与方案一致）**：`problem_discovery_auto_scan_
+interval` 默认 0（关闭）；手动挡下只记录、不自动写入
+`confirmed_problem_suggestions`，自动挡下才自动写入；扫描结果始终
+只是下一次 `advance_step` prompt 里的一句 hint，不强制改写
+`problems`。
+
+详细改动清单见 `PROJECT.md` "第十轮批次一" 条目；测试见
+`tests/test_problem_discovery.py` 新增的 5 个
+`_safe_auto_scan_problems()` 用例。
 
 ---
 

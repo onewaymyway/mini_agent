@@ -303,6 +303,110 @@ def test_adopt_problem_suggestion_normalizes_unknown_category(tmp_path):
 # ── _format_confirmed_problem_suggestions() ─────────────────────────
 
 
+# ── _safe_auto_scan_problems()（第十轮批次一）────────────────────────
+
+
+class _FakeStoreForAutoScan:
+    def __init__(self, history):
+        self._history = history
+        self.load_history_calls = []
+
+    def load_history(self, branch):
+        self.load_history_calls.append(branch)
+        return self._history
+
+
+def _make_manifest_ns(sim_id="sim1", settings=None):
+    return SimpleNamespace(sim_id=sim_id, settings=dict(settings or {}))
+
+
+def test_auto_scan_noop_when_interval_zero_or_unset(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        pd_mod, "suggest_problems", lambda *a, **k: calls.append(1) or {"observed": [], "latent": []}
+    )
+    manifest = _make_manifest_ns(settings={})
+    next_state = SimpleNamespace(step=3, vars={})
+    pd_mod._safe_auto_scan_problems(
+        object(), Path("/tmp/ws"), _FakeStoreForAutoScan([]), manifest,
+        branch="main", next_state=next_state, auto_confirm=False,
+    )
+    assert calls == []
+    assert "last_auto_problem_scan" not in manifest.settings
+
+
+def test_auto_scan_noop_when_step_not_multiple_of_interval(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        pd_mod, "suggest_problems", lambda *a, **k: calls.append(1) or {"observed": [], "latent": []}
+    )
+    manifest = _make_manifest_ns(settings={"problem_discovery_auto_scan_interval": 3})
+    next_state = SimpleNamespace(step=4, vars={})
+    pd_mod._safe_auto_scan_problems(
+        object(), Path("/tmp/ws"), _FakeStoreForAutoScan([]), manifest,
+        branch="main", next_state=next_state, auto_confirm=False,
+    )
+    assert calls == []
+    assert "last_auto_problem_scan" not in manifest.settings
+
+
+def test_auto_scan_manual_mode_records_result_but_does_not_confirm(monkeypatch):
+    fake_result = {
+        "observed": [{"symptom": "资金不足", "blocked_goal": "招聘", "missing_capabilities": []}],
+        "latent": [],
+    }
+    monkeypatch.setattr(pd_mod, "suggest_problems", lambda *a, **k: fake_result)
+    manifest = _make_manifest_ns(settings={"problem_discovery_auto_scan_interval": 3})
+    fake_store = _FakeStoreForAutoScan([SimpleNamespace(step=1, summary="s", narrative="n")])
+    next_state = SimpleNamespace(step=3, vars={"cash": 1})
+    pd_mod._safe_auto_scan_problems(
+        object(), Path("/tmp/ws"), fake_store, manifest,
+        branch="main", next_state=next_state, auto_confirm=False,
+    )
+    assert fake_store.load_history_calls == ["main"]
+    recorded = manifest.settings["last_auto_problem_scan"]
+    assert recorded["step"] == 3
+    assert recorded["source"] == ["sim1", "main"]
+    assert recorded["suggestions"] == fake_result
+    # 手动挡：只记录，不自动写入 confirmed_problem_suggestions。
+    assert "confirmed_problem_suggestions" not in manifest.settings
+
+
+def test_auto_scan_autopilot_mode_auto_confirms(monkeypatch):
+    fake_result = {
+        "observed": [{"symptom": "资金不足", "blocked_goal": "招聘", "missing_capabilities": ["融资"]}],
+        "latent": [{"symptom": "获客成本上升风险", "blocked_goal": "", "missing_capabilities": []}],
+    }
+    monkeypatch.setattr(pd_mod, "suggest_problems", lambda *a, **k: fake_result)
+    manifest = _make_manifest_ns(settings={"problem_discovery_auto_scan_interval": 2})
+    next_state = SimpleNamespace(step=4, vars={})
+    pd_mod._safe_auto_scan_problems(
+        object(), Path("/tmp/ws"), _FakeStoreForAutoScan([]), manifest,
+        branch="main", next_state=next_state, auto_confirm=True,
+    )
+    confirmed = manifest.settings["confirmed_problem_suggestions"]
+    assert len(confirmed) == 2
+    assert {c["category"] for c in confirmed} == {"observed", "latent"}
+    assert all(c["auto_confirmed"] is True for c in confirmed)
+    assert all(c["id"] for c in confirmed)
+
+
+def test_auto_scan_swallows_exceptions(monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pd_mod, "suggest_problems", _boom)
+    manifest = _make_manifest_ns(settings={"problem_discovery_auto_scan_interval": 1})
+    next_state = SimpleNamespace(step=1, vars={})
+    # 不应该抛出异常。
+    pd_mod._safe_auto_scan_problems(
+        object(), Path("/tmp/ws"), _FakeStoreForAutoScan([]), manifest,
+        branch="main", next_state=next_state, auto_confirm=True,
+    )
+    assert "last_auto_problem_scan" not in manifest.settings
+    assert "confirmed_problem_suggestions" not in manifest.settings
+
+
 def test_format_confirmed_problem_suggestions():
     assert pd_mod._format_confirmed_problem_suggestions(None) == ""
     assert pd_mod._format_confirmed_problem_suggestions([]) == ""

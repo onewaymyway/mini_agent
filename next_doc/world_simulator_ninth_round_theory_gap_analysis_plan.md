@@ -49,6 +49,13 @@
 ### 1.1 Problem：缺 Root Causes / Candidate Solutions / Dependencies，
 ### 更缺"问题之间的因果图"
 
+> **进度更新（2026-09-21）**：本节梳理出的问题已被拆分到
+> `next_doc/world_simulator_tenth_round_problem_discovery_
+> automation_plan.md` 继续推进——该文档批次一（自动触发机制）已
+> 实施完成；批次二（`depends_on`/`root_causes`/`candidate_
+> solutions` 结构化字段）、批次三（问题图可视化）待实施。本节原文
+> 保留作为差距分析的历史记录，不再是"待办"的唯一入口。
+
 **参考文档要求**（第六、四十八、四十九节）：Problem 不只是"症状+
 缺什么能力"，还应该有 Root Causes（根因）、Candidate Solutions（候选
 方案）、Dependencies（依赖哪些其它问题先解决），并且多个 Problem

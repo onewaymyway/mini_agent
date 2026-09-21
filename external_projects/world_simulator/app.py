@@ -3438,6 +3438,14 @@ def page_detail() -> None:
                 height=80,
                 placeholder='{"conditions": ["financial_independence"], "constraints": ["limited capital"]}',
             )
+        new_pd_auto_scan_interval = st.number_input(
+            "问题自动扫描间隔（第十轮批次一，每隔几步自动扫一次「潜在问题」，"
+            "0 = 关闭，默认关闭——开启后手动挡会把结果直接摆在下面「扫描潜在问题」"
+            "折叠区里，自动挡会自动确认关注，无需人工点按钮）",
+            min_value=0, max_value=50,
+            value=int(cur_settings.get("problem_discovery_auto_scan_interval", 0) or 0),
+            step=1, key="settings_pd_auto_scan_interval",
+        )
         new_model_version_text = st.text_input(
             "模型/Skill 版本标签（可选，阶段三十三——换了一版 prompt/skill 后自己"
             "标一下，供「预测准确性统计」按版本分组）",
@@ -3549,6 +3557,7 @@ def page_detail() -> None:
                     observer_mode=bool(new_observer_mode),
                     model_version=new_model_version_text.strip(),
                     desired_state=desired_state_to_save,
+                    problem_discovery_auto_scan_interval=int(new_pd_auto_scan_interval),
                 )
                 st.success("设置已更新，下一步推进开始生效。")
                 st.rerun()
@@ -3586,6 +3595,22 @@ def page_detail() -> None:
 
         pd_suggestions = st.session_state.get("problem_discovery_suggestions")
         pd_source = st.session_state.get("problem_discovery_source")
+        # 第十轮批次一：本次会话还没手动点过「扫描潜在问题」时，如果
+        # 引擎已经按 `problem_discovery_auto_scan_interval` 自动扫描过
+        # 当前分支的这一步，直接展示那份结果——不重新发起 LLM 调用，
+        # 用户仍然可以随时点上面的按钮立即重新扫描一次（两者不是替换
+        # 关系，手动按钮保留）。
+        if pd_suggestions is None:
+            last_auto_scan = cur_settings.get("last_auto_problem_scan")
+            if isinstance(last_auto_scan, dict):
+                auto_scan_source = tuple(last_auto_scan.get("source") or [])
+                if auto_scan_source == (sim_id, manifest.branch):
+                    pd_suggestions = last_auto_scan.get("suggestions")
+                    pd_source = auto_scan_source
+                    st.caption(
+                        f"以下是第 {last_auto_scan.get('step')} 步自动扫描（按设置的间隔"
+                        "自动触发，未消耗额外点击）的结果。"
+                    )
         if pd_suggestions is not None and pd_source == (sim_id, manifest.branch):
             for category, label in (("observed", "已观察到的问题"), ("latent", "潜在问题（尚未爆发）")):
                 items = pd_suggestions.get(category) or []
