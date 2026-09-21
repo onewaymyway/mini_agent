@@ -1,6 +1,30 @@
 # world_simulator 对照《万能模拟器》参考文档的差距分析：Problem / Capability 缺失（第八轮差距分析）
 
-> **状态**：本文档只做盘点 + 方案设计，尚未开始实施。这是用户上传
+> **状态（第九轮批次一，已完成）**：本文档 2.1（`Problem` 结构化）
+> 和 2.2（`Desired State` 结构化）两节已实施完成——`SimState` 新增
+> `problems` 字段、`SimManifest.settings` 新增 `desired_state` 字段，
+> 涉及的 workflow prompt（`generate_scenario.yaml`/`advance_step.
+> yaml`/`world_builder.yaml`/`world_evolve.yaml`）、三个模板
+> `SKILL.md`、`app.py` 创建向导与"模拟设置"页面的编辑入口、时间线
+> "🧩 问题"展示区块均已同步更新，测试见 `tests/test_state_and_store.
+> py`（`test_state_roundtrip_preserves_problems`/`test_manifest_
+> roundtrip_preserves_desired_state`）与 `tests/test_spec_and_engine.
+> py`（`test_scenario_draft_from_dict_parses_desired_state`/`test_
+> resolve_hints_desired_state_hint_variants`/`test_advance_parses_
+> problems_from_llm_output`）。2.3（`Capability` 对象）和 2.4
+> （Problem Discovery Engine）**尚未开始**，按第 5 节建议顺序，
+> 需要先观察 2.1/2.2 在真实使用中的效果（尤其是"LLM 是否会认真
+> 区分 `problems`/`narrative`，而不是把已有的话换个地方重复一遍"
+> 这条第 7 节点名过的风险）之后再评估是否推进，不建议立即接着做。
+>
+> 以下是本文档最初的盘点内容（保留作为背景与后续 2.3/2.4 的依据），
+> 阅读时请注意 2.1/2.2 节描述的是**实施前的设计方案**，具体实现细节
+> 以上面"已完成"状态说明和实际代码为准（比如 `problems` 最终没有
+> 单独在 `generate_scenario` 阶段输出，只在 `advance_step`/
+> `world_evolve` 阶段输出——创建时刻的"初始问题"这个概念被判断为
+> 价值有限，落地时收窄了范围）。
+>
+> **原始状态说明**：本文档只做盘点 + 方案设计，尚未开始实施。这是用户上传
 > 《万能模拟器到底如何构建？——从世界状态、问题空间到通用现实模拟
 > 引擎》一文后，要求"对照这份文档，重新盘点项目还有哪些改进方向、
 > 距离文档说的理想状态还有哪些差距"的产物。本文档**不是**要一次性
@@ -60,7 +84,7 @@ relations`）、因果线未来树（`causal_tree.py`）、跨线耦合
 判断继续交给 LLM，代码只管结构、存储、展示）；先设计最小字段集，
 不追求一次性覆盖文档里 `Problem` 的全部字段。
 
-### 2.1 `Problem` 结构化：最小字段集
+### 2.1 `Problem` 结构化：最小字段集（**已完成**，第九轮批次一）
 
 **现状**：`settings.objectives` 是当前最接近"问题/目标"的字段，
 但它是扁平的指标列表（`{"label": "资产净值", "field":
@@ -108,7 +132,7 @@ relations`）、因果线未来树（`causal_tree.py`）、跨线耦合
 
 **风险**：低——纯新增可选字段 + 展示层，旧实例/旧数据不受影响。
 
-### 2.2 `Desired State` 结构化
+### 2.2 `Desired State` 结构化（**已完成**，第九轮批次一）
 
 **现状**：`objectives` 只能表达"关注哪个指标、往哪个方向"，无法
 表达文档第十节设想的"一组条件 + 约束 + 偏好 + 假设"这种结构
@@ -254,10 +278,11 @@ systems_gap_survey_plan.md` 第 2 节 A 类）里还留着三项**代码已
 
 ```text
 第一优先（结构性、后续工作的地基）：
-  2.1 Problem 结构化（最小字段集）
-  2.2 Desired State 结构化
-  ——建议这两项一起设计（字段互相引用），但可以分两个批次落地，
-     互不阻塞对方独立完成/验证。
+  2.1 Problem 结构化（最小字段集）—— ✅ 已完成（第九轮批次一）
+  2.2 Desired State 结构化 —— ✅ 已完成（第九轮批次一）
+  ——这两项已一起设计（字段互相引用：`problems.blocked_goal` 可参考
+     `desired_state.conditions`），分两个批次的字段/展示改动最终在
+     同一批次内一起落地（改动面小，未强制拆分成两次交付）。
 
 第二优先（依赖第一优先落地并观察到真实反馈后再做）：
   2.3 Capability 对象（最小字段集，不做九段生命周期）
@@ -321,6 +346,14 @@ systems_gap_survey_plan.md` 第 2 节 A 类）里还留着三项**代码已
   settings` 新增一个嵌套字段（`desired_state`），需要注意
   `from_dict()`/`to_dict()` 的旧数据兼容（同项目一贯的"新增
   字段默认空值，旧数据缺失该字段时安全兜底"做法）。
+- **（第九轮批次一实施后新增）** 2.1/2.2 已完成落地，`SimState.
+  problems`/`SimManifest.settings.desired_state` 均已按上面的
+  兼容性要求实现并通过测试。**下一步不是立即做 2.3/2.4**，而是
+  按本节前面的提示，先在 `life_sim` 小范围人工创建/推进 3~5 次，
+  确认 LLM 产出的 `problems` 确实比现有 `narrative` 更有信息量、
+  `desired_state` 确实被认真区分而不是和 `objectives`/`narrative`
+  重复，再决定是否推进 2.3（`Capability` 对象）/2.4（Problem
+  Discovery Engine）。
 
 ---
 

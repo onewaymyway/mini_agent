@@ -570,6 +570,46 @@ class SimState:
     任何已有行为，向后兼容。
     """
 
+    problems: List[Dict[str, Any]] = field(default_factory=list)
+    """产生*本状态*这一步，skill 可选给出的"结构化问题"记录（第八轮
+    差距分析第九轮批次一，`next_doc/world_simulator_problem_
+    capability_gap_plan.md` 2.1 节，对照《万能模拟器》参考文档"问题
+    应该成为模拟器的第一等公民"——最小可行版本，不是参考文档 `Problem`
+    的全部字段）。
+
+    每一项最小字段集：`{"id": "problem_1", "symptom": "资金不足，
+    无法招聘核心工程师", "blocked_goal": "在 12 个月内完成产品原型",
+    "missing_capabilities": ["种子轮融资", "早期客户验证"], "status":
+    "emerging"}`：
+
+    - `id`：这个问题的标识（自由文本，供同一问题跨步骤延续时复用，
+      **不做自动判重/合并**——"这是不是同一个问题的延续"完全由 skill
+      自己决定要不要复用同一个 `id`，`engine.py` 不做任何语义比对）。
+    - `symptom`：一句话描述可观察到的症状（"发生了什么，看起来不对
+      劲"）。
+    - `blocked_goal`：这个问题挡住了什么目标，一句话，可以对应
+      `manifest.settings.desired_state.conditions` 里的一项（不强制
+      精确匹配，自由文本）。
+    - `missing_capabilities`：字符串数组，达成 `blocked_goal` 还缺
+      什么能力/资源/条件，1~3 条短语，不是完整的解决方案设计。
+    - `status`：这个问题当前所处阶段，只取参考文档完整生命周期（九段）
+      的一个精简子集：`"emerging"`（刚显现）/`"active"`（明确存在、
+      正被应对）/`"solved"`（已解决）/`"transformed"`（演变成了另一个
+      问题）之一。不认识的取值原样保留（不做归一化兜底，同
+      `reversibility` 的既有取舍——这里的取值集合本身就很明确，无法
+      识别的值交给展示层判断是否已知取值），空字符串表示未声明。
+
+    **刻意不做的部分**（详见方案 2.1 节"范围克制"）：不做 `Root
+    Causes`/`Candidate Solutions`/`Dependencies` 等参考文档原文的
+    其余字段；不做问题之间的因果关联图；不做任何自动判重/合并/去重
+    ——"这是不是同一个问题""根因是什么"这类判断继续交给 LLM/用户，
+    `engine.py` 落盘时只做"透传 + 校验最小字段是否存在"。
+
+    默认空列表：skill 没给出、旧数据、`state0`（初始状态一般不需要
+    这个概念，除非 `generate_scenario` 认为创建时就已经存在明显问题）
+    都可以为空，不影响任何已有行为，向后兼容。
+    """
+
     skill_version: str = ""
     """产生*本状态*这一步用的是哪个版本的模板 skill（第八轮批次六，
     `next_doc/world_simulator_c_category_precision_upgrade_
@@ -654,6 +694,9 @@ class SimState:
             option_warnings=[
                 dict(x) for x in (data.get("option_warnings") or []) if isinstance(x, dict)
             ],
+            problems=[
+                dict(x) for x in (data.get("problems") or []) if isinstance(x, dict)
+            ],
             skill_version=str(data.get("skill_version", "") or ""),
         )
 
@@ -736,6 +779,38 @@ class SimManifest:
       不会因为声明或不声明这个字段而改变任何推进/校验逻辑，纯粹是
       "记录这次模拟想优化什么"；排序结果始终"仅供参考"，不代表系统
       认定的最优解，最终判断权留给用户。
+    - `desired_state`：字典，声明这次模拟"理想状态"的结构化描述
+      （第八轮差距分析第九轮批次一，`next_doc/world_simulator_
+      problem_capability_gap_plan.md` 2.2 节，对照《万能模拟器》
+      参考文档第十节——最小可行版本，只取原文 `conditions`/
+      `constraints`/`assumptions` 三类，不做 `preferences`，理由见
+      下方）。形如：
+      ```json
+      {
+        "conditions": ["financial_independence", "meaningful_work"],
+        "constraints": ["cannot relocate", "limited capital"],
+        "assumptions": ["current_technology_available"]
+      }
+      ```
+      三个 key 都是字符串数组、都可选，缺失的 key 视为未声明。
+      - `conditions`：达成"理想状态"需要满足的一组条件，供 2.1 节
+        `problems.blocked_goal` 引用（不做精确匹配校验，自由文本，
+        `problems.blocked_goal` 只是一句话，不强制等于这里的某一项）。
+      - `constraints`：这次模拟里已知的硬约束（"不能做什么"）。
+      - `assumptions`：这次推演基于的假设条件。
+      **不实现参考文档的 `preferences` 字段**——和现有
+      `policy_feedback.py`"用户反馈反哺画像"的概念有一定重叠，避免
+      引入两套相似但不统一的"偏好"表达。**不参与任何自动排序或校验
+      计算**，纯粹是记录性字段，`engine.py` 不读取/不消费它来改变
+      任何推进逻辑（2.4 节 Problem Discovery Engine 落地后会读取它
+      作为 LLM 输入的一部分，但那是"喂给 LLM 参考"，不是代码层面的
+      排序/过滤依据）。**不做"理想状态随时间自动演化"**（参考文档
+      第九节"理想状态是移动的吸引子"）——这个留给用户自己在详情页
+      手动编辑来体现，不引入自动漂移逻辑。由 `generate_scenario`
+      阶段的 skill 给出建议值（见 `spec_generator.ScenarioDraft.
+      desired_state`），用户在创建向导/详情页"模拟设置"里可编辑。
+      留空（默认空字典）表示没有声明，不影响任何已有行为，向后
+      兼容。
     - `resource_relations`：列表，声明 `vars` 里资源字段之间的"转移"
       关系（阶段十六，`next_doc/world_simulator_universal_world_model_
       upgrade_plan.md` 4.8 节，通用规则引擎的最小可行版本）。每一项
@@ -1055,7 +1130,7 @@ class SimManifest:
       `time_granularity`、`time_granularity_guide`、
       `split_decision_calls`、`split_creation_calls`
     - 资源与守恒：`resource_fields`、`resource_relations`
-    - 目标与归因：`objectives`
+    - 目标与归因：`objectives`、`desired_state`
     - 多主体：`multi_entity_mode`、`hierarchical_agent_mode`、
       `background_entities`、`relationships`、
       `relationship_pending_effects`

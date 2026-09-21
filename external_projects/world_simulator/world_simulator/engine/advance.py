@@ -571,6 +571,9 @@ def advance(
         },
         structural_change=_normalize_structural_change(data.get("structural_change")),
         decision_reason=str(data.get("decision_reason", "") or ""),
+        problems=[
+            dict(x) for x in (data.get("problems") or []) if isinstance(x, dict)
+        ],
         skill_version=_read_skill_version(workspace_root, manifest.template),
     )
 

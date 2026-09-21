@@ -84,7 +84,56 @@ def test_scenario_draft_from_dict_parses_objectives():
     assert draft_without.objectives == []
 
 
-def test_scenario_draft_from_dict_parses_structured_objectives():
+def test_scenario_draft_from_dict_parses_desired_state():
+    """第九轮批次一（2.2 节）：`ScenarioDraft.from_dict` 应该原样解析
+    可选的 `desired_state` 字段，缺省/非字典时为空字典。"""
+    draft = spec_mod.ScenarioDraft.from_dict(
+        {
+            "title": "t", "summary": "s", "vars": {}, "options": [],
+            "desired_state": {
+                "conditions": ["financial_independence"],
+                "constraints": ["limited capital"],
+            },
+        }
+    )
+    assert draft.desired_state == {
+        "conditions": ["financial_independence"],
+        "constraints": ["limited capital"],
+    }
+
+    draft_without = spec_mod.ScenarioDraft.from_dict(
+        {"title": "t", "summary": "s", "vars": {}, "options": []}
+    )
+    assert draft_without.desired_state == {}
+
+    draft_invalid = spec_mod.ScenarioDraft.from_dict(
+        {"title": "t", "summary": "s", "vars": {}, "options": [], "desired_state": ["not", "a", "dict"]}
+    )
+    assert draft_invalid.desired_state == {}
+
+
+def test_resolve_hints_desired_state_hint_variants():
+    """第九轮批次一（2.2 节）：`desired_state_hint` 未声明时给出明确的
+    "未声明"说明，声明后按 conditions/constraints/assumptions 三段
+    拼接展示。"""
+    default_hint = spec_mod.resolve_hints({})["desired_state_hint"]
+    assert "未声明" in default_hint
+
+    hint = spec_mod.resolve_hints(
+        {
+            "desired_state": {
+                "conditions": ["financial_independence"],
+                "constraints": ["cannot relocate"],
+                "assumptions": ["current_technology_available"],
+            }
+        }
+    )["desired_state_hint"]
+    assert "financial_independence" in hint
+    assert "cannot relocate" in hint
+    assert "current_technology_available" in hint
+
+
+
     """阶段十四（4.6 节）：`objectives` 类型放宽为 `List[Any]`，结构化
     字典项应该原样保留（不被强制转成字符串），纯字符串项行为不变。"""
     draft = spec_mod.ScenarioDraft.from_dict(
@@ -162,6 +211,7 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
         "calibration_notes": "",
         "relevant_knowledge_hint": "（暂无相关的已知因果知识）",
         "relationship_hint": "",
+        "desired_state_hint": "（未声明——这次模拟没有结构化的理想状态描述，仅供参考，不强制要求）",
     }
     # 因果线是默认基础机制（不需要用户提前声明），这里只校验语义，不
     # 校验措辞原文，避免和 `test_resolve_hints_causal_lines_hint_variants`
@@ -1383,6 +1433,73 @@ def test_advance_parses_causal_links_from_llm_output(tmp_path, monkeypatch):
             "driver": "现金储备见底",
             "affected_fields": ["cash", "stage"],
             "effect": "被迫从「自由职业」转为「求稳定工作」",
+        }
+    ]
+
+
+def test_advance_parses_problems_from_llm_output(tmp_path, monkeypatch):
+    """第九轮批次一（2.1 节 Problem 结构化）：`advance_step` 输出里的
+    可选 `problems` 应该原样解析进 `next_state.problems`；未给出时应
+    为空列表；非字典项应该被跳过。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2",
+                    "narrative": "n",
+                    "next_vars": {},
+                    "options": [],
+                    "problems": [
+                        {
+                            "id": "problem_1",
+                            "symptom": "资金不足，无法招聘核心工程师",
+                            "blocked_goal": "在 12 个月内完成产品原型",
+                            "missing_capabilities": ["种子轮融资"],
+                            "status": "emerging",
+                        },
+                        "不是字典，应该被跳过",
+                    ],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.problems == [
+        {
+            "id": "problem_1",
+            "symptom": "资金不足，无法招聘核心工程师",
+            "blocked_goal": "在 12 个月内完成产品原型",
+            "missing_capabilities": ["种子轮融资"],
+            "status": "emerging",
         }
     ]
 

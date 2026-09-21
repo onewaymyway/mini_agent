@@ -1501,6 +1501,27 @@ def page_create() -> None:
             placeholder='[{"label": "资产净值", "field": "resources.cash", "direction": "max"}]',
         )
 
+    # ── 理想状态（第九轮批次一，2.2 节 Desired State 结构化）：纯记录
+    # 用途，不参与任何自动排序/校验计算，留空不影响任何行为 ──
+    desired_state_draft = getattr(draft, "desired_state", None) or {}
+    desired_state_default = (
+        json.dumps(desired_state_draft, ensure_ascii=False) if desired_state_draft else ""
+    )
+    with st.expander("理想状态（可选——一组条件/约束/假设，供后续问题记录引用）"):
+        st.markdown(
+            '<span class="ws-muted">用 JSON 对象声明，最多三个可选 key（都是字符串数组）：'
+            "`conditions`（达成理想状态需要满足的条件）、`constraints`（已知的硬约束）、"
+            "`assumptions`（这次推演基于的假设）。不填就跳过这一步，行为不受影响。</span>",
+            unsafe_allow_html=True,
+        )
+        desired_state_text = st.text_area(
+            "理想状态（JSON 对象，可选）",
+            value=st.session_state.get("create_desired_state", desired_state_default),
+            key="create_desired_state_input",
+            height=80,
+            placeholder='{"conditions": ["financial_independence"], "constraints": ["limited capital"]}',
+        )
+
     # ── 初始候选方向：可编辑文案、可删除、可手动新增，并且真的可以选 ──
     st.markdown("**初始候选方向**")
     st.markdown(
@@ -1682,6 +1703,10 @@ def page_create() -> None:
         declared_causal_graph_invalid = bool(declared_causal_graph_text.strip()) and not isinstance(
             declared_causal_graph_parsed, list
         )
+        desired_state_parsed = _safe_json_loads(desired_state_text, None)
+        desired_state_invalid = bool(desired_state_text.strip()) and not isinstance(
+            desired_state_parsed, dict
+        )
         if edited_vars is None:
             st.error("关键变量不是合法 JSON，请修正后再确认创建。")
         elif advanced_objectives_invalid:
@@ -1692,6 +1717,8 @@ def page_create() -> None:
             st.error("因果线声明不是合法的 JSON 数组，请修正后再确认创建（或清空这一栏跳过）。")
         elif declared_causal_graph_invalid:
             st.error("因果图先验声明不是合法的 JSON 数组，请修正后再确认创建（或清空这一栏跳过）。")
+        elif desired_state_invalid:
+            st.error("理想状态不是合法的 JSON 对象，请修正后再确认创建（或清空这一栏跳过）。")
         else:
             resource_fields = [
                 f.strip() for f in resource_fields_text.split(",") if f.strip()
@@ -1714,6 +1741,7 @@ def page_create() -> None:
                 [item for item in declared_causal_graph_parsed if isinstance(item, dict)]
                 if isinstance(declared_causal_graph_parsed, list) else []
             )
+            desired_state = desired_state_parsed if isinstance(desired_state_parsed, dict) else {}
             create_settings = dict(st.session_state.get("create_settings") or {})
             create_settings["resource_fields"] = resource_fields
             create_settings["belief_fields"] = belief_fields
@@ -1721,6 +1749,7 @@ def page_create() -> None:
             create_settings["causal_lines"] = causal_lines
             create_settings["declared_causal_graph"] = declared_causal_graph
             create_settings["objectives"] = objectives
+            create_settings["desired_state"] = desired_state
             create_settings["calibration_notes"] = calibration_notes_text.strip()
             background_entities = [
                 e.strip() for e in background_entities_text.split(",") if e.strip()
@@ -1762,6 +1791,7 @@ def page_create() -> None:
                 "create_background_entities", "create_causal_lines", "create_belief_fields",
                 "create_split_decision_calls", "create_declared_causal_graph",
                 "create_split_creation_calls", "create_observer_mode",
+                "create_desired_state",
             ):
                 st.session_state.pop(key, None)
             st.session_state["view"] = "detail"
@@ -1831,6 +1861,53 @@ def _structural_change_html(state) -> str:
     status = "（已采纳为正式结构）" if accepted else "（待确认，见下方按钮）"
     text = f"{kind_label}：{change.get('description')}{status}"
     return f'<div class="ws-key-drivers"><span class="ws-key-driver-tag">{_html_text(text)}</span></div>'
+
+
+_PROBLEM_STATUS_LABELS = {
+    "emerging": "🌱 刚显现",
+    "active": "🔥 应对中",
+    "solved": "✅ 已解决",
+    "transformed": "🔄 已演变",
+}
+
+
+def _problems_html(state) -> str:
+    """渲染这一步的"🧩 问题"结构化记录（第九轮批次一，2.1 节 Problem
+    结构化，`next_doc/world_simulator_problem_capability_gap_plan.md`）。
+    纯展示层，不做任何判重/合并——`SimState.problems` 里同一个 `id`
+    在不同步骤重复出现时，这里只是按各自出现的那一步分别展示，"这是不是
+    同一个问题的延续"由用户自己通过 `id`/`symptom` 判断，本函数不做
+    跨步骤聚合（跨步骤聚合展示见 `_render_problems_overview`，供详情页
+    单独调用）。没有任何记录时返回空字符串，同 `_structural_change_html`
+    等既有取舍。
+    """
+    problems = getattr(state, "problems", None) or []
+    parts = []
+    for item in problems:
+        if not isinstance(item, dict):
+            continue
+        symptom = str(item.get("symptom", "") or "").strip()
+        if not symptom:
+            continue
+        status = str(item.get("status", "") or "").strip()
+        status_label = _PROBLEM_STATUS_LABELS.get(status, "🧩 问题")
+        blocked_goal = str(item.get("blocked_goal", "") or "").strip()
+        missing = item.get("missing_capabilities") or []
+        missing_text = "、".join(_html_text(str(m)) for m in missing if str(m).strip())
+        detail_lines = [f'<div><b>症状：</b>{_html_text(symptom)}</div>']
+        if blocked_goal:
+            detail_lines.append(f'<div><b>挡住的目标：</b>{_html_text(blocked_goal)}</div>')
+        if missing_text:
+            detail_lines.append(f'<div><b>缺什么：</b>{missing_text}</div>')
+        parts.append(
+            '<details class="ws-key-driver-details">'
+            f'<summary class="ws-key-driver-tag">{status_label}：{_html_text(symptom)}</summary>'
+            f'<div class="ws-key-driver-detail-body">{"".join(detail_lines)}</div>'
+            "</details>"
+        )
+    if not parts:
+        return ""
+    return f'<div class="ws-key-drivers">{"".join(parts)}</div>'
 
 
 def _tree_updates_html(state, causal_lines_meta: Optional[List[Dict[str, Any]]] = None) -> str:
@@ -1931,11 +2008,12 @@ def _render_timeline(
         line_updates_note = _line_updates_html(state, causal_lines_meta)
         tree_updates_note = _tree_updates_html(state, causal_lines_meta)
         structural_change_note = _structural_change_html(state)
+        problems_note = _problems_html(state)
         html = (
             '<div class="ws-chapter">'
             f'<div class="ws-chapter-step">第 {state.step} 步{step_time_suffix}</div>'
             f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
-            f"{granularity_note}{resource_note}{relation_note}{option_warnings_note}{background_note}{line_updates_note}{tree_updates_note}{key_drivers_note}{structural_change_note}{narrative}{chosen_note}"
+            f"{granularity_note}{resource_note}{relation_note}{option_warnings_note}{background_note}{line_updates_note}{tree_updates_note}{key_drivers_note}{structural_change_note}{problems_note}{narrative}{chosen_note}"
             "</div>"
         )
         st.markdown(html, unsafe_allow_html=True)
@@ -3307,6 +3385,22 @@ def page_detail() -> None:
             placeholder="例：资产净值, 工作满意度, 健康水平",
             key="settings_objectives",
         )
+        cur_desired_state = cur_settings.get("desired_state") or {}
+        with st.expander("高级：理想状态（第九轮批次一，Desired State 结构化，可选）"):
+            st.markdown(
+                '<span class="ws-muted">用 JSON 对象声明，最多三个可选 key（都是字符串数组）：'
+                "`conditions`（达成理想状态需要满足的条件）、`constraints`（已知的硬约束）、"
+                "`assumptions`（这次推演基于的假设）。不参与任何自动排序/校验计算，"
+                "纯粹是记录性字段。</span>",
+                unsafe_allow_html=True,
+            )
+            new_desired_state_text = st.text_area(
+                "理想状态（JSON 对象，可选）",
+                value=json.dumps(cur_desired_state, ensure_ascii=False) if cur_desired_state else "",
+                key="settings_desired_state",
+                height=80,
+                placeholder='{"conditions": ["financial_independence"], "constraints": ["limited capital"]}',
+            )
         new_model_version_text = st.text_input(
             "模型/Skill 版本标签（可选，阶段三十三——换了一版 prompt/skill 后自己"
             "标一下，供「预测准确性统计」按版本分组）",
@@ -3350,6 +3444,10 @@ def page_detail() -> None:
             relationships_invalid = (
                 new_relationships_text.strip() and not isinstance(new_relationships, list)
             )
+            new_desired_state = _safe_json_loads(new_desired_state_text, None)
+            desired_state_invalid = (
+                new_desired_state_text.strip() and not isinstance(new_desired_state, dict)
+            )
             if objectives_advanced_invalid:
                 st.error("结构化关注指标不是合法的 JSON 数组，设置未保存，请修正后重试。")
             elif resource_relations_invalid:
@@ -3360,6 +3458,8 @@ def page_detail() -> None:
                 st.error("因果图先验声明不是合法的 JSON 数组，设置未保存，请修正后重试。")
             elif relationships_invalid:
                 st.error("关系声明不是合法的 JSON 数组，设置未保存，请修正后重试。")
+            elif desired_state_invalid:
+                st.error("理想状态不是合法的 JSON 对象，设置未保存，请修正后重试。")
             else:
                 if isinstance(new_objectives_advanced, list):
                     new_objectives = new_objectives + [
@@ -3380,6 +3480,9 @@ def page_detail() -> None:
                 relationships_to_save = (
                     relationship_mod.normalize_relationships(new_relationships)
                     if isinstance(new_relationships, list) else []
+                )
+                desired_state_to_save = (
+                    new_desired_state if isinstance(new_desired_state, dict) else {}
                 )
                 new_background_entities = [
                     e.strip() for e in new_background_entities_text.split(",") if e.strip()
@@ -3408,6 +3511,7 @@ def page_detail() -> None:
                     relationships=relationships_to_save,
                     observer_mode=bool(new_observer_mode),
                     model_version=new_model_version_text.strip(),
+                    desired_state=desired_state_to_save,
                 )
                 st.success("设置已更新，下一步推进开始生效。")
                 st.rerun()
@@ -4822,13 +4926,14 @@ def page_game() -> None:
     key_drivers_note = _key_drivers_html(s)
     line_updates_note = _line_updates_html(s, manifest.settings.get("causal_lines"))
     structural_change_note = _structural_change_html(s)
+    problems_note = _problems_html(s)
     narrative_text = _html_text(s.narrative) if s.narrative else "（这一章还没有更多叙事文本。）"
 
     html = (
         '<div class="ws-card" style="min-height: 220px;">'
         f'<div class="ws-chapter-step">第 {s.step} 章{step_time_suffix}{major_tag}</div>'
         f'<div class="ws-chapter-summary" style="font-size:1.15rem;">{_html_text(s.summary)}</div>'
-        f"{granularity_note}{resource_note}{relation_note}{option_warnings_note}{background_note}{line_updates_note}{key_drivers_note}{structural_change_note}"
+        f"{granularity_note}{resource_note}{relation_note}{option_warnings_note}{background_note}{line_updates_note}{key_drivers_note}{structural_change_note}{problems_note}"
         f'<div class="ws-chapter-narrative">{narrative_text}</div>'
         f"{chosen_note}"
         "</div>"

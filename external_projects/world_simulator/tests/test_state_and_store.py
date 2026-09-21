@@ -318,6 +318,61 @@ def test_state_roundtrip_preserves_relation_violations():
     assert mixed_restored.relation_violations == [{"from": "x"}]
 
 
+def test_state_roundtrip_preserves_problems():
+    """第九轮批次一（`next_doc/world_simulator_problem_capability_gap_
+    plan.md` 2.1 节）：`problems` 应该正确序列化/反序列化，旧数据
+    （没有这个字段）落回空列表。"""
+    state = SimState(
+        step=4,
+        summary="s",
+        problems=[
+            {
+                "id": "problem_1",
+                "symptom": "资金不足，无法招聘核心工程师",
+                "blocked_goal": "在 12 个月内完成产品原型",
+                "missing_capabilities": ["种子轮融资", "早期客户验证"],
+                "status": "emerging",
+            }
+        ],
+    )
+    restored = SimState.from_dict(state.to_dict())
+    assert restored.problems == [
+        {
+            "id": "problem_1",
+            "symptom": "资金不足，无法招聘核心工程师",
+            "blocked_goal": "在 12 个月内完成产品原型",
+            "missing_capabilities": ["种子轮融资", "早期客户验证"],
+            "status": "emerging",
+        }
+    ]
+
+    legacy_restored = SimState.from_dict({"step": 0, "summary": "旧数据"})
+    assert legacy_restored.problems == []
+
+
+def test_manifest_roundtrip_preserves_desired_state():
+    """第九轮批次一 2.2 节：`settings.desired_state` 走的是既有
+    `settings` 自由字典通道，这里只验证它确实原样往返（不需要
+    `SimManifest` 新增专门的 dataclass 字段）。"""
+    manifest = SimManifest(
+        sim_id="sim1", template="life_sim", intent="意图", title="标题",
+        created_at="t0", updated_at="t0",
+        settings={
+            "desired_state": {
+                "conditions": ["financial_independence", "meaningful_work"],
+                "constraints": ["cannot relocate"],
+                "assumptions": ["current_technology_available"],
+            }
+        },
+    )
+    restored = SimManifest.from_dict(manifest.to_dict())
+    assert restored.settings["desired_state"] == {
+        "conditions": ["financial_independence", "meaningful_work"],
+        "constraints": ["cannot relocate"],
+        "assumptions": ["current_technology_available"],
+    }
+
+
 def test_manifest_roundtrip():
     ts = now_iso()
     m = SimManifest(

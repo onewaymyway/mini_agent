@@ -404,6 +404,34 @@ def _resolve_belief_fields_hint(settings: "Dict[str, Any] | None") -> str:
     return "、".join(fields)
 
 
+def _resolve_desired_state_hint(settings: "Dict[str, Any] | None") -> str:
+    """把 `settings.desired_state` 转成喂给 prompt 的一句话提示（第八轮
+    差距分析第九轮批次一，2.2 节 `Desired State` 结构化）。
+
+    未声明或三个 key（`conditions`/`constraints`/`assumptions`）都为空
+    （默认情况）返回一句话说明"未声明"，不是空字符串——`desired_state_
+    hint` 在 `generate_scenario.yaml`/`advance_step.yaml` 里都是必然
+    出现的一句提示（不像 `belief_fields_hint` 那样整段条件性拼接），
+    保持"未声明"时也有一句明确的话，而不是留一个空行造成困惑。
+    """
+    desired = (settings or {}).get("desired_state")
+    if not isinstance(desired, dict):
+        desired = {}
+    conditions = [str(x).strip() for x in (desired.get("conditions") or []) if str(x).strip()]
+    constraints = [str(x).strip() for x in (desired.get("constraints") or []) if str(x).strip()]
+    assumptions = [str(x).strip() for x in (desired.get("assumptions") or []) if str(x).strip()]
+    if not (conditions or constraints or assumptions):
+        return "（未声明——这次模拟没有结构化的理想状态描述，仅供参考，不强制要求）"
+    parts = []
+    if conditions:
+        parts.append(f"理想条件：{'、'.join(conditions)}")
+    if constraints:
+        parts.append(f"已知约束：{'、'.join(constraints)}")
+    if assumptions:
+        parts.append(f"推演假设：{'、'.join(assumptions)}")
+    return "；".join(parts)
+
+
 def resolve_causal_graph_hint(
     settings: "Dict[str, Any] | None", history: "Sequence[Any] | None"
 ) -> str:
@@ -568,6 +596,7 @@ def resolve_hints(
             f"决策分岔点决定，见下方“候选选项生成流程”）"
         ),
         "belief_fields_hint": _resolve_belief_fields_hint(settings),
+        "desired_state_hint": _resolve_desired_state_hint(settings),
         "time_granularity_hint": time_granularity_hint,
         "multi_entity_mode_hint": _resolve_multi_entity_hint(settings),
         "background_entities_hint": _resolve_background_entities_hint(settings),
@@ -675,6 +704,16 @@ class ScenarioDraft:
     `resource_fields` 一致：创建向导展示建议值、允许用户编辑，最终
     结果存进 `settings.belief_fields`，这个字段本身只是"草稿阶段的
     建议值"，不直接落盘。"""
+    desired_state: Dict[str, Any] = field(default_factory=dict)
+    """skill 在生成初始状态时给出的"这次模拟理想状态"结构化建议
+    （第八轮差距分析第九轮批次一，2.2 节 `Desired State` 结构化），
+    格式同 `state_model.SimManifest.settings` 里 `desired_state` 的
+    说明（`conditions`/`constraints`/`assumptions` 三个可选字符串
+    数组）。用途与 `resource_fields` 一致：创建向导展示建议值、允许
+    用户编辑，最终结果存进 `settings.desired_state`，这个字段本身
+    只是"草稿阶段的建议值"，不直接落盘。可选输出，留空表示 skill
+    认为这次模拟意图里看不出明确的理想状态结构，不要为了填这个字段
+    而牵强编造。"""
     beliefs: Dict[str, Any] = field(default_factory=dict)
     """skill 在生成初始状态时，对 `belief_fields` 里声明的字段给出的
     "角色一开始就存在的认知偏差"估计值（阶段三十四，4.3 节第二批），
@@ -712,6 +751,11 @@ class ScenarioDraft:
             },
             belief_fields=[str(f).strip() for f in (data.get("belief_fields") or []) if str(f).strip()],
             beliefs=dict(data.get("beliefs") or {}),
+            desired_state=(
+                dict(data.get("desired_state"))
+                if isinstance(data.get("desired_state"), dict)
+                else {}
+            ),
         )
 
 

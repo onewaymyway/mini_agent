@@ -197,6 +197,13 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
   概率。就算你判断不出细致的分支，也请至少给出"乐观/悲观"这类最朴素
   的两条，不要完全不给——系统会用通用模板兜底，但贴合具体情境的树
   对用户更有价值。
+- `desired_state`：对象（可选，第九轮批次一，Desired State 结构化），
+  这次模拟意图里能看出的"理想状态"结构，最多包含三个可选 key（都是
+  字符串数组）：`conditions`（达成理想状态需要满足的一组条件，如
+  `["financial_independence", "meaningful_work"]`）、`constraints`
+  （已知的硬约束，如 `["cannot relocate", "limited capital"]`）、
+  `assumptions`（这次推演基于的假设）。意图里看不出明确的理想状态
+  结构就不用输出这个字段或给空对象，不要为了填这个字段而牵强编造。
 - `declared_causal_graph`：数组（可选，第五轮方案 5.4 节），声明因果线之间"先验的、稳定的结构性认知"——不是"这次模拟实际发生过什么"（那属于`advance_step` 阶段的 `line_updates`/`causal_links`），而是"这条线一般来说会影响那条线，即使这次模拟还没有历史数据"这类在任何具体历史事件发生之前就成立的常识性结构。每项 `{"from_line_id": "tech", "to_line_id": "industry", "note": "技术突破通常先影响行业格局，再传导到具体企业"}`：`from_line_id`/`to_line_id` 用上面 `causal_lines`里的 id，`note` 一句话说明。只有存在真正明显的先验关系时才给，不要为了填这个字段而牵强地编造，没有就不给或给空数组。
 
 ## 作为 `advance_step` 挂载时（result_file: next_state.json）
@@ -358,3 +365,14 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
   "proposed_fields": {...}}`，绝大多数步骤不应该有这个字段。系统
   不会自动采纳，只是展示给用户确认，`{confirmed_structural_changes_hint}`
   里能看到之前已被确认的项，请把它们当成既有事实。
+- `problems`：数组（可选，第九轮批次一，Problem 结构化），只有当
+  这一步的发展暴露了一个明确的现实问题、解决了之前的问题、或者让
+  之前的问题演变成了另一个问题时才给，每项 `{"id": "problem_1",
+  "symptom": "资金不足，无法招聘核心工程师", "blocked_goal": "在
+  12 个月内完成产品原型", "missing_capabilities": ["种子轮融资",
+  "早期客户验证"], "status": "emerging"}`——`id` 延续同一问题时请
+  复用之前用过的值，`status` 只能是
+  `"emerging"`/`"active"`/`"solved"`/`"transformed"` 四选一，
+  `blocked_goal` 可以参考上面 `{desired_state_hint}` 声明的理想
+  条件但不要求精确对应。绝大多数平淡的推进步骤不需要这个字段，不要
+  为了"显得有内容"而每步都编造问题。
