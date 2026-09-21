@@ -574,6 +574,9 @@ def advance(
         problems=[
             dict(x) for x in (data.get("problems") or []) if isinstance(x, dict)
         ],
+        capabilities_gained=[
+            dict(x) for x in (data.get("capabilities_gained") or []) if isinstance(x, dict)
+        ],
         skill_version=_read_skill_version(workspace_root, manifest.template),
     )
 

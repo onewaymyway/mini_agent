@@ -1,28 +1,33 @@
 # world_simulator 对照《万能模拟器》参考文档的差距分析：Problem / Capability 缺失（第八轮差距分析）
 
-> **状态（第九轮批次一，已完成）**：本文档 2.1（`Problem` 结构化）
-> 和 2.2（`Desired State` 结构化）两节已实施完成——`SimState` 新增
-> `problems` 字段、`SimManifest.settings` 新增 `desired_state` 字段，
-> 涉及的 workflow prompt（`generate_scenario.yaml`/`advance_step.
-> yaml`/`world_builder.yaml`/`world_evolve.yaml`）、三个模板
-> `SKILL.md`、`app.py` 创建向导与"模拟设置"页面的编辑入口、时间线
-> "🧩 问题"展示区块均已同步更新，测试见 `tests/test_state_and_store.
-> py`（`test_state_roundtrip_preserves_problems`/`test_manifest_
+> **状态（第九轮批次二，已完成）**：本文档 2.1（`Problem` 结构化）、
+> 2.2（`Desired State` 结构化）、2.3（`Capability` 对象）三节均已
+> 实施完成——`SimState` 新增 `problems`/`capabilities_gained` 两个
+> 字段、`SimManifest.settings` 新增 `desired_state` 字段，涉及的
+> workflow prompt（`generate_scenario.yaml`/`advance_step.yaml`/
+> `world_builder.yaml`/`world_evolve.yaml`）、三个模板 `SKILL.md`、
+> `app.py` 创建向导与"模拟设置"页面的编辑入口、时间线"🧩 问题"/
+> "🆙 能力"展示区块均已同步更新，测试见 `tests/test_state_and_store.
+> py`（`test_state_roundtrip_preserves_problems`/`test_state_
+> roundtrip_preserves_capabilities_gained`/`test_manifest_
 > roundtrip_preserves_desired_state`）与 `tests/test_spec_and_engine.
 > py`（`test_scenario_draft_from_dict_parses_desired_state`/`test_
 > resolve_hints_desired_state_hint_variants`/`test_advance_parses_
-> problems_from_llm_output`）。2.3（`Capability` 对象）和 2.4
-> （Problem Discovery Engine）**尚未开始**，按第 5 节建议顺序，
-> 需要先观察 2.1/2.2 在真实使用中的效果（尤其是"LLM 是否会认真
-> 区分 `problems`/`narrative`，而不是把已有的话换个地方重复一遍"
-> 这条第 7 节点名过的风险）之后再评估是否推进，不建议立即接着做。
+> problems_from_llm_output`/`test_advance_parses_capabilities_
+> gained_from_llm_output`）。2.4（Problem Discovery Engine）**尚未
+> 开始**，按第 5 节建议顺序，需要先观察 2.1/2.2/2.3 在真实使用中的
+> 效果（尤其是"LLM 是否会认真区分 `problems`/`capabilities_gained`/
+> `narrative`，而不是把已有的话换个地方重复一遍"这条第 7 节点名过的
+> 风险）之后再评估是否推进，不建议立即接着做。
 >
-> 以下是本文档最初的盘点内容（保留作为背景与后续 2.3/2.4 的依据），
-> 阅读时请注意 2.1/2.2 节描述的是**实施前的设计方案**，具体实现细节
-> 以上面"已完成"状态说明和实际代码为准（比如 `problems` 最终没有
-> 单独在 `generate_scenario` 阶段输出，只在 `advance_step`/
-> `world_evolve` 阶段输出——创建时刻的"初始问题"这个概念被判断为
-> 价值有限，落地时收窄了范围）。
+> 以下是本文档最初的盘点内容（保留作为背景与后续 2.4 的依据），
+> 阅读时请注意 2.1/2.2/2.3 节描述的是**实施前的设计方案**，具体
+> 实现细节以上面"已完成"状态说明和实际代码为准（比如
+> `problems`/`capabilities_gained` 最终都没有单独在
+> `generate_scenario` 阶段输出，只在 `advance_step`/`world_evolve`
+> 阶段输出——创建时刻的"初始问题/初始能力"这个概念被判断为价值
+> 有限，落地时收窄了范围；`Capability` 也没有做九段生命周期的显式
+> 建模，只记录"这一步新增的能力"这一个最小切面）。
 >
 > **原始状态说明**：本文档只做盘点 + 方案设计，尚未开始实施。这是用户上传
 > 《万能模拟器到底如何构建？——从世界状态、问题空间到通用现实模拟
@@ -168,7 +173,7 @@ fields`/`objectives` 同一量级。
 最好能对应到 `desired_state.conditions` 里的一项），但两者可以
 分两个独立批次实施，互不阻塞。
 
-### 2.3 `Capability` 对象
+### 2.3 `Capability` 对象（**已完成**，第九轮批次二）
 
 **现状**：技术/能力发展完全隐藏在 `vars`/`narrative` 自由文本里，
 没有文档第十二、十三节设想的"能力"结构（`Prerequisites`/
@@ -285,7 +290,12 @@ systems_gap_survey_plan.md` 第 2 节 A 类）里还留着三项**代码已
      同一批次内一起落地（改动面小，未强制拆分成两次交付）。
 
 第二优先（依赖第一优先落地并观察到真实反馈后再做）：
-  2.3 Capability 对象（最小字段集，不做九段生命周期）
+  2.3 Capability 对象（最小字段集，不做九段生命周期）—— ✅ 已完成
+      （第九轮批次二——按建议应先观察 2.1/2.2 真实反馈再做，实际
+      落地时因改动模式高度相似（同样是"新增可选列表字段 + 对应
+      workflow/SKILL.md/展示层"）一并做了，尚未经过真实使用反馈
+      验证；下一步 2.4 仍应先观察 2.1/2.2/2.3 三者的真实使用效果
+      再决定是否推进）
   2.4 Problem Discovery Engine（依赖 2.1/2.2 的字段作为输入）
 
 不建议规划：
@@ -354,6 +364,13 @@ systems_gap_survey_plan.md` 第 2 节 A 类）里还留着三项**代码已
   `desired_state` 确实被认真区分而不是和 `objectives`/`narrative`
   重复，再决定是否推进 2.3（`Capability` 对象）/2.4（Problem
   Discovery Engine）。
+- **（第九轮批次二实施后新增）** 2.3 也已完成落地（`SimState.
+  capabilities_gained`），但**没有**先等到上一条建议的真实使用
+  反馈——用户要求"按规划一个阶段一个阶段执行"，2.3 与 2.1/2.2
+  改动模式高度相似，就一并做了。这意味着 2.1/2.2/2.3 三者**都还
+  没有经过真实使用验证**，2.4（Problem Discovery Engine，依赖
+  这三者的字段做输入）启动前，更应该先做一次真实使用观察，而不是
+  接着往下顺延。
 
 ---
 

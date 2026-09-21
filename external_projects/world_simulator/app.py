@@ -1910,6 +1910,42 @@ def _problems_html(state) -> str:
     return f'<div class="ws-key-drivers">{"".join(parts)}</div>'
 
 
+def _capabilities_gained_html(state) -> str:
+    """渲染这一步"这一步新增的能力"记录（第九轮批次二，2.3 节
+    `Capability` 对象，`next_doc/world_simulator_problem_capability_
+    gap_plan.md`）。展示方式同 `_problems_html`（可展开的标签），
+    纯展示层、不做任何跨步骤累加——全量能力清单如果需要，由调用方
+    自行遍历 `history` 收集，本函数只渲染*这一步*的记录。没有任何
+    记录时返回空字符串。
+    """
+    items = getattr(state, "capabilities_gained", None) or []
+    parts = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        capability = str(item.get("capability", "") or "").strip()
+        if not capability:
+            continue
+        enables = item.get("enables") or []
+        enables_text = "、".join(_html_text(str(e)) for e in enables if str(e).strip())
+        limitations = item.get("limitations") or []
+        limitations_text = "、".join(_html_text(str(x)) for x in limitations if str(x).strip())
+        detail_lines = []
+        if enables_text:
+            detail_lines.append(f'<div><b>让这些事变得可能：</b>{enables_text}</div>')
+        if limitations_text:
+            detail_lines.append(f'<div><b>目前的局限：</b>{limitations_text}</div>')
+        parts.append(
+            '<details class="ws-key-driver-details">'
+            f'<summary class="ws-key-driver-tag">🆙 {_html_text(capability)}</summary>'
+            f'<div class="ws-key-driver-detail-body">{"".join(detail_lines)}</div>'
+            "</details>"
+        )
+    if not parts:
+        return ""
+    return f'<div class="ws-key-drivers">{"".join(parts)}</div>'
+
+
 def _tree_updates_html(state, causal_lines_meta: Optional[List[Dict[str, Any]]] = None) -> str:
     """渲染这一步对因果线"未来树"的修正摘要（阶段二十六，`next_doc/
     world_simulator_causal_line_future_tree_plan.md`），对应
@@ -2009,11 +2045,12 @@ def _render_timeline(
         tree_updates_note = _tree_updates_html(state, causal_lines_meta)
         structural_change_note = _structural_change_html(state)
         problems_note = _problems_html(state)
+        capabilities_note = _capabilities_gained_html(state)
         html = (
             '<div class="ws-chapter">'
             f'<div class="ws-chapter-step">第 {state.step} 步{step_time_suffix}</div>'
             f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
-            f"{granularity_note}{resource_note}{relation_note}{option_warnings_note}{background_note}{line_updates_note}{tree_updates_note}{key_drivers_note}{structural_change_note}{problems_note}{narrative}{chosen_note}"
+            f"{granularity_note}{resource_note}{relation_note}{option_warnings_note}{background_note}{line_updates_note}{tree_updates_note}{key_drivers_note}{structural_change_note}{problems_note}{capabilities_note}{narrative}{chosen_note}"
             "</div>"
         )
         st.markdown(html, unsafe_allow_html=True)
@@ -4927,13 +4964,14 @@ def page_game() -> None:
     line_updates_note = _line_updates_html(s, manifest.settings.get("causal_lines"))
     structural_change_note = _structural_change_html(s)
     problems_note = _problems_html(s)
+    capabilities_note = _capabilities_gained_html(s)
     narrative_text = _html_text(s.narrative) if s.narrative else "（这一章还没有更多叙事文本。）"
 
     html = (
         '<div class="ws-card" style="min-height: 220px;">'
         f'<div class="ws-chapter-step">第 {s.step} 章{step_time_suffix}{major_tag}</div>'
         f'<div class="ws-chapter-summary" style="font-size:1.15rem;">{_html_text(s.summary)}</div>'
-        f"{granularity_note}{resource_note}{relation_note}{option_warnings_note}{background_note}{line_updates_note}{key_drivers_note}{structural_change_note}{problems_note}"
+        f"{granularity_note}{resource_note}{relation_note}{option_warnings_note}{background_note}{line_updates_note}{key_drivers_note}{structural_change_note}{problems_note}{capabilities_note}"
         f'<div class="ws-chapter-narrative">{narrative_text}</div>'
         f"{chosen_note}"
         "</div>"

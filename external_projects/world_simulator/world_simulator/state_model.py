@@ -610,6 +610,42 @@ class SimState:
     都可以为空，不影响任何已有行为，向后兼容。
     """
 
+    capabilities_gained: List[Dict[str, Any]] = field(default_factory=list)
+    """产生*本状态*这一步，skill 可选给出的"这一步新增的能力"记录
+    （第九轮批次二，`next_doc/world_simulator_problem_capability_
+    gap_plan.md` 2.3 节，对照《万能模拟器》参考文档第十二、十三节
+    "能力"结构——最小可行版本，不是参考文档 `Capability` 的全部
+    字段，也不是九段生命周期的显式建模）。
+
+    只记录*这一步新增*的能力，不是全量能力清单——全量清单如果需要，
+    由 `app.py` 在展示层对历史做累加（遍历 `history` 收集所有
+    `capabilities_gained` 即可），引擎本身不维护一份"当前累计能力"
+    的派生状态，避免引入额外的一致性维护负担。
+
+    每一项最小字段集：`{"capability": "能够自动分析潜在客户的付费
+    意愿", "enables": ["更精准的销售话术", "更快的产品迭代"],
+    "limitations": ["无法替代真实用户访谈"]}`：
+
+    - `capability`：一句话，这一步新获得/形成的能力是什么。
+    - `enables`：字符串数组，这个能力让哪些事情变得可能/更容易，
+      1~3 条短语——**不是要求代码层面据此扩展行动空间**（参考文档
+      第十六节 Capability→Action Space 那种"能力→选项"自动映射
+      本方案不做），单纯是给用户看的说明性文字，行动空间是否真的
+      扩大继续由 LLM 在生成后续 `options` 时自行体现。
+    - `limitations`：字符串数组，这个能力目前的局限是什么，1~3 条
+      短语，避免用户误以为这个能力无所不能。
+
+    **刻意不做的部分**（详见方案 2.3 节"范围克制"）：不做参考文档
+    九段生命周期（不可行→实验室可行→……→社会常态化）的显式建模——
+    这需要为每条能力单独追踪阶段变化，改动面和不确定性都明显更大，
+    留给后续观察到真实需求后再评估；不做"能力→行动空间自动扩展"的
+    关联计算；不做任何跨步骤的能力判重/合并（同 `problems.id` 的
+    既有取舍，"这是不是同一个能力的延续"完全交给 LLM/用户判断）。
+
+    默认空列表：skill 没给出、旧数据、多数平淡的推进步骤都可以为空，
+    不影响任何已有行为，向后兼容。
+    """
+
     skill_version: str = ""
     """产生*本状态*这一步用的是哪个版本的模板 skill（第八轮批次六，
     `next_doc/world_simulator_c_category_precision_upgrade_
@@ -696,6 +732,9 @@ class SimState:
             ],
             problems=[
                 dict(x) for x in (data.get("problems") or []) if isinstance(x, dict)
+            ],
+            capabilities_gained=[
+                dict(x) for x in (data.get("capabilities_gained") or []) if isinstance(x, dict)
             ],
             skill_version=str(data.get("skill_version", "") or ""),
         )

@@ -350,6 +350,34 @@ def test_state_roundtrip_preserves_problems():
     assert legacy_restored.problems == []
 
 
+def test_state_roundtrip_preserves_capabilities_gained():
+    """第九轮批次二（`next_doc/world_simulator_problem_capability_
+    gap_plan.md` 2.3 节）：`capabilities_gained` 应该正确序列化/
+    反序列化，旧数据（没有这个字段）落回空列表。"""
+    state = SimState(
+        step=4,
+        summary="s",
+        capabilities_gained=[
+            {
+                "capability": "能够自动分析潜在客户的付费意愿",
+                "enables": ["更精准的销售话术", "更快的产品迭代"],
+                "limitations": ["无法替代真实用户访谈"],
+            }
+        ],
+    )
+    restored = SimState.from_dict(state.to_dict())
+    assert restored.capabilities_gained == [
+        {
+            "capability": "能够自动分析潜在客户的付费意愿",
+            "enables": ["更精准的销售话术", "更快的产品迭代"],
+            "limitations": ["无法替代真实用户访谈"],
+        }
+    ]
+
+    legacy_restored = SimState.from_dict({"step": 0, "summary": "旧数据"})
+    assert legacy_restored.capabilities_gained == []
+
+
 def test_manifest_roundtrip_preserves_desired_state():
     """第九轮批次一 2.2 节：`settings.desired_state` 走的是既有
     `settings` 自由字典通道，这里只验证它确实原样往返（不需要

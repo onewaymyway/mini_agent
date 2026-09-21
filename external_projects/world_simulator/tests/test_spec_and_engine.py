@@ -1504,6 +1504,69 @@ def test_advance_parses_problems_from_llm_output(tmp_path, monkeypatch):
     ]
 
 
+def test_advance_parses_capabilities_gained_from_llm_output(tmp_path, monkeypatch):
+    """第九轮批次二（2.3 节 Capability 对象）：`advance_step` 输出里的
+    可选 `capabilities_gained` 应该原样解析进 `next_state.
+    capabilities_gained`；未给出时应为空列表；非字典项应该被跳过。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "s2",
+                    "narrative": "n",
+                    "next_vars": {},
+                    "options": [],
+                    "capabilities_gained": [
+                        {
+                            "capability": "能够自动分析潜在客户的付费意愿",
+                            "enables": ["更精准的销售话术"],
+                            "limitations": ["无法替代真实用户访谈"],
+                        },
+                        "不是字典，应该被跳过",
+                    ],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert next_state.capabilities_gained == [
+        {
+            "capability": "能够自动分析潜在客户的付费意愿",
+            "enables": ["更精准的销售话术"],
+            "limitations": ["无法替代真实用户访谈"],
+        }
+    ]
+
+
 def test_advance_records_triggered_relationships_into_pending_effects(tmp_path, monkeypatch):
     """阶段三十六第二批（2.2 节）：`advance_step` 输出里的可选
     `triggered_relationships` 应该被 `engine.advance()` 转成
