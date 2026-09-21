@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -256,6 +257,115 @@ def suggest_critical_uncertainties(
 
     results.sort(key=lambda r: affected_counts.get(r["field"], 0), reverse=True)
     return results
+
+
+class ExperimentDesignError(RuntimeError):
+    """`suggest_experiment_design()` 底层 workflow 调用失败/无法解析
+    结果时抛出。"""
+
+
+def suggest_experiment_design(
+    cfg,
+    workspace_root: Path,
+    uncertainties: List[Dict[str, Any]],
+    *,
+    max_combinations: int = 4,
+) -> List[Dict[str, Any]]:
+    """从 `suggest_critical_uncertainties()` 识别出的关键不确定字段
+    列表，请 LLM 建议一组"有区分度"的实验组合（第八轮批次三，
+    `next_doc/world_simulator_c_category_precision_upgrade_
+    improvement_plan.md` 第 4 节）。
+
+    只发起一次轻量 LLM 调用（`workflows/experiment_design.yaml`），
+    要求 LLM 从这些字段各自可能的候选取值里，挑出最多
+    `max_combinations` 组"最有区分度"的组合，并对每组给一句"为什么
+    测这组"的说明。**不做真正的正交实验设计/最大信息增益这类严谨
+    优化**——只是让 LLM 给一个"看起来合理"的建议，判断标准仍然是
+    "提示而非精确计算"，用户可以完全不采纳（本函数只返回建议列表，
+    不做任何分叉/推进，真正跑哪一组由调用方决定，通常是用户在 UI 上
+    点击确认后再调用 `run_hypothesis_worlds()`）。
+
+    Args:
+        cfg: `mini_agent.config.load_config()` 返回的 `AppConfig`。
+        workspace_root: world_simulator 项目根。
+        uncertainties: `suggest_critical_uncertainties()` 的返回值
+            （或同样形状的手工构造列表，每项至少要有 `field`）。为空
+            列表时**不发起任何 LLM 调用**，直接返回空列表——没有
+            不确定字段就没有什么可以设计实验的。
+        max_combinations: 最多建议几组组合（默认 4，同时也是提示词
+            里明确要求 LLM 遵守的上限；LLM 偶尔给多了时这里做最后
+            一道截断兜底）。
+
+    Returns:
+        `[{"combination": {字段: 候选取值, ...}, "why": "一句话说明为
+        什么测这组"}, ...]`，最多 `max_combinations` 项。`combination`
+        不要求覆盖 `uncertainties` 里的每一个字段——LLM 可以判断某些
+        字段组合在一起更有区分度，也可以只挑一部分字段单独测。
+        LLM 回复里格式不对/缺字段的组合项会被跳过，不中断其它组合的
+        解析。
+
+    Raises:
+        ExperimentDesignError: 找不到 workflow 定义、workflow 执行
+            未成功、或最终回复无法解析出 `combinations` 字段。
+    """
+    if not uncertainties:
+        return []
+
+    from mini_agent.workflow.runner import WorkflowRunner
+    from mini_agent.workflow.store import WorkflowStore
+    from world_simulator.agent_step_result import AgentStepOutputError, extract_agent_json_output
+
+    wf_store = WorkflowStore(Path(workspace_root))
+    wf = wf_store.load("experiment_design")
+    if wf is None:
+        raise ExperimentDesignError(
+            "找不到 workflow 定义 'experiment_design'"
+            f"（预期路径：{workspace_root}/workflows/experiment_design.yaml）"
+        )
+
+    runner = WorkflowRunner(cfg)
+    result = runner.run(
+        wf,
+        {
+            "uncertainties_json": json.dumps(uncertainties, ensure_ascii=False),
+            "max_combinations": max_combinations,
+        },
+    )
+
+    if result.status != "done":
+        failed = [
+            f"{sr.step_id}({sr.status.value}): {sr.error}"
+            for sr in result.step_results
+            if sr.status.value != "done"
+        ]
+        raise ExperimentDesignError(
+            f"experiment_design workflow 执行未成功：status={result.status}；" + "；".join(failed)
+        )
+
+    step_result = next(
+        (sr for sr in result.step_results if sr.step_id == "experiment_design"), None
+    )
+    if step_result is None:
+        raise ExperimentDesignError("experiment_design 步骤没有产出结果")
+
+    try:
+        data = extract_agent_json_output(step_result.output, required_keys=["combinations"])
+    except AgentStepOutputError as exc:
+        raise ExperimentDesignError(
+            f"experiment_design 步骤回复无法解析为实验设计建议：{exc}"
+        ) from exc
+
+    suggestions: List[Dict[str, Any]] = []
+    for item in data.get("combinations") or []:
+        if not isinstance(item, dict):
+            continue
+        combination = item.get("combination")
+        if not isinstance(combination, dict) or not combination:
+            continue
+        suggestions.append({"combination": dict(combination), "why": str(item.get("why") or "")})
+        if len(suggestions) >= max_combinations:
+            break
+    return suggestions
 
 
 @dataclass

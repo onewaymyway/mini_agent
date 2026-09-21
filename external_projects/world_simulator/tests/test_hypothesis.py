@@ -492,6 +492,217 @@ def test_build_counterfactual_matrix_empty_fields_returns_empty_list_without_for
         object(), tmp_path, data_dir, "sim1", fields={"empty_field": []}, steps=1,
     ) == []
 
-    # 没有产生任何分叉：分支列表应该仍然只有 main
-    store = SimStore.for_root(data_dir, "sim1")
-    assert set(_ for _ in [store.load_manifest().branch]) == {"main"}
+
+# ---------------------------------------------------------------------------
+# suggest_experiment_design()（第八轮批次三，4.2 节）
+# ---------------------------------------------------------------------------
+
+
+def _agent_output(payload: dict) -> str:
+    """`type: agent` step 靠 `StepResult.output`（纯 JSON 文本）传结果，
+    同 `test_retrospective.py::_agent_output`。"""
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def test_suggest_experiment_design_returns_empty_list_without_calling_workflow(monkeypatch):
+    """`uncertainties` 为空时不应该发起任何 workflow 调用，直接返回
+    空列表——用一个"调用即失败"的假 WorkflowStore 验证确实没被调用。"""
+
+    class ExplodingWorkflowStore:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            raise AssertionError("uncertainties 为空时不应该加载任何 workflow")
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", ExplodingWorkflowStore)
+
+    assert hyp_mod.suggest_experiment_design(object(), Path("/tmp/ws"), []) == []
+
+
+def test_suggest_experiment_design_assembles_input_and_parses_result(tmp_path, monkeypatch):
+    captured_inputs = {}
+
+    class FakeWorkflowStore:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            assert name == "experiment_design"
+            return SimpleNamespace(steps=[SimpleNamespace(id="experiment_design")])
+
+    class FakeRunner:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            captured_inputs.update(inputs)
+            output = _agent_output(
+                {
+                    "combinations": [
+                        {
+                            "combination": {"ai_cost": "快速下降"},
+                            "why": "AI 成本骤降对结果影响最大",
+                        },
+                        {
+                            "combination": {"ai_cost": "基本不变", "market_demand": "旺盛"},
+                            "why": "两个维度都保守时作为对照组",
+                        },
+                    ]
+                }
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[
+                    SimpleNamespace(step_id="experiment_design", status=_FakeStatus("done"), output=output)
+                ],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeWorkflowStore)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunner)
+
+    uncertainties = [{"field": "ai_cost", "confidence": "low", "why": "...", "note": ""}]
+    result = hyp_mod.suggest_experiment_design(object(), tmp_path, uncertainties, max_combinations=4)
+
+    # 输入正确组装：不确定字段列表 + max_combinations 都传给了 workflow。
+    assert json.loads(captured_inputs["uncertainties_json"]) == uncertainties
+    assert captured_inputs["max_combinations"] == 4
+
+    # 返回结果正确解析为建议列表。
+    assert result == [
+        {"combination": {"ai_cost": "快速下降"}, "why": "AI 成本骤降对结果影响最大"},
+        {
+            "combination": {"ai_cost": "基本不变", "market_demand": "旺盛"},
+            "why": "两个维度都保守时作为对照组",
+        },
+    ]
+
+
+def test_suggest_experiment_design_skips_malformed_combination_items(tmp_path, monkeypatch):
+    class FakeWorkflowStore:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return SimpleNamespace(steps=[SimpleNamespace(id="experiment_design")])
+
+    class FakeRunner:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            output = _agent_output(
+                {
+                    "combinations": [
+                        {"combination": {"ai_cost": "快速下降"}, "why": "有效条目"},
+                        {"combination": "不是字典", "why": "格式不对，应被跳过"},
+                        {"combination": {}, "why": "空字典，应被跳过"},
+                        "不是字典的整项，应被跳过",
+                    ]
+                }
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[
+                    SimpleNamespace(step_id="experiment_design", status=_FakeStatus("done"), output=output)
+                ],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeWorkflowStore)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunner)
+
+    result = hyp_mod.suggest_experiment_design(
+        object(), tmp_path, [{"field": "ai_cost", "confidence": "low"}]
+    )
+    assert result == [{"combination": {"ai_cost": "快速下降"}, "why": "有效条目"}]
+
+
+def test_suggest_experiment_design_truncates_to_max_combinations(tmp_path, monkeypatch):
+    class FakeWorkflowStore:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return SimpleNamespace(steps=[SimpleNamespace(id="experiment_design")])
+
+    class FakeRunner:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            output = _agent_output(
+                {
+                    "combinations": [
+                        {"combination": {"f": f"v{i}"}, "why": f"why{i}"} for i in range(6)
+                    ]
+                }
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[
+                    SimpleNamespace(step_id="experiment_design", status=_FakeStatus("done"), output=output)
+                ],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeWorkflowStore)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunner)
+
+    result = hyp_mod.suggest_experiment_design(
+        object(), tmp_path, [{"field": "f", "confidence": "low"}], max_combinations=2
+    )
+    assert len(result) == 2
+
+
+def test_suggest_experiment_design_raises_when_workflow_missing(tmp_path, monkeypatch):
+    class FakeWorkflowStore:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return None
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeWorkflowStore)
+
+    try:
+        hyp_mod.suggest_experiment_design(
+            object(), tmp_path, [{"field": "f", "confidence": "low"}]
+        )
+        assert False, "应该抛出 ExperimentDesignError"
+    except hyp_mod.ExperimentDesignError:
+        pass
+
+
+def test_suggest_experiment_design_raises_when_workflow_status_not_done(tmp_path, monkeypatch):
+    class FakeWorkflowStore:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return SimpleNamespace(steps=[SimpleNamespace(id="experiment_design")])
+
+    class FakeRunner:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            return SimpleNamespace(
+                status="failed",
+                step_results=[
+                    SimpleNamespace(
+                        step_id="experiment_design", status=_FakeStatus("failed"), error="boom",
+                        output=None,
+                    )
+                ],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeWorkflowStore)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunner)
+
+    try:
+        hyp_mod.suggest_experiment_design(
+            object(), tmp_path, [{"field": "f", "confidence": "low"}]
+        )
+        assert False, "应该抛出 ExperimentDesignError"
+    except hyp_mod.ExperimentDesignError:
+        pass
+

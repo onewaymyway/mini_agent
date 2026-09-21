@@ -37,6 +37,13 @@ Branch merge
 >   不变）；`app.py` 新增对应展示分支。新增
 >   `tests/test_resource_production_relation.py` 13 个测试用例，
 >   全量测试套件 427 个全部通过。
+> - ✅ **批次三（第 4 节，Hypothesis Engine 半自动实验设计建议）
+>   已完成**：新增 `hypothesis.suggest_experiment_design()`，把
+>   `suggest_critical_uncertainties()` 识别出的不确定字段喂给一次
+>   `workflows/experiment_design.yaml` 轻量 LLM 调用，建议最多
+>   `max_combinations` 组"有区分度"的实验组合；`app.py` 在原有手动
+>   交互之前新增建议展示 + 勾选采纳，采纳只回填文本框、不自动触发
+>   分叉。新增 6 个测试用例，全量测试套件 433 个全部通过。
 >
 > **方针延续**：延续项目一贯原则——每一批都是"新增字段/开关 +
 > 旧路径完全保留"，不引入自动化数值计算或语义相似度模型（因果/

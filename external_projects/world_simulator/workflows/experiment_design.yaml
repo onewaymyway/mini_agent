@@ -1,0 +1,53 @@
+name: experiment_design
+description: >-
+  Hypothesis Engine 半自动实验设计建议（第八轮批次三，`next_doc/
+  world_simulator_c_category_precision_upgrade_improvement_plan.md`
+  第 4 节）。由 `world_simulator/hypothesis.py::suggest_experiment_
+  design()` 触发。用 `type: agent`（同 `retrospective.yaml`）——给出
+  "哪几组组合最有区分度"这件事是通用推理能力，不依赖具体场景模板的
+  私有规则，不需要按 template 绑定 skill。
+  【重要】同 `retrospective.yaml` 踩过的坑：`type: agent` 不支持
+  `result_file`/`result_file_required_keys`，这里同样要求 Agent 直接
+  把 JSON 作为最终回复的全部内容，由
+  `world_simulator/agent_step_result.py` 从 `StepResult.output` 解析。
+version: "1.0"
+steps:
+  - id: experiment_design
+    name: 建议一组有区分度的实验组合
+    type: agent
+    prompt: |
+      你正在为一次"世界模拟"设计一组实验方案。下面是系统识别出的
+      "关键不确定字段"列表（JSON 数组，每项包含 field/confidence/
+      why/note，`confidence` 都是 `"low"`，表示这些字段目前只是主观
+      估计，值得分叉出几个假设世界看看结果是否稳健）：
+      {uncertainties_json}
+
+      请你完成两件事：
+      1. 针对每个字段，结合它的字段名和 `why`/`note` 里的线索，想象
+         2~3 个合理、有代表性、方向上有区分度的候选取值或走势描述
+         （不需要精确数值，用简短的方向性短语即可，比如"快速下降"、
+         "行业需求旺盛"）。
+      2. 从这些字段的候选取值里，挑出最多 {max_combinations} 组
+         "最有区分度"的组合——每组可以只涉及一个字段，也可以是几个
+         字段的取值搭配在一起（如果你判断某几个字段联动起来测试更有
+         意义）。**组数不超过 {max_combinations}**，优先给"结果最可能
+         明显不同"的几组，不要给高度相似、区分度很低的组合凑数。
+
+      **范围克制**：这不是严谨的统计学正交实验设计，你不需要做穷举
+      或计算信息增益，只需要凭对这个模拟情境的理解给出"看起来合理"
+      的建议——用户可以完全不采纳，也可以只挑其中一组去实际推演。
+
+      【输出格式，必须严格遵守】你的最终回复必须**只包含一个 JSON
+      对象**，不要有任何其它文字、解释、markdown 代码块围栏、或工具
+      调用——直接把下面这个字段组成的 JSON 对象作为你这一轮对话的
+      最后回复内容，不要在 JSON 前后加说明文字：
+
+      - `combinations`：数组，每项 `{{"combination": {{"字段名":
+        "候选取值/走势描述", "字段名2": "候选取值2"}}, "why": "一句话
+        说明为什么测这组，比如预期两组结果会有明显分化"}}`。
+        `combination` 的 key 必须是上面给出的不确定字段列表里出现过
+        的字段名，可以只包含一个字段，也可以包含多个（上面例子里的
+        "字段名2" 仅示意可以有更多字段，不是必须凑够两个）。
+
+      不要用 bash/echo 或任何工具来"打印"这个 JSON。你的最后一条回复
+      消息，去掉首尾空白后，必须能被直接当 JSON 解析。

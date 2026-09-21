@@ -2849,3 +2849,50 @@ world_simulator/
   **后续节奏（按方案原文第 1 节）**：批次三（Hypothesis 半自动
   实验设计建议）与本批互相独立，可继续推进；批次四依赖批次一的
   `evidence` 字段（已具备）；批次五/六留待后续按顺序推进。
+- 2026-09-21（同日再追加）：**阶段三十七第三批**——按
+  `next_doc/world_simulator_c_category_precision_upgrade_
+  improvement_plan.md` 第 4 节，Hypothesis Engine 新增半自动实验
+  设计建议。
+  1. **`hypothesis.py`**：新增 `suggest_experiment_design(cfg,
+     workspace_root, uncertainties, *, max_combinations=4)`——把
+     `suggest_critical_uncertainties()` 识别出的不确定字段列表喂给
+     一次轻量 `type: agent` workflow 调用（同 `retrospective.py` 的
+     调用手法：`WorkflowStore`/`WorkflowRunner` + `extract_agent_
+     json_output()` 从 `StepResult.output` 解析），要求 LLM 挑出
+     最多 `max_combinations` 组"最有区分度"的组合并各给一句"为什么
+     测这组"，返回 `[{"combination": {...}, "why": "..."}]`。
+     `uncertainties` 为空时直接返回空列表，不发起任何调用；LLM 回复
+     里格式不对的组合项（`combination` 非字典/空字典）逐项跳过，不
+     中断其它组合解析；返回结果按 `max_combinations` 做最后一道
+     截断兜底。新增 `ExperimentDesignError` 异常类型（同
+     `RetrospectiveError` 的一贯设计）。
+  2. **`workflows/experiment_design.yaml`**：新增 workflow 定义，
+     `type: agent`（同 `retrospective.yaml` 的取舍——通用推理能力，
+     不依赖具体场景模板），prompt 要求 LLM 先为每个不确定字段想象
+     2~3 个有区分度的候选取值，再从中挑组合，最终只回复一个 JSON
+     对象；范围克制段落写明"不是严谨正交实验设计，不需要穷举/计算
+     信息增益"。
+  3. **`app.py`**："让系统建议关键不确定性"折叠区里，在原有"选一个
+     字段分叉假设世界"手动交互之前新增一层"💡 让系统建议一组实验
+     设计"：点击后展示建议组合列表（每组带复选框 + "为什么"说明），
+     用户勾选后点击"采纳选中组合到假设列表"，只是把选中组合拼成的
+     假设方向文本回填到下方文本框，**不自动触发分叉**——用户仍然
+     需要照原有路径点击"运行假设世界"才会真的调用
+     `run_hypothesis_worlds()`；用户也可以完全不点建议按钮，直接
+     手动填写文本框，原交互路径不变。
+  **范围克制（按方案要求，不做的部分）**：不做完整的 Experiment
+  Design Engine（统计学意义上的正交实验设计/最大信息增益）；不做
+  "自动触发分叉"，分叉本身有真实计算成本，必须用户点击确认。
+  **验收**：新增 6 个测试用例（`tests/test_hypothesis.py`），覆盖
+  `uncertainties` 为空时不发起调用、workflow 输入正确组装
+  （`uncertainties_json`/`max_combinations`）、返回结果正确解析为
+  建议列表、格式不对的组合项被跳过、结果按 `max_combinations` 截断、
+  workflow 定义缺失/执行未成功时正确抛出 `ExperimentDesignError`。
+  加上原有 427 个，全部通过（**433 passed**）。用户未确认前不触发
+  `run_hypothesis_worlds()` 这一条属于纯 UI 交互行为，按方案第 4 节
+  验收点说明以代码走查（`app.py` 新增代码块里"采纳"按钮只回填文本框、
+  分叉调用仍绑定在原有"运行假设世界"按钮上）确认，不是自动化测试能
+  替代的部分。
+  **后续节奏（按方案原文第 1 节）**：批次四（因果线可视化整合）
+  依赖批次一的 `evidence` 字段（已具备），建议下一步推进；批次五/
+  六留待之后按顺序推进。

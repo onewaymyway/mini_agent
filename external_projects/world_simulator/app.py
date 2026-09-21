@@ -3880,6 +3880,58 @@ def page_compare() -> None:
                     st.markdown(f"- `{s['field']}`：{s['why']}")
                 field_options = [s["field"] for s in suggestions]
                 chosen_field = st.selectbox("选一个字段分叉假设世界", options=field_options, key="hyp_field")
+
+                # ── 第八轮批次三（4.2 节）：半自动实验设计建议，展示在
+                # 手动填写假设方向之前，用户可以采纳也可以完全忽略，
+                # 原有手动交互路径不变 ──
+                if st.button("💡 让系统建议一组实验设计", key="hyp_design_suggest_btn"):
+                    try:
+                        cfg = _load_cfg()
+                        with st.spinner("正在生成实验设计建议..."):
+                            st.session_state["hyp_design_suggestions"] = hyp_mod.suggest_experiment_design(
+                                cfg, PROJECT_ROOT, suggestions,
+                            )
+                    except ImportError as exc:
+                        st.error(f"未检测到 mini_agent 框架，无法生成建议：{exc}")
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"生成实验设计建议失败：{exc}")
+
+                design_suggestions = st.session_state.get("hyp_design_suggestions")
+                if design_suggestions is not None:
+                    if not design_suggestions:
+                        st.info("系统没有给出有区分度的组合建议，可以继续手动填写假设方向。")
+                    else:
+                        st.markdown("**建议的实验组合**（仅供参考，判断标准是「提示而非精确计算」，可以不采纳）：")
+                        adopt_flags = []
+                        for idx, combo in enumerate(design_suggestions):
+                            combo_label = "；".join(
+                                f"{k}={v}" for k, v in combo["combination"].items()
+                            )
+                            checked = st.checkbox(
+                                f"{combo_label}（{combo['why']}）",
+                                key=f"hyp_design_pick_{idx}",
+                            )
+                            adopt_flags.append(checked)
+                        if st.button("采纳选中组合到假设列表", key="hyp_design_adopt_btn"):
+                            picked = [
+                                c for c, flag in zip(design_suggestions, adopt_flags) if flag
+                            ]
+                            if not picked:
+                                st.warning("请至少勾选一组建议组合再采纳。")
+                            else:
+                                lines = []
+                                for combo in picked:
+                                    label = "；".join(
+                                        f"{k}={v}" for k, v in combo["combination"].items()
+                                    )
+                                    why = str(combo.get("why") or "")
+                                    lines.append(f"{label}: {why}" if why else label)
+                                # 只更新即将渲染的假设方向文本框的初始值，不代替
+                                # 用户点击「运行假设世界」——分叉本身仍需用户
+                                # 手动确认，本批不做自动触发。
+                                st.session_state["hyp_hypotheses_text"] = "\n".join(lines)
+                                st.success("已采纳到下方假设方向文本框，确认无误后点击「运行假设世界」。")
+
                 hyp_text = st.text_area(
                     "假设方向（每行一条，格式「方向标签」或「方向标签: 理由」）",
                     value="快速下降: 行业价格战加剧\n缓慢下降\n基本不变",
