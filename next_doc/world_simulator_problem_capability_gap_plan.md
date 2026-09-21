@@ -1,33 +1,51 @@
 # world_simulator 对照《万能模拟器》参考文档的差距分析：Problem / Capability 缺失（第八轮差距分析）
 
-> **状态（第九轮批次二，已完成）**：本文档 2.1（`Problem` 结构化）、
-> 2.2（`Desired State` 结构化）、2.3（`Capability` 对象）三节均已
-> 实施完成——`SimState` 新增 `problems`/`capabilities_gained` 两个
-> 字段、`SimManifest.settings` 新增 `desired_state` 字段，涉及的
-> workflow prompt（`generate_scenario.yaml`/`advance_step.yaml`/
-> `world_builder.yaml`/`world_evolve.yaml`）、三个模板 `SKILL.md`、
-> `app.py` 创建向导与"模拟设置"页面的编辑入口、时间线"🧩 问题"/
-> "🆙 能力"展示区块均已同步更新，测试见 `tests/test_state_and_store.
-> py`（`test_state_roundtrip_preserves_problems`/`test_state_
-> roundtrip_preserves_capabilities_gained`/`test_manifest_
-> roundtrip_preserves_desired_state`）与 `tests/test_spec_and_engine.
-> py`（`test_scenario_draft_from_dict_parses_desired_state`/`test_
-> resolve_hints_desired_state_hint_variants`/`test_advance_parses_
-> problems_from_llm_output`/`test_advance_parses_capabilities_
-> gained_from_llm_output`）。2.4（Problem Discovery Engine）**尚未
-> 开始**，按第 5 节建议顺序，需要先观察 2.1/2.2/2.3 在真实使用中的
-> 效果（尤其是"LLM 是否会认真区分 `problems`/`capabilities_gained`/
-> `narrative`，而不是把已有的话换个地方重复一遍"这条第 7 节点名过的
-> 风险）之后再评估是否推进，不建议立即接着做。
+> **状态（第九轮批次三，已完成，本文档第 2 节四项全部落地）**：
+> 2.1（`Problem` 结构化）、2.2（`Desired State` 结构化）、2.3
+> （`Capability` 对象）、2.4（Problem Discovery Engine）四节均已
+> 实施完成。2.1/2.2/2.3 的实现见批次一/批次二的记录（`SimState`
+> 新增 `problems`/`capabilities_gained`、`SimManifest.settings`
+> 新增 `desired_state`）。2.4 新增 `world_simulator/problem_
+> discovery.py`（`suggest_problems()`，只做 Observed/Latent 两类
+> 建议，仿照 `hypothesis.suggest_experiment_design()` 的一次轻量
+> `type: agent` workflow 调用手法，见 `workflows/problem_discovery.
+> yaml`）+ 确认机制（`adopt_problem_suggestion()`/`withdraw_
+> confirmed_problem_suggestions()`，把用户确认关注的建议记进
+> `settings.confirmed_problem_suggestions`，作为下一次 `advance_
+> step`/`world_evolve` 的提示 `{confirmed_problem_suggestions_
+> hint}`——**不直接改写任何历史状态的 `problems` 字段**，因为
+> `state_history.jsonl` 是只追加、不回改的存储，这一点和最初方案
+> 描述的"用户可以选择性采纳进 2.1 节的 `problems` 列表"字面意思有
+> 出入，实际走的是"确认 → 下一次推进的提示 → LLM 自行判断要不要
+> 体现进 `problems`"这条路，机制上复用了已有的 `structural_change`/
+> `confirmed_structural_changes` 确认模式）。`app.py` 新增"🔍 扫描
+> 潜在问题"入口（`page_detail()` 内，"模拟设置"和"控制条"之间）。
+> 测试见 `tests/test_problem_discovery.py`（新文件，覆盖
+> `suggest_problems`/`adopt_problem_suggestion`/`withdraw_
+> confirmed_problem_suggestion`/`_format_confirmed_problem_
+> suggestions`）与 `tests/test_spec_and_engine.py`（`test_advance_
+> includes_confirmed_problem_suggestions_hint`）。
 >
-> 以下是本文档最初的盘点内容（保留作为背景与后续 2.4 的依据），
-> 阅读时请注意 2.1/2.2/2.3 节描述的是**实施前的设计方案**，具体
-> 实现细节以上面"已完成"状态说明和实际代码为准（比如
-> `problems`/`capabilities_gained` 最终都没有单独在
-> `generate_scenario` 阶段输出，只在 `advance_step`/`world_evolve`
-> 阶段输出——创建时刻的"初始问题/初始能力"这个概念被判断为价值
-> 有限，落地时收窄了范围；`Capability` 也没有做九段生命周期的显式
-> 建模，只记录"这一步新增的能力"这一个最小切面）。
+> **本次实施的已知缺口**：如批次二记录所说，2.3 落地时没有先等到
+> 2.1/2.2 的真实使用反馈；2.4 同样没有等——用户要求按阶段持续推进，
+> 四节最终是连续完成的，**目前为止没有一节经过真实使用验证**。这是
+> 当前最大的风险点，建议在继续任何新方向之前，先做一轮真实使用
+> （在 `life_sim`/`group_evolution`/`negotiation` 各跑几次完整流程，
+> 包括点几次"扫描潜在问题"），确认：(a) LLM 产出的 `problems`/
+> `capabilities_gained` 确实比现有 `narrative` 更有信息量，不是把
+> 已有的话换个地方重复一遍；(b) `desired_state` 确实被认真区分而
+> 不是和 `objectives`/`narrative` 重复；(c) Problem Discovery
+> Engine 给出的建议确实有参考价值，"确认关注"之后 LLM 是否真的会
+> 在后续推进里认真回应，而不是完全无视 `confirmed_problem_
+> suggestions_hint`。
+>
+> 以下是本文档最初的盘点内容（保留作为背景），阅读时请注意 2.1~2.4
+> 节描述的是**实施前的设计方案**，具体实现细节以上面"已完成"状态
+> 说明和实际代码为准（除了上面已经列出的偏差：`problems`/
+> `capabilities_gained` 最终都没有单独在 `generate_scenario` 阶段
+> 输出；`Capability` 没有做九段生命周期的显式建模；2.4 没有做
+> "结构性问题"/"冲突目标"两类细分，也没有直接改写 `problems`
+> 列表）。
 >
 > **原始状态说明**：本文档只做盘点 + 方案设计，尚未开始实施。这是用户上传
 > 《万能模拟器到底如何构建？——从世界状态、问题空间到通用现实模拟
@@ -204,7 +222,7 @@ List[Dict[str, Any]]`（这一步新增的能力记录，不是全量能力
 的内容，建议放在 2.1/2.2 之后、先观察"问题列表"本身是否好用，
 再决定要不要加这一层。
 
-### 2.4 Problem Discovery Engine（主动发现问题）
+### 2.4 Problem Discovery Engine（主动发现问题）（**已完成**，第九轮批次三）
 
 **现状**：项目现在完全被动——"问题"只在 LLM 叙事里顺带出现，
 没有一个专门步骤系统性扫描"当前哪些目标被什么挡住了"，更没有
@@ -296,7 +314,11 @@ systems_gap_survey_plan.md` 第 2 节 A 类）里还留着三项**代码已
       workflow/SKILL.md/展示层"）一并做了，尚未经过真实使用反馈
       验证；下一步 2.4 仍应先观察 2.1/2.2/2.3 三者的真实使用效果
       再决定是否推进）
-  2.4 Problem Discovery Engine（依赖 2.1/2.2 的字段作为输入）
+  2.4 Problem Discovery Engine（依赖 2.1/2.2 的字段作为输入）—— ✅
+      已完成（第九轮批次三——同样没有等到前三项的真实使用反馈就
+      接着做了，原因同上；确认机制实现为"记进 settings 供下一次
+      推进提示参考"，不是直接改写 `problems` 列表，见文档最上方
+      "状态"说明）
 
 不建议规划：
   Reality Renderer 独立分层 —— 等真实观察到 narrative/vars
@@ -371,6 +393,14 @@ systems_gap_survey_plan.md` 第 2 节 A 类）里还留着三项**代码已
   没有经过真实使用验证**，2.4（Problem Discovery Engine，依赖
   这三者的字段做输入）启动前，更应该先做一次真实使用观察，而不是
   接着往下顺延。
+- **（第九轮批次三实施后新增）** 2.4 同样已完成落地，同样**没有**
+  等到前面的真实使用反馈——用户持续要求"继续做"，四节最终是连续
+  完成的。截至本次更新，**本文档第 2 节四项全部落地，但没有一项
+  经过真实使用验证**，这是当前最大的风险敞口。强烈建议在开始任何
+  新的规划方向之前，先抽时间做一轮完整的真实使用（哪怕只是自己
+  手动跑几次 `life_sim` 完整流程，包含点击"扫描潜在问题"、确认几条
+  建议、观察下一步推进是否真的有所回应），再决定后续怎么走——继续
+  加新功能、还是回头简化/调整已经落地的这四项。
 
 ---
 

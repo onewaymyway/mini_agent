@@ -37,6 +37,7 @@ from world_simulator.engine.structural_change import (
     _format_confirmed_structural_changes,
     _normalize_structural_change,
 )
+from world_simulator.problem_discovery import _format_confirmed_problem_suggestions
 from world_simulator.spec_generator import resolve_causal_graph_hint, resolve_hints
 from world_simulator.state_model import ChoiceOption, SimState
 from world_simulator.store import SimStore
@@ -262,6 +263,9 @@ def advance(
         ),
         "confirmed_structural_changes_hint": _format_confirmed_structural_changes(
             manifest.settings.get("confirmed_structural_changes")
+        ),
+        "confirmed_problem_suggestions_hint": _format_confirmed_problem_suggestions(
+            manifest.settings.get("confirmed_problem_suggestions")
         ),
         # 阶段三十三第三批（4.13 节）：把历史 `causal_links` 聚合出的
         # "线到线"邻接关系反过来喂给这一次推进的 prompt——纯只读聚合，

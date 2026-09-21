@@ -60,6 +60,7 @@ from world_simulator import trend as trend_mod
 from world_simulator import relationship as relationship_mod
 from world_simulator import multi_entity as multi_entity_mod
 from world_simulator import knowledge_base as knowledge_base_mod
+from world_simulator import problem_discovery as problem_discovery_mod
 from world_simulator.config import DATA_DIR, ensure_dirs
 from world_simulator.achievements import achievement_progress, compute_achievements
 from world_simulator.engine import (
@@ -3552,6 +3553,88 @@ def page_detail() -> None:
                 )
                 st.success("设置已更新，下一步推进开始生效。")
                 st.rerun()
+
+    # ── Problem Discovery Engine 轻量入口（第九轮批次三，2.4 节，
+    # `next_doc/world_simulator_problem_capability_gap_plan.md`）：
+    # 只针对当前分支的当前状态给建议，只发起一次 LLM 调用，只建议、
+    # 不自动写入——用户"确认关注"某一条后，只是把它记进
+    # `settings.confirmed_problem_suggestions`，作为下一次推进的
+    # 提示，不直接改写任何历史状态的 `problems` 字段（见
+    # `problem_discovery.py` 模块 docstring 的设计说明） ──
+    with st.expander("🔍 扫描潜在问题（第九轮批次三，Problem Discovery Engine，可选）"):
+        st.markdown(
+            '<span class="ws-muted">让系统扫描一次"当前有哪些问题"：从当前状态数值、'
+            "上面的理想状态设置、最近几步历史里，找「已经能观察到的问题」和「还没爆发但"
+            "能推导出来的潜在问题」。只是建议，不会自动写进任何一步的记录——确认关注的"
+            "建议会成为下一次推进的提示，由 LLM 自行判断要不要真正体现进剧情。</span>",
+            unsafe_allow_html=True,
+        )
+        if st.button("扫描潜在问题", key="problem_discovery_scan_btn"):
+            try:
+                cfg = _load_cfg()
+                with st.spinner("正在扫描..."):
+                    st.session_state["problem_discovery_suggestions"] = (
+                        problem_discovery_mod.suggest_problems(
+                            cfg, PROJECT_ROOT,
+                            current.vars, cur_settings.get("desired_state"), history,
+                        )
+                    )
+                    st.session_state["problem_discovery_source"] = (sim_id, manifest.branch)
+            except ImportError as exc:
+                st.error(f"未检测到 mini_agent 框架，无法生成建议：{exc}")
+            except problem_discovery_mod.ProblemDiscoveryError as exc:
+                st.error(f"扫描失败：{exc}")
+
+        pd_suggestions = st.session_state.get("problem_discovery_suggestions")
+        pd_source = st.session_state.get("problem_discovery_source")
+        if pd_suggestions is not None and pd_source == (sim_id, manifest.branch):
+            for category, label in (("observed", "已观察到的问题"), ("latent", "潜在问题（尚未爆发）")):
+                items = pd_suggestions.get(category) or []
+                st.markdown(f"**{label}**")
+                if not items:
+                    st.markdown('<span class="ws-muted">（本次扫描没有给出这一类建议）</span>', unsafe_allow_html=True)
+                    continue
+                for idx, item in enumerate(items):
+                    missing_text = "、".join(item.get("missing_capabilities") or [])
+                    detail = item["symptom"]
+                    if item.get("blocked_goal"):
+                        detail += f"（挡住：{item['blocked_goal']}）"
+                    if missing_text:
+                        detail += f"｜缺：{missing_text}"
+                    col_a, col_b = st.columns([5, 1])
+                    with col_a:
+                        st.markdown(f"- {detail}")
+                    with col_b:
+                        if st.button("确认关注", key=f"pd_adopt_{category}_{idx}"):
+                            problem_discovery_mod.adopt_problem_suggestion(
+                                DATA_DIR, sim_id,
+                                category=category,
+                                symptom=item["symptom"],
+                                blocked_goal=item.get("blocked_goal", ""),
+                                missing_capabilities=item.get("missing_capabilities"),
+                            )
+                            st.success("已确认关注，下一次推进的提示里会看到它。")
+                            st.rerun()
+
+        confirmed_suggestions = list(cur_settings.get("confirmed_problem_suggestions") or [])
+        if confirmed_suggestions:
+            st.markdown("**已确认关注、等待下一次推进回应的建议**")
+            for item in confirmed_suggestions:
+                if not isinstance(item, dict):
+                    continue
+                suggestion_id = str(item.get("id") or "")
+                detail = f"[{item.get('category', '')}] {item.get('symptom', '')}"
+                if item.get("blocked_goal"):
+                    detail += f"（挡住：{item['blocked_goal']}）"
+                col_a, col_b = st.columns([5, 1])
+                with col_a:
+                    st.markdown(f"- {detail}")
+                with col_b:
+                    if suggestion_id and st.button("撤回", key=f"pd_withdraw_{suggestion_id}"):
+                        problem_discovery_mod.withdraw_confirmed_problem_suggestion(
+                            DATA_DIR, sim_id, suggestion_id
+                        )
+                        st.rerun()
 
     # ── 控制条：暂停/恢复/结束 ──
     ctrl1, ctrl2, ctrl3 = st.columns(3)

@@ -1567,6 +1567,62 @@ def test_advance_parses_capabilities_gained_from_llm_output(tmp_path, monkeypatc
     ]
 
 
+def test_advance_includes_confirmed_problem_suggestions_hint(tmp_path, monkeypatch):
+    """第九轮批次三（2.4 节 Problem Discovery Engine）：`manifest.
+    settings.confirmed_problem_suggestions` 应该被拼进 `advance_step`
+    的输入，喂给 prompt 的 `{confirmed_problem_suggestions_hint}`。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+    from world_simulator.store import SimStore
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    manifest = store.load_manifest()
+    manifest.settings = {
+        **manifest.settings,
+        "confirmed_problem_suggestions": [
+            {"id": "confirmed_problem_abc", "category": "observed", "symptom": "资金不足", "blocked_goal": "完成原型"},
+        ],
+    }
+    store.save_manifest(manifest)
+
+    step_step = _FakeStep("step")
+    captured_inputs = {}
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            captured_inputs.update(inputs)
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {"next_summary": "s2", "narrative": "n", "next_vars": {}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert captured_inputs["confirmed_problem_suggestions_hint"] == "- [observed] 资金不足（挡住：完成原型）"
+
+
 def test_advance_records_triggered_relationships_into_pending_effects(tmp_path, monkeypatch):
     """阶段三十六第二批（2.2 节）：`advance_step` 输出里的可选
     `triggered_relationships` 应该被 `engine.advance()` 转成

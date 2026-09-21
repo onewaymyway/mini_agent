@@ -78,6 +78,11 @@ steps:
       完整机制，为空说明没有声明任何关系）：{relationship_hint}
       理想状态设置（第九轮批次一，Desired State 结构化，未声明则说明
       没有结构化的理想状态描述，不影响推进）：{desired_state_hint}
+      用户已确认关注的潜在问题（第九轮批次三，Problem Discovery
+      Engine，来自 `problem_discovery.yaml` 的建议，用户点击"确认
+      关注"后会出现在这里；为空说明没有任何已确认的建议，忽略这一项
+      即可）：
+      {confirmed_problem_suggestions_hint}
       用户提供的真实世界参考信息（阶段十八，Reality Sync 轻量版，
       仅供参考、不要照抄成精确数值，为空说明没有需要参考的真实
       数据）：{calibration_notes}
@@ -288,7 +293,12 @@ steps:
       "emerging"}`——
       - `id`：这个问题的标识，如果是之前某一步已经出现过、这一步只是
         状态发生变化（比如从 `emerging` 变成 `active`，或者被解决），
-        请复用同一个 `id`；确实是全新的问题才用新 `id`。
+        请复用同一个 `id`；确实是全新的问题才用新 `id`。如果上面
+        "用户已确认关注的潜在问题"里有相关的一条，可以直接把它变成
+        一个正式的 `problems` 条目（`symptom`/`blocked_goal` 可以
+        沿用建议里的文字），但这不是强制的——如果你判断这一步的剧情
+        走向已经让某条建议过时/不再适用，可以不采纳它，不需要为了
+        "响应"而勉强写入。
       - `symptom`：一句话，可观察到的症状是什么。
       - `blocked_goal`：一句话，这个问题挡住了什么目标（如果上面
         "理想状态设置"里声明了 `conditions`，可以参考但不要求精确
