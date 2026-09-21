@@ -1910,6 +1910,36 @@ def _problems_html(state) -> str:
     return f'<div class="ws-key-drivers">{"".join(parts)}</div>'
 
 
+def _should_prompt_desired_state_review(state) -> bool:
+    """判断"当前展示的这一步"是否应该提示用户"要不要重新看看理想
+    状态是否需要调整"（第十一轮 2.1 节，`next_doc/world_simulator_
+    eleventh_round_remaining_gaps_plan.md`，对照参考文档"理想状态
+    不该是固定终点，应该随能力/问题的变化而演化"）。
+
+    纯函数，不依赖 Streamlit，只读 `state.capabilities_gained`/
+    `state.problems` 两个字段，复用 `advance()` 已经落盘的这一步
+    状态，不查询任何额外数据、不引入新的持久化标记。
+
+    触发条件（任一满足即触发，不做"值不值得改"的启发式过滤——
+    这个判断按方案原文要求完全交给用户）：
+    - `capabilities_gained` 非空（这一步有新能力记录）；
+    - `problems` 里至少有一条 `status` 是 `"solved"` 或
+      `"transformed"`（这一步有问题状态发生了变化）。
+
+    格式不对的条目（非 dict）直接跳过，不报错、不计入判断。
+    """
+    capabilities = getattr(state, "capabilities_gained", None) or []
+    if capabilities:
+        return True
+    problems = getattr(state, "problems", None) or []
+    for item in problems:
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") in ("solved", "transformed"):
+            return True
+    return False
+
+
 def _capabilities_gained_html(state) -> str:
     """渲染这一步"这一步新增的能力"记录（第九轮批次二，2.3 节
     `Capability` 对象，`next_doc/world_simulator_problem_capability_
@@ -3183,6 +3213,18 @@ def page_detail() -> None:
             st.session_state["view"] = "list"
             st.rerun()
 
+    if _should_prompt_desired_state_review(current):
+        hint_l, hint_r = st.columns([5, 1])
+        with hint_l:
+            st.info(
+                "这一步出现了新能力/问题状态变化，要不要重新看看理想状态是否需要调整？"
+                "（理想状态该怎么变是你的判断，这里只是提醒，不会自动改写）"
+            )
+        with hint_r:
+            if st.button("⚙️ 去看看", key="jump_to_desired_state_settings"):
+                st.session_state["_jump_to_settings_desired_state"] = True
+                st.rerun()
+
     step_time_suffix = f" · {_html_text(current.time_label)}" if current.time_label else ""
     st.markdown(f"#### 当前状态（第 {current.step} 步{step_time_suffix}）", unsafe_allow_html=True)
     st.markdown(
@@ -3367,7 +3409,10 @@ def page_detail() -> None:
                     if report.caveats:
                         st.caption("；".join(report.caveats))
 
-    with st.expander("⚙️ 模拟设置（候选方向数量 / 时间粒度）"):
+    with st.expander(
+        "⚙️ 模拟设置（候选方向数量 / 时间粒度）",
+        expanded=st.session_state.pop("_jump_to_settings_desired_state", False),
+    ):
         cur_settings = manifest.settings or {}
         st.markdown(
             '<span class="ws-muted">改了之后从下一步推进开始生效，不会改写已经产生的历史。'

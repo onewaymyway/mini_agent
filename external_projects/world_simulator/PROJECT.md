@@ -3064,6 +3064,33 @@ plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增
   把观察结论直接写回本文件或 `next_doc/world_simulator_eleventh_
   round_remaining_gaps_plan.md` 第 6 节，不需要重新走一遍立项流程。
 
+- 2026-09-21（同日再追加）：**第十一轮 2.1**——按 `next_doc/
+  world_simulator_eleventh_round_remaining_gaps_plan.md` 第 2.1 节，
+  `desired_state` 动态提示（不自动改写，只做不打断流程的提示）。
+  1. **`app.py`**：新增纯函数 `_should_prompt_desired_state_review
+     (state)`——判断"当前展示的这一步"是否满足"`capabilities_gained`
+     非空"或"某条 `problems` 状态是 `solved`/`transformed`"任一
+     条件，只读 `advance()` 已落盘的字段，不新增任何持久化标记、
+     不做"值不值得改"的启发式过滤。`page_detail()` 在渲染"当前状态"
+     卡片之前，条件满足时展示一条 `st.info` 提示条 + "⚙️ 去看看"
+     按钮；点击后把 `st.session_state["_jump_to_settings_desired_
+     state"]` 置位并 `st.rerun()`，"⚙️ 模拟设置（候选方向数量 /
+     时间粒度）"折叠区读取并消费这个一次性标记，作为 `expanded=`
+     参数值展开自身（消费后立即弹出该 key，不做"已读/已处理"状态
+     追踪，同方案原文"范围克制"要求一致——用户看到但没点，下一步
+     再满足条件时继续提示是可以接受的）。
+  2. **`tests/test_desired_state_review_hint.py`**（新文件）：8 个
+     测试，覆盖空/缺省字段不触发、`capabilities_gained` 非空触发、
+     `problems.status` 为 `solved`/`transformed` 触发、
+     `emerging`/`active` 不触发、格式不对的条目被跳过不报错、多条
+     `problems` 中只要有一条满足即触发。
+  **验收**：新增 8 个测试，加上原有的全部通过（**511 passed**）；
+  `streamlit run app.py --server.headless true` 冒烟测试通过
+  （HTTP 200，无异常日志）；人工验证建议：实际推进出现一次能力/
+  问题状态变化，确认提示条出现且点击后设置区展开。
+  **风险确认**：纯 UI 提示 + 一个纯函数，未改动任何数据结构或
+  引擎逻辑，符合方案标注的"低风险"评估。
+
 - 2026-09-21（同日再追加）：**第十轮批次一**——按 `next_doc/
   world_simulator_tenth_round_problem_discovery_automation_plan.md`
   第 3 节，Problem Discovery Engine 从"手动挡"到"引擎自动运行"：
