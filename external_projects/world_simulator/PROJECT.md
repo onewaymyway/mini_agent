@@ -3091,6 +3091,45 @@ plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增
   **风险确认**：纯 UI 提示 + 一个纯函数，未改动任何数据结构或
   引擎逻辑，符合方案标注的"低风险"评估。
 
+- 2026-09-21（同日再追加）：**第十一轮 2.3**——按 `next_doc/
+  world_simulator_eleventh_round_remaining_gaps_plan.md` 第 2.3 节，
+  Capability 生命周期字段：`capabilities_gained` 新增可选字段
+  `maturity_stage`，对照参考文档第十二、十三、十六节"能力应该有
+  阶段性生命周期"，精简成六段枚举，纯存储 + 展示，不做自动推进。
+  1. **`state_model.py`**：`SimState.capabilities_gained` docstring
+     补充 `maturity_stage` 六选一说明：`lab`/`expert`/`developer`/
+     `consumer`/`cheap_at_scale`/`infrastructure`（参考文档九段里
+     最后两段"大规模应用"和"社会常态化"合并成 `infrastructure`
+     一段）。不认识的取值原样保留、不校验，同 `problems.status` 的
+     既有取舍一致；不填表示"这一步没有明确判断出所处阶段"。
+  2. **`app.py::_collect_capability_maturity_timeline()`**（新增）：
+     `_collect_problem_graph_nodes()` 的姐妹实现，按 `capability`
+     字段**精确字符串匹配**（不做模糊匹配/语义归并）遍历历史归并，
+     聚合出每项能力按出现顺序排列的 `maturity_stage` 时间线。
+  3. **`app.py::_render_capability_maturity_section()`**（新增）：
+     "📈 能力成熟度时间线"只读折叠区，一个能力一行展示阶段演进
+     （如"能力甲：实验室可行 → 开发者可用"），不引入 graphviz，
+     位置紧跟"🕸️ 问题关系图"折叠区之后。
+  4. **`app.py::_capabilities_gained_html()`**：这一步的能力标签
+     追加 `maturity_stage` 中文后缀（有值时），如
+     `🆙 能够自动生成周报 [开发者可用]`，未知取值原样展示、缺省不
+     追加任何后缀。
+  5. **`workflows/advance_step.yaml`/`workflows/world_evolve.yaml`**：
+     `capabilities_gained` 相关 prompt 段落补充 `maturity_stage`
+     六选一说明，判断不出来就留空。
+  **范围克制（按方案要求，不做的部分）**：不做自动阶段推进算法——
+  阶段变化完全由 LLM 在叙事里体现、由 skill 声明，代码只做存储和
+  展示；不做跨步骤的能力模糊匹配/语义归并——按 `capability` 精确
+  字符串匹配，"新能力 A"和"能力 A（升级版）"刻意展示成两个不同的
+  能力，交给用户自己判断。
+  **验收**：新增 10 个测试（`tests/test_capability_maturity_
+  timeline.py`：聚合函数覆盖空历史/格式非法跳过/字段缺省/按名称
+  精确匹配归并保序/不模糊合并/相同阶段重复不去重/多能力独立时间线
+  7 个；`_capabilities_gained_html()` 后缀渲染覆盖已知阶段/未知
+  取值原样展示/缺省不追加后缀 3 个），加上原有的全部通过（**527
+  passed**）。旧数据兼容性：`capabilities_gained` 缺失
+  `maturity_stage` 字段时聚合/展示都不报错，天然兼容。
+
 - 2026-09-21（同日再追加）：**第十一轮 2.2**——按 `next_doc/
   world_simulator_eleventh_round_remaining_gaps_plan.md` 第 2.2 节，
   Causal Engine 字段扩展：`causal_links` 新增可选字段 `delay_steps`/

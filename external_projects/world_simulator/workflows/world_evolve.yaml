@@ -201,8 +201,8 @@ steps:
       如果这一步的发展让角色/群体/组织真正获得了一项新的能力，可以
       额外给一个可选字段 `capabilities_gained`：一个数组，格式与
       用途同单次调用版本 `advance_step.yaml` 的说明（`capability`/
-      `enables`/`limitations` 三个字段）。这一步没有真正新增能力就
-      不用输出这个字段或给空数组。
+      `enables`/`limitations`/可选的 `maturity_stage` 四个字段）。
+      这一步没有真正新增能力就不用输出这个字段或给空数组。
 
       如果这一步的剧情/状态变化里，有某条因果线的"未来因果树"
       （`future_tree` 里的 `branches`）需要更新（某个分支被印证/被

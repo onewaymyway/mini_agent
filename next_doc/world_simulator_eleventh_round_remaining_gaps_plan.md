@@ -2,8 +2,8 @@
 
 > **状态**：实施中。第 1 节验证债务已明确记录"决定继续搁置"（见
 > 第 6 节结论与 `PROJECT.md` 对应变更记录）；第 4 节文档流程债务
-> 已完成；第 2.1、2.2 节已完成。第 2 节剩余代码任务按 2.3 → 2.4
-> 顺序分阶段实施，进度见各小节标注。
+> 已完成；第 2.1、2.2、2.3 节已完成。第 2 节剩余代码任务
+> （2.4）按顺序分阶段实施，进度见各小节标注。
 
 ## 0. 这份文档是什么
 
@@ -209,7 +209,15 @@
 ---
 
 ### 2.3 Capability 九段生命周期字段：`maturity_stage`
-### （对应第九轮 1.2 节，批次一）
+### （对应第九轮 1.2 节，批次一）【已完成】
+
+> **实施记录（2026-09-21）**：已按下方设计落地，详见 `PROJECT.md`
+> 对应变更记录、`state_model.py::SimState.capabilities_gained`
+> docstring、`app.py::_collect_capability_maturity_timeline()`/
+> `_render_capability_maturity_section()`/`_capabilities_gained_
+> html()`、`workflows/advance_step.yaml`/`workflows/world_evolve.
+> yaml`。新增 10 个测试（`tests/test_capability_maturity_
+> timeline.py`）。全量测试 527 个全部通过。
 
 **参考文档要求**（第十二、十三、十六节）：技术/能力应该有阶段性
 生命周期（不可行→实验室可行→专家可用→开发者可用→普通用户可用→

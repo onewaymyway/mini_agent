@@ -1940,6 +1940,20 @@ def _should_prompt_desired_state_review(state) -> bool:
     return False
 
 
+_MATURITY_STAGE_LABELS = {
+    "lab": "实验室可行",
+    "expert": "专家可用",
+    "developer": "开发者可用",
+    "consumer": "普通用户可用",
+    "cheap_at_scale": "成本足够低/规模化",
+    "infrastructure": "基础设施化/社会常态化",
+}
+"""`capabilities_gained[].maturity_stage` → 中文展示文案，仅覆盖
+`state_model.py` docstring 里列出的六个已知取值（第十一轮 2.3 节）；
+未知/空取值直接原样展示英文取值（或不展示），同 `_PROBLEM_STATUS_
+COLORS` 只覆盖已知取值、其余保底兜底的既有风格一致。"""
+
+
 def _capabilities_gained_html(state) -> str:
     """渲染这一步"这一步新增的能力"记录（第九轮批次二，2.3 节
     `Capability` 对象，`next_doc/world_simulator_problem_capability_
@@ -1947,6 +1961,10 @@ def _capabilities_gained_html(state) -> str:
     纯展示层、不做任何跨步骤累加——全量能力清单如果需要，由调用方
     自行遍历 `history` 收集，本函数只渲染*这一步*的记录。没有任何
     记录时返回空字符串。
+
+    第十一轮 2.3 节：标签文字追加 `maturity_stage`（有值时），格式
+    `🆙 能力描述 [阶段中文名]`，取值不认识时原样展示取值本身，缺省
+    不追加任何后缀（向后兼容旧数据）。
     """
     items = getattr(state, "capabilities_gained", None) or []
     parts = []
@@ -1965,9 +1983,14 @@ def _capabilities_gained_html(state) -> str:
             detail_lines.append(f'<div><b>让这些事变得可能：</b>{enables_text}</div>')
         if limitations_text:
             detail_lines.append(f'<div><b>目前的局限：</b>{limitations_text}</div>')
+        maturity_stage = str(item.get("maturity_stage") or "").strip()
+        stage_suffix = ""
+        if maturity_stage:
+            stage_label = _MATURITY_STAGE_LABELS.get(maturity_stage, maturity_stage)
+            stage_suffix = f" [{_html_text(stage_label)}]"
         parts.append(
             '<details class="ws-key-driver-details">'
-            f'<summary class="ws-key-driver-tag">🆙 {_html_text(capability)}</summary>'
+            f'<summary class="ws-key-driver-tag">🆙 {_html_text(capability)}{stage_suffix}</summary>'
             f'<div class="ws-key-driver-detail-body">{"".join(detail_lines)}</div>'
             "</details>"
         )
@@ -2865,6 +2888,93 @@ def _render_problem_graph_section(history: List) -> None:
             unsafe_allow_html=True,
         )
         st.graphviz_chart(_problem_graph_edges_to_dot(nodes))
+
+
+# ── 第十一轮 2.3 节：能力成熟度时间线（纯只读展示，姐妹实现）──────
+
+
+def _collect_capability_maturity_timeline(history: List) -> List[Dict[str, Any]]:
+    """遍历同一分支完整历史里出现过的所有 `capabilities_gained`，按
+    `capability` 字段**精确字符串匹配**去重归并（第十一轮 2.3 节，
+    `next_doc/world_simulator_eleventh_round_remaining_gaps_plan.
+    md`）——`_collect_problem_graph_nodes()` 的姐妹实现，同样的
+    "遍历历史收集节点"模式，但去重维度是能力名称而不是 `id`。
+
+    **不做**模糊匹配/语义归并——"新能力 A"和"能力 A（升级版）"会被
+    当成两个不同的能力展示，这是刻意的，交给用户自己判断是否是同一
+    个能力在演进（按方案原文"风险"一节的取舍）。
+
+    `capability` 为空字符串的条目直接跳过（格式不合法/被跳过），同
+    `_collect_problem_graph_nodes()` 对没有 `symptom` 条目的处理
+    风格一致。
+
+    Returns:
+        按能力首次出现顺序排列的列表，每项：
+        `{"capability": 能力描述, "latest": 最新一次完整记录（含
+        enables/limitations）, "maturity_stages": 按出现顺序排列的
+        非空 maturity_stage 列表（同一能力多次给出相同阶段不去重，
+        "反复确认还在这个阶段"本身也是有效信息）, "latest_maturity_
+        stage": 最新一条非空阶段，全程没给过则是空字符串}`。
+    """
+    order: List[str] = []
+    latest: Dict[str, Dict[str, Any]] = {}
+    stages: Dict[str, List[str]] = {}
+    for state in history or []:
+        for item in getattr(state, "capabilities_gained", None) or []:
+            if not isinstance(item, dict):
+                continue
+            capability = str(item.get("capability") or "").strip()
+            if not capability:
+                continue
+            if capability not in latest:
+                order.append(capability)
+                stages[capability] = []
+            latest[capability] = item
+            stage = str(item.get("maturity_stage") or "").strip()
+            if stage:
+                stages[capability].append(stage)
+    return [
+        {
+            "capability": name,
+            "latest": latest[name],
+            "maturity_stages": stages[name],
+            "latest_maturity_stage": stages[name][-1] if stages[name] else "",
+        }
+        for name in order
+    ]
+
+
+def _render_capability_maturity_section(history: List) -> None:
+    """渲染"📈 能力成熟度时间线"只读折叠区（第十一轮 2.3 节）：把
+    当前分支历史里出现过的所有能力，按名称归并后逐行展示其
+    `maturity_stage` 演进顺序。纯展示层，不引入 graphviz，一个能力
+    一行，写法/位置仿照 `_render_problem_graph_section()`。
+    """
+    nodes = _collect_capability_maturity_timeline(history)
+    with st.expander("📈 能力成熟度时间线（第十一轮 2.3 节，按能力名称归并，可选）"):
+        if not nodes:
+            st.markdown(
+                '<span class="ws-muted">当前分支历史里还没有出现过任何结构化能力记录'
+                "——继续推进，等 skill 在某一步给出 `capabilities_gained` 后再回来看。"
+                "</span>",
+                unsafe_allow_html=True,
+            )
+            return
+        st.markdown(
+            '<span class="ws-muted">按 `capability` 精确字符串匹配归并（不做模糊'
+            "匹配/语义归并，措辞不同会被当成不同能力展示）；箭头方向是这项能力"
+            "`maturity_stage` 的出现顺序，没有给出过阶段的能力只展示名称。</span>",
+            unsafe_allow_html=True,
+        )
+        for node in nodes:
+            capability = _html_text(node["capability"])
+            stages = node["maturity_stages"]
+            if stages:
+                stage_labels = [_MATURITY_STAGE_LABELS.get(s, s) for s in stages]
+                timeline_text = " → ".join(_html_text(s) for s in stage_labels)
+                st.markdown(f"- 🆙 **{capability}**：{timeline_text}", unsafe_allow_html=True)
+            else:
+                st.markdown(f"- 🆙 **{capability}**：（未声明生命周期阶段）", unsafe_allow_html=True)
 
 
 def _render_causal_graph_section(history: List, *, manifest=None) -> None:
@@ -3873,6 +3983,11 @@ def page_detail() -> None:
     # 不是"建议阶段还没被采纳的候选"，所以是独立的折叠区而不是嵌套
     # 在上面那个折叠区内部。
     _render_problem_graph_section(history)
+
+    # 第十一轮 2.3 节：能力成熟度时间线，紧跟问题关系图之后——两者都是
+    # "遍历完整历史、按名称/id 归并展示"的纯只读折叠区，位置相邻方便
+    # 用户对照"问题解决进度"和"能力演进进度"。
+    _render_capability_maturity_section(history)
 
     # ── 控制条：暂停/恢复/结束 ──
     ctrl1, ctrl2, ctrl3 = st.columns(3)
