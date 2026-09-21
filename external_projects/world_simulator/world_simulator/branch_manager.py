@@ -368,6 +368,155 @@ def merge_branch(
     return last_state.step
 
 
+@dataclasses.dataclass
+class ExploreRouteResult:
+    """`explore_branches()` 里单条候选路线的探索结果（第十二轮方案第 1
+    节 Exploration Mode）。"""
+
+    route_label: str
+    """这条路线的展示用标签——取自 `choice_option_id` 对应候选选项的
+    `label`，或 `custom_option["label"]`，供调用方（`app.py`）展示，
+    不参与任何比较逻辑。"""
+
+    ok: bool
+    """这条路线是否探索成功（`fork_branch()` + `advance()` 都没有
+    抛异常）。"""
+
+    branch: Optional[str] = None
+    """成功时，新生成的分支 id；失败时为 `None`（失败路线不留下半
+    成品分支，见 `explore_branches()` docstring）。"""
+
+    error: Optional[str] = None
+    """失败时的原因说明；成功时为 `None`。"""
+
+
+def explore_branches(
+    cfg,
+    workspace_root: Path,
+    data_dir: Path,
+    sim_id: str,
+    *,
+    from_step: int,
+    routes: List[Dict[str, Any]],
+    source_branch: str = "main",
+) -> Dict[str, ExploreRouteResult]:
+    """批量分支探索（第十二轮方案第 1 节，对应参考文档"决策的价值不是
+    改变一个指标，而是选择一个未来世界"）。
+
+    给定 `from_step`/`source_branch` 这一个共同的历史起点，和一组候选
+    "路线"，对每条路线依次：`fork_branch(from_step=..., source_branch=
+    ..., switch=False)` 开一条独立分支 → 临时把活跃分支切过去 →
+    `engine.advance()` 推进一步（喂入这条路线对应的
+    `choice_option_id`/`custom_option`）→ 切回原来的活跃分支。
+
+    只做向前一步，不做多步递归自动探索——分支数量会随步数指数增长，
+    超出这个函数要解决的问题范围；用户如果想让某条探索出来的分支
+    继续往前跑，用已有的 `fast_forward()` 在那条分支上单独操作即可。
+
+    每条路线的推进互相独立、互不影响：某条路线 `advance()` 失败
+    （LLM 报错/校验失败）不影响其它路线的探索结果，也不留下一条
+    半成品分支——失败时会把已经为这条路线创建的分支删除
+    （`delete_branch()`）。
+
+    这个函数是纯粹在已有 `fork_branch`/`advance`/`delete_branch`/
+    `switch_branch` 之上的编排，不重复实现这几个函数已有的逻辑。
+
+    Args:
+        routes: 每一项是一条候选路线，形如
+            `{"choice_option_id": "..."}` 或
+            `{"custom_option": {"label": ..., "description": ...}}`——
+            与 `engine.advance()` 的同名参数一一对应，两者互斥（同时
+            给出时以 `custom_option` 为准，与 `advance()` 一致，不
+            额外报错）；可选 `route_label` 覆盖展示用标签（不给的话
+            从 `choice_option_id` 对应的当前候选选项标签或
+            `custom_option["label"]` 推导）。
+        from_step / source_branch: 所有路线共享的分叉起点。
+
+    Returns:
+        `{候选路线在 routes 里的序号（字符串形式）: ExploreRouteResult}`
+        ——用序号而不是分支 id 做 key，因为失败路线没有分支 id；
+        调用方（`app.py`）需要按 `routes` 原始顺序展示结果时，用这个
+        序号即可。
+
+    Raises:
+        BranchError: `routes` 为空——给出明确提示而不是静默不做任何事。
+    """
+    if not routes:
+        raise BranchError("候选路线为空，没有可探索的内容")
+
+    from world_simulator.engine import SimEngineError, advance as engine_advance
+    from world_simulator.engine.errors import SimAlreadyEndedError, SimPausedError
+
+    store = SimStore.for_root(data_dir, sim_id)
+    original_manifest = store.load_manifest()
+    original_branch = original_manifest.branch
+
+    # 先取一份 from_step 那一步的候选选项列表，用于给没有显式
+    # route_label 的 choice_option_id 路线推导展示标签——只是展示
+    # 用途，取不到（比如 from_step 对应节点没有 options）不影响探索
+    # 本身，静默退化成用 choice_option_id 原样当标签。
+    option_labels: Dict[str, str] = {}
+    try:
+        source_history = load_branch_timeline(data_dir, sim_id, source_branch)
+        anchor = next((s for s in source_history if s.step == from_step), None)
+        if anchor is not None:
+            option_labels = {opt.id: opt.label for opt in (anchor.options or [])}
+    except Exception:  # noqa: BLE001 — 标签推导失败不该拖垮整个探索
+        option_labels = {}
+
+    results: Dict[str, ExploreRouteResult] = {}
+    for idx, route in enumerate(routes):
+        key = str(idx)
+        choice_option_id = route.get("choice_option_id")
+        custom_option = route.get("custom_option")
+        route_label = str(
+            route.get("route_label")
+            or (custom_option or {}).get("label")
+            or option_labels.get(choice_option_id)
+            or choice_option_id
+            or f"路线 {idx + 1}"
+        )
+
+        new_branch: Optional[str] = None
+        try:
+            new_branch = fork_branch(
+                data_dir, sim_id,
+                from_step=from_step, source_branch=source_branch, switch=True,
+            )
+            engine_advance(
+                cfg, workspace_root, data_dir, sim_id,
+                choice_option_id=choice_option_id,
+                custom_option=custom_option,
+                chosen_by="user",
+            )
+        except (BranchError, SimEngineError, SimAlreadyEndedError, SimPausedError) as exc:
+            if new_branch is not None:
+                # 已经切到了这条失败路线的分支，先切回去，才能删除它
+                # （`delete_branch()` 不允许删除当前活跃分支）。
+                switch_branch(data_dir, sim_id, original_branch)
+                delete_branch(data_dir, sim_id, new_branch)
+            results[key] = ExploreRouteResult(route_label=route_label, ok=False, error=str(exc))
+            continue
+        except Exception as exc:  # noqa: BLE001 — 单条路线的未预期异常不该拖垮其它路线
+            if new_branch is not None:
+                switch_branch(data_dir, sim_id, original_branch)
+                delete_branch(data_dir, sim_id, new_branch)
+            results[key] = ExploreRouteResult(route_label=route_label, ok=False, error=str(exc))
+            continue
+
+        results[key] = ExploreRouteResult(route_label=route_label, ok=True, branch=new_branch)
+
+    # 无论每条路线成功与否，探索结束后都切回探索开始前的活跃分支——
+    # 探索是"生成多个可能世界供查看/对比"，不代表用户想切走当前
+    # 正在看的分支（同 `autopilot.run_comparison_experiment()` 的
+    # 既有取舍）。
+    current_manifest = store.load_manifest()
+    if current_manifest.branch != original_branch:
+        switch_branch(data_dir, sim_id, original_branch)
+
+    return results
+
+
 def compare_timelines(
     data_dir: Path, entries: List[Tuple[str, str]]
 ) -> Dict[str, Any]:

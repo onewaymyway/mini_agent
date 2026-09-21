@@ -4284,6 +4284,103 @@ def page_detail() -> None:
                     if st.button(f"选择「{opt.label}」", key=f"choose_{opt.id}"):
                         chosen_id = opt.id
 
+            # ── 批量探索（Exploration Mode，第十二轮方案第 1 节）：
+            # 把当前候选选项（默认）或 `problems[].candidate_solutions`
+            # 各自开一条独立分支，一次性推进一步，回答"如果选另一条
+            # 路会怎样"，而不是每次只能手动开一条。执行前需要二次
+            # 确认——会真实发起多次 LLM 调用，同项目一贯"自动化操作
+            # 消耗成本前需要用户确认"的风格。
+            with st.expander("🧭 批量探索所有候选（一次性生成多个可能世界）"):
+                st.markdown(
+                    '<span class="ws-muted">给每一个候选方向各开一条独立分支，各自推进一步，'
+                    "跑完后可以在「对比视图」里并排查看几条路线分别导致了什么样的世界。"
+                    "这不会影响当前分支，也不会自动选择/合并任何结果，看完之后你可以自己决定"
+                    "要不要切过去或合并某条分支。</span>",
+                    unsafe_allow_html=True,
+                )
+                explore_source = st.radio(
+                    "路线来源",
+                    ["当前候选选项", "问题的候选解决方向（如果有）"],
+                    key="explore_branches_source",
+                    horizontal=True,
+                )
+                explore_routes: List[Dict[str, Any]] = []
+                if explore_source == "当前候选选项":
+                    explore_routes = [{"choice_option_id": opt.id, "route_label": opt.label} for opt in ordered_options]
+                else:
+                    candidate_pool: List[str] = []
+                    for item in current.problems or []:
+                        for c in (item.get("candidate_solutions") or []) if isinstance(item, dict) else []:
+                            if c and c not in candidate_pool:
+                                candidate_pool.append(c)
+                    if not candidate_pool:
+                        st.markdown('<span class="ws-muted">当前没有声明 `candidate_solutions` 的未解决问题。</span>', unsafe_allow_html=True)
+                    else:
+                        picked = st.multiselect("勾选想探索的候选解决方向", candidate_pool, key="explore_branches_candidates")
+                        explore_routes = [
+                            {"custom_option": {"label": c, "description": ""}, "route_label": c} for c in picked
+                        ]
+
+                if explore_routes:
+                    st.markdown(
+                        f'<span class="ws-muted">这会为 {len(explore_routes)} 条路线各发起 1 次真实 LLM 调用'
+                        f"（共 {len(explore_routes)} 次），确认后才会真正触发。</span>",
+                        unsafe_allow_html=True,
+                    )
+                    explore_confirmed = st.checkbox(
+                        f"我确认要发起 {len(explore_routes)} 次 LLM 调用进行批量探索",
+                        key="explore_branches_confirm",
+                    )
+                    if st.button("🧭 开始批量探索", key="explore_branches_button", disabled=not explore_confirmed):
+                        with st.spinner(f"正在探索 {len(explore_routes)} 条路线..."):
+                            try:
+                                cfg = _load_cfg()
+                                explore_results = bm.explore_branches(
+                                    cfg, PROJECT_ROOT, DATA_DIR, sim_id,
+                                    from_step=current.step, source_branch=manifest.branch,
+                                    routes=explore_routes,
+                                )
+                            except bm.BranchError as exc:
+                                st.error(f"批量探索失败：{exc}")
+                            except ImportError as exc:
+                                st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
+                            else:
+                                st.session_state["explore_branches_last_result"] = {
+                                    "sim_id": sim_id,
+                                    "from_step": current.step,
+                                    "results": [
+                                        {
+                                            "route_label": r.route_label, "ok": r.ok,
+                                            "branch": r.branch, "error": r.error,
+                                        }
+                                        for r in explore_results.values()
+                                    ],
+                                }
+                                # 探索出来的成功分支自动加入「对比视图」的选择列表
+                                # （复用已有 compare_selection + compare_timelines()），
+                                # 用户可以直接去对比视图查看。
+                                selection = st.session_state.setdefault("compare_selection", [])
+                                for r in explore_results.values():
+                                    if r.ok and r.branch and (sim_id, r.branch) not in selection:
+                                        selection.append((sim_id, r.branch))
+                                st.rerun()
+
+                last_explore = st.session_state.get("explore_branches_last_result")
+                if last_explore and last_explore.get("sim_id") == sim_id:
+                    ok_count = sum(1 for r in last_explore["results"] if r["ok"])
+                    fail_count = len(last_explore["results"]) - ok_count
+                    st.markdown(
+                        f'<div class="ws-muted">上次批量探索（从第 {last_explore.get("from_step")} 步）：'
+                        f'成功 {ok_count} 条，失败 {fail_count} 条，已把成功的分支加入下方「对比视图」的'
+                        "选择列表。</div>",
+                        unsafe_allow_html=True,
+                    )
+                    for r in last_explore["results"]:
+                        if r["ok"]:
+                            st.markdown(f'✅ 「{_html_text(r["route_label"])}」→ 分支 `{r["branch"]}`', unsafe_allow_html=True)
+                        else:
+                            st.markdown(f'❌ 「{_html_text(r["route_label"])}」→ 探索失败：{_html_text(r["error"] or "")}', unsafe_allow_html=True)
+
         default_clicked = st.button("按默认走向推进")
 
         custom_clicked = False

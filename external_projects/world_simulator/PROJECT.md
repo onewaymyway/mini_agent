@@ -3307,3 +3307,28 @@ plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增
   至此第十轮问题清单（`next_doc/world_simulator_tenth_round_
   problem_discovery_automation_plan.md`）的三个批次全部完成，"信号
   触发扫描节奏"这一个可选加强项留待后续观察真实使用效果后再决定。
+
+- 2026-09-22：**第十二轮第 1 节**——按 `next_doc/world_simulator_
+  twelfth_round_exploration_and_deferred_directions_plan.md` 第 1
+  节，Exploration Mode（批量分支探索）。
+  1. **`branch_manager.py`**：新增 `explore_branches()`——给定
+     `sim_id`/`from_step`/`source_branch`/一组"路线"
+     （`choice_option_id` 或 `custom_option`），对每条路线依次
+     `fork_branch(switch=True)` → `engine.advance()` → 切回原分支，
+     互相独立、失败路线不留半成品分支（`delete_branch()` 清理）。
+     纯粹是在已有 `fork_branch`/`advance`/`delete_branch`/
+     `switch_branch` 之上的编排，不重复实现这几个函数已有的逻辑。
+     新增 `ExploreRouteResult` dataclass 描述单条路线的结果
+     （`route_label`/`ok`/`branch`/`error`）。
+  2. **`app.py`**："推进下一步"候选选项列表下新增"🧭 批量探索所有
+     候选"折叠区：路线来源可选"当前候选选项"或"问题的候选解决方向"
+     （`problems[].candidate_solutions`）；执行前需要勾选"我确认要
+     发起 N 次 LLM 调用"才能点击"开始批量探索"（同 `fast_forward`
+     一贯的成本确认交互）；探索完成后把成功的分支自动加入"对比
+     视图"的 `compare_selection`，并展示每条路线的成功/失败结果。
+  **范围克制（按方案要求，不做的部分）**：不做多步递归自动探索
+  （只做向前一步）；不做"自动结束/自动评分选出最优分支"；不做
+  "探索出来的分支自动合并回主线"。
+  **验收**：新增 `tests/test_explore_branches.py`（4 个测试：全部
+  成功/部分失败不留半成品分支/候选路线为空报错/`custom_option`
+  路线），加上原有的全部通过（**545 passed**）。
