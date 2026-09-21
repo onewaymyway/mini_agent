@@ -1965,6 +1965,11 @@ def _capabilities_gained_html(state) -> str:
     第十一轮 2.3 节：标签文字追加 `maturity_stage`（有值时），格式
     `🆙 能力描述 [阶段中文名]`，取值不认识时原样展示取值本身，缺省
     不追加任何后缀（向后兼容旧数据）。
+
+    第十二轮方案第 3 节：`first_occurrence == True` 时标签图标换成
+    ⭐ 并追加"首次达成"字样；`behavior_change`/`structural_impact`
+    非空时作为补充说明加进展开详情，缺省不影响任何已有展示（向后
+    兼容）。
     """
     items = getattr(state, "capabilities_gained", None) or []
     parts = []
@@ -1978,25 +1983,92 @@ def _capabilities_gained_html(state) -> str:
         enables_text = "、".join(_html_text(str(e)) for e in enables if str(e).strip())
         limitations = item.get("limitations") or []
         limitations_text = "、".join(_html_text(str(x)) for x in limitations if str(x).strip())
+        behavior_change = str(item.get("behavior_change") or "").strip()
+        structural_impact = str(item.get("structural_impact") or "").strip()
         detail_lines = []
         if enables_text:
             detail_lines.append(f'<div><b>让这些事变得可能：</b>{enables_text}</div>')
         if limitations_text:
             detail_lines.append(f'<div><b>目前的局限：</b>{limitations_text}</div>')
+        if behavior_change:
+            detail_lines.append(f'<div><b>改变的行为模式：</b>{_html_text(behavior_change)}</div>')
+        if structural_impact:
+            detail_lines.append(f'<div><b>组织/结构层面的影响：</b>{_html_text(structural_impact)}</div>')
         maturity_stage = str(item.get("maturity_stage") or "").strip()
         stage_suffix = ""
         if maturity_stage:
             stage_label = _MATURITY_STAGE_LABELS.get(maturity_stage, maturity_stage)
             stage_suffix = f" [{_html_text(stage_label)}]"
+        first_occurrence = bool(item.get("first_occurrence"))
+        icon = "⭐" if first_occurrence else "🆙"
+        first_suffix = "（首次达成）" if first_occurrence else ""
         parts.append(
             '<details class="ws-key-driver-details">'
-            f'<summary class="ws-key-driver-tag">🆙 {_html_text(capability)}{stage_suffix}</summary>'
+            f'<summary class="ws-key-driver-tag">{icon} {_html_text(capability)}{first_suffix}{stage_suffix}</summary>'
             f'<div class="ws-key-driver-detail-body">{"".join(detail_lines)}</div>'
             "</details>"
         )
     if not parts:
         return ""
     return f'<div class="ws-key-drivers">{"".join(parts)}</div>'
+
+
+def _collect_first_occurrence_milestones(history: List) -> List[Dict[str, Any]]:
+    """遍历历史，收集所有 `first_occurrence == True` 的
+    `capabilities_gained` 记录（第十二轮方案第 3 节"⭐ 首次达成的
+    里程碑"折叠区），按出现顺序返回，不去重、不做跨步骤归并——
+    同一项能力理论上不应该被标注两次"首次"，但这是声明式字段，标注
+    错了不做任何纠正，如实展示 LLM/skill 给出的原始记录。
+
+    每一项：`{"step": int, "time_label": str, "capability": str,
+    "behavior_change": str, "structural_impact": str}`。没有任何
+    `first_occurrence` 记录的历史返回空列表。
+    """
+    milestones: List[Dict[str, Any]] = []
+    for state in history or []:
+        items = getattr(state, "capabilities_gained", None) or []
+        for item in items:
+            if not isinstance(item, dict) or not item.get("first_occurrence"):
+                continue
+            capability = str(item.get("capability", "") or "").strip()
+            if not capability:
+                continue
+            milestones.append(
+                {
+                    "step": getattr(state, "step", None),
+                    "time_label": getattr(state, "time_label", None) or "",
+                    "capability": capability,
+                    "behavior_change": str(item.get("behavior_change") or "").strip(),
+                    "structural_impact": str(item.get("structural_impact") or "").strip(),
+                }
+            )
+    return milestones
+
+
+def _render_first_occurrence_milestones(history: List) -> None:
+    """渲染"⭐ 首次达成的里程碑"只读折叠区（第十二轮方案第 3 节）：
+    与 `achievements.py` 固定的 6 个游戏化徽章并列展示、互不影响、
+    不产生任何联动——徽章是预设的固定里程碑，这里是"任意一次真正
+    的历史性突破"，两套机制服务的场景不同。没有任何记录时不渲染
+    折叠区（避免"看起来有内容但其实是空的"）。
+    """
+    milestones = _collect_first_occurrence_milestones(history)
+    if not milestones:
+        return
+    with st.expander(f"⭐ 首次达成的里程碑（第十二轮方案第 3 节，共 {len(milestones)} 项）"):
+        for m in milestones:
+            label = m["time_label"] or f'第 {m["step"]} 步'
+            detail_lines = []
+            if m["behavior_change"]:
+                detail_lines.append(f'<div><b>改变的行为模式：</b>{_html_text(m["behavior_change"])}</div>')
+            if m["structural_impact"]:
+                detail_lines.append(f'<div><b>组织/结构层面的影响：</b>{_html_text(m["structural_impact"])}</div>')
+            st.markdown(
+                f'<div class="ws-card"><div class="ws-card-title">⭐ {_html_text(label)}：'
+                f'{_html_text(m["capability"])}</div>'
+                + "".join(detail_lines) + "</div>",
+                unsafe_allow_html=True,
+            )
 
 
 def _tree_updates_html(state, causal_lines_meta: Optional[List[Dict[str, Any]]] = None) -> str:
@@ -4008,6 +4080,11 @@ def page_detail() -> None:
     # "遍历完整历史、按名称/id 归并展示"的纯只读折叠区，位置相邻方便
     # 用户对照"问题解决进度"和"能力演进进度"。
     _render_capability_maturity_section(history)
+
+    # 第十二轮方案第 3 节：⭐ 首次达成的里程碑，紧跟能力成熟度时间线
+    # 之后——同样是遍历完整历史的只读折叠区，与 `achievements.py`
+    # 固定徽章并列、互不影响。
+    _render_first_occurrence_milestones(history)
 
     # ── 控制条：暂停/恢复/结束 ──
     ctrl1, ctrl2, ctrl3 = st.columns(3)

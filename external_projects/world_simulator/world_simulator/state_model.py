@@ -717,6 +717,39 @@ class SimState:
     stage`——`app.py::_collect_capability_maturity_timeline()` 按
     出现顺序遍历历史聚合成时间线，供展示层查看某项能力的阶段演进，
     不影响 `capabilities_gained` 本身"只记录这一步新增"的存储语义。
+
+    每一项再额外支持三个可选字段（第十二轮方案第 3 节，合并处理
+    Reality Renderer 独立分层 + 五层输出框架 + First Possible Event
+    的最小可行版本，对照参考文档第二十八、二十九、四十、四十一节；
+    这三个方向此前在 `world_simulator_problem_capability_gap_plan.md`
+    第 3 节被评估为"不建议现在做"，本轮用户明确要求推进——不新建
+    独立的渲染层/计算引擎，只是在已有 `capabilities_gained` 结构上
+    加展示层字段，见 `PROJECT.md` 对应条目"不做的部分"说明）：
+
+    - `first_occurrence`：布尔值（默认 `False`），标注"这是不是这次
+      模拟历史上第一次达成这个能力"——这是 First Possible Event
+      "现实变化往往是过去做不到的事情第一次变得可行"的最小化实现：
+      不新建独立的 Event Engine，复用已有结构加一个标记位，完全
+      由 LLM/skill 声明，`engine.py` 不做任何自动判断/校验（同
+      `problems.status` 等既有字段一贯的取舍）。**不**和
+      `achievements.py`（固定 6 个游戏化徽章）的既有机制合并或产生
+      任何联动——两套机制服务的场景不同：徽章是预设的固定里程碑，
+      这里是"任意一次真正意义上的历史性突破"。
+    - `behavior_change`：一句话（可选），这个能力具体改变了什么
+      行为模式，对应 Capability → Application → Behavior → Impact
+      → Structure 五层框架的 Behavior 层。
+    - `structural_impact`：一句话（可选），是否已经观察到组织/产业
+      结构层面的变化，收敛 Impact/Structure 两层为一个字段（叙事
+      层面这两层界限往往很难清晰区分，同 `maturity_stage`
+      `"infrastructure"` 合并"社会常态化"的既有取舍一致）。
+
+    `capability`/`enables`/`behavior_change`/`structural_impact` 四个
+    字段合起来近似覆盖五层框架的展示需求，仍然挂在同一个
+    `capabilities_gained` 条目下，不做成独立对象、不新建数据模型；
+    `narrative`/`next_vars` 继续在同一次 LLM 调用里一起产出，不做
+    强制分离渲染，也不做"检测 narrative 和 vars 是否对得上"的一致性
+    校验——这仍然是参考文档想解决但本轮不做的核心问题，这里只做了
+    展示层标注。三个字段都缺省时不影响任何已有行为，向后兼容。
     """
 
     skill_version: str = ""

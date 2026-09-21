@@ -3360,3 +3360,37 @@ plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增
   （`per_entity` 需要 `multi_entity_mode` 才生效、与全局
   `conditions` 共存、跳过非法条目），加上原有的全部通过
   （**544 passed**）。
+
+- 2026-09-22（同日再追加）：**第十二轮第 3 节**——按 `next_doc/
+  world_simulator_twelfth_round_exploration_and_deferred_directions_
+  plan.md` 第 3 节，Reality Renderer 独立分层 + 五层输出框架 +
+  First Possible Event（合并处理的最小可行版本，不新建独立渲染层/
+  计算引擎）。
+  1. **`state_model.py`**：`capabilities_gained[]` docstring 补充
+     三个新的可选字段：`first_occurrence`（布尔，标注"这是不是这次
+     模拟历史上第一次达成"）、`behavior_change`（一句话，对应五层
+     框架 Behavior 层）、`structural_impact`（一句话，收敛
+     Impact/Structure 两层）。`capabilities_gained` 本身透传存储，
+     不需要改 `from_dict`/`to_dict` 代码。
+  2. **`app.py`**：
+     - `_capabilities_gained_html()` 更新：`first_occurrence ==
+       True` 时图标从 🆙 换成 ⭐ 并追加"（首次达成）"字样；
+       `behavior_change`/`structural_impact` 非空时作为补充说明
+       加进展开详情。
+     - 新增 `_collect_first_occurrence_milestones()`/
+       `_render_first_occurrence_milestones()`，渲染"⭐ 首次达成的
+       里程碑"只读折叠区，紧跟"能力成熟度时间线"之后，与
+       `achievements.py` 固定徽章机制并列展示、互不联动。
+  3. **`workflows/advance_step.yaml`**：`capabilities_gained` prompt
+     段落补充三个新字段的判断依据，明确"不确定就不填，不要为了
+     凑内容而每步都编造"；`world_evolve.yaml` 通过既有的"格式同
+     单次调用版本"引用自动继承，不需要重复改。
+  **不做的部分（明确记录，按方案要求）**：不新建"内部状态→结构化
+  事件→渲染"的中间表示层；`narrative`/`next_vars` 继续在同一次 LLM
+  调用里一起产出，不做强制分离渲染；不做"检测 narrative 和 vars
+  是否对得上"的一致性校验；不做自动判断"是不是第一次"；不和
+  `achievements.py` 的固定徽章机制合并或产生联动。
+  **验收**：新增 `tests/test_first_occurrence_milestones.py`
+  （8 个测试：三个新字段缺省/部分声明/全部声明、⭐ 标记与首次达成
+  字样、里程碑聚合按出现顺序/跳过非法条目/无记录返回空列表），
+  加上原有的全部通过（**552 passed**）。

@@ -1,7 +1,7 @@
 # world_simulator 改进计划：探索模式新差距 + 此前搁置方向一并推进
 # （第十二轮）
 
-> **状态**：按第 8 节实施顺序逐阶段推进中。第 1、2 节已完成，
+> **状态**：按第 8 节实施顺序逐阶段推进中。第 1、2、3 节已完成，
 > 详见各节末尾的实施记录；其余各节仍在规划中，尚未开始实施。
 
 ## 0. 这份文档是什么
@@ -183,6 +183,7 @@ desired_state_hint()` 在 `per_entity` 非空时产出的提示包含每个
 
 ## 3. Reality Renderer 独立分层 + 五层输出框架 + First Possible
 ## Event（合并处理，对应参考文档第二十八、二十九、四十、四十一节）
+## 【已完成】
 
 > 这三个方向此前在 `world_simulator_problem_capability_gap_plan.md`
 > 第 3 节被分别列为"不建议现在做"（原因分别是"改动成本高，等真实
@@ -269,6 +270,8 @@ Renderer"）：不新建"内部状态 → 结构化事件 → 渲染成叙事"�
 "⭐ 首次达成的里程碑"折叠区聚合逻辑测试（覆盖历史里有/无
 `first_occurrence` 记录两种情况）；`behavior_change`/
 `structural_impact` 缺省时不影响任何已有展示，向后兼容。
+
+**实施记录（2026-09-22）**：已按上述设计完成实施。`state_model.py` docstring 补充三个新字段；`app.py::_capabilities_gained_html()` 增加 ⭐ 首次达成标记与`behavior_change`/`structural_impact` 展示，新增`_collect_first_occurrence_milestones()`/`_render_first_occurrence_milestones()` 渲染独立折叠区；`workflows/advance_step.yaml` 补充三个新字段的 prompt 判断依据。新增 8 个测试（`tests/test_first_occurrence_milestones.py`），加上原有的全部通过（552 passed）。详见 `PROJECT.md` 对应条目。
 
 ---
 
