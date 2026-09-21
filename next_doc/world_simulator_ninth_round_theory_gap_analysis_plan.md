@@ -7,6 +7,12 @@
 > 逐条对照用户提供的参考文档《万能模拟器到底如何构建？——从世界状态、
 > 问题空间到通用现实模拟引擎》，找出**参考文档已经明确提出、但代码
 > 里还没有 / 只有最小版本**的部分。不要求马上实施，先把全貌摆出来。
+>
+> **后续进展**：1.1 节已经通过 `next_doc/world_simulator_tenth_
+> round_problem_discovery_automation_plan.md` 三个批次全部实施
+>完成。1.2～1.6、第 2 节验证债务、第 3 节末文档流程债务的具体
+> 执行方案见 `next_doc/world_simulator_eleventh_round_remaining_
+> gaps_plan.md`（第十一轮，待实施）。
 
 ---
 
