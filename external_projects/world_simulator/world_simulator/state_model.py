@@ -311,6 +311,15 @@ class SimState:
     唯一正确答案，engine 没法像下限那样直接夹值，只能留痕供用户判断
     "这一步的资源转移不太守恒，可能是 AI 算错了或者有未说明的损耗"。
 
+    第八轮批次二（`next_doc/world_simulator_c_category_precision_
+    upgrade_improvement_plan.md` 第 3 节）新增 `production`（持续产出）
+    关系的不一致项，形如 `{"kind": "production", "field":
+    "resources.wood", "amount_per_step": 5, "actual_delta": 1}`：用
+    `kind` key（而不是 `from`/`to`）区分，展示层按是否有 `kind` 字段
+    判断走哪种渲染。只有声明了 `amount_per_step` 的 `production`
+    关系才会参与数值核对、产生这一种不一致项；未声明速率的
+    `production` 关系永远不出现在这里。
+
     默认空列表：`resource_relations` 未声明、这一步没有超出容差时都是
     空列表，不影响旧数据/其它模板的行为（向后兼容）。
     """
@@ -712,18 +721,34 @@ class SimManifest:
       "inventory.value", "tolerance": 0.1}`：`from`/`to` 是 `vars` 里
       的字段路径（支持一层嵌套，同 `resource_fields`），`tolerance` 是
       允许的相对误差比例（默认 0.1，即允许 10% 的"汇率损耗/交易成本"
-      之类的合理偏差，不强制精确守恒）。**只做 `transfer`（转移，两个
-      字段的变化量应大致相反）这一种关系类型**，`production`（生产/
-      持续产出）暂不支持。`engine.advance()` 每次落盘 `next_vars` 前
-      会对这里声明的每条关系做一致性检查：**不拒绝推进、不修改任何
-      数值**（和 `resource_fields` 的下限校验不同，这里没有"应该是
-      多少"的唯一正确答案），不一致时记入
-      `SimState.relation_violations` 供时间线展示"不一致提示"。留空
-      （默认）表示不做任何检查，行为与引入这个功能之前完全一致，向后
-      兼容。由 `generate_scenario` 阶段的 skill 在生成初始 `vars` 时
-      给出建议值（见 `spec_generator.ScenarioDraft.resource_relations`，
-      写法同 `resource_fields`），用户在创建向导里可以看到并编辑，也
-      可以在详情页"模拟设置"里随时增删。
+      之类的合理偏差，不强制精确守恒）。支持两种关系类型：
+      - `"transfer"`（转移，两个字段的变化量应大致相反，阶段十六）：
+        如上例。
+      - `"production"`（持续产出，第八轮批次二，`next_doc/
+        world_simulator_c_category_precision_upgrade_improvement_
+        plan.md` 第 3 节）：形如 `{"type": "production", "field":
+        "resources.wood", "amount_per_step": 5, "source_line_id":
+        "line_forestry", "tolerance": 0.1}`。`field` 是受影响的资源
+        字段路径（必填）；`amount_per_step` 是声明的每步理论产出
+        速率（可选，不填表示只标记这是一个持续产出关系，不做速率
+        层面的核对）；`source_line_id` 是产出来源对应的因果线 id
+        （可选，不填表示背景产出，不归因到具体某条线，本字段目前
+        只做记录，不参与任何校验或路由）。
+      `engine.advance()` 每次落盘 `next_vars` 前会对这里声明的每条
+      关系做一致性检查：**不拒绝推进、不修改任何数值**（和
+      `resource_fields` 的下限校验不同，这里没有"应该是多少"的唯一
+      正确答案），不一致时记入 `SimState.relation_violations` 供
+      时间线展示"不一致提示"（`transfer` 的不一致项形如
+      `{"from":..., "to":..., "delta_from":..., "delta_to":...}`；
+      `production` 的不一致项形如 `{"kind": "production", "field":
+      ..., "amount_per_step":..., "actual_delta":...}`，用 `kind`
+      key 区分，未声明 `amount_per_step` 的 `production` 关系不会
+      产生任何不一致项）。留空（默认）表示不做任何检查，行为与引入
+      这个功能之前完全一致，向后兼容。由 `generate_scenario` 阶段的
+      skill 在生成初始 `vars` 时给出建议值（见 `spec_generator.
+      ScenarioDraft.resource_relations`，写法同 `resource_fields`），
+      用户在创建向导里可以看到并编辑，也可以在详情页"模拟设置"里
+      随时增删。
     - `multi_entity_mode`：布尔值（默认 `False`），声明这次模拟是否
       采用"多主体私有信念"结构（阶段十七，`next_doc/
       world_simulator_universal_world_model_upgrade_plan.md` 4.9 节，

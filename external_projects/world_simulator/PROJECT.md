@@ -2801,3 +2801,51 @@ world_simulator/
   **后续节奏（按方案原文第 1 节）**：批次二（Resource/Rule 补
   `production`）、批次三（Hypothesis 半自动实验设计建议）与本批
   互相独立，可任选顺序继续；批次四/五/六留待后续按顺序推进。
+- 2026-09-21（同日再追加）：**阶段三十七第二批**——按
+  `next_doc/world_simulator_c_category_precision_upgrade_
+  improvement_plan.md` 第 3 节，`resource_relations` 新增
+  `production`（持续产出）关系类型。
+  1. **`engine/resource_guard.py`**：`_normalize_resource_relations()`
+     新增识别 `type == "production"` 的项，归一化出 `field`（必填，
+     受影响资源字段路径）、`amount_per_step`（可选，声明的每步理论
+     产出速率，缺省/非法安全落为 `None`）、`source_line_id`（可选，
+     产出来源因果线 id，缺省为空字符串，本批只记录不参与任何计算）、
+     `tolerance`（复用 `transfer` 现有默认 0.1）。原有 `transfer`
+     归一化结果内部补一个 `"type": "transfer"` key 便于
+     `_check_resource_relations()` 分支判断，对外返回形状（`from`/
+     `to`/`tolerance`）不变。`_check_resource_relations()` 新增
+     `production` 分支：仅当声明了 `amount_per_step` 时，对比这一步
+     `field` 实际变化量和声明速率，偏差超出容差（复用 `transfer`
+     现有的"按两者绝对值较大者衡量"判断逻辑）时追加一条不一致提示
+     ——**只提示，不阻断推进、不修改数值**，和 `transfer` 现有行为
+     一致；不一致项形如 `{"kind": "production", "field": ...,
+     "amount_per_step": ..., "actual_delta": ...}`，用 `kind` key
+     区分，`transfer` 的不一致项形状（`from`/`to`/`delta_from`/
+     `delta_to`，无 `kind`/`type` key）保持阶段十六上线时完全一致，
+     不破坏既有调用方/测试。未声明 `amount_per_step` 的 `production`
+     关系只是结构化记录，不参与任何数值核对。
+  2. **`state_model.py`**：`SimManifest.settings.resource_relations`
+     与 `SimState.relation_violations` 字段文档更新，补充
+     `production` 类型的格式说明与不一致项形状。
+  3. **`spec_generator.py`**：`ScenarioDraft.resource_relations`
+     字段文档补充 `production` 类型的示例。
+  4. **`app.py`**：`_relation_violations_html()` 新增按 `kind ==
+     "production"` 分支的展示文案（"「字段」这一步产出与声明速率
+     明显不符（声明每步 X，实际变化 Y）"），`transfer` 分支渲染逻辑
+     不变。
+  **范围克制（按方案要求，不做的部分）**：不做"自动帮 LLM 计算并
+  写入产出数值"；`source_line_id` 本批只做记录，不接入
+  `_resolve_relationship_hint()` 之类的 prompt 提示生成，留待后续
+  如果发现有需要再加。
+  **验收**：新增 `tests/test_resource_production_relation.py`，13
+  个用例覆盖：`production` 关系的归一化（含完整字段/可选字段缺省/
+  `amount_per_step` 非法回退/`field` 缺失跳过/未知 `type` 跳过）、
+  `_check_resource_relations()` 对 `production` 的偏差检测/容差内
+  不触发/未声明速率不核对/非数字字段跳过、`transfer` 与 `production`
+  混合声明时 `transfer` 检查结果形状不受影响（回归）、`engine.
+  advance()` 端到端集成（偏差记入 `relation_violations` 且不改
+  数值、未声明速率时不产生任何记录）。加上原有 414 个，全部通过
+  （**427 passed**）。
+  **后续节奏（按方案原文第 1 节）**：批次三（Hypothesis 半自动
+  实验设计建议）与本批互相独立，可继续推进；批次四依赖批次一的
+  `evidence` 字段（已具备）；批次五/六留待后续按顺序推进。

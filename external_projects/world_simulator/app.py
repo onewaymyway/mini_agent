@@ -559,6 +559,18 @@ def _relation_violations_html(state) -> str:
         return ""
     lines = []
     for v in violations:
+        if v.get("kind") == "production":
+            # 第八轮批次二：production（持续产出）关系的速率偏差提示，
+            # 和 transfer 提示共用同一个展示位置，但字段形状不同。
+            field_name = _html_text(str(v.get("field", "")))
+            expected = v.get("amount_per_step")
+            actual = v.get("actual_delta")
+            lines.append(
+                f'<div class="ws-chapter-relation-violation">🔶 「{field_name}」'
+                f"这一步产出与声明速率明显不符（声明每步 {_html_text(str(expected))}，"
+                f"实际变化 {_html_text(str(actual))}）</div>"
+            )
+            continue
         from_field = _html_text(str(v.get("from", "")))
         to_field = _html_text(str(v.get("to", "")))
         delta_from = v.get("delta_from")

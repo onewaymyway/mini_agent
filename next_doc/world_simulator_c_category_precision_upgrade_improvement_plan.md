@@ -28,6 +28,15 @@ Branch merge
 >   可选 `step` 参数用于拼出 `evidence` 来源引用，`app.py` 新增
 >   "📚 知识库"只读浏览页（侧边栏新入口）。新增 6 个测试用例，全量
 >   测试套件 414 个全部通过。
+> - ✅ **批次二（第 3 节，Resource/Rule 补 `production` 持续产出
+>   关系类型）已完成**：`resource_guard.py` 的 `_normalize_
+>   resource_relations()`/`_check_resource_relations()` 新增识别
+>   `type == "production"` 的项（`field`/`amount_per_step`/
+>   `source_line_id`/`tolerance`），声明速率与实际变化偏差超容差
+>   时追加不一致提示（只提示不阻断，`transfer` 既有行为/返回形状
+>   不变）；`app.py` 新增对应展示分支。新增
+>   `tests/test_resource_production_relation.py` 13 个测试用例，
+>   全量测试套件 427 个全部通过。
 >
 > **方针延续**：延续项目一贯原则——每一批都是"新增字段/开关 +
 > 旧路径完全保留"，不引入自动化数值计算或语义相似度模型（因果/
