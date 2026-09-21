@@ -3091,6 +3091,43 @@ plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增
   **风险确认**：纯 UI 提示 + 一个纯函数，未改动任何数据结构或
   引擎逻辑，符合方案标注的"低风险"评估。
 
+- 2026-09-21（同日再追加）：**第十一轮 2.4（跳过人工验证，用户
+  明确要求直接接入）**——按 `next_doc/world_simulator_eleventh_
+  round_remaining_gaps_plan.md` 第 2.4 节"做法"，把历史累计的
+  `capabilities_gained` 接入生成 `options` 的 prompt 输入侧。
+  **决定记录**：方案原文明确建议"先在测试实例上人工小范围验证喂
+  能力清单是否真的提升选项质量，不理想就不接入正式 prompt"，本轮
+  用户在确认后明确要求跳过这一步、直接接入正式 prompt——如实记录
+  这是主动跳过方案建议的验证节奏，不是本轮判断"不需要验证"。
+  1. **`world_simulator/spec_generator.py`**：新增
+     `resolve_capabilities_hint(history)`，按 `capability` 字段
+     精确字符串匹配去重（复用第十一轮 2.3 节的既有取舍），把每项
+     能力的最新记录（含 `maturity_stage`/`enables`）拼成一段"已获得
+     能力"提示；没有任何历史累计记录时返回空字符串（新实例/还没
+     获得过能力时 prompt 组装行为与改动前完全一致）。措辞明确"仅
+     作参考，不强制"，不做"能力→可选行动"的结构化自动映射表（同
+     方案"刻意不做的部分"）。
+  2. **`world_simulator/engine/advance.py`**：`advance()` 组装
+     `shared_inputs` 时新增 `capabilities_hint`（复用已加载的
+     `history_for_prompt`，避免重复调用 `store.load_history()`），
+     单次调用（`advance_step.yaml`）和拆分调用（`world_evolve.yaml`
+     + `decision_generate.yaml`）两条路径都共享同一份
+     `shared_inputs`，天然都能拿到这个新字段。
+  3. **`workflows/advance_step.yaml`/`workflows/decision_generate.
+     yaml`**：`options` 生成段落前补充 `{capabilities_hint}` 占位符
+     及说明文案，明确要求"候选行动应该体现已获得能力带来的新可能
+     性，而不是忽略它们"；`world_evolve.yaml` 不产出 `options`，
+     不需要这个提示，未改动。
+  **验收**：新增 10 个测试——`tests/test_capabilities_hint.py`
+  （`resolve_capabilities_hint()` 纯函数单测 8 个：空历史/字段缺省/
+  格式非法跳过/精确匹配去重保留最新/不模糊合并/`enables`+未知阶段
+  取值原样展示/兼容 `SimState` 对象/措辞含"仅供参考"）、
+  `tests/test_spec_and_engine.py` 新增 2 个集成回归测试（新实例
+  `capabilities_hint` 为空字符串；上一步落盘的能力记录体现进下一次
+  推进的 `capabilities_hint`），加上原有的全部通过（**537
+  passed**）。至此第十一轮计划第 2 节全部代码任务（2.1～2.4）
+  完成。
+
 - 2026-09-21（同日再追加）：**第十一轮 2.3**——按 `next_doc/
   world_simulator_eleventh_round_remaining_gaps_plan.md` 第 2.3 节，
   Capability 生命周期字段：`capabilities_gained` 新增可选字段

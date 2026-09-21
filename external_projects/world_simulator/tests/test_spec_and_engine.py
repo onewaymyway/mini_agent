@@ -1567,6 +1567,137 @@ def test_advance_parses_capabilities_gained_from_llm_output(tmp_path, monkeypatc
     ]
 
 
+def test_advance_capabilities_hint_empty_when_no_prior_capabilities(tmp_path, monkeypatch):
+    """第十一轮 2.4 节：新实例/还没获得过能力时，`capabilities_hint`
+    应为空字符串，prompt 组装行为与改动前完全一致（向后兼容）。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+    captured_inputs = {}
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            captured_inputs.update(inputs)
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {"next_summary": "s2", "narrative": "n", "next_vars": {}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert captured_inputs["capabilities_hint"] == ""
+
+
+def test_advance_capabilities_hint_reflects_previously_recorded_capability(tmp_path, monkeypatch):
+    """第十一轮 2.4 节：上一步落盘的 `capabilities_gained` 应该在下
+    一次推进时体现进 `capabilities_hint`，喂给生成 `options` 的
+    prompt——决定已记录在 `next_doc/world_simulator_eleventh_round_
+    remaining_gaps_plan.md` 2.4 节（跳过方案建议的人工验证，直接
+    接入）。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    # 第一次推进：落盘一条 capabilities_gained 记录。
+    class FakeRunnerForFirstAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result_1.json",
+                {
+                    "next_summary": "s2",
+                    "narrative": "n",
+                    "next_vars": {},
+                    "options": [],
+                    "capabilities_gained": [
+                        {
+                            "capability": "能够自动分析潜在客户的付费意愿",
+                            "enables": ["更精准的销售话术"],
+                            "maturity_stage": "developer",
+                        }
+                    ],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForFirstAdvance)
+    engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+
+    # 第二次推进：捕获这次调用的 inputs，确认 capabilities_hint 里
+    # 出现了上一步记录的能力。
+    captured_inputs = {}
+
+    class FakeRunnerForSecondAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            captured_inputs.update(inputs)
+            result_file = _write_result_file(
+                tmp_path, "advance_result_2.json",
+                {"next_summary": "s3", "narrative": "n2", "next_vars": {}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForSecondAdvance)
+    engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+
+    hint = captured_inputs["capabilities_hint"]
+    assert "能够自动分析潜在客户的付费意愿" in hint
+    assert "更精准的销售话术" in hint
+    assert "开发者可用" in hint
+
+
 def test_advance_includes_confirmed_problem_suggestions_hint(tmp_path, monkeypatch):
     """第九轮批次三（2.4 节 Problem Discovery Engine）：`manifest.
     settings.confirmed_problem_suggestions` 应该被拼进 `advance_step`

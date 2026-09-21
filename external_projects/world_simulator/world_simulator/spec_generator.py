@@ -523,6 +523,92 @@ def resolve_causal_graph_hint(
     return "\n".join(sections)
 
 
+_MATURITY_STAGE_LABELS_FOR_HINT = {
+    "lab": "实验室可行",
+    "expert": "专家可用",
+    "developer": "开发者可用",
+    "consumer": "普通用户可用",
+    "cheap_at_scale": "成本足够低/规模化",
+    "infrastructure": "基础设施化/社会常态化",
+}
+"""`capabilities_gained[].maturity_stage` → 中文展示文案，供
+`resolve_capabilities_hint()` 拼 prompt 用；已知取值集合同
+`app.py::_MATURITY_STAGE_LABELS`（第十一轮 2.3 节），这里单独维护
+一份小常量而不是跨模块导入 `app.py`——`app.py` 依赖 `streamlit`，
+`spec_generator.py` 是不依赖 UI 层的核心引擎模块，不应该反过来
+导入 UI 模块（同项目分层原则一致）。未知/空取值原样展示英文取值
+本身，不报错。"""
+
+
+def resolve_capabilities_hint(history: "Sequence[Any] | None") -> str:
+    """把历史累计的 `capabilities_gained` 聚合成一段"已获得能力"
+    提示，喂给生成 `options` 的 prompt（第十一轮 2.4 节，`next_doc/
+    world_simulator_eleventh_round_remaining_gaps_plan.md`——方案
+    原文建议先做人工小范围验证、确认有价值后再接入正式 prompt，本轮
+    按用户明确要求跳过验证直接接入，决定已记录在该文档与
+    `PROJECT.md`）。
+
+    按 `capability` 字段**精确字符串匹配**去重（不做模糊匹配/语义
+    归并，同 `app.py::_collect_capability_maturity_timeline()`
+    第十一轮 2.3 节的既有取舍一致），保留每项能力最新一次的完整
+    记录（含最新 `maturity_stage`/`enables`）。
+
+    只是把这层信息接入决策生成的**输入侧**，明确要求 LLM"候选行动
+    应该体现已获得能力带来的新可能性，而不是忽略它们"——**不是**
+    代码层面强制"有能力 X 就必须出现选项 Y"，是否真的体现、体现在
+    哪个候选选项里，完全交给 LLM 判断（同 `causal_graph_hint`
+    "两段都展示给 LLM，由它自己判断参考权重"的既有取舍一致，不做
+    "能力→可选行动"的结构化自动映射表）。
+
+    Returns:
+        没有任何历史、或历史里从未出现过带 `capability` 字段的记录
+        时返回空字符串——`advance_step.yaml`/`decision_generate.
+        yaml` 里这句提示是条件性的，为空不代表出错，调用方不需要
+        额外处理（新实例/还没获得过能力时，prompt 组装行为与改动前
+        完全一致，向后兼容）。
+    """
+    order: List[str] = []
+    latest: Dict[str, Dict[str, Any]] = {}
+    for state in history or []:
+        items = getattr(state, "capabilities_gained", None)
+        if items is None and isinstance(state, dict):
+            items = state.get("capabilities_gained")
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("capability") or "").strip()
+            if not name:
+                continue
+            if name not in latest:
+                order.append(name)
+            latest[name] = item
+
+    if not order:
+        return ""
+
+    lines = []
+    for name in order:
+        item = latest[name]
+        piece = name
+        stage = str(item.get("maturity_stage") or "").strip()
+        if stage:
+            stage_label = _MATURITY_STAGE_LABELS_FOR_HINT.get(stage, stage)
+            piece += f"（当前阶段：{stage_label}）"
+        enables = [str(e).strip() for e in (item.get("enables") or []) if str(e).strip()]
+        if enables:
+            piece += "，可以：" + "、".join(enables)
+        lines.append(f"- {piece}")
+
+    return (
+        "以下是这次模拟迄今为止累计获得的能力（按 capability 精确"
+        "字符串匹配去重、只展示每项能力最新一次的记录，仅作参考）：\n"
+        + "\n".join(lines)
+        + "\n候选行动应该体现这些已获得能力带来的新可能性，而不是"
+        "忽略它们；但不代表每一批候选选项都必须用到某项能力，也不是"
+        "每项能力都要在这一步被用上。"
+    )
+
+
 def resolve_hints(
     settings: "Dict[str, Any] | None" = None, *, stage: str = "advance", current_step: int = 0
 ) -> Dict[str, str]:

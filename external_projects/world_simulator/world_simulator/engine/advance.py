@@ -41,7 +41,11 @@ from world_simulator.problem_discovery import (
     _format_confirmed_problem_suggestions,
     _safe_auto_scan_problems,
 )
-from world_simulator.spec_generator import resolve_causal_graph_hint, resolve_hints
+from world_simulator.spec_generator import (
+    resolve_capabilities_hint,
+    resolve_causal_graph_hint,
+    resolve_hints,
+)
 from world_simulator.state_model import ChoiceOption, SimState
 from world_simulator.store import SimStore
 
@@ -246,6 +250,8 @@ def advance(
     skill_name = _skill_name_for_template(manifest.template)
     runner = WorkflowRunner(cfg)
 
+    history_for_prompt = store.load_history(branch)
+
     shared_inputs = {
         "title": manifest.title,
         "current_summary": current.summary,
@@ -274,10 +280,17 @@ def advance(
         # "线到线"邻接关系反过来喂给这一次推进的 prompt——纯只读聚合，
         # 不影响下面 `chosen_option` 落盘那一段对历史的读写。
         "causal_graph_hint": resolve_causal_graph_hint(
-            manifest.settings, store.load_history(branch)
+            manifest.settings, history_for_prompt
         ),
+        # 第十一轮 2.4 节（`next_doc/world_simulator_eleventh_round_
+        # remaining_gaps_plan.md`，跳过方案原文建议的人工小范围验证、
+        # 直接接入正式 prompt，决定已记录在该文档与 PROJECT.md）：
+        # 把历史累计的 `capabilities_gained` 喂给候选选项生成 prompt，
+        # 同样是纯只读聚合，不影响任何落盘逻辑。
+        "capabilities_hint": resolve_capabilities_hint(history_for_prompt),
         **resolve_hints(manifest.settings, current_step=current.step + 1),
     }
+
 
     # 4.12 节第三步（阶段三十三第八批，`next_doc/
     # world_simulator_potential_causal_space_and_decision_engine_plan.md`）：
