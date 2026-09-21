@@ -599,11 +599,32 @@ class SimState:
       `reversibility` 的既有取舍——这里的取值集合本身就很明确，无法
       识别的值交给展示层判断是否已知取值），空字符串表示未声明。
 
-    **刻意不做的部分**（详见方案 2.1 节"范围克制"）：不做 `Root
-    Causes`/`Candidate Solutions`/`Dependencies` 等参考文档原文的
-    其余字段；不做问题之间的因果关联图；不做任何自动判重/合并/去重
-    ——"这是不是同一个问题""根因是什么"这类判断继续交给 LLM/用户，
-    `engine.py` 落盘时只做"透传 + 校验最小字段是否存在"。
+    **第十轮批次二新增三个可选字段**（`next_doc/world_simulator_
+    tenth_round_problem_discovery_automation_plan.md` 批次二，对照
+    参考文档第六、四十八、四十九节"问题空间"的差距）：
+
+    - `depends_on`：字符串数组，引用同一实例历史里出现过的其它
+      `problems[].id`（或一句简短描述，取决于产出这条记录的是 skill
+      直接给 `id` 还是 Problem Discovery Engine 的建议——建议阶段
+      还不知道对方最终会用哪个 `id`，见 `suggest_problems()`），表示
+      "这个问题通常需要先解决哪些别的问题"。纯声明式，**不做**自动
+      拓扑排序、不做循环依赖校验、不做引用是否真实存在的强制检查——
+      同 `causal_links`/`relationships` 一贯的"提示而非强制"风格。
+    - `root_causes`：字符串数组（1~3 条短语），这个问题的根因是
+      什么——只是 LLM/用户给出的陈述，不引入因果推断算法。
+    - `candidate_solutions`：字符串数组（1~3 条短语），可能的解决
+      方向提示——**不是**完整的 `ChoiceOption`，不会出现在下一步的
+      候选选项里，只是给用户看的说明性文字，同 `capabilities_
+      gained.enables` 目前的定位一致。
+
+    三者默认缺省（不出现在字典里即视为未声明，旧数据/未声明时完全
+    兼容），`suggest_problems()`/`adopt_problem_suggestion()` 会以
+    空数组形式透传，不强行编造。
+
+    **仍然刻意不做的部分**（详见方案 2.1 节"范围克制"）：不做问题
+    之间的因果关联图（展示层可视化留给批次三）；不做任何自动判重/
+    合并/去重——"这是不是同一个问题""根因是什么"这类判断继续交给
+    LLM/用户，`engine.py` 落盘时只做"透传 + 校验最小字段是否存在"。
 
     默认空列表：skill 没给出、旧数据、`state0`（初始状态一般不需要
     这个概念，除非 `generate_scenario` 认为创建时就已经存在明显问题）

@@ -1,9 +1,9 @@
 # world_simulator 改进计划：Problem Discovery Engine 从"手动扫描"
 到"引擎自动运行" + 问题空间结构化（第十轮）
 
-> **状态**：批次一（自动触发机制）已实施完成，详见本文档"实施记录"
-> 一节及 `PROJECT.md` 对应变更记录；批次二（Problem 结构化字段）、
-> 批次三（问题图可视化 + 可选信号触发）待实施。本文档合并两个来源的问题：
+> **状态**：批次一（自动触发机制）、批次二（Problem 结构化字段）
+> 已实施完成，详见本文档"实施记录"一节及 `PROJECT.md` 对应变更
+> 记录；批次三（问题图可视化 + 可选信号触发）待实施。本文档合并两个来源的问题：
 > （1）用户直接指出的设计缺陷——"扫描潜在问题"目前需要人工在看板上
 > 点按钮，但这本该是模拟引擎在推进过程中自己做的事；
 > （2）`next_doc/world_simulator_ninth_round_theory_gap_analysis_
@@ -279,6 +279,35 @@ interval` 默认 0（关闭）；手动挡下只记录、不自动写入
 详细改动清单见 `PROJECT.md` "第十轮批次一" 条目；测试见
 `tests/test_problem_discovery.py` 新增的 5 个
 `_safe_auto_scan_problems()` 用例。
+
+## 4.2 实施记录：批次二（Problem 结构化字段）已完成
+
+**完成时间**：2026-09-21。**范围**：与本文档第 3 节"批次二"设计
+一致，无实现细节偏差：
+
+- `state_model.py` 的 `SimState.problems` 是 `List[Dict[str,
+  Any]]` 透传存储（`from_dict()`/`to_dict()` 都不对每一项做字段级
+  解析），所以"新增三个可选字段"这一步**不需要改动任何序列化/
+  反序列化代码**，只补充了 docstring 说明——旧数据缺失这三个字段
+  天然兼容，验证方式是单元测试里直接构造缺失这三个字段的字典，
+  确认不报错、字段缺省即可（不需要单独的"迁移测试"）。
+- `workflows/problem_discovery.yaml` 的 prompt 更新为要求 LLM
+  在能判断出来时给出 `root_causes`/`candidate_solutions`/
+  `depends_on`，明确要求判断不出来给空数组、不要为了填满而编造，
+  同 `symptom`/`blocked_goal` 等既有字段的措辞风格一致。
+- `problem_discovery.py` 的三处透传点（`suggest_problems()` 解析、
+  `adopt_problem_suggestion()` 采纳、`_safe_auto_scan_problems()`
+  自动确认）都已接入，`app.py` 的建议展示区也同步补上了这三行
+  说明（有值才显示，不占地方）。
+
+详细改动清单见 `PROJECT.md` "第十轮批次二" 条目；测试见
+`tests/test_problem_discovery.py` 新增的 6 个用例（`suggest_
+problems()` 透传/缺省两种场景、`adopt_problem_suggestion()` 带值/
+默认空两种场景、自动挡自动确认时的透传）。
+
+**后续节奏**：批次三（问题图可视化）依赖本批次的 `depends_on`
+字段，现在可以开始；信号触发的扫描节奏（批次三的可选加强部分）
+建议继续观察批次一的固定间隔在真实使用中是否已经够用。
 
 ---
 

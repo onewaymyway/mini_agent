@@ -3076,3 +3076,35 @@ plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增
   `root_causes`/`candidate_solutions`）待实施，依赖批次一但可以
   并行开发；批次三（问题图可视化 + 可选信号触发）待批次二落地后
   再排期。
+
+- 2026-09-21（同日再追加）：**第十轮批次二**——按 `next_doc/
+  world_simulator_tenth_round_problem_discovery_automation_plan.md`
+  第 3 节，Problem 结构化字段：`depends_on`/`root_causes`/
+  `candidate_solutions`。
+  1. **`state_model.py`**：`SimState.problems` 每项新增三个可选
+     字段（docstring 补充说明；`problems` 本身是 `List[Dict[str,
+     Any]]` 透传存储，不需要改 `from_dict`/`to_dict` 代码——旧数据
+     缺失这三个字段天然兼容）：`depends_on`（字符串数组，引用其它
+     问题）、`root_causes`（字符串数组，1~3 条短语）、`candidate_
+     solutions`（字符串数组，1~3 条短语，不是 `ChoiceOption`）。
+  2. **`workflows/problem_discovery.yaml`**：prompt 更新，要求 LLM
+     在给出 observed/latent 建议时，如果能判断出来，顺带给这三个
+     字段；判断不出来给空数组，明确要求不强行编造。
+  3. **`problem_discovery.py`**：`suggest_problems()` 的 `_parse_
+     list()` 解析这三个新字段（找不到时退化为空数组）；
+     `adopt_problem_suggestion()` 新增同名可选参数并透传进
+     `confirmed_problem_suggestions`；`_safe_auto_scan_problems()`
+     自动挡自动确认时同样透传这三个字段。
+  4. **`app.py`**："🔍 扫描潜在问题"建议列表在有值时展示"根因/候选
+     方向/依赖"三行说明；"确认关注"按钮把这三个字段一并传给
+     `adopt_problem_suggestion()`。
+  **范围克制（按方案要求，不做的部分）**：不做"问题自动判重/合并"；
+  不做根因的自动推断算法；`depends_on` 引用的 `id`/描述是否真的
+  存在不做强制校验——同 `problems.id`/`causal_links`/
+  `relationships` 现有取舍一致，纯声明式，"提示而非强制"。
+  **验收**：新增 6 个测试（`suggest_problems()` 透传新字段且缺省时
+  退化为空数组、`adopt_problem_suggestion()` 带结构化字段/默认空
+  数组两种场景、自动挡自动确认时结构化字段一并透传），加上原有的
+  全部通过（**492 passed**）。
+  **后续节奏**：批次三（问题图可视化 `depends_on` 连边 + 可选信号
+  触发的扫描节奏）依赖本批次的 `depends_on` 字段，待实施。

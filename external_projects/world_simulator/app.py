@@ -3628,6 +3628,26 @@ def page_detail() -> None:
                     col_a, col_b = st.columns([5, 1])
                     with col_a:
                         st.markdown(f"- {detail}")
+                        # 第十轮批次二：三个可选结构化字段，有就展示，
+                        # 没有（旧数据/LLM 判断不出来）就不显示这一行。
+                        root_causes_text = "、".join(item.get("root_causes") or [])
+                        candidate_solutions_text = "、".join(item.get("candidate_solutions") or [])
+                        depends_on_text = "、".join(item.get("depends_on") or [])
+                        if root_causes_text:
+                            st.markdown(
+                                f'<span class="ws-muted">　根因：{root_causes_text}</span>',
+                                unsafe_allow_html=True,
+                            )
+                        if candidate_solutions_text:
+                            st.markdown(
+                                f'<span class="ws-muted">　候选方向：{candidate_solutions_text}</span>',
+                                unsafe_allow_html=True,
+                            )
+                        if depends_on_text:
+                            st.markdown(
+                                f'<span class="ws-muted">　依赖：{depends_on_text}</span>',
+                                unsafe_allow_html=True,
+                            )
                     with col_b:
                         if st.button("确认关注", key=f"pd_adopt_{category}_{idx}"):
                             problem_discovery_mod.adopt_problem_suggestion(
@@ -3636,6 +3656,9 @@ def page_detail() -> None:
                                 symptom=item["symptom"],
                                 blocked_goal=item.get("blocked_goal", ""),
                                 missing_capabilities=item.get("missing_capabilities"),
+                                root_causes=item.get("root_causes"),
+                                candidate_solutions=item.get("candidate_solutions"),
+                                depends_on=item.get("depends_on"),
                             )
                             st.success("已确认关注，下一次推进的提示里会看到它。")
                             st.rerun()

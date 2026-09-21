@@ -114,6 +114,9 @@ def test_suggest_problems_assembles_input_and_parses_result(tmp_path, monkeypatc
                 "symptom": "资金不足，无法招聘核心工程师",
                 "blocked_goal": "在 12 个月内完成产品原型",
                 "missing_capabilities": ["种子轮融资"],
+                "root_causes": [],
+                "candidate_solutions": [],
+                "depends_on": [],
             }
         ],
         "latent": [
@@ -121,6 +124,9 @@ def test_suggest_problems_assembles_input_and_parses_result(tmp_path, monkeypatc
                 "symptom": "如果获客成本持续上升，六个月后现金流将转负",
                 "blocked_goal": "",
                 "missing_capabilities": [],
+                "root_causes": [],
+                "candidate_solutions": [],
+                "depends_on": [],
             }
         ],
     }
@@ -254,6 +260,63 @@ def test_suggest_problems_raises_when_workflow_status_not_done(tmp_path, monkeyp
         pass
 
 
+# ── 第十轮批次二：结构化字段（depends_on/root_causes/candidate_solutions）──
+
+
+def test_suggest_problems_passes_through_optional_structured_fields(tmp_path, monkeypatch):
+    class FakeWorkflowStore:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return SimpleNamespace(steps=[SimpleNamespace(id="problem_discovery")])
+
+    class FakeRunner:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            output = _agent_output(
+                {
+                    "observed": [
+                        {
+                            "symptom": "资金不足",
+                            "blocked_goal": "招聘",
+                            "missing_capabilities": ["融资"],
+                            "root_causes": ["获客成本过高"],
+                            "candidate_solutions": ["压缩非核心开支", "寻求天使轮"],
+                            "depends_on": ["先解决现金流预测不准的问题"],
+                        }
+                    ],
+                    "latent": [
+                        {"symptom": "无结构化字段的旧式建议", "blocked_goal": "", "missing_capabilities": []}
+                    ],
+                }
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[
+                    SimpleNamespace(step_id="problem_discovery", status=_FakeStatus("done"), output=output)
+                ],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeWorkflowStore)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunner)
+
+    result = pd_mod.suggest_problems(object(), tmp_path, {}, {}, [])
+
+    observed = result["observed"][0]
+    assert observed["root_causes"] == ["获客成本过高"]
+    assert observed["candidate_solutions"] == ["压缩非核心开支", "寻求天使轮"]
+    assert observed["depends_on"] == ["先解决现金流预测不准的问题"]
+
+    # 没给出这三个字段时，退化为空数组，不报错、不编造。
+    latent = result["latent"][0]
+    assert latent["root_causes"] == []
+    assert latent["candidate_solutions"] == []
+    assert latent["depends_on"] == []
+
+
 # ── adopt_problem_suggestion() / withdraw_confirmed_problem_suggestion() ──
 
 
@@ -289,6 +352,39 @@ def test_adopt_and_withdraw_problem_suggestion(tmp_path):
     # 撤回一个不存在的 id 应该幂等，不报错。
     manifest3 = pd_mod.withdraw_confirmed_problem_suggestion(data_dir, "sim1", "not_exists")
     assert manifest3.settings["confirmed_problem_suggestions"] == []
+
+
+def test_adopt_problem_suggestion_with_structured_fields(tmp_path):
+    data_dir = tmp_path / "data"
+    _make_sim(data_dir, "sim1")
+
+    manifest = pd_mod.adopt_problem_suggestion(
+        data_dir, "sim1",
+        category="observed",
+        symptom="资金不足",
+        blocked_goal="招聘",
+        missing_capabilities=["融资"],
+        root_causes=["获客成本过高"],
+        candidate_solutions=["压缩非核心开支"],
+        depends_on=["现金流预测不准"],
+    )
+    confirmed = manifest.settings["confirmed_problem_suggestions"][0]
+    assert confirmed["root_causes"] == ["获客成本过高"]
+    assert confirmed["candidate_solutions"] == ["压缩非核心开支"]
+    assert confirmed["depends_on"] == ["现金流预测不准"]
+
+
+def test_adopt_problem_suggestion_defaults_structured_fields_to_empty(tmp_path):
+    data_dir = tmp_path / "data"
+    _make_sim(data_dir, "sim1")
+
+    manifest = pd_mod.adopt_problem_suggestion(
+        data_dir, "sim1", category="observed", symptom="s",
+    )
+    confirmed = manifest.settings["confirmed_problem_suggestions"][0]
+    assert confirmed["root_causes"] == []
+    assert confirmed["candidate_solutions"] == []
+    assert confirmed["depends_on"] == []
 
 
 def test_adopt_problem_suggestion_normalizes_unknown_category(tmp_path):
@@ -389,6 +485,33 @@ def test_auto_scan_autopilot_mode_auto_confirms(monkeypatch):
     assert {c["category"] for c in confirmed} == {"observed", "latent"}
     assert all(c["auto_confirmed"] is True for c in confirmed)
     assert all(c["id"] for c in confirmed)
+
+
+def test_auto_scan_autopilot_mode_carries_through_structured_fields(monkeypatch):
+    fake_result = {
+        "observed": [
+            {
+                "symptom": "资金不足",
+                "blocked_goal": "招聘",
+                "missing_capabilities": ["融资"],
+                "root_causes": ["获客成本过高"],
+                "candidate_solutions": ["压缩非核心开支"],
+                "depends_on": ["现金流预测不准"],
+            }
+        ],
+        "latent": [],
+    }
+    monkeypatch.setattr(pd_mod, "suggest_problems", lambda *a, **k: fake_result)
+    manifest = _make_manifest_ns(settings={"problem_discovery_auto_scan_interval": 1})
+    next_state = SimpleNamespace(step=1, vars={})
+    pd_mod._safe_auto_scan_problems(
+        object(), Path("/tmp/ws"), _FakeStoreForAutoScan([]), manifest,
+        branch="main", next_state=next_state, auto_confirm=True,
+    )
+    confirmed = manifest.settings["confirmed_problem_suggestions"][0]
+    assert confirmed["root_causes"] == ["获客成本过高"]
+    assert confirmed["candidate_solutions"] == ["压缩非核心开支"]
+    assert confirmed["depends_on"] == ["现金流预测不准"]
 
 
 def test_auto_scan_swallows_exceptions(monkeypatch):

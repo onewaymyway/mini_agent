@@ -88,7 +88,12 @@ def suggest_problems(
         `SimState.problems` 的最小字段集去掉 `id`（建议阶段还没有
         被采纳，不需要 `id`；采纳时由调用方自己决定怎么呈现/存放，
         见模块 docstring）：`{"symptom": "...", "blocked_goal": "...",
-        "missing_capabilities": [...]}`。LLM 回复里格式不对/缺字段
+        "missing_capabilities": [...], "root_causes": [...],
+        "candidate_solutions": [...], "depends_on": [...]}`——后三个
+        是第十轮批次二新增的可选结构化字段（`next_doc/world_
+        simulator_tenth_round_problem_discovery_automation_plan.md`
+        批次二），LLM 判断不出来时留空数组，这里原样透传，不强行
+        编造、不做任何自动判重/推断。LLM 回复里格式不对/缺字段
         的条目会被跳过，不中断其它条目的解析。`history` 为空且
         `current_vars` 也为空时仍然会发起调用（不像 `hypothesis.
         suggest_experiment_design()` 那样有"入参为空就不调用"的
@@ -173,6 +178,20 @@ def suggest_problems(
                     "missing_capabilities": [
                         str(m) for m in (item.get("missing_capabilities") or []) if str(m).strip()
                     ],
+                    # 第十轮批次二：三个可选的结构化字段（`next_doc/
+                    # world_simulator_tenth_round_problem_discovery_
+                    # automation_plan.md` 批次二）——LLM 判断不出来
+                    # 时给空数组，这里原样透传，不强行编造、不做任何
+                    # 自动推断。
+                    "root_causes": [
+                        str(m) for m in (item.get("root_causes") or []) if str(m).strip()
+                    ],
+                    "candidate_solutions": [
+                        str(m) for m in (item.get("candidate_solutions") or []) if str(m).strip()
+                    ],
+                    "depends_on": [
+                        str(m) for m in (item.get("depends_on") or []) if str(m).strip()
+                    ],
                 }
             )
             if len(parsed) >= limit:
@@ -218,6 +237,9 @@ def adopt_problem_suggestion(
     symptom: str,
     blocked_goal: str = "",
     missing_capabilities: Optional[List[str]] = None,
+    root_causes: Optional[List[str]] = None,
+    candidate_solutions: Optional[List[str]] = None,
+    depends_on: Optional[List[str]] = None,
 ) -> "SimManifest":
     """用户在 `suggest_problems()` 的建议列表里点"确认关注"，把这条
     建议追加进 `settings.confirmed_problem_suggestions`（模块 docstring
@@ -234,6 +256,12 @@ def adopt_problem_suggestion(
         symptom/blocked_goal/missing_capabilities: 对应
             `suggest_problems()` 建议项里的同名字段，由调用方
             （`app.py`）从展示的建议里原样传入。
+        root_causes/candidate_solutions/depends_on: 第十轮批次二
+            新增的可选结构化字段，同样由调用方原样传入；三者都是
+            "提示而非强制"——不做任何 `id` 存在性校验、不做循环
+            依赖检测，谁引用了谁完全由 LLM/用户自己判断，同
+            `causal_links`/`relationships` 等既有结构化字段的一贯
+            取舍。
 
     Returns:
         更新后的 `SimManifest`（已落盘）。
@@ -253,6 +281,11 @@ def adopt_problem_suggestion(
             "missing_capabilities": [
                 str(m) for m in (missing_capabilities or []) if str(m).strip()
             ],
+            "root_causes": [str(m) for m in (root_causes or []) if str(m).strip()],
+            "candidate_solutions": [
+                str(m) for m in (candidate_solutions or []) if str(m).strip()
+            ],
+            "depends_on": [str(m) for m in (depends_on or []) if str(m).strip()],
             "confirmed_at": now_iso(),
         }
     )
@@ -375,6 +408,16 @@ def _safe_auto_scan_problems(
                     "blocked_goal": str(item.get("blocked_goal") or "").strip(),
                     "missing_capabilities": [
                         str(m) for m in (item.get("missing_capabilities") or []) if str(m).strip()
+                    ],
+                    # 第十轮批次二：三个可选结构化字段同样一并透传。
+                    "root_causes": [
+                        str(m) for m in (item.get("root_causes") or []) if str(m).strip()
+                    ],
+                    "candidate_solutions": [
+                        str(m) for m in (item.get("candidate_solutions") or []) if str(m).strip()
+                    ],
+                    "depends_on": [
+                        str(m) for m in (item.get("depends_on") or []) if str(m).strip()
                     ],
                     "confirmed_at": now_iso(),
                     "auto_confirmed": True,
