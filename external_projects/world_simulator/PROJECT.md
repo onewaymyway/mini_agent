@@ -3036,6 +3036,34 @@ world_simulator/
 plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增长到
 468 个，全部通过。
 
+- 2026-09-21（同日再追加）：**补记缺失的变更记录**——按 `next_doc/
+  world_simulator_eleventh_round_remaining_gaps_plan.md` 第 4 节。
+  `SimState.problems`（`next_doc/world_simulator_problem_capability_
+  gap_plan.md` 2.1 节，字段：`id`/`symptom`/`blocked_goal`/
+  `missing_capabilities`/`status`）与 `SimState.capabilities_gained`
+  （同方案 2.3 节，字段：`capability`/`enables`/`limitations`）两个
+  字段在代码里落地时（早于第九轮理论差距分析文档写作时间）没有在
+  本文件补一条变更记录，导致后续差距分析文档（第九轮、第十轮）要靠
+  翻代码才能确认它们已经存在。本条为纯补记，不涉及任何代码改动，
+  字段定义与取舍详见 `world_simulator/state_model.py` 对应 docstring。
+
+- 2026-09-21（同日再追加）：**第十一轮验证债务：决定继续搁置**——
+  按 `next_doc/world_simulator_eleventh_round_remaining_gaps_plan.md`
+  第 1 节。三项验证（`belief_fields`/`beliefs` 分叉验证、Agent
+  Preview 命中率验证、`independent_line_advance` 割裂感验证）本轮
+  仍然没有跑——这已经是第三次被写进待办（`world_simulator_
+  remaining_minimal_systems_gap_survey_plan.md` → 第九轮 → 本轮）。
+  **搁置原因**：这三项验证的本质是"用真实的多步剧情推进 + 人工
+  判断叙事是否合理"，需要交互式地实际运行 Streamlit 应用、反复调用
+  真实 LLM 生成叙事内容并做主观判断，这类工作依赖交互式人工使用
+  过程，不是本轮以自动化方式一次性执行能完成的任务，因此继续搁置，
+  改为优先推进第 2 节里风险明确、可以直接实施验收的代码任务（2.1～
+  2.4）。**这不是关闭这三项验证**，任何一位实际使用者在日常使用
+  过程中留意验证步骤里描述的现象（认知与现实是否分叉、预览是否
+  拦下过明显不合理的自动挡选择、独立线是否被晾置太久），随时可以
+  把观察结论直接写回本文件或 `next_doc/world_simulator_eleventh_
+  round_remaining_gaps_plan.md` 第 6 节，不需要重新走一遍立项流程。
+
 - 2026-09-21（同日再追加）：**第十轮批次一**——按 `next_doc/
   world_simulator_tenth_round_problem_discovery_automation_plan.md`
   第 3 节，Problem Discovery Engine 从"手动挡"到"引擎自动运行"：
