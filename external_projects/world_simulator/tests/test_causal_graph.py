@@ -135,6 +135,59 @@ def test_causal_edge_to_dict_roundtrip_shape():
     assert d["target_line"] == "a"
     assert d["total"] == 1
     assert "relation_counts" in d and "examples" in d
+    assert d["has_delay"] is False
+
+
+# ── 第十一轮 2.2 节：delay_steps/magnitude 字段扩展 ────────────────
+
+
+def test_build_causal_graph_has_delay_true_when_delay_steps_positive():
+    history = [
+        {
+            "causal_links": [
+                {"line_id": "a", "source_line_id": "b", "delay_steps": 2},
+            ]
+        }
+    ]
+    edges = cg.build_causal_graph(history)
+    assert edges[0].has_delay is True
+
+
+def test_build_causal_graph_has_delay_false_by_default():
+    """缺省字段的历史数据（改动前的既有数据）不应该被误判为延迟。"""
+    history = [{"causal_links": [{"line_id": "a", "source_line_id": "b"}]}]
+    edges = cg.build_causal_graph(history)
+    assert edges[0].has_delay is False
+
+
+def test_build_causal_graph_has_delay_false_when_delay_steps_zero_or_invalid():
+    history = [
+        {
+            "causal_links": [
+                {"line_id": "a", "source_line_id": "b", "delay_steps": 0},
+                {"line_id": "a", "source_line_id": "b", "delay_steps": "not_a_number"},
+                {"line_id": "a", "source_line_id": "b", "delay_steps": -1},
+            ]
+        }
+    ]
+    edges = cg.build_causal_graph(history)
+    assert edges[0].has_delay is False
+
+
+def test_build_causal_graph_has_delay_true_if_any_link_in_bucket_is_delayed():
+    """同一条边聚合了多次因果链，只要有一条给出了正的 delay_steps
+    就标记为 True，不要求每一条都有。"""
+    history = [
+        {
+            "causal_links": [
+                {"line_id": "a", "source_line_id": "b"},
+                {"line_id": "a", "source_line_id": "b", "delay_steps": 3},
+            ]
+        }
+    ]
+    edges = cg.build_causal_graph(history)
+    assert edges[0].has_delay is True
+    assert edges[0].total == 2
 
 
 def test_relation_type_label_known_and_unknown():

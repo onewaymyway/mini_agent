@@ -102,3 +102,36 @@ def test_edges_to_dot_handles_unassigned_placeholder_node():
     dot = app._causal_graph_edges_to_dot(edges)
     assert '"(未归属)";' in dot
     assert '"(未归属)" -> "line_b"' in dot
+
+
+# ── 第十一轮 2.2 节：has_delay 边 → 虚线 ────────────────────────────
+
+
+def test_edges_to_dot_marks_delayed_edge_as_dashed():
+    edges = [
+        CausalEdge(
+            source_line="line_a",
+            target_line="line_b",
+            relation_counts={"one_way": 1},
+            examples=[],
+            has_delay=True,
+        ),
+    ]
+    dot = app._causal_graph_edges_to_dot(edges)
+    edge_line = next(line for line in dot.splitlines() if "->" in line)
+    assert 'style="dashed"' in edge_line
+    assert 'label=' in edge_line
+
+
+def test_edges_to_dot_no_dashed_style_when_not_delayed():
+    edges = [
+        CausalEdge(
+            source_line="line_a",
+            target_line="line_b",
+            relation_counts={"one_way": 1},
+            examples=[],
+        ),
+    ]
+    dot = app._causal_graph_edges_to_dot(edges)
+    edge_line = next(line for line in dot.splitlines() if "->" in line)
+    assert "dashed" not in edge_line

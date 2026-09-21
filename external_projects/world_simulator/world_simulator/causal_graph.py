@@ -51,12 +51,19 @@ class CausalEdge:
     这条边一共出现过多少次、各类型各多少次；`examples` 保留最多 3 条
     原始 `driver`/`effect` 文本供展开查看，不做去重合并（同一对线之间
     多次出现是正常的，去重会丢失"这条边一共发生了几次"这个信息）。
+
+    `has_delay`（第十一轮 2.2 节）：这条边聚合过的原始 `causal_links`
+    里，是否至少有一条给出了 `delay_steps > 0`——只是一个布尔汇总，
+    不区分具体延迟几步（一条边可能来自多次不同延迟的因果链，展示层
+    只需要知道"这条边上出现过滞后影响"，不需要精确到某一次）。默认
+    `False`：历史数据没有 `delay_steps` 字段时行为不变，向后兼容。
     """
 
     source_line: str
     target_line: str
     relation_counts: Dict[str, int]
     examples: List[Dict[str, Any]]
+    has_delay: bool = False
 
     @property
     def total(self) -> int:
@@ -69,6 +76,7 @@ class CausalEdge:
             "relation_counts": dict(self.relation_counts),
             "total": self.total,
             "examples": list(self.examples),
+            "has_delay": self.has_delay,
         }
 
 
@@ -82,6 +90,12 @@ def build_causal_graph(history: Sequence[Any]) -> List[CausalEdge]:
       `target_line` 相同时也保留——表示"同线内部的因果关系"，不特殊
       过滤，展示层自行决定是否要略去这类自环边）；
     - `relation_type` 按 `_normalize_relation_type()` 归一化。
+
+    - `has_delay`：这条边聚合过的 `causal_links` 里只要有一条
+      `delay_steps`（第十一轮 2.2 节）能解析成大于 0 的整数，就标记
+      为 `True`；解析不出来（缺省、非数字、`<= 0`）不计入，同
+      `relationship.py::normalize_relationships()` 对 `delay_steps`
+      "解析不出来就退化为 0（不算数）"的既有取舍一致。
 
     返回按 `total`（出现次数）降序排列的边列表；`causal_links` 全部
     为空或历史为空时返回空列表，调用方应展示"暂无跨线影响记录"之类
@@ -103,7 +117,7 @@ def build_causal_graph(history: Sequence[Any]) -> List[CausalEdge]:
             key = (source_line, target_line)
             bucket = buckets.setdefault(
                 key,
-                {"relation_counts": Counter(), "examples": []},
+                {"relation_counts": Counter(), "examples": [], "has_delay": False},
             )
             bucket["relation_counts"][relation_type] += 1
             if len(bucket["examples"]) < 3:
@@ -114,6 +128,12 @@ def build_causal_graph(history: Sequence[Any]) -> List[CausalEdge]:
                         "relation_type": relation_type,
                     }
                 )
+            try:
+                delay_steps = int(link.get("delay_steps") or 0)
+            except (TypeError, ValueError):
+                delay_steps = 0
+            if delay_steps > 0:
+                bucket["has_delay"] = True
 
     edges = [
         CausalEdge(
@@ -121,6 +141,7 @@ def build_causal_graph(history: Sequence[Any]) -> List[CausalEdge]:
             target_line=target,
             relation_counts=dict(bucket["relation_counts"]),
             examples=bucket["examples"],
+            has_delay=bucket["has_delay"],
         )
         for (source, target), bucket in buckets.items()
     ]

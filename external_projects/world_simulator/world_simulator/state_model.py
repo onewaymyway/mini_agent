@@ -377,6 +377,27 @@ class SimState:
     供 `causal_graph.py::build_causal_graph()` 做展示层的聚合统计，
     不改变 `causal_links` 本身"自由文本 + 字段名列表"的定位（仍然
     不是可执行的因果图）。
+
+    每一项再额外支持两个可选字段（第十一轮 2.2 节，`next_doc/
+    world_simulator_eleventh_round_remaining_gaps_plan.md`），让记录
+    更接近参考文档设想的"延迟多久生效、影响幅度多大"——同样**不做
+    任何传播计算**，只是把这层信息存下来、留给展示层：
+
+    - `delay_steps`：这条因果关系从 cause 到 effect 隔了几步生效
+      （整数，选填），字段名和语义类比 `relationship.py` 已有的
+      `delay_steps`，但这里不做归一化/校验（`causal_links` 一贯的
+      "自由字典透传"取舍，`engine.py` 不解析、不改写、不基于它做
+      任何调度）。不填表示"即时生效或未判断出延迟"。
+    - `magnitude`：自由文本定性描述（比如"轻微"/"明显"/"剧烈"），不
+      量化、不限定取值集合，同 `reversibility` 一贯的"不认识的取值
+      原样保留"取舍一致。
+
+    这两个字段同样只服务展示层：`causal_graph.py::build_causal_
+    graph()` 用 `delay_steps`（大于 0 时）聚合出 `CausalEdge.
+    has_delay`，供 `app.py::_causal_graph_edges_to_dot()` 给对应的边
+    画成虚线，帮用户在图上区分"即时影响"和"滞后影响"；`magnitude`
+    目前只随 `causal_links` 原样落盘展示，不参与任何聚合。默认缺省：
+    历史数据/其它模板没有这两个字段时行为与改动前完全一致。
     """
     line_updates: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     """产生*本状态*这一步，skill 按 `manifest.settings.causal_lines`

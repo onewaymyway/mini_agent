@@ -2,7 +2,7 @@
 
 > **状态**：实施中。第 1 节验证债务已明确记录"决定继续搁置"（见
 > 第 6 节结论与 `PROJECT.md` 对应变更记录）；第 4 节文档流程债务
-> 已完成；第 2.1 节已完成。第 2 节剩余代码任务按 2.2 → 2.3 → 2.4
+> 已完成；第 2.1、2.2 节已完成。第 2 节剩余代码任务按 2.3 → 2.4
 > 顺序分阶段实施，进度见各小节标注。
 
 ## 0. 这份文档是什么
@@ -155,7 +155,15 @@
 ---
 
 ### 2.2 Causal Engine 字段扩展：`delay_steps`/`magnitude`
-### （对应第九轮 1.4 节）
+### （对应第九轮 1.4 节）【已完成】
+
+> **实施记录（2026-09-21）**：已按下方设计落地，详见 `PROJECT.md`
+> 对应变更记录、`state_model.py::SimState.causal_links` docstring、
+> `world_simulator/causal_graph.py::CausalEdge.has_delay`、
+> `app.py::_causal_graph_edges_to_dot()`、`workflows/advance_step.
+> yaml`/`workflows/world_evolve.yaml`。新增 6 个测试
+> （`tests/test_causal_graph.py`、`tests/test_causal_graph_visual.
+> py`）。全量测试 517 个全部通过。
 
 **参考文档要求**（第十七节）：因果引擎应该能描述"延迟多久生效、
 影响幅度多大"这类信息。

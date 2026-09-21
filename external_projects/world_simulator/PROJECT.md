@@ -3091,6 +3091,41 @@ plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增
   **风险确认**：纯 UI 提示 + 一个纯函数，未改动任何数据结构或
   引擎逻辑，符合方案标注的"低风险"评估。
 
+- 2026-09-21（同日再追加）：**第十一轮 2.2**——按 `next_doc/
+  world_simulator_eleventh_round_remaining_gaps_plan.md` 第 2.2 节，
+  Causal Engine 字段扩展：`causal_links` 新增可选字段 `delay_steps`/
+  `magnitude`，不做真正的传播计算，只是让记录更接近参考文档设想。
+  1. **`state_model.py`**：`SimState.causal_links` docstring 补充
+     两个可选字段说明：`delay_steps`（整数，隔几步生效）、
+     `magnitude`（自由文本定性描述，如"轻微"/"明显"/"剧烈"）。
+     `causal_links` 本身是自由字典透传存储，不需要改 `from_dict`/
+     `to_dict` 代码，旧数据缺失这两个字段天然兼容。
+  2. **`world_simulator/causal_graph.py`**：`CausalEdge` 新增字段
+     `has_delay`（默认 `False`）；`build_causal_graph()` 聚合时，
+     一条边只要有任意一次原始 `causal_links` 给出了能解析成正整数
+     的 `delay_steps`，就标记该边 `has_delay=True`（解析失败/
+     `<= 0`/缺省都不计入，同 `relationship.py::normalize_
+     relationships()` 对 `delay_steps` 的既有取舍一致）。
+  3. **`app.py::_causal_graph_edges_to_dot()`**：`has_delay=True`
+     的边额外加 `style="dashed"`，在因果关系图上把"滞后影响"和
+     "即时影响"区分开；不影响 `has_delay=False`（含历史数据没有这个
+     字段）的边的默认线型。
+  4. **`workflows/advance_step.yaml`/`workflows/world_evolve.yaml`**：
+     `causal_links` 相关 prompt 段落补一句，如果能判断出来，顺带给
+     `delay_steps`/`magnitude`，判断不出来留空，不强行编造——措辞
+     风格同第十轮批次二对 `problem_discovery.yaml` 的改法。
+  **范围克制（按方案要求，不做的部分）**：不做任何基于 `delay_
+  steps` 的自动调度/提醒（比如"这条延迟因果关系还有几步生效，到时
+  提醒用户"）——这会让"记录"变成"引擎逻辑"，超出本节范围；`magnitude`
+  目前只随 `causal_links` 原样落盘展示，不参与 `causal_graph.py`
+  的任何聚合或图上区分（方案原文只要求 `delay_steps` 影响线型）。
+  **验收**：新增 6 个测试（`causal_graph.py` 聚合逻辑覆盖有/无
+  延迟、聚合多条链只要有一条延迟即标记、`delay_steps` 为 0/非数字/
+  负数时不计入；`_causal_graph_edges_to_dot()` 覆盖虚线样式/默认
+  线型两种场景），加上原有的全部通过（**517 passed**）。旧数据
+  兼容性：`causal_links`/`CausalEdge` 缺失这两个字段时解析/展示都
+  不报错，天然兼容。
+
 - 2026-09-21（同日再追加）：**第十轮批次一**——按 `next_doc/
   world_simulator_tenth_round_problem_discovery_automation_plan.md`
   第 3 节，Problem Discovery Engine 从"手动挡"到"引擎自动运行"：

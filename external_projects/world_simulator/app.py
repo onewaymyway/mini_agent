@@ -2689,6 +2689,11 @@ def _causal_graph_edges_to_dot(edges: List["cg_mod.CausalEdge"]) -> str:
     `relation_counts`（按次数降序，同 `_render_causal_graph_section()`
     列表视图的文案口径，保持两种视图信息一致）。
 
+    第十一轮 2.2 节：`CausalEdge.has_delay` 为 `True` 的边额外加
+    `style="dashed"`，帮用户在图上区分"即时影响"（实线）和"滞后
+    影响"（虚线）；`has_delay` 为 `False`（含历史数据没有这个字段的
+    情况）的边保持原有默认线型，向后兼容。
+
     Returns:
         完整的 DOT 语法字符串；`edges` 为空时返回一个空的
         `digraph G {}"`，调用方仍然可以直接传给 `st.graphviz_chart()`
@@ -2718,9 +2723,12 @@ def _causal_graph_edges_to_dot(edges: List["cg_mod.CausalEdge"]) -> str:
             for rt, count in sorted(edge.relation_counts.items(), key=lambda kv: -kv[1])
         ]
         label = "，".join(label_parts)
+        attrs = [f'label="{_escape(label)}"']
+        if getattr(edge, "has_delay", False):
+            attrs.append('style="dashed"')
         lines.append(
             f'  "{_escape(edge.source_line)}" -> "{_escape(edge.target_line)}" '
-            f'[label="{_escape(label)}"];'
+            f'[{", ".join(attrs)}];'
         )
 
     lines.append("}")
