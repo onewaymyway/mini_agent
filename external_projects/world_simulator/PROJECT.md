@@ -3543,3 +3543,42 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   把某个折叠区的交互隔离成局部刷新单元，避免任何按钮点击都触发
   整页 `page_detail()` 重新执行——这是更治本的方案，但要先确认跟
   现有"自动挡连续推进"的 `st.rerun()` 续跑逻辑不冲突。
+
+- 2026-09-22（同日再追加，第十三轮）：**模拟结果导出为静态 HTML
+  网页**——按 `next_doc/world_simulator_thirteenth_round_html_
+  export_plan.md`，新增导出功能，用户可以把某个实例某条分支导出成
+  一份自包含、脱离项目也能打开的 HTML 网页。
+  1. **`world_simulator/html_export.py`**（新文件）：唯一对外接口
+     `export_simulation_html(data_dir, sim_id, branch="main") ->
+     str`，纯函数、不落盘、不产生任何副作用。内容涵盖：页头（标题/
+     状态/分叉来源）、模拟输入与背景（intent/初始 vars/desired_state
+     含 `per_entity`/objectives/resource_fields）、因果线总览
+     （声明的 causal_lines + `causal_graph.build_causal_graph()`
+     聚合出的线到线关系图）、时间线（按 `step` **正序**渲染，区别
+     于 `app.py` 详情页现有的倒序展示）、复盘报告（`retrospective.
+     load_for_branch()` 取全部记录，这条分支没生成过复盘时整节不
+     渲染）。
+  2. **因果线图静态化**：在还处于调用方进程内、Graphviz `dot` 二进
+     制可用的那一刻，把 DOT 字符串渲染成 SVG 直接内嵌进 HTML，不
+     依赖任何客户端 JS 运行时；`graphviz` 包缺失/渲染失败时捕获
+     异常降级为 `causal_graph.format_edges_for_display()` 的纯
+     文字列表，不让整个导出因为这一步失败而失败。
+  3. **不 import `app.py`**：格式化逻辑（能力图标映射、DOT 拼接等）
+     在 `html_export.py` 里独立实现一份，不共享 `app.py` 对应函数
+     的代码——两者服务"持续操作的看板"和"一次性通读的静态报告"两种
+     不同场景，本来就不要求布局代码复用，也让这个模块能脱离
+     Streamlit 运行时单独单测。
+  4. **`app.py`**：详情页"分支"区块前新增"导出"小节，点击"📤 生成
+     导出网页"按钮才现算（同"问题关系图"折叠区一贯的"不点击不起
+     Graphviz 子进程"性能取舍），生成结果存进 `st.session_state`
+     后展示"⬇️ 下载 HTML 文件"（`st.download_button`，不落盘中间
+     文件），文件名 `<sim_id>_<branch>.html`。
+  **明确不做的部分（按方案要求）**：不支持导出 PDF/Word；不支持
+  一次导出打包多个实例/多条分支；导出网页不嵌入任何交互能力
+  （纯只读存档）；不做导出历史/缓存去重。
+  **验收**：新增 `tests/test_html_export.py`（11 个测试：意图/背景
+  字段齐全、时间线正序、因果线总览含声明的线与图、SVG 渲染失败时
+  降级为文字列表且不影响其它章节、graphviz 可用时确实产出内嵌
+  SVG、无复盘记录时整节不出现/有记录时正确展示、`state0` 单独一步
+  不报错、多主体 `per_entity` 分组展示、非 main 分支正确展示分叉
+  来源、用户自由文本正确转义防止 HTML 注入），加上原有的全部通过。

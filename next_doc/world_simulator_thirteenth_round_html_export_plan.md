@@ -1,7 +1,8 @@
 # world_simulator 改进计划：模拟结果导出为静态网页
 # （第十三轮）
 
-> **状态**：待实施。
+> **状态**：已完成，详见 `PROJECT.md` 对应条目及
+> `tests/test_html_export.py`（11 个测试）。
 
 ## 0. 这份文档是什么
 

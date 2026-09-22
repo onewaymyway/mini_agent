@@ -48,6 +48,7 @@ from world_simulator import causal_tree
 from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
 from world_simulator import retrospective as retrospective_mod
+from world_simulator import html_export as html_export_mod
 from world_simulator import agent_preview as agent_preview_mod
 from world_simulator import policy_feedback as policy_feedback_mod
 from world_simulator import quality_signals as quality_signals_mod
@@ -4967,6 +4968,41 @@ def page_detail() -> None:
         )
     with timeline_tab:
         _render_timeline_subview()
+
+    # ── 导出为网页（第十三轮，`next_doc/world_simulator_
+    # thirteenth_round_html_export_plan.md`）──
+    #
+    # 按钮点击才现算——`html_export.export_simulation_html()` 里
+    # 因果线图的 SVG 渲染要起一次 Graphviz `dot` 子进程，同「问题
+    # 关系图」折叠区一贯的"不点开/不点击就不跑子进程"的性能取舍
+    # 一致，不在每次 `st.rerun()` 都无条件重算。
+    st.markdown("#### 导出")
+    if st.button("📤 生成导出网页（当前分支）", key="export_html_button"):
+        try:
+            html_str = html_export_mod.export_simulation_html(
+                DATA_DIR, sim_id, branch=manifest.branch,
+            )
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"导出失败：{exc}")
+        else:
+            st.session_state["export_html_ready"] = {
+                "sim_id": sim_id, "branch": manifest.branch, "html": html_str,
+            }
+    ready = st.session_state.get("export_html_ready")
+    if ready and ready.get("sim_id") == sim_id and ready.get("branch") == manifest.branch:
+        st.download_button(
+            "⬇️ 下载 HTML 文件",
+            data=ready["html"],
+            file_name=f"{sim_id}_{manifest.branch}.html",
+            mime="text/html",
+            key="export_html_download",
+        )
+        st.markdown(
+            '<span class="ws-muted">自包含的静态网页，包含模拟输入/背景、'
+            "因果线总览、正序时间线，以及这条分支已生成的复盘报告（如有）。"
+            "脱离本项目也能用浏览器直接打开。</span>",
+            unsafe_allow_html=True,
+        )
 
     # ── 分支管理 ──
     st.markdown("#### 分支")
