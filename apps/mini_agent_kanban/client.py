@@ -914,8 +914,20 @@ class AgentClient:
     # recommendation_plan.md §4.6/阶段四）─────────────────────────────────
     def goal_tree_research(self, node_id: str):
         """GET /v1/goals/{id}/research — 该节点待处理调研候选 +
-        最近一次触发时间，供"📄 相关调研"入口渲染。"""
+        最近一次触发时间。看板"🌳 目标树"渲染每个节点时默认改用批量
+        版本 `goal_tree_research_summary()`，这个方法保留给需要单独
+        查询某一个节点的场景（比如"🔍 立即调研"触发后想立刻确认这个
+        节点的最新状态）。"""
         return self._get(f"/goals/{node_id}/research")
+
+    def goal_tree_research_summary(self):
+        """GET /v1/goals/research_summary — [看板"🌳 目标树"性能优化，
+        goal_tree_research_n_plus_one_fix_plan.md] `goal_tree_
+        research()` 的批量版本：一次请求拿到树上所有节点各自的调研
+        摘要（`{"by_node": {node_id: {"items": [...], "last_
+        triggered_at": float | None}}}`），替代"渲染每个节点都单独
+        请求一次"的 N+1 模式——这是"🌳 目标树"子页现在的默认用法。"""
+        return self._get("/goals/research_summary")
 
     def trigger_goal_tree_research(self, node_id: str, force: bool = False):
         """POST /v1/goals/{id}/research/trigger — 手动触发一次该节点的

@@ -3509,3 +3509,37 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   几段字符串本来就不在任何被测试断言覆盖的函数体内），行为验证
   改为人工确认：界面顶部/相关折叠区附近不应该再出现这几段中文
   说明文字。
+
+- 2026-09-22（同日再追加，性能优化第一阶段）：详情页"目标多了就卡、
+  采纳类操作也要等很久"的根因分析 + 第一阶段修复（低风险，纯缓存/
+  展示层改动，不改变任何数据结构）。
+  根因：1）`get_simulation()` 每次调用都全量反序列化
+  `state_history.jsonl`，而 Streamlit 任何按钮点击都会触发整页
+  `st.rerun()`，等于每次点击（哪怕跟历史无关）都重新解析一遍历史；
+  2）问题关系图/能力成熟度时间线/协同演化观察三个"遍历完整历史"的
+  只读折叠区，同样在每次 rerun 时无条件重新计算；3）问题关系图的
+  `st.graphviz_chart()`（起 Graphviz `dot` 子进程做布局）不受折叠区
+  展开/收起状态影响，每次 rerun 都会跑一次子进程——这是最贵的一步。
+  修复：1）新增 `get_simulation_cached()`（`app.py`），用
+  `st.cache_data` 缓存 `store.load_history()` 的结果，缓存 key 用
+  `(sim_id, branch, 文件 mtime, 文件 size)`，文件没变直接复用；
+  5 个调用点全部从 `get_simulation()` 切到这个缓存版本。
+  2）`_collect_problem_graph_nodes()`/`_collect_capability_maturity_
+  timeline()`/`_collect_capability_kind_coevolution()` 各自新增一个
+  `_cached` 缓存包装，key 用 `(sim_id, branch, len(history), ...)`，
+  `history` 本身用 Streamlit 的下划线前缀约定跳过哈希（避免"为了
+  避免重算而先对整份历史算一遍哈希"这种没有净收益的开销）；三个
+  对应的 `_render_*_section()` 改成接收 `sim_id`/`branch` 参数、
+  优先调用缓存版本。3）问题关系图的 `st.graphviz_chart()` 改成
+  behind 一个"🔄 生成/刷新问题关系图"按钮，配合 `st.session_state`
+  记住"本次会话是否已经点开过"，不再是折叠区一出现就无条件渲染。
+  **验收**：新增 `tests/test_perf_caching.py`（6 个测试：缓存包装
+  函数结果跟未缓存版本一致、不同 `sim_id`/`window` 不会互相读到
+  对方缓存、`get_simulation_cached()` 在文件真的改写后能读到最新
+  内容），加上原有的全部通过（**582 passed**）。跨线影响关系图的
+  Graphviz 渲染此前已经是"默认列表视图、切到「🕸️ 关系图」才渲染"，
+  本身不受这次改动影响，不需要额外处理。
+  **未做（留给后续阶段，需要先验证兼容性）**：探索用 `st.fragment`
+  把某个折叠区的交互隔离成局部刷新单元，避免任何按钮点击都触发
+  整页 `page_detail()` 重新执行——这是更治本的方案，但要先确认跟
+  现有"自动挡连续推进"的 `st.rerun()` 续跑逻辑不冲突。

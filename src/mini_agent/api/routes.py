@@ -5810,7 +5810,28 @@ async def get_goal_tree_research(node_id: str, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/goals/{node_id}/research/trigger")
+@router.get("/goals/research_summary")
+async def get_goal_tree_research_summary(request: Request):
+    """GET /v1/goals/research_summary — [看板"🌳 目标树"性能优化，
+    goal_tree_research_n_plus_one_fix_plan.md] `GET /goals/{node_id}/
+    research` 的批量版本：一次性返回树上**所有**节点各自的调研摘要
+    （`items`/`last_triggered_at`），供看板一次网络请求换取全部
+    节点数据，替代"渲染每个节点都单独请求一次"的 N+1 模式——树有 N
+    个节点时，原来的模式是 N 次 HTTP 往返、每次背后还有多次全量磁盘
+    读取，节点一多就明显变慢；这个端点内部只读一次 `growth_backlog.
+    jsonl`、一次触发时间戳状态文件，在内存里按 `node_id` 分组返回。
+
+    返回 `{"by_node": {node_id: {"items": [...], "last_triggered_at":
+    float | None}}}`——只包含确实有数据的节点，没出现在字典里的
+    节点视为"从未调研过"（`items=[]`、`last_triggered_at=None`），
+    跟 `list_research_summary_for_all_nodes()` 文档说明的语义一致。
+    """
+    paths = _spec_paths(request)
+    try:
+        from mini_agent.evolution.focus_research_trigger import list_research_summary_for_all_nodes
+        return {"by_node": list_research_summary_for_all_nodes(paths)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 async def trigger_goal_tree_research(node_id: str, request: Request):
     """POST /v1/goals/{node_id}/research/trigger —
     [goal_tree_research_and_action_recommendation_plan.md §4.6 阶段四]

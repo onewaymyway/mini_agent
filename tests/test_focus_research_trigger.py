@@ -234,5 +234,82 @@ class TestListResearchItemsForNode(unittest.TestCase):
         self.assertEqual(items, [])
 
 
+class TestListResearchSummaryForAllNodes(unittest.TestCase):
+    """[goal_tree_research_n_plus_one_fix_plan.md，看板性能优化]
+    `list_research_summary_for_all_nodes()`：`list_research_items_
+    for_node()` + `FocusResearchTrigger.last_triggered_at()` 的批量
+    版本，覆盖"结果要跟对每个节点单独调用旧接口完全一致"这个核心
+    正确性要求，以及"没有数据的节点不出现在结果里"的语义。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.paths = AgentPaths(Path(self._tmp.name))
+        self.backlog = GoalBacklog(self.paths)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_matches_per_node_calls_for_multiple_nodes(self):
+        from mini_agent.evolution.focus_research_trigger import (
+            list_research_items_for_node,
+            list_research_summary_for_all_nodes,
+        )
+
+        goal_a = self.backlog.add_goal("学习 Rust 异步编程", priority=3)
+        goal_b = self.backlog.add_goal("换工作", priority=1)
+        trigger = FocusResearchTrigger(self.paths, self.backlog)
+        trigger.trigger(goal_a.id)
+        trigger.trigger(goal_b.id)
+
+        summary = list_research_summary_for_all_nodes(self.paths)
+
+        self.assertEqual(summary[goal_a.id]["items"], list_research_items_for_node(self.paths, goal_a.id))
+        self.assertEqual(summary[goal_b.id]["items"], list_research_items_for_node(self.paths, goal_b.id))
+        self.assertEqual(
+            summary[goal_a.id]["last_triggered_at"], trigger.last_triggered_at(goal_a.id),
+        )
+
+    def test_node_without_research_history_is_absent_from_result(self):
+        """从没调研过的节点不应该出现在批量结果字典里（调用方按"不在
+        字典里 = 从未调研过"处理，见函数文档说明）。"""
+        from mini_agent.evolution.focus_research_trigger import list_research_summary_for_all_nodes
+
+        goal = self.backlog.add_goal("从没调研过的目标", priority=3)
+        summary = list_research_summary_for_all_nodes(self.paths)
+        self.assertNotIn(goal.id, summary)
+
+    def test_empty_backlog_returns_empty_dict(self):
+        from mini_agent.evolution.focus_research_trigger import list_research_summary_for_all_nodes
+
+        self.assertEqual(list_research_summary_for_all_nodes(self.paths), {})
+
+    def test_only_one_growth_backlog_load_per_call(self):
+        """N+1 修复的核心断言：批量函数只应该读一次
+        `growth_backlog.jsonl`，不管树上有多少节点——用
+        `GrowthBacklog.load_all()` 调用次数直接验证，而不是只验证
+        结果正确（结果正确不代表没有走回 N+1 老路）。"""
+        from unittest import mock
+
+        from mini_agent.evolution.focus_research_trigger import list_research_summary_for_all_nodes
+        from mini_agent.evolution.growth_advisor import GrowthBacklog
+
+        trigger = FocusResearchTrigger(self.paths, self.backlog)
+        for i in range(5):
+            goal = self.backlog.add_goal(f"目标 {i}", priority=1)
+            trigger.trigger(goal.id, force=True)
+
+        original_load_all = GrowthBacklog.load_all
+        call_count = {"n": 0}
+
+        def _counting_load_all(self):
+            call_count["n"] += 1
+            return original_load_all(self)
+
+        with mock.patch.object(GrowthBacklog, "load_all", _counting_load_all):
+            list_research_summary_for_all_nodes(self.paths)
+
+        self.assertEqual(call_count["n"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

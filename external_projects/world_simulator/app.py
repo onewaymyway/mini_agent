@@ -1007,6 +1007,62 @@ def _load_cfg():
     return load_llm_cfg()
 
 
+@st.cache_data(show_spinner=False)
+def _load_history_cached(data_dir_str: str, sim_id: str, branch: str, mtime: float, size: int) -> List:
+    """`store.load_history()` 的缓存包装（第十二轮性能优化）。
+
+    根因：`store.load_history()` 每次调用都会把 `state_history.jsonl`
+    整个文件读出来、逐行 `json.loads` + `SimState.from_dict()` 反
+    序列化——而 Streamlit 的交互模型是"任何一个按钮点击都触发整页
+    `st.rerun()`"，也就是说哪怕这次点击跟历史数据毫无关系（比如只是
+    切换某个下拉框），`page_detail()` 也会把这个全量反序列化重新做
+    一遍。随着推进步数变多，文件越来越大，这个开销会跟着线性增长，
+    且是每次 rerun 都白付一次的隐藏成本。
+
+    缓存 key 特意不用 `sim_id`/`branch` 之外的"语义"信息，而是用
+    `(mtime, size)` 这对"文件是否变化"的廉价代理——`state_history.
+    jsonl` 只会被本项目自己的写操作（推进/回滚/分支）追加或重写，
+    这两个值任一变化就说明磁盘内容变了，缓存自动失效重新读取；没
+    变就直接复用上次反序列化好的 `List[SimState]`，不再重新解析。
+    这个手法与 `skill_version`（读文件 mtime 判断技能是否变化）是
+    同一种既有风格，不是本轮新引入的写法。
+
+    `history` 里的 `SimState` 对象是可变 dataclass，`st.cache_data`
+    默认会对缓存值做一次深拷贝再返回给调用方，调用方对返回列表的
+    修改不会污染缓存——如果未来改用 `st.cache_resource`（不做深拷贝）
+    需要重新评估这一点。
+    """
+    store = SimStore.for_root(Path(data_dir_str), sim_id)
+    return store.load_history(branch)
+
+
+def get_simulation_cached(data_dir: Path, sim_id: str) -> tuple:
+    """`get_simulation()` 的缓存版本（第十二轮性能优化）：`manifest`/
+    `current` 仍然每次都重新读（`manifest.json`/`state_current.json`
+    体积恒定、跟历史步数无关，缓存收益不大，不值得为它们引入缓存
+    失效的复杂度），只有 `history` 这部分改走
+    `_load_history_cached()`。
+
+    `page_detail()`/`page_experiment()`/`page_game()` 等原本直接调用
+    `get_simulation()` 的地方全部改调这个函数；`get_simulation()`
+    本身保留不动（`world_simulator/engine/management.py` 是纯 Python
+    库函数，不依赖 Streamlit，CLI/测试等场景仍然直接用它）。
+    """
+    store = SimStore.for_root(data_dir, sim_id)
+    manifest = store.load_manifest()
+    current = store.load_current_state(manifest.branch)
+    if current is None:
+        raise SimEngineError(f"模拟实例缺少当前状态：{sim_id}")
+    history_path = store.state_history_path(manifest.branch)
+    try:
+        stat = history_path.stat()
+        mtime, size = stat.st_mtime, stat.st_size
+    except OSError:
+        mtime, size = 0.0, 0
+    history = _load_history_cached(str(data_dir), sim_id, manifest.branch, mtime, size)
+    return manifest, current, history
+
+
 def _safe_json_loads(text: str, fallback: Any) -> Any:
     try:
         return json.loads(text)
@@ -2912,6 +2968,27 @@ def _collect_problem_graph_nodes(history: List) -> List[Dict[str, Any]]:
     return [latest[k] for k in order]
 
 
+@st.cache_data(show_spinner=False)
+def _collect_problem_graph_nodes_cached(
+    sim_id: str, branch: str, history_len: int, _history: List
+) -> List[Dict[str, Any]]:
+    """`_collect_problem_graph_nodes()` 的缓存包装（第十二轮性能优化）。
+
+    缓存 key 用 `(sim_id, branch, history_len)`——不直接用 `_history`
+    本身参与哈希（参数名前缀 `_` 是 Streamlit 的既有约定，加了下划线
+    的参数不参与缓存 key 计算），因为对一整份 `history`（`SimState`
+    对象列表）算哈希本身开销不比重新遍历一遍小，等于"为了避免计算
+    而先做了一遍量级相近的计算"，没有实际收益。
+
+    `history_len` 是关键的正确性保证：`history` 只会被追加，不会被
+    改写，长度不变就说明内容没变（同一个 `sim_id`/`branch` 组合下）；
+    `sim_id`+`branch` 保证不同实例/分支不会互相读到对方的缓存结果
+    （两个不同实例历史长度恰好相同的情况并不罕见，必须靠这两个字段
+    区分，不能只用长度当 key）。
+    """
+    return _collect_problem_graph_nodes(_history)
+
+
 def _problem_graph_edges_to_dot(nodes: List[Dict[str, Any]]) -> str:
     """把 `_collect_problem_graph_nodes()` 的节点列表转换成 Graphviz
     DOT 语法字符串，供 `st.graphviz_chart()` 直接渲染——复用
@@ -2965,13 +3042,28 @@ def _problem_graph_edges_to_dot(nodes: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _render_problem_graph_section(history: List) -> None:
+def _render_problem_graph_section(history: List, *, sim_id: str = "", branch: str = "") -> None:
     """渲染"🕸️ 问题关系图"只读折叠区（第十轮批次三）：把当前分支
     历史里出现过的所有 `problems` 按 `depends_on` 连成一张图，节点上
     按 `status` 着色。纯展示层，不新增任何持久化结构、不影响任何
     推进逻辑，写法/位置仿照 `_render_causal_graph_section()`。
+
+    第十二轮性能优化：`_collect_problem_graph_nodes()` 的结果改走
+    `_collect_problem_graph_nodes_cached()`（`sim_id`/`branch` 为空
+    时——比如被测试直接调用、或未来别的调用方懒得传——退化为不缓存
+    直接算，行为不变，只是没有缓存收益）；`st.graphviz_chart()`
+    这一步（内部要起 Graphviz `dot` 子进程做布局，是这个折叠区里最
+    贵的一步）额外用 `st.session_state` 记"这个折叠区本次会话是否
+    真的被展开查看过"，第一次没展开过时跳过子进程渲染、改成一个
+    "生成关系图"占位按钮——避免用户根本没点开这个折叠区时，仅仅因为
+    `st.expander(...)` 内部代码块在每次整页 `st.rerun()` 都会照跑，
+    就白白起一次子进程。
     """
-    nodes = _collect_problem_graph_nodes(history)
+    nodes = (
+        _collect_problem_graph_nodes_cached(sim_id, branch, len(history), history)
+        if sim_id
+        else _collect_problem_graph_nodes(history)
+    )
     with st.expander("🕸️ 问题关系图（第十轮批次三，按 depends_on 连边，可选）"):
         if not nodes:
             st.markdown(
@@ -2988,7 +3080,14 @@ def _render_problem_graph_section(history: List) -> None:
             "引用的问题一定存在于图里）。</span>",
             unsafe_allow_html=True,
         )
-        st.graphviz_chart(_problem_graph_edges_to_dot(nodes))
+        shown_key = f"pd_problem_graph_shown_{sim_id}_{branch}"
+        if st.session_state.get(shown_key) or st.button(
+            "🔄 生成/刷新问题关系图", key=f"pd_problem_graph_gen_{sim_id}_{branch}"
+        ):
+            st.session_state[shown_key] = True
+            st.graphviz_chart(_problem_graph_edges_to_dot(nodes))
+        else:
+            st.caption("点击上面的按钮才会真正渲染这张图（涉及一次 Graphviz 子进程调用，节点较多时不便宜）。")
 
 
 # ── 第十一轮 2.3 节：能力成熟度时间线（纯只读展示，姐妹实现）──────
@@ -3048,7 +3147,17 @@ def _collect_capability_maturity_timeline(history: List) -> List[Dict[str, Any]]
     ]
 
 
-def _render_capability_maturity_section(history: List) -> None:
+@st.cache_data(show_spinner=False)
+def _collect_capability_maturity_timeline_cached(
+    sim_id: str, branch: str, history_len: int, _history: List
+) -> List[Dict[str, Any]]:
+    """`_collect_capability_maturity_timeline()` 的缓存包装（第十二轮
+    性能优化，缓存 key 设计同 `_collect_problem_graph_nodes_cached()`
+    上方注释）。"""
+    return _collect_capability_maturity_timeline(_history)
+
+
+def _render_capability_maturity_section(history: List, *, sim_id: str = "", branch: str = "") -> None:
     """渲染"📈 能力成熟度时间线"只读折叠区（第十一轮 2.3 节）：把
     当前分支历史里出现过的所有能力，按名称归并后逐行展示其
     `maturity_stage` 演进顺序。纯展示层，不引入 graphviz，一个能力
@@ -3058,7 +3167,11 @@ def _render_capability_maturity_section(history: List) -> None:
     （🔧 技术 / 🏢 组织 / 📜 制度，缺省按 `"technology"` 兜底），并
     新增一个可选的类型筛选下拉（纯展示层交互，不影响底层数据）。
     """
-    nodes = _collect_capability_maturity_timeline(history)
+    nodes = (
+        _collect_capability_maturity_timeline_cached(sim_id, branch, len(history), history)
+        if sim_id
+        else _collect_capability_maturity_timeline(history)
+    )
     with st.expander("📈 能力成熟度时间线（第十一轮 2.3 节，按能力名称归并，可选）"):
         if not nodes:
             st.markdown(
@@ -3176,14 +3289,31 @@ def _collect_capability_kind_coevolution(
     return observations
 
 
-def _render_capability_kind_coevolution_section(history: List, *, window: int = 3) -> None:
+@st.cache_data(show_spinner=False)
+def _collect_capability_kind_coevolution_cached(
+    sim_id: str, branch: str, history_len: int, window: int, _history: List
+) -> List[Dict[str, Any]]:
+    """`_collect_capability_kind_coevolution()` 的缓存包装（第十二轮
+    性能优化，缓存 key 设计同 `_collect_problem_graph_nodes_cached()`
+    上方注释；`window` 也要参与哈希——同一份历史用不同窗口宽度调用，
+    结果不一样，必须分别缓存）。"""
+    return _collect_capability_kind_coevolution(_history, window=window)
+
+
+def _render_capability_kind_coevolution_section(
+    history: List, *, window: int = 3, sim_id: str = "", branch: str = ""
+) -> None:
     """渲染"🔀 技术/组织/制度协同演化观察"只读折叠区（第十二轮方案
     第 5 节）。纯统计展示，明确标注"这只是时间上接近，不代表存在
     因果关系"，不做自动触发/通知——只在用户主动展开这个折叠区时
     才有意义地查看结果（计算本身是无副作用的纯函数，本函数只是
     渲染层）。
     """
-    observations = _collect_capability_kind_coevolution(history, window=window)
+    observations = (
+        _collect_capability_kind_coevolution_cached(sim_id, branch, len(history), window, history)
+        if sim_id
+        else _collect_capability_kind_coevolution(history, window=window)
+    )
     with st.expander(
         f"🔀 技术/组织/制度协同演化观察（第十二轮方案第 5 节，{window} 步窗口内，纯统计，可选）"
     ):
@@ -3502,7 +3632,7 @@ def page_detail() -> None:
         return
 
     try:
-        manifest, current, history = get_simulation(DATA_DIR, sim_id)
+        manifest, current, history = get_simulation_cached(DATA_DIR, sim_id)
     except SimEngineError as exc:
         st.error(f"加载模拟实例失败：{exc}")
         if st.button("← 返回列表"):
@@ -3545,7 +3675,7 @@ def page_detail() -> None:
                     auto_run["remaining"] -= 1
                     # 重新加载最新状态，让这一次渲染（当前状态卡片、时间线）
                     # 反映刚刚推进完的这一步，而不是这一步开始前的旧数据。
-                    manifest, current, history = get_simulation(DATA_DIR, sim_id)
+                    manifest, current, history = get_simulation_cached(DATA_DIR, sim_id)
                     review_mode = (manifest.autopilot or {}).get("review_mode", "silent")
                     if review_mode == "pause_on_major_decision" and next_state.major_decision:
                         st.session_state.pop("autopilot_run", None)
@@ -4250,17 +4380,17 @@ def page_detail() -> None:
     # 依赖批次二的 depends_on 字段，展示的是"已经落盘的 problems"，
     # 不是"建议阶段还没被采纳的候选"，所以是独立的折叠区而不是嵌套
     # 在上面那个折叠区内部。
-    _render_problem_graph_section(history)
+    _render_problem_graph_section(history, sim_id=sim_id, branch=manifest.branch)
 
     # 第十一轮 2.3 节：能力成熟度时间线，紧跟问题关系图之后——两者都是
     # "遍历完整历史、按名称/id 归并展示"的纯只读折叠区，位置相邻方便
     # 用户对照"问题解决进度"和"能力演进进度"。
-    _render_capability_maturity_section(history)
+    _render_capability_maturity_section(history, sim_id=sim_id, branch=manifest.branch)
 
     # 第十二轮方案第 5 节：技术/组织/制度协同演化观察，紧跟能力成熟度
     # 时间线之后——依赖第 4 节 capability_kind 字段的聚合结果，纯统计
     # 展示，不做因果判断。
-    _render_capability_kind_coevolution_section(history)
+    _render_capability_kind_coevolution_section(history, sim_id=sim_id, branch=manifest.branch)
 
     # 第十二轮方案第 3 节：⭐ 首次达成的里程碑，紧跟能力成熟度时间线
     # 之后——同样是遍历完整历史的只读折叠区，与 `achievements.py`
@@ -5385,7 +5515,7 @@ def page_experiment() -> None:
 
         focus_fields_default = ""
         try:
-            _exp_manifest, _exp_current, _ = get_simulation(DATA_DIR, sim_id)
+            _exp_manifest, _exp_current, _ = get_simulation_cached(DATA_DIR, sim_id)
             focus_fields_default = ", ".join(
                 str(o) for o in (_exp_manifest.settings.get("objectives") or [])
             )
@@ -5413,7 +5543,7 @@ def page_experiment() -> None:
 
             if results:
                 try:
-                    _rank_manifest, _, _ = get_simulation(DATA_DIR, sim_id)
+                    _rank_manifest, _, _ = get_simulation_cached(DATA_DIR, sim_id)
                     _objectives_for_rank = _rank_manifest.settings.get("objectives") or []
                 except Exception:  # noqa: BLE001 — 拿不到就不展示排序区，不影响主流程
                     _objectives_for_rank = []
@@ -5720,7 +5850,7 @@ def page_game() -> None:
         return
 
     try:
-        manifest, current, history = get_simulation(DATA_DIR, sim_id)
+        manifest, current, history = get_simulation_cached(DATA_DIR, sim_id)
     except SimEngineError as exc:
         st.error(f"加载模拟实例失败：{exc}")
         return

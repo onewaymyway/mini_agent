@@ -360,6 +360,86 @@ def list_research_items_for_node(paths: "AgentPaths", node_id: str) -> list[dict
     return items
 
 
+def list_research_summary_for_all_nodes(paths: "AgentPaths") -> dict[str, dict]:
+    """[看板"🌳 目标树"性能优化，goal_tree_research_n_plus_one_fix_
+    plan.md] `list_research_items_for_node()` + `FocusResearchTrigger.
+    last_triggered_at()` 的**批量版本**：一次性返回树上所有节点各自的
+    调研摘要，供看板一次网络请求换取全部节点数据，替代"每个节点单独
+    请求一次 `/goals/{id}/research`"的 N+1 模式。
+
+    背景：看板"🌳 目标树"递归渲染每个节点时，原来都会各自调用一次
+    `GET /goals/{node_id}/research`，而这个端点内部本身要做至少
+    2 次 `growth_backlog.jsonl` 全量读取（`list_pending_research_
+    candidates()`/`list_research_items_for_node()` 各读一次，互相
+    不知道对方已经读过）+ 1 次触发时间戳状态文件读取 + 1 次
+    `goals.json` 全量重载（`_goal_backlog_only()`）。树有 N 个节点，
+    一次页面渲染就是 N 次 HTTP 往返、每次往返背后至少 4 次全量磁盘
+    读取——这是"目标树"随节点数增多越来越卡的主因。这个函数把
+    "growth_backlog.jsonl 读一次、状态文件读一次"降到全局各一次，
+    在内存里按 `node_id` 分组，调用方（`GET /goals/research_
+    summary`）一次请求就能拿到全部节点的数据。
+
+    `get_report_by_id()` 仍然是逐条候选各读一次报告文件——候选数量
+    通常远小于树的节点总数（多数节点从未触发过调研，没有候选），
+    这里没有进一步做成"报告也批量预读"，量级上已经不是主要瓶颈；
+    如果未来候选/报告数量本身也变得很大，可以再单独优化。
+
+    Returns:
+        `{node_id: {"items": [...同 list_research_items_for_node() 单
+        节点返回的元素结构...], "last_triggered_at": float | None}}`。
+        只包含"确实有调研历史或确实触发过"的节点，调用方对没出现在
+        这个字典里的节点应该按"从未调研过"处理（`items=[]`、
+        `last_triggered_at=None`），跟单节点版本 `last_triggered_at()`
+        对不存在的 `node_id` 返回 `0.0`（这里转成 `None`，语义上
+        "0.0" 和"没触发过"容易混淆，批量版本借机改成更明确的
+        `None`）的兜底行为一致。
+    """
+    from mini_agent.evolution.growth_advisor import GrowthBacklog, get_report_by_id
+
+    prefix = f"{FOCUS_EVIDENCE_REF_PREFIX}:"
+    by_node: dict[str, list[dict]] = {}
+    gb = GrowthBacklog(paths)
+    for c in gb.load_all():
+        if c.origin != "focus_research":
+            continue
+        node_ids = {ref[len(prefix):] for ref in c.evidence_refs if ref.startswith(prefix)}
+        if not node_ids:
+            continue
+        report = get_report_by_id(paths, c.report_id) if c.report_id else None
+        item = {
+            "candidate_id": c.candidate_id,
+            "title": c.title,
+            "status": c.status,
+            "created_at": c.created_at,
+            "rationale": c.rationale,
+            "report_id": c.report_id,
+            "report_summary": report.summary if report else None,
+            "report_slug": report.slug if report else None,
+        }
+        for node_id in node_ids:
+            by_node.setdefault(node_id, []).append(item)
+    for items in by_node.values():
+        items.sort(key=lambda d: d["created_at"], reverse=True)
+
+    state_path = paths.workdir_dir / _STATE_FILENAME
+    try:
+        state_data = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        state_data = {}
+    last_triggered = {
+        node_id: float(ts) for node_id, ts in state_data.items()
+        if node_id != _FOCUS_SNAPSHOT_KEY
+    }
+
+    result: dict[str, dict] = {}
+    for node_id in set(by_node) | set(last_triggered):
+        result[node_id] = {
+            "items": by_node.get(node_id, []),
+            "last_triggered_at": last_triggered.get(node_id) or None,
+        }
+    return result
+
+
 @dataclass
 class FocusResearchScanSummary:
     """`run_focus_research_scan_cycle()` 的返回值，纯汇总信息，供 cron
@@ -421,6 +501,7 @@ __all__ = [
     "find_newly_focused_nodes",
     "list_pending_research_candidates",
     "list_research_items_for_node",
+    "list_research_summary_for_all_nodes",
     "run_focus_research_scan_cycle",
     "FocusResearchScanSummary",
     "MIN_INTERVAL_SECONDS_STRUCTURAL",

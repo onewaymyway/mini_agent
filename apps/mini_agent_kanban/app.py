@@ -5105,7 +5105,9 @@ def _render_goal_tree_candidates(client: AgentClient, node_id: str, candidates: 
                             st.rerun()
 
 
-def _render_goal_tree_research_section(client: AgentClient, node_id: str) -> None:
+def _render_goal_tree_research_section(
+    client: AgentClient, node_id: str, *, summary: dict | None = None
+) -> None:
     """[goal_tree_research_and_action_recommendation_plan.md §4.5/阶段四；
     goal_tree_research_report_visibility_plan.md] "📄 相关调研"子区块：
     展示该节点全部调研历史（不限 pending，含已采纳/已忽略）+ 每条自带的
@@ -5119,19 +5121,36 @@ def _render_goal_tree_research_section(client: AgentClient, node_id: str) -> Non
     一起解决：后端 `FocusResearchTrigger.trigger()` 现在会立即生成报告
     （见该函数文档），这里则改成读 `items`（全部历史 + 报告摘要）而不是
     只读 `pending_candidates`，并给每条历史加一个"📄 查看报告"展开按钮。
+
+    [goal_tree_research_n_plus_one_fix_plan.md，看板性能优化] `summary`
+    参数：`_render_goal_tree_view()` 现在会在渲染整棵树之前，一次性调用
+    `client.goal_tree_research_summary()` 批量拉取所有节点的调研摘要，
+    递归渲染时把这个节点对应的那一份通过 `summary` 传进来——传了就直接
+    用，不再单独发请求；`summary is None` 时保留原来的单节点请求作为
+    兜底（比如未来有调用方想单独渲染某一个节点、不经过
+    `_render_goal_tree_view()` 的批量预取）。这是"🌳 目标树"随节点数
+    增多明显变慢的主因：原来树上每个节点在渲染时都会各自触发一次
+    `GET /goals/{id}/research`，且这个折叠区不管有没有被用户展开都会
+    执行（`st.expander` 只控制视觉展开，`with` 块内代码每次整页
+    `st.rerun()` 都照跑），N 个节点就是 N 次网络往返；批量预取后整棵树
+    只需要 1 次请求。
     """
-    resp = client.goal_tree_research(node_id) or {}
-    if isinstance(resp, dict) and resp.get("_error"):
-        st.caption(f"调研信息获取失败：{resp['_error']}")
-        return
-    items = resp.get("items")
-    if items is None:
-        # 兼容旧后端（还没升级、只返回 pending_candidates 时）的兜底。
-        items = [
-            {**c, "report_id": c.get("report_id"), "report_summary": None}
-            for c in (resp.get("pending_candidates") or [])
-        ]
-    last_triggered_at = resp.get("last_triggered_at")
+    if summary is not None:
+        items = summary.get("items") or []
+        last_triggered_at = summary.get("last_triggered_at")
+    else:
+        resp = client.goal_tree_research(node_id) or {}
+        if isinstance(resp, dict) and resp.get("_error"):
+            st.caption(f"调研信息获取失败：{resp['_error']}")
+            return
+        items = resp.get("items")
+        if items is None:
+            # 兼容旧后端（还没升级、只返回 pending_candidates 时）的兜底。
+            items = [
+                {**c, "report_id": c.get("report_id"), "report_summary": None}
+                for c in (resp.get("pending_candidates") or [])
+            ]
+        last_triggered_at = resp.get("last_triggered_at")
     st.caption("📄 相关调研")
     if last_triggered_at:
         import datetime as _dt
@@ -5253,6 +5272,7 @@ def _gt_button_col_weights(depth: int, has_toggle: bool) -> list[float]:
 def _render_goal_tree_node(
     client: AgentClient, tree_node: dict, id_to_title: dict, depth: int = 0,
     next_step_node_ids: set | None = None, is_focus: bool = False,
+    research_by_node: dict | None = None,
 ) -> None:
     """[goal_tree_system_plan.md §4.4] 递归渲染树形结构。
 
@@ -5277,22 +5297,32 @@ def _render_goal_tree_node(
     Streamlit 按钮的自然（内容自适应）尺寸，不受父列宽度影响，不管
     嵌套多少层缩进都保持同样大小；只有标题这类需要占满剩余空间的内容
     还是用列宽本身。
+
+    [goal_tree_research_n_plus_one_fix_plan.md] `research_by_node`：
+    `_render_goal_tree_view()` 一次性批量拉取的"每个节点的调研摘要"
+    字典（`{node_id: {...}}`），递归渲染时原样透传给
+    `_render_goal_tree_node_body()` → `_render_goal_tree_research_
+    section()`，替代"每个节点各自发一次请求"。`None` 时各节点退化为
+    单独请求（见 `_render_goal_tree_research_section()` 的兜底说明）。
     """
     if depth > 0:
         _spacer, content_col = st.columns([1, 9])
         with content_col:
             _render_goal_tree_node_body(
                 client, tree_node, id_to_title, depth, next_step_node_ids, is_focus,
+                research_by_node,
             )
     else:
         _render_goal_tree_node_body(
             client, tree_node, id_to_title, depth, next_step_node_ids, is_focus,
+            research_by_node,
         )
 
 
 def _render_goal_tree_node_body(
     client: AgentClient, tree_node: dict, id_to_title: dict, depth: int,
     next_step_node_ids: set | None, is_focus: bool,
+    research_by_node: dict | None = None,
 ) -> None:
     """`_render_goal_tree_node()` 缩进列内部实际渲染的内容，拆出来是为了
     让缩进包裹逻辑（`st.columns`）跟内容本身分开，避免每次改内容都要
@@ -5496,7 +5526,10 @@ def _render_goal_tree_node_body(
                         st.rerun()
 
         st.markdown("---")
-        _render_goal_tree_research_section(client, node_id)
+        _render_goal_tree_research_section(
+            client, node_id,
+            summary=(research_by_node.get(node_id) or {} if research_by_node is not None else None),
+        )
 
     candidates = node.get("decompose_candidates") or []
     if candidates:
@@ -5514,6 +5547,7 @@ def _render_goal_tree_node_body(
             _render_goal_tree_node(
                 client, child, id_to_title, depth=depth + 1,
                 next_step_node_ids=next_step_node_ids, is_focus=(c_id in focus_ids),
+                research_by_node=research_by_node,
             )
 
 
@@ -6304,7 +6338,24 @@ def _render_goal_tree_view(client: AgentClient) -> None:
         if it.get("ref_id")
     }
 
-    _render_goal_tree_node(client, tree, id_to_title, depth=0, next_step_node_ids=next_step_node_ids)
+    # [goal_tree_research_n_plus_one_fix_plan.md，看板性能优化] 同样的
+    # "一次性批量拉取 + 按 id 查字典"手法，用在"📄 相关调研"子区块上：
+    # 改动前这里没有这一步，`_render_goal_tree_node_body()` 会在递归
+    # 渲染**每一个**节点时都各自请求一次 `GET /goals/{id}/research`，
+    # 而这个端点内部本身要做多次全量文件读取——树越大，这部分开销
+    # 越明显，是"目标树"节点一多就卡的主因。这里改成只发一次批量请求，
+    # 拿到的 `research_by_node` 原样透传给 `_render_goal_tree_node()`。
+    research_summary_resp = client.goal_tree_research_summary() or {}
+    if isinstance(research_summary_resp, dict) and research_summary_resp.get("_error"):
+        st.caption(f"调研摘要批量获取失败，已回退为逐节点单独查询：{research_summary_resp['_error']}")
+        research_by_node = None
+    else:
+        research_by_node = research_summary_resp.get("by_node") or {}
+
+    _render_goal_tree_node(
+        client, tree, id_to_title, depth=0, next_step_node_ids=next_step_node_ids,
+        research_by_node=research_by_node,
+    )
 
 
 def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
