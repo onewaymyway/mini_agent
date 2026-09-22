@@ -71,10 +71,13 @@ def test_collect_milestones_skips_malformed_and_empty_capability():
 
 def test_capabilities_html_default_fields_empty_backward_compatible():
     """三个新字段都缺省时，渲染结果与第十一轮既有行为一致（无 ⭐、
-    无首次达成字样、无额外详情行）。"""
+    无首次达成字样、无额外详情行）。图标按第十二轮方案第 4 节
+    `capability_kind` 缺省兜底为 `"technology"` 对应的 🔧（不再是
+    旧版的通用 🆙，是本轮的预期行为变化，见 `test_capability_
+    maturity_timeline.py` 对应测试）。"""
     state = _state([{"capability": "能够自动生成周报"}])
     html = app._capabilities_gained_html(state)
-    assert "🆙" in html
+    assert "🔧" in html
     assert "⭐" not in html
     assert "首次达成" not in html
 
@@ -84,7 +87,7 @@ def test_capabilities_html_first_occurrence_marks_star_and_label():
     html = app._capabilities_gained_html(state)
     assert "⭐" in html
     assert "首次达成" in html
-    assert "🆙" not in html
+    assert "🔧" not in html
 
 
 def test_capabilities_html_includes_behavior_change_and_structural_impact():

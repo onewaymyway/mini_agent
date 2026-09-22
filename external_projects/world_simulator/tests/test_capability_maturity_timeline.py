@@ -105,18 +105,80 @@ def test_capabilities_gained_html_appends_known_stage_label():
     state = _state([{"capability": "能够自动生成周报", "maturity_stage": "developer"}])
     html = app._capabilities_gained_html(state)
     assert "能够自动生成周报" in html
-    assert "[开发者可用]" in html
+    assert "[开发者可用 · 技术]" in html
 
 
 def test_capabilities_gained_html_appends_unknown_stage_value_as_is():
     state = _state([{"capability": "能够自动生成周报", "maturity_stage": "未来某个新阶段"}])
     html = app._capabilities_gained_html(state)
-    assert "[未来某个新阶段]" in html
+    assert "[未来某个新阶段 · 技术]" in html
 
 
-def test_capabilities_gained_html_no_suffix_when_stage_missing():
-    """旧数据/没给 maturity_stage 时不追加任何后缀，向后兼容。"""
+def test_capabilities_gained_html_kind_suffix_only_when_stage_missing():
+    """旧数据/没给 maturity_stage 时不追加阶段部分，但类型部分（第
+    十二轮方案第 4 节，缺省按 technology 兜底）仍然展示，向后兼容
+    的同时体现新增字段。"""
     state = _state([{"capability": "能够自动生成周报"}])
     html = app._capabilities_gained_html(state)
     assert "能够自动生成周报" in html
-    assert "[" not in html
+    assert "[技术]" in html
+    assert "开发者可用" not in html
+
+
+# ── _capabilities_gained_html()/_collect_capability_maturity_timeline()：
+# capability_kind（第十二轮方案第 4 节）────────────────────────────
+
+
+def test_capabilities_gained_html_uses_kind_icon_for_organization():
+    state = _state([{"capability": "新的跨部门协作流程", "capability_kind": "organization"}])
+    html = app._capabilities_gained_html(state)
+    assert "🏢" in html
+    assert "[组织]" in html
+
+
+def test_capabilities_gained_html_uses_kind_icon_for_institution():
+    state = _state([{"capability": "新的绩效考核制度", "capability_kind": "institution"}])
+    html = app._capabilities_gained_html(state)
+    assert "📜" in html
+    assert "[制度]" in html
+
+
+def test_capabilities_gained_html_defaults_to_technology_icon():
+    state = _state([{"capability": "新的生产工具"}])
+    html = app._capabilities_gained_html(state)
+    assert "🔧" in html
+    assert "[技术]" in html
+
+
+def test_capabilities_gained_html_unknown_kind_value_kept_as_is():
+    """不认识的取值原样保留、不做校验（同 maturity_stage 既有取舍）。"""
+    state = _state([{"capability": "某种新能力", "capability_kind": "未来某个新类型"}])
+    html = app._capabilities_gained_html(state)
+    assert "[未来某个新类型]" in html
+    assert "🆙" in html  # 图标兜底不认识的取值
+
+
+def test_capabilities_gained_html_first_occurrence_overrides_kind_icon():
+    """first_occurrence 优先展示 ⭐，不与类型图标叠加。"""
+    state = _state([
+        {"capability": "新的绩效考核制度", "capability_kind": "institution", "first_occurrence": True}
+    ])
+    html = app._capabilities_gained_html(state)
+    assert "⭐" in html
+    assert "📜" not in html
+    assert "[制度]" in html
+
+
+def test_collect_timeline_capability_kind_defaults_to_technology():
+    history = [_state([{"capability": "能够自动生成周报"}])]
+    nodes = app._collect_capability_maturity_timeline(history)
+    assert nodes[0]["capability_kind"] == "technology"
+
+
+def test_collect_timeline_capability_kind_uses_latest_record():
+    history = [
+        _state([{"capability": "能力甲", "capability_kind": "technology"}]),
+        _state([{"capability": "能力甲", "capability_kind": "institution"}]),
+    ]
+    nodes = app._collect_capability_maturity_timeline(history)
+    assert nodes[0]["capability_kind"] == "institution"

@@ -1,8 +1,8 @@
 # world_simulator 改进计划：探索模式新差距 + 此前搁置方向一并推进
 # （第十二轮）
 
-> **状态**：按第 8 节实施顺序逐阶段推进中。第 1、2、3 节已完成，
-> 详见各节末尾的实施记录；其余各节仍在规划中，尚未开始实施。
+> **状态**：按第 8 节实施顺序逐阶段推进中。第 1、2、3、4 节已完成，
+> 详见各节末尾的实施记录；第 5、6 节仍在规划中，尚未开始实施。
 
 ## 0. 这份文档是什么
 
@@ -275,7 +275,7 @@ Renderer"）：不新建"内部状态 → 结构化事件 → 渲染成叙事"�
 
 ---
 
-## 4. 制度/组织/技术类型区分（对应参考文档第五十三节）
+## 4. 制度/组织/技术类型区分（对应参考文档第五十三节）【已完成】
 
 > 此前在 `world_simulator_problem_capability_gap_plan.md` 第 3
 > 节被评估为"收益不明确，容易变成为了像文档而像文档，不建议现在
@@ -325,6 +325,23 @@ Institution 的类型区分。
 **验收**：字段透传/默认值测试（不填时退化为 `"technology"`，
 未知取值原样保留还是归一化默认值需要在实现时明确选一种并测试
 覆盖）；展示层分组/图标测试。
+
+**实施记录（2026-09-22）**：已按上述设计完成实施，实现选择"未知
+取值原样保留、不归一化"（同 `maturity_stage` 既有取舍）。
+`state_model.py` docstring 补充 `capability_kind` 说明；`app.py`
+新增 `_CAPABILITY_KIND_LABELS`/`_CAPABILITY_KIND_ICONS`，
+`_capabilities_gained_html()` 图标按类型选择（`first_occurrence`
+仍优先展示 ⭐）、类型中文名追加进方括号后缀；
+`_collect_capability_maturity_timeline()` 节点新增
+`capability_kind`（取最新记录，缺省按 `"technology"` 兜底）；
+`_render_capability_maturity_section()` 每行加类型图标 + 新增可选
+类型筛选下拉。`workflows/advance_step.yaml`/`world_evolve.yaml`
+补充判断依据和例子。**行为变化**：默认图标从第十一轮通用 🆙 改为
+按类型区分（缺省 🔧），且方括号后缀从"仅 `maturity_stage` 非空时
+展示"改为"总是展示类型，`maturity_stage` 非空时额外用 ' · ' 拼接"
+——同步更新了受影响的既有测试用例，属于本节预期内的展示层变化。
+新增 8 个测试（`tests/test_capability_maturity_timeline.py`），
+加上原有的全部通过（559 passed）。详见 `PROJECT.md` 对应条目。
 
 ---
 

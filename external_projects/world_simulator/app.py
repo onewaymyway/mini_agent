@@ -1954,6 +1954,21 @@ _MATURITY_STAGE_LABELS = {
 COLORS` 只覆盖已知取值、其余保底兜底的既有风格一致。"""
 
 
+_CAPABILITY_KIND_LABELS = {
+    "technology": "技术",
+    "organization": "组织",
+    "institution": "制度",
+}
+_CAPABILITY_KIND_ICONS = {
+    "technology": "🔧",
+    "organization": "🏢",
+    "institution": "📜",
+}
+"""`capabilities_gained[].capability_kind` → 中文展示文案/图标（第
+十二轮方案第 4 节）。缺省或不认识的取值一律按 `"technology"` 兜底
+展示（同字段默认值一致），不报错、不留空图标。"""
+
+
 def _capabilities_gained_html(state) -> str:
     """渲染这一步"这一步新增的能力"记录（第九轮批次二，2.3 节
     `Capability` 对象，`next_doc/world_simulator_problem_capability_
@@ -1970,6 +1985,12 @@ def _capabilities_gained_html(state) -> str:
     ⭐ 并追加"首次达成"字样；`behavior_change`/`structural_impact`
     非空时作为补充说明加进展开详情，缺省不影响任何已有展示（向后
     兼容）。
+
+    第十二轮方案第 4 节：`first_occurrence == False`（或未声明）时，
+    图标改按 `capability_kind` 选择（🔧 技术 / 🏢 组织 / 📜 制度，
+    缺省按 `"technology"` 兜底）；`first_occurrence == True` 时继续
+    优先展示 ⭐，不与类型图标叠加。类型中文名追加进方括号后缀，与
+    `maturity_stage` 的后缀用" · "拼接。
     """
     items = getattr(state, "capabilities_gained", None) or []
     parts = []
@@ -1995,12 +2016,15 @@ def _capabilities_gained_html(state) -> str:
         if structural_impact:
             detail_lines.append(f'<div><b>组织/结构层面的影响：</b>{_html_text(structural_impact)}</div>')
         maturity_stage = str(item.get("maturity_stage") or "").strip()
-        stage_suffix = ""
+        capability_kind = str(item.get("capability_kind") or "").strip() or "technology"
+        kind_label = _CAPABILITY_KIND_LABELS.get(capability_kind, capability_kind)
+        bracket_parts = []
         if maturity_stage:
-            stage_label = _MATURITY_STAGE_LABELS.get(maturity_stage, maturity_stage)
-            stage_suffix = f" [{_html_text(stage_label)}]"
+            bracket_parts.append(_html_text(_MATURITY_STAGE_LABELS.get(maturity_stage, maturity_stage)))
+        bracket_parts.append(_html_text(kind_label))
+        stage_suffix = f" [{' · '.join(bracket_parts)}]"
         first_occurrence = bool(item.get("first_occurrence"))
-        icon = "⭐" if first_occurrence else "🆙"
+        icon = "⭐" if first_occurrence else _CAPABILITY_KIND_ICONS.get(capability_kind, "🆙")
         first_suffix = "（首次达成）" if first_occurrence else ""
         parts.append(
             '<details class="ws-key-driver-details">'
@@ -2986,7 +3010,9 @@ def _collect_capability_maturity_timeline(history: List) -> List[Dict[str, Any]]
         enables/limitations）, "maturity_stages": 按出现顺序排列的
         非空 maturity_stage 列表（同一能力多次给出相同阶段不去重，
         "反复确认还在这个阶段"本身也是有效信息）, "latest_maturity_
-        stage": 最新一条非空阶段，全程没给过则是空字符串}`。
+        stage": 最新一条非空阶段，全程没给过则是空字符串,
+        "capability_kind": 最新一次记录声明的类型，缺省按
+        `"technology"` 兜底（第十二轮方案第 4 节）}`。
     """
     order: List[str] = []
     latest: Dict[str, Dict[str, Any]] = {}
@@ -3011,6 +3037,7 @@ def _collect_capability_maturity_timeline(history: List) -> List[Dict[str, Any]]
             "latest": latest[name],
             "maturity_stages": stages[name],
             "latest_maturity_stage": stages[name][-1] if stages[name] else "",
+            "capability_kind": str(latest[name].get("capability_kind") or "").strip() or "technology",
         }
         for name in order
     ]
@@ -3021,6 +3048,10 @@ def _render_capability_maturity_section(history: List) -> None:
     当前分支历史里出现过的所有能力，按名称归并后逐行展示其
     `maturity_stage` 演进顺序。纯展示层，不引入 graphviz，一个能力
     一行，写法/位置仿照 `_render_problem_graph_section()`。
+
+    第十二轮方案第 4 节：每行按 `capability_kind` 加对应图标
+    （🔧 技术 / 🏢 组织 / 📜 制度，缺省按 `"technology"` 兜底），并
+    新增一个可选的类型筛选下拉（纯展示层交互，不影响底层数据）。
     """
     nodes = _collect_capability_maturity_timeline(history)
     with st.expander("📈 能力成熟度时间线（第十一轮 2.3 节，按能力名称归并，可选）"):
@@ -3038,15 +3069,30 @@ def _render_capability_maturity_section(history: List) -> None:
             "`maturity_stage` 的出现顺序，没有给出过阶段的能力只展示名称。</span>",
             unsafe_allow_html=True,
         )
+        kind_options = ["全部"] + [
+            f"{_CAPABILITY_KIND_ICONS.get(k, '🆙')} {label}" for k, label in _CAPABILITY_KIND_LABELS.items()
+        ]
+        kind_filter = st.selectbox(
+            "按类型筛选（可选）", kind_options, key="capability_maturity_kind_filter"
+        )
+        selected_kind = None
+        if kind_filter != "全部":
+            for k, label in _CAPABILITY_KIND_LABELS.items():
+                if kind_filter.endswith(label):
+                    selected_kind = k
+                    break
         for node in nodes:
+            if selected_kind and node["capability_kind"] != selected_kind:
+                continue
             capability = _html_text(node["capability"])
+            icon = _CAPABILITY_KIND_ICONS.get(node["capability_kind"], "🆙")
             stages = node["maturity_stages"]
             if stages:
                 stage_labels = [_MATURITY_STAGE_LABELS.get(s, s) for s in stages]
                 timeline_text = " → ".join(_html_text(s) for s in stage_labels)
-                st.markdown(f"- 🆙 **{capability}**：{timeline_text}", unsafe_allow_html=True)
+                st.markdown(f"- {icon} **{capability}**：{timeline_text}", unsafe_allow_html=True)
             else:
-                st.markdown(f"- 🆙 **{capability}**：（未声明生命周期阶段）", unsafe_allow_html=True)
+                st.markdown(f"- {icon} **{capability}**：（未声明生命周期阶段）", unsafe_allow_html=True)
 
 
 def _render_causal_graph_section(history: List, *, manifest=None) -> None:

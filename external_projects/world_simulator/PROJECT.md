@@ -3394,3 +3394,45 @@ plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增
   （8 个测试：三个新字段缺省/部分声明/全部声明、⭐ 标记与首次达成
   字样、里程碑聚合按出现顺序/跳过非法条目/无记录返回空列表），
   加上原有的全部通过（**552 passed**）。
+
+- 2026-09-22（同日再追加）：**第十二轮第 4 节**——按 `next_doc/
+  world_simulator_twelfth_round_exploration_and_deferred_directions_
+  plan.md` 第 4 节，制度/组织/技术类型区分（纯枚举字段扩展 + 展示层
+  分组/筛选，不新建独立数据类型/数据表）。
+  1. **`state_model.py`**：`capabilities_gained[]` docstring 补充
+     可选字段 `capability_kind`，三选一枚举：`"technology"`（默认，
+     技术类）/`"organization"`（组织类）/`"institution"`（制度类）。
+     不认识的取值原样保留、不做校验（同 `maturity_stage` 既有取舍）；
+     不填按 `"technology"` 兜底展示。`capabilities_gained` 本身透传
+     存储，不需要改 `from_dict`/`to_dict` 代码。
+  2. **`app.py`**：
+     - 新增 `_CAPABILITY_KIND_LABELS`/`_CAPABILITY_KIND_ICONS`
+       （🔧 技术 / 🏢 组织 / 📜 制度）。
+     - `_capabilities_gained_html()`：`first_occurrence == False`
+       时图标按 `capability_kind` 选择（不再是通用 🆙，缺省按
+       `"technology"` 兜底为 🔧）；`first_occurrence == True` 时
+       继续优先展示 ⭐，不与类型图标叠加。类型中文名追加进方括号
+       后缀，与 `maturity_stage` 用" · "拼接展示。
+     - `_collect_capability_maturity_timeline()`：每个节点新增
+       `capability_kind`（取该能力最新一次记录的声明，缺省按
+       `"technology"` 兜底）。
+     - `_render_capability_maturity_section()`：每行按
+       `capability_kind` 加对应图标；新增一个可选的类型筛选下拉
+       （纯展示层交互，不影响底层数据）。
+  3. **`workflows/advance_step.yaml`**：`capabilities_gained` prompt
+     段落补充 `capability_kind` 三选一的判断依据和例子；
+     `world_evolve.yaml` 对应段落同步补充字段列表引用。
+  **不做的部分（按方案要求）**：不做"制度是如何形成的"过程建模；
+  不强制每条能力都归类，不确定就用默认值 `technology`；不给三种
+  类型各自加专属子字段，保持和其它 `capabilities_gained` 条目完全
+  一样的字段集合。
+  **行为变化说明**：本节改变了 `_capabilities_gained_html()` 的默认
+  图标（第十一轮通用 🆙 → 按类型区分，缺省 🔧）以及"无 `maturity_
+  stage` 时不展示任何方括号后缀"这条旧行为（现在总是展示类型方括号
+  后缀）——同步更新了 `tests/test_first_occurrence_milestones.py`/
+  `tests/test_capability_maturity_timeline.py` 里断言旧图标/旧无
+  后缀行为的既有测试用例，属于本节预期内的展示层变化，不是回归。
+  **验收**：`tests/test_capability_maturity_timeline.py` 新增 8 个
+  测试（图标按类型选择、未知取值原样保留、first_occurrence 优先于
+  类型图标、聚合结果 `capability_kind` 缺省兜底/取最新记录），加上
+  原有的全部通过（**559 passed**）。

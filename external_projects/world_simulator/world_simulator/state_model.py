@@ -750,6 +750,27 @@ class SimState:
     强制分离渲染，也不做"检测 narrative 和 vars 是否对得上"的一致性
     校验——这仍然是参考文档想解决但本轮不做的核心问题，这里只做了
     展示层标注。三个字段都缺省时不影响任何已有行为，向后兼容。
+
+    每一项再额外支持一个可选字段 `capability_kind`（第十二轮方案第 4
+    节，对照参考文档第五十三节"Technology/Organization/Institution
+    应该被放进统一的 Capability/Problem Solving Framework"）——三选一
+    枚举，默认 `"technology"`（不填也视为这个值，向后兼容）：
+
+    - `"technology"`：技术类能力（工具、方法、算法等）。
+    - `"organization"`：组织类能力（新的分工方式、新岗位、新的协作
+      流程等）。
+    - `"institution"`：制度类能力（新规则、新合同形式、新市场机制、
+      新的激励安排等）。
+
+    这是"把 Technology/Organization/Institution 放进统一框架"这句话
+    的最小落地方式——不新建三个独立的数据类型/数据表，只是给已有的
+    `capabilities_gained` 加一个分类标签，复用同一套存储和展示逻辑；
+    不认识的取值原样保留、不做校验/归一化（同 `maturity_stage` 的
+    既有取舍一致）。`app.py::_capabilities_gained_html()` 据此选择
+    对应图标（🔧 技术 / 🏢 组织 / 📜 制度），"能力成熟度时间线"折叠区
+    支持按类型筛选。**不**强制每条能力都归类，不确定就用默认值
+    `technology`；**不**给三种类型各自加专属子字段，保持和其它
+    `capabilities_gained` 条目完全一样的字段集合。
     """
 
     skill_version: str = ""
