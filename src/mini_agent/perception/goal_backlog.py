@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -2408,9 +2409,71 @@ def default_goal_to_objectives(
 
 
 def load_goal_backlog(paths: AgentPaths) -> GoalBacklog:
-    """加载并返回 GoalBacklog（便捷函数）。"""
+    """加载并返回 GoalBacklog（便捷函数）。每次调用都对
+    `goals.json` 做一次完整的读文件 + JSON 解析 + 逐节点重建对象
+    （`load()`），是"从磁盘取最新状态"的基准实现——CLI/守护进程后台
+    巡检等场景需要的正是这种"每次都绝对最新"的语义，不应该被下面的
+    缓存版本悄悄替换掉。"""
     gb = GoalBacklog(paths)
     gb.load()
+    return gb
+
+
+# [goal_tree_candidate_accept_reject_latency_fix.md 第二轮，看板性能优化]
+# 看板"🌳 目标树"页面每次全量 rerun 都要经过 `GET /goals/tree` 等只读
+# 接口，而这些接口此前统一走 `_goal_backlog_only()`/
+# `_goal_backlog_and_scheduler()` → `load_goal_backlog()`，也就是每次
+# HTTP 请求都对 `goals.json` 做一次完整的读文件 + JSON 解析 + 逐节点
+# 重建对象——树上节点、每个节点的 `decompose_candidates`/描述文本越多，
+# 这个开销越大；采纳/忽略一个候选触发的全量 rerun 里，光是看板自己
+# 发起的只读请求就有好几个（`goal_tree`、`goal_tree_next_steps`、
+# `goal_tree_research_summary`），全部走这条"每次都整份重新反序列化"
+# 的路径，是"点了采纳/忽略要卡好几秒"的另一个主因（另一个主因——两个
+# 跟该动作无关的批量接口重复请求——已经在看板前端加 TTL 缓存解决）。
+#
+# 这里加一层进程内、按 `goals.json` 绝对路径为 key、以文件 mtime 为
+# 失效依据的缓存：mtime 没变就直接复用上一次已经反序列化好的
+# `GoalBacklog` 对象，不重新读文件/不重新解析 JSON；mtime 变了（不管是
+# 本进程自己写的，还是同一台机器上其它进程——CLI/守护进程——写的）就
+# 说明磁盘上有更新，老老实实重新走一遍 `load_goal_backlog()`。
+#
+# 正确性依据：所有会修改数据的方法都通过 `_locked()` 临界区执行，而
+# `_locked()` 进临界区的第一件事就是 `self.load()`——不管传进来的
+# `GoalBacklog` 对象是不是缓存命中的旧对象、内存里是不是已经过期，只要
+# 真正发生写操作，都会先无条件从磁盘重新加载最新状态再改、再存盘（这是
+# `_locked()` 本来就有的"避免丢失更新"保证，不是这次新增的行为）。也
+# 就是说，这层缓存只加速"读"，不会让"改"用上过期数据——写路径的正确性
+# 完全不依赖这里缓存的是不是最新。
+#
+# mtime 精度的已知局限：部分文件系统 mtime 精度只到秒级，理论上"同一秒
+# 内先写后读"可能拿到没来得及失效的缓存，读到的是那一秒之前的状态。
+# 对这个看板的实际使用节奏（人手动点按钮，不是程序化的亚秒级连续读写）
+# 可以接受；真的需要绝对实时读最新的场景（比如"改"之前的隐式读）本来就
+# 不经过这层缓存——`_locked()` 内部的 `self.load()` 是直接调用底层
+# `GoalBacklog.load()`，不经过、也不受这个模块级缓存字典影响。
+_goal_backlog_cache_lock = threading.Lock()
+_goal_backlog_cache: dict[str, tuple[float, "GoalBacklog"]] = {}
+
+
+def load_goal_backlog_cached(paths: AgentPaths) -> GoalBacklog:
+    """`load_goal_backlog()` 的缓存版本，供 HTTP API 只读/写操作的入口
+    使用（看板"🌳 目标树"等页面背后的全部 `/goals/*` 端点）。语义见本
+    函数上方的大段说明；CLI、守护进程后台巡检等其它调用方仍然应该用
+    `load_goal_backlog()`（不缓存），保持原有"每次都绝对最新"的行为
+    不受影响。"""
+    goals_path = paths.workdir_dir / "goals.json"
+    try:
+        mtime = goals_path.stat().st_mtime
+    except OSError:
+        mtime = 0.0  # 文件还不存在——跟"内容为空"的状态一起当一种 mtime 处理
+    key = str(goals_path)
+    with _goal_backlog_cache_lock:
+        cached = _goal_backlog_cache.get(key)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+    gb = load_goal_backlog(paths)
+    with _goal_backlog_cache_lock:
+        _goal_backlog_cache[key] = (mtime, gb)
     return gb
 
 

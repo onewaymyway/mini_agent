@@ -6491,13 +6491,18 @@ def _goal_backlog_and_scheduler(request: Request):
         raise HTTPException(status_code=503, detail="HttpServer not available")
     _require_owner(request)
     from mini_agent.storage.paths import AgentPaths
-    from mini_agent.perception.goal_backlog import load_goal_backlog
+    # [goal_tree_candidate_accept_reject_latency_fix.md 第二轮] 用带 mtime
+    # 缓存的版本，避免看板每次全量 rerun 都对 goals.json 做一次完整的
+    # 读文件+JSON解析+重建对象；正确性说明见 `load_goal_backlog_cached()`
+    # 文档字符串——写操作始终通过 `_locked()` 先从磁盘重新加载最新状态,
+    # 不会因为这里缓存的是旧对象而丢失更新。
+    from mini_agent.perception.goal_backlog import load_goal_backlog_cached
     self_agent = http_server.bridge.agent
     project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
     if not project_root:
         raise HTTPException(status_code=503, detail="project_root not configured")
     paths = AgentPaths(project_root)
-    backlog = load_goal_backlog(paths)
+    backlog = load_goal_backlog_cached(paths)
     scheduler = _get_cron_scheduler(http_server)
     return backlog, scheduler
 
@@ -6515,13 +6520,15 @@ def _goal_backlog_only(request: Request):
         raise HTTPException(status_code=503, detail="HttpServer not available")
     _require_owner(request)
     from mini_agent.storage.paths import AgentPaths
-    from mini_agent.perception.goal_backlog import load_goal_backlog
+    # [goal_tree_candidate_accept_reject_latency_fix.md 第二轮] 同
+    # `_goal_backlog_and_scheduler()`，改用带 mtime 缓存的版本。
+    from mini_agent.perception.goal_backlog import load_goal_backlog_cached
     self_agent = http_server.bridge.agent
     project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
     if not project_root:
         raise HTTPException(status_code=503, detail="project_root not configured")
     paths = AgentPaths(project_root)
-    backlog = load_goal_backlog(paths)
+    backlog = load_goal_backlog_cached(paths)
     return backlog
 
 
