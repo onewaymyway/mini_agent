@@ -6265,12 +6265,83 @@ def _render_goal_node_detail_panel(client: AgentClient, goal_id: str) -> None:
                 st.rerun()
 
 
+# [goal_tree_candidate_accept_reject_latency_fix.md 第三轮，看板性能
+# 诊断] "🌳 目标树"页面每次刷新的总耗时大致可以拆成两段：①请求
+# 段——`client.goal_tree()` / `_gt_next_steps_cached()` /
+# `_gt_research_summary_cached()` 三次（网络往返 + 后端处理）；②渲染
+# 段——`_render_goal_tree_node()` 递归创建这棵树上所有节点/候选/折叠区
+# 对应的 Streamlit 控件。之前两轮优化分别针对这两段各自的已知开销点
+# 做了处理，但具体到某一次部署、某一份数据规模，到底还是不是"卡"、
+# 卡在哪一段，光看代码猜不出来——这里加一个轻量耗时统计面板，每次刷新
+# 都记录这两段各自花了多少毫秒，并保留最近若干次的历史，方便直接在
+# 页面上对比"点了采纳之后卡的到底是请求还是渲染"，不用另外接 profiler。
+_GT_PERF_LOG_KEY = "_gt_perf_log"
+_GT_PERF_LOG_MAX = 30
+
+
+def _gt_record_perf(entry: dict) -> None:
+    """把一次刷新的耗时记录追加进 session_state 里的滚动日志（最多保留
+    `_GT_PERF_LOG_MAX` 条，超出的从最旧的开始丢）。"""
+    log = list(st.session_state.get(_GT_PERF_LOG_KEY, []))
+    log.append(entry)
+    if len(log) > _GT_PERF_LOG_MAX:
+        log = log[-_GT_PERF_LOG_MAX:]
+    st.session_state[_GT_PERF_LOG_KEY] = log
+
+
+def _gt_render_perf_panel(placeholder, entry: dict) -> None:
+    """把最新一次耗时 + 历史趋势渲染进传进来的 `st.empty()` 占位符——
+    占位符是在函数最开头创建的，这样耗时面板会显示在树的最上方，即使
+    实际耗时数字要等整棵树渲染完之后才算得出来。"""
+    request_ms = entry["tree_ms"] + entry["next_steps_ms"] + entry["research_ms"]
+    with placeholder.container():
+        # 简单判断这次刷新主要慢在哪一段，给个直接结论，不用自己心算。
+        if entry["total_ms"] < 300:
+            verdict = "✅ 都很快，暂时看不出明显瓶颈。"
+        elif request_ms > entry["render_ms"] * 1.5:
+            verdict = "🔍 **请求段**明显更慢——大概率是后端处理/磁盘 IO（或网络延迟），不是 Streamlit 渲染本身。"
+        elif entry["render_ms"] > request_ms * 1.5:
+            verdict = "🔍 **渲染段**明显更慢——大概率是树上节点/候选/折叠区数量太多，Streamlit 创建控件本身的开销，可以考虑按节点拆分局部渲染。"
+        else:
+            verdict = "🔍 请求段和渲染段耗时接近，两边都有一定占比。"
+        st.caption(
+            f"⏱️ 本次刷新：请求 **{request_ms:.0f}ms**"
+            f"（树结构 {entry['tree_ms']:.0f} / 焦点建议 {entry['next_steps_ms']:.0f} / "
+            f"调研摘要 {entry['research_ms']:.0f}，后两项命中前端 TTL 缓存时应接近 0）　"
+            f"渲染 **{entry['render_ms']:.0f}ms**　总计 **{entry['total_ms']:.0f}ms**　"
+            f"节点数 {entry['node_count']}"
+        )
+        st.caption(verdict)
+        log = st.session_state.get(_GT_PERF_LOG_KEY, [])
+        if len(log) > 1:
+            with st.expander(f"📈 最近 {len(log)} 次刷新耗时明细（观察趋势/对比不同操作）", expanded=False):
+                if st.button("🗑️ 清空记录", key="_gt_perf_log_clear"):
+                    st.session_state[_GT_PERF_LOG_KEY] = []
+                    st.rerun()
+                rows = [
+                    "| # | 节点数 | 树请求 | 焦点建议 | 调研摘要 | 渲染 | 总计 |",
+                    "|---|---|---|---|---|---|---|",
+                ]
+                for i, e in enumerate(reversed(log)):
+                    rows.append(
+                        f"| {len(log) - i} | {e['node_count']} | {e['tree_ms']:.0f}ms | "
+                        f"{e['next_steps_ms']:.0f}ms | {e['research_ms']:.0f}ms | "
+                        f"{e['render_ms']:.0f}ms | **{e['total_ms']:.0f}ms** |"
+                    )
+                st.markdown("\n".join(rows))
+
+
 def _render_goal_tree_view(client: AgentClient) -> None:
     """[goal_tree_system_plan.md §4.4/阶段四] Streamlit"🌳 目标树"子页：
     从根节点开始的完整层级 + 候选采纳/忽略 + 手动管理（新建/编辑/pin），
     与既有列表/看板视图并存（该视图专注"人生目标现状总览"，列表视图仍是
     "看所有 Objective 执行状态"场景的首选）。"""
+    # 耗时面板的占位符要在最开头创建，让它显示在页面最上方；实际内容要
+    # 等下面把请求/渲染都跑完、算出耗时之后才回填（见函数末尾）。
+    _perf_placeholder = st.empty()
+    _t_tree_start = time.time()
     resp = client.goal_tree() or {}
+    _t_tree_ms = (time.time() - _t_tree_start) * 1000
     if "_error" in resp:
         st.warning(f"目标树数据获取失败：{resp['_error']}")
         return
@@ -6392,7 +6463,9 @@ def _render_goal_tree_view(client: AgentClient) -> None:
     # 一次性拉取全部 focus_next_step 候选，构造"有待处理建议的节点 id"
     # 集合，递归渲染时按 id 查集合而不是每个节点单独请求一次——避免树
     # 较大时产生 N 次网络调用。
+    _t_next_steps_start = time.time()
     next_steps_resp = _gt_next_steps_cached(client)
+    _t_next_steps_ms = (time.time() - _t_next_steps_start) * 1000
     next_step_node_ids = {
         str(it.get("ref_id", "")).split(":")[0]
         for it in (next_steps_resp.get("items") or [])
@@ -6406,17 +6479,35 @@ def _render_goal_tree_view(client: AgentClient) -> None:
     # 而这个端点内部本身要做多次全量文件读取——树越大，这部分开销
     # 越明显，是"目标树"节点一多就卡的主因。这里改成只发一次批量请求，
     # 拿到的 `research_by_node` 原样透传给 `_render_goal_tree_node()`。
+    _t_research_start = time.time()
     research_summary_resp = _gt_research_summary_cached(client)
+    _t_research_ms = (time.time() - _t_research_start) * 1000
     if isinstance(research_summary_resp, dict) and research_summary_resp.get("_error"):
         st.caption(f"调研摘要批量获取失败，已回退为逐节点单独查询：{research_summary_resp['_error']}")
         research_by_node = None
     else:
         research_by_node = research_summary_resp.get("by_node") or {}
 
+    _t_render_start = time.time()
     _render_goal_tree_node(
         client, tree, id_to_title, depth=0, next_step_node_ids=next_step_node_ids,
         research_by_node=research_by_node,
     )
+    _t_render_ms = (time.time() - _t_render_start) * 1000
+
+    # [goal_tree_candidate_accept_reject_latency_fix.md 第三轮] 所有计时
+    # 都算完了，回填函数最开头创建的占位符——最终会显示在页面最上方。
+    _gt_perf_entry = {
+        "ts": time.time(),
+        "node_count": len(id_to_title),
+        "tree_ms": _t_tree_ms,
+        "next_steps_ms": _t_next_steps_ms,
+        "research_ms": _t_research_ms,
+        "render_ms": _t_render_ms,
+        "total_ms": _t_tree_ms + _t_next_steps_ms + _t_research_ms + _t_render_ms,
+    }
+    _gt_record_perf(_gt_perf_entry)
+    _gt_render_perf_panel(_perf_placeholder, _gt_perf_entry)
 
 
 def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
