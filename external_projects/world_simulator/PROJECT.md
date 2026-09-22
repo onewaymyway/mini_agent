@@ -3605,3 +3605,14 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   **验收**：`tests/test_html_export.py` 新增 2 个测试（按线时间正序
   + 两节不混排、未声明的 line_id 也能退化展示），加上原有 11 个
   全部通过（**13 个全部通过**）。
+
+- 2026-09-23（同日再追加，第十四轮小修）：**「下载 HTML 文件」按钮
+  配色跟其它按钮不一致**——`THEME_CSS` 里统一按钮外观的选择器只写了
+  `div[data-testid="stButton"] > button`，没有覆盖
+  `st.download_button()` 渲染出来的 `div[data-testid="stDownloadButton"]
+  > button`，导致"下载 HTML 文件"按钮沿用 Streamlit 默认主题色
+  （偏红），跟页面里其它按钮（夜航日志配色：深底+`--ws-border`
+  描边，悬停变金色 `--ws-accent`）不一样。
+  **`app.py`**：把 `stDownloadButton` 加进同一组选择器（默认态和
+  `:hover` 态各加一行），不新增任何 CSS 规则、不改变已有按钮的样式，
+  纯粹是让下载按钮补齐到同一条规则里。

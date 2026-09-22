@@ -331,6 +331,7 @@ section[data-testid="stSidebar"] {
 }
 
 div[data-testid="stButton"] > button,
+div[data-testid="stDownloadButton"] > button,
 div[data-testid="stPopover"] button {
     border-radius: 8px;
     border: 1px solid var(--ws-border);
@@ -338,6 +339,7 @@ div[data-testid="stPopover"] button {
     color: var(--ws-text);
 }
 div[data-testid="stButton"] > button:hover,
+div[data-testid="stDownloadButton"] > button:hover,
 div[data-testid="stPopover"] button:hover {
     border-color: var(--ws-accent);
     color: var(--ws-accent);
