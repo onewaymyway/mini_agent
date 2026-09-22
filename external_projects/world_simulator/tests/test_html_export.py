@@ -232,6 +232,72 @@ def test_branch_fork_note_rendered_when_not_main(tmp_path):
     assert "第 0 步分叉而来" in html
 
 
+def test_causal_overview_breakdown_by_line_ascending_and_separate_from_timeline(tmp_path):
+    """第十四轮：「因果线总览」要按线展示时间正序的点序列 + 未来因果树，
+    并且和「时间线」两节分开渲染，不混排在一起。
+    """
+    sim_id = "sim_causal_breakdown"
+    store = SimStore.for_root(tmp_path, sim_id)
+    manifest = _make_manifest(
+        sim_id,
+        causal_lines=[
+            {
+                "id": "line_biz",
+                "label": "业务发展线",
+                "future_tree": {
+                    "branches": [
+                        {"id": "b1", "description": "快速扩张", "likelihood": "high", "status": "active"},
+                        {"id": "b2", "description": "收缩关停", "likelihood": "low", "status": "resolved"},
+                    ]
+                },
+            }
+        ],
+    )
+    store.save_manifest(manifest)
+    store.append_state(
+        SimState(
+            step=0, summary="起点", vars={},
+            line_updates={"line_biz": {"time_label": "第 1 月", "summary": "起步筹备", "trend": "steady"}},
+        )
+    )
+    store.append_state(
+        SimState(
+            step=1, summary="推进", vars={},
+            line_updates={"line_biz": {"time_label": "第 2 月", "summary": "签下首单", "trend": "accelerating"}},
+            causal_links=[{"driver": "客户信任", "effect": "签单", "line_id": "line_biz"}],
+        )
+    )
+
+    html = he.export_simulation_html(tmp_path, sim_id)
+    assert "业务发展线" in html
+    # 按线的时间点序列必须正序：第 1 月早于第 2 月出现。
+    assert html.index("第 1 月") < html.index("第 2 月")
+    assert "未来因果树" in html
+    assert "快速扩张" in html and "收缩关停" in html
+    assert "关联因果链" in html and "客户信任" in html
+    # 「因果线总览」和「时间线（正序）」是两个独立小节，且总览在前。
+    assert html.index("因果线总览") < html.index("时间线（正序）")
+
+
+def test_causal_overview_breakdown_degrades_for_undeclared_line_ids(tmp_path):
+    """没有在 `causal_lines` 里声明、但历史 `line_updates` 里实际出现过的
+    line_id，也要能在按线总览里退化展示出来（label 退化为 id 本身）。
+    """
+    sim_id = "sim_causal_undeclared"
+    store = SimStore.for_root(tmp_path, sim_id)
+    store.save_manifest(_make_manifest(sim_id, causal_lines=[]))
+    store.append_state(
+        SimState(
+            step=0, summary="起点", vars={},
+            line_updates={"line_ghost": {"time_label": "第 1 步", "summary": "自发出现的线"}},
+        )
+    )
+
+    html = he.export_simulation_html(tmp_path, sim_id)
+    assert "line_ghost" in html
+    assert "自发出现的线" in html
+
+
 def test_html_escapes_user_supplied_free_text(tmp_path):
     sim_id = "sim_escape"
     store = SimStore.for_root(tmp_path, sim_id)

@@ -37,6 +37,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from world_simulator import branch_manager as bm
 from world_simulator import causal_graph as cg_mod
+from world_simulator import causal_tree as causal_tree_mod
+from world_simulator import hypothesis as hyp_mod
 from world_simulator import retrospective as retrospective_mod
 from world_simulator.state_model import SimManifest, SimState
 from world_simulator.store import SimStore
@@ -62,6 +64,45 @@ _MATURITY_STAGE_LABELS = {
     "infrastructure": "基础设施化/社会常态化",
 }
 _CHOSEN_BY_LABELS = {"user": "用户选择", "autopilot": "自动挡代选"}
+
+# 第十四轮（`next_doc/world_simulator_fourteenth_round_causal_
+# overview_export_plan.md`）：因果线「按线」总览新增的展示映射表，
+# 直接对齐 `app.py::_render_causal_lines_overview()` 同名字典，
+# 保证导出网页和详情页对同一份数据的措辞完全一致。
+_TREND_LABELS = {
+    "accelerating": "📈 加速",
+    "steady": "➡️ 匀速延续",
+    "decelerating": "📉 放缓",
+    "reversing": "🔄 已反转",
+}
+_TREE_STATUS_ICONS = {
+    "dormant": "○",
+    "emerging": "🌱",
+    "active": "◐",
+    "resolved": "●",
+    "expired": "⌛",
+    "invalidated": "✕",
+}
+_TREE_STATUS_LABELS = {
+    "dormant": "潜伏",
+    "emerging": "形成中",
+    "active": "已激活",
+    "resolved": "已解决",
+    "expired": "已错过",
+    "invalidated": "已失效",
+}
+_LIKELIHOOD_LABELS = {"high": "可能性高", "medium": "可能性中", "low": "可能性低"}
+_FUTURE_CONFIDENCE_LABELS = {
+    "low": "低置信度·分叉可能大",
+    "medium": "中等置信度",
+    "high": "高置信度",
+    "unknown": "置信度未知",
+}
+_TREE_LIFECYCLE_GROUPS = [
+    ("🌱 仍在演化中（潜在 / 活跃）", ("dormant", "emerging", "active")),
+    ("● 已发生（已确认/已解决）", ("resolved",)),
+    ("✕ 已排除（错过窗口/已失效）", ("expired", "invalidated")),
+]
 
 
 def _esc(value: Any) -> str:
@@ -297,7 +338,281 @@ def _render_input_and_background(manifest: SimManifest, state0: Optional[SimStat
     """
 
 
+def _future_tree_branches_html(line_meta: Optional[Dict[str, Any]]) -> str:
+    """渲染一条因果线的"未来因果树"分支列表（按生命周期分组，只读），
+    对齐 `app.py::_render_causal_lines_overview()` 里同一段渲染逻辑，
+    去掉「标为已解决/已失效」这两个只在可交互详情页才有意义的按钮
+    （见模块 docstring：导出网页是纯只读存档）。
+    """
+    future_tree = (line_meta or {}).get("future_tree") if line_meta else None
+    branches = (
+        [b for b in (future_tree or {}).get("branches", []) if isinstance(b, dict)]
+        if isinstance(future_tree, dict)
+        else []
+    )
+    if not branches:
+        return '<p class="ws-causal-line-empty">这条线目前还没有未来树数据（旧实例可能缺失）。</p>'
+
+    status_to_group = {
+        status: name for name, statuses in _TREE_LIFECYCLE_GROUPS for status in statuses
+    }
+    grouped: Dict[str, List[Dict[str, Any]]] = {name: [] for name, _ in _TREE_LIFECYCLE_GROUPS}
+    for branch in branches:
+        b_status = causal_tree_mod.canonical_status(branch.get("status"))
+        grouped[status_to_group.get(b_status, _TREE_LIFECYCLE_GROUPS[0][0])].append(branch)
+
+    parts: List[str] = []
+    for group_name, _statuses in _TREE_LIFECYCLE_GROUPS:
+        group_branches = grouped[group_name]
+        if not group_branches:
+            continue
+        rows = []
+        for branch in group_branches:
+            b_status = causal_tree_mod.canonical_status(branch.get("status"))
+            b_desc = str(branch.get("description") or "")
+            b_like = str(branch.get("likelihood") or "medium")
+            icon = _TREE_STATUS_ICONS.get(b_status, "○")
+            rows.append(
+                f"<li>{icon} <b>{_esc(_TREE_STATUS_LABELS.get(b_status, b_status))}</b>"
+                f"（{_esc(_LIKELIHOOD_LABELS.get(b_like, b_like))}）— {_esc(b_desc)}</li>"
+            )
+        parts.append(
+            f'<div class="ws-muted" style="margin-top:0.3rem;font-size:0.85rem;">'
+            f"{_esc(group_name)}（{len(group_branches)}）</div>"
+            f'<ul>{"".join(rows)}</ul>'
+        )
+    return "".join(parts)
+
+
+def _line_futures_html(futures: List[Dict[str, Any]]) -> str:
+    """渲染一条因果线的"简单历史外推"（`hypothesis.project_line_
+    futures()` 的结果），对齐 `app.py` 同一段。没有外推数据时返回
+    空字符串——不留一个空标题。
+    """
+    if not futures:
+        return ""
+    rows = []
+    for fut in futures:
+        dim = str(fut.get("dimension") or "")
+        scale = str(fut.get("time_scale") or "")
+        desc = str(fut.get("description") or "")
+        conf = str(fut.get("confidence") or "unknown")
+        conf_label = _FUTURE_CONFIDENCE_LABELS.get(conf, conf)
+        badge_class = conf if conf in ("low", "medium", "high") else "medium"
+        rows.append(
+            '<div class="ws-uncertain-field">'
+            f'<span class="ws-uncertain-badge ws-uncertain-badge-{badge_class}">'
+            f"{_esc(conf_label)}</span>"
+            f"<b>{_esc(dim)}</b>（时间尺度：{_esc(scale)}）— {_esc(desc)}</div>"
+        )
+    return (
+        '<div class="ws-muted" style="margin-top:0.3rem;">🔮 简单历史外推'
+        "（基于最近因果链的单路径推演，仅作补充参考，完整的分叉可能见"
+        "上方\u300c未来因果树\u300d）：</div>" + "".join(rows)
+    )
+
+
+def _render_causal_line_row(
+    line_id: str,
+    label: str,
+    granularity: str,
+    cadence_n: Optional[int],
+    independent_note: str,
+    history: List[SimState],
+    line_meta: Optional[Dict[str, Any]],
+    futures: List[Dict[str, Any]],
+) -> str:
+    """渲染单条因果线的完整卡片：时间点序列（时间正序）+ 关联因果链
+    + 未来因果树 + 历史外推，对齐 `app.py::_render_causal_lines_
+    overview()` 逐条线渲染的内容，去掉「提修改意见」等只在可交互
+    详情页才有意义的表单（见模块 docstring）。
+
+    `history` 需要按 step 升序传入，这样时间点序列才是"从早到晚"，
+    符合"走势"的直觉，同 app.py 对这个函数的同一要求。
+    """
+    points: List[tuple] = []
+    last_trend: Optional[str] = None
+    for state in history:
+        line_updates = getattr(state, "line_updates", None) or {}
+        update = line_updates.get(line_id)
+        if not isinstance(update, dict) or update.get("advanced") is False:
+            continue
+        time_label = str(update.get("time_label") or "").strip()
+        summary = str(update.get("summary") or "").strip()
+        points.append((state.step, time_label, summary))
+        trend = str(update.get("trend") or "").strip().lower()
+        if trend in _TREND_LABELS:
+            last_trend = trend
+
+    suffix_parts = [
+        p for p in (
+            granularity,
+            (f"约每 {cadence_n} 步一动" if cadence_n else ""),
+            independent_note,
+        ) if p
+    ]
+    granularity_suffix = f"（{'，'.join(suffix_parts)}）" if suffix_parts else ""
+    trend_badge = (
+        f' <span class="ws-uncertain-badge">{_esc(_TREND_LABELS[last_trend])}</span>'
+        if last_trend else ""
+    )
+
+    parts = [
+        '<div class="ws-causal-line-row">'
+        f'<div class="ws-causal-line-row-title">📈 {_esc(label)}{granularity_suffix} '
+        f'<span class="ws-causal-line-row-id">{_esc(line_id)}</span>{trend_badge}</div>'
+    ]
+
+    if not points:
+        parts.append('<div class="ws-causal-line-empty">这条线目前还没有推进记录。</div>')
+    else:
+        track_items = []
+        for idx, (step, time_label, summary) in enumerate(points):
+            if idx > 0:
+                track_items.append('<span class="ws-causal-line-point-arrow">→</span>')
+            time_text = time_label or f"第 {step} 步"
+            track_items.append(
+                '<span class="ws-causal-line-point">'
+                f'<span class="ws-causal-line-point-time">{_esc(time_text)}</span>'
+                f"{_esc(summary)}</span>"
+            )
+        parts.append(f'<div class="ws-causal-line-track">{"".join(track_items)}</div>')
+
+    related_links = [
+        (state.step, link)
+        for state in history
+        for link in (getattr(state, "causal_links", None) or [])
+        if isinstance(link, dict) and str(link.get("line_id") or "") == line_id
+    ]
+    if related_links:
+        rows = []
+        for step, link in related_links:
+            driver = str(link.get("driver") or "").strip()
+            effect = str(link.get("effect") or "").strip()
+            affected = link.get("affected_fields") or []
+            affected_text = "、".join(str(x) for x in affected) if affected else ""
+            detail = " → ".join(x for x in (driver, effect) if x)
+            suffix = f"（影响：{affected_text}）" if affected_text else ""
+            rows.append(f"<li>第 {step} 步 · {_esc(detail)}{_esc(suffix)}</li>")
+        parts.append(
+            f'<div class="ws-muted" style="margin-top:0.4rem;">关联因果链'
+            f'（{len(related_links)} 条）</div><ul>{"".join(rows)}</ul>'
+        )
+
+    parts.append(
+        '<div class="ws-muted" style="margin-top:0.4rem;">🌳 未来因果树'
+        "（从当前节点出发的若干可能分支，不是只有一条路）：</div>"
+    )
+    parts.append(_future_tree_branches_html(line_meta))
+    parts.append(_line_futures_html(futures))
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _render_causal_lines_breakdown(manifest: SimManifest, history: List[SimState]) -> str:
+    """按因果线聚合渲染每条线的完整卡片（第十四轮新增，`next_doc/
+    world_simulator_fourteenth_round_causal_overview_export_plan.md`），
+    对齐 `app.py::_render_causal_lines_overview()`：声明列表里没有的
+    line_id，只要在历史里真的出现过（`line_updates`/`causal_links.
+    line_id`）也纳入展示，label 退化为 id 本身——因果线不需要提前
+    声明这个既有约束在导出报告里同样成立。
+
+    `history` 要求按 step 升序传入（`export_simulation_html()` 直接
+    传 `store.load_history()` 的结果，等价于升序，见 `_render_
+    timeline()` 同一处注释）。
+    """
+    causal_lines_meta = list((manifest.settings or {}).get("causal_lines") or [])
+
+    label_by_id: Dict[str, str] = {
+        str(line.get("id")): str(line.get("label") or line.get("id"))
+        for line in causal_lines_meta
+        if isinstance(line, dict) and line.get("id")
+    }
+    granularity_by_id: Dict[str, str] = {
+        str(line.get("id")): str(line.get("time_granularity") or "")
+        for line in causal_lines_meta
+        if isinstance(line, dict) and line.get("id")
+    }
+    cadence_by_id: Dict[str, int] = {}
+    independent_by_id: Dict[str, str] = {}
+    for line in causal_lines_meta:
+        if not (isinstance(line, dict) and line.get("id")):
+            continue
+        line_id = str(line.get("id"))
+        try:
+            n = int(line.get("advance_every_n_steps") or 1)
+        except (TypeError, ValueError):
+            n = 1
+        if n > 1:
+            cadence_by_id[line_id] = n
+        owned = line.get("owned_vars")
+        if isinstance(owned, list) and owned:
+            try:
+                local_step = int(line.get("local_step") or 0)
+            except (TypeError, ValueError):
+                local_step = 0
+            independent_by_id[line_id] = f"独立推进 · 本线第 {local_step} 步"
+
+    # 退化路径：声明列表里没有的 id，只要在历史里真的出现过也纳入展示。
+    for state in history:
+        for lid in (getattr(state, "line_updates", None) or {}).keys():
+            lid = str(lid).strip()
+            if lid and lid not in label_by_id:
+                label_by_id[lid] = lid
+                granularity_by_id.setdefault(lid, "")
+        for link in (getattr(state, "causal_links", None) or []):
+            if isinstance(link, dict):
+                lid = str(link.get("line_id") or "").strip()
+                if lid and lid not in label_by_id:
+                    label_by_id[lid] = lid
+                    granularity_by_id.setdefault(lid, "")
+
+    if not label_by_id:
+        return (
+            '<p class="ws-muted">因果线是模拟的默认基础机制，这次模拟还没有任何'
+            "因果线推进记录。</p>"
+        )
+
+    futures_by_id: Dict[str, List[Dict[str, Any]]] = {}
+    try:
+        futures_by_id = {
+            item["line_id"]: item["futures"]
+            for item in hyp_mod.project_line_futures(manifest, history)
+        }
+    except Exception:  # noqa: BLE001 — 展望是辅助信息，算失败不影响总览本身。
+        futures_by_id = {}
+
+    rows_html = []
+    for line_id, label in label_by_id.items():
+        line_meta = next(
+            (
+                line for line in causal_lines_meta
+                if isinstance(line, dict) and str(line.get("id")) == line_id
+            ),
+            None,
+        )
+        rows_html.append(
+            _render_causal_line_row(
+                line_id,
+                label,
+                granularity_by_id.get(line_id, ""),
+                cadence_by_id.get(line_id),
+                independent_by_id.get(line_id, ""),
+                history,
+                line_meta,
+                futures_by_id.get(line_id) or [],
+            )
+        )
+    return "".join(rows_html)
+
+
 def _render_causal_overview(manifest: SimManifest, history: List[SimState]) -> str:
+    """渲染"因果线总览"整节：声明的因果线列表 → 按线聚合的时间点
+    序列/未来因果树/历史外推（第十四轮新增，见 `_render_causal_
+    lines_breakdown()`）→ 线到线影响关系图。三段都按时间正序组织，
+    和 `_render_timeline()` 各自独立成节、互不混排（见模块 docstring
+    "设计取舍"新增第 6 条）。
+    """
     causal_lines = (manifest.settings or {}).get("causal_lines") or []
     lines_items = "".join(
         f"<li><b>{_esc(l.get('id', ''))}</b>"
@@ -310,14 +625,18 @@ def _render_causal_overview(manifest: SimManifest, history: List[SimState]) -> s
         f"<ul>{lines_items}</ul>" if lines_items else '<p class="ws-muted">未声明因果线。</p>'
     )
 
+    breakdown_html = _render_causal_lines_breakdown(manifest, history)
+
     edges = cg_mod.build_causal_graph(history)
     graph_html = _render_causal_graph_visual(edges)
 
     return f"""
     <div class="ws-card">
-      <h2 class="ws-serif">因果线总览</h2>
+      <h2 class="ws-serif">因果线总览（正序）</h2>
       <h3 class="ws-serif">声明的因果线</h3>
       {lines_html}
+      <h3 class="ws-serif">各因果线的时间点序列与未来因果树</h3>
+      {breakdown_html}
       <h3 class="ws-serif">线到线影响关系</h3>
       {graph_html}
     </div>
@@ -564,6 +883,35 @@ h1, h2, h3 { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif
 .ws-capability-detail { margin-left: 1.2rem; }
 .ws-causal-graph svg { max-width: 100%; height: auto; }
 ul { margin: 0.3rem 0 0.3rem 1.2rem; }
+.ws-uncertain-field { margin: 0.15rem 0; font-size: 0.82rem; color: var(--ws-text-muted); }
+.ws-uncertain-badge {
+    display: inline-block; padding: 0.05rem 0.4rem; border-radius: 6px;
+    font-size: 0.72rem; font-weight: 600; margin-right: 0.4rem;
+    background: rgba(140, 122, 230, 0.16); color: var(--ws-violet);
+}
+.ws-uncertain-badge-low { background: rgba(226, 114, 110, 0.15); color: var(--ws-danger); }
+.ws-uncertain-badge-medium { background: rgba(232, 181, 89, 0.18); color: var(--ws-accent); }
+.ws-uncertain-badge-high { background: rgba(90, 160, 224, 0.15); color: #7fb3e8; }
+.ws-causal-line-row {
+    border: 1px solid var(--ws-border);
+    border-radius: 10px;
+    padding: 0.6rem 0.8rem;
+    margin-bottom: 0.7rem;
+    background: var(--ws-bg);
+}
+.ws-causal-line-row-title { font-weight: 600; font-size: 0.92rem; margin-bottom: 0.35rem; }
+.ws-causal-line-row-id { color: var(--ws-text-muted); font-weight: 400; font-size: 0.76rem; }
+.ws-causal-line-track { display: flex; flex-wrap: wrap; align-items: center; }
+.ws-causal-line-point {
+    display: inline-flex; flex-direction: column;
+    padding: 0.15rem 0.55rem; margin: 0.1rem 0.35rem 0.1rem 0;
+    border-radius: 10px; font-size: 0.74rem;
+    background: transparent; border: 1px solid var(--ws-border);
+    color: var(--ws-text-muted); max-width: 220px;
+}
+.ws-causal-line-point-time { color: var(--ws-accent); font-weight: 600; font-size: 0.7rem; }
+.ws-causal-line-point-arrow { color: var(--ws-border); margin: 0 0.1rem; align-self: center; }
+.ws-causal-line-empty { color: var(--ws-text-muted); font-size: 0.82rem; font-style: italic; }
 </style>
 """
 

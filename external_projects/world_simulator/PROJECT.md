@@ -3582,3 +3582,26 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   SVG、无复盘记录时整节不出现/有记录时正确展示、`state0` 单独一步
   不报错、多主体 `per_entity` 分组展示、非 main 分支正确展示分叉
   来源、用户自由文本正确转义防止 HTML 注入），加上原有的全部通过。
+
+- 2026-09-23（第十四轮）：**导出网页补齐「因果线总览」按线视图**——
+  按 `next_doc/world_simulator_fourteenth_round_causal_overview_
+  export_plan.md`，修复用户反馈"导出模拟结果时只有时间线信息，没有
+  因果线总览信息"。
+  1. **`world_simulator/html_export.py`**：`_render_causal_overview()`
+     从"声明的因果线列表 + 线到线影响关系图"两段，扩展为"声明的
+     因果线列表 → 按线聚合的时间点序列/关联因果链/未来因果树（按
+     生命周期分组）/历史外推 → 线到线影响关系图"三段，对齐 `app.py::
+     _render_causal_lines_overview()` 详情页里的按线展示内容，去掉
+     「标为已解决/已失效」「提修改意见」等只在可交互详情页才有意义
+     的按钮/表单（导出网页维持纯只读存档的既有定位）。新增
+     `_render_causal_lines_breakdown()`/`_render_causal_line_row()`/
+     `_future_tree_branches_html()`/`_line_futures_html()` 四个函数，
+     新增 import `causal_tree`/`hypothesis`（均为纯函数模块）。
+  2. **两节保持独立**：「因果线总览」和「时间线（正序）」延续第
+     十三轮就有的"各自一个 `<div class="ws-card">`"结构，没有把
+     两节内容混排，均按时间正序组织。
+  3. **CSS**：`_PAGE_CSS` 新增 `.ws-causal-line-row`/`.ws-uncertain-*`
+     系列样式，照搬 `app.py::THEME_CSS` 对应定义保证视觉一致。
+  **验收**：`tests/test_html_export.py` 新增 2 个测试（按线时间正序
+  + 两节不混排、未声明的 line_id 也能退化展示），加上原有 11 个
+  全部通过（**13 个全部通过**）。
