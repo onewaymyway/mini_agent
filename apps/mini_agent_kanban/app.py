@@ -5492,38 +5492,61 @@ def _render_goal_tree_node_body(
         # id_to_title 已经展开的树，找不到就保守地不排除——后端
         # reparent_node() 会做真正的环检测兜底，前端只是减少无效选项）。
         if level != "ultimate":
-            descendant_ids = set()
+            reparent_open_key = f"_gt_reparent_open_{node_id}"
+            if not st.session_state.get(reparent_open_key):
+                if st.button("🔀 改父节点", key=f"_gt_reparent_btn_{node_id}"):
+                    st.session_state[reparent_open_key] = True
+                    st.rerun()
+            else:
+                # 只有点开"🔀 改父节点"之后，才对这一个节点付出一次
+                # O(n) 的子树遍历 + 全树候选扫描；未点开时不计算、不建
+                # selectbox，避免 293 个节点在每次 rerun 时都各跑一遍。
+                descendant_ids = set()
 
-            def _collect_descendants(n: dict) -> None:
-                for c in n.get("children") or []:
-                    c_id = (c.get("node") or {}).get("id")
-                    if c_id:
-                        descendant_ids.add(c_id)
-                    _collect_descendants(c)
+                def _collect_descendants(n: dict) -> None:
+                    for c in n.get("children") or []:
+                        c_id = (c.get("node") or {}).get("id")
+                        if c_id:
+                            descendant_ids.add(c_id)
+                        _collect_descendants(c)
 
-            _collect_descendants(tree_node)
-            candidate_parents = [
-                (pid, title) for pid, title in id_to_title.items()
-                if pid != node_id and pid not in descendant_ids
-            ]
-            if candidate_parents:
-                with st.form(f"_gt_reparent_{node_id}"):
-                    st.caption("🔀 改父节点")
-                    cur_parent_id = node.get("parent_id")
-                    labels = [f"{title}（{pid}）" for pid, title in candidate_parents]
-                    ids = [pid for pid, _ in candidate_parents]
-                    default_idx = ids.index(cur_parent_id) if cur_parent_id in ids else 0
-                    chosen_label = st.selectbox("新父节点", labels, index=default_idx, key=f"_gt_reparent_sel_{node_id}")
-                    if st.form_submit_button("确认改父节点"):
-                        chosen_id = ids[labels.index(chosen_label)]
-                        if chosen_id == cur_parent_id:
-                            st.caption("未改变父节点。")
-                        else:
-                            res = client.reparent_goal_tree_node(node_id, chosen_id)
-                            if isinstance(res, dict) and res.get("_error"):
-                                st.error(f"改父节点失败：{res['_error']}")
+                _collect_descendants(tree_node)
+                candidate_parents = [
+                    (pid, title) for pid, title in id_to_title.items()
+                    if pid != node_id and pid not in descendant_ids
+                ]
+                if candidate_parents:
+                    with st.form(f"_gt_reparent_{node_id}"):
+                        st.caption("🔀 改父节点")
+                        cur_parent_id = node.get("parent_id")
+                        labels = [f"{title}（{pid}）" for pid, title in candidate_parents]
+                        ids = [pid for pid, _ in candidate_parents]
+                        default_idx = ids.index(cur_parent_id) if cur_parent_id in ids else 0
+                        chosen_label = st.selectbox("新父节点", labels, index=default_idx, key=f"_gt_reparent_sel_{node_id}")
+                        col_confirm, col_cancel = st.columns([1, 1])
+                        with col_confirm:
+                            confirmed = st.form_submit_button("确认改父节点")
+                        with col_cancel:
+                            cancelled = st.form_submit_button("取消")
+                        if confirmed:
+                            chosen_id = ids[labels.index(chosen_label)]
+                            if chosen_id == cur_parent_id:
+                                st.caption("未改变父节点。")
                             else:
-                                st.rerun()
+                                res = client.reparent_goal_tree_node(node_id, chosen_id)
+                                if isinstance(res, dict) and res.get("_error"):
+                                    st.error(f"改父节点失败：{res['_error']}")
+                                else:
+                                    st.session_state.pop(reparent_open_key, None)
+                                    st.rerun()
+                        if cancelled:
+                            st.session_state.pop(reparent_open_key, None)
+                            st.rerun()
+                else:
+                    st.caption("没有可选的候选父节点。")
+                    if st.button("取消", key=f"_gt_reparent_cancel_{node_id}"):
+                        st.session_state.pop(reparent_open_key, None)
+                        st.rerun()
 
         if level in _GOAL_TREE_NONLEAF_LEVELS:
             # 手动触发分解，走 async_jobs 轮询（涉及 LLM 调用）。
