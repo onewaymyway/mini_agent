@@ -1948,10 +1948,13 @@ _MATURITY_STAGE_LABELS = {
     "cheap_at_scale": "成本足够低/规模化",
     "infrastructure": "基础设施化/社会常态化",
 }
-"""`capabilities_gained[].maturity_stage` → 中文展示文案，仅覆盖
-`state_model.py` docstring 里列出的六个已知取值（第十一轮 2.3 节）；
-未知/空取值直接原样展示英文取值（或不展示），同 `_PROBLEM_STATUS_
-COLORS` 只覆盖已知取值、其余保底兜底的既有风格一致。"""
+# `capabilities_gained[].maturity_stage` → 中文展示文案，仅覆盖
+# `state_model.py` docstring 里列出的六个已知取值（第十一轮 2.3 节）；
+# 未知/空取值直接原样展示英文取值（或不展示），同 `_PROBLEM_STATUS_
+# COLORS` 只覆盖已知取值、其余保底兜底的既有风格一致。
+# 注意：这里必须用 `#` 注释而不是裸字符串字面量——Streamlit 的
+# "magic" 机制会把脚本顶层（不在函数/类内部）出现的裸字符串表达式
+# 语句自动 `st.write()` 出来，裸字符串会真的显示在界面上。
 
 
 _CAPABILITY_KIND_LABELS = {
@@ -1964,9 +1967,10 @@ _CAPABILITY_KIND_ICONS = {
     "organization": "🏢",
     "institution": "📜",
 }
-"""`capabilities_gained[].capability_kind` → 中文展示文案/图标（第
-十二轮方案第 4 节）。缺省或不认识的取值一律按 `"technology"` 兜底
-展示（同字段默认值一致），不报错、不留空图标。"""
+# `capabilities_gained[].capability_kind` → 中文展示文案/图标（第
+# 十二轮方案第 4 节）。缺省或不认识的取值一律按 `"technology"` 兜底
+# 展示（同字段默认值一致），不报错、不留空图标。同上，用 `#` 注释
+# 而不是裸字符串，避免被 Streamlit magic 渲染到界面上。
 
 
 def _capabilities_gained_html(state) -> str:
@@ -2863,9 +2867,10 @@ _PROBLEM_STATUS_COLORS = {
     "solved": "#dcfce7",
     "transformed": "#e0e7ff",
 }
-"""问题 `status` → 节点填充色，仅覆盖 `state_model.py` docstring 里
-列出的四个已知取值；未知/空取值退化为因果线关系图同款的默认色
-`#eef2ff`，同 `_causal_graph_edges_to_dot()` 的既有配色风格一致。"""
+# 问题 `status` → 节点填充色，仅覆盖 `state_model.py` docstring 里
+# 列出的四个已知取值；未知/空取值退化为因果线关系图同款的默认色
+# `#eef2ff`，同 `_causal_graph_edges_to_dot()` 的既有配色风格一致。
+# 用 `#` 注释而不是裸字符串——见 `_MATURITY_STAGE_LABELS` 上方注释。
 
 
 def _collect_problem_graph_nodes(history: List) -> List[Dict[str, Any]]:
@@ -5568,14 +5573,15 @@ _CONFIDENCE_LABELS = {
     "hypothesis": "待验证假设",
     "speculative": "推测",
 }
-"""`KnowledgeItem.confidence` → 中文展示文案（第十二轮方案第 6 节，
-对照参考文档第五十九节 Fact/Assumption/Hypothesis/Prediction/
-Observation 类型标签——现状核实后发现 `confidence` 已经是四态离散
-枚举，`confirmed`≈Fact、`hypothesis`≈Hypothesis，本节只做纯展示层
-的中文标签映射，不新增数据字段、不重命名枚举值）。未知/空取值直接
-原样展示英文取值本身，不报错，同 `_MATURITY_STAGE_LABELS`/
-`_CAPABILITY_KIND_LABELS` 只覆盖已知取值、其余保底兜底的既有风格
-一致。"""
+# `KnowledgeItem.confidence` → 中文展示文案（第十二轮方案第 6 节，
+# 对照参考文档第五十九节 Fact/Assumption/Hypothesis/Prediction/
+# Observation 类型标签——现状核实后发现 `confidence` 已经是四态离散
+# 枚举，`confirmed`≈Fact、`hypothesis`≈Hypothesis，本节只做纯展示层
+# 的中文标签映射，不新增数据字段、不重命名枚举值）。未知/空取值直接
+# 原样展示英文取值本身，不报错，同 `_MATURITY_STAGE_LABELS`/
+# `_CAPABILITY_KIND_LABELS` 只覆盖已知取值、其余保底兜底的既有风格
+# 一致。用 `#` 注释而不是裸字符串——见 `_MATURITY_STAGE_LABELS`
+# 上方注释，避免被 Streamlit magic 渲染到界面上。
 
 
 def _confidence_label(confidence: str) -> str:
