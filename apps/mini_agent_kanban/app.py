@@ -5026,6 +5026,63 @@ def _render_goal_direction_overview(client: "AgentClient", goals: list, directio
 
 
 # ── 目标树（goal_tree_system_plan.md 阶段四）──────────────────────────────
+# [goal_tree_candidate_accept_reject_latency_fix.md，看板性能优化]
+# "🌳 目标树"每次全量 rerun（包括点候选卡片"✅ 采纳"/"✖️ 忽略"/"确认采纳"
+# 触发的那次）都会无条件发起 3 次网络请求：`goal_tree()`（必须刷新——
+# 采纳/忽略本身会改变树结构）、`goal_tree_next_steps()`、
+# `goal_tree_research_summary()`。后两个批量接口返回的"焦点行动建议"/
+# "全部节点调研摘要"跟"采纳/忽略一个分解候选"这个动作完全无关——不会
+# 因为这个动作而改变，但之前每次点按钮都要重新请求一遍，其中
+# `goal_tree_research_summary()` 内部还要做多次全量磁盘读取（见该接口
+# 文档字符串），树上节点/候选/调研历史越多，这部分不必要的等待就越
+# 明显，是"点采纳/忽略要卡好几秒才刷新"的主因。
+#
+# 这里给这两个接口的结果加一层带 TTL 的 session_state 缓存：候选
+# 采纳/忽略触发的 rerun 直接复用缓存、不再重新请求；只有真正会让这两份
+# 数据过期的操作（目前只有"🔍 立即调研"会新增/更新调研候选）才主动
+# 调用 `_gt_invalidate_research_summary_cache()` 使缓存失效，保证下一次
+# 看到的还是最新数据。TTL 兜底（默认 20 秒）确保即使遗漏某个失效点，
+# 数据也不会长期陈旧——这两类数据本身也不是需要秒级实时的内容。
+_GT_SIDE_CACHE_TTL_SECONDS = 20.0
+
+
+def _gt_next_steps_cached(client: AgentClient) -> dict:
+    """带 TTL 缓存的 `client.goal_tree_next_steps()`，避免候选采纳/忽略
+    触发的 rerun 重复请求这份跟该动作无关的数据。"""
+    cache_key, ts_key = "_gt_next_steps_cache", "_gt_next_steps_cache_ts"
+    now = time.time()
+    cached = st.session_state.get(cache_key)
+    if cached is not None and (now - st.session_state.get(ts_key, 0.0)) < _GT_SIDE_CACHE_TTL_SECONDS:
+        return cached
+    resp = client.goal_tree_next_steps() or {}
+    st.session_state[cache_key] = resp
+    st.session_state[ts_key] = now
+    return resp
+
+
+def _gt_research_summary_cached(client: AgentClient) -> dict:
+    """带 TTL 缓存的 `client.goal_tree_research_summary()`，理由同
+    `_gt_next_steps_cached()`。触发调研成功后需调用
+    `_gt_invalidate_research_summary_cache()` 主动失效，不能只靠 TTL
+    （否则"立即调研"生成的新候选，用户可能要等 20 秒才能在树上看到）。"""
+    cache_key, ts_key = "_gt_research_summary_cache", "_gt_research_summary_cache_ts"
+    now = time.time()
+    cached = st.session_state.get(cache_key)
+    if cached is not None and (now - st.session_state.get(ts_key, 0.0)) < _GT_SIDE_CACHE_TTL_SECONDS:
+        return cached
+    resp = client.goal_tree_research_summary() or {}
+    st.session_state[cache_key] = resp
+    st.session_state[ts_key] = now
+    return resp
+
+
+def _gt_invalidate_research_summary_cache() -> None:
+    """`goal_tree_research_summary()` 缓存的主动失效入口——"🔍 立即调研"
+    成功生成/更新候选后调用，避免用户要等到 TTL 过期才能在树上看到。"""
+    st.session_state.pop("_gt_research_summary_cache", None)
+    st.session_state.pop("_gt_research_summary_cache_ts", None)
+
+
 # level 图标，跟方案 §4.4 定义一致。
 _GOAL_TREE_LEVEL_ICON = {
     "ultimate": "🌍", "domain": "🧭", "stage": "📅", "goal": "🎯", "objective": "📌",
@@ -5208,6 +5265,10 @@ def _render_goal_tree_research_section(
                 st.success(f"已生成/更新调研候选并生成报告：{cand.get('title', '')}")
             else:
                 st.success(f"已生成/更新调研候选：{cand.get('title', '')}（报告生成失败，可稍后重试）")
+            # [goal_tree_candidate_accept_reject_latency_fix.md] 这个动作
+            # 真的会改变 `goal_tree_research_summary()` 的数据（新增/更新了
+            # 一条调研候选），主动使缓存失效，不能等 TTL 自然过期。
+            _gt_invalidate_research_summary_cache()
             st.rerun()
         else:
             reason = (res or {}).get("skip_reason") or "本次没有生成新候选"
@@ -6331,7 +6392,7 @@ def _render_goal_tree_view(client: AgentClient) -> None:
     # 一次性拉取全部 focus_next_step 候选，构造"有待处理建议的节点 id"
     # 集合，递归渲染时按 id 查集合而不是每个节点单独请求一次——避免树
     # 较大时产生 N 次网络调用。
-    next_steps_resp = client.goal_tree_next_steps() or {}
+    next_steps_resp = _gt_next_steps_cached(client)
     next_step_node_ids = {
         str(it.get("ref_id", "")).split(":")[0]
         for it in (next_steps_resp.get("items") or [])
@@ -6345,7 +6406,7 @@ def _render_goal_tree_view(client: AgentClient) -> None:
     # 而这个端点内部本身要做多次全量文件读取——树越大，这部分开销
     # 越明显，是"目标树"节点一多就卡的主因。这里改成只发一次批量请求，
     # 拿到的 `research_by_node` 原样透传给 `_render_goal_tree_node()`。
-    research_summary_resp = client.goal_tree_research_summary() or {}
+    research_summary_resp = _gt_research_summary_cached(client)
     if isinstance(research_summary_resp, dict) and research_summary_resp.get("_error"):
         st.caption(f"调研摘要批量获取失败，已回退为逐节点单独查询：{research_summary_resp['_error']}")
         research_by_node = None
