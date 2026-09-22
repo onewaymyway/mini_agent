@@ -3436,3 +3436,28 @@ plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增
   测试（图标按类型选择、未知取值原样保留、first_occurrence 优先于
   类型图标、聚合结果 `capability_kind` 缺省兜底/取最新记录），加上
   原有的全部通过（**559 passed**）。
+
+- 2026-09-22（同日再追加）：**第十二轮第 5 节**——按 `next_doc/
+  world_simulator_twelfth_round_exploration_and_deferred_directions_
+  plan.md` 第 5 节，技术/组织/制度协同演化观察（纯统计展示，依赖
+  第 4 节 `capability_kind` 字段，不新增任何数据字段）。
+  1. **`app.py`**：新增 `_collect_capability_kind_coevolution()`：
+     遍历完整历史里所有 `capabilities_gained` 记录，按 `step` 排序
+     后用一个滑动步数窗口（默认 3 步，闭区间 `[s - window + 1,
+     s]`）检测窗口内是否同时出现至少两种不同 `capability_kind`，
+     命中则记录一次观察（窗口起止 step、涉及的类型、涉及的具体
+     记录），**不做任何"谁驱动了谁"的因果判断**。新增
+     `_render_capability_kind_coevolution_section()`：渲染"🔀
+     技术/组织/制度协同演化观察"只读折叠区，紧跟"能力成熟度时间线"
+     之后、"⭐ 首次达成的里程碑"之前，明确标注"这只是时间上接近，
+     不代表存在因果关系"；没有任何观察时展示占位提示，不为了
+     "看起来有内容"而制造虚假关联。
+  **不做的部分（按方案要求）**：不做"协同演化模式"的分类/推荐；不做
+  自动触发机制/提醒（只在用户主动展开折叠区时才有意义地查看结果，
+  计算本身无副作用）；不新增任何数据字段，完全复用第 4 节
+  `capability_kind` 的统计结果。
+  **验收**：新增 `tests/test_capability_kind_coevolution.py`
+  （10 个测试：空历史/单一类型不产生观察、缺省类型按 technology
+  归并、默认窗口内命中、窗口边界闭区间精确测试、自定义更宽窗口扩大
+  检测范围、跳过非法条目、跳过 `step` 缺失的状态、三种类型同窗口
+  全部报告），加上原有的全部通过（**569 passed**）。

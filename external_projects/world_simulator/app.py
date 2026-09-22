@@ -3095,6 +3095,131 @@ def _render_capability_maturity_section(history: List) -> None:
                 st.markdown(f"- {icon} **{capability}**：（未声明生命周期阶段）", unsafe_allow_html=True)
 
 
+# ── 第十二轮方案第 5 节：技术/组织/制度协同演化观察（纯统计展示）──
+
+
+def _collect_capability_kind_coevolution(
+    history: List, *, window: int = 3
+) -> List[Dict[str, Any]]:
+    """遍历完整历史里所有 `capabilities_gained` 记录，按 `step` 排序
+    后用一个滑动步数窗口（默认 3 步）检测"窗口内是否同时出现了至少
+    两种不同 `capability_kind`"（第十二轮方案第 5 节，对照参考文档
+    第五十四节"技术、组织、制度共同演化"）。
+
+    **纯统计观察，不做任何因果判断**——命中只表示"这几步之内同时
+    出现了跨类型的新增能力记录"，不代表谁驱动了谁，也不代表这几条
+    记录之间真的存在协同关系，调用方展示时需要明确这一点。
+
+    依赖第 4 节 `capability_kind` 字段的聚合结果，不新增任何数据
+    字段、不需要 LLM 额外声明任何东西。`step` 为 `None` 的状态（理论
+    上不应该出现）直接跳过，不参与统计。
+
+    Args:
+        history: 完整历史（同一分支）。
+        window: 步数窗口宽度，默认 3（对应方案原文"相邻 3 步内"，
+            建议默认窗口较窄，避免"随便挨着的两条记录都被算成协同"
+            的过度解读）。窗口按"以某一步为右端点，向前追溯
+            `window - 1` 步（含自身）"计算，即 `[s - window + 1, s]`
+            这个闭区间。
+
+    Returns:
+        按 `window_end_step` 升序排列的观察列表，每项：
+        `{"window_start_step": int, "window_end_step": int, "kinds":
+        窗口内出现过的所有 capability_kind（去重、排序）, "entries":
+        窗口内所有记录（含 step/time_label/capability/
+        capability_kind），按 step 升序}`。没有任何跨类型变化时返回
+        空列表——不为了"看起来有内容"而制造虚假关联。
+    """
+    entries: List[Dict[str, Any]] = []
+    for state in history or []:
+        step = getattr(state, "step", None)
+        if step is None:
+            continue
+        time_label = getattr(state, "time_label", None) or ""
+        for item in getattr(state, "capabilities_gained", None) or []:
+            if not isinstance(item, dict):
+                continue
+            capability = str(item.get("capability") or "").strip()
+            if not capability:
+                continue
+            capability_kind = str(item.get("capability_kind") or "").strip() or "technology"
+            entries.append(
+                {
+                    "step": step,
+                    "time_label": time_label,
+                    "capability": capability,
+                    "capability_kind": capability_kind,
+                }
+            )
+    entries.sort(key=lambda e: e["step"])
+    steps = sorted({e["step"] for e in entries})
+    observations: List[Dict[str, Any]] = []
+    for s in steps:
+        window_start = s - window + 1
+        window_entries = [e for e in entries if window_start <= e["step"] <= s]
+        kinds = sorted({e["capability_kind"] for e in window_entries})
+        if len(kinds) < 2:
+            continue
+        observations.append(
+            {
+                "window_start_step": window_start,
+                "window_end_step": s,
+                "kinds": kinds,
+                "entries": window_entries,
+            }
+        )
+    return observations
+
+
+def _render_capability_kind_coevolution_section(history: List, *, window: int = 3) -> None:
+    """渲染"🔀 技术/组织/制度协同演化观察"只读折叠区（第十二轮方案
+    第 5 节）。纯统计展示，明确标注"这只是时间上接近，不代表存在
+    因果关系"，不做自动触发/通知——只在用户主动展开这个折叠区时
+    才有意义地查看结果（计算本身是无副作用的纯函数，本函数只是
+    渲染层）。
+    """
+    observations = _collect_capability_kind_coevolution(history, window=window)
+    with st.expander(
+        f"🔀 技术/组织/制度协同演化观察（第十二轮方案第 5 节，{window} 步窗口内，纯统计，可选）"
+    ):
+        st.markdown(
+            '<span class="ws-muted">检测相邻若干步内是否同时出现了技术/组织/制度中'
+            "至少两种不同类型的新增能力记录——这只是时间上接近，不代表存在因果关系，"
+            "谁驱动了谁需要你自己判断。</span>",
+            unsafe_allow_html=True,
+        )
+        if not observations:
+            st.markdown(
+                '<span class="ws-muted">当前分支历史里还没有观察到跨类型的协同'
+                "变化——继续推进，等历史里同时出现技术/组织/制度中至少两种类型的新增"
+                "能力后再回来看。</span>",
+                unsafe_allow_html=True,
+            )
+            return
+        for obs in observations:
+            kind_labels = "、".join(
+                f"{_CAPABILITY_KIND_ICONS.get(k, '🆙')} {_CAPABILITY_KIND_LABELS.get(k, k)}"
+                for k in obs["kinds"]
+            )
+            step_range = (
+                f"第 {obs['window_start_step']}～{obs['window_end_step']} 步"
+                if obs["window_start_step"] != obs["window_end_step"]
+                else f"第 {obs['window_end_step']} 步"
+            )
+            entry_lines = "".join(
+                f'<div>· 第 {e["step"]} 步'
+                f'{"（" + _html_text(e["time_label"]) + "）" if e["time_label"] else ""}：'
+                f'{_CAPABILITY_KIND_ICONS.get(e["capability_kind"], "🆙")} '
+                f'{_html_text(e["capability"])}</div>'
+                for e in obs["entries"]
+            )
+            st.markdown(
+                f'<div class="ws-card"><div class="ws-card-title">🔀 {step_range}：涉及 {kind_labels}</div>'
+                f"{entry_lines}</div>",
+                unsafe_allow_html=True,
+            )
+
+
 def _render_causal_graph_section(history: List, *, manifest=None) -> None:
     """渲染"跨线影响关系"区块（阶段二十七，4.19 节，因果线耦合结构化；
     第八轮批次四新增"🕸️ 关系图"图形化子视图，见下方）。
@@ -4126,6 +4251,11 @@ def page_detail() -> None:
     # "遍历完整历史、按名称/id 归并展示"的纯只读折叠区，位置相邻方便
     # 用户对照"问题解决进度"和"能力演进进度"。
     _render_capability_maturity_section(history)
+
+    # 第十二轮方案第 5 节：技术/组织/制度协同演化观察，紧跟能力成熟度
+    # 时间线之后——依赖第 4 节 capability_kind 字段的聚合结果，纯统计
+    # 展示，不做因果判断。
+    _render_capability_kind_coevolution_section(history)
 
     # 第十二轮方案第 3 节：⭐ 首次达成的里程碑，紧跟能力成熟度时间线
     # 之后——同样是遍历完整历史的只读折叠区，与 `achievements.py`
