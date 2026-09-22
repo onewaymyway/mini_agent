@@ -5562,6 +5562,29 @@ def page_experiment() -> None:
 # ─────────────────────────────────────────────────────────────
 
 
+_CONFIDENCE_LABELS = {
+    "confirmed": "已证实事实",
+    "supported": "有依据的判断",
+    "hypothesis": "待验证假设",
+    "speculative": "推测",
+}
+"""`KnowledgeItem.confidence` → 中文展示文案（第十二轮方案第 6 节，
+对照参考文档第五十九节 Fact/Assumption/Hypothesis/Prediction/
+Observation 类型标签——现状核实后发现 `confidence` 已经是四态离散
+枚举，`confirmed`≈Fact、`hypothesis`≈Hypothesis，本节只做纯展示层
+的中文标签映射，不新增数据字段、不重命名枚举值）。未知/空取值直接
+原样展示英文取值本身，不报错，同 `_MATURITY_STAGE_LABELS`/
+`_CAPABILITY_KIND_LABELS` 只覆盖已知取值、其余保底兜底的既有风格
+一致。"""
+
+
+def _confidence_label(confidence: str) -> str:
+    """`confidence` 枚举值 → 中文展示文案，未知/空取值原样返回取值
+    本身（第十二轮方案第 6 节）。"""
+    confidence = str(confidence or "").strip()
+    return _CONFIDENCE_LABELS.get(confidence, confidence)
+
+
 def page_knowledge() -> None:
     """📚 知识库浏览页（第八轮批次一，`world_simulator_c_category_
     precision_upgrade_improvement_plan.md` 第 2 节）：跨模拟因果知识库
@@ -5599,7 +5622,7 @@ def page_knowledge() -> None:
         track_record = f"印证 {item.validated_count} 次"
         if item.contradicted_count:
             track_record += f" · 证伪 {item.contradicted_count} 次"
-        title = f"{item.cause} → {item.effect}（{item.confidence} · {track_record}）"
+        title = f"{item.cause} → {item.effect}（{_confidence_label(item.confidence)} · {track_record}）"
         with st.expander(title):
             if item.mechanism:
                 st.markdown(f"**机制**：{_html_text(item.mechanism)}", unsafe_allow_html=True)

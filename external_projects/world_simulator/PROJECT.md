@@ -3461,3 +3461,33 @@ plan.md` 六个批次全部完成，全量测试套件从升级前的 414 个增
   归并、默认窗口内命中、窗口边界闭区间精确测试、自定义更宽窗口扩大
   检测范围、跳过非法条目、跳过 `step` 缺失的状态、三种类型同窗口
   全部报告），加上原有的全部通过（**569 passed**）。
+
+- 2026-09-22（同日再追加）：**第十二轮第 6 节（第十二轮方案全部
+  完成）**——按 `next_doc/world_simulator_twelfth_round_exploration_
+  and_deferred_directions_plan.md` 第 6 节，Fact/Assumption/
+  Hypothesis/Prediction 类型标签。现状核实发现第九轮文档对
+  `knowledge_base.py::KnowledgeItem.confidence` 的描述已过时——
+  `confidence` 实际已经是 `confirmed`/`supported`/`hypothesis`/
+  `speculative` 四态离散枚举，不是连续值，参考文档想要的类型区分
+  在因果知识库层面已经存在，本节相应缩小为纯展示层的中文标签映射，
+  不新增数据字段、不重命名枚举值。
+  1. **`app.py`**：新增 `_CONFIDENCE_LABELS` 映射表 +
+     `_confidence_label()` 辅助函数（`confirmed`→"已证实事实"、
+     `supported`→"有依据的判断"、`hypothesis`→"待验证假设"、
+     `speculative`→"推测"，未知/空取值原样返回取值本身，不报错）。
+     `page_knowledge()` 知识库浏览页的条目标题改用
+     `_confidence_label(item.confidence)` 展示中文标签。
+  **不做的部分（按方案要求）**：不新增独立的 `Prediction`/
+  `Observation` 类型（`causal_graph_hint`/`declared_causal_graph`
+  已经是两段分开展示的内容，本质上是朴素的 Observation vs
+  Assumption/Prediction 区分，重复建一层类型标签收益不明确）；不做
+  `confidence` 枚举值的重命名（避免破坏存量数据兼容性）。
+  **验收**：新增 `tests/test_confidence_label.py`（7 个测试：四个
+  已知枚举值都有对应中文标签、未知/空取值原样兜底、覆盖
+  `_VALID_CONFIDENCE` 全部取值的回归测试），加上原有的全部通过
+  （**576 passed**）。
+
+**至此，`next_doc/world_simulator_twelfth_round_exploration_and_
+deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
+新差距 + 第 3～6 节四个此前搁置、本轮用户明确要求推进的方向），详见
+该文档各节末尾的实施记录。
