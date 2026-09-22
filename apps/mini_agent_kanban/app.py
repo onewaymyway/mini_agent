@@ -5419,6 +5419,7 @@ def _render_goal_tree_node_body(
     # `use_container_width=True`，用 Streamlit 按钮的自然尺寸，不随
     # 列宽（会随深度嵌套逐层收窄）一起缩放，保证任意深度下按钮大小一致
     # （见 `_render_goal_tree_node` 顶部说明）。
+    _header_t0 = time.perf_counter()
     if children:
         _toggle_w, _title_w, _detail_w, _wiki_w = _gt_button_col_weights(depth, has_toggle=True)
         toggle_col, title_col, detail_col, wiki_col = st.columns(
@@ -5468,7 +5469,35 @@ def _render_goal_tree_node_body(
                 st.session_state["_goal_wiki_view_target"] = node_id
                 st.rerun()
 
-    with st.expander("⚙️ 管理", expanded=False):
+    _gt_timing_hdr = st.session_state.setdefault(
+        "_gt_node_timing",
+        {"header_ms": 0.0, "manage_ms": 0.0, "manage_open_count": 0, "candidates_ms": 0.0},
+    )
+    _gt_timing_hdr["header_ms"] += (time.perf_counter() - _header_t0) * 1000
+
+    # [渲染性能优化：⚙️ 管理区块懒加载] `st.expander(expanded=False)` 只是
+    # 前端视觉折叠，里面的代码每次全量 rerun 依旧会执行——这个区块里有
+    # 编辑表单（3 个控件）、改父节点、拆解按钮、新建子节点表单（3 个
+    # 控件）、焦点 pin 按钮（每个子节点一个）、调研摘要子区块，293 个
+    # 节点全部无条件构建，是渲染段耗时的主要来源。改成跟"🔀 改父节点"
+    # 同一套模式：先只放一个按钮，点开之后才真正构建这些控件——没点开
+    # 的节点，这里只有一个按钮的开销。
+    manage_open_key = f"_gt_manage_open_{node_id}"
+    manage_is_open = bool(st.session_state.get(manage_open_key))
+    if st.button(
+        "⚙️ 管理" if not manage_is_open else "⚙️ 收起管理",
+        key=f"_gt_manage_btn_{node_id}",
+    ):
+        st.session_state[manage_open_key] = not manage_is_open
+        st.rerun()
+
+    if manage_is_open:
+        _manage_t0 = time.perf_counter()
+        _gt_timing = st.session_state.setdefault(
+            "_gt_node_timing",
+            {"header_ms": 0.0, "manage_ms": 0.0, "manage_open_count": 0, "candidates_ms": 0.0},
+        )
+        _gt_timing["manage_open_count"] += 1
         st.caption(f"id: `{node_id}`　level: `{level}`")
         if node.get("description"):
             st.caption(node["description"])
@@ -5614,10 +5643,18 @@ def _render_goal_tree_node_body(
             client, node_id,
             summary=(research_by_node.get(node_id) or {} if research_by_node is not None else None),
         )
+        _gt_timing["manage_ms"] += (time.perf_counter() - _manage_t0) * 1000
 
+    _candidates_t0 = time.perf_counter()
     candidates = node.get("decompose_candidates") or []
     if candidates:
         _render_goal_tree_candidates(client, node_id, candidates)
+    if candidates:
+        _gt_timing2 = st.session_state.setdefault(
+            "_gt_node_timing",
+            {"header_ms": 0.0, "manage_ms": 0.0, "manage_open_count": 0, "candidates_ms": 0.0},
+        )
+        _gt_timing2["candidates_ms"] += (time.perf_counter() - _candidates_t0) * 1000
 
     focus_ids = set(node.get("current_focus_ids") or [])
     if is_collapsed:
@@ -6327,12 +6364,30 @@ def _gt_render_perf_panel(placeholder, entry: dict) -> None:
             verdict = "🔍 **渲染段**明显更慢——大概率是树上节点/候选/折叠区数量太多，Streamlit 创建控件本身的开销，可以考虑按节点拆分局部渲染。"
         else:
             verdict = "🔍 请求段和渲染段耗时接近，两边都有一定占比。"
+        header_ms = entry.get("header_ms", 0.0)
+        manage_ms = entry.get("manage_ms", 0.0)
+        manage_open_count = entry.get("manage_open_count", 0)
+        candidates_ms = entry.get("candidates_ms", 0.0)
+        # 渲染段自身的细分：header_ms 是"每个节点都跑一遍"的部分（标题行
+        # 按钮），跟节点总数直接成正比；manage_ms/candidates_ms 只在
+        # 对应区块被点开/存在候选时才会累加，理论上应该远小于 header_ms
+        # ——如果不是，说明瓶颈在别处（比如某个具体节点的管理区块本身
+        # 很重，而不是"节点数多"）。两者之和跟 render_ms 之间的差值就是
+        # "没被单独计时覆盖到"的部分（比如缩进用的嵌套 st.columns 本身、
+        # 递归调用开销），如果差值很大也值得在后续排查里单独计时。
+        _accounted_ms = header_ms + manage_ms + candidates_ms
+        _unaccounted_ms = max(entry["render_ms"] - _accounted_ms, 0.0)
         st.caption(
             f"⏱️ 本次刷新：请求 **{request_ms:.0f}ms**"
             f"（树结构 {entry['tree_ms']:.0f} / 焦点建议 {entry['next_steps_ms']:.0f} / "
             f"调研摘要 {entry['research_ms']:.0f}，后两项命中前端 TTL 缓存时应接近 0）　"
             f"渲染 **{entry['render_ms']:.0f}ms**　总计 **{entry['total_ms']:.0f}ms**　"
             f"节点数 {entry['node_count']}"
+        )
+        st.caption(
+            f"　└ 渲染细分：标题行 {header_ms:.0f}ms（{entry['node_count']} 个节点均摊） / "
+            f"⚙️ 管理区块 {manage_ms:.0f}ms（{manage_open_count} 个节点已展开） / "
+            f"候选区块 {candidates_ms:.0f}ms　/　未单独计时部分 ≈{_unaccounted_ms:.0f}ms"
         )
         st.caption(verdict)
         log = st.session_state.get(_GT_PERF_LOG_KEY, [])
@@ -6342,14 +6397,16 @@ def _gt_render_perf_panel(placeholder, entry: dict) -> None:
                     st.session_state[_GT_PERF_LOG_KEY] = []
                     st.rerun()
                 rows = [
-                    "| # | 节点数 | 树请求 | 焦点建议 | 调研摘要 | 渲染 | 总计 |",
-                    "|---|---|---|---|---|---|---|",
+                    "| # | 节点数 | 树请求 | 焦点建议 | 调研摘要 | 渲染 | 其中:标题行 | 其中:管理区块(展开数) | 其中:候选区块 | 总计 |",
+                    "|---|---|---|---|---|---|---|---|---|---|",
                 ]
                 for i, e in enumerate(reversed(log)):
                     rows.append(
                         f"| {len(log) - i} | {e['node_count']} | {e['tree_ms']:.0f}ms | "
                         f"{e['next_steps_ms']:.0f}ms | {e['research_ms']:.0f}ms | "
-                        f"{e['render_ms']:.0f}ms | **{e['total_ms']:.0f}ms** |"
+                        f"{e['render_ms']:.0f}ms | {e.get('header_ms', 0.0):.0f}ms | "
+                        f"{e.get('manage_ms', 0.0):.0f}ms({e.get('manage_open_count', 0)}) | "
+                        f"{e.get('candidates_ms', 0.0):.0f}ms | **{e['total_ms']:.0f}ms** |"
                     )
                 st.markdown("\n".join(rows))
 
@@ -6511,12 +6568,25 @@ def _render_goal_tree_view(client: AgentClient) -> None:
     else:
         research_by_node = research_summary_resp.get("by_node") or {}
 
+    # [渲染性能优化：更细粒度耗时统计] 在每次真正渲染树之前清空
+    # `_gt_node_timing` 累加器——`_render_goal_tree_node_body()` 递归时
+    # 会往里面累加"标题行按钮"（header_ms，每个节点都跑）、"⚙️ 管理"
+    # 区块（manage_ms + manage_open_count，只有点开的节点才跑）、
+    # "候选区块"（candidates_ms，只有带候选的节点才跑）三段耗时，
+    # 用来在懒加载改完之后进一步定位：如果 header_ms 本身就很高，说明
+    # 瓶颈是"每个节点都跑一遍"的部分，需要再拆分/虚拟化标题行本身；
+    # 如果 header_ms 很低但 manage_open_count > 0 时 manage_ms 很高，
+    # 说明是用户点开的那几个管理区块单独很重，跟节点总数无关。
+    st.session_state["_gt_node_timing"] = {
+        "header_ms": 0.0, "manage_ms": 0.0, "manage_open_count": 0, "candidates_ms": 0.0,
+    }
     _t_render_start = time.time()
     _render_goal_tree_node(
         client, tree, id_to_title, depth=0, next_step_node_ids=next_step_node_ids,
         research_by_node=research_by_node,
     )
     _t_render_ms = (time.time() - _t_render_start) * 1000
+    _gt_node_timing = st.session_state.get("_gt_node_timing", {})
 
     # [goal_tree_candidate_accept_reject_latency_fix.md 第三轮] 所有计时
     # 都算完了，回填函数最开头创建的占位符——最终会显示在页面最上方。
@@ -6528,6 +6598,10 @@ def _render_goal_tree_view(client: AgentClient) -> None:
         "research_ms": _t_research_ms,
         "render_ms": _t_render_ms,
         "total_ms": _t_tree_ms + _t_next_steps_ms + _t_research_ms + _t_render_ms,
+        "header_ms": _gt_node_timing.get("header_ms", 0.0),
+        "manage_ms": _gt_node_timing.get("manage_ms", 0.0),
+        "manage_open_count": _gt_node_timing.get("manage_open_count", 0),
+        "candidates_ms": _gt_node_timing.get("candidates_ms", 0.0),
     }
     _gt_record_perf(_gt_perf_entry)
     _gt_render_perf_panel(_perf_placeholder, _gt_perf_entry)
