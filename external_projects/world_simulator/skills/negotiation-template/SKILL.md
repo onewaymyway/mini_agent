@@ -145,8 +145,10 @@ triggers: 多方谈判, 谈判模拟, 博弈模拟, 多主体模拟, 信息不�
   `"entities.甲方.budget"`，两层嵌套；如果引擎只支持一层嵌套路径，
   优先把需要校验的资源字段放在 `shared_vars` 下，用一层路径表达，
   避免超出引擎当前支持的嵌套深度）。没有这类字段就不用输出。
-- `resource_relations`：数组（可选），格式与另外两个模板完全一致，
-  同样注意嵌套深度的限制。没有明显的转移关系就不用输出。
+- `resource_relations`：数组（可选），格式与另外两个模板完全一致
+  （`"transfer"` 只用于同量纲搬运，量纲不同的一对字段要用
+  `"conversion"`，两者的区别与正反例见 `life-sim-template`），同样
+  注意嵌套深度的限制。没有明显的转移/转化关系就不用输出。
 - `uncertain_fields`：数组（可选），格式与另外两个模板完全一致。
 - `objectives`：数组（可选），字符串列表，格式与另外两个模板完全
   一致（比如 `["达成交易的可能性", "己方利益最大化"]`）。
@@ -212,7 +214,7 @@ triggers: 多方谈判, 谈判模拟, 博弈模拟, 多主体模拟, 信息不�
   的背景说明，规则与另外两个模板一致。
 - `major_decision`：布尔值（可选，默认 false），这一步是否是谈判/
   博弈的关键转折点（比如"接近最终摊牌"）。
-- `uncertain_fields`/`key_drivers`/`causal_links`/`line_updates`：
+- `uncertain_fields`/`resource_transfers`/`key_drivers`/`causal_links`/`line_updates`：
   格式与另外两个模板完全一致；`causal_links` 尽量带上 `line_id`，
   `line_updates` 默认应该给出（因果线是基础机制，不需要提前声明才
   输出，见 `{causal_lines_hint}`）。字段路径如果指向某个主体的私有

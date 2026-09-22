@@ -870,7 +870,13 @@ def test_advance_records_relation_violation_when_transfer_not_conserved(tmp_path
     assert next_state.vars["cash"] == 900
     assert next_state.vars["inventory"]["value"] == 20
     assert next_state.relation_violations == [
-        {"from": "cash", "to": "inventory.value", "delta_from": -100, "delta_to": 20}
+        {
+            "from": "cash",
+            "to": "inventory.value",
+            "delta_from": -100,
+            "delta_to": 20,
+            "checked_by": "diff",
+        }
     ]
 
     store = SimStore.for_root(data_dir, manifest.sim_id)

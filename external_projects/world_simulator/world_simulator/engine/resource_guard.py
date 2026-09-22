@@ -92,9 +92,16 @@ def _normalize_resource_relations(raw: Any) -> list:
     `next_doc/world_simulator_c_category_precision_upgrade_
     improvement_plan.md` 第 3 节）。
 
-    识别两种 `type`：
+    识别三种 `type`：
     - `"transfer"`（或没写 `type`，默认按 `transfer` 处理）：归一化成
       `{"type": "transfer", "from": str, "to": str, "tolerance": float}`。
+      只应该用于同一种量纲/记账单位之间的搬运（见
+      `state_model.SimManifest.settings` 里 `resource_relations` 的
+      格式说明）——量纲不同的一对字段应该声明成 `"conversion"`。
+    - `"conversion"`（有代价的跨量纲转化，第九轮批次一新增）：归一化成
+      `{"type": "conversion", "from": str, "to": str, "note": str}`。
+      **不参与任何数值核对**，只做结构化记录，`_check_resource_
+      relations()` 里直接跳过、永不产生不一致项。
     - `"production"`（持续产出关系）：归一化成
       `{"type": "production", "field": str, "amount_per_step":
       float | None, "source_line_id": str, "tolerance": float}`。
@@ -124,6 +131,19 @@ def _normalize_resource_relations(raw: Any) -> list:
             relations.append(
                 {"type": "transfer", "from": from_field, "to": to_field, "tolerance": tolerance}
             )
+        elif rel_type == "conversion":
+            from_field = str(item.get("from") or "").strip()
+            to_field = str(item.get("to") or "").strip()
+            if not from_field or not to_field:
+                continue
+            relations.append(
+                {
+                    "type": "conversion",
+                    "from": from_field,
+                    "to": to_field,
+                    "note": str(item.get("note") or "").strip(),
+                }
+            )
         elif rel_type == "production":
             field_name = str(item.get("field") or "").strip()
             if not field_name:
@@ -151,20 +171,84 @@ def _normalize_resource_relations(raw: Any) -> list:
     return relations
 
 
-def _check_resource_relations(
-    current_vars: Dict[str, Any], next_vars: Dict[str, Any], resource_relations_raw: Any
-) -> list:
-    """对声明的 `transfer`/`production` 关系做一次事后一致性检查
-    （`transfer` 部分阶段十六 4.8 节实现，`production` 部分第八轮批次二，
-    `next_doc/world_simulator_c_category_precision_upgrade_
-    improvement_plan.md` 第 3 节新增）。
+def _normalize_resource_transfers(raw: Any) -> Dict[str, float]:
+    """把 `advance_step` 阶段 skill 可选给出的 `resource_transfers`
+    （见 `state_model.SimState.resource_transfers` 的格式说明）归一化
+    成 `{"{from}->{to}": amount}` 的查找表，`amount` 取绝对值（方向由
+    `relation` 字符串本身、也就是对应哪条 `transfer` 关系决定，不需要
+    在这里判断正负号）。`relation` 缺失、和已声明关系对不上、或
+    `amount` 不是数字的项直接跳过——这是 LLM 的可选自报数据，格式
+    不对不应该让整个核对流程失败，只是这一条退化成没报账。
+    """
+    ledger: Dict[str, float] = {}
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        relation_key = str(item.get("relation") or "").strip()
+        if not relation_key:
+            continue
+        amount = item.get("amount")
+        if not isinstance(amount, (int, float)) or isinstance(amount, bool):
+            continue
+        ledger[relation_key] = abs(float(amount))
+    return ledger
 
-    `transfer`：计算 `delta_from = next_vars[from] - current_vars[from]`、
-    `delta_to = next_vars[to] - current_vars[to]`，如果两者之和的绝对值
-    超出容差（按两者绝对值的较大者衡量），记为一条不一致，返回项形如
-    `{"from": ..., "to": ..., "delta_from": ..., "delta_to": ...}`
-    （字段形状和阶段十六上线时完全一致，不新增 key，向后兼容既有
-    调用方/测试）。
+
+def _count_field_references(relations: list) -> Dict[str, int]:
+    """统计 `transfer`/`conversion` 关系里每个字段路径被引用的次数，
+    用于判断"这个字段这一步是否可能有多个来源同时在变"（第九轮批次
+    一新增）。`production` 关系不计入——它描述的是单一字段自身的
+    产出速率，不涉及"和另一个字段的变化量做零和核对"，不存在这里
+    要规避的归因混淆问题。
+    """
+    counts: Dict[str, int] = {}
+    for spec in relations:
+        if spec["type"] not in ("transfer", "conversion"):
+            continue
+        for path in (spec["from"], spec["to"]):
+            counts[path] = counts.get(path, 0) + 1
+    return counts
+
+
+def _check_resource_relations(
+    current_vars: Dict[str, Any],
+    next_vars: Dict[str, Any],
+    resource_relations_raw: Any,
+    resource_transfers_raw: Any = None,
+) -> list:
+    """对声明的 `transfer`/`conversion`/`production` 关系做一次事后
+    一致性检查（`transfer` 部分阶段十六 4.8 节实现，`production` 部分
+    第八轮批次二，`next_doc/world_simulator_c_category_precision_
+    upgrade_improvement_plan.md` 第 3 节新增，`conversion` 类型与
+    `transfer` 的核对方式改进见第九轮批次一，`next_doc/world_
+    simulator_resource_relation_consistency_fix_plan.md`）。
+
+    `transfer`：默认计算 `delta_from = next_vars[from] -
+    current_vars[from]`、`delta_to = next_vars[to] - current_vars[to]`，
+    如果两者之和的绝对值超出容差（按两者绝对值的较大者衡量），记为
+    一条不一致，返回项形如 `{"from": ..., "to": ..., "delta_from":
+    ..., "delta_to": ..., "checked_by": "diff"}`。这个"整体快照差分"
+    假设这一步该字段的净变化全部来自这一条关系，在该字段这一步还被
+    别的变动影响时会失真，因此有两个改进：
+    - **显式流水优先**：如果 `resource_transfers_raw` 里报告了这条
+      关系（`"{from}->{to}"` 能在归一化后的流水表里查到），**直接
+      信任这份账，跳过差分核对，不产生不一致项**——不再用报告值去
+      比对整体快照差分的精确数值，也不做任何反过来验证报告是否"准
+      确"的二次校验。这正是原始问题场景要解决的：`to` 端这一步很
+      可能还被别的、根本没有声明成 `resource_relations` 的变动影响
+      （甚至可能盖过转移本身的方向），净差分本来就不是可靠的校验
+      依据，一旦 skill 已经如实报了这条关系的账，继续拿净差分去
+      验证它只是把"差分法不可靠"这个问题换个地方重新引入。这一点
+      和 `major_decision`/`key_drivers` 等其它"自报"字段的既有取舍
+      一致：只做结构化记录、不做无法可靠核实的二次校验。
+    - **共享字段自动降级**：没有显式流水报告时，如果 `from`/`to`
+      任一字段被两条以上 `transfer`/`conversion` 关系引用（说明这一步
+      该字段很可能不止一个来源在变），差分法已知不可靠，直接跳过、
+      不产生不一致项——不是检查变宽松了，是不再对一个已知不成立的
+      假设继续报警。
+
+    `conversion`：**永不参与数值核对**，只是一条结构化记录，直接
+    跳过，不会出现在返回列表里。
 
     `production`：仅当声明了 `amount_per_step` 时才参与数值核对——
     计算 `actual_delta = next_vars[field] - current_vars[field]`，
@@ -175,12 +259,18 @@ def _check_resource_relations(
     `type` 字段判断）。未声明 `amount_per_step` 的 `production` 关系
     不参与任何数值核对，只是一条结构化记录。
 
-    两种类型都是**只提示，不修改任何数值、不拒绝推进**——这里没有
+    所有类型都是**只提示，不修改任何数值、不拒绝推进**——这里没有
     "应该是多少"的唯一正确答案，只做留痕。任一字段缺失/非数字/
     变化量都为 0 时跳过，不产生误报。
     """
+    relations = _normalize_resource_relations(resource_relations_raw)
+    ledger = _normalize_resource_transfers(resource_transfers_raw)
+    field_ref_counts = _count_field_references(relations)
+
     violations: list = []
-    for spec in _normalize_resource_relations(resource_relations_raw):
+    for spec in relations:
+        if spec["type"] == "conversion":
+            continue
         if spec["type"] == "transfer":
             from_path = spec["from"]
             to_path = spec["to"]
@@ -196,6 +286,27 @@ def _check_resource_relations(
             delta_to = next_to - cur_to
             if delta_from == 0 and delta_to == 0:
                 continue
+
+            relation_key = f"{from_path}->{to_path}"
+            if relation_key in ledger:
+                # 有显式流水时，**不再**用它去比对整体快照差分——这正
+                # 是原始问题场景（`cash` 这一步同时被这条转移和别的、
+                # 根本没有声明成 `resource_relations` 的花销共同影响，
+                # 净差分本来就不等于这条关系单独的搬运量，甚至连方向
+                # 都可能被未建模的其它变动盖过）。既然 skill 已经如实
+                # 报了这条关系的账，就直接信任这份账、不产生不一致项，
+                # 不再尝试用一个已知会被污染的净差分去反过来验证它——
+                # 这和 `major_decision`/`key_drivers` 等其它"自报"字段
+                # 的既有取舍一致：只做结构化记录，不做无法可靠核实的
+                # 二次校验。
+                continue
+
+            # 没有显式流水：任一端字段被多条关系共享时，差分法已知
+            # 无法正确归因，跳过差分核对，避免已知不成立的假设继续
+            # 误报。
+            if field_ref_counts.get(from_path, 0) > 1 or field_ref_counts.get(to_path, 0) > 1:
+                continue
+
             allowed = tolerance * max(abs(delta_from), abs(delta_to))
             if abs(delta_from + delta_to) > allowed:
                 violations.append(
@@ -204,6 +315,7 @@ def _check_resource_relations(
                         "to": to_path,
                         "delta_from": delta_from,
                         "delta_to": delta_to,
+                        "checked_by": "diff",
                     }
                 )
         elif spec["type"] == "production":

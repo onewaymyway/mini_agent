@@ -578,11 +578,18 @@ def _relation_violations_html(state) -> str:
         to_field = _html_text(str(v.get("to", "")))
         delta_from = v.get("delta_from")
         delta_to = v.get("delta_to")
+        # 第九轮批次一：这里能出现的 transfer 不一致项都是按"整体
+        # 快照差分"估算出来的——如果 skill 在 `resource_transfers`
+        # 里显式报告过这条关系，引擎会直接信任、根本不会产生不一致
+        # 项（见 `resource_guard._check_resource_relations()`），所以
+        # 走到这里的提示始终"仅供参考"，明确提示可能受同一字段这一步
+        # 其它未建模变动干扰，不是确凿的错误。
         lines.append(
             f'<div class="ws-chapter-relation-violation">🔶 「{from_field}」'
             f"（变化 {_html_text(str(delta_from))}）→「{to_field}」"
             f"（变化 {_html_text(str(delta_to))}）看起来不太守恒，"
-            "可能是 AI 算错了或者有未说明的损耗</div>"
+            "可能是 AI 算错了，也可能只是这一步该字段还有其它未声明的"
+            "变动、估算失真（按前后快照差值估算，仅供参考）</div>"
         )
     return "".join(lines)
 

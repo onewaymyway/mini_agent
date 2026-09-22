@@ -152,7 +152,13 @@ def test_check_transfer_relation_unchanged_by_production_addition():
     nxt = {"cash": 900, "inventory": {"value": 20}, "resources": {"wood": 110}}
     violations = _check_resource_relations(current, nxt, raw)
     assert violations == [
-        {"from": "cash", "to": "inventory.value", "delta_from": -100, "delta_to": 20}
+        {
+            "from": "cash",
+            "to": "inventory.value",
+            "delta_from": -100,
+            "delta_to": 20,
+            "checked_by": "diff",
+        }
     ]
 
 

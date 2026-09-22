@@ -320,8 +320,50 @@ class SimState:
     关系才会参与数值核对、产生这一种不一致项；未声明速率的
     `production` 关系永远不出现在这里。
 
-    默认空列表：`resource_relations` 未声明、这一步没有超出容差时都是
-    空列表，不影响旧数据/其它模板的行为（向后兼容）。
+    第九轮批次一（资源转移一致性机制根本性改进，`next_doc/
+    world_simulator_resource_relation_consistency_fix_plan.md`）起，
+    `transfer` 类型的核对改成"显式流水优先、差分法兜底"：如果这一步
+    `resource_transfers`（见下）里报告了某条 `transfer` 关系发生过，
+    直接信任这份账、**不产生任何不一致项**（不再拿净差分去反过来
+    验证这份自报数据，理由见 `resource_transfers` 的说明）；没有
+    显式流水时仍走原有的整体快照差分核对，不一致项形如
+    `{"from": ..., "to": ..., "delta_from": ..., "delta_to": ...,
+    "checked_by": "diff"}`（旧数据没有 `checked_by` 这个 key，展示层
+    按缺失时默认当 `"diff"` 处理，向后兼容）。此外，如果同一个
+    `from`/`to` 字段被两条以上 `resource_relations` 引用（说明这一步
+    该字段的变化很可能不止一个来源），且这条关系没有显式流水，差分
+    法本身已知不可靠，会自动跳过差分核对、不产生不一致项（不是
+    "检查更严格"，是"已知这种场景下差分法不成立，不该继续报一个
+    不成立的假设"）。`conversion`（有代价的跨量纲转化，见
+    `SimManifest.settings` `resource_relations` 的格式说明）类型的
+    关系**永远不参与数值核对**，从声明类型上就不适用"两个字段变化量
+    之和≈0"这个只对同量纲搬运成立的假设。
+    """
+    resource_transfers: List[Dict[str, Any]] = field(default_factory=list)
+    """产生*本状态*这一步，skill 在 `advance_step` 阶段可选给出的
+    "这一步实际发生的资源转移流水"（第九轮批次一，同上）。每项形如
+    `{"relation": "resources.invested->resources.cash", "amount":
+    1000}`——`relation` 是 `"{from}->{to}"` 拼接的字符串，对应
+    `manifest.settings.resource_relations` 里某条 `transfer` 关系的
+    `from`/`to`；`amount` 是这一步这条关系实际搬运的量（正数，方向由
+    `relation` 本身决定：`from` 减少、`to` 增加）。一条关系一旦在这里
+    出现，`relation_violations` 就直接信任它、跳过对应的差分核对——
+    不会反过来拿 `next_vars` 前后差值验证这个报告"准不准"，这是
+    刻意的取舍：真正会污染差分核对的干扰（这一步该字段还被别的、
+    根本没有声明成 `resource_relations` 的变动影响）本来就没法靠
+    对比两个数字来分辨"报告有问题"还是"净值被其它变动盖过"，继续
+    做这种二次校验只是把"差分法不可靠"这个问题换个地方重新引入；
+    `amount` 目前只落盘存档、供时间线展示，不参与任何数值比对。
+
+    这是一个**可选**字段：不声明 `resource_relations`、这一步没有
+    触发任何转移、或模板 skill 版本较旧还不支持这个字段时都留空，
+    引擎自动退回整体快照差分核对（见 `relation_violations`），不影响
+    任何已有行为。之所以不强制要求——真正做到"每一步都精确记账"
+    需要把整个推进循环改造成完整的 Event/Ledger 驱动（参考文档
+    第二十七节的方向），改动面远超一次性修复的范围；这里只是给了
+    LLM 一个"如实报账"的口子，账报了就优先信任账，没报账才用不
+    完全可靠的差分估算兜底，是向"流水驱动"方向的一个务实折中，而
+    不是完整实现。
     """
     background_entities_applied: List[str] = field(default_factory=list)
     """产生*本状态*这一步，`engine.py::advance()` 按
@@ -830,6 +872,9 @@ class SimState:
             relation_violations=[
                 dict(x) for x in (data.get("relation_violations") or []) if isinstance(x, dict)
             ],
+            resource_transfers=[
+                dict(x) for x in (data.get("resource_transfers") or []) if isinstance(x, dict)
+            ],
             background_entities_applied=[
                 str(x) for x in (data.get("background_entities_applied") or [])
             ],
@@ -999,9 +1044,28 @@ class SimManifest:
       "inventory.value", "tolerance": 0.1}`：`from`/`to` 是 `vars` 里
       的字段路径（支持一层嵌套，同 `resource_fields`），`tolerance` 是
       允许的相对误差比例（默认 0.1，即允许 10% 的"汇率损耗/交易成本"
-      之类的合理偏差，不强制精确守恒）。支持两种关系类型：
+      之类的合理偏差，不强制精确守恒）。支持三种关系类型：
       - `"transfer"`（转移，两个字段的变化量应大致相反，阶段十六）：
-        如上例。
+        如上例。**只能用于同一种量纲/记账单位之间的搬运**——花掉的
+        现金和库存账面价值上涨的量本质是同一个数换了个记账位置，这
+        种才适用"两个字段变化量之和≈0"的零和假设。不是同一种量纲
+        （比如"花的现金"和"体能指数涨幅"）**不要**声明成
+        `transfer`，应该用下面的 `conversion`——这是第九轮批次一
+        （资源转移一致性机制根本性改进，`next_doc/world_simulator_
+        resource_relation_consistency_fix_plan.md`）新增的强制区分，
+        之前版本没有这条边界，容易把"有代价的跨量纲转化"误声明成
+        "转移"，导致零和核对必然报出"不一致"（并不是模拟算错了，
+        是关系类型从声明起就选错了）。
+      - `"conversion"`（有代价的跨量纲转化，第九轮批次一新增）：形如
+        `{"type": "conversion", "from": "resources.cash", "to":
+        "health.physical_fitness", "note": "花钱健身"}`。用于
+        "一种资源消耗、换来另一种不同量纲的东西涨跌"，比如花钱健身、
+        花时间学习换技能、花体力换收入。`note` 可选，用于说明这层
+        换算的现实依据，供展示层显示。**这个类型永远不参与任何数值
+        核对**（不存在"变化量之和应该≈多少"的先验假设），只做
+        结构化记录，标注"这两个字段之间存在因果转化关系"，供时间线/
+        Reality Renderer 展示用；不会产生任何 `relation_violations`
+        条目。
       - `"production"`（持续产出，第八轮批次二，`next_doc/
         world_simulator_c_category_precision_upgrade_improvement_
         plan.md` 第 3 节）：形如 `{"type": "production", "field":
@@ -1017,16 +1081,38 @@ class SimManifest:
       `resource_fields` 的下限校验不同，这里没有"应该是多少"的唯一
       正确答案），不一致时记入 `SimState.relation_violations` 供
       时间线展示"不一致提示"（`transfer` 的不一致项形如
-      `{"from":..., "to":..., "delta_from":..., "delta_to":...}`；
+      `{"from":..., "to":..., "delta_from":..., "delta_to":...,
+      "checked_by": "diff"}`，`checked_by` 见下方"显式流水"说明；
       `production` 的不一致项形如 `{"kind": "production", "field":
       ..., "amount_per_step":..., "actual_delta":...}`，用 `kind`
       key 区分，未声明 `amount_per_step` 的 `production` 关系不会
-      产生任何不一致项）。留空（默认）表示不做任何检查，行为与引入
-      这个功能之前完全一致，向后兼容。由 `generate_scenario` 阶段的
-      skill 在生成初始 `vars` 时给出建议值（见 `spec_generator.
-      ScenarioDraft.resource_relations`，写法同 `resource_fields`），
-      用户在创建向导里可以看到并编辑，也可以在详情页"模拟设置"里
-      随时增删。
+      产生任何不一致项；`conversion` 永不产生不一致项）。
+
+      **`transfer` 的核对方式（第九轮批次一改进，向"流水驱动"折中）**：
+      默认仍是"整体快照差分"（对比 `current.vars`/`next_vars`，假设
+      这一步该字段的净变化全部来自这一条关系）——这个假设在该字段
+      这一步同时被别的变动影响时会失真（比如同一步 `cash` 既收到一
+      笔转移、又花掉了别的钱，净差分就不等于这条转移单独的搬运量，
+      甚至方向都可能被盖过）。为了缓解这个问题：① `advance_step`
+      阶段 skill 可以在 `resource_transfers` 里显式报告某条关系这一步
+      确实发生过（见 `SimState.resource_transfers`），报告了就直接
+      信任、跳过这条关系的差分核对，**不会**反过来拿净差分去验证这
+      份报告——这不是漏洞，是刻意的取舍：净差分之所以不可靠，正是
+      因为它可能被没有声明成 `resource_relations` 的其它变动污染，
+      继续用它去验证报告只是把同一个问题换个地方重新引入；② 没有
+      显式流水时，如果同一个 `from`/`to` 字段被两条以上
+      `resource_relations` 引用（无论 `transfer` 还是 `conversion`），
+      说明该字段这一步很可能不止一个来源在变，差分法本身已知不可靠，
+      此时自动跳过差分核对、不产生不一致项，而不是继续用一个已知
+      不成立的假设报警。这不是完整的 Event/Ledger 记账系统（参考
+      文档第二十七节的方向），只是在不改造整个推进循环的前提下，
+      向"有账就按账信任，没账才估算"迈进的一个务实折中。
+
+      留空（默认）表示不做任何检查，行为与引入这个功能之前完全
+      一致，向后兼容。由 `generate_scenario` 阶段的 skill 在生成
+      初始 `vars` 时给出建议值（见 `spec_generator.ScenarioDraft.
+      resource_relations`，写法同 `resource_fields`），用户在创建
+      向导里可以看到并编辑，也可以在详情页"模拟设置"里随时增删。
     - `multi_entity_mode`：布尔值（默认 `False`），声明这次模拟是否
       采用"多主体私有信念"结构（阶段十七，`next_doc/
       world_simulator_universal_world_model_upgrade_plan.md` 4.9 节，

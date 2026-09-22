@@ -535,8 +535,18 @@ def advance(
     # `current.vars` 对比夹值*之后*的 `next_vars`——夹值本身也是这一步
     # 真实落盘的变化量的一部分，检查应该看"最终生效的变化"，而不是
     # LLM 原始给出的、可能已经因为下限校验被修正过的值。
+    # 显式资源流水（第九轮批次一，资源转移一致性机制根本性改进）：
+    # skill 可选给出这一步实际搬运的量，报了就优先按账核对，不再
+    # 只靠"整体快照差分"反推——见 `resource_guard._check_resource_
+    # relations()` 的说明。
+    resource_transfers = [
+        dict(x) for x in (data.get("resource_transfers") or []) if isinstance(x, dict)
+    ]
     relation_violations = _check_resource_relations(
-        current.vars, next_vars, manifest.settings.get("resource_relations")
+        current.vars,
+        next_vars,
+        manifest.settings.get("resource_relations"),
+        resource_transfers,
     )
 
     # 背景角色的简单趋势外推（Hierarchical Agent，4.10 节设计草案第
@@ -578,6 +588,7 @@ def advance(
         granularity_reason=granularity_reason,
         resource_violations=resource_violations,
         relation_violations=relation_violations,
+        resource_transfers=resource_transfers,
         background_entities_applied=background_entities_applied,
         uncertain_fields=list(data.get("uncertain_fields") or []),
         key_drivers=[str(x) for x in (data.get("key_drivers") or [])],
