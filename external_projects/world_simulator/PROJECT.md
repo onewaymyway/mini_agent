@@ -3616,3 +3616,25 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   **`app.py`**：把 `stDownloadButton` 加进同一组选择器（默认态和
   `:hover` 态各加一行），不新增任何 CSS 规则、不改变已有按钮的样式，
   纯粹是让下载按钮补齐到同一条规则里。
+
+- 2026-09-23（第十五轮阶段一）：**字段变化台账（`field_ledger`）——
+  数据结构 + 校验算法**，按 `next_doc/
+  world_simulator_fifteenth_round_field_ledger_plan.md`，用户要求
+  给模拟推进的每一步补一份审计级"资源/指标变化记账表"，本阶段先
+  落地数据结构与校验函数，展示层/workflow 提示/反馈修正循环留给
+  后续阶段。
+  1. **`world_simulator/state_model.py`**：`SimState` 新增
+     `field_ledger`（逐笔记账流水，`field`/`kind`/`amount`/
+     `value_before`/`value_after`/`reason`）、`ledger_violations`
+     （审计不一致提示，五种 `issue`）两个字段，含详细 docstring +
+     `from_dict` 解析；`SimManifest.settings` 新增
+     `tracked_ledger_fields`（动态追踪字段集合，初始 = `resource_
+     fields`，随记账自动扩展、只增不减）的字段说明。
+  2. **`world_simulator/engine/resource_guard.py`**：新增
+     `_check_field_ledger()`（归一化 + 按字段分组 + 首笔/逐笔算术/
+     链式连续性/末笔核对 + 未记账变化检查，`_tolerant_equal()` 统一
+     1% 相对容差）、`_auto_register_ledger_fields()`（写法同
+     `causal_lines` 自动登记）。均为纯函数，尚未接入 `advance.py`
+     主流程（下一阶段接入）。
+  默认空列表/空集合，`field_ledger`/`tracked_ledger_fields` 未使用
+  时行为与改动前完全一致，向后兼容。

@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 
 def _normalize_resource_fields(raw: Any) -> list:
@@ -341,3 +341,211 @@ def _check_resource_relations(
                     }
                 )
     return violations
+
+
+def _tolerant_equal(expected: Any, actual: Any) -> bool:
+    """判断两个数值在"1% 相对容差 + 极小绝对值下限"内是否相等
+    （第十五轮，`next_doc/world_simulator_fifteenth_round_field_
+    ledger_plan.md` 3.3 节"容差"小节）：`max(1e-6, abs(期望值) * 0.01)`。
+    数值越大，允许的绝对误差也越大，能容忍 LLM 正常的估算/取整
+    误差，但百分之几以上的明显算错、方向搞反仍然会被抓出来。
+    """
+    try:
+        expected_f = float(expected)
+        actual_f = float(actual)
+    except (TypeError, ValueError):
+        return False
+    allowed = max(1e-6, abs(expected_f) * 0.01)
+    return abs(expected_f - actual_f) <= allowed
+
+
+def _normalize_field_ledger(raw: Any) -> List[Dict[str, Any]]:
+    """把 skill 给出的原始 `field_ledger`（见 `state_model.SimState.
+    field_ledger` 的格式说明）归一化：只保留 `field`/`kind`/`amount`
+    三者齐全、`amount` 可解析为非负数的记录；`kind` 只认
+    `increase`/`decrease`，其它值归一化为 `decrease`（同项目一贯的
+    "未知取值退化为默认档"规则）；`value_before`/`value_after`/
+    `reason` 原样透传（缺失时分别退化成 `None`/`None`/空字符串）。
+    完全无法解析（缺 `field` 或 `amount` 非数字）的记录直接丢弃，不
+    计入展示也不计入校验（noise，不是有效审计记录）。
+    """
+    normalized: List[Dict[str, Any]] = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        field_path = str(item.get("field") or "").strip()
+        if not field_path:
+            continue
+        amount = item.get("amount")
+        if not isinstance(amount, (int, float)) or isinstance(amount, bool):
+            continue
+        amount = abs(float(amount))
+        kind = item.get("kind") if item.get("kind") in ("increase", "decrease") else "decrease"
+        normalized.append(
+            {
+                "field": field_path,
+                "kind": kind,
+                "amount": amount,
+                "value_before": item.get("value_before"),
+                "value_after": item.get("value_after"),
+                "reason": str(item.get("reason") or ""),
+            }
+        )
+    return normalized
+
+
+def _group_ledger_by_field(entries: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """按 `field` 分组，组内保持原始顺序（假定是这一步内发生的时间
+    顺序），供 `_check_field_ledger()` 做逐字段的连续性核对。"""
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for entry in entries:
+        grouped.setdefault(entry["field"], []).append(entry)
+    return grouped
+
+
+def _check_field_ledger(
+    current_vars: Dict[str, Any],
+    next_vars: Dict[str, Any],
+    field_ledger_raw: Any,
+    tracked_ledger_fields: Any = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """对 `field_ledger`（字段变化台账）做审计级一致性校验（第十五轮，
+    `next_doc/world_simulator_fifteenth_round_field_ledger_plan.md`
+    3.3 节）。
+
+    输入 `current_vars`（本步开始前）、`next_vars`（本步最终落盘值，
+    已完成资源下限校验夹值）、原始 `field_ledger`、
+    `tracked_ledger_fields`（见 `SimManifest.settings.tracked_ledger_
+    fields` 的说明，含 `resource_fields` 并集）。
+
+    校验步骤：
+    1. 归一化（见 `_normalize_field_ledger()`），按 `field` 分组。
+    2. 对每个分组：
+       a. 首笔 `value_before` 是否等于 `current_vars` 里该字段的实际
+          值；不等 → `start_mismatch`。
+       b. 逐笔检查 `value_after` 是否等于 `value_before ± amount`
+          （`increase` 用加、`decrease` 用减）；不等 →
+          `arithmetic_mismatch`。
+       c. 逐笔检查本笔 `value_before` 是否等于上一笔 `value_after`
+          （第一笔跳过，已在 a 检查过）；不等 → `chain_broken`。
+       d. 末笔 `value_after` 是否等于 `next_vars` 里该字段的最终值；
+          不等 → `end_mismatch_with_actual`。
+       非数值字段（`value_before`/`value_after` 无法解析为
+       `int`/`float`）跳过算术校验（a/b/c/d 全部跳过），不因为"不是
+       数字"本身报违规——当前版本只处理数值型字段。
+    3. 对 `tracked_ledger_fields` 里的每个字段：如果 `current_vars`
+       与 `next_vars` 里的值不同（超出 `_tolerant_equal()` 容差），
+       但这个字段完全没有出现在归一化后的分组里 →
+       `unaccounted_resource_change`。
+
+    返回 `(归一化后的 field_ledger 列表, ledger_violations 列表)`。
+    容差统一使用 `_tolerant_equal()`（1% 相对容差 + 极小绝对值下限）。
+    """
+    normalized = _normalize_field_ledger(field_ledger_raw)
+    grouped = _group_ledger_by_field(normalized)
+    violations: List[Dict[str, Any]] = []
+
+    for field_path, entries in grouped.items():
+        numeric_ok = True
+        for entry in entries:
+            vb, va = entry["value_before"], entry["value_after"]
+            if not isinstance(vb, (int, float)) or isinstance(vb, bool):
+                numeric_ok = False
+                break
+            if not isinstance(va, (int, float)) or isinstance(va, bool):
+                numeric_ok = False
+                break
+        if not numeric_ok:
+            continue
+
+        first = entries[0]
+        actual_start = _get_nested(current_vars, field_path)
+        if isinstance(actual_start, (int, float)) and not isinstance(actual_start, bool):
+            if not _tolerant_equal(actual_start, first["value_before"]):
+                violations.append(
+                    {
+                        "field": field_path,
+                        "issue": "start_mismatch",
+                        "expected": actual_start,
+                        "actual": first["value_before"],
+                    }
+                )
+
+        prev_after = None
+        for i, entry in enumerate(entries):
+            vb = float(entry["value_before"])
+            va = float(entry["value_after"])
+            amount = entry["amount"]
+            expected_after = vb + amount if entry["kind"] == "increase" else vb - amount
+            if not _tolerant_equal(expected_after, va):
+                violations.append(
+                    {
+                        "field": field_path,
+                        "issue": "arithmetic_mismatch",
+                        "expected": expected_after,
+                        "actual": va,
+                    }
+                )
+            if i > 0 and not _tolerant_equal(prev_after, vb):
+                violations.append(
+                    {
+                        "field": field_path,
+                        "issue": "chain_broken",
+                        "expected": prev_after,
+                        "actual": vb,
+                    }
+                )
+            prev_after = va
+
+        last = entries[-1]
+        actual_end = _get_nested(next_vars, field_path)
+        if isinstance(actual_end, (int, float)) and not isinstance(actual_end, bool):
+            if not _tolerant_equal(actual_end, last["value_after"]):
+                violations.append(
+                    {
+                        "field": field_path,
+                        "issue": "end_mismatch_with_actual",
+                        "expected": last["value_after"],
+                        "actual": actual_end,
+                    }
+                )
+
+    tracked_fields = [str(f).strip() for f in (tracked_ledger_fields or []) if str(f).strip()]
+    for field_path in tracked_fields:
+        if field_path in grouped:
+            continue
+        before = _get_nested(current_vars, field_path)
+        after = _get_nested(next_vars, field_path)
+        if not isinstance(before, (int, float)) or isinstance(before, bool):
+            continue
+        if not isinstance(after, (int, float)) or isinstance(after, bool):
+            continue
+        if _tolerant_equal(before, after):
+            continue
+        violations.append(
+            {
+                "field": field_path,
+                "issue": "unaccounted_resource_change",
+                "expected": before,
+                "actual": after,
+            }
+        )
+
+    return normalized, violations
+
+
+def _auto_register_ledger_fields(tracked_ledger_fields: Any, field_ledger: List[Dict[str, Any]]) -> List[str]:
+    """把这一步 `field_ledger` 里实际出现过的字段自动并入
+    `manifest.settings.tracked_ledger_fields`（第十五轮 3.2 节），写法
+    与 `causal_lines._auto_register_causal_lines()` 一致——发现即登记，
+    不要求提前声明。只增不减，按原有顺序去重、新字段追加在后面。
+    """
+    existing = [str(f).strip() for f in (tracked_ledger_fields or []) if str(f).strip()]
+    seen = set(existing)
+    result = list(existing)
+    for entry in field_ledger or []:
+        field_path = str(entry.get("field") or "").strip()
+        if field_path and field_path not in seen:
+            seen.add(field_path)
+            result.append(field_path)
+    return result

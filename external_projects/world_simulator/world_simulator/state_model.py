@@ -365,6 +365,59 @@ class SimState:
     完全可靠的差分估算兜底，是向"流水驱动"方向的一个务实折中，而
     不是完整实现。
     """
+    field_ledger: List[Dict[str, Any]] = field(default_factory=list)
+    """产生*本状态*这一步，skill 可选给出的"字段变化台账"（第十五轮，
+    `next_doc/world_simulator_fifteenth_round_field_ledger_plan.md`）：
+    审计级的逐笔记账流水，覆盖货币类资源，也覆盖技术指标、声望值等
+    任意 `vars` 里的数值型字段变化——不要求字段提前声明为
+    `resource_fields`。
+
+    每一项形如 `{"field": "resources.cash", "kind": "increase",
+    "amount": 500, "value_before": 1000, "value_after": 1500,
+    "reason": "签下新客户，预付款到账"}`：
+
+    - `field`：`vars` 路径（支持一层嵌套，写法同 `resource_fields`）。
+    - `kind`：`"increase"`（增加）| `"decrease"`（减少）；不认识的取值
+      按现有"未知取值退化为默认档"的一贯规则归一化为 `"decrease"`。
+    - `amount`：非负数，本笔变动的幅度，方向由 `kind` 决定。
+    - `value_before`/`value_after`：这笔记录发生前/后该字段的值——
+      是本轮新增的审计要素，让每一笔记录自带"能否对上账"的验证依据，
+      而不是只有一个孤立的变化量。
+    - `reason`：一句话说明具体做了什么/为什么发生这笔变化。
+
+    一步可以有 0～N 条记录（和 `key_drivers` 一样"稀疏声明"，平淡的
+    一步可以完全没有）。落盘前会经过 `resource_guard._check_field_
+    ledger()` 归一化（丢弃 field/amount 缺失或无法解析的记录）并做
+    一致性校验，产生 `ledger_violations`；如果校验发现不一致，engine
+    会先尝试一次反馈修正调用（见 `ledger_violations` 说明），这里
+    落盘的是修正之后的最终版本。默认空列表：skill 没给出、旧数据、
+    模板未使用这个机制时都可以为空，不影响任何已有行为，向后兼容。
+    """
+    ledger_violations: List[Dict[str, Any]] = field(default_factory=list)
+    """产生*本状态*这一步，`resource_guard._check_field_ledger()` 对
+    `field_ledger` 做审计一致性核对时发现、且经过一次反馈修正调用之后
+    仍然存在的不一致项（第十五轮）。
+
+    每一项形如 `{"field": "resources.cash", "issue":
+    "end_mismatch_with_actual", "expected": 1500, "actual": 1400}`：
+    `issue` 取值 `start_mismatch`（首笔 `value_before` 与实际起始值
+    不符）/`chain_broken`（同一字段相邻两笔账目不连续）/
+    `arithmetic_mismatch`（某笔自身 `value_before ± amount` 算不出
+    `value_after`）/`end_mismatch_with_actual`（末笔 `value_after` 与
+    这一步最终落盘值不符）/`unaccounted_resource_change`
+    （`manifest.settings.tracked_ledger_fields` 里的字段这一步实际
+    变化了，却完全没有对应的 `field_ledger` 记录）。
+
+    **只提示、不阻断推进、不修改任何数值**——engine 发现不一致后会
+    先发起一次范围有限的修正调用（把违规详情连同原始记账一起喂给
+    LLM，要求只修正有问题的字段，见 `advance.py` 里 `ledger_
+    correction` workflow 的调用逻辑），修正后重新校验一次；这里落盘
+    的是修正一次之后仍然剩余的不一致（如果修正调用本身失败或修正后
+    依然对不上，就原样保留），供时间线展示"系统已尝试自动修正、以下
+    是仍未解决的问题"，保持透明而不是静默隐藏或无限重试。默认空
+    列表：没有触发任何不一致、`field_ledger` 为空、旧数据都可以为
+    空，不影响任何已有行为，向后兼容。
+    """
     background_entities_applied: List[str] = field(default_factory=list)
     """产生*本状态*这一步，`engine.py::advance()` 按
     `manifest.settings.background_entities` 声明、用简单线性趋势外推
@@ -875,6 +928,12 @@ class SimState:
             resource_transfers=[
                 dict(x) for x in (data.get("resource_transfers") or []) if isinstance(x, dict)
             ],
+            field_ledger=[
+                dict(x) for x in (data.get("field_ledger") or []) if isinstance(x, dict)
+            ],
+            ledger_violations=[
+                dict(x) for x in (data.get("ledger_violations") or []) if isinstance(x, dict)
+            ],
             background_entities_applied=[
                 str(x) for x in (data.get("background_entities_applied") or [])
             ],
@@ -968,6 +1027,19 @@ class SimManifest:
       初始 `vars` 时给出建议值（见 `spec_generator.ScenarioDraft.
       resource_fields`），用户在创建向导里可以看到并编辑，也可以在
       详情页的"模拟设置"里随时增删。
+    - `tracked_ledger_fields`：字符串数组，第十五轮（`next_doc/
+      world_simulator_fifteenth_round_field_ledger_plan.md` 3.2 节）
+      新增，"哪些字段必须有 `SimState.field_ledger` 记账"的动态集合
+      ——不局限于创建时声明的 `resource_fields`，只要某个字段在
+      `field_ledger` 里出现过一次记账记录（不限资源类），下一步开始
+      它就会被自动并入这个集合（`resource_guard._auto_register_
+      ledger_fields()`，写法与 `causal_lines` 的自动登记一致）。初始
+      值 = `resource_fields` 里声明的字段名；这个集合只增不减，不提供
+      手动移出的入口。`resource_guard._check_field_ledger()` 用它判断
+      "这个字段变了却没有对应记账记录"（`unaccounted_resource_change`
+      不一致项），不直接用 `resource_fields`。留空（默认）等价于只
+      追踪 `resource_fields` 声明过的字段，行为与未引入这个功能之前
+      完全一致，向后兼容。
     - `objectives`：列表，声明这次模拟"主要关心的指标"（阶段十二，
       `next_doc/world_simulator_universal_world_model_upgrade_plan.md`
       4.4 节 Problem Compiler 雏形；阶段十四，4.6 节目标驱动排序）。
