@@ -3763,3 +3763,72 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
      行为的场景。
   **验收**：`pytest tests/`（614 passed，含本轮新增/修改的 5 个
   用例），未见回归。
+
+- 2026-09-23（第十七轮，用户对话里确认方向、未单独立项 next_doc）：
+  **"完全独立的外部服务"封装——`tool_api.py` + HTTP + CLI**，目标是
+  让外部调用方（未来主 agent、脚本、别的服务）不需要打开 Streamlit
+  看板、也不需要知道 `cfg`/`workspace_root` 这些内部实现细节，就能
+  创建/推进/查询/管理模拟实例。三层结构见
+  `docs/service_api.md`：`tool_api.py`（唯一承载业务逻辑）→
+  `server.py`（HTTP 外壳）/`service_cli.py`（命令行外壳），后两者
+  只做参数适配 + JSON 序列化，不重复业务判断。
+  1. **`world_simulator/tool_api.py`**：把 `world_simulator.engine`
+     的公开函数（`create_simulation`/`advance`/`fast_forward`/
+     `list_simulations`/`get_simulation`/`set_status`/
+     `set_pilot_config`/`update_settings`/`rename_simulation`/
+     `delete_simulation`/`apply_structural_change`/
+     `accept_suggested_causal_line`/`reject_suggested_causal_line`）
+     加上 `html_export.export_simulation_html()`，逐个包成入参只用
+     基本类型、返回统一 `{"ok": ..., "data"/"error": ...}` 结构、
+     **绝不对外抛异常**的版本。异常映射：`SimNotFoundError` →
+     `not_found`；`SimEngineError`/`OwnedVarsOverlapError` →
+     `engine_error`；`ScenarioGenerationError` → `generation_error`；
+     `load_llm_cfg()` 因缺 `mini_agent` 框架抛 `ImportError` →
+     `environment_error`；本层自己的参数校验（空 `sim_id`/非法
+     `pilot_mode`/非 dict 的 `updates` 等）→ `validation_error`；
+     兜底 `internal_error`。`list_simulations()` 只返回精简字段集
+     （不带 `settings`/`autopilot`），避免主 agent 一次列出很多实例
+     时把上下文撑爆；`get_simulation()` 默认不带历史，
+     `include_history=True` 才附带且可以用 `history_limit` 限制条数；
+     `fast_forward_simulation()` 的 `skipped_states` 只给
+     `step`/`summary` 摘要，同样是为了控制返回体积。`cfg` 通过
+     `load_llm_cfg()` 惰性加载后进程内缓存，外部调用方的请求参数里
+     完全不出现任何 LLM 配置/密钥。
+  2. **`world_simulator/service_cli.py`**：`python -m world_simulator.
+     service_cli <子命令>`，每个子命令 1:1 对应 `tool_api.py` 的一个
+     函数，统一单行 JSON 打到 stdout（`--pretty` 可选缩进），成功
+     `exit 0`/失败 `exit 1`；`delete` 子命令要求显式 `--yes` 才会
+     真正执行（不可逆操作，这一层加一道命令行侧确认，`tool_api.py`
+     本身不做二次确认，保持"业务层不管调用方要不要有确认交互"这个
+     职责边界）；`--settings`/`--updates`/`--autopilot` 这类 JSON
+     参数解析失败时在进入 `tool_api.py` 之前就报错，不把错误的值
+     传下去。不需要额外依赖，跟随 `requirements.txt` 即可用。
+  3. **`world_simulator/server.py`**：`python -m world_simulator.
+     server [--host --port --reload]` 或
+     `uvicorn world_simulator.server:app`；`fastapi`/`uvicorn` 是
+     可选依赖（新增 `requirements-server.txt`，不进主
+     `requirements.txt`，CLI/看板都不需要），缺依赖时给出清晰的安装
+     提示而不是裸 `ModuleNotFoundError`。路由按 REST 风格组织
+     （`POST /simulations`、`POST /simulations/{sim_id}/advance` 等，
+     完整列表见 `docs/service_api.md`），`ok=False` 时按
+     `error.type` 映射 HTTP 状态码（400/404/409/502/503/500），响应体
+     始终是同一份 `tool_api.py` 返回值，不因状态码不同变换结构；
+     额外提供 `GET /simulations/{sim_id}/export.html` 直接返回
+     `text/html`（不需要先解析 JSON 再取 `html` 字段）。暂不内置
+     鉴权（同机/内网场景优先，公网部署建议在前面挂反向代理）。
+  4. **`docs/service_api.md`**（新增，`docs/README.md` 加了索引项）：
+     面向外部调用方的使用文档——命令行示例、HTTP 路由表、和
+     `entrypoints/*.py`（daemon 定时调度场景，用途不同、可以共存）的
+     区别。
+  5. **测试**：`tests/test_tool_api.py`（24 个用例，覆盖不需要 LLM
+     的全部函数用真实 `materialize_simulation()` 落盘的实例做
+     fixture，需要 LLM 的函数覆盖参数校验路径 + 复用
+     `test_spec_and_engine.py` 的 `FakeRunner` 手法验证 happy
+     path/`SimEngineError` 正确映射成 `engine_error`）、
+     `tests/test_service_cli.py`（8 个用例，全部对 `tool_api.py`
+     打桩，只测这一层自己的参数适配/JSON 输出/退出码职责）、
+     `tests/test_server.py`（10 个用例，同样对 `tool_api.py` 打桩，
+     `fastapi` 未安装时用 `pytest.importorskip` 整份跳过，不让"要不要
+     跑 HTTP 服务"这个可选能力拖累主测试套件必须装 `fastapi`）。
+  **验收**：`pytest tests/`（656 passed，含本轮新增 42 个用例），未见
+  回归。

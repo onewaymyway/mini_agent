@@ -1,0 +1,8 @@
+# requirements-server.txt — 只有要跑 `world_simulator/server.py`（HTTP
+# 服务模式）才需要装这里的依赖；CLI（`service_cli.py`）和 Streamlit
+# 看板（`app.py`）都不需要，见 `requirements.txt`。
+#
+#   pip install -r requirements.txt -r requirements-server.txt
+#
+fastapi>=0.110.0
+uvicorn>=0.27.0

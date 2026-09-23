@@ -6,3 +6,7 @@ graphviz>=0.19.0
 # 用到 `st.graphviz_chart()`，Streamlit 要求额外安装这个包才能渲染
 # DOT 字符串（不装的话这一个子视图会报错，列表视图/其它功能不受
 # 影响）。
+#
+# HTTP 服务模式（`world_simulator/server.py`）需要额外的 fastapi/
+# uvicorn，是可选依赖，不写在这里——见同目录 `requirements-server.txt`。
+# CLI 模式（`world_simulator/service_cli.py`）不需要任何额外依赖。
