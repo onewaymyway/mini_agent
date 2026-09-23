@@ -3677,3 +3677,40 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   不带路径分隔符的示例字段名）。展示层（`app.py`/`html_export.py`）
   和正式的记账校验/自动登记单测（`tests/test_spec_and_engine.py`）
   留给后续阶段。
+
+- 2026-09-23（第十五轮阶段三）：**字段变化台账——展示层（模拟界面 +
+  导出网页）+ 单测**，按 `next_doc/
+  world_simulator_fifteenth_round_field_ledger_plan.md` 3.6 节，收尾
+  本轮功能，接入阶段一/二已经落地的数据结构与校验/修正逻辑。
+  1. **`app.py`**：新增 `_field_ledger_html()` / `_ledger_violations_
+     html()` 两个 helper，接入 `_render_timeline()`（新增
+     `resource_fields` 可选参数，决定记账表格里字段用 💰（资源类）
+     还是 📈/📉（其它数值指标）图标，两处调用点都传入
+     `manifest.settings.get("resource_fields")`）；不放进 expander，
+     和 `key_drivers`/`causal_links` 等其它"核心信息"小节一样直接
+     展示；`THEME_CSS` 新增 `.ws-chapter-ledger`/`.ws-ledger-table`/
+     `.ws-ledger-increase`/`.ws-ledger-decrease`/`.ws-chapter-ledger-
+     violation` 样式（增加用 `--ws-success`，减少用 `--ws-danger`，
+     不新增第三套配色体系）。
+  2. **`world_simulator/html_export.py`**：独立实现一份同名 helper
+     （延续"导出模块独立实现一份格式化逻辑、不 import app.py"的既有
+     约定），接入 `_render_state_card()`/`_render_timeline()`（同样
+     新增 `resource_fields` 参数，从 `manifest.settings` 读取并透传）；
+     `_PAGE_CSS` 补充同款样式类，顺带补上此前缺失的 `--ws-success`
+     CSS 变量（之前导出页只有 `--ws-danger`，没有成功色变量）。
+  3. 两处渲染逻辑保持一致：没有记账记录、也没有（修正后仍剩余的）
+     不一致提示的步骤，对应小节都不出现，不留空标题，和
+     `key_drivers`/`causal_links` 现有处理方式一致；不一致提示措辞
+     明确写"系统已尝试自动修正一次……不代表系统还会继续纠正"，避免
+     用户误以为还会自动再改。
+  4. **`tests/test_html_export.py`**：新增 4 个用例——正常记账渲染
+     （资源字段用 💰、非资源字段用 📈，变化前→变化后+原因都要出现）、
+     没有记账记录时小节不出现、`ledger_violations` 渲染 + 透明修正
+     措辞、有记账但无不一致时提示小节不出现。
+  **验收**：`tests/test_html_export.py` 全量通过（17 passed，含本轮
+  新增 4 个）。`app.py` 侧渲染函数与导出模块逐一对应、手工核对逻辑
+  一致，未新增可独立跑的 Streamlit UI 测试（沿用项目里
+  Streamlit 界面代码一贯不做渲染层单测、只测导出模块的既有做法）。
+  至此第十五轮 `field_ledger` 全部计划内容（3.1～3.6 节）落地完成，
+  3.7 节的非数值 `transition` 扩展仍按计划留待后续有实际需求时再
+  立项。

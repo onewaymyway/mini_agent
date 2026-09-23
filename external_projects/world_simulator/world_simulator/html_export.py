@@ -654,7 +654,94 @@ def _option_text_by_id(state: SimState, option_id: Optional[str]) -> Optional[st
     return None
 
 
-def _render_state_card(prev: Optional[SimState], state: SimState) -> str:
+def _field_ledger_html(state: SimState, resource_fields: Optional[List[str]] = None) -> str:
+    """导出网页版「记账」表格（第十五轮，3.6 节，可能为空）。逻辑与
+    `app.py::_field_ledger_html()` 保持一致，独立实现一份（延续"导出
+    模块独立实现一份格式化逻辑、不 import app.py"的既有约定）。
+    """
+    entries = getattr(state, "field_ledger", None) or []
+    if not entries:
+        return ""
+    resource_set = set()
+    for item in resource_fields or []:
+        if isinstance(item, str):
+            resource_set.add(item.strip())
+        elif isinstance(item, dict):
+            name = str(item.get("field") or "").strip()
+            if name:
+                resource_set.add(name)
+    rows = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        field_name = str(entry.get("field", ""))
+        kind = entry.get("kind")
+        amount = entry.get("amount")
+        value_before = entry.get("value_before")
+        value_after = entry.get("value_after")
+        reason = str(entry.get("reason", ""))
+        is_increase = kind == "increase"
+        is_resource = field_name in resource_set
+        if is_resource:
+            label = "💰 收入" if is_increase else "💰 支出"
+        else:
+            label = "📈 提升" if is_increase else "📉 下降"
+        sign = "+" if is_increase else "-"
+        css_class = "ws-ledger-increase" if is_increase else "ws-ledger-decrease"
+        rows.append(
+            f"<tr><td>{_esc(field_name)}</td>"
+            f'<td class="{css_class}">{_esc(label)} {sign}{_esc(amount)}</td>'
+            f"<td>{_esc(value_before)} → {_esc(value_after)}</td>"
+            f"<td>{_esc(reason)}</td></tr>"
+        )
+    if not rows:
+        return ""
+    return (
+        '<div class="ws-chapter-ledger"><div class="ws-chapter-ledger-title">📒 记账</div>'
+        '<table class="ws-ledger-table"><thead><tr><th>字段</th><th>类型</th>'
+        f"<th>变化前 → 变化后</th><th>原因</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
+    )
+
+
+def _ledger_violations_html(state: SimState) -> str:
+    """导出网页版「修正一次之后仍剩余的记账不一致」提示（第十五轮，
+    3.6 节，可能为空），逻辑与 `app.py` 对应函数保持一致。"""
+    violations = getattr(state, "ledger_violations", None) or []
+    if not violations:
+        return ""
+    issue_labels = {
+        "start_mismatch": "首笔起始值与实际不符",
+        "chain_broken": "同一字段账目不连续",
+        "arithmetic_mismatch": "单笔加减算不出声明的变化后值",
+        "end_mismatch_with_actual": "末笔变化后值与最终实际值不符",
+        "unaccounted_resource_change": "字段发生了变化，但没有对应记账记录",
+    }
+    rows = []
+    for v in violations:
+        if not isinstance(v, dict):
+            continue
+        field_name = _esc(v.get("field", ""))
+        issue = str(v.get("issue", ""))
+        issue_label = issue_labels.get(issue, issue)
+        expected = v.get("expected")
+        actual = v.get("actual")
+        detail = (
+            f"（期望 {_esc(expected)}，实际 {_esc(actual)}）"
+            if expected is not None or actual is not None else ""
+        )
+        rows.append(f"<li>「{field_name}」{_esc(issue_label)}{detail}</li>")
+    if not rows:
+        return ""
+    return (
+        '<div class="ws-chapter-ledger-violation">'
+        "⚠ 系统已尝试自动修正一次，以下是修正后仍未解决的记账不一致，"
+        f"不代表系统还会继续纠正：<ul>{''.join(rows)}</ul></div>"
+    )
+
+
+def _render_state_card(
+    prev: Optional[SimState], state: SimState, resource_fields: Optional[List[str]] = None
+) -> str:
     time_label = state.time_label or f"第 {state.step} 步"
     granularity_note = ""
     if state.time_granularity:
@@ -724,6 +811,9 @@ def _render_state_card(prev: Optional[SimState], state: SimState) -> str:
             f'<div class="ws-chapter-relation-violation">资源转移不一致提示<ul>{rows}</ul></div>'
         )
 
+    ledger_html = _field_ledger_html(state, resource_fields)
+    ledger_violations_html = _ledger_violations_html(state)
+
     major_class = " ws-chapter-major" if state.major_decision else ""
     major_badge = ' <span class="ws-pill ws-pill-major">重大决策</span>' if state.major_decision else ""
 
@@ -737,18 +827,20 @@ def _render_state_card(prev: Optional[SimState], state: SimState) -> str:
       {causal_links_html}
       {capabilities_html}
       {violations_html}
+      {ledger_html}
+      {ledger_violations_html}
     </div>
     """
 
 
-def _render_timeline(history: List[SimState]) -> str:
+def _render_timeline(history: List[SimState], resource_fields: Optional[List[str]] = None) -> str:
     ordered = sorted(history, key=lambda s: s.step)  # 显式正序，即便入参
     # 已经是正序也不依赖调用方保证（`store.load_history()` 目前确实是
     # 按落盘顺序返回，等价于正序，但这里不假设这个隐含前提）。
     cards = []
     prev: Optional[SimState] = None
     for state in ordered:
-        cards.append(_render_state_card(prev, state))
+        cards.append(_render_state_card(prev, state, resource_fields))
         prev = state
     body = "".join(cards) or '<p class="ws-muted">这条分支还没有任何推进记录。</p>'
     return f"""
@@ -833,6 +925,7 @@ _PAGE_CSS = """
     --ws-accent: #e8b559;
     --ws-violet: #8c7ae6;
     --ws-danger: #e2726e;
+    --ws-success: #6fcf97;
 }
 body {
     background: radial-gradient(circle at 20% 0%, #1a1830 0%, var(--ws-bg) 55%);
@@ -872,6 +965,20 @@ h1, h2, h3 { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif
 .ws-chapter-narrative { color: var(--ws-text-muted); font-size: 0.92rem; }
 .ws-chapter-choice { margin-top: 0.4rem; font-size: 0.86rem; color: var(--ws-violet); }
 .ws-chapter-resource-violation, .ws-chapter-relation-violation {
+    margin-top: 0.4rem; font-size: 0.82rem; color: var(--ws-danger); font-weight: 600;
+}
+.ws-chapter-ledger { margin-top: 0.4rem; }
+.ws-chapter-ledger-title {
+    font-size: 0.82rem; font-weight: 600; color: var(--ws-text-muted); margin-bottom: 0.15rem;
+}
+.ws-ledger-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.ws-ledger-table th, .ws-ledger-table td {
+    text-align: left; padding: 0.2rem 0.4rem; border-bottom: 1px solid var(--ws-border);
+}
+.ws-ledger-table th { color: var(--ws-text-muted); font-weight: 600; }
+.ws-ledger-increase { color: var(--ws-success); font-weight: 600; }
+.ws-ledger-decrease { color: var(--ws-danger); font-weight: 600; }
+.ws-chapter-ledger-violation {
     margin-top: 0.4rem; font-size: 0.82rem; color: var(--ws-danger); font-weight: 600;
 }
 .ws-pill {
@@ -946,7 +1053,7 @@ def export_simulation_html(data_dir: Path, sim_id: str, branch: str = "main") ->
             _render_header(manifest, branch, branches_detailed),
             _render_input_and_background(manifest, state0),
             _render_causal_overview(manifest, history),
-            _render_timeline(history),
+            _render_timeline(history, (manifest.settings or {}).get("resource_fields")),
             _render_retrospectives(data_dir, sim_id, branch),
         ]
     )

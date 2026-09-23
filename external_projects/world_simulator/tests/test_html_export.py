@@ -310,3 +310,128 @@ def test_html_escapes_user_supplied_free_text(tmp_path):
     html = he.export_simulation_html(tmp_path, sim_id)
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;" in html
+
+
+def test_field_ledger_renders_table_with_resource_and_non_resource_icons(tmp_path):
+    """第十五轮阶段三（3.6 节）：记账表格要展示字段/类型（含图标）/
+    变化前→变化后/原因；`resource_fields` 声明过的字段用 💰，其它数值
+    指标用 📈/📉，同一套底层数据结构。"""
+    sim_id = "sim_ledger"
+    store = SimStore.for_root(tmp_path, sim_id)
+    store.save_manifest(_make_manifest(sim_id, resource_fields=["cash"]))
+    store.append_state(SimState(step=0, summary="起点", vars={"cash": 1000, "tech": 60}))
+    store.append_state(
+        SimState(
+            step=1,
+            summary="签单 + 调优",
+            vars={"cash": 1500, "tech": 65},
+            field_ledger=[
+                {
+                    "field": "cash",
+                    "kind": "increase",
+                    "amount": 500,
+                    "value_before": 1000,
+                    "value_after": 1500,
+                    "reason": "签下新客户，预付款到账",
+                },
+                {
+                    "field": "tech",
+                    "kind": "increase",
+                    "amount": 5,
+                    "value_before": 60,
+                    "value_after": 65,
+                    "reason": "完成一轮模型调优",
+                },
+            ],
+        )
+    )
+
+    html = he.export_simulation_html(tmp_path, sim_id)
+    assert "📒 记账" in html
+    assert "💰 收入" in html  # cash 声明为 resource_fields，用资源措辞
+    assert "📈 提升" in html  # tech 未声明，用非资源指标措辞
+    assert "签下新客户，预付款到账" in html
+    assert "完成一轮模型调优" in html
+    assert "1000" in html and "1500" in html
+    assert "60" in html and "65" in html
+
+
+def test_field_ledger_absent_when_no_entries(tmp_path):
+    """没有记账记录的步骤，「记账」小节整体不出现，不留空标题——同
+    `key_drivers`/`causal_links` 现有处理方式一致（3.6 节末尾要求）。"""
+    sim_id = "sim_ledger_empty"
+    store = SimStore.for_root(tmp_path, sim_id)
+    store.save_manifest(_make_manifest(sim_id))
+    store.append_state(SimState(step=0, summary="起点", vars={"cash": 1000}))
+    store.append_state(SimState(step=1, summary="平淡的一步", vars={"cash": 1000}))
+
+    html = he.export_simulation_html(tmp_path, sim_id)
+    assert "📒 记账" not in html
+
+
+def test_ledger_violations_render_with_transparent_correction_notice(tmp_path):
+    """修正一次之后仍剩余的 `ledger_violations` 要在表格下方用醒目
+    提示列出，措辞要写清楚"已尝试自动修正一次"（3.6 节）。"""
+    sim_id = "sim_ledger_violation"
+    store = SimStore.for_root(tmp_path, sim_id)
+    store.save_manifest(_make_manifest(sim_id, resource_fields=["cash"]))
+    store.append_state(SimState(step=0, summary="起点", vars={"cash": 1000}))
+    store.append_state(
+        SimState(
+            step=1,
+            summary="账没对上",
+            vars={"cash": 1400},
+            field_ledger=[
+                {
+                    "field": "cash",
+                    "kind": "increase",
+                    "amount": 500,
+                    "value_before": 1000,
+                    "value_after": 1500,
+                    "reason": "签下新客户",
+                }
+            ],
+            ledger_violations=[
+                {
+                    "field": "cash",
+                    "issue": "end_mismatch_with_actual",
+                    "expected": 1500,
+                    "actual": 1400,
+                }
+            ],
+        )
+    )
+
+    html = he.export_simulation_html(tmp_path, sim_id)
+    assert "已尝试自动修正一次" in html
+    assert "末笔变化后值与最终实际值不符" in html
+    assert "1500" in html and "1400" in html
+
+
+def test_field_ledger_and_violations_absent_when_empty(tmp_path):
+    """没有不一致提示的步骤，提示小节也不出现（即便有正常记账）。"""
+    sim_id = "sim_ledger_no_violation"
+    store = SimStore.for_root(tmp_path, sim_id)
+    store.save_manifest(_make_manifest(sim_id, resource_fields=["cash"]))
+    store.append_state(SimState(step=0, summary="起点", vars={"cash": 1000}))
+    store.append_state(
+        SimState(
+            step=1,
+            summary="正常记账",
+            vars={"cash": 1500},
+            field_ledger=[
+                {
+                    "field": "cash",
+                    "kind": "increase",
+                    "amount": 500,
+                    "value_before": 1000,
+                    "value_after": 1500,
+                    "reason": "签下新客户",
+                }
+            ],
+        )
+    )
+
+    html = he.export_simulation_html(tmp_path, sim_id)
+    assert "📒 记账" in html
+    assert "已尝试自动修正一次" not in html

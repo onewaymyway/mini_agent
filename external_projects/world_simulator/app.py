@@ -216,6 +216,37 @@ section[data-testid="stSidebar"] {
     color: var(--ws-muted, #8a8f98);
     font-style: italic;
 }
+.ws-chapter-ledger {
+    margin-top: 0.3rem;
+}
+.ws-chapter-ledger-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--ws-text-muted);
+    margin-bottom: 0.15rem;
+}
+.ws-ledger-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+}
+.ws-ledger-table th, .ws-ledger-table td {
+    text-align: left;
+    padding: 0.2rem 0.4rem;
+    border-bottom: 1px solid var(--ws-border, #322f49);
+}
+.ws-ledger-table th {
+    color: var(--ws-text-muted);
+    font-weight: 600;
+}
+.ws-ledger-increase { color: var(--ws-success); font-weight: 600; }
+.ws-ledger-decrease { color: var(--ws-danger); font-weight: 600; }
+.ws-chapter-ledger-violation {
+    margin-top: 0.2rem;
+    font-size: 0.78rem;
+    color: var(--ws-danger, #e0665a);
+    font-weight: 600;
+}
 .ws-chapter-background-entity-note {
     margin-top: 0.2rem;
     font-size: 0.78rem;
@@ -634,6 +665,106 @@ def _background_entities_html(state) -> str:
     return (
         f'<div class="ws-chapter-background-entity-note">🧩 背景角色（{names}）'
         "这一步的数值由规则自动外推更新，未使用 AI 推理</div>"
+    )
+
+
+def _field_ledger_html(state, resource_fields: Optional[List[str]] = None) -> str:
+    """渲染这一步的「记账」表格（第十五轮，`next_doc/world_simulator_
+    fifteenth_round_field_ledger_plan.md` 3.6 节，可能为空）。
+
+    每条 `field_ledger` 记录一行：字段 / 类型（图标+措辞+±幅度）/
+    变化前 → 变化后 / 原因。`resource_fields` 用来决定字段是"资源类"
+    （💰 收入/支出）还是"其它数值指标"（📈 提升/📉 下降）——只影响
+    图标措辞，不影响底层数据结构，同规划文档 3.1.1 节的展示约定。
+    `resource_fields` 为 None/空时全部按"其它数值指标"措辞展示。
+    """
+    entries = getattr(state, "field_ledger", None) or []
+    if not entries:
+        return ""
+    # `resource_fields` 写法同 `resource_guard._normalize_resource_fields`：
+    # 纯字段名字符串，或 `{"field": ..., "min": ...}` 字典，这里只取字段名。
+    resource_set = set()
+    for item in resource_fields or []:
+        if isinstance(item, str):
+            resource_set.add(item.strip())
+        elif isinstance(item, dict):
+            name = str(item.get("field") or "").strip()
+            if name:
+                resource_set.add(name)
+    rows = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        field_name = str(entry.get("field", ""))
+        kind = entry.get("kind")
+        amount = entry.get("amount")
+        value_before = entry.get("value_before")
+        value_after = entry.get("value_after")
+        reason = str(entry.get("reason", ""))
+        is_increase = kind == "increase"
+        is_resource = field_name in resource_set
+        if is_resource:
+            label = "💰 收入" if is_increase else "💰 支出"
+        else:
+            label = "📈 提升" if is_increase else "📉 下降"
+        sign = "+" if is_increase else "-"
+        css_class = "ws-ledger-increase" if is_increase else "ws-ledger-decrease"
+        rows.append(
+            '<tr>'
+            f'<td>{_html_text(field_name)}</td>'
+            f'<td class="{css_class}">{label} {sign}{_html_text(str(amount))}</td>'
+            f'<td>{_html_text(str(value_before))} → {_html_text(str(value_after))}</td>'
+            f'<td>{_html_text(reason)}</td>'
+            '</tr>'
+        )
+    if not rows:
+        return ""
+    return (
+        '<div class="ws-chapter-ledger">'
+        '<div class="ws-chapter-ledger-title">📒 记账</div>'
+        '<table class="ws-ledger-table">'
+        '<thead><tr><th>字段</th><th>类型</th><th>变化前 → 变化后</th><th>原因</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody>'
+        '</table></div>'
+    )
+
+
+def _ledger_violations_html(state) -> str:
+    """渲染这一步「修正一次之后仍剩余」的记账不一致提示（第十五轮，
+    3.6 节，可能为空）。措辞明确写清楚"已尝试自动修正一次"，避免用户
+    误以为系统还会继续纠正。
+    """
+    violations = getattr(state, "ledger_violations", None) or []
+    if not violations:
+        return ""
+    issue_labels = {
+        "start_mismatch": "首笔起始值与实际不符",
+        "chain_broken": "同一字段账目不连续",
+        "arithmetic_mismatch": "单笔加减算不出声明的变化后值",
+        "end_mismatch_with_actual": "末笔变化后值与最终实际值不符",
+        "unaccounted_resource_change": "字段发生了变化，但没有对应记账记录",
+    }
+    rows = []
+    for v in violations:
+        if not isinstance(v, dict):
+            continue
+        field_name = _html_text(str(v.get("field", "")))
+        issue = str(v.get("issue", ""))
+        issue_label = issue_labels.get(issue, issue)
+        expected = v.get("expected")
+        actual = v.get("actual")
+        detail = (
+            f"（期望 {_html_text(str(expected))}，实际 {_html_text(str(actual))}）"
+            if expected is not None or actual is not None else ""
+        )
+        rows.append(f"<li>「{field_name}」{_html_text(issue_label)}{detail}</li>")
+    if not rows:
+        return ""
+    return (
+        '<div class="ws-chapter-ledger-violation">'
+        "⚠ 系统已尝试自动修正一次，以下是修正后仍未解决的记账不一致，"
+        "不代表系统还会继续纠正："
+        f'<ul>{"".join(rows)}</ul></div>'
     )
 
 
@@ -2207,6 +2338,7 @@ def _render_timeline(
     source_branch: Optional[str] = None,
     causal_lines_meta: Optional[List[Dict[str, Any]]] = None,
     causal_line_filter: Optional[str] = None,
+    resource_fields: Optional[List[str]] = None,
 ) -> None:
     """渲染时间线。
 
@@ -2226,6 +2358,10 @@ def _render_timeline(
     （阶段二十二，"按因果线筛选"视图切换，为阶段二十五的因果线 UI
     打基础）；为 None（默认）表示不筛选，渲染全部节点，与引入这个
     功能之前完全一致。
+
+    `resource_fields`：`manifest.settings.resource_fields`（第十五轮，
+    传给 `_field_ledger_html()` 决定记账表格里字段展示"💰"还是"📈"
+    图标）；为 None/空表示全部按非资源指标措辞展示，不影响底层数据。
     """
     can_fork = sim_id is not None and source_branch is not None
     for _idx, state in enumerate(history):
@@ -2265,11 +2401,13 @@ def _render_timeline(
         structural_change_note = _structural_change_html(state)
         problems_note = _problems_html(state)
         capabilities_note = _capabilities_gained_html(state)
+        ledger_note = _field_ledger_html(state, resource_fields)
+        ledger_violation_note = _ledger_violations_html(state)
         html = (
             '<div class="ws-chapter">'
             f'<div class="ws-chapter-step">第 {state.step} 步{step_time_suffix}</div>'
             f'<div class="ws-chapter-summary">{_html_text(state.summary)}</div>'
-            f"{granularity_note}{resource_note}{relation_note}{option_warnings_note}{background_note}{line_updates_note}{tree_updates_note}{key_drivers_note}{structural_change_note}{problems_note}{capabilities_note}{narrative}{chosen_note}"
+            f"{granularity_note}{resource_note}{relation_note}{option_warnings_note}{background_note}{line_updates_note}{tree_updates_note}{key_drivers_note}{structural_change_note}{problems_note}{capabilities_note}{ledger_note}{ledger_violation_note}{narrative}{chosen_note}"
             "</div>"
         )
         st.markdown(html, unsafe_allow_html=True)
@@ -4964,6 +5102,7 @@ def page_detail() -> None:
         _render_timeline(
             list(reversed(history)), sim_id=sim_id, source_branch=manifest.branch,
             causal_lines_meta=causal_lines_meta, causal_line_filter=causal_line_filter,
+            resource_fields=manifest.settings.get("resource_fields"),
         )
 
     # 阶段二十五（4.17 节，因果线 UI）：因果线是模拟的默认基础机制，
@@ -5456,6 +5595,7 @@ def page_compare() -> None:
             _render_timeline(
                 list(reversed(line["history"])),
                 causal_lines_meta=line["manifest"].settings.get("causal_lines"),
+                resource_fields=line["manifest"].settings.get("resource_fields"),
             )
 
     st.markdown("#### 关键变量对比（按 step 对齐）")
