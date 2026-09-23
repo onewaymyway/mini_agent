@@ -315,19 +315,72 @@ def _resolve_execution_phase(paths, goal: "GoalNode", cycle_no: int,
             except Exception:
                 routine_stability = None
 
+        # [goal_output_directory_tidy_enforcement_plan.md] 读取 tidy 强制化
+        # 相关配置，并跑一次 output/ 结构扫描算出 messy_signal/tidy_verified
+        # 两个信号：当前处于 tidy 阶段时用扫描结果核查"是否已清理达标"
+        # （tidy_verified）；不在 tidy 阶段时用扫描结果判断"是否确实已经
+        # 脏乱到该立即插入 tidy"（messy_signal）。扫描失败/目录不存在时
+        # 两者都保持 None，不影响触发主流程（与其余可选信号一致的保守
+        # 降级风格）。
+        tidy_every_n_cycles = ep.DEFAULT_TIDY_EVERY_N_CYCLES
+        messy_signal = None
+        tidy_verified = None
+        tidy_max_consecutive_rounds = ep.DEFAULT_TIDY_MAX_CONSECUTIVE_ROUNDS
+        try:
+            from mini_agent.config import load_config
+            ep_cfg = load_config().execution_phase
+            tidy_every_n_cycles = getattr(ep_cfg, "tidy_every_n_cycles", ep.DEFAULT_TIDY_EVERY_N_CYCLES)
+            tidy_max_consecutive_rounds = getattr(
+                ep_cfg, "tidy_max_consecutive_rounds", ep.DEFAULT_TIDY_MAX_CONSECUTIVE_ROUNDS,
+            )
+            messy_trigger_enabled = getattr(ep_cfg, "tidy_messy_trigger_enabled", True)
+            from mini_agent.evolution import output_workspace as ow
+            user_output_dir = getattr(goal, "user_output_dir", None)
+            stats = ow.scan_output_structure(paths, goal.id, user_output_dir=user_output_dir)
+            messy = ow.is_output_messy(
+                stats,
+                misc_file_threshold=getattr(ep_cfg, "tidy_misc_file_threshold", 1),
+                stray_root_threshold=getattr(ep_cfg, "tidy_stray_root_threshold", 1),
+            )
+            if state.mode == "tidy":
+                # 当前已落盘状态就处于 tidy（本轮 resolve_effective_mode
+                # 还没跑，但 tidy 是"手动/auto 进入后维持一轮"的语义，读
+                # 落盘的 state.mode 与 resolve_effective_mode 内部判断口径
+                # 一致），用本次扫描结果核查是否已清理达标。
+                tidy_verified = not messy
+            elif messy_trigger_enabled:
+                messy_signal = messy
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(
+                _mini_agent_exc,
+                where='mini_agent.evolution.goal_cron_bridge._resolve_execution_phase.tidy_scan',
+            )
+
         effective_mode, state = ep.resolve_effective_mode(
             state,
             cycle_no=cycle_no,
             spec_confirmed=spec_confirmed,
             spec_recently_revised=spec_recently_revised,
             miss_streak=miss_streak,
+            tidy_every_n_cycles=tidy_every_n_cycles,
             progress_trend_stuck=progress_trend_stuck,
             routine_stability=routine_stability,
+            messy_signal=messy_signal,
+            tidy_verified=tidy_verified,
+            tidy_max_consecutive_rounds=tidy_max_consecutive_rounds,
         )
         try:
-            health_reason = ep.check_phase_health(state, effective_mode)
+            health_reason = ep.check_phase_health(
+                state, effective_mode, tidy_max_consecutive_rounds=tidy_max_consecutive_rounds,
+            )
             if health_reason:
-                kind = "stuck_explore" if effective_mode == "explore" else "phase_flapping"
+                if effective_mode == "explore":
+                    kind = "stuck_explore"
+                elif effective_mode == "tidy":
+                    kind = "tidy_not_converging"
+                else:
+                    kind = "phase_flapping"
                 state.last_health_alert_kind = kind
                 state.last_health_alert_at = time.time()
                 _notify_phase_health_issue(paths, goal, health_reason)

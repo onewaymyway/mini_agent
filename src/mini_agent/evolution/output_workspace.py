@@ -459,6 +459,22 @@ def scan_output_structure(paths: "AgentPaths", goal_id: str, *, user_output_dir:
     return result
 
 
+def is_output_messy(stats: dict, *, misc_file_threshold: int = 1,
+                     stray_root_threshold: int = 1) -> bool:
+    """[next_doc/goal_output_directory_tidy_enforcement_plan.md] 基于
+    `scan_output_structure()` 的返回值判断 output/ 是否"确实脏乱"，供
+    `execution_phase.resolve_effective_mode()` 的条件触发/收尾核查使用。
+
+    只看两条已有的确定性字段（`misc_count`/`root_unexpected` 数量），不
+    新增扫描逻辑、不做语义判断——与既有 `_build_tidy_problem_checklist()`
+    "尽量代码化"的风格一致。
+    """
+    return (
+        stats.get("misc_count", 0) >= misc_file_threshold
+        or len(stats.get("root_unexpected", [])) >= stray_root_threshold
+    )
+
+
 def render_output_readme(paths: "AgentPaths", goal_id: str, *, cycle_no: Optional[int] = None, user_output_dir: Optional[str] = None) -> str:
     """扫描 output/ 实际内容，机械生成 output/README.md（方案 §2.5）——
     刻意不经过 LLM，保证这份索引反映的是客观文件系统事实，而不是 agent 的

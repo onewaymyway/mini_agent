@@ -485,6 +485,147 @@ def test_resolve_auto_periodic_tidy_disabled_by_default(tmp_path):
     assert effective == "running"
 
 
+# ── goal_output_directory_tidy_enforcement_plan.md：tidy 强制化 ──────────────
+
+def test_resolve_messy_signal_triggers_tidy_before_schedule_due(tmp_path):
+    """messy_signal=True 时，即使 tidy_every_n_cycles 间隔还没到，也立即插入
+    tidy（条件触发与定时触发是 OR 关系）。"""
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto")
+    effective, state = ep.resolve_effective_mode(
+        state, cycle_no=6, spec_confirmed=True, spec_recently_revised=False, miss_streak=0,
+        tidy_every_n_cycles=20, messy_signal=True,
+    )
+    assert effective == "tidy"
+    assert state.last_tidy_cycle == 6
+
+
+def test_resolve_messy_signal_false_does_not_force_tidy(tmp_path):
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto")
+    effective, _ = ep.resolve_effective_mode(
+        state, cycle_no=6, spec_confirmed=True, spec_recently_revised=False, miss_streak=0,
+        tidy_every_n_cycles=20, messy_signal=False,
+    )
+    assert effective == "running"
+
+
+def test_resolve_tidy_not_verified_stays_in_tidy():
+    """tidy_verified=False 时不放行，停留在 tidy 并继续累加 cycles_in_mode，
+    直到达到 tidy_max_consecutive_rounds 上限。"""
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="tidy", locked=True)
+    effective1, state = ep.resolve_effective_mode(
+        state, cycle_no=5, spec_confirmed=True, spec_recently_revised=False, miss_streak=0,
+    )
+    assert effective1 == "tidy"
+    assert state.cycles_in_mode == 1
+
+    # 第二轮：核查未通过（tidy_verified=False），且还没到上限（默认 2），
+    # 应继续停留在 tidy，不回 running。
+    effective2, state = ep.resolve_effective_mode(
+        state, cycle_no=6, spec_confirmed=True, spec_recently_revised=False, miss_streak=0,
+        tidy_verified=False,
+    )
+    assert effective2 == "tidy"
+    assert state.mode == "tidy"
+    assert state.cycles_in_mode == 2
+
+
+def test_resolve_tidy_not_verified_forced_revert_after_cap():
+    """连续核查不达标达到 tidy_max_consecutive_rounds 上限后强制放行，避免
+    无限卡在 tidy。"""
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="tidy", locked=True, cycles_in_mode=2)
+    effective, state = ep.resolve_effective_mode(
+        state, cycle_no=7, spec_confirmed=True, spec_recently_revised=False, miss_streak=0,
+        tidy_verified=False, tidy_max_consecutive_rounds=2,
+    )
+    assert effective == "running"
+    assert state.mode == "running"
+    assert state.locked is False
+    assert state.mode_history[-1].reason == "tidy_auto_revert_cap_exceeded"
+
+
+def test_resolve_tidy_verified_none_keeps_backward_compatible_behavior():
+    """tidy_verified 未传入（None）时保持改造前行为：跑满一轮即放行，不受
+    新机制影响，保证旧调用方（没升级传参）不会被卡死。"""
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="tidy", locked=True, cycles_in_mode=1)
+    effective, state = ep.resolve_effective_mode(
+        state, cycle_no=8, spec_confirmed=True, spec_recently_revised=False, miss_streak=0,
+    )
+    assert effective == "running"
+    assert state.mode_history[-1].reason == "tidy_auto_revert"
+
+
+def test_resolve_tidy_verified_true_reverts_immediately():
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="tidy", locked=True, cycles_in_mode=1)
+    effective, state = ep.resolve_effective_mode(
+        state, cycle_no=9, spec_confirmed=True, spec_recently_revised=False, miss_streak=0,
+        tidy_verified=True,
+    )
+    assert effective == "running"
+    assert state.mode_history[-1].reason == "tidy_auto_revert"
+
+
+def test_check_phase_health_tidy_not_converging_triggers():
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", cycles_in_mode=2)
+    reason = ep.check_phase_health(state, "tidy", tidy_max_consecutive_rounds=2)
+    assert reason is not None
+    assert "tidy" in reason or "整理" in reason
+
+
+def test_check_phase_health_tidy_not_converging_below_threshold_no_alert():
+    state = ep.ExecutionPhaseState(goal_id="g1", mode="auto", cycles_in_mode=1)
+    reason = ep.check_phase_health(state, "tidy", tidy_max_consecutive_rounds=2)
+    assert reason is None
+
+
+def test_is_output_messy_detects_misc_and_root_unexpected():
+    from mini_agent.evolution import output_workspace as ow
+
+    assert ow.is_output_messy({"misc_count": 0, "root_unexpected": []}) is False
+    assert ow.is_output_messy({"misc_count": 1, "root_unexpected": []}) is True
+    assert ow.is_output_messy({"misc_count": 0, "root_unexpected": ["stray.txt"]}) is True
+    assert ow.is_output_messy(
+        {"misc_count": 2, "root_unexpected": []}, misc_file_threshold=3,
+    ) is False
+
+
+def test_bridge_resolve_execution_phase_triggers_tidy_on_messy_output(tmp_path):
+    """`_resolve_execution_phase()` 会实际扫描 output/ 目录，检测到脏乱
+    （_misc/ 下有文件）时即使还没到 tidy_every_n_cycles 间隔也插入 tidy。"""
+    from mini_agent.evolution import goal_cron_bridge as bridge
+    from mini_agent.evolution import output_workspace as ow
+    from mini_agent.perception.goal_backlog import GoalBacklog
+
+    paths = AgentPaths(project_root=tmp_path)
+    gb = GoalBacklog(paths)
+    goal = gb.add_goal(title="周期性整理测试 Goal")
+    gb.update_fields(goal.id, execution_spec_confirmed=True)
+
+    out_dir = ow.ensure_output_skeleton(paths, goal.id)
+    (out_dir / "_misc" / "leftover.txt").write_text("x", encoding="utf-8")
+
+    result = bridge._resolve_execution_phase(paths, gb.get(goal.id), cycle_no=10)
+    assert result["effective_mode"] == "tidy"
+
+
+def test_bridge_resolve_execution_phase_tidy_verified_reverts_when_clean(tmp_path):
+    """当前处于 tidy 阶段、output/ 已经扫描干净时，正常放行回 running。"""
+    from mini_agent.evolution import goal_cron_bridge as bridge
+    from mini_agent.evolution import output_workspace as ow
+    from mini_agent.perception.goal_backlog import GoalBacklog
+    from mini_agent.perception import execution_phase as ep2
+
+    paths = AgentPaths(project_root=tmp_path)
+    gb = GoalBacklog(paths)
+    goal = gb.add_goal(title="周期性整理测试 Goal2")
+    ow.ensure_output_skeleton(paths, goal.id)
+
+    state = ep2.ExecutionPhaseState(goal_id=goal.id, mode="tidy", locked=True, cycles_in_mode=1)
+    ep2.save_phase(paths, state)
+
+    result = bridge._resolve_execution_phase(paths, gb.get(goal.id), cycle_no=3)
+    assert result["effective_mode"] == "running"
+
+
 def test_bridge_converge_appends_spec_hint_when_unconfirmed(tmp_path):
     from mini_agent.evolution import goal_cron_bridge as bridge
 

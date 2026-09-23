@@ -69,6 +69,11 @@ output/
 
 - **`_misc/`**：agent 一时拿不准某个产出该归到哪个业务子目录时，允许先
   扔进这里，但**不允许跨轮留存**——tidy 阶段的第一优先级任务就是清空它。
+  **[goal_output_directory_tidy_enforcement_plan.md]** 现在这条规则由
+  代码强制而不只是文档约定：`_misc/` 里只要有文件（或根目录出现违规
+  文件），系统会在下一轮自动插入 tidy（不用等定时周期），并且 tidy 收尾
+  时会重新扫描核查——`_misc/` 没有真正清空之前不会自动判定整理完成，见
+  [执行阶段指南 · tidy 阶段的行为细节](goal-execution-phase-guide.md#tidy-阶段的行为细节)。
 - **`_archive/`**：converge 阶段淘汰的备选方案、tidy 阶段清理的旧版本
   文件都挪进这里，不直接删除。归档规模较大（默认 200 项以上）时 tidy
   阶段会提示"是否可以彻底删除某些过老的归档"，但默认不自动删。
@@ -162,6 +167,15 @@ tidy 阶段不要求 agent 自己从零判断"哪里乱了"，而是先由代码
 于"怎么处理这些具体问题"。业务子目录的 `retention`/`naming_pattern` 规则
 核对（需要结合 `GoalExecutionSpec` 判断）暂未覆盖到代码检查，留给后续
 版本。
+
+**[goal_output_directory_tidy_enforcement_plan.md]** 这份清单里"`_misc/`
+未清空"和"根目录散落文件"这两项现在是**强制核查项**：tidy 阶段结束时会
+重新跑一次同样的扫描，只有这两项都清零了才允许退出 tidy；仍未清零则停
+在 tidy，把最新的问题清单再给下一轮，直到连续 `tidy_max_consecutive_
+rounds`（默认 2）轮仍不达标才会强制放行并发一次健康告警。触发时机也不
+再只靠定时——只要这两项任一超过阈值，不等 `tidy_every_n_cycles` 到期也
+会立即插入一轮 tidy。相关配置项见
+[执行阶段指南](goal-execution-phase-guide.md#tidy-相关配置项agent_configjson-的-execution_phase-块)。
 
 **[Stage 8f] 三种 `output_mode` 的差异化默认模板**：如果这个 Goal 的
 `GoalExecutionSpec.output_mode` 声明为 `capability_hardening`，

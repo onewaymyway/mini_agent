@@ -1203,8 +1203,23 @@ class ExecutionPhaseConfig:
     `progress_trend_llm_enabled` 后，改用 LLM 判断是否真的在原地打转，
     difflib 结果降级为 LLM 不可用/解析失败时的兜底，不会因为 LLM 异常
     影响 Goal 触发主流程。默认关闭，不影响现有部署行为。
+
+    [next_doc/goal_output_directory_tidy_enforcement_plan.md] 以下五个
+    字段控制 tidy 阶段的"强制化"：触发从纯定时改为定时 OR 检测到确实
+    脏乱，收尾从"跑一轮就算数"改为代码重新扫描核查过关才放行，避免
+    recurring Goal 跑多轮后产出目录持续变乱。
     """
     progress_trend_llm_enabled: bool = False
+    tidy_every_n_cycles: int = 5              # 0=关闭定时触发；默认给一个
+    # 保守非零值，作为"即使一直很干净也定期巡检一次"的兜底
+    tidy_messy_trigger_enabled: bool = True   # 检测到确实脏乱时是否立即
+    # 插入 tidy（不等定时间隔到期），与定时触发是 OR 关系
+    tidy_misc_file_threshold: int = 1         # output/_misc/ 文件数达到
+    # 此值即判定脏乱
+    tidy_stray_root_threshold: int = 1        # output/ 根目录违规文件数
+    # 达到此值即判定脏乱
+    tidy_max_consecutive_rounds: int = 2      # tidy 连续核查不达标的轮数
+    # 上限，超过后强制放行并触发健康告警，避免无限卡在 tidy
 
 
 @dataclass

@@ -669,7 +669,17 @@ class TestExecutionRoutineStabilitySignal(unittest.TestCase):
             ges.save_spec(paths, goal.id, spec_v2)
             gb.update_fields(goal.id, execution_spec_confirmed=True)
 
-            result = bridge._resolve_execution_phase(paths, gb.get(goal.id), 10)
+            # [goal_output_directory_tidy_enforcement_plan.md] tidy_every_n_cycles
+            # 默认值由 0 改为 5，cycle_no=10 在默认配置下会命中定时 tidy 触发，
+            # 与本测试要验证的 routine_stability 信号无关，这里显式关闭定时
+            # 触发，避免两个互不相关的机制在同一断言上打架。
+            import mini_agent.config as _cfg_mod
+            from unittest.mock import patch as _patch
+
+            cfg = _cfg_mod.load_config()
+            cfg.execution_phase.tidy_every_n_cycles = 0
+            with _patch.object(_cfg_mod, "load_config", return_value=cfg):
+                result = bridge._resolve_execution_phase(paths, gb.get(goal.id), 10)
             self.assertEqual(result["effective_mode"], "running")
 
     def test_shifting_routine_keeps_miss_streak_converge(self):

@@ -45,7 +45,13 @@ def _normalize_mode(mode: str) -> str:
 # auto 模式下的默认规则参数（§2）。后续如需可配置，从 AppConfig 读取覆盖。
 DEFAULT_EXPLORE_MIN_CYCLES = 3
 DEFAULT_SPEC_STABLE_CYCLES = 2
-DEFAULT_TIDY_EVERY_N_CYCLES = 0  # 0 = 关闭自动 tidy 插入
+DEFAULT_TIDY_EVERY_N_CYCLES = 0  # 0 = 关闭自动 tidy 插入（调用方——
+# goal_cron_bridge.py——实际从 ExecutionPhaseConfig.tidy_every_n_cycles
+# 读取配置值，默认为 5，此常量只是本函数参数未显式传入时的兜底默认值）
+
+# [goal_output_directory_tidy_enforcement_plan.md] tidy 阶段连续核查不
+# 达标的轮数上限，超过后强制放行并告警，避免无限卡在 tidy。
+DEFAULT_TIDY_MAX_CONSECUTIVE_ROUNDS = 2
 
 # [goal_cron_task_optimization_holistic_plan.md 方向 B] 健康告警的默认阈值。
 DEFAULT_STUCK_EXPLORE_CYCLES = 6      # auto 模式下连续判定为 explore 达到此轮数即告警
@@ -369,6 +375,9 @@ def resolve_effective_mode(
     tidy_every_n_cycles: int = DEFAULT_TIDY_EVERY_N_CYCLES,
     progress_trend_stuck: Optional[bool] = None,
     routine_stability: Optional[bool] = None,
+    messy_signal: Optional[bool] = None,
+    tidy_verified: Optional[bool] = None,
+    tidy_max_consecutive_rounds: int = DEFAULT_TIDY_MAX_CONSECUTIVE_ROUNDS,
 ) -> tuple[str, ExecutionPhaseState]:
     """计算本轮的"有效阶段"，并按需推进/落盘 mode_history（调用方负责 save）。
 
@@ -411,8 +420,18 @@ def resolve_effective_mode(
         # 就自动回到 running 并解除锁定，不需要用户手动切回，避免每轮都停在
         # 整理模式不产出正常内容。
         if state.mode == "tidy" and state.cycles_in_mode >= 1:
+            # [goal_output_directory_tidy_enforcement_plan.md] 收尾强制核查：
+            # tidy_verified 未提供（None，调用方未升级/扫描失败）时维持改造前
+            # 行为，跑满一轮即放行，保证向后兼容、不会因为某个调用路径没有
+            # 接入新信号就卡死。tidy_verified is False 时不放行，除非已经
+            # 达到连续轮数上限——避免死循环，交给健康告警提醒用户人工介入。
+            cap = max(1, tidy_max_consecutive_rounds)
+            if tidy_verified is False and state.cycles_in_mode < cap:
+                state.cycles_in_mode += 1
+                return state.mode, state
+            reason = "tidy_auto_revert" if tidy_verified is not False else "tidy_auto_revert_cap_exceeded"
             state.last_tidy_cycle = cycle_no
-            state.record_transition("running", reason="tidy_auto_revert")
+            state.record_transition("running", reason=reason)
             state.locked = False
             return "running", state
         state.cycles_in_mode += 1
@@ -442,9 +461,17 @@ def resolve_effective_mode(
     # 触发后本轮 effective mode 直接给 tidy（下一轮由上面的
     # "tidy 一轮后自动回 running"逻辑收尾），不改变 state.mode 本身
     # （仍是 "auto"）。
-    if target == "running" and tidy_every_n_cycles and tidy_every_n_cycles > 0:
-        last_tidy = state.last_tidy_cycle or 0
-        if cycle_no - last_tidy >= tidy_every_n_cycles:
+    if target == "running":
+        triggered_by_schedule = bool(
+            tidy_every_n_cycles and tidy_every_n_cycles > 0
+            and cycle_no - (state.last_tidy_cycle or 0) >= tidy_every_n_cycles
+        )
+        # [goal_output_directory_tidy_enforcement_plan.md] 条件触发：不等
+        # 定时间隔到期，检测到 output/ 确实脏乱（messy_signal=True）也立即
+        # 插入 tidy，与定时触发是 OR 关系。messy_signal 为 None（调用方未
+        # 接入/扫描失败）时不产生任何效果，与其余可选信号一致的保守风格。
+        triggered_by_mess = messy_signal is True
+        if triggered_by_schedule or triggered_by_mess:
             target = "tidy"
             state.last_tidy_cycle = cycle_no
 
@@ -527,6 +554,7 @@ def check_phase_health(
     flap_window: int = DEFAULT_FLAP_WINDOW,
     flap_threshold: int = DEFAULT_FLAP_THRESHOLD,
     cooldown_seconds: float = DEFAULT_HEALTH_ALERT_COOLDOWN_SECONDS,
+    tidy_max_consecutive_rounds: int = DEFAULT_TIDY_MAX_CONSECUTIVE_ROUNDS,
 ) -> Optional[str]:
     """[goal_cron_task_optimization_holistic_plan.md 方向 B] 判断这个 Goal 的
     执行阶段是否出现了值得主动告诉用户的"健康问题"，返回一段中文告警原因；
@@ -536,7 +564,7 @@ def check_phase_health(
     把阶段状态转成一个面向用户的信号：用户不需要每天巡检看板，系统主动
     在异常时喊一声。只做规则判定，第一版不引入额外 LLM 调用。
 
-    两类问题：
+    三类问题：
     1. stuck_explore —— 长期（auto 模式下）判定为 explore 迟迟不收敛，往往
        意味着任务定义本身有问题（目标不清晰/环境不稳定），而不是 agent
        "还需要多试几次"。只在 mode == "auto" 且未被用户手动锁定时判定——
@@ -544,10 +572,13 @@ def check_phase_health(
     2. phase_flapping —— 阶段反复从 running/converge 被打回 explore/converge
        （常见于 Stage D 的"伪进展"降级反复触发），意味着看起来收敛但内容
        层面并不稳定，值得用户介入看看，而不是让系统一直自动降级下去。
+    3. tidy_not_converging —— [goal_output_directory_tidy_enforcement_plan.md]
+       tidy 阶段连续多轮代码核查仍不达标，说明产出目录的整理已经超出 agent
+       自觉能解决的范围，值得用户直接看一眼。
 
-    两类问题共享同一个冷却字段（`last_health_alert_kind`/`last_health_alert_at`）
+    三类问题共享同一个冷却字段（`last_health_alert_kind`/`last_health_alert_at`）
     ——同一种 kind 在 cooldown_seconds 内不重复返回，不同 kind 之间不互相
-    抑制（stuck 和 flapping 是不同性质的问题，都值得各自提醒一次）。
+    抑制（三者是不同性质的问题，都值得各自提醒一次）。
     调用方负责在决定"确实要发送通知"后落盘更新这两个字段（本函数只读
     判断，不修改 state，保持与其它只读判定函数一致的风格）。
     """
@@ -589,6 +620,21 @@ def check_phase_health(
                     "说明这个 Goal 表面上看起来收敛了，但内容层面可能反复不稳定，建议人工"
                     "复核最近几轮的实际产出。"
                 )
+
+        # [goal_output_directory_tidy_enforcement_plan.md] 第三类：tidy
+        # 连续多轮核查仍不达标（被 resolve_effective_mode 强制留在 tidy
+        # 而不是像原来那样跑一轮就放行），意味着光靠 agent 自己整理已经
+        # 收敛不了，值得提醒用户看一眼 output/ 目录本身。
+        if (
+            effective_mode == "tidy"
+            and state.cycles_in_mode >= max(1, tidy_max_consecutive_rounds)
+            and _cooldown_ok("tidy_not_converging")
+        ):
+            return (
+                f"已连续 {state.cycles_in_mode} 轮处于整理阶段（tidy）仍未能通过代码核查"
+                "（_misc/ 未清空或根目录仍有违规文件），可能需要人工直接查看 output/ "
+                "目录，帮忙判断这些文件该归到哪里或是否可以清理。"
+            )
         return None
     except Exception:
         return None

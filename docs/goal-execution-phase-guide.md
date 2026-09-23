@@ -137,8 +137,21 @@ execution_phase.progress_trend_llm_enabled=False`）用纯文本相似度
 
 ## tidy 阶段的行为细节
 
-- 手动/自动进入 `tidy` 后，只会维持**一轮**：这一轮结束、下一次触发时会
-  自动回到 `running` 并解除锁定，不需要手动切回。
+- **[goal_output_directory_tidy_enforcement_plan.md] tidy 现在既会定时
+  触发，也会在检测到确实脏乱时立即触发**：`_resolve_execution_phase()`
+  每轮都会扫描一次 `output/` 结构，只要 `_misc/` 文件数或根目录违规文件
+  数达到阈值（`tidy_misc_file_threshold`/`tidy_stray_root_threshold`，
+  默认都是 1），就算还没到 `tidy_every_n_cycles` 的定时间隔，也会立即
+  插入一轮 tidy——不用等固定周期，"刚变乱就整理"。
+- **tidy 收尾现在会重新扫描核查，核查不通过不会放行**：以前 tidy 阶段
+  跑满一轮就无条件判定"整理完了"，改为收尾时重新扫描 `output/`，只有
+  `_misc/` 确实清空、根目录确实没有违规文件了，才允许回到 `running`；
+  否则继续停留在 tidy、把最新的问题清单再给 agent 一轮机会处理。为避免
+  死循环，连续核查不达标的轮数达到 `tidy_max_consecutive_rounds`（默认
+  2）后会强制放行，并触发一次"tidy 未能收敛"的健康告警提醒你人工看一眼
+  `output/` 目录（告警机制见下文"健康告警"一节，若该节尚未存在于你本地
+  文档版本，可参考本仓库 `next_doc/goal_cron_task_optimization_holistic_
+  plan.md` 方向 B）。
 - recurring Goal 的 tidy 阶段不要求 agent 自己从零判断"哪里乱了"：系统
   会先扫描 `output/` 实际内容，算出一份确定性问题清单（散落文件、
   `_misc/` 未清空、疑似临时脚本、`_run_logs/` 超量、`requirements.txt`
@@ -156,8 +169,34 @@ execution_phase.progress_trend_llm_enabled=False`）用纯文本相似度
   "代码扫描问题清单"是互补关系：一个纯粹扫描文件系统，一个需要结合规范
   内容判断，两者共同提示 agent 依据既定规范整理，而不是凭空判断"哪些算
   冗余"。
-- `auto` 模式默认不会周期性插入 tidy（需要显式配置 `tidy_every_n_cycles`
-  才会生效，当前版本尚未暴露为用户可配置项，留待后续版本）。
+- `auto` 模式默认会周期性插入 tidy：`tidy_every_n_cycles` 默认值为 `5`
+  （每 5 轮至少巡检一次），配合上面的"检测到脏乱立即触发"，两者是 OR
+  关系，任一满足即进入 tidy。设为 `0` 可关闭定时触发（只保留脏乱检测）；
+  同时把 `tidy_messy_trigger_enabled` 设为 `false` 可完全关闭自动 tidy，
+  退回改造前"只能手动触发"的行为。
+
+### tidy 相关配置项（`agent_config.json` 的 `execution_phase` 块）
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| `tidy_every_n_cycles` | `5` | 定时触发的轮数间隔；`0` 关闭定时触发 |
+| `tidy_messy_trigger_enabled` | `true` | 是否在检测到确实脏乱时立即插入 tidy（不等定时间隔） |
+| `tidy_misc_file_threshold` | `1` | `output/_misc/` 文件数达到此值即判定脏乱 |
+| `tidy_stray_root_threshold` | `1` | `output/` 根目录违规文件数达到此值即判定脏乱 |
+| `tidy_max_consecutive_rounds` | `2` | tidy 连续核查不达标的轮数上限，超过后强制放行并告警 |
+
+示例（`agent_config.json`）：
+
+```json
+{
+  "execution_phase": {
+    "tidy_every_n_cycles": 8,
+    "tidy_max_consecutive_rounds": 3
+  }
+}
+```
+
+
 
 ## converge 阶段与执行规范的联动
 
