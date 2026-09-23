@@ -36,7 +36,7 @@ from world_simulator.decision_validation import compute_option_warnings
 from world_simulator.engine.ledger_correction import _safe_correct_field_ledger
 from world_simulator.engine.resource_guard import (
     _apply_resource_guard,
-    _auto_register_ledger_fields,
+    _auto_fill_unaccounted_ledger_entries,
     _check_field_ledger,
     _check_resource_relations,
 )
@@ -616,20 +616,29 @@ def advance(
     )
 
     # 字段变化台账审计校验（第十五轮，`next_doc/
-    # world_simulator_fifteenth_round_field_ledger_plan.md`）：和资源
-    # 转移关系一致性检查一样，用夹值*之前*的 `current.vars` 对比夹值
-    # *之后*的 `next_vars`——夹值本身也是这一步真实落盘的变化量的一
-    # 部分。`tracked_ledger_fields` 决定"未记账变化"检查覆盖哪些字段
-    # （不局限于 `resource_fields`，见 `SimManifest.settings.tracked_
-    # ledger_fields` 的说明）。
-    tracked_ledger_fields = manifest.settings.get("tracked_ledger_fields")
+    # world_simulator_fifteenth_round_field_ledger_plan.md`；第十八轮
+    # 改成全字段扫描 + 确定性自动补全，见 `resource_guard._check_
+    # field_ledger()`/`_auto_fill_unaccounted_ledger_entries()` 的
+    # 说明）：和资源转移关系一致性检查一样，用夹值*之前*的
+    # `current.vars` 对比夹值*之后*的 `next_vars`——夹值本身也是这一步
+    # 真实落盘的变化量的一部分。
     field_ledger, ledger_violations = _check_field_ledger(
-        current.vars, next_vars, data.get("field_ledger"), tracked_ledger_fields
+        current.vars, next_vars, data.get("field_ledger")
     )
-    if ledger_violations:
-        # 校验失败先尝试一次范围有限的反馈修正调用（3.4 节），而不是
-        # 直接降级为纯标记；修正调用本身是可选旁路，任何基础设施异常
-        # 都会安全降级为原样返回，不影响本次推进的主流程。
+    # 第十八轮：只有存在"模型确实记了账但算错了"这类问题（`start_
+    # mismatch`/`arithmetic_mismatch`/`chain_broken`/`end_mismatch_
+    # with_actual`）时才值得发起一次修正调用——这类问题的"正确值"
+    # 不是唯一可确定的，需要模型自己重新想一遍。单纯的
+    # `unaccounted_resource_change`（字段变了但完全没记账）不需要
+    # 模型参与：变化前/变化后的数值本来就是已知量，直接交给下面的
+    # 确定性自动补全就行，没必要为此多打一次 LLM 调用（尤其是全字段
+    # 扫描之后这类"单纯遗漏"会比以前更常见）。
+    needs_llm_correction = any(
+        v.get("issue") != "unaccounted_resource_change" for v in ledger_violations
+    )
+    if needs_llm_correction:
+        # 修正调用本身是可选旁路，任何基础设施异常都会安全降级为原样
+        # 返回，不影响本次推进的主流程。
         next_vars, field_ledger, ledger_violations = _safe_correct_field_ledger(
             cfg,
             workspace_root,
@@ -637,8 +646,16 @@ def advance(
             next_vars=next_vars,
             field_ledger=field_ledger,
             ledger_violations=ledger_violations,
-            tracked_ledger_fields=tracked_ledger_fields,
             narrative_hint=str(data.get("narrative", "") or data.get("next_summary", "") or ""),
+        )
+    if ledger_violations:
+        # 不管上面有没有发起修正调用，剩余的 `unaccounted_resource_
+        # change` 都在这里确定性补全，保证"所有变更都有对应记账
+        # 记录"是引擎的硬保证，不是"尽量靠提示词/重试提高概率"。其它
+        # issue 类型（模型确实记了账但算错了）不受影响，原样保留给
+        # 用户看。
+        field_ledger, ledger_violations = _auto_fill_unaccounted_ledger_entries(
+            field_ledger, ledger_violations
         )
 
     # 背景角色的简单趋势外推（Hierarchical Agent，4.10 节设计草案第
@@ -730,16 +747,6 @@ def advance(
     # 不需要额外的确认环节。新登记的线同样会带上兜底的默认未来树（阶段
     # 二十六），保证"自发出现的线"不会缺未来展望。
     _auto_register_causal_lines(manifest, next_state)
-
-    # 第十五轮 3.2 节：把这一步 `field_ledger` 里实际出现过的字段自动
-    # 并入 `manifest.settings.tracked_ledger_fields`，写法与因果线
-    # 自动登记一致——发现即登记，不要求提前声明。只增不减。
-    manifest.settings = {
-        **manifest.settings,
-        "tracked_ledger_fields": _auto_register_ledger_fields(
-            manifest.settings.get("tracked_ledger_fields"), next_state.field_ledger
-        ),
-    }
 
     # 阶段二十六：合并这一步对因果线"未来树"的修正（印证/排除/新增
     # 分支），必须在 `_auto_register_causal_lines()` 之后调用——新登记

@@ -403,20 +403,46 @@ def _group_ledger_by_field(entries: List[Dict[str, Any]]) -> Dict[str, List[Dict
     return grouped
 
 
+def _flatten_numeric_leaves(vars_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """把 `vars` 展开成 `{路径: 数值}` 的扁平字典，路径写法与
+    `_get_nested()`/`resource_fields` 一致（最多一层嵌套，`.`
+    分隔）——第十八轮引入，是"所有数值变化都必须有对应记账记录"这个
+    完整性保证的基础：不再局限于用户显式声明过的
+    `resource_fields`/历史上出现过的记账字段，而是完整扫一遍 `vars`
+    的每一个数值叶子节点。
+
+    只收集数值型叶子（`int`/`float`，排除 `bool`），跳过字符串/列表/
+    嵌套两层以上的结构（这类字段本来就不该被当成"可记账的数值资源"，
+    模板设计者如果真的把数值塞进更深的嵌套里，本来也超出了
+    `resource_fields`/`_get_nested()` 一直以来"最多一层嵌套"的
+    约定，不是这里要解决的问题）。
+    """
+    leaves: Dict[str, Any] = {}
+    for key, value in (vars_dict or {}).items():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            leaves[key] = value
+        elif isinstance(value, dict):
+            for inner_key, inner_value in value.items():
+                if isinstance(inner_value, bool):
+                    continue
+                if isinstance(inner_value, (int, float)):
+                    leaves[f"{key}.{inner_key}"] = inner_value
+    return leaves
+
+
 def _check_field_ledger(
     current_vars: Dict[str, Any],
     next_vars: Dict[str, Any],
     field_ledger_raw: Any,
-    tracked_ledger_fields: Any = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """对 `field_ledger`（字段变化台账）做审计级一致性校验（第十五轮，
     `next_doc/world_simulator_fifteenth_round_field_ledger_plan.md`
-    3.3 节）。
+    3.3 节；第十八轮改成全字段扫描，见下方步骤 3 的说明）。
 
     输入 `current_vars`（本步开始前）、`next_vars`（本步最终落盘值，
-    已完成资源下限校验夹值）、原始 `field_ledger`、
-    `tracked_ledger_fields`（见 `SimManifest.settings.tracked_ledger_
-    fields` 的说明，含 `resource_fields` 并集）。
+    已完成资源下限校验夹值）、原始 `field_ledger`。
 
     校验步骤：
     1. 归一化（见 `_normalize_field_ledger()`），按 `field` 分组。
@@ -433,10 +459,21 @@ def _check_field_ledger(
        非数值字段（`value_before`/`value_after` 无法解析为
        `int`/`float`）跳过算术校验（a/b/c/d 全部跳过），不因为"不是
        数字"本身报违规——当前版本只处理数值型字段。
-    3. 对 `tracked_ledger_fields` 里的每个字段：如果 `current_vars`
-       与 `next_vars` 里的值不同（超出 `_tolerant_equal()` 容差），
-       但这个字段完全没有出现在归一化后的分组里 →
-       `unaccounted_resource_change`。
+    3. **全字段扫描**（第十八轮，取代原来只检查
+       `manifest.settings.tracked_ledger_fields` 的做法）：对
+       `current_vars`/`next_vars` 里出现过的*每一个*数值叶子字段
+       （`_flatten_numeric_leaves()` 展开、两边取并集，不要求字段
+       提前声明过、也不要求之前有没有被记过账）：如果值发生了变化
+       （超出 `_tolerant_equal()` 容差），但这个字段完全没有出现在
+       归一化后的分组里 → `unaccounted_resource_change`。
+       旧机制（`tracked_ledger_fields`/`_auto_register_ledger_
+       fields()`）只检查"曾经被记过账、因而被自动登记过"的字段，
+       一个字段如果*从来没有*被模型记过账，就永远不会进入这个追踪
+       集合，等于永远不检查它——这正是用户反馈"总有字段完全没有
+       对应记账记录"的根因之一（另一部分原因是模型这一步就是漏记，
+       见 `_auto_fill_unaccounted_ledger_entries()`）。全字段扫描
+       彻底堵上这个口子："所有变更都有对应记账记录"不再依赖"这个
+       字段是不是恰好被模型提过一次"这个偶然条件。
 
     返回 `(归一化后的 field_ledger 列表, ledger_violations 列表)`。
     容差统一使用 `_tolerant_equal()`（1% 相对容差 + 极小绝对值下限）。
@@ -510,16 +547,16 @@ def _check_field_ledger(
                     }
                 )
 
-    tracked_fields = [str(f).strip() for f in (tracked_ledger_fields or []) if str(f).strip()]
-    for field_path in tracked_fields:
+    before_leaves = _flatten_numeric_leaves(current_vars)
+    after_leaves = _flatten_numeric_leaves(next_vars)
+    all_numeric_fields = sorted(set(before_leaves) | set(after_leaves))
+    for field_path in all_numeric_fields:
         if field_path in grouped:
             continue
-        before = _get_nested(current_vars, field_path)
-        after = _get_nested(next_vars, field_path)
-        if not isinstance(before, (int, float)) or isinstance(before, bool):
-            continue
-        if not isinstance(after, (int, float)) or isinstance(after, bool):
-            continue
+        before = before_leaves.get(field_path)
+        after = after_leaves.get(field_path)
+        if before is None or after is None:
+            continue  # 这一步才出现/消失的字段，没有"变化前"或"变化后"可比较
         if _tolerant_equal(before, after):
             continue
         violations.append(
@@ -534,18 +571,64 @@ def _check_field_ledger(
     return normalized, violations
 
 
-def _auto_register_ledger_fields(tracked_ledger_fields: Any, field_ledger: List[Dict[str, Any]]) -> List[str]:
-    """把这一步 `field_ledger` 里实际出现过的字段自动并入
-    `manifest.settings.tracked_ledger_fields`（第十五轮 3.2 节），写法
-    与 `causal_lines._auto_register_causal_lines()` 一致——发现即登记，
-    不要求提前声明。只增不减，按原有顺序去重、新字段追加在后面。
+def _auto_fill_unaccounted_ledger_entries(
+    field_ledger: List[Dict[str, Any]], violations: List[Dict[str, Any]]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """把 `violations` 里的 `unaccounted_resource_change` 项**确定性地**
+    补成正式的 `field_ledger` 记录（第十八轮，用户反馈"应该真正解决
+    没有账本的变更，所有变更都应该有对应的记账记录"的直接回应）。
+
+    为什么可以不经过 LLM 就能补：这类违规的 `expected`（变化前实际
+    值）/`actual`（变化后实际值）本来就是从 `current_vars`/
+    `next_vars` 直接读出来的已知量，不是需要推测的东西——增减方向、
+    幅度都能唯一确定，唯一"缺"的只是一句人类可读的原因说明，这里用
+    统一的免责文案代替，不冒充模型给出的解释：
+
+    - `reason` 固定为"系统自动补录：模型未在这一步的记账里报告该
+      字段变化的具体原因"。
+    - 额外打一个 `auto_filled: True` 标记，供展示层（`app.py`/
+      `html_export.py`）识别并用不同样式呈现（比如原因文字用斜体/
+      加一个小图标），对用户保持透明——这条记录是系统补的，不是
+      模型的分析。
+
+    这一步应该放在"一次反馈修正调用"（`ledger_correction.py`）之后
+    再跑：修正调用偶尔能给出比固定文案更贴切的原因，让它先尝试没有
+    坏处；但不管修正调用成功与否，这里都会把*所有*剩余的
+    `unaccounted_resource_change` 兜底补完，保证调用方最终拿到的
+    `ledger_violations` 里不会再出现这个 issue 类型——"所有变更都有
+    对应记账记录"从"尽量靠模型配合"变成"系统保证"。
+
+    返回 `(补全后的 field_ledger, 移除了 unaccounted_resource_change
+    之后剩余的 violations)`；其它 issue 类型（`start_mismatch` 等，
+    代表模型确实记了账但算错了，不是单纯遗漏）原样保留，不在这里
+    处理——那类问题的"正确值"不是唯一可确定的（算错的可能是
+    `value_before`，也可能是 `amount`，系统猜不出模型原本想表达
+    哪一种），继续交给 LLM 修正调用或者原样展示给用户。
     """
-    existing = [str(f).strip() for f in (tracked_ledger_fields or []) if str(f).strip()]
-    seen = set(existing)
-    result = list(existing)
-    for entry in field_ledger or []:
-        field_path = str(entry.get("field") or "").strip()
-        if field_path and field_path not in seen:
-            seen.add(field_path)
-            result.append(field_path)
-    return result
+    updated_ledger = list(field_ledger)
+    remaining: List[Dict[str, Any]] = []
+    for v in violations:
+        if v.get("issue") != "unaccounted_resource_change":
+            remaining.append(v)
+            continue
+        before = v.get("expected")
+        after = v.get("actual")
+        if not isinstance(before, (int, float)) or isinstance(before, bool):
+            remaining.append(v)  # 理论上不会发生（生成时已经校验过是数值），保守兜底
+            continue
+        if not isinstance(after, (int, float)) or isinstance(after, bool):
+            remaining.append(v)
+            continue
+        is_increase = after >= before
+        updated_ledger.append(
+            {
+                "field": v.get("field"),
+                "kind": "increase" if is_increase else "decrease",
+                "amount": abs(after - before),
+                "value_before": before,
+                "value_after": after,
+                "reason": "系统自动补录：模型未在这一步的记账里报告该字段变化的具体原因",
+                "auto_filled": True,
+            }
+        )
+    return updated_ledger, remaining

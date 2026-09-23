@@ -860,6 +860,138 @@ def test_advance_gives_up_after_max_attempts_and_raises_sim_engine_error(tmp_pat
     assert call_count["n"] == 3
 
 
+def test_advance_auto_fills_unaccounted_field_without_calling_correction_workflow(tmp_path, monkeypatch):
+    """端到端验证（第十八轮）：模型只记了 `cash` 的账，但 `reputation`
+    也变了却完全没提——`advance()` 返回的状态里不应该再有
+    `unaccounted_resource_change` 违规，`reputation` 应该出现在
+    `field_ledger` 里且标了 `auto_filled: True`；而且因为这类问题
+    系统自己就能确定性解决，不应该触发 `ledger_correction`
+    workflow（`FakeStoreForAdvance.load("ledger_correction")` 会
+    返回 `None`——如果代码路径真的去调用它，`_safe_correct_field_
+    ledger()` 会安全降级返回，不会直接报错，所以这里额外用一个
+    调用计数器断言"根本没有尝试加载/跑这个 workflow"，而不是只看
+    最终结果侥幸正确。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={"cash": 1000, "reputation": 50}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+    load_calls = []
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            load_calls.append(name)
+            if name == "advance_step":
+                return _FakeWorkflow([step_step])
+            return None  # 没有 ledger_correction workflow 可用
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "涨薪了", "narrative": "n",
+                    "next_vars": {"cash": 1500, "reputation": 55},
+                    "field_ledger": [
+                        {"field": "cash", "kind": "increase", "amount": 500,
+                         "value_before": 1000, "value_after": 1500, "reason": "涨薪"},
+                        # reputation 完全没提
+                    ],
+                    "options": [],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+
+    assert next_state.ledger_violations == []
+    assert "ledger_correction" not in load_calls
+
+    ledgered_fields = {e["field"] for e in next_state.field_ledger}
+    assert ledgered_fields == {"cash", "reputation"}
+    reputation_entry = next(e for e in next_state.field_ledger if e["field"] == "reputation")
+    assert reputation_entry["auto_filled"] is True
+    assert reputation_entry["kind"] == "increase"
+    assert reputation_entry["amount"] == 5
+
+
+def test_advance_still_calls_correction_workflow_for_genuine_arithmetic_mismatch(tmp_path, monkeypatch):
+    """有真正的算术错误（模型记了账但算错了）时，仍然应该尝试发起
+    修正调用——这类问题不是单纯遗漏，系统没办法替模型确定"正确值"，
+    第十八轮"跳过纯遗漏场景的修正调用"这个优化不应该影响这条路径。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={"cash": 1000}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+    load_calls = []
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            load_calls.append(name)
+            if name == "advance_step":
+                return _FakeWorkflow([step_step])
+            return None  # ledger_correction 不可用，验证"尝试过"即可
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {
+                    "next_summary": "算错账了", "narrative": "n",
+                    "next_vars": {"cash": 1600},  # 实际落盘 1600
+                    "field_ledger": [
+                        {"field": "cash", "kind": "increase", "amount": 500,
+                         "value_before": 1000, "value_after": 1500, "reason": "涨薪"},  # 账上说 1500，对不上
+                    ],
+                    "options": [],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+
+    assert "ledger_correction" in load_calls  # 确实尝试过发起修正调用
+    issues = {v["issue"] for v in next_state.ledger_violations}
+    assert "end_mismatch_with_actual" in issues  # 修正 workflow 不可用，违规原样保留
+
+
 def test_advance_clamps_negative_resource_field_and_records_violation(tmp_path, monkeypatch):
     """阶段九（4.1 节）：`resource_fields` 声明的字段被 LLM 算成负数时，
     应该被夹到下限（默认 0），且推进本身不被拒绝，越界详情记入

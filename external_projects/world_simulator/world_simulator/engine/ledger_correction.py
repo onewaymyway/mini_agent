@@ -80,7 +80,6 @@ def _safe_correct_field_ledger(
     next_vars: Dict[str, Any],
     field_ledger: List[Dict[str, Any]],
     ledger_violations: List[Dict[str, Any]],
-    tracked_ledger_fields: Any,
     narrative_hint: str,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """发起一次范围有限的记账修正调用，合并补丁并重新校验一次。
@@ -140,9 +139,7 @@ def _safe_correct_field_ledger(
         patched_vars = _merge_next_vars_patch(next_vars, data.get("next_vars_patch"))
         patched_ledger = _merge_field_ledger_patch(field_ledger, data.get("field_ledger_patch"))
 
-        _, remaining_violations = _check_field_ledger(
-            current_vars, patched_vars, patched_ledger, tracked_ledger_fields
-        )
+        _, remaining_violations = _check_field_ledger(current_vars, patched_vars, patched_ledger)
         return patched_vars, patched_ledger, remaining_violations
     except Exception:
         # 修正调用本身是一次可选的旁路增强，任何基础设施异常都不应该

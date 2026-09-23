@@ -3832,3 +3832,68 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
      跑 HTTP 服务"这个可选能力拖累主测试套件必须装 `fastapi`）。
   **验收**：`pytest tests/`（656 passed，含本轮新增 42 个用例），未见
   回归。
+
+- 2026-09-23（第十八轮，用户反馈直接改进，未单独立项 next_doc）：
+  **"所有变更都必须有对应记账记录"——从机制上保证，不再依赖模型
+  配合**。用户贴出的真实案例：一步推进里 5 个字段（`resources.
+  total_capital`/`research.digital_twin_operation`/`knowledge.
+  harness_expertise`/`knowledge.agent_architecture`/`resources.
+  api_budget`）变化了但完全没有对应的 `field_ledger` 记录，"修正一次"
+  之后仍然解决不了，用户明确要求"真正解决"。
+  根因排查：`resource_guard._check_field_ledger()`（第十五轮）的
+  "未记账变化"检查只扫描 `manifest.settings.tracked_ledger_fields`
+  这个集合，而这个集合只有在字段*曾经*出现在某一步的 `field_ledger`
+  里才会被自动登记（`_auto_register_ledger_fields()`）——一个字段
+  如果从来没被模型记过账，就永远不会进入这个集合，等于永远不检查
+  它，是比"这一步偶尔漏记"更根本的一个覆盖面漏洞。
+  1. **`world_simulator/engine/resource_guard.py`**：新增 `_flatten_
+     numeric_leaves()`（把 `vars` 展开成 `{路径: 数值}` 的扁平字典，
+     一层嵌套，和 `resource_fields`/`_get_nested()` 的寻址约定一致），
+     `_check_field_ledger()` 的"未记账变化"检查改成对 `current_vars`/
+     `next_vars` 的数值叶子字段取并集做完整扫描，不再依赖
+     `tracked_ledger_fields`（移除该形参）——不要求字段提前声明、也
+     不要求之前被记过账，彻底堵上"从来没被记过账的字段永远不检查"
+     这个口子。同时新增 `_auto_fill_unaccounted_ledger_entries()`：
+     对扫描出的每一处"变了但没记账"，直接用已知的变化前/变化后数值
+     **确定性**合成一条正式的 `field_ledger` 记录（`reason` 用固定
+     免责文案，额外打 `auto_filled: True` 标记），不需要也不依赖
+     模型配合——这类违规的"正确答案"本来就是已知量，没有猜测空间。
+     移除不再需要的 `_auto_register_ledger_fields()`。
+  2. **`world_simulator/engine/advance.py`**：`_check_field_ledger()`
+     调用点同步去掉 `tracked_ledger_fields` 参数；移除结尾处把
+     `field_ledger` 里出现过的字段并入 `manifest.settings.tracked_
+     ledger_fields` 的登记逻辑（连带这个 settings 字段一起废弃，见
+     `state_model.py` 的更新）。新增一个判断：只有违规里存在"模型
+     确实记了账但算错了"（`start_mismatch`/`arithmetic_mismatch`/
+     `chain_broken`/`end_mismatch_with_actual`）的情形，才发起
+     `ledger_correction` 修正调用——纯粹的 `unaccounted_resource_
+     change` 不再触发这次额外的 LLM 调用（全字段扫描之后这类"单纯
+     遗漏"会比以前更常见，系统自己就能确定性解决，没必要为此多花
+     一次 LLM 调用）。修正调用之后（或者跳过修正调用之后），统一走
+     `_auto_fill_unaccounted_ledger_entries()` 兜底补全剩余的
+     `unaccounted_resource_change`，保证 `advance()` 返回给调用方的
+     `ledger_violations` 里**不会再出现**这个 issue 类型。
+  3. **`world_simulator/engine/ledger_correction.py`**：
+     `_safe_correct_field_ledger()` 同步移除 `tracked_ledger_fields`
+     形参和重新校验时的对应实参。
+  4. **展示层**（`app.py`/`world_simulator/html_export.py`）：
+     `_field_ledger_html()` 对 `entry["auto_filled"] == True` 的行，
+     原因文字加 "🤖 " 前缀并用斜体展示，和模型自己给出的记账原因
+     区分开，保持透明——这条不是模型的分析，是系统按已知数值确定性
+     补的。
+  5. **`state_model.py`**：更新 `field_ledger`/`ledger_violations`
+     docstring，说明 `unaccounted_resource_change` 现在会在落盘前
+     被自动补全、理论上不会再出现在 `ledger_violations` 里；
+     `settings.tracked_ledger_fields` 标记为已废弃（旧数据里如果
+     还留着这个 key，原样保留但不再被任何代码读取）。
+  6. **测试**：新增 `tests/test_field_ledger.py`（15 个用例，这是
+     `_check_field_ledger()`/`_auto_fill_unaccounted_ledger_
+     entries()` 第一次拥有独立单测——审计发现第十五轮引入这两个
+     函数以来一直没有专门的单测覆盖，只在集成层面间接跑到；这次
+     顺手补上，包括直接复现用户反馈的多字段场景和一个
+     check→auto_fill 串起来的端到端场景），`tests/test_spec_and_
+     engine.py` 新增 2 个 `advance()` 集成用例（验证纯遗漏场景不
+     触发 `ledger_correction` workflow、真正的算术错误场景仍然
+     触发）。
+  **验收**：`pytest tests/`（673 passed，含本轮新增 17 个用例），
+  未见回归。

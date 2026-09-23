@@ -680,6 +680,10 @@ def _field_ledger_html(state: SimState, resource_fields: Optional[List[str]] = N
         value_before = entry.get("value_before")
         value_after = entry.get("value_after")
         reason = str(entry.get("reason", ""))
+        if entry.get("auto_filled"):
+            reason_html = f"<i>🤖 {_esc(reason)}</i>"
+        else:
+            reason_html = _esc(reason)
         is_increase = kind == "increase"
         is_resource = field_name in resource_set
         if is_resource:
@@ -692,7 +696,7 @@ def _field_ledger_html(state: SimState, resource_fields: Optional[List[str]] = N
             f"<tr><td>{_esc(field_name)}</td>"
             f'<td class="{css_class}">{_esc(label)} {sign}{_esc(amount)}</td>'
             f"<td>{_esc(value_before)} → {_esc(value_after)}</td>"
-            f"<td>{_esc(reason)}</td></tr>"
+            f"<td>{reason_html}</td></tr>"
         )
     if not rows:
         return ""

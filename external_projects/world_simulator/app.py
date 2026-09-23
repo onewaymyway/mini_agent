@@ -677,6 +677,12 @@ def _field_ledger_html(state, resource_fields: Optional[List[str]] = None) -> st
     （💰 收入/支出）还是"其它数值指标"（📈 提升/📉 下降）——只影响
     图标措辞，不影响底层数据结构，同规划文档 3.1.1 节的展示约定。
     `resource_fields` 为 None/空时全部按"其它数值指标"措辞展示。
+
+    `entry["auto_filled"] == True`（第十八轮，`resource_guard._auto_
+    fill_unaccounted_ledger_entries()` 生成）的行，原因文字前加
+    "🤖 " 前缀并用斜体展示，和模型自己给出的记账原因区分开，保持
+    透明——这条不是模型的分析，是系统按已知的变化前/变化后数值
+    确定性补的。
     """
     entries = getattr(state, "field_ledger", None) or []
     if not entries:
@@ -701,6 +707,10 @@ def _field_ledger_html(state, resource_fields: Optional[List[str]] = None) -> st
         value_before = entry.get("value_before")
         value_after = entry.get("value_after")
         reason = str(entry.get("reason", ""))
+        if entry.get("auto_filled"):
+            reason_html = f'<i>🤖 {_html_text(reason)}</i>'
+        else:
+            reason_html = _html_text(reason)
         is_increase = kind == "increase"
         is_resource = field_name in resource_set
         if is_resource:
@@ -714,7 +724,7 @@ def _field_ledger_html(state, resource_fields: Optional[List[str]] = None) -> st
             f'<td>{_html_text(field_name)}</td>'
             f'<td class="{css_class}">{label} {sign}{_html_text(str(amount))}</td>'
             f'<td>{_html_text(str(value_before))} → {_html_text(str(value_after))}</td>'
-            f'<td>{_html_text(reason)}</td>'
+            f'<td>{reason_html}</td>'
             '</tr>'
         )
     if not rows:

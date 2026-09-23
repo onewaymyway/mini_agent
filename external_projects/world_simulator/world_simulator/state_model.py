@@ -390,8 +390,13 @@ class SimState:
     ledger()` 归一化（丢弃 field/amount 缺失或无法解析的记录）并做
     一致性校验，产生 `ledger_violations`；如果校验发现不一致，engine
     会先尝试一次反馈修正调用（见 `ledger_violations` 说明），这里
-    落盘的是修正之后的最终版本。默认空列表：skill 没给出、旧数据、
-    模板未使用这个机制时都可以为空，不影响任何已有行为，向后兼容。
+    落盘的是修正之后的最终版本，可能包含系统自动补录的记录——这类
+    记录额外带一个 `"auto_filled": true` 字段（第十八轮，见
+    `resource_guard._auto_fill_unaccounted_ledger_entries()`），
+    `reason` 是固定的免责文案而不是模型给出的解释，展示层据此可以
+    用不同样式呈现，对用户保持透明。默认空列表：skill 没给出、旧
+    数据、模板未使用这个机制时都可以为空，不影响任何已有行为，向后
+    兼容。
     """
     ledger_violations: List[Dict[str, Any]] = field(default_factory=list)
     """产生*本状态*这一步，`resource_guard._check_field_ledger()` 对
@@ -404,9 +409,14 @@ class SimState:
     不符）/`chain_broken`（同一字段相邻两笔账目不连续）/
     `arithmetic_mismatch`（某笔自身 `value_before ± amount` 算不出
     `value_after`）/`end_mismatch_with_actual`（末笔 `value_after` 与
-    这一步最终落盘值不符）/`unaccounted_resource_change`
-    （`manifest.settings.tracked_ledger_fields` 里的字段这一步实际
-    变化了，却完全没有对应的 `field_ledger` 记录）。
+    这一步最终落盘值不符）——**不会**再出现
+    `unaccounted_resource_change`（第十八轮之前的取值，"字段变了却
+    没有对应记账记录"）：这类违规现在由 `resource_guard._auto_fill_
+    unaccounted_ledger_entries()` 在这里落盘之前就确定性补成了正式
+    的 `field_ledger` 记录（见 `field_ledger.auto_filled` 说明），
+    不会再作为"未解决的问题"出现——上面四种才是真正值得用户关注的
+    情况：模型*确实*记了账，但账目本身算错了/接不上，系统没办法
+    替模型猜出"正确答案"应该是什么，只能如实展示。
 
     **只提示、不阻断推进、不修改任何数值**——engine 发现不一致后会
     先发起一次范围有限的修正调用（把违规详情连同原始记账一起喂给
@@ -1027,19 +1037,23 @@ class SimManifest:
       初始 `vars` 时给出建议值（见 `spec_generator.ScenarioDraft.
       resource_fields`），用户在创建向导里可以看到并编辑，也可以在
       详情页的"模拟设置"里随时增删。
-    - `tracked_ledger_fields`：字符串数组，第十五轮（`next_doc/
-      world_simulator_fifteenth_round_field_ledger_plan.md` 3.2 节）
-      新增，"哪些字段必须有 `SimState.field_ledger` 记账"的动态集合
-      ——不局限于创建时声明的 `resource_fields`，只要某个字段在
-      `field_ledger` 里出现过一次记账记录（不限资源类），下一步开始
-      它就会被自动并入这个集合（`resource_guard._auto_register_
-      ledger_fields()`，写法与 `causal_lines` 的自动登记一致）。初始
-      值 = `resource_fields` 里声明的字段名；这个集合只增不减，不提供
-      手动移出的入口。`resource_guard._check_field_ledger()` 用它判断
-      "这个字段变了却没有对应记账记录"（`unaccounted_resource_change`
-      不一致项），不直接用 `resource_fields`。留空（默认）等价于只
-      追踪 `resource_fields` 声明过的字段，行为与未引入这个功能之前
-      完全一致，向后兼容。
+    - `tracked_ledger_fields`：**已废弃**（第十八轮之前的机制，见
+      下方说明；如果旧数据里还留着这个 key，会被原样保留但不再被
+      任何代码读取，不影响任何行为）。原本是字符串数组，
+      第十五轮（`next_doc/world_simulator_fifteenth_round_field_
+      ledger_plan.md` 3.2 节）引入，"哪些字段必须有 `SimState.
+      field_ledger` 记账"的动态集合，只有在 `field_ledger` 里出现
+      过一次记账记录的字段才会被自动并入这个集合——问题在于一个
+      字段如果从来没被模型记过账，就永远不会进入这个集合，等于
+      永远不检查它，"所有变更都有对应记账记录"就无法真正做到。
+      第十八轮（用户反馈直接改进）把 `resource_guard._check_field_
+      ledger()` 的完整性检查改成对 `vars` 里*所有*数值叶子字段做
+      并集扫描（`resource_guard._flatten_numeric_leaves()`），不再
+      需要任何"提前声明追踪范围"的配置；同时新增
+      `resource_guard._auto_fill_unaccounted_ledger_entries()`，
+      对扫描出的每一处"变了但没记账"确定性补全一条系统生成的
+      `field_ledger` 记录（见 `SimState.field_ledger`/`ledger_
+      violations` 的说明），不再依赖模型配合。
     - `objectives`：列表，声明这次模拟"主要关心的指标"（阶段十二，
       `next_doc/world_simulator_universal_world_model_upgrade_plan.md`
       4.4 节 Problem Compiler 雏形；阶段十四，4.6 节目标驱动排序）。
