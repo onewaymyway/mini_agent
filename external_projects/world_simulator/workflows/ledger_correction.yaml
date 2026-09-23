@@ -1,0 +1,86 @@
+name: ledger_correction
+description: >-
+  字段变化台账（`field_ledger`）的一次性反馈修正调用（第十五轮，
+  `next_doc/world_simulator_fifteenth_round_field_ledger_plan.md`
+  3.4 节）。由 `world_simulator/engine/ledger_correction.py::
+  _safe_correct_field_ledger()` 触发，只在 `resource_guard._check_
+  field_ledger()` 发现 `ledger_violations` 非空时才会调用一次（大多数
+  步骤账目本来就是对的，不会触发）。
+
+  用 `type: agent`（不是 `skill_agent`）——修正记账数字是通用的
+  算术/一致性核对能力，不依赖具体场景模板（life_sim/negotiation/...）
+  的私有规则，同 `retrospective.yaml`/`agent_preview.yaml` 的取舍。
+  同样因为 `type: agent` 不支持 `result_file` 结果文件契约，要求
+  Agent 直接把 JSON 作为最终回复的全部内容，由
+  `world_simulator/agent_step_result.py::extract_agent_json_output()`
+  解析（同 `retrospective.py` 的既有用法）。
+
+  只修正一次：调用方不会因为修正后仍有问题而再次触发这个 workflow，
+  剩余的不一致按方案 3.4 节降级为透明标记。
+version: "1.0"
+steps:
+  - id: ledger_correction
+    name: 修正字段变化台账
+    type: agent
+    prompt: |
+      你正在帮一次"世界模拟"的单步推进做一次**记账核对修正**。上一次
+      产出的字段变化台账（`field_ledger`）和最终生效的变量值
+      （`next_vars`）之间存在几处对不上账的问题，需要你只修正有问题
+      的部分，其它内容原样保留。
+
+      这一步的叙事/摘要（仅供理解背景，不要求你重写它们）：
+      {narrative_hint}
+
+      这一步最终生效的变量值里，与本次问题相关的部分（JSON，只包含
+      涉及问题字段的路径，不是完整的 next_vars）：
+      {next_vars_relevant_json}
+
+      上一次给出的完整字段变化台账（JSON 数组，每项包含
+      field/kind/amount/value_before/value_after/reason）：
+      {field_ledger_json}
+
+      系统核对发现的不一致（JSON 数组，每项包含 field/issue/
+      expected/actual）：
+      {violations_json}
+
+      不一致的类型说明：
+      - `start_mismatch`：某字段第一笔记录的 value_before 与这一步
+        开始前的实际值对不上。
+      - `chain_broken`：同一字段内，后一笔的 value_before 与前一笔的
+        value_after 对不上。
+      - `arithmetic_mismatch`：某一笔自己的 value_before ± amount
+        （increase 用加、decrease 用减）算不出声明的 value_after。
+      - `end_mismatch_with_actual`：某字段最后一笔的 value_after 与
+        这一步最终生效值对不上。
+      - `unaccounted_resource_change`：这个字段这一步实际发生了变化，
+        但完全没有对应的记账记录（需要你补一条合理的记录，说明这个
+        变化是因为什么发生的）。
+
+      【你的任务】只针对上面列出的问题字段，重新核算并给出修正后的
+      记账记录（保证 value_before/value_after/amount 三者能对上账，
+      且首尾能和实际值对上）；不要改动没有出现在问题列表里的字段，
+      不要重写叙事、不要改动 kind/reason 之外的语义（reason 如果本来
+      就合理可以保留，只有确实说不通时才需要调整措辞）。如果某个
+      `unaccounted_resource_change` 问题你核算后认为实际值本身应该
+      修正（比如这个变化其实是之前某个字段计算错误导致的连带影响），
+      可以通过 `next_vars_patch` 一并给出修正后的最终值，但优先考虑
+      "记账补齐"而不是"改动最终数值"——只有记账怎么补都补不出实际
+      值时才通过 `next_vars_patch` 调整数值本身。
+
+      【输出格式，必须严格遵守】你的最终回复必须**只包含一个 JSON
+      对象**，不要有任何其它文字、解释、markdown 代码块围栏、或工具
+      调用——直接把下面这些字段组成的 JSON 对象作为你这一轮对话的
+      最后回复内容：
+
+      - `next_vars_patch`：对象，只包含你认为确实需要修正的字段路径
+        （用 `.` 分隔的一层嵌套写法，比如 `{{"resources": {{"cash":
+        1500}}}}`），不需要修正任何数值时给 `{{}}`。
+      - `field_ledger_patch`：数组，每一项是一个字段这一步**完整的**
+        修正后记账分组（同一个字段如果有多笔，全部放在这里，会整体
+        替换掉原来这个字段的记账记录）——数组里每一项结构同原始
+        `field_ledger` 的单条记录（field/kind/amount/value_before/
+        value_after/reason）。只包含你修正过的字段，未出现在这里的
+        字段保持原样不变。
+
+      不要用 bash/echo 或任何工具来"打印"这个 JSON。你的最后一条回复
+      消息，去掉首尾空白后，必须能被直接当 JSON 解析。

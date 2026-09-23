@@ -3638,3 +3638,42 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
      主流程（下一阶段接入）。
   默认空列表/空集合，`field_ledger`/`tracked_ledger_fields` 未使用
   时行为与改动前完全一致，向后兼容。
+
+- 2026-09-23（第十五轮阶段二）：**字段变化台账——接入推进主流程 +
+  反馈修正调用**，按 `next_doc/
+  world_simulator_fifteenth_round_field_ledger_plan.md` 3.3/3.4/3.5
+  节。
+  1. **`workflows/ledger_correction.yaml`**：新增单步骤 `type: agent`
+     workflow，只在校验发现 `ledger_violations` 时被触发一次，只要求
+     模型修正有问题的字段（`next_vars_patch`/`field_ledger_patch`
+     补丁），不重新生成叙事/其它字段，同 `retrospective.yaml` 的
+     `type: agent` + `extract_agent_json_output()` 解析方式。
+  2. **`world_simulator/engine/ledger_correction.py`**：新增
+     `_safe_correct_field_ledger()`，发起一次修正调用、合并补丁、
+     重新跑一遍 `_check_field_ledger()`；任何基础设施异常（workflow
+     找不到/执行失败/回复解析失败）都安全降级为原样返回修正前的
+     结果，不影响主推进流程（同 `_safe_*` 系列包装函数的既有取舍）。
+     **只修正一次**，不做第二次重试。
+  3. **`world_simulator/engine/advance.py`**：`advance()` 落盘前
+     解析 `data.get("field_ledger")`、调用 `_check_field_ledger()`；
+     有违规时触发上面的一次修正调用；把最终的归一化列表和（可能
+     仍剩余的）违规列表落到 `next_state.field_ledger`/`next_state.
+     ledger_violations`；`_auto_register_causal_lines()` 之后同样
+     调用 `_auto_register_ledger_fields()` 更新 `manifest.settings.
+     tracked_ledger_fields`（只增不减，随 `field_ledger` 自动扩展）。
+     拆分调用模式（`split_decision_calls`）下 `field_ledger` 由
+     `world_evolve` 产出，合并逻辑（`data = {**data_decide,
+     **data_evolve}`）已保证世界状态字段优先取自 `world_evolve`，
+     不需要额外改动。
+  4. **`workflows/advance_step.yaml`/`workflows/world_evolve.yaml`**：
+     新增 `field_ledger` 输出格式说明段落（字段结构、`value_before`/
+     `value_after` 必须与实际 `next_vars` 对得上、一旦记过账要持续
+     记账、平淡变化不强求记账）。
+  **验收**：`resource_guard._check_field_ledger()`/`_auto_register_
+  ledger_fields()` 独立单测脚本验证五种 `issue` 分支 + 自动登记；
+  接入后跑全部既有测试套件（`606 passed`，无回归）；发现并修复
+  `workflows/*.yaml` prompt 示例里带 `.` 的花括号会被
+  `test_workflow_prompt_placeholders.py` 误判为占位符的问题（改用
+  不带路径分隔符的示例字段名）。展示层（`app.py`/`html_export.py`）
+  和正式的记账校验/自动登记单测（`tests/test_spec_and_engine.py`）
+  留给后续阶段。

@@ -32,7 +32,13 @@ from world_simulator.engine.knowledge import (
     _safe_suggest_knowledge,
 )
 from world_simulator.decision_validation import compute_option_warnings
-from world_simulator.engine.resource_guard import _apply_resource_guard, _check_resource_relations
+from world_simulator.engine.ledger_correction import _safe_correct_field_ledger
+from world_simulator.engine.resource_guard import (
+    _apply_resource_guard,
+    _auto_register_ledger_fields,
+    _check_field_ledger,
+    _check_resource_relations,
+)
 from world_simulator.engine.structural_change import (
     _format_confirmed_structural_changes,
     _normalize_structural_change,
@@ -549,6 +555,32 @@ def advance(
         resource_transfers,
     )
 
+    # 字段变化台账审计校验（第十五轮，`next_doc/
+    # world_simulator_fifteenth_round_field_ledger_plan.md`）：和资源
+    # 转移关系一致性检查一样，用夹值*之前*的 `current.vars` 对比夹值
+    # *之后*的 `next_vars`——夹值本身也是这一步真实落盘的变化量的一
+    # 部分。`tracked_ledger_fields` 决定"未记账变化"检查覆盖哪些字段
+    # （不局限于 `resource_fields`，见 `SimManifest.settings.tracked_
+    # ledger_fields` 的说明）。
+    tracked_ledger_fields = manifest.settings.get("tracked_ledger_fields")
+    field_ledger, ledger_violations = _check_field_ledger(
+        current.vars, next_vars, data.get("field_ledger"), tracked_ledger_fields
+    )
+    if ledger_violations:
+        # 校验失败先尝试一次范围有限的反馈修正调用（3.4 节），而不是
+        # 直接降级为纯标记；修正调用本身是可选旁路，任何基础设施异常
+        # 都会安全降级为原样返回，不影响本次推进的主流程。
+        next_vars, field_ledger, ledger_violations = _safe_correct_field_ledger(
+            cfg,
+            workspace_root,
+            current_vars=current.vars,
+            next_vars=next_vars,
+            field_ledger=field_ledger,
+            ledger_violations=ledger_violations,
+            tracked_ledger_fields=tracked_ledger_fields,
+            narrative_hint=str(data.get("narrative", "") or data.get("next_summary", "") or ""),
+        )
+
     # 背景角色的简单趋势外推（Hierarchical Agent，4.10 节设计草案第
     # 一步）：需要"上一步"（当前状态*之前*那一步）的 vars 才能算变化量，
     # 用当前分支的完整历史往前找一条；第一次推进（历史只有 1 条，即
@@ -589,6 +621,8 @@ def advance(
         resource_violations=resource_violations,
         relation_violations=relation_violations,
         resource_transfers=resource_transfers,
+        field_ledger=field_ledger,
+        ledger_violations=ledger_violations,
         background_entities_applied=background_entities_applied,
         uncertain_fields=list(data.get("uncertain_fields") or []),
         key_drivers=[str(x) for x in (data.get("key_drivers") or [])],
@@ -636,6 +670,16 @@ def advance(
     # 不需要额外的确认环节。新登记的线同样会带上兜底的默认未来树（阶段
     # 二十六），保证"自发出现的线"不会缺未来展望。
     _auto_register_causal_lines(manifest, next_state)
+
+    # 第十五轮 3.2 节：把这一步 `field_ledger` 里实际出现过的字段自动
+    # 并入 `manifest.settings.tracked_ledger_fields`，写法与因果线
+    # 自动登记一致——发现即登记，不要求提前声明。只增不减。
+    manifest.settings = {
+        **manifest.settings,
+        "tracked_ledger_fields": _auto_register_ledger_fields(
+            manifest.settings.get("tracked_ledger_fields"), next_state.field_ledger
+        ),
+    }
 
     # 阶段二十六：合并这一步对因果线"未来树"的修正（印证/排除/新增
     # 分支），必须在 `_auto_register_causal_lines()` 之后调用——新登记
