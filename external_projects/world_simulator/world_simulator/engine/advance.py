@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -165,6 +166,115 @@ def _build_decision_opportunity(next_state: SimState) -> Optional[Dict[str, Any]
         "max_risk": _max_by_rank(risk_levels, _RISK_RANK),
         "baseline_option_id": baseline_option_id,
     }
+
+
+# 第十六轮（`next_doc` 暂未单独立项，随用户反馈直接修复）：workflow
+# 产出解析的异常处理 + 重试机制。修复前的问题（见 PROJECT.md 对应
+# 变更日志里贴的用户复现 traceback）：模型偶尔会在 JSON 字符串里夹带
+# 未转义的字面控制字符（比如叙事文本里直接换行而不是写成 `\n`），
+# `json.loads()` 默认 `strict=True` 遇到这种情况直接抛
+# `json.decoder.JSONDecodeError`——这是 `ValueError` 的子类，不是
+# `SimEngineError`，会绕过 `app.py` 里几乎所有 `except SimEngineError`
+# 分支，在 Streamlit 页面上变成一次没有任何提示的裸崩溃（自动挡连续
+# 推进场景尤其容易撞到，因为不需要人工确认就会连续发起多次 LLM 调用）。
+_JSON_PARSE_MAX_ATTEMPTS = 3  # 含首次调用，最多再重试 2 次
+_JSON_PARSE_RETRY_DELAY_SECONDS = 1.5
+
+
+def _parse_agent_json_result(raw_text: str, *, workflow_label: str) -> Dict[str, Any]:
+    """把 workflow 落盘的原始文本解析成 JSON，尽量宽容地处理模型偶尔
+    夹带的非法字符/格式瑕疵，解析彻底失败时抛 `SimEngineError`（而
+    不是让 `json.JSONDecodeError` 原样往外传）。
+
+    两层尝试：
+    1. 正常 `json.loads()`（`strict=True`，绝大多数情况下直接成功，
+       走最快路径）。
+    2. `json_repair.loads()` 重试——这是本项目已有依赖（`world_
+       simulator/agent_step_result.py::extract_agent_json_output()`
+       解析 `type: agent` step 输出时用的同一个库），能容忍字符串里
+       的字面控制字符（未转义的换行/制表符，本次修复的直接触发场景）、
+       缺逗号/多逗号、单引号、尾随逗号等一大类常见 LLM 输出瑕疵，
+       比手写正则修补更稳，不需要为这里单独维护一套修复规则。
+    两层都失败才判定为"这次产出本身就不是合法 JSON"，交给调用方的
+    重试循环决定要不要重新发起一次 LLM 调用。
+    """
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError:
+        pass
+    import json_repair
+
+    try:
+        data = json_repair.loads(raw_text)
+    except Exception as exc:  # noqa: BLE001 — json_repair 内部异常类型不固定
+        data = None
+        repair_error: Optional[Exception] = exc
+    else:
+        repair_error = None
+    if isinstance(data, dict):
+        return data
+    preview = raw_text[:200].replace("\n", "\\n")
+    detail = f"（{repair_error}）" if repair_error else "（修复后仍不是 JSON 对象）"
+    raise SimEngineError(
+        f"{workflow_label} 返回的内容不是合法 JSON{detail}；"
+        f"原始内容开头：{preview}..."
+    )
+
+
+def _run_workflow_step_with_retry(
+    runner,
+    wf,
+    step_id: str,
+    inputs: Dict[str, Any],
+    *,
+    workflow_label: str,
+    max_attempts: int = _JSON_PARSE_MAX_ATTEMPTS,
+) -> Dict[str, Any]:
+    """跑一次 workflow 的单个 step 并解析其 JSON 产出；workflow 执行
+    失败（`result.status != "done"`）或者产出不是合法 JSON（`_parse_
+    agent_json_result()` 两层尝试后仍失败），都视为一次可能的瞬时
+    故障（网络抖动、模型偶发输出格式错误），自动重试最多
+    `max_attempts` 次（含首次），每次重试之间短暂等待；全部尝试都
+    失败后，把最后一次的错误包装成 `SimEngineError` 抛出——调用方
+    （`advance()` 自身、以及再往上 `app.py`/`autopilot.py` 里现有的
+    `except SimEngineError` 分支）不需要任何改动就能接住，展示为一条
+    清晰的中文错误提示，而不是原始的 Python traceback。
+
+    只对"这次调用本身失败/产出解析失败"重试，不对调用成功、但业务
+    校验不通过（比如选项 id 不在候选列表里）的情形重试——那类错误
+    在 `advance()` 里由专门的分支处理，不经过这个函数。
+    """
+    last_error: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = runner.run(wf, inputs)
+            if result.status != "done":
+                failed = [
+                    f"{sr.step_id}({sr.status.value}): {sr.error}"
+                    for sr in result.step_results
+                    if sr.status.value != "done"
+                ]
+                raise SimEngineError(
+                    f"{workflow_label} workflow 执行未成功：status={result.status}；"
+                    + "；".join(failed)
+                )
+            step_result = next(
+                (sr for sr in result.step_results if sr.step_id == step_id), None
+            )
+            if step_result is None or not step_result.result_file:
+                raise SimEngineError(
+                    f"{workflow_label} 的 {step_id} 步骤未产出 result_file，无法解析推进结果"
+                )
+            raw_text = Path(step_result.result_file).read_text(encoding="utf-8")
+            return _parse_agent_json_result(raw_text, workflow_label=workflow_label)
+        except SimEngineError as exc:
+            last_error = exc
+            if attempt < max_attempts:
+                time.sleep(_JSON_PARSE_RETRY_DELAY_SECONDS)
+                continue
+    raise SimEngineError(
+        f"{workflow_label} 连续 {max_attempts} 次尝试均失败，已放弃重试：{last_error}"
+    )
 
 
 def advance(
@@ -322,23 +432,9 @@ def advance(
         if not found:
             raise SimEngineError("advance_step workflow 中找不到 step id=step")
 
-        result = runner.run(wf, shared_inputs)
-        if result.status != "done":
-            failed = [
-                f"{sr.step_id}({sr.status.value}): {sr.error}"
-                for sr in result.step_results
-                if sr.status.value != "done"
-            ]
-            raise SimEngineError(
-                f"advance_step workflow 执行未成功（skill={skill_name}）："
-                f"status={result.status}；" + "；".join(failed)
-            )
-
-        step_result = next((sr for sr in result.step_results if sr.step_id == "step"), None)
-        if step_result is None or not step_result.result_file:
-            raise SimEngineError("step 步骤未产出 result_file，无法解析推进结果")
-
-        data: Dict[str, Any] = json.loads(Path(step_result.result_file).read_text(encoding="utf-8"))
+        data: Dict[str, Any] = _run_workflow_step_with_retry(
+            runner, wf, "step", shared_inputs, workflow_label="advance_step"
+        )
     else:
         wf_evolve = wf_store.load("world_evolve")
         if wf_evolve is None:
@@ -352,26 +448,8 @@ def advance(
         if not found:
             raise SimEngineError("world_evolve workflow 中找不到 step id=world_evolve")
 
-        result_evolve = runner.run(wf_evolve, shared_inputs)
-        if result_evolve.status != "done":
-            failed = [
-                f"{sr.step_id}({sr.status.value}): {sr.error}"
-                for sr in result_evolve.step_results
-                if sr.status.value != "done"
-            ]
-            raise SimEngineError(
-                f"world_evolve workflow 执行未成功（skill={skill_name}）："
-                f"status={result_evolve.status}；" + "；".join(failed)
-            )
-
-        step_result_evolve = next(
-            (sr for sr in result_evolve.step_results if sr.step_id == "world_evolve"), None
-        )
-        if step_result_evolve is None or not step_result_evolve.result_file:
-            raise SimEngineError("world_evolve 步骤未产出 result_file，无法解析推进结果")
-
-        data_evolve: Dict[str, Any] = json.loads(
-            Path(step_result_evolve.result_file).read_text(encoding="utf-8")
+        data_evolve: Dict[str, Any] = _run_workflow_step_with_retry(
+            runner, wf_evolve, "world_evolve", shared_inputs, workflow_label="world_evolve"
         )
 
         wf_decide = wf_store.load("decision_generate")
@@ -405,26 +483,8 @@ def advance(
                 data_evolve.get("tree_updates") or [], ensure_ascii=False
             ),
         }
-        result_decide = runner.run(wf_decide, decide_inputs)
-        if result_decide.status != "done":
-            failed = [
-                f"{sr.step_id}({sr.status.value}): {sr.error}"
-                for sr in result_decide.step_results
-                if sr.status.value != "done"
-            ]
-            raise SimEngineError(
-                f"decision_generate workflow 执行未成功（skill={skill_name}）："
-                f"status={result_decide.status}；" + "；".join(failed)
-            )
-
-        step_result_decide = next(
-            (sr for sr in result_decide.step_results if sr.step_id == "decision_generate"), None
-        )
-        if step_result_decide is None or not step_result_decide.result_file:
-            raise SimEngineError("decision_generate 步骤未产出 result_file，无法解析推进结果")
-
-        data_decide: Dict[str, Any] = json.loads(
-            Path(step_result_decide.result_file).read_text(encoding="utf-8")
+        data_decide: Dict[str, Any] = _run_workflow_step_with_retry(
+            runner, wf_decide, "decision_generate", decide_inputs, workflow_label="decision_generate"
         )
 
         # 两份结果按字段合并：`world_evolve` 负责世界状态类字段，

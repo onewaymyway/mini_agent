@@ -710,6 +710,156 @@ def test_advance_rejects_unknown_option(tmp_path, monkeypatch):
         )
 
 
+def test_parse_agent_json_result_tolerates_literal_control_characters():
+    """用户反馈复现的原始 bug：模型在 JSON 字符串里夹带了未转义的字面
+    换行符，`json.loads()` 默认 `strict=True` 直接抛
+    `json.decoder.JSONDecodeError`（"Invalid control character"）；
+    `_parse_agent_json_result()` 应该用 `json_repair` 兜底救回来，不
+    抛异常。"""
+    from world_simulator.engine.advance import _parse_agent_json_result
+
+    raw = '{"next_summary": "签下了新客户\n（预付款已到账）", "next_vars": {"cash": 1500}}'
+    data = _parse_agent_json_result(raw, workflow_label="advance_step")
+    assert data["next_vars"]["cash"] == 1500
+    assert "签下了新客户" in data["next_summary"]
+
+
+def test_parse_agent_json_result_raises_sim_engine_error_when_unrecoverable():
+    """连字符串修复都救不回来的内容（比如压根不是 JSON 的自然语言），
+    应该抛 `SimEngineError`（可被调用方现有的 `except SimEngineError`
+    分支接住），而不是让原始 `json.JSONDecodeError` 或其它异常类型
+    往外传。"""
+    from world_simulator.engine.advance import _parse_agent_json_result
+
+    with pytest.raises(engine_mod.SimEngineError):
+        _parse_agent_json_result("这根本不是 JSON，只是一段自然语言回复。", workflow_label="advance_step")
+
+
+def test_advance_retries_on_malformed_json_and_eventually_succeeds(tmp_path, monkeypatch):
+    """workflow 第一次产出的内容不是合法 JSON（模拟"模型这次答得不
+    合格式"的瞬时故障）时，`advance()` 应该自动重试，第二次成功就
+    正常推进，不应该把 `json.JSONDecodeError`/`SimEngineError` 抛给
+    调用方。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={"age": 22}, options=[],
+    )
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+
+    step_step = _FakeStep("step")
+    call_count = {"n": 0}
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # 第一次调用：产出的"JSON"文件内容是残缺/非法的，模拟
+                # 模型这次没有按格式回复。
+                bad_file = tmp_path / "bad_result.json"
+                bad_file.write_text("这不是合法 JSON，只是模型跑题了。", encoding="utf-8")
+                return SimpleNamespace(
+                    status="done",
+                    step_results=[
+                        SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=str(bad_file))
+                    ],
+                )
+            result_file = _write_result_file(
+                tmp_path,
+                "good_result.json",
+                {
+                    "next_summary": "第二次重试成功",
+                    "narrative": "重新生成后格式正确",
+                    "next_vars": {"age": 23},
+                    "options": [],
+                },
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[
+                    SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)
+                ],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+    advance_mod = sys.modules["world_simulator.engine.advance"]  # package __init__ 把同名 attribute 重绑成了函数，不能用 import-as
+    monkeypatch.setattr(advance_mod.time, "sleep", lambda *_a, **_k: None)
+
+    next_state = engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+
+    assert call_count["n"] == 2
+    assert next_state.summary == "第二次重试成功"
+    assert next_state.vars["age"] == 23
+
+
+def test_advance_gives_up_after_max_attempts_and_raises_sim_engine_error(tmp_path, monkeypatch):
+    """每次都产出非法内容时，重试到上限后应该放弃，抛
+    `SimEngineError`（而不是无限重试、也不是把底层 `json.
+    JSONDecodeError` 原样抛出）——`app.py` 里几乎所有调用点都是靠
+    `except SimEngineError` 展示错误提示，异常类型必须保持一致。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={"age": 22}, options=[],
+    )
+
+    step_step = _FakeStep("step")
+    call_count = {"n": 0}
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            call_count["n"] += 1
+            bad_file = tmp_path / f"bad_result_{call_count['n']}.json"
+            bad_file.write_text("依旧不是合法 JSON。", encoding="utf-8")
+            return SimpleNamespace(
+                status="done",
+                step_results=[
+                    SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=str(bad_file))
+                ],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+    advance_mod = sys.modules["world_simulator.engine.advance"]  # package __init__ 把同名 attribute 重绑成了函数，不能用 import-as
+    monkeypatch.setattr(advance_mod.time, "sleep", lambda *_a, **_k: None)
+
+    with pytest.raises(engine_mod.SimEngineError):
+        engine_mod.advance(
+            cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+        )
+
+    # 含首次调用一共尝试 3 次（`_JSON_PARSE_MAX_ATTEMPTS` 默认值），
+    # 不多不少，既不是"失败一次就放弃"，也不是无限重试。
+    assert call_count["n"] == 3
+
+
 def test_advance_clamps_negative_resource_field_and_records_violation(tmp_path, monkeypatch):
     """阶段九（4.1 节）：`resource_fields` 声明的字段被 LLM 算成负数时，
     应该被夹到下限（默认 0），且推进本身不被拒绝，越界详情记入

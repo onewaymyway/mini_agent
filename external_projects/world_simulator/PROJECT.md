@@ -3714,3 +3714,52 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   至此第十五轮 `field_ledger` 全部计划内容（3.1～3.6 节）落地完成，
   3.7 节的非数值 `transition` 扩展仍按计划留待后续有实际需求时再
   立项。
+
+- 2026-09-23（第十六轮，用户反馈直接修复，未单独立项 next_doc）：
+  **`advance()` 里 workflow 产出的 JSON 解析——异常处理 + 重试机制**。
+  用户在 Windows 环境下自动挡连续推进时遇到裸崩溃，贴出的 traceback：
+  `json.decoder.JSONDecodeError: Invalid control character at: line 7
+  column 116`，一路往上经过 `advance.py:426`（`json.loads(...)`）、
+  `autopilot.py::run_autopilot_step`，最终在 `app.py::page_detail`
+  没有被任何 `except` 分支接住，整个 Streamlit 页面直接崩掉。
+  根因：模型偶尔会在 JSON 字符串里夹带未转义的字面控制字符（比如
+  叙事文本里直接换行），`json.loads()` 默认 `strict=True` 遇到这种
+  情况会抛 `json.decoder.JSONDecodeError`——这是 `ValueError` 的
+  子类，不是 `SimEngineError`，而 `app.py` 几乎所有调用点都只
+  `except SimEngineError`（及其子类），于是这个异常类型直接绕过了
+  现有的错误提示机制。
+  1. **`world_simulator/engine/advance.py`**：新增
+     `_parse_agent_json_result()`（两层尝试：先走正常
+     `json.loads()`，失败后用本项目已有依赖 `json_repair.loads()`
+     兜底——同 `world_simulator/agent_step_result.py::extract_agent_
+     json_output()` 用的同一个库，能容忍字面控制字符、缺逗号、单
+     引号等一大类常见 LLM 输出瑕疵；两层都失败才抛 `SimEngineError`，
+     带上错误详情和原始内容开头预览）和
+     `_run_workflow_step_with_retry()`（把"跑一次 workflow step +
+     解析其 JSON 产出"这个动作包起来，workflow 执行失败或者解析
+     失败都视为一次可能的瞬时故障，自动重试最多 3 次——含首次调用，
+     每次重试间隔 1.5 秒，`_JSON_PARSE_MAX_ATTEMPTS`/`_JSON_PARSE_
+     RETRY_DELAY_SECONDS` 两个模块级常量控制；全部尝试都失败后统一
+     包装成 `SimEngineError` 抛出）。`advance()` 内部三处原本直接
+     `json.loads(Path(...).read_text())` 的调用点（单次调用模式的
+     `step`、拆分调用模式的 `world_evolve`/`decision_generate`）
+     全部改用这个新的重试封装，不再手写各自的 `result.status`
+     校验 + `json.loads` 逻辑。
+  2. **不需要改 `app.py`**：因为修复后所有失败路径最终都统一收敛成
+     `SimEngineError`，`app.py`/`autopilot.py` 里现有的
+     `except SimEngineError` 分支不用做任何改动就能正确接住并展示
+     清晰的中文错误提示，而不是裸崩溃。
+  3. **`tests/test_spec_and_engine.py`**：新增 4 个用例——
+     `_parse_agent_json_result()` 容忍字面控制字符（直接复现用户
+     反馈的场景）、彻底不是 JSON 的内容仍抛 `SimEngineError`、
+     workflow 第一次产出非法内容第二次重试成功、连续 3 次都失败后
+     放弃并抛 `SimEngineError`（断言恰好调用 3 次，不多不少）。
+  4. **`tests/test_autopilot.py`**：`test_batch_autopilot_continues_
+     after_single_failure` 原本假设"workflow 执行失败一次就立刻
+     判定这次自动挡推进失败"，这个假设在有了自动重试之后不再成立
+     （偶发失败会被自动重试掩盖），改为让 mock 连续失败 3 次（用尽
+     重试次数）才判定为持续性故障，验证"一个 sim 重试耗尽后仍然
+     彻底失败、不影响批量任务里后面其它 sim 正常推进"这个更贴近新
+     行为的场景。
+  **验收**：`pytest tests/`（614 passed，含本轮新增/修改的 5 个
+  用例），未见回归。

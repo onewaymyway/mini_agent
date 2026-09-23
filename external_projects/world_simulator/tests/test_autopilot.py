@@ -452,9 +452,16 @@ def test_batch_autopilot_continues_after_single_failure(tmp_path, monkeypatch):
             # 用 inputs 里的 current_step/summary 无法区分是哪个 sim，改用一个
             # 模块级计数器：第一次调用（按 list_simulations 的顺序，"auto_bad"
             # 先于 "auto_good"）制造失败，第二次成功。
+            #
+            # `advance()` 现在会对"workflow 执行未成功"自动重试（含首次）
+            # 最多 `_JSON_PARSE_MAX_ATTEMPTS`（3）次，所以这里让前 3 次调用
+            # 都失败，模拟"auto_bad"这次推进是持续性故障、重试到上限后
+            # 仍然失败，而不是偶发一次就恢复——第 4 次调用（轮到
+            # "auto_good"）才成功，验证批量自动挡里一个 sim 用尽重试次数
+            # 彻底失败，不影响后面其它 sim 正常推进。
             call_count = getattr(FakeRunner, "_calls", 0)
             FakeRunner._calls = call_count + 1
-            if call_count == 0:
+            if call_count < 3:
                 return SimpleNamespace(status="failed", step_results=[
                     SimpleNamespace(step_id="step", status=_FakeStatus("failed"), result_file=None, error="boom")
                 ])
@@ -471,6 +478,8 @@ def test_batch_autopilot_continues_after_single_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStore)
     monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunner)
+    advance_mod = sys.modules["world_simulator.engine.advance"]
+    monkeypatch.setattr(advance_mod.time, "sleep", lambda *_a, **_k: None)
 
     results = ap_mod.run_batch_autopilot(object(), tmp_path, data_dir, steps=1)
 
