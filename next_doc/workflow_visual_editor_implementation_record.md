@@ -199,3 +199,68 @@ failed**；这 4 个失败（`test_session_to_workflow.py` 1 个、
   266 通过；5 个失败在未改动的原始代码上同样失败（`test_workflow_p11` 3 个中有 1 个本身不稳定、
   `test_workflow_p15` 1 个、`test_session_to_workflow` 1 个），与本里程碑无关。
   （`streamlit` 缺失导致部分看板测试无法在沙箱收集，未运行。）
+
+## M3：看板侧纯函数模块与 client 方法
+
+### 1. 交付内容
+
+- 新增 `apps/mini_agent_kanban/workflow_editor.py`：**纯函数**（不 import streamlit、无网络），M4 的 UI
+  只负责渲染与事件转发。所有"改草稿"的函数不原地修改入参，返回新草稿（深拷贝）。
+  - 图转换：`draft_to_graph`（节点含图标 / 配色 / 徽标 🔒🔀🧩⚠️ / 错误·警告边框 / 批次；`depends_on` 实线、
+    不重复的 `merge_sources` 虚线只读；指向不存在节点的引用进 `dangling` 而不画边）、`compute_layers`（本地 Kahn 分层，
+    有环也不丢节点）。
+  - 依赖编辑：`find_cycle` / `would_create_cycle`（返回具体环路径）/ `add_dependency`（拒绝自依赖、重复、成环）/
+    `remove_dependency` / `dependency_diff` + `apply_dependency_diff`（画布边差集 → depends_on，逐条环检测，
+    失败的收集报错、其余照常应用）。
+  - 节点操作：`add_step`（各类型空骨架）/ `duplicate_step` / `delete_step` + `analyze_delete`（影响面：谁依赖它、
+    谁的 condition / 占位符还引用它）/ `insert_between`（方案 §4.2「插入到边间」的纯函数，UI 在 M5）/
+    `validate_new_id` / `unique_step_id`。
+  - 改 id 联动 `rename_step`：改写其它 step 的 `depends_on` / `merge_sources` / `condition` / 各文本字段里的
+    `{old.xxx}` 占位符（含 `tool_args` 嵌套、`prompt_file` 正文），返回 `renames`（传给后端保住注释）与
+    `changes` 清单（进"查看变更"）。
+  - 校验归类：`group_messages`（与后端同口径的本地兜底）、`normalize_validation`、`parse_editor_error`
+    （把 client 失败返回值归成 conflict / validation / disabled / needs_confirm / not_found / network / other）。
+  - 变更预览：`semantic_equal` / `is_dirty` / `summarize_changes` / `build_change_diff`（git 风格 unified diff，
+    可直接喂给 `diff_view.parse_unified_diff`，方案 §2.4 的复用点）。
+  - 降级渲染 `to_dot`（graphviz DOT，选中高亮、错误红框、merge 虚线）。
+  - 属性面板字段清单 `STEP_FIELD_SPECS` / `ADVANCED_FIELD_SPECS` / `WORKFLOW_LEVEL_FIELD_SPECS` / `fields_for` /
+    `runtime_switch_note`（§4.4 的表单清单数据化，include 节点只开放 `id` / `depends_on`）。
+- `apps/mini_agent_kanban/client.py`：`workflow_editor_meta` / `workflow_editor_doc` / `validate_workflow_draft` /
+  `save_workflow_draft`，省略的可选参数不出现在请求体里。
+
+### 2. 与方案的偏差 / 补充
+
+1. **client 用独立的 `_editor_request`，不复用 `_get/_post/_put`**：既有三者遇到非 200 只返回被截成 200 字符的
+   `_error` 文本，而编辑器必须拿到后端 detail 的**完整结构**（422 的 `errors_by_step` 用来给节点标红、
+   409 的 `current_hash` 用来做"重新加载 / 强制覆盖"）。新方法仍以 `_error` 表示失败（与既有 UI 判断方式一致），
+   额外带回 `_status` 与 `_detail`。
+2. **condition 改写基于 AST 而非正则**：只改 `ast.Name` 节点，因此 `inputs.old` 的属性名、字符串字面量
+   `'old'`、同前缀标识符 `old_x` 都不会被误伤；AST 列偏移是 UTF-8 字节偏移，已按字节处理（中文 id 有测试）；
+   语法错误的表达式原样保留不猜。占位符只改带点的 `{old.xxx}`（后端规则：无点的 `{param}` 是运行时 inputs）。
+3. **`prompt` 出现在 tool_call / sub_workflow / script 的字段清单里**：后端 `validate()` 要求这三类（以及 skill_agent）
+   prompt 非空（除非用 `prompt_file`），面板若不暴露就永远存不了。清单里标注"校验要求非空"。
+4. **新节点骨架只放必填键、值留空**，不塞占位内容——校验会如实报"还没填"（测试断言各类型空骨架都不能悄悄通过后端校验，
+   仅 `wait` 骨架本身合法）。
+5. 复制带 `prompt_file` 的节点时，副本**不共享文件**：有正文就内联成 `prompt`，没有就只去掉 `prompt_file`。
+6. 新增 id 的字符约束（无空白 / `.` / `{}` / 引号 / `:` / `,` / `[]` / `#`）来自占位符与 condition 的解析规则；
+   非合法 Python 标识符的 id 允许但提示"之后无法在 condition 里引用"。
+7. `build_change_diff` 是**语义预览**（规范化后的 YAML 文本对比），与磁盘最终的逐行 diff 可能因格式细节略有出入，
+   但不会漏报内容变化；真正的逐行保真由后端保存保证（M2）。
+
+### 3. 测试
+
+- `tests/test_workflow_editor_graph.py`（40 个）：图转换（类型推断、徽标、include 无 id、merge 虚线去重、悬空引用、
+  错误 / 批次进节点）；环检测与依赖编辑（含环路径、自依赖 / 缺失 / 重复、画布边差集与成环边被拒但其余生效）；
+  增删复制插入（id 唯一、prompt_file 内联、删除联动与影响面、merge_sources 清理、边上插入）；改 id 联动
+  （deps / condition / 占位符 / 嵌套 tool_args / prompt_file 正文；不误伤前缀同名、`inputs.a`、字符串字面量、
+  `{a}` 与 `{data.a}`；中文 id；语法错误表达式；纯函数性）；错误归类与解析；`is_dirty` / 摘要 / diff 可被
+  `diff_view` 解析；DOT；字段清单与后端 `WorkflowStep` 字段一致、样式覆盖全部内置类型；新骨架与后端校验联动；
+  client 请求方法 / 路径 / 请求体与失败时保留完整 detail。
+- 回归：`test_kanban_client_goal_tree_extras.py`、`test_kanban_diff_view.py` 与 M2 的 62 个测试一并通过。
+
+### 4. 留给后续里程碑
+
+- M4：Streamlit UI（入口切换、画布 / 降级图、属性面板、diff / 保存流程、冲突处理），`_flow_available()` 探测。
+- M5：拖线 / 点边删依赖、新建 / 复制工作流、边上插入、并行批次高亮、单步试运行、备份恢复端点与 UI、
+  "编辑器保存后在最近运行上用最新定义续跑"入口（M1 遗留）。
+

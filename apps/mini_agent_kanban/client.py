@@ -1576,6 +1576,71 @@ class AgentClient:
     def override_workflow_step_output(self, run_id: str, step_id: str, output: str):
         return self._post(f"/workflow_runs/{run_id}/steps/{step_id}/override", {"output": output})
 
+    # ── 看板：工作流可视化编辑器（next_doc/workflow_visual_editor_plan.md M3）──
+    # 与其它方法的差别：`_get/_post/_put` 遇到非 200 只返回被截成 200 字符的 `_error` 文本，
+    # 而编辑器需要后端 detail 里的**完整结构化信息**（422 的 errors_by_step 定位到节点、409 的
+    # current_hash 用于"重新加载/强制覆盖"）。所以这里走 `_editor_request`：仍以 `_error`
+    # 表示失败（与既有 UI 判断方式一致），并额外带回 `_status` 与完整的 `_detail`。
+    # 解析见 workflow_editor.parse_editor_error。
+    def _editor_request(self, method: str, path: str, json_body=None, params=None, timeout=15):
+        start = time.monotonic()
+        try:
+            r = _HTTP.request(method, self._url(path), headers=self.headers, json=json_body,
+                              params=params, timeout=timeout)
+            _record_http_call(method, path, params, (time.monotonic() - start) * 1000,
+                               status_code=r.status_code)
+            if r.status_code == 200:
+                return r.json()
+            detail = {}
+            message = f"HTTP {r.status_code}: {r.text[:200]}"
+            try:
+                body = r.json()
+                raw = body.get("detail") if isinstance(body, dict) else None
+                if isinstance(raw, dict):
+                    detail = raw
+                    message = str(raw.get("message") or message)
+                elif isinstance(raw, str):
+                    message = raw
+            except Exception:
+                pass
+            return {"_error": message, "_status": r.status_code, "_detail": detail}
+        except Exception as e:
+            _record_http_call(method, path, params, (time.monotonic() - start) * 1000,
+                               error=str(e))
+            return {"_error": str(e)}
+
+    def workflow_editor_meta(self, workflow: str = None):
+        """属性面板下拉选项（step 类型/角色/工具/skill/工作流名/片段名/开关状态）。"""
+        params = {"workflow": workflow} if workflow else None
+        return self._editor_request("GET", "/workflow_editor/meta", params=params)
+
+    def workflow_editor_doc(self, name: str):
+        """编辑用文档：draft + base_hash + prompt_files + prompt_hashes + 元信息（只读）。"""
+        return self._editor_request("GET", f"/workflows/{name}/editor")
+
+    def validate_workflow_draft(self, name: str, draft: dict, prompt_files: dict = None,
+                                renames: dict = None):
+        """草稿校验（不落盘）。renames={旧id: 新id}（改 id 时传，让后端匹配到原节点）。"""
+        body = {"draft": draft, "prompt_files": prompt_files or {}}
+        if renames:
+            body["renames"] = renames
+        return self._editor_request("POST", f"/workflows/{name}/editor/validate", body)
+
+    def save_workflow_draft(self, name: str, draft: dict, base_hash: str, prompt_files: dict = None,
+                            prompt_hashes: dict = None, renames: dict = None, force: bool = False,
+                            confirm_comment_loss: bool = False):
+        """保存草稿。省略的可选参数不出现在请求体里（与后端默认值一致，保持向后兼容）。"""
+        body = {"draft": draft, "base_hash": base_hash, "prompt_files": prompt_files or {}}
+        if prompt_hashes:
+            body["prompt_hashes"] = prompt_hashes
+        if renames:
+            body["renames"] = renames
+        if force:
+            body["force"] = True
+        if confirm_comment_loss:
+            body["confirm_comment_loss"] = True
+        return self._editor_request("PUT", f"/workflows/{name}/editor", body, timeout=20)
+
     # ── 日报 / 主动推荐 / 决策画像（主动推荐与数字分身机制设计方案）───────
     def daily_digest(self, date: str = None):
         params = {"date": date} if date else None
