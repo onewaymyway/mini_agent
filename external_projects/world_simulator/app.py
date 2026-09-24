@@ -3782,6 +3782,40 @@ def _render_attribution_section(history: List, manifest) -> None:
                 )
 
 
+def _persist_pending_autorun(sim_id: str, auto_run: Optional[Dict[str, Any]]) -> None:
+    """把"连续推进"这个批处理任务的进度（`target`/`done`/`remaining`）
+    写进 `manifest.settings["pending_autorun"]`，而不是只放在
+    `st.session_state` 里（第十九轮，直接回应"切走浏览器窗口太久、
+    回来发现连续推进的任务被打断、剩余步数也不知道还有没有"的反馈）。
+
+    `st.session_state["autopilot_run"]` 只活在一次 WebSocket 会话里，
+    会话被服务端整个丢弃时（长时间断线重连，见 `_restore_view_from_
+    query_params()` 的说明）这个进度会跟着一起消失，循环停在当前已
+    完成的那一步、不会自动续上；已经落盘的每一步模拟数据本身不受
+    影响（`advance()` 每步都立即持久化），丢的只是"还要不要继续、
+    继续到第几步"这个驱动信息。这里把它也落盘，`page_detail()` 打开
+    时会检查这个字段并自动恢复连续推进循环，见调用点的说明。
+
+    `auto_run=None` 表示任务已经结束/被取消，清空这个字段（写
+    `None` 而不是直接不管——不清理的话，下次即使没有真的启动过连续
+    推进，也会被误判成"有一个任务还没跑完"而莫名其妙自动继续）。
+    落盘失败（`SimEngineError`/`SimNotFoundError`，比如实例并发被
+    删除）不应该打断当前这次页面渲染/推进本身，只是这次没能持久化
+    这个进度，退化成"回到只有 session_state 那一份"的旧行为。
+    """
+    payload = None
+    if auto_run:
+        payload = {
+            "target": auto_run.get("target"),
+            "done": auto_run.get("done"),
+            "remaining": auto_run.get("remaining"),
+        }
+    try:
+        update_settings(DATA_DIR, sim_id, pending_autorun=payload)
+    except (SimEngineError, SimNotFoundError):
+        pass
+
+
 def page_detail() -> None:
     sim_id = st.session_state.get("sim_id")
     if not sim_id:
@@ -3809,9 +3843,24 @@ def page_detail() -> None:
     # 最后一步才刷新。
     schedule_next_autostep = False
     auto_run = st.session_state.get("autopilot_run")
+    if not (auto_run and auto_run.get("sim_id") == sim_id):
+        # 第十九轮：`st.session_state` 里没有（或者不是这个实例的）
+        # 连续推进记录，但 manifest 上如果还留着一个没跑完的
+        # `pending_autorun`，说明上一次是被会话重置打断的，不是用户
+        # 主动停止——自动恢复，不需要用户重新点一次"连续自动推进"。
+        pending = manifest.settings.get("pending_autorun")
+        if pending and pending.get("remaining", 0) > 0 and manifest.status == "active":
+            auto_run = {"sim_id": sim_id, **pending}
+            st.session_state["autopilot_run"] = auto_run
+            st.info(
+                f"检测到一个未跑完的连续推进任务（已完成 {pending.get('done', 0)}/"
+                f"{pending.get('target', '?')} 步，此前可能因为浏览器切走太久被中断），"
+                "自动继续……"
+            )
     if auto_run and auto_run.get("sim_id") == sim_id and auto_run.get("remaining", 0) > 0:
         if manifest.status != "active":
             st.session_state.pop("autopilot_run", None)
+            _persist_pending_autorun(sim_id, None)
             st.info("模拟状态已变化（暂停/结束），自动连续推进已停止。")
         else:
             try:
@@ -3819,6 +3868,7 @@ def page_detail() -> None:
             except ImportError as exc:
                 st.error(f"未检测到 mini_agent 框架，无法调用推演引擎：{exc}")
                 st.session_state.pop("autopilot_run", None)
+                _persist_pending_autorun(sim_id, None)
             else:
                 try:
                     with st.spinner(
@@ -3828,6 +3878,7 @@ def page_detail() -> None:
                 except (SimEngineError, AutopilotDisabledError) as exc:
                     st.error(f"自动挡推进失败，已停止连续推进：{exc}")
                     st.session_state.pop("autopilot_run", None)
+                    _persist_pending_autorun(sim_id, None)
                 else:
                     auto_run["done"] += 1
                     auto_run["remaining"] -= 1
@@ -3837,12 +3888,15 @@ def page_detail() -> None:
                     review_mode = (manifest.autopilot or {}).get("review_mode", "silent")
                     if review_mode == "pause_on_major_decision" and next_state.major_decision:
                         st.session_state.pop("autopilot_run", None)
+                        _persist_pending_autorun(sim_id, None)
                         st.success(f"已连续推进 {auto_run['done']} 步（遇到重大决策，已按配置暂停）。")
                     elif auto_run["remaining"] <= 0:
                         st.session_state.pop("autopilot_run", None)
+                        _persist_pending_autorun(sim_id, None)
                         st.success(f"已连续推进 {auto_run['done']} 步。")
                     else:
                         st.session_state["autopilot_run"] = auto_run
+                        _persist_pending_autorun(sim_id, auto_run)
                         schedule_next_autostep = True
                         st.info(
                             f"✅ 已完成第 {auto_run['done']}/{auto_run['target']} 步"
@@ -4768,6 +4822,7 @@ def page_detail() -> None:
             )
             if st.button("⏹ 停止连续推进", key="autopilot_run_cancel"):
                 st.session_state.pop("autopilot_run", None)
+                _persist_pending_autorun(sim_id, None)
                 st.rerun()
         else:
             st.markdown(
@@ -4790,9 +4845,11 @@ def page_detail() -> None:
 
             if run_clicked or single_clicked:
                 target_steps = 1 if single_clicked else int(auto_steps)
-                st.session_state["autopilot_run"] = {
+                new_auto_run = {
                     "sim_id": sim_id, "remaining": target_steps, "target": target_steps, "done": 0,
                 }
+                st.session_state["autopilot_run"] = new_auto_run
+                _persist_pending_autorun(sim_id, new_auto_run)
                 st.rerun()
 
     # ── 推进面板 ──
@@ -6165,11 +6222,61 @@ def page_game() -> None:
 # 入口
 # ─────────────────────────────────────────────────────────────
 
+# 第十九轮（用户反馈"自动挡模拟中途切走浏览器窗口、回来发现被重置到
+# 列表页"）：导航状态（`view`/`sim_id`）此前只存在 `st.session_state`
+# 里，而 `st.session_state` 绑定的是一次 WebSocket 会话——浏览器标签
+# 页长时间失去焦点会被节流甚至挂起，连接断开超过服务端的保留窗口后，
+# 会话（连同 `session_state`）就会被整个丢弃；用户切回来时前端拿同一
+# 个 URL 重新建立连接，落地的是全新的空会话，`view` 会退回默认的
+# `"list"`（`page_detail()` 发现 `sim_id` 也没了，会主动把 view 改
+# 回 list）——这不是浏览器刷新，是服务端"记忆"丢了，但用户体感和刷新
+# 一样。
+#
+# 解法：把 `view`/`sim_id` 也写进 URL 查询参数（`st.query_params`）。
+# 查询参数活在浏览器地址栏里，不受服务端会话生死影响——哪怕会话被
+# 整个丢弃，只要浏览器标签页本身没有真的关掉/跳转，地址栏还是原来
+# 那个 URL，新会话一启动就能从这里把之前的导航状态续上，不需要用户
+# 重新点几次才能找回来。
+_VALID_VIEWS = {"list", "create", "detail", "compare", "experiment", "archive", "knowledge", "game"}
+
+
+def _restore_view_from_query_params() -> None:
+    """只在这是一次"全新会话"（`session_state` 里还没有 `view`）时才
+    生效——已经在正常跑的会话里，`session_state` 才是权威来源，不应该
+    被 URL（可能是用户手动改过、或者停留在上一次导航时写入的旧值）
+    覆盖回去。"""
+    if "view" in st.session_state:
+        return
+    qp_view = st.query_params.get("view")
+    qp_sim_id = st.query_params.get("sim_id")
+    if qp_view in _VALID_VIEWS:
+        st.session_state["view"] = qp_view
+        if qp_sim_id:
+            st.session_state["sim_id"] = qp_sim_id
+    else:
+        st.session_state["view"] = "list"
+
+
+def _sync_query_params_from_session_state(view: str) -> None:
+    """每次脚本跑完，把最终生效的导航状态同步回 URL 查询参数——这样
+    不管这次是用户点了哪个按钮切的页面，地址栏总归会跟上最新状态，
+    下次会话丢了也能从这里恢复。只在值真的变化时才写，避免每次
+    rerun 都触发一次不必要的浏览器地址栏更新。"""
+    sim_id = st.session_state.get("sim_id") if view in ("detail", "game") else None
+    if st.query_params.get("view") != view:
+        st.query_params["view"] = view
+    if sim_id:
+        if st.query_params.get("sim_id") != sim_id:
+            st.query_params["sim_id"] = sim_id
+    elif "sim_id" in st.query_params:
+        del st.query_params["sim_id"]
+
 
 def main() -> None:
     st.set_page_config(page_title="world_simulator", page_icon="🌌", layout="wide")
     st.markdown(THEME_CSS, unsafe_allow_html=True)
 
+    _restore_view_from_query_params()
     st.session_state.setdefault("view", "list")
 
     with st.sidebar:
@@ -6212,6 +6319,8 @@ def main() -> None:
         page_game()
     else:
         page_list()
+
+    _sync_query_params_from_session_state(view)
 
 
 if __name__ == "__main__":

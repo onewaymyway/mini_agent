@@ -1054,6 +1054,21 @@ class SimManifest:
       对扫描出的每一处"变了但没记账"确定性补全一条系统生成的
       `field_ledger` 记录（见 `SimState.field_ledger`/`ledger_
       violations` 的说明），不再依赖模型配合。
+    - `pending_autorun`：`{"target": int, "done": int, "remaining":
+      int}` 或 `None`（默认）——`app.py` 详情页"连续自动推进"按钮
+      驱动的批处理任务的进度快照，第十九轮引入（用户反馈"自动挡连续
+      推进中途切走浏览器窗口太久，回来发现任务被打断、也不知道跑到
+      哪一步了"）。这个任务原本的驱动信息（还剩几步、目标是多少步）
+      只放在 `st.session_state["autopilot_run"]` 里，而 `session_
+      state` 绑定的是一次 WebSocket 会话，长时间断线会被服务端整个
+      丢弃（已完成步骤的模拟数据本身不受影响，`advance()` 每步都会
+      立即落盘，丢的只是"要不要继续、继续到第几步"这个驱动信息）；
+      这里把同样的进度也写一份到 manifest，`page_detail()` 每次打开
+      时会检查这个字段——如果发现 `session_state` 里没有对应的记录
+      但这里还有一个 `remaining > 0` 的任务，就自动恢复继续推进，
+      不需要用户重新点一次"连续自动推进"按钮。任务正常结束/被用户
+      手动停止/因为推进失败或遇到重大决策而暂停时，会写回 `None`
+      清空这个字段，避免下次被误判成"还有任务没跑完"。
     - `objectives`：列表，声明这次模拟"主要关心的指标"（阶段十二，
       `next_doc/world_simulator_universal_world_model_upgrade_plan.md`
       4.4 节 Problem Compiler 雏形；阶段十四，4.6 节目标驱动排序）。

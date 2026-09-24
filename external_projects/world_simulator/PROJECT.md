@@ -3897,3 +3897,58 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
      触发）。
   **验收**：`pytest tests/`（673 passed，含本轮新增 17 个用例），
   未见回归。
+
+- 2026-09-23（第十九轮，用户反馈直接改进，未单独立项 next_doc）：
+  **"自动挡连续推进中途切走浏览器窗口太久、回来发现被重置到列表页、
+  连续推进任务也断了"——从两处易失状态改成可持久化/可恢复**。
+  根因排查：
+  1. 页面导航状态（`view`/`sim_id`）只存在 `st.session_state` 里，
+     而 `session_state` 绑定的是一次 WebSocket 会话——浏览器标签页
+     长时间失去焦点会被节流/挂起，连接断开超过服务端保留窗口后，
+     会话会被整个丢弃；用户切回来时前端用同一个 URL 重新连接，落地
+     的是全新的空会话，`page_detail()` 发现 `sim_id` 没了会主动把
+     `view` 改回 `"list"`。这不是浏览器真的刷新，是服务端"记忆"丢了，
+     但体感和刷新一样。
+  2. "连续自动推进 N 步"这个批处理任务的驱动进度
+     （`st.session_state["autopilot_run"]`：`target`/`done`/
+     `remaining`）同样只放在 `session_state` 里，从来没有落盘。
+     已经跑完的每一步模拟数据本身不受影响（`advance()` 每步都立即
+     持久化），但"还要不要继续、继续到第几步"这个驱动信息会跟着
+     会话一起消失，循环停在当前已完成的那一步，不会自动续上，用户
+     也无从得知具体断在哪。
+  修复：
+  1. **`app.py`**：新增 `_restore_view_from_query_params()`（只在
+     全新会话——`session_state` 里还没有 `view`——时生效，从 `st.
+     query_params` 恢复 `view`/`sim_id`，恢复不了才退回默认
+     `"list"`）和 `_sync_query_params_from_session_state()`（每次
+     脚本跑完把最终导航状态同步回 URL 查询参数，只在值真的变化时
+     才写）；`main()` 开头/结尾分别接入这两个函数。查询参数活在
+     浏览器地址栏里，不受服务端会话生死影响，哪怕会话被整个丢弃，
+     只要标签页本身没有真的关掉/跳转，新会话一启动就能从地址栏把
+     之前的导航状态续上。
+  2. **`app.py`**：新增 `_persist_pending_autorun()`，把"连续推进"
+     任务的进度也写一份到 `manifest.settings["pending_autorun"]`
+     （只存 `target`/`done`/`remaining` 三个字段），在任务的每一个
+     状态变化点（启动、每步完成后继续、正常结束、被手动停止、因为
+     推进失败/状态变化/遇到重大决策而暂停）都同步调用，结束/停止时
+     显式写 `None` 清空，避免误判。`page_detail()` 打开时新增一段
+     检测逻辑：如果 `session_state` 里没有这个实例的连续推进记录，
+     但 manifest 上还留着一个 `remaining > 0` 的 `pending_autorun`
+     且实例状态是 `active`，判定为"上次被会话重置打断，不是用户
+     主动停止"，自动恢复继续推进，不需要用户重新点一次"连续自动
+     推进"按钮，并用 `st.info()` 提示用户检测到了未跑完的任务。
+  3. **`world_simulator/state_model.py`**：`SimManifest.settings`
+     文档新增 `pending_autorun` 字段说明。
+  4. **测试**：新增 `tests/test_session_resilience.py`（13 个用例），
+     覆盖 URL 恢复/同步的各种边界情况（全新会话恢复、非法/空查询
+     参数回退默认、已有会话不被覆盖、非 detail/game 视图不泄漏
+     `sim_id`、恢复→同步的幂等往返）和 `_persist_pending_autorun()`
+     的落盘/清空/异常吞掉行为（用真实 `SimStore` 落盘校验，不是
+     只看返回值）。这几个函数都只做 dict-like 操作（`in`/`.get`/
+     `[]=`/`del`），测试直接用普通 `dict` 替换 `st.session_state`/
+     `st.query_params`，不需要拉起完整的 Streamlit 运行时。
+  **验收**：`pytest tests/`（686 passed，含本轮新增 13 个用例），
+  未见回归。这两个修复解决的是同一类问题的两个层面：URL 恢复解决
+  "回到哪个页面"，`pending_autorun` 解决"回到页面之后这个未完成的
+  批处理任务能不能自动接着跑"，二者结合后，用户切换浏览器窗口太久
+  这件事对连续推进流程应该基本无感。
