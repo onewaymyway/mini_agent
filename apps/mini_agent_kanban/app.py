@@ -7674,8 +7674,15 @@ def _render_workflow_step_card(client: AgentClient, run_id: str, step_id: str, s
                     if res and "_error" in res:
                         st.error(res["_error"])
                     else:
-                        client.resume_workflow_run(run_id, background=True, force_rerun_from=step_id)
-                        st.success("已保存修改，正在从此步骤续跑…")
+                        # [next_doc/workflow_visual_editor_plan.md §六 5] 这里正是
+                        # patch_workflow_step 改完定义、接着续跑的场景，必须传
+                        # use_latest_definition=True，否则续跑仍会沿用本次执行
+                        # 首次运行时的旧定义快照，刚保存的修改不会生效。
+                        client.resume_workflow_run(
+                            run_id, background=True, force_rerun_from=step_id,
+                            use_latest_definition=True,
+                        )
+                        st.success("已保存修改，正在按最新定义从此步骤续跑…")
                         st.rerun()
 
     if status == "awaiting_approval":
@@ -7726,6 +7733,11 @@ def _render_workflow_run_detail_body(client: AgentClient, run_id: str, detail: d
     status = detail.get("status", "unknown")
     is_stale = detail.get("is_stale", False)
     st.markdown(f"##### 🔄 {detail.get('workflow_name', run_id)}　`{run_id}`")
+    # [next_doc/workflow_visual_editor_plan.md §六 5] 定义漂移提示：本次执行
+    # 使用的定义快照与当前持久化定义不一致（比如中途用 patch_workflow_step
+    # 改过），提醒用户默认续跑不会自动用上这些改动。
+    if detail.get("definition_changed"):
+        st.warning("⚠️ 该次执行使用的是旧定义快照，当前定义已修改")
     if is_stale:
         st.warning(
             "⚠️ 状态显示为「运行中」，但进程内已经没有活跃控制——大概率是 daemon "
@@ -7750,8 +7762,15 @@ def _render_workflow_run_detail_body(client: AgentClient, run_id: str, detail: d
         if tc2.button("🛑 取消", key=f"wf_cancel_{run_id}"):
             client.cancel_workflow_run(run_id)
             st.rerun()
+        resume_latest = False
+        if detail.get("definition_changed"):
+            resume_latest = st.checkbox(
+                "续跑时改用最新定义", key=f"wf_resume_latest_{run_id}",
+                help="默认续跑沿用本次执行首次运行时的定义快照；勾选后改为当前"
+                     "已保存的最新定义（已完成的步骤结果不受影响）。",
+            )
         if tc3.button("▶️ 续跑", key=f"wf_resume_{run_id}"):
-            client.resume_workflow_run(run_id, background=True)
+            client.resume_workflow_run(run_id, background=True, use_latest_definition=resume_latest)
             st.rerun()
 
     step_results = detail.get("step_results", {})

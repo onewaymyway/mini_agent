@@ -23,8 +23,9 @@ cli/commands/workflow_cmd.py — workflow 子命令处理
                                            — 执行工作流
   /workflow runs [name]                   — 列举执行记录（可按工作流名过滤）
   /workflow status <workflow_session_id>  — 查看某次执行的详细进度
-  /workflow resume <workflow_session_id> [--background]
-                                           — 从断点续跑
+  /workflow resume <workflow_session_id> [--background] [--latest]
+                                           — 从断点续跑；--latest 改用当前最新
+                                             持久化定义而非首次运行时的快照
   /workflow pause <workflow_session_id>   — 暂停一次后台执行
   /workflow cancel <workflow_session_id>  — 取消一次执行
   /workflow approve <workflow_session_id> — 批准当前等待审批的步骤
@@ -167,7 +168,7 @@ def _print_usage() -> None:
         "                                         执行工作流\n"
         "  workflow runs [name]                  列举执行记录\n"
         "  workflow status <workflow_session_id>  查看某次执行的详细进度\n"
-        "  workflow resume <workflow_session_id> [--background]\n"
+        "  workflow resume <workflow_session_id> [--background] [--latest]\n"
         "                                         从断点续跑\n"
         "  workflow pause <workflow_session_id>   暂停一次后台执行\n"
         "  workflow cancel <workflow_session_id>  取消一次执行\n"
@@ -486,7 +487,7 @@ def _handle_debug(cfg, rest: list[str]) -> None:
 
 def _handle_resume(cfg, rest: list[str], standalone: bool = False) -> None:
     if not rest:
-        R.print_error("用法：workflow resume <workflow_session_id> [--background]")
+        R.print_error("用法：workflow resume <workflow_session_id> [--background] [--latest]")
         return
 
     # 见 _handle_run 里同名参数的说明：detached 子进程用它强制走前台同步分支。
@@ -495,13 +496,20 @@ def _handle_resume(cfg, rest: list[str], standalone: bool = False) -> None:
         idx = rest.index("--__detached-session-id")
         rest = rest[:idx] + rest[idx + 2:]
 
+    # [next_doc/workflow_visual_editor_plan.md §六] --latest：续跑时改用当前
+    # 已保存的最新工作流定义（而不是本次执行首次运行时的定义快照），
+    # patch_workflow_step / 可视化编辑器保存后的改动才会真正在这次续跑里生效。
+    use_latest_definition = "--latest" in rest
+    if use_latest_definition:
+        rest = [x for x in rest if x != "--latest"]
+
     wf_session_id = rest[0]
     background = "--background" in rest
 
     from mini_agent.storage.paths import AgentPaths
     from mini_agent.workflow.session import WorkflowSession
     from mini_agent.workflow.runner import WorkflowRunner
-    from mini_agent.workflow.generator import WorkflowGenerator
+    from mini_agent.workflow import api_helpers
 
     paths = AgentPaths(project_root=cfg.project_root)
     wf_session = WorkflowSession.load(paths, wf_session_id)
@@ -512,12 +520,19 @@ def _handle_resume(cfg, rest: list[str], standalone: bool = False) -> None:
     if not snap_path.exists():
         R.print_error(f"执行 {wf_session_id!r} 缺少工作流定义快照，无法续跑")
         return
-    generator = WorkflowGenerator(cfg)
     try:
-        wf = generator.parse_yaml(snap_path.read_text(encoding="utf-8"))
-    except ValueError as e:
-        R.print_error(f"定义快照解析失败：{e}")
+        # [重构：复用 api_helpers 的加载逻辑，与 Agent 工具 / REST API 三处
+        # 入口共享同一套状态机，见 workflow-guide.md「设计理念」第 1 条]
+        wf, load_warnings = api_helpers.load_definition_for_resume(
+            cfg, wf_session, snap_path, use_latest_definition,
+        )
+    except api_helpers.WorkflowApiError as e:
+        R.print_error(e.message)
         return
+    if use_latest_definition:
+        wf_session.save(paths)
+        for w in load_warnings:
+            R.print_warning(f"⚠️ {w}")
 
     runner = WorkflowRunner(cfg)
 
@@ -531,7 +546,8 @@ def _handle_resume(cfg, rest: list[str], standalone: bool = False) -> None:
         return
 
     if standalone:
-        log_path = _spawn_detached_run(cfg, ["resume", wf_session_id], wf_session_id)
+        spawn_args = ["resume", wf_session_id] + (["--latest"] if use_latest_definition else [])
+        log_path = _spawn_detached_run(cfg, spawn_args, wf_session_id)
         R.print_info(
             f"🚀 已在独立后台进程中续跑 workflow_session_id={wf_session_id}\n"
             f"用 `mini-agent workflow status {wf_session_id} --project {cfg.project_root}` 查看进度\n"

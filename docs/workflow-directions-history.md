@@ -232,12 +232,50 @@ resume_workflow_run(
 `patch_workflow_step` 只修改指定字段（未出现在 `patch` 中的字段保持不变），
 保存前会跑一次 `WorkflowDef.validate()`，校验不通过则不落盘。
 `resume_workflow_run(force_rerun_from=<step_id>)` 会让该 step 及其所有下游
-重新执行，`step_id` 之前已经成功、消耗过 token 的步骤不会重来；
-`force_rerun_from` 自身的输入沿用 `patch_workflow_step` 改过之后的新定义。
+重新执行，`step_id` 之前已经成功、消耗过 token 的步骤不会重来。
+
+> **⚠️ `patch_workflow_step` 改完定义，续跑默认不会用上改动**：
+> `resume_workflow_run` 默认沿用**本次执行首次运行时写入的定义快照**
+> （`.agent/workflow_sessions/<id>/workflow_def.yaml`），这是有意设计——
+> 防止运行中途原 YAML 被改动导致执行内容不可预期。只改了 step 定义、不加
+> `use_latest_definition=true` 就直接 `force_rerun_from` 续跑，实际执行的
+> 仍是旧定义，`patch_workflow_step` 的改动看起来"生效了"其实完全没跑到。
+> 要让改动在这次续跑里真正生效，必须显式传：
+>
+> ```
+> resume_workflow_run(
+>   workflow_session_id="wfs_xxx",
+>   force_rerun_from="analyze",
+>   use_latest_definition=true
+> )
+> ```
+>
+> 传 `true` 时会从当前已保存的定义重新加载、重写这次执行的快照（此后不传
+> 该参数的续跑也会沿用这份新快照）；已完成的 step 结果按 id 保留；
+> `force_rerun_from` 必须是新定义里仍然存在的 step id，否则报错；新定义
+> 里已经不存在的 step id，其历史结果仍会保留在执行记录里但不参与调度，
+> 并在返回结果的 `warnings` 里列出。CLI 对应 `workflow resume <id> --latest`；
+> 看板"保存修改并从此步骤续跑"按钮已经默认带上这个参数。
+>
+> `get_workflow_run_status` / 看板 run 详情会附带 `definition_changed`
+> 标记（`true`/`false`/`null`=无法判断），提示"这次执行用的快照是不是已经
+> 跟当前定义不一致了"，帮助判断要不要用 `use_latest_definition`。
 
 若不确定该改哪里，工具输出命中失败状态时会自动附带一条提醒，按
 "`get_workflow_run_status(verbose=true)` → `patch_workflow_step` →
-`resume_workflow_run(force_rerun_from=...)`" 的顺序处理即可。
+`resume_workflow_run(force_rerun_from=..., use_latest_definition=true)`"
+的顺序处理即可。
+
+> **[配套修复] 批次推进 bug**：`use_latest_definition` 复现测试过程中发现
+> `runner.py` 里"某批次内有 step 跑到 `failed`/`needs_fix`/`gate_failed`/
+> `timeout`"时，批次序号（`current_batch_index`）之前会无条件继续推进，
+> 导致下一次 `resume_workflow_run`（不论带不带 `force_rerun_from`）在批次
+> 循环里被直接跳过、失败的 step 实际上根本不会被重新执行——与本节"断点
+> 续跑优先于从头重来"的设计初衷矛盾。已一并修复：只有当批次内所有 step
+> 都落在 `done`/`skipped`/`cancelled`/`rejected` 终态时才推进批次序号，
+> 否则钉在第一个未解决的批次，交给下一次 resume 重新判定。这是本轮改动
+> 里除 `use_latest_definition` 之外唯一改到执行语义的地方，细节见
+> `next_doc/workflow_visual_editor_implementation_record.md`。
 
 ---
 

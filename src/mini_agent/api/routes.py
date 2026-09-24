@@ -342,12 +342,14 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/workflows/{name}/stats         [P9-1a] 汇总历史执行统计（成功率/各步骤耗时评分重试率/condition命中率）
     POST   /v1/workflows/{name}/run           启动一次执行（前台/后台，语义同 run_workflow 工具）
     GET    /v1/workflow_runs                  列出所有执行记录（?name= 可按工作流名过滤）
-    GET    /v1/workflow_runs/{id}             单次执行详情
+    GET    /v1/workflow_runs/{id}             单次执行详情（含 definition_changed：该次执行使用的定义快照
+                                              是否与当前持久化定义不一致，true/false/null=无法判断）
     GET    /v1/workflow_runs/{id}/events      events.jsonl 增量拉取（?since_line=N）
     POST   /v1/workflow_runs/{id}/pause       请求暂停
     POST   /v1/workflow_runs/{id}/cancel      请求取消
     POST   /v1/workflow_runs/{id}/mark_interrupted 清理孤儿运行（daemon 重启后遗留的假"running"）
-    POST   /v1/workflow_runs/{id}/resume      断点续跑（Body 可选 force_rerun_from 做单步编辑续跑）
+    POST   /v1/workflow_runs/{id}/resume      断点续跑（Body 可选 force_rerun_from 做单步编辑续跑；
+                                              use_latest_definition=true 时改用当前最新定义并重写快照）
     POST   /v1/workflow_runs/{id}/approve     批准当前等待审批的 step
     POST   /v1/workflow_runs/{id}/reject      拒绝当前等待审批的 step（Body: {"reason": str}）
     POST   /v1/workflow_runs/{id}/input       向等待 human_input 的 step 送入文本（Body: {"text": str}）
@@ -9613,9 +9615,14 @@ async def mark_workflow_run_interrupted_route(run_id: str, request: Request):
 async def resume_workflow_run_route(run_id: str, request: Request):
     """
     POST /v1/workflow_runs/{id}/resume
-    Body: {"background": true, "force_rerun_from": "step_id"}
+    Body: {"background": true, "force_rerun_from": "step_id", "use_latest_definition": true}
     force_rerun_from 为单步编辑续跑场景：配合 .../steps/{step_id}/override 先改输出，
     再传同一个 step_id 触发"该 step 之后全部重跑"。
+
+    use_latest_definition：[next_doc/workflow_visual_editor_plan.md §六] 默认
+    false（沿用本次执行首次运行时的定义快照，行为与改动前一致）。传 true 时
+    从当前已保存的工作流定义重新加载并重写快照，patch_workflow_step /
+    编辑器保存后的改动才会在这次续跑里真正生效。
     """
     cfg = _workflow_cfg(request)
     _require_owner(request)
@@ -9624,21 +9631,29 @@ async def resume_workflow_run_route(run_id: str, request: Request):
     body = await request.json() if await request.body() else {}
     background = body.get("background")
     force_rerun_from = body.get("force_rerun_from")
+    use_latest_definition = bool(body.get("use_latest_definition", False))
 
     try:
-        outcome = api_helpers.resume_workflow_run(cfg, run_id, background, force_rerun_from)
+        outcome = api_helpers.resume_workflow_run(
+            cfg, run_id, background, force_rerun_from,
+            use_latest_definition=use_latest_definition,
+        )
     except api_helpers.WorkflowApiError as e:
         raise _workflow_api_error_to_http(e)
 
     if outcome["mode"] == "sync":
         result = outcome["result"]
-        return {
+        response = {
             "mode": "sync",
             "workflow_session_id": result.workflow_session_id,
             "status": result.status,
             "final_output": result.final_output,
         }
-    return {"mode": "async", "workflow_session_id": run_id}
+    else:
+        response = {"mode": "async", "workflow_session_id": run_id}
+    if use_latest_definition:
+        response["warnings"] = outcome.get("warnings", [])
+    return response
 
 
 @router.post("/workflow_runs/{run_id}/approve")

@@ -1553,10 +1553,15 @@ class AgentClient:
         改写落盘状态的清理动作。"""
         return self._post(f"/workflow_runs/{run_id}/mark_interrupted")
 
-    def resume_workflow_run(self, run_id: str, background: bool = True, force_rerun_from: str = None):
+    def resume_workflow_run(
+        self, run_id: str, background: bool = True, force_rerun_from: str = None,
+        use_latest_definition: bool = False,
+    ):
         body = {"background": background}
         if force_rerun_from:
             body["force_rerun_from"] = force_rerun_from
+        if use_latest_definition:
+            body["use_latest_definition"] = True
         return self._post(f"/workflow_runs/{run_id}/resume", body)
 
     def approve_workflow_step(self, run_id: str):

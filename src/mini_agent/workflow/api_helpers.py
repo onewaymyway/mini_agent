@@ -201,12 +201,118 @@ def start_workflow_run(
     }
 
 
+def load_definition_for_resume(
+    cfg: "AppConfig",
+    wf_session,
+    snap_path: Path,
+    use_latest_definition: bool = False,
+):
+    """
+    [next_doc/workflow_visual_editor_plan.md §六 3] 从 `resume_workflow_run`
+    抽出来的"决定这次续跑到底用哪份定义"逻辑，供 api_helpers 自己和
+    `cli/commands/workflow_cmd.py` 的独立命令行续跑复用——CLI 之前手工重复了
+    一遍"读快照 → parse_yaml"，缺了下面这段 source_dir/prompt_file 的
+    bugfix，也没有 use_latest_definition 支持；抽成公共函数后两边永远同步。
+
+    返回 (wf, warnings)；warnings 只在 use_latest_definition=True 且存在
+    孤儿 step 结果时非空。副作用：use_latest_definition=True 时会重写
+    snap_path 指向的快照文件、并把 wf_session.current_batch_index 归零
+    （调用方需要自己在之后 wf_session.save(paths)）。
+    """
+    from mini_agent.workflow.generator import WorkflowGenerator
+    from mini_agent.workflow.store import WorkflowStore
+
+    warnings: list[str] = []
+
+    if use_latest_definition:
+        # [§六 2] 重新走一遍 start_workflow_run 同款加载路径：WorkflowStore.load()
+        # 内部已经做了 include 展开 / prompt_file 正文回填 / script_path 解析，
+        # 不需要再像下面"沿用旧快照"分支那样手工调用一遍 _resolve_* 私有方法。
+        _store = WorkflowStore(Path(cfg.project_root))
+        wf = _store.load(wf_session.workflow_name)
+        if wf is None:
+            raise WorkflowApiError(
+                "bad_snapshot",
+                f"use_latest_definition=True，但当前找不到工作流 {wf_session.workflow_name!r} "
+                f"的持久化定义（可能已被删除），无法重新加载——为避免误用旧快照，本次续跑已中止",
+            )
+        wf_cfg = getattr(cfg, "workflow", None)
+        check_placeholders = bool(getattr(wf_cfg, "validate_placeholders_on_save", True))
+        check_condition = bool(getattr(wf_cfg, "condition_static_check_enabled", True))
+        check_placeholder_depends_on = bool(getattr(wf_cfg, "placeholder_depends_on_check_enabled", True))
+        errors = wf.validate(
+            check_placeholders=check_placeholders,
+            check_condition=check_condition,
+            check_placeholder_depends_on=check_placeholder_depends_on,
+        )
+        if errors:
+            raise WorkflowApiError(
+                "bad_snapshot",
+                "use_latest_definition=True，但当前持久化定义未通过校验，本次续跑已中止：\n"
+                + "\n".join(f"  - {e}" for e in errors),
+            )
+
+        # 重写本次执行的定义快照，此后不传 use_latest_definition 的续跑也会
+        # 沿用这份新定义（而不是最初那份）。
+        try:
+            import yaml  # type: ignore
+            snap = yaml.dump(wf.to_dict(), allow_unicode=True, sort_keys=False)
+        except ImportError:
+            import json as _json
+            snap = _json.dumps(wf.to_dict(), ensure_ascii=False, indent=2)
+        snap_path.write_text(snap, encoding="utf-8")
+
+        # 新定义里已经不存在的 step id：结果保留在 session 里但不参与本次
+        # 调度（_compute_parallel_batches 只认 wf.steps 里的 id），只在返回值
+        # 里明确列出，不静默丢弃——万一新定义后续又把这个 id 加回来，历史
+        # 结果还能继续复用。
+        new_step_ids = {s.id for s in wf.steps}
+        orphaned = sorted(set(wf_session.step_results.keys()) - new_step_ids)
+        if orphaned:
+            warnings.append(
+                f"以下 step 的历史执行结果在新定义中已不存在，本次续跑不会用到，"
+                f"仍保留在执行记录里：{orphaned}"
+            )
+        # 新定义没有触碰 current_batch_index 的批次划分依据（拓扑结构可能已
+        # 变化），保守起见让 runner 按 step_results 逐一重新判定——不倒退到
+        # 0（已完成的 step 不会被重新执行，见 runner._run_one_step 的
+        # dep_failed / pending_in_batch 判断，只按 step id 状态决定，不依赖
+        # current_batch_index 是否为 0），但 current_batch_index 本身归零，
+        # 避免新拓扑下批次数量变化时旧的 current_batch_index 指错批次。
+        wf_session.current_batch_index = 0
+        return wf, warnings
+
+    generator = WorkflowGenerator(cfg)
+    try:
+        wf = generator.parse_yaml(snap_path.read_text(encoding="utf-8"))
+    except ValueError as e:
+        raise WorkflowApiError("bad_snapshot", f"定义快照解析失败：{e}")
+
+    # [bugfix] wf.source_dir 是纯运行时字段，不参与 to_dict()/快照序列化，
+    # generator.parse_yaml() 重建出来的 WorkflowDef 因此丢失了目录模式
+    # workflow 的 source_dir，导致 python_step 的 ctx.workflow_dir 为 None、
+    # load_prompt_file() 报"workflow_dir 未设置"；同理 prompt_file/
+    # script_path 在快照里也只存了相对路径本身（没存展开后的正文），
+    # 需要重新按 store 加载时同一套逻辑解析一遍。这里按工作流名字重新定位
+    # 一次原始入口文件（目录模式 or 单文件模式），复用 WorkflowStore 的
+    # 静态解析方法，行为与 WorkflowStore._load_path() 保持一致。
+    _store = WorkflowStore(Path(cfg.project_root))
+    _entry_path = _store._resolve_path(wf.name)
+    if _entry_path is not None:
+        if _entry_path.name == "workflow.yaml" and _entry_path.parent != _store._dir:
+            wf.source_dir = _entry_path.parent
+        _store._resolve_prompt_files(wf, _entry_path)
+        _store._resolve_script_paths(wf, _entry_path)
+    return wf, warnings
+
+
 def resume_workflow_run(
     cfg: "AppConfig",
     workflow_session_id: str,
     background: Optional[bool] = None,
     force_rerun_from: Optional[str] = None,
     step_overrides: Optional[dict] = None,
+    use_latest_definition: bool = False,
 ) -> dict:
     """
     对应 resume_workflow_run 工具的核心逻辑。
@@ -224,15 +330,33 @@ def resume_workflow_run(
     字段（如 prompt/condition/tool_name）直接拒绝并报错，不静默忽略——
     这类改动本质上是"改逻辑"，应该走 patch_workflow_step 留痕。
 
-    返回同 start_workflow_run。找不到执行记录/定义快照抛
-    WorkflowApiError(code='not_found' / 'bad_snapshot')；step_overrides
-    引用了不存在的 step_id 或非法字段抛 WorkflowApiError(code='bad_override')。
+    use_latest_definition：[next_doc/workflow_visual_editor_plan.md §六]
+    默认 False（完全向后兼容，沿用本次执行首次运行时写入的定义快照——这是
+    有意设计，防止运行中途原 YAML 被改动导致执行内容不可预期）。为 True
+    时：
+      - 从 WorkflowStore 按工作流名重新加载**当前**持久化定义（与
+        start_workflow_run 同一条加载路径），并用它覆盖/重写这次执行的
+        定义快照文件，此后（不传本参数的）后续续跑会默认沿用这份新快照；
+      - 已有 step_results 按 step id 原样保留（不因为重新加载定义而丢失
+        已经跑过、消耗过 token 的结果）；新定义里已经不存在的 step id，
+        其历史结果仍保留在 session 里（不参与本次调度），并通过返回值
+        `warnings` 列出，不静默丢弃；新定义里新增的 step 视为尚未执行
+        （pending，按拓扑顺序正常排队）；
+      - force_rerun_from（如果同时传入）按**新定义**校验，必须是新定义里
+        存在的 step id，否则抛 WorkflowApiError(code='bad_step')；
+      - 当前定义加载/校验失败时直接抛错，不回退到旧快照——避免用户以为
+        已经切到新定义、实际上仍在跑旧的一份。
+
+    返回同 start_workflow_run，use_latest_definition=True 时额外带
+    `warnings: list[str]`（孤儿 step 结果提示等，可能为空列表）。
+    找不到执行记录/定义快照抛 WorkflowApiError(code='not_found' /
+    'bad_snapshot')；step_overrides 引用了不存在的 step_id 或非法字段抛
+    WorkflowApiError(code='bad_override')。
     """
     import dataclasses
     from mini_agent.storage.paths import AgentPaths
     from mini_agent.workflow.session import WorkflowSession
     from mini_agent.workflow.runner import WorkflowRunner
-    from mini_agent.workflow.generator import WorkflowGenerator
     from mini_agent.workflow.schema import RUNTIME_OVERRIDABLE_FIELDS
 
     paths = AgentPaths(project_root=cfg.project_root)
@@ -244,32 +368,16 @@ def resume_workflow_run(
     if not snap_path.exists():
         raise WorkflowApiError("bad_snapshot", f"执行 {workflow_session_id!r} 缺少工作流定义快照，无法续跑")
 
-    generator = WorkflowGenerator(cfg)
-    try:
-        wf = generator.parse_yaml(snap_path.read_text(encoding="utf-8"))
-    except ValueError as e:
-        raise WorkflowApiError("bad_snapshot", f"定义快照解析失败：{e}")
-
-    # [bugfix] wf.source_dir 是纯运行时字段，不参与 to_dict()/快照序列化，
-    # generator.parse_yaml() 重建出来的 WorkflowDef 因此丢失了目录模式
-    # workflow 的 source_dir，导致 python_step 的 ctx.workflow_dir 为 None、
-    # load_prompt_file() 报"workflow_dir 未设置"；同理 prompt_file/
-    # script_path 在快照里也只存了相对路径本身（没存展开后的正文），
-    # 需要重新按 store 加载时同一套逻辑解析一遍。这里按工作流名字重新定位
-    # 一次原始入口文件（目录模式 or 单文件模式），复用 WorkflowStore 的
-    # 静态解析方法，行为与 WorkflowStore._load_path() 保持一致。
-    from mini_agent.workflow.store import WorkflowStore
-    _store = WorkflowStore(Path(cfg.project_root))
-    _entry_path = _store._resolve_path(wf.name)
-    if _entry_path is not None:
-        if _entry_path.name == "workflow.yaml" and _entry_path.parent != _store._dir:
-            wf.source_dir = _entry_path.parent
-        _store._resolve_prompt_files(wf, _entry_path)
-        _store._resolve_script_paths(wf, _entry_path)
+    wf, warnings = load_definition_for_resume(cfg, wf_session, snap_path, use_latest_definition)
+    if use_latest_definition:
+        wf_session.save(paths)
 
     if force_rerun_from:
         _mark_downstream_for_rerun(wf, wf_session, force_rerun_from)
         wf_session.save(paths)
+
+    if step_overrides:
+        step_by_id = {s.id: s for s in wf.steps}
 
     if step_overrides:
         step_by_id = {s.id: s for s in wf.steps}
@@ -310,7 +418,10 @@ def resume_workflow_run(
     runner = WorkflowRunner(cfg)
     if not run_in_background:
         result = runner.run(wf, wf_session.inputs, workflow_session_id=workflow_session_id)
-        return {"mode": "sync", "result": result}
+        outcome = {"mode": "sync", "result": result}
+        if use_latest_definition:
+            outcome["warnings"] = warnings
+        return outcome
 
     def _bg_resume():
         try:
@@ -321,7 +432,10 @@ def resume_workflow_run(
 
     t = threading.Thread(target=_bg_resume, daemon=True, name=f"wf-resume-{workflow_session_id}")
     t.start()
-    return {"mode": "async", "workflow_session_id": workflow_session_id}
+    outcome = {"mode": "async", "workflow_session_id": workflow_session_id}
+    if use_latest_definition:
+        outcome["warnings"] = warnings
+    return outcome
 
 
 def _mark_downstream_for_rerun(wf, wf_session, force_rerun_from: str) -> None:
@@ -629,7 +743,48 @@ def get_workflow_run_detail(cfg: "AppConfig", workflow_session_id: str) -> dict:
         WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED, WorkflowRunStatus.AWAITING_APPROVAL,
     }
     d["is_stale"] = s.status in in_flight and wf_registry.get(workflow_session_id) is None
+    d["definition_changed"] = _compute_definition_changed(cfg, workflow_session_id, s.workflow_name)
     return d
+
+
+def _compute_definition_changed(cfg: "AppConfig", workflow_session_id: str, workflow_name: str) -> Optional[bool]:
+    """[next_doc/workflow_visual_editor_plan.md §六 4] 该次执行使用的定义
+    快照，是否与当前持久化定义存在差异——用于看板 run 详情页的"⚠️ 该次执行
+    使用的是旧定义快照，当前定义已修改"漂移提示。
+
+    比较方式：快照 WorkflowDef.to_dict() 与当前 WorkflowStore.load() 出来的
+    WorkflowDef.to_dict() 是否相等（与 patch_workflow_step 判断"定义是否
+    有实质变化"同一标准，天然忽略 source_dir 等纯运行时字段，因为 to_dict()
+    本就不序列化它们）。
+
+    快照缺失、快照解析失败、或当前定义已读取不到/校验不过时返回 None——
+    "无法判断"，不误报为 True 或 False；正常情况下返回 True/False。
+    """
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.workflow.generator import WorkflowGenerator
+    from mini_agent.workflow.store import WorkflowStore
+
+    paths = AgentPaths(project_root=cfg.project_root)
+    snap_path = paths.workflow_session_def_snapshot(workflow_session_id)
+    if not snap_path.exists():
+        return None
+    try:
+        generator = WorkflowGenerator(cfg)
+        snapshot_wf = generator.parse_yaml(snap_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    try:
+        current_wf = WorkflowStore(Path(cfg.project_root)).load(workflow_name)
+    except Exception:
+        return None
+    if current_wf is None:
+        return None
+
+    try:
+        return snapshot_wf.to_dict() != current_wf.to_dict()
+    except Exception:
+        return None
 
 
 def read_workflow_run_events(cfg: "AppConfig", workflow_session_id: str, since_line: int = 0) -> dict:

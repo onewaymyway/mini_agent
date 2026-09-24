@@ -1052,7 +1052,7 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `run_workflow(force_serial=, require_all_inputs_upfront=)` | `POST /v1/workflows/{name}/run` | 启动执行，支持强制串行 / 要求输入一次性给全两个护栏开关 |
 | `patch_workflow_step()` | `POST /v1/workflows/{name}/steps/{step_id}/patch` | 单步编辑工作流定义（不用重贴整份 YAML），落盘后对后续所有执行生效 |
 | `workflow_runs()` / `workflow_run_detail()` / `workflow_run_events()` | `GET /v1/workflow_runs*` | 执行记录列表 / 单次详情 / 事件增量拉取 |
-| `pause_workflow_run()` / `cancel_workflow_run()` / `resume_workflow_run(force_rerun_from=)` | `POST /v1/workflow_runs/{id}/{pause\|cancel\|resume}` | 暂停 / 取消 / 续跑（`force_rerun_from` 配合单步编辑做定点重跑） |
+| `pause_workflow_run()` / `cancel_workflow_run()` / `resume_workflow_run(force_rerun_from=, use_latest_definition=)` | `POST /v1/workflow_runs/{id}/{pause\|cancel\|resume}` | 暂停 / 取消 / 续跑（`force_rerun_from` 配合单步编辑做定点重跑；`use_latest_definition=true` 让续跑改用当前最新持久化定义，见 workflow-directions-history.md「出错定位、编辑与重跑」一节） |
 | `approve_workflow_step()` / `reject_workflow_step()` / `provide_workflow_input()` | `POST /v1/workflow_runs/{id}/{approve\|reject\|input}` | 审批门 / 人工输入 |
 | `override_workflow_step_output()` | `POST /v1/workflow_runs/{id}/steps/{step_id}/override` | 人工改写已完成 step 的输出 |
 | `fs_list()` / `fs_read()` / `fs_download_url()` | `/v1/fs/*` | 产出物浏览与下载 |

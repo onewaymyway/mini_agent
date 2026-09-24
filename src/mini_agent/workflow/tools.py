@@ -555,12 +555,15 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
     @tool(name="resume_workflow_run", group="workflow",
           description="从断点续跑一次已暂停/未完整完成的工作流执行，跳过已完成的步骤只重跑剩余部分。"
                       "可选 step_overrides 参数支持只对本次续跑生效的一次性执行参数覆盖（如临时调大 timeout），"
-                      "不污染工作流定义，适合调试用；改逻辑类字段仍需用 patch_workflow_step。")
+                      "不污染工作流定义，适合调试用；改逻辑类字段仍需用 patch_workflow_step。"
+                      "默认续跑沿用首次运行时的定义快照——patch_workflow_step 改完定义后，"
+                      "要让改动在这次续跑里生效，需显式传 use_latest_definition=true。")
     def resume_workflow_run(
         workflow_session_id: str,
         background: Optional[bool] = None,
         force_rerun_from: Optional[str] = None,
         step_overrides: Optional[str] = None,
+        use_latest_definition: bool = False,
     ) -> str:
         """
         workflow_session_id: 之前一次 run_workflow 返回的执行 ID
@@ -583,6 +586,15 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
                     语义的字段——那类改动请用 patch_workflow_step（会持久化、
                     留痕）。适合"只想临时放宽一下（比如把 timeout 调大看看
                     是不是单纯超时问题）"这类不想污染正式定义的调试场景。
+        use_latest_definition: [next_doc/workflow_visual_editor_plan.md §六]
+                    默认 False：续跑沿用本次执行首次运行时写入的定义快照
+                    （即使之后用 patch_workflow_step 改过定义，这次续跑也
+                    看不到改动——这是有意设计，防止运行中途原 YAML 被改动导致
+                    执行内容不可预期）。传 True 时会从当前已保存的工作流定义
+                    重新加载并重写这次执行的快照，patch_workflow_step 的改动
+                    才会真正在这次续跑里生效；重写后续跑的判定标准与
+                    force_rerun_from 相同——已完成的 step 不受影响，force_rerun_from
+                    指定的 step 必须在新定义里仍然存在。
         """
         from mini_agent.workflow import api_helpers
 
@@ -599,14 +611,22 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             outcome = api_helpers.resume_workflow_run(
                 cfg, workflow_session_id, background,
                 force_rerun_from=force_rerun_from, step_overrides=parsed_overrides,
+                use_latest_definition=use_latest_definition,
             )
         except api_helpers.WorkflowApiError as e:
             return f"❌ {e.message}"
 
         override_hint = f"（本次使用了一次性覆盖：{parsed_overrides}，不影响工作流定义本身）" if parsed_overrides else ""
+        latest_hint = ""
+        if use_latest_definition:
+            latest_hint = "（本次已切换到当前最新的持久化定义，并重写了执行快照）"
+            if outcome.get("warnings"):
+                latest_hint += "\n" + "\n".join(f"⚠️ {w}" for w in outcome["warnings"])
         if outcome["mode"] == "sync":
-            return outcome["result"].to_summary() + (f"\n\n{override_hint}" if override_hint else "")
-        return f"🚀 已在后台续跑 workflow_session_id=`{workflow_session_id}`{override_hint}"
+            extra = "\n\n".join(x for x in (override_hint, latest_hint) if x)
+            return outcome["result"].to_summary() + (f"\n\n{extra}" if extra else "")
+        extra = "".join(x for x in (override_hint, latest_hint) if x)
+        return f"🚀 已在后台续跑 workflow_session_id=`{workflow_session_id}`{extra}"
 
     # ── 执行记录查询（P2/P3）──────────────────────────────────────────────────
 
@@ -729,6 +749,16 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             # 使用过一次性 step_overrides，避免误以为这是工作流定义本身
             # 的行为——覆盖只影响这一次 resume，没有写回持久化定义。
             lines.append(f"- ⚠️ 本次执行使用了临时覆盖：{s.last_step_overrides}，未写入 workflow 定义")
+        # [next_doc/workflow_visual_editor_plan.md §六 4] 定义漂移提示：本次
+        # 执行用的定义快照与当前持久化定义不一致时提醒一下，避免误以为
+        # patch_workflow_step 已经在这次执行里生效。
+        from mini_agent.workflow.api_helpers import _compute_definition_changed
+        definition_changed = _compute_definition_changed(cfg, workflow_session_id, s.workflow_name)
+        if definition_changed:
+            lines.append(
+                "- ⚠️ 该次执行使用的是旧定义快照，当前工作流定义已修改；"
+                "要让改动生效，请用 resume_workflow_run(use_latest_definition=true) 续跑"
+            )
         if s.error:
             lines.append(f"- 错误：{s.error}")
         lines.append(f"- 📁 默认输出目录：`{paths.workflow_session_output_dir(workflow_session_id)}`")

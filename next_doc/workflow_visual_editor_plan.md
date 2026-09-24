@@ -3,7 +3,8 @@
 > 本文档记录设计方案本身，供实施前确认；实施完成后另写
 > `next_doc/workflow_visual_editor_implementation_record.md`，不混在本文档里。
 >
-> **状态**：方案已确认（决策见 §一），待实施。
+> **状态**：方案已确认（决策见 §一），实施中——M1（续跑定义快照修复）已完成，
+> 详见 `next_doc/workflow_visual_editor_implementation_record.md`；M2 起未开始。
 >
 > **相关文档**：`docs/workflow-guide.md`、`docs/kanban-dashboard-guide.md`、
 > `next_doc/workflow_directory_mode_design.md`（目录化 workflow）、
@@ -282,7 +283,7 @@ require_approval、escalate_after_n_same_failures、output_file。
 
 | 里程碑 | 内容 | 阶段 |
 |---|---|---|
-| M1 | 快照问题：复现测试 → `use_latest_definition` 全链路（api_helpers / routes / tools / CLI / client）→ `definition_changed` | — |
+| M1 | 快照问题：复现测试 → `use_latest_definition` 全链路（api_helpers / routes / tools / CLI / client）→ `definition_changed` ✅已完成 | — |
 | M2 | 后端编辑：`WorkflowStore.validate_def()` 抽取、`editor_helpers.py`（ruamel 同步 / 校验 / 保存 / 备份 / 元信息）、配置项、`GET/validate/PUT/meta` 路由 | 一 |
 | M3 | 看板侧纯函数模块与 client 方法（图转换、环检测、改 id 联动、错误归类）及测试 | 一 |
 | M4 | 看板 UI：只读图 + 选中 + 属性面板 + 增删复制节点 + 依赖多选 + 校验 + diff + 保存 + 降级 | 一 |

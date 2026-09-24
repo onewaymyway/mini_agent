@@ -31,7 +31,10 @@ mini_agent 内置了一套轻量的工作流引擎，支持将多步 AI 任务�
 3. **断点续跑优先于从头重来**。`WorkflowSession` 把每个 step 的结果增量
    落盘，进程崩溃、主动暂停、甚至只是改了一个 step 的定义，都可以用
    `resume_workflow_run` 从断点继续，已经成功、消耗过 token 的步骤不会
-   重来。
+   重来（"改了一个 step 的定义"要真正生效，需要显式传
+   `use_latest_definition=true`，见「出错定位、编辑与重跑」一节——默认
+   续跑沿用的是执行开始时写入的定义快照，这是有意为之，防止运行中途原
+   YAML 被改动导致执行内容不可预期）。
 4. **沙箱/dry-run 先行，落盘操作谨慎**。改一个 step 前可以先
    `test_workflow_step` 单独验证（不落盘、不接入正式 DAG）；生成/保存前
    可以先 `preview_workflow` 看并发分批和 condition 求值结果；一次性调试
@@ -462,9 +465,9 @@ condition 时如果不确定某个字段这时候是否已经就绪，可以先�
 | `show_workflow` | 查看工作流 YAML 定义 | P1 | 本节 |
 | `delete_workflow` | 删除工作流定义 | P1 | 本节 |
 | `preview_workflow` | dry-run 预览执行计划，不实际执行 | P7 | 本节 |
-| `resume_workflow_run` | 从断点续跑；支持一次性 `step_overrides` | P2（+P10§2/改进§4） | Workflow Session 一节 / P10 一节 |
+| `resume_workflow_run` | 从断点续跑；支持一次性 `step_overrides`；`use_latest_definition` 切到最新定义 | P2（+P10§2/改进§4/`next_doc/workflow_visual_editor_plan.md`§六） | Workflow Session 一节 / P10 一节 / 出错定位一节 |
 | `list_workflow_runs` | 列举历史/当前执行记录 | P2 | Workflow Session 一节 |
-| `get_workflow_run_status` | 查看某次执行详细进度（`verbose`/`wait`） | P2（+改进§4） | 出错定位一节 |
+| `get_workflow_run_status` | 查看某次执行详细进度（`verbose`/`wait`，含 `definition_changed` 漂移提示） | P2（+改进§4/`next_doc/workflow_visual_editor_plan.md`§六） | 出错定位一节 |
 | `get_workflow_stats` | 汇总某工作流历史执行统计（成功率/耗时/重试率） | P9-1a | 本节 |
 | `pause_workflow_run` | 暂停一次后台执行 | P3 | 后台执行一节 |
 | `cancel_workflow_run` | 取消一次执行 | P3 | 后台执行一节 |

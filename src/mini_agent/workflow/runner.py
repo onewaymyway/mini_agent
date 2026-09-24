@@ -433,6 +433,21 @@ class WorkflowRunner:
         # 会写回 step_results[dep_id]），用一把锁保护写操作，避免极端情况下的竞态。
         results_lock = threading.Lock()
 
+        # [next_doc/workflow_visual_editor_plan.md M1 附带修复] current_batch_index
+        # 之前无论批次内 step 成功与否都无条件推进（见下面 `_BATCH_TERMINAL_STATUSES`
+        # 之前的历史写法），导致：只要一个 step 跑到 FAILED/NEEDS_FIX/GATE_FAILED/
+        # TIMEOUT 这类"值得重跑"的终态，本批次也会被当成"已经跑过"，之后任何
+        # resume_workflow_run（不管带不带 force_rerun_from）在批次循环的
+        # `if batch_index < wf_session.current_batch_index: continue` 处直接被跳过，
+        # 该 step 永远不会被重新执行——与 docs/workflow-guide.md 里"断点续跑优先于
+        # 从头重来"的设计初衷矛盾，也让 force_rerun_from 清空的 step_results 形同虚设。
+        # 修复：只有当本批次内所有 step 都落在与 `pending_in_batch` 判断完全一致的
+        # 终态集合（DONE/SKIPPED/CANCELLED/REJECTED）时才推进 current_batch_index；
+        # 一旦出现不在此集合内的 step，之后所有批次都不再推进 current_batch_index
+        # （哪怕本次调用里后续批次因依赖失败而被标记 SKIPPED），把"下一次 resume
+        # 应该从哪个批次重新进入"精确地钉在第一个未解决的批次上。
+        _batches_settled_so_far = True
+
         for batch_index, batch in enumerate(batches):
             if batch_index < wf_session.current_batch_index:
                 continue  # resume：跳过已经跑过的批次
@@ -527,7 +542,16 @@ class WorkflowRunner:
                             _key_listener.start()
                     self._persist_progress(paths, wf_session, step_results)
 
-            wf_session.current_batch_index = batch_index + 1
+            unresolved_in_batch = [
+                s for s in batch
+                if step_results.get(s.id) is None or step_results[s.id].status not in (
+                    StepStatus.DONE, StepStatus.SKIPPED, StepStatus.CANCELLED, StepStatus.REJECTED,
+                )
+            ]
+            if unresolved_in_batch:
+                _batches_settled_so_far = False
+            if _batches_settled_so_far:
+                wf_session.current_batch_index = batch_index + 1
             wf_session.save(paths)
 
             if control.cancel_requested.is_set():
