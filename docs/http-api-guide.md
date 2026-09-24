@@ -1237,6 +1237,53 @@ GET /v1/external_projects/{name}/review
 `enabled=false`（`project.yaml` 未声明 `review: {enabled: true}`）时
 不报错，仍返回模板文本，供先预览格式。
 
+### /v1/workflows/{name}/editor、/v1/workflow_editor/meta — 工作流可视化编辑器后端（owner only）
+
+`next_doc/workflow_visual_editor_plan.md` 里程碑 M2 新增，供看板「🔄 工作流」tab 的图形化编辑器使用
+（后端逻辑在 `workflow/editor_helpers.py`，路由只做薄封装；看板侧 UI 见后续里程碑）。
+编辑器直接编辑**原始 YAML 文档**（保留 `include` / 相对 `script_path` / `prompt_file` / 注释），
+不走 `WorkflowStore.save()` 的加载→`to_dict()`→重写往返。
+
+```bash
+# 编辑用文档（只读，写入开关关闭时也可用）
+GET /v1/workflows/{name}/editor
+# → {name, path, mode: "file"|"dir", draft: {原始 YAML 的 JSON 形式}, base_hash, comment_lines,
+#    has_ruamel, editor_enabled, prompt_files: {相对路径: 正文}, prompt_hashes, warnings}
+
+# 草稿校验（不落盘）
+POST /v1/workflows/{name}/editor/validate
+Body: { "draft": {...}, "prompt_files": {...}, "renames": {"旧id": "新id"} }
+# → {ok, errors, warnings, errors_by_step, warnings_by_step, workflow_errors, cycle, batches,
+#    has_ruamel, will_lose_comments}
+
+# 保存（受 workflow.visual_editor_enabled 控制）
+PUT /v1/workflows/{name}/editor
+Body: { "draft": {...}, "prompt_files": {...}, "base_hash": "...", "prompt_hashes": {...},
+        "renames": {...}, "force": false, "confirm_comment_loss": false }
+# → {status: "saved"|"unchanged", base_hash(新), changed_steps: {added, removed, modified, reordered, top_level},
+#    warnings, path, backup_id, prompt_files_written, git_hint}
+
+# 属性面板下拉选项（?workflow= 传目录模式工作流名时合并其本地 agents/skills）
+GET /v1/workflow_editor/meta
+# → {step_types, roles, tools, skills, workflows, snippets, merge_strategies, modes, switches}
+```
+
+错误一律为 `{"detail": {"message", "code", ...}}`：
+
+| 状态码 | `code` | 含义 |
+|---|---|---|
+| 403 | `editor_disabled` | `workflow.visual_editor_enabled=false`，写入类端点被关闭 |
+| 409 | `conflict` | `base_hash`（或 `prompt_hashes`）与磁盘不一致，`detail.current_hash` 给出当前值；传 `force=true` 覆盖 |
+| 409 | `needs_confirm` | 未安装 `ruamel.yaml` 且原文件含注释，需 `confirm_comment_loss=true` |
+| 422 | `validation_failed` | 校验未通过，`detail.errors_by_step` / `cycle` 可定位到节点，文件未被改动 |
+| 422 | `invalid_yaml` / `path_escape` | 原文件无法解析 / `prompt_file` 越出工作流目录 |
+| 400 | `bad_request` | 缺 `base_hash` / 请求体不是对象等 |
+| 500 | `sync_mismatch` | 写盘前的语义回读保险触发：生成的 YAML 与草稿不一致，已拒绝写入 |
+
+保存流程：开关 → 乐观锁 → 校验（复用 `WorkflowStore.validate_def()` + 环检测）→ 备份到
+`.agent/workflow_backups/<name>/<时间戳>.yaml` → ruamel 原位同步 + `atomic_write_text` → `prompt_file`
+正文写回（越界拒绝）。草稿与文件语义等价时返回 `unchanged`，文件字节不变。
+
 ### Session 清理保护 / 批量清理
 
 [看板 Session 清理功能集成]（`next_doc/session_cleanup_design.md`）

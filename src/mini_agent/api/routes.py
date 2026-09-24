@@ -339,6 +339,12 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/workflows                     列出已保存的工作流
     GET    /v1/workflows/{name}               查看 YAML 定义
     POST   /v1/workflows/{name}/preview       dry-run 预览执行计划（不实际执行）
+    GET    /v1/workflows/{name}/editor        [可视化编辑器 M2] 编辑用文档：原始 YAML 的 JSON 草稿（include/相对路径原样）
+                                              + base_hash + prompt_file 正文 + 元信息；只读，不受写入开关影响
+    POST   /v1/workflows/{name}/editor/validate  草稿校验（不落盘）：errors_by_step / 环 / 并发批次
+    PUT    /v1/workflows/{name}/editor        保存草稿（ruamel 保留注释；乐观锁 base_hash → 409；校验失败 → 422；
+                                              visual_editor_enabled=false → 403；自动备份）
+    GET    /v1/workflow_editor/meta           属性面板下拉选项：step 类型/角色/工具/skill/工作流名/片段名/开关状态
     GET    /v1/workflows/{name}/stats         [P9-1a] 汇总历史执行统计（成功率/各步骤耗时评分重试率/condition命中率）
     POST   /v1/workflows/{name}/run           启动一次执行（前台/后台，语义同 run_workflow 工具）
     GET    /v1/workflow_runs                  列出所有执行记录（?name= 可按工作流名过滤）
@@ -9455,6 +9461,109 @@ async def patch_workflow_step_route(name: str, step_id: str, request: Request):
     except api_helpers.WorkflowApiError as e:
         raise _workflow_api_error_to_http(e)
     return {"patched": True, "step_id": step_id, **outcome}
+
+
+# ── 可视化编辑器端点（next_doc/workflow_visual_editor_plan.md §5.5，里程碑 M2）──
+#
+# 薄封装：真正的逻辑都在 workflow/editor_helpers.py。文件 IO 与保存后的 git 探测
+# 可能耗时，统一丢进线程池，避免阻塞事件循环。写入类端点受
+# cfg.workflow.visual_editor_enabled 控制（关闭 → 403），只读 GET 始终可用。
+
+def _workflow_editor_error_to_http(e) -> HTTPException:
+    """编辑器错误映射：detail 是对象 {message, code, ...payload}，看板据此定位到具体节点/提示冲突。"""
+    from mini_agent.workflow.editor_helpers import WorkflowEditorError
+    if not isinstance(e, WorkflowEditorError):
+        return _workflow_api_error_to_http(e)
+    status_map = {
+        "not_found": 404,
+        "editor_disabled": 403,
+        "conflict": 409,
+        "needs_confirm": 409,
+        "validation_failed": 422,
+        "invalid_yaml": 422,
+        "path_escape": 422,
+        "bad_request": 400,
+        "sync_mismatch": 500,
+    }
+    return HTTPException(
+        status_code=status_map.get(e.code, 400),
+        detail={"message": e.message, "code": e.code, **e.payload},
+    )
+
+
+async def _editor_body(request: Request) -> dict:
+    body = await request.json() if await request.body() else {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON 对象")
+    return body
+
+
+@router.get("/workflow_editor/meta")
+async def workflow_editor_meta_route(request: Request, workflow: Optional[str] = Query(default=None)):
+    """GET /v1/workflow_editor/meta[?workflow=name] — 属性面板下拉选项（只读）。
+    传 workflow 时（目录模式）额外合并该工作流本地 agents/ 与 skills/ 里的资源。"""
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import editor_helpers
+    return await asyncio.to_thread(editor_helpers.editor_meta, cfg, workflow)
+
+
+@router.get("/workflows/{name}/editor")
+async def get_workflow_editor_route(name: str, request: Request):
+    """GET /v1/workflows/{name}/editor — 编辑用文档（只读，不受写入开关影响）。"""
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import editor_helpers
+    try:
+        return await asyncio.to_thread(editor_helpers.load_for_edit, cfg, name)
+    except editor_helpers.WorkflowApiError as e:
+        raise _workflow_editor_error_to_http(e)
+
+
+@router.post("/workflows/{name}/editor/validate")
+async def validate_workflow_editor_route(name: str, request: Request):
+    """
+    POST /v1/workflows/{name}/editor/validate — 草稿校验（不落盘，不受写入开关影响）。
+    Body: {"draft": {...}, "prompt_files": {相对路径: 正文}, "renames": {旧id: 新id}}
+    """
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import editor_helpers
+    body = await _editor_body(request)
+    try:
+        return await asyncio.to_thread(
+            editor_helpers.validate_draft, cfg, name,
+            body.get("draft"), body.get("prompt_files") or {}, body.get("renames") or None,
+        )
+    except editor_helpers.WorkflowApiError as e:
+        raise _workflow_editor_error_to_http(e)
+
+
+@router.put("/workflows/{name}/editor")
+async def save_workflow_editor_route(name: str, request: Request):
+    """
+    PUT /v1/workflows/{name}/editor — 保存草稿（受 workflow.visual_editor_enabled 控制）。
+    Body: {"draft": {...}, "prompt_files": {...}, "base_hash": "...", "prompt_hashes": {...},
+           "renames": {...}, "force": false, "confirm_comment_loss": false}
+    错误：403 写入已关闭 / 409 冲突（detail.code=conflict，带 current_hash）或需确认丢注释 /
+          422 校验失败（detail.errors_by_step 定位到节点）。
+    """
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import editor_helpers
+    body = await _editor_body(request)
+    try:
+        return await asyncio.to_thread(
+            lambda: editor_helpers.save_draft(
+                cfg, name, body.get("draft"), body.get("prompt_files") or {}, body.get("base_hash"),
+                prompt_hashes=body.get("prompt_hashes") or None,
+                renames=body.get("renames") or None,
+                force=bool(body.get("force", False)),
+                confirm_comment_loss=bool(body.get("confirm_comment_loss", False)),
+            )
+        )
+    except editor_helpers.WorkflowApiError as e:
+        raise _workflow_editor_error_to_http(e)
 
 
 @router.post("/workflows/{name}/preview")

@@ -9,6 +9,7 @@ dependencies = [
     "httpx[socks]>=0.27",
     "cryptography>=41.0",
     "json_repair",
+    "ruamel.yaml>=0.17",
 ]
 
 [project.optional-dependencies]

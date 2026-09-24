@@ -972,6 +972,28 @@ run_workflow("article_writer", {
 > [workflow-directions-history.md](workflow-directions-history.md)，
 > 按原章节顺序排列（大致即落地时间先后）。
 
+## 可视化编辑器后端（`workflow/editor_helpers.py`，M2）
+
+看板图形化编辑器（`next_doc/workflow_visual_editor_plan.md`）的后端。要点：
+
+- **直接编辑原始 YAML**：不复用 `store.save()`（它会摊平 `include`、把 `script_path` 改成绝对路径、
+  丢注释、写不回 `prompt_file` 正文）。读取得到原始文档的 JSON 草稿，保存时把草稿按 step id
+  **原位同步**进用 `ruamel.yaml` round-trip 加载的原文档，未变化的键连同注释、引号、`|` 块样式原样保留；
+  输出缩进按原文件风格自动挑选，"改一个字段"通常只有那一行 diff；草稿与文件等价时不写盘。
+- **校验口径与保存一致**：抽出 `WorkflowStore.validate_def()`（`save()` 行为不变），编辑器另外做
+  环检测（错误归到环上每个节点）、`script_path` / `prompt_file` 越界检查；`include` 展开出的
+  `<id>__xxx` 步骤的错误归到 include 节点上。不绕过 `script_step_enabled` / `python_step_enabled`，
+  开关关闭时只给 warning。
+- **保存护栏**：开关 → `base_hash` 乐观锁（409）→ 校验（422）→ 备份 → 原子写 → `prompt_file` 写回；
+  写盘前把生成的 YAML 重新解析，与草稿语义不一致就拒绝写入。
+- **已知限制（注释保留）**：删除某 step 时，紧贴在它前后的独立注释行可能丢失或错位（ruamel 把它挂在
+  相邻项尾部）；对带行尾注释的标量改成多行字符串，行尾注释会挪到块末尾；重排 step 时独立成行的注释
+  可能跟着相邻 step 移动。以上只影响注释位置，不影响语义。
+- **降级**：未安装 `ruamel.yaml` 时回退 PyYAML 整体重写，会规范化格式并丢注释；校验结果带
+  `will_lose_comments`，原文件含注释时保存需显式 `confirm_comment_loss=true`。依赖已加入
+  `requirements.txt` / `pyproject.toml`。
+- REST 端点见 [HTTP API 指南](http-api-guide.md) 的「工作流可视化编辑器后端」一节。
+
 ## workflow 相关配置（`agent_config.json`）
 
 ```json
@@ -1004,7 +1026,9 @@ run_workflow("article_writer", {
   "python_step_inputs_filtered_by_depends_on": true,
   "debug_log_enabled": false,
   "debug_log_max_chars": 4000,
-  "circuit_breaker_distinct_step_threshold": null
+  "circuit_breaker_distinct_step_threshold": null,
+  "visual_editor_enabled": true,
+  "editor_backup_keep": 20
 }
 ```
 
@@ -1039,6 +1063,8 @@ run_workflow("article_writer", {
 | `debug_log_enabled`（P11 §6） | `false` | 是否在每个 step 执行完后填充 `StepResult.debug_log`（resolved_prompt/unresolved_placeholders/时间戳/subprocess 输出等），默认关闭避免 session 目录体积膨胀 |
 | `debug_log_max_chars`（P11 §6） | `4000` | `debug_log` 里 `resolved_prompt`/`subprocess_stdout`/`subprocess_stderr` 等长文本字段的截断长度上限 |
 | `circuit_breaker_distinct_step_threshold`（P14） | `null` | workflow 级熔断阈值：同一个 `error_type` 导致失败的**不同 step_id** 数量达到该值时提前整体 `request_cancel()`，`null`=不启用，见 workflow-directions-history.md "workflow 级熔断（P14）"一节 |
+| `visual_editor_enabled`（可视化编辑器 M2） | `true` | 看板工作流编辑器的写入总开关。关闭后 `PUT /v1/workflows/{name}/editor` 等写入类端点返回 403，只读 GET 不受影响；默认开启，风险由保存前校验 / 自动备份 / 乐观锁兜底，详见 `next_doc/workflow_visual_editor_plan.md` §五 |
+| `editor_backup_keep`（可视化编辑器 M2） | `20` | 编辑器每次保存前把旧文件备份到 `.agent/workflow_backups/<name>/`，每个工作流保留的份数，超出删最旧；最小按 1 处理（不提供"完全不备份"） |
 
 ---
 

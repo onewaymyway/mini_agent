@@ -176,7 +176,9 @@
     "condition_static_check_enabled": true,
     "dry_run_preview_on_generate": true,
     "git_hint_enabled": true,
-    "python_step_enabled": true
+    "python_step_enabled": true,
+    "visual_editor_enabled": true,
+    "editor_backup_keep": 20
   },
   "autonomy": {
     "max_concurrent_objectives_per_goal": 1,

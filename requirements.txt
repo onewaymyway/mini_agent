@@ -5,6 +5,9 @@ httpx[socks]>=0.27
 cryptography>=41.0
 json_repair
 
+# 工作流可视化编辑器：保存时保留 YAML 注释/格式（未安装时回退 PyYAML，会丢注释）
+ruamel.yaml>=0.17
+
 # MCP (Model Context Protocol) 支持
 mcp>=1.0.0
 

@@ -75,9 +75,13 @@ class WorkflowStore:
 
     # ── CRUD ────────────────────────────────────────────────────────────────
 
-    def save(self, wf: WorkflowDef, cfg=None, role_checker=None) -> Path:
+    def validate_def(self, wf: WorkflowDef, cfg=None, role_checker=None) -> list[str]:
         """
-        保存工作流到 YAML 文件，返回文件路径。
+        [next_doc/workflow_visual_editor_plan.md M2] 从 save() 里抽出的「保存前校验」，
+        供 save() 与可视化编辑器（workflow/editor_helpers.py::validate_draft）共用同一
+        组开关与同一套校验口径，两处永远不会漂移。只做校验、不落盘，返回错误列表
+        （空列表=合法）；warning 级建议仍通过 `wf.last_validate_warnings` 暴露
+        （与 WorkflowDef.validate() 一致）。
 
         [workflow机制改进计划.md P6] 保存前引用完整性校验受 cfg 里的开关
         控制（cfg 为 None 时按默认值 True 全部开启，保持向后兼容）：
@@ -95,12 +99,25 @@ class WorkflowStore:
         # _transitive_deps 逻辑，但可以单独关闭，供还没来得及补全旧 workflow
         # depends_on 声明的用户过渡期临时跳过）。
         check_placeholder_depends_on = bool(getattr(wf_cfg, "placeholder_depends_on_check_enabled", True))
-        errors = wf.validate(
+        return wf.validate(
             check_placeholders=check_placeholders,
             check_condition=check_condition,
             check_placeholder_depends_on=check_placeholder_depends_on,
             role_checker=(role_checker if (check_roles and role_checker is not None) else None),
         )
+
+    def resolve_path(self, name: str) -> Optional[Path]:
+        """[M2] `_resolve_path` 的公开别名（编辑器定位工作流实际文件用），找不到返回 None。"""
+        return self._resolve_path(name)
+
+    def save(self, wf: WorkflowDef, cfg=None, role_checker=None) -> Path:
+        """
+        保存工作流到 YAML 文件，返回文件路径。
+
+        保存前校验见 validate_def()（[workflow机制改进计划.md P6] 起的一组开关，
+        M2 起抽成独立方法供可视化编辑器复用，本方法行为不变）。
+        """
+        errors = self.validate_def(wf, cfg=cfg, role_checker=role_checker)
         if errors:
             raise ValueError("工作流定义有误：\n" + "\n".join(f"  - {e}" for e in errors))
 

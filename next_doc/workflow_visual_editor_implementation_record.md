@@ -137,3 +137,65 @@ failed**；这 4 个失败（`test_session_to_workflow.py` 1 个、
   本身不改变 `force_rerun_from` "自身沿用当前落盘结果"这条既有语义。
 - REST `resume` 路由目前不支持 `step_overrides`（这是改动前就有的现状，
   不是本次引入的缺口，未在本里程碑范围内一并补上）。
+
+## M2：后端编辑（`editor_helpers.py` + 路由 + 配置）
+
+### 1. 交付内容
+
+- `workflow/store.py`：从 `save()` 抽出 `validate_def(wf, cfg, role_checker)`（同一组开关、同一套校验），
+  `save()` 行为不变；新增公开的 `resolve_path(name)`。
+- `config/models.py::WorkflowConfig`：`visual_editor_enabled`（默认 `True`）、`editor_backup_keep`（默认 20），
+  走 `param_registry` 的 nested block，未动 `loader.py`；`agent_config.json` 同步写入默认值。
+- 新增 `workflow/editor_helpers.py`：`load_for_edit` / `validate_draft` / `save_draft` /
+  `list_backups` / `restore_backup` / `editor_meta`，以及编辑器专用的 `WorkflowEditorError`
+  （`WorkflowApiError` 子类，多带 `payload`）。
+- `api/routes.py`：`GET /v1/workflows/{name}/editor`、`POST .../editor/validate`、`PUT .../editor`、
+  `GET /v1/workflow_editor/meta`；错误 `detail` 为对象 `{message, code, ...}`；文件 IO 走
+  `asyncio.to_thread`，不阻塞事件循环。备份列表 / 恢复的**端点**留给 M5（helper 已就绪并有测试）；
+  `create_workflow` 同样留给 M5。
+- 依赖：`ruamel.yaml>=0.17` 加入 `requirements.txt` 与 `pyproject.toml`。
+
+### 2. 与方案的偏差 / 补充（实施中的判断）
+
+1. **缩进风格自适应**：方案 §5.3 第 6 点给的是固定 `indent(mapping=2, sequence=4, offset=2)`，但既有文件里
+   PyYAML 输出（序列不缩进）与手写（序列缩进 2）两种风格并存，固定参数会让整份文件的序列行全部改缩进。
+   实现改为：对未改动的文档用若干候选缩进各 dump 一次，选与原文逐行相同数最多的一组；方案里的那组是其中之一。
+2. **语义回读保险**（方案未写）：写盘前把生成的 YAML 重新解析，必须与草稿语义完全一致，否则抛
+   `sync_mismatch` 拒绝写入。目的是即便 ruamel 同步在极端排版下出错，也不会落一份与用户所见不一致的文件。
+3. **`renames` 参数**：`validate` / `save` 接受 `{旧id: 新id}`，让"改 id"的 step 仍匹配到原节点、保住注释，
+   而不是被当成"删一个、加一个"（方案 §4.5 的改 id 联动由 M3/M4 的看板侧实现，这里只提供后端接口）。
+4. **None 语义**：草稿里值为 `None` 的顶层 / step 级键视为"已清空"——丢弃该键（原文档没有则不写成 `key: null`，
+   有则删除）；原文档本来就显式 `key: null` 且未动则保持。嵌套用户数据（`params` / `tool_args`）里的 null 原样保留。
+5. **`prompt_hashes`**：`load_for_edit` 额外返回各 `prompt_file` 的字节 hash，保存时若传入则同样做乐观锁，
+   避免覆盖别处改过的 prompt 文件（方案 §5.4 只写了 yaml 的 `base_hash`）。
+6. **名称不可改**：草稿的 `name` 与磁盘不同视为校验错误（改名会让按名字定位文件的所有入口错位）。
+7. **缺失 `prompt_file` 只给 warning**：文件不存在且草稿未提供正文时不阻断保存（否则一个已损坏的旧工作流
+   连别处的修复都存不了）；越界则是 error。
+8. **`editor_backup_keep` 最小按 1 处理**：不提供"完全不备份"，保留安全网。
+9. 角色未注册、`script` / `python_step` 运行期开关关闭均只给 warning，不阻断保存，也不绕过运行期开关。
+10. **`validate()` 本身不检测环**：环检测是编辑器校验新增的（DFS 找出具体环路径，环上每个节点都归入
+    `errors_by_step`）；`store.save()` 的行为保持不变，未顺手改。
+
+### 3. 已知限制
+
+- 注释保留的限制与方案 §5.3 一致：删除 step 时紧贴其前后的独立注释行可能丢失或错位；重排 step 时独立成行的
+  注释可能跟着相邻 step 移动（测试只固定语义结果与行尾注释，不固定这类位置）。
+- `include` 节点没有显式 `id` 时，画布节点 id 的约定（本实现内部用 `include:<片段名>` 匹配、错误归到片段名）
+  留给 M3 的图转换模块统一。
+- Windows：`atomic_write_text` 以文本模式写入，换行由平台决定；本模块读取时统一按 `\n` 处理，不主动写 CRLF。
+
+### 4. 测试
+
+- `tests/test_workflow_editor_helpers.py`（51 个）：往返保真（无修改字节不变且不产生备份、改一行只有该行 diff、
+  注释 / 引号 / `|` 块样式保留、PyYAML 风格文件、多行字符串、新增 / 删除 / 重排 / 改名 step、include 与相对
+  `script_path` 不被摊平、None 语义）；ruamel 缺失降级（含确认流程）；保存护栏（hash 冲突与强制覆盖、
+  校验失败不落盘不备份、开关关闭、备份字节一致与超量清理、原子写入失败不留残留、`sync_mismatch`、改名拒绝）；
+  `prompt_file` 写回 / 备份 / 越界 / 冲突；校验（批次、环、依赖 / condition / 占位符 / 类型必填 / autonomous /
+  字段类型错误的节点归类、include 归属、`script_path` 越界、运行期开关 warning）；备份恢复（含 prompt 文件、
+  非法 id）；`editor_meta`；`store.validate_def` 与 `save()` 一致；配置字段默认值与从 `agent_config.json` 加载。
+- `tests/test_workflow_editor_routes.py`（11 个）：四个端点的状态码与 `detail` 结构（200 / 400 / 403 / 404 /
+  409 / 422），写入开关关闭时 GET 仍可用，既有 `GET /v1/workflows/{name}` 不受影响。
+- 回归：`tests/test_workflow*.py`、`test_session_to_workflow.py`、`test_zhihu_workflow_steps.py` 共 271 个中
+  266 通过；5 个失败在未改动的原始代码上同样失败（`test_workflow_p11` 3 个中有 1 个本身不稳定、
+  `test_workflow_p15` 1 个、`test_session_to_workflow` 1 个），与本里程碑无关。
+  （`streamlit` 缺失导致部分看板测试无法在沙箱收集，未运行。）

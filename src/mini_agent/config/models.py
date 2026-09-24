@@ -1482,6 +1482,14 @@ class WorkflowConfig:
     # 长文本字段的截断上限（字符数），超出部分截断并标注省略了多少字符。
     debug_log_max_chars: int = 4000
 
+    # ── 看板工作流可视化编辑器（next_doc/workflow_visual_editor_plan.md §5.1）──
+    # 写入类端点（PUT /v1/workflows/{name}/editor 等）的总开关。默认开启（方案
+    # 决策 2：风险由保存前校验 / 自动备份 / 乐观锁兜底）；关闭后写入类端点一律
+    # 返回 403，只读的 GET（编辑用文档、元信息）始终可用。
+    visual_editor_enabled: bool = True
+    # 每个工作流在 .agent/workflow_backups/<name>/ 下保留的备份份数，超出后删除最旧。
+    editor_backup_keep: int = 20
+
 
 @dataclass
 class ProprioceptionConfig:
