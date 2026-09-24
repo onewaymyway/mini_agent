@@ -3200,7 +3200,9 @@ def _problem_graph_edges_to_dot(nodes: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _render_problem_graph_section(history: List, *, sim_id: str = "", branch: str = "") -> None:
+def _render_problem_graph_section(
+    history: List, *, sim_id: str = "", branch: str = "", auto_scan_interval: Optional[int] = None
+) -> None:
     """渲染"🕸️ 问题关系图"只读折叠区（第十轮批次三）：把当前分支
     历史里出现过的所有 `problems` 按 `depends_on` 连成一张图，节点上
     按 `status` 着色。纯展示层，不新增任何持久化结构、不影响任何
@@ -3216,6 +3218,16 @@ def _render_problem_graph_section(history: List, *, sim_id: str = "", branch: st
     "生成关系图"占位按钮——避免用户根本没点开这个折叠区时，仅仅因为
     `st.expander(...)` 内部代码块在每次整页 `st.rerun()` 都会照跑，
     就白白起一次子进程。
+
+    `auto_scan_interval`：这个实例当前生效的 `problem_discovery_
+    auto_scan_interval`（第十九轮，`problem_discovery_mod.get_
+    effective_auto_scan_interval()` 算出来的），只在空状态时用来判断
+    要不要多提示一句"你把自动扫描关掉了"——`problems` 完全靠模型
+    自愿声明这件事本来就不保证一定会发生，用户看到这里空着的时候，
+    "是不是该扫一次/开一下自动扫描"应该是最先想到、也最容易操作的
+    排查方向，直接摆在空状态提示里，不需要用户自己找到这篇分析。
+    传 `None`（比如被测试直接调用、不关心这个提示）时跳过这段判断，
+    行为等价于第十九轮之前。
     """
     nodes = (
         _collect_problem_graph_nodes_cached(sim_id, branch, len(history), history)
@@ -3230,6 +3242,15 @@ def _render_problem_graph_section(history: List, *, sim_id: str = "", branch: st
                 "把它们体现进 `problems` 后再回来看。</span>",
                 unsafe_allow_html=True,
             )
+            if auto_scan_interval is not None and auto_scan_interval <= 0:
+                st.markdown(
+                    '<span class="ws-muted">💡 这个实例的"问题自动扫描"目前是关闭的——'
+                    "`problems` 完全指望模型自己主动声明，很多步都不会触发；去上面"
+                    "「模拟设置」把「问题自动扫描间隔」调成一个正整数（比如 5），"
+                    "可以每隔几步自动帮你扫一遍并（自动挡下）自动确认关注，不需要"
+                    "每次都记得手动点「扫描潜在问题」。</span>",
+                    unsafe_allow_html=True,
+                )
             return
         st.markdown(
             '<span class="ws-muted">节点是同一分支历史里出现过的问题（按 `id` 去重、'
@@ -4345,10 +4366,11 @@ def page_detail() -> None:
             )
         new_pd_auto_scan_interval = st.number_input(
             "问题自动扫描间隔（第十轮批次一，每隔几步自动扫一次「潜在问题」，"
-            "0 = 关闭，默认关闭——开启后手动挡会把结果直接摆在下面「扫描潜在问题」"
-            "折叠区里，自动挡会自动确认关注，无需人工点按钮）",
+            f"0 = 关闭，第十九轮起未配置过的实例默认按 {problem_discovery_mod.DEFAULT_AUTO_SCAN_INTERVAL} "
+            "生效——开启后手动挡会把结果直接摆在下面「扫描潜在问题」折叠区里，"
+            "自动挡会自动确认关注，无需人工点按钮）",
             min_value=0, max_value=50,
-            value=int(cur_settings.get("problem_discovery_auto_scan_interval", 0) or 0),
+            value=problem_discovery_mod.get_effective_auto_scan_interval(cur_settings),
             step=1, key="settings_pd_auto_scan_interval",
         )
         new_model_version_text = st.text_input(
@@ -4592,7 +4614,10 @@ def page_detail() -> None:
     # 依赖批次二的 depends_on 字段，展示的是"已经落盘的 problems"，
     # 不是"建议阶段还没被采纳的候选"，所以是独立的折叠区而不是嵌套
     # 在上面那个折叠区内部。
-    _render_problem_graph_section(history, sim_id=sim_id, branch=manifest.branch)
+    _render_problem_graph_section(
+        history, sim_id=sim_id, branch=manifest.branch,
+        auto_scan_interval=problem_discovery_mod.get_effective_auto_scan_interval(manifest.settings),
+    )
 
     # 第十一轮 2.3 节：能力成熟度时间线，紧跟问题关系图之后——两者都是
     # "遍历完整历史、按名称/id 归并展示"的纯只读折叠区，位置相邻方便

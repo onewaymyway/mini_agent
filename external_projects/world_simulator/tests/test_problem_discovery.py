@@ -399,6 +399,29 @@ def test_adopt_problem_suggestion_normalizes_unknown_category(tmp_path):
 # ── _format_confirmed_problem_suggestions() ─────────────────────────
 
 
+# ── get_effective_auto_scan_interval()（第十九轮）────────────────────
+
+
+def test_effective_interval_defaults_when_key_absent():
+    assert pd_mod.get_effective_auto_scan_interval({}) == pd_mod.DEFAULT_AUTO_SCAN_INTERVAL
+    assert pd_mod.get_effective_auto_scan_interval(None) == pd_mod.DEFAULT_AUTO_SCAN_INTERVAL
+
+
+def test_effective_interval_respects_explicit_zero():
+    assert pd_mod.get_effective_auto_scan_interval({"problem_discovery_auto_scan_interval": 0}) == 0
+
+
+def test_effective_interval_respects_explicit_positive_value():
+    assert pd_mod.get_effective_auto_scan_interval({"problem_discovery_auto_scan_interval": 10}) == 10
+
+
+def test_effective_interval_falls_back_to_default_on_malformed_value():
+    assert (
+        pd_mod.get_effective_auto_scan_interval({"problem_discovery_auto_scan_interval": "not_a_number"})
+        == pd_mod.DEFAULT_AUTO_SCAN_INTERVAL
+    )
+
+
 # ── _safe_auto_scan_problems()（第十轮批次一）────────────────────────
 
 
@@ -416,13 +439,50 @@ def _make_manifest_ns(sim_id="sim1", settings=None):
     return SimpleNamespace(sim_id=sim_id, settings=dict(settings or {}))
 
 
-def test_auto_scan_noop_when_interval_zero_or_unset(monkeypatch):
+def test_auto_scan_noop_when_interval_explicitly_zero(monkeypatch):
+    """用户在设置面板里显式把间隔存成 0（主动关闭），即使这一步的
+    `step` 恰好是新默认值（5）的整数倍，也不应该触发——显式选择要
+    被尊重，不能被"未配置时默认 5"这条规则悄悄覆盖回去。"""
+    calls = []
+    monkeypatch.setattr(
+        pd_mod, "suggest_problems", lambda *a, **k: calls.append(1) or {"observed": [], "latent": []}
+    )
+    manifest = _make_manifest_ns(settings={"problem_discovery_auto_scan_interval": 0})
+    next_state = SimpleNamespace(step=5, vars={})
+    pd_mod._safe_auto_scan_problems(
+        object(), Path("/tmp/ws"), _FakeStoreForAutoScan([]), manifest,
+        branch="main", next_state=next_state, auto_confirm=False,
+    )
+    assert calls == []
+    assert "last_auto_problem_scan" not in manifest.settings
+
+
+def test_auto_scan_triggers_by_default_when_unset(monkeypatch):
+    """第十九轮：`settings` 里完全没有这个 key（新建实例、或从没打开
+    过设置面板保存过的旧实例）时，应该按 `DEFAULT_AUTO_SCAN_INTERVAL`
+    （5）生效，不再是"未配置=关闭"——这正是这一轮要解决的问题：不需要
+    用户自己发现并手动打开这个开关。"""
     calls = []
     monkeypatch.setattr(
         pd_mod, "suggest_problems", lambda *a, **k: calls.append(1) or {"observed": [], "latent": []}
     )
     manifest = _make_manifest_ns(settings={})
-    next_state = SimpleNamespace(step=3, vars={})
+    next_state = SimpleNamespace(step=pd_mod.DEFAULT_AUTO_SCAN_INTERVAL, vars={})
+    pd_mod._safe_auto_scan_problems(
+        object(), Path("/tmp/ws"), _FakeStoreForAutoScan([]), manifest,
+        branch="main", next_state=next_state, auto_confirm=False,
+    )
+    assert calls == [1]
+    assert "last_auto_problem_scan" in manifest.settings
+
+
+def test_auto_scan_noop_when_unset_and_step_not_multiple_of_default_interval(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        pd_mod, "suggest_problems", lambda *a, **k: calls.append(1) or {"observed": [], "latent": []}
+    )
+    manifest = _make_manifest_ns(settings={})
+    next_state = SimpleNamespace(step=3, vars={})  # 不是默认间隔 5 的整数倍
     pd_mod._safe_auto_scan_problems(
         object(), Path("/tmp/ws"), _FakeStoreForAutoScan([]), manifest,
         branch="main", next_state=next_state, auto_confirm=False,

@@ -18,9 +18,11 @@ experiment_design()` 的既有调用手法（`WorkflowStore`/`WorkflowRunner`
 **范围克制**（对照方案 2.4 节）：
 - 不做"结构性问题"/"冲突目标"两类细分（参考文档原文四类，这里只做
   Observed/Latent 两类）。
-- 不做自动周期性触发——只在调用方（通常是用户在 UI 上点击"扫描潜在
-  问题"）主动调用时才发起一次 LLM 调用，避免增加不必要的 LLM 调用
-  成本。
+- ~~不做自动周期性触发~~——这一条是模块最初版本（第九轮批次三）的
+  取舍，第十轮批次一已经加了 `_safe_auto_scan_problems()` 这个自动
+  周期触发的安全包装，本条描述已经不准确，保留删除线是为了不重写
+  历史小节、只在这里显式标注过时，实际行为以 `_safe_auto_scan_
+  problems()` 的 docstring 为准。
 - **只建议、不自动写入**：本函数只返回建议列表，不做任何 `problems`
   落盘。用户"采纳"一条建议，走的也不是"直接改写某条历史状态的
   `problems` 字段"这条路——`state_history.jsonl` 是只追加、不回改的
@@ -316,6 +318,44 @@ def withdraw_confirmed_problem_suggestion(
 # ── 第十轮批次一：自动触发（不再要求用户记得去点"扫描潜在问题"按钮）──
 
 
+DEFAULT_AUTO_SCAN_INTERVAL = 5
+"""`problem_discovery_auto_scan_interval` 未显式配置时使用的默认值
+（第十九轮，用户反馈"模拟了几十步，问题关系图还是空的"——排查发现
+这个开关此前默认是 `0`=关闭，新建实例从来不会自动打开它，用户也不
+一定知道要去设置里手动开，`problems` 因此只能完全指望模型自己主动
+声明，而 `advance_step` prompt 里这类"可选字段"有五六个之多，模型
+大概率会全部跳过）。
+
+改成"没有配置就当作 5"而不是直接把创建流程/旧数据的默认值改成 5，
+是为了同时兼顾两件事：新建实例、以及从来没打开过"模拟设置"面板保存
+过的旧实例，都能不做任何操作就自动获得这个默认值；已经在设置面板里
+显式保存过 `0`（不管是特意关闭、还是看到默认显示的 0 直接点了保存）
+的实例，尊重这个显式选择，不会被这次改动悄悄改回 5——`get_effective_
+auto_scan_interval()` 用"这个 key 在 settings 里存不存在"而不是
+"值是不是 0"来做这个区分，见该函数的说明。
+"""
+
+
+def get_effective_auto_scan_interval(settings: Optional[Dict[str, Any]]) -> int:
+    """统一算出这个实例实际生效的自动扫描间隔——`_safe_auto_scan_
+    problems()`（引擎侧，决定要不要真的发起一次扫描）和 `app.py`
+    的"模拟设置"面板（展示层，决定数字输入框默认显示什么）都调用
+    这一个函数，保证"UI 上看到的默认值"和"引擎实际使用的默认值"
+    永远一致，不会出现 UI 显示 0、实际却按 5 生效的错位。
+
+    `settings` 里完全没有 `problem_discovery_auto_scan_interval`
+    这个 key（新建实例、或从未在设置面板里保存过的旧实例）→ 返回
+    `DEFAULT_AUTO_SCAN_INTERVAL`；显式存了这个 key（不管是 0 还是
+    其它正整数）→ 尊重这个显式值，解析失败（脏数据）时退回默认值。
+    """
+    if not settings or "problem_discovery_auto_scan_interval" not in settings:
+        return DEFAULT_AUTO_SCAN_INTERVAL
+    try:
+        return int(settings.get("problem_discovery_auto_scan_interval"))
+    except (TypeError, ValueError):
+        return DEFAULT_AUTO_SCAN_INTERVAL
+
+
 def _safe_auto_scan_problems(
     cfg,
     workspace_root: Path,
@@ -331,7 +371,9 @@ def _safe_auto_scan_problems(
     automation_plan.md` 3 节）。
 
     只在 `manifest.settings["problem_discovery_auto_scan_interval"]`
-    （整数，默认 0=关闭）大于 0、且 `next_state.step` 是该间隔的整数倍
+    （整数，未配置时按 `DEFAULT_AUTO_SCAN_INTERVAL` 处理，见
+    `get_effective_auto_scan_interval()` 的说明；显式设为 0 表示
+    用户主动关闭）大于 0、且 `next_state.step` 是该间隔的整数倍
     时才发起一次扫描调用；未设置/为 0 时立即返回，不产生任何额外的
     LLM 调用——同项目一贯"新增开关默认不改变已有行为"的惯例，手动挡/
     自动挡都会经过这里（`engine.advance.advance()` 是两者共同的唯一
@@ -364,8 +406,8 @@ def _safe_auto_scan_problems(
     到达间隔时会自然重试。
     """
     try:
-        interval = int(manifest.settings.get("problem_discovery_auto_scan_interval") or 0)
-    except (TypeError, ValueError):
+        interval = get_effective_auto_scan_interval(manifest.settings)
+    except Exception:
         interval = 0
     if interval <= 0 or next_state.step % interval != 0:
         return
