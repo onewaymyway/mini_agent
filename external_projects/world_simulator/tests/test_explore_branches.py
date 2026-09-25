@@ -22,7 +22,7 @@ from world_simulator.engine.management import get_simulation
 from world_simulator.state_model import ChoiceOption, SimManifest, SimState
 from world_simulator.store import SimStore, now_iso
 
-from tests.test_fast_forward import _default_payload, _patch_sequenced_advance_step_workflow
+from test_fast_forward import _default_payload, _patch_sequenced_advance_step_workflow
 
 
 def _make_sim(data_dir: Path, sim_id: str) -> SimStore:
