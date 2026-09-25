@@ -132,6 +132,53 @@ def aggregate_field_stats(
     return results
 
 
+def discover_numeric_fields(vars_list: List[Dict[str, Any]]) -> List[str]:
+    """自动扫出一组分支终态 `vars` 里"数值型、可比较"的字段路径（最多
+    支持一层嵌套，同 `_get_nested()` 的路径格式），不需要用户手动敲
+    JSON/逗号分隔列表才能用"统计摘要"/"按关注指标排序"这些功能——
+    模板输出的 `vars` 本身就带着这些字段，用户没declare不代表系统
+    没法自己看出来"哪些字段是数值、可能值得关注"。
+
+    只收"多数分支都能取到数值"的字段（同 `aggregate_field_stats()`
+    "多数值是数字才按数值型处理"的取舍一致），避免把偶尔混进来的
+    字符串字段、或者只在个别分支出现的噪声字段也当成候选。顶层字段
+    和一层嵌套字段（如 `resources.cash`）都会被扫描，嵌套字典本身
+    不算作候选（要展开到叶子）。
+
+    Args:
+        vars_list: 多条分支的 `vars` 字典列表。
+
+    Returns: 按字段路径字母序排列、去重的字段路径列表；`vars_list`
+        为空或扫不出任何数值字段时返回空列表。
+    """
+    per_field_values: Dict[str, List[Any]] = {}
+    per_field_seen: Dict[str, int] = {}
+
+    def _record(path: str, value: Any) -> None:
+        per_field_seen[path] = per_field_seen.get(path, 0) + 1
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            per_field_values.setdefault(path, []).append(value)
+
+    for v in vars_list:
+        if not isinstance(v, dict):
+            continue
+        for key, value in v.items():
+            if isinstance(value, dict):
+                for nested_key, nested_value in value.items():
+                    _record(f"{key}.{nested_key}", nested_value)
+            else:
+                _record(key, value)
+
+    fields = [
+        path
+        for path, seen in per_field_seen.items()
+        if len(per_field_values.get(path, [])) >= max(1, seen) / 2
+        and per_field_values.get(path)
+    ]
+    fields.sort()
+    return fields
+
+
 @dataclass
 class Objective:
     """单条"关注指标"的规范化形式（阶段十四，4.6 节）。

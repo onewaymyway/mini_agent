@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from world_simulator.analysis import (
     aggregate_field_stats,
+    discover_numeric_fields,
     normalize_objectives,
     rank_by_objectives,
 )
@@ -70,6 +71,61 @@ def test_field_paths_order_preserved_and_length_matches():
     stats = aggregate_field_stats(vars_list, ["b", "missing", "a"])
     assert [s.field for s in stats] == ["b", "missing", "a"]
     assert len(stats) == 3
+
+
+def test_discover_numeric_fields_empty_list_returns_empty():
+    assert discover_numeric_fields([]) == []
+
+
+def test_discover_numeric_fields_top_level_and_nested():
+    vars_list = [
+        {"age": 30, "resources": {"cash": 100}},
+        {"age": 31, "resources": {"cash": 150}},
+    ]
+    fields = discover_numeric_fields(vars_list)
+    assert fields == ["age", "resources.cash"]
+
+
+def test_discover_numeric_fields_excludes_categorical_fields():
+    vars_list = [
+        {"age": 30, "stage": "seed"},
+        {"age": 31, "stage": "growth"},
+    ]
+    fields = discover_numeric_fields(vars_list)
+    assert fields == ["age"]
+
+
+def test_discover_numeric_fields_excludes_bool_values():
+    vars_list = [{"is_active": True}, {"is_active": False}]
+    assert discover_numeric_fields(vars_list) == []
+
+
+def test_discover_numeric_fields_requires_majority_numeric():
+    vars_list = [
+        {"cash": 100},
+        {"cash": 200},
+        {"cash": "约 500 元"},
+    ]
+    assert discover_numeric_fields(vars_list) == ["cash"]
+
+
+def test_discover_numeric_fields_skips_mostly_non_numeric_field():
+    vars_list = [
+        {"cash": "约 100 元"},
+        {"cash": "约 200 元"},
+        {"cash": 300},
+    ]
+    assert discover_numeric_fields(vars_list) == []
+
+
+def test_discover_numeric_fields_ignores_non_dict_entries():
+    vars_list = ["not a dict", {"cash": 100}]
+    assert discover_numeric_fields(vars_list) == ["cash"]
+
+
+def test_discover_numeric_fields_sorted_alphabetically():
+    vars_list = [{"zeta": 1, "alpha": 2}]
+    assert discover_numeric_fields(vars_list) == ["alpha", "zeta"]
 
 
 def test_normalize_objectives_plain_strings_have_no_field():

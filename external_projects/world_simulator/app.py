@@ -55,7 +55,12 @@ from world_simulator import quality_signals as quality_signals_mod
 from world_simulator.autopilot import (
     AutopilotDisabledError, run_autopilot_step, run_comparison_experiment, run_repeated_experiment,
 )
-from world_simulator.analysis import aggregate_field_stats, normalize_objectives, rank_by_objectives
+from world_simulator.analysis import (
+    aggregate_field_stats,
+    discover_numeric_fields,
+    normalize_objectives,
+    rank_by_objectives,
+)
 from world_simulator import attribution as attribution_mod
 from world_simulator import trend as trend_mod
 from world_simulator import relationship as relationship_mod
@@ -1691,18 +1696,20 @@ def page_create() -> None:
         "（可以再改）。</span>",
         unsafe_allow_html=True,
     )
-    with st.expander("高级：声明可排序字段（阶段十四，可选）"):
+    with st.expander("高级：给关注字段起个显示名/指定方向（阶段十四，纯锦上添花，可选）"):
         st.markdown(
-            '<span class="ws-muted">上面填的是纯文字说明，不参与排序。如果想让'
-            "「对比实验」页面按某个具体字段自动排序（仅供参考，不代表最优解），"
-            "在这里用 JSON 数组声明，比如：\n"
+            '<span class="ws-muted">「对比实验」和「这个结果是怎么来的」归因区'
+            "现在会自动从每条分支/每步的数据里扫出数值字段并排序/归因，"
+            "**不填这里也能正常用**。这里纯粹是可选的美化：想给某个字段起个"
+            "比原始路径更好懂的显示名、或者强制声明「越小越好」（默认按越大"
+            "越好排序），才需要用 JSON 数组声明，比如：\n"
             '`[{"label": "资产净值", "field": "resources.cash", '
-            '"direction": "max"}]`。不填就跳过这一步，行为与阶段十二完全一致。'
+            '"direction": "max"}]`。不填就用自动扫出来的字段名和默认方向。'
             "</span>",
             unsafe_allow_html=True,
         )
         advanced_objectives_text = st.text_area(
-            "结构化关注指标（JSON 数组，可选）",
+            "结构化关注指标（JSON 数组，可选，仅影响显示名/排序方向）",
             value=st.session_state.get("create_objectives_advanced", ""),
             key="create_objectives_advanced_input",
             height=80,
@@ -3723,11 +3730,20 @@ def _render_causal_graph_node_detail(
 
 def _render_attribution_section(history: List, manifest) -> None:
     """渲染"这个结果是怎么来的"折叠区（阶段二十九，4.21 节，归因/贡献
-    拆解报告）。
+    拆解报告；第若干轮改进：目标字段改为自动发现，不再要求手动声明）。
 
-    只对 `manifest.settings.objectives` 里声明过 `field` 的目标字段
-    提供归因入口——没有声明可排序字段的实例，这里退化为一句引导文案
-    而不是强行猜一个字段（同 `rank_by_objectives()` 的前置条件），
+    目标字段来源两部分，自动合并去重（手动声明的优先展示在前面，
+    因为它带了一个用户自己起的更好懂的 `label`）：
+    - `manifest.settings.objectives` 里声明过 `field` 的条目（手动，
+      可选，主要作用是给字段起个好记的显示名，不再是"能不能用"的
+      前提条件）；
+    - `attribution.discover_target_fields()` 直接从历史 `causal_links
+      [].affected_fields` 里自动扫出来的字段（自动，`causal_links`
+      本来就是每步 LLM 输出自带的，不需要用户额外配置）。
+
+    只有当历史里连一条带 `affected_fields` 的 `causal_links` 都没有
+    出现过时，才退化为一句引导文案——这种情况下确实没有任何数据支撑
+    归因，不是"用户没声明"的问题，而是"还没有可用于归因的因果链"。
     纯展示层调用 `attribution.summarize_contributions()`，不发起任何
     新的 LLM 调用。
 
@@ -3737,16 +3753,29 @@ def _render_attribution_section(history: List, manifest) -> None:
     """
     objectives = normalize_objectives((manifest.settings or {}).get("objectives") or [])
     field_objectives = [o for o in objectives if o.field]
+    discovered = attribution_mod.discover_target_fields(history)
+
+    # 合并：手动声明的字段用它自己的 label；自动发现但没被手动声明过
+    # 的字段，用"字段名（自动发现 · 出现 N 次）"这样的 label，让用户
+    # 一眼看出这条是系统自己找出来的，不是他配置的。
+    declared_fields = {o.field for o in field_objectives}
+    options: Dict[str, str] = {o.label: o.field for o in field_objectives}
+    for d in discovered:
+        if d.field in declared_fields:
+            continue
+        label = f"{d.field}（自动发现 · 出现 {d.count} 次）"
+        options[label] = d.field
+
     with st.expander("🧭 这个结果是怎么来的（归因/贡献拆解，可选）"):
-        if not field_objectives:
+        if not options:
             st.markdown(
-                '<span class="ws-muted">还没有声明可排序的关注字段——在'
-                '"⚙️ 模拟设置"里的"声明可排序字段"填一个 `field`，'
-                "就能在这里看它的贡献来源清单。</span>",
+                '<span class="ws-muted">目前的因果链条目里还没有出现过带 '
+                "`affected_fields` 的记录——这部分不需要手动配置，"
+                "继续推进几步、等 `causal_links` 输出带上受影响字段之后，"
+                "这里会自动列出可以归因的字段。</span>",
                 unsafe_allow_html=True,
             )
             return
-        options = {o.label: o.field for o in field_objectives}
         picked_label = st.selectbox(
             "选择一个目标字段", list(options.keys()), key="attribution_target_field_picker",
         )
@@ -4410,14 +4439,16 @@ def page_detail() -> None:
             key="settings_model_version",
         )
         cur_objectives_advanced = [o for o in cur_objectives if isinstance(o, dict)]
-        with st.expander("高级：声明可排序字段（阶段十四，可选）"):
+        with st.expander("高级：给关注字段起个显示名/指定方向（阶段十四，纯锦上添花，可选）"):
             st.markdown(
-                '<span class="ws-muted">声明后「对比实验」页面会出现"按关注指标排序"的辅助'
-                "展示区（仅供参考，不代表最优解）。</span>",
+                '<span class="ws-muted">「对比实验」页面的「按关注指标排序」辅助展示区'
+                "现在会自动扫描各分支数值字段并排序，不需要在这里声明才能出现"
+                "（仅供参考，不代表最优解）。这里可选声明纯粹是为了给字段起个"
+                "更好懂的显示名，或者把默认的「越大越好」改成「越小越好」。</span>",
                 unsafe_allow_html=True,
             )
             new_objectives_advanced_text = st.text_area(
-                "结构化关注指标（JSON 数组，可选）",
+                "结构化关注指标（JSON 数组，可选，仅影响显示名/排序方向）",
                 value=json.dumps(cur_objectives_advanced, ensure_ascii=False) if cur_objectives_advanced else "",
                 key="settings_objectives_advanced",
                 height=80,
@@ -5931,10 +5962,11 @@ def page_experiment() -> None:
         except Exception:  # noqa: BLE001 — 拿不到就用空默认值，不影响主流程
             pass
         focus_fields_text = st.text_input(
-            "关注哪些变量字段做统计摘要（逗号分隔，比如 resources.cash）",
+            "关注哪些变量字段做统计摘要（逗号分隔，比如 resources.cash；"
+            "留空会自动扫出所有分支里的数值字段，不是必填项）",
             value=st.session_state.get("exp_focus_fields", focus_fields_default),
             key="exp_focus_fields",
-            placeholder="例：age, resources.cash",
+            placeholder="例：age, resources.cash（留空自动识别）",
         )
 
         if st.button("▶▶ 运行重复实验", type="primary"):
@@ -6022,9 +6054,25 @@ def page_experiment() -> None:
         if exp_results.get("mode") == "repeat":
             focus_fields = exp_results.get("focus_fields") or []
             ok_results = [r for r in exp_results["results"] if r.final_vars is not None]
-            if focus_fields and ok_results:
-                stats = aggregate_field_stats([r.final_vars for r in ok_results], focus_fields)
+            final_vars_list = [r.final_vars for r in ok_results]
+            # 自动扫一遍所有分支的数值字段——不管有没有手动填关注字段，
+            # 都算出来备用：填了字段的场景下也可能想在排序区看到没被
+            # 手动点名的其它数值字段，避免"关键功能因为没手动配置就
+            # 形同虚设"。
+            auto_discovered_fields: List[str] = (
+                discover_numeric_fields(final_vars_list) if final_vars_list else []
+            )
+            effective_focus_fields = focus_fields or auto_discovered_fields
+            if effective_focus_fields and ok_results:
+                stats = aggregate_field_stats(final_vars_list, effective_focus_fields)
                 st.markdown("**统计摘要**")
+                if not focus_fields and auto_discovered_fields:
+                    st.markdown(
+                        '<span class="ws-muted">没有手动填写关注字段，以下是自动扫出的数值'
+                        "字段（可以在上面「重复实验」的关注字段里手动指定，覆盖这份自动列表）。"
+                        "</span>",
+                        unsafe_allow_html=True,
+                    )
                 for s in stats:
                     if s.kind == "numeric":
                         st.markdown(
@@ -6046,21 +6094,31 @@ def page_experiment() -> None:
                             f'<div class="ws-muted">没有任何一条分支给出这个字段的值。</div></div>',
                             unsafe_allow_html=True,
                         )
-            elif not focus_fields:
+            elif not effective_focus_fields:
                 st.markdown(
-                    '<span class="ws-muted">没有填写要关注的字段，只展示每条分支的完成情况；'
-                    "填写字段路径可以看到均值/极差/标准差摘要。</span>",
+                    '<span class="ws-muted">没有扫出任何数值字段，只展示每条分支的完成情况。'
+                    "</span>",
                     unsafe_allow_html=True,
                 )
 
-            # ── 按关注指标排序（阶段十四，4.6 节）：只有 objectives 里至少
-            # 一条声明了 field 才会有结果，否则 rank_by_objectives 返回空
-            # 列表，这里不展示任何东西 ──
+            # ── 按关注指标排序（阶段十四，4.6 节；后续改进：手动声明的
+            # objectives[].field 只用来起显示名/指定方向，没手动声明时
+            # 自动用 discover_numeric_fields() 扫出的数值字段兜底，不再
+            # 要求必须手动声明才能看到排序结果 ──
             objectives_for_rank = exp_results.get("objectives") or []
+            declared_rank_fields = {
+                o.field for o in normalize_objectives(objectives_for_rank) if o.field
+            }
+            auto_rank_objectives = [
+                {"label": f, "field": f, "direction": "max"}
+                for f in auto_discovered_fields
+                if f not in declared_rank_fields
+            ]
+            effective_objectives_for_rank = objectives_for_rank + auto_rank_objectives
             if ok_results:
                 ranked = rank_by_objectives(
-                    [r.final_vars for r in ok_results],
-                    objectives_for_rank,
+                    final_vars_list,
+                    effective_objectives_for_rank,
                     labels=[f"分支 {r.branch}" for r in ok_results],
                 )
                 if ranked:

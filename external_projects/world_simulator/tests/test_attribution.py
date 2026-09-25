@@ -158,6 +158,52 @@ def test_summarize_contributions_no_caveat_when_field_never_flagged():
     assert report.caveat is None
 
 
+def test_discover_target_fields_empty_history_returns_empty_list():
+    assert attr.discover_target_fields([]) == []
+
+
+def test_discover_target_fields_counts_and_sorts_by_frequency():
+    history = [
+        {
+            "causal_links": [
+                {"affected_fields": ["cash"]},
+                {"affected_fields": ["cash", "stage"]},
+                {"affected_fields": ["stage"]},
+            ]
+        },
+        {"causal_links": [{"affected_fields": ["cash"]}]},
+    ]
+    fields = attr.discover_target_fields(history)
+    assert [f.field for f in fields] == ["cash", "stage"]
+    assert fields[0].count == 3
+    assert fields[1].count == 2
+
+
+def test_discover_target_fields_merges_nested_and_bare_names():
+    history = [
+        {
+            "causal_links": [
+                {"affected_fields": ["resources.cash"]},
+                {"affected_fields": ["cash"]},
+            ]
+        }
+    ]
+    fields = attr.discover_target_fields(history)
+    assert len(fields) == 1
+    assert fields[0].field == "cash"
+    assert fields[0].count == 2
+
+
+def test_discover_target_fields_ignores_non_dict_links_and_blanks():
+    history = [{"causal_links": ["not a dict", {"affected_fields": ["", None]}]}]
+    assert attr.discover_target_fields(history) == []
+
+
+def test_discovered_field_to_dict():
+    field = attr.DiscoveredField(field="cash", count=2)
+    assert field.to_dict() == {"field": "cash", "count": 2}
+
+
 def test_contribution_report_to_dict_roundtrip_shape():
     history = [{"causal_links": [{"affected_fields": ["cash"], "line_id": "econ"}]}]
     report = attr.summarize_contributions(history, "cash")

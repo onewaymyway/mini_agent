@@ -81,6 +81,65 @@ def _classify_level(count: int, total: int) -> str:
 
 
 @dataclass
+class DiscoveredField:
+    """自动扫描出的候选归因目标字段（不需要用户手动声明）。"""
+
+    field: str
+    count: int
+    """历史 `causal_links` 里 `affected_fields` 命中这个字段的条目数，
+    用来把"提得最多、最值得归因"的字段排在前面。"""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"field": self.field, "count": self.count}
+
+
+def discover_target_fields(history: Sequence[Any]) -> List[DiscoveredField]:
+    """从历史 `causal_links[].affected_fields` 里自动扫出所有出现过的
+    字段名，按出现次数降序返回——不需要用户在"⚙️ 模拟设置"里手动声明
+    `objectives[].field` 才能用归因功能：`causal_links` 本来就是每步
+    LLM 输出自带的（`affected_fields` 是自由文本字段名列表，见
+    `state_model.py::SimState.causal_links` docstring），只要历史里
+    出现过就足够支撑归因，手动声明只是"给个更友好的显示名"这个锦上
+    添花的角色，不该是这个功能能不能用的前提条件。
+
+    同一个字段的不同写法（比如 `resources.cash` 和 `cash`）按
+    `_last_segment()` 规则去重合并——合并时保留末段更短（即更"贴近
+    叶子"）的那种写法用于展示，计数相加。
+
+    Args:
+        history: 同 `summarize_contributions()`。
+
+    Returns: 按 `count` 降序排列的 `DiscoveredField` 列表；历史里完全
+        没有带 `affected_fields` 的 `causal_links` 时返回空列表。
+    """
+    counts: Dict[str, int] = {}
+    display: Dict[str, str] = {}
+    for state in history:
+        links = _get_attr_or_key(state, "causal_links") or []
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+            for affected in link.get("affected_fields") or []:
+                raw = str(affected or "").strip()
+                if not raw:
+                    continue
+                key = _last_segment(raw)
+                counts[key] = counts.get(key, 0) + 1
+                # 展示名优先用更短（更贴近叶子）的写法，同长度时保留
+                # 先出现的那个，避免同一批次里来回抖动。
+                current = display.get(key)
+                if current is None or len(raw) < len(current):
+                    display[key] = raw
+
+    fields = [
+        DiscoveredField(field=display[key], count=count)
+        for key, count in counts.items()
+    ]
+    fields.sort(key=lambda f: f.count, reverse=True)
+    return fields
+
+
+@dataclass
 class ContributionSource:
     """某个来源线（因果线 `id`，或 `(未归属)` 表示没有 `source_line_id`/
     `line_id` 标注）对目标字段的贡献汇总。"""
