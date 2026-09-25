@@ -43,7 +43,7 @@ resources:
 # 提示"未开启"，不影响其它命令。
 review:
   cadence: weekly
-  enabled: false
+  enabled: true
 
 # 可选：如果这个项目的核心数据有"状态流转"语义（比如候选池条目在几个
 # 状态之间迁移），参考 stock_watch/project.yaml 的 dashboard.kanban_view
