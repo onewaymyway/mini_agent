@@ -65,7 +65,7 @@ class WorkflowEditorError(WorkflowApiError):
 
     code 取值：not_found / editor_disabled(403) / conflict(409) / needs_confirm(409) /
     validation_failed(422) / invalid_yaml(422) / bad_request(400) / path_escape(422) /
-    sync_mismatch(500)。
+    sync_mismatch(500) / already_exists(409，M5 新建 / 复制时重名)。
     """
 
     def __init__(self, code: str, message: str, **payload: Any) -> None:
@@ -1023,7 +1023,168 @@ def save_draft(
     }
 
 
-# ── 备份列表 / 恢复（端点在 M5 接入）──────────────────────────────────────
+# ── 新建 / 复制工作流（M5，方案 §5.2 create_workflow）────────────────────
+
+_NAME_MAX_LEN = 64
+# 会被 YAML 当作非字符串解析的裸标量（数字 / 布尔 / null），写 name 时需要加引号
+_YAML_NON_STRING_RE = re.compile(r"^(?:[-+]?[0-9_.]+|true|false|yes|no|on|off|null|~)$", re.IGNORECASE)
+_TOP_NAME_LINE_RE = re.compile(r"^name[ \t]*:[^\n]*$", re.MULTILINE)
+
+_BLANK_TEMPLATE = """\
+# 由看板可视化编辑器创建的空白工作流：请在编辑器里补充步骤与依赖。
+name: {name}
+description: ""
+steps:
+  - id: step_1
+    name: 第一步
+    prompt: 请在此填写这一步要完成的任务说明。
+"""
+
+
+def validate_new_name(name: Any) -> str:
+    """校验并返回可用于新建的工作流名。规则与 `WorkflowStore._path` 的规范化一致：
+    只允许字母 / 数字（含中文）/ 下划线 / 中划线——保证「名称 == 文件名」，不会出现「输入 a b、
+    实际落成 a_b」这类让用户找不到文件的静默改名。"""
+    n = str(name or "").strip()
+    if not n:
+        raise WorkflowEditorError("bad_request", "工作流名称不能为空")
+    if len(n) > _NAME_MAX_LEN:
+        raise WorkflowEditorError("bad_request", f"工作流名称过长（最多 {_NAME_MAX_LEN} 个字符）")
+    bad = sorted({c for c in n if not (c.isalnum() or c in "-_")})
+    if bad:
+        raise WorkflowEditorError(
+            "bad_request",
+            "工作流名称只能包含字母、数字、下划线和中划线，发现非法字符：" + " ".join(repr(c) for c in bad),
+        )
+    return n
+
+
+def _yaml_name_scalar(name: str) -> str:
+    return f'"{name}"' if _YAML_NON_STRING_RE.match(name) else name
+
+
+def _set_top_level_name(text: str, new_name: str) -> str:
+    """只改顶层 `name:` 那一行的值（保留其余全部文本、注释与格式）；没有该行则在文件开头补一行。
+    行尾注释一并保留。"""
+    scalar = _yaml_name_scalar(new_name)
+    m = _TOP_NAME_LINE_RE.search(text)
+    if m is None:
+        return f"name: {scalar}\n" + text
+    line = m.group(0)
+    comment = ""
+    ci = re.search(r"\s+#", line)
+    if ci:
+        comment = line[ci.start():]
+    return text[:m.start()] + f"name: {scalar}{comment}" + text[m.end():]
+
+
+def create_workflow(cfg: "AppConfig", name: str, copy_from: Optional[str] = None) -> dict:
+    """[POST /v1/workflows] 新建空白工作流，或复制已有工作流（受写入开关控制）。
+
+    - 空白：单文件模式 `<name>.yaml`，带一个合法的起始步骤（创建后立即能通过校验）。
+    - 复制：保持源工作流的模式——单文件复制文本（只改顶层 `name:` 行，注释 / include / 相对路径
+      原样保留）；目录模式整目录复制（agents / skills / prompts 一并带走，`__pycache__` 除外）。
+    - 已存在同名工作流 → `already_exists`(409)；绝不覆盖。
+    - 写完后回读校验（能加载、名字一致），失败则清理刚创建的文件并抛 `sync_mismatch`，
+      不留下半成品。
+
+    单文件复制时若源工作流有 `prompt_file` 步骤，副本与源**共享**这些文件（相对路径都指向同一
+    位置）——在返回的 `warnings` 里明确提示，避免用户在副本里改 prompt 正文时悄悄改到原工作流。
+    返回 {status, name, mode, path, copied_from, base_hash, warnings}。
+    """
+    from mini_agent.utils.atomic_write import atomic_write_text
+
+    _require_enabled(cfg)
+    new = validate_new_name(name)
+    store = load_store(cfg)
+    if (store.resolve_path(new) is not None or store._path(new).exists()
+            or store._dir_path(new).exists()):
+        raise WorkflowEditorError("already_exists", f"已存在同名工作流 {new!r}，请换一个名称")
+
+    warnings: list[str] = []
+    created_file: Optional[Path] = None
+    created_dir: Optional[Path] = None
+    try:
+        if copy_from:
+            src_path = store.resolve_path(copy_from)
+            if src_path is None:
+                raise WorkflowEditorError("not_found", f"找不到要复制的工作流 {copy_from!r}")
+            src_is_dir = src_path.name == "workflow.yaml" and src_path.parent != store._dir
+            if src_is_dir:
+                dst_dir = store._dir_path(new)
+                shutil.copytree(src_path.parent, dst_dir,
+                                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                created_dir = dst_dir
+                entry = dst_dir / "workflow.yaml"
+                atomic_write_text(entry, _set_top_level_name(_decode(entry.read_bytes()), new))
+                final_path, mode = entry, "dir"
+            else:
+                text = _decode(src_path.read_bytes())
+                final_path = store._path(new)
+                atomic_write_text(final_path, _set_top_level_name(text, new))
+                created_file, mode = final_path, "file"
+                try:
+                    import yaml  # type: ignore
+                    src_doc = yaml.safe_load(text) or {}
+                    shared = sorted({
+                        str(s.get("prompt_file")) for s in (src_doc.get("steps") or [])
+                        if isinstance(s, dict) and s.get("prompt_file")
+                    })
+                except Exception:
+                    shared = []
+                if shared:
+                    warnings.append(
+                        "副本与原工作流共享这些 prompt 文件（单文件模式下相对路径指向同一位置）："
+                        + "、".join(shared) + "；在编辑器里修改其正文会同时影响两者。"
+                    )
+        else:
+            final_path = store._path(new)
+            atomic_write_text(final_path, _BLANK_TEMPLATE.format(name=_yaml_name_scalar(new)))
+            created_file, mode = final_path, "file"
+
+        loaded = store.load(new)
+        if loaded is None or loaded.name != new:
+            raise WorkflowEditorError(
+                "sync_mismatch",
+                f"新建后回读校验失败（加载不出工作流或名称不一致，得到 {getattr(loaded, 'name', None)!r}），已清理。",
+            )
+        if not copy_from:
+            errs = store.validate_def(loaded, cfg)
+            if errs:
+                raise WorkflowEditorError("sync_mismatch", "空白模板未通过校验，已清理：" + "；".join(errs))
+    except BaseException:
+        if created_file is not None:
+            try:
+                created_file.unlink()
+            except OSError:
+                pass
+        if created_dir is not None:
+            shutil.rmtree(created_dir, ignore_errors=True)
+        raise
+
+    return {
+        "status": "created", "name": new, "mode": mode, "path": _rel(cfg, final_path),
+        "copied_from": copy_from or None, "base_hash": _sha256(final_path.read_bytes()),
+        "warnings": warnings,
+    }
+
+
+# ── 单步试运行的前置检查（M5，方案 §5.5 steps/{step_id}/test）─────────────
+
+def precheck_step_test(cfg: "AppConfig", name: str, step_id: str) -> dict:
+    """试运行前先同步确认工作流与 step 存在（廉价、立即失败），真正的执行交给异步任务。
+    只看**已保存**定义——与 `api_helpers.test_workflow_step` 一致。"""
+    store = load_store(cfg)
+    wf = store.load(name)
+    if wf is None:
+        raise WorkflowApiError("not_found", f"找不到工作流 {name!r}")
+    step = next((s for s in wf.steps if s.id == step_id), None)
+    if step is None:
+        raise WorkflowApiError("bad_step", f"工作流 {name!r} 中不存在 step_id={step_id!r}")
+    return {"step_type": step.effective_type}
+
+
+# ── 备份列表 / 恢复（M2 实现，端点在 M5 接入）──────────────────────────────
 
 def list_backups(cfg: "AppConfig", name: str) -> list[dict]:
     """列出某工作流的编辑器备份（新的在前）：{id, created, size, has_prompts}。"""

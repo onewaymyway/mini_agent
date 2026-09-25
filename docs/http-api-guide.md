@@ -1284,6 +1284,34 @@ GET /v1/workflow_editor/meta
 `.agent/workflow_backups/<name>/<时间戳>.yaml` → ruamel 原位同步 + `atomic_write_text` → `prompt_file`
 正文写回（越界拒绝）。草稿与文件语义等价时返回 `unchanged`，文件字节不变。
 
+#### M5 新增：新建 / 复制、单步试运行、备份恢复
+
+```bash
+# 新建空白工作流，或复制已有工作流（受 workflow.visual_editor_enabled 控制）
+POST /v1/workflows
+Body: {"name": "新名称", "copy_from": "源工作流名（可选，省略=空白）"}
+# → {status: "created", name, mode: "file"|"dir", path, copied_from, base_hash, warnings}
+# 错误：400 名称非法（bad_request）/ 403 写入已关闭（editor_disabled）/
+#      404 找不到 copy_from（not_found）/ 409 已存在同名工作流（already_exists）
+
+# 单步试运行（用已保存定义；真实调用 LLM/工具；走 async_jobs 异步）
+POST /v1/workflows/{name}/steps/{step_id}/test
+Body: {"mock_step_results": {"上游id": {"output": "...", "score": 0.8}},
+       "mock_inputs": {"变量名": "..."}, "timeout_override": 60}   # 均可选
+# → {job_id, key}；轮询 GET /v1/async_jobs/{job_id}，终态 result 即
+#   StepResult.to_dict()（或不支持沙箱测试时的 {skipped: true, reason}）
+# 提交前的同步检查：404 工作流不存在 / 422 bad_step（step_id 不在该工作流定义中）
+
+# 编辑器备份列表（新的在前；只读，不受写入开关影响）
+GET /v1/workflows/{name}/backups
+# → {name, backups: [{id, created, size, has_prompts}]}
+
+# 恢复某份备份（受写入开关控制；恢复前会先把当前文件再备份一份）
+POST /v1/workflows/{name}/backups/{backup_id}/restore
+Body: {"base_hash": "..."}   # 可选，传入时做乐观锁，当前文件已被别处改动 → 409 conflict
+# → editor_helpers.restore_backup() 的返回体
+```
+
 ### Session 清理保护 / 批量清理
 
 [看板 Session 清理功能集成]（`next_doc/session_cleanup_design.md`）

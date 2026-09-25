@@ -1641,6 +1641,38 @@ class AgentClient:
             body["confirm_comment_loss"] = True
         return self._editor_request("PUT", f"/workflows/{name}/editor", body, timeout=20)
 
+    # ── 工作流可视化编辑器 M5：新建/复制、单步试运行、备份恢复 ──────────────────
+    def create_workflow(self, name: str, copy_from: str = None):
+        """新建空白工作流；传 copy_from 则复制该工作流。重名 → `_status=409`（kind=other，
+        `_detail.code == "already_exists"`）。"""
+        body = {"name": name}
+        if copy_from:
+            body["copy_from"] = copy_from
+        return self._editor_request("POST", "/workflows", body)
+
+    def test_workflow_step(self, name: str, step_id: str, mock_step_results: dict = None,
+                           mock_inputs: dict = None, timeout_override: float = None):
+        """单步试运行（用**已保存**定义，会真实调用 LLM / 工具）。服务端走 async_jobs：
+        成功提交返回 `{"job_id", "key"}`，交给 `async_job_ui.start_async_job/run_async_job` 轮询。
+        用 `_post`（而非 `_editor_request`）——失败只需要文本，且与其它 async_jobs 提交方法一致。"""
+        body = {}
+        if mock_step_results:
+            body["mock_step_results"] = mock_step_results
+        if mock_inputs:
+            body["mock_inputs"] = mock_inputs
+        if timeout_override:
+            body["timeout_override"] = timeout_override
+        return self._post(f"/workflows/{name}/steps/{step_id}/test", body, timeout=30)
+
+    def workflow_backups(self, name: str):
+        """编辑器备份列表（新的在前）：{"name", "backups": [{id, created, size, has_prompts}]}。"""
+        return self._editor_request("GET", f"/workflows/{name}/backups")
+
+    def restore_workflow_backup(self, name: str, backup_id: str, base_hash: str = None):
+        """恢复某份备份；传 base_hash 做乐观锁（冲突 → kind=conflict）。"""
+        body = {"base_hash": base_hash} if base_hash else {}
+        return self._editor_request("POST", f"/workflows/{name}/backups/{backup_id}/restore", body, timeout=20)
+
     # ── 日报 / 主动推荐 / 决策画像（主动推荐与数字分身机制设计方案）───────
     def daily_digest(self, date: str = None):
         params = {"date": date} if date else None

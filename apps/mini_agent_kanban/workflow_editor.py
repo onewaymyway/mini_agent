@@ -20,6 +20,8 @@ apps/mini_agent_kanban/workflow_editor.py — 看板工作流可视化编辑器�
   6. 变更预览：两份草稿的语义比较、步骤级摘要、git 风格 unified diff（可直接喂给 diff_view）
   7. 降级渲染：graphviz DOT（未安装 streamlit-flow-component 时用 `st.graphviz_chart`）
   8. 属性面板字段清单（§4.4，按类型出表单，UI 只负责渲染）
+  9. [M5] 画布边同步（拖线加依赖 / 删边 → depends_on，含陈旧回传的防护）、并行批次高亮预览、
+     单步试运行的 mock 骨架 / 结果摘要、新建工作流名校验、最近可续跑执行的挑选
 """
 from __future__ import annotations
 
@@ -53,6 +55,7 @@ STEP_TYPE_STYLES: dict[str, tuple[str, str, str]] = {
 _UNKNOWN_STYLE = ("❓", "#FAFAFA", "#9E9E9E")   # 插件注册的自定义类型
 ERROR_BORDER = "#E53935"
 WARNING_BORDER = "#F9A825"
+HIGHLIGHT_BORDER = "#FF6F00"   # [M5] 并行批次高亮
 
 # include 节点只允许改这两项：片段内容要去 .agent/workflow_snippets/ 维护，避免编辑器把片段摊平
 INCLUDE_EDITABLE_FIELDS = ("id", "depends_on")
@@ -865,9 +868,17 @@ def _dot_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
-def to_dot(graph: dict, selected: Optional[str] = None) -> str:
+def to_dot(graph: dict, selected: Optional[str] = None, selected_edge: Optional[tuple] = None,
+           show_batches: bool = False) -> str:
     """把 draft_to_graph 的结果渲染成 graphviz DOT（自上而下），供 `st.graphviz_chart` 使用。
-    选中节点加粗高亮；有错误的节点红框；merge_sources 虚线边。"""
+    选中节点加粗高亮；有错误的节点红框；merge_sources 虚线边。
+
+    M5 扩展（均为可选，默认行为与 M3/M4 完全一致）：
+      - selected_edge=(source, target)：该边加粗标红（「插入节点 / 删除依赖」的操作对象）；
+      - show_batches=True：节点标签追加「批次 N」；
+      - 节点带 `highlighted` / `dimmed`（`apply_batch_highlight` 产出）时：高亮的加粗橙框，
+        其余淡化为灰色——错误 / 选中的样式优先，不被高亮盖掉。
+    """
     lines = [
         "digraph workflow {",
         '  rankdir=TB; bgcolor="transparent";',
@@ -878,14 +889,28 @@ def to_dot(graph: dict, selected: Optional[str] = None) -> str:
         label = n["label"] + ("  " + "".join(n["badges"]) if n["badges"] else "")
         if n["name"] != n["id"]:
             label += "\n(" + n["id"] + ")"
-        pen = 3 if n["id"] == selected else 1.5
-        color = n["border"] if n["id"] != selected else "#000000"
+        if show_batches and n.get("batch") is not None:
+            label += f"\n批次 {n['batch'] + 1}"
+        fill, color, pen, fontcolor = n["fill"], n["border"], 1.5, None
+        if n.get("dimmed") and not n.get("has_error"):
+            fill, color, fontcolor = "#F5F5F5", "#BDBDBD", "#9E9E9E"
+        elif n.get("highlighted") and not n.get("has_error"):
+            color, pen = HIGHLIGHT_BORDER, 3.5
+        if n["id"] == selected:
+            color, pen = "#000000", 3
+        extra = f', fontcolor="{fontcolor}"' if fontcolor else ""
         lines.append(
             f'  "{_dot_escape(n["id"])}" [label="{_dot_escape(label)}", '
-            f'fillcolor="{n["fill"]}", color="{color}", penwidth={pen}];'
+            f'fillcolor="{fill}", color="{color}", penwidth={pen}{extra}];'
         )
+    sel_pair = (str(selected_edge[0]), str(selected_edge[1])) if selected_edge else None
     for e in graph["edges"]:
-        style = ' [style=dashed, color="#9FA8DA"]' if e["kind"] == "merge" else ""
+        attrs = []
+        if e["kind"] == "merge":
+            attrs += ["style=dashed", 'color="#9FA8DA"']
+        if sel_pair and (e["source"], e["target"]) == sel_pair:
+            attrs = ['color="#E53935"', "penwidth=3"]
+        style = f" [{', '.join(attrs)}]" if attrs else ""
         lines.append(f'  "{_dot_escape(e["source"])}" -> "{_dot_escape(e["target"])}"{style};')
     lines.append("}")
     return "\n".join(lines)
@@ -1003,3 +1028,352 @@ def runtime_switch_note(step_type: str, switches: Optional[dict]) -> str:
     if step_type == "python_step" and not sw.get("python_step_enabled", False):
         return "当前配置 workflow.python_step_enabled=false，该类型步骤不会执行"
     return ""
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 10. [M5] 画布边同步：拖线加依赖 / 点边删依赖
+# ══════════════════════════════════════════════════════════════════════════
+#
+# streamlit-flow-component 是「Python 传入 state → 前端渲染 → 用户交互后把整份 state（含全部边）
+# 回传」的模型，且回传值是异步到达的（前端 echo 我们传入的参数、或用户的一次交互，都会触发新一轮
+# rerun）。所以 Python 侧拿到的画布边可能是**陈旧的**：例如刚在面板里加了一条依赖，重跑时组件返回的
+# 仍是上一轮的边集——如果直接拿它跟草稿做差集，就会把刚加的依赖当成「用户在画布上删了」而误删。
+#
+# 防护分两层（UI 层各负责一半，纯函数负责这里）：
+#   ① 时间戳去重：同一个回传（timestamp 相同）只处理一次（UI 层记 `_canvas_ts`）；
+#   ② **相对「我们最近发给前端的边集」求差**（`detect_canvas_edits`），而不是相对当前草稿——
+#      回传若等于某个最近发送过的边集，就是前端在原样回显，不算用户编辑；用户的编辑（多了 / 少了
+#      边）表现为相对最近发送集合的增量，再把这个**增量**应用到当前草稿（`sync_canvas_edges`）。
+
+MERGE_EDGE_MARK = "~>"      # draft_to_graph 里 merge 边 id 的形式：`源~>目标`
+SENT_HISTORY_KEEP = 6
+
+
+def _edge_parts(e: Any) -> tuple[str, str, str]:
+    """兼容 dict 与带属性的对象（StreamlitFlowEdge）：返回 (id, source, target)。"""
+    if isinstance(e, dict):
+        return str(e.get("id", "")), str(e.get("source", "")), str(e.get("target", ""))
+    return str(getattr(e, "id", "")), str(getattr(e, "source", "")), str(getattr(e, "target", ""))
+
+
+def is_merge_edge_id(edge_id: Any) -> bool:
+    """merge_sources 虚线边（画布上只读）的 id 带 `~>`；depends 边是 `->`，用户新拖出的是
+    组件自己生成的 `st-flow-edge_源-目标`。"""
+    return MERGE_EDGE_MARK in str(edge_id)
+
+
+def canvas_depends_pairs(canvas_edges: Iterable[Any], node_ids: Optional[Iterable[str]] = None) -> list[tuple[str, str]]:
+    """画布边 → depends_on 依赖对 (source, target)（去重、排序）。
+    排除 merge 虚线边；给了 node_ids 则丢弃任一端不在其中的边（陈旧回传里指向已删节点的边）。"""
+    ids = set(node_ids) if node_ids is not None else None
+    out: set[tuple[str, str]] = set()
+    for e in canvas_edges or []:
+        eid, src, dst = _edge_parts(e)
+        if is_merge_edge_id(eid) or not src or not dst:
+            continue
+        if ids is not None and (src not in ids or dst not in ids):
+            continue
+        out.add((src, dst))
+    return sorted(out)
+
+
+def push_sent_history(history: Optional[list], pairs: Iterable[tuple[str, str]],
+                      keep: int = SENT_HISTORY_KEEP) -> list:
+    """记录本次发给前端的依赖边集（frozenset）；与最新一条相同则不重复入栈。返回新列表。"""
+    cur = frozenset((str(a), str(b)) for a, b in pairs)
+    hist = list(history or [])
+    if not hist or hist[-1] != cur:
+        hist.append(cur)
+    return hist[-keep:]
+
+
+def detect_canvas_edits(canvas_pairs: Iterable[tuple[str, str]], sent_history: Iterable[frozenset],
+                        node_ids: Optional[Iterable[str]] = None) -> tuple[list, list]:
+    """画布回传的依赖边集，相对「最近发送过的边集」求差 → (用户新增的边, 用户删除的边)。
+
+    在 sent_history 里挑与回传**差异最小**的一份作基准（并列取最新的）：回传等于其中任一份 →
+    视为前端原样回显，返回 ([], [])。没有历史 → 无从判断，保守地返回 ([], [])。
+    基准集合按 node_ids 过滤（与回传同口径，避免已删节点的边被当成「用户删除」）。"""
+    ids = set(node_ids) if node_ids is not None else None
+    cp = {(str(a), str(b)) for a, b in canvas_pairs}
+    best: Optional[tuple[int, set, set]] = None
+    for s in reversed(list(sent_history or [])):
+        base = {p for p in s if ids is None or (p[0] in ids and p[1] in ids)}
+        added, removed = cp - base, base - cp
+        size = len(added) + len(removed)
+        if size == 0:
+            return [], []
+        if best is None or size < best[0]:
+            best = (size, added, removed)
+    if best is None:
+        return [], []
+    return sorted(best[1]), sorted(best[2])
+
+
+@dataclass
+class CanvasSync:
+    draft: dict
+    added: list = field(default_factory=list)      # 实际新增成功的依赖 (source, target)
+    removed: list = field(default_factory=list)    # 实际删除的依赖
+    errors: list = field(default_factory=list)     # 被拒绝的新增（成环 / 自依赖 / 节点不存在）
+    ignored: list = field(default_factory=list)    # 已是当前草稿状态的空操作（陈旧回传的残留）
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.added or self.removed)
+
+    @property
+    def needs_canvas_reset(self) -> bool:
+        """有被拒绝的编辑时，画布上残留着草稿里没有的边 → UI 需要重建画布组件以回到草稿状态。"""
+        return bool(self.errors)
+
+
+def sync_canvas_edges(draft: dict, canvas_edges: Iterable[Any], sent_history: Iterable[frozenset]) -> CanvasSync:
+    """把画布上的边编辑（拖线加依赖 / 删边）应用到草稿，不修改入参。
+
+    先用 `detect_canvas_edits` 得到用户相对「最近发送集合」的增量，再把增量应用到**当前**草稿：
+    已存在的新增 / 不存在的删除是空操作（进 `ignored`）；新增逐条做环检测，成环 / 自依赖被拒并
+    进 `errors`（其余照常应用）。merge_sources 虚线边只读，不参与。"""
+    ids = step_ids(draft)
+    pairs = canvas_depends_pairs(canvas_edges, ids)
+    added, removed = detect_canvas_edits(pairs, sent_history, ids)
+    cur = set(dependency_edges(draft))
+    eff_removed = [p for p in removed if p in cur]
+    eff_added = [p for p in added if p not in cur]
+    ignored = [p for p in removed if p not in cur] + [p for p in added if p in cur]
+    new_draft, errors = apply_dependency_diff(draft, eff_added, eff_removed)
+    err_pairs = set()
+    for msg in errors:
+        head = msg.split("：", 1)[0]
+        if " → " in head:
+            a, b = head.split(" → ", 1)
+            err_pairs.add((a.strip(), b.strip()))
+    return CanvasSync(
+        draft=new_draft,
+        added=[p for p in eff_added if p not in err_pairs],
+        removed=eff_removed,
+        errors=errors,
+        ignored=ignored,
+    )
+
+
+def resolve_canvas_selection(selected_id: Optional[str], node_ids: Iterable[str],
+                             canvas_edges: Iterable[Any]) -> tuple[Optional[str], Optional[tuple]]:
+    """画布回传的 selected_id → (选中节点, 选中边)。`get_edge_on_click` 开启后 selected_id 也可能是
+    边 id：返回 (None, (source, target, kind))，kind 为 "depends"/"merge"。都不是则 (None, None)。"""
+    if not selected_id:
+        return None, None
+    if selected_id in set(node_ids):
+        return selected_id, None
+    for e in canvas_edges or []:
+        eid, src, dst = _edge_parts(e)
+        if eid == selected_id and src and dst:
+            return None, (src, dst, "merge" if is_merge_edge_id(eid) else "depends")
+    return None, None
+
+
+def edge_choices(draft: dict) -> list[tuple[str, str]]:
+    """草稿里全部 depends 边 (source, target)，按目标节点在草稿中的顺序、再按依赖声明顺序排列——
+    「插入节点 / 删除依赖」的边选择器用（画布点边不可用 / 降级模式下的替代入口）。"""
+    ids = set(step_ids(draft))
+    return [(d, node_id(s)) for s in steps_of(draft) for d in _deps(s) if d in ids]
+
+
+def edge_label(edge: tuple) -> str:
+    return f"{edge[0]} → {edge[1]}"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 11. [M5] 并行批次高亮预览（方案 §8 M5「并行批次高亮预览」）
+# ══════════════════════════════════════════════════════════════════════════
+
+def _effective_allow_parallel(draft: dict, step: dict) -> bool:
+    """与 runner 同一条三层查找：step 显式值 → defaults → 硬编码兜底 True。"""
+    v = step.get("allow_parallel")
+    if v is None:
+        v = (draft.get("defaults") or {}).get("allow_parallel")
+    return True if v is None else bool(v)
+
+
+def batch_summary(draft: dict, batches: Optional[list] = None) -> list[dict]:
+    """并行批次摘要。batches 省略时用本地 Kahn 分层（`compute_layers`）。
+
+    每项：{index, label, ids, concurrent_ids（allow_parallel 生效、会在线程池里并发跑的）,
+    serial_ids（allow_parallel=false，被单独串行的）, will_run_concurrently（并发的 ≥ 2）, text}。
+    只反映「拓扑层内互不依赖」这一结构信息；实际是否并发还受运行期的 force_serial / 并发上限影响，
+    UI 需要在预览旁给出这条提示。"""
+    layers = batches if batches else compute_layers(draft)
+    out: list[dict] = []
+    for i, ids in enumerate(layers):
+        ids = [str(x) for x in ids]
+        conc, serial = [], []
+        for sid in ids:
+            step = find_step(draft, sid) or {}
+            (conc if _effective_allow_parallel(draft, step) else serial).append(sid)
+        label = f"批次 {i + 1}"
+        if len(conc) >= 2:
+            text = f"{label}：{'、'.join(conc)} 互不依赖，可并发执行"
+        else:
+            text = f"{label}：{'、'.join(ids)}"
+        if serial:
+            text += f"（{'、'.join(serial)} 设置了 allow_parallel=false，单独串行）"
+        out.append({
+            "index": i, "label": label, "ids": ids, "concurrent_ids": conc, "serial_ids": serial,
+            "will_run_concurrently": len(conc) >= 2, "text": text,
+        })
+    return out
+
+
+def apply_batch_highlight(graph: dict, batch_index: Optional[int]) -> dict:
+    """高亮某个批次：返回**新图**（深拷贝），该批次节点 `highlighted=True`，其余 `dimmed=True`。
+    batch_index 为 None（或图里没有任何节点属于该批次）时原样返回不高亮。"""
+    if batch_index is None or not any(n.get("batch") == batch_index for n in graph.get("nodes", [])):
+        return graph
+    g = copy.deepcopy(graph)
+    for n in g["nodes"]:
+        on = n.get("batch") == batch_index
+        n["highlighted"], n["dimmed"] = on, not on
+    return g
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 12. [M5] 单步试运行：mock 骨架 / 入参解析 / 结果摘要
+# ══════════════════════════════════════════════════════════════════════════
+
+_TEST_REF_RE = re.compile(r"\{([^{}]+)\}")
+_IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
+_ITEM_VARS = {"item", "item_index"}       # foreach 内层专属占位符，运行时由 foreach 提供
+_MOCKABLE_FIELDS = {"output", "score"}    # build_mock_step_results 能伪造的字段
+
+
+def _iter_texts(step: dict, prompt_files: Optional[dict]) -> Iterable[str]:
+    def walk(v: Any):
+        if isinstance(v, str):
+            yield v
+        elif isinstance(v, dict):
+            for x in v.values():
+                yield from walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                yield from walk(x)
+    for k, v in step.items():
+        if k in _NON_TEXT_KEYS:
+            continue
+        yield from walk(v)
+    pf = step.get("prompt_file")
+    if pf and (prompt_files or {}).get(pf):
+        yield prompt_files[pf]
+
+
+def suggest_test_mocks(step: dict, prompt_files: Optional[dict] = None) -> dict:
+    """按 step 里引用到的占位符，给「单步试运行」造 mock 骨架：
+      - `{上游id.output}` / `{上游id.score}` → mock_step_results[上游id]（output 给占位文本 / score 给 0.8）
+      - `{变量}`（无点、合法标识符、非 foreach 专属）→ mock_inputs[变量] = ""
+      - `{id.output_file}` / `{id.result_file...}` 这类依赖真实落盘文件的引用，mock 伪造不了，
+        进 `unmockable`，UI 提示用户改用「续跑」实际验证。
+    JSON 花括号（`{"a": 1}`）等非标识符内容会被忽略，与 runner 替换时「找不到就保持原样」一致。"""
+    results: dict[str, dict] = {}
+    inputs: dict[str, str] = {}
+    unmockable: list[str] = []
+    for text in _iter_texts(step, prompt_files):
+        for m in _TEST_REF_RE.finditer(text):
+            key = m.group(1)
+            if "." in key:
+                sid, fld = key.split(".", 1)
+                if not sid or not fld or " " in key:
+                    continue
+                if fld in _MOCKABLE_FIELDS:
+                    entry = results.setdefault(sid, {})
+                    if fld == "output":
+                        entry.setdefault("output", f"（{sid} 的模拟输出）")
+                    else:
+                        entry.setdefault("score", 0.8)
+                elif fld == "output_file" or fld == "result_file" or fld.startswith("result_file:"):
+                    if key not in unmockable:
+                        unmockable.append(key)
+            elif _IDENT_RE.match(key) and key not in _ITEM_VARS:
+                inputs.setdefault(key, "")
+    return {"mock_step_results": results, "mock_inputs": inputs, "unmockable": unmockable}
+
+
+def parse_json_object(text: str, label: str = "JSON") -> tuple[Optional[dict], Optional[str]]:
+    """文本框 → dict。空文本 → (None, None)（表示不传）；非法 JSON / 非对象 → (None, 错误信息)。"""
+    if not (text or "").strip():
+        return None, None
+    try:
+        v = json.loads(text)
+    except Exception as e:
+        return None, f"「{label}」不是合法 JSON：{e}"
+    if not isinstance(v, dict):
+        return None, f"「{label}」必须是 JSON 对象（{{...}}）"
+    return v, None
+
+
+_OK_STATUSES = {"done"}
+
+
+def summarize_test_result(result: Any) -> dict:
+    """试运行终态 result → UI 展示用摘要：
+    {kind: skipped|error|ok|failed, title, output, error, status, duration, score, prompt_preview, raw}。
+    - 任务本身失败（`{"_error": ...}`）→ error；
+    - 该类型不支持沙箱测试（`{skipped: true, reason}`）→ skipped；
+    - 执行完毕：status == done → ok，否则 failed（无论成功与否都把 output / error 带回，方便对照）。"""
+    if not isinstance(result, dict):
+        return {"kind": "error", "title": "试运行没有返回结果", "raw": result}
+    if result.get("_error"):
+        return {"kind": "error", "title": "试运行失败", "error": str(result["_error"]), "raw": result}
+    if result.get("skipped"):
+        return {"kind": "skipped", "title": "该 step 不支持沙箱试运行",
+                "error": str(result.get("reason") or ""), "raw": result}
+    status = str(result.get("status") or "")
+    ok = status in _OK_STATUSES
+    return {
+        "kind": "ok" if ok else "failed",
+        "title": "试运行通过" if ok else f"试运行未通过（{status or '未知状态'}）",
+        "status": status,
+        "output": result.get("output") or "",
+        "error": result.get("error") or "",
+        "duration": result.get("duration_seconds"),
+        "score": result.get("score"),
+        "prompt_preview": result.get("resolved_prompt_preview") or "",
+        "raw": result,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 13. [M5] 新建 / 复制工作流、保存后续跑
+# ══════════════════════════════════════════════════════════════════════════
+
+def validate_workflow_name(name: str, existing: Iterable[str] = ()) -> tuple[bool, str]:
+    """新建 / 复制工作流的名称即时校验（与后端 `editor_helpers.validate_new_name` 同一口径，
+    后端仍是最终裁决；这里只是让用户少走一次往返）。返回 (是否合法, 提示)。"""
+    n = (name or "").strip()
+    if not n:
+        return False, "请输入工作流名称"
+    if len(n) > 64:
+        return False, "名称过长（最多 64 个字符）"
+    bad = sorted({c for c in n if not (c.isalnum() or c in "-_")})
+    if bad:
+        return False, "只能包含字母、数字、下划线和中划线，非法字符：" + " ".join(repr(c) for c in bad)
+    if n in set(existing):
+        return False, f"已存在同名工作流 {n!r}"
+    return True, ""
+
+
+# run.status 里「还能续跑」的状态：失败 / 部分完成 / 已取消（含被标记为已中断）/ 已暂停。
+# running 与 awaiting_approval 不算——前者正在跑，后者应走审批入口。
+RESUMABLE_RUN_STATUSES = ("failed", "partial", "cancelled", "paused")
+
+
+def pick_resumable_run(runs: Iterable[dict], workflow_name: str) -> Optional[dict]:
+    """从 `workflow_runs()` 的列表里挑该工作流**最近一次**可续跑的执行；没有返回 None。
+    不含疑似孤儿记录（is_stale：状态是 running 但进程内已无活跃控制，应走「标记为已中断」）。"""
+    cands = [
+        r for r in runs or []
+        if r.get("workflow_name") == workflow_name
+        and r.get("status") in RESUMABLE_RUN_STATUSES
+        and not r.get("is_stale")
+    ]
+    if not cands:
+        return None
+    return max(cands, key=lambda r: r.get("started_at") or 0)

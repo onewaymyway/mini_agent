@@ -994,6 +994,21 @@ run_workflow("article_writer", {
   `requirements.txt` / `pyproject.toml`。
 - REST 端点见 [HTTP API 指南](http-api-guide.md) 的「工作流可视化编辑器后端」一节。
 
+### M5 新增：新建 / 复制、单步试运行、备份恢复
+
+- `create_workflow(cfg, name, copy_from=None)`：新建空白工作流（单文件模板，带一个能通过校验的起始
+  step）或复制已有工作流。名称只允许字母 / 数字（含中文）/ 下划线 / 中划线，与文件名规范化同口径。
+  单文件复制只改顶层 `name:` 行（保留注释 / include / 相对路径），若源工作流有 `prompt_file` 步骤，
+  副本与源**共享**这些文件（返回的 `warnings` 里会提示）；目录模式整目录复制。重名 → `already_exists`
+  (409)。写完后回读校验，失败会清理刚建的文件。
+- 单步试运行（`POST /v1/workflows/{name}/steps/{step_id}/test`）：用**已保存**定义（未保存的编辑不
+  生效），手工提供 `mock_step_results`/`mock_inputs` 代替真实上游依赖，复用既有的
+  `api_helpers.test_workflow_step` 沙箱逻辑（见上文「单步测试沙箱」）；会真实调用 LLM / 工具，走
+  `async_jobs` 异步执行。
+- 备份恢复（`GET/POST /v1/workflows/{name}/backups[/{id}/restore]`）：备份在 M2 保存流程里已自动生成
+  （`.agent/workflow_backups/<name>/`），M5 补上"列出并恢复"的路由；恢复前会把当前文件再备份一份（恢复
+  本身也可撤销），可传 `base_hash` 做乐观锁。
+
 ## workflow 相关配置（`agent_config.json`）
 
 ```json

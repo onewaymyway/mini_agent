@@ -7885,7 +7885,10 @@ def _wfed_reload(client: AgentClient, name: str) -> None:
         "mode": resp.get("mode"),
         "renames": {},
         "selected_node": None,
+        "selected_edge": None,
         "validation": None,
+        "canvas_sync": {"history": we.push_sent_history(None, we.dependency_edges(draft)), "last_ts": None},
+        "highlight_batch": None,
     }
     for k in (f"wfed_conflict_{name}", f"wfed_needs_confirm_{name}", f"wfed_save_result_{name}",
               f"wfed_confirm_delete_{name}"):
@@ -7980,21 +7983,31 @@ def _wfed_field_widget(spec: "we.FieldSpec", holder: dict, meta: Optional[dict],
     return val
 
 
-def _wfed_render_flow_canvas(graph: dict, selected: Optional[str], key: str) -> Optional[str]:
+def _wfed_render_flow_canvas(graph: dict, selected: Optional[str], key: str,
+                             sync_state: Optional[dict] = None) -> tuple:
     """streamlit-flow-component 画布：ELK 自动分层（自上而下）、点击节点选中，坐标不落盘。
     仅在 `_flow_available()` 为真时调用；渲染中任何异常都吞掉并回退到降级路径，
-    避免第三方组件的抖动拖垮整个编辑器（方案 §七"主要技术风险"）。"""
+    避免第三方组件的抖动拖垮整个编辑器（方案 §七"主要技术风险"）。
+
+    [M5] `sync_state`（`state["canvas_sync"]`，形如 `{"history": [...], "last_ts": int}`）不为
+    None 时开放拖线加依赖 / 点边选中：返回 `(selected_node, selected_edge, canvas_edges)`，
+    `canvas_edges` 是本轮画布上的完整边集合（供调用方判断是否真的发生了编辑并调用
+    `we.sync_canvas_edges` 应用到草稿——同步逻辑需要当前草稿，只能交给调用方，这里只负责
+    "有没有变化"的去重判断），未发生编辑 / 未开启同步时为 None。未传 sync_state 时行为与 M4
+    完全一致（只读连线、`allow_new_edges=False`）。
+    """
     try:
         from streamlit_flow import streamlit_flow
         from streamlit_flow.elements import StreamlitFlowEdge, StreamlitFlowNode
         from streamlit_flow.layouts import LayeredLayout
         from streamlit_flow.state import StreamlitFlowState
 
+        node_ids = [n["id"] for n in graph["nodes"]]
         nodes = [
             StreamlitFlowNode(
                 id=n["id"], pos=(0, 0),
                 data={"content": n["label"] + ("　" + "".join(n["badges"]) if n["badges"] else "")},
-                selectable=True, draggable=True, connectable=False,
+                selectable=True, draggable=True, connectable=sync_state is not None,
                 style={"backgroundColor": n["fill"], "border": f"2px solid {n['border']}"},
             )
             for n in graph["nodes"]
@@ -8003,6 +8016,7 @@ def _wfed_render_flow_canvas(graph: dict, selected: Optional[str], key: str) -> 
             StreamlitFlowEdge(
                 id=e["id"], source=e["source"], target=e["target"],
                 marker_end={"type": "arrowclosed"},
+                deletable=sync_state is not None and e["kind"] != "merge",
                 style={"strokeDasharray": "5,5"} if e["kind"] == "merge" else {},
             )
             for e in graph["edges"]
@@ -8023,14 +8037,36 @@ def _wfed_render_flow_canvas(graph: dict, selected: Optional[str], key: str) -> 
         new_state = streamlit_flow(
             key, state, height=420, fit_view=True, show_controls=True,
             layout=LayeredLayout(direction="down"), get_node_on_click=True,
-            allow_new_edges=False,  # 阶段二（M5）再开放拖线加依赖
+            get_edge_on_click=sync_state is not None,
+            allow_new_edges=sync_state is not None,
+            enable_edge_menu=sync_state is not None,
         )
         st.session_state[state_key] = new_state
-        return new_state.selected_id or selected
+
+        if sync_state is None:
+            return new_state.selected_id or selected, None, None
+
+        # 同一个回传（timestamp 相同）只处理一次：组件在未交互的重跑里也会原样 echo 上一轮
+        # 的 state，若不去重会把"什么都没变"误判成一次编辑。
+        ts = getattr(new_state, "timestamp", None)
+        canvas_edges = None
+        if ts is not None and ts != sync_state.get("last_ts"):
+            sync_state["last_ts"] = ts
+            pairs = we.canvas_depends_pairs(new_state.edges, node_ids)
+            added, removed = we.detect_canvas_edits(pairs, sync_state.get("history") or [], node_ids)
+            if added or removed:
+                canvas_edges = new_state.edges
+
+        node_sel, edge_sel = we.resolve_canvas_selection(new_state.selected_id, node_ids, new_state.edges)
+        if node_sel or edge_sel:
+            selected_node = node_sel
+            selected_edge = (edge_sel[0], edge_sel[1]) if edge_sel and edge_sel[2] == "depends" else None
+        else:
+            selected_node, selected_edge = selected, None
+        return selected_node, selected_edge, canvas_edges
     except Exception as e:  # noqa: BLE001 — 第三方组件的任何问题都不应拖垮编辑器
         st.warning(f"画布组件渲染异常，已降级为只读图（{e}）。")
-        return selected
-
+        return selected, None, None
 
 def _wfed_render_property_panel(name: str, state: dict, meta: Optional[dict],
                                 errors_by_step: dict, warnings_by_step: dict) -> None:
@@ -8184,6 +8220,141 @@ def _wfed_save(client: AgentClient, name: str, state: dict, *, force: bool = Fal
         st.error(f"保存失败：{err.message}")
 
 
+def _wfed_render_create_panel(client: AgentClient, existing_names: list) -> None:
+    """[M5] 新建空白工作流 / 复制已有工作流（方案 §5.2）。"""
+    mode = st.radio("方式", ["空白工作流", "复制已有工作流"], key="wfed_create_mode",
+                     horizontal=True, label_visibility="collapsed")
+    copy_from = None
+    if mode == "复制已有工作流":
+        if not existing_names:
+            st.caption("暂无可复制的工作流。")
+            return
+        copy_from = st.selectbox("复制自", existing_names, key="wfed_create_copy_from")
+    new_name = st.text_input("新工作流名称", key="wfed_create_name",
+                              help="只能包含字母、数字（含中文）、下划线和中划线，需与文件名一致。")
+    ok, msg = we.validate_workflow_name(new_name, existing_names) if new_name else (True, "")
+    if new_name and not ok:
+        st.warning(msg)
+    if st.button("创建", key="wfed_create_btn", disabled=not (new_name and ok)):
+        resp = client.create_workflow(new_name, copy_from=copy_from)
+        err = we.parse_editor_error(resp)
+        if err:
+            st.error(f"创建失败：{err.message}")
+            return
+        for w in resp.get("warnings") or []:
+            st.toast(f"⚠️ {w}", icon="⚠️")
+        st.session_state["wfed_wf_name"] = new_name
+        _wfed_reload(client, new_name)
+        st.toast(f"✅ 已创建 {new_name}", icon="✅")
+        st.rerun()
+
+
+def _wfed_render_step_test_panel(client: AgentClient, name: str, state: dict) -> None:
+    """[M5] 单步试运行（方案 §5.5）：只跑当前选中节点，用手工 mock 数据代替真实上游依赖。
+    会真实调用 LLM / 工具、消耗 token，所以默认折叠 + 需要点按钮才触发；用**已保存**的定义，
+    有未保存修改时禁用并提示先保存。"""
+    draft = state["draft"]
+    sid = state.get("selected_node")
+    step = we.find_step(draft, sid)
+    if not step:
+        return
+    dirty = we.is_dirty(state["original"], draft, state["original_prompt_files"], state["prompt_files"])
+    if dirty:
+        st.caption("⚠️ 有未保存修改：单步试运行使用的是**已保存**的定义，请先保存或放弃修改再试运行。")
+
+    async_key = f"wf_step_test:{name}:{sid}"
+    result = run_async_job(client, async_key, label="⏳ 正在试运行，可能需要数分钟…")
+    if result is not None:
+        if "_error" in result:
+            st.error(f"试运行失败：{result['_error']}")
+        else:
+            summary = we.summarize_test_result(result)
+            icon = {"ok": "✅", "failed": "❌", "skipped": "⏭️", "error": "❌"}[summary["kind"]]
+            st.markdown(f"{icon} **{summary['title']}**")
+            if summary.get("prompt_preview"):
+                with st.expander("解析后的 prompt 预览", expanded=False):
+                    st.code(summary["prompt_preview"], language=None)
+            if summary.get("output"):
+                st.text_area("输出", summary["output"], height=150, key=f"wfed_test_out_{name}_{sid}")
+            if summary.get("error"):
+                st.caption(f"错误信息：{summary['error']}")
+            if summary.get("duration") is not None:
+                st.caption(f"耗时：{summary['duration']:.1f}s")
+        return
+
+    prompt_files = state.get("prompt_files") or {}
+    mocks = we.suggest_test_mocks(step, prompt_files)
+    if mocks["unmockable"]:
+        st.caption("⚠️ 以下引用依赖真实落盘文件，无法用 mock 数据伪造，试运行时这些占位符会保持原样："
+                   + "、".join(mocks["unmockable"]))
+
+    mock_results_text = st.text_area(
+        "mock_step_results（JSON，可留空）", value=json.dumps(mocks["mock_step_results"], ensure_ascii=False, indent=2)
+        if mocks["mock_step_results"] else "", height=100, key=f"wfed_test_mr_{name}_{sid}",
+    )
+    mock_inputs_text = st.text_area(
+        "mock_inputs（JSON，可留空）", value=json.dumps(mocks["mock_inputs"], ensure_ascii=False, indent=2)
+        if mocks["mock_inputs"] else "", height=70, key=f"wfed_test_mi_{name}_{sid}",
+    )
+    timeout_override = st.number_input("超时秒数（0=使用默认）", min_value=0, value=0, step=10,
+                                       key=f"wfed_test_to_{name}_{sid}")
+
+    mock_results, mr_err = we.parse_json_object(mock_results_text, "mock_step_results")
+    mock_inputs, mi_err = we.parse_json_object(mock_inputs_text, "mock_inputs")
+    if mr_err:
+        st.error(mr_err)
+    if mi_err:
+        st.error(mi_err)
+
+    if st.button("▶️ 开始试运行（会真实调用 LLM/工具，消耗 token）", key=f"wfed_test_run_{name}_{sid}",
+                disabled=dirty or bool(mr_err) or bool(mi_err)):
+        if start_async_job(
+            client, async_key,
+            lambda: client.test_workflow_step(
+                name, sid, mock_results, mock_inputs,
+                float(timeout_override) if timeout_override else None,
+            ),
+        ):
+            st.rerun()
+
+
+def _wfed_render_backups_panel(client: AgentClient, name: str, state: dict) -> None:
+    """[M5] 编辑器备份列表 / 恢复（方案 §5.5）。恢复后重新加载编辑器文档，放弃当前草稿。"""
+    backups_resp = client.workflow_backups(name)
+    err = we.parse_editor_error(backups_resp)
+    if err:
+        st.warning(f"备份列表获取失败：{err.message}")
+        return
+    backups = backups_resp.get("backups") or []
+    if not backups:
+        st.caption("暂无备份（保存过一次修改后才会生成）。")
+        return
+    for b in backups:
+        c1, c2, c3 = st.columns([3, 1, 1])
+        c1.markdown(f"`{b['id']}`　{b.get('created', '')}　{b.get('size', 0)} 字节"
+                    + ("　🧩含 prompt 文件" if b.get("has_prompts") else ""))
+        if c2.button("恢复", key=f"wfed_backup_restore_{name}_{b['id']}"):
+            st.session_state[f"wfed_confirm_restore_{name}"] = b["id"]
+            st.rerun()
+    confirm_id = st.session_state.get(f"wfed_confirm_restore_{name}")
+    if confirm_id:
+        st.warning(f"确认恢复到备份 `{confirm_id}`？当前编辑器里未保存的修改会丢失（磁盘上的当前文件会先被再备份一份，恢复本身也可撤销）。")
+        rc1, rc2 = st.columns(2)
+        if rc1.button("确认恢复", key=f"wfed_backup_restore_confirm_{name}"):
+            resp = client.restore_workflow_backup(name, confirm_id, state.get("base_hash"))
+            err = we.parse_editor_error(resp)
+            st.session_state.pop(f"wfed_confirm_restore_{name}", None)
+            if err:
+                st.error(f"恢复失败：{err.message}")
+            else:
+                _wfed_reload(client, name)
+                st.toast("✅ 已恢复备份", icon="✅")
+            st.rerun()
+        if rc2.button("取消", key=f"wfed_backup_restore_cancel_{name}"):
+            st.session_state.pop(f"wfed_confirm_restore_{name}", None)
+            st.rerun()
+
+
 def _render_workflow_editor_tab(client: AgentClient) -> None:
     st.caption(
         "直接编辑工作流 DAG：图形画布 + 属性面板，保存时保留原 YAML 的注释 / include 引用 / "
@@ -8194,6 +8365,10 @@ def _render_workflow_editor_tab(client: AgentClient) -> None:
         st.warning(f"工作流列表获取失败：{wf_data['_error']}")
         return
     names = [w["name"] for w in wf_data.get("workflows", [])]
+
+    with st.expander("➕ 新建 / 复制工作流", expanded=not names):
+        _wfed_render_create_panel(client, names)
+
     if not names:
         st.info("暂无已保存的工作流。")
         return
@@ -8301,17 +8476,58 @@ def _render_workflow_editor_tab(client: AgentClient) -> None:
                 with st.expander(f.summary, expanded=len(files) == 1):
                     st.code(f.body, language="diff")
 
+    # [M5] 并行批次高亮预览：选了某个批次时，画布把该批次节点加粗高亮、其余淡化。
+    summary = we.batch_summary(draft, batches)
+    hl_labels = ["（不高亮）"] + [b["text"] for b in summary]
+    hl_idx = 0
+    cur_hl = state.get("highlight_batch")
+    if cur_hl is not None and cur_hl < len(summary):
+        hl_idx = cur_hl + 1
+    hl_choice = st.selectbox("并行批次预览", hl_labels, index=hl_idx, key=f"wfed_batch_hl_{name}")
+    state["highlight_batch"] = hl_labels.index(hl_choice) - 1 if hl_choice != hl_labels[0] else None
+
     graph = we.draft_to_graph(draft, errors_by_step, warnings_by_step, batches)
+    if state["highlight_batch"] is not None:
+        graph = we.apply_batch_highlight(graph, state["highlight_batch"])
+
     gcol, pcol = st.columns([3, 2])
     with gcol:
         selected = state.get("selected_node")
+        selected_edge = state.get("selected_edge")
+        node_ids = [n["id"] for n in graph["nodes"]]
         if _flow_available():
-            selected = _wfed_render_flow_canvas(graph, selected, key=f"wfed_flow_{name}")
+            sync_state = state.setdefault(
+                "canvas_sync", {"history": we.push_sent_history(None, we.dependency_edges(draft)), "last_ts": None},
+            )
+            selected, selected_edge, canvas_edges = _wfed_render_flow_canvas(
+                graph, selected, key=f"wfed_flow_{name}", sync_state=sync_state,
+            )
+            if canvas_edges is not None:
+                res = we.sync_canvas_edges(draft, canvas_edges, sync_state.get("history") or [])
+                if res.changed:
+                    state["draft"] = draft = res.draft
+                    state["validation"] = None
+                    msg = []
+                    if res.added:
+                        msg.append("新增依赖：" + "、".join(f"{a}→{b}" for a, b in res.added))
+                    if res.removed:
+                        msg.append("删除依赖：" + "、".join(f"{a}→{b}" for a, b in res.removed))
+                    st.toast("；".join(msg), icon="🔗")
+                if res.errors:
+                    for e in res.errors:
+                        st.error(f"画布连线被拒绝：{e}")
+                sync_state["history"] = we.push_sent_history(sync_state.get("history"), we.dependency_edges(draft))
+                if res.needs_canvas_reset:
+                    # 有编辑被拒绝：画布上还留着草稿里没有的边，必须重建组件才能回到草稿状态。
+                    st.session_state.pop(f"_wfed_flow_{name}_state", None)
+                    st.rerun()
         else:
-            st.caption("未安装可选依赖 `streamlit-flow-component`，降级为只读图 + 节点选择器"
-                       "（依赖 `graphviz`；功能完整，只是没有点选和拖线）。")
-            st.graphviz_chart(we.to_dot(graph, selected), width='stretch')
-            node_ids = [n["id"] for n in graph["nodes"]]
+            st.caption("未安装可选依赖 `streamlit-flow-component`，降级为只读图 + 节点/边选择器"
+                       "（依赖 `graphviz`；功能完整，只是没有拖拽）。")
+            st.graphviz_chart(
+                we.to_dot(graph, selected, selected_edge, show_batches=state["highlight_batch"] is not None),
+                width='stretch',
+            )
             if node_ids:
                 idx = node_ids.index(selected) if selected in node_ids else 0
                 selected = st.selectbox(
@@ -8319,10 +8535,35 @@ def _render_workflow_editor_tab(client: AgentClient) -> None:
                     format_func=lambda i: next((n["label"] for n in graph["nodes"] if n["id"] == i), i),
                     key=f"wfed_select_node_{name}",
                 )
-        state["selected_node"] = selected
+                selected_edge = None
+        state["selected_node"], state["selected_edge"] = selected, selected_edge
         if graph["dangling"]:
             st.caption("⚠️ 存在指向不存在节点的引用：" + "；".join(
                 f"{d['node']}.{d['field']} → {d['missing']}" for d in graph["dangling"]))
+
+        # [M5] 降级模式（或想避免手滑拖错线）下的边操作入口：删除依赖 / 在边上插入节点。
+        choices = we.edge_choices(draft)
+        if choices:
+            with st.expander("🔗 依赖边操作", expanded=selected_edge is not None):
+                labels = [we.edge_label(e) for e in choices]
+                idx = choices.index(selected_edge) if selected_edge in choices else 0
+                pick_label = st.selectbox("选中的依赖边", labels, index=idx, key=f"wfed_edge_pick_{name}")
+                pick = choices[labels.index(pick_label)]
+                ec1, ec2, ec3 = st.columns([1, 1.4, 1])
+                if ec1.button("🗑️ 删除依赖", key=f"wfed_edge_del_{name}"):
+                    state["draft"] = we.remove_dependency(draft, pick[0], pick[1])
+                    state["selected_edge"], state["validation"] = None, None
+                    st.rerun()
+                insert_type = ec2.selectbox(
+                    "插入节点类型", list(we.STEP_TYPE_STYLES.keys()),
+                    key=f"wfed_edge_ins_type_{name}", label_visibility="collapsed",
+                )
+                if ec3.button("✂️ 插入节点", key=f"wfed_edge_ins_{name}"):
+                    new_draft, new_id = we.insert_between(draft, pick[0], pick[1], insert_type)
+                    state["draft"] = new_draft
+                    state["selected_node"], state["selected_edge"] = new_id, None
+                    state["validation"] = None
+                    st.rerun()
 
         st.markdown("**节点操作**")
         add_type = st.selectbox("新节点类型", list(we.STEP_TYPE_STYLES.keys()), key=f"wfed_add_type_{name}")
@@ -8369,9 +8610,15 @@ def _render_workflow_editor_tab(client: AgentClient) -> None:
 
     with pcol:
         _wfed_render_property_panel(name, state, meta, errors_by_step, warnings_by_step)
+        if state.get("selected_node"):
+            with st.expander("🧪 单步试运行", expanded=False):
+                _wfed_render_step_test_panel(client, name, state)
 
     with st.expander("⚙️ 工作流属性", expanded=False):
         _wfed_render_workflow_fields(name, state)
+
+    with st.expander("🗄️ 备份 / 恢复", expanded=False):
+        _wfed_render_backups_panel(client, name, state)
 
 
 # ═══════════════════════════════════════════════════════════════════════

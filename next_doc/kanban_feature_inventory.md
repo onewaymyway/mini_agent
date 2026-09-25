@@ -120,6 +120,15 @@
   `GET /workflow_runs`、`GET /workflow_runs/{id}`、`GET /workflow_runs/{id}/events`、
   `POST /workflow_runs/{id}/pause|cancel|mark_interrupted|resume|approve|reject|input`、
   `POST /workflow_runs/{id}/steps/{step_id}/override`
+- **✏️ 编辑器视图**（`next_doc/workflow_visual_editor_plan.md`，M4/M5）：图形化 DAG 编辑器，保留原 YAML
+  的注释/include/相对路径；画布（`streamlit-flow-component`，未装则降级为只读图+选择器）+ 属性面板；
+  节点增删复制、依赖多选、依赖边删除/边上插入节点（拖线或面板均可）、并行批次高亮预览、单步试运行
+  （mock 数据、走 async_jobs）、校验、变更 diff、保存（乐观锁/注释丢失确认）、备份列表与恢复、新建/复制
+  工作流。对应端点：`GET /workflows/{name}/editor`、`POST /workflows/{name}/editor/validate`、
+  `PUT /workflows/{name}/editor`、`GET /workflow_editor/meta`、`POST /workflows`、
+  `POST /workflows/{name}/steps/{step_id}/test`、`GET /workflows/{name}/backups`、
+  `POST /workflows/{name}/backups/{id}/restore`
+
 
 ---
 

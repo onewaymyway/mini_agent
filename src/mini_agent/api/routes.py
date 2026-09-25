@@ -345,6 +345,12 @@ api/routes.py — FastAPI 路由定义
     PUT    /v1/workflows/{name}/editor        保存草稿（ruamel 保留注释；乐观锁 base_hash → 409；校验失败 → 422；
                                               visual_editor_enabled=false → 403；自动备份）
     GET    /v1/workflow_editor/meta           属性面板下拉选项：step 类型/角色/工具/skill/工作流名/片段名/开关状态
+    POST   /v1/workflows                      [可视化编辑器 M5] 新建空白 / 复制工作流（Body: {name, copy_from?}；
+                                              重名 → 409 already_exists；受写入开关控制）
+    POST   /v1/workflows/{name}/steps/{step_id}/test  [M5] 单步试运行（用**已保存**定义；真实调用 LLM/工具；
+                                              走 async_jobs 异步：返回 {job_id, key}，轮询 /async_jobs/{id}）
+    GET    /v1/workflows/{name}/backups        [M5] 编辑器备份列表（新的在前；只读）
+    POST   /v1/workflows/{name}/backups/{id}/restore  [M5] 恢复某份备份（恢复前会再备份当前文件；受写入开关控制）
     GET    /v1/workflows/{name}/stats         [P9-1a] 汇总历史执行统计（成功率/各步骤耗时评分重试率/condition命中率）
     POST   /v1/workflows/{name}/run           启动一次执行（前台/后台，语义同 run_workflow 工具）
     GET    /v1/workflow_runs                  列出所有执行记录（?name= 可按工作流名过滤）
@@ -9484,6 +9490,7 @@ def _workflow_editor_error_to_http(e) -> HTTPException:
         "path_escape": 422,
         "bad_request": 400,
         "sync_mismatch": 500,
+        "already_exists": 409,
     }
     return HTTPException(
         status_code=status_map.get(e.code, 400),
@@ -9561,6 +9568,102 @@ async def save_workflow_editor_route(name: str, request: Request):
                 force=bool(body.get("force", False)),
                 confirm_comment_loss=bool(body.get("confirm_comment_loss", False)),
             )
+        )
+    except editor_helpers.WorkflowApiError as e:
+        raise _workflow_editor_error_to_http(e)
+
+
+@router.post("/workflows")
+async def create_workflow_route(request: Request):
+    """
+    POST /v1/workflows — 新建空白工作流，或复制已有工作流（M5，受 workflow.visual_editor_enabled 控制）。
+    Body: {"name": "新名称", "copy_from": "源工作流名（可选，省略=空白）"}
+    错误：400 名称非法 / 403 写入已关闭 / 404 找不到 copy_from / 409 已存在同名工作流。
+    成功返回 {status:"created", name, mode, path, copied_from, base_hash, warnings}；
+    warnings 里会提示「单文件复制时与原工作流共享 prompt_file」这类需要用户知晓的事项。
+    """
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import editor_helpers
+    body = await _editor_body(request)
+    try:
+        return await asyncio.to_thread(
+            editor_helpers.create_workflow, cfg, body.get("name"), body.get("copy_from") or None,
+        )
+    except editor_helpers.WorkflowApiError as e:
+        raise _workflow_editor_error_to_http(e)
+
+
+@router.post("/workflows/{name}/steps/{step_id}/test")
+async def test_workflow_step_route(name: str, step_id: str, request: Request):
+    """
+    POST /v1/workflows/{name}/steps/{step_id}/test — 单步试运行（M5）。
+    Body: {"mock_step_results": {step_id: {"output": "...", "score": 0.8, "passed": true}},
+           "mock_inputs": {...}, "timeout_override": 60}（均可选）
+    只执行**已保存**定义里的这一个 step，用手工提供的 mock 上游数据代替真实依赖，不落盘 run 历史
+    （包装 api_helpers.test_workflow_step，与 test_workflow_step 工具同一套逻辑）。会真实调用
+    LLM / 工具并消耗 token，耗时可能是分钟级，所以走 async_jobs：先同步检查工作流与 step 是否存在
+    （404 / 422 立即失败），通过后返回 {job_id, key}，前端轮询 GET /v1/async_jobs/{job_id}，
+    终态 result 即 StepResult.to_dict()（或 {skipped, reason}）。
+    """
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers, editor_helpers
+    body = await _editor_body(request)
+    mock_results = body.get("mock_step_results")
+    mock_inputs = body.get("mock_inputs")
+    timeout_override = body.get("timeout_override")
+    if mock_results is not None and not isinstance(mock_results, dict):
+        raise HTTPException(status_code=400, detail="mock_step_results 必须是 JSON 对象")
+    if mock_inputs is not None and not isinstance(mock_inputs, dict):
+        raise HTTPException(status_code=400, detail="mock_inputs 必须是 JSON 对象")
+    if timeout_override is not None:
+        if isinstance(timeout_override, bool) or not isinstance(timeout_override, (int, float)) or timeout_override <= 0:
+            raise HTTPException(status_code=400, detail="timeout_override 必须是正数（秒）")
+    try:
+        await asyncio.to_thread(editor_helpers.precheck_step_test, cfg, name, step_id)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
+
+    def _do_test():
+        return api_helpers.test_workflow_step(
+            cfg, name, step_id,
+            mock_step_results=mock_results, mock_inputs=mock_inputs,
+            timeout_override=float(timeout_override) if timeout_override is not None else None,
+        )
+
+    key = f"workflow_step_test:{name}:{step_id}"
+    job_id = _async_jobs(request).start(_do_test, key=key)
+    return {"job_id": job_id, "key": key}
+
+
+@router.get("/workflows/{name}/backups")
+async def list_workflow_backups_route(name: str, request: Request):
+    """GET /v1/workflows/{name}/backups — 编辑器备份列表（新的在前；只读，不受写入开关影响）。"""
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import editor_helpers
+    try:
+        backups = await asyncio.to_thread(editor_helpers.list_backups, cfg, name)
+    except editor_helpers.WorkflowApiError as e:
+        raise _workflow_editor_error_to_http(e)
+    return {"name": name, "backups": backups}
+
+
+@router.post("/workflows/{name}/backups/{backup_id}/restore")
+async def restore_workflow_backup_route(name: str, backup_id: str, request: Request):
+    """
+    POST /v1/workflows/{name}/backups/{backup_id}/restore — 恢复某份备份（M5，受写入开关控制）。
+    Body（可选）: {"base_hash": "..."}——传入时做乐观锁，当前文件已被别处改动 → 409。
+    恢复前会先把当前文件再备份一份（恢复本身也可撤销）；备份里的 prompt_file 正文一并恢复。
+    """
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import editor_helpers
+    body = await _editor_body(request)
+    try:
+        return await asyncio.to_thread(
+            editor_helpers.restore_backup, cfg, name, backup_id, body.get("base_hash") or None,
         )
     except editor_helpers.WorkflowApiError as e:
         raise _workflow_editor_error_to_http(e)

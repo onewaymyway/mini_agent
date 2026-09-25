@@ -369,3 +369,91 @@ failed**；这 4 个失败（`test_session_to_workflow.py` 1 个、
   （纯函数 `insert_between` 已在 M3 做好）、并行批次高亮预览、单步试运行、备份恢复端点与 UI、
   "编辑器保存后在最近运行上用最新定义续跑"入口（M1 遗留）。
 
+---
+
+## M5：画布拖线 / 点边删依赖、新建 / 复制、边上插入节点、并行批次高亮、单步试运行、备份恢复
+
+### 1. 实施内容
+
+**后端（`src/mini_agent/workflow/editor_helpers.py` + `src/mini_agent/api/routes.py`）**
+
+- `create_workflow(cfg, name, copy_from=None)`：新建空白工作流（单文件模板，带一个能通过校验的起始
+  step）或复制已有工作流（单文件复制只改顶层 `name:` 行，保留注释 / include / 相对路径；目录模式整目录
+  复制，`agents/` `skills/` `prompts/` 一并带走）。名称只允许字母 / 数字（含中文）/ 下划线 / 中划线（与
+  `WorkflowStore._path` 的文件名规范化同口径，避免"输入 a b、落成 a_b"这类找不到文件的静默改名）。写完后
+  回读校验，失败会清理刚建的文件，不留半成品。单文件复制若源工作流有 `prompt_file` 步骤，副本与源共享这些
+  文件（相对路径指向同一位置），在 `warnings` 里提示。重名 → `already_exists`(409)。
+- `precheck_step_test(cfg, name, step_id)`：单步试运行提交前的同步廉价检查（工作流 / step 是否存在），
+  404/422 立即失败，通过后再进异步任务。
+- 四个新端点：`POST /v1/workflows`（新建/复制）、`POST /v1/workflows/{name}/steps/{step_id}/test`
+  （单步试运行，包装既有 `api_helpers.test_workflow_step`，走 `async_jobs` 异步——会真实调用 LLM/工具，
+  耗时不可控）、`GET /v1/workflows/{name}/backups`、`POST /v1/workflows/{name}/backups/{id}/restore`
+  （均已在 M2 的 `editor_helpers.list_backups`/`restore_backup` 实现，M5 只是补上路由）。
+
+**看板纯函数（`apps/mini_agent_kanban/workflow_editor.py` §10~§13）**
+
+- §10 画布边同步：`canvas_depends_pairs`/`push_sent_history`/`detect_canvas_edits`/`sync_canvas_edges`/
+  `resolve_canvas_selection`/`edge_choices`/`edge_label`。核心问题：`streamlit-flow-component` 的回传值
+  是异步到达的，可能是上一轮的旧边集——如果直接拿它和当前草稿求差，刚在属性面板里加的依赖会被当成"用户在
+  画布上删了"而误删。解法：不直接对比草稿，而是维护"最近几次发给前端的边集历史"，把回传边集**相对最近一次
+  发送集合**求差，得到的才是真正的用户编辑增量，再把这个增量应用到当前草稿。
+- §11 并行批次：`batch_summary`（可选传入后端算好的 batches，否则本地 Kahn 分层）、
+  `apply_batch_highlight`（返回新图，不改原图）；`to_dot` 扩展 `selected_edge`/`show_batches` 参数。
+- §12 单步试运行：`suggest_test_mocks`（扫描 step 里的 `{id.output}`/`{id.score}`/`{变量}` 占位符，生成
+  mock 骨架；`{id.output_file}` 这类依赖真实落盘文件的引用进 `unmockable`，无法伪造）、
+  `parse_json_object`（文本框 → dict，容错）、`summarize_test_result`（结果摘要，区分
+  ok/failed/skipped/error 四种终态）。
+- §13 `validate_workflow_name`（前端即时校验，与后端 `editor_helpers.validate_new_name` 同口径）、
+  `pick_resumable_run`（M1 遗留的"续跑"入口用，挑最近一次可续跑的执行）。
+
+**看板 client（`apps/mini_agent_kanban/client.py`）**：新增 `create_workflow`/`test_workflow_step`/
+`workflow_backups`/`restore_workflow_backup` 四个方法。
+
+**看板 UI（`apps/mini_agent_kanban/app.py`）**
+
+- `_wfed_render_flow_canvas` 新增 `sync_state` 参数：传入时开放 `allow_new_edges`/`get_edge_on_click`/
+  `enable_edge_menu`，返回 `(选中节点, 选中边, 本轮画布边集或None)`；边集非 None 表示相对发送历史检测到
+  了真实编辑，调用方据此调用 `sync_canvas_edges` 并把结果应用到草稿、刷新发送历史。merge 虚线边设
+  `deletable=False`，画布上保持只读。
+- 主编辑 tab 新增：并行批次高亮下拉（选中后画布节点变灰/加粗）；"🔗 依赖边操作"折叠区（下拉选边 + 删除
+  依赖 + 边上插入节点，降级模式下是唯一的编辑边入口）；"🧪 单步试运行"折叠区（mock JSON 文本框、超时输入、
+  有未保存修改时禁用、走 `start_async_job`/`run_async_job` 异步轮询）；"🗄️ 备份 / 恢复"折叠区（列表 +
+  恢复二次确认）；"➕ 新建 / 复制工作流"折叠区（默认在没有任何工作流时展开）。
+
+### 2. 与方案的偏差 / 补充
+
+1. **"编辑器保存后用最新定义续跑"（M1 遗留项）本轮未实现 UI 入口**：`pick_resumable_run` 纯函数已写好并
+   测试覆盖，但接入"📜 历史执行记录"面板需要改动运行面板的既有交互（选中哪次执行、`resume_workflow_run`
+   的 `force_rerun_from` 参数如何暴露），评估后判断与本轮 M5 的核心范围（画布编辑 + 新建复制 + 单步试运行
+   + 备份恢复）耦合不深，留到有明确需求时再做，避免为了"顺手做完"而扩大这一轮的改动面。
+2. **单步试运行结果展示为纯文本 + 折叠预览，不做语法高亮 / diff**：`summarize_test_result` 返回的
+   `prompt_preview`/`output` 直接用 `st.code`/`st.text_area` 展示，与"🔍 查看变更"面板复用同一套 diff
+   组件（`parse_unified_diff`）不是同一类数据，没有比对的意义。
+3. **`mock_step_results`/`mock_inputs` 用文本框而非逐字段表单**：候选 mock 字段数量、结构因 step 而异
+   （取决于 prompt 里到底引用了哪些占位符），逐字段生成表单的复杂度和"改字段用 JSON 文本框"这个既有模式
+   （`_wfed_field_widget` 对 `json` 类型字段的处理）不一致，改用同一套模式更省心，`suggest_test_mocks`
+   生成的骨架已经把"要填什么"降到了"改几个值"的程度。
+4. **画布边同步的"重建组件"兜底**：新增依赖如果成环被拒绝，画布上会残留一条草稿里不存在的边（组件自己
+   乐观渲染了这条边）；此时清掉 `session_state` 里缓存的组件对象并 `st.rerun()`，让画布下一轮以草稿的
+   真实边集重新初始化，而不是尝试"撤销"画布上那一条边（该组件没有暴露这样的 API）。
+
+### 3. 测试
+
+- 新增 `tests/test_workflow_editor_m5_graph.py`（39 用例）：画布边同步（含"陈旧回传不能把刚加的依赖误删"
+  这个核心回归用例）、选中解析、并行批次摘要与高亮、`to_dot` 扩展参数、单步试运行的 mock 骨架/JSON 解析/
+  结果摘要、新建校验、续跑挑选、client 四个新方法的请求形状。
+- 新增 `tests/test_workflow_editor_m5_routes.py`（16 用例）：`POST /v1/workflows` 新建/复制（含重名 409、
+  非法名称 400、源不存在 404、共享 prompt 警告、写入开关关闭 403）、备份列表 + 恢复（含恢复后内容回退、
+  恢复本身再生成一份备份、未知 id 404、`base_hash` 冲突 409）、单步试运行路由（precheck 404/422、
+  mock 参数类型校验、能提交 async_job 并轮询到终态）。
+- 与 M2~M4 既有的 `tests/test_workflow_editor_graph.py`/`tests/test_workflow_editor_helpers.py`/
+  `tests/test_workflow_editor_routes.py`（合计 102 用例）一起跑：`PYTHONPATH=src:apps/mini_agent_kanban
+  python3 -m pytest tests/test_workflow_editor_m5_routes.py tests/test_workflow_editor_m5_graph.py
+  tests/test_workflow_editor_graph.py tests/test_workflow_editor_helpers.py
+  tests/test_workflow_editor_routes.py -q` → **156 passed**，无回归。
+- **已知限制**：本轮没有对新增的 `app.py` UI 代码（画布边同步接线、三个新面板）做 Streamlit 运行时/浏览器
+  级验证——`ast.parse`/`py_compile` 通过，且逐一确认了 `workflow_editor` 模块暴露了 UI 侧调用的全部函数，
+  但真实的拖线成边 / 点边删除 / `streamlit-flow-component` 的 `deletable`/`enable_edge_menu` 行为只能在
+  浏览器里验证，本次未能补上像 M4 那样的本地烟雾测试脚本。这是留给后续验证或用户实际使用中反馈的已知缺口，
+  如实记录于此，而非隐瞒。
+
