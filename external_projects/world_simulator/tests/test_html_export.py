@@ -10,9 +10,15 @@
 from __future__ import annotations
 
 import sys
+import shutil
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+try:
+    import pytest
+except ImportError:
+    pytest = None
 
 from world_simulator import causal_graph as cg_mod
 from world_simulator import html_export as he
@@ -142,6 +148,8 @@ def test_causal_graph_renders_inline_svg_when_available(tmp_path):
     """graphviz 环境可用时（本项目环境已验证 `dot` 二进制存在），
     走正常路径应该产出内嵌 SVG，而不是文字降级版本。
     """
+    if shutil.which("dot") is None:
+        pytest.skip("Graphviz dot binary not available")
     _seed_two_step_sim(tmp_path)
     html = he.export_simulation_html(tmp_path, "sim_export")
     assert "<svg" in html
