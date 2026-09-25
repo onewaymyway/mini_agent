@@ -61,6 +61,7 @@ from world_simulator import trend as trend_mod
 from world_simulator import relationship as relationship_mod
 from world_simulator import multi_entity as multi_entity_mod
 from world_simulator import knowledge_base as knowledge_base_mod
+from world_simulator import capability_discovery as capability_discovery_mod
 from world_simulator import problem_discovery as problem_discovery_mod
 from world_simulator.config import DATA_DIR, ensure_dirs
 from world_simulator.achievements import achievement_progress, compute_achievements
@@ -3336,7 +3337,9 @@ def _collect_capability_maturity_timeline_cached(
     return _collect_capability_maturity_timeline(_history)
 
 
-def _render_capability_maturity_section(history: List, *, sim_id: str = "", branch: str = "") -> None:
+def _render_capability_maturity_section(
+    history: List, *, sim_id: str = "", branch: str = "", auto_scan_interval: Optional[int] = None
+) -> None:
     """渲染"📈 能力成熟度时间线"只读折叠区（第十一轮 2.3 节）：把
     当前分支历史里出现过的所有能力，按名称归并后逐行展示其
     `maturity_stage` 演进顺序。纯展示层，不引入 graphviz，一个能力
@@ -3345,6 +3348,13 @@ def _render_capability_maturity_section(history: List, *, sim_id: str = "", bran
     第十二轮方案第 4 节：每行按 `capability_kind` 加对应图标
     （🔧 技术 / 🏢 组织 / 📜 制度，缺省按 `"technology"` 兜底），并
     新增一个可选的类型筛选下拉（纯展示层交互，不影响底层数据）。
+
+    `auto_scan_interval`：这个实例当前生效的 `capability_discovery_
+    auto_scan_interval`（第二十一轮，`capability_discovery_mod.get_
+    effective_auto_scan_interval()` 算出来的），只在空状态时用来判断
+    要不要多提示一句"你把自动扫描关掉了"——写法/理由同
+    `_render_problem_graph_section()` 的同名参数，两处逐项对称，不
+    重复展开。传 `None` 时跳过这段判断。
     """
     nodes = (
         _collect_capability_maturity_timeline_cached(sim_id, branch, len(history), history)
@@ -3359,6 +3369,15 @@ def _render_capability_maturity_section(history: List, *, sim_id: str = "", bran
                 "</span>",
                 unsafe_allow_html=True,
             )
+            if auto_scan_interval is not None and auto_scan_interval <= 0:
+                st.markdown(
+                    '<span class="ws-muted">💡 这个实例的"能力自动扫描"目前是关闭的——'
+                    "`capabilities_gained` 完全指望模型自己主动声明，判定门槛又比较高，"
+                    "很多步都不会触发；去上面「模拟设置」把「能力自动扫描间隔」调成一个"
+                    "正整数（比如 5），可以每隔几步自动帮你回顾一遍并（自动挡下）自动确认"
+                    "关注，不需要每次都记得手动点「扫描待发现能力」。</span>",
+                    unsafe_allow_html=True,
+                )
             return
         st.markdown(
             '<span class="ws-muted">按 `capability` 精确字符串匹配归并（不做模糊'
@@ -4373,6 +4392,16 @@ def page_detail() -> None:
             value=problem_discovery_mod.get_effective_auto_scan_interval(cur_settings),
             step=1, key="settings_pd_auto_scan_interval",
         )
+        new_cd_auto_scan_interval = st.number_input(
+            "能力自动扫描间隔（第二十一轮，Capability Discovery Engine，和上面「问题"
+            f"自动扫描」逐项对称，每隔几步自动扫一次「已具备但没被记录的能力」，0 = 关闭，"
+            f"未配置过的实例默认按 {capability_discovery_mod.DEFAULT_AUTO_SCAN_INTERVAL} 生效——"
+            "开启后手动挡会把结果直接摆在下面「扫描待发现能力」折叠区里，自动挡会自动确认关注，"
+            "无需人工点按钮）",
+            min_value=0, max_value=50,
+            value=capability_discovery_mod.get_effective_auto_scan_interval(cur_settings),
+            step=1, key="settings_cd_auto_scan_interval",
+        )
         new_model_version_text = st.text_input(
             "模型/Skill 版本标签（可选，阶段三十三——换了一版 prompt/skill 后自己"
             "标一下，供「预测准确性统计」按版本分组）",
@@ -4485,6 +4514,7 @@ def page_detail() -> None:
                     model_version=new_model_version_text.strip(),
                     desired_state=desired_state_to_save,
                     problem_discovery_auto_scan_interval=int(new_pd_auto_scan_interval),
+                    capability_discovery_auto_scan_interval=int(new_cd_auto_scan_interval),
                 )
                 st.success("设置已更新，下一步推进开始生效。")
                 st.rerun()
@@ -4610,6 +4640,105 @@ def page_detail() -> None:
                         )
                         st.rerun()
 
+    # ── Capability Discovery Engine 轻量入口（第二十一轮，和上面
+    # Problem Discovery Engine 的折叠区逐项对称，同样只建议、不自动
+    # 写入——用户"确认关注"某一条后，只是把它记进 `settings.
+    # confirmed_capability_suggestions`，作为下一次推进的提示，不直接
+    # 改写任何历史状态的 `capabilities_gained` 字段） ──
+    with st.expander("🔍 扫描待发现能力（第二十一轮，Capability Discovery Engine，可选）"):
+        st.markdown(
+            '<span class="ws-muted">让系统回顾一次"有没有一项能力已经实际具备了，但还没'
+            '被正式记录"：从当前状态数值、最近几步历史里，找已经能确认达成质变的能力。'
+            "只是建议，不会自动写进任何一步的记录——确认关注的建议会成为下一次推进的提示，"
+            "由 LLM 自行判断要不要真正体现进 `capabilities_gained`。</span>",
+            unsafe_allow_html=True,
+        )
+        if st.button("扫描待发现能力", key="capability_discovery_scan_btn"):
+            try:
+                cfg = _load_cfg()
+                already_recorded = capability_discovery_mod._collect_recorded_capability_names(history) + [
+                    str(c.get("capability") or "").strip()
+                    for c in (cur_settings.get("confirmed_capability_suggestions") or [])
+                    if isinstance(c, dict)
+                ]
+                with st.spinner("正在扫描..."):
+                    st.session_state["capability_discovery_suggestions"] = (
+                        capability_discovery_mod.suggest_capabilities(
+                            cfg, PROJECT_ROOT, current.vars, history,
+                            already_recorded=already_recorded,
+                        )
+                    )
+                    st.session_state["capability_discovery_source"] = (sim_id, manifest.branch)
+            except ImportError as exc:
+                st.error(f"未检测到 mini_agent 框架，无法生成建议：{exc}")
+            except capability_discovery_mod.CapabilityDiscoveryError as exc:
+                st.error(f"扫描失败：{exc}")
+
+        cd_suggestions = st.session_state.get("capability_discovery_suggestions")
+        cd_source = st.session_state.get("capability_discovery_source")
+        # 同 Problem Discovery：本次会话还没手动点过按钮时，如果引擎
+        # 已经自动扫描过当前分支的这一步，直接展示那份结果。
+        if cd_suggestions is None:
+            last_auto_scan = cur_settings.get("last_auto_capability_scan")
+            if isinstance(last_auto_scan, dict):
+                auto_scan_source = tuple(last_auto_scan.get("source") or [])
+                if auto_scan_source == (sim_id, manifest.branch):
+                    cd_suggestions = last_auto_scan.get("suggestions")
+                    cd_source = auto_scan_source
+                    st.caption(
+                        f"以下是第 {last_auto_scan.get('step')} 步自动扫描（按设置的间隔"
+                        "自动触发，未消耗额外点击）的结果。"
+                    )
+        if cd_suggestions is not None and cd_source == (sim_id, manifest.branch):
+            if not cd_suggestions:
+                st.markdown('<span class="ws-muted">（本次扫描没有找到符合标准的建议）</span>', unsafe_allow_html=True)
+            for idx, item in enumerate(cd_suggestions):
+                enables_text = "、".join(item.get("enables") or [])
+                limitations_text = "、".join(item.get("limitations") or [])
+                detail = item["capability"]
+                if item.get("maturity_stage"):
+                    detail += f"｜{_MATURITY_STAGE_LABELS.get(item['maturity_stage'], item['maturity_stage'])}"
+                if item.get("capability_kind"):
+                    icon = _CAPABILITY_KIND_ICONS.get(item["capability_kind"], "🆙")
+                    detail = f"{icon} {detail}"
+                col_a, col_b = st.columns([5, 1])
+                with col_a:
+                    st.markdown(f"- {detail}")
+                    if enables_text:
+                        st.markdown(f'<span class="ws-muted">　带来：{enables_text}</span>', unsafe_allow_html=True)
+                    if limitations_text:
+                        st.markdown(f'<span class="ws-muted">　局限：{limitations_text}</span>', unsafe_allow_html=True)
+                with col_b:
+                    if st.button("确认关注", key=f"cd_adopt_{idx}"):
+                        capability_discovery_mod.adopt_capability_suggestion(
+                            DATA_DIR, sim_id,
+                            capability=item["capability"],
+                            enables=item.get("enables"),
+                            limitations=item.get("limitations"),
+                            maturity_stage=item.get("maturity_stage"),
+                            capability_kind=item.get("capability_kind"),
+                        )
+                        st.success("已确认关注，下一次推进的提示里会看到它。")
+                        st.rerun()
+
+        confirmed_capability_suggestions = list(cur_settings.get("confirmed_capability_suggestions") or [])
+        if confirmed_capability_suggestions:
+            st.markdown("**已确认关注、等待下一次推进回应的建议**")
+            for item in confirmed_capability_suggestions:
+                if not isinstance(item, dict):
+                    continue
+                suggestion_id = str(item.get("id") or "")
+                detail = str(item.get("capability", ""))
+                col_a, col_b = st.columns([5, 1])
+                with col_a:
+                    st.markdown(f"- {detail}")
+                with col_b:
+                    if suggestion_id and st.button("撤回", key=f"cd_withdraw_{suggestion_id}"):
+                        capability_discovery_mod.withdraw_confirmed_capability_suggestion(
+                            DATA_DIR, sim_id, suggestion_id
+                        )
+                        st.rerun()
+
     # 第十轮批次三：问题关系图，放在「扫描潜在问题」折叠区旁边——
     # 依赖批次二的 depends_on 字段，展示的是"已经落盘的 problems"，
     # 不是"建议阶段还没被采纳的候选"，所以是独立的折叠区而不是嵌套
@@ -4622,7 +4751,10 @@ def page_detail() -> None:
     # 第十一轮 2.3 节：能力成熟度时间线，紧跟问题关系图之后——两者都是
     # "遍历完整历史、按名称/id 归并展示"的纯只读折叠区，位置相邻方便
     # 用户对照"问题解决进度"和"能力演进进度"。
-    _render_capability_maturity_section(history, sim_id=sim_id, branch=manifest.branch)
+    _render_capability_maturity_section(
+        history, sim_id=sim_id, branch=manifest.branch,
+        auto_scan_interval=capability_discovery_mod.get_effective_auto_scan_interval(manifest.settings),
+    )
 
     # 第十二轮方案第 5 节：技术/组织/制度协同演化观察，紧跟能力成熟度
     # 时间线之后——依赖第 4 节 capability_kind 字段的聚合结果，纯统计

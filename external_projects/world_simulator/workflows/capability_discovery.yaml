@@ -1,0 +1,63 @@
+name: capability_discovery
+description: >-
+  Capability Discovery Engine（第二十一轮，`world_simulator/
+  capability_discovery.py::suggest_capabilities()` 触发，和
+  `problem_discovery.yaml` 姐妹实现）。用 `type: agent`（同
+  `problem_discovery.yaml`）——"回顾近期发展，有没有已经具备但没被
+  记录的能力"是通用推理能力，不依赖具体场景模板的私有规则，不需要
+  按 template 绑定 skill。
+  【重要】同 `problem_discovery.yaml` 踩过的坑：`type: agent` 不支持
+  `result_file`/`result_file_required_keys`，这里同样要求 Agent 直接
+  把 JSON 作为最终回复的全部内容，由
+  `world_simulator/agent_step_result.py` 从 `StepResult.output` 解析。
+version: "1.0"
+steps:
+  - id: capability_discovery
+    name: 回顾近期发展，扫描已经具备但没被记录的能力
+    type: agent
+    prompt: |
+      你正在为一次"世界模拟"回顾"有没有一项能力已经实际具备了，但还
+      没有被正式记录下来"。下面是相关素材：
+
+      当前状态数值（JSON 对象）：
+      {current_vars_json}
+
+      最近几步的历史（JSON 数组，每项包含 step/summary/narrative，
+      按时间顺序）：
+      {recent_history_json}
+
+      已经记录过的能力名称（JSON 字符串数组，**不要重复建议这些**，
+      如果你认为其中某一项现在应该升级到更高的 maturity_stage，也不
+      要在这里重复提——那属于叙事当下该体现的事，不是这次回顾扫描
+      要做的）：
+      {already_recorded_json}
+
+      请你从当前状态数值和近期历史推演里，找出最多 {max_suggestions}
+      条**已经具备、但从未被正式记录**的能力——判断标准和正式记录一
+      个能力的标准完全一致：不是"变得更好一点"，而是"之前做不到的
+      事，现在明显能做了"，而且要能从当前状态数值/近期历史里找到具体
+      依据，不是凭空猜测。找不到符合这个标准的能力，给空数组比硬凑
+      更好。
+
+      每一项格式（`maturity_stage`/`capability_kind` 都是可选的，
+      判断不出来就不填/留空，不要为了填满而强行归类）：
+      `{{"capability": "一句话，这项能力是什么", "enables":
+      ["字符串数组，1~3 条，这个能力让哪些事情变得可能/更容易"],
+      "limitations": ["字符串数组，1~3 条，这个能力目前的局限是
+      什么"], "maturity_stage": "可选，六选一：lab（实验室可行）/
+      expert（专家可用）/developer（开发者可用）/consumer（普通用户
+      可用）/cheap_at_scale（成本足够低、可大规模应用）/
+      infrastructure（基础设施化/社会常态化）", "capability_kind":
+      "可选，三选一：technology（技术类）/organization（组织类）/
+      institution（制度类）"}}`。
+
+      【输出格式，必须严格遵守】你的最终回复必须**只包含一个 JSON
+      对象**，不要有任何其它文字、解释、markdown 代码块围栏、或工具
+      调用——直接把下面这个字段组成的 JSON 对象作为你这一轮对话的
+      最后回复内容，不要在 JSON 前后加说明文字：
+
+      - `suggestions`：数组，格式见上文，最多 {max_suggestions} 项，
+        没有找到符合标准的能力就给空数组。
+
+      不要用 bash/echo 或任何工具来"打印"这个 JSON。你的最后一条回复
+      消息，去掉首尾空白后，必须能被直接当 JSON 解析。

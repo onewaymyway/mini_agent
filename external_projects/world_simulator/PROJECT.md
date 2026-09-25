@@ -3998,3 +3998,61 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   未见回归。这次修复解决的是"兜底通道默认没开"这一层；`problems`
   最终是否真的被模型采纳仍然是模型的判断，不是这次改动能保证的（同
   `confirmed_problem_suggestions` 一贯"建议而非强制"的设计边界）。
+
+- 2026-09-24（第二十一轮，用户反馈直接改进，用户明确选择"完整对称
+  方案"，未单独立项 next_doc）：**新建 Capability Discovery
+  Engine——和 Problem Discovery Engine 完全对称的"能力发现"兜底
+  机制**，解决"模拟很久了，📈 能力成熟度时间线还是空的"。
+  根因排查：`capabilities_gained` 完全靠 skill 在叙事当下自愿声明，
+  且判定门槛比 `problems` 更高（"不是单纯变得更好一点，而是之前做
+  不到的事，现在能做了"），可选子字段也更多，模型系统性跳过的概率
+  天然更高；而且不像 `problems` 有 Problem Discovery Engine 兜底，
+  `capabilities_gained` 此前完全没有任何后备发现机制。
+  1. **新增 `world_simulator/capability_discovery.py`**：`problem_
+     discovery.py` 的姐妹实现，架构/函数命名/确认-撤回-自动扫描机制
+     逐项对称——`suggest_capabilities()`（不分类别，单一建议列表，
+     必须传入 `already_recorded` 做去重）、`adopt_capability_
+     suggestion()`/`withdraw_confirmed_capability_suggestion()`、
+     `DEFAULT_AUTO_SCAN_INTERVAL = 5`/`get_effective_auto_scan_
+     interval()`（直接采用非零默认上线，吸取上一轮"先默认关闭、跑了
+     很久才被发现"的教训）、`_safe_auto_scan_capabilities()`。建议
+     字段集是 `capabilities_gained` 可选子字段的子集（`capability`/
+     `enables`/`limitations`/`maturity_stage`/`capability_kind`，
+     不含 `first_occurrence`/`behavior_change`/`structural_impact`
+     ——这三个本质是叙事当下的判断，事后回顾式扫描很难可靠判断，
+     留给 skill 在真正体现时自己判断）。
+  2. **新增 `workflows/capability_discovery.yaml`**：`type: agent`，
+     结构对称 `problem_discovery.yaml`，prompt 里明确要求"不要重复
+     建议已经记录过的能力"。
+  3. **`workflows/advance_step.yaml`/`world_evolve.yaml`**：新增
+     `{confirmed_capability_suggestions_hint}` 占位符，位置紧跟
+     `{confirmed_problem_suggestions_hint}` 之后。
+  4. **`world_simulator/engine/advance.py`**：`shared_inputs` 新增
+     `confirmed_capability_suggestions_hint`；`_safe_auto_scan_
+     problems()` 调用之后紧跟一次对称的 `_safe_auto_scan_
+     capabilities()` 调用，同样是落盘前的内存旁路操作，复用同一次
+     `store.save_manifest()`。
+  5. **`app.py`**：设置面板新增"能力自动扫描间隔"数字输入框（写法
+     对称"问题自动扫描间隔"）；新增"🔍 扫描待发现能力"折叠区（对称
+     "🔍 扫描潜在问题"，展示建议、确认关注、撤回、自动扫描结果复用）；
+     `_render_capability_maturity_section()` 新增 `auto_scan_
+     interval` 参数，空状态提示里追加"这个实例的能力自动扫描目前是
+     关闭的，去模拟设置调整"的提示，对称问题关系图那次的同款改动。
+  6. **测试**：新增 `tests/test_capability_discovery.py`（22 个用例，
+     结构对称 `test_problem_discovery.py`：`suggest_capabilities()`
+     的输入组装/枚举值兜底/空 capability 跳过/workflow 缺失报错，
+     `adopt_capability_suggestion()`/`withdraw_confirmed_capability_
+     suggestion()` 的落盘/幂等，`get_effective_auto_scan_interval()`
+     四种情形，`_collect_recorded_capability_names()` 的抽取逻辑，
+     `_safe_auto_scan_capabilities()` 的间隔判断/已记录能力去重
+     参数传递/手动挡只记录不确认/自动挡自动确认/异常吞掉，
+     `_format_confirmed_capability_suggestions()` 的格式化）；
+     `tests/test_spec_and_engine.py` 新增 2 个 `advance()` 集成
+     用例（`confirmed_capability_suggestions_hint` 正确拼进 prompt
+     输入、`capability_discovery_auto_scan_interval=1` 时推进第 1
+     步真的触发扫描并落盘）。
+  **验收**：`pytest tests/`（716 passed，含本轮新增 24 个用例），
+  未见回归。和 `problems` 一样，这次解决的是"有没有一个不依赖模型
+  自觉的发现机制、这个机制默认是不是开着"这一层；`capabilities_
+  gained` 最终是否真的被模型采纳仍然完全是模型的判断，同一贯"建议
+  而非强制"的设计边界。

@@ -44,6 +44,10 @@ from world_simulator.engine.structural_change import (
     _format_confirmed_structural_changes,
     _normalize_structural_change,
 )
+from world_simulator.capability_discovery import (
+    _format_confirmed_capability_suggestions,
+    _safe_auto_scan_capabilities,
+)
 from world_simulator.problem_discovery import (
     _format_confirmed_problem_suggestions,
     _safe_auto_scan_problems,
@@ -391,6 +395,9 @@ def advance(
         ),
         "confirmed_problem_suggestions_hint": _format_confirmed_problem_suggestions(
             manifest.settings.get("confirmed_problem_suggestions")
+        ),
+        "confirmed_capability_suggestions_hint": _format_confirmed_capability_suggestions(
+            manifest.settings.get("confirmed_capability_suggestions")
         ),
         # 阶段三十三第三批（4.13 节）：把历史 `causal_links` 聚合出的
         # "线到线"邻接关系反过来喂给这一次推进的 prompt——纯只读聚合，
@@ -806,6 +813,16 @@ def advance(
     # `manifest.settings`，复用这一次落盘，不单独多一次 IO；任何异常
     # 都被内部吞掉，不影响本次推进已经产生的返回值。
     _safe_auto_scan_problems(
+        cfg, workspace_root, store, manifest,
+        branch=branch, next_state=next_state,
+        auto_confirm=(effective_chosen_by == "autopilot"),
+    )
+
+    # 第二十一轮：Capability Discovery 自动扫描，和上面 Problem
+    # Discovery 自动扫描逐项对称（同一次 `advance()` 调用里紧跟着做，
+    # 都是落盘之后的旁路操作，都只修改内存里的 `manifest.settings`，
+    # 复用下面统一的一次 `store.save_manifest(manifest)`）。
+    _safe_auto_scan_capabilities(
         cfg, workspace_root, store, manifest,
         branch=branch, next_state=next_state,
         auto_confirm=(effective_chosen_by == "autopilot"),

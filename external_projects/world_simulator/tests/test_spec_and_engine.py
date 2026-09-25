@@ -2102,6 +2102,125 @@ def test_advance_includes_confirmed_problem_suggestions_hint(tmp_path, monkeypat
     assert captured_inputs["confirmed_problem_suggestions_hint"] == "- [observed] 资金不足（挡住：完成原型）"
 
 
+def test_advance_includes_confirmed_capability_suggestions_hint(tmp_path, monkeypatch):
+    """第二十一轮（Capability Discovery Engine，与上面 Problem
+    Discovery 的同名用例逐项对称）：`manifest.settings.confirmed_
+    capability_suggestions` 应该被拼进 `advance_step` 的输入，喂给
+    prompt 的 `{confirmed_capability_suggestions_hint}`。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+    from world_simulator.store import SimStore
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    manifest = store.load_manifest()
+    manifest.settings = {
+        **manifest.settings,
+        "confirmed_capability_suggestions": [
+            {"id": "confirmed_capability_abc", "capability": "自动化客户分析", "enables": ["更精准的销售话术"]},
+        ],
+    }
+    store.save_manifest(manifest)
+
+    step_step = _FakeStep("step")
+    captured_inputs = {}
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            captured_inputs.update(inputs)
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {"next_summary": "s2", "narrative": "n", "next_vars": {}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+
+    engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+    assert (
+        captured_inputs["confirmed_capability_suggestions_hint"]
+        == "- 自动化客户分析（可能带来：更精准的销售话术）"
+    )
+
+
+def test_advance_triggers_capability_auto_scan_and_persists_result(tmp_path, monkeypatch):
+    """确认 `advance()` 真的接上了 `_safe_auto_scan_capabilities()`
+    （不是只有 import、没有调用点）：`capability_discovery_auto_scan_
+    interval=1` 时，推进第 1 步应该触发一次扫描，结果落盘进
+    `manifest.settings["last_auto_capability_scan"]`。"""
+    data_dir = tmp_path / "data"
+    workspace_root = tmp_path / "ws"
+
+    manifest = engine_mod.materialize_simulation(
+        data_dir, template="life_sim", intent="i", title="t", summary="s",
+        vars={}, options=[],
+    )
+    from world_simulator.store import SimStore
+    store = SimStore.for_root(data_dir, manifest.sim_id)
+    manifest = store.load_manifest()
+    manifest.settings = {**manifest.settings, "capability_discovery_auto_scan_interval": 1}
+    store.save_manifest(manifest)
+
+    step_step = _FakeStep("step")
+
+    class FakeStoreForAdvance:
+        def __init__(self, root):
+            pass
+
+        def load(self, name):
+            return _FakeWorkflow([step_step])
+
+    class FakeRunnerForAdvance:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs):
+            result_file = _write_result_file(
+                tmp_path, "advance_result.json",
+                {"next_summary": "s2", "narrative": "n", "next_vars": {}, "options": []},
+            )
+            return SimpleNamespace(
+                status="done",
+                step_results=[SimpleNamespace(step_id="step", status=_FakeStatus("done"), result_file=result_file)],
+            )
+
+    monkeypatch.setattr("mini_agent.workflow.store.WorkflowStore", FakeStoreForAdvance)
+    monkeypatch.setattr("mini_agent.workflow.runner.WorkflowRunner", FakeRunnerForAdvance)
+    monkeypatch.setattr(
+        "world_simulator.capability_discovery.suggest_capabilities",
+        lambda *a, **k: [{"capability": "自动化客户分析", "enables": [], "limitations": [], "maturity_stage": None, "capability_kind": None}],
+    )
+
+    engine_mod.advance(
+        cfg=object(), workspace_root=workspace_root, data_dir=data_dir, sim_id=manifest.sim_id,
+    )
+
+    reloaded = store.load_manifest()
+    scan = reloaded.settings.get("last_auto_capability_scan")
+    assert scan is not None
+    assert scan["step"] == 1
+    assert scan["suggestions"][0]["capability"] == "自动化客户分析"
+
+
 def test_advance_records_triggered_relationships_into_pending_effects(tmp_path, monkeypatch):
     """阶段三十六第二批（2.2 节）：`advance_step` 输出里的可选
     `triggered_relationships` 应该被 `engine.advance()` 转成
