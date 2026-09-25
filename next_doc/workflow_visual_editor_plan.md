@@ -3,8 +3,8 @@
 > 本文档记录设计方案本身，供实施前确认；实施完成后另写
 > `next_doc/workflow_visual_editor_implementation_record.md`，不混在本文档里。
 >
-> **状态**：方案已确认（决策见 §一），实施中——M1（续跑定义快照修复）、M2（后端编辑）、M3（看板侧纯函数模块与 client 方法）已完成，
-> 详见 `next_doc/workflow_visual_editor_implementation_record.md`；M4 起未开始。
+> **状态**：方案已确认（决策见 §一），实施中——M1（续跑定义快照修复）、M2（后端编辑）、M3（看板侧纯函数模块与 client 方法）、
+> M4（看板 UI）已完成，详见 `next_doc/workflow_visual_editor_implementation_record.md`；M5 起未开始。
 >
 > **相关文档**：`docs/workflow-guide.md`、`docs/kanban-dashboard-guide.md`、
 > `next_doc/workflow_directory_mode_design.md`（目录化 workflow）、
@@ -286,7 +286,7 @@ require_approval、escalate_after_n_same_failures、output_file。
 | M1 | 快照问题：复现测试 → `use_latest_definition` 全链路（api_helpers / routes / tools / CLI / client）→ `definition_changed` ✅已完成 | — |
 | M2 | 后端编辑：`WorkflowStore.validate_def()` 抽取、`editor_helpers.py`（ruamel 同步 / 校验 / 保存 / 备份 / 元信息）、配置项、`GET/validate/PUT/meta` 路由 ✅已完成 | 一 |
 | M3 | 看板侧纯函数模块与 client 方法（图转换、环检测、改 id 联动、错误归类）及测试 ✅已完成 | 一 |
-| M4 | 看板 UI：只读图 + 选中 + 属性面板 + 增删复制节点 + 依赖多选 + 校验 + diff + 保存 + 降级 | 一 |
+| M4 | 看板 UI：只读图 + 选中 + 属性面板 + 增删复制节点 + 依赖多选 + 校验 + diff + 保存 + 降级 ✅已完成 | 一 |
 | M5 | 画布拖线 / 点边删依赖、新建 / 复制工作流、边上插入节点、并行批次高亮预览、单步试运行、备份恢复；文档、实施记录、打包 | 二 |
 
 单步试运行会真实调用 LLM / 工具并消耗 token：UI 二次确认、仅使用**已保存**定义（有未保存修改时按钮置灰），

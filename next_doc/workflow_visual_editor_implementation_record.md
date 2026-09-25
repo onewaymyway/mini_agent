@@ -264,3 +264,108 @@ failed**；这 4 个失败（`test_session_to_workflow.py` 1 个、
 - M5：拖线 / 点边删依赖、新建 / 复制工作流、边上插入、并行批次高亮、单步试运行、备份恢复端点与 UI、
   "编辑器保存后在最近运行上用最新定义续跑"入口（M1 遗留）。
 
+---
+
+## M4：看板 UI（Streamlit 渲染层）
+
+### 1. 交付内容
+
+全部落在 `apps/mini_agent_kanban/app.py`（新增，无独立文件——M3 已经把纯函数拆到 `workflow_editor.py`，
+这里只做渲染与 session_state 管理，沿用 `diff_view.py` / `async_job_ui.py` 的拆分先例）：
+
+- **入口切换**（§4.1）：`render_workflow_tab` 顶部加 `st.radio`「▶️ 运行与记录」/「✏️ 编辑器」，原有运行面板
+  原样保留在前者（`_render_workflow_run_panel`，未改动一行）；后者转发到新增的 `_render_workflow_editor_tab`。
+- **编辑器主流程** `_render_workflow_editor_tab`：选工作流 → "打开 / 重新加载"（`_wfed_reload`，把
+  `workflow_editor_doc()` 的返回值摊进 `st.session_state[f"wfed_state_{name}"]`：`draft` / `original` /
+  `prompt_files` / `original_prompt_files` / `prompt_hashes` / `base_hash` / `renames` / `selected_node` /
+  `validation` 等）→ 顶部状态行（🟠/🟢 脏标记、`editor_enabled=false` 时的 🔒 提示、无 ruamel 时的 ⚠️ 提示）
+  → 「✅ 校验」/「💾 保存」/「↩️ 放弃修改」→ 冲突（409 conflict：重新加载 / 强制覆盖）与需要确认
+  （409 needs_confirm：会丢注释，二次确认）两条专门的解决流程 → 「🔍 查看变更」（`build_change_diff` 接
+  `diff_view.parse_unified_diff` + `summarize_files`，复用 M3 §2.4 的复用点）→ 画布 + 节点操作 + 属性面板
+  两栏布局 →「⚙️ 工作流属性」折叠区（`WORKFLOW_LEVEL_FIELD_SPECS`）。
+- **画布**：`_flow_available()` 探测到装了 `streamlit-flow-component` 时，`_wfed_render_flow_canvas` 用
+  `StreamlitFlowNode/Edge` + `LayeredLayout(direction="down")` 自动分层、`get_node_on_click=True` 点选
+  （`allow_new_edges=False`——拖线加依赖是 M5）；节点样式（填色 / 边框 / 徽标）直接吃 M3 `draft_to_graph`
+  算好的值。未安装时降级为 `st.graphviz_chart(we.to_dot(...))` 只读图 + `st.selectbox` 节点选择器
+  （方案 §七的降级路径，功能完整只是没有点选和拖线）。
+- **节点操作**：画布下方「新增 / 复制 / 删除」三个按钮，分别接 `we.add_step` / `we.duplicate_step` /
+  `we.delete_step`；删除前用 `we.analyze_delete` 的影响面（谁依赖它、谁的 merge_sources 引用它、谁的
+  condition / 占位符还引用它）做二次确认卡片，而不是删了才提示。
+- **属性面板** `_wfed_render_property_panel`：`st.form` 一次性提交（改 id / 名称 / depends_on 多选 / 类型
+  专属字段 / 高级字段折叠区），"应用到草稿"时：先按需 `rename_step`（`sync_refs` 复选框控制是否联动改其它
+  节点的引用），再对 `depends_on` 算差集分别 `add_dependency` / `remove_dependency`（加依赖失败——比如会成
+  环——只中断加依赖这一步，已经应用的改名和删依赖不回滚，报错里点名是哪条边），最后把表单字段写回 step。
+  include 节点只展开 `id` / `depends_on` 两个字段（M3 `is_include` 的口径）。字段按 `kind` 分发到具体
+  widget：`str/text/int/float/bool` 直给对应控件；`tribool` 用「继承默认/是/否」三选一映射
+  `None/True/False`；`json` 用 `st.text_area` + `json.loads`，解析失败当场报错且**不**写回草稿（避免非法
+  值污染 draft）；`list` 按行分割；`select/multiselect` 从 `workflow_editor_meta()` 的 `roles/tools/skills/
+  workflows/merge_strategies/modes` 或当前草稿的 step id 列表（`merge_sources` 用）取选项。
+- **改 id 的连续改名合并** `_wfed_merge_renames`：同一次编辑会话里"a→b 再 b→c"，累积成 `{a: c}` 传给后端，
+  否则后端按 `renames` 找旧注释锚点时会因为中间态 `b` 已经不存在而找不到。
+- **保存** `_wfed_save`：正常路径更新 `original`/`base_hash`、清空 `renames`、`st.toast` 提示；三种失败分支
+  （`conflict` / `needs_confirm` / `validation`）各自落一个 session_state 标记，交给上面提到的两条专门 UI
+  处理；`validation` 分支直接把后端返回的 `errors_by_step` 灌回 `state["validation"]`，不用户再点一次「校验」
+  就能在节点上看到红框。
+- `apps/mini_agent_kanban/workflow_editor.py` 新增公开别名 `deps_of()`（= 原来的模块私有 `_deps()`），
+  UI 层读某节点当前依赖走这个，不直接碰下划线私有函数。
+- `apps/mini_agent_kanban/requirements.txt` 补充可选依赖 `streamlit-flow-component>=1.6.1` 的说明与降级指引。
+
+### 2. 与方案的偏差 / 补充（实施中的判断）
+
+1. **字段编辑用「表单 + 应用」按钮，不做逐字段实时联动**：方案 §4.4 没有强制要求实时保存；Streamlit 的
+   rerun 模型下，逐字段改一下就整体 rerun 一次会导致文本框输入卡顿、光标跳动，改用 `st.form` 一次性提交
+   （"改 id / 名称 / 依赖 / 各字段"打包成一次 `st.rerun()`）体验更稳，且和现有「🛠️ 修改此步骤定义」面板
+   的既有交互风格一致。代价是画布上的选中节点切换后，面板里没提交的未保存输入会丢——可接受，字段改动量通常
+   不大。
+2. **画布组件的"点击选中"与"Python 侧强制切换选中节点"会打架，已在实现里修正**：新增 / 复制节点后 UI 会把
+   `state["selected_node"]` 设成新节点 id 并 `st.rerun()`，但 `streamlit-flow-component` 的组件状态是
+   跨 rerun 由前端缓存的——如果节点集合没变（只是选中变了），组件不会自己用新的 `selected_id` 重新渲染，
+   会用它自己缓存的上一次选中态覆盖回来，导致"新增节点后画布却还选中着旧节点、属性面板对不上"。修复方式：
+   `_wfed_render_flow_canvas` 复用缓存状态时，无条件用调用方传入的 `selected`（= `state["selected_node"]`，
+   我们自己维护的单一事实来源）覆盖缓存对象的 `selected_id`，只有真正的用户点击（组件返回值）才会反过来
+   更新它。这个问题是在写完整套烟雾测试（见下）之后才复现出来的，不是纯靠读代码能看出来的时序 bug，值得
+   在这里记一笔，免得以后"优化"画布缓存逻辑时把这行覆盖删掉。
+3. **`_flow_available()` 捕获 `Exception` 而非只捕获 `ImportError`**（`_sortable_available` 只捕获
+   `ImportError`）：`streamlit-flow-component` 的 `__init__.py` 在 import 阶段就会调用
+   `st.components.v1.declare_component()` 注册前端资源，脱离真正的 Streamlit runtime（比如前端构建产物
+   缺失、或被非 `streamlit run` 的方式加载——本阶段的烟雾测试就踩了这个）时抛出的不一定是 `ImportError`，
+   不兜住会直接带崩整个编辑器 tab，而不是优雅降级成只读图。
+4. **`json` 字段解析失败时用哨兵值 `_WFED_JSON_ERROR` 跳过写回，而不是拿旧值兜底或直接报错中断**：这样
+   "一个字段 JSON 写挂了"不会连累同一次提交里其它已经改对的字段（id / 依赖 / 其它字段照常应用），也不会
+   悄悄把用户的错误输入丢弃换成看不出改动的旧值。
+5. **依赖更新中途失败（加某条依赖会成环）不回滚已经生效的其它修改**：改 id、删依赖、其它已经处理完的加依赖
+   仍然应用，只中断"加依赖"这一步剩余的边，并在错误信息里点名是哪一条——用户少点一次"回退重来"，只需要
+   针对性地再调整那一条依赖。
+6. **`workflow_editor_meta()` 按当前选中的工作流懒加载并缓存在 `session_state`**（方案没有明确要求缓存
+   粒度）：因为 `meta` 里的 `roles/tools/skills` 是"当前工作流目录下能看到的"本地资源，换工作流要重新拉；
+   同一个工作流反复渲染不用每次都请求。
+7. **`is_include` 的节点没有"类型专属字段"和"高级字段"折叠区**：`fields_for()` 对 include 节点本来就只在
+   `id`/`depends_on` 两个通用字段生效，UI 侧对应地跳过整段类型字段渲染，而不是渲染出一堆空字段再让用户
+   发现填了也没用。
+
+### 3. 测试
+
+- 复用并重跑了 M3 的 `tests/test_workflow_editor_graph.py`（`PYTHONPATH=src python3 -m pytest
+  tests/test_workflow_editor_graph.py -q`）：38/40 通过；另外 2 个
+  （`test_field_specs_are_consistent_with_backend_schema` /
+  `test_new_step_skeletons_get_reported_by_backend_validation`）在本次实施用的沙箱里因为缺 `fastapi`
+  （`src/mini_agent` 主包的间接依赖，装不上，与本阶段改动无关）没能收集成功，M4 没有改动 `workflow_editor.py`
+  的任何既有函数（只加了一个 `deps_of` 别名），不影响这两个用例本身的正确性。
+- `_render_workflow_editor_tab` 及其子函数是 Streamlit 渲染代码，不适合写成 `pytest` 单测（方案 §十的
+  测试计划里 M4 本来就没列专门的自动化测试文件，和 `diff_view.py` / `async_job_ui.py` 的既有先例一致）。
+  实施过程中搭了一个一次性的本地烟雾测试脚本（极简 `streamlit` 桩 + 假 `AgentClient` + 假
+  `streamlit_flow` 包），跑通了以下路径并在交付前删除（不进正式仓库）：
+  - 未打开 / 已打开 / 切换选中节点 / 选中 include 节点，四种状态下完整渲染一遍不报错；
+  - `streamlit-flow-component` 已装（走画布主路径）与未装（走 `st.graphviz_chart` 降级路径）两种环境；
+  - 保存的三种失败分支（`conflict` / `needs_confirm` / `validation_failed`）各自触发对应的解决 UI；
+  - 属性面板改 id：验证 `depends_on` 下游节点联动改名（`report` 依赖 `review`，把 `review` 改名成
+    `review_renamed` 后 `report.depends_on` 同步更新），过程中定位并修复了上面第 2 条的画布选中态 bug。
+
+### 4. 已知限制 / 留给后续里程碑
+
+- 字段编辑要点「应用到草稿」才生效，不是逐字段实时保存（见偏差 1）；画布本身的拖拽布局不落盘，每次渲染都
+  重新自动分层（方案 §七本就没要求持久化坐标）。
+- M5：拖线加依赖 / 点边删依赖（当前 `allow_new_edges=False`）、新建 / 复制工作流、边上插入节点的 UI
+  （纯函数 `insert_between` 已在 M3 做好）、并行批次高亮预览、单步试运行、备份恢复端点与 UI、
+  "编辑器保存后在最近运行上用最新定义续跑"入口（M1 遗留）。
+

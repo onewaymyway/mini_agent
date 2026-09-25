@@ -104,6 +104,11 @@ def _deps(step: dict) -> list[str]:
     return [str(d) for d in (step.get("depends_on") or [])]
 
 
+def deps_of(step: dict) -> list[str]:
+    """`_deps` 的公开别名，供 M4 的 Streamlit UI（app.py）读取某节点当前的 depends_on。"""
+    return _deps(step)
+
+
 def _merge_sources(step: dict) -> list[str]:
     return [str(d) for d in (step.get("merge_sources") or [])]
 

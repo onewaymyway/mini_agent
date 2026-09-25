@@ -14,3 +14,8 @@ streamlit-sortables>=0.3.0
 # 见 kanban_auth_cookie_migration_plan.md）。未开启 --require-login 时
 # 不会导入这个包，可以不装。
 extra-streamlit-components>=0.1.60
+# 可选：工作流可视化编辑器（Tab 3.5 「✏️ 编辑器」）的图形画布——自动分层 +
+# 点击选中节点。未安装时自动回退到 st.graphviz_chart 只读图 + 节点选择器，
+# 编辑功能本身不受影响（见 apps/mini_agent_kanban/app.py::_flow_available，
+# next_doc/workflow_visual_editor_plan.md §七「M4：看板 UI」）。
+streamlit-flow-component>=1.6.1

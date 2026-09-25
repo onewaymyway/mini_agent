@@ -18,6 +18,7 @@ Mini-Agent 看板 (Kanban Dashboard)
 运行方式：
     streamlit run apps/mini_agent_kanban/app.py
 """
+import copy
 import html
 import json
 import logging
@@ -39,6 +40,7 @@ except ImportError:  # 极老版本 streamlit 没有这个异常类，退化成�
 from client import AgentClient
 from async_job_ui import start_async_job, run_async_job
 from diff_view import parse_unified_diff, summarize_files
+import workflow_editor as we
 
 
 def _esc_html(text) -> str:
@@ -7795,6 +7797,16 @@ def _render_workflow_run_detail_body(client: AgentClient, run_id: str, detail: d
 def render_workflow_tab(client: AgentClient):
     st.markdown("#### 🔄 工作流")
 
+    # [next_doc/workflow_visual_editor_plan.md §4.1 / M4] 顶部切换「运行与记录」/
+    # 「编辑器」；原有运行面板 / 历史记录内容原样保留在前者里。
+    mode = st.radio(
+        "工作流视图", ["▶️ 运行与记录", "✏️ 编辑器"], key="wf_tab_mode",
+        horizontal=True, label_visibility="collapsed",
+    )
+    if mode == "✏️ 编辑器":
+        _render_workflow_editor_tab(client)
+        return
+
     _render_workflow_run_panel(client)
     st.markdown("---")
 
@@ -7821,6 +7833,545 @@ def render_workflow_tab(client: AgentClient):
                 if rc2.button("查看", key=f"wf_open_{rid}"):
                     st.session_state.wf_active_run_id = rid
                     st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Tab 3.5: 工作流可视化编辑器（next_doc/workflow_visual_editor_plan.md M4）
+#
+# 纯计算部分在 workflow_editor.py（`we`，M3）；本节只负责 Streamlit 渲染与
+# session_state 管理，沿用 diff_view.py / async_job_ui.py 的拆分先例。
+# 画布：已安装 streamlit-flow-component 时用它自动分层 + 点击选中；未安装
+# 时降级为 st.graphviz_chart 只读图 + st.selectbox 节点选择器（方案 §七）。
+# 任何一条编辑动作（改字段/改依赖/改 id）都通过属性面板的表单完成，画布
+# 只是选择节点的快捷方式——即使画布组件本身不稳定，编辑器仍然可用。
+# ═══════════════════════════════════════════════════════════════════════
+
+_WFED_JSON_ERROR = object()  # json 字段解析失败时的哨兵值，应用时跳过该字段
+
+
+def _flow_available() -> bool:
+    """是否已安装可选依赖 streamlit-flow-component（沿用 _sortable_available 的探测写法）。
+    与 `_sortable_available` 的差别：这里用 `Exception` 而不是只捕获 `ImportError`——
+    该组件的 `__init__.py` 在 import 时就会调用 `st.components.v1.declare_component()`
+    注册前端资源，脱离真正的 Streamlit runtime（比如被非 `streamlit run` 的方式加载、
+    或前端构建产物缺失）时抛出的不一定是 `ImportError`，不兜住会直接带崩整个编辑器 tab。"""
+    try:
+        import streamlit_flow  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _wfed_reload(client: AgentClient, name: str) -> None:
+    """(重新)加载某工作流的编辑用文档，覆盖 session_state 里的编辑器状态（放弃未保存修改）。"""
+    resp = client.workflow_editor_doc(name)
+    err = we.parse_editor_error(resp)
+    if err:
+        st.error(f"加载失败：{err.message}")
+        return
+    draft = resp.get("draft") or {}
+    prompt_files = dict(resp.get("prompt_files") or {})
+    st.session_state[f"wfed_state_{name}"] = {
+        "draft": draft,
+        "original": copy.deepcopy(draft),
+        "prompt_files": prompt_files,
+        "original_prompt_files": dict(prompt_files),
+        "prompt_hashes": dict(resp.get("prompt_hashes") or {}),
+        "base_hash": resp.get("base_hash"),
+        "comment_lines": resp.get("comment_lines", 0),
+        "has_ruamel": resp.get("has_ruamel", True),
+        "editor_enabled": resp.get("editor_enabled", True),
+        "path": resp.get("path"),
+        "mode": resp.get("mode"),
+        "renames": {},
+        "selected_node": None,
+        "validation": None,
+    }
+    for k in (f"wfed_conflict_{name}", f"wfed_needs_confirm_{name}", f"wfed_save_result_{name}",
+              f"wfed_confirm_delete_{name}"):
+        st.session_state.pop(k, None)
+    for w in resp.get("warnings") or []:
+        st.toast(f"⚠️ {w}", icon="⚠️")
+
+
+def _wfed_merge_renames(acc: dict, new_map: dict) -> dict:
+    """把新一次 rename_step 的结果 {old: new} 并入累积的改名映射，让"a→b 再 b→c"这类连续改名
+    仍能算出"原始 id → 最终 id"，传给后端时能匹配到同一个节点、保住其注释。"""
+    out = dict(acc)
+    for old, new in new_map.items():
+        src = old
+        for k, v in acc.items():
+            if v == old:
+                src = k
+                break
+        out[src] = new
+    return out
+
+
+def _wfed_options_for(source: str, meta: Optional[dict], all_ids: list) -> list:
+    meta = meta or {}
+    if source == "roles":
+        return [r["name"] for r in meta.get("roles", [])]
+    if source == "tools":
+        return [t["name"] for t in meta.get("tools", [])]
+    if source == "skills":
+        return [s["name"] for s in meta.get("skills", [])]
+    if source == "workflows":
+        return list(meta.get("workflows", []))
+    if source == "merge_strategies":
+        return list(meta.get("merge_strategies", []))
+    if source == "modes":
+        return list(meta.get("modes", []))
+    if source == "steps":
+        return list(all_ids)
+    return []
+
+
+def _wfed_field_widget(spec: "we.FieldSpec", holder: dict, meta: Optional[dict], key_prefix: str,
+                        all_ids: Optional[list] = None):
+    """渲染单个属性字段，返回其当前（用户输入后的）值；json 字段解析失败时返回
+    `_WFED_JSON_ERROR` 哨兵，调用方据此跳过写回（不用非法值污染草稿）。"""
+    key = f"{key_prefix}_{spec.key}"
+    val = holder.get(spec.key)
+    if spec.kind == "str":
+        return st.text_input(spec.label, value="" if val is None else str(val), key=key, help=spec.help or None)
+    if spec.kind == "text":
+        return st.text_area(spec.label, value="" if val is None else str(val), key=key,
+                            help=spec.help or None, height=120)
+    if spec.kind == "int":
+        return int(st.number_input(spec.label, value=int(val) if isinstance(val, (int, float)) else 0,
+                                   step=1, key=key, help=spec.help or None))
+    if spec.kind == "float":
+        return float(st.number_input(spec.label, value=float(val) if isinstance(val, (int, float)) else 0.0,
+                                     key=key, help=spec.help or None))
+    if spec.kind == "bool":
+        return st.checkbox(spec.label, value=bool(val), key=key, help=spec.help or None)
+    if spec.kind == "tribool":
+        options = ["（继承默认）", "是", "否"]
+        idx = 0 if val is None else (1 if val else 2)
+        choice = st.selectbox(spec.label, options, index=idx, key=key, help=spec.help or None)
+        return {0: None, 1: True, 2: False}[options.index(choice)]
+    if spec.kind == "json":
+        text = st.text_area(
+            spec.label, value=json.dumps(val, ensure_ascii=False, indent=2) if val is not None else "",
+            key=key, help=spec.help or None, height=100,
+        )
+        if not text.strip():
+            return None
+        try:
+            return json.loads(text)
+        except Exception as e:
+            st.error(f"「{spec.label}」不是合法 JSON：{e}")
+            return _WFED_JSON_ERROR
+    if spec.kind == "list":
+        text = st.text_area(spec.label, value="\n".join(str(x) for x in (val or [])), key=key,
+                            help=(spec.help + "；" if spec.help else "") + "每行一项", height=80)
+        return [line.strip() for line in text.splitlines() if line.strip()]
+    if spec.kind == "select":
+        options = _wfed_options_for(spec.options, meta, all_ids or [])
+        values = [""] + options
+        idx = values.index(val) if val in values else 0
+        choice = st.selectbox(spec.label, values, index=idx, key=key, help=spec.help or None)
+        return choice or None
+    if spec.kind == "multiselect":
+        options = _wfed_options_for(spec.options, meta, all_ids or [])
+        default = [x for x in (val or []) if x in options]
+        return st.multiselect(spec.label, options, default=default, key=key, help=spec.help or None)
+    return val
+
+
+def _wfed_render_flow_canvas(graph: dict, selected: Optional[str], key: str) -> Optional[str]:
+    """streamlit-flow-component 画布：ELK 自动分层（自上而下）、点击节点选中，坐标不落盘。
+    仅在 `_flow_available()` 为真时调用；渲染中任何异常都吞掉并回退到降级路径，
+    避免第三方组件的抖动拖垮整个编辑器（方案 §七"主要技术风险"）。"""
+    try:
+        from streamlit_flow import streamlit_flow
+        from streamlit_flow.elements import StreamlitFlowEdge, StreamlitFlowNode
+        from streamlit_flow.layouts import LayeredLayout
+        from streamlit_flow.state import StreamlitFlowState
+
+        nodes = [
+            StreamlitFlowNode(
+                id=n["id"], pos=(0, 0),
+                data={"content": n["label"] + ("　" + "".join(n["badges"]) if n["badges"] else "")},
+                selectable=True, draggable=True, connectable=False,
+                style={"backgroundColor": n["fill"], "border": f"2px solid {n['border']}"},
+            )
+            for n in graph["nodes"]
+        ]
+        edges = [
+            StreamlitFlowEdge(
+                id=e["id"], source=e["source"], target=e["target"],
+                marker_end={"type": "arrowclosed"},
+                style={"strokeDasharray": "5,5"} if e["kind"] == "merge" else {},
+            )
+            for e in graph["edges"]
+        ]
+        state_key = f"_{key}_state"
+        prev = st.session_state.get(state_key)
+        if prev is None or {n.id for n in prev.nodes} != {n.id for n in nodes}:
+            state = StreamlitFlowState(nodes=nodes, edges=edges, selected_id=selected)
+        else:
+            prev.nodes, prev.edges = nodes, edges
+            # `selected` 来自 `state["selected_node"]`（我们自己维护的选中态，单一
+            # 事实来源：每次画布交互后都会回写成组件返回值）；这里强制用它覆盖缓存
+            # 组件状态里的 selected_id，否则"新增/复制/改 id 后把选中切到新节点"这类
+            # 纯 Python 侧的选择变更，会被上一轮缓存的旧 selected_id 悄悄吞掉——
+            # 节点集合没变时组件不会重新以新选中态渲染，属性面板也就跟着对不上。
+            prev.selected_id = selected
+            state = prev
+        new_state = streamlit_flow(
+            key, state, height=420, fit_view=True, show_controls=True,
+            layout=LayeredLayout(direction="down"), get_node_on_click=True,
+            allow_new_edges=False,  # 阶段二（M5）再开放拖线加依赖
+        )
+        st.session_state[state_key] = new_state
+        return new_state.selected_id or selected
+    except Exception as e:  # noqa: BLE001 — 第三方组件的任何问题都不应拖垮编辑器
+        st.warning(f"画布组件渲染异常，已降级为只读图（{e}）。")
+        return selected
+
+
+def _wfed_render_property_panel(name: str, state: dict, meta: Optional[dict],
+                                errors_by_step: dict, warnings_by_step: dict) -> None:
+    draft = state["draft"]
+    sid = state.get("selected_node")
+    step = we.find_step(draft, sid) if sid else None
+    if not sid or step is None:
+        st.caption("在左侧选中一个节点查看 / 编辑其属性。")
+        return
+
+    is_inc = we.is_include(step)
+    st.markdown(f"**{'🧩 include 片段' if is_inc else '节点属性'}：`{sid}`**")
+    for e in errors_by_step.get(sid, []):
+        st.error(f"❌ {e}")
+    for w in warnings_by_step.get(sid, []):
+        st.warning(f"⚠️ {w}")
+    if is_inc:
+        st.caption("include 节点只能改 id / depends_on；片段内容请在 `.agent/workflow_snippets/` 目录里维护，"
+                    "编辑器不会把片段摊平展开。")
+
+    all_ids = [i for i in we.step_ids(draft) if i != sid]
+    form_key = f"wfed_panel_form_{name}_{sid}"
+    field_key_prefix = f"wfed_f_{name}_{sid}"
+    with st.form(key=form_key):
+        new_id = st.text_input("id", value=sid, key=f"{field_key_prefix}_id")
+        sync_refs = st.checkbox(
+            "改 id 时同步更新其它节点对它的引用（depends_on / merge_sources / condition / 占位符）",
+            value=True, key=f"{field_key_prefix}_syncrefs",
+        )
+        new_name = None
+        if not is_inc:
+            new_name = st.text_input("名称", value=str(step.get("name") or ""), key=f"{field_key_prefix}_name")
+        new_deps = st.multiselect(
+            "依赖（depends_on）", all_ids, default=[d for d in we.deps_of(step) if d in all_ids],
+            key=f"{field_key_prefix}_deps",
+        )
+
+        field_values: dict = {}
+        if not is_inc:
+            step_specs, adv_specs = we.fields_for(step)
+            note = we.runtime_switch_note(we.effective_type(step), (meta or {}).get("switches"))
+            if note:
+                st.info(note)
+            if step_specs:
+                st.markdown("*类型专属字段*")
+                for spec in step_specs:
+                    field_values[spec.key] = _wfed_field_widget(spec, step, meta, field_key_prefix, all_ids)
+            with st.expander("高级字段", expanded=False):
+                for spec in we.ADVANCED_FIELD_SPECS:
+                    field_values[spec.key] = _wfed_field_widget(spec, step, meta, field_key_prefix, all_ids)
+
+        applied = st.form_submit_button("✅ 应用到草稿", type="primary")
+
+    if not applied:
+        return
+
+    d = draft
+    renames_acc = state.get("renames") or {}
+    cur_sid = sid
+    if new_id != sid:
+        result = we.rename_step(d, sid, new_id, state["prompt_files"], sync_refs=sync_refs)
+        if result.error:
+            st.error(result.error)
+            return
+        d = result.draft
+        state["prompt_files"] = result.prompt_files
+        renames_acc = _wfed_merge_renames(renames_acc, result.renames)
+        cur_sid = new_id
+        if result.hint:
+            st.info(result.hint)
+
+    step2 = we.find_step(d, cur_sid)
+    if not is_inc and new_name is not None:
+        step2["name"] = new_name
+
+    cur_deps = we.deps_of(step2)
+    for x in [x for x in cur_deps if x not in new_deps]:
+        d = we.remove_dependency(d, x, cur_sid)
+        step2 = we.find_step(d, cur_sid)
+    dep_error = None
+    for x in [x for x in new_deps if x not in cur_deps]:
+        d, err = we.add_dependency(d, x, cur_sid)
+        if err:
+            dep_error = f"{x} → {cur_sid}：{err}"
+            break
+        step2 = we.find_step(d, cur_sid)
+    if dep_error:
+        st.error(f"依赖更新失败（其余修改已应用）：{dep_error}")
+
+    if not is_inc:
+        for k, v in field_values.items():
+            if v is _WFED_JSON_ERROR:
+                continue  # 非法 JSON：跳过该字段，不写回草稿
+            if v in (None, "", []) and k not in step2:
+                continue  # 保持"没填=没有这个键"，避免表单空值造出一堆 null
+            step2[k] = v
+
+    state["draft"] = d
+    state["selected_node"] = cur_sid
+    state["renames"] = renames_acc
+    state["validation"] = None
+    st.rerun()
+
+
+def _wfed_render_workflow_fields(name: str, state: dict) -> None:
+    draft = state["draft"]
+    with st.form(key=f"wfed_wf_fields_form_{name}"):
+        values = {}
+        for spec in we.WORKFLOW_LEVEL_FIELD_SPECS:
+            values[spec.key] = _wfed_field_widget(spec, draft, None, f"wfed_wff_{name}")
+        applied = st.form_submit_button("✅ 应用")
+    if not applied:
+        return
+    d = copy.deepcopy(draft)
+    for k, v in values.items():
+        if v is _WFED_JSON_ERROR:
+            continue
+        if v in (None, "", []) and k not in d:
+            continue
+        d[k] = v
+    state["draft"] = d
+    state["validation"] = None
+    st.rerun()
+
+
+def _wfed_save(client: AgentClient, name: str, state: dict, *, force: bool = False,
+               confirm_comment_loss: bool = False) -> None:
+    resp = client.save_workflow_draft(
+        name, state["draft"], state["base_hash"], state["prompt_files"],
+        state.get("prompt_hashes"), state.get("renames") or None,
+        force=force, confirm_comment_loss=confirm_comment_loss,
+    )
+    err = we.parse_editor_error(resp)
+    if err is None:
+        state["original"] = copy.deepcopy(state["draft"])
+        state["original_prompt_files"] = dict(state["prompt_files"])
+        state["base_hash"] = resp.get("base_hash", state["base_hash"])
+        state["renames"] = {}
+        state["validation"] = None
+        st.session_state[f"wfed_save_result_{name}"] = resp
+        st.toast(f"✅ 已保存（{resp.get('status', 'saved')}）", icon="✅")
+        return
+    if err.kind == "conflict":
+        st.session_state[f"wfed_conflict_{name}"] = err
+    elif err.kind == "needs_confirm":
+        st.session_state[f"wfed_needs_confirm_{name}"] = err
+    elif err.kind == "validation":
+        state["validation"] = we.normalize_validation(err.detail, we.step_ids(state["draft"]))
+        st.error("校验未通过，未保存——详见下方节点标红与错误列表。")
+    else:
+        st.error(f"保存失败：{err.message}")
+
+
+def _render_workflow_editor_tab(client: AgentClient) -> None:
+    st.caption(
+        "直接编辑工作流 DAG：图形画布 + 属性面板，保存时保留原 YAML 的注释 / include 引用 / "
+        "相对路径（next_doc/workflow_visual_editor_plan.md）。"
+    )
+    wf_data = client.workflows() or {}
+    if "_error" in wf_data:
+        st.warning(f"工作流列表获取失败：{wf_data['_error']}")
+        return
+    names = [w["name"] for w in wf_data.get("workflows", [])]
+    if not names:
+        st.info("暂无已保存的工作流。")
+        return
+
+    name = st.selectbox("选择工作流", names, key="wfed_wf_name")
+    state = st.session_state.get(f"wfed_state_{name}")
+
+    top1, top2, top3 = st.columns([1.4, 1.4, 3])
+    if top1.button("📥 打开 / 重新加载", key=f"wfed_reload_btn_{name}"):
+        _wfed_reload(client, name)
+        st.rerun()
+    if state is None:
+        st.caption("点击「打开 / 重新加载」开始编辑。")
+        return
+
+    meta = st.session_state.get(f"wfed_meta_{name}")
+    if meta is None:
+        meta_resp = client.workflow_editor_meta(workflow=name)
+        meta = meta_resp if meta_resp and "_error" not in meta_resp else {}
+        st.session_state[f"wfed_meta_{name}"] = meta
+
+    draft = state["draft"]
+    dirty = we.is_dirty(state["original"], draft, state["original_prompt_files"], state["prompt_files"])
+    if top2.button("↩️ 放弃修改", key=f"wfed_discard_btn_{name}", disabled=not dirty):
+        state["draft"] = copy.deepcopy(state["original"])
+        state["prompt_files"] = dict(state["original_prompt_files"])
+        state["renames"] = {}
+        state["selected_node"] = None
+        state["validation"] = None
+        st.rerun()
+    status_line = "🟠 有未保存修改" if dirty else "🟢 无未保存修改"
+    if not state.get("editor_enabled", True):
+        status_line += "　🔒 写入已关闭（配置 `workflow.visual_editor_enabled=true` 开启，只读仍可用）"
+    if not state.get("has_ruamel", True) and state.get("comment_lines", 0) > 0:
+        status_line += "　⚠️ 未安装 ruamel.yaml，保存会丢失该文件的注释"
+    top3.markdown(status_line)
+
+    vcol1, vcol2, _vcol3 = st.columns([1, 1, 3])
+    if vcol1.button("✅ 校验", key=f"wfed_validate_btn_{name}"):
+        resp = client.validate_workflow_draft(name, draft, state["prompt_files"], state.get("renames") or None)
+        err = we.parse_editor_error(resp)
+        if err:
+            st.error(f"校验请求失败：{err.message}")
+        else:
+            state["validation"] = we.normalize_validation(resp, we.step_ids(draft))
+        st.rerun()
+    can_save = state.get("editor_enabled", True) and dirty
+    if vcol2.button("💾 保存", key=f"wfed_save_btn_{name}", type="primary", disabled=not can_save):
+        _wfed_save(client, name, state)
+        st.rerun()
+
+    conflict = st.session_state.get(f"wfed_conflict_{name}")
+    if conflict:
+        st.error(conflict.message)
+        cc1, cc2 = st.columns(2)
+        if cc1.button("🔄 重新加载（放弃本地修改）", key=f"wfed_conflict_reload_{name}"):
+            _wfed_reload(client, name)
+            st.rerun()
+        if cc2.button("⚠️ 强制覆盖保存", key=f"wfed_conflict_force_{name}"):
+            _wfed_save(client, name, state, force=True)
+            st.session_state.pop(f"wfed_conflict_{name}", None)
+            st.rerun()
+
+    needs_confirm = st.session_state.get(f"wfed_needs_confirm_{name}")
+    if needs_confirm:
+        st.warning(needs_confirm.message)
+        if st.button("我知道，继续保存（会丢失注释）", key=f"wfed_confirm_loss_{name}"):
+            _wfed_save(client, name, state, confirm_comment_loss=True)
+            st.session_state.pop(f"wfed_needs_confirm_{name}", None)
+            st.rerun()
+
+    save_result = st.session_state.get(f"wfed_save_result_{name}")
+    if save_result:
+        with st.expander("上次保存结果", expanded=False):
+            st.json(save_result, expanded=False)
+            if save_result.get("git_hint"):
+                st.caption(save_result["git_hint"])
+
+    validation = state.get("validation")
+    errors_by_step = (validation or {}).get("errors_by_step", {})
+    warnings_by_step = (validation or {}).get("warnings_by_step", {})
+    batches = (validation or {}).get("batches") or we.compute_layers(draft)
+    if validation:
+        if validation["errors"]:
+            st.error(f"❌ 校验发现 {validation['total_errors']} 个问题（详见对应节点）")
+            for e in validation.get("workflow_errors", []):
+                st.caption(f"· {e}")
+        elif validation.get("warnings"):
+            st.warning(f"⚠️ {len(validation['warnings'])} 条警告（详见对应节点）")
+        else:
+            st.success("✅ 校验通过")
+
+    with st.expander("🔍 查看变更", expanded=False):
+        diff_text = we.build_change_diff(
+            name, state["original"], draft, state["original_prompt_files"], state["prompt_files"]
+        )
+        if not diff_text.strip():
+            st.caption("暂无改动。")
+        else:
+            files = parse_unified_diff(diff_text)
+            summary = summarize_files(files)
+            if summary:
+                st.caption(summary)
+            for f in files:
+                with st.expander(f.summary, expanded=len(files) == 1):
+                    st.code(f.body, language="diff")
+
+    graph = we.draft_to_graph(draft, errors_by_step, warnings_by_step, batches)
+    gcol, pcol = st.columns([3, 2])
+    with gcol:
+        selected = state.get("selected_node")
+        if _flow_available():
+            selected = _wfed_render_flow_canvas(graph, selected, key=f"wfed_flow_{name}")
+        else:
+            st.caption("未安装可选依赖 `streamlit-flow-component`，降级为只读图 + 节点选择器"
+                       "（依赖 `graphviz`；功能完整，只是没有点选和拖线）。")
+            st.graphviz_chart(we.to_dot(graph, selected), width='stretch')
+            node_ids = [n["id"] for n in graph["nodes"]]
+            if node_ids:
+                idx = node_ids.index(selected) if selected in node_ids else 0
+                selected = st.selectbox(
+                    "选中节点", node_ids, index=idx,
+                    format_func=lambda i: next((n["label"] for n in graph["nodes"] if n["id"] == i), i),
+                    key=f"wfed_select_node_{name}",
+                )
+        state["selected_node"] = selected
+        if graph["dangling"]:
+            st.caption("⚠️ 存在指向不存在节点的引用：" + "；".join(
+                f"{d['node']}.{d['field']} → {d['missing']}" for d in graph["dangling"]))
+
+        st.markdown("**节点操作**")
+        add_type = st.selectbox("新节点类型", list(we.STEP_TYPE_STYLES.keys()), key=f"wfed_add_type_{name}")
+        nc1, nc2, nc3 = st.columns(3)
+        if nc1.button("＋ 新增", key=f"wfed_add_btn_{name}"):
+            new_draft, new_id = we.add_step(draft, add_type, after=selected)
+            state["draft"] = new_draft
+            state["selected_node"] = new_id
+            state["validation"] = None
+            st.rerun()
+        if nc2.button("⧉ 复制", key=f"wfed_dup_btn_{name}", disabled=not selected):
+            new_draft, new_id = we.duplicate_step(draft, selected, state["prompt_files"])
+            if new_id:
+                state["draft"] = new_draft
+                state["selected_node"] = new_id
+                state["validation"] = None
+                st.rerun()
+        if nc3.button("🗑️ 删除", key=f"wfed_del_btn_{name}", disabled=not selected):
+            st.session_state[f"wfed_confirm_delete_{name}"] = selected
+            st.rerun()
+
+        pending_delete = st.session_state.get(f"wfed_confirm_delete_{name}")
+        if pending_delete and pending_delete in we.step_ids(draft):
+            report = we.analyze_delete(draft, pending_delete, state["prompt_files"])
+            with st.container(border=True):
+                st.warning(f"确认删除节点 `{pending_delete}`？")
+                if report.dependents:
+                    st.caption(f"以下节点依赖它，会同步移除该依赖：{', '.join(report.dependents)}")
+                if report.merge_dependents:
+                    st.caption(f"以下节点的 merge_sources 引用了它，会同步移除：{', '.join(report.merge_dependents)}")
+                if report.other_refs:
+                    st.caption("以下 condition / 占位符引用了它，删除后需手动处理：" + "；".join(
+                        f"{r['step']}.{r['where']}" for r in report.other_refs))
+                dc1, dc2 = st.columns(2)
+                if dc1.button("确认删除", key=f"wfed_del_confirm_{name}"):
+                    state["draft"] = we.delete_step(draft, pending_delete, cleanup_refs=True)
+                    state["selected_node"] = None
+                    state["validation"] = None
+                    st.session_state.pop(f"wfed_confirm_delete_{name}", None)
+                    st.rerun()
+                if dc2.button("取消", key=f"wfed_del_cancel_{name}"):
+                    st.session_state.pop(f"wfed_confirm_delete_{name}", None)
+                    st.rerun()
+
+    with pcol:
+        _wfed_render_property_panel(name, state, meta, errors_by_step, warnings_by_step)
+
+    with st.expander("⚙️ 工作流属性", expanded=False):
+        _wfed_render_workflow_fields(name, state)
 
 
 # ═══════════════════════════════════════════════════════════════════════
