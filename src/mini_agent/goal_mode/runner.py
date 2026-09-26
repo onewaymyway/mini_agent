@@ -55,8 +55,17 @@ from mini_agent.core import (
     Event as _core_Event,
     ExperienceStore as _core_ExperienceStore,
     GoalAdapter as _core_GoalAdapter,
+    get_event_bus as _core_get_event_bus,
     goal_run_result_to_experience as _core_goal_run_result_to_experience,
 )
+
+# [next_doc/refactor_plan/03-phase2-event-model-sprint-plan.md Sprint 2-1]
+# 在 Sprint 1 已经打通的同一个接入点上，把原本只写日志的 trace 记录
+# 改为同时 publish() 到进程内事件总线，且新增 ActionStarted/Completed/
+# Failed/ExperienceCreated 几种事件，让"Goal 执行一次完整闭环"能在总线上
+# publish 至少 4 个事件（验收标准第 1 条）。`uuid` 只用于给每次 run()
+# 生成一个 correlation_id，不引入其它新依赖。
+import uuid as _core_uuid
 
 if TYPE_CHECKING:
     from mini_agent.agent import Agent
@@ -342,6 +351,26 @@ class GoalRunner:
             ).to_dict(),
         )
 
+        # [Phase 2 Sprint 2-1] 本次 run() 的因果链路 id：本方法内产生的
+        # GoalCreated/ActionStarted/ActionCompleted/ActionFailed 与
+        # `_finish()` 里产生的 ExperienceCreated 共享同一个
+        # correlation_id，供 Sprint 2-2 的 `events trace <correlation_id>`
+        # 按顺序重放。只在实例上存一份，`_finish()` 是同一个 GoalRunner
+        # 实例的方法，直接复用。
+        self._core_correlation_id = _core_uuid.uuid4().hex
+        _core_goal_created_event = _core_Event(
+            kind="GoalCreated",
+            payload={
+                "goal_text": _core_goal_state.goal_text,
+                "status": _core_goal_state.status,
+                "version": _core_goal_state.version,
+            },
+            actor="goal_mode.runner",
+            correlation_id=self._core_correlation_id,
+        )
+        _core_get_event_bus().publish(_core_goal_created_event)
+        self._core_last_event_id = _core_goal_created_event.id
+
         # 正常从 0 开始时用全局配置；从 max_rounds_exhausted 恢复时用
         # __init__ 里追加过的更高上限（见上方 resume_state 分支的说明）。
         max_rounds = self._max_rounds_override or self._gm_cfg.max_rounds
@@ -353,7 +382,42 @@ class GoalRunner:
             R.print_info(
                 f"[GoalRunner] 第 {self._round + 1}/{max_rounds} 轮执行中…"
             )
-            step = self._executor.execute(self._agent, prompt)
+
+            # [Phase 2 Sprint 2-1] 唯一新增接入点：`_executor.execute()` 是
+            # `goal_mode/executor.py` 已有的调用点，这里只在调用外侧包一层
+            # publish()，不改动 executor 内部任何逻辑，也不改变
+            # `step`/异常本身的传播方式（异常照常向上抛出，只是抛出前先
+            # publish 一次 ActionFailed 旁路记录）。
+            _core_action_started = _core_Event(
+                kind="ActionStarted",
+                payload={"round": self._round},
+                actor="goal_mode.runner",
+                causation_id=self._core_last_event_id,
+                correlation_id=self._core_correlation_id,
+            )
+            _core_get_event_bus().publish(_core_action_started)
+            try:
+                step = self._executor.execute(self._agent, prompt)
+            except Exception as _core_exc:
+                _core_action_failed = _core_Event(
+                    kind="ActionFailed",
+                    payload={"round": self._round, "error": str(_core_exc)},
+                    actor="goal_mode.runner",
+                    causation_id=_core_action_started.id,
+                    correlation_id=self._core_correlation_id,
+                )
+                _core_get_event_bus().publish(_core_action_failed)
+                self._core_last_event_id = _core_action_failed.id
+                raise
+            _core_action_completed = _core_Event(
+                kind="ActionCompleted",
+                payload={"round": self._round, "hit_max_turns": step.hit_max_turns},
+                actor="goal_mode.runner",
+                causation_id=_core_action_started.id,
+                correlation_id=self._core_correlation_id,
+            )
+            _core_get_event_bus().publish(_core_action_completed)
+            self._core_last_event_id = _core_action_completed.id
 
             # [goal_mode_stuck_compact_plan.md §5] 如果上一轮的提示里刚刚
             # 请求过重规划提议（只会发生在"最后一次恢复机会"那一轮），
@@ -1572,6 +1636,21 @@ class GoalRunner:
         # [Sprint 1 唯一接入点 · 后半段] Outcome(GoalRunResult) → Experience(core)。
         _core_experience = _core_goal_run_result_to_experience(result)
         _core_logger.debug("%s", _core_Event(kind="goal_mode.adapter.to_experience", payload=_core_experience.to_dict()).to_dict())
+
+        # [Phase 2 Sprint 2-1] 闭环的最后一个事件：ExperienceCreated，
+        # 与本次 run() 的 GoalCreated/ActionStarted/ActionCompleted 共享
+        # 同一个 correlation_id（`getattr` 兜底：`_finish()` 理论上只会在
+        # `run()` 走过前半段接入点之后被调用，但用 getattr 避免未来有人
+        # 绕开 run() 直接调用 `_finish()` 时在这里 AttributeError）。
+        _core_get_event_bus().publish(
+            _core_Event(
+                kind="ExperienceCreated",
+                payload=_core_experience.to_dict(),
+                actor="goal_mode.runner",
+                causation_id=getattr(self, "_core_last_event_id", None),
+                correlation_id=getattr(self, "_core_correlation_id", None),
+            )
+        )
 
         # [Sprint 2] 持久化，供下一次类似目标通过
         # `mini-agent experience search "<关键词>"` 检索到。写失败（例如

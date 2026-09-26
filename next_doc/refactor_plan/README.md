@@ -162,3 +162,19 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
 - [ ] `MemoryAdapter.to_old` 方向、`self._global_memory` 是否需要
       单独接入、`perception/` 包内部 12 个调用方（若后续需要进一步
       收敛）：待项目所有者确认排期后启动。
+- [x] Phase 1（Goal 迁移链）已达到验收标准，正式进入 **Phase 2（统一
+      Event Model）**，按 `03-phase2-event-model-sprint-plan.md` 划分的
+      Sprint 2-1（Event 数据结构 + 最小总线）已完成：扩展
+      `core/events.py::Event` 字段集（新增 `id`/`actor`/`context`/
+      `causation_id`/`correlation_id`，保留 `kind`/`payload`/`at`
+      三个 Sprint 1 已用字段名不变，旧调用点不改一行仍可工作）、新增
+      `core/event_bus.py`（进程内最小发布/订阅总线，订阅者异常不传播）、
+      在 `goal_mode/runner.py` Sprint 1 唯一接入点上新增
+      `GoalCreated → ActionStarted → ActionCompleted/ActionFailed →
+      ExperienceCreated` 四类事件的 publish（共享同一
+      `correlation_id`，`causation_id` 构成因果链）。验收标准第 1 条
+      （一次 Goal 闭环至少 4 个 Event）与第 2 条（Phase 1 特征测试全部
+      仍通过）均已用回归测试验证，详见
+      `03-phase2-event-model-sprint-plan.md` 末尾"Sprint 2-1 执行记录"。
+      事件雏形盘点表、依赖图核对两项完成标志尚未做，已在该文档标注为
+      未完成，留待下一次推进（Sprint 2-2 或专门盘点任务）。

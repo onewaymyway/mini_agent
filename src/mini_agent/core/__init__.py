@@ -8,12 +8,18 @@ Sprint 2 新增 `experience_store.py`（Experience 的最小 JSONL 持久化 +
 检索），对应原方案 §52 列的 11 个文件里，本包仍只建当前迁移链真正
 用得上的部分，不提前补全。
 
+Phase 2 Sprint 2-1（见
+`next_doc/refactor_plan/03-phase2-event-model-sprint-plan.md`）新增
+`event_bus.py`（进程内最小发布/订阅总线），并扩展了 `events.py` 里
+`Event` 的字段集（详见该文件顶部说明）。
+
 其它核心概念（Self / World / Capability / Action / Simulation / Runtime）
 的最小 dataclass，待对应 Phase 的迁移链启动时再补，不提前占位。
 """
 
 from .adapter import Adapter
-from .events import Event
+from .event_bus import EventBus, get_event_bus, reset_event_bus
+from .events import EVENT_KINDS, Event
 from .experience import Experience
 from .experience_store import ExperienceStore
 from .goal import GoalState
@@ -25,7 +31,11 @@ from .self_adapter import SelfAdapter
 
 __all__ = [
     "Adapter",
+    "EVENT_KINDS",
     "Event",
+    "EventBus",
+    "get_event_bus",
+    "reset_event_bus",
     "Experience",
     "ExperienceStore",
     "GoalState",
