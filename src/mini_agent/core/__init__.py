@@ -27,6 +27,13 @@ Sprint 3-2 新增 `experience_retrieval.py`（按关键词重叠度检索"同类
 LLM 上下文）与 `experience_patterns.py`（Analyzer 雏形：对同类失败
 Experience 做聚合统计，为 Phase 9 Self Evolution 打基础）。
 
+Phase 4 Sprint 4-1（见
+`next_doc/refactor_plan/05-phase4-unified-state-sprint-plan.md`）新增
+`state_manager.py`（`StateManager` 骨架：`get_state`/`update_state`
+两个核心方法 + 订阅事件总线上的 `GoalUpdated` 自动更新内部持有的
+`GoalState`），`goal_mode/runner.py` 唯一接入点改为把 `GoalState` 的
+持有权交给 `StateManager`，不再自己另外保留一份可变引用。
+
 其它核心概念（Self / World / Capability / Action / Simulation / Runtime）
 的最小 dataclass，待对应 Phase 的迁移链启动时再补，不提前占位。
 """
@@ -54,6 +61,12 @@ from .history import HistorySnapshot
 from .history_adapter import HistoryAdapter
 from .self import SelfState
 from .self_adapter import SelfAdapter
+from .state_manager import (
+    StateManager,
+    ensure_state_manager_subscribed,
+    get_state_manager,
+    reset_state_manager,
+)
 
 __all__ = [
     "Adapter",
@@ -81,4 +94,8 @@ __all__ = [
     "HistoryAdapter",
     "SelfState",
     "SelfAdapter",
+    "StateManager",
+    "ensure_state_manager_subscribed",
+    "get_state_manager",
+    "reset_state_manager",
 ]

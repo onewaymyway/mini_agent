@@ -93,7 +93,18 @@ def test_goal_runner_run_persists_events_and_cli_trace_replays_them(monkeypatch,
     store = EventLogStore(path=log_path)
     chain = store.trace(correlation_id)
     kinds = [d["kind"] for d in chain]
-    assert kinds == ["GoalCreated", "ActionStarted", "ActionCompleted", "ExperienceCreated"]
+    # [Phase 4 Sprint 4-1] `_finish()` 新增 publish 了一个 GoalUpdated
+    # （status=最终状态），供 StateManager 订阅后同步内部 GoalState；
+    # EventLogStore 订阅的是 EVENT_KINDS 全集（本就包含 GoalUpdated），
+    # 因此这里也会落盘，顺序在 ActionCompleted 之后、ExperienceCreated
+    # 之前（与 `_finish()` 里实际 publish 的先后一致）。
+    assert kinds == [
+        "GoalCreated",
+        "ActionStarted",
+        "ActionCompleted",
+        "GoalUpdated",
+        "ExperienceCreated",
+    ]
     # 时间戳单调不减：CLI 打印顺序与实际执行顺序一致。
     ats = [d["at"] for d in chain]
     assert ats == sorted(ats)

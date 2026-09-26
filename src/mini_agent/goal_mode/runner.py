@@ -58,9 +58,17 @@ from mini_agent.core import (
     GoalAdapter as _core_GoalAdapter,
     ensure_event_log_subscribed as _core_ensure_event_log_subscribed,
     ensure_experience_recorder_subscribed as _core_ensure_experience_recorder_subscribed,
+    ensure_state_manager_subscribed as _core_ensure_state_manager_subscribed,
     get_event_bus as _core_get_event_bus,
+    get_state_manager as _core_get_state_manager,
     goal_run_result_to_experience as _core_goal_run_result_to_experience,
 )
+
+# [next_doc/refactor_plan/05-phase4-unified-state-sprint-plan.md Sprint 4-1]
+# `GoalState` 的持有权交给 `StateManager`：`run()` 里只在最开始 seed 一次
+# （`update_state`），之后每轮 CONTINUE 推进 / `_finish()` 终止都改为
+# publish 一个 `GoalUpdated` 事件，由 `StateManager` 订阅后自动更新——
+# `runner.py` 自己不再另外保留一份可变的 `GoalState` 引用（验收标准）。
 
 # [next_doc/refactor_plan/03-phase2-event-model-sprint-plan.md Sprint 2-1]
 # 在 Sprint 1 已经打通的同一个接入点上，把原本只写日志的 trace 记录
@@ -401,9 +409,17 @@ class GoalRunner:
                 R.print_warning("[GoalRunner] 检索历史 Experience 失败（不影响本次 Goal 执行）")
 
         # [Sprint 1 唯一接入点 · 前半段] Goal(old) → GoalAdapter → GoalState(core)
-        # 只做转换 + trace 记录，不影响后续任何执行逻辑（转换结果不参与
-        # 下面的主循环，避免"定义了但没人用"——trace 日志就是证据）。
-        _core_goal_state = _core_GoalAdapter.to_new(self._spec)
+        # [Phase 4 Sprint 4-1] 转换出的 GoalState 不再只是一个用完即弃的
+        # 局部变量——立即交给 StateManager 托管（本次 run() 里唯一一次
+        # 手写 update_state 调用），之后所有读取都改走
+        # `_core_get_state_manager().get_state("goal")`，不在 runner.py
+        # 里另外保留一份可变引用。挂载 StateManager 的订阅同样要求放在
+        # 本方法内第一次 publish(GoalUpdated) 之前（幂等，模式与上面的
+        # event_log/experience_recorder 订阅一致）。
+        _core_ensure_state_manager_subscribed()
+        _core_state_manager = _core_get_state_manager()
+        _core_state_manager.update_state("goal", _core_GoalAdapter.to_new(self._spec))
+        _core_goal_state = _core_state_manager.get_state("goal")
         _core_logger.debug(
             "%s",
             _core_Event(
@@ -551,6 +567,22 @@ class GoalRunner:
             self._last_feedback = judge_feedback
             self._round += 1
             self._save_state(status="running")
+
+            # [Phase 4 Sprint 4-1] 唯一新增接入点：每轮真正推进一次
+            # （计入 max_rounds 预算的 CONTINUE），publish 一个
+            # GoalUpdated，供 StateManager 订阅后自动把内部 GoalState 的
+            # round/status 更新到与本轮一致——不在这里直接改
+            # `_core_goal_state`（那只是一份只读快照，改了也不会被任何人
+            # 消费，纯托管权全部在 StateManager 一侧）。
+            _core_action_completed_for_goal_updated = _core_Event(
+                kind="GoalUpdated",
+                payload={"round": self._round, "status": "running"},
+                actor="goal_mode.runner",
+                causation_id=self._core_last_event_id,
+                correlation_id=self._core_correlation_id,
+            )
+            _core_get_event_bus().publish(_core_action_completed_for_goal_updated)
+            self._core_last_event_id = _core_action_completed_for_goal_updated.id
 
             # [goal_mode_stuck_compact_plan.md §4] 更新探索/收敛阶段（计算本身
             # 成本很低，始终执行；是否据此触发主动 compact 由
@@ -1697,6 +1729,21 @@ class GoalRunner:
             goal_spec=self._spec,
             replan_proposal=self._replan_proposal,
         )
+
+        # [Phase 4 Sprint 4-1] 终止时也 publish 一次 GoalUpdated，让
+        # StateManager 托管的 GoalState.status 反映最终状态（done/stuck/
+        # max_rounds_exhausted/failed/cancelled），而不是永远停在最后一次
+        # 循环内 publish 的 "running"。`getattr` 兜底同上面 ExperienceCreated
+        # 的注释：避免未来有人绕开 run() 直接调用 _finish()。
+        _core_goal_updated_final = _core_Event(
+            kind="GoalUpdated",
+            payload={"round": self._round, "status": status},
+            actor="goal_mode.runner",
+            causation_id=getattr(self, "_core_last_event_id", None),
+            correlation_id=getattr(self, "_core_correlation_id", None),
+        )
+        _core_get_event_bus().publish(_core_goal_updated_final)
+        self._core_last_event_id = _core_goal_updated_final.id
 
         # [Sprint 1 唯一接入点 · 后半段] Outcome(GoalRunResult) → Experience(core)。
         _core_experience = _core_goal_run_result_to_experience(result)

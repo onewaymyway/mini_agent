@@ -280,5 +280,27 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       执行记录"与 `MIGRATION_STATUS.md`。Phase 3（Experience 分层）
       两个 Sprint 均已完成；`phase3-experience-inventory.md` 里"lesson
       通过 Adapter 接入新 Experience"这一条尚未实现，留在
-      `MIGRATION_STATUS.md` 里作为待办。下一步按整体路线图推进
-      （Phase 4 或其他优先级更高的项），留待下一次推进。
+      `MIGRATION_STATUS.md` 里作为待办。
+- [x] Phase 3 达标后进入 **Phase 4（统一 State）**，按
+      `05-phase4-unified-state-sprint-plan.md` 划分的 Sprint 4-1
+      （StateManager 骨架）已完成：新增 `core/state_manager.py::StateManager`
+      （`get_state`/`update_state`/`snapshot()` 三个核心方法），`goal_mode/
+      runner.py::run()`/`_finish()` 唯一接入点把 `GoalAdapter.to_new(spec)`
+      转出的 `GoalState` 交给 `StateManager` 托管，之后每轮 CONTINUE 推进 /
+      终止时各 publish 一次此前定义了取值但从未真正使用过的
+      `GoalUpdated` 事件，`StateManager` 订阅该事件自动同步内部
+      `GoalState` 的 `round`/`status`，`runner.py` 不再自己另外持有一份
+      可变的 `GoalState` 引用。验收标准第 1、3 条（"GoalState 读写全部
+      经过 StateManager"、"`snapshot()` 可用"）已用新增测试
+      `tests/test_phase4_state_manager.py`（7 用例，含端到端跑一次
+      `GoalRunner.run()` 断言全局 `StateManager` 单例状态变为
+      `"done"`）验证；因新增的 `GoalUpdated` publish 会被
+      `EventLogStore` 落盘，`test_goal_mode_phase2_events.py`/
+      `test_phase2_event_log_and_cli.py` 两处对事件序列的精确断言同步
+      更新（有意的行为变化，非破坏）；回归测试（`test_goal_mode.py` 等
+      共 238 用例，233 通过，5 个既有失败与本次改动无关）+ 依赖图核对
+      （`core.state_manager` inbound=1/outbound=0，未触发止损阈值）均已
+      验证，详见 `05-phase4-unified-state-sprint-plan.md` 末尾"Sprint
+      4-1 执行记录"。验收标准第 2 条（`SelfState`/`WorldState`/
+      `CapabilityState`/`RuntimeState` 占位）对应 Sprint 4-2，留待下一次
+      推进。

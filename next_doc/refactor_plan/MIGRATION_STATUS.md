@@ -33,6 +33,8 @@
 | scripts/migrate_experience_jsonl_to_sqlite.py（新增，Sprint 3-1） | Phase 3 | 完全迁移 | 100%（一次性迁移脚本，跑完即弃，不接入正式代码路径） | 不适用 | 2026-09-26 | Phase 3 Sprint 3-1 执行者 |
 | core/experience_retrieval.py（新增，Sprint 3-2） | Phase 3 | 完全迁移 | 100%（`retrieve_similar_experiences()` 关键词重叠度检索 + `render_experiences_as_context()` 渲染，`goal_mode/runner.py::run()` 唯一接入点，默认关闭） | 不适用 | 2026-09-27 | Phase 3 Sprint 3-2 执行者 |
 | core/experience_patterns.py（新增，Sprint 3-2，Analyzer 雏形） | Phase 3 | 完全迁移 | 100%（`summarize_failures()` 聚合统计，仅供 Phase 9 Self Evolution 复用，暂未接入任何调用方） | 不适用 | 2026-09-27 | Phase 3 Sprint 3-2 执行者 |
+| core/state_manager.py（新增，Sprint 4-1） | Phase 4 | 部分迁移 | `goal_mode/runner.py::run()`/`_finish()` 唯一接入点已把 `GoalState` 的持有权交给 `StateManager`（不再自己保留可变引用），并通过新增的 `GoalUpdated` 事件驱动自动更新；`SelfState`/`WorldState`/`CapabilityState`/`RuntimeState` 占位与 `snapshot()` 的完整联调留给 Sprint 4-2 | 不适用（`StateManager` 是新领域概念本身，不是 Old↔New 转换 Adapter） | 2026-09-27 | Phase 4 Sprint 4-1 执行者 |
+| core/events.py（Sprint 4-1 补上 GoalUpdated 的首次真实 publish） | Phase 2/4 | 部分迁移 | `EVENT_KINDS` 里 Sprint 2-1 就预留的 `"GoalUpdated"` 取值，Sprint 4-1 起在 `goal_mode/runner.py` 每轮 CONTINUE 推进 / `_finish()` 终止时真正 publish，供 `core/state_manager.py` 订阅消费 | 不适用 | 2026-09-27 | Phase 4 Sprint 4-1 执行者 |
 
 > 以上为初始占位行，对应 `02`-`11` 各 Phase 文档里"现状盘点"提到的
 > 主要模块。执行过程中如发现遗漏模块，直接追加新行，不要删除已有行

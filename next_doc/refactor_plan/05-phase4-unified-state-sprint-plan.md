@@ -42,8 +42,72 @@ dataclass 占位，不实现内部逻辑——留给 Phase 5 之后按需填充�
 
 ## 完成标志
 
-- [ ] GoalState 的读写全部经过 `StateManager`，`goal_mode/runner.py`
-      里不再有旧的直接状态持有代码
+- [x] GoalState 的读写全部经过 `StateManager`，`goal_mode/runner.py`
+      里不再有旧的直接状态持有代码（Sprint 4-1 已完成，见下方执行记录）
 - [ ] 其余 4 类 State 已有结构占位，且在 `phase-mapping` 文档里标注了
-      "将在哪个 Phase 填充"
-- [ ] `snapshot()` 可用，为 Phase 9 的 evolution 验证做好准备
+      "将在哪个 Phase 填充"（Sprint 4-2，留待下一次推进）
+- [x] `snapshot()` 可用，为 Phase 9 的 evolution 验证做好准备
+      （Sprint 4-1 已提供骨架实现，Sprint 4-2 加入占位 State 后无需
+      改动 `snapshot()` 本身，见下方执行记录）
+
+## Sprint 4-1 执行记录
+
+新增 `core/state_manager.py::StateManager`：`get_state(kind)` /
+`update_state(kind, state)` 两个核心方法 + `snapshot()`（遍历内部
+`_states` dict 导出所有已托管 State 的字典快照）。Sprint 4-1 范围内
+只有 `"goal"` 这一个 kind 有真实托管逻辑（`SelfState`/`WorldState`/
+`CapabilityState`/`RuntimeState` 占位留给 Sprint 4-2）。
+
+`goal_mode/runner.py` 唯一接入点改造（与 Sprint 1/2/3 一贯的"只在
+`run()`/`_finish()` 一处接入，不改动主循环内部逻辑"模式一致）：
+
+1. `run()` 开始时，`GoalAdapter.to_new(spec)` 转出的 `GoalState` 不再
+   只是一个用完即弃、只用来打一条 trace 日志的局部变量——立即通过
+   `state_manager.update_state("goal", ...)` 交给 `StateManager` 托管
+   （本次 `run()` 里唯一一次手写 `update_state` 调用），随后的 trace
+   日志也改成从 `state_manager.get_state("goal")` 读回来打印，证明
+   "读"这一侧也走的是 `StateManager`，不是本地变量。
+2. 任务表里"事件驱动更新"一项：`EVENT_KINDS`（`core/events.py`）里
+   `Sprint 2-1` 就已经预留了 `"GoalUpdated"` 这个取值，但此前一直没有
+   任何 publish 调用真正用到它。Sprint 4-1 补上这个空缺——每轮
+   CONTINUE 真正推进（`self._round += 1`）时 publish 一次
+   `GoalUpdated(round=当前轮次, status="running")`；`_finish()` 终止时
+   再 publish 一次 `GoalUpdated(round=最终轮次, status=最终状态)`。
+   `StateManager.subscribe_to_bus()` 订阅这个 kind，收到后自动把内部
+   持有的 `GoalState.round`/`status`/`updated_at` 更新掉——`runner.py`
+   自己不再直接改一份 `GoalState` 的字段。
+3. 挂载订阅（`ensure_state_manager_subscribed()`）与 Sprint 2-2/3-1 的
+   `ensure_event_log_subscribed()`/`ensure_experience_recorder_subscribed()`
+   同款：按 `(bus 实例, manager 实例)` 去重，幂等，放在本次 `run()`
+   第一次 `publish(GoalUpdated)` 之前。
+
+**验收标准**核对：`goal_mode/runner.py` 里搜索不到任何"自己持有一份
+可变 `GoalState` 引用并直接改字段"的代码——`_core_goal_state` 现在
+只是 `state_manager.get_state("goal")` 的只读返回值，且只用于打印
+trace 日志，不参与任何判断分支。已用新增测试
+`tests/test_phase4_state_manager.py`（7 用例，覆盖：空状态读取、
+`update_state`/`get_state` 往返、`GoalUpdated` 事件驱动更新、未 seed
+时收到事件的容错、`snapshot()`、端到端跑一次 `GoalRunner.run()` 后
+`StateManager` 全局单例里的 `GoalState.status` 变为 `"done"`、幂等
+订阅）验证，全部通过。
+
+**回归测试**：新增的两处 `GoalUpdated` publish 会被 `EventLogStore`
+（订阅的是 `EVENT_KINDS` 全集，`"GoalUpdated"` 本就在这个常量元组里）
+落盘，因此因果链路上多了一环——`tests/test_goal_mode_phase2_events.py`
+与 `tests/test_phase2_event_log_and_cli.py` 两处对事件序列做了精确
+断言的测试同步更新为
+`[..., ActionCompleted, GoalUpdated, ExperienceCreated]`（原先是
+`[..., ActionCompleted, ExperienceCreated]`），这是有意的行为变化，
+不是意外破坏。相关回归测试（`test_goal_mode.py` / 两个 Phase 2 事件
+测试文件 / `test_phase3_experience_recorder.py` /
+`test_phase3_experience_retrieval_and_patterns.py` /
+`test_phase3_experience_retrieval_injection.py` / `test_core_events.py` /
+`test_core_event_bus.py` / `test_goal_tree_phase1~4.py` /
+`test_core_experience_store.py`）共 238 用例，233 通过，5 个既有失败
+（`test_build_from_history_*`，与本次改动无关的既有 fixture 问题，
+`README.md`/`MIGRATION_STATUS.md` 此前已多次确认）；依赖图核对
+（`scripts/dep_graph.py --module core.state_manager` inbound=1、
+outbound=0，未触发止损阈值）+ 未发现新增回归。
+
+Sprint 4-2（`SelfState`/`WorldState`/`CapabilityState`/`RuntimeState`
+占位 + 一致性快照的占位联调）留待下一次推进。

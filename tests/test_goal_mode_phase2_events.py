@@ -45,7 +45,13 @@ def test_goal_runner_done_on_first_round_publishes_closed_loop_events(monkeypatc
 
     received: list[Event] = []
     bus = get_event_bus()
-    for kind in ("GoalCreated", "ActionStarted", "ActionCompleted", "ActionFailed", "ExperienceCreated"):
+    # [Phase 4 Sprint 4-1] 新增订阅 "GoalUpdated"：`_finish()` 现在会在
+    # ActionCompleted 之后、ExperienceCreated 之前额外 publish 一个
+    # GoalUpdated（供 StateManager 同步最终状态），因果链路里多了这一环。
+    for kind in (
+        "GoalCreated", "ActionStarted", "ActionCompleted", "ActionFailed",
+        "GoalUpdated", "ExperienceCreated",
+    ):
         bus.subscribe(kind, received.append)
 
     runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
@@ -56,7 +62,10 @@ def test_goal_runner_done_on_first_round_publishes_closed_loop_events(monkeypatc
     assert result.rounds_used == 0
 
     kinds = [ev.kind for ev in received]
-    assert kinds == ["GoalCreated", "ActionStarted", "ActionCompleted", "ExperienceCreated"]
+    assert kinds == [
+        "GoalCreated", "ActionStarted", "ActionCompleted", "GoalUpdated",
+        "ExperienceCreated",
+    ]
     assert len(received) >= 4
 
     # 同一次 run() 产生的事件共享同一个 correlation_id。
@@ -65,11 +74,12 @@ def test_goal_runner_done_on_first_round_publishes_closed_loop_events(monkeypatc
     assert next(iter(correlation_ids)) is not None
 
     # causation_id 构成一条因果链：GoalCreated ← ActionStarted ←
-    # ActionCompleted ← ExperienceCreated。
-    goal_created, action_started, action_completed, experience_created = received
+    # ActionCompleted ← GoalUpdated ← ExperienceCreated。
+    goal_created, action_started, action_completed, goal_updated, experience_created = received
     assert action_started.causation_id == goal_created.id
     assert action_completed.causation_id == action_started.id
-    assert experience_created.causation_id == action_completed.id
+    assert goal_updated.causation_id == action_completed.id
+    assert experience_created.causation_id == goal_updated.id
 
 
 def test_goal_runner_action_exception_publishes_action_failed_and_reraises(monkeypatch, tmp_path):
