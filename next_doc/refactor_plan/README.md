@@ -191,3 +191,28 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       完成标志全部达成，`03-phase2-event-model-sprint-plan.md` 已同步
       勾选。Sprint 2-2 剩余任务（`mini_agent events trace` CLI 命令）
       留待下一次推进，详见该文档"Sprint 2-1 收尾核对记录"。
+- [x] Sprint 2-2（causation_id/correlation_id 打通 + `events trace` CLI
+      可视化）已完成，**Phase 2（统一 Event Model）三条完成标志全部
+      达成**：新增 `core/event_log_store.py::EventLogStore`（JSONL 落盘
+      + 按 `correlation_id` 检索）+ `ensure_event_log_subscribed()`
+      （幂等挂载订阅者，只订阅 `EVENT_KINDS` 里的几种 kind）、
+      `storage/paths.py::AgentPaths.workdir_event_log`
+      （`.agent/events.jsonl`）；`goal_mode/runner.py::run()` 唯一接入点
+      新增一行挂载调用，纯旁路，不改变控制流/返回值；新增 CLI
+      `cli/commands/events_cmd.py::run_events_cli`（`mini-agent events
+      trace <correlation_id>` / `events list`），接入方式与
+      `experience`/`projects` 等既有短路子命令完全一致。验收标准（"能用
+      `events trace` 命令完整重放...顺序一致"）已通过
+      `tests/test_phase2_event_log_and_cli.py` 5 个新增用例验证（含
+      跑一次真实 `GoalRunner.run()` 后通过 CLI 入口重放）；回归测试
+      155 passed / 5 failed（失败用例与 Sprint 2-1 已确认的
+      `test_build_from_history_*` 问题完全一致，非新增回归）；依赖图
+      核对（`core.event_log_store` inbound=2/outbound=0，未触发止损
+      阈值）+ pyflakes 均确认无新增问题。**关联链路**（causation_id/
+      correlation_id 共享）部分实际已在 Sprint 2-1 提前完成，本次只
+      补齐了"可视化"部分。详见
+      `03-phase2-event-model-sprint-plan.md` 末尾"Sprint 2-2 执行
+      记录"与 `MIGRATION_STATUS.md`。Phase 2 已达到验收标准，可进入
+      **Phase 3（Experience Layer 落地）**，按
+      `04-phase3-experience-layer-sprint-plan.md` 划分的 Sprint 继续
+      推进（下一次对话的任务）。

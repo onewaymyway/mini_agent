@@ -52,6 +52,59 @@
 **验收标准**：能用 `events trace` 命令完整重放 Sprint 2-1 里那次 Goal
 执行的事件序列，事件顺序与实际执行顺序一致。
 
+**止损条件**：如果为了让 CLI 能读到事件而不得不把落盘逻辑塞进
+`goal_mode/runner.py` 的主流程（而不是"挂一个旁路订阅者"），说明
+持久化正在侵入业务逻辑，应回退为纯订阅者模式，不修改 `run()`/`_finish()`
+原有的控制流和返回值。
+
+## Sprint 2-2 执行记录（2026-09-26）
+
+- **关联链路**部分（`causation_id`/`correlation_id` 打通）已在 Sprint
+  2-1 提前完成（见上方"Sprint 2-1 执行记录"），本次不再重复实现，
+  只补齐**可视化**部分。
+- 新增 `core/event_log_store.py::EventLogStore`（JSONL 落盘 + 按
+  `correlation_id` 检索，写法与 `core/experience_store.py` 一致）+
+  `ensure_event_log_subscribed()`（幂等地把 `EventLogStore` 挂到
+  `EventBus` 上，只订阅 `EVENT_KINDS` 里的几种 kind，不通配订阅）。
+- 新增 `storage/paths.py::AgentPaths.workdir_event_log`
+  （`<project_root>/.agent/events.jsonl`），命名和落盘方式对齐已有的
+  `workdir_experience_store`。
+- 接入点：`goal_mode/runner.py::run()` 里，在本方法第一次 `publish()`
+  （`GoalCreated`）之前新增一行
+  `_core_ensure_event_log_subscribed(_core_EventLogStore(path=self._paths.workdir_event_log))`，
+  只做"挂订阅"，不改变 `publish()` 本身的行为或 `run()` 的控制流/
+  返回值，止损条件未触发。
+- 新增 CLI：`cli/commands/events_cmd.py::run_events_cli`（`trace`/`list`
+  两个子命令），在 `cli/app.py::main()` 里按 `experience`/`projects`
+  等既有子命令完全一致的"短路"方式接入（`mini-agent events trace
+  <correlation_id>` / `mini-agent events list [--limit N]`），只读，
+  不提供写入子命令。
+- **验收标准**（"能用 `events trace` 命令完整重放...顺序一致"）已通过
+  `tests/test_phase2_event_log_and_cli.py::
+  test_goal_runner_run_persists_events_and_cli_trace_replays_them`
+  验证：跑一次真实 `GoalRunner.run()` 后，`.agent/events.jsonl` 里能
+  查到 `[GoalCreated, ActionStarted, ActionCompleted, ExperienceCreated]`
+  四个事件，时间戳单调不减，且通过 CLI 入口（不只是直接调
+  `EventLogStore`）成功重放（返回码 0）。另新增
+  `test_event_log_store_append_and_trace_order`（乱序写入、验证按
+  `at` 排序且只匹配对应 `correlation_id`）、
+  `test_ensure_event_log_subscribed_is_idempotent_per_bus_and_path`
+  （重复订阅不重复写）、两个 CLI 边界用例（项目从未跑过 Goal / 查无
+  匹配 `correlation_id`，均给出友好提示而非报错）。
+- 回归测试：`tests/test_goal_mode_phase2_events.py`（Sprint 2-1 既有
+  用例）+ `tests/test_goal_mode.py` + `tests/test_goal_mode_characterization.py`
+  + `tests/test_compact_autopilot_improvements.py` +
+  `tests/test_judge_verdict.py` 共 155 passed / 5 failed，失败用例与
+  Sprint 2-1 执行记录里确认过的同一批 `test_build_from_history_*`
+  （`detection_text` 参数问题）完全一致，非本次改动引入的新回归。
+- 依赖图核对：`python scripts/dep_graph.py --module core.event_log_store`
+  → inbound=2（`cli/commands/events_cmd.py`、`core/__init__.py`）、
+  outbound=0，未触发止损阈值。
+- Lint：`pyflakes` 核对本次新增/改动的 6 个文件，无新增问题（残留
+  警告均为改动前已存在、与本次改动无关的 unused import）。
+- `MIGRATION_STATUS.md` 已同步新增 `core/event_log_store.py`、
+  `cli/commands/events_cmd.py` 两行。
+
 ## 完成标志（对应原文 Phase 2 目标）
 
 - [x] `core/events.py` 中 Event 结构稳定，且已在 Goal 链路上验证过

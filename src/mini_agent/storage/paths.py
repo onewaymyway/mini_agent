@@ -17,6 +17,7 @@ storage/paths.py — 统一路径管理
     # Workdir 级
     paths.workdir_memory          # .agent/memory.jsonl
     paths.workdir_experience_store # .agent/experience_store.jsonl（core.Experience 存储，Sprint 2）
+    paths.workdir_event_log       # .agent/events.jsonl（core.Event 落盘，Phase 2 Sprint 2-2）
     paths.permissions             # .agent/permissions.json
     paths.sessions_dir            # .agent/sessions/
     paths.cache_dir               # .agent/cache/
@@ -228,6 +229,18 @@ class AgentPaths:
         `mini-agent experience search "<关键词>"` 检索。
         """
         return self.workdir_dir / "experience_store.jsonl"
+
+    @property
+    def workdir_event_log(self) -> Path:
+        """<project_root>/.agent/events.jsonl — Event 落盘记录
+
+        见 `next_doc/refactor_plan/03-phase2-event-model-sprint-plan.md`
+        Sprint 2-2：持久化 `mini_agent.core.events.Event`（`EVENT_KINDS`
+        里的几种），每行一条 JSON（append-only JSONL，与
+        `workdir_experience_store` 同样的落盘方式），供
+        `mini-agent events trace <correlation_id>` 按因果链路重放。
+        """
+        return self.workdir_dir / "events.jsonl"
 
     @property
     def workdir_prompts_dir(self) -> Path:

@@ -149,6 +149,16 @@ def main() -> int:
         project_root, rest = _extract_project_root(sys.argv[2:])
         return run_experience_cli(rest, project_root)
 
+    # ── events 子命令短路：`mini-agent events trace|list ...` ────────────────
+    # 对应 next_doc/refactor_plan/03-phase2-event-model-sprint-plan.md
+    # Sprint 2-2。与 experience 短路方式完全一致：不构造 Agent，只读
+    # `core/event_log_store.py` 的 JSONL 落盘（由 `goal_mode/runner.py::run()`
+    # 里挂载的 `ensure_event_log_subscribed()` 产出）。
+    if len(sys.argv) > 1 and sys.argv[1] == "events":
+        from mini_agent.cli.commands.events_cmd import run_events_cli
+        project_root, rest = _extract_project_root(sys.argv[2:])
+        return run_events_cli(rest, project_root)
+
     # ── 全局异常捕获：确保任何启动错误都能显示 ────────────────────────────────
     try:
         _main_inner()

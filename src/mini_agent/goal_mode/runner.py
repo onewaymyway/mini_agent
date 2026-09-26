@@ -53,8 +53,10 @@ from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal, Pr
 # 旧 `GoalState`（`.state` 模块，落盘用）撞名。
 from mini_agent.core import (
     Event as _core_Event,
+    EventLogStore as _core_EventLogStore,
     ExperienceStore as _core_ExperienceStore,
     GoalAdapter as _core_GoalAdapter,
+    ensure_event_log_subscribed as _core_ensure_event_log_subscribed,
     get_event_bus as _core_get_event_bus,
     goal_run_result_to_experience as _core_goal_run_result_to_experience,
 )
@@ -334,6 +336,17 @@ class GoalRunner:
     def run(self) -> GoalRunResult:
         self._pin_goal_context()
         self._save_state(status="running")
+
+        # [Phase 2 Sprint 2-2] 挂载 Event 落盘订阅者（幂等，见
+        # `core/event_log_store.py::ensure_event_log_subscribed()`），
+        # 让本次 run() 接下来 publish() 的事件都被写进
+        # `<project_root>/.agent/events.jsonl`，供事后 `mini-agent
+        # events trace <correlation_id>` 命令重放。必须放在本方法内
+        # 第一次 publish()（下面的 GoalCreated）之前，且只做"挂订阅"，
+        # 不改变 publish() 本身的行为或 run() 的控制流，仍是纯旁路。
+        _core_ensure_event_log_subscribed(
+            _core_EventLogStore(path=self._paths.workdir_event_log)
+        )
 
         # [Sprint 1 唯一接入点 · 前半段] Goal(old) → GoalAdapter → GoalState(core)
         # 只做转换 + trace 记录，不影响后续任何执行逻辑（转换结果不参与
