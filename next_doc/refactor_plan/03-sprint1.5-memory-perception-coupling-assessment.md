@@ -229,3 +229,59 @@ HistoryManager` 出现在某个方法体内部，紧跟着 `HistoryManager(cfg=c
 **`MIGRATION_STATUS.md` 是否已同步更新**：是，`history_manager.py`
 一行的耦合评估备注已更新为"inbound=2（原 12 里 10 个是死代码，已
 清理），未触发止损阈值，可评估 Adapter 接入点"。
+
+---
+
+## 七、history_manager.py Adapter 接入点执行记录（第二条迁移链正式启动，复盘）
+
+按"六"的结论（inbound=2，未触发止损阈值），直接参照 Self 迁移链
+（`core/self.py` + `core/self_adapter.py`）的模式启动 Adapter 接入点，
+不再需要额外的 facade 层。
+
+**产出**：
+- 新增 `core/history.py::HistorySnapshot`（最小 dataclass，只保留
+  `active_history_len`/`raw_history_len`/`has_pending_snapshot` 三个
+  跨子系统共享字段，不包含压缩策略、raw history 具体条目、extraction
+  调度状态等 `history_manager.py` 内部实现细节）+
+  `core/history_adapter.py::HistoryAdapter`
+  （`HistoryManager → HistorySnapshot` 单向转换；`to_old` 方向因无
+  调用方暂未实现，显式抛 `NotImplementedError` 并注明原因）。
+- **唯一接入点**：`agent/lifecycle.py::_init_components()` 里
+  `self._hist = HistoryManager(...)` 构造之后，做一次
+  `HistoryAdapter.to_new` 转换 + DEBUG trace 记录（`mini_agent.core.trace`
+  logger，与 Self/Goal 迁移链的 trace 约定一致），不改动
+  `history_manager.py` 内部逻辑。
+
+**验收标准对照**（参照 Self 迁移链的验收标准格式）：
+1. 有 trace 证据证明链路被执行——**已达成**，
+   `tests/test_core_history_adapter.py::test_lifecycle_history_hook_emits_trace_event`
+   用 `caplog` 断言。
+2. `HistoryAdapter`/`HistorySnapshot` 自身单测（正向转换字段正确、
+   反向转换显式 `NotImplementedError`）——**已达成**，
+   `tests/test_core_history_adapter.py` 共 3 个用例全部通过。
+3. 真实构造 Agent 的既有测试不受影响——**已达成**：
+   `tests/test_agent_startup_project_meta.py` +
+   `tests/test_global_knowledge_integration.py` 共 21 passed（与
+   Self 迁移链验证时一致）。
+4. 依赖图显示耦合度没有因为迁移而异常上升——**已达成**：
+   `scripts/dep_graph.py --module history_manager` 的 inbound 深度
+   依赖从"六"评估时的 2 变为 3（唯一新增的正是计划内的
+   `core/history_adapter.py`），远低于止损阈值 10+，且低于 Self
+   迁移链当前的 6。
+5. 与 history 相关的既有测试子集（`snapshot`/`compaction`/
+   `turn_loop`/`reflection`/`reminders`/`role_judge`/`llm_control`/
+   `profile`/`commit_guard`/`self_model`/`self_adapter`）——**已达成**：
+   325 passed，5 failed（`test_browser_core_session_manager.py` 里
+   与本次改动完全无关的浏览器 profile 用例，环境相关的既有失败，
+   非本次改动引入）。
+6. `scripts/lint_no_new_toplevel_concepts.py` 通过——**已达成**。
+
+**是否触发止损条件**：未触发。
+
+**`MIGRATION_STATUS.md` 是否已同步更新**：是，`history_manager.py`
+一行状态由"未开始（可评估 Adapter 接入点）"更新为"部分迁移"。
+
+**遗留/下一步**：`HistoryAdapter.to_old` 尚未实现（无调用方需要），
+处理方式与 `SelfAdapter.to_old` 一致；`perception/memory_store.py`
+（Memory 核心）仍按"三、迁移优先级建议"第 3 条暂缓，待项目所有者
+确认排期后再评估。

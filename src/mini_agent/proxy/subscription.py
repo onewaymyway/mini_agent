@@ -124,12 +124,34 @@ _PARSERS = {
 }
 
 
+def parse_ip_port(line: str) -> ProxyNode | None:
+    """解析纯ip:port格式的代理行，支持HTTP/SOCKS4/SOCKS5。"""
+    line = line.strip()
+    if not line or '://' in line:
+        return None
+    # 匹配 ip:port 或 host:port (允许IPv6 [::1]:port)
+    m = re.match(r'^(?:(?:\[([\da-fA-F:]+)\])|([\da-fA-F.\-]+)):(\d+)$', line)
+    if not m:
+        return None
+    if m.group(1):
+        server = m.group(1)  # IPv6
+    else:
+        server = m.group(2)
+    port = int(m.group(3))
+    if port < 1 or port > 65535:
+        return None
+    name = f"{server}:{port}"
+    # 默认推断为http，实际验证时按可用性决定
+    return ProxyNode(protocol="http", name=name, server=server, port=port, raw=line)
+
+
 def parse_node_uri(uri: str) -> ProxyNode | None:
     uri = uri.strip()
     for prefix, fn in _PARSERS.items():
         if uri.startswith(prefix):
             return fn(uri)
-    return None
+    # 尝试纯ip:port格式
+    return parse_ip_port(uri)
 
 
 def _json_to_proxy_node(item: dict) -> ProxyNode | None:

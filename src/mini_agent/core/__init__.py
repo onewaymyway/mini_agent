@@ -18,6 +18,8 @@ from .experience import Experience
 from .experience_store import ExperienceStore
 from .goal import GoalState
 from .goal_adapter import GoalAdapter, goal_run_result_to_experience
+from .history import HistorySnapshot
+from .history_adapter import HistoryAdapter
 from .self import SelfState
 from .self_adapter import SelfAdapter
 
@@ -29,6 +31,8 @@ __all__ = [
     "GoalState",
     "GoalAdapter",
     "goal_run_result_to_experience",
+    "HistorySnapshot",
+    "HistoryAdapter",
     "SelfState",
     "SelfAdapter",
 ]

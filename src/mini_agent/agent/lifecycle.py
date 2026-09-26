@@ -24,7 +24,11 @@ import mini_agent.ui.renderer as R
 # 与 `goal_mode/runner.py` 的 `_core_` 别名约定保持一致，避免误以为这是
 # `perception.self_model` 自己的符号。
 import logging as _self_logging
-from mini_agent.core import Event as _core_Event, SelfAdapter as _core_SelfAdapter
+from mini_agent.core import (
+    Event as _core_Event,
+    SelfAdapter as _core_SelfAdapter,
+    HistoryAdapter as _core_HistoryAdapter,
+)
 
 _core_self_logger = _self_logging.getLogger("mini_agent.core.trace")
 
@@ -280,6 +284,31 @@ class SessionLifecycleMixin:
         # HistoryManager：接管 _history 列表，并让 self._history 指向同一对象
         self._hist = HistoryManager(cfg=self.cfg, skill_loader=self.skill_loader)
         self._history = self._hist._history   # 共享同一列表对象，无需全量替换引用
+
+        # [history_manager 迁移链唯一接入点] HistoryManager(old) →
+        # HistoryAdapter → HistorySnapshot(core)：只做转换 + trace 记录，
+        # 不影响 self._hist 后续任何使用方式（转换结果不参与下面的逻辑，
+        # trace 日志就是"链路真的被执行过"的证据，与 Self 迁移链
+        # （AgentSelfModel → SelfAdapter）的做法一致）。
+        try:
+            _core_history_snapshot = _core_HistoryAdapter.to_new(self._hist)
+            _core_self_logger.debug(
+                "%s",
+                _core_Event(
+                    kind="history_manager.adapter.to_new",
+                    payload={
+                        "active_history_len": _core_history_snapshot.active_history_len,
+                        "raw_history_len": _core_history_snapshot.raw_history_len,
+                        "has_pending_snapshot": _core_history_snapshot.has_pending_snapshot,
+                    },
+                ).to_dict(),
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(
+                _mini_agent_exc,
+                where='mini_agent.agent.lifecycle.SessionLifecycleMixin._init_components.history_adapter',
+            )
 
         # [SYS-COMPACT-TRIGGERS] compact 触发器组合（token/轮次/工具调用计数/
         # 话题切换/冗余检测），各自独立开关，见 history/triggers.py

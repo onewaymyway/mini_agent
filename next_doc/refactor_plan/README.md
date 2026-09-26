@@ -100,4 +100,18 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       问题。Adapter 接入点尚未设计（本步骤只做了前置的耦合清理）。
       详见 `03-sprint1.5-memory-perception-coupling-assessment.md`
       末尾"六、history_manager.py facade 整理执行记录"。
-- [ ] `history_manager.py` 的 Adapter 接入点设计与实现：待项目所有者确认排期后启动。
+- [x] `history_manager.py` 的 Adapter 接入点设计与实现已完成：新增
+      `core/history.py::HistorySnapshot` + `core/history_adapter.py::HistoryAdapter`
+      （`HistoryManager → HistorySnapshot` 单向转换，模式与 Self 迁移链
+      一致），唯一接入点 `agent/lifecycle.py::_init_components()`，
+      trace 证据 + 新增单测（3 passed）+ 既有相关测试（325 passed，
+      5 个失败为环境相关的浏览器 profile 用例，与本次改动无关）+
+      依赖图核对（inbound 2→3，未触发止损阈值）均已验证，`to_old`
+      方向因无调用方暂未实现（显式标注，非静默空实现）。详见
+      `03-sprint1.5-memory-perception-coupling-assessment.md` 末尾
+      "七、history_manager.py Adapter 接入点执行记录"。
+- [ ] `perception/memory_store.py`（Memory 核心）迁移评估：按
+      `03-sprint1.5-memory-perception-coupling-assessment.md`
+      "三、迁移优先级建议"第 3 条，待项目所有者确认排期后启动
+      （建议在 history_manager.py 的 facade + Adapter 组合模式验证
+      完成之后再开始，本次已验证该模式可行）。
