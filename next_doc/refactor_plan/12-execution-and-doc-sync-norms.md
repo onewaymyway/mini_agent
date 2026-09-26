@@ -125,6 +125,18 @@
 4. **任何"占位/暂不实现"的设计，必须在文档里显式标注 TODO 和填充
    时机**（参考 `05-phase4-unified-state-sprint-plan.md` 里
    SelfState/WorldState 占位的写法），不允许留下没有说明的空实现。
+5. **评估迁移链耦合度时，`scripts/dep_graph.py --module` 要按"具体
+   要迁移的类/子模块"扫描，不要只扫顶层包**（
+   Sprint 1.5 教训，见
+   `03-sprint1.5-memory-perception-coupling-assessment.md` "一、
+   现状盘点"）：像 `perception/` 这种把多个不相关概念（Memory、
+   Self、GoalBacklog、system_events……）捆在一个顶级包里的模块，
+   直接扫整个包会把互不相关的耦合来源加在一起，得到一个夸大且
+   无法拆解行动的数字（例如"inbound 69"）；改成
+   `--module perception.memory_store`、`--module perception.self_model`
+   这样按子模块/类分别扫描，才能定位到真正需要处理的耦合点，
+   也才能对"哪个概念可以先迁移、哪个需要先做 facade"给出有区分度
+   的建议。
 
 ---
 

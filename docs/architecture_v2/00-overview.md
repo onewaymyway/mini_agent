@@ -104,6 +104,29 @@ wiki、growth_advisor、goal_tree……），但这些功能之间没有统一�
 **Phase 1（第一阶段）整体状态：判定标准 7 条全部达成，已闭环。** 下一步
 （是否启动 Sprint 1.5、以及后续 Phase 2/3 的排期）待项目所有者决策。
 
+- [x] **Sprint 1.5（Memory/Perception 耦合拆解评估，Sprint 3 复盘新增
+  任务）**：
+  - 关键发现：Sprint 3 用 `--module perception` 得到的"inbound 69"是
+    粗粒度数字，把 Memory/Self/GoalBacklog/system_events 等多个不相关
+    概念混在一个顶层包里统计；按子模块重新扫描后，三个概念的真实风险
+    差异很大——`perception/self_model.py`（Self）inbound=5，未超阈值；
+    `history_manager.py`（Experience 一部分）inbound=12，但 11/12
+    集中在 `agent/*` 一个集群；`perception/memory_store.py`（Memory
+    核心）inbound=33，跨 `agent/`/`evolution/`/`api/`/`goal_mode/`
+    至少 4 个子系统，是三者中风险最高的。
+  - 迁移优先级建议：Self 可直接参照 Goal 模式启动 → history_manager
+    需先在 `agent/` 层做 facade 收敛 → memory_store 暂缓，待前两者
+    验证 facade 模式后再评估。
+  - 方法论教训已回填进 `12-execution-and-doc-sync-norms.md` 第六节：
+    评估迁移链耦合度要按具体类/子模块扫描，不能只扫顶层包。
+  - `MIGRATION_STATUS.md` 已补充 `history_manager.py`、
+    `perception/self_model.py` 两行的耦合评估备注，并新增遗漏的
+    `perception/memory_store.py` 一行。
+  - 详见 `next_doc/refactor_plan/03-sprint1.5-memory-perception-coupling-assessment.md`。
+
+**下一步（待项目所有者确认排期）**：Self（`perception/self_model.py`）
+迁移 Sprint——本文档不代表已批准启动，只是给出了基于实测数据的建议。
+
 已知问题（Sprint 0 执行期间发现，不在本次改动范围内，如实记录）：
 `tests/test_goal_mode.py` 里 `test_build_from_history_*` 系列（5 个用例）
 在当前仓库状态下会失败——测试里的 lambda 参数签名与

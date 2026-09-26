@@ -74,4 +74,14 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       判定标准逐条核对，全部达成或在计划范围内。详见
       `02-executable-sprint-plan.md` 末尾"Sprint 3 执行记录"与
       `00-original-architecture-proposal.md` 末尾的映射表补充。
-- [ ] Sprint 1.5（Memory/Perception 耦合拆解评估，Sprint 3 复盘新增）：待开始，需项目所有者确认是否采纳。
+- [x] Sprint 1.5（Memory/Perception 耦合拆解评估，Sprint 3 复盘新增）已
+      完成：按子模块重新扫描（不再只扫整个 `perception/` 顶层包），发现
+      `perception/self_model.py`（Self，inbound=5，未超阈值）、
+      `history_manager.py`（Experience 一部分，inbound=12 但 11 个集中在
+      `agent/*`）、`perception/memory_store.py`（Memory 核心，
+      inbound=33，跨 4+ 子系统）三者风险程度实际差异很大，给出了有区分度
+      的迁移优先级建议（Self 可直接启动 → history_manager 先做
+      facade → memory_store 暂缓）。方法论教训（按子模块而非顶层包扫描）
+      已回填进 `12-execution-and-doc-sync-norms.md` 第六节。详见
+      `03-sprint1.5-memory-perception-coupling-assessment.md`。
+- [ ] Self（`perception/self_model.py`）迁移 Sprint：待项目所有者确认排期后启动。
