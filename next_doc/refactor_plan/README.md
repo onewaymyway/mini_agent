@@ -51,4 +51,7 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
 - [x] 全部 Phase（0-10）已产出可执行 Sprint 计划
 - [x] 执行规范与文档同步流程已产出（`12-execution-and-doc-sync-norms.md`）
 - [x] `MIGRATION_STATUS.md` 初始模板已建立
-- [ ] Sprint 0 尚未开始执行
+- [x] Sprint 0（地基与安全网）已完成，详见
+      `02-executable-sprint-plan.md` 末尾的"Sprint 0 执行记录"
+      与 `docs/architecture_v2/00-overview.md`
+- [ ] Sprint 1（Domain Model + Goal 试验）尚未开始

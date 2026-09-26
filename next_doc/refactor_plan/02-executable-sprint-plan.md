@@ -119,3 +119,58 @@ Model），届时应参照本文档的格式，为 Memory / Self 单独产出一
 | `00-original-architecture-proposal.md` | 原始重构设计文档（用户上传） |
 | `01-evaluation-and-gaps.md` | 对原方案的评估：合理性判断 + 结构性缺口 + 额外改进方向 |
 | `02-executable-sprint-plan.md` | 本文档：把第一阶段拆成 4 个可执行 Sprint |
+
+---
+
+## Sprint 0 执行记录（复盘，按 `12-execution-and-doc-sync-norms.md` 第五节最低要求）
+
+**验收标准逐条对照**（Sprint 0 表格里的四项任务）：
+
+1. 依赖关系扫描脚本 `scripts/dep_graph.py`（AST 静态解析，未使用
+   `grimp`——当前环境该三方包不可用，改用标准库 `ast` 实现同等效果）。
+   已实测输出 `goal_mode` 的 inbound/outbound 清单，能明确列出"谁
+   import 了 goal_mode"、"goal_mode 又 import 了谁"，达成验收标准。
+2. 冻结新增一级概念：新增 `scripts/lint_no_new_toplevel_concepts.py` +
+   `CONTRIBUTING.md` 规则说明。**与原验收标准有一处偏差**：原文写
+   "CI 能拦截违规 PR"，但当前仓库没有任何 CI 配置文件（`.github/workflows`
+   等均不存在），因此暂时只能保证"本地/PR 评审时手动运行能正确拦截"
+   （已用单元测试 `tests/test_lint_no_new_toplevel_concepts.py` 验证脚本
+   本身逻辑正确、退出码符合 CI 集成的要求），尚未真正接入 CI 自动拦截。
+   见下方"影响范围"。
+3. 特征测试：新增 `tests/test_goal_mode_characterization.py`，覆盖
+   `CoarseStepExecutor` 全部分支 + `runner.py` 中 `render_replan_proposal`
+   / `_compute_progress_score` / `_record_dead_end` / `_render_dead_ends_block`
+   / `_extract_replan_proposal` / `_build_goal_aware_compact_hint` 六个
+   纯函数/轻状态方法的输入输出快照；加上已有的 `tests/test_goal_mode.py`
+   （92 个用例，覆盖 GoalRunner 主循环 DONE/CONTINUE/NEED_COMPACT/stuck/
+   max_rounds 等主要分支），两者合计构成"迁移前后行为一致"的安全网。
+   未追求 100% 覆盖（符合验收标准"覆盖主要分支即可"）。
+4. 总纲文档：新增 `docs/architecture_v2/00-overview.md`。
+
+**是否触发止损条件**：未触发。`scripts/dep_graph.py` 对 `goal_mode` 的
+实测结果显示 inbound 深度依赖（import 具体符号/类）的文件数为 5，
+远低于止损阈值（10+），Goal 仍是合适的第一条迁移链，可以按计划进入
+Sprint 1。
+
+**`MIGRATION_STATUS.md` 是否已同步更新**：Sprint 0 本身不涉及任何模块的
+实际迁移（`MIGRATION_STATUS.md` 记录的是"迁移完成度"，Sprint 0 只是
+建立安全网），因此该文件保持初始占位状态不变，符合预期，不需要更新。
+
+**下一个 Sprint（Sprint 1）开始前需要注意**：
+- Sprint 1 的"验证特征测试"任务依赖本次新增的两个测试文件持续通过，
+  改动 `goal_mode/` 时先跑 `pytest tests/test_goal_mode.py
+  tests/test_goal_mode_characterization.py`。
+- 前置条件补充：执行 Sprint 0 时发现仓库现有测试里有 5 个既有失败用例
+  （`tests/test_goal_mode.py` 的 `test_build_from_history_*` 系列，
+  `GoalSpecBuilder._run_builder` 相关 lambda 签名与 `spec.py` 实际调用
+  参数 `detection_text` 不匹配）与本次改动无关，是 Sprint 0 开始前就
+  存在的问题；Sprint 1 统计"现有 398 个测试中与 goal_mode 相关的部分
+  全部通过"时，应把这 5 个已知失败排除在外单独跟踪，不要误判为 Sprint 1
+  引入的回归。
+
+**影响范围**：上述"CI 未真正接入"的偏差不影响 Sprint 1-3 的前置条件
+（Sprint 1 不依赖 CI 自动拦截才能开始），但建议在仓库后续接入 CI 时
+（不属于本次架构重构范围，是否/何时接入 CI 由项目所有者决定）把
+`python scripts/lint_no_new_toplevel_concepts.py` 和
+`pytest tests/test_goal_mode.py tests/test_goal_mode_characterization.py`
+加入流水线。
