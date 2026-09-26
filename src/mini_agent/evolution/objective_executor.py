@@ -461,6 +461,46 @@ class ObjectiveExecutor:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor')
             pass
 
+    def reconcile_orphaned_executions(self) -> list[str]:
+        """[goal_cycle_orphan_execution_recovery_plan.md 2.1] daemon 冷启动
+        自愈：load() 刚把磁盘记录恢复进内存时，任何仍处于非终态
+        （running/paused_for_fairness）的执行记录都只可能来自"上次进程
+        退出前没有正常收尾"——正常收尾的记录早就被转成终态，不会以这个
+        状态落盘等待下次加载。这一刻本进程还没有跑过任何一个 turn，
+        不需要依赖可选的 is_active_fn（它此刻必然返回 False）就能下判断，
+        因此对默认的共享队列部署形态同样生效，不像看板展示用的 is_stale
+        那样依赖 is_active_fn 是否被接线。
+
+        把这些孤儿记录标记为 failed 并通过既有的 _sync_goal_status()
+        路径把对应 Objective 的状态一并置为 failed，让后续
+        reap_finished_cycles()/_notify_cycle_failed() 按正常终态收尾流程
+        处理（计入 cycle_count、发出通知），而不是让它们无声地永久阻塞
+        `_goal_has_active_cycle()` 的判断。
+
+        只处理本方法自己识别出的记录，不修改 abandoned/paused/
+        skip_next_cycle 等用户主动意图状态。返回被回收的 execution_id
+        列表，调用方可用于日志/测试断言，忽略也不影响行为。
+        """
+        recovered: list[str] = []
+        for ex in list(self._executions.values()):
+            if ex.status not in ("running", "paused_for_fairness"):
+                continue
+            ex.status = "failed"
+            ex.progress_notes = (
+                "daemon 重启后发现的孤儿执行记录，判定为异常中断，已自动回收"
+            )
+            if not ex.finished_at:
+                ex.finished_at = time.time()
+            self._sync_goal_status(ex.objective_id, "failed")
+            recovered.append(ex.execution_id)
+        if recovered:
+            try:
+                self.save()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor.reconcile_orphaned_executions')
+        return recovered
+
     def save(self) -> None:
         active = [
             ex for ex in self._executions.values()

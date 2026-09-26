@@ -1876,6 +1876,12 @@ class HttpServer:
                 cfg=cfg,
             )
             objective_executor.load()
+            # [goal_cycle_orphan_execution_recovery_plan.md 2.1] 冷启动一次性
+            # 回收上次进程异常退出遗留的孤儿执行记录（running/
+            # paused_for_fairness 但支撑它的进程早已消失），避免其永久
+            # 阻塞 `_goal_has_active_cycle()` 导致对应 Goal 看似 overdue
+            # 却再也不会真正触发。
+            objective_executor.reconcile_orphaned_executions()
 
             # [goal_execution_scheduling_global_cap_bugfix.md] 双向接线跨
             # 通道运行数回调，供 `scheduler.max_total_concurrent_tasks`

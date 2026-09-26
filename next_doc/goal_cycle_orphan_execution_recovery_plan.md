@@ -1,9 +1,22 @@
 # 周期性 Goal 因孤儿执行记录永久停摆 —— 自愈与告警改进方案
 
-> 状态：**设计中，待实施确认**。
+> 状态：**2.1（核心：孤儿执行记录自愈）已实施完成；2.2（连续跳过告警
+> 改为重复提醒）待实施**。
 > 触发背景：用户反馈一个已经正常跑了 172 轮的 recurring Goal，看板显示
 > "下次触发：now / overdue"，但实际已经连续很多天没有真正触发过，也没有
 > 任何持续的告警提醒用户。
+>
+> **实施记录（2.1）**：`ObjectiveExecutor` 新增
+> `reconcile_orphaned_executions()`，在 `load()` 之后由
+> `api/server.py` 紧接着调用一次；把冷启动时仍处于
+> `running`/`paused_for_fairness` 的记录标记为 `failed`（复用
+> `_sync_goal_status()` 同步对应 Objective 终态），不依赖可选的
+> `is_active_fn`，默认共享队列部署形态同样生效。新增测试
+> `tests/test_objective_executor_orphan_reconcile.py`（6 用例全过），
+> 与既有 `test_objective_executor_*`/`test_goal_mode.py` 回归测试
+> 一并跑过无回归（`test_goal_mode.py` 中 6 个跟本方案无关的用例因本地
+> 环境未装 `anthropic` SDK 失败，属既有环境问题，非本次改动引入）。
+> 已更新 `docs/goal-cron-binding-guide.md` §3。
 
 ## 0. 结论先行
 

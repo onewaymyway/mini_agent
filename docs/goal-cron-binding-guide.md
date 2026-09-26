@@ -100,6 +100,19 @@ progress_notes）区分开。
 3. **上一轮不能还在跑**。如果这一轮的子 Objective 还处于执行中，不会叠加开第二轮，
    要等上一轮进入终态才会开始下一轮——即便到了下一次 schedule 触发点也会先跳过。
 
+   > **孤儿执行记录自愈**（见 [next_doc/goal_cycle_orphan_execution_recovery_plan.md](../next_doc/goal_cycle_orphan_execution_recovery_plan.md)）：
+   > daemon 崩溃/重启会在磁盘上留下 `status="running"` 但背后进程早已
+   > 消失的"孤儿"执行记录，若不处理会让第 3 条判断永远为真——该 Goal
+   > 看板上一直显示"下次触发：now / overdue"，`cycle_count` 却再也不
+   > 增长，且系统不会自己恢复。现在 daemon 每次冷启动、
+   > `ObjectiveExecutor.load()` 刚把磁盘记录恢复进内存后，会立即调用
+   > `reconcile_orphaned_executions()` 做一次性回收：把仍处于
+   > `running`/`paused_for_fairness` 的记录标记为 `failed`（`progress_notes`
+   > 注明"daemon 重启后发现的孤儿执行记录"）并同步对应 Objective 状态，
+   > 让第 3 条判断恢复正常、下一次 tick 能重新触发，不需要人工介入。
+   > 这个回收只在进程冷启动时跑一次，不影响用户主动 `pause`/`abandon`/
+   > `skip_next_cycle` 造成的跳过。
+
 ## 4. 数据结构变化（供二次开发参考）
 
 `GoalNode`（`perception/goal_backlog.py`）新增字段：
