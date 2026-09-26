@@ -22,7 +22,7 @@ from mini_agent.perception.project_scanner import ProjectScanner
 from mini_agent.perception.file_watcher import FileWatcher
 from mini_agent.perception.tool_cache import ToolResultCache
 from mini_agent.perception.memory_base import MemoryBackend
-from mini_agent.perception.memory_store import MemoryStore, MemoryEntry
+from mini_agent.perception.memory_store import MemoryEntry  # [dead-code cleanup] MemoryStore 未被本文件使用，已删除
 from mini_agent.perception.memory_factory import create_memory_backend
 from mini_agent.context_builder import ContextBuilder
 from mini_agent.tool_executor import ToolExecutor

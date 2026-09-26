@@ -54,7 +54,10 @@ def _rule_based_merge(group_entries: list) -> "MemoryEntry":
     """无 llm_call 时的降级路径：取聚类里 occurrence_count 最高的一条作为
     代表，其余条目的 occurrence_count 累加到它身上，不生成新的抽象摘要文本，
     只做"多条计数合一"，仍然优于纯粹丢弃。"""
-    from mini_agent.perception.memory_store import MemoryEntry
+    # [dead-code cleanup] 原 "from mini_agent.perception.memory_store import
+    # MemoryEntry" 未被本函数使用（返回类型注解是字符串前向引用，由模块
+    # 顶部第 29 行的导入满足），已删除（见
+    # next_doc/refactor_plan/03-sprint1.5-memory-perception-coupling-assessment.md 八）
     import copy
 
     representative = max(group_entries, key=lambda e: e.occurrence_count)

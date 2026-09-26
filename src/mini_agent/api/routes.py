@@ -10457,7 +10457,11 @@ async def get_growth_summary(request: Request, refresh_diagnostics: bool = False
     try:
         paths = _get_paths_for_request(request)
         from mini_agent.evolution import growth_advisor as ga
-        from mini_agent.perception.memory_store import MemoryStore
+        # [dead-code cleanup] 原 "from mini_agent.perception.memory_store
+        # import MemoryStore" 未被本函数使用（下方已改用
+        # memory_factory.build_default_memory_store()，MemoryStore 直接
+        # 构造是被替换掉的旧写法），已删除（见
+        # next_doc/refactor_plan/03-sprint1.5-memory-perception-coupling-assessment.md 八）
         from mini_agent.profile import UserProfileManager
 
         backlog = ga.GrowthBacklog(paths)

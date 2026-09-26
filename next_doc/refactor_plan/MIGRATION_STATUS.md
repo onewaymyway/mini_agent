@@ -17,7 +17,7 @@
 | orchestrator/ | Phase 6 | 未开始 | 0% | 否 | - | - |
 | evolution/（67 个模块，逐步细分） | Phase 9 | 未开始 | 0% | 否 | - | - |
 | perception/self_model.py | Phase 4 | 部分迁移 | 未知，待补充（`agent/lifecycle.py::_init_components()` 唯一接入点已走新链路做转换+trace，`AgentSelfModelBuilder`/`AgentSelfModel` 内部逻辑未改动） | 否（`SelfAdapter.to_old` 尚未实现，无实际调用方，见 `03-sprint1.5-memory-perception-coupling-assessment.md` "五、Self 迁移链执行记录"） | 2026-09-26 | Self 迁移链执行者 |
-| perception/memory_store.py（原表遗漏，Sprint 1.5 补充） | Phase 3 | 未开始 | 0%（Sprint 1.5 耦合评估：inbound=33，其中 21 个跨 `agent/`/`evolution/`/`api/`/`goal_mode/` 等至少 4 个子系统，耦合面最广，建议暂缓，等 history_manager.py 的 facade 经验积累后再评估，见 `03-sprint1.5-memory-perception-coupling-assessment.md`） | 否 | 2026-09-26 | Sprint 1.5 执行者 |
+| perception/memory_store.py（原表遗漏，Sprint 1.5 补充） | Phase 3 | 未开始 | 0%（死代码清理已完成：inbound=24（原 33 里 9 个是死代码，已清理），仍超止损阈值 10+，调用方跨 `agent/`（3 个真实使用）/`evolution/`/`api/`/`goal_mode/`/根目录模块等至少 5 个子系统，维持"暂缓迁移，需分层加 facade"的原判断，未做 Adapter 转换本身，故状态仍为"未开始"，见 `03-sprint1.5-memory-perception-coupling-assessment.md` "八、perception/memory_store.py 死代码清理执行记录"） | 否 | 2026-09-26 | memory_store 死代码清理执行者 |
 | Daemon / AutonomousLoop / Cron / UnifiedTaskScheduler / ObjectiveExecutor / ResourceArbiter | Phase 8 | 未开始 | 0% | 否 | - | - |
 
 > 以上为初始占位行，对应 `02`-`11` 各 Phase 文档里"现状盘点"提到的

@@ -22,7 +22,7 @@ from mini_agent.perception.project_scanner import ProjectScanner
 from mini_agent.perception.file_watcher import FileWatcher
 from mini_agent.perception.tool_cache import ToolResultCache
 from mini_agent.perception.memory_base import MemoryBackend
-from mini_agent.perception.memory_store import MemoryStore, MemoryEntry
+# [dead-code cleanup] 原 "from mini_agent.perception.memory_store import MemoryStore, MemoryEntry" 未被本文件使用，已删除（见 next_doc/refactor_plan/03-sprint1.5-memory-perception-coupling-assessment.md 八）
 from mini_agent.perception.memory_factory import create_memory_backend
 from mini_agent.context_builder import ContextBuilder
 from mini_agent.tool_executor import ToolExecutor

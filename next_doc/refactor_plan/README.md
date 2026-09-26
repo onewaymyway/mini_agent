@@ -110,8 +110,18 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       方向因无调用方暂未实现（显式标注，非静默空实现）。详见
       `03-sprint1.5-memory-perception-coupling-assessment.md` 末尾
       "七、history_manager.py Adapter 接入点执行记录"。
-- [ ] `perception/memory_store.py`（Memory 核心）迁移评估：按
+- [x] `perception/memory_store.py` 死代码清理已完成：复查同一批
+      `agent/*` mixin 文件后发现与 `history_manager.py` 同款问题
+      （公共导入模板复制导致的死代码），清理 14 处死代码 import 后
+      inbound 从 33 降到 24，但**仍超止损阈值**，与
+      `history_manager.py`（清理后跌破阈值）结论不同——真实调用方
+      跨越至少 5 个子系统，原"暂缓迁移，需分层加 facade"的判断
+      未被推翻。回归测试（407 passed，6 failed 均为既有环境/历史
+      失败，非新增回归）+ lint 均确认无新增问题。详见
       `03-sprint1.5-memory-perception-coupling-assessment.md`
-      "三、迁移优先级建议"第 3 条，待项目所有者确认排期后启动
-      （建议在 history_manager.py 的 facade + Adapter 组合模式验证
-      完成之后再开始，本次已验证该模式可行）。
+      末尾"八、perception/memory_store.py 死代码清理执行记录"。
+- [ ] `perception/memory_store.py` 的分层 facade 设计与实现：
+      待项目所有者确认排期后启动（工作量和风险是三者中最大的，
+      建议按"三、迁移优先级建议"第 3 条的顺序——先
+      `evolution/` 内部收敛、再 `agent/` 内部收敛、`api/routes.py`
+      等零散调用方逐个单独处理）。

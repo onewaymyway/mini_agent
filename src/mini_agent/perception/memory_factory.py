@@ -244,8 +244,9 @@ def merge_search(
     - 合并后按分数排序（project 分数乘以 1.2 倍，优先展示项目相关记忆）
     - 返回最终 top-k
     """
-    from mini_agent.perception.memory_store import MemoryStore
-
+    # [dead-code cleanup] 原 "from mini_agent.perception.memory_store import
+    # MemoryStore" 未被本函数使用，已删除（见
+    # next_doc/refactor_plan/03-sprint1.5-memory-perception-coupling-assessment.md 八）
     results = []
 
     # 项目记忆（分数 × 1.2 以体现相关性优先）

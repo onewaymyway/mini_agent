@@ -285,3 +285,90 @@ HistoryManager` 出现在某个方法体内部，紧跟着 `HistoryManager(cfg=c
 处理方式与 `SelfAdapter.to_old` 一致；`perception/memory_store.py`
 （Memory 核心）仍按"三、迁移优先级建议"第 3 条暂缓，待项目所有者
 确认排期后再评估。
+
+---
+
+## 八、perception/memory_store.py 死代码清理执行记录（Memory 迁移评估的前置步骤）
+
+按"三、迁移优先级建议"第 3 条，`memory_store.py` 暂缓迁移，在
+`history_manager.py` 的 facade 经验（"六"）积累之后先评估是否有同类
+死代码噪音。用 `grep` + `pyflakes` 交叉验证复查"一、现状盘点"表格里
+`memory_store.py` 的 33 个 inbound 文件，发现**确实存在同一类问题**，
+但规模和结论与 `history_manager.py` 不同：
+
+**关键发现**：
+1. `history_manager.py` inbound 表格里那 11 个 `agent/*` 文件
+   （`_helpers.py`/`compaction.py`/`core.py`/`lifecycle.py`/
+   `llm_control.py`/`profile.py`/`reflection.py`/
+   `reminders_correction.py`/`role_judge.py`/`snapshot.py`/
+   `turn_loop.py`）同样都 import 了
+   `from mini_agent.perception.memory_store import MemoryStore, MemoryEntry`
+   ——这印证了"六"里的推测："agent/ 这批 mixin 文件大概率是从同一份
+   公共导入模板复制出来的"。`pyflakes` 逐一确认：**`MemoryStore` 在
+   全部 11 个文件里都是未使用的死代码**；`MemoryEntry` 在其中 8 个
+   文件（`_helpers.py`/`compaction.py`/`core.py`/`lifecycle.py`/
+   `llm_control.py`/`role_judge.py`/`snapshot.py`/`turn_loop.py`）
+   也是死代码，但在另外 3 个文件（`profile.py`/`reflection.py`/
+   `reminders_correction.py`）里被真实用来构造 `MemoryEntry(...)`，
+   不能整体删除，只能删掉 `MemoryStore` 这一半。
+2. 另外发现 3 处分散的、非 `agent/*` 集群的死代码局部 import：
+   `perception/memory_factory.py::merge_search()`（`MemoryStore`
+   未使用）、`evolution/memory_consolidation.py::_rule_based_merge()`
+   （`MemoryEntry` 未使用，模块顶部第 29 行已有同名导入满足字符串
+   前向引用注解）、`api/routes.py` 的 growth 诊断路由（`MemoryStore`
+   未使用，注释显示是历史遗留——该处后来改用
+   `memory_factory.build_default_memory_store()`，直接构造
+   `MemoryStore` 的旧写法被替换后导入忘记删除）。
+
+**处理方式**：与"六"一致，直接删除死代码 import，不引入 facade 层：
+11 个 `agent/*` 文件里全部删掉 `MemoryStore`，其中 8 个连
+`MemoryEntry` 一并删掉（保留 3 个真实使用的）；另外 3 处局部死代码
+import 直接删除并加注释说明。
+
+**验证**：
+- `pyflakes` 复查确认改动的 14 个文件（11 个 `agent/*` + 3 个零散
+  文件）均不再报 `MemoryStore`/`MemoryEntry` 相关的 unused-import
+  警告，`py_compile` 全部通过。
+- `scripts/dep_graph.py --module perception.memory_store` 复扫：
+  inbound 深度依赖从 **33 降到 24**（11 个 `agent/*` 文件里的 8 个
+  完全死代码文件被移出 inbound 列表，`api/routes.py` 的死代码点也
+  被移出；`profile.py`/`reflection.py`/`reminders_correction.py`
+  因为真实使用 `MemoryEntry` 继续留在 inbound 里）。
+- 回归测试：与 memory 相关的关键字测试子集
+  （`snapshot`/`compaction`/`turn_loop`/`reflection`/`reminders`/
+  `role_judge`/`llm_control`/`profile`/`commit_guard`/`self_model`/
+  `self_adapter`/`history_adapter`/`core_self`/`memory`，407 passed，
+  6 failed）无新增回归——6 个失败里 5 个是
+  `test_browser_core_session_manager.py` 里与本次改动完全无关的
+  浏览器 profile 用例（同"七"记录的既有环境失败），第 6 个
+  `test_evolution_cli.py::test_revert_memory_failure_does_not_raise`
+  经核对**在未做任何本次改动的原始代码上跑同一个测试同样失败**
+  （对照 `/tmp/orig` 下的原始 zip 解包结果复现），是与本次改动
+  无关的既有失败，不是新增回归。
+- `scripts/lint_no_new_toplevel_concepts.py` 通过。
+
+**结论（对"三、迁移优先级建议"第 3 条的更新）**：清理死代码后，
+`memory_store.py` 真实 inbound 深度依赖从 33 降到 24，**仍然远超
+止损阈值 10+**，且真实调用方依旧跨越 `agent/*`（3 个真实使用）、
+`perception/*` 内部、`evolution/*`、`api/routes.py`、
+`context_builder.py`、`goal_mode/runner.py`、根目录 `profile.py`
+至少 5 个子系统——"死代码清理"这一步能做的清理已经做完（不像
+`history_manager.py` 那样清理后就跌破阈值），原判断"暂缓迁移，
+需要分层加 facade 而非直接 Adapter 接入"依然成立，**没有被推翻**。
+这与"六"里 `history_manager.py` 的结果不同：同一类死代码问题，
+在不同模块上可能得出"清理后风险消除"或"清理后风险仍然存在，只是
+量级降低"两种不同结论，不能假设同一手法一定能让所有模块跌破阈值。
+
+**是否触发止损条件**：未触发（清理本身是死代码删除，无新增代码
+风险；`pyflakes` + 回归测试双重验证，删除前后行为完全一致）。
+
+**`MIGRATION_STATUS.md` 是否已同步更新**：是，
+`perception/memory_store.py` 一行的耦合评估备注已更新为
+"inbound=24（原 33 里 9 个是死代码，已清理），仍超止损阈值，
+维持'暂缓迁移，需分层加 facade'的原判断"。
+
+**遗留/下一步**：`perception/memory_store.py` 的分层 facade
+设计（先 `evolution/` 内部收敛、再 `agent/` 内部收敛、
+`api/routes.py` 等零散调用方逐个单独处理）**不在本次清理范围内**，
+工作量和风险明显大于死代码清理本身，需要项目所有者单独确认排期
+后再启动，参照"三、迁移优先级建议"第 3 条的分层顺序建议。
