@@ -272,7 +272,7 @@ def backfill_cron_run(
     ):
         return None
 
-    from mini_agent.perception.memory_store import MemoryEntry
+    from mini_agent.evolution.memory_types import MemoryEntry
     import re as _re2
 
     tags = list({w.lower() for w in _re2.findall(r"[a-zA-Z一-鿿]{3,}", summary)})[:8]
@@ -317,7 +317,7 @@ def backfill_incomplete_cron_run(
     if not text:
         return None
 
-    from mini_agent.perception.memory_store import MemoryEntry
+    from mini_agent.evolution.memory_types import MemoryEntry
 
     summary = f"[cron:{job_id}] 本轮运行因 {final_status} 未正常完成，最后进展：{text[:200]}"
     entry = MemoryEntry(
@@ -332,7 +332,7 @@ def backfill_incomplete_cron_run(
 
 
 def _build_memory_entry(session_id: str, summary: str, user_turns: list[str], model: str) -> "MemoryEntry":
-    from mini_agent.perception.memory_store import MemoryEntry
+    from mini_agent.evolution.memory_types import MemoryEntry
 
     tags = list({
         w.lower() for w in _re.findall(r"[a-zA-Z一-鿿]{3,}", summary)

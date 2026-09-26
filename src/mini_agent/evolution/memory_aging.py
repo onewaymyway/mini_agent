@@ -31,7 +31,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mini_agent.perception.memory_store import MemoryEntry
+    from mini_agent.evolution.memory_types import MemoryEntry
 
 # 默认半衰期（天）——与 memory_store.py 原有的全局默认值保持一致，
 # 既是 summary 型条目的半衰期，也是未识别 source 时的兜底值。

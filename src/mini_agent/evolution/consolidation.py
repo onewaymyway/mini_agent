@@ -444,7 +444,7 @@ def _infer_domain(text: str) -> str:
 def _write_capability_map_to_memory(memory_backend, entries: list[CapabilityMapEntry]) -> None:
     """把能力地图写入 memory.jsonl（entry_type="capability_map"）。"""
     try:
-        from mini_agent.perception.memory_store import MemoryEntry
+        from mini_agent.evolution.memory_types import MemoryEntry
 
         key_outcomes = []
         for e in sorted(entries, key=lambda x: -x.confidence):

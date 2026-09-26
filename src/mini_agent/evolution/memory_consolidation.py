@@ -26,7 +26,7 @@ from __future__ import annotations
 from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mini_agent.perception.memory_store import MemoryEntry
+    from mini_agent.evolution.memory_types import MemoryEntry
 
 MIN_CONSOLIDATE_GROUP_SIZE = 3   # 至少3条才归纳，避免小样本过度抽象（可被 min_group_size 参数覆盖）
 CONSOLIDATE_TRIGGER_RATIO = 0.9  # 预留：淘汰候选达到 max_entries 的这个比例时才触发归纳扫描
@@ -77,7 +77,7 @@ def _rule_based_merge(group_entries: list) -> "MemoryEntry":
 
 def _llm_based_merge(group_entries: list, llm_call: Callable[[str], str]) -> Optional["MemoryEntry"]:
     """有 llm_call 时：生成一条抽象化摘要，写成新的 MemoryEntry。"""
-    from mini_agent.perception.memory_store import MemoryEntry
+    from mini_agent.evolution.memory_types import MemoryEntry
 
     prompt = _SUMMARY_PROMPT_TEMPLATE.format(entries_text=_format_entries_for_prompt(group_entries))
     summary_text = (llm_call(prompt) or "").strip()

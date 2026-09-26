@@ -372,3 +372,73 @@ import 直接删除并加注释说明。
 `api/routes.py` 等零散调用方逐个单独处理）**不在本次清理范围内**，
 工作量和风险明显大于死代码清理本身，需要项目所有者单独确认排期
 后再启动，参照"三、迁移优先级建议"第 3 条的分层顺序建议。
+
+---
+
+## 九、perception/memory_store.py 分层 facade · 第一层（evolution/）执行记录
+
+按"八"末尾遗留事项与"三、迁移优先级建议"第 3 条的分层顺序（先
+`evolution/` 内部收敛 → 再 `agent/` 内部收敛 → `api/routes.py`
+等零散调用方逐个处理），启动第一层：`evolution/` 包内 6 个文件
+（`consolidation.py`/`failure_pattern_store.py`/`memory_aging.py`/
+`memory_backfill.py`/`memory_consolidation.py`/`outcome_tracker.py`）
+的收敛。
+
+**现状盘点**：复查这 6 个文件发现，它们**只用到 `MemoryEntry`
+这一个类型**（构造一条记忆条目），完全不涉及 `MemoryStore` 本身
+的读写方法——耦合面比"六"/"八"里 `agent/*` 的情况更单一，是"分层
+facade"里风险最低的一层，适合先做，验证"引入门面模块收敛多处
+直接 import"这个手法本身是否可行，再用到风险更高的 `agent/` 层。
+
+**产出**：
+- 新增 `evolution/memory_types.py`：只做 `MemoryEntry` 的重新导出
+  （`from mini_agent.perception.memory_store import MemoryEntry`），
+  不是新的领域概念，也不改变 `MemoryEntry` 的定义或行为。
+- 6 个 `evolution/*` 文件里全部 10 处
+  `from mini_agent.perception.memory_store import MemoryEntry`
+  （含模块顶部与函数内局部导入）统一改成
+  `from mini_agent.evolution.memory_types import MemoryEntry`。
+
+**验证**：
+- `py_compile` 全部通过；`pyflakes` 复查确认改动本身未引入新的
+  unused-import/undefined-name 问题（`memory_backfill.py` 的
+  3 处 `undefined name 'MemoryEntry'` 字符串注解警告，经与
+  `/tmp/orig` 原始代码比对，是**改动前就存在**的既有问题，非本次
+  引入）。
+- `scripts/dep_graph.py --module perception.memory_store` 复扫：
+  inbound 深度依赖从"八"评估时的 **24 降到 19**（6 个 `evolution/*`
+  文件收敛为 `evolution/memory_types.py` 这 1 个新的直接调用方，
+  净减少 5）。`scripts/dep_graph.py --module evolution.memory_types`
+  确认新门面模块的 inbound 是预期的 6，未超止损阈值。
+- 回归测试：`evolution`/`memory`/`consolidation`/`outcome_tracker`/
+  `failure_pattern`/`backfill` 关键字测试子集 310 passed，2 failed
+  ——均为 `test_evolution_cli.py` 里与本次改动无关的既有失败（
+  `test_revert_memory_failure_does_not_raise`：与"七"记录的原因
+  相同；`test_revert_writes_lesson_with_revert_record_source`：
+  经核对在 `/tmp/orig` 未改动的原始代码上跑同一测试同样失败，
+  是 `confidence` 期望值 0.9 与实际 0.85 不匹配的既有断言问题，
+  与本次改动无关）。
+- `scripts/lint_no_new_toplevel_concepts.py` 通过（新文件是
+  `evolution/` 包内部子模块，不在顶层扫描范围内）。
+
+**结论**：`perception/memory_store.py` 真实 inbound 从 19 仍然
+**超过止损阈值 10+**，第一层收敛降低了耦合面但还不足以让这条
+迁移链直接进入 Adapter 接入点设计；需要继续推进"三、迁移优先级
+建议"第 3 条里的下一层（`agent/` 内部收敛：让持有真实 `MemoryEntry`
+写入需求的 3 个文件——`profile.py`/`reflection.py`/
+`reminders_correction.py`——改为通过 `agent/core.py` 的 Agent
+对象统一访问，而不是各自直接 import）。
+
+**是否触发止损条件**：未触发（本身是"重新导出"性质的收敛，
+无新增代码风险；`pyflakes` + 回归测试双重验证，行为完全一致）。
+
+**`MIGRATION_STATUS.md` 是否已同步更新**：是，
+`perception/memory_store.py` 一行的耦合评估备注已更新为
+"分层 facade 第一层（evolution/）已完成，inbound=19（原 24 里
+5 个收敛进 evolution/memory_types.py），仍超止损阈值，继续推进
+agent/ 层收敛"。
+
+**遗留/下一步**：`agent/` 层收敛（`profile.py`/`reflection.py`/
+`reminders_correction.py` 改为通过 Agent 对象统一访问）与
+`api/routes.py` 等零散调用方的处理，**不在本次范围内**，待项目
+所有者确认排期后再启动。

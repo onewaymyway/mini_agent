@@ -199,7 +199,7 @@ def _write_eval_failure_lesson(paths, memory_backend, record: "TrackedCommit") -
     其余记录继续处理）。
     """
     try:
-        from mini_agent.perception.memory_store import MemoryEntry
+        from mini_agent.evolution.memory_types import MemoryEntry
 
         group = _find_lesson_group(memory_backend, record.trigger_lesson_group_id)
         # 用触发该 commit 的原始 lesson 组里最新一条的 summary 做上下文，

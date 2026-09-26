@@ -120,8 +120,18 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       失败，非新增回归）+ lint 均确认无新增问题。详见
       `03-sprint1.5-memory-perception-coupling-assessment.md`
       末尾"八、perception/memory_store.py 死代码清理执行记录"。
-- [ ] `perception/memory_store.py` 的分层 facade 设计与实现：
-      待项目所有者确认排期后启动（工作量和风险是三者中最大的，
-      建议按"三、迁移优先级建议"第 3 条的顺序——先
-      `evolution/` 内部收敛、再 `agent/` 内部收敛、`api/routes.py`
-      等零散调用方逐个单独处理）。
+- [x] `perception/memory_store.py` 分层 facade 第一层（`evolution/`
+      内部收敛）已完成：新增 `evolution/memory_types.py` 门面模块，
+      6 个 `evolution/*` 文件（只用到 `MemoryEntry`，不涉及
+      `MemoryStore` 读写方法）统一改为从门面模块 import，
+      inbound 从 24 降到 19，仍超止损阈值。回归测试（310 passed，
+      2 failed 均为既有失败，非新增回归）+ 依赖图核对 + lint
+      均确认无新增问题。详见
+      `03-sprint1.5-memory-perception-coupling-assessment.md`
+      末尾"九、perception/memory_store.py 分层 facade · 第一层
+      （evolution/）执行记录"。
+- [ ] `perception/memory_store.py` 分层 facade 第二层（`agent/`
+      内部收敛：`profile.py`/`reflection.py`/
+      `reminders_correction.py` 改为通过 Agent 对象统一访问）与
+      `api/routes.py` 等零散调用方的处理：待项目所有者确认排期后
+      启动。

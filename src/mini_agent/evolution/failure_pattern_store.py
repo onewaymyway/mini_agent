@@ -264,7 +264,7 @@ def record_goal_spec_preflight_lesson(
     if not issues:
         return
     try:
-        from mini_agent.perception.memory_store import MemoryEntry
+        from mini_agent.evolution.memory_types import MemoryEntry
         from mini_agent.perception.memory_factory import create_memory_backend
 
         memory = create_memory_backend(cfg)
