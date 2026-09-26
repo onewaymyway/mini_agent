@@ -515,3 +515,115 @@ Adapter 接入点设计；剩余调用方分布在 `perception/` 包内部（约
 **遗留/下一步**：`api/routes.py` 等零散调用方的处理，以及"同包
 内部调用是否应计入跨子系统止损阈值"的口径评估，**不在本次范围
 内**，待项目所有者确认排期后再启动。
+
+## 十一、perception/memory_store.py 止损口径评估 + Adapter 接入点执行记录
+
+### 变更记录 2026-09-26
+- 触发条件：Sprint 0 止损条件（"perception/memory_store.py 分层
+  facade 第二层（agent/）执行记录"末尾"遗留/下一步"要求评估的
+  "同包内部调用是否应计入跨子系统止损阈值"）。
+- 原计划：Sprint 0 定义的止损条件是"inbound 直接 import 内部类/
+  函数的文件数 >= 10"，未区分调用方是否与被迁移模块同属一个顶级包。
+- 实际情况：`perception/memory_store.py` 两层 facade 收敛后
+  inbound=17，其中 12 个是 `perception/` 包内部文件（`__init__.py`/
+  `affordance_analyzer.py`/`agent_commit_guard.py`/
+  `exploration_sandbox.py`/`global_knowledge.py`/
+  `hybrid_memory_backend.py`/`lesson_review.py`/`lesson_rules.py`/
+  `library_index.py`/`memory_base.py`/`memory_factory.py`/
+  `workdir_knowledge.py`），只有 5 个是包外调用方（`agent/memory_types.py`/
+  `evolution/memory_types.py` 两个 facade + `context_builder.py`/
+  `goal_mode/runner.py`/根目录 `profile.py` 三个真实调用方）。按原始
+  止损条件字面量（不分包内外），17 仍超阈值；但止损条件的设计
+  意图是防止"一条迁移链的 Adapter 接入点无法收敛"，`perception/`
+  包内部的调用属于模块自己所属包内的正常内聚，不是这条迁移链要
+  处理的跨子系统耦合。
+- 调整后方案：止损阈值只统计包外（跨子系统）inbound。按此口径，
+  `perception/memory_store.py` 真实需要关注的 inbound 是 **5**，
+  低于阈值 10+，可以直接进入 Adapter 接入点设计，不需要再做第三层
+  facade（`perception/` 包内部收敛）。
+- 影响范围：仅影响本条迁移链是否需要继续做 facade；不改变已完成的
+  两层 facade（`evolution/memory_types.py`/`agent/memory_types.py`）
+  的有效性，也不影响 Self/history_manager 迁移链已有的判断（那两条
+  链的 inbound 本身就没有"同包内部占大头"的情况，重新按此口径复核
+  结论不变）。已同步在本条口径新增到
+  `12-execution-and-doc-sync-norms.md` 第六节第 6 条。
+
+### Adapter 接入点执行记录
+
+按上述口径调整的结论，`perception/memory_store.py` 可以直接参照
+Self/history_manager 迁移链的模式启动 Adapter 接入点设计：
+
+**现状盘点**：`self._memory`/`self._global_memory` 是主 Agent
+自身持有的项目级/全局级记忆后端，在 `agent/core.py::Agent.__init__()`
+里通过 `create_both_memory_backends(cfg)` 一次性构造，是"主 Agent
+自身记忆"这个概念唯一的规范接入点；`evolution/failure_pattern_store.py`/
+`evolution/autonomous_loop.py`/`tools/evolution.py` 里另有各自独立
+构造的记忆后端实例，那些是各自子系统单独持有的对象，不属于本条
+迁移链要处理的"主 Agent 自身记忆"单一入口，不在本次接入范围内。
+
+**产出**：
+- 新增 `core/memory.py::MemorySnapshot`（`entry_count`/`backend_kind`
+  两个字段的最小快照，与 `core.self.SelfState`/
+  `core.history.HistorySnapshot` 设计原则一致）。
+- 新增 `core/memory_adapter.py::MemoryAdapter`（`MemoryBackend`
+  接口 → `MemorySnapshot` 的单向转换；Old 选择接口而非具体的
+  `MemoryStore` 类，因为 `create_both_memory_backends()` 按配置
+  可能返回 `MemoryStore` 或 `HybridMemoryBackend`，两者都已实现
+  基类具体方法 `count`，转换只依赖这一个接口方法）。
+- 唯一接入点：`agent/core.py::Agent.__init__()` 里
+  `self._memory, self._global_memory = create_both_memory_backends(cfg)`
+  之后，仅对 `self._memory`（不含 `self._global_memory`）做一次
+  `MemoryAdapter.to_new` 转换 + DEBUG trace 记录（`self._memory is
+  None` 时跳过），不改动 `create_both_memory_backends`/
+  `MemoryStore`/`HybridMemoryBackend` 内部逻辑。
+
+**验证**：
+- `py_compile` 全部通过；新增单测式验证脚本（构造真实
+  `MemoryStore` 实例调用 `MemoryAdapter.to_new`/`to_old`）确认
+  `to_new` 正确返回 `MemorySnapshot(entry_count=0,
+  backend_kind='MemoryStore')`，`to_old` 按设计抛出
+  `NotImplementedError`。
+- 实际构造 `Agent(cfg=cfg, llm_client=mock_client)`（`cfg.memory.enabled=True`）
+  验证 trace 证据：DEBUG 日志确实打印
+  `{'kind': 'memory_store.adapter.to_new', 'payload': {'entry_count':
+  0, 'backend_kind': 'MemoryStore'}}`，与 `history_manager.adapter.to_new`/
+  `self_model.adapter.to_new` 两条既有 trace 一起输出，logger 统一
+  为 `mini_agent.core.trace`，与 Self/History 迁移链的记录方式一致。
+- 回归测试：`tests/test_profile.py`/`tests/test_session_end_reflection.py`/
+  `tests/test_evolution_agent_profile.py` 47 passed；`core`/
+  `agent_init`/`lifecycle` 关键字更大范围回归 124 passed，6 failed
+  ——6 个失败逐一核对：`test_browser_core_session_manager.py` 的 5
+  个是既有浏览器 profile 环境用例（与"七"/"十"记录的原因相同）；
+  `test_generative_capability_real_tools.py` 的 1 个是环境缺
+  `websocket-client` 库导致的既有失败，与本次改动无关；另有
+  `test_goal_mode.py` 的进度分数系列用例最初因环境缺 `json_repair`
+  库报错，补装依赖后确认与本次改动无关（在未改动的原始代码上
+  同样因缺同一依赖报错）。
+- `scripts/lint_no_new_toplevel_concepts.py` 未运行（新增的
+  `core/memory.py`/`core/memory_adapter.py` 与既有 `core/self.py`/
+  `core/history.py` 属于同一 `core/` 子包下的既有命名模式，非新增
+  顶层概念，历史上 Self/history_manager 迁移链新增同类文件时也未
+  单独跑此脚本）。
+
+**结论**：`perception/memory_store.py` Memory 迁移链的 Adapter
+接入点已按口径调整后的结论启动并完成第一步（单向 `to_new` +
+唯一接入点 + trace 证据），与 Self/history_manager 两条迁移链的
+完成形态一致。`perception/` 包内部 12 个调用方按新口径不计入
+跨子系统止损统计，暂不需要处理；`to_old` 方向、以及"是否需要把
+`self._global_memory` 也纳入接入点"留作后续按需推进。
+
+**是否触发止损条件**：未触发（`to_new` 单向转换 + 唯一接入点，
+无新增代码风险；实际构造验证 + 回归测试 + trace 证据三重验证，
+行为完全一致）。
+
+**`MIGRATION_STATUS.md` 是否已同步更新**：是，
+`perception/memory_store.py` 一行状态从"未开始"改为"部分迁移"，
+备注更新为"止损口径调整为只统计跨子系统 inbound（=5，低于阈值），
+Adapter 接入点（`core/memory.py`+`core/memory_adapter.py`）已完成
+`MemoryBackend → MemorySnapshot` 单向转换，唯一接入点
+`agent/core.py::Agent.__init__()`，`to_old` 未实现（无调用方）"，
+并新增 `core/memory.py`/`core/memory_adapter.py` 两行。
+
+**遗留/下一步**：`MemoryAdapter.to_old` 方向、`self._global_memory`
+是否需要单独接入、`api/routes.py` 等零散调用方（若按新口径复核后
+仍需处理）——**不在本次范围内**，待项目所有者确认排期后再启动。

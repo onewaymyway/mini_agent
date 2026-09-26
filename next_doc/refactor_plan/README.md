@@ -142,6 +142,23 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       `03-sprint1.5-memory-perception-coupling-assessment.md`
       末尾"十、perception/memory_store.py 分层 facade · 第二层
       （agent/）执行记录"。
-- [ ] `api/routes.py` 等零散调用方的处理，以及"同包内部调用是否
-      应计入跨子系统止损阈值"的口径评估：待项目所有者确认排期后
-      启动。
+- [x] `perception/memory_store.py` 止损口径评估已完成，并按新口径
+      启动 Adapter 接入点：止损阈值调整为只统计跨子系统 inbound
+      （不含被迁移模块自己所属顶级包内部的调用方），口径变更走了
+      `12-execution-and-doc-sync-norms.md` "四、计划变更流程"的
+      留痕（新增该文档第六节第 6 条 + `03-sprint1.5-...md` 对应
+      变更记录）；按新口径 `perception/memory_store.py` 的跨子系统
+      inbound 只有 5（远低于阈值），直接参照 Self/history_manager
+      模式启动 Adapter：新增 `core/memory.py::MemorySnapshot` +
+      `core/memory_adapter.py::MemoryAdapter`（`MemoryBackend`
+      接口 → `MemorySnapshot` 单向转换），唯一接入点
+      `agent/core.py::Agent.__init__()`，trace 证据 + 实际构造
+      Agent 验证 + 回归测试（124 passed，6 个既有环境失败均确认
+      与本次改动无关）均已验证，`to_old` 方向因无调用方暂未实现
+      （显式标注，非静默空实现）。详见
+      `03-sprint1.5-memory-perception-coupling-assessment.md` 末尾
+      "十一、perception/memory_store.py 止损口径评估 + Adapter
+      接入点执行记录"。
+- [ ] `MemoryAdapter.to_old` 方向、`self._global_memory` 是否需要
+      单独接入、`perception/` 包内部 12 个调用方（若后续需要进一步
+      收敛）：待项目所有者确认排期后启动。

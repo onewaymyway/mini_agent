@@ -501,6 +501,40 @@ class Agent(
             )
             self._memory, self._global_memory = create_both_memory_backends(cfg)
 
+            # [memory_store 迁移链唯一接入点] MemoryBackend(old，主 Agent
+            # 自己的项目级记忆 self._memory，不含 self._global_memory 及
+            # evolution/ 等子系统各自独立构造的记忆实例) → MemoryAdapter →
+            # MemorySnapshot(core)：只做转换 + trace 记录，不影响
+            # self._memory 后续任何使用方式（转换结果不参与下面的逻辑，
+            # trace 日志就是"链路真的被执行过"的证据，与 Self/History
+            # 迁移链的做法一致）。见
+            # next_doc/refactor_plan/03-sprint1.5-memory-perception-coupling-assessment.md
+            # "十一、perception/memory_store.py 止损口径评估 + Adapter
+            # 接入点执行记录"。
+            if self._memory is not None:
+                try:
+                    from mini_agent.core.memory_adapter import MemoryAdapter as _core_MemoryAdapter
+                    from mini_agent.core.events import Event as _core_Event
+                    import logging as _core_logging
+
+                    _core_memory_snapshot = _core_MemoryAdapter.to_new(self._memory)
+                    _core_logging.getLogger("mini_agent.core.trace").debug(
+                        "%s",
+                        _core_Event(
+                            kind="memory_store.adapter.to_new",
+                            payload={
+                                "entry_count": _core_memory_snapshot.entry_count,
+                                "backend_kind": _core_memory_snapshot.backend_kind,
+                            },
+                        ).to_dict(),
+                    )
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(
+                        _mini_agent_exc,
+                        where='mini_agent.agent.core.Agent.__init__.memory_adapter',
+                    )
+
             # [SYS-LIBRARY-INDEX] 图书馆式索引的分类兜底（规则未命中时）复用
             # Agent 当前正在用的 LLMClient，不单独接一个新 provider。
             # 复用 self._client_pool.current_client 而不是固定住某个 client 引用，
