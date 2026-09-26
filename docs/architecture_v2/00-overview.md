@@ -127,6 +127,25 @@ wiki、growth_advisor、goal_tree……），但这些功能之间没有统一�
 **下一步（待项目所有者确认排期）**：Self（`perception/self_model.py`）
 迁移 Sprint——本文档不代表已批准启动，只是给出了基于实测数据的建议。
 
+- [x] **Self 迁移链（第一步）**：
+  - 新增 `core/self.py::SelfState`（最小 dataclass：
+    `capability_snapshot`/`active_skill_count`/`session_start_at`）+
+    `core/self_adapter.py::SelfAdapter`（`AgentSelfModel → SelfState`
+    单向转换，`to_old` 因无调用方显式未实现，非静默空实现）。
+  - **唯一接入点**：`agent/lifecycle.py::_init_components()`，
+    `AgentSelfModelBuilder().build()` 之后转换 + trace，不改动
+    `perception/self_model.py` 内部逻辑。
+  - 验证：`test_core_self_adapter.py` 新增测试全部通过；
+    `test_self_model*.py`（32 个）+ 真实构造 Agent 的既有测试
+    （21 个）均无回归；依赖图 inbound 5→6（唯一新增即
+    `core/self_adapter.py`），未触发止损阈值。
+  - 详见 `03-sprint1.5-memory-perception-coupling-assessment.md` 末尾
+    "五、Self 迁移链执行记录"。
+
+**下一步（待项目所有者确认排期）**：`history_manager.py` 的 `agent/`
+层 facade 整理（Sprint 1.5 建议的第二条迁移链，风险中等，需要先做
+调用方收敛，工作量大于 Self 这条）。
+
 已知问题（Sprint 0 执行期间发现，不在本次改动范围内，如实记录）：
 `tests/test_goal_mode.py` 里 `test_build_from_history_*` 系列（5 个用例）
 在当前仓库状态下会失败——测试里的 lambda 参数签名与

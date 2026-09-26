@@ -17,6 +17,17 @@ from mini_agent.skills import SkillLoader
 from mini_agent.tools import ToolRegistry, get_default_registry
 from mini_agent.session import SessionManager, Session
 import mini_agent.ui.renderer as R
+
+# ── [next_doc/refactor_plan/03-sprint1.5-memory-perception-coupling-
+# assessment.md · Self 迁移链] 唯一接入点：只在 _init_components() 里走一次
+# AgentSelfModel(old) → SelfAdapter → SelfState(core) 转换 + trace，
+# 与 `goal_mode/runner.py` 的 `_core_` 别名约定保持一致，避免误以为这是
+# `perception.self_model` 自己的符号。
+import logging as _self_logging
+from mini_agent.core import Event as _core_Event, SelfAdapter as _core_SelfAdapter
+
+_core_self_logger = _self_logging.getLogger("mini_agent.core.trace")
+
 from mini_agent.perception.token_counter import estimate_messages_tokens
 from mini_agent.perception.project_scanner import ProjectScanner
 from mini_agent.perception.file_watcher import FileWatcher
@@ -334,6 +345,21 @@ class SessionLifecycleMixin:
                 use_capability_map=getattr(
                     getattr(self.cfg, 'affordance', None), 'use_capability_map', True
                 ),
+            )
+            # [Self 迁移链唯一接入点] AgentSelfModel(old) → SelfAdapter →
+            # SelfState(core)：只做转换 + trace 记录，不影响 self._self_model
+            # 后续任何使用方式（转换结果不参与下面的逻辑，trace 日志就是
+            # "链路真的被执行过"的证据，与 goal_mode/runner.py 的做法一致）。
+            _core_self_state = _core_SelfAdapter.to_new(self._self_model)
+            _core_self_logger.debug(
+                "%s",
+                _core_Event(
+                    kind="self_model.adapter.to_new",
+                    payload={
+                        "active_skill_count": _core_self_state.active_skill_count,
+                        "capability_domain_count": len(_core_self_state.capability_snapshot),
+                    },
+                ).to_dict(),
             )
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception

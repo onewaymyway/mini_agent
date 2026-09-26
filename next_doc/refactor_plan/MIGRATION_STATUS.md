@@ -16,7 +16,7 @@
 | tools/ + tool_executor.py | Phase 6 | 未开始 | 0% | 否 | - | - |
 | orchestrator/ | Phase 6 | 未开始 | 0% | 否 | - | - |
 | evolution/（67 个模块，逐步细分） | Phase 9 | 未开始 | 0% | 否 | - | - |
-| perception/self_model.py | Phase 4 | 未开始 | 0%（Sprint 1.5 耦合评估：inbound=5，未触发止损阈值，建议作为下一条可直接启动的迁移链，见 `03-sprint1.5-memory-perception-coupling-assessment.md`） | 否 | 2026-09-26 | Sprint 1.5 执行者 |
+| perception/self_model.py | Phase 4 | 部分迁移 | 未知，待补充（`agent/lifecycle.py::_init_components()` 唯一接入点已走新链路做转换+trace，`AgentSelfModelBuilder`/`AgentSelfModel` 内部逻辑未改动） | 否（`SelfAdapter.to_old` 尚未实现，无实际调用方，见 `03-sprint1.5-memory-perception-coupling-assessment.md` "五、Self 迁移链执行记录"） | 2026-09-26 | Self 迁移链执行者 |
 | perception/memory_store.py（原表遗漏，Sprint 1.5 补充） | Phase 3 | 未开始 | 0%（Sprint 1.5 耦合评估：inbound=33，其中 21 个跨 `agent/`/`evolution/`/`api/`/`goal_mode/` 等至少 4 个子系统，耦合面最广，建议暂缓，等 history_manager.py 的 facade 经验积累后再评估，见 `03-sprint1.5-memory-perception-coupling-assessment.md`） | 否 | 2026-09-26 | Sprint 1.5 执行者 |
 | Daemon / AutonomousLoop / Cron / UnifiedTaskScheduler / ObjectiveExecutor / ResourceArbiter | Phase 8 | 未开始 | 0% | 否 | - | - |
 

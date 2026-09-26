@@ -84,4 +84,11 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       facade → memory_store 暂缓）。方法论教训（按子模块而非顶层包扫描）
       已回填进 `12-execution-and-doc-sync-norms.md` 第六节。详见
       `03-sprint1.5-memory-perception-coupling-assessment.md`。
-- [ ] Self（`perception/self_model.py`）迁移 Sprint：待项目所有者确认排期后启动。
+- [x] Self（`perception/self_model.py`）迁移链已启动并完成第一步：新增
+      `core/self.py::SelfState` + `core/self_adapter.py::SelfAdapter`
+      （`AgentSelfModel → SelfState` 单向转换），唯一接入点
+      `agent/lifecycle.py::_init_components()`，trace 证据 + 既有
+      测试（32+21 passed）+ 依赖图核对均已验证，`to_old` 方向因无调用方
+      暂未实现（显式标注，非静默空实现）。详见
+      `03-sprint1.5-memory-perception-coupling-assessment.md` 末尾
+      "五、Self 迁移链执行记录"。

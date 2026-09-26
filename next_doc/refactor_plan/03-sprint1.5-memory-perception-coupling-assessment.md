@@ -121,5 +121,48 @@ system_events、behavior perception 等）捆在一个顶级包里的"大杂烩"
       核心）各自有独立的、基于实测数据的迁移优先级建议。
 - [x] 方法论教训（按具体类/子模块扫描，不按顶层包扫描）已补充进
       `12-execution-and-doc-sync-norms.md`。
-- [ ] `self_model.py` 的正式迁移 Sprint 尚未启动（本 Sprint 只给建议，
-      不代表已经开始执行，需项目所有者确认后另开 Sprint）。
+- [x] `perception/self_model.py` 的正式迁移 Sprint 已启动并完成第一步
+      （见下方"五、Self 迁移链执行记录"）。
+
+---
+
+## 五、Self 迁移链执行记录（复盘，按 `12-execution-and-doc-sync-norms.md` 第五节最低要求）
+
+按本文档"三、迁移优先级建议"第 1 条，Self 是三者中风险最低、可以直接
+参照 Goal 模式启动的一条，项目所有者确认后按此执行：
+
+**产出**：
+- 新增 `core/self.py::SelfState`（最小 dataclass，只保留
+  `capability_snapshot`/`active_skill_count`/`session_start_at` 三个
+  跨子系统共享字段）+ `core/self_adapter.py::SelfAdapter`
+  （`AgentSelfModel → SelfState` 单向转换；`to_old` 方向没有实际调用方，
+  显式抛 `NotImplementedError` 并注明原因，不做没人用的空实现）。
+- **唯一接入点**：`agent/lifecycle.py::_init_components()` 里
+  `AgentSelfModelBuilder().build()` 调用之后，做一次
+  `SelfAdapter.to_new` 转换 + DEBUG trace 记录（`mini_agent.core.trace`
+  logger，与 `goal_mode/runner.py` 的 trace 约定一致），不改动
+  `perception/self_model.py` 内部逻辑。
+
+**验收标准对照**（参照 Goal 迁移链 Sprint 1 的验收标准格式）：
+1. 有 trace 证据证明链路被执行——**已达成**，
+   `tests/test_core_self_adapter.py::test_lifecycle_self_model_hook_emits_trace_event`
+   用 `caplog` 断言。
+2. 现有 `self_model` 相关测试全部通过——**已达成**：
+   `tests/test_self_model.py` + `test_self_model_drift.py` +
+   `test_self_model_snapshot.py` 共 32 passed，0 failed。
+3. 真实构造 Agent 的既有测试不受影响——**已达成**：
+   `tests/test_agent_startup_project_meta.py` +
+   `tests/test_global_knowledge_integration.py` 共 21 passed。
+4. 依赖图显示耦合度没有因为迁移而上升——**已达成**：inbound 深度依赖
+   从评估时的 5 变为 6（唯一新增的正是计划内的
+   `core/self_adapter.py`），未触发止损阈值。
+
+**是否触发止损条件**：未触发。
+
+**`MIGRATION_STATUS.md` 是否已同步更新**：是，`perception/self_model.py`
+一行状态由"未开始"更新为"部分迁移"。
+
+**遗留/下一步**：`SelfAdapter.to_old` 尚未实现（无调用方需要），如果
+未来 Self 迁移链继续推进（比如需要让某个新调用方只持有
+`core.SelfState` 而不直接依赖 `perception.self_model`），需要先补上
+这个方向的实现与往返转换测试，而不是假设它已经能用。
