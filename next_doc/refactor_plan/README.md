@@ -254,3 +254,31 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       执行记录"与 `MIGRATION_STATUS.md`。可进入 **Sprint 3-2
       （ExperienceRetriever + Analyzer，接入 Goal 规划阶段）**，
       留待下一次推进。
+- [x] Sprint 3-2（ExperienceRetriever + Analyzer）已完成：新增
+      `core/experience_retrieval.py::retrieve_similar_experiences()`
+      （关键词重叠度检索"同类历史 Experience"）+
+      `render_experiences_as_context()`（渲染成可读文本）；新增
+      `core/experience_patterns.py::summarize_failures()`（Analyzer
+      雏形，聚合同类失败的状态分布 + 高频教训，为 Phase 9 Self
+      Evolution 打基础，只统计不决策）；`goal_mode/runner.py::run()`
+      在挂载 `ExperienceRecorder` 订阅之后接入检索——新增配置项
+      `cfg.goal_mode.experience_retrieval_enabled`（默认关闭，保守
+      opt-in 默认值），开启时按当前 `GoalSpec.goal_text` 检索相似历史
+      Experience，渲染后一次性注入 `agent._hist`（`_type=
+      "goal_experience_context"`），检索失败纯旁路兜底不影响 Goal
+      本身执行。三条 Sprint 3-2 验收标准（生成结构化 Experience /
+      检索结果真实出现在传给 LLM 的 context 里 / 旧 history-lesson-
+      decision 测试仍通过）均已用新增测试验证：
+      `tests/test_phase3_experience_retrieval_and_patterns.py`（6 用例）
+      + `tests/test_phase3_experience_retrieval_injection.py`（3 用例，
+      直接跑真实 `GoalRunner.run()` 断言 `agent._hist` 里出现检索结果）；
+      回归测试（`test_goal_mode.py`/`test_goal_mode_phase2_events.py`/
+      `test_core_experience_store.py`/`test_phase2_event_log_and_cli.py`/
+      `test_phase3_experience_recorder.py`/`test_core_events.py` 共 128
+      用例，123 通过，5 个既有失败与本次改动无关）。详见
+      `04-phase3-experience-layer-sprint-plan.md` 末尾"Sprint 3-2
+      执行记录"与 `MIGRATION_STATUS.md`。Phase 3（Experience 分层）
+      两个 Sprint 均已完成；`phase3-experience-inventory.md` 里"lesson
+      通过 Adapter 接入新 Experience"这一条尚未实现，留在
+      `MIGRATION_STATUS.md` 里作为待办。下一步按整体路线图推进
+      （Phase 4 或其他优先级更高的项），留待下一次推进。

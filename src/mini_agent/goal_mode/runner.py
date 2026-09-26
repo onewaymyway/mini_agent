@@ -363,6 +363,43 @@ class GoalRunner:
             )
         )
 
+        # [Phase 3 Sprint 3-2] 检索"同类历史 Experience"，注入本次 run()
+        # 的历史上下文（一次性追加，不像 `_pin_goal_context()` 那样每轮
+        # 重复追加——检索结果是"参考资料"，不需要像目标本身那样反复
+        # 强调，重复追加只会白白占用上下文长度）。默认关闭
+        # （`experience_retrieval_enabled=False`，见 `config/models.py`
+        # 对应字段注释里的保守 opt-in 默认值原则），开启时读取失败也不
+        # 影响 Goal 本身的执行（`try/except` 兜底 + 只记警告）。
+        if getattr(self._gm_cfg, "experience_retrieval_enabled", False):
+            try:
+                from mini_agent.core import (
+                    retrieve_similar_experiences as _core_retrieve_similar_experiences,
+                    render_experiences_as_context as _core_render_experiences_as_context,
+                )
+
+                _similar = _core_retrieve_similar_experiences(
+                    goal_text=self._spec.goal_text,
+                    store=_core_ExperienceStore(path=self._paths.workdir_experience_store),
+                    limit=getattr(self._gm_cfg, "experience_retrieval_limit", 3),
+                )
+                _context_text = _core_render_experiences_as_context(_similar)
+                if _context_text:
+                    self._agent._hist.append_raw_dict(
+                        {
+                            "role": "user",
+                            "content": _context_text,
+                            "_type": "goal_experience_context",
+                        }
+                    )
+            except Exception:
+                from mini_agent.errors import log_exception as _log_exception
+
+                _log_exception(
+                    Exception("检索历史 Experience 失败"),
+                    where="mini_agent.goal_mode.runner.GoalRunner.run.experience_retrieval",
+                )
+                R.print_warning("[GoalRunner] 检索历史 Experience 失败（不影响本次 Goal 执行）")
+
         # [Sprint 1 唯一接入点 · 前半段] Goal(old) → GoalAdapter → GoalState(core)
         # 只做转换 + trace 记录，不影响后续任何执行逻辑（转换结果不参与
         # 下面的主循环，避免"定义了但没人用"——trace 日志就是证据）。

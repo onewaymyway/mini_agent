@@ -1080,6 +1080,15 @@ class GoalModeConfig:
     # "unknown"，不会触发）。默认关闭，与其余分级响应开关一致。
     goal_cron_execution_note_enabled: bool = False
 
+    # ── [next_doc/refactor_plan/04-phase3-experience-layer-sprint-plan.md
+    #    Sprint 3-2] 目标启动时检索历史 Experience，把检索结果作为一条
+    #    只读上下文注入本次 run() 的历史（不参与 acceptance_criteria/判官
+    #    逻辑），供 Agent 参考"上次遇到类似目标时做过什么"。默认关闭
+    #    （保守 opt-in 默认值）：检索/落库均为纯旁路，不开启时零改动。
+    experience_retrieval_enabled: bool = False
+    # 检索返回的历史 Experience 条数上限，避免注入过长上下文。
+    experience_retrieval_limit: int = 3
+
 
 @dataclass
 class GoalExecutionSpecConfig:

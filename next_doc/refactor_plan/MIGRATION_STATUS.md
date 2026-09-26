@@ -31,6 +31,8 @@
 | core/experience_store.py（Sprint 3-1 升级为 SQLite） | Phase 3 | 完全迁移 | 100%（对外 API 不变，`goal_mode/runner.py`/`cli/commands/experience_cmd.py` 两个既有调用方均无需改动；`AgentPaths.workdir_experience_store` 路径同步从 `.jsonl` 改名为 `.db`） | 不适用 | 2026-09-26 | Phase 3 Sprint 3-1 执行者 |
 | core/experience_recorder.py（新增，Sprint 3-1） | Phase 3 | 完全迁移 | 100%（`ExperienceRecorder` 订阅 `ExperienceCreated` 落库，`goal_mode/runner.py::run()` 唯一接入点新增一行挂载调用，`_finish()` 同步删除了原手写落盘调用） | 不适用 | 2026-09-26 | Phase 3 Sprint 3-1 执行者 |
 | scripts/migrate_experience_jsonl_to_sqlite.py（新增，Sprint 3-1） | Phase 3 | 完全迁移 | 100%（一次性迁移脚本，跑完即弃，不接入正式代码路径） | 不适用 | 2026-09-26 | Phase 3 Sprint 3-1 执行者 |
+| core/experience_retrieval.py（新增，Sprint 3-2） | Phase 3 | 完全迁移 | 100%（`retrieve_similar_experiences()` 关键词重叠度检索 + `render_experiences_as_context()` 渲染，`goal_mode/runner.py::run()` 唯一接入点，默认关闭） | 不适用 | 2026-09-27 | Phase 3 Sprint 3-2 执行者 |
+| core/experience_patterns.py（新增，Sprint 3-2，Analyzer 雏形） | Phase 3 | 完全迁移 | 100%（`summarize_failures()` 聚合统计，仅供 Phase 9 Self Evolution 复用，暂未接入任何调用方） | 不适用 | 2026-09-27 | Phase 3 Sprint 3-2 执行者 |
 
 > 以上为初始占位行，对应 `02`-`11` 各 Phase 文档里"现状盘点"提到的
 > 主要模块。执行过程中如发现遗漏模块，直接追加新行，不要删除已有行

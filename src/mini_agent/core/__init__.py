@@ -22,6 +22,11 @@ Phase 3 Sprint 3-1（见
 `experience_recorder.py`（`ExperienceRecorder` 订阅 `ExperienceCreated`
 事件落库，替代此前 `goal_mode/runner.py` 手写的落盘调用）。
 
+Sprint 3-2 新增 `experience_retrieval.py`（按关键词重叠度检索"同类
+历史 Experience"，`goal_mode/runner.py` 在 Goal 启动时把检索结果注入
+LLM 上下文）与 `experience_patterns.py`（Analyzer 雏形：对同类失败
+Experience 做聚合统计，为 Phase 9 Self Evolution 打基础）。
+
 其它核心概念（Self / World / Capability / Action / Simulation / Runtime）
 的最小 dataclass，待对应 Phase 的迁移链启动时再补，不提前占位。
 """
@@ -41,6 +46,8 @@ from .experience_recorder import (
     reset_experience_recorder_subscriptions,
 )
 from .experience_store import ExperienceStore
+from .experience_retrieval import retrieve_similar_experiences, render_experiences_as_context
+from .experience_patterns import FailurePatternSummary, summarize_failures
 from .goal import GoalState
 from .goal_adapter import GoalAdapter, goal_run_result_to_experience
 from .history import HistorySnapshot
@@ -63,6 +70,10 @@ __all__ = [
     "ensure_experience_recorder_subscribed",
     "reset_experience_recorder_subscriptions",
     "ExperienceStore",
+    "retrieve_similar_experiences",
+    "render_experiences_as_context",
+    "FailurePatternSummary",
+    "summarize_failures",
     "GoalState",
     "GoalAdapter",
     "goal_run_result_to_experience",

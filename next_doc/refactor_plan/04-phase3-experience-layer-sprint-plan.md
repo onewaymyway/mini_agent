@@ -124,10 +124,74 @@ CLI），字段完整覆盖原文 §7 定义的 yaml 结构。
   可进入 **Sprint 3-2（ExperienceRetriever + Analyzer，接入 Goal
   规划阶段）**，留待下一次推进。
 
+## Sprint 3-2 执行记录（2026-09-27）
+
+- 新增 `core/experience_retrieval.py::retrieve_similar_experiences()`：
+  按"目标相似度"检索历史 Experience。第一版选关键词重叠度（Jaccard
+  相似度，中文按字符切分、拉丁文按 `\w+` 切分），不引入 embedding——
+  与 Sprint 2 `experience_store.search()` 选子串匹配的理由一致：现阶段
+  记录量级低，检索质量瓶颈不在算法精细度，未来量级增长到需要 embedding
+  时再按需升级。同时提供 `render_experiences_as_context()`，把检索
+  结果渲染成人类可读文本（只挑 `goal_text`/`status`/`final_report`/
+  `lesson`，不塞目前大多是空 dict 的 `context`/`state_before` 等字段，
+  等 Phase 4 有真实数据后再纳入）。
+- 新增 `core/experience_patterns.py::summarize_failures()`（Analyzer
+  雏形）：对"同类 Goal"（复用 `experience_retrieval.py` 同款相似度
+  实现，避免维护两套相似度逻辑）里的失败记录做状态分布 + 高频教训聚合
+  统计，返回 `FailurePatternSummary`。只做统计不做决策，为 Phase 9
+  Self Evolution 打基础，不在本 Sprint 提前实现自动干预逻辑。
+- 接入 Goal 规划阶段：`goal_mode/runner.py::run()` 在挂载
+  `ExperienceRecorder` 订阅之后、新增一段检索注入逻辑——若
+  `cfg.goal_mode.experience_retrieval_enabled=True`（新增配置项，见
+  `config/models.py`，**默认关闭**，保守 opt-in 默认值），按当前
+  `GoalSpec.goal_text` 检索相似历史 Experience，渲染后用
+  `self._agent._hist.append_raw_dict(...)` 一次性追加进历史（`_type=
+  "goal_experience_context"`，与 `_pin_goal_context()` 的"每轮重复
+  追加"不同——检索结果是参考资料，只需要在 run() 开始时注入一次，避免
+  重复追加浪费上下文长度）。检索失败包在 `try/except` 里，只记警告，
+  不影响 Goal 本身执行（与 `_save_state()` 的失败处理原则一致）。
+- 验证：新增 `tests/test_phase3_experience_retrieval_and_patterns.py`
+  （6 用例，覆盖检索排序/空结果/上下文渲染/Analyzer 聚合）与
+  `tests/test_phase3_experience_retrieval_injection.py`（3 用例，覆盖
+  "默认关闭时不注入"/"开启后相似历史真实出现在 `agent._hist` 里"/
+  "检索异常不影响 Goal 执行结果"，直接复用 `test_goal_mode.py` 的
+  `FakeAgent`/`_FakeCfg`/`_confirmed_spec` 测试替身，与
+  `test_goal_mode_phase2_events.py` 的既有做法一致）；全部通过。
+  回归验证：`tests/test_goal_mode.py` + `test_goal_mode_phase2_events.py`
+  + `test_core_experience_store.py` + `test_phase2_event_log_and_cli.py`
+  + `test_phase3_experience_recorder.py` + `test_core_events.py` 共 128
+  个用例，123 通过，5 个失败均为此前 Sprint 0 已记录、与本次改动无关的
+  `test_build_from_history_*` 系列既有失败（`pyflakes` 核对新增/改动
+  文件无未用 import）。
+- 验收标准对照：
+  1. 一个 Goal 执行结束后可以生成结构化 Experience —— Sprint 3-1 已
+     验证，本 Sprint 未改动。
+  2. 下一个类似 Goal 执行时，Retriever 能检索到它，并且检索结果真实
+     出现在了传给 LLM 的 context 里 —— 已用
+     `test_experience_retrieval_enabled_injects_similar_past_experience`
+     验证（断言 `agent._hist.entries` 里包含检索到的历史目标文本和
+     教训，不是"检索到了但没用上"）。
+  3. 旧的 history/lesson/decision 相关测试仍然通过 —— 本 Sprint 完全
+     不触碰 `history_manager.py`/`MemoryEntry`/`wiki/experience_writer.
+     py`/`evolution/` 目录下任何文件，是纯新增的并行链路；回归验证
+     未见相关测试新增失败。
+- Sprint 3-2 完整完成三项任务（retrieval / patterns / 接入 Goal 规划
+  阶段），Phase 3（Experience 分层）两个 Sprint 均已完成。下一步是
+  Phase 4 或按 `README.md` 里的整体路线图继续，留待下一次推进。
+
 ## 完成标志
 
-- [ ] Experience 的记录、存储、检索三个环节都已用真实 Goal 执行验证过
+- [x] Experience 的记录、存储、检索三个环节都已用真实 Goal 执行验证过
+      （`GoalRunner.run()` e2e：记录/存储见 Sprint 3-1
+      `test_goal_mode_phase2_events.py`；检索见 Sprint 3-2
+      `test_phase3_experience_retrieval_injection.py`，均是真实跑一次
+      `GoalRunner.run()` 而非只测底层函数）
 - [ ] `phase3-experience-inventory.md` 里列出的旧结构，至少有一种
       （建议选 lesson）已经通过 Adapter 接入新 Experience，其余的
-      迁移计划写入 `MIGRATION_STATUS.md`
-- [ ] Analyzer 产出的聚合统计已经有雏形，可以在 Phase 9 直接复用
+      迁移计划写入 `MIGRATION_STATUS.md`（Sprint 3-1/3-2 只搭好了
+      `Experience`/Store/Recorder/Retriever/Analyzer 这条新链路本身，
+      "把 `MemoryEntry.entry_type="lesson"` 接进来"这条 Adapter 尚未
+      实现，留待下一次推进）
+- [x] Analyzer 产出的聚合统计已经有雏形，可以在 Phase 9 直接复用
+      （`core/experience_patterns.py::summarize_failures()` →
+      `FailurePatternSummary`）
