@@ -26,7 +26,6 @@ from mini_agent.perception.memory_store import MemoryStore, MemoryEntry
 from mini_agent.perception.memory_factory import create_memory_backend
 from mini_agent.context_builder import ContextBuilder
 from mini_agent.tool_executor import ToolExecutor
-from mini_agent.history_manager import HistoryManager
 from mini_agent.reminders import ReminderManager
 from mini_agent.reminders.loader import Reminder, TRIGGER_USER_INTENT
 

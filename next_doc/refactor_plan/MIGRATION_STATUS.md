@@ -11,7 +11,7 @@
 | goal_mode/runner.py | Phase 1 | 部分迁移 | 未知，待补充（`run()`/`_finish()` 两处接入点已走新链路做转换+trace+持久化，主循环内部仍是旧逻辑，未按"路径条数"精确统计） | 是（`GoalAdapter.to_new`/`to_old` 均已实现并被特征测试覆盖） | 2026-09-26 | Sprint 2 执行者 |
 | goal_mode/executor.py | Phase 1 | 未开始 | 0% | 否 | - | - |
 | goal_backlog.py | Phase 5 | 未开始 | 0% | 否 | - | - |
-| history_manager.py | Phase 3 | 未开始 | 0%（Sprint 1.5 耦合评估：inbound=12，超止损阈值但 11/12 集中在 `agent/*`，建议先做 facade 收敛，见 `03-sprint1.5-memory-perception-coupling-assessment.md`） | 否 | 2026-09-26 | Sprint 1.5 执行者 |
+| history_manager.py | Phase 3 | 未开始 | 0%（facade 整理已完成：删除 `agent/` 下 10 个文件里未使用的死代码 import 后，inbound 从 12 降到 2，未触发止损阈值，可评估 Adapter 接入点；尚未做 Adapter 转换本身，故状态仍为"未开始"，见 `03-sprint1.5-memory-perception-coupling-assessment.md` "六、history_manager.py facade 整理执行记录"） | 否 | 2026-09-26 | facade 整理执行者 |
 | workflow/ | Phase 6 | 未开始 | 0% | 否 | - | - |
 | tools/ + tool_executor.py | Phase 6 | 未开始 | 0% | 否 | - | - |
 | orchestrator/ | Phase 6 | 未开始 | 0% | 否 | - | - |

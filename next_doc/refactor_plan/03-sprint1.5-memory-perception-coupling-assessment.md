@@ -166,3 +166,66 @@ system_events、behavior perception 等）捆在一个顶级包里的"大杂烩"
 未来 Self 迁移链继续推进（比如需要让某个新调用方只持有
 `core.SelfState` 而不直接依赖 `perception.self_model`），需要先补上
 这个方向的实现与往返转换测试，而不是假设它已经能用。
+
+---
+
+## 六、history_manager.py facade 整理执行记录（第二条迁移链的前置步骤）
+
+按本文档"三、迁移优先级建议"第 2 条，`history_manager.py` 需要先在
+`agent/` 层做 facade 收敛，再评估 Adapter 接入点。实际动手整理时，
+发现比预想的更简单：
+
+**关键发现**：用 `grep`（人工排查）+ `pyflakes`（工具交叉验证）逐个
+检查"三、现状盘点"表格里那 11 个 `agent/*` 直接 import
+`HistoryManager` 的文件，发现除 `agent/lifecycle.py`（唯一实际
+`HistoryManager(cfg=..., skill_loader=...)` 构造并持有实例的文件）
+之外，其余 **10 个文件（`_helpers.py` / `compaction.py` / `core.py` /
+`llm_control.py` / `profile.py` / `reflection.py` /
+`reminders_correction.py` / `role_judge.py` / `turn_loop.py` /
+`snapshot.py`）在模块顶部 import `HistoryManager` 之后，再也没有
+在文件其它地方引用过这个名字**——既不是类型注解、也不是实际调用，
+是纯粹的死代码（`pyflakes` 对全部 10 个文件逐一确认
+"imported but unused"）。`snapshot.py` 略特殊：文件内部另有一处
+**函数内的局部 import**（`from mini_agent.history_manager import
+HistoryManager` 出现在某个方法体内部，紧跟着 `HistoryManager(cfg=cfg)`
+真实构造），这处局部 import 是真实使用、原样保留；顶层那行才是
+需要删除的重复死代码。这与 Sprint 3 复盘"perception 耦合被夸大"是
+同一类问题的再现：`--module` 扫描统计的是"文件里出现了 import
+语句"，不区分这行 import 是否真的被用到，`history_manager.py`
+"inbound=12"里有 10 个其实是无效噪音，真实耦合远低于表面数字。
+
+**处理方式**：不是"加一层 facade 隐藏这些依赖"，而是更直接、风险
+更低的方式——**直接删除这 10 处模块顶层的未使用 import**（`agent/`
+这批 mixin 文件大概率是从同一份公共导入模板复制出来的，很可能各自
+按需删减时遗漏了这一行，不是有意为之的设计）。这比"新建一层 facade
+模块，让 10 个文件改成 import facade 而不是 import HistoryManager
+本身"的改动量小得多，也不引入新的中间层。
+
+**验证**：
+- 删除后 10 个文件仍可正常 `import`（无 `ImportError`/`NameError`）。
+- `pyflakes` 复查确认这 10 个文件不再报 `HistoryManager` 相关的
+  unused-import 警告。
+- `scripts/dep_graph.py --module history_manager` 复扫：inbound 深度
+  依赖从 **12 降到 2**（`agent/lifecycle.py` 真正实例化 + 
+  `evolution/session_cleanup.py` 的真实使用），远低于止损阈值 10+。
+- 回归测试：`test_agent_startup_project_meta.py` /
+  `test_global_knowledge_integration.py`（真实构造 Agent）+
+  与被改动文件相关的关键字测试子集（`snapshot`/`compaction`/
+  `turn_loop`/`reflection`/`reminders`/`role_judge`/`llm_control`/
+  `profile`/`commit_guard`，319 passed）+ Self/Goal 迁移链既有测试
+  （190 passed，同 5 个已知 `test_build_from_history_*` 历史失败）
+  均无新增回归。`lint_no_new_toplevel_concepts.py` 通过。
+
+**结论**：`history_manager.py` 迁移链的前置条件（"facade 收敛"）已经
+通过删除死代码的方式达成，且比预期简单——**真实耦合度（inbound=2）
+已经比 Self 迁移链（inbound=6）更低，未触发止损阈值，可以考虑直接
+进入 Adapter 接入点设计，不再需要额外的、更复杂的 facade 层**。这是
+对"三、迁移优先级建议"第 2 条的更新：原建议"先做 facade 再评估"里的
+"facade"被证实其实就是"删掉死代码"这么简单，不需要引入新抽象层。
+
+**是否触发止损条件**：未触发（本身是清理性质，无新增代码风险；
+`pyflakes` + 回归测试双重验证，删除前后行为完全一致）。
+
+**`MIGRATION_STATUS.md` 是否已同步更新**：是，`history_manager.py`
+一行的耦合评估备注已更新为"inbound=2（原 12 里 10 个是死代码，已
+清理），未触发止损阈值，可评估 Adapter 接入点"。

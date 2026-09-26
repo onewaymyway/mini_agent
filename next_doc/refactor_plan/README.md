@@ -92,3 +92,12 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       暂未实现（显式标注，非静默空实现）。详见
       `03-sprint1.5-memory-perception-coupling-assessment.md` 末尾
       "五、Self 迁移链执行记录"。
+- [x] `history_manager.py` 的 `agent/` 层 facade 整理已完成：发现原
+      "inbound=12"里有 10 个是从未被引用的死代码 import（`pyflakes`
+      交叉验证），删除后 inbound 降到 2（低于 Self 迁移链的 6），
+      比预想的"建 facade"更简单——真正做的是"删掉死代码"，不是
+      "新建抽象层"。回归测试（319+190 passed）+ lint 均确认无新增
+      问题。Adapter 接入点尚未设计（本步骤只做了前置的耦合清理）。
+      详见 `03-sprint1.5-memory-perception-coupling-assessment.md`
+      末尾"六、history_manager.py facade 整理执行记录"。
+- [ ] `history_manager.py` 的 Adapter 接入点设计与实现：待项目所有者确认排期后启动。

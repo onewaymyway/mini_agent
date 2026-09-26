@@ -146,6 +146,25 @@ wiki、growth_advisor、goal_tree……），但这些功能之间没有统一�
 层 facade 整理（Sprint 1.5 建议的第二条迁移链，风险中等，需要先做
 调用方收敛，工作量大于 Self 这条）。
 
+- [x] **`history_manager.py` facade 整理**：
+  - 关键发现：`agent/` 下 11 个 import `HistoryManager` 的文件里，
+    除 `lifecycle.py`（真实实例化）外，其余 10 个（含 `snapshot.py`——
+    其顶层 import 是死代码，文件内另有一处真实使用的函数内局部
+    import，原样保留）都是从未被引用的死代码 import，`pyflakes`
+    逐一确认。
+  - 处理：直接删除这 10 处死代码 import，而不是新建 facade 抽象层。
+  - 验证：inbound 12→2；`snapshot`/`compaction`/`turn_loop`/
+    `reflection`/`reminders`/`role_judge`/`llm_control`/`profile`/
+    `commit_guard` 关键字测试子集 319 passed；真实构造 Agent 测试
+    + Self/Goal 迁移链测试 190 passed（同 5 个已知历史失败）；
+    lint 通过。
+  - 详见 `03-sprint1.5-memory-perception-coupling-assessment.md` 末尾
+    "六、history_manager.py facade 整理执行记录"。
+
+**下一步（待项目所有者确认排期）**：`history_manager.py` 的 Adapter
+接入点设计（本步骤只完成了前置耦合清理，真实 inbound 已降到 2，
+风险特征与 Self 相当，理论上可以直接进入 Adapter 设计阶段）。
+
 已知问题（Sprint 0 执行期间发现，不在本次改动范围内，如实记录）：
 `tests/test_goal_mode.py` 里 `test_build_from_history_*` 系列（5 个用例）
 在当前仓库状态下会失败——测试里的 lambda 参数签名与
