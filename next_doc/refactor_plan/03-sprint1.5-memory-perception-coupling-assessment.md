@@ -442,3 +442,76 @@ agent/ 层收敛"。
 `reminders_correction.py` 改为通过 Agent 对象统一访问）与
 `api/routes.py` 等零散调用方的处理，**不在本次范围内**，待项目
 所有者确认排期后再启动。
+
+## 十、perception/memory_store.py 分层 facade · 第二层（agent/）执行记录
+
+按"九"末尾"遗留/下一步"，启动第二层：`agent/` 包内 3 个文件
+（`agent/profile.py`/`agent/reflection.py`/`agent/reminders_correction.py`）
+的收敛。
+
+**现状盘点**：复查这 3 个文件的真实用法（`grep memory_store\.` 确认
+无任何 `MemoryStore` 实例方法调用），发现它们与"九"里 `evolution/`
+的情况完全一致——**只用到 `MemoryEntry` 这一个类型**，不涉及
+`MemoryStore` 本身的读写方法。这与"三、迁移优先级建议"第 3 条当初
+"这三个文件可能持有真实 `MemoryStore` 写入需求，需改为通过 Agent
+对象统一访问"的预判不同：预判基于未展开复查的粗粒度判断，实际展开
+后耦合面比预想更窄，因此采用与 `evolution/memory_types.py` 相同、
+更轻量的门面模式，而不是引入"通过 Agent 对象访问"这种更重的设计。
+
+**产出**：
+- 新增 `agent/memory_types.py`：只做 `MemoryEntry` 的重新导出
+  （`from mini_agent.perception.memory_store import MemoryEntry`），
+  不是新的领域概念，也不改变 `MemoryEntry` 的定义或行为。
+- 3 个 `agent/*` 文件里原来的
+  `from mini_agent.perception.memory_store import MemoryEntry`
+  （原带 `[dead-code cleanup]` 注释，见"六"）统一改成
+  `from mini_agent.agent.memory_types import MemoryEntry`。
+
+**验证**：
+- `py_compile` 全部通过；`pyflakes` 复查确认改动本身未引入新的
+  unused-import/undefined-name 问题（三个文件里报出的其它
+  unused-import 警告经核对是改动前就存在的既有问题——与"九"记录的
+  `agent/*` mixin 文件公共导入模板复制现象一致，非本次引入）。
+- `scripts/dep_graph.py --module perception.memory_store` 复扫：
+  inbound 深度依赖从"九"评估时的 **19 降到 17**（3 个 `agent/*`
+  文件收敛为 `agent/memory_types.py` 这 1 个新的直接调用方，净减少
+  2；因原 19 里已算入 `agent/memory_types.py` 自身尚未存在，实际
+  是 19 → 17，减少数与"评估口径"一致）。
+  `scripts/dep_graph.py --module agent.memory_types` 确认新门面
+  模块的 inbound 是预期的 3，未超止损阈值。
+- 回归测试：`tests/test_profile.py`/`tests/test_session_end_reflection.py`/
+  `tests/test_evolution_agent_profile.py` 47 passed（三个文件对应的
+  直接测试全过）；`profile`/`reflection`/`memory` 关键字更大范围
+  回归 235 passed, 11 failed——11 个失败逐一核对：`test_browser_core_session_manager.py`
+  的 5 个是既有浏览器 profile 环境用例（与"七"记录原因相同）；
+  `test_evolution_cli.py::test_revert_memory_failure_does_not_raise`
+  与"九"记录的既有失败一致；`test_evolve_cli.py` 3 个与
+  `test_subagent_inheritance.py` 2 个经在未改动的原始代码上单独
+  复跑同一批测试确认同样失败（测试隔离/执行顺序相关的既有问题，
+  非本次改动引入的回归）。
+- `scripts/lint_no_new_toplevel_concepts.py` 通过（新文件是 `agent/`
+  包内部子模块，不在顶层扫描范围内）。
+
+**结论**：`perception/memory_store.py` 真实 inbound 从 17 仍然
+**超过止损阈值 10+**，第二层收敛（`evolution/` + `agent/` 两层
+合计从 24 降到 17）降低了耦合面但还不足以让这条迁移链直接进入
+Adapter 接入点设计；剩余调用方分布在 `perception/` 包内部（约 10
+个文件，属于同包内聚，非跨子系统耦合）、`context_builder.py`/
+`goal_mode/runner.py`/根目录 `profile.py` 等零散调用方，需要继续
+推进"三、迁移优先级建议"第 3 条里的最后一步（`api/routes.py` 等
+零散调用方逐个处理，或评估"同包内部调用不计入跨子系统止损阈值"
+的口径调整）。
+
+**是否触发止损条件**：未触发（本身是"重新导出"性质的收敛，无新增
+代码风险；`pyflakes` + 回归测试 + 依赖图三重验证，行为完全一致）。
+
+**`MIGRATION_STATUS.md` 是否已同步更新**：是，
+`perception/memory_store.py` 一行的耦合评估备注已更新为
+"分层 facade 第二层（agent/）已完成，inbound=17（原 19 里 2 个净
+收敛进 agent/memory_types.py），仍超止损阈值，剩余调用方多数集中
+在 perception/ 包内部，需评估口径调整或继续处理零散调用方"，并
+新增一行 `agent/memory_types.py（新增门面模块）` 记录。
+
+**遗留/下一步**：`api/routes.py` 等零散调用方的处理，以及"同包
+内部调用是否应计入跨子系统止损阈值"的口径评估，**不在本次范围
+内**，待项目所有者确认排期后再启动。

@@ -17,8 +17,9 @@
 | orchestrator/ | Phase 6 | 未开始 | 0% | 否 | - | - |
 | evolution/（67 个模块，逐步细分） | Phase 9 | 未开始 | 0% | 否 | - | - |
 | perception/self_model.py | Phase 4 | 部分迁移 | 未知，待补充（`agent/lifecycle.py::_init_components()` 唯一接入点已走新链路做转换+trace，`AgentSelfModelBuilder`/`AgentSelfModel` 内部逻辑未改动） | 否（`SelfAdapter.to_old` 尚未实现，无实际调用方，见 `03-sprint1.5-memory-perception-coupling-assessment.md` "五、Self 迁移链执行记录"） | 2026-09-26 | Self 迁移链执行者 |
-| perception/memory_store.py（原表遗漏，Sprint 1.5 补充） | Phase 3 | 未开始 | 0%（分层 facade 第一层（evolution/）已完成：inbound=19（原 24 里 5 个收敛进新增的 `evolution/memory_types.py` 门面模块），仍超止损阈值 10+，调用方跨 `agent/`（3 个真实使用）/`perception/` 内部/`api/`/`goal_mode/`/根目录模块等子系统，继续推进 agent/ 层收敛，未做 Adapter 转换本身，故状态仍为"未开始"，见 `03-sprint1.5-memory-perception-coupling-assessment.md` "九、perception/memory_store.py 分层 facade · 第一层（evolution/）执行记录"） | 否 | 2026-09-26 | memory_store 分层 facade 第一层执行者 |
+| perception/memory_store.py（原表遗漏，Sprint 1.5 补充） | Phase 3 | 未开始 | 0%（分层 facade 第二层（agent/）已完成：inbound=17（原 19 里 2 个净收敛进新增的 `agent/memory_types.py` 门面模块；两层合计从 24 降到 17），仍超止损阈值 10+，剩余调用方多数集中在 `perception/` 包内部（同包内聚），另有 `context_builder.py`/`goal_mode/runner.py`/根目录 `profile.py` 等零散调用方，需评估"同包内部调用是否计入跨子系统止损阈值"口径或继续处理零散调用方，未做 Adapter 转换本身，故状态仍为"未开始"，见 `03-sprint1.5-memory-perception-coupling-assessment.md` "十、perception/memory_store.py 分层 facade · 第二层（agent/）执行记录"） | 否 | 2026-09-26 | memory_store 分层 facade 第二层执行者 |
 | evolution/memory_types.py（新增门面模块，Sprint 1.5 补充） | Phase 3 | 完全迁移 | 100%（`evolution/` 包内部对 `MemoryEntry` 的统一访问入口，本身只做重新导出，不涉及迁移语义） | 否 | 2026-09-26 | memory_store 分层 facade 第一层执行者 |
+| agent/memory_types.py（新增门面模块，Sprint 1.5 补充） | Phase 3 | 完全迁移 | 100%（`agent/` 包内部对 `MemoryEntry` 的统一访问入口，本身只做重新导出，不涉及迁移语义） | 否 | 2026-09-26 | memory_store 分层 facade 第二层执行者 |
 | Daemon / AutonomousLoop / Cron / UnifiedTaskScheduler / ObjectiveExecutor / ResourceArbiter | Phase 8 | 未开始 | 0% | 否 | - | - |
 
 > 以上为初始占位行，对应 `02`-`11` 各 Phase 文档里"现状盘点"提到的

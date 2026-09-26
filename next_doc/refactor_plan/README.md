@@ -130,8 +130,18 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       `03-sprint1.5-memory-perception-coupling-assessment.md`
       末尾"九、perception/memory_store.py 分层 facade · 第一层
       （evolution/）执行记录"。
-- [ ] `perception/memory_store.py` 分层 facade 第二层（`agent/`
-      内部收敛：`profile.py`/`reflection.py`/
-      `reminders_correction.py` 改为通过 Agent 对象统一访问）与
-      `api/routes.py` 等零散调用方的处理：待项目所有者确认排期后
+- [x] `perception/memory_store.py` 分层 facade 第二层（`agent/`
+      内部收敛）已完成：复查 `profile.py`/`reflection.py`/
+      `reminders_correction.py` 后发现与 `evolution/` 层同款情况——
+      只用到 `MemoryEntry`，不涉及 `MemoryStore` 读写方法，因此沿用
+      门面模式（新增 `agent/memory_types.py`）而非原计划更重的
+      "通过 Agent 对象统一访问"设计。inbound 从 19 降到 17（两层
+      合计 24→17），仍超止损阈值，剩余调用方多数集中在 `perception/`
+      包内部。回归测试（235 passed，11 个既有失败均与本次改动无关）
+      + 依赖图核对 + lint 均确认无新增问题。详见
+      `03-sprint1.5-memory-perception-coupling-assessment.md`
+      末尾"十、perception/memory_store.py 分层 facade · 第二层
+      （agent/）执行记录"。
+- [ ] `api/routes.py` 等零散调用方的处理，以及"同包内部调用是否
+      应计入跨子系统止损阈值"的口径评估：待项目所有者确认排期后
       启动。
