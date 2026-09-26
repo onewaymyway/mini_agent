@@ -20,6 +20,28 @@
 
 产出：`docs/architecture_v2/phase3-experience-inventory.md`。
 
+## 现状盘点执行记录（2026-09-26）
+
+- 已产出 `docs/architecture_v2/phase3-experience-inventory.md`：
+  盘点了 `history_manager.py`（对话/操作历史，定位为 `context` 字段
+  素材来源而非迁移对象）、`entry_type="lesson"` 的 `MemoryEntry`
+  （分布在 `agent/reflection.py`/`agent/reminders_correction.py`/
+  `evolution/outcome_tracker.py`/`evolution/failure_pattern_store.py`
+  至少 4 个写入点，**澄清了"lesson"实际不是独立类而是 `MemoryEntry`
+  的一个 `entry_type` 取值**，仍维持"作为第一条 Adapter 接入链路"的
+  最高优先级建议）、`wiki/experience_writer.py`（正面经验 wiki 页面，
+  确认保留不迁移，仅作字段命名参考）、以及原计划未点名但一并盘点到的
+  `evolution/failure_pattern_store.py::FailurePattern`（聚合统计层，
+  作为 Sprint 3-2 Analyzer 雏形参考）、
+  `evolution/decision_recall.py::DecisionRecallResult`（检索结果包装层，
+  作为 Sprint 3-2 Retriever 参考，可复用 `wiki_shelf_search()` 检索
+  通路）、`evolution/decision_profile_builder.py::ValuePattern`
+  （判断不属于本次迁移范围）。
+- 产出的迁移优先级表已可直接支撑 Sprint 3-1（"lesson"作为第一条
+  Adapter 接入链路）与 Sprint 3-2（Analyzer/Retriever 复用现有聚合/
+  检索基础设施）的启动，Sprint 3-1/3-2 本身（实际代码改动）留待下一次
+  推进，不在本次盘点范围内一并做掉。
+
 ## Sprint 3-1（1.5 周）：ExperienceRecorder + Store 扎实化
 
 | 任务 | 产出 |

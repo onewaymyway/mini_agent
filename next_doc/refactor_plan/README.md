@@ -216,3 +216,15 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       **Phase 3（Experience Layer 落地）**，按
       `04-phase3-experience-layer-sprint-plan.md` 划分的 Sprint 继续
       推进（下一次对话的任务）。
+- [x] Phase 2 达标后进入 **Phase 3（Experience Layer 落地）**，按
+      `04-phase3-experience-layer-sprint-plan.md` 划分的"现状盘点"环节
+      已完成：产出 `docs/architecture_v2/phase3-experience-inventory.md`，
+      盘点 `history_manager.py`/`entry_type="lesson"` 的
+      `MemoryEntry`（分布 4+ 写入点）/`wiki/experience_writer.py`/
+      `evolution/failure_pattern_store.py`/`evolution/decision_recall.py`/
+      `evolution/decision_profile_builder.py` 六类经验类结构，给出
+      迁移优先级表，确认"lesson"（`MemoryEntry.entry_type="lesson"`）
+      作为 Sprint 3-1 第一条 Adapter 接入链路、`failure_pattern_store.py`/
+      `decision_recall.py` 分别作为 Sprint 3-2 Analyzer/Retriever 的
+      参考实现。Sprint 3-1（`experience/recorder.py` + Store 扎实化）
+      留待下一次推进。
