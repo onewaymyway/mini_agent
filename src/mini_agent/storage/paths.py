@@ -16,7 +16,7 @@ storage/paths.py — 统一路径管理
 
     # Workdir 级
     paths.workdir_memory          # .agent/memory.jsonl
-    paths.workdir_experience_store # .agent/experience_store.jsonl（core.Experience 存储，Sprint 2）
+    paths.workdir_experience_store # .agent/experience_store.db（core.Experience 存储，Sprint 2 起；Sprint 3-1 起改为 SQLite）
     paths.workdir_event_log       # .agent/events.jsonl（core.Event 落盘，Phase 2 Sprint 2-2）
     paths.permissions             # .agent/permissions.json
     paths.sessions_dir            # .agent/sessions/
@@ -221,14 +221,22 @@ class AgentPaths:
 
     @property
     def workdir_experience_store(self) -> Path:
-        """<project_root>/.agent/experience_store.jsonl — 领域模型 Experience 存储
+        """<project_root>/.agent/experience_store.db — 领域模型 Experience 存储
 
         见 `next_doc/refactor_plan/02-executable-sprint-plan.md` Sprint 2：
-        持久化 `mini_agent.core.experience.Experience` 记录，每行一条 JSON
-        （append-only JSONL，与 `workdir_memory` 同样的落盘方式），供
+        持久化 `mini_agent.core.experience.Experience` 记录，供
         `mini-agent experience search "<关键词>"` 检索。
+
+        Phase 3 Sprint 3-1（见
+        `next_doc/refactor_plan/04-phase3-experience-layer-sprint-plan.md`）
+        把底层格式从 append-only JSONL 升级为 SQLite，文件名同步从
+        `experience_store.jsonl` 改为 `experience_store.db`，避免新旧两种
+        格式混用同一个文件名。Sprint 2 阶段已经产生的 `.jsonl` 历史数据
+        用一次性脚本 `scripts/migrate_experience_jsonl_to_sqlite.py` 迁移
+        进这个新路径，脚本本身不在这里自动触发（避免每次读路径都尝试
+        迁移，产生隐式的一次性副作用）。
         """
-        return self.workdir_dir / "experience_store.jsonl"
+        return self.workdir_dir / "experience_store.db"
 
     @property
     def workdir_event_log(self) -> Path:

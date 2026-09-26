@@ -62,11 +62,28 @@ def goal_run_result_to_experience(result: "GoalRunResult") -> Experience:
     """把 `GoalRunner.run()` 的返回值转换成一条 `Experience`。
 
     对应 Sprint 1 验收标准第 1 条链路里的 `Outcome → Experience` 一环。
+
+    Phase 3 Sprint 3-1（见
+    `next_doc/refactor_plan/04-phase3-experience-layer-sprint-plan.md`）
+    补齐 `Experience` 新增的 §7 字段：`GoalRunResult` 目前只暴露
+    `goal_spec/status/rounds_used/final_report/replan_proposal` 几个
+    字段，能可靠填充的新字段只有 `action`/`reason`/`evidence`——
+    `state_before`/`state_after`/`prediction`/`causal_hypothesis`/
+    `confidence` 需要 Goal 执行过程中的中间状态快照，`GoalRunResult`
+    这一层还拿不到，保持默认值（不臆造数据），留给后续 Sprint（比如
+    Phase 4 统一 State 落地后）再补。
     """
+    acceptance_criteria = (
+        list(result.goal_spec.acceptance_criteria) if result.goal_spec else []
+    )
     return Experience(
         source="goal_mode",
         goal_text=result.goal_spec.goal_text if result.goal_spec else "",
         status=result.status,
         rounds_used=result.rounds_used,
         final_report=result.final_report,
+        action="goal_mode.run",
+        reason=f"acceptance_criteria: {acceptance_criteria}" if acceptance_criteria else "",
+        evidence={"replan_proposal": dict(result.replan_proposal)} if result.replan_proposal else {},
+        lesson=result.final_report if result.status in ("stuck", "max_rounds_exhausted", "failed") else "",
     )

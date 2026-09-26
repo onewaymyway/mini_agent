@@ -57,6 +57,7 @@ from mini_agent.core import (
     ExperienceStore as _core_ExperienceStore,
     GoalAdapter as _core_GoalAdapter,
     ensure_event_log_subscribed as _core_ensure_event_log_subscribed,
+    ensure_experience_recorder_subscribed as _core_ensure_experience_recorder_subscribed,
     get_event_bus as _core_get_event_bus,
     goal_run_result_to_experience as _core_goal_run_result_to_experience,
 )
@@ -346,6 +347,20 @@ class GoalRunner:
         # 不改变 publish() 本身的行为或 run() 的控制流，仍是纯旁路。
         _core_ensure_event_log_subscribed(
             _core_EventLogStore(path=self._paths.workdir_event_log)
+        )
+
+        # [Phase 3 Sprint 3-1] 挂载 Experience 落库订阅者（幂等，见
+        # `core/experience_recorder.py::ensure_experience_recorder_subscribed()`），
+        # 让 `_finish()` 里 publish() 的 `ExperienceCreated` 事件自动落库，
+        # 不再需要 `_finish()` 内部手写额外的 `ExperienceStore.append()`
+        # 调用（见下方 `_finish()` 对应改动）。同样必须放在本次 run()
+        # 第一次 publish() 之前，且只做"挂订阅"，是纯旁路。
+        from mini_agent.core import ExperienceRecorder as _core_ExperienceRecorder
+
+        _core_ensure_experience_recorder_subscribed(
+            _core_ExperienceRecorder(
+                store=_core_ExperienceStore(path=self._paths.workdir_experience_store)
+            )
         )
 
         # [Sprint 1 唯一接入点 · 前半段] Goal(old) → GoalAdapter → GoalState(core)
@@ -1665,13 +1680,14 @@ class GoalRunner:
             )
         )
 
-        # [Sprint 2] 持久化，供下一次类似目标通过
-        # `mini-agent experience search "<关键词>"` 检索到。写失败（例如
-        # 磁盘只读）不应该影响 Goal 本身已经产出的结果，只记录警告。
-        try:
-            _core_ExperienceStore(path=self._paths.workdir_experience_store).append(_core_experience)
-        except OSError:
-            _core_logger.warning("持久化 Experience 失败（不影响 Goal 结果本身）", exc_info=True)
+        # [Phase 3 Sprint 3-1] 持久化不再在这里手写调用——上面的
+        # publish(ExperienceCreated) 会被 `run()` 里挂载的
+        # `ExperienceRecorder`（订阅者）自动落库到同一个
+        # `self._paths.workdir_experience_store`，供下一次类似目标通过
+        # `mini-agent experience search "<关键词>"` 检索到。落库失败的
+        # 处理已经在 `ExperienceRecorder.on_experience_created()` 内部
+        # 完成（记警告，不影响 Goal 本身已经产出的结果），这里不需要
+        # 重复 try/except。
 
         return result
 

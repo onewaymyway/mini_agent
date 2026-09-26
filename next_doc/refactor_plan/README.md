@@ -226,5 +226,31 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       迁移优先级表，确认"lesson"（`MemoryEntry.entry_type="lesson"`）
       作为 Sprint 3-1 第一条 Adapter 接入链路、`failure_pattern_store.py`/
       `decision_recall.py` 分别作为 Sprint 3-2 Analyzer/Retriever 的
-      参考实现。Sprint 3-1（`experience/recorder.py` + Store 扎实化）
+      参考实现。
+- [x] Sprint 3-1（ExperienceRecorder + Store 扎实化）已完成：
+      `core/experience.py::Experience` 扩展补齐原方案 §7 yaml 全部字段
+      （新增 `id`/`context`/`state_before`/`action`/`reason`/
+      `prediction`/`state_after`/`evidence`/`lesson`/
+      `causal_hypothesis`/`confidence`，旧字段名不变）+
+      `Experience.from_dict()` 宽容解析旧数据；`core/experience_store.py`
+      从 JSONL 升级为 SQLite（对外 API 与构造签名不变，
+      `AgentPaths.workdir_experience_store` 路径同步从 `.jsonl` 改名为
+      `.db`）；新增 `core/experience_recorder.py::ExperienceRecorder`
+      （订阅 `ExperienceCreated` 事件自动落库，接入模式与
+      `core/event_log_store.py` 一致）；`goal_mode/runner.py::run()`
+      挂载该订阅，`_finish()` 删除了原来手写的
+      `ExperienceStore(...).append(...)` 调用；`core/goal_adapter.py::
+      goal_run_result_to_experience()` 补充填充 `action`/`reason`/
+      `evidence`/`lesson`（`state_before`/`state_after`/`prediction`/
+      `causal_hypothesis`/`confidence` 因 `GoalRunResult` 拿不到对应
+      中间状态，如实保留默认值）；新增一次性迁移脚本
+      `scripts/migrate_experience_jsonl_to_sqlite.py`。验收标准（"一个
+      Goal 执行结束后 Experience 自动落库，不需要手动调用 CLI，字段
+      完整覆盖 §7 yaml 结构"）已用新增测试
+      `tests/test_phase3_experience_recorder.py`（5 用例）+ 既有
+      `tests/test_core_experience_store.py`（13 用例）验证，均通过；
+      相关回归测试无新增失败。详见
+      `04-phase3-experience-layer-sprint-plan.md` 末尾"Sprint 3-1
+      执行记录"与 `MIGRATION_STATUS.md`。可进入 **Sprint 3-2
+      （ExperienceRetriever + Analyzer，接入 Goal 规划阶段）**，
       留待下一次推进。

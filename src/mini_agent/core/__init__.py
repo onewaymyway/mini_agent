@@ -15,6 +15,13 @@ Phase 2 Sprint 2-1（见
 `event_log_store.py`（Event 的 JSONL 落盘 + 按 correlation_id 检索，
 供 `mini-agent events trace` CLI 命令使用）。
 
+Phase 3 Sprint 3-1（见
+`next_doc/refactor_plan/04-phase3-experience-layer-sprint-plan.md`）
+扩展了 `experience.py` 里 `Experience` 的字段集（补齐原方案 §7 yaml
+结构），把 `experience_store.py` 从 JSONL 升级为 SQLite，并新增
+`experience_recorder.py`（`ExperienceRecorder` 订阅 `ExperienceCreated`
+事件落库，替代此前 `goal_mode/runner.py` 手写的落盘调用）。
+
 其它核心概念（Self / World / Capability / Action / Simulation / Runtime）
 的最小 dataclass，待对应 Phase 的迁移链启动时再补，不提前占位。
 """
@@ -28,6 +35,11 @@ from .event_log_store import (
 )
 from .events import EVENT_KINDS, Event
 from .experience import Experience
+from .experience_recorder import (
+    ExperienceRecorder,
+    ensure_experience_recorder_subscribed,
+    reset_experience_recorder_subscriptions,
+)
 from .experience_store import ExperienceStore
 from .goal import GoalState
 from .goal_adapter import GoalAdapter, goal_run_result_to_experience
@@ -47,6 +59,9 @@ __all__ = [
     "ensure_event_log_subscribed",
     "reset_event_log_subscriptions",
     "Experience",
+    "ExperienceRecorder",
+    "ensure_experience_recorder_subscribed",
+    "reset_experience_recorder_subscriptions",
     "ExperienceStore",
     "GoalState",
     "GoalAdapter",

@@ -27,6 +27,10 @@
 | docs/architecture_v2/phase2-event-inventory.md（新增，Sprint 2-1 收尾） | Phase 2 | 完全迁移 | 100%（纯盘点文档，盘点 `history_manager.py`/`perception/behavior/events.py`/`evolution/`/`orchestrator/plan.py` 四类现有事件雏形并给出映射建议，判定四者本次均不接入 `core/event_bus.py`） | 不适用 | 2026-09-26 | Phase 2 Sprint 2-1 收尾核对执行者 |
 | core/event_log_store.py（新增，Sprint 2-2） | Phase 2 | 完全迁移 | 100%（新增模块：`EventLogStore` JSONL 落盘 + `trace(correlation_id)` 检索、`ensure_event_log_subscribed()` 幂等挂载订阅者；`goal_mode/runner.py::run()` 唯一接入点新增一行挂载调用，纯旁路，未改动 `run()`/`_finish()` 控制流或返回值） | 不适用 | 2026-09-26 | Phase 2 Sprint 2-2 执行者 |
 | cli/commands/events_cmd.py（新增，Sprint 2-2） | Phase 2 | 完全迁移 | 100%（`mini-agent events trace\|list` 只读 CLI，与 `experience_cmd.py` 短路接入方式一致，见 `cli/app.py::main()`） | 不适用 | 2026-09-26 | Phase 2 Sprint 2-2 执行者 |
+| core/experience.py（Sprint 3-1 字段扩展） | Phase 3 | 部分迁移 | Goal 链路唯一接入点（`goal_adapter.py::goal_run_result_to_experience()`）已填充新字段里 `action`/`reason`/`evidence`/`lesson`；`state_before`/`state_after`/`prediction`/`causal_hypothesis`/`confidence` 因 `GoalRunResult` 拿不到中间状态快照，暂保留默认值，等 Phase 4（统一 State）落地后再补 | 不适用（`Experience` 是新领域概念本身） | 2026-09-26 | Phase 3 Sprint 3-1 执行者 |
+| core/experience_store.py（Sprint 3-1 升级为 SQLite） | Phase 3 | 完全迁移 | 100%（对外 API 不变，`goal_mode/runner.py`/`cli/commands/experience_cmd.py` 两个既有调用方均无需改动；`AgentPaths.workdir_experience_store` 路径同步从 `.jsonl` 改名为 `.db`） | 不适用 | 2026-09-26 | Phase 3 Sprint 3-1 执行者 |
+| core/experience_recorder.py（新增，Sprint 3-1） | Phase 3 | 完全迁移 | 100%（`ExperienceRecorder` 订阅 `ExperienceCreated` 落库，`goal_mode/runner.py::run()` 唯一接入点新增一行挂载调用，`_finish()` 同步删除了原手写落盘调用） | 不适用 | 2026-09-26 | Phase 3 Sprint 3-1 执行者 |
+| scripts/migrate_experience_jsonl_to_sqlite.py（新增，Sprint 3-1） | Phase 3 | 完全迁移 | 100%（一次性迁移脚本，跑完即弃，不接入正式代码路径） | 不适用 | 2026-09-26 | Phase 3 Sprint 3-1 执行者 |
 
 > 以上为初始占位行，对应 `02`-`11` 各 Phase 文档里"现状盘点"提到的
 > 主要模块。执行过程中如发现遗漏模块，直接追加新行，不要删除已有行

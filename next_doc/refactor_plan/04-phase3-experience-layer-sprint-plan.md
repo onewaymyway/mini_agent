@@ -68,6 +68,62 @@ CLI），字段完整覆盖原文 §7 定义的 yaml 结构。
 3. 旧的 `history/lesson/decision` 相关测试仍然通过（说明没有破坏
    旧系统，只是新增了一条并行链路）。
 
+## Sprint 3-1 执行记录（2026-09-26）
+
+- `core/experience.py::Experience` 扩展补齐原方案 §7 yaml 结构剩余字段：
+  `id`/`context`/`state_before`/`action`/`reason`/`prediction`/
+  `state_after`/`evidence`/`lesson`/`causal_hypothesis`/`confidence`。
+  沿用 `core/events.py` 扩展 `Event` 字段集时定下的先例：保留旧字段名
+  （`goal_text`/`status`/`final_report`/`created_at`）不变，新增字段
+  全部给默认值，`goal_adapter.py`/`experience_store.py`/
+  `experience_cmd.py` 的旧调用点不改一行也能继续工作。新增
+  `Experience.from_dict()`，对缺失新增字段的旧数据宽容处理（回退默认
+  值而不是抛异常），为迁移脚本铺路。
+- `core/experience_store.py` 从 Sprint 2 的 JSONL 升级为 SQLite（单表
+  `experiences`）。选择这么做的原因见 Sprint 3-1 任务表：Sprint 3-2 即将
+  加检索/聚合统计，继续用"整份读进内存再过滤"的方式会随记录量增长而
+  失效。对外 `append`/`all`/`search` API 与构造函数签名（`path` 可选）
+  保持不变，现有调用方（`goal_mode/runner.py`、
+  `cli/commands/experience_cmd.py`）与既有测试
+  （`tests/test_core_experience_store.py`）不需要改一行。
+- 新增 `core/experience_recorder.py::ExperienceRecorder`：订阅
+  `ExperienceCreated` 事件后自动落库，接入模式（`ensure_experience_
+  recorder_subscribed()` 幂等挂载、订阅是纯旁路）与 Phase 2 Sprint 2-2
+  的 `core/event_log_store.py::ensure_event_log_subscribed()` 完全一致。
+  `goal_mode/runner.py::run()` 在挂载 `EventLogStore` 订阅的同一位置，
+  新增挂载 `ExperienceRecorder` 订阅；`_finish()` 删除了原来手写的
+  `ExperienceStore(...).append(...)` 调用——不再需要"publish 一次 +
+  手写落盘一次"两段独立逻辑，只保留 publish，落盘由订阅者自动完成，
+  避免两处逻辑漂移。
+- `core/goal_adapter.py::goal_run_result_to_experience()` 补充填充新增
+  字段里能可靠拿到的部分：`action="goal_mode.run"`、`reason`（来自
+  `goal_spec.acceptance_criteria`）、`evidence`（来自
+  `replan_proposal`）、`lesson`（终止状态为 stuck/max_rounds_exhausted/
+  failed 时取 `final_report`）。`state_before`/`state_after`/
+  `prediction`/`causal_hypothesis`/`confidence` 因为 `GoalRunResult`
+  这一层目前拿不到对应的中间状态快照，如实保留默认值，不臆造——
+  这些字段的真正填充需要等 Phase 4（统一 State）落地后才有数据来源。
+- 新增一次性迁移脚本 `scripts/migrate_experience_jsonl_to_sqlite.py`：
+  读取 Sprint 2 阶段遗留的 `.agent/experience_store.jsonl`，用
+  `Experience.from_dict()` 宽容解析每一行，逐条写入新的 SQLite store
+  （`.agent/experience_store.db`）。脚本本身不在 `AgentPaths` 属性读取
+  时自动触发，需要手动运行一次，跑完确认数据无误后建议手动删除旧文件。
+- 验证：新增 `tests/test_phase3_experience_recorder.py`（5 用例全过，
+  覆盖新字段完整性、SQLite round-trip、订阅落库、订阅幂等性、旧数据
+  宽容解析）；`tests/test_core_experience_store.py`（Sprint 2 遗留测试，
+  13 用例全过，证明 SQLite 升级没有破坏对外行为）；
+  `tests/test_phase2_event_log_and_cli.py`、`tests/test_goal_mode.py`
+  等相关回归测试全过（仅剩 Sprint 0 已记录、与本次改动无关的
+  `test_build_from_history_*` 系列 + 浏览器 profile 相关既有失败）；
+  `pyflakes` 核对新增/改动文件无未用 import。
+- 验收标准（"一个 Goal 执行结束后，Experience 自动落库，不需要手动调用
+  CLI，字段完整覆盖原文 §7 定义的 yaml 结构"）已满足：`run()` 挂载
+  `ExperienceRecorder` 订阅后，`_finish()` 只需 `publish()`，落库是
+  订阅者的自动行为；`Experience.to_dict()` 覆盖 §7 全部字段。
+- Sprint 3-1 完整完成三项任务（recorder / store 升级 / 迁移脚本），
+  可进入 **Sprint 3-2（ExperienceRetriever + Analyzer，接入 Goal
+  规划阶段）**，留待下一次推进。
+
 ## 完成标志
 
 - [ ] Experience 的记录、存储、检索三个环节都已用真实 Goal 执行验证过
