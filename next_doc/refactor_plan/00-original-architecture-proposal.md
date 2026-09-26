@@ -3166,3 +3166,29 @@ Learning
 > **Self-centered Runtime。**
 
 这应该成为 mini_agent 下一阶段最重要的架构方向。
+
+---
+
+# 补充（Sprint 3 复盘新增，2026-09-26）
+
+> 以下内容是 Sprint 1-2 实际执行后，按
+> `next_doc/refactor_plan/02-executable-sprint-plan.md` Sprint 3
+> "更新映射表"任务追加的补充说明，**不修改上方"三十、当前模块如何映射到
+> 新架构"表格的原文**（避免静默篡改用户提供的原始方案），只在此追加
+> 实际踩坑后发现的隐藏依赖数据，供后续 Phase 决策参考。完整复盘见
+> `02-executable-sprint-plan.md` 末尾"Sprint 3 执行记录"。
+
+对"三十"表格里三行的补充数据（`scripts/dep_graph.py --module <name>`
+实测结果，inbound 指"直接 import 具体符号/类"的文件数，止损阈值为
+10+）：
+
+| 当前模块 | 表格标注的下一代归属 | 实测 inbound 深度依赖文件数 | 是否已超止损阈值 |
+| --- | --- | --- | --- |
+| `goal_mode/` | `goals/` | 6（Sprint 1 后，含新增的 `core/goal_adapter.py`） | 否，远低于阈值，Sprint 1 已验证可行 |
+| `history/`（含 `history_manager.py`） | `experience/` | 12 | **是**（Sprint 3 复盘新发现） |
+| `perception/`（含 `perception/memory_store.py`、`perception/self_model.py`） | `experience/` + `self/` | 69 | **是，远超阈值**（Sprint 3 复盘新发现） |
+
+结论见 `02-executable-sprint-plan.md` Sprint 3 执行记录"正式决策"一节：
+Memory → Experience 这条链**不能**直接照搬 Goal 迁移链"单一接入点 +
+Adapter 直接转换"的模式，需要先做耦合拆解。
+

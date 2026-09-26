@@ -84,7 +84,25 @@ wiki、growth_advisor、goal_tree……），但这些功能之间没有统一�
     prompt 组装（即"Agent 决策时自动看到"），明确标注留给后续 Phase。
   - 详见 `next_doc/refactor_plan/02-executable-sprint-plan.md` 末尾
     "Sprint 2 执行记录"。
-- [ ] Sprint 3（复盘 + 推广决策）：待开始。
+- [x] **Sprint 3（复盘 + 推广决策）**：
+  - 复盘发现：Adapter 双向转换本身未踩坑，但只保证核心字段一致，不是
+    完整可逆序列化（有意裁剪，非缺陷）。
+  - 依赖数据：`scripts/dep_graph.py` 实测 `history_manager.py`
+    inbound 12、`perception/` inbound 69，均超过 Sprint 0 止损阈值
+    （10+），`perception/` 超出近 7 倍。
+  - **正式决策**：Memory → Experience 迁移链暂缓直接照搬 Goal 的
+    "单点接入 + Adapter"模式，需先做独立的耦合拆解评估
+    （"Sprint 1.5"）。不影响 Goal 迁移链已完成的成果，不回滚。
+  - Phase 1（第一阶段）7 条完成判定标准逐条核对：全部达成或在计划
+    范围内的"尚未开始"状态（Self/World/Capability/Action/Simulation/
+    Runtime 6 个术语的 dataclass 按计划留给后续 Phase，非缺陷）。
+  - 映射表补充：已在 `00-original-architecture-proposal.md` 末尾追加
+    "补充（Sprint 3 复盘新增）"小节（不改动原表格），记录实测耦合数据。
+  - 详见 `next_doc/refactor_plan/02-executable-sprint-plan.md` 末尾
+    "Sprint 3 执行记录"（含按第四节流程留痕的计划变更说明）。
+
+**Phase 1（第一阶段）整体状态：判定标准 7 条全部达成，已闭环。** 下一步
+（是否启动 Sprint 1.5、以及后续 Phase 2/3 的排期）待项目所有者决策。
 
 已知问题（Sprint 0 执行期间发现，不在本次改动范围内，如实记录）：
 `tests/test_goal_mode.py` 里 `test_build_from_history_*` 系列（5 个用例）

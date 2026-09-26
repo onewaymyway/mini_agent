@@ -66,4 +66,12 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       `mini-agent experience search|list` CLI 命令，`goal_mode/runner.py`
       在原有 Sprint 1 接入点上新增实际持久化调用，详见
       `02-executable-sprint-plan.md` 末尾的"Sprint 2 执行记录"
-- [ ] Sprint 3（复盘 + 推广决策）尚未开始
+- [x] Sprint 3（复盘 + 推广决策）已完成：复盘发现 `history_manager.py`
+      （inbound 12）、`perception/`（inbound 69）均已超过 Sprint 0
+      定义的止损阈值（10+），**正式决策：Memory → Experience 迁移链
+      暂缓直接照搬 Goal 的模式，需先补一个独立的"Sprint 1.5：
+      Memory/Perception 耦合拆解评估"**。Phase 1（第一阶段）7 条完成
+      判定标准逐条核对，全部达成或在计划范围内。详见
+      `02-executable-sprint-plan.md` 末尾"Sprint 3 执行记录"与
+      `00-original-architecture-proposal.md` 末尾的映射表补充。
+- [ ] Sprint 1.5（Memory/Perception 耦合拆解评估，Sprint 3 复盘新增）：待开始，需项目所有者确认是否采纳。

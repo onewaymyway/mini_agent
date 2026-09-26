@@ -325,3 +325,129 @@ Goal 本身已经产出的结果，不新增第二个接入点（仍然只在 `_
 
 **影响范围**：`storage/paths.py` 新增了 `workdir_experience_store`
 属性（纯新增，不修改任何既有属性的路径/行为），不影响其它模块。
+
+---
+
+## Sprint 3 执行记录（复盘 + 推广决策，按 `12-execution-and-doc-sync-norms.md` 第五节最低要求）
+
+### 复盘会（Sprint 1-2 遇到的耦合问题、Adapter 双向转换的坑）
+
+- **Adapter 双向转换本身没有踩坑**：`GoalAdapter` 在
+  `goal_text`/`acceptance_criteria`/`version` 三个核心字段上的往返转换
+  经测试验证无数据丢失（见 Sprint 1 执行记录）。但这三个字段只是
+  `GoalSpec` 全部字段的子集——`verification_method` /
+  `verification_command` / `negotiation_log` 没有被纳入新领域模型的
+  `core.goal.GoalState`（Sprint 1 文档已注明"只保留跨子系统需要共享的
+  最小信息"）。这不是"转换出错"，而是**有意的范围裁剪**，但复盘时需要
+  明确记录：如果未来有代码路径依赖"`GoalAdapter.to_old(GoalAdapter
+  .to_new(spec))` 应该完全等价于原 `spec`"，这个假设是不成立的，
+  `to_old` 只保证核心字段一致，不是完整的可逆序列化。
+- **单一接入点原则在 Goal 这条链路上验证可行**：只在 `run()`/`_finish()`
+  两处调用，没有出现"为了让 Adapter 能用而不得不到处插入转换代码"的
+  情况，说明"只在一个点做 Old↔New 转换 + trace/持久化，不改动内部逻辑"
+  这个模式本身是稳妥的。
+- **真正的耦合问题出现在推广评估阶段，而不是 Goal 自己身上**（见下方
+  "更新映射表"）：`history_manager.py`（12 个深度 inbound）和
+  `perception/`（69 个深度 inbound）都已经超过 Sprint 0 定义的止损阈值
+  （10+）。这意味着"Goal 迁移链走通了"不能简单地当作"整个模式已验证、
+  可以直接套用到 Memory"的证据——Goal 是原方案里coupling 最低的子系统，
+  这条链路顺利本身某种程度上是"挑了一条最容易的路"，不代表 Memory/Self
+  同样容易。
+
+### 更新映射表
+
+已按计划在 `00-original-architecture-proposal.md` 末尾追加"补充
+（Sprint 3 复盘新增）"小节（不修改原表格文字本身，避免静默篡改用户
+原始文档），记录 `goal_mode/` / `history/` / `perception/` 三个模块的
+实测 inbound 深度依赖数据。详见该文件末尾。
+
+### 迁移完成度标注
+
+`MIGRATION_STATUS.md` 已在 Sprint 1/2 建立并持续更新（`goal_mode/runner.py`
+一行当前状态"部分迁移"）。本 Sprint 未发生新的模块迁移，因此没有新增
+需要更新的行；`history_manager.py` / `perception/self_model.py` 两行
+维持"未开始"不变（如实反映——复盘发现耦合度高，不代表已经开始迁移）。
+
+### 正式决策：Memory → Experience 这条链是否按 Sprint 1-2 的模式做？
+
+**决策：不直接照搬，需要先做耦合拆解，暂缓启动 Memory 完整迁移。**
+
+依据：
+1. Sprint 0 定义的止损条件明确写着"如果依赖扫描发现 goal_mode 和其它
+   模块的耦合远超预期（比如被 10+ 个模块直接 import 内部类），需要重新
+   评估"——虽然这条止损条件原文是针对 Goal 写的，但其精神（"耦合度是
+   决定是否直接套用该模式的关键指标"）同样适用于任何后续候选迁移链。
+   `history_manager.py`（12）和 `perception/`（69）都已实测超过该阈值，
+   `perception/` 更是超出接近 7 倍，属于"远超预期"。
+2. `GoalAdapter` 模式的核心假设是"只需要在一个调用点做转换，不动内部
+   逻辑"；但 69 个文件直接 import `perception/` 内部符号，意味着
+   `perception/self_model.py` 等模块的调用方分散在 `evolution/`（约
+   12 个子模块）、`wiki/`（约 10 个子模块）等大量地方，"只选一个接入点"
+   这个假设在如此分散的调用方分布下大概率不成立——真正推广时很可能
+   需要在多个调用点分别接入 Adapter，而不是 Goal 链路验证过的"单点
+   接入"模式。
+3. 因此正式决策为：**Memory → Experience 迁移链在启动前，需要先补一个
+   独立的"Sprint 1.5：Memory/Perception 耦合拆解评估"**（不是直接跳到
+   "比照 02 的格式写 03-memory-migration-sprint-plan.md"），先把
+   `perception/` 内部哪些符号被外部直接依赖、能否先做一层门面
+   （facade）收窄依赖面，评估清楚之后，再决定 Adapter 接入点应该有
+   几个、放在哪些位置。这本身也应该产出一份新的 Phase 文档，遵循
+   `12-execution-and-doc-sync-norms.md` 第六节的文档写作规范。
+4. 本决策不影响 Sprint 1-2 已经完成的 Goal 迁移链成果——`goal_mode` 的
+   接入点保持不变，继续按"部分迁移"状态运行，不回滚。
+
+### Phase 1（第一阶段）整体完成的判定标准逐条核对
+
+对照 `02-executable-sprint-plan.md` 原文 Phase 1 完成判定标准（7 条）：
+
+1. 新代码不再随意创建新的一级概念——**达成**：本次全部新增文件（`core/`
+   6 个 + `experience_store.py` + `experience_cmd.py`）均通过
+   `scripts/lint_no_new_toplevel_concepts.py` 检查，未新增
+   `Manager/Scheduler/Advisor` 后缀模块。
+2. `Self / World / Experience / Goal / Capability / Action / Simulation /
+   Runtime` 术语在 `core/` 中有对应的最小 dataclass 定义——**部分达成**：
+   只有 `Goal`（`core.goal.GoalState`）和 `Experience`
+   （`core.experience.Experience`）两个术语有定义，其余 6 个术语
+   （Self/World/Capability/Action/Simulation/Runtime）按计划"待对应
+   Phase 的迁移链启动时再补，不提前占位"，尚未定义。**这是本次第一
+   阶段范围内的正常状态，不是缺陷**——原文档本条判定标准的范围就是
+   "Phase 1（第一阶段）"，而 Self/World 等属于 Phase 4/8 等后续 Phase，
+   在那些 Phase 启动前不应该提前建空 dataclass（呼应
+   `12-execution-and-doc-sync-norms.md` 第六节第 4 条"任何占位/暂不
+   实现的设计必须显式标注 TODO"，`core/__init__.py` 的文档字符串已
+   如此标注）。
+3. Goal 能完整走通 `Goal → Action → Outcome → Experience` 链路，且有
+   trace 证据——**达成**（Sprint 1 trace 日志 + Sprint 2 实际持久化 +
+   CLI 检索演示）。
+4. Experience 可以被下一次类似任务检索到——**达成**（Sprint 2 已验证，
+   见"Sprint 2 执行记录"实测演示）。
+5. 旧的 `goal_mode` 模块仍可正常运行，且原有测试全部通过——**达成，
+   有 5 个已知例外**：`test_goal_mode.py` 121-126 passed（依运行范围
+   不同），5 个 `test_build_from_history_*` 失败在 Sprint 0 之前就已
+   存在，与本次三个 Sprint 的改动均无关，已在每个 Sprint 执行记录里
+   如实记录，未被"修复掉又假装没发生过"，也未被本次改动放大或修复
+   （不在本次范围内处理，需要单独排期）。
+6. 依赖图显示 `goal_mode` 与其它模块的耦合度没有因为迁移而上升——
+   **达成**：inbound 深度依赖从 Sprint 0 的 5 个变为 Sprint 1 后的 6 个
+   （唯一新增的是计划内的 `core/goal_adapter.py`），outbound 新增
+   `mini_agent.core` 一条单向依赖，均在预期范围内，未出现意外新增
+   耦合。
+7. `MIGRATION_STATUS.md` 如实反映了当前迁移完成度，不是"全有或全无"——
+   **达成**：`goal_mode/runner.py` 标注为"部分迁移"、占比"未知，待
+   补充"并说明具体原因，未使用"完全迁移"这种夸大的表述。
+
+**Phase 1（第一阶段）整体判定：达成（7 条标准全部满足或在计划范围内的
+"尚未开始"状态，无一条被违反）。**
+
+**下一步（不属于本次 Sprint 1-3 范围，供项目所有者决策）**：
+按判定标准达成后的下一步，应进入原方案 §54 提到的 P1 阶段前，先完成
+本 Sprint 决策里提到的"Sprint 1.5：Memory/Perception 耦合拆解评估"，
+而不是直接为 Memory 写一份与 `02-executable-sprint-plan.md` 同构的
+`03-memory-migration-sprint-plan.md`——这是本次复盘与原计划产生的
+唯一分歧，已按`12-execution-and-doc-sync-norms.md` 第四节"计划变更
+流程"在此留痕（触发条件：止损条件里"耦合远超预期"被 `perception/`
+的实测数据触发；原计划：Sprint 3 任务表写的是"决定 Memory → Experience
+这条链是否按 Sprint 1-2 的模式做"；实际情况：耦合度数据显示不能直接
+照搬；调整后方案：先做独立的耦合拆解评估 Sprint，再决定 Adapter
+接入点方案；影响范围：后续任何 Memory/Self 迁移相关文档在"前置条件"
+小节都应该注明"依赖 Sprint 1.5 耦合拆解评估的结论"）。
