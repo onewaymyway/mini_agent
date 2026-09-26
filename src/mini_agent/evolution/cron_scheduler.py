@@ -878,13 +878,15 @@ class CronScheduler:
         self._goal_cycle_fn = handler
 
     def _maybe_alert_consecutive_skip(self, job: CronJob) -> None:
-        """[goal_cron_unified_scheduler_improvement_plan.md P2] 只在
-        consecutive_skip_count 恰好跨越 `cron.skip_alert_threshold`（默认 5）
-        那一刻发一次告警，不重复刷屏——与 `record_gating_transition()` 的
-        "状态变化才写入"是同一节流思路：== threshold 而不是 >= threshold，
-        保证每次连续跳过的"轮次"只在跨越阈值时触发一次；后续再连续跳过
-        不会重复通知，直到某次成功触发清零、重新从零累积、再次跨越阈值。
-        失败静默：告警本身失败不能影响 tick() 主流程。"""
+        """[goal_cron_unified_scheduler_improvement_plan.md P2；
+        goal_cycle_orphan_execution_recovery_plan.md 2.2 改为重复提醒]
+        每达到一次 `cron.skip_alert_threshold`（默认 5）的整数倍就发一次
+        告警——与 `goal_node_retry.py` 里连续失败重试告警"每 threshold
+        整数倍提醒一次"是同一节流思路，既不刷屏，又不会永久沉默：第 5、
+        10、15…次连续跳过各发一次通知，而不是只在第 5 次发一次。
+        `consecutive_skip_count` 在某次成功触发后清零（见 `tick()`），
+        所以正常工作的 Goal 完全不受影响，只有真正长期卡住的才会被
+        反复提醒。失败静默：告警本身失败不能影响 tick() 主流程。"""
         try:
             # CronScheduler 本身不持有 AppConfig（构造参数只有 paths/
             # submit_fn/digest_advisor_cfg/job_runner），复用 job_runner
@@ -893,7 +895,7 @@ class CronScheduler:
             base_cfg = getattr(self._job_runner, "_base_cfg", None) if self._job_runner is not None else None
             cron_cfg = getattr(base_cfg, "cron", None) if base_cfg is not None else None
             threshold = getattr(cron_cfg, "skip_alert_threshold", 5) if cron_cfg is not None else 5
-            if threshold <= 0 or job.consecutive_skip_count != threshold:
+            if threshold <= 0 or job.consecutive_skip_count % threshold != 0:
                 return
             from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
             NotificationDispatcher(self._paths).dispatch(NotificationMessage(

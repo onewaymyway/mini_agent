@@ -1,7 +1,7 @@
 # 周期性 Goal 因孤儿执行记录永久停摆 —— 自愈与告警改进方案
 
-> 状态：**2.1（核心：孤儿执行记录自愈）已实施完成；2.2（连续跳过告警
-> 改为重复提醒）待实施**。
+> 状态：**2.1（核心：孤儿执行记录自愈）、2.2（连续跳过告警改为重复提醒）
+> 均已实施完成**。
 > 触发背景：用户反馈一个已经正常跑了 172 轮的 recurring Goal，看板显示
 > "下次触发：now / overdue"，但实际已经连续很多天没有真正触发过，也没有
 > 任何持续的告警提醒用户。
@@ -17,6 +17,28 @@
 > 一并跑过无回归（`test_goal_mode.py` 中 6 个跟本方案无关的用例因本地
 > 环境未装 `anthropic` SDK 失败，属既有环境问题，非本次改动引入）。
 > 已更新 `docs/goal-cron-binding-guide.md` §3。
+>
+> **实施记录（2.2）**：`cron_scheduler.py::_maybe_alert_consecutive_
+> skip()` 判断条件从 `== threshold` 改为 `% threshold == 0`（与
+> `goal_node_retry.py` 的重复提醒模式一致），第 5、10、15…次连续跳过
+> 各发一次告警。新增测试
+> `tests/test_cron_scheduler_repeated_skip_alert.py`（3 用例全过），
+> 更新了 `tests/test_goal_cron_unified_scheduler_p0_p1_p2.py` 的文档
+> 注释（既有用例本身无需改动，仍然通过）。与更广的 cron/patrol/
+> unified-scheduler 回归测试（`test_unified_dispatch_p5_step5/step4`、
+> `test_cycle_tuning`、`test_cycle_patrol`、
+> `test_unified_scheduler_preview_route`、
+> `test_unified_arbitration_p5_step3`、
+> `test_scheduling_overview_route`）一并跑过，除一个与本方案无关的
+> 既有失败用例（`test_unified_dispatch_p5_step4.py::
+> TestObjectiveAdapterExecuteStillUnimplemented`，与本次改动的文件均
+> 无关，属既有环境/代码状态问题）外无新增回归。已更新
+> `docs/unified-scheduler-guide.md` §4、`docs/cron-dedicated-execution-
+> guide.md` §3.2 与配置表、`docs/goal-cycle-patrol-guide.md` 的 cron 层
+> /巡检层去重说明。
+>
+> 至此本方案 §2 的两项修复全部落地，`goal_cycle_orphan_execution_
+> recovery_plan.md` 无更多待实施项。
 
 ## 0. 结论先行
 

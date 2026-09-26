@@ -7,8 +7,11 @@ P0 — CronJobRunner.set_gating_degraded()/effective_max_concurrent()：degraded
      态收紧并发上限（不是整体拒绝提交），full 态恢复。
 P1 — cron job 执行完毕后把 token 计入 ResourceArbiter 的 used_today_cron，
      gating_state() 的 blocked 原因附带三类消耗的分项数字。
-P2 — CronJob.consecutive_skip_count 由 CronScheduler.tick() 维护，跨越
-     cron.skip_alert_threshold 时发一次通知，成功触发后清零。
+P2 — CronJob.consecutive_skip_count 由 CronScheduler.tick() 维护，每达到
+     cron.skip_alert_threshold 的整数倍时发一次通知（重复提醒，见
+     goal_cycle_orphan_execution_recovery_plan.md 2.2；本文件保留跨越
+     阈值时首次触发的用例，第 10/15…次的重复提醒用例见
+     tests/test_cron_scheduler_repeated_skip_alert.py），成功触发后清零。
 """
 
 from __future__ import annotations

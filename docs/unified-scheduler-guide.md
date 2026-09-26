@@ -55,9 +55,12 @@ daemon 内部实际有三条相互独立、但共享同一份底层 LLM 资源�
 ## 4. cron 连续跳过追踪与告警（P2）
 
 每个 `CronJob` 有 `consecutive_skip_count` 字段：到期未能成功触发时
-+1，成功触发一次清零。超过 `cron.skip_alert_threshold`（默认 `5`）时，
-通过通知系统发一条告警（"cron job X 已连续 N 次到点未能触发"），且只在
-**跨越阈值那一刻**发一次，不重复刷屏；之后再次连续跳过会重新从零累积。
++1，成功触发一次清零。每达到 `cron.skip_alert_threshold`（默认 `5`）的
+**整数倍**时，通过通知系统发一条告警（"cron job X 已连续 N 次到点未能
+触发"）——即第 5、10、15…次各发一次，而不是只在第一次跨越阈值时发一次，
+避免长期停摆的 job 发完一条告警后就此永久沉默（见
+[goal_cycle_orphan_execution_recovery_plan.md](../next_doc/goal_cycle_orphan_execution_recovery_plan.md) 2.2）；
+成功触发一次后清零，重新从零累积。
 
 看板 Cron 面板会展示每个 job 的 `consecutive_skip_count`，非零时高亮。
 

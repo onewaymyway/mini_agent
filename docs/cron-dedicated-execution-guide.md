@@ -117,9 +117,10 @@ Agent 已经在跑是 `running`——此前两者会被合并展示为笼统的"
 不受这条检查影响，设计上就应该在用户在场时也能正常跑（本身低频、轻量、
 以只读扫描为主）。
 
-`CronJob.consecutive_skip_count` 达到 `cron.skip_alert_threshold`（默认
-5）时会通过 `NotificationDispatcher` 发一次告警，避免一个 job 长期
-"到点但从来没成功触发过"而没人注意到。
+`CronJob.consecutive_skip_count` 每达到 `cron.skip_alert_threshold`
+（默认 5）的整数倍时会通过 `NotificationDispatcher` 发一次告警（第
+5、10、15…次各发一次，而不是只发一次），避免一个 job 长期"到点但从来
+没成功触发过"而没人持续注意到。
 
 同一次 `tick()` 内多个 job 同时到期时，按 `CronJob.priority`（默认 0，
 数值越大越优先）降序排序后依次提交——只影响"谁先拿到排队位置"，不做
@@ -351,7 +352,7 @@ build_cron_agent()`），不跨触发复用同一个 Agent/history：
 | `inner_max_turns` | 15 | cron 专用 Agent 单次 `run_turn()` 内部的 `max_turns` 预算（见 §5） |
 | `stale_job_watchdog_grace_seconds` | 300（5 分钟） | §3.3 watchdog 判定"job 已卡死"时，在 job 自己的 `timeout_seconds` 之上再加的宽限期 |
 | `degraded_max_concurrent` | 1 | §3.1 resource arbiter 判定为 `degraded` 时，cron 通道临时收紧到的并发上限（`scheduler.unified_arbitration_enabled=True` 时改由 §7.1 的加权分配接管，本字段退化为兜底值） |
-| `skip_alert_threshold` | 5 | §3.2 `consecutive_skip_count` 达到该阈值时触发一次告警 |
+| `skip_alert_threshold` | 5 | §3.2 `consecutive_skip_count` 每达到该阈值的整数倍时触发一次告警（重复提醒，不是只发一次） |
 | `reserved_min_concurrent` | 1 | 仅 `scheduler.unified_arbitration_enabled=True` 时生效：degraded 状态下 cron 通道保证能分到的最少槽位数（见 §7.1） |
 | `circuit_breaker_distinct_threshold` | `null`（不启用） | §3.4 跨 job 广度熔断的判定阈值 |
 

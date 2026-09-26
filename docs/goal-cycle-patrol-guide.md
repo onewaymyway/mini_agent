@@ -56,8 +56,10 @@
 同一个 Goal 的"连续跳过"可能同时触发两层通知：
 
 1. **cron 层**（`evolution/cron_scheduler.py::_maybe_alert_consecutive_
-   skip()`）——跳过次数**恰好跨越** `cron.skip_alert_threshold` 那一刻
-   发一次技术性告警，服务的是"这一次跨越"。
+   skip()`）——跳过次数每**跨越** `cron.skip_alert_threshold` 的整数倍
+   （第 5、10、15…次）各发一次技术性告警，服务的是"每一次跨越"，不是
+   只在第一次跨越时发一次（见
+   [goal_cycle_orphan_execution_recovery_plan.md](../next_doc/goal_cycle_orphan_execution_recovery_plan.md) 2.2）。
 2. **巡检层**（本方案）——服务的是"周期性健康汇报 + 跨越阈值之前的早期
    预警"，两者定位不同、值得都保留，但如果不做任何处理，会在阈值附近
    产生两条高度重叠的通知。
@@ -65,7 +67,9 @@
 `dedupe_cron_skip_alert=true`（默认）时，巡检把 `cron_skip` 信号的判定
 窗口限制在 `[threshold-1, threshold)`（不含 threshold 本身）——也就是
 说巡检只在 cron 层告警**即将**发生之前提前提醒一次，一旦真的跨越阈值，
-就把这次通知的所有权交给 cron 层，不重复发。
+就把这次通知的所有权交给 cron 层，不重复发。cron 层现在会在每个阈值
+整数倍重复告警，所以"交出所有权"之后长期停摆的 Goal 依然会被持续提醒，
+不会像早期实现那样在第一次告警后彻底沉默。
 
 ### 巡检范围与判定标准
 
