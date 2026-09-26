@@ -803,6 +803,110 @@ def detect_accretive_duplicate_candidates(paths: "AgentPaths", goal_id: str, *, 
     return {base: names for base, names in groups.items() if len(names) >= 2}
 
 
+# ── tidy 通知（goal_tidy_notification_plan.md）───────────────────────────────
+#
+# tidy 阶段触发时（_append_output_workspace_context 拼 prompt 那一刻）先把
+# "本轮 tidy 是为了什么、当时目录现状如何"这份快照落盘成一个小 JSON 侧写
+# 文件；等这一轮子 Objective 真正跑完（reap_finished_cycles 侦测到终态）
+# 再读出来，补上"tidy 之后变成什么样"，拼成一条完整通知发出去。
+#
+# 用侧写文件搭桥而不是直接在触发时就发通知，是因为触发时刻还不知道"tidy
+# 后的成果"——那必须等这一轮真正跑完、agent 已经动手整理过之后再重新扫描
+# 才有意义。文件是"一次性纸条"：读到即清，正常情况下不会累积。
+
+def _tidy_notice_pending_path(paths: "AgentPaths", goal_id: str) -> Path:
+    return goal_output_base_dir(paths, goal_id) / "_tidy_notice_pending.json"
+
+
+def write_tidy_notice_pending(
+    paths: "AgentPaths",
+    goal_id: str,
+    *,
+    cycle_no: int,
+    out_dir: str,
+    checklist_text: str,
+    stats_before: dict,
+    spec_summary: str,
+) -> None:
+    """tidy 阶段触发时调用，记一张"纸条"：这一轮 tidy 是为了解决 checklist_text
+    里列的哪些问题（= tidy 的目标）、触发那一刻 output/ 的实际扫描现状
+    （stats_before）、以及当时已确认的执行规范摘要，供该轮跑完后
+    `read_and_clear_tidy_notice_pending()` 取出来拼通知。
+
+    同一个 goal_id 只保留最新一张纸条（覆盖写）——tidy 是"一次性插入"的
+    维护动作，正常不会同时有两轮 tidy 交叠；即使出现异常交叠，覆盖成最新
+    一轮的记录也好过两张纸条互相打架。写入失败按调用方约定的\"通知是感知
+    增强，不能影响主流程\"整体交给上层 try/except 兜底，这里不再重复。
+    """
+    path = _tidy_notice_pending_path(paths, goal_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, {
+        "cycle_no": cycle_no,
+        "out_dir": out_dir,
+        "checklist_text": checklist_text,
+        "stats_before": stats_before,
+        "spec_summary": spec_summary,
+        "created_at": time.time(),
+    })
+
+
+def read_and_clear_tidy_notice_pending(paths: "AgentPaths", goal_id: str) -> Optional[dict]:
+    """读取并清除待发送的 tidy 通知纸条。没有纸条（本轮不是 tidy 轮，或已经
+    被读取/发送过）时返回 `None`。读到即删——不管调用方后续发送通知是否
+    成功，都不重试（通知本身走 dispatcher 自己的失败日志，这里不做二次
+    保证，避免"发送失败→纸条一直不清→下次又误发一份过时通知"）。
+    """
+    path = _tidy_notice_pending_path(paths, goal_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return data
+
+
+def format_stats_diff_for_notification(stats_before: dict, stats_after: dict) -> str:
+    """把 tidy 前后两次 `scan_output_structure()` 的结果拼成一段人类可读的
+    "前 → 后"对比文本，供通知正文的"tidy 后的成果"小节使用。只对比几个
+    最能体现"乱不乱"的确定性字段，不追求覆盖 stats 的每一个子字段。
+    """
+    def _misc(s: dict) -> int:
+        return int(s.get("misc_count", 0) or 0)
+
+    def _root(s: dict) -> list:
+        return list(s.get("root_unexpected", []) or [])
+
+    def _scripts_stray(s: dict) -> list:
+        return list((s.get("scripts") or {}).get("unexpected_root_files", []) or [])
+
+    lines: list[str] = []
+    lines.append(f"- `_misc/` 待整理文件数：{_misc(stats_before)} → {_misc(stats_after)}")
+
+    root_before, root_after = _root(stats_before), _root(stats_after)
+    lines.append(
+        f"- output/ 根目录散落文件：{len(root_before)} → {len(root_after)}"
+        + (f"（仍未处理：{', '.join(root_after)}）" if root_after else "")
+    )
+
+    stray_before, stray_after = _scripts_stray(stats_before), _scripts_stray(stats_after)
+    lines.append(
+        f"- scripts/ 根目录疑似临时脚本：{len(stray_before)} → {len(stray_after)}"
+        + (f"（仍未处理：{', '.join(stray_after)}）" if stray_after else "")
+    )
+
+    archive_before = int(stats_before.get("archive_entries", 0) or 0)
+    archive_after = int(stats_after.get("archive_entries", 0) or 0)
+    if archive_after != archive_before:
+        lines.append(f"- `_archive/` 归档项数：{archive_before} → {archive_after}")
+
+    still_messy = is_output_messy(stats_after)
+    lines.append("- 代码复查结论：" + ("⚠️ 仍判定为脏乱，可能需要下一轮继续整理" if still_messy else "✅ 已通过代码复查"))
+    return "\n".join(lines)
+
+
 # ── manifest 读写 ─────────────────────────────────────────────────────────────
 
 def _latest_path(base_dir: Path) -> Path:
@@ -968,4 +1072,8 @@ __all__ = [
     "has_legacy_cycle_dirs",
     "build_legacy_migration_summary",
     "detect_user_specified_output_hint",
+    # tidy 通知（goal_tidy_notification_plan.md）
+    "write_tidy_notice_pending",
+    "read_and_clear_tidy_notice_pending",
+    "format_stats_diff_for_notification",
 ]

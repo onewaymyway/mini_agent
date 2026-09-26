@@ -645,6 +645,25 @@ def _append_output_workspace_context(paths, goal: "GoalNode", cycle_no: int, des
                 "专注于'怎么处理这些具体问题'即可）。",
             ]
             parts.append("\n".join(lines))
+
+            # [goal_tidy_notification_plan.md] 记一张"纸条"：这一轮 tidy 是
+            # 为了解决 checklist 里列的哪些问题、触发时刻 output/ 的实际
+            # 扫描现状如何、当时已确认的执行规范摘要是什么——供这一轮真正
+            # 跑完后（reap_finished_cycles）拼成一条完整通知发给用户。失败
+            # 静默跳过，不影响本轮 prompt 拼接主流程（已在外层 try 内）。
+            try:
+                stats_before = ow.scan_output_structure(paths, goal_id, user_output_dir=user_output_dir)
+                ow.write_tidy_notice_pending(
+                    paths, goal_id,
+                    cycle_no=cycle_no,
+                    out_dir=str(out_dir),
+                    checklist_text=checklist,
+                    stats_before=stats_before,
+                    spec_summary=_render_spec_summary_for_notification(spec_for_tidy_checklist),
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_output_workspace_context.tidy_notice')
         else:  # running（含未知/None 兜底）
             lines = [
                 "## 产出目录约束（稳定期）",
@@ -1266,6 +1285,11 @@ def reap_finished_cycles(goal_backlog: "GoalBacklog", *, llm_helper_provider=Non
             note = child.progress_notes or f"状态：{child.status}"
             if goal_backlog.record_cycle_completed(goal.id, child.id, note=note):
                 reaped += 1
+                # [goal_tidy_notification_plan.md] 与下面按 failed/completed
+                # 分支的通知是"是否有纸条"和"是否终态"两条独立判断维度，
+                # 不互斥：一轮 tidy 无论最终 completed 还是 failed，只要
+                # 触发时留过纸条就强制发送整理结果通知。
+                _notify_tidy_cycle_result(goal_backlog, goal, child, note)
                 if child.status == "failed":
                     # [goal_cron_visibility_and_intervention_improvement_plan.md
                     # Track C] 只在失败时推通知——completed/cancelled 不打扰
@@ -1346,6 +1370,81 @@ def _notify_cycle_failed(goal_backlog: "GoalBacklog", goal: "GoalNode", note: st
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._notify_cycle_failed')
+
+
+def _render_spec_summary_for_notification(spec) -> str:
+    """[goal_tidy_notification_plan.md] 把 `GoalExecutionSpec` 压缩成几行
+    通知里放得下的摘要——`GoalExecutionSpec.render_summary_for_user()` 是
+    给看板/CLI 用的完整渲染，篇幅对一条通知来说太长，这里只挑
+    "执行规范"这一节里对理解"tidy 该往哪个方向整理"最直接相关的几个字段。
+    `spec` 为 `None`（尚未确认过执行规范）时返回一句说明性文字。
+    """
+    if spec is None:
+        return "（本 Goal 尚未确认执行规范，tidy 按通用规则整理）"
+    lines = [f"产出模式 output_mode：{getattr(spec, 'output_mode', 'converging')}"]
+    sub_dirs = getattr(spec, "sub_directories", None) or []
+    if sub_dirs:
+        lines.append("已声明的业务子目录：" + "、".join(s.name for s in sub_dirs))
+    hardening_target = getattr(spec, "hardening_target", "") or ""
+    if hardening_target:
+        lines.append(f"外部固化目标：{hardening_target}")
+    return "\n".join(lines)
+
+
+def _notify_tidy_cycle_result(goal_backlog: "GoalBacklog", goal: "GoalNode", child: "GoalNode", note: str) -> None:
+    """[goal_tidy_notification_plan.md] 一轮 tidy 对应的子 Objective 收尾
+    （不论 completed/failed/cancelled）时，取出 `_append_output_workspace_
+    context()` 在触发那一刻记的\"纸条\"（`read_and_clear_tidy_notice_
+    pending()`），重新扫描一次 output/ 拿到\"tidy 后的现状\"，拼成一条完整
+    通知：本轮是哪个 Goal 的第几轮 tidy、当时的执行规范、触发时的目录现状
+    与整理目标（= 问题清单）、以及整理后的前后对比结果。
+
+    没有纸条时（这一轮不是 tidy 轮，或者已经被读取过）直接返回，不发送
+    任何通知——这是判断"要不要发"的唯一依据，不重复判断 effective_mode。
+    强制发送：只要有纸条就发，不看 tidy 是否\"整理干净\"（复查结论本身也是
+    通知内容的一部分，让用户自己判断是否需要介入）。异常整体吞掉，不影响
+    reap_finished_cycles() 的计数主流程。
+    """
+    try:
+        paths = getattr(goal_backlog, "_paths", None)
+        if paths is None:
+            return
+        from mini_agent.evolution import output_workspace as ow
+        pending = ow.read_and_clear_tidy_notice_pending(paths, goal.id)
+        if pending is None:
+            return
+
+        user_output_dir = getattr(goal, "user_output_dir", None)
+        try:
+            stats_after = ow.scan_output_structure(paths, goal.id, user_output_dir=user_output_dir)
+            diff_text = ow.format_stats_diff_for_notification(pending.get("stats_before") or {}, stats_after)
+        except Exception:
+            diff_text = "（tidy 后重新扫描失败，请自行检查目录现状）"
+
+        body_parts = [
+            f"正式产出目录：{pending.get('out_dir', '')}",
+            f"本轮状态：{child.status}" + (f"（{note[:100]}）" if note else ""),
+            "",
+            "## 触发时的执行规范",
+            pending.get("spec_summary", ""),
+            "",
+            "## 触发时的目录现状与本轮整理目标",
+            pending.get("checklist_text", ""),
+            "",
+            "## tidy 后的成果（前 → 后对比）",
+            diff_text,
+        ]
+
+        from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+        NotificationDispatcher(paths).dispatch(NotificationMessage(
+            title=f"周期性目标「{goal.title}」完成了第 {pending.get('cycle_no', '?')} 轮产出目录整理（tidy）",
+            body="\n".join(body_parts),
+            source="goal_cycle_tidy",
+            meta={"goal_id": goal.id, "cycle": pending.get("cycle_no"), "child_status": child.status},
+        ))
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._notify_tidy_cycle_result')
 
 
 def _notify_phase_health_issue(paths, goal: "GoalNode", reason: str) -> None:
