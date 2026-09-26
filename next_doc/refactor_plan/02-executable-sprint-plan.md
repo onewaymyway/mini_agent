@@ -174,3 +174,83 @@ Sprint 1。
 `python scripts/lint_no_new_toplevel_concepts.py` 和
 `pytest tests/test_goal_mode.py tests/test_goal_mode_characterization.py`
 加入流水线。
+
+---
+
+## Sprint 1 执行记录（复盘，按 `12-execution-and-doc-sync-norms.md` 第五节最低要求）
+
+**验收标准逐条对照**：
+
+1. `goal_mode/runner.py` 里能看到一次完整的调用链
+   `Goal(old) → GoalAdapter → GoalState → 执行 → Outcome → Experience`，
+   且有日志/trace 能证明这条链真的被执行过——**已达成**。具体实现：
+   - 新增 `src/mini_agent/core/`，只放计划里规定的 4 个文件
+     （`types.py`、`events.py`、`goal.py`、`experience.py`）+
+     `adapter.py`（`Adapter[Old, New]` 最小协议），未按原文档 §52
+     多建其它文件。
+   - `core/goal_adapter.py` 实现 `GoalAdapter`（`GoalSpec ↔
+     core.goal.GoalState` 双向转换）+ `goal_run_result_to_experience`
+     （`GoalRunResult → core.experience.Experience`）。
+   - **唯一接入点**：`goal_mode/runner.py` 的 `GoalRunner.run()` 开头
+     （`Goal(old) → GoalAdapter → GoalState`）与 `_finish()` 结尾
+     （`Outcome → Experience`）各调用一次，未改动 `executor.py` 内部
+     逻辑，未在其它任何位置直接构造/转换这两个新领域对象。
+   - trace 证据：两处接入点都通过 `logging.getLogger("mini_agent.core.trace")`
+     在 DEBUG 级别记录一条 `core.events.Event`（`kind` 分别为
+     `goal_mode.adapter.to_new` / `goal_mode.adapter.to_experience`），
+     `tests/test_core_goal_adapter.py::test_goal_runner_run_emits_adapter_trace_events`
+     用 `caplog` 断言了该日志确实产出，证明链路"真的被执行过"而不是
+     "定义了但没人用"。
+2. Sprint 0 录的特征测试全部通过——**已达成**：
+   `pytest tests/test_goal_mode.py tests/test_goal_mode_characterization.py`
+   126 passed / 5 failed（5 个失败即 Sprint 0 记录里已知的
+   `test_build_from_history_*` 历史遗留问题，与本次改动无关，详见
+   Sprint 0 执行记录）。
+3. 现有测试中与 `goal_mode` 相关的部分全部通过——**基本达成，有偏差**：
+   `pytest -k goal`（排除 4 个与 goal 无关、环境依赖缺失导致的既有
+   collection 错误：`test_kanban_growth_dragdrop.py` / `test_session.py`
+   / `test_stock_watch_optimization_loop_e2e.py` 缺 `websocket`/
+   `cdp_client` 三方包，`test_goal_execution_spec_diff.py` 同类问题）
+   共 719 passed / 16 failed。16 个失败中 5 个是 Sprint 0 已记录的
+   `test_build_from_history_*` 已知问题；另外 11 个
+   （`test_goal_cron_feedback_and_output_policy.py` 2 个、
+   `test_goal_execution_spec.py` 1 个、
+   `test_goal_execution_spec_kanban_routes.py` 8 个）**不涉及
+   `goal_mode.runner`/`mini_agent.core` 任何符号**（已用
+   `grep -l "goal_mode.runner\|mini_agent.core"` 核实这些测试文件均无
+   匹配），是本次 Sprint 1 改动之前就存在于当前仓库状态的问题，不是
+   本次改动引入的回归，按第五节要求如实记录，不隐藏。
+
+**是否触发止损条件**：未触发。`GoalAdapter` 在 `goal_text` /
+`acceptance_criteria` / `version` 三个核心字段上的双向转换经
+`tests/test_core_goal_adapter.py::test_goal_adapter_round_trip_does_not_lose_goal_text_or_criteria`
+验证无数据丢失。`scripts/dep_graph.py --module goal_mode` 重新扫描显示
+inbound 深度依赖文件数从 Sprint 0 的 5 个变为 6 个（新增
+`mini_agent/core/goal_adapter.py` 一处，这正是本次计划内新增的
+Adapter 接入点，预期之内），仍远低于止损阈值（10+）；outbound 新增
+`mini_agent.core` 一条依赖（`goal_mode → core`，单向），耦合度未
+"因为迁移而上升"到需要止损的程度。
+
+**`MIGRATION_STATUS.md` 是否已同步更新**：是，已将 `goal_mode/runner.py`
+一行的状态由"未开始"更新为"部分迁移"（见该文件）。`goal_mode/executor.py`
+未被本次改动触及（接入点只在 `runner.py`），保持"未开始"不变，符合
+计划"不动 `executor.py` 内部逻辑"的要求。
+
+**下一个 Sprint（Sprint 2）开始前需要注意**：
+- Sprint 2 的 `experience/store.py` 应直接消费本 Sprint 定义的
+  `core.experience.Experience` dataclass（`to_dict()` 已提供），不需要
+  再设计新的经验数据结构。
+- Sprint 1 遗留的 11 个非本次改动引入的测试失败
+  （`test_goal_cron_feedback_and_output_policy.py` /
+  `test_goal_execution_spec.py` /
+  `test_goal_execution_spec_kanban_routes.py`）与本次改动无关，但建议
+  作为独立问题跟踪，避免 Sprint 2/3 统计测试通过率时被误判为新引入的
+  回归（做法与 Sprint 0 对 5 个 `test_build_from_history_*` 失败的
+  处理方式一致：单独记录，不算作本 Sprint 的验收范围）。
+- 环境缺失的三方依赖（`websocket`、`cdp_client`）导致的 4 个 collection
+  错误同样与本次改动无关，不属于本次架构重构范围。
+
+**影响范围**：无对后续 Phase 前置条件的影响；`core/` 目录结构与
+`Adapter` 协议按计划保持最小化，为 Sprint 2（Experience 持久化）和
+未来 Memory/Self 迁移链复用 `Adapter[Old, New]` 协议留出空间，未提前
+实现任何 Sprint 2+ 范围的功能。

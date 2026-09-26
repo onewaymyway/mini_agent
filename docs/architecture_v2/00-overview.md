@@ -53,7 +53,20 @@ wiki、growth_advisor、goal_tree……），但这些功能之间没有统一�
     （`CoarseStepExecutor` 全覆盖 + `runner.py` 若干纯函数/辅助方法的
     输入输出快照）。
   - 本文档。
-- [ ] Sprint 1（Domain Model + Goal 试验）：待开始。
+- [x] **Sprint 1（Domain Model + Goal 试验）**：
+  - 新建 `src/mini_agent/core/`：只放 Goal 链路用得上的 5 个文件
+    （`types.py`/`events.py`/`goal.py`/`experience.py`/`adapter.py`），
+    未按原方案 §52 一次性建满 11 个文件。
+  - `core/goal_adapter.py::GoalAdapter` 实现 `Adapter[Old, New]` 协议，
+    完成 `GoalSpec ↔ GoalState(core)` 双向转换；`goal_run_result_to_experience`
+    完成 `GoalRunResult → Experience(core)` 转换。
+  - **唯一接入点**：`goal_mode/runner.py` 的 `run()`/`_finish()`，未改动
+    `executor.py` 内部逻辑；两处均记录 DEBUG trace 日志作为"链路真的被
+    执行过"的证据（`tests/test_core_goal_adapter.py` 已断言）。
+  - 回归验证：`goal_mode` 特征测试安全网 126 passed（5 个 Sprint 0 已知
+    历史失败照旧，与本次无关）；`dep_graph.py` 复查未触发止损阈值。
+  - 详见 `next_doc/refactor_plan/02-executable-sprint-plan.md` 末尾
+    "Sprint 1 执行记录" 与 `next_doc/refactor_plan/MIGRATION_STATUS.md`。
 - [ ] Sprint 2（Experience 落地）：待开始。
 - [ ] Sprint 3（复盘 + 推广决策）：待开始。
 

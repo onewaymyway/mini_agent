@@ -32,6 +32,7 @@ GoalRunner 只需要兜底处理三种"常规触发器没接住"的情况：
 
 from __future__ import annotations
 
+import logging
 import re
 import sys
 import time
@@ -45,6 +46,17 @@ from .executor import GoalStepExecutor, CoarseStepExecutor, GoalStepResult
 from .state import GoalState, GoalStateStore
 from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal, ProgressTracker, GoalPhase
 
+# ── [next_doc/refactor_plan/02-executable-sprint-plan.md Sprint 1] ──────────
+# 唯一的新领域模型接入点：只在 run()/_finish() 里走一次
+# Goal(old) → GoalAdapter → GoalState(core) → 执行 → Outcome → Experience
+# 链路，不改动本文件其它任何逻辑。别名前缀 `_core_` 避免与本文件已有的
+# 旧 `GoalState`（`.state` 模块，落盘用）撞名。
+from mini_agent.core import (
+    Event as _core_Event,
+    GoalAdapter as _core_GoalAdapter,
+    goal_run_result_to_experience as _core_goal_run_result_to_experience,
+)
+
 if TYPE_CHECKING:
     from mini_agent.agent import Agent
     from mini_agent.config import AppConfig
@@ -54,6 +66,8 @@ if TYPE_CHECKING:
 # ```replan_proposal 代码块包裹（见 prompts/fragments/goal_mode.md
 # REPLAN_PROPOSAL_REQUEST_BLOCK），block 内是一段 JSON，容忍围栏内有多余空白。
 _REPLAN_PROPOSAL_BLOCK_RE = re.compile(r"```replan_proposal\s*(\{.*?\})\s*```", re.DOTALL)
+
+_core_logger = logging.getLogger("mini_agent.core.trace")
 
 
 def render_replan_proposal(proposal: dict) -> str:
@@ -310,6 +324,22 @@ class GoalRunner:
     def run(self) -> GoalRunResult:
         self._pin_goal_context()
         self._save_state(status="running")
+
+        # [Sprint 1 唯一接入点 · 前半段] Goal(old) → GoalAdapter → GoalState(core)
+        # 只做转换 + trace 记录，不影响后续任何执行逻辑（转换结果不参与
+        # 下面的主循环，避免"定义了但没人用"——trace 日志就是证据）。
+        _core_goal_state = _core_GoalAdapter.to_new(self._spec)
+        _core_logger.debug(
+            "%s",
+            _core_Event(
+                kind="goal_mode.adapter.to_new",
+                payload={
+                    "goal_text": _core_goal_state.goal_text,
+                    "status": _core_goal_state.status,
+                    "version": _core_goal_state.version,
+                },
+            ).to_dict(),
+        )
 
         # 正常从 0 开始时用全局配置；从 max_rounds_exhausted 恢复时用
         # __init__ 里追加过的更高上限（见上方 resume_state 分支的说明）。
@@ -1529,7 +1559,7 @@ class GoalRunner:
                     "（也可以在协商过程中输入自己的修改意见）。"
                 )
 
-        return GoalRunResult(
+        result = GoalRunResult(
             status=status,
             rounds_used=self._round,
             compacts_done=self._compacts_done,
@@ -1537,6 +1567,14 @@ class GoalRunner:
             goal_spec=self._spec,
             replan_proposal=self._replan_proposal,
         )
+
+        # [Sprint 1 唯一接入点 · 后半段] Outcome(GoalRunResult) → Experience(core)。
+        # 与前半段一样，只做转换 + trace 记录（Sprint 2 才会把 Experience
+        # 真正持久化/检索，见 `02-executable-sprint-plan.md` Sprint 2）。
+        _core_experience = _core_goal_run_result_to_experience(result)
+        _core_logger.debug("%s", _core_Event(kind="goal_mode.adapter.to_experience", payload=_core_experience.to_dict()).to_dict())
+
+        return result
 
     def _write_failure_lesson(self, status: str, report: str) -> None:
         """[next_doc/goal_mode_completion_improvement_plan.md 改造项五]

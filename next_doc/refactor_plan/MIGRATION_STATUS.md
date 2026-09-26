@@ -8,7 +8,7 @@
 
 | 模块 | 所属 Phase | 状态 | 走新链路的路径占比 | Adapter 是否双向 | 最后更新 | 负责人 |
 |---|---|---|---|---|---|---|
-| goal_mode/runner.py | Phase 1 | 未开始 | 0% | 否 | - | - |
+| goal_mode/runner.py | Phase 1 | 部分迁移 | 未知，待补充（`run()`/`_finish()` 两处接入点已走新链路做转换+trace，主循环内部仍是旧逻辑，未按"路径条数"精确统计） | 是（`GoalAdapter.to_new`/`to_old` 均已实现并被特征测试覆盖） | 2026-09-26 | Sprint 1 执行者 |
 | goal_mode/executor.py | Phase 1 | 未开始 | 0% | 否 | - | - |
 | goal_backlog.py | Phase 5 | 未开始 | 0% | 否 | - | - |
 | history_manager.py | Phase 3 | 未开始 | 0% | 否 | - | - |

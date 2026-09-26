@@ -54,4 +54,10 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
 - [x] Sprint 0（地基与安全网）已完成，详见
       `02-executable-sprint-plan.md` 末尾的"Sprint 0 执行记录"
       与 `docs/architecture_v2/00-overview.md`
-- [ ] Sprint 1（Domain Model + Goal 试验）尚未开始
+- [x] Sprint 1（Domain Model + Goal 试验）已完成：新建 `src/mini_agent/core/`
+      （`types.py`/`events.py`/`goal.py`/`experience.py`/`adapter.py`/
+      `goal_adapter.py`），在 `goal_mode/runner.py` 唯一接入点走通
+      `Goal(old) → GoalAdapter → GoalState → 执行 → Outcome → Experience`
+      链路并有 trace 日志证据，详见 `02-executable-sprint-plan.md` 末尾的
+      "Sprint 1 执行记录"与 `MIGRATION_STATUS.md`
+- [ ] Sprint 2（Experience 落地）尚未开始
