@@ -64,22 +64,28 @@
       ActionCompleted, ExperienceCreated]` 四个事件、
       correlation_id 一致、causation_id 构成因果链，且执行器抛异常时
       publish `ActionFailed` 后异常照常向上抛出）
-- [ ] 事件雏形盘点表完成，明确了后续哪些旧模块的"通知机制"要逐步
-      替换为 Event（而不是立刻全部替换）——**尚未开始**：Sprint 2-1
-      范围内只在 Goal 链路唯一接入点新增了埋点，`docs/architecture_v2/
-      phase2-event-inventory.md`（现状盘点里要求的"现有事件雏形 →
-      对应到新 Event type"映射表）尚未产出，`history_manager.py`
-      历史条目结构 / `perception/behavior/` 行为感知事件 /
-      `evolution/` 状态变更通知 / `orchestrator/` SubAgent 开始结束
-      通知这四类现有"事件雏形"尚未盘点，留给下一次推进（不在本次
-      Sprint 2-1 范围内，避免"顺手"把 Sprint 划分之外的工作也做掉）。
-- [ ] 依赖图（Sprint 0 建立的脚本）显示引入 Event 总线没有增加模块间
+- [x] 事件雏形盘点表完成，明确了后续哪些旧模块的"通知机制"要逐步
+      替换为 Event（而不是立刻全部替换）：产出
+      `docs/architecture_v2/phase2-event-inventory.md`，盘点了
+      `history_manager.py` 历史条目结构（`append_*` 方法）、
+      `perception/behavior/events.py::ActivityEvent`（已有独立统一
+      结构）、`evolution/`（以 `candidate_queue_triage.py` 的 `status`
+      字段流转为代表样本）、`orchestrator/plan.py::PlanTask` 状态流转
+      四类现有"事件雏形"，逐一给出对应新 Event type 建议，并明确
+      **四者均暂不接入** `core/event_bus.py`（本次只做盘点，接入是
+      独立的后续任务），其中 `orchestrator/plan.py` 因字段语义与
+      Phase 1 `ActionStarted/ActionCompleted/ActionFailed` 最接近、
+      接入点容易收敛，被列为优先级最高的后续接入候选。
+- [x] 依赖图（Sprint 0 建立的脚本）显示引入 Event 总线没有增加模块间
       的硬编码依赖（订阅关系应该是单向的：旧模块 → 发布 Event，
-      不应该反向依赖 Event 总线的内部实现）——**尚未核对**：
-      `core/event_bus.py` 只被 `goal_mode/runner.py` 一处导入
-      （`from mini_agent.core import ... get_event_bus ...`），从代码
-      结构上看不存在反向依赖，但尚未按 `scripts/dep_graph.py` 实际跑一次
-      并把结果记录进本文档，留给 Sprint 2-2 收尾时一并核对。
+      不应该反向依赖 Event 总线的内部实现）：已用
+      `python scripts/dep_graph.py --module core.event_bus` 实际跑过，
+      结果为 inbound 1（仅 `mini_agent/core/__init__.py` 导入
+      `EventBus`/`get_event_bus`/`reset_event_bus` 三个符号）、
+      outbound 0（`core/event_bus.py` 自身不依赖任何包外目标），
+      未触发 Sprint 0 止损阈值，且 outbound=0 说明总线本身不反向
+      依赖任何发布者模块，结构上是单向的（旧模块 → import 总线，
+      总线不 import 旧模块）。详见下方"Sprint 2-1 收尾核对记录"。
 
 ## Sprint 2-1 执行记录（2026-09-26）
 
@@ -111,3 +117,49 @@
   Sprint 2-1 范围内一并做掉。
 - `MIGRATION_STATUS.md` 已同步新增 `core/events.py`（字段扩展）、
   `core/event_bus.py`（新增）两行。
+
+## Sprint 2-1 收尾核对记录（2026-09-26，补做完成标志剩余两项）
+
+> 本次只补做 Sprint 2-1 完成标志清单里遗留的"事件雏形盘点表"和
+> "依赖图核对"两项，不涉及代码改动，也不属于 Sprint 2-2 的任务范围
+> （Sprint 2-2 是 `causation_id`/`correlation_id` 打通 + `events trace`
+> CLI，这两项已在 Sprint 2-1 里随字段扩展一并实现，见上方执行记录，
+> Sprint 2-2 剩余任务是补 CLI 命令）。
+
+- **事件雏形盘点表**：产出 `docs/architecture_v2/phase2-event-inventory.md`
+  （详见文档内容），核心结论：
+  1. `history_manager.py`（历史条目）→ 建议新增 `MessageAppended` /
+     `HistoryAnnotationAdded`，或复用已有的 `ActionCompleted`，
+     暂不接入。
+  2. `perception/behavior/events.py::ActivityEvent`（行为感知）→
+     已有独立统一结构和落盘存储，建议新增
+     `PerceptionActivityObserved`，暂不接入，需先评估总线承载高频
+     事件的性能。
+  3. `evolution/`（状态变更，以 `candidate_queue_triage.py` 为样本）→
+     实际代码库中未找到原计划文档假设的 `EvolutionProposed`/
+     `EvolutionApplied` 固定类型，改为按真实 `status` 字段流转命名
+     `EvolutionCandidateStatusChanged`，接入前需要先对 `evolution/`
+     做子模块级耦合扫描（属于 Phase 9 前置工作）。
+  4. `orchestrator/plan.py::PlanTask`（SubAgent 任务状态）→ 字段语义
+     与 Phase 1 `ActionStarted/ActionCompleted/ActionFailed` 最接近，
+     建议直接复用 + 新增 `ActionSkipped`，列为**优先级最高**的后续
+     接入候选。
+  - 四类现有事件雏形均判定为"本次不接入"，理由和优先级排序已写入
+    盘点文档，供 Sprint 2-2 之后决定下一条接入链路时参考。
+- **依赖图核对**：执行
+  `python scripts/dep_graph.py --module core.event_bus`，输出：
+  - 对内依赖（inbound）：1 个文件（`mini_agent/core/__init__.py`，
+    导入 `EventBus`/`get_event_bus`/`reset_event_bus`）。
+  - 对外依赖（outbound）：0（`core/event_bus.py` 不 import 任何
+    包外目标）。
+  - 止损条件核对：深度 inbound 计数 1，远低于 Sprint 0 定义的 10+
+    阈值，未触发止损。
+  - 结论：`core/event_bus.py` 只被 `core/__init__.py` 重新导出后
+    间接被 `goal_mode/runner.py` 使用，自身不依赖任何发布者模块，
+    订阅/发布关系是单向的（发布者 → 总线，总线不反向依赖发布者），
+    符合完成标志里"不应该反向依赖 Event 总线的内部实现"的预期，
+    也没有观察到"总线反向依赖 Event 总线内部实现"之外的其它异常
+    依赖形态。
+- 两项均已在上方"完成标志"清单勾选为 `[x]`，Sprint 2-1 对应的完成
+  标志现已全部达成；Sprint 2-2 遗留任务（`mini_agent events trace`
+  CLI 命令）不受影响，留待专门的 Sprint 2-2 收尾任务处理。

@@ -178,3 +178,16 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       `03-phase2-event-model-sprint-plan.md` 末尾"Sprint 2-1 执行记录"。
       事件雏形盘点表、依赖图核对两项完成标志尚未做，已在该文档标注为
       未完成，留待下一次推进（Sprint 2-2 或专门盘点任务）。
+- [x] Sprint 2-1 完成标志清单剩余两项（事件雏形盘点表、依赖图核对）
+      已补齐：新增 `docs/architecture_v2/phase2-event-inventory.md`，
+      盘点 `history_manager.py`/`perception/behavior/events.py`/
+      `evolution/`/`orchestrator/plan.py` 四类现有"事件雏形"，逐一
+      给出对应新 Event type 建议并判定"本次均不接入"，其中
+      `orchestrator/plan.py`（字段语义与 Phase 1 `ActionStarted/
+      ActionCompleted/ActionFailed` 最接近）被列为优先级最高的后续
+      接入候选；`python scripts/dep_graph.py --module core.event_bus`
+      实际跑出 inbound=1（仅 `core/__init__.py`）、outbound=0，未触发
+      止损阈值，确认总线不反向依赖发布者模块。至此 Sprint 2-1 对应的
+      完成标志全部达成，`03-phase2-event-model-sprint-plan.md` 已同步
+      勾选。Sprint 2-2 剩余任务（`mini_agent events trace` CLI 命令）
+      留待下一次推进，详见该文档"Sprint 2-1 收尾核对记录"。

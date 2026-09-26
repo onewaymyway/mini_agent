@@ -23,7 +23,8 @@
 | core/memory.py + core/memory_adapter.py（新增，Sprint 1.5 补充） | Phase 3 | 部分迁移 | `MemoryBackend → MemorySnapshot` 单向转换已完成（`entry_count`/`backend_kind` 两字段），唯一接入点 `agent/core.py::Agent.__init__()` | 否（`to_old` 未实现） | 2026-09-26 | memory_store Adapter 接入点执行者 |
 | Daemon / AutonomousLoop / Cron / UnifiedTaskScheduler / ObjectiveExecutor / ResourceArbiter | Phase 8 | 未开始 | 0% | 否 | - | - |
 | core/events.py（Sprint 2-1 字段扩展） | Phase 2 | 部分迁移 | Goal 链路唯一接入点（`goal_mode/runner.py::run()`/`_finish()`）已用新字段（`id`/`actor`/`causation_id`/`correlation_id`）publish 4 类事件；其余旧模块（`history_manager.py`/`perception/behavior/`/`evolution/`/`orchestrator/`）的"事件雏形"尚未盘点、未接入 | 不适用（`Event` 是新领域概念本身，不是 Old↔New 转换 Adapter） | 2026-09-26 | Phase 2 Sprint 2-1 执行者 |
-| core/event_bus.py（新增，Sprint 2-1） | Phase 2 | 完全迁移 | 100%（新增模块，只被 `goal_mode/runner.py` 一处导入，尚未按 `scripts/dep_graph.py` 核对反向依赖，见 `03-phase2-event-model-sprint-plan.md` 完成标志） | 不适用 | 2026-09-26 | Phase 2 Sprint 2-1 执行者 |
+| core/event_bus.py（新增，Sprint 2-1） | Phase 2 | 完全迁移 | 100%（新增模块，实际被 `core/__init__.py` 一处导入再转导出给 `goal_mode/runner.py` 使用；已按 `scripts/dep_graph.py --module core.event_bus` 核对反向依赖，inbound=1、outbound=0，未触发止损阈值，见 `03-phase2-event-model-sprint-plan.md` "Sprint 2-1 收尾核对记录"） | 不适用 | 2026-09-26 | Phase 2 Sprint 2-1 收尾核对执行者 |
+| docs/architecture_v2/phase2-event-inventory.md（新增，Sprint 2-1 收尾） | Phase 2 | 完全迁移 | 100%（纯盘点文档，盘点 `history_manager.py`/`perception/behavior/events.py`/`evolution/`/`orchestrator/plan.py` 四类现有事件雏形并给出映射建议，判定四者本次均不接入 `core/event_bus.py`） | 不适用 | 2026-09-26 | Phase 2 Sprint 2-1 收尾核对执行者 |
 
 > 以上为初始占位行，对应 `02`-`11` 各 Phase 文档里"现状盘点"提到的
 > 主要模块。执行过程中如发现遗漏模块，直接追加新行，不要删除已有行
