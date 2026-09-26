@@ -53,6 +53,7 @@ from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal, Pr
 # 旧 `GoalState`（`.state` 模块，落盘用）撞名。
 from mini_agent.core import (
     Event as _core_Event,
+    ExperienceStore as _core_ExperienceStore,
     GoalAdapter as _core_GoalAdapter,
     goal_run_result_to_experience as _core_goal_run_result_to_experience,
 )
@@ -1569,10 +1570,16 @@ class GoalRunner:
         )
 
         # [Sprint 1 唯一接入点 · 后半段] Outcome(GoalRunResult) → Experience(core)。
-        # 与前半段一样，只做转换 + trace 记录（Sprint 2 才会把 Experience
-        # 真正持久化/检索，见 `02-executable-sprint-plan.md` Sprint 2）。
         _core_experience = _core_goal_run_result_to_experience(result)
         _core_logger.debug("%s", _core_Event(kind="goal_mode.adapter.to_experience", payload=_core_experience.to_dict()).to_dict())
+
+        # [Sprint 2] 持久化，供下一次类似目标通过
+        # `mini-agent experience search "<关键词>"` 检索到。写失败（例如
+        # 磁盘只读）不应该影响 Goal 本身已经产出的结果，只记录警告。
+        try:
+            _core_ExperienceStore(path=self._paths.workdir_experience_store).append(_core_experience)
+        except OSError:
+            _core_logger.warning("持久化 Experience 失败（不影响 Goal 结果本身）", exc_info=True)
 
         return result
 

@@ -33,6 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
                   Owner-only overview of AutonomousLoop / goals / recent activity / session pool
                   on a running daemon. See docs/multi-user-guide.md.
 
+              mini-agent experience search "<keyword>" [--limit N]
+                  Search persisted Experience records (produced when a Goal run finishes)
+                  by keyword in goal_text/final_report.
+              mini-agent experience list [--limit N]
+                  List the most recent Experience records for the current project.
+
             Slash commands (in REPL):
               /help              Show this help
               /clear             Clear conversation history

@@ -60,4 +60,10 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       `Goal(old) → GoalAdapter → GoalState → 执行 → Outcome → Experience`
       链路并有 trace 日志证据，详见 `02-executable-sprint-plan.md` 末尾的
       "Sprint 1 执行记录"与 `MIGRATION_STATUS.md`
-- [ ] Sprint 2（Experience 落地）尚未开始
+- [x] Sprint 2（Experience 落地）已完成：新增
+      `src/mini_agent/core/experience_store.py`（JSONL 持久化 + 检索）、
+      `AgentPaths.workdir_experience_store`、
+      `mini-agent experience search|list` CLI 命令，`goal_mode/runner.py`
+      在原有 Sprint 1 接入点上新增实际持久化调用，详见
+      `02-executable-sprint-plan.md` 末尾的"Sprint 2 执行记录"
+- [ ] Sprint 3（复盘 + 推广决策）尚未开始

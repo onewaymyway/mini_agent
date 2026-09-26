@@ -16,6 +16,7 @@ storage/paths.py — 统一路径管理
 
     # Workdir 级
     paths.workdir_memory          # .agent/memory.jsonl
+    paths.workdir_experience_store # .agent/experience_store.jsonl（core.Experience 存储，Sprint 2）
     paths.permissions             # .agent/permissions.json
     paths.sessions_dir            # .agent/sessions/
     paths.cache_dir               # .agent/cache/
@@ -216,6 +217,17 @@ class AgentPaths:
     def workdir_memory(self) -> Path:
         """<project_root>/.agent/memory.jsonl — 项目级记忆"""
         return self.workdir_dir / "memory.jsonl"
+
+    @property
+    def workdir_experience_store(self) -> Path:
+        """<project_root>/.agent/experience_store.jsonl — 领域模型 Experience 存储
+
+        见 `next_doc/refactor_plan/02-executable-sprint-plan.md` Sprint 2：
+        持久化 `mini_agent.core.experience.Experience` 记录，每行一条 JSON
+        （append-only JSONL，与 `workdir_memory` 同样的落盘方式），供
+        `mini-agent experience search "<关键词>"` 检索。
+        """
+        return self.workdir_dir / "experience_store.jsonl"
 
     @property
     def workdir_prompts_dir(self) -> Path:

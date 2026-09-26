@@ -140,6 +140,15 @@ def main() -> int:
         project_root, rest = _extract_project_root(sys.argv[2:])
         return run_projects_cli(rest, project_root)
 
+    # ── experience 子命令短路：`mini-agent experience search|list ...` ──────
+    # 对应 next_doc/refactor_plan/02-executable-sprint-plan.md Sprint 2。
+    # 与 projects/workflow 短路方式完全一致：不构造 Agent，只读
+    # `core/experience_store.py` 的 JSONL 存储。
+    if len(sys.argv) > 1 and sys.argv[1] == "experience":
+        from mini_agent.cli.commands.experience_cmd import run_experience_cli
+        project_root, rest = _extract_project_root(sys.argv[2:])
+        return run_experience_cli(rest, project_root)
+
     # ── 全局异常捕获：确保任何启动错误都能显示 ────────────────────────────────
     try:
         _main_inner()

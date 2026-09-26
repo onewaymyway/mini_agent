@@ -254,3 +254,74 @@ Adapter 接入点，预期之内），仍远低于止损阈值（10+）；outbou
 `Adapter` 协议按计划保持最小化，为 Sprint 2（Experience 持久化）和
 未来 Memory/Self 迁移链复用 `Adapter[Old, New]` 协议留出空间，未提前
 实现任何 Sprint 2+ 范围的功能。
+
+---
+
+## Sprint 2 执行记录（复盘，按 `12-execution-and-doc-sync-norms.md` 第五节最低要求）
+
+**验收标准逐条对照**：
+
+1. `experience/store.py` 最小实现（用 JSON 或 SQLite 持久化 Sprint 1
+   产生的 `Experience` 对象）——**已达成，选择 JSONL 而非 SQLite**：
+   新增 `src/mini_agent/core/experience_store.py::ExperienceStore`
+   （append-only JSONL，与仓库既有 `workdir_memory`/`memory.jsonl` 的
+   落盘方式保持一致，理由见该文件头部注释：量级低、不需要索引/事务，
+   SQLite 是过度设计）。存储位置：新增
+   `AgentPaths.workdir_experience_store`
+   （`<project_root>/.agent/experience_store.jsonl`）。
+2. 检索能力：一个 CLI 命令，如 `mini_agent experience search
+   "<关键词>"`——**已达成**：新增 `cli/commands/experience_cmd.py` +
+   `cli/app.py::main()` 里的 `experience` 短路分支（与
+   `projects`/`workflow` 等既有短路子命令写法一致），支持
+   `mini-agent experience search "<关键词>" [--limit N]` 与
+   `mini-agent experience list [--limit N]`。只提供只读子命令，不提供
+   绕过 Adapter 接入点的写入入口。
+3. 可演示效果：Agent 第二次遇到类似目标时，能看到自己上次做过什么——
+   **本 Sprint 范围内以"写入 → CLI 检索命中"完成最小可验证形式的演示**
+   （见下方"实测演示"），尚未接入主 Agent 的 prompt 组装（即"Agent 自己
+   在决策时看到"这一步）；这一接入点留给 Phase 1 Goal 迁移链继续推进
+   或 Sprint 3 复盘时决定是否需要，不在本 Sprint 范围内提前实现（避免
+   在验收标准之外扩大改动范围）。
+
+   实测演示（可复现）：
+   ```
+   写入一条 Experience（goal_text="给项目写周报"）到某项目的
+   .agent/experience_store.jsonl 后，执行：
+     mini-agent experience search "周报" --project <该项目路径>
+   输出命中该条记录（status/rounds/goal_text/final_report 均正确显示）。
+   ```
+
+**接入点补充**：`goal_mode/runner.py::_finish()` 在 Sprint 1 已有的
+"Outcome → Experience" 转换之后，新增一行实际持久化调用
+（`_core_ExperienceStore(path=self._paths.workdir_experience_store)
+.append(_core_experience)`），写失败（`OSError`）只记录警告、不影响
+Goal 本身已经产出的结果，不新增第二个接入点（仍然只在 `_finish()` 一处）。
+
+**是否触发止损条件**：未触发（Sprint 2 无独立止损条件，沿用 Sprint 1
+的 Adapter 双向转换止损条件，本 Sprint 未改动 `GoalAdapter` 本身）。
+
+**`MIGRATION_STATUS.md` 是否已同步更新**：是，`goal_mode/runner.py`
+一行补充说明"Experience 持久化"这一路径也已接入新链路（状态仍为
+"部分迁移"，未升级为"完全迁移"，因为主循环内部逻辑仍是旧实现，如实
+反映，不夸大）。
+
+**测试**：新增 `tests/test_core_experience_store.py`（9 个用例：
+`ExperienceStore.append/all/search` 的读写一致性、关键词匹配、
+最近优先排序、limit 生效、文件不存在时的兜底，以及 CLI
+`search`/`list` 子命令的输出断言），全部通过；
+`tests/test_goal_mode.py` + `tests/test_goal_mode_characterization.py`
+121 passed / 5 failed（同 Sprint 0/1 已知的 `test_build_from_history_*`
+历史遗留问题，无新增回归）；lint 脚本仍通过。
+
+**下一个 Sprint（Sprint 3）开始前需要注意**：
+- Sprint 3 的复盘应评估：Experience 检索是否需要真正接入主 Agent 的
+  prompt 组装（本 Sprint 明确标注为"留给后续"的部分），如果需要，应该
+  按 Phase 1 迁移链继续推进还是等 Phase 3（Experience Layer 落地，见
+  `04-phase3-experience-layer-sprint-plan.md`）统一做。
+- JSONL 存储在单机/单项目场景下够用，但 Sprint 3 复盘"是否推广到
+  Memory"时，应一并评估 Memory 的量级是否仍适合同样的 JSONL 方案，
+  或者需要在推广时就切换存储技术栈（不要在 Goal 这条链路上验证过
+  JSONL 可行，就默认 Memory 也直接照搬，需要重新评估量级假设）。
+
+**影响范围**：`storage/paths.py` 新增了 `workdir_experience_store`
+属性（纯新增，不修改任何既有属性的路径/行为），不影响其它模块。

@@ -67,7 +67,23 @@ wiki、growth_advisor、goal_tree……），但这些功能之间没有统一�
     历史失败照旧，与本次无关）；`dep_graph.py` 复查未触发止损阈值。
   - 详见 `next_doc/refactor_plan/02-executable-sprint-plan.md` 末尾
     "Sprint 1 执行记录" 与 `next_doc/refactor_plan/MIGRATION_STATUS.md`。
-- [ ] Sprint 2（Experience 落地）：待开始。
+- [x] **Sprint 2（Experience 落地 + 可演示成果）**：
+  - `core/experience_store.py::ExperienceStore`：Experience 的最小
+    持久化实现（append-only JSONL，理由见文件头注释：与仓库已有
+    `memory.jsonl` 落盘方式一致，量级不需要 SQLite）。新增
+    `AgentPaths.workdir_experience_store`
+    （`<project_root>/.agent/experience_store.jsonl`）。
+  - `mini-agent experience search "<关键词>" [--limit N]` /
+    `mini-agent experience list [--limit N]`：只读 CLI 检索命令
+    （`cli/commands/experience_cmd.py`，与 `projects`/`workflow` 等
+    既有短路子命令写法一致）。
+  - `goal_mode/runner.py::_finish()` 在 Sprint 1 的转换之后新增一行
+    实际持久化调用，仍只在同一个接入点，未新增第二处。
+  - 可演示效果：写入一条 Experience 后，`mini-agent experience search`
+    能检索命中（已实测，见"Sprint 2 执行记录"）；尚未接入主 Agent 的
+    prompt 组装（即"Agent 决策时自动看到"），明确标注留给后续 Phase。
+  - 详见 `next_doc/refactor_plan/02-executable-sprint-plan.md` 末尾
+    "Sprint 2 执行记录"。
 - [ ] Sprint 3（复盘 + 推广决策）：待开始。
 
 已知问题（Sprint 0 执行期间发现，不在本次改动范围内，如实记录）：
