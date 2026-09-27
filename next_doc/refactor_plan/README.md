@@ -425,4 +425,55 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       的全链路测试）验证，全部通过；`pyflakes` 无告警。详见
       `07-phase6-action-model-sprint-plan.md` 末尾"Sprint 6-1 执行
       记录"与 `MIGRATION_STATUS.md`。可进入 **Sprint 6-2（接入
-      Workflow 与 SubAgent）**，留待下一次推进（下一次对话的任务）。
+      Workflow 与 SubAgent）**。
+- [x] Sprint 6-2（接入 Workflow 与 SubAgent）已完成：`actions/
+      executor.py` 新增 `type="workflow"`（转发给 `WorkflowStore.
+      load()` + `WorkflowRunner.run()`）与 `type="subagent"` 两个分支。
+      `type="subagent"` **没有**按原计划转发给
+      `orchestrator/task_manager.py`/`orchestrator/sub_agent.py`——
+      耦合评估发现这一对是线程模型且强依赖主 Agent session 生命周期，
+      与 Phase 5 对 `objective_executor.py` 的"低耦合但高时序敏感"
+      判定同类，改为转发给语义等价、专为独立同步调用设计的
+      `workflow/agent_spawn.py::build_minimal_agent()` +
+      `Agent.run_turn()`，已按规范留痕（详见
+      `07-phase6-action-model-sprint-plan.md` "变更记录 2026-09-27"）。
+      权限接入相应调整为 workflow/subagent 各自复用自己模块内部的
+      审批机制，不再套用 Tool 专属的 `PermissionGuard.check()` 签名。
+      新增测试共 9 个（含 Sprint 6-1 原有用例调整后共 11 个）全部
+      通过，其中 `test_all_three_action_types_produce_uniform_result_
+      shape` 直接验证三种 type 产出的 `ActionResult` 字段形状一致
+      （验收标准第二条）。回归测试 563 passed / 6 既有失败（与本次
+      改动无关）。**Phase 6（统一 Action）三条完成标志全部达成**，
+      详见 `07-phase6-action-model-sprint-plan.md` 末尾"Sprint 6-2
+      执行记录"与更新后的 `MIGRATION_STATUS.md`。可进入 **Phase 7
+      （Decision + Simulation）**。
+- [x] Phase 7（Decision + Simulation）Sprint 7-1（Candidate Actions
+      生成 + 最小 Simulation）与 Sprint 7-2（Decision Engine 接入）
+      已完成：新增 `core/simulation.py::SimulationScenario`/
+      `SimulationResult`（无任何数值分数字段，对应文档"禁止数值化
+      打分系统"的边界）；新增 `simulation/engine.py::
+      generate_candidate_actions()`/`simulate_candidates()`，均按
+      `goals/gap.py::detect_gap(llm_judge=...)` 的既有风格把 LLM
+      调用点做成调用方注入的 `Callable`，不内置默认网络实现；
+      `simulate_candidates()` 对每个候选独立检索 Phase 3 相似
+      Experience，`SimulationResult.experience_refs` 记录实际引用的
+      `Experience.id`，作为"确实引用历史"这条验收标准的可核验证据。
+      新增 `cognition/decision.py::DecisionEngine.select()`——比任务表
+      签名多返回一个 `DecisionTrace`（承接验收标准"完整决策 trace"的
+      要求），构造时二选一注入 `llm_select`/`human_confirm`，两者都给
+      时 `human_confirm` 优先。新增测试
+      `tests/test_phase7_simulation_decision.py`（8 用例，含一条
+      `test_full_chain_gap_to_candidates_to_simulation_to_decision_
+      to_action` 完整走一遍 Gap→Candidate→Simulation→Decision→
+      Action→Experience 全链路）全部通过；`pyflakes` 无告警；回归
+      测试 594 passed / 6 既有失败（与本次改动无关，同 Phase 6 记录
+      的一组）。**范围决策**：未把决策链路自动接入
+      `goal_mode/runner.py` 主循环——任务表"接入 Phase 6"字面要求的
+      是"选中的 ActionSpec 直接交给 ActionExecutor 执行"，用测试验证
+      转发路径成立即满足，扩大到自动接入主循环是明显更大的改动且与
+      Phase 7"最容易过度设计"的警示冲突，留给后续专门评估。详见
+      `08-phase7-decision-simulation-sprint-plan.md` 末尾"Sprint 7-1/
+      7-2 执行记录"与"后续判断依据"一节。**Phase 7 三条完成标志全部
+      达成**，可进入 **Phase 8（Runtime Convergence）**（下一次对话的
+      任务，见 `next_doc/refactor_plan/09-phase8-runtime-convergence-
+      sprint-plan.md`）。

@@ -46,6 +46,9 @@
 | core/runtime.py（新增，Sprint 4-2，占位） | Phase 4（占位）/ 待 Phase 8 填充字段 | 部分迁移 | 同上（无字段空 dataclass，未接入任何调用方） | 不适用 | 2026-09-27 | Phase 4 Sprint 4-2 执行者 |
 | docs/architecture_v2/phase5-goal-inventory.md（新增，Phase 5 现状盘点） | Phase 5 | 完全迁移 | 100%（纯盘点文档，核心发现：`Objective` 与 `perception/goal_backlog.py::GoalBacklog`/`GoalNode` 是同一套子系统而非两个独立处理项，实测 inbound=33 远超止损阈值，与 `evolution/objective_executor.py` 紧耦合，触发 Sprint 5-1 止损条件并新增 Sprint 5.0.5，见 `06-phase5-goal-convergence-sprint-plan.md` "变更记录"） | 不适用 | 2026-09-27 | Phase 5 现状盘点执行者 |
 | core/self.py + core/self_adapter.py（Sprint 4-2 补充 StateManager 接入） | Phase 3（Self 迁移链）/ Phase 4（State 托管） | 部分迁移 | `SelfState` 字段本身在 Sprint 1.5 已完成，非本次新增；本次新增的是 `agent/lifecycle.py::_init_components()` 唯一接入点里补的一行 `get_state_manager().update_state("self", ...)`，使 `"self"` 这个 kind 真正被 `StateManager` 托管，此前只做了 Adapter 转换未托管 | 否（`SelfAdapter.to_old` 仍未实现，与 Sprint 1.5 状态一致，本次未改动） | 2026-09-27 | Phase 4 Sprint 4-2 执行者 |
+| core/simulation.py（新增，Phase 7 Sprint 7-1） | Phase 7 | 完全迁移 | 100%（新增领域协议 `SimulationScenario`/`SimulationResult`，无数值分数字段，对应"禁止数值化打分系统"边界，不是旧模块迁移） | 不适用 | 2026-09-27 | Phase 7 Sprint 7-1/7-2 执行者 |
+| simulation/engine.py（新增，Phase 7 Sprint 7-1） | Phase 7 | 完全迁移 | 100%（`generate_candidate_actions()`/`simulate_candidates()`，LLM 调用点均为调用方注入的 `Callable`，不内置默认实现；`simulate_candidates()` 转发给 Phase 3 `core/experience_retrieval.py::retrieve_similar_experiences()` 做历史检索） | 不适用（新增转发/编排层，非 Old↔New Adapter） | 2026-09-27 | Phase 7 Sprint 7-1 执行者 |
+| cognition/decision.py（新增，Phase 7 Sprint 7-2） | Phase 7 | 完全迁移 | 100%（`DecisionEngine.select()` 二选一注入 `llm_select`/`human_confirm`，返回 `(ActionSpec, DecisionTrace)`；`DecisionTrace.to_text()` 产出可读自然语言 trace，未接入 `goal_mode/runner.py` 主循环——显式范围决策，见 `08-phase7-decision-simulation-sprint-plan.md` "Sprint 7-2 执行记录"） | 不适用 | 2026-09-27 | Phase 7 Sprint 7-2 执行者 |
 
 > 以上为初始占位行，对应 `02`-`11` 各 Phase 文档里"现状盘点"提到的
 > 主要模块。执行过程中如发现遗漏模块，直接追加新行，不要删除已有行
