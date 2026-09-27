@@ -73,3 +73,68 @@ Sprint 5.0.5 移交项）评估结论：风险点在于"改动它现有的构造
       统一接口调用
 - [ ] 权限、超时、重试等横切逻辑没有在三个分支里重复实现
 - [ ] 产出的 Experience 记录格式统一，不需要按 Action 类型特判处理
+
+## Sprint 6-1 执行记录
+
+按任务表逐项完成：
+
+- `core/action.py`：新增 `ActionSpec(type, capability, arguments,
+  expected_outcome)` + `ActionResult(success, output, error,
+  action_type, capability)`。`type` 用 `Literal["tool", "workflow",
+  "subagent"]` 标注取值空间，Sprint 6-1 只实现 `"tool"`。
+- `actions/executor.py`（新增 `actions/` 包）：`ActionExecutor.execute(spec,
+  correlation_id=?, causation_id=?)`——`type="tool"` 时先调用
+  `permissions.py::PermissionGuard.check(capability, arguments)`，
+  被拒绝时不执行、返回 `ActionResult(success=False, error="permission_denied: <tool>")`；
+  通过后转发给 `tools/__init__.py::ToolRegistry.call(capability, arguments)`，
+  工具执行抛异常时捕获并转成 `ActionResult(success=False, error=...)`，
+  不让异常穿透给调用方。`type="workflow"`/`type="subagent"` 显式
+  `raise NotImplementedError`（按 `12-execution-and-doc-sync-norms.md`
+  第六节第 4 条要求，不留静默空实现）。
+- 权限接入：直接复用现有 `PermissionGuard.check()`，未重新实现任何
+  越权判断逻辑，符合止损条件"不强行统一内部细节"。
+- Event 总线接入：每次 `execute()` 调用 publish `ActionStarted` →
+  （成功）`ActionCompleted` 或（权限拒绝/异常）`ActionFailed`，与
+  `goal_mode/runner.py` 现有的 `# [Phase 2 Sprint 2-1]` 接入点用同一套
+  `Event`/`EventBus`，`causation_id` 指向本次 `ActionStarted.id`，
+  `correlation_id` 由调用方透传（复用某次 Goal 闭环的 id）或缺省时
+  自动生成一个新的。
+- Goal 链路打通验证：新增 `tests/test_phase6_action_executor.py::
+  test_goal_gap_to_action_executor_full_chain_with_shared_correlation_id`——
+  构造一个真实 `GoalState`，跑 `goals/gap.py::detect_gap()` 产出
+  `gap`，把 `gap[0]` 转成一个 `ActionSpec(type="tool", ...)`，通过
+  `ActionExecutor.execute()` 真实调用一个测试工具并核对返回结果与
+  发布的事件序列/`correlation_id`。**注意**：本 Sprint 只打通
+  "gap 结果 → 手工构造 ActionSpec → ActionExecutor 执行"这条链路，
+  不实现"从 gap 自动规划出 ActionSpec"的 Planner（那不在 Sprint 6-1
+  任务表范围内，任务表只要求"通过 ActionExecutor 调用一个 Tool 并
+  拿到结果"）。
+- 越权拦截验证：新增
+  `test_execute_tool_blocked_by_sandbox_permission_returns_failure_not_exception`——
+  用 `PermissionGuard(sandbox=True)` 故意对 `bash`（`_RISKY_TOOLS`
+  之一）发起调用，验证被拦截、返回 `ActionResult(success=False)`
+  而不是抛异常或静默放行，且发布了 `ActionFailed`（未发布
+  `ActionCompleted`）。
+
+验收标准两条均已用测试验证：
+
+1. "一个真实 Goal 从检测到 gap 到通过 ActionExecutor 调用一个 Tool
+   并拿到结果全流程打通" —— 见上文 full_chain 测试。
+2. "过程中权限检查确实生效（故意越权场景验证拦截）" —— 见上文越权
+   拦截测试。
+
+新增测试 `tests/test_phase6_action_executor.py`（5 用例）全部通过；
+`python -m pyflakes core/action.py actions/executor.py actions/__init__.py`
+无告警；本次改动未涉及既有模块的 import 关系变化（`actions/` 是全新
+包，只反向依赖 `core/action.py`/`core/event_bus.py`/`core/events.py`），
+无需重新跑 `dep_graph.py`。回归测试：本沙箱环境里跑
+`pytest tests/ -k "phase or goal_mode or events or experience or action"`
+有大量既有的模块导入错误（`ModuleNotFoundError: No module named
+'fastapi'` 等，仓库多处历史记录里已确认是环境缺依赖问题，与本次改动
+无关）与既有失败（`test_build_from_history_*` 系列等，历次 Sprint
+记录均已标注为"既有失败，与改动无关"），本次改动新增的
+`test_phase6_action_executor.py` 全部 5 用例本身独立通过，未观察到
+因本次新增代码导致的新增失败。
+
+Phase 6 Sprint 6-1 达到验收标准，可进入 **Sprint 6-2（接入 Workflow
+与 SubAgent）**，留待下一次推进。

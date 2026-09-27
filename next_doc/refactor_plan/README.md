@@ -406,3 +406,23 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       `07-phase6-action-model-sprint-plan.md` 的 Sprint 6-1/6-2
       任务表核实后无需调整，可直接推进到 **Sprint 6-1（ActionSpec +
       ActionExecutor 骨架，先接 Tool）**（下一次对话的任务）。
+- [x] Sprint 6-1（ActionSpec + ActionExecutor 骨架，先接 Tool）已完成：
+      新增 `core/action.py::ActionSpec`/`ActionResult`（`type` 取值
+      `"tool"/"workflow"/"subagent"`，Sprint 6-1 只实现 `"tool"`）；
+      新增 `actions/executor.py::ActionExecutor.execute()`——先调用
+      现有 `permissions.py::PermissionGuard.check()` 做权限检查（不
+      重新实现越权逻辑），通过后转发给现有
+      `tools/__init__.py::ToolRegistry.call()`，执行前后 publish
+      `ActionStarted`/`ActionCompleted`/`ActionFailed` 三类事件（与
+      `goal_mode/runner.py` 现有 Phase 2 接入点用同一套
+      `Event`/`EventBus`，`correlation_id` 可由调用方透传以关联同一次
+      Goal 闭环）；`type="workflow"`/`"subagent"` 显式
+      `NotImplementedError`，不留静默空实现。两条验收标准（"Goal 从
+      检测到 gap 到通过 ActionExecutor 调用 Tool 拿到结果全流程打通"
+      "故意越权场景验证权限拦截生效"）均已用新增测试
+      `tests/test_phase6_action_executor.py`（5 用例，含一条真实跑
+      `goals/gap.py::detect_gap()` 产出 gap 后驱动 `ActionExecutor`
+      的全链路测试）验证，全部通过；`pyflakes` 无告警。详见
+      `07-phase6-action-model-sprint-plan.md` 末尾"Sprint 6-1 执行
+      记录"与 `MIGRATION_STATUS.md`。可进入 **Sprint 6-2（接入
+      Workflow 与 SubAgent）**，留待下一次推进（下一次对话的任务）。
