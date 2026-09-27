@@ -536,3 +536,17 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       执行记录"与"变更记录"、`MIGRATION_STATUS.md`。可进入
       **Sprint 8-3（剩余 Scheduler 逐个评估表 + 排期，直接复用 Sprint
       8-2 已产出的评估表）**（下一次对话的任务）。
+- [x] Phase 8 Sprint 8-3 已完成：为剩余三个真实候选
+      （`cron_job_runner`/`goal_cycle`/`AutonomousLoop`）逐一给出
+      "能否接入 + 前置改动 + 预估工作量 + 风险等级"，并产出排期建议
+      （`cron_job_runner` → Sprint 8-4 最先接入，工作量最小风险最低；
+      `goal_cycle` → Sprint 8-5，依赖 8-4 产出的 `run_once_async()`；
+      `AutonomousLoop` → Sprint 8-6，需先做独立的职责拆分）。
+      `ResourceArbiter`/`Daemon`/`UnifiedTaskScheduler` 已在 Sprint 8-2
+      定论不适用/未被实际调用，不占排期。完成标志"剩余 Scheduler 有
+      明确的评估结论和排期"已勾选；"至少一种旧 Scheduler 已成功接入"
+      按排期移交 Sprint 8-4。本 Sprint 未改动任何生产代码/测试，仅
+      文档同步。详见 `09-phase8-runtime-convergence-sprint-plan.md`
+      末尾"Sprint 8-3 执行记录"。可进入 **Sprint 8-4（接入
+      `cron_job_runner`：新增 `AgentRuntime.run_once_async()` +
+      `cron.runtime_dispatch_enabled` 开关）**（下一次对话的任务）。

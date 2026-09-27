@@ -56,7 +56,8 @@
 - [x] 至少一种触发路径（用户主动 Goal）完全走 `AgentRuntime`（Sprint 8-1
       已完成，见下方执行记录）
 - [ ] 至少一种旧 Scheduler 已成功接入 `AgentRuntime`
-- [ ] 剩余 Scheduler 有明确的评估结论和排期，而不是被忽略
+- [x] 剩余 Scheduler 有明确的评估结论和排期，而不是被忽略（Sprint 8-3
+      已完成，见下方"Sprint 8-3 执行记录"）
 - [x] 所有涉及模块的原有测试全部通过（Sprint 8-1 范围内，见下方执行记录；
       整个 Phase 8 完成标志仍要求 Sprint 8-2/8-3 涉及模块的测试也全部通过）
 
@@ -241,3 +242,60 @@ Objective 触发路径、`goal_cycle`、`cron_job_runner` 的普通 message
   基于本次评估表选定具体候选后再推进；不影响"至少一种触发路径完全走
   `AgentRuntime`"（Sprint 8-1 已达成）和"所有涉及模块的原有测试全部
   通过"（本 Sprint 范围内的 `runtime/event_loop.py` 已验证）两条。
+
+## Sprint 8-3 执行记录
+
+任务表两项都是纯评估/排期产出，本 Sprint 不改动任何生产代码——
+"逐个评估表"直接复用 Sprint 8-2 已经做过的六候选依赖图扫描 + 代码
+阅读结论（`ResourceArbiter`/`Daemon` 不适用、`UnifiedTaskScheduler`
+未被任何路径实际调用，已在上面"六个候选的依赖图扫描 + 评估结论"表格
+中定论，不重复调研），本节只补齐"能否接入、大概需要多久、风险等级"
+三项，并给出排期建议。
+
+### 剩余三个真实候选的评估表（能否接入 / 预估工作量 / 风险等级）
+
+| 候选 | 能否接入 `AgentRuntime` | 需要的前置改动 | 预估工作量 | 风险等级 |
+|---|---|---|---|---|
+| `cron_job_runner`（普通 `run_mode="message"` cron 任务） | 可以，但需要新增能力而非简单转发 | 1) 给 `AgentRuntime` 加一个非阻塞的 `run_once_async()`（沿用 `cron_job_runner.py` 已有的"独立线程执行"模式，返回句柄/Future，不阻塞调用方）；2) 新增 `cron.runtime_dispatch_enabled`（默认 `False`）配置开关，仅当开启时 `_run_message_job()` 走新路径，旧路径（`CronJobExecutor.run_job()`）完全不动；3) 把 `RunOutcome` 的关键字段（status/output/error/耗时）映射回 `CronJobWorkspace` 状态，让 watchdog/`reap_stale_jobs`/摘要展示等下游消费者无感 | 约 1 个 Sprint（0.5 加 `run_once_async` + 测试，0.5 接线 + 状态映射 + 回归） | **低-中**：新增而非替换，默认关闭不影响存量行为；风险集中在"状态映射是否完整覆盖 `CronJobExecutor` 原有语义"，需要专门的对照测试而不能只测"调用到了新路径" |
+| `goal_cycle`（经 `goal_cron_bridge.py`，`objective_executor.start()`） | 可以，但前提是先有第一行的 `run_once_async()`（`goal_cycle` 本身就要求非阻塞 fire-and-forget，`run_once()` 同步阻塞在此处完全不可用，`run_once_async()` 是硬前提，不是可选优化） | 在 `run_once_async()` 基础上，还需要在 `AgentRuntime`/`RuntimeEventLoop` 层补一个"公平调度/并发槽位"的最小实现（对应 `ObjectiveExecutor` 现有的 `fairness_paused_objective_ids()`/`running_count_for_goal()` 语义），否则会退化成"每个 Goal 无限制并发触发"，是比 `cron_job_runner` 更大的一块改动 | 约 2 个 Sprint（第 1 个 Sprint 做 `run_once_async()`，第 2 个 Sprint 做最小公平调度 + `goal_cron_bridge` 接线 + 回归） | **中**：依赖第一行先完成；公平调度语义如果实现不完整，会在"多 Goal 并发"场景下产生行为回归，需要专门补一批"公平性"测试用例（可参考 `ObjectiveExecutor` 现有测试作为基准） |
+| `AutonomousLoop._tick_autonomous()`（Objective 触发路径） | 可以，但依赖上面两行都做完 | 除了公平调度，还要处理 `_trigger_objective_candidate()` 里"暂停/恢复"（`fairness_paused`/`user_paused`）等状态机语义，是三者中状态最复杂的一个；且 `AutonomousLoop` 本身 1293 行、职责混杂（passive/maintenance/autonomous 三档 tick 都在同一个类里），改动前建议先做一次独立的"职责拆分"而不是直接在现状上打补丁 | 约 2-3 个 Sprint（前置 1-2 个 Sprint 做职责拆分，之后再接入） | **中-高**：改动面最大，且改动前需要先做拆分（拆分本身就是不小的工作量），是三者里最不适合"抢首个接入"的一个 |
+
+### 排期建议
+
+1. **优先接入 `cron_job_runner`**：工作量最小、风险最低、且不依赖任何
+   其它前置改动，是"至少一种旧 Scheduler 已成功接入 `AgentRuntime`"
+   这条完成标志最现实的落点，建议排为 **Sprint 8-4**。
+2. **`goal_cycle` 排在其后**：依赖 `run_once_async()`（Sprint 8-4 的
+   副产物可以直接复用），核心新增是最小公平调度，建议排为
+   **Sprint 8-5**。
+3. **`AutonomousLoop` 排最后**：既依赖前两者的基础设施，又需要一次
+   独立的职责拆分作为前提，建议排为 **Sprint 8-6**，且拆分本身可以
+   考虑单独立项而不占用 Phase 8 的 Sprint 编号（类似 Phase 6 对
+   `objective_executor.py` 构造闭包的处理方式：先记录风险，不强行在
+   本 Phase 内解决）。
+4. `ResourceArbiter`/`Daemon`/`UnifiedTaskScheduler` 不进入排期——原因
+   已在 Sprint 8-2 评估表中定论（不适用 / 未被实际调用），不需要
+   "评估结论和排期"之外的进一步动作。
+
+### 完成标志核对
+
+- 六个候选均已有"能否接入 + 评估结论"（三个不适用/未使用，三个有
+  具体工作量/风险等级评估），满足"剩余 Scheduler 有明确的评估结论和
+  排期，而不是被忽略"——对应完成标志第二条改为 `[x]`。
+- "至少一种旧 Scheduler 已成功接入 `AgentRuntime`"（完成标志第一条）
+  仍为 `[ ]`：按上面排期，这是 Sprint 8-4 的产出，本 Sprint（8-3）
+  按任务表定义"不要求本 Phase 内全部完成"，不在本次改动范围内，留给
+  下一次对话按排期推进。
+- 本 Sprint 未修改任何生产代码/测试，仅更新文档，因此没有新增测试
+  运行记录；`pyflakes`/`dep_graph.py` 均不涉及（无代码改动）。
+
+## 变更记录 2026-09-27（续）
+
+- 触发条件：无——Sprint 8-3 任务表本身就是"评估表 + 排期"，不涉及
+  代码改动，不存在需要触发止损条件的情形，记录仅为与
+  `12-execution-and-doc-sync-norms.md` 的"每完成一个阶段都要更新文档"
+  要求保持一致的常规文档同步。
+- 结果：Sprint 8-2 遗留的两个未完成的"完成标志"中，"剩余 Scheduler
+  有评估结论和排期"（第二条）已在本 Sprint 完成；"至少一种旧
+  Scheduler 已成功接入"（第一条）按排期表移交 Sprint 8-4（`cron_job_runner`
+  + 新增 `AgentRuntime.run_once_async()`）。
