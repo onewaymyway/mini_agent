@@ -10,7 +10,8 @@
 |---|---|---|---|---|---|---|
 | goal_mode/runner.py | Phase 1 | 部分迁移 | 未知，待补充（`run()`/`_finish()` 两处接入点已走新链路做转换+trace+持久化，主循环内部仍是旧逻辑，未按"路径条数"精确统计） | 是（`GoalAdapter.to_new`/`to_old` 均已实现并被特征测试覆盖） | 2026-09-26 | Sprint 2 执行者 |
 | goal_mode/executor.py | Phase 1 | 未开始 | 0% | 否 | - | - |
-| goal_backlog.py | Phase 5 | 未开始 | 0%（现状盘点发现 inbound=33，远超止损阈值，且与 `evolution/objective_executor.py` 紧耦合，见 `docs/architecture_v2/phase5-goal-inventory.md`，Sprint 5-1 暂缓，待 Sprint 5.0.5 耦合拆解评估结论） | 否 | 2026-09-27 | Phase 5 现状盘点执行者 |
+| goal_backlog.py | Phase 5 | 未开始 | 0%（Sprint 5.0.5 耦合拆解评估：按跨子系统口径重新统计 inbound=22，仍远超止损阈值，**暂缓**，不属于任何已排期 Phase，待项目所有者确认排期，见 `06-phase5-goal-convergence-sprint-plan.md` "Sprint 5.0.5 执行记录"） | 否 | 2026-09-27 | Phase 5 Sprint 5.0.5 执行者 |
+| evolution/objective_executor.py（原表遗漏，Phase 5 Sprint 5.0.5 补充） | Phase 6（评估后移交，原属 Phase 5 候选） | 未开始 | 0%（inbound=5 未超阈值，但唯一实例化点在 `api/server.py` 内高时序敏感的构造闭包中，且 `ExecutionStep` 语义更贴近 Action/Capability；判定移出 Phase 5，留给 Phase 6 统一 Action 时一并评估，见同上执行记录） | 否 | 2026-09-27 | Phase 5 Sprint 5.0.5 执行者 |
 | history_manager.py | Phase 3 | 部分迁移 | 未知，待补充（`agent/lifecycle.py::_init_components()` 唯一接入点已走新链路做转换+trace，`HistoryManager` 内部逻辑未改动，见 `03-sprint1.5-memory-perception-coupling-assessment.md` "七、history_manager.py Adapter 接入点执行记录"） | 否（`HistoryAdapter.to_old` 尚未实现，无实际调用方） | 2026-09-26 | history_manager Adapter 接入点执行者 |
 | workflow/ | Phase 6 | 未开始 | 0% | 否 | - | - |
 | tools/ + tool_executor.py | Phase 6 | 未开始 | 0% | 否 | - | - |

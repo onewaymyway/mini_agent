@@ -19,6 +19,7 @@ ActionResult` 的接口（原文 §10、§39）。这是 Capability 收敛的关
 | Workflow 执行 | `workflow/`（18 个模块） | 有自己的执行状态机，需要包一层 Adapter |
 | SubAgent 调用 | `orchestrator/` | 涉及跨进程/跨会话调用，风险相对高 |
 | Hybrid Exec | `hybrid_exec/` | 已经是"多种执行方式混合"的雏形，可以直接参考其分发逻辑设计 `ActionExecutor` |
+| `evolution/objective_executor.py::ObjectiveExecutor`（Phase 5 Sprint 5.0.5 移交） | `evolution/` | `ExecutionStep`（多步执行 + 重试 + 超时）语义上更接近 Action/Capability 而非 Goal，Phase 5 评估后判定不适合套用 Goal 的 Adapter 模式（唯一实例化点在 `api/server.py::HttpServer._build_autonomous_loop()` 内一段时序高度敏感的构造闭包里，风险特征是"低耦合但高时序敏感"），移交本 Phase 一并评估，见 `06-phase5-goal-convergence-sprint-plan.md` "Sprint 5.0.5 执行记录" |
 
 产出：`docs/architecture_v2/phase6-action-inventory.md`。
 

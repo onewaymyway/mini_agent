@@ -50,13 +50,107 @@
 | 评估 `ObjectiveExecutor` 能否独立启动 Adapter | 判断"只转换 `ObjectiveExecutor` 侧、不动 `GoalBacklog`"是否会变成"没有实际解耦效果的包装层"，还是确实可以复用 Self/history_manager 那套"低风险先行"模式 |
 | 给出 Sprint 5-1 实际任务范围建议 | 输出：`goal_backlog.py`/`ObjectiveExecutor` 分别应该"直接启动 Adapter" / "先做 facade 隔离" / "暂缓"三选一的判断，附实测数据 |
 
-## Sprint 5-1（2 周）：Objective → InternalGoalStep 降级
+## Sprint 5.0.5 执行记录
 
-| 任务 | 产出 |
-|---|---|
-| `core/goal.py` 扩充 | `GoalState` 增加 `current_state / ideal_state / problems / gap / constraints / resources / priority / evidence / deadline` 字段（原文 §8） |
-| Objective Adapter | 把现有 `Objective` 对象转换为 `GoalState.gap` 下的一个条目，而不是独立对象；旧 `Objective` 的读写接口保留，内部转发到新结构 |
-| GoalBacklog Adapter | 让 `goal_backlog.py` 的读写通过 `StateManager` 完成，内部数据结构逐步替换为多个 `GoalState` 实例的集合 |
+**一、`goal_backlog.py` 按子系统重新统计**
+
+沿用 `12-execution-and-doc-sync-norms.md` 第六节第 6 条已确立的口径
+（同一顶级包内部调用不计入"跨子系统 inbound"——`goal_backlog.py`
+本身位于 `perception/` 包，因此 `perception/*` 的 11 个调用方按新口径
+不计入）：
+
+| 调用方所属顶级包 | 文件数 | 是否计入跨子系统 inbound |
+|---|---|---|
+| `perception/`（`goal_backlog.py` 自己所属的包） | 11 | 否（同包内部） |
+| `evolution/` | 15 | 是 |
+| `cli/`（`commands/cron.py`/`commands/goals.py`/`commands/growth_cmd.py`） | 3 | 是 |
+| `api/`（`routes.py`/`server.py`） | 2 | 是 |
+| `external_input/`（`goal_relevance.py`/`novelty_judge.py`） | 2 | 是 |
+| **跨子系统 inbound 合计** | **22** | — |
+
+与 `perception/memory_store.py` 的先例（33 → 按新口径降到 5，跌破
+阈值）**结论不同**：`goal_backlog.py` 按新口径重新统计后仍有 22，
+**依然远超 10+ 止损阈值**——不是"同包内部调用占多数、剔除后就达标"
+的情况，而是`evolution/` 包里就有 15 个真实跨子系统调用方（自主循环、
+cron 调度、公平度诊断、看板衍生数据等），本身就已经超过阈值近 50%。
+这意味着"口径调整"这条路对 `goal_backlog.py` 不成立，不需要再往下
+做分层 facade 尝试（`memory_store.py` 当初是先做两层 facade 才发现
+口径问题；这次实测数据已经足够明确，没有必要重复走一遍"先 facade
+再看还剩多少"的过程去验证一个大概率不会成立的假设）。
+
+**结论**：`goal_backlog.py` **暂缓**任何形式的迁移（包括 facade），
+维持"未开始"状态。它不是"看起来复杂、实测发现没那么复杂"的情况
+（`history_manager.py`/`memory_store.py` 都是这类），而是"看起来复杂、
+实测确认真的复杂"——一套服务于自主循环/公平调度/看板衍生数据的
+跨会话持久化目标树，本身就该被视为独立于 `goal_mode/`（Phase 1）
+的另一个大子系统，不应该被塞进 Phase 5（统一 Goal）的范围里一起做。
+
+**二、`ObjectiveExecutor` 能否独立启动 Adapter**
+
+`ObjectiveExecutor` 自身 inbound=5，数值上未超阈值，但实测其唯一
+实例化位置（`api/server.py::HttpServer._build_autonomous_loop()`
+内部，约第 1866 行）后发现：这个接入点本身嵌在一段几百行的 HTTP
+服务器自主循环构造闭包里，构造完成后紧接着做孤儿执行恢复
+（`reconcile_orphaned_executions()`）、双向接线公平调度回调
+（`set_other_channel_running_fn`）、条件性切换到隔离 Runner
+（`ObjectiveIsolatedRunner`）等一系列强状态、强时序依赖的操作——
+与 Self/History/Memory 迁移链的接入点
+（`agent/lifecycle.py::_init_components()`，一个相对独立、可以安全
+"只加一行 trace 调用不影响后续逻辑"的位置）性质不同：这里插入任何
+新代码都有干扰这段精密时序编排的风险，即使新代码本身只做只读转换
++ trace，也难以保证不会因为求值顺序、异常传播等副作用打断后续几行
+强依赖前面构造结果的接线逻辑。
+
+**结论**：`ObjectiveExecutor` 的 inbound 数值虽然不高，但**风险特征
+不是"低耦合"而是"低耦合但高时序敏感"**，不满足 Self/history_manager
+那套"单点接入、纯旁路 trace"模式安全套用的前提条件。同时
+`ObjectiveExecutor` 拆解的 `ExecutionStep`（多步执行 + 重试 + 超时）
+在语义上更接近原方案 §9/§10（Capability/Action），而不是 Phase 5
+的 Goal 语义本身——把它现在塞进 Phase 5 用 Goal 的 Adapter 模式硬套，
+既有风险又语义不贴切。**建议把 `ObjectiveExecutor` 的迁移移出
+Phase 5，留给 Phase 6（统一 Action，收敛 Tool/Workflow/SubAgent）
+一并处理**，那里本来就要建立"多步执行"的统一表达，`ExecutionStep`
+天然应该在那时候被纳入评估，而不是现在孤立处理。
+
+**三、对 Sprint 5-1 的最终范围调整**
+
+综合以上两点，原 Sprint 5-1 计划的两项任务（"Objective Adapter"、
+"GoalBacklog Adapter"）均从 Phase 5 移出：
+
+- `goal_backlog.py`（含其中"Objective"概念）：暂缓，不在当前任何
+  已排期 Phase 内，留待项目所有者确认排期后再决定归属（可能是新增
+  一个独立 Phase，也可能等 Phase 8 Runtime 收敛时一并评估——它同时
+  涉及调度/自主循环，与 Phase 8 的 Runtime 概念也有交集）。
+- `evolution/objective_executor.py`：移入 Phase 6（统一 Action）
+  范围，在 `07-phase6-action-model-sprint-plan.md` 补充这条待评估
+  任务（不在本次改动，留给 Phase 6 启动时处理，避免在 Phase 5 的
+  文档里预支 Phase 6 还没排期的具体任务设计）。
+
+Phase 5 剩余可执行内容收窄为 **Sprint 5-2（Gap 检测能力）**——该任务
+只依赖 `core/goal.py::GoalState` 的字段扩展和 Phase 4 的
+`state_manager.get_state("world"/"self")` 接口，不依赖
+`goal_backlog.py`/`ObjectiveExecutor` 的具体实现，可以独立推进，
+详见现状盘点文档"五、Sprint 5-1/5-2 范围建议"一节的判断已被验证成立。
+
+**回归测试**：本次 Sprint 5.0.5 只做依赖关系实测和文档判断，未修改
+任何生产代码，因此不需要跑回归测试（与 Sprint 3/Sprint 1.5 里"纯
+复盘/评估类"子任务的处理方式一致）。
+
+## Sprint 5-1（2 周，原计划——按 Sprint 5.0.5 结论已收窄范围）：Objective → InternalGoalStep 降级
+
+> **范围调整说明（不删除原文，仅标注，完整依据见 Sprint 5.0.5 执行
+> 记录）**：下表"Objective Adapter"、"GoalBacklog Adapter"两项任务
+> 已确认**暂缓/移出本 Phase**（详见上方"Sprint 5.0.5 执行记录·三、
+> 对 Sprint 5-1 的最终范围调整"）。原表格保留在下面，作为"曾经的
+> 计划"存档，不代表当前仍要执行；`core/goal.py` 扩充这一项因为
+> Sprint 5-2 的 Gap 检测需要用到新增字段，改为并入 Sprint 5-2 一并
+> 推进（见下方 Sprint 5-2 任务表）。
+
+| 任务 | 产出 | 当前状态 |
+|---|---|---|
+| `core/goal.py` 扩充 | `GoalState` 增加 `current_state / ideal_state / problems / gap / constraints / resources / priority / evidence / deadline` 字段（原文 §8） | 并入 Sprint 5-2 |
+| Objective Adapter | 把现有 `Objective` 对象转换为 `GoalState.gap` 下的一个条目，而不是独立对象；旧 `Objective` 的读写接口保留，内部转发到新结构 | **暂缓**（Sprint 5.0.5：`goal_backlog.py` 跨子系统 inbound=22，远超阈值） |
+| GoalBacklog Adapter | 让 `goal_backlog.py` 的读写通过 `StateManager` 完成，内部数据结构逐步替换为多个 `GoalState` 实例的集合 | **暂缓**，理由同上 |
 
 **验收标准**：现有依赖 `Objective` / `GoalBacklog` 的旧测试全部通过
 （Adapter 模式的核心验证方式——外部接口不变，内部实现改变）。
@@ -64,6 +158,11 @@
 **止损条件**：如果 Objective 的语义（比如"多级子目标嵌套"）在
 `GoalState.gap` 这个简单列表结构里表达不了，说明 `GoalState` 需要
 支持递归结构，应先扩展数据模型，而不是强行压缩语义丢失信息。
+
+> 止损条件本身已在 Sprint 5.0.5 触发（见上方执行记录），处理方式是
+> 暂缓迁移而非强行压缩语义——这与止损条件描述的"先扩展数据模型"是
+> 同一种保守处理原则的应用，只是这次问题出现在"依赖规模"而不是
+> "语义表达能力"上。
 
 ## Sprint 5-2（1.5 周）：Gap 检测能力
 

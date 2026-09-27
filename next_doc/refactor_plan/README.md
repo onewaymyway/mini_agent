@@ -347,3 +347,27 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       详见 `06-phase5-goal-convergence-sprint-plan.md` 末尾"变更
       记录"。Sprint 5.0.5 留待下一次推进（Sprint 5-2 的 Gap 检测
       不依赖此结论，可并行）。
+- [x] Sprint 5.0.5（GoalBacklog/ObjectiveExecutor 耦合拆解评估）已
+      完成：按 `12-execution-and-doc-sync-norms.md` 第六节第 6 条口径
+      重新统计 `goal_backlog.py` 跨子系统 inbound（剔除同属
+      `perception/` 包的 11 个调用方后）仍为 **22**，与
+      `memory_store.py`（33 → 剔除后降到 5，跌破阈值）的先例**结论
+      不同**——`evolution/` 包单独就贡献了 15 个真实跨子系统调用方，
+      确认这是"看起来复杂、实测确认真的复杂"，不是"口径问题"，正式
+      决策：`goal_backlog.py` **暂缓**，不属于任何已排期 Phase。
+      `ObjectiveExecutor` 自身 inbound=5 未超阈值，但实测其唯一
+      实例化点（`api/server.py::HttpServer._build_autonomous_loop()`
+      内部）嵌在一段孤儿执行恢复/公平调度回调接线/隔离 Runner 切换等
+      强时序依赖的构造闭包里，风险特征是"低耦合但高时序敏感"，不满足
+      Self/history_manager 那套"单点旁路 trace"模式的安全前提；且其
+      `ExecutionStep`（多步执行+重试+超时）语义上更贴近 Action/
+      Capability，因此正式决策：**移出 Phase 5，移交 Phase 6（统一
+      Action）一并评估**，已在 `07-phase6-action-model-sprint-plan.md`
+      现状盘点表格补充这条待评估项。原 Sprint 5-1 的两项任务
+      （Objective Adapter/GoalBacklog Adapter）因此从 Phase 5 范围内
+      正式移除，Sprint 5-1 文档保留原表格存档并标注调整状态；
+      `core/goal.py` 的字段扩充任务并入 Sprint 5-2 一并推进。Phase 5
+      当前可执行范围收窄为 Sprint 5-2（Gap 检测能力），留待下一次
+      推进。本次改动只涉及文档判断，未修改生产代码，无需跑回归测试。
+      详见 `06-phase5-goal-convergence-sprint-plan.md` 末尾"Sprint
+      5.0.5 执行记录"与 `MIGRATION_STATUS.md`。
