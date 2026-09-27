@@ -23,6 +23,19 @@ ActionResult` 的接口（原文 §10、§39）。这是 Capability 收敛的关
 
 产出：`docs/architecture_v2/phase6-action-inventory.md`。
 
+**现状盘点已完成**（详见 `docs/architecture_v2/phase6-action-inventory.md`），
+核心结论：`ToolExecutor`（inbound=11）/`PermissionGuard`（inbound=26）/
+`orchestrator/`（inbound=37）虽然实测数值超过 Sprint 0 止损阈值，但
+**不需要因此暂停或重新规划**——与 Phase 3（Memory）/Phase 5
+（GoalBacklog）不同，本 Phase Sprint 6-1/6-2 的设计从一开始就是"新增
+一层纯转发 wrapper，不改动被依赖模块内部"，止损条件防的是"改动一个
+被广泛依赖的模块内部逻辑波及所有调用方"，不适用于"新增一个调用方去
+调一个稳定公开接口"这种情况。原 Sprint 6-1/6-2 任务表核实后**无需
+调整，直接按原计划推进**。`evolution/objective_executor.py`（Phase 5
+Sprint 5.0.5 移交项）评估结论：风险点在于"改动它现有的构造闭包"，
+不在于"新增转发分支调用已构造好的实例"，因此不需要额外止损处理，
+具体接入排期留给 Sprint 6-2 之后决定。
+
 ## Sprint 6-1（2 周）：ActionSpec + ActionExecutor 骨架（先接 Tool）
 
 | 任务 | 产出 |

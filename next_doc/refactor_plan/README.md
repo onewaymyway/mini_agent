@@ -388,3 +388,21 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       plan.md` 末尾"Sprint 5-2 执行记录"。可进入 **Phase 6（统一
       Action）**，注意需要一并评估 Sprint 5.0.5 移交的
       `evolution/objective_executor.py`（下一次对话的任务）。
+- [x] Phase 6（统一 Action）"现状盘点"已完成：产出
+      `docs/architecture_v2/phase6-action-inventory.md`。实测
+      `ToolExecutor`（inbound=11）/`PermissionGuard`（inbound=26）/
+      `orchestrator/`（inbound=37）均超 Sprint 0 止损阈值，但**判定
+      不需要因此暂停或重新规划**——与 Phase 3/5 不同，本 Phase
+      Sprint 6-1/6-2 的设计从一开始就是"新增一层纯转发 wrapper，
+      不改动被依赖模块内部"（`ActionExecutor` 只调用
+      `tool_executor.py`/`permissions.py`/`orchestrator/` 现有的
+      公开接口），止损条件针对的是"改动一个被广泛依赖的模块内部逻辑"，
+      不适用于"新增调用方调一个稳定公开接口"。`ToolExecutor` 额外
+      确认 11 个调用方全部在 `agent/` 包内，本质是 Agent 拆分出的
+      内部协作类，风险比数字暗示的更低。`evolution/objective_executor.py`
+      （Sprint 5.0.5 移交项）评估结论：Phase 5 发现的风险点是"改动它
+      的构造闭包"，不是"新增转发分支调用已构造好的实例"，因此不需要
+      额外止损处理，接入排期留给 Sprint 6-2 之后决定。原
+      `07-phase6-action-model-sprint-plan.md` 的 Sprint 6-1/6-2
+      任务表核实后无需调整，可直接推进到 **Sprint 6-1（ActionSpec +
+      ActionExecutor 骨架，先接 Tool）**（下一次对话的任务）。
