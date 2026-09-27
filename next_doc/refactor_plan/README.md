@@ -508,3 +508,31 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       问题。详见 `09-phase8-runtime-convergence-sprint-plan.md` 末尾
       "Sprint 8-1 执行记录"与 `MIGRATION_STATUS.md`。可进入 **Sprint 8-2
       （接入持续运行 + 一种旧 Scheduler）**（下一次对话的任务）。
+- [x] Phase 8 Sprint 8-2 已完成"持续运行"部分：新增
+      `runtime/event_loop.py::RuntimeEventLoop`（`run_forever()` 实现
+      `while running: run_once(...)`，支持 `stop_event`/
+      `KeyboardInterrupt` 优雅退出、单轮异常不终止循环）。任务表第二项
+      "接入一种旧 Scheduler"评估后**暂缓**：实测
+      `Daemon`/`AutonomousLoop`/`Cron`（含 `goal_cycle`）/
+      `UnifiedTaskScheduler`/`ObjectiveExecutor`/`ResourceArbiter`
+      六个候选逐一排查，`ResourceArbiter`/`Daemon` 本身不是"触发任务
+      入口"、`UnifiedTaskScheduler` 是尚未被任何路径调用的只读层，
+      其余三个（`AutonomousLoop` 的 Objective 触发路径 / `goal_cycle`
+      / 普通 `cron_job_runner` message 任务）各自有具体的技术障碍——
+      公平调度状态耦合 / 同步阻塞与异步 fire-and-forget 语义不兼容
+      （会卡死 daemon 主循环）/ `CronJobExecutor` 自成一套平行执行框架
+      （替换即丢功能或 Big Bang Rewrite）。按 `12-execution-and-doc-
+      sync-norms.md` 第四节留痕（见
+      `09-phase8-runtime-convergence-sprint-plan.md` "变更记录
+      2026-09-27"），"接入一种旧 Scheduler"移交 **Sprint 8-3**（与其
+      "剩余 Scheduler 逐个评估表"任务性质一致，评估表已产出可直接
+      作为起点）。新增测试 `tests/test_phase8_sprint8_2_event_loop.py`
+      （5 用例）全部通过；回归测试（同 Sprint 8-1 的一组 + 本文件，
+      共 160 用例，155 通过，5 个既有失败 `test_build_from_history_*`
+      与本次改动无关）；`pyflakes` 无告警；`scripts/dep_graph.py
+      --module runtime.event_loop` inbound=1（仅 `runtime/__init__.py`
+      转导出）/outbound=0，未触发止损阈值。详见
+      `09-phase8-runtime-convergence-sprint-plan.md` 末尾"Sprint 8-2
+      执行记录"与"变更记录"、`MIGRATION_STATUS.md`。可进入
+      **Sprint 8-3（剩余 Scheduler 逐个评估表 + 排期，直接复用 Sprint
+      8-2 已产出的评估表）**（下一次对话的任务）。
