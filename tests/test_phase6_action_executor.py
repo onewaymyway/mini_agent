@@ -93,16 +93,20 @@ def test_execute_tool_blocked_by_sandbox_permission_returns_failure_not_exceptio
     assert failed_events[0].correlation_id == "corr-2"
 
 
-# ── Sprint 6-1：workflow/subagent 显式未实现（不是静默假成功）───────────────
+# ── 未知 type 仍然显式抛错（不是静默假成功）──────────────────────────────────
 
 
-@pytest.mark.parametrize("action_type", ["workflow", "subagent"])
-def test_execute_unsupported_type_raises_not_implemented(action_type):
+def test_execute_truly_unknown_type_raises_not_implemented():
+    """`tool`/`workflow`/`subagent` 三个已知取值之外的 type 仍然显式报错——
+    Sprint 6-2 之后 `ActionType` 的取值空间已经全部实现，这里验证的是
+    "非法 type"（`ActionSpec` 是普通 dataclass，运行时不强制 Literal），
+    而不是 Sprint 6-1 时"合法但未实现"的旧行为。
+    """
     registry = _make_registry()
     guard = PermissionGuard(auto_approve=True)
     executor = ActionExecutor(registry=registry, guard=guard, event_bus=EventBus())
 
-    spec = ActionSpec(type=action_type, capability="whatever", arguments={})
+    spec = ActionSpec(type="bogus_type", capability="whatever", arguments={})
 
     with pytest.raises(NotImplementedError):
         executor.execute(spec)
@@ -154,3 +158,252 @@ def test_goal_gap_to_action_executor_full_chain_with_shared_correlation_id():
     assert goal.gap[0] in str(result.output)
     assert [e.kind for e in events] == ["ActionStarted", "ActionCompleted"]
     assert all(e.correlation_id == correlation_id for e in events)
+
+
+# ── Sprint 6-2：type="workflow" ──────────────────────────────────────────────
+
+
+class _FakeCfg:
+    """duck-typed AppConfig：ActionExecutor 只读取这几个属性。"""
+
+    def __init__(self, project_root="/tmp/does-not-matter"):
+        self.project_root = project_root
+        self.llm_provider = "fake-provider"
+        self.llm_base_url = None
+        self.api_key = "fake-key"
+
+
+class _FakeWorkflowStore:
+    def __init__(self, workflows: dict):
+        self._workflows = workflows
+
+    def load(self, name):
+        return self._workflows.get(name)
+
+
+def test_execute_workflow_missing_cfg_returns_failure_not_exception():
+    registry = _make_registry()
+    guard = PermissionGuard(auto_approve=True)
+    executor = ActionExecutor(registry=registry, guard=guard, event_bus=EventBus())
+
+    spec = ActionSpec(type="workflow", capability="some_workflow", arguments={})
+    result = executor.execute(spec)
+
+    assert result.success is False
+    assert result.error.startswith("missing_cfg")
+
+
+def test_execute_workflow_not_found_returns_failure():
+    registry = _make_registry()
+    guard = PermissionGuard(auto_approve=True)
+    store = _FakeWorkflowStore({})
+    executor = ActionExecutor(
+        registry=registry, guard=guard, event_bus=EventBus(),
+        cfg=_FakeCfg(), workflow_store=store,
+    )
+
+    spec = ActionSpec(type="workflow", capability="does_not_exist", arguments={})
+    result = executor.execute(spec)
+
+    assert result.success is False
+    assert result.error == "workflow_not_found: does_not_exist"
+
+
+def test_execute_workflow_success_forwards_to_workflow_runner(monkeypatch):
+    sentinel_wf = object()
+    store = _FakeWorkflowStore({"my_wf": sentinel_wf})
+    bus = EventBus()
+    events = []
+    for kind in ("ActionStarted", "ActionCompleted", "ActionFailed"):
+        bus.subscribe(kind, lambda e, _k=kind: events.append(e))
+
+    captured = {}
+
+    class _FakeRunResult:
+        status = "done"
+        error = None
+        step_results = []
+
+    class _FakeWorkflowRunner:
+        def __init__(self, cfg):
+            captured["cfg"] = cfg
+
+        def run(self, wf, inputs=None):
+            captured["wf"] = wf
+            captured["inputs"] = inputs
+            return _FakeRunResult()
+
+    monkeypatch.setattr(
+        "mini_agent.workflow.runner.WorkflowRunner", _FakeWorkflowRunner
+    )
+
+    registry = _make_registry()
+    guard = PermissionGuard(auto_approve=True)
+    cfg = _FakeCfg()
+    executor = ActionExecutor(
+        registry=registry, guard=guard, event_bus=bus, cfg=cfg, workflow_store=store,
+    )
+
+    spec = ActionSpec(type="workflow", capability="my_wf", arguments={"code": "print(1)"})
+    result = executor.execute(spec, correlation_id="corr-wf")
+
+    assert result.success is True
+    assert isinstance(result.output, _FakeRunResult)
+    assert result.action_type == "workflow"
+    assert result.capability == "my_wf"
+    assert captured["wf"] is sentinel_wf
+    assert captured["inputs"] == {"code": "print(1)"}
+    assert captured["cfg"] is cfg
+    assert [e.kind for e in events] == ["ActionStarted", "ActionCompleted"]
+
+
+def test_execute_workflow_non_done_status_maps_to_failure(monkeypatch):
+    store = _FakeWorkflowStore({"my_wf": object()})
+
+    class _FakeRunResult:
+        status = "failed"
+        error = "step s1 blew up"
+
+    class _FakeWorkflowRunner:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs=None):
+            return _FakeRunResult()
+
+    monkeypatch.setattr(
+        "mini_agent.workflow.runner.WorkflowRunner", _FakeWorkflowRunner
+    )
+
+    registry = _make_registry()
+    guard = PermissionGuard(auto_approve=True)
+    executor = ActionExecutor(
+        registry=registry, guard=guard, event_bus=EventBus(),
+        cfg=_FakeCfg(), workflow_store=store,
+    )
+
+    spec = ActionSpec(type="workflow", capability="my_wf", arguments={})
+    result = executor.execute(spec)
+
+    assert result.success is False
+    assert "workflow_status_not_done: failed" in result.error
+    assert "step s1 blew up" in result.error
+    # 失败也不丢信息：output 仍然是完整的 WorkflowRunResult。
+    assert isinstance(result.output, _FakeRunResult)
+
+
+# ── Sprint 6-2：type="subagent" ──────────────────────────────────────────────
+
+
+def test_execute_subagent_missing_prompt_returns_failure():
+    registry = _make_registry()
+    guard = PermissionGuard(auto_approve=True)
+    executor = ActionExecutor(
+        registry=registry, guard=guard, event_bus=EventBus(), cfg=_FakeCfg(),
+    )
+
+    spec = ActionSpec(type="subagent", capability="anything", arguments={})
+    result = executor.execute(spec)
+
+    assert result.success is False
+    assert result.error.startswith("missing_argument")
+
+
+def test_execute_subagent_success_forwards_to_build_minimal_agent(monkeypatch):
+    captured = {}
+
+    class _FakeAgent:
+        def run_turn(self, prompt):
+            captured["prompt"] = prompt
+            return f"answer to: {prompt}"
+
+    def _fake_build_minimal_agent(**kwargs):
+        captured["kwargs"] = kwargs
+        return _FakeAgent()
+
+    monkeypatch.setattr(
+        "mini_agent.workflow.agent_spawn.build_minimal_agent",
+        _fake_build_minimal_agent,
+    )
+
+    bus = EventBus()
+    events = []
+    for kind in ("ActionStarted", "ActionCompleted", "ActionFailed"):
+        bus.subscribe(kind, lambda e, _k=kind: events.append(e))
+
+    registry = _make_registry()
+    guard = PermissionGuard(auto_approve=True)
+    executor = ActionExecutor(
+        registry=registry, guard=guard, event_bus=bus, cfg=_FakeCfg(),
+    )
+
+    spec = ActionSpec(
+        type="subagent", capability="research_subtask",
+        arguments={"prompt": "总结一下 README"},
+    )
+    result = executor.execute(spec, correlation_id="corr-sub")
+
+    assert result.success is True
+    assert result.output == "answer to: 总结一下 README"
+    assert result.action_type == "subagent"
+    assert result.capability == "research_subtask"
+    assert captured["prompt"] == "总结一下 README"
+    assert captured["kwargs"]["sandbox"] is False
+    assert [e.kind for e in events] == ["ActionStarted", "ActionCompleted"]
+
+
+# ── Sprint 6-2 验收标准：三种 type 产出的 ActionResult 形状一致 ─────────────
+
+
+def test_all_three_action_types_produce_uniform_result_shape(monkeypatch):
+    """验收标准：'产出的 Experience 记录格式一致，不需要按 Action 类型
+    特判处理'——这里直接断言三种 type 返回的 ActionResult 都具备同一组
+    字段（dataclasses.fields 一致），不是靠某个分支多出/少了字段。
+    """
+    import dataclasses
+
+    class _FakeRunResult:
+        status = "done"
+        error = None
+
+    class _FakeWorkflowRunner:
+        def __init__(self, cfg):
+            pass
+
+        def run(self, wf, inputs=None):
+            return _FakeRunResult()
+
+    class _FakeAgent:
+        def run_turn(self, prompt):
+            return "ok"
+
+    monkeypatch.setattr(
+        "mini_agent.workflow.runner.WorkflowRunner", _FakeWorkflowRunner
+    )
+    monkeypatch.setattr(
+        "mini_agent.workflow.agent_spawn.build_minimal_agent",
+        lambda **kwargs: _FakeAgent(),
+    )
+
+    registry = _make_registry()
+    guard = PermissionGuard(auto_approve=True)
+    store = _FakeWorkflowStore({"wf": object()})
+    executor = ActionExecutor(
+        registry=registry, guard=guard, event_bus=EventBus(),
+        cfg=_FakeCfg(), workflow_store=store,
+    )
+
+    tool_result = executor.execute(
+        ActionSpec(type="tool", capability="echo_tool", arguments={"text": "x"})
+    )
+    workflow_result = executor.execute(
+        ActionSpec(type="workflow", capability="wf", arguments={})
+    )
+    subagent_result = executor.execute(
+        ActionSpec(type="subagent", capability="x", arguments={"prompt": "hi"})
+    )
+
+    field_names = {f.name for f in dataclasses.fields(ActionResult)}
+    for result in (tool_result, workflow_result, subagent_result):
+        assert result.success is True
+        assert {f.name for f in dataclasses.fields(result)} == field_names

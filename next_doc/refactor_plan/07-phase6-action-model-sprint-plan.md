@@ -69,10 +69,10 @@ Sprint 5.0.5 移交项）评估结论：风险点在于"改动它现有的构造
 
 ## 完成标志
 
-- [ ] Tool/Workflow/SubAgent 三类执行路径都已通过 `ActionExecutor`
+- [x] Tool/Workflow/SubAgent 三类执行路径都已通过 `ActionExecutor`
       统一接口调用
-- [ ] 权限、超时、重试等横切逻辑没有在三个分支里重复实现
-- [ ] 产出的 Experience 记录格式统一，不需要按 Action 类型特判处理
+- [x] 权限、超时、重试等横切逻辑没有在三个分支里重复实现
+- [x] 产出的 Experience 记录格式统一，不需要按 Action 类型特判处理
 
 ## Sprint 6-1 执行记录
 
@@ -138,3 +138,136 @@ Sprint 5.0.5 移交项）评估结论：风险点在于"改动它现有的构造
 
 Phase 6 Sprint 6-1 达到验收标准，可进入 **Sprint 6-2（接入 Workflow
 与 SubAgent）**，留待下一次推进。
+
+## 变更记录
+
+### 变更记录 2026-09-27
+
+- 触发条件：Sprint 6-2 任务表第 2 项"SubAgent Adapter：增加
+  `type="subagent"` 分支，转发给 `orchestrator/`"在实际实现前的耦合
+  评估中，发现 `orchestrator/task_manager.py::TaskManager` +
+  `orchestrator/sub_agent.py::SubAgent` 是线程模型（`start()` 非阻塞 +
+  `join()`），且 `SubAgent` 的构造强依赖主 Agent 的 session 生命周期
+  （`session_id`/`session_dir`/`shared_tool_cache`/主 Agent memory
+  backend 通过 `set_memory_sinks()` 事后注入），与 Phase 5
+  Sprint 5.0.5 评估 `evolution/objective_executor.py` 时定性的"低耦合
+  但高时序敏感"是同一类风险特征——`scripts/dep_graph.py --module
+  orchestrator.sub_agent`/`--module orchestrator.task_manager` 实测
+  inbound 均为 5（未超止损阈值），问题不在耦合面大小，而在于
+  `ActionExecutor.execute()` 是同步调用，若要接 `TaskManager`/
+  `SubAgent` 就必须在 `execute()` 内部自己处理"提交任务 → 轮询/阻塞
+  等待完成 → 读取 `TaskRecord.result`"这一整套时序，且需要伪造一个
+  独立于当前主 Agent session 的 `session_id`/`session_dir`，这已经不是
+  "新增一层纯转发 wrapper"，而是在搭建一套新的时序控制逻辑，不满足
+  Phase 6 现状盘点定下的止损前提。
+- 原计划：Sprint 6-2 任务表"SubAgent Adapter：增加 `type="subagent"`
+  分支，转发给 `orchestrator/`"。
+- 实际情况：`orchestrator/` 的 `TaskManager`/`SubAgent` 不适合直接
+  转发；但项目里已经存在另一个语义同样是"临时起一个 Agent 执行一次
+  prompt"、且从设计上就是为了脱离 `WorkflowRunner` 实例被独立调用的
+  同步函数——`workflow/agent_spawn.py::build_minimal_agent()`
+  （原本是给 `workflow/executors.py::SkillAgentStepExecutor`/
+  `workflow/py_step_runner.py` 复用的"构造最小 Agent"逻辑），
+  构造完成后 `agent.run_turn(prompt)` 就是一次同步调用，没有线程/
+  session 耦合问题。
+- 调整后方案：`type="subagent"` 分支转发给 `build_minimal_agent()` +
+  `Agent.run_turn()`，不转发给 `orchestrator/task_manager.py`/
+  `orchestrator/sub_agent.py`。`ActionSpec.capability` 对 `subagent`
+  类型降级为自由文本标签（不做校验），`arguments["prompt"]` 为必填项，
+  其余键（`model`/`sandbox`/`max_turns`/`timeout`/`skill_name`）透传给
+  `build_minimal_agent()`。权限接入相应调整：不调用顶层
+  `PermissionGuard.check()`（其签名 `check(tool_name, tool_input)` 是
+  Tool 专属的，套不到 workflow/subagent 上），workflow 分支依赖
+  `WorkflowStep.require_approval` 自己的审批门禁，subagent 分支依赖
+  `build_minimal_agent()` 内部自建的
+  `PermissionGuard(auto_approve=True, sandbox=...)`（`sandbox` 透传自
+  `arguments`）。
+- 影响范围：`orchestrator/task_manager.py`/`orchestrator/sub_agent.py`
+  本身未被这条迁移链触碰，仍是"未开始"状态（见
+  `MIGRATION_STATUS.md`），不影响后续 Phase 的前置条件——本 Phase的
+  目标"统一执行入口"通过"另一个语义等价的同步实现"达成，没有留下
+  语义缺口（`ActionExecutor` 依然能"派生一个子 Agent 执行任务"，只是
+  不是通过 `TaskManager` 那套并发调度/后台任务基础设施）。如果后续
+  确实需要"真正的并发多任务子 Agent 调度"接入 `ActionExecutor`，需要
+  新开一个专门评估 `TaskManager` 同步化接入方式的 Sprint，不在本次
+  变更范围内。
+
+## Sprint 6-2 执行记录
+
+按调整后方案（见上方"变更记录"）完成：
+
+- `actions/executor.py`：新增 `_execute_workflow()`/`_execute_subagent()`
+  两个私有方法，`execute()` 主体按 `spec.type` 分派到
+  `_execute_tool()`/`_execute_workflow()`/`_execute_subagent()` 三者
+  之一，事件发布逻辑（`ActionStarted` → 分支执行 →
+  `ActionCompleted`/`ActionFailed`）统一收口在 `execute()` 里，三个
+  私有方法只负责"执行并返回 `ActionResult`"，不再各自重复发布事件
+  （相比 Sprint 6-1 版本的一处重构，行为不变，减少后续新增分支时
+  漏发事件的风险）。
+- `type="workflow"`：`ActionExecutor.__init__` 新增可选
+  `cfg`/`workflow_store` 两个构造参数；`_execute_workflow()` 用
+  `workflow_store.load(spec.capability)`（惰性用
+  `WorkflowStore(cfg.project_root)` 构造）加载 `WorkflowDef`，找不到
+  返回 `ActionResult(success=False, error="workflow_not_found: ...")`；
+  加载到后转发给 `WorkflowRunner(cfg).run(wf, inputs=spec.arguments)`
+  （同步调用）；只有 `WorkflowRunResult.status == "done"` 才映射为
+  `success=True`，`"failed"/"partial"/"paused"/"cancelled"` 一律
+  `success=False`（`error` 里带上具体 status + 原始 `error` 字段），
+  但 `output` 无论成功与否都保留完整的 `WorkflowRunResult`，不因为
+  失败丢信息。
+- `type="subagent"`：转发给 `workflow/agent_spawn.py::
+  build_minimal_agent()` + `Agent.run_turn()`（原因见上方"变更
+  记录"）；`arguments["prompt"]` 缺失时返回
+  `ActionResult(success=False, error="missing_argument: ...")`，不
+  抛异常也不静默用空字符串跑一次。
+- 统一 Outcome：`ActionResult` 字段形状（`success`/`output`/`error`/
+  `action_type`/`capability`）三种 type 完全复用同一个 dataclass，
+  未新增任何 type 专属字段，`execute()` 主体也不再包含任何
+  `if spec.type == "workflow": ...` 式的特判（分派到私有方法之后，
+  三个分支各自独立，返回值形状由 `ActionResult` 的构造保证一致）。
+- 新增测试 `tests/test_phase6_action_executor.py`（新增 9 个用例，
+  含 Sprint 6-1 原有 5 个用例调整后共 11 个）：
+  - `test_execute_truly_unknown_type_raises_not_implemented`
+    （替换 Sprint 6-1 时"workflow/subagent 抛 NotImplementedError"的
+    旧测试——两者现已实现，改为验证真正非法的 `type` 值仍会显式报错）
+  - `test_execute_workflow_missing_cfg_returns_failure_not_exception`/
+    `test_execute_workflow_not_found_returns_failure`/
+    `test_execute_workflow_success_forwards_to_workflow_runner`/
+    `test_execute_workflow_non_done_status_maps_to_failure`
+  - `test_execute_subagent_missing_prompt_returns_failure`/
+    `test_execute_subagent_success_forwards_to_build_minimal_agent`
+  - `test_all_three_action_types_produce_uniform_result_shape`——
+    直接用 `dataclasses.fields()` 断言三种 type 返回的 `ActionResult`
+    字段集合完全一致，对应验收标准第二条。
+
+验收标准两条均已验证：
+
+1. "三种 Action 类型（tool/workflow/subagent）都能通过同一个
+   `ActionExecutor.execute()` 入口调用" —— 三个新增/沿用的
+   `test_execute_*_success_*` 用例覆盖。
+2. "产生的 `Experience` 记录格式一致（不需要 `if type == ... else ...`
+   特判）" —— `test_all_three_action_types_produce_uniform_result_shape`
+   验证。
+
+新增测试全部通过（`python -m pytest tests/test_phase6_action_executor.py -q`
+→ 11 passed）；`python -m pyflakes src/mini_agent/actions/executor.py
+src/mini_agent/core/action.py` 无告警；回归测试
+`pytest tests/ -k "phase or goal_mode or events or experience or action"`
+共 569 个用例收集成功（另有 4 个测试文件因环境缺少
+`streamlit`/`websocket`/`cdp_client` 等三方依赖或历史遗留的
+`mini_agent.session._flock` 导入问题无法收集，均与本次改动无关），
+其中 563 通过、6 个既有失败——`test_build_from_history_*` 系列
+（历次 Sprint 记录已多次确认为既有失败）与
+`test_attach_mode_with_no_listening_port_raises_actionable_error`
+（浏览器 profile 相关，与本次改动无关），未观察到因本次新增代码
+导致的新增失败。依赖图核对：`workflow.runner`/`orchestrator.sub_agent`/
+`orchestrator.task_manager` 三者 inbound 分别为 5/5/5，均未超止损
+阈值（Sprint 6-2 未改动这三个模块内部任何一行，只是新增
+`actions/executor.py` 对 `workflow.runner`/`workflow.store`/
+`workflow.agent_spawn` 的调用方，`orchestrator/` 最终未被本次改动
+触碰，见上方"变更记录"）。
+
+Phase 6（统一 Action）三条完成标志全部达成。可进入
+**Phase 7（Decision + Simulation）**，按
+`08-phase7-decision-simulation-sprint-plan.md` 划分的 Sprint 继续
+推进（下一次对话的任务）。

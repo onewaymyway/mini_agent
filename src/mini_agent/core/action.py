@@ -6,9 +6,13 @@ expected_outcome)` 与 `ActionResult`，用作 `actions/executor.py::
 ActionExecutor` 的输入/输出协议。
 
 Sprint 6-1 范围内 `type` 只实际支持 `"tool"`（转发给现有
-`tool_executor.py` 依赖的 `tools/__init__.py::ToolRegistry.call()`），
-`"workflow"`/`"subagent"` 两个取值留给 Sprint 6-2，本文件先把字段定义
-出来，避免 Sprint 6-2 落地时还要回来改这里的协议形状。
+`tool_executor.py` 依赖的 `tools/__init__.py::ToolRegistry.call()`）。
+Sprint 6-2 补齐了 `"workflow"`（转发给 `workflow/runner.py::
+WorkflowRunner`）与 `"subagent"`（转发给 `workflow/agent_spawn.py::
+build_minimal_agent()` + `Agent.run_turn()`）——本文件当初按
+`ActionType` 提前把取值空间定出来的设计验证有效：Sprint 6-2 落地时
+`ActionSpec`/`ActionResult` 字段形状没有改动，只在
+`actions/executor.py::ActionExecutor.execute()` 里新增了两个分支。
 
 刻意保持极简（不像 `core/events.py::Event` 那样带 `id`/`causation_id`
 等追踪字段）：`ActionSpec`/`ActionResult` 是"一次调用的输入输出"，追踪
