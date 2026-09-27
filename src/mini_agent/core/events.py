@@ -49,6 +49,10 @@ EVENT_KINDS: tuple[str, ...] = (
     "ActionCompleted",
     "ActionFailed",
     "ExperienceCreated",
+    # [Phase 8 Sprint 8-1] `runtime/runtime.py::AgentRuntime.run_once()`
+    # 循环边界埋点，见 `09-phase8-runtime-convergence-sprint-plan.md`。
+    "RuntimeCycleStarted",
+    "RuntimeCycleCompleted",
 )
 
 

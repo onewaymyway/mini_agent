@@ -57,7 +57,9 @@ def test_each_event_gets_a_distinct_id():
 
 
 def test_event_kinds_covers_sprint_2_1_minimal_set():
-    """Sprint 2-1 范围内先落地的最小事件类型集合。"""
+    """Sprint 2-1 范围内先落地的最小事件类型集合，Phase 8 Sprint 8-1 追加了
+    `RuntimeCycleStarted`/`RuntimeCycleCompleted` 两种循环边界事件（见
+    `runtime/runtime.py::AgentRuntime.run_once()`）。"""
     assert set(EVENT_KINDS) == {
         "GoalCreated",
         "GoalUpdated",
@@ -65,4 +67,6 @@ def test_event_kinds_covers_sprint_2_1_minimal_set():
         "ActionCompleted",
         "ActionFailed",
         "ExperienceCreated",
+        "RuntimeCycleStarted",
+        "RuntimeCycleCompleted",
     }

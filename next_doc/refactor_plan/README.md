@@ -477,3 +477,34 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       达成**，可进入 **Phase 8（Runtime Convergence）**（下一次对话的
       任务，见 `next_doc/refactor_plan/09-phase8-runtime-convergence-
       sprint-plan.md`）。
+- [x] Phase 8（Runtime Convergence）Sprint 8-1（AgentRuntime 单次循环
+      骨架）已完成：新增 `runtime/` 包（`runtime/__init__.py` +
+      `runtime/runtime.py::AgentRuntime`），`run_once(goal_spec)` 实现
+      `observe → state update → gap detect → plan → simulate → decide →
+      execute → record → learn` 九步骨架，**只支持单次运行**（Sprint
+      8-2 才做常驻循环）；`execute`/`record` 两步**完全复用**
+      `goal_mode/runner.py::GoalRunner`（不重新实现），`gap detect` 是
+      `plan/simulate/decide` 三步里唯一默认真实执行的一步（调用 Phase 5
+      `goals/gap.py::detect_gap()`），`plan`/`simulate`/`decide` 默认
+      跳过——沿用 Phase 7 Sprint 7-2"不强行接入主循环"的范围决策，避免
+      过度设计；`learn` 留空并显式标注 TODO（对应 Phase 9）。新增
+      `RuntimeCycleStarted`/`RuntimeCycleCompleted` 两个 Event kind
+      （已加入 `core/events.py::EVENT_KINDS`），包裹住内部 Goal 闭环
+      已有的四类事件。接入点：`cli/commands/goal_mode_cmd.py::
+      _run_goal()`（"用户主动发起一个新 Goal"这条路径）内部实现从
+      直接调用 `GoalRunner` 改为调用 `AgentRuntime.run_once()`，旧入口
+      签名/展示逻辑不变；`/goal resume` 场景本 Sprint 未改动（`run_once`
+      已透传 `state_store`/`resume_state` 参数为后续预留接口）。验收
+      标准（"通过 CLI 发起一个 Goal，能看到完整走了一遍 Phase 1-7 打通
+      的链路，且旧的 CLI 相关测试仍然通过"）已用新增测试
+      `tests/test_phase8_runtime.py`（4 用例：确认真的调用了
+      `GoalRunner`、Event 顺序正确、gap detect 真实产出、`KeyboardInterrupt`
+      时 `last_runner` 可用）验证，全部通过；回归测试（`test_goal_mode.py`/
+      `test_goal_mode_phase2_events.py`/`test_goal_mode_characterization.py`/
+      `test_phase4_state_manager.py`/`test_phase5_gap_detection.py`/
+      `test_core_events.py` 共 292 用例，287 通过，5 个既有失败
+      `test_build_from_history_*` 与本次改动无关，与此前多个 Phase 记录
+      里提到的是同一组）；`pyflakes`/`scripts/dep_graph.py` 核对均无
+      问题。详见 `09-phase8-runtime-convergence-sprint-plan.md` 末尾
+      "Sprint 8-1 执行记录"与 `MIGRATION_STATUS.md`。可进入 **Sprint 8-2
+      （接入持续运行 + 一种旧 Scheduler）**（下一次对话的任务）。

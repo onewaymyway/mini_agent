@@ -319,17 +319,25 @@ def _negotiate_loop(builder, spec, agent):
 # ── 执行 ─────────────────────────────────────────────────────────────────
 
 def _run_goal(agent, spec) -> None:
-    from mini_agent.goal_mode.runner import GoalRunner
+    # [next_doc/refactor_plan/09-phase8-runtime-convergence-sprint-plan.md
+    #  Sprint 8-1] "用户主动发起一个 Goal" 场景的唯一接入点：内部实现从
+    # "直接调用 GoalRunner" 改为 "调用 AgentRuntime.run_once()"——
+    # AgentRuntime 内部仍然是同一个 GoalRunner（不是重新实现），这里只是
+    # 换了一层外壳。旧入口（`/goal <文本>` 这条 slash 命令本身）不删除、
+    # 签名不变，`runner.pause()` 需要拿到底层 GoalRunner 实例才能调用，
+    # 因此中断处理分支改为从 AgentRuntime 上取 `_last_runner`。
+    from mini_agent.runtime import AgentRuntime
 
-    runner = GoalRunner(agent=agent, cfg=agent.cfg, goal_spec=spec)
+    runtime = AgentRuntime(agent=agent, cfg=agent.cfg)
     R.print_info(
         f"[Goal 模式] 开始执行（最多 {agent.cfg.goal_mode.max_rounds} 轮），"
         "过程中可以 Ctrl-C 中断（会保留状态，之后可用 /goal resume 续跑）。"
     )
     try:
-        result = runner.run()
+        result = runtime.run_once(spec)
     except KeyboardInterrupt:
-        runner.pause()
+        if runtime.last_runner is not None:
+            runtime.last_runner.pause()
         R.print_warning("[Goal 模式] 已中断，状态已保存，可用 /goal resume 继续。")
         return
     except Exception as e:
