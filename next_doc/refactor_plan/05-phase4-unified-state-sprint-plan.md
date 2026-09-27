@@ -44,11 +44,96 @@ dataclass 占位，不实现内部逻辑——留给 Phase 5 之后按需填充�
 
 - [x] GoalState 的读写全部经过 `StateManager`，`goal_mode/runner.py`
       里不再有旧的直接状态持有代码（Sprint 4-1 已完成，见下方执行记录）
-- [ ] 其余 4 类 State 已有结构占位，且在 `phase-mapping` 文档里标注了
-      "将在哪个 Phase 填充"（Sprint 4-2，留待下一次推进）
+- [x] 其余 4 类 State 已有结构占位，且在 `phase-mapping` 文档里标注了
+      "将在哪个 Phase 填充"（Sprint 4-2 已完成，见下方执行记录；
+      `SelfState` 实际不是占位，见执行记录说明）
 - [x] `snapshot()` 可用，为 Phase 9 的 evolution 验证做好准备
       （Sprint 4-1 已提供骨架实现，Sprint 4-2 加入占位 State 后无需
       改动 `snapshot()` 本身，见下方执行记录）
+
+## Sprint 4-2 执行记录
+
+**与计划文档字面表述的出入（先说明，避免误导后续读者）**：任务表和
+完成标志原本都把 `SelfState` 列为"待建的占位 dataclass"之一，但
+`SelfState` 实际在 Sprint 1.5（`perception/self_model.py` 迁移链）就
+已经建好，且是**真实字段**（`capability_snapshot`/`active_skill_count`/
+`session_start_at`），不是空占位——本 Sprint 没有重新定义一个空版本
+去"凑齐 4 类占位"，而是据实处理：只给真正需要占位的
+`WorldState`/`CapabilityState`/`RuntimeState` 建空 dataclass，并补上
+`SelfState` 缺的那一环（向 `StateManager` 的托管接入，此前只做了
+Adapter 转换，没有 seed 进 `StateManager`）。
+
+**占位 State（新增 3 个文件）**：
+
+- `core/world.py::WorldState`——对应原方案 §6（"六、World"），无字段，
+  文档字符串标注 `# TODO: Phase 5（统一 Goal，需要 World 判断"目标是否
+  已达成"）起再补字段`。
+- `core/capability.py::CapabilityState`——对应原方案 §9（"九、
+  Capability"），无字段，标注 `# TODO: Phase 6（统一 Action）落地
+  Tool/Skill/Workflow/SubAgent 统一表达之后再回填`。
+- `core/runtime.py::RuntimeState`——对应原方案 §12（"十二、Runtime"），
+  无字段，标注 `# TODO: Phase 8（Autonomous Runtime 收敛）落地后再
+  回填`。
+
+三者均为无字段的 `@dataclass`，`__dict__` 恒为 `{}`；`core/__init__.py`
+同步导出并更新了包文档字符串。这一"phase-mapping"标注同时补充进了
+`00-original-architecture-proposal.md` 末尾新增的"补充（Sprint 4-2
+新增）"小节，避免只写在本文件里、下次读原方案时找不到对应关系。
+
+**SelfState 补齐 StateManager 接入**：`agent/lifecycle.py`
+`_init_components()` 唯一接入点（与 Self 迁移链 Sprint 1.5 是同一处），
+在 `SelfAdapter.to_new()` 转换之后新增一行
+`get_state_manager().update_state("self", _core_self_state)`，是本次
+改动里 `"self"` 这个 kind 唯一一次写入调用；因为当前 mini_agent 里没有
+任何模块会在运行期间修改 `capability_snapshot`/`active_skill_count`，
+暂无事件驱动更新的需求，未仿照 `"goal"` 那样接事件订阅——这是有意
+不做，不是遗漏，留给触发该需求的 Phase 再补。
+
+**验收标准核对**：
+
+1. "其余 4 类 State 已有结构占位"——`WorldState`/`CapabilityState`/
+   `RuntimeState` 三个空 dataclass 已建好；`SelfState` 按上文说明不是
+   占位，已有真实字段且已完成 `StateManager` 托管接入，实际进度超过
+   计划要求。
+2. "占位 State 不会导致调用报错（哪怕内容是空的）"——新增测试验证
+   `update_state`/`get_state`/`snapshot()` 全流程对空 dataclass 均不
+   报错，`snapshot()` 里对应 kind 的值是 `{}`。
+3. "`snapshot()` 输出的结构和 GoalState 的真实数据一致"——新增测试
+   直接在同一个 `StateManager` 实例里混合托管 `GoalState`（真实数据）
+   和三个占位 State，断言 `snapshot()` 返回的都是同一种
+   `{kind: dict}` 形状，只是占位那几项的 dict 是空的。
+
+已用新增测试 `tests/test_phase4_state_placeholders.py`（7 用例：
+3 个参数化用例验证占位 State 无字段、3 个参数化用例验证占位 State 可
+被托管不报错、1 个用例验证 snapshot 形状一致性）+
+`test_self_state_is_seeded_into_state_manager_like_lifecycle_does`
+（复刻 lifecycle.py 接入点逻辑，验证 `SelfState` 确实被 seed 进
+`StateManager`）验证，全部通过。
+
+**回归测试**：`tests/test_phase4_state_placeholders.py` +
+`tests/test_phase4_state_manager.py` + `tests/test_core_self_adapter.py`
++ `tests/test_self_model.py` + `tests/test_goal_mode.py` +
+`tests/test_goal_mode_phase2_events.py` +
+`tests/test_phase2_event_log_and_cli.py` + `tests/test_core_events.py` +
+`tests/test_core_event_bus.py` + `tests/test_core_experience_store.py` +
+`tests/test_phase3_experience_recorder.py` +
+`tests/test_phase3_experience_retrieval_and_patterns.py` +
+`tests/test_phase3_experience_retrieval_injection.py` 共 177 用例，172
+通过，5 个既有失败（`test_build_from_history_*`，与本次改动无关，
+`README.md`/`MIGRATION_STATUS.md` 此前已多次确认）；依赖图核对
+（`scripts/dep_graph.py --module core.world/core.capability/
+core.runtime` 均为 inbound=1（仅 `core/__init__.py`）、outbound=0，
+未触发止损阈值）+ pyflakes（新增文件本身无告警，`agent/lifecycle.py`
+里既有的大量 unused-import 告警与本次新增的一行调用无关，本次新增的
+`get_state_manager` 导入已被使用）均确认无新增问题。
+
+**止损条件核对**：未触发。三个占位 State 的字段设计确实还没有真实
+使用场景（符合"宁可留 TODO 也不要编造字段"的止损条件），因此严格
+保持空 dataclass，没有强行填充。
+
+Phase 4（统一 State）两个 Sprint 均已完成，达到验收标准，可进入
+**Phase 5（统一 Goal）**，按 `06-phase5-goal-convergence-sprint-plan.md`
+划分的 Sprint 继续推进（下一次对话的任务）。
 
 ## Sprint 4-1 执行记录
 

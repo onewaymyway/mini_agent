@@ -3192,3 +3192,26 @@ Learning
 Memory → Experience 这条链**不能**直接照搬 Goal 迁移链"单一接入点 +
 Adapter 直接转换"的模式，需要先做耦合拆解。
 
+---
+
+# 补充（Sprint 4-2 新增，2026-09-27）
+
+> 以下内容是按 `05-phase4-unified-state-sprint-plan.md` Sprint 4-2
+> 完成标志"其余 4 类 State 已有结构占位，且在 `phase-mapping` 文档里
+> 标注了将在哪个 Phase 填充"追加的补充说明，同样**不修改上方各章节的
+> 原文**，只在此追加 Phase 4 落地后的实际归属情况。完整执行记录见
+> `05-phase4-unified-state-sprint-plan.md` 末尾"Sprint 4-2 执行记录"。
+
+对"五、八个核心对象"中 Self / World / Capability / Runtime 四类概念，
+Phase 4 落地后的当前状态与后续填充计划：
+
+| 核心对象 | 对应章节 | `core/` 现状 | 字段填充计划 |
+| --- | --- | --- | --- |
+| Self | §5.1 | `core/self.py::SelfState`，**真实字段**（`capability_snapshot`/`active_skill_count`/`session_start_at`），Sprint 1.5 已建，Phase 4 Sprint 4-2 补齐了向 `StateManager` 的托管接入 | 已完成（提前于计划，无需等 Phase 4 才建） |
+| World | §6 | `core/world.py::WorldState`，无字段占位 | Phase 5（统一 Goal，需要 World 判断"目标是否已达成"时）起视真实场景补充 |
+| Capability | §9 | `core/capability.py::CapabilityState`，无字段占位 | Phase 6（统一 Action，收敛 Tool/Skill/Workflow/SubAgent 之后）落地时回填 |
+| Runtime | §12 | `core/runtime.py::RuntimeState`，无字段占位 | Phase 8（重构 Autonomous Runtime）落地后回填 |
+
+三个占位类均为空 `@dataclass`，不含任何字段——按 Sprint 4-2 止损条件，
+在没有真实使用场景前不编造字段，宁可留 `# TODO` 注释指向对应 Phase。
+

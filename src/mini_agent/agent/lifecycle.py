@@ -28,6 +28,7 @@ from mini_agent.core import (
     Event as _core_Event,
     SelfAdapter as _core_SelfAdapter,
     HistoryAdapter as _core_HistoryAdapter,
+    get_state_manager as _core_get_state_manager,
 )
 
 _core_self_logger = _self_logging.getLogger("mini_agent.core.trace")
@@ -380,6 +381,14 @@ class SessionLifecycleMixin:
             # 后续任何使用方式（转换结果不参与下面的逻辑，trace 日志就是
             # "链路真的被执行过"的证据，与 goal_mode/runner.py 的做法一致）。
             _core_self_state = _core_SelfAdapter.to_new(self._self_model)
+            # [Phase 4 Sprint 4-2] SelfState 不是占位（Sprint 1.5 已建
+            # 真实字段），补齐向 StateManager 的托管接入——与 goal 这个
+            # kind 的接入方式一致：只在这里 seed 一次，之后如需读取
+            # 一律走 `state_manager.get_state("self")`，不额外另开一条
+            # 更新路径（当前 mini_agent 里还没有会在运行期间修改
+            # capability_snapshot/active_skill_count 的模块，因此暂无
+            # 事件驱动更新需求，留给触发该需求的 Phase 补）。
+            _core_get_state_manager().update_state("self", _core_self_state)
             _core_self_logger.debug(
                 "%s",
                 _core_Event(

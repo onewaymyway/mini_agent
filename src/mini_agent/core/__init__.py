@@ -34,11 +34,19 @@ Phase 4 Sprint 4-1（见
 `GoalState`），`goal_mode/runner.py` 唯一接入点改为把 `GoalState` 的
 持有权交给 `StateManager`，不再自己另外保留一份可变引用。
 
-其它核心概念（Self / World / Capability / Action / Simulation / Runtime）
-的最小 dataclass，待对应 Phase 的迁移链启动时再补，不提前占位。
+Sprint 4-2 新增 `world.py`/`capability.py`/`runtime.py` 三个占位
+dataclass（`WorldState`/`CapabilityState`/`RuntimeState`，均无字段，
+标注 `# TODO: Phase 5/6/8 填充`）；`SelfState`（Sprint 1.5 已建，不是
+占位）补齐了向 `StateManager` 的托管接入——`agent/lifecycle.py`
+唯一接入点新增 `update_state("self", ...)` 调用，是本 Sprint 内唯一
+托管了真实数据的 State kind。
+
+Action / Simulation 的最小 dataclass，待对应 Phase（Phase 6 / Phase 7）
+的迁移链启动时再补，不提前占位。
 """
 
 from .adapter import Adapter
+from .capability import CapabilityState
 from .event_bus import EventBus, get_event_bus, reset_event_bus
 from .event_log_store import (
     EventLogStore,
@@ -59,6 +67,7 @@ from .goal import GoalState
 from .goal_adapter import GoalAdapter, goal_run_result_to_experience
 from .history import HistorySnapshot
 from .history_adapter import HistoryAdapter
+from .runtime import RuntimeState
 from .self import SelfState
 from .self_adapter import SelfAdapter
 from .state_manager import (
@@ -67,9 +76,13 @@ from .state_manager import (
     get_state_manager,
     reset_state_manager,
 )
+from .world import WorldState
 
 __all__ = [
     "Adapter",
+    "CapabilityState",
+    "RuntimeState",
+    "WorldState",
     "EVENT_KINDS",
     "Event",
     "EventBus",

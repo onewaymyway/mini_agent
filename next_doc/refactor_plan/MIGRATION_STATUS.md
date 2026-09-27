@@ -35,6 +35,10 @@
 | core/experience_patterns.py（新增，Sprint 3-2，Analyzer 雏形） | Phase 3 | 完全迁移 | 100%（`summarize_failures()` 聚合统计，仅供 Phase 9 Self Evolution 复用，暂未接入任何调用方） | 不适用 | 2026-09-27 | Phase 3 Sprint 3-2 执行者 |
 | core/state_manager.py（新增，Sprint 4-1） | Phase 4 | 部分迁移 | `goal_mode/runner.py::run()`/`_finish()` 唯一接入点已把 `GoalState` 的持有权交给 `StateManager`（不再自己保留可变引用），并通过新增的 `GoalUpdated` 事件驱动自动更新；`SelfState`/`WorldState`/`CapabilityState`/`RuntimeState` 占位与 `snapshot()` 的完整联调留给 Sprint 4-2 | 不适用（`StateManager` 是新领域概念本身，不是 Old↔New 转换 Adapter） | 2026-09-27 | Phase 4 Sprint 4-1 执行者 |
 | core/events.py（Sprint 4-1 补上 GoalUpdated 的首次真实 publish） | Phase 2/4 | 部分迁移 | `EVENT_KINDS` 里 Sprint 2-1 就预留的 `"GoalUpdated"` 取值，Sprint 4-1 起在 `goal_mode/runner.py` 每轮 CONTINUE 推进 / `_finish()` 终止时真正 publish，供 `core/state_manager.py` 订阅消费 | 不适用 | 2026-09-27 | Phase 4 Sprint 4-1 执行者 |
+| core/world.py（新增，Sprint 4-2，占位） | Phase 4（占位）/ 待 Phase 5 填充字段 | 部分迁移 | 无字段空 dataclass，可被 `StateManager` 托管（`update_state`/`get_state`/`snapshot()` 均不报错），尚无任何模块产出真实数据、暂未接入任何调用方 | 不适用（占位 dataclass，非 Old↔New Adapter） | 2026-09-27 | Phase 4 Sprint 4-2 执行者 |
+| core/capability.py（新增，Sprint 4-2，占位） | Phase 4（占位）/ 待 Phase 6 填充字段 | 部分迁移 | 同上（无字段空 dataclass，未接入任何调用方） | 不适用 | 2026-09-27 | Phase 4 Sprint 4-2 执行者 |
+| core/runtime.py（新增，Sprint 4-2，占位） | Phase 4（占位）/ 待 Phase 8 填充字段 | 部分迁移 | 同上（无字段空 dataclass，未接入任何调用方） | 不适用 | 2026-09-27 | Phase 4 Sprint 4-2 执行者 |
+| core/self.py + core/self_adapter.py（Sprint 4-2 补充 StateManager 接入） | Phase 3（Self 迁移链）/ Phase 4（State 托管） | 部分迁移 | `SelfState` 字段本身在 Sprint 1.5 已完成，非本次新增；本次新增的是 `agent/lifecycle.py::_init_components()` 唯一接入点里补的一行 `get_state_manager().update_state("self", ...)`，使 `"self"` 这个 kind 真正被 `StateManager` 托管，此前只做了 Adapter 转换未托管 | 否（`SelfAdapter.to_old` 仍未实现，与 Sprint 1.5 状态一致，本次未改动） | 2026-09-27 | Phase 4 Sprint 4-2 执行者 |
 
 > 以上为初始占位行，对应 `02`-`11` 各 Phase 文档里"现状盘点"提到的
 > 主要模块。执行过程中如发现遗漏模块，直接追加新行，不要删除已有行

@@ -304,3 +304,26 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       4-1 执行记录"。验收标准第 2 条（`SelfState`/`WorldState`/
       `CapabilityState`/`RuntimeState` 占位）对应 Sprint 4-2，留待下一次
       推进。
+- [x] Sprint 4-2（占位 State + 一致性快照）已完成，**Phase 4（统一
+      State）两条完成标志全部达成**：新增 `core/world.py::WorldState`/
+      `core/capability.py::CapabilityState`/`core/runtime.py::RuntimeState`
+      三个无字段空 dataclass 占位（分别对应原方案 §6/§9/§12，标注
+      `# TODO: Phase 5/6/8 填充`）；发现计划文档把 `SelfState` 也列为
+      "待建占位"与实情不符——`SelfState` 在 Sprint 1.5 已是真实字段，
+      本次据实处理，只补上它缺的一环：`agent/lifecycle.py` 唯一接入点
+      新增 `get_state_manager().update_state("self", ...)`，使其真正被
+      `StateManager` 托管而不只是转换一次即弃。`00-original-architecture-
+      proposal.md` 末尾新增"补充（Sprint 4-2 新增）"小节，以表格形式
+      标注 Self/World/Capability/Runtime 四者当前状态与后续填充所属
+      Phase，对应完成标志里的"phase-mapping 文档"要求。验收标准（占位
+      State 不报错 + `snapshot()` 形状与真实 GoalState 一致）已用新增
+      测试 `tests/test_phase4_state_placeholders.py`（7 用例）验证；
+      回归测试（`test_phase4_state_manager.py`/`test_core_self_adapter.py`/
+      `test_self_model.py`/`test_goal_mode.py` 等共 177 用例，172 通过，
+      5 个既有失败与本次改动无关）+ 依赖图核对（三个新模块均
+      inbound=1/outbound=0，未触发止损阈值）+ pyflakes 均确认无新增
+      问题。详见 `05-phase4-unified-state-sprint-plan.md` 末尾"Sprint
+      4-2 执行记录"与 `MIGRATION_STATUS.md`。Phase 4 已达到验收标准，
+      可进入 **Phase 5（统一 Goal）**，按
+      `06-phase5-goal-convergence-sprint-plan.md` 划分的 Sprint 继续
+      推进（下一次对话的任务）。
