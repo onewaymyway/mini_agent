@@ -10,7 +10,7 @@
 |---|---|---|---|---|---|---|
 | goal_mode/runner.py | Phase 1 | 部分迁移 | 未知，待补充（`run()`/`_finish()` 两处接入点已走新链路做转换+trace+持久化，主循环内部仍是旧逻辑，未按"路径条数"精确统计） | 是（`GoalAdapter.to_new`/`to_old` 均已实现并被特征测试覆盖） | 2026-09-26 | Sprint 2 执行者 |
 | goal_mode/executor.py | Phase 1 | 未开始 | 0% | 否 | - | - |
-| goal_backlog.py | Phase 5 | 未开始 | 0% | 否 | - | - |
+| goal_backlog.py | Phase 5 | 未开始 | 0%（现状盘点发现 inbound=33，远超止损阈值，且与 `evolution/objective_executor.py` 紧耦合，见 `docs/architecture_v2/phase5-goal-inventory.md`，Sprint 5-1 暂缓，待 Sprint 5.0.5 耦合拆解评估结论） | 否 | 2026-09-27 | Phase 5 现状盘点执行者 |
 | history_manager.py | Phase 3 | 部分迁移 | 未知，待补充（`agent/lifecycle.py::_init_components()` 唯一接入点已走新链路做转换+trace，`HistoryManager` 内部逻辑未改动，见 `03-sprint1.5-memory-perception-coupling-assessment.md` "七、history_manager.py Adapter 接入点执行记录"） | 否（`HistoryAdapter.to_old` 尚未实现，无实际调用方） | 2026-09-26 | history_manager Adapter 接入点执行者 |
 | workflow/ | Phase 6 | 未开始 | 0% | 否 | - | - |
 | tools/ + tool_executor.py | Phase 6 | 未开始 | 0% | 否 | - | - |
@@ -38,6 +38,7 @@
 | core/world.py（新增，Sprint 4-2，占位） | Phase 4（占位）/ 待 Phase 5 填充字段 | 部分迁移 | 无字段空 dataclass，可被 `StateManager` 托管（`update_state`/`get_state`/`snapshot()` 均不报错），尚无任何模块产出真实数据、暂未接入任何调用方 | 不适用（占位 dataclass，非 Old↔New Adapter） | 2026-09-27 | Phase 4 Sprint 4-2 执行者 |
 | core/capability.py（新增，Sprint 4-2，占位） | Phase 4（占位）/ 待 Phase 6 填充字段 | 部分迁移 | 同上（无字段空 dataclass，未接入任何调用方） | 不适用 | 2026-09-27 | Phase 4 Sprint 4-2 执行者 |
 | core/runtime.py（新增，Sprint 4-2，占位） | Phase 4（占位）/ 待 Phase 8 填充字段 | 部分迁移 | 同上（无字段空 dataclass，未接入任何调用方） | 不适用 | 2026-09-27 | Phase 4 Sprint 4-2 执行者 |
+| docs/architecture_v2/phase5-goal-inventory.md（新增，Phase 5 现状盘点） | Phase 5 | 完全迁移 | 100%（纯盘点文档，核心发现：`Objective` 与 `perception/goal_backlog.py::GoalBacklog`/`GoalNode` 是同一套子系统而非两个独立处理项，实测 inbound=33 远超止损阈值，与 `evolution/objective_executor.py` 紧耦合，触发 Sprint 5-1 止损条件并新增 Sprint 5.0.5，见 `06-phase5-goal-convergence-sprint-plan.md` "变更记录"） | 不适用 | 2026-09-27 | Phase 5 现状盘点执行者 |
 | core/self.py + core/self_adapter.py（Sprint 4-2 补充 StateManager 接入） | Phase 3（Self 迁移链）/ Phase 4（State 托管） | 部分迁移 | `SelfState` 字段本身在 Sprint 1.5 已完成，非本次新增；本次新增的是 `agent/lifecycle.py::_init_components()` 唯一接入点里补的一行 `get_state_manager().update_state("self", ...)`，使 `"self"` 这个 kind 真正被 `StateManager` 托管，此前只做了 Adapter 转换未托管 | 否（`SelfAdapter.to_old` 仍未实现，与 Sprint 1.5 状态一致，本次未改动） | 2026-09-27 | Phase 4 Sprint 4-2 执行者 |
 
 > 以上为初始占位行，对应 `02`-`11` 各 Phase 文档里"现状盘点"提到的

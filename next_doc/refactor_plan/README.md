@@ -327,3 +327,23 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       可进入 **Phase 5（统一 Goal）**，按
       `06-phase5-goal-convergence-sprint-plan.md` 划分的 Sprint 继续
       推进（下一次对话的任务）。
+- [x] Phase 5（统一 Goal）"现状盘点"已完成：产出
+      `docs/architecture_v2/phase5-goal-inventory.md`，核心发现——原
+      计划把 `Objective` 与 `goal_backlog.py` 当成两个独立、可轻量
+      转换的处理项，实测后发现二者是**同一套**子系统
+      （`perception/goal_backlog.py::GoalBacklog`/`GoalNode`，
+      `level="objective"` 即"Objective"），`scripts/dep_graph.py`
+      实测 inbound=33，**远超**止损阈值，且与
+      `evolution/objective_executor.py`（自主执行引擎，反向回写
+      `GoalNode.status`）紧耦合，服务于看板/自主循环/公平调度等 10+
+      下游子系统、83 个测试文件涉及，与 Phase 1 已迁移的 `goal_mode/`
+      （`GoalSpec`/`GoalRunner`）完全独立、互不引用。这与 Sprint 3
+      对 `perception/memory_store.py` 的判断是同一类问题，处理方式
+      也一致：**正式决策：Sprint 5-1 暂缓直接执行"Objective/GoalBacklog
+      Adapter"，新增 Sprint 5.0.5（GoalBacklog/ObjectiveExecutor
+      耦合拆解评估）**，参照 Sprint 1.5 方法论重新按子系统统计真实
+      耦合面后再确定 Sprint 5-1 范围；`workflow/` 边界（inbound=5，
+      未超阈值）盘点后确认原计划"本 Phase 不处理"仍然合理。变更留痕
+      详见 `06-phase5-goal-convergence-sprint-plan.md` 末尾"变更
+      记录"。Sprint 5.0.5 留待下一次推进（Sprint 5-2 的 Gap 检测
+      不依赖此结论，可并行）。
