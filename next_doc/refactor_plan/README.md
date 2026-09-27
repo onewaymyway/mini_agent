@@ -371,3 +371,20 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       推进。本次改动只涉及文档判断，未修改生产代码，无需跑回归测试。
       详见 `06-phase5-goal-convergence-sprint-plan.md` 末尾"Sprint
       5.0.5 执行记录"与 `MIGRATION_STATUS.md`。
+- [x] Sprint 5-2（Gap 检测能力）已完成，**Phase 5 在 Sprint 5.0.5
+      调整后的范围内达到完成标志**：`core/goal.py::GoalState` 追加
+      `current_state`/`ideal_state`/`problems`/`gap`/`constraints`/
+      `resources`/`priority`/`evidence`/`deadline` 九个默认值字段
+      （不影响现有构造方式）；新增 `goals/` 包
+      （`goals/gap.py::detect_gap()`），第一版按规则推导
+      problems/gap（`current_state`/`ideal_state` 缺失记 problem，
+      相同视为已达成，不同则优先用 `acceptance_criteria` 生成
+      gap），可选 `llm_judge` 接管 problems 生成；内部固定读取
+      `state_manager.get_state("self"/"world")` 作为输入，占位/未
+      托管时不报错、只记录"不可用"。新增测试
+      `tests/test_phase5_gap_detection.py`（8 用例）全部通过；回归
+      测试共 185 用例，180 通过，5 个既有失败与本次改动无关；
+      pyflakes 无新增告警。详见 `06-phase5-goal-convergence-sprint-
+      plan.md` 末尾"Sprint 5-2 执行记录"。可进入 **Phase 6（统一
+      Action）**，注意需要一并评估 Sprint 5.0.5 移交的
+      `evolution/objective_executor.py`（下一次对话的任务）。

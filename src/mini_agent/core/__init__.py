@@ -41,6 +41,14 @@ dataclass（`WorldState`/`CapabilityState`/`RuntimeState`，均无字段，
 唯一接入点新增 `update_state("self", ...)` 调用，是本 Sprint 内唯一
 托管了真实数据的 State kind。
 
+Phase 5 Sprint 5-2（见
+`next_doc/refactor_plan/06-phase5-goal-convergence-sprint-plan.md`）
+给 `goal.py::GoalState` 追加 `current_state`/`ideal_state`/
+`problems`/`gap`/`constraints`/`resources`/`priority`/`evidence`/
+`deadline` 九个字段，供新增的 `mini_agent.goals.gap.detect_gap()`
+读写（`goals/` 是与 `core/` 平级的新包，不在本包内，这里只提一句
+避免以为 `GoalState` 这几个新字段没有调用方）。
+
 Action / Simulation 的最小 dataclass，待对应 Phase（Phase 6 / Phase 7）
 的迁移链启动时再补，不提前占位。
 """

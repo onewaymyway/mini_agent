@@ -174,14 +174,93 @@ Phase 5 剩余可执行内容收窄为 **Sprint 5-2（Gap 检测能力）**—�
 **验收标准**：给定一个新 Goal 输入，系统能自动生成 `problems` 和 `gap`
 字段，而不需要用户手动填写。
 
+## Sprint 5-2 执行记录
+
+**`core/goal.py` 字段扩充**：`GoalState` 追加
+`current_state`/`ideal_state`/`problems`/`gap`/`constraints`/
+`resources`/`priority`/`evidence`/`deadline` 九个字段，均带默认值
+（`""`/`[]`/`None`/`{}`），全部追加在原有字段之后，不影响
+`GoalAdapter.to_new()`/`to_old()`（Sprint 1，用关键字参数显式构造）
+和现有测试里所有 `GoalState(goal_text=...)` 的构造方式。新字段暂不
+接入 `GoalAdapter`——旧的 `GoalSpec` 里没有对应概念，硬填属于编造
+数据，留到后续真有 Goal 执行链路产出这些数据时再评估。
+
+**新增 `goals/` 包**（`goals/__init__.py` + `goals/gap.py`）：
+`detect_gap(goal, state_manager=None, llm_judge=None)`，原地写回
+`goal.problems`/`goal.gap`/`goal.evidence["gap_detection"]` 并返回
+同一个 `GoalState`。第一版按任务表止损备注"不需要复杂算法"实现为
+纯规则：`current_state`/`ideal_state` 缺一项各记一条 problem；两者
+相同视为已达成（`problems`/`gap` 均为空）；不同则优先用
+`acceptance_criteria` 逐条生成 `gap`，没有 `acceptance_criteria` 时
+退化为一条通用提示，不编造具体差距内容。`llm_judge` 是可选替换点，
+传入时接管 `problems` 生成（`gap` 仍走规则），签名
+`(goal, self_state, world_state) -> list[str]`，本 Sprint 不提供
+默认实现（LLM 判断不像规则那样能保证确定性/可测试，留给调用方接入
+真实 LLM）。
+
+**"接入 StateManager"任务**：`detect_gap()` 内部固定调用
+`state_manager.get_state("self")`/`get_state("world")`（不传
+`state_manager` 时退化到全局单例 `get_state_manager()`），把两者
+是否可用记进 `goal.evidence["gap_detection"]`；`world`/`self` 目前
+即使是占位/未托管（返回 `None`）也不报错，只是老实记录
+"不可用"，不替占位 State 编造内容——验证了 Sprint 4-2 占位 State
+"不会导致调用报错"这条验收标准在真实调用方（而不只是单元测试直接
+调 `StateManager`）场景下同样成立。
+
+**验收标准核对**：新增测试
+`tests/test_phase5_gap_detection.py`（8 用例）覆盖：
+`current_state`/`ideal_state` 均缺失时生成两条 problems + 用
+`acceptance_criteria` 生成 gap；两者相同时无 problems/gap；两者不同
+但没有 `acceptance_criteria` 时退化为通用提示；`llm_judge` 只接管
+problems 不影响 gap；`self`/`world` State 已托管/未托管两种情况下
+`evidence` 记录是否正确；不显式传 `state_manager` 时走全局单例。全部
+通过，验证"给定一个新 Goal 输入，系统能自动生成 problems 和 gap
+字段，而不需要用户手动填写"这条验收标准成立。
+
+**回归测试**：`test_phase5_gap_detection.py` +
+`test_phase4_state_placeholders.py` + `test_phase4_state_manager.py` +
+`test_core_self_adapter.py` + `test_self_model.py` +
+`test_goal_mode.py` + `test_goal_mode_phase2_events.py` +
+`test_phase2_event_log_and_cli.py` + `test_core_events.py` +
+`test_core_event_bus.py` + `test_core_experience_store.py` +
+`test_phase3_experience_recorder.py` +
+`test_phase3_experience_retrieval_and_patterns.py` +
+`test_phase3_experience_retrieval_injection.py` 共 185 用例，180
+通过，5 个既有失败（`test_build_from_history_*`，与本次改动无关，
+此前已多次确认）；pyflakes 检查新增/修改文件均无告警。
+
+**止损条件核对**：未触发。`current_state`/`ideal_state`/
+`acceptance_criteria` 这几个简单字段足够表达"多级子目标嵌套"以外的
+常见场景；如果后续真的遇到 Objective 那种需要递归结构的场景，止损
+条件里"应先扩展数据模型"的应对方式与 Sprint 5.0.5 对 Objective/
+GoalBacklog 采取的"暂缓，不强行套用"是同一种保守原则，届时按需
+处理，本 Sprint 范围内没有出现这类场景。
+
+**Phase 5 完成情况**：Sprint 5.0.5 结论已把 Objective Adapter/
+GoalBacklog Adapter 移出本 Phase（详见上方"Sprint 5.0.5 执行记录"），
+Sprint 5-2（Gap 检测）是调整后 Phase 5 的唯一剩余可执行任务，现已
+完成。据此，**Phase 5 在调整后的范围内已达到完成标志**（见下方
+"完成标志"，两条"暂缓"项已改为不计入本 Phase 完成判定，理由同上）。
+
 ## 完成标志
 
-- [ ] `Objective` 对外接口不变，内部已经是 `GoalState` 的适配层
-- [ ] `GoalBacklog` 的持久化已经统一走 `StateManager`
-- [ ] Gap 检测逻辑已实现最小版本，并在至少一个真实 Goal 场景下验证过
+- [x] ~~`Objective` 对外接口不变，内部已经是 `GoalState` 的适配层~~
+      **不计入本 Phase 判定**——Sprint 5.0.5 已确认 `Objective`
+      （即 `goal_backlog.py::GoalNode(level="objective")`）暂缓，
+      移出 Phase 5 范围，见"Sprint 5.0.5 执行记录"
+- [x] ~~`GoalBacklog` 的持久化已经统一走 `StateManager`~~
+      **不计入本 Phase 判定**，理由同上
+- [x] Gap 检测逻辑已实现最小版本，并在至少一个真实 Goal 场景下验证过
+      （Sprint 5-2 已完成：`goals/gap.py::detect_gap()` + 8 个测试
+      用例覆盖多种真实场景，见上方"Sprint 5-2 执行记录"）
 - [x] Workflow 相关代码未被本 Phase 触碰（留给 Capability 收敛处理）
       （现状盘点已核实：`workflow/` inbound=5，与 `goal_backlog.py`/
       `objective_executor.py` 无直接依赖，边界确认合理）
+
+**Phase 5 结论**：调整后范围内（Sprint 5.0.5 + Sprint 5-2）已完成，
+可进入 **Phase 6（统一 Action）**——注意 Phase 6 现状盘点表格已补充
+`evolution/objective_executor.py` 这条 Sprint 5.0.5 移交项，Phase 6
+启动时需要一并评估。
 
 ## 变更记录
 

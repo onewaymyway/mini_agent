@@ -12,6 +12,7 @@
 | goal_mode/executor.py | Phase 1 | 未开始 | 0% | 否 | - | - |
 | goal_backlog.py | Phase 5 | 未开始 | 0%（Sprint 5.0.5 耦合拆解评估：按跨子系统口径重新统计 inbound=22，仍远超止损阈值，**暂缓**，不属于任何已排期 Phase，待项目所有者确认排期，见 `06-phase5-goal-convergence-sprint-plan.md` "Sprint 5.0.5 执行记录"） | 否 | 2026-09-27 | Phase 5 Sprint 5.0.5 执行者 |
 | evolution/objective_executor.py（原表遗漏，Phase 5 Sprint 5.0.5 补充） | Phase 6（评估后移交，原属 Phase 5 候选） | 未开始 | 0%（inbound=5 未超阈值，但唯一实例化点在 `api/server.py` 内高时序敏感的构造闭包中，且 `ExecutionStep` 语义更贴近 Action/Capability；判定移出 Phase 5，留给 Phase 6 统一 Action 时一并评估，见同上执行记录） | 否 | 2026-09-27 | Phase 5 Sprint 5.0.5 执行者 |
+| core/goal.py（Sprint 5-2 字段扩充） + goals/gap.py（新增） | Phase 5 | 完全迁移（新增能力，非旧模块迁移） | 100%——`GoalState` 追加 9 个新字段（均带默认值，向后兼容）；新增 `goals/gap.py::detect_gap()` 实现 Gap 检测第一版（规则 + 可选 `llm_judge`），接入 `state_manager.get_state("world"/"self")` 作为输入 | 不适用（`goals/` 是新增能力，不是 Old↔New Adapter 迁移） | 2026-09-27 | Phase 5 Sprint 5-2 执行者 |
 | history_manager.py | Phase 3 | 部分迁移 | 未知，待补充（`agent/lifecycle.py::_init_components()` 唯一接入点已走新链路做转换+trace，`HistoryManager` 内部逻辑未改动，见 `03-sprint1.5-memory-perception-coupling-assessment.md` "七、history_manager.py Adapter 接入点执行记录"） | 否（`HistoryAdapter.to_old` 尚未实现，无实际调用方） | 2026-09-26 | history_manager Adapter 接入点执行者 |
 | workflow/ | Phase 6 | 未开始 | 0% | 否 | - | - |
 | tools/ + tool_executor.py | Phase 6 | 未开始 | 0% | 否 | - | - |
