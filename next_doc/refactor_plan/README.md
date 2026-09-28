@@ -578,3 +578,24 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       不阻塞 Phase 8 收尾；可进入 **Phase 9（Self Evolution 接入统一
       Experience）或按排期继续 Sprint 8-5**（下一次对话的任务，两者
       均可，视优先级而定）。
+- [x] Phase 8 Sprint 8-5 已完成（深化评估，修正 Sprint 8-3 的估计，
+      不涉及代码改动）：深入读 `objective_executor.py::start()`/
+      `_submit_step()` 与 `api/server.py::_obj_submit()` 后发现，
+      `goal_cycle`／`AutonomousLoop._trigger_objective_candidate()`
+      最终都走 `ObjectiveExecutor`，其执行模型是"每个 step 通过
+      `_obj_submit()` 塞进与用户聊天共用的 InputQueue，由同一个共享的
+      主 Agent 异步处理"——与 `AgentRuntime.run_once()`/`GoalRunner`
+      要求的"独占持有一个 Agent、在一次调用内同步驱动多轮"根本不是
+      同一种模型（`cron_job_runner` 在 Sprint 8-4 能顺利接入，正是
+      因为它本来就是"每次触发构造一个独占的一次性 Agent"，模型天然
+      一致）。要接入意味着要新增"为 Goal cycle 构造独占 Agent"的
+      产品层决策（会让 Objective 执行从"与用户交互共享上下文"变成
+      "隔离执行"），超出 Phase 8"复用已打通的 GoalRunner、不改动它
+      内部逻辑"的范围。据此把 `goal_cycle`/`AutonomousLoop` 的风险
+      等级由 Sprint 8-3 估计的"中"修正为**高**，排期从"Sprint
+      8-5/8-6"改为"移出 Phase 8，交由后续单独立项"。四条完成标志
+      不受影响（均已达成）。详见
+      `09-phase8-runtime-convergence-sprint-plan.md` 末尾"Sprint 8-5
+      执行记录"与"Phase 8 收尾说明"。**Phase 8 到此收尾**，可进入
+      **Phase 9（Self Evolution 接入统一 Experience）**（下一次对话
+      的任务）。

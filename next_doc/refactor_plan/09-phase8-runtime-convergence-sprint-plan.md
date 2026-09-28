@@ -391,3 +391,87 @@ Objective 触发路径、`goal_cycle`、`cron_job_runner` 的普通 message
   Phase 8 可视为主体完成；`goal_cycle`/`AutonomousLoop` 两个候选按
   Sprint 8-3 排期（Sprint 8-5/8-6）留待后续单独推进，不阻塞 Phase 8
   收尾。
+
+## Sprint 8-5 执行记录（深化评估，修正 Sprint 8-3 的工作量估计）
+
+按 Sprint 8-3 排期，本 Sprint 本应"接入 `goal_cycle`"。深入读
+`objective_executor.py::start()`/`_submit_step()` 与
+`api/server.py::_obj_submit()` 的实际接线后，发现一个 Sprint 8-3
+评估时没有读到的、更根本的架构性障碍——**先如实记录这个发现，再据此
+修正排期，不带着错误的工作量估计继续往下写一个实际跑不通的集成**。
+
+### 新发现：`ObjectiveExecutor` 与 `GoalRunner` 是两种不兼容的执行模型
+
+- `ObjectiveExecutor._submit_step()` 每次只提交**一个 step**，通过
+  `submit_fn`（`api/server.py::_obj_submit()`）塞进
+  `self._bridge.input_queue`——**这是与用户聊天消息共用的同一个
+  InputQueue，由同一个共享的主 `Agent` 实例异步处理**；这一步什么时候
+  真正被执行、什么时候通过 `on_turn_done()` 回调把结果送回来，完全
+  取决于主 Agent 当前的排队/繁忙情况，可能跟用户的其它消息、其它
+  Objective 的其它 step 交替执行，本质上是"异步、逐 step、共享 Agent"
+  的模型。
+- `AgentRuntime.run_once()`（进而 `GoalRunner`）的模型正相反：需要
+  **独占持有一个 `Agent` 实例，在一次函数调用内部同步地、连续地驱动
+  它跑完多轮**（`GoalRunner.run()` 内部的 `while` 循环），这个 Agent
+  在这次调用期间不能被别的任务打断/共享。
+- 这两种模型不是"加一层适配"能抹平的差异——`cron_job_runner` 之所以
+  能在 Sprint 8-4 顺利接入，正是因为它本来就"每次触发用
+  `build_cron_agent()` 构造一个独占的一次性 Agent，在独立线程里同步
+  跑到底"，与 `GoalRunner` 的模型天然一致；而 `goal_cycle`／
+  `AutonomousLoop._trigger_objective_candidate()`（两者最终都调用
+  `ObjectiveExecutor.start()`）用的是完全不同的"共享 Agent + 异步
+  step 队列"模型。
+- 若要把 `goal_cycle` 接入 `AgentRuntime.run_once()`，唯一现实的做法
+  是新增一个类似 `build_cron_agent()` 的"为这个 Goal cycle 构造一个
+  独占 Agent"的函数，让每轮 cycle 拥有自己独立的 Agent（而不是继续
+  共享主 Agent/InputQueue）——但这**不是"接入 Runtime"这个技术动作
+  本身能决定的**，而是一个会实际改变现有产品行为的决策：现在的
+  Objective 执行是"和用户交互共享同一个 Agent 会话/工具状态"，改成
+  独立 Agent 后，Objective 之间、以及 Objective 与用户交互之间会失去
+  当前这种共享上下文的能力。这类决策不应该在 Phase 8 的一个 Sprint
+  里顺带做掉。
+
+### 结论：修正 Sprint 8-3 的工作量/风险等级估计
+
+Sprint 8-3 当时给 `goal_cycle` 的估计是"约 2 个 Sprint，风险等级
+中"，前提假设是"补一个最小公平调度就够了"。本次深入读码后发现前提
+本身不成立——真正的障碍不是"缺公平调度"，而是"执行模型（共享 Agent
+异步 step 队列 vs 独占 Agent 同步多轮）根本不同源"，公平调度只是需要
+解决的问题之一，且是相对次要的一个。修正结论：
+
+- `goal_cycle`：风险等级由"中"上调为 **高**，且不建议在"Phase 8：把
+  旧 Scheduler 接进 Runtime"这个范围内继续推进——需要先在产品层面
+  明确决定"是否要把 Objective 执行从共享 Agent 改成独占 Agent"，这
+  超出了 Phase 8 的范围（Phase 8 的前提是"复用已打通的 GoalRunner，
+  不改动它内部任何逻辑"，改 Objective 的 Agent 共享模型已经不是
+  "复用"而是"重新设计一部分现有行为"）。
+- `AutonomousLoop._trigger_objective_candidate()`（Sprint 8-3 排期里
+  的 Sprint 8-6）最终同样调用 `ObjectiveExecutor.start()`，继承完全
+  相同的障碍，一并修正为风险等级 **高**，同样不建议在 Phase 8 范围内
+  推进。
+
+### 对完成标志的影响
+
+不影响已达成的四条完成标志（均已在 Sprint 8-1/8-2/8-3/8-4 满足，见
+上方"完成标志核对（更新）"）——"至少一种旧 Scheduler 已成功接入"
+已经由 `cron_job_runner` 满足；"剩余 Scheduler 有明确的评估结论和
+排期"这条的"评估结论"本身在本 Sprint 得到了修正（从"可接入，约 2
+个 Sprint"改为"当前设计下不建议接入，需要先做一个更大的、独立于
+Phase 8 的产品决策"），排期从"Sprint 8-5/8-6"改为"移出 Phase 8，
+交由后续单独立项（若决定要做）"。这是"评估结论"的正常迭代——发现
+更准确的信息后修正此前的估计，比抱着一个已知不成立的估计继续往下
+排期更符合"如实记录"的要求。
+
+### 本 Sprint 未做代码改动
+
+本 Sprint 是纯粹的读码 + 评估修正，不涉及任何生产代码/测试改动，
+因此没有新增测试运行记录，`pyflakes`/`dep_graph.py` 均不涉及。
+
+## Phase 8 收尾说明
+
+四条完成标志已全部达成（Sprint 8-1 至 8-4），`goal_cycle`/
+`AutonomousLoop` 的 Objective 触发路径经 Sprint 8-5 重新评估后，
+结论是"当前架构下不建议接入，需要独立于 Phase 8 的产品层决策"，不再
+留在 Phase 8 的排期里。**Phase 8（Autonomous Runtime 收敛）到此
+收尾**，可进入 Phase 9（Self Evolution 接入统一 Experience，见
+`10-phase9-self-evolution-sprint-plan.md`）。
