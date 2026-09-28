@@ -24,4 +24,6 @@ GoalStatus = Literal[
 # Experience 的来源标记：区分"这条经验来自哪条迁移链/子系统"，
 # 便于 Sprint 2 检索时过滤，也便于未来 Memory 迁移链复用同一个
 # Experience 存储时不与 Goal 链路产生的记录混淆。
-ExperienceSource = Literal["goal_mode"]
+# "memory_lesson"：Phase 3 遗留项——由 `core/lesson_adapter.py` 把旧的
+# `MemoryEntry(entry_type="lesson")` 转换而来（见 `core/lesson_import.py`）。
+ExperienceSource = Literal["goal_mode", "memory_lesson"]

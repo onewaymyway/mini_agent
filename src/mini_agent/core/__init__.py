@@ -75,6 +75,8 @@ from .goal import GoalState
 from .goal_adapter import GoalAdapter, goal_run_result_to_experience
 from .history import HistorySnapshot
 from .history_adapter import HistoryAdapter
+from .lesson_adapter import LessonAdapter
+from .lesson_import import LessonImportResult, import_lessons
 from .runtime import RuntimeState
 from .self import SelfState
 from .self_adapter import SelfAdapter
@@ -113,6 +115,9 @@ __all__ = [
     "goal_run_result_to_experience",
     "HistorySnapshot",
     "HistoryAdapter",
+    "LessonAdapter",
+    "LessonImportResult",
+    "import_lessons",
     "SelfState",
     "SelfAdapter",
     "StateManager",

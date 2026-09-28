@@ -64,7 +64,9 @@ def summarize_failures(
     与原文举例的"过去 5 次"一致（`limit` 默认 5）。
     """
     store = store or ExperienceStore()
-    all_exp = list(reversed(store.all()))  # 最近的在前
+    # 只统计 Goal 执行产生的记录：lesson 导入的 Experience（source="memory_lesson"）
+    # 不是一次 Goal 执行，计入分母会稀释 failure_rate（Phase 3 lesson Adapter 的副作用修正）。
+    all_exp = [e for e in reversed(store.all()) if e.source == "goal_mode"]  # 最近的在前
 
     if goal_text:
         query_tokens = _tokenize(goal_text)

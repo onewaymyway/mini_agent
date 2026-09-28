@@ -60,6 +60,8 @@
 | core/simulation.py（新增，Phase 7 Sprint 7-1） | Phase 7 | 完全迁移 | 100%（新增领域协议 `SimulationScenario`/`SimulationResult`，无数值分数字段，对应"禁止数值化打分系统"边界，不是旧模块迁移） | 不适用 | 2026-09-27 | Phase 7 Sprint 7-1/7-2 执行者 |
 | simulation/engine.py（新增，Phase 7 Sprint 7-1） | Phase 7 | 完全迁移 | 100%（`generate_candidate_actions()`/`simulate_candidates()`，LLM 调用点均为调用方注入的 `Callable`，不内置默认实现；`simulate_candidates()` 转发给 Phase 3 `core/experience_retrieval.py::retrieve_similar_experiences()` 做历史检索） | 不适用（新增转发/编排层，非 Old↔New Adapter） | 2026-09-27 | Phase 7 Sprint 7-1 执行者 |
 | cognition/decision.py（新增，Phase 7 Sprint 7-2） | Phase 7 | 完全迁移 | 100%（`DecisionEngine.select()` 二选一注入 `llm_select`/`human_confirm`，返回 `(ActionSpec, DecisionTrace)`；`DecisionTrace.to_text()` 产出可读自然语言 trace，未接入 `goal_mode/runner.py` 主循环——显式范围决策，见 `08-phase7-decision-simulation-sprint-plan.md` "Sprint 7-2 执行记录"） | 不适用 | 2026-09-27 | Phase 7 Sprint 7-2 执行者 |
+| core/lesson_adapter.py + core/lesson_import.py + scripts/import_lessons_to_experience.py（新增，Phase 3 遗留项补做） | Phase 3 | 部分迁移 | `MemoryEntry(entry_type="lesson") → Experience` 单向转换 + 批量导入已完成（手动、幂等、默认 dry-run）；4 个 lesson 写入点（`agent/reflection.py`/`agent/reminders_correction.py`/`evolution/outcome_tracker.py`/`evolution/failure_pattern_store.py`）**未改动**，新 lesson 不会自动进入 Experience；仅项目级记忆，全局记忆与 `consolidated_lesson` 未处理 | 否（`to_old` 未实现，无调用方） | 2026-09-28 | Phase 3 lesson Adapter 补做执行者；见 `04-phase3-experience-layer-sprint-plan.md` 文末“lesson Adapter 补做记录” |
+| core/experience_patterns.py::summarize_failures（Phase 3 lesson Adapter 副作用修正） | Phase 3 | 部分迁移 | 统计范围收窄为 `source=="goal_mode"`，避免导入的 lesson 稀释 `failure_rate`；旧数据 `source` 缺省即 `goal_mode`，行为不变 | 不适用 | 2026-09-28 | 同上 |
 
 > 以上为初始占位行，对应 `02`-`11` 各 Phase 文档里"现状盘点"提到的
 > 主要模块。执行过程中如发现遗漏模块，直接追加新行，不要删除已有行

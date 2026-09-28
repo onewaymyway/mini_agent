@@ -699,6 +699,15 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       commit>`）后才能勾选；生产中仍没有自动产生 `DeployRecord` 的路径，“建议回退”也
       没有面向用户的出口。详见 `10-phase9-self-evolution-sprint-plan.md` 末尾“Sprint
       9-4 执行记录”。
+- [x] Phase 3 遗留项（`lesson` → Experience Adapter）已补做（2026-09-28）：新增 `core/lesson_adapter.py`
+      （`LessonAdapter.to_new`，`to_old` 显式未实现）、`core/lesson_import.py`（幂等批量导入）、
+      `scripts/import_lessons_to_experience.py`（手动入口，默认 dry-run，`--apply` 才写入）。
+      **保守 opt-in**：不改任何 lesson 写入点、不挂运行时钩子，不运行脚本则行为零变化。
+      测试发现并修正一处副作用：导入的 lesson 会稀释 `summarize_failures()` 的 `failure_rate`，
+      已改为只统计 `source=="goal_mode"`。新增 8 用例；广域回归 361 用例 356 通过，5 个既有失败
+      与本次无关。`04-phase3-experience-layer-sprint-plan.md` 完成标志第 2 条已勾选，详见其文末
+      “lesson Adapter 补做记录”与 `MIGRATION_STATUS.md`。**这不改变 Phase 10 的阻塞状态**：
+      D1–D5 仍待项目所有者决定。
 - [ ] Phase 10 Sprint 10-1（对外 API 收敛）**部分完成，验收未达成，触发止损**：
       新增 `scripts/entrypoint_inventory.py`（静态、可重复的入口盘点脚本，含 13 个
       测试）与 `docs/architecture_v2/phase10-entrypoint-inventory.md`。**盘点完成**：

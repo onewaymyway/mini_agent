@@ -139,3 +139,8 @@ Sprint 3-1 的"字段完整覆盖原文 §7 yaml 结构"验收标准，本质上
   `entry_type == "lesson"` 过滤而不是按类名导入；这是对"现状盘点"
   环节的正常执行结果，不改变"选 lesson 作为第一条迁移链"的结论，
   不需要走 `12-execution-and-doc-sync-norms.md` 第四节的变更记录流程。
+
+> **更新（2026-09-28）**：第 2 项 `entry_type="lesson"` 的 `MemoryEntry` 已通过
+> `core/lesson_adapter.py::LessonAdapter` 接入新 Experience（手动批量导入，非实时），
+> 详见 `next_doc/refactor_plan/04-phase3-experience-layer-sprint-plan.md` 文末“lesson Adapter 补做记录”。
+> 其余三类的迁移计划见上方迁移优先级表，本次未动。

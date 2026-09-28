@@ -186,12 +186,61 @@ CLI），字段完整覆盖原文 §7 定义的 yaml 结构。
       `test_goal_mode_phase2_events.py`；检索见 Sprint 3-2
       `test_phase3_experience_retrieval_injection.py`，均是真实跑一次
       `GoalRunner.run()` 而非只测底层函数）
-- [ ] `phase3-experience-inventory.md` 里列出的旧结构，至少有一种
+- [x] `phase3-experience-inventory.md` 里列出的旧结构，至少有一种
       （建议选 lesson）已经通过 Adapter 接入新 Experience，其余的
-      迁移计划写入 `MIGRATION_STATUS.md`（Sprint 3-1/3-2 只搭好了
-      `Experience`/Store/Recorder/Retriever/Analyzer 这条新链路本身，
-      "把 `MemoryEntry.entry_type="lesson"` 接进来"这条 Adapter 尚未
-      实现，留待下一次推进）
+      迁移计划写入 `MIGRATION_STATUS.md`（lesson 已通过
+      `core/lesson_adapter.py::LessonAdapter` + `scripts/import_lessons_to_experience.py`
+      接入，见文末“lesson Adapter 补做记录”；接入方式是**手动、幂等的批量导入**，
+      不是运行时实时同步，局限见该记录）
 - [x] Analyzer 产出的聚合统计已经有雏形，可以在 Phase 9 直接复用
       （`core/experience_patterns.py::summarize_failures()` →
       `FailurePatternSummary`）
+
+## lesson Adapter 补做记录（2026-09-28，补齐完成标志第 2 条）
+
+Sprint 3-1/3-2 只搭好了 Experience 的新链路，`MemoryEntry.entry_type="lesson"` → Experience
+的 Adapter 一直是待办。本次补齐，沿用 Self/History/Memory 迁移链的形态（单向 `to_new`，
+`to_old` 显式 `NotImplementedError`）。
+
+**产出**
+
+| 文件 | 内容 |
+|---|---|
+| `src/mini_agent/core/lesson_adapter.py` | `LessonAdapter.to_new(MemoryEntry) -> Experience`；非 lesson 条目抛 `ValueError`；字段映射表见文件顶部注释 |
+| `src/mini_agent/core/lesson_import.py` | `import_lessons(entries, store)`：按 `entry_type` 过滤、逐条转换写入、单条失败不中断，返回 `LessonImportResult` |
+| `scripts/import_lessons_to_experience.py` | 手动入口，默认 dry-run 只统计，`--apply` 才写入 |
+| `core/types.py` | `ExperienceSource` 增加 `"memory_lesson"` |
+| `core/experience_patterns.py::summarize_failures` | 只统计 `source=="goal_mode"` 的记录（见下方“副作用修正”） |
+| `tests/test_phase3_lesson_adapter.py` | 8 用例 |
+
+**设计决定**
+
+1. **保守 opt-in**：不挂任何运行时钩子，不改 `agent/reflection.py` 等 4 个 lesson 写入点。
+   没人运行导入脚本时，系统行为与改动前完全一致。
+2. **确定性 id**（`lesson:<entry_id>`）+ store 按 id upsert ⇒ 重复导入真正幂等
+   （Sprint 3-1 的 JSONL 迁移脚本因旧记录无 id 做不到这点）。
+3. **`status="lesson"`**，不用 failed/stuck：lesson 不是一次 Goal 执行，不应被当成 Goal 失败计数。
+4. `action/reason/prediction/state_before/state_after` 保持默认值，旧结构没有对应信息，不臆造。
+5. 未在 CLI 增加写入子命令：`experience_cmd.py` 声明“CLI 层不提供绕过接入点的写入入口”，
+   故用 `scripts/` 而非 `mini-agent experience` 子命令，与 `migrate_experience_jsonl_to_sqlite.py` 一致。
+
+**副作用修正（测试发现）**：导入的 lesson 若计入 `summarize_failures()` 的 `total_matched`，
+会稀释 `failure_rate`（1 次失败 + 2 条 lesson ⇒ 33% 而非 100%）。已改为只统计
+`source=="goal_mode"`；旧数据 `source` 缺省即 `"goal_mode"`，不受影响。
+`detect_problems_from_experience()` 只看失败状态，不受影响。
+
+**验证**：新增 8 用例通过；相关 Phase 3/9 测试 36 用例通过；广域回归
+（`test_core_*`/`test_phase*`/`test_goal_mode*`/`test_failure_pattern_store`）361 用例，
+356 通过，5 个失败均为 Sprint 0 已记录的 `test_build_from_history_*`，与本次无关；
+在临时项目里端到端跑了脚本：dry-run 只统计、`--apply` 导入 1 条、再次 `--apply` 后 store 仍为 1 行；
+`pyflakes` 无告警；`lint_no_new_toplevel_concepts.py` 通过；
+`dep_graph.py --module core.lesson_adapter` 深度 inbound=2，未触发止损阈值。
+
+**局限**
+
+- 非实时：导入之后新产生的 lesson 不会自动进入 Experience，需再次运行脚本。
+- 导入后，若开启 `goal_mode.experience_retrieval_enabled`，lesson 会作为“相似历史”参与检索注入——
+  这是导入后才出现的行为变化，其 `goal_text` 取自 `trigger`（触发场景），相似度按关键词重叠计算，
+  质量取决于 trigger 文本写得是否具体。
+- 只覆盖 `entry_type=="lesson"`；`consolidated_lesson` 等其它类型未处理。
+- 只读取项目级记忆后端（`create_memory_backend`），全局记忆（`~/.agent/memory.jsonl`）未导入。
