@@ -18,6 +18,26 @@
 > D1–D5 仍待项目所有者决定。详见 `10-phase9-self-evolution-sprint-plan.md` 文末。
 >
 > **更新（Phase 10 A4，2026-09-28）**：`goal_mode/executor.py` 已评估——它是可替换的策略接口而非待收敛的旧概念，**决定不迁移**（台账状态按规范维持“未开始”并附注原因），不再是前置条件里的“待做”项；前置条件整体仍未满足（A1 待所有者、`objective_executor.py`/`orchestrator/*`/`goal_backlog.py` 未变）。详见 `14-phase10-sa-item-plan.md` 第十一节。
+>
+> **更新（Sprint 10-2 复核，2026-09-28）**：S-A（A2–A5、A4）与 S-B0、B3 均已完成（见 `13-…`/`14-…`）。据此实际跑了一次
+> `dep_graph.py`，核实 Sprint 10-2 的止损条件**目前仍然成立**，尚不能开始目录移动：
+>
+> - `orchestrator/`：深度 inbound = **37**（远超阈值 10），涵盖 `agent/core.py`、`agent/lifecycle.py`、`cli/app.py`、
+>   `api/routes.py` 等——这是被大量新旧代码共同直接使用的通用基础设施（人设/并发/计划会话），不是“已被 Adapter 完全代理”的
+>   单一旧实现，本身就不适合整体移入 `legacy/`。
+> - `evolution/objective_executor.py`：深度 inbound = 6（数量上未过阈值），但其中 `api/server.py`、`api/routes.py`、
+>   `evolution/goal_cron_bridge.py` **绕过** `core/objective_adapter.py` 直接 import `ObjectiveExecutor`/
+>   `MAX_CONCURRENT_OBJECTIVES` 等符号——这正是止损条件描述的“被多处新代码绕过 Adapter 直接调用”，Adapter（A5 的
+>   `project_objective_executions()`）覆盖的只是只读投影，写路径与生命周期管理仍被直接调用。
+> - `goal_mode/objective_executor.py`、`goal_cycle.objective_executor` 两个路径均**不存在**（`dep_graph.py` 返回 0/0）——
+>   11 号文档与部分早期文档里对该模块路径的表述需要以 `evolution/objective_executor.py` 为准，本次未去改历史文档正文，只在此注明。
+> - `perception/goal_backlog.py` 立项状态未变（仍暂缓），`orchestrator/` 的量级也说明它并非当初设想的“待降级单点”，需要先拆分
+>   评估，而非直接判定去留。
+>
+> **结论：Sprint 10-2 继续不开始**（沿用既有止损条件，本次只是用最新代码重新核实，结论未变）。Phase 10 四条完成标志继续
+> 全部不勾选。D1（状态管理类入口是否统一）与 D5（何时启动 Sprint 10-2）仍待所有者决定；即便决定启动，也需要先针对
+> `orchestrator/` 单独评估拆分方案，而不能整包移动。Sprint 10-3 的验收报告因此也**不产出**——它的前提是 10-2 的目录移动
+> 结果，现在没有可汇总的收敛结果，写一份“形式上完整但结论空洞”的报告不符合本文档一贯的如实原则。
 
 ## 目标与边界
 
