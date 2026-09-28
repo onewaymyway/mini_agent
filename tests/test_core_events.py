@@ -70,4 +70,5 @@ def test_event_kinds_covers_sprint_2_1_minimal_set():
         "RuntimeCycleStarted",
         "RuntimeCycleCompleted",
         "ObjectiveProjected",
+        "DecisionMade",
     }

@@ -164,3 +164,8 @@ Causal Tree / Counterfactual 推演（现在不提前引入）：
 目前的 Goal 场景（Sprint 7-1/7-2 测试所用的"替换 README 占位符"一类）
 里没有观察到以上三种情况，因此第一版"LLM + Experience，无因果树"的
 方式暂时够用，维持现状。
+
+## 后续更新（2026-09-28，Phase 10 A3；追加，未改动上文）
+
+Sprint 7-2 的范围决策“不把决策链路自动接入主循环”**仍然成立**：`goal_mode/runner.py` 主循环未接入，本文任务表与验收标准未改。变化只有一点——`AgentRuntime.run_once()` 现在可在 `goal_mode.runtime_decision_enabled=True`（默认关闭）时，经 `runtime/decision_stage.py` 调用本 Phase 的 `generate_candidate_actions → simulate_candidates → DecisionEngine.select`，发布 `DecisionMade` 事件。该旁路是 **advisory-only：只记录决策、不执行所选动作**（`GoalRunner` 不接受 `ActionSpec`），只针对第一条 gap，每次运行最多 5 次 LLM 调用。本 Phase 的三个模块内部均未改动。详见 `14-phase10-sa-item-plan.md` 第十节。
+

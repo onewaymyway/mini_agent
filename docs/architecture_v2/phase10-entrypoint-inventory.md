@@ -64,6 +64,8 @@
 被高估的一条——Phase 7 交付了新的决策引擎，但它目前没有任何生产调用方，旧 Advisor
 也没有接过去：这条映射现在只有“目标端的新模块”，还没有发生任何“迁移”。
 
+> **更新（2026-09-28，Phase 10 A3；上表为 Sprint 10-1 时点快照，未改写）**：“没有任何生产代码调用 `DecisionEngine`”自 A3 起不再成立——`runtime/decision_stage.py` 在 `goal_mode.runtime_decision_enabled=True`（默认关闭）时调用它，但只记录决策、不执行；旧 `next_action_advisor`/`growth_advisor` 仍未接入，这条映射本身仍是“未落地”。见 `next_doc/refactor_plan/14-phase10-sa-item-plan.md` 第十节。
+
 ## 四、验收标准基线：用户可见文本的术语
 
 验收标准原文：*所有对外接口的文档/帮助信息里，只出现 Self/World/Experience/Goal/

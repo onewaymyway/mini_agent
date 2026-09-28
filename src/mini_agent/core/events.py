@@ -56,6 +56,10 @@ EVENT_KINDS: tuple[str, ...] = (
     # [Phase 10 S-A A5] `core/objective_adapter.py::project_objective_executions()`
     # 读取时发布（仅状态变化时），见 `14-phase10-sa-item-plan.md` 第三节。
     "ObjectiveProjected",
+    # [Phase 10 S-A A3] `runtime/decision_stage.py::run_decision_stage()` 在
+    # `runtime_decision_enabled` 开启时发布；payload 带 `advisory=True`/
+    # `executed=False`，表示这是决策记录、所选动作未被执行。
+    "DecisionMade",
 )
 
 

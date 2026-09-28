@@ -66,6 +66,8 @@ Phase 7 文档明确禁止：
 
 接入点应在 `goal_mode/runner.py::run()` 内 Gap 检测成功后、Action 执行前的位置，需要额外评估对主循环控制流的影响，留给后续 Sprint。
 
+> **更新（2026-09-28，Phase 10 A3）**：上述“尚未接入”对 `goal_mode/runner.py` 主循环**仍然成立**，但 `DecisionEngine`/`SimulationEngine` 现在有一个 opt-in、默认关闭的调用方：`runtime/decision_stage.py`（经 `AgentRuntime.run_once()`，`goal_mode.runtime_decision_enabled`）。它只**记录**决策（`DecisionMade` 事件），**不执行**所选动作，也没有改动本 Phase 的任何模块。见 `next_doc/refactor_plan/14-phase10-sa-item-plan.md` 第十节。
+
 ## 五、测试覆盖
 
 `sprints/test_phase7_simulation_decision.py`（309 行）覆盖：

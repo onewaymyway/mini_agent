@@ -1,6 +1,6 @@
 # Phase 10 S-A 分项方案（补齐前置条件）——待所有者确认后实施
 
-> 状态：**方案已获所有者确认（Q-A5/Q-A3/Q-A4/顺序 均“接受”，Q-A2 按推荐 (a)）；A2 已完成（第八节）、A5 已完成（第九节）；其余未实施。**
+> 状态：**方案已获所有者确认（Q-A5/Q-A3/Q-A4/顺序 均“接受”，Q-A2 按推荐 (a)）；A2 已完成（第八节）、A5 已完成（第九节）、A3 已完成（第十节）；A4（仅文档）未实施。**
 > 原状态：方案，未实施，未改任何代码。 承接 `13-phase10-post-decision-execution-plan.md` 第八节：
 > 所有者已确认“不机械改名、重点理顺逻辑”“A5 只做只读投影 + 事件、不改 Objective 执行模型”。
 > 本文把 S-A 的 A2–A5 逐项落到**真实代码现状**上（2026-09-28 静态核实），给出推荐做法与需你决定的问题。
@@ -187,3 +187,49 @@ opt-in 的快照刷新（②）。①无开关但幂等、纯内存、只读（`
 - 定向回归（`test_core_*`/`test_phase*`/`test_objective*`/`test_goal_mode*`/`test_state*`/`test_cron*`/`test_autonomous*`）871 用例，866 通过；5 个失败均为既有的 `test_build_from_history_*`，无新增。**未跑全量测试**（其余需 streamlit/cdp_client 等本环境没有的依赖，另有 3 个测试文件因此无法收集，已排除）。
 - `pyflakes` 无告警；`lint_no_new_toplevel_concepts` 通过；`dep_graph.py --module core.objective_adapter`：outbound=0，深度 inbound=1（仅 `core/__init__.py`），未触发止损；`check_frozen_evolution_modules.py --check-manifest` 6 个文件均未变。
 
+## 十、执行记录（续）
+
+### A3（2026-09-28）：默认关闭的 advisory 决策旁路——已完成
+
+按 Q-A3 的“接受”实施：**默认关闭、advisory-only、不执行所选动作**。`goal_mode/runner.py`、`cognition/decision.py`、
+`simulation/engine.py`、`core/simulation.py`、`core/action.py` 与 4 个 evolution 安全设施文件**均未改动**（只新增调用方）。
+
+| 文件 | 内容 |
+|---|---|
+| `runtime/decision_stage.py`（新增） | `run_decision_stage()`：对**第一条 gap** 走 `generate_candidate_actions → simulate_candidates → DecisionEngine.select`，发布 `DecisionMade`，返回 `DecisionStageReport`。三个注入函数（生成/权衡/选择）用 `agent.llm_helper.ask()` 实现，LLM 输出只做 JSON 形状校验（非法 `type`/空 `capability`/越界或非整数 `index` 一律丢弃或判失败）。**永不抛异常** |
+| `runtime/runtime.py` | 新增构造参数 `enable_decision_stage` 与开关读取；`plan/simulate/decide` 处的“显式跳过”改为“开关开启时调用旁路”；`AgentRuntimeResult.decision_report`；`RuntimeCycleCompleted` payload 仅在启用时多一个 `decision` 摘要键 |
+| `config/models.py` | 新增 `goal_mode.runtime_decision_enabled`，**默认 False** |
+| `core/events.py` | `EVENT_KINDS` 追加 `DecisionMade`（因此会被 `EventLogStore` 落盘）；payload 带 `advisory=True`、`executed=False` |
+| `runtime/__init__.py` | 导出 `DecisionStageReport`/`run_decision_stage` |
+
+**必须让使用者知道的边界**
+1. **选出的动作不会被执行**——`GoalRunner` 不接受 `ActionSpec`。这是“决策记录”，不是“决策执行”。要让决策驱动执行需改 `GoalRunner`，另立方案（Q-A3 已明确不做）。
+2. **LLM 调用次数比方案写的多**：第四节写“约 2–3 次”，**低估了**。实际为 `1（生成候选）+ N（每个候选各 1 次权衡描述）+ 1（选择）`，`N ≤ 3`，**上界 5 次**。测试 `test_max_candidates_bounds_llm_calls` 守住这个上界。
+3. 一次运行只针对第一条 gap 决策一次，不遍历所有 gap（限制成本）。
+4. 候选里的工具/工作流名称**不对照注册表校验**（它们只被记录，不会被执行）；日后若接入执行，必须在执行前校验。
+
+**与方案的偏差（如实记录）**
+- 方案写“整段 try/except，失败只记日志”。实现为两层：`run_decision_stage()` 自身永不抛异常（失败进 `report.error`，状态 `failed`），`run_once()` 再包一层兜底。
+- 开启时 `run_once()` 会在旁路之前先挂载事件日志订阅（`ensure_event_log_subscribed`，幂等），否则 `DecisionMade` 发布时还没有订阅者、不会落盘。未开启时不做这件事，默认行为不变。
+- 旁路使用 `AgentPaths(project_root=cfg.project_root)` 下的 Experience 库做历史检索（与 `GoalRunner` 用的是同一个库），不使用进程默认路径。
+- “旧 Advisor 候选 → `ActionSpec` 的 Adapter”按方案推荐**本轮不做**（无消费者，且 `next_action_advisor` 候选结构未逐字段核实）。
+- 顺手更正 `runtime.py` 顶部 docstring 里从未作为代码存在过的 `enable_decision_stage` 开关名（实际开关是 `runtime_decision_enabled`；构造参数沿用 `enable_decision_stage` 与 `enable_learn_stage` 同风格）。
+
+**默认行为变化**：无。关闭时不发起任何 LLM 调用、不挂载额外订阅、payload 与返回值（`decision_report=None`）与此前一致；有测试守住。
+
+**测试与验证**
+- 新增 `tests/test_phase10_sa_a3_decision_stage.py` **27 用例**：JSON 解析（围栏、非法项丢弃、单元素数组、对象包装、垃圾输入）、无 gap/无 llm_helper 不调用 LLM、happy path 与 `DecisionMade` 事件字段、调用次数上界、**`ActionExecutor.execute` 不被调用**、三个阶段各自 LLM 失败被隔离且不发布事件、无有效候选、越界/非整数/bool/非 JSON 的选择输出、非 JSON 对象的权衡输出、payload 文本截断、默认关闭零变化、经配置/构造参数开启、覆盖优先级、`DecisionMade` 真实落盘且先于 `RuntimeCycleCompleted`、无 `llm_helper` 的 Agent 不影响 Goal、LLM 异常与旁路崩溃均不影响 Goal 结果。
+- **测试发现并已修复一个实现 bug**：`_extract_json` 最初总是先尝试 `{…}`，LLM 只返回**一个**候选（`[{…}]`）时内层对象会抢先匹配，候选被误判为空。已改为按“最先出现的括号”解析，并补了回归用例。
+- 修改既有测试：`tests/test_core_events.py` 的 `EVENT_KINDS` 集合断言追加 `DecisionMade`（有意的取值集合变化）。
+- 定向回归（`test_core_*`/`test_phase*`/`test_goal_mode*`/`test_state*`/`test_cron*`/`test_runtime*`）：改动后 695 passed / 7 failed / 3 errors；**未修改的原始压缩包同批**：668 passed / 7 failed / 3 errors，**失败与错误集合逐条一致**（差值 27 即本次新增用例）。失败为既有的 5 个 `test_build_from_history_*` 与 2 个 `test_cron_async_user_feedback`；3 个 ERROR 是本环境缺 `uvicorn`，无法收集，与本次无关。**未跑全量测试**；前端与需 streamlit 的看板测试未运行。
+- `pyflakes`：新增/改动的 `runtime/`、测试文件无告警（`config/models.py` 有 2 条既有的未使用 import，非本次引入）；`lint_no_new_toplevel_concepts` 通过；`dep_graph.py --module runtime.decision_stage`：outbound=0，深度 inbound=2（`runtime/__init__.py`、`runtime/runtime.py`），`runtime.runtime` inbound=3，均未触发止损；`check_frozen_evolution_modules.py --check-manifest` 6 个文件均未变。
+
+**局限**
+- 决策**从未在真实 LLM 上跑过**：测试用的是脚本化替身，只证明链路、解析、隔离与不执行的性质，不证明真实模型的输出质量，也不证明提示词效果。开启前建议在小范围内人工检查几条 `DecisionMade` 的 `trace_text`。
+- `RuntimeCycleStarted` 在事件日志订阅之前发布，**首个周期的 Started 事件不会落盘**——这是 Phase 8 起的既有行为，本 Sprint 未改（改它会改变默认行为）；`DecisionMade` 与 `RuntimeCycleCompleted` 会落盘。
+- 决策只看第一条 gap；`current_state` 目前多数为空（旧 `GoalSpec` 没有对应字段），权衡描述的上下文因此较薄。
+- 没有面向用户的出口：`DecisionMade` 只出现在事件日志（可用 `events trace <correlation_id>` 查看）与 `AgentRuntimeResult.decision_report`，CLI/HTTP 不展示。
+
+### 下一步
+
+**A4**（`goal_mode/executor.py` “评估后保留、不迁移”，**仅文档**：台账改“已评估，不迁移”并写明理由）。之后 S-A 除 A1（需所有者在真实 git 仓库执行）外全部完成，可进入 S-B 其余批次或 S-C 的复核。

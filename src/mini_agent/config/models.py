@@ -1105,6 +1105,14 @@ class GoalModeConfig:
     #    RuntimeState 的事件订阅（纯内存、只读）之外行为与此前完全一致。
     runtime_capability_snapshot_enabled: bool = False
 
+    # ── [next_doc/refactor_plan/14-phase10-sa-item-plan.md A3] AgentRuntime 的
+    #    plan/simulate/decide 步骤是否启用 advisory 决策旁路（候选生成 → 模拟 →
+    #    DecisionEngine 选择 → 发布 `DecisionMade` 事件）。**仅决策记录，不执行
+    #    所选动作**（`GoalRunner` 不接受 ActionSpec）。默认关闭（保守 opt-in）；
+    #    开启后每次运行最多多 5 次 LLM 调用（1 次生成候选 + 每个候选各 1 次权衡
+    #    描述，默认最多 3 个 + 1 次选择），且只针对第一条 gap。
+    runtime_decision_enabled: bool = False
+
 
 @dataclass
 class GoalExecutionSpecConfig:

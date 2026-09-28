@@ -10,10 +10,14 @@ Sprint 8-1 产出 `runtime.py::AgentRuntime`（单次循环骨架，
 
 Phase 9 Sprint 9-4 新增 `learn.py::run_learn_step()`（`AgentRuntime` 的
 `learn` 步骤，默认关闭）。
+
+Phase 10 A3 新增 `decision_stage.py::run_decision_stage()`（`plan/simulate/decide`
+步骤的 advisory 旁路，默认关闭，只记录决策、不执行所选动作）。
 """
 
 from .runtime import AgentRuntime, AgentRuntimeResult
 from .event_loop import RuntimeEventLoop, RuntimeEventLoopStats
+from .decision_stage import DecisionStageReport, run_decision_stage
 from .learn import LearnReport, ObservedDeployment, run_learn_step
 
 __all__ = [
@@ -24,4 +28,6 @@ __all__ = [
     "LearnReport",
     "ObservedDeployment",
     "run_learn_step",
+    "DecisionStageReport",
+    "run_decision_stage",
 ]

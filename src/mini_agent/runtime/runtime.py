@@ -25,6 +25,11 @@ Sprint 8-1。对应原方案 §41 的核心循环：
     `gap detect` 一步是真实执行的（因为它不需要 LLM 注入、本身就是
     纯函数，代价很低，且是"观察当前状态与目标差距"这个循环骨架里
     真正对应"骨架"部分的一环）。
+    Phase 10 A3 起，这三步可通过 `goal_mode.runtime_decision_enabled`
+    （**默认关闭**）接入 `runtime/decision_stage.py`：仅做“决策记录”
+    （发布 `DecisionMade` 事件），**不执行所选动作**，详见该模块 docstring。
+    注：上文的 `enable_decision_stage` 从未作为代码存在过，实际开关名是
+    `runtime_decision_enabled`（14 号文档第〇节已更正同类笔误）。
   - `learn` 对应 Phase 9（Self Evolution 接入统一 Experience）。Sprint 8-1
     时留空；Sprint 9-4 起由 `runtime/learn.py::run_learn_step()` 实现，
     **默认关闭**（`goal_mode.runtime_learn_enabled=False`），关闭时行为与
@@ -48,6 +53,7 @@ from mini_agent.core import (
 )
 from mini_agent.goal_mode.runner import GoalRunner, GoalRunResult
 from mini_agent.goals.gap import detect_gap
+from mini_agent.runtime.decision_stage import DecisionStageReport, run_decision_stage
 from mini_agent.runtime.learn import LearnReport, run_learn_step
 
 if TYPE_CHECKING:
@@ -89,6 +95,9 @@ class AgentRuntimeResult:
     goal_run_result: Optional[GoalRunResult] = None
     # Sprint 9-4：`learn` 步骤的报告；未启用（默认）时为 None。
     learn_report: Optional["LearnReport"] = None
+    # Phase 10 A3：`plan/simulate/decide` 的 advisory 报告；未启用（默认）时为 None。
+    # 选出的动作**没有被执行**，只是决策记录。
+    decision_report: Optional["DecisionStageReport"] = None
 
 
 class AgentRuntime:
@@ -106,6 +115,7 @@ class AgentRuntime:
         cfg: "AppConfig",
         enable_learn_stage: Optional[bool] = None,
         learn_auto_rollback: Optional[bool] = None,
+        enable_decision_stage: Optional[bool] = None,
     ) -> None:
         self._agent = agent
         self._cfg = cfg
@@ -119,6 +129,12 @@ class AgentRuntime:
         self._learn_auto_rollback = (
             learn_auto_rollback if learn_auto_rollback is not None
             else bool(getattr(gm, "runtime_learn_auto_rollback", False))
+        )
+        # Phase 10 A3：是否启用 advisory 决策旁路（默认关闭；开启后每次运行最多
+        # 多 5 次 LLM 调用，且选出的动作不会被执行）。
+        self._decision_enabled = (
+            enable_decision_stage if enable_decision_stage is not None
+            else bool(getattr(gm, "runtime_decision_enabled", False))
         )
         # Phase 10 A2：observe 步是否刷新 CapabilityState（默认关闭）。
         self._capability_snapshot_enabled = bool(
@@ -242,11 +258,43 @@ class AgentRuntime:
                 )
 
         # ── plan / simulate / decide ─────────────────────────────────
-        # 显式跳过：见本文件顶部"止损原则"说明，沿用 Phase 7 Sprint 7-2
-        # 的范围决策（`simulation/engine.py`/`cognition/decision.py` 均
-        # 需要调用方注入 LLM callable，本 Sprint 不内置默认实现，也不
-        # 强行接入主循环）。TODO: Sprint 8-2/8-3 或专门的评估任务里，
-        # 视是否需要"多候选 Action 竞争"场景再决定是否接入。
+        # Phase 10 A3：默认关闭的 advisory 旁路（`runtime_decision_enabled`）。
+        # 关闭时仍是 Phase 8 Sprint 8-1 的“显式跳过”（沿用 Phase 7 Sprint 7-2
+        # 的范围决策）。开启后只做“候选 → 模拟 → 决策”并发布 `DecisionMade`，
+        # **不执行所选动作**（`GoalRunner` 不接受 ActionSpec，见
+        # `runtime/decision_stage.py` 文档字符串）。`run_decision_stage()`
+        # 永不抛异常；这里再包一层只是防御性兜底——旁路不得改变 Goal 结果。
+        decision_report: Optional[DecisionStageReport] = None
+        if self._decision_enabled:
+            try:
+                from mini_agent.core import (
+                    EventLogStore,
+                    ExperienceStore,
+                    ensure_event_log_subscribed,
+                )
+                from mini_agent.storage.paths import AgentPaths
+
+                paths = AgentPaths(project_root=self._cfg.project_root)
+                # `GoalRunner.run()` 内的同款订阅晚于本步骤；不先挂载，
+                # `DecisionMade` 就不会被落盘（幂等，重复调用无副作用）。
+                ensure_event_log_subscribed(EventLogStore(path=paths.workdir_event_log))
+                decision_report = run_decision_stage(
+                    llm_helper=getattr(self._agent, "llm_helper", None),
+                    goal_text=goal_spec.goal_text,
+                    gap=gap_items,
+                    current_state=(core_goal_state.current_state if core_goal_state else ""),
+                    constraints=(list(core_goal_state.constraints) if core_goal_state else []),
+                    experience_store=ExperienceStore(path=paths.workdir_experience_store),
+                    bus=bus,
+                    correlation_id=correlation_id,
+                )
+            except Exception:
+                from mini_agent.errors import log_exception
+
+                log_exception(
+                    Exception("AgentRuntime.run_once: decision 步骤失败"),
+                    where="mini_agent.runtime.runtime.AgentRuntime.run_once.decision",
+                )
 
         # ── execute（复用 Phase 1-7 打通的 GoalRunner 全链路）──────────
         runner = GoalRunner(
@@ -290,6 +338,8 @@ class AgentRuntime:
         completed_payload = {"status": goal_run_result.status, "gap_item_count": len(gap_items)}
         if learn_report is not None:  # 仅启用时才多一个键，关闭时 payload 与此前一致
             completed_payload["learn"] = learn_report.summary()
+        if decision_report is not None:  # 同上：仅启用时才多一个键
+            completed_payload["decision"] = decision_report.summary()
         bus.publish(
             Event(
                 kind="RuntimeCycleCompleted",
@@ -310,4 +360,5 @@ class AgentRuntime:
             correlation_id=correlation_id,
             goal_run_result=goal_run_result,
             learn_report=learn_report,
+            decision_report=decision_report,
         )
