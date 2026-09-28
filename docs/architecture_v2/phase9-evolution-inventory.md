@@ -122,3 +122,27 @@ Phase 5/8 "计划写太细、一跑就变"的教训）。
   已有或将有独立的评估流程。
 
 本次盘点未修改任何生产代码，仅新增本文档，无需跑回归测试。
+
+## 六、Sprint 9-2 接入关系补充（2026-09-28）
+
+Sprint 9-2 新增 `evolution/proposals.py` 后，`evolution/` 内部新增以下
+依赖方向（均为“新模块 → 既有模块”，无反向依赖，既有模块不知道 `proposals.py`
+的存在）：
+
+| `proposals.py` 依赖的既有模块 | 依赖方式 | 类别 | 说明 |
+|---|---|---|---|
+| `state_repo.py` | 顶层 import `ChangeSet`/`StateRepoError`；运行时调用 `StateRepo.resolve_tier()` | 安全设施（冻结） | 只调用公开接口，tier 判定/强制升级/initiator 上浮完全由其决定 |
+| `validators.py` | 函数内延迟 import `validators_for_tier()`，逐个以 `validator(repo.root, changes)` 调用 | 安全设施（冻结） | 与 `StateRepo.apply()` 落盘前校验环节调用方式一致 |
+| `proposal_risk.py` | 顶层 import 私有函数 `_is_low_risk_path` | 决策逻辑 | 让“文档/规则类低风险路径”全包只有一个定义；私有 import 是已知代价，见 Sprint 计划文档范围说明第 4 条 |
+| `eval_runner.py` | **不直接依赖**；`eval_fn` 由调用方注入，只读其 `EvalReport.to_dict()` 形状的 `summary` | 安全设施（冻结） | 回归口径镜像自 `proposal_risk._check_eval_regression()`，见范围说明第 3 条 |
+| `core/experience_patterns.py::Problem` | 仅 `TYPE_CHECKING` 下类型引用，无运行时 import | Phase 9 Sprint 9-1 产出 | 避免 `evolution/` 与 `core/` 之间新增运行时循环依赖风险 |
+
+**冻结模块核对（阶段性）**：Sprint 9-2 交付时，`state_repo.py`/`workspace.py`/
+`validators.py`/`eval_runner.py` 四个安全设施及 `failure_pattern_store.py`/
+`proposal_risk.py` 与原始压缩包 sha256 一致；`src/` 相对原包仅新增
+`proposals.py`。交付所用压缩包不含 `.git`，该结论不能替代 Phase 收尾时在
+真实仓库里做的 `git diff` 核对。
+
+本次补充只新增文档，`phase9-evolution-inventory.md` 第二至五节的分类结论
+不受影响：`proposals.py` 归入“决策逻辑”一类（Hypothesis/Proposal 生成 +
+Evaluation 对接），不属于安全设施。

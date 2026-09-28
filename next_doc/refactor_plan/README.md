@@ -636,3 +636,27 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       "Sprint 9-1 执行记录"与 `MIGRATION_STATUS.md`。可进入
       **Sprint 9-2（Hypothesis → Experiment → Evaluation）**（下一次
       对话的任务）。
+- [x] Sprint 9-2（Hypothesis → Experiment → Evaluation）已完成：新增
+      `evolution/proposals.py`——`Hypothesis`/`EvolutionProposal`/
+      `ProposalEvaluation` 数据结构、`generate_hypothesis()`（LLM 调用点
+      为调用方注入的 `llm_propose`，未注入时走规则模板，生成一份
+      `.agent/lessons/<slug>.md` 规则文件）、`build_proposal()`（默认
+      `initiator="autonomous"`，使 `StateRepo.resolve_tier()` 的 T0→T1
+      上浮规则对新入口同样生效）、`evaluate_proposal()`（调用
+      `StateRepo.resolve_tier()` + `validators_for_tier()` 对提案做
+      **不落盘、不 commit** 的 dry-run 评估，可选 `eval_fn` 做 eval 对比）。
+      `EvolutionProposal` 字段与 `StateRepo.apply()` 入参一一对应，Sprint
+      9-3 可直接 `repo.apply(**proposal.apply_kwargs())`。**范围说明**：本
+      Sprint 的 “Experiment” 只含 dry-run 校验 + 可选 eval 对比，真实
+      sandbox 试跑属 Sprint 9-3；默认规则模板只证明链路走得通，不证明规则
+      真的降低失败率（留给 9-3 的 Observe/Promote/Rollback）。验收标准
+      （真实 `Problem` 走到 Proposal 并被现有 Validators 接受评估，不绕开
+      安全设施）已用新增测试 `tests/test_phase9_sprint9_2_proposals.py`
+      （17 用例）验证，全部通过，含校验失败/受保护路径强制 T3/initiator
+      上浮/eval 回归等反例。回归测试 356 用例 354 通过，2 个失败
+      （`test_evolution_cli.py` 的 revert 相关用例）在未修改的原始压缩包
+      中同样复现，属既有失败；`pyflakes` 无告警；4 个安全设施文件及
+      `failure_pattern_store.py`/`proposal_risk.py` 与原包 sha256 一致。
+      详见 `10-phase9-self-evolution-sprint-plan.md` 末尾“Sprint 9-2 执行
+      记录”与 `MIGRATION_STATUS.md`。可进入 **Sprint 9-3（Sandbox →
+      Validation → Deploy 闭环打通）**（下一次对话的任务）。
