@@ -22,6 +22,7 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
 | `10-phase9-self-evolution-sprint-plan.md` | Phase 9：Self Evolution 接入统一 Experience | §42 |
 | `11-phase10-legacy-decommission-plan.md` | Phase 10：旧系统降级（用户不可见，非删除） | §43 |
 | `12-execution-and-doc-sync-norms.md` | **执行规范**：代码改动后如何同步更新文档、`MIGRATION_STATUS.md` 格式、计划变更留痕流程、复盘最低要求、文档写作规范 | — |
+| `14-phase10-sa-item-plan.md` | Phase 10 S-A（补齐前置条件 A2–A5）分项方案，含对 13 号文档一处事实错误的更正，**待所有者确认** | §43 |
 | `13-phase10-post-decision-execution-plan.md` | Phase 10 决策落地方案（D2/D3/D4 → S-A/S-B/S-C 分阶段计划，**待所有者确认**） | §43 |
 | `MIGRATION_STATUS.md` | 迁移完成度台账（初始占位模板，执行过程中持续更新） | — |
 
@@ -735,3 +736,6 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       一起改、D3=交由 Claude 判断（结论：人设能力学习改名为 Persona Learning，架构 Capability 保留）、D4=补齐前置条件。
       方案把工作拆成 S-A（补齐 A1–A5）、S-B0–B4（按概念分批改名，旧名保留为隐藏别名）、S-C（Sprint 10-2/10-3）。
       **仅方案，未改代码**；等待所有者确认 Q1–Q4（命名映射、A5 范围、别名策略、起步阶段）后实施。
+- [ ] Phase 10 S-A 分项方案已产出（`14-phase10-sa-item-plan.md`，2026-09-28）：A2 只投影有真实来源的字段（Runtime/Capability），World 是否填待定；
+      A5 推荐拉取式投影（不改 `objective_executor.py`）；A3 推荐默认关闭的 advisory 旁路；A4 推荐评估后保留。**仅方案，未改代码**，
+      并更正了 13 号文档里“`enable_decision_stage` 开关已存在”的事实错误。等待所有者回答 Q-A2/Q-A5/Q-A3/Q-A4/Q-顺序。

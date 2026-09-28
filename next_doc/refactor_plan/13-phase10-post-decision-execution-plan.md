@@ -45,7 +45,7 @@ Phase 10 前置条件原文：Phase 1–9 全部完成，八大概念在真实�
 |---|---|---|---|---|
 | A1 | Phase 9 完成标志第 3、4 条 | 需真实仓库 `git diff`；压缩包无 `.git` | **只能由你执行**：`python scripts/check_frozen_evolution_modules.py --base <Phase 9 起点 commit>`，把结果发我，我勾选并记录 | 无 |
 | A2 | `WorldState`/`CapabilityState`/`RuntimeState` 三个空占位 | 全是无字段 dataclass，仅 `state_manager` 与 `core/__init__` 引用 | 各填最小真实字段并接**一个**真实产出方：Capability ← 现有 tool/skill/workflow 注册表的只读快照；Runtime ← `AgentRuntime` 周期计数/上次运行状态；World ← 项目/工作区只读事实。全部只读投影，不改旧模块 | 低 |
-| A3 | `DecisionEngine` 无生产调用方；旧 Advisor 未接 | `runtime.py` 有 `enable_decision_stage` 开关但默认 False | 让 `AgentRuntime` 的 plan/simulate/decide 在开关打开时真的调用 `DecisionEngine`；给 `next_action_advisor` 的候选做一个 `→ ActionSpec` 的 Adapter。**默认仍关闭** | 中 |
+| A3 | `DecisionEngine` 无生产调用方；旧 Advisor 未接 | ~~`runtime.py` 有 `enable_decision_stage` 开关但默认 False~~ **[更正 2026-09-28：该开关并不存在，仅是一句 docstring；`plan/simulate/decide` 是被直接跳过的，接入需新增开关与代码，见 `14-phase10-sa-item-plan.md` 第〇节]** | 让 `AgentRuntime` 的 plan/simulate/decide 在开关打开时真的调用 `DecisionEngine`；给 `next_action_advisor` 的候选做一个 `→ ActionSpec` 的 Adapter。**默认仍关闭** | 中 |
 | A4 | `goal_mode/executor.py` 台账“未开始” | Phase 1 遗留 | 先按 Sprint 1.5 方法论重新按跨子系统口径统计 inbound，再决定 Adapter 还是评估后豁免 | 低–中 |
 | A5 | `ObjectiveExecutor`/`GoalBacklog`（“旧 Objective → Goal internal step”“旧 Goal”） | inbound=22（跨子系统）；共享 Agent + InputQueue 模型，Sprint 8-5 评估为**高风险** | **不改执行模型**。只做“只读投影 + 事件”：把 `ObjectiveExecution` 投影成 `GoalState` 并 publish 事件，使其进入 Event/Experience 链路。是否进一步让 Objective 改用独占 Agent 属产品决策，**见第七节 Q2** | 中（投影）/ 高（改模型） |
 

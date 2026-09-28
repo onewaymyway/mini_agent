@@ -143,3 +143,6 @@ inventory.py`（13 用例）。
 - S-B0（人设学习 `/capability` → `/persona-learning`，HTTP `/v1/persona_learning/*`，旧名隐藏别名）已完成，详见
   `13-phase10-post-decision-execution-plan.md` 第八、九节。Sprint 10-1/10-2/10-3 的任务表与验收标准**仍未修订**，
   待 S-A 结束后按本规范第四节流程统一修订。
+
+### 变更记录 2026-09-28（S-A 分项方案）
+- 产出 `14-phase10-sa-item-plan.md`（仅方案）。核实发现 `13` 号文档关于“`runtime.py` 已有 `enable_decision_stage` 开关”的表述有误，已在 `13` 内更正，并在 `14` 第〇节说明。任务表/验收标准仍未修订。
