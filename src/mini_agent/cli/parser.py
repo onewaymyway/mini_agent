@@ -143,14 +143,14 @@ def build_parser() -> argparse.ArgumentParser:
               /growth report <id>         Show (or generate) the research report for a candidate
               /growth material <id>       Show (or generate) the learning material for a candidate
               /growth retrospective       Show the monthly growth retrospective summary
-              /capability [list]          Show CapabilityTrack overview (Persona Capability Learning)
-              /capability create <title> | <persona_desc> [--llm-draft] [--persona]  Create a Track (knowledge-type by default, --persona for persona-type)
-              /capability cycle           Run one learning cycle now (P1: retriever not wired, skips research)
-              /capability questions [track_id]  List pending async questions
-              /capability answer <id> <text>  Submit an answer to a pending question
-              /capability persona draft <track_id>    Compose/refresh a persona draft from collected answers (persona-type Track only)
-              /capability persona show <track_id>     Preview the last saved persona draft
-              /capability persona publish <track_id>  Explicitly publish the draft to .agent/personas/
+              /persona-learning [list]    Show learning-track overview (Persona Learning; formerly /capability)
+              /persona-learning create <title> | <persona_desc> [--llm-draft] [--persona]  Create a Track (knowledge-type by default, --persona for persona-type)
+              /persona-learning cycle           Run one learning cycle now (P1: retriever not wired, skips research)
+              /persona-learning questions [track_id]  List pending async questions
+              /persona-learning answer <id> <text>  Submit an answer to a pending question
+              /persona-learning persona draft <track_id>    Compose/refresh a persona draft from collected answers (persona-type Track only)
+              /persona-learning persona show <track_id>     Preview the last saved persona draft
+              /persona-learning persona publish <track_id>  Explicitly publish the draft to .agent/personas/
               /debug system               Print current system prompt (with token estimate)
               /debug history [full] [n]   Print history as a table (last n msgs; 'full' = no truncation)
               /debug all [n]              Print system + history together

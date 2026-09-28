@@ -11,7 +11,7 @@
 避免引入不必要的耦合/循环 import 风险，和 `capability_routes.py` 顶部
 "独立成文件、独立成一个 APIRouter" 的取舍一致。
 
-已挂载到 api/server.py（`app.include_router(persona_candidate_router)`）。
+已挂载到 api/server.py（经 `capability_routes.mount_persona_learning_routers`；旧路径 `/v1/capability/persona_candidates` 为隐藏别名）。
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from mini_agent.evolution.persona_candidates import (
 )
 from mini_agent.storage.paths import AgentPaths
 
-persona_candidate_router = APIRouter(prefix="/v1/capability/persona_candidates")
+persona_candidate_router = APIRouter(prefix="/v1/persona_learning/persona_candidates")
 
 
 def _get_paths(request: Request) -> AgentPaths:
@@ -90,7 +90,7 @@ class DismissCandidateBody(BaseModel):
 
 @persona_candidate_router.get("")
 def list_persona_candidates(request: Request, status: Optional[str] = None):
-    """GET /v1/capability/persona_candidates — 列出候选（默认只返回
+    """GET /v1/persona_learning/persona_candidates — 列出候选（默认只返回
     pending，加 `status` 查询参数可查其它状态，对齐 `/growth/candidates`
     现有风格）。"""
     store = PersonaCandidateStore(_get_paths(request))
@@ -99,7 +99,7 @@ def list_persona_candidates(request: Request, status: Optional[str] = None):
 
 @persona_candidate_router.post("/scan")
 async def scan_candidates(request: Request):
-    """POST /v1/capability/persona_candidates/scan — 触发一次扫描；因为
+    """POST /v1/persona_learning/persona_candidates/scan — 触发一次扫描；因为
     要调用 LLM（提炼 + 逐条判重），走异步任务返回 `{"job_id", "key"}`，
     前端用 `run_async_job()` 轮询（同 `growth_scan`，见方案 §5）。
     `PersonaCandidateConfig.enabled=False`（默认）时直接返回空结果，不

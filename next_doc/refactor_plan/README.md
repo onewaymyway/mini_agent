@@ -727,6 +727,10 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       已按规范在 `11-phase10-legacy-decommission-plan.md` 写入“变更记录 2026-09-28”
       （D1–D5 待项目所有者决定，未改任务表）。**下一步需人工决策，不是直接进入
       Sprint 10-2。**
+- [x] Phase 10 S-B0 完成（2026-09-28）：人设学习用户可见名由 `/capability`、`/v1/capability/*` 改为 `/persona-learning`、`/v1/persona_learning/*`，
+      旧名保留为隐藏别名（HTTP `include_in_schema=False`；CLI 使用旧名时提示）；内部标识与磁盘格式未改。所有者确认 Q1–Q4：
+      **只改 Objective，`/workflow`、`/cron` 等不改**；A5 只做投影 + 事件。新增 8 用例，定向回归 831 用例 825 通过，6 个失败均为既有
+      （已在原始压缩包上复现其中 async_jobs 一项）。看板测试（需 streamlit）与前端构建未在本环境运行。详见 `13-…` 第八、九节。
 - [ ] Phase 10 决策落地方案已产出（`13-phase10-post-decision-execution-plan.md`，2026-09-28）：所有者决定 D2=连概念词与命令名
       一起改、D3=交由 Claude 判断（结论：人设能力学习改名为 Persona Learning，架构 Capability 保留）、D4=补齐前置条件。
       方案把工作拆成 S-A（补齐 A1–A5）、S-B0–B4（按概念分批改名，旧名保留为隐藏别名）、S-C（Sprint 10-2/10-3）。

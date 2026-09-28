@@ -1,6 +1,9 @@
 # Phase 10 决策落地方案（D2/D3/D4）——待所有者确认后实施
 
-> 状态：**方案，未实施，未改任何代码**。本文件承接 `11-phase10-legacy-decommission-plan.md`
+> 状态：**方案已获所有者确认（Q1–Q4，见第八节，范围已大幅收窄）；S-B0 已实施（第九节）；其余阶段未实施。**
+> （第一至七节是确认前的原方案，保留作决策依据；与第八节冲突处以第八节为准。）
+>
+> 原状态：方案，未实施，未改任何代码。本文件承接 `11-phase10-legacy-decommission-plan.md`
 > “变更记录 2026-09-28”里的 D1–D5。所有者已给出 D2/D3/D4 的决定（见下），本文把决定
 > 转成可执行的分阶段计划，并列出**仍需所有者确认的事项（第七节）**，确认后才动代码。
 > 影响面数字均为 2026-09-28 对上传仓库的静态统计（grep/AST），是下限估计。
@@ -106,3 +109,57 @@ HTTP 文档里概念词计数：Cron×96、Objective×62、Workflow×31、Schedu
   还是做 Sprint 8-5 说的产品层决策、让 Objective 改用独占 Agent（风险高，会改变 Objective 与用户共享上下文的行为）？
 - **Q3 别名策略**：接受“旧名永久隐藏别名、本方案不删除”吗？
 - **Q4 起步阶段**：建议先做 **S-B0（D3 改名）**，它独立、可回退、且是后续所有改名的前置；或者你更想先做 S-A 的某一项？
+
+## 八、所有者确认结果与范围调整（2026-09-28）
+
+| 问题 | 所有者答复 | 对方案的影响 |
+|---|---|---|
+| Q1 命名映射 | Objective 可以改；`/workflow`、`/cron` 不改；其他也没有修改必要。**“没必要机械的改名，重要的是把整体的逻辑理顺”** | **取消 B1（workflow→capability）、B2（cron→runtime schedule）、B4（next/digest/growth/directions→decision）**；只保留 B3（Objective → Goal 步骤），且需等 A5 完成；不再要求“用户可见面旧概念词命中为 0”的机器验收 |
+| Q2 A5 范围 | 只做只读投影 + 事件，不改 Objective 执行模型 | A5 按“投影版”实施，不做独占 Agent |
+| Q3 别名策略 | 接受旧名永久隐藏别名 | 生效，S-B0 已按此实施 |
+| Q4 起步阶段 | 先做 S-B0 | 已实施，见第九节 |
+
+**修订后的阶段**：S-B0（已完成）→ S-A（A1 由所有者执行；A2/A3/A4/A5 由我实施，重点是“理顺逻辑”而非改名）→ B3（Objective 改称，仅在 A5 之后）→ S-C（10-2/10-3）。
+
+**需如实说明的一点**：S-B0 的原始动机之一是给 `/workflow → /capability` 腾名字；Q1 取消该改名后，这个冲突不再存在。
+S-B0 仍按所有者指示完成，且它独立、可回退、旧名保留，所以没有回滚；它现在的价值只是消除
+“人设学习”与架构 Capability 这个领域词在用户可见面的歧义。若所有者认为价值不足，回退只需把
+`capability_routes.py`/`persona_candidate_routes.py` 的前缀和 `repl.py`/`parser.py` 的主名改回即可（别名机制可保留）。
+
+## 九、S-B0 执行记录（2026-09-28）
+
+**改动（用户可见名 `capability` → `persona-learning` / `persona_learning`）**
+
+| 面 | 新名（主） | 旧名 |
+|---|---|---|
+| CLI | `/persona-learning`（另接受 `/persona_learning`） | `/capability`，隐藏别名，使用时打印一行迁移提示；`--help` 只列新名 |
+| HTTP（`capability_routes.py`、`persona_candidate_routes.py`） | `/v1/persona_learning/*`、`/v1/persona_learning/persona_candidates/*` | `/v1/capability/*`，隐藏别名（`include_in_schema=False`，由 `make_legacy_alias_router` 为每条路由生成） |
+| HTTP（`routes.py` 的 adopt_goal） | `/v1/persona_learning/tracks/{id}/topics/{id}/adopt_goal` | 旧路径叠加第二个装饰器，`include_in_schema=False` |
+| 挂载 | `api/server.py` 改为调用 `mount_persona_learning_routers(app)` 一处完成新路径 + 旧别名 | — |
+| 调用方 | Streamlit 看板 `client.py` 28 处 API 路径、`app.py` 提示语；React 看板 `endpoints.ts`（API 前缀）与导航文案“人设学习” | — |
+| 定时任务提示词 | `cron_agent_bridge.py` 改为让 agent 执行 `/persona-learning cycle` | 用户已保存的旧任务提示词里的 `/capability cycle` 仍可用 |
+| 文档 | `docs/persona-guide.md`、`docs/kanban-dashboard-guide.md`；`next_doc/persona_capability_learning_design.md` 加命名更新状态头（正文保持历史原貌）；`phase10-entrypoint-inventory.md` 附录重新生成 | — |
+
+**刻意不改**：`CapabilityTrack*` 类名、`capability_router` 变量名、`evolution/capability_learning.py`、磁盘上的 track 文件格式、
+cron 任务 id `sys:capability_learning_cycle`/`sys:capability_question_sweep`（改这些需要数据迁移，且无用户可见收益）。
+React 看板的前端路由路径 `/capability` 与文件名 `useCapability.ts`/`CapabilityLearning` 也未改（内部导航，非 API）。
+Streamlit 看板 `app.py` 里除提示语外的界面文案（如“能力学习”标签）未改，避免机械改名。
+
+**验证（均已实际运行）**
+
+- 新增 `tests/test_phase10_sb0_persona_learning_rename.py` 8 用例：新旧路径行为一致且共享同一份数据；OpenAPI 只暴露新路径；
+  别名覆盖主路由的每一条（方法 + 路径）；CLI 新/旧名都能分发且只有旧名出现提示；cron 提示词与 `--help` 用新名。
+- 既有测试 `test_capability_routes_mount.py`、`test_capability_persona_wiki_scopes_binding.py` 改为通过 `mount_persona_learning_routers` 挂载，
+  其中大量用例仍访问旧路径 `/v1/capability/*`——它们通过即证明旧路径别名可用。
+- 定向回归（`test_core_*`/`test_phase*`/`test_capability*`/`test_persona*`/`test_goal_mode`/`test_cron*`/`test_slash*`/`test_api*`）
+  831 用例，825 通过；6 个失败均为既有：5 个 `test_build_from_history_*`（Sprint 0 已记录）+
+  `test_capability_routes_mount.py::TestPersonaDraftRoutes::test_draft_show_publish_full_flow`（缺 `app.state.async_jobs`，
+  已在**未修改的原始压缩包**上复现，与本次无关）。
+- `pyflakes` 无告警；`entrypoint_inventory` 的 13 个测试通过（路由计数与独立正则一致）。
+
+**未验证 / 局限**
+
+- `tests/test_kanban_*` 需要 `streamlit`，本环境未安装，未运行；React 看板（`mini_agent_kanban_x`）未构建，只做了字符串级修改。
+  建议你在本机跑一次看板相关测试与前端构建。
+- 未拉起完整 `HttpServer` 做端到端冒烟；挂载逻辑通过 `mount_persona_learning_routers`（`server.py` 实际调用的同一函数）在测试里覆盖。
+- 全量测试未跑（历次均为定向回归）。

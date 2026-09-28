@@ -576,9 +576,12 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         # cli/commands/growth_cmd.py 顶部子命令说明。
         handle_growth_cmd(parts[1:], agent)
 
-    elif name == "capability":
-        # [next_doc/persona_capability_learning_design.md] 人设能力自主
-        # 学习：见 cli/commands/capability_cmd.py 顶部子命令说明。
+    elif name in ("persona-learning", "persona_learning", "capability"):
+        # [next_doc/persona_capability_learning_design.md] 人设学习（原名
+        # /capability，S-B0 起用户可见名为 /persona-learning，旧名为隐藏别名）：
+        # 见 cli/commands/capability_cmd.py 顶部子命令说明。
+        if name == "capability":
+            R.print_info("提示：/capability 已更名为 /persona-learning（旧名仍可用）。")
         handle_capability_cmd(parts[1:], agent)
 
     elif name == "debug":

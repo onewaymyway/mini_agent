@@ -318,8 +318,8 @@ export const generateGrowthMaterial = (candidateId: string) =>
 export const getGrowthMaterialBody = (materialId: string) =>
   apiGet<Record<string, unknown> & { body: string }>(`/growth/materials/${encodeURIComponent(materialId)}`);
 
-// ── 能力学习 / 人设养成（Tab9） ───────────────────────────────────
-const CAP = "/capability";
+// ── 人设学习 / 人设养成（Tab9，原“能力学习”） ───────────────────────────────────
+const CAP = "/persona_learning"; // S-B0：原 /capability，后端旧路径仍保留为隐藏别名
 export const listCapabilityTracks = (status?: string) =>
   apiGet<{ tracks: CapabilityTrack[] }>(`${CAP}/tracks`, { status });
 export const createCapabilityTrack = (body: {

@@ -978,16 +978,15 @@ def create_app(
     # §7.1）。独立 router，见 api/capability_routes.py 顶部注释——本次接线只挂载
     # 数据 CRUD/问答端点，不影响任何默认自动运行行为（cron 任务表本身仍未新增
     # sys:capability_learning_cycle 条目，见该设计文档「实施状态」表格）。
-    from mini_agent.api.capability_routes import capability_router
-    app.include_router(capability_router)
+    from mini_agent.api.capability_routes import mount_persona_learning_routers
+    mount_persona_learning_routers(app)  # 新路径 /v1/persona_learning/* + 隐藏旧别名 /v1/capability/*
 
     # 候选人设/能力自动检测（persona_candidates，见
     # next_doc/persona_candidate_autoscan_plan.md）。独立 router，见
     # api/persona_candidate_routes.py 顶部注释。默认 `PersonaCandidateConfig.
     # enabled=False`（opt-in），挂载本身不影响任何默认自动运行行为——
     # 端点存在但 /scan 在配置关闭时直接返回空结果，不发起 LLM 调用。
-    from mini_agent.api.persona_candidate_routes import persona_candidate_router
-    app.include_router(persona_candidate_router)
+    # （已由上面的 mount_persona_learning_routers 一并挂载，此处不重复。）
 
     @app.get("/")
     async def root():

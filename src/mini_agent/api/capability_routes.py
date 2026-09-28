@@ -6,8 +6,9 @@
 超大文件），原因见该文件规模——直接在里面插入几百行新代码风险高、review
 成本大，独立文件挂载是更安全的接线方式。
 
-已挂载到 api/server.py（`app.include_router(capability_router)`，紧跟在
-主 router 挂载之后），`/v1/capability/*` 端点对外可用。
+已挂载到 api/server.py（经 `mount_persona_learning_routers(app)`，紧跟在主 router
+挂载之后），`/v1/persona_learning/*` 端点对外可用；旧路径 `/v1/capability/*`
+作为隐藏别名保留（不出现在 OpenAPI 文档）。
 
 本文件里的 `_get_paths(request)` 复用了 routes.py 里同样的取 AgentPaths
 方式（`http_server.bridge.agent.cfg.project_root`），Track 数据是
@@ -38,7 +39,14 @@ from mini_agent.orchestrator.persona_profiles import (
 )
 from mini_agent.storage.paths import AgentPaths
 
-capability_router = APIRouter(prefix="/v1/capability")
+# S-B0（见 next_doc/refactor_plan/13-phase10-post-decision-execution-plan.md）：
+# 用户可见名由 `/v1/capability/*` 改为 `/v1/persona_learning/*`，避免与架构里的
+# Capability 领域概念重名。旧路径保留为隐藏别名（见文件末 `mount_persona_learning_routers`），
+# 内部标识（`capability_router`/`CapabilityTrack*`/磁盘格式/cron 任务 id）不改。
+PERSONA_LEARNING_PREFIX = "/v1/persona_learning"
+LEGACY_CAPABILITY_PREFIX = "/v1/capability"
+
+capability_router = APIRouter(prefix=PERSONA_LEARNING_PREFIX)
 
 
 def _get_paths(request: Request) -> AgentPaths:
@@ -508,3 +516,48 @@ def get_capability_wiki_page(request: Request, page_id: str):
         raise HTTPException(status_code=404, detail="wiki page not found")
     body = md_path.read_text(encoding="utf-8")
     return {"page_id": page_id, "body": body}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 旧路径别名（S-B0）
+# ─────────────────────────────────────────────────────────────────────
+
+def make_legacy_alias_router(primary: APIRouter, new_prefix: str, old_prefix: str) -> APIRouter:
+    """为 `primary` 里的每条路由生成一条旧前缀的隐藏别名（`include_in_schema=False`）。
+
+    复用同一个 endpoint 函数，行为与新路径完全一致；不出现在 OpenAPI 里，因此
+    `/docs` 只暴露新名。旧路径长期保留（Q3 决定：永久隐藏别名），因为看板/用户
+    已保存的 cron 任务提示词等调用方可能仍在使用旧名。
+    """
+    alias = APIRouter()
+    for route in primary.routes:
+        path = getattr(route, "path", None)
+        if path is None or not path.startswith(new_prefix):
+            continue
+        alias.add_api_route(
+            old_prefix + path[len(new_prefix):],
+            route.endpoint,
+            methods=sorted(route.methods or []),
+            response_model=getattr(route, "response_model", None),
+            status_code=getattr(route, "status_code", None),
+            include_in_schema=False,
+        )
+    return alias
+
+
+def mount_persona_learning_routers(app) -> None:
+    """把人设学习相关的全部路由（含候选人设）挂到 `app`：新路径 + 隐藏的旧路径别名。"""
+    from mini_agent.api.persona_candidate_routes import persona_candidate_router
+
+    app.include_router(capability_router)
+    app.include_router(persona_candidate_router)
+    app.include_router(
+        make_legacy_alias_router(capability_router, PERSONA_LEARNING_PREFIX, LEGACY_CAPABILITY_PREFIX)
+    )
+    app.include_router(
+        make_legacy_alias_router(
+            persona_candidate_router,
+            PERSONA_LEARNING_PREFIX + "/persona_candidates",
+            LEGACY_CAPABILITY_PREFIX + "/persona_candidates",
+        )
+    )

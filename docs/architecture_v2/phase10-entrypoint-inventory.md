@@ -147,18 +147,18 @@ ObjectiveExecutor/CronScheduler/...` 等旧类名给最终用户*。可度量的
 
 | 入口类别 | 总数 | runtime | mixed | legacy | none |
 |---|---|---|---|---|---|
-| CLI 斜杠命令 | 59 | 0 | 1 | 7 | 51 |
-| HTTP 路由 | 308 | 0 | 0 | 86 | 222 |
+| CLI 斜杠命令 | 61 | 0 | 1 | 9 | 51 |
+| HTTP 路由 | 309 | 0 | 0 | 87 | 222 |
 
 ### §43 六条映射：入口直接触达旧类的情况
 
 | 映射 | 触达的 CLI 命令数 | 触达的 HTTP 路由数 |
 |---|---|---|
-| 旧 Goal → Adapter | 6 | 66 |
+| 旧 Goal → Adapter | 8 | 67 |
 | 旧 Memory → Adapter | 1 | 2 |
 | 旧 Workflow → Capability | 1 | 0 |
 | 旧 Scheduler → Runtime adapter | 1 | 6 |
-| 旧 Advisor → Decision policy | 5 | 35 |
+| 旧 Advisor → Decision policy | 7 | 35 |
 | 旧 Objective → Goal internal step | 0 | 0 |
 
 ### 其它对外入口
@@ -214,14 +214,14 @@ ObjectiveExecutor/CronScheduler/...` 等旧类名给最终用户*。可度量的
 | http_docs | `src/mini_agent/api/routes.py:11156` | `GoalBacklog` | POST /v1/growth/pursuits/{goal_id}/view_material — [growth_advisor_ideal_advisor_gap_and_roadmap_pla |
 | http_docs | `src/mini_agent/api/routes.py:11224` | `growth_advisor` | POST /v1/growth/align/adopt_all — [growth_advisor_autonomy_ deepening_plan.md 方向 A3] 批量落地对齐分析里"有兴趣但没 |
 | http_docs | `src/mini_agent/api/routes.py:11454` | `GoalBacklog` | POST /v1/growth/candidates/{id}/adopt_goal — 把一个候选"落地"成 GoalBacklog 里的一个 Goal 节点，交给 Goal/Cron 体系持续推进 |
-| http_docs | `src/mini_agent/api/routes.py:11495` | `GoalBacklog` | POST /v1/capability/tracks/{track_id}/topics/{topic_id}/adopt_goal —— [next_doc/initiative_systems_u |
+| http_docs | `src/mini_agent/api/routes.py:11496` | `GoalBacklog` | POST /v1/persona_learning/tracks/{track_id}/topics/{topic_id}/adopt_goal —— [next_doc/initiative_sys |
 | http_docs | `src/mini_agent/api/persona_candidate_routes.py:146` | `growth_advisor` | 忽略一条候选，`reason` 复用 growth_advisor 的 DISMISS_REASON_* 常量语义（不强制传值，默认记为 unspecified）。 |
 
 ### 附录 A：CLI 斜杠命令逐条
 
 | 入口 | 分类 | 触达的旧类 | 触达 core/actions | 位置 |
 |---|---|---|---|---|
-| `/agent` | legacy | GoalBacklog, GoalTreeDecomposer, next_action_advisor | - | `src/mini_agent/cli/repl.py:590` |
+| `/agent` | legacy | GoalBacklog, GoalTreeDecomposer, next_action_advisor | - | `src/mini_agent/cli/repl.py:593` |
 | `/agent_value_profile` | none | - | - | `src/mini_agent/cli/repl.py:557` |
 | `/agents` | none | - | - | `src/mini_agent/cli/repl.py:505` |
 | `/behavior` | none | - | - | `src/mini_agent/cli/repl.py:317` |
@@ -232,15 +232,15 @@ ObjectiveExecutor/CronScheduler/...` 等旧类名给最终用户*。可度量的
 | `/compact` | none | - | - | `src/mini_agent/cli/repl.py:367` |
 | `/compact_continue` | none | - | - | `src/mini_agent/cli/repl.py:370` |
 | `/concurrency` | none | - | - | `src/mini_agent/cli/repl.py:495` |
-| `/cron` | legacy | GoalBacklog | - | `src/mini_agent/cli/repl.py:603` |
-| `/debug` | none | - | - | `src/mini_agent/cli/repl.py:584` |
+| `/cron` | legacy | GoalBacklog | - | `src/mini_agent/cli/repl.py:606` |
+| `/debug` | none | - | - | `src/mini_agent/cli/repl.py:587` |
 | `/decision_profile` | none | - | - | `src/mini_agent/cli/repl.py:548` |
 | `/digest` | none | - | - | `src/mini_agent/cli/repl.py:536` |
 | `/ensemble` | none | - | - | `src/mini_agent/cli/repl.py:498` |
 | `/evolution` | none | - | - | `src/mini_agent/cli/repl.py:527` |
 | `/evolve` | none | - | - | `src/mini_agent/cli/repl.py:530` |
 | `/goal` | mixed | GoalRunner, GoalStateStore | - | `src/mini_agent/cli/repl.py:373` |
-| `/goals` | legacy | CronScheduler, GoalBacklog, GoalTreeDecomposer, next_action_advisor | - | `src/mini_agent/cli/repl.py:594` |
+| `/goals` | legacy | CronScheduler, GoalBacklog, GoalTreeDecomposer, next_action_advisor | - | `src/mini_agent/cli/repl.py:597` |
 | `/growth` | legacy | GoalBacklog, MemoryStore, growth_advisor | - | `src/mini_agent/cli/repl.py:574` |
 | `/help` | none | - | - | `src/mini_agent/cli/repl.py:298` |
 | `/hooks` | none | - | - | `src/mini_agent/cli/repl.py:515` |
@@ -248,6 +248,8 @@ ObjectiveExecutor/CronScheduler/...` 等旧类名给最终用户*。可度量的
 | `/model` | none | - | - | `src/mini_agent/cli/repl.py:361` |
 | `/next` | legacy | growth_advisor, next_action_advisor | - | `src/mini_agent/cli/repl.py:544` |
 | `/notepad` | none | - | - | `src/mini_agent/cli/repl.py:489` |
+| `/persona-learning` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/cli/repl.py:579` |
+| `/persona_learning` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/cli/repl.py:579` |
 | `/plan` | none | - | - | `src/mini_agent/cli/repl.py:486` |
 | `/platform` | none | - | - | `src/mini_agent/cli/repl.py:518` |
 | `/profile` | none | - | - | `src/mini_agent/cli/repl.py:383` |
@@ -285,7 +287,30 @@ ObjectiveExecutor/CronScheduler/...` 等旧类名给最终用户*。可度量的
 
 | 入口 | 分类 | 触达的旧类 | 触达 core/actions | 位置 |
 |---|---|---|---|---|
-| `GET /` | none | - | - | `src/mini_agent/api/server.py:993` |
+| `GET /` | none | - | - | `src/mini_agent/api/server.py:992` |
+| `GET /personas` | none | - | - | `src/mini_agent/api/capability_routes.py:330` |
+| `POST /personas/{persona_name}/wiki_scopes` | none | - | - | `src/mini_agent/api/capability_routes.py:348` |
+| `GET /questions` | none | - | - | `src/mini_agent/api/capability_routes.py:259` |
+| `POST /questions/{question_id}/answer` | none | - | - | `src/mini_agent/api/capability_routes.py:265` |
+| `POST /questions/{question_id}/dismiss` | none | - | - | `src/mini_agent/api/capability_routes.py:276` |
+| `GET /suggestions` | none | - | - | `src/mini_agent/api/capability_routes.py:293` |
+| `POST /suggestions/{suggestion_id}/accept` | none | - | - | `src/mini_agent/api/capability_routes.py:299` |
+| `POST /suggestions/{suggestion_id}/dismiss` | none | - | - | `src/mini_agent/api/capability_routes.py:311` |
+| `GET /tracks` | none | - | - | `src/mini_agent/api/capability_routes.py:126` |
+| `POST /tracks` | none | - | - | `src/mini_agent/api/capability_routes.py:132` |
+| `POST /tracks/refresh_all` | none | - | - | `src/mini_agent/api/capability_routes.py:176` |
+| `DELETE /tracks/{track_id}` | none | - | - | `src/mini_agent/api/capability_routes.py:166` |
+| `GET /tracks/{track_id}` | none | - | - | `src/mini_agent/api/capability_routes.py:147` |
+| `PATCH /tracks/{track_id}` | none | - | - | `src/mini_agent/api/capability_routes.py:156` |
+| `GET /tracks/{track_id}/ledger` | none | - | - | `src/mini_agent/api/capability_routes.py:186` |
+| `POST /tracks/{track_id}/outline/apply_revision` | none | - | - | `src/mini_agent/api/capability_routes.py:212` |
+| `POST /tracks/{track_id}/outline/revise` | none | - | - | `src/mini_agent/api/capability_routes.py:198` |
+| `POST /tracks/{track_id}/outline/topics` | none | - | - | `src/mini_agent/api/capability_routes.py:222` |
+| `DELETE /tracks/{track_id}/outline/topics/{topic_id}` | none | - | - | `src/mini_agent/api/capability_routes.py:247` |
+| `PATCH /tracks/{track_id}/outline/topics/{topic_id}` | none | - | - | `src/mini_agent/api/capability_routes.py:234` |
+| `GET /tracks/{track_id}/persona/draft` | none | - | - | `src/mini_agent/api/capability_routes.py:447` |
+| `POST /tracks/{track_id}/persona/draft` | none | - | - | `src/mini_agent/api/capability_routes.py:394` |
+| `POST /tracks/{track_id}/persona/publish` | none | - | - | `src/mini_agent/api/capability_routes.py:476` |
 | `GET /v1/archive/query` | none | - | - | `src/mini_agent/api/routes.py:8676` |
 | `GET /v1/artifacts` | none | - | - | `src/mini_agent/api/routes.py:5196` |
 | `GET /v1/artifacts/{manifest_id}` | none | - | - | `src/mini_agent/api/routes.py:5212` |
@@ -296,35 +321,7 @@ ObjectiveExecutor/CronScheduler/...` 等旧类名给最终用户*。可度量的
 | `POST /v1/autonomous/scheduling/pause` | none | - | - | `src/mini_agent/api/routes.py:5439` |
 | `POST /v1/autonomous/scheduling/resume` | none | - | - | `src/mini_agent/api/routes.py:5484` |
 | `GET /v1/autonomous/status` | none | - | - | `src/mini_agent/api/routes.py:5271` |
-| `GET /v1/capability/persona_candidates` | none | - | - | `src/mini_agent/api/persona_candidate_routes.py:92` |
-| `POST /v1/capability/persona_candidates/scan` | legacy | growth_advisor | - | `src/mini_agent/api/persona_candidate_routes.py:101` |
-| `POST /v1/capability/persona_candidates/{candidate_id}/accept` | none | - | - | `src/mini_agent/api/persona_candidate_routes.py:135` |
-| `POST /v1/capability/persona_candidates/{candidate_id}/dismiss` | none | - | - | `src/mini_agent/api/persona_candidate_routes.py:146` |
-| `GET /v1/capability/personas` | none | - | - | `src/mini_agent/api/capability_routes.py:322` |
-| `POST /v1/capability/personas/{persona_name}/wiki_scopes` | none | - | - | `src/mini_agent/api/capability_routes.py:340` |
-| `GET /v1/capability/questions` | none | - | - | `src/mini_agent/api/capability_routes.py:251` |
-| `POST /v1/capability/questions/{question_id}/answer` | none | - | - | `src/mini_agent/api/capability_routes.py:257` |
-| `POST /v1/capability/questions/{question_id}/dismiss` | none | - | - | `src/mini_agent/api/capability_routes.py:268` |
-| `GET /v1/capability/suggestions` | none | - | - | `src/mini_agent/api/capability_routes.py:285` |
-| `POST /v1/capability/suggestions/{suggestion_id}/accept` | none | - | - | `src/mini_agent/api/capability_routes.py:291` |
-| `POST /v1/capability/suggestions/{suggestion_id}/dismiss` | none | - | - | `src/mini_agent/api/capability_routes.py:303` |
-| `GET /v1/capability/tracks` | none | - | - | `src/mini_agent/api/capability_routes.py:118` |
-| `POST /v1/capability/tracks` | none | - | - | `src/mini_agent/api/capability_routes.py:124` |
-| `POST /v1/capability/tracks/refresh_all` | none | - | - | `src/mini_agent/api/capability_routes.py:168` |
-| `DELETE /v1/capability/tracks/{track_id}` | none | - | - | `src/mini_agent/api/capability_routes.py:158` |
-| `GET /v1/capability/tracks/{track_id}` | none | - | - | `src/mini_agent/api/capability_routes.py:139` |
-| `PATCH /v1/capability/tracks/{track_id}` | none | - | - | `src/mini_agent/api/capability_routes.py:148` |
-| `GET /v1/capability/tracks/{track_id}/ledger` | none | - | - | `src/mini_agent/api/capability_routes.py:178` |
-| `POST /v1/capability/tracks/{track_id}/outline/apply_revision` | none | - | - | `src/mini_agent/api/capability_routes.py:204` |
-| `POST /v1/capability/tracks/{track_id}/outline/revise` | none | - | - | `src/mini_agent/api/capability_routes.py:190` |
-| `POST /v1/capability/tracks/{track_id}/outline/topics` | none | - | - | `src/mini_agent/api/capability_routes.py:214` |
-| `DELETE /v1/capability/tracks/{track_id}/outline/topics/{topic_id}` | none | - | - | `src/mini_agent/api/capability_routes.py:239` |
-| `PATCH /v1/capability/tracks/{track_id}/outline/topics/{topic_id}` | none | - | - | `src/mini_agent/api/capability_routes.py:226` |
-| `GET /v1/capability/tracks/{track_id}/persona/draft` | none | - | - | `src/mini_agent/api/capability_routes.py:439` |
-| `POST /v1/capability/tracks/{track_id}/persona/draft` | none | - | - | `src/mini_agent/api/capability_routes.py:386` |
-| `POST /v1/capability/tracks/{track_id}/persona/publish` | none | - | - | `src/mini_agent/api/capability_routes.py:468` |
-| `POST /v1/capability/tracks/{track_id}/topics/{topic_id}/adopt_goal` | legacy | GoalBacklog | - | `src/mini_agent/api/routes.py:11495` |
-| `GET /v1/capability/wiki_pages/{page_id}` | none | - | - | `src/mini_agent/api/capability_routes.py:490` |
+| `POST /v1/capability/tracks/{track_id}/topics/{topic_id}/adopt_goal` | legacy | GoalBacklog | - | `src/mini_agent/api/routes.py:11496` |
 | `POST /v1/chat` | none | - | - | `src/mini_agent/api/routes.py:2187` |
 | `GET /v1/cron/jobs` | none | - | - | `src/mini_agent/api/routes.py:8935` |
 | `POST /v1/cron/jobs` | none | - | - | `src/mini_agent/api/routes.py:8972` |
@@ -440,7 +437,7 @@ ObjectiveExecutor/CronScheduler/...` 等旧类名给最终用户*。可度量的
 | `POST /v1/growth/align/adopt_all` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/api/routes.py:11224` |
 | `POST /v1/growth/align/confirm_match` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/api/routes.py:11271` |
 | `POST /v1/growth/candidates/{candidate_id}/adopt_goal` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/api/routes.py:11454` |
-| `POST /v1/growth/candidates/{candidate_id}/material/generate` | legacy | growth_advisor | - | `src/mini_agent/api/routes.py:11559` |
+| `POST /v1/growth/candidates/{candidate_id}/material/generate` | legacy | growth_advisor | - | `src/mini_agent/api/routes.py:11560` |
 | `POST /v1/growth/candidates/{candidate_id}/report/refresh` | legacy | growth_advisor | - | `src/mini_agent/api/routes.py:11408` |
 | `GET /v1/growth/candidates/{candidate_id}/timeline` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/api/routes.py:11351` |
 | `POST /v1/growth/candidates/{candidate_id}/{action}` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/api/routes.py:10685` |
@@ -455,14 +452,14 @@ ObjectiveExecutor/CronScheduler/...` 等旧类名给最终用户*。可度量的
 | `POST /v1/growth/keywords/{topic}/confirm` | legacy | growth_advisor | - | `src/mini_agent/api/routes.py:10957` |
 | `POST /v1/growth/keywords/{topic}/remove` | legacy | growth_advisor | - | `src/mini_agent/api/routes.py:10964` |
 | `POST /v1/growth/keywords/{topic}/restore` | legacy | growth_advisor | - | `src/mini_agent/api/routes.py:10971` |
-| `GET /v1/growth/materials/{material_id}` | legacy | growth_advisor | - | `src/mini_agent/api/routes.py:11601` |
+| `GET /v1/growth/materials/{material_id}` | legacy | growth_advisor | - | `src/mini_agent/api/routes.py:11602` |
 | `GET /v1/growth/pursuits` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/api/routes.py:11025` |
 | `GET /v1/growth/pursuits/portfolio_summary` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/api/routes.py:11097` |
 | `GET /v1/growth/pursuits/related_directions` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/api/routes.py:11130` |
 | `GET /v1/growth/pursuits/{goal_id}/saturation_trend` | legacy | growth_advisor | - | `src/mini_agent/api/routes.py:11324` |
 | `POST /v1/growth/pursuits/{goal_id}/view_material` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/api/routes.py:11156` |
 | `GET /v1/growth/reports/refresh_candidates` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/api/routes.py:10978` |
-| `GET /v1/growth/reports/{report_id}` | legacy | growth_advisor | - | `src/mini_agent/api/routes.py:11536` |
+| `GET /v1/growth/reports/{report_id}` | legacy | growth_advisor | - | `src/mini_agent/api/routes.py:11537` |
 | `POST /v1/growth/scan` | legacy | MemoryStore, growth_advisor | - | `src/mini_agent/api/routes.py:10593` |
 | `GET /v1/growth/summary` | legacy | GoalBacklog, MemoryStore, growth_advisor | - | `src/mini_agent/api/routes.py:10446` |
 | `GET /v1/health` | none | - | - | `src/mini_agent/api/routes.py:567` |
@@ -505,6 +502,11 @@ ObjectiveExecutor/CronScheduler/...` 等旧类名给最终用户*。可度量的
 | `POST /v1/perception/toggle` | none | - | - | `src/mini_agent/api/routes.py:9959` |
 | `GET /v1/permissions/pending` | none | - | - | `src/mini_agent/api/routes.py:3203` |
 | `POST /v1/permissions/{req_id}` | none | - | - | `src/mini_agent/api/routes.py:3215` |
+| `GET /v1/persona_learning/persona_candidates` | none | - | - | `src/mini_agent/api/persona_candidate_routes.py:92` |
+| `POST /v1/persona_learning/persona_candidates/scan` | legacy | growth_advisor | - | `src/mini_agent/api/persona_candidate_routes.py:101` |
+| `POST /v1/persona_learning/persona_candidates/{candidate_id}/accept` | none | - | - | `src/mini_agent/api/persona_candidate_routes.py:135` |
+| `POST /v1/persona_learning/persona_candidates/{candidate_id}/dismiss` | none | - | - | `src/mini_agent/api/persona_candidate_routes.py:146` |
+| `POST /v1/persona_learning/tracks/{track_id}/topics/{topic_id}/adopt_goal` | legacy | GoalBacklog | - | `src/mini_agent/api/routes.py:11496` |
 | `POST /v1/protected-files/backup` | none | - | - | `src/mini_agent/api/routes.py:3107` |
 | `DELETE /v1/protected-files/entries` | none | - | - | `src/mini_agent/api/routes.py:3082` |
 | `POST /v1/protected-files/entries` | none | - | - | `src/mini_agent/api/routes.py:3061` |
@@ -593,4 +595,5 @@ ObjectiveExecutor/CronScheduler/...` 等旧类名给最终用户*。可度量的
 | `GET /v1/workflows/{name}/stats` | none | - | - | `src/mini_agent/api/routes.py:9690` |
 | `POST /v1/workflows/{name}/steps/{step_id}/patch` | none | - | - | `src/mini_agent/api/routes.py:9452` |
 | `POST /v1/workflows/{name}/steps/{step_id}/test` | none | - | - | `src/mini_agent/api/routes.py:9598` |
+| `GET /wiki_pages/{page_id}` | none | - | - | `src/mini_agent/api/capability_routes.py:498` |
 

@@ -1,25 +1,25 @@
 """
-cli/commands/capability_cmd.py — /capability 命令处理（人设能力自主学习，见
+cli/commands/capability_cmd.py — /persona-learning 命令处理（人设能力自主学习，见
 next_doc/persona_capability_learning_design.md）。
 
 补齐设计文档 §4 里发现的那一层缺失：`cron_scheduler.py` 的 `sys:` 内置任务
 是"生成一段 task_template 文本交给 Agent 带着工具执行"的模式（参照
 `sys:growth_advisor_daily` 引用 `/growth scan`），不是直接调用 Python 函数。
-本模块提供的 `/capability cycle` 就是 `sys:capability_learning_cycle`
+本模块提供的 `/persona-learning cycle` 就是 `sys:capability_learning_cycle`
 引用的中间层命令（该 cron job 已注册，默认 enabled=True，见
 cron_scheduler.py SYSTEM_JOBS 里对应条目的说明）。
 
 子命令：
-  /capability                    — 展示所有 Track 概况（标题/状态/覆盖率）
-  /capability list                — 同上（显式别名，风格对齐 /growth list）
-  /capability create <title> | <persona_desc> [--llm-draft]
+  /persona-learning                    — 展示所有 Track 概况（标题/状态/覆盖率）
+  /persona-learning list                — 同上（显式别名，风格对齐 /growth list）
+  /persona-learning create <title> | <persona_desc> [--llm-draft]
                                    — 创建一个 knowledge 型 Track。默认空
                                      大纲，之后可在看板手动补充子主题；
                                      加 --llm-draft 时用 agent 的
                                      llm_helper 起草一份初始大纲（§14 P2，
                                      拿不到 LLM 或起草失败时静默退回
                                      空大纲，不报错）
-  /capability cycle                — 手动触发一轮学习循环（等价于
+  /persona-learning cycle                — 手动触发一轮学习循环（等价于
                                      sys:capability_learning_cycle 的内容，
                                      不依赖那条 cron job 是否已注册/enabled）。
                                      是否使用真实检索由
@@ -36,12 +36,12 @@ cron_scheduler.py SYSTEM_JOBS 里对应条目的说明）。
                                      写入前仍会经过 §13.3-g 合规过滤
                                      （make_wiki_writer 里已经接好，不受这个
                                      开关影响）
-  /capability questions [track_id] — 列出 pending 状态的待回答问题
-  /capability questions --sweep-expired
+  /persona-learning questions [track_id] — 列出 pending 状态的待回答问题
+  /persona-learning questions --sweep-expired
                                    — 清理超过 TTL 未回答的问题，标记为
                                      expired（§3.3），供
                                      sys:capability_question_sweep 引用
-  /capability questions --dismiss-all-pending [track_id] [--all-types]
+  /persona-learning questions --dismiss-all-pending [track_id] [--all-types]
                                    — [next_doc/persona_research_first_and_
                                      role_fit_improvement_plan.md §3.5]
                                      批量忽略 pending 问题（标记为
@@ -49,31 +49,31 @@ cron_scheduler.py SYSTEM_JOBS 里对应条目的说明）。
                                      persona 型 Track 的问题；加
                                      --all-types 连 knowledge 型一起清；
                                      可传 track_id 精确到单个 Track
-  /capability answer <question_id> <answer text>
+  /persona-learning answer <question_id> <answer text>
                                    — 提交一条问题的回答（下一轮 cycle 会消费）
-  /capability suggestions [track_id]
+  /persona-learning suggestions [track_id]
                                    — 列出 pending 状态的大纲动态生长建议
                                      （v0.21 §13.2-f，消费已回答问题时由
                                      llm_helper 提炼产生，见
                                      generate_outline_suggestion_from_answer）
-  /capability suggestions accept <suggestion_id>
+  /persona-learning suggestions accept <suggestion_id>
                                    — 采纳一条建议，追加为大纲新子主题
-  /capability suggestions dismiss <suggestion_id>
+  /persona-learning suggestions dismiss <suggestion_id>
                                    — 忽略一条建议
-  /capability migrate-volatility  — [next_doc/capability_wiki_freshness_
+  /persona-learning migrate-volatility  — [next_doc/capability_wiki_freshness_
                                      improvement_plan.md 阶段 2] 一次性把
                                      存量子主题里 volatility=="stable"（永
                                      不过期）的批量改成 "periodic"（30 天
                                      刷新周期）。幂等，可重复执行；不影响
                                      新建子主题（默认值已改为 periodic）。
-  /capability refresh-all [track_id]
+  /persona-learning refresh-all [track_id]
                                    — 把已判定 covered 的子主题批量重置为
                                      partial，立刻重新进入下一轮检索候选池
                                      （不用等 volatility 的周期性刷新窗口）。
                                      不传 track_id 时对所有 Track 生效；
                                      不清空已有 wiki 页面，重新检索到新内容
                                      前旧内容仍可读。幂等，可重复执行。
-  /capability adopt-goal <track_id> <topic_id>
+  /persona-learning adopt-goal <track_id> <topic_id>
                                    — [next_doc/initiative_systems_
                                      unification_plan.md §4.2 阶段二] 把
                                      指定 Track 下的一个子主题落地成
@@ -129,7 +129,7 @@ def _get_llm_helper(agent):
 
 def _print_tracks(tracks) -> None:
     if not tracks:
-        R.print_info("暂无 CapabilityTrack，使用 /capability create <title> | <persona_desc> 创建一个。")
+        R.print_info("暂无 CapabilityTrack，使用 /persona-learning create <title> | <persona_desc> 创建一个。")
         return
     for t in tracks:
         R.print_info(
@@ -163,7 +163,7 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         use_llm_draft = "--llm-draft" in args
         target_type = "persona" if "--persona" in args else "knowledge"
         if not rest:
-            R.print_error("用法：/capability create <title> | <persona_desc> [--llm-draft] [--persona]")
+            R.print_error("用法：/persona-learning create <title> | <persona_desc> [--llm-draft] [--persona]")
             return
         if "|" in rest:
             title, _, persona_desc = rest.partition("|")
@@ -172,7 +172,7 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         title = title.strip()
         persona_desc = persona_desc.strip() or title
         if not title:
-            R.print_error("用法：/capability create <title> | <persona_desc> [--llm-draft] [--persona]")
+            R.print_error("用法：/persona-learning create <title> | <persona_desc> [--llm-draft] [--persona]")
             return
         store = CapabilityTrackStore(paths)
         # --llm-draft：用 draft_outline_with_llm() 起草初始大纲（§14 P2，
@@ -221,7 +221,7 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
             R.print_success(
                 f"已把 {scope_note} 里 {result['topics_reset']} 个已覆盖子主题重置为 "
                 f"partial（涉及 {result['tracks_affected']} 个 Track），"
-                f"下一轮 /capability cycle 或 sys:capability_learning_cycle 会重新检索。"
+                f"下一轮 /persona-learning cycle 或 sys:capability_learning_cycle 会重新检索。"
             )
         return
 
@@ -373,7 +373,7 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
 
     if sub == "answer":
         if len(args) < 3:
-            R.print_error("用法：/capability answer <question_id> <answer text>")
+            R.print_error("用法：/persona-learning answer <question_id> <answer text>")
             return
         question_id = args[1]
         answer_text = " ".join(args[2:])
@@ -382,14 +382,14 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         if q is None:
             R.print_error(f"未找到待回答问题：{question_id}（可能已回答/已过期/id 有误）")
             return
-        R.print_success(f"已记录回答，下一轮 /capability cycle 会消费这条问题。")
+        R.print_success(f"已记录回答，下一轮 /persona-learning cycle 会消费这条问题。")
         return
 
     if sub == "persona":
         # persona 型 Track 专属子命令组（§10.3）：draft 生成/刷新草稿预览，
         # show 展示上一次落盘的草稿，publish 显式发布到正式 personas 目录。
         # 三个动作互相独立、都要求用户显式触发，任何一步都不会被
-        # /capability cycle 自动带出（见设计文档 §10.3 第 4 点）。
+        # /persona-learning cycle 自动带出（见设计文档 §10.3 第 4 点）。
         from mini_agent.evolution.capability_learning import (
             CapabilityTrackStore as _TrackStore,
             draft_persona_markdown,
@@ -403,9 +403,9 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         track_id = args[2] if len(args) > 2 else ""
         if persona_sub not in ("draft", "show", "publish") or not track_id:
             R.print_error(
-                "用法：/capability persona draft <track_id> | "
-                "/capability persona show <track_id> | "
-                "/capability persona publish <track_id>"
+                "用法：/persona-learning persona draft <track_id> | "
+                "/persona-learning persona show <track_id> | "
+                "/persona-learning persona publish <track_id>"
             )
             return
 
@@ -434,8 +434,8 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
             R.print_success(
                 f"已生成/刷新 Track [{track_id}] 的人设草稿"
                 f"（{completeness['answered']}/{completeness['total']} 个维度已有信息{missing_note}）。"
-                f"用 /capability persona show {track_id} 预览，确认无误后用 "
-                f"/capability persona publish {track_id} 发布。"
+                f"用 /persona-learning persona show {track_id} 预览，确认无误后用 "
+                f"/persona-learning persona publish {track_id} 发布。"
             )
             return
 
@@ -444,7 +444,7 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
             if text is None:
                 R.print_error(
                     f"Track [{track_id}] 还没有草稿，请先执行 "
-                    f"/capability persona draft {track_id}。"
+                    f"/persona-learning persona draft {track_id}。"
                 )
                 return
             R.print_info(text)
@@ -471,7 +471,7 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         action = args[1] if len(args) > 1 else ""
         if action in ("accept", "dismiss"):
             if len(args) < 3:
-                R.print_error(f"用法：/capability suggestions {action} <suggestion_id>")
+                R.print_error(f"用法：/persona-learning suggestions {action} <suggestion_id>")
                 return
             suggestion_id = args[2]
             if action == "accept":
@@ -537,7 +537,7 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
 
         if action in ("accept", "dismiss"):
             if len(args) < 3:
-                R.print_error(f"用法：/capability persona_candidates {action} <candidate_id>")
+                R.print_error(f"用法：/persona-learning persona_candidates {action} <candidate_id>")
                 return
             candidate_id = args[2]
             if action == "accept":
@@ -562,7 +562,7 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
         store = PersonaCandidateStore(paths)
         pending = store.list_candidates(status="pending")
         if not pending:
-            R.print_info("暂无待处理的候选人设，可用 /capability persona_candidates scan 触发一次扫描。")
+            R.print_info("暂无待处理的候选人设，可用 /persona-learning persona_candidates scan 触发一次扫描。")
             return
         for c in pending:
             R.print_info(f"[{c.candidate_id}] {c.title}\n  {c.rationale}")
@@ -570,7 +570,7 @@ def handle_capability_cmd(args: list[str], agent=None) -> None:
 
     if sub == "adopt-goal":
         if len(args) < 3:
-            R.print_error("用法：/capability adopt-goal <track_id> <topic_id>")
+            R.print_error("用法：/persona-learning adopt-goal <track_id> <topic_id>")
             return
         track_id, topic_id = args[1], args[2]
         store = CapabilityTrackStore(paths)

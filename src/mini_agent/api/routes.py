@@ -11491,14 +11491,15 @@ async def post_growth_candidate_adopt_goal(request: Request, candidate_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/capability/tracks/{track_id}/topics/{topic_id}/adopt_goal")
+@router.post("/persona_learning/tracks/{track_id}/topics/{topic_id}/adopt_goal")
+@router.post("/capability/tracks/{track_id}/topics/{topic_id}/adopt_goal", include_in_schema=False)  # 旧名隐藏别名（S-B0）
 async def post_capability_topic_adopt_goal(request: Request, track_id: str, topic_id: str):
-    """POST /v1/capability/tracks/{track_id}/topics/{topic_id}/adopt_goal
+    """POST /v1/persona_learning/tracks/{track_id}/topics/{topic_id}/adopt_goal
     —— [next_doc/initiative_systems_unification_plan.md §4.2 阶段二] 把
     CapabilityTrack 下的一个子主题落地成 GoalBacklog 里的 Goal，交给目标树
     执行引擎 + ResourceArbiter 推进——与 `/growth/candidates/{id}/adopt_goal`
     对称，是"候选采纳 → 统一接入目标树执行"在能力学习这一侧此前缺失的
-    对接点（CLI `/capability adopt-goal <track_id> <topic_id>` 是另一个
+    对接点（CLI `/persona-learning adopt-goal <track_id> <topic_id>` 是另一个
     入口，行为完全复用同一个 `adopt_topic_as_goal()`）。
 
     幂等：子主题已经落地过（`linked_goal_id` 非空且对应 Goal 仍存在）时

@@ -1,5 +1,11 @@
 # 人设能力自主学习系统设计方案（Persona Capability Learning）
 
+> **命名更新（2026-09-28，Phase 10 S-B0）**：本文中的用户可见名 `/capability …`（CLI）与 `/v1/capability/*`（HTTP）
+> 已改为 `/persona-learning …` 与 `/v1/persona_learning/*`；旧名保留为隐藏别名，仍可使用。内部标识
+> （`CapabilityTrack*`、`evolution/capability_learning.py`、磁盘格式、`sys:capability_learning_cycle`）未改。
+> 下文正文保持历史原貌，不逐处改写。详见 `next_doc/refactor_plan/13-phase10-post-decision-execution-plan.md`。
+
+
 - **版本**：v0.27（用户反馈 persona 型 Track 的"待回答问题"里出现大量
   本可以靠调研/行业惯例回答、不该问用户的问题，且生成的人设草稿读起来
   不像正常的功能性 agent 人设。**根因**：① `needs_user_context()` 是

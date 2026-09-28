@@ -767,7 +767,7 @@ Tab 最末是**🪞 自我画像 / 能力地图**区块（`GET /v1/self/portrait
 ### 🎓 能力学习 Tab
 
 对应 `next_doc/persona_capability_learning_design.md` §7 三个区域，数据来自
-`/v1/capability/*`：
+`/v1/persona_learning/*`（旧路径 `/v1/capability/*` 为隐藏别名）：
 
 - **人设管理区**：顶部"➕ 新建能力 / 人设方向"表单（标题 + 方向描述 +
   类型 knowledge/persona + 可选 wiki 命名空间 + 可选"用 LLM 起草初始
@@ -800,7 +800,7 @@ Tab 最末是**🪞 自我画像 / 能力地图**区块（`GET /v1/self/portrait
 - **待回答问题区**：所有 `status=pending` 的异步问题，逐条展示问题文本+
   提示+所属 Track，配文本框"提交"/"忽略"按钮；提交后立即返回、不等待
   也不触发学习循环（异步语义，见设计文档 §3.3/§9 第 6 条）——下一轮
-  `/capability cycle` 才会去消费已回答的问题。已回答/已忽略/
+  `/persona-learning cycle` 才会去消费已回答的问题。已回答/已忽略/
   已过期的问题收进一个折叠的"历史问答"区。
 
 `sys:capability_learning_cycle`/`sys:capability_question_sweep` 两个
@@ -808,7 +808,7 @@ cron job 已注册但默认 `enabled=False`（opt-in，见设计文档「实施
 状态」），因此这个 Tab 目前没有"距离下次学习还有多久"之类的倒计时
 展示，也没有"立即学习"按钮——避免在用户显式打开 cron 之前，让 UI
 暗示这是个已经在自动运行的功能。当前唯一能推进学习循环的方式是 CLI
-的 `/capability cycle` 命令，或在 ⏰ Cron 任务 Tab 里手动打开对应
+的 `/persona-learning cycle` 命令，或在 ⏰ Cron 任务 Tab 里手动打开对应
 cron job 后等待其按 cadence 自动触发。
 
 ### 🗂️ 外部项目 Tab

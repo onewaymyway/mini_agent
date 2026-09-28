@@ -1911,7 +1911,7 @@ class AgentClient:
     # ── 能力学习 / 人设养成（persona_capability_learning_design.md §7.1）───
     def capability_tracks(self, status: str = None):
         params = {"status": status} if status else None
-        return self._get("/capability/tracks", params=params)
+        return self._get("/persona_learning/tracks", params=params)
 
     def create_capability_track(self, title: str, persona_desc: str,
                                  outline_names: list = None, target_type: str = "knowledge",
@@ -1923,42 +1923,42 @@ class AgentClient:
         }
         if outline_names:
             body["outline_names"] = outline_names
-        return self._post("/capability/tracks", body)
+        return self._post("/persona_learning/tracks", body)
 
     def get_capability_track(self, track_id: str):
-        return self._get(f"/capability/tracks/{track_id}")
+        return self._get(f"/persona_learning/tracks/{track_id}")
 
     def update_capability_track(self, track_id: str, **fields):
-        return self._patch(f"/capability/tracks/{track_id}", fields)
+        return self._patch(f"/persona_learning/tracks/{track_id}", fields)
 
     def delete_capability_track(self, track_id: str):
-        return self._delete(f"/capability/tracks/{track_id}")
+        return self._delete(f"/persona_learning/tracks/{track_id}")
 
     def refresh_all_capability_topics(self, track_id: str = None):
         params = {"track_id": track_id} if track_id else None
-        return self._post("/capability/tracks/refresh_all", json_body={}, params=params)
+        return self._post("/persona_learning/tracks/refresh_all", json_body={}, params=params)
 
     def capability_track_ledger(self, track_id: str, limit: int = 50):
-        return self._get(f"/capability/tracks/{track_id}/ledger", params={"limit": limit})
+        return self._get(f"/persona_learning/tracks/{track_id}/ledger", params={"limit": limit})
 
     # ── [next_doc/outline_revision_and_suggestion_improvement_plan.md §一]
     # 大纲修订（LLM diff 预览 + 应用）与手动增/改名/删。
     def revise_capability_outline(self, track_id: str):
         """用 LLM 生成大纲修订建议（不落盘），返回 `{"ops": [...]}`。"""
-        return self._post(f"/capability/tracks/{track_id}/outline/revise")
+        return self._post(f"/persona_learning/tracks/{track_id}/outline/revise")
 
     def apply_capability_outline_revision(self, track_id: str, ops: list):
         """把用户勾选保留的 ops 应用到大纲上并落盘。"""
-        return self._post(f"/capability/tracks/{track_id}/outline/apply_revision", {"ops": ops})
+        return self._post(f"/persona_learning/tracks/{track_id}/outline/apply_revision", {"ops": ops})
 
     def add_capability_outline_topic(self, track_id: str, name: str):
-        return self._post(f"/capability/tracks/{track_id}/outline/topics", {"name": name})
+        return self._post(f"/persona_learning/tracks/{track_id}/outline/topics", {"name": name})
 
     def rename_capability_outline_topic(self, track_id: str, topic_id: str, name: str):
-        return self._patch(f"/capability/tracks/{track_id}/outline/topics/{topic_id}", {"name": name})
+        return self._patch(f"/persona_learning/tracks/{track_id}/outline/topics/{topic_id}", {"name": name})
 
     def remove_capability_outline_topic(self, track_id: str, topic_id: str):
-        return self._delete(f"/capability/tracks/{track_id}/outline/topics/{topic_id}")
+        return self._delete(f"/persona_learning/tracks/{track_id}/outline/topics/{topic_id}")
 
     def capability_questions(self, status: str = None, track_id: str = None):
         params = {}
@@ -1966,13 +1966,13 @@ class AgentClient:
             params["status"] = status
         if track_id:
             params["track_id"] = track_id
-        return self._get("/capability/questions", params=params or None)
+        return self._get("/persona_learning/questions", params=params or None)
 
     def answer_capability_question(self, question_id: str, answer: str):
-        return self._post(f"/capability/questions/{question_id}/answer", {"answer": answer})
+        return self._post(f"/persona_learning/questions/{question_id}/answer", {"answer": answer})
 
     def dismiss_capability_question(self, question_id: str):
-        return self._post(f"/capability/questions/{question_id}/dismiss")
+        return self._post(f"/persona_learning/questions/{question_id}/dismiss")
 
     # ── v0.21 §13.2-f 大纲动态生长建议 ──────────────────────────────────
     def capability_outline_suggestions(self, status: str = None, track_id: str = None):
@@ -1981,26 +1981,26 @@ class AgentClient:
             params["status"] = status
         if track_id:
             params["track_id"] = track_id
-        return self._get("/capability/suggestions", params=params or None)
+        return self._get("/persona_learning/suggestions", params=params or None)
 
     def accept_capability_outline_suggestion(self, suggestion_id: str):
-        return self._post(f"/capability/suggestions/{suggestion_id}/accept")
+        return self._post(f"/persona_learning/suggestions/{suggestion_id}/accept")
 
     def dismiss_capability_outline_suggestion(self, suggestion_id: str):
-        return self._post(f"/capability/suggestions/{suggestion_id}/dismiss")
+        return self._post(f"/persona_learning/suggestions/{suggestion_id}/dismiss")
 
     def capability_wiki_page(self, page_id: str):
         """能力大纲覆盖状态区块"查看 wiki 页面"用：返回该页面的 Markdown
         正文（`{"page_id": ..., "body": ...}`），页面不存在时后端返回
         404，调用方按现有 `_get` 的异常处理方式兜底展示。"""
-        return self._get(f"/capability/wiki_pages/{page_id}")
+        return self._get(f"/persona_learning/wiki_pages/{page_id}")
 
     # ── §11.4 知识范围绑定 ────────────────────────────────────────────
     def list_capability_personas(self):
-        return self._get("/capability/personas")
+        return self._get("/persona_learning/personas")
 
     def set_persona_wiki_scopes(self, persona_name: str, wiki_scopes: list):
-        return self._post(f"/capability/personas/{persona_name}/wiki_scopes",
+        return self._post(f"/persona_learning/personas/{persona_name}/wiki_scopes",
                            {"wiki_scopes": wiki_scopes})
 
     # ── §10.3 persona 型 Track：人设草稿生成/预览/发布 ──────────────────
@@ -2009,32 +2009,32 @@ class AgentClient:
         （涉及 LLM 调用，改走 async_jobs 机制，见 capability_routes.py
         对应端点文档字符串）。调用方应配合 async_job_ui.py 的
         `start_async_job()`/`run_async_job()` 轮询，不要当同步接口用。"""
-        return self._post(f"/capability/tracks/{track_id}/persona/draft")
+        return self._post(f"/persona_learning/tracks/{track_id}/persona/draft")
 
     def get_capability_persona_draft(self, track_id: str):
         """读取上一次落盘的草稿，尚未生成过时后端返回 404
         （_get 统一转成 {"_error": ...}，调用方按 _error 判空）。"""
-        return self._get(f"/capability/tracks/{track_id}/persona/draft")
+        return self._get(f"/persona_learning/tracks/{track_id}/persona/draft")
 
     def publish_capability_persona(self, track_id: str):
         """把已落盘的草稿显式发布到 `.agent/personas/`。"""
-        return self._post(f"/capability/tracks/{track_id}/persona/publish")
+        return self._post(f"/persona_learning/tracks/{track_id}/persona/publish")
 
     # ── next_doc/persona_candidate_autoscan_plan.md 候选人设/能力自动检测 ──
 
     def persona_candidates(self, status: str = None):
         params = {"status": status} if status else None
-        return self._get("/capability/persona_candidates", params=params)
+        return self._get("/persona_learning/persona_candidates", params=params)
 
     def persona_candidate_scan(self):
         # 服务端立即返回 `{"job_id", "key": "persona_candidate_scan"}`，
         # 提交本身很快，真正的 LLM 调用等待交给 async_job_ui.run_async_job()
         # 轮询（同 growth_scan()）。
-        return self._post("/capability/persona_candidates/scan")
+        return self._post("/persona_learning/persona_candidates/scan")
 
     def persona_candidate_accept(self, candidate_id: str):
-        return self._post(f"/capability/persona_candidates/{candidate_id}/accept")
+        return self._post(f"/persona_learning/persona_candidates/{candidate_id}/accept")
 
     def persona_candidate_dismiss(self, candidate_id: str, *, reason: str | None = None):
         body = {"reason": reason} if reason else {}
-        return self._post(f"/capability/persona_candidates/{candidate_id}/dismiss", body)
+        return self._post(f"/persona_learning/persona_candidates/{candidate_id}/dismiss", body)

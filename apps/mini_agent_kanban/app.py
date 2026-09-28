@@ -10592,7 +10592,7 @@ def _render_growth_kanban_dragdrop(client: "AgentClient", candidates: list[dict]
 # （`CapabilityLearningConfig.retriever_enabled`）与 cron 定时自动推进
 # （`sys:capability_learning_cycle` / `sys:capability_question_sweep`）
 # 现已默认开启——Track 一旦创建为 active 状态，就会按各自 cadence 自动
-# 检索沉淀，不再需要用户手动敲 `/capability cycle`。仍可以在看板「⏰ Cron
+# 检索沉淀，不再需要用户手动敲 `/persona-learning cycle`。仍可以在看板「⏰ Cron
 # 任务」Tab 里单独 disable 这两个 job，或去配置里关掉 retriever_enabled
 # 只保留手动触发。
 # ── [next_doc/persona_candidate_autoscan_plan.md] 🎭 候选人设子区域 ─────
@@ -10710,7 +10710,7 @@ def render_capability_tab(client: "AgentClient"):
         "给 Agent 一个能力方向或人设描述，它会持续、克制地检索沉淀成 wiki 知识；"
         "遇到只有你知道的信息会异步向你提问，不会打断你当前的事。"
         "🟢 真实检索与 cron 定时自动推进默认已开启（每 6 小时一轮），"
-        "也可以随时用 `/capability cycle` 手动触发一轮；"
+        "也可以随时用 `/persona-learning cycle` 手动触发一轮；"
         "如果想暂停自动运行，去「⏰ Cron 任务」Tab 关闭 "
         "`sys:capability_learning_cycle` 即可，不影响手动触发。"
     )
@@ -10991,7 +10991,7 @@ def render_capability_tab(client: "AgentClient"):
             else:
                 st.caption(
                     "还没有学习台账记录——cron 会按 6 小时一轮自动推进，"
-                    "也可以用 `/capability cycle` 立即手动跑一轮看效果。"
+                    "也可以用 `/persona-learning cycle` 立即手动跑一轮看效果。"
                 )
 
             # ── §10.3 人设草稿区（仅 persona 型 Track）──────────────────

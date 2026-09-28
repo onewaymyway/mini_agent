@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from mini_agent.api.capability_routes import capability_router
+from mini_agent.api.capability_routes import mount_persona_learning_routers
 from mini_agent.orchestrator.persona_profiles import (
     list_personas_for_paths,
     set_persona_wiki_scopes,
@@ -54,7 +54,7 @@ wiki_scopes: capability:old_tag
 
 def _make_client(project_root: Path) -> TestClient:
     app = FastAPI()
-    app.include_router(capability_router)
+    mount_persona_learning_routers(app)  # 新路径 + 隐藏旧别名（S-B0）
     cfg = SimpleNamespace(project_root=str(project_root))
     bridge = SimpleNamespace(agent=SimpleNamespace(cfg=cfg))
     app.state.bridge = bridge
