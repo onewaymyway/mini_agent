@@ -613,3 +613,26 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       本次盘点未修改任何生产代码，无需跑回归测试。可进入
       **Sprint 9-1（Pattern 检测接入 Experience Analyzer）**（下一次
       对话的任务）。
+- [x] Sprint 9-1（Pattern 检测接入 Experience Analyzer）已完成：
+      `core/experience_patterns.py`（Phase 3 已有的 `summarize_failures()`
+      所在文件）新增 `Problem` 数据结构 + `detect_problems_from_
+      experience()`（按归一化 `goal_text` 类别聚合 Experience 失败记录，
+      达到 `min_occurrence` 才算一个 Problem）+ `problem_from_failure_
+      pattern()`/`detect_problems_from_failure_pattern_store()`（Adapter
+      对接既有 `evolution/failure_pattern_store.py::load_failure_
+      patterns()`，复用其扫描 `objective_executions.json`/`goal_state.
+      json` dead_ends/TurnJudge stuck 事件的既有聚合逻辑，**不重写、不
+      修改该文件一行**）+ `detect_problems()`（合并两路来源，`paths=
+      None` 时优雅降级为只用 Experience 路径，两路命中不合并计数以保留
+      "双重证据"信号）。验收标准（"Analyzer 能从真实 Experience 数据中
+      识别出至少一种重复出现的问题模式，并生成结构化的 `Problem` 记录"）
+      已用新增测试 `tests/test_phase9_sprint9_1_problem_detection.py`
+      （6 用例）验证，全部通过；回归测试（Phase 3 Experience 相关 4 个
+      测试文件 + `test_failure_pattern_interception.py`/`test_failure_
+      pattern_store.py` 共 40 用例全部通过，`failure_pattern_store.py`
+      未被修改一行）；`pyflakes` 无告警；依赖图核对
+      （`core.experience_patterns` inbound=1/outbound=0，未触发止损
+      阈值）。详见 `10-phase9-self-evolution-sprint-plan.md` 末尾
+      "Sprint 9-1 执行记录"与 `MIGRATION_STATUS.md`。可进入
+      **Sprint 9-2（Hypothesis → Experiment → Evaluation）**（下一次
+      对话的任务）。
