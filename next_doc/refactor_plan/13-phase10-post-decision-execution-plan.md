@@ -163,3 +163,6 @@ Streamlit 看板 `app.py` 里除提示语外的界面文案（如“能力学习
   建议你在本机跑一次看板相关测试与前端构建。
 - 未拉起完整 `HttpServer` 做端到端冒烟；挂载逻辑通过 `mount_persona_learning_routers`（`server.py` 实际调用的同一函数）在测试里覆盖。
 - 全量测试未跑（历次均为定向回归）。
+
+
+> **进展更新（2026-09-28）**：A5 已按“拉取式投影”完成，详见 `14-phase10-sa-item-plan.md` 第九节；B3 现在可用 `project_objective_executions()` 作为数据来源。

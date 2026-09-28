@@ -78,6 +78,11 @@ from .history import HistorySnapshot
 from .history_adapter import HistoryAdapter
 from .lesson_adapter import LessonAdapter
 from .lesson_import import LessonImportResult, import_lessons
+from .objective_adapter import (
+    ObjectiveAdapter,
+    project_objective_executions,
+    reset_objective_projection_cache,
+)
 from .runtime import RuntimeState
 from .self import SelfState
 from .self_adapter import SelfAdapter
@@ -119,6 +124,9 @@ __all__ = [
     "HistorySnapshot",
     "HistoryAdapter",
     "LessonAdapter",
+    "ObjectiveAdapter",
+    "project_objective_executions",
+    "reset_objective_projection_cache",
     "LessonImportResult",
     "import_lessons",
     "SelfState",

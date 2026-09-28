@@ -743,3 +743,4 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       （ToolRegistry/SkillLoader/WorkflowStore 名字快照，`core/capability_projector.py`）已填真实字段；`WorldState` 无真实来源，保持空占位
       （Q-A2 未答复，按推荐 (a)）。`runtime.py` 有两处小改动（订阅时序 + opt-in 快照刷新，`goal_mode.runtime_capability_snapshot_enabled` 默认 False），
       默认行为不变。新增 15 用例；有意修改了 Phase 4 的占位断言；定向回归无新增失败。详见 `14-…` 第八节。下一步 A5。
+- [x] Phase 10 S-A A5 完成（2026-09-28）：新增 `core/objective_adapter.py`——`ObjectiveAdapter`（`ObjectiveExecution → GoalState` 单向，`to_old` 显式未实现）与拉取式 `project_objective_executions()`，读取时仅在状态变化时发布新增的 `ObjectiveProjected` 事件（已加入 `EVENT_KINDS`，会被 `EventLogStore` 落盘）。**`objective_executor.py`/`goal_backlog.py` 未改动一行**，只调用其只读公开方法；不写 `StateManager` 的 `goal`。**目前没有生产调用方**，行为零变化，第一个真实消费者是下一步 B3 的 `/v1/goals/{id}/steps`。有意与方案的偏差：`node` 为可选参数、事件做了去重（防看板轮询刷屏）。新增 25 用例，定向回归 871 用例 866 通过，5 个失败均为既有 `test_build_from_history_*`，未跑全量。详见 `14-…` 第九节。下一步：B3 → A3 → A4。

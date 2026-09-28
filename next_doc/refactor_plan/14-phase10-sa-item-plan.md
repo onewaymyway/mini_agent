@@ -1,6 +1,6 @@
 # Phase 10 S-A 分项方案（补齐前置条件）——待所有者确认后实施
 
-> 状态：**方案已获所有者确认（Q-A5/Q-A3/Q-A4/顺序 均“接受”，Q-A2 按推荐 (a)）；A2 已完成（第八节）；其余未实施。**
+> 状态：**方案已获所有者确认（Q-A5/Q-A3/Q-A4/顺序 均“接受”，Q-A2 按推荐 (a)）；A2 已完成（第八节）、A5 已完成（第九节）；其余未实施。**
 > 原状态：方案，未实施，未改任何代码。 承接 `13-phase10-post-decision-execution-plan.md` 第八节：
 > 所有者已确认“不机械改名、重点理顺逻辑”“A5 只做只读投影 + 事件、不改 Objective 执行模型”。
 > 本文把 S-A 的 A2–A5 逐项落到**真实代码现状**上（2026-09-28 静态核实），给出推荐做法与需你决定的问题。
@@ -140,4 +140,50 @@ opt-in 的快照刷新（②）。①无开关但幂等、纯内存、只读（`
 
 ### 下一步
 
-按确认的顺序：**A5（拉取式投影，不改 `objective_executor.py`）→ B3 → A3（默认关闭 advisory）→ A4（评估后保留，仅文档）**。
+按确认的顺序：**B3 → A3（默认关闭 advisory）→ A4（评估后保留，仅文档）**（A5 已完成，见第九节）。
+
+## 九、执行记录（续）
+
+### A5（2026-09-28）：Objective → GoalState 拉取式投影——已完成
+
+按 Q-A5 的“接受”，采用**拉取式**，`evolution/objective_executor.py` 与 `perception/goal_backlog.py` **未改动一行**。
+
+| 文件 | 内容 |
+|---|---|
+| `core/objective_adapter.py`（新增） | `ObjectiveAdapter.to_new(execution, node=None)`（单向；`to_old` 显式 `NotImplementedError`）+ `project_objective_executions(executor, backlog=None, publish_events=True)` |
+| `core/events.py` | `EVENT_KINDS` 追加 `ObjectiveProjected`（因此会被 `EventLogStore` 落盘，可用 `events trace <execution_id>` 查看） |
+| `core/__init__.py` | 导出 `ObjectiveAdapter`/`project_objective_executions`/`reset_objective_projection_cache` |
+
+**只使用旧模块已有的只读公开方法**：`ObjectiveExecutor.get_status_summary()`、`get_execution()`、`GoalBacklog.get()`。
+
+字段映射（每个字段都有真实来源，没有来源的不填）：
+
+| GoalState 字段 | 来源 |
+|---|---|
+| `goal_text` / `round` | `objective_title` / `current_step_idx` |
+| `status` | `pending/running/paused*` → `running`，`completed` → `done`，`failed`/`cancelled` 同名；**原始状态保留在 `evidence["objective_status"]`**（`GoalStatus` 没有 paused/pending，不丢信息） |
+| `current_state` | 当前步骤的 `description`（截断 200 字） |
+| `ideal_state` / `priority` / `evidence["parent_goal_id"]` | 仅在传入 `GoalNode` 时，取其 `description`/`priority`/`parent_id` |
+| `problems` | 仅取 `failed`/`blocked` 步骤中非空的 `error_msg`（最多 5 条） |
+| `evidence` | `execution_id`/`objective_id`/`level="objective"`/`steps_total`/`steps_done`/`current_step_idx`/`source` |
+| `acceptance_criteria`、`gap`、`constraints`、`resources`、`deadline` | **不填**（Objective 没有对应概念） |
+
+**与方案的偏差（如实记录）**
+1. 方案写 `ObjectiveAdapter.to_new(ObjectiveExecution, GoalNode)`；实际 `node` 为**可选**第二参数，这样仍满足 `Adapter.to_new(old)` 协议签名。
+2. 方案写 `current_step()`/`progress_ratio()` 是方法；核实代码后它们是 **property**，按 property 使用。
+3. **事件做了去重**：方案只写“读取时发布”，但看板会轮询，每次读取都发会刷满 `events.jsonl`。实现为：仅当 `(objective_status, round, steps_done)` 相对上次发布发生变化时才发布（进程内缓存，重启后第一次读取会重发一次）。
+4. **不写入 `StateManager` 的 `"goal"` kind**（那是 `GoalRunner` 当前 Goal 的托管位，写入会互相覆盖），有测试守住。
+
+**默认行为变化**：无。全仓目前没有任何生产代码调用 `project_objective_executions()`——这是有意的：第一个真实消费者是 B3 的 `/v1/goals/{id}/steps`，届时再接。**在 B3 之前，这一步只是“能力就位”，不代表 HTTP/CLI 用户可见的行为有任何变化。**
+
+**局限**
+- `get_status_summary()` 会跳过“已终止且超过 1 小时”的记录，所以批量投影只覆盖活跃 + 最近 1 小时终止的；更早的记录需调用方自己 `get_execution(id)` 后传给 `to_new()`。
+- 去重缓存仅在进程内，不跨进程/重启。
+- 未实现推送式事件（方案已选拉取式）；`ObjectiveProjected` 不会在没人读取时产生。
+
+**测试**
+- 新增 `tests/test_phase10_sa_a5_objective_adapter.py` 25 用例：状态映射全取值 + 未知状态兜底、problems 只来自失败/阻塞步骤、空步骤不崩溃、`node` 补充与类型异常忽略、`to_old` 显式未实现、**真实 `ObjectiveExecutor`+`GoalBacklog` 投影**、完成一步后投影随之变化、**投影只读**（`objective_executions.json` 哈希不变、执行记录不变、`StateManager` 无 `goal`）、事件只发一次/变化后再发/关闭时不发、`EventLogStore` 真实落盘、执行器/单条记录/backlog 查询失败均不抛异常。
+- 修改既有测试：`tests/test_core_events.py` 的 `EVENT_KINDS` 集合断言追加 `ObjectiveProjected`（有意的取值集合变化）。
+- 定向回归（`test_core_*`/`test_phase*`/`test_objective*`/`test_goal_mode*`/`test_state*`/`test_cron*`/`test_autonomous*`）871 用例，866 通过；5 个失败均为既有的 `test_build_from_history_*`，无新增。**未跑全量测试**（其余需 streamlit/cdp_client 等本环境没有的依赖，另有 3 个测试文件因此无法收集，已排除）。
+- `pyflakes` 无告警；`lint_no_new_toplevel_concepts` 通过；`dep_graph.py --module core.objective_adapter`：outbound=0，深度 inbound=1（仅 `core/__init__.py`），未触发止损；`check_frozen_evolution_modules.py --check-manifest` 6 个文件均未变。
+

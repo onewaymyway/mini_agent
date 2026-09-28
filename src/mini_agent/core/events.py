@@ -53,6 +53,9 @@ EVENT_KINDS: tuple[str, ...] = (
     # 循环边界埋点，见 `09-phase8-runtime-convergence-sprint-plan.md`。
     "RuntimeCycleStarted",
     "RuntimeCycleCompleted",
+    # [Phase 10 S-A A5] `core/objective_adapter.py::project_objective_executions()`
+    # 读取时发布（仅状态变化时），见 `14-phase10-sa-item-plan.md` 第三节。
+    "ObjectiveProjected",
 )
 
 
