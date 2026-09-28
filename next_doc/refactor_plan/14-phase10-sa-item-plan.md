@@ -1,6 +1,6 @@
 # Phase 10 S-A 分项方案（补齐前置条件）——待所有者确认后实施
 
-> 状态：**方案已获所有者确认（Q-A5/Q-A3/Q-A4/顺序 均“接受”，Q-A2 按推荐 (a)）；A2 已完成（第八节）、A5 已完成（第九节）、A3 已完成（第十节）；A4（仅文档）未实施。**
+> 状态：**方案已获所有者确认（Q-A5/Q-A3/Q-A4/顺序 均“接受”，Q-A2 按推荐 (a)）；A2 已完成（第八节）、A5 已完成（第九节）、A3 已完成（第十节）、A4 已完成（第十一节，仅文档）。S-A 除 A1（需所有者在真实 git 仓库执行）外全部完成。**
 > 原状态：方案，未实施，未改任何代码。 承接 `13-phase10-post-decision-execution-plan.md` 第八节：
 > 所有者已确认“不机械改名、重点理顺逻辑”“A5 只做只读投影 + 事件、不改 Objective 执行模型”。
 > 本文把 S-A 的 A2–A5 逐项落到**真实代码现状**上（2026-09-28 静态核实），给出推荐做法与需你决定的问题。
@@ -233,3 +233,36 @@ opt-in 的快照刷新（②）。①无开关但幂等、纯内存、只读（`
 ### 下一步
 
 **A4**（`goal_mode/executor.py` “评估后保留、不迁移”，**仅文档**：台账改“已评估，不迁移”并写明理由）。之后 S-A 除 A1（需所有者在真实 git 仓库执行）外全部完成，可进入 S-B 其余批次或 S-C 的复核。
+
+## 十一、执行记录（续）
+
+### A4（2026-09-28）：`goal_mode/executor.py`——评估后保留、不迁移（仅文档，未改任何代码）
+
+按 Q-A4 的“接受”执行推荐做法。**本步没有修改任何生产代码或测试**，只做核实与台账更新。
+
+**核实结果（2026-09-28，直接读代码与跑脚本）**
+
+| 项 | 结果 |
+|---|---|
+| 文件规模 | **71 行**（第一节写“约 60 行”，略低估；结论不受影响） |
+| 内容 | `GoalStepResult`（dataclass）、`GoalStepExecutor`（ABC，唯一抽象方法 `execute(agent, prompt)`）、`CoarseStepExecutor`（调用一次 `agent.run_turn(prompt)`，读取 `agent.stats.turns/tool_calls` 前后差值与 `last_turn_hit_max_turns`） |
+| 依赖 | `dep_graph.py --module goal_mode.executor`：outbound=0；深度 inbound=3（`goal_mode/__init__.py` 再导出、`goal_mode/runner.py`、`runtime/runtime.py`），**未触发止损**。其中 `runtime/runtime.py` 只在 `TYPE_CHECKING` 下引用类型、把 `executor` 参数透传给 `GoalRunner`，不是运行期依赖 |
+| 使用方式 | `GoalRunner.__init__` 默认 `executor or CoarseStepExecutor()`；`AgentRuntime.run_once()` 透传；测试里有替换/注入用例（`test_goal_mode.py`、`test_goal_mode_phase2_events.py`、`test_goal_mode_characterization.py`） |
+| 回归（本步开始前的事实核对） | `test_goal_mode_characterization.py` + `test_goal_mode.py`：121 passed / 5 failed，5 个失败即既有的 `test_build_from_history_*`，与此前一致 |
+
+**结论：保留，不迁移。** 理由（逐条对应第五节）：
+1. 它本身就是“可替换的策略接口”——Phase 1 起就为“细粒度版本”预留，已经是新旧架构都能接受的形态，不是需要被 Adapter 收编的旧概念。
+2. `ActionSpec.type` 只有 `tool/workflow/subagent`。“驱动持有会话历史与 stats 的**主 Agent** 跑一轮”与 `type="subagent"`（转发给 `build_minimal_agent()` 新建的**独立**最小 Agent）语义不同，不能等同。
+3. 给 `ActionSpec` 加 `agent_turn` 会改动 Phase 6 核心类型，而收益只是让这一个类改走 `ActionExecutor`；`GoalStepResult → ActionResult` 转换目前没有任何消费者，属推测性设计。均不做。
+4. 重评触发条件（记录在此，避免以后凭印象翻案）：出现**真实消费者**需要用统一 Action 词汇表达“一步 Goal 迭代”，例如把 A3 的 `DecisionMade` 升级为“决策真正驱动执行”并需要执行所选 `ActionSpec` 时。
+
+**与方案的偏差（如实记录）**：方案写“台账改‘已评估，不迁移’”。但 `12-execution-and-doc-sync-norms.md` 第三节规定状态只允许 `未开始/部分迁移/完全迁移/已降级到 legacy` 四种，台账页脚也明确写“判定暂不迁移的模块应把状态维持在‘未开始’并附注原因”。因此台账里状态**仍写“未开始”**，“已评估，决定不迁移”写在同一格括号与“走新链路占比”格里。（台账里已有的 `goal_cycle/AutonomousLoop` 行使用了“已评估，不建议接入”这一自造状态词，是 Sprint 8-5 遗留的不一致，本步**未改动**，仅在此提示。）
+
+**对 Phase 10 前置条件的影响**：`11-phase10-legacy-decommission-plan.md` 前置条件核对里“`goal_mode/executor.py` 未开始”这一项现在有了明确结论（评估后不迁移，不再是“待做”）；但前置条件整体**仍未满足**（A1 待所有者、`objective_executor.py`/`orchestrator/*`/`goal_backlog.py` 未变），D1–D5 仍待所有者决定。已在 `11` 号文档追加带日期的更新说明。
+
+### 下一步
+
+S-A 的 A2–A5 均已完成。剩余需要**所有者**参与的事项：
+- **A1**：在真实 git 仓库运行 `python scripts/check_frozen_evolution_modules.py --base <Phase 9 起点 commit>`，通过后勾选 Phase 9 完成标志第 3、4 条（本环境的压缩包没有 `.git`，无法代劳）。
+- **S-B 其余批次 / S-C**：按 `13-…` 的分批计划，需要所有者确认起步批次后再继续；同时建议先决定 D1–D5 中仍开放的项。
+

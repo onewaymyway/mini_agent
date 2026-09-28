@@ -16,6 +16,8 @@
 > <commit>` 一条命令即可）。`goal_mode/executor.py`/`objective_executor.py`/
 > `orchestrator/*`/`goal_backlog.py` 的状态**未变**，因此前置条件整体**仍未满足**，
 > D1–D5 仍待项目所有者决定。详见 `10-phase9-self-evolution-sprint-plan.md` 文末。
+>
+> **更新（Phase 10 A4，2026-09-28）**：`goal_mode/executor.py` 已评估——它是可替换的策略接口而非待收敛的旧概念，**决定不迁移**（台账状态按规范维持“未开始”并附注原因），不再是前置条件里的“待做”项；前置条件整体仍未满足（A1 待所有者、`objective_executor.py`/`orchestrator/*`/`goal_backlog.py` 未变）。详见 `14-phase10-sa-item-plan.md` 第十一节。
 
 ## 目标与边界
 
