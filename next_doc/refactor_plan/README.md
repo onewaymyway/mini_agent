@@ -550,3 +550,31 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       末尾"Sprint 8-3 执行记录"。可进入 **Sprint 8-4（接入
       `cron_job_runner`：新增 `AgentRuntime.run_once_async()` +
       `cron.runtime_dispatch_enabled` 开关）**（下一次对话的任务）。
+- [x] Phase 8 Sprint 8-4 已完成：`cron_job_runner` 成为第一个成功接入
+      `AgentRuntime` 的旧 Scheduler。新增 `cron.runtime_dispatch_enabled`
+      （默认 `False`，纯新增可选路径，不改动任何既有行为）；开启后
+      `run_mode="message"` cron job 改走 `AgentRuntime.run_once()`
+      （复用既有 `build_cron_agent()`，`GoalSpec` 由
+      `job.task_template` 直接构造，跳过协商阶段）。**已知限制**（如实
+      记录，不隐藏）：这条路径不支持"跨次恢复"（每次触发都是全新一轮
+      `GoalRunner` 执行，不接续 `CronJobExecutor` 的
+      run_id/progress_summary）、不做 stuck detection/单步超时、不接入
+      `CircuitBreakerCore`，因此默认关闭，只适合"独立执行、不需要
+      跨次续接"的 cron job。（实际发现 Sprint 8-3 排期里评估的
+      `run_once_async()` 并非硬需求——`cron_job_runner` 的执行本来就
+      已经在独立线程里，`run_once()` 同步阻塞在该线程内完全不影响
+      daemon 主循环，不需要额外的异步包装，比排期时预估的更简单。）
+      新增测试 `tests/test_phase8_sprint8_4_cron_runtime_dispatch.py`
+      （5 用例）全部通过；回归测试（`test_cron_job_runner.py` 等
+      68 用例 + `test_goal_cron_unified_scheduler_p0_p1_p2.py` +
+      Sprint 8-1/8-2 的一组，共 188 用例，183 通过，5 个既有失败
+      `test_build_from_history_*` 与本次改动无关）；`pyflakes` 对改动
+      文件无新增告警；`scripts/dep_graph.py --module
+      evolution.cron_job_runner` inbound=2，未触发止损阈值。**Phase 8
+      四条完成标志全部达成**，详见
+      `09-phase8-runtime-convergence-sprint-plan.md` 末尾"Sprint 8-4
+      执行记录"与"完成标志核对（更新）"。`goal_cycle`/`AutonomousLoop`
+      两个候选按 Sprint 8-3 排期（Sprint 8-5/8-6）留待后续单独推进，
+      不阻塞 Phase 8 收尾；可进入 **Phase 9（Self Evolution 接入统一
+      Experience）或按排期继续 Sprint 8-5**（下一次对话的任务，两者
+      均可，视优先级而定）。

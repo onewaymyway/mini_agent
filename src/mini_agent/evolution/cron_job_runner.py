@@ -571,8 +571,22 @@ class CronJobRunner:
         CronJobExecutor 执行一轮"任务"，产出 CronJobWorkspace 执行记录。
         从原 `_run_job_thread()` 平移而来，逻辑不变，只是拆成独立方法，
         与新增的 `_run_external_entrypoint_job()` 在 `_run_job_thread()`
-        里对称分派。"""
+        里对称分派。
+
+        [next_doc/refactor_plan/09-phase8-runtime-convergence-sprint-plan.md
+        Sprint 8-4] `cron.runtime_dispatch_enabled=True` 时在函数最开头
+        分流到 `_run_message_job_via_runtime()`（走 `AgentRuntime.
+        run_once()`），复用下面这同一个 try/except（该分支自身的异常
+        同样会被下面的兜底 except 捕获、标记 needs_human_review，不需要
+        重复一份异常处理）。默认 False 时这条分流完全不触发，下面的
+        原有逻辑一字不改。
+        """
         try:
+            cron_cfg = getattr(self._base_cfg, "cron", None)
+            if getattr(cron_cfg, "runtime_dispatch_enabled", False):
+                self._run_message_job_via_runtime(job)
+                return
+
             from mini_agent.evolution.cron_agent_bridge import (
                 build_cron_agent, make_submit_step_fn,
             )
@@ -653,6 +667,101 @@ class CronJobRunner:
                 ws.write_state(state)
             except Exception:
                 pass
+
+    def _run_message_job_via_runtime(self, job: "CronJob") -> None:
+        """[next_doc/refactor_plan/09-phase8-runtime-convergence-sprint-plan.md
+        Sprint 8-4] opt-in 路径（`cron.runtime_dispatch_enabled=True`）：
+        run_mode="message" cron job 改走 Phase 8 收敛出的
+        `AgentRuntime.run_once()`，而不是 `CronJobExecutor.run_job()`。
+
+        Agent 构造复用同一个 `build_cron_agent()`（不重新实现一遍"怎么
+        为 cron job 配一个 Agent"）；`GoalSpec` 直接由
+        `job.task_template` 构造并置 `confirmed=True`（cron job 本身
+        没有"用户协商验收标准"这个概念，跳过 GoalSpecBuilder 协商
+        阶段，语义上等价于"这就是任务，直接执行，不需要再确认一遍"）。
+
+        已知限制（开启前需要清楚）：`AgentRuntime.run_once()` 每次都是
+        一次全新的 `GoalRunner` 执行，不读/写
+        `CronJobWorkspace.render_prompt()` 依赖的 run_id/
+        progress_summary 续接机制——也就是说这条路径下 cron job **不会
+        "接着上次没做完的地方继续"**，每次触发都是从头一轮新的执行。
+        这是当前 `AgentRuntime`（Sprint 8-1/8-2 范围）本身还没有"跨次
+        恢复"能力决定的，不是本次改动引入的新限制，如实记录，不假装
+        没有这个差异。
+        """
+        from mini_agent.evolution.cron_agent_bridge import build_cron_agent
+        from mini_agent.evolution.cron_job_executor import RunOutcome
+        from mini_agent.evolution.cron_job_workspace import (
+            CronJobWorkspace, STATUS_IDLE, STATUS_NEEDS_REVIEW,
+        )
+        from mini_agent.goal_mode.spec import GoalSpec
+        from mini_agent.runtime.runtime import AgentRuntime
+
+        agent = build_cron_agent(self._base_cfg, job)
+        goal_spec = GoalSpec(goal_text=job.task_template, confirmed=True)
+        runtime = AgentRuntime(agent=agent, cfg=self._base_cfg)
+
+        start = time.time()
+        result = None
+        error: Optional[str] = None
+        try:
+            result = runtime.run_once(goal_spec)
+            status = STATUS_IDLE if result.status == "done" else STATUS_NEEDS_REVIEW
+            if result.status != "done":
+                error = f"AgentRuntime.run_once() 状态: {result.status}"
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(
+                exc,
+                where="mini_agent.evolution.cron_job_runner.CronJobRunner._run_message_job_via_runtime.run_once",
+            )
+            status = STATUS_NEEDS_REVIEW
+            error = str(exc)
+        duration = time.time() - start
+
+        # 落地 workspace 状态，供看板/watchdog 观察——字段选取对齐
+        # `CronJobExecutor.run_job()` 收尾时会写的最小子集（status/
+        # last_error/last_run_finished_at），"续接进度"相关字段
+        # （run_id/progress_summary）在本路径下不适用，保持原值不动。
+        ws = CronJobWorkspace(self._paths, job.id)
+        ws.ensure(default_task_template=job.task_template)
+        state = ws.read_state()
+        state.status = status
+        state.last_error = error
+        state.last_run_finished_at = time.time()
+        ws.write_state(state)
+
+        # [P1：cron 消耗统一记账] 与 `_run_message_job()` 同一份记账
+        # 方式，agent 同样是本次 job 独占的一次性实例。
+        try:
+            tokens_used = (
+                getattr(agent.stats, "input_tokens", 0)
+                + getattr(agent.stats, "output_tokens", 0)
+            )
+            if tokens_used > 0:
+                from mini_agent.evolution.resource_arbiter import ResourceArbiter
+                ResourceArbiter(self._paths, self._base_cfg).record_autonomous_token_usage(
+                    tokens_used, usage_type="cron",
+                )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(
+                _mini_agent_exc,
+                where="mini_agent.evolution.cron_job_runner.CronJobRunner._run_message_job_via_runtime.token_accounting",
+            )
+
+        if self._on_finished is not None:
+            try:
+                outcome = RunOutcome(
+                    run_id=f"runtime-{uuid.uuid4().hex[:8]}",
+                    status=status,
+                    steps_executed=getattr(result, "rounds_used", 0) if result is not None else 0,
+                    duration_seconds=duration,
+                )
+                self._on_finished(job.id, outcome)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where="mini_agent.evolution.cron_job_runner.on_finished")
 
 
 __all__ = ["CronJobRunner"]

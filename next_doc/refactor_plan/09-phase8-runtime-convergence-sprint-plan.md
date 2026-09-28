@@ -55,7 +55,9 @@
 
 - [x] 至少一种触发路径（用户主动 Goal）完全走 `AgentRuntime`（Sprint 8-1
       已完成，见下方执行记录）
-- [ ] 至少一种旧 Scheduler 已成功接入 `AgentRuntime`
+- [x] 至少一种旧 Scheduler 已成功接入 `AgentRuntime`（Sprint 8-4
+      已完成：`cron_job_runner` 的 message 任务，见下方"Sprint 8-4
+      执行记录"）
 - [x] 剩余 Scheduler 有明确的评估结论和排期，而不是被忽略（Sprint 8-3
       已完成，见下方"Sprint 8-3 执行记录"）
 - [x] 所有涉及模块的原有测试全部通过（Sprint 8-1 范围内，见下方执行记录；
@@ -299,3 +301,93 @@ Objective 触发路径、`goal_cycle`、`cron_job_runner` 的普通 message
   有评估结论和排期"（第二条）已在本 Sprint 完成；"至少一种旧
   Scheduler 已成功接入"（第一条）按排期表移交 Sprint 8-4（`cron_job_runner`
   + 新增 `AgentRuntime.run_once_async()`）。
+
+## Sprint 8-4 执行记录
+
+按 Sprint 8-3 排期，接入 `cron_job_runner`（三个真实候选中工作量最小、
+风险最低的一个）。
+
+**改动内容：**
+
+- `config/models.py::CronConfig` 新增 `runtime_dispatch_enabled: bool =
+  False`。
+- `evolution/cron_job_runner.py::_run_message_job()` 开头新增一个分流：
+  `runtime_dispatch_enabled=True` 时调用新方法
+  `_run_message_job_via_runtime()` 并直接返回，**共用同一个外层
+  try/except**（该分支自身异常同样被下面既有的兜底 except 捕获并标记
+  `needs_human_review`，没有写第二份异常处理）；默认 `False` 时这段
+  代码原样保留，一字未改。
+- 新增 `_run_message_job_via_runtime(job)`：复用既有的
+  `build_cron_agent()` 构造 Agent（不重新实现"怎么为 cron job 配一个
+  Agent"），用 `job.task_template` 直接构造
+  `GoalSpec(goal_text=..., confirmed=True)`（cron job 没有"用户协商
+  验收标准"这个概念，跳过 GoalSpecBuilder 协商阶段），调用
+  `AgentRuntime.run_once()`；返回 `status=="done"` 时写
+  `CronJobWorkspace` 状态为 `STATUS_IDLE`，否则为
+  `STATUS_NEEDS_REVIEW` 并把状态原因写进 `last_error`；`run_once()`
+  内部抛异常时同样标记 `STATUS_NEEDS_REVIEW`，异常信息记入
+  `last_error`，不让线程崩溃；token 记账复用与旧路径相同的
+  `ResourceArbiter.record_autonomous_token_usage(usage_type="cron")`；
+  `on_finished` 回调收到的 `RunOutcome` 用 `AgentRuntimeResult.
+  rounds_used` 填充 `steps_executed`。
+
+**没有做、且原因需要如实记录的部分（已知限制）：**
+
+- 没有实现"跨次恢复"——`CronJobExecutor.run_job()` 原本支持
+  `CronJobWorkspace.render_prompt()` 读取上次的 `run_id`/
+  `progress_summary`，让一个没跑完的长任务下次触发时接着做；
+  `AgentRuntime.run_once()`（Sprint 8-1/8-2 范围）本身没有这个"跨次
+  恢复"能力，因此走新路径的 cron job 每次触发都是全新的一轮
+  `GoalRunner` 执行，不会接续上次进度。这不是本 Sprint 引入的新限制，
+  是 `AgentRuntime` 当前范围本身决定的，开启 `runtime_dispatch_enabled`
+  前用户需要知道这一点——因此默认值保持 `False`，只有明确需要"每次
+  独立执行、不需要跨次续接"的 cron job 才适合开启（比如一次性检查类
+  任务），需要"长任务续接"的 cron job 不应该开启。
+- 没有做 stuck detection / 单步超时（`CronJobExecutor.run_job()`
+  原有能力）——`GoalRunner` 本身有自己的轮次上限和 `run_goal_judge()`
+  判定收敛的机制，但判定逻辑与 `CronJobExecutor` 的
+  `StuckDetector`/`timeout_seconds` 不是同一套，行为观感会不同（不是
+  "缺失"，是"换了一套不同的收敛判定"，同样需要用户知晓）。
+- 未接入 `CircuitBreakerCore`（`_run_message_job()` 走
+  `CronJobExecutor` 时会传入共享熔断实例）——`GoalRunner` 路径下暂不
+  统计熔断，跨 job 系统性失败告警在这条路径下不会触发。
+
+上述限制均已写入本节，供后续 Sprint（如果决定继续完善这条路径）或
+用户决定是否开启这个开关时参考，不是被忽略的隐藏差异。
+
+**测试与验证：**
+
+- 新增 `tests/test_phase8_sprint8_4_cron_runtime_dispatch.py`（5
+  用例）：flag 关闭时新路径完全不触发／flag 开启 + `run_once()`
+  返回 `done` 时状态与 `on_finished` 回调正确／flag 开启 +
+  非 `done` 状态时标记 `needs_human_review`／flag 开启 +
+  `run_once()` 抛异常时不崩溃且正确标记／token 记账正确调用，全部
+  通过。
+- 回归测试：`test_cron_job_runner.py`（68 用例，含
+  `test_cron_job_runner_resource_arbiter.py`/
+  `test_cron_job_workspace_and_executor.py`）+
+  `test_goal_cron_unified_scheduler_p0_p1_p2.py` +
+  `test_phase8_runtime.py`/`test_phase8_sprint8_2_event_loop.py`/
+  `test_goal_mode.py` 共 188 用例，183 通过，5 个既有失败
+  `test_build_from_history_*` 与本次改动无关（同前几次 Sprint 记录里
+  提到的同一组）。
+- `pyflakes` 对本次改动的三个文件（`cron_job_runner.py`/
+  `config/models.py`/新测试文件）均无新增告警（`models.py` 现有的两条
+  `unused import` 告警是改动前就存在的，与本次改动无关）。
+- `scripts/dep_graph.py --module evolution.cron_job_runner`：inbound=2，
+  未触发止损阈值（改动前后耦合度不变，本次只是在模块内部新增一个
+  opt-in 分支，没有新增/减少任何外部 import 关系）。
+
+## 完成标志核对（更新）
+
+- "至少一种旧 Scheduler 已成功接入 `AgentRuntime`"：**已完成**——
+  `cron_job_runner` 的 `run_mode="message"` 任务在
+  `cron.runtime_dispatch_enabled=True` 时，触发的任务现在走的是
+  `AgentRuntime.run_once()`，原有该 Scheduler 的测试
+  （`test_cron_job_runner.py` 等 68 用例）全部通过。完成标志第一条
+  改为 `[x]`。
+- Phase 8 四条完成标志全部达成（第一条 Sprint 8-1、第二条本 Sprint、
+  第三条 Sprint 8-3、第四条 Sprint 8-1/8-2/8-4 各自范围内验证）——
+  Phase 8 可视为主体完成；`goal_cycle`/`AutonomousLoop` 两个候选按
+  Sprint 8-3 排期（Sprint 8-5/8-6）留待后续单独推进，不阻塞 Phase 8
+  收尾。

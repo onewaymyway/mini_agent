@@ -1980,6 +1980,17 @@ class CronConfig:
     # 关闭状态下完全不影响现有行为。
     reserved_min_concurrent: int = 1
 
+    # [next_doc/refactor_plan/09-phase8-runtime-convergence-sprint-plan.md
+    # Sprint 8-4] 默认 False，不影响任何现有行为。开启后，普通
+    # run_mode="message" cron job 的实际执行改走
+    # `AgentRuntime.run_once()`（Phase 8 收敛的统一循环骨架），而不是
+    # `CronJobExecutor.run_job()`——两条路径互斥，仍然共用
+    # `CronJobRunner` 的槽位/仲裁/watchdog/熔断（这些在到达具体 worker
+    # 之前就已经处理完毕，与走哪条 worker 无关）。是"新增一条可选路径"
+    # 而不是"替换旧路径"，默认关闭时旧路径的既有测试/行为不受任何影响。
+    # 见该文档"Sprint 8-4 执行记录"。
+    runtime_dispatch_enabled: bool = False
+
 
 @dataclass
 class DigestAdvisorConfig:
