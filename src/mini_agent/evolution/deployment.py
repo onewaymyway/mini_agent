@@ -66,10 +66,10 @@ hash（`DeployRecord.applied_commits`），Rollback 时按逆序对每个 commit
   - `"inconclusive"`：样本不足或介于两者之间 → **不 Promote 也不 Rollback**，
     保持 `observing`，等待更多数据。宁可多观察，也不在证据不足时动仓库。
 
-TODO(持久化)：`DeployRecord` 只提供 `to_dict()/from_dict()`，尚未落盘。
-Observe 通常发生在部署之后的若干次运行之后（可能跨进程），接入
-`AgentRuntime` 的 `learn` 步骤时需要决定存储位置（不应绕过 `StateRepo`
-直接写受 git 管理的路径）。当前尚无运行时调用方，见 Sprint 计划文档。
+持久化（Sprint 9-4）：`DeployRecord` 由 `evolution/deploy_record_store.py::
+DeployRecordStore` 落盘（`.agent/deploy_records.jsonl`，运行时状态，不进 git、
+不经 `StateRepo.apply()`）。`deploy_proposal(record_store=...)` 在合并成功后
+立即写入，避免“已合并但无凭据、之后无法 Observe/Rollback”的孤儿部署。
 """
 
 from __future__ import annotations
@@ -89,6 +89,7 @@ from mini_agent.evolution.state_repo import StateRepo, StateRepoError
 from mini_agent.evolution.workspace import EvolutionWorkspace, EvolutionWorkspaceError
 
 if TYPE_CHECKING:
+    from mini_agent.evolution.deploy_record_store import DeployRecordStore
     from mini_agent.core.experience_patterns import Problem
     from mini_agent.core.experience_store import ExperienceStore
     from mini_agent.evolution.workspace import SmokeBootResult
@@ -135,6 +136,9 @@ class DeployRecord:
     state: str = STATE_OBSERVING
     revert_commits: list = field(default_factory=list)
     settle_reason: str = ""
+    # Sprint 9-4：Observe 按“同类任务”统计部署后的 Experience 所需。旧数据/
+    # 手工构造的记录可能为空，此时 Observe 只能给出 inconclusive。
+    problem_category: str = ""
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
@@ -193,6 +197,7 @@ def deploy_proposal(
     eval_fn: Optional[Callable[[EvolutionProposal], dict]] = None,
     run_smoke_boot: bool = False,
     workspace_root: Optional[Path] = None,
+    record_store: Optional["DeployRecordStore"] = None,
 ) -> DeployResult:
     """把一个 `EvolutionProposal` 走完 Sandbox → Validation → Deploy。
 
@@ -207,6 +212,11 @@ def deploy_proposal(
          返回 True → `merge_branch()`，得到 `DeployRecord`。
 
     合并前记录分支上的 commit hash（合并后分支会被删除，见模块 docstring）。
+
+    `record_store`（Sprint 9-4，可选）：注入后，合并成功的 `DeployRecord` 会立即
+    落盘，供之后（可能是另一个进程里）的 Observe 使用。落盘失败**不会**把
+    已经合并成功的部署改写成失败——仓库确实已经变了，谎报状态更危险——而是把
+    原因写进 `result.errors`，调用方应据此提示人工补录。
     """
     result = DeployResult(proposal_id=proposal.proposal_id, status="")
 
@@ -278,11 +288,15 @@ def deploy_proposal(
         result.status = STATUS_REJECTED
         return result
 
-    return _merge_and_record(proposal, repo, branch, result)
+    return _merge_and_record(proposal, repo, branch, result, record_store)
 
 
 def _merge_and_record(
-    proposal: EvolutionProposal, repo: StateRepo, branch: str, result: DeployResult,
+    proposal: EvolutionProposal,
+    repo: StateRepo,
+    branch: str,
+    result: DeployResult,
+    record_store: Optional["DeployRecordStore"] = None,
 ) -> DeployResult:
     base = repo.current_branch() or "HEAD"
     # 必须在合并前取：merge_branch 默认会删除分支
@@ -303,8 +317,19 @@ def _merge_and_record(
         branch=branch,
         merge_commit=merge_commit,
         applied_commits=applied_commits,
+        problem_category=hyp.problem_category,
     )
     result.status = STATUS_DEPLOYED
+    if record_store is not None:
+        try:
+            record_store.save(result.record)
+        except Exception as e:  # 见 deploy_proposal 文档：不改写已成功的部署状态
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.evolution.deployment._merge_and_record.save")
+            result.errors.append(
+                f"部署已合并（{result.record.merge_commit[:8]}），但 DeployRecord 落盘失败，"
+                f"之后无法自动 Observe/Rollback，请人工补录：{e}"
+            )
     return result
 
 
@@ -312,28 +337,28 @@ def _merge_and_record(
 # Observe
 # ─────────────────────────────────────────────────────────────────────
 
-def make_experience_observer(
-    problem: "Problem",
+def make_category_observer(
     store: "ExperienceStore",
+    category: Optional[str] = None,
     min_samples: int = 3,
     persist_threshold: int = 2,
 ) -> Callable[[DeployRecord], Observation]:
-    """用真实 Experience 数据构造 Observe 函数。
+    """用真实 Experience 数据构造 Observe 函数（按 category 观察）。
 
-    只看 `record.deployed_at` **之后**产生的、与 `problem.category` 同类
-    （用与 Sprint 9-1 完全相同的归一化）的 Experience：
-      - 失败次数 >= `persist_threshold`（默认 2，与 Sprint 9-1 里“重复”的
-        含义一致）→ `persists`，问题部署后仍在重复。
-      - 样本数 >= `min_samples` 且失败为 0 → `improved`。
-      - 其余 → `inconclusive`。
+    `category` 为 None 时取 `record.problem_category`（跨进程 Observe 的常规
+    路径：此时手里只有落盘的 `DeployRecord`，没有 `Problem` 对象）。category
+    为空（旧记录）→ `inconclusive`，**不**去猜一个类别，宁可不动仓库。
     """
     from mini_agent.core.experience_patterns import _FAILURE_STATUSES, _normalize_category
 
     def observe(record: DeployRecord) -> Observation:
+        cat = category if category is not None else record.problem_category
+        if not cat:
+            return Observation("inconclusive", "记录没有 problem_category，无法确定观察哪一类任务")
         post = [
             e for e in store.all()
             if e.created_at > record.deployed_at
-            and _normalize_category(e.goal_text) == problem.category
+            and _normalize_category(e.goal_text) == cat
         ]
         failures = [e for e in post if e.status in _FAILURE_STATUSES]
         n, f = len(post), len(failures)
@@ -344,6 +369,30 @@ def make_experience_observer(
         return Observation("inconclusive", f"部署后同类样本 {n} 个、失败 {f} 次，证据不足", n, f)
 
     return observe
+
+
+def make_experience_observer(
+    problem: "Problem",
+    store: "ExperienceStore",
+    min_samples: int = 3,
+    persist_threshold: int = 2,
+) -> Callable[[DeployRecord], Observation]:
+    """用真实 Experience 数据构造 Observe 函数（Sprint 9-3 入口，行为不变）。
+
+    只看 `record.deployed_at` **之后**产生的、与 `problem.category` 同类
+    （用与 Sprint 9-1 完全相同的归一化）的 Experience：
+      - 失败次数 >= `persist_threshold`（默认 2，与 Sprint 9-1 里“重复”的
+        含义一致）→ `persists`，问题部署后仍在重复。
+      - 样本数 >= `min_samples` 且失败为 0 → `improved`。
+      - 其余 → `inconclusive`。
+
+    Sprint 9-4 起判定逻辑统一在 `make_category_observer()`，本函数是持有
+    `Problem` 对象时的便捷包装。
+    """
+    return make_category_observer(
+        store, category=problem.category,
+        min_samples=min_samples, persist_threshold=persist_threshold,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -402,7 +451,7 @@ def settle_deployment(
 
 __all__ = [
     "DeployRecord", "DeployResult", "Observation",
-    "deploy_proposal", "make_experience_observer",
+    "deploy_proposal", "make_experience_observer", "make_category_observer",
     "rollback_deployment", "settle_deployment",
     "STATUS_EVALUATION_REJECTED", "STATUS_SANDBOX_ERROR", "STATUS_VALIDATION_FAILED",
     "STATUS_SMOKE_FAILED", "STATUS_PENDING_APPROVAL", "STATUS_REJECTED",

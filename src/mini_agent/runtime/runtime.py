@@ -25,8 +25,11 @@ Sprint 8-1。对应原方案 §41 的核心循环：
     `gap detect` 一步是真实执行的（因为它不需要 LLM 注入、本身就是
     纯函数，代价很低，且是"观察当前状态与目标差距"这个循环骨架里
     真正对应"骨架"部分的一环）。
-  - `learn` 对应 Phase 9（Self Evolution 接入统一 Experience），本
-    Sprint 尚未开始，留空并显式标注 TODO，不做静默空实现。
+  - `learn` 对应 Phase 9（Self Evolution 接入统一 Experience）。Sprint 8-1
+    时留空；Sprint 9-4 起由 `runtime/learn.py::run_learn_step()` 实现，
+    **默认关闭**（`goal_mode.runtime_learn_enabled=False`），关闭时行为与
+    Sprint 8-1 完全一致。它只做“Observe 已部署改动 + 汇总重复问题”，不自动
+    提案、不自动部署，详见该模块 docstring。
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ from mini_agent.core import (
 )
 from mini_agent.goal_mode.runner import GoalRunner, GoalRunResult
 from mini_agent.goals.gap import detect_gap
+from mini_agent.runtime.learn import LearnReport, run_learn_step
 
 if TYPE_CHECKING:
     from mini_agent.agent import Agent
@@ -83,6 +87,8 @@ class AgentRuntimeResult:
     # 的调用方使用；`AgentRuntimeResult` 本身的同名字段只是从这里拷贝
     # 出来的一份快照，避免调用方必须知道"还要再深入一层"才能拿到结果。
     goal_run_result: Optional[GoalRunResult] = None
+    # Sprint 9-4：`learn` 步骤的报告；未启用（默认）时为 None。
+    learn_report: Optional["LearnReport"] = None
 
 
 class AgentRuntime:
@@ -94,9 +100,26 @@ class AgentRuntime:
     加一层 `while running: run_once(...)`，届时才需要考虑跨轮次状态。
     """
 
-    def __init__(self, agent: "Agent", cfg: "AppConfig") -> None:
+    def __init__(
+        self,
+        agent: "Agent",
+        cfg: "AppConfig",
+        enable_learn_stage: Optional[bool] = None,
+        learn_auto_rollback: Optional[bool] = None,
+    ) -> None:
         self._agent = agent
         self._cfg = cfg
+        # Sprint 9-4：显式参数优先，其次读 `cfg.goal_mode.runtime_learn_*`，
+        # 缺省均为 False（保守 opt-in，与 Phase 3/7/8 的一贯做法一致）。
+        gm = getattr(cfg, "goal_mode", None)
+        self._learn_enabled = (
+            enable_learn_stage if enable_learn_stage is not None
+            else bool(getattr(gm, "runtime_learn_enabled", False))
+        )
+        self._learn_auto_rollback = (
+            learn_auto_rollback if learn_auto_rollback is not None
+            else bool(getattr(gm, "runtime_learn_auto_rollback", False))
+        )
         # 供调用方在 `run_once()` 抛出 KeyboardInterrupt 时取到底层
         # `GoalRunner` 实例以便调用 `runner.pause()`（见
         # `cli/commands/goal_mode_cmd.py::_run_goal()`）。只在
@@ -208,14 +231,33 @@ class AgentRuntime:
         # 落库，都是"execute"这一步内部自带的产出，这里不重复实现。
 
         # ── learn ────────────────────────────────────────────────────
-        # TODO: Phase 9（Self Evolution 接入统一 Experience）落地后再
-        # 在这里接入真实的学习步骤（比如消费 `core/experience_patterns.py
-        # ::summarize_failures()` 的聚合结果）。本 Sprint 不提前假设。
+        # Sprint 9-4：默认关闭。开启后由 `runtime/learn.py::run_learn_step()`
+        # 做 Observe + 问题汇总；它永不抛异常，这里再包一层只是防御性兜底
+        # ——learn 是旁路，任何情况下都不能改变 Goal 的执行结果。
+        learn_report: Optional[LearnReport] = None
+        if self._learn_enabled:
+            try:
+                from mini_agent.storage.paths import AgentPaths
 
+                learn_report = run_learn_step(
+                    AgentPaths(project_root=self._cfg.project_root),
+                    auto_rollback=self._learn_auto_rollback,
+                )
+            except Exception:
+                from mini_agent.errors import log_exception
+
+                log_exception(
+                    Exception("AgentRuntime.run_once: learn 步骤失败"),
+                    where="mini_agent.runtime.runtime.AgentRuntime.run_once.learn",
+                )
+
+        completed_payload = {"status": goal_run_result.status, "gap_item_count": len(gap_items)}
+        if learn_report is not None:  # 仅启用时才多一个键，关闭时 payload 与此前一致
+            completed_payload["learn"] = learn_report.summary()
         bus.publish(
             Event(
                 kind="RuntimeCycleCompleted",
-                payload={"status": goal_run_result.status, "gap_item_count": len(gap_items)},
+                payload=completed_payload,
                 actor="runtime.AgentRuntime",
                 correlation_id=correlation_id,
             )
@@ -231,4 +273,5 @@ class AgentRuntime:
             gap=gap_items,
             correlation_id=correlation_id,
             goal_run_result=goal_run_result,
+            learn_report=learn_report,
         )

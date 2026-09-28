@@ -73,10 +73,16 @@ Deploy → Observe → Promote / Rollback
 - [ ] 现有 `StateRepo/Validators/EvalRunner` 等安全设施未被修改，
       只是接入方式改变（**待勾**：Sprint 9-2、9-3 期间已用 sha256 核对未
       改动，但 Sprint 9-1 及更早的状态无法仅凭压缩包核实，见下条）
+      （**Sprint 9-4 更新**：仍待勾。新增 `scripts/check_frozen_evolution_modules.py`，
+      在真实仓库里 `python scripts/check_frozen_evolution_modules.py --base
+      <Phase 9 起点 commit> --also-adapted` 即可完成本条与下条要求的 `git diff`
+      核对；退出码 0 才能勾选。）
 - [ ] `phase9-evolution-inventory.md` 中标注的"绝对不能动"的模块
       在整个 Phase 过程中确实没有被修改（可用 git diff 核对）（**待勾**：
       交付压缩包不含 `.git`，需在真实仓库里对 Phase 9 起点 commit 做
       `git diff -- src/mini_agent/evolution/{state_repo,workspace,validators,eval_runner}.py`）
+      （**Sprint 9-4 更新**：仍待勾，同上，工具已就绪，但压缩包里没有 `.git`，
+      本次无法代为执行。）
 
 ## Sprint 9-1 执行记录
 
@@ -333,3 +339,132 @@ patterns` inbound=1（`core/__init__.py`）/outbound=0（对
 Sprint 9-3 是 Phase 9 的最后一个 Sprint。**Phase 9 尚不能整体宣布完成**：
 完成标志第 3、4 条待在真实仓库核对后勾选，第 1 条建议再用一次真实 Experience
 数据跑通，并需决定 `DeployRecord` 的持久化与运行时接入方式（局限 §2）。
+
+## 变更记录
+
+### 变更记录 2026-09-28（新增 Sprint 9-4：Phase 9 收尾）
+- 触发条件：本文档 Sprint 9-3 执行记录末尾的判断——“Phase 9 尚不能整体宣布完成”——
+  以及 `11-phase10-legacy-decommission-plan.md` “变更记录 2026-09-28”里的 D4（Phase 10
+  前置条件“Phase 1-9 全部完成”未满足，需要补齐或明确豁免）。不是止损条件触发，
+  是 Sprint 9-3 自己记录的两条已知局限（§2 `DeployRecord` 未持久化；`AgentRuntime` 的
+  `learn` 步骤仍空）需要有个 Sprint 来承接。
+- 原计划：Phase 9 由 Sprint 9-1 ～ 9-3 三个 Sprint 构成，任务表里没有“运行时接入”，
+  也没有“持久化”。
+- 实际情况：9-3 打通的闭环只能被显式调用驱动——`DeployRecord` 不落盘，Observe 无法
+  跨进程；Runtime 里没有任何位置会去 Observe 已部署的改动。
+- 调整后方案：新增 Sprint 9-4，**只承接上述两条局限**，验收标准（可验证）：
+  1. `DeployRecord` 落盘后，新的 Store 实例（模拟另一个进程）能读出并继续 Observe；
+  2. `learn` 默认关闭，关闭时 `AgentRuntime.run_once()` 的行为与 `RuntimeCycleCompleted`
+     事件 payload 与 Sprint 8-1 完全一致；
+  3. 开启后：`improved` 只改记录不动仓库；`persists` 默认只建议回退、不动仓库；
+     `persists` + `auto_rollback` 才真的回退，且断言的是磁盘与 git 历史；
+  4. `learn` 任何失败都不改变 Goal 的执行结果；
+  5. 四个冻结安全设施与原包逐字节一致。
+  止损条件：若要实现上述任何一条必须修改冻结安全设施，停止并回到本节走变更流程。
+- 影响范围：不改动 9-1 ～ 9-3 的任务表与验收标准；**不改变** Phase 9 完成标志第 3、4
+  条的待勾状态；对 Phase 10 前置条件 D4 只是“部分推进”（见
+  `11-phase10-legacy-decommission-plan.md` 前置条件下的更新提示），不构成豁免。
+
+## Sprint 9-4 执行记录
+
+### 做了什么
+
+| 任务 | 产出 |
+|---|---|
+| `DeployRecord` 持久化 | 新增 `evolution/deploy_record_store.py::DeployRecordStore`（append-only JSONL，同一 `proposal_id` 以最后一行为准）、`AgentPaths.workdir_deploy_records`（`.agent/deploy_records.jsonl`，已加入 `.gitignore`）；`deploy_proposal(record_store=...)` 合并成功后立即落盘 |
+| Observe 可脱离 `Problem` 对象 | `DeployRecord` 与 `Hypothesis` 新增 `problem_category`（均带默认值，旧数据可读）；新增 `make_category_observer()`，`make_experience_observer()` 改为它的包装（9-3 行为不变，有对照测试） |
+| `AgentRuntime` 的 `learn` 步骤 | 新增 `runtime/learn.py::run_learn_step()`；`AgentRuntime.__init__` 新增 `enable_learn_stage` / `learn_auto_rollback`（缺省读 `goal_mode.runtime_learn_enabled` / `runtime_learn_auto_rollback`，均默认 `False`）；`AgentRuntimeResult.learn_report`；仅启用时 `RuntimeCycleCompleted.payload` 多一个 `learn` 摘要键 |
+| 冻结核对工具 | 新增 `scripts/check_frozen_evolution_modules.py`（git 模式 / manifest 模式，“无法核对”退出码 2，不当作通过）+ 基线 `docs/architecture_v2/phase9-frozen-modules.sha256` |
+
+### 关键设计决策
+
+1. **`learn` 只接“观察”和“汇总”，不接“提案”和“部署”。** 让 Agent 每跑一轮都有机会
+   自动生成并合并对自己的修改，与 Sprint 9-3“不自动合并、人审门保持”的决策相冲突，
+   所以没有做。这意味着**生产中目前仍没有任何路径会自动产生 `DeployRecord`**——
+   `deploy_proposal()` 依旧只有测试和显式调用方。`learn` 现在能观察的是“被显式部署
+   过并传入 `record_store` 的改动”。这是有意的范围，不是遗漏。
+2. **回退需要第二个开关。** `persists` 时默认只在报告里标 `rollback_recommended`，
+   记录保持 `observing`（下一轮仍会再次提示）；只有 `runtime_learn_auto_rollback=True`
+   才执行 `git revert`。理由：回退是对受 git 管理的项目仓库的写操作，与合并一样应由
+   人决定；而且 `learn` 紧跟在 Goal 执行之后运行，此刻工作区可能带着 Goal 刚做的、
+   尚未提交的改动，自动 `git revert` 有与之冲突的风险（见下方局限 §3）。
+3. **持久化不走 `StateRepo`、不进 git。** 它记录的是“部署发生过”这个运行时事实，
+   不是对 Agent 行为的自我修改；真正改变行为的文件仍只能经 `StateRepo.apply()`。
+   与 `events.jsonl` 同类处理。
+4. **落盘失败不改写已成功的部署状态。** 仓库确实已经合并，把状态改写成失败比留下
+   一条“需人工补录”的 `errors` 更危险。
+5. **`StateRepo` 延迟构造。** `StateRepo(root)` 在目标目录没有 `.git` 时会 `git init`；
+   观察阶段（`improved`/`inconclusive`/仅建议）不应有这种副作用，只在真要回退时才构造
+   （测试 `test_learn_observation_never_creates_a_git_repo`）。
+
+### 过程中发现并修复的真实问题
+
+- **崩溃留下的残缺末行会连带损坏下一条记录。** 首版 `save()` 直接追加；测试
+  `test_store_skips_corrupt_and_truncated_lines` 第一次运行即失败：末行没有换行符时，
+  新记录被接在它后面，两者一起变成无法解析的一行，导致新记录丢失。已改为追加前检查
+  文件是否以换行结尾，否则先补一个。
+
+### 验收标准核对
+
+| 验收标准 | 结果 | 证据 |
+|---|---|---|
+| 1. 落盘后新 Store 实例能读出并继续 Observe | 达成 | `test_store_survives_across_instances`、`test_deploy_persists_record_with_category`；端到端 `test_end_to_end_runtime_learn_reverts_a_bad_deployment` 里 Observe 使用的是从磁盘读回的记录 |
+| 2. 关闭时行为与 payload 与 Sprint 8-1 一致 | 达成 | `test_learn_is_off_by_default_and_changes_nothing`（断言未调用 `run_learn_step`、payload 无 `learn` 键）、`test_config_defaults_are_conservative`；Phase 8 的 14 个既有用例未改动仍通过 |
+| 3. improved 不动仓库 / persists 默认只建议 / persists+开关才回退 | 达成 | `test_learn_improved_promotes_record_and_leaves_repo_alone`、`test_learn_persists_without_auto_rollback_only_recommends`（断言 HEAD 不变、文件仍在、记录仍 `observing`）、`test_learn_persists_with_auto_rollback_really_reverts`（断言文件从磁盘消失、原 commit 与 revert commit 均在 `git log`、第二轮不重复回退）；另有 inconclusive、回退冲突（`rollback_failed` 被如实报告并持久化、仓库无半途状态、不会被无限重试） |
+| 4. learn 失败不改变 Goal 结果 | 达成 | `test_learn_failure_never_changes_goal_result`、`test_learn_never_raises_and_still_reports_other_parts`、`test_learn_one_bad_record_does_not_block_the_others` |
+| 5. 冻结安全设施未改 | 达成（口径见下） | 四个安全设施与 `failure_pattern_store.py`/`proposal_risk.py` 对原压缩包 `cmp` 逐字节一致；`test_shipped_manifest_matches_current_tree`。**口径：只对本次交付的压缩包成立，不等于完成标志第 4 条要求的真实仓库 `git diff`** |
+
+### 验证结果
+
+- 新增测试 44 个全部通过：`tests/test_phase9_sprint9_4_learn_and_persistence.py`（30）、
+  `tests/test_phase9_sprint9_4_frozen_check.py`（14）。
+- **回归范围说明（未跑全量）**：全量测试在本环境单核下预计数小时，启动后在约 2%
+  处中止。改为定向回归——文件名含 `phase|core_|goal_mode|evolution|runtime|paths|config|
+  cron_job|state_repo|workspace|validators|failure_pattern|proposal|experience|event` 的
+  67 个测试文件。改动后：**977 passed，19 failed**；在未修改的原始压缩包上跑同一批
+  （去掉本 Sprint 新增的 2 个文件）：**933 passed，19 failed**，且**失败用例集合逐条
+  一致**（`test_browser_core_session_manager.py` 5、`test_evolution_cli.py` 2、
+  `test_explorer_runtime_subagent.py` 7、`test_goal_mode.py::test_build_from_history_*` 5），
+  均为既有失败，与本 Sprint 无关，未处理。多出的 44 个通过用例即上面的新增测试。
+  **其余约 350 个测试文件未运行**，不能据此声称全量测试通过率“持平”。
+- `pyflakes` 对全部改动/新增文件无告警；`scripts/lint_no_new_toplevel_concepts.py` 通过。
+- `scripts/dep_graph.py`：`evolution.deploy_record_store` inbound=2（`deployment.py`、
+  `runtime/learn.py`），`runtime.learn` inbound=2（`runtime/__init__.py`、
+  `runtime/runtime.py`），均 outbound=0，未触发止损阈值。
+
+### 已知局限（逐条如实记录）
+
+1. **生产中没有自动产生 `DeployRecord` 的路径**（见设计决策 §1）。`learn` 的 Observe
+   目前只对显式部署过的记录有意义；闭环的前半段（Problem → Proposal → Deploy）仍需
+   人或调用方驱动。Phase 9 完成标志第 1 条“口径”里的保留意见（Experience 数据是测试灌入的，
+   未拿生产真实数据跑过）**仍然成立**。
+2. **“建议回退”目前没有面向用户的出口。** `rollback_recommended` 只出现在
+   `AgentRuntimeResult.learn_report` 和 `RuntimeCycleCompleted` 事件 payload 里（后者会被
+   `EventLogStore` 落盘，可用 `events trace` 查看）。没有通知、没有 CLI 提示。
+   开启 `learn` 但不开自动回退的用户，除非主动去看事件日志，否则不会知道有建议。
+3. **自动回退与“Goal 刚改过工作区”的交互没有专门验证。** 测试覆盖了“后续提交改了同一
+   文件导致冲突”这一路径，但没有覆盖“工作区里有 Goal 刚做的、未提交的改动”。`git revert`
+   在这种情况下可能失败（会被记为 `rollback_failed`），也可能在改动不重叠时成功、
+   使工作区同时包含回退与未提交改动。这是默认关闭自动回退的直接原因；开启前应先验证。
+4. **`learn` 随每次 `run_once()` 执行，包括 `cron.runtime_dispatch_enabled` 的 cron
+   路径**（二者共用 `cfg.goal_mode`）。每次都会读取全部 Experience 与 `DeployRecord` 日志，
+   规模大时是 O(n) 开销；目前未做增量或节流。
+5. **Observe 的阈值（`min_samples=3`、`persist_threshold=2`）仍是经验默认值**，`learn`
+   没有把它们做成配置项，沿用 9-3 的取舍；只看“同类任务后续是否仍失败”，是相关性而非因果。
+6. **旧记录没有 `problem_category`**（9-3 时期手工构造的记录）会被判为 `inconclusive`，
+   永远不会被自动 Promote/Rollback。这是刻意的保守，不去猜类别。
+7. **私有访问的已知代价不变**：`deployment.py` 仍私有访问 `StateRepo._run_git`
+   （9-3 局限 §1），`learn` 复用 `settle_deployment()`，继承了这一点。
+
+### Phase 9 当前状态
+
+**Phase 9 仍不能整体宣布完成。** 完成标志第 1、2 条保持已勾（口径见上）；第 3、4 条
+保持未勾——需要在真实仓库里用 `scripts/check_frozen_evolution_modules.py --base
+<Phase 9 起点 commit> --also-adapted` 核对，退出码 0 后才能勾选。**这一步只有你能做**
+（压缩包不含 `.git`）。9-3 记录的两条运行时局限（`DeployRecord` 未持久化、`learn` 未接入）
+已由本 Sprint 处理，但见上面的局限 §1、§2、§3。
+
+可进入的下一步：**不是 Phase 10**——Phase 10 仍需项目所有者对 D1–D5 作出决定
+（见 `11-phase10-legacy-decommission-plan.md`）。在此之前，Phase 9 内部还有一项可独立
+推进的候选（未排期）：为 `rollback_recommended` 提供用户可见的出口（局限 §2）。
+

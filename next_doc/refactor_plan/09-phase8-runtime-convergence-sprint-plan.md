@@ -475,3 +475,12 @@ Phase 8 的产品决策"），排期从"Sprint 8-5/8-6"改为"移出 Phase 8，
 留在 Phase 8 的排期里。**Phase 8（Autonomous Runtime 收敛）到此
 收尾**，可进入 Phase 9（Self Evolution 接入统一 Experience，见
 `10-phase9-self-evolution-sprint-plan.md`）。
+
+## 后续更新（2026-09-28，Phase 9 Sprint 9-4）
+
+Sprint 8-1 执行记录中“`learn` 留空并显式标注 TODO（对应 Phase 9）”的那一步，已由
+Phase 9 Sprint 9-4 接入：`runtime/learn.py::run_learn_step()`，由
+`goal_mode.runtime_learn_enabled`（默认 `False`）控制。关闭时 `AgentRuntime.run_once()`
+的行为与 `RuntimeCycleCompleted` 事件 payload 与 Sprint 8-1 完全一致；`plan/simulate/
+decide` 三步仍按 Sprint 8-1 的范围决策默认跳过，未改动。上文各 Sprint 的原始记录
+保持原样，不回改。详见 `10-phase9-self-evolution-sprint-plan.md` “Sprint 9-4 执行记录”。

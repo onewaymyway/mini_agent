@@ -1089,6 +1089,16 @@ class GoalModeConfig:
     # 检索返回的历史 Experience 条数上限，避免注入过长上下文。
     experience_retrieval_limit: int = 3
 
+    # ── [next_doc/refactor_plan/10-phase9-self-evolution-sprint-plan.md
+    #    Sprint 9-4] AgentRuntime 的 `learn` 步骤（Observe 已部署的自我演化
+    #    改动 + 汇总重复出现的问题模式）。默认关闭（保守 opt-in）：关闭时
+    #    `AgentRuntime.run_once()` 行为与 Sprint 8-1 完全一致。
+    runtime_learn_enabled: bool = False
+    # 观察到“部署后同类失败仍在重复”时是否**自动**执行回退。默认 False：
+    # 只在报告里标注“建议回退”，不动用户仓库。回退是对受 git 管理的项目
+    # 仓库执行 `git revert`，与合并一样属于需要人来决定的动作。
+    runtime_learn_auto_rollback: bool = False
+
 
 @dataclass
 class GoalExecutionSpecConfig:

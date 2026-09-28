@@ -101,6 +101,10 @@ class Hypothesis:
     problem_source: str = ""
     problem_occurrence_count: int = 0
     generated_by: str = "rule_template"   # "rule_template" | "llm"
+    # Sprint 9-4：Observe 只能按“同类任务”统计部署后的 Experience，而
+    # `Problem.problem_id` 里未必带得出 category（`failure_pattern_store:` 来源
+    # 的 id 是 pattern_id），所以把 category 一路带到 `DeployRecord`。
+    problem_category: str = ""
 
 
 @dataclass
@@ -226,6 +230,7 @@ def _rule_template_hypothesis(problem: "Problem") -> Hypothesis:
         changes={target: "\n".join(body_lines)},
         problem_source=problem.source,
         problem_occurrence_count=problem.occurrence_count,
+        problem_category=problem.category,
         generated_by="rule_template",
     )
 
@@ -274,6 +279,7 @@ def generate_hypothesis(
         changes=changes,
         problem_source=problem.source,
         problem_occurrence_count=problem.occurrence_count,
+        problem_category=problem.category,
         generated_by="llm",
     )
 

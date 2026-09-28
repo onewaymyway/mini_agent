@@ -9,6 +9,13 @@
 > 仍空；台账里 `goal_mode/executor.py`、`objective_executor.py`、`orchestrator/*`
 > 未开始，`goal_backlog.py` 暂缓。详见文末“变更记录 2026-09-28”与
 > `docs/architecture_v2/phase10-entrypoint-inventory.md`。
+>
+> **更新（Phase 9 Sprint 9-4，2026-09-28）**：上述两项中的 `learn` 步骤与
+> `DeployRecord` 持久化已由 Sprint 9-4 接入（默认关闭）；Phase 9 完成标志第 3、4
+> 条仍待在真实仓库核对（现有 `scripts/check_frozen_evolution_modules.py --base
+> <commit>` 一条命令即可）。`goal_mode/executor.py`/`objective_executor.py`/
+> `orchestrator/*`/`goal_backlog.py` 的状态**未变**，因此前置条件整体**仍未满足**，
+> D1–D5 仍待项目所有者决定。详见 `10-phase9-self-evolution-sprint-plan.md` 文末。
 
 ## 目标与边界
 

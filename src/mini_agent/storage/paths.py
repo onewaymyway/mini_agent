@@ -18,6 +18,7 @@ storage/paths.py — 统一路径管理
     paths.workdir_memory          # .agent/memory.jsonl
     paths.workdir_experience_store # .agent/experience_store.db（core.Experience 存储，Sprint 2 起；Sprint 3-1 起改为 SQLite）
     paths.workdir_event_log       # .agent/events.jsonl（core.Event 落盘，Phase 2 Sprint 2-2）
+    paths.workdir_deploy_records  # .agent/deploy_records.jsonl（DeployRecord 快照日志，Phase 9 Sprint 9-4）
     paths.permissions             # .agent/permissions.json
     paths.sessions_dir            # .agent/sessions/
     paths.cache_dir               # .agent/cache/
@@ -249,6 +250,22 @@ class AgentPaths:
         `mini-agent events trace <correlation_id>` 按因果链路重放。
         """
         return self.workdir_dir / "events.jsonl"
+
+    @property
+    def workdir_deploy_records(self) -> Path:
+        """<project_root>/.agent/deploy_records.jsonl — 自我演化部署记录
+
+        见 `next_doc/refactor_plan/10-phase9-self-evolution-sprint-plan.md`
+        Sprint 9-4：持久化 `evolution/deployment.py::DeployRecord` 的状态快照
+        （append-only JSONL，每次状态变化追加一行，同一 `proposal_id` 以最后
+        一行为准），使 Observe 可以跨进程发生（部署之后若干次运行才观察）。
+
+        这是**运行时状态**而不是“自我修改”：它不经过 `StateRepo.apply()`，
+        也不进 git（已加入 `.gitignore`，与 `events.jsonl` 同类）。被 git
+        管理的、真正改变 Agent 行为的文件（`.agent/lessons/*.md` 等）仍然只能
+        经 `StateRepo` 落地。
+        """
+        return self.workdir_dir / "deploy_records.jsonl"
 
     @property
     def workdir_prompts_dir(self) -> Path:

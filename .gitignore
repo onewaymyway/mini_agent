@@ -147,6 +147,7 @@ test_reports/
 .agent/decision_candidates_pending.jsonl
 .agent/entities.json
 .agent/events.jsonl
+.agent/deploy_records.jsonl
 .agent/extraction_cursor.json
 .agent/extraction_trigger_log.jsonl
 .agent/goals.json

@@ -174,3 +174,29 @@ Sprint 9-3 新增 `evolution/deployment.py`，同样是“新模块 → 既有�
 该结论不能替代 Phase 收尾时在真实仓库里的 `git diff` 核对。
 
 分类结论不变：`deployment.py` 归入“决策逻辑/编排”，不属于安全设施。
+
+## 八、Sprint 9-4 接入关系补充（2026-09-28）
+
+Sprint 9-4（Phase 9 收尾，见 `next_doc/refactor_plan/10-phase9-self-evolution-sprint-plan.md`
+“变更记录 2026-09-28”）新增两个模块并改动两个既有的非冻结模块。依赖方向仍然是
+“新模块 → 既有模块”，没有任何冻结安全设施被修改或反向依赖新模块。
+
+| 模块 | 位置 | 类别 | 依赖 / 被依赖 |
+|---|---|---|---|
+| `deploy_record_store.py`（新增） | `evolution/` | 决策逻辑/编排（运行时状态存储） | 依赖 `deployment.py` 的 `DeployRecord`/`STATE_OBSERVING`；被 `deployment.py`（仅 `TYPE_CHECKING`）与 `runtime/learn.py` 使用。**不经过 `StateRepo.apply()`、不进 git**（`.agent/deploy_records.jsonl` 已加入 `.gitignore`），因为它记录的是“部署发生过”这一运行时事实，而不是对 Agent 行为的自我修改 |
+| `runtime/learn.py`（新增） | `runtime/` | Phase 8/9 交叉：`AgentRuntime` 的 `learn` 步骤 | 依赖 `core/experience_store.py`、`core/experience_patterns.py::detect_problems`、`evolution/deploy_record_store.py`、`evolution/deployment.py::make_category_observer/settle_deployment`；回退时**延迟**构造 `StateRepo(paths.project_root)`（`StateRepo(root)` 在目标目录无 `.git` 时会 `git init`，观察阶段不应有此副作用） |
+| `deployment.py`（改动） | `evolution/` | 决策逻辑/编排 | `DeployRecord` 新增 `problem_category`；新增 `make_category_observer()`（`make_experience_observer()` 改为它的包装，行为不变）；`deploy_proposal()` 新增可选 `record_store`，合并成功后立即落盘 |
+| `proposals.py`（改动） | `evolution/` | 决策逻辑 | `Hypothesis` 新增 `problem_category`，两处构造点填充，使 category 能一路带到 `DeployRecord` |
+
+**冻结模块核对（Sprint 9-4）**：
+
+- 四个安全设施及 `failure_pattern_store.py`/`proposal_risk.py` 与原始压缩包逐字节一致
+  （`cmp`）。
+- 新增 `scripts/check_frozen_evolution_modules.py`：把完成标志第 3、4 条要求的
+  `git diff` 核对做成一条命令（`--base <Phase 9 起点 commit>`；无 `.git` 时给出
+  “无法核对”退出码 2，**不当作通过**）。同时提交基线
+  `docs/architecture_v2/phase9-frozen-modules.sha256`（6 个文件的 sha256），供之后的
+  Sprint 用 `--check-manifest` 核对。**manifest 只能证明“自基线生成起未变”，
+  不能证明基线之前的历史**，所以完成标志第 3、4 条仍需在真实仓库用 `--base` 核对。
+
+分类结论不变：本次两个新模块均不属于安全设施。

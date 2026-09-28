@@ -679,6 +679,26 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       真实仓库用 `git diff` 核对；`DeployRecord` 尚未持久化、`AgentRuntime`
       的 `learn` 步骤仍未接入，闭环目前只能被显式调用驱动。详见
       `10-phase9-self-evolution-sprint-plan.md` 末尾“Sprint 9-3 执行记录”。
+- [x] Sprint 9-4（Phase 9 收尾，2026-09-28 新增，走 `10-phase9-self-evolution-
+      sprint-plan.md` “变更记录 2026-09-28”留痕）已完成：承接 Sprint 9-3 记录的两条
+      运行时局限。新增 `evolution/deploy_record_store.py::DeployRecordStore`
+      （`DeployRecord` 的 append-only JSONL 持久化，`.agent/deploy_records.jsonl`，
+      运行时状态、不进 git、不经 `StateRepo.apply()`），`deploy_proposal(record_store=)`
+      合并成功后立即落盘；新增 `runtime/learn.py::run_learn_step()` 并接入
+      `AgentRuntime.run_once()` 的 `learn` 步骤（`goal_mode.runtime_learn_enabled`，
+      **默认关闭**，关闭时行为与 payload 同 Sprint 8-1）：只做“Observe 已部署改动 +
+      汇总重复问题”，`persists` 默认**只建议回退**，需再开
+      `runtime_learn_auto_rollback` 才真的 `git revert`；**有意不做**自动提案/部署。
+      新增 `scripts/check_frozen_evolution_modules.py` 与基线
+      `docs/architecture_v2/phase9-frozen-modules.sha256`，把完成标志第 3、4 条要求的
+      `git diff` 核对做成一条命令。新增测试 44 个全部通过；**定向回归**（67 个测试
+      文件）977 passed / 19 failed，原压缩包同批 933 / 19 且失败集合逐条一致（均为既有
+      失败）；**未跑全量测试**（单核环境预计数小时）。测试首次运行即暴露并已修复一个
+      真实问题：崩溃留下的无换行残缺末行会连带损坏下一条记录。**Phase 9 仍不能整体
+      宣布完成**：完成标志第 3、4 条需在真实仓库运行上述脚本（`--base <Phase 9 起点
+      commit>`）后才能勾选；生产中仍没有自动产生 `DeployRecord` 的路径，“建议回退”也
+      没有面向用户的出口。详见 `10-phase9-self-evolution-sprint-plan.md` 末尾“Sprint
+      9-4 执行记录”。
 - [ ] Phase 10 Sprint 10-1（对外 API 收敛）**部分完成，验收未达成，触发止损**：
       新增 `scripts/entrypoint_inventory.py`（静态、可重复的入口盘点脚本，含 13 个
       测试）与 `docs/architecture_v2/phase10-entrypoint-inventory.md`。**盘点完成**：
