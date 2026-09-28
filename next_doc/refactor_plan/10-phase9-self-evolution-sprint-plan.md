@@ -61,12 +61,22 @@ Deploy → Observe → Promote / Rollback
 
 ## 完成标志
 
-- [ ] 至少一次真实问题模式走完了完整的 evolution 闭环
-- [ ] Rollback 机制在新链路下经过真实验证（不是"理论上应该没问题"）
+- [x] 至少一次真实问题模式走完了完整的 evolution 闭环（Sprint 9-3：
+      `test_full_loop_ends_in_real_rollback` / `..._promote_...`。**口径**：
+      Experience 数据是测试里灌入的，但 `ExperienceStore`（SQLite）、git
+      worktree 沙盒、`merge_branch()`、`revert()` 全是真实组件；**尚未**
+      拿生产环境的真实 Experience 数据跑过，见 Sprint 9-3 执行记录）
+- [x] Rollback 机制在新链路下经过真实验证（不是"理论上应该没问题"）
+      （断言的是磁盘文件真的消失、git 历史里真的有 revert commit，且验证
+      过回退冲突的失败路径；过程中发现并处理了两个真实问题，见 Sprint 9-3
+      执行记录）
 - [ ] 现有 `StateRepo/Validators/EvalRunner` 等安全设施未被修改，
-      只是接入方式改变
+      只是接入方式改变（**待勾**：Sprint 9-2、9-3 期间已用 sha256 核对未
+      改动，但 Sprint 9-1 及更早的状态无法仅凭压缩包核实，见下条）
 - [ ] `phase9-evolution-inventory.md` 中标注的"绝对不能动"的模块
-      在整个 Phase 过程中确实没有被修改（可用 git diff 核对）
+      在整个 Phase 过程中确实没有被修改（可用 git diff 核对）（**待勾**：
+      交付压缩包不含 `.git`，需在真实仓库里对 Phase 9 起点 commit 做
+      `git diff -- src/mini_agent/evolution/{state_repo,workspace,validators,eval_runner}.py`）
 
 ## Sprint 9-1 执行记录
 
@@ -217,3 +227,109 @@ patterns` inbound=1（`core/__init__.py`）/outbound=0（对
 
 可进入 **Sprint 9-3（Sandbox → Validation → Deploy 闭环打通）**（下一次
 对话的任务）。
+
+## Sprint 9-3 执行记录
+
+新增 `src/mini_agent/evolution/deployment.py`，只**新增调用方**，不修改
+任何安全设施文件。流程：
+
+    evaluate_proposal（9-2 dry-run 门）
+      → EvolutionWorkspace.create（git worktree 沙盒）
+      → 沙盒内 StateRepo(ws.path).apply(auto_validators=True)（第二道校验）
+      → 可选 smoke_boot
+      → classify_proposal_risk（既有 Track I 分级）
+      → 人审门（approve 回调）
+      → merge_branch（Deploy）→ DeployRecord
+      → make_experience_observer（Observe，读真实 Experience）
+      → settle_deployment（Promote / Rollback / 继续观察）
+
+### 关键设计决策
+
+1. **不自动合并，人审门保持**。既有设计是"低风险也要人点一下，高风险全人工
+   审核"。新链路不能因为由 Experience 驱动就绕开这道门：`deploy_proposal()`
+   **未注入 `approve` 时永远停在 `pending_approval`**（沙盒已验证、分支保留
+   不合并）。`approve(proposal, risk)` 返回 True 才合并，False 则删分支（与
+   既有"拒绝 = 删分支"一致）。`pending_approval` 的分支与旧 `skill_propose`
+   使用同一套 `evolve/*` 约定，可被既有 `/evolution merge` 直接接手（测试
+   `test_without_approve_stops_at_pending_and_keeps_branch` 验证）。
+2. **Rollback 逐 commit 逆序回退，而不是回退合并提交**。真实探针与测试
+   `test_reverting_a_merge_commit_directly_fails` 证实：`merge_branch()` 用
+   `--no-ff` 产生合并提交，而 `StateRepo.revert()` 不带 `-m`，对合并提交
+   直接失败（`is a merge but no -m option was given`）；且
+   `merge_branch(delete_after=True)` 合并后分支即被删，事后查不出分支含哪些
+   commit。因此**合并前**用 `commits_on_branch()` 记下全部 commit hash
+   （`DeployRecord.applied_commits`），Rollback 时逆序逐个调用公开的
+   `StateRepo.revert()`。原 commit 与合并提交保留在历史中（回退不改写历史）。
+3. **Observe 保守三态**：`improved`（样本 ≥ `min_samples` 且失败为 0 →
+   Promote）、`persists`（部署后同类失败 ≥ 阈值 → Rollback）、
+   `inconclusive`（证据不足 → **既不 Promote 也不 Rollback**，保持
+   `observing`）。只看 `deployed_at` 之后、与 `Problem.category` 同类（复用
+   9-1 的同一归一化）的 Experience。已定论（promoted/rolled_back）的记录再次
+   `settle` 不会重复回退。
+
+### 本 Sprint 发现并处理的两个真实问题
+
+- **回退冲突会把仓库留在"回退进行中"的半途状态**：`StateRepo.revert()`
+  遇冲突只抛异常，不会 `git revert --abort`（对比 `merge_branch()` 内部对
+  合并冲突做了 `--abort`）。测试 `test_rollback_failure_is_reported_not_
+  swallowed` 首次运行即因工作区残留 `UD` 未合并条目而失败，证实了这一点。
+  `state_repo.py` 属冻结文件不可改，故在 `rollback_deployment()` 里捕获异常
+  后调用 `repo._run_git(["revert","--abort"])` 收尾，并把记录标为
+  `rollback_failed`、如实写明原因，**不吞异常、不静默声称成功**。
+- **沙盒有两道独立校验**：`evaluate_proposal()` 与沙盒内 `apply()` 用的是
+  同一套校验函数，理论上后者是冗余的。测试
+  `test_sandbox_validation_is_an_independent_second_gate` 强行放行第一道后，
+  确认第二道仍能拦截坏提案并清理沙盒/分支——避免日后有人以"重复"为由删掉
+  其中一道。
+
+### 范围说明与已知局限（逐条如实记录）
+
+1. **`repo._run_git` 私有访问**（仅用于上述 `revert --abort`），代价：
+   `StateRepo` 若重命名该私有方法，`deployment.py` 会在回退冲突路径上出错。
+   更好的长期做法是让 `StateRepo.revert()` 自己在冲突时 abort——但这需要
+   修改冻结的安全设施，应走 `## 变更记录` 流程由人决定，本 Sprint 未擅自做。
+2. **`DeployRecord` 未持久化**，只提供 `to_dict()/from_dict()`。Observe
+   通常发生在部署之后若干次运行之后（可能跨进程），接入运行时前必须决定
+   存储位置（不应绕过 `StateRepo` 直接写受 git 管理的路径）。当前无运行时
+   调用方，`AgentRuntime` 的 `learn` 步骤仍为空。**这意味着闭环目前只能被
+   显式调用驱动，还不是"自动运转"的。**
+3. **`smoke_boot` 默认关闭**（`run_smoke_boot=False`）：它会启动子进程，成本
+   高；测试里用 monkeypatch 验证了"开启且失败则阻断并清理"及"默认不调用"，
+   **没有**在测试里真实拉起一次副本进程。T2/T3 提案建议开启，由调用方决定。
+4. **Observe 的阈值（`min_samples=3`、`persist_threshold=2`）是经验默认值**，
+   没有数据依据；样本很少时 `inconclusive` 会占多数，这是刻意的保守取舍。
+   它也不区分"失败是否与本次改动有关"，只看同类任务后续是否仍失败，
+   属于相关性而非因果判断。
+5. **`_normalize_category` / `_FAILURE_STATUSES` 是 9-1 模块的私有符号**，
+   Observe 直接 import 以保证与 Problem 检测口径一致，代价同 §1。
+6. **回退冲突场景下的半回退**：多 commit 部署时若第 N 个 revert 冲突，前
+   N-1 个已成功的 revert commit 保留，记录 `rollback_failed` 与
+   `revert_commits`，需要人工处理；没有自动"回退上一次回退"。
+7. `evolution/__init__.py` 仍未新增导出（理由同 9-2）。
+
+### 验收标准核对
+
+| 验收标准 | 结果 | 证据 |
+|---|---|---|
+| 完整走一次 Experience → … → Deploy → Observe → Promote/Rollback | 达成（口径见完成标志第 1 条） | `test_full_loop_ends_in_real_rollback`、`test_full_loop_ends_in_promote_and_repo_untouched` |
+| Rollback 场景经过真实验证 | 达成 | 上述测试断言：文件从磁盘消失、`git status` 干净、原 commit 与 revert commit 均在 `git log`、HEAD 前进；另有多 commit 逆序回退、回退冲突、重复 settle 三条 |
+| 安全设施未被绕开 | 达成 | 无 `approve` 时 HEAD 不变且不合并；评估拒绝/沙盒校验失败/smoke 失败三条路径均断言"无残留分支、`git worktree list` 只剩主仓库、HEAD 不变" |
+
+### 验证结果
+
+- 新增测试 `tests/test_phase9_sprint9_3_deployment.py`：17 用例全部通过。
+- 回归：evolution 与 Phase 3/9 相关测试文件共 373 用例，371 通过，2 失败，
+  与 Sprint 9-2 记录的是**同一个**既有失败（`test_evolution_cli.py` 的
+  revert 相关两条，原始压缩包中同样复现），与本 Sprint 无关，未处理。
+- `pyflakes` 对 `deployment.py` 与新测试文件无告警。
+- `scripts/dep_graph.py --module evolution.deployment`：inbound=0，
+  未触发止损阈值。
+- 冻结模块核对：`state_repo.py`/`workspace.py`/`validators.py`/
+  `eval_runner.py`/`failure_pattern_store.py`/`proposal_risk.py` 与原始压缩包
+  sha256 一致；`diff -rq src/` 相对原包仅多出 `proposals.py`（9-2）与
+  `deployment.py`（9-3）两个新文件。**仍需在真实仓库里用 `git diff` 核对**
+  （见完成标志第 4 条）。
+
+Sprint 9-3 是 Phase 9 的最后一个 Sprint。**Phase 9 尚不能整体宣布完成**：
+完成标志第 3、4 条待在真实仓库核对后勾选，第 1 条建议再用一次真实 Experience
+数据跑通，并需决定 `DeployRecord` 的持久化与运行时接入方式（局限 §2）。

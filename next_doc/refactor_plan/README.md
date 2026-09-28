@@ -660,3 +660,22 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       详见 `10-phase9-self-evolution-sprint-plan.md` 末尾“Sprint 9-2 执行
       记录”与 `MIGRATION_STATUS.md`。可进入 **Sprint 9-3（Sandbox →
       Validation → Deploy 闭环打通）**（下一次对话的任务）。
+- [x] Sprint 9-3（Sandbox → Validation → Deploy 闭环打通）已完成：新增
+      `evolution/deployment.py`——`deploy_proposal()`（9-2 dry-run 门 →
+      `EvolutionWorkspace` 沙盒内 `apply(auto_validators=True)` → 可选
+      smoke boot → `classify_proposal_risk()` → 人审门 → `merge_branch()`）、
+      `make_experience_observer()`（用真实 Experience 做 Observe）、
+      `settle_deployment()`/`rollback_deployment()`（Promote / Rollback /
+      继续观察）。**未注入 `approve` 时永远停在 `pending_approval`，不自动
+      合并**，分支可被既有 `/evolution merge` 接手。Rollback 采用**合并前记录
+      分支 commit、逆序逐个 `StateRepo.revert()`**，因为真实验证发现
+      `revert()` 对 `--no-ff` 合并提交直接失败；同时发现 `revert()` 遇冲突
+      不会中止、会把仓库留在半途状态，已在调用方收尾并如实标记
+      `rollback_failed`。验收标准用新增测试
+      `tests/test_phase9_sprint9_3_deployment.py`（17 用例）验证，全部通过，
+      Rollback 断言的是磁盘与 git 历史而非状态字段。回归 373 用例 371 通过，
+      2 个失败为 `test_evolution_cli.py` 既有失败；安全设施文件与原包
+      sha256 一致。**Phase 9 尚不能整体宣布完成**：完成标志第 3、4 条需在
+      真实仓库用 `git diff` 核对；`DeployRecord` 尚未持久化、`AgentRuntime`
+      的 `learn` 步骤仍未接入，闭环目前只能被显式调用驱动。详见
+      `10-phase9-self-evolution-sprint-plan.md` 末尾“Sprint 9-3 执行记录”。

@@ -146,3 +146,31 @@ Sprint 9-2 新增 `evolution/proposals.py` 后，`evolution/` 内部新增以下
 本次补充只新增文档，`phase9-evolution-inventory.md` 第二至五节的分类结论
 不受影响：`proposals.py` 归入“决策逻辑”一类（Hypothesis/Proposal 生成 +
 Evaluation 对接），不属于安全设施。
+
+## 七、Sprint 9-3 接入关系补充（2026-09-28）
+
+Sprint 9-3 新增 `evolution/deployment.py`，同样是“新模块 → 既有模块”的单向
+依赖，既有模块不知道它的存在：
+
+| `deployment.py` 依赖的既有模块 | 依赖方式 | 类别 | 说明 |
+|---|---|---|---|
+| `workspace.py` | `EvolutionWorkspace.create()` / `destroy()` / `smoke_boot()` | 安全设施（冻结） | 只调用公开接口；沙盒隔离完全由其提供 |
+| `state_repo.py` | `StateRepo(ws.path).apply()`、`commits_on_branch()`、`merge_branch()`、`revert()`、`delete_branch()`、`current_branch()`；**私有** `_run_git(["revert","--abort"])` | 安全设施（冻结） | 私有访问仅用于回退冲突收尾，是已知代价（见 Sprint 计划文档局限第 1 条） |
+| `proposal_risk.py` | `classify_proposal_risk()` | 决策逻辑 | 风险分级不重写 |
+| `proposals.py`（9-2） | `evaluate_proposal()`、`EvolutionProposal.apply_kwargs()` | Phase 9 产出 | 9-2 预留的接口在此被真实使用 |
+| `core/experience_patterns.py`（9-1） | 函数内延迟 import `_normalize_category`/`_FAILURE_STATUSES`（私有）；`Problem` 仅 `TYPE_CHECKING` | Phase 9 产出 | Observe 与 Problem 检测保持同一口径 |
+
+**对冻结安全设施的两条实测发现**（未修改它们，仅记录，供后续是否走
+`## 变更记录` 流程时参考）：
+
+1. `StateRepo.revert()` 不带 `-m`，对 `merge_branch()` 产生的 `--no-ff` 合并
+   提交直接失败；
+2. `StateRepo.revert()` 遇冲突只抛异常，不中止进行中的 `git revert`，会把
+   仓库留在冲突的半途状态（`merge_branch()` 对合并冲突则会 `--abort`）。
+
+**冻结模块核对（阶段性）**：Sprint 9-3 交付时，四个安全设施及
+`failure_pattern_store.py`/`proposal_risk.py` 与原始压缩包 sha256 一致；
+`src/` 相对原包仅新增 `proposals.py`、`deployment.py`。压缩包不含 `.git`，
+该结论不能替代 Phase 收尾时在真实仓库里的 `git diff` 核对。
+
+分类结论不变：`deployment.py` 归入“决策逻辑/编排”，不属于安全设施。
