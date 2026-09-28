@@ -1099,6 +1099,12 @@ class GoalModeConfig:
     # 仓库执行 `git revert`，与合并一样属于需要人来决定的动作。
     runtime_learn_auto_rollback: bool = False
 
+    # ── [next_doc/refactor_plan/14-phase10-sa-item-plan.md A2] AgentRuntime 的
+    #    observe 步骤是否顺带刷新 `CapabilityState` 快照（读三个注册表的名字并交给
+    #    StateManager 托管）。默认关闭（保守 opt-in）：关闭时 `run_once()` 除了
+    #    RuntimeState 的事件订阅（纯内存、只读）之外行为与此前完全一致。
+    runtime_capability_snapshot_enabled: bool = False
+
 
 @dataclass
 class GoalExecutionSpecConfig:

@@ -1,6 +1,7 @@
 # Phase 10 S-A 分项方案（补齐前置条件）——待所有者确认后实施
 
-> 状态：**方案，未实施，未改任何代码。** 承接 `13-phase10-post-decision-execution-plan.md` 第八节：
+> 状态：**方案已获所有者确认（Q-A5/Q-A3/Q-A4/顺序 均“接受”，Q-A2 按推荐 (a)）；A2 已完成（第八节）；其余未实施。**
+> 原状态：方案，未实施，未改任何代码。 承接 `13-phase10-post-decision-execution-plan.md` 第八节：
 > 所有者已确认“不机械改名、重点理顺逻辑”“A5 只做只读投影 + 事件、不改 Objective 执行模型”。
 > 本文把 S-A 的 A2–A5 逐项落到**真实代码现状**上（2026-09-28 静态核实），给出推荐做法与需你决定的问题。
 > A1（Phase 9 完成标志第 3、4 条，需真实 git 仓库）只能由所有者执行，不在本文范围。
@@ -97,3 +98,46 @@ A2 之前我会先核实三个注册表的只读 API（写进该步执行记录�
 - **Q-A3（决策）**：接受“默认关闭、advisory-only、不执行所选动作”吗？还是你要让决策真正驱动执行（需改 `GoalRunner`，另立方案）？
 - **Q-A4（executor）**：接受“评估后保留、不迁移”吗？
 - **Q-顺序**：接受第六节顺序，从 A2 的 Runtime/Capability 开始吗？
+
+## 八、执行记录
+
+### A2（2026-09-28）：RuntimeState / CapabilityState 填入真实字段——已完成
+
+所有者对 Q-A5/Q-A3/Q-A4/Q-顺序 均答“接受”。**Q-A2（World）未获明确答复**，按推荐的 (a) 处理：`WorldState` 保持空占位
+（无真实来源），由 `tests/test_phase4_state_placeholders.py::test_world_state_is_still_an_empty_placeholder` 和
+`tests/test_phase10_sa_a2_runtime_capability_state.py::test_worldstate_stays_empty_placeholder` 守住；如需改为 (b) 随时可调。
+
+| 文件 | 内容 |
+|---|---|
+| `core/runtime.py` | `RuntimeState`：`cycles_started/completed`、`last_cycle_status`、`last_cycle_started_at/finished_at`、`last_gap_item_count`、`last_learn_summary`——**每个字段都只来自 `RuntimeCycleStarted/Completed` 事件**，文件头有字段→来源表 |
+| `core/capability.py` | `CapabilityState`：`tools`（`ToolRegistry.names()`）、`skills_available/active`（`SkillLoader.available/active`）、`workflows`（`WorkflowStore.list_all()` 的 `name`）、`refreshed_at`——只存名字，不是第二份真相来源 |
+| `core/capability_projector.py`（新增） | `build_capability_state()`（纯读取）+ `refresh_capability_state()`（交给 `StateManager`）；三个来源均可选、单个来源失败互不影响、永不抛异常；**不会自己构造 `WorkflowStore`**（其 `__init__` 会 `mkdir`，有副作用，仅在调用方显式传入时才读） |
+| `core/state_manager.py` | 订阅 `RuntimeCycleStarted/Completed`；`RuntimeState` 由事件从零累计（不需要外部 seed，不会出现“字段不完整”）；payload 类型不对时只跳过该字段 |
+| `runtime/runtime.py` | ① `run_once()` 开头、发布 Started 事件**之前**幂等调用 `ensure_state_manager_subscribed()`（否则第一个周期的 Started 会丢，原订阅点在 `GoalRunner.run()` 内、晚于该事件）；② observe 步在 opt-in 时刷新 `CapabilityState` |
+| `config/models.py` | 新增 `goal_mode.runtime_capability_snapshot_enabled`，**默认 False** |
+
+**与 14 号文档第二节原方案的偏差（如实记录）**：原方案写“不改 `runtime.py`”。实际需要改两处小改动：订阅时序（①）和
+opt-in 的快照刷新（②）。①无开关但幂等、纯内存、只读（`GoalRunner.run()` 本来就会做同样的订阅）；②默认关闭。
+若不接线，`RuntimeState` 第一个周期会漏计、`CapabilityState` 则没有任何产出方。
+
+**默认行为变化**：无。唯一可观察差异——`StateManager.snapshot()` 在第一次 `run_once()` 之后会多出 `runtime` 这个 key
+（原先只有 `goal`）；`observe` 步只把 key 名写进 debug 日志，`detect_gap` 只读 `goal`，均不受影响。
+
+**测试**
+- 新增 `tests/test_phase10_sa_a2_runtime_capability_state.py` 15 用例：事件累计与并发计数差值、payload 类型不对不抛错、
+  learn 摘要跨周期保留、三个来源可选且失败隔离、投影不产生磁盘副作用、真实 `ToolRegistry`/`WorkflowStore` 兼容、
+  `run_once()` 端到端（**含第一个周期的 Started 被计到**）、快照默认关/开/刷新失败不影响周期、World 仍为空。
+- **修改了既有测试**：`tests/test_phase4_state_placeholders.py` 里“占位必须是空 dict”的断言描述的是 Phase 4 事实，A2 有意改变了它——
+  已改为：World 仍断言为空；Capability/Runtime 断言“已有字段，但托管/读回/snapshot 形状契约不变”。这是有意改断言，不是绕过失败。
+- 定向回归（`test_core_*`/`test_phase*`/`test_capability*`/`test_persona*`/`test_goal_mode`/`test_cron*`/`test_slash*`/`test_api*`/`test_state*`）
+  883 用例，877 通过；6 个失败均为既有（5 个 `test_build_from_history_*` + `test_draft_show_publish_full_flow`），无新增。
+  （中途一度出现 5 个 Phase 4 占位断言失败，正是上一条“有意改断言”修好的。）`pyflakes` 无新告警；
+  `lint_no_new_toplevel_concepts` 通过；`dep_graph.py --module core.state_manager` 深度 inbound=4，未触发止损。
+
+**局限**：`CapabilityState` 只在开启开关后、每次 `run_once()` 的 observe 步刷新一次，不是实时；不含 workflows（observe 步不传
+`workflow_store`，避免 `mkdir` 副作用），需要 workflows 时由调用方自己传入 `refresh_capability_state(..., workflow_store=...)`；
+`RuntimeState` 只反映本进程内、经 `AgentRuntime.run_once()` 发起的周期（不含旧的 cron/AutonomousLoop 路径，那些已被评估为不接入）。
+
+### 下一步
+
+按确认的顺序：**A5（拉取式投影，不改 `objective_executor.py`）→ B3 → A3（默认关闭 advisory）→ A4（评估后保留，仅文档）**。

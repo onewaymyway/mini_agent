@@ -55,6 +55,7 @@ Action / Simulation 的最小 dataclass，待对应 Phase（Phase 6 / Phase 7）
 
 from .adapter import Adapter
 from .capability import CapabilityState
+from .capability_projector import build_capability_state, refresh_capability_state
 from .event_bus import EventBus, get_event_bus, reset_event_bus
 from .event_log_store import (
     EventLogStore,
@@ -91,6 +92,8 @@ from .world import WorldState
 __all__ = [
     "Adapter",
     "CapabilityState",
+    "build_capability_state",
+    "refresh_capability_state",
     "RuntimeState",
     "WorldState",
     "EVENT_KINDS",

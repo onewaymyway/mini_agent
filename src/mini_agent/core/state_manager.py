@@ -41,6 +41,7 @@ from typing import Dict, Optional
 from .event_bus import EventBus, get_event_bus
 from .events import Event
 from .goal import GoalState
+from .runtime import RuntimeState
 
 _logger = logging.getLogger("mini_agent.core.trace")
 
@@ -127,10 +128,49 @@ class StateManager:
                 state.status = status
             state.updated_at = time.time()
 
+    def _runtime_state_locked(self) -> RuntimeState:
+        """取（必要时新建）RuntimeState。调用方必须已持有 `self._lock`。
+
+        与 GoalState 不同，RuntimeState 完全由事件推导，不需要外部先 seed：
+        从零值开始累计不会造成“字段不完整”的状态。
+        """
+        state = self._states.get("runtime")
+        if not isinstance(state, RuntimeState):
+            state = RuntimeState()
+            self._states["runtime"] = state
+        return state
+
+    def _on_runtime_cycle_started(self, event: Event) -> None:
+        """订阅 `RuntimeCycleStarted`（Phase 10 A2）。"""
+        with self._lock:
+            st = self._runtime_state_locked()
+            st.cycles_started += 1
+            st.last_cycle_started_at = event.at
+
+    def _on_runtime_cycle_completed(self, event: Event) -> None:
+        """订阅 `RuntimeCycleCompleted`（Phase 10 A2）。payload 字段缺失/类型不对时只跳过该字段。"""
+        payload = event.payload or {}
+        with self._lock:
+            st = self._runtime_state_locked()
+            st.cycles_completed += 1
+            st.last_cycle_finished_at = event.at
+            status = payload.get("status")
+            if isinstance(status, str):
+                st.last_cycle_status = status
+            gap = payload.get("gap_item_count")
+            if isinstance(gap, int) and not isinstance(gap, bool):
+                st.last_gap_item_count = gap
+            # `learn` 键仅在开启 learn 步骤时才有；没有时保留上一次的摘要，不清空
+            learn = payload.get("learn")
+            if isinstance(learn, dict):
+                st.last_learn_summary = dict(learn)
+
     def subscribe_to_bus(self, bus: Optional[EventBus] = None) -> None:
         """把本实例的事件回调挂到 `bus`（默认全局单例）上。"""
         bus = bus or get_event_bus()
         bus.subscribe("GoalUpdated", self._on_goal_updated)
+        bus.subscribe("RuntimeCycleStarted", self._on_runtime_cycle_started)
+        bus.subscribe("RuntimeCycleCompleted", self._on_runtime_cycle_completed)
 
 
 _default_manager: Optional[StateManager] = None

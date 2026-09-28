@@ -120,6 +120,10 @@ class AgentRuntime:
             learn_auto_rollback if learn_auto_rollback is not None
             else bool(getattr(gm, "runtime_learn_auto_rollback", False))
         )
+        # Phase 10 A2：observe 步是否刷新 CapabilityState（默认关闭）。
+        self._capability_snapshot_enabled = bool(
+            getattr(gm, "runtime_capability_snapshot_enabled", False)
+        )
         # 供调用方在 `run_once()` 抛出 KeyboardInterrupt 时取到底层
         # `GoalRunner` 实例以便调用 `runner.pause()`（见
         # `cli/commands/goal_mode_cmd.py::_run_goal()`）。只在
@@ -144,6 +148,20 @@ class AgentRuntime:
         """
         correlation_id = _uuid.uuid4().hex
         bus = get_event_bus()
+        # Phase 10 A2：必须在发布 `RuntimeCycleStarted` **之前**确保 StateManager 已订阅，
+        # 否则第一次周期的 Started 事件会丢失（`GoalRunner.run()` 里的同款订阅发生在
+        # 本方法之后）。幂等，重复调用无副作用；失败只记日志，不影响周期。
+        try:
+            from mini_agent.core.state_manager import ensure_state_manager_subscribed
+
+            ensure_state_manager_subscribed()
+        except Exception:
+            from mini_agent.errors import log_exception
+
+            log_exception(
+                Exception("AgentRuntime.run_once: ensure_state_manager_subscribed 失败"),
+                where="mini_agent.runtime.runtime.AgentRuntime.run_once.subscribe_state",
+            )
         bus.publish(
             Event(
                 kind="RuntimeCycleStarted",
@@ -160,6 +178,24 @@ class AgentRuntime:
         # 读一次当前 StateManager 里已经托管的状态快照，供下面 gap
         # detect 使用，不假装有更多能力。
         state_manager = get_state_manager()
+        # Phase 10 A2（opt-in，默认关闭）：刷新一次 CapabilityState 快照再读 snapshot。
+        # 只读三个注册表的名字；失败只记日志。不传 workflow_store（其构造有 mkdir 副作用）。
+        if self._capability_snapshot_enabled:
+            try:
+                from mini_agent.core.capability_projector import refresh_capability_state
+
+                refresh_capability_state(
+                    registry=getattr(self._agent, "registry", None),
+                    skill_loader=getattr(self._agent, "skill_loader", None),
+                    state_manager=state_manager,
+                )
+            except Exception:
+                from mini_agent.errors import log_exception
+
+                log_exception(
+                    Exception("AgentRuntime.run_once: 刷新 CapabilityState 失败"),
+                    where="mini_agent.runtime.runtime.AgentRuntime.run_once.capability_snapshot",
+                )
         observed_snapshot = state_manager.snapshot()
         _logger.debug(
             "%s",

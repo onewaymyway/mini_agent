@@ -739,3 +739,7 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
 - [ ] Phase 10 S-A 分项方案已产出（`14-phase10-sa-item-plan.md`，2026-09-28）：A2 只投影有真实来源的字段（Runtime/Capability），World 是否填待定；
       A5 推荐拉取式投影（不改 `objective_executor.py`）；A3 推荐默认关闭的 advisory 旁路；A4 推荐评估后保留。**仅方案，未改代码**，
       并更正了 13 号文档里“`enable_decision_stage` 开关已存在”的事实错误。等待所有者回答 Q-A2/Q-A5/Q-A3/Q-A4/Q-顺序。
+- [x] Phase 10 S-A A2 完成（2026-09-28）：`RuntimeState`（事件驱动：周期计数/最近状态/时间戳/gap 数/learn 摘要）与 `CapabilityState`
+      （ToolRegistry/SkillLoader/WorkflowStore 名字快照，`core/capability_projector.py`）已填真实字段；`WorldState` 无真实来源，保持空占位
+      （Q-A2 未答复，按推荐 (a)）。`runtime.py` 有两处小改动（订阅时序 + opt-in 快照刷新，`goal_mode.runtime_capability_snapshot_enabled` 默认 False），
+      默认行为不变。新增 15 用例；有意修改了 Phase 4 的占位断言；定向回归无新增失败。详见 `14-…` 第八节。下一步 A5。

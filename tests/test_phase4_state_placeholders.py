@@ -8,6 +8,11 @@ Sprint 4-2 验收标准：
 2. `snapshot()` 输出的结构和 Sprint 4-1 里 `GoalState` 的真实数据一致
    （同样是"kind -> dict"的形状），哪怕占位 State 内容是空 dict。
 
+**Phase 10 S-A A2 更新（2026-09-28）**：`CapabilityState`/`RuntimeState` 已从空占位填为
+真实字段（见 `14-phase10-sa-item-plan.md`、`tests/test_phase10_sa_a2_runtime_capability_state.py`），
+因此下面“必须是空”的断言只再适用于 `WorldState`（仍无真实来源，保持空占位）；
+Capability/Runtime 改为断言“仍可被 StateManager 托管、snapshot 形状不变、字段非空定义”。
+
 `SelfState` 在 Sprint 1.5 已经是真实字段的领域模型，不是本 Sprint 新建
 的占位（这点与计划文档字面表述有出入，`README.md`/本文件顶部按实情
 如实记录），因此额外补一条断言：`agent/lifecycle.py` 唯一接入点确实
@@ -41,30 +46,31 @@ def _reset_manager():
     reset_state_manager()
 
 
-@pytest.mark.parametrize(
-    "cls, kind",
-    [
-        (WorldState, "world"),
-        (CapabilityState, "capability"),
-        (RuntimeState, "runtime"),
-    ],
-)
-def test_placeholder_state_has_no_fabricated_fields(cls, kind):
-    """占位 State 必须是真正的"空"，不能提前编造字段（止损条件）。"""
-    state = cls()
-    assert state.__dict__ == {}
+def test_world_state_is_still_an_empty_placeholder():
+    """WorldState 仍无任何真实产出方（Q-A2 选 (a)），必须是真正的\"空\"，不能编造字段。"""
+    assert WorldState().__dict__ == {}
 
 
-@pytest.mark.parametrize(
-    "cls, kind",
-    [
-        (WorldState, "world"),
-        (CapabilityState, "capability"),
-        (RuntimeState, "runtime"),
-    ],
-)
-def test_placeholder_state_can_be_managed_without_error(cls, kind):
+def test_world_placeholder_can_be_managed_without_error():
     """占位 State 通过 StateManager 托管 + 读回 + snapshot 都不应该报错。"""
+    manager = StateManager()
+    state = WorldState()
+
+    manager.update_state("world", state)
+
+    assert manager.get_state("world") is state
+    assert manager.snapshot()["world"] == {}
+
+
+@pytest.mark.parametrize(
+    "cls, kind",
+    [(CapabilityState, "capability"), (RuntimeState, "runtime")],
+)
+def test_filled_states_are_still_manageable_and_snapshot_as_dict(cls, kind):
+    """A2 之后 Capability/Runtime 有真实字段，但托管/读回/snapshot 的契约不变。"""
+    from dataclasses import fields
+
+    assert len(fields(cls)) > 0
     manager = StateManager()
     state = cls()
 
@@ -72,13 +78,11 @@ def test_placeholder_state_can_be_managed_without_error(cls, kind):
 
     assert manager.get_state(kind) is state
     snap = manager.snapshot()
-    assert snap[kind] == {}
+    assert isinstance(snap[kind], dict) and set(snap[kind]) == {f.name for f in fields(cls)}
 
 
 def test_snapshot_shape_consistent_across_real_and_placeholder_states():
-    """`snapshot()` 对"有真实数据的 GoalState"和"空占位 State"输出的都是
-    同一种形状（dict），而不是真实的走一套格式、占位的走另一套。
-    """
+    """`snapshot()` 对\"有真实数据的 State\"和\"空占位 State\"输出的都是同一种形状（dict）。"""
     from mini_agent.core.goal import GoalState
 
     manager = StateManager()
@@ -90,9 +94,9 @@ def test_snapshot_shape_consistent_across_real_and_placeholder_states():
     snap = manager.snapshot()
 
     assert isinstance(snap["goal"], dict) and snap["goal"]["goal_text"] == "写周报"
-    for kind in ("world", "capability", "runtime"):
-        assert isinstance(snap[kind], dict)
-        assert snap[kind] == {}
+    assert snap["world"] == {}  # 唯一仍是空占位的
+    for kind in ("capability", "runtime"):
+        assert isinstance(snap[kind], dict) and snap[kind]  # 已有真实字段
 
 
 def test_self_state_is_seeded_into_state_manager_like_lifecycle_does(caplog):

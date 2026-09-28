@@ -196,3 +196,7 @@ outbound=0，未触发止损阈值）+ 未发现新增回归。
 
 Sprint 4-2（`SelfState`/`WorldState`/`CapabilityState`/`RuntimeState`
 占位 + 一致性快照的占位联调）留待下一次推进。
+
+> **后续更新（2026-09-28，Phase 10 S-A A2）**：本文 Sprint 4-2 建立的 `CapabilityState`/`RuntimeState` 占位已填入真实字段
+> （来源分别为 ToolRegistry/SkillLoader/WorkflowStore 与 `RuntimeCycleStarted/Completed` 事件），`WorldState` 仍保持空占位。
+> 上文正文保持历史原貌；`tests/test_phase4_state_placeholders.py` 的断言已相应调整。详见 `14-phase10-sa-item-plan.md` 第八节。
