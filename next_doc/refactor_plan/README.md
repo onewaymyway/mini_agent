@@ -599,3 +599,17 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       执行记录"与"Phase 8 收尾说明"。**Phase 8 到此收尾**，可进入
       **Phase 9（Self Evolution 接入统一 Experience）**（下一次对话
       的任务）。
+- [x] Phase 9（Self Evolution 接入统一 Experience）"现状盘点"已完成：
+      产出 `docs/architecture_v2/phase9-evolution-inventory.md`，对
+      `evolution/` 目录全部 67 个模块逐一分类——**安全设施**（`state_
+      repo.py`/`workspace.py`/`validators.py`/`eval_runner.py`，共 4 个，
+      本 Phase 及后续 Sprint 严禁修改内部实现，只允许新增调用方对接）、
+      **决策逻辑**（`failure_pattern_store.py`/`decision_recall.py`/
+      `proposal_risk.py`/`capability_learning.py`/`soft_goal_deriver.py`
+      等 15 个，是 Sprint 9-1～9-3 要重新接到统一 Experience 上的
+      迁移对象）、**不相关**（48 个，分调度/自主循环——已在 Phase 8
+      逐一评估过、Memory/Perception 治理——属于 Phase 1.5 范围、
+      Wiki/报表展示、日常运维、自我叙事等子领域，本 Phase 不处理）。
+      本次盘点未修改任何生产代码，无需跑回归测试。可进入
+      **Sprint 9-1（Pattern 检测接入 Experience Analyzer）**（下一次
+      对话的任务）。
