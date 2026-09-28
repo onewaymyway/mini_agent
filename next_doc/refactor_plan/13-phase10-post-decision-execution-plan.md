@@ -166,3 +166,24 @@ Streamlit 看板 `app.py` 里除提示语外的界面文案（如“能力学习
 
 
 > **进展更新（2026-09-28）**：A5 已按“拉取式投影”完成，详见 `14-phase10-sa-item-plan.md` 第九节；B3 现在可用 `project_objective_executions()` 作为数据来源。
+
+## 十、B3 执行记录（2026-09-28）：Objective 改称 Goal 步骤——已完成
+
+前置 A5 已完成。按所有者 Q1（只改 Objective）执行；`/workflow`、`/cron` 等未动。
+
+| 变更 | 内容 |
+|---|---|
+| 新名（唯一对外名） | `/v1/objectives/*` 共 9 条路由 → `/v1/goal_steps/*`（cancel/pause/resume/retry/guidance/steps/{i}/edit/steps/{i}/reset/steps/{i}/trace/completion_trend），docstring、`routes.py` 顶部路由清单、`docs/http-api-guide.md`、`docs/daemon-autonomous-state-recovery-guide.md` 已同步 |
+| 旧名 | 保留为**隐藏别名**（`include_in_schema=False`，同一个处理函数，行为完全一致），不删除 |
+| 新只读端点 | `GET /v1/goals/{goal_id}/steps`：`goal_id` 可为 goal 或 objective 节点，返回其下执行记录 + 步骤列表；数据来自 A5 的 `project_objective_executions()`（**这是 A5 的第一个生产调用方**），读取时按去重规则发布 `ObjectiveProjected` |
+| 调用方 | `apps/mini_agent_kanban/client.py`、`apps/mini_agent_kanban_x/src/api/endpoints.ts`、`cli/commands/goals.py` 已切到新名 |
+
+**如实说明**
+1. **只是术语与投影层收敛，不是执行模型迁移**：`ObjectiveExecutor` 仍是旧实现，执行仍 100% 走旧链路（与第六节第 1 条一致）。
+2. 路径中的 `{execution_id}` 仍是执行记录 id，不是 goal id；所以控制类操作是 `/v1/goal_steps/{execution_id}/…`，只有只读列表挂在 `/v1/goals/{goal_id}/steps` 下。这是有意的——按 goal id 定位会有“一个 goal 多个 objective/多次执行”的歧义，控制操作必须精确到 execution。
+3. **前端未构建验证**：`endpoints.ts` 只做了字符串替换，本环境无 node 构建；旧名别名保证即使前端没重新构建也不会坏。
+4. `docs/architecture_v2/phase10-entrypoint-inventory.md` 的快照**未重新生成**（是带人工结论的快照）。用脚本重跑的对照：HTTP 路由 309 → 319（+9 个隐藏别名、+1 个新端点；脚本会把隐藏别名也计入路由数）；`http_docs` 的 “Objective” 类名命中不变，因为剩余命中来自 `/v1/self/execution_model_status` 等**描述内部执行引擎类名**的端点，不在 B3 范围。
+5. “用户可见面旧概念词命中为 0” 的机器验收已在 Q1 取消，未做。
+
+**测试**：新增 `tests/test_phase10_b3_goal_steps.py` 16 用例（新旧路径打到同一处理函数、逐条断言每个旧路由都有新孪生且被隐藏、OpenAPI 只含新名、`/goals/{id}/steps` 只返回该 goal 的执行且只读、未知 goal 404、无执行器 503、调用方已切新名）。定向回归 1250 用例，1242 通过；8 个失败均为既有（5 个 `test_build_from_history_*`，另 3 个 `test_capability_routes_mount`/`test_explorer_runtime_subagent`/`test_notification_dispatcher` 已在原始压缩包上复现）。未跑全量测试，未跑 kanban 前端。
+

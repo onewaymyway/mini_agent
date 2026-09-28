@@ -118,7 +118,7 @@ api/routes.py — FastAPI 路由定义
                                        dashboard.kanban_view 或数据文件
                                        尚未产出时返回 {"available": false}
     GET    /v1/self/llm_call_stats   [同上 方向 B.2] 按天聚合的 LLM 调用计数
-    GET    /v1/objectives/completion_trend  [同上 方向 D.1] Objective 完成率
+    GET    /v1/goal_steps/completion_trend  [同上 方向 D.1] Objective 完成率
                                        每日趋势（快照挂在 /growth/scan 上记录）
     GET    /v1/wiki/quarantine_status  [同上 方向 E] wiki 隔离区积压
     POST   /v1/wiki/stats            [wiki_kanban_tab_async_plan.md 改造为
@@ -274,18 +274,20 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/self/task_concurrency [kanban_concurrency_control_plan.md]
                                        运行时热改 Objective/Goal 通道、Cron
                                        通道各自的最大并发执行数
-    POST   /v1/objectives/{execution_id}/cancel    终止一个正在运行的 Objective 执行
-    POST   /v1/objectives/{execution_id}/retry     手动重试当前 step（不等超时）
-    POST   /v1/objectives/{execution_id}/steps/{step_index}/reset
+    POST   /v1/goal_steps/{execution_id}/cancel    终止一个正在运行的 Objective 执行
+    POST   /v1/goal_steps/{execution_id}/retry     手动重试当前 step（不等超时）
+    POST   /v1/goal_steps/{execution_id}/steps/{step_index}/reset
                                       [daemon_autonomous_state_recovery_plan.md]
                                       手动把某一步打回 pending 重做（含清空
                                       其之后所有步骤的既有进度）
-    POST   /v1/objectives/{execution_id}/steps/{step_index}/edit
+    POST   /v1/goal_steps/{execution_id}/steps/{step_index}/edit
                                       [daemon_stability_and_ux_improvement_plan.md
                                       P2-10] 编辑一个已完成 step 的产出并继续，
                                       不重新执行该 step（与 /reset 互补）
-    POST   /v1/objectives/{execution_id}/guidance  插一句补充说明，供下次提交时使用
-    GET    /v1/objectives/{execution_id}/steps/{step_index}/trace
+    POST   /v1/goal_steps/{execution_id}/guidance  插一句补充说明，供下次提交时使用
+    GET    /v1/goal_steps/{execution_id}/steps/{step_index}/trace
+                                     （以上 /v1/goal_steps/* 原名 /v1/objectives/*，旧名仍可用，为隐藏别名）
+    GET    /v1/goals/{goal_id}/steps  [Phase 10 B3] 某 Goal 下的执行记录与步骤（只读投影）
                                      查看某个 step 实际执行过程（完整 tool_call/
                                      tool_result 序列），而非截断摘要
     GET    /v1/inbox                 全局待办中心：跨 session 聚合权限/交互请求 + 失败 Objective +
@@ -7435,9 +7437,10 @@ def _objective_executor_or_404(request: Request):
     return oe
 
 
-@router.post("/objectives/{execution_id}/cancel")
+@router.post("/goal_steps/{execution_id}/cancel")
+@router.post("/objectives/{execution_id}/cancel", include_in_schema=False)  # 旧名隐藏别名（Phase 10 B3）
 async def cancel_objective(request: Request, execution_id: str):
-    """POST /v1/objectives/{execution_id}/cancel — 终止一个正在运行的 Objective
+    """POST /v1/goal_steps/{execution_id}/cancel — 终止一个正在运行的 Objective
     执行：立即释放并发槽位，不再重试；对应 GoalNode.status 会同步变为
     "cancelled"（见 ObjectiveExecutor._on_objective_cancelled）。"""
     oe = _objective_executor_or_404(request)
@@ -7450,9 +7453,10 @@ async def cancel_objective(request: Request, execution_id: str):
     return {"ok": True}
 
 
-@router.post("/objectives/{execution_id}/pause")
+@router.post("/goal_steps/{execution_id}/pause")
+@router.post("/objectives/{execution_id}/pause", include_in_schema=False)  # 旧名隐藏别名（Phase 10 B3）
 async def pause_objective(request: Request, execution_id: str):
-    """POST /v1/objectives/{execution_id}/pause — [daemon_stability_and_
+    """POST /v1/goal_steps/{execution_id}/pause — [daemon_stability_and_
     ux_improvement_plan.md P1-5] 用户主动暂停一个正在运行/因公平性暂停的
     Objective execution：不释放已完成 step 的进度，也不重新拆解，只是
     不再提交下一步，等用户显式调用 /resume 才继续。如果当前 step 正在
@@ -7468,9 +7472,10 @@ async def pause_objective(request: Request, execution_id: str):
     return {"ok": True}
 
 
-@router.post("/objectives/{execution_id}/resume")
+@router.post("/goal_steps/{execution_id}/resume")
+@router.post("/objectives/{execution_id}/resume", include_in_schema=False)  # 旧名隐藏别名（Phase 10 B3）
 async def resume_objective(request: Request, execution_id: str):
-    """POST /v1/objectives/{execution_id}/resume — 恢复一个被用户主动暂停
+    """POST /v1/goal_steps/{execution_id}/resume — 恢复一个被用户主动暂停
     （paused_by_user）的 Objective execution：从断点（current_step_idx）
     重新提交，不重新拆解、不丢失已完成 step 的进度。"""
     oe = _objective_executor_or_404(request)
@@ -7483,9 +7488,10 @@ async def resume_objective(request: Request, execution_id: str):
     return {"ok": True}
 
 
-@router.post("/objectives/{execution_id}/retry")
+@router.post("/goal_steps/{execution_id}/retry")
+@router.post("/objectives/{execution_id}/retry", include_in_schema=False)  # 旧名隐藏别名（Phase 10 B3）
 async def retry_objective_step(request: Request, execution_id: str):
-    """POST /v1/objectives/{execution_id}/retry — 手动触发当前 step 重新
+    """POST /v1/goal_steps/{execution_id}/retry — 手动触发当前 step 重新
     提交，不检查是否超时，随时可调用（区别于 reap_stale_steps() 的自动
     超时重试）。"""
     oe = _objective_executor_or_404(request)
@@ -7498,9 +7504,10 @@ async def retry_objective_step(request: Request, execution_id: str):
     return {"ok": True}
 
 
-@router.post("/objectives/{execution_id}/steps/{step_index}/edit")
+@router.post("/goal_steps/{execution_id}/steps/{step_index}/edit")
+@router.post("/objectives/{execution_id}/steps/{step_index}/edit", include_in_schema=False)  # 旧名隐藏别名（Phase 10 B3）
 async def edit_objective_step(request: Request, execution_id: str, step_index: int):
-    """POST /v1/objectives/{execution_id}/steps/{step_index}/edit
+    """POST /v1/goal_steps/{execution_id}/steps/{step_index}/edit
     Body: { "result_summary"?: str, "artifacts"?: list[str] }
 
     [daemon_stability_and_ux_improvement_plan.md P2-10] 编辑一个已完成
@@ -7534,9 +7541,10 @@ async def edit_objective_step(request: Request, execution_id: str, step_index: i
     return {"ok": True}
 
 
-@router.post("/objectives/{execution_id}/steps/{step_index}/reset")
+@router.post("/goal_steps/{execution_id}/steps/{step_index}/reset")
+@router.post("/objectives/{execution_id}/steps/{step_index}/reset", include_in_schema=False)  # 旧名隐藏别名（Phase 10 B3）
 async def reset_objective_step(request: Request, execution_id: str, step_index: int):
-    """POST /v1/objectives/{execution_id}/steps/{step_index}/reset
+    """POST /v1/goal_steps/{execution_id}/steps/{step_index}/reset
     Body（可选）: { "reason": str }
 
     [daemon_autonomous_state_recovery_plan.md 阶段二] 手动把某一步（可以是
@@ -7559,9 +7567,10 @@ async def reset_objective_step(request: Request, execution_id: str, step_index: 
     return {"ok": True}
 
 
-@router.post("/objectives/{execution_id}/guidance")
+@router.post("/goal_steps/{execution_id}/guidance")
+@router.post("/objectives/{execution_id}/guidance", include_in_schema=False)  # 旧名隐藏别名（Phase 10 B3）
 async def inject_objective_guidance(request: Request, execution_id: str):
-    """POST /v1/objectives/{execution_id}/guidance
+    """POST /v1/goal_steps/{execution_id}/guidance
     Body: { "message": str }
     把用户的一句话作为补充上下文塞进下一次提交当前 step 的 prompt。若希望
     立即生效（而不是等当前 step 跑完/超时后才用上），需要配合调用
@@ -7578,6 +7587,64 @@ async def inject_objective_guidance(request: Request, execution_id: str):
             detail=f"execution {execution_id!r} not found or has no current step",
         )
     return {"ok": True}
+
+
+@router.get("/goals/{goal_id}/steps")
+async def list_goal_steps(request: Request, goal_id: str):
+    """GET /v1/goals/{goal_id}/steps — [Phase 10 B3] 一个 Goal 下所有执行记录
+    及其步骤（原 Objective 视图的“Goal 步骤”命名）。
+
+    `goal_id` 可以是 level=goal 的节点（返回其下所有 objective 的执行记录），
+    也可以直接是 level=objective 的节点。数据来自
+    `core/objective_adapter.py::project_objective_executions()`（只读投影，
+    同时在状态变化时发布 `ObjectiveProjected` 事件），不修改任何执行状态。
+
+    局限：只包含活跃 + 最近 1 小时内终止的执行记录（`ObjectiveExecutor.
+    get_status_summary()` 的既有过滤规则）。
+    """
+    oe = _objective_executor_or_404(request)
+    try:
+        from dataclasses import asdict
+        from mini_agent.core.objective_adapter import project_objective_executions
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+
+        backlog = load_goal_backlog(_get_paths_for_request(request))
+        node = backlog.get(goal_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"goal {goal_id!r} not found")
+
+    objective_ids = {
+        n.id for n in backlog.all_nodes()
+        if n.level == "objective" and (n.id == goal_id or n.parent_id == goal_id)
+    }
+    executions = []
+    for st in project_objective_executions(oe, backlog):
+        ev = st.evidence
+        if ev.get("objective_id") not in objective_ids:
+            continue
+        ex = oe.get_execution(ev.get("execution_id"))
+        steps = []
+        for s in (ex.steps if ex is not None else []):
+            steps.append({
+                "step_index": s.step_index,
+                "description": s.description,
+                "status": s.status,
+                "retry_count": s.retry_count,
+                "result_summary": s.result_summary,
+                "error_msg": s.error_msg,
+                "artifacts": list(s.artifacts),
+            })
+        executions.append({
+            "execution_id": ev.get("execution_id"),
+            "objective_id": ev.get("objective_id"),
+            "goal_state": asdict(st),
+            "steps": steps,
+        })
+    return {"goal_id": goal_id, "executions": executions}
 
 
 # ── 执行细节可钻取（看板与自主性改进方案 Track E）────────────────────────────
@@ -7704,9 +7771,10 @@ def _extract_tool_write_paths(raw_entries: list[dict]) -> list[str]:
     return list(dict.fromkeys(paths))  # 去重且保序
 
 
-@router.get("/objectives/{execution_id}/steps/{step_index}/trace")
+@router.get("/goal_steps/{execution_id}/steps/{step_index}/trace")
+@router.get("/objectives/{execution_id}/steps/{step_index}/trace", include_in_schema=False)  # 旧名隐藏别名（Phase 10 B3）
 async def get_objective_step_trace(request: Request, execution_id: str, step_index: int):
-    """GET /v1/objectives/{execution_id}/steps/{step_index}/trace
+    """GET /v1/goal_steps/{execution_id}/steps/{step_index}/trace
 
     [看板与自主性改进方案 Track E] 返回某个 step 实际执行过程中的完整
     tool_call/tool_result 序列，而不只是 result_summary 截断到的 200~500
@@ -11385,9 +11453,10 @@ async def get_growth_candidate_timeline(request: Request, candidate_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/objectives/completion_trend")
+@router.get("/goal_steps/completion_trend")
+@router.get("/objectives/completion_trend", include_in_schema=False)  # 旧名隐藏别名（Phase 10 B3）
 async def get_objectives_completion_trend(request: Request, limit: int = Query(30, ge=1, le=200)):
-    """GET /v1/objectives/completion_trend — [kanban_perception_gaps_
+    """GET /v1/goal_steps/completion_trend — [kanban_perception_gaps_
     improvement_plan.md 方向 D.1] Objective 完成率每日快照序列（最近若干
     天，按时间正序）：每天完成/失败的 Objective 数、平均重试次数、当前
     活跃 Objective 数。快照由 `POST /v1/growth/scan`（cron

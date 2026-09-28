@@ -137,6 +137,8 @@ ObjectiveExecutor/CronScheduler/...` 等旧类名给最终用户*。可度量的
 
 ---
 
+> **B3 更新（2026-09-28）**：下文附录是 Sprint 10-1 时的快照，未重新生成。其中 `/v1/objectives/*` 现已改名为 `/v1/goal_steps/*`（旧名为隐藏别名），并新增 `GET /v1/goals/{goal_id}/steps`；重新运行脚本 HTTP 路由数为 319（含 9 个隐藏别名）。详见 `next_doc/refactor_plan/13-…` 第十节。
+
 ## 附录（由 `scripts/entrypoint_inventory.py` 生成）
 
 <!-- 由 scripts/entrypoint_inventory.py 生成，勿手改；重新生成见该脚本 docstring -->

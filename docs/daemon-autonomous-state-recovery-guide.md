@@ -76,7 +76,7 @@ valid=...)`：`valid=False` 时不会把内容写进 `step.result_summary`，而
 
 在 daemon 模式下，非本进程内的 Agent（比如通过 CLI attach 到远程 daemon）
 会自动回退为通过 `DaemonClient` 发起
-`POST /v1/objectives/{execution_id}/steps/{step_index}/reset` 请求，
+`POST /v1/goal_steps/{execution_id}/steps/{step_index}/reset` 请求，
 本地/远程两种场景命令用法完全一致。
 
 ## 4. 阶段三：自主任务独立上下文（P1）

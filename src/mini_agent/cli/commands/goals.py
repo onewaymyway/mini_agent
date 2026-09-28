@@ -765,7 +765,7 @@ def _cmd_reset_step(agent, paths, exec_id: str, step_idx_str: str, reason: str) 
 
     client = DaemonClient(info["http_port"])
     result = client._post_json(
-        f"/v1/objectives/{exec_id}/steps/{step_idx}/reset",
+        f"/v1/goal_steps/{exec_id}/steps/{step_idx}/reset",
         {"reason": reason} if reason else {},
     )
     if result and result.get("ok"):

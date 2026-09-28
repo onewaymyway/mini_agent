@@ -731,9 +731,12 @@ DELETE /v1/goals
 ```
 
 两个删除接口只接受 `level == "goal"` 的节点（Objective 请用
-`POST /v1/objectives/{execution_id}/cancel` 或 `PATCH /v1/goals/{goal_id}`
+`POST /v1/goal_steps/{execution_id}/cancel` 或 `PATCH /v1/goals/{goal_id}`
 改状态，没有单独的硬删除入口），是**彻底删除**而不是状态迁移——删除后
 `GoalBacklog` 里不再有这条记录，同时级联清理：
+
+> **命名说明（Phase 10 B3）**：原 `/v1/objectives/*` 现名 `/v1/goal_steps/*`（Objective 的执行记录/步骤），旧路径仍可用但已从 OpenAPI 隐藏。
+> 另有只读 `GET /v1/goals/{goal_id}/steps`：返回该 Goal（或 Objective 节点）下的执行记录与步骤列表，仅含活跃及最近 1 小时内终止的记录。
 
 1. 该 Goal 绑定/关联的全部 cron job（不止周期性触发那一个，任何
    `goal_id` 指向被删节点的 job 都会一并移除），避免留下引用已删 Goal

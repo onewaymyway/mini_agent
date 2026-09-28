@@ -657,7 +657,7 @@ class AgentClient:
     def objective_completion_trend(self, limit: int = 30):
         """[kanban_perception_gaps_improvement_plan.md 方向 D.1] Objective
         完成率每日快照序列，供"📌 目标看板"tab"📈 完成率趋势"区块展示。"""
-        return self._get("/objectives/completion_trend", params={"limit": limit})
+        return self._get("/goal_steps/completion_trend", params={"limit": limit})
 
     def wiki_quarantine_status(self):
         """[kanban_perception_gaps_improvement_plan.md 方向 E] wiki 隔离区
@@ -1148,21 +1148,21 @@ class AgentClient:
 
     # ── 看板：Objective 执行操作（Track D）+ 全局待办中心（Track A）───
     def cancel_objective(self, execution_id: str):
-        return self._post(f"/objectives/{execution_id}/cancel")
+        return self._post(f"/goal_steps/{execution_id}/cancel")
 
     def retry_objective(self, execution_id: str):
-        return self._post(f"/objectives/{execution_id}/retry")
+        return self._post(f"/goal_steps/{execution_id}/retry")
 
     def pause_objective(self, execution_id: str):
         """[daemon_stability_and_ux_improvement_plan.md P1-5] 用户主动暂停：
         不释放已完成 step 进度，不重新拆解，等 resume_objective 恢复。"""
-        return self._post(f"/objectives/{execution_id}/pause")
+        return self._post(f"/goal_steps/{execution_id}/pause")
 
     def resume_objective(self, execution_id: str):
-        return self._post(f"/objectives/{execution_id}/resume")
+        return self._post(f"/goal_steps/{execution_id}/resume")
 
     def inject_objective_guidance(self, execution_id: str, message: str):
-        return self._post(f"/objectives/{execution_id}/guidance", {"message": message})
+        return self._post(f"/goal_steps/{execution_id}/guidance", {"message": message})
 
     def edit_objective_step(self, execution_id: str, step_index: int, result_summary: str = None,
                              artifacts: list = None):
@@ -1175,12 +1175,12 @@ class AgentClient:
             body["result_summary"] = result_summary
         if artifacts is not None:
             body["artifacts"] = artifacts
-        return self._post(f"/objectives/{execution_id}/steps/{step_index}/edit", body)
+        return self._post(f"/goal_steps/{execution_id}/steps/{step_index}/edit", body)
 
     def objective_step_trace(self, execution_id: str, step_index: int):
         """[Track E] 查看某个 step 实际执行过程的完整 tool_call/tool_result
         序列，供看板"查看详情"展开使用。"""
-        return self._get(f"/objectives/{execution_id}/steps/{step_index}/trace")
+        return self._get(f"/goal_steps/{execution_id}/steps/{step_index}/trace")
 
     def inbox(self):
         return self._get("/inbox")

@@ -202,21 +202,21 @@ export const applyTuningProposal = (goalId: string, proposalId: string) =>
 export const rejectTuningProposal = (goalId: string, proposalId: string) =>
   apiPost<{ ok?: boolean }>(`/goals/${encodeURIComponent(goalId)}/tuning_proposals/${encodeURIComponent(proposalId)}/reject`);
 
-export const getCompletionTrend = () => apiGet<Record<string, unknown>>("/objectives/completion_trend");
+export const getCompletionTrend = () => apiGet<Record<string, unknown>>("/goal_steps/completion_trend");
 
 // ── Objective 执行控制 ─────────────────────────────────────────────
-export const cancelObjective = (execId: string) => apiPost<{ ok?: boolean }>(`/objectives/${encodeURIComponent(execId)}/cancel`);
-export const pauseObjective = (execId: string) => apiPost<{ ok?: boolean }>(`/objectives/${encodeURIComponent(execId)}/pause`);
-export const resumeObjective = (execId: string) => apiPost<{ ok?: boolean }>(`/objectives/${encodeURIComponent(execId)}/resume`);
-export const retryObjective = (execId: string) => apiPost<{ ok?: boolean }>(`/objectives/${encodeURIComponent(execId)}/retry`);
+export const cancelObjective = (execId: string) => apiPost<{ ok?: boolean }>(`/goal_steps/${encodeURIComponent(execId)}/cancel`);
+export const pauseObjective = (execId: string) => apiPost<{ ok?: boolean }>(`/goal_steps/${encodeURIComponent(execId)}/pause`);
+export const resumeObjective = (execId: string) => apiPost<{ ok?: boolean }>(`/goal_steps/${encodeURIComponent(execId)}/resume`);
+export const retryObjective = (execId: string) => apiPost<{ ok?: boolean }>(`/goal_steps/${encodeURIComponent(execId)}/retry`);
 export const editObjectiveStep = (execId: string, stepIndex: number, body: unknown) =>
-  apiPost<{ ok?: boolean }>(`/objectives/${encodeURIComponent(execId)}/steps/${stepIndex}/edit`, body);
+  apiPost<{ ok?: boolean }>(`/goal_steps/${encodeURIComponent(execId)}/steps/${stepIndex}/edit`, body);
 export const resetObjectiveStep = (execId: string, stepIndex: number) =>
-  apiPost<{ ok?: boolean }>(`/objectives/${encodeURIComponent(execId)}/steps/${stepIndex}/reset`);
+  apiPost<{ ok?: boolean }>(`/goal_steps/${encodeURIComponent(execId)}/steps/${stepIndex}/reset`);
 export const addObjectiveGuidance = (execId: string, guidance: string) =>
-  apiPost<{ ok?: boolean }>(`/objectives/${encodeURIComponent(execId)}/guidance`, { guidance });
+  apiPost<{ ok?: boolean }>(`/goal_steps/${encodeURIComponent(execId)}/guidance`, { guidance });
 export const getObjectiveStepTrace = (execId: string, stepIndex: number) =>
-  apiGet<Record<string, unknown>>(`/objectives/${encodeURIComponent(execId)}/steps/${stepIndex}/trace`);
+  apiGet<Record<string, unknown>>(`/goal_steps/${encodeURIComponent(execId)}/steps/${stepIndex}/trace`);
 
 // ── 工作流 ──────────────────────────────────────────────────────
 import type { WorkflowRunDetail, WorkflowSummary } from "./types";
