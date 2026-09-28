@@ -679,3 +679,21 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       真实仓库用 `git diff` 核对；`DeployRecord` 尚未持久化、`AgentRuntime`
       的 `learn` 步骤仍未接入，闭环目前只能被显式调用驱动。详见
       `10-phase9-self-evolution-sprint-plan.md` 末尾“Sprint 9-3 执行记录”。
+- [ ] Phase 10 Sprint 10-1（对外 API 收敛）**部分完成，验收未达成，触发止损**：
+      新增 `scripts/entrypoint_inventory.py`（静态、可重复的入口盘点脚本，含 13 个
+      测试）与 `docs/architecture_v2/phase10-entrypoint-inventory.md`。**盘点完成**：
+      CLI 斜杠命令 59 条、HTTP 路由 308 条（与独立逐行正则计数一致），仅
+      1 条 CLI 命令（`/goal` 新目标路径，内部仍是旧 `GoalRunner`）、0 条 HTTP 路由
+      经过 `AgentRuntime`；86 条 HTTP 路由与 8 条 CLI 命令直接触达旧类
+      （静态下限估计）。**§43 六条映射核对完成，无一条“完全落地”**——最被高估的是
+      “Advisor → Decision policy”：`DecisionEngine` 目前没有任何生产调用方。**“统一入口”
+      未执行**：触达旧类的入口几乎全是对 `GoalBacklog` 的状态增删改与只读视图，不是
+      执行循环，“统一调用 `AgentRuntime`”对它们是范畴错误，且真正的执行类入口已被
+      Sprint 8-5 评估为高风险。验收标准的可度量部分：CLI 菜单/`--help` 达标，HTTP
+      OpenAPI 文档有 32 处旧类名命中（26 条路由说明，`/docs` 显式开启）未达标；
+      刻意未改写这些文档，避免在底层未迁移前让文档声称不存在的事实。另发现用户可见的
+      `capability` 一词已被“人设能力学习”占用，与架构 Capability 重名。**Phase 10 的
+      前置条件（Phase 1-9 全部完成）目前未满足，Sprint 10-2 的止损条件已成立。**
+      已按规范在 `11-phase10-legacy-decommission-plan.md` 写入“变更记录 2026-09-28”
+      （D1–D5 待项目所有者决定，未改任务表）。**下一步需人工决策，不是直接进入
+      Sprint 10-2。**

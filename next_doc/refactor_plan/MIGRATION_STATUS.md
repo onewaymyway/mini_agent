@@ -46,6 +46,7 @@
 | core/experience_patterns.py（Sprint 3-2 新增 Analyzer 雏形，Phase 9 Sprint 9-1 扩展 Problem 检测） | Phase 3 / Phase 9 | 部分迁移 | `summarize_failures()`（Sprint 3-2）+ `detect_problems()`/`detect_problems_from_experience()`/`problem_from_failure_pattern()`（Sprint 9-1，Adapter 对接 `evolution/failure_pattern_store.py`，不改其内部实现），暂未接入 `goal_mode/runner.py` 等调用方，仅供后续 Sprint 9-2 生成 Hypothesis/Proposal 时调用 | 是（`problem_from_failure_pattern` 为单向 `Old(FailurePattern) -> New(Problem)`，无 `to_old` 需求——Problem 不需要转回 FailurePattern） | 2026-09-28 | Phase 9 Sprint 9-1 执行者 |
 | evolution/proposals.py（新增，Phase 9 Sprint 9-2） | Phase 9 | 完全迁移 | 100%（新增模块，本 Sprint 范围内已完成：`generate_hypothesis()`/`build_proposal()`/`evaluate_proposal()`/`propose_and_evaluate()`；`evaluate_proposal()` 转发给现有 `StateRepo.resolve_tier()` + `validators_for_tier()`，dry-run 不落盘不 commit；`llm_propose`/`eval_fn` 均为调用方注入的 `Callable`，无内置网络实现；尚无运行时调用方，`AgentRuntime` 的 `learn` 步骤仍为空，接入留给 Sprint 9-3 之后统一评估；注意：eval 回归口径镜像自 `proposal_risk._check_eval_regression()`，并私有 import 了 `proposal_risk._is_low_risk_path`，见 `10-phase9-self-evolution-sprint-plan.md` "Sprint 9-2 执行记录"范围说明第 3、4 条） | 不适用（新增编排层，非 Old↔New Adapter） | 2026-09-28 | Phase 9 Sprint 9-2 执行者 |
 | evolution/deployment.py（新增，Phase 9 Sprint 9-3） | Phase 9 | 完全迁移 | 100%（新增模块，本 Sprint 范围内已完成：`deploy_proposal()`/`make_experience_observer()`/`settle_deployment()`/`rollback_deployment()`；沙盒/合并/回退全部转发给现有 `EvolutionWorkspace`/`StateRepo`，无自实现的 git 逻辑；无 `approve` 回调时不合并；Rollback 逐 commit 逆序回退（因 `revert()` 不支持合并提交）；尚无运行时调用方，`DeployRecord` 未持久化；注意：私有访问了 `StateRepo._run_git`（回退冲突时 abort）与 9-1 的 `_normalize_category`/`_FAILURE_STATUSES`，见 `10-phase9-self-evolution-sprint-plan.md` "Sprint 9-3 执行记录"局限第 1、5 条） | 不适用（新增编排层，非 Old↔New Adapter） | 2026-09-28 | Phase 9 Sprint 9-3 执行者 |
+| scripts/entrypoint_inventory.py（新增，Phase 10 Sprint 10-1） | Phase 10 | 完全迁移 | 100%（新增只读盘点脚本，本 Sprint 范围内已完成：静态抽取 CLI 斜杠命令/HTTP 路由并标注是否经 `AgentRuntime`、是否触达旧类，另扫描用户可见字符串的旧类名；不属于产品代码路径，不改变任何运行时行为；结果是下限估计，见 `docs/architecture_v2/phase10-entrypoint-inventory.md` 第一节） | 不适用（工具脚本） | 2026-09-28 | Phase 10 Sprint 10-1 执行者 |
 | core/state_manager.py（新增，Sprint 4-1） | Phase 4 | 部分迁移 | `goal_mode/runner.py::run()`/`_finish()` 唯一接入点已把 `GoalState` 的持有权交给 `StateManager`（不再自己保留可变引用），并通过新增的 `GoalUpdated` 事件驱动自动更新；`SelfState`/`WorldState`/`CapabilityState`/`RuntimeState` 占位与 `snapshot()` 的完整联调留给 Sprint 4-2 | 不适用（`StateManager` 是新领域概念本身，不是 Old↔New 转换 Adapter） | 2026-09-27 | Phase 4 Sprint 4-1 执行者 |
 | core/events.py（Sprint 4-1 补上 GoalUpdated 的首次真实 publish） | Phase 2/4 | 部分迁移 | `EVENT_KINDS` 里 Sprint 2-1 就预留的 `"GoalUpdated"` 取值，Sprint 4-1 起在 `goal_mode/runner.py` 每轮 CONTINUE 推进 / `_finish()` 终止时真正 publish，供 `core/state_manager.py` 订阅消费 | 不适用 | 2026-09-27 | Phase 4 Sprint 4-1 执行者 |
 | core/world.py（新增，Sprint 4-2，占位） | Phase 4（占位）/ 待 Phase 5 填充字段 | 部分迁移 | 无字段空 dataclass，可被 `StateManager` 托管（`update_state`/`get_state`/`snapshot()` 均不报错），尚无任何模块产出真实数据、暂未接入任何调用方 | 不适用（占位 dataclass，非 Old↔New Adapter） | 2026-09-27 | Phase 4 Sprint 4-2 执行者 |
@@ -61,3 +62,22 @@
 > 主要模块。执行过程中如发现遗漏模块，直接追加新行，不要删除已有行
 > （即使某模块后来判定"暂不迁移"，也应保留记录并把状态维持在
 > "未开始"，附注说明原因，而不是从表中移除）。
+
+
+---
+
+## §43 六条映射核对（Phase 10 Sprint 10-1 快照，2026-09-28）
+
+> **这不是“最终版”**：Phase 10 计划要求最终版写入本台账，但现状下没有任何一条映射
+> 已完全落地，写成最终版会失真。此处只记录当前快照，判据为“目标概念在真实调用
+> 路径上被使用，而不只是模块存在”。证据与入口触达数见
+> `docs/architecture_v2/phase10-entrypoint-inventory.md` 第三节。
+
+| §43 映射 | 当前状态 | 一句话依据 |
+|---|---|---|
+| 旧 Goal → Adapter | 部分迁移 | `GoalAdapter` 用于 `runner.py` 两处接入点；`executor.py` 未开始；`goal_backlog.py` 暂缓 |
+| 旧 Memory → Adapter | 部分迁移 | 仅 `MemoryBackend → MemorySnapshot` 单向、两个字段 |
+| 旧 Workflow → Capability | 部分迁移 | 落地的是 `ActionExecutor` 的 workflow 旁路（Action）；`CapabilityState` 是无生产引用的空占位 |
+| 旧 Scheduler → Runtime adapter | 部分迁移 | 仅 cron `message` 模式 opt-in 且默认关；`goal_cycle`/`AutonomousLoop` 已评估不建议接入 |
+| 旧 Advisor → Decision policy | 未开始 | `DecisionEngine` 无生产调用方，旧 advisor 未引用 `cognition/` |
+| 旧 Objective → Goal internal step | 未开始 | `objective_executor.py` 未开始，与 `GoalBacklog` 是同一套子系统 |
