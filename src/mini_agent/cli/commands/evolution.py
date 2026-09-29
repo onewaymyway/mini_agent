@@ -12,6 +12,10 @@ cli/commands/evolution.py — /evolution slash 命令处理（Stage 2.4）
 [看板与自主性改进方案 Track I] 新增：
 /evolution proposals          — 列出所有 evolve/* 提案分支，逐条给出风险分级
                                   （low/high，见 evolution/proposal_risk.py）
+/evolution deploys            — 只读：列出已部署的自我演化改动及其状态；对仍在观察期的
+                                  部署现算一次判断，若“部署后同类任务仍在失败”会标出
+                                  建议回退，并给出逐个 revert 的命令（不会自动执行）。
+                                  不打开/初始化 git 仓库，不写任何文件。
 /evolution merge <branch> [--force]
                                — 一键合并提案分支：risk=low 时直接合并；
                                  risk=high 时默认拒绝，需要显式加 --force
@@ -45,6 +49,12 @@ def handle_evolution_cmd(args: list[str], agent=None) -> None:
     sub = args[0] if args else "log"
     rest = args[1:]
 
+    # `deploys` 只读 `.agent/` 下的运行时记录，不需要 git 仓库；在打开 StateRepo 之前
+    # 分流，避免目标目录没有 .git 时 `StateRepo(root)` 顺带 `git init`。
+    if sub == "deploys":
+        _handle_deploys(agent)
+        return
+
     try:
         repo = StateRepo(agent.cfg.project_root)
     except StateRepoError as e:
@@ -71,8 +81,56 @@ def handle_evolution_cmd(args: list[str], agent=None) -> None:
         R.print_error(
             "Usage: /evolution [log [N] | show <commit> | diff <commit> | "
             "revert <commit> | outcomes [--worsened] | lessons-to-reminders | "
-            "proposals | merge <branch> [--force]]"
+            "proposals | merge <branch> [--force] | deploys]"
         )
+
+
+# ── /evolution deploys ───────────────────────────────────────────────────────
+
+_STATE_LABEL = {
+    "observing": "观察中",
+    "promoted": "已确认有效",
+    "rolled_back": "已回退",
+    "rollback_failed": "回退失败（需人工处理）",
+}
+
+
+def _handle_deploys(agent) -> None:
+    import time
+
+    from mini_agent.runtime.learn import collect_deploy_overview
+    from mini_agent.storage.paths import AgentPaths
+
+    overview = collect_deploy_overview(AgentPaths(project_root=agent.cfg.project_root))
+    for err in overview.errors:
+        R.print_warning(err)
+    if not overview.rows:
+        if not overview.errors:
+            R.print_info("还没有已部署的自我演化改动记录（.agent/deploy_records.jsonl 为空或不存在）。")
+        return
+
+    R.console.print(f"\n[bold]已部署的自我演化改动（{len(overview.rows)}）[/bold]")
+    for row in overview.rows:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["deployed_at"])) if row["deployed_at"] else "-"
+        state = _STATE_LABEL.get(row["state"], row["state"])
+        R.console.print(f"\n{row['proposal_id']}  [{state}]  部署于 {when}")
+        if row["problem_category"]:
+            R.console.print(f"  针对：{row['problem_category']}")
+        if row["expected_effect"]:
+            R.console.print(f"  预期：{row['expected_effect']}")
+        if row["state"] == "observing":
+            R.console.print(f"  当前观察：{row['verdict'] or '-'} — {row['detail'] or '-'}")
+            if row["suggestion"] == "rollback_recommended":
+                R.print_warning("  建议回退：部署后同类任务仍在失败（系统不会自动回退，除非开启 runtime_learn_auto_rollback）")
+                commits = list(reversed(row["applied_commits"]))
+                if commits:
+                    R.console.print("  回退（先新后旧，逐个执行）：")
+                    for c in commits:
+                        R.console.print(f"    /evolution revert {c[:8]}")
+                else:
+                    R.console.print("  该记录没有 commit 信息，请用 /evolution log 找到对应提交。")
+        elif row["settle_reason"]:
+            R.console.print(f"  结论：{row['settle_reason']}")
 
 
 # ── /evolution log ───────────────────────────────────────────────────────────

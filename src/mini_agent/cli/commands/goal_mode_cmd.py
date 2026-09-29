@@ -353,6 +353,17 @@ def _run_goal(agent, spec) -> None:
     R.console.print(f"轮次：{result.rounds_used}  compact 次数：{result.compacts_done}")
     R.console.print(result.final_report)
 
+    # Phase 9 收尾：learn 步骤开启且判定“建议回退”时，让用户在当场看到（只读提示，
+    # 不动仓库；未开启 learn 或没有需要处理的事时 `learn_report` 为空/提示为空串）。
+    learn_report = getattr(result, "learn_report", None)
+    if learn_report is not None:
+        try:
+            notice = learn_report.render_notice()
+        except Exception:  # 提示只是附带信息，不能影响 Goal 结果的展示
+            notice = ""
+        if notice:
+            R.print_warning("\n" + notice)
+
 
 # ── resume ───────────────────────────────────────────────────────────────
 

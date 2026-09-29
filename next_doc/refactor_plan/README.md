@@ -757,3 +757,11 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       ② `MIGRATION_STATUS.md` 中 `core/objective_adapter.py` 一行同时写着“B3 起有 1 个生产调用方”与“尚无任何生产调用方”，自相矛盾，已按事实
       （唯一生产调用方为 B3 的 `GET /v1/goals/{id}/steps`）订正；③ 本条本身。**仍未勾选、且有意不动**的三项：Sprint 10-1（验收未达成，所有者已决定不追求）、
       `MemoryAdapter.to_old`/`_global_memory`（待所有者排期）、Sprint 10-2/10-3（D5 搁置）。按 README 现有记录，**没有尚未执行且不依赖所有者决定的阶段**。
+- [x] Phase 9 收尾补充完成（2026-09-29）：`rollback_recommended` 有了用户可见的出口（Sprint 9-4 局限 §2）。三处：`/goal` 结束时的终端提示
+      （`LearnReport.render_notice()`，只读）；看板通知（`run_learn_step(notify=True)`，`goal_mode.runtime_learn_notify_enabled`，**默认 False**，
+      同一部署只提醒一次，靠新增的 `DeployRecord.rollback_notified_at` 去重，新增 source `learn_rollback_recommended`/`learn_rollback_failed`）；
+      只读命令 `/evolution deploys`（不构造 `StateRepo`、不写文件，对观察期部署现算判断并给出先新后旧的 revert 命令）。新增 25 用例（含去重的变异检查），
+      Sprint 9-4 既有 30 用例不变；定向回归 849 passed / 8 failed，8 个失败均为既有（其中 3 个已在原始压缩包复现，另 5 个为 Sprint 0 已记录的
+      `test_build_from_history_*`）；4 个安全设施文件未改动（manifest 校验 0 不一致）；未跑全量，看板前端未在本环境运行。详见
+      `10-phase9-self-evolution-sprint-plan.md` 文末“Sprint 9-4 收尾补充”。**自动回退成功不发通知、终端提示每次重复出现**等取舍见该节“已知局限”。
+

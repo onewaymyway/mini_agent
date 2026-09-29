@@ -128,10 +128,14 @@ _SOURCE_CATEGORY_MAP: dict[str, str] = {
     "recovery_burst": "执行失败",
     "cron_skip_alert": "执行失败",
     "scheduler_heartbeat_stuck": "执行失败",
+    # 自我演化：自动回退失败，仓库可能停在半途状态，需要人工处理
+    "learn_rollback_failed": "执行失败",
     # 关注提醒 —— 需要留意但不是"失败"，比如执行阶段健康度、饱和度提示
     "goal_cycle_phase_health": "关注提醒",
     "growth_advisor_pursuit_saturation": "关注提醒",
     "goal_cycle_converge_spec_draft": "关注提醒",
+    # 自我演化：已部署的改动部署后同类任务仍在失败，建议人工回退
+    "learn_rollback_recommended": "关注提醒",
     # 关注汇报 —— 关注对象/成长顾问按周期打包的信息类汇总
     "watchlist_report": "关注汇报",
     "growth_weekly_digest": "关注汇报",

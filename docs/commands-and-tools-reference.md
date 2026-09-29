@@ -433,6 +433,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/evolution diff <commit>` | 展示某次 commit 的改动 diff（语法高亮） |
 | `/evolution revert <commit>` | 生成 revert commit，并自动记录一条 `source="revert_record"` 的 lesson（内部调用 `perception/agent_commit_guard.py::record_undo_lesson()`，与 `/commit-guard scan` 共用同一份实现，见 [agent commit guard 指南](agent-commit-guard-guide.md)）；若该 commit 正处于效果回填观察期，提前结束观察 |
 | `/evolution outcomes [--worsened]` | **新增**：列出自我进化 commit 的效果回填记录（`observing`/`improved`/`no_change`/`worsened`/`insufficient_data`/`reverted_by_user`）。`--worsened` 只看建议复核 revert 的记录。详见 [效果回填指南](self-evolution-outcome-tracking-guide.md) |
+| `/evolution deploys` | **只读**：列出已部署的自我演化改动（`.agent/deploy_records.jsonl`）及状态（观察中/已确认有效/已回退/回退失败）；对仍在观察期的部署现算一次判断，若“部署后同类任务仍在失败”则标出**建议回退**，并给出逐个 `/evolution revert <commit>` 的命令（先新后旧）。不会自动回退，不初始化 git 仓库，不写文件。`goal_mode.runtime_learn_enabled` 开启后，`/goal` 结束时同样会打印该提示；另开 `goal_mode.runtime_learn_notify_enabled`（默认关闭）可向看板“关注与通知”发一条通知（同一部署只提醒一次） |
 | `/evolve review [--global] [--tier T1\|T2]` | 扫描 lesson（默认 workdir 级 `memory.jsonl`，`--global` 扫描 `~/.agent/memory.jsonl`），对达标分组 spawn `evolution-agent` 提案 |
 | `/evolve list [--global] [--tier T1\|T2]` | 同 `review`，但只扫描 + 列出达标分组，不 spawn agent、不消耗 LLM 调用 |
 | `/evolve consolidate [--force] [--dry-run]` | **Stage 8** 手动触发 巩固循环 后台循环扫描（剪枝候选 + 能力地图 + 晋升候选 + 知识巩固，含 wiki 镜像/索引重建/专题页生成）。`--force` 跳过 24h 时间门控，`--dry-run` 只展示不写入节奏记录 |

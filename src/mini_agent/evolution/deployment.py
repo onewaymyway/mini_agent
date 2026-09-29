@@ -139,6 +139,10 @@ class DeployRecord:
     # Sprint 9-4：Observe 按“同类任务”统计部署后的 Experience 所需。旧数据/
     # 手工构造的记录可能为空，此时 Observe 只能给出 inconclusive。
     problem_category: str = ""
+    # Phase 9 收尾（“建议回退”用户出口）：已就“建议回退”向看板发过通知的时间戳，
+    # 0 表示没发过。用来保证同一个部署只提醒一次（`learn` 每次 `run_once()` 都会
+    # 再次得出同样的建议，不去重就会刷屏）。旧记录没有该字段，按 0 读取。
+    rollback_notified_at: float = 0.0
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)

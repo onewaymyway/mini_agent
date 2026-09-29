@@ -440,7 +440,7 @@ Sprint 9-3 是 Phase 9 的最后一个 Sprint。**Phase 9 尚不能整体宣布�
    目前只对显式部署过的记录有意义；闭环的前半段（Problem → Proposal → Deploy）仍需
    人或调用方驱动。Phase 9 完成标志第 1 条“口径”里的保留意见（Experience 数据是测试灌入的，
    未拿生产真实数据跑过）**仍然成立**。
-2. **“建议回退”目前没有面向用户的出口。** `rollback_recommended` 只出现在
+2. **“建议回退”目前没有面向用户的出口。**（**2026-09-29 已处理**，见文末“Sprint 9-4 收尾补充：建议回退的用户出口”；以下为处理前的原始记录。） `rollback_recommended` 只出现在
    `AgentRuntimeResult.learn_report` 和 `RuntimeCycleCompleted` 事件 payload 里（后者会被
    `EventLogStore` 落盘，可用 `events trace` 查看）。没有通知、没有 CLI 提示。
    开启 `learn` 但不开自动回退的用户，除非主动去看事件日志，否则不会知道有建议。
@@ -467,8 +467,46 @@ Sprint 9-3 是 Phase 9 的最后一个 Sprint。**Phase 9 尚不能整体宣布�
 §1、§2、§3——这些是记录在案的已知代价，不是完成标志要求核对的范围，Phase 9
 可以整体宣布完成。
 
-Phase 9 内部还有一项可独立推进、未排期的候选：为 `rollback_recommended` 提供
-用户可见的出口（局限 §2）。Phase 10 的状态见 `11-phase10-legacy-decommission-plan.md`
+~~Phase 9 内部还有一项可独立推进、未排期的候选：为 `rollback_recommended` 提供
+用户可见的出口（局限 §2）。~~ **已于 2026-09-29 完成**，见文末“Sprint 9-4 收尾补充”。Phase 10 的状态见 `11-phase10-legacy-decommission-plan.md`
 "变更记录"最新一条——D1/D5 已由所有者决定（维持现状 / 搁置 Sprint 10-2），
 Phase 10 的目录收敛工作到此告一段落。
 
+## Sprint 9-4 收尾补充：建议回退的用户出口（2026-09-29）
+
+承接 Sprint 9-4 局限 §2：`rollback_recommended` 只存在于 `LearnReport` 与事件 payload，用户看不到。
+本次补三个出口，均为增量改动，**默认行为不变**（`runtime_learn_enabled` 关闭时与此前逐字节一致）。
+
+### 做了什么
+
+| 出口 | 触发 | 副作用 | 开关 |
+|---|---|---|---|
+| ① `/goal` 结束时的终端提示 | `learn` 开启且本轮有“建议回退/回退失败”时，`_run_goal` 用 `print_warning` 打印 `LearnReport.render_notice()` | 无（只读） | 无（`learn` 本身已是 opt-in） |
+| ② 看板“关注与通知”通知 | `run_learn_step(notify=True)`，经 `NotificationDispatcher`（看板恒发，email/webhook 按用户既有通知配置） | 写 `.agent/notification/reports.jsonl`；在 `DeployRecord` 记 `rollback_notified_at` | `goal_mode.runtime_learn_notify_enabled`，**默认 False** |
+| ③ `/evolution deploys` | 用户主动输入 | 无：只读，**不构造 `StateRepo`**（不会在无 `.git` 的目录 `git init`），无 observing 记录时不打开 Experience 库 | 无 |
+
+- 通知 `source` 两个：`learn_rollback_recommended`（分类“关注提醒”）、`learn_rollback_failed`（分类“执行失败”），已加入 `notification/reports_store.py::_SOURCE_CATEGORY_MAP`，看板无需改动即可分类展示。
+- 文案里的回退命令是 `applied_commits` 的**逆序**（先新后旧）。原因：`/evolution revert` 一次只接一个 commit，且 Sprint 9-3 已实测 `revert` 对 `--no-ff` 合并提交直接失败，所以不能只给合并提交。
+- **去重**：`persists` 的部署会一直保持 `observing`，`learn` 每次运行都会再次得出同样的建议；`DeployRecord` 新增 `rollback_notified_at`（默认 0，旧记录按 0 读取），**kanban 渠道写入成功后**才记时间戳，所以同一个部署只提醒一次；发送失败不记，下一轮重试。`rollback_failed` 记录会离开 `observing`，天然只出现一次，不需要标记。
+- 新增 `collect_deploy_overview()`（`/evolution deploys` 的数据来源）：对仍在 `observing` 的部署现算一次 Observe（与 `learn` 同口径），让用户不必等下一次 `/goal` 结束。
+
+### 涉及文件
+
+`runtime/learn.py`（`ObservedDeployment` 新增三个带默认值字段、`LearnReport.render_notice()`/`notified`、`notify` 参数与 `_notify_kanban()`、`collect_deploy_overview()`）；`runtime/runtime.py`（`learn_notify` 构造参数 + 读配置）；`evolution/deployment.py`（`DeployRecord.rollback_notified_at`）；`config/models.py`（`runtime_learn_notify_enabled`）；`notification/reports_store.py`（两个 source 的分类）；`cli/commands/goal_mode_cmd.py`（`_run_goal` 末尾提示）；`cli/commands/evolution.py`（`deploys` 子命令）。4 个安全设施文件及 `failure_pattern_store.py`/`proposal_risk.py` 未改动（`check_frozen_evolution_modules.py --check-manifest` 6 个文件 0 不一致）。
+
+### 验证
+
+- 新增 `tests/test_phase9_rollback_user_exit.py`（**25 用例**）：文案（无事可报为空串、逆序命令、无 commit 信息、回退失败）、旧记录兼容、默认不写通知文件、通知内容/分类、**跨轮去重**、发送失败不标记且可重试、通知抛异常不影响 learn、回退失败通知一次、improved/inconclusive 不通知、`AgentRuntime` 开关优先级（参数 > 配置 > 默认）、`/goal` 提示（有/无/提示本身抛异常）、`/evolution deploys`（空、实时建议、已结算、不 `git init`、不创建 `.agent/`、不落盘、盘点不抛异常）。**变异检查**：临时去掉去重条件，`test_notify_dedupes_across_runs_but_still_recommends` 随即失败，恢复后通过。
+- Sprint 9-4 既有 30 用例全部通过（未改动）。
+- 定向回归（`test_phase*`/`test_core_*`/`test_goal_mode*`/`test_evolution*`/`test_cron*`/`test_notification*`/`test_deploy*` 等 57 个文件，含本次新增之外）：**849 passed，8 failed**。8 个失败均为既有：`test_build_from_history_*` 5 个（Sprint 0 已记录）、`test_evolution_cli.py` revert 相关 2 个、`test_notification_dispatcher.py::test_kanban_writes_alert_record` 1 个（该测试仍读旧的 `alerts.jsonl`，而 `KanbanChannel` 早已改写 `reports.jsonl`），后三项已在**未修改的原始压缩包**上复现。**未跑全量测试**。
+- `pyflakes` 对本次改动文件无新增告警（`reports_store.py` 的 `time` 未使用、`goal_mode_cmd.py` 的 `scan_goal_states` 未使用为既有）；`lint_no_new_toplevel_concepts.py` 通过；`dep_graph.py --module runtime.learn`：深度 inbound=3，未触发止损。
+
+### 已知局限（如实记录）
+
+1. **看板通知默认关闭**（保守 opt-in）。只开 `runtime_learn_enabled` 而不开 `runtime_learn_notify_enabled` 时，走 cron 路径（无终端）的用户仍然不会被主动告知——此时只能靠 `/evolution deploys` 或事件日志。想要“看板可见”需要显式打开第二个开关。
+2. **终端提示每次 `/goal` 结束都会重复出现**（只要建议仍然成立且用户没处理）。这是有意的：用户当场在场，重复提醒比静默更安全；只有看板通知做了“只提醒一次”。
+3. 去重标记落盘失败时，下一轮会重发一条通知（宁可多发不漏发）。
+4. `rollback_failed` 的通知只尝试一次：发送失败后没有重试（记录已离开 `observing`）。失败原因会出现在 `LearnReport.errors`，终端提示同一轮仍会显示。
+5. **自动回退成功（`rolled_back`）不发通知**：本次范围是“需要人处理的事”；自动改动了用户仓库这件事本身是否要提醒，留待决定。
+6. 通知正文里的回退命令未校验 commit 是否仍在当前分支历史里（用户可能已手动处理）；`/evolution revert` 自身会报“Commit not found”。
+7. 看板前端（Streamlit）未做任何改动，也未在本环境运行；依赖既有“关注与通知”面板按 `source` 分类展示新增的两个 source，这部分只用纯函数测试（`categorize_report`/`list_pending_reports`）覆盖，**没有浏览器级验证**。

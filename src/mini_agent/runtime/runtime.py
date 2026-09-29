@@ -116,6 +116,7 @@ class AgentRuntime:
         enable_learn_stage: Optional[bool] = None,
         learn_auto_rollback: Optional[bool] = None,
         enable_decision_stage: Optional[bool] = None,
+        learn_notify: Optional[bool] = None,
     ) -> None:
         self._agent = agent
         self._cfg = cfg
@@ -129,6 +130,11 @@ class AgentRuntime:
         self._learn_auto_rollback = (
             learn_auto_rollback if learn_auto_rollback is not None
             else bool(getattr(gm, "runtime_learn_auto_rollback", False))
+        )
+        # “建议回退”的看板通知（默认关闭；仅 learn 开启时才有意义）。
+        self._learn_notify = (
+            learn_notify if learn_notify is not None
+            else bool(getattr(gm, "runtime_learn_notify_enabled", False))
         )
         # Phase 10 A3：是否启用 advisory 决策旁路（默认关闭；开启后每次运行最多
         # 多 5 次 LLM 调用，且选出的动作不会被执行）。
@@ -326,6 +332,7 @@ class AgentRuntime:
                 learn_report = run_learn_step(
                     AgentPaths(project_root=self._cfg.project_root),
                     auto_rollback=self._learn_auto_rollback,
+                    notify=self._learn_notify,
                 )
             except Exception:
                 from mini_agent.errors import log_exception

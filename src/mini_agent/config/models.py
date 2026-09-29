@@ -1098,6 +1098,11 @@ class GoalModeConfig:
     # 只在报告里标注“建议回退”，不动用户仓库。回退是对受 git 管理的项目
     # 仓库执行 `git revert`，与合并一样属于需要人来决定的动作。
     runtime_learn_auto_rollback: bool = False
+    # `learn` 得出“建议回退”（或自动回退失败）时，是否向看板“关注与通知”发一条
+    # 通知（同一个部署只发一次）。默认关闭（保守 opt-in）：关闭时 `learn` 不写
+    # 任何通知文件；`/goal` 结束时的终端提示与 `/evolution deploys` 不受此开关影响
+    # （二者只读、不落盘）。仅在 `runtime_learn_enabled=True` 时才有意义。
+    runtime_learn_notify_enabled: bool = False
 
     # ── [next_doc/refactor_plan/14-phase10-sa-item-plan.md A2] AgentRuntime 的
     #    observe 步骤是否顺带刷新 `CapabilityState` 快照（读三个注册表的名字并交给
