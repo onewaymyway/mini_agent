@@ -202,7 +202,10 @@ session 逐个调用一次摘要生成）、
 `DELETE /v1/cron/jobs/{job_id}` 彻底删除一个用户自定义 job（`sys:` 前缀
 的内置 job 会被拒绝，返回 400，只能用 `PUT .../enabled=false` 禁用）。
 看板"📌 目标看板"和"⏰ Cron 任务"两个 Tab 都提供删除入口（二次确认后
-才真正调用删除接口），行为完全一致。
+才真正调用删除接口），行为完全一致。"⏰ Cron 任务"Tab 的删除入口在卡片
+「📋 详情 / 操作」弹窗内：进入确认态/取消都保持弹窗打开，确认删除成功后
+弹窗关闭并在 Tab 顶部提示，失败则在弹窗内展示错误并可重试（见
+`next_doc/kanban_cron_detail_dialog_delete_rerun_bugfix.md`）。
 
 `api/routes.py` 里 `GET/POST/PUT/DELETE /cron/jobs...` 四个路由统一通过
 `_get_cron_scheduler(http_server)` 解析当前生效的 `CronScheduler` 实例

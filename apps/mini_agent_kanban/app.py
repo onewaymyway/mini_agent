@@ -12567,6 +12567,40 @@ _CRON_PHASE_LABEL = {
 }
 
 
+# [bugfix：Cron 详情弹窗内点「删除」后弹窗被关掉] Cron 任务的详情弹窗是
+# `st.dialog`，其正文本身就是一个 `st.fragment`——弹窗内的按钮点击默认只会
+# 局部重跑弹窗自己。但弹窗内如果调用不带 `scope` 的 `st.rerun()`（默认
+# `scope="app"`，整页重跑），整页脚本重新执行时并不会再次调用
+# `_show_cron_job_detail_dialog()`（打开弹窗只发生在"点了卡片上的详情按钮"
+# 那一轮），弹窗就被直接关掉了。删除任务需要"点删除 → 进入二次确认态 →
+# 点确认删除"两步，第一步就用整页 rerun 会让弹窗在用户看到确认按钮之前
+# 消失，而 `cron_tab_confirm_delete_<job_id>` 标记已经写进 session_state，
+# 用户再次点开详情时看到的直接就是"确认删除"，表现为"删除没成功、详情
+# 页面莫名关闭、再点开已经是确认态"。
+#
+# 需要保持弹窗打开的交互（进入确认态 / 取消 / 删除失败）改用只重跑弹窗
+# 自身的 `_rerun_cron_dialog_only()`；只有"确认删除并成功"这类需要刷新
+# 背后任务列表的场景才用整页 `st.rerun()`（同时也就顺带关掉弹窗，符合预期）。
+_CRON_FLASH_KEY = "_cron_tab_flash"
+
+
+def _cron_delete_confirm_key(job_id: str) -> str:
+    """Cron 详情弹窗里"删除二次确认态"的 session_state 键。"""
+    return f"cron_tab_confirm_delete_{job_id}"
+
+
+def _rerun_cron_dialog_only() -> None:
+    """只重跑 Cron 详情弹窗自身（`st.dialog` 正文所在的 fragment），不重跑
+    整页，从而保持弹窗打开。若当前不是 fragment 内的局部重跑触发（例如弹窗
+    刚被打开的那一轮全量重跑里），Streamlit 不允许 `scope="fragment"` 并会
+    抛 `StreamlitInvalidLayoutContextError`，此时退回整页 `st.rerun()`，
+    行为等价于改动前（用法同 `_async_fetch_or_retry`）。"""
+    try:
+        st.rerun(scope="fragment")
+    except StreamlitInvalidLayoutContextError:
+        st.rerun()
+
+
 _CRON_RUN_EVENT_TITLE = {
     "run_started": "▶️ 开始执行",
     "timed_out": "⏱️ 超时终止",
@@ -12727,6 +12761,11 @@ def _render_cron_job_card(client: AgentClient, job: dict) -> None:
                         st.rerun()
 
         if st.button("📋 详情 / 操作", key=f"cron_card_detail_{job_id}", use_container_width=True):
+            # 每次重新打开详情弹窗都先清掉上一次遗留的"删除二次确认态"——
+            # 用户上次点了「🗑️ 删除」进入确认态后，可能通过 ✕/Esc/点击外部
+            # 关掉了弹窗（这几种方式不会触发任何回调），标记就会一直留在
+            # session_state 里，下次打开直接是"⚠️ 确认删除"，容易误触。
+            st.session_state.pop(_cron_delete_confirm_key(job_id), None)
             _show_cron_job_detail_dialog(client, job)
 
 
@@ -13098,26 +13137,39 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
     # 删除前二次确认，用 confirm_key 这个 session_state 标记控制）。
     if not is_system_job:
         st.markdown("###### 🗑️ 删除任务")
-        confirm_key = f"cron_tab_confirm_delete_{job_id}"
+        confirm_key = _cron_delete_confirm_key(job_id)
         if not st.session_state.get(confirm_key):
             if st.button("🗑️ 删除", key=f"cron_tab_delete_{job_id}"):
                 st.session_state[confirm_key] = True
-                st.rerun()
+                # 进入二次确认态：只重跑弹窗自身，保持弹窗打开（见
+                # `_rerun_cron_dialog_only` 的说明）。
+                _rerun_cron_dialog_only()
         else:
+            st.warning(f"确认彻底删除 cron job「{job.get('name', job_id)}」？此操作不可撤销。")
             dc1, dc2 = st.columns(2)
             with dc1:
                 if st.button("⚠️ 确认删除", key=f"cron_tab_delete_confirm_{job_id}"):
                     result = client.delete_cron_job(job_id)
-                    st.session_state.pop(confirm_key, None)
                     if isinstance(result, dict) and result.get("_error"):
+                        # 删除失败：留在弹窗里展示错误，并保留确认态方便直接
+                        # 重试；不整页 rerun，否则错误提示会连同弹窗一起消失。
                         st.error(f"删除失败：{result['_error']}")
                     else:
-                        st.success(f"已删除 cron job：{job.get('name')}")
-                    st.rerun()
+                        st.session_state.pop(confirm_key, None)
+                        # 删除成功：需要刷新背后的任务列表，所以这里用整页
+                        # rerun（同时关闭弹窗，此时任务已不存在，符合预期）。
+                        # 成功提示写进 session_state，由 render_cron_jobs_tab
+                        # 在下一轮渲染时展示——直接 st.success 后立即 rerun
+                        # 的话提示会一闪而过看不到。
+                        st.session_state[_CRON_FLASH_KEY] = (
+                            "success", f"已删除 cron job：{job.get('name', job_id)}"
+                        )
+                        st.rerun()
             with dc2:
                 if st.button("取消", key=f"cron_tab_delete_cancel_{job_id}"):
                     st.session_state.pop(confirm_key, None)
-                    st.rerun()
+                    # 退出确认态：同样只重跑弹窗，保持打开。
+                    _rerun_cron_dialog_only()
     else:
         st.caption("系统内置任务，不可删除，只能禁用。")
 
@@ -13138,6 +13190,13 @@ def render_cron_jobs_tab(client: AgentClient):
         "互相阻塞；单次执行有超时/步数上限兜底，输出连续雷同时会自动判定"
         "\"卡住\"并停止，需要人工确认后才会继续调度。"
     )
+
+    # 详情弹窗内的操作（如删除成功）会写一条一次性提示到 session_state，
+    # 这里在整页重跑后的第一次渲染里展示并清掉。
+    _flash = st.session_state.pop(_CRON_FLASH_KEY, None)
+    if _flash:
+        _flash_kind, _flash_msg = _flash
+        (st.success if _flash_kind == "success" else st.error)(_flash_msg)
 
     if st.button("🔄 刷新", key="cron_jobs_refresh"):
         st.rerun()

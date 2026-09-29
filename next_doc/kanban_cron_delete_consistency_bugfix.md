@@ -79,6 +79,14 @@ expander 之后新增一段删除 UI，与"📌 目标看板"Tab（`app.py` 里
 - 手工走查：四个路由现在共用同一份 `_get_cron_scheduler()` 兜底逻辑，
   不再存在"GET 用 A 实例、DELETE 用 B 实例"的分叉路径。
 
+## 后续修复
+
+- 「⏰ Cron 任务」Tab 的删除入口后来被收进卡片「📋 详情 / 操作」弹窗，
+  弹窗内点「🗑️ 删除」会因整页 `st.rerun()` 把弹窗关掉（"详情页面消失、
+  任务还在、再点开直接是确认态"）。这是前端交互问题，与本文的后端路由问题
+  无关，修复见
+  [`kanban_cron_detail_dialog_delete_rerun_bugfix.md`](kanban_cron_detail_dialog_delete_rerun_bugfix.md)。
+
 ## 后续建议（未在本次改动范围内）
 
 - 如果之后要新增别的 `/cron/jobs/...` 路由，一律直接调用
