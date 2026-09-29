@@ -61,6 +61,8 @@ SKIP_REASONS: dict[str, str] = {
     "goal_cycle_user_skip": "用户手动要求跳过这一轮（skip_next_cycle）",
     "goal_cycle_prev_cycle_running": "上一轮 Objective 还没跑完，本轮不叠加并发",
     "goal_cycle_objective_start_failed": "objective_executor.start() 返回 None（拆解失败/第一步提交失败等）",
+    # ── 各 sys: 内置任务的本地 handler ──
+    "protected_backup_failed": "受保护文件备份失败（详见补充：哪个路径、什么异常；本次残缺快照已回滚，历史快照未受影响）",
 }
 
 
@@ -77,6 +79,8 @@ SKIP_CATEGORIES: dict[str, str] = {
     "goal_cycle_no_goal_id": CATEGORY_INVALID,
     "goal_cycle_goal_missing": CATEGORY_INVALID,
     "goal_cycle_objective_start_failed": CATEGORY_RETRY_BACKOFF,
+    # 备份失败多半是文件被占用/权限/磁盘问题，每分钟重试没有意义，退避到最多一个周期。
+    "protected_backup_failed": CATEGORY_RETRY_BACKOFF,
 }
 
 # intentional 类里需要"推进 next_run_at"（真正跳过一个周期）的原因码。
@@ -94,7 +98,7 @@ def set_skip_reason(job: Any, code: str, detail: str = "") -> None:
         if getattr(job, "last_skip_reason", ""):
             return
         job.last_skip_reason = code
-        job.last_skip_detail = (detail or "")[:300]
+        job.last_skip_detail = (detail or "")[:600]
     except Exception:
         # 记录原因只是诊断用途，绝不能影响触发主流程。
         pass

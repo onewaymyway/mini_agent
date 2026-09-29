@@ -144,6 +144,14 @@ bash 命令——这正是需要第 3 层兜底的原因。
   `AppConfig.protected_files_backup_keep_count`）份以外的旧快照按
   `generation_id` 排序自动清理；备份目录本身不在受保护集合里，不会
   跟自身清理动作冲突。
+- **失败处理与原因可见性**（详见
+  [`next_doc/protected_backup_failure_visibility_and_report_time_plan.md`](../next_doc/protected_backup_failure_visibility_and_report_time_plan.md)）：
+  本次运行只要有任何打包错误，就**回滚**自己新建的残缺快照目录并**跳过保留清理**，
+  历史完整快照不受影响（此前失败会被每分钟重试，几分钟内把成功快照挤掉）。具体错误
+  （哪个路径、什么异常类型）写进 job 的 `last_skip_detail`，原因码
+  `protected_backup_failed`，`cron_skip_alert` 汇报的"补充"里直接可见；失败后
+  `next_run_at` 指数退避（上限一天）。清理旧快照遇到只读文件（Windows）会清除只读位
+  后重试。想立刻看具体错误：`POST /v1/protected-files/backup`，响应的 `errors`。
 - **`manifest.txt` 存储格式**：`<index>\t<original_path>` 每行一条，
   `index` 与打包时使用的 `_safe_snapshot_name(path, index)` 显式记录
   在同一行，不依赖任何形式的重新枚举/排序去推导（阶段 3 落地时是纯

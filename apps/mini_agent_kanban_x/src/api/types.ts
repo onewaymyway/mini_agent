@@ -430,9 +430,19 @@ export interface ReportTierItem {
 }
 
 export interface PendingReportItem {
-  id: string;
+  /** 后端记录的主键字段是 report_id（旧类型里的 id 从未出现在返回里） */
+  report_id?: string;
+  id?: string;
+  title?: string;
+  category?: string;
   detail?: unknown;
-  created_at?: string;
+  /** 汇报落盘时间（epoch 秒） */
+  created_at?: number;
+  /** 事件发生时间（epoch 秒） */
+  occurred_at?: number;
+  /** 服务端算好的本地时间文本 YYYY-MM-DD HH:MM:SS（只读，不落盘） */
+  created_at_text?: string;
+  occurred_at_text?: string;
   [key: string]: unknown;
 }
 

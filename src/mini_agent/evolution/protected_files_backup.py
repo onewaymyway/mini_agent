@@ -31,7 +31,10 @@ bash 命令删除文件。第 3 层不追求"拦得住"，追求"能找回来"�
 
 from __future__ import annotations
 
+import logging
+import os
 import shutil
+import stat
 import sys
 import time
 from dataclasses import dataclass, field
@@ -43,6 +46,11 @@ if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
 
 JOB_ID = "sys:protected_files_backup"
+
+_logger = logging.getLogger(__name__)
+
+# 失败详情里最多逐条列出的错误数；其余只给个数，避免 last_skip_detail 被撑爆。
+_DETAIL_MAX_ERRORS = 5
 
 _BACKUP_SUBDIR = "protected_backup"          # <project_root>/.agent/protected_backup/
 _DEFAULT_KEEP_COUNT = 5
@@ -62,9 +70,53 @@ class BackupSummary:
     errors: list[str] = field(default_factory=list)
     generation_id: str = ""
 
+    # 本次运行是否因为出错而回滚了自己新建的（残缺）快照目录。
+    rolled_back: bool = False
+
     @property
     def ok(self) -> bool:
         return not self.errors
+
+    def failure_detail(self, max_errors: int = _DETAIL_MAX_ERRORS) -> str:
+        """把 errors 拼成一段可直接展示在告警/汇报里的说明（无错误返回空串）。
+
+        [受保护文件备份失败原因可见性] 此前 handler 只返回 `summary.ok`，具体是
+        哪个路径、什么异常全部丢掉，告警里只剩 `local_handler_returned_false`。
+        格式：`共 N 处失败：① … ② …[；另有 M 处未列出][；已回滚本次残缺快照]`。
+        """
+        if not self.errors:
+            return ""
+        shown = self.errors[:max_errors]
+        marks = "①②③④⑤⑥⑦⑧⑨⑩"
+        parts = [f"{marks[i] if i < len(marks) else str(i + 1) + '.'} {e}" for i, e in enumerate(shown)]
+        text = f"共 {len(self.errors)} 处失败：" + " ".join(parts)
+        if len(self.errors) > len(shown):
+            text += f"；另有 {len(self.errors) - len(shown)} 处未列出"
+        if self.rolled_back:
+            text += "；已回滚本次残缺快照，历史快照未受影响"
+        return text
+
+
+def _fmt_exc(exc: BaseException) -> str:
+    """`PermissionError: [Errno 13] Permission denied: 'x'`——带异常类型，
+    否则 Windows 上一长串本地化文案里看不出是哪类错误。"""
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _rmtree_force(path: Path) -> None:
+    """删除目录树；Windows 上遇到只读文件（如 .git 对象）时清除只读位后重试。
+
+    `shutil.rmtree` 在 Windows 上对只读文件抛 PermissionError，会让旧快照永远
+    清理不掉。仍失败则把异常抛给调用方记入 errors。
+    """
+    def _onerror(func, target, _exc_info):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except Exception:
+            raise
+
+    shutil.rmtree(path, onerror=_onerror)
 
 
 def _backup_root(project_root: Path) -> Path:
@@ -132,8 +184,11 @@ def run_backup_once(
     existing_generations = _list_generations(backup_root)
 
     # ── 缺失核对：对比上一份快照的清单 vs 当前受保护路径 ──────────────
-    if existing_generations:
-        prev_manifest = _snapshot_manifest(existing_generations[-1])
+    # 只拿"有 manifest 的最近一份快照"做对比：没有 manifest 的目录是历史上
+    # 失败运行遗留的残缺快照，用它对比会得出错误结论。
+    complete_generations = [g for g in existing_generations if (g / "manifest.txt").is_file()]
+    if complete_generations:
+        prev_manifest = _snapshot_manifest(complete_generations[-1])
         current_paths = {e.path for e in entries}
         summary.missing = sorted(p for p in prev_manifest if p not in current_paths)
 
@@ -150,7 +205,7 @@ def run_backup_once(
     try:
         generation_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        summary.errors.append(f"mkdir_failed: {exc}")
+        summary.errors.append(f"mkdir_failed({generation_dir}): {_fmt_exc(exc)}")
         return summary
 
     manifest_lines: list[str] = []
@@ -170,7 +225,7 @@ def run_backup_once(
             manifest_lines.append(f"{idx}\t{entry.path}")
             summary.backed_up.append(entry.path)
         except OSError as exc:
-            summary.errors.append(f"backup_failed({entry.path}): {exc}")
+            summary.errors.append(f"backup_failed({entry.path}): {_fmt_exc(exc)}")
 
     try:
         (generation_dir / "manifest.txt").write_text(
@@ -178,7 +233,23 @@ def run_backup_once(
             encoding="utf-8",
         )
     except OSError as exc:
-        summary.errors.append(f"manifest_write_failed: {exc}")
+        summary.errors.append(f"manifest_write_failed({generation_dir}): {_fmt_exc(exc)}")
+
+    # ── 本次快照不完整：回滚它，且不做保留清理 ─────────────────────────
+    # [受保护文件备份失败原因可见性] 此前失败的运行也会留下一份残缺快照并照常
+    # 执行保留策略；而失败又会被调度器每分钟重试，几分钟内 keep_count 个名额
+    # 全被残缺快照占满，最后一份成功的完整快照被清掉——备份反而销毁了备份。
+    # 现在：本次任何一条打包错误 → 删掉自己新建的目录、跳过清理，历史快照原样保留。
+    if summary.errors:
+        try:
+            _rmtree_force(generation_dir)
+            summary.rolled_back = True
+            summary.generation_id = ""
+        except Exception as exc:
+            # 回滚失败：保留残缺目录（其 manifest 只含成功项，不会误导缺失核对），
+            # 但把原因写进 errors，别悄悄吞掉。
+            summary.errors.append(f"rollback_failed({generation_dir.name}): {_fmt_exc(exc)}")
+        return summary
 
     # ── 保留策略：只留最近 keep_count 份（含本次新建的这份） ──────────
     all_generations = _list_generations(backup_root)
@@ -186,10 +257,10 @@ def run_backup_once(
         to_prune = all_generations[: len(all_generations) - keep_count]
         for gen_dir in to_prune:
             try:
-                shutil.rmtree(gen_dir)
+                _rmtree_force(gen_dir)
                 summary.pruned_generations.append(gen_dir.name)
             except OSError as exc:
-                summary.errors.append(f"prune_failed({gen_dir.name}): {exc}")
+                summary.errors.append(f"prune_failed({gen_dir.name}): {_fmt_exc(exc)}")
 
     return summary
 
@@ -304,6 +375,15 @@ def ensure_protected_files_backup_job(
     def _handler(job: "CronJob") -> bool:
         summary = run_backup_once(paths.project_root, keep_count=keep_count)
         _write_missing_alert(paths, summary)
+        if not summary.ok:
+            # [受保护文件备份失败原因可见性] 把具体错误写进 job.last_skip_detail，
+            # 连续跳过告警/待处理汇报的"补充"里就能看到是哪个路径、什么异常；
+            # 原因码 protected_backup_failed 归 retry_backoff 类（失败后指数退避，
+            # 不再每分钟重试）。
+            from mini_agent.evolution.cron_skip_reasons import set_skip_reason
+            detail = summary.failure_detail()
+            set_skip_reason(job, "protected_backup_failed", detail)
+            _logger.warning("protected_files_backup 失败：%s", detail)
         return summary.ok
 
     cron_scheduler.register_local_handler(JOB_ID, _handler)

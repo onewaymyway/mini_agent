@@ -14833,7 +14833,17 @@ def _render_pending_reports_panel(client: "AgentClient"):
             selected_ids.discard(rid)
         with row_expander:
             icon = _REPORT_CATEGORY_ICONS.get(cat, "⚪")
-            with st.expander(f"{icon} [{cat}] {rep.get('title', '(无标题)')}", expanded=False):
+            # 汇报时间放进折叠标题，不展开就能按时间对上问题；事件发生时间与汇报
+            # 时间不同（延迟汇报/批量打包）时在正文上方再单独标出。
+            rep_time = rep.get("created_at_text") or "时间未知"
+            occ_time = rep.get("occurred_at_text") or ""
+            with st.expander(
+                f"🕒 {rep_time}　{icon} [{cat}] {rep.get('title', '(无标题)')}", expanded=False,
+            ):
+                st.caption(
+                    f"汇报时间：{rep_time}"
+                    + (f"　事件发生：{occ_time}" if occ_time and occ_time != rep_time else "")
+                )
                 st.markdown(rep.get("detail") or "（无正文）")
                 if st.button("标记已读", key=f"notif_report_ack_{idx}_{rid}"):
                     res = client.ack_notification_report(rid)

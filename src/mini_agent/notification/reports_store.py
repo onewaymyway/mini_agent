@@ -64,6 +64,21 @@ def _load_pending_sorted(paths: "AgentPaths") -> list[dict]:
     return result
 
 
+def format_report_time(ts) -> str:
+    """epoch 秒 → 本地时间 `YYYY-MM-DD HH:MM:SS`；空/非法值返回空串。
+
+    汇报记录里 `created_at`（汇报落盘时间）/`occurred_at`（事件发生时间）都是
+    epoch 浮点数，看板此前要么完全不显示、要么直接显示原始数字，分析"这条汇报
+    是什么时候报的、事件比汇报早多久"很不方便。这里在读取时算出可读文本，不落盘。
+    """
+    try:
+        if not ts:
+            return ""
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
+    except Exception:
+        return ""
+
+
 def list_pending_reports(
     paths: "AgentPaths", limit: Optional[int] = None, offset: int = 0,
     category: Optional[str] = None,
@@ -73,11 +88,15 @@ def list_pending_reports(
     （汇报正文，含命中明细），供看板"📋 待处理汇报"面板展开显示——这是
     跟 alerts.jsonl 共用时缺失的能力。每条记录额外附带一个只读的
     `category` 字段（`categorize_report()` 算出来的，不落盘、不是存储
-    schema 的一部分），供看板按分类筛选/分组展示；`category` 参数非空
+    schema 的一部分），供看板按分类筛选/分组展示；另附只读的
+    `created_at_text`/`occurred_at_text`（汇报时间/事件发生时间的可读文本）；`category` 参数非空
     时只返回该分类下的记录，分页（limit/offset）在筛选之后计算。"""
     result = _load_pending_sorted(paths)
     for d in result:
         d["category"] = categorize_report(d)
+        # 只读的可读时间文本（不落盘）：汇报时间 / 事件发生时间。
+        d["created_at_text"] = format_report_time(d.get("created_at"))
+        d["occurred_at_text"] = format_report_time(d.get("occurred_at"))
     if category:
         result = [d for d in result if d["category"] == category]
     if offset:

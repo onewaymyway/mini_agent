@@ -1086,7 +1086,10 @@ class CronScheduler:
         lines.append(f"最近一次未触发原因：{reason_text}（{reason_code}）")
         if job.last_skip_detail:
             lines.append(f"补充：{job.last_skip_detail}")
-        return "\n".join(lines)[:1200]
+        # 汇报时间：待处理汇报面板另有独立的时间列，这里写进正文是为了纯文本渠道
+        # （微信/邮件等）里也能对上"这条是什么时候报的"。
+        lines.append("本次汇报时间：" + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)))
+        return "\n".join(lines)[:1600]
 
     def _fire(self, job: CronJob) -> bool:
         """

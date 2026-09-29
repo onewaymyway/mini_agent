@@ -185,7 +185,9 @@ channels:
   `.agent/notification/reports.jsonl`，通过专用的
   `GET /v1/notifications/pending` / `POST /v1/notifications/pending/{id}/ack`
   端点读取/标记已读，在看板"关注与通知"tab 的"📋 待处理汇报"面板展开
-  显示（含完整 Markdown 正文）。不再出现在"全局待办中心"或网关的
+  显示（含完整 Markdown 正文）。每条汇报都显示**汇报时间**（`created_at`，汇报落盘
+  时间）；事件发生时间（`occurred_at`）与之不同时也一并显示。接口返回里附带只读的
+  `created_at_text`/`occurred_at_text`（`YYYY-MM-DD HH:MM:SS`，不落盘）。不再出现在"全局待办中心"或网关的
   "🔔 待处理告警"面板里——这两类东西对用户语义不同（"需要你处理的
   外部告警" vs "周期性打包的关注汇总"），存储和展示都彻底分开，
   互不干扰、也不需要靠 `source` 字段在共享文件里做区分。

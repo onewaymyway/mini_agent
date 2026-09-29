@@ -3,6 +3,16 @@ import { useWatchlist } from "../../hooks/useWatchlist";
 
 const { Title, Text } = Typography;
 
+/** epoch 秒 → 本地时间文本；服务端已给 created_at_text 时不会走到这里，仅作旧后端兜底。 */
+function fmtReportTs(ts?: number): string {
+  if (!ts) return "";
+  try {
+    return new Date(ts * 1000).toLocaleString();
+  } catch {
+    return String(ts);
+  }
+}
+
 export default function Watchlist() {
   const { watchlist, reportTiers, pendingReports, dispatchLog, ackReport } = useWatchlist();
 
@@ -75,7 +85,7 @@ export default function Watchlist() {
                   size="small"
                   loading={ackReport.isPending}
                   onClick={() =>
-                    ackReport.mutate(r.id, {
+                    ackReport.mutate((r.report_id || r.id) as string, {
                       onSuccess: () => message.success("已标记已读"),
                       onError: (e: any) => message.error(e?.message || "操作失败"),
                     })
@@ -89,14 +99,23 @@ export default function Watchlist() {
                 style={{ width: "100%" }}
                 items={[
                   {
-                    key: r.id,
+                    key: (r.report_id || r.id) as string,
                     label: (
                       <>
-                        <Text type="secondary">{r.created_at}</Text> {r.id}
+                        <Text type="secondary">
+                          {r.created_at_text || fmtReportTs(r.created_at) || "时间未知"}
+                        </Text>{" "}
+                        {r.category ? <Tag>{r.category}</Tag> : null}
+                        {r.title || r.report_id || r.id}
                       </>
                     ),
                     children: (
                       <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>
+                        {`汇报时间：${r.created_at_text || fmtReportTs(r.created_at) || "未知"}` +
+                          (r.occurred_at_text && r.occurred_at_text !== r.created_at_text
+                            ? `　事件发生：${r.occurred_at_text}`
+                            : "") +
+                          "\n\n"}
                         {typeof r.detail === "string" ? r.detail : JSON.stringify(r.detail, null, 2)}
                       </pre>
                     ),

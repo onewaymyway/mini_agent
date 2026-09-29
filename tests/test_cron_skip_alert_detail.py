@@ -279,7 +279,10 @@ class TestAlertContent:
         _tick_n(s, job.id, 5)
         body = sent[0].body
         assert len(body) > 200
-        assert body.rstrip().endswith("预算说明")  # 补充说明完整保留，没有被截断
+        # 补充说明完整保留，没有被截断（正文末尾现在还有一行"本次汇报时间"，
+        # 所以不再断言以补充说明结尾）
+        assert ("预算说明" * 60) in body
+        assert body.rstrip().splitlines()[-1].startswith("本次汇报时间：")
 
 
 # ── 3. 发送记录 ───────────────────────────────────────────────────────────
