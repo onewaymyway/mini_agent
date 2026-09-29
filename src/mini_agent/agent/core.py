@@ -501,33 +501,37 @@ class Agent(
             )
             self._memory, self._global_memory = create_both_memory_backends(cfg)
 
-            # [memory_store 迁移链唯一接入点] MemoryBackend(old，主 Agent
-            # 自己的项目级记忆 self._memory，不含 self._global_memory 及
-            # evolution/ 等子系统各自独立构造的记忆实例) → MemoryAdapter →
-            # MemorySnapshot(core)：只做转换 + trace 记录，不影响
-            # self._memory 后续任何使用方式（转换结果不参与下面的逻辑，
-            # trace 日志就是"链路真的被执行过"的证据，与 Self/History
-            # 迁移链的做法一致）。见
+            # [memory_store 迁移链唯一接入点] MemoryBackend(old) → MemoryAdapter
+            # → MemorySnapshot(core)：只做转换 + trace 记录，不影响后续任何
+            # 使用方式（转换结果不参与下面的逻辑，trace 日志就是"链路真的被
+            # 执行过"的证据，与 Self/History 迁移链的做法一致）。
+            # 覆盖主 Agent 自己的两个后端：项目级 self._memory（scope=
+            # "project"）与全局级 self._global_memory（scope="global"，
+            # 2026-09-29 纳入）；不含 evolution/ 等子系统各自独立构造的记忆
+            # 实例。每个后端各自 try/except，一个失败不影响另一个。见
             # next_doc/refactor_plan/03-sprint1.5-memory-perception-coupling-assessment.md
-            # "十一、perception/memory_store.py 止损口径评估 + Adapter
-            # 接入点执行记录"。
-            if self._memory is not None:
-                try:
-                    from mini_agent.core.memory_adapter import MemoryAdapter as _core_MemoryAdapter
-                    from mini_agent.core.events import Event as _core_Event
+            # "十一"与"十二"。
+            for _core_scope, _core_backend in (
+                ("project", self._memory),
+                ("global", self._global_memory),
+            ):
+                if _core_backend is None:
+                    continue
+                # 全局后端此前是懒加载的：读 `count` 会触发 `_ensure_loaded()`
+                # 把整份 ~/.agent/memory.jsonl 提前读盘解析，而 Agent 在 cron
+                # 每次触发/SubAgent 构造时都会创建。trace 只是可观测性旁路，
+                # 不应为它引入新的启动开销，因此全局这一路仅在 trace logger
+                # 实际开启 DEBUG 时才计算。项目级后端原本就在此处读 `count`，
+                # 保持不变（不改变既有加载时机）。
+                if _core_scope == "global":
                     import logging as _core_logging
 
-                    _core_memory_snapshot = _core_MemoryAdapter.to_new(self._memory)
-                    _core_logging.getLogger("mini_agent.core.trace").debug(
-                        "%s",
-                        _core_Event(
-                            kind="memory_store.adapter.to_new",
-                            payload={
-                                "entry_count": _core_memory_snapshot.entry_count,
-                                "backend_kind": _core_memory_snapshot.backend_kind,
-                            },
-                        ).to_dict(),
-                    )
+                    if not _core_logging.getLogger("mini_agent.core.trace").isEnabledFor(_core_logging.DEBUG):
+                        continue
+                try:
+                    from mini_agent.core.memory_adapter import trace_memory_snapshot as _core_trace_memory
+
+                    _core_trace_memory(_core_backend, _core_scope)
                 except Exception as _mini_agent_exc:
                     from mini_agent.errors import log_exception
                     log_exception(

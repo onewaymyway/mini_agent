@@ -627,3 +627,113 @@ Adapter 接入点（`core/memory.py`+`core/memory_adapter.py`）已完成
 **遗留/下一步**：`MemoryAdapter.to_old` 方向、`self._global_memory`
 是否需要单独接入、`api/routes.py` 等零散调用方（若按新口径复核后
 仍需处理）——**不在本次范围内**，待项目所有者确认排期后再启动。
+（2026-09-29 更新：上述三项已在下方"十二"逐项评估并处理，原文保留不改。）
+
+## 十二、`_global_memory` 纳入 + `MemoryAdapter.to_old` 复核 + `perception/` 包内调用方评估（2026-09-29）
+
+承接"十一"的**遗留/下一步**三项（`MemoryAdapter.to_old`、`self._global_memory`
+是否单独接入、`perception/` 包内调用方是否需要进一步收敛）。项目所有者于
+2026-09-29 明确选择推进这一项。本节按 `12-execution-and-doc-sync-norms.md`
+第五节的最低复盘要求逐项记录。
+
+### 现状盘点（动手前实测，非沿用旧结论）
+
+- `self._memory` 与 `self._global_memory` 由同一个 `create_both_memory_backends()`
+  在同一行构造，类型同为 `MemoryBackend`；`_global_memory` 在 `agent/` 下另有
+  约 10 处真实使用（`profile.py`/`reflection.py`/`reminders_correction.py`/
+  `lifecycle.py`/`core.py`/`cli/commands/evolve.py`/`tools/introspection.py`
+  等），是主 Agent 自己持有的对象，不是子系统各自独立构造的实例。
+- **发现：`MemoryAdapter`/`MemorySnapshot` 自 2026-09-26 落地以来没有任何测试
+  文件**（"十一"的验证只有一次性脚本 + 手工观察 trace）。本次补齐。
+- `MemoryStore.count` 内部调用 `_ensure_loaded()`，即读取 `count` 会**提前读盘并
+  解析整份 JSONL**。项目级后端本来就在该接入点读 `count`（启动时加载）；全局
+  后端此前是**懒加载**。这决定了"纳入全局"不能无条件照搬项目级的写法（见下）。
+- `scripts/dep_graph.py --module perception.memory_store` 复测：inbound 共 18，
+  其中 `perception/` 包内 12、**跨子系统 6**（`agent/memory_types.py`/
+  `context_builder.py`/`core/lesson_adapter.py`/`evolution/memory_types.py`/
+  `goal_mode/runner.py`/`profile.py`）。"十一"记录的跨子系统 5 → 6，多出的是
+  2026-09-28 补做 lesson Adapter 新增的 `core/lesson_adapter.py`，**不是本次
+  改动引入的**（本次没有新增任何对 `memory_store` 的 import）。
+
+### 三项决策
+
+| 遗留项 | 决策 | 依据 |
+|---|---|---|
+| `self._global_memory` 是否纳入 | **纳入**，复用同一个 `MemoryAdapter`、同一个接入点，不新增 Adapter 类 | 同一构造点、同一接口类型；区别只有作用域，用 `MemorySnapshot.scope` 表达即可 |
+| `MemoryAdapter.to_old` | **仍不实现**，保持显式 `NotImplementedError` | 无任何消费者；`MemorySnapshot`（条数/种类/作用域）不足以重建后端（缺 `path`/`library_index`/`embed_call`/`AppConfig`，且已持久化的条目不在快照里）；返回只读桩会让调用方拿到"看起来可用、实际检索不到任何东西"的后端，比显式报错更危险。与 A4（`goal_mode/executor.py` 评估后不迁移）同一原则：推测性设计不做 |
+| `perception/` 包内 12 个调用方 | **不处理** | 按第六节第 6 条口径不计入止损；跨子系统 6 仍低于阈值 10 |
+
+### 产出
+
+- `core/memory.py::MemorySnapshot` 新增 `scope: str = "project"`（默认值，旧的
+  两字段构造方式不受影响）。
+- `core/memory_adapter.py`：`to_new(old)` **协议签名不变**（`scope` 不加进
+  `to_new`，因为 `MemoryBackend` 接口本身不携带作用域）；新增
+  `trace_memory_snapshot(old, scope)`——转换 + `dataclasses.replace` 标注
+  作用域 + 写 DEBUG trace。抽成函数是为了让测试直接执行真实代码，而不是像
+  `test_core_history_adapter.py` 那样复刻一份接入点逻辑。`to_old` 的 TODO 注释
+  改写为明确的重评触发条件。
+- `agent/core.py::Agent.__init__()` 唯一接入点：对 `("project", self._memory)`、
+  `("global", self._global_memory)` 各调用一次 `trace_memory_snapshot`，每个后端
+  独立 `try/except`（一个失败不影响另一个）。trace 的 kind 不变
+  （`memory_store.adapter.to_new`），payload 新增 `scope`。
+- **全局这一路有门控**：仅当 `mini_agent.core.trace` logger 实际开启 DEBUG 时才
+  计算。原因即上面"现状盘点"第三条——无条件读取会把全局记忆文件的加载从"首次
+  使用时"提前到"每次构造 Agent 时"（cron 每次触发、SubAgent 构造都会创建
+  Agent），为一个纯可观测性旁路引入新的启动开销不值得。项目级后端保持原有
+  行为不变。**第一版实现没有这个门控**，是在核对 `count` 的实现后才发现并修正的；
+  记录在此，避免日后有人把门控当成多余代码删掉（测试会拦住，见下）。
+- 新增 `tests/test_core_memory_adapter.py`（12 用例）。
+
+### 验证
+
+- 新增 12 用例全部通过，覆盖：`MemorySnapshot` 旧构造兼容、`to_new` 字段（含真实
+  `MemoryStore`）、`to_old` 仍显式报错、`trace_memory_snapshot` 作用域标注与日志
+  内容、只读性（不调用后端任何方法）、异常向上传播；以及**真实构造 `Agent`**
+  的三条集成用例（project+global 各一条 trace / 关闭全局时只有 project /
+  trace 抛异常时 Agent 仍可构造且记忆可用）和一条"默认日志级别下全局后端
+  `_loaded is False`、项目级 `_loaded is True`"的不变量用例。
+- **变异检查**：临时换回改动前的 `agent/core.py`，两条集成用例失败；临时去掉
+  全局门控，"不提前加载"用例失败；两次均已恢复。
+- 定向回归（69 个测试文件：memory/core/lifecycle/profile/reflection/phase*/
+  goal_mode/introspection/task_manager/hybrid 相关）：改动后 **878 passed /
+  5 failed**，改动前的原始压缩包同批 **866 passed / 5 failed**（差的 12 个即
+  本次新增用例），失败集合逐条一致——均为 README 多次记录的既有
+  `test_goal_mode.py::test_build_from_history_*`。
+- 补充一批会真实构造 `Agent` 的文件（`test_llm.py`/`test_global_knowledge_integration.py`/
+  `test_system_tool_call_and_debug.py`/`test_workdir_knowledge_tools.py`）：新旧两树
+  均为 194 passed / 2 failed，失败集合一致（`test_system_tool_call_and_debug.py`
+  两条既有失败）。
+- `pyflakes`：新增/改动的 `core/memory*.py`、测试文件无告警；`agent/core.py`
+  告警数与改动前一致（24，均为既有的未使用 import）。
+- `scripts/dep_graph.py`：`core.memory_adapter` inbound=1（仅 `agent/core.py`）/
+  outbound=0；`core.memory` inbound=1/outbound=0；均未触发止损阈值。
+
+### 是否触发止损条件
+
+未触发。`perception.memory_store` 跨子系统 inbound=6 < 10；Adapter 接入点仍是
+唯一一处。
+
+### 已知局限（如实记录，不隐藏）
+
+- 全局记忆的 trace **默认不产生**（仅 DEBUG 下产生）。因此"全局记忆已纳入接入点"
+  的可观测证据只在开启 DEBUG 时才存在；这是有意的取舍，不是遗漏。
+- `MemorySnapshot` 目前仍**没有任何消费者**（只有 trace），与 Self/History 的
+  处境一致；`scope` 字段是否被后续 Phase 用到，取决于是否出现真实消费者。
+- 未跑全量测试（此前各 Sprint 同样只跑定向回归）。`tests/test_session.py` 在
+  原始压缩包中同样存在收集错误（`ImportError: cannot import name '_flock'`），
+  本次未处理，与本任务无关。
+- 全局这一路依赖 logger 级别在 `Agent.__init__` 时已配置好；若日志配置在
+  Agent 构造之后才提升到 DEBUG，则该次构造不会产生全局 trace。
+
+### 重评触发条件
+
+- `to_old`：出现真实消费者（某新代码只持有 `core.MemorySnapshot`，却必须喂给
+  仍依赖 `MemoryBackend` 的旧代码）时再评估，并补往返转换测试。
+- `perception/` 包内调用方：仅当跨子系统 inbound 再次逼近阈值 10（当前 6）。
+
+### `MIGRATION_STATUS.md` 是否已同步更新
+
+是。`perception/memory_store.py`、`core/memory.py + core/memory_adapter.py` 两行
+及页脚"旧 Memory → Adapter"映射行已更新；状态词仍为"部分迁移"（Adapter 仍
+单向，未达"完全迁移"）。

@@ -32,3 +32,9 @@ class MemorySnapshot:
 
     entry_count: int = 0
     backend_kind: str = "unknown"
+    # 记忆作用域："project"（主 Agent 项目级记忆 `Agent._memory`）或
+    # "global"（跨项目全局记忆 `Agent._global_memory`）。`MemoryBackend`
+    # 接口本身不携带作用域信息，因此 `MemoryAdapter.to_new()` 保持默认值
+    # "project"，由知道来源的调用方（`trace_memory_snapshot()`）显式标注。
+    # 默认值保证旧的构造方式（只传前两个字段）不受影响。
+    scope: str = "project"

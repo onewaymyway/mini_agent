@@ -161,9 +161,10 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       `03-sprint1.5-memory-perception-coupling-assessment.md` 末尾
       "十一、perception/memory_store.py 止损口径评估 + Adapter
       接入点执行记录"。
-- [ ] `MemoryAdapter.to_old` 方向、`self._global_memory` 是否需要
+- [x] `MemoryAdapter.to_old` 方向、`self._global_memory` 是否需要
       单独接入、`perception/` 包内部 12 个调用方（若后续需要进一步
-      收敛）：待项目所有者确认排期后启动。
+      收敛）：~~待项目所有者确认排期后启动~~。（2026-09-29 状态订正：所有者已选择
+      推进，三项均已逐项评估处理，结论见文末"Memory 迁移链遗留项处理完成"条目。）
 - [x] Phase 1（Goal 迁移链）已达到验收标准，正式进入 **Phase 2（统一
       Event Model）**，按 `03-phase2-event-model-sprint-plan.md` 划分的
       Sprint 2-1（Event 数据结构 + 最小总线）已完成：扩展
@@ -764,4 +765,25 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       Sprint 9-4 既有 30 用例不变；定向回归 849 passed / 8 failed，8 个失败均为既有（其中 3 个已在原始压缩包复现，另 5 个为 Sprint 0 已记录的
       `test_build_from_history_*`）；4 个安全设施文件未改动（manifest 校验 0 不一致）；未跑全量，看板前端未在本环境运行。详见
       `10-phase9-self-evolution-sprint-plan.md` 文末“Sprint 9-4 收尾补充”。**自动回退成功不发通知、终端提示每次重复出现**等取舍见该节“已知局限”。
-
+- [x] Memory 迁移链遗留项处理完成（2026-09-29）：所有者选择推进 `MemoryAdapter.to_old` /
+      `_global_memory` 一项，逐项评估后——① **`self._global_memory` 纳入**：复用同一个
+      `MemoryAdapter`、同一个接入点（`agent/core.py::Agent.__init__()`），`MemorySnapshot`
+      新增 `scope` 字段（默认 `"project"`，旧构造不受影响），新增 `trace_memory_snapshot()`；
+      `to_new(old)` 协议签名不变。**全局这一路仅在 `mini_agent.core.trace` 开启 DEBUG 时计算**——
+      核对 `MemoryStore.count` 实现后发现读取它会触发整份 JSONL 的提前加载，而全局后端此前是懒加载，
+      Agent 在 cron 每次触发/SubAgent 构造时都会创建，不应为纯旁路引入新的启动开销
+      （第一版无此门控，核对后修正；有测试固定）；② **`to_old` 仍不实现**：无消费者，且
+      `MemorySnapshot` 不足以重建后端，返回桩对象比显式报错更危险，重评触发条件已记录；
+      ③ **`perception/` 包内 12 个调用方不处理**：按第六节第 6 条口径不计入止损，跨子系统 inbound
+      复测为 6（原 5，多出的 `core/lesson_adapter.py` 来自 2026-09-28 lesson Adapter，非本次引入），
+      仍低于阈值 10。**发现并补齐**：`MemoryAdapter` 此前没有任何测试文件，新增
+      `tests/test_core_memory_adapter.py`（12 用例，含真实构造 `Agent` 的集成用例；变异检查——
+      换回旧接入点/去掉门控均使对应用例失败）。定向回归 69 个文件：改动后 878 passed / 5 failed，
+      原始压缩包同批 866 passed / 5 failed，失败集合逐条一致（均为既有
+      `test_build_from_history_*`）；另补一批构造 `Agent` 的文件，新旧均 194 passed / 2 failed 且一致。
+      **未跑全量**；`tests/test_session.py` 在原包中同样有收集错误（`_flock`），未处理。
+      `MemorySnapshot` 仍无消费者（只有 trace）。台账 `perception/memory_store.py`、
+      `core/memory*.py` 行与页脚映射行已同步。详见
+      `03-sprint1.5-memory-perception-coupling-assessment.md` "十二"。**至此 README 中不依赖
+      所有者决定的遗留项已清零**；仍未勾选且有意不动的只剩 Sprint 10-1 与 Sprint 10-2/10-3
+      （D1/D5 已由所有者决定不追求）。

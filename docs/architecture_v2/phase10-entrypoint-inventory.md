@@ -54,7 +54,7 @@
 | 映射 | 状态 | 证据 | 入口直接触达（CLI / HTTP） |
 |---|---|---|---|
 | 旧 Goal → Adapter | **部分落地** | `GoalAdapter` 与 `GoalState` 已用于 `goal_mode/runner.py` 的 `run()`/`_finish()`（台账：部分迁移）；`goal_mode/executor.py` 未开始；`goal_backlog.py` 暂缓（跨子系统 inbound=22，远超止损阈值） | 6 / 66 |
-| 旧 Memory → Adapter | **部分落地** | `MemoryBackend → MemorySnapshot` 仅单向且只转换 `entry_count`/`backend_kind` 两个字段；`HistoryManager` 内部逻辑未改（台账） | 1 / 2 |
+| 旧 Memory → Adapter | **部分落地** | `MemoryBackend → MemorySnapshot` 仅单向且只转换 `entry_count`/`backend_kind` 两个字段；`HistoryManager` 内部逻辑未改（台账）（2026-09-29 更新：现为三个字段，新增 `scope`，并覆盖全局记忆后端；仍仅单向，见 03 号文档"十二"） | 1 / 2 |
 | 旧 Workflow → Capability | **部分落地，且目标概念本身未实装** | 实际落地的是 `ActionExecutor` 的 `type="workflow"` 旁路（Action，不是 Capability）；`core/capability.py::CapabilityState` 是无字段空占位，**除 `core/__init__.py` 的再导出与占位测试外，没有任何生产代码引用**（已 grep 核实） | 1 / 0 |
 | 旧 Scheduler → Runtime adapter | **部分落地（opt-in，默认关）** | `cron_job_runner` 的 `message` 模式在 `cron.runtime_dispatch_enabled=True` 时经 `AgentRuntime`，默认 `False`；`goal_cycle`/`AutonomousLoop` 经 Sprint 8-5 评估为高风险、移出 Phase 8 | 1 / 6 |
 | 旧 Advisor → Decision policy | **未落地** | `DecisionEngine`（`cognition/decision.py`，Phase 7）是**新增**模块，**没有任何生产代码调用它**：`runtime/runtime.py` 里只有注释说明 `plan/simulate/decide` 三步被显式跳过，`core/simulation.py` 里只是文档字符串提及（已 grep 核实）；旧 `next_action_advisor`/`growth_advisor` 也**完全不引用 `cognition/`**，台账里没有这两个模块的行 | 5 / 35 |
