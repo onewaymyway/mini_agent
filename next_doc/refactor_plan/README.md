@@ -732,13 +732,15 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       旧名保留为隐藏别名（HTTP `include_in_schema=False`；CLI 使用旧名时提示）；内部标识与磁盘格式未改。所有者确认 Q1–Q4：
       **只改 Objective，`/workflow`、`/cron` 等不改**；A5 只做投影 + 事件。新增 8 用例，定向回归 831 用例 825 通过，6 个失败均为既有
       （已在原始压缩包上复现其中 async_jobs 一项）。看板测试（需 streamlit）与前端构建未在本环境运行。详见 `13-…` 第八、九节。
-- [ ] Phase 10 决策落地方案已产出（`13-phase10-post-decision-execution-plan.md`，2026-09-28）：所有者决定 D2=连概念词与命令名
+- [x] Phase 10 决策落地方案已产出（`13-phase10-post-decision-execution-plan.md`，2026-09-28）：所有者决定 D2=连概念词与命令名
       一起改、D3=交由 Claude 判断（结论：人设能力学习改名为 Persona Learning，架构 Capability 保留）、D4=补齐前置条件。
       方案把工作拆成 S-A（补齐 A1–A5）、S-B0–B4（按概念分批改名，旧名保留为隐藏别名）、S-C（Sprint 10-2/10-3）。
       **仅方案，未改代码**；等待所有者确认 Q1–Q4（命名映射、A5 范围、别名策略、起步阶段）后实施。
-- [ ] Phase 10 S-A 分项方案已产出（`14-phase10-sa-item-plan.md`，2026-09-28）：A2 只投影有真实来源的字段（Runtime/Capability），World 是否填待定；
+      （2026-09-29 状态订正：本条为“产出方案”节点，Q1–Q4 已获所有者确认并落地——S-B0、B3 见下方完成条目；B1/B2/B4 按 Q1 取消。）
+- [x] Phase 10 S-A 分项方案已产出（`14-phase10-sa-item-plan.md`，2026-09-28）：A2 只投影有真实来源的字段（Runtime/Capability），World 是否填待定；
       A5 推荐拉取式投影（不改 `objective_executor.py`）；A3 推荐默认关闭的 advisory 旁路；A4 推荐评估后保留。**仅方案，未改代码**，
       并更正了 13 号文档里“`enable_decision_stage` 开关已存在”的事实错误。等待所有者回答 Q-A2/Q-A5/Q-A3/Q-A4/Q-顺序。
+      （2026-09-29 状态订正：本条为“产出方案”节点，方案已被所有者确认并落地——A2/A3/A4/A5 见下方各完成条目；勾选仅表示该节点达成，不代表 S-A 之外的内容。）
 - [x] Phase 10 S-A A2 完成（2026-09-28）：`RuntimeState`（事件驱动：周期计数/最近状态/时间戳/gap 数/learn 摘要）与 `CapabilityState`
       （ToolRegistry/SkillLoader/WorkflowStore 名字快照，`core/capability_projector.py`）已填真实字段；`WorldState` 无真实来源，保持空占位
       （Q-A2 未答复，按推荐 (a)）。`runtime.py` 有两处小改动（订阅时序 + opt-in 快照刷新，`goal_mode.runtime_capability_snapshot_enabled` 默认 False），
@@ -750,4 +752,8 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
 - [x] Sprint 10-2 复核完成（2026-09-28，**仅文档，未改任何代码**）：S-A/S-B0/B3 完成后重新跑 `dep_graph.py` 核实止损条件。结论：**仍不能开始**——`orchestrator/` 深度 inbound=37（远超阈值 10），`evolution/objective_executor.py` 被 `api/server.py`/`api/routes.py`/`goal_cron_bridge.py` 绕过 Adapter 直接 import。顺带更正：`goal_mode/objective_executor.py` 路径不存在，实际模块是 `evolution/objective_executor.py`。**Sprint 10-3 验收报告未产出**——其前提是 10-2 的收敛结果，目前没有可汇总的结果。Phase 10 四条完成标志仍全部未勾选。详见 `11-…` 变更记录。**本任务到此需要所有者决策**：D1（状态管理类入口是否统一）、D5（何时启动 10-2，及是否接受先拆分评估 `orchestrator/` 再决定去留）。
 - [x] Phase 9 完成标志第 3、4 条已勾选（2026-09-28）：所有者在真实仓库执行 `check_frozen_evolution_modules.py --base 5c16de19939b1d076d275d351cca9f81af061e9a`，`state_repo.py`/`workspace.py`/`validators.py`/`eval_runner.py` 四个文件 0 改动，退出码 0。**Phase 9 至此整体完成**。
 - [x] Phase 10 D1/D5 由所有者决定（2026-09-28）：**D1 维持现状**（状态管理类入口不统一）；**D5 搁置 Sprint 10-2**（`orchestrator/` 等目录级收敛不做，理由见 Sprint 10-2 复核数据）。Sprint 10-2/10-3 与 Phase 10 三条完成标志因此**主动不追求**，不是"待定"。**本轮重构到此收尾**：Phase 10 的最终产出是 S-A（A2–A5）+ S-B0（人设学习改名）+ B3（Objective→Goal 步骤改名），均为 opt-in、默认行为不变、旧路径保留别名的增量改动；`orchestrator/`、`evolution/objective_executor.py` 等大件旧模块维持原位，未来若重启目录收敛，需先对 `orchestrator/` 做拆分评估。详见 `10-…`"Phase 9 当前状态"、`11-…`"变更记录"最新条目。
-
+- [x] 文档收尾一致性修正（2026-09-29，**仅文档，未改任何代码**）：重构本轮已按所有者 D1/D5 决定收尾后，核对发现三处文档状态与事实不符并订正——
+      ① 上方两条“方案已产出”条目（决策落地方案 / S-A 分项方案）勾选框仍为未勾选，实际方案早已确认并落地，已勾选并加订正注；
+      ② `MIGRATION_STATUS.md` 中 `core/objective_adapter.py` 一行同时写着“B3 起有 1 个生产调用方”与“尚无任何生产调用方”，自相矛盾，已按事实
+      （唯一生产调用方为 B3 的 `GET /v1/goals/{id}/steps`）订正；③ 本条本身。**仍未勾选、且有意不动**的三项：Sprint 10-1（验收未达成，所有者已决定不追求）、
+      `MemoryAdapter.to_old`/`_global_memory`（待所有者排期）、Sprint 10-2/10-3（D5 搁置）。按 README 现有记录，**没有尚未执行且不依赖所有者决定的阶段**。
