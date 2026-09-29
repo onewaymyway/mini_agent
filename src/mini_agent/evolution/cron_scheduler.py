@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
 
+from mini_agent.evolution.cron_skip_reasons import describe_skip_reason, set_skip_reason
 from mini_agent.utils.atomic_write import atomic_write_json
 
 if TYPE_CHECKING:
@@ -89,6 +90,12 @@ class CronJob:
     # 缺省 0 保证旧 cron_jobs.json 反序列化后行为等同于改造前。
     consecutive_skip_count: int = 0
 
+    # [cron_skip_alert 信息补全] 最近一次"到点但未能触发"的具体原因码/补充说明
+    # （原因码词表见 `evolution/cron_skip_reasons.py`）。每次触发尝试前清空，
+    # 触发成功后保持为空；缺省 "" 保证旧 cron_jobs.json 反序列化后行为不变。
+    last_skip_reason: str = ""
+    last_skip_detail: str = ""
+
     # [external_projects_cron_dispatch_plan.md] run_mode="external_entrypoint"
     # 时，标识这条 job 对应哪个已注册外部项目、哪个 entrypoint——
     # CronJobRunner._run_job_thread() 据此加载 manifest 并复用
@@ -117,6 +124,8 @@ class CronJob:
             "priority": self.priority,
             "user_feedback": self.user_feedback,
             "consecutive_skip_count": self.consecutive_skip_count,
+            "last_skip_reason": self.last_skip_reason,
+            "last_skip_detail": self.last_skip_detail,
             "external_project": self.external_project,
             "external_entrypoint": self.external_entrypoint,
             # [看板 cron 面板补齐删除功能] 显式下发 is_system，避免前端
@@ -143,6 +152,8 @@ class CronJob:
             priority=d.get("priority", 0),
             user_feedback=d.get("user_feedback", []),
             consecutive_skip_count=d.get("consecutive_skip_count", 0),
+            last_skip_reason=d.get("last_skip_reason", "") or "",
+            last_skip_detail=d.get("last_skip_detail", "") or "",
             external_project=d.get("external_project"),
             external_entrypoint=d.get("external_entrypoint"),
         )
@@ -824,6 +835,10 @@ class CronScheduler:
         `next_run_at`/`consecutive_skip_count`），不负责 `save()`——调用方
         （`tick()`/`trigger_job_now()`）各自决定何时落盘，避免这里重复
         写文件。返回值与 `_fire()` 含义一致：True 表示确实触发成功。"""
+        # 每次触发尝试前清空上一次的跳过原因：本次如果又失败，由 _fire() /
+        # job_runner / goal_cycle 处理函数各自写入最新原因。
+        job.last_skip_reason = ""
+        job.last_skip_detail = ""
         success = self._fire(job)
         if success:
             job.last_run_at = now
@@ -831,7 +846,10 @@ class CronScheduler:
             job.next_run_at = compute_next_run(job.schedule, now)
             if job.consecutive_skip_count:
                 job.consecutive_skip_count = 0
+            job.last_skip_reason = ""
+            job.last_skip_detail = ""
         else:
+            set_skip_reason(job, "unknown")
             # [goal_cron_unified_scheduler_improvement_plan.md P2]
             # 到点但未能成功触发（仲裁 blocked / 已有一次执行在跑 /
             # semaphore 排队中拒绝等）：记一次连续跳过，跨越告警阈值
@@ -898,19 +916,62 @@ class CronScheduler:
             if threshold <= 0 or job.consecutive_skip_count % threshold != 0:
                 return
             from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+            now = time.time()
+            overdue_s = max(0.0, now - job.next_run_at) if job.next_run_at > 0 else 0.0
+            reason_code = job.last_skip_reason or "unknown"
+            body = self._format_skip_alert_body(job, now, overdue_s, threshold)
             NotificationDispatcher(self._paths).dispatch(NotificationMessage(
-                title="cron job 长期未能触发",
-                body=(
-                    f"cron job {job.name!r}（{job.id}）已连续 {job.consecutive_skip_count} "
-                    "次到点未能成功触发，可能是资源仲裁持续 blocked，或已有一次执行"
-                    "长期未结束，建议检查"
-                )[:200],
+                title=f"cron job「{job.name}」长期未能触发",
+                body=body,
                 source="cron_skip_alert",
-                meta={"job_id": job.id, "consecutive_skip_count": job.consecutive_skip_count},
+                meta={
+                    "job_id": job.id,
+                    "job_name": job.name,
+                    "run_mode": job.run_mode,
+                    "goal_id": job.goal_id,
+                    "consecutive_skip_count": job.consecutive_skip_count,
+                    "skip_reason": reason_code,
+                    "skip_detail": job.last_skip_detail,
+                    "last_run_at": job.last_run_at,
+                    "overdue_seconds": int(overdue_s),
+                },
             ))
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where="mini_agent.evolution.cron_scheduler.CronScheduler._maybe_alert_consecutive_skip")
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        seconds = int(max(0, seconds))
+        if seconds < 60:
+            return f"{seconds} 秒"
+        if seconds < 3600:
+            return f"{seconds // 60} 分钟"
+        if seconds < 86400:
+            return f"{seconds // 3600} 小时 {seconds % 3600 // 60} 分钟"
+        return f"{seconds // 86400} 天 {seconds % 86400 // 3600} 小时"
+
+    def _format_skip_alert_body(self, job: CronJob, now: float, overdue_s: float, threshold: int) -> str:
+        """`cron_skip_alert` 正文：哪个 job、绑定了什么、为什么没触发、卡了多久。"""
+        reason_code = job.last_skip_reason or "unknown"
+        reason_text = describe_skip_reason(reason_code)
+        lines = [
+            f"job：{job.name}（{job.id}）",
+            f"类型：{job.run_mode}" + (f"　绑定 Goal：{job.goal_id}" if job.goal_id else ""),
+            f"调度：{job.schedule}",
+            f"连续跳过：{job.consecutive_skip_count} 次（每 {threshold} 次提醒一次）",
+            "上次成功触发：" + (
+                time.strftime("%m-%d %H:%M:%S", time.localtime(job.last_run_at))
+                + f"（{self._format_duration(now - job.last_run_at)}前）"
+                if job.last_run_at > 0 else "从未成功触发"
+            ),
+        ]
+        if overdue_s > 0:
+            lines.append(f"已逾期：{self._format_duration(overdue_s)}")
+        lines.append(f"最近一次未触发原因：{reason_text}（{reason_code}）")
+        if job.last_skip_detail:
+            lines.append(f"补充：{job.last_skip_detail}")
+        return "\n".join(lines)[:1200]
 
     def _fire(self, job: CronJob) -> bool:
         """
@@ -934,32 +995,46 @@ class CronScheduler:
             # （比如非 daemon 场景、或功能尚未接线）直接返回 False，等同于
             # "这次没触发成功"，tick() 不会推进 last_run_at，下次再试。
             if self._goal_cycle_fn is None:
+                set_skip_reason(job, "goal_cycle_handler_missing")
                 return False
             try:
-                return self._goal_cycle_fn(job)
+                ok = self._goal_cycle_fn(job)
+                if not ok:
+                    set_skip_reason(job, "goal_cycle_returned_false")
+                return ok
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler._fire.goal_cycle')
+                set_skip_reason(job, "goal_cycle_handler_exception", repr(_mini_agent_exc))
                 return False
 
         local_handler = self._local_handlers.get(job.id)
         if local_handler is not None:
             try:
-                return local_handler(job)
+                ok = local_handler(job)
+                if not ok:
+                    set_skip_reason(job, "local_handler_returned_false")
+                return ok
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler._fire.local_handler')
+                set_skip_reason(job, "local_handler_exception", repr(_mini_agent_exc))
                 return False
 
         if self._job_runner is not None:
             try:
-                return self._job_runner.submit(job)
+                ok = self._job_runner.submit(job)
+                if not ok:
+                    set_skip_reason(job, "job_runner_returned_false")
+                return ok
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler._fire.job_runner')
+                set_skip_reason(job, "job_runner_exception", repr(_mini_agent_exc))
                 return False
 
         if self._submit_fn is None:
+            set_skip_reason(job, "no_submit_fn")
             return False
         try:
             message = job.task_template
@@ -977,14 +1052,18 @@ class CronScheduler:
                     _mini_agent_exc,
                     where="mini_agent.evolution.cron_scheduler.CronScheduler._fire.output_policy",
                 )
-            return self._submit_fn(
+            ok = self._submit_fn(
                 message,
                 job.initiator,
                 {"cron_job_id": job.id, "cron_job_name": job.name},
             )
+            if not ok:
+                set_skip_reason(job, "submit_fn_rejected")
+            return ok
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler._fire')
+            set_skip_reason(job, "submit_fn_exception", repr(_mini_agent_exc))
             return False
 
     # ── CRUD ──────────────────────────────────────────────────────────────────

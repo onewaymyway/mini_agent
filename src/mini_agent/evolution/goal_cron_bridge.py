@@ -26,6 +26,8 @@ from __future__ import annotations
 import time
 from typing import Optional, TYPE_CHECKING
 
+from mini_agent.evolution.cron_skip_reasons import set_skip_reason
+
 if TYPE_CHECKING:
     from mini_agent.perception.goal_backlog import GoalBacklog, GoalNode
     from mini_agent.evolution.cron_scheduler import CronScheduler, CronJob
@@ -115,10 +117,12 @@ def _fire_goal_cycle(
     续期"本来就是一种自主行为，不该在最保守的 passive 档位下发生。
     """
     if not job.goal_id:
+        set_skip_reason(job, "goal_cycle_no_goal_id")
         return False
 
     paths = getattr(goal_backlog, "_paths", None)
     if paths is not None and _autonomy_level(paths) == "passive":
+        set_skip_reason(job, "goal_cycle_passive_autonomy")
         return False
 
     goal_backlog.load()
@@ -133,17 +137,20 @@ def _fire_goal_cycle(
         # 绑定；② 未来出现其它硬删除路径（比如手动改 goals.json）时不
         # 至于直接抛异常——job 本身不自动删除，只是每次触发都跳过，用户
         # 可以在"⏰ Cron 任务"tab 或 `/cron remove` 手动清理。
+        set_skip_reason(job, "goal_cycle_goal_missing", f"goal_id={job.goal_id}")
         return False
 
     if goal.status == "abandoned":
         # 用户明确放弃：这是周期性 Goal 唯一的真终态，不触发，也不报错。
         # 这正是 P3 要解决的问题——用户只需要管 Goal 的状态，不需要额外
         # 记得去 disable 对应 cron job。
+        set_skip_reason(job, "goal_cycle_goal_abandoned", f"Goal：{goal.title}")
         return False
 
     if goal.status == "paused":
         # 用户主动暂停：保留既有语义，不触发、不报错、也不自动拉回
         # active——"我先别跑"是显式意图，不应该被自愈逻辑覆盖掉。
+        set_skip_reason(job, "goal_cycle_goal_paused", f"Goal：{goal.title}")
         return False
 
     if goal.status != "active":
@@ -170,10 +177,12 @@ def _fire_goal_cycle(
         # 只影响下一次触发这一次，不会一直跳过。
         goal_backlog.update_fields(goal.id, skip_next_cycle=False)
         goal_backlog.append_progress_note(goal.id, "本轮由用户手动跳过（跳过后周期性照常继续）")
+        set_skip_reason(job, "goal_cycle_user_skip", f"Goal：{goal.title}")
         return False
 
     if _goal_has_active_cycle(goal, goal_backlog, objective_executor):
         # 上一轮还没跑完，本轮跳过，不叠加并发。
+        set_skip_reason(job, "goal_cycle_prev_cycle_running", f"Goal：{goal.title}")
         return False
 
     cycle_no = goal.cycle_count + 1
@@ -228,6 +237,7 @@ def _fire_goal_cycle(
         # 但节点本身语义上应该反映"这轮没跑起来"，所以仍需显式标记）。
         goal_backlog.set_status(objective.id, "failed")
         goal_backlog.update_fields(objective.id, progress_notes="本轮启动失败：objective_executor.start() 返回 None")
+        set_skip_reason(job, "goal_cycle_objective_start_failed", f"Goal：{goal.title}")
         return False
 
     return True

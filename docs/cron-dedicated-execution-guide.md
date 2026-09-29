@@ -122,6 +122,19 @@ Agent 已经在跑是 `running`——此前两者会被合并展示为笼统的"
 5、10、15…次各发一次，而不是只发一次），避免一个 job 长期"到点但从来
 没成功触发过"而没人持续注意到。
 
+告警标题形如 `cron job「<job 名>」长期未能触发`，正文列出 job id、类型
+（`run_mode`）、绑定 Goal、调度、连续跳过次数、上次成功触发时间、已逾期
+时长，以及**最近一次未触发的具体原因**。原因由 `_fire()` 的各分支、
+`CronJobRunner.submit()` 与 `goal_cron_bridge._fire_goal_cycle()` 通过
+`evolution/cron_skip_reasons.py::set_skip_reason()` 写入
+`CronJob.last_skip_reason`（原因码）/`last_skip_detail`（补充说明），
+每次触发尝试前清空、触发成功后保持为空，并随 `cron_jobs.json` 持久化。
+常见原因码：`arbiter_blocked`（资源仲裁 blocked）、`already_running`
+（上次执行未结束）、`goal_cycle_passive_autonomy`（autonomy_level 为
+passive）、`goal_cycle_goal_paused`/`goal_cycle_goal_abandoned`（绑定的
+Goal 已暂停/放弃但 cron job 仍启用）、`goal_cycle_handler_missing`
+（非 daemon 场景未注册处理函数）等，完整词表见该模块的 `SKIP_REASONS`。
+
 同一次 `tick()` 内多个 job 同时到期时，按 `CronJob.priority`（默认 0，
 数值越大越优先）降序排序后依次提交——只影响"谁先拿到排队位置"，不做
 抢占（正在执行的 job 不会被打断）。可以在看板 cron job 卡片上直接调整
@@ -664,7 +677,7 @@ curl -X PUT $BASE/v1/cron/jobs/user:ab12cd34/config \
 | job 到期了但一直没执行（用户自定义 job） | 先看"🕹️ 统一调度总览"的仲裁状态是不是 `blocked`——非 `sys:` job 在 `blocked` 时会被直接跳过触发（§3.2），不是排队问题；再检查 `max_concurrent_jobs`/`effective_max_concurrent()` 是否被占满（看板 `execution_phase=queued` 列表）；检查该 job 上一次是否还在跑（同 job 去重会拒绝并发触发） |
 | `sys:` 系统维护 job 到期了但一直没执行 | 不受仲裁影响（§3.2），只可能是并发槽位被占满或该 job 自己上次还没跑完，同上一行后半部分排查 |
 | 并发上限忽然从 2 变成 1，job 排队变久 | 仲裁状态处于 `degraded`（§3.1），查"🕹️ 统一调度总览"的原因；开了 `scheduler.unified_arbitration_enabled` 时实际上限由 §7.2 的加权分配决定，不一定是固定的 `cron.degraded_max_concurrent` |
-| `consecutive_skip_count` 持续增长、收到"连续跳过超阈值"告警 | 该 job 长期处于 `blocked` 仲裁状态下到期——检查预算是否持续耗尽、或 frustration 阈值配置是否过低；这是 §3.2 的 `skip_alert_threshold` 机制在正常工作，不是 bug |
+| `consecutive_skip_count` 持续增长、收到"连续跳过超阈值"告警 | 先看告警正文（或看板"通知发送记录"里该条的"详情"）中的**未触发原因**，不同原因处理方式不同：`arbiter_blocked` → 检查预算是否持续耗尽、或 frustration 阈值配置是否过低；`goal_cycle_passive_autonomy` → 把 autonomy_level 调到 maintenance/autonomous；`goal_cycle_goal_paused`/`goal_cycle_goal_abandoned`/`goal_cycle_goal_missing` → Goal 已不再需要推进，disable 或删除对应 cron job；`already_running` → 检查上一次执行是否卡死。这是 §3.2 的 `skip_alert_threshold` 机制在正常工作，不是 bug |
 | 状态卡在 `needs_human_review` | 打开该 job 的最近一次 `runs/<run_id>.jsonl`，看最后几条 `step`/`stuck_recover`/`stuck_give_up`/`step_error` 事件；确认原因后在看板点"重置"或调用 `POST /v1/cron/jobs/{id}/reset`；如果 `last_error` 里提到"判定为卡死…已被 watchdog 强制回收"，说明是 §3.3 的存活性回收触发的，可以按需调大该 job 的 `timeout_seconds` 或全局 `stale_job_watchdog_grace_seconds` |
 | 状态卡在 `running` 但看板显示未在执行 | daemon 异常退出导致的僵尸状态，不影响下次触发（下次执行会记一次 `consecutive_failures` 但仍会正常继续执行），也可以手动 `reset` 清掉；如果 daemon 一直在跑但某个 job 长时间卡在 `running`，正常情况下 §3.3 的 watchdog 会在超时+宽限期后自动回收，不需要手动介入 |
 | 任务每次都从头开始，没有接续上次进度 | 检查 `prompt.md` 是否还保留 `{{#progress}}...{{/progress}}` 块（被用户误删就不会拼进度了）；检查上次是不是 `idle` 正常完成（正常完成会清空 `progress_summary`，这是预期行为，不是 bug） |

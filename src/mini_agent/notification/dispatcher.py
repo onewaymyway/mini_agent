@@ -100,6 +100,7 @@ class NotificationDispatcher:
     # [P7 新增] 通知发送记录，供看板只读展示（见
     # next_doc/watchlist_notification_goal_design.md §6 P7）。
     _MAX_LOG_LINES = 500
+    _MAX_LOG_BODY_CHARS = 2000
 
     def _append_dispatch_log(self, message: NotificationMessage, results: dict) -> None:
         """追加一条"这次 dispatch 各渠道发送结果"的记录到
@@ -110,17 +111,24 @@ class NotificationDispatcher:
         try:
             p = self._paths.notification_dispatch_log
             p.parent.mkdir(parents=True, exist_ok=True)
+            # [通知记录信息补全] 之前只落盘 title/source/results，看板"通知发送记录"
+            # 面板因此只能显示标题，看不出是哪个 job/哪个对象触发的。这里把
+            # body/url/meta 一并落盘；旧记录没有这几个字段，读取方按缺省处理即可。
             record = {
                 "title": message.title,
                 "source": message.source,
                 "created_at": message.created_at,
                 "logged_at": time.time(),
                 "results": results,
+                "body": (message.body or "")[: self._MAX_LOG_BODY_CHARS],
+                "url": message.url,
+                "meta": message.meta or {},
             }
             lines: list[str] = []
             if p.exists():
                 lines = p.read_text(encoding="utf-8").splitlines()
-            lines.append(json.dumps(record, ensure_ascii=False))
+            # default=str：meta 里偶发的不可序列化值（Path/set 等）不应让整条记录丢失。
+            lines.append(json.dumps(record, ensure_ascii=False, default=str))
             if len(lines) > self._MAX_LOG_LINES:
                 lines = lines[-self._MAX_LOG_LINES:]
             p.write_text("\n".join(lines) + "\n", encoding="utf-8")

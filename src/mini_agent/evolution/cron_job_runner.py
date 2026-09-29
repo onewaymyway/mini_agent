@@ -340,15 +340,21 @@ class CronJobRunner:
             try:
                 from mini_agent.evolution.resource_arbiter import ResourceArbiter
                 arbiter = ResourceArbiter(self._paths, self._base_cfg)
-                state = arbiter.gating_state().get("state")
+                _gating = arbiter.gating_state()
+                state = _gating.get("state")
+                _gating_reason = str(_gating.get("reason") or "")
             except Exception:
                 # 仲裁模块本身异常：保守放行，不能因为仲裁检查失败导致
                 # 所有用户 cron job 停摆（与 ResourceArbiter 自身各 _check_*
                 # 方法"异常时保守放行"的既有风格保持一致）。
                 state = "full"
+                _gating_reason = ""
             if state == "blocked":
                 with self._lock:
                     self._arbiter_skipped_count += 1
+                # [cron_skip_alert 信息补全] 留下具体原因，供告警正文引用。
+                from mini_agent.evolution.cron_skip_reasons import set_skip_reason
+                set_skip_reason(job, "arbiter_blocked", _gating_reason)
                 # 不触发，等同于"这次没触发成功"：不占用 semaphore、不记账，
                 # CronScheduler.tick() 不会推进 last_run_at/next_run_at，
                 # 下次 tick 会再次尝试，行为与"job 已有一次执行在跑"时
@@ -358,6 +364,12 @@ class CronJobRunner:
         token = uuid.uuid4().hex
         with self._lock:
             if job.id in self._running_job_ids:
+                from mini_agent.evolution.cron_skip_reasons import set_skip_reason
+                _started = self._started_at.get(job.id)
+                set_skip_reason(
+                    job, "already_running",
+                    f"已运行 {int(time.time() - _started)} 秒" if _started else "",
+                )
                 return False
             self._running_job_ids.add(job.id)
             self._tokens[job.id] = token

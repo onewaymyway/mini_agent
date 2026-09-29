@@ -15262,6 +15262,15 @@ def render_notification_tab(client: AgentClient):
                 f"`{ts_str}` **{entry.get('title', '')}**"
                 f"（来源 `{entry.get('source', '')}`）　{status_str}"
             )
+            # 正文/元信息（旧记录没有这两个字段，缺省不展示，行为与之前一致）。
+            _body = (entry.get("body") or "").strip()
+            _meta = entry.get("meta") or {}
+            if _body or _meta:
+                with st.expander("详情", expanded=False):
+                    if _body:
+                        st.text(_body)
+                    if _meta:
+                        st.json(_meta, expanded=False)
         _load_more_control("notif_dispatch_limit", 50, 50, bool(log_resp.get("has_more")))
 
 
