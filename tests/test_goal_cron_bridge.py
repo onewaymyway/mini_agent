@@ -138,7 +138,11 @@ class TestFireGoalCycle(unittest.TestCase):
             job = bridge.make_goal_recurring(gb, cs, goal.id, "interval:3600")
             oe = FakeObjectiveExecutor()
 
-            fired = bridge._fire_goal_cycle(cs.get(job.id), gb, oe)
+            # [goal_cron_paused_semantics_and_status_provenance_plan.md] 默认策略
+            # 已改为 heal（paused 自动拉回并触发）；旧的"暂停即挂起"语义对应
+            # paused_policy="respect"。heal 语义见
+            # test_goal_cron_paused_semantics_and_provenance.py。
+            fired = bridge._fire_goal_cycle(cs.get(job.id), gb, oe, paused_policy="respect")
 
             self.assertFalse(fired)
             self.assertEqual(oe.start_calls, [])

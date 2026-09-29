@@ -112,7 +112,10 @@ def retry_failed_goal_tree_nodes(
             goal_backlog.append_progress_note(node.id, f"第 {new_count} 次连续失败后自动重试")
         except Exception:
             pass
-        goal_backlog.set_status(node.id, "active")
+        goal_backlog.set_status(
+            node.id, "active", actor="system:goal_node_retry",
+            reason=f"第 {new_count} 次连续失败后自动重试",
+        )
         retried.append(node.id)
         if threshold > 0 and new_count % threshold == 0:
             refreshed = goal_backlog.get(node.id)

@@ -1924,7 +1924,10 @@ class ObjectiveExecutor:
         if self._goal_backlog is None:
             return
         try:
-            self._goal_backlog.set_status(objective_id, status)
+            self._goal_backlog.set_status(
+                objective_id, status, actor="system:objective_executor",
+                reason="execution 终态回写",
+            )
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._sync_goal_status')

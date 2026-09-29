@@ -398,6 +398,8 @@ class SoftGoalDeriver:
                         status="paused",
                         tags=[t for t in node.tags if t != "needs_review"] + ["review_failed"],
                         progress_notes=(node.progress_notes + f"\n[自动复核] {reason}").strip(),
+                        status_actor="system:soft_goal_deriver",
+                        status_reason=f"自动复核不通过：{reason}",
                     )
                 processed += 1
             except Exception as _mini_agent_exc:

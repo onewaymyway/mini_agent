@@ -27,6 +27,7 @@ import time
 from typing import Optional, TYPE_CHECKING
 
 from mini_agent.evolution.cron_skip_reasons import set_skip_reason
+from mini_agent.perception.status_provenance import ACTOR_CRON_GOAL_CYCLE, ACTOR_SYSTEM_GOAL_RECURRENCE
 
 if TYPE_CHECKING:
     from mini_agent.perception.goal_backlog import GoalBacklog, GoalNode
@@ -43,7 +44,7 @@ def register_goal_cycle_handler(
     cron_scheduler: "CronScheduler",
     goal_backlog: "GoalBacklog",
     objective_executor: "ObjectiveExecutor",
-    *, llm_helper_provider=None,
+    *, llm_helper_provider=None, paused_policy_provider=None,
 ) -> None:
     """把 goal_cycle 触发逻辑挂到 cron_scheduler。daemon 启动时（构建完
     GoalBacklog/CronScheduler/ObjectiveExecutor 三者之后）调用一次，见
@@ -54,10 +55,25 @@ def register_goal_cycle_handler(
     时 agent 可能还没就绪也不影响注册本身（与 `ensure_goal_relevance_judge_job`
     等既有 P5 机制同款写法）。传 None（默认）时 execution phase 的进展趋势
     信号维持纯 difflib 判断，行为与引入本参数之前完全一致。
+
+    `paused_policy_provider`：[goal_cron_paused_semantics_and_status_provenance_plan.md]
+    可选的 `Callable[[], str]`，每次触发时读取 `cron.recurring_goal_paused_policy`
+    （"heal"/"respect"）。传 None（默认）等价于 "heal"。用 provider 而不是固定值，
+    是为了配置热更新后无需重新注册 handler。
     """
 
     def _handler(job: "CronJob") -> bool:
-        return _fire_goal_cycle(job, goal_backlog, objective_executor, llm_helper_provider=llm_helper_provider)
+        policy = None
+        if paused_policy_provider is not None:
+            try:
+                policy = paused_policy_provider()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge.register_goal_cycle_handler.paused_policy')
+        return _fire_goal_cycle(
+            job, goal_backlog, objective_executor,
+            llm_helper_provider=llm_helper_provider, paused_policy=policy,
+        )
 
     cron_scheduler.set_goal_cycle_handler(_handler)
 
@@ -100,13 +116,19 @@ def _fire_goal_cycle(
     job: "CronJob",
     goal_backlog: "GoalBacklog",
     objective_executor: "ObjectiveExecutor",
-    *, llm_helper_provider=None,
+    *, llm_helper_provider=None, paused_policy: Optional[str] = None,
 ) -> bool:
     """CronScheduler 到期触发一个 run_mode="goal_cycle" 的 job 时调用。
 
-    返回 False 时 CronScheduler.tick() 不会推进 last_run_at/next_run_at，
-    等于"这次没算数"，下次 tick 会再次尝试——用来实现"Goal 非 active 时挂起
-    等待"和"上一轮还没跑完时跳过"两种场景，都不需要用户手动介入。
+    返回 False 时 CronScheduler.tick() 不会推进 last_run_at，等于"这次没算数"。
+    **为什么没算数**由 `set_skip_reason()` 写入的原因码决定，调度器按原因码的
+    类别分流（见 `cron_skip_reasons.py`）：暂时性的（上一轮还在跑）稍后重试并
+    计数告警；用户意图类的（abandoned、跳过一轮、"respect" 策略下的 paused）
+    静默且不计数；配置失效类的（Goal 已删）自动停用 job；启动失败类退避重试。
+
+    [goal_cron_paused_semantics_and_status_provenance_plan.md] `paused_policy`：
+    "heal"（默认/None）——周期性 Goal 不可暂停，遇到 paused 自动拉回 active 并照常
+    触发；"respect"——旧语义，paused 期间静默不触发。
 
     档位边界：`AutonomousLoop._tick_passive()` 的既有约定是"方法体内不引用
     GoalBacklog 任何方法"，但 CronScheduler.tick() 恰好是在 passive 档位下
@@ -148,10 +170,16 @@ def _fire_goal_cycle(
         return False
 
     if goal.status == "paused":
-        # 用户主动暂停：保留既有语义，不触发、不报错、也不自动拉回
-        # active——"我先别跑"是显式意图，不应该被自愈逻辑覆盖掉。
-        set_skip_reason(job, "goal_cycle_goal_paused", f"Goal：{goal.title}")
-        return False
+        from mini_agent.perception.goal_backlog import PAUSED_POLICY_RESPECT, normalize_paused_policy
+        if normalize_paused_policy(paused_policy) == PAUSED_POLICY_RESPECT:
+            # "respect" 策略（旧语义）：用户主动暂停，不触发、也不自动拉回
+            # active。调度器把它归为 intentional 类——静默、不计入连续跳过、
+            # 不告警（此前这里被当成"触发失败"，每分钟重试并周期性告警）。
+            set_skip_reason(job, "goal_cycle_goal_paused", f"Goal：{goal.title}")
+            return False
+        # "heal" 策略（默认）：周期性 Goal 的设计不变量是"永不结束"，paused 对
+        # 它是矛盾状态，与 completed/failed 等异常写入同样处理——落到下面的
+        # 自愈分支拉回 active，并把"是谁、什么时候写的 paused"写进 progress_notes。
 
     if goal.status != "active":
         # [goal_cron_status_integrity_and_self_healing_plan.md] 走到这里说明
@@ -161,11 +189,21 @@ def _fire_goal_cycle(
         # 写入——自动拉回 active 并继续本轮触发，同时留一条 progress_notes
         # 方便事后排查是哪一轮出的问题、被写成了什么。
         stale_status = goal.status
-        goal_backlog.set_status(goal.id, "active")
+        # [goal_cron_paused_semantics_and_status_provenance_plan.md] 追溯是谁
+        # 把它写成这个状态的：取 status_history 里最近一条 status==stale_status
+        # 的记录（旧数据没有 by 字段，显示"未记录来源"）。
+        from mini_agent.perception.status_provenance import format_history_entry, last_entry_with
+        culprit = last_entry_with(goal.status_history, status=stale_status)
+        origin = format_history_entry(culprit) if culprit else "无状态历史记录"
+        goal_backlog.set_status(
+            goal.id, "active", actor=ACTOR_CRON_GOAL_CYCLE,
+            reason=f"周期性 Goal 被写成 {stale_status!r}，自动恢复",
+        )
         goal_backlog.append_progress_note(
             goal.id,
             f"⚠️ 检测到周期性 Goal 状态被写成 {stale_status!r}，"
-            f"已自动恢复为 active 并继续第 {goal.cycle_count + 1} 轮触发",
+            f"已自动恢复为 active 并继续第 {goal.cycle_count + 1} 轮触发"
+            f"（该状态的写入记录：{origin}）",
         )
         goal = goal_backlog.get(goal.id) or goal
 
@@ -235,7 +273,10 @@ def _fire_goal_cycle(
         # 下一次 tick 的幂等检查（_goal_has_active_cycle 会一直认为"活跃"，
         # 因为 objective_executor.is_running() 对它返回 False，反而不会拦住——
         # 但节点本身语义上应该反映"这轮没跑起来"，所以仍需显式标记）。
-        goal_backlog.set_status(objective.id, "failed")
+        goal_backlog.set_status(
+            objective.id, "failed", actor=ACTOR_CRON_GOAL_CYCLE,
+            reason="objective_executor.start() 返回 None",
+        )
         goal_backlog.update_fields(objective.id, progress_notes="本轮启动失败：objective_executor.start() 返回 None")
         set_skip_reason(job, "goal_cycle_objective_start_failed", f"Goal：{goal.title}")
         return False
@@ -1198,6 +1239,7 @@ def make_goal_recurring(
     goal_id: str,
     schedule: str,
     task_template: Optional[str] = None,
+    *, actor: Optional[str] = None,
 ) -> "CronJob":
     """把一个已存在的 Goal 声明为周期性。
 
@@ -1221,6 +1263,7 @@ def make_goal_recurring(
         if existing is not None:
             existing.schedule = schedule
             existing.task_template = template
+            cron_scheduler._record_enabled_change(existing, True, actor, "make_goal_recurring 复用旧 job")
             existing.enabled = True
             from mini_agent.evolution.cron_scheduler import compute_next_run
             existing.next_run_at = compute_next_run(schedule, 0.0)
@@ -1245,6 +1288,7 @@ def stop_goal_recurrence(
     goal_backlog: "GoalBacklog",
     cron_scheduler: "CronScheduler",
     goal_id: str,
+    *, actor: Optional[str] = None,
 ) -> bool:
     """停止周期性推进：disable 绑定的 cron job，goal.recurring 置回 False。
     不删除 Goal，也不删除 cron job（用户随时可以再次 make_goal_recurring 复用
@@ -1257,7 +1301,11 @@ def stop_goal_recurrence(
 
     job_id = goal.recurrence_cron_job_id
     if job_id:
-        cron_scheduler.disable(job_id)
+        # [goal_cron_paused_semantics_and_status_provenance_plan.md] 记录 job 是
+        # 被谁停用的；调用方（CLI/REST）传各自的 actor，不传时记为 goal_recurrence。
+        cron_scheduler.disable(
+            job_id, actor=actor or ACTOR_SYSTEM_GOAL_RECURRENCE, reason="stop_goal_recurrence",
+        )
 
     return goal_backlog.set_recurrence(goal.id, recurring=False, cron_job_id=None)
 

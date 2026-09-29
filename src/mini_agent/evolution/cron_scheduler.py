@@ -42,7 +42,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
 
-from mini_agent.evolution.cron_skip_reasons import describe_skip_reason, set_skip_reason
+from mini_agent.evolution.cron_skip_reasons import (
+    ADVANCE_ON_INTENTIONAL,
+    CATEGORY_INTENTIONAL,
+    CATEGORY_INVALID,
+    CATEGORY_RETRY_BACKOFF,
+    describe_skip_reason,
+    set_skip_reason,
+    skip_category,
+)
+from mini_agent.perception.status_provenance import (
+    ACTOR_CRON_SCHEDULER,
+    append_history,
+    make_history_entry,
+)
 from mini_agent.utils.atomic_write import atomic_write_json
 
 if TYPE_CHECKING:
@@ -106,6 +119,13 @@ class CronJob:
     external_project: Optional[str] = None
     external_entrypoint: Optional[str] = None
 
+    # [goal_cron_paused_semantics_and_status_provenance_plan.md] `enabled`
+    # 变更历史（含来源），与 GoalNode.status_history 同一套表达：
+    # `{enabled: bool, at, from, by, reason[, caller]}`，只追加，超长丢最旧。
+    # 用来回答"这个 job 是谁停用的"——Goal 状态和 job 启停是两份独立状态，
+    # 只追溯 Goal 一侧不够。旧 cron_jobs.json 没有该字段，按 [] 处理。
+    state_history: list = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -128,6 +148,7 @@ class CronJob:
             "last_skip_detail": self.last_skip_detail,
             "external_project": self.external_project,
             "external_entrypoint": self.external_entrypoint,
+            "state_history": self.state_history,
             # [看板 cron 面板补齐删除功能] 显式下发 is_system，避免前端
             # 只能靠 id.startswith("sys:") 这种约定猜测，接口更自描述。
             "is_system": self.is_system,
@@ -156,6 +177,7 @@ class CronJob:
             last_skip_detail=d.get("last_skip_detail", "") or "",
             external_project=d.get("external_project"),
             external_entrypoint=d.get("external_entrypoint"),
+            state_history=list(d.get("state_history", []) or []),
         )
 
     @property
@@ -813,11 +835,15 @@ class CronScheduler:
             # `_trigger_and_record()`，供 `trigger_job_now()`（统一调度层
             # execute() 复用）与这里共用同一份实现，避免记账逻辑存在两份
             # 拷贝、日后改一处忘了改另一处。
-            prev_skip_count = job.consecutive_skip_count
+            # [goal_cron_paused_semantics_and_status_provenance_plan.md] 记账
+            # 不再只可能改 consecutive_skip_count：用户跳过一轮会推进
+            # next_run_at、invalid 类会自动停用 job，这些也需要落盘，所以
+            # 对比"记账三元组"而不只是计数。
+            before = (job.consecutive_skip_count, job.next_run_at, job.enabled)
             triggered_ok = self._trigger_and_record(job, now)
             if triggered_ok:
                 triggered.append(job.id)
-            if job.consecutive_skip_count != prev_skip_count:
+            if (job.consecutive_skip_count, job.next_run_at, job.enabled) != before:
                 skip_state_changed = True
 
         if triggered or skip_state_changed:
@@ -850,13 +876,95 @@ class CronScheduler:
             job.last_skip_detail = ""
         else:
             set_skip_reason(job, "unknown")
-            # [goal_cron_unified_scheduler_improvement_plan.md P2]
-            # 到点但未能成功触发（仲裁 blocked / 已有一次执行在跑 /
-            # semaphore 排队中拒绝等）：记一次连续跳过，跨越告警阈值
-            # 时发一次通知，避免长期"静默重试"导致用户完全无感知。
-            job.consecutive_skip_count += 1
-            self._maybe_alert_consecutive_skip(job)
+            self._record_skip(job, now)
         return success
+
+    # ── 未触发的分类处理 ──────────────────────────────────────────────────────
+
+    def _cron_cfg(self):
+        """读取 CronConfig（复用 job_runner 持有的 base_cfg，理由见
+        `_maybe_alert_consecutive_skip`）。取不到返回 None，调用方用默认值。"""
+        try:
+            base_cfg = getattr(self._job_runner, "_base_cfg", None) if self._job_runner is not None else None
+            return getattr(base_cfg, "cron", None) if base_cfg is not None else None
+        except Exception:
+            return None
+
+    def _record_skip(self, job: "CronJob", now: float) -> None:
+        """`_fire()` 返回 False 后的记账，按原因类别分流（类别定义见
+        `cron_skip_reasons.py` 头部说明）。
+
+        - intentional：用户意图/配置决定不该跑 → 不计数（并清零历史计数）、不告警；
+          仅 `ADVANCE_ON_INTENTIONAL` 里的原因（用户跳过一轮）推进 next_run_at。
+        - invalid：配置已失效 → 自动停用 job + 一次性通知。
+        - retry_backoff：计数 + 告警，next_run_at 指数退避（可由配置关闭）。
+        - retry（默认）：既有行为，计数 + 告警，不推进 next_run_at。
+        """
+        code = job.last_skip_reason or "unknown"
+        category = skip_category(code)
+
+        if category == CATEGORY_INTENTIONAL:
+            job.consecutive_skip_count = 0
+            if code in ADVANCE_ON_INTENTIONAL:
+                job.next_run_at = compute_next_run(job.schedule, now)
+            return
+
+        if category == CATEGORY_INVALID:
+            job.consecutive_skip_count = 0
+            self._auto_disable_invalid_job(job, code)
+            return
+
+        # [goal_cron_unified_scheduler_improvement_plan.md P2]
+        # 到点但未能成功触发（仲裁 blocked / 已有一次执行在跑 /
+        # semaphore 排队中拒绝等）：记一次连续跳过，跨越告警阈值
+        # 时发一次通知，避免长期"静默重试"导致用户完全无感知。
+        job.consecutive_skip_count += 1
+
+        if category == CATEGORY_RETRY_BACKOFF:
+            cron_cfg = self._cron_cfg()
+            enabled = getattr(cron_cfg, "start_failure_backoff_enabled", True) if cron_cfg is not None else True
+            if enabled:
+                job.next_run_at = now + self._backoff_seconds(job, now)
+
+        self._maybe_alert_consecutive_skip(job)
+
+    @staticmethod
+    def _backoff_seconds(job: "CronJob", now: float) -> float:
+        """指数退避：60s × 2^(连续失败次数-1)，但不超过 job 自身的一个调度周期
+        （退避不能比正常周期还慢，否则失败反而比成功更\"省事\"）。"""
+        n = max(1, job.consecutive_skip_count)
+        delay = 60.0 * (2 ** min(n - 1, 20))
+        try:
+            period = compute_next_run(job.schedule, now) - now
+        except Exception:
+            period = delay
+        return max(60.0, min(delay, period)) if period > 0 else delay
+
+    def _auto_disable_invalid_job(self, job: "CronJob", code: str) -> None:
+        """invalid 类原因（Goal 已被删/没有 goal_id）：继续重试没有任何意义，
+        自动停用并发一次性通知，把来源记进 state_history。失败静默。"""
+        try:
+            reason_text = describe_skip_reason(code)
+            self._record_enabled_change(
+                job, False, ACTOR_CRON_SCHEDULER, f"{code}: {job.last_skip_detail or reason_text}"[:200],
+            )
+            job.enabled = False
+            from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+            NotificationDispatcher(self._paths).dispatch(NotificationMessage(
+                title=f"cron job「{job.name}」已自动停用",
+                body=(
+                    f"job：{job.name}（{job.id}）\n"
+                    f"原因：{reason_text}（{code}）\n"
+                    + (f"补充：{job.last_skip_detail}\n" if job.last_skip_detail else "")
+                    + "该 job 的配置已失效，继续重试没有意义，已自动停用。"
+                    "如确认不再需要，可在 Cron 面板或 `/cron remove` 删除。"
+                ),
+                source="cron_job_auto_disabled",
+                meta={"job_id": job.id, "job_name": job.name, "goal_id": job.goal_id, "skip_reason": code},
+            ))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.cron_scheduler.CronScheduler._auto_disable_invalid_job")
 
     def trigger_job_now(self, job_id: str) -> bool:
         """[goal_cron_unified_scheduler_improvement_plan.md P5 第 4 步]
@@ -915,6 +1023,13 @@ class CronScheduler:
             threshold = getattr(cron_cfg, "skip_alert_threshold", 5) if cron_cfg is not None else 5
             if threshold <= 0 or job.consecutive_skip_count % threshold != 0:
                 return
+            # [goal_cron_paused_semantics_and_status_provenance_plan.md]
+            # 可选退避式提醒（默认关闭，保持每 threshold 次提醒一次）：只在
+            # 第 threshold × 2^k 次（5、10、20、40…）发，长期卡住不再刷屏。
+            if cron_cfg is not None and getattr(cron_cfg, "skip_alert_backoff_enabled", False):
+                multiple = job.consecutive_skip_count // threshold
+                if multiple & (multiple - 1) != 0:
+                    return
             from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
             now = time.time()
             overdue_s = max(0.0, now - job.next_run_at) if job.next_run_at > 0 else 0.0
@@ -1228,20 +1343,42 @@ class CronScheduler:
             log_exception(exc, where="mini_agent.evolution.cron_scheduler.CronScheduler.remove_job")
         return True
 
-    def enable(self, job_id: str) -> bool:
+    @staticmethod
+    def _record_enabled_change(job: "CronJob", enabled: bool, actor: Optional[str], reason: str) -> None:
+        """`enabled` 真正发生变化时追加一条带来源的 state_history。
+
+        actor 缺失时自动记为 unknown 并附带调用点（见 status_provenance）。
+        记录失败不能影响启停本身。
+        """
+        try:
+            if job.enabled == enabled:
+                return
+            job.state_history = append_history(
+                job.state_history,
+                make_history_entry(
+                    status=enabled, previous=job.enabled, actor=actor, reason=reason,
+                    status_key="enabled",
+                ),
+            )
+        except Exception:
+            pass
+
+    def enable(self, job_id: str, *, actor: Optional[str] = None, reason: str = "") -> bool:
         job = self._jobs.get(job_id)
         if not job:
             return False
+        self._record_enabled_change(job, True, actor, reason)
         job.enabled = True
         # 重新计算下次运行时间
         job.next_run_at = compute_next_run(job.schedule, job.last_run_at)
         self.save()
         return True
 
-    def disable(self, job_id: str) -> bool:
+    def disable(self, job_id: str, *, actor: Optional[str] = None, reason: str = "") -> bool:
         job = self._jobs.get(job_id)
         if not job:
             return False
+        self._record_enabled_change(job, False, actor, reason)
         job.enabled = False
         self.save()
         return True

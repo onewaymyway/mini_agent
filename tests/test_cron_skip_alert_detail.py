@@ -216,7 +216,9 @@ class TestGoalCycleReasons:
         paths, gb, goal, job = self._setup(tmp_path)
         self._maintenance(paths)
         gb.set_status(goal.id, "paused")
-        assert bridge._fire_goal_cycle(job, gb, self._Exec()) is False
+        # [goal_cron_paused_semantics_and_status_provenance_plan.md] 默认策略 heal
+        # 下 paused 会被自动拉回；这里验证的是 "respect"（旧语义）下的原因码。
+        assert bridge._fire_goal_cycle(job, gb, self._Exec(), paused_policy="respect") is False
         assert job.last_skip_reason == "goal_cycle_goal_paused"
         assert "周期目标" in job.last_skip_detail
 

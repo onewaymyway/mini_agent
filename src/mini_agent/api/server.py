@@ -1962,9 +1962,17 @@ class HttpServer:
                 def _execution_phase_llm_helper():
                     return getattr(agent, "llm_helper", None)
 
+                # [goal_cron_paused_semantics_and_status_provenance_plan.md]
+                # 每次触发时读取 cron.recurring_goal_paused_policy，配置热更新后
+                # 无需重新注册 handler；读取失败退回默认 "heal"。
+                def _paused_policy():
+                    cron_cfg = getattr(getattr(agent, "cfg", None), "cron", None)
+                    return getattr(cron_cfg, "recurring_goal_paused_policy", "heal")
+
                 register_goal_cycle_handler(
                     cron_scheduler, goal_backlog, objective_executor,
                     llm_helper_provider=_execution_phase_llm_helper,
+                    paused_policy_provider=_paused_policy,
                 )
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception

@@ -477,6 +477,8 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/agent goals wiki build [root_id]` | 手动批量生成目标产出 Wiki 静态文件（`.agent/daemon_run_outputs/goals_wiki/<id>/index.md`），省略 `root_id` 遍历全局森林并刷新根索引；正常情况下 tidy 阶段收敛时会自动刷新单个节点，这个命令用于手动补触发/批量重建 |
 | `/agent goals recur <id> <schedule> [task_template]` | 声明为周期性：绑定一个 cron job，到期时自动为该 Goal 派生并启动一轮新 Objective；详见 [Goal 与 Cron 绑定指南](goal-cron-binding-guide.md) |
 | `/agent goals unrecur <id>` | 停止周期性推进（disable 绑定的 cron job，不删除 Goal/job） |
+| `/agent goals skip <id>` | 跳过周期性 Goal 的下一轮（真正跳过一个完整周期，之后照常继续）。周期性 Goal 默认不可暂停，"停一下"请用本命令或停用绑定的 cron job |
+| `/agent goals history <id>` | 只读打印节点的状态变更历史及来源（`user:cli`/`user:api`/`cron:goal_cycle`/`system:*`/`unknown`+调用点），周期性 Goal 同时打印绑定 cron job 的启停历史；详见 [状态变更来源追溯方案](../next_doc/goal_cron_paused_semantics_and_status_provenance_plan.md) |
 | `/agent goals status` | 显示 AutonomousLoop tick 状态（档位/上次 tick/tick 次数） |
 | `/agent goals reset-step <exec_id> <step_idx> [reason]` | 重置某个自主 Objective execution 的指定 step（清空该 step 及其之后所有 step 的结果/产出，重新提交），用于人工发现某步结果被污染/需要重跑；daemon 模式下非本进程 Agent 会自动回退为 HTTP 请求；详见 [Daemon 自主任务错误状态识别与恢复指南](daemon-autonomous-state-recovery-guide.md) |
 | `/agent goals judge-calibration` | 只读展示判官校准建议报告：统计各判官（TurnJudge/GoalJudge）判定分布、判官冲突对分布，供人工复盘判官 prompt/阈值是否需要调整；不会自动修改任何配置或 prompt；详见 [Goal 模式指南](goal-mode-guide.md#判官冲突记录goaljudge-和-turnjudge-意见不一致时) / [轮次守门员指南](turn-judge-guide.md#判官冲突记录与保守值收紧) |

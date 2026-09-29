@@ -23,6 +23,13 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
                                      and_report_plan.md Stage 4 能力 C）。
                                      不带 --about 时保持原有行为（笼统贴
                                      在 Goal 上，状态永远是 pending）。
+  /agent goals history <id>        — 查看状态变更历史及来源（谁在什么时候把状态
+                                     改成了什么：用户 CLI/REST、cron 自愈、执行器
+                                     回写、自动复核……），并列出绑定 cron job 的
+                                     启停历史。见 next_doc/goal_cron_paused_
+                                     semantics_and_status_provenance_plan.md
+  /agent goals skip <id>           — 跳过周期性 Goal 的下一轮（真正跳过一个完整
+                                     周期，之后照常继续；不改 recurring）
   /agent goals recur <id> <schedule> [task]  — 声明为周期性（见 goal_cron_bridge.py）
   /agent goals unrecur <id>        — 停止周期性（不删 Goal/cron job）
   /agent goals migrate-legacy <id> — 请求下一次触发时附加一次"历史数据迁移"
@@ -195,7 +202,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         if not rest:
             R.print_error("Usage: /agent goals done <id>")
             return
-        _cmd_set_status(gb, rest[0], "completed")
+        _cmd_set_status(gb, rest[0], "completed", agent=agent)
 
     elif subcmd == "abandon":
         if not rest:
@@ -221,7 +228,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         if not rest:
             R.print_error("Usage: /agent goals pause <id>")
             return
-        _cmd_set_status(gb, rest[0], "paused")
+        _cmd_set_status(gb, rest[0], "paused", agent=agent)
 
     elif subcmd == "progress":
         if len(rest) < 2:
@@ -413,6 +420,18 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         force = "--force" in rest[1:]
         _cmd_research(gb, paths, rest[0], force=force)
 
+    elif subcmd == "history":
+        if not rest:
+            R.print_error("Usage: /agent goals history <id>")
+            return
+        _cmd_history(gb, paths, rest[0])
+
+    elif subcmd == "skip":
+        if not rest:
+            R.print_error("Usage: /agent goals skip <id>")
+            return
+        _cmd_skip(gb, rest[0])
+
     elif subcmd == "next-steps":
         # [next_doc/goal_tree_research_and_action_recommendation_plan.md
         # §4.6 阶段四] /agent goals next-steps [id]
@@ -424,7 +443,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
-            "progress, feedback, recur, unrecur, migrate-legacy, spec, phase, diagnose, show, report, "
+            "progress, feedback, history, skip, recur, unrecur, migrate-legacy, spec, phase, diagnose, show, report, "
             "wiki build, tune, status, reset-step, judge-calibration, tree, decompose, candidates, "
             "focus, research, next-steps"
         )
@@ -558,7 +577,7 @@ def _cmd_add_objective(gb, args: list[str]) -> None:
     R.print_success(f"Objective 已添加: {node.id} — {node.title}{parent_str}{thread_str}")
 
 
-def _cmd_set_status(gb, node_id: str, status: str) -> None:
+def _cmd_set_status(gb, node_id: str, status: str, agent=None) -> None:
     """更新节点状态。
 
     [goal_cron_status_integrity_and_self_healing_plan.md] 写入前先校验：
@@ -571,14 +590,71 @@ def _cmd_set_status(gb, node_id: str, status: str) -> None:
         R.print_error(f"Not found: {node_id!r}")
         return
     from mini_agent.perception.goal_backlog import validate_status_write_for_recurring_goal
-    reject_reason = validate_status_write_for_recurring_goal(node, status)
+    # [goal_cron_paused_semantics_and_status_provenance_plan.md] 周期性 Goal 的
+    # paused 策略读 cron.recurring_goal_paused_policy（拿不到配置时按默认 heal）。
+    cron_cfg = getattr(getattr(agent, "cfg", None), "cron", None) if agent else None
+    reject_reason = validate_status_write_for_recurring_goal(
+        node, status, paused_policy=getattr(cron_cfg, "recurring_goal_paused_policy", "heal"),
+    )
     if reject_reason:
         R.print_error(reject_reason)
         return
     old_status = node.status
-    gb.set_status(node_id, status)
+    gb.set_status(node_id, status, actor="user:cli", reason=f"/agent goals {'done' if status == 'completed' else status}")
     emoji = {"completed": "✅", "abandoned": "🗑", "paused": "⏸"}.get(status, "")
     R.print_success(f"{emoji} {node_id} 状态: {old_status} → {status}")
+
+
+def _cmd_history(gb, paths, node_id: str, limit: int = 30) -> None:
+    """[goal_cron_paused_semantics_and_status_provenance_plan.md] 打印节点的状态
+    变更历史（含来源），周期性 Goal 额外打印绑定 cron job 的启停历史。
+    只读；旧记录没有来源字段时显示"未记录来源（旧数据）"。"""
+    from mini_agent.perception.status_provenance import format_history_entry
+    node = gb.get(node_id)
+    if not node:
+        R.print_error(f"Not found: {node_id!r}")
+        return
+    history = list(node.status_history or [])
+    R.print_info(f"{node_id}　{node.title}　当前状态：{node.status}")
+    if not history:
+        R.print_info("（没有状态变更历史）")
+    for entry in history[-limit:]:
+        R.print_info("  " + format_history_entry(entry))
+    if len(history) > limit:
+        R.print_info(f"  ……仅显示最近 {limit} 条，共 {len(history)} 条")
+
+    job_id = getattr(node, "recurrence_cron_job_id", None)
+    if not (node.recurring and job_id and paths is not None):
+        return
+    try:
+        from mini_agent.evolution.cron_scheduler import load_cron_scheduler
+        job = load_cron_scheduler(paths).get(job_id)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.commands.goals._cmd_history')
+        return
+    if job is None:
+        R.print_warning(f"绑定的 cron job {job_id} 不存在")
+        return
+    R.print_info(f"绑定 cron job：{job.id}　enabled={job.enabled}")
+    jh = list(job.state_history or [])
+    if not jh:
+        R.print_info("  （没有启停历史）")
+    for entry in jh[-limit:]:
+        R.print_info("  " + format_history_entry(entry, status_key="enabled"))
+
+
+def _cmd_skip(gb, node_id: str) -> None:
+    """跳过周期性 Goal 的下一轮（与看板"跳过下一轮"按钮同一语义）。"""
+    node = gb.get(node_id)
+    if not node or not node.is_goal:
+        R.print_error(f"Not found: {node_id!r}")
+        return
+    if not node.recurring:
+        R.print_error(f"{node_id} 不是周期性 Goal，无需跳过")
+        return
+    gb.update_fields(node_id, skip_next_cycle=True)
+    R.print_success(f"⏭ {node_id} 将跳过下一轮，之后周期性照常继续")
 
 
 def _cmd_accept(gb, node_id: str, paths=None) -> None:
@@ -596,7 +672,9 @@ def _cmd_accept(gb, node_id: str, paths=None) -> None:
     fields = {"status": "active"}
     if getattr(node, "source", "") == "agent_derived" and node.priority < 50:
         fields["priority"] = 50
-    updated = gb.update_fields(node_id, **fields)
+    updated = gb.update_fields(
+        node_id, status_actor="user:cli", status_reason="/agent goals accept", **fields,
+    )
     if not updated:
         R.print_error(f"Not found: {node_id!r}")
         return
@@ -626,7 +704,7 @@ def _cmd_abandon(gb, node_id: str, paths=None, agent=None) -> None:
         R.print_error(f"Not found: {node_id!r}")
         return
     old_status = node.status
-    gb.set_status(node_id, "abandoned")
+    gb.set_status(node_id, "abandoned", actor="user:cli", reason="/agent goals abandon|reject")
 
     # agent_derived Goal 被拒绝时，通知 SoftGoalDeriver 记录 30 天去重
     if getattr(node, "source", "") == "agent_derived":
@@ -790,7 +868,7 @@ def _cmd_recur(gb, paths, goal_id: str, schedule: str, task_template: Optional[s
         from mini_agent.evolution.cron_scheduler import load_cron_scheduler
         from mini_agent.evolution.goal_cron_bridge import make_goal_recurring
         cs = load_cron_scheduler(paths)
-        job = make_goal_recurring(gb, cs, goal_id, schedule, task_template)
+        job = make_goal_recurring(gb, cs, goal_id, schedule, task_template, actor="user:cli")
     except ValueError as e:
         R.print_error(str(e))
         return
@@ -824,7 +902,7 @@ def _cmd_unrecur(gb, paths, goal_id: str) -> None:
         from mini_agent.evolution.cron_scheduler import load_cron_scheduler
         from mini_agent.evolution.goal_cron_bridge import stop_goal_recurrence
         cs = load_cron_scheduler(paths)
-        ok = stop_goal_recurrence(gb, cs, goal_id)
+        ok = stop_goal_recurrence(gb, cs, goal_id, actor="user:cli")
     except Exception as e:
         from mini_agent.errors import log_exception
         log_exception(e, where='mini_agent.cli.commands.goals._cmd_unrecur')

@@ -1999,6 +1999,27 @@ class CronConfig:
     # 真正"长期没跑成功"的信号。
     skip_alert_threshold: int = 5
 
+    # [next_doc/goal_cron_paused_semantics_and_status_provenance_plan.md]
+    # 周期性（recurring=True）Goal 处于 paused 时的处理策略：
+    #   "heal"    （默认）周期性 Goal 不可暂停——CLI/REST 拒绝把它写成 paused
+    #             （409），历史遗留的 paused 在下一次 tick 自动拉回 active 并
+    #             照常触发（progress_notes 留痕，status_history 记录来源）。
+    #             想"停一下"请用 skip_next_cycle / 停用 cron job / unrecur。
+    #   "respect" 旧语义：允许暂停，暂停期间 goal_cycle 静默不触发（不计跳过、
+    #             不告警，不再被当成 [执行失败]）。
+    # 非法值按 "heal" 处理。
+    recurring_goal_paused_policy: str = "heal"
+
+    # 子任务启动失败（objective_executor.start() 返回 None）时，next_run_at
+    # 是否按失败次数指数退避（60s、120s、240s…，上限为 job 自身的一个调度周期）。
+    # 关闭时保持旧行为：每次 tick（约每分钟）重试一次，且每次都新建一个 failed
+    # 子 Objective。默认开启——旧行为在持续失败时会制造大量垃圾节点。
+    start_failure_backoff_enabled: bool = True
+
+    # 连续跳过告警是否改为退避式提醒（第 N、2N、4N、8N… 次各发一次，N 为
+    # skip_alert_threshold）。默认 False（opt-in），保持"每 N 次提醒一次"的既有节奏。
+    skip_alert_backoff_enabled: bool = False
+
     # [goal_cron_unified_scheduler_improvement_plan.md P5 第 3 步] degraded
     # 状态下、且 `scheduler.unified_arbitration_enabled=True` 时，普通
     # cron 通道的保底并发槽位数——即使 goal 通道权重更高，cron 通道分配到

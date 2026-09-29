@@ -6214,7 +6214,13 @@ async def update_goal(goal_id: str, request: Request):
         # 停摆"问题的两个根因入口之一（另一个是 CLI `/agent goals done`）。
         if "status" in body:
             from mini_agent.perception.goal_backlog import validate_status_write_for_recurring_goal
-            reject_reason = validate_status_write_for_recurring_goal(node, body["status"])
+            # [goal_cron_paused_semantics_and_status_provenance_plan.md]
+            # 周期性 Goal 的 paused 策略读 cron.recurring_goal_paused_policy。
+            _cron_cfg = getattr(getattr(self_agent, "cfg", None), "cron", None)
+            reject_reason = validate_status_write_for_recurring_goal(
+                node, body["status"],
+                paused_policy=getattr(_cron_cfg, "recurring_goal_paused_policy", "heal"),
+            )
             if reject_reason:
                 raise HTTPException(status_code=409, detail=reject_reason)
 
@@ -6243,7 +6249,12 @@ async def update_goal(goal_id: str, request: Request):
             v = body["user_output_dir"]
             fields["user_output_dir"] = (v or "").strip() or None
 
-        updated = backlog.update_fields(goal_id, **fields)
+        # [goal_cron_paused_semantics_and_status_provenance_plan.md] 本入口是
+        # 用户经 REST/看板发起的写入（_require_owner 已校验），记为 user:api。
+        from mini_agent.perception.status_provenance import ACTOR_USER_API
+        updated = backlog.update_fields(
+            goal_id, status_actor=ACTOR_USER_API, status_reason="PATCH /v1/goals", **fields,
+        )
         if updated is None:
             raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
 
@@ -6578,7 +6589,8 @@ async def unrecur_goal(goal_id: str, request: Request):
     """
     backlog, scheduler = _goal_backlog_and_scheduler(request)
     from mini_agent.evolution.goal_cron_bridge import stop_goal_recurrence
-    ok = stop_goal_recurrence(backlog, scheduler, goal_id)
+    from mini_agent.perception.status_provenance import ACTOR_USER_API
+    ok = stop_goal_recurrence(backlog, scheduler, goal_id, actor=ACTOR_USER_API)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found or not recurring")
     goal = backlog.get(goal_id)
@@ -9094,10 +9106,12 @@ async def update_cron_job(job_id: str, request: Request):
     body = await request.json()
     try:
         if "enabled" in body:
+            # [goal_cron_paused_semantics_and_status_provenance_plan.md] 记录来源
+            from mini_agent.perception.status_provenance import ACTOR_USER_API
             if body["enabled"]:
-                cs.enable(job_id)
+                cs.enable(job_id, actor=ACTOR_USER_API, reason="PUT /v1/cron/jobs")
             else:
-                cs.disable(job_id)
+                cs.disable(job_id, actor=ACTOR_USER_API, reason="PUT /v1/cron/jobs")
         if "schedule" in body:
             cs.update_schedule(job_id, body["schedule"])
         if "priority" in body:

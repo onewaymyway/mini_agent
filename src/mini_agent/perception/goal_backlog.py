@@ -37,6 +37,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from mini_agent import time_utils
+from mini_agent.perception.status_provenance import (
+    ACTOR_SYSTEM_GOAL_RELEVANCE,
+    append_history,
+    make_history_entry,
+)
 from mini_agent.storage.paths import AgentPaths
 from mini_agent.utils.atomic_write import atomic_write_json
 
@@ -221,6 +226,12 @@ class GoalNode:
     # `{"status": str, "at": float}`，只追加不修改/删除，旧数据反序列化
     # 时缺该字段按 `[]` 处理（等价于"这个节点还没经历过一次显式状态
     # 变更"，不需要额外迁移）。
+    #
+    # [next_doc/goal_cron_paused_semantics_and_status_provenance_plan.md]
+    # 状态变更来源追溯：每项在 `{status, at}` 基础上追加可选字段
+    # `from`（变更前状态）、`by`（来源，`<类别>:<入口>`，词表见
+    # `perception/status_provenance.py`）、`reason`（原因）、`caller`（调用方
+    # 没声明 by 时自动抓取的调用点）。旧记录没有这些字段，读取方按缺失处理。
     status_history: list = field(default_factory=list)
 
     # [next_doc/goal_execution_spec_generation_plan.md §4] 轻量指针字段：
@@ -501,8 +512,19 @@ class Direction:
 _RECURRING_GOAL_ALLOWED_GENERIC_STATUSES = {"active", "paused", "abandoned"}
 
 
+PAUSED_POLICY_HEAL = "heal"        # 周期性 Goal 不可暂停：拒绝写 paused，遇到 paused 自动拉回 active
+PAUSED_POLICY_RESPECT = "respect"  # 旧语义：允许暂停，暂停期间静默不触发（不计跳过、不告警）
+_VALID_PAUSED_POLICIES = (PAUSED_POLICY_HEAL, PAUSED_POLICY_RESPECT)
+
+
+def normalize_paused_policy(value) -> str:
+    """把配置值规整成合法策略；非法/空值回落到 heal（与 CronConfig 默认值一致）。"""
+    v = str(value or "").strip().lower()
+    return v if v in _VALID_PAUSED_POLICIES else PAUSED_POLICY_HEAL
+
+
 def validate_status_write_for_recurring_goal(
-    node: Optional["GoalNode"], status: str,
+    node: Optional["GoalNode"], status: str, *, paused_policy: str = PAUSED_POLICY_HEAL,
 ) -> Optional[str]:
     """周期性 Goal 通过通用状态写入口写状态时的合法性校验。
 
@@ -513,6 +535,12 @@ def validate_status_write_for_recurring_goal(
     `goal.status != "active"` 就静默跳过触发，导致"周期性 Goal 永远不会
     结束"这个设计不变量被悄悄打破，且没有任何报错或日志。
 
+    [goal_cron_paused_semantics_and_status_provenance_plan.md] 在此基础上，
+    `paused_policy="heal"`（默认，对应 `cron.recurring_goal_paused_policy`）时
+    周期性 Goal 也不允许被写成 `paused`：暂停后又会被触发逻辑自动拉回，
+    "暂停"这个动作对周期性 Goal 没有意义，还会让人困惑。`respect` 时保持旧
+    行为（允许暂停）。
+
     返回 `None` 表示允许写入；返回非空字符串表示拒绝，内容是可以直接展示
     给调用方（CLI/REST）的错误说明。
 
@@ -521,14 +549,21 @@ def validate_status_write_for_recurring_goal(
     """
     if node is None or node.level != "goal" or not node.recurring:
         return None
+    if status == "paused" and normalize_paused_policy(paused_policy) == PAUSED_POLICY_HEAL:
+        return (
+            f"{node.id} 是周期性 Goal（recurring=True），不支持暂停：暂停后会被 "
+            f"cron 触发逻辑自动恢复为 active。可选做法：只想跳过一轮，请用 "
+            f"`/agent goals skip {node.id}`（skip_next_cycle）；想停一段时间，请停用"
+            f"绑定的 cron job（看板 Cron 面板开关 / `/cron disable <job_id>`）；"
+            f"想彻底停止，请用 `/agent goals unrecur {node.id}`。"
+        )
     if status in _RECURRING_GOAL_ALLOWED_GENERIC_STATUSES:
         return None
     return (
         f"{node.id} 是周期性 Goal（recurring=True），不允许通过通用状态"
         f"写入口直接改成 {status!r}。如果确实要彻底结束这个周期性 Goal，"
         f"请先执行 `/agent goals unrecur {node.id}` 停止周期性，再进行本次"
-        f"操作；如果只是想暂停这一轮/这段时间，请用 "
-        f"`/agent goals pause {node.id}`。"
+        f"操作。"
     )
 
 
@@ -1722,7 +1757,9 @@ class GoalBacklog:
             node.last_touched_at = time.time()
         return True
 
-    def set_status(self, node_id: str, status: str) -> bool:
+    def set_status(
+        self, node_id: str, status: str, *, actor: Optional[str] = None, reason: str = "",
+    ) -> bool:
         """更新节点状态。
         [goal_cron_status_integrity_and_self_healing_plan.md] 本方法本身不
         做周期性 Goal 的合法性校验——它是最底层的写入原语，`goal_cron_bridge`
@@ -1742,15 +1779,23 @@ class GoalBacklog:
         [目标树节点失败自动重试] status 变为 "completed" 时顺带把
         `consecutive_failures` 清零——这一轮成功了，之前的连续失败 streak
         应该重新开始计数，不能让很久以前的失败继续压着后面的重试统计。
+
+        [goal_cron_paused_semantics_and_status_provenance_plan.md] 新增可选
+        参数 `actor`/`reason`：记录"是谁改的、为什么改"，写进 `status_history`
+        的 `by`/`reason`。不传 actor 时不报错（既有调用点行为不变），但会记为
+        `unknown` 并自动附带调用点 `caller`，保证任何入口改状态都能被追溯。
         """
         with self._locked():
             node = self._nodes.get(node_id)
             if not node:
                 return False
             if node.status != status:
-                node.status_history = list(node.status_history) + [
-                    {"status": status, "at": time.time()}
-                ]
+                node.status_history = append_history(
+                    node.status_history,
+                    make_history_entry(
+                        status=status, previous=node.status, actor=actor, reason=reason,
+                    ),
+                )
             node.status = status
             if status == "completed":
                 node.consecutive_failures = 0
@@ -2036,7 +2081,10 @@ class GoalBacklog:
             node.reaped_cycle_child_ids = reaped[len(reaped) - keep_recent:]
         return len(archived_nodes)
 
-    def update_fields(self, node_id: str, **fields) -> Optional[GoalNode]:
+    def update_fields(
+        self, node_id: str, *, status_actor: Optional[str] = None,
+        status_reason: str = "", **fields,
+    ) -> Optional[GoalNode]:
         """在锁保护下批量更新节点的任意字段（如 status/priority/progress_notes）。
 
         用于"一次性改好几个字段再存"的场景（例如 accept/PATCH 接口），
@@ -2046,11 +2094,25 @@ class GoalBacklog:
 
         内部会先重新加载磁盘最新状态，在最新数据基础上应用这些字段修改再落盘。
         返回更新后的节点；节点不存在时返回 None（不做任何修改）。
+
+        [goal_cron_paused_semantics_and_status_provenance_plan.md] `fields`
+        里包含 `status` 且与当前不同时，也会像 `set_status()` 一样追加一条带
+        来源的 `status_history`（此前经本方法（看板 PATCH、CLI accept、自动复核）
+        改状态完全不留历史，这正是"谁把周期性 Goal 置成 paused"查不到的原因之一）。
+        `status_actor`/`status_reason` 是这条历史的来源/原因，不写进节点字段。
         """
         with self._locked():
             node = self._nodes.get(node_id)
             if not node:
                 return None
+            if "status" in fields and fields["status"] != node.status:
+                node.status_history = append_history(
+                    node.status_history,
+                    make_history_entry(
+                        status=fields["status"], previous=node.status,
+                        actor=status_actor, reason=status_reason,
+                    ),
+                )
             for key, value in fields.items():
                 setattr(node, key, value)
             node.last_touched_at = time.time()
@@ -2257,6 +2319,13 @@ class GoalBacklog:
 
             node.last_external_advance_at = now
             if node.status != "active":
+                node.status_history = append_history(
+                    node.status_history,
+                    make_history_entry(
+                        status="active", previous=node.status,
+                        actor=ACTOR_SYSTEM_GOAL_RELEVANCE, reason="外部信号相关，自动重新激活",
+                    ),
+                )
                 node.status = "active"
                 note = f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(now))}] 因外部信号被自动重新激活"
                 node.progress_notes = (

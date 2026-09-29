@@ -141,7 +141,7 @@ def _cmd_status(cs) -> str:
 
 
 def _cmd_enable(cs, job_id: str) -> str:
-    if cs.enable(job_id):
+    if cs.enable(job_id, actor="user:cli", reason="/cron enable"):
         job = cs.get(job_id)
         nxt = job.next_run_str() if job else "unknown"
         return f"[cron] ✓ {job_id} 已启用，下次触发：{nxt}"
@@ -149,7 +149,7 @@ def _cmd_enable(cs, job_id: str) -> str:
 
 
 def _cmd_disable(cs, job_id: str) -> str:
-    if cs.disable(job_id):
+    if cs.disable(job_id, actor="user:cli", reason="/cron disable"):
         return f"[cron] ✓ {job_id} 已禁用"
     return f"[cron] ✗ Job '{job_id}' 不存在"
 

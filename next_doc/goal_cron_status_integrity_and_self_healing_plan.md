@@ -1,6 +1,13 @@
 # 周期性 Goal 状态完整性护栏与自愈方案
 
 > 状态：已实施完成。新增/修改文件清单见文末"实施记录"一节。
+>
+> **⚠️ 后续变更（paused 语义已修订）**：本文第 3 条"保留 `paused` 既有语义
+> （不触发、不报错、不自愈）"已被
+> `next_doc/goal_cron_paused_semantics_and_status_provenance_plan.md` 修订——
+> 默认 `cron.recurring_goal_paused_policy="heal"`：周期性 Goal 不可暂停，遗留
+> 的 `paused` 会被自动拉回 `active`；设为 `"respect"` 可恢复本文原语义（且暂停
+> 期间不再计入连续跳过、不再告警）。以下正文保留原始设计记录。
 > 前置背景：`next_doc/goal_cron_binding_plan.md`（周期性 Goal ⇄ Cron 绑定/
 > 触发机制）与 `next_doc/goal_cron_visibility_and_intervention_improvement_
 > plan.md`（可见性/干预能力）已经把"周期性 Goal 正常应该怎么转"的机制建

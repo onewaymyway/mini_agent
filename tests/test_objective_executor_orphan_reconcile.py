@@ -32,7 +32,7 @@ class _FakeGoalBacklog:
     def __init__(self):
         self.set_status_calls: list[tuple[str, str]] = []
 
-    def set_status(self, node_id: str, status: str) -> None:
+    def set_status(self, node_id: str, status: str, **_provenance) -> None:  # 对齐真实接口的 actor/reason
         self.set_status_calls.append((node_id, status))
 
     def get(self, node_id: str):
