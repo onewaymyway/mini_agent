@@ -70,19 +70,21 @@ Deploy → Observe → Promote / Rollback
       （断言的是磁盘文件真的消失、git 历史里真的有 revert commit，且验证
       过回退冲突的失败路径；过程中发现并处理了两个真实问题，见 Sprint 9-3
       执行记录）
-- [ ] 现有 `StateRepo/Validators/EvalRunner` 等安全设施未被修改，
-      只是接入方式改变（**待勾**：Sprint 9-2、9-3 期间已用 sha256 核对未
-      改动，但 Sprint 9-1 及更早的状态无法仅凭压缩包核实，见下条）
-      （**Sprint 9-4 更新**：仍待勾。新增 `scripts/check_frozen_evolution_modules.py`，
-      在真实仓库里 `python scripts/check_frozen_evolution_modules.py --base
-      <Phase 9 起点 commit> --also-adapted` 即可完成本条与下条要求的 `git diff`
-      核对；退出码 0 才能勾选。）
-- [ ] `phase9-evolution-inventory.md` 中标注的"绝对不能动"的模块
-      在整个 Phase 过程中确实没有被修改（可用 git diff 核对）（**待勾**：
-      交付压缩包不含 `.git`，需在真实仓库里对 Phase 9 起点 commit 做
-      `git diff -- src/mini_agent/evolution/{state_repo,workspace,validators,eval_runner}.py`）
-      （**Sprint 9-4 更新**：仍待勾，同上，工具已就绪，但压缩包里没有 `.git`，
-      本次无法代为执行。）
+- [x] 现有 `StateRepo/Validators/EvalRunner` 等安全设施未被修改，
+      只是接入方式改变（**2026-09-28 由所有者在真实仓库核对，已勾**：
+      `python scripts/check_frozen_evolution_modules.py --base
+      5c16de19939b1d076d275d351cca9f81af061e9a`，4 个文件、0 个被改动，退出码 0。
+      **口径**：本次核对未加 `--also-adapted`，只覆盖了本条与下条明确列出的
+      4 个 FROZEN 文件；Sprint 9-1/9-2 承诺"只新增调用方、不修改"的
+      `failure_pattern_store.py`/`proposal_risk.py`（ADAPTED 列表）尚未在真实
+      仓库核对，与本两条完成标志的字面范围无关，不影响勾选，但建议后续找机会
+      补跑一次 `--also-adapted` 存档）
+- [x] `phase9-evolution-inventory.md` 中标注的"绝对不能动"的模块
+      在整个 Phase 过程中确实没有被修改（可用 git diff 核对）（**2026-09-28
+      由所有者在真实仓库核对，已勾**：同上，基线 commit
+      `5c16de19939b1d076d275d351cca9f81af061e9a`，
+      `state_repo.py`/`workspace.py`/`validators.py`/`eval_runner.py`
+      四个文件均 unchanged）
 
 ## Sprint 9-1 执行记录
 
@@ -458,13 +460,15 @@ Sprint 9-3 是 Phase 9 的最后一个 Sprint。**Phase 9 尚不能整体宣布�
 
 ### Phase 9 当前状态
 
-**Phase 9 仍不能整体宣布完成。** 完成标志第 1、2 条保持已勾（口径见上）；第 3、4 条
-保持未勾——需要在真实仓库里用 `scripts/check_frozen_evolution_modules.py --base
-<Phase 9 起点 commit> --also-adapted` 核对，退出码 0 后才能勾选。**这一步只有你能做**
-（压缩包不含 `.git`）。9-3 记录的两条运行时局限（`DeployRecord` 未持久化、`learn` 未接入）
-已由本 Sprint 处理，但见上面的局限 §1、§2、§3。
+**Phase 9 完成标志四条已全部勾选（2026-09-28）。** 第 1、2 条口径见上；第 3、4 条
+由所有者在真实仓库执行 `check_frozen_evolution_modules.py` 核对通过（结果见上，
+基线 `5c16de19939b1d076d275d351cca9f81af061e9a`）。9-3 记录的两条运行时局限
+（`DeployRecord` 未持久化、`learn` 未接入）已由本 Sprint 处理，但见上面的局限
+§1、§2、§3——这些是记录在案的已知代价，不是完成标志要求核对的范围，Phase 9
+可以整体宣布完成。
 
-可进入的下一步：**不是 Phase 10**——Phase 10 仍需项目所有者对 D1–D5 作出决定
-（见 `11-phase10-legacy-decommission-plan.md`）。在此之前，Phase 9 内部还有一项可独立
-推进的候选（未排期）：为 `rollback_recommended` 提供用户可见的出口（局限 §2）。
+Phase 9 内部还有一项可独立推进、未排期的候选：为 `rollback_recommended` 提供
+用户可见的出口（局限 §2）。Phase 10 的状态见 `11-phase10-legacy-decommission-plan.md`
+"变更记录"最新一条——D1/D5 已由所有者决定（维持现状 / 搁置 Sprint 10-2），
+Phase 10 的目录收敛工作到此告一段落。
 

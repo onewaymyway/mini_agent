@@ -81,6 +81,13 @@
 > 已完全落地，写成最终版会失真。此处只记录当前快照，判据为“目标概念在真实调用
 > 路径上被使用，而不只是模块存在”。证据与入口触达数见
 > `docs/architecture_v2/phase10-entrypoint-inventory.md` 第三节。
+>
+> **更新（2026-09-28，所有者决定 D1/D5 后）**：下表状态是本轮重构的**最终快照**，
+> 不会再推进——所有者已决定 D1（状态管理类入口）维持现状、D5 搁置 Sprint 10-2
+> （目录级收敛）。已完成的增量见「旧 Goal → Adapter」行的 A5 只读投影、
+> B3 Objective→Goal 步骤改名，以及本文件顶部 `runtime/decision_stage.py`（A3）、
+> `goal_mode/executor.py`（A4，已评估不迁移）两行。详见
+> `11-phase10-legacy-decommission-plan.md`“变更记录”最新一条。
 
 | §43 映射 | 当前状态 | 一句话依据 |
 |---|---|---|
