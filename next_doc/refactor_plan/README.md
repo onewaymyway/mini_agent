@@ -24,6 +24,7 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
 | `12-execution-and-doc-sync-norms.md` | **执行规范**：代码改动后如何同步更新文档、`MIGRATION_STATUS.md` 格式、计划变更留痕流程、复盘最低要求、文档写作规范 | — |
 | `14-phase10-sa-item-plan.md` | Phase 10 S-A（补齐前置条件 A2–A5）分项方案，含对 13 号文档一处事实错误的更正，**待所有者确认** | §43 |
 | `13-phase10-post-decision-execution-plan.md` | Phase 10 决策落地方案（D2/D3/D4 → S-A/S-B/S-C 分阶段计划，**待所有者确认**） | §43 |
+| `15-phase10-orchestrator-split-assessment.md` | Phase 10 前置评估：`orchestrator/` 拆分评估（仅文档；结论：分五类、Sprint 10-2 对整包的止损继续成立、给出两步**提议**，**待所有者确认**） | §43 |
 | `MIGRATION_STATUS.md` | 迁移完成度台账（初始占位模板，执行过程中持续更新） | — |
 
 ## 阅读与执行顺序
@@ -787,3 +788,19 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       `03-sprint1.5-memory-perception-coupling-assessment.md` "十二"。**至此 README 中不依赖
       所有者决定的遗留项已清零**；仍未勾选且有意不动的只剩 Sprint 10-1 与 Sprint 10-2/10-3
       （D1/D5 已由所有者决定不追求）。
+- [x] `orchestrator/` 拆分评估完成（2026-09-29，仅文档，未改任何代码；产出 `15-phase10-orchestrator-split-assessment.md`）：
+      ① **`orchestrator/` 不是一个整体**：10 个文件是五类基本互不相关的东西——子 Agent 执行（`task`/`task_manager`/`sub_agent`）、
+      并发限流（`concurrency`）、执行计划（`plan`/`plan_display`）、角色人设配置（`agent_profiles`/`persona_profiles`）、终端 UI
+      （`status_bar`/`task_display`）；包内仅 9 条 import 边；② **37 的构成**：配置加载类 25 个、其余四类去重 16 个、重叠 4 个
+      （原 11 号文档只说"通用基础设施"，未量化）——**真正与子 Agent 调度相关的调用方只有 6 个**；③ **`__init__.py` 的"公共 API"包外
+      零使用**（37 个调用方全走子模块路径），却在导入时急切加载 `sub_agent`→`agent`/`tools`；实测仅 `import llm.providers._base_mixin`
+      就会连带加载 7 个 orchestrator 模块及 `agent`/`tools`/`skills`（LLM 层通过 `concurrency` 间接依赖了 Agent/工具层）；
+      ④ **Sprint 10-2 的止损条件对整包继续成立**（子 Agent 执行类没有任何 Adapter，且 `evolution/`×2、`skills/` 三处生产代码直接
+      使用），结论是"分类归位而非整体降级"，**未修改** 11 号文档任务表/验收标准，仅追加变更记录；⑤ 给出两步**提议**（均待所有者确认、
+      均未执行）：Step 1 把 `__init__.py` 改为惰性再导出——不移动文件、不改调用方，**已在临时副本验证**旧写法全部可用、
+      import LLM 层不再连带加载重包、16 个相关测试文件与 69 个文件定向集的失败集合与当前树一致；Step 2（可选）把 `concurrency.py` 归位到
+      轻量中性位置，需同步改 4 个字符串式 patch 目标中的 2 个（**只搬代码不改 patch 目标会让测试静默失效**）。**过程中如实记录**：
+      实验一第一次因副本缺 `.agent/agents/*.md` 得到无效结果（42 vs 12 个失败），已用完整副本重做；`test_explorer_runtime_subagent.py`
+      的 7 个失败在原始压缩包上同样存在（已在 10 号文档记录为既有）。**局限**：静态分析看不到间接使用；子模块级的新架构归属
+      （D→`capabilities/agents.py`/`self/`、C→`actions/planner.py`）是按文件自述做的判断，未经所有者确认，文中未据此提出动作；惰性方案未跑全量测试。
+      台账已新增登记行并在 `orchestrator/task_manager.py + sub_agent.py` 行追加说明。
