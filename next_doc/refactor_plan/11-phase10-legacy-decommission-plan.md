@@ -190,3 +190,7 @@ inventory.py`（13 用例）。
   `agent`/`tools`/`skills`、测试失败集合不变）；Step 2（可选）把 `concurrency.py` 归位到轻量中性位置。
 - 影响范围：**未修改**本文档的任务表、验收标准与四条完成标志（按 `12-execution-and-doc-sync-norms.md` 第四节，修订需所有者确认）；
   D1/D5 的决定不受影响，本评估不启动 Sprint 10-2。
+
+### 变更记录 2026-09-29（`orchestrator/` 拆分评估 Step 1 执行）
+- 执行 `15-phase10-orchestrator-split-assessment.md` §四 Step 1：`orchestrator/__init__.py` 改为惰性再导出，仅单文件生产代码改动 + 1 个新增测试文件；LLM 层导入连带加载的 orchestrator 模块 7→2，`agent`/`tools`/`skills` 不再被拉起。Step 2 未做。
+- 影响范围：**未修改**本文档任务表、验收标准与四条完成标志；Sprint 10-2 对 `orchestrator/` 整包的止损结论与 D1/D5 决定不变。详见 15 号文档 §十。

@@ -152,7 +152,7 @@ Agent/工具层（较高层）**。它现在没有报循环导入错误，是因
 按"收益/风险比"从高到低排序。**每一步都是独立的，可以只做前几步**；Step 1 之后到 Step 2 之间
 没有强依赖关系，但 Step 2 的收益依赖 Step 1。
 
-### Step 1：把 `orchestrator/__init__.py` 改为惰性再导出（推荐）
+### Step 1：把 `orchestrator/__init__.py` 改为惰性再导出（推荐；**已于 2026-09-29 执行，见 §十**）
 
 - **内容**：用 PEP 562 的模块级 `__getattr__` 保留原有 21 个名字的再导出，但按需加载对应
   子模块；`__all__` 保持不变。**不移动任何文件，不修改任何调用方。**
@@ -241,7 +241,7 @@ Agent/工具层（较高层）**。它现在没有报循环导入错误，是因
 - 新架构归属（D 类→`capabilities/agents.py`/`self/`，C 类→`actions/planner.py`）是**根据文件
   自述做的判断**，原方案 §30 只给了整包的映射，没有子模块级映射；这些归属均未经所有者确认，
   本文也没有据此提出任何需要这些归属的动作。
-- 惰性 `__getattr__` 只在临时副本上验证，**没有**跑全量测试；此前各 Sprint 同样只跑定向回归。
+- 惰性 `__getattr__` 最初只在临时副本上验证；2026-09-29 已正式落地（§十），仍**没有**跑全量测试，只跑了定向回归；此前各 Sprint 同样只跑定向回归。
 - `tests/test_session.py` 在原始压缩包中存在收集错误（`_flock` 导入失败），与本评估无关，未处理。
 
 ## 八、重评触发条件
@@ -258,3 +258,18 @@ Agent/工具层（较高层）**。它现在没有报循环导入错误，是因
 是。新增一行登记本评估文档，并在既有的
 "`orchestrator/task_manager.py` + `orchestrator/sub_agent.py`"一行追加 2026-09-29 说明；
 状态词保持"未开始"（没有任何迁移发生）。
+
+## 十、Step 1 执行记录（2026-09-29）
+
+- **触发**：所有者要求按 README 继续后续修改；本次把它作为对 Step 1 的确认执行。**Step 2 未做**（§四 建议先观察，且需同步改测试 patch 目标）。
+- **改动（仅 2 个文件，无调用方改动、无文件移动）**：
+  - `src/mini_agent/orchestrator/__init__.py`：急切 `from .x import ...` 改为 PEP 562 惰性再导出（`_LAZY_EXPORTS` 名字→子模块表 + 模块级 `__getattr__` + `__dir__`，首次访问后缓存进模块命名空间；`TYPE_CHECKING` 分支保留静态导入供 IDE 识别）；`__all__` 的 21 项不变。
+  - `tests/test_orchestrator_lazy_init.py`（新增，31 用例，含子进程隔离断言）：旧写法兼容、`import *`、未知属性抛 `AttributeError`、`_LAZY_EXPORTS` 与 `__all__` 一致且目标子模块真有该名字、LLM 层导入不再连带加载 `agent`/`tools`/`skills`、只 import 包不加载任何子模块、首次访问只加载所属子模块并缓存、惰性访问不产生第二份 `concurrency` 全局状态。
+- **验证**：
+  - 导入链实测（改动前后同一探针脚本）：`import mini_agent.llm.providers._base_mixin` 后被加载的 orchestrator 模块 **7 → 2**（仅 `orchestrator` 与 `orchestrator.concurrency`），`mini_agent.agent`/`tools`/`skills` 由“已加载”变为“未加载”，与 §四 的预测一致。
+  - 变异检查：把 `__init__.py` 换回原始急切版，新增测试 **5 个失败**（导入链/惰性/一致性类）；还原后 31 个全过。
+  - 定向回归：涉及 `orchestrator` 的 16 个既有测试文件，改动后 **387 passed / 12 failed**，未改动的原始压缩包同批 **387 passed / 12 failed**，失败集合逐条一致（`test_explorer_runtime_subagent.py` 7 个 + `test_goal_mode.py::test_build_from_history_*` 5 个，均为 §六 已记录的既有失败）。
+  - 核对：`src/`、`tests/` 中没有任何“包级名字”形式的字符串式 patch 目标（`patch("mini_agent.orchestrator.<Name>")`），惰性化不会让 patch 静默失效。
+- **未验证**：全量测试；`orchestrator` 之外的第三方/用户脚本是否依赖“import 即加载全部子模块”的副作用（静态分析看不到，已核对模块级副作用仅有单例构造）。
+- **回退方式**：把 `__init__.py` 还原为急切 import 版本（单文件），测试文件可一并删除。
+- **对 Phase 10 的影响**：无。Sprint 10-2 的止损结论、D1/D5 决定、11 号文档任务表与完成标志均未改变；这不是“目录收敛”。

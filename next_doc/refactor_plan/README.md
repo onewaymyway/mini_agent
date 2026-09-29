@@ -804,3 +804,8 @@ Sprint 计划，每个 Phase 文档都包含：现状盘点、Sprint 划分、�
       的 7 个失败在原始压缩包上同样存在（已在 10 号文档记录为既有）。**局限**：静态分析看不到间接使用；子模块级的新架构归属
       （D→`capabilities/agents.py`/`self/`、C→`actions/planner.py`）是按文件自述做的判断，未经所有者确认，文中未据此提出动作；惰性方案未跑全量测试。
       台账已新增登记行并在 `orchestrator/task_manager.py + sub_agent.py` 行追加说明。
+- [x] `orchestrator/` 拆分评估 Step 1 已执行（2026-09-29）：`orchestrator/__init__.py` 改为惰性再导出（PEP 562），`__all__` 与 21 个旧名字的用法不变，
+      不移动文件、不改任何调用方。实测 `import mini_agent.llm.providers._base_mixin` 连带加载的 orchestrator 模块 7→2，`agent`/`tools`/`skills`
+      不再被拉起。新增 `tests/test_orchestrator_lazy_init.py`（31 用例，含子进程隔离断言；换回急切版会有 5 个失败）；涉及 `orchestrator` 的 16 个既有测试
+      文件改动前后同为 387 passed / 12 failed 且失败集合一致（均为既有）。**Step 2（`concurrency.py` 归位）未做**，按评估建议先观察；未跑全量测试。
+      详见 `15-phase10-orchestrator-split-assessment.md` §十。**至此 README 中不依赖所有者新决定的阶段再次清零**；Sprint 10-1、10-2/10-3 仍按 D1/D5 有意不动。
