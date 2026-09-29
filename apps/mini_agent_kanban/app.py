@@ -4402,7 +4402,12 @@ def _show_goal_detail_dialog(
     内容靠 session_state 传参）。"""
     title = f"{'🎯目标' if n.get('level') == 'objective' else '🌱心愿'} {n.get('title', '(无标题)')}"
 
-    @st.dialog(title, width="large")
+    # 每次重新打开详情弹窗都先清掉上一次遗留的"删除二次确认态"（用户在
+    # 确认态下用 ✕/Esc/点击外部关掉弹窗不会触发任何回调，标记会残留，
+    # 下次打开直接是"⚠️ 确认删除"，容易误触）。
+    st.session_state.pop(f"{key_prefix}confirm_delete_goal_{n.get('id')}", None)
+
+    @st.dialog(title, width="large", on_dismiss="rerun")
     def _dialog():
         _render_goal_card_details(
             client, n, status_key, execution=execution,
@@ -4807,7 +4812,11 @@ def _render_goal_card_details(
             if not st.session_state.get(confirm_key):
                 if st.button("🗑️ 删除", key=f"{key_prefix}delete_goal_{n.get('id')}"):
                     st.session_state[confirm_key] = True
-                    st.rerun()
+                    # 进入二次确认态：只重跑弹窗自身，保持弹窗打开。整页
+                    # `st.rerun()` 会把 `st.dialog` 弹窗关掉（弹窗只在点击
+                    # 卡片上的详情按钮那一轮才会被调起），用户还没看到确认
+                    # 按钮弹窗就没了，见 `_rerun_dialog_only`。
+                    _rerun_dialog_only()
             else:
                 st.warning(f"确认彻底删除「{n.get('title', '')}」？此操作不可撤销。")
                 if n.get("user_output_dir"):
@@ -4816,25 +4825,38 @@ def _render_goal_card_details(
                 with dgc1:
                     if st.button("⚠️ 确认删除", key=f"{key_prefix}delete_goal_confirm_{n.get('id')}"):
                         result = client.delete_goal(n.get("id"))
-                        st.session_state.pop(confirm_key, None)
                         if isinstance(result, dict) and result.get("_error"):
+                            # 删除失败：留在弹窗里展示错误，保留确认态便于
+                            # 直接重试；不整页 rerun，否则错误提示会随弹窗
+                            # 一起消失。
                             st.error(f"删除失败：{result['_error']}")
                         else:
+                            st.session_state.pop(confirm_key, None)
                             removed_jobs = (result or {}).get("removed_cron_job_ids") or []
                             file_errs = (result or {}).get("file_cleanup_errors") or []
                             msg = f"已删除目标「{n.get('title', '')}」"
                             if removed_jobs:
                                 msg += f"，同时清理了 {len(removed_jobs)} 个关联 cron 任务"
-                            st.success(msg)
+                            flash = [("success", msg)]
                             if file_errs:
-                                st.warning(f"部分关联数据清理失败（{', '.join(file_errs)}），可能需要手动清理对应目录/文件。")
+                                flash.append((
+                                    "warning",
+                                    f"部分关联数据清理失败（{', '.join(file_errs)}），可能需要手动清理对应目录/文件。",
+                                ))
+                            # 成功提示写进 session_state，由 render_kanban_tab
+                            # 下一轮渲染时展示（直接 st.success 后立刻 rerun
+                            # 会一闪而过）。
+                            st.session_state[_GOAL_FLASH_KEY] = flash
                             if st.session_state.get("kanban_focus_node_id") == n.get("id"):
                                 st.session_state.pop("kanban_focus_node_id", None)
-                        st.rerun()
+                            # 删除成功：需要刷新背后的看板，整页 rerun（同时关闭
+                            # 弹窗，此时目标已不存在，符合预期）。
+                            st.rerun()
                 with dgc2:
                     if st.button("取消", key=f"{key_prefix}delete_goal_cancel_{n.get('id')}"):
                         st.session_state.pop(confirm_key, None)
-                        st.rerun()
+                        # 退出确认态：同样只重跑弹窗，保持打开。
+                        _rerun_dialog_only()
 
 
 # [kanban_perception_gaps_improvement_plan.md 方向 D.1] "📈 完成率趋势"
@@ -6846,6 +6868,9 @@ def _render_goal_scheduling_diagnostics_panel(client: AgentClient) -> None:
 
 def render_kanban_tab(client: AgentClient):
     st.markdown("#### 📌 目标看板 (Goal Backlog)")
+
+    # 详情弹窗内删除目标成功后留下的一次性提示（见 `_render_goal_card_details`）。
+    _pop_and_render_flash(_GOAL_FLASH_KEY)
 
     _render_goal_scheduling_diagnostics_panel(client)
 
@@ -12582,6 +12607,7 @@ _CRON_PHASE_LABEL = {
 # 自身的 `_rerun_cron_dialog_only()`；只有"确认删除并成功"这类需要刷新
 # 背后任务列表的场景才用整页 `st.rerun()`（同时也就顺带关掉弹窗，符合预期）。
 _CRON_FLASH_KEY = "_cron_tab_flash"
+_GOAL_FLASH_KEY = "_goal_board_flash"
 
 
 def _cron_delete_confirm_key(job_id: str) -> str:
@@ -12589,16 +12615,68 @@ def _cron_delete_confirm_key(job_id: str) -> str:
     return f"cron_tab_confirm_delete_{job_id}"
 
 
-def _rerun_cron_dialog_only() -> None:
-    """只重跑 Cron 详情弹窗自身（`st.dialog` 正文所在的 fragment），不重跑
+def _rerun_dialog_only() -> None:
+    """只重跑当前 `st.dialog` 弹窗自身（弹窗正文所在的 fragment），不重跑
     整页，从而保持弹窗打开。若当前不是 fragment 内的局部重跑触发（例如弹窗
     刚被打开的那一轮全量重跑里），Streamlit 不允许 `scope="fragment"` 并会
     抛 `StreamlitInvalidLayoutContextError`，此时退回整页 `st.rerun()`，
-    行为等价于改动前（用法同 `_async_fetch_or_retry`）。"""
+    行为等价于改动前（用法同 `_async_fetch_or_retry`）。Cron 详情弹窗与
+    目标看板 Goal 详情弹窗共用。"""
     try:
         st.rerun(scope="fragment")
     except StreamlitInvalidLayoutContextError:
         st.rerun()
+
+
+def _rerun_cron_dialog_only() -> None:
+    """Cron 详情弹窗用的别名，见 `_rerun_dialog_only`。"""
+    _rerun_dialog_only()
+
+
+def _pop_and_render_flash(key: str) -> None:
+    """读取并清除 `session_state[key]` 里的一次性提示后展示。值可以是单个
+    `(kind, msg)`，也可以是它们的列表；kind 为 success/warning/error。
+    用于\"弹窗内操作成功后整页 rerun\"的场景——直接 `st.success` 后立刻
+    `st.rerun()` 提示会一闪而过，所以先写进 session_state，下一轮渲染再展示。"""
+    flash = st.session_state.pop(key, None)
+    items = [] if not flash else ([flash] if isinstance(flash, tuple) else list(flash))
+    # 无论有没有提示都固定占一个 `st.container()`：Streamlit 按元素在页面
+    # 里的位置识别 expander 等控件，提示时有时无会让它下面所有元素整体
+    # 上/下移一格，展开状态随之丢失（表现为提示消失后，用户刚展开的折叠区
+    # 莫名收起）。固定占位后后面元素的位置不受提示有无影响。
+    with st.container():
+        for kind, msg in items:
+            {"success": st.success, "warning": st.warning}.get(kind, st.error)(msg)
+
+
+def _cron_dialog_done(job_id: str, kind: str, msg: str) -> None:
+    """Cron 详情弹窗内某个操作完成后的统一收尾：把结果提示写进该 job 的
+    弹窗提示位，然后只重跑弹窗（保持打开）。`_render_cron_job_details` 顶部
+    会读取并展示这条提示，同时弹窗每次重跑都会重新拉取最新 job 数据，
+    所以启用/禁用按钮、priority 等立即反映最新状态。"""
+    st.session_state[_cron_dialog_flash_key(job_id)] = (kind, msg)
+    _rerun_dialog_only()
+
+
+def _cron_dialog_flash_key(job_id: str) -> str:
+    return f"_cron_dialog_flash_{job_id}"
+
+
+def _fetch_cron_job_fresh(client: "AgentClient", job_id: str) -> tuple:
+    """从 `GET /cron/jobs` 取某个 job 的最新数据，返回 `(job, gone)`：
+    找到 -> `(job, False)`；列表请求成功但没有该 id（已被删除）->
+    `(None, True)`；请求失败/异常 -> `(None, False)`，调用方沿用打开弹窗时
+    的快照，不因为一次网络抖动就把弹窗弄空。"""
+    try:
+        resp = client.cron_jobs()
+    except Exception:
+        return None, False
+    if not isinstance(resp, dict) or "_error" in resp:
+        return None, False
+    for j in resp.get("jobs") or []:
+        if j.get("id") == job_id:
+            return j, False
+    return None, True
 
 
 _CRON_RUN_EVENT_TITLE = {
@@ -12776,9 +12854,18 @@ def _show_cron_job_detail_dialog(client: AgentClient, job: dict) -> None:
     job_id = job.get("id", "")
     title = f"⏰ {job.get('name', job_id)}"
 
-    @st.dialog(title, width="large")
+    # `on_dismiss="rerun"`：用 ✕ / Esc / 点击弹窗外部关闭弹窗时刷新背后的
+    # 任务列表——弹窗内的操作（启用/禁用、改优先级等）现在都保持弹窗打开、
+    # 只重跑弹窗自身，背后的卡片在弹窗关闭前不会更新，关闭时需要补一次刷新。
+    @st.dialog(title, width="large", on_dismiss="rerun")
     def _dialog():
-        _render_cron_job_details(client, job)
+        # 弹窗内的操作只局部重跑弹窗，闭包里的 `job` 是打开时的快照会过期
+        # （比如刚点了禁用，按钮还显示"禁用"），所以每次重跑都重新取最新。
+        fresh, gone = _fetch_cron_job_fresh(client, job_id)
+        if gone:
+            st.info("该任务已不存在（可能已被删除），关闭弹窗后列表会刷新。")
+            return
+        _render_cron_job_details(client, fresh or job)
 
     _dialog()
 
@@ -12793,6 +12880,8 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
     job_id = job.get("id", "")
     is_system_job = bool(job.get("is_system")) or job_id.startswith("sys:")
     is_external_job = job_id.startswith("ext:")
+    # 本弹窗内上一个操作（重置/运行/启停/保存等）留下的一次性结果提示。
+    _pop_and_render_flash(_cron_dialog_flash_key(job_id))
     if is_external_job:
         # [external_projects_cron_dispatch_plan.md 3.4] ext:* job 的
         # schedule 权威来源是对应外部项目的 project.yaml，daemon 每次
@@ -12867,8 +12956,7 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
                 if res and "_error" in res:
                     st.error(f"重置失败：{res['_error']}")
                 else:
-                    st.success("已重置，下次触发将从头开始执行。")
-                    st.rerun()
+                    _cron_dialog_done(job_id, "success", "已重置，下次触发将从头开始执行。")
 
         # [goal 详情已有"真实执行记录"（ObjectiveExecutor 分步计划），这里
         # 做同类补齐] 最近执行记录 + 逐次事件时间线，跟 Goal 侧
@@ -13006,7 +13094,7 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
                 if res and "_error" in res:
                     st.error(res["_error"])
                 else:
-                    st.rerun()
+                    _cron_dialog_done(job_id, "success", "意见已提交。")
 
     btn_col1, btn_col2 = st.columns(2)
     with btn_col1:
@@ -13015,8 +13103,7 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
             if res and "_error" in res:
                 st.error(f"触发失败：{res['_error']}")
             else:
-                st.success("已触发，稍后可在上方状态区看到执行进度。")
-                st.rerun()
+                _cron_dialog_done(job_id, "success", "已触发，稍后可在上方状态区看到执行进度。")
     with btn_col2:
         enabled = job.get("enabled", True)
         toggle_label = "⏸️ 禁用" if enabled else "▶️ 启用"
@@ -13025,7 +13112,7 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
             if res and "_error" in res:
                 st.error(f"操作失败：{res['_error']}")
             else:
-                st.rerun()
+                _cron_dialog_done(job_id, "success", "已禁用。" if enabled else "已启用。")
 
     with st.expander("🔢 调整优先级"):
         new_priority = st.number_input(
@@ -13038,8 +13125,7 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
             if res and "_error" in res:
                 st.error(f"保存失败：{res['_error']}")
             else:
-                st.success("已保存。")
-                st.rerun()
+                _cron_dialog_done(job_id, "success", "已保存。")
 
     # [新增] 编辑该 job 专属的执行限制覆盖（超时/最大步数/卡死检测
     # 参数）。字段没被这个 job 显式覆盖过时，输入框预填的是"当前
@@ -13111,8 +13197,7 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
                     if res and "_error" in res:
                         st.error(f"保存失败：{res['_error']}")
                     else:
-                        st.success("已保存，下次该 job 触发时生效。")
-                        st.rerun()
+                        _cron_dialog_done(job_id, "success", "已保存，下次该 job 触发时生效。")
             with reset_col:
                 if st.button("↩️ 恢复为全局默认", key=f"cron_cfg_reset_{job_id}"):
                     res = client.update_cron_job_config(
@@ -13126,8 +13211,7 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
                     if res and "_error" in res:
                         st.error(f"重置失败：{res['_error']}")
                     else:
-                        st.success("已恢复跟随全局默认。")
-                        st.rerun()
+                        _cron_dialog_done(job_id, "success", "已恢复跟随全局默认。")
 
     # [看板 cron 任务标签页补齐删除功能] 此前只有"目标看板"tab里
     # 才能删除 cron job，本 tab（Cron 任务）只有运行/启停/改优先级，
@@ -13193,10 +13277,7 @@ def render_cron_jobs_tab(client: AgentClient):
 
     # 详情弹窗内的操作（如删除成功）会写一条一次性提示到 session_state，
     # 这里在整页重跑后的第一次渲染里展示并清掉。
-    _flash = st.session_state.pop(_CRON_FLASH_KEY, None)
-    if _flash:
-        _flash_kind, _flash_msg = _flash
-        (st.success if _flash_kind == "success" else st.error)(_flash_msg)
+    _pop_and_render_flash(_CRON_FLASH_KEY)
 
     if st.button("🔄 刷新", key="cron_jobs_refresh"):
         st.rerun()
