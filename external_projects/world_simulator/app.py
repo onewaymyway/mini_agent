@@ -47,6 +47,7 @@ from world_simulator import causal_graph as cg_mod
 from world_simulator import causal_tree
 from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
+from world_simulator import tech_model as tech_mod
 from world_simulator import retrospective as retrospective_mod
 from world_simulator import html_export as html_export_mod
 from world_simulator import agent_preview as agent_preview_mod
@@ -658,6 +659,63 @@ def _option_warnings_html(state) -> str:
             f"：{note}</div>"
         )
     return "".join(lines)
+
+
+def _tech_violations_html(state) -> str:
+    """技术模型（第二十二轮 WP1）本步的裁决提示：被驳回/夹值/降级的原因。
+    透明记录，不是错误——被驳回的结果已经体现在技术状态里。"""
+    lines = []
+    for v in getattr(state, "tech_violations", None) or []:
+        if not isinstance(v, dict):
+            continue
+        icon = "ℹ️" if v.get("severity") == "info" else "⚙️"
+        lines.append(
+            f'<div class="ws-chapter-option-warning">{icon} 技术模型 {html_stdlib.escape(str(v.get("code", "")))}：'
+            f'{html_stdlib.escape(str(v.get("message", "")))}</div>'
+        )
+    for a in getattr(state, "tech_updates", None) or []:
+        if isinstance(a, dict) and a.get("action") == "time" and a.get("elapsed_source") == "fallback":
+            lines.append(
+                '<div class="ws-chapter-option-warning">⏱️ 技术模型：这一步 AI 没有给出有效的 '
+                "elapsed_days，已按每步固定天数推算（精度降级）。</div>"
+            )
+    return "".join(lines)
+
+
+def _render_tech_panel(settings) -> None:
+    """技术树面板：当前各技术节点的阶段/进度/状态（只读）。"""
+    if not tech_mod.is_enabled(settings):
+        return
+    rows = tech_mod.summarize(settings)
+    with st.expander(f"🧬 技术发展模型（{len(rows)} 个节点）"):
+        if not rows:
+            st.caption("还没有登记任何技术节点——AI 会在出现值得追踪的技术时用 tech_updates 登记，也可以在设置里手动添加种子节点。")
+            return
+        st.caption(
+            "阶段/进度由引擎按 elapsed_days 推算并裁决，AI 只能提议。典型停留时长若标注“未验证”，"
+            "说明来自 AI 估计或通用占位值，不是领域事实。"
+        )
+        status_text = {"ready": "✅ 可迁移", "blocked": "⛔ 受阻", "stalled": "🕸️ 停滞",
+                       "progressing": "🔧 推进中", "mature": "🏁 已达最高阶段"}
+        for r in rows:
+            n = r["node"]
+            label = tech_mod.STAGE_LABELS.get(n["stage"], n["stage"])
+            unverified = "" if n["dwell_verified"] else "（典型时长未验证）"
+            line = (
+                f"**{n['name']}** `{n['id']}` · {label} · 进度 {n['progress']:.0%} · "
+                f"已停留 {n['dwell_days']:.0f}/{r['typical_dwell_days']:.0f} 天{unverified} · "
+                f"{status_text.get(r['status'], r['status'])}"
+            )
+            if r["unmet_hard"]:
+                line += " · 硬前置未满足：" + "、".join(q["tech_id"] for q in r["unmet_hard"])
+            if n["bottleneck"]:
+                line += f" · 瓶颈：{n['bottleneck']}"
+            if n["perceived_stage"] and n["perceived_stage"] != n["stage"]:
+                line += f" · 公众以为：{tech_mod.STAGE_LABELS.get(n['perceived_stage'], n['perceived_stage'])}"
+            if n["preexisting"]:
+                line += " · 既有技术（未经验证）"
+            st.markdown(line)
+            st.progress(min(1.0, max(0.0, float(n["progress"]))))
 
 
 def _consistency_warnings_html(state) -> str:
@@ -2426,7 +2484,7 @@ def _render_timeline(
         granularity_note = _granularity_note_html(state)
         resource_note = _resource_violations_html(state)
         relation_note = _relation_violations_html(state)
-        option_warnings_note = _option_warnings_html(state) + _consistency_warnings_html(state)
+        option_warnings_note = _option_warnings_html(state) + _consistency_warnings_html(state) + _tech_violations_html(state)
         background_note = _background_entities_html(state)
         key_drivers_note = _key_drivers_html(state)
         line_updates_note = _line_updates_html(state, causal_lines_meta)
@@ -4132,6 +4190,9 @@ def page_detail() -> None:
             "判断，暂时没有自动化的衡量方式，仍需自行阅读叙事/因果图判断。"
         )
 
+    # 第二十二轮 WP1：技术树面板（只读；未开启技术模型时不渲染）。
+    _render_tech_panel(manifest.settings)
+
     # 第二十二轮 WP4：真实性体检（结构性检查，不是语义真实性评分）。
     # 每次渲染都从历史现算，纯 Python、不调 LLM；默认折叠。
     with st.expander("🩺 真实性体检（结构性检查，非真实性评分）"):
@@ -4516,6 +4577,43 @@ def page_detail() -> None:
                 height=80,
                 placeholder='[{"label": "资产净值", "field": "resources.cash", "direction": "max"}]',
             )
+        cur_tech_enabled = bool(cur_settings.get("tech_model_enabled"))
+        with st.expander("高级：技术发展模型（第二十二轮 WP1，可选，默认关闭）"):
+            st.markdown(
+                '<span class="ws-muted">开启后，引擎持有各技术的权威阶段/进度，AI 只能“提议”阶段迁移，'
+                "由引擎按 <code>elapsed_days</code>、前置依赖、一步一档等规则裁决，违规会被驳回并记录在时间线上。"
+                "同时要求 AI 每步给出 <code>elapsed_days</code>（这一步跨越的天数）。"
+                "<b>所有默认时长都是通用占位值，不是领域事实</b>，请按你的场景覆盖。"
+                "已知边界：独立推进（独立因果线推进）路径不运行技术模型。</span>",
+                unsafe_allow_html=True,
+            )
+            new_tech_enabled = st.checkbox(
+                "开启技术发展模型", value=cur_tech_enabled, key="settings_tech_model_enabled",
+            )
+            cur_tech_nodes = (cur_settings.get("tech_state") or {}).get("nodes") or []
+            new_tech_state_text = st.text_area(
+                "技术节点（JSON 数组，可选；保存会覆盖当前技术状态，包括进度）",
+                value=json.dumps(cur_tech_nodes, ensure_ascii=False, indent=1) if cur_tech_nodes else "",
+                key="settings_tech_state", height=160,
+                placeholder=(
+                    '[{"id": "battery", "name": "固态电池", "stage": "lab", "typical_dwell_days": '
+                    '{"lab": 900}, "requires": [{"tech_id": "material", "min_stage": "expert", "mode": "hard"}]}]'
+                ),
+            )
+            cur_tech_params = cur_settings.get("tech_params") or {}
+            new_tech_params_text = st.text_area(
+                "引擎参数覆盖（JSON 对象，可选）",
+                value=json.dumps(cur_tech_params, ensure_ascii=False) if cur_tech_params else "",
+                key="settings_tech_params", height=70,
+                placeholder='{"default_dwell_days": 365, "fallback_days_per_step": 30, "stall_multiplier": 3}',
+            )
+            cur_tech_priors = cur_settings.get("tech_priors") or {}
+            new_tech_priors_text = st.text_area(
+                "各类技术的典型停留天数先验（JSON 对象，可选，按 kind 分类）",
+                value=json.dumps(cur_tech_priors, ensure_ascii=False) if cur_tech_priors else "",
+                key="settings_tech_priors", height=70,
+                placeholder='{"energy": {"lab": 1800, "expert": 1200}, "default": {"lab": 730}}',
+            )
         if st.button("保存设置", key="settings_save"):
             new_objectives = [o.strip() for o in new_objectives_text.split(",") if o.strip()]
             new_objectives_advanced = _safe_json_loads(new_objectives_advanced_text, None)
@@ -4542,6 +4640,12 @@ def page_detail() -> None:
             desired_state_invalid = (
                 new_desired_state_text.strip() and not isinstance(new_desired_state, dict)
             )
+            new_tech_state = _safe_json_loads(new_tech_state_text, None)
+            new_tech_params = _safe_json_loads(new_tech_params_text, None)
+            new_tech_priors = _safe_json_loads(new_tech_priors_text, None)
+            tech_state_invalid = new_tech_state_text.strip() and not isinstance(new_tech_state, list)
+            tech_params_invalid = new_tech_params_text.strip() and not isinstance(new_tech_params, dict)
+            tech_priors_invalid = new_tech_priors_text.strip() and not isinstance(new_tech_priors, dict)
             if objectives_advanced_invalid:
                 st.error("结构化关注指标不是合法的 JSON 数组，设置未保存，请修正后重试。")
             elif resource_relations_invalid:
@@ -4554,6 +4658,12 @@ def page_detail() -> None:
                 st.error("关系声明不是合法的 JSON 数组，设置未保存，请修正后重试。")
             elif desired_state_invalid:
                 st.error("理想状态不是合法的 JSON 对象，设置未保存，请修正后重试。")
+            elif tech_state_invalid:
+                st.error("技术节点不是合法的 JSON 数组，设置未保存，请修正后重试。")
+            elif tech_params_invalid:
+                st.error("技术引擎参数不是合法的 JSON 对象，设置未保存，请修正后重试。")
+            elif tech_priors_invalid:
+                st.error("技术先验不是合法的 JSON 对象，设置未保存，请修正后重试。")
             else:
                 if isinstance(new_objectives_advanced, list):
                     new_objectives = new_objectives + [
@@ -4608,6 +4718,13 @@ def page_detail() -> None:
                     desired_state=desired_state_to_save,
                     problem_discovery_auto_scan_interval=int(new_pd_auto_scan_interval),
                     capability_discovery_auto_scan_interval=int(new_cd_auto_scan_interval),
+                    tech_model_enabled=bool(new_tech_enabled),
+                    tech_state=(
+                        {"nodes": tech_mod.get_nodes({"tech_state": {"nodes": new_tech_state}})}
+                        if isinstance(new_tech_state, list) else {}
+                    ),
+                    tech_params=new_tech_params if isinstance(new_tech_params, dict) else {},
+                    tech_priors=new_tech_priors if isinstance(new_tech_priors, dict) else {},
                 )
                 st.success("设置已更新，下一步推进开始生效。")
                 st.rerun()
@@ -6452,7 +6569,7 @@ def page_game() -> None:
     granularity_note = _granularity_note_html(s)
     resource_note = _resource_violations_html(s)
     relation_note = _relation_violations_html(s)
-    option_warnings_note = _option_warnings_html(s) + _consistency_warnings_html(s)
+    option_warnings_note = _option_warnings_html(s) + _consistency_warnings_html(s) + _tech_violations_html(s)
     background_note = _background_entities_html(s)
     key_drivers_note = _key_drivers_html(s)
     line_updates_note = _line_updates_html(s, manifest.settings.get("causal_lines"))

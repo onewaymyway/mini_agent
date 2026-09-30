@@ -59,6 +59,7 @@ python -m pytest tests/ -v
 | `test_branch_dynamic_state.py` | 是（打桩，无需真实 LLM） | 第二十二轮 WP0：因果树/待兑现关系按分支隔离——分叉后推进不污染主线、分叉即回滚、`explore_branches` 不污染主线、旧实例离开分支时提交、手改因果线不丢、合并后刷新、序列化往返 | 10 个用例全绿 |
 | `test_consistency_guard.py` | 是（打桩，无需真实 LLM） | 第二十二轮 WP4：一致性守卫 C1–C8 的判定边界（成熟度跳级/倒退、分支复活、前置违规、非常规迁移、数值波动、事件密度、边覆盖、校准）、`advance()` 端到端记录 C2、开关与异常兜底、序列化往返 | 23 个用例全绿 |
 | `test_backtest.py` | 是（打桩，无需真实 LLM；引擎/匹配 workflow 都用假实现） | 第二十二轮 WP5：案例校验（重复 id/前置成环等）、别名化与年份平移、候选抽取、规则/LLM 匹配器与覆盖、打分边界（τ/区间误差/前置违反/范围/无数据）、端到端落盘与隔离、A/B 汇总与小样本提示、示例案例有效且标 `verified: false` | 43 个用例全绿 |
+| `test_tech_model.py` | 是（无需真实 LLM；引擎 workflow 用桩） | 第二十二轮 WP1：R1–R7 各规则判定边界（T1–T11，含同步迁移不互相满足、`for_stage`、未登记前置不阻断）、`elapsed_days` 合法性与降级、投入/瓶颈/软前置系数、参数与先验优先级、提示词、`SimState` 新字段往返、C6 按 `elapsed_days` 归一、`advance()` 端到端（审计/快照/工作副本/开关关闭逐字节等价/技术模型出错不拖垮推进）、拆分模式、分叉回滚与种子锚定、界面 HTML 助手 | 54 个用例全绿 |
 
 **如何判断"没测通过"**：任何一条 `FAILED`（而不是因为上述 `fastapi`
 之类的环境缺依赖导致的 `ImportError` collection error）都说明改动

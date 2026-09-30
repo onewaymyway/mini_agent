@@ -25,7 +25,7 @@ from world_simulator.engine.background_entities import (
     _normalize_background_entities,
 )
 from world_simulator import causal_tree, relationship
-from world_simulator import consistency_guard, dynamic_state
+from world_simulator import consistency_guard, dynamic_state, tech_model
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _read_skill_version, _skill_name_for_template
@@ -374,6 +374,19 @@ def advance(
 
     history_for_prompt = store.load_history(branch)
 
+    # 第二十二轮 WP1：技术种子锚定。用户在设置里写入的 `tech_state` 种子（或
+    # 中途才开启技术模型）在历史里还没有任何 `tech_state` 快照时，先把当前
+    # 工作副本提交到该分支头部——否则第一步推进后才有快照，从推进之前的
+    # 步分叉会拿到"已被推进过的技术状态"而不是种子（回滚语义失效）。只在
+    # 这一个窄条件下触发，不改变其它动态状态的既有归属规则。
+    if tech_model.is_enabled(manifest.settings) and manifest.settings.get("tech_state"):
+        _anchor = dynamic_state.latest_snapshot(history_for_prompt)
+        if (_anchor is None or "tech_state" not in _anchor) and dynamic_state.commit_working_copy(
+            store, manifest, branch
+        ):
+            history_for_prompt = store.load_history(branch)
+            current = store.load_current_state(branch) or current
+
     shared_inputs = {
         "title": manifest.title,
         "current_summary": current.summary,
@@ -413,6 +426,9 @@ def advance(
         # 把历史累计的 `capabilities_gained` 喂给候选选项生成 prompt，
         # 同样是纯只读聚合，不影响任何落盘逻辑。
         "capabilities_hint": resolve_capabilities_hint(history_for_prompt),
+        # 第二十二轮 WP1：技术模型开启时，把引擎持有的权威技术状态 + 输出
+        # 协议喂给 LLM；未开启返回空字符串（prompt 与之前等价）。
+        "tech_state_hint": tech_model.safe_build_hint(manifest.settings),
         **resolve_hints(manifest.settings, current_step=current.step + 1),
     }
 
@@ -771,6 +787,19 @@ def advance(
         else None
     )
     next_state.tree_updates = _apply_tree_updates(manifest, next_state, data)
+
+    # 第二十二轮 WP1：技术模型裁决（提议–审核）。必须在下面
+    # `dynamic_state.snapshot_if_changed()` 之前——`tech_state` 是分支作用域
+    # 动态状态，快照要包含这一步的推进/迁移结果。未开启时整段是空操作，
+    # 不产生任何新字段（`SimState.to_dict()` 对空值不输出）。
+    if tech_model.is_enabled(manifest.settings):
+        next_state.elapsed_days = tech_model.normalize_reported_elapsed(data.get("elapsed_days"))
+        next_state.tech_updates, next_state.tech_violations = tech_model.safe_apply_step(
+            manifest.settings,
+            data.get("tech_updates"),
+            step=next_state.step,
+            elapsed_days_raw=data.get("elapsed_days"),
+        )
 
     # 4.10 节（阶段三十三第五批）：把这一批 options 共享的决策背景
     # 收纳进一个精简容器（`decision_opportunity`），必须在上面

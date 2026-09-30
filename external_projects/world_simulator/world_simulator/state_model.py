@@ -933,6 +933,33 @@ class SimState:
     该 key，旧格式逐字节不变，旧数据读回为空列表。
     """
 
+    elapsed_days: Optional[float] = None
+    """这一步在模拟世界里大致跨越的天数（第二十二轮 WP1，`next_doc/
+world_simulator_realism_tech_and_causal_engine_plan.md` §4 WP1"时间基础
+设施"）。**LLM 给出的量级估计**，只做合法性检查（正数、有限），不作精确
+值使用。引擎里一切"随时间"的机制（技术停留时长、C6 波动归一化）都用它；
+`None` = 没给/非法（旧数据、`tech_model_enabled` 关闭时 prompt 不会索要），
+此时这些机制退化为按步计数，并在审计里标"精度降级"。`to_dict()` 在 `None`
+时不输出该 key，旧格式逐字节不变。
+    """
+
+    tech_updates: List[Dict[str, Any]] = field(default_factory=list)
+    """技术模型（`tech_model.py`，WP1）对*本步*做的审计记录：`action` 为
+`time`（本步时间来源，含 `elapsed_source`：`reported`/`fallback`）/
+`registered`/`transition`/`regression`/`held`（提出的迁移被驳回）。技术的
+*当前状态*不在这里，而在 `dynamic_snapshot["tech_state"]`（随分支）。空列表
+= 未开启或本步没有节点；`to_dict()` 空时不输出。
+    """
+
+    tech_violations: List[Dict[str, Any]] = field(default_factory=list)
+    """技术模型裁决出的违规（T1 跳级/T2 进度未满/T3 硬前置未满足/T4 倒退无
+原因/T5 新技术阶段夹值/T6 采用率超额/T7 成本无冲击上升/T8 结构参数被
+忽略/T9 前置无法核验/T10 投入无理由/T11 瓶颈清除无理由），每项
+`{code, severity, tech_id, message, detail}`。**透明记录**（沿用
+`resource_violations` 的做法）：被驳回/夹值的结果已经体现在状态里，这里
+说明为什么。`to_dict()` 空时不输出。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
@@ -940,6 +967,12 @@ class SimState:
             d.pop("dynamic_snapshot", None)  # 关闭态/旧数据：不输出该 key，逐字节不变
         if not d.get("consistency_warnings"):
             d.pop("consistency_warnings", None)
+        if d.get("elapsed_days") is None:
+            d.pop("elapsed_days", None)
+        if not d.get("tech_updates"):
+            d.pop("tech_updates", None)
+        if not d.get("tech_violations"):
+            d.pop("tech_violations", None)
         return d
 
     @classmethod
@@ -1024,6 +1057,19 @@ class SimState:
                 if isinstance(data.get("dynamic_snapshot"), dict)
                 else None
             ),
+            elapsed_days=(
+                float(data["elapsed_days"])
+                if isinstance(data.get("elapsed_days"), (int, float))
+                and not isinstance(data.get("elapsed_days"), bool)
+                and data["elapsed_days"] > 0
+                else None
+            ),
+            tech_updates=[
+                copy.deepcopy(x) for x in (data.get("tech_updates") or []) if isinstance(x, dict)
+            ],
+            tech_violations=[
+                copy.deepcopy(x) for x in (data.get("tech_violations") or []) if isinstance(x, dict)
+            ],
         )
 
 

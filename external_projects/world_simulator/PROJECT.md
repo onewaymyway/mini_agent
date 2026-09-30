@@ -670,6 +670,12 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
 - **回测框架只有相对比较价值（第二十二轮 WP5）**：训练数据污染无法根除，
   绝对分数不可信；仓库自带的示例案例未经核对；框架没有在真实 LLM 下跑过。
   详见 `docs/backtest_guide.md` 与"变更记录"第二十二轮 P2 条目。
+- **技术发展模型是结构性约束，不是语义判断（第二十二轮 WP1，默认关闭）**：
+  引擎只检查阶段/进度/前置/采用率/成本，不判断"合不合理"；所有默认时长
+  （365 天等）是通用占位值而非领域事实；LLM 给的典型时长标"未验证"；
+  `elapsed_days` 是 LLM 的量级估计；**没有在真实 LLM 下验证过**；
+  `advance_lines()` 独立推进路径不跑技术模型；开启后每步写完整快照、历史
+  变大。详见 `docs/tech_model_guide.md` 与"变更记录"第二十二轮 P3 条目。
 
 ## 目录结构
 
@@ -4225,3 +4231,49 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   `settings`，而 `tech_model_enabled` 等开关要到 P3 才存在——在那之前 A/B
   能比较的只有现有 settings（如 `consistency_guard_enabled`、时间粒度）
   与匹配方式。
+
+- 2026-10-01（第二十二轮 · 阶段 P3 / WP1，依据 `next_doc/world_simulator_
+  realism_tech_and_causal_engine_plan.md` §4 WP1）：**技术发展模型 + `elapsed_days`**
+  （默认关闭 `settings.tech_model_enabled`；关闭时 prompt/落盘/界面与之前等价）。
+  1. **新增** `world_simulator/tech_model.py`（纯 Python、不调 LLM）：技术节点
+     规整、`apply_step()` 提议–审核裁决、`build_hint()` 提示词、`summarize()`、
+     兜底包装 `safe_apply_step()`/`safe_build_hint()`（出错不拖垮推进，记 T0）。
+     阶段序数沿用 `capability_discovery._MATURITY_STAGES`，不新造枚举。规则：
+     进度由引擎按 `elapsed/典型停留×投入×瓶颈×软前置` 推算；一步最多升一档
+     （T1）；迁移需进度满（T2）且硬前置满足（T3）；倒退须带原因（T4）；新技术
+     只能从 lab 起（T5，`preexisting` 例外且标"未经验证"）；同市场采用率和≤1
+     （T6）、成本上升须带冲击原因（T7）；`requires`/`typical_dwell_days` 仅登记
+     时可给（T8）；未登记前置**不阻断**仅记录（T9）；投入/瓶颈清除无理由（T10/T11）。
+  2. **`SimState` 新增** `elapsed_days`/`tech_updates`/`tech_violations`（空值不输出，
+     旧格式逐字节不变）；`dynamic_state.DYNAMIC_KEYS` 加入 `tech_state`（按分支隔离）。
+  3. **`engine/advance.py`**：`{tech_state_hint}` 喂入 prompt；在树更新之后、
+     `snapshot_if_changed()` 之前执行裁决。**种子锚定**：历史里还没有 `tech_state`
+     快照而设置里有种子时，推进前先把工作副本提交到分支头部——否则从推进前的
+     步分叉会拿到已被推进的技术状态（有测试）。
+  4. **`workflows/advance_step.yaml`、`world_evolve.yaml`** 加 `{tech_state_hint}` 与
+     输出字段说明；三个模板 SKILL.md 补 `elapsed_days`/`tech_updates` 字段定义。
+  5. **`consistency_guard.VolatilityTracker`（兑现 P1 遗留）**：带合法 `elapsed_days`
+     的步改按"每日变化率"比较、且不因 `granularity_changed` 跳过；没有 `elapsed_days`
+     的步沿用原口径。两种口径的基线分开存，不混用。
+  6. **`app.py`**：设置页"高级：技术发展模型"（开关/种子节点/参数/先验，含 JSON 校验）、
+     详情页"🧬 技术发展模型"面板（只读）、每步驳回/降级提示。
+  7. **文档**：新增 `docs/tech_model_guide.md`；更新 `docs/README.md`、`overview.md`、
+     `testing_guide.md`。
+  8. **测试**：新增 `tests/test_tech_model.py`（54 个）。变异验证 13 个（T1/T2/T3/T5/
+     T6/T7 判定、软前置、投入粘性、倒退进度、C6 归一、种子锚定、开关关闭仍执行、
+     `tech_state` 不进快照）全部转红，另有 1 个无操作对照存活（符合预期）。
+  **验收**：`pytest tests/` 859 passed（P2 后基线 805，新增 54）；`streamlit.testing.AppTest` 冒烟：开启技术模型的实例详情页无异常、
+  两个面板均渲染。
+  **与 §4 WP1 的偏离/细化**：① 进度完全由引擎算，LLM 自报被忽略；② 提前迁移被驳回
+  后**不送进度**（比计划"降级为接近完成"更严格）；③ 先验放 `settings.tech_priors`/
+  `tech_params`——代码里并不存在计划里提到的 `reference_priors`；④ **`delay_steps`
+  语义修正（§8 第 2 问"WP1 同时修正"）推迟到 P5**：`delay_steps` 的消费方属于
+  WP3 因果可执行范围，届时统一改用 elapsed 单位，本阶段没有改；⑤ 违规策略按
+  计划默认"降级+记录"，**§8 第 3 问用户仍未回复**，修复调用未实现。
+  **已知边界（如实记录）**：① **没有在真实 LLM 下运行过**——LLM 是否遵守协议、
+  `tech_updates` 质量、额外 token 成本均未知；② 默认数值全是占位值；③ LLM 典型
+  时长标"未验证"；④ `advance_lines()` 不跑技术模型；⑤ 开启后每步写完整快照
+  （连带 `causal_lines`），历史变大；⑥ 叙事与引擎状态的错位无法消除，只能被量化；
+  ⑦ 未登记前置不阻断，这类前置形同虚设；⑧ 设置页保存"技术节点"会覆盖当前
+  技术状态（含进度）；⑨ 回测框架（WP5）**尚未**改用 `elapsed_days`/`tech_state`
+  （"阶段迁移时点偏差"仍未做）；⑩ 分支隔离只对新写入的步生效。

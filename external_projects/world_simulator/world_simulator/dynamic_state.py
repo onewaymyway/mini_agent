@@ -51,9 +51,12 @@ from world_simulator.state_model import SimManifest, SimState
 from world_simulator.store import SimStore, atomic_write_json, atomic_write_jsonl
 
 # 纳入分支作用域的 `manifest.settings` key。后续工作包新增的动态状态
-# （WP1 `tech_state`、WP3 `causal_pending` 等）在这里追加即可，不需要
-# 改其它地方。
-DYNAMIC_KEYS = ("causal_lines", "relationship_pending_effects")
+# （WP3 `causal_pending` 等）在这里追加即可，不需要改其它地方。
+# `tech_state`（第二十二轮 WP1，`tech_model.py`）：技术节点的阶段/进度/
+# 停留时长——随时间线变化，分叉即回滚到那一刻。它每步都会变（进度随时间
+# 推进），所以开启技术模型后每步都会写一份完整快照（连带 `causal_lines`），
+# 历史文件会相应变大——见 PROJECT.md 第二十二轮 P3 的已知边界。
+DYNAMIC_KEYS = ("causal_lines", "relationship_pending_effects", "tech_state")
 
 
 def _normalize(value: Any) -> Any:

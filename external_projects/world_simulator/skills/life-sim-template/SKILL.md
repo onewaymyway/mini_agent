@@ -409,6 +409,17 @@ triggers: 人生模拟, 人生推演, life simulation, 决策推演, 职业发�
   为了"显得有内容"而每步都编造问题；如果上面提示里出现了用户已确认
   关注的潜在问题建议，可以判断是否值得直接采纳成一条正式的
   `problems`，不采纳也可以。
+- `elapsed_days` 与 `tech_updates`（可选，第二十二轮 WP1，**仅当提示里
+  出现"技术发展模型已开启"时才输出**，否则不要输出）：`elapsed_days` 是
+  这一步在模拟世界里大致跨越的天数（正数，量级估计即可）；`tech_updates`
+  是技术变化数组，每项以 `id` 为键，可含 `name`/`kind`（登记新技术）、
+  `stage`（本步结束时你认为所处阶段，六选一同 `maturity_stage`）、
+  `investment`（`low`/`normal`/`high`，非 normal 须附 `investment_reason`）、
+  `bottleneck`/`bottleneck_severity`、`adoption`、`market`、`cost_index`、
+  `perceived_stage`、`regression_reason` 等。**引擎按时间推算阶段内进度并
+  裁决迁移**——你不能自己宣布"进入下一阶段"：一步最多升一档、进度未满或
+  硬前置未满足会被驳回并记录在时间线上；新技术只能从 `lab` 开始（世界里
+  本来就存在的技术请标 `preexisting: true`）。详见提示里的协议说明。
 - `capabilities_gained`：数组（可选，第九轮批次二，Capability 对象），
   只有当这一步的发展让角色真正获得了一项新能力（不是单纯"变好一
   点"，而是"之前做不到的事，现在能做了"）时才给，每项

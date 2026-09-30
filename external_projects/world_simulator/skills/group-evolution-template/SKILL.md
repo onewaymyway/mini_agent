@@ -268,6 +268,17 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
   演变了一个明确的现实问题（比如"资源储备见底导致扩张停滞""内部
   路线分歧演变成公开分裂"）才给，绝大多数平淡的推进步骤不需要这个
   字段。
+- `elapsed_days` 与 `tech_updates`（可选，第二十二轮 WP1，**仅当提示里
+  出现"技术发展模型已开启"时才输出**，否则不要输出）：`elapsed_days` 是
+  这一步在模拟世界里大致跨越的天数（正数，量级估计即可）；`tech_updates`
+  是技术变化数组，每项以 `id` 为键，可含 `name`/`kind`（登记新技术）、
+  `stage`（本步结束时你认为所处阶段，六选一同 `maturity_stage`）、
+  `investment`（`low`/`normal`/`high`，非 normal 须附 `investment_reason`）、
+  `bottleneck`/`bottleneck_severity`、`adoption`、`market`、`cost_index`、
+  `perceived_stage`、`regression_reason` 等。**引擎按时间推算阶段内进度并
+  裁决迁移**——你不能自己宣布"进入下一阶段"：一步最多升一档、进度未满或
+  硬前置未满足会被驳回并记录在时间线上；新技术只能从 `lab` 开始（世界里
+  本来就存在的技术请标 `preexisting: true`）。详见提示里的协议说明。
 - `capabilities_gained`：数组（可选，第九轮批次二，Capability 对象），
   格式与用途与 `life-sim-template` 完全一致——只有这一步真正让群体
   获得了新能力（比如"建立了稳定的资源调配机制""形成了跨群体协作

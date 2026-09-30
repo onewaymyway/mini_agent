@@ -39,8 +39,10 @@
 - C6 `z_threshold=4.0`、`min_deltas=5`：历史变化量样本不足 5 个时不判断。
   历史变化量标准差为 0（如"年龄每步 +1"）时，用 `0.1×|均值|` 做下限，
   避免除零，也让"匀速计数器突然跳变"仍能被发现。**已知误报来源**：
-  时间粒度切换（本模块跳过 `granularity_changed` 那一步）与步长可变
-  （`elapsed_days` 在 WP1 才引入，之前无法归一）。
+  时间粒度切换（本模块跳过 `granularity_changed` 那一步）与步长可变。
+  WP1 起，带合法 `elapsed_days` 的步改按"每日变化率"比较（口径见
+  `VolatilityTracker`），步长可变不再是误报来源；没有 `elapsed_days` 的
+  旧步/未开技术模型的实例仍是原口径，误报来源不变。
 - C5 `run_threshold=3`：只用于统计"连续 ≥3 步都戏剧化"出现了几段，
   不据此告警——阈值应由基线数据决定，先看数据再定（计划 §4 WP4 C5）。
 
@@ -279,39 +281,58 @@ def _numeric_leaves(vars_dict: Any) -> Dict[str, float]:
 
 class VolatilityTracker:
     """逐步喂入历史，累计每个数值叶子字段的"变化量"序列；对新一步给出
-    z 值超阈的 C6 告警。`granularity_changed` 的那一步不参与判断也不
-    进入基线（时间粒度变了，变化量本来就不可比）。"""
+    z 值超阈的 C6 告警。
+
+    两种口径互不混用（序列按 `(字段, 口径)` 分开存）：
+    - `rate`：这一步带合法 `elapsed_days`（WP1）→ 用"每天变化率"
+      `delta / elapsed_days` 比较，步长可变也可比，此时**不**因
+      `granularity_changed` 跳过。
+    - `raw`：没有 `elapsed_days`（旧数据/技术模型未开）→ 沿用原口径，
+      `granularity_changed` 的那一步不参与判断也不进入基线。
+    """
 
     def __init__(self, z_threshold: float, min_deltas: int) -> None:
         self.z_threshold = z_threshold
         self.min_deltas = min_deltas
         self._prev: Optional[Dict[str, float]] = None
-        self._deltas: Dict[str, List[float]] = {}
+        self._deltas: Dict[Any, List[float]] = {}
 
     def feed(self, state: Any) -> List[Dict[str, Any]]:
         step = int(_get(state, "step", 0) or 0)
         leaves = _numeric_leaves(_get(state, "vars"))
         warnings: List[Dict[str, Any]] = []
-        skip = bool(_get(state, "granularity_changed", False))
+        elapsed = _get(state, "elapsed_days")
+        rate_mode = isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) and elapsed > 0
+        skip = bool(_get(state, "granularity_changed", False)) and not rate_mode
+        mode = "rate" if rate_mode else "raw"
         if self._prev is not None and not skip:
             for name, value in leaves.items():
                 if name not in self._prev:
                     continue
                 delta = float(value) - float(self._prev[name])
-                series = self._deltas.setdefault(name, [])
+                used = delta / float(elapsed) if rate_mode else delta
+                series = self._deltas.setdefault((name, mode), [])
                 if len(series) >= self.min_deltas:
                     mean = sum(series) / len(series)
                     var = sum((d - mean) ** 2 for d in series) / len(series)
                     std = max(var ** 0.5, 0.1 * abs(mean), 1e-9)
-                    z = (delta - mean) / std
+                    z = (used - mean) / std
                     if abs(z) >= self.z_threshold:
+                        if rate_mode:
+                            msg = (
+                                f"字段 {name} 本步变化 {delta:+g}（约 {used:+g}/天，按 elapsed_days 归一），"
+                                f"与它此前的每日变化率（均值 {mean:+g}/天）相比偏离 {abs(z):.1f} 个标准差"
+                            )
+                        else:
+                            msg = (
+                                f"字段 {name} 本步变化 {delta:+g}，与它此前的变化量"
+                                f"（均值 {mean:+g}）相比偏离 {abs(z):.1f} 个标准差"
+                            )
                         warnings.append(_warn(
-                            "C6", step,
-                            f"字段 {name} 本步变化 {delta:+g}，与它此前的变化量"
-                            f"（均值 {mean:+g}）相比偏离 {abs(z):.1f} 个标准差",
-                            field=name, delta=delta, mean_delta=mean, z=round(z, 2),
+                            "C6", step, msg,
+                            field=name, delta=delta, mean_delta=mean, z=round(z, 2), mode=mode,
                         ))
-                series.append(delta)
+                series.append(used)
         self._prev = leaves
         return warnings
 
