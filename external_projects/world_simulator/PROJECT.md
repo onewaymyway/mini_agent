@@ -667,6 +667,9 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   `consistency_guard.py` 的八项检查度量"结构上有没有明显作弊"，不是语义
   真实性评分，会有误报；默认开启（`settings.consistency_guard_enabled`），
   不想要可设 False。详见"变更记录"第二十二轮 P1 条目。
+- **回测框架只有相对比较价值（第二十二轮 WP5）**：训练数据污染无法根除，
+  绝对分数不可信；仓库自带的示例案例未经核对；框架没有在真实 LLM 下跑过。
+  详见 `docs/backtest_guide.md` 与"变更记录"第二十二轮 P2 条目。
 
 ## 目录结构
 
@@ -4177,3 +4180,48 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   C2–C4 把之前若干步的变化都归到那一步，属于旧数据固有的归因粗糙；
   ⑧ 未在真实 LLM 下运行，告警在真实输出上的误报率**未知**——这正是
   下一步（P2 / WP5 回测）之前需要用基线数据回答的问题。
+
+- 2026-09-30（第二十二轮 · 阶段 P2 / WP5，依据 `next_doc/world_simulator_
+  realism_tech_and_causal_engine_plan.md` §4 WP5）：**回测与校准框架**。
+  目标是"有答案才能说更真实"——给后续 WP1/2/3 提供 before/after 的量化手段。
+  1. **新增 `world_simulator/backtest.py`**：`load_case()/parse_case()`
+     （校验重复 id、前置不存在/自环/成环、非法阶段与数字）；`anonymize()`
+     （名称别名化，长名优先；年份整体平移；原案例不被修改）；
+     `run_case()`（在**独立数据目录** `out_dir/data` 里创建并推进 N 步，
+     不碰真实 `data/`；推进中遇到 `SimEngineError` 停止并带着已有历史继续
+     打分，`aborted` 记录原因）；`extract_candidates()`（`capabilities_
+     gained` + 因果树 resolved 分支，后者的步数取自 WP0 快照链，缺快照时
+     保守取最后一步）；`rule_matcher()`（默认，零成本可复现）与
+     `make_llm_matcher()`（一次 LLM 调用，`sanitize_matches()` 强制一对一
+     并丢弃不存在的 id）；`rescore()`（用户覆盖，累积、只追加变化的对账
+     记录）；`score_run()`；`run_ab()/compare_arms()`。
+  2. **指标只看顺序与间隔**：召回（范围内）、精确（**下界**）、Kendall τ-b、
+     以首个命中项对齐的区间误差（带符号，正=引擎更慢）、前置违反数（同步
+     不算）、阶段一致率。分母为 0 记 `None`（无数据 ≠ 0 分）。每次运行同时
+     带上 WP4 体检的告警计数。
+  3. **对账写入 `reality_checks.jsonl`**：复用 `reality_check.record_and_apply`
+     （命中→matched，范围内未命中→diverged；范围外不记，因为引擎没跑到那么远）。
+  4. **新增** `entrypoints/backtest.py`（`check`/`run`/`ab`/`rescore`；`check`
+     不调 LLM 不写数据）、`workflows/backtest_match.yaml`（`type: agent`，
+     JSON 直接作为最终回复，同 `retrospective.yaml`）、`backtest_cases/` 两个
+     示例案例（`internet_early`、`personal_computer`）、`docs/backtest_guide.md`、
+     `requirements.txt` 加 `pyyaml`。**未登记进 `project.yaml`**（长时间、按
+     步数计费的 LLM 调用不适合 daemon 调度/看板一键触发）。
+  5. **测试**：新增 `tests/test_backtest.py`（43 个用例）。引擎与匹配 workflow
+     全部用桩。做过变异验证：把别名替换改成短名优先、把前置违反判定改成
+     "同步也算"、把范围边界改成开区间，各有相关用例转红，恢复后全绿。
+  **验收**：`pytest tests/` 805 passed（P1 后基线 762，含本轮新增 43 个）。
+  **已知边界（如实记录，详见 `docs/backtest_guide.md` 开头）**：
+  ① **没有在真实 LLM 下运行过**：涌现里程碑数量、LLM 匹配质量、单次成本
+  都是未知；② **训练数据污染只能缓解不能根除**，绝对分数不可信，只有同案例
+  同匹配方式的 A/B 相对差异有参考价值；③ **两个示例案例的里程碑与年份是
+  Claude 凭记忆起草、未经核对的**（`verified: false`，报告每次都标注），
+  在你核对之前不应据此下任何结论；用户在本轮开始前未回复"回测案例"一问，
+  按计划起草示例；④ 精确率是下界；⑤ 候选时间由 `years_per_step` 近似推得，
+  `elapsed_days`（WP1）落地后应改用引擎记录的跨度；⑥ 阶段迁移**时点**
+  偏差需要 WP1 的 `tech_state`，本阶段只做阶段一致率；⑦ `run_ab` 不做显著性
+  检验，n<5 时写"不足以下结论"；⑧ 候选来源只有 `capabilities_gained`
+  与 resolved 分支，不含 `structural_change` 等；⑨ A/B 的 B 臂只是覆盖
+  `settings`，而 `tech_model_enabled` 等开关要到 P3 才存在——在那之前 A/B
+  能比较的只有现有 settings（如 `consistency_guard_enabled`、时间粒度）
+  与匹配方式。

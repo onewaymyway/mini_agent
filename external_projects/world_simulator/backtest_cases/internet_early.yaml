@@ -1,0 +1,70 @@
+# 回测案例草稿：互联网早期里程碑（第二十二轮 WP5 示例）
+#
+# 【重要】里程碑与年份由 Claude 凭记忆起草，**未经核对，不是事实来源**。
+# 年份取整（同一事件常有多个"日期"口径：首次演示/标准发布/商用/上市），
+# 请你逐条核对、按需修改后，再把 verified 改为 true。verified=false 时，
+# 回测报告会标注"案例未经核对"。
+#
+# 别名化与年份平移只是缓解训练数据污染，不能根除——见 backtest.py 文档。
+id: internet_early
+title: 互联网早期（示例，未核对）
+verified: false
+disclaimer: "里程碑与年份为 Claude 凭记忆起草的示例，未经核对，不作为事实来源。"
+steps: 8
+year_shift: 37          # 引擎看到的年份 = 真实年份 + 37；打分只用顺序与间隔，不受影响
+
+# 名称别名：意图与真值名称里出现的键会被替换成值（长名优先）
+alias_map:
+  ARPANET: 联盟研究网
+  TCP/IP: 通用互联协议
+  NSFNET: 学术骨干网
+  万维网: 超文本信息系统
+  Mosaic: 图形化浏览器甲
+  Netscape: 浏览器公司乙
+
+start:
+  template: group_evolution
+  time_granularity: "2 年"
+  start_year: 1969
+  years_per_step: 2
+  intent: >-
+    1969 年，几家研究机构与政府资助方开始尝试把不同的计算机连成一个
+    分组交换网络（ARPANET），各机构使用互不兼容的设备。请推演这个研究
+    网络之后二十年左右，技术、协议、组织与应用如何逐步演化。
+
+milestones:
+  - id: m_packet_net
+    name: ARPANET 首次跨机构连通
+    year: 1969
+    aliases: [分组交换网络首次连通, 联盟研究网连通]
+    stage: lab
+  - id: m_protocol
+    name: TCP/IP 成为网络标准协议
+    year: 1983
+    aliases: [统一互联协议, 通用互联协议成为标准]
+    stage: developer
+    requires: [m_packet_net]
+  - id: m_backbone
+    name: NSFNET 学术骨干网建成
+    year: 1986
+    aliases: [学术骨干网, 国家级骨干网]
+    stage: developer
+    requires: [m_protocol]
+  - id: m_web
+    name: 万维网公开可用
+    year: 1991
+    aliases: [超文本信息系统, 超文本网络]
+    stage: expert
+    requires: [m_protocol]
+  - id: m_browser
+    name: Mosaic 图形浏览器发布
+    year: 1993
+    aliases: [图形化浏览器, 图形浏览器]
+    stage: consumer
+    requires: [m_web]
+  - id: m_commercial
+    name: Netscape 上市，商业互联网热潮开始
+    year: 1995
+    aliases: [浏览器公司上市, 商业化热潮]
+    stage: consumer
+    requires: [m_browser]

@@ -1,0 +1,41 @@
+name: backtest_match
+description: >-
+  回测里程碑语义匹配（第二十二轮 WP5，`next_doc/world_simulator_realism_
+  tech_and_causal_engine_plan.md` §4 WP5）。由 `world_simulator/backtest.py::
+  make_llm_matcher()` 触发。用 `type: agent`（通用能力，不绑定场景模板 skill）；
+  `type: agent` 不支持 `result_file` 契约，要求 Agent 直接把 JSON 作为最终回复，
+  由 `agent_step_result.extract_agent_json_output` 解析（同 retrospective.yaml）。
+  结果会被 `sanitize_matches()` 校验（只认存在的 id、强制一对一），并且用户
+  可以事后覆盖——最终裁定权在人。
+version: "1.0"
+steps:
+  - id: match
+    name: 里程碑语义匹配
+    type: agent
+    prompt: |
+      你在为一次"世界模拟回测"做配对。下面有两组条目：
+
+      A. 模拟**涌现**的候选里程碑（JSON 数组，每项 id/text/detail）：
+      {candidates_json}
+
+      B. 已知的**真值**里程碑（JSON 数组，每项 id/name/aliases）：
+      {truths_json}
+
+      任务：对 B 里的每一个真值，判断 A 里是否有**描述同一件事**的候选。
+      判断标准是"事件本质相同"（同一项技术/制度/组织的出现或成熟），
+      不是字面相似；只是主题相关、但不是同一件事的，不算匹配。
+
+      硬性规则：
+      - 一个候选最多匹配一个真值，一个真值最多匹配一个候选。
+      - 拿不准就填 null，宁缺毋滥。
+      - candidate_id 只能取自 A 里出现过的 id，truth_id 只能取自 B。
+      - 不要评价模拟好坏，不要补充 A、B 之外的信息。
+
+      【输出格式，必须严格遵守】最终回复**只包含一个 JSON 对象**，不要任何
+      其它文字、解释、markdown 代码块围栏、或工具调用：
+
+      {{"matches": [{{"truth_id": "B里的id", "candidate_id": "A里的id 或 null",
+      "confidence": "high|medium|low", "reason": "一句话依据"}}]}}
+
+      B 里每个真值都必须在 matches 里出现一次。不要用 bash/echo 打印 JSON；
+      你的最后一条回复去掉首尾空白后必须能被直接当 JSON 解析。

@@ -42,6 +42,7 @@ external_projects/world_simulator/
   docs/                       # 本目录：使用者视角的说明文档
     README.md                 #   文档入口/导航
     overview.md                #   本文件：项目说明
+    backtest_guide.md           #   回测与校准（WP5）
     testing_guide.md            #   如何测试/验证
   app.py                       # 独立 Streamlit 看板（核心交互入口）
   world_simulator/             # 业务代码包

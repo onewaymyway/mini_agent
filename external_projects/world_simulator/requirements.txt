@@ -1,5 +1,8 @@
 # 本项目独立依赖
 streamlit>=1.32.0
+pyyaml>=6.0
+# ↑ pyyaml：第二十二轮 WP5 回测案例（`backtest_cases/*.yaml`）用它读取；
+# 只有跑回测才需要，其它功能不受影响（mini_agent 主项目本身已依赖它）。
 graphviz>=0.19.0
 # ↑ graphviz：第八轮批次四（`next_doc/world_simulator_c_category_
 # precision_upgrade_improvement_plan.md` 第 5 节）"🕸️ 关系图"子视图
