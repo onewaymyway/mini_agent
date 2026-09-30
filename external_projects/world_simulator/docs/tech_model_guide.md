@@ -76,6 +76,8 @@
 
 ## 时间：`elapsed_days`
 
+- 也被外生事件采样使用（`event_sampling_guide.md`）：事件概率用最近几步的中位数估计本步跨度，
+  所以只开事件采样时提示词同样会索要 `elapsed_days`。
 - 是 LLM 给的**量级估计**，引擎只检查合法性（正数、有限、≤ 36500 天）。
 - 没给/非法 → 按 `fallback_days_per_step`（默认 30 天）推算，审计里标 `elapsed_source: fallback`，
   界面提示"精度降级"。`SimState.elapsed_days` 此时为 `None`，不伪造。

@@ -48,6 +48,7 @@ from world_simulator import causal_tree
 from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
 from world_simulator import tech_model as tech_mod
+from world_simulator import event_sampler as event_mod
 from world_simulator import retrospective as retrospective_mod
 from world_simulator import html_export as html_export_mod
 from world_simulator import agent_preview as agent_preview_mod
@@ -716,6 +717,69 @@ def _render_tech_panel(settings) -> None:
                 line += " · 既有技术（未经验证）"
             st.markdown(line)
             st.progress(min(1.0, max(0.0, float(n["progress"]))))
+
+
+def _sampled_events_html(state) -> str:
+    """外生事件采样（第二十二轮 WP2）本步抽中的事件：这些是引擎抽样决定的
+    "既成事实"，不是 AI 的选择。"""
+    lines = []
+    for e in getattr(state, "sampled_events", None) or []:
+        if not isinstance(e, dict):
+            continue
+        if e.get("suppressed_by_cap"):
+            note = "（本步命中数超过上限，未注入）"
+        else:
+            note = ""
+        unverified = "" if e.get("verified") else "（先验未核对）"
+        try:
+            prob = f"{float(e.get('probability', 0)):.0%}"
+        except (TypeError, ValueError):
+            prob = "?"
+        lines.append(
+            f'<div class="ws-chapter-option-warning">🎲 外生事件：{html_stdlib.escape(str(e.get("description", e.get("id", ""))))}'
+            f'（严重度 {html_stdlib.escape(str(e.get("severity", "")))}，抽样概率 {prob}）{unverified}{note}</div>'
+        )
+    return "".join(lines)
+
+
+def _render_event_panel(manifest, current, history) -> None:
+    """外生事件先验面板（只读）：每条先验当前的单步概率、冷却、条件状态。
+    **不显示"下一步会不会抽中"**——避免把模拟当剧本提前剧透。"""
+    settings = manifest.settings
+    if not event_mod.is_enabled(settings):
+        return
+    priors, problems = event_mod.get_priors(settings)
+    with st.expander(f"🎲 外生事件采样（{len(priors)} 条先验）"):
+        for why in problems:
+            st.warning(f"先验被忽略：{why}")
+        if not priors:
+            st.caption("还没有可用的事件先验——在设置里添加。没有先验时，采样不会产生任何事件。")
+            return
+        st.caption(
+            "事件由引擎按先验概率抽样，作为“本步已发生的事实”注入 AI；抽样可复现（同一分支同一步重跑一致）。"
+            "先验数值由你声明，引擎不知道任何领域的真实频率；“未核对”表示还没有人核对过这个数。"
+        )
+        rows = event_mod.preview(
+            settings, history, getattr(current, "vars", None) or {},
+            sim_id=manifest.sim_id, branch=manifest.branch, step=int(getattr(current, "step", 0)) + 1,
+        )
+        label = {"disabled": "已停用", "cooldown": "冷却中", "condition_unmet": "条件未满足",
+                 "hit": "参与抽样", "miss": "参与抽样"}
+        for r in rows:
+            p = r["prior"]
+            line = (
+                f"**{p['description']}** `{p['id']}` · 每年约 {p['rate_per_year']:g} 次 · 严重度 {p['severity']}"
+                f" · {label.get(r['status'], r['status'])}"
+            )
+            if r["status"] in ("hit", "miss"):
+                line += f" · 下一步概率约 {r['probability']:.1%}（按约 {r['basis_days']:g} 天估计）"
+            if r["status"] == "cooldown":
+                line += f"（还需 {r.get('cooldown_left', '?')} 步）"
+            if r["status"] == "condition_unmet" and r.get("why"):
+                line += f"（{r['why']}）"
+            if not p["verified"]:
+                line += " · ⚠️ 未核对"
+            st.markdown(line)
 
 
 def _consistency_warnings_html(state) -> str:
@@ -2484,7 +2548,7 @@ def _render_timeline(
         granularity_note = _granularity_note_html(state)
         resource_note = _resource_violations_html(state)
         relation_note = _relation_violations_html(state)
-        option_warnings_note = _option_warnings_html(state) + _consistency_warnings_html(state) + _tech_violations_html(state)
+        option_warnings_note = _option_warnings_html(state) + _consistency_warnings_html(state) + _tech_violations_html(state) + _sampled_events_html(state)
         background_note = _background_entities_html(state)
         key_drivers_note = _key_drivers_html(state)
         line_updates_note = _line_updates_html(state, causal_lines_meta)
@@ -4192,6 +4256,7 @@ def page_detail() -> None:
 
     # 第二十二轮 WP1：技术树面板（只读；未开启技术模型时不渲染）。
     _render_tech_panel(manifest.settings)
+    _render_event_panel(manifest, current, history)
 
     # 第二十二轮 WP4：真实性体检（结构性检查，不是语义真实性评分）。
     # 每次渲染都从历史现算，纯 Python、不调 LLM；默认折叠。
@@ -4614,6 +4679,48 @@ def page_detail() -> None:
                 key="settings_tech_priors", height=70,
                 placeholder='{"energy": {"lab": 1800, "expert": 1200}, "default": {"lab": 730}}',
             )
+        cur_event_enabled = bool(cur_settings.get("event_sampling_enabled"))
+        with st.expander("高级：外生事件采样（第二十二轮 WP2，可选，默认关闭）"):
+            st.markdown(
+                '<span class="ws-muted">开启后，引擎按你声明的先验概率在<b>每步开始前</b>抽样外部事件，'
+                "作为“本步已发生的事实”注入 AI；没抽中时明确告诉 AI 可以写平静的一步。"
+                "<b>引擎不内置任何先验，也不知道领域的真实频率</b>——<code>rate_per_year</code> 是你的声明。"
+                "事件概率按最近几步 <code>elapsed_days</code> 的中位数估计（没有则用占位天数 30），"
+                "所以 AI 给出的时间跨度越不稳定，实际频率越偏离先验。"
+                "引擎<b>无法验证</b> AI 是否真的把事件写进了叙事。</span>",
+                unsafe_allow_html=True,
+            )
+            new_event_enabled = st.checkbox(
+                "开启外生事件采样", value=cur_event_enabled, key="settings_event_sampling_enabled",
+            )
+            cur_event_priors = cur_settings.get("event_priors") or []
+            new_event_priors_text = st.text_area(
+                "事件先验（JSON 数组）",
+                value=json.dumps(cur_event_priors, ensure_ascii=False, indent=1) if cur_event_priors else "",
+                key="settings_event_priors", height=160,
+                placeholder=(
+                    '[{"id": "drought", "description": "严重干旱", "rate_per_year": 0.1, '
+                    '"severity": "high", "affects": ["收成"], "cooldown_steps": 4, '
+                    '"condition": {"var": "resources.land", "op": ">", "value": 0}, "verified": false}]'
+                ),
+            )
+            cur_event_params = cur_settings.get("event_params") or {}
+            new_event_params_text = st.text_area(
+                "采样参数覆盖（JSON 对象，可选）",
+                value=json.dumps(cur_event_params, ensure_ascii=False) if cur_event_params else "",
+                key="settings_event_params", height=60,
+                placeholder='{"default_days_per_step": 30, "max_events_per_step": 3, "basis_window": 3}',
+            )
+            new_event_salt = st.text_input(
+                "随机盐 salt（可选；改它会改变整条事件序列）",
+                value=str(cur_settings.get("event_sampling_salt") or ""), key="settings_event_salt",
+            )
+            new_event_common = st.checkbox(
+                "公共随机数（同一步上所有分支抽到相同事件；用于比较不同策略，避免“策略差异”与“事件差异”混在一起。"
+                "开启后重复采样的各分支事件序列相同，除非手动设不同 salt）",
+                value=bool(cur_settings.get("event_sampling_common_random_numbers")),
+                key="settings_event_common",
+            )
         if st.button("保存设置", key="settings_save"):
             new_objectives = [o.strip() for o in new_objectives_text.split(",") if o.strip()]
             new_objectives_advanced = _safe_json_loads(new_objectives_advanced_text, None)
@@ -4643,6 +4750,10 @@ def page_detail() -> None:
             new_tech_state = _safe_json_loads(new_tech_state_text, None)
             new_tech_params = _safe_json_loads(new_tech_params_text, None)
             new_tech_priors = _safe_json_loads(new_tech_priors_text, None)
+            new_event_priors = _safe_json_loads(new_event_priors_text, None)
+            new_event_params = _safe_json_loads(new_event_params_text, None)
+            event_priors_invalid = new_event_priors_text.strip() and not isinstance(new_event_priors, list)
+            event_params_invalid = new_event_params_text.strip() and not isinstance(new_event_params, dict)
             tech_state_invalid = new_tech_state_text.strip() and not isinstance(new_tech_state, list)
             tech_params_invalid = new_tech_params_text.strip() and not isinstance(new_tech_params, dict)
             tech_priors_invalid = new_tech_priors_text.strip() and not isinstance(new_tech_priors, dict)
@@ -4664,6 +4775,10 @@ def page_detail() -> None:
                 st.error("技术引擎参数不是合法的 JSON 对象，设置未保存，请修正后重试。")
             elif tech_priors_invalid:
                 st.error("技术先验不是合法的 JSON 对象，设置未保存，请修正后重试。")
+            elif event_priors_invalid:
+                st.error("事件先验不是合法的 JSON 数组，设置未保存，请修正后重试。")
+            elif event_params_invalid:
+                st.error("事件采样参数不是合法的 JSON 对象，设置未保存，请修正后重试。")
             else:
                 if isinstance(new_objectives_advanced, list):
                     new_objectives = new_objectives + [
@@ -4725,8 +4840,17 @@ def page_detail() -> None:
                     ),
                     tech_params=new_tech_params if isinstance(new_tech_params, dict) else {},
                     tech_priors=new_tech_priors if isinstance(new_tech_priors, dict) else {},
+                    event_sampling_enabled=bool(new_event_enabled),
+                    event_priors=[x for x in new_event_priors if isinstance(x, dict)]
+                    if isinstance(new_event_priors, list) else [],
+                    event_params=new_event_params if isinstance(new_event_params, dict) else {},
+                    event_sampling_salt=new_event_salt.strip(),
+                    event_sampling_common_random_numbers=bool(new_event_common),
                 )
+                _, _ev_problems = event_mod.get_priors({"event_priors": new_event_priors})
                 st.success("设置已更新，下一步推进开始生效。")
+                for _why in _ev_problems:
+                    st.warning(f"事件先验被忽略（不会参与抽样）：{_why}")
                 st.rerun()
 
     # ── Problem Discovery Engine 轻量入口（第九轮批次三，2.4 节，
@@ -6569,7 +6693,7 @@ def page_game() -> None:
     granularity_note = _granularity_note_html(s)
     resource_note = _resource_violations_html(s)
     relation_note = _relation_violations_html(s)
-    option_warnings_note = _option_warnings_html(s) + _consistency_warnings_html(s) + _tech_violations_html(s)
+    option_warnings_note = _option_warnings_html(s) + _consistency_warnings_html(s) + _tech_violations_html(s) + _sampled_events_html(s)
     background_note = _background_entities_html(s)
     key_drivers_note = _key_drivers_html(s)
     line_updates_note = _line_updates_html(s, manifest.settings.get("causal_lines"))

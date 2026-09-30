@@ -25,7 +25,7 @@ from world_simulator.engine.background_entities import (
     _normalize_background_entities,
 )
 from world_simulator import causal_tree, relationship
-from world_simulator import consistency_guard, dynamic_state, tech_model
+from world_simulator import consistency_guard, dynamic_state, event_sampler, tech_model
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _read_skill_version, _skill_name_for_template
@@ -387,6 +387,14 @@ def advance(
             history_for_prompt = store.load_history(branch)
             current = store.load_current_state(branch) or current
 
+    # 第二十二轮 WP2：外生事件采样。必须在调用 LLM *之前*完成（抽中的事件是
+    # 注入提示词的"既成事实"）；可复现种子=(sim_id, 分支, 步序号, salt, 事件 id)，
+    # 所以重试/重跑同一步结果一致。未开启时 `sampled_events` 为 []、hint 为 ""。
+    sampled_events = event_sampler.safe_sample_step(
+        manifest.settings, history_for_prompt, current.vars,
+        sim_id=sim_id, branch=branch, step=current.step + 1,
+    )
+
     shared_inputs = {
         "title": manifest.title,
         "current_summary": current.summary,
@@ -429,6 +437,7 @@ def advance(
         # 第二十二轮 WP1：技术模型开启时，把引擎持有的权威技术状态 + 输出
         # 协议喂给 LLM；未开启返回空字符串（prompt 与之前等价）。
         "tech_state_hint": tech_model.safe_build_hint(manifest.settings),
+        "sampled_events_hint": event_sampler.safe_build_hint(manifest.settings, sampled_events),
         **resolve_hints(manifest.settings, current_step=current.step + 1),
     }
 
@@ -788,12 +797,18 @@ def advance(
     )
     next_state.tree_updates = _apply_tree_updates(manifest, next_state, data)
 
+    # 第二十二轮 WP2：把本步抽中的事件记进状态（审计 + 下一步冷却的依据）。
+    next_state.sampled_events = sampled_events
+
     # 第二十二轮 WP1：技术模型裁决（提议–审核）。必须在下面
     # `dynamic_state.snapshot_if_changed()` 之前——`tech_state` 是分支作用域
     # 动态状态，快照要包含这一步的推进/迁移结果。未开启时整段是空操作，
     # 不产生任何新字段（`SimState.to_dict()` 对空值不输出）。
-    if tech_model.is_enabled(manifest.settings):
+    # `elapsed_days` 也服务于外生事件采样（WP2：下一步的事件概率用最近几步的跨度
+    # 估计），所以两个功能任一开启都记录它；技术裁决本身仍只在技术模型开启时跑。
+    if tech_model.is_enabled(manifest.settings) or event_sampler.is_enabled(manifest.settings):
         next_state.elapsed_days = tech_model.normalize_reported_elapsed(data.get("elapsed_days"))
+    if tech_model.is_enabled(manifest.settings):
         next_state.tech_updates, next_state.tech_violations = tech_model.safe_apply_step(
             manifest.settings,
             data.get("tech_updates"),

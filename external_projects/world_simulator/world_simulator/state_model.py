@@ -960,6 +960,16 @@ world_simulator_realism_tech_and_causal_engine_plan.md` §4 WP1"时间基础
 说明为什么。`to_dict()` 空时不输出。
     """
 
+    sampled_events: List[Dict[str, Any]] = field(default_factory=list)
+    """外生事件采样（`event_sampler.py`，第二十二轮 WP2）在*本步开始前*抽中的
+事件，作为"既成事实"注入了提示词。每项 `{id, description, severity, affects,
+probability, draw, basis_days, basis_source, source, verified}`，被
+`max_events_per_step` 压掉的另带 `suppressed_by_cap: true`（没有注入、不启动
+冷却）。`basis_days` 是抽样时对本步跨度的**估计**，不是实际 `elapsed_days`。
+空列表 = 未开启或本步静默（没抽到）；`to_dict()` 空时不输出。冷却就是从分支
+历史里的这个字段推导的，所以天然按分支正确。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
@@ -973,6 +983,8 @@ world_simulator_realism_tech_and_causal_engine_plan.md` §4 WP1"时间基础
             d.pop("tech_updates", None)
         if not d.get("tech_violations"):
             d.pop("tech_violations", None)
+        if not d.get("sampled_events"):
+            d.pop("sampled_events", None)
         return d
 
     @classmethod
@@ -1069,6 +1081,9 @@ world_simulator_realism_tech_and_causal_engine_plan.md` §4 WP1"时间基础
             ],
             tech_violations=[
                 copy.deepcopy(x) for x in (data.get("tech_violations") or []) if isinstance(x, dict)
+            ],
+            sampled_events=[
+                copy.deepcopy(x) for x in (data.get("sampled_events") or []) if isinstance(x, dict)
             ],
         )
 

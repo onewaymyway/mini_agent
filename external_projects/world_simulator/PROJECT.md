@@ -676,6 +676,12 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   `elapsed_days` 是 LLM 的量级估计；**没有在真实 LLM 下验证过**；
   `advance_lines()` 独立推进路径不跑技术模型；开启后每步写完整快照、历史
   变大。详见 `docs/tech_model_guide.md` 与"变更记录"第二十二轮 P3 条目。
+- **外生事件采样只是按你声明的先验抽样（第二十二轮 WP2，默认关闭）**：没有内置
+  任何先验，引擎不知道领域的真实频率；事件概率按**估计**的本步跨度（最近几步
+  `elapsed_days` 中位数）计算，不是实际跨度；引擎无法验证 LLM 是否把事件写进了
+  叙事；`affects` 只是提示；`advance_lines()` 不做采样；先验由用户手写（未做
+  `generate_scenario` 提议）；没有在真实 LLM 下验证过。详见
+  `docs/event_sampling_guide.md` 与"变更记录"第二十二轮 P4 条目。
 
 ## 目录结构
 
@@ -4277,3 +4283,46 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   ⑦ 未登记前置不阻断，这类前置形同虚设；⑧ 设置页保存"技术节点"会覆盖当前
   技术状态（含进度）；⑨ 回测框架（WP5）**尚未**改用 `elapsed_days`/`tech_state`
   （"阶段迁移时点偏差"仍未做）；⑩ 分支隔离只对新写入的步生效。
+
+- 2026-10-01（第二十二轮 · 阶段 P4 / WP2，依据 `next_doc/world_simulator_
+  realism_tech_and_causal_engine_plan.md` §4 WP2）：**外生事件采样**（默认关闭
+  `settings.event_sampling_enabled`；关闭时 prompt/落盘/界面与之前等价）。
+  1. **新增** `world_simulator/event_sampler.py`（纯 Python、不调 LLM）：先验规整
+     （`rate_per_year` 必须非负，非法条目丢弃并给原因）、泊松单步概率
+     `1-exp(-rate×basis_days/365.25)`、可复现抽样（种子=`sha256(sim_id|分支|步序号|
+     salt|事件 id)`，每个事件独立）、冷却（**从分支历史的 `sampled_events` 推导**，
+     所以天然按分支隔离、不需要新增分支作用域状态）、最小条件谓词（变量比较 /
+     技术阶段 / AND，缺失即不满足）、单步上限、提示词、`preview()`、兜底包装
+     `safe_sample_step()`/`safe_build_hint()`（出错退化为静默步）。
+  2. **`SimState` 新增** `sampled_events`（空值不输出，旧格式逐字节不变）。
+  3. **`engine/advance.py`**：在调用 LLM **之前**抽样，把 `{sampled_events_hint}` 喂入
+     prompt，抽中的事件记入本步状态。**发现并修掉的缺口**：`elapsed_days` 原先只在
+     技术模型开启时才索要/落盘，导致只开事件采样时基准天数永远退回占位值 30——现在
+     事件采样或技术模型任一开启即落盘 `elapsed_days`，且两种提示都向 LLM 索要
+     （有回归测试；这是写测试时由一个失败用例暴露的，不是事先想到的）。
+  4. **`workflows/advance_step.yaml`、`world_evolve.yaml`** 加 `{sampled_events_hint}`；
+     `elapsed_days` 的输出条件改为"技术模型或事件采样任一提示非空"；三个模板
+     SKILL.md 补说明。
+  5. **`app.py`**：设置页"高级：外生事件采样"（开关/先验 JSON/参数/salt/公共随机数，
+     含 JSON 校验与被忽略先验的警告）、详情页"🎲 外生事件采样"面板（概率/冷却/
+     条件状态，**不显示"下一步是否抽中"以免剧透**）、每步"🎲 外生事件"提示。
+  6. **文档**：新增 `docs/event_sampling_guide.md`；更新 `docs/README.md`、`overview.md`、
+     `testing_guide.md`、`tech_model_guide.md`。
+  7. **测试**：新增 `tests/test_event_sampler.py`（39 个）。变异验证 15 个（概率公式、
+     种子忽略分支/salt/步序号、公共随机数开关、冷却少一步、被压掉的事件启动冷却、
+     上限多放一个、缺失变量视为满足、基准取均值、开关关闭仍抽样/仍注入、仅事件采样
+     不记 elapsed_days、advance 写死分支名、事件不落盘）全部转红。
+  **验收**：`pytest tests/` 898 passed（P3 后基线 859，新增 39）；`streamlit.testing.
+  AppTest` 冒烟：开启事件采样、带一步含事件历史的实例详情页无异常，先验面板正确显示
+  冷却/条件未满足/未核对标记，坏先验给出警告，每步事件提示正确渲染。
+  **与 §4 WP2 的偏离/细化**：① **先验由用户手写，没有做 `generate_scenario` 提议**
+  （会改动场景生成与确认界面，且 LLM 猜的先验本身就是垃圾进垃圾出的入口；可作为后续
+  独立小阶段）；② "每分支不同 salt"改为**分支名进种子**，效果相同且不改实验代码，
+  另加公共随机数开关（比较不同策略时避免"策略差异"与"事件差异"混淆）；③ 新增
+  `max_events_per_step` 上限（计划未写）；④ 实现了最小条件谓词，P5 可复用。
+  **已知边界（如实记录）**：① **没有在真实 LLM 下运行过**——LLM 是否遵守"既成事实"、
+  额外 token 成本未知；② 引擎**无法验证**叙事是否包含事件，也无法阻止 LLM 另外编造
+  冲击；③ 概率用**估计**跨度，`elapsed_days` 不稳定会让实际频率偏离先验；④ 没有内置
+  先验，数值完全取决于用户；⑤ `affects` 只是提示，不自动改任何状态；⑥ 事件间无相关性；
+  ⑦ `advance_lines()` 不做采样；⑧ 只对新写入的步有效；⑨ 公共随机数开启后重复采样各
+  分支事件序列相同（除非设不同 salt）。
